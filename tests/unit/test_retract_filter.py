@@ -11,7 +11,6 @@ from src.db import init_database, get_connection
 from src.services.topic_service import add_topic
 from src.services.discussion_log_service import add_logs, get_logs
 from src.services.decision_service import add_decisions, get_decisions
-from src.services.pin_service import update_pin
 from src.services.retract_service import retract
 from src.services.checkin_service import check_in
 from src.services.activity_service import add_activity
@@ -176,8 +175,13 @@ class TestCheckInFilter:
         ])
         decision_id = result["created"][0]["decision_id"]
 
-        # pin → retract
-        update_pin("decision", decision_id, True)
+        # pin（DBのpinned列を直接設定）→ retract
+        conn = get_connection()
+        try:
+            conn.execute("UPDATE decisions SET pinned = 1 WHERE id = ?", (decision_id,))
+            conn.commit()
+        finally:
+            conn.close()
         retract("decision", [decision_id])
 
         checkin = check_in(aid)
@@ -198,8 +202,13 @@ class TestCheckInFilter:
         ])
         log_id = result["created"][0]["log_id"]
 
-        # pin → retract
-        update_pin("log", log_id, True)
+        # pin（DBのpinned列を直接設定）→ retract
+        conn = get_connection()
+        try:
+            conn.execute("UPDATE discussion_logs SET pinned = 1 WHERE id = ?", (log_id,))
+            conn.commit()
+        finally:
+            conn.close()
         retract("log", [log_id])
 
         checkin = check_in(aid)

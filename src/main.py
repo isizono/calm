@@ -837,28 +837,61 @@ def update_habit(habit_id: int, content: Optional[str] = None, active: Optional[
 
 
 @mcp.tool()
-def update_pin(entity_type: str, entity_id: int, pinned: bool) -> dict:
-    """エンティティのpinを切り替える。
+def add_pin(
+    source_type: str,
+    source_ref,
+    target_type: str,
+    target_ref,
+) -> dict:
+    """有向pinを追加する（source → target）。
 
-    pin基準: 「これを知らずに着手したら間違った方向に進む」レベルの情報。
-    unpin基準: 「もう知らなくてもいい状態になったか」。
+    pinはsourceエンティティからtargetエンティティへの有向関係として記録される。
+    check-in時にsourceに対応するpinのtargetが自動注入される。
 
-    pinすべき例:
-    - 方向転換を記録したログ（以前の方針と異なる判断をした経緯）
-    - プロジェクトの根幹に関わるdecision（アーキテクチャ選定、命名規約など）
-    - 必読のmaterial（設計ドキュメント、仕様書など）
+    source/target の種別は tag / activity / topic / decision / log / material のいずれか。
+    tagのrefはID（整数）またはnamespace:name形式の文字列（例: "domain:cc-memory"）で指定できる。
+    それ以外の種別のrefはIDを整数で指定する。
 
-    pinしない例:
-    - 進捗報告ログ（読まなくても方向を間違えない）
-    - 独立した小さな決定（他の作業に影響しない）
-    - 一時的な調査メモ（役目を終えた情報）
+    重複追加は冪等（エラーにならない）。自己参照（source==target）は拒否される。
+    source/targetが存在しない場合はNOT_FOUNDエラーを返す。
 
     Args:
-        entity_type: "decision" | "log" | "material"
-        entity_id: エンティティのID
-        pinned: True=pin, False=unpin
+        source_type: 起点エンティティ種別（"tag" | "activity" | "topic" | "decision" | "log" | "material"）
+        source_ref: 起点エンティティのID（int）またはtag名文字列（tag種別のみ）
+        target_type: 終点エンティティ種別（"tag" | "activity" | "topic" | "decision" | "log" | "material"）
+        target_ref: 終点エンティティのID（int）またはtag名文字列（tag種別のみ）
+
+    Returns:
+        成功時: {"source_type": str, "source_id": int, "target_type": str, "target_id": int}
+        失敗時: {"error": {"code": str, "message": str}}
     """
-    return pin_service.update_pin(entity_type, entity_id, pinned)
+    return pin_service.add_pin(source_type, source_ref, target_type, target_ref)
+
+
+@mcp.tool()
+def remove_pin(
+    source_type: str,
+    source_ref,
+    target_type: str,
+    target_ref,
+) -> dict:
+    """有向pinを削除する（source → target）。
+
+    add_pinで追加したpinを削除する。対象pinが存在しない場合はremoved=0を返す（エラーにならない）。
+
+    tagのrefはID（整数）またはnamespace:name形式の文字列（例: "domain:cc-memory"）で指定できる。
+
+    Args:
+        source_type: 起点エンティティ種別（"tag" | "activity" | "topic" | "decision" | "log" | "material"）
+        source_ref: 起点エンティティのID（int）またはtag名文字列（tag種別のみ）
+        target_type: 終点エンティティ種別（"tag" | "activity" | "topic" | "decision" | "log" | "material"）
+        target_ref: 終点エンティティのID（int）またはtag名文字列（tag種別のみ）
+
+    Returns:
+        成功時: {"removed": int}（実際に削除された件数）
+        失敗時: {"error": {"code": str, "message": str}}
+    """
+    return pin_service.remove_pin(source_type, source_ref, target_type, target_ref)
 
 
 @mcp.tool()
