@@ -16,6 +16,7 @@ from src.services.checkin_service import check_in
 from src.services.activity_service import add_activity
 from src.services.relation_service import add_relation
 from src.services.tag_service import _injected_tags
+from tests.helpers import set_pinned
 
 
 DEFAULT_TAGS = ["domain:test"]
@@ -176,12 +177,7 @@ class TestCheckInFilter:
         decision_id = result["created"][0]["decision_id"]
 
         # pin（DBのpinned列を直接設定）→ retract
-        conn = get_connection()
-        try:
-            conn.execute("UPDATE decisions SET pinned = 1 WHERE id = ?", (decision_id,))
-            conn.commit()
-        finally:
-            conn.close()
+        set_pinned("decision", decision_id, True)
         retract("decision", [decision_id])
 
         checkin = check_in(aid)

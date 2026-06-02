@@ -221,14 +221,6 @@ def remove_pin(
 
         return {"removed": cursor.rowcount}
 
-    except sqlite3.IntegrityError as e:
-        conn.rollback()
-        return {
-            "error": {
-                "code": "CONSTRAINT_VIOLATION",
-                "message": str(e),
-            }
-        }
     except Exception as e:
         conn.rollback()
         return {

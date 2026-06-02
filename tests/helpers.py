@@ -4,9 +4,31 @@ add_logs / add_decisions のバッチAPIを単件呼び出し形式でラップ�
 旧 add_log / add_decision と同じインターフェースを提供する。
 """
 from typing import Optional
+from src.db import get_connection
 from src.services.discussion_log_service import add_logs
 from src.services.decision_service import add_decisions
 from src.services.retract_service import retract
+
+
+_ENTITY_TABLE = {
+    "decision": "decisions",
+    "log": "discussion_logs",
+    "material": "materials",
+}
+
+
+def set_pinned(entity_type: str, entity_id: int, pinned: bool = True) -> None:
+    """テスト用: DBのpinned列を直接設定する。
+
+    0035以降でpinned列をDROPする際の修正箇所をここ1箇所に集約する。
+    """
+    table = _ENTITY_TABLE[entity_type]
+    conn = get_connection()
+    try:
+        conn.execute(f"UPDATE {table} SET pinned = ? WHERE id = ?", (1 if pinned else 0, entity_id))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def add_log(
