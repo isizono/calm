@@ -843,10 +843,22 @@ def add_pin(
     target_type: str,
     target_ref: Union[int, str],
 ) -> dict:
-    """有向pinを追加する（source → target）。
+    """pinを追加する（source → target）。
 
-    pinはsourceエンティティからtargetエンティティへの有向関係として記録される。
+    pinはsourceエンティティからtargetエンティティへの関係として記録される。
     check-in時にsourceに対応するpinのtargetが自動注入される。
+
+    pin基準: 「これを知らずに着手したら間違った方向に進む」レベルの情報。
+
+    pinすべき例:
+    - 方向転換を記録したログ（以前の方針と異なる判断をした経緯）
+    - プロジェクトの根幹に関わるdecision（アーキテクチャ選定、命名規約など）
+    - 必読のmaterial（設計ドキュメント、仕様書など）
+
+    pinしない例:
+    - 進捗報告ログ（読まなくても方向を間違えない）
+    - 独立した小さな決定（他の作業に影響しない）
+    - 一時的な調査メモ（役目を終えた情報）
 
     source/target の種別は tag / activity / topic / decision / log / material のいずれか。
     tagのrefはID（整数）またはnamespace:name形式の文字列（例: "domain:cc-memory"）で指定できる。
@@ -875,9 +887,12 @@ def remove_pin(
     target_type: str,
     target_ref: Union[int, str],
 ) -> dict:
-    """有向pinを削除する（source → target）。
+    """pinを削除する（source → target）。
+
+    unpin基準: 「もう知らなくてもいい状態になったか」。
 
     add_pinで追加したpinを削除する。対象pinが存在しない場合はremoved=0を返す（エラーにならない）。
+    tag refを文字列で渡して該当tagが存在しなかった場合も removed=0 を返す（冪等）。
 
     tagのrefはID（整数）またはnamespace:name形式の文字列（例: "domain:cc-memory"）で指定できる。
 

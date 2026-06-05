@@ -341,11 +341,10 @@ class TestRemovePin:
         assert "error" in result
         assert result["error"]["code"] == "VALIDATION_ERROR"
 
-    def test_remove_pin_nonexistent_tag_string(self, activity, temp_db):
-        """存在しないtag名文字列でNOT_FOUNDエラーを返す"""
+    def test_remove_pin_nonexistent_tag_string_is_idempotent(self, activity, temp_db):
+        """存在しないtag名文字列で remove しても {"removed": 0} を返し冪等になる（D#2347）"""
         activity_id = activity["activity_id"]
 
         result = remove_pin("tag", "domain:nonexistent", "activity", activity_id)
 
-        assert "error" in result
-        assert result["error"]["code"] == "NOT_FOUND"
+        assert result == {"removed": 0}
