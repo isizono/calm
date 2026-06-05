@@ -2,7 +2,7 @@
 import logging
 import random
 from fastmcp import FastMCP, Context
-from typing import Optional
+from typing import Optional, Union
 from src.services import (
     topic_service,
     discussion_log_service,
@@ -839,9 +839,9 @@ def update_habit(habit_id: int, content: Optional[str] = None, active: Optional[
 @mcp.tool()
 def add_pin(
     source_type: str,
-    source_ref,
+    source_ref: Union[int, str],
     target_type: str,
-    target_ref,
+    target_ref: Union[int, str],
 ) -> dict:
     """有向pinを追加する（source → target）。
 
@@ -871,9 +871,9 @@ def add_pin(
 @mcp.tool()
 def remove_pin(
     source_type: str,
-    source_ref,
+    source_ref: Union[int, str],
     target_type: str,
-    target_ref,
+    target_ref: Union[int, str],
 ) -> dict:
     """有向pinを削除する（source → target）。
 

@@ -4,7 +4,7 @@ import tempfile
 import pytest
 from src.db import init_database, get_connection
 from src.services.activity_service import add_activity, update_activity
-from tests.helpers import add_decision, add_log, retract_decision
+from tests.helpers import add_decision, add_log, retract_decision, set_pinned as _set_pinned
 from src.services.material_service import add_material
 from src.services.relation_service import add_relation
 from src.services.topic_service import add_topic
@@ -13,23 +13,6 @@ from src.services.tag_service import _injected_tags
 
 
 DEFAULT_TAGS = ["domain:test"]
-
-_ENTITY_TABLE = {
-    "decision": "decisions",
-    "log": "discussion_logs",
-    "material": "materials",
-}
-
-
-def _set_pinned(entity_type: str, entity_id: int, pinned: bool = True) -> None:
-    """テスト用: DBのpinned列を直接設定する。"""
-    table = _ENTITY_TABLE[entity_type]
-    conn = get_connection()
-    try:
-        conn.execute(f"UPDATE {table} SET pinned = ? WHERE id = ?", (1 if pinned else 0, entity_id))
-        conn.commit()
-    finally:
-        conn.close()
 
 
 @pytest.fixture

@@ -212,7 +212,7 @@ def remove_pin(
         if isinstance(target_id, dict):
             return target_id
 
-        # DELETE実行
+        # DELETE実行（pinsテーブルに外部キー制約はないためIntegrityErrorは発生しない）
         cursor = conn.execute(
             "DELETE FROM pins WHERE source_type=? AND source_id=? AND target_type=? AND target_id=?",
             (source_type, source_id, target_type, target_id),
@@ -221,14 +221,6 @@ def remove_pin(
 
         return {"removed": cursor.rowcount}
 
-    except sqlite3.IntegrityError as e:
-        conn.rollback()
-        return {
-            "error": {
-                "code": "CONSTRAINT_VIOLATION",
-                "message": str(e),
-            }
-        }
     except Exception as e:
         conn.rollback()
         return {
