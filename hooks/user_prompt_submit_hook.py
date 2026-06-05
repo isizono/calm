@@ -1,4 +1,4 @@
-"""PreToolUse hook: nudgeリマインダー注入（イベント駆動版）
+"""UserPromptSubmit hook: nudgeリマインダー注入（イベント駆動版）
 
 処理フロー:
 1. stdin読み込み → JSON parse（session_id取得）
@@ -6,6 +6,9 @@
 3. events.jsonl全読み
 4. 未消費のnudgeイベント判定 → system-reminder注入
 5. 何もなし → 空JSON出力
+
+Stop hookでnudge判定とevents.jsonl追記を行い、本hookで消費して注入する。
+注入タイミングが「ユーザーの次の発言時」になるため、文面もその文脈に合わせている。
 """
 import json
 import os
@@ -21,10 +24,10 @@ from hooks.hook_state import HookState
 
 
 def _make_hook_output(message: str) -> dict:
-    """PreToolUse hookのsystem-reminder注入用JSON構造を返す"""
+    """UserPromptSubmit hookのsystem-reminder注入用JSON構造を返す"""
     return {
         "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
+            "hookEventName": "UserPromptSubmit",
             "additionalContext": message,
         }
     }
@@ -32,17 +35,17 @@ def _make_hook_output(message: str) -> dict:
 
 _FOLLOW_UP_NUDGE_MESSAGE = (
     "<system-reminder>"
-    "決定事項を記録しました。以下を確認してください:\n"
-    "- 関連するエンティティ（topic・logs・activity）の作成や更新\n"
-    "- 資材（material）として残すべき成果物がないか\n"
-    "- tag_notesへ転記すべき運用ルールや設計指針がないか\n"
-    "該当しなければ無視してください。"
+    "直近で add_decisions を呼んだものの、関連エンティティ（topic/logs/activity/material/tag_notes）"
+    "の更新が行われていません。応答に入る前に、補完すべき記録がないか確認してください。"
+    "該当なしなら無視してOK。"
     "</system-reminder>"
 )
 
 _RECORD_NUDGE_MESSAGE = (
     "<system-reminder>"
-    "記録が遅れています。議論の途中でもいいので add_logs / add_decisions / add_topic で記録してください。"
+    "直近の応答で記録ツール（add_logs/add_decisions/add_topic）が呼ばれていません。"
+    "ユーザーの今回の発言に応答する前に、これまでの議論で残すべき事項がないか振り返ってください。"
+    "該当があれば応答冒頭で記録してから本題に入ってください。"
     "</system-reminder>"
 )
 
@@ -97,7 +100,7 @@ def main() -> None:
 
     except Exception as e:
         # フェイルオープン: 例外時は空JSON + stderrログ
-        print(f"pretooluse_hook.py error: {e}", file=sys.stderr)
+        print(f"user_prompt_submit_hook.py error: {e}", file=sys.stderr)
         print("{}")
 
 

@@ -232,7 +232,7 @@ def _handle_nudges(state: HookState, events: list[dict], current_turn: int) -> N
         )
         if not has_recent_record:
             turns_since = _turns_since_last_recording(events, current_turn)
-            repeat = max(1, min(turns_since // _NUDGE_INTERVAL, 3))
+            repeat = max(1, min(turns_since // _NUDGE_INTERVAL, 5))
             nudge_events.append({
                 "e": "nudge",
                 "type": "record",

@@ -1,6 +1,6 @@
-"""hooks/pretooluse_hook.py のE2Eテスト（イベント駆動アーキテクチャ版）
+"""hooks/user_prompt_submit_hook.py のE2Eテスト（イベント駆動アーキテクチャ版）
 
-subprocess.runでpretooluse_hook.pyを呼び出し、stdin→stdoutの入出力をテスト。
+subprocess.runでuser_prompt_submit_hook.pyを呼び出し、stdin→stdoutの入出力をテスト。
 nudge判定はevents.jsonl内のnudgeイベントに基づく。
 """
 import json
@@ -25,9 +25,9 @@ def state_dir(tmp_path, monkeypatch):
 
 
 def _run_hook(input_data: dict, state_dir: Path) -> subprocess.CompletedProcess:
-    """pretooluse_hook.pyをサブプロセスで実行する"""
+    """user_prompt_submit_hook.pyをサブプロセスで実行する"""
     return subprocess.run(
-        [sys.executable, "hooks/pretooluse_hook.py"],
+        [sys.executable, "hooks/user_prompt_submit_hook.py"],
         input=json.dumps(input_data),
         capture_output=True,
         text=True,
@@ -64,7 +64,7 @@ class TestNoNudge:
 
 
 class TestRecordNudge:
-    """record nudgeイベント → system-reminder注入"""
+    """record nudgeイベント → system-reminder注入（hookEventName="UserPromptSubmit"）"""
 
     def test_record_nudge_injection(self, state_dir):
         _write_events(
@@ -77,11 +77,11 @@ class TestRecordNudge:
 
         output = json.loads(result.stdout)
         assert "hookSpecificOutput" in output
-        assert output["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+        assert output["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
 
         ctx = output["hookSpecificOutput"]["additionalContext"]
         assert "<system-reminder>" in ctx
-        assert "記録が遅れています" in ctx
+        assert "直近の応答で記録ツール" in ctx
         assert "add_decisions" in ctx
 
     def test_nudge_consumed_after_injection(self, state_dir):
@@ -111,22 +111,22 @@ class TestRecordNudgeMultiplication:
         result = _run_hook({"session_id": _SESSION_ID}, state_dir)
         output = json.loads(result.stdout)
         ctx = output["hookSpecificOutput"]["additionalContext"]
-        assert ctx.count("記録が遅れています") == 2
+        assert ctx.count("直近の応答で記録ツール") == 2
 
-    def test_repeat_3_triples_message(self, state_dir):
-        """repeat=3 → メッセージが3回注入される"""
+    def test_repeat_5_quintuples_message(self, state_dir):
+        """repeat=5 → メッセージが5回注入される（上限到達）"""
         _write_events(
-            [{"e": "nudge", "type": "record", "turn": 6, "repeat": 3}],
+            [{"e": "nudge", "type": "record", "turn": 10, "repeat": 5}],
             state_dir,
         )
 
         result = _run_hook({"session_id": _SESSION_ID}, state_dir)
         output = json.loads(result.stdout)
         ctx = output["hookSpecificOutput"]["additionalContext"]
-        assert ctx.count("記録が遅れています") == 3
+        assert ctx.count("直近の応答で記録ツール") == 5
 
     def test_no_repeat_field_defaults_to_1(self, state_dir):
-        """repeatフィールドなし → メッセージ1回（後方互換）"""
+        """repeatフィールドなし → メッセージ1回（デフォルト値）"""
         _write_events(
             [{"e": "nudge", "type": "record", "turn": 2}],
             state_dir,
@@ -135,7 +135,7 @@ class TestRecordNudgeMultiplication:
         result = _run_hook({"session_id": _SESSION_ID}, state_dir)
         output = json.loads(result.stdout)
         ctx = output["hookSpecificOutput"]["additionalContext"]
-        assert ctx.count("記録が遅れています") == 1
+        assert ctx.count("直近の応答で記録ツール") == 1
 
 
 class TestFollowUpNudge:
@@ -152,8 +152,9 @@ class TestFollowUpNudge:
 
         output = json.loads(result.stdout)
         assert "hookSpecificOutput" in output
+        assert output["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
         ctx = output["hookSpecificOutput"]["additionalContext"]
-        assert "決定事項" in ctx
+        assert "add_decisions" in ctx
         assert "topic" in ctx
         assert "material" in ctx
         assert "tag_notes" in ctx
@@ -172,13 +173,13 @@ class TestFollowUpNudge:
         output = json.loads(result.stdout)
         ctx = output["hookSpecificOutput"]["additionalContext"]
         # follow_up nudgeが注入される（最新のnudgeが先に消費される）
-        assert "決定事項" in ctx
+        assert "補完すべき記録" in ctx
 
         # record nudgeはまだ残っている
         result2 = _run_hook({"session_id": _SESSION_ID}, state_dir)
         output2 = json.loads(result2.stdout)
         ctx2 = output2["hookSpecificOutput"]["additionalContext"]
-        assert "記録が遅れています" in ctx2
+        assert "直近の応答で記録ツール" in ctx2
 
 
 class TestEmptySessionId:
@@ -200,7 +201,7 @@ class TestFailOpen:
 
     def test_invalid_json_input(self, state_dir):
         proc = subprocess.run(
-            [sys.executable, "hooks/pretooluse_hook.py"],
+            [sys.executable, "hooks/user_prompt_submit_hook.py"],
             input="not valid json",
             capture_output=True,
             text=True,
