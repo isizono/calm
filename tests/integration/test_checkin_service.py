@@ -4,9 +4,8 @@ import tempfile
 import pytest
 from src.db import init_database, get_connection
 from src.services.activity_service import add_activity, update_activity
-from tests.helpers import add_decision, add_log, retract_decision
+from tests.helpers import add_decision, add_log, retract_decision, set_pinned as _set_pinned
 from src.services.material_service import add_material
-from src.services.pin_service import update_pin
 from src.services.relation_service import add_relation
 from src.services.topic_service import add_topic
 from src.services.checkin_service import check_in, DECISIONS_FULL_LIMIT
@@ -733,7 +732,7 @@ class TestCheckInPinned:
         """pinされたdecisionがpinned.decisionsにcontent付きで返る"""
         topic = add_topic(title="トピック", description="Desc", tags=DEFAULT_TAGS)
         d = add_decision(decision="重要な決定", reason="根本的な理由", topic_id=topic["topic_id"])
-        update_pin("decision", d["decision_id"], True)
+        _set_pinned("decision", d["decision_id"], True)
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
         add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [topic["topic_id"]]}])
 
@@ -750,7 +749,7 @@ class TestCheckInPinned:
         topic = add_topic(title="トピック", description="Desc", tags=DEFAULT_TAGS)
         d1 = add_decision(decision="pinされた決定", reason="理由1", topic_id=topic["topic_id"])
         add_decision(decision="通常の決定", reason="理由2", topic_id=topic["topic_id"])
-        update_pin("decision", d1["decision_id"], True)
+        _set_pinned("decision", d1["decision_id"], True)
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
         add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [topic["topic_id"]]}])
 
@@ -768,7 +767,7 @@ class TestCheckInPinned:
         """pinされたlogがpinned.logsにcontent付きで返る"""
         topic = add_topic(title="トピック", description="Desc", tags=DEFAULT_TAGS)
         log = add_log(topic_id=topic["topic_id"], title="方向転換ログ", content="## 経緯\n重要な方向転換")
-        update_pin("log", log["log_id"], True)
+        _set_pinned("log", log["log_id"], True)
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
         add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [topic["topic_id"]]}])
 
@@ -785,7 +784,7 @@ class TestCheckInPinned:
         topic = add_topic(title="トピック", description="Desc", tags=DEFAULT_TAGS)
         log1 = add_log(topic_id=topic["topic_id"], title="pinログ", content="内容1")
         add_log(topic_id=topic["topic_id"], title="通常ログ", content="内容2")
-        update_pin("log", log1["log_id"], True)
+        _set_pinned("log", log1["log_id"], True)
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
         add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [topic["topic_id"]]}])
 
@@ -801,7 +800,7 @@ class TestCheckInPinned:
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
         m = add_material("設計書", "# 設計\n詳細な内容", DEFAULT_TAGS, "テスト用データ",
                          related=[{"type": "activity", "ids": [a["activity_id"]]}])
-        update_pin("material", m["material_id"], True)
+        _set_pinned("material", m["material_id"], True)
 
         result = check_in(a["activity_id"])
 
@@ -819,7 +818,7 @@ class TestCheckInPinned:
                           related=[{"type": "activity", "ids": [a["activity_id"]]}])
         add_material("通常資材", "内容2", DEFAULT_TAGS, "テスト用データ",
                      related=[{"type": "activity", "ids": [a["activity_id"]]}])
-        update_pin("material", m1["material_id"], True)
+        _set_pinned("material", m1["material_id"], True)
 
         result = check_in(a["activity_id"])
 
@@ -834,7 +833,7 @@ class TestCheckInPinned:
         d1 = add_decision(decision="pin決定", reason="理由", topic_id=topic["topic_id"])
         add_decision(decision="通常決定1", reason="理由", topic_id=topic["topic_id"])
         add_decision(decision="通常決定2", reason="理由", topic_id=topic["topic_id"])
-        update_pin("decision", d1["decision_id"], True)
+        _set_pinned("decision", d1["decision_id"], True)
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
         add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [topic["topic_id"]]}])
 
@@ -849,7 +848,7 @@ class TestCheckInPinned:
         topic = add_topic(title="トピック", description="Desc", tags=DEFAULT_TAGS)
         log1 = add_log(topic_id=topic["topic_id"], title="pinログ", content="内容1")
         add_log(topic_id=topic["topic_id"], title="通常ログ", content="内容2")
-        update_pin("log", log1["log_id"], True)
+        _set_pinned("log", log1["log_id"], True)
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
         add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [topic["topic_id"]]}])
 
@@ -866,7 +865,7 @@ class TestCheckInPinned:
                           related=[{"type": "activity", "ids": [a["activity_id"]]}])
         add_material("通常資材", "内容2", DEFAULT_TAGS, "テスト用データ",
                      related=[{"type": "activity", "ids": [a["activity_id"]]}])
-        update_pin("material", m1["material_id"], True)
+        _set_pinned("material", m1["material_id"], True)
 
         result = check_in(a["activity_id"])
 
@@ -883,9 +882,9 @@ class TestCheckInPinned:
         add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [topic["topic_id"]]}])
         m = add_material("重要資材", "内容", DEFAULT_TAGS, "テスト用データ",
                          related=[{"type": "activity", "ids": [a["activity_id"]]}])
-        update_pin("decision", d["decision_id"], True)
-        update_pin("log", log["log_id"], True)
-        update_pin("material", m["material_id"], True)
+        _set_pinned("decision", d["decision_id"], True)
+        _set_pinned("log", log["log_id"], True)
+        _set_pinned("material", m["material_id"], True)
 
         result = check_in(a["activity_id"])
 
