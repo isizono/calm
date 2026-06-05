@@ -68,6 +68,19 @@ def _build_active_context_wrapper():
         conn.close()
 
 
+def _age_all_activities(hours: int = 48) -> None:
+    """スコアリング対象セクション検証用: 全アクティビティのcreated_atを指定時間前に書き戻す。"""
+    conn = get_connection()
+    try:
+        past = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        conn.execute("UPDATE activities SET created_at = ?", (past,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 # ========================================
 # 定数の確認
 # ========================================
@@ -273,6 +286,7 @@ def test_build_activities_section_empty_with_only_topics(temp_db):
 def test_build_activities_section_with_activities(temp_db):
     """アクティビティがある場合、スコアリング対象セクションが生成される"""
     add_activity(title="[作業] 実装する", description="Desc", tags=["domain:myapp"], check_in=False)
+    _age_all_activities()
 
     result = _build_active_context_wrapper()
 
@@ -339,6 +353,7 @@ def test_build_activities_section_all_items_shown(temp_db):
         )
         if i < 4:
             update_activity(r["activity_id"], status="in_progress")
+    _age_all_activities()
 
     result = _build_active_context_wrapper()
 
@@ -368,6 +383,7 @@ def test_build_activities_section_total_count(temp_db):
             title=f"[作業] Activity {i}", description="Desc",
             tags=["domain:myapp"], check_in=False,
         )
+    _age_all_activities()
 
     result = _build_active_context_wrapper()
 
@@ -397,6 +413,7 @@ def test_build_activities_section_multiple_domains_flat(temp_db):
     """複数domainのアクティビティがフラットリストに統合される"""
     add_activity(title="App Activity", description="Desc", tags=["domain:app"], check_in=False)
     add_activity(title="Lib Activity", description="Desc", tags=["domain:lib"], check_in=False)
+    _age_all_activities()
 
     result = _build_active_context_wrapper()
 
@@ -440,6 +457,7 @@ def test_build_activities_section_completed_activities_excluded(temp_db):
 def test_build_activities_section_scoring_instructions(temp_db):
     """スコアリング指示が末尾に含まれる"""
     add_activity(title="[作業] Task", description="Desc", tags=["domain:myapp"], check_in=False)
+    _age_all_activities()
 
     result = _build_active_context_wrapper()
 
@@ -555,6 +573,7 @@ def test_build_activities_section_format(temp_db):
         title="[作業] アクティブコンテキスト改善", description="改善作業",
         tags=["domain:cc-memory"], check_in=False,
     )
+    _age_all_activities()
 
     result = _build_active_context_wrapper()
 

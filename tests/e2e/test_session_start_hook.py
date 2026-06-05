@@ -340,3 +340,123 @@ class TestSessionStartHookSyncPolicy:
         )
         context = result["hookSpecificOutput"]["additionalContext"]
         assert "# sync_policy" not in context
+
+
+class TestSessionStartHookRecentCreated:
+    """直近作成（24h以内）セクションのテスト"""
+
+    @staticmethod
+    def _set_created_at(activity_id: int, created_at_iso: str) -> None:
+        """アクティビティのcreated_atを指定値に上書きする"""
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE activities SET created_at = ? WHERE id = ?",
+                (created_at_iso, activity_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_recent_activity_shown_in_recent_section(self, temp_db):
+        """24h以内に作成されたアクティビティが'## 🆕 直近作成（24h以内）'セクションに出力される"""
+        from datetime import datetime, timedelta, timezone
+
+        activity_id = _seed_activity("[作業] 新規作業", status="pending")
+        # 1時間前に作成
+        recent_time = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        self._set_created_at(activity_id, recent_time)
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "## \U0001f195 直近作成（24h以内）" in context
+        # 直近作成セクション内にアクティビティが含まれていること
+        recent_idx = context.index("## \U0001f195 直近作成（24h以内）")
+        assert f"[{activity_id}]" in context[recent_idx:]
+        assert "新規作業" in context[recent_idx:]
+
+    def test_recent_activity_not_duplicated_in_scoring(self, temp_db):
+        """24h以内のアクティビティはスコアリング対象リストに重複出力されない"""
+        from datetime import datetime, timedelta, timezone
+
+        activity_id = _seed_activity("[作業] 重複確認", status="pending")
+        recent_time = (datetime.now(timezone.utc) - timedelta(hours=2)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        self._set_created_at(activity_id, recent_time)
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        # アクティビティIDの出現回数が1回（直近作成セクションのみ）
+        assert context.count(f"[{activity_id}]") == 1
+        # スコアリング対象セクションは該当アクティビティを含まない
+        if "## スコアリング対象" in context:
+            scoring_idx = context.index("## スコアリング対象")
+            assert f"[{activity_id}]" not in context[scoring_idx:]
+
+    def test_recent_section_omitted_when_no_recent(self, temp_db):
+        """24h以内のアクティビティが存在しない場合、直近作成セクションは出力されない"""
+        from datetime import datetime, timedelta, timezone
+
+        activity_id = _seed_activity("[作業] 古い作業", status="pending")
+        # 48時間前に作成（24h閾値外）
+        old_time = (datetime.now(timezone.utc) - timedelta(hours=48)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        self._set_created_at(activity_id, old_time)
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "直近作成" not in context
+        # アクティビティはスコアリング対象セクションに出る
+        assert "## スコアリング対象" in context
+        assert "古い作業" in context
+
+    def test_heartbeat_activity_not_mixed_into_recent_section(self, temp_db):
+        """is_heartbeat_activeなアクティビティは直近作成セクションに混ざらず、'## 作業中（別セッション）'セクションに出る"""
+        from datetime import datetime, timedelta, timezone
+
+        activity_id = _seed_activity("[作業] heartbeat作業", status="in_progress")
+        recent_time = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        self._set_created_at(activity_id, recent_time)
+
+        # last_heartbeat_atを直近に設定してis_heartbeat_active=trueにする
+        conn = get_connection()
+        try:
+            now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            conn.execute(
+                "UPDATE activities SET last_heartbeat_at = ? WHERE id = ?",
+                (now_iso, activity_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        # 作業中（別セッション）セクションに出る
+        assert "## 作業中（別セッション）" in context
+        heartbeat_idx = context.index("## 作業中（別セッション）")
+        assert f"[{activity_id}]" in context[heartbeat_idx:]
+
+        # 直近作成セクションには該当アクティビティが混ざっていない
+        if "## \U0001f195 直近作成（24h以内）" in context:
+            recent_idx = context.index("## \U0001f195 直近作成（24h以内）")
+            # 直近作成セクション〜次セクションまでの区間にheartbeatアクティビティIDが含まれない
+            next_section_idx = context.find("\n## ", recent_idx + 1)
+            recent_block = (
+                context[recent_idx:next_section_idx]
+                if next_section_idx != -1
+                else context[recent_idx:]
+            )
+            assert f"[{activity_id}]" not in recent_block
+        # アクティビティIDの出現は1回（heartbeatセクションのみ）
+        assert context.count(f"[{activity_id}]") == 1

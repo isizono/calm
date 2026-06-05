@@ -86,6 +86,32 @@ def _get_descriptions(conn, activity_ids: list[int]) -> dict[int, str]:
     return result
 
 
+def _get_created_ats(conn, activity_ids: list[int]) -> dict[int, str]:
+    """アクティビティIDリストに対し、created_atを一括取得する。
+
+    Returns:
+        {activity_id: created_at, ...}
+    """
+    if not activity_ids:
+        return {}
+    placeholders = ",".join("?" * len(activity_ids))
+    rows = conn.execute(
+        f"SELECT id, created_at FROM activities WHERE id IN ({placeholders})",
+        tuple(activity_ids),
+    ).fetchall()
+    return {r["id"]: r["created_at"] for r in rows}
+
+
+def _is_recent_created(created_at_str: str, hours: int = 24) -> bool:
+    """created_atが指定時間以内かを判定する。"""
+    try:
+        created = datetime.fromisoformat(created_at_str).replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        return (now - created).total_seconds() < hours * 3600
+    except (ValueError, TypeError):
+        return False
+
+
 _SCORING_INSTRUCTIONS = """\
 # スコアリング指示
 上記アクティビティから優先度の高い上位5件を選び、番号付きで表示してください。
@@ -133,6 +159,35 @@ def _build_activities_section(conn) -> str:
     tags_map = get_entity_tags_batch(conn, "activity_tags", "activity_id", all_ids)
     unresolved_deps = _get_unresolved_deps(conn, all_ids)
     descriptions = _get_descriptions(conn, all_ids)
+    created_ats = _get_created_ats(conn, all_ids)
+
+    # normal_activitiesを「直近作成(24h以内)」と「それ以外」に分割
+    recent_activities: list[dict] = []
+    rest_activities: list[dict] = []
+    for a in normal_activities:
+        created_at_str = created_ats.get(a["id"], "")
+        if created_at_str and _is_recent_created(created_at_str):
+            recent_activities.append(a)
+        else:
+            rest_activities.append(a)
+    # 直近作成セクションはcreated_at降順（新しい順）で並べる
+    recent_activities.sort(
+        key=lambda a: created_ats.get(a["id"], ""), reverse=True
+    )
+
+    def _render_activity_meta(aid: int, days: int) -> list[str]:
+        meta_parts = [f"updated: {days}d ago"]
+        tags = tags_map.get(aid, [])
+        deps = unresolved_deps.get(aid, [])
+        desc_snippet = descriptions.get(aid, "")
+        if tags:
+            meta_parts.append(f"tags: {', '.join(tags)}")
+        if deps:
+            dep_titles = [f"{d['title']}({d['status']})" for d in deps]
+            meta_parts.append(f"blocked_by: {', '.join(dep_titles)}")
+        if desc_snippet:
+            meta_parts.append(f"desc: {desc_snippet}")
+        return meta_parts
 
     parts = ["# アクティビティ一覧", ""]
 
@@ -144,31 +199,32 @@ def _build_activities_section(conn) -> str:
             parts.append(f"- [{a['id']}] {a['title']} ({days}d)")
         parts.append("")
 
-    # 非heartbeat: 番号付きフラットリスト
-    if normal_activities:
-        parts.append("## スコアリング対象")
-        for idx, a in enumerate(normal_activities, 1):
+    # 直近作成（24h以内）: スコアリング対象の上に独立セクションとして配置
+    if recent_activities:
+        parts.append("## \U0001f195 直近作成（24h以内）")
+        for idx, a in enumerate(recent_activities, 1):
             aid = a["id"]
             days = _calc_elapsed_days(a["updated_at"])
             status_mark = "●" if a["status"] == "in_progress" else "○"
-            tags = tags_map.get(aid, [])
-            deps = unresolved_deps.get(aid, [])
-            desc_snippet = descriptions.get(aid, "")
-
             line = f"{idx}. {status_mark} [{aid}] {a['title']}"
-            meta_parts = [f"updated: {days}d ago"]
-            if tags:
-                meta_parts.append(f"tags: {', '.join(tags)}")
-            if deps:
-                dep_titles = [f"{d['title']}({d['status']})" for d in deps]
-                meta_parts.append(f"blocked_by: {', '.join(dep_titles)}")
-            if desc_snippet:
-                meta_parts.append(f"desc: {desc_snippet}")
+            meta_parts = _render_activity_meta(aid, days)
+            parts.append(line)
+            parts.append(f"   {' | '.join(meta_parts)}")
+        parts.append("")
 
+    # 非heartbeat: 番号付きフラットリスト（直近作成に該当したものは除外）
+    if rest_activities:
+        parts.append("## スコアリング対象")
+        for idx, a in enumerate(rest_activities, 1):
+            aid = a["id"]
+            days = _calc_elapsed_days(a["updated_at"])
+            status_mark = "●" if a["status"] == "in_progress" else "○"
+            line = f"{idx}. {status_mark} [{aid}] {a['title']}"
+            meta_parts = _render_activity_meta(aid, days)
             parts.append(line)
             parts.append(f"   {' | '.join(meta_parts)}")
 
-        total = len(normal_activities)
+        total = len(rest_activities)
         parts.append(f"\n全{total}件")
 
         parts.append("")
