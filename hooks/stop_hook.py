@@ -216,7 +216,7 @@ def _update_state_on_approve(
 def _handle_nudges(state: HookState, events: list[dict], current_turn: int) -> None:
     """nudge判定: events.jsonlから直接判定してnudgeイベントを追記する。
 
-    pretooluse_hookがevents.jsonlを読んでnudge注入を判定するため、
+    user_prompt_submit_hookがevents.jsonlを読んでnudge注入を判定するため、
     nudgeフラグの代わりにnudgeイベントをevents.jsonlに追記する。
     """
     nudge_events: list[dict] = []

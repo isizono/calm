@@ -13,6 +13,7 @@ Stop hookでnudge判定とevents.jsonl追記を行い、本hookで消費して�
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 # プロジェクトルートをパスに追加
@@ -106,10 +107,9 @@ def main() -> None:
 
 def _rewrite_events(state: HookState, events: list[dict]) -> None:
     """events.jsonlを全書き換えする（nudge消費マーク用）。
-    tempfile + os.replace()でアトミックに書き換える。"""
-    import os
-    import tempfile
-
+    tempfile + os.replace()でアトミックに書き換える。
+    Note: stop_hookのappend_eventsと同じファイルを操作するが、
+    発火順（Stop→ユーザー入力→UserPromptSubmit）上は通常競合しない。"""
     dir_ = state.events_path.parent
     with tempfile.NamedTemporaryFile("w", dir=dir_, delete=False, suffix=".tmp", encoding="utf-8") as f:
         tmp = f.name
