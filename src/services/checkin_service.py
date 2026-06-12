@@ -76,9 +76,9 @@ def _get_activities_overview(conn: sqlite3.Connection, activity_ids: list[int]) 
 
 
 def _get_decisions_from_topics(conn: sqlite3.Connection, topic_ids: list[int]) -> list[dict]:
-    """複数トピックの非pinnedのdecisionsを横断取得し、新しい順にフラット化する。
+    """複数トピックのdecisionsを横断取得し、新しい順にフラット化する。
 
-    上位DECISIONS_FULL_LIMIT件はid+title。pinnedは除外される（別途取得）。
+    上位DECISIONS_FULL_LIMIT件はid+title。retractedは除外される。
     """
     if not topic_ids:
         return []
@@ -87,7 +87,7 @@ def _get_decisions_from_topics(conn: sqlite3.Connection, topic_ids: list[int]) -
         f"""
         SELECT id, decision
         FROM decisions
-        WHERE topic_id IN ({placeholders}) AND pinned = 0 AND retracted_at IS NULL
+        WHERE topic_id IN ({placeholders}) AND retracted_at IS NULL
         ORDER BY id DESC
         LIMIT {DECISIONS_FULL_LIMIT}
         """,
@@ -101,7 +101,7 @@ def _get_decisions_from_topics(conn: sqlite3.Connection, topic_ids: list[int]) -
 
 
 def _count_decisions_from_topics(conn: sqlite3.Connection, topic_ids: list[int]) -> int:
-    """複数トピックのdecisionsの総件数を取得する（pinned含む、retracted除外、coverage分母用）。"""
+    """複数トピックのdecisionsの総件数を取得する（retracted除外、coverage分母用）。"""
     if not topic_ids:
         return 0
     placeholders = ",".join("?" * len(topic_ids))
@@ -116,7 +116,7 @@ def _count_decisions_from_topics(conn: sqlite3.Connection, topic_ids: list[int])
 def _get_logs_catalog_from_topics(
     conn: sqlite3.Connection, topic_ids: list[int]
 ) -> tuple[dict | None, list[dict]]:
-    """複数トピックの非pinnedのlogsを横断取得し、新しい順にフラット化する。
+    """複数トピックのlogsを横断取得し、新しい順にフラット化する。
 
     最新1件はcontent付き、残りはid + titleのカタログとして返す。
 
@@ -134,7 +134,7 @@ def _get_logs_catalog_from_topics(
         f"""
         SELECT id, title, content
         FROM discussion_logs
-        WHERE topic_id IN ({placeholders}) AND pinned = 0 AND retracted_at IS NULL
+        WHERE topic_id IN ({placeholders}) AND retracted_at IS NULL
         ORDER BY id DESC
         LIMIT 1
         """,
@@ -151,7 +151,7 @@ def _get_logs_catalog_from_topics(
         f"""
         SELECT id, title
         FROM discussion_logs
-        WHERE topic_id IN ({placeholders}) AND pinned = 0 AND retracted_at IS NULL AND id != ?
+        WHERE topic_id IN ({placeholders}) AND retracted_at IS NULL AND id != ?
         ORDER BY id DESC
         """,
         params + (latest_row["id"],),
@@ -161,54 +161,177 @@ def _get_logs_catalog_from_topics(
     return latest_log, catalog
 
 
-def _get_pinned_decisions_from_topics(conn: sqlite3.Connection, topic_ids: list[int]) -> list[dict]:
-    """関連トピックのpinned decisionsをcontent付きで取得する。"""
-    if not topic_ids:
-        return []
-    placeholders = ",".join("?" * len(topic_ids))
-    rows = conn.execute(
-        f"""
-        SELECT id, decision, reason
-        FROM decisions
-        WHERE topic_id IN ({placeholders}) AND pinned = 1 AND retracted_at IS NULL
-        ORDER BY id DESC
-        """,
-        tuple(topic_ids),
-    ).fetchall()
-    return [{"id": row["id"], "title": row["decision"], "reason": row["reason"]} for row in rows]
+def _get_pinned_targets(conn: sqlite3.Connection, activity_id: int) -> dict:
+    """新pinsテーブル経由でpinされたtargetをcontent付きで取得する。
 
+    1. activity自身のtag_idを取得する（activity_tags経由）
+    2. source=tag（activity自身のtagsのみ）と source=activity のpinsをUNIONで取得する
+    3. (target_type, target_id) でDISTINCT化し、created_at降順で並べる
+    4. target_type別にcontent fetchする（decision/logはretracted_at IS NULLでフィルタ）
+    5. {decisions, logs, materials, topics, activities} に振り分けて返す（0件キーは省略）
 
-def _get_pinned_logs_from_topics(conn: sqlite3.Connection, topic_ids: list[int]) -> list[dict]:
-    """関連トピックのpinned logsをcontent付きで取得する。"""
-    if not topic_ids:
-        return []
-    placeholders = ",".join("?" * len(topic_ids))
-    rows = conn.execute(
-        f"""
-        SELECT id, title, content
-        FROM discussion_logs
-        WHERE topic_id IN ({placeholders}) AND pinned = 1 AND retracted_at IS NULL
-        ORDER BY id DESC
-        """,
-        tuple(topic_ids),
-    ).fetchall()
-    return [{"id": row["id"], "title": row["title"], "content": row["content"]} for row in rows]
+    NOTE: retracted_at カラムは decisions と discussion_logs にのみ存在する（migration 0031）。
+    materials / discussion_topics / activities には存在しないため、
+    retracted_at IS NULL フィルタは decision/log のクエリにのみ付ける。
 
-
-def _get_pinned_materials_for_activity(conn: sqlite3.Connection, activity_id: int) -> list[dict]:
-    """アクティビティに紐づくpinned materialsをcontent付きで取得する。"""
-    rows = conn.execute(
-        """
-        SELECT m.id, m.title, m.content, m.source
-        FROM materials m
-        JOIN relations r ON r.source_type = 'activity' AND r.source_id = ?
-                        AND r.target_type = 'material' AND r.target_id = m.id
-        WHERE m.pinned = 1
-        ORDER BY m.created_at ASC
-        """,
+    Returns:
+        0件キーを省略したdict。全種0件の場合は空dict。
+    """
+    # 1. activity自身のtag_idを取得
+    tag_rows = conn.execute(
+        "SELECT tag_id FROM activity_tags WHERE activity_id = ?",
         (activity_id,),
     ).fetchall()
-    return [{"id": row["id"], "title": row["title"], "content": row["content"], "source": row["source"]} for row in rows]
+    tag_ids = [row["tag_id"] for row in tag_rows]
+
+    # 2. source=tag（activity自身のtagsのみ）と source=activity のpinsをUNIONで取得
+    if tag_ids:
+        tag_placeholders = ",".join("?" * len(tag_ids))
+        raw_rows = conn.execute(
+            f"""
+            SELECT target_type, target_id, created_at
+            FROM pins
+            WHERE (source_type = 'tag' AND source_id IN ({tag_placeholders}))
+               OR (source_type = 'activity' AND source_id = ?)
+            """,
+            tuple(tag_ids) + (activity_id,),
+        ).fetchall()
+    else:
+        raw_rows = conn.execute(
+            """
+            SELECT target_type, target_id, created_at
+            FROM pins
+            WHERE source_type = 'activity' AND source_id = ?
+            """,
+            (activity_id,),
+        ).fetchall()
+
+    # 3. (target_type, target_id) でDISTINCT化し、created_at降順で並べる
+    seen: set[tuple[str, int]] = set()
+    distinct_rows: list[tuple[str, int]] = []
+    # created_at降順にするため、ソートしてから処理（SQLiteのdatetimeはISO8601文字列なのでstr比較OK）
+    sorted_rows = sorted(raw_rows, key=lambda r: r["created_at"] or "", reverse=True)
+    for row in sorted_rows:
+        key = (row["target_type"], row["target_id"])
+        if key not in seen:
+            seen.add(key)
+            distinct_rows.append(key)
+
+    if not distinct_rows:
+        return {}
+
+    # target_type別にIDをグルーピング
+    by_type: dict[str, list[int]] = {}
+    for target_type, target_id in distinct_rows:
+        by_type.setdefault(target_type, []).append(target_id)
+
+    result: dict[str, list[dict]] = {}
+
+    # 4. target_type別にcontent fetch（target_type別に順序を保つためID→rowをmapして変換）
+    if "decision" in by_type:
+        ids = by_type["decision"]
+        placeholders = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"""
+            SELECT id, decision, reason
+            FROM decisions
+            WHERE id IN ({placeholders}) AND retracted_at IS NULL
+            """,
+            tuple(ids),
+        ).fetchall()
+        row_map = {row["id"]: row for row in rows}
+        decisions = []
+        for did in ids:
+            if did in row_map:
+                row = row_map[did]
+                decisions.append({"id": row["id"], "title": row["decision"], "reason": row["reason"]})
+        if decisions:
+            result["decisions"] = decisions
+
+    if "log" in by_type:
+        ids = by_type["log"]
+        placeholders = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"""
+            SELECT id, title, content
+            FROM discussion_logs
+            WHERE id IN ({placeholders}) AND retracted_at IS NULL
+            """,
+            tuple(ids),
+        ).fetchall()
+        row_map = {row["id"]: row for row in rows}
+        logs = []
+        for lid in ids:
+            if lid in row_map:
+                row = row_map[lid]
+                logs.append({"id": row["id"], "title": row["title"], "content": row["content"]})
+        if logs:
+            result["logs"] = logs
+
+    if "material" in by_type:
+        # materialsにはretracted_atカラムが存在しない（migration 0031参照）
+        ids = by_type["material"]
+        placeholders = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"""
+            SELECT id, title, content, source
+            FROM materials
+            WHERE id IN ({placeholders})
+            """,
+            tuple(ids),
+        ).fetchall()
+        row_map = {row["id"]: row for row in rows}
+        materials = []
+        for mid in ids:
+            if mid in row_map:
+                row = row_map[mid]
+                materials.append({"id": row["id"], "title": row["title"], "content": row["content"], "source": row["source"]})
+        if materials:
+            result["materials"] = materials
+
+    if "topic" in by_type:
+        # discussion_topicsにはretracted_atカラムが存在しない
+        ids = by_type["topic"]
+        placeholders = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"""
+            SELECT id, title
+            FROM discussion_topics
+            WHERE id IN ({placeholders})
+            """,
+            tuple(ids),
+        ).fetchall()
+        row_map = {row["id"]: row for row in rows}
+        topics = []
+        for tid in ids:
+            if tid in row_map:
+                row = row_map[tid]
+                topics.append({"id": row["id"], "title": row["title"]})
+        if topics:
+            result["topics"] = topics
+
+    if "activity" in by_type:
+        # activitiesにはretracted_atカラムが存在しない
+        ids = by_type["activity"]
+        placeholders = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"""
+            SELECT id, title, status
+            FROM activities
+            WHERE id IN ({placeholders})
+            """,
+            tuple(ids),
+        ).fetchall()
+        row_map = {row["id"]: row for row in rows}
+        activities = []
+        for aid in ids:
+            if aid in row_map:
+                row = row_map[aid]
+                activities.append({"id": row["id"], "title": row["title"], "status": row["status"]})
+        if activities:
+            result["activities"] = activities
+
+    return result
 
 
 def _extract_intent_tag(tags: list[str]) -> str:
@@ -257,6 +380,11 @@ def check_in(activity_id: int) -> dict:
     - always_inject_namespaces対象タグ（例: intent:）: 毎回注入される。
       _injected_tagsによるフィルタをスキップし、check-inのたびにnotesを返す。
 
+    pinsテーブル経由のpinned targets注入:
+    - activity自身のtag（source=tag）と activity自身（source=activity）のpinsを取得する
+    - (target_type, target_id) でDISTINCT化してレスポンスのpinnedキーに注入する
+    - retracted済みのdecision/logはpins経由でも注入されない（retracted_at IS NULL除外）
+
     Args:
         activity_id: アクティビティID
 
@@ -282,16 +410,19 @@ def check_in(activity_id: int) -> dict:
         activity = row_to_dict(row)
         tags = get_entity_tags(conn, "activity_tags", "activity_id", activity_id)
 
-        # 2. 直接関連エンティティ取得（1次）
+        # 2. tag_notes収集（collect_tag_notes_for_injectionは変更なし）
+        tag_notes = collect_tag_notes_for_injection(conn, tags, always_inject_namespaces=["intent"]) or []
+
+        # 3. 直接関連エンティティ取得（1次）
         direct = _get_direct_relations(conn, "activity", activity_id)
 
-        # 2a. 関連トピック情報
+        # 3a. 関連トピック情報
         related_topics = _get_topics_info(conn, direct["topic"])
 
-        # 2b. 関連アクティビティ概要
+        # 3b. 関連アクティビティ概要
         related_activities = _get_activities_overview(conn, direct["activity"])
 
-        # 2c. depends_on情報取得
+        # 3c. depends_on情報取得
         dep_rows = conn.execute(
             """SELECT a.id, a.title, a.status
                FROM activity_dependencies ad
@@ -301,45 +432,38 @@ def check_in(activity_id: int) -> dict:
         ).fetchall()
         dependencies = [{"id": r["id"], "title": r["title"], "status": r["status"]} for r in dep_rows]
 
-        # 3. tag_notes収集
-        tag_notes = collect_tag_notes_for_injection(conn, tags, always_inject_namespaces=["intent"]) or []
+        # 4. pinsテーブル経由のpinned targets取得（新pinsテーブル経由）
+        pinned_targets = _get_pinned_targets(conn, activity_id)
 
-        # 4. pinnedエンティティ取得（content付き）
-        pinned_decisions = _get_pinned_decisions_from_topics(conn, direct["topic"])
-        pinned_logs = _get_pinned_logs_from_topics(conn, direct["topic"])
-        pinned_materials = _get_pinned_materials_for_activity(conn, activity_id)
-        pinned_material_ids = {m["id"] for m in pinned_materials}
+        # 5. materials取得（リレーション経由、カタログ形式）
+        materials = get_materials_by_relation_with_conn(conn, activity_id)
 
-        # 5. materials取得（リレーション経由、カタログ形式、pinnedを除外）
-        all_materials = get_materials_by_relation_with_conn(conn, activity_id)
-        materials = [m for m in all_materials if m["id"] not in pinned_material_ids]
-
-        # 6. recent_decisions取得（関連topic横断、フラット15件、pinnedを除外）
+        # 5a. recent_decisions取得（関連topic横断、フラット15件）
         recent_decisions = _get_decisions_from_topics(conn, direct["topic"])
 
-        # 7. logs取得（最新1件はcontent付き、残りはカタログ、pinnedを除外）
+        # 5b. logs取得（最新1件はcontent付き、残りはカタログ）
         latest_log, logs_catalog = _get_logs_catalog_from_topics(conn, direct["topic"])
 
-        # 8. coverage算出（pinned件数・最新ログを分子に加算）
+        # 6. coverage算出（pins注入targetsは含めない）
         total_decisions = _count_decisions_from_topics(conn, direct["topic"])
         total_materials_row = conn.execute(
             "SELECT COUNT(*) FROM relations WHERE source_type = 'activity' AND source_id = ? AND target_type = 'material'",
             (activity_id,),
         ).fetchone()
         total_materials = total_materials_row[0] if total_materials_row else 0
-        total_logs = (1 if latest_log else 0) + len(logs_catalog) + len(pinned_logs)
-        loaded_logs = len(pinned_logs) + (1 if latest_log else 0)
+        total_logs = (1 if latest_log else 0) + len(logs_catalog)
+        loaded_logs = 1 if latest_log else 0
 
         coverage = {
-            "decisions": f"{len(pinned_decisions) + len(recent_decisions)}/{total_decisions}",
-            "materials": f"{len(pinned_materials) + len(materials)}/{total_materials}",
+            "decisions": f"{len(recent_decisions)}/{total_decisions}",
+            "materials": f"{len(materials)}/{total_materials}",
             "logs": f"{loaded_logs}/{total_logs}",
         }
 
-        # 9. 2次カタログ取得（depth 1-2）
+        # 7. 2次カタログ取得（depth 1-2）
         catalog = _get_map_with_conn(conn, "activity", activity_id, min_depth=1, max_depth=2)
 
-        # 10. status自動更新（in_progress以外ならin_progressに変更）
+        # 8. status自動更新（in_progress以外ならin_progressに変更）
         # NOTE: update_activityは内部で別コネクションを使用する（既存APIの制約）。
         # check_inのトランザクションとは独立してコミットされる。
         if activity["status"] != "in_progress":
@@ -353,7 +477,7 @@ def check_in(activity_id: int) -> dict:
             else:
                 activity["status"] = "in_progress"
 
-        # 11. summary生成
+        # 9. summary生成
         summary = _build_summary(activity, tags)
 
         # 戻り値組み立て（coverageをトップレベルの最初のキーに）
@@ -379,12 +503,8 @@ def check_in(activity_id: int) -> dict:
         if dependencies:
             result["dependencies"] = dependencies
 
-        if pinned_decisions or pinned_logs or pinned_materials:
-            result["pinned"] = {
-                "decisions": pinned_decisions,
-                "logs": pinned_logs,
-                "materials": pinned_materials,
-            }
+        if pinned_targets:
+            result["pinned"] = pinned_targets
 
         result["tag_notes"] = tag_notes
         result["materials"] = materials

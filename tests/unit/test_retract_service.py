@@ -13,7 +13,8 @@ from src.services.discussion_log_service import add_logs
 from src.services.decision_service import add_decisions
 from src.services.retract_service import retract
 from src.services.tag_service import _injected_tags
-from tests.helpers import set_pinned
+from src.services.pin_service import add_pin
+from src.services.activity_service import add_activity
 
 
 DEFAULT_TAGS = ["domain:test"]
@@ -229,30 +230,38 @@ class TestRetractValidationErrors:
 
 
 class TestRetractWithPin:
-    """pinned + retractの組み合わせ"""
+    """pinsテーブルでpinされたエンティティのretractテスト"""
 
     def test_retract_pinned_decision(self, topic):
-        """pinされたdecisionもretractできる"""
+        """pinsテーブルでpinされたdecisionもretractできる（pinsエントリが残りretracted_atが設定される）"""
         tid = topic["topic_id"]
         result = add_decisions([
             {"topic_id": tid, "decision": "pinされた決定", "reason": "理由"},
         ])
         decision_id = result["created"][0]["decision_id"]
 
-        # pin（DBのpinned列を直接設定）→ retract
-        set_pinned("decision", decision_id, True)
+        # activityを作成してpinsテーブルにpin登録 → retract
+        act = add_activity(title="テストタスク", description="テスト用", tags=["domain:test"], check_in=False)
+        aid = act["activity_id"]
+        add_pin("activity", aid, "decision", decision_id)
         retract_result = retract("decision", [decision_id])
 
         assert "error" not in retract_result
         assert decision_id in retract_result["success"]
 
-        # pinned=1かつretracted_atが設定されていることを確認
+        # pinsエントリが残りつつretracted_atが設定されていることを確認
         conn = get_connection()
         try:
             row = conn.execute(
-                "SELECT pinned, retracted_at FROM decisions WHERE id = ?", (decision_id,)
+                "SELECT retracted_at FROM decisions WHERE id = ?", (decision_id,)
             ).fetchone()
-            assert row["pinned"] == 1
             assert row["retracted_at"] is not None
+
+            # pinsテーブルのエントリはそのまま残る（D#2149: retract時pins残置）
+            pin_row = conn.execute(
+                "SELECT * FROM pins WHERE source_type='activity' AND source_id=? AND target_type='decision' AND target_id=?",
+                (aid, decision_id),
+            ).fetchone()
+            assert pin_row is not None
         finally:
             conn.close()
