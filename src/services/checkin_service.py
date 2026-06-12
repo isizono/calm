@@ -170,6 +170,9 @@ def _get_pinned_targets(conn: sqlite3.Connection, activity_id: int) -> dict:
     4. target_type別にcontent fetchする（decision/logはretracted_at IS NULLでフィルタ）
     5. {decisions, logs, materials, topics, activities} に振り分けて返す（0件キーは省略）
 
+    NOTE: target_type='tag' のpinは処理しない（tagにはcontent表現がないため）。
+    pinsテーブルのCHECK制約では'tag'が許容されるが、注入対象は上記5種に限定する。
+
     NOTE: retracted_at カラムは decisions と discussion_logs にのみ存在する（migration 0031）。
     materials / discussion_topics / activities には存在しないため、
     retracted_at IS NULL フィルタは decision/log のクエリにのみ付ける。
