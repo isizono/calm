@@ -26,13 +26,13 @@
         ]
       }
     ],
-    "PreToolUse": [
+    "UserPromptSubmit": [
       {
         "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python hooks/pretooluse_hook.py"
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python hooks/user_prompt_submit_hook.py"
           }
         ]
       }

@@ -607,8 +607,55 @@ class TestRecordNudgeMultiplication:
         assert len(record_nudges) >= 1
         assert record_nudges[-1]["repeat"] == 1
 
-    def test_6_turns_without_recording_nudge_repeat_3_ceiling(self, env_setup):
-        """6ターン記録なし → nudge repeat=3（天井）"""
+    def test_10_turns_without_recording_nudge_repeat_5_ceiling(self, env_setup):
+        """10ターン記録なし → nudge repeat=5（天井）。turns_since//2が5を超えても5で頭打ち"""
+        state_dir = env_setup["state_dir"]
+        _write_events(
+            [
+                {"e": "tool", "name": "check_in", "turn": 1, "activity_id": 1},
+            ],
+            state_dir, "test-session",
+        )
+        Path(state_dir, "current_turn_test-session").write_text("1")
+        Path(state_dir, "checked_in_activity_test-session").write_text("1")
+
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("turn2"),
+                _make_assistant_entry(text="response 2"),
+                _make_user_entry("turn3"),
+                _make_assistant_entry(text="response 3"),
+                _make_user_entry("turn4"),
+                _make_assistant_entry(text="response 4"),
+                _make_user_entry("turn5"),
+                _make_assistant_entry(text="response 5"),
+                _make_user_entry("turn6"),
+                _make_assistant_entry(text="response 6"),
+                _make_user_entry("turn7"),
+                _make_assistant_entry(text="response 7"),
+                _make_user_entry("turn8"),
+                _make_assistant_entry(text="response 8"),
+                _make_user_entry("turn9"),
+                _make_assistant_entry(text="response 9"),
+                _make_user_entry("turn10"),
+                _make_assistant_entry(text="response 10"),
+            ],
+            transcript,
+        )
+
+        result = _run_stop_hook(
+            str(transcript), "test-session", env_setup["env_override"],
+        )
+        assert result["decision"] == "approve"
+
+        events = _read_events(state_dir, "test-session")
+        record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record"]
+        assert len(record_nudges) >= 1
+        assert record_nudges[-1]["repeat"] == 5
+
+    def test_6_turns_without_recording_nudge_repeat_3(self, env_setup):
+        """6ターン記録なし → nudge repeat=3（6//2=3、天井5には未達）"""
         state_dir = env_setup["state_dir"]
         _write_events(
             [
