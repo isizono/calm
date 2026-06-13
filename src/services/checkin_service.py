@@ -486,7 +486,7 @@ def _build_summary(
     return f"{line1}\n{line2}"
 
 
-def check_in(activity_id: int) -> dict:
+def check_in(activity_id: int, session_id: str | None = None) -> dict:
     """アクティビティにcheck-inする。
 
     関連情報（tag_notes, materials, decisions, logs catalog, catalog）を集約取得し、
@@ -536,8 +536,8 @@ def check_in(activity_id: int) -> dict:
         activity = row_to_dict(row)
         tags = get_entity_tags(conn, "activity_tags", "activity_id", activity_id)
 
-        # 2. tag_notes収集（collect_tag_notes_for_injectionは変更なし）
-        tag_notes = collect_tag_notes_for_injection(conn, tags, always_inject_namespaces=["intent"]) or []
+        # 2. tag_notes収集
+        tag_notes = collect_tag_notes_for_injection(conn, tags, session_id=session_id, always_inject_namespaces=["intent"]) or []
 
         # 3. 直接関連エンティティ取得（1次）
         direct = _get_direct_relations(conn, "activity", activity_id)

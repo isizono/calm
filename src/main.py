@@ -2,6 +2,7 @@
 import logging
 import random
 from fastmcp import FastMCP, Context
+from fastmcp.server.dependencies import get_context
 from typing import Optional, Union
 from src.services import (
     topic_service,
@@ -129,9 +130,14 @@ def _maybe_inject_tag_notes(result: dict, tag_strings: list[str], mark: bool = T
     Args:
         mark: False の場合、_injected_tags を参照も更新もしない（読み取り経路用）。
     """
+    try:
+        ctx = get_context()
+        session_id = ctx.session_id
+    except RuntimeError:
+        session_id = None
     conn = get_connection()
     try:
-        notes = collect_tag_notes_for_injection(conn, tag_strings, mark=mark)
+        notes = collect_tag_notes_for_injection(conn, tag_strings, session_id=session_id, mark=mark)
     finally:
         conn.close()
     if notes:
@@ -726,7 +732,12 @@ def check_in(
     Returns:
         check-in結果（coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary）
     """
-    return _check_in(activity_id)
+    try:
+        ctx = get_context()
+        session_id = ctx.session_id
+    except RuntimeError:
+        session_id = None
+    return _check_in(activity_id, session_id=session_id)
 
 
 
