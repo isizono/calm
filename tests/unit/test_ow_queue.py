@@ -454,6 +454,7 @@ class TestOwSpawnWorkerManualFallback:
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         monkeypatch.delenv("OW_TERMINAL", raising=False)
         monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
+        monkeypatch.setattr(ow_service, "ensure_channel", lambda channel: True)
 
         result = ow_service.ow_spawn_worker(
             alias="w-a", channel="ch1", cwd="/tmp", model="sonnet",
@@ -469,6 +470,7 @@ class TestOwSpawnWorkerManualFallback:
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         monkeypatch.setenv("OW_TERMINAL", "manual")
         monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
+        monkeypatch.setattr(ow_service, "ensure_channel", lambda channel: True)
 
         result = ow_service.ow_spawn_worker(
             alias="w-b", channel="ch2", cwd="/tmp", model="haiku",
@@ -486,6 +488,7 @@ class TestOwSpawnWorkerAdapter:
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         monkeypatch.setenv("OW_TERMINAL", "iterm2")
         monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
+        monkeypatch.setattr(ow_service, "ensure_channel", lambda channel: True)
 
         adapter_script = tmp_path / "iterm2.sh"
         adapter_script.write_text("#!/bin/bash\necho 'session-uuid-from-iterm2'\n")
@@ -504,6 +507,7 @@ class TestOwSpawnWorkerAdapter:
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         monkeypatch.setenv("OW_TERMINAL", "iterm2")
         monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
+        monkeypatch.setattr(ow_service, "ensure_channel", lambda channel: True)
 
         adapter_script = tmp_path / "iterm2.sh"
         adapter_script.write_text("#!/bin/bash\n")
@@ -522,6 +526,7 @@ class TestOwSpawnWorkerAdapter:
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         monkeypatch.setenv("OW_TERMINAL", "iterm2")
         monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
+        monkeypatch.setattr(ow_service, "ensure_channel", lambda channel: True)
 
         adapter_script = tmp_path / "iterm2.sh"
         adapter_script.write_text("#!/bin/bash\nexit 1\n")
