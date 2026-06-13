@@ -246,3 +246,121 @@ class TestOwSendSuccess:
         assert isinstance(sent_data["body"], str)
         parsed_body = json.loads(sent_data["body"])
         assert parsed_body == ow_body
+
+
+class TestEnsureChannel:
+    """ensure_channel: channel未存在時の自動作成"""
+
+    def test_ensure_channel_success(self, monkeypatch):
+        """POST /createが成功すればTrueを返す"""
+
+        class FakeResponse:
+            def read(self):
+                return json.dumps({"channel_code": "TestCh01"}).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+        monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: FakeResponse())
+        monkeypatch.setattr(ow_service, "RELAY_URL", "http://127.0.0.1:8765")
+
+        result = ow_service.ensure_channel("TestCh01")
+        assert result is True
+
+    def test_ensure_channel_failure_returns_false(self, monkeypatch):
+        """POST /createが失敗（5xx）すればFalseを返す（raiseは外に出ない）"""
+
+        def fake_urlopen(req, timeout=None):
+            raise urllib.error.HTTPError(
+                url="http://127.0.0.1:8765/create",
+                code=500,
+                msg="internal server error",
+                hdrs={},
+                fp=None,
+            )
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(ow_service, "RELAY_URL", "http://127.0.0.1:8765")
+        monkeypatch.setattr(ow_service.time, "sleep", lambda _: None)
+
+        with pytest.raises(urllib.error.HTTPError):
+            ow_service.ensure_channel("TestCh01")
+
+
+class TestOwSendEnsureChannel:
+    """ow_send: channel未存在時のensure_channel自動作成フロー"""
+
+    def test_404_triggers_ensure_channel_and_resend(self, monkeypatch):
+        """ow_sendでchannel 404 → ensure_channelが呼ばれ再送が成功する"""
+        call_log = []
+
+        class FakeCreateResponse:
+            def read(self):
+                return json.dumps({"channel_code": "AbCdEfGh"}).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+        class FakeSendResponse:
+            def read(self):
+                return json.dumps({"msg_id": 99}).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+        def fake_urlopen(req, timeout=None):
+            url = req.full_url
+            call_log.append(url)
+            if "/send" in url and len([u for u in call_log if "/send" in u]) == 1:
+                # 1回目のsendは404
+                raise urllib.error.HTTPError(
+                    url=url, code=404, msg="channel not found", hdrs={}, fp=None
+                )
+            elif "/create" in url:
+                return FakeCreateResponse()
+            else:
+                # 2回目のsend（再送）は成功
+                return FakeSendResponse()
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(ow_service, "RELAY_URL", "http://127.0.0.1:8765")
+
+        result = ow_service.ow_send(
+            channel="AbCdEfGh",
+            handle="orch",
+            body={"v": 1, "kind": "cmd", "to": "w-a", "verb": "ping"},
+        )
+
+        assert result.get("msg_id") == 99
+        # /createと2回目の/sendが呼ばれている
+        assert any("/create" in u for u in call_log)
+        assert len([u for u in call_log if "/send" in u]) == 2
+
+    def test_404_ensure_channel_fails_returns_error(self, monkeypatch):
+        """ow_sendでchannel 404 → ensure_channel失敗 → 元の404エラーを返す"""
+
+        def fake_urlopen(req, timeout=None):
+            raise urllib.error.HTTPError(
+                url=req.full_url, code=404, msg="not found", hdrs={}, fp=None
+            )
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(ow_service, "RELAY_URL", "http://127.0.0.1:8765")
+
+        result = ow_service.ow_send(
+            channel="NoExist1",
+            handle="orch",
+            body={"v": 1, "kind": "state", "state": "ready"},
+        )
+
+        assert "error" in result
+        assert result["error"]["code"] == 404
