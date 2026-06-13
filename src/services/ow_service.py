@@ -469,16 +469,19 @@ def ow_spawn_worker(
             "alias": alias,
         }
 
-    # アダプタ呼び出し
-    term_ref = str(uuid.uuid4())
+    # アダプタ呼び出し — stdoutから安定IDを取得する（D#2400）
     try:
-        subprocess.run(
-            ["bash", str(adapter_path), "spawn", cwd, worker_cmd, term_ref],
+        result = subprocess.run(
+            ["bash", str(adapter_path), "spawn", cwd, worker_cmd],
             check=True,
             capture_output=True,
             text=True,
             timeout=30,
         )
+        term_ref = result.stdout.strip()
+        if not term_ref:
+            term_ref = str(uuid.uuid4())
+            logger.warning("adapter returned empty term_ref, using fallback UUID: %s", term_ref)
     except subprocess.TimeoutExpired:
         logger.warning("adapter spawn timed out after 30s")
         return {
