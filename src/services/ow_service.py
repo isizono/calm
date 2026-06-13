@@ -240,12 +240,12 @@ def _get_queue_dir() -> Path:
     """queueディレクトリパスを返す。
 
     OW_QUEUE_DIR環境変数が設定されていればそのパスを使用する。
-    未設定の場合は~/.cc-memory-ow/orchをデフォルトとして返す。
+    未設定の場合は~/.cc-memory/ow/orchをデフォルトとして返す。
     いずれもauto-memory管理外ディレクトリに配置する（frontmatter書き換え防止）。
     """
     if OW_QUEUE_DIR:
         return Path(OW_QUEUE_DIR).expanduser()
-    return Path.home() / ".cc-memory-ow" / "orch"
+    return Path.home() / ".cc-memory" / "ow" / "orch"
 
 
 def _build_queue_frontmatter(

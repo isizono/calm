@@ -576,10 +576,10 @@ class TestGetQueueDir:
         assert result == tmp_path
 
     def test_default_path_is_not_auto_memory(self, monkeypatch):
-        """OW_QUEUE_DIR未設定の場合、~/.cc-memory-ow/orch を返す（auto-memory管理外）"""
+        """OW_QUEUE_DIR未設定の場合、~/.cc-memory/ow/orch を返す（auto-memory管理外）"""
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", "")
         result = ow_service._get_queue_dir()
-        assert result == Path.home() / ".cc-memory-ow" / "orch"
+        assert result == Path.home() / ".cc-memory" / "ow" / "orch"
         # auto-memoryが管理する~/.claude/projects/配下でないことを確認
         assert ".claude" not in str(result)
 
