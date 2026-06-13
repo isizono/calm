@@ -452,7 +452,7 @@ class TestSessionStartHookSyncPolicy:
 
 
 class TestSessionStartHookRecentCreated:
-    """直近作成（24h以内）セクションのテスト"""
+    """直近作成（🆕マーカー）のテスト"""
 
     @staticmethod
     def _set_created_at(activity_id: int, created_at_iso: str) -> None:
@@ -467,12 +467,11 @@ class TestSessionStartHookRecentCreated:
         finally:
             conn.close()
 
-    def test_recent_activity_shown_in_recent_section(self, temp_db):
-        """24h以内に作成されたアクティビティが'## 🆕 直近作成（24h以内）'セクションに出力される"""
+    def test_recent_activity_has_new_marker(self, temp_db):
+        """24h以内に作成されたアクティビティに🆕マーカーが付く"""
         from datetime import datetime, timedelta, timezone
 
         activity_id = _seed_activity("[作業] 新規作業", status="pending")
-        # 1時間前に作成
         recent_time = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
@@ -481,53 +480,27 @@ class TestSessionStartHookRecentCreated:
         result = _run_session_start_hook(temp_db)
         context = result["hookSpecificOutput"]["additionalContext"]
 
-        assert "## \U0001f195 直近作成（24h以内）" in context
-        # 直近作成セクション内にアクティビティが含まれていること
-        recent_idx = context.index("## \U0001f195 直近作成（24h以内）")
-        assert f"[{activity_id}]" in context[recent_idx:]
-        assert "新規作業" in context[recent_idx:]
+        assert "\U0001f195" in context
+        assert "新規作業" in context
 
-    def test_recent_activity_not_duplicated_in_scoring(self, temp_db):
-        """24h以内のアクティビティはスコアリング対象リストに重複出力されない"""
+    def test_old_activity_has_no_new_marker(self, temp_db):
+        """24h以上前に作成されたアクティビティには🆕マーカーが付かない"""
         from datetime import datetime, timedelta, timezone
 
-        activity_id = _seed_activity("[作業] 重複確認", status="pending")
-        recent_time = (datetime.now(timezone.utc) - timedelta(hours=2)).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-        self._set_created_at(activity_id, recent_time)
-
-        result = _run_session_start_hook(temp_db)
-        context = result["hookSpecificOutput"]["additionalContext"]
-
-        # アクティビティIDの出現回数が1回（直近作成セクションのみ）
-        assert context.count(f"[{activity_id}]") == 1
-        # スコアリング対象セクションは該当アクティビティを含まない
-        if "## スコアリング対象" in context:
-            scoring_idx = context.index("## スコアリング対象")
-            assert f"[{activity_id}]" not in context[scoring_idx:]
-
-    def test_recent_section_omitted_when_no_recent(self, temp_db):
-        """24h以内のアクティビティが存在しない場合、直近作成セクションは出力されない"""
-        from datetime import datetime, timedelta, timezone
-
-        activity_id = _seed_activity("[作業] 古い作業", status="pending")
-        # 48時間前に作成（24h閾値外）
+        _seed_activity("[作業] 古い作業", status="pending")
         old_time = (datetime.now(timezone.utc) - timedelta(hours=48)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
-        self._set_created_at(activity_id, old_time)
+        self._set_created_at(1, old_time)
 
         result = _run_session_start_hook(temp_db)
         context = result["hookSpecificOutput"]["additionalContext"]
 
-        assert "直近作成" not in context
-        # アクティビティはスコアリング対象セクションに出る
-        assert "## スコアリング対象" in context
+        assert "\U0001f195" not in context
         assert "古い作業" in context
 
-    def test_heartbeat_activity_not_mixed_into_recent_section(self, temp_db):
-        """is_heartbeat_activeなアクティビティは直近作成セクションに混ざらず、'## 作業中（別セッション）'セクションに出る"""
+    def test_heartbeat_activity_not_in_normal_list(self, temp_db):
+        """is_heartbeat_activeなアクティビティはトピック別リストに混ざらず、作業中（別セッション）セクションに出る"""
         from datetime import datetime, timedelta, timezone
 
         activity_id = _seed_activity("[作業] heartbeat作業", status="in_progress")
@@ -536,7 +509,6 @@ class TestSessionStartHookRecentCreated:
         )
         self._set_created_at(activity_id, recent_time)
 
-        # last_heartbeat_atを直近に設定してis_heartbeat_active=trueにする
         conn = get_connection()
         try:
             now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -551,21 +523,75 @@ class TestSessionStartHookRecentCreated:
         result = _run_session_start_hook(temp_db)
         context = result["hookSpecificOutput"]["additionalContext"]
 
-        # 作業中（別セッション）セクションに出る
         assert "## 作業中（別セッション）" in context
         heartbeat_idx = context.index("## 作業中（別セッション）")
         assert f"[{activity_id}]" in context[heartbeat_idx:]
-
-        # 直近作成セクションには該当アクティビティが混ざっていない
-        if "## \U0001f195 直近作成（24h以内）" in context:
-            recent_idx = context.index("## \U0001f195 直近作成（24h以内）")
-            # 直近作成セクション〜次セクションまでの区間にheartbeatアクティビティIDが含まれない
-            next_section_idx = context.find("\n## ", recent_idx + 1)
-            recent_block = (
-                context[recent_idx:next_section_idx]
-                if next_section_idx != -1
-                else context[recent_idx:]
-            )
-            assert f"[{activity_id}]" not in recent_block
-        # アクティビティIDの出現は1回（heartbeatセクションのみ）
         assert context.count(f"[{activity_id}]") == 1
+
+
+class TestSessionStartHookTopicGrouping:
+    """トピック別グルーピングのテスト"""
+
+    @staticmethod
+    def _relate_activity_to_topic(activity_id: int, topic_id: int) -> None:
+        """アクティビティとトピックにリレーションを張る"""
+        conn = get_connection()
+        try:
+            conn.execute(
+                "INSERT INTO relations (source_type, source_id, target_type, target_id) VALUES (?, ?, ?, ?)",
+                ("activity", activity_id, "topic", topic_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_activity_grouped_under_topic(self, temp_db):
+        """トピックに関連付けられたアクティビティがトピック名の見出し配下に表示される"""
+        topic_id = _seed_topic("テスト機能の実装 — 詳細説明")
+        activity_id = _seed_activity("[作業] テスト実装", status="in_progress")
+        self._relate_activity_to_topic(activity_id, topic_id)
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "## テスト機能の実装" in context
+        assert "テスト実装" in context
+
+    def test_topic_title_shortened(self, temp_db):
+        """トピックタイトルの「 — 」以降が除去される"""
+        topic_id = _seed_topic("短いタイトル — これは除去される長い説明")
+        activity_id = _seed_activity("[作業] 作業A", status="in_progress")
+        self._relate_activity_to_topic(activity_id, topic_id)
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "## 短いタイトル" in context
+        assert "これは除去される長い説明" not in context
+
+    def test_ungrouped_in_other_section(self, temp_db):
+        """トピック未関連のアクティビティは「その他」セクションに出る"""
+        _seed_activity("[作業] 孤立タスク", status="in_progress")
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "## その他" in context
+        assert "孤立タスク" in context
+
+    def test_multiple_topics_each_have_section(self, temp_db):
+        """複数トピックがそれぞれ独立した見出しを持つ"""
+        topic_a = _seed_topic("トピックA")
+        topic_b = _seed_topic("トピックB")
+        aid_a = _seed_activity("[作業] 作業A", status="in_progress")
+        aid_b = _seed_activity("[作業] 作業B", status="in_progress")
+        self._relate_activity_to_topic(aid_a, topic_a)
+        self._relate_activity_to_topic(aid_b, topic_b)
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "## トピックA" in context
+        assert "## トピックB" in context
+        assert "作業A" in context
+        assert "作業B" in context

@@ -113,6 +113,39 @@ def _is_recent_created(created_at_str: str, hours: int = 24) -> bool:
         return False
 
 
+def _short_topic_title(title: str) -> str:
+    """トピックタイトルから「 — 」以降を除去した短縮版を返す。"""
+    return title.split(" — ")[0]
+
+
+def _get_activity_topic_map(conn, activity_ids: list[int]) -> dict[int, list[dict]]:
+    """アクティビティIDリストに対し、関連トピックを一括取得する。
+
+    Returns:
+        {activity_id: [{"id": int, "title": str}, ...], ...}
+    """
+    if not activity_ids:
+        return {}
+    placeholders = ",".join("?" * len(activity_ids))
+    rows = conn.execute(
+        f"""SELECT rv.source_id AS activity_id, dt.id AS topic_id, dt.title AS topic_title
+            FROM relations_view rv
+            JOIN discussion_topics dt ON dt.id = rv.target_id
+            WHERE rv.source_type = 'activity'
+              AND rv.source_id IN ({placeholders})
+              AND rv.target_type = 'topic'""",
+        tuple(activity_ids),
+    ).fetchall()
+
+    result: dict[int, list[dict]] = {}
+    for r in rows:
+        aid = r["activity_id"]
+        if aid not in result:
+            result[aid] = []
+        result[aid].append({"id": r["topic_id"], "title": r["topic_title"]})
+    return result
+
+
 _SCORING_INSTRUCTIONS = """\
 # スコアリング指示
 上記アクティビティから優先度の高い上位5件を選び、番号付きで表示してください。
@@ -125,10 +158,10 @@ _SCORING_INSTRUCTIONS = """\
 
 
 def _build_activities_section(conn) -> str:
-    """スコアリング用にアクティビティ一覧とメタデータを組み立てる。
+    """アクティビティ一覧をトピック別にグルーピングして組み立てる。
 
-    heartbeat中は別セクション表示。非heartbeatは番号付きフラットリストで出力し、
-    AIスコアリング指示を末尾に追加する。
+    heartbeat中は別セクション表示。非heartbeatはトピック別にグルーピングし、
+    各アクティビティにメタデータを付与する。
 
     worker セッション（OW_ROLE=worker）では一覧注入自体を抑制する（D#2409）。
     通常セッションでは orch-managed タグ付きアクティビティを除外する（D#2410）。
@@ -182,20 +215,7 @@ def _build_activities_section(conn) -> str:
     unresolved_deps = _get_unresolved_deps(conn, all_ids)
     descriptions = _get_descriptions(conn, all_ids)
     created_ats = _get_created_ats(conn, all_ids)
-
-    # normal_activitiesを「直近作成(24h以内)」と「それ以外」に分割
-    recent_activities: list[dict] = []
-    rest_activities: list[dict] = []
-    for a in normal_activities:
-        created_at_str = created_ats.get(a["id"], "")
-        if created_at_str and _is_recent_created(created_at_str):
-            recent_activities.append(a)
-        else:
-            rest_activities.append(a)
-    # 直近作成セクションはcreated_at降順（新しい順）で並べる
-    recent_activities.sort(
-        key=lambda a: created_ats.get(a["id"], ""), reverse=True
-    )
+    topic_map = _get_activity_topic_map(conn, all_ids)
 
     def _render_activity_meta(aid: int, days: int) -> list[str]:
         meta_parts = [f"updated: {days}d ago"]
@@ -211,6 +231,15 @@ def _build_activities_section(conn) -> str:
             meta_parts.append(f"desc: {desc_snippet}")
         return meta_parts
 
+    def _render_activity(idx: int, a: dict) -> list[str]:
+        aid = a["id"]
+        days = _calc_elapsed_days(a["updated_at"])
+        status_mark = "●" if a["status"] == "in_progress" else "○"
+        recent = "\U0001f195 " if _is_recent_created(created_ats.get(aid, "")) else ""
+        line = f"{idx}. {recent}{status_mark} [{aid}] {a['title']}"
+        meta_parts = _render_activity_meta(aid, days)
+        return [line, f"   {' | '.join(meta_parts)}"]
+
     parts = ["# アクティビティ一覧", ""]
 
     # heartbeat中は別セクション
@@ -221,36 +250,41 @@ def _build_activities_section(conn) -> str:
             parts.append(f"- [{a['id']}] {a['title']} ({days}d)")
         parts.append("")
 
-    # 直近作成（24h以内）: スコアリング対象の上に独立セクションとして配置
-    if recent_activities:
-        parts.append("## \U0001f195 直近作成（24h以内）")
-        for idx, a in enumerate(recent_activities, 1):
-            aid = a["id"]
-            days = _calc_elapsed_days(a["updated_at"])
-            status_mark = "●" if a["status"] == "in_progress" else "○"
-            line = f"{idx}. {status_mark} [{aid}] {a['title']}"
-            meta_parts = _render_activity_meta(aid, days)
-            parts.append(line)
-            parts.append(f"   {' | '.join(meta_parts)}")
+    # トピック別にグルーピング（D#2464）
+    topic_groups: dict[int, dict] = {}
+    ungrouped: list[dict] = []
+
+    for a in normal_activities:
+        topics = topic_map.get(a["id"], [])
+        if topics:
+            primary = topics[0]
+            tid = primary["id"]
+            if tid not in topic_groups:
+                topic_groups[tid] = {"title": primary["title"], "activities": []}
+            topic_groups[tid]["activities"].append(a)
+        else:
+            ungrouped.append(a)
+
+    idx = 0
+    for group in topic_groups.values():
+        short_title = _short_topic_title(group["title"])
+        parts.append(f"## {short_title}")
+        for a in group["activities"]:
+            idx += 1
+            parts.extend(_render_activity(idx, a))
         parts.append("")
 
-    # 非heartbeat: 番号付きフラットリスト（直近作成に該当したものは除外）
-    if rest_activities:
-        parts.append("## スコアリング対象")
-        for idx, a in enumerate(rest_activities, 1):
-            aid = a["id"]
-            days = _calc_elapsed_days(a["updated_at"])
-            status_mark = "●" if a["status"] == "in_progress" else "○"
-            line = f"{idx}. {status_mark} [{aid}] {a['title']}"
-            meta_parts = _render_activity_meta(aid, days)
-            parts.append(line)
-            parts.append(f"   {' | '.join(meta_parts)}")
-
-        total = len(rest_activities)
-        parts.append(f"\n全{total}件")
-
+    if ungrouped:
+        parts.append("## その他")
+        for a in ungrouped:
+            idx += 1
+            parts.extend(_render_activity(idx, a))
         parts.append("")
-        parts.append(_SCORING_INSTRUCTIONS)
+
+    total = len(normal_activities)
+    parts.append(f"全{total}件")
+    parts.append("")
+    parts.append(_SCORING_INSTRUCTIONS)
 
     return "\n".join(parts) + "\n"
 
