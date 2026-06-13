@@ -271,8 +271,8 @@ class TestEnsureChannel:
         result = ow_service.ensure_channel("TestCh01")
         assert result is True
 
-    def test_ensure_channel_failure_returns_false(self, monkeypatch):
-        """POST /createが失敗（5xx）すればFalseを返す（raiseは外に出ない）"""
+    def test_ensure_channel_5xx_propagates_exception(self, monkeypatch):
+        """POST /createが5xxのとき_relay_request経由で例外が伝播する"""
 
         def fake_urlopen(req, timeout=None):
             raise urllib.error.HTTPError(

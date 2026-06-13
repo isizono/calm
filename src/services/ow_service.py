@@ -158,14 +158,16 @@ def ensure_channel(channel_code: str) -> bool:
     """channelが存在しなければrelayに作成する（idempotent）。
 
     POST /createにchannel_codeを指定して送信する。relayサーバー側で
-    既存なら何もせず、未存在なら作成する（D#2xxx）。
+    既存なら何もせず、未存在なら作成する（D#2453）。
 
     Args:
         channel_code: 存在を保証したいchannel_code
 
     Returns:
         True: channelが存在する（作成成功・既存どちらも）
-        False: 作成失敗
+        False: 作成失敗（4xxエラー）
+    Raises:
+        urllib.error.HTTPError: relayが5xxを返した場合（_relay_requestが再raise）
     """
     result = _relay_request("POST", "/create", {"channel_code": channel_code})
     if "error" in result:
@@ -694,7 +696,8 @@ def ow_status(channel: str, topic_id: str | None = None) -> dict:
 
     # channel指定があればensure_channel（idempotent）
     if channel:
-        ensure_channel(channel)
+        if not ensure_channel(channel):
+            return {"error": {"code": "CHANNEL_UNAVAILABLE", "message": f"channel {channel} could not be created"}}
 
     # presenceを取得
     presence_result = _relay_request("GET", f"/presence?{urllib.parse.urlencode({'channel': channel})}")
