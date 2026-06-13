@@ -40,6 +40,8 @@ def _run_session_start_hook(
 ) -> dict:
     """session_start_hook.pyを実行してJSON出力を返す"""
     env = {**os.environ, "DISCUSSION_DB_PATH": db_path}
+    # runnerのOW_ROLEを継承しない（テストの決定性確保。worker抑制テストはextra_envで明示設定する）
+    env.pop("OW_ROLE", None)
     if extra_env:
         env.update(extra_env)
     if env_remove:
@@ -90,6 +92,31 @@ def _seed_activity(title: str, status: str = "pending", domain: str = "test") ->
         )
         conn.commit()
         return activity_id
+    finally:
+        conn.close()
+
+
+def _tag_activity_bare(activity_id: int, tag_name: str) -> None:
+    """アクティビティに素タグ（namespaceなし）を付与する"""
+    conn = get_connection()
+    try:
+        tag_row = conn.execute(
+            "SELECT id FROM tags WHERE namespace = '' AND name = ?",
+            (tag_name,),
+        ).fetchone()
+        if tag_row:
+            tag_id = tag_row["id"]
+        else:
+            cursor = conn.execute(
+                "INSERT INTO tags (namespace, name) VALUES ('', ?)",
+                (tag_name,),
+            )
+            tag_id = cursor.lastrowid
+        conn.execute(
+            "INSERT INTO activity_tags (activity_id, tag_id) VALUES (?, ?)",
+            (activity_id, tag_id),
+        )
+        conn.commit()
     finally:
         conn.close()
 
@@ -288,6 +315,88 @@ class TestSessionStartHookHabits:
         context = result["hookSpecificOutput"]["additionalContext"]
 
         assert "無効な振る舞い" not in context
+
+
+class TestSessionStartHookWorkerSuppression:
+    """OW_ROLE=worker セッションでのアクティビティ一覧抑制テスト（D#2409）"""
+
+    def test_worker_session_suppresses_activity_list(self, temp_db):
+        """OW_ROLE=worker時はアクティビティがあってもアクティビティ一覧セクションが出ない"""
+        _seed_activity("[作業] worker抑制テスト", status="in_progress")
+
+        result = _run_session_start_hook(temp_db, extra_env={"OW_ROLE": "worker"})
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "# アクティビティ一覧" not in context
+        assert "worker抑制テスト" not in context
+
+    def test_worker_session_keeps_habits_and_guide(self, temp_db):
+        """OW_ROLE=worker時もアクティビティ以外（振る舞い・取得フローガイド）は注入される"""
+        _seed_habit("worker向け振る舞い")
+
+        result = _run_session_start_hook(temp_db, extra_env={"OW_ROLE": "worker"})
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "コンテキスト取得フロー" in context
+        assert "# 振る舞い" in context
+        assert "worker向け振る舞い" in context
+
+    def test_non_worker_session_shows_activity_list(self, temp_db):
+        """OW_ROLE未設定（通常セッション）ではアクティビティ一覧が出る"""
+        _seed_activity("[作業] 通常表示テスト", status="in_progress")
+
+        result = _run_session_start_hook(temp_db, env_remove=["OW_ROLE"])
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "# アクティビティ一覧" in context
+        assert "通常表示テスト" in context
+
+
+class TestSessionStartHookOrchManagedExclusion:
+    """orch-managedタグ付きアクティビティの除外テスト（D#2410）"""
+
+    def test_orch_managed_activity_excluded(self, temp_db):
+        """orch-managedタグ付きアクティビティはアクティビティ一覧に出ない"""
+        activity_id = _seed_activity("[作業] orch管理タスク", status="in_progress")
+        _tag_activity_bare(activity_id, "orch-managed")
+
+        result = _run_session_start_hook(temp_db, env_remove=["OW_ROLE"])
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "orch管理タスク" not in context
+        assert f"[{activity_id}]" not in context
+
+    def test_non_orch_managed_activity_still_shown(self, temp_db):
+        """orch-managedタグのない通常アクティビティは引き続き表示される"""
+        normal_id = _seed_activity("[作業] 個人タスク", status="in_progress")
+        orch_id = _seed_activity("[作業] orch管理タスク", status="in_progress")
+        _tag_activity_bare(orch_id, "orch-managed")
+
+        result = _run_session_start_hook(temp_db, env_remove=["OW_ROLE"])
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "個人タスク" in context
+        assert f"[{normal_id}]" in context
+        assert "orch管理タスク" not in context
+        assert f"[{orch_id}]" not in context
+
+    def test_all_orch_managed_yields_no_activity_section(self, temp_db):
+        """全アクティビティがorch-managedなら一覧セクション自体が出ない"""
+        activity_id = _seed_activity("[作業] orch管理のみ", status="in_progress")
+        _tag_activity_bare(activity_id, "orch-managed")
+
+        # 初期振る舞いを削除してアクティビティ一覧の有無を純粋に判定
+        conn = get_connection()
+        try:
+            conn.execute("DELETE FROM habits")
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = _run_session_start_hook(temp_db, env_remove=["OW_ROLE"])
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "# アクティビティ一覧" not in context
 
 
 class TestSessionStartHookErrorHandling:
