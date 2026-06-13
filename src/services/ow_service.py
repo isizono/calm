@@ -10,6 +10,7 @@ import shlex
 import subprocess
 import sys
 import time
+import urllib.parse
 import urllib.request
 import urllib.error
 import uuid
@@ -210,7 +211,8 @@ def ow_history(channel: str, since: int = 0, limit: int = 100) -> dict:
         {"messages": [{"msg_id": int, "handle": str, "body": dict, ...}, ...]}
         失敗時: {"error": {...}}
     """
-    path = f"/history?channel={channel}&since={since}&limit={limit}"
+    params = urllib.parse.urlencode({"channel": channel, "since": since, "limit": limit})
+    path = f"/history?{params}"
     result = _relay_request("GET", path)
     if "error" in result:
         return result
@@ -253,6 +255,7 @@ def _write_queue_spawning(
     spawning_entry = (
         f"\n## T{task_n} | spawning | spawning\n"
         f"- worker: {alias} / term_ref: (pending) / session: (pending)\n"
+        f"- cwd: {cwd}\n"
         f"- spawning: {now}\n"
     )
 
@@ -413,10 +416,19 @@ def ow_spawn_worker(
             check=True,
             capture_output=True,
             text=True,
+            timeout=30,
         )
+    except subprocess.TimeoutExpired:
+        logger.warning("adapter spawn timed out after 30s")
+        return {
+            "command": worker_cmd,
+            "manual": True,
+            "task_file": str(task_file),
+            "alias": alias,
+            "adapter_error": "adapter spawn timed out",
+        }
     except subprocess.CalledProcessError as e:
         logger.warning("adapter spawn failed: %s", e.stderr)
-        # アダプタ失敗時はmanualフォールバック
         return {
             "command": worker_cmd,
             "manual": True,
@@ -457,8 +469,15 @@ def ow_close_worker(term_ref: str) -> dict:
             check=True,
             capture_output=True,
             text=True,
+            timeout=15,
         )
         return {"closed": True, "term_ref": term_ref}
+    except subprocess.TimeoutExpired:
+        logger.warning("adapter close timed out after 15s")
+        return {
+            "error": {"code": "ADAPTER_CLOSE_TIMEOUT", "message": "adapter close timed out"},
+            "term_ref": term_ref,
+        }
     except subprocess.CalledProcessError as e:
         logger.warning("adapter close failed: %s", e.stderr)
         return {
@@ -493,8 +512,8 @@ def _parse_queue_file(queue_file: Path) -> list[dict]:
                 tasks.append(current_task)
             parts = line.lstrip("# ").split(" | ")
             task_id = parts[0].strip() if len(parts) > 0 else "?"
-            task_title = parts[1].strip() if len(parts) > 1 else ""
-            task_status = parts[2].strip() if len(parts) > 2 else "unknown"
+            task_status = parts[-1].strip() if len(parts) > 2 else "unknown"
+            task_title = " | ".join(parts[1:-1]).strip() if len(parts) > 2 else (parts[1].strip() if len(parts) > 1 else "")
             current_task = {
                 "task": task_id,
                 "title": task_title,
@@ -529,7 +548,7 @@ def ow_status(channel: str, topic_id: str | None = None) -> dict:
         {"tasks": [...], "presence": [...], "summary": {...}}
     """
     # presenceを取得
-    presence_result = _relay_request("GET", f"/presence?channel={channel}")
+    presence_result = _relay_request("GET", f"/presence?{urllib.parse.urlencode({'channel': channel})}")
     if "error" in presence_result:
         handles = []
     else:

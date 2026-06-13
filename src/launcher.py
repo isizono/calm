@@ -361,6 +361,7 @@ def main() -> None:
         except Exception as e:
             # anyioのExceptionGroupによりServerDisconnectedが直接キャッチできない
             # ケースがあるため、例外の種類を問わず統一的にリトライする
+            _pending_tools_list_ids.clear()
             if attempt >= MAX_RETRIES:
                 logger.error("Bridge failed, max retries (%d) exceeded: %s", MAX_RETRIES, e)
                 break

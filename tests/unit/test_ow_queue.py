@@ -61,6 +61,16 @@ class TestParseQueueFile:
         tasks = ow_service._parse_queue_file(queue_file)
         assert tasks == []
 
+    def test_handles_pipe_in_title(self, tmp_path: Path):
+        """タイトルに ' | ' が含まれていてもstatusが正しくパースされる"""
+        content = "## T1 | fix: A | B問題 | in_progress\n- worker: w-a / term_ref: uuid-1 / session: s1\n"
+        queue_file = tmp_path / "queue-t1.md"
+        queue_file.write_text(content, encoding="utf-8")
+        tasks = ow_service._parse_queue_file(queue_file)
+        assert len(tasks) == 1
+        assert tasks[0]["title"] == "fix: A | B問題"
+        assert tasks[0]["status"] == "in_progress"
+
     def test_handles_spawning_status(self, tmp_path: Path):
         """spawningステータスのwrite-aheadエントリをパースできる"""
         content = "## T3 | new task | spawning\n- worker: w-b / term_ref: (pending) / session: (pending)\n"

@@ -14,7 +14,10 @@ if [ -z "$CHANNEL" ] || [ -z "$HANDLE" ]; then
 fi
 
 while true; do
-    curl -sN "${RELAY_URL}/stream?channel=${CHANNEL}&handle=${HANDLE}" \
+    curl -sN --get \
+        --data-urlencode "channel=${CHANNEL}" \
+        --data-urlencode "handle=${HANDLE}" \
+        "${RELAY_URL}/stream" \
         | python3 -u "${SCRIPT_DIR}/recv_filter.py" "${HANDLE}"
     sleep 1
 done
