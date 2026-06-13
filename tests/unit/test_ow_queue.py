@@ -463,6 +463,64 @@ class TestOwSpawnWorkerManualFallback:
         assert "command" in result
 
 
+class TestOwSpawnWorkerAdapter:
+    """アダプタ経由でworkerを起動し、stdoutからterm_refを取得する"""
+
+    def test_adapter_returns_term_ref_from_stdout(self, tmp_path: Path, monkeypatch):
+        """アダプタのstdoutをterm_refとして使用する"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        monkeypatch.setenv("OW_TERMINAL", "iterm2")
+        monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
+
+        adapter_script = tmp_path / "iterm2.sh"
+        adapter_script.write_text("#!/bin/bash\necho 'session-uuid-from-iterm2'\n")
+        adapter_script.chmod(0o755)
+        monkeypatch.setattr(ow_service, "_get_adapter_path", lambda t: adapter_script)
+
+        result = ow_service.ow_spawn_worker(
+            alias="w-a", channel="ch1", cwd="/tmp", model="sonnet",
+            task_title="test", acceptance="done", topic_id="99", task_n=1,
+        )
+        assert result.get("spawning") == "ok"
+        assert result["term_ref"] == "session-uuid-from-iterm2"
+
+    def test_adapter_empty_stdout_falls_back_to_uuid(self, tmp_path: Path, monkeypatch):
+        """アダプタがstdoutに何も返さない場合はUUIDフォールバック"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        monkeypatch.setenv("OW_TERMINAL", "iterm2")
+        monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
+
+        adapter_script = tmp_path / "iterm2.sh"
+        adapter_script.write_text("#!/bin/bash\n")
+        adapter_script.chmod(0o755)
+        monkeypatch.setattr(ow_service, "_get_adapter_path", lambda t: adapter_script)
+
+        result = ow_service.ow_spawn_worker(
+            alias="w-b", channel="ch2", cwd="/tmp", model="haiku",
+            task_title="test", acceptance="done", task_n=2,
+        )
+        assert result.get("spawning") == "ok"
+        assert len(result["term_ref"]) > 0  # UUID fallback
+
+    def test_adapter_failure_falls_back_to_manual(self, tmp_path: Path, monkeypatch):
+        """アダプタが失敗した場合はmanualフォールバック"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        monkeypatch.setenv("OW_TERMINAL", "iterm2")
+        monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
+
+        adapter_script = tmp_path / "iterm2.sh"
+        adapter_script.write_text("#!/bin/bash\nexit 1\n")
+        adapter_script.chmod(0o755)
+        monkeypatch.setattr(ow_service, "_get_adapter_path", lambda t: adapter_script)
+
+        result = ow_service.ow_spawn_worker(
+            alias="w-c", channel="ch3", cwd="/tmp", model="sonnet",
+            task_title="test", acceptance="done", task_n=3,
+        )
+        assert result.get("manual") is True
+        assert "adapter_error" in result
+
+
 class TestOwCloseWorkerTermRef:
     """ケース#17: term_ref(安定ID)で対象を特定"""
 
