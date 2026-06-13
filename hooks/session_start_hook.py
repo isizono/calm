@@ -25,24 +25,10 @@ from src.services.activity_service import (
 from src.services.habit_service import get_active_habit_contents_with_conn
 from src.services.tag_service import get_entity_tags_batch
 from scripts.snapshot import health_check, should_take_snapshot, take_snapshot
+from hooks.hook_transcript import _ORCH_MANAGED_TAG, _is_worker_session
 
 # description先頭の切り出し文字数
 _DESCRIPTION_SNIPPET_LENGTH = 100
-
-# orchが管理するアクティビティに付与される素タグ（D#2410）。
-# 個人フローのアクティビティ一覧・スコアリングから除外する。
-_ORCH_MANAGED_TAG = "orch-managed"
-
-
-def _is_worker_session() -> bool:
-    """ow workerとして起動されたセッションかを判定する（D#2409）。
-
-    ow_spawn_workerは worker起動時に環境変数 OW_ROLE=worker を設定する。
-    worker は task file と check_in で文脈を得るため、個人フロー用の
-    アクティビティ一覧注入は不要・ノイズになる。
-    """
-    return os.environ.get("OW_ROLE") == "worker"
-
 
 
 def _calc_elapsed_days(updated_at_str: str) -> int:

@@ -728,13 +728,13 @@ class TestRecordNudgeMultiplication:
         assert result["decision"] == "approve"
 
 
-def _seed_orch_managed_db(db_path: str, activity_id: int) -> None:
+def _seed_orch_managed_db(db_path: str, activity_id: int, monkeypatch) -> None:
     """テスト用DBを初期化し、orch-managed素タグ付きアクティビティを作成する"""
     import src.config
     from src.db import init_database, get_connection
 
-    os.environ["DISCUSSION_DB_PATH"] = db_path
-    src.config.DB_PATH = db_path
+    monkeypatch.setenv("DISCUSSION_DB_PATH", db_path)
+    monkeypatch.setattr(src.config, "DB_PATH", db_path)
     init_database()
 
     conn = get_connection()
@@ -754,8 +754,6 @@ def _seed_orch_managed_db(db_path: str, activity_id: int) -> None:
         conn.commit()
     finally:
         conn.close()
-    src.config.DB_PATH = None
-    del os.environ["DISCUSSION_DB_PATH"]
 
 
 class TestOrchFlowSuppression:
@@ -810,11 +808,11 @@ class TestOrchFlowSuppression:
         record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record"]
         assert len(record_nudges) == 0
 
-    def test_orch_managed_activity_no_record_nudge(self, env_setup):
+    def test_orch_managed_activity_no_record_nudge(self, env_setup, monkeypatch):
         """orch-managedアクティビティにcheck-in済みなら記録なしでもrecord nudgeを生成しない"""
         state_dir = env_setup["state_dir"]
         db_path = str(env_setup["tmp_path"] / "orch.db")
-        _seed_orch_managed_db(db_path, activity_id=1)
+        _seed_orch_managed_db(db_path, activity_id=1, monkeypatch=monkeypatch)
 
         _write_events(
             [{"e": "tool", "name": "check_in", "turn": 1, "activity_id": 1}],
@@ -846,15 +844,15 @@ class TestOrchFlowSuppression:
         record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record"]
         assert len(record_nudges) == 0
 
-    def test_normal_activity_still_nudges(self, env_setup):
+    def test_normal_activity_still_nudges(self, env_setup, monkeypatch):
         """orch-managedでない通常アクティビティでは従来通りrecord nudgeを生成する"""
         state_dir = env_setup["state_dir"]
         db_path = str(env_setup["tmp_path"] / "normal.db")
         # 通常アクティビティ（orch-managedタグなし）のDBを作る
         import src.config
         from src.db import init_database, get_connection
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        src.config.DB_PATH = db_path
+        monkeypatch.setenv("DISCUSSION_DB_PATH", db_path)
+        monkeypatch.setattr(src.config, "DB_PATH", db_path)
         init_database()
         conn = get_connection()
         try:
@@ -865,8 +863,6 @@ class TestOrchFlowSuppression:
             conn.commit()
         finally:
             conn.close()
-        src.config.DB_PATH = None
-        del os.environ["DISCUSSION_DB_PATH"]
 
         _write_events(
             [{"e": "tool", "name": "check_in", "turn": 1, "activity_id": 1}],

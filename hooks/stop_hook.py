@@ -24,7 +24,9 @@ from hooks.heartbeat import update_heartbeat
 from hooks.hook_state import HookState
 from hooks.hook_transcript import (
     _CHECKIN_TOOLS,
+    _ORCH_MANAGED_TAG,
     _RECORDING_TOOLS,
+    _is_worker_session,
     extract_events,
     extract_last_activity_id,
     read_transcript_from_offset,
@@ -34,19 +36,6 @@ _BLOCK_LIMIT = 1
 _CHECKIN_DEFER_TURNS = 2
 _MAX_SKILL_SPAN_TURNS = 20
 _NUDGE_INTERVAL = 2
-
-# orchが管理するアクティビティに付与される素タグ（D#2410）
-_ORCH_MANAGED_TAG = "orch-managed"
-
-
-def _is_worker_session() -> bool:
-    """ow workerとして起動されたセッションかを判定する（D#2409）。
-
-    ow_spawn_workerは worker起動時に環境変数 OW_ROLE=worker を設定する。
-    workerはworkerスキル・worker-syncの記録規律に従うため、個人フロー用の
-    check-inブロック・nudgeは適用しない。
-    """
-    return os.environ.get("OW_ROLE") == "worker"
 
 
 def _is_orch_managed_activity(activity_id) -> bool:
