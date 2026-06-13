@@ -6,6 +6,7 @@
 - コンテキスト取得フロー・補助ツール認知（静的テキスト）
 """
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +28,20 @@ from scripts.snapshot import health_check, should_take_snapshot, take_snapshot
 
 # description先頭の切り出し文字数
 _DESCRIPTION_SNIPPET_LENGTH = 100
+
+# orchが管理するアクティビティに付与される素タグ（D#2410）。
+# 個人フローのアクティビティ一覧・スコアリングから除外する。
+_ORCH_MANAGED_TAG = "orch-managed"
+
+
+def _is_worker_session() -> bool:
+    """ow workerとして起動されたセッションかを判定する（D#2409）。
+
+    ow_spawn_workerは worker起動時に環境変数 OW_ROLE=worker を設定する。
+    worker は task file と check_in で文脈を得るため、個人フロー用の
+    アクティビティ一覧注入は不要・ノイズになる。
+    """
+    return os.environ.get("OW_ROLE") == "worker"
 
 
 
@@ -128,7 +143,14 @@ def _build_activities_section(conn) -> str:
 
     heartbeat中は別セクション表示。非heartbeatは番号付きフラットリストで出力し、
     AIスコアリング指示を末尾に追加する。
+
+    worker セッション（OW_ROLE=worker）では一覧注入自体を抑制する（D#2409）。
+    通常セッションでは orch-managed タグ付きアクティビティを除外する（D#2410）。
     """
+    # worker セッションはアクティビティ一覧を注入しない
+    if _is_worker_session():
+        return ""
+
     domains = get_active_domains_with_conn(conn)
 
     if not domains:
@@ -151,12 +173,26 @@ def _build_activities_section(conn) -> str:
             else:
                 normal_activities.append(a)
 
+    # 収集した全アクティビティのタグを一括取得し、orch-managedを除外する。
+    # heartbeat/normal両セクションが対象（個人フローからorchフローを分離）。
+    collected_ids = [a["id"] for a in heartbeat_activities + normal_activities]
+    tags_map = get_entity_tags_batch(
+        conn, "activity_tags", "activity_id", collected_ids
+    )
+    heartbeat_activities = [
+        a for a in heartbeat_activities
+        if _ORCH_MANAGED_TAG not in tags_map.get(a["id"], [])
+    ]
+    normal_activities = [
+        a for a in normal_activities
+        if _ORCH_MANAGED_TAG not in tags_map.get(a["id"], [])
+    ]
+
     if not heartbeat_activities and not normal_activities:
         return ""
 
-    # メタデータ一括取得
+    # メタデータ一括取得（tags_mapは収集時に取得済み・全idを網羅）
     all_ids = [a["id"] for a in normal_activities]
-    tags_map = get_entity_tags_batch(conn, "activity_tags", "activity_id", all_ids)
     unresolved_deps = _get_unresolved_deps(conn, all_ids)
     descriptions = _get_descriptions(conn, all_ids)
     created_ats = _get_created_ats(conn, all_ids)
