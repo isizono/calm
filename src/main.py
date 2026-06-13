@@ -1105,13 +1105,20 @@ def ow_status(channel: str, topic_id: str | None = None) -> dict:
     """queueサマリ＋GetPresence（worker死活）の合成ビュー。
 
     queueの論理状態とrelayのpresence（物理接続）を統合して、orchが判断に使える単一ビューを返す。
+    frontmatterフィールドにはqueueのYAMLフロントマター情報（channel_code, last_seen_msg_id等）が含まれる。
 
     Args:
         channel: channelコード（presence取得に使用）
         topic_id: queueファイル特定に使用（OW_QUEUE_DIRと組み合わせ）
 
     Returns:
-        {"tasks": [...], "presence": [...], "summary": {"total_tasks": int, "status_counts": dict, "online_workers": [...]}}
+        {
+            "tasks": [...],
+            "presence": [...],
+            "frontmatter": {"topic_id": int, "orch_activity_id": int, "channel_code": str,
+                           "orch_cwd": str, "last_seen_msg_id": int},
+            "summary": {"total_tasks": int, "status_counts": dict, "online_workers": [...]}
+        }
     """
     return ow_service.ow_status(channel, topic_id)
 
