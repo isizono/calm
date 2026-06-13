@@ -9,6 +9,7 @@ owは、cc-memory上でオーケストレーター（orch）と複数のワー�
 - **Claude Code** v2.0.12 以上
 - **cc-memory プラグイン** がインストール済み（`claude plugin list` で確認）
 - **relayサーバー** のソースコードが配置済み（後述）
+- **recv.sh** が `~/workspace/cc-memory/scripts/ow/recv.sh` に配置済み（cc-memoryリポジトリを `~/workspace/cc-memory` にクローン済みであること）
 
 ## 1. relayサーバーの準備
 
@@ -48,6 +49,7 @@ cc-memory の `.mcp.json` に以下の環境変数を追加する。
 | `RELAY_DIR` | `~/workspace/powwow` | relayサーバーのソースコードディレクトリ |
 | `RELAY_URL` | `http://127.0.0.1:8765` | relayサーバーのURL |
 | `OW_QUEUE_DIR` | （自動） | queueファイルの保存先。未設定時は `~/.cc-memory-ow/orch` |
+| `OW_ORCH_CWD` | （自動） | orchの作業ディレクトリ。未設定時はorch起動時のcwdを使用。crash復旧時にqueueファイルを特定するために必要（D#2394） |
 
 ### 設定例（`.mcp.json`）
 
@@ -114,7 +116,9 @@ orchが `ow_spawn_worker` を呼ぶと、起動コマンドが表示される。
 
 ```bash
 # orchが表示するコマンドの例
-claude --task "/worker task: ~/.cc-memory-ow/orch/tasks/T1.json"
+env OW_ROLE=worker OW_ALIAS=w-a OW_CHANNEL=<channel_code> OW_TASK_FILE=~/.cc-memory-ow/orch/tasks/T1.json \
+  claude --model sonnet --permission-mode auto \
+  "workerスキルに従って作業を開始して。task: ~/.cc-memory-ow/orch/tasks/T1.json"
 ```
 
 **OW_TERMINAL=iterm2 の場合:**
