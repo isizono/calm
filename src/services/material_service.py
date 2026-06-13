@@ -82,8 +82,11 @@ def add_material(title: str, content: str, tags: list[str], source: str, related
 
     conn = get_connection()
     try:
+        # updated_at は created_at と同値で初期化する（recomposeナッジ判定の基準時刻T用）。
+        # created_at の DEFAULT 式に揃え、INSERT内で同一の strftime 値をセットする。
         cursor = conn.execute(
-            "INSERT INTO materials (title, content, source) VALUES (?, ?, ?)",
+            "INSERT INTO materials (title, content, source, updated_at) "
+            "VALUES (?, ?, ?, strftime('%Y-%m-%d %H:%M:%S', 'now'))",
             (title, content, source),
         )
         material_id = cursor.lastrowid
@@ -250,13 +253,16 @@ def update_material(
             set_parts.append("source = ?")
             values.append(source)
 
-        if set_parts:
-            set_clause = ", ".join(set_parts)
-            values.append(material_id)
-            conn.execute(
-                f"UPDATE materials SET {set_clause} WHERE id = ?",
-                tuple(values),
-            )
+        # updated_atは常に現在時刻で更新する（recomposeナッジ判定の基準時刻T用）。
+        # title/content/source指定が無くtagsのみ更新するケースでもupdated_atは進める。
+        set_parts.append("updated_at = strftime('%Y-%m-%d %H:%M:%S', 'now')")
+
+        set_clause = ", ".join(set_parts)
+        values.append(material_id)
+        conn.execute(
+            f"UPDATE materials SET {set_clause} WHERE id = ?",
+            tuple(values),
+        )
 
         # タグの全置換（tags指定時のみ）
         if parsed_tags is not None:

@@ -17,6 +17,13 @@ logger = logging.getLogger(__name__)
 # 1次 decisions の展開上限
 DECISIONS_FULL_LIMIT = 15
 
+# recomposeナッジhintのしきい値。
+# 実運用での発火頻度を見ながら調整する前提の暫定値。
+# メンテナッジ: recomposed material最終更新以降に増えたdecisionがこの件数以上で発火。
+_RECOMPOSE_HINT_DELTA_THRESHOLD = 5
+# ブートストラップナッジ: material未整備のtagでdecision総数がこの件数以上で発火。
+_RECOMPOSE_HINT_BOOTSTRAP_THRESHOLD = 15
+
 
 def _get_direct_relations(conn: sqlite3.Connection, entity_type: str, entity_id: int) -> dict[str, list[int]]:
     """relations_viewから直接関連エンティティのIDをtype別に取得する。
@@ -337,6 +344,122 @@ def _get_pinned_targets(conn: sqlite3.Connection, activity_id: int) -> dict:
     return result
 
 
+def _count_tag_scope_decisions(
+    conn: sqlite3.Connection, tag_id: int, after: str | None = None
+) -> int:
+    """対象tagのスコープに属するdecision件数を数える（retracted除外）。
+
+    tagスコープは以下2経路のUNIONで定義する:
+      1. decision_tags直付け: decision_tags.tag_id = tag_id
+      2. topic_tags継承: decisions.topic_id → topic_tags.tag_id = tag_id
+    両経路をORで結合し、いずれかに該当すれば対象とする。
+
+    Args:
+        conn: SQLiteコネクション
+        tag_id: 対象tagのID
+        after: 指定時、created_at > after のdecisionのみ数える（増分カウント用）。
+            Noneのときは時刻フィルタなし（総数カウント）。
+
+    Returns:
+        条件を満たすdecisionの件数。
+    """
+    sql = """
+        SELECT COUNT(*) FROM decisions d
+        WHERE d.retracted_at IS NULL
+          AND (
+            EXISTS (
+                SELECT 1 FROM decision_tags dt
+                WHERE dt.decision_id = d.id AND dt.tag_id = ?
+            )
+            OR EXISTS (
+                SELECT 1 FROM topic_tags tt
+                WHERE tt.topic_id = d.topic_id AND tt.tag_id = ?
+            )
+          )
+    """
+    params: list = [tag_id, tag_id]
+    if after is not None:
+        # 厳密大なり（>=ではなく>）。after=recomposed materialの最終更新時刻なので、
+        # その時点までのdecisionは統合済み。>=にすると最終秒に読んだdecisionを
+        # 翌check-inで再カウントしてしまうため、>で「更新後に新規追加された分」だけを数える。
+        sql += " AND d.created_at > ?"
+        params.append(after)
+    row = conn.execute(sql, tuple(params)).fetchone()
+    return row[0] if row else 0
+
+
+def _get_recompose_hints(conn: sqlite3.Connection, activity_id: int) -> list[str]:
+    """check-in対象activityのtagについてrecomposeナッジhintを生成する。
+
+    対象tagはactivityに紐づくtagのうち素タグ（namespace=''）のみ。
+    domain:/intent: などnamespace付きタグは対象外とする。
+
+    各tagについて、pinされたmaterial（pins: source_type='tag' AND source_id=tag_id
+    AND target_type='material'）の有無で2種類のナッジを判定する:
+
+      - pinされたmaterialがある場合（メンテナッジ）:
+        基準時刻 T = pinされたmaterialの COALESCE(updated_at, created_at) のmax。
+        tagスコープ内でcreated_at > T のdecision（retracted除外）が
+        _RECOMPOSE_HINT_DELTA_THRESHOLD 件以上なら発火する。
+
+      - pinされたmaterialが無い場合（ブートストラップナッジ）:
+        tagスコープ内のdecision総数（retracted除外）が
+        _RECOMPOSE_HINT_BOOTSTRAP_THRESHOLD 件以上なら発火する。
+
+    Returns:
+        hint文字列のリスト。発火するtagが無ければ空リスト。
+    """
+    # activityに紐づく素タグ（namespace=''）のみ取得する
+    tag_rows = conn.execute(
+        """
+        SELECT t.id, t.name
+        FROM activity_tags at
+        JOIN tags t ON t.id = at.tag_id
+        WHERE at.activity_id = ? AND t.namespace = ''
+        """,
+        (activity_id,),
+    ).fetchall()
+
+    hints: list[str] = []
+    for tag_row in tag_rows:
+        tag_id = tag_row["id"]
+        tag_name = tag_row["name"]
+
+        # 該当tagにpinされたmaterialの最終更新時刻T（複数あればmax）を取得する
+        t_row = conn.execute(
+            """
+            SELECT MAX(COALESCE(m.updated_at, m.created_at)) AS t
+            FROM pins p
+            JOIN materials m ON m.id = p.target_id
+            WHERE p.source_type = 'tag' AND p.source_id = ?
+              AND p.target_type = 'material'
+            """,
+            (tag_id,),
+        ).fetchone()
+        base_time = t_row["t"] if t_row else None
+
+        if base_time is not None:
+            # メンテナッジ（増分）: 最終更新以降のdecision増分で判定
+            delta_count = _count_tag_scope_decisions(conn, tag_id, after=base_time)
+            if delta_count >= _RECOMPOSE_HINT_DELTA_THRESHOLD:
+                hints.append(
+                    f"tag「{tag_name}」はrecomposed materialの最終更新以降にdecisionが"
+                    f"{delta_count}件増えています。recompose-context skillでのメンテを"
+                    f"ユーザーに提案してください。"
+                )
+        else:
+            # ブートストラップナッジ（初回）: decision総数で判定
+            total_count = _count_tag_scope_decisions(conn, tag_id)
+            if total_count >= _RECOMPOSE_HINT_BOOTSTRAP_THRESHOLD:
+                hints.append(
+                    f"tag「{tag_name}」にdecisionが{total_count}件蓄積していますが、"
+                    f"統合material（recomposed material）がありません。"
+                    f"recompose-context skillでの初回整理をユーザーに提案してください。"
+                )
+
+    return hints
+
+
 def _extract_intent_tag(tags: list[str]) -> str:
     """タグリストからintent:プレフィックスのタグを抽出する。なければ「(未設定)」。"""
     for tag in tags:
@@ -480,7 +603,10 @@ def check_in(activity_id: int) -> dict:
             else:
                 activity["status"] = "in_progress"
 
-        # 9. summary生成
+        # 9. recomposeナッジhint生成（既存connを共有して読み取り）
+        recompose_hints = _get_recompose_hints(conn, activity_id)
+
+        # 10. summary生成
         summary = _build_summary(activity, tags)
 
         # 戻り値組み立て（coverageをトップレベルの最初のキーに）
@@ -516,6 +642,8 @@ def check_in(activity_id: int) -> dict:
         result["logs"] = logs_catalog
         if catalog:
             result["catalog"] = catalog
+        if recompose_hints:
+            result["hints"] = recompose_hints
         result["summary"] = summary
 
         return result
