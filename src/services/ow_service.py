@@ -179,6 +179,7 @@ def ensure_channel(channel_code: str) -> bool:
     return True
 
 
+
 # ----------------------------
 # T1: ow_send
 # ----------------------------
@@ -445,7 +446,6 @@ def ow_spawn_worker(
     if not ensure_channel(channel):
         return {"error": {"code": "CHANNEL_UNAVAILABLE", "message": f"channel {channel} could not be created"}}
 
-
     queue_dir = _get_queue_dir()
     task_dir = queue_dir / "tasks"
 
@@ -697,6 +697,15 @@ def ow_status(channel: str, topic_id: str | None = None) -> dict:
             "summary": {"total_tasks": int, "status_counts": dict, "online_workers": [...]}
         }
     """
+    # relayサーバー確認 → 未起動なら自動起動
+    if not ensure_relay_server():
+        return {"error": {"code": "RELAY_UNAVAILABLE", "message": "relay server is not available"}}
+
+    # channel指定があればensure_channel（idempotent）
+    if channel:
+        if not ensure_channel(channel):
+            return {"error": {"code": "CHANNEL_UNAVAILABLE", "message": f"channel {channel} could not be created"}}
+
     # presenceを取得
     presence_result = _relay_request("GET", f"/presence?{urllib.parse.urlencode({'channel': channel})}")
     if "error" in presence_result:

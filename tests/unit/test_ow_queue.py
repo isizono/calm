@@ -319,6 +319,9 @@ last_seen_msg_id: 42
 
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
 
+        monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
+        monkeypatch.setattr(ow_service, "ensure_channel", lambda channel: True)
+
         def fake_relay_request(method, path, data=None):
             if "/presence" in path:
                 return {"handles": ["orch", "w-a"]}
@@ -348,6 +351,9 @@ last_seen_msg_id: 42
 
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
 
+        monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
+        monkeypatch.setattr(ow_service, "ensure_channel", lambda channel: True)
+
         def fake_relay_request(method, path, data=None):
             return {"handles": ["orch", "w-a"]}
 
@@ -374,6 +380,9 @@ class TestOwStatusIntegration:
 
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
 
+        monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
+        monkeypatch.setattr(ow_service, "ensure_channel", lambda channel: True)
+
         def fake_relay_request(method, path, data=None):
             if "/presence" in path:
                 return {"handles": ["orch", "w-a"]}
@@ -392,6 +401,9 @@ class TestOwStatusIntegration:
     def test_status_with_empty_queue(self, tmp_path: Path, monkeypatch):
         """queueファイルなし + presence取得 → タスク0件の統合ビュー"""
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+
+        monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
+        monkeypatch.setattr(ow_service, "ensure_channel", lambda channel: True)
 
         def fake_relay_request(method, path, data=None):
             return {"handles": ["orch"]}
@@ -428,6 +440,9 @@ class TestOwStatusIntegration:
         )
 
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+
+        monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
+        monkeypatch.setattr(ow_service, "ensure_channel", lambda channel: True)
 
         def fake_relay_request(method, path, data=None):
             return {"handles": []}

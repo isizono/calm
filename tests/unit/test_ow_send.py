@@ -8,6 +8,7 @@
 import json
 import urllib.error
 import urllib.request
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -248,6 +249,7 @@ class TestOwSendSuccess:
         assert parsed_body == ow_body
 
 
+
 class TestEnsureChannel:
     """ensure_channel: channel未存在時の自動作成"""
 
@@ -364,3 +366,47 @@ class TestOwSendEnsureChannel:
 
         assert "error" in result
         assert result["error"]["code"] == 404
+
+
+class TestGetQueueDir:
+    """_get_queue_dir: OW_QUEUE_DIR設定の有無でパスが変わる"""
+
+    def test_default_returns_cc_memory_ow_path(self, monkeypatch):
+        """OW_QUEUE_DIR未設定時は ~/.cc-memory/ow/orch を返す"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", "")
+        result = ow_service._get_queue_dir()
+        assert result == Path.home() / ".cc-memory" / "ow" / "orch"
+
+    def test_env_var_overrides_default(self, monkeypatch, tmp_path):
+        """OW_QUEUE_DIR設定時はその値を展開して返す"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        result = ow_service._get_queue_dir()
+        assert result == tmp_path
+
+
+class TestOwStatusEnsure:
+    """ow_status: relay起動 + channel作成の自動化"""
+
+    def test_ow_status_calls_ensure_relay_and_channel(self, monkeypatch, tmp_path):
+        """ow_statusはensure_relay_serverとensure_channelを自動実行する"""
+        ensure_relay_called = []
+        ensure_channel_called = []
+
+        monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: ensure_relay_called.append(True) or True)
+        monkeypatch.setattr(ow_service, "ensure_channel", lambda ch: ensure_channel_called.append(ch) or True)
+        monkeypatch.setattr(ow_service, "_relay_request", lambda *args, **kwargs: {"handles": []})
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+
+        ow_service.ow_status(channel="TestCh01", topic_id="454")
+
+        assert len(ensure_relay_called) == 1
+        assert ensure_channel_called == ["TestCh01"]
+
+    def test_ow_status_relay_unavailable_returns_error(self, monkeypatch):
+        """relayが起動できない場合はエラーを返す"""
+        monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: False)
+
+        result = ow_service.ow_status(channel="TestCh01")
+
+        assert "error" in result
+        assert result["error"]["code"] == "RELAY_UNAVAILABLE"

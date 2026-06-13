@@ -17,7 +17,7 @@ description: orchとしてtopicのプロジェクト進捗管理・worker指揮�
 ## 起動フロー
 
 1. **queue走査**: `~/.cc-memory/ow/orch/queue-t<topic_id>.md` を走査する（auto-memory管理外のディレクトリ。パス変更は `OW_QUEUE_DIR` 環境変数で可能）。既存queueファイルがあれば再開候補として提示（crash引き継ぎ）。なければSessionStart注入のアクティビティ一覧からorch対象topicを選択（check-inスキルと同様のファジーマッチ可）
-2. **relay疎通確認**: `ow_status()` を呼ぶ（ow_*ツール内蔵のensure-server処理が自動実行）。channelがなければ作成し、channel_codeをqueueのfrontmatterに記録する
+2. **relay疎通確認**: `ow_status(channel_code, topic_id)` を呼ぶ。relayサーバーの自動起動・channel自動作成（idempotent）が内部で実行される。queueファイルのfrontmatterを確認し、channel_codeを記録する（初回起動時）
 3. **不在中メッセージ回収**: `ow_history(since=last_seen_msg_id)` で不在中メッセージをpullし処理する（初回起動時はskip）
 4. **cc-memory check-in**: `check_in(orch_activity_id)` でアクティビティに紐づく情報を取得する
 5. **特化版プレイブック取得**: `search(tags=["playbook", "domain:<topic_domain>"])` で特化版プレイブックを取得する（§プレイブック参照 参照）
@@ -101,6 +101,7 @@ on Monitor発火 or 自発的タイミング:
 ### ファイルパス
 
 - パス: `~/.cc-memory/ow/orch/queue-t<topic_id>.md`（auto-memory管理外）
+- MEMORY.mdに1行ポインタを追記し「orchセッション専用」と明記する
 - task fileは `~/.cc-memory/ow/orch/tasks/T<n>.json`
 - パスは `OW_QUEUE_DIR` 環境変数で変更可能（変更する場合もauto-memory管理外のディレクトリを指定すること）
 
