@@ -21,7 +21,7 @@ description: orchとしてtopicのプロジェクト進捗管理・worker指揮�
 3. **不在中メッセージ回収**: `ow_history(since=last_seen_msg_id)` で不在中メッセージをpullし処理する（初回起動時はskip）
 4. **cc-memory check-in**: `check_in(orch_activity_id)` でアクティビティに紐づく情報を取得する
 5. **特化版プレイブック取得**: `search(tags=["playbook", "domain:<topic_domain>"])` で特化版プレイブックを取得する（§プレイブック参照 参照）
-6. **Monitor起動**: `Monitor recv.sh --me orch (persistent)` を起動する。Monitorはスキル指示でClaude自身に起動させる。`recv.sh` は `scripts/ow/recv.sh` にあり、1秒自動再接続付き
+6. **Monitor起動**: `Monitor recv.sh <channel_code> orch (persistent)` を起動する。Monitorはスキル指示でClaude自身に起動させる。`recv.sh` は `scripts/ow/recv.sh` にあり、引数は `<channel_code> <handle>` の位置引数。1秒自動再接続付き
 
 **起動cwd規約**: orchは作業ルート（例: `~/workspace`）で起動し、workerにはリポジトリ/worktreeのcwdを割り当てる。auto-memoryのslug依存を回避し、orch/workerのauto-memoryを構造分離する。queueのfrontmatterに `orch_cwd` を記録し、復旧は同一cwdで行う。
 
