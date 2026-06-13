@@ -226,6 +226,10 @@ class TestWriteQueueSpawning:
         """EC#1: 新規queueファイル作成時 → frontmatter（5フィールド）＋spawningエントリが書き込まれる"""
         ow_service._write_queue_spawning(
             tmp_path, "454", "w-a", 1, "/workspace/repo",
+            task_title="queue統合タスク",
+            model="opus",
+            permission="acceptEdits",
+            acceptance="テスト全通過",
             orch_activity_id=798,
             channel_code="AbCdEfGh",
             orch_cwd="/Users/babajunichi/workspace",
@@ -240,9 +244,14 @@ class TestWriteQueueSpawning:
         assert "channel_code: AbCdEfGh" in content
         assert "orch_cwd: /Users/babajunichi/workspace" in content
         assert "last_seen_msg_id: 0" in content
-        # spawningエントリも含まれる
-        assert "## T1 | spawning | spawning" in content
-        assert "worker: w-a" in content
+        # 正式フォーマットのspawningエントリ（title・status・各フィールド）が含まれる
+        assert "## T1 | queue統合タスク | spawning" in content
+        assert "- worker: w-a / term_ref: (pending) / session: (pending)" in content
+        assert "- activity: 798" in content
+        assert "- model: opus / permission: acceptEdits" in content
+        assert "- cwd: /workspace/repo" in content
+        assert "- acceptance: テスト全通過" in content
+        assert "- note: spawning write-ahead" in content
 
     def test_edge_case_2_existing_file_frontmatter_unchanged(self, tmp_path: Path):
         """EC#2: 既存queueファイルへのspawning追記時 → frontmatterは変更されず、末尾にエントリが追記される"""
@@ -261,6 +270,7 @@ last_seen_msg_id: 50
         queue_file.write_text(original_frontmatter, encoding="utf-8")
         ow_service._write_queue_spawning(
             tmp_path, "100", "w-b", 2, "/workspace/repo",
+            task_title="新タスク",
             orch_activity_id=999,
             channel_code="NewCode",
             orch_cwd="/new/cwd",
@@ -273,9 +283,8 @@ last_seen_msg_id: 50
         # 新しいコードは追記されない
         assert "channel_code: NewCode" not in content
         # 既存タスクと新しいspawningエントリが両方含まれる
-        assert "T1" in content
-        assert "T2" in content
-        assert "## T2 | spawning | spawning" in content
+        assert "既存タスク" in content
+        assert "## T2 | 新タスク | spawning" in content
 
     def test_edge_case_1_frontmatter_is_valid_yaml(self, tmp_path: Path):
         """EC#1: 新規ファイルに書かれたfrontmatterがYAMLとして正常にパースできる"""
@@ -295,6 +304,169 @@ last_seen_msg_id: 50
         # spawningエントリもパースされる
         assert len(tasks) == 1
         assert tasks[0]["status"] == "spawning"
+
+
+class TestFormatQueueTaskEntry:
+    """_format_queue_task_entry: 正式queueフォーマットのエントリ生成"""
+
+    def test_basic_format(self):
+        """ヘッダー行＋フィールド行が正式フォーマットで生成される"""
+        entry = ow_service._format_queue_task_entry(
+            task_n=1,
+            title="タスク名",
+            status="working",
+            fields=[
+                ("worker", "w-a / term_ref: iterm2:xxx / session: uuid"),
+                ("activity", "801"),
+                ("note", "実装中"),
+            ],
+        )
+        assert entry == (
+            "## T1 | タスク名 | working\n"
+            "- worker: w-a / term_ref: iterm2:xxx / session: uuid\n"
+            "- activity: 801\n"
+            "- note: 実装中\n"
+        )
+
+    def test_field_order_preserved(self):
+        """fieldsの順序がそのまま保持される"""
+        entry = ow_service._format_queue_task_entry(
+            task_n=2, title="t", status="queued",
+            fields=[("b", "2"), ("a", "1"), ("c", "3")],
+        )
+        assert entry.index("- b: 2") < entry.index("- a: 1") < entry.index("- c: 3")
+
+    def test_parseable_by_parse_queue_file(self, tmp_path: Path):
+        """生成エントリが_parse_queue_fileでパース可能（ラウンドトリップ）"""
+        entry = ow_service._format_queue_task_entry(
+            task_n=7, title="round trip", status="done",
+            fields=[("worker", "w-c / term_ref: t7 / session: s7")],
+        )
+        queue_file = tmp_path / "queue-t1.md"
+        queue_file.write_text(entry, encoding="utf-8")
+        _, tasks = ow_service._parse_queue_file(queue_file)
+        assert tasks[0]["task"] == "T7"
+        assert tasks[0]["title"] == "round trip"
+        assert tasks[0]["status"] == "done"
+        assert tasks[0]["worker"] == "w-c"
+        assert tasks[0]["term_ref"] == "t7"
+
+    def test_newline_in_field_is_collapsed(self, tmp_path: Path):
+        """フィールド値の改行は空白に畳まれ、エントリが複数行に分裂しない"""
+        entry = ow_service._format_queue_task_entry(
+            task_n=1, title="t", status="spawning",
+            fields=[("acceptance", "条件1\n条件2\n条件3")],
+        )
+        # acceptanceは1行に収まる（改行が空白化）
+        assert "- acceptance: 条件1 条件2 条件3\n" in entry
+        # エントリ全体は「ヘッダー1行＋フィールド1行」= 2行のみ
+        assert entry.count("\n") == 2
+
+    def test_phantom_task_injection_is_prevented(self, tmp_path: Path):
+        """フィールド値に '## T99 | ...' を改行付きで注入してもファントムタスクにならない"""
+        malicious = "正当な条件\n## T99 | injected | hacked"
+        entry = ow_service._format_queue_task_entry(
+            task_n=1, title="t", status="spawning",
+            fields=[("acceptance", malicious)],
+        )
+        queue_file = tmp_path / "queue-t1.md"
+        queue_file.write_text(entry, encoding="utf-8")
+        _, tasks = ow_service._parse_queue_file(queue_file)
+        # 注入されたT99はタスクとして認識されず、本物のT1のみ
+        assert [t["task"] for t in tasks] == ["T1"]
+        assert all(t["status"] != "hacked" for t in tasks)
+
+
+class TestUpsertQueueTask:
+    """_upsert_queue_task: queue状態更新の内部関数（追加/置換）"""
+
+    def _entry(self, task_n, title, status, note):
+        return ow_service._format_queue_task_entry(
+            task_n=task_n, title=title, status=status,
+            fields=[("worker", "w-a / term_ref: (pending) / session: (pending)"), ("note", note)],
+        )
+
+    def test_creates_new_file_with_frontmatter(self, tmp_path: Path):
+        """新規ファイル: frontmatter＋エントリで初期化される"""
+        fm = ow_service._build_queue_frontmatter("454", 798, "AbCdEfGh", "/cwd", 0)
+        ow_service._upsert_queue_task(tmp_path, "454", 1, self._entry(1, "t1", "spawning", "n1"), fm)
+        content = (tmp_path / "queue-t454.md").read_text(encoding="utf-8")
+        assert content.startswith("---")
+        assert "topic_id: 454" in content
+        assert "## T1 | t1 | spawning" in content
+
+    def test_appends_new_task_preserving_existing(self, tmp_path: Path):
+        """別T<n>の追記: 既存タスクのエントリは保持され、末尾に追記される"""
+        queue_file = tmp_path / "queue-t100.md"
+        queue_file.write_text(
+            "## T1 | 既存タスク | done\n- worker: w-z / term_ref: t1 / session: s1\n- note: orch手書きメモ\n",
+            encoding="utf-8",
+        )
+        ow_service._upsert_queue_task(tmp_path, "100", 2, self._entry(2, "新タスク", "spawning", "n2"))
+        content = queue_file.read_text(encoding="utf-8")
+        assert "## T1 | 既存タスク | done" in content
+        assert "- note: orch手書きメモ" in content  # orch手編集が保持される
+        assert "## T2 | 新タスク | spawning" in content
+
+    def test_replaces_existing_task_block(self, tmp_path: Path):
+        """同じT<n>の再upsert: 該当ブロックのみ置換され、重複追記されない"""
+        queue_file = tmp_path / "queue-t100.md"
+        queue_file.write_text(
+            "## T1 | タスク | spawning\n- worker: w-a / term_ref: (pending) / session: (pending)\n- note: spawning write-ahead\n",
+            encoding="utf-8",
+        )
+        ow_service._upsert_queue_task(tmp_path, "100", 1, self._entry(1, "タスク", "working", "実装中"))
+        content = queue_file.read_text(encoding="utf-8")
+        assert content.count("## T1 |") == 1  # 重複しない
+        assert "## T1 | タスク | working" in content
+        assert "spawning write-ahead" not in content  # 旧noteは消える
+        assert "- note: 実装中" in content
+
+    def test_replace_preserves_sibling_blocks_and_notes(self, tmp_path: Path):
+        """T<n>置換時、前後の別タスクブロックとそのorch手書きnoteが保持される"""
+        queue_file = tmp_path / "queue-t100.md"
+        queue_file.write_text(
+            "---\ntopic_id: 100\n---\n\n"
+            "## T1 | first | done\n- worker: w-1 / term_ref: t1 / session: s1\n- note: T1メモ\n\n"
+            "## T2 | second | working\n- worker: w-2 / term_ref: t2 / session: s2\n- note: 古いT2メモ\n\n"
+            "## T3 | third | queued\n- worker: w-3 / term_ref: t3 / session: s3\n- note: T3メモ\n",
+            encoding="utf-8",
+        )
+        ow_service._upsert_queue_task(tmp_path, "100", 2, self._entry(2, "second", "done", "新T2メモ"))
+        fm, tasks = ow_service._parse_queue_file(queue_file)
+        content = queue_file.read_text(encoding="utf-8")
+        # frontmatter・前後ブロック・それぞれのnoteが保持される
+        assert fm["topic_id"] == 100
+        assert [t["task"] for t in tasks] == ["T1", "T2", "T3"]
+        assert "- note: T1メモ" in content
+        assert "- note: T3メモ" in content
+        # T2は置換されている
+        assert "## T2 | second | done" in content
+        assert "- note: 新T2メモ" in content
+        assert "古いT2メモ" not in content
+
+
+class TestWriteQueueSpawningReSpawn:
+    """再spawn時のspawningエントリ重複防止"""
+
+    def test_respawn_replaces_not_duplicates(self, tmp_path: Path):
+        """同一T<n>の再spawnでエントリが重複追記されず置換される"""
+        ow_service._write_queue_spawning(tmp_path, "454", "w-a", 1, "/cwd", task_title="タスク")
+        ow_service._write_queue_spawning(tmp_path, "454", "w-a", 1, "/cwd", task_title="タスク")
+        content = (tmp_path / "queue-t454.md").read_text(encoding="utf-8")
+        assert content.count("## T1 |") == 1
+
+    def test_respawn_with_multiline_acceptance_no_block_residue(self, tmp_path: Path):
+        """複数行＋'## '始まりの行を含むacceptanceでも再spawnでブロック残骸が出ない"""
+        acc = "条件1を満たす\n## 補足見出し\n条件2を満たす"
+        ow_service._write_queue_spawning(tmp_path, "454", "w-a", 1, "/cwd", task_title="タスク", acceptance=acc)
+        ow_service._write_queue_spawning(tmp_path, "454", "w-a", 1, "/cwd", task_title="タスク", acceptance=acc)
+        content = (tmp_path / "queue-t454.md").read_text(encoding="utf-8")
+        _, tasks = ow_service._parse_queue_file(tmp_path / "queue-t454.md")
+        # タスクはT1の1件のみ（補足見出しがファントムタスク化しない）
+        assert [t["task"] for t in tasks] == ["T1"]
+        # acceptanceは1行化されブロック残骸（独立した補足見出し行）が残らない
+        assert "\n## 補足見出し\n" not in content
 
 
 class TestOwStatusFrontmatter:
@@ -657,8 +829,8 @@ class TestWriteTaskFile:
         assert data["alias"] == "w-a"
         assert data["v"] == 1
 
-    def test_task_file_name(self, tmp_path: Path):
-        """task fileの名前がT{n}.json形式になる"""
+    def test_task_file_name_without_topic(self, tmp_path: Path):
+        """topic_id未指定時はT{n}.json形式にフォールバックする"""
         task_file = ow_service._write_task_file(
             task_dir=tmp_path, task_n=5, alias="w-e", channel="ch1",
             cwd="/tmp", model="haiku", permission="default",
@@ -666,6 +838,36 @@ class TestWriteTaskFile:
             timeout_min=30, activity_id=None, topic_id=None
         )
         assert task_file.name == "T5.json"
+
+    def test_task_file_name_has_topic_prefix(self, tmp_path: Path):
+        """topic_id指定時はt{topic_id}-T{n}.json形式でtopic間衝突を避ける"""
+        task_file = ow_service._write_task_file(
+            task_dir=tmp_path, task_n=1, alias="w-a", channel="ch1",
+            cwd="/tmp", model="opus", permission="acceptEdits",
+            task_title="", acceptance="", context="", playbook="",
+            timeout_min=60, activity_id=821, topic_id="454"
+        )
+        assert task_file.name == "t454-T1.json"
+
+    def test_task_file_topic_prefix_no_collision(self, tmp_path: Path):
+        """同じtask_nでもtopicが異なれば別ファイルになる（衝突しない）"""
+        f1 = ow_service._write_task_file(
+            task_dir=tmp_path, task_n=1, alias="w-a", channel="ch1",
+            cwd="/tmp", model="opus", permission="acceptEdits",
+            task_title="topic454", acceptance="", context="", playbook="",
+            timeout_min=60, activity_id=1, topic_id="454"
+        )
+        f2 = ow_service._write_task_file(
+            task_dir=tmp_path, task_n=1, alias="w-b", channel="ch2",
+            cwd="/tmp", model="opus", permission="acceptEdits",
+            task_title="topic100", acceptance="", context="", playbook="",
+            timeout_min=60, activity_id=2, topic_id="100"
+        )
+        assert f1.name == "t454-T1.json"
+        assert f2.name == "t100-T1.json"
+        assert f1 != f2
+        assert json.loads(f1.read_text())["title"] == "topic454"
+        assert json.loads(f2.read_text())["title"] == "topic100"
 
     def test_creates_parent_dirs(self, tmp_path: Path):
         """親ディレクトリが存在しなくても作成する"""

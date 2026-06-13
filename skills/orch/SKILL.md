@@ -102,7 +102,7 @@ on Monitor発火 or 自発的タイミング:
 
 - パス: `~/.cc-memory/ow/orch/queue-t<topic_id>.md`（auto-memory管理外）
 - MEMORY.mdに1行ポインタを追記し「orchセッション専用」と明記する
-- task fileは `~/.cc-memory/ow/orch/tasks/T<n>.json`
+- task fileは `~/.cc-memory/ow/orch/tasks/t<topic_id>-T<n>.json`（topic prefixでtopic間の名前衝突を防ぐ。topic_id未指定時のみ旧形式 `T<n>.json` にフォールバック）
 - パスは `OW_QUEUE_DIR` 環境変数で変更可能（変更する場合もauto-memory管理外のディレクトリを指定すること）
 
 ### frontmatterフォーマット
