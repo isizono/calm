@@ -16,6 +16,7 @@ from src.services import (
     retract_service,
     timeline_service,
     harness_service,
+    ow_service,
 )
 from src.services.checkin_service import check_in as _check_in
 from src.services.tag_service import search_tags as _search_tags, update_tag as _update_tag, collect_tag_notes_for_injection
@@ -968,6 +969,151 @@ def get_config() -> dict:
 def roll_dice(sides: int = 10) -> dict:
     """指定面数のダイスを振る。デフォルト1d10。"""
     return {"result": random.randint(1, sides)}
+
+
+# ----------------------------
+# ow（orch/worker）ツール群
+# CCM_OW=1またはOW_ROLE=workerのセッションのみ可視（launcher.pyでフィルタ）
+# ----------------------------
+
+
+@mcp.tool()
+def ow_send(
+    channel: str,
+    handle: str,
+    body: dict,
+    needs_reply: bool = False,
+    in_reply_to: int | None = None,
+) -> dict:
+    """ow channelにメッセージを送信する。
+
+    bodyはow固有JSONを格納するdict（{"v":1, "kind":"cmd"|"state", ...}）。
+    4xx即失敗、5xx/接続断のみ3回指数バックオフ。
+
+    Args:
+        channel: channelコード
+        handle: 送信者handle（例: "orch", "w-a"）
+        body: ow固有JSON。relayのbody内に格納される
+        needs_reply: 返信を期待するか（デフォルト: False）
+        in_reply_to: 返信先のmsg_id（optional）
+
+    Returns:
+        成功時: {"msg_id": int}
+        失敗時: {"error": {...}}
+    """
+    return ow_service.ow_send(channel, handle, body, needs_reply, in_reply_to)
+
+
+@mcp.tool()
+def ow_history(channel: str, since: int = 0, limit: int = 100) -> dict:
+    """ow channelの履歴を取得する。受信処理の本体。
+
+    since自身を含まない（msg_id > since）。
+    SSEは起床信号専用。起床後はこのツールで未処理メッセージを全件pull（D#2392）。
+
+    Args:
+        channel: channelコード
+        since: このmsg_idより大きいものを返す（0=全件）
+        limit: 最大取得件数（デフォルト: 100）
+
+    Returns:
+        {"messages": [{"msg_id": int, "handle": str, "body": dict, ...}, ...]}
+        失敗時: {"error": {...}}
+    """
+    return ow_service.ow_history(channel, since, limit)
+
+
+@mcp.tool()
+def ow_spawn_worker(
+    alias: str,
+    channel: str,
+    cwd: str,
+    model: str,
+    permission: str = "acceptEdits",
+    task_title: str = "",
+    acceptance: str = "",
+    context: str = "",
+    playbook: str = "",
+    timeout_min: int = 60,
+    activity_id: int | None = None,
+    topic_id: str | None = None,
+    task_n: int = 1,
+) -> dict:
+    """workerセッションを起動する。
+
+    処理順: queueへspawning write-ahead → task file書き出し → アダプタ起動 → 安定ID返却。
+    relay疎通確認・起動（ensure-server処理）も内包。
+
+    OW_TERMINAL環境変数でアダプタを選択（iterm2/tmux/manual。manualは起動コマンド表示のフォールバック）。
+
+    Args:
+        alias: workerのhandle（例: "w-a"）
+        channel: channelコード
+        cwd: workerの作業ディレクトリ
+        model: 使用モデル（例: "sonnet", "opus"）
+        permission: permission_mode（デフォルト: "acceptEdits"）
+        task_title: タスクタイトル
+        acceptance: 完了条件
+        context: タスクコンテキスト
+        playbook: プレイブック抜粋（assignのplaybookフィールド）
+        timeout_min: タイムアウト（分、デフォルト: 60）
+        activity_id: 対応するアクティビティID（optional）
+        topic_id: 対応するトピックID（optional）
+        task_n: タスク番号（T<n>）
+
+    Returns:
+        成功時: {"term_ref": str, "task_file": str, "spawning": "ok", "alias": str}
+        manualフォールバック時: {"command": str, "manual": True, "task_file": str, "alias": str}
+        失敗時: {"error": {...}}
+    """
+    return ow_service.ow_spawn_worker(
+        alias=alias,
+        channel=channel,
+        cwd=cwd,
+        model=model,
+        permission=permission,
+        task_title=task_title,
+        acceptance=acceptance,
+        context=context,
+        playbook=playbook,
+        timeout_min=timeout_min,
+        activity_id=activity_id,
+        topic_id=topic_id,
+        task_n=task_n,
+    )
+
+
+@mcp.tool()
+def ow_close_worker(term_ref: str) -> dict:
+    """アダプタ経由でworkerセッションをクローズする。
+
+    OW_TERMINAL環境変数でアダプタを選択。アダプタ不在時はmanualフォールバック（手動クローズ案内）。
+
+    Args:
+        term_ref: 安定ID（iTerm2のsession UUID、tmuxのpane ID等。タブindexは不安定なため使用しない）
+
+    Returns:
+        成功時: {"closed": True, "term_ref": str}
+        manualフォールバック時: {"manual": True, "message": str}
+        失敗時: {"error": {...}}
+    """
+    return ow_service.ow_close_worker(term_ref)
+
+
+@mcp.tool()
+def ow_status(channel: str, topic_id: str | None = None) -> dict:
+    """queueサマリ＋GetPresence（worker死活）の合成ビュー。
+
+    queueの論理状態とrelayのpresence（物理接続）を統合して、orchが判断に使える単一ビューを返す。
+
+    Args:
+        channel: channelコード（presence取得に使用）
+        topic_id: queueファイル特定に使用（OW_QUEUE_DIRと組み合わせ）
+
+    Returns:
+        {"tasks": [...], "presence": [...], "summary": {"total_tasks": int, "status_counts": dict, "online_workers": [...]}}
+    """
+    return ow_service.ow_status(channel, topic_id)
 
 
 # セッションエンドポイント（HTTPモード用カスタムルート）
