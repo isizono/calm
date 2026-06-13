@@ -518,6 +518,13 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
         check-in結果（coverage, activity, related_topics, related_activities, pinned,
         tag_notes, materials, recent_decisions, logs, catalog, summary）
     """
+    if session_id is None:
+        try:
+            from fastmcp.server.dependencies import get_context
+            ctx = get_context()
+            session_id = ctx.session_id
+        except (RuntimeError, ImportError):
+            pass
     conn = get_connection()
     try:
         # 1. activity取得
