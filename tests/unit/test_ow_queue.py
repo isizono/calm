@@ -564,7 +564,7 @@ class TestWriteTaskFile:
         """task fileがJSONとして作成される"""
         task_file = ow_service._write_task_file(
             task_dir=tmp_path, task_n=1, alias="w-a", channel="AbCdEfGh",
-            cwd="/tmp", model="sonnet", permission="acceptEdits",
+            cwd="/tmp", model="sonnet", permission="auto",
             task_title="Test", acceptance="pass", context="ctx",
             playbook="", timeout_min=60, activity_id=1, topic_id="10"
         )
@@ -589,7 +589,7 @@ class TestWriteTaskFile:
         nested_dir = tmp_path / "deep" / "nested" / "tasks"
         task_file = ow_service._write_task_file(
             task_dir=nested_dir, task_n=1, alias="w-a", channel="ch",
-            cwd="/tmp", model="sonnet", permission="acceptEdits",
+            cwd="/tmp", model="sonnet", permission="auto",
             task_title="", acceptance="", context="", playbook="",
             timeout_min=60, activity_id=None, topic_id=None
         )
