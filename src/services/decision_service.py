@@ -28,10 +28,12 @@ def add_decisions(items: list[dict]) -> dict:
             - topic_id (int, 必須): 関連するトピックのID
             - decision (str, 必須): 決定内容
             - reason (str, 必須): 決定の理由
+            - title (str, optional): 決定の要点を表す1行。省略時はNULL（表示はdecision本文にfallback）
             - tags (list[str], optional): 追加タグ。省略時はtopicのタグを継承
 
     Returns:
         {created: [...], errors: [{index, error}]}
+        created各要素には related_decisions（同topic内の類似decision上位N件）が付く。
     """
     # バリデーション: 1 <= len(items) <= 10
     if not items:
@@ -60,6 +62,10 @@ def add_decisions(items: list[dict]) -> dict:
                 topic_id = item.get("topic_id")
                 decision = item.get("decision", "")
                 reason = item.get("reason", "")
+                # 空文字・空白のみのtitleはNULLへ正規化する。表示fallbackは
+                # SQL側がCOALESCE(NULLのみfallback)・Python側が`or`(""もfallback)で
+                # 意味論が分かれるため、""をNULLに寄せて全箇所の挙動を一致させる。
+                title = (item.get("title") or "").strip() or None
                 tags = item.get("tags")
 
                 # タグのバリデーション（tagsが指定された場合のみ）
@@ -71,8 +77,8 @@ def add_decisions(items: list[dict]) -> dict:
 
                 # decisionをINSERT
                 cursor = conn.execute(
-                    "INSERT INTO decisions (topic_id, decision, reason) VALUES (?, ?, ?)",
-                    (topic_id, decision, reason),
+                    "INSERT INTO decisions (topic_id, decision, reason, title) VALUES (?, ?, ?, ?)",
+                    (topic_id, decision, reason, title),
                 )
                 decision_id = cursor.lastrowid
 
@@ -145,15 +151,26 @@ def add_decisions(items: list[dict]) -> dict:
                 c["tags"] = tags_map.get(c["decision_id"], [])
                 c["created_at"] = created_at_map.get(c["decision_id"])
 
-            # embedding一括生成（created分のみ。失敗してもエラーにしない）
+            # embedding一括生成 + 同topic内の関連decision取得（created分のみ。失敗してもエラーにしない）
+            # 関連decisionは矛盾・重複への気づきを促す導線。embeddingサーバー未起動時は空リスト。
+            # search_serviceは関数内importでcircular import（decision→search→...）を回避する。
+            from src.services import search_service
             for c in created:
                 tag_text = " ".join(c["tags"]) if c["tags"] else ""
-                generate_and_store_embedding(
+                embedding = generate_and_store_embedding(
                     "decision", c["decision_id"],
                     build_embedding_text(c["decision"], c["reason"], tag_text),
                 )
+                related = []
+                if embedding is not None and c["topic_id"] is not None:
+                    related = search_service.find_similar_decisions(
+                        exclude_id=c["decision_id"],
+                        topic_id=c["topic_id"],
+                        embedding=embedding,
+                    )
+                c["related_decisions"] = related
 
-            # レスポンス軽量化: embedding生成後にdecision_id以外を除去
+            # レスポンス軽量化: embedding生成後はdecision_id/related_decisions以外を除去
             for c in created:
                 c.pop("decision", None)
                 c.pop("reason", None)

@@ -92,7 +92,7 @@ def _get_decisions_from_topics(conn: sqlite3.Connection, topic_ids: list[int]) -
     placeholders = ",".join("?" * len(topic_ids))
     rows = conn.execute(
         f"""
-        SELECT id, decision
+        SELECT id, decision, title
         FROM decisions
         WHERE topic_id IN ({placeholders}) AND retracted_at IS NULL
         ORDER BY id DESC
@@ -103,7 +103,8 @@ def _get_decisions_from_topics(conn: sqlite3.Connection, topic_ids: list[int]) -
 
     decisions = []
     for row in rows:
-        decisions.append({"id": row["id"], "title": row["decision"]})
+        # title優先・decision本文fallback
+        decisions.append({"id": row["id"], "title": row["title"] or row["decision"]})
     return decisions
 
 
@@ -243,7 +244,7 @@ def _get_pinned_targets(conn: sqlite3.Connection, activity_id: int) -> dict:
         placeholders = ",".join("?" * len(ids))
         rows = conn.execute(
             f"""
-            SELECT id, decision, reason
+            SELECT id, decision, reason, title
             FROM decisions
             WHERE id IN ({placeholders}) AND retracted_at IS NULL
             """,
@@ -254,7 +255,8 @@ def _get_pinned_targets(conn: sqlite3.Connection, activity_id: int) -> dict:
         for did in ids:
             if did in row_map:
                 row = row_map[did]
-                decisions.append({"id": row["id"], "title": row["decision"], "reason": row["reason"]})
+                # title優先・decision本文fallback
+                decisions.append({"id": row["id"], "title": row["title"] or row["decision"], "reason": row["reason"]})
         if decisions:
             result["decisions"] = decisions
 
