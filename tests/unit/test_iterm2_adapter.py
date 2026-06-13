@@ -7,8 +7,6 @@ import os
 import subprocess
 from pathlib import Path
 
-import pytest
-
 ADAPTER = Path(__file__).resolve().parent.parent.parent / "scripts" / "ow" / "adapters" / "iterm2.sh"
 MOCK_UUID = "mock-uuid-0000-1111-2222-333333333333"
 
@@ -111,22 +109,18 @@ class TestIterm2AdapterClose:
         result, _ = _run_adapter(["close", "uuid with spaces"], tmp_path)
         assert result.returncode == 0
 
+    def test_close_applescript_contains_base64(self, tmp_path):
+        """closeで生成されたAppleScriptにTERM_REFのbase64エンコード文字列が含まれる。"""
+        import base64
+        term_ref = "ABCD1234-5678-90EF-ABCD-EF0123456789"
+        expected_b64 = base64.b64encode(term_ref.encode()).decode()
+        _, captured = _run_adapter(["close", term_ref], tmp_path)
+        assert expected_b64 in captured
+
 
 class TestIterm2AdapterErrors:
     def test_unknown_action_exits_nonzero(self, tmp_path):
         """未知のactionはゼロ以外のexit codeとエラーメッセージを返す。"""
-        capture_file = tmp_path / "capture.txt"
-        capture_file.write_text("")
-        mock_dir = _make_mock_osascript(tmp_path, capture_file)
-
-        env = os.environ.copy()
-        env["PATH"] = str(mock_dir) + ":" + env["PATH"]
-
-        result = subprocess.run(
-            [str(ADAPTER), "unknown_action"],
-            capture_output=True,
-            text=True,
-            env=env,
-        )
+        result, _ = _run_adapter(["unknown_action"], tmp_path)
         assert result.returncode != 0
         assert "Unknown action" in result.stderr
