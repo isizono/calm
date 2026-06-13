@@ -448,6 +448,7 @@ class TestOwSpawnWorkerManualFallback:
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         monkeypatch.delenv("OW_TERMINAL", raising=False)
         monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
+        monkeypatch.setattr(ow_service, "ensure_channel", lambda c: True)
 
         result = ow_service.ow_spawn_worker(
             alias="w-a", channel="ch1", cwd="/tmp", model="sonnet",
@@ -463,6 +464,7 @@ class TestOwSpawnWorkerManualFallback:
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         monkeypatch.setenv("OW_TERMINAL", "manual")
         monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
+        monkeypatch.setattr(ow_service, "ensure_channel", lambda c: True)
 
         result = ow_service.ow_spawn_worker(
             alias="w-b", channel="ch2", cwd="/tmp", model="haiku",
@@ -480,6 +482,7 @@ class TestOwSpawnWorkerAdapter:
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         monkeypatch.setenv("OW_TERMINAL", "iterm2")
         monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
+        monkeypatch.setattr(ow_service, "ensure_channel", lambda c: True)
 
         adapter_script = tmp_path / "iterm2.sh"
         adapter_script.write_text("#!/bin/bash\necho 'session-uuid-from-iterm2'\n")
@@ -498,6 +501,7 @@ class TestOwSpawnWorkerAdapter:
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         monkeypatch.setenv("OW_TERMINAL", "iterm2")
         monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
+        monkeypatch.setattr(ow_service, "ensure_channel", lambda c: True)
 
         adapter_script = tmp_path / "iterm2.sh"
         adapter_script.write_text("#!/bin/bash\n")
@@ -516,6 +520,7 @@ class TestOwSpawnWorkerAdapter:
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         monkeypatch.setenv("OW_TERMINAL", "iterm2")
         monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
+        monkeypatch.setattr(ow_service, "ensure_channel", lambda c: True)
 
         adapter_script = tmp_path / "iterm2.sh"
         adapter_script.write_text("#!/bin/bash\nexit 1\n")
@@ -528,6 +533,44 @@ class TestOwSpawnWorkerAdapter:
         )
         assert result.get("manual") is True
         assert "adapter_error" in result
+
+
+class TestOwSpawnWorkerEnsureChannel:
+    """ow_spawn_worker: ensure_channel呼び出しの動作確認"""
+
+    def test_ensure_channel_called_before_spawn(self, tmp_path: Path, monkeypatch):
+        """ensure_channelが成功すれば通常通りspawnが進む"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        monkeypatch.delenv("OW_TERMINAL", raising=False)
+        monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
+
+        called_channels = []
+
+        def fake_ensure_channel(c):
+            called_channels.append(c)
+            return True
+
+        monkeypatch.setattr(ow_service, "ensure_channel", fake_ensure_channel)
+
+        result = ow_service.ow_spawn_worker(
+            alias="w-a", channel="TestCh01", cwd="/tmp", model="sonnet",
+            task_title="test", acceptance="done", task_n=1,
+        )
+        assert called_channels == ["TestCh01"]
+        assert result.get("manual") is True  # OW_TERMINAL未設定なのでmanual
+
+    def test_ensure_channel_failure_returns_error(self, tmp_path: Path, monkeypatch):
+        """ensure_channelが失敗するとCHANNEL_UNAVAILABLEエラーを返す"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
+        monkeypatch.setattr(ow_service, "ensure_channel", lambda c: False)
+
+        result = ow_service.ow_spawn_worker(
+            alias="w-a", channel="BadCh01", cwd="/tmp", model="sonnet",
+            task_title="test", acceptance="done", task_n=1,
+        )
+        assert "error" in result
+        assert result["error"]["code"] == "CHANNEL_UNAVAILABLE"
 
 
 class TestOwCloseWorkerTermRef:
