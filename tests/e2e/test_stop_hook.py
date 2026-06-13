@@ -95,6 +95,8 @@ def _run_stop_hook(
     })
 
     env = {**os.environ}
+    # runnerのOW_ROLEを継承しない（テストの決定性確保。worker抑制テストはenv_overrideで明示設定する）
+    env.pop("OW_ROLE", None)
     if env_override:
         env.update(env_override)
 
@@ -126,6 +128,9 @@ def env_setup(tmp_path):
 
     env_override = {
         "HOOK_STATE_DIR": state_dir,
+        # orch-managed判定が本番DBへ接続しないよう隔離DBを指す。
+        # 未初期化の空パスのため接続/クエリは失敗し、フェイルオープン（False）になる。
+        "DISCUSSION_DB_PATH": str(tmp_path / "isolated.db"),
     }
 
     yield {
@@ -721,3 +726,169 @@ class TestRecordNudgeMultiplication:
             str(transcript), "test-session", env_setup["env_override"],
         )
         assert result["decision"] == "approve"
+
+
+def _seed_orch_managed_db(db_path: str, activity_id: int, monkeypatch) -> None:
+    """テスト用DBを初期化し、orch-managed素タグ付きアクティビティを作成する"""
+    import src.config
+    from src.db import init_database, get_connection
+
+    monkeypatch.setenv("DISCUSSION_DB_PATH", db_path)
+    monkeypatch.setattr(src.config, "DB_PATH", db_path)
+    init_database()
+
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO activities (id, title, description, status) VALUES (?, ?, ?, ?)",
+            (activity_id, "[作業] orch管理タスク", "desc", "in_progress"),
+        )
+        cursor = conn.execute(
+            "INSERT INTO tags (namespace, name) VALUES ('', 'orch-managed')"
+        )
+        tag_id = cursor.lastrowid
+        conn.execute(
+            "INSERT INTO activity_tags (activity_id, tag_id) VALUES (?, ?)",
+            (activity_id, tag_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+class TestOrchFlowSuppression:
+    """orchフロー（worker セッション・orch-managedアクティビティ）でのcheck-inブロック/nudge抑制（D#2409/D#2410）"""
+
+    def test_worker_session_no_checkin_block(self, env_setup):
+        """OW_ROLE=worker時はcheck-in未呼出でもturn>=2でblockしない"""
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("hi"),
+                CONTEXT_RETRIEVAL_ENTRY,
+                _make_assistant_entry(text="response 1"),
+                _make_user_entry("continue"),
+                _make_assistant_entry(text="response 2"),
+            ],
+            transcript,
+        )
+
+        env_override = {**env_setup["env_override"], "OW_ROLE": "worker"}
+        result = _run_stop_hook(str(transcript), "test-session", env_override)
+        assert result["decision"] == "approve"
+
+    def test_worker_session_no_record_nudge(self, env_setup):
+        """OW_ROLE=worker時は記録なしターンが続いてもrecord nudgeを生成しない"""
+        state_dir = env_setup["state_dir"]
+        _write_events(
+            [{"e": "tool", "name": "check_in", "turn": 1, "activity_id": 1}],
+            state_dir, "test-session",
+        )
+        Path(state_dir, "current_turn_test-session").write_text("1")
+        Path(state_dir, "checked_in_activity_test-session").write_text("1")
+
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("turn2"),
+                _make_assistant_entry(text="response 2"),
+                _make_user_entry("turn3"),
+                _make_assistant_entry(text="response 3"),
+                _make_user_entry("turn4"),
+                _make_assistant_entry(text="response 4"),
+            ],
+            transcript,
+        )
+
+        env_override = {**env_setup["env_override"], "OW_ROLE": "worker"}
+        result = _run_stop_hook(str(transcript), "test-session", env_override)
+        assert result["decision"] == "approve"
+
+        events = _read_events(state_dir, "test-session")
+        record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record"]
+        assert len(record_nudges) == 0
+
+    def test_orch_managed_activity_no_record_nudge(self, env_setup, monkeypatch):
+        """orch-managedアクティビティにcheck-in済みなら記録なしでもrecord nudgeを生成しない"""
+        state_dir = env_setup["state_dir"]
+        db_path = str(env_setup["tmp_path"] / "orch.db")
+        _seed_orch_managed_db(db_path, activity_id=1, monkeypatch=monkeypatch)
+
+        _write_events(
+            [{"e": "tool", "name": "check_in", "turn": 1, "activity_id": 1}],
+            state_dir, "test-session",
+        )
+        Path(state_dir, "current_turn_test-session").write_text("1")
+        Path(state_dir, "checked_in_activity_test-session").write_text("1")
+
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("turn2"),
+                _make_assistant_entry(text="response 2"),
+                _make_user_entry("turn3"),
+                _make_assistant_entry(text="response 3"),
+                _make_user_entry("turn4"),
+                _make_assistant_entry(text="response 4"),
+            ],
+            transcript,
+        )
+
+        env_override = {**env_setup["env_override"], "DISCUSSION_DB_PATH": db_path}
+        # OW_ROLEは設定しない（orch-managedタグのみで抑制されることを確認）
+        env_override.pop("OW_ROLE", None)
+        result = _run_stop_hook(str(transcript), "test-session", env_override)
+        assert result["decision"] == "approve"
+
+        events = _read_events(state_dir, "test-session")
+        record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record"]
+        assert len(record_nudges) == 0
+
+    def test_normal_activity_still_nudges(self, env_setup, monkeypatch):
+        """orch-managedでない通常アクティビティでは従来通りrecord nudgeを生成する"""
+        state_dir = env_setup["state_dir"]
+        db_path = str(env_setup["tmp_path"] / "normal.db")
+        # 通常アクティビティ（orch-managedタグなし）のDBを作る
+        import src.config
+        from src.db import init_database, get_connection
+        monkeypatch.setenv("DISCUSSION_DB_PATH", db_path)
+        monkeypatch.setattr(src.config, "DB_PATH", db_path)
+        init_database()
+        conn = get_connection()
+        try:
+            conn.execute(
+                "INSERT INTO activities (id, title, description, status) VALUES (?, ?, ?, ?)",
+                (1, "[作業] 個人タスク", "desc", "in_progress"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        _write_events(
+            [{"e": "tool", "name": "check_in", "turn": 1, "activity_id": 1}],
+            state_dir, "test-session",
+        )
+        Path(state_dir, "current_turn_test-session").write_text("1")
+        Path(state_dir, "checked_in_activity_test-session").write_text("1")
+
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("turn2"),
+                _make_assistant_entry(text="response 2"),
+                _make_user_entry("turn3"),
+                _make_assistant_entry(text="response 3"),
+                _make_user_entry("turn4"),
+                _make_assistant_entry(text="response 4"),
+            ],
+            transcript,
+        )
+
+        env_override = {**env_setup["env_override"], "DISCUSSION_DB_PATH": db_path}
+        env_override.pop("OW_ROLE", None)
+        result = _run_stop_hook(str(transcript), "test-session", env_override)
+        assert result["decision"] == "approve"
+
+        events = _read_events(state_dir, "test-session")
+        record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record"]
+        assert len(record_nudges) >= 1

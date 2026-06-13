@@ -249,6 +249,7 @@ class TestOwSendSuccess:
         assert parsed_body == ow_body
 
 
+
 class TestEnsureChannel:
     """ensure_channel: channel未存在時の自動作成"""
 
@@ -271,8 +272,8 @@ class TestEnsureChannel:
         result = ow_service.ensure_channel("TestCh01")
         assert result is True
 
-    def test_ensure_channel_5xx_propagates_exception(self, monkeypatch):
-        """POST /createが5xxのとき_relay_request経由で例外が伝播する"""
+    def test_ensure_channel_failure_returns_false(self, monkeypatch):
+        """POST /createが5xxで失敗してもFalseを返す（例外は外に出ない）"""
 
         def fake_urlopen(req, timeout=None):
             raise urllib.error.HTTPError(
@@ -287,8 +288,8 @@ class TestEnsureChannel:
         monkeypatch.setattr(ow_service, "RELAY_URL", "http://127.0.0.1:8765")
         monkeypatch.setattr(ow_service.time, "sleep", lambda _: None)
 
-        with pytest.raises(urllib.error.HTTPError):
-            ow_service.ensure_channel("TestCh01")
+        result = ow_service.ensure_channel("TestCh01")
+        assert result is False
 
 
 class TestOwSendEnsureChannel:
@@ -371,10 +372,10 @@ class TestGetQueueDir:
     """_get_queue_dir: OW_QUEUE_DIR設定の有無でパスが変わる"""
 
     def test_default_returns_cc_memory_ow_path(self, monkeypatch):
-        """OW_QUEUE_DIR未設定時は ~/.cc-memory-ow/orch を返す"""
+        """OW_QUEUE_DIR未設定時は ~/.cc-memory/ow/orch を返す"""
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", "")
         result = ow_service._get_queue_dir()
-        assert result == Path.home() / ".cc-memory-ow" / "orch"
+        assert result == Path.home() / ".cc-memory" / "ow" / "orch"
 
     def test_env_var_overrides_default(self, monkeypatch, tmp_path):
         """OW_QUEUE_DIR設定時はその値を展開して返す"""

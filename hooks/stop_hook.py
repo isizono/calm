@@ -24,7 +24,9 @@ from hooks.heartbeat import update_heartbeat
 from hooks.hook_state import HookState
 from hooks.hook_transcript import (
     _CHECKIN_TOOLS,
+    _ORCH_MANAGED_TAG,
     _RECORDING_TOOLS,
+    _is_worker_session,
     extract_events,
     extract_last_activity_id,
     read_transcript_from_offset,
@@ -34,6 +36,31 @@ _BLOCK_LIMIT = 1
 _CHECKIN_DEFER_TURNS = 2
 _MAX_SKILL_SPAN_TURNS = 20
 _NUDGE_INTERVAL = 2
+
+
+def _is_orch_managed_activity(activity_id) -> bool:
+    """指定アクティビティが orch-managed タグを持つかを判定する（D#2410）。
+
+    orchが管理するアクティビティにcheck-in済みのセッションは個人フローでなく
+    orchフローなので、check-inブロック・nudgeの対象外とする。
+    DB参照に失敗した場合はフェイルオープン（False=通常フロー扱い）。
+    """
+    if not activity_id:
+        return False
+    try:
+        from src.db import get_connection
+        from src.services.tag_service import get_entity_tags_batch
+
+        conn = get_connection()
+        try:
+            tags_map = get_entity_tags_batch(
+                conn, "activity_tags", "activity_id", [int(activity_id)]
+            )
+        finally:
+            conn.close()
+        return _ORCH_MANAGED_TAG in tags_map.get(int(activity_id), [])
+    except Exception:
+        return False
 
 
 def _output(decision: str, reason: str = "") -> None:
@@ -104,22 +131,31 @@ def main() -> None:
         if has_checkin:
             # activity_idを抽出して保存
             _update_checked_in_activity(state, all_events, transcript_path)
-        elif current_turn == _CHECKIN_DEFER_TURNS:
-            # one-shot block: 正確にdefer turnで1回だけblock
-            state.increment_block_count()
-            _output(
-                "block",
-                "アクティビティにcheck-inしてください。"
-                "該当するものがなければadd_activityで作成してください。",
-            )
-            return
+
+        # orchフロー（worker セッション or orch-managedアクティビティ）では
+        # 個人フロー用のcheck-inブロック・nudgeを抑制する（D#2409/D#2410）。
+        suppress_personal_flow = (
+            _is_worker_session()
+            or _is_orch_managed_activity(state.get_checked_in_activity())
+        )
+
+        if not has_checkin and not suppress_personal_flow:
+            if current_turn == _CHECKIN_DEFER_TURNS:
+                # one-shot block: 正確にdefer turnで1回だけblock
+                state.increment_block_count()
+                _output(
+                    "block",
+                    "アクティビティにcheck-inしてください。"
+                    "該当するものがなければadd_activityで作成してください。",
+                )
+                return
 
         # 7. nudge判定 + 状態更新 + approve
         state.reset_block_count()
         _output("approve")
         _safe_post_approve(
             state, all_events, transcript_path, current_turn,
-            run_nudges=True,
+            run_nudges=not suppress_personal_flow,
         )
 
     except Exception as e:

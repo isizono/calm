@@ -4,6 +4,7 @@
 レガシー関数（Phase 3で廃止予定）を含む。
 """
 import json
+import os
 import re
 from pathlib import Path
 
@@ -23,6 +24,21 @@ def _is_cc_memory_tool(name: str) -> bool:
 def _extract_short_name(name: str) -> str:
     """ツール名からshort_name（check_in, add_logs等）を取り出す。"""
     return name.split(_CC_MEMORY_MARKER, 1)[1]
+
+# --- ow worker判定 ---
+
+_ORCH_MANAGED_TAG = "orch-managed"
+
+
+def _is_worker_session() -> bool:
+    """ow workerとして起動されたセッションかを判定する（D#2409）。
+
+    ow_spawn_workerは worker起動時に環境変数 OW_ROLE=worker を設定する。
+    workerはtask fileとcheck_inで文脈を得るため、個人フロー用の
+    アクティビティ一覧注入・check-inブロック・nudgeは適用しない。
+    """
+    return os.environ.get("OW_ROLE") == "worker"
+
 
 # --- 記録ツール ---
 
