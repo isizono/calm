@@ -158,16 +158,20 @@ def ensure_channel(channel_code: str) -> bool:
     """channelが存在しなければrelayに作成する（idempotent）。
 
     POST /createにchannel_codeを指定して送信する。relayサーバー側で
-    既存なら何もせず、未存在なら作成する（D#2xxx）。
+    既存なら何もせず、未存在なら作成する（D#2453）。
 
     Args:
         channel_code: 存在を保証したいchannel_code
 
     Returns:
         True: channelが存在する（作成成功・既存どちらも）
-        False: 作成失敗
+        False: 作成失敗（4xx・5xx・接続断すべて含む）
     """
-    result = _relay_request("POST", "/create", {"channel_code": channel_code})
+    try:
+        result = _relay_request("POST", "/create", {"channel_code": channel_code})
+    except Exception as e:
+        logger.warning("ensure_channel failed for %s: %s", channel_code, e)
+        return False
     if "error" in result:
         logger.warning("ensure_channel failed for %s: %s", channel_code, result["error"])
         return False

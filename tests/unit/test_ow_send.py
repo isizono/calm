@@ -271,7 +271,7 @@ class TestEnsureChannel:
         assert result is True
 
     def test_ensure_channel_failure_returns_false(self, monkeypatch):
-        """POST /createが失敗（5xx）すればFalseを返す（raiseは外に出ない）"""
+        """POST /createが5xxで失敗してもFalseを返す（例外は外に出ない）"""
 
         def fake_urlopen(req, timeout=None):
             raise urllib.error.HTTPError(
@@ -286,8 +286,8 @@ class TestEnsureChannel:
         monkeypatch.setattr(ow_service, "RELAY_URL", "http://127.0.0.1:8765")
         monkeypatch.setattr(ow_service.time, "sleep", lambda _: None)
 
-        with pytest.raises(urllib.error.HTTPError):
-            ow_service.ensure_channel("TestCh01")
+        result = ow_service.ensure_channel("TestCh01")
+        assert result is False
 
 
 class TestOwSendEnsureChannel:
