@@ -15,12 +15,15 @@ case "$ACTION" in
     SESSION_UUID=$(osascript <<APPLESCRIPT
       tell application "iTerm2"
         tell current window
+          set originalTab to current tab
           set newTab to (create tab with default profile)
           tell current session of newTab
             set its name to "ow-worker"
             write text "cd ${CWD} && ${WORKER_CMD}"
-            return id
+            set newSessionId to id
           end tell
+          select originalTab
+          return newSessionId
         end tell
       end tell
 APPLESCRIPT

@@ -1029,7 +1029,7 @@ def ow_spawn_worker(
     channel: str,
     cwd: str,
     model: str,
-    permission: str = "acceptEdits",
+    permission: str = "auto",
     task_title: str = "",
     acceptance: str = "",
     context: str = "",
@@ -1051,7 +1051,7 @@ def ow_spawn_worker(
         channel: channelコード
         cwd: workerの作業ディレクトリ
         model: 使用モデル（例: "sonnet", "opus"）
-        permission: permission_mode（デフォルト: "acceptEdits"）
+        permission: permission_mode（デフォルト: "auto"）。autoは全操作を自動承認するため、orchが管理する信頼されたタスクでの使用を前提とする
         task_title: タスクタイトル
         acceptance: 完了条件
         context: タスクコンテキスト
