@@ -559,6 +559,28 @@ class TestOwCloseWorkerTermRef:
         assert "some-uuid" in result.get("message", "")
 
 
+class TestGetQueueDir:
+    def test_returns_env_var_path(self, tmp_path: Path, monkeypatch):
+        """OW_QUEUE_DIRが設定されている場合はその値をPathとして返す"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        result = ow_service._get_queue_dir()
+        assert result == tmp_path
+
+    def test_default_path_is_not_auto_memory(self, monkeypatch):
+        """OW_QUEUE_DIR未設定の場合、~/.cc-memory-ow/orch を返す（auto-memory管理外）"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", "")
+        result = ow_service._get_queue_dir()
+        assert result == Path.home() / ".cc-memory-ow" / "orch"
+        # auto-memoryが管理する~/.claude/projects/配下でないことを確認
+        assert ".claude" not in str(result)
+
+    def test_default_path_never_returns_none(self, monkeypatch):
+        """OW_QUEUE_DIR未設定でもNoneは返さない（ow_statusがNoneチェック不要）"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", "")
+        result = ow_service._get_queue_dir()
+        assert result is not None
+
+
 class TestWriteTaskFile:
     def test_creates_task_json(self, tmp_path: Path):
         """task fileがJSONとして作成される"""
