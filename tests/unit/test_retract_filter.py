@@ -16,7 +16,7 @@ from src.services.checkin_service import check_in
 from src.services.activity_service import add_activity
 from src.services.relation_service import add_relation
 from src.services.tag_service import _injected_tags
-from tests.helpers import set_pinned
+from src.services.pin_service import add_pin
 
 
 DEFAULT_TAGS = ["domain:test"]
@@ -167,7 +167,7 @@ class TestCheckInFilter:
             assert checkin["latest_log"]["id"] != retracted_id
 
     def test_pinned_retracted_decision_excluded_from_checkin(self, activity_with_topic):
-        """pinned + retractedのdecisionはcheck-inのpinnedに含まれない"""
+        """pinsテーブルでpinされたdecisionをretractすると、check-inのpinnedに含まれない"""
         tid = activity_with_topic["topic_id"]
         aid = activity_with_topic["activity_id"]
 
@@ -176,20 +176,20 @@ class TestCheckInFilter:
         ])
         decision_id = result["created"][0]["decision_id"]
 
-        # pin（DBのpinned列を直接設定）→ retract
-        set_pinned("decision", decision_id, True)
+        # pinsテーブルに登録 → retract
+        add_pin("activity", aid, "decision", decision_id)
         retract("decision", [decision_id])
 
         checkin = check_in(aid)
         assert "error" not in checkin
 
-        # pinnedセクションに含まれないこと
+        # retractされているためpinnedセクションに含まれない
         pinned = checkin.get("pinned", {})
         pinned_decision_ids = [d["id"] for d in pinned.get("decisions", [])]
         assert decision_id not in pinned_decision_ids
 
     def test_pinned_retracted_log_excluded_from_checkin(self, activity_with_topic):
-        """pinned + retractedのlogはcheck-inのpinnedに含まれない"""
+        """pinsテーブルでpinされたlogをretractすると、check-inのpinnedに含まれない"""
         tid = activity_with_topic["topic_id"]
         aid = activity_with_topic["activity_id"]
 
@@ -198,13 +198,14 @@ class TestCheckInFilter:
         ])
         log_id = result["created"][0]["log_id"]
 
-        # pin（DBのpinned列を直接設定）→ retract
-        set_pinned("log", log_id, True)
+        # pinsテーブルに登録 → retract
+        add_pin("activity", aid, "log", log_id)
         retract("log", [log_id])
 
         checkin = check_in(aid)
         assert "error" not in checkin
 
+        # retractされているためpinnedセクションに含まれない
         pinned = checkin.get("pinned", {})
         pinned_log_ids = [l["id"] for l in pinned.get("logs", [])]
         assert log_id not in pinned_log_ids

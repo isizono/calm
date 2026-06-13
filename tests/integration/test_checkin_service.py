@@ -4,8 +4,9 @@ import tempfile
 import pytest
 from src.db import init_database, get_connection
 from src.services.activity_service import add_activity, update_activity
-from tests.helpers import add_decision, add_log, retract_decision, set_pinned as _set_pinned
+from tests.helpers import add_decision, add_log, retract_decision
 from src.services.material_service import add_material
+from src.services.pin_service import add_pin
 from src.services.relation_service import add_relation
 from src.services.topic_service import add_topic
 from src.services.checkin_service import check_in, DECISIONS_FULL_LIMIT
@@ -537,6 +538,27 @@ class TestCheckInCoverage:
         assert result["coverage"]["materials"] == "0/0"
         assert result["coverage"]["logs"] == "0/0"
 
+    def test_coverage_not_affected_by_pinned_targets(self, temp_db):
+        """pinsテーブル経由で注入されたpinned targetsはcoverageの分子に加算されない"""
+        # activityに関連するtopic（coverageの分母・分子に計上される）
+        related_topic = add_topic(title="関連トピック", description="Desc", tags=DEFAULT_TAGS)
+        add_decision(decision="通常の決定", reason="理由", topic_id=related_topic["topic_id"])
+        # activityに関連しないtopic（coverage対象外）にdecisionを作成
+        unrelated_topic = add_topic(title="無関係トピック", description="Desc", tags=DEFAULT_TAGS)
+        unrelated_d = add_decision(decision="pin用決定", reason="理由", topic_id=unrelated_topic["topic_id"])
+        a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
+        add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [related_topic["topic_id"]]}])
+        # 無関係topicのdecisionをpin → pins注入されるがcoverageには含まれないはず
+        add_pin("activity", a["activity_id"], "decision", unrelated_d["decision_id"])
+
+        result = check_in(a["activity_id"])
+
+        assert "error" not in result
+        assert "pinned" in result
+        assert len(result["pinned"]["decisions"]) == 1
+        # coverageは関連topic配下のdecisionのみ: 通常1件/全体1件。pin注入分は加算されない
+        assert result["coverage"]["decisions"] == "1/1"
+
 
 class TestCheckInLogsCatalog:
     """logsカタログのテスト"""
@@ -714,10 +736,10 @@ class TestCheckInDependencies:
 
 
 class TestCheckInPinned:
-    """pinnedエンティティのcheck-in注入テスト"""
+    """pinsテーブル経由のpinned target注入テスト"""
 
     def test_no_pinned_field_when_nothing_pinned(self, temp_db):
-        """pinnedエンティティが0件の場合、pinnedフィールドは省略される"""
+        """pinsテーブルに対象activity向けのpinがない場合、pinnedフィールドは省略される"""
         topic = add_topic(title="トピック", description="Desc", tags=DEFAULT_TAGS)
         add_decision(decision="通常の決定", reason="理由", topic_id=topic["topic_id"])
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
@@ -728,163 +750,234 @@ class TestCheckInPinned:
         assert "error" not in result
         assert "pinned" not in result
 
-    def test_pinned_decision_in_pinned_field(self, temp_db):
-        """pinされたdecisionがpinned.decisionsにcontent付きで返る"""
+    def test_activity_source_pin_injects_decision(self, temp_db):
+        """source=activityのpinsテーブルエントリが、check-in時にpinned.decisionsにcontent付きで注入される"""
         topic = add_topic(title="トピック", description="Desc", tags=DEFAULT_TAGS)
         d = add_decision(decision="重要な決定", reason="根本的な理由", topic_id=topic["topic_id"])
-        _set_pinned("decision", d["decision_id"], True)
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
-        add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [topic["topic_id"]]}])
+        # pinsにsource=activityでdecisionをpin
+        add_pin("activity", a["activity_id"], "decision", d["decision_id"])
 
         result = check_in(a["activity_id"])
 
         assert "error" not in result
         assert "pinned" in result
+        assert "decisions" in result["pinned"]
         assert len(result["pinned"]["decisions"]) == 1
         assert result["pinned"]["decisions"][0]["title"] == "重要な決定"
         assert result["pinned"]["decisions"][0]["reason"] == "根本的な理由"
 
-    def test_pinned_decision_excluded_from_recent_decisions(self, temp_db):
-        """pinされたdecisionはrecent_decisionsから除外される"""
+    def test_tag_source_pin_injects_decision(self, temp_db):
+        """source=tag（activity自身のtag）のpinsテーブルエントリが、check-in時にpinned.decisionsに注入される"""
         topic = add_topic(title="トピック", description="Desc", tags=DEFAULT_TAGS)
-        d1 = add_decision(decision="pinされた決定", reason="理由1", topic_id=topic["topic_id"])
-        add_decision(decision="通常の決定", reason="理由2", topic_id=topic["topic_id"])
-        _set_pinned("decision", d1["decision_id"], True)
+        d = add_decision(decision="タグ経由重要決定", reason="根拠", topic_id=topic["topic_id"])
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
-        add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [topic["topic_id"]]}])
-
-        result = check_in(a["activity_id"])
-
-        assert "error" not in result
-        # recent_decisionsにはpinされていないものだけ
-        assert len(result["recent_decisions"]) == 1
-        assert result["recent_decisions"][0]["title"] == "通常の決定"
-        # pinnedにはpinされたものだけ
-        assert len(result["pinned"]["decisions"]) == 1
-        assert result["pinned"]["decisions"][0]["title"] == "pinされた決定"
-
-    def test_pinned_log_in_pinned_field(self, temp_db):
-        """pinされたlogがpinned.logsにcontent付きで返る"""
-        topic = add_topic(title="トピック", description="Desc", tags=DEFAULT_TAGS)
-        log = add_log(topic_id=topic["topic_id"], title="方向転換ログ", content="## 経緯\n重要な方向転換")
-        _set_pinned("log", log["log_id"], True)
-        a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
-        add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [topic["topic_id"]]}])
+        # pinsにsource=tagでdecisionをpin（domain:testタグ）
+        add_pin("tag", "domain:test", "decision", d["decision_id"])
 
         result = check_in(a["activity_id"])
 
         assert "error" not in result
         assert "pinned" in result
+        assert "decisions" in result["pinned"]
+        assert len(result["pinned"]["decisions"]) == 1
+        assert result["pinned"]["decisions"][0]["title"] == "タグ経由重要決定"
+
+    def test_pinned_decisions_included_in_recent_decisions(self, temp_db):
+        """pinsテーブルでpinされたdecisionはrecent_decisionsにも通常通り含まれる（除外されない）"""
+        topic = add_topic(title="トピック", description="Desc", tags=DEFAULT_TAGS)
+        d = add_decision(decision="ピン済み決定", reason="理由", topic_id=topic["topic_id"])
+        add_decision(decision="通常の決定", reason="理由", topic_id=topic["topic_id"])
+        a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
+        add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [topic["topic_id"]]}])
+        # decisionをpinする
+        add_pin("activity", a["activity_id"], "decision", d["decision_id"])
+
+        result = check_in(a["activity_id"])
+
+        assert "error" not in result
+        # recent_decisionsにはピン済み・非ピンの両方が含まれる（pinned列による除外なし）
+        assert len(result["recent_decisions"]) == 2
+        titles = {dec["title"] for dec in result["recent_decisions"]}
+        assert "ピン済み決定" in titles
+        assert "通常の決定" in titles
+
+    def test_activity_source_pin_injects_log(self, temp_db):
+        """source=activityのpinsテーブルエントリが、check-in時にpinned.logsにcontent付きで注入される"""
+        topic = add_topic(title="トピック", description="Desc", tags=DEFAULT_TAGS)
+        log = add_log(topic_id=topic["topic_id"], title="方向転換ログ", content="## 経緯\n重要な方向転換")
+        a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
+        add_pin("activity", a["activity_id"], "log", log["log_id"])
+
+        result = check_in(a["activity_id"])
+
+        assert "error" not in result
+        assert "pinned" in result
+        assert "logs" in result["pinned"]
         assert len(result["pinned"]["logs"]) == 1
         assert result["pinned"]["logs"][0]["title"] == "方向転換ログ"
         assert result["pinned"]["logs"][0]["content"] == "## 経緯\n重要な方向転換"
 
-    def test_pinned_log_excluded_from_logs_catalog(self, temp_db):
-        """pinされたlogはlogsカタログとlatest_logから除外される"""
+    def test_pinned_log_also_appears_in_latest_log(self, temp_db):
+        """pinsテーブルでpinされたlogはlatest_logにも通常通り含まれる（除外されない）"""
         topic = add_topic(title="トピック", description="Desc", tags=DEFAULT_TAGS)
-        log1 = add_log(topic_id=topic["topic_id"], title="pinログ", content="内容1")
-        add_log(topic_id=topic["topic_id"], title="通常ログ", content="内容2")
-        _set_pinned("log", log1["log_id"], True)
+        log1 = add_log(topic_id=topic["topic_id"], title="ピン済みログ", content="内容1")
+        add_log(topic_id=topic["topic_id"], title="新しいログ", content="内容2")
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
         add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [topic["topic_id"]]}])
+        # log1をpinするが、IDが小さい（古い）ため latest_log には新しい方が来る
+        add_pin("activity", a["activity_id"], "log", log1["log_id"])
 
         result = check_in(a["activity_id"])
 
         assert "error" not in result
-        # 非pinの1件がlatest_logに入り、logsカタログは空
-        assert result["latest_log"]["title"] == "通常ログ"
-        assert result["logs"] == []
+        # latest_logには最新のログが入る（pinned列による除外なし）
+        assert result["latest_log"]["title"] == "新しいログ"
+        # logsカタログにはpinされたログが残る
+        assert len(result["logs"]) == 1
+        assert result["logs"][0]["title"] == "ピン済みログ"
 
-    def test_pinned_material_in_pinned_field(self, temp_db):
-        """pinされたmaterialがpinned.materialsにcontent付きで返る"""
+    def test_activity_source_pin_injects_material(self, temp_db):
+        """source=activityのpinsテーブルエントリが、check-in時にpinned.materialsにcontent付きで注入される"""
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
         m = add_material("設計書", "# 設計\n詳細な内容", DEFAULT_TAGS, "テスト用データ",
                          related=[{"type": "activity", "ids": [a["activity_id"]]}])
-        _set_pinned("material", m["material_id"], True)
+        add_pin("activity", a["activity_id"], "material", m["material_id"])
 
         result = check_in(a["activity_id"])
 
         assert "error" not in result
         assert "pinned" in result
+        assert "materials" in result["pinned"]
         assert len(result["pinned"]["materials"]) == 1
         assert result["pinned"]["materials"][0]["title"] == "設計書"
         assert result["pinned"]["materials"][0]["content"] == "# 設計\n詳細な内容"
         assert result["pinned"]["materials"][0]["source"] == "テスト用データ"
 
-    def test_pinned_material_excluded_from_materials(self, temp_db):
-        """pinされたmaterialは通常のmaterialsフィールドから除外される"""
+    def test_pinned_material_also_appears_in_materials(self, temp_db):
+        """pinsテーブルでpinされたmaterialはmaterialsフィールドにも通常通り含まれる（除外されない）"""
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
-        m1 = add_material("pin資材", "内容1", DEFAULT_TAGS, "テスト用データ",
+        m1 = add_material("ピン資材", "内容1", DEFAULT_TAGS, "テスト用データ",
                           related=[{"type": "activity", "ids": [a["activity_id"]]}])
         add_material("通常資材", "内容2", DEFAULT_TAGS, "テスト用データ",
                      related=[{"type": "activity", "ids": [a["activity_id"]]}])
-        _set_pinned("material", m1["material_id"], True)
+        add_pin("activity", a["activity_id"], "material", m1["material_id"])
 
         result = check_in(a["activity_id"])
 
         assert "error" not in result
-        # materialsにはpinされていないものだけ
-        assert len(result["materials"]) == 1
-        assert result["materials"][0]["title"] == "通常資材"
+        # materialsにはpin済みも非ピンも両方含まれる（pinned列による除外なし）
+        assert len(result["materials"]) == 2
+        titles = {m["title"] for m in result["materials"]}
+        assert "ピン資材" in titles
+        assert "通常資材" in titles
 
-    def test_coverage_includes_pinned_decisions(self, temp_db):
-        """coverageのdecisions分子にpinned件数が加算される"""
-        topic = add_topic(title="トピック", description="Desc", tags=DEFAULT_TAGS)
-        d1 = add_decision(decision="pin決定", reason="理由", topic_id=topic["topic_id"])
-        add_decision(decision="通常決定1", reason="理由", topic_id=topic["topic_id"])
-        add_decision(decision="通常決定2", reason="理由", topic_id=topic["topic_id"])
-        _set_pinned("decision", d1["decision_id"], True)
+    def test_activity_source_pin_injects_topic(self, temp_db):
+        """source=activityのpinsテーブルエントリが、check-in時にpinned.topicsに注入される"""
+        topic = add_topic(title="重要トピック", description="Desc", tags=DEFAULT_TAGS)
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
-        add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [topic["topic_id"]]}])
+        add_pin("activity", a["activity_id"], "topic", topic["topic_id"])
 
         result = check_in(a["activity_id"])
 
         assert "error" not in result
-        # pinned 1件 + 通常 2件 = 3件, 全体 3件
-        assert result["coverage"]["decisions"] == "3/3"
+        assert "pinned" in result
+        assert "topics" in result["pinned"]
+        assert len(result["pinned"]["topics"]) == 1
+        assert result["pinned"]["topics"][0]["id"] == topic["topic_id"]
+        assert result["pinned"]["topics"][0]["title"] == "重要トピック"
 
-    def test_coverage_includes_pinned_logs(self, temp_db):
-        """coverageのlogs分子にpinned件数が加算される"""
+    def test_activity_source_pin_injects_activity(self, temp_db):
+        """source=activityのpinsテーブルエントリが、check-in時にpinned.activitiesに注入される"""
+        a1 = add_activity(title="メインタスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
+        a2 = add_activity(title="重要参照タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
+        add_pin("activity", a1["activity_id"], "activity", a2["activity_id"])
+
+        result = check_in(a1["activity_id"])
+
+        assert "error" not in result
+        assert "pinned" in result
+        assert "activities" in result["pinned"]
+        assert len(result["pinned"]["activities"]) == 1
+        assert result["pinned"]["activities"][0]["id"] == a2["activity_id"]
+        assert result["pinned"]["activities"][0]["title"] == "重要参照タスク"
+        assert result["pinned"]["activities"][0]["status"] == "pending"
+
+    def test_distinct_deduplication_when_multiple_routes(self, temp_db):
+        """同一targetがtagソースとactivityソースの両方からpinされても、pinned結果に1件だけ注入される"""
         topic = add_topic(title="トピック", description="Desc", tags=DEFAULT_TAGS)
-        log1 = add_log(topic_id=topic["topic_id"], title="pinログ", content="内容1")
-        add_log(topic_id=topic["topic_id"], title="通常ログ", content="内容2")
-        _set_pinned("log", log1["log_id"], True)
+        d = add_decision(decision="重複テスト決定", reason="理由", topic_id=topic["topic_id"])
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
-        add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [topic["topic_id"]]}])
+        # activityソースとtagソースの両方からdecisionをpin
+        add_pin("activity", a["activity_id"], "decision", d["decision_id"])
+        add_pin("tag", "domain:test", "decision", d["decision_id"])
 
         result = check_in(a["activity_id"])
 
         assert "error" not in result
-        # pinned 1件 + latest_log 1件 / 全体 2件
-        assert result["coverage"]["logs"] == "2/2"
+        assert "pinned" in result
+        # (target_type, target_id) でDISTINCTされ、1件のみ
+        assert len(result["pinned"]["decisions"]) == 1
+        assert result["pinned"]["decisions"][0]["title"] == "重複テスト決定"
 
-    def test_coverage_includes_pinned_materials(self, temp_db):
-        """coverageのmaterials分子にpinned件数が加算される"""
-        a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
-        m1 = add_material("pin資材", "内容1", DEFAULT_TAGS, "テスト用データ",
-                          related=[{"type": "activity", "ids": [a["activity_id"]]}])
-        add_material("通常資材", "内容2", DEFAULT_TAGS, "テスト用データ",
-                     related=[{"type": "activity", "ids": [a["activity_id"]]}])
-        _set_pinned("material", m1["material_id"], True)
-
-        result = check_in(a["activity_id"])
-
-        assert "error" not in result
-        # pinned 1件 + 通常 1件 = 2件, 全体 2件
-        assert result["coverage"]["materials"] == "2/2"
-
-    def test_all_types_pinned_together(self, temp_db):
-        """decision, log, materialすべてpinされた場合、pinnedフィールドに3種とも含まれる"""
+    def test_retracted_decision_excluded_from_pinned(self, temp_db):
+        """retractされたdecisionはpinsテーブル経由でもpinned.decisionsに注入されない"""
         topic = add_topic(title="トピック", description="Desc", tags=DEFAULT_TAGS)
+        d = add_decision(decision="取り消し済み決定", reason="理由", topic_id=topic["topic_id"])
+        a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
+        add_pin("activity", a["activity_id"], "decision", d["decision_id"])
+        # decisionをretract
+        retract_decision(d["decision_id"])
+
+        result = check_in(a["activity_id"])
+
+        assert "error" not in result
+        # retractされているためpinnedキー自体が省略される（または decisions が空）
+        assert "pinned" not in result or "decisions" not in result.get("pinned", {})
+
+    def test_tag_source_only_uses_activity_own_tags(self, temp_db):
+        """tagソースのpinは、check-in対象activityが持つtagのみが使用される（他activityのtagは無視される）"""
+        topic = add_topic(title="トピック", description="Desc", tags=DEFAULT_TAGS)
+        d = add_decision(decision="他タグ経由決定", reason="理由", topic_id=topic["topic_id"])
+        a1 = add_activity(title="メインタスク", description="Desc", tags=["domain:test"], check_in=False)
+        # a1が持たないタグ（domain:other）をsourceとしてdecisionをpin
+        conn = get_connection()
+        try:
+            conn.execute(
+                "INSERT INTO tags (namespace, name) VALUES ('domain', 'other')",
+            )
+            other_tag_row = conn.execute(
+                "SELECT id FROM tags WHERE namespace='domain' AND name='other'"
+            ).fetchone()
+            conn.execute(
+                "INSERT INTO pins (source_type, source_id, target_type, target_id) VALUES ('tag', ?, 'decision', ?)",
+                (other_tag_row["id"], d["decision_id"]),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = check_in(a1["activity_id"])
+
+        assert "error" not in result
+        # a1はdomain:otherタグを持たないため、そのpinは注入されない
+        assert "pinned" not in result
+
+    def test_all_five_target_types_in_pinned(self, temp_db):
+        """decision/log/material/topic/activityの5種すべてがpinnedフィールドに含まれる"""
+        topic = add_topic(title="重要トピック", description="Desc", tags=DEFAULT_TAGS)
         d = add_decision(decision="重要決定", reason="理由", topic_id=topic["topic_id"])
         log = add_log(topic_id=topic["topic_id"], title="重要ログ", content="内容")
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
-        add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [topic["topic_id"]]}])
         m = add_material("重要資材", "内容", DEFAULT_TAGS, "テスト用データ",
                          related=[{"type": "activity", "ids": [a["activity_id"]]}])
-        _set_pinned("decision", d["decision_id"], True)
-        _set_pinned("log", log["log_id"], True)
-        _set_pinned("material", m["material_id"], True)
+        a2 = add_activity(title="参照タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
+
+        add_pin("activity", a["activity_id"], "decision", d["decision_id"])
+        add_pin("activity", a["activity_id"], "log", log["log_id"])
+        add_pin("activity", a["activity_id"], "material", m["material_id"])
+        add_pin("activity", a["activity_id"], "topic", topic["topic_id"])
+        add_pin("activity", a["activity_id"], "activity", a2["activity_id"])
 
         result = check_in(a["activity_id"])
 
@@ -893,3 +986,23 @@ class TestCheckInPinned:
         assert len(result["pinned"]["decisions"]) == 1
         assert len(result["pinned"]["logs"]) == 1
         assert len(result["pinned"]["materials"]) == 1
+        assert len(result["pinned"]["topics"]) == 1
+        assert len(result["pinned"]["activities"]) == 1
+
+    def test_zero_key_omission_in_pinned(self, temp_db):
+        """pinned結果で0件のキーは省略される"""
+        a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
+        topic = add_topic(title="トピック", description="Desc", tags=DEFAULT_TAGS)
+        # topicのみをpin（他のtypeはピンなし）
+        add_pin("activity", a["activity_id"], "topic", topic["topic_id"])
+
+        result = check_in(a["activity_id"])
+
+        assert "error" not in result
+        assert "pinned" in result
+        assert "topics" in result["pinned"]
+        # 0件のキーは省略される
+        assert "decisions" not in result["pinned"]
+        assert "logs" not in result["pinned"]
+        assert "materials" not in result["pinned"]
+        assert "activities" not in result["pinned"]

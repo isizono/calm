@@ -214,13 +214,15 @@ class TestPinsMigrationData:
         conn.commit()
         return activity_id, material_id
 
-    def test_pinned_column_still_exists_after_0034(self, migrated_db):
-        """migration 0034適用後もmaterialsテーブルにpinned列が残っている（0035でDROP予定）"""
+    def test_pinned_column_still_exists_after_0034_before_0035(self, db_before_0034):
+        """0033までのDBに0034を適用するとmaterialsテーブルにpinned列が存在する（0035適用前の状態確認）"""
+        _apply_migration_0034(db_before_0034)
+
         conn = get_connection()
         try:
             rows = conn.execute("PRAGMA table_info(materials)").fetchall()
             column_names = {row["name"] for row in rows}
-            assert "pinned" in column_names, "pinned列がmaterialsから削除されている（0035はまだ適用していないはず）"
+            assert "pinned" in column_names, "0034適用後（0035適用前）にpinned列がmaterialsから削除されている"
         finally:
             conn.close()
 
