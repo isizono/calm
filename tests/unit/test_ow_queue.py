@@ -403,6 +403,15 @@ class TestOwStatusIntegration:
         assert result["summary"]["total_tasks"] == 0
 
 
+    def test_status_no_queue_dir_returns_empty(self, monkeypatch, tmp_path):
+        """OW_QUEUE_DIR未設定かつデフォルトディレクトリが存在しない場合、tasks=[]を返す（初回起動シナリオ）"""
+        nonexistent = tmp_path / "does_not_exist"
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", "")
+        monkeypatch.setattr(ow_service, "_get_queue_dir", lambda: nonexistent)
+        monkeypatch.setattr(ow_service, "_relay_request", lambda *a, **k: {"handles": []})
+        result = ow_service.ow_status(channel="ch", topic_id=None)
+        assert result["tasks"] == []
+
     def test_status_multi_queue_uses_first_frontmatter(self, tmp_path: Path, monkeypatch):
         """topic_id未指定の全件走査時、ソート順で最初のfrontmatterを代表として返す"""
         q1 = tmp_path / "queue-t100.md"
@@ -601,6 +610,21 @@ class TestOwCloseWorkerTermRef:
         assert result.get("manual") is True
         assert "some-uuid" in result.get("message", "")
 
+
+class TestGetQueueDir:
+    def test_returns_env_var_path(self, tmp_path: Path, monkeypatch):
+        """OW_QUEUE_DIRが設定されている場合はその値をPathとして返す"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        result = ow_service._get_queue_dir()
+        assert result == tmp_path
+
+    def test_default_path_is_not_auto_memory(self, monkeypatch):
+        """OW_QUEUE_DIR未設定の場合、~/.cc-memory/ow/orch を返す（auto-memory管理外）"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", "")
+        result = ow_service._get_queue_dir()
+        assert result == Path.home() / ".cc-memory" / "ow" / "orch"
+        # auto-memoryが管理する~/.claude/projects/配下でないことを確認
+        assert ".claude" not in str(result)
 
 class TestWriteTaskFile:
     def test_creates_task_json(self, tmp_path: Path):
