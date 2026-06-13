@@ -156,16 +156,16 @@ channel_code: XyZwAbCd
         assert "last_seen_msg_id" not in frontmatter
         assert len(tasks) == 1
 
-    def test_edge_case_7_empty_file_returns_empty_tuple(self, tmp_path: Path):
-        """EC#7: 空ファイルのパース → ({}, []) が返る"""
+    def test_edge_case_7a_empty_file_returns_empty_tuple(self, tmp_path: Path):
+        """EC#7a: 空ファイルのパース → ({}, []) が返る"""
         queue_file = tmp_path / "queue-t0.md"
         queue_file.write_text("", encoding="utf-8")
         frontmatter, tasks = ow_service._parse_queue_file(queue_file)
         assert frontmatter == {}
         assert tasks == []
 
-    def test_edge_case_7_nonexistent_file_returns_empty_tuple(self, tmp_path: Path):
-        """EC#7: 存在しないファイルのパース → ({}, []) が返る"""
+    def test_edge_case_7b_nonexistent_file_returns_empty_tuple(self, tmp_path: Path):
+        """EC#7b: 存在しないファイルのパース → ({}, []) が返る"""
         queue_file = tmp_path / "queue-t999.md"
         frontmatter, tasks = ow_service._parse_queue_file(queue_file)
         assert frontmatter == {}
@@ -401,6 +401,34 @@ class TestOwStatusIntegration:
         result = ow_service.ow_status(channel="ch", topic_id="999")
         assert result["tasks"] == []
         assert result["summary"]["total_tasks"] == 0
+
+
+    def test_status_multi_queue_uses_first_frontmatter(self, tmp_path: Path, monkeypatch):
+        """topic_id未指定の全件走査時、ソート順で最初のfrontmatterを代表として返す"""
+        q1 = tmp_path / "queue-t100.md"
+        q1.write_text(
+            "---\ntopic_id: 100\nchannel_code: ch100\n---\n\n"
+            "## T1 | タスクA | done\n",
+            encoding="utf-8",
+        )
+        q2 = tmp_path / "queue-t200.md"
+        q2.write_text(
+            "---\ntopic_id: 200\nchannel_code: ch200\n---\n\n"
+            "## T1 | タスクB | in_progress\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+
+        def fake_relay_request(method, path, data=None):
+            return {"handles": []}
+
+        monkeypatch.setattr(ow_service, "_relay_request", fake_relay_request)
+
+        result = ow_service.ow_status(channel="ch", topic_id=None)
+        assert result["frontmatter"]["topic_id"] == 100
+        assert result["frontmatter"]["channel_code"] == "ch100"
+        assert len(result["tasks"]) == 2
 
 
 class TestOwSpawnWorkerManualFallback:

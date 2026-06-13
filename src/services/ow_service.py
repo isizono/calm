@@ -289,10 +289,11 @@ def _write_queue_spawning(
     )
 
     queue_file.parent.mkdir(parents=True, exist_ok=True)
-    is_new_file = not queue_file.exists()
-    with open(queue_file, "a", encoding="utf-8") as f:
-        if is_new_file:
-            # 新規ファイル: frontmatterを先頭に書いてからspawningエントリを追記
+
+    # 排他的にファイル作成を試みてTOCTOU競合を防ぐ
+    try:
+        fd = os.open(str(queue_file), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             frontmatter = _build_queue_frontmatter(
                 topic_id=topic_id,
                 orch_activity_id=orch_activity_id,
@@ -301,7 +302,10 @@ def _write_queue_spawning(
                 last_seen_msg_id=0,
             )
             f.write(frontmatter)
-        f.write(spawning_entry)
+            f.write(spawning_entry)
+    except FileExistsError:
+        with open(queue_file, "a", encoding="utf-8") as f:
+            f.write(spawning_entry)
 
 
 def _write_task_file(
@@ -407,8 +411,14 @@ def ow_spawn_worker(
     task_dir = queue_dir / "tasks"
 
     # queueへspawning write-ahead（孤児worker対策 D#2395）
-    # orch_cwdはシステム環境変数から取得（orchの作業ルートcwd、D#2394）
-    orch_cwd = os.environ.get("OW_ORCH_CWD", os.getcwd())
+    orch_cwd = os.environ.get("OW_ORCH_CWD", "")
+    if not orch_cwd:
+        orch_cwd = os.getcwd()
+        logger.warning(
+            "OW_ORCH_CWD not set, using cwd=%s as orch_cwd. "
+            "Crash recovery requires the same cwd (D#2394).",
+            orch_cwd,
+        )
     if topic_id is not None:
         _write_queue_spawning(
             queue_dir,
@@ -557,7 +567,7 @@ def _parse_frontmatter(content: str) -> tuple[dict, str]:
         return {}, content
 
     fm_text = content[3:end_idx].strip()
-    rest = content[end_idx + 4:]  # '---\n' の後
+    rest = content[end_idx + 4:]  # '\n---'（4文字）の後
 
     try:
         fm_data = yaml.safe_load(fm_text)

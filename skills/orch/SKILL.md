@@ -89,7 +89,7 @@ on Monitor発火 or 自発的タイミング:
 | `working` | 受諾・作業中 | `{phase, note}` | assignへの最初のworkingはin_reply_to必須 |
 | `blocked` | 判断要請 | `{question, options, context_refs}` | needs_reply=true |
 | `escalated` | エスカレーション文脈出力済み | `{report_md}` | watchdog対象外 |
-| `done` | 完了（sync済み） | `{summary, evidence, synced, materials[], decision_proposals[], cancelled?}` | needs_reply=true。cancelへの応答時はin_reply_to必須 |
+| `done` | 完了（sync済み） | `{summary, evidence, synced, materials[], decision_proposals[], cancelled?}` | needs_reply=true。cancelへの応答時はin_reply_to必須。cancelled（boolean）: cmd:cancelへの応答doneの場合にtrue、自発doneではfalseまたは省略 |
 | `closed` | クローズ受諾 | `{}` | |
 | `dead` | 起動失敗等の自己申告 | `{message}` | |
 | `fallback` | 人間対話モードへ移行宣言 | `{reason}` | |
@@ -235,7 +235,7 @@ orchは起動時に特化版最新を取得し、assignの `playbook` フィー�
 |---|---|
 | `ow_send(channel, handle, body, needs_reply, in_reply_to)` | メッセージ送信（4xx即失敗、5xx/接続断のみ3回指数バックオフ） |
 | `ow_history(channel, since, limit)` | 履歴pull（受信処理の本体） |
-| `ow_spawn_worker(alias, channel, cwd, model, permission, task_title, acceptance, ...)` | worker起動（spawning write-ahead→task file書き出し→アダプタ起動→安定ID返却） |
+| `ow_spawn_worker(alias, channel, cwd, model, permission, task_title, acceptance, context, playbook, timeout_min, activity_id, topic_id, task_n)` | worker起動（spawning write-ahead→task file書き出し→アダプタ起動→安定ID返却） |
 | `ow_close_worker(term_ref)` | workerクローズ |
 | `ow_status(channel, topic_id)` | queue+presence統合ビュー |
 | `check_in(activity_id)` | cc-memoryのアクティビティcheck-in |
