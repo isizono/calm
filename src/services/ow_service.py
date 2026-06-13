@@ -266,11 +266,11 @@ def ow_history(channel: str, since: int = 0, limit: int = 100) -> dict:
 # ----------------------------
 
 
-def _get_queue_dir() -> Path | None:
-    """queueディレクトリパスを返す（OW_QUEUE_DIR環境変数）。"""
+def _get_queue_dir() -> Path:
+    """queueディレクトリパスを返す（OW_QUEUE_DIR環境変数、またはデフォルト ~/.cc-memory-ow/orch）。"""
     if OW_QUEUE_DIR:
         return Path(OW_QUEUE_DIR).expanduser()
-    return None
+    return Path.home() / ".cc-memory-ow" / "orch"
 
 
 def _build_queue_frontmatter(
@@ -438,10 +438,6 @@ def ow_spawn_worker(
 
     # task file書き出し先の決定
     queue_dir = _get_queue_dir()
-    if queue_dir is None:
-        # OW_QUEUE_DIR未設定の場合は一時的なパスを使用
-        queue_dir = Path.home() / ".cc-memory-ow" / "orch"
-
     task_dir = queue_dir / "tasks"
 
     # queueへspawning write-ahead（孤児worker対策 D#2395）
@@ -692,6 +688,14 @@ def ow_status(channel: str, topic_id: str | None = None) -> dict:
             "summary": {"total_tasks": int, "status_counts": dict, "online_workers": [...]}
         }
     """
+    # relayサーバー確認 → 未起動なら自動起動
+    if not ensure_relay_server():
+        return {"error": {"code": "RELAY_UNAVAILABLE", "message": "relay server is not available"}}
+
+    # channel指定があればensure_channel（idempotent）
+    if channel:
+        ensure_channel(channel)
+
     # presenceを取得
     presence_result = _relay_request("GET", f"/presence?{urllib.parse.urlencode({'channel': channel})}")
     if "error" in presence_result:
@@ -703,10 +707,10 @@ def ow_status(channel: str, topic_id: str | None = None) -> dict:
     tasks: list[dict] = []
     frontmatter: dict = {}
     queue_dir = _get_queue_dir()
-    if queue_dir is not None and topic_id is not None:
+    if topic_id is not None:
         queue_file = queue_dir / f"queue-t{topic_id}.md"
         frontmatter, tasks = _parse_queue_file(queue_file)
-    elif queue_dir is not None:
+    else:
         # topic_id未指定の場合は存在する全queueファイルを読む
         for queue_file in sorted(queue_dir.glob("queue-t*.md")):
             fm, file_tasks = _parse_queue_file(queue_file)
