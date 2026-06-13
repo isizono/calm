@@ -154,6 +154,31 @@ def ensure_relay_server() -> bool:
     return False
 
 
+def ensure_channel(channel_code: str) -> bool:
+    """channelが存在しなければrelayに作成する（idempotent）。
+
+    POST /createにchannel_codeを指定して送信する。relayサーバー側で
+    既存なら何もせず、未存在なら作成する（D#2453）。
+
+    Args:
+        channel_code: 存在を保証したいchannel_code
+
+    Returns:
+        True: channelが存在する（作成成功・既存どちらも）
+        False: 作成失敗（4xx・5xx・接続断すべて含む）
+    """
+    try:
+        result = _relay_request("POST", "/create", {"channel_code": channel_code})
+    except Exception as e:
+        logger.warning("ensure_channel failed for %s: %s", channel_code, e)
+        return False
+    if "error" in result:
+        logger.warning("ensure_channel failed for %s: %s", channel_code, result["error"])
+        return False
+    logger.info("ensure_channel: channel %s is ready", channel_code)
+    return True
+
+
 # ----------------------------
 # T1: ow_send
 # ----------------------------
@@ -170,6 +195,7 @@ def ow_send(
 
     bodyはow固有JSONを格納するdict（relay schemaは無改修）。
     4xx即失敗、5xx/接続断のみ3回指数バックオフ。
+    channel未存在（404）の場合はensure_channelで自動作成してから再送する。
 
     Args:
         channel: channelコード
@@ -191,7 +217,15 @@ def ow_send(
     if in_reply_to is not None:
         payload["in_reply_to"] = in_reply_to
 
-    return _relay_request("POST", "/send", payload)
+    result = _relay_request("POST", "/send", payload)
+
+    # channel未存在による404 → 自動作成して再送（1回のみ）
+    if "error" in result and result["error"].get("code") == 404:
+        logger.info("ow_send: channel %s not found, attempting ensure_channel", channel)
+        if ensure_channel(channel):
+            result = _relay_request("POST", "/send", payload)
+
+    return result
 
 
 # ----------------------------
@@ -401,6 +435,10 @@ def ow_spawn_worker(
     # relayサーバー確認
     if not ensure_relay_server():
         return {"error": {"code": "RELAY_UNAVAILABLE", "message": "relay server is not available"}}
+
+    # channel存在確認 → 未存在なら自動作成
+    if not ensure_channel(channel):
+        return {"error": {"code": "CHANNEL_UNAVAILABLE", "message": f"channel {channel} could not be created"}}
 
     # task file書き出し先の決定
     queue_dir = _get_queue_dir()
