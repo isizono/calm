@@ -7,6 +7,7 @@ import fcntl
 import json
 import logging
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -477,6 +478,28 @@ def _write_queue_spawning(
     )
 
 
+def _slugify_task_title(title: str, max_len: int = 40) -> str:
+    """task fileのファイル名に使うslugをタイトルから生成する。
+
+    「main — detail」構造のタイトルはmain部分のみを採用し、
+    空白・パス上危険な文字（/ \\ | : # ? * < > " ' 改行等）を `-` に畳む。
+    日本語はそのまま残す（日本語話者がファイル名から内容を即把握できるようにするため）。
+    連続する `-` は1つに畳み、max_len文字で切り詰める。空文字列なら "" を返す。
+    """
+    if not title:
+        return ""
+    # 「main — detail」構造ならmain部分のみを使う
+    for sep in (" — ", " – ", " - ", "—", "–"):
+        if sep in title:
+            title = title.split(sep, 1)[0]
+            break
+    slug = re.sub(r"""[\s/\\|:#?*<>"']+""", "-", title.strip())
+    slug = re.sub(r"-+", "-", slug).strip("-")
+    if len(slug) > max_len:
+        slug = slug[:max_len].rstrip("-")
+    return slug
+
+
 def _write_task_file(
     task_dir: Path,
     task_n: int,
@@ -493,18 +516,23 @@ def _write_task_file(
     activity_id: int | None,
     topic_id: str | None,
 ) -> Path:
-    """task fileを書き出す。
+    """task fileをマークダウン（YAML frontmatter + 本文）で書き出す。
 
-    ファイル名はtopic間衝突を避けるためtopic prefixを付ける（tasks/t<topic_id>-T<n>.json）。
-    topic_idが未指定の場合のみ旧来のT<n>.json形式にフォールバックする。
+    機械可読フィールド（task/alias/channel/cwd/model等）はfrontmatterに、
+    人間可読な内容（タイトル・acceptance・context・playbook）は本文に置く。
+    workerはfrontmatterから起動パラメータを、本文からタスク内容を読み取る。
+
+    ファイル名は `t<topic_id>-T<n>-<title-slug>.md`。topic prefixでtopic間の名前衝突を、
+    title slugで人間がファイルを開かずに内容を把握できることを担保する。
+    topic_idが未指定の場合は `T<n>-<title-slug>.md`、slugが空なら接尾辞を省く。
     """
-    if topic_id is not None and str(topic_id):
-        task_file = task_dir / f"t{topic_id}-T{task_n}.json"
-    else:
-        task_file = task_dir / f"T{task_n}.json"
+    base = f"t{topic_id}-T{task_n}" if (topic_id is not None and str(topic_id)) else f"T{task_n}"
+    slug = _slugify_task_title(task_title)
+    name = f"{base}-{slug}" if slug else base
+    task_file = task_dir / f"{name}.md"
     task_file.parent.mkdir(parents=True, exist_ok=True)
 
-    task_data = {
+    fm_data = {
         "v": 1,
         "task": f"T{task_n}",
         "alias": alias,
@@ -512,17 +540,23 @@ def _write_task_file(
         "cwd": cwd,
         "model": model,
         "permission_mode": permission,
-        "title": task_title,
-        "acceptance": acceptance,
-        "context": context,
-        "playbook": playbook,
         "timeout_min": timeout_min,
         "activity_id": activity_id,
         "topic_id": topic_id,
     }
+    fm_yaml = yaml.safe_dump(fm_data, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
-    with open(task_file, "w", encoding="utf-8") as f:
-        json.dump(task_data, f, ensure_ascii=False, indent=2)
+    body_lines = [f"# {fm_data['task']}: {task_title}".rstrip()]
+    if acceptance:
+        body_lines += ["", "## Acceptance", "", acceptance]
+    if context:
+        body_lines += ["", "## Context", "", context]
+    if playbook:
+        body_lines += ["", "## Playbook", "", playbook]
+    body = "\n".join(body_lines) + "\n"
+
+    content = f"---\n{fm_yaml}---\n\n{body}"
+    task_file.write_text(content, encoding="utf-8")
 
     return task_file
 

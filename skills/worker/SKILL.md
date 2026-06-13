@@ -29,9 +29,11 @@ owフレームワークのworkerとして動作する。orchからの指示を�
 
 ## 起動
 
-1. task fileを読み込む: orchのbootstrapプロンプトで渡されたパスからJSONを読む
+1. task fileを読み込む: orchのbootstrapプロンプトで渡されたパス（`.md`）を読む。task fileはYAML frontmatter（機械可読の起動パラメータ）＋本文（タスク内容）のマークダウン形式
    - **task fileが存在しない/読めない場合は `state:dead`（data: `{"message":"task file not found: <path>"}`）を送信して終了する**
-2. task fileから `channel`(channel_code), `alias`, `task`(task_n), `activity_id`, `topic_id`, `acceptance`, `context`, `playbook`, `timeout_min` を取得する
+2. task fileから起動パラメータと内容を取得する
+   - frontmatterから: `channel`(channel_code), `alias`, `task`(task_n), `cwd`, `model`, `permission_mode`, `timeout_min`, `activity_id`, `topic_id`
+   - 本文から: タイトル（H1）, `## Acceptance`, `## Context`, `## Playbook`（各セクションは存在する場合のみ）
 3. Monitorを起動する: `Monitor recv.sh <channel_code> <alias> (persistent)`
    - `recv.sh` は `~/workspace/cc-memory/scripts/ow/recv.sh` にある
 4. `check_in(activity_id)` でアクティビティの関連情報を取得する

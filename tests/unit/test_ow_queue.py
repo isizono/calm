@@ -814,60 +814,101 @@ class TestGetQueueDir:
         # auto-memoryが管理する~/.claude/projects/配下でないことを確認
         assert ".claude" not in str(result)
 
+class TestSlugifyTaskTitle:
+    def test_keeps_japanese(self):
+        """日本語タイトルはそのままslugに残る"""
+        assert ow_service._slugify_task_title("queue読み書き一元化") == "queue読み書き一元化"
+
+    def test_uses_main_part_before_emdash(self):
+        """「main — detail」構造はmain部分のみを採用する"""
+        slug = ow_service._slugify_task_title("queue読み書き一元化 — ow_serviceがorch queueフォーマットを扱う")
+        assert slug == "queue読み書き一元化"
+
+    def test_collapses_spaces_and_unsafe_chars(self):
+        """空白・パス危険文字は-に畳まれる"""
+        assert ow_service._slugify_task_title("fix the/bug now") == "fix-the-bug-now"
+
+    def test_truncates_to_max_len(self):
+        """max_lenで切り詰め、末尾の-は除去される"""
+        slug = ow_service._slugify_task_title("a" * 50, max_len=10)
+        assert slug == "a" * 10
+
+    def test_empty_title_returns_empty(self):
+        """空タイトルは空文字列を返す"""
+        assert ow_service._slugify_task_title("") == ""
+
+
 class TestWriteTaskFile:
-    def test_creates_task_json(self, tmp_path: Path):
-        """task fileがJSONとして作成される"""
+    def _parse(self, task_file: Path):
+        fm, body = ow_service._parse_frontmatter(task_file.read_text(encoding="utf-8"))
+        return fm, body
+
+    def test_creates_markdown_task_file(self, tmp_path: Path):
+        """task fileがmarkdown（frontmatter＋本文）として作成される"""
         task_file = ow_service._write_task_file(
             task_dir=tmp_path, task_n=1, alias="w-a", channel="AbCdEfGh",
             cwd="/tmp", model="sonnet", permission="auto",
-            task_title="Test", acceptance="pass", context="ctx",
+            task_title="テストタスク", acceptance="全テスト通過", context="背景説明",
             playbook="", timeout_min=60, activity_id=1, topic_id="10"
         )
         assert task_file.exists()
-        data = json.loads(task_file.read_text(encoding="utf-8"))
-        assert data["task"] == "T1"
-        assert data["alias"] == "w-a"
-        assert data["v"] == 1
+        assert task_file.suffix == ".md"
+        fm, body = self._parse(task_file)
+        # frontmatterに機械可読フィールドが入る
+        assert fm["task"] == "T1"
+        assert fm["alias"] == "w-a"
+        assert fm["channel"] == "AbCdEfGh"
+        assert fm["v"] == 1
+        assert fm["activity_id"] == 1
+        # 本文にタイトル・acceptance・contextが入る
+        assert "# T1: テストタスク" in body
+        assert "## Acceptance" in body
+        assert "全テスト通過" in body
+        assert "## Context" in body
+        assert "背景説明" in body
+        # playbookは空なのでセクションが出ない
+        assert "## Playbook" not in body
 
     def test_task_file_name_without_topic(self, tmp_path: Path):
-        """topic_id未指定時はT{n}.json形式にフォールバックする"""
+        """topic_id未指定・slug空時はT{n}.md形式にフォールバックする"""
         task_file = ow_service._write_task_file(
             task_dir=tmp_path, task_n=5, alias="w-e", channel="ch1",
             cwd="/tmp", model="haiku", permission="default",
             task_title="", acceptance="", context="", playbook="",
             timeout_min=30, activity_id=None, topic_id=None
         )
-        assert task_file.name == "T5.json"
+        assert task_file.name == "T5.md"
 
-    def test_task_file_name_has_topic_prefix(self, tmp_path: Path):
-        """topic_id指定時はt{topic_id}-T{n}.json形式でtopic間衝突を避ける"""
+    def test_task_file_name_has_topic_prefix_and_slug(self, tmp_path: Path):
+        """topic_id・タイトル指定時はt{topic_id}-T{n}-{slug}.md形式になる"""
         task_file = ow_service._write_task_file(
-            task_dir=tmp_path, task_n=1, alias="w-a", channel="ch1",
+            task_dir=tmp_path, task_n=16, alias="w-a", channel="ch1",
             cwd="/tmp", model="opus", permission="acceptEdits",
-            task_title="", acceptance="", context="", playbook="",
+            task_title="queue読み書き一元化 — ow_serviceがorch queueフォーマットを扱う",
+            acceptance="", context="", playbook="",
             timeout_min=60, activity_id=821, topic_id="454"
         )
-        assert task_file.name == "t454-T1.json"
+        assert task_file.name == "t454-T16-queue読み書き一元化.md"
 
     def test_task_file_topic_prefix_no_collision(self, tmp_path: Path):
         """同じtask_nでもtopicが異なれば別ファイルになる（衝突しない）"""
         f1 = ow_service._write_task_file(
             task_dir=tmp_path, task_n=1, alias="w-a", channel="ch1",
             cwd="/tmp", model="opus", permission="acceptEdits",
-            task_title="topic454", acceptance="", context="", playbook="",
+            task_title="topic454タスク", acceptance="", context="", playbook="",
             timeout_min=60, activity_id=1, topic_id="454"
         )
         f2 = ow_service._write_task_file(
             task_dir=tmp_path, task_n=1, alias="w-b", channel="ch2",
             cwd="/tmp", model="opus", permission="acceptEdits",
-            task_title="topic100", acceptance="", context="", playbook="",
+            task_title="topic100タスク", acceptance="", context="", playbook="",
             timeout_min=60, activity_id=2, topic_id="100"
         )
-        assert f1.name == "t454-T1.json"
-        assert f2.name == "t100-T1.json"
+        assert f1.name == "t454-T1-topic454タスク.md"
+        assert f2.name == "t100-T1-topic100タスク.md"
         assert f1 != f2
-        assert json.loads(f1.read_text())["title"] == "topic454"
-        assert json.loads(f2.read_text())["title"] == "topic100"
+        assert "# T1: topic454タスク" in f1.read_text(encoding="utf-8")
+        assert "# T1: topic100タスク" in f2.read_text(encoding="utf-8")
 
     def test_creates_parent_dirs(self, tmp_path: Path):
         """親ディレクトリが存在しなくても作成する"""
