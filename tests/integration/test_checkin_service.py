@@ -5,11 +5,16 @@ import pytest
 from src.db import init_database, get_connection
 from src.services.activity_service import add_activity, update_activity
 from tests.helpers import add_decision, add_log, retract_decision
-from src.services.material_service import add_material
+from src.services.material_service import add_material, update_material
 from src.services.pin_service import add_pin
 from src.services.relation_service import add_relation
 from src.services.topic_service import add_topic
-from src.services.checkin_service import check_in, DECISIONS_FULL_LIMIT
+from src.services.checkin_service import (
+    check_in,
+    DECISIONS_FULL_LIMIT,
+    _RECOMPOSE_HINT_DELTA_THRESHOLD,
+    _RECOMPOSE_HINT_BOOTSTRAP_THRESHOLD,
+)
 from src.services.tag_service import _injected_tags
 
 
@@ -1006,3 +1011,263 @@ class TestCheckInPinned:
         assert "logs" not in result["pinned"]
         assert "materials" not in result["pinned"]
         assert "activities" not in result["pinned"]
+
+
+# recomposeナッジhintの定数。テストの境界条件で参照する。
+PLAIN_TAG = "recompose-target"
+PLAIN_TAG_NS = ""  # 素タグはnamespace空文字で格納される
+
+
+def _set_material_updated_at(material_id: int, ts: str) -> None:
+    """materialのupdated_atを指定文字列に上書きする（基準時刻Tの制御用）。
+
+    add_material/update_materialはupdated_atを現在時刻でセットするため、
+    decisionとの前後関係を秒未満の精度に依存させずテストするには、
+    updated_atを固定値に直接書き換える必要がある。
+    """
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE materials SET updated_at = ? WHERE id = ?",
+            (ts, material_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _set_decision_created_at(decision_id: int, ts: str) -> None:
+    """decisionのcreated_atを指定文字列に上書きする（基準時刻Tとの前後制御用）。"""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE decisions SET created_at = ? WHERE id = ?",
+            (ts, decision_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _make_activity_with_plain_tag() -> int:
+    """素タグ PLAIN_TAG を持つアクティビティを作成しIDを返す。"""
+    result = add_activity(
+        title="[作業] recompose対象タスク",
+        description="recomposeナッジ判定の対象タスク",
+        tags=["domain:test", "intent:implement", PLAIN_TAG],
+        check_in=False,
+    )
+    return result["activity_id"]
+
+
+def _make_topic_with_plain_tag(title: str = "recomposeトピック") -> int:
+    """素タグ PLAIN_TAG を持つトピックを作成しIDを返す（topic_tags継承経路用）。"""
+    result = add_topic(title=title, description="Desc", tags=["domain:test", PLAIN_TAG])
+    return result["topic_id"]
+
+
+class TestRecomposeHints:
+    """check_in結果のrecomposeナッジhint生成の統合テスト"""
+
+    def test_bootstrap_hint_fires_at_threshold_via_topic_tags(self, temp_db):
+        """material未pinのtagで、topic_tags継承のdecisionがブートストラップしきい値ちょうど蓄積するとhintが発火する"""
+        activity_id = _make_activity_with_plain_tag()
+        topic_id = _make_topic_with_plain_tag()
+        for i in range(_RECOMPOSE_HINT_BOOTSTRAP_THRESHOLD):
+            add_decision(decision=f"決定{i}", reason="理由", topic_id=topic_id)
+
+        result = check_in(activity_id)
+
+        assert "error" not in result
+        assert "hints" in result
+        bootstrap_hints = [h for h in result["hints"] if "蓄積しています" in h]
+        assert len(bootstrap_hints) == 1
+        assert PLAIN_TAG in bootstrap_hints[0]
+        assert str(_RECOMPOSE_HINT_BOOTSTRAP_THRESHOLD) in bootstrap_hints[0]
+
+    def test_bootstrap_hint_absent_below_threshold(self, temp_db):
+        """material未pinのtagで、decisionがブートストラップしきい値-1件のときhintは発火せずキーも無い"""
+        activity_id = _make_activity_with_plain_tag()
+        topic_id = _make_topic_with_plain_tag()
+        for i in range(_RECOMPOSE_HINT_BOOTSTRAP_THRESHOLD - 1):
+            add_decision(decision=f"決定{i}", reason="理由", topic_id=topic_id)
+
+        result = check_in(activity_id)
+
+        assert "error" not in result
+        assert "hints" not in result
+
+    def test_bootstrap_hint_fires_via_decision_tags_direct(self, temp_db):
+        """material未pinのtagで、decision_tags直付けのdecisionがしきい値蓄積するとブートストラップhintが発火する"""
+        activity_id = _make_activity_with_plain_tag()
+        # topicには素タグを付けず、decision側に直接素タグを付ける
+        topic = add_topic(title="無タグトピック", description="Desc", tags=["domain:test"])
+        topic_id = topic["topic_id"]
+        for i in range(_RECOMPOSE_HINT_BOOTSTRAP_THRESHOLD):
+            add_decision(
+                decision=f"決定{i}", reason="理由", topic_id=topic_id,
+                tags=["domain:test", PLAIN_TAG],
+            )
+
+        result = check_in(activity_id)
+
+        assert "error" not in result
+        assert "hints" in result
+        assert any("蓄積しています" in h and PLAIN_TAG in h for h in result["hints"])
+
+    def test_bootstrap_hint_excludes_retracted_decisions(self, temp_db):
+        """retractedなdecisionはブートストラップ判定の件数に含まれない"""
+        activity_id = _make_activity_with_plain_tag()
+        topic_id = _make_topic_with_plain_tag()
+        # しきい値ちょうど作成し、うち1件をretractすると しきい値-1 になり発火しない
+        decision_ids = []
+        for i in range(_RECOMPOSE_HINT_BOOTSTRAP_THRESHOLD):
+            d = add_decision(decision=f"決定{i}", reason="理由", topic_id=topic_id)
+            decision_ids.append(d["decision_id"])
+        retract_decision(decision_ids[0])
+
+        result = check_in(activity_id)
+
+        assert "error" not in result
+        assert "hints" not in result
+
+    def test_delta_hint_fires_at_threshold(self, temp_db):
+        """material pin済みのtagで、material最終更新後のdecisionが増分しきい値ちょうど増えるとメンテhintが発火する"""
+        activity_id = _make_activity_with_plain_tag()
+        topic_id = _make_topic_with_plain_tag()
+
+        # 基準時刻Tより前のdecision（増分にカウントされない）
+        old_decision = add_decision(decision="旧決定", reason="理由", topic_id=topic_id)
+        _set_decision_created_at(old_decision["decision_id"], "2024-01-01 00:00:00")
+
+        # tagにmaterialをpinし、updated_at（基準時刻T）を固定
+        mat = add_material(
+            title="統合material", content="まとめ", tags=["domain:test", PLAIN_TAG],
+            source="recompose",
+        )
+        add_pin("tag", PLAIN_TAG, "material", mat["material_id"])
+        _set_material_updated_at(mat["material_id"], "2024-06-01 00:00:00")
+
+        # 基準時刻Tより後のdecisionをしきい値ちょうど作成
+        for i in range(_RECOMPOSE_HINT_DELTA_THRESHOLD):
+            d = add_decision(decision=f"新決定{i}", reason="理由", topic_id=topic_id)
+            _set_decision_created_at(d["decision_id"], "2024-07-01 00:00:00")
+
+        result = check_in(activity_id)
+
+        assert "error" not in result
+        assert "hints" in result
+        delta_hints = [h for h in result["hints"] if "最終更新以降" in h]
+        assert len(delta_hints) == 1
+        assert PLAIN_TAG in delta_hints[0]
+        assert str(_RECOMPOSE_HINT_DELTA_THRESHOLD) in delta_hints[0]
+
+    def test_delta_hint_absent_below_threshold(self, temp_db):
+        """material pin済みのtagで、最終更新後のdecisionが増分しきい値-1件のときメンテhintは発火しない"""
+        activity_id = _make_activity_with_plain_tag()
+        topic_id = _make_topic_with_plain_tag()
+
+        mat = add_material(
+            title="統合material", content="まとめ", tags=["domain:test", PLAIN_TAG],
+            source="recompose",
+        )
+        add_pin("tag", PLAIN_TAG, "material", mat["material_id"])
+        _set_material_updated_at(mat["material_id"], "2024-06-01 00:00:00")
+
+        for i in range(_RECOMPOSE_HINT_DELTA_THRESHOLD - 1):
+            d = add_decision(decision=f"新決定{i}", reason="理由", topic_id=topic_id)
+            _set_decision_created_at(d["decision_id"], "2024-07-01 00:00:00")
+
+        result = check_in(activity_id)
+
+        assert "error" not in result
+        assert "hints" not in result
+
+    def test_delta_hint_excludes_decisions_before_base_time(self, temp_db):
+        """material最終更新時刻T以前のdecisionは増分カウントに含まれない"""
+        activity_id = _make_activity_with_plain_tag()
+        topic_id = _make_topic_with_plain_tag()
+
+        mat = add_material(
+            title="統合material", content="まとめ", tags=["domain:test", PLAIN_TAG],
+            source="recompose",
+        )
+        add_pin("tag", PLAIN_TAG, "material", mat["material_id"])
+        _set_material_updated_at(mat["material_id"], "2024-06-01 00:00:00")
+
+        # しきい値件数だけ作るが、すべてT以前なので増分0となり発火しない
+        for i in range(_RECOMPOSE_HINT_DELTA_THRESHOLD):
+            d = add_decision(decision=f"旧決定{i}", reason="理由", topic_id=topic_id)
+            _set_decision_created_at(d["decision_id"], "2024-05-01 00:00:00")
+
+        result = check_in(activity_id)
+
+        assert "error" not in result
+        assert "hints" not in result
+
+    def test_delta_hint_uses_max_updated_at_across_pinned_materials(self, temp_db):
+        """tagに複数materialがpinされている場合、基準時刻Tは最大のupdated_atになる"""
+        activity_id = _make_activity_with_plain_tag()
+        topic_id = _make_topic_with_plain_tag()
+
+        mat_old = add_material(
+            title="古い統合", content="まとめ", tags=["domain:test", PLAIN_TAG], source="recompose",
+        )
+        add_pin("tag", PLAIN_TAG, "material", mat_old["material_id"])
+        _set_material_updated_at(mat_old["material_id"], "2024-01-01 00:00:00")
+
+        mat_new = add_material(
+            title="新しい統合", content="まとめ", tags=["domain:test", PLAIN_TAG], source="recompose",
+        )
+        add_pin("tag", PLAIN_TAG, "material", mat_new["material_id"])
+        _set_material_updated_at(mat_new["material_id"], "2024-06-01 00:00:00")
+
+        # T=2024-06-01（max）と2024-01-01の間に置いたdecisionは増分に含まれない。
+        # しきい値件数をこの区間に置くと、maxを基準とするため発火しない。
+        for i in range(_RECOMPOSE_HINT_DELTA_THRESHOLD):
+            d = add_decision(decision=f"中間決定{i}", reason="理由", topic_id=topic_id)
+            _set_decision_created_at(d["decision_id"], "2024-03-01 00:00:00")
+
+        result = check_in(activity_id)
+
+        assert "error" not in result
+        assert "hints" not in result, (
+            "基準時刻Tが最大のupdated_at（2024-06-01）でなく最小（2024-01-01）で評価されている"
+        )
+
+    def test_namespaced_tags_excluded_from_hints(self, temp_db):
+        """domain:/intent:のnamespaceタグはhint判定対象外で、素タグが無ければhintは出ない"""
+        # 素タグを持たず、domain:とintent:のみを持つアクティビティ
+        result_a = add_activity(
+            title="[作業] namespaceのみ",
+            description="素タグなし",
+            tags=["domain:bootstrap-domain", "intent:implement"],
+            check_in=False,
+        )
+        activity_id = result_a["activity_id"]
+        # domain:タグを付けたtopicにブートストラップしきい値を超えるdecisionを蓄積
+        topic = add_topic(
+            title="domainトピック", description="Desc",
+            tags=["domain:bootstrap-domain"],
+        )
+        for i in range(_RECOMPOSE_HINT_BOOTSTRAP_THRESHOLD + 5):
+            add_decision(decision=f"決定{i}", reason="理由", topic_id=topic["topic_id"])
+
+        result = check_in(activity_id)
+
+        assert "error" not in result
+        assert "hints" not in result, (
+            "namespace付きタグ（domain:/intent:）がhint判定対象になっている"
+        )
+
+    def test_hints_key_absent_when_no_tag_fires(self, temp_db):
+        """どのtagも発火条件を満たさないとき、resultにhintsキーは含まれない"""
+        activity_id = _make_activity_with_plain_tag()
+        topic_id = _make_topic_with_plain_tag()
+        # ブートストラップしきい値未満のdecisionのみ
+        add_decision(decision="単一決定", reason="理由", topic_id=topic_id)
+
+        result = check_in(activity_id)
+
+        assert "error" not in result
+        assert "hints" not in result
