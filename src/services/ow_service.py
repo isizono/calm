@@ -384,7 +384,7 @@ def ow_spawn_worker(
         channel: channelコード
         cwd: workerの作業ディレクトリ
         model: 使用モデル（例: "sonnet", "opus"）
-        permission: permission_mode（デフォルト: "auto"）
+        permission: permission_mode（デフォルト: "auto"）。autoは全操作を自動承認するため、orchが管理する信頼されたタスクでの使用を前提とする
         task_title: タスクタイトル
         acceptance: 完了条件
         context: タスクコンテキスト
