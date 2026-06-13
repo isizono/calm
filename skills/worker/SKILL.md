@@ -47,7 +47,24 @@ orchから `cmd:assign` が届いたら:
    ```json
    {"v":1, "kind":"state", "from":"<alias>", "to":"orch", "task":"T<task_n>", "state":"done", "data":{"summary":"<作業内容の要約>", "evidence":"<acceptanceを満たす証拠>", "synced":true, "materials":[], "decision_proposals":[]}}
    ```
-3. orchからの応答を待つ。`cmd:close` が届いたら `state:closed` を送信して終了:
+3. orchからの応答を待つ。`cmd:close` が届いたら退場処理（§退場処理）を行ってから `state:closed` を送信して終了する
+
+## 退場処理（cmd:close受信時）
+
+`cmd:close` を受信したら、`state:closed` を送信する**前に**以下を実行する。セッション終了でコンテキストが失われるため、次のセッションが引き継げる情報を残すことが目的。
+
+1. **ログ記録** (`add_logs`): セッション中の作業経緯を1件のログとして記録する
+   - title: `worker <alias> T<task_n>: <タスク名>` の形式
+   - content: 何をやったか、どういうアプローチを取ったか、途中で判断した点、ハマったポイントなど。state:doneのsummaryより詳細に残す
+   - topic_id: task fileの `topic_id` を使う
+   - tags: `["worker-log", "domain:<topic_domain>"]` + タスク内容に応じた素タグ
+
+2. **決定事項記録** (`add_decisions`): セッション中にworkerが判断・合意した事項があれば記録する（なければスキップ）
+   - 実装上の設計判断、仕様解釈、トレードオフの選択など
+
+3. **成果物記録** (`add_material`): state:doneで報告済みのmaterial以外に、記録すべき中間成果物があれば保存する（なければスキップ）
+
+4. 記録完了後に `state:closed` を送信する:
    ```json
    {"v":1, "kind":"state", "from":"<alias>", "to":"orch", "task":"T<task_n>", "state":"closed", "data":{}}
    ```
