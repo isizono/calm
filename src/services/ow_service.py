@@ -17,6 +17,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+import yaml
+
 logger = logging.getLogger(__name__)
 
 # ----------------------------
@@ -241,14 +243,41 @@ def _get_queue_dir() -> Path | None:
     return None
 
 
+def _build_queue_frontmatter(
+    topic_id: str,
+    orch_activity_id: int | None,
+    channel_code: str,
+    orch_cwd: str,
+    last_seen_msg_id: int = 0,
+) -> str:
+    """queueファイルのYAML frontmatterを生成して返す。"""
+    fm_data = {
+        "topic_id": int(topic_id) if topic_id.isdigit() else topic_id,
+        "orch_activity_id": orch_activity_id,
+        "channel_code": channel_code,
+        "orch_cwd": orch_cwd,
+        "last_seen_msg_id": last_seen_msg_id,
+    }
+    fm_yaml = yaml.safe_dump(fm_data, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    return f"---\n{fm_yaml}---\n"
+
+
 def _write_queue_spawning(
     queue_dir: Path,
     topic_id: str,
     alias: str,
     task_n: int,
     cwd: str,
+    orch_activity_id: int | None = None,
+    channel_code: str = "",
+    orch_cwd: str = "",
 ) -> None:
-    """queueファイルにspawning write-aheadを記録する（孤児worker対策）。"""
+    """queueファイルにspawning write-aheadを記録する（孤児worker対策）。
+
+    新規ファイル作成時はYAML frontmatter（topic_id, orch_activity_id, channel_code,
+    orch_cwd, last_seen_msg_id）を先頭に生成してからspawningエントリを追記する。
+    既存ファイルへの追記時はfrontmatterに触らない（frontmatter更新はorchのEditツール責務）。
+    """
     queue_file = queue_dir / f"queue-t{topic_id}.md"
     now = datetime.now(timezone.utc).isoformat()
 
@@ -260,7 +289,18 @@ def _write_queue_spawning(
     )
 
     queue_file.parent.mkdir(parents=True, exist_ok=True)
+    is_new_file = not queue_file.exists()
     with open(queue_file, "a", encoding="utf-8") as f:
+        if is_new_file:
+            # 新規ファイル: frontmatterを先頭に書いてからspawningエントリを追記
+            frontmatter = _build_queue_frontmatter(
+                topic_id=topic_id,
+                orch_activity_id=orch_activity_id,
+                channel_code=channel_code,
+                orch_cwd=orch_cwd,
+                last_seen_msg_id=0,
+            )
+            f.write(frontmatter)
         f.write(spawning_entry)
 
 
@@ -367,8 +407,19 @@ def ow_spawn_worker(
     task_dir = queue_dir / "tasks"
 
     # queueへspawning write-ahead（孤児worker対策 D#2395）
+    # orch_cwdはシステム環境変数から取得（orchの作業ルートcwd、D#2394）
+    orch_cwd = os.environ.get("OW_ORCH_CWD", os.getcwd())
     if topic_id is not None:
-        _write_queue_spawning(queue_dir, str(topic_id), alias, task_n, cwd)
+        _write_queue_spawning(
+            queue_dir,
+            str(topic_id),
+            alias,
+            task_n,
+            cwd,
+            orch_activity_id=activity_id,
+            channel_code=channel,
+            orch_cwd=orch_cwd,
+        )
 
     # task fileを書き出す
     task_file = _write_task_file(
@@ -491,20 +542,62 @@ def ow_close_worker(term_ref: str) -> dict:
 # ----------------------------
 
 
-def _parse_queue_file(queue_file: Path) -> list[dict]:
-    """queueファイルをパースしてタスク一覧を返す。"""
-    if not queue_file.exists():
-        return []
+def _parse_frontmatter(content: str) -> tuple[dict, str]:
+    """YAMLフロントマターをパースして(frontmatter_dict, rest_content)を返す。
 
-    tasks = []
-    current_task: dict | None = None
+    frontmatterが存在しない場合は ({}, content) を返す。
+    YAMLパースエラー時は ({}, rest_content) にフォールバックする（本文のタスクパースは継続）。
+    """
+    if not content.startswith("---"):
+        return {}, content
+
+    # 2番目の '---' を探す
+    end_idx = content.find("\n---", 3)
+    if end_idx == -1:
+        return {}, content
+
+    fm_text = content[3:end_idx].strip()
+    rest = content[end_idx + 4:]  # '---\n' の後
+
+    try:
+        fm_data = yaml.safe_load(fm_text)
+        if not isinstance(fm_data, dict):
+            return {}, rest
+        return fm_data, rest
+    except yaml.YAMLError:
+        return {}, rest
+
+
+def _parse_queue_file(queue_file: Path) -> tuple[dict, list[dict]]:
+    """queueファイルをパースして (frontmatter, tasks) のタプルを返す。
+
+    Returns:
+        (frontmatter_dict, tasks_list)
+        - frontmatter_dict: YAMLフロントマターのdict。存在しない場合は {}
+        - tasks_list: タスク一覧のリスト
+
+    後方互換: frontmatterなしのqueueファイルは ({}, tasks) を返す。
+    YAMLパースエラー時は ({}, tasks) にフォールバックし、タスク部分は正常パースする。
+    空ファイル・存在しないファイルは ({}, []) を返す。
+    """
+    if not queue_file.exists():
+        return {}, []
 
     try:
         content = queue_file.read_text(encoding="utf-8")
     except OSError:
-        return []
+        return {}, []
 
-    for line in content.splitlines():
+    if not content.strip():
+        return {}, []
+
+    # frontmatterをパース
+    frontmatter, body = _parse_frontmatter(content)
+
+    tasks = []
+    current_task: dict | None = None
+
+    for line in body.splitlines():
         line = line.strip()
         # タスクヘッダー: ## T1 | タイトル | status
         if line.startswith("## T") and " | " in line:
@@ -534,7 +627,7 @@ def _parse_queue_file(queue_file: Path) -> list[dict]:
     if current_task is not None:
         tasks.append(current_task)
 
-    return tasks
+    return frontmatter, tasks
 
 
 def ow_status(channel: str, topic_id: str | None = None) -> dict:
@@ -545,7 +638,12 @@ def ow_status(channel: str, topic_id: str | None = None) -> dict:
         topic_id: queueファイル特定に使用（OW_QUEUE_DIRと組み合わせ）
 
     Returns:
-        {"tasks": [...], "presence": [...], "summary": {...}}
+        {
+            "tasks": [...],
+            "presence": [...],
+            "frontmatter": {...},  # queueのfrontmatter情報（channel_code, last_seen_msg_id等）
+            "summary": {"total_tasks": int, "status_counts": dict, "online_workers": [...]}
+        }
     """
     # presenceを取得
     presence_result = _relay_request("GET", f"/presence?{urllib.parse.urlencode({'channel': channel})}")
@@ -556,14 +654,20 @@ def ow_status(channel: str, topic_id: str | None = None) -> dict:
 
     # queueファイルをパース
     tasks: list[dict] = []
+    frontmatter: dict = {}
     queue_dir = _get_queue_dir()
     if queue_dir is not None and topic_id is not None:
         queue_file = queue_dir / f"queue-t{topic_id}.md"
-        tasks = _parse_queue_file(queue_file)
+        frontmatter, tasks = _parse_queue_file(queue_file)
     elif queue_dir is not None:
         # topic_id未指定の場合は存在する全queueファイルを読む
         for queue_file in sorted(queue_dir.glob("queue-t*.md")):
-            tasks.extend(_parse_queue_file(queue_file))
+            fm, file_tasks = _parse_queue_file(queue_file)
+            tasks.extend(file_tasks)
+            if fm and not frontmatter:
+                # 1 orch = 1 topic（D#2383）のためtopic_id指定が原則。
+                # topic_id未指定の全件走査は診断用途のみ想定し、最初のfrontmatterを代表とする。
+                frontmatter = fm
 
     # presenceとqueueの統合
     for task in tasks:
@@ -580,6 +684,7 @@ def ow_status(channel: str, topic_id: str | None = None) -> dict:
     return {
         "tasks": tasks,
         "presence": handles,
+        "frontmatter": frontmatter,
         "summary": {
             "total_tasks": len(tasks),
             "status_counts": status_counts,
