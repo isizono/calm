@@ -2,13 +2,19 @@
 
 relay HTTPサーバーとのやり取り、worker spawn/close、ステータス管理を担う。
 外部HTTPのためcc-memory DBのconn共有パターンは不要。urllib.requestベース（サードパーティ依存なし）。
+
+relayサーバーはcc-memoryリポ内のsrc/relay/にvendoringされており、ow_serviceと
+PROTOCOL_VERSIONを構造的に共有する。ensure_relay_serverは/healthのversion不一致時に
+古いrelayをkillして再起動する自己修復gate（D#2481）。
 """
+import errno
 import fcntl
 import json
 import logging
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -21,6 +27,8 @@ from pathlib import Path
 
 import yaml
 
+from src.relay import PROTOCOL_VERSION
+
 logger = logging.getLogger(__name__)
 
 # ----------------------------
@@ -28,8 +36,16 @@ logger = logging.getLogger(__name__)
 # ----------------------------
 
 RELAY_URL = os.environ.get("RELAY_URL", "http://127.0.0.1:8765")
-RELAY_DIR = os.environ.get("RELAY_DIR", str(Path.home() / "workspace" / "powwow"))
 OW_QUEUE_DIR = os.environ.get("OW_QUEUE_DIR", "")
+
+# cc-memoryリポルート（src/services/ow_service.py → src/ → repo root）
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+# vendoring済みrelayサーバー（src/relay/server.py）。env overrideでforkに切替可能だがデフォルトは固定。
+RELAY_DIR = os.environ.get("RELAY_DIR", str(_REPO_ROOT / "src" / "relay"))
+
+# 自己修復用ロック（relay起動/kill時の競合防止）とDBパス
+_RELAY_STATE_DIR = Path.home() / ".cc-memory" / "ow" / "relay"
+_RELAY_LOCK_PATH = _RELAY_STATE_DIR / "relay.lock"
 
 _MAX_RETRIES = 3
 
@@ -94,66 +110,195 @@ def _relay_request(method: str, path: str, data: dict | None = None) -> dict:
 
 
 # ----------------------------
-# relayサーバー起動確認
+# relayサーバー起動確認・自己修復
 # ----------------------------
 
 
-def _is_relay_running() -> bool:
-    """relayサーバーの生存確認。"""
+def _get_relay_health() -> dict | None:
+    """GET /healthでrelayの生死＋PROTOCOL_VERSION含むdictを取得する。
+
+    返り値:
+        - dict: relay稼働中。`protocol_version`/`pid`/`status`等を含む
+        - None: relay未起動・応答なし・/health非対応（旧版相当）
+
+    旧 `_is_relay_running` は404でもTrueを返す設計だったため、改名前の古いrelayが
+    動いていても「running」と誤判定して新規spawnを諦めていた。本関数はversion不一致時に
+    呼び出し元（ensure_relay_server）がkill+restartで自己修復できるよう
+    /healthレスポンスをそのまま返す（D#2481）。
+    """
     try:
-        req = urllib.request.Request(
-            f"{RELAY_URL}/presence?channel=__health__",
-            method="GET",
-        )
+        req = urllib.request.Request(f"{RELAY_URL}/health", method="GET")
         with urllib.request.urlopen(req, timeout=2) as resp:
-            return resp.status == 200
+            if resp.status != 200:
+                return None
+            try:
+                data = json.loads(resp.read())
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                return None
+            if not isinstance(data, dict):
+                return None
+            return data
     except urllib.error.HTTPError as e:
-        # 404でもサーバー起動済みと判定可能
-        return e.code in (404, 400)
+        if e.code == 404:
+            # /health非対応の旧relayが応答している = 互換性なし。Noneで「未起動扱い」にしてrestartへ
+            logger.warning("relay returned 404 for /health (legacy server detected)")
+            return None
+        return None
     except Exception:
-        return False
+        return None
 
 
 def _start_relay_server() -> bool:
-    """relayサーバーをバックグラウンドで起動する。"""
+    """relayサーバーをバックグラウンドで起動する（vendoring済みリポ内固定パス）。
+
+    `python -m src.relay.server` で起動する。RELAY_DBは固定パス（server.py側のデフォルト）に
+    委ねるが、env override（RELAY_URL/RELAY_DIR）が指定されていればそれを尊重する。
+    """
     relay_dir = Path(RELAY_DIR).expanduser()
     server_py = relay_dir / "server.py"
     if not server_py.exists():
         logger.warning("relay server.py not found at %s", server_py)
         return False
+    # vendoring済みのリポ内パッケージとして起動する（`python -m src.relay.server`）。
+    # `_REPO_ROOT/src/relay/server.py` が標準で、env override時はファイル直接実行にフォールバック。
+    use_module = (server_py.resolve() == (_REPO_ROOT / "src" / "relay" / "server.py").resolve())
+    if use_module:
+        cmd = [sys.executable, "-m", "src.relay.server"]
+        cwd = str(_REPO_ROOT)
+    else:
+        cmd = [sys.executable, str(server_py)]
+        cwd = str(relay_dir)
     try:
         subprocess.Popen(
-            [sys.executable, str(server_py)],
-            cwd=str(relay_dir),
+            cmd,
+            cwd=cwd,
             start_new_session=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        logger.info("relay server process started")
+        logger.info("relay server process started (cmd=%s)", cmd)
         return True
     except OSError as e:
         logger.warning("Failed to start relay server: %s", e)
         return False
 
 
-def ensure_relay_server() -> bool:
-    """relayサーバーの起動確認 → 未起動なら自動起動 → 待機。
+def _kill_relay(pid: int) -> None:
+    """relayプロセスにSIGTERM→数秒待機→SIGKILLでkillする。
 
-    Returns:
-        Trueなら接続可能、Falseなら起動失敗またはタイムアウト
+    版不一致のrelayが動いているケースで呼ばれる。SIGTERM後にpoll間隔0.1秒x20回（最大2秒）で
+    終了を待ち、それでも生存していればSIGKILL。プロセス不在/権限不足は致命的でないため
+    ログして握り潰す（ポートが空けば次の_start_relay_serverが成功する）。
     """
-    if _is_relay_running():
-        return True
-    if not _start_relay_server():
-        return False
-    # 最大10秒待機（0.5秒間隔 x 20回）
+    if not pid:
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except PermissionError:
+        logger.warning("permission denied when SIGTERMing relay pid=%s", pid)
+        return
+    except OSError as e:
+        logger.warning("SIGTERM failed for pid=%s: %s", pid, e)
+        return
+
     for _ in range(20):
-        time.sleep(0.5)
-        if _is_relay_running():
-            logger.info("relay server is ready")
-            return True
-    logger.warning("relay server failed to start within 10 seconds")
-    return False
+        time.sleep(0.1)
+        try:
+            os.kill(pid, 0)  # 生存確認
+        except ProcessLookupError:
+            return
+        except OSError:
+            return
+
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError) as e:
+        logger.warning("SIGKILL fallback failed for pid=%s: %s", pid, e)
+
+
+def _open_relay_lock():
+    """relay起動/kill区間を排他するためのflock fdを開いて返す（要close）。
+
+    複数orch/workerが同時にensure_relay_serverを呼んでもkill＋start中の競合（lost update的なrace）が
+    起きないよう、`~/.cc-memory/ow/relay/relay.lock` をflock(LOCK_EX)で排他する。
+    最悪二重起動になってもポートbindで2つ目が即死するため致命的ではないが、kill直後にもう一つの
+    プロセスがhealth=正常と判定して何もしない、というすれ違いを防ぐ。
+    """
+    _RELAY_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(_RELAY_LOCK_PATH), os.O_RDWR | os.O_CREAT, 0o644)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
+
+
+def _close_relay_lock(fd) -> None:
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def _wait_for_relay_health(timeout_sec: float = 10.0, interval_sec: float = 0.5) -> dict | None:
+    """relayの/healthが返るまでポーリング。timeout内に揃ったhealth dictを返す。"""
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        health = _get_relay_health()
+        if health is not None:
+            return health
+        time.sleep(interval_sec)
+    return None
+
+
+def ensure_relay_server() -> bool:
+    """relayの起動・互換性gateを満たすことを保証する自己修復関数。
+
+    フロー:
+      1. flock排他（kill+restart区間のみ）
+      2. /health取得
+         - 応答なし → 起動して/health安定まで待つ
+         - protocol_version != PROTOCOL_VERSION → 古いrelayをkillして起動し直す
+         - 一致 → そのまま成功
+    Returns:
+        Trueなら接続可能、Falseなら起動失敗・互換版立ち上がりに失敗
+    """
+    lock_fd = _open_relay_lock()
+    try:
+        health = _get_relay_health()
+        if health is None:
+            # 未起動 or 旧版404扱い: そのまま起動して/healthが揃うのを待つ
+            if not _start_relay_server():
+                return False
+            health = _wait_for_relay_health()
+            if health is None:
+                logger.warning("relay server failed to start within timeout")
+                return False
+        elif health.get("protocol_version") != PROTOCOL_VERSION:
+            # 版不一致: 古いrelayをkill→新版を起動
+            stale_pid = health.get("pid")
+            logger.warning(
+                "relay protocol_version mismatch (running=%s, expected=%s, pid=%s) — restarting",
+                health.get("protocol_version"), PROTOCOL_VERSION, stale_pid,
+            )
+            if isinstance(stale_pid, int):
+                _kill_relay(stale_pid)
+            if not _start_relay_server():
+                return False
+            health = _wait_for_relay_health()
+            if health is None or health.get("protocol_version") != PROTOCOL_VERSION:
+                logger.warning(
+                    "relay restart did not converge to PROTOCOL_VERSION=%s (got=%s)",
+                    PROTOCOL_VERSION, health,
+                )
+                return False
+        return True
+    finally:
+        _close_relay_lock(lock_fd)
+
+
+def _is_relay_running() -> bool:
+    """後方互換ラッパー（テスト用）。`_get_relay_health()` is not None と等価。"""
+    return _get_relay_health() is not None
 
 
 def ensure_channel(channel_code: str) -> bool:
