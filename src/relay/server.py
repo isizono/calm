@@ -91,6 +91,10 @@ def init_db(db_path: str = DB_PATH) -> None:
                 in_reply_to  INTEGER,
                 created_at   TEXT NOT NULL
             );
+            CREATE INDEX IF NOT EXISTS idx_messages_channel_msg_id
+                ON messages(channel_code, msg_id);
+            CREATE INDEX IF NOT EXISTS idx_messages_channel_handle_msg
+                ON messages(channel_code, handle, msg_id DESC);
         """)
         conn.commit()
     finally:
@@ -328,8 +332,20 @@ def get_presence(channel_code: str) -> list[str]:
 
 
 def _broadcast(channel_code: str, sender_handle: str, msg: dict) -> None:
-    """同一 channel の購読者（送信者と同一 handle を除く）にメッセージを配信する（D#2286）。"""
-    payload = json.dumps(msg, ensure_ascii=False)
+    """同一 channel の購読者（送信者と同一 handle を除く）にメッセージを配信する（D#2286）。
+
+    SSE ペイロードは msg_id / body / handle / created_at の4フィールドに絞る。
+    受信側が body フィールド有無を許容する後方互換設計を前提とする。
+    """
+    payload = json.dumps(
+        {
+            "msg_id": msg["msg_id"],
+            "body": msg["body"],
+            "handle": msg["handle"],
+            "created_at": msg["created_at"],
+        },
+        ensure_ascii=False,
+    )
     with _sub_lock:
         entries = list(_subscribers.get(channel_code, []))
     for handle, q in entries:
