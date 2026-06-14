@@ -60,7 +60,7 @@ orchから `cmd:assign` が届いたら:
   {"v":1, "kind":"state", "from":"<alias>", "to":"orch", "task":"T<task_n>", "state":"working", "data":{"phase":"<phase>", "note":"<進捗メモ>"}}
   ```
 - cc-memoryへの記録方針はworker専用の規律に従う（§記録規律）
-- SAを使う場合のモデル選択: 機械的作業→haiku/sonnet、通常実装→sonnet/opus、設計・複雑推論→opus以上
+- SAを使う場合のモデル選択: 機械的作業→haiku/sonnet、通常実装→sonnet/claude-opus-4-7、設計・複雑推論→claude-opus-4-7以上。**opus 4.8は使用禁止**（D#2476）。`opus` 等の省略形は4.8に解決されるか無効。必ずフルID `claude-opus-4-7` を使う
 
 ## 判断に迷ったら → blocked
 
