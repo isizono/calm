@@ -1247,10 +1247,12 @@ def reconstruct_state_from_relay(channel: str, limit: int = 10000) -> dict:
     if "error" in history:
         return {"by_worker_task": {}, "max_msg_id": 0, "error": history["error"]}
 
+    messages = history.get("messages", [])
+    truncated = len(messages) >= limit
     by_worker_task: dict[str, dict] = {}
     max_msg_id = 0
 
-    for msg in history.get("messages", []):
+    for msg in messages:
         msg_id = msg.get("msg_id", 0)
         if isinstance(msg_id, int) and msg_id > max_msg_id:
             max_msg_id = msg_id
@@ -1283,7 +1285,7 @@ def reconstruct_state_from_relay(channel: str, limit: int = 10000) -> dict:
             entry["latest_msg_id"] = msg_id
             entry["latest_at"] = msg.get("created_at", "")
 
-    return {"by_worker_task": by_worker_task, "max_msg_id": max_msg_id}
+    return {"by_worker_task": by_worker_task, "max_msg_id": max_msg_id, "truncated": truncated}
 
 
 def detect_crash_inconsistencies(
@@ -1522,9 +1524,9 @@ def ow_recover(channel: str, topic_id: str, dry_run: bool = False) -> dict:
         1. ensure_relay_server / ensure_channel で前提整える
         2. reconstruct_state_from_relay で全relay履歴から状態再構築
         3. _get_presence で現在onlineのworker一覧取得
-        4. detect_crash_inconsistencies で3カテゴリ（ghost_active/stalled_done/orphans）に分類
+        4. detect_crash_inconsistencies で4カテゴリ（ghost_active/pending_spawn/stalled_done/orphans）に分類
         5. dry_run=Falseなら:
-           - ghost_active: queueをrelay最新stateで自動更新
+           - ghost_active + pending_spawn(relay履歴あり): queueをrelay最新stateで自動更新
            - stalled_done / orphans: cmd:ping送信（応答待ちはしない）
 
     orchはこの戻り値を見て、queueの状態が更新されたことを確認し、ping送信先からの応答を
@@ -1537,7 +1539,12 @@ def ow_recover(channel: str, topic_id: str, dry_run: bool = False) -> dict:
 
     Returns:
         {
-            "detected": {ghost_active: [...], stalled_done: [...], orphans: [...]},
+            "detected": {
+                ghost_active: [...],
+                pending_spawn: [...],
+                stalled_done: [...],
+                orphans: [...],
+            },
             "applied": {queue_updates: [...], pings_sent: [...]},
             "warnings": [str],
             "presence": [str],
@@ -1545,6 +1552,7 @@ def ow_recover(channel: str, topic_id: str, dry_run: bool = False) -> dict:
             "dry_run": bool,
         }
         relay/channel不可時: {"error": {"code": ..., "message": ...}}
+        relay history取得失敗時: detected全カテゴリ空 + warnings に fetch error メッセージ
     """
     warnings: list[str] = []
 
@@ -1567,7 +1575,23 @@ def ow_recover(channel: str, topic_id: str, dry_run: bool = False) -> dict:
 
     reconstructed = reconstruct_state_from_relay(channel)
     if "error" in reconstructed:
-        warnings.append(f"relay history fetch error: {reconstructed['error']}")
+        return {
+            "detected": {
+                "ghost_active": [],
+                "pending_spawn": [],
+                "stalled_done": [],
+                "orphans": [],
+            },
+            "applied": {"queue_updates": [], "pings_sent": []},
+            "warnings": [f"relay history fetch error: {reconstructed['error']}"],
+            "presence": [],
+            "reconstructed_max_msg_id": 0,
+            "dry_run": dry_run,
+        }
+    if reconstructed.get("truncated"):
+        warnings.append(
+            "relay history truncated at limit=10000: oldest state declarations may be missing"
+        )
 
     presence = _get_presence(channel)
     detected = detect_crash_inconsistencies(queue_tasks, reconstructed, presence)

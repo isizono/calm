@@ -1142,10 +1142,12 @@ def ow_recover(channel: str, topic_id: str, dry_run: bool = False) -> dict:
     """orch crash後のqueue × relay履歴 × presence整合チェック・自動修正。
 
     relay履歴を since=0 で全件再走査して各worker毎の最新state宣言を集計し、queueと
-    presenceに突合した上で次の3カテゴリに分類する。
+    presenceに突合した上で次の4カテゴリに分類する。
 
-    - ghost_active: queue=spawning/assigned/working なのに presence offline
+    - ghost_active: queue=assigned/working なのに presence offline
       → relay 最新state宣言から queue ステータスを自動再構築（dry_run=Falseのみ）
+    - pending_spawn: queue=spawning なのに presence offline
+      → relay履歴に当該workerのstate宣言があれば自動更新、なければ起動進行中として放置
     - stalled_done: queue=done/closed/cancelled/failed なのに worker が presence onlineで残存
       → cmd:ping を送信して素性照会
     - orphans: presence online だが queue に登場しない w-* handle
@@ -1163,7 +1165,7 @@ def ow_recover(channel: str, topic_id: str, dry_run: bool = False) -> dict:
     Returns:
         成功時:
             {
-                "detected": {"ghost_active": [...], "stalled_done": [...], "orphans": [...]},
+                "detected": {"ghost_active": [...], "pending_spawn": [...], "stalled_done": [...], "orphans": [...]},
                 "applied": {"queue_updates": [...], "pings_sent": [...]},
                 "warnings": [str],
                 "presence": [str],

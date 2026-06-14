@@ -159,7 +159,7 @@ class TestReconstructStateFromRelay:
             lambda channel, since=0, limit=10000: self._build_history([]),
         )
         result = ow_service.reconstruct_state_from_relay("ChAbCdEf")
-        assert result == {"by_worker_task": {}, "max_msg_id": 0}
+        assert result == {"by_worker_task": {}, "max_msg_id": 0, "truncated": False}
 
     def test_single_worker_multiple_states(self, monkeypatch):
         """同一workerが ready→working→done と進む → latest_state=done"""
@@ -725,6 +725,27 @@ class TestOwRecover:
         }
         new_content = (queue_dir / "queue-t454.md").read_text()
         assert "## T1 | mytask | done\n" in new_content
+
+    def test_relay_history_fetch_failure_returns_empty_detected(self, monkeypatch, tmp_path):
+        """ensure_relay_serverは成功するがow_historyが失敗 → detected全空 + warningsに記録、queue未変更"""
+        queue_dir = tmp_path / "queue"
+        queue_dir.mkdir()
+        original = "## T1 | mytask | working\n- worker: w-a / term_ref: x / session: y\n"
+        (queue_dir / "queue-t454.md").write_text(original)
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(queue_dir))
+        monkeypatch.setattr(
+            ow_service, "ow_history",
+            lambda channel, since=0, limit=10000: {"error": {"code": 500, "message": "timeout"}},
+        )
+
+        result = ow_service.ow_recover(channel="ChAbCdEf", topic_id="454")
+        assert result["detected"]["ghost_active"] == []
+        assert result["detected"]["pending_spawn"] == []
+        assert result["detected"]["stalled_done"] == []
+        assert result["detected"]["orphans"] == []
+        assert any("relay history fetch error" in w for w in result["warnings"])
+        # queueファイルは無変更
+        assert (queue_dir / "queue-t454.md").read_text() == original
 
     def test_queue_update_failure_recorded_as_warning(self, monkeypatch, tmp_path):
         """queue更新中の例外はwarningsに記録され処理は継続する"""
