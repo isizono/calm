@@ -168,6 +168,10 @@ def _start_relay_server() -> bool:
     else:
         cmd = [sys.executable, str(server_py)]
         cwd = str(relay_dir)
+    env = os.environ.copy()
+    port = _get_relay_port()
+    if port:
+        env["RELAY_PORT"] = str(port)
     try:
         subprocess.Popen(
             cmd,
@@ -175,12 +179,111 @@ def _start_relay_server() -> bool:
             start_new_session=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=env,
         )
         logger.info("relay server process started (cmd=%s)", cmd)
         return True
     except OSError as e:
         logger.warning("Failed to start relay server: %s", e)
         return False
+
+
+def _get_relay_port() -> int | None:
+    """RELAY_URL から待受ポート番号を抽出する。
+
+    `http://127.0.0.1:8765` のような形式から 8765 を取り出す。
+    解析失敗時は None（_find_port_owners 側でスキップ）。
+    """
+    try:
+        parsed = urllib.parse.urlparse(RELAY_URL)
+        return parsed.port
+    except (ValueError, TypeError):
+        return None
+
+
+# `lsof unavailable` warningは ensure_relay_server 呼び出しの度に出ると煩いため、
+# プロセスライフタイムで1回だけ警告する（以降は debug ログに格下げ）。
+_lsof_unavailable_logged = False
+
+
+def _find_port_owners(port: int) -> list[int]:
+    """指定ポートを LISTEN 中のプロセスPIDを返す（lsof経由）。
+
+    `/health` 404 を返す旧版relayや、何らかの別プロセスがポートを占有しているケースで、
+    `_start_relay_server` 前にそのPIDを特定してkillするために使う。
+    lsofが存在しない・実行失敗・占有プロセス無しはいずれも空リストを返し、呼び出し元は
+    そのまま起動を試みて従来挙動（bind失敗で起動失敗扱い）にフォールバックする。
+
+    macOS/Linuxを想定し、`lsof -ti:<port> -sTCP:LISTEN` で LISTEN 限定のPIDのみ取得する
+    （curl等のクライアント接続側PIDを含めないため）。
+
+    Note:
+        lsof必須。Alpine等のlsof不在環境ではこの自己修復経路は無効化され、
+        `ensure_relay_server` は `_start_relay_server` のbind失敗 → wait timeout → False
+        の従来挙動に落ちる（その場合 `RELAY_UNAVAILABLE` が呼び出し元に伝搬する）。
+        コンテナ運用する場合は `lsof` を含むベースイメージ（Debian slim等）の利用を推奨する。
+    """
+    global _lsof_unavailable_logged
+    timeout_sec = 2  # lsofは通常ms単位、_wait_for_relay_healthのtimeout(10s)と接近させない
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti", f":{port}", "-sTCP:LISTEN"],
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
+        if not _lsof_unavailable_logged:
+            logger.warning(
+                "lsof unavailable for port %s: %s (relay self-heal port-clear disabled; further occurrences logged at debug)",
+                port, e,
+            )
+            _lsof_unavailable_logged = True
+        else:
+            logger.debug("lsof unavailable for port %s: %s", port, e)
+        return []
+
+    # lsof は該当プロセスがない場合 exit code 1 + 空 stdout
+    pids: list[int] = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            pids.append(int(line))
+        except ValueError:
+            continue
+    return pids
+
+
+def _clear_relay_port() -> int:
+    """RELAY_URL のポート占有プロセスを全てkillする。killしたPID数を返す。
+
+    `ensure_relay_server` の `health is None` 枝で `_start_relay_server` 前に呼ばれる。
+    /health 非対応の旧版relayや無関係プロセスが居座っているケースを self-heal するための経路。
+    `_kill_relay` がSIGTERM→SIGKILL fallbackと例外握り潰しを担うため、ここでは単純に列挙して
+    順次killし、bind可能な状態を作るだけに専念する。
+
+    WARNING:
+        本関数は `RELAY_URL` のportを LISTEN 中の**任意の**プロセスを kill する。
+        プロセス種別の検証は行わない（lsofで返ってきたPIDをそのまま `_kill_relay` に渡す）。
+        したがって `RELAY_URL` の port は relay 専用の値（デフォルト 8765）を使うこと。
+        誤って他サービスと共有しているportを指定すると、そのサービスを巻き込んで kill する。
+        実害は kill 権限の範囲（同一ユーザー）に閉じるが、設計上の前提として明示しておく。
+    """
+    port = _get_relay_port()
+    if port is None:
+        return 0
+    pids = _find_port_owners(port)
+    if not pids:
+        return 0
+    logger.warning(
+        "clearing %d stale process(es) holding relay port %d (pids=%s) before restart",
+        len(pids), port, pids,
+    )
+    for pid in pids:
+        _kill_relay(pid)
+    return len(pids)
 
 
 def _kill_relay(pid: int) -> None:
@@ -266,13 +369,28 @@ def ensure_relay_server() -> bool:
     try:
         health = _get_relay_health()
         if health is None:
-            # 未起動 or 旧版404扱い: そのまま起動して/healthが揃うのを待つ
+            # 未起動 or 旧版404扱い。「/health 404 を返す旧版relayがport占有中」のケースでは
+            # 起動前にport占有プロセスをkillしないとEADDRINUSEで新版が起動できない。
+            # 占有が無い未起動ケースでは _clear_relay_port が0件で何もせず通過する。
+            _clear_relay_port()
             if not _start_relay_server():
                 return False
             health = _wait_for_relay_health()
             if health is None:
-                logger.warning("relay server failed to start within timeout")
-                return False
+                # 起動直後に/healthが揃わない原因の最頻ケースはbind失敗（並行起動・占有再発）。
+                # 一度だけport占有を再掃除→再起動する（self-heal 1回限り）。リトライしても揃わなければFalse。
+                # flock保持中なので別orch/workerからの並行起動は発生せず、無限ループにはならない。
+                # clear件数が0でもリトライする（_start_relay_serverが起動途中で死んだ等のレアケースを救うため）。
+                logger.warning(
+                    "relay /health did not converge — clearing port and retrying once (cleared=%d)",
+                    _clear_relay_port(),
+                )
+                if not _start_relay_server():
+                    return False
+                health = _wait_for_relay_health()
+                if health is None:
+                    logger.warning("relay server failed to start within timeout (after retry)")
+                    return False
         elif health.get("protocol_version") != PROTOCOL_VERSION:
             # 版不一致: 古いrelayをkill→新版を起動
             stale_pid = health.get("pid")
