@@ -49,6 +49,16 @@ _RELAY_LOCK_PATH = _RELAY_STATE_DIR / "relay.lock"
 
 _MAX_RETRIES = 3
 
+# reducer: v3 workload state 分類
+_NON_TERMINAL_WORKLOAD_STATES: frozenset[str] = frozenset(
+    {"loading", "ready", "working", "blocked", "escalated", "draining"}
+)
+# heartbeat タイムアウト閾値（M#258 §5.4.2: 周期×3）
+_HEARTBEAT_TIMEOUT_SECS: dict[str, float] = {
+    "loading": 30.0,  # 10s × 3
+}
+_HEARTBEAT_TIMEOUT_DEFAULT: float = 90.0  # 30s × 3（ready/working/draining共通）
+
 
 # ----------------------------
 # relay HTTPヘルパー
@@ -1775,4 +1785,260 @@ def ow_recover(channel: str, topic_id: str, dry_run: bool = False) -> dict:
         "presence": presence,
         "reconstructed_max_msg_id": reconstructed.get("max_msg_id", 0),
         "dry_run": dry_run,
+    }
+
+
+# ----------------------------
+# reducer: v3 event sourcing
+# ----------------------------
+
+
+def _parse_ow_event(msg: dict) -> dict | None:
+    """relayメッセージからow envelopeを解釈する。
+
+    Args:
+        msg: ow_historyから返されるメッセージdict
+
+    Returns:
+        {"msg_id": int, "handle": str, "body": dict, "created_at": str} または None
+    """
+    body = msg.get("body")
+    if not isinstance(body, dict):
+        return None
+    msg_id = msg.get("msg_id")
+    v = body.get("v")
+    if v != 1:
+        logger.warning(
+            "ow_service: skip msg_id=%s (envelope v=%r, expected 1)", msg_id, v
+        )
+        return None
+    kind = body.get("kind")
+    if kind not in ("command", "event"):
+        logger.warning(
+            "ow_service: skip msg_id=%s (kind=%r, expected command/event)", msg_id, kind
+        )
+        return None
+    return {
+        "msg_id": msg_id,
+        "handle": msg.get("handle"),
+        "body": body,
+        "created_at": msg.get("created_at"),
+    }
+
+
+def _query_latest_event(
+    channel: str, handle: str | None, data_type: str, since: int = 0
+) -> dict | None:
+    """指定 channel/handle/data_type の最新 event を返す（kind=event のみ対象）。
+
+    Args:
+        channel: channelコード
+        handle: workerハンドル（Noneなら全handle対象）
+        data_type: eventのdata.type（例: "identity", "state", "heartbeat"）
+        since: このmsg_idより大きいものを返す（0=全件）
+
+    Returns:
+        最新のparsed event dict または None
+    """
+    history = ow_history(channel, since=since, limit=10000)
+    if "error" in history:
+        return None
+    result = None
+    for msg in history.get("messages", []):
+        if handle is not None and msg.get("handle") != handle:
+            continue
+        parsed = _parse_ow_event(msg)
+        if parsed is None:
+            continue
+        if parsed["body"].get("kind") != "event":
+            continue
+        if parsed["body"].get("data", {}).get("type") != data_type:
+            continue
+        if result is None or parsed["msg_id"] > result["msg_id"]:
+            result = parsed
+    return result
+
+
+def _query_events_since(
+    channel: str,
+    handle: str | None,
+    data_type: str | None,
+    since: int = 0,
+) -> list[dict]:
+    """指定条件のeventを時系列順で全件取得（kind=event のみ）。
+
+    Args:
+        channel: channelコード
+        handle: workerハンドル（Noneなら全handle対象）
+        data_type: eventのdata.type（Noneなら全type）
+        since: このmsg_idより大きいものを返す（0=全件）
+
+    Returns:
+        条件に合うparsed event dictのリスト（msg_id昇順）
+    """
+    history = ow_history(channel, since=since, limit=10000)
+    if "error" in history:
+        return []
+    results = []
+    for msg in history.get("messages", []):
+        if handle is not None and msg.get("handle") != handle:
+            continue
+        parsed = _parse_ow_event(msg)
+        if parsed is None:
+            continue
+        if parsed["body"].get("kind") != "event":
+            continue
+        if data_type is not None and parsed["body"].get("data", {}).get("type") != data_type:
+            continue
+        results.append(parsed)
+    return results
+
+
+def _infer_crash_cause(
+    workload_state: str | None, last_heartbeat_at: str | None
+) -> str | None:
+    """crash推論ロジック（DB不変、戻り値のみに付与）。
+
+    Args:
+        workload_state: 最新のworkload state文字列
+        last_heartbeat_at: 最後のheartbeat受信時刻（ISO形式文字列）
+
+    Returns:
+        crash推論結果文字列 または None（crashでない場合）
+    """
+    if workload_state not in _NON_TERMINAL_WORKLOAD_STATES:
+        return None
+    if last_heartbeat_at is None:
+        return None
+    try:
+        hb_time = datetime.fromisoformat(last_heartbeat_at)
+        if hb_time.tzinfo is None:
+            hb_time = hb_time.replace(tzinfo=timezone.utc)
+        elapsed = (datetime.now(timezone.utc) - hb_time).total_seconds()
+        timeout = _HEARTBEAT_TIMEOUT_SECS.get(workload_state, _HEARTBEAT_TIMEOUT_DEFAULT)
+        if elapsed < timeout:
+            return None
+        if workload_state == "draining":
+            return "crashed-during-drain (inferred)"
+        return "crashed (inferred)"
+    except (ValueError, TypeError):
+        return None
+
+
+def ow_get_identity(channel: str, handle: str) -> dict | None:
+    """指定 handle の最新 identity bundle を返す。crash 推論を含む。
+
+    crash 推論: 最新の event:state が terminal でない（loading/ready/working/blocked/
+               escalated/draining）かつ最後の event:heartbeat 受信時刻から閾値超過 →
+               メモリ上で inferred_cause を付与（DB 不変）。
+
+    Returns:
+        dict | None: identity bundle ＋ {msg_id, identity_at, inferred_cause?}
+    """
+    identity_msg = _query_latest_event(channel, handle, "identity")
+    if identity_msg is None:
+        return None
+    data = identity_msg["body"].get("data", {})
+    result = dict(data)
+    result["msg_id"] = identity_msg["msg_id"]
+    result["identity_at"] = identity_msg["created_at"]
+
+    state_msg = _query_latest_event(channel, handle, "state")
+    workload_state = None
+    if state_msg is not None:
+        workload_state = state_msg["body"].get("data", {}).get("state")
+
+    heartbeat_msg = _query_latest_event(channel, handle, "heartbeat")
+    last_heartbeat_at = heartbeat_msg["created_at"] if heartbeat_msg is not None else None
+
+    inferred_cause = _infer_crash_cause(workload_state, last_heartbeat_at)
+    if inferred_cause is not None:
+        result["inferred_cause"] = inferred_cause
+
+    return result
+
+
+def ow_list_identities(channel: str, alive_only: bool = False) -> list[dict]:
+    """channel 上の全 handle の identity リスト。alive_only=True で terminated を除外。"""
+    history = ow_history(channel, since=0, limit=10000)
+    if "error" in history:
+        return []
+
+    # handle別に最新identity msgを収集
+    latest_by_handle: dict[str, dict] = {}
+    for msg in history.get("messages", []):
+        parsed = _parse_ow_event(msg)
+        if parsed is None:
+            continue
+        if parsed["body"].get("kind") != "event":
+            continue
+        if parsed["body"].get("data", {}).get("type") != "identity":
+            continue
+        h = parsed["handle"]
+        if h not in latest_by_handle or parsed["msg_id"] > latest_by_handle[h]["msg_id"]:
+            latest_by_handle[h] = parsed
+
+    entries = []
+    for parsed in latest_by_handle.values():
+        data = parsed["body"].get("data", {})
+        entry = dict(data)
+        entry["msg_id"] = parsed["msg_id"]
+        entry["identity_at"] = parsed["created_at"]
+
+        if alive_only:
+            cause = entry.get("cause")
+            if cause in ("closed", "cancelled", "dead") or entry.get("terminated_at"):
+                continue
+
+        entries.append(entry)
+
+    return entries
+
+
+def ow_get_presence(channel: str, handle: str) -> dict | None:
+    """最新 heartbeat 受信時刻から online/offline を推論する。
+
+    T17 ow_recover の _get_presence() と推論ロジックを統一した実装。
+    SSE 接続状態ではなく heartbeat 時刻ベースの推論を行う。
+
+    Returns:
+        dict: {handle, status("online"|"offline"|"unknown"), last_heartbeat_at, phase}
+    """
+    heartbeat_msg = _query_latest_event(channel, handle, "heartbeat")
+    if heartbeat_msg is None:
+        return {"handle": handle, "status": "unknown", "last_heartbeat_at": None, "phase": None}
+
+    last_heartbeat_at = heartbeat_msg["created_at"]
+    phase = heartbeat_msg["body"].get("data", {}).get("phase")
+    timeout = _HEARTBEAT_TIMEOUT_SECS.get(phase or "", _HEARTBEAT_TIMEOUT_DEFAULT)
+
+    try:
+        hb_time = datetime.fromisoformat(last_heartbeat_at)
+        if hb_time.tzinfo is None:
+            hb_time = hb_time.replace(tzinfo=timezone.utc)
+        elapsed = (datetime.now(timezone.utc) - hb_time).total_seconds()
+        status = "online" if elapsed < timeout else "offline"
+    except (ValueError, TypeError):
+        status = "unknown"
+
+    return {
+        "handle": handle,
+        "status": status,
+        "last_heartbeat_at": last_heartbeat_at,
+        "phase": phase,
+    }
+
+
+def ow_get_workload_state(channel: str, handle: str) -> dict | None:
+    """指定 handle の最新 workload state を返す。"""
+    state_msg = _query_latest_event(channel, handle, "state")
+    if state_msg is None:
+        return None
+    data = state_msg["body"].get("data", {})
+    return {
+        "handle": handle,
+        "state": data.get("state"),
+        "cause": data.get("cause"),
+        "msg_id": state_msg["msg_id"],
+        "state_at": state_msg["created_at"],
     }
