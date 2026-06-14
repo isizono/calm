@@ -281,6 +281,34 @@ class TestEnsureRelayServer:
         assert started == [True, True]
         assert cleared_count == [0, 1]
 
+    def test_retries_even_when_clear_finds_nothing(self, monkeypatch):
+        """1回目wait失敗 + 2回目のclearでも0件 → それでもretryは1回必ず実行される
+
+        clear=0でretryをスキップすると、_start_relay_server が起動途中で死んだだけのレース
+        ケースが救えなくなる。flock保持中なので無条件retryでも無限ループにはならない。
+        """
+        monkeypatch.setattr(ow_service, "_get_relay_health", lambda: None)
+        # 1回目wait→None、2回目wait→揃う（retryが走らないとTrueにならない）
+        wait_calls = iter([None, {"protocol_version": PROTOCOL_VERSION, "pid": 2222}])
+        monkeypatch.setattr(
+            ow_service, "_wait_for_relay_health",
+            lambda timeout_sec=10.0, interval_sec=0.5: next(wait_calls),
+        )
+        # 全 clear で 0件 = 占有なし
+        cleared_count: list[int] = []
+        def fake_clear():
+            cleared_count.append(0)
+            return 0
+        monkeypatch.setattr(ow_service, "_clear_relay_port", fake_clear)
+        started: list[bool] = []
+        monkeypatch.setattr(ow_service, "_start_relay_server", lambda: started.append(True) or True)
+        monkeypatch.setattr(ow_service, "_kill_relay", lambda pid: None)
+
+        assert ow_service.ensure_relay_server() is True
+        # 2回起動・2回clear（retryがclear件数に依らず必ず実行される）
+        assert started == [True, True]
+        assert cleared_count == [0, 0]
+
     def test_returns_false_when_retry_also_fails(self, monkeypatch):
         """1回目wait失敗 → port掃除しても2回目wait失敗 → False（無限リトライ防止）"""
         monkeypatch.setattr(ow_service, "_get_relay_health", lambda: None)

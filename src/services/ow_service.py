@@ -196,6 +196,11 @@ def _get_relay_port() -> int | None:
         return None
 
 
+# `lsof unavailable` warningは ensure_relay_server 呼び出しの度に出ると煩いため、
+# プロセスライフタイムで1回だけ警告する（以降は debug ログに格下げ）。
+_lsof_unavailable_logged = False
+
+
 def _find_port_owners(port: int) -> list[int]:
     """指定ポートを LISTEN 中のプロセスPIDを返す（lsof経由）。
 
@@ -206,16 +211,31 @@ def _find_port_owners(port: int) -> list[int]:
 
     macOS/Linuxを想定し、`lsof -ti:<port> -sTCP:LISTEN` で LISTEN 限定のPIDのみ取得する
     （curl等のクライアント接続側PIDを含めないため）。
+
+    Note:
+        lsof必須。Alpine等のlsof不在環境ではこの自己修復経路は無効化され、
+        `ensure_relay_server` は `_start_relay_server` のbind失敗 → wait timeout → False
+        の従来挙動に落ちる（その場合 `RELAY_UNAVAILABLE` が呼び出し元に伝搬する）。
+        コンテナ運用する場合は `lsof` を含むベースイメージ（Debian slim等）の利用を推奨する。
     """
+    global _lsof_unavailable_logged
+    timeout_sec = 2  # lsofは通常ms単位、_wait_for_relay_healthのtimeout(10s)と接近させない
     try:
         result = subprocess.run(
             ["lsof", "-ti", f":{port}", "-sTCP:LISTEN"],
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=timeout_sec,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
-        logger.warning("lsof unavailable for port %s: %s", port, e)
+        if not _lsof_unavailable_logged:
+            logger.warning(
+                "lsof unavailable for port %s: %s (relay self-heal port-clear disabled; further occurrences logged at debug)",
+                port, e,
+            )
+            _lsof_unavailable_logged = True
+        else:
+            logger.debug("lsof unavailable for port %s: %s", port, e)
         return []
 
     # lsof は該当プロセスがない場合 exit code 1 + 空 stdout
@@ -238,6 +258,13 @@ def _clear_relay_port() -> int:
     /health 非対応の旧版relayや無関係プロセスが居座っているケースを self-heal するための経路。
     `_kill_relay` がSIGTERM→SIGKILL fallbackと例外握り潰しを担うため、ここでは単純に列挙して
     順次killし、bind可能な状態を作るだけに専念する。
+
+    WARNING:
+        本関数は `RELAY_URL` のportを LISTEN 中の**任意の**プロセスを kill する。
+        プロセス種別の検証は行わない（lsofで返ってきたPIDをそのまま `_kill_relay` に渡す）。
+        したがって `RELAY_URL` の port は relay 専用の値（デフォルト 8765）を使うこと。
+        誤って他サービスと共有しているportを指定すると、そのサービスを巻き込んで kill する。
+        実害は kill 権限の範囲（同一ユーザー）に閉じるが、設計上の前提として明示しておく。
     """
     port = _get_relay_port()
     if port is None:
@@ -346,14 +373,18 @@ def ensure_relay_server() -> bool:
             health = _wait_for_relay_health()
             if health is None:
                 # 起動直後に/healthが揃わない原因の最頻ケースはbind失敗（並行起動・占有再発）。
-                # もう一度port占有を掃除して起動を試みる(self-heal 1回限り)。リトライしても揃わなければFalse。
-                if _clear_relay_port() > 0:
-                    logger.warning("relay /health did not converge — retrying after clearing port")
-                    if not _start_relay_server():
-                        return False
-                    health = _wait_for_relay_health()
+                # 一度だけport占有を再掃除→再起動する（self-heal 1回限り）。リトライしても揃わなければFalse。
+                # flock保持中なので別orch/workerからの並行起動は発生せず、無限ループにはならない。
+                # clear件数が0でもリトライする（_start_relay_serverが起動途中で死んだ等のレアケースを救うため）。
+                logger.warning(
+                    "relay /health did not converge — clearing port and retrying once (cleared=%d)",
+                    _clear_relay_port(),
+                )
+                if not _start_relay_server():
+                    return False
+                health = _wait_for_relay_health()
                 if health is None:
-                    logger.warning("relay server failed to start within timeout")
+                    logger.warning("relay server failed to start within timeout (after retry)")
                     return False
         elif health.get("protocol_version") != PROTOCOL_VERSION:
             # 版不一致: 古いrelayをkill→新版を起動

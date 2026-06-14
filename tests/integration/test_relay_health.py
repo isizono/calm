@@ -16,15 +16,12 @@
 既存の8765上の本番relayと衝突しないようにするための処置。
 """
 import json
-import os
 import socket
 import subprocess
 import sys
-import threading
 import time
 import urllib.error
 import urllib.request
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -41,22 +38,6 @@ def _pick_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
-
-
-class _LegacyStubHandler(BaseHTTPRequestHandler):
-    """旧版relay相当のスタブ。あらゆるルートに404 + {"error":"not found"} を返す。"""
-
-    def do_GET(self):  # noqa: N802 (BaseHTTPRequestHandlerの命名規約)
-        self.send_response(404)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps({"error": "not found"}).encode("utf-8"))
-
-    def do_POST(self):  # noqa: N802
-        self.do_GET()
-
-    def log_message(self, format, *args):  # テスト出力を汚さない
-        return
 
 
 def _start_legacy_stub_subprocess(port: int) -> subprocess.Popen:
@@ -144,7 +125,10 @@ def isolated_relay(tmp_path, monkeypatch):
     monkeypatch.setattr(ow_service, "RELAY_URL", relay_url)
     monkeypatch.setattr(ow_service, "_RELAY_STATE_DIR", tmp_path)
     monkeypatch.setattr(ow_service, "_RELAY_LOCK_PATH", tmp_path / "relay.lock")
-    # _start_relay_server が起動する src.relay.server に env として伝播
+    # `_start_relay_server` は `subprocess.Popen` で env を明示せず親の os.environ を継承する
+    # 設計に依存して、ここで monkeypatch.setenv した RELAY_PORT/RELAY_DB が子プロセスに届く。
+    # 将来 _start_relay_server に `env={...}` 引数渡しのリファクタが入った場合は、ここで
+    # explicit env を渡す形式に追従する必要がある。
     monkeypatch.setenv("RELAY_PORT", str(port))
     monkeypatch.setenv("RELAY_DB", relay_db)
 
