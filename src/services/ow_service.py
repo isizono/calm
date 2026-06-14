@@ -3,9 +3,11 @@
 relay HTTPサーバーとのやり取り、worker spawn/close、ステータス管理を担う。
 外部HTTPのためcc-memory DBのconn共有パターンは不要。urllib.requestベース（サードパーティ依存なし）。
 """
+import fcntl
 import json
 import logging
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -302,50 +304,200 @@ def _build_queue_frontmatter(
     return f"---\n{fm_yaml}---\n"
 
 
+def _sanitize_queue_field(value: str) -> str:
+    """queueエントリの1行フィールドに埋め込む値から改行を除去する。
+
+    queueフォーマットは「1フィールド=1行」が不変条件。値に生の改行が含まれると
+    行が分割され、`## `で始まる行がファントムタスクとして誤パースされたり、
+    _upsert_queue_taskのブロック境界検出（次の`## `行まで）が内部行で誤停止して
+    ファイルが破損する。改行（CR/LF）を空白1つに畳んでこれを防ぐ。
+
+    acceptanceやnoteのようなorch自由記述フィールド（複数行が常態）が主な対象。
+    """
+    return " ".join(str(value).splitlines()).strip()
+
+
+def _format_queue_task_entry(
+    task_n: int,
+    title: str,
+    status: str,
+    fields: list[tuple[str, str]],
+) -> str:
+    """正式queueフォーマットのタスクエントリブロックを文字列で返す。
+
+    出力例:
+        ## T1 | タスク名 | working
+        - worker: w-a / term_ref: iterm2:xxx / session: uuid
+        - activity: 801
+        - cwd: ~/workspace/cc-memory/.trees/feature-xxx
+        - note: 実装中
+
+    末尾に改行を1つ含み、先頭に余分な空行は付けない（空白制御は_upsert_queue_task側の責務）。
+    fieldsは (キー, 値) のタプル列。順序はそのまま保持される。
+    title・status・各値は_sanitize_queue_fieldで改行を畳んでからフォーマットに埋め込む
+    （1フィールド=1行の不変条件を守り、フォーマット破壊・ファントムタスク注入を防ぐ）。
+    """
+    title = _sanitize_queue_field(title)
+    status = _sanitize_queue_field(status)
+    lines = [f"## T{task_n} | {title} | {status}"]
+    lines.extend(f"- {key}: {_sanitize_queue_field(value)}" for key, value in fields)
+    return "\n".join(lines) + "\n"
+
+
+def _upsert_queue_task(
+    queue_dir: Path,
+    topic_id: str,
+    task_n: int,
+    entry_text: str,
+    frontmatter: str | None = None,
+) -> None:
+    """queueファイルのT<n>タスクエントリを追加または置換する（queue状態更新の内部関数）。
+
+    挙動:
+    - ファイルが存在しない/空の場合: frontmatter（指定時）＋entry_textで初期化する。
+    - 同じT<n>のエントリが既に存在する場合: そのブロックのみを置換する
+      （他タスクのエントリやorchが手で編集したnote等はそのまま保持される）。
+    - 存在しない場合: ファイル末尾に空行区切りで追記する。
+
+    既存ファイルのfrontmatterには一切触れない（frontmatter更新はorchのEditツール責務）。
+    fcntl.flockで排他ロックし、並列spawn時のread-modify-write競合（lost update）を防ぐ。
+
+    MCPツール化はせず、ow_spawn_worker等のow_service内部からのみ呼び出す。
+    """
+    queue_file = queue_dir / f"queue-t{topic_id}.md"
+    queue_file.parent.mkdir(parents=True, exist_ok=True)
+    header_prefix = f"## T{task_n} | "
+
+    fd = os.open(str(queue_file), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        size = os.fstat(fd).st_size
+        content = os.read(fd, size).decode("utf-8") if size else ""
+
+        if not content.strip():
+            # 新規 or 空ファイル: frontmatter（あれば）の後に空行を1つ挟んでエントリを置く
+            fm = frontmatter or ""
+            new_content = f"{fm}\n{entry_text}" if fm else entry_text
+        else:
+            lines = content.splitlines(keepends=True)
+            start = next(
+                (i for i, line in enumerate(lines) if line.startswith(header_prefix)),
+                None,
+            )
+            if start is None:
+                # 追記: 直前の内容との間に空行を1つ確保する
+                if content.endswith("\n\n"):
+                    sep = ""
+                elif content.endswith("\n"):
+                    sep = "\n"
+                else:
+                    sep = "\n\n"
+                new_content = f"{content}{sep}{entry_text}"
+            else:
+                # 既存T<n>ブロックを置換（次の'## 'ヘッダーまで、なければEOFまで）
+                end = len(lines)
+                for j in range(start + 1, len(lines)):
+                    if lines[j].startswith("## "):
+                        end = j
+                        break
+                before = "".join(lines[:start])
+                after = "".join(lines[end:])
+                # 後続ブロックがある場合は空行で区切る
+                sep = "\n" if (after and not entry_text.endswith("\n\n")) else ""
+                new_content = f"{before}{entry_text}{sep}{after}"
+
+        data = new_content.encode("utf-8")
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.ftruncate(fd, 0)
+        os.write(fd, data)
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
 def _write_queue_spawning(
     queue_dir: Path,
     topic_id: str,
     alias: str,
     task_n: int,
     cwd: str,
+    task_title: str = "",
+    model: str = "",
+    permission: str = "",
+    acceptance: str = "",
     orch_activity_id: int | None = None,
     channel_code: str = "",
     orch_cwd: str = "",
 ) -> None:
-    """queueファイルにspawning write-aheadを記録する（孤児worker対策）。
+    """spawning write-aheadを正式queueフォーマットのタスクエントリとして記録する（孤児worker対策）。
 
-    新規ファイル作成時はYAML frontmatter（topic_id, orch_activity_id, channel_code,
-    orch_cwd, last_seen_msg_id）を先頭に生成してからspawningエントリを追記する。
-    既存ファイルへの追記時はfrontmatterに触らない（frontmatter更新はorchのEditツール責務）。
+    旧実装のWAL風追記（`## T<n> | spawning | spawning`）をやめ、title・model・activity・
+    acceptance等を含む正式エントリ（status=spawning）を_upsert_queue_task経由で書き込む。
+    こうすることでspawning直後でもorchはqueueファイルから完全なタスク情報を読み取れ、
+    再spawn時はエントリが重複追記されず置換される。
+
+    新規ファイル作成時のみYAML frontmatter（topic_id, orch_activity_id, channel_code,
+    orch_cwd, last_seen_msg_id）を生成する。既存ファイルのfrontmatterには触れない。
     """
-    queue_file = queue_dir / f"queue-t{topic_id}.md"
     now = datetime.now(timezone.utc).isoformat()
 
-    spawning_entry = (
-        f"\n## T{task_n} | spawning | spawning\n"
-        f"- worker: {alias} / term_ref: (pending) / session: (pending)\n"
-        f"- cwd: {cwd}\n"
-        f"- spawning: {now}\n"
+    fields: list[tuple[str, str]] = [
+        ("worker", f"{alias} / term_ref: (pending) / session: (pending)"),
+    ]
+    if orch_activity_id is not None:
+        fields.append(("activity", str(orch_activity_id)))
+    if model or permission:
+        fields.append(("model", f"{model} / permission: {permission}"))
+    fields.append(("cwd", cwd))
+    fields.append(("spawning", now))
+    if acceptance:
+        fields.append(("acceptance", acceptance))
+    fields.append(("note", "spawning write-ahead"))
+
+    entry_text = _format_queue_task_entry(
+        task_n=task_n,
+        title=task_title or "(untitled)",
+        status="spawning",
+        fields=fields,
     )
 
-    queue_file.parent.mkdir(parents=True, exist_ok=True)
+    frontmatter = _build_queue_frontmatter(
+        topic_id=topic_id,
+        orch_activity_id=orch_activity_id,
+        channel_code=channel_code,
+        orch_cwd=orch_cwd,
+        last_seen_msg_id=0,
+    )
 
-    # 排他的にファイル作成を試みてTOCTOU競合を防ぐ
-    try:
-        fd = os.open(str(queue_file), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            frontmatter = _build_queue_frontmatter(
-                topic_id=topic_id,
-                orch_activity_id=orch_activity_id,
-                channel_code=channel_code,
-                orch_cwd=orch_cwd,
-                last_seen_msg_id=0,
-            )
-            f.write(frontmatter)
-            f.write(spawning_entry)
-    except FileExistsError:
-        with open(queue_file, "a", encoding="utf-8") as f:
-            f.write(spawning_entry)
+    _upsert_queue_task(
+        queue_dir=queue_dir,
+        topic_id=topic_id,
+        task_n=task_n,
+        entry_text=entry_text,
+        frontmatter=frontmatter,
+    )
+
+
+def _slugify_task_title(title: str, max_len: int = 40) -> str:
+    """task fileのファイル名に使うslugをタイトルから生成する。
+
+    「main — detail」構造のタイトルはmain部分のみを採用し、
+    空白・パス上危険な文字（/ \\ | : # ? * < > " ' 改行等）を `-` に畳む。
+    日本語はそのまま残す（日本語話者がファイル名から内容を即把握できるようにするため）。
+    連続する `-` は1つに畳み、max_len文字で切り詰める。空文字列なら "" を返す。
+    """
+    if not title:
+        return ""
+    # 「main — detail」構造ならmain部分のみを使う
+    for sep in (" — ", " – ", " - ", "—", "–"):
+        if sep in title:
+            title = title.split(sep, 1)[0]
+            break
+    slug = re.sub(r"""[\s/\\|:#?*<>"']+""", "-", title.strip())
+    slug = re.sub(r"-+", "-", slug).strip("-")
+    if len(slug) > max_len:
+        slug = slug[:max_len].rstrip("-")
+    return slug
 
 
 def _write_task_file(
@@ -364,11 +516,23 @@ def _write_task_file(
     activity_id: int | None,
     topic_id: str | None,
 ) -> Path:
-    """task fileを書き出す。"""
-    task_file = task_dir / f"T{task_n}.json"
+    """task fileをマークダウン（YAML frontmatter + 本文）で書き出す。
+
+    機械可読フィールド（task/alias/channel/cwd/model等）はfrontmatterに、
+    人間可読な内容（タイトル・acceptance・context・playbook）は本文に置く。
+    workerはfrontmatterから起動パラメータを、本文からタスク内容を読み取る。
+
+    ファイル名は `t<topic_id>-T<n>-<title-slug>.md`。topic prefixでtopic間の名前衝突を、
+    title slugで人間がファイルを開かずに内容を把握できることを担保する。
+    topic_idが未指定の場合は `T<n>-<title-slug>.md`、slugが空なら接尾辞を省く。
+    """
+    base = f"t{topic_id}-T{task_n}" if (topic_id is not None and str(topic_id)) else f"T{task_n}"
+    slug = _slugify_task_title(task_title)
+    name = f"{base}-{slug}" if slug else base
+    task_file = task_dir / f"{name}.md"
     task_file.parent.mkdir(parents=True, exist_ok=True)
 
-    task_data = {
+    fm_data = {
         "v": 1,
         "task": f"T{task_n}",
         "alias": alias,
@@ -376,17 +540,23 @@ def _write_task_file(
         "cwd": cwd,
         "model": model,
         "permission_mode": permission,
-        "title": task_title,
-        "acceptance": acceptance,
-        "context": context,
-        "playbook": playbook,
         "timeout_min": timeout_min,
         "activity_id": activity_id,
         "topic_id": topic_id,
     }
+    fm_yaml = yaml.safe_dump(fm_data, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
-    with open(task_file, "w", encoding="utf-8") as f:
-        json.dump(task_data, f, ensure_ascii=False, indent=2)
+    body_lines = [f"# {fm_data['task']}: {task_title}".rstrip()]
+    if acceptance:
+        body_lines += ["", "## Acceptance", "", acceptance]
+    if context:
+        body_lines += ["", "## Context", "", context]
+    if playbook:
+        body_lines += ["", "## Playbook", "", playbook]
+    body = "\n".join(body_lines) + "\n"
+
+    content = f"---\n{fm_yaml}---\n\n{body}"
+    task_file.write_text(content, encoding="utf-8")
 
     return task_file
 
@@ -465,6 +635,10 @@ def ow_spawn_worker(
             alias,
             task_n,
             cwd,
+            task_title=task_title,
+            model=model,
+            permission=permission,
+            acceptance=acceptance,
             orch_activity_id=activity_id,
             channel_code=channel,
             orch_cwd=orch_cwd,
