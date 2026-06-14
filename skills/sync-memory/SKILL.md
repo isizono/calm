@@ -99,7 +99,7 @@ transcriptを解析し、議論されたテーマを特定する。
 
 **アクション:**
 - セッション中の生データを洗い出し、`add_material` でタグ付きで保存する（タグ必須）
-- 既存 material（ガイド・設計仕様・一覧表など、更新されうる素材）の内容と矛盾・古い情報がある場合は `update_material(material_id, ...)` で更新する
+- 既存 material（ガイド・設計仕様・一覧表など、更新されうる素材）の内容と矛盾・古い情報がある場合は、`search()` で対象 material を特定してから `update_material(material_id, ...)` で更新する
 - `related` で関連するアクティビティやトピックとリレーションを張る
 - 保存した material ID は Step 4 の log で参照する
 
@@ -261,9 +261,9 @@ description: "「sync-memory改善」トピックで議論中。ステップ4の
 
 **habits の手順:**
 1. `get_habits` で既存 habits を確認する
-2. 新規ルールは `add_habit` で追加する
-3. 既存 habit と矛盾・改善がある場合は `update_habit(habit_id, content)` で更新する（内容を保持しつつ改訂）
-4. ステップ9cでユーザーに提案し、承認後に書き込む
+2. 新規ルールか、既存 habit の改善・修正かを判定する
+3. 登録・更新する内容のドラフトを準備する（この時点では API 呼び出ししない）
+4. ステップ9cでユーザーに提案し、承認後に `add_habit` または `update_habit(habit_id, content)` で書き込む
 
 **auto-memory の記録先判断（エージェント裁量）:**
 - 短い（数行）→ MEMORY.mdに直接追記
@@ -310,12 +310,12 @@ options:
 ```
 header: "habits"
 question: |
-  habitsに登録する？（check-in時にAIへ毎回注入される）
-  - {ルールの概要}
+  habitsを登録／更新する？（check-in時にAIへ毎回注入される）
+  - {ルールの概要}（新規 or 既存habit id:XX の更新）
 options:
-  - label: 登録する
+  - label: 登録／更新する
     markdown: |
-      {登録するhabitsの全文}
+      {登録・更新するhabitsの全文}
   - label: 不要
 ```
 
