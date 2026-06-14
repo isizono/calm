@@ -593,6 +593,7 @@ class TestOwStatusIntegration:
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", "")
         monkeypatch.setattr(ow_service, "_get_queue_dir", lambda: nonexistent)
         monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
+        monkeypatch.setattr(ow_service, "ensure_channel", lambda channel: True)
         monkeypatch.setattr(ow_service, "_relay_request", lambda *a, **k: {"handles": []})
         result = ow_service.ow_status(channel="ch", topic_id=None)
         assert result["tasks"] == []
