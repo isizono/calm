@@ -168,6 +168,10 @@ def _start_relay_server() -> bool:
     else:
         cmd = [sys.executable, str(server_py)]
         cwd = str(relay_dir)
+    env = os.environ.copy()
+    port = _get_relay_port()
+    if port:
+        env["RELAY_PORT"] = str(port)
     try:
         subprocess.Popen(
             cmd,
@@ -175,6 +179,7 @@ def _start_relay_server() -> bool:
             start_new_session=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=env,
         )
         logger.info("relay server process started (cmd=%s)", cmd)
         return True

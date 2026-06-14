@@ -236,8 +236,7 @@ class TestEnsureRelayServer:
     def test_clears_port_owner_when_health_404(self, monkeypatch):
         """/health 404→Noneかつport占有プロセスあり → killしてから起動 → 新版がhealthyになりTrue"""
         # health=None（旧版が404を返す相当）
-        health_calls = iter([None, {"protocol_version": PROTOCOL_VERSION, "pid": 9999}])
-        monkeypatch.setattr(ow_service, "_get_relay_health", lambda: next(health_calls))
+        monkeypatch.setattr(ow_service, "_get_relay_health", lambda: None)
         monkeypatch.setattr(
             ow_service, "_wait_for_relay_health",
             lambda timeout_sec=10.0, interval_sec=0.5: {"protocol_version": PROTOCOL_VERSION, "pid": 9999},

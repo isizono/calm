@@ -16,6 +16,7 @@
 既存の8765上の本番relayと衝突しないようにするための処置。
 """
 import json
+import select
 import socket
 import subprocess
 import sys
@@ -80,11 +81,11 @@ srv.serve_forever()
     # "ready"が来るまで待つ（最大3秒）
     deadline = time.monotonic() + 3.0
     while time.monotonic() < deadline:
-        if proc.stdout and proc.stdout.readable():
+        r, _, _ = select.select([proc.stdout], [], [], 0.05)
+        if r:
             line = proc.stdout.readline()
             if line.strip() == "ready":
                 return proc
-        time.sleep(0.05)
     proc.kill()
     raise RuntimeError("legacy stub did not become ready in time")
 
@@ -125,10 +126,8 @@ def isolated_relay(tmp_path, monkeypatch):
     monkeypatch.setattr(ow_service, "RELAY_URL", relay_url)
     monkeypatch.setattr(ow_service, "_RELAY_STATE_DIR", tmp_path)
     monkeypatch.setattr(ow_service, "_RELAY_LOCK_PATH", tmp_path / "relay.lock")
-    # `_start_relay_server` は `subprocess.Popen` で env を明示せず親の os.environ を継承する
-    # 設計に依存して、ここで monkeypatch.setenv した RELAY_PORT/RELAY_DB が子プロセスに届く。
-    # 将来 _start_relay_server に `env={...}` 引数渡しのリファクタが入った場合は、ここで
-    # explicit env を渡す形式に追従する必要がある。
+    # `_start_relay_server` は os.environ.copy() に RELAY_PORT を明示してから Popen に渡す。
+    # monkeypatch.setenv はここで os.environ を書き換えるため、Popen 呼び出し時のコピーに反映される。
     monkeypatch.setenv("RELAY_PORT", str(port))
     monkeypatch.setenv("RELAY_DB", relay_db)
 
