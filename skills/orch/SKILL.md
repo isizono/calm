@@ -213,12 +213,17 @@ orchは起動時に特化版最新を取得し、assignの `playbook` フィー�
 1. **crash中**: workerはフォールバック規則で待機。報告はrelay SQLite履歴に残存する
 2. **再起動**: 人間が`orch_cwd`と同じcwdで `/orch` を起動し、queue再開候補から選択する
 3. **不在中メッセージ回収**: `ow_history(since=last_seen_msg_id)` から実行（冪等性が再処理を安全にする。専用復旧ロジック不要）
-4. **整合チェック**（必須）:
-   - queue各タスクのstatus × presence（worker死活）× 履歴のready/doneを突合する
-   - `spawning` 残留: readyの有無で「assigned再リンク」または「queued戻し」を判別する
-   - queueに対応のないready（孤児worker）: `cmd:ping` で素性確認 → 再リンクまたはclose
-   - **cc-memory activityも突合**: queue終端済み（done/cancelled/failed） × activity `in_progress` 残留を検出・修正する
-5. **worker復帰**: 各workerにpingを送り、フォールバック復帰規則に従って復帰させる
+4. **整合チェック**（必須）: `ow_recover(channel, topic_id)` を呼ぶ。relay履歴since=0再走査・queue・presenceの3者突合・自動修正までを一括で行う:
+   - **ghost_active**（queue=assigned/ready/working & presence offline）→ relay最新state宣言からqueueを自動再構築（done→done、closed→closed、working/ready→stalled、failed→failed等）
+   - **pending_spawn**（queue=spawning & presence offline）→ relay履歴に当該workerのstate宣言がある場合のみ自動再構築。履歴ゼロは起動進行中の可能性が高くow_recoverは触らない（spawn racing回避）。orchは戻り値で残留spawning件数を把握し、経過時間が長い物は手動で `failed` 化判断する
+   - **stalled_done**（queue=done/closed/cancelled/failed & presence online）→ `cmd:ping` 送信で素性照会
+   - **orphans**（presence onlineだがqueue外のw-* handle）→ `cmd:ping` 送信で再リンク照会
+   - 検証だけしたい時は `dry_run=True` で呼ぶ
+   - 戻り値の `detected`/`applied`/`warnings` を確認し、ping応答は通常受信ループで処理
+   - **cc-memory activityも突合**（ow_recover対象外）: queue終端済み（done/cancelled/failed） × activity `in_progress` 残留を別途検出・修正する
+5. **worker復帰**: ow_recoverが送ったpingへの応答を受信ループで処理し、フォールバック復帰規則に従って復帰させる
+
+**spawn前バリデーション**: `ow_spawn_worker` は内部で relay疎通・channel存在・cwd存在・alias重複の4点を自動チェックする。失敗時は `{"error": {"code": "SPAWN_PRECONDITION_FAILED", "warnings": [...]}}` が返るので、warningsを確認して原因を解消してから再spawnする。
 
 **フォールバック復帰規則**:
 - フォールバック後に人間入力ゼロ → orchの復帰メッセージで自動復帰
@@ -239,6 +244,7 @@ orchは起動時に特化版最新を取得し、assignの `playbook` フィー�
 | `ow_spawn_worker(alias, channel, cwd, model, permission, task_title, acceptance, context, playbook, timeout_min, activity_id, topic_id, task_n)` | worker起動（spawning write-ahead→task file書き出し→アダプタ起動→安定ID返却） |
 | `ow_close_worker(term_ref)` | workerクローズ |
 | `ow_status(channel, topic_id)` | queue+presence統合ビュー |
+| `ow_recover(channel, topic_id, dry_run)` | crash復旧（queue×relay履歴×presence突合・ghost_active自動再構築・stalled/orphan ping送信） |
 | `check_in(activity_id)` | cc-memoryのアクティビティcheck-in |
 | `add_activity(...)` / `update_activity(...)` | アクティビティ管理（orch-managedタグ必須） |
 | `search(...)` | 特化プレイブック・過去エスカレーションログ検索 |

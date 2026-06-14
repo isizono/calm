@@ -1137,6 +1137,46 @@ def ow_status(channel: str, topic_id: str | None = None) -> dict:
     return ow_service.ow_status(channel, topic_id)
 
 
+@mcp.tool()
+def ow_recover(channel: str, topic_id: str, dry_run: bool = False) -> dict:
+    """orch crash後のqueue × relay履歴 × presence整合チェック・自動修正。
+
+    relay履歴を since=0 で全件再走査して各worker毎の最新state宣言を集計し、queueと
+    presenceに突合した上で次の4カテゴリに分類する。
+
+    - ghost_active: queue=assigned/working なのに presence offline
+      → relay 最新state宣言から queue ステータスを自動再構築（dry_run=Falseのみ）
+    - pending_spawn: queue=spawning なのに presence offline
+      → relay履歴に当該workerのstate宣言があれば自動更新、なければ起動進行中として放置
+    - stalled_done: queue=done/closed/cancelled/failed なのに worker が presence onlineで残存
+      → cmd:ping を送信して素性照会
+    - orphans: presence online だが queue に登場しない w-* handle
+      → cmd:ping で再リンク照会
+
+    ping応答は orch の通常受信ループで処理する（本ツールは送信のみ）。queueの更新は
+    ow_service内部の単一の接点関数経由のため、queue層の物理形が将来変わっても
+    呼び出し側の影響範囲は最小。
+
+    Args:
+        channel: channelコード
+        topic_id: トピックID（queue-t<topic_id>.md 特定に使用）
+        dry_run: Trueなら検出のみ・修正/ping送信なし
+
+    Returns:
+        成功時:
+            {
+                "detected": {"ghost_active": [...], "pending_spawn": [...], "stalled_done": [...], "orphans": [...]},
+                "applied": {"queue_updates": [...], "pings_sent": [...]},
+                "warnings": [str],
+                "presence": [str],
+                "reconstructed_max_msg_id": int,
+                "dry_run": bool,
+            }
+        relay/channel不可時: {"error": {"code": ..., "message": ...}}
+    """
+    return ow_service.ow_recover(channel, topic_id, dry_run)
+
+
 # セッションエンドポイント（HTTPモード用カスタムルート）
 @mcp.custom_route("/session/register", methods=["POST"])
 async def session_register(request: Request) -> JSONResponse:
