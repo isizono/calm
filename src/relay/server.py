@@ -29,7 +29,7 @@ from urllib.parse import parse_qs, urlparse
 
 from . import PROTOCOL_VERSION
 
-PORT = 8765
+PORT = int(os.environ.get("RELAY_PORT", "8765"))
 DB_PATH = os.environ.get(
     "RELAY_DB",
     str(Path.home() / ".cc-memory" / "ow" / "relay" / "relay.db"),
