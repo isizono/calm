@@ -2,6 +2,7 @@
 import logging
 import random
 from fastmcp import FastMCP, Context
+from fastmcp.server.dependencies import get_context
 from typing import Optional, Union
 from src.services import (
     topic_service,
@@ -129,9 +130,14 @@ def _maybe_inject_tag_notes(result: dict, tag_strings: list[str], mark: bool = T
     Args:
         mark: False の場合、_injected_tags を参照も更新もしない（読み取り経路用）。
     """
+    try:
+        ctx = get_context()
+        session_id = ctx.session_id
+    except RuntimeError:
+        session_id = None
     conn = get_connection()
     try:
-        notes = collect_tag_notes_for_injection(conn, tag_strings, mark=mark)
+        notes = collect_tag_notes_for_injection(conn, tag_strings, session_id=session_id, mark=mark)
     finally:
         conn.close()
     if notes:
@@ -214,6 +220,7 @@ def add_decisions(items: list[dict], ctx: Context) -> dict:
         - topic_id (int, 必須): 関連するトピックのID
         - decision (str, 必須): 決定内容
         - reason (str, 必須): 決定の理由
+        - title (str, optional): 決定の要点を表す1行。**付けることを強く推奨**。check-in・timeline・search等の一覧表示でdecision本文の代わりに見出しとして使われ、可読性が大きく上がる。省略時はdecision本文にfallbackする
         - tags (list[str], optional): 追加タグ。省略時はtopicのタグを継承。内容を表すタグを積極的に追加すること。namespace: domain:(プロジェクト)/intent:(意図)/素タグ(キーワード)。例: ["intent:design", "naming-convention", "backward-compat"]
         - propagate_to (dict, optional): 決定事項を注入先に伝搬する。
             - type: "habit" | "tag_note"
@@ -221,6 +228,8 @@ def add_decisions(items: list[dict], ctx: Context) -> dict:
             - tag: タグ文字列（type="tag_note"の場合のみ必須）
 
     Returns: {created: [...], errors: [{index, error}]}
+        created各要素には related_decisions（同topic内の類似decision上位3件 [{id, title, distance}]）が付く。
+        既存decisionとの矛盾・重複に気づくための導線。embeddingサーバー未起動時は空配列。
     """
     result = decision_service.add_decisions(items)
     if "error" not in result:
@@ -726,7 +735,12 @@ def check_in(
     Returns:
         check-in結果（coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary）
     """
-    return _check_in(activity_id)
+    try:
+        ctx = get_context()
+        session_id = ctx.session_id
+    except RuntimeError:
+        session_id = None
+    return _check_in(activity_id, session_id=session_id)
 
 
 

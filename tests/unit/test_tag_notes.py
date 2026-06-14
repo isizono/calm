@@ -249,7 +249,7 @@ class TestAlwaysInjectNamespaces:
             collect_tag_notes_for_injection(
                 conn, ["intent:design"], always_inject_namespaces=["intent"]
             )
-            assert "intent:design" not in _injected_tags
+            assert "intent:design" not in _injected_tags.get("__default__", set())
         finally:
             conn.close()
 
@@ -625,7 +625,7 @@ class TestResultBasedInjectionDoesNotMark:
             assert result[0]["tag"] == "domain:test"
 
             # _injected_tags に登録されていないことを確認
-            assert "domain:test" not in _injected_tags
+            assert "domain:test" not in _injected_tags.get("__default__", set())
 
             # mark=True（書き込み経路）でも notes が注入されることを確認
             result2 = collect_tag_notes_for_injection(conn, ["domain:test"])
@@ -645,7 +645,7 @@ class TestResultBasedInjectionDoesNotMark:
         try:
             # まず mark=True で domain:test をマーク
             collect_tag_notes_for_injection(conn, ["domain:test"])
-            assert "domain:test" in _injected_tags
+            assert "domain:test" in _injected_tags.get("__default__", set())
 
             # mark=False では domain:test もクエリ対象になる
             result = collect_tag_notes_for_injection(
@@ -706,7 +706,7 @@ class TestHandlerGetTopicsInjection:
         update_tag("domain:handler", "ハンドラ経由テスト")
 
         get_topics()
-        assert "domain:handler" not in _injected_tags
+        assert "domain:handler" not in _injected_tags.get("__default__", set())
 
 
 class TestHandlerGetActivitiesInjection:
@@ -738,7 +738,7 @@ class TestHandlerGetActivitiesInjection:
         update_tag("domain:handler", "ハンドラ経由テスト")
 
         get_activities()
-        assert "domain:handler" not in _injected_tags
+        assert "domain:handler" not in _injected_tags.get("__default__", set())
 
 
 class TestHandlerGetLogsInjection:
@@ -776,7 +776,7 @@ class TestHandlerGetLogsInjection:
         update_tag("domain:handler", "ハンドラ経由テスト")
 
         get_logs("topic", topic_id)
-        assert "domain:handler" not in _injected_tags
+        assert "domain:handler" not in _injected_tags.get("__default__", set())
 
 
 class TestHandlerGetDecisionsInjection:
@@ -814,4 +814,87 @@ class TestHandlerGetDecisionsInjection:
         update_tag("domain:handler", "ハンドラ経由テスト")
 
         get_decisions("topic", topic_id)
-        assert "domain:handler" not in _injected_tags
+        assert "domain:handler" not in _injected_tags.get("__default__", set())
+
+
+# ========================================
+# マルチセッション分離テスト
+# ========================================
+
+
+class TestMultiSessionIsolation:
+    """異なるセッションIDで _injected_tags が独立管理されるテスト"""
+
+    def test_different_sessions_inject_independently(self, temp_db):
+        """セッションAの注入済みタグがセッションBの注入を阻害しない"""
+        add_topic(title="Test", description="Desc", tags=["domain:test"])
+        update_tag("domain:test", "テスト教訓")
+
+        conn = get_connection()
+        try:
+            result_a = collect_tag_notes_for_injection(
+                conn, ["domain:test"], session_id="session-A"
+            )
+            assert result_a is not None
+            assert result_a[0]["tag"] == "domain:test"
+
+            result_b = collect_tag_notes_for_injection(
+                conn, ["domain:test"], session_id="session-B"
+            )
+            assert result_b is not None
+            assert result_b[0]["tag"] == "domain:test"
+        finally:
+            conn.close()
+
+    def test_same_session_deduplicates(self, temp_db):
+        """同一セッション内では2回目の注入が抑制される"""
+        add_topic(title="Test", description="Desc", tags=["domain:test"])
+        update_tag("domain:test", "テスト教訓")
+
+        conn = get_connection()
+        try:
+            result1 = collect_tag_notes_for_injection(
+                conn, ["domain:test"], session_id="session-X"
+            )
+            assert result1 is not None
+
+            result2 = collect_tag_notes_for_injection(
+                conn, ["domain:test"], session_id="session-X"
+            )
+            assert result2 is None
+        finally:
+            conn.close()
+
+    def test_session_sets_are_isolated(self, temp_db):
+        """各セッションの注入済みセットが他セッションに影響しない"""
+        add_topic(title="Test", description="Desc", tags=["domain:test", "domain:other"])
+        update_tag("domain:test", "テスト教訓")
+        update_tag("domain:other", "その他の教訓")
+
+        conn = get_connection()
+        try:
+            collect_tag_notes_for_injection(
+                conn, ["domain:test"], session_id="session-1"
+            )
+            assert "domain:test" in _injected_tags["session-1"]
+            assert "session-2" not in _injected_tags
+
+            collect_tag_notes_for_injection(
+                conn, ["domain:other"], session_id="session-2"
+            )
+            assert "domain:other" in _injected_tags["session-2"]
+            assert "domain:other" not in _injected_tags["session-1"]
+        finally:
+            conn.close()
+
+    def test_no_session_id_uses_default_key(self, temp_db):
+        """session_id=Noneの場合は__default__キーが使われる"""
+        add_topic(title="Test", description="Desc", tags=["domain:test"])
+        update_tag("domain:test", "テスト教訓")
+
+        conn = get_connection()
+        try:
+            collect_tag_notes_for_injection(conn, ["domain:test"])
+            assert "domain:test" in _injected_tags["__default__"]
+        finally:
+            conn.close()

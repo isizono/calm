@@ -92,7 +92,7 @@ def _get_decisions_from_topics(conn: sqlite3.Connection, topic_ids: list[int]) -
     placeholders = ",".join("?" * len(topic_ids))
     rows = conn.execute(
         f"""
-        SELECT id, decision
+        SELECT id, decision, title
         FROM decisions
         WHERE topic_id IN ({placeholders}) AND retracted_at IS NULL
         ORDER BY id DESC
@@ -103,7 +103,8 @@ def _get_decisions_from_topics(conn: sqlite3.Connection, topic_ids: list[int]) -
 
     decisions = []
     for row in rows:
-        decisions.append({"id": row["id"], "title": row["decision"]})
+        # title優先・decision本文fallback
+        decisions.append({"id": row["id"], "title": row["title"] or row["decision"]})
     return decisions
 
 
@@ -243,7 +244,7 @@ def _get_pinned_targets(conn: sqlite3.Connection, activity_id: int) -> dict:
         placeholders = ",".join("?" * len(ids))
         rows = conn.execute(
             f"""
-            SELECT id, decision, reason
+            SELECT id, decision, reason, title
             FROM decisions
             WHERE id IN ({placeholders}) AND retracted_at IS NULL
             """,
@@ -254,7 +255,8 @@ def _get_pinned_targets(conn: sqlite3.Connection, activity_id: int) -> dict:
         for did in ids:
             if did in row_map:
                 row = row_map[did]
-                decisions.append({"id": row["id"], "title": row["decision"], "reason": row["reason"]})
+                # title優先・decision本文fallback
+                decisions.append({"id": row["id"], "title": row["title"] or row["decision"], "reason": row["reason"]})
         if decisions:
             result["decisions"] = decisions
 
@@ -486,7 +488,7 @@ def _build_summary(
     return f"{line1}\n{line2}"
 
 
-def check_in(activity_id: int) -> dict:
+def check_in(activity_id: int, session_id: str | None = None) -> dict:
     """アクティビティにcheck-inする。
 
     関連情報（tag_notes, materials, decisions, logs catalog, catalog）を集約取得し、
@@ -518,6 +520,13 @@ def check_in(activity_id: int) -> dict:
         check-in結果（coverage, activity, related_topics, related_activities, pinned,
         tag_notes, materials, recent_decisions, logs, catalog, summary）
     """
+    if session_id is None:
+        try:
+            from fastmcp.server.dependencies import get_context
+            ctx = get_context()
+            session_id = ctx.session_id
+        except (RuntimeError, ImportError):
+            pass
     conn = get_connection()
     try:
         # 1. activity取得
@@ -536,8 +545,8 @@ def check_in(activity_id: int) -> dict:
         activity = row_to_dict(row)
         tags = get_entity_tags(conn, "activity_tags", "activity_id", activity_id)
 
-        # 2. tag_notes収集（collect_tag_notes_for_injectionは変更なし）
-        tag_notes = collect_tag_notes_for_injection(conn, tags, always_inject_namespaces=["intent"]) or []
+        # 2. tag_notes収集
+        tag_notes = collect_tag_notes_for_injection(conn, tags, session_id=session_id, always_inject_namespaces=["intent"]) or []
 
         # 3. 直接関連エンティティ取得（1次）
         direct = _get_direct_relations(conn, "activity", activity_id)

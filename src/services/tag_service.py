@@ -1014,13 +1014,14 @@ def get_available_intents() -> list[dict]:
 # 遭遇時注入（Tag Notes Injection）
 # ========================================
 
-# モジュールレベルのグローバル変数（MCPサーバープロセスのライフサイクル = セッション）
-_injected_tags: set[str] = set()
+# セッション別の注入済みタグ追跡（ctx.session_idキー）
+_injected_tags: dict[str, set[str]] = {}
 
 
 def collect_tag_notes_for_injection(
     conn: sqlite3.Connection,
     tag_strings: list[str],
+    session_id: str | None = None,
     always_inject_namespaces: list[str] | None = None,
     mark: bool = True,
 ) -> list[dict] | None:
@@ -1029,6 +1030,7 @@ def collect_tag_notes_for_injection(
     Args:
         conn: DB接続
         tag_strings: タグ文字列リスト（例: ["domain:cc-memory", "intent:design"]）
+        session_id: MCPセッションID。セッション別に注入済みを管理する
         always_inject_namespaces: 常時注入するnamespaceのリスト（例: ["intent"]）。
             このnamespaceに属するタグは _injected_tags チェックをスキップし、
             毎回 notes を返す。_injected_tags には登録しない。
@@ -1039,6 +1041,7 @@ def collect_tag_notes_for_injection(
         notes があるタグの一覧。なければ None
         [{"tag": "domain:cc-memory", "notes": "..."}, ...]
     """
+    session_key = session_id or "__default__"
     always_ns = set(always_inject_namespaces) if always_inject_namespaces else set()
 
     # always_inject対象とそれ以外を分離（パース結果も保持）
@@ -1054,13 +1057,12 @@ def collect_tag_notes_for_injection(
             normal_parsed.append((ns, name))
 
     if mark:
-        # 通常タグ: 未注入のもののみ
+        session_set = _injected_tags.setdefault(session_key, set())
         new_normal = [
             (t, p) for t, p in zip(normal_tags, normal_parsed)
-            if t not in _injected_tags
+            if t not in session_set
         ]
-        # 通常タグをすべてマーク（notes の有無に関わらず）
-        _injected_tags.update(t for t, _ in new_normal)
+        session_set.update(t for t, _ in new_normal)
     else:
         # mark=False: 全タグをクエリ対象にし、_injected_tags は更新しない
         new_normal = list(zip(normal_tags, normal_parsed))
