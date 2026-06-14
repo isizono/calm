@@ -2,6 +2,7 @@
 import logging
 import math
 import re
+import sqlite3
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -917,8 +918,94 @@ def find_similar_topics(
         results.sort(key=lambda x: x["distance"])
         return results[:limit]
 
-    except (ValueError, RuntimeError, OSError):
+    except (ValueError, RuntimeError, OSError, sqlite3.Error):
         logger.warning("find_similar_topics failed", exc_info=True)
+        return []
+
+
+def find_similar_decisions(
+    exclude_id: int,
+    topic_id: int,
+    text: str | None = None,
+    embedding: list[float] | None = None,
+    limit: int = 3,
+) -> list[dict]:
+    """同じtopic内でテキスト/embeddingに類似するdecisionをベクトル検索で取得する。
+
+    add_decisions のレスポンスに含める「関連decision」サジェスト用。
+    既存decisionのembedding（decision+reason+tagsで生成済み・vec_index格納済み）を
+    KNNし、search_index経由でsource_type='decision'に絞り、decisionsテーブルへJOINして
+    同一topic_id・retracted_at IS NULL・自身除外に限定する。
+    矛盾・重複への気づきを促す導線であり、embeddingサーバー未起動時は空リストを返す。
+
+    Args:
+        exclude_id: 除外するdecision ID（新規作成された自身）
+        topic_id: 関連decisionを絞り込む対象topic ID
+        text: 検索テキスト（embedding未指定時のみ使う）
+        embedding: 事前生成済みのembeddingベクトル（指定時はencode_queryをスキップ）
+        limit: 最大取得件数
+
+    Returns:
+        類似decisionのリスト [{id, title, distance}, ...]
+        title は title優先・decision本文fallback（COALESCE(title, decision)）。
+        distance は小さいほど類似度が高い。
+    """
+    try:
+        query_embedding = embedding if embedding is not None else (
+            embedding_service.encode_query(text) if text else None
+        )
+        if query_embedding is None:
+            return []
+
+        blob = serialize_float32(query_embedding)
+        # グローバルKNNで多めに取得してから decision型 + 同一topic + 自身除外 + retract除外 に
+        # post-filterする。find_similar_topicsより絞り込みが厳しい（種別＋topic）ため候補数を
+        # limit*20に増やす。本機能は矛盾・重複への気づき導線であり厳密なrecallは要求しない
+        # （DB規模が非常に大きくなり同一topicのdecisionが上位に来ない場合は取りこぼし得るが、
+        #  サジェストが減るだけで誤動作はしない）。将来はtopic絞り込み後KNNへの作り替え余地あり。
+        vec_rows = execute_query(
+            "SELECT rowid, distance FROM vec_index WHERE embedding MATCH ? AND k = ?",
+            (blob, limit * 20),
+        )
+        if not vec_rows:
+            return []
+
+        vec_data = {}
+        for row in vec_rows:
+            r = row_to_dict(row)
+            vec_data[r["rowid"]] = r["distance"]
+
+        rowids = list(vec_data.keys())
+        rowid_placeholders = ",".join("?" * len(rowids))
+
+        filter_rows = execute_query(
+            f"""
+            SELECT si.id, si.source_id, COALESCE(d.title, d.decision) AS title
+            FROM search_index si
+            JOIN decisions d ON d.id = si.source_id
+            WHERE si.id IN ({rowid_placeholders})
+              AND si.source_type = 'decision'
+              AND si.source_id != ?
+              AND d.topic_id = ?
+              AND d.retracted_at IS NULL
+            """,
+            (*rowids, exclude_id, topic_id),
+        )
+
+        results = []
+        for row in filter_rows:
+            r = row_to_dict(row)
+            results.append({
+                "id": r["source_id"],
+                "title": r["title"],
+                "distance": round(vec_data[r["id"]], 4),
+            })
+
+        results.sort(key=lambda x: x["distance"])
+        return results[:limit]
+
+    except (ValueError, RuntimeError, OSError, sqlite3.Error):
+        logger.warning("find_similar_decisions failed", exc_info=True)
         return []
 
 
@@ -1446,6 +1533,7 @@ def _format_row(type_name: str, data: dict, tags: list[str]) -> dict:
         result = {
             "id": data["id"],
             "topic_id": data["topic_id"],
+            "title": data.get("title"),
             "decision": data["decision"],
             "reason": data["reason"],
             "tags": tags,
