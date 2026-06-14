@@ -2,6 +2,7 @@
 import logging
 import math
 import re
+import sqlite3
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -917,7 +918,7 @@ def find_similar_topics(
         results.sort(key=lambda x: x["distance"])
         return results[:limit]
 
-    except (ValueError, RuntimeError, OSError):
+    except (ValueError, RuntimeError, OSError, sqlite3.Error):
         logger.warning("find_similar_topics failed", exc_info=True)
         return []
 
@@ -1003,7 +1004,7 @@ def find_similar_decisions(
         results.sort(key=lambda x: x["distance"])
         return results[:limit]
 
-    except (ValueError, RuntimeError, OSError):
+    except (ValueError, RuntimeError, OSError, sqlite3.Error):
         logger.warning("find_similar_decisions failed", exc_info=True)
         return []
 

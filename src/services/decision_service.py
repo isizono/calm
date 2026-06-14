@@ -33,7 +33,7 @@ def add_decisions(items: list[dict]) -> dict:
 
     Returns:
         {created: [...], errors: [{index, error}]}
-        created各要素には related_decisions（同topic内の類似decision上位N件）が付く。
+        created各要素には related_decisions（同topic内の類似decision上位3件 [{id, title, distance}]）が付く。
     """
     # バリデーション: 1 <= len(items) <= 10
     if not items:
