@@ -5,7 +5,7 @@
 #   tmux.sh close <term_ref>           → pane IDでpaneをkill
 #
 # worker_cmdはshlex.quote等でエスケープ済みのシェルコマンド文字列を期待する。
-# bash -c に直接渡すため、呼び出し元でのエスケープが必要。
+# base64エンコード経由でコマンドを渡すため、特殊文字のインジェクション対策済み。
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
@@ -14,7 +14,7 @@ if [[ $# -lt 1 ]]; then
 fi
 
 ACTION="$1"
-SESSION_NAME="ow-workers"
+SESSION_NAME="${OW_TMUX_SESSION:-ow-workers}"
 
 case "$ACTION" in
   spawn)
@@ -30,9 +30,13 @@ case "$ACTION" in
       tmux new-session -d -s "$SESSION_NAME" -n "ow-base"
     fi
 
+    # シェルインジェクション対策: base64エンコードしてCWDとCMDを安全に渡す
+    CWD_B64=$(printf '%s' "$CWD" | base64 | tr -d '\n')
+    CMD_B64=$(printf '%s' "$WORKER_CMD" | base64 | tr -d '\n')
+
     # 新規windowを作成してworkerを起動、pane IDを返す
-    PANE_ID=$(tmux new-window -t "$SESSION_NAME" -P -F "#{pane_id}" -c "$CWD" -- \
-      bash -c "$WORKER_CMD")
+    PANE_ID=$(tmux new-window -t "$SESSION_NAME" -n "ow-worker" -P -F "#{pane_id}" -- \
+      bash -c "cd \$(echo $CWD_B64 | base64 -d) && \$(echo $CMD_B64 | base64 -d)")
 
     echo "$PANE_ID"
     ;;
