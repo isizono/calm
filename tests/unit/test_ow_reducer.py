@@ -1,4 +1,6 @@
 """ow_service reducer 4関数のユニットテスト (T39)"""
+import logging
+
 import pytest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
@@ -58,7 +60,6 @@ class TestParseOwEvent:
         """v=2 → None を返し、warningログを出す。"""
         body = {"v": 2, "kind": "event", "data": {"type": "identity"}}
         msg = _make_msg(10, "w-h", body)
-        import logging
         with caplog.at_level(logging.WARNING, logger="src.services.ow_service"):
             result = ow_service._parse_ow_event(msg)
         assert result is None
@@ -68,7 +69,6 @@ class TestParseOwEvent:
         """kind="state"（commandでもeventでもない） → None を返し、warningログを出す。"""
         body = {"v": 1, "kind": "state", "data": {"type": "identity"}}
         msg = _make_msg(11, "w-h", body)
-        import logging
         with caplog.at_level(logging.WARNING, logger="src.services.ow_service"):
             result = ow_service._parse_ow_event(msg)
         assert result is None
@@ -225,6 +225,11 @@ class TestInferCrashCause:
     def test_none_heartbeat_returns_none(self):
         """last_heartbeat_at=None → None。"""
         result = ow_service._infer_crash_cause("working", None)
+        assert result is None
+
+    def test_escalated_state_returns_none(self):
+        """state="escalated"（人間対話中）は heartbeat が古くても crash 推論対象外。"""
+        result = ow_service._infer_crash_cause("escalated", self._old_hb(600))
         assert result is None
 
 

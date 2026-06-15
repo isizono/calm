@@ -53,7 +53,9 @@ _MAX_RETRIES = 3
 _NON_TERMINAL_WORKLOAD_STATES: frozenset[str] = frozenset(
     {"loading", "ready", "working", "blocked", "escalated", "draining"}
 )
-# heartbeat タイムアウト閾値（M#258 §5.4.2: 周期×3）
+# heartbeat タイムアウト閾値（周期×3）。
+# キーは workload_state または heartbeat body の phase。両者は worker 側で同期される
+# （event:state 送信時に heartbeat phase も追従）ため、同一の値空間として共有する。
 _HEARTBEAT_TIMEOUT_SECS: dict[str, float] = {
     "loading": 30.0,  # 10s × 3
 }
@@ -1905,8 +1907,15 @@ def _infer_crash_cause(
 
     Returns:
         crash推論結果文字列 または None（crashでない場合）
+
+    Notes:
+        escalated は workload state machine 上は non-terminal だが、人間対話中の
+        worker は heartbeat 停止が「異常」を意味しないため watchdog 対象外
+        （orch SKILL.md・playbook.md でも明示）。crash 推論からも除外する。
     """
     if workload_state not in _NON_TERMINAL_WORKLOAD_STATES:
+        return None
+    if workload_state == "escalated":
         return None
     if last_heartbeat_at is None:
         return None
@@ -1925,6 +1934,40 @@ def _infer_crash_cause(
         return None
 
 
+def _latest_events_by_type(
+    channel: str, handle: str | None, data_types: tuple[str, ...]
+) -> dict[str, dict]:
+    """指定 handle の各 data_type について最新 event を1回の ow_history で取得する。
+
+    Args:
+        channel: channelコード
+        handle: workerハンドル（Noneなら全handle対象）
+        data_types: 対象とする event の data.type タプル
+
+    Returns:
+        {data_type: latest_event_dict} — 該当 event が無い type はキー欠落
+    """
+    history = ow_history(channel, since=0, limit=10000)
+    if "error" in history:
+        return {}
+    latest: dict[str, dict] = {}
+    for msg in history.get("messages", []):
+        if handle is not None and msg.get("handle") != handle:
+            continue
+        parsed = _parse_ow_event(msg)
+        if parsed is None:
+            continue
+        if parsed["body"].get("kind") != "event":
+            continue
+        t = parsed["body"].get("data", {}).get("type")
+        if t not in data_types:
+            continue
+        current = latest.get(t)
+        if current is None or parsed["msg_id"] > current["msg_id"]:
+            latest[t] = parsed
+    return latest
+
+
 def ow_get_identity(channel: str, handle: str) -> dict | None:
     """指定 handle の最新 identity bundle を返す。crash 推論を含む。
 
@@ -1935,7 +1978,8 @@ def ow_get_identity(channel: str, handle: str) -> dict | None:
     Returns:
         dict | None: identity bundle ＋ {msg_id, identity_at, inferred_cause?}
     """
-    identity_msg = _query_latest_event(channel, handle, "identity")
+    latest = _latest_events_by_type(channel, handle, ("identity", "state", "heartbeat"))
+    identity_msg = latest.get("identity")
     if identity_msg is None:
         return None
     data = identity_msg["body"].get("data", {})
@@ -1943,12 +1987,11 @@ def ow_get_identity(channel: str, handle: str) -> dict | None:
     result["msg_id"] = identity_msg["msg_id"]
     result["identity_at"] = identity_msg["created_at"]
 
-    state_msg = _query_latest_event(channel, handle, "state")
-    workload_state = None
-    if state_msg is not None:
-        workload_state = state_msg["body"].get("data", {}).get("state")
-
-    heartbeat_msg = _query_latest_event(channel, handle, "heartbeat")
+    state_msg = latest.get("state")
+    workload_state = (
+        state_msg["body"].get("data", {}).get("state") if state_msg is not None else None
+    )
+    heartbeat_msg = latest.get("heartbeat")
     last_heartbeat_at = heartbeat_msg["created_at"] if heartbeat_msg is not None else None
 
     inferred_cause = _infer_crash_cause(workload_state, last_heartbeat_at)
@@ -1959,35 +2002,69 @@ def ow_get_identity(channel: str, handle: str) -> dict | None:
 
 
 def ow_list_identities(channel: str, alive_only: bool = False) -> list[dict]:
-    """channel 上の全 handle の identity リスト。alive_only=True で terminated を除外。"""
+    """channel 上の全 handle の identity リスト。
+
+    alive_only=True の場合:
+    - identity bundle に terminated_at / cause(closed/cancelled/dead) を持つ entry を除外
+    - 加えて、ow_get_identity と同様の crash 推論（state が non-terminal + heartbeat 途絶）
+      で inferred_cause が付与される entry も除外する
+    handle フィールドが欠落した event は集約キーが None になるためスキップする。
+    """
     history = ow_history(channel, since=0, limit=10000)
     if "error" in history:
         return []
 
-    # handle別に最新identity msgを収集
-    latest_by_handle: dict[str, dict] = {}
+    # handle別に identity / state / heartbeat の最新msgを収集
+    identity_by_handle: dict[str, dict] = {}
+    state_by_handle: dict[str, dict] = {}
+    heartbeat_by_handle: dict[str, dict] = {}
     for msg in history.get("messages", []):
         parsed = _parse_ow_event(msg)
         if parsed is None:
             continue
+        h = parsed["handle"]
+        if h is None:
+            continue
         if parsed["body"].get("kind") != "event":
             continue
-        if parsed["body"].get("data", {}).get("type") != "identity":
-            continue
-        h = parsed["handle"]
-        if h not in latest_by_handle or parsed["msg_id"] > latest_by_handle[h]["msg_id"]:
-            latest_by_handle[h] = parsed
+        t = parsed["body"].get("data", {}).get("type")
+        if t == "identity":
+            current = identity_by_handle.get(h)
+            if current is None or parsed["msg_id"] > current["msg_id"]:
+                identity_by_handle[h] = parsed
+        elif t == "state":
+            current = state_by_handle.get(h)
+            if current is None or parsed["msg_id"] > current["msg_id"]:
+                state_by_handle[h] = parsed
+        elif t == "heartbeat":
+            current = heartbeat_by_handle.get(h)
+            if current is None or parsed["msg_id"] > current["msg_id"]:
+                heartbeat_by_handle[h] = parsed
 
     entries = []
-    for parsed in latest_by_handle.values():
+    for h, parsed in identity_by_handle.items():
         data = parsed["body"].get("data", {})
         entry = dict(data)
         entry["msg_id"] = parsed["msg_id"]
         entry["identity_at"] = parsed["created_at"]
 
+        state_msg = state_by_handle.get(h)
+        workload_state = (
+            state_msg["body"].get("data", {}).get("state")
+            if state_msg is not None
+            else None
+        )
+        hb_msg = heartbeat_by_handle.get(h)
+        last_heartbeat_at = hb_msg["created_at"] if hb_msg is not None else None
+        inferred_cause = _infer_crash_cause(workload_state, last_heartbeat_at)
+        if inferred_cause is not None:
+            entry["inferred_cause"] = inferred_cause
+
         if alive_only:
             cause = entry.get("cause")
             if cause in ("closed", "cancelled", "dead") or entry.get("terminated_at"):
+                continue
+            if inferred_cause is not None:
                 continue
 
         entries.append(entry)
@@ -1995,11 +2072,14 @@ def ow_list_identities(channel: str, alive_only: bool = False) -> list[dict]:
     return entries
 
 
-def ow_get_presence(channel: str, handle: str) -> dict | None:
+def ow_get_presence(channel: str, handle: str) -> dict:
     """最新 heartbeat 受信時刻から online/offline を推論する。
 
     T17 ow_recover の _get_presence() と推論ロジックを統一した実装。
     SSE 接続状態ではなく heartbeat 時刻ベースの推論を行う。
+
+    heartbeat が一度も観測されない handle に対しては status="unknown" の
+    entry を返す（None は返さない）。
 
     Returns:
         dict: {handle, status("online"|"offline"|"unknown"), last_heartbeat_at, phase}
