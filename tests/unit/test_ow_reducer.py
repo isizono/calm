@@ -1,4 +1,4 @@
-"""ow_service reducer 4関数のユニットテスト (T39)"""
+"""ow_service reducer 4関数のユニットテスト。"""
 import logging
 
 import pytest
