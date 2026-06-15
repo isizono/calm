@@ -163,7 +163,33 @@ orchから `kind:command, data.type:assign`（または旧形式 `kind:cmd, verb
   {"v":1, "kind":"event", "from":"<alias>", "to":"orch", "task":"T<task_n>", "data":{"type":"state", "state":"working", "phase":"<phase>", "note":"<進捗メモ>"}}
   ```
 - cc-memoryへの記録方針はworker専用の規律に従う（§記録規律）
-- SAを使う場合のモデル選択: 機械的作業→haiku/sonnet、通常実装→sonnet/claude-opus-4-7、設計・複雑推論→claude-opus-4-7以上。**opus 4.8は使用禁止**。フルID `claude-opus-4-7` を使う
+- SAの活用については §SAの活用 参照
+
+## SAの活用
+
+workerは全部自分で調べきる必要はない。Agent/TaskツールによるSA（サブエージェント）を積極的に活用してよい。
+
+### workerがSAを使う典型的な場面
+
+- **コードベースの調査**: 実装前の既存コード把握、関連ファイルの特定
+- **テスト・検証**: CI結果の解析、大量ログの要約
+- **コードレビュー**: 実装後の品質チェック
+
+### SAのモデル選択
+
+| SAの用途 | 推奨モデル |
+|---|---|
+| 情報収集・ファイル読み込み・機械的作業 | haiku / sonnet |
+| 通常の実装・分析・整理 | sonnet |
+| 設計判断・品質評価・複雑な推論 | opus（`claude-opus-4-7`） |
+
+**opus 4.8は使用禁止**。opusが必要な場合は `claude-opus-4-7` を指定する。
+
+### SAへの指示の書き方
+
+- 明確なスコープと完了条件を渡す（何を調べてどう返すかを指定）
+- 漠然と「調べて」ではなく、探す対象・返却形式・成功条件を具体的に書く
+- 調査系には `subagent_type: "Explore"` を活用できる
 
 ## 判断に迷ったら → blocked
 
@@ -261,7 +287,7 @@ heartbeatループは draining フェーズで 30秒間隔を維持する（work
 `worker-sync` スキルは以下を行う（詳細はworker-syncスキル参照）:
 - **log記録**: セッション中の作業経緯（実装アプローチ・障害・orchとのやり取り）を1件のログとして記録
 - **material記録**: state:doneで報告済み以外の中間成果物があれば保存
-- **decisionは原則記録しない**: decision_proposalsでorchに提案する（D#2397）
+- **decisionは原則記録しない**: decision_proposalsでorchに提案する
 
 ### Step 3: event:identity 再 append（terminated情報付き）
 

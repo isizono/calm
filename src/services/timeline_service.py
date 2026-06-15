@@ -144,7 +144,7 @@ def get_timeline(
         if "decision" in types:
             # supersedes関係はスカラー（1:1前提）で返す。
             # decision_supersedesは多対多のスキーマだが、APIレスポンスのreplaces/replaced_byは
-            # D#1874で{type, id}のスカラーと定義されているため、最新の1件のみ返す。
+            # {type, id}のスカラーと定義されているため、最新の1件のみ返す。
             union_parts.append(
                 f"SELECT d.id, 'decision' AS type, COALESCE(d.title, d.decision) AS title, d.created_at,"
                 f" (SELECT target_id FROM decision_supersedes WHERE source_id = d.id ORDER BY created_at DESC LIMIT 1) AS replaces_id,"

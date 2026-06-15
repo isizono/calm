@@ -13,7 +13,7 @@
 到達順は厳密に保証しない（受信側は GetHistory + msg_id で冪等突合する設計）。
 SQLite 同時書き込みは WAL モード + busy_timeout で吸収する（`_db_connect`）。
 
-標準ライブラリのみ。依存ゼロ（D#2282）。
+標準ライブラリのみ。依存ゼロ。
 """
 import json
 import os
@@ -62,7 +62,7 @@ def _db_connect(db_path: str = DB_PATH) -> sqlite3.Connection:
     ThreadingHTTPServer 配下で複数スレッドが同時に書き込むため、WAL モードと
     busy_timeout を設定して ``sqlite3.OperationalError: database is locked`` を
     回避する。複数 Claude が同一 channel に同時 send するのがこのシステムの常態で
-    あり、並行書き込みは想定内のため（D#2285 でハンドルは非検証＝アクセスは
+    あり、並行書き込みは想定内のため（ハンドルは非検証であり、アクセスは
     bridge-connect 経由に限られるが、同時アクセス自体は起こりうる）。
     """
     conn = sqlite3.connect(db_path, check_same_thread=False, timeout=5.0)
@@ -111,7 +111,7 @@ def _now_iso() -> str:
 # ---------------------------------------------------------------------------
 
 def create_channel(db_path: str = DB_PATH) -> str:
-    """channel を作成し channel_code を返す。衝突時はリトライ（D#2287）。"""
+    """channel を作成し channel_code を返す。衝突時はリトライ。"""
     conn = _db_connect(db_path)
     try:
         for _ in range(10):
@@ -332,7 +332,7 @@ def get_presence(channel_code: str) -> list[str]:
 
 
 def _broadcast(channel_code: str, sender_handle: str, msg: dict) -> None:
-    """同一 channel の購読者（送信者と同一 handle を除く）にメッセージを配信する（D#2286）。
+    """同一 channel の購読者（送信者と同一 handle を除く）にメッセージを配信する。
 
     SSE ペイロードは msg_id / body / handle / created_at の4フィールドに絞る。
     受信側が body フィールド有無を許容する後方互換設計を前提とする。
@@ -350,7 +350,7 @@ def _broadcast(channel_code: str, sender_handle: str, msg: dict) -> None:
         entries = list(_subscribers.get(channel_code, []))
     for handle, q in entries:
         if handle == sender_handle:
-            # 送信者自身へはエコーしない（D#2286）
+            # 送信者自身へはエコーしない
             continue
         q.put(payload)
 

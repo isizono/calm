@@ -39,7 +39,7 @@ _NUDGE_INTERVAL = 2
 
 
 def _is_orch_managed_activity(activity_id) -> bool:
-    """指定アクティビティが orch-managed タグを持つかを判定する（D#2410）。
+    """指定アクティビティが orch-managed タグを持つかを判定する。
 
     orchが管理するアクティビティにcheck-in済みのセッションは個人フローでなく
     orchフローなので、check-inブロック・nudgeの対象外とする。
@@ -133,7 +133,7 @@ def main() -> None:
             _update_checked_in_activity(state, all_events, transcript_path)
 
         # orchフロー（worker セッション or orch-managedアクティビティ）では
-        # 個人フロー用のcheck-inブロック・nudgeを抑制する（D#2409/D#2410）。
+        # 個人フロー用のcheck-inブロック・nudgeを抑制する。
         suppress_personal_flow = (
             _is_worker_session()
             or _is_orch_managed_activity(state.get_checked_in_activity())

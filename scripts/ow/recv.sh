@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SSE購読 + recv_filter + 自動再接続
 # 使い方: recv.sh <channel_code> <handle>
-# SSE切断時に1秒間隔で自動再接続する（M#219 §2.5）
+# SSE切断時に1秒間隔で自動再接続する
 
 RELAY_URL="${RELAY_URL:-http://127.0.0.1:8765}"
 CHANNEL="$1"
