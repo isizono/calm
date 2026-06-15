@@ -677,8 +677,7 @@ class TestOwSpawnWorkerManualFallback:
         assert result.get("manual") is True
         cmd = result["command"]
         expected_task_dir = str(tmp_path / "tasks")
-        assert "--add-dir" in cmd
-        assert expected_task_dir in cmd
+        assert f"--add-dir {expected_task_dir}" in cmd
 
 
 class TestOwSpawnWorkerAdapter:
