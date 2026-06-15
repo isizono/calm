@@ -101,7 +101,7 @@ ow_sendで1回だけ送信:
 }
 ```
 
-identity bundleに含めない属性: `task_n`（activity_idから逆引き可能）、`permission_mode`（auto固定）、`user`（relay参加者でないため）。
+identity bundleに含めない属性: `task_n`（activity_idから逆引き可能）、`user`（relay参加者でないため）。
 
 ### 5. event:state(loading) を送信
 

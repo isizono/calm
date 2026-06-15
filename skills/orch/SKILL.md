@@ -77,7 +77,7 @@ envelopeは `kind` が `command`（targeted）または `event`（broadcast）�
 
 | data.type | data 内容 | 補足 |
 |---|---|---|
-| `assign` | `{title, activity_id, topic_id, cwd, model（必須）, permission_mode, acceptance（必須）, context, playbook, timeout_min}` | worker は `event:state(working)` で応答 |
+| `assign` | `{title, activity_id, topic_id, cwd, model（必須）, acceptance（必須）, context, playbook, timeout_min}` | worker は `event:state(working)` で応答 |
 | `close` | `{reason}` | worker は退場処理（draining→terminated/cause:closed）で応答 |
 | `cancel` | `{reason}` | worker は退場処理（draining→terminated/cause:cancelled）で応答 |
 | `answer` | `{answer}` または `{escalate: true}` | blocked への応答 |
@@ -159,7 +159,7 @@ worker 起動時と terminated 直前に append される身元情報。orchは 
  }}
 ```
 
-identity から **削除された属性**: `task_n`（activity_id から逆引き可能）、`permission_mode`（auto 固定）、`user`（relay 非参加者）。M#258 §6.3.1 参照。
+identity から **削除された属性**: `task_n`（activity_id から逆引き可能）、`user`（relay 非参加者）。
 
 ### heartbeat（event:heartbeat）
 
@@ -202,7 +202,7 @@ last_seen_msg_id: 0
 ## T1 | タスク名 | status
 - worker: w-a / term_ref: iterm2:UUID / session: <uuid>
 - activity: 801
-- model: sonnet / permission: acceptEdits
+- model: sonnet
 - cwd: ~/workspace/cc-memory/.trees/feature-xxx
 - assigned: HH:MM / last_recv: HH:MM
 - acceptance: {acceptance条件}
@@ -369,7 +369,7 @@ M#258 §5.2.2 / §9 の cause lineup に基づき、orchは以下のルールで
 |---|---|
 | `ow_send(channel, handle, body, needs_reply, in_reply_to)` | メッセージ送信（4xx即失敗、5xx/接続断のみ3回指数バックオフ）。bodyは `kind=command`/`event` envelope |
 | `ow_history(channel, since, limit)` | 履歴pull（受信処理の本体・保険経路。SSE push本体添付が主軸、M#258 §3.3） |
-| `ow_spawn_worker(alias, channel, cwd, model, permission, task_title, acceptance, context, playbook, timeout_min, activity_id, topic_id, task_n)` | worker起動（spawning write-ahead→task file書き出し→アダプタ起動→安定ID返却） |
+| `ow_spawn_worker(alias, channel, cwd, model, task_title, acceptance, context, playbook, timeout_min, activity_id, topic_id, task_n)` | worker起動（spawning write-ahead→task file書き出し→アダプタ起動→安定ID返却。permission_modeはauto固定） |
 | `ow_close_worker(term_ref)` | workerクローズ |
 | `ow_status(channel, topic_id)` | queue+identity統合ビュー |
 | `ow_recover(channel, topic_id, dry_run)` | crash復旧（queue×relay履歴×identity reducer突合・ghost_active自動再構築・stalled/orphan command:ping送信） |

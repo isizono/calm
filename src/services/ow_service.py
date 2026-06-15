@@ -698,7 +698,6 @@ def _write_queue_spawning(
     cwd: str,
     task_title: str = "",
     model: str = "",
-    permission: str = "",
     acceptance: str = "",
     orch_activity_id: int | None = None,
     channel_code: str = "",
@@ -721,8 +720,8 @@ def _write_queue_spawning(
     ]
     if orch_activity_id is not None:
         fields.append(("activity", str(orch_activity_id)))
-    if model or permission:
-        fields.append(("model", f"{model} / permission: {permission}"))
+    if model:
+        fields.append(("model", model))
     fields.append(("cwd", cwd))
     fields.append(("spawning", now))
     if acceptance:
@@ -782,7 +781,6 @@ def _write_task_file(
     channel: str,
     cwd: str,
     model: str,
-    permission: str,
     task_title: str,
     acceptance: str,
     context: str,
@@ -814,7 +812,7 @@ def _write_task_file(
         "channel": channel,
         "cwd": cwd,
         "model": model,
-        "permission_mode": permission,
+        "permission_mode": "auto",
         "timeout_min": timeout_min,
         "activity_id": activity_id,
         "topic_id": topic_id,
@@ -850,7 +848,6 @@ def ow_spawn_worker(
     channel: str,
     cwd: str,
     model: str,
-    permission: str = "auto",
     task_title: str = "",
     acceptance: str = "",
     context: str = "",
@@ -865,12 +862,13 @@ def ow_spawn_worker(
     処理順: spawn前ヘルスチェック → queueへspawning write-ahead → task file書き出し
         → アダプタ呼び出し → 安定ID返却
 
+    permission_modeは常にautoに固定される。
+
     Args:
         alias: workerのhandle（例: "w-a"）
         channel: channelコード
         cwd: workerの作業ディレクトリ
         model: 使用モデル（例: "sonnet", "opus"）
-        permission: permission_mode（デフォルト: "auto"）。autoは全操作を自動承認するため、orchが管理する信頼されたタスクでの使用を前提とする
         task_title: タスクタイトル
         acceptance: 完了条件
         context: タスクコンテキスト
@@ -917,7 +915,6 @@ def ow_spawn_worker(
             cwd,
             task_title=task_title,
             model=model,
-            permission=permission,
             acceptance=acceptance,
             orch_activity_id=activity_id,
             channel_code=channel,
@@ -932,7 +929,6 @@ def ow_spawn_worker(
         channel=channel,
         cwd=cwd,
         model=model,
-        permission=permission,
         task_title=task_title,
         acceptance=acceptance,
         context=context,
@@ -949,7 +945,7 @@ def ow_spawn_worker(
     worker_cmd = (
         f'env OW_ROLE=worker OW_ALIAS={shlex.quote(alias)} OW_CHANNEL={shlex.quote(channel)} '
         f'OW_TASK_FILE={shlex.quote(str(task_file))} '
-        f'claude --model {shlex.quote(model)} --permission-mode {shlex.quote(permission)} '
+        f'claude --model {shlex.quote(model)} --permission-mode auto '
         f'{shlex.quote(f"workerスキルに従って作業を開始して。task: {task_file}")}'
     )
 

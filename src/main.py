@@ -1043,7 +1043,6 @@ def ow_spawn_worker(
     channel: str,
     cwd: str,
     model: str,
-    permission: str = "auto",
     task_title: str = "",
     acceptance: str = "",
     context: str = "",
@@ -1056,7 +1055,7 @@ def ow_spawn_worker(
     """workerセッションを起動する。
 
     処理順: queueへspawning write-ahead → task file書き出し → アダプタ起動 → 安定ID返却。
-    relay疎通確認・起動（ensure-server処理）も内包。
+    relay疎通確認・起動（ensure-server処理）も内包。permission_modeはautoに固定。
 
     OW_TERMINAL環境変数でアダプタを選択（iterm2/tmux/manual。manualは起動コマンド表示のフォールバック）。
 
@@ -1065,7 +1064,6 @@ def ow_spawn_worker(
         channel: channelコード
         cwd: workerの作業ディレクトリ
         model: 使用モデル（例: "sonnet", "opus"）
-        permission: permission_mode（デフォルト: "auto"）。autoは全操作を自動承認するため、orchが管理する信頼されたタスクでの使用を前提とする
         task_title: タスクタイトル
         acceptance: 完了条件
         context: タスクコンテキスト
@@ -1085,7 +1083,6 @@ def ow_spawn_worker(
         channel=channel,
         cwd=cwd,
         model=model,
-        permission=permission,
         task_title=task_title,
         acceptance=acceptance,
         context=context,
