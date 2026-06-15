@@ -173,11 +173,11 @@ worker のバックグラウンドループ（scripts/ow/heartbeat.sh）が定�
 - 周期: loading=10秒、それ以外=30秒（M#258 §5.4.1、D#2525）
 - `phase` は workload state を写像する補助情報
 
-**スレッド規約**: `in_reply_to` はrelay物理カラムとして残置されているが、ow 応用層では原則使わない（M#258 §4.4 / D#2522）。例外として assign への最初の `event:state(working)` には `in_reply_to=<assign msg_id>` を付けることがある（worker SKILL.md 規約に従う）。`to` はbody内規約でサーバーはルーティングしない（宛先フィルタは受信側のローカル実装）。
+**スレッド規約**: `in_reply_to` はrelay物理カラムとして残置されているが、ow 応用層では原則使わない。例外として assign への最初の `event:state(working)` には `in_reply_to=<assign msg_id>` を付けることがある（worker SKILL.md 規約に従う）。`to` はbody内規約でサーバーはルーティングしない（宛先フィルタは受信側のローカル実装）。
 
 ### 旧 cmd/state envelope の後方互換放棄
 
-D#2532 により、旧 `kind:cmd` / `kind:state` レコードは v3 reducer・orch では解釈しない。新規送受信は `kind:command` / `kind:event` のみとする。relay 物理スキーマ（messages テーブル）は D#2479 で凍結されており、過去レコードはそのまま残置される。
+旧 `kind:cmd` / `kind:state` レコードは v3 reducer・orch では解釈しない。新規送受信は `kind:command` / `kind:event` のみとする。relay 物理スキーマ（messages テーブル）は凍結されており、過去レコードはそのまま残置される。
 
 ## タスクキュー
 

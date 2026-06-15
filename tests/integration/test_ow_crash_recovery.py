@@ -110,8 +110,8 @@ def live_relay(tmp_path, monkeypatch):
 def _send_state(channel: str, alias: str, task: str, state: str):
     """workerからの state 宣言を実relayに送信する。"""
     body = {
-        "v": 1, "kind": "state", "from": alias, "to": "orch",
-        "task": task, "state": state, "data": {},
+        "v": 1, "kind": "event", "from": alias, "to": "orch",
+        "task": task, "data": {"type": "state", "state": state},
     }
     result = ow_service.ow_send(channel=channel, handle=alias, body=body)
     assert "msg_id" in result, f"send failed: {result}"
@@ -231,8 +231,9 @@ class TestCrashRecoveryScenario:
             ping_msgs = [
                 m for m in history["messages"]
                 if isinstance(m.get("body"), dict)
-                and m["body"].get("kind") == "cmd"
-                and m["body"].get("verb") == "ping"
+                and m["body"].get("kind") == "command"
+                and isinstance(m["body"].get("data"), dict)
+                and m["body"]["data"].get("type") == "ping"
                 and m["body"].get("to") == "w-z"
             ]
             assert ping_msgs, "ping was not actually delivered to relay"

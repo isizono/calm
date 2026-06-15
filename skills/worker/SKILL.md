@@ -36,7 +36,7 @@ workerが送信するメッセージはすべて `kind:event`:
 | `identity` | 参加者の身元情報 full snapshot | `"*"` |
 | `heartbeat` | liveness signal（バックグラウンドループが自動送信） | `"*"` |
 
-orchからworkerへ届くメッセージは `kind:command`（または旧形式 `kind:cmd`）。
+orchからworkerへ届くメッセージは `kind:command`。
 
 ## 起動シーケンス
 
@@ -146,7 +146,7 @@ aliasは**連番（w-a, w-b）ではなく任意の単語**を推奨する。orc
 
 ## cmd:assign の受信 → working
 
-orchから `kind:command, data.type:assign`（または旧形式 `kind:cmd, verb:assign`）が届いたら:
+orchから `kind:command, data.type:assign` が届いたら:
 
 1. 内容を確認し、`event:state(working)` を送信する:
    ```json
@@ -175,7 +175,7 @@ orchから `kind:command, data.type:assign`（または旧形式 `kind:cmd, verb
 ```
 
 orchの応答:
-- `command:answer`（または旧形式 `cmd:answer`）が届いたら、その回答に従って作業を再開し `event:state(working)` を送信する
+- `command:answer` が届いたら、その回答に従って作業を再開し `event:state(working)` を送信する
 - orchが「エスカレーションせよ」と判断した場合は §エスカレーション へ進む
 
 ## エスカレーション（escalated）
@@ -237,12 +237,12 @@ done送信後はcloseを受けるまで**読み取り専用**で待機する:
 - `event:state(terminated)` 以外のstateを送らない（`cmd:ping`への応答を除く）
 
 orchの応答:
-- `command:close`（または旧形式 `cmd:close`）→ §退場処理 を実行する
+- `command:close` → §退場処理 を実行する
 - `command:answer` 等で差し戻し（done検証NG）→ 指示に従い `event:state(working)` に戻って作業を再開
 
 ## 退場処理（cmd:close受信時）
 
-`command:close`（または旧形式 `cmd:close`）を受信したら以下の手順を順番に実行する:
+`command:close` を受信したら以下の手順を順番に実行する:
 
 ### Step 1: event:state(draining) を送信
 
@@ -324,7 +324,7 @@ SSE（Monitor）は起床信号専用。起床したら `ow_history(channel=<cha
 
 ## cmd:ping への応答
 
-orchから `kind:command, data.type:ping`（または旧形式 `kind:cmd, verb:ping`）が届いたら、現在の state を `event:state` で返す:
+orchから `kind:command, data.type:ping` が届いたら、現在の state を `event:state` で返す:
 
 ```json
 {"v":1, "kind":"event", "from":"<alias>", "to":"orch", "task":"T<task_n>", "data":{"type":"state", "state":"<現在のstate>", "note":"pong"}}
