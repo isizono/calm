@@ -53,11 +53,6 @@ _MAX_RETRIES = 3
 # model validation / normalization
 # ----------------------------
 
-# sonnet系の短縮形 → claude-sonnet-4-6[1m] に正規化
-_SONNET_CANONICAL = "claude-sonnet-4-6[1m]"
-# opus系の短縮形 → claude-opus-4-7 に正規化（4.8 は拒否）
-_OPUS_CANONICAL = "claude-opus-4-7"
-
 
 def _normalize_and_validate_model(model: str) -> tuple[str, str | None]:
     """model引数を正規化し、禁止モデルを拒否する。
@@ -79,18 +74,16 @@ def _normalize_and_validate_model(model: str) -> tuple[str, str | None]:
     if "opus-4-8" in m or "opus4-8" in m:
         return "", (
             f"model '{model}' は使用できません。"
-            f" opus 4.8 は禁止されています。代わりに '{_OPUS_CANONICAL}' を使ってください。"
+            " opus 4.8 は禁止されています。代わりに claude-opus-4-7 を使ってください。"
         )
 
-    # opus系の正規化 → claude-opus-4-7 固定
-    if "opus" in m:
-        return _OPUS_CANONICAL, None
-
-    # sonnet系の正規化 → [1m] を強制付与
+    # sonnet系: [1m] が付いていなければ付与（バージョン固定なし）
     if "sonnet" in m:
-        return _SONNET_CANONICAL, None
+        if "[1m]" not in m:
+            return model + "[1m]", None
+        return model, None
 
-    # その他未知のモデルはそのまま通す
+    # その他（opus含む）はそのまま透過
     return model, None
 
 

@@ -938,19 +938,19 @@ class TestNormalizeAndValidateModel:
     """_normalize_and_validate_model のユニットテスト"""
 
     def test_sonnet_shorthand_normalizes_to_1m(self):
-        """'sonnet' 短縮形は claude-sonnet-4-6[1m] に正規化される"""
+        """'sonnet' 短縮形は [1m] が付与される"""
         model, err = ow_service._normalize_and_validate_model("sonnet")
         assert err is None
-        assert model == "claude-sonnet-4-6[1m]"
+        assert model == "sonnet[1m]"
 
     def test_sonnet_1m_shorthand_normalizes(self):
-        """'sonnet[1m]' 短縮形も claude-sonnet-4-6[1m] に正規化される"""
+        """'sonnet[1m]' 短縮形はそのまま透過される"""
         model, err = ow_service._normalize_and_validate_model("sonnet[1m]")
         assert err is None
-        assert model == "claude-sonnet-4-6[1m]"
+        assert model == "sonnet[1m]"
 
     def test_sonnet_full_id_without_1m_gets_1m_appended(self):
-        """'claude-sonnet-4-6' は [1m] なしでも claude-sonnet-4-6[1m] に正規化される"""
+        """'claude-sonnet-4-6' は [1m] が付与される"""
         model, err = ow_service._normalize_and_validate_model("claude-sonnet-4-6")
         assert err is None
         assert model == "claude-sonnet-4-6[1m]"
@@ -961,17 +961,17 @@ class TestNormalizeAndValidateModel:
         assert err is None
         assert model == "claude-sonnet-4-6[1m]"
 
-    def test_opus_shorthand_normalizes_to_4_7(self):
-        """'opus' 短縮形は claude-opus-4-7 に正規化される"""
+    def test_opus_shorthand_passthrough(self):
+        """'opus' 短縮形は透過される"""
         model, err = ow_service._normalize_and_validate_model("opus")
         assert err is None
-        assert model == "claude-opus-4-7"
+        assert model == "opus"
 
-    def test_opus_4_7_shorthand_normalizes(self):
-        """'opus-4-7' 短縮形は claude-opus-4-7 に正規化される"""
+    def test_opus_4_7_passthrough(self):
+        """'opus-4-7' 短縮形は透過される"""
         model, err = ow_service._normalize_and_validate_model("opus-4-7")
         assert err is None
-        assert model == "claude-opus-4-7"
+        assert model == "opus-4-7"
 
     def test_opus_full_id_passthrough(self):
         """'claude-opus-4-7' はそのまま通る"""
@@ -1043,24 +1043,24 @@ class TestOwSpawnWorkerModelValidation:
         assert result["error"]["code"] == "INVALID_MODEL"
 
     def test_sonnet_shorthand_normalized_in_command(self, tmp_path: Path, monkeypatch):
-        """'sonnet' 指定時、生成コマンドに claude-sonnet-4-6[1m] が使われる"""
+        """'sonnet' 指定時、生成コマンドに sonnet[1m] が使われる"""
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         result = ow_service.ow_spawn_worker(
             alias="w-a", channel="ch1", cwd="/tmp", model="sonnet",
             task_title="test", acceptance="done", task_n=1,
         )
         assert result.get("manual") is True
-        assert "claude-sonnet-4-6[1m]" in result["command"]
+        assert "sonnet[1m]" in result["command"]
 
     def test_opus_shorthand_normalized_in_command(self, tmp_path: Path, monkeypatch):
-        """'opus' 指定時、生成コマンドに claude-opus-4-7 が使われる"""
+        """'opus' 指定時、生成コマンドに opus が透過される"""
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         result = ow_service.ow_spawn_worker(
             alias="w-a", channel="ch1", cwd="/tmp", model="opus",
             task_title="test", acceptance="done", task_n=1,
         )
         assert result.get("manual") is True
-        assert "claude-opus-4-7" in result["command"]
+        assert "opus" in result["command"]
 
     def test_claude_haiku_full_id_rejected(self, tmp_path: Path, monkeypatch):
         """'claude-haiku-4-5-20251001' のフルIDでも拒否される"""
