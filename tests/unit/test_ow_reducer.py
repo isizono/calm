@@ -227,6 +227,11 @@ class TestInferCrashCause:
         result = ow_service._infer_crash_cause("working", None)
         assert result is None
 
+    def test_escalated_state_returns_none(self):
+        """state="escalated"（人間対話中）は heartbeat が古くても crash 推論対象外。"""
+        result = ow_service._infer_crash_cause("escalated", self._old_hb(600))
+        assert result is None
+
 
 # ----------------------------
 # TestOwGetIdentity

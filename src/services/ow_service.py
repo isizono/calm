@@ -1907,8 +1907,15 @@ def _infer_crash_cause(
 
     Returns:
         crash推論結果文字列 または None（crashでない場合）
+
+    Notes:
+        escalated は workload state machine 上は non-terminal だが、人間対話中の
+        worker は heartbeat 停止が「異常」を意味しないため watchdog 対象外
+        （orch SKILL.md・playbook.md でも明示）。crash 推論からも除外する。
     """
     if workload_state not in _NON_TERMINAL_WORKLOAD_STATES:
+        return None
+    if workload_state == "escalated":
         return None
     if last_heartbeat_at is None:
         return None
