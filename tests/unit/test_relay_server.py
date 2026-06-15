@@ -3,7 +3,7 @@
 カバー範囲:
 - _broadcast: 送信者と同一handleの購読者はブロードキャスト対象外（test_case17相当）
 - _broadcast: SSE notifyペイロードに msg_id / body / handle / created_at の4フィールドが添付される
-- init_db: idx_messages_channel_msg_id / idx_messages_channel_handle_msg インデックスが作成される
+- init_db: idx_messages_channel_msg_id インデックスが作成され、再呼び出しでも維持される
 """
 import json
 import queue
@@ -61,7 +61,7 @@ class TestBroadcastSenderExcluded:
         assert sender_q.empty(), "送信者 alice 自身にエコーされた"
 
     def test_multiple_same_handle_all_excluded(self, channel):
-        """送信者と同じhandleを持つ複数purchaserが全員除外される。"""
+        """送信者と同じhandleを持つ複数subscriberが全員除外される。"""
         alice_q1: queue.Queue = queue.Queue()
         alice_q2: queue.Queue = queue.Queue()
         bob_q: queue.Queue = queue.Queue()
@@ -83,50 +83,23 @@ class TestBroadcastSenderExcluded:
 class TestBroadcastPayloadBody:
     """SSE notifyペイロードにbody本体4フィールドが添付される。"""
 
-    def test_payload_contains_msg_id(self, channel):
-        """ペイロードにmsg_idが含まれる。"""
-        q: queue.Queue = queue.Queue()
-        with srv._sub_lock:
-            srv._subscribers[channel] = [("bob", q)]
-
-        srv._broadcast(channel, "alice", _make_msg(channel, msg_id=42))
-        payload = json.loads(q.get(timeout=1))
-
-        assert payload["msg_id"] == 42
-
-    def test_payload_contains_body(self, channel):
-        """ペイロードにbody（JSON文字列）が含まれる。"""
+    def test_payload_contains_expected_fields(self, channel):
+        """msg_id / body / handle / created_at の4フィールドが正しく含まれる。"""
         body_content = '{"v":1,"kind":"event","data":{"type":"state"}}'
         q: queue.Queue = queue.Queue()
         with srv._sub_lock:
             srv._subscribers[channel] = [("bob", q)]
 
-        srv._broadcast(channel, "alice", _make_msg(channel, body=body_content))
+        srv._broadcast(
+            channel,
+            "alice",
+            _make_msg(channel, handle="alice", body=body_content, msg_id=42),
+        )
         payload = json.loads(q.get(timeout=1))
 
+        assert payload["msg_id"] == 42
         assert payload["body"] == body_content
-
-    def test_payload_contains_handle(self, channel):
-        """ペイロードにhandleが含まれる。"""
-        q: queue.Queue = queue.Queue()
-        with srv._sub_lock:
-            srv._subscribers[channel] = [("bob", q)]
-
-        srv._broadcast(channel, "alice", _make_msg(channel, handle="alice"))
-        payload = json.loads(q.get(timeout=1))
-
         assert payload["handle"] == "alice"
-
-    def test_payload_contains_created_at(self, channel):
-        """ペイロードにcreated_atが含まれる。"""
-        q: queue.Queue = queue.Queue()
-        with srv._sub_lock:
-            srv._subscribers[channel] = [("bob", q)]
-
-        msg = _make_msg(channel)
-        srv._broadcast(channel, "alice", msg)
-        payload = json.loads(q.get(timeout=1))
-
         assert payload["created_at"] == "2026-06-14T10:00:00+00:00"
 
     def test_payload_excludes_extra_fields(self, channel):
@@ -157,19 +130,14 @@ class TestInitDbIndexes:
         conn.close()
         assert row is not None, "idx_messages_channel_msg_id が作成されていない"
 
-    def test_creates_channel_handle_msg_index(self, tmp_path):
-        """idx_messages_channel_handle_msg インデックスが作成される。"""
+    def test_init_db_idempotent(self, tmp_path):
+        """init_db を2回呼んでもエラーが起きず、インデックスが維持される。"""
         db_path = str(tmp_path / "relay.db")
+        srv.init_db(db_path)
         srv.init_db(db_path)
         conn = sqlite3.connect(db_path)
         row = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_messages_channel_handle_msg'"
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_messages_channel_msg_id'"
         ).fetchone()
         conn.close()
-        assert row is not None, "idx_messages_channel_handle_msg が作成されていない"
-
-    def test_init_db_idempotent(self, tmp_path):
-        """init_db を2回呼んでも CREATE INDEX IF NOT EXISTS でエラーが起きない。"""
-        db_path = str(tmp_path / "relay.db")
-        srv.init_db(db_path)
-        srv.init_db(db_path)
+        assert row is not None, "idx_messages_channel_msg_id が2回目init_db後に失われた"

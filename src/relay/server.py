@@ -93,8 +93,6 @@ def init_db(db_path: str = DB_PATH) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_messages_channel_msg_id
                 ON messages(channel_code, msg_id);
-            CREATE INDEX IF NOT EXISTS idx_messages_channel_handle_msg
-                ON messages(channel_code, handle, msg_id DESC);
         """)
         conn.commit()
     finally:
