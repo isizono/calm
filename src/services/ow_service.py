@@ -836,6 +836,66 @@ def _write_task_file(
     return task_file
 
 
+def _save_task_as_material(
+    task_file: Path,
+    task_title: str,
+    task_n: int,
+    activity_id: int | None,
+    topic_id: str | None,
+) -> int | None:
+    """task fileの内容をcc-memoryにmaterialとして保存する。失敗時はNoneを返す（spawn処理は継続）。"""
+    try:
+        from src.services.material_service import add_material
+    except ImportError:
+        logger.warning("material_service not available, skipping task material save")
+        return None
+
+    content = task_file.read_text(encoding="utf-8")
+    tags = ["domain:cc-memory", "orch-worker", "task-file"]
+
+    related: list[dict] = []
+    if activity_id is not None:
+        related.append({"type": "activity", "id": activity_id})
+    if topic_id is not None:
+        try:
+            related.append({"type": "topic", "id": int(topic_id)})
+        except ValueError:
+            pass
+
+    result = add_material(
+        title=f"T{task_n}: {task_title}" if task_title else f"T{task_n}",
+        content=content,
+        tags=tags,
+        source=str(task_file),
+        related=related if related else None,
+    )
+    if "error" in result:
+        logger.warning("task materialの保存に失敗しました: %s", result["error"])
+        return None
+    return result["material_id"]
+
+
+def _add_material_id_to_task_file(task_file: Path, material_id: int) -> None:
+    """task fileのfrontmatterにmaterial_idを追加して再書き込みする。"""
+    content = task_file.read_text(encoding="utf-8")
+    if not content.startswith("---"):
+        return
+    end_idx = content.find("\n---", 3)
+    if end_idx == -1:
+        return
+    fm_text = content[3:end_idx].strip()
+    rest = content[end_idx + 4:]
+    try:
+        fm_data = yaml.safe_load(fm_text)
+        if not isinstance(fm_data, dict):
+            return
+    except yaml.YAMLError:
+        return
+    fm_data["material_id"] = material_id
+    fm_yaml = yaml.safe_dump(fm_data, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    task_file.write_text(f"---\n{fm_yaml}---\n{rest}", encoding="utf-8")
+
+
 def _get_adapter_path(terminal: str) -> Path | None:
     """アダプタスクリプトのパスを返す（不在ならNone）。"""
     scripts_dir = Path(__file__).resolve().parent.parent.parent / "scripts" / "ow" / "adapters"
@@ -941,6 +1001,17 @@ def ow_spawn_worker(
         activity_id=activity_id,
         topic_id=topic_id,
     )
+
+    # task fileをcc-memoryにmaterialとして保存
+    material_id = _save_task_as_material(
+        task_file=task_file,
+        task_title=task_title,
+        task_n=task_n,
+        activity_id=activity_id,
+        topic_id=topic_id,
+    )
+    if material_id is not None:
+        _add_material_id_to_task_file(task_file, material_id)
 
     # アダプタ起動
     terminal = os.environ.get("OW_TERMINAL", "manual")

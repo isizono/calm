@@ -932,3 +932,119 @@ class TestWriteTaskFile:
             timeout_min=60, activity_id=None, topic_id=None
         )
         assert task_file.exists()
+
+
+class TestSaveTaskAsMaterial:
+    """_save_task_as_materialのユニットテスト"""
+
+    def test_saves_material_and_returns_id(self, tmp_path: Path, monkeypatch):
+        """task fileの内容をmaterialとして保存し、material_idを返す"""
+        task_file = tmp_path / "t99-T5-test.md"
+        task_file.write_text("---\nv: 1\n---\n\n# T5: test\n", encoding="utf-8")
+
+        from unittest.mock import MagicMock, patch
+        mock_add_material = MagicMock(return_value={"material_id": 42})
+        with patch("src.services.material_service.add_material", mock_add_material):
+            result = ow_service._save_task_as_material(
+                task_file=task_file,
+                task_title="test",
+                task_n=5,
+                activity_id=100,
+                topic_id="99",
+            )
+        assert result == 42
+        mock_add_material.assert_called_once()
+        call_kwargs = mock_add_material.call_args
+        assert call_kwargs.kwargs["title"] == "T5: test"
+        assert "domain:cc-memory" in call_kwargs.kwargs["tags"]
+        assert "task-file" in call_kwargs.kwargs["tags"]
+
+    def test_returns_none_on_material_service_error(self, tmp_path: Path):
+        """material_serviceがエラーを返した場合はNoneを返す"""
+        task_file = tmp_path / "t99-T5-test.md"
+        task_file.write_text("---\nv: 1\n---\n\n# T5: test\n", encoding="utf-8")
+
+        from unittest.mock import patch
+        with patch("src.services.material_service.add_material", return_value={"error": {"code": "DB_ERROR"}}):
+            result = ow_service._save_task_as_material(
+                task_file=task_file,
+                task_title="test",
+                task_n=5,
+                activity_id=None,
+                topic_id=None,
+            )
+        assert result is None
+
+
+class TestAddMaterialIdToTaskFile:
+    """_add_material_id_to_task_fileのユニットテスト"""
+
+    def test_adds_material_id_to_frontmatter(self, tmp_path: Path):
+        """frontmatterにmaterial_idを追加して再書き込みする"""
+        task_file = tmp_path / "task.md"
+        task_file.write_text(
+            "---\nv: 1\ntask: T5\nalias: w-a\n---\n\n# T5: test\n",
+            encoding="utf-8",
+        )
+        ow_service._add_material_id_to_task_file(task_file, 42)
+        content = task_file.read_text(encoding="utf-8")
+        assert "material_id: 42" in content
+        assert "task: T5" in content
+
+    def test_no_op_when_no_frontmatter(self, tmp_path: Path):
+        """frontmatterがない場合は何もしない"""
+        task_file = tmp_path / "task.md"
+        original = "# T5: test\n"
+        task_file.write_text(original, encoding="utf-8")
+        ow_service._add_material_id_to_task_file(task_file, 42)
+        assert task_file.read_text(encoding="utf-8") == original
+
+
+class TestSpawnWorkerSavesMaterial:
+    """ow_spawn_workerがtask fileをmaterialとして保存するテスト"""
+
+    @pytest.fixture(autouse=True)
+    def _stub_preflight(self, monkeypatch):
+        monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
+        monkeypatch.setattr(ow_service, "ensure_channel", lambda c: True)
+        monkeypatch.setattr(ow_service, "_get_presence", lambda c: [])
+
+    def test_spawn_saves_material_and_updates_frontmatter(self, tmp_path: Path, monkeypatch):
+        """spawn成功時にmaterialが保存され、task fileのfrontmatterにmaterial_idが追加される"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        monkeypatch.delenv("OW_TERMINAL", raising=False)
+
+        from unittest.mock import patch
+        with patch("src.services.material_service.add_material", return_value={"material_id": 99}) as mock_add:
+            result = ow_service.ow_spawn_worker(
+                alias="w-x", channel="ch1", cwd="/tmp", model="sonnet",
+                task_title="material化テスト", acceptance="done", topic_id="99", task_n=27,
+            )
+
+        assert result.get("manual") is True
+        assert "task_file" in result
+        mock_add.assert_called_once()
+
+        # frontmatterにmaterial_idが追加されている
+        task_file = Path(result["task_file"])
+        content = task_file.read_text(encoding="utf-8")
+        assert "material_id: 99" in content
+
+    def test_spawn_continues_when_material_save_fails(self, tmp_path: Path, monkeypatch):
+        """material保存失敗でもspawnは正常に完了する"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        monkeypatch.delenv("OW_TERMINAL", raising=False)
+
+        from unittest.mock import patch
+        with patch("src.services.material_service.add_material", return_value={"error": {"code": "DB_ERROR"}}):
+            result = ow_service.ow_spawn_worker(
+                alias="w-y", channel="ch2", cwd="/tmp", model="sonnet",
+                task_title="エラーテスト", acceptance="done", topic_id="99", task_n=28,
+            )
+
+        assert result.get("manual") is True
+        assert "task_file" in result
+        # frontmatterにmaterial_idは追加されない
+        task_file = Path(result["task_file"])
+        content = task_file.read_text(encoding="utf-8")
+        assert "material_id" not in content
