@@ -592,6 +592,31 @@ def _sanitize_queue_field(value: str) -> str:
     return " ".join(str(value).splitlines()).strip()
 
 
+# MCP/Claudeプロトコルで使われる予約XMLタグのパターン（antml:プレフィックス含む）
+_MCP_RESERVED_TAG_RE = re.compile(
+    r"</?(?:antml:)?(?:function_calls|invoke|parameter|tool_result)(?:\s[^>]*)?>",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_task_body_field(value: str, field_name: str = "") -> str:
+    """task_file本文フィールド（acceptance/context等）からMCP予約XMLタグを除去する。
+
+    orchがtool callの引数としてフィールド値を渡すとき、XML構文ミスでタグ残骸
+    （例: </parameter>, <invoke name="..."> 等）が混入することがある。
+    workerがtask_fileとして読むとき、これらがMCPプロトコルの一部として
+    誤解釈される恐れがあるため、既知の予約タグは除去する。
+    """
+    cleaned, count = _MCP_RESERVED_TAG_RE.subn("", value)
+    if count:
+        logger.warning(
+            "_write_task_file: %sフィールドにMCP予約XMLタグが%d件混入していました（除去済み）",
+            field_name or "unknown",
+            count,
+        )
+    return cleaned
+
+
 def _format_queue_task_entry(
     task_n: int,
     title: str,
@@ -821,13 +846,17 @@ def _write_task_file(
     }
     fm_yaml = yaml.safe_dump(fm_data, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
+    acceptance_clean = _sanitize_task_body_field(acceptance, "acceptance")
+    context_clean = _sanitize_task_body_field(context, "context")
+    playbook_clean = _sanitize_task_body_field(playbook, "playbook")
+
     body_lines = [f"# {fm_data['task']}: {task_title}".rstrip()]
-    if acceptance:
-        body_lines += ["", "## Acceptance", "", acceptance]
-    if context:
-        body_lines += ["", "## Context", "", context]
-    if playbook:
-        body_lines += ["", "## Playbook", "", playbook]
+    if acceptance_clean:
+        body_lines += ["", "## Acceptance", "", acceptance_clean]
+    if context_clean:
+        body_lines += ["", "## Context", "", context_clean]
+    if playbook_clean:
+        body_lines += ["", "## Playbook", "", playbook_clean]
     body = "\n".join(body_lines) + "\n"
 
     content = f"---\n{fm_yaml}---\n\n{body}"
