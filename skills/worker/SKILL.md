@@ -181,7 +181,7 @@ workerは全部自分で調べきる必要はない。Agent/Taskツールによ�
 |---|---|
 | 情報収集・ファイル読み込み・機械的作業 | haiku / sonnet |
 | 通常の実装・分析・整理 | sonnet |
-| 設計判断・品質評価・複雑な推論 | opus（`claude-opus-4-7`） |
+| 設計判断・品質評価・複雑な推論 | sonnet / opus（`claude-opus-4-7`） |
 
 **opus 4.8は使用禁止**。opusが必要な場合は `claude-opus-4-7` を指定する。
 
