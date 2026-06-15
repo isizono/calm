@@ -1,4 +1,4 @@
-"""launcherのtools/listフィルタのユニットテスト（M#219 §2.6）
+"""launcherのtools/listフィルタのユニットテスト
 
 エッジケース:
 - CCM_OW未設定&OW_ROLE未設定 → tools/list応答からow_*を除外

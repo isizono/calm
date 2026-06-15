@@ -12,9 +12,9 @@ assignの `model` は必須。タスクの性質に応じて以下の目安で�
 | 通常実装（コーディング、テスト作成、バグ修正等） | sonnet / opus |
 | 設計・複雑推論（アーキテクチャ設計、トレードオフ分析、根本原因調査等） | opus 以上 |
 
-cc-memoryプラグイン付きのworkerはコンテキスト消費が大きいため、原則 **1Mコンテキスト版**を使う（D#2449）。CLIの `--model` 引数: `sonnet[1m]`、`claude-opus-4-7` 等。
+cc-memoryプラグイン付きのworkerはコンテキスト消費が大きいため、原則 **1Mコンテキスト版**を使う。CLIの `--model` 引数: `sonnet[1m]`、`claude-opus-4-7` 等。
 
-**opus 4.8は使用禁止**（D#2476）。`opus` `opus[1m]` `opus-4-7` `opus-4-7[1m]` は無効なモデルIDまたは4.8に解決される。必ずフルID `claude-opus-4-7` を使う。
+**opus 4.8は使用禁止**。`opus` `opus[1m]` `opus-4-7` `opus-4-7[1m]` は無効なモデルIDまたは4.8に解決される。必ずフルID `claude-opus-4-7` を使う。
 
 workerのSA（サブエージェント）にも同ルールを適用する。
 
@@ -26,7 +26,7 @@ workerのSA（サブエージェント）にも同ルールを適用する。
 - assignに明示的に指定しない場合は60分を適用する
 - タスクの性質（大規模実装・長時間調査等）に応じてorchが上書き可能
 
-### heartbeat 途絶 watchdog（M#258 §5.4.2 / D#2525）
+### heartbeat 途絶 watchdog（設計書v3 §5.4.2）
 
 orchが worker の生死を判定する基準は **heartbeat 途絶**。workload state の所要時間（`timeout_min`）とは別軸で監視する。`timeout_min` 超過は workload 上の予期外長期化、heartbeat 途絶は liveness 側のcrash候補（reducer 推論）として分けて扱う。
 

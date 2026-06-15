@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # リトライ設定
 MAX_RETRIES = 3
 
-# ow ON/OFFトグル（M#219 §2.6）
+# ow ON/OFFトグル
 # CCM_OW=1またはOW_ROLE=workerのセッションのみow_*ツールを可視にする
 _OW_ENABLED = os.environ.get("CCM_OW") == "1" or os.environ.get("OW_ROLE") == "worker"
 
@@ -274,7 +274,7 @@ async def _bridge() -> None:
             read_streamが終了したとき、stdin_eofがFalseならサーバー側切断と判断し
             ServerDisconnectedをraiseしてtask group全体をキャンセルする。
 
-            OW無効時はtools/listレスポンスからow_*ツールを除外する（M#219 §2.6）。
+            OW無効時はtools/listレスポンスからow_*ツールを除外する。
             """
             try:
                 async for session_msg_or_exc in read_stream:

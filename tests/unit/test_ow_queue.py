@@ -1,4 +1,4 @@
-"""queueファイルのパース/シリアライズのユニットテスト（M#219 §3.2）"""
+"""queueファイルのパース/シリアライズのユニットテスト"""
 import json
 from pathlib import Path
 

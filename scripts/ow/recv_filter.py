@@ -7,7 +7,7 @@
 
 自分宛（to=自分のhandle）またはbroadcast（to="*"）のメッセージのみ出力する。
 不正なJSON行はスキップ（クラッシュしない）。
-python -u + 行ごとflushでMonitorへの遅延なし（D#2393）。
+python -u + 行ごとflushでMonitorへの遅延なし。
 """
 import json
 import sys
