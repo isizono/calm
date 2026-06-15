@@ -80,6 +80,15 @@ class TestParseOwEvent:
         result = ow_service._parse_ow_event(msg)
         assert result is None
 
+    def test_old_kind_cmd_returns_none_with_warning(self, caplog):
+        """旧形式 kind=cmd → None を返し warning ログを出す（v3 cutoff）"""
+        body = {"v": 1, "kind": "cmd", "from": "orch", "to": "w-a", "verb": "assign"}
+        msg = _make_msg(20, "orch", body)
+        with caplog.at_level(logging.WARNING, logger="src.services.ow_service"):
+            result = ow_service._parse_ow_event(msg)
+        assert result is None
+        assert any("kind=" in r.message for r in caplog.records)
+
 
 # ----------------------------
 # TestQueryLatestEvent

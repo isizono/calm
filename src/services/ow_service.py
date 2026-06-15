@@ -478,7 +478,7 @@ def ow_send(
     Args:
         channel: channelコード
         handle: 送信者handle（例: "orch", "w-a"）
-        body: ow固有JSON（{"v":1, "kind":"cmd"|"state", ...}）
+        body: ow固有JSON（{"v":1, "kind":"command"|"event", ...}）
         needs_reply: 返信を期待するか
         in_reply_to: 返信先のmsg_id
 
@@ -1419,11 +1419,14 @@ def reconstruct_state_from_relay(channel: str, limit: int = 10000) -> dict:
         body = msg.get("body", {})
         if not isinstance(body, dict):
             continue
-        if body.get("kind") != "state":
+        if body.get("kind") != "event":
+            continue
+        data = body.get("data") or {}
+        if data.get("type") != "state":
             continue
         alias = body.get("from") or ""
         task = body.get("task") or ""
-        state = body.get("state") or ""
+        state = data.get("state") or ""
         if not alias or not task or not state:
             continue
         key = f"{alias}:{task}"
@@ -1580,19 +1583,18 @@ def detect_crash_inconsistencies(
 
 
 def _send_recovery_ping(channel: str, alias: str, task: str = "T0") -> dict:
-    """workerにcrash復旧用cmd:pingを送信する。
+    """workerにcrash復旧用pingを送信する（kind:command / data.type:ping）。
 
     needs_reply=True で送り、応答はorchの通常受信ループで処理される。
     本関数はfire-and-forget（応答待ちはしない）。
     """
     body = {
         "v": 1,
-        "kind": "cmd",
+        "kind": "command",
         "from": "orch",
         "to": alias,
         "task": task or "T0",
-        "verb": "ping",
-        "data": {"recovery": True},
+        "data": {"type": "ping", "recovery": True},
     }
     return ow_send(channel=channel, handle="orch", body=body, needs_reply=True)
 

@@ -1000,7 +1000,7 @@ def ow_send(
 ) -> dict:
     """ow channelにメッセージを送信する。
 
-    bodyはow固有JSONを格納するdict（{"v":1, "kind":"cmd"|"state", ...}）。
+    bodyはow固有JSONを格納するdict（{"v":1, "kind":"command"|"event", ...}）。
     4xx即失敗、5xx/接続断のみ3回指数バックオフ。
 
     Args:

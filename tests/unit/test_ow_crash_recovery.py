@@ -164,9 +164,9 @@ class TestReconstructStateFromRelay:
     def test_single_worker_multiple_states(self, monkeypatch):
         """同一workerが ready→working→done と進む → latest_state=done"""
         msgs = [
-            {"msg_id": 1, "body": {"kind": "state", "from": "w-a", "task": "T1", "state": "ready"}, "created_at": "t1"},
-            {"msg_id": 2, "body": {"kind": "state", "from": "w-a", "task": "T1", "state": "working"}, "created_at": "t2"},
-            {"msg_id": 3, "body": {"kind": "state", "from": "w-a", "task": "T1", "state": "done"}, "created_at": "t3"},
+            {"msg_id": 1, "body": {"v": 1, "kind": "event", "from": "w-a", "task": "T1", "data": {"type": "state", "state": "ready"}}, "created_at": "t1"},
+            {"msg_id": 2, "body": {"v": 1, "kind": "event", "from": "w-a", "task": "T1", "data": {"type": "state", "state": "working"}}, "created_at": "t2"},
+            {"msg_id": 3, "body": {"v": 1, "kind": "event", "from": "w-a", "task": "T1", "data": {"type": "state", "state": "done"}}, "created_at": "t3"},
         ]
         monkeypatch.setattr(
             ow_service, "ow_history",
@@ -183,8 +183,8 @@ class TestReconstructStateFromRelay:
     def test_multiple_workers_isolated(self, monkeypatch):
         """異なる (alias, task) のstateは独立に集計される"""
         msgs = [
-            {"msg_id": 1, "body": {"kind": "state", "from": "w-a", "task": "T1", "state": "ready"}, "created_at": "t1"},
-            {"msg_id": 2, "body": {"kind": "state", "from": "w-b", "task": "T2", "state": "working"}, "created_at": "t2"},
+            {"msg_id": 1, "body": {"v": 1, "kind": "event", "from": "w-a", "task": "T1", "data": {"type": "state", "state": "ready"}}, "created_at": "t1"},
+            {"msg_id": 2, "body": {"v": 1, "kind": "event", "from": "w-b", "task": "T2", "data": {"type": "state", "state": "working"}}, "created_at": "t2"},
         ]
         monkeypatch.setattr(
             ow_service, "ow_history",
@@ -195,11 +195,11 @@ class TestReconstructStateFromRelay:
         assert result["by_worker_task"]["w-a:T1"]["latest_state"] == "ready"
         assert result["by_worker_task"]["w-b:T2"]["latest_state"] == "working"
 
-    def test_cmd_messages_are_ignored(self, monkeypatch):
-        """kind=cmdのメッセージは集計から除外される"""
+    def test_command_messages_are_ignored(self, monkeypatch):
+        """kind=commandのメッセージはstate集計から除外される"""
         msgs = [
-            {"msg_id": 1, "body": {"kind": "cmd", "from": "orch", "to": "w-a", "task": "T1", "verb": "assign"}},
-            {"msg_id": 2, "body": {"kind": "state", "from": "w-a", "task": "T1", "state": "ready"}, "created_at": "t2"},
+            {"msg_id": 1, "body": {"v": 1, "kind": "command", "from": "orch", "to": "w-a", "task": "T1", "data": {"type": "assign"}}},
+            {"msg_id": 2, "body": {"v": 1, "kind": "event", "from": "w-a", "task": "T1", "data": {"type": "state", "state": "ready"}}, "created_at": "t2"},
         ]
         monkeypatch.setattr(
             ow_service, "ow_history",
@@ -207,17 +207,17 @@ class TestReconstructStateFromRelay:
         )
         result = ow_service.reconstruct_state_from_relay("ChAbCdEf")
         assert "w-a:T1" in result["by_worker_task"]
-        # ready 1件のみ集計、cmdはhistory_countに含まれない
+        # ready 1件のみ集計、commandはhistory_countに含まれない
         assert result["by_worker_task"]["w-a:T1"]["history_count"] == 1
 
     def test_malformed_messages_skipped(self, monkeypatch):
         """body無しやfrom/task/stateの欠落は無視される"""
         msgs = [
             {"msg_id": 1, "body": None},
-            {"msg_id": 2, "body": {"kind": "state", "from": "", "task": "T1", "state": "ready"}},
-            {"msg_id": 3, "body": {"kind": "state", "from": "w-a", "task": "", "state": "ready"}},
-            {"msg_id": 4, "body": {"kind": "state", "from": "w-a", "task": "T1", "state": ""}},
-            {"msg_id": 5, "body": {"kind": "state", "from": "w-a", "task": "T1", "state": "ready"}, "created_at": "ok"},
+            {"msg_id": 2, "body": {"v": 1, "kind": "event", "from": "", "task": "T1", "data": {"type": "state", "state": "ready"}}},
+            {"msg_id": 3, "body": {"v": 1, "kind": "event", "from": "w-a", "task": "", "data": {"type": "state", "state": "ready"}}},
+            {"msg_id": 4, "body": {"v": 1, "kind": "event", "from": "w-a", "task": "T1", "data": {"type": "state", "state": ""}}},
+            {"msg_id": 5, "body": {"v": 1, "kind": "event", "from": "w-a", "task": "T1", "data": {"type": "state", "state": "ready"}}, "created_at": "ok"},
         ]
         monkeypatch.setattr(
             ow_service, "ow_history",
@@ -239,6 +239,26 @@ class TestReconstructStateFromRelay:
         assert result["by_worker_task"] == {}
         assert result["max_msg_id"] == 0
         assert "error" in result
+
+    def test_old_kind_cmd_state_messages_are_skipped(self, monkeypatch):
+        """旧形式 kind=cmd/state のレコードは reconstruct_state_from_relay で無視される（v3 cutoff）"""
+        msgs = [
+            # 旧形式 kind:cmd
+            {"msg_id": 1, "body": {"kind": "cmd", "from": "orch", "to": "w-a", "task": "T1", "verb": "assign"}},
+            # 旧形式 kind:state
+            {"msg_id": 2, "body": {"kind": "state", "from": "w-a", "task": "T1", "state": "ready"}, "created_at": "t2"},
+            # 新形式 kind:event data.type:state のみ集計対象
+            {"msg_id": 3, "body": {"v": 1, "kind": "event", "from": "w-a", "task": "T1", "data": {"type": "state", "state": "working"}}, "created_at": "t3"},
+        ]
+        monkeypatch.setattr(
+            ow_service, "ow_history",
+            lambda channel, since=0, limit=10000: self._build_history(msgs),
+        )
+        result = ow_service.reconstruct_state_from_relay("ChAbCdEf")
+        # 旧形式はskipされ、新形式の1件のみ集計される
+        assert "w-a:T1" in result["by_worker_task"]
+        assert result["by_worker_task"]["w-a:T1"]["history_count"] == 1
+        assert result["by_worker_task"]["w-a:T1"]["latest_state"] == "working"
 
 
 # ----------------------------
@@ -590,7 +610,7 @@ class TestOwRecover:
             ow_service, "ow_history",
             lambda channel, since=0, limit=10000: {
                 "messages": [
-                    {"msg_id": 1, "body": {"kind": "state", "from": "w-a", "task": "T1", "state": "working"}, "created_at": "t1"},
+                    {"msg_id": 1, "body": {"v": 1, "kind": "event", "from": "w-a", "task": "T1", "data": {"type": "state", "state": "working"}}, "created_at": "t1"},
                 ]
             },
         )
@@ -621,7 +641,7 @@ class TestOwRecover:
             ow_service, "ow_history",
             lambda channel, since=0, limit=10000: {
                 "messages": [
-                    {"msg_id": 1, "body": {"kind": "state", "from": "w-a", "task": "T1", "state": "done"}, "created_at": "t1"},
+                    {"msg_id": 1, "body": {"v": 1, "kind": "event", "from": "w-a", "task": "T1", "data": {"type": "state", "state": "done"}}, "created_at": "t1"},
                 ]
             },
         )
@@ -652,7 +672,7 @@ class TestOwRecover:
         assert len(result["applied"]["pings_sent"]) == 1
         assert result["applied"]["pings_sent"][0]["alias"] == "w-z"
         assert result["applied"]["pings_sent"][0]["reason"] == "orphan"
-        assert sent and sent[0]["body"]["verb"] == "ping"
+        assert sent and sent[0]["body"]["data"]["type"] == "ping"
         assert sent[0]["body"]["to"] == "w-z"
         assert sent[0]["needs_reply"] is True
 
@@ -710,7 +730,7 @@ class TestOwRecover:
             ow_service, "ow_history",
             lambda channel, since=0, limit=10000: {
                 "messages": [
-                    {"msg_id": 1, "body": {"kind": "state", "from": "w-a", "task": "T1", "state": "done"}, "created_at": "t1"},
+                    {"msg_id": 1, "body": {"v": 1, "kind": "event", "from": "w-a", "task": "T1", "data": {"type": "state", "state": "done"}}, "created_at": "t1"},
                 ]
             },
         )
@@ -759,7 +779,7 @@ class TestOwRecover:
             ow_service, "ow_history",
             lambda channel, since=0, limit=10000: {
                 "messages": [
-                    {"msg_id": 1, "body": {"kind": "state", "from": "w-a", "task": "T1", "state": "done"}, "created_at": "t1"},
+                    {"msg_id": 1, "body": {"v": 1, "kind": "event", "from": "w-a", "task": "T1", "data": {"type": "state", "state": "done"}}, "created_at": "t1"},
                 ]
             },
         )
