@@ -107,7 +107,7 @@ def add_pin(
                 }
             }
 
-        # 自己参照拒否（D#2147）
+        # 自己参照拒否
         if source_type == target_type and source_id == target_id:
             return {
                 "error": {
@@ -116,7 +116,7 @@ def add_pin(
                 }
             }
 
-        # 存在性チェック（D#2152）
+        # 存在性チェック
         source_table = ENTITY_TABLE_MAP[source_type]
         row = conn.execute(
             f"SELECT id FROM {source_table} WHERE id = ?", (source_id,)
@@ -141,7 +141,7 @@ def add_pin(
                 }
             }
 
-        # INSERT OR IGNORE（D#2154 冪等）
+        # INSERT OR IGNORE（冪等）
         conn.execute(
             "INSERT OR IGNORE INTO pins (source_type, source_id, target_type, target_id) VALUES (?, ?, ?, ?)",
             (source_type, source_id, target_type, target_id),
@@ -203,7 +203,7 @@ def remove_pin(
 
     conn = get_connection()
     try:
-        # ref解決。tag str 未存在は冪等な {"removed": 0} で短絡（D#2347）
+        # ref解決。tag str 未存在は冪等な {"removed": 0} で短絡
         source_id, err = _resolve_ref(conn, source_type, source_ref)
         if err:
             return err

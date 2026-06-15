@@ -130,8 +130,8 @@ def _build_activities_section(conn) -> str:
     heartbeat中は別セクション表示。非heartbeatは番号付きフラットリストで出力し、
     AIスコアリング指示を末尾に追加する。
 
-    worker セッション（OW_ROLE=worker）では一覧注入自体を抑制する（D#2409）。
-    通常セッションでは orch-managed タグ付きアクティビティを除外する（D#2410）。
+    worker セッション（OW_ROLE=worker）では一覧注入自体を抑制する。
+    通常セッションでは orch-managed タグ付きアクティビティを除外する。
     """
     # worker セッションはアクティビティ一覧を注入しない
     if _is_worker_session():
