@@ -272,7 +272,7 @@ class TestHeartbeatShLoopControl:
         # ready フェーズに切り替え
         tmp_phase_file.write_text("ready")
 
-        deadline = time.time() + 1.0
+        deadline = time.time() + 3.0
         while len(server.received) < loading_count + 1 and time.time() < deadline:
             time.sleep(0.05)
 

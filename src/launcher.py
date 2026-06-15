@@ -23,13 +23,6 @@ logger = logging.getLogger(__name__)
 # リトライ設定
 MAX_RETRIES = 3
 
-# ow ON/OFFトグル
-# CCM_OW=1またはOW_ROLE=workerのセッションのみow_*ツールを可視にする
-_OW_ENABLED = os.environ.get("CCM_OW") == "1" or os.environ.get("OW_ROLE") == "worker"
-
-# tools/listリクエストIDのトラッキング（フィルタ対象の特定に使用）
-_pending_tools_list_ids: set = set()
-
 
 class ServerDisconnected(Exception):
     """サーバー側の切断を示す例外。stdin EOFとの区別に使用する。"""
@@ -242,16 +235,6 @@ async def _bridge() -> None:
                         if not line:
                             continue
                         try:
-                            # ow_*フィルタ: tools/listリクエストのIDをトラッキング（OW無効時のみ）
-                            if not _OW_ENABLED:
-                                try:
-                                    parsed = json.loads(line)
-                                    if parsed.get("method") == "tools/list":
-                                        req_id = parsed.get("id")
-                                        if req_id is not None:
-                                            _pending_tools_list_ids.add(req_id)
-                                except (json.JSONDecodeError, AttributeError):
-                                    pass
                             message = types.JSONRPCMessage.model_validate_json(line)
                             session_msg = SessionMessage(message)
                             await write_stream.send(session_msg)
@@ -273,8 +256,6 @@ async def _bridge() -> None:
 
             read_streamが終了したとき、stdin_eofがFalseならサーバー側切断と判断し
             ServerDisconnectedをraiseしてtask group全体をキャンセルする。
-
-            OW無効時はtools/listレスポンスからow_*ツールを除外する。
             """
             try:
                 async for session_msg_or_exc in read_stream:
@@ -285,26 +266,6 @@ async def _bridge() -> None:
                     json_bytes = message.model_dump_json(
                         by_alias=True, exclude_none=True
                     ).encode("utf-8")
-
-                    # ow_*フィルタ: tools/listレスポンスからow_*を除外（OW無効時のみ）
-                    if not _OW_ENABLED and _pending_tools_list_ids:
-                        try:
-                            parsed = json.loads(json_bytes)
-                            resp_id = parsed.get("id")
-                            if resp_id in _pending_tools_list_ids:
-                                _pending_tools_list_ids.discard(resp_id)
-                                tools = (
-                                    parsed.get("result", {}).get("tools", [])
-                                )
-                                if tools:
-                                    filtered = [
-                                        t for t in tools
-                                        if not t.get("name", "").startswith("ow_")
-                                    ]
-                                    parsed["result"]["tools"] = filtered
-                                    json_bytes = json.dumps(parsed, ensure_ascii=False).encode("utf-8")
-                        except (json.JSONDecodeError, AttributeError, KeyError):
-                            pass
 
                     sys.stdout.buffer.write(json_bytes + b"\n")
                     sys.stdout.buffer.flush()
@@ -361,7 +322,6 @@ def main() -> None:
         except Exception as e:
             # anyioのExceptionGroupによりServerDisconnectedが直接キャッチできない
             # ケースがあるため、例外の種類を問わず統一的にリトライする
-            _pending_tools_list_ids.clear()
             if attempt >= MAX_RETRIES:
                 logger.error("Bridge failed, max retries (%d) exceeded: %s", MAX_RETRIES, e)
                 break
