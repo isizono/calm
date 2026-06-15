@@ -871,6 +871,7 @@ class TestWriteTaskFile:
         assert fm["channel"] == "AbCdEfGh"
         assert fm["v"] == 1
         assert fm["activity_id"] == 1
+        assert fm["permission_mode"] == "auto"
         # 本文にタイトル・acceptance・contextが入る
         assert "# T1: テストタスク" in body
         assert "## Acceptance" in body
