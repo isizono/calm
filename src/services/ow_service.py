@@ -1553,7 +1553,7 @@ def detect_crash_inconsistencies(
 
 
 def _send_recovery_ping(channel: str, alias: str, task: str = "T0") -> dict:
-    """workerにcrash復旧用cmd:pingを送信する。
+    """workerにcrash復旧用pingを送信する（kind:command / data.type:ping）。
 
     needs_reply=True で送り、応答はorchの通常受信ループで処理される。
     本関数はfire-and-forget（応答待ちはしない）。
