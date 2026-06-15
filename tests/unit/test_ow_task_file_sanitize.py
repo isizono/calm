@@ -86,7 +86,7 @@ class TestWriteTaskFileSanitize:
             channel="testchan",
             cwd="/tmp",
             model="claude-sonnet-4-6",
-            permission="auto",
+
             task_title="サニタイズテスト",
             acceptance="テスト全通過</parameter>",
             context="",
@@ -109,7 +109,7 @@ class TestWriteTaskFileSanitize:
             channel="testchan",
             cwd="/tmp",
             model="claude-sonnet-4-6",
-            permission="auto",
+
             task_title="サニタイズテスト",
             acceptance="",
             context='<invoke name="foo">背景情報</invoke>',
@@ -133,7 +133,7 @@ class TestWriteTaskFileSanitize:
             channel="testchan",
             cwd="/tmp",
             model="claude-sonnet-4-6",
-            permission="auto",
+
             task_title="サニタイズテスト",
             acceptance="</parameter>",
             context="",
@@ -154,7 +154,7 @@ class TestWriteTaskFileSanitize:
             channel="chan",
             cwd="/tmp",
             model="claude-sonnet-4-6",
-            permission="auto",
+
             task_title="クリーンテスト",
             acceptance="PRを作成してCIが通ること",
             context="背景情報",
