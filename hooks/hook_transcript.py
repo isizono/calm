@@ -31,7 +31,7 @@ _ORCH_MANAGED_TAG = "orch-managed"
 
 
 def _is_worker_session() -> bool:
-    """ow workerとして起動されたセッションかを判定する（D#2409）。
+    """ow workerとして起動されたセッションかを判定する。
 
     ow_spawn_workerは worker起動時に環境変数 OW_ROLE=worker を設定する。
     workerはtask fileとcheck_inで文脈を得るため、個人フロー用の

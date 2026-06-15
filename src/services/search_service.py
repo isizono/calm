@@ -1401,7 +1401,7 @@ def search(
     if date_before is not None and len(date_before) == 10:
         date_before = date_before + " 23:59:59"
 
-    # domain → tagsマージ（D#1695: 重複除去）
+    # domain → tagsマージ（重複除去）
     if domain:
         domain_tag = f"domain:{domain}"
         if tags is None:

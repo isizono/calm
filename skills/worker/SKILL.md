@@ -261,7 +261,7 @@ heartbeatループは draining フェーズで 30秒間隔を維持する（work
 `worker-sync` スキルは以下を行う（詳細はworker-syncスキル参照）:
 - **log記録**: セッション中の作業経緯（実装アプローチ・障害・orchとのやり取り）を1件のログとして記録
 - **material記録**: state:doneで報告済み以外の中間成果物があれば保存
-- **decisionは原則記録しない**: decision_proposalsでorchに提案する（D#2397）
+- **decisionは原則記録しない**: decision_proposalsでorchに提案する
 
 ### Step 3: event:identity 再 append（terminated情報付き）
 
