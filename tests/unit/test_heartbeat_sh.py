@@ -77,6 +77,18 @@ def tmp_phase_file(tmp_path):
         f.unlink()
 
 
+def _shutdown_proc(proc):
+    """テスト用ヘルパー: proc を terminate し、wait のタイムアウトでは kill にフォールバックする。"""
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=3)
+
+
 # ========================================
 # Tests
 # ========================================
@@ -123,8 +135,7 @@ class TestHeartbeatShEnvelope:
 
         # ループ停止
         tmp_phase_file.unlink()
-        proc.terminate()
-        proc.wait(timeout=3)
+        _shutdown_proc(proc)
 
         assert len(server.received) >= 1
         req = server.received[0]
@@ -161,8 +172,7 @@ class TestHeartbeatShEnvelope:
             time.sleep(0.05)
 
         tmp_phase_file.unlink()
-        proc.terminate()
-        proc.wait(timeout=3)
+        _shutdown_proc(proc)
 
         assert len(server.received) >= 1
         body = server.received[0].get("body", {})
@@ -193,8 +203,7 @@ class TestHeartbeatShEnvelope:
             time.sleep(0.05)
 
         tmp_phase_file.unlink()
-        proc.terminate()
-        proc.wait(timeout=3)
+        _shutdown_proc(proc)
 
         assert len(server.received) >= 1
         req = server.received[0]
@@ -236,8 +245,7 @@ class TestHeartbeatShLoopControl:
             proc.wait(timeout=3)
             exited = True
         except subprocess.TimeoutExpired:
-            proc.terminate()
-            proc.wait()
+            _shutdown_proc(proc)
             exited = False
 
         assert exited, "PHASE_FILE 削除後にスクリプトが終了しなかった"
@@ -262,8 +270,8 @@ class TestHeartbeatShLoopControl:
             stderr=subprocess.DEVNULL,
         )
 
-        # loading フェーズで数件届くのを確認
-        deadline = time.time() + 1.5
+        # loading フェーズで数件届くのを確認（CIのリソース競合に備えて余裕を持たせる）
+        deadline = time.time() + 5.0
         while len(server.received) < 2 and time.time() < deadline:
             time.sleep(0.05)
 
@@ -272,14 +280,13 @@ class TestHeartbeatShLoopControl:
         # ready フェーズに切り替え
         tmp_phase_file.write_text("ready")
 
-        deadline = time.time() + 1.0
+        deadline = time.time() + 5.0
         while len(server.received) < loading_count + 1 and time.time() < deadline:
             time.sleep(0.05)
 
         # ready フェーズのメッセージが届いているはず
         tmp_phase_file.unlink()
-        proc.terminate()
-        proc.wait(timeout=3)
+        _shutdown_proc(proc)
 
         ready_msgs = [
             m for m in server.received

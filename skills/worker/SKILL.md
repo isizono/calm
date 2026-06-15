@@ -51,10 +51,17 @@ frontmatterから取得するパラメータ:
 - タイトル（H1）, `## Acceptance`, `## Context`, `## Playbook`
 
 **task fileが存在しない / 読めない場合の処理（起動失敗）:**
+
+起動失敗時の identity フィールド（`channel_code` / `alias` / `topic_id` 等）は、orch から渡される **bootstrap プロンプト**から取得する。bootstrap プロンプトは task file path のほかにも以下の起動パラメータを含む前提:
+
+- `channel_code`, `alias`, `task_n`, `topic_id`, `activity_id`, `cwd`, `model`
+
+これらが bootstrap で確実に渡される限り、task file 読み込み前でも最小限の identity bundle を組み立てて送信できる:
+
 ```
 可能ならば: event:identity（最小bundle + terminated_at + cause:"dead"）を送信
            → event:state(terminated, cause:"dead") を送信
-不可能な場合: event:state(terminated, cause:"dead") のみ送信
+不可能な場合（bootstrap も欠損）: event:state(terminated, cause:"dead") のみ送信
 → 終了
 ```
 
@@ -102,6 +109,8 @@ ow_sendで1回だけ送信:
 ```
 
 identity bundleに含めない属性: `task_n`（activity_idから逆引き可能）、`permission_mode`（auto固定）、`user`（relay参加者でないため）。
+
+`handle` と `alias` の関係: `handle` は relay 上の参加者 ID（正規のキー、必須）。`alias` は worker 表示用のエイリアスで、worker では `handle` と同一値を入れる。受信側は `handle` を主キーとして参照し、`alias` は表示・ログ用途として扱う。
 
 ### 5. event:state(loading) を送信
 
@@ -288,17 +297,19 @@ terminated_atと cause を付与してidentityを再送する:
 }
 ```
 
-### Step 4: event:state(terminated, cause:closed) を送信
+### Step 4: heartbeatループ停止
+
+PHASE_FILE を削除して heartbeat ループを先に終了させる:
+```bash
+rm /tmp/ow_hb_phase_<alias>
+```
+
+terminated 宣言の前にループを止めることで、terminated 後に heartbeat が1回余分に送出されるのを防ぐ（受信側が「terminated 後の heartbeat」を矛盾としてエラー扱いする実装に変わっても安全）。
+
+### Step 5: event:state(terminated, cause:closed) を送信
 
 ```json
 {"v":1, "kind":"event", "from":"<alias>", "to":"orch", "task":"T<task_n>", "data":{"type":"state", "state":"terminated", "cause":"closed"}}
-```
-
-### Step 5: heartbeatループ停止
-
-PHASE_FILEを削除してheartbeatループを終了させる:
-```bash
-rm /tmp/ow_hb_phase_<alias>
 ```
 
 ## 記録規律（worker専用）

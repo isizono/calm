@@ -18,11 +18,25 @@ CHANNEL="${1:?channel_code is required}"
 HANDLE="${2:?handle is required}"
 PHASE_FILE="${PHASE_FILE:-/tmp/ow_hb_phase_$$}"
 
+# 入力バリデーション: " や \ などのJSONインジェクションを防ぐため、
+# channel/handle は英数字・アンダースコア・ハイフンのみに制限する。
+_id_re='^[A-Za-z0-9_-]+$'
+if ! [[ "$CHANNEL" =~ $_id_re ]]; then
+    echo "heartbeat.sh: invalid channel format (expected [A-Za-z0-9_-]+): $CHANNEL" >&2
+    exit 2
+fi
+if ! [[ "$HANDLE" =~ $_id_re ]]; then
+    echo "heartbeat.sh: invalid handle format (expected [A-Za-z0-9_-]+): $HANDLE" >&2
+    exit 2
+fi
+
 # 初期フェーズを loading に設定（呼び出し側が事前に書いていない場合）
 [ -f "$PHASE_FILE" ] || echo "loading" > "$PHASE_FILE"
 
 while [ -f "$PHASE_FILE" ]; do
-    PHASE=$(cat "$PHASE_FILE" 2>/dev/null || echo "ready")
+    # cat 失敗（ファイル削除との競合）は fallback せずループ終了させる。
+    # 旧実装の `|| echo ready` は terminated 後の「余分な ready heartbeat 送出」を招いていた。
+    PHASE=$(cat "$PHASE_FILE" 2>/dev/null) || break
 
     if [ "$PHASE" = "loading" ]; then
         INTERVAL="${HEARTBEAT_INTERVAL_LOADING:-10}"
