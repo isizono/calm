@@ -16,12 +16,18 @@ def _make_mock_tmux(
     has_session: bool = True,
     capture_file: Path | None = None,
     kill_pane_exit: int = 0,
+    target_pane_exists: bool = True,
+    existing_worker_panes: str = "",
 ) -> Path:
     """tmuxをモックするシェルスクリプトを作成する。
 
     spawn時はMOCK_PANE_IDを返す。close時は何も出力しない。
     capture_fileが指定された場合、受け取った引数を追記する。
     kill_pane_exitが1の場合、kill-paneが失敗するモックになる。
+
+    target_pane_exists=Falseのとき `tmux display` がexit 1を返す（target_pane不在シミュレーション）。
+    existing_worker_panesは `tmux list-panes -F "#{pane_id}|#{pane_title}"` の擬似出力。
+    例: "%5|ow-worker\\n%7|other-title" を渡すと既存worker paneが1個ある状態を模擬する。
     """
     mock_dir = tmp_path / "mock_bin"
     mock_dir.mkdir(exist_ok=True)
@@ -29,13 +35,18 @@ def _make_mock_tmux(
 
     has_session_exit = "0" if has_session else "1"
     capture_cmd = f'printf "%s\\n" "$*" >> "{capture_file}"' if capture_file else ""
+    display_exit = "0" if target_pane_exists else "1"
+    display_out = '"@1"' if target_pane_exists else '""'
 
     mock.write_text(
         f'#!/usr/bin/env bash\n'
         f'{capture_cmd}\n'
         f'if [ "$1" = "has-session" ]; then exit {has_session_exit}; fi\n'
         f'if [ "$1" = "new-window" ]; then echo "{MOCK_PANE_ID}"; fi\n'
+        f'if [ "$1" = "split-window" ]; then echo "{MOCK_PANE_ID}"; fi\n'
         f'if [ "$1" = "kill-pane" ]; then exit {kill_pane_exit}; fi\n'
+        f'if [ "$1" = "display" ]; then echo {display_out}; exit {display_exit}; fi\n'
+        f'if [ "$1" = "list-panes" ]; then printf "%b\\n" "{existing_worker_panes}"; fi\n'
         f'exit 0\n'
     )
     mock.chmod(0o755)
@@ -140,6 +151,77 @@ class TestTmuxAdapterClose:
         # kill_pane_exit=1でkill-paneが常に失敗するモックを使用
         result, _ = _run_adapter(["close", "%999"], tmp_path, kill_pane_exit=1)
         assert result.returncode == 0
+
+
+class TestTmuxAdapterSplit:
+    """target_pane指定時のsplit-window方式のテスト。"""
+
+    def test_spawn_with_target_pane_calls_split_window(self, tmp_path):
+        """target_pane指定時はsplit-windowが呼ばれ、new-windowは呼ばれない。"""
+        result, captured = _run_adapter(
+            ["spawn", "/tmp/work", "claude", "%0"], tmp_path
+        )
+        assert result.returncode == 0
+        assert "split-window" in captured
+        assert "new-window" not in captured
+
+    def test_no_target_pane_falls_back_to_new_window(self, tmp_path):
+        """target_pane未指定時は従来通りnew-windowで起動し、split-windowは呼ばれない。"""
+        result, captured = _run_adapter(["spawn", "/tmp/work", "claude"], tmp_path)
+        assert result.returncode == 0
+        assert "new-window" in captured
+        assert "split-window" not in captured
+
+    def test_first_worker_uses_horizontal_30pct(self, tmp_path):
+        """既存worker pane 0個のとき、最初のworkerは -h -l 30% で水平分割される。"""
+        result, captured = _run_adapter(
+            ["spawn", "/tmp/work", "claude", "%0"],
+            tmp_path,
+            existing_worker_panes="",
+        )
+        assert result.returncode == 0
+        assert "split-window -h" in captured
+        assert "30%" in captured
+
+    def test_subsequent_worker_uses_vertical_split(self, tmp_path):
+        """既存worker pane (pane-title=ow-worker) があるとき、-v で垂直分割される。"""
+        result, captured = _run_adapter(
+            ["spawn", "/tmp/work", "claude", "%0"],
+            tmp_path,
+            existing_worker_panes="%5|ow-worker",
+        )
+        assert result.returncode == 0
+        assert "split-window -v" in captured
+
+    def test_split_sets_pane_title_ow_worker(self, tmp_path):
+        """split-window後にselect-paneでpane-title=ow-workerが設定される。"""
+        result, captured = _run_adapter(
+            ["spawn", "/tmp/work", "claude", "%0"], tmp_path
+        )
+        assert result.returncode == 0
+        assert "select-pane" in captured
+        assert "ow-worker" in captured
+
+    def test_non_worker_titled_panes_ignored(self, tmp_path):
+        """pane-titleがow-worker以外のpaneは既存workerとして扱わず、水平30%分割になる。"""
+        result, captured = _run_adapter(
+            ["spawn", "/tmp/work", "claude", "%0"],
+            tmp_path,
+            existing_worker_panes="%5|other-title\\n%7|zsh",
+        )
+        assert result.returncode == 0
+        assert "split-window -h" in captured
+        assert "30%" in captured
+
+    def test_target_pane_not_found_exits_nonzero(self, tmp_path):
+        """target_paneが存在しないとき、exit 1とstderrエラーメッセージを返す。"""
+        result, _ = _run_adapter(
+            ["spawn", "/tmp/work", "claude", "%999"],
+            tmp_path,
+            target_pane_exists=False,
+        )
+        assert result.returncode != 0
+        assert "target_pane not found" in result.stderr
 
 
 class TestTmuxAdapterErrors:

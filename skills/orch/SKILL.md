@@ -357,6 +357,8 @@ ID別の取得関数:
 
 **spawn前バリデーション**: `ow_spawn_worker` は内部で relay疎通・channel存在・cwd存在・alias重複の4点を自動チェックする。失敗時は `{"error": {"code": "SPAWN_PRECONDITION_FAILED", "warnings": [...]}}` が返るので、warningsを確認して原因を解消してから再spawnする。
 
+**tmux分割表示**: `OW_TERMINAL=tmux` の環境では、orchが自身の `os.environ['TMUX_PANE']` を読んで `ow_spawn_worker(..., tmux_target_pane=<TMUX_PANE>)` に渡すと、orchペインと同じwindow内にworker paneが分割表示される（最初は右に30%水平、以降は右ペインを垂直分割で積む）。未指定時は従来の `ow-workers` 別sessionに新windowで起動する。MCPサーバープロセスのenvは起動時にフリーズするためサーバー側で参照できない、必ずクライアント側で読んで渡すこと。
+
 ## 複数orchの運用
 
 - インスタンスキー = `topic_id`。channel・queueファイル・worker aliasすべて分離する
@@ -369,7 +371,7 @@ ID別の取得関数:
 |---|---|
 | `ow_send(channel, handle, body, needs_reply, in_reply_to)` | メッセージ送信（4xx即失敗、5xx/接続断のみ3回指数バックオフ）。bodyは `kind=command`/`event` envelope |
 | `ow_history(channel, since, limit)` | 履歴pull（受信処理の本体・保険経路。SSE push本体添付が主軸、設計書v3 §3.3） |
-| `ow_spawn_worker(alias, channel, cwd, model, task_title, acceptance, context, playbook, timeout_min, activity_id, topic_id, task_n)` | worker起動（spawning write-ahead→task file書き出し→アダプタ起動→安定ID返却。permission_modeはauto固定） |
+| `ow_spawn_worker(alias, channel, cwd, model, task_title, acceptance, context, playbook, timeout_min, activity_id, topic_id, task_n, tmux_target_pane)` | worker起動（spawning write-ahead→task file書き出し→アダプタ起動→安定ID返却。permission_modeはauto固定）。OW_TERMINAL=tmux時は orch自身の TMUX_PANE を `tmux_target_pane` に渡すと同window内に分割表示される |
 | `ow_close_worker(term_ref)` | workerクローズ |
 | `ow_status(channel, topic_id)` | queue+identity統合ビュー |
 | `ow_recover(channel, topic_id, dry_run)` | crash復旧（queue×relay履歴×identity reducer突合・ghost_active自動再構築・stalled/orphan command:ping送信） |
