@@ -848,14 +848,15 @@ def _write_task_file(
 
     acceptance_clean = _sanitize_task_body_field(acceptance, "acceptance")
     context_clean = _sanitize_task_body_field(context, "context")
+    playbook_clean = _sanitize_task_body_field(playbook, "playbook")
 
     body_lines = [f"# {fm_data['task']}: {task_title}".rstrip()]
     if acceptance_clean:
         body_lines += ["", "## Acceptance", "", acceptance_clean]
     if context_clean:
         body_lines += ["", "## Context", "", context_clean]
-    if playbook:
-        body_lines += ["", "## Playbook", "", playbook]
+    if playbook_clean:
+        body_lines += ["", "## Playbook", "", playbook_clean]
     body = "\n".join(body_lines) + "\n"
 
     content = f"---\n{fm_yaml}---\n\n{body}"
