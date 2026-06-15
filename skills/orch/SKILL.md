@@ -50,7 +50,7 @@ on Monitor発火 or 自発的タイミング:
 
 ## 通信プロトコル
 
-envelopeは `kind` が `command`（targeted）または `event`（broadcast）の2種。内訳は `data.type` で区別する（M#258 §4.1）。
+envelopeは `kind` が `command`（targeted）または `event`（broadcast）の2種。内訳は `data.type` で区別する（設計書v3 §4.1）。
 
 ### envelope 共通形式
 
@@ -64,7 +64,7 @@ envelopeは `kind` が `command`（targeted）または `event`（broadcast）�
 }
 ```
 
-- `v` は body 内 envelope のスキーマバージョン（relay 物理スキーマとは別レイヤ、M#258 §7.4）
+- `v` は body 内 envelope のスキーマバージョン（relay 物理スキーマとは別レイヤ、設計書v3 §7.4）
 - `from` は messages.handle と一致しなければreducerが drop する
 - `kind=command` は `to` 必須、`kind=event` は `to` 省略または `"*"` で broadcast
 
@@ -98,7 +98,7 @@ workerが送る全メッセージは `kind:event`。内訳は `data.type` で:
 | `identity` | `*` | 身元情報 full snapshot | identity bundle（§identity 参照） |
 | `heartbeat` | `*` | liveness signal（バックグラウンドループから送信） | `{type:"heartbeat", phase, nonce?}` |
 
-### workload state（M#258 §5.2 と整合）
+### workload state（設計書v3 §5.2 と整合）
 
 ```
        spawn
@@ -130,11 +130,11 @@ draining ──▶ terminated
 | `draining` | なし | command:close/cancel 受領後の worker-sync 実行中。長時間でもheartbeatが続けばcrash扱いしない |
 | `terminated` | `{cause}` | cause ∈ {closed, cancelled, dead}。crashed/crashed-during-drain は orch reducer の推論のみで、history には書かれない |
 
-**done の扱い**: M#258 §5.2 の workload state machine に `done` は含まれない。ただし worker は acceptance 完了申告として `event:state(done)` を送る運用（worker SKILL.md §完了→done）。orchはこれを **workload state ではなく orchestration 層の完了申告イベント** として解釈し、acceptance 照合 → `command:close` 送信に進む。doneは workload遷移ではないため、heartbeat 途絶判定の対象外（worker は close 受領前まで working として heartbeat を継続）。
+**done の扱い**: 設計書v3 §5.2 の workload state machine に `done` は含まれない。ただし worker は acceptance 完了申告として `event:state(done)` を送る運用（worker SKILL.md §完了→done）。orchはこれを **workload state ではなく orchestration 層の完了申告イベント** として解釈し、acceptance 照合 → `command:close` 送信に進む。doneは workload遷移ではないため、heartbeat 途絶判定の対象外（worker は close 受領前まで working として heartbeat を継続）。
 
 **done の payload**: `{summary, evidence, synced, materials[], decision_proposals[], cancelled?}`。`cancelled`（boolean）は `command:cancel` への応答 doneの場合に true、自発 done では false または省略。
 
-**fallback state は v3 で正式削除**（M#258 §5.2.1）。
+**fallback state は v3 で正式削除**（設計書v3 §5.2.1）。
 
 ### identity（event:identity）
 
@@ -159,7 +159,7 @@ worker 起動時と terminated 直前に append される身元情報。orchは 
  }}
 ```
 
-identity から **削除された属性**: `task_n`（activity_id から逆引き可能）、`permission_mode`（auto 固定）、`user`（relay 非参加者）。M#258 §6.3.1 参照。
+identity から **削除された属性**: `task_n`（activity_id から逆引き可能）、`permission_mode`（auto 固定）、`user`（relay 非参加者）。設計書v3 §6.3.1 参照。
 
 ### heartbeat（event:heartbeat）
 
@@ -170,10 +170,10 @@ worker のバックグラウンドループ（scripts/ow/heartbeat.sh）が定�
  "data":{"type":"heartbeat", "phase":"alive|loading|ready|working|draining"}}
 ```
 
-- 周期: loading=10秒、それ以外=30秒（M#258 §5.4.1、D#2525）
+- 周期: loading=10秒、それ以外=30秒（設計書v3 §5.4.1）
 - `phase` は workload state を写像する補助情報
 
-**スレッド規約**: `in_reply_to` はrelay物理カラムとして残置されているが、ow 応用層では原則使わない。例外として assign への最初の `event:state(working)` には `in_reply_to=<assign msg_id>` を付けることがある（worker SKILL.md 規約に従う）。`to` はbody内規約でサーバーはルーティングしない（宛先フィルタは受信側のローカル実装）。
+**スレッド規約**: `in_reply_to` はrelay物理カラムとして残置されているが、ow 応用層では原則使わない（設計書v3 §4.4）。例外として assign への最初の `event:state(working)` には `in_reply_to=<assign msg_id>` を付けることがある（worker SKILL.md 規約に従う）。`to` はbody内規約でサーバーはルーティングしない（宛先フィルタは受信側のローカル実装）。
 
 ### 旧 cmd/state envelope の後方互換放棄
 
@@ -237,7 +237,7 @@ queued → spawning → assigned → in_progress → awaiting_verify → done
 
 **「完了」の定義**: `event:state(done)` の `evidence` が `acceptance` を満たすとorchが判定 ∧ `synced: true`。無条件信頼しない。
 
-**done は workload state ではない**: M#258 §5.2 の workload state machine に done は含まれず、worker→orchの完了申告として `event:{type:state, state:done}` envelope形式で扱う（orchestration層の信号）。orchはdoneを受信したらacceptance照合し、`command:close`送信 → workerは draining → terminated(cause:closed) へ進む。
+**done は workload state ではない**: 設計書v3 §5.2 の workload state machine に done は含まれず、worker→orchの完了申告として `event:{type:state, state:done}` envelope形式で扱う（orchestration層の信号）。orchはdoneを受信したらacceptance照合し、`command:close`送信 → workerは draining → terminated(cause:closed) へ進む。
 
 **cancelと自発doneの交差**:
 - `event:state(done)` の `in_reply_to` が `command:cancel` を指していなければ自発done
@@ -256,14 +256,14 @@ queued → spawning → assigned → in_progress → awaiting_verify → done
 
 ## watchdog
 
-**監視基準**: 「そのworkerからの最後の `event:heartbeat` 受信時刻」からの経過時間（M#258 §5.4.2、D#2525）。workload state の所要時間や `last_recv` 全般の経過では判定しない（長時間 loading や draining でも heartbeat が続けば crash 扱いしない）。
+**監視基準**: 「そのworkerからの最後の `event:heartbeat` 受信時刻」からの経過時間（設計書v3 §5.4.2）。workload state の所要時間や `last_recv` 全般の経過では判定しない（長時間 loading や draining でも heartbeat が続けば crash 扱いしない）。
 
 **heartbeat 周期 × 3 の閾値**:
 
 | 現在の workload state | heartbeat 周期 | タイムアウト閾値（周期×3） |
 |---|---|---|
-| `loading` | 10秒（D#2525） | **30秒** |
-| `ready` / `working` / `blocked` / `draining` | 30秒（D#2525） | **90秒** |
+| `loading` | 10秒 | **30秒** |
+| `ready` / `working` / `blocked` / `draining` | 30秒 | **90秒** |
 | `escalated` | 監視対象外 | — |
 
 orchは `ow_get_workload_state(channel, handle)` で現在のstateを参照し、対応する閾値を選んで判定する。閾値はreducer実装のチューニング余地として残るが、orch側の初期実装は上記固定値を使う。
@@ -274,7 +274,7 @@ orchは `ow_get_workload_state(channel, handle)` で現在のstateを参照し�
 3. **自動failedおよび自動クローズはしない**。failedへの変更・強制クローズは人間判断
 
 **watchdog対象外**:
-- `escalated` 状態のworker（人間対話中はタイムアウト・クローズ対象外、M#258 §5.2の state machine参照）
+- `escalated` 状態のworker（人間対話中はタイムアウト・クローズ対象外、設計書v3 §5.2の state machine参照）
 - `terminated` 状態のworker（既に終了済み）
 
 **ready未送信タイムアウト（loading 滞留）**: heartbeat が来ているかぎり crash 扱いしない。30秒以上 heartbeat 途絶した場合のみ crash 候補となる。長時間 loading（巨大コンテキスト読込・1Mコンテキストモデルのwarm-up等）でも heartbeat が続けばタイムアウトしない。
@@ -311,11 +311,11 @@ orchは起動時に特化版最新を取得し、assignの `playbook` フィー�
 
 ## identity 取得経路
 
-orchはworkerの身元情報（alias、activity_id、model、cwd、session_id、terminated_at、cause等）を取得する際は、必ず `ow_get_identity(channel, handle)` 経由で取得する（M#258 §6 / §8.3）。`ow_history` を自前パースして identity bundle を組み立てる経路は使わない。
+orchはworkerの身元情報（alias、activity_id、model、cwd、session_id、terminated_at、cause等）を取得する際は、必ず `ow_get_identity(channel, handle)` 経由で取得する（設計書v3 §6 / §8.3）。`ow_history` を自前パースして identity bundle を組み立てる経路は使わない。
 
 理由:
 - reducer が event:identity の最新エントリを返す責務を持つため、orch側で二重実装しない
-- crash 推論（`cause: "crashed (inferred)"` / `"crashed-during-drain (inferred)"`）は reducer がメモリ上で付与する（DB不変、M#258 §9.2）。orch側で直接 history を見ると推論結果が得られない
+- crash 推論（`cause: "crashed (inferred)"` / `"crashed-during-drain (inferred)"`）は reducer がメモリ上で付与する（DB不変、設計書v3 §9.2）。orch側で直接 history を見ると推論結果が得られない
 
 ID別の取得関数:
 
@@ -328,7 +328,7 @@ ID別の取得関数:
 
 ## crash 推論の cause lineup と queue 反映
 
-M#258 §5.2.2 / §9 の cause lineup に基づき、orchは以下のルールで queue status を更新する。`cause` 値は `ow_get_identity` の戻り値 `cause` フィールドから判定する（履歴に明示書き込まれる closed/cancelled/dead と、reducer がメモリ上で付与する crashed/crashed-during-drain）。
+設計書v3 §5.2.2 / §9 の cause lineup に基づき、orchは以下のルールで queue status を更新する。`cause` 値は `ow_get_identity` の戻り値 `cause` フィールドから判定する（履歴に明示書き込まれる closed/cancelled/dead と、reducer がメモリ上で付与する crashed/crashed-during-drain）。
 
 | cause | 発生条件 | queue status への反映 | 補足 |
 |---|---|---|---|
@@ -368,7 +368,7 @@ M#258 §5.2.2 / §9 の cause lineup に基づき、orchは以下のルールで
 | ツール | 用途 |
 |---|---|
 | `ow_send(channel, handle, body, needs_reply, in_reply_to)` | メッセージ送信（4xx即失敗、5xx/接続断のみ3回指数バックオフ）。bodyは `kind=command`/`event` envelope |
-| `ow_history(channel, since, limit)` | 履歴pull（受信処理の本体・保険経路。SSE push本体添付が主軸、M#258 §3.3） |
+| `ow_history(channel, since, limit)` | 履歴pull（受信処理の本体・保険経路。SSE push本体添付が主軸、設計書v3 §3.3） |
 | `ow_spawn_worker(alias, channel, cwd, model, permission, task_title, acceptance, context, playbook, timeout_min, activity_id, topic_id, task_n)` | worker起動（spawning write-ahead→task file書き出し→アダプタ起動→安定ID返却） |
 | `ow_close_worker(term_ref)` | workerクローズ |
 | `ow_status(channel, topic_id)` | queue+identity統合ビュー |

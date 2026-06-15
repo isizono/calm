@@ -19,8 +19,8 @@ description: 合意事項のanchor（検証先＝どこを見れば正しさを�
 |---|---|
 | 実装済 | 該当コードのファイル+関数（例: `src/services/checkin_service.py:check_in`）|
 | 外部仕様準拠 | doc URL |
-| 未実装 | 周辺の実装済みコード＋関連decisionの前後関係（例: 「`pin_service.py:add_pin` + D#2120/D#2148の整合を見る」）|
-| 事実調査 | material内の一次ソース（例: `M#182の調査結果`）|
+| 未実装 | 周辺の実装済みコード＋関連decisionの前後関係（例: 「`pin_service.py:add_pin` の整合を見る」）|
+| 事実調査 | material内の一次ソース（例: `materialの調査結果`）|
 
 「最新decisionを静的参照」は採用しない。未実装合意は周辺コード見渡しが基本。
 

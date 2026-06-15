@@ -1023,7 +1023,7 @@ def ow_history(channel: str, since: int = 0, limit: int = 100) -> dict:
     """ow channelの履歴を取得する。受信処理の本体。
 
     since自身を含まない（msg_id > since）。
-    SSEは起床信号専用。起床後はこのツールで未処理メッセージを全件pull（D#2392）。
+    SSEは起床信号専用。起床後はこのツールで未処理メッセージを全件pull。
 
     Args:
         channel: channelコード

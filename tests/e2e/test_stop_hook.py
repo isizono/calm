@@ -757,7 +757,7 @@ def _seed_orch_managed_db(db_path: str, activity_id: int, monkeypatch) -> None:
 
 
 class TestOrchFlowSuppression:
-    """orchフロー（worker セッション・orch-managedアクティビティ）でのcheck-inブロック/nudge抑制（D#2409/D#2410）"""
+    """orchフロー（worker セッション・orch-managedアクティビティ）でのcheck-inブロック/nudge抑制"""
 
     def test_worker_session_no_checkin_block(self, env_setup):
         """OW_ROLE=worker時はcheck-in未呼出でもturn>=2でblockしない"""

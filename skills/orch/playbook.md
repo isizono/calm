@@ -12,11 +12,37 @@ assignの `model` は必須。タスクの性質に応じて以下の目安で�
 | 通常実装（コーディング、テスト作成、バグ修正等） | sonnet / opus |
 | 設計・複雑推論（アーキテクチャ設計、トレードオフ分析、根本原因調査等） | opus 以上 |
 
-cc-memoryプラグイン付きのworkerはコンテキスト消費が大きいため、原則 **1Mコンテキスト版**を使う（D#2449）。CLIの `--model` 引数: `sonnet[1m]`、`claude-opus-4-7` 等。
+cc-memoryプラグイン付きのworkerはコンテキスト消費が大きいため、原則 **1Mコンテキスト版**を使う。CLIの `--model` 引数: `sonnet[1m]`、`claude-opus-4-7` 等。
 
-**opus 4.8は使用禁止**（D#2476）。`opus` `opus[1m]` `opus-4-7` `opus-4-7[1m]` は無効なモデルIDまたは4.8に解決される。必ずフルID `claude-opus-4-7` を使う。
+**opus 4.8は使用禁止**。`opus` `opus[1m]` `opus-4-7` `opus-4-7[1m]` は無効なモデルIDまたは4.8に解決される。必ずフルID `claude-opus-4-7` を使う。
 
 workerのSA（サブエージェント）にも同ルールを適用する。
+
+## SAの活用
+
+orchは調査・分析・検証のためにAgent/TaskツールによるSA（サブエージェント）を積極的に活用してよい。worker spawnとは独立した手段として、短期の情報収集や品質チェックをSAに委譲できる。
+
+### orchがSAを使う典型的な場面
+
+- **情報収集・調査**: 既存コード・設計記録の調査、関連ファイルの特定
+- **done検証**: PR URL・CI結果の確認、acceptance照合の補助
+- **品質チェック**: worker成果のコードレビュー、テスト結果サマリー
+
+### SAのモデル選択
+
+| SAの用途 | 推奨モデル |
+|---|---|
+| 情報収集・ファイル読み込み・ログ解析など機械的作業 | haiku / sonnet |
+| 調査結果の整理・要約・分類 | sonnet |
+| 品質判断・設計レビュー・抜け漏れ発見など推論主体 | sonnet / opus（`claude-opus-4-7`） |
+
+**opus 4.8は使用禁止**。opusが必要な場合は `claude-opus-4-7` を指定する。
+
+### SAへの指示の書き方
+
+- スコープと完了条件を明示する（何を調べて何を返すか）
+- 調査系には `subagent_type: "Explore"` を活用できる
+- バックグラウンドで走らせる場合は `run_in_background: true`（完了通知はharnessから届く）
 
 ## タイムアウト既定値
 
@@ -26,7 +52,7 @@ workerのSA（サブエージェント）にも同ルールを適用する。
 - assignに明示的に指定しない場合は60分を適用する
 - タスクの性質（大規模実装・長時間調査等）に応じてorchが上書き可能
 
-### heartbeat 途絶 watchdog（M#258 §5.4.2 / D#2525）
+### heartbeat 途絶 watchdog（設計書v3 §5.4.2）
 
 orchが worker の生死を判定する基準は **heartbeat 途絶**。workload state の所要時間（`timeout_min`）とは別軸で監視する。`timeout_min` 超過は workload 上の予期外長期化、heartbeat 途絶は liveness 側のcrash候補（reducer 推論）として分けて扱う。
 
