@@ -51,17 +51,20 @@ case "$ACTION" in
         | tail -1)
 
       if [[ -z "$EXISTING_WORKER" ]]; then
-        # 最初: target_paneの右に30%水平分割
-        PANE_ID=$(tmux split-window -h -t "$TARGET_PANE" -l "30%" -P -F "#{pane_id}" -- \
+        # 最初: target_paneの右に30%水平分割（-d でフォーカスを呼び出し元paneに残す）
+        PANE_ID=$(tmux split-window -h -d -t "$TARGET_PANE" -l "30%" -P -F "#{pane_id}" -- \
           bash -c "$SHELL_CMD")
       else
-        # 2個目以降: 最新worker paneを垂直分割（下に新workerが入る）
-        PANE_ID=$(tmux split-window -v -t "$EXISTING_WORKER" -P -F "#{pane_id}" -- \
+        # 2個目以降: 最新worker paneを垂直分割（下に新workerが入る、-d でフォーカス維持）
+        PANE_ID=$(tmux split-window -v -d -t "$EXISTING_WORKER" -P -F "#{pane_id}" -- \
           bash -c "$SHELL_CMD")
       fi
 
       # pane-titleで識別用マーカーを設定（pane-border-status未有効でも内部値は保持される）
-      tmux select-pane -t "$PANE_ID" -T "$WORKER_TITLE" 2>/dev/null || true
+      # -T はtmux 2.0+のみ対応。未対応環境では pane-title が空になり次回spawnで「最初」扱いに
+      # なり続けるため、stderr に警告を出して診断可能にする（subprocess.runのcapture_outputで拾える）。
+      tmux select-pane -t "$PANE_ID" -T "$WORKER_TITLE" 2>/dev/null \
+        || echo "warn: tmux select-pane -T unsupported (requires tmux 2.0+), pane-title not set" >&2
     else
       # フォールバック: 従来の ow-workers 別session方式
       if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then

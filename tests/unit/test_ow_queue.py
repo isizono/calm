@@ -739,6 +739,97 @@ class TestOwSpawnWorkerAdapter:
         assert result.get("manual") is True
         assert "adapter_error" in result
 
+    def test_tmux_target_pane_appended_when_terminal_is_tmux(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """OW_TERMINAL=tmux かつ tmux_target_pane 指定時、adapter args の末尾に target_pane が追加される"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        monkeypatch.setenv("OW_TERMINAL", "tmux")
+
+        adapter_script = tmp_path / "tmux.sh"
+        adapter_script.write_text("#!/bin/bash\necho '%9'\n")
+        adapter_script.chmod(0o755)
+        monkeypatch.setattr(ow_service, "_get_adapter_path", lambda t: adapter_script)
+
+        captured_args: list[list[str]] = []
+        real_run = ow_service.subprocess.run
+
+        def capturing_run(args, **kwargs):
+            captured_args.append(list(args))
+            return real_run(args, **kwargs)
+
+        monkeypatch.setattr(ow_service.subprocess, "run", capturing_run)
+
+        result = ow_service.ow_spawn_worker(
+            alias="w-a", channel="ch1", cwd="/tmp", model="sonnet",
+            task_title="test", acceptance="done", task_n=1,
+            tmux_target_pane="%0",
+        )
+        assert result.get("spawning") == "ok"
+        # adapter_args は ["bash", "<script>", "spawn", cwd, worker_cmd, target_pane] の6要素
+        assert len(captured_args[0]) == 6
+        assert captured_args[0][-1] == "%0"
+
+    def test_tmux_target_pane_omitted_when_none(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """OW_TERMINAL=tmux かつ tmux_target_pane=None のとき adapter args に target_pane が追加されない"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        monkeypatch.setenv("OW_TERMINAL", "tmux")
+
+        adapter_script = tmp_path / "tmux.sh"
+        adapter_script.write_text("#!/bin/bash\necho '%5'\n")
+        adapter_script.chmod(0o755)
+        monkeypatch.setattr(ow_service, "_get_adapter_path", lambda t: adapter_script)
+
+        captured_args: list[list[str]] = []
+        real_run = ow_service.subprocess.run
+
+        def capturing_run(args, **kwargs):
+            captured_args.append(list(args))
+            return real_run(args, **kwargs)
+
+        monkeypatch.setattr(ow_service.subprocess, "run", capturing_run)
+
+        result = ow_service.ow_spawn_worker(
+            alias="w-b", channel="ch2", cwd="/tmp", model="sonnet",
+            task_title="test", acceptance="done", task_n=2,
+        )
+        assert result.get("spawning") == "ok"
+        # tmux_target_pane未指定なので adapter_args は5要素のみ
+        assert len(captured_args[0]) == 5
+
+    def test_tmux_target_pane_ignored_when_terminal_is_not_tmux(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """OW_TERMINAL=iterm2 のとき tmux_target_pane 指定は無視され adapter args に追加されない"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        monkeypatch.setenv("OW_TERMINAL", "iterm2")
+
+        adapter_script = tmp_path / "iterm2.sh"
+        adapter_script.write_text("#!/bin/bash\necho 'iterm2-uuid'\n")
+        adapter_script.chmod(0o755)
+        monkeypatch.setattr(ow_service, "_get_adapter_path", lambda t: adapter_script)
+
+        captured_args: list[list[str]] = []
+        real_run = ow_service.subprocess.run
+
+        def capturing_run(args, **kwargs):
+            captured_args.append(list(args))
+            return real_run(args, **kwargs)
+
+        monkeypatch.setattr(ow_service.subprocess, "run", capturing_run)
+
+        result = ow_service.ow_spawn_worker(
+            alias="w-c", channel="ch3", cwd="/tmp", model="sonnet",
+            task_title="test", acceptance="done", task_n=3,
+            tmux_target_pane="%0",
+        )
+        assert result.get("spawning") == "ok"
+        # iterm2のため tmux_target_pane は無視され adapter_args は5要素、"%0"も含まれない
+        assert len(captured_args[0]) == 5
+        assert "%0" not in captured_args[0]
+
 
 class TestOwSpawnWorkerEnsureChannel:
     """ow_spawn_worker: spawn前ヘルスチェック (T17) と ensure_channel 連携の動作確認"""
