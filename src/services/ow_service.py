@@ -5,7 +5,7 @@ relay HTTPサーバーとのやり取り、worker spawn/close、ステータス�
 
 relayサーバーはcc-memoryリポ内のsrc/relay/にvendoringされており、ow_serviceと
 PROTOCOL_VERSIONを構造的に共有する。ensure_relay_serverは/healthのversion不一致時に
-古いrelayをkillして再起動する自己修復gate（D#2481）。
+古いrelayをkillして再起動する自己修復gate。
 """
 import errno
 import fcntl
@@ -136,7 +136,7 @@ def _get_relay_health() -> dict | None:
     旧 `_is_relay_running` は404でもTrueを返す設計だったため、改名前の古いrelayが
     動いていても「running」と誤判定して新規spawnを諦めていた。本関数はversion不一致時に
     呼び出し元（ensure_relay_server）がkill+restartで自己修復できるよう
-    /healthレスポンスをそのまま返す（D#2481）。
+    /healthレスポンスをそのまま返す。
     """
     try:
         req = urllib.request.Request(f"{RELAY_URL}/health", method="GET")
@@ -435,7 +435,7 @@ def ensure_channel(channel_code: str) -> bool:
     """channelが存在しなければrelayに作成する（idempotent）。
 
     POST /createにchannel_codeを指定して送信する。relayサーバー側で
-    既存なら何もせず、未存在なら作成する（D#2453）。
+    既存なら何もせず、未存在なら作成する。
 
     Args:
         channel_code: 存在を保証したいchannel_code
@@ -458,7 +458,7 @@ def ensure_channel(channel_code: str) -> bool:
 
 
 # ----------------------------
-# T1: ow_send
+# ow_send
 # ----------------------------
 
 
@@ -507,7 +507,7 @@ def ow_send(
 
 
 # ----------------------------
-# T2: ow_history
+# ow_history
 # ----------------------------
 
 
@@ -544,7 +544,7 @@ def ow_history(channel: str, since: int = 0, limit: int = 100) -> dict:
 
 
 # ----------------------------
-# T3: ow_spawn_worker / ow_close_worker
+# ow_spawn_worker / ow_close_worker
 # ----------------------------
 
 
@@ -590,6 +590,31 @@ def _sanitize_queue_field(value: str) -> str:
     acceptanceやnoteのようなorch自由記述フィールド（複数行が常態）が主な対象。
     """
     return " ".join(str(value).splitlines()).strip()
+
+
+# MCP/Claudeプロトコルで使われる予約XMLタグのパターン（antml:プレフィックス含む）
+_MCP_RESERVED_TAG_RE = re.compile(
+    r"</?(?:antml:)?(?:function_calls|invoke|parameter|tool_result)(?:\s[^>]*)?>",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_task_body_field(value: str, field_name: str = "") -> str:
+    """task_file本文フィールド（acceptance/context等）からMCP予約XMLタグを除去する。
+
+    orchがtool callの引数としてフィールド値を渡すとき、XML構文ミスでタグ残骸
+    （例: </parameter>, <invoke name="..."> 等）が混入することがある。
+    workerがtask_fileとして読むとき、これらがMCPプロトコルの一部として
+    誤解釈される恐れがあるため、既知の予約タグは除去する。
+    """
+    cleaned, count = _MCP_RESERVED_TAG_RE.subn("", value)
+    if count:
+        logger.warning(
+            "_write_task_file: %sフィールドにMCP予約XMLタグが%d件混入していました（除去済み）",
+            field_name or "unknown",
+            count,
+        )
+    return cleaned
 
 
 def _format_queue_task_entry(
@@ -819,13 +844,17 @@ def _write_task_file(
     }
     fm_yaml = yaml.safe_dump(fm_data, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
+    acceptance_clean = _sanitize_task_body_field(acceptance, "acceptance")
+    context_clean = _sanitize_task_body_field(context, "context")
+    playbook_clean = _sanitize_task_body_field(playbook, "playbook")
+
     body_lines = [f"# {fm_data['task']}: {task_title}".rstrip()]
-    if acceptance:
-        body_lines += ["", "## Acceptance", "", acceptance]
-    if context:
-        body_lines += ["", "## Context", "", context]
-    if playbook:
-        body_lines += ["", "## Playbook", "", playbook]
+    if acceptance_clean:
+        body_lines += ["", "## Acceptance", "", acceptance_clean]
+    if context_clean:
+        body_lines += ["", "## Context", "", context_clean]
+    if playbook_clean:
+        body_lines += ["", "## Playbook", "", playbook_clean]
     body = "\n".join(body_lines) + "\n"
 
     content = f"---\n{fm_yaml}---\n\n{body}"
@@ -883,7 +912,7 @@ def ow_spawn_worker(
         manualフォールバック時: {"command": str, "manual": True, "task_file": str}
         spawn前検証失敗時: {"error": {"code": "SPAWN_PRECONDITION_FAILED", "warnings": [...]}}
     """
-    # T17: spawn前ヘルスチェック (relay疎通・channel存在・cwd存在・alias重複)
+    # spawn前ヘルスチェック (relay疎通・channel存在・cwd存在・alias重複)
     preflight = _validate_spawn_preconditions(alias, channel, cwd, topic_id=topic_id, task_n=task_n)
     if not preflight["ok"]:
         return {
@@ -897,13 +926,13 @@ def ow_spawn_worker(
     queue_dir = _get_queue_dir()
     task_dir = queue_dir / "tasks"
 
-    # queueへspawning write-ahead（孤児worker対策 D#2395）
+    # queueへspawning write-ahead（孤児worker対策）
     orch_cwd = os.environ.get("OW_ORCH_CWD", "")
     if not orch_cwd:
         orch_cwd = os.getcwd()
         logger.warning(
             "OW_ORCH_CWD not set, using cwd=%s as orch_cwd. "
-            "Crash recovery requires the same cwd (D#2394).",
+            "Crash recovery requires the same cwd.",
             orch_cwd,
         )
     if topic_id is not None:
@@ -946,6 +975,7 @@ def ow_spawn_worker(
         f'env OW_ROLE=worker OW_ALIAS={shlex.quote(alias)} OW_CHANNEL={shlex.quote(channel)} '
         f'OW_TASK_FILE={shlex.quote(str(task_file))} '
         f'claude --model {shlex.quote(model)} --permission-mode auto '
+        f'--add-dir {shlex.quote(str(task_file.parent))} '
         f'{shlex.quote(f"workerスキルに従って作業を開始して。task: {task_file}")}'
     )
 
@@ -958,7 +988,7 @@ def ow_spawn_worker(
             "alias": alias,
         }
 
-    # アダプタ呼び出し — stdoutから安定IDを取得する（D#2400）
+    # アダプタ呼び出し — stdoutから安定IDを取得する
     try:
         result = subprocess.run(
             ["bash", str(adapter_path), "spawn", cwd, worker_cmd],
@@ -1040,7 +1070,7 @@ def ow_close_worker(term_ref: str) -> dict:
 
 
 # ----------------------------
-# T4: ow_status
+# ow_status
 # ----------------------------
 
 
@@ -1177,7 +1207,7 @@ def ow_status(channel: str, topic_id: str | None = None) -> dict:
                 fm, file_tasks = _parse_queue_file(queue_file)
                 tasks.extend(file_tasks)
                 if fm and not frontmatter:
-                    # 1 orch = 1 topic（D#2383）のためtopic_id指定が原則。
+                    # 1 orch = 1 topic のため topic_id 指定が原則。
                     # topic_id未指定の全件走査は診断用途のみ想定し、最初のfrontmatterを代表とする。
                     frontmatter = fm
 
@@ -1206,12 +1236,12 @@ def ow_status(channel: str, topic_id: str | None = None) -> dict:
 
 
 # ----------------------------
-# T17: crash復旧自動化・spawn前バリデーション
+# crash復旧自動化・spawn前バリデーション
 # ----------------------------
 #
-# 設計方針 (T17 / A#830):
+# 設計方針:
 #   - 突合ロジックの中核は relay messages history + presence のみで成立し、queue層の物理形に依存しない
-#     (T35議論で queue層が活動activity/log/material化される可能性に対する将来耐性)
+#     (queue層が活動activity/log/material化される可能性に対する将来耐性)
 #   - queue層との接点は `_apply_queue_status_update` 1点に集約。queue層が変わったらこの関数だけ書き換えれば済む
 #   - reconstruct_state_from_relay と detect_crash_inconsistencies は純粋関数として実装し、テスト容易性を確保
 #
@@ -1225,7 +1255,7 @@ def _get_presence(channel: str) -> list[str]:
     """relayのGET /presenceから接続中handle一覧を取得する。
 
     エラー時は空リストを返し、呼び出し元が「presence情報なし」として扱える設計。
-    例外を伝播させない（fail-soft）のは ensure_channel と同じ規律（D#2458）。
+    例外を伝播させない（fail-soft）のは ensure_channel と同じ規律。
     """
     try:
         result = _relay_request("GET", f"/presence?{urllib.parse.urlencode({'channel': channel})}")
@@ -1572,7 +1602,7 @@ def _apply_queue_status_update(
 ) -> None:
     """queueファイルの指定タスクのstatusヘッダーのみを更新する（他フィールドは保持）。
 
-    queue層との接点はこの関数1箇所に集約してある。T35議論結果でqueue層がcc-memory entityに
+    queue層との接点はこの関数1箇所に集約してある。queue層がcc-memory entityに
     置換される場合も、ここを書き換えれば突合ロジック (`detect_crash_inconsistencies`) は無改修で済む。
 
     挙動:
@@ -2071,7 +2101,7 @@ def ow_list_identities(channel: str, alive_only: bool = False) -> list[dict]:
 def ow_get_presence(channel: str, handle: str) -> dict:
     """最新 heartbeat 受信時刻から online/offline を推論する。
 
-    T17 ow_recover の _get_presence() と推論ロジックを統一した実装。
+    ow_recover の _get_presence() と推論ロジックを統一した実装。
     SSE 接続状態ではなく heartbeat 時刻ベースの推論を行う。
 
     heartbeat が一度も観測されない handle に対しては status="unknown" の

@@ -318,7 +318,7 @@ class TestSessionStartHookHabits:
 
 
 class TestSessionStartHookWorkerSuppression:
-    """OW_ROLE=worker セッションでのアクティビティ一覧抑制テスト（D#2409）"""
+    """OW_ROLE=worker セッションでのアクティビティ一覧抑制テスト"""
 
     def test_worker_session_suppresses_activity_list(self, temp_db):
         """OW_ROLE=worker時はアクティビティがあってもアクティビティ一覧セクションが出ない"""
@@ -353,7 +353,7 @@ class TestSessionStartHookWorkerSuppression:
 
 
 class TestSessionStartHookOrchManagedExclusion:
-    """orch-managedタグ付きアクティビティの除外テスト（D#2410）"""
+    """orch-managedタグ付きアクティビティの除外テスト"""
 
     def test_orch_managed_activity_excluded(self, temp_db):
         """orch-managedタグ付きアクティビティはアクティビティ一覧に出ない"""

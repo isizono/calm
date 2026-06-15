@@ -1,4 +1,4 @@
-"""queueファイルのパース/シリアライズのユニットテスト（M#219 §3.2）"""
+"""queueファイルのパース/シリアライズのユニットテスト"""
 import json
 from pathlib import Path
 
@@ -663,6 +663,20 @@ class TestOwSpawnWorkerManualFallback:
         )
         assert result.get("manual") is True
         assert "command" in result
+
+    def test_worker_cmd_includes_add_dir_for_task_file_dir(self, tmp_path: Path, monkeypatch):
+        """worker起動コマンドにtask_fileディレクトリへの--add-dirが含まれる（CWD外task fileの許可プロンプト抑制）"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        monkeypatch.delenv("OW_TERMINAL", raising=False)
+
+        result = ow_service.ow_spawn_worker(
+            alias="w-a", channel="ch1", cwd="/tmp", model="sonnet",
+            task_title="test", acceptance="done", topic_id="99", task_n=1,
+        )
+        assert result.get("manual") is True
+        cmd = result["command"]
+        expected_task_dir = str(tmp_path / "tasks")
+        assert f"--add-dir {expected_task_dir}" in cmd
 
 
 class TestOwSpawnWorkerAdapter:

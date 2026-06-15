@@ -6,7 +6,7 @@ description: owフレームワークのworkerが退場時に実行する簡易sy
 # worker-sync
 
 owフレームワークの **worker** が退場処理（`cmd:close` 受信時）に実行する記録スキル。
-通常の `sync-memory` のworker版で、**会話相手（ユーザー）がいない**前提で設計されている（D#2397 / 設計M#219 §4.4）。
+通常の `sync-memory` のworker版で、**会話相手（ユーザー）がいない**前提で設計されている。
 
 `worker` スキルの §退場処理 から呼び出される。worker以外のセッションでは使わない（通常セッションは `sync-memory` を使う）。
 
@@ -22,7 +22,7 @@ owフレームワークの **worker** が退場処理（`cmd:close` 受信時）
 | decision記録 | 直接記録 | **原則しない**（decision_proposalsでorchに提案） |
 | 棚卸し・remember・ふりかえり | あり | **なし** |
 
-workerは記録ストア上をorchフローとして走るため、知識層への書き込み権限はorchに集約する。workerが勝手にtopic/activity/decisionを量産すると、orchの認知漏れとrelay履歴からの監査欠落を招く（D#2397）。
+workerは記録ストア上をorchフローとして走るため、知識層への書き込み権限はorchに集約する。workerが勝手にtopic/activity/decisionを量産すると、orchの認知漏れとrelay履歴からの監査欠落を招く。
 
 ## 実行手順
 

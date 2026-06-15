@@ -220,7 +220,7 @@ class TestOwSendSuccess:
         assert result["messages"][0]["msg_id"] == 5
 
     def test_body_serialized_as_json_string(self, monkeypatch):
-        """bodyはJSON文字列としてrelayに送信される（D#2405）"""
+        """bodyはJSON文字列としてrelayに送信される"""
         sent_data = {}
 
         class FakeResponse:

@@ -257,7 +257,7 @@ class TestRetractWithPin:
             ).fetchone()
             assert row["retracted_at"] is not None
 
-            # pinsテーブルのエントリはそのまま残る（D#2149: retract時pins残置）
+            # pinsテーブルのエントリはそのまま残る（retract時pins残置）
             pin_row = conn.execute(
                 "SELECT * FROM pins WHERE source_type='activity' AND source_id=? AND target_type='decision' AND target_id=?",
                 (aid, decision_id),
