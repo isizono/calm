@@ -979,6 +979,7 @@ def ow_spawn_worker(
         f'env OW_ROLE=worker OW_ALIAS={shlex.quote(alias)} OW_CHANNEL={shlex.quote(channel)} '
         f'OW_TASK_FILE={shlex.quote(str(task_file))} '
         f'claude --model {shlex.quote(model)} --permission-mode {shlex.quote(permission)} '
+        f'--add-dir {shlex.quote(str(task_file.parent))} '
         f'{shlex.quote(f"workerスキルに従って作業を開始して。task: {task_file}")}'
     )
 
