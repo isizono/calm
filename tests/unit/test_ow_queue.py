@@ -228,7 +228,6 @@ class TestWriteQueueSpawning:
             tmp_path, "454", "w-a", 1, "/workspace/repo",
             task_title="queue統合タスク",
             model="opus",
-            permission="acceptEdits",
             acceptance="テスト全通過",
             orch_activity_id=798,
             channel_code="AbCdEfGh",
@@ -248,7 +247,7 @@ class TestWriteQueueSpawning:
         assert "## T1 | queue統合タスク | spawning" in content
         assert "- worker: w-a / term_ref: (pending) / session: (pending)" in content
         assert "- activity: 798" in content
-        assert "- model: opus / permission: acceptEdits" in content
+        assert "- model: opus" in content
         assert "- cwd: /workspace/repo" in content
         assert "- acceptance: テスト全通過" in content
         assert "- note: spawning write-ahead" in content
@@ -873,7 +872,7 @@ class TestWriteTaskFile:
         """task fileがmarkdown（frontmatter＋本文）として作成される"""
         task_file = ow_service._write_task_file(
             task_dir=tmp_path, task_n=1, alias="w-a", channel="AbCdEfGh",
-            cwd="/tmp", model="sonnet", permission="auto",
+            cwd="/tmp", model="sonnet",
             task_title="テストタスク", acceptance="全テスト通過", context="背景説明",
             playbook="", timeout_min=60, activity_id=1, topic_id="10"
         )
@@ -886,6 +885,7 @@ class TestWriteTaskFile:
         assert fm["channel"] == "AbCdEfGh"
         assert fm["v"] == 1
         assert fm["activity_id"] == 1
+        assert fm["permission_mode"] == "auto"
         # 本文にタイトル・acceptance・contextが入る
         assert "# T1: テストタスク" in body
         assert "## Acceptance" in body
@@ -899,7 +899,7 @@ class TestWriteTaskFile:
         """topic_id未指定・slug空時はT{n}.md形式にフォールバックする"""
         task_file = ow_service._write_task_file(
             task_dir=tmp_path, task_n=5, alias="w-e", channel="ch1",
-            cwd="/tmp", model="haiku", permission="default",
+            cwd="/tmp", model="haiku",
             task_title="", acceptance="", context="", playbook="",
             timeout_min=30, activity_id=None, topic_id=None
         )
@@ -909,7 +909,7 @@ class TestWriteTaskFile:
         """topic_id・タイトル指定時はt{topic_id}-T{n}-{slug}.md形式になる"""
         task_file = ow_service._write_task_file(
             task_dir=tmp_path, task_n=16, alias="w-a", channel="ch1",
-            cwd="/tmp", model="opus", permission="acceptEdits",
+            cwd="/tmp", model="opus",
             task_title="queue読み書き一元化 — ow_serviceがorch queueフォーマットを扱う",
             acceptance="", context="", playbook="",
             timeout_min=60, activity_id=821, topic_id="454"
@@ -920,13 +920,13 @@ class TestWriteTaskFile:
         """同じtask_nでもtopicが異なれば別ファイルになる（衝突しない）"""
         f1 = ow_service._write_task_file(
             task_dir=tmp_path, task_n=1, alias="w-a", channel="ch1",
-            cwd="/tmp", model="opus", permission="acceptEdits",
+            cwd="/tmp", model="opus",
             task_title="topic454タスク", acceptance="", context="", playbook="",
             timeout_min=60, activity_id=1, topic_id="454"
         )
         f2 = ow_service._write_task_file(
             task_dir=tmp_path, task_n=1, alias="w-b", channel="ch2",
-            cwd="/tmp", model="opus", permission="acceptEdits",
+            cwd="/tmp", model="opus",
             task_title="topic100タスク", acceptance="", context="", playbook="",
             timeout_min=60, activity_id=2, topic_id="100"
         )
@@ -941,7 +941,7 @@ class TestWriteTaskFile:
         nested_dir = tmp_path / "deep" / "nested" / "tasks"
         task_file = ow_service._write_task_file(
             task_dir=nested_dir, task_n=1, alias="w-a", channel="ch",
-            cwd="/tmp", model="sonnet", permission="auto",
+            cwd="/tmp", model="sonnet",
             task_title="", acceptance="", context="", playbook="",
             timeout_min=60, activity_id=None, topic_id=None
         )
