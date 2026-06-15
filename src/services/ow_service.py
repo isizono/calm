@@ -923,6 +923,7 @@ def ow_spawn_worker(
     activity_id: int | None = None,
     topic_id: str | None = None,
     task_n: int = 1,
+    tmux_target_pane: str | None = None,
 ) -> dict:
     """workerセッションを起動する。
 
@@ -944,6 +945,12 @@ def ow_spawn_worker(
         activity_id: 対応するアクティビティID
         topic_id: 対応するトピックID
         task_n: タスク番号（Tn）
+        tmux_target_pane: OW_TERMINAL=tmuxのとき、worker paneを分割する基準pane ID。
+            指定時はそのpaneと同じwindow内に split-window で入れる（最初は右に30%水平、
+            以降は最新worker paneを垂直分割）。未指定時は従来の `ow-workers` 別sessionに
+            新windowで起動する。クライアント（spawn呼び出し元）が自身の os.environ['TMUX_PANE']
+            を読んで渡す想定。MCPサーバープロセスのenvは起動時にフリーズするためサーバー側で
+            参照できない。
 
     Returns:
         {"term_ref": str, "task_file": str, "spawning": "ok"}
@@ -1037,9 +1044,12 @@ def ow_spawn_worker(
         }
 
     # アダプタ呼び出し — stdoutから安定IDを取得する
+    adapter_args = ["bash", str(adapter_path), "spawn", cwd, worker_cmd]
+    if terminal == "tmux" and tmux_target_pane:
+        adapter_args.append(tmux_target_pane)
     try:
         result = subprocess.run(
-            ["bash", str(adapter_path), "spawn", cwd, worker_cmd],
+            adapter_args,
             check=True,
             capture_output=True,
             text=True,

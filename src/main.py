@@ -1050,6 +1050,7 @@ def ow_spawn_worker(
     activity_id: int | None = None,
     topic_id: str | None = None,
     task_n: int = 1,
+    tmux_target_pane: str | None = None,
 ) -> dict:
     """workerセッションを起動する。
 
@@ -1057,6 +1058,9 @@ def ow_spawn_worker(
     relay疎通確認・起動（ensure-server処理）も内包。permission_modeはautoに固定。
 
     OW_TERMINAL環境変数でアダプタを選択（iterm2/tmux/manual。manualは起動コマンド表示のフォールバック）。
+    OW_TERMINAL=tmuxのとき、tmux_target_pane（呼び出し元のTMUX_PANE）を渡すと、その
+    paneと同じwindow内にworker paneを分割表示できる（最初は右に30%水平、以降は最新
+    worker paneを垂直分割）。未指定時は従来の `ow-workers` 別sessionに新windowで起動する。
 
     Args:
         alias: workerのhandle（例: "w-a"）
@@ -1071,6 +1075,9 @@ def ow_spawn_worker(
         activity_id: 対応するアクティビティID（optional）
         topic_id: 対応するトピックID（optional）
         task_n: タスク番号（T<n>）
+        tmux_target_pane: tmux分割表示用の基準pane ID（例: "%0"）。クライアント側で
+            os.environ['TMUX_PANE']を読んで渡す。MCPサーバープロセスのenvは起動時に
+            フリーズするためサーバー側で参照できない。
 
     Returns:
         成功時: {"term_ref": str, "task_file": str, "spawning": "ok", "alias": str}
@@ -1090,6 +1097,7 @@ def ow_spawn_worker(
         activity_id=activity_id,
         topic_id=topic_id,
         task_n=task_n,
+        tmux_target_pane=tmux_target_pane,
     )
 
 
