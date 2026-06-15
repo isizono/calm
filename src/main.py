@@ -987,7 +987,6 @@ def roll_dice(sides: int = 10) -> dict:
 
 # ----------------------------
 # ow（orch/worker）ツール群
-# CCM_OW=1またはOW_ROLE=workerのセッションのみ可視（launcher.pyでフィルタ）
 # ----------------------------
 
 
