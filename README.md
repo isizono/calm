@@ -154,6 +154,50 @@ claude.ai → Settings → Integrations → Add Integration からリモート�
 
 </details>
 
+## orch/worker フレームワーク
+
+複数のClaude Codeセッションを協調動作させる実験的なマルチエージェント基盤です。`ow_spawn_worker`・`ow_close_worker`などのMCPツールで、orchセッションからworkerセッションを起動・管理できます。
+
+### ターミナルアダプタの設定
+
+workerセッションを自動起動するには、`OW_TERMINAL`環境変数でターミナルアプリを指定します。
+
+| 値 | 動作 | 前提条件 |
+|----|------|---------|
+| `iterm2` | iTerm2の新規タブでworkerを起動 | macOS + iTerm2 |
+| `tmux` | tmuxの新規windowでworkerを起動 | tmuxがインストール済み |
+| `manual`（デフォルト） | 起動コマンドを返すだけ。手動で実行が必要 | なし |
+
+`.mcp.json`の`env`フィールドに追加します:
+
+```json
+{
+  "mcpServers": {
+    "claude-code-memory": {
+      "env": {
+        "OW_TERMINAL": "tmux"
+      }
+    }
+  }
+}
+```
+
+#### tmuxアダプタの動作
+
+- `OW_TERMINAL=tmux` に設定すると、`ow_spawn_worker`呼び出し時に自動でtmuxセッション（`ow-workers`）を作成し、新規windowでworkerを起動します
+- 既存の`ow-workers`セッションがある場合は、そこに新規windowを追加します
+- `ow_close_worker`を呼ぶと、対応するpaneをkillします
+- workerの安定IDにはtmux pane ID（`%0`、`%1`のような形式）を使用します
+
+#### tmuxの推奨設定
+
+Claude Codeをtmux内で使うには、`~/.tmux.conf`に以下を追加してください:
+
+```tmux
+set -g allow-passthrough on
+set -g extended-keys on
+```
+
 ## ライセンス
 
 MIT
