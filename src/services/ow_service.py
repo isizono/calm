@@ -49,6 +49,51 @@ _RELAY_LOCK_PATH = _RELAY_STATE_DIR / "relay.lock"
 
 _MAX_RETRIES = 3
 
+# ----------------------------
+# model validation / normalization
+# ----------------------------
+
+# sonnet系の短縮形 → claude-sonnet-4-6[1m] に正規化
+_SONNET_CANONICAL = "claude-sonnet-4-6[1m]"
+# opus系の短縮形 → claude-opus-4-7 に正規化（4.8 は拒否）
+_OPUS_CANONICAL = "claude-opus-4-7"
+
+
+def _normalize_and_validate_model(model: str) -> tuple[str, str | None]:
+    """model引数を正規化し、禁止モデルを拒否する。
+
+    Returns:
+        (正規化済みmodel, エラーメッセージ) のタプル。
+        エラーなしの場合は (正規化済みmodel, None)。
+    """
+    m = model.lower().strip()
+
+    # haiku系は worker での使用禁止
+    if "haiku" in m:
+        return "", (
+            f"model '{model}' は worker では使用できません。"
+            " haiku は SA (Agent ツール) での利用のみ許可されています。"
+        )
+
+    # opus-4-8 は禁止（恒久ルール）
+    if "opus-4-8" in m or "opus4-8" in m:
+        return "", (
+            f"model '{model}' は使用できません。"
+            f" opus 4.8 は禁止されています。代わりに '{_OPUS_CANONICAL}' を使ってください。"
+        )
+
+    # opus系の正規化 → claude-opus-4-7 固定
+    if "opus" in m:
+        return _OPUS_CANONICAL, None
+
+    # sonnet系の正規化 → [1m] を強制付与
+    if "sonnet" in m:
+        return _SONNET_CANONICAL, None
+
+    # その他未知のモデルはそのまま通す
+    return model, None
+
+
 # reducer: v3 workload state 分類
 _NON_TERMINAL_WORKLOAD_STATES: frozenset[str] = frozenset(
     {"loading", "ready", "working", "blocked", "escalated", "draining"}
@@ -885,6 +930,16 @@ def ow_spawn_worker(
         manualフォールバック時: {"command": str, "manual": True, "task_file": str}
         spawn前検証失敗時: {"error": {"code": "SPAWN_PRECONDITION_FAILED", "warnings": [...]}}
     """
+    # model validation / normalization
+    model, model_error = _normalize_and_validate_model(model)
+    if model_error:
+        return {
+            "error": {
+                "code": "INVALID_MODEL",
+                "message": model_error,
+            },
+        }
+
     # T17: spawn前ヘルスチェック (relay疎通・channel存在・cwd存在・alias重複)
     preflight = _validate_spawn_preconditions(alias, channel, cwd, topic_id=topic_id, task_n=task_n)
     if not preflight["ok"]:
