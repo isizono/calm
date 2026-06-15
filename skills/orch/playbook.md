@@ -20,14 +20,36 @@ workerのSA（サブエージェント）にも同ルールを適用する。
 
 ## タイムアウト既定値
 
+### worker assign の timeout_min
+
 - `timeout_min` のデフォルト値: **60分**
 - assignに明示的に指定しない場合は60分を適用する
 - タスクの性質（大規模実装・長時間調査等）に応じてorchが上書き可能
 
+### heartbeat 途絶 watchdog（M#258 §5.4.2 / D#2525）
+
+orchが worker の生死を判定する基準は **heartbeat 途絶**。workload state の所要時間（`timeout_min`）とは別軸で監視する。`timeout_min` 超過は workload 上の予期外長期化、heartbeat 途絶は liveness 側のcrash候補（reducer 推論）として分けて扱う。
+
+| 現在の workload state | heartbeat 周期 | watchdog 閾値（周期×3） |
+|---|---|---|
+| `loading` | 10秒 | **30秒** |
+| `ready` / `working` / `blocked` / `draining` | 30秒 | **90秒** |
+| `escalated` | 監視対象外 | — |
+| `terminated` | 監視対象外（既に終了済み） | — |
+
+途絶検知時のorchの行動: `command:ping` 送信 → 無応答かつ heartbeat 復活なし → reducer の `cause` を参照して queue を更新（cause lineup は orch SKILL.md §crash推論 参照）。
+
+**自動 failed / 自動クローズはしない**。failed への変更・強制クローズは人間判断（heartbeat 途絶は worker が長時間ツール実行中の場合にも発生しうるため、確実な異常証明にならない）。
+
+### watchdog 対象外の state
+
+- `escalated`: 人間対話中はタイムアウト・クローズ対象外
+- `terminated`: 既に終了済み
+
 ## worker同時稼働数上限
 
-- **最大3インスタンス**（暴走防止ハードリミット兼用）
-- 実行中（in_progress/assigned/spawning/awaiting_verify）のworker数が3に達している場合、新規spawnは待機キューに留める
+- **最大5インスタンス**（暴走防止ハードリミット兼用）
+- 実行中（in_progress/assigned/spawning/awaiting_verify）のworker数が5に達している場合、新規spawnは待機キューに留める
 - escalatedはカウントに含める（セッションが存続しているため）
 - stalledはカウントに含める（閉じていないため）
 
@@ -39,7 +61,7 @@ workerのSA（サブエージェント）にも同ルールを適用する。
 
 ## エスカレーション基準
 
-workerがエスカレーション（`state:blocked` → `cmd:answer {escalate: true}`）を要請する典型的な場面:
+workerがエスカレーション（`event:state(blocked)` → `command:answer {escalate: true}`）を要請する典型的な場面:
 
 | 類型 | 例 |
 |---|---|
@@ -52,7 +74,7 @@ workerがエスカレーション（`state:blocked` → `cmd:answer {escalate: t
 
 エスカレーションの際はフォーマット（質問/推奨と理由/選択肢/文脈要約/関連ID）で出力する。
 
-orchが自力で判断できる場合は `cmd:answer {answer}` で直接回答し、エスカレーションに進めない。escalate指示は慎重に使う。
+orchが自力で判断できる場合は `command:answer {answer}` で直接回答し、エスカレーションに進めない。escalate指示は慎重に使う。
 
 ## 報告頻度
 
