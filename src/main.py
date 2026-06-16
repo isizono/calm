@@ -1066,7 +1066,7 @@ def ow_spawn_worker(
         alias: workerのhandle（例: "w-a"）
         channel: channelコード
         cwd: workerの作業ディレクトリ
-        model: 使用モデル（例: "sonnet", "opus"）
+        model: 使用モデル。claude-opus-4-7 のみ許可。sonnet/haiku/opus-4-8 はバリデーションで拒否
         task_title: タスクタイトル
         acceptance: 完了条件
         context: タスクコンテキスト

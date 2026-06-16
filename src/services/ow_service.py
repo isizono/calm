@@ -57,17 +57,28 @@ _MAX_RETRIES = 3
 def _normalize_and_validate_model(model: str) -> tuple[str, str | None]:
     """model引数を正規化し、禁止モデルを拒否する。
 
+    現行方針: claude-opus-4-7 のみ許可。sonnet・haiku・opus-4-8 は全て拒否。
+    opus エイリアス（"opus", "opus-4-7", "claude-opus-4-7", `[1m]` 付き等）は
+    すべて "claude-opus-4-7" に正規化する。
+
     Returns:
         (正規化済みmodel, エラーメッセージ) のタプル。
         エラーなしの場合は (正規化済みmodel, None)。
     """
     m = model.lower().strip()
 
-    # haiku系は worker での使用禁止
+    # sonnet系は禁止（credit消費が大きい）。`claude-sonnet-4-6[1m]` のような [1m] 付きも等しく拒否する
+    if "sonnet" in m:
+        return "", (
+            f"model '{model}' は使用できません。"
+            " sonnet は禁止されています。代わりに claude-opus-4-7 を使ってください。"
+        )
+
+    # haiku系も禁止（worker・SAともに opus 4.7 で統一）
     if "haiku" in m:
         return "", (
-            f"model '{model}' は worker では使用できません。"
-            " haiku は SA (Agent ツール) での利用のみ許可されています。"
+            f"model '{model}' は使用できません。"
+            " haiku は禁止されています。代わりに claude-opus-4-7 を使ってください。"
         )
 
     # opus-4-8 は禁止（恒久ルール）
@@ -77,14 +88,15 @@ def _normalize_and_validate_model(model: str) -> tuple[str, str | None]:
             " opus 4.8 は禁止されています。代わりに claude-opus-4-7 を使ってください。"
         )
 
-    # sonnet系: [1m] が付いていなければ付与（バージョン固定なし）
-    if "sonnet" in m:
-        if "[1m]" not in m:
-            return model + "[1m]", None
-        return model, None
+    # opus 系は claude-opus-4-7 に正規化
+    if "opus" in m:
+        return "claude-opus-4-7", None
 
-    # その他（opus含む）はそのまま透過
-    return model, None
+    # 上記いずれにも該当しないモデルは拒否
+    return "", (
+        f"model '{model}' は使用できません。"
+        " claude-opus-4-7 のみ許可されています。"
+    )
 
 
 # reducer: v3 workload state 分類
@@ -936,7 +948,8 @@ def ow_spawn_worker(
         alias: workerのhandle（例: "w-a"）
         channel: channelコード
         cwd: workerの作業ディレクトリ
-        model: 使用モデル（例: "sonnet", "opus"）
+        model: 使用モデル（claude-opus-4-7 のみ許可。"opus", "opus-4-7" 等の
+            エイリアスは正規化される。sonnet/haiku/opus-4-8 はバリデーションで拒否）
         task_title: タスクタイトル
         acceptance: 完了条件
         context: タスクコンテキスト
