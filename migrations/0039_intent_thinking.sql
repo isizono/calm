@@ -1,6 +1,6 @@
--- Migration 0038: intent:thinking タグ新設
+-- Migration 0039: intent:thinking タグ新設
 --
--- depends: 0037_add_decisions_title
+-- depends: 0038_pins_target_index_and_cascade
 --
 -- 思考worker（深い議論・設計検討・調査を行うworker）用のintentタグ。
 -- role=worker は変えず、task_file 本文に `ultratink` マーカーを埋め込んだ

@@ -1287,6 +1287,13 @@ class TestOwSpawnWorkerThinking:
         monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
         monkeypatch.setattr(ow_service, "ensure_channel", lambda c: True)
         monkeypatch.setattr(ow_service, "_get_presence", lambda c: [])
+        # _validate_spawn_preconditions は ow_get_identity 経由で relay にHTTPを叩くため、
+        # CIなどrelayが立っていない環境でも通るよう全体をstubする
+        monkeypatch.setattr(
+            ow_service,
+            "_validate_spawn_preconditions",
+            lambda *a, **kw: {"ok": True, "warnings": []},
+        )
         monkeypatch.delenv("OW_TERMINAL", raising=False)
 
     def test_thinking_default_false_no_marker(self, tmp_path: Path, monkeypatch):
