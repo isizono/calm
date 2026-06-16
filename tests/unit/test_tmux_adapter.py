@@ -26,8 +26,8 @@ def _make_mock_tmux(
     kill_pane_exitが1の場合、kill-paneが失敗するモックになる。
 
     target_pane_exists=Falseのとき `tmux display` がexit 1を返す（target_pane不在シミュレーション）。
-    existing_worker_panesは `tmux list-panes -F "#{pane_id}|#{pane_title}"` の擬似出力。
-    例: "%5|ow-worker\\n%7|other-title" を渡すと既存worker paneが1個ある状態を模擬する。
+    existing_worker_panesは `tmux list-panes -F "#{pane_id}|#{@ow-worker}"` の擬似出力。
+    例: "%5|1\\n%7|" を渡すと既存worker paneが1個ある状態を模擬する（"1"がworkerマーカー、空欄が非worker）。
     """
     mock_dir = tmp_path / "mock_bin"
     mock_dir.mkdir(exist_ok=True)
@@ -184,34 +184,61 @@ class TestTmuxAdapterSplit:
         assert "30%" in captured
 
     def test_subsequent_worker_uses_vertical_split(self, tmp_path):
-        """既存worker pane (pane-title=ow-worker) があるとき、-v で垂直分割される。"""
+        """既存worker pane (pane user option @ow-worker=1) があるとき、-v で垂直分割される。"""
         result, captured = _run_adapter(
             ["spawn", "/tmp/work", "claude", "%0"],
             tmp_path,
-            existing_worker_panes="%5|ow-worker",
+            existing_worker_panes="%5|1",
         )
         assert result.returncode == 0
         assert "split-window -v" in captured
 
-    def test_split_sets_pane_title_ow_worker(self, tmp_path):
-        """split-window後にselect-paneでpane-title=ow-workerが設定される。"""
+    def test_split_sets_pane_user_option_marker(self, tmp_path):
+        """split-window後にset-option -p で @ow-worker=1 が設定される。"""
         result, captured = _run_adapter(
             ["spawn", "/tmp/work", "claude", "%0"], tmp_path
         )
         assert result.returncode == 0
-        assert "select-pane" in captured
-        assert "ow-worker" in captured
+        assert "set-option -p" in captured
+        assert "@ow-worker" in captured
+        # 値 "1" が引数列に含まれること (例: "set-option -p -t %42 @ow-worker 1")
+        assert "@ow-worker 1" in captured
 
-    def test_non_worker_titled_panes_ignored(self, tmp_path):
-        """pane-titleがow-worker以外のpaneは既存workerとして扱わず、水平30%分割になる。"""
+    def test_split_does_not_use_pane_title_marker(self, tmp_path):
+        """旧マーカー方式（select-pane -T "ow-worker"）が呼ばれていないことを保証する。
+
+        claude セッションが pane-title を ANSI escape で動的上書きするため、
+        pane-title をマーカーとしては使えない。
+        """
+        result, captured = _run_adapter(
+            ["spawn", "/tmp/work", "claude", "%0"], tmp_path
+        )
+        assert result.returncode == 0
+        assert "select-pane" not in captured
+
+    def test_non_worker_panes_ignored(self, tmp_path):
+        """@ow-worker が未設定（空欄）のpaneは既存workerとして扱わず、水平30%分割になる。"""
         result, captured = _run_adapter(
             ["spawn", "/tmp/work", "claude", "%0"],
             tmp_path,
-            existing_worker_panes="%5|other-title\\n%7|zsh",
+            # list-panes 出力で @ow-worker 列が空（未設定）の2 pane を模擬
+            existing_worker_panes="%5|\\n%7|",
         )
         assert result.returncode == 0
         assert "split-window -h" in captured
         assert "30%" in captured
+
+    def test_list_panes_filter_uses_pane_user_option(self, tmp_path):
+        """list-panes のフォーマット指定が #{@ow-worker} を参照していることを確認する。
+
+        pane-title ベース判定への退行を防ぐ回帰テスト。
+        """
+        result, captured = _run_adapter(
+            ["spawn", "/tmp/work", "claude", "%0"], tmp_path
+        )
+        assert result.returncode == 0
+        assert "#{@ow-worker}" in captured
+        assert "#{pane_title}" not in captured
 
     def test_target_pane_not_found_exits_nonzero(self, tmp_path):
         """target_paneが存在しないとき、exit 1とstderrエラーメッセージを返す。"""
