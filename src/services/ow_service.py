@@ -1660,7 +1660,11 @@ def _send_recovery_ping(channel: str, alias: str, task: str = "T0") -> dict:
         "data": {"type": "ping", "nonce": nonce, "recovery": True},
     }
     result = ow_send(channel=channel, handle="orch", body=body, needs_reply=True)
-    result["nonce"] = nonce
+    # ow_send 失敗時は nonce を付与しない。送信が成立していないものを
+    # pending_pings に積むと、後続の nonce echo チェックで "応答なし" と
+    # "送信途中" が区別できなくなる。
+    if "error" not in result:
+        result["nonce"] = nonce
     return result
 
 
@@ -1859,6 +1863,7 @@ def ow_recover(
             "presence": [],
             "reconstructed_max_msg_id": 0,
             "dry_run": dry_run,
+            "nonce_echo_results": [],
         }
     if reconstructed.get("truncated"):
         warnings.append(

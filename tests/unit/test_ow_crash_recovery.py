@@ -1134,18 +1134,14 @@ class TestOwRecoverPendingPings:
         assert echo_by_alias["w-a"] is True
         assert echo_by_alias["w-b"] is False
 
-    def test_pings_sent_includes_nonce(self, monkeypatch):
+    def test_pings_sent_includes_nonce(self, monkeypatch, tmp_path):
         """ow_recoverがstalled_done workerにpingを送ったとき、pings_sentにnonceが含まれる"""
         monkeypatch.setattr(ow_service, "_get_presence", lambda ch: ["w-a"])
-        # queue に done タスク（w-a は presence にいる = stalled_done）
-        import tempfile
-        tmp = tempfile.mkdtemp()
-        qd = Path(tmp) / "queue"
-        qd.mkdir()
-        (qd / "queue-t454.md").write_text(
+        # autouseフィクスチャが作成済みのqueueファイルを done タスクで上書き
+        # （w-a が presence にいる + queue が done = stalled_done）
+        (tmp_path / "queue" / "queue-t454.md").write_text(
             "## T1 | x | done\n- worker: w-a / term_ref: x / session: y\n"
         )
-        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(qd))
 
         sent = []
         monkeypatch.setattr(
