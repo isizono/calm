@@ -1103,6 +1103,13 @@ class TestNormalizeAndValidateModel:
         assert err is not None
         assert model == ""
 
+    def test_opus4_8_no_hyphen_rejected(self):
+        """'opus4-8'（opus と 4 の間にハイフンなし）も拒否される"""
+        model, err = ow_service._normalize_and_validate_model("opus4-8")
+        assert err is not None
+        assert model == ""
+        assert "opus 4.8" in err
+
     # --- opus 4.7 系: 全て 'claude-opus-4-7' に正規化 ---
 
     def test_opus_shorthand_normalizes_to_claude_opus_4_7(self):

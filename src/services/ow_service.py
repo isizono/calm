@@ -67,7 +67,7 @@ def _normalize_and_validate_model(model: str) -> tuple[str, str | None]:
     """
     m = model.lower().strip()
 
-    # sonnet系は禁止（credit消費が大きい [1m] 強制適用を避けるため）
+    # sonnet系は禁止（credit消費が大きい）。`claude-sonnet-4-6[1m]` のような [1m] 付きも等しく拒否する
     if "sonnet" in m:
         return "", (
             f"model '{model}' は使用できません。"
