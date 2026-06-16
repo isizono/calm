@@ -5,6 +5,7 @@ import tempfile
 import pytest
 
 from src.db import get_connection, init_database
+from src.services.pin_service import add_pin
 from src.services.relation_service import add_relation, get_map, remove_relation
 from src.services.tag_service import _injected_tags
 from tests.helpers import add_decision, retract_decision
@@ -1123,6 +1124,287 @@ class TestGetMapDecisionLogFilter:
         # decision自体は出力に含まれない
         types_in_result = {ent["type"] for ent in result["entities"]}
         assert "decision" not in types_in_result
+
+
+class TestSupersedesPinTransfer:
+    """supersedesリレーション追加時のpin自動引き継ぎテスト"""
+
+    def test_target_side_pin_transferred(self, entities_with_decision_log):
+        """pin(activity, old_decision) は supersedes(new, old) で pin(activity, new_decision) に付け替わる"""
+        e = entities_with_decision_log
+        # 旧decisionへpin
+        add_pin("activity", e["a1"], "decision", e["d1"])
+
+        # d2 supersedes d1
+        result = add_relation(
+            "decision", e["d2"], [{"type": "decision", "ids": [e["d1"]]}],
+            relation_type="supersedes",
+        )
+        assert "error" not in result
+        assert result["added"] == 1
+        assert result.get("pins_transferred") == 1
+
+        # 付け替え確認
+        conn = get_connection()
+        try:
+            old_row = conn.execute(
+                "SELECT * FROM pins WHERE target_type='decision' AND target_id=?",
+                (e["d1"],),
+            ).fetchone()
+            new_row = conn.execute(
+                "SELECT * FROM pins WHERE target_type='decision' AND target_id=?",
+                (e["d2"],),
+            ).fetchone()
+            assert old_row is None
+            assert new_row is not None
+            assert new_row["source_type"] == "activity"
+            assert new_row["source_id"] == e["a1"]
+        finally:
+            conn.close()
+
+    def test_source_side_pin_transferred(self, entities_with_decision_log):
+        """pin(old_decision, material) は supersedes(new, old) で pin(new_decision, material) に付け替わる"""
+        e = entities_with_decision_log
+        add_pin("decision", e["d1"], "material", e["m1"])
+
+        result = add_relation(
+            "decision", e["d2"], [{"type": "decision", "ids": [e["d1"]]}],
+            relation_type="supersedes",
+        )
+        assert result.get("pins_transferred") == 1
+
+        conn = get_connection()
+        try:
+            new_row = conn.execute(
+                "SELECT * FROM pins WHERE source_type='decision' AND source_id=?",
+                (e["d2"],),
+            ).fetchone()
+            assert new_row is not None
+            assert new_row["target_type"] == "material"
+            assert new_row["target_id"] == e["m1"]
+        finally:
+            conn.close()
+
+    def test_both_sides_transferred_simultaneously(self, entities_with_decision_log):
+        """target側とsource側のpinが同一add_relationで両方付け替わる"""
+        e = entities_with_decision_log
+        add_pin("activity", e["a1"], "decision", e["d1"])  # target側
+        add_pin("decision", e["d1"], "material", e["m1"])  # source側
+
+        result = add_relation(
+            "decision", e["d2"], [{"type": "decision", "ids": [e["d1"]]}],
+            relation_type="supersedes",
+        )
+        assert result.get("pins_transferred") == 2
+
+        conn = get_connection()
+        try:
+            d1_count = conn.execute(
+                "SELECT COUNT(*) AS c FROM pins WHERE "
+                "(source_type='decision' AND source_id=?) OR (target_type='decision' AND target_id=?)",
+                (e["d1"], e["d1"]),
+            ).fetchone()["c"]
+            assert d1_count == 0
+        finally:
+            conn.close()
+
+    def test_created_at_preserved(self, entities_with_decision_log):
+        """付け替え後の新pinのcreated_atは旧pinの値から引き継ぐ"""
+        e = entities_with_decision_log
+        add_pin("activity", e["a1"], "decision", e["d1"])
+
+        conn = get_connection()
+        try:
+            # 古いcreated_atに書き換える
+            conn.execute(
+                "UPDATE pins SET created_at='2020-01-01 00:00:00' "
+                "WHERE target_type='decision' AND target_id=?",
+                (e["d1"],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        add_relation(
+            "decision", e["d2"], [{"type": "decision", "ids": [e["d1"]]}],
+            relation_type="supersedes",
+        )
+
+        conn = get_connection()
+        try:
+            new_row = conn.execute(
+                "SELECT created_at FROM pins WHERE target_type='decision' AND target_id=?",
+                (e["d2"],),
+            ).fetchone()
+            assert new_row["created_at"] == "2020-01-01 00:00:00"
+        finally:
+            conn.close()
+
+    def test_conflict_merges_via_or_ignore(self, entities_with_decision_log):
+        """new側に既存pinがあると衝突マージ（OR IGNORE）され、旧行は削除、pins_transferredは実INSERT数のみ"""
+        e = entities_with_decision_log
+        add_pin("activity", e["a1"], "decision", e["d1"])  # 旧側
+        add_pin("activity", e["a1"], "decision", e["d2"])  # 新側に既存（衝突相手）
+
+        result = add_relation(
+            "decision", e["d2"], [{"type": "decision", "ids": [e["d1"]]}],
+            relation_type="supersedes",
+        )
+        # 衝突マージなので実INSERT数は0、pins_transferredキーは付かない
+        assert "pins_transferred" not in result
+
+        conn = get_connection()
+        try:
+            old_count = conn.execute(
+                "SELECT COUNT(*) AS c FROM pins WHERE target_type='decision' AND target_id=?",
+                (e["d1"],),
+            ).fetchone()["c"]
+            new_count = conn.execute(
+                "SELECT COUNT(*) AS c FROM pins WHERE target_type='decision' AND target_id=?",
+                (e["d2"],),
+            ).fetchone()["c"]
+            assert old_count == 0
+            assert new_count == 1
+        finally:
+            conn.close()
+
+    def test_self_referencing_pin_vanishes(self, entities_with_decision_log):
+        """付け替えで自己参照化するpin（pin(new, old) / pin(old, new)）は消滅する"""
+        e = entities_with_decision_log
+        # pin(d2, d1): supersedes(d2, d1) で pin(d2, d2) になりかけるが除外
+        add_pin("decision", e["d2"], "decision", e["d1"])
+        # pin(d1, d2): pin(d2, d2) になりかけるが除外
+        add_pin("decision", e["d1"], "decision", e["d2"])
+
+        result = add_relation(
+            "decision", e["d2"], [{"type": "decision", "ids": [e["d1"]]}],
+            relation_type="supersedes",
+        )
+        # どちらも自己参照化で消えるためpins_transferredキーは付かない
+        assert "pins_transferred" not in result
+
+        conn = get_connection()
+        try:
+            self_ref = conn.execute(
+                "SELECT COUNT(*) AS c FROM pins WHERE "
+                "source_type='decision' AND source_id=? AND target_type='decision' AND target_id=?",
+                (e["d2"], e["d2"]),
+            ).fetchone()["c"]
+            assert self_ref == 0
+            # d1への参照も残らない
+            d1_count = conn.execute(
+                "SELECT COUNT(*) AS c FROM pins WHERE "
+                "(source_type='decision' AND source_id=?) OR (target_type='decision' AND target_id=?)",
+                (e["d1"], e["d1"]),
+            ).fetchone()["c"]
+            assert d1_count == 0
+        finally:
+            conn.close()
+
+    def test_no_pins_no_op(self, entities_with_decision_log):
+        """旧decisionにpinが無い場合 pins_transferred キーが付かない"""
+        e = entities_with_decision_log
+        result = add_relation(
+            "decision", e["d2"], [{"type": "decision", "ids": [e["d1"]]}],
+            relation_type="supersedes",
+        )
+        assert result["added"] == 1
+        assert "pins_transferred" not in result
+
+    def test_duplicate_add_does_not_re_fire_hook(self, entities_with_decision_log):
+        """重複add（INSERT OR IGNOREで弾かれる）時はpin引き継ぎhookが発火しない"""
+        e = entities_with_decision_log
+        # 初回supersedesでpin移動を完了させる
+        add_pin("activity", e["a1"], "decision", e["d1"])
+        result1 = add_relation(
+            "decision", e["d2"], [{"type": "decision", "ids": [e["d1"]]}],
+            relation_type="supersedes",
+        )
+        assert result1.get("pins_transferred") == 1
+
+        # この時点で pin(activity, d2) に移動済み。ここで pin(activity, d2) を pin(activity, d1) に戻して、
+        # もう一度同じsupersedesを張ってhookが不発火（pins_transferredキー無し）なことを確認する
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE pins SET target_id=? WHERE target_type='decision' AND target_id=?",
+                (e["d1"], e["d2"]),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result2 = add_relation(
+            "decision", e["d2"], [{"type": "decision", "ids": [e["d1"]]}],
+            relation_type="supersedes",
+        )
+        assert result2["added"] == 0
+        assert "pins_transferred" not in result2
+        # pin(activity, d1) のまま移動していない
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT * FROM pins WHERE target_type='decision' AND target_id=?",
+                (e["d1"],),
+            ).fetchone()
+            assert row is not None
+        finally:
+            conn.close()
+
+    def test_cycle_rollback_does_not_move_pins(self, entities_with_decision_log):
+        """循環検出時のrollbackでpinの移動も巻き戻される"""
+        e = entities_with_decision_log
+        # 既存: d1 → d2 (d1 supersedes d2)
+        add_relation(
+            "decision", e["d1"], [{"type": "decision", "ids": [e["d2"]]}],
+            relation_type="supersedes",
+        )
+        add_pin("activity", e["a1"], "decision", e["d2"])
+
+        # d2 supersedes [d3, d1] を同一バッチで張ると、d2→d3 INSERT後にd2→d1で循環検出 → rollback
+        result = add_relation(
+            "decision", e["d2"],
+            [{"type": "decision", "ids": [e["d3"], e["d1"]]}],
+            relation_type="supersedes",
+        )
+        assert "error" in result
+        assert result["error"]["code"] == "CIRCULAR_SUPERSEDES"
+
+        # pin(activity, d2) が残っている（移動していない）
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT * FROM pins WHERE target_type='decision' AND target_id=?",
+                (e["d2"],),
+            ).fetchone()
+            assert row is not None
+        finally:
+            conn.close()
+
+    def test_mixed_entity_type_pin_target_side(self, entities_with_decision_log):
+        """pin相手側がdecision以外（topic/material/activity）でも正常に付け替わる"""
+        e = entities_with_decision_log
+        add_pin("topic", e["t1"], "decision", e["d1"])
+        add_pin("material", e["m1"], "decision", e["d1"])
+        add_pin("activity", e["a1"], "decision", e["d1"])
+
+        result = add_relation(
+            "decision", e["d2"], [{"type": "decision", "ids": [e["d1"]]}],
+            relation_type="supersedes",
+        )
+        assert result.get("pins_transferred") == 3
+
+        conn = get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT source_type FROM pins WHERE target_type='decision' AND target_id=? "
+                "ORDER BY source_type",
+                (e["d2"],),
+            ).fetchall()
+            types = sorted(r["source_type"] for r in rows)
+            assert types == ["activity", "material", "topic"]
+        finally:
+            conn.close()
 
 
 class TestFKLossImpact:

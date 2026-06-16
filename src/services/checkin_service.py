@@ -20,7 +20,7 @@ DECISIONS_FULL_LIMIT = 15
 # recomposeナッジhintのしきい値。
 # 実運用での発火頻度を見ながら調整する前提の暫定値。
 # メンテナッジ: recomposed material最終更新以降に増えたdecisionがこの件数以上で発火。
-_RECOMPOSE_HINT_DELTA_THRESHOLD = 5
+_RECOMPOSE_HINT_DELTA_THRESHOLD = 30
 # ブートストラップナッジ: material未整備のtagでdecision総数がこの件数以上で発火。
 _RECOMPOSE_HINT_BOOTSTRAP_THRESHOLD = 15
 

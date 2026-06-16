@@ -348,3 +348,299 @@ class TestRemovePin:
         result = remove_pin("tag", "domain:nonexistent", "activity", activity_id)
 
         assert result == {"removed": 0}
+
+
+class TestAddPinSupersededHint:
+    """add_pin: supersededなdecisionへのpinはhintを返す"""
+
+    def _setup_superseded(self, topic_id: int) -> tuple[int, int]:
+        """topic_id 配下に d_old, d_new を作り、d_new supersedes d_old の関係を張る"""
+        from src.services.relation_service import add_relation
+
+        d_old_res = add_decisions([
+            {"topic_id": topic_id, "decision": "古い決定", "reason": "旧"},
+        ])
+        d_new_res = add_decisions([
+            {"topic_id": topic_id, "decision": "新しい決定", "reason": "新"},
+        ])
+        d_old = d_old_res["created"][0]["decision_id"]
+        d_new = d_new_res["created"][0]["decision_id"]
+        add_relation(
+            "decision", d_new, [{"type": "decision", "ids": [d_old]}],
+            relation_type="supersedes",
+        )
+        return d_old, d_new
+
+    def test_pin_to_superseded_target_returns_hint(self, topic, activity):
+        """add_pinのtargetがsuperseded decisionの場合hintキーが付き、pin自体は張られる"""
+        topic_id = topic["topic_id"]
+        activity_id = activity["activity_id"]
+        d_old, d_new = self._setup_superseded(topic_id)
+
+        result = add_pin("activity", activity_id, "decision", d_old)
+
+        assert "error" not in result
+        assert result["source_type"] == "activity"
+        assert result["target_id"] == d_old
+        assert "hint" in result
+        assert f"decision#{d_old}" in result["hint"]
+        assert f"decision#{d_new}" in result["hint"]
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT * FROM pins WHERE source_type='activity' AND source_id=? "
+                "AND target_type='decision' AND target_id=?",
+                (activity_id, d_old),
+            ).fetchone()
+            assert row is not None
+        finally:
+            conn.close()
+
+    def test_pin_to_superseded_source_returns_hint(self, topic, material):
+        """add_pinのsourceがsuperseded decisionの場合hintキーが付く"""
+        topic_id = topic["topic_id"]
+        material_id = material["material_id"]
+        d_old, _d_new = self._setup_superseded(topic_id)
+
+        result = add_pin("decision", d_old, "material", material_id)
+
+        assert "error" not in result
+        assert "hint" in result
+
+    def test_pin_to_non_superseded_decision_no_hint(self, topic, activity):
+        """通常のdecisionへのpinはhintキーが付かない"""
+        topic_id = topic["topic_id"]
+        activity_id = activity["activity_id"]
+        d_res = add_decisions([
+            {"topic_id": topic_id, "decision": "通常", "reason": "r"},
+        ])
+        decision_id = d_res["created"][0]["decision_id"]
+
+        result = add_pin("activity", activity_id, "decision", decision_id)
+
+        assert "error" not in result
+        assert "hint" not in result
+
+    def test_pin_to_non_decision_target_no_hint(self, topic, activity, material):
+        """target_typeがdecision以外の場合hintキーは付かない"""
+        activity_id = activity["activity_id"]
+        material_id = material["material_id"]
+
+        result = add_pin("activity", activity_id, "material", material_id)
+
+        assert "error" not in result
+        assert "hint" not in result
+
+    def test_pin_both_sides_superseded_returns_two_hints(self, topic):
+        """source/target両方がsuperseded decisionの場合hintが2件結合される"""
+        topic_id = topic["topic_id"]
+        d_src_old, d_src_new = self._setup_superseded(topic_id)
+        d_tgt_old, d_tgt_new = self._setup_superseded(topic_id)
+
+        result = add_pin("decision", d_src_old, "decision", d_tgt_old)
+
+        assert "error" not in result
+        assert "hint" in result
+        hint_lines = result["hint"].split("\n")
+        assert len(hint_lines) == 2
+        assert any(f"decision#{d_src_old}" in line and f"decision#{d_src_new}" in line for line in hint_lines)
+        assert any(f"decision#{d_tgt_old}" in line and f"decision#{d_tgt_new}" in line for line in hint_lines)
+
+
+class TestTransferPinsWithConn:
+    """_transfer_pins_with_conn 単体テスト"""
+
+    def _create_decisions(self, topic_id: int) -> tuple[int, int]:
+        d1 = add_decisions([{"topic_id": topic_id, "decision": "d1", "reason": "r"}])
+        d2 = add_decisions([{"topic_id": topic_id, "decision": "d2", "reason": "r"}])
+        return d1["created"][0]["decision_id"], d2["created"][0]["decision_id"]
+
+    def test_no_pins_returns_zero(self, topic):
+        """旧entityにpinが無い場合は0を返す"""
+        from src.services.pin_service import _transfer_pins_with_conn
+
+        topic_id = topic["topic_id"]
+        d_old, d_new = self._create_decisions(topic_id)
+
+        conn = get_connection()
+        try:
+            n = _transfer_pins_with_conn(conn, "decision", d_old, d_new)
+            conn.commit()
+        finally:
+            conn.close()
+        assert n == 0
+
+    def test_target_side_only(self, topic, activity):
+        """target側のpinだけを移動"""
+        from src.services.pin_service import _transfer_pins_with_conn
+
+        topic_id = topic["topic_id"]
+        activity_id = activity["activity_id"]
+        d_old, d_new = self._create_decisions(topic_id)
+
+        conn = get_connection()
+        try:
+            conn.execute(
+                "INSERT INTO pins (source_type, source_id, target_type, target_id) "
+                "VALUES ('activity', ?, 'decision', ?)",
+                (activity_id, d_old),
+            )
+            conn.commit()
+            n = _transfer_pins_with_conn(conn, "decision", d_old, d_new)
+            conn.commit()
+        finally:
+            conn.close()
+        assert n == 1
+
+    def test_conflict_returns_zero_inserts(self, topic, activity):
+        """new側に既存pinがある場合、OR IGNOREで実INSERTは0、旧行は消滅"""
+        from src.services.pin_service import _transfer_pins_with_conn
+
+        topic_id = topic["topic_id"]
+        activity_id = activity["activity_id"]
+        d_old, d_new = self._create_decisions(topic_id)
+
+        conn = get_connection()
+        try:
+            conn.execute(
+                "INSERT INTO pins (source_type, source_id, target_type, target_id) "
+                "VALUES ('activity', ?, 'decision', ?)",
+                (activity_id, d_old),
+            )
+            conn.execute(
+                "INSERT INTO pins (source_type, source_id, target_type, target_id) "
+                "VALUES ('activity', ?, 'decision', ?)",
+                (activity_id, d_new),
+            )
+            conn.commit()
+            n = _transfer_pins_with_conn(conn, "decision", d_old, d_new)
+            conn.commit()
+
+            old_count = conn.execute(
+                "SELECT COUNT(*) AS c FROM pins WHERE target_type='decision' AND target_id=?",
+                (d_old,),
+            ).fetchone()["c"]
+        finally:
+            conn.close()
+        assert n == 0
+        assert old_count == 0
+
+
+class TestPinsCascadeDelete:
+    """migration 0038: 各entityのDELETE時にpinsがCASCADE削除されること"""
+
+    def _add_decision_to(self, topic_id: int) -> int:
+        res = add_decisions([{"topic_id": topic_id, "decision": "d", "reason": "r"}])
+        return res["created"][0]["decision_id"]
+
+    def test_topic_delete_cascades_pins(self, topic, activity):
+        topic_id = topic["topic_id"]
+        activity_id = activity["activity_id"]
+        add_pin("topic", topic_id, "activity", activity_id)
+        conn = get_connection()
+        try:
+            conn.execute("DELETE FROM discussion_topics WHERE id=?", (topic_id,))
+            conn.commit()
+            cnt = conn.execute(
+                "SELECT COUNT(*) AS c FROM pins WHERE "
+                "(source_type='topic' AND source_id=?) OR (target_type='topic' AND target_id=?)",
+                (topic_id, topic_id),
+            ).fetchone()["c"]
+        finally:
+            conn.close()
+        assert cnt == 0
+
+    def test_activity_delete_cascades_pins(self, topic, activity, material):
+        activity_id = activity["activity_id"]
+        material_id = material["material_id"]
+        add_pin("activity", activity_id, "material", material_id)
+        conn = get_connection()
+        try:
+            conn.execute("DELETE FROM activities WHERE id=?", (activity_id,))
+            conn.commit()
+            cnt = conn.execute(
+                "SELECT COUNT(*) AS c FROM pins WHERE "
+                "(source_type='activity' AND source_id=?) OR (target_type='activity' AND target_id=?)",
+                (activity_id, activity_id),
+            ).fetchone()["c"]
+        finally:
+            conn.close()
+        assert cnt == 0
+
+    def test_material_delete_cascades_pins(self, topic, activity, material):
+        activity_id = activity["activity_id"]
+        material_id = material["material_id"]
+        add_pin("activity", activity_id, "material", material_id)
+        conn = get_connection()
+        try:
+            conn.execute("DELETE FROM materials WHERE id=?", (material_id,))
+            conn.commit()
+            cnt = conn.execute(
+                "SELECT COUNT(*) AS c FROM pins WHERE "
+                "(source_type='material' AND source_id=?) OR (target_type='material' AND target_id=?)",
+                (material_id, material_id),
+            ).fetchone()["c"]
+        finally:
+            conn.close()
+        assert cnt == 0
+
+    def test_decision_delete_cascades_pins(self, topic, activity):
+        topic_id = topic["topic_id"]
+        activity_id = activity["activity_id"]
+        decision_id = self._add_decision_to(topic_id)
+        add_pin("activity", activity_id, "decision", decision_id)
+        conn = get_connection()
+        try:
+            conn.execute("DELETE FROM decisions WHERE id=?", (decision_id,))
+            conn.commit()
+            cnt = conn.execute(
+                "SELECT COUNT(*) AS c FROM pins WHERE "
+                "(source_type='decision' AND source_id=?) OR (target_type='decision' AND target_id=?)",
+                (decision_id, decision_id),
+            ).fetchone()["c"]
+        finally:
+            conn.close()
+        assert cnt == 0
+
+    def test_log_delete_cascades_pins(self, topic, activity):
+        topic_id = topic["topic_id"]
+        activity_id = activity["activity_id"]
+        log_res = add_logs([{"topic_id": topic_id, "content": "log", "title": "log title"}])
+        log_id = log_res["created"][0]["log_id"]
+        add_pin("activity", activity_id, "log", log_id)
+        conn = get_connection()
+        try:
+            conn.execute("DELETE FROM discussion_logs WHERE id=?", (log_id,))
+            conn.commit()
+            cnt = conn.execute(
+                "SELECT COUNT(*) AS c FROM pins WHERE "
+                "(source_type='log' AND source_id=?) OR (target_type='log' AND target_id=?)",
+                (log_id, log_id),
+            ).fetchone()["c"]
+        finally:
+            conn.close()
+        assert cnt == 0
+
+    def test_tag_delete_cascades_pins(self, topic, activity, temp_db):
+        activity_id = activity["activity_id"]
+        conn = get_connection()
+        try:
+            tag_ids = ensure_tag_ids(conn, [("domain", "cc-memory")])
+            conn.commit()
+            tag_id = tag_ids[0]
+        finally:
+            conn.close()
+        add_pin("tag", tag_id, "activity", activity_id)
+        conn = get_connection()
+        try:
+            conn.execute("DELETE FROM tags WHERE id=?", (tag_id,))
+            conn.commit()
+            cnt = conn.execute(
+                "SELECT COUNT(*) AS c FROM pins WHERE "
+                "(source_type='tag' AND source_id=?) OR (target_type='tag' AND target_id=?)",
+                (tag_id, tag_id),
+            ).fetchone()["c"]
+        finally:
+            conn.close()
+        assert cnt == 0

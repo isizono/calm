@@ -85,7 +85,7 @@ class TestWriteTaskFileSanitize:
             alias="w-test",
             channel="testchan",
             cwd="/tmp",
-            model="claude-sonnet-4-6",
+            model="claude-opus-4-7",
 
             task_title="サニタイズテスト",
             acceptance="テスト全通過</parameter>",
@@ -108,7 +108,7 @@ class TestWriteTaskFileSanitize:
             alias="w-test",
             channel="testchan",
             cwd="/tmp",
-            model="claude-sonnet-4-6",
+            model="claude-opus-4-7",
 
             task_title="サニタイズテスト",
             acceptance="",
@@ -132,7 +132,7 @@ class TestWriteTaskFileSanitize:
             alias="w-test",
             channel="testchan",
             cwd="/tmp",
-            model="claude-sonnet-4-6",
+            model="claude-opus-4-7",
 
             task_title="サニタイズテスト",
             acceptance="</parameter>",
@@ -153,7 +153,7 @@ class TestWriteTaskFileSanitize:
             alias="w-a",
             channel="chan",
             cwd="/tmp",
-            model="claude-sonnet-4-6",
+            model="claude-opus-4-7",
 
             task_title="クリーンテスト",
             acceptance="PRを作成してCIが通ること",

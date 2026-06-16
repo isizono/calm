@@ -637,6 +637,7 @@ class TestOwSpawnWorkerManualFallback:
         monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
         monkeypatch.setattr(ow_service, "ensure_channel", lambda c: True)
         monkeypatch.setattr(ow_service, "_get_presence", lambda c: [])
+        monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
 
     def test_manual_fallback_when_ow_terminal_unset(self, tmp_path: Path, monkeypatch):
         """OW_TERMINAL未設定 → manual=True + commandキーを返す"""
@@ -644,7 +645,7 @@ class TestOwSpawnWorkerManualFallback:
         monkeypatch.delenv("OW_TERMINAL", raising=False)
 
         result = ow_service.ow_spawn_worker(
-            alias="w-a", channel="ch1", cwd="/tmp", model="sonnet",
+            alias="w-a", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
             task_title="test", acceptance="done", topic_id="99", task_n=1,
         )
         assert result.get("manual") is True
@@ -658,7 +659,7 @@ class TestOwSpawnWorkerManualFallback:
         monkeypatch.setenv("OW_TERMINAL", "manual")
 
         result = ow_service.ow_spawn_worker(
-            alias="w-b", channel="ch2", cwd="/tmp", model="sonnet",
+            alias="w-b", channel="ch2", cwd="/tmp", model="claude-opus-4-7",
             task_title="manual", acceptance="ok", task_n=2,
         )
         assert result.get("manual") is True
@@ -670,7 +671,7 @@ class TestOwSpawnWorkerManualFallback:
         monkeypatch.delenv("OW_TERMINAL", raising=False)
 
         result = ow_service.ow_spawn_worker(
-            alias="w-a", channel="ch1", cwd="/tmp", model="sonnet",
+            alias="w-a", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
             task_title="test", acceptance="done", topic_id="99", task_n=1,
         )
         assert result.get("manual") is True
@@ -687,6 +688,7 @@ class TestOwSpawnWorkerAdapter:
         monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
         monkeypatch.setattr(ow_service, "ensure_channel", lambda c: True)
         monkeypatch.setattr(ow_service, "_get_presence", lambda c: [])
+        monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
 
     def test_adapter_returns_term_ref_from_stdout(self, tmp_path: Path, monkeypatch):
         """アダプタのstdoutをterm_refとして使用する"""
@@ -699,7 +701,7 @@ class TestOwSpawnWorkerAdapter:
         monkeypatch.setattr(ow_service, "_get_adapter_path", lambda t: adapter_script)
 
         result = ow_service.ow_spawn_worker(
-            alias="w-a", channel="ch1", cwd="/tmp", model="sonnet",
+            alias="w-a", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
             task_title="test", acceptance="done", topic_id="99", task_n=1,
         )
         assert result.get("spawning") == "ok"
@@ -716,7 +718,7 @@ class TestOwSpawnWorkerAdapter:
         monkeypatch.setattr(ow_service, "_get_adapter_path", lambda t: adapter_script)
 
         result = ow_service.ow_spawn_worker(
-            alias="w-b", channel="ch2", cwd="/tmp", model="sonnet",
+            alias="w-b", channel="ch2", cwd="/tmp", model="claude-opus-4-7",
             task_title="test", acceptance="done", task_n=2,
         )
         assert result.get("spawning") == "ok"
@@ -733,7 +735,7 @@ class TestOwSpawnWorkerAdapter:
         monkeypatch.setattr(ow_service, "_get_adapter_path", lambda t: adapter_script)
 
         result = ow_service.ow_spawn_worker(
-            alias="w-c", channel="ch3", cwd="/tmp", model="sonnet",
+            alias="w-c", channel="ch3", cwd="/tmp", model="claude-opus-4-7",
             task_title="test", acceptance="done", task_n=3,
         )
         assert result.get("manual") is True
@@ -761,7 +763,7 @@ class TestOwSpawnWorkerAdapter:
         monkeypatch.setattr(ow_service.subprocess, "run", capturing_run)
 
         result = ow_service.ow_spawn_worker(
-            alias="w-a", channel="ch1", cwd="/tmp", model="sonnet",
+            alias="w-a", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
             task_title="test", acceptance="done", task_n=1,
             tmux_target_pane="%0",
         )
@@ -792,7 +794,7 @@ class TestOwSpawnWorkerAdapter:
         monkeypatch.setattr(ow_service.subprocess, "run", capturing_run)
 
         result = ow_service.ow_spawn_worker(
-            alias="w-b", channel="ch2", cwd="/tmp", model="sonnet",
+            alias="w-b", channel="ch2", cwd="/tmp", model="claude-opus-4-7",
             task_title="test", acceptance="done", task_n=2,
         )
         assert result.get("spawning") == "ok"
@@ -821,7 +823,7 @@ class TestOwSpawnWorkerAdapter:
         monkeypatch.setattr(ow_service.subprocess, "run", capturing_run)
 
         result = ow_service.ow_spawn_worker(
-            alias="w-c", channel="ch3", cwd="/tmp", model="sonnet",
+            alias="w-c", channel="ch3", cwd="/tmp", model="claude-opus-4-7",
             task_title="test", acceptance="done", task_n=3,
             tmux_target_pane="%0",
         )
@@ -840,6 +842,7 @@ class TestOwSpawnWorkerEnsureChannel:
         monkeypatch.delenv("OW_TERMINAL", raising=False)
         monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
         monkeypatch.setattr(ow_service, "_get_presence", lambda c: [])
+        monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
 
         called_channels = []
 
@@ -850,7 +853,7 @@ class TestOwSpawnWorkerEnsureChannel:
         monkeypatch.setattr(ow_service, "ensure_channel", fake_ensure_channel)
 
         result = ow_service.ow_spawn_worker(
-            alias="w-a", channel="TestCh01", cwd="/tmp", model="sonnet",
+            alias="w-a", channel="TestCh01", cwd="/tmp", model="claude-opus-4-7",
             task_title="test", acceptance="done", task_n=1,
         )
         assert called_channels == ["TestCh01"]
@@ -866,9 +869,10 @@ class TestOwSpawnWorkerEnsureChannel:
         monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
         monkeypatch.setattr(ow_service, "ensure_channel", lambda c: False)
         monkeypatch.setattr(ow_service, "_get_presence", lambda c: [])
+        monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
 
         result = ow_service.ow_spawn_worker(
-            alias="w-a", channel="BadCh01", cwd="/tmp", model="sonnet",
+            alias="w-a", channel="BadCh01", cwd="/tmp", model="claude-opus-4-7",
             task_title="test", acceptance="done", task_n=1,
         )
         assert "error" in result
@@ -963,7 +967,7 @@ class TestWriteTaskFile:
         """task fileがmarkdown（frontmatter＋本文）として作成される"""
         task_file = ow_service._write_task_file(
             task_dir=tmp_path, task_n=1, alias="w-a", channel="AbCdEfGh",
-            cwd="/tmp", model="sonnet",
+            cwd="/tmp", model="claude-opus-4-7",
             task_title="テストタスク", acceptance="全テスト通過", context="背景説明",
             playbook="", timeout_min=60, activity_id=1, topic_id="10"
         )
@@ -990,7 +994,7 @@ class TestWriteTaskFile:
         """topic_id未指定・slug空時はT{n}.md形式にフォールバックする"""
         task_file = ow_service._write_task_file(
             task_dir=tmp_path, task_n=5, alias="w-e", channel="ch1",
-            cwd="/tmp", model="haiku",
+            cwd="/tmp", model="claude-opus-4-7",
             task_title="", acceptance="", context="", playbook="",
             timeout_min=30, activity_id=None, topic_id=None
         )
@@ -1032,7 +1036,7 @@ class TestWriteTaskFile:
         nested_dir = tmp_path / "deep" / "nested" / "tasks"
         task_file = ow_service._write_task_file(
             task_dir=nested_dir, task_n=1, alias="w-a", channel="ch",
-            cwd="/tmp", model="sonnet",
+            cwd="/tmp", model="claude-opus-4-7",
             task_title="", acceptance="", context="", playbook="",
             timeout_min=60, activity_id=None, topic_id=None
         )
@@ -1094,65 +1098,43 @@ class TestWriteTaskFile:
 
 
 class TestNormalizeAndValidateModel:
-    """_normalize_and_validate_model のユニットテスト"""
+    """_normalize_and_validate_model のユニットテスト
 
-    def test_sonnet_shorthand_normalizes_to_1m(self):
-        """'sonnet' 短縮形は [1m] が付与される"""
+    現行方針: claude-opus-4-7 のみ許可。sonnet・haiku・opus-4-8 は全て拒否。
+    opus エイリアスはすべて 'claude-opus-4-7' に正規化される。
+    """
+
+    # --- sonnet 系: 全て拒否 ---
+
+    def test_sonnet_shorthand_rejected(self):
+        """'sonnet' 短縮形は拒否される"""
         model, err = ow_service._normalize_and_validate_model("sonnet")
-        assert err is None
-        assert model == "sonnet[1m]"
+        assert err is not None
+        assert model == ""
+        assert "sonnet" in err
 
-    def test_sonnet_1m_shorthand_normalizes(self):
-        """'sonnet[1m]' 短縮形はそのまま透過される"""
+    def test_sonnet_1m_rejected(self):
+        """'sonnet[1m]' も拒否される"""
         model, err = ow_service._normalize_and_validate_model("sonnet[1m]")
-        assert err is None
-        assert model == "sonnet[1m]"
+        assert err is not None
+        assert model == ""
 
-    def test_sonnet_full_id_without_1m_gets_1m_appended(self):
-        """'claude-sonnet-4-6' は [1m] が付与される"""
+    def test_sonnet_full_id_rejected(self):
+        """'claude-sonnet-4-6' も拒否される"""
         model, err = ow_service._normalize_and_validate_model("claude-sonnet-4-6")
-        assert err is None
-        assert model == "claude-sonnet-4-6[1m]"
+        assert err is not None
+        assert model == ""
 
-    def test_sonnet_full_id_with_1m_passthrough(self):
-        """'claude-sonnet-4-6[1m]' はそのまま通る"""
+    def test_sonnet_full_id_with_1m_rejected(self):
+        """'claude-sonnet-4-6[1m]' も拒否される"""
         model, err = ow_service._normalize_and_validate_model("claude-sonnet-4-6[1m]")
-        assert err is None
-        assert model == "claude-sonnet-4-6[1m]"
-
-    def test_opus_shorthand_passthrough(self):
-        """'opus' 短縮形は透過される"""
-        model, err = ow_service._normalize_and_validate_model("opus")
-        assert err is None
-        assert model == "opus"
-
-    def test_opus_4_7_passthrough(self):
-        """'opus-4-7' 短縮形は透過される"""
-        model, err = ow_service._normalize_and_validate_model("opus-4-7")
-        assert err is None
-        assert model == "opus-4-7"
-
-    def test_opus_full_id_passthrough(self):
-        """'claude-opus-4-7' はそのまま通る"""
-        model, err = ow_service._normalize_and_validate_model("claude-opus-4-7")
-        assert err is None
-        assert model == "claude-opus-4-7"
-
-    def test_opus_4_8_rejected(self):
-        """'claude-opus-4-8' は拒否されエラーが返る"""
-        model, err = ow_service._normalize_and_validate_model("claude-opus-4-8")
         assert err is not None
         assert model == ""
-        assert "opus 4.8" in err
 
-    def test_opus_4_8_shorthand_rejected(self):
-        """'opus-4-8' 短縮形も拒否される"""
-        model, err = ow_service._normalize_and_validate_model("opus-4-8")
-        assert err is not None
-        assert model == ""
+    # --- haiku 系: 全て拒否 ---
 
     def test_haiku_rejected(self):
-        """'haiku' は拒否されエラーが返る"""
+        """'haiku' は拒否される"""
         model, err = ow_service._normalize_and_validate_model("haiku")
         assert err is not None
         assert model == ""
@@ -1164,11 +1146,61 @@ class TestNormalizeAndValidateModel:
         assert err is not None
         assert model == ""
 
-    def test_unknown_model_passthrough(self):
-        """未知のモデルIDはそのまま通る（将来の拡張余地）"""
-        model, err = ow_service._normalize_and_validate_model("claude-fable-5")
+    # --- opus 4.8: 拒否 ---
+
+    def test_opus_4_8_rejected(self):
+        """'claude-opus-4-8' は拒否される"""
+        model, err = ow_service._normalize_and_validate_model("claude-opus-4-8")
+        assert err is not None
+        assert model == ""
+        assert "opus 4.8" in err
+
+    def test_opus_4_8_shorthand_rejected(self):
+        """'opus-4-8' 短縮形も拒否される"""
+        model, err = ow_service._normalize_and_validate_model("opus-4-8")
+        assert err is not None
+        assert model == ""
+
+    def test_opus4_8_no_hyphen_rejected(self):
+        """'opus4-8'（opus と 4 の間にハイフンなし）も拒否される"""
+        model, err = ow_service._normalize_and_validate_model("opus4-8")
+        assert err is not None
+        assert model == ""
+        assert "opus 4.8" in err
+
+    # --- opus 4.7 系: 全て 'claude-opus-4-7' に正規化 ---
+
+    def test_opus_shorthand_normalizes_to_claude_opus_4_7(self):
+        """'opus' 短縮形は 'claude-opus-4-7' に正規化される"""
+        model, err = ow_service._normalize_and_validate_model("opus")
         assert err is None
-        assert model == "claude-fable-5"
+        assert model == "claude-opus-4-7"
+
+    def test_opus_4_7_normalizes_to_claude_opus_4_7(self):
+        """'opus-4-7' 短縮形も正規化される"""
+        model, err = ow_service._normalize_and_validate_model("opus-4-7")
+        assert err is None
+        assert model == "claude-opus-4-7"
+
+    def test_opus_4_7_with_1m_normalizes_to_claude_opus_4_7(self):
+        """'opus-4-7[1m]' 等の [1m] 付きも正規化先は同じ"""
+        model, err = ow_service._normalize_and_validate_model("opus-4-7[1m]")
+        assert err is None
+        assert model == "claude-opus-4-7"
+
+    def test_opus_full_id_passthrough(self):
+        """'claude-opus-4-7' はそのまま通る（正規化先と同一）"""
+        model, err = ow_service._normalize_and_validate_model("claude-opus-4-7")
+        assert err is None
+        assert model == "claude-opus-4-7"
+
+    # --- 未知のモデル: 拒否 ---
+
+    def test_unknown_model_rejected(self):
+        """未知のモデルIDも拒否される（claude-opus-4-7 のみ許可）"""
+        model, err = ow_service._normalize_and_validate_model("claude-fable-5")
+        assert err is not None
+        assert model == ""
 
 
 class TestOwSpawnWorkerModelValidation:
@@ -1179,6 +1211,7 @@ class TestOwSpawnWorkerModelValidation:
         monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
         monkeypatch.setattr(ow_service, "ensure_channel", lambda c: True)
         monkeypatch.setattr(ow_service, "_get_presence", lambda c: [])
+        monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
         monkeypatch.delenv("OW_TERMINAL", raising=False)
 
     def test_haiku_returns_invalid_model_error(self, tmp_path: Path, monkeypatch):
@@ -1201,25 +1234,35 @@ class TestOwSpawnWorkerModelValidation:
         assert "error" in result
         assert result["error"]["code"] == "INVALID_MODEL"
 
-    def test_sonnet_shorthand_normalized_in_command(self, tmp_path: Path, monkeypatch):
-        """'sonnet' 指定時、生成コマンドに sonnet[1m] が使われる"""
+    def test_sonnet_returns_invalid_model_error(self, tmp_path: Path, monkeypatch):
+        """'sonnet' は拒否され INVALID_MODEL エラーが返る"""
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         result = ow_service.ow_spawn_worker(
             alias="w-a", channel="ch1", cwd="/tmp", model="sonnet",
             task_title="test", acceptance="done", task_n=1,
         )
-        assert result.get("manual") is True
-        assert "sonnet[1m]" in result["command"]
+        assert "error" in result
+        assert result["error"]["code"] == "INVALID_MODEL"
 
-    def test_opus_shorthand_normalized_in_command(self, tmp_path: Path, monkeypatch):
-        """'opus' 指定時、生成コマンドに opus が透過される"""
+    def test_claude_sonnet_full_id_rejected(self, tmp_path: Path, monkeypatch):
+        """'claude-sonnet-4-6' のフルIDも拒否される"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        result = ow_service.ow_spawn_worker(
+            alias="w-a", channel="ch1", cwd="/tmp", model="claude-sonnet-4-6",
+            task_title="test", acceptance="done", task_n=1,
+        )
+        assert "error" in result
+        assert result["error"]["code"] == "INVALID_MODEL"
+
+    def test_opus_shorthand_normalized_to_claude_opus_4_7(self, tmp_path: Path, monkeypatch):
+        """'opus' 指定時、生成コマンドに 'claude-opus-4-7' に正規化される"""
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         result = ow_service.ow_spawn_worker(
             alias="w-a", channel="ch1", cwd="/tmp", model="opus",
             task_title="test", acceptance="done", task_n=1,
         )
         assert result.get("manual") is True
-        assert "opus" in result["command"]
+        assert "claude-opus-4-7" in result["command"]
 
     def test_claude_haiku_full_id_rejected(self, tmp_path: Path, monkeypatch):
         """'claude-haiku-4-5-20251001' のフルIDでも拒否される"""

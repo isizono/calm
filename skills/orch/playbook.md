@@ -2,19 +2,15 @@
 
 owフレームワークのorch用一般プレイブック。トピック特化版プレイブック（cc-memory material、タグ `playbook`+domain）がある場合は**特化版を優先**し、本書は特化版がカバーしていない項目のみ適用する。
 
-## モデル選択目安
+## モデル選択
 
-assignの `model` は必須。タスクの性質に応じて以下の目安で選択する。
+assignの `model` は必須。**claude-opus-4-7 のみ許可**（タスク性質による使い分けはしない）。
 
-| タスクの性質 | 推奨モデル |
-|---|---|
-| 機械的作業（フォーマット変換、ファイル整理、定型テスト実行等） | haiku / sonnet |
-| 通常実装（コーディング、テスト作成、バグ修正等） | sonnet / opus |
-| 設計・複雑推論（アーキテクチャ設計、トレードオフ分析、根本原因調査等） | opus 以上 |
-
-cc-memoryプラグイン付きのworkerはコンテキスト消費が大きいため、原則 **1Mコンテキスト版**を使う。CLIの `--model` 引数: `sonnet[1m]`、`claude-opus-4-7` 等。
-
-**opus 4.8は使用禁止**。`opus` `opus[1m]` `opus-4-7` `opus-4-7[1m]` は無効なモデルIDまたは4.8に解決される。必ずフルID `claude-opus-4-7` を使う。
+- 全タスク共通: `claude-opus-4-7`
+- sonnet（`sonnet` / `claude-sonnet-4-6` / `[1m]` 付き等）はバリデーションで拒否される（credit消費が大きいため）
+- haiku もバリデーションで拒否される
+- opus 4.8（`opus-4-8` / `claude-opus-4-8`）は恒久禁止
+- `opus` `opus-4-7` 等のエイリアスは `claude-opus-4-7` に正規化される
 
 workerのSA（サブエージェント）にも同ルールを適用する。
 
@@ -30,13 +26,9 @@ orchは調査・分析・検証のためにAgent/TaskツールによるSA（サ�
 
 ### SAのモデル選択
 
-| SAの用途 | 推奨モデル |
-|---|---|
-| 情報収集・ファイル読み込み・ログ解析など機械的作業 | haiku / sonnet |
-| 調査結果の整理・要約・分類 | sonnet |
-| 品質判断・設計レビュー・抜け漏れ発見など推論主体 | sonnet / opus（`claude-opus-4-7`） |
+**SAも `claude-opus-4-7` 一択**。用途による使い分けはしない（sonnet/haiku は禁止、opus 4.8 も禁止）。
 
-**opus 4.8は使用禁止**。opusが必要な場合は `claude-opus-4-7` を指定する。
+Agent ツールの `model` パラメータは `"opus"` enum を渡すと環境側で `claude-opus-4-7` 系に解決される。ただしフルID `claude-opus-4-7` を明示するのが確実。
 
 ### SAへの指示の書き方
 

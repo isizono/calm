@@ -35,6 +35,8 @@ class TestValidateSpawnPreconditions:
         monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
         monkeypatch.setattr(ow_service, "ensure_channel", lambda ch: True)
         monkeypatch.setattr(ow_service, "_get_presence", lambda ch: [])
+        # デフォルトはidentity未存在（alive identityなし）
+        monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
 
     def test_all_ok_returns_no_warnings(self, monkeypatch, tmp_path):
         """全項目クリア → ok=True、warnings空"""
@@ -138,6 +140,53 @@ class TestValidateSpawnPreconditions:
         )
         assert result["ok"] is True
         assert result["warnings"] == []
+
+    def test_alias_alive_identity_blocks_spawn(self, monkeypatch, tmp_path):
+        """alive identity（terminated_at/cause未設定）があればok=False・INV-9警告"""
+        monkeypatch.setattr(
+            ow_service,
+            "ow_get_identity",
+            lambda ch, h: {
+                "type": "identity",
+                "role": "worker",
+                "handle": h,
+                "alias": h,
+                # terminated_at / cause がない = alive
+            },
+        )
+        result = ow_service._validate_spawn_preconditions(
+            alias="w-x", channel="ChAbCdEf", cwd=str(tmp_path)
+        )
+        assert result["ok"] is False
+        assert any("INV-9" in w for w in result["warnings"])
+
+    def test_no_identity_allows_spawn(self, monkeypatch, tmp_path):
+        """identityが存在しない（ow_get_identity=None）→ ok=True"""
+        # autouseフィクスチャがNoneを返すデフォルト設定
+        result = ow_service._validate_spawn_preconditions(
+            alias="w-x", channel="ChAbCdEf", cwd=str(tmp_path)
+        )
+        assert result["ok"] is True
+        assert result["warnings"] == []
+
+    def test_terminated_identity_allows_spawn(self, monkeypatch, tmp_path):
+        """terminatedなidentity（cause=closed / terminated_at設定）→ ok=True"""
+        for terminated_identity in [
+            {"handle": "w-x", "cause": "closed", "terminated_at": "2026-06-16T00:00:00Z"},
+            {"handle": "w-x", "cause": "cancelled", "terminated_at": "2026-06-16T00:00:00Z"},
+            {"handle": "w-x", "cause": "dead", "terminated_at": "2026-06-16T00:00:00Z"},
+            {"handle": "w-x", "inferred_cause": "crashed (inferred)"},
+        ]:
+            monkeypatch.setattr(
+                ow_service,
+                "ow_get_identity",
+                lambda ch, h, _ident=terminated_identity: _ident,
+            )
+            result = ow_service._validate_spawn_preconditions(
+                alias="w-x", channel="ChAbCdEf", cwd=str(tmp_path)
+            )
+            assert result["ok"] is True, f"terminated identity should allow spawn: {terminated_identity}"
+            assert result["warnings"] == [], f"unexpected warning for {terminated_identity}"
 
 
 # ----------------------------
@@ -859,6 +908,7 @@ class TestOwSpawnWorkerPreflight:
         monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
         monkeypatch.setattr(ow_service, "ensure_channel", lambda ch: True)
         monkeypatch.setattr(ow_service, "_get_presence", lambda ch: ["w-x"])
+        monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
         result = ow_service.ow_spawn_worker(
             alias="w-x", channel="ChAbCdEf", cwd=str(tmp_path),
             model="claude-opus-4-7",
