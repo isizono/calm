@@ -1051,6 +1051,7 @@ def ow_spawn_worker(
     topic_id: str | None = None,
     task_n: int = 1,
     tmux_target_pane: str | None = None,
+    thinking: bool = False,
 ) -> dict:
     """workerセッションを起動する。
 
@@ -1078,6 +1079,10 @@ def ow_spawn_worker(
         tmux_target_pane: tmux分割表示用の基準pane ID（例: "%0"）。クライアント側で
             os.environ['TMUX_PANE']を読んで渡す。MCPサーバープロセスのenvは起動時に
             フリーズするためサーバー側で参照できない。
+        thinking: 思考worker（深い議論・設計検討・調査向けworker）として起動するなら
+            True（デフォルト: False）。Trueのとき task_file 本文にマーカーセクション
+            （`ultratink`文字列を含む。意図的タイポ）が挿入される。role は worker のまま。
+            対応activityには `intent:thinking` タグを別途付与すること。
 
     Returns:
         成功時: {"term_ref": str, "task_file": str, "spawning": "ok", "alias": str}
@@ -1098,6 +1103,7 @@ def ow_spawn_worker(
         topic_id=topic_id,
         task_n=task_n,
         tmux_target_pane=tmux_target_pane,
+        thinking=thinking,
     )
 
 

@@ -1038,6 +1038,60 @@ class TestWriteTaskFile:
         )
         assert task_file.exists()
 
+    def test_thinking_false_omits_marker_section(self, tmp_path: Path):
+        """thinking=False（デフォルト）の場合、本文に `ultratink` マーカーと
+        `## Thinking worker` セクションが含まれず、frontmatterにもthinkingキーが出ない"""
+        task_file = ow_service._write_task_file(
+            task_dir=tmp_path, task_n=1, alias="w-a", channel="ch1",
+            cwd="/tmp", model="opus",
+            task_title="通常タスク", acceptance="A", context="C", playbook="P",
+            timeout_min=60, activity_id=1, topic_id="454",
+        )
+        fm, body = self._parse(task_file)
+        assert "thinking" not in fm
+        assert "ultratink" not in body
+        assert "## Thinking worker" not in body
+
+    def test_thinking_true_injects_ultratink_marker(self, tmp_path: Path):
+        """thinking=Trueの場合、本文に `ultratink` 文字列と `## Thinking worker` セクションが
+        挿入され、frontmatterに `thinking: true` が記録される。
+        綴りは `ultratink`（意図的タイポ）を厳格に保ち、`ultrathink` は混入しない"""
+        task_file = ow_service._write_task_file(
+            task_dir=tmp_path, task_n=2, alias="w-th", channel="ch1",
+            cwd="/tmp", model="opus",
+            task_title="思考タスク", acceptance="A", context="C", playbook="P",
+            timeout_min=60, activity_id=1, topic_id="454",
+            thinking=True,
+        )
+        fm, body = self._parse(task_file)
+        assert fm.get("thinking") is True
+        assert "## Thinking worker" in body
+        assert "ultratink" in body
+        # 意図的タイポを保つ: extended thinking トリガーの `ultrathink` は含めない
+        assert "ultrathink" not in body
+
+    def test_thinking_true_keeps_other_sections(self, tmp_path: Path):
+        """thinking=Trueでも既存の Acceptance/Context/Playbook セクションは出力される。
+        マーカーセクションは Acceptance より前（タイトル直後）に挿入される"""
+        task_file = ow_service._write_task_file(
+            task_dir=tmp_path, task_n=3, alias="w-th", channel="ch1",
+            cwd="/tmp", model="opus",
+            task_title="思考タスク", acceptance="全件通過",
+            context="背景説明あり", playbook="プレイブック本文",
+            timeout_min=60, activity_id=1, topic_id="454",
+            thinking=True,
+        )
+        _, body = self._parse(task_file)
+        assert "## Thinking worker" in body
+        assert "## Acceptance" in body
+        assert "全件通過" in body
+        assert "## Context" in body
+        assert "背景説明あり" in body
+        assert "## Playbook" in body
+        assert "プレイブック本文" in body
+        # マーカーセクションはタイトル直後に出る
+        assert body.index("## Thinking worker") < body.index("## Acceptance")
+
 
 class TestNormalizeAndValidateModel:
     """_normalize_and_validate_model のユニットテスト"""
@@ -1176,3 +1230,58 @@ class TestOwSpawnWorkerModelValidation:
         )
         assert "error" in result
         assert result["error"]["code"] == "INVALID_MODEL"
+
+
+class TestOwSpawnWorkerThinking:
+    """ow_spawn_worker の thinking 引数（思考worker起動）の挙動テスト。
+
+    思考worker = role:worker のまま task_file 本文に意図的タイポ `ultratink` を
+    マーカーとして埋め込んだworker。spawn時にthinking=True指定で発動する。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _stub_preflight(self, monkeypatch):
+        monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
+        monkeypatch.setattr(ow_service, "ensure_channel", lambda c: True)
+        monkeypatch.setattr(ow_service, "_get_presence", lambda c: [])
+        monkeypatch.delenv("OW_TERMINAL", raising=False)
+
+    def test_thinking_default_false_no_marker(self, tmp_path: Path, monkeypatch):
+        """thinking引数を渡さない（デフォルト False）と task_file 本文にマーカーが入らない"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        result = ow_service.ow_spawn_worker(
+            alias="w-a", channel="ch1", cwd="/tmp", model="opus",
+            task_title="通常タスク", acceptance="done", task_n=1, topic_id="999",
+        )
+        assert result.get("manual") is True
+        content = Path(result["task_file"]).read_text(encoding="utf-8")
+        assert "ultratink" not in content
+        assert "## Thinking worker" not in content
+
+    def test_thinking_true_injects_ultratink_into_task_file(self, tmp_path: Path, monkeypatch):
+        """thinking=True で spawn すると task_file 本文に `ultratink` が含まれる"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        result = ow_service.ow_spawn_worker(
+            alias="w-th", channel="ch1", cwd="/tmp", model="opus",
+            task_title="思考タスク", acceptance="議論まとめ", task_n=1, topic_id="999",
+            thinking=True,
+        )
+        assert result.get("manual") is True
+        content = Path(result["task_file"]).read_text(encoding="utf-8")
+        assert "ultratink" in content
+        assert "## Thinking worker" in content
+        # 意図的タイポを保つ: extended thinking トリガー `ultrathink` は混入させない
+        assert "ultrathink" not in content
+
+    def test_thinking_true_marks_frontmatter(self, tmp_path: Path, monkeypatch):
+        """thinking=True で spawn すると task_file frontmatter に thinking: true が残る"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        result = ow_service.ow_spawn_worker(
+            alias="w-th", channel="ch1", cwd="/tmp", model="opus",
+            task_title="思考タスク", acceptance="done", task_n=2, topic_id="999",
+            thinking=True,
+        )
+        assert result.get("manual") is True
+        content = Path(result["task_file"]).read_text(encoding="utf-8")
+        fm, _ = ow_service._parse_frontmatter(content)
+        assert fm.get("thinking") is True

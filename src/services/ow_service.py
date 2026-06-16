@@ -851,6 +851,7 @@ def _write_task_file(
     timeout_min: int,
     activity_id: int | None,
     topic_id: str | None,
+    thinking: bool = False,
 ) -> Path:
     """task fileをマークダウン（YAML frontmatter + 本文）で書き出す。
 
@@ -861,6 +862,11 @@ def _write_task_file(
     ファイル名は `t<topic_id>-T<n>-<title-slug>.md`。topic prefixでtopic間の名前衝突を、
     title slugで人間がファイルを開かずに内容を把握できることを担保する。
     topic_idが未指定の場合は `T<n>-<title-slug>.md`、slugが空なら接尾辞を省く。
+
+    thinking=True のとき、本文の冒頭（タイトル直後）に思考workerマーカーセクションを
+    挿入し、`ultratink` 文字列を含める（意図的タイポ。claudeの extended thinking
+    トリガー `ultrathink` と区別するための綴り）。frontmatterにも `thinking: true` を
+    残す。
     """
     base = f"t{topic_id}-T{task_n}" if (topic_id is not None and str(topic_id)) else f"T{task_n}"
     slug = _slugify_task_title(task_title)
@@ -880,6 +886,8 @@ def _write_task_file(
         "activity_id": activity_id,
         "topic_id": topic_id,
     }
+    if thinking:
+        fm_data["thinking"] = True
     fm_yaml = yaml.safe_dump(fm_data, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
     acceptance_clean = _sanitize_task_body_field(acceptance, "acceptance")
@@ -887,6 +895,17 @@ def _write_task_file(
     playbook_clean = _sanitize_task_body_field(playbook, "playbook")
 
     body_lines = [f"# {fm_data['task']}: {task_title}".rstrip()]
+    if thinking:
+        body_lines += [
+            "",
+            "## Thinking worker",
+            "",
+            "ultratink",
+            "",
+            "このタスクは思考worker扱い。実装ではなく深い議論・設計検討・調査を行う。"
+            "上記マーカー `ultratink` は意図的タイポ（claudeのextended thinking"
+            "トリガー語と1文字違いの別綴り。トリガー語そのものは本文に含めない）。",
+        ]
     if acceptance_clean:
         body_lines += ["", "## Acceptance", "", acceptance_clean]
     if context_clean:
@@ -924,6 +943,7 @@ def ow_spawn_worker(
     topic_id: str | None = None,
     task_n: int = 1,
     tmux_target_pane: str | None = None,
+    thinking: bool = False,
 ) -> dict:
     """workerセッションを起動する。
 
@@ -951,6 +971,11 @@ def ow_spawn_worker(
             新windowで起動する。クライアント（spawn呼び出し元）が自身の os.environ['TMUX_PANE']
             を読んで渡す想定。MCPサーバープロセスのenvは起動時にフリーズするためサーバー側で
             参照できない。
+        thinking: 思考worker（深い議論・設計検討・調査向けworker）として起動するなら
+            True。Trueのとき task_file 本文にマーカーセクション（`ultratink`文字列を
+            含む。意図的タイポ）が挿入され、frontmatter にも `thinking: true` が
+            残る。role は worker のまま（新role不要）。対応activityには
+            `intent:thinking` タグを別途付与すること。
 
     Returns:
         {"term_ref": str, "task_file": str, "spawning": "ok"}
@@ -1020,6 +1045,7 @@ def ow_spawn_worker(
         timeout_min=timeout_min,
         activity_id=activity_id,
         topic_id=topic_id,
+        thinking=thinking,
     )
 
     # アダプタ起動
