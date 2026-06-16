@@ -470,6 +470,39 @@ def _extract_intent_tag(tags: list[str]) -> str:
     return "(未設定)"
 
 
+def _build_ow_summary_line(
+    conn,
+    activity_id: int,
+    topic_ids: list[int],
+) -> str | None:
+    """ow:managed activity に対し、ダッシュボード render の該当行を抜粋して返す。
+
+    activity が ow:managed タグを持たない、または topic_id が紐づいていない、
+    あるいは render 結果に該当行が無い場合は None を返す（既存挙動を維持）。
+    """
+    from src.services.ow.dashboard import (
+        extract_activity_line,
+        is_ow_managed_activity_with_conn,
+        render_with_conn,
+    )
+
+    if not is_ow_managed_activity_with_conn(conn, activity_id):
+        return None
+    if not topic_ids:
+        return None
+    # 複数 topic 紐付けは現状想定外なので先頭のみ採用
+    topic_id = topic_ids[0]
+    try:
+        dashboard_text = render_with_conn(conn, topic_id=topic_id, role="general")
+    except Exception as e:
+        logger.warning("ow dashboard render failed for activity %d: %s", activity_id, e)
+        return None
+    line = extract_activity_line(dashboard_text, activity_id)
+    if not line:
+        return None
+    return f"  ow: {line}"
+
+
 def _build_summary(
     activity: dict,
     tags: list[str],
@@ -617,6 +650,13 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
 
         # 10. summary生成
         summary = _build_summary(activity, tags)
+        # 10a. ow:managed activity の場合、ダッシュボード抜粋を summary に追加する
+        #      （M#288 §3.8: 単一レンダラから生成した行を check_in summary にも共有）
+        ow_summary_line = _build_ow_summary_line(
+            conn, activity_id, direct.get("topic", [])
+        )
+        if ow_summary_line:
+            summary = f"{summary}\n{ow_summary_line}"
 
         # 戻り値組み立て（coverageをトップレベルの最初のキーに）
         result = {
