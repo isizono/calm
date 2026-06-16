@@ -55,7 +55,10 @@ class TestIntentThinkingMigration:
         assert len(row["description"]) > 0
 
     def test_intent_thinking_has_notes(self, temp_db):
-        """intent:thinking に notes（振る舞いガイド）が設定されている"""
+        """intent:thinking に notes（振る舞いガイド）が設定されている。
+        notes は orch セッション側で injecion されるため、思考トリガー語の
+        正規綴り (`ultrathink`) ではなく sentinel `ultratink`（意図的タイポ）
+        で参照される (D#2599, D#2600)。"""
         conn = get_connection()
         try:
             row = conn.execute(
@@ -65,8 +68,10 @@ class TestIntentThinkingMigration:
             conn.close()
         assert row is not None
         assert row["notes"] is not None
-        # 思考workerの境界・ultratink マーカー言及を含む
+        # sentinel `ultratink` で参照されている (orch session 誤発動回避)
         assert "ultratink" in row["notes"]
+        # 正規綴り `ultrathink` は notes に混入させない (orch session への注入を考慮)
+        assert "ultrathink" not in row["notes"]
 
     def test_intent_thinking_in_available_intents(self, temp_db):
         """intent:thinking が get_available_intents の返り値に含まれる"""

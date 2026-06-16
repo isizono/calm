@@ -287,6 +287,17 @@ orchは `ow_get_workload_state(channel, handle)` で現在のstateを参照し�
 
 assignの `model` は必須。一般プレイブック `skills/orch/playbook.md` のモデル選択目安表に従って選択する。
 
+## 思考worker (effort指定) の spawn
+
+深い議論・設計検討・調査向けに extended thinking を効かせたい worker は `ow_spawn_worker` の `effort` 引数を指定して spawn する。値は `high` / `xhigh` / `max` / `ultratink` の4段 (D#2599)。指定時の挙動:
+
+- task_file 本文に思考トリガー語マーカーセクションが正規綴りで埋め込まれ、worker セッション全体が長考モードで動作する
+- frontmatter に `effort: <値>` が残り、worker や ow_status から参照できる
+- OW_TERMINAL=tmux のとき、通常workerが split-pane で同 window 内に並ぶのに対し、思考worker は `tmux new-window` で別タブに開かれる (D#2601)
+- 対応 activity には `intent:thinking` タグも付与すること (D#2597)
+
+**綴り規約 (D#2600)**: 本ドキュメント・skill・playbook・チャット出力では sentinel `ultratink` (意図的タイポ) を使う。orch セッション自身が読んだ時点で extended thinking が暴発するのを避けるため。worker 側 task_file 本文には正規綴り (h付き) が埋め込まれる (実装責務)。`ow_spawn_worker` 呼び出し時の `effort` 値も sentinel `ultratink` を渡してよい — ow_service 内で `_EFFORT_ALIASES` 経由で正規綴りに正規化され、frontmatter・本文マーカーは正規綴りで書き出される (D#2600 アライアス実装)。
+
 ## エスカレーション
 
 1. workerが `event:state(blocked)` を送信する

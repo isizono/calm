@@ -768,9 +768,10 @@ class TestOwSpawnWorkerAdapter:
             tmux_target_pane="%0",
         )
         assert result.get("spawning") == "ok"
-        # adapter_args は ["bash", "<script>", "spawn", cwd, worker_cmd, target_pane] の6要素
-        assert len(captured_args[0]) == 6
-        assert captured_args[0][-1] == "%0"
+        # adapter_args は ["bash", "<script>", "spawn", cwd, worker_cmd, target_pane, is_thinking] の7要素
+        # is_thinking="0" (通常worker), target_pane=%0
+        assert len(captured_args[0]) == 7
+        assert captured_args[0][-2:] == ["%0", "0"]
 
     def test_tmux_target_pane_omitted_when_none(
         self, tmp_path: Path, monkeypatch
@@ -1042,9 +1043,9 @@ class TestWriteTaskFile:
         )
         assert task_file.exists()
 
-    def test_thinking_false_omits_marker_section(self, tmp_path: Path):
-        """thinking=False（デフォルト）の場合、本文に `ultratink` マーカーと
-        `## Thinking worker` セクションが含まれず、frontmatterにもthinkingキーが出ない"""
+    def test_effort_none_omits_marker_section(self, tmp_path: Path):
+        """effort=None（デフォルト=通常worker）の場合、本文に `ultrathink` マーカーと
+        `## Thinking worker` セクションが含まれず、frontmatterにもeffortキーが出ない"""
         task_file = ow_service._write_task_file(
             task_dir=tmp_path, task_n=1, alias="w-a", channel="ch1",
             cwd="/tmp", model="opus",
@@ -1052,30 +1053,33 @@ class TestWriteTaskFile:
             timeout_min=60, activity_id=1, topic_id="454",
         )
         fm, body = self._parse(task_file)
-        assert "thinking" not in fm
-        assert "ultratink" not in body
+        assert "effort" not in fm
+        assert "ultrathink" not in body
         assert "## Thinking worker" not in body
 
-    def test_thinking_true_injects_ultratink_marker(self, tmp_path: Path):
-        """thinking=Trueの場合、本文に `ultratink` 文字列と `## Thinking worker` セクションが
-        挿入され、frontmatterに `thinking: true` が記録される。
-        綴りは `ultratink`（意図的タイポ）を厳格に保ち、`ultrathink` は混入しない"""
+    @pytest.mark.parametrize("effort", ["high", "xhigh", "max", "ultrathink"])
+    def test_effort_injects_ultrathink_marker(self, tmp_path: Path, effort: str):
+        """effort enum 各値で、本文に正規綴り `ultrathink` 文字列と `## Thinking worker`
+        セクションが挿入され、frontmatter に `effort: <値>` が記録される。
+        worker 埋め込みは正規綴り `ultrathink`（claude extended thinking トリガー語）であり、
+        sentinel `ultratink` は worker 側に混入させない (D#2599, D#2600)"""
         task_file = ow_service._write_task_file(
             task_dir=tmp_path, task_n=2, alias="w-th", channel="ch1",
             cwd="/tmp", model="opus",
             task_title="思考タスク", acceptance="A", context="C", playbook="P",
             timeout_min=60, activity_id=1, topic_id="454",
-            thinking=True,
+            effort=effort,
         )
         fm, body = self._parse(task_file)
-        assert fm.get("thinking") is True
+        assert fm.get("effort") == effort
         assert "## Thinking worker" in body
-        assert "ultratink" in body
-        # 意図的タイポを保つ: extended thinking トリガーの `ultrathink` は含めない
-        assert "ultrathink" not in body
+        # 正規綴り `ultrathink` がマーカーとして埋め込まれる
+        assert "ultrathink" in body
+        # sentinel タイポ `ultratink` は worker 側プロンプトに混入させない
+        assert "ultratink" not in body
 
-    def test_thinking_true_keeps_other_sections(self, tmp_path: Path):
-        """thinking=Trueでも既存の Acceptance/Context/Playbook セクションは出力される。
+    def test_effort_keeps_other_sections(self, tmp_path: Path):
+        """effort指定時でも既存の Acceptance/Context/Playbook セクションは出力される。
         マーカーセクションは Acceptance より前（タイトル直後）に挿入される"""
         task_file = ow_service._write_task_file(
             task_dir=tmp_path, task_n=3, alias="w-th", channel="ch1",
@@ -1083,7 +1087,7 @@ class TestWriteTaskFile:
             task_title="思考タスク", acceptance="全件通過",
             context="背景説明あり", playbook="プレイブック本文",
             timeout_min=60, activity_id=1, topic_id="454",
-            thinking=True,
+            effort="ultrathink",
         )
         _, body = self._parse(task_file)
         assert "## Thinking worker" in body
@@ -1276,10 +1280,12 @@ class TestOwSpawnWorkerModelValidation:
 
 
 class TestOwSpawnWorkerThinking:
-    """ow_spawn_worker の thinking 引数（思考worker起動）の挙動テスト。
+    """ow_spawn_worker の effort 引数（思考worker起動）の挙動テスト。
 
-    思考worker = role:worker のまま task_file 本文に意図的タイポ `ultratink` を
-    マーカーとして埋め込んだworker。spawn時にthinking=True指定で発動する。
+    思考worker = role:worker のまま task_file 本文に正規綴り `ultrathink` マーカーを
+    埋め込んだ worker。spawn時に effort enum (`high` / `xhigh` / `max` / `ultrathink`)
+    のいずれかを指定して発動する (D#2599)。worker 側マーカーは正規綴り `ultrathink`、
+    ドキュメント・skill 側の参照は sentinel `ultratink` という綴り分けを守る (D#2600)。
     """
 
     @pytest.fixture(autouse=True)
@@ -1296,8 +1302,8 @@ class TestOwSpawnWorkerThinking:
         )
         monkeypatch.delenv("OW_TERMINAL", raising=False)
 
-    def test_thinking_default_false_no_marker(self, tmp_path: Path, monkeypatch):
-        """thinking引数を渡さない（デフォルト False）と task_file 本文にマーカーが入らない"""
+    def test_effort_default_none_no_marker(self, tmp_path: Path, monkeypatch):
+        """effort 引数を渡さない（デフォルト None）と task_file 本文にマーカーが入らない"""
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         result = ow_service.ow_spawn_worker(
             alias="w-a", channel="ch1", cwd="/tmp", model="opus",
@@ -1305,33 +1311,129 @@ class TestOwSpawnWorkerThinking:
         )
         assert result.get("manual") is True
         content = Path(result["task_file"]).read_text(encoding="utf-8")
-        assert "ultratink" not in content
+        assert "ultrathink" not in content
         assert "## Thinking worker" not in content
 
-    def test_thinking_true_injects_ultratink_into_task_file(self, tmp_path: Path, monkeypatch):
-        """thinking=True で spawn すると task_file 本文に `ultratink` が含まれる"""
+    @pytest.mark.parametrize("effort", ["high", "xhigh", "max", "ultrathink"])
+    def test_effort_injects_ultrathink_into_task_file(self, tmp_path: Path, monkeypatch, effort: str):
+        """effort enum 各値で spawn すると task_file 本文に正規綴り `ultrathink` が含まれる
+        (D#2599, D#2600)。sentinel `ultratink` は混入させない"""
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         result = ow_service.ow_spawn_worker(
             alias="w-th", channel="ch1", cwd="/tmp", model="opus",
             task_title="思考タスク", acceptance="議論まとめ", task_n=1, topic_id="999",
-            thinking=True,
+            effort=effort,
         )
         assert result.get("manual") is True
         content = Path(result["task_file"]).read_text(encoding="utf-8")
-        assert "ultratink" in content
+        # 正規綴り: claude extended thinking トリガー語
+        assert "ultrathink" in content
         assert "## Thinking worker" in content
-        # 意図的タイポを保つ: extended thinking トリガー `ultrathink` は混入させない
-        assert "ultrathink" not in content
+        # sentinel タイポ: worker 側プロンプトには埋め込まない (orch 側で言及するときだけ使う)
+        assert "ultratink" not in content
 
-    def test_thinking_true_marks_frontmatter(self, tmp_path: Path, monkeypatch):
-        """thinking=True で spawn すると task_file frontmatter に thinking: true が残る"""
+    @pytest.mark.parametrize("effort", ["high", "xhigh", "max", "ultrathink"])
+    def test_effort_marks_frontmatter(self, tmp_path: Path, monkeypatch, effort: str):
+        """effort enum で spawn すると task_file frontmatter に effort: <値> が残る"""
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         result = ow_service.ow_spawn_worker(
             alias="w-th", channel="ch1", cwd="/tmp", model="opus",
             task_title="思考タスク", acceptance="done", task_n=2, topic_id="999",
-            thinking=True,
+            effort=effort,
         )
         assert result.get("manual") is True
         content = Path(result["task_file"]).read_text(encoding="utf-8")
         fm, _ = ow_service._parse_frontmatter(content)
-        assert fm.get("thinking") is True
+        assert fm.get("effort") == effort
+
+    def test_invalid_effort_rejected(self, tmp_path: Path, monkeypatch):
+        """THINKING_EFFORTS に含まれない effort 値は INVALID_EFFORT エラーで拒否される"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        result = ow_service.ow_spawn_worker(
+            alias="w-th", channel="ch1", cwd="/tmp", model="opus",
+            task_title="思考タスク", acceptance="done", task_n=3, topic_id="999",
+            effort="low",  # 未定義値
+        )
+        assert "error" in result
+        assert result["error"]["code"] == "INVALID_EFFORT"
+
+    def test_sentinel_effort_alias_normalized(self, tmp_path: Path, monkeypatch):
+        """orch 側 sentinel 綴り `ultratink` を effort に渡すと正規綴り `ultrathink` に
+        畳まれて受理される (D#2600)。orch セッションでの extended thinking 暴発回避用。"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        result = ow_service.ow_spawn_worker(
+            alias="w-th", channel="ch1", cwd="/tmp", model="opus",
+            task_title="思考タスク", acceptance="done", task_n=6, topic_id="999",
+            effort="ultratink",  # sentinel
+        )
+        assert result.get("manual") is True
+        content = Path(result["task_file"]).read_text(encoding="utf-8")
+        fm, body = ow_service._parse_frontmatter(content)
+        # 正規綴りで保存される
+        assert fm.get("effort") == "ultrathink"
+        # 本文マーカーも正規綴り
+        assert "ultrathink" in body
+        # sentinel タイポ自体は task_file に残らない
+        assert "ultratink" not in content
+
+    def test_tmux_thinking_passes_is_thinking_flag_to_adapter(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """OW_TERMINAL=tmux + effort指定で adapter 呼び出しに is_thinking=1 が渡される
+        (D#2601: 思考workerはtmuxでもsplit-paneではなくnew-windowで別タブに開く)"""
+        monkeypatch.setenv("OW_TERMINAL", "tmux")
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        # 実存するadapterパスを返すstub
+        adapter_stub = tmp_path / "tmux.sh"
+        adapter_stub.write_text("#!/usr/bin/env bash\necho stub-pane-id\n")
+        adapter_stub.chmod(0o755)
+        monkeypatch.setattr(ow_service, "_get_adapter_path", lambda t: adapter_stub)
+
+        captured: dict = {}
+
+        def fake_run(args, **kwargs):
+            captured["args"] = list(args)
+            import subprocess as _sp
+            return _sp.CompletedProcess(args=args, returncode=0, stdout="stub-pane-id\n", stderr="")
+
+        monkeypatch.setattr(ow_service.subprocess, "run", fake_run)
+
+        result = ow_service.ow_spawn_worker(
+            alias="w-th", channel="ch1", cwd="/tmp", model="opus",
+            task_title="思考タスク", acceptance="done", task_n=4, topic_id="999",
+            effort="ultrathink", tmux_target_pane="%0",
+        )
+        assert result.get("term_ref") == "stub-pane-id"
+        # adapter には target_pane と is_thinking=1 が positional で渡される
+        assert captured["args"][-2:] == ["%0", "1"]
+
+    def test_tmux_non_thinking_passes_is_thinking_zero(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """OW_TERMINAL=tmux + effort未指定（通常worker）で adapter 呼び出しに is_thinking=0
+        が渡される (target_pane指定時のみ。target_pane未指定 + 通常workerは従来通り is_thinking
+        引数を渡さず ow-workers 別session方式にフォールバックする)"""
+        monkeypatch.setenv("OW_TERMINAL", "tmux")
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        adapter_stub = tmp_path / "tmux.sh"
+        adapter_stub.write_text("#!/usr/bin/env bash\necho stub-pane-id\n")
+        adapter_stub.chmod(0o755)
+        monkeypatch.setattr(ow_service, "_get_adapter_path", lambda t: adapter_stub)
+
+        captured: dict = {}
+
+        def fake_run(args, **kwargs):
+            captured["args"] = list(args)
+            import subprocess as _sp
+            return _sp.CompletedProcess(args=args, returncode=0, stdout="stub-pane-id\n", stderr="")
+
+        monkeypatch.setattr(ow_service.subprocess, "run", fake_run)
+
+        result = ow_service.ow_spawn_worker(
+            alias="w-a", channel="ch1", cwd="/tmp", model="opus",
+            task_title="通常タスク", acceptance="done", task_n=5, topic_id="999",
+            tmux_target_pane="%0",  # effort未指定 = 通常worker
+        )
+        assert result.get("term_ref") == "stub-pane-id"
+        # 通常worker + target_pane: target_pane と is_thinking=0 を渡す (split-pane 経路)
+        assert captured["args"][-2:] == ["%0", "0"]

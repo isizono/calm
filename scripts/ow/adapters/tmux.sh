@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # tmux ターミナルアダプタ
 # 使い方:
-#   tmux.sh spawn <cwd> <worker_cmd> [target_pane]
-#     target_pane 未指定: 従来通り ow-workers セッションに新windowで起動
-#     target_pane 指定:   target_paneと同じwindow内で split-window
-#                         - window内に pane user option @ow-worker=1 のpaneが0個 → 右に30%水平分割
-#                         - 1個以上 → 最新worker paneを垂直分割
+#   tmux.sh spawn <cwd> <worker_cmd> [target_pane] [is_thinking]
+#     target_pane 未指定 + is_thinking=0/未指定: 従来通り ow-workers セッションに新windowで起動
+#     target_pane 指定 + is_thinking=0/未指定:   target_paneと同じwindow内で split-window
+#                                                - window内に pane user option @ow-worker=1 のpaneが0個 → 右に30%水平分割
+#                                                - 1個以上 → 最新worker paneを垂直分割
+#     is_thinking=1:                              思考worker (D#2601)。target_pane と同じセッションに `tmux new-window`
+#                                                で別タブ (window) を開く。target_pane 未指定なら ow-workers セッションに
+#                                                新タブで起動。新window名は "ow-worker-thinking" を設定し、pane user
+#                                                option @ow-worker=1 で識別マーカーを付ける。
 #   tmux.sh close <term_ref>           → pane IDでpaneをkill
 #
 # worker_cmdはshlex.quote等でエスケープ済みのシェルコマンド文字列を期待する。
@@ -13,23 +17,25 @@
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
-  echo "Usage: tmux.sh spawn <cwd> <worker_cmd> [target_pane] | close <term_ref>" >&2
+  echo "Usage: tmux.sh spawn <cwd> <worker_cmd> [target_pane] [is_thinking] | close <term_ref>" >&2
   exit 1
 fi
 
 ACTION="$1"
 SESSION_NAME="${OW_TMUX_SESSION:-ow-workers}"
 WORKER_MARKER_OPT="@ow-worker"
+THINKING_WINDOW_NAME="ow-worker-thinking"
 
 case "$ACTION" in
   spawn)
     if [[ $# -lt 3 ]]; then
-      echo "Usage: tmux.sh spawn <cwd> <worker_cmd> [target_pane]" >&2
+      echo "Usage: tmux.sh spawn <cwd> <worker_cmd> [target_pane] [is_thinking]" >&2
       exit 1
     fi
     CWD="$2"
     WORKER_CMD="$3"
     TARGET_PANE="${4:-}"
+    IS_THINKING="${5:-0}"
 
     # シェルインジェクション対策: base64エンコードしてCWDとCMDを安全に渡す
     # cd側はダブルクォートでword splittingを抑止、worker_cmd側はevalでシェル構文として
@@ -39,8 +45,30 @@ case "$ACTION" in
     CMD_B64=$(printf '%s' "$WORKER_CMD" | base64 | tr -d '\n')
     SHELL_CMD="cd \"\$(echo $CWD_B64 | base64 -d)\" && eval \"\$(echo $CMD_B64 | base64 -d)\""
 
-    if [[ -n "$TARGET_PANE" ]]; then
-      # split-window方式: target_paneと同じwindowに分割して入れる
+    if [[ "$IS_THINKING" == "1" ]]; then
+      # 思考worker: 別タブ (new-window) で開く (D#2601)
+      # target_pane があればそのセッションに、なければ ow-workers セッションに新windowを足す。
+      # 通常worker と pane user option (@ow-worker=1) を共有 — 別window配置のため
+      # list-panes 検出競合は発生しない (split-window 検出は同一window内に閉じる)。
+      if [[ -n "$TARGET_PANE" ]]; then
+        SESSION_ID=$(tmux display -t "$TARGET_PANE" -p "#{session_id}" 2>/dev/null || true)
+        if [[ -z "$SESSION_ID" ]]; then
+          echo "target_pane not found: $TARGET_PANE" >&2
+          exit 1
+        fi
+        PANE_ID=$(tmux new-window -t "$SESSION_ID" -n "$THINKING_WINDOW_NAME" -d -P -F "#{pane_id}" -- \
+          bash -c "$SHELL_CMD")
+      else
+        if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+          tmux new-session -d -s "$SESSION_NAME" -n "ow-base"
+        fi
+        PANE_ID=$(tmux new-window -t "$SESSION_NAME" -n "$THINKING_WINDOW_NAME" -P -F "#{pane_id}" -- \
+          bash -c "$SHELL_CMD")
+      fi
+      tmux set-option -p -t "$PANE_ID" "$WORKER_MARKER_OPT" 1 \
+        || echo "warn: tmux set-option -p @ow-worker failed (possibly tmux <1.8 or pane gone), worker marker not set" >&2
+    elif [[ -n "$TARGET_PANE" ]]; then
+      # 通常worker + split-window方式: target_paneと同じwindowに分割して入れる
       WINDOW_ID=$(tmux display -t "$TARGET_PANE" -p "#{window_id}" 2>/dev/null || true)
       if [[ -z "$WINDOW_ID" ]]; then
         echo "target_pane not found: $TARGET_PANE" >&2
