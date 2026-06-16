@@ -1678,16 +1678,57 @@ def _send_recovery_ping(channel: str, alias: str, task: str = "T0") -> dict:
 
     needs_reply=True で送り、応答はorchの通常受信ループで処理される。
     本関数はfire-and-forget（応答待ちはしない）。
+
+    Returns:
+        ow_send の戻り値に nonce フィールドを追加したdict。
+        nonce は ow_recover の pending_pings 引数に渡すことで、
+        次回呼び出し時に nonce echo の有無を確認できる。
     """
+    nonce = uuid.uuid4().hex
     body = {
         "v": 1,
         "kind": "command",
         "from": "orch",
         "to": alias,
         "task": task or "T0",
-        "data": {"type": "ping", "recovery": True},
+        "data": {"type": "ping", "nonce": nonce, "recovery": True},
     }
-    return ow_send(channel=channel, handle="orch", body=body, needs_reply=True)
+    result = ow_send(channel=channel, handle="orch", body=body, needs_reply=True)
+    # ow_send 失敗時は nonce を付与しない。送信が成立していないものを
+    # pending_pings に積むと、後続の nonce echo チェックで "応答なし" と
+    # "送信途中" が区別できなくなる。
+    if "error" not in result:
+        result["nonce"] = nonce
+    return result
+
+
+def _check_nonce_echo(channel: str, nonce: str, after_msg_id: int = 0) -> bool:
+    """ping送信後のrelayでin_reply_nonceが一致するeventを探す。
+
+    Args:
+        channel: channelコード
+        nonce: _send_recovery_pingが生成したnonce文字列
+        after_msg_id: pingを送った直後のmsg_id（これより大きいメッセージのみ対象）
+
+    Returns:
+        True: 対応nonceを持つevent:heartbeatまたはevent:stateが見つかった
+        False: 見つからなかった、またはrelay取得失敗
+    """
+    history = ow_history(channel, since=after_msg_id, limit=1000)
+    if "error" in history:
+        return False
+    for msg in history.get("messages", []):
+        body = msg.get("body", {})
+        if not isinstance(body, dict):
+            continue
+        if body.get("kind") != "event":
+            continue
+        data = body.get("data") or {}
+        if data.get("type") not in ("heartbeat", "state"):
+            continue
+        if data.get("in_reply_nonce") == nonce:
+            return True
+    return False
 
 
 def _apply_queue_status_update(
@@ -1770,7 +1811,12 @@ def _apply_queue_status_update(
         os.close(fd)
 
 
-def ow_recover(channel: str, topic_id: str, dry_run: bool = False) -> dict:
+def ow_recover(
+    channel: str,
+    topic_id: str,
+    dry_run: bool = False,
+    pending_pings: list[dict] | None = None,
+) -> dict:
     """orch crash後のqueue × relay履歴 × presence整合チェック・自動修正のエントリポイント。
 
     手順:
@@ -1778,17 +1824,24 @@ def ow_recover(channel: str, topic_id: str, dry_run: bool = False) -> dict:
         2. reconstruct_state_from_relay で全relay履歴から状態再構築
         3. _get_presence で現在onlineのworker一覧取得
         4. detect_crash_inconsistencies で4カテゴリ（ghost_active/pending_spawn/stalled_done/orphans）に分類
-        5. dry_run=Falseなら:
+        5. pending_pings が渡された場合: nonce echo 確認（前回ping送信後の応答有無）
+        6. dry_run=Falseなら:
            - ghost_active + pending_spawn(relay履歴あり): queueをrelay最新stateで自動更新
            - stalled_done / orphans: cmd:ping送信（応答待ちはしない）
 
     orchはこの戻り値を見て、queueの状態が更新されたことを確認し、ping送信先からの応答を
-    通常の受信ループで処理する。
+    通常の受信ループで処理する。nonce echo確認のユースケース:
+        1回目: ow_recover() → pings_sentにnonceが記録される
+        2回目（待機後）: ow_recover(..., pending_pings=[{alias, task, nonce, sent_after_msg_id}])
+            → nonce_echo_resultsでworkerの生存確認結果を取得
 
     Args:
         channel: channelコード
         topic_id: トピックID（queueファイル特定用、文字列も整数も受け付ける）
         dry_run: Trueなら検出のみ・修正/送信なし
+        pending_pings: 前回のping送信情報。各要素は:
+            {alias: str, task: str, nonce: str, sent_after_msg_id: int}
+            sent_after_msg_idより大きいmsg_idのrelayメッセージでnonce echoを探す。
 
     Returns:
         {
@@ -1803,6 +1856,10 @@ def ow_recover(channel: str, topic_id: str, dry_run: bool = False) -> dict:
             "presence": [str],
             "reconstructed_max_msg_id": int,
             "dry_run": bool,
+            "nonce_echo_results": [
+                {alias: str, task: str, nonce: str, echo_found: bool},
+                ...
+            ],
         }
         relay/channel不可時: {"error": {"code": ..., "message": ...}}
         relay history取得失敗時: detected全カテゴリ空 + warnings に fetch error メッセージ
@@ -1840,6 +1897,7 @@ def ow_recover(channel: str, topic_id: str, dry_run: bool = False) -> dict:
             "presence": [],
             "reconstructed_max_msg_id": 0,
             "dry_run": dry_run,
+            "nonce_echo_results": [],
         }
     if reconstructed.get("truncated"):
         warnings.append(
@@ -1888,6 +1946,7 @@ def ow_recover(channel: str, topic_id: str, dry_run: bool = False) -> dict:
                 {
                     "alias": orphan["alias"],
                     "task": "T0",
+                    "nonce": result.get("nonce"),
                     "reason": "orphan",
                     "result": result,
                 }
@@ -1898,10 +1957,28 @@ def ow_recover(channel: str, topic_id: str, dry_run: bool = False) -> dict:
                 {
                     "alias": stalled["alias"],
                     "task": stalled["task"],
+                    "nonce": result.get("nonce"),
                     "reason": "stalled_done",
                     "result": result,
                 }
             )
+
+    # pending_pings が渡された場合、nonce echo の有無を確認する
+    nonce_echo_results: list[dict] = []
+    for pp in pending_pings or []:
+        echo_found = _check_nonce_echo(
+            channel=channel,
+            nonce=pp["nonce"],
+            after_msg_id=pp.get("sent_after_msg_id", 0),
+        )
+        nonce_echo_results.append(
+            {
+                "alias": pp["alias"],
+                "task": pp["task"],
+                "nonce": pp["nonce"],
+                "echo_found": echo_found,
+            }
+        )
 
     return {
         "detected": detected,
@@ -1910,6 +1987,7 @@ def ow_recover(channel: str, topic_id: str, dry_run: bool = False) -> dict:
         "presence": presence,
         "reconstructed_max_msg_id": reconstructed.get("max_msg_id", 0),
         "dry_run": dry_run,
+        "nonce_echo_results": nonce_echo_results,
     }
 
 
