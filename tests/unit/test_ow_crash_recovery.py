@@ -6,6 +6,9 @@
 - `detect_crash_inconsistencies`: ghost_active / stalled_done / orphans 各分類
 - `_apply_queue_status_update`: header status 置換 / note 追加・上書き / 不在 task
 - `ow_recover`: dry_run / 自動修正適用 / relay不可
+- `_send_recovery_ping`: nonce生成と envelope 形式 (FT-2)
+- `_check_nonce_echo`: nonce echo 判定ロジック (FT-3)
+- `ow_recover` pending_pings: nonce echo 結果の統合 (FT-3)
 
 突合ロジック本体は純粋関数のためHTTPはモックに差し替えず直接呼ぶ。
 relay HTTP接点（ow_history / _get_presence / ow_send 等）はmonkeypatchで差し替える。
@@ -934,3 +937,224 @@ class TestSendRecoveryPingNonce:
         assert body["data"]["recovery"] is True
         assert body["to"] == "w-a"
         assert body["task"] == "T3"
+
+
+# ----------------------------
+# _check_nonce_echo (FT-3)
+# ----------------------------
+
+
+class TestCheckNonceEcho:
+    """nonce echo 判定ロジックのテスト（FT-3）。"""
+
+    def _make_history(self, messages):
+        return {"messages": messages}
+
+    def _heartbeat_msg(self, msg_id, alias, nonce):
+        return {
+            "msg_id": msg_id,
+            "body": {
+                "v": 1, "kind": "event", "from": alias, "to": "*",
+                "data": {"type": "heartbeat", "phase": "working", "in_reply_nonce": nonce},
+            },
+        }
+
+    def _state_msg(self, msg_id, alias, state, nonce):
+        return {
+            "msg_id": msg_id,
+            "body": {
+                "v": 1, "kind": "event", "from": alias, "to": "orch",
+                "data": {"type": "state", "state": state, "in_reply_nonce": nonce},
+            },
+        }
+
+    def test_heartbeat_with_matching_nonce_returns_true(self, monkeypatch):
+        """event:heartbeat で in_reply_nonce が一致 → True"""
+        monkeypatch.setattr(
+            ow_service, "ow_history",
+            lambda channel, since=0, limit=1000: self._make_history([
+                self._heartbeat_msg(101, "w-a", "abc123"),
+            ]),
+        )
+        assert ow_service._check_nonce_echo("ChAbCdEf", "abc123", after_msg_id=100) is True
+
+    def test_state_with_matching_nonce_returns_true(self, monkeypatch):
+        """event:state で in_reply_nonce が一致 → True"""
+        monkeypatch.setattr(
+            ow_service, "ow_history",
+            lambda channel, since=0, limit=1000: self._make_history([
+                self._state_msg(101, "w-a", "working", "xyz789"),
+            ]),
+        )
+        assert ow_service._check_nonce_echo("ChAbCdEf", "xyz789", after_msg_id=100) is True
+
+    def test_no_matching_nonce_returns_false(self, monkeypatch):
+        """一致する nonce がない → False"""
+        monkeypatch.setattr(
+            ow_service, "ow_history",
+            lambda channel, since=0, limit=1000: self._make_history([
+                self._heartbeat_msg(101, "w-a", "different_nonce"),
+            ]),
+        )
+        assert ow_service._check_nonce_echo("ChAbCdEf", "abc123", after_msg_id=100) is False
+
+    def test_empty_history_returns_false(self, monkeypatch):
+        """応答なし（空履歴）→ False"""
+        monkeypatch.setattr(
+            ow_service, "ow_history",
+            lambda channel, since=0, limit=1000: self._make_history([]),
+        )
+        assert ow_service._check_nonce_echo("ChAbCdEf", "abc123", after_msg_id=100) is False
+
+    def test_relay_error_returns_false(self, monkeypatch):
+        """relay取得失敗 → False（例外伝播しない）"""
+        monkeypatch.setattr(
+            ow_service, "ow_history",
+            lambda channel, since=0, limit=1000: {"error": {"code": 500}},
+        )
+        assert ow_service._check_nonce_echo("ChAbCdEf", "abc123", after_msg_id=0) is False
+
+    def test_non_event_kind_ignored(self, monkeypatch):
+        """kind=command や kind=state（旧形式）は in_reply_nonce があっても無視"""
+        monkeypatch.setattr(
+            ow_service, "ow_history",
+            lambda channel, since=0, limit=1000: self._make_history([
+                {
+                    "msg_id": 101,
+                    "body": {
+                        "kind": "command", "from": "orch",
+                        "data": {"type": "pong", "in_reply_nonce": "abc123"},
+                    },
+                },
+            ]),
+        )
+        assert ow_service._check_nonce_echo("ChAbCdEf", "abc123", after_msg_id=100) is False
+
+    def test_after_msg_id_filters_old_messages(self, monkeypatch):
+        """after_msg_id より前のメッセージは無視（ow_historyのsince引数に渡る）"""
+        called_with = []
+        def fake_history(channel, since=0, limit=1000):
+            called_with.append(since)
+            return self._make_history([])
+        monkeypatch.setattr(ow_service, "ow_history", fake_history)
+        ow_service._check_nonce_echo("ChAbCdEf", "abc123", after_msg_id=500)
+        assert called_with == [500]
+
+
+# ----------------------------
+# ow_recover pending_pings (FT-3)
+# ----------------------------
+
+
+class TestOwRecoverPendingPings:
+    """ow_recover の pending_pings 引数と nonce_echo_results の統合テスト（FT-3）。"""
+
+    @pytest.fixture(autouse=True)
+    def _stub_relay(self, monkeypatch, tmp_path):
+        """relay/channel/presence/history を既定でスタブ化する。"""
+        monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
+        monkeypatch.setattr(ow_service, "ensure_channel", lambda ch: True)
+        monkeypatch.setattr(ow_service, "_get_presence", lambda ch: [])
+        monkeypatch.setattr(
+            ow_service, "ow_history",
+            lambda channel, since=0, limit=10000: {"messages": []},
+        )
+        # queueディレクトリ（空のqueueファイル）
+        queue_dir = tmp_path / "queue"
+        queue_dir.mkdir()
+        (queue_dir / "queue-t454.md").write_text("")
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(queue_dir))
+
+    def test_no_pending_pings_returns_empty_results(self, monkeypatch):
+        """pending_pings なし（デフォルト）→ nonce_echo_results が空リスト"""
+        result = ow_service.ow_recover(channel="ChAbCdEf", topic_id="454")
+        assert result["nonce_echo_results"] == []
+
+    def test_nonce_echo_found(self, monkeypatch):
+        """pending_pings に nonce を渡し、relay に対応 nonce echo がある → echo_found=True"""
+        def fake_history(channel, since=0, limit=10000):
+            if since == 100:
+                # _check_nonce_echo が呼ぶ側（limit=1000）
+                return {
+                    "messages": [
+                        {
+                            "msg_id": 101,
+                            "body": {
+                                "v": 1, "kind": "event", "from": "w-a", "to": "*",
+                                "data": {"type": "heartbeat", "phase": "working", "in_reply_nonce": "abc123"},
+                            },
+                        },
+                    ]
+                }
+            return {"messages": []}
+        monkeypatch.setattr(ow_service, "ow_history", fake_history)
+
+        pending = [{"alias": "w-a", "task": "T1", "nonce": "abc123", "sent_after_msg_id": 100}]
+        result = ow_service.ow_recover(channel="ChAbCdEf", topic_id="454", pending_pings=pending)
+        assert len(result["nonce_echo_results"]) == 1
+        er = result["nonce_echo_results"][0]
+        assert er["alias"] == "w-a"
+        assert er["nonce"] == "abc123"
+        assert er["echo_found"] is True
+
+    def test_nonce_echo_not_found(self, monkeypatch):
+        """pending_pings に nonce を渡し、relay に対応 nonce echo がない → echo_found=False"""
+        result = ow_service.ow_recover(
+            channel="ChAbCdEf",
+            topic_id="454",
+            pending_pings=[{"alias": "w-a", "task": "T1", "nonce": "xyz999", "sent_after_msg_id": 50}],
+        )
+        assert len(result["nonce_echo_results"]) == 1
+        assert result["nonce_echo_results"][0]["echo_found"] is False
+
+    def test_multiple_pending_pings(self, monkeypatch):
+        """複数の pending_pings それぞれの echo_found が独立して判定される"""
+        def fake_history(channel, since=0, limit=10000):
+            if since == 10:
+                return {
+                    "messages": [
+                        {
+                            "msg_id": 11,
+                            "body": {
+                                "v": 1, "kind": "event", "from": "w-a", "to": "*",
+                                "data": {"type": "heartbeat", "in_reply_nonce": "nonce-a"},
+                            },
+                        },
+                    ]
+                }
+            return {"messages": []}
+        monkeypatch.setattr(ow_service, "ow_history", fake_history)
+
+        pending = [
+            {"alias": "w-a", "task": "T1", "nonce": "nonce-a", "sent_after_msg_id": 10},
+            {"alias": "w-b", "task": "T2", "nonce": "nonce-b", "sent_after_msg_id": 20},
+        ]
+        result = ow_service.ow_recover(channel="ChAbCdEf", topic_id="454", pending_pings=pending)
+        echo_by_alias = {r["alias"]: r["echo_found"] for r in result["nonce_echo_results"]}
+        assert echo_by_alias["w-a"] is True
+        assert echo_by_alias["w-b"] is False
+
+    def test_pings_sent_includes_nonce(self, monkeypatch):
+        """ow_recoverがstalled_done workerにpingを送ったとき、pings_sentにnonceが含まれる"""
+        monkeypatch.setattr(ow_service, "_get_presence", lambda ch: ["w-a"])
+        # queue に done タスク（w-a は presence にいる = stalled_done）
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        qd = Path(tmp) / "queue"
+        qd.mkdir()
+        (qd / "queue-t454.md").write_text(
+            "## T1 | x | done\n- worker: w-a / term_ref: x / session: y\n"
+        )
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(qd))
+
+        sent = []
+        monkeypatch.setattr(
+            ow_service, "ow_send",
+            lambda channel, handle, body, needs_reply=False: sent.append(body) or {"msg_id": 99},
+        )
+        result = ow_service.ow_recover(channel="ChAbCdEf", topic_id="454")
+        assert len(result["applied"]["pings_sent"]) == 1
+        ps = result["applied"]["pings_sent"][0]
+        assert "nonce" in ps
+        assert ps["nonce"] is not None
+        assert ps["nonce"] != ""
