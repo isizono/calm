@@ -432,6 +432,21 @@ class TestAddPinSupersededHint:
         assert "error" not in result
         assert "hint" not in result
 
+    def test_pin_both_sides_superseded_returns_two_hints(self, topic):
+        """source/target両方がsuperseded decisionの場合hintが2件結合される"""
+        topic_id = topic["topic_id"]
+        d_src_old, d_src_new = self._setup_superseded(topic_id)
+        d_tgt_old, d_tgt_new = self._setup_superseded(topic_id)
+
+        result = add_pin("decision", d_src_old, "decision", d_tgt_old)
+
+        assert "error" not in result
+        assert "hint" in result
+        hint_lines = result["hint"].split("\n")
+        assert len(hint_lines) == 2
+        assert any(f"decision#{d_src_old}" in line and f"decision#{d_src_new}" in line for line in hint_lines)
+        assert any(f"decision#{d_tgt_old}" in line and f"decision#{d_tgt_new}" in line for line in hint_lines)
+
 
 class TestTransferPinsWithConn:
     """_transfer_pins_with_conn 単体テスト"""

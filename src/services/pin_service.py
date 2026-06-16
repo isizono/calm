@@ -228,24 +228,28 @@ def add_pin(
             "target_id": target_id,
         }
 
-        # superseded decisionへのpinはhintを付与する（自動解決はしない）
-        hints = []
-        if source_type == "decision":
-            superseder_id = _is_decision_superseded(conn, source_id)
-            if superseder_id is not None:
-                hints.append(
-                    f"decision#{source_id} は decision#{superseder_id} に superseded されています。"
-                    f"古い decision を意図的に pin する場合はそのままで問題ありません。"
-                )
-        if target_type == "decision":
-            superseder_id = _is_decision_superseded(conn, target_id)
-            if superseder_id is not None:
-                hints.append(
-                    f"decision#{target_id} は decision#{superseder_id} に superseded されています。"
-                    f"古い decision を意図的に pin する場合はそのままで問題ありません。"
-                )
-        if hints:
-            result["hint"] = "\n".join(hints)
+        # supersededへのpinはhintを付与する（自動解決はしない）。
+        # hintクエリはcommit済みpinへの補足情報。失敗してもpin挿入は維持しhintなしで返す。
+        try:
+            hints = []
+            if source_type == "decision":
+                superseder_id = _is_decision_superseded(conn, source_id)
+                if superseder_id is not None:
+                    hints.append(
+                        f"decision#{source_id} は decision#{superseder_id} に superseded されています。"
+                        f"古い decision を意図的に pin する場合はそのままで問題ありません。"
+                    )
+            if target_type == "decision":
+                superseder_id = _is_decision_superseded(conn, target_id)
+                if superseder_id is not None:
+                    hints.append(
+                        f"decision#{target_id} は decision#{superseder_id} に superseded されています。"
+                        f"古い decision を意図的に pin する場合はそのままで問題ありません。"
+                    )
+            if hints:
+                result["hint"] = "\n".join(hints)
+        except Exception:
+            pass
 
         return result
 
