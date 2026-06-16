@@ -1427,6 +1427,23 @@ def _validate_spawn_preconditions(
             )
             break
 
+    # 6. identity alive check (INV-9: 同一 handle で alive 期間が時間的に重複しない)
+    identity = ow_get_identity(channel, alias)
+    if identity is not None:
+        cause = identity.get("cause")
+        inferred_cause = identity.get("inferred_cause")
+        terminated_at = identity.get("terminated_at")
+        is_terminated = (
+            cause in ("closed", "cancelled", "dead")
+            or bool(terminated_at)
+            or inferred_cause is not None
+        )
+        if not is_terminated:
+            warnings.append(
+                f"alias {alias} has an alive identity on channel {channel} "
+                "(not yet terminated); cannot spawn duplicate worker (INV-9)"
+            )
+
     return {"ok": not warnings, "warnings": warnings}
 
 
