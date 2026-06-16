@@ -267,23 +267,29 @@ def _has_supersedes_path(conn: sqlite3.Connection, from_id: int, to_id: int) -> 
     return False
 
 
-def _add_supersedes_with_conn(conn: sqlite3.Connection, source_id: int, target_ids: list[int]) -> int:
+def _add_supersedes_with_conn(conn: sqlite3.Connection, source_id: int, target_ids: list[int]) -> tuple[int, int]:
     """supersedesリレーションをdecision_supersedesテーブルに追加する。
 
     循環を検出した場合はValueErrorを送出する。
+    INSERT成功時のみ pins の付け替えを同一トランザクション内で実行する
+    （重複add（changes()=0）では発火しない）。
 
     Args:
         conn: DB接続
-        source_id: 上書き元のdecision ID
-        target_ids: 上書き先のdecision IDリスト
+        source_id: 上書き元（新）のdecision ID
+        target_ids: 上書き先（旧）のdecision IDリスト
 
     Returns:
-        追加件数
+        (追加件数, pin付け替え件数)
 
     Raises:
         ValueError: 循環が検出された場合
     """
+    # pin_service との循環import回避のためローカルimport
+    from src.services.pin_service import _transfer_pins_with_conn
+
     added = 0
+    pins_transferred = 0
     for target_id in target_ids:
         # 自己参照はCHECK制約で弾かれるが、明示的にスキップ
         if source_id == target_id:
@@ -302,7 +308,9 @@ def _add_supersedes_with_conn(conn: sqlite3.Connection, source_id: int, target_i
         )
         if conn.execute("SELECT changes()").fetchone()[0] > 0:
             added += 1
-    return added
+            # INSERT成功時のみpin付け替えを実行（superseded側=target_id, superseder側=source_id）
+            pins_transferred += _transfer_pins_with_conn(conn, "decision", target_id, source_id)
+    return added, pins_transferred
 
 
 def _remove_supersedes_with_conn(conn: sqlite3.Connection, source_id: int, target_ids: list[int]) -> int:
@@ -375,10 +383,24 @@ def add_relation(source_type: str, source_id: int, targets: list[dict], relation
             added = 0
             for target in targets:
                 added += _add_depends_on_with_conn(conn, source_id, target["ids"])
+            conn.commit()
+            return {"added": added}
         elif relation_type == "supersedes":
             added = 0
+            pins_transferred = 0
             for target in targets:
-                added += _add_supersedes_with_conn(conn, source_id, target["ids"])
+                a, p = _add_supersedes_with_conn(conn, source_id, target["ids"])
+                added += a
+                pins_transferred += p
+            conn.commit()
+            result: dict = {"added": added}
+            if pins_transferred > 0:
+                result["pins_transferred"] = pins_transferred
+                logger.info(
+                    f"supersedes added: source_id={source_id}, "
+                    f"added={added}, pins_transferred={pins_transferred}"
+                )
+            return result
         else:
             added = _add_relation_with_conn(conn, source_type, source_id, targets)
         conn.commit()
