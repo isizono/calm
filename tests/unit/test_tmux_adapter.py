@@ -251,6 +251,59 @@ class TestTmuxAdapterSplit:
         assert "target_pane not found" in result.stderr
 
 
+class TestTmuxAdapterThinking:
+    """is_thinking=1 のとき思考worker扱いで `tmux new-window` で別タブを開く (D#2601)。"""
+
+    def test_thinking_with_target_pane_uses_new_window(self, tmp_path):
+        """target_pane指定 + is_thinking=1 のとき、split-window ではなく new-window が呼ばれる。"""
+        result, captured = _run_adapter(
+            ["spawn", "/tmp/work", "claude", "%0", "1"], tmp_path
+        )
+        assert result.returncode == 0
+        assert "new-window" in captured
+        assert "split-window" not in captured
+
+    def test_thinking_no_target_pane_uses_new_window(self, tmp_path):
+        """target_pane未指定 + is_thinking=1 でも new-window 経路（ow-workers セッションに新タブ）になる。"""
+        result, captured = _run_adapter(
+            ["spawn", "/tmp/work", "claude", "", "1"], tmp_path
+        )
+        assert result.returncode == 0
+        assert "new-window" in captured
+        assert "split-window" not in captured
+
+    def test_thinking_sets_window_name_and_pane_marker(self, tmp_path):
+        """is_thinking=1 のとき、window名 ow-worker-thinking で new-window され、
+        pane user option @ow-worker=1 が set される (通常worker と同じマーカーを共有)。"""
+        result, captured = _run_adapter(
+            ["spawn", "/tmp/work", "claude", "%0", "1"], tmp_path
+        )
+        assert result.returncode == 0
+        # 思考workerは window-name で識別 (別タブとして可視化される)
+        assert "ow-worker-thinking" in captured
+        # 通常worker と同じ pane user option を共有 (別window配置のため検出競合は発生しない)
+        assert "set-option" in captured
+        assert "@ow-worker" in captured
+
+    def test_thinking_zero_target_pane_uses_split(self, tmp_path):
+        """is_thinking=0 + target_pane指定なら従来通り split-window 経路 (互換性確認)。"""
+        result, captured = _run_adapter(
+            ["spawn", "/tmp/work", "claude", "%0", "0"], tmp_path
+        )
+        assert result.returncode == 0
+        assert "split-window" in captured
+
+    def test_thinking_target_pane_not_found_exits_nonzero(self, tmp_path):
+        """is_thinking=1 で target_pane が存在しないとき、exit 1 と stderr エラーを返す。"""
+        result, _ = _run_adapter(
+            ["spawn", "/tmp/work", "claude", "%999", "1"],
+            tmp_path,
+            target_pane_exists=False,
+        )
+        assert result.returncode != 0
+        assert "target_pane not found" in result.stderr
+
+
 class TestTmuxAdapterErrors:
     def test_unknown_action_exits_nonzero(self, tmp_path):
         """未知のactionはゼロ以外のexit codeとエラーメッセージを返す。"""

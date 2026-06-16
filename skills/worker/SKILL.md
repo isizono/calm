@@ -49,6 +49,7 @@ frontmatterから取得するパラメータ:
 
 本文から取得する情報:
 - タイトル（H1）, `## Acceptance`, `## Context`, `## Playbook`
+- `## Thinking worker` セクションが存在する場合は「思考worker」モード (深い議論・設計検討・調査向け; D#2599)。frontmatter にも `effort: <値>` (`high`/`xhigh`/`max`/`ultrathink`) が入る。マーカー直下に thinking トリガー語 (正規綴り) が埋め込まれており、worker セッション全体が長考モードで動作する。実装ではなく議論・設計・調査が役割範囲なので、コード変更には踏み込まない (related: `intent:thinking` notes)。
 
 **task fileが存在しない / 読めない場合の処理（起動失敗）:**
 ```

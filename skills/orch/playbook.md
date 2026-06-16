@@ -14,6 +14,25 @@ assignの `model` は必須。**claude-opus-4-7 のみ許可**（タスク性質
 
 workerのSA（サブエージェント）にも同ルールを適用する。
 
+## 思考worker (effort指定) の使い分け
+
+`ow_spawn_worker(effort=...)` を指定すると思考worker (深い議論・設計検討・調査向け) として起動する。値: `high` / `xhigh` / `max` / `ultratink` (sentinel; ow_service内で正規綴りに alias される。D#2599, D#2600)。
+
+| effort | 用途 |
+|---|---|
+| `high` | 通常より深く考えてほしい議論・設計検討 |
+| `xhigh` | 多角的な比較検討・トレードオフ整理 |
+| `max` | 大規模な設計判断・複雑な仕様確定 |
+| `ultratink` (sentinel) | 最深長考。仕様の根本検討・抜本的設計レビュー等 |
+
+挙動 (effort 指定時):
+- task_file 本文に思考トリガー語マーカーが正規綴りで埋め込まれ、worker セッション全体が長考モードで動作する
+- frontmatter に `effort: <値>` が残る
+- OW_TERMINAL=tmux のとき、通常worker (split-pane) ではなく `tmux new-window` で別タブに開かれる (D#2601)
+- 対応 activity には `intent:thinking` タグも付与する (D#2597)
+
+orch 側ドキュメント・チャット出力では sentinel `ultratink` (意図的タイポ) で参照する。orch セッション自身に正規綴りが入ると extended thinking が暴発するため。`ow_spawn_worker` の `effort` 引数にも sentinel をそのまま渡してよい (ow_service が正規化する)。
+
 ## SAの活用
 
 orchは調査・分析・検証のためにAgent/TaskツールによるSA（サブエージェント）を積極的に活用してよい。worker spawnとは独立した手段として、短期の情報収集や品質チェックをSAに委譲できる。

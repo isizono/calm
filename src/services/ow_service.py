@@ -99,6 +99,18 @@ def _normalize_and_validate_model(model: str) -> tuple[str, str | None]:
     )
 
 
+# 思考worker (thinking worker) の effort enum。Claude のreasoning effort と対応する4段。
+# None = 通常 worker。値が指定された場合は task_file 本文に思考トリガー語マーカー (正規綴り
+# `ultrathink`) が埋め込まれ、OW_TERMINAL=tmux では split-pane ではなく new-window で
+# 別タブに開かれる。
+THINKING_EFFORTS: frozenset[str] = frozenset({"high", "xhigh", "max", "ultrathink"})
+
+# orch 側コード/skill/ドキュメントから sentinel 綴り `ultratink` を渡せるよう、最大段の
+# alias を1つ受け付ける (D#2600)。orch セッションが MCP 呼び出し時に正規綴り
+# `ultrathink` を入力すると orch 自身の extended thinking モードが暴発するため、
+# orch は sentinel `ultratink` を使い、ow_service 側で正規綴りに畳む。
+_EFFORT_ALIASES: dict[str, str] = {"ultratink": "ultrathink"}
+
 # reducer: v3 workload state 分類
 _NON_TERMINAL_WORKLOAD_STATES: frozenset[str] = frozenset(
     {"loading", "ready", "working", "blocked", "escalated", "draining"}
@@ -863,6 +875,7 @@ def _write_task_file(
     timeout_min: int,
     activity_id: int | None,
     topic_id: str | None,
+    effort: str | None = None,
 ) -> Path:
     """task fileをマークダウン（YAML frontmatter + 本文）で書き出す。
 
@@ -873,6 +886,15 @@ def _write_task_file(
     ファイル名は `t<topic_id>-T<n>-<title-slug>.md`。topic prefixでtopic間の名前衝突を、
     title slugで人間がファイルを開かずに内容を把握できることを担保する。
     topic_idが未指定の場合は `T<n>-<title-slug>.md`、slugが空なら接尾辞を省く。
+
+    effort が指定された場合 (THINKING_EFFORTS の値) は思考workerとして扱い、本文冒頭
+    （タイトル直後）に思考workerマーカーセクションを挿入する。マーカーには正規綴り
+    `ultrathink` （claude の extended thinking トリガー語）を埋め込む。frontmatterにも
+    `effort: <値>` を残す。
+
+    Note: ドキュメント・skill・チャット文中で本トリガー語に言及する場合は、orch
+    セッション側で extended thinking モードが暴発しないよう sentinel `ultratink`
+    （意図的タイポ）を使う運用とする。worker 埋め込みの実体は正規綴り `ultrathink`。
     """
     base = f"t{topic_id}-T{task_n}" if (topic_id is not None and str(topic_id)) else f"T{task_n}"
     slug = _slugify_task_title(task_title)
@@ -892,6 +914,8 @@ def _write_task_file(
         "activity_id": activity_id,
         "topic_id": topic_id,
     }
+    if effort:
+        fm_data["effort"] = effort
     fm_yaml = yaml.safe_dump(fm_data, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
     acceptance_clean = _sanitize_task_body_field(acceptance, "acceptance")
@@ -899,6 +923,17 @@ def _write_task_file(
     playbook_clean = _sanitize_task_body_field(playbook, "playbook")
 
     body_lines = [f"# {fm_data['task']}: {task_title}".rstrip()]
+    if effort:
+        body_lines += [
+            "",
+            "## Thinking worker",
+            "",
+            "ultrathink",
+            "",
+            f"このタスクは思考worker (effort: {effort}) 扱い。実装ではなく深い議論・"
+            "設計検討・調査を行う。上記キーワード `ultrathink` は claude の extended "
+            "thinking モードトリガー語。worker セッションは長考モードで動作する。",
+        ]
     if acceptance_clean:
         body_lines += ["", "## Acceptance", "", acceptance_clean]
     if context_clean:
@@ -936,6 +971,7 @@ def ow_spawn_worker(
     topic_id: str | None = None,
     task_n: int = 1,
     tmux_target_pane: str | None = None,
+    effort: str | None = None,
 ) -> dict:
     """workerセッションを起動する。
 
@@ -964,12 +1000,35 @@ def ow_spawn_worker(
             新windowで起動する。クライアント（spawn呼び出し元）が自身の os.environ['TMUX_PANE']
             を読んで渡す想定。MCPサーバープロセスのenvは起動時にフリーズするためサーバー側で
             参照できない。
+        effort: 思考worker（深い議論・設計検討・調査向けworker）として起動するなら
+            THINKING_EFFORTS の値 (`"high"` / `"xhigh"` / `"max"` / `"ultrathink"`) のい
+            ずれかを指定する。指定時は task_file 本文に正規綴り `ultrathink` マーカー
+            セクションが挿入され、frontmatter にも `effort: <値>` が残る。OW_TERMINAL=
+            tmux のときは split-pane ではなく `tmux new-window` で別タブに開く。role は
+            worker のまま（新role不要）。対応activityには `intent:thinking` タグを別途
+            付与すること。None（デフォルト）は通常 worker。
 
     Returns:
         {"term_ref": str, "task_file": str, "spawning": "ok"}
         manualフォールバック時: {"command": str, "manual": True, "task_file": str}
         spawn前検証失敗時: {"error": {"code": "SPAWN_PRECONDITION_FAILED", "warnings": [...]}}
+        effort不正値時: {"error": {"code": "INVALID_EFFORT", "message": ...}}
     """
+    # effort validation. sentinel alias (`ultratink`) を正規綴りに畳んでから検証する。
+    if effort is not None:
+        effort = _EFFORT_ALIASES.get(effort, effort)
+        if effort not in THINKING_EFFORTS:
+            return {
+                "error": {
+                    "code": "INVALID_EFFORT",
+                    "message": (
+                        f"effort '{effort}' は不正値。許可値: "
+                        f"{sorted(THINKING_EFFORTS)} (sentinel: {sorted(_EFFORT_ALIASES)}), "
+                        "または None"
+                    ),
+                },
+            }
+
     # model validation / normalization
     model, model_error = _normalize_and_validate_model(model)
     if model_error:
@@ -1033,6 +1092,7 @@ def ow_spawn_worker(
         timeout_min=timeout_min,
         activity_id=activity_id,
         topic_id=topic_id,
+        effort=effort,
     )
 
     # アダプタ起動
@@ -1060,9 +1120,16 @@ def ow_spawn_worker(
         }
 
     # アダプタ呼び出し — stdoutから安定IDを取得する
+    # tmux アダプタは positional 引数 `[target_pane] [is_thinking]` を受ける:
+    #   - is_thinking=1 のとき split-pane ではなく `tmux new-window` で別タブ起動 (D#2601)
+    #   - target_pane が無い思考worker のときは空文字列をプレースホルダにして is_thinking のみ届ける
     adapter_args = ["bash", str(adapter_path), "spawn", cwd, worker_cmd]
-    if terminal == "tmux" and tmux_target_pane:
-        adapter_args.append(tmux_target_pane)
+    if terminal == "tmux":
+        is_thinking = "1" if effort is not None else "0"
+        if tmux_target_pane:
+            adapter_args.extend([tmux_target_pane, is_thinking])
+        elif effort is not None:
+            adapter_args.extend(["", is_thinking])
     try:
         result = subprocess.run(
             adapter_args,
