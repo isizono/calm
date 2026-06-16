@@ -637,6 +637,7 @@ class TestOwSpawnWorkerManualFallback:
         monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
         monkeypatch.setattr(ow_service, "ensure_channel", lambda c: True)
         monkeypatch.setattr(ow_service, "_get_presence", lambda c: [])
+        monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
 
     def test_manual_fallback_when_ow_terminal_unset(self, tmp_path: Path, monkeypatch):
         """OW_TERMINAL未設定 → manual=True + commandキーを返す"""
@@ -687,6 +688,7 @@ class TestOwSpawnWorkerAdapter:
         monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
         monkeypatch.setattr(ow_service, "ensure_channel", lambda c: True)
         monkeypatch.setattr(ow_service, "_get_presence", lambda c: [])
+        monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
 
     def test_adapter_returns_term_ref_from_stdout(self, tmp_path: Path, monkeypatch):
         """アダプタのstdoutをterm_refとして使用する"""
@@ -840,6 +842,7 @@ class TestOwSpawnWorkerEnsureChannel:
         monkeypatch.delenv("OW_TERMINAL", raising=False)
         monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
         monkeypatch.setattr(ow_service, "_get_presence", lambda c: [])
+        monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
 
         called_channels = []
 
@@ -866,6 +869,7 @@ class TestOwSpawnWorkerEnsureChannel:
         monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
         monkeypatch.setattr(ow_service, "ensure_channel", lambda c: False)
         monkeypatch.setattr(ow_service, "_get_presence", lambda c: [])
+        monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
 
         result = ow_service.ow_spawn_worker(
             alias="w-a", channel="BadCh01", cwd="/tmp", model="sonnet",
@@ -1125,6 +1129,7 @@ class TestOwSpawnWorkerModelValidation:
         monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
         monkeypatch.setattr(ow_service, "ensure_channel", lambda c: True)
         monkeypatch.setattr(ow_service, "_get_presence", lambda c: [])
+        monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
         monkeypatch.delenv("OW_TERMINAL", raising=False)
 
     def test_haiku_returns_invalid_model_error(self, tmp_path: Path, monkeypatch):

@@ -908,6 +908,7 @@ class TestOwSpawnWorkerPreflight:
         monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
         monkeypatch.setattr(ow_service, "ensure_channel", lambda ch: True)
         monkeypatch.setattr(ow_service, "_get_presence", lambda ch: ["w-x"])
+        monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
         result = ow_service.ow_spawn_worker(
             alias="w-x", channel="ChAbCdEf", cwd=str(tmp_path),
             model="claude-opus-4-7",
