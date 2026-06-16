@@ -169,24 +169,29 @@ class TestValidateSpawnPreconditions:
         assert result["ok"] is True
         assert result["warnings"] == []
 
-    def test_terminated_identity_allows_spawn(self, monkeypatch, tmp_path):
-        """terminatedなidentity（cause=closed / terminated_at設定）→ ok=True"""
-        for terminated_identity in [
+    @pytest.mark.parametrize(
+        "terminated_identity",
+        [
             {"handle": "w-x", "cause": "closed", "terminated_at": "2026-06-16T00:00:00Z"},
             {"handle": "w-x", "cause": "cancelled", "terminated_at": "2026-06-16T00:00:00Z"},
             {"handle": "w-x", "cause": "dead", "terminated_at": "2026-06-16T00:00:00Z"},
             {"handle": "w-x", "inferred_cause": "crashed (inferred)"},
-        ]:
-            monkeypatch.setattr(
-                ow_service,
-                "ow_get_identity",
-                lambda ch, h, _ident=terminated_identity: _ident,
-            )
-            result = ow_service._validate_spawn_preconditions(
-                alias="w-x", channel="ChAbCdEf", cwd=str(tmp_path)
-            )
-            assert result["ok"] is True, f"terminated identity should allow spawn: {terminated_identity}"
-            assert result["warnings"] == [], f"unexpected warning for {terminated_identity}"
+            # terminated_at のみ（cause/inferred_cause なし）も alive 扱いではないため spawn 許可
+            {"handle": "w-x", "terminated_at": "2026-06-16T00:00:00Z"},
+        ],
+    )
+    def test_terminated_identity_allows_spawn(self, monkeypatch, tmp_path, terminated_identity):
+        """terminatedなidentity（cause=closed / terminated_at設定 / inferred_cause）→ ok=True"""
+        monkeypatch.setattr(
+            ow_service,
+            "ow_get_identity",
+            lambda ch, h: terminated_identity,
+        )
+        result = ow_service._validate_spawn_preconditions(
+            alias="w-x", channel="ChAbCdEf", cwd=str(tmp_path)
+        )
+        assert result["ok"] is True
+        assert result["warnings"] == []
 
 
 # ----------------------------

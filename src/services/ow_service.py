@@ -1350,6 +1350,10 @@ def _get_presence(channel: str) -> list[str]:
 _ACTIVE_QUEUE_STATUSES: set[str] = {"assigned", "ready", "working"}
 _TERMINAL_QUEUE_STATUSES: set[str] = {"done", "closed", "cancelled", "failed"}
 
+# identity bundle の cause として「明示的に終了済み」を示す値。
+# alive判定（INV-9）や alive_only フィルタで同じ集合を参照するため一元化する。
+_TERMINATED_IDENTITY_CAUSES: frozenset[str] = frozenset({"closed", "cancelled", "dead"})
+
 # relay最新state宣言 → queue statusへの再構築マップ。
 # presence offline & queue active のghost_activeケースで使う。
 # 終端state (done/closed/failed/cancelled) はそのまま反映、非終端 (ready/working等) は
@@ -1447,7 +1451,7 @@ def _validate_spawn_preconditions(
         inferred_cause = identity.get("inferred_cause")
         terminated_at = identity.get("terminated_at")
         is_terminated = (
-            cause in ("closed", "cancelled", "dead")
+            cause in _TERMINATED_IDENTITY_CAUSES
             or bool(terminated_at)
             or inferred_cause is not None
         )
@@ -2181,7 +2185,7 @@ def ow_list_identities(channel: str, alive_only: bool = False) -> list[dict]:
 
         if alive_only:
             cause = entry.get("cause")
-            if cause in ("closed", "cancelled", "dead") or entry.get("terminated_at"):
+            if cause in _TERMINATED_IDENTITY_CAUSES or entry.get("terminated_at"):
                 continue
             if inferred_cause is not None:
                 continue
