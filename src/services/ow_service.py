@@ -1347,8 +1347,8 @@ def _get_presence(channel: str) -> list[str]:
 # worker起動直後でreadyメッセージ未送信、等）の状態が混在しており、ow_recover がここに介入すると
 # 進行中のworker起動とレース条件を起こす。spawning は detect_crash_inconsistencies で別カテゴリ
 # pending_spawn として扱う。
-_ACTIVE_QUEUE_STATUSES: set[str] = {"assigned", "ready", "working"}
-_TERMINAL_QUEUE_STATUSES: set[str] = {"done", "closed", "cancelled", "failed"}
+_ACTIVE_QUEUE_STATUSES: frozenset[str] = frozenset({"assigned", "ready", "working"})
+_TERMINAL_QUEUE_STATUSES: frozenset[str] = frozenset({"done", "closed", "cancelled", "failed"})
 
 # identity bundle の cause として「明示的に終了済み」を示す値。
 # alive判定（INV-9）や alive_only フィルタで同じ集合を参照するため一元化する。
