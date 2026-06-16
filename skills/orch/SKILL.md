@@ -38,7 +38,7 @@ on Monitor発火 or 自発的タイミング:
   人間向けダイジェスト出力（状態変化時）→ Monitor待機へ
 ```
 
-**自発的タイミングでの ow_status 呼び出し**: Monitor 発火ではなくユーザー入力・直接呼び出し等の自発的タイミングで起床した場合は、`ow_history` 処理後に `ow_status(channel, topic_id)` を呼んで worker の presence 状態を確認すること。キュー状態とworker生死の乖離を早期発見するため。
+**自発的タイミングでの ow_status 呼び出し**: Monitor 発火ではなくユーザー入力・直接呼び出し等の自発的タイミングで起床した場合は、`ow_history` 処理後に `ow_status(channel, topic_id)` を呼んで worker の presence 状態を確認すること。キュー状態とworker生死の乖離を早期発見するため。`topic_id` が手元にない場合は省略可能（`None`）。その場合 presence はチャンネル単位なのでそのまま取得でき、queue タスクは存在する全 queue ファイルを統合した結果が返る（診断用途。1 orch = 1 topic の通常運用では topic_id を明示する）。
 
 **受信処理（SSEはベル、真実源は/history）**:
 1. SSE（Monitor監視）は起床信号専用。届いたdata行の中身は処理に使わない
