@@ -308,11 +308,22 @@ class TestOwListIdentities:
         aliases = {e["alias"] for e in result}
         assert aliases == {"worker-a", "worker-b"}
 
-    def test_alive_only_excludes_terminated(self, monkeypatch):
-        """alive_only=True → cause=closedを除外する。"""
+    @pytest.mark.parametrize(
+        "terminated_payload",
+        [
+            {"cause": "closed"},
+            {"cause": "cancelled"},
+            {"cause": "dead"},
+            # terminated_at のみ（cause なし）も除外対象
+            {"terminated_at": "2026-06-16T00:00:00Z"},
+        ],
+    )
+    def test_alive_only_excludes_terminated(self, monkeypatch, terminated_payload):
+        """alive_only=True → cause=closed/cancelled/dead と terminated_at を除外する。"""
+        terminated_identity = {"alias": "worker-b", **terminated_payload}
         msgs = [
             _make_msg(1, "w-a", _event_body("identity", {"alias": "worker-a"}, handle="w-a")),
-            _make_msg(2, "w-b", _event_body("identity", {"alias": "worker-b", "cause": "closed"}, handle="w-b")),
+            _make_msg(2, "w-b", _event_body("identity", terminated_identity, handle="w-b")),
         ]
         monkeypatch.setattr(ow_service, "ow_history", lambda *a, **kw: _make_history(msgs))
         result = ow_service.ow_list_identities("ch", alive_only=True)
