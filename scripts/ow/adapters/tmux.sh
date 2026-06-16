@@ -51,7 +51,7 @@ case "$ACTION" in
       # pane-title はclaudeセッションが ANSI escape sequence (\e]2;...\a) で動的に上書きするため
       # マーカーとして使えない。pane user option (@プレフィックス) は tmux server 内部の属性で
       # クライアントから escape 経由で書き換え不可なので、安定したマーカーとして利用できる。
-      EXISTING_WORKER=$(tmux list-panes -t "$WINDOW_ID" -F "#{pane_id}|#{${WORKER_MARKER_OPT}}" 2>/dev/null \
+      EXISTING_WORKER=$(tmux list-panes -t "$WINDOW_ID" -F "#{pane_id}|#{@ow-worker}" 2>/dev/null \
         | awk -F'|' '$2 == "1" { print $1 }' \
         | sort -t'%' -k2 -n \
         | tail -1)
@@ -68,9 +68,10 @@ case "$ACTION" in
 
       # pane user option で識別用マーカーを設定（claudeの escape sequence では上書き不可）。
       # set-option -p は pane-local オプション、@<name> カスタムオプションは tmux 1.8+ 対応。
-      # 未対応環境では次回spawnで「最初」扱いになり続けるため、stderr に警告を出して診断可能にする。
-      tmux set-option -p -t "$PANE_ID" "$WORKER_MARKER_OPT" 1 2>/dev/null \
-        || echo "warn: tmux set-option -p @ow-worker unsupported (requires tmux 1.8+), worker marker not set" >&2
+      # マーカー未設定では次回spawnで「最初」扱いになり続けるため、失敗時は警告を出して診断可能にする
+      # （非対応バージョン以外にも pane消失・tmux server断などが要因になりうるため、原因は断定しない）。
+      tmux set-option -p -t "$PANE_ID" "$WORKER_MARKER_OPT" 1 \
+        || echo "warn: tmux set-option -p @ow-worker failed (possibly tmux <1.8 or pane gone), worker marker not set" >&2
     else
       # フォールバック: 従来の ow-workers 別session方式
       if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then

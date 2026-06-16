@@ -221,7 +221,7 @@ class TestTmuxAdapterSplit:
         result, captured = _run_adapter(
             ["spawn", "/tmp/work", "claude", "%0"],
             tmp_path,
-            # claudeに上書きされた pane-title 等が混入しても、@ow-worker の値は空のままなので非worker扱い
+            # list-panes 出力で @ow-worker 列が空（未設定）の2 pane を模擬
             existing_worker_panes="%5|\\n%7|",
         )
         assert result.returncode == 0
