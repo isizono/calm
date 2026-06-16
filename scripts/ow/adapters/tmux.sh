@@ -32,9 +32,12 @@ case "$ACTION" in
     TARGET_PANE="${4:-}"
 
     # シェルインジェクション対策: base64エンコードしてCWDとCMDを安全に渡す
+    # cd側はダブルクォートでword splittingを抑止、worker_cmd側はevalでシェル構文として
+    # 再パースさせる（shlex.quoteのリテラル引用符を正しく解釈させるため）。
+    # evalに渡すソースはow_serviceが組み立てた信頼コマンド文字列のみ（base64で運搬）。
     CWD_B64=$(printf '%s' "$CWD" | base64 | tr -d '\n')
     CMD_B64=$(printf '%s' "$WORKER_CMD" | base64 | tr -d '\n')
-    SHELL_CMD="cd \$(echo $CWD_B64 | base64 -d) && \$(echo $CMD_B64 | base64 -d)"
+    SHELL_CMD="cd \"\$(echo $CWD_B64 | base64 -d)\" && eval \"\$(echo $CMD_B64 | base64 -d)\""
 
     if [[ -n "$TARGET_PANE" ]]; then
       # split-window方式: target_paneと同じwindowに分割して入れる

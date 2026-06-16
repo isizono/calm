@@ -1026,11 +1026,14 @@ def ow_spawn_worker(
     terminal = os.environ.get("OW_TERMINAL", "manual")
     adapter_path = _get_adapter_path(terminal) if terminal != "manual" else None
 
+    # --add-dir は variadic option (`<directories...>`) のため、続く positional prompt まで
+    # ディレクトリ引数として食ってしまう。`--` で variadic を打ち切って prompt を positional
+    # として確実に届ける。
     worker_cmd = (
         f'env OW_ROLE=worker OW_ALIAS={shlex.quote(alias)} OW_CHANNEL={shlex.quote(channel)} '
         f'OW_TASK_FILE={shlex.quote(str(task_file))} '
         f'claude --model {shlex.quote(model)} --permission-mode auto '
-        f'--add-dir {shlex.quote(str(task_file.parent))} '
+        f'--add-dir {shlex.quote(str(task_file.parent))} -- '
         f'{shlex.quote(f"workerスキルに従って作業を開始して。task: {task_file}")}'
     )
 
