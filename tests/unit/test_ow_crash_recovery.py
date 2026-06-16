@@ -866,3 +866,71 @@ class TestOwSpawnWorkerPreflight:
         assert "error" in result
         assert result["error"]["code"] == "SPAWN_PRECONDITION_FAILED"
         assert any("alias w-x" in w for w in result["error"]["warnings"])
+
+
+# ----------------------------
+# _send_recovery_ping: nonce (FT-2)
+# ----------------------------
+
+
+class TestSendRecoveryPingNonce:
+    """_send_recovery_ping が nonce を生成して envelope に含めることを確認する（FT-2）。"""
+
+    def test_nonce_included_in_data(self, monkeypatch):
+        """送信 envelope の data.nonce が存在し、空でないこと"""
+        sent = []
+        monkeypatch.setattr(
+            ow_service, "ow_send",
+            lambda channel, handle, body, needs_reply=False: sent.append(body) or {"msg_id": 1},
+        )
+        ow_service._send_recovery_ping("ChAbCdEf", "w-a", task="T1")
+        assert len(sent) == 1
+        data = sent[0]["data"]
+        assert "nonce" in data
+        assert data["nonce"] != ""
+
+    def test_nonce_unique_per_call(self, monkeypatch):
+        """呼び出しごとに異なる nonce が生成されること"""
+        sent = []
+        monkeypatch.setattr(
+            ow_service, "ow_send",
+            lambda channel, handle, body, needs_reply=False: sent.append(body) or {"msg_id": 1},
+        )
+        ow_service._send_recovery_ping("ChAbCdEf", "w-a", task="T1")
+        ow_service._send_recovery_ping("ChAbCdEf", "w-a", task="T1")
+        assert sent[0]["data"]["nonce"] != sent[1]["data"]["nonce"]
+
+    def test_return_value_contains_nonce(self, monkeypatch):
+        """戻り値に nonce フィールドが含まれること（pending_pings 管理用）"""
+        monkeypatch.setattr(
+            ow_service, "ow_send",
+            lambda channel, handle, body, needs_reply=False: {"msg_id": 99},
+        )
+        result = ow_service._send_recovery_ping("ChAbCdEf", "w-a", task="T1")
+        assert "nonce" in result
+        assert result["nonce"] != ""
+
+    def test_nonce_in_return_matches_envelope(self, monkeypatch):
+        """戻り値の nonce と envelope の data.nonce が一致すること"""
+        sent = []
+        monkeypatch.setattr(
+            ow_service, "ow_send",
+            lambda channel, handle, body, needs_reply=False: sent.append(body) or {"msg_id": 1},
+        )
+        result = ow_service._send_recovery_ping("ChAbCdEf", "w-a", task="T1")
+        assert result["nonce"] == sent[0]["data"]["nonce"]
+
+    def test_envelope_format(self, monkeypatch):
+        """送信 envelope が v3 形式（kind=command, data.type=ping, recovery=True）であること"""
+        sent = []
+        monkeypatch.setattr(
+            ow_service, "ow_send",
+            lambda channel, handle, body, needs_reply=False: sent.append(body) or {"msg_id": 1},
+        )
+        ow_service._send_recovery_ping("ChAbCdEf", "w-a", task="T3")
+        body = sent[0]
+        assert body["kind"] == "command"
+        assert body["data"]["type"] == "ping"
+        assert body["data"]["recovery"] is True
+        assert body["to"] == "w-a"
+        assert body["task"] == "T3"

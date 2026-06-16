@@ -1644,16 +1644,24 @@ def _send_recovery_ping(channel: str, alias: str, task: str = "T0") -> dict:
 
     needs_reply=True で送り、応答はorchの通常受信ループで処理される。
     本関数はfire-and-forget（応答待ちはしない）。
+
+    Returns:
+        ow_send の戻り値に nonce フィールドを追加したdict。
+        nonce は ow_recover の pending_pings 引数に渡すことで、
+        次回呼び出し時に nonce echo の有無を確認できる。
     """
+    nonce = uuid.uuid4().hex
     body = {
         "v": 1,
         "kind": "command",
         "from": "orch",
         "to": alias,
         "task": task or "T0",
-        "data": {"type": "ping", "recovery": True},
+        "data": {"type": "ping", "nonce": nonce, "recovery": True},
     }
-    return ow_send(channel=channel, handle="orch", body=body, needs_reply=True)
+    result = ow_send(channel=channel, handle="orch", body=body, needs_reply=True)
+    result["nonce"] = nonce
+    return result
 
 
 def _apply_queue_status_update(
@@ -1854,6 +1862,7 @@ def ow_recover(channel: str, topic_id: str, dry_run: bool = False) -> dict:
                 {
                     "alias": orphan["alias"],
                     "task": "T0",
+                    "nonce": result.get("nonce"),
                     "reason": "orphan",
                     "result": result,
                 }
@@ -1864,6 +1873,7 @@ def ow_recover(channel: str, topic_id: str, dry_run: bool = False) -> dict:
                 {
                     "alias": stalled["alias"],
                     "task": stalled["task"],
+                    "nonce": result.get("nonce"),
                     "reason": "stalled_done",
                     "result": result,
                 }
