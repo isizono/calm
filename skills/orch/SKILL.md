@@ -202,7 +202,7 @@ last_seen_msg_id: 0
 ## T1 | タスク名 | status
 - worker: w-a / term_ref: iterm2:UUID / session: <uuid>
 - activity: 801
-- model: sonnet
+- model: claude-opus-4-7
 - cwd: ~/workspace/cc-memory/.trees/feature-xxx
 - assigned: HH:MM / last_recv: HH:MM
 - acceptance: {acceptance条件}
