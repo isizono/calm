@@ -18,6 +18,79 @@ ENTITY_TABLE_MAP = {
 }
 
 
+def _is_decision_superseded(conn: sqlite3.Connection, decision_id: int) -> Optional[int]:
+    """decisionがsupersedeされていれば、supersederのdecision_id（1件）を返す。
+
+    複数のsupersederがある場合は最新の created_at の1件を返す。
+    superseded されていなければ None。
+    """
+    row = conn.execute(
+        "SELECT source_id FROM decision_supersedes WHERE target_id = ? "
+        "ORDER BY created_at DESC LIMIT 1",
+        (decision_id,),
+    ).fetchone()
+    return row["source_id"] if row else None
+
+
+def _transfer_pins_with_conn(
+    conn: sqlite3.Connection,
+    entity_type: str,
+    old_id: int,
+    new_id: int,
+) -> int:
+    """旧entityへのpinを新entityへ付け替える（target側 + source側の両方向）。
+
+    INSERT OR IGNORE + DELETE の2文方式（両方向で計4文）。
+    - UNIQUE衝突（new側に既存pinあり）はOR IGNOREでマージ → 旧行DELETEで消滅
+    - 自己参照化するpin（旧⇔新間のpin）はWHERE除外＋DELETEで消滅させる
+    - 新pinの created_at は旧pinの値を引き継ぐ
+
+    Args:
+        conn: DB接続（呼び出し元のトランザクションに参加）
+        entity_type: 付け替え対象entityの種別（supersedes用途では現状 "decision"）
+        old_id: 付け替え元entityのID
+        new_id: 付け替え先entityのID
+
+    Returns:
+        実際にINSERTされたpin件数。
+        衝突マージ（OR IGNOREで除かれた行）と自己参照化で消滅した行はカウントしない。
+    """
+    # target側付け替え: pin(X, old) → pin(X, new)
+    # 自己参照化(pin(new, old) → pin(new, new))は WHERE で除外して移動を止め、
+    # 旧行は後段の DELETE で消滅させる
+    target_cursor = conn.execute(
+        "INSERT OR IGNORE INTO pins (source_type, source_id, target_type, target_id, created_at) "
+        "SELECT source_type, source_id, ?, ?, created_at "
+        "FROM pins "
+        "WHERE target_type = ? AND target_id = ? "
+        "AND NOT (source_type = ? AND source_id = ?)",
+        (entity_type, new_id, entity_type, old_id, entity_type, new_id),
+    )
+    target_inserted = target_cursor.rowcount
+    conn.execute(
+        "DELETE FROM pins WHERE target_type = ? AND target_id = ?",
+        (entity_type, old_id),
+    )
+
+    # source側付け替え: pin(old, Y) → pin(new, Y)
+    # 自己参照化(pin(old, new) → pin(new, new))は WHERE で除外
+    source_cursor = conn.execute(
+        "INSERT OR IGNORE INTO pins (source_type, source_id, target_type, target_id, created_at) "
+        "SELECT ?, ?, target_type, target_id, created_at "
+        "FROM pins "
+        "WHERE source_type = ? AND source_id = ? "
+        "AND NOT (target_type = ? AND target_id = ?)",
+        (entity_type, new_id, entity_type, old_id, entity_type, new_id),
+    )
+    source_inserted = source_cursor.rowcount
+    conn.execute(
+        "DELETE FROM pins WHERE source_type = ? AND source_id = ?",
+        (entity_type, old_id),
+    )
+
+    return target_inserted + source_inserted
+
+
 def _resolve_ref(
     conn: sqlite3.Connection, entity_type: str, ref: Union[int, str]
 ) -> tuple[Optional[int], Optional[dict]]:
@@ -148,12 +221,33 @@ def add_pin(
         )
         conn.commit()
 
-        return {
+        result = {
             "source_type": source_type,
             "source_id": source_id,
             "target_type": target_type,
             "target_id": target_id,
         }
+
+        # superseded decisionへのpinはhintを付与する（自動解決はしない）
+        hints = []
+        if source_type == "decision":
+            superseder_id = _is_decision_superseded(conn, source_id)
+            if superseder_id is not None:
+                hints.append(
+                    f"decision#{source_id} は decision#{superseder_id} に superseded されています。"
+                    f"古い decision を意図的に pin する場合はそのままで問題ありません。"
+                )
+        if target_type == "decision":
+            superseder_id = _is_decision_superseded(conn, target_id)
+            if superseder_id is not None:
+                hints.append(
+                    f"decision#{target_id} は decision#{superseder_id} に superseded されています。"
+                    f"古い decision を意図的に pin する場合はそのままで問題ありません。"
+                )
+        if hints:
+            result["hint"] = "\n".join(hints)
+
+        return result
 
     except Exception as e:
         conn.rollback()
