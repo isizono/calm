@@ -1102,10 +1102,14 @@ def ow_spawn_worker(
     # --add-dir は variadic option (`<directories...>`) のため、続く positional prompt まで
     # ディレクトリ引数として食ってしまう。`--` で variadic を打ち切って prompt を positional
     # として確実に届ける。
+    # --name はセッション表示名（プロンプトボックス・/resume picker・端末タイトル）。
+    # workerはtask_titleをActivity名としてそのまま渡し、orch側で見分けやすくする。
+    session_name = task_title or alias
     worker_cmd = (
         f'env OW_ROLE=worker OW_ALIAS={shlex.quote(alias)} OW_CHANNEL={shlex.quote(channel)} '
         f'OW_TASK_FILE={shlex.quote(str(task_file))} '
         f'claude --model {shlex.quote(model)} --permission-mode auto '
+        f'--name {shlex.quote(session_name)} '
         f'--add-dir {shlex.quote(str(task_file.parent))} -- '
         f'{shlex.quote(f"workerスキルに従って作業を開始して。task: {task_file}")}'
     )

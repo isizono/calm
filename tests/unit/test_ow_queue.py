@@ -679,6 +679,33 @@ class TestOwSpawnWorkerManualFallback:
         expected_task_dir = str(tmp_path / "tasks")
         assert f"--add-dir {expected_task_dir}" in cmd
 
+    def test_worker_cmd_includes_name_from_task_title(self, tmp_path: Path, monkeypatch):
+        """worker起動コマンドにtask_titleが--nameで渡される（セッション表示名）"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        monkeypatch.delenv("OW_TERMINAL", raising=False)
+
+        result = ow_service.ow_spawn_worker(
+            alias="w-a", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
+            task_title="議論: relation循環依存解消",
+            acceptance="done", topic_id="99", task_n=1,
+        )
+        cmd = result["command"]
+        assert "--name '議論: relation循環依存解消'" in cmd
+
+    def test_worker_cmd_name_falls_back_to_alias_when_title_empty(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """task_titleが空のとき--nameはaliasにフォールバックする"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        monkeypatch.delenv("OW_TERMINAL", raising=False)
+
+        result = ow_service.ow_spawn_worker(
+            alias="w-fallback", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
+            task_title="", acceptance="done", topic_id="99", task_n=1,
+        )
+        cmd = result["command"]
+        assert "--name w-fallback" in cmd
+
 
 class TestOwSpawnWorkerAdapter:
     """アダプタ経由でworkerを起動し、stdoutからterm_refを取得する"""
