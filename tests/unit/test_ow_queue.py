@@ -666,7 +666,7 @@ class TestOwSpawnWorkerManualFallback:
         assert "command" in result
 
     def test_worker_cmd_includes_add_dir_for_task_file_dir(self, tmp_path: Path, monkeypatch):
-        """worker起動コマンドにtask_fileディレクトリへの--add-dirが含まれる（CWD外task fileの許可プロンプト抑制）"""
+        """worker起動コマンドにtask_fileディレクトリへの--add-dir=DIRが含まれる（CWD外task fileの許可プロンプト抑制）"""
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         monkeypatch.delenv("OW_TERMINAL", raising=False)
 
@@ -677,7 +677,59 @@ class TestOwSpawnWorkerManualFallback:
         assert result.get("manual") is True
         cmd = result["command"]
         expected_task_dir = str(tmp_path / "tasks")
-        assert f"--add-dir {expected_task_dir}" in cmd
+        # `=` 形式で渡すことで commander.js variadic が後続 positional を吸わない
+        assert f"--add-dir={expected_task_dir}" in cmd
+
+    def test_worker_cmd_add_dir_does_not_absorb_prompt(self, tmp_path: Path, monkeypatch):
+        """--add-dir が `=` 形式で渡され、後続 positional prompt が claude CLI に独立して届く。
+
+        claude CLI の `--add-dir <directories...>` は commander.js variadic option で、
+        空白区切り `--add-dir DIR PROMPT` 形式は PROMPT を追加 dir として吸収する
+        (PR#374で `--` separator対応も入れたが、より明示的な `=` 形式に統一)。
+
+        修正前: `--add-dir DIR -- PROMPT` (--で区切るが variadic の挙動次第)
+        修正後: `--add-dir=DIR PROMPT` (= で単一値確定、`--` 不要)
+        """
+        import shlex as _shlex
+
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        monkeypatch.delenv("OW_TERMINAL", raising=False)
+
+        result = ow_service.ow_spawn_worker(
+            alias="w-a", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
+            task_title="test", acceptance="done", topic_id="99", task_n=1,
+        )
+        cmd = result["command"]
+        expected_task_dir = str(tmp_path / "tasks")
+
+        # `=` 形式で含まれる
+        assert f"--add-dir={expected_task_dir}" in cmd, (
+            f"--add-dir should use equals form, got: {cmd}"
+        )
+
+        # 空白区切り形式 (`--add-dir DIR`) は含まれない (variadic 吸収を構造的に避ける)
+        assert f"--add-dir {expected_task_dir}" not in cmd, (
+            f"--add-dir should NOT use space-separated form (variadic absorbs prompt), got: {cmd}"
+        )
+
+        # tokenize して claude argv を取り出し、`--add-dir=DIR` が1トークンに収まり、
+        # prompt token が直後に独立して並んでいることを検証する
+        tokens = _shlex.split(cmd)
+        idx = tokens.index("claude")
+        claude_args = tokens[idx + 1 :]
+
+        add_dir_token = f"--add-dir={expected_task_dir}"
+        assert add_dir_token in claude_args, (
+            f"expected single token {add_dir_token!r} in claude_args, got: {claude_args}"
+        )
+        add_dir_idx = claude_args.index(add_dir_token)
+
+        # add-dir の後続に prompt が独立トークンとして存在する (吸収されていない)
+        after_add_dir = claude_args[add_dir_idx + 1 :]
+        prompt_marker = "workerスキルに従って作業を開始して。"
+        assert any(
+            prompt_marker in tok for tok in after_add_dir
+        ), f"prompt token not found after --add-dir=, claude_args={claude_args}"
 
     def test_worker_cmd_includes_name_from_task_title(self, tmp_path: Path, monkeypatch):
         """worker起動コマンドにtask_titleが--nameで渡される（セッション表示名）"""

@@ -1129,9 +1129,11 @@ def ow_spawn_worker(
     terminal = os.environ.get("OW_TERMINAL", "manual")
     adapter_path = _get_adapter_path(terminal) if terminal != "manual" else None
 
-    # --add-dir は variadic option (`<directories...>`) のため、続く positional prompt まで
-    # ディレクトリ引数として食ってしまう。`--` で variadic を打ち切って prompt を positional
-    # として確実に届ける。
+    # --add-dir は commander.js の variadic option (`<directories...>`) で、空白区切り形式
+    # (`--add-dir DIR PROMPT`) だと続く positional prompt を dir として吸収する。
+    # `=` 形式 (`--add-dir=DIR`) は単一値として確定的にパースされ、複数指定は
+    # `--add-dir=DIR1 --add-dir=DIR2` の append 形で渡せる。後続 prompt の吸収リスクが
+    # 構造的に発生しないため、`--` separator なしで positional が確実に届く。
     # --name はセッション表示名（プロンプトボックス・/resume picker・端末タイトル）。
     # workerはtask_titleをActivity名としてそのまま渡し、orch側で見分けやすくする。
     session_name = task_title or alias
@@ -1140,7 +1142,7 @@ def ow_spawn_worker(
         f'OW_TASK_FILE={shlex.quote(str(task_file))} '
         f'claude --model {shlex.quote(model)} --permission-mode auto '
         f'--name {shlex.quote(session_name)} '
-        f'--add-dir {shlex.quote(str(task_file.parent))} -- '
+        f'--add-dir={shlex.quote(str(task_file.parent))} '
         f'{shlex.quote(f"workerスキルに従って作業を開始して。task: {task_file}")}'
     )
 
