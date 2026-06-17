@@ -957,6 +957,29 @@ def _get_adapter_path(terminal: str) -> Path | None:
     return None
 
 
+def _resolve_activity_title(activity_id: int) -> str:
+    """activities.id → title を返す。見つからない/エラー時は空文字。
+
+    spawn時にtask_title未指定でもactivity_idがあればAPI呼び出しを増やさずタイトルを引ける。
+    DBアクセス失敗はspawn全体を止めない（best-effort）。
+    """
+    try:
+        from src.db import get_connection
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT title FROM activities WHERE id = ?", (activity_id,)
+            ).fetchone()
+        finally:
+            conn.close()
+        if row and row[0]:
+            return str(row[0])
+    except Exception as e:
+        logger.warning("activity title lookup failed for id=%s: %s", activity_id, e)
+    return ""
+
+
 def ow_spawn_worker(
     alias: str,
     channel: str,
@@ -1038,6 +1061,13 @@ def ow_spawn_worker(
                 "message": model_error,
             },
         }
+
+    # task_title未指定 かつ activity_id指定時は activities.title を自動解決する。
+    # 呼び出し側（orch等）に task_title を毎回詰めさせず、activity名と一貫させる。
+    # この task_title は task file frontmatter / ファイル名スラッグ / worker_cmd の
+    # --name（セッション表示名）すべてに伝播する。
+    if not task_title and activity_id is not None:
+        task_title = _resolve_activity_title(activity_id)
 
     # spawn前ヘルスチェック (relay疎通・channel存在・cwd存在・alias重複)
     preflight = _validate_spawn_preconditions(alias, channel, cwd, topic_id=topic_id, task_n=task_n)

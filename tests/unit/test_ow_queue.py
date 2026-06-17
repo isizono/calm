@@ -706,6 +706,60 @@ class TestOwSpawnWorkerManualFallback:
         cmd = result["command"]
         assert "--name w-fallback" in cmd
 
+    def test_task_title_auto_resolved_from_activity_id(self, tmp_path: Path, monkeypatch):
+        """task_title未指定 かつ activity_id指定時、activities.title が --name に乗る"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        monkeypatch.delenv("OW_TERMINAL", raising=False)
+        monkeypatch.setattr(
+            ow_service, "_resolve_activity_title", lambda aid: "解決された Activity 名"
+        )
+
+        result = ow_service.ow_spawn_worker(
+            alias="w-a", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
+            task_title="", acceptance="done", topic_id="99", task_n=1,
+            activity_id=42,
+        )
+        cmd = result["command"]
+        assert "--name '解決された Activity 名'" in cmd
+
+    def test_explicit_task_title_overrides_activity_lookup(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """task_title明示指定時はactivity_idがあってもDB lookupせず明示値を使う"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        monkeypatch.delenv("OW_TERMINAL", raising=False)
+
+        def _should_not_be_called(aid):
+            raise AssertionError(
+                f"_resolve_activity_title called with id={aid} despite explicit task_title"
+            )
+
+        monkeypatch.setattr(ow_service, "_resolve_activity_title", _should_not_be_called)
+
+        result = ow_service.ow_spawn_worker(
+            alias="w-a", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
+            task_title="明示タイトル", acceptance="done", topic_id="99", task_n=1,
+            activity_id=42,
+        )
+        cmd = result["command"]
+        assert "--name '明示タイトル'" in cmd
+
+    def test_task_title_remains_empty_when_activity_lookup_fails(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """activity lookupが空文字を返したとき task_title は空のまま → --name は alias"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        monkeypatch.delenv("OW_TERMINAL", raising=False)
+        monkeypatch.setattr(ow_service, "_resolve_activity_title", lambda aid: "")
+
+        result = ow_service.ow_spawn_worker(
+            alias="w-fallback", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
+            task_title="", acceptance="done", topic_id="99", task_n=1,
+            activity_id=999,
+        )
+        cmd = result["command"]
+        assert "--name w-fallback" in cmd
+
 
 class TestOwSpawnWorkerAdapter:
     """アダプタ経由でworkerを起動し、stdoutからterm_refを取得する"""
