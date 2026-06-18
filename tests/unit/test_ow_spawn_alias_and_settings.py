@@ -60,6 +60,8 @@ class TestValidateAliasFormat:
             "w-play book",     # スペース
             "w-play.book",     # ドット
             "w-プレイブック",   # 非ASCII
+            "w--playbook",     # 連続ハイフン
+            "abc---def",       # 3連続ハイフン
         ],
     )
     def test_invalid_kebab_case_rejected(self, alias: str):
@@ -104,6 +106,32 @@ class TestSpawnPreconditionsAliasFormat:
         )
         assert result["ok"] is True
         assert result["warnings"] == []
+
+    def test_invalid_alias_does_not_contact_relay(self, monkeypatch, tmp_path):
+        """alias 書式違反時は relay 接続 (ensure_relay_server / ensure_channel) を呼ばない。
+
+        コメントが意図する早期 return の挙動を call_count で検証する。
+        """
+        relay_calls: list[None] = []
+        channel_calls: list[str] = []
+
+        def _track_relay() -> bool:
+            relay_calls.append(None)
+            return True
+
+        def _track_channel(ch: str) -> bool:
+            channel_calls.append(ch)
+            return True
+
+        monkeypatch.setattr(ow_service, "ensure_relay_server", _track_relay)
+        monkeypatch.setattr(ow_service, "ensure_channel", _track_channel)
+
+        result = ow_service._validate_spawn_preconditions(
+            alias="w-a", channel="ChAbCdEf", cwd=str(tmp_path)
+        )
+        assert result["ok"] is False
+        assert relay_calls == []
+        assert channel_calls == []
 
 
 # ----------------------------

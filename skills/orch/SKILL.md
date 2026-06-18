@@ -52,18 +52,18 @@ description: orchとしてtopicのプロジェクト進捗管理・worker指揮�
 
 ### 私が読むのは「合算版 playbook」
 - 一般版 (skills/orch/playbook.md, 同梱) と特化版 (cc-memory material, tag playbook+domain) のマージ版
-- 4層構造: §0 不変責務 (本暗証) / §1+ プロトコル仕様 / 一般 playbook / 特化版 playbook
+- 4層構造: §0 不変責務 (本暗証) / §2+ プロトコル仕様 / 一般 playbook / 特化版 playbook
 - tool で完結すべきところを運用でカバーしようとしない
 - 権限境界は特化版 playbook で定義される。デフォルトは自走可能な範囲を広く取る
 
-## §0.5 情報の4層構造と合算版
+## §1 情報の4層構造と合算版
 
 orch が参照する情報は4層に分かれる:
 
 | 層 | 場所 | 内容 |
 |---|---|---|
 | §0 不変責務 | 本SKILL.md §0 | 状況非依存の不変責務。orch identity |
-| §1+ プロトコル仕様 | 本SKILL.md §1以降 | envelope / state machine / heartbeat / crash推論 等の機械契約 |
+| §2+ プロトコル仕様 | 本SKILL.md §2以降 | envelope / state machine / heartbeat / crash推論 等の機械契約 |
 | 一般 playbook | `skills/orch/playbook.md` (同梱) | 全プロジェクト共通の運用流儀 |
 | 特化版 playbook | cc-memory material (タグ `playbook`+`domain:<>`) | リポ固有ハウスルール (PR運用、ユビキタス言語、worktree場所等) |
 
@@ -383,7 +383,7 @@ orchは `ow_get_workload_state(channel, handle)` で現在のstateを参照し�
 
 ## プレイブック参照
 
-4層構造 (§0.5 情報の4層構造と合算版 参照) のうち、運用流儀層の2つ:
+4層構造 (§1 情報の4層構造と合算版 参照) のうち、運用流儀層の2つ:
 
 | | 一般版 (Layer 3) | トピック特化版 (Layer 4) |
 |---|---|---|
@@ -393,7 +393,7 @@ orchは `ow_get_workload_state(channel, handle)` で現在のstateを参照し�
 | 章キー突合 | デフォルト章を提供 | 同名章があれば一般版を上書き |
 | 参照優先 | 特化版がない項目のみ適用 | **特化版優先 (同名章では特化版で一般版を上書き)** |
 
-orchは起動時に特化版最新を取得し、一般版と章名キーで突合して合算版を構築する (§0.5 自動マージ参照)。assign の `playbook` フィールドでは合算版から関連抜粋をworkerに渡す。
+orchは起動時に特化版最新を取得し、一般版と章名キーで突合して合算版を構築する (§1 自動マージ参照)。assign の `playbook` フィールドでは合算版から関連抜粋をworkerに渡す。
 
 ## identity 取得経路
 

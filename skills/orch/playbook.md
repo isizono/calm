@@ -2,10 +2,10 @@
 
 ## 本書の位置づけ (4層構造)
 
-本書は orch が参照する情報4層 (orch SKILL.md §0.5 参照) のうち **Layer 3 (一般 playbook)** である。
+本書は orch が参照する情報4層 (orch SKILL.md §1 参照) のうち **Layer 3 (一般 playbook)** である。
 
 - Layer 1: §0 不変責務 (orch SKILL.md §0) — 状況非依存の orch identity
-- Layer 2: §1+ プロトコル仕様 (orch SKILL.md §1以降) — envelope / state machine / heartbeat 等の機械契約
+- Layer 2: §2+ プロトコル仕様 (orch SKILL.md §2以降) — envelope / state machine / heartbeat 等の機械契約
 - **Layer 3: 一般 playbook (本書)** — 全プロジェクト共通の運用流儀
 - Layer 4: 特化版 playbook (cc-memory material、タグ `playbook`+`domain:<>`) — リポ固有ハウスルール
 
@@ -120,13 +120,6 @@ worker (または orch 自身) が spend limit (Claude Code の API quota) に�
 5. activity description に「spend-limit中断、次回再開時の手がかり」を追記
 6. 次セッションで再 spawn (orch が新 worker を立てて続きを assign する)
 
-## PR 運用基本
-
-- **close 遅延**: PR が open でも CI 緑 + レビュー対応完了までは worker を close しない。CI 落ちの再修正 / レビューコメント対応 も worker の責務
-- **レビュー対応は commit / push のみ**: PR コメントへの返信は不要。reviewer 指摘は commit / push で応答する
-- **Stacked PR base 切替確認**: stacked PR で base ブランチが切り替わったら確認漏れを防ぐ
-- **PR マージ後の後片付け前に sync-memory 先行**: マージ後の worktree 削除・branch 削除前に、cc-memory への記録 (sync-memory) を完了させる
-
 ## SA / worker 分担基準
 
 - **複数ファイル横断はSA委譲**: 1ファイル内の単純編集はメインでもよいが、複数ファイル横断の編集は SA に委譲
@@ -141,42 +134,14 @@ CLI コマンドを bash 経由で叩いた際、UI 上に何も出ない時は�
 - UI表示の有無では「コマンド届いていない」と判定しない
 - shell escape / quoting で argv が崩れているケースが多い
 
-## SA に情報収集を頼むときの prompt 注意
-
-SA に情報収集を依頼する場合、判定軸 (どう分類するか) を渡してはならない。
-
-- **判定軸を渡すと収集タスクが分類タスクに変質する**: SA が判定軸を見ると、「収集対象を判定軸に沿って分類する」モードに入り、判定軸外の情報を見落とす
-- 収集タスクは「これとこれを集めて返してくれ」と指示し、判定は orch / メインで行う
-
-## 議論 / 設計タスク要否判定 (What / Why)
+## 議論 / 設計タスク要否判定 (What / Why / How)
 
 新規タスクが議論型 (discuss) / 設計型 (design) / 実装型 (implement) のどれかを判定する基準:
 
-- **What と Why が一致しているか確認**: ユーザーが提示した「やりたいこと (What)」と「なぜそうするか (Why)」が一致していれば実装フェーズへ
-- 一致していなければ議論 / 設計フェーズ (intent:discuss / intent:design タグ付与)
-- What だけ確定して Why が曖昧な場合は危険。Why をユーザーに確認
-
-## decision 合意成立フロー
-
-decision の合意プロセス:
-
-1. orch が事前通知する (「この decision を確定します」)
-2. ユーザーに反対なしの待機時間を与える
-3. 待機時間内に反対なし → 確定して `add_decisions` で記録
-
-事後通知型 (記録した後に「決めました」と通知) は廃止。事前通知 → 待機 → 確定の順を守る。
-
-## 介入語デフォルトリスト
-
-ユーザーからの以下の語を検知したら、提案実行を即停止する:
-
-- 「待って」
-- 「違う」
-- 「stop」
-- 「やめ」
-- 「中止」
-
-検知後は実行中の自走判断を停止し、ユーザー入力を待つ。
+- **What / Why / How が揃っているか確認**: ユーザーが提示した「やりたいこと (What)」「なぜそうするか (Why)」「どう実現するか (How)」が揃っていれば実装フェーズへ
+- Why が曖昧なら議論フェーズ (intent:discuss タグ付与)
+- What / Why は確定しているが How が未確定なら設計フェーズ (intent:design タグ付与)
+- What だけ確定で Why が曖昧な場合は危険。先に Why をユーザーに確認
 
 ## cwd 絶対パス必須 / ~ 非展開
 
@@ -188,7 +153,6 @@ decision の合意プロセス:
 
 - アダプタ (tmux / iterm2 / 外部 CLI 呼び出し) は **実機検証必須**。docs だけで通さない
 - エラーをサイレントに握り潰さない。失敗は warnings / error として返す
-- spawn 前バリデーション (relay疎通 / channel存在 / cwd存在 / alias重複) は `ow_spawn_worker` 内で自動チェックされるが、warnings は必ず確認
 
 ## Co-Authored-By: Claude を worker commit に必ず付ける
 
@@ -212,8 +176,8 @@ orch から worker に渡す context / playbook 抜粋にも明記し、worker �
 
 ### worker assign の timeout_min
 
-- デフォルト値: **60分**
-- assign に明示指定しない場合は60分を適用する
+- デフォルト値: **10分**
+- assign に明示指定しない場合は10分を適用する
 - タスクの性質 (大規模実装・長時間調査等) に応じて orch が上書き可能
 
 heartbeat 途絶 watchdog の閾値表は orch SKILL.md §watchdog で定義されており、本playbookでは重複させない。

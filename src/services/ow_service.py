@@ -111,11 +111,13 @@ THINKING_EFFORTS: frozenset[str] = frozenset({"high", "xhigh", "max", "ultrathin
 # orch は sentinel `ultratink` を使い、ow_service 側で正規綴りに畳む。
 _EFFORT_ALIASES: dict[str, str] = {"ultratink": "ultrathink"}
 
-# worker alias の書式制約。kebab-case（小文字英数字+ハイフン、先頭は英字、末尾は英数字）
-# かつ最小長 8 文字以上。短すぎる alias は名前衝突や視認性低下を招き、queue/relay 識別子
-# として再利用しづらいため一律で拒否する。
+# worker alias の書式制約。kebab-case（小文字英数字+ハイフン、先頭は英字、末尾は英数字、
+# 連続ハイフン禁止）かつ最小長 8 文字以上。短すぎる alias は名前衝突や視認性低下を招き、
+# queue/relay 識別子として再利用しづらいため一律で拒否する。
+# alias の上限長は意図的に設けない（task_file / queue / relay messages に埋め込まれるが、
+# 物理上限はファイルシステム側に委ねる。orch 運用上は kebab-case の自然な命名で十分短く収まる）。
 _ALIAS_MIN_LENGTH: int = 8
-_ALIAS_PATTERN: re.Pattern[str] = re.compile(r"^[a-z][a-z0-9-]*[a-z0-9]$")
+_ALIAS_PATTERN: re.Pattern[str] = re.compile(r"^[a-z]([a-z0-9]|-(?!-))*[a-z0-9]$")
 
 
 def _validate_alias_format(alias: str) -> str | None:
@@ -123,7 +125,7 @@ def _validate_alias_format(alias: str) -> str | None:
 
     検証項目:
         - 最小長: 8 文字以上
-        - kebab-case: 小文字英数字とハイフンのみ。先頭は英字、末尾は英数字
+        - kebab-case: 小文字英数字とハイフンのみ。先頭は英字、末尾は英数字、連続ハイフン禁止
     """
     if not isinstance(alias, str) or not alias:
         return "alias must be a non-empty string"
@@ -135,8 +137,8 @@ def _validate_alias_format(alias: str) -> str | None:
     if not _ALIAS_PATTERN.match(alias):
         return (
             f"alias '{alias}' does not match required kebab-case pattern "
-            f"^[a-z][a-z0-9-]*[a-z0-9]$ (lowercase letters/digits/hyphen, "
-            "start with letter, end with letter or digit)"
+            "(lowercase letters/digits/hyphen, start with letter, "
+            "end with letter or digit, no consecutive hyphens)"
         )
     return None
 
@@ -1608,9 +1610,11 @@ def _validate_spawn_preconditions(
     warnings: list[str] = []
 
     # 0. alias書式（最小長 + kebab-case）。relay 接続前に純粋な書式検証で弾く。
+    # 書式エラー時は relay 接続を行わずに早期return（無効aliasで relay 接続を発生させない）。
     alias_err = _validate_alias_format(alias)
     if alias_err is not None:
         warnings.append(alias_err)
+        return {"ok": False, "warnings": warnings}
 
     # 1. relay疎通
     if not ensure_relay_server():
