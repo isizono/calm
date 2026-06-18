@@ -2115,7 +2115,7 @@ def ow_recover(
 #
 # 段階②③（relay-side ow_recover での term_ref キー再リンク等）は D#2608 によりスコープ外。
 
-_TERM_REF_PATTERNS: dict[str, "re.Pattern[str]"] = {
+_TERM_REF_PATTERNS: dict[str, re.Pattern[str]] = {
     "tmux": re.compile(r"^%\d+$"),
     "iterm2": re.compile(
         r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
@@ -2128,7 +2128,7 @@ def classify_term_ref(value: object) -> str | None:
     """term_ref 値の形式を分類して種別名（"tmux"/"iterm2"/"manual"）を返す。
 
     値が文字列でない、空文字、未知形式のいずれかなら None を返す。
-    形式チェックは _TERM_REF_PATTERNS の辞書順（tmux→iterm2→manual）で先勝ち。
+    形式チェックは _TERM_REF_PATTERNS の定義順（tmux→iterm2→manual）で先勝ち。
     """
     if not isinstance(value, str) or not value:
         return None

@@ -89,7 +89,7 @@ ow_sendで1回だけ送信:
 TERM_REF=$(bash scripts/ow/get_term_ref.sh)
 ```
 
-取得できなかった場合（`OW_TERMINAL=manual` 環境などで空が返るケース）は `term_ref` フィールドを省略してよい。
+取得できなかった場合（`OW_TERMINAL=manual` モードや tmux/iTerm2 セッション外での実行など、安定 ID が取れず空が返るケース）は `term_ref` フィールドを省略してよい。
 
 ```json
 {

@@ -30,7 +30,10 @@ case "$ADAPTER" in
       || printf '\n'
     ;;
   manual)
-    printf 'manual:%s:%s\n' "$(hostname -s)" "$$"
+    # manual モードでは安定 ID を提供できないため空を返す。
+    # ($$ はこのスクリプト実行ごとに別 bash プロセスとなるため、worker terminal
+    #  peer の逆引き ID として安定しない。呼び出し側で term_ref フィールドを省略させる。)
+    printf '\n'
     ;;
   *)
     printf '\n'

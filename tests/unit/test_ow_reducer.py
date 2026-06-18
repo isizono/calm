@@ -316,6 +316,29 @@ class TestOwGetIdentity:
         # validator が呼び出し側で利用できることを担保（reducer 自体は加工しない）。
         assert ow_service.is_valid_term_ref(term_ref_value) is True
 
+    def test_identity_without_term_ref_works(self, monkeypatch):
+        """後方互換: term_ref フィールドを持たない identity event でも reducer は正常動作する。
+
+        worker が manual モードや term_ref 取得失敗時に term_ref を省略するケースを想定。
+        戻り値には term_ref キーが存在しない（または None）状態となり、他のフィールドは
+        通常通り取り出せる。
+        """
+        msgs = [
+            _make_msg(
+                1, "w-h",
+                _event_body("identity", {"alias": "worker-1", "channel": "ch"}),
+                "2026-06-14T10:00:00+00:00",
+            ),
+        ]
+        self._setup_history(monkeypatch, msgs)
+        result = ow_service.ow_get_identity("ch", "w-h")
+        assert result is not None
+        assert result["alias"] == "worker-1"
+        # term_ref キーは無いか、あっても None
+        assert result.get("term_ref") is None
+        # validator は欠落値を invalid と判定する
+        assert ow_service.is_valid_term_ref(result.get("term_ref")) is False
+
 
 # ----------------------------
 # TestOwListIdentities
@@ -386,6 +409,23 @@ class TestOwListIdentities:
         by_handle = {e["alias"]: e for e in result}
         assert by_handle["worker-a"]["term_ref"] == "%5"
         assert by_handle["worker-b"]["term_ref"] == "12345678-1234-1234-1234-123456789ABC"
+
+    def test_identities_without_term_ref_work(self, monkeypatch):
+        """後方互換: term_ref を持たない identity event でも ow_list_identities は正常動作する。
+
+        term_ref 省略はあくまで「フィールドが無い」状態であり、reducer は他のフィールドを
+        通常通り集約する。term_ref キーは戻り値に存在しない（None）。
+        """
+        msgs = [
+            _make_msg(1, "w-a", _event_body("identity", {"alias": "worker-a"}, handle="w-a")),
+            _make_msg(2, "w-b", _event_body("identity", {"alias": "worker-b"}, handle="w-b")),
+        ]
+        monkeypatch.setattr(ow_service, "ow_history", lambda *a, **kw: _make_history(msgs))
+        result = ow_service.ow_list_identities("ch")
+        by_handle = {e["alias"]: e for e in result}
+        assert set(by_handle.keys()) == {"worker-a", "worker-b"}
+        assert by_handle["worker-a"].get("term_ref") is None
+        assert by_handle["worker-b"].get("term_ref") is None
 
 
 # ----------------------------
