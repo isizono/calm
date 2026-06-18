@@ -25,6 +25,50 @@ _RECOMPOSE_HINT_DELTA_THRESHOLD = 30
 _RECOMPOSE_HINT_BOOTSTRAP_THRESHOLD = 15
 
 
+def get_activity_topics_batch(
+    conn: sqlite3.Connection, activity_ids: list[int]
+) -> dict[int, list[dict]]:
+    """アクティビティID群に対し、関連する全topicの (id, title) を一括取得する。
+
+    SessionStart hook の topic別グルーピング用に relations_view を1クエリで叩く
+    （D#2465: スキル層から get_map をN回叩かずバックエンドでバッチ取得）。
+    relations_view は対称 relation を両方向に展開済みなので source 側だけ見れば十分。
+
+    Returns:
+        {activity_id: [{"id": int, "title": str}, ...]}
+        各 activity_id について topic_id 昇順でソート済み（決定的）。
+        関連 topic を持たない activity_id はキー自体が存在しない。
+    """
+    if not activity_ids:
+        return {}
+    placeholders = ",".join("?" * len(activity_ids))
+    rows = conn.execute(
+        f"""SELECT rv.source_id AS activity_id,
+                   dt.id AS topic_id,
+                   dt.title AS topic_title
+            FROM relations_view rv
+            JOIN discussion_topics dt ON dt.id = rv.target_id
+            WHERE rv.source_type = 'activity'
+              AND rv.source_id IN ({placeholders})
+              AND rv.target_type = 'topic'
+            ORDER BY rv.source_id, dt.id""",
+        tuple(activity_ids),
+    ).fetchall()
+    result: dict[int, list[dict]] = {}
+    seen: dict[int, set] = {}
+    for r in rows:
+        aid = r["activity_id"]
+        tid = r["topic_id"]
+        if aid not in result:
+            result[aid] = []
+            seen[aid] = set()
+        if tid in seen[aid]:
+            continue
+        seen[aid].add(tid)
+        result[aid].append({"id": tid, "title": r["topic_title"]})
+    return result
+
+
 def _get_direct_relations(conn: sqlite3.Connection, entity_type: str, entity_id: int) -> dict[str, list[int]]:
     """relations_viewから直接関連エンティティのIDをtype別に取得する。
 

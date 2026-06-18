@@ -284,14 +284,17 @@ def test_build_activities_section_empty_with_only_topics(temp_db):
 
 
 def test_build_activities_section_with_activities(temp_db):
-    """アクティビティがある場合、スコアリング対象セクションが生成される"""
+    """アクティビティがある場合、topic別グルーピング (関連topic無しは『その他』) で表示される (D#2464-2466)"""
     add_activity(title="[作業] 実装する", description="Desc", tags=["domain:myapp"], check_in=False)
     _age_all_activities()
 
     result = _build_active_context_wrapper()
 
     assert "# アクティビティ一覧" in result
-    assert "## スコアリング対象" in result
+    # 旧 "## スコアリング対象" フラットセクションは廃止 (D#2466)
+    assert "## スコアリング対象" not in result
+    # 関連topicなしは『その他』セクションに集約
+    assert "## その他" in result
     assert "[作業] 実装する" in result
 
 
@@ -410,7 +413,7 @@ def test_build_activities_section_domain_with_zero_activities_skipped(temp_db):
 
 
 def test_build_activities_section_multiple_domains_flat(temp_db):
-    """複数domainのアクティビティがフラットリストに統合される"""
+    """複数domainのアクティビティが topic 別グルーピング (D#2466) で統合表示される"""
     add_activity(title="App Activity", description="Desc", tags=["domain:app"], check_in=False)
     add_activity(title="Lib Activity", description="Desc", tags=["domain:lib"], check_in=False)
     _age_all_activities()
@@ -419,8 +422,8 @@ def test_build_activities_section_multiple_domains_flat(temp_db):
 
     assert "App Activity" in result
     assert "Lib Activity" in result
-    # ドメインセクションではなくフラットリスト
-    assert "## スコアリング対象" in result
+    # 関連topicが無い両アクティビティは「その他」セクション配下に統合される
+    assert "## その他" in result
 
 
 def test_build_activities_section_activity_id_in_bracket(temp_db):
@@ -563,7 +566,7 @@ def test_build_activities_section_deduplicates_multi_domain(temp_db):
 
 
 def test_build_activities_section_format(temp_db):
-    """出力フォーマットが仕様通り: ヘッダ + スコアリング対象 + 番号付き行 + メタデータ行"""
+    """出力フォーマット: ヘッダ + topic別見出し（topicless は『その他』）+ 番号付き行 + メタデータ行 (D#2466)"""
     r = add_activity(
         title="[議論] stop_hookのスキップ機能", description="機能の設計",
         tags=["domain:cc-memory"], check_in=False,
@@ -580,8 +583,9 @@ def test_build_activities_section_format(temp_db):
     lines = result.strip().split("\n")
     assert lines[0] == "# アクティビティ一覧"
     assert lines[1] == ""
-    assert lines[2] == "## スコアリング対象"
-    # in_progressが先に来る（番号付き）
+    # 関連topicを持たないため『その他』セクション直下に並ぶ
+    assert lines[2] == "## その他"
+    # in_progressが先に来る（番号付き、グループ通し連番）
     assert lines[3].startswith("1. ●")
     assert "[議論] stop_hookのスキップ機能" in lines[3]
     # メタデータ行
