@@ -1697,7 +1697,8 @@ def detect_crash_inconsistencies(
                 {task, alias, queue_status, has_relay_history, latest_state, latest_msg_id, latest_at,
                  spawning_at, age_min, suggested_status},
                 ...
-            ],
+            ]
+            # spawning_at は常に str（queue で取れなかった場合は ""）。age_min は float または None。
             "stalled_done": [    # queue終端だがworkerがpresenceに残存
                 {task, alias, queue_status},
                 ...
@@ -1970,6 +1971,7 @@ def ow_recover(
     dry_run: bool = False,
     pending_pings: list[dict] | None = None,
     pending_spawn_stalled_threshold_min: int | None = None,
+    now: datetime | None = None,
 ) -> dict:
     """orch crash後のqueue × relay履歴 × presence整合チェック・自動修正のエントリポイント。
 
@@ -2000,6 +2002,8 @@ def ow_recover(
             `auto_stalled` 化する経過時間閾値（分）。None なら従来挙動（自動更新対象外）。
             P0-7 で導入。orch が「2日経っても failed 化されない pending_spawn」を強制終端
             するために使う。
+        now: 経過時間判定の基準時刻。テスト用に時刻を注入するため `detect_crash_inconsistencies` に
+            そのまま伝搬する。None なら datetime.now(UTC)。
 
     Returns:
         {
@@ -2068,6 +2072,7 @@ def ow_recover(
         reconstructed,
         presence,
         pending_spawn_stalled_threshold_min=pending_spawn_stalled_threshold_min,
+        now=now,
     )
 
     applied: dict = {"queue_updates": [], "pings_sent": []}
@@ -2083,8 +2088,11 @@ def ow_recover(
         ]
         for ghost in auto_update_targets:
             if ghost["suggested_status"] == "auto_stalled":
-                age_min = ghost.get("age_min")
-                age_str = f"{age_min:.1f}min" if isinstance(age_min, (int, float)) else "unknown"
+                # auto_stalled は detect_crash_inconsistencies で
+                # age_min is not None and age_min >= threshold が成立したときのみ付与される。
+                # したがってここで age_min は float であることが保証される。
+                age_min = ghost["age_min"]
+                age_str = f"{age_min:.1f}min"
                 note = (
                     f"crash-recovery: pending_spawn が relay履歴なしのまま "
                     f"{age_str} 経過 (threshold={pending_spawn_stalled_threshold_min}min) "

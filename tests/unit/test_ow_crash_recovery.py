@@ -544,7 +544,10 @@ class TestDetectCrashInconsistencies:
         assert detected["pending_spawn"][0]["suggested_status"] is None
 
     def test_pending_spawn_missing_spawning_at_keeps_none(self):
-        """spawning_at が無い queue エントリ → 閾値判定不能 → suggested=None"""
+        """spawning_at が無い queue エントリ → 閾値判定不能 → suggested=None。
+
+        pending_spawn 出力の spawning_at は常に str 型（取れない場合は ""）であることを保証する。
+        """
         now = datetime(2026, 6, 18, 0, 30, 0, tzinfo=timezone.utc)
         queue_tasks = [
             {
@@ -561,6 +564,34 @@ class TestDetectCrashInconsistencies:
         p = detected["pending_spawn"][0]
         assert p["suggested_status"] is None
         assert p["age_min"] is None
+        # 仕様: spawning_at は常に str (キー欠落時は "")
+        assert p["spawning_at"] == ""
+        assert isinstance(p["spawning_at"], str)
+
+    def test_pending_spawn_none_spawning_at_normalized_to_empty_string(self):
+        """spawning_at が None の queue エントリ → 出力の spawning_at は "" に正規化される。
+
+        _parse_queue_file のデフォルトが None なのに対し、pending_spawn 辞書では
+        常に str ("" if missing) で表現する仕様であることを担保する。
+        """
+        now = datetime(2026, 6, 18, 0, 30, 0, tzinfo=timezone.utc)
+        queue_tasks = [
+            {
+                "task": "T1", "title": "x", "status": "spawning",
+                "worker": "w-a", "term_ref": "(pending)",
+                "spawning_at": None,
+            },
+        ]
+        detected = ow_service.detect_crash_inconsistencies(
+            queue_tasks, {"by_worker_task": {}, "max_msg_id": 0}, presence=[],
+            pending_spawn_stalled_threshold_min=15,
+            now=now,
+        )
+        p = detected["pending_spawn"][0]
+        assert p["suggested_status"] is None
+        assert p["age_min"] is None
+        assert p["spawning_at"] == ""
+        assert isinstance(p["spawning_at"], str)
 
     def test_pending_spawn_malformed_spawning_at_keeps_none(self):
         """spawning_at が ISO 形式でない → fail-soft で suggested=None"""
@@ -960,11 +991,15 @@ class TestOwRecover:
         assert (queue_dir / "queue-t454.md").read_text() == before
 
     def test_pending_spawn_auto_stalled_updates_queue(self, monkeypatch, tmp_path):
-        """P0-7: pending_spawn_stalled_threshold_min を渡し、spawning_at が閾値以上 → queue=auto_stalled"""
+        """P0-7: pending_spawn_stalled_threshold_min を渡し、spawning_at が閾値以上 → queue=auto_stalled。
+
+        ow_recover に now を注入することで実時刻に依存しない hermetic テストになっている。
+        """
         queue_dir = tmp_path / "queue"
         queue_dir.mkdir()
-        # 古い spawning_at: 24時間前
-        old_ts = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        # 固定基準時刻と、それより 24 時間前の spawning_at で hermetic に組む
+        fixed_now = datetime(2026, 6, 18, 12, 0, 0, tzinfo=timezone.utc)
+        old_ts = (fixed_now - timedelta(hours=24)).isoformat()
         (queue_dir / "queue-t454.md").write_text(
             f"## T1 | mytask | spawning\n"
             f"- worker: w-a / term_ref: (pending) / session: (pending)\n"
@@ -978,6 +1013,7 @@ class TestOwRecover:
             channel="ChAbCdEf",
             topic_id="454",
             pending_spawn_stalled_threshold_min=15,
+            now=fixed_now,
         )
         assert result["dry_run"] is False
         assert len(result["applied"]["queue_updates"]) == 1
