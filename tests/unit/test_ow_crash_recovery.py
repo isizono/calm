@@ -3,9 +3,10 @@
 カバー範囲:
 - `_validate_spawn_preconditions`: relay/channel/cwd/alias 各失敗ケース + 全クリア
 - `reconstruct_state_from_relay`: 単一 worker / 複数 worker / 重複 state / 非state混在
-- `detect_crash_inconsistencies`: ghost_active / stalled_done / orphans 各分類
+- `detect_crash_inconsistencies`: ghost_active / stalled_done / orphans 各分類 +
+    pending_spawn auto_stalled 閾値ロジック (P0-7)
 - `_apply_queue_status_update`: header status 置換 / note 追加・上書き / 不在 task
-- `ow_recover`: dry_run / 自動修正適用 / relay不可
+- `ow_recover`: dry_run / 自動修正適用 / relay不可 / pending_spawn auto_stalled (P0-7)
 - `_send_recovery_ping`: nonce生成と envelope 形式 (FT-2)
 - `_check_nonce_echo`: nonce echo 判定ロジック (FT-3)
 - `ow_recover` pending_pings: nonce echo 結果の統合 (FT-3)
@@ -16,6 +17,7 @@ relay HTTP接点（ow_history / _get_presence / ow_send 等）はmonkeypatchで�
 import json
 import urllib.error
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -443,6 +445,219 @@ class TestDetectCrashInconsistencies:
         assert detected["ghost_active"] == []
         assert detected["pending_spawn"] == []
 
+    # P0-7: pending_spawn → auto_stalled 閾値ロジック
+    def test_pending_spawn_auto_stalled_above_threshold(self):
+        """spawning & 履歴なし & offline & spawning_at から閾値以上経過 → auto_stalled"""
+        spawning_at = "2026-06-18T00:00:00+00:00"
+        now = datetime(2026, 6, 18, 0, 30, 0, tzinfo=timezone.utc)  # +30min
+        queue_tasks = [
+            {
+                "task": "T1", "title": "x", "status": "spawning",
+                "worker": "w-a", "term_ref": "(pending)",
+                "spawning_at": spawning_at,
+            },
+        ]
+        detected = ow_service.detect_crash_inconsistencies(
+            queue_tasks, {"by_worker_task": {}, "max_msg_id": 0}, presence=[],
+            pending_spawn_stalled_threshold_min=15,
+            now=now,
+        )
+        assert len(detected["pending_spawn"]) == 1
+        p = detected["pending_spawn"][0]
+        assert p["has_relay_history"] is False
+        assert p["suggested_status"] == "auto_stalled"
+        assert p["spawning_at"] == spawning_at
+        assert p["age_min"] == pytest.approx(30.0)
+
+    def test_pending_spawn_auto_stalled_below_threshold(self):
+        """spawning & 履歴なし & offline & 閾値未満 → suggested=None (起動進行中扱い)"""
+        spawning_at = "2026-06-18T00:00:00+00:00"
+        now = datetime(2026, 6, 18, 0, 10, 0, tzinfo=timezone.utc)  # +10min
+        queue_tasks = [
+            {
+                "task": "T1", "title": "x", "status": "spawning",
+                "worker": "w-a", "term_ref": "(pending)",
+                "spawning_at": spawning_at,
+            },
+        ]
+        detected = ow_service.detect_crash_inconsistencies(
+            queue_tasks, {"by_worker_task": {}, "max_msg_id": 0}, presence=[],
+            pending_spawn_stalled_threshold_min=15,
+            now=now,
+        )
+        p = detected["pending_spawn"][0]
+        assert p["suggested_status"] is None
+        assert p["age_min"] == pytest.approx(10.0)
+
+    def test_pending_spawn_auto_stalled_boundary_exact_threshold(self):
+        """境界: 経過時間 == 閾値 → auto_stalled (>= 判定)"""
+        spawning_at = "2026-06-18T00:00:00+00:00"
+        now = datetime(2026, 6, 18, 0, 15, 0, tzinfo=timezone.utc)  # ちょうど +15min
+        queue_tasks = [
+            {
+                "task": "T1", "title": "x", "status": "spawning",
+                "worker": "w-a", "term_ref": "(pending)",
+                "spawning_at": spawning_at,
+            },
+        ]
+        detected = ow_service.detect_crash_inconsistencies(
+            queue_tasks, {"by_worker_task": {}, "max_msg_id": 0}, presence=[],
+            pending_spawn_stalled_threshold_min=15,
+            now=now,
+        )
+        assert detected["pending_spawn"][0]["suggested_status"] == "auto_stalled"
+
+    def test_pending_spawn_auto_stalled_boundary_just_below(self):
+        """境界: 経過時間が閾値より1秒少ない → None"""
+        spawning_at = "2026-06-18T00:00:00+00:00"
+        now = datetime(2026, 6, 18, 0, 14, 59, tzinfo=timezone.utc)  # 14min59sec
+        queue_tasks = [
+            {
+                "task": "T1", "title": "x", "status": "spawning",
+                "worker": "w-a", "term_ref": "(pending)",
+                "spawning_at": spawning_at,
+            },
+        ]
+        detected = ow_service.detect_crash_inconsistencies(
+            queue_tasks, {"by_worker_task": {}, "max_msg_id": 0}, presence=[],
+            pending_spawn_stalled_threshold_min=15,
+            now=now,
+        )
+        assert detected["pending_spawn"][0]["suggested_status"] is None
+
+    def test_pending_spawn_threshold_none_keeps_legacy_behavior(self):
+        """閾値=None (デフォルト) なら spawning_at がいくら古くても suggested=None"""
+        spawning_at = "2024-01-01T00:00:00+00:00"  # 2年以上前
+        now = datetime(2026, 6, 18, 0, 0, 0, tzinfo=timezone.utc)
+        queue_tasks = [
+            {
+                "task": "T1", "title": "x", "status": "spawning",
+                "worker": "w-a", "term_ref": "(pending)",
+                "spawning_at": spawning_at,
+            },
+        ]
+        detected = ow_service.detect_crash_inconsistencies(
+            queue_tasks, {"by_worker_task": {}, "max_msg_id": 0}, presence=[],
+            now=now,
+        )
+        # threshold 未指定 → 閾値ロジック動かない → 従来挙動 (None)
+        assert detected["pending_spawn"][0]["suggested_status"] is None
+
+    def test_pending_spawn_missing_spawning_at_keeps_none(self):
+        """spawning_at が無い queue エントリ → 閾値判定不能 → suggested=None。
+
+        pending_spawn 出力の spawning_at は常に str 型（取れない場合は ""）であることを保証する。
+        """
+        now = datetime(2026, 6, 18, 0, 30, 0, tzinfo=timezone.utc)
+        queue_tasks = [
+            {
+                "task": "T1", "title": "x", "status": "spawning",
+                "worker": "w-a", "term_ref": "(pending)",
+                # spawning_at キーなし (古いフォーマットや手編集破損のシミュレート)
+            },
+        ]
+        detected = ow_service.detect_crash_inconsistencies(
+            queue_tasks, {"by_worker_task": {}, "max_msg_id": 0}, presence=[],
+            pending_spawn_stalled_threshold_min=15,
+            now=now,
+        )
+        p = detected["pending_spawn"][0]
+        assert p["suggested_status"] is None
+        assert p["age_min"] is None
+        # 仕様: spawning_at は常に str (キー欠落時は "")
+        assert p["spawning_at"] == ""
+        assert isinstance(p["spawning_at"], str)
+
+    def test_pending_spawn_none_spawning_at_normalized_to_empty_string(self):
+        """spawning_at が None の queue エントリ → 出力の spawning_at は "" に正規化される。
+
+        _parse_queue_file のデフォルトが None なのに対し、pending_spawn 辞書では
+        常に str ("" if missing) で表現する仕様であることを担保する。
+        """
+        now = datetime(2026, 6, 18, 0, 30, 0, tzinfo=timezone.utc)
+        queue_tasks = [
+            {
+                "task": "T1", "title": "x", "status": "spawning",
+                "worker": "w-a", "term_ref": "(pending)",
+                "spawning_at": None,
+            },
+        ]
+        detected = ow_service.detect_crash_inconsistencies(
+            queue_tasks, {"by_worker_task": {}, "max_msg_id": 0}, presence=[],
+            pending_spawn_stalled_threshold_min=15,
+            now=now,
+        )
+        p = detected["pending_spawn"][0]
+        assert p["suggested_status"] is None
+        assert p["age_min"] is None
+        assert p["spawning_at"] == ""
+        assert isinstance(p["spawning_at"], str)
+
+    def test_pending_spawn_malformed_spawning_at_keeps_none(self):
+        """spawning_at が ISO 形式でない → fail-soft で suggested=None"""
+        now = datetime(2026, 6, 18, 0, 30, 0, tzinfo=timezone.utc)
+        queue_tasks = [
+            {
+                "task": "T1", "title": "x", "status": "spawning",
+                "worker": "w-a", "term_ref": "(pending)",
+                "spawning_at": "not-a-timestamp",
+            },
+        ]
+        detected = ow_service.detect_crash_inconsistencies(
+            queue_tasks, {"by_worker_task": {}, "max_msg_id": 0}, presence=[],
+            pending_spawn_stalled_threshold_min=15,
+            now=now,
+        )
+        assert detected["pending_spawn"][0]["suggested_status"] is None
+
+    def test_pending_spawn_naive_spawning_at_treated_as_utc(self):
+        """naive (tzなし) spawning_at は UTC として解釈される"""
+        spawning_at = "2026-06-18T00:00:00"  # naive
+        now = datetime(2026, 6, 18, 0, 30, 0, tzinfo=timezone.utc)
+        queue_tasks = [
+            {
+                "task": "T1", "title": "x", "status": "spawning",
+                "worker": "w-a", "term_ref": "(pending)",
+                "spawning_at": spawning_at,
+            },
+        ]
+        detected = ow_service.detect_crash_inconsistencies(
+            queue_tasks, {"by_worker_task": {}, "max_msg_id": 0}, presence=[],
+            pending_spawn_stalled_threshold_min=15,
+            now=now,
+        )
+        assert detected["pending_spawn"][0]["suggested_status"] == "auto_stalled"
+
+    def test_pending_spawn_with_history_unaffected_by_threshold(self):
+        """has_relay_history=True の場合は閾値ロジック関係なく従来通り suggested を入れる"""
+        queue_tasks = [
+            {
+                "task": "T1", "title": "x", "status": "spawning",
+                "worker": "w-a", "term_ref": "(pending)",
+                "spawning_at": "2026-06-18T00:00:00+00:00",
+            },
+        ]
+        reconstructed = {
+            "by_worker_task": {
+                "w-a:T1": {
+                    "alias": "w-a", "task": "T1",
+                    "latest_state": "working", "latest_msg_id": 5, "latest_at": "t5",
+                    "history_count": 1,
+                }
+            },
+            "max_msg_id": 5,
+        }
+        now = datetime(2026, 6, 18, 0, 1, 0, tzinfo=timezone.utc)  # 1min
+        detected = ow_service.detect_crash_inconsistencies(
+            queue_tasks, reconstructed, presence=[],
+            pending_spawn_stalled_threshold_min=15,
+            now=now,
+        )
+        p = detected["pending_spawn"][0]
+        assert p["has_relay_history"] is True
+        # has_relay_history=True の経路は relay 最新state 優先 → "stalled"
+        assert p["suggested_status"] == "stalled"
+
     def test_stalled_done_detected(self):
         """queue=done & worker presence online → stalled_done"""
         queue_tasks = [
@@ -774,6 +989,61 @@ class TestOwRecover:
         assert result["applied"]["queue_updates"] == []
         # queueファイルは無変更
         assert (queue_dir / "queue-t454.md").read_text() == before
+
+    def test_pending_spawn_auto_stalled_updates_queue(self, monkeypatch, tmp_path):
+        """P0-7: pending_spawn_stalled_threshold_min を渡し、spawning_at が閾値以上 → queue=auto_stalled。
+
+        ow_recover に now を注入することで実時刻に依存しない hermetic テストになっている。
+        """
+        queue_dir = tmp_path / "queue"
+        queue_dir.mkdir()
+        # 固定基準時刻と、それより 24 時間前の spawning_at で hermetic に組む
+        fixed_now = datetime(2026, 6, 18, 12, 0, 0, tzinfo=timezone.utc)
+        old_ts = (fixed_now - timedelta(hours=24)).isoformat()
+        (queue_dir / "queue-t454.md").write_text(
+            f"## T1 | mytask | spawning\n"
+            f"- worker: w-a / term_ref: (pending) / session: (pending)\n"
+            f"- spawning: {old_ts}\n"
+            f"- note: spawning write-ahead\n"
+        )
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(queue_dir))
+        # 履歴は空（worker は relay に何も送らないまま消えたシナリオ）
+
+        result = ow_service.ow_recover(
+            channel="ChAbCdEf",
+            topic_id="454",
+            pending_spawn_stalled_threshold_min=15,
+            now=fixed_now,
+        )
+        assert result["dry_run"] is False
+        assert len(result["applied"]["queue_updates"]) == 1
+        update = result["applied"]["queue_updates"][0]
+        assert update == {
+            "task": "T1", "alias": "w-a",
+            "from": "spawning", "to": "auto_stalled",
+        }
+        content = (queue_dir / "queue-t454.md").read_text()
+        assert "## T1 | mytask | auto_stalled\n" in content
+        # note も auto_stalled 用の文言になっている
+        assert "auto_stalled" in content
+        assert "pending_spawn が relay履歴なし" in content
+
+    def test_pending_spawn_auto_stalled_threshold_not_passed_keeps_legacy(self, monkeypatch, tmp_path):
+        """P0-7: pending_spawn_stalled_threshold_min を渡さなければ古い pending_spawn でも触らない (後方互換)"""
+        queue_dir = tmp_path / "queue"
+        queue_dir.mkdir()
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+        original = (
+            f"## T1 | mytask | spawning\n"
+            f"- worker: w-a / term_ref: (pending) / session: (pending)\n"
+            f"- spawning: {old_ts}\n"
+        )
+        (queue_dir / "queue-t454.md").write_text(original)
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(queue_dir))
+
+        result = ow_service.ow_recover(channel="ChAbCdEf", topic_id="454")
+        assert result["applied"]["queue_updates"] == []
+        assert (queue_dir / "queue-t454.md").read_text() == original
 
     def test_pending_spawn_with_history_is_updated(self, monkeypatch, tmp_path):
         """spawning & relay最新=done → pending_spawn (has_relay_history=True) → queue=done"""
