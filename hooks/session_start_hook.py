@@ -22,9 +22,9 @@ from src.services.activity_service import (
     get_active_domains_with_conn,
     get_active_activities_by_tag_with_conn,
 )
-from src.services.checkin_service import get_activity_topics_batch
 from src.services.habit_service import get_active_habit_contents_with_conn
 from src.services.tag_service import get_entity_tags_batch
+from src.services.topic_service import get_activity_topics_batch
 from scripts.snapshot import health_check, should_take_snapshot, take_snapshot
 from hooks.hook_transcript import _ORCH_MANAGED_TAG, _is_worker_session
 
@@ -145,6 +145,8 @@ def _build_activities_section(conn) -> str:
       - topic 見出しは em-dash 以降を除去した短縮版
       - 24h 以内に作成されたアクティビティはタイトル末尾に 🆕 マーカーをインライン付与
       - 番号はグループ通しで連番
+      - グループ内の並び順は in_progress を先頭にし、その中で updated_at 降順
+        （旧フラット表示の rank 基準を踏襲。domain タグ反復順への暗黙依存を排除）
     - 末尾にスコアリング指示を付与
 
     worker セッション（OW_ROLE=worker）はメインセッション作業文脈なので注入しない (D#2662)。
@@ -254,9 +256,18 @@ def _build_activities_section(conn) -> str:
         if None in groups:
             topic_ids_sorted.append(None)
 
+        # グループ内ソート: in_progress 優先、updated_at 降順（決定的）。
+        # get_active_activities_by_tag_with_conn は同順で返すが、複数 domain を
+        # 横断するこの関数では domain 反復順に依存して順序がブレるため、ここで
+        # 最終形を再確定する。updated_at は ISO8601 文字列なので、安定ソートを
+        # 利用して updated_at 降順 → status 優先の 2 段階で並べる。
         idx_counter = 1
         for tid in topic_ids_sorted:
             group = groups[tid]
+            group["activities"].sort(key=lambda a: a["updated_at"], reverse=True)
+            group["activities"].sort(
+                key=lambda a: 0 if a["status"] == "in_progress" else 1
+            )
             parts.append(f"## {group['title']}")
             for a in group["activities"]:
                 aid = a["id"]

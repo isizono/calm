@@ -18,6 +18,46 @@ from src.services.tag_service import (
 TOPIC_DESC_MAX_LEN = 200
 
 
+def get_activity_topics_batch(
+    conn: sqlite3.Connection, activity_ids: list[int]
+) -> dict[int, list[dict]]:
+    """アクティビティID群に対し、関連する全topicの (id, title) を一括取得する。
+
+    SessionStart hook の topic別グルーピング用に relations_view を1クエリで叩く
+    （D#2465: スキル層から get_map をN回叩かずバックエンドでバッチ取得）。
+    relations_view は逆方向展開を含むが、`source_type='activity' AND target_type='topic'`
+    でフィルタすることで activity 側を source とする行のみに絞られる。
+    relations テーブルの PRIMARY KEY (source_type, source_id, target_type, target_id) が
+    重複を保証するため、結果セットに (activity_id, topic_id) の重複は現れない。
+
+    Returns:
+        {activity_id: [{"id": int, "title": str}, ...]}
+        各 activity_id について topic_id 昇順でソート済み（決定的）。
+        関連 topic を持たない activity_id はキー自体が存在しない。
+    """
+    if not activity_ids:
+        return {}
+    placeholders = ",".join("?" * len(activity_ids))
+    rows = conn.execute(
+        f"""SELECT rv.source_id AS activity_id,
+                   dt.id AS topic_id,
+                   dt.title AS topic_title
+            FROM relations_view rv
+            JOIN discussion_topics dt ON dt.id = rv.target_id
+            WHERE rv.source_type = 'activity'
+              AND rv.source_id IN ({placeholders})
+              AND rv.target_type = 'topic'
+            ORDER BY rv.source_id, dt.id""",
+        tuple(activity_ids),
+    ).fetchall()
+    result: dict[int, list[dict]] = {}
+    for r in rows:
+        result.setdefault(r["activity_id"], []).append(
+            {"id": r["topic_id"], "title": r["topic_title"]}
+        )
+    return result
+
+
 def count_decisions_per_topic(conn: sqlite3.Connection, topic_ids: list[int]) -> dict[int, int]:
     """トピックごとのdecisions件数を取得する（retracted除外）。
 

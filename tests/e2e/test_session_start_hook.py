@@ -470,18 +470,14 @@ class TestSessionStartHookTopicGrouping:
     @staticmethod
     def _relate_activity_to_topic(activity_id: int, topic_id: int) -> None:
         """activity と topic の関係を relations テーブルに挿入する。
+        _normalize_pair の正規化順 (source_type < target_type 辞書順) では
+        'activity' < 'topic' のためスワップは発生せず、そのまま挿入できる。
         relations_view は対称展開済みなので片方向で十分。"""
         conn = get_connection()
         try:
-            # _normalize_pair に倣い (source_type < target_type) の順で挿入
-            src_type, src_id = "activity", activity_id
-            tgt_type, tgt_id = "topic", topic_id
-            if src_type > tgt_type:
-                src_type, tgt_type = tgt_type, src_type
-                src_id, tgt_id = tgt_id, src_id
             conn.execute(
                 "INSERT INTO relations (source_type, source_id, target_type, target_id) VALUES (?, ?, ?, ?)",
-                (src_type, src_id, tgt_type, tgt_id),
+                ("activity", activity_id, "topic", topic_id),
             )
             conn.commit()
         finally:
