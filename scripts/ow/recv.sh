@@ -9,6 +9,16 @@
 #                  ow_service.py の spawn 経路から注入される。未指定なら親監視は無効
 #                  (claude本体死亡時にppid=1で生き残る旧挙動。後方互換)。
 
+# set -euo pipefail は意図的に未設定。
+# このスクリプトは「SSE 切断 → 1秒待って再接続」を while で回す再接続ループを
+# 持ち、curl 終了や非ゼロ終了は正常パスとして扱う必要がある。set -e を入れると
+# curl 失敗や `kill ... || true` のような部分エラーで再接続前にループを抜けてしまい
+# (≒ watchdog 機能を壊す)、heartbeat.sh のような「1ショット send + sleep」の
+# 構造とは要件が異なる。pipefail も同様に pipeline 中の curl 失敗を errno 化して
+# しまうため未設定。未定義参照は `${VAR:-}` で個別に防御している。
+# (判断保留: 将来 set -u だけ局所的に有効化する余地はあるが、現状の `${PIPE_PID:-}`
+#  パターンで実害なし。)
+
 RELAY_URL="${RELAY_URL:-http://127.0.0.1:8765}"
 CHANNEL="$1"
 HANDLE="$2"
@@ -20,12 +30,22 @@ if [ -z "$CHANNEL" ] || [ -z "$HANDLE" ]; then
     exit 1
 fi
 
-# B案: trap でシグナル受信時に curl を確実に殺してから exit。
+# B案: trap でシグナル受信時に pipeline 末尾プロセスを殺してから exit。
 # bg化された後の親 SIGHUP は macOS デフォルトで届かないため A案(PPID watchdog)
 # の補助にすぎないが、claude が正常 exit する SIGTERM 経路には反応する。
+#
+# PIPE_PID は `curl ... | python3 ... &` で取得した `$!` の値で、これは
+# パイプライン末尾の python3 の PID。これを kill すると python3 が死に、
+# 上流の curl は stdout への書き込み時 SIGPIPE で連鎖死する。
+# (TODO: SSE 無音時など stdout に書き込みが起きない状況では curl が孤児として
+#  生き残るリスクがある。根本対策は別 issue 扱い。)
+#
+# exit 0 は HUP/INT/TERM 経由で呼ばれた際の終了コードを明示するためのもの。
+# EXIT 経由では冗長だが、シグナル経路で「子の状態に引きずられない 0 終了」を
+# 確定させる目的で残している。
 cleanup() {
-    if [ -n "${CURL_PID:-}" ]; then
-        kill "$CURL_PID" 2>/dev/null || true
+    if [ -n "${PIPE_PID:-}" ]; then
+        kill "$PIPE_PID" 2>/dev/null || true
     fi
     exit 0
 }
@@ -48,19 +68,21 @@ while parent_alive; do
         --data-urlencode "handle=${HANDLE}" \
         "${RELAY_URL}/stream" \
         | python3 -u "${SCRIPT_DIR}/recv_filter.py" "${HANDLE}" &
-    CURL_PID=$!
+    # $! はパイプライン末尾 (python3) の PID。これを kill すると python3 が落ち、
+    # 上流の curl は SIGPIPE で連鎖死する想定。変数名 PIPE_PID で意図を明示する。
+    PIPE_PID=$!
 
-    # curl 終了 or 親死亡まで待つ。1秒ごとに親監視。
-    while kill -0 "$CURL_PID" 2>/dev/null; do
+    # pipeline 終了 or 親死亡まで待つ。1秒ごとに親監視。
+    while kill -0 "$PIPE_PID" 2>/dev/null; do
         if ! parent_alive; then
-            kill "$CURL_PID" 2>/dev/null || true
-            wait "$CURL_PID" 2>/dev/null || true
+            kill "$PIPE_PID" 2>/dev/null || true
+            wait "$PIPE_PID" 2>/dev/null || true
             exit 0
         fi
         sleep 1
     done
-    wait "$CURL_PID" 2>/dev/null || true
-    unset CURL_PID
+    wait "$PIPE_PID" 2>/dev/null || true
+    unset PIPE_PID
 
     # SSE 切断後は1秒待ってから再接続を試みる。親死亡なら次の while 条件で抜ける。
     sleep 1

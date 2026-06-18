@@ -135,10 +135,14 @@ class TestRecvShParentWatchdog:
 
 
 class TestRecvShTrap:
-    """B案: trap EXIT で curl 子プロセスが掃除される"""
+    """B案: trap EXIT で pipeline 子プロセス (python3 + curl) が掃除される"""
 
-    def test_curl_killed_on_sigterm(self, mock_stream_relay):
-        """SIGTERM で recv.sh が exit し curl 子も終了する"""
+    def test_pipe_killed_on_sigterm(self, mock_stream_relay):
+        """SIGTERM で recv.sh が exit する (pipeline 末尾 python3 を kill → curl は SIGPIPE 連鎖死)
+
+        TODO: curl 自体のPID追跡アサーションは未実装。SSE 無音時に curl が
+        孤児として残るリスクは別 issue 扱い。
+        """
         _server, relay_url = mock_stream_relay
 
         env = {
