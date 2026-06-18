@@ -1322,6 +1322,7 @@ def _parse_queue_file(queue_file: Path) -> tuple[dict, list[dict]]:
                 "status": task_status,
                 "worker": None,
                 "term_ref": None,
+                "spawning_at": None,
             }
         elif current_task is not None and line.startswith("- worker:"):
             # "- worker: w-a / term_ref: iterm2:xxx / session: <uuid>"
@@ -1332,6 +1333,8 @@ def _parse_queue_file(queue_file: Path) -> tuple[dict, list[dict]]:
                     current_task["term_ref"] = part[len("term_ref:"):].strip()
                 elif not part.startswith("session:"):
                     current_task["worker"] = part
+        elif current_task is not None and line.startswith("- spawning:"):
+            current_task["spawning_at"] = line[len("- spawning:"):].strip()
 
     if current_task is not None:
         tasks.append(current_task)
@@ -1645,10 +1648,29 @@ def reconstruct_state_from_relay(channel: str, limit: int = 10000) -> dict:
     return {"by_worker_task": by_worker_task, "max_msg_id": max_msg_id, "truncated": truncated}
 
 
+def _parse_spawning_at(value: str | None) -> datetime | None:
+    """`- spawning: <iso>` フィールドからdatetime（tz-aware）を取り出す。
+
+    queueファイルが手編集で壊れていても例外を投げない（fail-soft）。
+    naive datetime はUTCとみなして tz-awareに格上げする。
+    """
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.strip())
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 def detect_crash_inconsistencies(
     queue_tasks: list[dict],
     reconstructed: dict,
     presence: list[str],
+    pending_spawn_stalled_threshold_min: int | None = None,
+    now: datetime | None = None,
 ) -> dict:
     """queue状態 × relay最新state × presence の3つを突合し、不整合を4カテゴリに分類する。
 
@@ -1656,9 +1678,14 @@ def detect_crash_inconsistencies(
 
     Args:
         queue_tasks: `_parse_queue_file` の返り値相当
-            （[{task, title, status, worker, term_ref}, ...]）
+            （[{task, title, status, worker, term_ref, spawning_at}, ...]）
         reconstructed: `reconstruct_state_from_relay` の返り値
         presence: `_get_presence` の返り値
+        pending_spawn_stalled_threshold_min: pending_spawn (has_relay_history=False) を
+            `auto_stalled` 化する経過時間閾値（分）。None または `spawning_at` 不在/不正
+            なら自動更新対象外（従来挙動）。閾値以上経過していれば
+            `suggested_status="auto_stalled"` を入れる。
+        now: 経過時間判定の基準時刻。テスト用にinject可能。Noneなら datetime.now(UTC)。
 
     Returns:
         {
@@ -1667,7 +1694,8 @@ def detect_crash_inconsistencies(
                 ...
             ],
             "pending_spawn": [   # queue=spawning。relay履歴の有無で2通りに分かれる
-                {task, alias, queue_status, has_relay_history, latest_state, latest_msg_id, latest_at, suggested_status},
+                {task, alias, queue_status, has_relay_history, latest_state, latest_msg_id, latest_at,
+                 spawning_at, age_min, suggested_status},
                 ...
             ],
             "stalled_done": [    # queue終端だがworkerがpresenceに残存
@@ -1683,11 +1711,16 @@ def detect_crash_inconsistencies(
     pending_spawn の解釈（C1対応）:
         - has_relay_history=True: workerが起動してstate宣言を送ったがpresence offline → ghost_active相当の
             扱いで `suggested_status` を入れる（ow_recoverは自動更新する）
-        - has_relay_history=False: workerはまだ何も送っていない＝起動進行中の可能性が高い。
-            ow_recoverは自動更新せず、orchに「pending_spawn 残留」を伝えるだけにする。
+        - has_relay_history=False:
+            - 閾値未指定 or spawning_at 取れない or 閾値未満: 起動進行中の可能性が高い。
+                ow_recoverは自動更新せず、orchに「pending_spawn 残留」を伝えるだけにする
+                （suggested_status=None）。
+            - 閾値以上経過: suggested_status="auto_stalled"。ow_recoverが queue を自動更新する。
+              （P0-7: T5 自身が実証した「2日間 failed 化されなかった pending_spawn」を解消）
     """
     by_wt = reconstructed.get("by_worker_task", {}) or {}
     presence_set = set(presence or [])
+    now_dt = now or datetime.now(timezone.utc)
 
     ghost_active: list[dict] = []
     pending_spawn: list[dict] = []
@@ -1706,11 +1739,26 @@ def detect_crash_inconsistencies(
         if status == "spawning" and worker and worker not in presence_set:
             has_history = relay_entry is not None
             latest_state = relay_entry["latest_state"] if relay_entry else None
-            suggested = (
-                _RELAY_STATE_TO_QUEUE_STATUS.get(latest_state, "stalled")
-                if has_history
-                else None  # 起動進行中の可能性 → ow_recoverは触らない
-            )
+            spawning_at_str = task.get("spawning_at") or ""
+            spawning_at_dt = _parse_spawning_at(spawning_at_str)
+            age_min: float | None = None
+            if spawning_at_dt is not None:
+                age_min = (now_dt - spawning_at_dt).total_seconds() / 60.0
+
+            if has_history:
+                suggested = _RELAY_STATE_TO_QUEUE_STATUS.get(latest_state, "stalled")
+            elif (
+                pending_spawn_stalled_threshold_min is not None
+                and age_min is not None
+                and age_min >= pending_spawn_stalled_threshold_min
+            ):
+                # P0-7: spawning が閾値以上経過しても relay 履歴が無い
+                # → terminal adapter 起動失敗等で worker が実体化しなかった可能性が高い。
+                # auto_stalled に倒して人間判断の俎上に乗せる。
+                suggested = "auto_stalled"
+            else:
+                # 起動進行中の可能性 → ow_recoverは触らない
+                suggested = None
             pending_spawn.append(
                 {
                     "task": task_id,
@@ -1720,6 +1768,8 @@ def detect_crash_inconsistencies(
                     "latest_state": latest_state,
                     "latest_msg_id": relay_entry["latest_msg_id"] if relay_entry else 0,
                     "latest_at": relay_entry["latest_at"] if relay_entry else "",
+                    "spawning_at": spawning_at_str,
+                    "age_min": age_min,
                     "suggested_status": suggested,
                 }
             )
@@ -1919,6 +1969,7 @@ def ow_recover(
     topic_id: str,
     dry_run: bool = False,
     pending_pings: list[dict] | None = None,
+    pending_spawn_stalled_threshold_min: int | None = None,
 ) -> dict:
     """orch crash後のqueue × relay履歴 × presence整合チェック・自動修正のエントリポイント。
 
@@ -1945,6 +1996,10 @@ def ow_recover(
         pending_pings: 前回のping送信情報。各要素は:
             {alias: str, task: str, nonce: str, sent_after_msg_id: int}
             sent_after_msg_idより大きいmsg_idのrelayメッセージでnonce echoを探す。
+        pending_spawn_stalled_threshold_min: pending_spawn (has_relay_history=False) を
+            `auto_stalled` 化する経過時間閾値（分）。None なら従来挙動（自動更新対象外）。
+            P0-7 で導入。orch が「2日経っても failed 化されない pending_spawn」を強制終端
+            するために使う。
 
     Returns:
         {
@@ -2008,27 +2063,45 @@ def ow_recover(
         )
 
     presence = _get_presence(channel)
-    detected = detect_crash_inconsistencies(queue_tasks, reconstructed, presence)
+    detected = detect_crash_inconsistencies(
+        queue_tasks,
+        reconstructed,
+        presence,
+        pending_spawn_stalled_threshold_min=pending_spawn_stalled_threshold_min,
+    )
 
     applied: dict = {"queue_updates": [], "pings_sent": []}
 
     if not dry_run:
-        # ghost_active + pending_spawn(has_relay_history=True) を自動更新対象とする。
-        # spawning だが relay履歴ゼロ (起動進行中の可能性) は触らない。
+        # ghost_active + pending_spawn(suggested_status が決まっているもの) を自動更新対象とする。
+        # suggested_status が None の pending_spawn (起動進行中の可能性) は触らない。
+        # suggested_status は以下のいずれかで決まる:
+        #   - has_relay_history=True: relay最新stateに基づく
+        #   - has_relay_history=False & pending_spawn_stalled_threshold_min 経過: "auto_stalled"
         auto_update_targets = list(detected["ghost_active"]) + [
-            p for p in detected["pending_spawn"] if p["has_relay_history"]
+            p for p in detected["pending_spawn"] if p.get("suggested_status")
         ]
         for ghost in auto_update_targets:
+            if ghost["suggested_status"] == "auto_stalled":
+                age_min = ghost.get("age_min")
+                age_str = f"{age_min:.1f}min" if isinstance(age_min, (int, float)) else "unknown"
+                note = (
+                    f"crash-recovery: pending_spawn が relay履歴なしのまま "
+                    f"{age_str} 経過 (threshold={pending_spawn_stalled_threshold_min}min) "
+                    f"→ auto_stalled"
+                )
+            else:
+                note = (
+                    f"crash-recovery: relay最新state={ghost['latest_state']} "
+                    f"(msg_id={ghost['latest_msg_id']})で再構築"
+                )
             try:
                 _apply_queue_status_update(
                     queue_dir=queue_dir,
                     topic_id=topic_id_str,
                     task=ghost["task"],
                     new_status=ghost["suggested_status"],
-                    note=(
-                        f"crash-recovery: relay最新state={ghost['latest_state']} "
-                        f"(msg_id={ghost['latest_msg_id']})で再構築"
-                    ),
+                    note=note,
                 )
                 applied["queue_updates"].append(
                     {

@@ -1151,7 +1151,12 @@ def ow_status(channel: str, topic_id: str | None = None) -> dict:
 
 
 @mcp.tool()
-def ow_recover(channel: str, topic_id: str, dry_run: bool = False) -> dict:
+def ow_recover(
+    channel: str,
+    topic_id: str,
+    dry_run: bool = False,
+    pending_spawn_stalled_threshold_min: int | None = None,
+) -> dict:
     """orch crash後のqueue × relay履歴 × presence整合チェック・自動修正。
 
     relay履歴を since=0 で全件再走査して各worker毎の最新state宣言を集計し、queueと
@@ -1160,7 +1165,8 @@ def ow_recover(channel: str, topic_id: str, dry_run: bool = False) -> dict:
     - ghost_active: queue=assigned/working なのに presence offline
       → relay 最新state宣言から queue ステータスを自動再構築（dry_run=Falseのみ）
     - pending_spawn: queue=spawning なのに presence offline
-      → relay履歴に当該workerのstate宣言があれば自動更新、なければ起動進行中として放置
+      → relay履歴に当該workerのstate宣言があれば自動更新、無く `pending_spawn_stalled_threshold_min`
+        を超えた経過時間なら `auto_stalled` 化、それ未満なら起動進行中として放置
     - stalled_done: queue=done/closed/cancelled/failed なのに worker が presence onlineで残存
       → cmd:ping を送信して素性照会
     - orphans: presence online だが queue に登場しない w-* handle
@@ -1174,6 +1180,10 @@ def ow_recover(channel: str, topic_id: str, dry_run: bool = False) -> dict:
         channel: channelコード
         topic_id: トピックID（queue-t<topic_id>.md 特定に使用）
         dry_run: Trueなら検出のみ・修正/ping送信なし
+        pending_spawn_stalled_threshold_min: pending_spawn (has_relay_history=False) を
+            `auto_stalled` 化する経過時間閾値（分）。None なら従来挙動（自動更新対象外）。
+            P0-7 で導入。「2日経っても failed 化されない pending_spawn」を orch が
+            強制終端するために使う。
 
     Returns:
         成功時:
@@ -1187,7 +1197,12 @@ def ow_recover(channel: str, topic_id: str, dry_run: bool = False) -> dict:
             }
         relay/channel不可時: {"error": {"code": ..., "message": ...}}
     """
-    return ow_service.ow_recover(channel, topic_id, dry_run)
+    return ow_service.ow_recover(
+        channel,
+        topic_id,
+        dry_run,
+        pending_spawn_stalled_threshold_min=pending_spawn_stalled_threshold_min,
+    )
 
 
 # セッションエンドポイント（HTTPモード用カスタムルート）

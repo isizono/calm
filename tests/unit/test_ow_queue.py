@@ -108,6 +108,26 @@ class TestParseQueueFile:
         assert len(tasks) == 1
         assert tasks[0]["status"] == "spawning"
 
+    def test_parses_spawning_at_timestamp(self, tmp_path: Path):
+        """`- spawning: <iso>` 行から spawning_at を抽出する (P0-7)"""
+        content = (
+            "## T3 | new task | spawning\n"
+            "- worker: w-b / term_ref: (pending) / session: (pending)\n"
+            "- spawning: 2026-06-18T00:00:00+00:00\n"
+        )
+        queue_file = tmp_path / "queue-t1.md"
+        queue_file.write_text(content, encoding="utf-8")
+        _, tasks = ow_service._parse_queue_file(queue_file)
+        assert tasks[0]["spawning_at"] == "2026-06-18T00:00:00+00:00"
+
+    def test_spawning_at_absent_returns_none(self, tmp_path: Path):
+        """`- spawning:` 行が無いタスクは spawning_at=None (P0-7 後方互換)"""
+        content = "## T1 | x | working\n- worker: w-a / term_ref: r / session: s\n"
+        queue_file = tmp_path / "queue-t1.md"
+        queue_file.write_text(content, encoding="utf-8")
+        _, tasks = ow_service._parse_queue_file(queue_file)
+        assert tasks[0]["spawning_at"] is None
+
 
 class TestParseQueueFileFrontmatter:
     """エッジケース#1-#8: frontmatter対応テスト"""
