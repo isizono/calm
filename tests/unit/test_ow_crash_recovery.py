@@ -46,7 +46,7 @@ class TestValidateSpawnPreconditions:
     def test_all_ok_returns_no_warnings(self, monkeypatch, tmp_path):
         """全項目クリア → ok=True、warnings空"""
         result = ow_service._validate_spawn_preconditions(
-            alias="w-x", channel="ChAbCdEf", cwd=str(tmp_path)
+            alias="w-xray01", channel="ChAbCdEf", cwd=str(tmp_path)
         )
         assert result["ok"] is True
         assert result["warnings"] == []
@@ -59,7 +59,7 @@ class TestValidateSpawnPreconditions:
         monkeypatch.setattr(ow_service, "ensure_channel", lambda ch: channel_calls.append(ch) or True)
 
         result = ow_service._validate_spawn_preconditions(
-            alias="w-x", channel="ChAbCdEf", cwd=str(tmp_path)
+            alias="w-xray01", channel="ChAbCdEf", cwd=str(tmp_path)
         )
         assert result["ok"] is False
         assert any("relay" in w for w in result["warnings"])
@@ -69,7 +69,7 @@ class TestValidateSpawnPreconditions:
         """channel作成失敗 → ok=False、warningにchannel名"""
         monkeypatch.setattr(ow_service, "ensure_channel", lambda ch: False)
         result = ow_service._validate_spawn_preconditions(
-            alias="w-x", channel="ChAbCdEf", cwd=str(tmp_path)
+            alias="w-xray01", channel="ChAbCdEf", cwd=str(tmp_path)
         )
         assert result["ok"] is False
         assert any("channel ChAbCdEf" in w for w in result["warnings"])
@@ -78,7 +78,7 @@ class TestValidateSpawnPreconditions:
         """存在しないcwd → ok=False、warningにcwdパス"""
         missing = tmp_path / "does-not-exist"
         result = ow_service._validate_spawn_preconditions(
-            alias="w-x", channel="ChAbCdEf", cwd=str(missing)
+            alias="w-xray01", channel="ChAbCdEf", cwd=str(missing)
         )
         assert result["ok"] is False
         assert any("cwd" in w and str(missing) in w for w in result["warnings"])
@@ -88,35 +88,35 @@ class TestValidateSpawnPreconditions:
         f = tmp_path / "afile"
         f.write_text("x")
         result = ow_service._validate_spawn_preconditions(
-            alias="w-x", channel="ChAbCdEf", cwd=str(f)
+            alias="w-xray01", channel="ChAbCdEf", cwd=str(f)
         )
         assert result["ok"] is False
         assert any("cwd" in w for w in result["warnings"])
 
     def test_alias_in_presence_is_warning(self, monkeypatch, tmp_path):
         """presenceに既にaliasがいる → ok=False"""
-        monkeypatch.setattr(ow_service, "_get_presence", lambda ch: ["orch", "w-x"])
+        monkeypatch.setattr(ow_service, "_get_presence", lambda ch: ["orch", "w-xray01"])
         result = ow_service._validate_spawn_preconditions(
-            alias="w-x", channel="ChAbCdEf", cwd=str(tmp_path)
+            alias="w-xray01", channel="ChAbCdEf", cwd=str(tmp_path)
         )
         assert result["ok"] is False
-        assert any("alias w-x" in w and "online" in w for w in result["warnings"])
+        assert any("alias w-xray01" in w and "online" in w for w in result["warnings"])
 
     def test_alias_in_active_queue_task_is_warning(self, monkeypatch, tmp_path):
         """queueで活動中のタスクに同一aliasが他task_nで割当て済み → ok=False"""
-        # queue設定: w-x が T9 で working 中
+        # queue設定: w-xray01 が T9 で working 中
         queue_dir = tmp_path / "queue"
         queue_dir.mkdir()
         queue_file = queue_dir / "queue-t454.md"
         queue_file.write_text(
             "## T9 | dummy | working\n"
-            "- worker: w-x / term_ref: x / session: y\n"
+            "- worker: w-xray01 / term_ref: x / session: y\n"
         )
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(queue_dir))
 
         # 異なるtask_n (T10) で再spawn試行 → 警告
         result = ow_service._validate_spawn_preconditions(
-            alias="w-x",
+            alias="w-xray01",
             channel="ChAbCdEf",
             cwd=str(tmp_path),
             topic_id="454",
@@ -132,12 +132,12 @@ class TestValidateSpawnPreconditions:
         queue_file = queue_dir / "queue-t454.md"
         queue_file.write_text(
             "## T9 | dummy | working\n"
-            "- worker: w-x / term_ref: x / session: y\n"
+            "- worker: w-xray01 / term_ref: x / session: y\n"
         )
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(queue_dir))
 
         result = ow_service._validate_spawn_preconditions(
-            alias="w-x",
+            alias="w-xray01",
             channel="ChAbCdEf",
             cwd=str(tmp_path),
             topic_id="454",
@@ -160,7 +160,7 @@ class TestValidateSpawnPreconditions:
             },
         )
         result = ow_service._validate_spawn_preconditions(
-            alias="w-x", channel="ChAbCdEf", cwd=str(tmp_path)
+            alias="w-xray01", channel="ChAbCdEf", cwd=str(tmp_path)
         )
         assert result["ok"] is False
         assert any("INV-9" in w for w in result["warnings"])
@@ -169,7 +169,7 @@ class TestValidateSpawnPreconditions:
         """identityが存在しない（ow_get_identity=None）→ ok=True"""
         # autouseフィクスチャがNoneを返すデフォルト設定
         result = ow_service._validate_spawn_preconditions(
-            alias="w-x", channel="ChAbCdEf", cwd=str(tmp_path)
+            alias="w-xray01", channel="ChAbCdEf", cwd=str(tmp_path)
         )
         assert result["ok"] is True
         assert result["warnings"] == []
@@ -177,12 +177,12 @@ class TestValidateSpawnPreconditions:
     @pytest.mark.parametrize(
         "terminated_identity",
         [
-            {"handle": "w-x", "cause": "closed", "terminated_at": "2026-06-16T00:00:00Z"},
-            {"handle": "w-x", "cause": "cancelled", "terminated_at": "2026-06-16T00:00:00Z"},
-            {"handle": "w-x", "cause": "dead", "terminated_at": "2026-06-16T00:00:00Z"},
-            {"handle": "w-x", "inferred_cause": "crashed (inferred)"},
+            {"handle": "w-xray01", "cause": "closed", "terminated_at": "2026-06-16T00:00:00Z"},
+            {"handle": "w-xray01", "cause": "cancelled", "terminated_at": "2026-06-16T00:00:00Z"},
+            {"handle": "w-xray01", "cause": "dead", "terminated_at": "2026-06-16T00:00:00Z"},
+            {"handle": "w-xray01", "inferred_cause": "crashed (inferred)"},
             # terminated_at のみ（cause/inferred_cause なし）も alive 扱いではないため spawn 許可
-            {"handle": "w-x", "terminated_at": "2026-06-16T00:00:00Z"},
+            {"handle": "w-xray01", "terminated_at": "2026-06-16T00:00:00Z"},
         ],
     )
     def test_terminated_identity_allows_spawn(self, monkeypatch, tmp_path, terminated_identity):
@@ -193,7 +193,7 @@ class TestValidateSpawnPreconditions:
             lambda ch, h: terminated_identity,
         )
         result = ow_service._validate_spawn_preconditions(
-            alias="w-x", channel="ChAbCdEf", cwd=str(tmp_path)
+            alias="w-xray01", channel="ChAbCdEf", cwd=str(tmp_path)
         )
         assert result["ok"] is True
         assert result["warnings"] == []
@@ -1173,7 +1173,7 @@ class TestOwSpawnWorkerPreflight:
         )
 
         result = ow_service.ow_spawn_worker(
-            alias="w-x", channel="ChAbCdEf", cwd=str(tmp_path),
+            alias="w-xray01", channel="ChAbCdEf", cwd=str(tmp_path),
             model="claude-opus-4-7",
         )
         assert "error" in result
@@ -1185,15 +1185,15 @@ class TestOwSpawnWorkerPreflight:
         """presenceに同aliasがいる → SPAWN_PRECONDITION_FAILED"""
         monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
         monkeypatch.setattr(ow_service, "ensure_channel", lambda ch: True)
-        monkeypatch.setattr(ow_service, "_get_presence", lambda ch: ["w-x"])
+        monkeypatch.setattr(ow_service, "_get_presence", lambda ch: ["w-xray01"])
         monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
         result = ow_service.ow_spawn_worker(
-            alias="w-x", channel="ChAbCdEf", cwd=str(tmp_path),
+            alias="w-xray01", channel="ChAbCdEf", cwd=str(tmp_path),
             model="claude-opus-4-7",
         )
         assert "error" in result
         assert result["error"]["code"] == "SPAWN_PRECONDITION_FAILED"
-        assert any("alias w-x" in w for w in result["error"]["warnings"])
+        assert any("alias w-xray01" in w for w in result["error"]["warnings"])
 
 
 # ----------------------------
