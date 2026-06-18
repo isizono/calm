@@ -3,7 +3,7 @@ import logging
 import random
 from fastmcp import FastMCP, Context
 from fastmcp.server.dependencies import get_context
-from typing import Optional, Union
+from typing import Literal, Optional, Union
 from src.services import (
     topic_service,
     discussion_log_service,
@@ -671,16 +671,21 @@ def update_material(
     title: str | None = None,
     tags: list[str] | None = None,
     source: str | None = None,
+    mode: Literal["overwrite", "prepend", "append"] = "overwrite",
 ) -> dict:
     """
     既存の資材を更新する。content、title、tags、sourceを個別または同時に更新できる。
 
-    contentは全体置換（部分更新やappendではない）。
+    contentはmodeで動作を選べる。"overwrite"（既定）は上書き、"prepend"は新content+区切り+既存content、
+    "append"は既存content+区切り+新content。区切りは改行2つ("\n\n")。既存contentが空の場合はoverwrite相当。
+    contentを指定しない場合（None）はmodeは無視される。
     tagsは全置換（指定時は既存タグを全削除して新しいタグに置き換える）。
-    少なくとも1つのパラメータを指定する必要がある。
+    少なくとも1つのパラメータ（content/title/tags/source）を指定する必要がある。
 
     典型的な使い方:
-    - 内容を改訂: update_material(material_id=5, content="# 改訂版\n...")
+    - 内容を改訂（上書き）: update_material(material_id=5, content="# 改訂版\n...")
+    - 末尾に追記: update_material(material_id=5, content="## 追記\n...", mode="append")
+    - 先頭に追記: update_material(material_id=5, content="## TL;DR\n...", mode="prepend")
     - タイトル変更: update_material(material_id=5, title="新しいタイトル")
     - タグ変更: update_material(material_id=5, tags=["domain:cc-memory", "design"])
     - ソース更新: update_material(material_id=5, source="公式ドキュメント")
@@ -688,15 +693,16 @@ def update_material(
 
     Args:
         material_id: 資材のID
-        content: 新しい本文（全体置換。optional）。先頭1-2文は内容の説明・要約を書くこと（check-inやsearchのsnippetに使われるため）
+        content: 新しい本文（optional）。先頭1-2文は内容の説明・要約を書くこと（check-inやsearchのsnippetに使われるため）
         title: 新しいタイトル（optional）
         tags: 新しいタグ配列（指定時は全置換。1個以上必須。optional）
         source: 新しいソース（optional）
+        mode: content指定時の結合動作。"overwrite"=上書き(既定、後方互換)、"prepend"=新+"\n\n"+既存、"append"=既存+"\n\n"+新
 
     Returns:
         更新された資材情報
     """
-    return material_service.update_material(material_id, content=content, title=title, tags=tags, source=source)
+    return material_service.update_material(material_id, content=content, title=title, tags=tags, source=source, mode=mode)
 
 
 @mcp.tool()
