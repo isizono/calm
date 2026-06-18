@@ -45,7 +45,7 @@ def main() -> None:
         event = json.loads(raw)
         tool_input = event.get("tool_input") or {}
 
-        if tool_input.get("tmux_target_pane"):
+        if "tmux_target_pane" in tool_input:
             print("{}")
             return
 

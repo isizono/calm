@@ -3,19 +3,26 @@
 PreToolUse hook が ow_spawn_worker 呼び出しに tmux_target_pane を自動 inject する
 挙動を、tmux サブプロセスを mock した上でケース別に検証する。
 """
+import io
 import json
 import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from hooks import pretooluse_ow_spawn_worker as hook
+
+
+def _make_stdin(payload: dict):
+    return io.StringIO(json.dumps(payload))
+
+
+def _make_stdin_raw(raw: str):
+    return io.StringIO(raw)
 
 
 def _run_hook(stdin_data: dict, env: dict, monkeypatch, capsys) -> dict:
@@ -33,11 +40,6 @@ def _run_hook(stdin_data: dict, env: dict, monkeypatch, capsys) -> dict:
     hook.main()
     captured = capsys.readouterr()
     return json.loads(captured.out)
-
-
-def _make_stdin(payload: dict):
-    import io
-    return io.StringIO(json.dumps(payload))
 
 
 class TestNoOp:
@@ -83,11 +85,6 @@ class TestNoOp:
         hook.main()
         captured = capsys.readouterr()
         assert json.loads(captured.out) == {}
-
-
-def _make_stdin_raw(raw: str):
-    import io
-    return io.StringIO(raw)
 
 
 class TestInject:
