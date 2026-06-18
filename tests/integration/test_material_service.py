@@ -2,7 +2,7 @@
 import os
 import tempfile
 import pytest
-from src.db import init_database
+from src.db import get_connection, init_database
 from src.services.activity_service import add_activity
 from src.services.material_service import add_material, get_material, update_material
 from src.services.search_service import get_by_id, get_by_ids
@@ -597,7 +597,6 @@ class TestUpdateMaterialMode:
         material_id = created["material_id"]
 
         # 既存contentを空に書き換える（バリデーションを通常経路では通れないためDB直接操作）
-        from src.db import get_connection
         conn = get_connection()
         try:
             conn.execute("UPDATE materials SET content = ? WHERE id = ?", ("", material_id))
@@ -616,7 +615,6 @@ class TestUpdateMaterialMode:
         created = self._create_material()
         material_id = created["material_id"]
 
-        from src.db import get_connection
         conn = get_connection()
         try:
             conn.execute("UPDATE materials SET content = ? WHERE id = ?", ("", material_id))
@@ -641,6 +639,28 @@ class TestUpdateMaterialMode:
         fetched = get_material(material_id)
         assert fetched["title"] == "New Title"
         assert fetched["content"] == "Original content"  # 既存contentは変わらない
+
+    def test_invalid_mode_ignored_when_content_not_specified(self, temp_db):
+        """contentを指定しない場合、modeが不正な値でもバリデーションは実行されず更新は成功する"""
+        created = self._create_material()
+        material_id = created["material_id"]
+
+        result = update_material(material_id, title="New Title", mode="invalid")
+        assert "error" not in result
+
+        fetched = get_material(material_id)
+        assert fetched["title"] == "New Title"
+        assert fetched["content"] == "Original content"
+
+    def test_invalid_mode_rejected_when_content_specified(self, temp_db):
+        """content指定時にmodeが不正な値の場合、VALIDATION_ERROR を返す"""
+        created = self._create_material()
+        material_id = created["material_id"]
+
+        result = update_material(material_id, content="new", mode="invalid")
+        assert "error" in result
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+        assert "mode" in result["error"]["message"]
 
     def test_mode_prepend_multiline_preserves_structure(self, temp_db):
         """mode='prepend'で改行を含むcontentを結合しても、区切り '\\n\\n' が間に正しく入る"""

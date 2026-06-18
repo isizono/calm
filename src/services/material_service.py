@@ -200,7 +200,8 @@ def update_material(
             }
         }
 
-    if mode not in ("overwrite", "prepend", "append"):
+    # modeのバリデーション（content指定時のみ。content=Noneならmodeは無視されるため）
+    if content is not None and mode not in ("overwrite", "prepend", "append"):
         return {
             "error": {
                 "code": "VALIDATION_ERROR",
