@@ -284,7 +284,7 @@ class TestSpawnPreflightAgainstLiveRelay:
             [
                 sys.executable, "-c",
                 f"import urllib.request; "
-                f"req = urllib.request.Request('{live_relay['url']}/stream?channel={channel}&handle=w-x'); "
+                f"req = urllib.request.Request('{live_relay['url']}/stream?channel={channel}&handle=w-xtest01'); "
                 f"resp = urllib.request.urlopen(req, timeout=10); "
                 f"import time; time.sleep(15)",
             ],
@@ -293,17 +293,17 @@ class TestSpawnPreflightAgainstLiveRelay:
         try:
             registered = False
             for _ in range(100):
-                if "w-x" in ow_service._get_presence(channel):
+                if "w-xtest01" in ow_service._get_presence(channel):
                     registered = True
                     break
                 time.sleep(0.1)
             assert registered, "presence registration timed out"
 
             preflight = ow_service._validate_spawn_preconditions(
-                alias="w-x", channel=channel, cwd=str(tmp_path),
+                alias="w-xtest01", channel=channel, cwd=str(tmp_path),
             )
             assert preflight["ok"] is False
-            assert any("alias w-x" in w for w in preflight["warnings"])
+            assert any("alias w-xtest01" in w for w in preflight["warnings"])
         finally:
             ssec.terminate()
             try:
@@ -318,7 +318,7 @@ class TestSpawnPreflightAgainstLiveRelay:
         ow_service.ensure_channel(channel)
         missing = tmp_path / "no-such-dir"
         preflight = ow_service._validate_spawn_preconditions(
-            alias="w-fresh", channel=channel, cwd=str(missing),
+            alias="w-freshen", channel=channel, cwd=str(missing),
         )
         assert preflight["ok"] is False
         assert any("cwd" in w for w in preflight["warnings"])
@@ -328,7 +328,7 @@ class TestSpawnPreflightAgainstLiveRelay:
         channel = "TestT17f"
         ow_service.ensure_channel(channel)
         preflight = ow_service._validate_spawn_preconditions(
-            alias="w-fresh", channel=channel, cwd=str(tmp_path),
+            alias="w-freshen", channel=channel, cwd=str(tmp_path),
         )
         assert preflight["ok"] is True
         assert preflight["warnings"] == []

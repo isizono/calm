@@ -111,6 +111,37 @@ THINKING_EFFORTS: frozenset[str] = frozenset({"high", "xhigh", "max", "ultrathin
 # orch は sentinel `ultratink` を使い、ow_service 側で正規綴りに畳む。
 _EFFORT_ALIASES: dict[str, str] = {"ultratink": "ultrathink"}
 
+# worker alias の書式制約。kebab-case（小文字英数字+ハイフン、先頭は英字、末尾は英数字、
+# 連続ハイフン禁止）かつ最小長 8 文字以上。短すぎる alias は名前衝突や視認性低下を招き、
+# queue/relay 識別子として再利用しづらいため一律で拒否する。
+# alias の上限長は意図的に設けない（task_file / queue / relay messages に埋め込まれるが、
+# 物理上限はファイルシステム側に委ねる。orch 運用上は kebab-case の自然な命名で十分短く収まる）。
+_ALIAS_MIN_LENGTH: int = 8
+_ALIAS_PATTERN: re.Pattern[str] = re.compile(r"^[a-z]([a-z0-9]|-(?!-))*[a-z0-9]$")
+
+
+def _validate_alias_format(alias: str) -> str | None:
+    """alias の書式検証。OK なら None、NG ならユーザー向けエラーメッセージ文字列を返す。
+
+    検証項目:
+        - 最小長: 8 文字以上
+        - kebab-case: 小文字英数字とハイフンのみ。先頭は英字、末尾は英数字、連続ハイフン禁止
+    """
+    if not isinstance(alias, str) or not alias:
+        return "alias must be a non-empty string"
+    if len(alias) < _ALIAS_MIN_LENGTH:
+        return (
+            f"alias '{alias}' is too short "
+            f"(length={len(alias)}, min={_ALIAS_MIN_LENGTH})"
+        )
+    if not _ALIAS_PATTERN.match(alias):
+        return (
+            f"alias '{alias}' does not match required kebab-case pattern "
+            "(lowercase letters/digits/hyphen, start with letter, "
+            "end with letter or digit, no consecutive hyphens)"
+        )
+    return None
+
 # reducer: v3 workload state 分類
 _NON_TERMINAL_WORKLOAD_STATES: frozenset[str] = frozenset(
     {"loading", "ready", "working", "blocked", "escalated", "draining"}
@@ -980,6 +1011,73 @@ def _resolve_activity_title(activity_id: int) -> str:
     return ""
 
 
+def _ensure_worker_askuser_deny(cwd: str) -> None:
+    """worker の cwd 配下に `.claude/settings.local.json` を用意し、
+    `permissions.deny` に `"AskUserQuestion"` を追記する。
+
+    既存ファイルがあれば JSON ロードしてマージ（permissions.deny リストへ append + dedup）。
+    存在しなければ新規作成。書き出しは UTF-8 + 末尾改行。
+
+    Claude Code CLI の permission deny を使い、worker セッションが AskUserQuestion を
+    呼び出した場合に標準挙動として遮断させる狙い。
+
+    cwd が存在しない・書き込み不能などの I/O エラー時は warning ログのみで黙って続行し、
+    spawn 全体は失敗させない（cwd 健全性は `_validate_spawn_preconditions` 側の責務）。
+    """
+    try:
+        cwd_path = Path(cwd).expanduser()
+        if not cwd_path.is_dir():
+            logger.warning(
+                "_ensure_worker_askuser_deny: cwd %s is not a directory, skipping",
+                cwd,
+            )
+            return
+        settings_dir = cwd_path / ".claude"
+        settings_dir.mkdir(parents=True, exist_ok=True)
+        settings_path = settings_dir / "settings.local.json"
+
+        data: dict = {}
+        if settings_path.exists():
+            try:
+                raw = settings_path.read_text(encoding="utf-8")
+                if raw.strip():
+                    loaded = json.loads(raw)
+                    if isinstance(loaded, dict):
+                        data = loaded
+                    else:
+                        logger.warning(
+                            "_ensure_worker_askuser_deny: %s is not a JSON object, "
+                            "overwriting", settings_path,
+                        )
+            except (OSError, json.JSONDecodeError) as e:
+                logger.warning(
+                    "_ensure_worker_askuser_deny: failed to read %s (%s), overwriting",
+                    settings_path, e,
+                )
+                data = {}
+
+        permissions = data.get("permissions")
+        if not isinstance(permissions, dict):
+            permissions = {}
+            data["permissions"] = permissions
+        deny = permissions.get("deny")
+        if not isinstance(deny, list):
+            deny = []
+        if "AskUserQuestion" not in deny:
+            deny.append("AskUserQuestion")
+        permissions["deny"] = deny
+
+        settings_path.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as e:
+        logger.warning(
+            "_ensure_worker_askuser_deny: I/O error writing settings.local.json "
+            "under %s: %s", cwd, e,
+        )
+
+
 def ow_spawn_worker(
     alias: str,
     channel: str,
@@ -1079,6 +1177,11 @@ def ow_spawn_worker(
                 "warnings": preflight["warnings"],
             },
         }
+
+    # worker workspace に `.claude/settings.local.json` を用意し AskUserQuestion を deny する。
+    # Claude Code CLI の permission deny を使って worker セッションから AskUserQuestion を
+    # 構造的に遮断する。既存設定があればマージ。
+    _ensure_worker_askuser_deny(cwd)
 
     queue_dir = _get_queue_dir()
     task_dir = queue_dir / "tasks"
@@ -1516,6 +1619,13 @@ def _validate_spawn_preconditions(
     呼び出し元はok=Falseならspawnを中止し、warningsをユーザー/orchに見せる責務を持つ。
     """
     warnings: list[str] = []
+
+    # 0. alias書式（最小長 + kebab-case）。relay 接続前に純粋な書式検証で弾く。
+    # 書式エラー時は relay 接続を行わずに早期return（無効aliasで relay 接続を発生させない）。
+    alias_err = _validate_alias_format(alias)
+    if alias_err is not None:
+        warnings.append(alias_err)
+        return {"ok": False, "warnings": warnings}
 
     # 1. relay疎通
     if not ensure_relay_server():

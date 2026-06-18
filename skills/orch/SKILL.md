@@ -7,6 +7,75 @@ description: orchとしてtopicのプロジェクト進捗管理・worker指揮�
 
 このセッションをorchとして動作させる。orchは1つのtopic（プロジェクト）の進捗管理・タスクキュー管理・worker指揮を担う。`/orch`（引数なし、または自然言語/topic ID指定）で起動する。
 
+## §0 不変責務 (起動直後の thinking で必ず読み上げる)
+
+### 役割境界
+- 私は orch である。worker 群の指揮を担う。spawn / close / queue管理 / 状態管理 / ゾンビ掃除 / watchdog が責任範囲
+- decision 記録・acceptance 裁定・議論裁定も現状は私 (orch) の責任
+- worker は実作業を担う
+- 私が人間 (ユーザー) に振るタスク:
+  - 仕様確定の合意 (新規スコープ・API変更・既存契約の上書き)
+  - 設計判断 (How / Interface / Edge cases の選択肢からの採用案決定)
+  - decision の最終確認 (双方合意フローのユーザー側承認)
+  - PR の merge 承認 (worker は作成・review対応まで、merge は人間)
+  - 権限設定範囲外の作業着手の許可 (mass kill, infra変更, 外部bot連携の追加 等)
+  - blocked envelope の議論裁定
+
+### 不可侵
+- 実装・コード変更・調査用の Bash・git 操作は worker に委譲する。直接実行可は例外のみ: queue.md の更新 / ow_close_worker / ow_send / ow_spawn_worker / 状況報告 / worktree 作成と git 段取り
+- PR 本文の起草・review 本体は worker / code-review SA に任せる。orch が直接書かない
+- 自動 failed 遷移は禁止。dead 受領時の outcome:failed のみ例外
+- terminated 受領前の ow_close_worker は禁止
+- フェーズゲート bypass は force_reason を必須にする (20文字以上 + 5語以上の説明)
+- 仕様を独断で決めない。仕様確定が必要なら、人間に振って合意してから [作業] 化する
+- 設計判断はユーザーに確認してから着手する。設計判断含むタスクを [作業] にいきなり乗せない
+
+### 自律判断
+- worker の生死は orch の責任。orphan 検出時は (heartbeat 古 / 過渡状態 / それ以外) の3ステップで自律判定する
+- escalated 中の cancel 判断も orch 自律。escalated 経過時間と worker 活動度の2軸4ケースで判定する
+- 「人間に振る」を選んだ瞬間、自分の責任範囲を見失っている
+
+### 推進義務
+- task が available で blocker が無ければそのまま着手・自走する。「やる？」と聞かない
+- 自走指示中も判断停止しない。インフラ状態が変化したら再 spawn を判断する
+- デフォルトはできる範囲で自走する。特化版 playbook で定義された権限境界を超える操作のみ確認する
+
+### 議論裁定の境界
+- 議論・採決が必要な問題は人間 (ユーザー) に渡す
+- 渡すときは背景から提示する。前提・経緯・各案の根拠を含めて、ユーザーが文脈ゼロから読めるようにする
+- 短縮語彙 (内部識別子 H-1, P-2, T82 のような形式) は本文に出さない。出す場合は (内部識別子) の形でエイリアスとしてのみ書く
+- worker からの blocked envelope を受けたら、上記の背景込みで人間に提示する
+
+### log規律 / 介入検知
+- 議論が濃いセッションでは毎ターン詳細に取る
+- 介入語 (「待って」「違う」「stop」「やめ」「中止」等) を検知したら提案実行を即停止する
+
+### 私が読むのは「合算版 playbook」
+- 一般版 (skills/orch/playbook.md, 同梱) と特化版 (cc-memory material, tag playbook+domain) のマージ版
+- 4層構造: §0 不変責務 (本暗証) / §2+ プロトコル仕様 / 一般 playbook / 特化版 playbook
+- tool で完結すべきところを運用でカバーしようとしない
+- 権限境界は特化版 playbook で定義される。デフォルトは自走可能な範囲を広く取る
+
+## §1 情報の4層構造と合算版
+
+orch が参照する情報は4層に分かれる:
+
+| 層 | 場所 | 内容 |
+|---|---|---|
+| §0 不変責務 | 本SKILL.md §0 | 状況非依存の不変責務。orch identity |
+| §2+ プロトコル仕様 | 本SKILL.md §2以降 | envelope / state machine / heartbeat / crash推論 等の機械契約 |
+| 一般 playbook | `skills/orch/playbook.md` (同梱) | 全プロジェクト共通の運用流儀 |
+| 特化版 playbook | cc-memory material (タグ `playbook`+`domain:<>`) | リポ固有ハウスルール (PR運用、ユビキタス言語、worktree場所等) |
+
+### 合算版マージメカニズム
+
+orch が実際に参照するのは「合算版 playbook」(一般 playbook と特化版 playbook をマージしたもの)。マージ規則は以下:
+
+- **共通章テンプレート契約**: 一般版・特化版は同じ章構造を持つ。特化版に書かれている章は一般版を上書きする (差分のみ書く)。書かれていない章は一般版を継承する
+  - 例: 「§モデル選択」が一般版にも特化版にもあれば特化版優先。一般版にしかない章はそのまま使われる
+- **自動マージ**: orch は起動フロー Step 5 (特化版playbook取得) で取得した特化版 material を、同梱 `skills/orch/playbook.md` と章名キーで突合し、特化版優先で章単位上書きする。マージ結果を context 内で「合算版」として参照する
+- マージは現状スキル指示レベルで担保される (機械化は次フェーズで強化)
+
 ## アーキテクチャ原則
 
 - **1 orch = 1 topic = 1 channel**。同一channelに複数orchを立てない
@@ -16,6 +85,7 @@ description: orchとしてtopicのプロジェクト進捗管理・worker指揮�
 
 ## 起動フロー
 
+0. **§0 不変責務 を thinking で読み上げる**: 起動直後に本SKILL.md §0 不変責務を thinking 内で復唱する。役割境界・不可侵・自律判断・推進義務・議論裁定の境界・log規律 / 介入検知・「私が読むのは合算版 playbook」を毎セッション再確認する
 1. **queue走査**: `~/.cc-memory/ow/orch/queue-t<topic_id>.md` を走査する（auto-memory管理外のディレクトリ。パス変更は `OW_QUEUE_DIR` 環境変数で可能）。既存queueファイルがあれば再開候補として提示（crash引き継ぎ）。なければSessionStart注入のアクティビティ一覧からorch対象topicを選択（check-inスキルと同様のファジーマッチ可）
 2. **relay疎通確認**: `ow_status(channel_code, topic_id)` を呼ぶ。relayサーバーの自動起動・channel自動作成（idempotent）が内部で実行される。queueファイルのfrontmatterを確認し、channel_codeを記録する（初回起動時）
 3. **不在中メッセージ回収**: `ow_history(since=last_seen_msg_id)` で不在中メッセージをpullし処理する（初回起動時はskip）
@@ -283,9 +353,9 @@ orchは `ow_get_workload_state(channel, handle)` で現在のstateを参照し�
 
 **spawning（ready前）タイムアウト**: spawning は orch 側 queue の状態。worker が `event:identity` または `event:state(loading)` を送る前に timeout_min 経過した場合は、spawn失敗の可能性が高い（cwd不在・aliasぶつかり・relay疎通断等）。`ow_recover` で pending_spawn として検出される。
 
-## モデル選択
+## モデル選択 (プロトコル制約のみ)
 
-assignの `model` は必須。一般プレイブック `skills/orch/playbook.md` のモデル選択目安表に従って選択する。
+`command:assign` envelope では `model` が必須フィールド。値の選び方は合算版 playbook の §モデル選択 セクションに従う (一般版・特化版で上書きされうる)。
 
 ## 思考worker (effort指定) の spawn
 
@@ -313,14 +383,17 @@ assignの `model` は必須。一般プレイブック `skills/orch/playbook.md`
 
 ## プレイブック参照
 
-| | 一般版 | トピック特化版 |
-|---|---|---|
-| 内容 | モデル選択目安、タイムアウト・worker同時数既定値、エスカレーション基準、報告頻度等 | topicで蓄積した対応知識 |
-| 保存場所 | `skills/orch/playbook.md`（同梱・静的） | cc-memory material（タグ `playbook`+domain、related=topic） |
-| 更新 | プラグイン更新 | orchが新material+supersedes relationで版管理 |
-| 参照優先 | 特化版がない項目のみ | **特化版優先** |
+4層構造 (§1 情報の4層構造と合算版 参照) のうち、運用流儀層の2つ:
 
-orchは起動時に特化版最新を取得し、assignの `playbook` フィールドで関連抜粋をworkerに渡す。
+| | 一般版 (Layer 3) | トピック特化版 (Layer 4) |
+|---|---|---|
+| 内容 | モデル選択目安、タイムアウト・worker同時数既定値、エスカレーション基準、報告頻度、自律実行範囲、SA分担基準、trouble-shooting 等 | topicで蓄積した対応知識 (PR運用、ユビキタス言語、worktree場所等のリポ固有ハウスルール) |
+| 保存場所 | `skills/orch/playbook.md`（同梱・静的） | cc-memory material（タグ `playbook`+`domain:<>`、related=topic） |
+| 更新 | プラグイン更新 | orchが新material+supersedes relationで版管理 |
+| 章キー突合 | デフォルト章を提供 | 同名章があれば一般版を上書き |
+| 参照優先 | 特化版がない項目のみ適用 | **特化版優先 (同名章では特化版で一般版を上書き)** |
+
+orchは起動時に特化版最新を取得し、一般版と章名キーで突合して合算版を構築する (§1 自動マージ参照)。assign の `playbook` フィールドでは合算版から関連抜粋をworkerに渡す。
 
 ## identity 取得経路
 
@@ -407,10 +480,12 @@ Monitor recv.sh --me orch (persistent)
 
 `recv.sh` は `scripts/ow/recv.sh` にあり、1秒自動再接続付き。persistentモードでイベントドリブン待ち受けを行う。Monitorは手動起動のみ可能なため、スキル指示でClaude自身に起動させること。
 
-## 禁止事項
+## プロトコル制約 (補足)
 
-- 同一channelへの複数orch参加（混在channelは1 channel = 1 topic原則違反）
-- done/cancelled/failedに至っていないworkerの自動クローズ
-- failed設定および強制クローズの自律判断（人間判断が必要）
-- escalated状態workerへのwatchdog適用
-- cc-memory activityへのリアルタイム稼働状態の書き込み（queue=真実源）
+§0 不変責務 と §アーキテクチャ原則 で扱いきれない、プロトコルレイヤの制約をここに集約する:
+
+- escalated 状態workerへのwatchdog適用は禁止 (§watchdog 参照)
+- cc-memory activity へのリアルタイム稼働状態の書き込みは禁止 (queue が真実源、§アーキテクチャ原則 参照)
+- 同一channelへの複数orch参加は禁止 (1 channel = 1 topic 原則、§アーキテクチャ原則 参照)
+- done/cancelled/failed に至っていないworkerの自動クローズは禁止 (§0 不変責務 にも明記)
+- failed 設定および強制クローズの自律判断は禁止 (§0 不変責務 にも明記)

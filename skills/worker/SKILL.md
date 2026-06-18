@@ -358,3 +358,4 @@ orchから `kind:command, data.type:ping` が届いたら、現在の state を 
 - decisionを直接記録しない（エスカレーション例外を除く。原則decision_proposalsでorchに提案）
 - `event:state(terminated)` 送信後にツールを呼ばない
 - done送信後、closeを受けるまで新しい作業を始めない・cc-memoryへ追記しない（退場処理を除く）
+- **AskUserQuestion 禁止**: worker は人間に直接質問しない。質問は `event:state(blocked)` envelope で orch 経由。AskUserQuestion ツールは ow_spawn_worker の settings injection で deny されているが、明示的に守ること

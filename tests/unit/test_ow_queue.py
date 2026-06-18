@@ -660,6 +660,7 @@ class TestOwSpawnWorkerManualFallback:
         monkeypatch.setattr(ow_service, "ensure_channel", lambda c: True)
         monkeypatch.setattr(ow_service, "_get_presence", lambda c: [])
         monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
+        monkeypatch.setattr(ow_service, "_ensure_worker_askuser_deny", lambda c: None)
 
     def test_manual_fallback_when_ow_terminal_unset(self, tmp_path: Path, monkeypatch):
         """OW_TERMINAL未設定 → manual=True + commandキーを返す"""
@@ -667,7 +668,7 @@ class TestOwSpawnWorkerManualFallback:
         monkeypatch.delenv("OW_TERMINAL", raising=False)
 
         result = ow_service.ow_spawn_worker(
-            alias="w-a", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
+            alias="w-alpha01", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
             task_title="test", acceptance="done", topic_id="99", task_n=1,
         )
         assert result.get("manual") is True
@@ -681,7 +682,7 @@ class TestOwSpawnWorkerManualFallback:
         monkeypatch.setenv("OW_TERMINAL", "manual")
 
         result = ow_service.ow_spawn_worker(
-            alias="w-b", channel="ch2", cwd="/tmp", model="claude-opus-4-7",
+            alias="w-bravo01", channel="ch2", cwd="/tmp", model="claude-opus-4-7",
             task_title="manual", acceptance="ok", task_n=2,
         )
         assert result.get("manual") is True
@@ -703,7 +704,7 @@ class TestOwSpawnWorkerManualFallback:
         monkeypatch.delenv("OW_TERMINAL", raising=False)
 
         result = ow_service.ow_spawn_worker(
-            alias="w-a", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
+            alias="w-alpha01", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
             task_title="test", acceptance="done", topic_id="99", task_n=1,
         )
         assert result.get("manual") is True
@@ -760,7 +761,7 @@ class TestOwSpawnWorkerManualFallback:
         monkeypatch.delenv("OW_TERMINAL", raising=False)
 
         result = ow_service.ow_spawn_worker(
-            alias="w-a", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
+            alias="w-alpha01", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
             task_title="議論: relation循環依存解消",
             acceptance="done", topic_id="99", task_n=1,
         )
@@ -789,7 +790,7 @@ class TestOwSpawnWorkerManualFallback:
         monkeypatch.delenv("OW_TERMINAL", raising=False)
 
         result = ow_service.ow_spawn_worker(
-            alias="w-pp", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
+            alias="w-parpid", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
             task_title="parent_pid", acceptance="done", topic_id="99", task_n=1,
         )
         cmd = result["command"]
@@ -817,7 +818,7 @@ class TestOwSpawnWorkerManualFallback:
         )
 
         result = ow_service.ow_spawn_worker(
-            alias="w-a", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
+            alias="w-alpha01", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
             task_title="", acceptance="done", topic_id="99", task_n=1,
             activity_id=42,
         )
@@ -839,7 +840,7 @@ class TestOwSpawnWorkerManualFallback:
         monkeypatch.setattr(ow_service, "_resolve_activity_title", _should_not_be_called)
 
         result = ow_service.ow_spawn_worker(
-            alias="w-a", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
+            alias="w-alpha01", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
             task_title="明示タイトル", acceptance="done", topic_id="99", task_n=1,
             activity_id=42,
         )
@@ -872,6 +873,7 @@ class TestOwSpawnWorkerAdapter:
         monkeypatch.setattr(ow_service, "ensure_channel", lambda c: True)
         monkeypatch.setattr(ow_service, "_get_presence", lambda c: [])
         monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
+        monkeypatch.setattr(ow_service, "_ensure_worker_askuser_deny", lambda c: None)
 
     def test_adapter_returns_term_ref_from_stdout(self, tmp_path: Path, monkeypatch):
         """アダプタのstdoutをterm_refとして使用する"""
@@ -884,7 +886,7 @@ class TestOwSpawnWorkerAdapter:
         monkeypatch.setattr(ow_service, "_get_adapter_path", lambda t: adapter_script)
 
         result = ow_service.ow_spawn_worker(
-            alias="w-a", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
+            alias="w-alpha01", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
             task_title="test", acceptance="done", topic_id="99", task_n=1,
         )
         assert result.get("spawning") == "ok"
@@ -901,7 +903,7 @@ class TestOwSpawnWorkerAdapter:
         monkeypatch.setattr(ow_service, "_get_adapter_path", lambda t: adapter_script)
 
         result = ow_service.ow_spawn_worker(
-            alias="w-b", channel="ch2", cwd="/tmp", model="claude-opus-4-7",
+            alias="w-bravo01", channel="ch2", cwd="/tmp", model="claude-opus-4-7",
             task_title="test", acceptance="done", task_n=2,
         )
         assert result.get("spawning") == "ok"
@@ -918,7 +920,7 @@ class TestOwSpawnWorkerAdapter:
         monkeypatch.setattr(ow_service, "_get_adapter_path", lambda t: adapter_script)
 
         result = ow_service.ow_spawn_worker(
-            alias="w-c", channel="ch3", cwd="/tmp", model="claude-opus-4-7",
+            alias="w-charlie", channel="ch3", cwd="/tmp", model="claude-opus-4-7",
             task_title="test", acceptance="done", task_n=3,
         )
         assert result.get("manual") is True
@@ -946,7 +948,7 @@ class TestOwSpawnWorkerAdapter:
         monkeypatch.setattr(ow_service.subprocess, "run", capturing_run)
 
         result = ow_service.ow_spawn_worker(
-            alias="w-a", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
+            alias="w-alpha01", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
             task_title="test", acceptance="done", task_n=1,
             tmux_target_pane="%0",
         )
@@ -978,7 +980,7 @@ class TestOwSpawnWorkerAdapter:
         monkeypatch.setattr(ow_service.subprocess, "run", capturing_run)
 
         result = ow_service.ow_spawn_worker(
-            alias="w-b", channel="ch2", cwd="/tmp", model="claude-opus-4-7",
+            alias="w-bravo01", channel="ch2", cwd="/tmp", model="claude-opus-4-7",
             task_title="test", acceptance="done", task_n=2,
         )
         assert result.get("spawning") == "ok"
@@ -1007,7 +1009,7 @@ class TestOwSpawnWorkerAdapter:
         monkeypatch.setattr(ow_service.subprocess, "run", capturing_run)
 
         result = ow_service.ow_spawn_worker(
-            alias="w-c", channel="ch3", cwd="/tmp", model="claude-opus-4-7",
+            alias="w-charlie", channel="ch3", cwd="/tmp", model="claude-opus-4-7",
             task_title="test", acceptance="done", task_n=3,
             tmux_target_pane="%0",
         )
@@ -1027,6 +1029,7 @@ class TestOwSpawnWorkerEnsureChannel:
         monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
         monkeypatch.setattr(ow_service, "_get_presence", lambda c: [])
         monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
+        monkeypatch.setattr(ow_service, "_ensure_worker_askuser_deny", lambda c: None)
 
         called_channels = []
 
@@ -1037,7 +1040,7 @@ class TestOwSpawnWorkerEnsureChannel:
         monkeypatch.setattr(ow_service, "ensure_channel", fake_ensure_channel)
 
         result = ow_service.ow_spawn_worker(
-            alias="w-a", channel="TestCh01", cwd="/tmp", model="claude-opus-4-7",
+            alias="w-alpha01", channel="TestCh01", cwd="/tmp", model="claude-opus-4-7",
             task_title="test", acceptance="done", task_n=1,
         )
         assert called_channels == ["TestCh01"]
@@ -1054,9 +1057,10 @@ class TestOwSpawnWorkerEnsureChannel:
         monkeypatch.setattr(ow_service, "ensure_channel", lambda c: False)
         monkeypatch.setattr(ow_service, "_get_presence", lambda c: [])
         monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
+        monkeypatch.setattr(ow_service, "_ensure_worker_askuser_deny", lambda c: None)
 
         result = ow_service.ow_spawn_worker(
-            alias="w-a", channel="BadCh01", cwd="/tmp", model="claude-opus-4-7",
+            alias="w-alpha01", channel="BadCh01", cwd="/tmp", model="claude-opus-4-7",
             task_title="test", acceptance="done", task_n=1,
         )
         assert "error" in result
@@ -1399,13 +1403,14 @@ class TestOwSpawnWorkerModelValidation:
         monkeypatch.setattr(ow_service, "ensure_channel", lambda c: True)
         monkeypatch.setattr(ow_service, "_get_presence", lambda c: [])
         monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
+        monkeypatch.setattr(ow_service, "_ensure_worker_askuser_deny", lambda c: None)
         monkeypatch.delenv("OW_TERMINAL", raising=False)
 
     def test_haiku_returns_invalid_model_error(self, tmp_path: Path, monkeypatch):
         """haiku を指定すると INVALID_MODEL エラーが返り spawn しない"""
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         result = ow_service.ow_spawn_worker(
-            alias="w-a", channel="ch1", cwd="/tmp", model="haiku",
+            alias="w-alpha01", channel="ch1", cwd="/tmp", model="haiku",
             task_title="test", acceptance="done", task_n=1,
         )
         assert "error" in result
@@ -1415,7 +1420,7 @@ class TestOwSpawnWorkerModelValidation:
         """opus-4-8 を指定すると INVALID_MODEL エラーが返る"""
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         result = ow_service.ow_spawn_worker(
-            alias="w-a", channel="ch1", cwd="/tmp", model="claude-opus-4-8",
+            alias="w-alpha01", channel="ch1", cwd="/tmp", model="claude-opus-4-8",
             task_title="test", acceptance="done", task_n=1,
         )
         assert "error" in result
@@ -1425,7 +1430,7 @@ class TestOwSpawnWorkerModelValidation:
         """'sonnet' は拒否され INVALID_MODEL エラーが返る"""
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         result = ow_service.ow_spawn_worker(
-            alias="w-a", channel="ch1", cwd="/tmp", model="sonnet",
+            alias="w-alpha01", channel="ch1", cwd="/tmp", model="sonnet",
             task_title="test", acceptance="done", task_n=1,
         )
         assert "error" in result
@@ -1435,7 +1440,7 @@ class TestOwSpawnWorkerModelValidation:
         """'claude-sonnet-4-6' のフルIDも拒否される"""
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         result = ow_service.ow_spawn_worker(
-            alias="w-a", channel="ch1", cwd="/tmp", model="claude-sonnet-4-6",
+            alias="w-alpha01", channel="ch1", cwd="/tmp", model="claude-sonnet-4-6",
             task_title="test", acceptance="done", task_n=1,
         )
         assert "error" in result
@@ -1445,7 +1450,7 @@ class TestOwSpawnWorkerModelValidation:
         """'opus' 指定時、生成コマンドに 'claude-opus-4-7' に正規化される"""
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         result = ow_service.ow_spawn_worker(
-            alias="w-a", channel="ch1", cwd="/tmp", model="opus",
+            alias="w-alpha01", channel="ch1", cwd="/tmp", model="opus",
             task_title="test", acceptance="done", task_n=1,
         )
         assert result.get("manual") is True
@@ -1455,7 +1460,7 @@ class TestOwSpawnWorkerModelValidation:
         """'claude-haiku-4-5-20251001' のフルIDでも拒否される"""
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         result = ow_service.ow_spawn_worker(
-            alias="w-a", channel="ch1", cwd="/tmp", model="claude-haiku-4-5-20251001",
+            alias="w-alpha01", channel="ch1", cwd="/tmp", model="claude-haiku-4-5-20251001",
             task_title="test", acceptance="done", task_n=1,
         )
         assert "error" in result
@@ -1483,13 +1488,14 @@ class TestOwSpawnWorkerThinking:
             "_validate_spawn_preconditions",
             lambda *a, **kw: {"ok": True, "warnings": []},
         )
+        monkeypatch.setattr(ow_service, "_ensure_worker_askuser_deny", lambda c: None)
         monkeypatch.delenv("OW_TERMINAL", raising=False)
 
     def test_effort_default_none_no_marker(self, tmp_path: Path, monkeypatch):
         """effort 引数を渡さない（デフォルト None）と task_file 本文にマーカーが入らない"""
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         result = ow_service.ow_spawn_worker(
-            alias="w-a", channel="ch1", cwd="/tmp", model="opus",
+            alias="w-alpha01", channel="ch1", cwd="/tmp", model="opus",
             task_title="通常タスク", acceptance="done", task_n=1, topic_id="999",
         )
         assert result.get("manual") is True
@@ -1503,7 +1509,7 @@ class TestOwSpawnWorkerThinking:
         (D#2599, D#2600)。sentinel `ultratink` は混入させない"""
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         result = ow_service.ow_spawn_worker(
-            alias="w-th", channel="ch1", cwd="/tmp", model="opus",
+            alias="w-thinker", channel="ch1", cwd="/tmp", model="opus",
             task_title="思考タスク", acceptance="議論まとめ", task_n=1, topic_id="999",
             effort=effort,
         )
@@ -1520,7 +1526,7 @@ class TestOwSpawnWorkerThinking:
         """effort enum で spawn すると task_file frontmatter に effort: <値> が残る"""
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         result = ow_service.ow_spawn_worker(
-            alias="w-th", channel="ch1", cwd="/tmp", model="opus",
+            alias="w-thinker", channel="ch1", cwd="/tmp", model="opus",
             task_title="思考タスク", acceptance="done", task_n=2, topic_id="999",
             effort=effort,
         )
@@ -1533,7 +1539,7 @@ class TestOwSpawnWorkerThinking:
         """THINKING_EFFORTS に含まれない effort 値は INVALID_EFFORT エラーで拒否される"""
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         result = ow_service.ow_spawn_worker(
-            alias="w-th", channel="ch1", cwd="/tmp", model="opus",
+            alias="w-thinker", channel="ch1", cwd="/tmp", model="opus",
             task_title="思考タスク", acceptance="done", task_n=3, topic_id="999",
             effort="low",  # 未定義値
         )
@@ -1545,7 +1551,7 @@ class TestOwSpawnWorkerThinking:
         畳まれて受理される (D#2600)。orch セッションでの extended thinking 暴発回避用。"""
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         result = ow_service.ow_spawn_worker(
-            alias="w-th", channel="ch1", cwd="/tmp", model="opus",
+            alias="w-thinker", channel="ch1", cwd="/tmp", model="opus",
             task_title="思考タスク", acceptance="done", task_n=6, topic_id="999",
             effort="ultratink",  # sentinel
         )
@@ -1582,7 +1588,7 @@ class TestOwSpawnWorkerThinking:
         monkeypatch.setattr(ow_service.subprocess, "run", fake_run)
 
         result = ow_service.ow_spawn_worker(
-            alias="w-th", channel="ch1", cwd="/tmp", model="opus",
+            alias="w-thinker", channel="ch1", cwd="/tmp", model="opus",
             task_title="思考タスク", acceptance="done", task_n=4, topic_id="999",
             effort="ultrathink", tmux_target_pane="%0",
         )
@@ -1613,7 +1619,7 @@ class TestOwSpawnWorkerThinking:
         monkeypatch.setattr(ow_service.subprocess, "run", fake_run)
 
         result = ow_service.ow_spawn_worker(
-            alias="w-a", channel="ch1", cwd="/tmp", model="opus",
+            alias="w-alpha01", channel="ch1", cwd="/tmp", model="opus",
             task_title="通常タスク", acceptance="done", task_n=5, topic_id="999",
             tmux_target_pane="%0",  # effort未指定 = 通常worker
         )
