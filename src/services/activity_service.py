@@ -74,7 +74,7 @@ def _check_implement_workflow_guard(
 
     通過条件:
         - intent:implement を含まない、または
-        - related に type='decision' かつ ids が非空のエントリが1件以上ある
+        - related に type='decision' で実在する decision_id を1件以上含む
 
     Returns:
         通過時: None
@@ -83,12 +83,22 @@ def _check_implement_workflow_guard(
     if not _has_intent_implement(conn, parsed_tags):
         return None
 
-    has_decision_relate = any(
-        t.get("type") == "decision" and t.get("ids")
+    decision_ids = [
+        decision_id
         for t in (related or [])
-    )
-    if has_decision_relate:
-        return None
+        if t.get("type") == "decision"
+        for decision_id in (t.get("ids") or [])
+    ]
+    if decision_ids:
+        placeholders = ",".join("?" * len(decision_ids))
+        # retracted_at IS NULL: 取り消し済 decision はガード通過の根拠にしない
+        row = conn.execute(
+            f"SELECT COUNT(*) AS cnt FROM decisions "
+            f"WHERE id IN ({placeholders}) AND retracted_at IS NULL",
+            decision_ids,
+        ).fetchone()
+        if row["cnt"] > 0:
+            return None
 
     return {
         "error": {

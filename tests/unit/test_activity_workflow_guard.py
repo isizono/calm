@@ -1,39 +1,24 @@
 """add_activity の議論未経過バリデーション (IMPLEMENT_WORKFLOW_GUARD) のユニットテスト
 
 intent:implement を含む add_activity 呼び出しが related に decision タイプ直接
-1件以上を持たない場合に IMPLEMENT_WORKFLOW_GUARD で弾かれることを検証する。
-canonical_id を辿ったエイリアス intent タグの判定もカバーする。
-"""
-import os
-import tempfile
+1件以上（実在するdecision_id）を持たない場合に IMPLEMENT_WORKFLOW_GUARD で
+弾かれることを検証する。canonical_id を辿ったエイリアス intent タグの判定や、
+存在しない/取り消し済 decision_id によるバイパス試行のブロックもカバーする。
 
+temp_db / disable_embedding フィクスチャは tests/conftest.py で共有。
+"""
 import pytest
 
-import src.services.embedding_service as emb
-from src.db import init_database, get_connection
+from src.db import get_connection
 from src.services.activity_service import add_activity
 from src.services.topic_service import add_topic
+from src.services.retract_service import retract
 from tests.helpers import add_decision
 
 
 @pytest.fixture(autouse=True)
-def disable_embedding(monkeypatch):
-    """embeddingサービスを無効化する。判定はDBクエリだけで完結するためサーバー不要。"""
-    monkeypatch.setattr(emb, "_server_initialized", False)
-    monkeypatch.setattr(emb, "_backfill_done", True)
-    monkeypatch.setattr(emb, "_ensure_server_running", lambda: False)
-
-
-@pytest.fixture
-def temp_db():
-    """テスト用の一時的なデータベースを作成する"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
+def _auto_disable_embedding(disable_embedding):
+    """このファイル内の全テストでembedding服を無効化する"""
 
 
 @pytest.fixture
@@ -112,7 +97,7 @@ class TestImplementWorkflowGuard:
         assert result["error"]["code"] == "IMPLEMENT_WORKFLOW_GUARD"
 
     def test_implement_with_decision_passes(self, topic_with_decision):
-        """intent:implement + related に decision 1件 → 通過する"""
+        """intent:implement + related に decision 1件（実在ID）→ 通過する"""
         _, decision_id = topic_with_decision
         result = add_activity(
             title="Implement with agreement",
@@ -214,10 +199,46 @@ class TestImplementWorkflowGuard:
         assert "error" in result
         assert result["error"]["code"] == "IMPLEMENT_WORKFLOW_GUARD"
 
+    def test_nonexistent_decision_id_blocks(self, topic_with_decision):
+        """存在しない decision_id では通過させない（バイパス試行のブロック）"""
+        # 99999 のような未存在IDを並べてもガード通過しない。
+        # _validate_targets は構造のみ検証、relations テーブルは FK 制約を
+        # 持たないため、存在チェックをガード側で行う必要がある。
+        result = add_activity(
+            title="Bypass attempt with fake id",
+            description="Non-existent decision ID should not pass.",
+            tags=["domain:test", "intent:implement"],
+            related=[{"type": "decision", "ids": [99999]}],
+            check_in=False,
+        )
+        assert "error" in result
+        assert result["error"]["code"] == "IMPLEMENT_WORKFLOW_GUARD"
+
+    def test_retracted_decision_blocks(self, topic_with_decision):
+        """retract済 decision は通過の根拠にしない"""
+        _, decision_id = topic_with_decision
+        # 取り消し
+        retract_result = retract("decision", [decision_id])
+        assert "error" not in retract_result
+
+        result = add_activity(
+            title="Implement with retracted decision",
+            description="Retracted decisions should not pass the guard.",
+            tags=["domain:test", "intent:implement"],
+            related=[{"type": "decision", "ids": [decision_id]}],
+            check_in=False,
+        )
+        assert "error" in result
+        assert result["error"]["code"] == "IMPLEMENT_WORKFLOW_GUARD"
+
     def test_decision_with_empty_ids_blocks(self, topic_with_decision):
-        """related に decision タイプはあるが ids が空 → 弾かれる"""
-        # _validate_targets が空idsを許容するかは別問題。ここではガード側の判定を検証する。
-        # 直接 _check_implement_workflow_guard を呼んで確認する。
+        """related に decision タイプはあるが ids が空 → ガード単体で弾く
+
+        公開 API (add_activity) 経由だと _validate_targets が空idsを先に
+        VALIDATION_ERROR で弾くため、このシナリオは公開APIから直接は起きない。
+        ガード単体の仕様としての保証（直接呼び出しでも誤って通過しないこと）を
+        ここで明示する。
+        """
         from src.services.activity_service import _check_implement_workflow_guard
 
         conn = get_connection()

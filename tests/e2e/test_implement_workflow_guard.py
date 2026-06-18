@@ -3,35 +3,19 @@
 src.main の add_activity（@mcp.tool() で公開される実体）を呼び、
 intent:implement かつ related に decision を含まないケースが
 IMPLEMENT_WORKFLOW_GUARD で弾かれることを確認する。
-"""
-import os
-import tempfile
 
+temp_db / disable_embedding フィクスチャは tests/conftest.py で共有。
+"""
 import pytest
 
-import src.services.embedding_service as emb
-from src.db import init_database
 from src.main import add_activity as mcp_add_activity
 from src.services.topic_service import add_topic
 from tests.helpers import add_decision
 
 
 @pytest.fixture(autouse=True)
-def disable_embedding(monkeypatch):
-    monkeypatch.setattr(emb, "_server_initialized", False)
-    monkeypatch.setattr(emb, "_backfill_done", True)
-    monkeypatch.setattr(emb, "_ensure_server_running", lambda: False)
-
-
-@pytest.fixture
-def temp_db():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
+def _auto_disable_embedding(disable_embedding):
+    """このファイル内の全テストでembedding服を無効化する"""
 
 
 def test_mcp_add_activity_implement_without_decision_is_blocked(temp_db):
