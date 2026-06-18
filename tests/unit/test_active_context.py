@@ -18,6 +18,7 @@ from src.services.activity_service import (
     get_active_activities_by_tag,
 )
 import src.services.embedding_service as emb
+from tests.helpers import add_decision
 from hooks.session_start_hook import (
     _build_activities_section,
     _calc_elapsed_days,
@@ -468,9 +469,13 @@ def test_build_activities_section_scoring_instructions(temp_db):
 
 def test_build_activities_section_tags_in_metadata(temp_db):
     """メタデータ行にタグ情報が含まれる"""
+    topic = add_topic(title="t", description="d", tags=["domain:myapp"])
+    dec = add_decision(decision="d", reason="r", topic_id=topic["topic_id"])
     add_activity(
         title="[作業] Task", description="Desc",
-        tags=["domain:myapp", "intent:implement"], check_in=False,
+        tags=["domain:myapp", "intent:implement"],
+        related=[{"type": "decision", "ids": [dec["decision_id"]]}],
+        check_in=False,
     )
 
     result = _build_active_context_wrapper()

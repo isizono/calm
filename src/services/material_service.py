@@ -40,7 +40,10 @@ def add_material(title: str, content: str, tags: list[str], source: str, related
         content: 資材の本文
         tags: タグ配列（必須、1個以上）
         source: データの出自
-        related: 関連エンティティ [{"type": "topic", "ids": [1, 2]}, ...] (optional)
+        related: 関連エンティティ（optional）。
+            [{"type": "topic" | "activity" | "material" | "decision" | "log", "ids": [int, ...]}, ...] 形式。
+            複数エンティティを配列で同時紐付け可能。
+            例: [{"type": "activity", "ids": [123]}, {"type": "decision", "ids": [10]}]
 
     Returns:
         作成された資材情報

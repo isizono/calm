@@ -30,6 +30,74 @@ ACTIVE_STATUSES = ("in_progress", "pending")
 VALID_STATUSES = REAL_STATUSES | {"active"}
 
 
+IMPLEMENT_WORKFLOW_GUARD_MESSAGE = (
+    "This implement has no decision in its related entities.\n\n"
+    "Add a decision recording either:\n"
+    "- the agreement reached through discussion, or\n"
+    "- the reason for proceeding without design (e.g., \"typo-only\", \"hotfix\").\n\n"
+    "Then retry add_activity."
+)
+
+
+def _has_intent_implement(conn, parsed_tags: list[tuple[str, str]]) -> bool:
+    """parsed_tags が intent:implement を（aliasを辿った上で）含むかを返す。
+
+    既存タグの canonical_id を SELECT して、エイリアス越しに
+    intent:implement に解決されるかを判定する。
+    """
+    intent_tags = [(ns, name) for ns, name in parsed_tags if ns == "intent"]
+    if not intent_tags:
+        return False
+    if any(name == "implement" for _, name in intent_tags):
+        return True
+    placeholders = " OR ".join("(t.namespace = ? AND t.name = ?)" for _ in intent_tags)
+    flat = [v for pair in intent_tags for v in pair]
+    rows = conn.execute(
+        f"""
+        SELECT ct.namespace AS canonical_ns, ct.name AS canonical_name
+        FROM tags t
+        LEFT JOIN tags ct ON t.canonical_id = ct.id
+        WHERE {placeholders}
+        """,
+        flat,
+    ).fetchall()
+    return any(
+        row["canonical_ns"] == "intent" and row["canonical_name"] == "implement"
+        for row in rows
+    )
+
+
+def _check_implement_workflow_guard(
+    conn, parsed_tags: list[tuple[str, str]], related: list[dict] | None
+) -> dict | None:
+    """intent:implement アクティビティに decision の direct relate を要求する。
+
+    通過条件:
+        - intent:implement を含まない、または
+        - related に type='decision' かつ ids が非空のエントリが1件以上ある
+
+    Returns:
+        通過時: None
+        ブロック時: {"error": {"code": "IMPLEMENT_WORKFLOW_GUARD", "message": ...}}
+    """
+    if not _has_intent_implement(conn, parsed_tags):
+        return None
+
+    has_decision_relate = any(
+        t.get("type") == "decision" and t.get("ids")
+        for t in (related or [])
+    )
+    if has_decision_relate:
+        return None
+
+    return {
+        "error": {
+            "code": "IMPLEMENT_WORKFLOW_GUARD",
+            "message": IMPLEMENT_WORKFLOW_GUARD_MESSAGE,
+        }
+    }
+
+
 def add_activity(
     title: str,
     description: str,
@@ -44,7 +112,12 @@ def add_activity(
         title: アクティビティのタイトル
         description: アクティビティの説明
         tags: タグ配列（必須、1個以上）
-        related: 関連エンティティ [{"type": "topic", "ids": [1, 2]}, ...] (optional)
+        related: 関連エンティティ（optional）。
+            [{"type": "topic" | "activity" | "material" | "decision" | "log", "ids": [int, ...]}, ...] 形式。
+            複数エンティティを配列で同時紐付け可能。
+            例: [{"type": "topic", "ids": [1, 2]}, {"type": "decision", "ids": [10]}]
+            intent:implement タグを含む場合、related に type='decision' のエントリを
+            最低1件含めないと IMPLEMENT_WORKFLOW_GUARD エラーで弾かれる。
         check_in: 作成後にcheck_inを実行するか（デフォルト: True）
 
     Returns:
@@ -63,6 +136,11 @@ def add_activity(
 
     conn = get_connection()
     try:
+        # Workflow guard: intent:implement アクティビティは related に decision を必須とする
+        guard_err = _check_implement_workflow_guard(conn, parsed_tags, related)
+        if guard_err:
+            return guard_err
+
         # アクティビティをINSERT
         cursor = conn.execute(
             "INSERT INTO activities (title, description, status) VALUES (?, ?, ?)",
