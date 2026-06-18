@@ -2095,6 +2095,55 @@ def ow_recover(
 
 
 # ----------------------------
+# identity bundle ヘルパー: term_ref（端末・セッション安定 ID）
+# ----------------------------
+#
+# term_ref は worker セッションが住む物理単位（tmux pane / iTerm2 session 等）の安定 ID。
+# event:identity.data.term_ref として worker 自身が宣言する（scripts/ow/get_term_ref.sh
+# が取得元）。reducer（ow_get_identity / ow_list_identities）は dict(data) で透過的に
+# 保持するため、reducer 側に追加ロジックは不要。本ヘルパーは「観測値の形式分類」と
+# 「妥当性判定」を提供する純関数で、診断・ow_recover 用途に利用する。
+#
+# 認める形式:
+#   - tmux:    "%N"                  例: "%5", "%123"     (tmux pane_id 規約)
+#   - iterm2:  RFC4122 UUID 表記      例: "12345678-1234-...-123456789ABC"
+#   - manual:  "manual:host:pid"      例: "manual:mac-mini:12345"
+#
+# 段階① のスコープ:
+#   - reducer が term_ref を破棄しないことを担保するテストを追加（test_ow_reducer）
+#   - is_valid_term_ref() / classify_term_ref() を診断ヘルパーとして提供
+#
+# 段階②③（relay-side ow_recover での term_ref キー再リンク等）は D#2608 によりスコープ外。
+
+_TERM_REF_PATTERNS: dict[str, "re.Pattern[str]"] = {
+    "tmux": re.compile(r"^%\d+$"),
+    "iterm2": re.compile(
+        r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
+    ),
+    "manual": re.compile(r"^manual:[^:\s]+:\d+$"),
+}
+
+
+def classify_term_ref(value: object) -> str | None:
+    """term_ref 値の形式を分類して種別名（"tmux"/"iterm2"/"manual"）を返す。
+
+    値が文字列でない、空文字、未知形式のいずれかなら None を返す。
+    形式チェックは _TERM_REF_PATTERNS の辞書順（tmux→iterm2→manual）で先勝ち。
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    for name, pattern in _TERM_REF_PATTERNS.items():
+        if pattern.match(value):
+            return name
+    return None
+
+
+def is_valid_term_ref(value: object) -> bool:
+    """term_ref 値が認められた形式のいずれかに合致するかを判定する。"""
+    return classify_term_ref(value) is not None
+
+
+# ----------------------------
 # reducer: v3 event sourcing
 # ----------------------------
 
@@ -2279,6 +2328,10 @@ def ow_get_identity(channel: str, handle: str) -> dict | None:
                escalated/draining）かつ最後の event:heartbeat 受信時刻から閾値超過 →
                メモリ上で inferred_cause を付与（DB 不変）。
 
+    term_ref 透過保持: event:identity.data に term_ref が含まれていれば dict(data) で
+                      そのまま戻り値に乗る（reducer 側の加工なし）。形式判定が必要なら
+                      is_valid_term_ref() / classify_term_ref() を別途呼び出す。
+
     Returns:
         dict | None: identity bundle ＋ {msg_id, identity_at, inferred_cause?}
     """
@@ -2313,6 +2366,9 @@ def ow_list_identities(channel: str, alive_only: bool = False) -> list[dict]:
     - 加えて、ow_get_identity と同様の crash 推論（state が non-terminal + heartbeat 途絶）
       で inferred_cause が付与される entry も除外する
     handle フィールドが欠落した event は集約キーが None になるためスキップする。
+
+    term_ref 透過保持: ow_get_identity と同様、entry = dict(data) により term_ref も
+                      そのまま保持される。
     """
     history = ow_history(channel, since=0, limit=10000)
     if "error" in history:

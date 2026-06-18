@@ -288,6 +288,34 @@ class TestOwGetIdentity:
         assert result is not None
         assert result.get("inferred_cause") == "crashed (inferred)"
 
+    @pytest.mark.parametrize(
+        "term_ref_value",
+        [
+            "%5",  # tmux pane_id
+            "12345678-1234-1234-1234-123456789ABC",  # iterm2 UUID
+            "manual:mac-mini:12345",  # manual fallback
+        ],
+    )
+    def test_term_ref_round_trip(self, monkeypatch, term_ref_value):
+        """段階①: event:identity の term_ref が ow_get_identity 戻り値にそのまま乗る。
+
+        reducer は dict(data) で透過保持する。tmux %N / iterm2 UUID / manual いずれの
+        形式でも値は加工せず保存される。
+        """
+        msgs = [
+            _make_msg(
+                1, "w-h",
+                _event_body("identity", {"alias": "worker-1", "term_ref": term_ref_value}),
+                "2026-06-14T10:00:00+00:00",
+            ),
+        ]
+        self._setup_history(monkeypatch, msgs)
+        result = ow_service.ow_get_identity("ch", "w-h")
+        assert result is not None
+        assert result.get("term_ref") == term_ref_value
+        # validator が呼び出し側で利用できることを担保（reducer 自体は加工しない）。
+        assert ow_service.is_valid_term_ref(term_ref_value) is True
+
 
 # ----------------------------
 # TestOwListIdentities
@@ -329,6 +357,81 @@ class TestOwListIdentities:
         result = ow_service.ow_list_identities("ch", alive_only=True)
         assert len(result) == 1
         assert result[0]["alias"] == "worker-a"
+
+    def test_term_ref_preserved_per_handle(self, monkeypatch):
+        """段階①: 複数 handle の identity に term_ref が個別に乗る。
+
+        ow_list_identities は handle 単位で最新 identity を集約するが、各 entry の
+        term_ref は元 event のものをそのまま保持し、混線しない。
+        """
+        msgs = [
+            _make_msg(
+                1, "w-a",
+                _event_body("identity", {"alias": "worker-a", "term_ref": "%5"}, handle="w-a"),
+            ),
+            _make_msg(
+                2, "w-b",
+                _event_body(
+                    "identity",
+                    {
+                        "alias": "worker-b",
+                        "term_ref": "12345678-1234-1234-1234-123456789ABC",
+                    },
+                    handle="w-b",
+                ),
+            ),
+        ]
+        monkeypatch.setattr(ow_service, "ow_history", lambda *a, **kw: _make_history(msgs))
+        result = ow_service.ow_list_identities("ch")
+        by_handle = {e["alias"]: e for e in result}
+        assert by_handle["worker-a"]["term_ref"] == "%5"
+        assert by_handle["worker-b"]["term_ref"] == "12345678-1234-1234-1234-123456789ABC"
+
+
+# ----------------------------
+# TestTermRefValidation
+# ----------------------------
+
+
+class TestTermRefValidation:
+    """段階① identity bundle ヘルパー: is_valid_term_ref / classify_term_ref のテスト。"""
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("%0", "tmux"),
+            ("%5", "tmux"),
+            ("%123", "tmux"),
+            ("12345678-1234-1234-1234-123456789ABC", "iterm2"),
+            ("abcdef01-2345-6789-abcd-ef0123456789", "iterm2"),
+            ("manual:mac-mini:12345", "manual"),
+            ("manual:host-with-dash:1", "manual"),
+        ],
+    )
+    def test_classify_valid_formats(self, value, expected):
+        """tmux %N / iterm2 UUID / manual:host:pid を正しく分類する。"""
+        assert ow_service.classify_term_ref(value) == expected
+        assert ow_service.is_valid_term_ref(value) is True
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            None,
+            "",
+            "abc",  # 未知形式
+            "%",  # tmux pattern に %N の数字部が無い
+            "%abc",  # tmux pattern は数字のみ
+            "12345678-1234-1234-1234",  # UUID truncated
+            "12345678-1234-1234-1234-123456789ABCDEF",  # UUID 末尾過多
+            "manual:host:abc",  # pid が数字でない
+            "manual::123",  # host 部が空
+            123,  # 非文字列
+        ],
+    )
+    def test_invalid_formats_return_none_and_false(self, value):
+        """未知形式・None・空文字・非文字列は classify=None / is_valid=False。"""
+        assert ow_service.classify_term_ref(value) is None
+        assert ow_service.is_valid_term_ref(value) is False
 
 
 # ----------------------------
