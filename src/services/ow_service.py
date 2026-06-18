@@ -957,6 +957,29 @@ def _get_adapter_path(terminal: str) -> Path | None:
     return None
 
 
+def _resolve_activity_title(activity_id: int) -> str:
+    """activities.id → title を返す。見つからない/エラー時は空文字。
+
+    spawn時にtask_title未指定でもactivity_idがあればAPI呼び出しを増やさずタイトルを引ける。
+    DBアクセス失敗はspawn全体を止めない（best-effort）。
+    """
+    try:
+        from src.db import get_connection
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT title FROM activities WHERE id = ?", (activity_id,)
+            ).fetchone()
+        finally:
+            conn.close()
+        if row and row[0]:
+            return str(row[0])
+    except Exception as e:
+        logger.warning("activity title lookup failed for id=%s: %s", activity_id, e)
+    return ""
+
+
 def ow_spawn_worker(
     alias: str,
     channel: str,
@@ -1039,6 +1062,13 @@ def ow_spawn_worker(
             },
         }
 
+    # task_title未指定 かつ activity_id指定時は activities.title を自動解決する。
+    # 呼び出し側（orch等）に task_title を毎回詰めさせず、activity名と一貫させる。
+    # この task_title は task file frontmatter / ファイル名スラッグ / worker_cmd の
+    # --name（セッション表示名）すべてに伝播する。
+    if not task_title and activity_id is not None:
+        task_title = _resolve_activity_title(activity_id)
+
     # spawn前ヘルスチェック (relay疎通・channel存在・cwd存在・alias重複)
     preflight = _validate_spawn_preconditions(alias, channel, cwd, topic_id=topic_id, task_n=task_n)
     if not preflight["ok"]:
@@ -1099,14 +1129,20 @@ def ow_spawn_worker(
     terminal = os.environ.get("OW_TERMINAL", "manual")
     adapter_path = _get_adapter_path(terminal) if terminal != "manual" else None
 
-    # --add-dir は variadic option (`<directories...>`) のため、続く positional prompt まで
-    # ディレクトリ引数として食ってしまう。`--` で variadic を打ち切って prompt を positional
-    # として確実に届ける。
+    # --add-dir は commander.js の variadic option (`<directories...>`) で、空白区切り形式
+    # (`--add-dir DIR PROMPT`) だと続く positional prompt を dir として吸収する。
+    # `=` 形式 (`--add-dir=DIR`) は単一値として確定的にパースされ、複数指定は
+    # `--add-dir=DIR1 --add-dir=DIR2` の append 形で渡せる。後続 prompt の吸収リスクが
+    # 構造的に発生しないため、`--` separator なしで positional が確実に届く。
+    # --name はセッション表示名（プロンプトボックス・/resume picker・端末タイトル）。
+    # workerはtask_titleをActivity名としてそのまま渡し、orch側で見分けやすくする。
+    session_name = task_title or alias
     worker_cmd = (
         f'env OW_ROLE=worker OW_ALIAS={shlex.quote(alias)} OW_CHANNEL={shlex.quote(channel)} '
         f'OW_TASK_FILE={shlex.quote(str(task_file))} '
         f'claude --model {shlex.quote(model)} --permission-mode auto '
-        f'--add-dir {shlex.quote(str(task_file.parent))} -- '
+        f'--name {shlex.quote(session_name)} '
+        f'--add-dir={shlex.quote(str(task_file.parent))} '
         f'{shlex.quote(f"workerスキルに従って作業を開始して。task: {task_file}")}'
     )
 

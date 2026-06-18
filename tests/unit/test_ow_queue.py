@@ -1,5 +1,7 @@
 """queueファイルのパース/シリアライズのユニットテスト"""
 import json
+import re
+import shlex
 from pathlib import Path
 
 import pytest
@@ -665,8 +667,18 @@ class TestOwSpawnWorkerManualFallback:
         assert result.get("manual") is True
         assert "command" in result
 
-    def test_worker_cmd_includes_add_dir_for_task_file_dir(self, tmp_path: Path, monkeypatch):
-        """worker起動コマンドにtask_fileディレクトリへの--add-dirが含まれる（CWD外task fileの許可プロンプト抑制）"""
+    def test_worker_cmd_add_dir_uses_equals_form_and_does_not_absorb_prompt(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """worker起動コマンドの --add-dir が `=` 形式で、後続 positional prompt が独立して届く。
+
+        claude CLI の `--add-dir <directories...>` は commander.js variadic option で、
+        空白区切り `--add-dir DIR PROMPT` 形式は PROMPT を追加 dir として吸収する
+        (PR#374で `--` separator対応も入れたが、より明示的な `=` 形式に統一)。
+
+        修正前: `--add-dir DIR -- PROMPT` (--で区切るが variadic の挙動次第)
+        修正後: `--add-dir=DIR PROMPT` (= で単一値確定、`--` 不要)
+        """
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         monkeypatch.delenv("OW_TERMINAL", raising=False)
 
@@ -677,7 +689,127 @@ class TestOwSpawnWorkerManualFallback:
         assert result.get("manual") is True
         cmd = result["command"]
         expected_task_dir = str(tmp_path / "tasks")
-        assert f"--add-dir {expected_task_dir}" in cmd
+
+        # `=` 形式で含まれる
+        assert f"--add-dir={expected_task_dir}" in cmd, (
+            f"--add-dir should use equals form, got: {cmd}"
+        )
+
+        # 空白区切り形式 (`--add-dir DIR`) は含まれない (variadic 吸収を構造的に避ける)
+        assert f"--add-dir {expected_task_dir}" not in cmd, (
+            f"--add-dir should NOT use space-separated form (variadic absorbs prompt), got: {cmd}"
+        )
+
+        # tokenize して claude argv を取り出し、`--add-dir=DIR` が1トークンに収まり、
+        # prompt token が直後に独立して並んでいることを検証する。
+        # `claude` 文字列が env 値や --name 値として偶発的に現れる可能性があるため、
+        # 「先頭から env コマンド/VAR=VAL トークンを読み飛ばした直後の token を実行ファイル」
+        # と特定する。
+        tokens = shlex.split(cmd)
+        env_token_re = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+        claude_idx = 0
+        if tokens and tokens[0] == "env":
+            claude_idx = 1
+        while claude_idx < len(tokens) and env_token_re.match(tokens[claude_idx]):
+            claude_idx += 1
+        assert (
+            claude_idx < len(tokens) and tokens[claude_idx] == "claude"
+        ), f"expected 'claude' executable after env prefix, got tokens={tokens}"
+        claude_args = tokens[claude_idx + 1 :]
+
+        add_dir_token = f"--add-dir={expected_task_dir}"
+        assert add_dir_token in claude_args, (
+            f"expected single token {add_dir_token!r} in claude_args, got: {claude_args}"
+        )
+        add_dir_idx = claude_args.index(add_dir_token)
+
+        # add-dir の後続に prompt が独立トークンとして存在する (吸収されていない)
+        after_add_dir = claude_args[add_dir_idx + 1 :]
+        prompt_marker = "workerスキルに従って作業を開始して。"
+        assert any(
+            prompt_marker in tok for tok in after_add_dir
+        ), f"prompt token not found after --add-dir=, claude_args={claude_args}"
+
+    def test_worker_cmd_includes_name_from_task_title(self, tmp_path: Path, monkeypatch):
+        """worker起動コマンドにtask_titleが--nameで渡される（セッション表示名）"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        monkeypatch.delenv("OW_TERMINAL", raising=False)
+
+        result = ow_service.ow_spawn_worker(
+            alias="w-a", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
+            task_title="議論: relation循環依存解消",
+            acceptance="done", topic_id="99", task_n=1,
+        )
+        cmd = result["command"]
+        assert "--name '議論: relation循環依存解消'" in cmd
+
+    def test_worker_cmd_name_falls_back_to_alias_when_title_empty(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """task_titleが空のとき--nameはaliasにフォールバックする"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        monkeypatch.delenv("OW_TERMINAL", raising=False)
+
+        result = ow_service.ow_spawn_worker(
+            alias="w-fallback", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
+            task_title="", acceptance="done", topic_id="99", task_n=1,
+        )
+        cmd = result["command"]
+        assert "--name w-fallback" in cmd
+
+    def test_task_title_auto_resolved_from_activity_id(self, tmp_path: Path, monkeypatch):
+        """task_title未指定 かつ activity_id指定時、activities.title が --name に乗る"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        monkeypatch.delenv("OW_TERMINAL", raising=False)
+        monkeypatch.setattr(
+            ow_service, "_resolve_activity_title", lambda aid: "解決された Activity 名"
+        )
+
+        result = ow_service.ow_spawn_worker(
+            alias="w-a", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
+            task_title="", acceptance="done", topic_id="99", task_n=1,
+            activity_id=42,
+        )
+        cmd = result["command"]
+        assert "--name '解決された Activity 名'" in cmd
+
+    def test_explicit_task_title_overrides_activity_lookup(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """task_title明示指定時はactivity_idがあってもDB lookupせず明示値を使う"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        monkeypatch.delenv("OW_TERMINAL", raising=False)
+
+        def _should_not_be_called(aid):
+            raise AssertionError(
+                f"_resolve_activity_title called with id={aid} despite explicit task_title"
+            )
+
+        monkeypatch.setattr(ow_service, "_resolve_activity_title", _should_not_be_called)
+
+        result = ow_service.ow_spawn_worker(
+            alias="w-a", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
+            task_title="明示タイトル", acceptance="done", topic_id="99", task_n=1,
+            activity_id=42,
+        )
+        cmd = result["command"]
+        assert "--name '明示タイトル'" in cmd
+
+    def test_task_title_remains_empty_when_activity_lookup_fails(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """activity lookupが空文字を返したとき task_title は空のまま → --name は alias"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        monkeypatch.delenv("OW_TERMINAL", raising=False)
+        monkeypatch.setattr(ow_service, "_resolve_activity_title", lambda aid: "")
+
+        result = ow_service.ow_spawn_worker(
+            alias="w-fallback", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
+            task_title="", acceptance="done", topic_id="99", task_n=1,
+            activity_id=999,
+        )
+        cmd = result["command"]
+        assert "--name w-fallback" in cmd
 
 
 class TestOwSpawnWorkerAdapter:
