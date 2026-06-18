@@ -331,11 +331,13 @@ class TestServerDisconnected:
 class TestMainRetryLoop:
     """main()のリトライループの動作検証"""
 
-    def _setup_main(self, monkeypatch, bridge_side_effects):
+    def _setup_main(self, monkeypatch, bridge_side_effects, max_retries=3):
         """main()テスト用の共通セットアップ
 
         bridge_side_effectsにはasyncio.run(_bridge())の戻り値/例外のリストを渡す。
+        max_retries で MAX_RETRIES を明示的に上書きする（None で無限）。
         """
+        monkeypatch.setattr(launcher, "MAX_RETRIES", max_retries)
         monkeypatch.setattr(launcher, "_IS_LOCAL", True)
         monkeypatch.setattr(launcher, "_cleanup_done", False)
         monkeypatch.setattr(launcher, "_ensure_server_running", lambda: True)
@@ -435,6 +437,7 @@ class TestMainRetryLoop:
         def counting_cleanup():
             cleanup_count["calls"] += 1
 
+        monkeypatch.setattr(launcher, "MAX_RETRIES", 3)
         monkeypatch.setattr(launcher, "_IS_LOCAL", True)
         monkeypatch.setattr(launcher, "_cleanup_done", False)
         monkeypatch.setattr(launcher, "_cleanup", counting_cleanup)
@@ -449,3 +452,90 @@ class TestMainRetryLoop:
         monkeypatch.setattr(launcher.asyncio, "run", fake_asyncio_run)
         launcher.main()
         assert cleanup_count["calls"] == 1
+
+    def test_backoff_capped_at_60_seconds(self, monkeypatch):
+        """backoff は BACKOFF_CAP_SEC (60秒) で頭打ちになる"""
+        sleep_values = []
+
+        def tracking_sleep(seconds):
+            sleep_values.append(seconds)
+
+        # attempt 0..7 で失敗させる（max_retries=8 で 8 回 sleep が発生）
+        # 期待: 2, 4, 8, 16, 32, 60, 60, 60
+        self._setup_main(
+            monkeypatch,
+            [launcher.ServerDisconnected("lost")] * 9,
+            max_retries=8,
+        )
+        monkeypatch.setattr(launcher.time, "sleep", tracking_sleep)
+        launcher.main()
+        assert sleep_values == [2, 4, 8, 16, 32, 60, 60, 60]
+
+    def test_infinite_retries_stops_on_success(self, monkeypatch):
+        """MAX_RETRIES=None (無限) のとき、成功するまでリトライし続けて終了する"""
+        # 5 回失敗 → 6 回目で成功
+        call_count = self._setup_main(
+            monkeypatch,
+            [launcher.ServerDisconnected("lost")] * 5 + [None],
+            max_retries=None,
+        )
+        launcher.main()
+        assert call_count["bridge"] == 6
+
+
+class TestReadMaxRetries:
+    """_read_max_retries() のテスト"""
+
+    def test_returns_none_when_env_unset(self, monkeypatch):
+        """env 未設定時は None（無限）を返す"""
+        monkeypatch.delenv("CC_MEMORY_LAUNCHER_MAX_RETRIES", raising=False)
+        assert launcher._read_max_retries() is None
+
+    def test_returns_none_when_env_empty(self, monkeypatch):
+        """env が空文字列のときは None を返す"""
+        monkeypatch.setenv("CC_MEMORY_LAUNCHER_MAX_RETRIES", "")
+        assert launcher._read_max_retries() is None
+
+    def test_returns_int_when_env_valid(self, monkeypatch):
+        """env が有効な数値のときはその値を返す"""
+        monkeypatch.setenv("CC_MEMORY_LAUNCHER_MAX_RETRIES", "5")
+        assert launcher._read_max_retries() == 5
+
+    def test_returns_zero_when_env_zero(self, monkeypatch):
+        """env が 0 のときは 0 を返す（リトライしないという有効値）"""
+        monkeypatch.setenv("CC_MEMORY_LAUNCHER_MAX_RETRIES", "0")
+        assert launcher._read_max_retries() == 0
+
+    def test_returns_none_on_invalid_string(self, monkeypatch):
+        """env が数値に変換できない文字列のときは None にフォールバック"""
+        monkeypatch.setenv("CC_MEMORY_LAUNCHER_MAX_RETRIES", "abc")
+        assert launcher._read_max_retries() is None
+
+    def test_returns_none_on_negative(self, monkeypatch):
+        """env が負値のときは None にフォールバック"""
+        monkeypatch.setenv("CC_MEMORY_LAUNCHER_MAX_RETRIES", "-1")
+        assert launcher._read_max_retries() is None
+
+
+class TestBackoffCap:
+    def test_backoff_cap_constant(self):
+        """BACKOFF_CAP_SEC が 60 秒に設定されている"""
+        assert launcher.BACKOFF_CAP_SEC == 60
+
+
+class TestMaxRetriesDefault:
+    def test_default_is_none_when_env_unset(self, monkeypatch):
+        """env 未設定でモジュールを再読み込みすると MAX_RETRIES は None"""
+        import importlib
+
+        monkeypatch.delenv("CC_MEMORY_LAUNCHER_MAX_RETRIES", raising=False)
+        importlib.reload(launcher)
+        assert launcher.MAX_RETRIES is None
+
+    def test_override_via_env(self, monkeypatch):
+        """env で数値指定するとモジュール再読み込みで MAX_RETRIES がその値になる"""
+        import importlib
+
+        monkeypatch.setenv("CC_MEMORY_LAUNCHER_MAX_RETRIES", "7")
+        importlib.reload(launcher)
+        assert launcher.MAX_RETRIES == 7

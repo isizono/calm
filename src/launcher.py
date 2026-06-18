@@ -7,6 +7,7 @@ stdinからのJSON-RPCメッセージをStreamable HTTP経由で転送する。
 """
 import asyncio
 import atexit
+import itertools
 import json
 import logging
 import os
@@ -20,8 +21,38 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# リトライ設定
-MAX_RETRIES = 3
+
+def _read_max_retries() -> int | None:
+    """env `CC_MEMORY_LAUNCHER_MAX_RETRIES` からリトライ上限を読む。
+
+    未設定・無効値・負値の場合は None（無限リトライ）を返す。
+    D#2485 に基づき、HTTPサーバー復旧待ち継続のためデフォルトは無限。
+    """
+    raw = os.environ.get("CC_MEMORY_LAUNCHER_MAX_RETRIES")
+    if raw is None or raw == "":
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid CC_MEMORY_LAUNCHER_MAX_RETRIES=%r, falling back to infinite", raw
+        )
+        return None
+    if value < 0:
+        logger.warning(
+            "CC_MEMORY_LAUNCHER_MAX_RETRIES must be >= 0, got %d, falling back to infinite",
+            value,
+        )
+        return None
+    return value
+
+
+# リトライ設定（None = 無限。D#2485）
+MAX_RETRIES: int | None = _read_max_retries()
+
+# backoff 上限（秒）。指数的に伸びる sleep を一定でキャップし、
+# 長時間のHTTPサーバー復旧待ちでもリトライ間隔を上限内に抑える。
+BACKOFF_CAP_SEC = 60
 
 
 class ServerDisconnected(Exception):
@@ -285,8 +316,8 @@ async def _bridge() -> None:
 def main() -> None:
     """ランチャーのメインエントリーポイント
 
-    サーバー側切断時は自動でリトライする（最大MAX_RETRIES回）。
-    stdin EOF（Claude Code終了）時は即座に終了する。
+    サーバー側切断時は自動でリトライする。MAX_RETRIES が None なら無限、
+    数値指定なら最大 MAX_RETRIES 回。stdin EOF（Claude Code終了）時は即座に終了する。
     """
     # ログ設定（stderrへ出力、stdoutはMCPプロトコル用）
     logging.basicConfig(
@@ -302,7 +333,10 @@ def main() -> None:
     else:
         logger.info("Remote mode: connecting to %s", MCP_ENDPOINT)
 
-    for attempt in range(MAX_RETRIES + 1):
+    max_retries = MAX_RETRIES
+    retries_label = "inf" if max_retries is None else str(max_retries)
+
+    for attempt in itertools.count():
         # 1. HTTPサーバーの起動確認（ローカルのみ。リモートはOAuth等の制約があるためスキップ）
         if _IS_LOCAL and not _ensure_server_running():
             logger.error("Failed to ensure HTTP server is running")
@@ -322,13 +356,13 @@ def main() -> None:
         except Exception as e:
             # anyioのExceptionGroupによりServerDisconnectedが直接キャッチできない
             # ケースがあるため、例外の種類を問わず統一的にリトライする
-            if attempt >= MAX_RETRIES:
-                logger.error("Bridge failed, max retries (%d) exceeded: %s", MAX_RETRIES, e)
+            if max_retries is not None and attempt >= max_retries:
+                logger.error("Bridge failed, max retries (%d) exceeded: %s", max_retries, e)
                 break
-            backoff = 2 ** (attempt + 1)  # 2秒, 4秒, 8秒
+            backoff = min(2 ** (attempt + 1), BACKOFF_CAP_SEC)
             logger.warning(
-                "Bridge failed (%s), retrying in %ds (%d/%d)",
-                e, backoff, attempt + 1, MAX_RETRIES,
+                "Bridge failed (%s), retrying in %ds (%d/%s)",
+                e, backoff, attempt + 1, retries_label,
             )
             time.sleep(backoff)
 
