@@ -24,6 +24,7 @@ from src.services.activity_service import (
 )
 from src.services.habit_service import get_active_habit_contents_with_conn
 from src.services.tag_service import get_entity_tags_batch
+from src.services.topic_service import get_activity_topics_batch
 from scripts.snapshot import health_check, should_take_snapshot, take_snapshot
 from hooks.hook_transcript import _ORCH_MANAGED_TAG, _is_worker_session
 
@@ -123,17 +124,36 @@ _SCORING_INSTRUCTIONS = """\
 - 鮮度が高い（最近更新） → やや加点（更新頻度が高いものは継続中の作業）
 """
 
+# topic別グルーピングで関連topicを持たないアクティビティの見出し
+_TOPICLESS_GROUP_LABEL = "その他"
+
+
+def _shorten_topic_title(title: str) -> str:
+    """topic見出しは「 — 」(em dash) 以降を除去した短縮版を使う (D#2466)。"""
+    if " — " in title:
+        return title.split(" — ", 1)[0].strip()
+    return title
+
 
 def _build_activities_section(conn) -> str:
-    """スコアリング用にアクティビティ一覧とメタデータを組み立てる。
+    """アクティビティ一覧を組み立てる。
 
-    heartbeat中は別セクション表示。非heartbeatは番号付きフラットリストで出力し、
-    AIスコアリング指示を末尾に追加する。
+    - heartbeat 中のアクティビティは「## 作業中（別セッション）」セクションで提示（D#2466 据え置き）
+    - それ以外は topic 別グルーピング (D#2464-2466)
+      - 各アクティビティは関連 topic_id 最小を primary topic として 1 グループに配置
+      - 関連 topic 無しは「その他」セクション
+      - topic 見出しは em-dash 以降を除去した短縮版
+      - 24h 以内に作成されたアクティビティはタイトル末尾に 🆕 マーカーをインライン付与
+      - 番号はグループ通しで連番
+      - グループ内の並び順は in_progress を先頭にし、その中で updated_at 降順
+        （旧フラット表示の rank 基準を踏襲。domain タグ反復順への暗黙依存を排除）
+    - 末尾にスコアリング指示を付与
 
-    worker セッション（OW_ROLE=worker）では一覧注入自体を抑制する。
+    worker セッション（OW_ROLE=worker）はメインセッション作業文脈なので注入しない (D#2662)。
     通常セッションでは orch-managed タグ付きアクティビティを除外する。
     """
-    # worker セッションはアクティビティ一覧を注入しない
+    # P0-8 (D#2662): worker は担当 activity に閉じて動く設計のため、
+    # メインセッション作業文脈であるアクティビティ一覧は注入しない。
     if _is_worker_session():
         return ""
 
@@ -182,20 +202,8 @@ def _build_activities_section(conn) -> str:
     unresolved_deps = _get_unresolved_deps(conn, all_ids)
     descriptions = _get_descriptions(conn, all_ids)
     created_ats = _get_created_ats(conn, all_ids)
-
-    # normal_activitiesを「直近作成(24h以内)」と「それ以外」に分割
-    recent_activities: list[dict] = []
-    rest_activities: list[dict] = []
-    for a in normal_activities:
-        created_at_str = created_ats.get(a["id"], "")
-        if created_at_str and _is_recent_created(created_at_str):
-            recent_activities.append(a)
-        else:
-            rest_activities.append(a)
-    # 直近作成セクションはcreated_at降順（新しい順）で並べる
-    recent_activities.sort(
-        key=lambda a: created_ats.get(a["id"], ""), reverse=True
-    )
+    # D#2465: relations_view から activity → topic を1クエリでバッチ取得
+    activity_topics = get_activity_topics_batch(conn, all_ids)
 
     def _render_activity_meta(aid: int, days: int) -> list[str]:
         meta_parts = [f"updated: {days}d ago"]
@@ -213,7 +221,7 @@ def _build_activities_section(conn) -> str:
 
     parts = ["# アクティビティ一覧", ""]
 
-    # heartbeat中は別セクション
+    # heartbeat 中は別セクション（D#2466 据え置き）
     if heartbeat_activities:
         parts.append("## 作業中（別セッション）")
         for a in heartbeat_activities:
@@ -221,34 +229,66 @@ def _build_activities_section(conn) -> str:
             parts.append(f"- [{a['id']}] {a['title']} ({days}d)")
         parts.append("")
 
-    # 直近作成（24h以内）: スコアリング対象の上に独立セクションとして配置
-    if recent_activities:
-        parts.append("## \U0001f195 直近作成（24h以内）")
-        for idx, a in enumerate(recent_activities, 1):
-            aid = a["id"]
-            days = _calc_elapsed_days(a["updated_at"])
-            status_mark = "●" if a["status"] == "in_progress" else "○"
-            line = f"{idx}. {status_mark} [{aid}] {a['title']}"
-            meta_parts = _render_activity_meta(aid, days)
-            parts.append(line)
-            parts.append(f"   {' | '.join(meta_parts)}")
-        parts.append("")
+    if normal_activities:
+        # topic別グルーピング: 各アクティビティは関連 topic_id 最小を primary topic として
+        # 1 グループに配置する。複数 topic 関連でも重複表示しない（番号通し維持のため）。
+        # topicなしは _TOPICLESS_GROUP_LABEL に集約。
+        # primary_topic_id (None=topicless) -> {"title": str, "activities": list[dict]}
+        groups: dict[int | None, dict] = {}
+        for a in normal_activities:
+            topics = activity_topics.get(a["id"], [])
+            if topics:
+                primary = topics[0]  # get_activity_topics_batch は topic_id 昇順
+                primary_id: int | None = primary["id"]
+                primary_title = _shorten_topic_title(primary["title"])
+            else:
+                primary_id = None
+                primary_title = _TOPICLESS_GROUP_LABEL
+            group = groups.setdefault(
+                primary_id, {"title": primary_title, "activities": []}
+            )
+            group["activities"].append(a)
 
-    # 非heartbeat: 番号付きフラットリスト（直近作成に該当したものは除外）
-    if rest_activities:
-        parts.append("## スコアリング対象")
-        for idx, a in enumerate(rest_activities, 1):
-            aid = a["id"]
-            days = _calc_elapsed_days(a["updated_at"])
-            status_mark = "●" if a["status"] == "in_progress" else "○"
-            line = f"{idx}. {status_mark} [{aid}] {a['title']}"
-            meta_parts = _render_activity_meta(aid, days)
-            parts.append(line)
-            parts.append(f"   {' | '.join(meta_parts)}")
+        # 見出しは topic_id 昇順で安定化、topicless は最後尾
+        topic_ids_sorted: list[int | None] = sorted(
+            tid for tid in groups.keys() if tid is not None
+        )
+        if None in groups:
+            topic_ids_sorted.append(None)
 
-        total = len(rest_activities)
-        parts.append(f"\n全{total}件")
+        # グループ内ソート: in_progress 優先、updated_at 降順（決定的）。
+        # get_active_activities_by_tag_with_conn は同順で返すが、複数 domain を
+        # 横断するこの関数では domain 反復順に依存して順序がブレるため、ここで
+        # 最終形を再確定する。updated_at は ISO8601 文字列なので、安定ソートを
+        # 利用して updated_at 降順 → status 優先の 2 段階で並べる。
+        idx_counter = 1
+        for tid in topic_ids_sorted:
+            group = groups[tid]
+            group["activities"].sort(key=lambda a: a["updated_at"], reverse=True)
+            group["activities"].sort(
+                key=lambda a: 0 if a["status"] == "in_progress" else 1
+            )
+            parts.append(f"## {group['title']}")
+            for a in group["activities"]:
+                aid = a["id"]
+                days = _calc_elapsed_days(a["updated_at"])
+                status_mark = "●" if a["status"] == "in_progress" else "○"
+                created_at_str = created_ats.get(aid, "")
+                # 24h以内作成は 🆕 をインラインで付与 (D#2466)
+                new_marker = (
+                    " \U0001f195"
+                    if created_at_str and _is_recent_created(created_at_str)
+                    else ""
+                )
+                line = f"{idx_counter}. {status_mark} [{aid}] {a['title']}{new_marker}"
+                meta_parts = _render_activity_meta(aid, days)
+                parts.append(line)
+                parts.append(f"   {' | '.join(meta_parts)}")
+                idx_counter += 1
+            parts.append("")
 
+        total = sum(len(g["activities"]) for g in groups.values())
+        parts.append(f"全{total}件")
         parts.append("")
         parts.append(_SCORING_INSTRUCTIONS)
 
