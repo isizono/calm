@@ -24,7 +24,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TypedDict
+from typing import Any, TypedDict
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +37,8 @@ class OwState(TypedDict):
     schema_version: int
     channel: str
     last_msg_id: int
-    workers: dict[str, dict]
-    identities: dict[str, dict]
+    workers: dict[str, Any]
+    identities: dict[str, Any]
     presence: list[str]
     updated_at: str
 
@@ -77,7 +77,11 @@ def load_state(topic_id: int, channel: str | None = None) -> OwState | None:
     try:
         with path.open("r", encoding="utf-8") as f:
             data = json.load(f)
-    except json.JSONDecodeError:
+    except FileNotFoundError:
+        # exists() 後 open() 前に別プロセスが削除した競合 (TOCTOU)。
+        # 不存在扱いで None を返し、ファイル削除は行わない。
+        return None
+    except (json.JSONDecodeError, OSError):
         logger.warning("ow state cache corruption at %s, deleting", path)
         path.unlink(missing_ok=True)
         return None
@@ -126,6 +130,11 @@ def save_state(topic_id: int, state: OwState) -> None:
         ordered["updated_at"] = datetime.now(timezone.utc).isoformat()
 
     tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(ordered, f, ensure_ascii=False, indent=2)
-    tmp.replace(path)
+    try:
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(ordered, f, ensure_ascii=False, indent=2)
+        tmp.replace(path)
+    finally:
+        # json.dump TypeError や tmp.replace OSError で例外が出た場合に
+        # .tmp ファイルが残らないようにする (成功時は replace 済みで既に存在しない)。
+        tmp.unlink(missing_ok=True)

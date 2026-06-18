@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -187,6 +188,86 @@ class TestFallbackChannelMismatch:
 
         assert result is not None
         assert result["channel"] == "P_whatever"
+
+
+class TestLoadStateRaceConditions:
+    """TOCTOU 競合 (path.exists() 後の削除) と OSError 系の取り扱い."""
+
+    def test_load_returns_none_when_file_deleted_between_exists_and_open(
+        self, _isolated_state_dir: Path
+    ) -> None:
+        """exists() True 後 open() 前に別プロセスが削除した競合では None を返す.
+
+        FileNotFoundError は corruption 扱いではないので、ファイル削除 (missing_ok) も
+        warning ログも出さずに静かに None を返す。
+        """
+        # exists() が True を返すよう実ファイルを置く
+        path = _isolated_state_dir / "topic-454.json"
+        path.write_text(
+            json.dumps({"schema_version": CURRENT_SCHEMA_VERSION}), encoding="utf-8"
+        )
+
+        original_open = Path.open
+
+        def open_then_raise(self: Path, *args: object, **kwargs: object) -> object:
+            # 最初の open 呼び出しで FileNotFoundError を投げる (TOCTOU シミュレート)
+            if self == path:
+                raise FileNotFoundError(2, "No such file or directory", str(self))
+            return original_open(self, *args, **kwargs)  # type: ignore[arg-type]
+
+        with patch.object(Path, "open", open_then_raise):
+            result = load_state(topic_id=454)
+
+        assert result is None
+
+    def test_load_handles_oserror_during_open(self, _isolated_state_dir: Path) -> None:
+        """open() が PermissionError 等の OSError を投げた場合は corruption 扱いで削除して None を返す."""
+        path = _isolated_state_dir / "topic-454.json"
+        path.write_text(
+            json.dumps({"schema_version": CURRENT_SCHEMA_VERSION}), encoding="utf-8"
+        )
+
+        original_open = Path.open
+
+        def open_then_raise(self: Path, *args: object, **kwargs: object) -> object:
+            if self == path:
+                raise PermissionError(13, "Permission denied", str(self))
+            return original_open(self, *args, **kwargs)  # type: ignore[arg-type]
+
+        with patch.object(Path, "open", open_then_raise):
+            result = load_state(topic_id=454)
+
+        assert result is None
+        # OSError 経路は corruption と同じ扱いでファイル削除されている
+        assert not path.exists()
+
+
+class TestSaveStateTmpFileCleanup:
+    """save_state で json.dump / tmp.replace が失敗しても .tmp が残らない."""
+
+    def test_save_removes_tmp_when_json_dump_raises_typeerror(
+        self, _isolated_state_dir: Path
+    ) -> None:
+        """JSON 非対応型 (set など) を含む state で json.dump が TypeError → .tmp 削除済み."""
+        # set は JSON 非対応 → json.dump で TypeError
+        bad_state: dict = {
+            "schema_version": CURRENT_SCHEMA_VERSION,
+            "channel": "P_bad",
+            "last_msg_id": 0,
+            "workers": {"w-a": {"tags": {"x", "y"}}},  # set is not JSON serializable
+            "identities": {},
+            "presence": [],
+            "updated_at": "2026-06-18T11:00:00+00:00",
+        }
+
+        with pytest.raises(TypeError):
+            save_state(topic_id=454, state=bad_state)  # type: ignore[arg-type]
+
+        # .tmp ファイルが残っていない
+        tmp_path = _isolated_state_dir / "topic-454.json.tmp"
+        assert not tmp_path.exists()
+        # 本ファイルも作られていない (replace まで到達していない)
+        assert not (_isolated_state_dir / "topic-454.json").exists()
 
 
 class TestOwStateDirOverride:
