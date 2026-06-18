@@ -728,9 +728,13 @@ class TestOwSpawnWorkerManualFallback:
         tokens = shlex.split(cmd)
         env_token_re = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
         claude_idx = 0
-        if tokens and tokens[0] == "env":
-            claude_idx = 1
+        # 先頭の `env` コマンドまたは `exec` キーワード（PID 継承用）を skip
+        while claude_idx < len(tokens) and tokens[claude_idx] in ("env", "exec"):
+            claude_idx += 1
         while claude_idx < len(tokens) and env_token_re.match(tokens[claude_idx]):
+            claude_idx += 1
+        # inline VAR=VAL の後の `exec` も skip
+        while claude_idx < len(tokens) and tokens[claude_idx] == "exec":
             claude_idx += 1
         assert (
             claude_idx < len(tokens) and tokens[claude_idx] == "claude"
@@ -776,6 +780,33 @@ class TestOwSpawnWorkerManualFallback:
         )
         cmd = result["command"]
         assert "--name w-fallback" in cmd
+
+    def test_worker_cmd_injects_parent_pid_and_exec(self, tmp_path: Path, monkeypatch):
+        """worker起動コマンドが OW_PARENT_PID=$$ を inline 設定し exec claude で
+        shell PID を claude PID に継承させる。worker SKILL.md 依存ゼロで
+        recv.sh / heartbeat.sh の親監視 (OW_PARENT_PID env) を成立させる。"""
+        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        monkeypatch.delenv("OW_TERMINAL", raising=False)
+
+        result = ow_service.ow_spawn_worker(
+            alias="w-pp", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
+            task_title="parent_pid", acceptance="done", topic_id="99", task_n=1,
+        )
+        cmd = result["command"]
+        # inline で OW_PARENT_PID=$$ を持つ ($$ はevaluate時にshell PIDに展開される)
+        assert "OW_PARENT_PID=$$" in cmd, (
+            f"OW_PARENT_PID=$$ inline assignment missing from worker_cmd: {cmd}"
+        )
+        # exec claude で shell が claude に置き換わる (PID 継承)
+        assert "exec claude" in cmd, (
+            f"exec claude missing from worker_cmd (needed for PID inheritance): {cmd}"
+        )
+        # OW_PARENT_PID は claude より先に書かれている (env として claude に渡る)
+        pid_pos = cmd.index("OW_PARENT_PID=$$")
+        claude_pos = cmd.index("exec claude")
+        assert pid_pos < claude_pos, (
+            f"OW_PARENT_PID must precede 'exec claude': pid_pos={pid_pos}, claude_pos={claude_pos}"
+        )
 
     def test_task_title_auto_resolved_from_activity_id(self, tmp_path: Path, monkeypatch):
         """task_title未指定 かつ activity_id指定時、activities.title が --name に乗る"""

@@ -1137,10 +1137,16 @@ def ow_spawn_worker(
     # --name はセッション表示名（プロンプトボックス・/resume picker・端末タイトル）。
     # workerはtask_titleをActivity名としてそのまま渡し、orch側で見分けやすくする。
     session_name = task_title or alias
+    # OW_PARENT_PID=$$ + exec claude で「shell PID → claude PID」の継承を行い、
+    # claude プロセスに OW_PARENT_PID 環境変数として自身の PID を埋め込む。
+    # claude の子（Bash tool / Monitor で起動される recv.sh / heartbeat.sh）はこの env を
+    # 継承するため、claude 本体死亡時に watchdog が自動 exit する。
+    # worker SKILL.md 依存ゼロ（A案 + ow_service spawn 経路で完結）。
     worker_cmd = (
-        f'env OW_ROLE=worker OW_ALIAS={shlex.quote(alias)} OW_CHANNEL={shlex.quote(channel)} '
+        f'OW_PARENT_PID=$$ '
+        f'OW_ROLE=worker OW_ALIAS={shlex.quote(alias)} OW_CHANNEL={shlex.quote(channel)} '
         f'OW_TASK_FILE={shlex.quote(str(task_file))} '
-        f'claude --model {shlex.quote(model)} --permission-mode auto '
+        f'exec claude --model {shlex.quote(model)} --permission-mode auto '
         f'--name {shlex.quote(session_name)} '
         f'--add-dir={shlex.quote(str(task_file.parent))} '
         f'{shlex.quote(f"workerスキルに従って作業を開始して。task: {task_file}")}'
