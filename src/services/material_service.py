@@ -1,6 +1,7 @@
 """資材管理サービス"""
 import logging
 import sqlite3
+from typing import Literal
 
 from src.db import get_connection, row_to_dict
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
@@ -167,22 +168,29 @@ def get_materials_by_relation_with_conn(conn, activity_id: int) -> list[dict]:
     ]
 
 
+CONTENT_JOIN_SEPARATOR = "\n\n"
+
+
 def update_material(
     material_id: int,
     content: str | None = None,
     title: str | None = None,
     tags: list[str] | None = None,
     source: str | None = None,
+    mode: Literal["overwrite", "prepend", "append"] = "overwrite",
 ) -> dict:
     """
     Update an existing material's content, title, and/or tags.
 
     Args:
         material_id: ID of the material to update
-        content: New content (full replace, optional)
+        content: New content (optional)
         title: New title (optional)
         tags: New tags (full replace, optional. At least 1 required when specified)
         source: New source (optional)
+        mode: content指定時の結合動作。"overwrite"=既定で上書き、"prepend"=新+区切り+既存、
+              "append"=既存+区切り+新。区切りは "\n\n"。既存contentが空文字列の場合はoverwrite相当。
+              contentが未指定（None）の場合はmodeは無視される。
 
     Returns:
         Updated material info
@@ -192,6 +200,15 @@ def update_material(
             "error": {
                 "code": "VALIDATION_ERROR",
                 "message": "At least one of content, title, tags, or source must be provided",
+            }
+        }
+
+    # modeのバリデーション（content指定時のみ。content=Noneならmodeは無視されるため）
+    if content is not None and mode not in ("overwrite", "prepend", "append"):
+        return {
+            "error": {
+                "code": "VALIDATION_ERROR",
+                "message": f"mode must be one of 'overwrite', 'prepend', 'append', got {mode!r}",
             }
         }
 
@@ -240,6 +257,17 @@ def update_material(
                 }
             }
 
+        # content の値を mode に応じて結合する
+        effective_content = content
+        if content is not None and mode != "overwrite":
+            existing_content = row["content"] or ""
+            if existing_content == "":
+                effective_content = content
+            elif mode == "prepend":
+                effective_content = content + CONTENT_JOIN_SEPARATOR + existing_content
+            else:  # append
+                effective_content = existing_content + CONTENT_JOIN_SEPARATOR + content
+
         # Build dynamic SQL for title/content
         set_parts = []
         values = []
@@ -250,7 +278,7 @@ def update_material(
 
         if content is not None:
             set_parts.append("content = ?")
-            values.append(content)
+            values.append(effective_content)
 
         if source is not None:
             set_parts.append("source = ?")

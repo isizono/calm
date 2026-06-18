@@ -286,3 +286,195 @@ class TestHeartbeatShLoopControl:
             if m.get("body", {}).get("data", {}).get("phase") == "ready"
         ]
         assert len(ready_msgs) >= 1
+
+
+class TestHeartbeatShParentWatchdog:
+    """A案: OW_PARENT_PID 監視で親プロセス死亡時に自動 exit する"""
+
+    def test_exits_when_parent_dies(self, mock_relay, tmp_phase_file):
+        """OW_PARENT_PID で指定された親 PID が消えたら loop が終了する"""
+        server, relay_url = mock_relay
+        tmp_phase_file.write_text("ready")
+
+        # ダミー親 process を sleep で起動
+        parent = subprocess.Popen(["sleep", "30"])
+        parent_pid = parent.pid
+
+        env = {
+            **os.environ,
+            "RELAY_URL": relay_url,
+            "PHASE_FILE": str(tmp_phase_file),
+            "HEARTBEAT_INTERVAL_LOADING": "0",
+            "HEARTBEAT_INTERVAL_DEFAULT": "0",
+            "OW_PARENT_PID": str(parent_pid),
+        }
+
+        proc = subprocess.Popen(
+            ["bash", str(SCRIPT_PATH), "CH_PW", "w-pw"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        # 1件届くまで待つ
+        deadline = time.time() + 2.0
+        while not server.received and time.time() < deadline:
+            time.sleep(0.05)
+
+        assert len(server.received) >= 1, "親生存中にheartbeatが届いていない"
+
+        # ダミー親を kill → heartbeat.sh が次の周期で自動 exit するはず
+        parent.kill()
+        parent.wait()
+
+        try:
+            proc.wait(timeout=3)
+            exited = True
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+            proc.wait()
+            exited = False
+
+        assert exited, "親プロセス死亡後に heartbeat.sh が exit しなかった"
+
+    def test_no_parent_pid_does_not_block(self, mock_relay, tmp_phase_file):
+        """OW_PARENT_PID 未指定なら従来通り動く（後方互換）"""
+        server, relay_url = mock_relay
+        tmp_phase_file.write_text("loading")
+
+        env = {
+            **os.environ,
+            "RELAY_URL": relay_url,
+            "PHASE_FILE": str(tmp_phase_file),
+            "HEARTBEAT_INTERVAL_LOADING": "0",
+            "HEARTBEAT_INTERVAL_DEFAULT": "0",
+        }
+        # OW_PARENT_PID を意図的に削除（あれば）
+        env.pop("OW_PARENT_PID", None)
+
+        proc = subprocess.Popen(
+            ["bash", str(SCRIPT_PATH), "CH_NP", "w-np"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        deadline = time.time() + 2.0
+        while not server.received and time.time() < deadline:
+            time.sleep(0.05)
+
+        tmp_phase_file.unlink()
+        proc.wait(timeout=3)
+
+        assert len(server.received) >= 1, "OW_PARENT_PID 未指定時にheartbeatが届かなかった"
+
+
+class TestHeartbeatShTrap:
+    """B案: trap EXIT で PHASE_FILE が自動掃除される"""
+
+    def test_phase_file_removed_on_sigterm(self, mock_relay, tmp_path):
+        """SIGTERM 受信で PHASE_FILE が削除される（trap cleanup）"""
+        server, relay_url = mock_relay
+        phase_file = tmp_path / "ow_hb_phase_trap_test"
+        phase_file.write_text("ready")
+
+        env = {
+            **os.environ,
+            "RELAY_URL": relay_url,
+            "PHASE_FILE": str(phase_file),
+            "HEARTBEAT_INTERVAL_LOADING": "0",
+            "HEARTBEAT_INTERVAL_DEFAULT": "0",
+        }
+
+        proc = subprocess.Popen(
+            ["bash", str(SCRIPT_PATH), "CH_TRAP", "w-trap"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        # 1件届くまで待つ
+        deadline = time.time() + 2.0
+        while not server.received and time.time() < deadline:
+            time.sleep(0.05)
+
+        assert phase_file.exists(), "起動直後に PHASE_FILE が消えている"
+
+        # SIGTERM → trap cleanup が走るはず
+        proc.terminate()
+        proc.wait(timeout=3)
+
+        assert not phase_file.exists(), "trap EXIT で PHASE_FILE が削除されなかった"
+
+
+class TestHeartbeatShCurlTimeout:
+    """C案: curl --max-time でhang時に sleep に進める"""
+
+    def test_curl_timeout_does_not_block_loop(self, tmp_phase_file):
+        """relay が応答を遅延しても curl が --max-time で打ち切られ次の heartbeat が届く"""
+        # 意図的に応答を遅延させる mock relay。並列受信のため ThreadingHTTPServer を使う
+        # (シングルスレッドだと do_POST 内の sleep が次のリクエストを block する)。
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        class _SlowRelayHandler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", 0))
+                _body = self.rfile.read(length)
+                self.server.received.append(time.time())
+                # 5秒hangさせる（curlのmax-timeでcutされるはず）
+                time.sleep(5.0)
+                try:
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(b'{"msg_id": 1}')
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _SlowRelayHandler)
+        server.received = []
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+        relay_url = f"http://127.0.0.1:{port}"
+
+        tmp_phase_file.write_text("ready")
+        env = {
+            **os.environ,
+            "RELAY_URL": relay_url,
+            "PHASE_FILE": str(tmp_phase_file),
+            "HEARTBEAT_INTERVAL_LOADING": "0",
+            "HEARTBEAT_INTERVAL_DEFAULT": "0",
+            "OW_CURL_TIMEOUT": "1",  # 1秒で打ち切り
+            "OW_CURL_CONNECT_TIMEOUT": "1",
+        }
+
+        proc = subprocess.Popen(
+            ["bash", str(SCRIPT_PATH), "CH_SLOW", "w-slow"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        # 4秒待つ。timeout 1秒 + interval 0 で、4秒で 2件以上の curl 試行があるはず。
+        # （5秒hang が timeout で打ち切られ、次のループに進む）
+        time.sleep(4.0)
+
+        tmp_phase_file.unlink()
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+
+        server.shutdown()
+
+        # 5秒hang を timeout で打ち切らなかったら 1件しか試行できないはず。
+        # 2件以上 = curl timeout が機能している証拠。
+        assert len(server.received) >= 2, (
+            f"curl --max-time が機能していない (試行 {len(server.received)} 件、"
+            f"timeout 1s なら 4秒で 2件以上届くはず)"
+        )

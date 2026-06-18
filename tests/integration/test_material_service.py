@@ -2,7 +2,7 @@
 import os
 import tempfile
 import pytest
-from src.db import init_database
+from src.db import get_connection, init_database
 from src.services.activity_service import add_activity
 from src.services.material_service import add_material, get_material, update_material
 from src.services.search_service import get_by_id, get_by_ids
@@ -505,3 +505,170 @@ class TestUpdateMaterial:
 
         fetched = get_material(material_id)
         assert fetched["source"] == "テスト用データ"
+
+
+class TestUpdateMaterialMode:
+    """update_material の mode 引数 (overwrite/prepend/append) テスト"""
+
+    def _create_material(self, content: str = "Original content"):
+        return add_material(
+            title="Mode Test Material",
+            content=content,
+            tags=["domain:test"],
+            source="テスト用データ",
+        )
+
+    def test_mode_default_overwrites(self, temp_db):
+        """mode未指定の場合、contentは上書きされる（後方互換）"""
+        created = self._create_material()
+        material_id = created["material_id"]
+
+        result = update_material(material_id, content="brand new")
+        assert "error" not in result
+
+        fetched = get_material(material_id)
+        assert fetched["content"] == "brand new"
+
+    def test_mode_overwrite_explicit(self, temp_db):
+        """mode='overwrite'を明示指定した場合、contentは上書きされる"""
+        created = self._create_material()
+        material_id = created["material_id"]
+
+        result = update_material(material_id, content="explicit overwrite", mode="overwrite")
+        assert "error" not in result
+
+        fetched = get_material(material_id)
+        assert fetched["content"] == "explicit overwrite"
+
+    def test_mode_prepend_concatenates_new_then_existing(self, temp_db):
+        """mode='prepend'の場合、'新content\\n\\n既存content'の順で結合される"""
+        created = self._create_material(content="existing body")
+        material_id = created["material_id"]
+
+        result = update_material(material_id, content="new head", mode="prepend")
+        assert "error" not in result
+
+        fetched = get_material(material_id)
+        assert fetched["content"] == "new head\n\nexisting body"
+
+    def test_mode_append_concatenates_existing_then_new(self, temp_db):
+        """mode='append'の場合、'既存content\\n\\n新content'の順で結合される"""
+        created = self._create_material(content="existing body")
+        material_id = created["material_id"]
+
+        result = update_material(material_id, content="appended tail", mode="append")
+        assert "error" not in result
+
+        fetched = get_material(material_id)
+        assert fetched["content"] == "existing body\n\nappended tail"
+
+    def test_mode_invalid_returns_validation_error(self, temp_db):
+        """mode に invalid な値を指定した場合、VALIDATION_ERROR を返す"""
+        created = self._create_material()
+        material_id = created["material_id"]
+
+        result = update_material(material_id, content="x", mode="merge")  # type: ignore[arg-type]
+        assert "error" in result
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+        assert "mode" in result["error"]["message"]
+
+    def test_mode_prepend_with_empty_new_content_returns_validation_error(self, temp_db):
+        """mode='prepend' で新contentが空文字列の場合、VALIDATION_ERROR を返す（content空チェック）"""
+        created = self._create_material()
+        material_id = created["material_id"]
+
+        result = update_material(material_id, content="", mode="prepend")
+        assert "error" in result
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+        assert "content" in result["error"]["message"]
+
+    def test_mode_append_with_whitespace_new_content_returns_validation_error(self, temp_db):
+        """mode='append' で新contentが空白のみの場合、VALIDATION_ERROR を返す"""
+        created = self._create_material()
+        material_id = created["material_id"]
+
+        result = update_material(material_id, content="   ", mode="append")
+        assert "error" in result
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_mode_prepend_with_existing_empty_falls_back_to_overwrite(self, temp_db):
+        """既存contentが空文字列の場合、prependでも区切りを挟まずoverwrite相当の動作になる"""
+        created = self._create_material()
+        material_id = created["material_id"]
+
+        # 既存contentを空に書き換える（バリデーションを通常経路では通れないためDB直接操作）
+        conn = get_connection()
+        try:
+            conn.execute("UPDATE materials SET content = ? WHERE id = ?", ("", material_id))
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = update_material(material_id, content="only this", mode="prepend")
+        assert "error" not in result
+
+        fetched = get_material(material_id)
+        assert fetched["content"] == "only this"
+
+    def test_mode_append_with_existing_empty_falls_back_to_overwrite(self, temp_db):
+        """既存contentが空文字列の場合、appendでも区切りを挟まずoverwrite相当の動作になる"""
+        created = self._create_material()
+        material_id = created["material_id"]
+
+        conn = get_connection()
+        try:
+            conn.execute("UPDATE materials SET content = ? WHERE id = ?", ("", material_id))
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = update_material(material_id, content="only this", mode="append")
+        assert "error" not in result
+
+        fetched = get_material(material_id)
+        assert fetched["content"] == "only this"
+
+    def test_mode_ignored_when_content_not_specified(self, temp_db):
+        """contentを指定せずmodeのみ指定した場合、modeは無視されtitle更新は成功する"""
+        created = self._create_material()
+        material_id = created["material_id"]
+
+        result = update_material(material_id, title="New Title", mode="prepend")
+        assert "error" not in result
+
+        fetched = get_material(material_id)
+        assert fetched["title"] == "New Title"
+        assert fetched["content"] == "Original content"  # 既存contentは変わらない
+
+    def test_invalid_mode_ignored_when_content_not_specified(self, temp_db):
+        """contentを指定しない場合、modeが不正な値でもバリデーションは実行されず更新は成功する"""
+        created = self._create_material()
+        material_id = created["material_id"]
+
+        result = update_material(material_id, title="New Title", mode="invalid")
+        assert "error" not in result
+
+        fetched = get_material(material_id)
+        assert fetched["title"] == "New Title"
+        assert fetched["content"] == "Original content"
+
+    def test_invalid_mode_rejected_when_content_specified(self, temp_db):
+        """content指定時にmodeが不正な値の場合、VALIDATION_ERROR を返す"""
+        created = self._create_material()
+        material_id = created["material_id"]
+
+        result = update_material(material_id, content="new", mode="invalid")
+        assert "error" in result
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+        assert "mode" in result["error"]["message"]
+
+    def test_mode_prepend_multiline_preserves_structure(self, temp_db):
+        """mode='prepend'で改行を含むcontentを結合しても、区切り '\\n\\n' が間に正しく入る"""
+        created = self._create_material(content="line1\nline2")
+        material_id = created["material_id"]
+
+        result = update_material(material_id, content="head1\nhead2", mode="prepend")
+        assert "error" not in result
+
+        fetched = get_material(material_id)
+        assert fetched["content"] == "head1\nhead2\n\nline1\nline2"

@@ -41,6 +41,13 @@ case "$ACTION" in
     # cd側はダブルクォートでword splittingを抑止、worker_cmd側はevalでシェル構文として
     # 再パースさせる（shlex.quoteのリテラル引用符を正しく解釈させるため）。
     # evalに渡すソースはow_serviceが組み立てた信頼コマンド文字列のみ（base64で運搬）。
+    #
+    # 注: worker_cmd 内の `OW_PARENT_PID=$$` の `$$` は ow_service.py 側では
+    # クォートされた文字列としてそのまま運搬され、ここの `eval` 実行時に
+    # 「この bash プロセスの PID」へ展開される。直後の `exec claude ...` で
+    # claude プロセスはこの bash の PID を継承するため、`$$` の値は claude
+    # 本体の PID と一致する。これが recv.sh/heartbeat.sh の親監視 (OW_PARENT_PID)
+    # の基準 PID になる。
     CWD_B64=$(printf '%s' "$CWD" | base64 | tr -d '\n')
     CMD_B64=$(printf '%s' "$WORKER_CMD" | base64 | tr -d '\n')
     SHELL_CMD="cd \"\$(echo $CWD_B64 | base64 -d)\" && eval \"\$(echo $CMD_B64 | base64 -d)\""
