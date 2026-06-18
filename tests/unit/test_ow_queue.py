@@ -1,5 +1,7 @@
 """queueファイルのパース/シリアライズのユニットテスト"""
 import json
+import re
+import shlex
 from pathlib import Path
 
 import pytest
@@ -665,23 +667,10 @@ class TestOwSpawnWorkerManualFallback:
         assert result.get("manual") is True
         assert "command" in result
 
-    def test_worker_cmd_includes_add_dir_for_task_file_dir(self, tmp_path: Path, monkeypatch):
-        """worker起動コマンドにtask_fileディレクトリへの--add-dir=DIRが含まれる（CWD外task fileの許可プロンプト抑制）"""
-        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
-        monkeypatch.delenv("OW_TERMINAL", raising=False)
-
-        result = ow_service.ow_spawn_worker(
-            alias="w-a", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
-            task_title="test", acceptance="done", topic_id="99", task_n=1,
-        )
-        assert result.get("manual") is True
-        cmd = result["command"]
-        expected_task_dir = str(tmp_path / "tasks")
-        # `=` 形式で渡すことで commander.js variadic が後続 positional を吸わない
-        assert f"--add-dir={expected_task_dir}" in cmd
-
-    def test_worker_cmd_add_dir_does_not_absorb_prompt(self, tmp_path: Path, monkeypatch):
-        """--add-dir が `=` 形式で渡され、後続 positional prompt が claude CLI に独立して届く。
+    def test_worker_cmd_add_dir_uses_equals_form_and_does_not_absorb_prompt(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """worker起動コマンドの --add-dir が `=` 形式で、後続 positional prompt が独立して届く。
 
         claude CLI の `--add-dir <directories...>` は commander.js variadic option で、
         空白区切り `--add-dir DIR PROMPT` 形式は PROMPT を追加 dir として吸収する
@@ -690,8 +679,6 @@ class TestOwSpawnWorkerManualFallback:
         修正前: `--add-dir DIR -- PROMPT` (--で区切るが variadic の挙動次第)
         修正後: `--add-dir=DIR PROMPT` (= で単一値確定、`--` 不要)
         """
-        import shlex as _shlex
-
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         monkeypatch.delenv("OW_TERMINAL", raising=False)
 
@@ -699,6 +686,7 @@ class TestOwSpawnWorkerManualFallback:
             alias="w-a", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
             task_title="test", acceptance="done", topic_id="99", task_n=1,
         )
+        assert result.get("manual") is True
         cmd = result["command"]
         expected_task_dir = str(tmp_path / "tasks")
 
@@ -713,10 +701,21 @@ class TestOwSpawnWorkerManualFallback:
         )
 
         # tokenize して claude argv を取り出し、`--add-dir=DIR` が1トークンに収まり、
-        # prompt token が直後に独立して並んでいることを検証する
-        tokens = _shlex.split(cmd)
-        idx = tokens.index("claude")
-        claude_args = tokens[idx + 1 :]
+        # prompt token が直後に独立して並んでいることを検証する。
+        # `claude` 文字列が env 値や --name 値として偶発的に現れる可能性があるため、
+        # 「先頭から env コマンド/VAR=VAL トークンを読み飛ばした直後の token を実行ファイル」
+        # と特定する。
+        tokens = shlex.split(cmd)
+        env_token_re = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+        claude_idx = 0
+        if tokens and tokens[0] == "env":
+            claude_idx = 1
+        while claude_idx < len(tokens) and env_token_re.match(tokens[claude_idx]):
+            claude_idx += 1
+        assert (
+            claude_idx < len(tokens) and tokens[claude_idx] == "claude"
+        ), f"expected 'claude' executable after env prefix, got tokens={tokens}"
+        claude_args = tokens[claude_idx + 1 :]
 
         add_dir_token = f"--add-dir={expected_task_dir}"
         assert add_dir_token in claude_args, (
