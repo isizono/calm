@@ -790,7 +790,7 @@ class TestOwSpawnWorkerManualFallback:
         monkeypatch.delenv("OW_TERMINAL", raising=False)
 
         result = ow_service.ow_spawn_worker(
-            alias="w-pp", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
+            alias="w-parpid", channel="ch1", cwd="/tmp", model="claude-opus-4-7",
             task_title="parent_pid", acceptance="done", topic_id="99", task_n=1,
         )
         cmd = result["command"]
