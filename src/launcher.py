@@ -27,6 +27,9 @@ def _read_max_retries() -> int | None:
 
     未設定・無効値・負値の場合は None（無限リトライ）を返す。
     D#2485 に基づき、HTTPサーバー復旧待ち継続のためデフォルトは無限。
+
+    モジュールロード時にも呼ばれるため、警告は `logging.basicConfig` 未設定でも
+    意図通り stderr に出るよう `print` で直接出す。
     """
     raw = os.environ.get("CC_MEMORY_LAUNCHER_MAX_RETRIES")
     if raw is None or raw == "":
@@ -34,14 +37,17 @@ def _read_max_retries() -> int | None:
     try:
         value = int(raw)
     except ValueError:
-        logger.warning(
-            "Invalid CC_MEMORY_LAUNCHER_MAX_RETRIES=%r, falling back to infinite", raw
+        print(
+            f"[launcher] WARNING Invalid CC_MEMORY_LAUNCHER_MAX_RETRIES={raw!r}, "
+            "falling back to infinite",
+            file=sys.stderr,
         )
         return None
     if value < 0:
-        logger.warning(
-            "CC_MEMORY_LAUNCHER_MAX_RETRIES must be >= 0, got %d, falling back to infinite",
-            value,
+        print(
+            f"[launcher] WARNING CC_MEMORY_LAUNCHER_MAX_RETRIES must be >= 0, "
+            f"got {value}, falling back to infinite",
+            file=sys.stderr,
         )
         return None
     return value

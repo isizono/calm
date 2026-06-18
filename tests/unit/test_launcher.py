@@ -376,7 +376,7 @@ class TestMainRetryLoop:
         assert call_count["bridge"] == 2
 
     def test_max_retries_exceeded(self, monkeypatch):
-        """MAX_RETRIES回リトライしても失敗したら終了する"""
+        """MAX_RETRIES回リトライしても失敗したら終了する。max_retries=3 → 4 回呼ばれる"""
         call_count = self._setup_main(monkeypatch, [
             launcher.ServerDisconnected("lost"),  # attempt 0
             launcher.ServerDisconnected("lost"),  # attempt 1
@@ -384,7 +384,7 @@ class TestMainRetryLoop:
             launcher.ServerDisconnected("lost"),  # attempt 3 (max)
         ])
         launcher.main()
-        assert call_count["bridge"] == launcher.MAX_RETRIES + 1
+        assert call_count["bridge"] == 4  # max_retries=3 → 1 初回 + 3 リトライ
 
     def test_unexpected_exception_retries(self, monkeypatch):
         """予期しない例外でもリトライする"""
@@ -524,13 +524,23 @@ class TestBackoffCap:
 
 
 class TestMaxRetriesDefault:
+    """env による MAX_RETRIES のロードを importlib.reload で検証する。
+
+    `importlib.reload` の副作用（モジュールレベル変数の書き換え）はテスト終了後も
+    残るため、各テストの末尾で `MAX_RETRIES` を None に戻す（monkeypatch だけでは
+    モジュール属性の reload 結果は元に戻らない）。
+    """
+
     def test_default_is_none_when_env_unset(self, monkeypatch):
         """env 未設定でモジュールを再読み込みすると MAX_RETRIES は None"""
         import importlib
 
         monkeypatch.delenv("CC_MEMORY_LAUNCHER_MAX_RETRIES", raising=False)
         importlib.reload(launcher)
-        assert launcher.MAX_RETRIES is None
+        try:
+            assert launcher.MAX_RETRIES is None
+        finally:
+            launcher.MAX_RETRIES = None
 
     def test_override_via_env(self, monkeypatch):
         """env で数値指定するとモジュール再読み込みで MAX_RETRIES がその値になる"""
@@ -538,4 +548,7 @@ class TestMaxRetriesDefault:
 
         monkeypatch.setenv("CC_MEMORY_LAUNCHER_MAX_RETRIES", "7")
         importlib.reload(launcher)
-        assert launcher.MAX_RETRIES == 7
+        try:
+            assert launcher.MAX_RETRIES == 7
+        finally:
+            launcher.MAX_RETRIES = None
