@@ -1,0 +1,331 @@
+# cc-memory コンポーネント構成図 v0
+
+## 0. 読み方
+
+本ドキュメントはcc-memory（広義）の実装コンポーネントを、`docs/spec-v0.md` の4層スタック（プロトコル/ストア/フロー/協調）に沿って写し取った構成図である。仕様凍結を目的としない。一次情報はリポジトリ構造とコードであり、本ドキュメントはその「実装側の写し取り」であって、コードと食い違った場合はコードが正である。
+
+`docs/spec-v0.md` が「概論・地図」で抽象モデルを示し、本ドキュメントは同じ4層を実コンポーネント名に落として示す。「どこで何が動いているか」をコードを開かずに把握できることを優先する。
+
+cc-memory内部ID（D#/M#/A#/L#/T#）は本文に出さず論理名で書く。一方、コードベース上のモジュール名・ファイル名は外部参照可能なので出す。
+
+---
+
+## 1. 全体像
+
+```mermaid
+graph TB
+    subgraph Protocol["プロトコル層 / 紙の上の約束"]
+        Migrations["migrations/<br/>エンティティ型・関係・操作スキーマ"]
+        MCPSchema["src/main.py<br/>MCPツールシグネチャ"]
+    end
+
+    subgraph Store["ストア層 / 書庫"]
+        DB["src/db.py<br/>SQLite + FTS5 + sqlite-vec"]
+        EntityServices["entity services<br/>topic/decision/log/activity/<br/>material/pin/relation/habit"]
+        SearchService["search_service<br/>FTS+vec RRF"]
+        RetractService["retract_service"]
+        TagService["tag_service<br/>tag_analysis_service"]
+        TimelineService["timeline_service"]
+        EmbeddingService["embedding_service"]
+    end
+
+    subgraph Flow["フロー層 / 働き方"]
+        Hooks["hooks/<br/>SessionStart/Stop/<br/>UserPromptSubmit/PreToolUse"]
+        Skills["skills/<br/>check-in/sync-memory/<br/>recompose 他"]
+        CheckinService["checkin_service"]
+        HarnessService["harness_service<br/>hint/recommendation"]
+        HookState["hooks/hook_state.py<br/>state files + events.jsonl"]
+    end
+
+    subgraph Coord["協調層 / 指揮系統"]
+        OwService["ow_service"]
+        Relay["src/relay/server.py<br/>SSE+SQLite中継"]
+        OwScripts["scripts/ow/<br/>recv/heartbeat/adapters"]
+        OrchSkills["skills/orch<br/>skills/worker<br/>skills/worker-sync"]
+    end
+
+    subgraph Infra["横断インフラ"]
+        Launcher["src/launcher.py<br/>stdio↔HTTP bridge"]
+        HTTPServer["src/http_config.py<br/>+ session_manager"]
+        EmbeddingServer["embedding_server<br/>:52836"]
+        Config["src/config.py"]
+        Remote["src/remote.py<br/>OAuth/Tunnel"]
+    end
+
+    Protocol -.スキーマ定義.-> Store
+    Flow --> Store
+    Coord --> Store
+    Coord --> Flow
+    Infra --> Store
+    Infra --> Flow
+    Infra --> Coord
+```
+
+層は独立に差し替え可能という設計方針（`docs/spec-v0.md` §1）に沿って、層内の依存はストア層 → プロトコル層（スキーマ参照）の片方向、フロー層・協調層はストア層を読み書きする利用者、横断インフラは全層に横たわるという構成になっている。
+
+---
+
+## 2. プロトコル層 — 紙の上の約束
+
+プロトコル層はエンティティ型・関係・操作のセマンティクスを定義する層で、cc-memoryのコードベースには「層として独立したモジュール」は存在しない。代わりに以下の場所にセマンティクスが分散して埋め込まれている。
+
+### 2.1 スキーマの実体
+
+- `migrations/0001_initial_schema.sql` 〜 `migrations/0039_*` 系: テーブル・インデックス・トリガー定義。エンティティ型（topics / decisions / discussion_logs / activities / materials / pins / relations / habits / tags / tag_canonicals）と関係（supersedes / depends_on / pin / relation）のスキーマはここに具現化されている
+- `migrations/0033_relation_expansion.sql`, `migrations/0034_pins_directed_relation.sql`: 関係の汎化と方向性導入
+- `migrations/0009_tag_infrastructure.sql`, `migrations/0014_intent_namespace.sql`, `migrations/0015_tag_canonical.sql`, `migrations/0024_tag_description.sql`, `migrations/0039_extend_tag_namespace.sql`, `migrations/0039_intent_thinking.sql`: タグ名前空間と二段防御（tag_canonicals）。なお `0039_*.sql` は番号重複（`docs/spec/db-schema.md` §7 を参照）
+
+### 2.2 操作の実体
+
+- `src/main.py`: FastMCPでMCPツールシグネチャを定義する。`add_topic` / `add_decisions` / `add_logs` / `add_activity` / `add_material` / `add_pin` / `add_relation` / `update_*` / `retract` / `search` / `get_*` / `check_in` などの操作のIFはここで宣言される
+- `src/main.py` 冒頭の `RULES` 定数: MCP serverのinstructions（利用ガイド）を文字列で持つ。プロトコルの意味論をAIへ伝える「文面の規律」（`docs/spec-v0.md` §6 T-A）の入口
+
+### 2.3 ライフサイクル操作
+
+- `src/services/retract_service.py`: 論理削除（retracted_atを立てる）の集約点。エンティティ別の物理削除波及（search_indexのクリーンアップ等）は未確認の領域があり、`docs/spec-v0.md` §2.2 のretract/supersedesライフサイクル節で「論理削除の連鎖が閉じていない」と指摘されている
+- supersedes・depends_on・pinといった「関係としての操作」は `src/services/relation_service.py` / `src/services/pin_service.py` に集約される
+
+### 2.4 未確認領域
+
+- プロトコル層に対応する独立した型定義（models/やschemas/）は本リポでは見当たらない。エンティティ型はDBスキーマと各serviceの返却dict形状で表現されている。型レベルでの規律は弱いと推察される（要検証）
+
+---
+
+## 3. ストア層 — cc-memory（狭義）
+
+ストア層は「データの保持と読み出し」を担う。`src/services/` がほぼそのまま層に対応する。「読まれること」が仕事である。
+
+### 3.1 永続化基盤
+
+- `src/db.py`: SQLite接続・yoyoによるマイグレーション実行・sqlite_vec拡張ロード
+- `src/config.py`: DB_PATH等の環境設定
+- 永続化先のDB実体は `~/.claude/.claude-code-memory/discussion.db`（auto-memoryに記録あり）
+
+### 3.2 エンティティ別 service
+
+役割は「単一エンティティのCRUD + そのエンティティ固有のクエリ」。
+
+| service | 担当エンティティ |
+|---|---|
+| `topic_service` | topics |
+| `decision_service` | decisions（supersedes含む） |
+| `discussion_log_service` | discussion_logs |
+| `activity_service` | activities（status遷移、depends_on含む） |
+| `material_service` | materials |
+| `pin_service` | pins（directed relation） |
+| `relation_service` | relations（双方向関連の汎化） |
+| `habit_service` | habits（SessionStart注入対象） |
+| `tag_service` | tags / tag_canonicals / tag_notes |
+
+### 3.3 横断クエリ・読み出し
+
+- `src/services/search_service.py`: FTS5検索（`_fts_search`）+ ベクトル検索（`_vector_search`）の RRF（Reciprocal Rank Fusion）合成、recency boost、適応的重み（`_compute_adaptive_weights`）、タグフィルタCTE（`_build_tag_filter_cte`）、`get_by_id` / `get_by_ids` の詳細取得を提供する
+- `src/services/timeline_service.py`: 時系列ビュー（`get_timeline`）
+- `src/services/retract_service.py`: 論理削除と検索からの除外（NOT EXISTSによるretract遅延除外）
+- `src/services/tag_analysis_service.py`: タグ共起分析（`analyze_tags`）。tag-cleanupスキルから利用
+
+### 3.4 埋め込み
+
+- `src/services/embedding_service.py`: アプリ側からembedding取得を呼ぶクライアント
+- `src/services/embedding_server.py`: モデル保持・encodeを1プロセスに集約するHTTPサーバー（localhost:52836、idle timeout 5分、モデル `cl-nagoya/ruri-v3-70m`）。横断インフラ寄りだが本体はストア層が読むため §3 にも記載
+
+### 3.5 公開IF
+
+ストア層の公開IFは `src/main.py` のMCPツールである。MCP toolsはストア層 servicesの薄いラッパとして動作するものが多く（例: `add_topic` → `topic_service.create`）、`check_in` / `search` のように複数service横断・計算ロジックを持つものはservice側に集約されている。
+
+### 3.6 既知の課題
+
+- 5次元統合レポート（cc-memory material 312、要参照）が指摘するサービス膨張・共通パターン未抽出（CRUDの定型処理がservice間でコピーされている）
+- スコア解釈の不整合（`_apply_recency_boost` による正規化崩れ）。`docs/spec-v0.md` §3.1で言及あり
+
+---
+
+## 4. フロー層 — 働き方
+
+フロー層は「動くこと」を仕事とする。ユーザーやAIの行動に介入し、記録忘れや文脈ロードを駆動する。
+
+### 4.1 hooks/
+
+Claude Code harnessのhookシグナルを受けてプロセスとして起動する一連のスクリプト。settings.jsonからの登録は `hooks/hooks.json` 経由で管理される。
+
+| hookファイル | 発火タイミング | 主な仕事 |
+|---|---|---|
+| `hooks/session_start_hook.py` | SessionStart | habits注入、未完アクティビティscoring、鮮度警告 |
+| `hooks/session_end_hook.py` | SessionEnd | sync-memory連携・終了処理 |
+| `hooks/user_prompt_submit_hook.py` | UserPromptSubmit | ターンカウンタ・record nudge発火判定 |
+| `hooks/stop_hook.py` | Stop | 終端でのフォローアップ提案 |
+| `hooks/heartbeat.py` | 定期 | プレゼンス維持・ハートビート送信 |
+| `hooks/remind_activity_on_decision.sh` | （シェル介入） | decision記録時のactivity紐付け促し |
+
+共通基盤:
+
+- `hooks/hook_state.py`: 状態ファイル群（`block_count` / `transcript_offset` / `current_turn` / `checked_in_activity`）と events.jsonl の読み書きを一元化（`HookState` クラス）。永続化先は `~/.claude/.claude-code-memory/state/`
+- `hooks/hook_transcript.py`: transcriptの差分抽出
+- `hooks/auto_sync_prompt.txt`: sync-memory自動起動のプロンプト文面
+
+### 4.2 skills/
+
+スキル本文（SKILL.md相当）に行動規範を文面として埋め込み、Claude Codeのスキル機構を通じて発動する。
+
+主要スキル群（フロー層に直接寄与するもの）:
+
+- `skills/check-in`: 作業開始時の文脈ロード入り口
+- `skills/sync-memory`: セッション終了前の一括記録
+- `skills/recompose-context`: タグ・アクティビティの再構成
+- `skills/setup-anchor`: anchor確定
+- `skills/remember`: 記憶要望の保存先振り分け
+- `skills/tag-notes` / `skills/tag-cleanup`: タグnotes管理・整理
+- `skills/activity-start` / `skills/activity-finish`: アクティビティのライフサイクル操作
+- `skills/postmortem`: 完了アクティビティの振り返り
+- `skills/scribe`: cc-memory記録からドキュメント生成
+- `skills/guide`: pull型の使い方説明
+
+協調層に属するスキル（`orch` / `worker` / `worker-sync`）は §5 で扱う。
+
+### 4.3 フロー層 service
+
+- `src/services/checkin_service.py`: check-inの本体実装。アクティビティに紐づく tag-notes・資材カタログ・pinned・関連decisions・recent logs を一括取得し、coverage と recompose hints を計算する
+- `src/services/harness_service.py`: hint/recommendation生成（`get_recommendations`）。`_count_decisions_and_logs` 等を用いて記録忘れシグナルを判定し、フロー層のnudgeを駆動する
+- `src/services/habit_service.py`: SessionStartでの全件注入対象
+
+### 4.4 hookシグナルの流れ
+
+```
+SessionStart        → session_start_hook → habits注入 / scoring / 鮮度警告
+UserPromptSubmit    → user_prompt_submit_hook → ターンカウント / record nudge判定
+PostToolUse         → remind_activity_on_decision.sh （add_decisions matcher限定）
+Stop                → stop_hook → follow_up nudge
+SessionEnd          → session_end_hook → sync-memory連携
+```
+
+PostToolUseは `hooks/hooks.json` に `add_decisions` matcher 限定で登録済みで、`remind_activity_on_decision.sh` が発火する。PreToolUse は `hooks/hooks.json` に登録がなく、対応する hook スクリプトも存在しない。
+
+### 4.5 既知の課題
+
+- nudgeチャネルの増殖（`docs/spec-v0.md` §6 T-C 補完チャネル重複）。事後hint / Stop nudge / harness推奨 / coverage / tag-notes がしきい値・状態管理バラバラで並走
+- 「46ターン中16回発火→全て無視→記録ゼロ」の観測知見が `docs/spec-v0.md` §4.2に記録されている
+
+---
+
+## 5. 協調層 — orch/worker
+
+協調層はorch/workerフレームワーク全体に対応するが、本ドキュメントの対象はcc-memory本体に内蔵されている協調機構に絞る（powwowのような外部ラッパーには触れない）。
+
+### 5.1 cc-memory本体の協調コンポーネント
+
+- `src/services/ow_service.py`: ow_send / ow_history / ow_spawn_worker / ow_close_worker / ow_status / ow_recover / プレゼンス・identity管理（`ow_get_identity`, `ow_list_identities`, `ow_get_presence`, `ow_get_workload_state`）。relayサーバーの自動起動・健全性チェック（`ensure_relay_server` / `_wait_for_relay_health`）、queueファイルの生成と更新（`_upsert_queue_task` / `_write_task_file`）、crash検出と復旧（`detect_crash_inconsistencies` / `ow_recover` / `_send_recovery_ping`）を担う
+- `src/relay/server.py`: 中継サーバー本体。SQLite永続化 + SSEブロードキャスト。エンドポイント: `/create` / `/stream` / `/send` / `/history` / `/presence` / `/health`。msg_idがメッセージ順序の真実源
+- `scripts/ow/recv.sh`, `scripts/ow/recv_filter.py`: メッセージ受信側のフィルタリング
+- `scripts/ow/heartbeat.sh`: presence維持
+- `scripts/ow/adapters/iterm2.sh`, `scripts/ow/adapters/tmux.sh`: ターミナル別のworker spawnアダプタ
+- queueファイル配置: `~/.cc-memory/ow/orch/queue-t<topic_id>.md`（auto-memoryに記録あり）
+
+### 5.2 協調スキル
+
+- `skills/orch`: orchとしてtopicのプロジェクト進捗管理・worker指揮
+- `skills/worker`: worker動作
+- `skills/worker-sync`: worker退場時の簡易sync（decisionはorchへ提案、自分で書かない）
+
+### 5.3 cc-memoryとの接点（`docs/spec-v0.md` §5 と対応）
+
+- 接点1 記録ガード: workerは `add_decisions` を直接呼ばずrelay経由でorchへ提案する。これは文面規律（スキル本文）で表現されており、コード強制はまだない
+- 接点2 orch-managed: orch運用下で生成された entity は `orch-managed` タグを付与する規律。検索・SessionStartの除外はタグフィルタで実現される
+- 接点3 サブセッション間文脈分断: 複数Claude Codeセッションがcc-memoryを共有基盤として参照する側面。本体のコードに専用機構は薄い（要検証）
+
+### 5.4 powwowとの境界
+
+powwow（外部協調ラッパー）に該当する記述は本リポ内には見当たらない。「powwowとの境界」については本ドキュメント v0 では未確認領域として保留する。
+
+---
+
+## 6. 横断インフラ
+
+層の外側に横たわる基盤的コンポーネント。
+
+### 6.1 プロセス起動・ブリッジ
+
+- `src/launcher.py`: stdio ↔ HTTPブリッジ。Claude Codeがstdioで接続してくる入口で、HTTPサーバー未起動なら自動でデーモン起動し、stdin JSON-RPCをStreamable HTTP経由で転送する。stdin EOFでセッション解除
+- `src/main.py`: FastMCPサーバーエントリ（HTTPモード起動の本体）
+- `src/http_config.py`: HTTPサーバー設定
+- `src/services/session_manager.py`: HTTPセッションカウントと自動停止ウォッチドッグ。セッション数0で猶予期間後にshutdown
+- `src/services/lock_file.py`: プロセス間ロック
+
+### 6.2 リモート公開
+
+- `src/remote.py`: OAuth callback、リモート公開関連
+- CLAUDE.local.md記載: Cloudflare Tunnel経由 `https://mcp.isizono.com/mcp`、launchd `com.isizono.cc-memory-remote`
+
+### 6.3 ストレージ周辺ファイル
+
+- DB本体: `~/.claude/.claude-code-memory/discussion.db`
+- 状態ファイル群: `~/.claude/.claude-code-memory/state/` 配下に `block_count_<sid>` / `transcript_offset_<sid>` / `current_turn_<sid>` / `checked_in_activity_<sid>` / `events_<sid>.jsonl`（`hooks/hook_state.py` 参照）
+- queueファイル: `~/.cc-memory/ow/orch/queue-t<topic_id>.md`
+- relayサーバーのDB: `src/relay/server.py` がSQLite WALモードで永続化（パスは要検証）
+- embedding_server: localhost:52836
+
+### 6.4 hooks/utils相当
+
+- `hooks/hook_state.py`: hooksパッケージ内の共通基盤として §4.1 で扱った
+- 標準ライブラリのみ依存で書かれており、フロー層のhookから直接importされる
+
+---
+
+## 7. 依存方向
+
+```mermaid
+graph LR
+    subgraph L1["プロトコル層"]
+        P[migrations + MCP signatures]
+    end
+    subgraph L2["ストア層"]
+        S[entity services + search]
+    end
+    subgraph L3["フロー層"]
+        F[hooks + skills + checkin/harness]
+    end
+    subgraph L4["協調層"]
+        C[ow_service + relay + orch/worker skills]
+    end
+    subgraph L0["横断インフラ"]
+        I[launcher / http / embedding_server / config]
+    end
+
+    P -. スキーマ参照 .-> S
+    F -->|読み書き| S
+    C -->|読み書き| S
+    C -->|nudgeトリガ等| F
+    I -->|プロセス・接続| S
+    I -->|プロセス・接続| F
+    I -->|プロセス・接続| C
+    F -.| MCPツール経由 |.- S
+    C -.| MCPツール経由 |.- S
+```
+
+健全な依存方向:
+
+- フロー層・協調層 → ストア層（読み書き）
+- 全層 → プロトコル層（スキーマ参照）
+- 横断インフラ → 全層（プロセス起動・接続管理）
+
+潜在的な循環・癒着:
+
+- フロー層のhookが直接 `src/services/*` をimportする箇所がある（hookプロセスからDB直アクセス）。MCPツール経由ではないため、ストア層のCRUD変更がhookの内部実装に影響しうる
+- `ow_service` は relayサーバー（`src/relay/server.py`）を子プロセスとして起動・管理する。ow_service と relay server間で状態整合（events.jsonl と relay DB）が二系統存在しうる（`docs/spec-v0.md` §6 T-E マルチセッション境界）
+- service間の循環import懸念は5次元統合レポート（material 312、要参照）で指摘されている。本ドキュメントでは具体ファイル間の特定は未実施
+
+---
+
+## 8. 既知の課題
+
+`docs/spec-v0.md` §6 横断テーマと 5次元統合レポート（cc-memory material、要参照）に紐づく、コンポーネント構成上のpain。
+
+1. **サービス膨張**: `src/services/` 配下に20以上のserviceファイルが並び、共通パターン（CRUDの定型処理、タグ付与、retracted_atフィルタ）が未抽出。新エンティティ追加のたびに同型コードが増える
+2. **共通パターン未抽出**: search_serviceのSQL組み立て関数群（`_fts_search` / `_vector_search` / `_tag_like_search`）、relation/pin/supersedesの関係メカニズム5系統など、同型ロジックが複数箇所に存在する
+3. **circular import懸念**: `src/main.py` から services を読み、 services 同士の相互参照や、tag_serviceとtag_analysis_serviceの分担境界など整理余地がある（具体特定は未実施）
+4. **プロトコル層が薄い**: 独立した型/スキーマ定義モジュールがなく、エンティティ型はDBスキーマと各serviceの返却dictで表現される。型レベル規律が弱い
+5. **retract連鎖の未完**: `retract_service` が論理削除を立てるが、search_index物理クリーンアップなし、material/topic/activityにretracted_at列なし、関連pin/relationの扱いが未統一（`docs/spec-v0.md` §2.2）
+6. **協調層と本体の二系統真実源**: `events.jsonl`（hook側）と relay DB（ow_service側）の整合性、queueファイル（markdown）と activities テーブルの二重管理（`docs/spec-v0.md` §6 T-E）
+7. **HintService単一窓口の不在**: nudge発火源（hooks/各種、harness_service、checkin_serviceのrecompose hints、tag_service経由のtag-notes）が並走しており、しきい値・状態管理がバラバラ
+8. **効果測定基盤の不在**: 検索のスコアリング・nudgeの効果・タグ付与の精度を測定する仕組みがない（`docs/spec-v0.md` §6 T-D）。search_telemetry導入が処方箋候補
+
+各課題の詳細・処方箋候補は5次元統合レポート本文（cc-memory material、要参照）と `docs/spec-v0.md` §6 横断テーマを参照のこと。

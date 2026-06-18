@@ -1,0 +1,1350 @@
+openapi: 3.0.3
+info:
+  title: cc-memory MCP server
+  version: "0"
+  description: |
+    cc-memory が提供する MCP ツール群の機械可読仕様 (v0)。
+    MCP は本来 JSON-RPC ベースだが、ここでは OpenAPI 3.0 形式で
+    1 ツール = 1 path (POST) として整理する。
+    一次情報は src/main.py の @mcp.tool 関数。本ファイルはレビュー・議論用の v0。
+servers:
+  - url: mcp://cc-memory
+    description: ローカル/HTTP/StreamableHTTP の任意のトランスポートを抽象化した仮想 base URL
+
+tags:
+  - name: topic
+    description: トピックの記録・取得
+  - name: log
+    description: 議論ログの記録・取得
+  - name: decision
+    description: 決定事項の記録・取得
+  - name: activity
+    description: アクティビティの記録・取得・更新
+  - name: material
+    description: 資材の記録・取得・更新
+  - name: search
+    description: 横断検索・タグ検索・ID取得
+  - name: tag
+    description: タグの更新・分析
+  - name: relation
+    description: エンティティ間リレーション
+  - name: pin
+    description: pin の追加・削除
+  - name: habit
+    description: 振る舞いの登録・更新
+  - name: timeline
+    description: 時系列取得
+  - name: checkin
+    description: アクティビティ check-in
+  - name: retract
+    description: 取り消し（論理削除）
+  - name: ow
+    description: orch/worker 間メッセージング
+  - name: misc
+    description: 設定取得・ユーティリティ
+
+paths:
+  /tools/add_topic:
+    post:
+      tags: [topic]
+      summary: 新しい議論トピックを追加する
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, description, tags]
+              properties:
+                title: { type: string }
+                description: { type: string }
+                tags:
+                  type: array
+                  items: { type: string }
+                  minItems: 1
+                related:
+                  type: array
+                  items: { $ref: '#/components/schemas/RelatedRef' }
+                  nullable: true
+      responses:
+        '200':
+          description: 作成された topic と similar_topics
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/TopicCreatedResponse'
+                  - $ref: '#/components/schemas/ErrorResponse'
+
+  /tools/add_logs:
+    post:
+      tags: [log]
+      summary: 複数のログを一括追加 (最大10件)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  maxItems: 10
+                  items:
+                    type: object
+                    required: [topic_id, content]
+                    properties:
+                      topic_id: { type: integer }
+                      content: { type: string }
+                      title: { type: string }
+                      tags:
+                        type: array
+                        items: { type: string }
+      responses:
+        '200':
+          description: created と errors の混在配列
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BulkCreateResponse'
+
+  /tools/add_decisions:
+    post:
+      tags: [decision]
+      summary: 複数の決定事項を一括記録 (最大10件)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  maxItems: 10
+                  items:
+                    type: object
+                    required: [topic_id, decision, reason]
+                    properties:
+                      topic_id: { type: integer }
+                      decision: { type: string }
+                      reason: { type: string }
+                      title: { type: string }
+                      tags:
+                        type: array
+                        items: { type: string }
+                      propagate_to:
+                        type: object
+                        properties:
+                          type:
+                            type: string
+                            enum: [habit, tag_note]
+                          content: { type: string }
+                          tag: { type: string }
+      responses:
+        '200':
+          description: 作成結果 (related_decisions と hints 付き)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BulkCreateResponse'
+                  - type: object
+                    properties:
+                      hints:
+                        type: array
+                        items: { type: string }
+
+  /tools/get_topics:
+    post:
+      tags: [topic]
+      summary: トピックを新しい順に取得
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tags:
+                  type: array
+                  items: { type: string }
+                  nullable: true
+                limit: { type: integer, default: 10 }
+                offset: { type: integer, default: 0 }
+                since: { type: string, nullable: true, description: "ISO日付" }
+                until: { type: string, nullable: true }
+      responses:
+        '200':
+          description: topics 配列と total_count
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  topics:
+                    type: array
+                    items: { $ref: '#/components/schemas/Topic' }
+                  total_count: { type: integer }
+                  tag_notes:
+                    type: array
+                    items: { $ref: '#/components/schemas/TagNote' }
+
+  /tools/get_logs:
+    post:
+      tags: [log]
+      summary: 指定エンティティの議論ログを取得
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [entity_type, entity_id]
+              properties:
+                entity_type:
+                  type: string
+                  enum: [topic, activity]
+                entity_id: { type: integer }
+                start_id: { type: integer, nullable: true }
+                limit: { type: integer, default: 30, maximum: 30 }
+                include_retracted: { type: boolean, default: false }
+      responses:
+        '200':
+          description: logs 配列
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logs:
+                    type: array
+                    items: { $ref: '#/components/schemas/DiscussionLog' }
+
+  /tools/get_decisions:
+    post:
+      tags: [decision]
+      summary: 指定エンティティに関連する決定事項を取得
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [entity_type, entity_id]
+              properties:
+                entity_type:
+                  type: string
+                  enum: [topic, activity]
+                entity_id: { type: integer }
+                start_id: { type: integer, nullable: true }
+                limit: { type: integer, default: 30, maximum: 30 }
+                include_retracted: { type: boolean, default: false }
+      responses:
+        '200':
+          description: decisions 配列
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  decisions:
+                    type: array
+                    items: { $ref: '#/components/schemas/Decision' }
+
+  /tools/search:
+    post:
+      tags: [search]
+      summary: キーワードで横断検索 (FTS5 trigram + ベクトル ハイブリッド)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [keyword]
+              properties:
+                keyword:
+                  oneOf:
+                    - type: string
+                    - type: array
+                      items: { type: string }
+                tags:
+                  type: array
+                  items: { type: string }
+                  nullable: true
+                entity_type:
+                  type: string
+                  enum: [topic, decision, activity, log, material]
+                  nullable: true
+                limit: { type: integer, default: 10, maximum: 50 }
+                offset: { type: integer, default: 0 }
+                keyword_mode:
+                  type: string
+                  enum: [and, or]
+                  default: and
+                include_details: { type: boolean, default: false }
+                domain: { type: string, nullable: true }
+                date_after: { type: string, nullable: true }
+                date_before: { type: string, nullable: true }
+                include_retracted: { type: boolean, default: false }
+      responses:
+        '200':
+          description: 検索結果一覧
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items: { $ref: '#/components/schemas/SearchHit' }
+
+  /tools/get_by_ids:
+    post:
+      tags: [search]
+      summary: search 結果の詳細を ID 指定で取得 (最大20件)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  maxItems: 20
+                  items:
+                    type: object
+                    required: [type, id]
+                    properties:
+                      type:
+                        type: string
+                        enum: [topic, decision, activity, log, material]
+                      id: { type: integer }
+      responses:
+        '200':
+          description: 各アイテムの詳細
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        type: { type: string }
+                        id: { type: integer }
+                        data: { type: object }
+
+  /tools/search_tags:
+    post:
+      tags: [tag]
+      summary: タグをキーワード検索
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query: { type: string }
+                namespace:
+                  type: string
+                  nullable: true
+                  description: '"domain" | "intent" | "" (空文字=素タグ)'
+                include_notes: { type: boolean, default: false }
+                limit: { type: integer, default: 20 }
+      responses:
+        '200':
+          description: tags 配列
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tags:
+                    type: array
+                    items: { $ref: '#/components/schemas/TagHit' }
+
+  /tools/update_tag:
+    post:
+      tags: [tag]
+      summary: タグの notes/canonical/rename/description を更新 (相互排他)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tag]
+              properties:
+                tag: { type: string }
+                notes: { type: string, nullable: true }
+                canonical: { type: string, nullable: true }
+                rename: { type: string, nullable: true }
+                description:
+                  type: string
+                  nullable: true
+                  maxLength: 100
+      responses:
+        '200':
+          description: 更新結果
+          content:
+            application/json:
+              schema: { type: object }
+
+  /tools/analyze_tags:
+    post:
+      tags: [tag]
+      summary: タグ共起分析 (PMI + クラスタ + 孤児 + 重複候補)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                domain: { type: string, nullable: true }
+                include_domain_tags: { type: boolean, default: false }
+                focus_tag: { type: string, nullable: true }
+                min_usage: { type: integer, default: 2 }
+                top_n: { type: integer, default: 20 }
+      responses:
+        '200':
+          description: 共起・クラスタ・孤児・重複候補
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  co_occurrences: { type: array }
+                  clusters: { type: array }
+                  orphans: { type: array }
+                  suspected_duplicates: { type: array }
+
+  /tools/add_activity:
+    post:
+      tags: [activity]
+      summary: 新しいアクティビティを追加 (デフォルトで check_in 同時実行)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, description, tags]
+              properties:
+                title: { type: string }
+                description: { type: string }
+                tags:
+                  type: array
+                  items: { type: string }
+                  minItems: 1
+                related:
+                  type: array
+                  items: { $ref: '#/components/schemas/RelatedRef' }
+                  nullable: true
+                check_in: { type: boolean, default: true }
+      responses:
+        '200':
+          description: 作成された activity と check_in_result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  activity: { $ref: '#/components/schemas/Activity' }
+                  check_in_result: { $ref: '#/components/schemas/CheckInResult' }
+
+  /tools/get_activities:
+    post:
+      tags: [activity]
+      summary: アクティビティ一覧を status と tags でフィルタ取得
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tags:
+                  type: array
+                  items: { type: string }
+                  nullable: true
+                status:
+                  type: string
+                  enum: [active, pending, in_progress, completed, snoozed, shelved]
+                  default: active
+                limit: { type: integer, default: 5 }
+                since: { type: string, nullable: true }
+                until: { type: string, nullable: true }
+      responses:
+        '200':
+          description: activities と total_count
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  activities:
+                    type: array
+                    items: { $ref: '#/components/schemas/Activity' }
+                  total_count: { type: integer }
+
+  /tools/update_activity:
+    post:
+      tags: [activity]
+      summary: アクティビティの status/title/description/tags を更新
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [activity_id]
+              properties:
+                activity_id: { type: integer }
+                status:
+                  type: string
+                  enum: [pending, in_progress, completed, snoozed, shelved]
+                  nullable: true
+                title: { type: string, nullable: true }
+                description: { type: string, nullable: true }
+                tags:
+                  type: array
+                  items: { type: string }
+                  nullable: true
+                  minItems: 1
+      responses:
+        '200':
+          description: 更新結果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Activity' }
+
+  /tools/add_material:
+    post:
+      tags: [material]
+      summary: 資材を追加 (独立エンティティ)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, content, tags, source]
+              properties:
+                title: { type: string }
+                content: { type: string }
+                tags:
+                  type: array
+                  items: { type: string }
+                  minItems: 1
+                source: { type: string }
+                related:
+                  type: array
+                  items: { $ref: '#/components/schemas/RelatedRef' }
+                  nullable: true
+      responses:
+        '200':
+          description: 作成された material
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Material' }
+
+  /tools/update_material:
+    post:
+      tags: [material]
+      summary: 資材の content/title/tags/source を更新 (最低1つ指定)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [material_id]
+              properties:
+                material_id: { type: integer }
+                content: { type: string, nullable: true }
+                title: { type: string, nullable: true }
+                tags:
+                  type: array
+                  items: { type: string }
+                  nullable: true
+                  minItems: 1
+                source: { type: string, nullable: true }
+      responses:
+        '200':
+          description: 更新結果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Material' }
+
+  /tools/get_material:
+    post:
+      tags: [material]
+      summary: 資材の全文取得
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [material_id]
+              properties:
+                material_id: { type: integer }
+      responses:
+        '200':
+          description: 資材の全文
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Material' }
+
+  /tools/check_in:
+    post:
+      tags: [checkin]
+      summary: アクティビティ check-in、関連情報を集約
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [activity_id]
+              properties:
+                activity_id: { type: integer }
+      responses:
+        '200':
+          description: check-in 結果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckInResult' }
+
+  /tools/add_relation:
+    post:
+      tags: [relation]
+      summary: エンティティ間リレーションを追加
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source_type, source_id, targets]
+              properties:
+                source_type:
+                  type: string
+                  enum: [topic, activity, material, decision, log]
+                source_id: { type: integer }
+                targets:
+                  type: array
+                  items: { $ref: '#/components/schemas/RelatedRef' }
+                relation_type:
+                  type: string
+                  enum: [related, depends_on, supersedes]
+                  default: related
+      responses:
+        '200':
+          description: 追加件数
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  added: { type: integer }
+
+  /tools/remove_relation:
+    post:
+      tags: [relation]
+      summary: エンティティ間リレーションを削除
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source_type, source_id, targets]
+              properties:
+                source_type:
+                  type: string
+                  enum: [topic, activity, material, decision, log]
+                source_id: { type: integer }
+                targets:
+                  type: array
+                  items: { $ref: '#/components/schemas/RelatedRef' }
+                relation_type:
+                  type: string
+                  enum: [related, depends_on, supersedes]
+                  default: related
+      responses:
+        '200':
+          description: 削除件数
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  removed: { type: integer }
+
+  /tools/get_map:
+    post:
+      tags: [relation]
+      summary: リレーショングラフを走査しカタログを返す
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [entity_type, entity_id]
+              properties:
+                entity_type:
+                  type: string
+                  enum: [topic, activity, material, decision, log]
+                entity_id: { type: integer }
+                min_depth: { type: integer, default: 0 }
+                max_depth: { type: integer, default: 2, maximum: 10 }
+      responses:
+        '200':
+          description: 到達可能エンティティ
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entities:
+                    type: array
+                    items: { $ref: '#/components/schemas/MapEntity' }
+                  total_count: { type: integer }
+
+  /tools/add_habit:
+    post:
+      tags: [habit]
+      summary: 振る舞いを登録
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { type: string }
+      responses:
+        '200':
+          description: 作成結果
+          content:
+            application/json:
+              schema: { type: object }
+
+  /tools/get_habits:
+    post:
+      tags: [habit]
+      summary: 登録済み振る舞い一覧
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200':
+          description: habits 配列
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  habits:
+                    type: array
+                    items: { type: object }
+
+  /tools/update_habit:
+    post:
+      tags: [habit]
+      summary: 振る舞いを更新 (content/active)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [habit_id]
+              properties:
+                habit_id: { type: integer }
+                content: { type: string, nullable: true }
+                active: { type: boolean, nullable: true }
+      responses:
+        '200':
+          description: 更新結果
+          content:
+            application/json:
+              schema: { type: object }
+
+  /tools/add_pin:
+    post:
+      tags: [pin]
+      summary: pin を追加 (source → target)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source_type, source_ref, target_type, target_ref]
+              properties:
+                source_type:
+                  type: string
+                  enum: [tag, activity, topic, decision, log, material]
+                source_ref:
+                  oneOf:
+                    - type: integer
+                    - type: string
+                target_type:
+                  type: string
+                  enum: [tag, activity, topic, decision, log, material]
+                target_ref:
+                  oneOf:
+                    - type: integer
+                    - type: string
+      responses:
+        '200':
+          description: 追加された pin
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pin' }
+
+  /tools/remove_pin:
+    post:
+      tags: [pin]
+      summary: pin を削除 (source → target)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source_type, source_ref, target_type, target_ref]
+              properties:
+                source_type:
+                  type: string
+                  enum: [tag, activity, topic, decision, log, material]
+                source_ref:
+                  oneOf: [{ type: integer }, { type: string }]
+                target_type:
+                  type: string
+                  enum: [tag, activity, topic, decision, log, material]
+                target_ref:
+                  oneOf: [{ type: integer }, { type: string }]
+      responses:
+        '200':
+          description: 削除件数
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  removed: { type: integer }
+
+  /tools/retract:
+    post:
+      tags: [retract]
+      summary: 決定事項やログを取り消す (論理削除)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [entity_type, ids]
+              properties:
+                entity_type:
+                  type: string
+                  enum: [decision, log]
+                ids:
+                  type: array
+                  items: { type: integer }
+                undo: { type: boolean, default: false }
+      responses:
+        '200':
+          description: 取り消し結果
+          content:
+            application/json:
+              schema: { type: object }
+
+  /tools/get_timeline:
+    post:
+      tags: [timeline]
+      summary: トピックまたはアクティビティの時系列を返す
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                topic_id: { type: integer, nullable: true }
+                activity_id: { type: integer, nullable: true }
+                entity_types:
+                  type: array
+                  items:
+                    type: string
+                    enum: [decision, log, material]
+                  nullable: true
+                before: { type: string, nullable: true }
+                limit: { type: integer, default: 50, maximum: 100 }
+                order:
+                  type: string
+                  enum: [desc, asc]
+                  default: desc
+      responses:
+        '200':
+          description: 時系列要素配列
+          content:
+            application/json:
+              schema: { type: object }
+
+  /tools/get_config:
+    post:
+      tags: [misc]
+      summary: 現在の設定値を返す
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200':
+          description: 設定値
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  heartbeat_timeout: { type: integer }
+                  in_progress_limit: { type: integer }
+                  pending_limit: { type: integer }
+                  recency_decay_rate: { type: number }
+                  sync_disable_retrospective: { type: boolean }
+                  sync_policy: { type: string }
+                  snapshot_interval_hours: { type: integer }
+                  snapshot_max_count: { type: integer }
+                  snapshot_anomaly_threshold: { type: number }
+
+  /tools/roll_dice:
+    post:
+      tags: [misc]
+      summary: ダイスを振る (デフォルト 1d10)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sides: { type: integer, default: 10 }
+      responses:
+        '200':
+          description: ダイス目
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result: { type: integer }
+
+  /tools/ow_send:
+    post:
+      tags: [ow]
+      summary: ow channel にメッセージを送信
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channel, handle, body]
+              properties:
+                channel: { type: string }
+                handle: { type: string }
+                body: { type: object }
+                needs_reply: { type: boolean, default: false }
+                in_reply_to: { type: integer, nullable: true }
+      responses:
+        '200':
+          description: msg_id
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  msg_id: { type: integer }
+
+  /tools/ow_history:
+    post:
+      tags: [ow]
+      summary: ow channel 履歴を取得
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channel]
+              properties:
+                channel: { type: string }
+                since: { type: integer, default: 0 }
+                limit: { type: integer, default: 100 }
+      responses:
+        '200':
+          description: messages 配列
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  messages:
+                    type: array
+                    items: { type: object }
+
+  /tools/ow_spawn_worker:
+    post:
+      tags: [ow]
+      summary: worker セッションを起動
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [alias, channel, cwd, model]
+              properties:
+                alias: { type: string }
+                channel: { type: string }
+                cwd: { type: string }
+                model:
+                  type: string
+                  description: claude-opus-4-7 のみ許可 (sonnet/haiku/opus-4-8 は拒否)
+                task_title: { type: string, default: "" }
+                acceptance: { type: string, default: "" }
+                context: { type: string, default: "" }
+                playbook: { type: string, default: "" }
+                timeout_min: { type: integer, default: 60 }
+                activity_id: { type: integer, nullable: true }
+                topic_id: { type: string, nullable: true }
+                task_n: { type: integer, default: 1 }
+                tmux_target_pane: { type: string, nullable: true }
+                effort:
+                  type: string
+                  enum: [high, xhigh, max, ultrathink]
+                  nullable: true
+      responses:
+        '200':
+          description: 起動結果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  term_ref: { type: string }
+                  task_file: { type: string }
+                  spawning: { type: string }
+                  alias: { type: string }
+                  command: { type: string }
+                  manual: { type: boolean }
+
+  /tools/ow_close_worker:
+    post:
+      tags: [ow]
+      summary: worker セッションをクローズ
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [term_ref]
+              properties:
+                term_ref: { type: string }
+      responses:
+        '200':
+          description: クローズ結果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  closed: { type: boolean }
+                  term_ref: { type: string }
+                  manual: { type: boolean }
+                  message: { type: string }
+
+  /tools/ow_status:
+    post:
+      tags: [ow]
+      summary: queue サマリ + GetPresence 合成ビュー
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channel]
+              properties:
+                channel: { type: string }
+                topic_id: { type: string, nullable: true }
+      responses:
+        '200':
+          description: tasks/presence/frontmatter/summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tasks: { type: array }
+                  presence: { type: array }
+                  frontmatter: { type: object }
+                  summary: { type: object }
+
+  /tools/ow_recover:
+    post:
+      tags: [ow]
+      summary: orch crash 後の queue × relay × presence 整合チェック・自動修正
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channel, topic_id]
+              properties:
+                channel: { type: string }
+                topic_id: { type: string }
+                dry_run: { type: boolean, default: false }
+      responses:
+        '200':
+          description: 整合チェック結果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detected: { type: object }
+                  applied: { type: object }
+                  warnings:
+                    type: array
+                    items: { type: string }
+                  presence:
+                    type: array
+                    items: { type: string }
+                  reconstructed_max_msg_id: { type: integer }
+                  dry_run: { type: boolean }
+
+components:
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+
+    BulkCreateResponse:
+      type: object
+      properties:
+        created:
+          type: array
+          items: { type: object }
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              index: { type: integer }
+              error: { type: object }
+
+    RelatedRef:
+      type: object
+      required: [type, ids]
+      properties:
+        type:
+          type: string
+          enum: [topic, activity, material, decision, log]
+        ids:
+          type: array
+          items: { type: integer }
+
+    Topic:
+      type: object
+      properties:
+        topic_id: { type: integer }
+        title: { type: string }
+        description: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        created_at: { type: string }
+        updated_at: { type: string }
+
+    TopicCreatedResponse:
+      type: object
+      properties:
+        topic: { $ref: '#/components/schemas/Topic' }
+        similar_topics:
+          type: array
+          items:
+            type: object
+            properties:
+              topic_id: { type: integer }
+              title: { type: string }
+              distance: { type: number }
+
+    DiscussionLog:
+      type: object
+      properties:
+        log_id: { type: integer }
+        topic_id: { type: integer }
+        title: { type: string }
+        content: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        retracted_at: { type: string, nullable: true }
+        created_at: { type: string }
+
+    Decision:
+      type: object
+      properties:
+        decision_id: { type: integer }
+        topic_id: { type: integer }
+        title: { type: string }
+        decision: { type: string }
+        reason: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        related_decisions:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              title: { type: string }
+              distance: { type: number }
+        retracted_at: { type: string, nullable: true }
+        created_at: { type: string }
+
+    Activity:
+      type: object
+      properties:
+        activity_id: { type: integer }
+        title: { type: string }
+        description: { type: string }
+        status:
+          type: string
+          enum: [pending, in_progress, completed, snoozed, shelved]
+        tags:
+          type: array
+          items: { type: string }
+        created_at: { type: string }
+        updated_at: { type: string }
+
+    Material:
+      type: object
+      properties:
+        material_id: { type: integer }
+        title: { type: string }
+        content: { type: string }
+        source: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        created_at: { type: string }
+
+    Pin:
+      type: object
+      properties:
+        source_type: { type: string }
+        source_id: { type: integer }
+        target_type: { type: string }
+        target_id: { type: integer }
+
+    TagHit:
+      type: object
+      properties:
+        tag: { type: string }
+        namespace: { type: string }
+        score: { type: number }
+        notes: { type: string, nullable: true }
+
+    TagNote:
+      type: object
+      properties:
+        tag: { type: string }
+        notes: { type: string }
+
+    SearchHit:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [topic, decision, activity, log, material]
+        id: { type: integer }
+        title: { type: string }
+        score: { type: number }
+        snippet: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        details:
+          type: object
+          nullable: true
+
+    MapEntity:
+      type: object
+      properties:
+        type: { type: string }
+        id: { type: integer }
+        title: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        depth: { type: integer }
+
+    CheckInResult:
+      type: object
+      properties:
+        coverage: { type: object }
+        activity: { $ref: '#/components/schemas/Activity' }
+        related_topics:
+          type: array
+          items: { type: object }
+        related_activities:
+          type: array
+          items: { type: object }
+        pinned:
+          type: array
+          items: { type: object }
+        tag_notes:
+          type: array
+          items: { $ref: '#/components/schemas/TagNote' }
+        materials:
+          type: array
+          items: { type: object }
+        recent_decisions:
+          type: array
+          items: { type: object }
+        latest_log: { type: object, nullable: true }
+        logs:
+          type: array
+          items: { $ref: '#/components/schemas/DiscussionLog' }
+        catalog: { type: object }
+        summary: { type: string }
