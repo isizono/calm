@@ -19,6 +19,7 @@ from src.services.decision_service import add_decisions
 from src.services.discussion_log_service import add_logs
 from src.services.activity_service import add_activity
 from src.services.search_service import get_by_ids
+from tests.helpers import add_decision
 import src.services.embedding_service as emb
 
 
@@ -449,9 +450,13 @@ class TestGetActivitiesResultBasedInjection:
         """タグフィルタなしでも結果内のタグからtag_notesが注入される"""
         from src.services.activity_service import get_activities
 
+        topic = add_topic(title="t", description="d", tags=["domain:test"])
+        dec = add_decision(decision="d", reason="r", topic_id=topic["topic_id"])
         add_activity(
             title="Test Activity", description="Desc",
-            tags=["domain:test", "intent:implement"], check_in=False,
+            tags=["domain:test", "intent:implement"],
+            related=[{"type": "decision", "ids": [dec["decision_id"]]}],
+            check_in=False,
         )
         update_tag("domain:test", "テスト教訓")
 

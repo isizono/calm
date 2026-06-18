@@ -1050,11 +1050,18 @@ def _set_decision_created_at(decision_id: int, ts: str) -> None:
 
 
 def _make_activity_with_plain_tag() -> int:
-    """素タグ PLAIN_TAG を持つアクティビティを作成しIDを返す。"""
+    """素タグ PLAIN_TAG を持つアクティビティを作成しIDを返す。
+
+    intent:implement を含むため IMPLEMENT_WORKFLOW_GUARD 用に
+    dummy decision を作って related に含める。
+    """
+    topic = add_topic(title="dummy topic", description="d", tags=["domain:test"])
+    dec = add_decision(decision="d", reason="r", topic_id=topic["topic_id"])
     result = add_activity(
         title="[作業] recompose対象タスク",
         description="recomposeナッジ判定の対象タスク",
         tags=["domain:test", "intent:implement", PLAIN_TAG],
+        related=[{"type": "decision", "ids": [dec["decision_id"]]}],
         check_in=False,
     )
     return result["activity_id"]
@@ -1238,10 +1245,18 @@ class TestRecomposeHints:
     def test_namespaced_tags_excluded_from_hints(self, temp_db):
         """domain:/intent:のnamespaceタグはhint判定対象外で、素タグが無ければhintは出ない"""
         # 素タグを持たず、domain:とintent:のみを持つアクティビティ
+        # intent:implement は IMPLEMENT_WORKFLOW_GUARD のため dummy decision を関連付け
+        ns_topic = add_topic(
+            title="dummy", description="d", tags=["domain:bootstrap-domain"],
+        )
+        ns_dec = add_decision(
+            decision="d", reason="r", topic_id=ns_topic["topic_id"],
+        )
         result_a = add_activity(
             title="[作業] namespaceのみ",
             description="素タグなし",
             tags=["domain:bootstrap-domain", "intent:implement"],
+            related=[{"type": "decision", "ids": [ns_dec["decision_id"]]}],
             check_in=False,
         )
         activity_id = result_a["activity_id"]

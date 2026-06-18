@@ -179,7 +179,7 @@ def add_topic(
     """新しい議論トピックを追加する。
 
     tags: タグ配列(必須、1個以上)。domain:タグに加えて内容を表すタグも付けること。namespace: domain:(プロジェクト)/intent:(意図)/素タグ(キーワード)。例: ["domain:cc-memory", "intent:implement", "error-handling", "validation", "stdin"]
-    related: 関連エンティティ（optional）。[{"type": "topic"|"activity", "ids": [int, ...]}] 形式。作成と同時にリレーションを張る
+    related: 関連エンティティ（optional）。[{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...] 形式。複数エンティティを配列で同時紐付け可能。例: [{"type": "topic", "ids": [1, 2]}, {"type": "decision", "ids": [10]}]。作成と同時にリレーションを張る
 
     レスポンスに類似トピック(similar_topics)が含まれる場合がある。重複トピックの防止やリレーション追加の参考にすること。"""
     result = topic_service.add_topic(title, description, tags, related=related)
@@ -533,13 +533,14 @@ def add_activity(
     - 作業アクティビティを作成: add_activity("○○機能を実装", "詳細説明...", ["domain:cc-memory", "intent:implement", "search", "ranking"])
     - トピック紐付け: add_activity("○○機能を実装", "詳細説明...", ["domain:cc-memory", "intent:implement"], related=[{"type": "topic", "ids": [123]}])
     - 複数関連: add_activity("...", "...", [...], related=[{"type": "topic", "ids": [1, 2]}, {"type": "activity", "ids": [3]}])
+    - intent:implementは合意済みdecisionをrelateする: add_activity("...", "...", ["domain:cc-memory", "intent:implement"], related=[{"type": "decision", "ids": [10, 11]}])
     - check_inなしで作成: add_activity("○○機能を実装", "詳細説明...", ["domain:cc-memory", "intent:implement"], check_in=False)
 
     Args:
         title: アクティビティのタイトル
         description: アクティビティの詳細説明（必須）。スコアリングに活用されるため、以下の情報があれば記載を推奨: 締め切り、ブロッカー（自分が/外部）、影響度・緊急度
         tags: タグ配列（必須、1個以上）。domain:タグとintent:タグは必須。素タグも積極的に付けること。namespace: domain:(プロジェクト)/intent:(意図)/素タグ(キーワード)。例: ["domain:cc-memory", "intent:implement", "search", "ranking"]
-        related: 関連エンティティ（optional）。[{"type": "topic"|"activity", "ids": [int, ...]}] 形式。作成と同時にリレーションを張る
+        related: 関連エンティティ（optional）。[{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...] 形式。複数エンティティを配列で同時紐付け可能。例: [{"type": "topic", "ids": [1]}, {"type": "decision", "ids": [10, 11]}]。作成と同時にリレーションを張る。intent:implementタグを含む場合、relatedにtype='decision'のエントリを最低1件含めないとIMPLEMENT_WORKFLOW_GUARDエラーで弾かれる（議論・設計フェーズで合意したdecisionか、いきなりimplementする理由を記録したdecisionをrelateする）
         check_in: 作成後にcheck_inを実行するか（デフォルト: True）。Trueの場合、返り値にcheck_in_resultが含まれる
 
     Returns:
@@ -655,7 +656,7 @@ def add_material(
         content: 資材の本文（マークダウン形式推奨）。先頭1-2文は内容の説明・要約を書くこと（check-in時にsnippetとして表示される）
         tags: タグ配列（必須、1個以上）。domain:タグに加えて内容を表すタグも付けること。namespace: domain:(プロジェクト)/intent:(意図)/素タグ(キーワード)
         source: データの出自。典型的なソース種類: ユーザー発言、公式ドキュメント、コード調査、計測結果、外部記事、チーム議事録など。事実と推論が混在する場合はcontent内で明示的に区別すること
-        related: 関連エンティティ（optional）。[{"type": "topic"|"activity", "ids": [int, ...]}] 形式。作成と同時にリレーションを張る
+        related: 関連エンティティ（optional）。[{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...] 形式。複数エンティティを配列で同時紐付け可能。例: [{"type": "activity", "ids": [123]}, {"type": "decision", "ids": [10]}]。作成と同時にリレーションを張る
 
     Returns:
         作成された資材情報（material_id, title, content, source, tags, created_at）
