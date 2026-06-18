@@ -73,7 +73,7 @@ graph TB
 
 - `migrations/0001_initial_schema.sql` 〜 `migrations/0039_*` 系: テーブル・インデックス・トリガー定義。エンティティ型（topics / decisions / discussion_logs / activities / materials / pins / relations / habits / tags / tag_canonicals）と関係（supersedes / depends_on / pin / relation）のスキーマはここに具現化されている
 - `migrations/0033_relation_expansion.sql`, `migrations/0034_pins_directed_relation.sql`: 関係の汎化と方向性導入
-- `migrations/0009_tag_infrastructure.sql`, `migrations/0014_intent_namespace.sql`, `migrations/0015_tag_canonical.sql`, `migrations/0024_tag_description.sql`, `migrations/0039_extend_tag_namespace.sql`: タグ名前空間と二段防御（tag_canonicals）
+- `migrations/0009_tag_infrastructure.sql`, `migrations/0014_intent_namespace.sql`, `migrations/0015_tag_canonical.sql`, `migrations/0024_tag_description.sql`, `migrations/0039_extend_tag_namespace.sql`, `migrations/0039_intent_thinking.sql`: タグ名前空間と二段防御（tag_canonicals）。なお `0039_*.sql` は番号重複（`docs/spec/db-schema.md` §7 を参照）
 
 ### 2.2 操作の実体
 
@@ -153,7 +153,6 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 | `hooks/session_start_hook.py` | SessionStart | habits注入、未完アクティビティscoring、鮮度警告 |
 | `hooks/session_end_hook.py` | SessionEnd | sync-memory連携・終了処理 |
 | `hooks/user_prompt_submit_hook.py` | UserPromptSubmit | ターンカウンタ・record nudge発火判定 |
-| `hooks/pretooluse_hook.py` | PreToolUse | ツール呼び出し前の介入・記録ガード |
 | `hooks/stop_hook.py` | Stop | 終端でのフォローアップ提案 |
 | `hooks/heartbeat.py` | 定期 | プレゼンス維持・ハートビート送信 |
 | `hooks/remind_activity_on_decision.sh` | （シェル介入） | decision記録時のactivity紐付け促し |
@@ -194,13 +193,12 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 ```
 SessionStart        → session_start_hook → habits注入 / scoring / 鮮度警告
 UserPromptSubmit    → user_prompt_submit_hook → ターンカウント / record nudge判定
-PreToolUse          → pretooluse_hook → 記録ガード・前置処理
-PostToolUse         → （hooks.jsonに登録ある場合）
+PostToolUse         → remind_activity_on_decision.sh （add_decisions matcher限定）
 Stop                → stop_hook → follow_up nudge
 SessionEnd          → session_end_hook → sync-memory連携
 ```
 
-PostToolUseは `hooks/hooks.json` 上の登録有無を未確認。要検証。
+PostToolUseは `hooks/hooks.json` に `add_decisions` matcher 限定で登録済みで、`remind_activity_on_decision.sh` が発火する。PreToolUse は `hooks/hooks.json` に登録がなく、対応する hook スクリプトも存在しない。
 
 ### 4.5 既知の課題
 
