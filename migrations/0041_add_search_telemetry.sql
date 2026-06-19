@@ -1,4 +1,4 @@
--- Migration 041: search_telemetry テーブル追加
+-- Migration 0041: search_telemetry テーブル追加
 --
 -- depends: 0039_intent_thinking
 --

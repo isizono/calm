@@ -173,13 +173,13 @@ def test_telemetry_write_runs_in_separate_thread(temp_db):
     main_thread_id = _threading.get_ident()
     captured_thread_id = []
 
-    original_get_conn = search_service.get_connection
+    original_get_conn = search_service._telemetry_get_connection
 
     def tracking_get_conn():
         captured_thread_id.append(_threading.get_ident())
         return original_get_conn()
 
-    search_service.get_connection = tracking_get_conn
+    search_service._telemetry_get_connection = tracking_get_conn
     try:
         thread = search_service._record_search_telemetry_async(
             query="thread-check",
@@ -191,9 +191,9 @@ def test_telemetry_write_runs_in_separate_thread(temp_db):
         thread.join(timeout=5.0)
         assert not thread.is_alive()
     finally:
-        search_service.get_connection = original_get_conn
+        search_service._telemetry_get_connection = original_get_conn
 
-    assert captured_thread_id, "telemetry 書込で get_connection が呼ばれていない"
+    assert captured_thread_id, "telemetry 書込で _telemetry_get_connection が呼ばれていない"
     assert all(tid != main_thread_id for tid in captured_thread_id), (
         "telemetry 書込が呼出元と同じスレッドで実行されている"
     )
@@ -244,19 +244,16 @@ def test_search_unaffected_when_telemetry_write_fails(
         tags=DEFAULT_TAGS,
     )
 
-    real_get_connection = search_service.get_connection
+    real_get_connection = search_service._telemetry_get_connection
     call_counter = {"writer": 0}
 
     def flaky_get_connection():
-        # search 本体 (メインスレッド) からは通常接続を返し、
-        # 書込スレッドだけ例外を出してフォールバック挙動を検証する
-        import threading as _threading
-        if _threading.current_thread() is not _threading.main_thread():
-            call_counter["writer"] += 1
-            raise RuntimeError("simulated telemetry write failure")
-        return real_get_connection()
+        # telemetry 書込スレッドからの呼び出し時のみ例外を出して
+        # フォールバック挙動を検証する。search 本体は通常通り動く。
+        call_counter["writer"] += 1
+        raise RuntimeError("simulated telemetry write failure")
 
-    monkeypatch.setattr(search_service, "get_connection", flaky_get_connection)
+    monkeypatch.setattr(search_service, "_telemetry_get_connection", flaky_get_connection)
 
     with caplog.at_level("WARNING"):
         result = search_service.search(keyword="書込失敗フォールバック検証")

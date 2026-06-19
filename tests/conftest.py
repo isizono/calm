@@ -35,6 +35,13 @@ def _synchronous_telemetry(monkeypatch):
     レース無しで cleanup できるようにする。書込挙動自体 (Thread 生成 / daemon=True)
     は本番と同じ実装を通る (ラッパ内で original を呼ぶ) ため、
     本番の非同期性を検証するテストは join 後でも is_alive=False を assert できる。
+
+    注意: 個別テストファイルの `capture_telemetry_threads` フィクスチャは、
+    pytest のフィクスチャ適用順序上この `synchronous_wrapper` を更にラップする
+    形になる。すなわち capture 側に渡ってくる thread は既にここで join() 済みで
+    あり、`_wait_for_telemetry()` 側の join は実質 no-op になる。
+    現状のテスト同期化はこの fixture (autouse) に依存しており、将来 autouse を
+    解除する場合は capture 側でも join() を保証する必要がある。
     """
     from src.services import search_service
 

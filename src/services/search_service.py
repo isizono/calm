@@ -10,7 +10,7 @@ from typing import Optional
 
 from sqlite_vec import serialize_float32
 
-from src.db import execute_query, get_connection, row_to_dict
+from src.db import execute_query, get_connection, get_db_path, row_to_dict
 from src.services import embedding_service
 from src.services.tag_service import (
     get_entity_tags,
@@ -1538,6 +1538,22 @@ def search(
         }
 
 
+def _telemetry_get_connection() -> sqlite3.Connection:
+    """telemetry 書込専用の軽量コネクション。
+
+    `search_telemetry` への INSERT は sqlite-vec 拡張を必要としないため、
+    `db.get_connection()` の `enable_load_extension(True)` → 拡張ロード →
+    `enable_load_extension(False)` のオーバーヘッドや拡張ロード失敗時の
+    warning ログを避ける目的で、最小構成（WAL + busy_timeout）のみ設定する。
+    daemon thread から呼ばれることを想定。
+    """
+    conn = sqlite3.connect(get_db_path())
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+
+
 def _record_search_telemetry_async(
     query: str | list[str],
     parameters: dict,
@@ -1551,6 +1567,9 @@ def _record_search_telemetry_async(
     した場合も、呼出元 search() の外側 try で DATABASE_ERROR 化されないよう
     ここで握って warning + None 返却にする。
 
+    書込は `_telemetry_get_connection()` 経由で sqlite-vec 拡張を
+    ロードしない軽量コネクションを使う。
+
     Returns:
         起動した daemon Thread。起動に失敗した場合は None。
     """
@@ -1563,7 +1582,7 @@ def _record_search_telemetry_async(
             return
 
         try:
-            conn = get_connection()
+            conn = _telemetry_get_connection()
             try:
                 conn.execute(
                     "INSERT INTO search_telemetry (query, parameters, result_count) "
