@@ -847,10 +847,12 @@ def get_map(
 def add_habit(content: str) -> dict:
     """エージェントの振る舞いを登録する。check-in時に自動注入され、以降の行動に反映される。"覚えといて"と言われた行動ルールはここに登録する
 
-    note: 現在は worker ガードの対象外。ユーザー承認を要する書き込みである点は
-    add_decisions / add_topic と同様なので、将来の議論によりガード対象に
-    含める余地がある。
+    worker セッション (OW_ROLE=worker) からの直接呼び出しは
+    WorkerGuardError でブロックされる。ユーザー承認を要する書き込みなので
+    add_decisions / add_topic と同じ guard 対象。OW_ESCALATION=1 の
+    orch_proxy 経路でのみ通過する。
     """
+    guard_service.check_worker_guard("add_habit")
     return habit_service.add_habit(content)
 
 

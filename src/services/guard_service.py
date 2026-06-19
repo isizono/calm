@@ -1,13 +1,12 @@
 """worker セッション向けの構造的ガード。
 
 ow worker として起動されたセッションが、ユーザー合意を必要とする記録系ツール
-(add_decisions / add_topic) を直接呼び出すのを構造的に阻止する。
+(add_decisions / add_topic / add_habit) を直接呼び出すのを構造的に阻止する。
 worker は task に集中するため、これらの記録はユーザー合意に基づいて
 orch 経由で行う。判断を orch に仰ぐためのエスカレーション通路では
 OW_ESCALATION=1 を立てて通過させる。
 
 note: add_logs は worker-sync の退場処理で必須呼び出しなのでガード対象外。
-add_habit も現状ガード対象外 (将来議論で拡張余地あり)。
 """
 import os
 
@@ -46,8 +45,8 @@ _WORKER_GUARD_MESSAGE_TMPL = (
 def check_worker_guard(tool_name: str) -> None:
     """worker セッションかつ非エスカレーション時に WorkerGuardError を raise する。
 
-    add_decisions / add_topic 等、worker が直接呼んではならないツールの
-    冒頭で呼ぶ。OW_ESCALATION=1 のときは通過する。
+    add_decisions / add_topic / add_habit 等、worker が直接呼んではならない
+    ツールの冒頭で呼ぶ。OW_ESCALATION=1 のときは通過する。
     """
     if is_worker_session() and not is_escalation_mode():
         raise WorkerGuardError(_WORKER_GUARD_MESSAGE_TMPL.format(tool_name=tool_name))

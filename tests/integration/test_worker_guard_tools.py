@@ -1,4 +1,4 @@
-"""add_decisions / add_topic MCPツールの worker ガード統合テスト。
+"""add_decisions / add_topic / add_habit MCPツールの worker ガード統合テスト。
 
 guard_service.check_worker_guard が main.py の MCP ツール冒頭で正しく実行され、
 worker セッションから直接呼ばれた場合に WorkerGuardError が raise されること、
@@ -197,6 +197,47 @@ class TestAddDecisionsWorkerGuard:
         )
         assert "error" not in result
         assert "created" in result
+
+
+class TestAddHabitWorkerGuard:
+    """add_habit への worker ガード。"""
+
+    def test_worker_session_raises(self, temp_db, monkeypatch):
+        """OW_ROLE=worker のとき WorkerGuardError を raise する。"""
+        from src.main import add_habit
+
+        monkeypatch.setenv("OW_ROLE", "worker")
+        with pytest.raises(WorkerGuardError) as exc_info:
+            add_habit(content="Should fail under worker role.")
+        assert "add_habit" in str(exc_info.value)
+
+    def test_worker_with_escalation_passes(self, temp_db, monkeypatch):
+        """OW_ROLE=worker かつ OW_ESCALATION=1 → ガード通過して habit 作成。"""
+        from src.main import add_habit
+
+        monkeypatch.setenv("OW_ROLE", "worker")
+        monkeypatch.setenv("OW_ESCALATION", "1")
+        result = add_habit(content="Escalation passes for habit.")
+        assert "error" not in result
+        assert "habit_id" in result
+
+    def test_orch_role_passes(self, temp_db, monkeypatch):
+        """OW_ROLE=orch → ガード通過。"""
+        from src.main import add_habit
+
+        monkeypatch.setenv("OW_ROLE", "orch")
+        result = add_habit(content="Orch may register habit directly.")
+        assert "error" not in result
+        assert "habit_id" in result
+
+    def test_no_role_passes(self, temp_db, monkeypatch):
+        """OW_ROLE 未設定 (通常セッション) → ガード通過。"""
+        from src.main import add_habit
+
+        monkeypatch.delenv("OW_ROLE", raising=False)
+        result = add_habit(content="Regular session habit registration.")
+        assert "error" not in result
+        assert "habit_id" in result
 
 
 class TestGuardMessageContent:
