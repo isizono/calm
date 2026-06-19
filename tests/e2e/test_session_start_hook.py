@@ -283,7 +283,7 @@ class TestSessionStartHookDuplicateActivities:
         context = result["hookSpecificOutput"]["additionalContext"]
 
         # アクティビティIDが1回だけ出現する
-        assert context.count(f"[{activity_id}]") == 1
+        assert context.count(f"(#{activity_id})") == 1
 
 
 class TestSessionStartHookHabits:
@@ -364,7 +364,7 @@ class TestSessionStartHookOrchManagedExclusion:
         context = result["hookSpecificOutput"]["additionalContext"]
 
         assert "orch管理タスク" not in context
-        assert f"[{activity_id}]" not in context
+        assert f"(#{activity_id})" not in context
 
     def test_non_orch_managed_activity_still_shown(self, temp_db):
         """orch-managedタグのない通常アクティビティは引き続き表示される"""
@@ -376,9 +376,9 @@ class TestSessionStartHookOrchManagedExclusion:
         context = result["hookSpecificOutput"]["additionalContext"]
 
         assert "個人タスク" in context
-        assert f"[{normal_id}]" in context
+        assert f"(#{normal_id})" in context
         assert "orch管理タスク" not in context
-        assert f"[{orch_id}]" not in context
+        assert f"(#{orch_id})" not in context
 
     def test_all_orch_managed_yields_no_activity_section(self, temp_db):
         """全アクティビティがorch-managedなら一覧セクション自体が出ない"""
@@ -505,7 +505,7 @@ class TestSessionStartHookTopicGrouping:
         assert "## 検索リファインメント" in context
         # トピック見出し以降にアクティビティが現れる
         topic_idx = context.index("## 検索リファインメント")
-        assert f"[{activity_id}]" in context[topic_idx:]
+        assert f"(#{activity_id})" in context[topic_idx:]
         assert "検索改善" in context[topic_idx:]
 
     def test_topicless_activity_in_other_section(self, temp_db):
@@ -517,7 +517,7 @@ class TestSessionStartHookTopicGrouping:
 
         assert "## その他" in context
         other_idx = context.index("## その他")
-        assert f"[{activity_id}]" in context[other_idx:]
+        assert f"(#{activity_id})" in context[other_idx:]
 
     def test_topic_title_em_dash_stripped(self, temp_db):
         """topic見出しは em-dash 以降を除去した短縮版で出力される (D#2466)"""
@@ -549,7 +549,7 @@ class TestSessionStartHookTopicGrouping:
         # 🆕 マーカーが本文中に存在し、対象 activity の行に付与されている
         marker_line_present = False
         for line in context.splitlines():
-            if f"[{activity_id}]" in line and "新着タスク" in line and "\U0001f195" in line:
+            if f"(#{activity_id})" in line and "新着タスク" in line and "\U0001f195" in line:
                 marker_line_present = True
                 break
         assert marker_line_present, "24h以内作成 activity の行に🆕マーカーが付いていない"
@@ -568,7 +568,7 @@ class TestSessionStartHookTopicGrouping:
         context = result["hookSpecificOutput"]["additionalContext"]
 
         for line in context.splitlines():
-            if f"[{activity_id}]" in line and "古いタスク" in line:
+            if f"(#{activity_id})" in line and "古いタスク" in line:
                 assert "\U0001f195" not in line, "古い activity 行に🆕マーカーが付いている"
 
     def test_heartbeat_section_unchanged(self, temp_db):
@@ -593,9 +593,9 @@ class TestSessionStartHookTopicGrouping:
         # heartbeat セクションは従来通り
         assert "## 作業中（別セッション）" in context
         heartbeat_idx = context.index("## 作業中（別セッション）")
-        assert f"[{activity_id}]" in context[heartbeat_idx:]
+        assert f"(#{activity_id})" in context[heartbeat_idx:]
         # heartbeat activity は topic grouping に重複出現しない
-        assert context.count(f"[{activity_id}]") == 1
+        assert context.count(f"(#{activity_id})") == 1
 
     def test_numbering_continuous_across_groups(self, temp_db):
         """番号付けは複数 topic グループにまたがって連番になる"""

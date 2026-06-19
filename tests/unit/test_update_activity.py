@@ -85,7 +85,8 @@ class TestUpdateActivitySuccess:
 
         result = get_activities(status="in_progress")
         activities = result["activities"]
-        match = [a for a in activities if a["id"] == activity_id]
+        # α化: id は文字列、元 ID は id_raw に退避
+        match = [a for a in activities if a["id_raw"] == activity_id]
         assert len(match) == 1
         assert match[0]["title"] == "Persisted Title"
         assert match[0]["description"] == "Persisted Desc"

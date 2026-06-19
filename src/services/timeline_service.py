@@ -6,6 +6,7 @@ import logging
 from datetime import datetime
 
 from src.db import get_connection
+from src.services.alphaization import alphaize_result_dict_inplace
 
 logger = logging.getLogger(__name__)
 
@@ -186,17 +187,29 @@ def get_timeline(
         total_row = conn.execute(count_query, count_params).fetchone()
         total = total_row[0] if total_row else 0
 
-        items = [
-            {
+        items = []
+        for row in rows:
+            replaces = None
+            if row["replaces_id"]:
+                replaces = {"type": "decision", "id": row["replaces_id"]}
+                # replaces 内には title が無いので id_raw 退避のみ（title=None）
+                alphaize_result_dict_inplace(replaces, "decision")
+            replaced_by = None
+            if row["replaced_by_id"]:
+                replaced_by = {"type": "decision", "id": row["replaced_by_id"]}
+                alphaize_result_dict_inplace(replaced_by, "decision")
+
+            item = {
                 "id": row["id"],
                 "type": row["type"],
                 "title": row["title"],
                 "created_at": row["created_at"],
-                "replaces": {"type": "decision", "id": row["replaces_id"]} if row["replaces_id"] else None,
-                "replaced_by": {"type": "decision", "id": row["replaced_by_id"]} if row["replaced_by_id"] else None,
+                "replaces": replaces,
+                "replaced_by": replaced_by,
             }
-            for row in rows
-        ]
+            # type は α化前に決定済みなのでそのまま渡す
+            alphaize_result_dict_inplace(item, row["type"])
+            items.append(item)
 
         return {"items": items, "total": total}
 

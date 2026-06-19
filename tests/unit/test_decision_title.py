@@ -290,7 +290,8 @@ class TestDisplayFallback:
         finally:
             conn.close()
 
-        by_id = {d["id"]: d["title"] for d in decisions}
+        # α化後 id は文字列なので、元 ID は id_raw で索引する
+        by_id = {d["id_raw"]: d["title"] for d in decisions}
         assert by_id[with_id] == "要点X", "titleありdecisionがtitleで表示されない"
         assert by_id[without_id] == "本文Y（titleなし）", "titleなしdecisionがdecision本文にfallbackしない"
 

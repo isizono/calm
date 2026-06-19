@@ -97,7 +97,8 @@ class TestGetLogsTopicType:
 
         assert "error" not in result
         assert len(result["logs"]) == 2
-        ids = [l["id"] for l in result["logs"]]
+        # α化により id は文字列 "title (#N)"、元の整数 ID は id_raw に退避
+        ids = [l["id_raw"] for l in result["logs"]]
         assert first_log_id not in ids
         assert second_log_id in ids
 
@@ -167,9 +168,9 @@ class TestGetLogsActivityType:
 
         assert "error" not in result
         assert len(result["logs"]) == 2
-        # ID降順なので新しいログが先
-        assert result["logs"][0]["id"] == l2["log_id"]
-        assert result["logs"][1]["id"] == l1["log_id"]
+        # ID降順なので新しいログが先（α化により id_raw が元 ID）
+        assert result["logs"][0]["id_raw"] == l2["log_id"]
+        assert result["logs"][1]["id_raw"] == l1["log_id"]
 
     def test_get_logs_by_activity_pagination_start_id(self, temp_db):
         """activityタイプのstart_idはID大小でフィルタリングされる"""
@@ -185,7 +186,8 @@ class TestGetLogsActivityType:
 
         assert "error" not in result
         # l2とl1が返る（l3はl2より大きいIDなので除外）
-        ids = [l["id"] for l in result["logs"]]
+        # α化により id は文字列 "title (#N)"、元の整数 ID は id_raw に退避
+        ids = [l["id_raw"] for l in result["logs"]]
         assert l3["log_id"] not in ids
         assert l2["log_id"] in ids
         assert l1["log_id"] in ids
@@ -266,7 +268,8 @@ class TestGetDecisionsTopicType:
 
         assert "error" not in result
         assert len(result["decisions"]) == 2
-        ids = [d["id"] for d in result["decisions"]]
+        # α化により id は文字列 "title (#N)"、元の整数 ID は id_raw に退避
+        ids = [d["id_raw"] for d in result["decisions"]]
         assert d1["decision_id"] not in ids
         assert second_id in ids
 
@@ -323,9 +326,9 @@ class TestGetDecisionsActivityType:
 
         assert "error" not in result
         assert len(result["decisions"]) == 2
-        # ID降順なので新しい決定が先
-        assert result["decisions"][0]["id"] == d2["decision_id"]
-        assert result["decisions"][1]["id"] == d1["decision_id"]
+        # ID降順なので新しい決定が先（α化により id_raw が元 ID）
+        assert result["decisions"][0]["id_raw"] == d2["decision_id"]
+        assert result["decisions"][1]["id_raw"] == d1["decision_id"]
 
     def test_get_decisions_by_activity_pagination(self, temp_db):
         """activityタイプのstart_idはID大小でフィルタリングされる"""
@@ -340,7 +343,8 @@ class TestGetDecisionsActivityType:
         result = get_decisions("activity", act["activity_id"], start_id=d2["decision_id"])
 
         assert "error" not in result
-        ids = [d["id"] for d in result["decisions"]]
+        # α化により id は文字列 "title (#N)"、元の整数 ID は id_raw に退避
+        ids = [d["id_raw"] for d in result["decisions"]]
         assert d3["decision_id"] not in ids
         assert d2["decision_id"] in ids
         assert d1["decision_id"] in ids

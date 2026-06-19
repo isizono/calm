@@ -4,6 +4,7 @@ import sqlite3
 
 from src.db import get_connection, row_to_dict
 from src.services import activity_service
+from src.services.alphaization import alphaize_result_dict_inplace
 from src.services.material_service import get_materials_by_relation_with_conn
 from src.services.relation_service import _get_map_with_conn
 from src.services.tag_service import (
@@ -59,15 +60,17 @@ def _get_topics_info(conn: sqlite3.Connection, topic_ids: list[int]) -> list[dic
     ).fetchall()
     dec_counts = count_decisions_per_topic(conn, topic_ids)
     mat_counts = count_materials_per_topic(conn, topic_ids)
-    return [
-        {
+    result = []
+    for row in rows:
+        item = {
             "id": row["id"],
             "title": row["title"],
             "decisions_count": dec_counts.get(row["id"], 0),
             "materials_count": mat_counts.get(row["id"], 0),
         }
-        for row in rows
-    ]
+        alphaize_result_dict_inplace(item, "topic")
+        result.append(item)
+    return result
 
 
 def _get_activities_overview(conn: sqlite3.Connection, activity_ids: list[int]) -> list[dict]:
@@ -79,7 +82,12 @@ def _get_activities_overview(conn: sqlite3.Connection, activity_ids: list[int]) 
         f"SELECT id, title, status FROM activities WHERE id IN ({placeholders})",
         tuple(activity_ids),
     ).fetchall()
-    return [{"id": row["id"], "title": row["title"], "status": row["status"]} for row in rows]
+    result = []
+    for row in rows:
+        item = {"id": row["id"], "title": row["title"], "status": row["status"]}
+        alphaize_result_dict_inplace(item, "activity")
+        result.append(item)
+    return result
 
 
 def _get_decisions_from_topics(conn: sqlite3.Connection, topic_ids: list[int]) -> list[dict]:
@@ -104,7 +112,9 @@ def _get_decisions_from_topics(conn: sqlite3.Connection, topic_ids: list[int]) -
     decisions = []
     for row in rows:
         # title優先・decision本文fallback
-        decisions.append({"id": row["id"], "title": row["title"] or row["decision"]})
+        item = {"id": row["id"], "title": row["title"] or row["decision"]}
+        alphaize_result_dict_inplace(item, "decision")
+        decisions.append(item)
     return decisions
 
 
@@ -153,6 +163,7 @@ def _get_logs_catalog_from_topics(
         return None, []
 
     latest_log = {"id": latest_row["id"], "title": latest_row["title"], "content": latest_row["content"]}
+    alphaize_result_dict_inplace(latest_log, "log")
 
     # 残り: id + titleのみ
     catalog_rows = conn.execute(
@@ -165,7 +176,11 @@ def _get_logs_catalog_from_topics(
         params + (latest_row["id"],),
     ).fetchall()
 
-    catalog = [{"id": row["id"], "title": row["title"]} for row in catalog_rows]
+    catalog = []
+    for row in catalog_rows:
+        item = {"id": row["id"], "title": row["title"]}
+        alphaize_result_dict_inplace(item, "log")
+        catalog.append(item)
     return latest_log, catalog
 
 
@@ -256,7 +271,9 @@ def _get_pinned_targets(conn: sqlite3.Connection, activity_id: int) -> dict:
             if did in row_map:
                 row = row_map[did]
                 # title優先・decision本文fallback
-                decisions.append({"id": row["id"], "title": row["title"] or row["decision"], "reason": row["reason"]})
+                item = {"id": row["id"], "title": row["title"] or row["decision"], "reason": row["reason"]}
+                alphaize_result_dict_inplace(item, "decision")
+                decisions.append(item)
         if decisions:
             result["decisions"] = decisions
 
@@ -276,7 +293,9 @@ def _get_pinned_targets(conn: sqlite3.Connection, activity_id: int) -> dict:
         for lid in ids:
             if lid in row_map:
                 row = row_map[lid]
-                logs.append({"id": row["id"], "title": row["title"], "content": row["content"]})
+                item = {"id": row["id"], "title": row["title"], "content": row["content"]}
+                alphaize_result_dict_inplace(item, "log")
+                logs.append(item)
         if logs:
             result["logs"] = logs
 
@@ -297,7 +316,9 @@ def _get_pinned_targets(conn: sqlite3.Connection, activity_id: int) -> dict:
         for mid in ids:
             if mid in row_map:
                 row = row_map[mid]
-                materials.append({"id": row["id"], "title": row["title"], "content": row["content"], "source": row["source"]})
+                item = {"id": row["id"], "title": row["title"], "content": row["content"], "source": row["source"]}
+                alphaize_result_dict_inplace(item, "material")
+                materials.append(item)
         if materials:
             result["materials"] = materials
 
@@ -318,7 +339,9 @@ def _get_pinned_targets(conn: sqlite3.Connection, activity_id: int) -> dict:
         for tid in ids:
             if tid in row_map:
                 row = row_map[tid]
-                topics.append({"id": row["id"], "title": row["title"]})
+                item = {"id": row["id"], "title": row["title"]}
+                alphaize_result_dict_inplace(item, "topic")
+                topics.append(item)
         if topics:
             result["topics"] = topics
 
@@ -339,7 +362,9 @@ def _get_pinned_targets(conn: sqlite3.Connection, activity_id: int) -> dict:
         for aid in ids:
             if aid in row_map:
                 row = row_map[aid]
-                activities.append({"id": row["id"], "title": row["title"], "status": row["status"]})
+                item = {"id": row["id"], "title": row["title"], "status": row["status"]}
+                alphaize_result_dict_inplace(item, "activity")
+                activities.append(item)
         if activities:
             result["activities"] = activities
 
@@ -565,7 +590,11 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
                WHERE ad.dependent_id = ?""",
             (activity_id,),
         ).fetchall()
-        dependencies = [{"id": r["id"], "title": r["title"], "status": r["status"]} for r in dep_rows]
+        dependencies = []
+        for r in dep_rows:
+            dep_item = {"id": r["id"], "title": r["title"], "status": r["status"]}
+            alphaize_result_dict_inplace(dep_item, "activity")
+            dependencies.append(dep_item)
 
         # 4. pinsテーブル経由のpinned targets取得（新pinsテーブル経由）
         pinned_targets = _get_pinned_targets(conn, activity_id)
@@ -619,15 +648,17 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
         summary = _build_summary(activity, tags)
 
         # 戻り値組み立て（coverageをトップレベルの最初のキーに）
+        activity_block = {
+            "id": activity["id"],
+            "title": activity["title"],
+            "description": activity["description"],
+            "status": activity["status"],
+            "tags": tags,
+        }
+        alphaize_result_dict_inplace(activity_block, "activity")
         result = {
             "coverage": coverage,
-            "activity": {
-                "id": activity["id"],
-                "title": activity["title"],
-                "description": activity["description"],
-                "status": activity["status"],
-                "tags": tags,
-            },
+            "activity": activity_block,
         }
 
         if related_topics:

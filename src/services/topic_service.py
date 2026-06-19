@@ -3,6 +3,7 @@ import re
 import sqlite3
 from typing import Optional
 from src.db import get_connection, row_to_dict
+from src.services.alphaization import alphaize_result_dict_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.relation_service import _add_relation_with_conn, _validate_targets
 from src.services.search_service import find_similar_topics
@@ -348,13 +349,15 @@ def get_topics(
             topics = []
             for row in rows:
                 topic = row_to_dict(row)
-                topics.append({
+                item = {
                     "id": topic["id"],
                     "title": topic["title"],
                     "description": (topic["description"] or "")[:TOPIC_DESC_MAX_LEN],
                     "tags": tags_map.get(topic["id"], []),
                     "created_at": topic["created_at"],
-                })
+                }
+                alphaize_result_dict_inplace(item, "topic")
+                topics.append(item)
 
             return {"topics": topics, "total_count": total_count}
 

@@ -633,8 +633,8 @@ def test_search_recency_boost_applied(temp_db, mock_embedding_model):
     topic_results = [r for r in result["results"] if r["type"] == "topic"]
     assert len(topic_results) >= 2
 
-    # 新しいトピックが古いトピックより先に来る
-    ids_in_order = [r["id"] for r in topic_results]
+    # 新しいトピックが古いトピックより先に来る（α化により id_raw が元 ID）
+    ids_in_order = [r["id_raw"] for r in topic_results]
     idx_new = ids_in_order.index(t_new["topic_id"])
     idx_old = ids_in_order.index(t_old["topic_id"])
     assert idx_new < idx_old, "新しいトピックが古いトピックより上位に来るべき"

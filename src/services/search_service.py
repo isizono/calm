@@ -10,6 +10,7 @@ from sqlite_vec import serialize_float32
 
 from src.db import execute_query, get_connection, row_to_dict
 from src.services import embedding_service
+from src.services.alphaization import alphaize_result_dict_inplace
 from src.services.tag_service import (
     get_entity_tags,
     get_entity_tags_batch,
@@ -1503,6 +1504,11 @@ def search(
 
         nearby_tags = _compute_nearby_tags(results, tag_ids, offset)
 
+        # α化: 各結果の id を「title (#NNN)」形式に置換し、元の id を id_raw に退避
+        # type フィールドは α化前に確定済みなのでそのまま参照する
+        for item in results:
+            alphaize_result_dict_inplace(item, item["type"])
+
         return {
             "results": results,
             "total_count": total_count,
@@ -1522,13 +1528,15 @@ def search(
 def _format_row(type_name: str, data: dict, tags: list[str]) -> dict:
     """typeに応じたレスポンス整形"""
     if type_name == 'topic':
-        return {
+        result = {
             "id": data["id"],
             "title": data["title"],
             "description": data["description"],
             "tags": tags,
             "created_at": data["created_at"],
         }
+        alphaize_result_dict_inplace(result, "topic")
+        return result
     elif type_name == 'decision':
         result = {
             "id": data["id"],
@@ -1541,9 +1549,10 @@ def _format_row(type_name: str, data: dict, tags: list[str]) -> dict:
         }
         if data.get("retracted_at"):
             result["retracted_at"] = data["retracted_at"]
+        alphaize_result_dict_inplace(result, "decision")
         return result
     elif type_name == 'activity':
-        return {
+        result = {
             "id": data["id"],
             "title": data["title"],
             "description": data["description"],
@@ -1552,6 +1561,8 @@ def _format_row(type_name: str, data: dict, tags: list[str]) -> dict:
             "created_at": data["created_at"],
             "updated_at": data["updated_at"],
         }
+        alphaize_result_dict_inplace(result, "activity")
+        return result
     elif type_name == 'log':
         title = data["title"]
         if not title:
@@ -1566,14 +1577,19 @@ def _format_row(type_name: str, data: dict, tags: list[str]) -> dict:
         }
         if data.get("retracted_at"):
             result["retracted_at"] = data["retracted_at"]
+        alphaize_result_dict_inplace(result, "log")
         return result
     elif type_name == 'material':
-        return {
+        result = {
             "material_id": data["id"],
             "title": data["title"],
             "tags": tags,
             "created_at": data["created_at"],
         }
+        alphaize_result_dict_inplace(
+            result, "material", id_key="material_id"
+        )
+        return result
     return data
 
 

@@ -5,6 +5,7 @@ import sqlite3
 from typing import Optional
 
 from src.db import get_connection, row_to_dict
+from src.services.alphaization import alphaize_result_dict_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.relation_service import _add_relation_with_conn, _validate_targets
 from src.services.tag_service import (
@@ -364,7 +365,7 @@ def get_activities(
         activities = []
         for row in rows:
             activity = row_to_dict(row)
-            activities.append({
+            item = {
                 "id": activity["id"],
                 "title": activity["title"],
                 "description": (activity["description"] or "")[:ACTIVITY_DESC_MAX_LEN],
@@ -373,7 +374,9 @@ def get_activities(
                 "created_at": activity["created_at"],
                 "updated_at": activity["updated_at"],
                 "is_heartbeat_active": bool(activity["is_heartbeat_active"]),
-            })
+            }
+            alphaize_result_dict_inplace(item, "activity")
+            activities.append(item)
 
         return {"activities": activities, "total_count": total_count}
 

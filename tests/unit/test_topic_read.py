@@ -396,10 +396,10 @@ def test_get_logs_multiple(temp_db):
 
     assert "error" not in result
     assert len(result["logs"]) == 3
-    assert result["logs"][0]["id"] == log1["log_id"]
+    assert result["logs"][0]["id_raw"] == log1["log_id"]
     assert result["logs"][0]["content"] == "Log 1"
-    assert result["logs"][1]["id"] == log2["log_id"]
-    assert result["logs"][2]["id"] == log3["log_id"]
+    assert result["logs"][1]["id_raw"] == log2["log_id"]
+    assert result["logs"][2]["id_raw"] == log3["log_id"]
 
 
 def test_get_logs_with_pagination(temp_db):
@@ -424,7 +424,7 @@ def test_get_logs_with_pagination(temp_db):
         limit=3,
     )
     assert len(result2["logs"]) == 2
-    assert result2["logs"][0]["id"] == logs[3]["log_id"]
+    assert result2["logs"][0]["id_raw"] == logs[3]["log_id"]
 
 
 def test_get_logs_with_tags(temp_db):
@@ -505,10 +505,10 @@ def test_get_decisions_multiple(temp_db):
 
     assert "error" not in result
     assert len(result["decisions"]) == 3
-    assert result["decisions"][0]["id"] == dec1["decision_id"]
+    assert result["decisions"][0]["id_raw"] == dec1["decision_id"]
     assert result["decisions"][0]["decision"] == "Decision 1"
-    assert result["decisions"][1]["id"] == dec2["decision_id"]
-    assert result["decisions"][2]["id"] == dec3["decision_id"]
+    assert result["decisions"][1]["id_raw"] == dec2["decision_id"]
+    assert result["decisions"][2]["id_raw"] == dec3["decision_id"]
 
 
 def test_get_decisions_with_pagination(temp_db):
@@ -537,7 +537,7 @@ def test_get_decisions_with_pagination(temp_db):
         limit=3,
     )
     assert len(result2["decisions"]) == 2
-    assert result2["decisions"][0]["id"] == decisions[3]["decision_id"]
+    assert result2["decisions"][0]["id_raw"] == decisions[3]["decision_id"]
 
 
 def test_get_decisions_with_tags(temp_db):

@@ -200,7 +200,8 @@ class TestGetMaterial:
         result = get_material(material_id)
 
         assert "error" not in result
-        assert result["material_id"] == material_id
+        # α化: material_id は文字列、元 ID は material_id_raw に退避
+        assert result["material_id_raw"] == material_id
         assert result["title"] == "Get Test"
         assert result["content"] == "Full content here"
         assert result["source"] == "コード調査"
@@ -251,7 +252,7 @@ class TestGetByIdMaterial:
 
         assert "error" not in result
         assert result["type"] == "material"
-        assert result["data"]["material_id"] == material_id
+        assert result["data"]["material_id_raw"] == material_id
         assert result["data"]["title"] == "ById Test"
         assert "content" not in result["data"]  # カタログ形式: 全文なし
         assert result["data"]["tags"] == ["domain:test"]  # material自身のタグ
@@ -280,7 +281,7 @@ class TestGetByIdMaterial:
         assert "error" not in result
         assert len(result["results"]) == 1
         assert result["results"][0]["type"] == "material"
-        assert result["results"][0]["data"]["material_id"] == material_id
+        assert result["results"][0]["data"]["material_id_raw"] == material_id
 
     def test_get_by_ids_mixed_types(self, activity_id):
         """get_by_idsでmaterialと他のtypeを混在して取得できる"""
@@ -302,10 +303,10 @@ class TestGetByIdMaterial:
         assert len(result["results"]) == 2
         # material
         assert result["results"][0]["type"] == "material"
-        assert result["results"][0]["data"]["material_id"] == material_id
+        assert result["results"][0]["data"]["material_id_raw"] == material_id
         # activity
         assert result["results"][1]["type"] == "activity"
-        assert result["results"][1]["data"]["id"] == activity_id
+        assert result["results"][1]["data"]["id_raw"] == activity_id
 
 
 class TestUpdateMaterial:

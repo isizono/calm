@@ -2,6 +2,7 @@
 import sqlite3
 from typing import Optional
 from src.db import get_connection, row_to_dict
+from src.services.alphaization import alphaize_result_dict_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.tag_service import (
     validate_and_parse_tags,
@@ -264,8 +265,11 @@ def get_decisions(
             decisions = []
             for row in rows:
                 dec = row_to_dict(row)
+                # α化用 title: 明示 title 優先、無ければ decision 本文先頭をフォールバック
+                display_title = dec.get("title") or (dec["decision"] or "")[:50]
                 item = {
                     "id": dec["id"],
+                    "title": display_title,
                     "decision": dec["decision"],
                     "reason": dec["reason"],
                     "tags": tags_map.get(dec["id"], []),
@@ -273,6 +277,7 @@ def get_decisions(
                 }
                 if dec.get("retracted_at"):
                     item["retracted_at"] = dec["retracted_at"]
+                alphaize_result_dict_inplace(item, "decision")
                 decisions.append(item)
 
             return {
@@ -321,8 +326,11 @@ def get_decisions(
             decisions = []
             for row in rows:
                 dec = row_to_dict(row)
+                # α化用 title: 明示 title 優先、無ければ decision 本文先頭をフォールバック
+                display_title = dec.get("title") or (dec["decision"] or "")[:50]
                 item = {
                     "id": dec["id"],
+                    "title": display_title,
                     "decision": dec["decision"],
                     "reason": dec["reason"],
                     "tags": tags_map.get(dec["id"], []),
@@ -330,6 +338,7 @@ def get_decisions(
                 }
                 if dec.get("retracted_at"):
                     item["retracted_at"] = dec["retracted_at"]
+                alphaize_result_dict_inplace(item, "decision")
                 decisions.append(item)
 
             return {"decisions": decisions}
