@@ -226,12 +226,13 @@ worker 起動時と terminated 直前に append される身元情報。orchは 
    "model":"...",
    "cwd":"...",
    "session_id":"...",
+   "term_ref":"<tmux pane_id / iterm2 session UUID 等>",  // worker が scripts/ow/get_term_ref.sh で取得
    "terminated_at":"<UTC ISO8601>",   // terminated 直前の再 append でのみ set
    "cause":"closed|cancelled|dead"     // terminated 直前の再 append でのみ set
  }}
 ```
 
-identity から **削除された属性**: `task_n`（activity_id から逆引き可能）、`permission_mode`（auto 固定）、`user`（relay 非参加者）。設計書v3 §6.3.1 参照。
+identity から **削除された属性**: `task_n`（activity_id から逆引き可能）、`permission_mode`（auto 固定）、`user`（relay 非参加者）。`term_ref` は `ow_spawn_worker` の spawn 戻り値と同形式で、orch が当該 worker のターミナル peer を逆引きする際の安定 ID として機能する（FT-X self-close 機構の前提情報、D#2608/D#2610）。設計書v3 §6.3.1 参照。
 
 ### heartbeat（event:heartbeat）
 
