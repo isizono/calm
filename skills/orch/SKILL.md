@@ -354,6 +354,44 @@ orchは `ow_get_workload_state(channel, handle)` で現在のstateを参照し�
 
 **spawning（ready前）タイムアウト**: spawning は orch 側 queue の状態。worker が `event:identity` または `event:state(loading)` を送る前に timeout_min 経過した場合は、spawn失敗の可能性が高い（cwd不在・aliasぶつかり・relay疎通断等）。`ow_recover` で pending_spawn として検出される。
 
+## stagnation detector (Phase A: ow_sentinel)
+
+watchdog が「死活 (heartbeat 途絶)」を見るのに対し、stagnation detector は「詰まり (heartbeat 継続中に state 遷移が起きない)」を見る。両者は責務分離・併走であり、stagnation が watchdog の前段に位置する fallback 仕組み (M#388 / D#2752)。
+
+**監視対象 state と閾値**:
+
+| 観測 state | 期待される遷移 | 閾値 | 検出する詰まり |
+|---|---|---|---|
+| `ready` | `working` (auto-assign 成功) | **60秒** | auto-assign 不発 |
+| `draining` | `terminated` | **90秒** | close ハンドシェイク失敗 / worker-sync 詰まり |
+
+`loading` / `working` / `blocked` / `escalated` は対象外 (`loading` は巨大 context warm-up を許容、他は heartbeat watchdog または人間判断側でカバー)。
+
+**Phase A 実装**: `scripts/ow/sentinel.py` を別 process として orch と並走起動する (薄実装、Phase B = ow_service projector への push hook 統合で廃止予定)。
+
+```bash
+RELAY_URL=http://127.0.0.1:8765 python3 scripts/ow/sentinel.py <channel_code> &
+```
+
+sentinel は relay `/history` を 5秒間隔で polling し、state event / identity event から各 handle の現在 state を追跡する。閾値超え時に handle=`ow_sentinel` で stagnation event を append する。
+
+**sentinel envelope 形式**:
+
+```json
+{"v":1, "kind":"event", "from":"ow_sentinel", "to":"orch", "task":"T<n>",
+ "data":{"type":"stagnation", "target_handle":"<alias>",
+         "target_state":"ready|draining", "elapsed_sec":<int>, "threshold_sec":<int>}}
+```
+
+**orch 側受信時の対処**: 既存 Monitor SSE 経路 (`recv_filter.py` は `to:"orch"` を通す) で受信される。`data.type=="stagnation"` を見たら以下を判断する:
+
+- `target_state="ready"` → auto-assign 不発の疑い。`command:assign` を明示送信、または worker 側 SKILL 不発の調査
+- `target_state="draining"` → close ハンドシェイク失敗の疑い。`command:close` 再送、または `ow_recover` で stalled_close 候補を確認
+
+**重複抑止**: 同一 `(target_handle, target_state)` の閾値超過中は 1回だけ通知される。worker が次の state に遷移する (またはterminated になる) と sentinel 側で watch entry が解除され、再度 ready / draining に入った場合は新規 entry として再武装される。
+
+**watchdog との発火順序**: 典型的には ready 滞留時 → 60秒 で stagnation 先行発火 → orch が対処判断 → 解決すれば watchdog 不要。orch 対処後も worker が動かず heartbeat も止まる場合は、別途 watchdog (90秒) が crash 推論する。
+
 ## モデル選択 (プロトコル制約のみ)
 
 `command:assign` envelope では `model` が必須フィールド。値の選び方は合算版 playbook の §モデル選択 セクションに従う (一般版・特化版で上書きされうる)。
