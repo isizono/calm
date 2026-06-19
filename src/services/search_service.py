@@ -1,8 +1,10 @@
 """FTS5 + ベクトル ハイブリッド検索サービス"""
+import json
 import logging
 import math
 import re
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -1503,6 +1505,23 @@ def search(
 
         nearby_tags = _compute_nearby_tags(results, tag_ids, offset)
 
+        _record_search_telemetry_async(
+            query=keyword,
+            parameters={
+                "tags": tags,
+                "entity_type": entity_type,
+                "limit": limit,
+                "offset": offset,
+                "keyword_mode": keyword_mode,
+                "include_details": include_details,
+                "domain": domain,
+                "date_after": date_after,
+                "date_before": date_before,
+                "include_retracted": include_retracted,
+            },
+            result_count=total_count,
+        )
+
         return {
             "results": results,
             "total_count": total_count,
@@ -1517,6 +1536,46 @@ def search(
                 "message": str(e),
             }
         }
+
+
+def _record_search_telemetry_async(
+    query: str | list[str],
+    parameters: dict,
+    result_count: int,
+) -> threading.Thread:
+    """search 呼出の telemetry を別スレッドで非同期書込する。
+
+    search() のレスポンスタイムに影響しないよう daemon thread で走らせる。
+    書込中の例外は logger.warning に出して握りつぶし、search 本体を壊さない。
+
+    Returns:
+        起動した daemon Thread。テストから join() で完了待機できるよう返す。
+    """
+    def _write() -> None:
+        try:
+            query_json = json.dumps(query, ensure_ascii=False)
+            parameters_json = json.dumps(parameters, ensure_ascii=False)
+        except (TypeError, ValueError) as e:
+            logger.warning("search_telemetry serialize failed: %s", e)
+            return
+
+        try:
+            conn = get_connection()
+            try:
+                conn.execute(
+                    "INSERT INTO search_telemetry (query, parameters, result_count) "
+                    "VALUES (?, ?, ?)",
+                    (query_json, parameters_json, int(result_count)),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.warning("search_telemetry write failed: %s", e)
+
+    thread = threading.Thread(target=_write, daemon=True)
+    thread.start()
+    return thread
 
 
 def _format_row(type_name: str, data: dict, tags: list[str]) -> dict:
