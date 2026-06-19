@@ -37,8 +37,13 @@ def _run_session_start_hook(
     db_path: str,
     extra_env: dict | None = None,
     env_remove: list[str] | None = None,
+    stdin_payload: dict | None = None,
 ) -> dict:
-    """session_start_hook.pyを実行してJSON出力を返す"""
+    """session_start_hook.pyを実行してJSON出力を返す。
+
+    stdin_payload を指定すると {session_id: ...} などを stdin に流し込める
+    (P1-7 の自セッション照合テスト用)。
+    """
     env = {**os.environ, "DISCUSSION_DB_PATH": db_path}
     # runnerのOW_ROLEを継承しない（テストの決定性確保。worker抑制テストはextra_envで明示設定する）
     env.pop("OW_ROLE", None)
@@ -48,9 +53,10 @@ def _run_session_start_hook(
         for key in env_remove:
             env.pop(key, None)
 
+    payload_str = "{}" if stdin_payload is None else json.dumps(stdin_payload)
     result = subprocess.run(
         [sys.executable, "hooks/session_start_hook.py"],
-        input="{}",
+        input=payload_str,
         capture_output=True,
         text=True,
         cwd=str(PROJECT_ROOT),
@@ -626,3 +632,87 @@ class TestSessionStartHookTopicGrouping:
         context = result["hookSpecificOutput"]["additionalContext"]
 
         assert "# スコアリング指示" in context
+
+
+def _set_heartbeat(activity_id: int, session_id: str | None) -> None:
+    """activity の heartbeat を「今」に更新し session_id を同梱する"""
+    from datetime import datetime, timezone
+
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE activities SET last_heartbeat_at = ?, last_heartbeat_session_id = ? WHERE id = ?",
+            (now_iso, session_id, activity_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+class TestSessionStartHookSelfSessionHeartbeat:
+    """P1-7: 自セッション自身の heartbeat を「別セッション扱い」しない"""
+
+    def test_self_session_heartbeat_not_in_other_session_block(self, temp_db):
+        """stdin session_id と一致する heartbeat は「## 作業中（別セッション）」に出ない"""
+        activity_id = _seed_activity("[作業] 自セッション中", status="in_progress")
+        _set_heartbeat(activity_id, session_id="sess-self")
+
+        result = _run_session_start_hook(
+            temp_db, stdin_payload={"session_id": "sess-self"}
+        )
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        # 「別セッション」ブロック自体が出ないか、出ても対象 activity が含まれない
+        if "## 作業中（別セッション）" in context:
+            other_block_start = context.index("## 作業中（別セッション）")
+            # 直後セクションまでで切り出す
+            tail = context[other_block_start:]
+            next_section = tail.find("\n## ", 1)
+            other_block = tail if next_section == -1 else tail[:next_section]
+            assert f"[{activity_id}]" not in other_block, (
+                "自セッションの heartbeat が「作業中（別セッション）」に出てしまっている"
+            )
+
+    def test_other_session_heartbeat_in_other_session_block(self, temp_db):
+        """別 session_id の heartbeat は引き続き「## 作業中（別セッション）」に出る"""
+        activity_id = _seed_activity("[作業] 別セッション中", status="in_progress")
+        _set_heartbeat(activity_id, session_id="sess-other")
+
+        result = _run_session_start_hook(
+            temp_db, stdin_payload={"session_id": "sess-self"}
+        )
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "## 作業中（別セッション）" in context
+        heartbeat_idx = context.index("## 作業中（別セッション）")
+        assert f"[{activity_id}]" in context[heartbeat_idx:], (
+            "他セッション heartbeat が「作業中（別セッション）」に出ていない"
+        )
+
+    def test_null_session_id_falls_back_to_other_session(self, temp_db):
+        """last_heartbeat_session_id=NULL（カラム導入前データ）は従来通り別セッション扱い"""
+        activity_id = _seed_activity("[作業] 旧データ", status="in_progress")
+        _set_heartbeat(activity_id, session_id=None)
+
+        result = _run_session_start_hook(
+            temp_db, stdin_payload={"session_id": "sess-self"}
+        )
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "## 作業中（別セッション）" in context
+        heartbeat_idx = context.index("## 作業中（別セッション）")
+        assert f"[{activity_id}]" in context[heartbeat_idx:]
+
+    def test_no_stdin_session_id_keeps_other_session_block(self, temp_db):
+        """stdin に session_id が無い場合は照合不能 → 従来通り別セッション扱い"""
+        activity_id = _seed_activity("[作業] sid不明", status="in_progress")
+        _set_heartbeat(activity_id, session_id="sess-anything")
+
+        # 引数省略で stdin_payload=None → {}
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "## 作業中（別セッション）" in context
+        heartbeat_idx = context.index("## 作業中（別セッション）")
+        assert f"[{activity_id}]" in context[heartbeat_idx:]

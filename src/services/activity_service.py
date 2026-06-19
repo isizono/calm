@@ -420,13 +420,17 @@ def get_active_domains() -> list[dict]:
 def get_active_activities_by_tag_with_conn(conn, tag_id: int) -> list[dict]:
     """domain:タグに紐づくホットアクティビティを取得する（conn共有版）。
 
+    last_heartbeat_session_id は呼び出し側（session_start_hook）が自セッション
+    照合に使うため一緒に返す。
+
     Returns:
-        [{"id": int, "title": str, "status": str, "updated_at": str, "is_heartbeat_active": bool}, ...]
+        [{"id": int, "title": str, "status": str, "updated_at": str,
+          "last_heartbeat_session_id": str | None, "is_heartbeat_active": bool}, ...]
         （in_progress優先、updated_at降順）
     """
     rows = conn.execute(
         """
-        SELECT a.id, a.title, a.status, a.updated_at,
+        SELECT a.id, a.title, a.status, a.updated_at, a.last_heartbeat_session_id,
                CASE WHEN a.last_heartbeat_at > datetime('now', '-' || ? || ' minutes') THEN 1 ELSE 0 END AS is_heartbeat_active
         FROM activities a
         JOIN activity_tags at ON a.id = at.activity_id
