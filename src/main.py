@@ -202,7 +202,6 @@ def add_logs(items: list[dict]) -> dict:
 
     Returns: {created: [...], errors: [{index, error}]}
     """
-    guard_service.check_worker_guard("add_logs")
     result = discussion_log_service.add_logs(items)
     if "error" not in result:
         # tag_notes: 全アイテムのタグをUNIONして1回注入
@@ -846,7 +845,12 @@ def get_map(
 
 @mcp.tool()
 def add_habit(content: str) -> dict:
-    """エージェントの振る舞いを登録する。check-in時に自動注入され、以降の行動に反映される。"覚えといて"と言われた行動ルールはここに登録する"""
+    """エージェントの振る舞いを登録する。check-in時に自動注入され、以降の行動に反映される。"覚えといて"と言われた行動ルールはここに登録する
+
+    note: 現在は worker ガードの対象外。ユーザー承認を要する書き込みである点は
+    add_decisions / add_topic と同様なので、将来の議論によりガード対象に
+    含める余地がある。
+    """
     return habit_service.add_habit(content)
 
 

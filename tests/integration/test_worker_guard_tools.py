@@ -1,9 +1,12 @@
-"""add_decisions / add_logs / add_topic MCPツールの worker ガード統合テスト。
+"""add_decisions / add_topic MCPツールの worker ガード統合テスト。
 
 guard_service.check_worker_guard が main.py の MCP ツール冒頭で正しく実行され、
 worker セッションから直接呼ばれた場合に WorkerGuardError が raise されること、
 OW_ESCALATION=1 / OW_ROLE 未設定 / OW_ROLE=orch の場合は通過してツール本体が
 実行されることを検証する。
+
+add_logs は worker-sync の退場処理で必須の直接呼び出しになるためガード対象外。
+本テストでも add_logs はカバーしない (回帰検出は既存 batch logs テストに任せる)。
 """
 import os
 import tempfile
@@ -101,51 +104,18 @@ class TestAddTopicWorkerGuard:
         assert "topic_id" in result
 
 
-class TestAddLogsWorkerGuard:
-    """add_logs への worker ガード。"""
+class TestAddLogsBypassesGuard:
+    """add_logs はガード対象外 (worker-sync 退場処理で必須直接呼び出し)。"""
 
-    def test_worker_session_raises(self, temp_db, monkeypatch):
-        """OW_ROLE=worker のとき WorkerGuardError を raise する。"""
+    def test_worker_session_passes_through(self, temp_db, existing_topic, monkeypatch):
+        """OW_ROLE=worker でも add_logs はガードに引っかからず通過する。"""
         from src.main import add_logs
 
         monkeypatch.setenv("OW_ROLE", "worker")
-        with pytest.raises(WorkerGuardError) as exc_info:
-            add_logs(items=[{"topic_id": 1, "content": "blocked write"}])
-        assert "add_logs" in str(exc_info.value)
-
-    def test_worker_with_escalation_passes(self, temp_db, existing_topic, monkeypatch):
-        """OW_ROLE=worker かつ OW_ESCALATION=1 → ガード通過。"""
-        from src.main import add_logs
-
-        monkeypatch.setenv("OW_ROLE", "worker")
-        monkeypatch.setenv("OW_ESCALATION", "1")
+        monkeypatch.delenv("OW_ESCALATION", raising=False)
         result = add_logs(items=[{
             "topic_id": existing_topic,
-            "content": "Escalation log payload.",
-        }])
-        assert "error" not in result
-        assert "created" in result
-
-    def test_orch_role_passes(self, temp_db, existing_topic, monkeypatch):
-        """OW_ROLE=orch → ガード通過。"""
-        from src.main import add_logs
-
-        monkeypatch.setenv("OW_ROLE", "orch")
-        result = add_logs(items=[{
-            "topic_id": existing_topic,
-            "content": "Orch direct log.",
-        }])
-        assert "error" not in result
-        assert "created" in result
-
-    def test_no_role_passes(self, temp_db, existing_topic, monkeypatch):
-        """OW_ROLE 未設定 → ガード通過。"""
-        from src.main import add_logs
-
-        monkeypatch.delenv("OW_ROLE", raising=False)
-        result = add_logs(items=[{
-            "topic_id": existing_topic,
-            "content": "Normal session log.",
+            "content": "worker-sync exit log payload.",
         }])
         assert "error" not in result
         assert "created" in result
@@ -232,15 +202,13 @@ class TestAddDecisionsWorkerGuard:
 class TestGuardMessageContent:
     """raise されたメッセージで案内文言が含まれることを統合経由で確認する。"""
 
-    def test_message_includes_recording_skill_guidance(self, temp_db, monkeypatch):
-        """recording skill 経由の記録方法を案内する。"""
+    def test_message_includes_guidance(self, temp_db, monkeypatch):
+        """メッセージで orch 経由の記録と OW_ESCALATION=1 通過手段を案内する。"""
         from src.main import add_topic
 
         monkeypatch.setenv("OW_ROLE", "worker")
         with pytest.raises(WorkerGuardError) as exc_info:
             add_topic(title="x", description="x", tags=["domain:test"])
         message = str(exc_info.value)
-        assert "recording skill" in message
         assert "orch" in message
-        assert "エスカレーション" in message
         assert "OW_ESCALATION=1" in message

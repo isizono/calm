@@ -123,21 +123,14 @@ class TestWorkerGuardErrorMessage:
             check_worker_guard("add_topic")
         assert "add_topic" in str(exc_info.value)
 
-    def test_message_guides_to_recording_skill(self, monkeypatch):
-        """メッセージで recording skill 経由の記録方法を案内する。"""
-        monkeypatch.setenv("OW_ROLE", "worker")
-        with pytest.raises(WorkerGuardError) as exc_info:
-            check_worker_guard("add_logs")
-        assert "recording skill" in str(exc_info.value)
-
-    def test_message_guides_to_orch_escalation(self, monkeypatch):
-        """メッセージで orch エスカレーション経路を案内する。"""
+    def test_message_guides_to_orch(self, monkeypatch):
+        """メッセージで orch 経由でユーザー合意を取って記録する方針を案内する。"""
         monkeypatch.setenv("OW_ROLE", "worker")
         with pytest.raises(WorkerGuardError) as exc_info:
             check_worker_guard("add_decisions")
         message = str(exc_info.value)
         assert "orch" in message
-        assert "エスカレーション" in message
+        assert "ユーザー合意" in message
 
     def test_message_mentions_escalation_env(self, monkeypatch):
         """メッセージで OW_ESCALATION=1 通過手段を明示する。"""
