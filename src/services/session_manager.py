@@ -4,12 +4,46 @@ HTTPサーバーモードで使用するセッションカウント管理と自�
 セッション数が0になると猶予期間後にサーバーをシャットダウンする。
 """
 import logging
+import os
+import sys
 import threading
 from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_GRACE_PERIOD_SEC = 30
+GRACE_PERIOD_ENV = "CC_MEMORY_AUTO_SHUTDOWN_SEC"
+
+
+def _read_grace_period_sec() -> int:
+    """env から猶予期間を読む。
+
+    未設定・空文字・無効値の場合は ``DEFAULT_GRACE_PERIOD_SEC`` にフォールバックする。
+    0 を指定すると auto-shutdown ウォッチドッグを完全に無効化する。
+
+    モジュール外から ``SessionManager()`` 呼び出し時に評価される想定で、
+    ``logging.basicConfig`` 未設定でも警告が確実に出るよう ``print`` で stderr に出す。
+    """
+    raw = os.environ.get(GRACE_PERIOD_ENV)
+    if raw is None or raw == "":
+        return DEFAULT_GRACE_PERIOD_SEC
+    try:
+        value = int(raw)
+    except ValueError:
+        print(
+            f"[session_manager] WARNING Invalid {GRACE_PERIOD_ENV}={raw!r}, "
+            f"falling back to default {DEFAULT_GRACE_PERIOD_SEC}s",
+            file=sys.stderr,
+        )
+        return DEFAULT_GRACE_PERIOD_SEC
+    if value < 0:
+        print(
+            f"[session_manager] WARNING {GRACE_PERIOD_ENV} must be >= 0, "
+            f"got {value}, falling back to default {DEFAULT_GRACE_PERIOD_SEC}s",
+            file=sys.stderr,
+        )
+        return DEFAULT_GRACE_PERIOD_SEC
+    return value
 
 
 class SessionManager:
@@ -17,12 +51,19 @@ class SessionManager:
 
     スレッドセーフ。register/unregisterはHTTPリクエストハンドラから呼ばれる。
     ウォッチドッグはバックグラウンドスレッドで動作し、セッション0 → 猶予期間 → shutdownを行う。
+
+    ``grace_period_sec`` が ``None`` の場合は env ``CC_MEMORY_AUTO_SHUTDOWN_SEC`` から
+    値を読む。env で 0 を指定すると auto-shutdown を完全に無効化し、ウォッチドッグ
+    スレッドの起動とシャットダウン発火を一切行わない。
     """
 
-    def __init__(self, grace_period_sec: int = DEFAULT_GRACE_PERIOD_SEC):
+    def __init__(self, grace_period_sec: Optional[int] = None):
         self._active_sessions: set[str] = set()
         self._lock = threading.Lock()
-        self._grace_period = grace_period_sec
+        self._grace_period = (
+            grace_period_sec if grace_period_sec is not None
+            else _read_grace_period_sec()
+        )
         self._shutdown_callback: Optional[Callable[[], None]] = None
         self._shutdown_event = threading.Event()
         self._cancel_event = threading.Event()
@@ -96,8 +137,23 @@ class SessionManager:
         """
         self._start_grace_timer()
 
+    @property
+    def is_auto_shutdown_disabled(self) -> bool:
+        """auto-shutdown が env により無効化されているかを返す。"""
+        return self._grace_period == 0
+
     def _start_grace_timer(self) -> None:
-        """猶予期間タイマーを（再）開始する。"""
+        """猶予期間タイマーを（再）開始する。
+
+        env で grace_period=0 が指定されている場合は auto-shutdown 完全無効モードと
+        みなしてタイマーを起動しない。
+        """
+        if self._grace_period == 0:
+            logger.info(
+                f"Auto-shutdown disabled ({GRACE_PERIOD_ENV}=0), "
+                "skipping grace timer start"
+            )
+            return
         with self._lock:
             # 既存のタイマーをキャンセル
             self._cancel_event.set()

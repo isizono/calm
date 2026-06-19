@@ -2,7 +2,12 @@
 import threading
 import time
 
-from src.services.session_manager import SessionManager
+from src.services.session_manager import (
+    DEFAULT_GRACE_PERIOD_SEC,
+    GRACE_PERIOD_ENV,
+    SessionManager,
+    _read_grace_period_sec,
+)
 
 
 class TestRegisterUnregister:
@@ -123,3 +128,122 @@ class TestGraceTimer:
 
         # 合計で猶予期間分待てばshutdownされる
         assert shutdown_called.wait(timeout=5) is True
+
+
+class TestReadGracePeriodSec:
+    """env CC_MEMORY_AUTO_SHUTDOWN_SEC を読み取るヘルパーの単体テスト"""
+
+    def test_env_unset_returns_default(self, monkeypatch):
+        """env未設定時は30秒デフォルトを返す"""
+        monkeypatch.delenv(GRACE_PERIOD_ENV, raising=False)
+        assert _read_grace_period_sec() == DEFAULT_GRACE_PERIOD_SEC
+        assert DEFAULT_GRACE_PERIOD_SEC == 30
+
+    def test_env_empty_returns_default(self, monkeypatch):
+        """env空文字時はデフォルトにフォールバック"""
+        monkeypatch.setenv(GRACE_PERIOD_ENV, "")
+        assert _read_grace_period_sec() == DEFAULT_GRACE_PERIOD_SEC
+
+    def test_env_numeric_returns_value(self, monkeypatch):
+        """env数値指定時はその値を返す"""
+        monkeypatch.setenv(GRACE_PERIOD_ENV, "120")
+        assert _read_grace_period_sec() == 120
+
+    def test_env_zero_returns_zero(self, monkeypatch):
+        """env=0 は0をそのまま返す（auto-shutdown無効化マーカー）"""
+        monkeypatch.setenv(GRACE_PERIOD_ENV, "0")
+        assert _read_grace_period_sec() == 0
+
+    def test_env_invalid_returns_default(self, monkeypatch, capsys):
+        """env無効値時はデフォルトにフォールバック + stderr警告"""
+        monkeypatch.setenv(GRACE_PERIOD_ENV, "abc")
+        assert _read_grace_period_sec() == DEFAULT_GRACE_PERIOD_SEC
+        captured = capsys.readouterr()
+        assert "WARNING" in captured.err
+        assert "Invalid" in captured.err
+
+    def test_env_negative_returns_default(self, monkeypatch, capsys):
+        """env負値時はデフォルトにフォールバック + stderr警告"""
+        monkeypatch.setenv(GRACE_PERIOD_ENV, "-1")
+        assert _read_grace_period_sec() == DEFAULT_GRACE_PERIOD_SEC
+        captured = capsys.readouterr()
+        assert "WARNING" in captured.err
+        assert ">= 0" in captured.err
+
+
+class TestEnvOverride:
+    """SessionManager コンストラクタの env override 挙動"""
+
+    def test_default_uses_env_value(self, monkeypatch):
+        """grace_period_sec未指定時はenvから読む"""
+        monkeypatch.setenv(GRACE_PERIOD_ENV, "120")
+        mgr = SessionManager()
+        assert mgr._grace_period == 120
+
+    def test_default_unset_env_uses_30s(self, monkeypatch):
+        """env未設定時は30秒デフォルトを採用する"""
+        monkeypatch.delenv(GRACE_PERIOD_ENV, raising=False)
+        mgr = SessionManager()
+        assert mgr._grace_period == DEFAULT_GRACE_PERIOD_SEC
+        assert mgr._grace_period == 30
+
+    def test_explicit_arg_overrides_env(self, monkeypatch):
+        """grace_period_sec明示指定時はenvより優先される"""
+        monkeypatch.setenv(GRACE_PERIOD_ENV, "120")
+        mgr = SessionManager(grace_period_sec=5)
+        assert mgr._grace_period == 5
+
+    def test_explicit_zero_overrides_env(self, monkeypatch):
+        """grace_period_sec=0明示時もenvより優先される"""
+        monkeypatch.setenv(GRACE_PERIOD_ENV, "120")
+        mgr = SessionManager(grace_period_sec=0)
+        assert mgr._grace_period == 0
+        assert mgr.is_auto_shutdown_disabled is True
+
+
+class TestAutoShutdownDisabled:
+    """env=0 で auto-shutdown が完全に無効化されることの検証"""
+
+    def test_env_zero_disables_watchdog(self, monkeypatch):
+        """env=0 で start_watchdog 呼び出してもタイマースレッドが起動しない"""
+        monkeypatch.setenv(GRACE_PERIOD_ENV, "0")
+        mgr = SessionManager()
+        assert mgr.is_auto_shutdown_disabled is True
+
+        shutdown_called = threading.Event()
+        mgr.set_shutdown_callback(shutdown_called.set)
+        mgr.start_watchdog()
+
+        # ウォッチドッグスレッドが起動していないこと
+        assert mgr._watchdog_thread is None
+        # シャットダウンも発火しない
+        assert shutdown_called.wait(timeout=2) is False
+        assert mgr.is_shutdown_requested is False
+
+    def test_env_zero_disables_unregister_trigger(self, monkeypatch):
+        """env=0 で最後のセッション解除でもシャットダウンが発火しない"""
+        monkeypatch.setenv(GRACE_PERIOD_ENV, "0")
+        mgr = SessionManager()
+
+        shutdown_called = threading.Event()
+        mgr.set_shutdown_callback(shutdown_called.set)
+
+        mgr.register("s1")
+        mgr.unregister("s1")
+
+        # 無効化されているのでシャットダウンは呼ばれない
+        assert shutdown_called.wait(timeout=2) is False
+        assert mgr.is_shutdown_requested is False
+        assert mgr._watchdog_thread is None
+
+    def test_register_unregister_still_work_when_disabled(self, monkeypatch):
+        """env=0 でも register/unregister 自体は正常動作する"""
+        monkeypatch.setenv(GRACE_PERIOD_ENV, "0")
+        mgr = SessionManager()
+
+        assert mgr.register("s1") is True
+        assert mgr.register("s2") is True
+        assert mgr.active_count == 2
+        assert mgr.session_ids == {"s1", "s2"}
+        assert mgr.unregister("s1") is True
+        assert mgr.active_count == 1
