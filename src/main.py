@@ -295,6 +295,8 @@ def get_logs(
     include_retracted: bool = False,
 ) -> dict:
     """
+    Choose: topic/activity に紐づく log 一覧が欲しいとき。決定事項一覧なら get_decisions、log/decision/material の混合時系列なら get_timeline、起点からの関連グラフ走査なら get_map。
+
     指定エンティティの議論ログを取得する。
 
     Args:
@@ -325,6 +327,8 @@ def get_decisions(
     include_retracted: bool = False,
 ) -> dict:
     """
+    Choose: topic/activity に紐づく decision 一覧が欲しいとき。議論経緯の log なら get_logs、log/decision/material の混合時系列なら get_timeline、起点からの関連グラフ走査なら get_map。
+
     指定エンティティに関連する決定事項を取得する。
 
     Args:
@@ -405,6 +409,8 @@ def get_by_ids(
     items: list[dict],
 ) -> dict:
     """
+    Choose: search 結果の type+id ペアを本文付きで一括取得したいとき（複数種別 OK）。material 単独なら get_material、topic/activity 起点の log/decision 集約なら get_logs / get_decisions、関連グラフ走査なら get_map。
+
     search結果の詳細情報を取得する。
 
     searchツールで得られたtype + idペアを指定して、
@@ -715,6 +721,8 @@ def get_material(
     material_id: int,
 ) -> dict:
     """
+    Choose: material_id 既知で資材の全文だけ取得したいとき。複数種別を一括なら get_by_ids、activity 配下の関連 material カタログなら check_in、起点からの関連グラフ走査なら get_map。
+
     資材の全文を取得する。
 
     get_by_idsで取得したmaterial概要の詳細を取得する際に使う（2段階リードの後半）。
@@ -733,6 +741,8 @@ def check_in(
     activity_id: int,
 ) -> dict:
     """
+    Choose: アクティビティに着手するときに関連情報を一括取得したいとき（status を in_progress に自動更新）。関連グラフだけ俯瞰したいなら get_map、log/decision/material の時系列なら get_timeline、log だけなら get_logs。
+
     アクティビティにcheck-inする。関連情報を集約取得しsummaryを返す。
 
     既存アクティビティに関連する作業を始めるときに呼ぶ。
@@ -826,6 +836,8 @@ def get_map(
     max_depth: int = 2,
 ) -> dict:
     """
+    Choose: 起点エンティティから relation を辿って到達可能な topic/activity/material のカタログが欲しいとき。log/decision/material の時系列なら get_timeline、特定 activity の文脈集約なら check_in、log/decision の本文一覧なら get_logs / get_decisions。
+
     リレーショングラフを走査し、到達可能エンティティのカタログを返す。
 
     再帰的にリレーションを辿り、指定深度範囲のエンティティをカタログ形式で返す。
@@ -964,7 +976,10 @@ def get_timeline(
     limit: int = 50,
     order: str = "desc",
 ) -> dict:
-    """トピックまたはアクティビティに紐づくdecision・log・materialを時系列で返す。
+    """
+    Choose: topic/activity に紐づく decision/log/material を時系列順に並べたいとき。log だけなら get_logs、decision だけなら get_decisions、関連グラフ走査なら get_map、activity の文脈集約なら check_in。
+
+    トピックまたはアクティビティに紐づくdecision・log・materialを時系列で返す。
 
     Args:
         topic_id: トピックID（activity_idと排他）
