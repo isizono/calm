@@ -9,6 +9,8 @@ src/main.py の entity_type / source_type / target_type / entity_types
 
 を確認する。
 """
+import asyncio
+import functools
 import json
 
 import pytest
@@ -17,23 +19,28 @@ from pydantic import ValidationError
 from src.main import mcp
 from src.services.activity_service import add_activity
 from src.services.topic_service import add_topic
+from tests.helpers import add_decision
 
 
 DEFAULT_TAGS = ["domain:test"]
 
 
-def _schema_for(name: str) -> dict:
-    """指定ツールの入力スキーマ（properties）を取り出す。"""
-    import asyncio
+@functools.lru_cache(maxsize=1)
+def _all_schemas() -> dict[str, dict]:
+    """全ツールのスキーマを一括取得しキャッシュする（list_tools を 1 回に抑える）。"""
 
     async def _fetch():
-        tools = await mcp.list_tools()
-        for t in tools:
-            if t.name == name:
-                return t.parameters
-        raise AssertionError(f"tool not found: {name}")
+        return {t.name: t.parameters for t in await mcp.list_tools()}
 
     return asyncio.run(_fetch())
+
+
+def _schema_for(name: str) -> dict:
+    """指定ツールの入力スキーマ（properties）を取り出す。"""
+    schemas = _all_schemas()
+    if name not in schemas:
+        raise AssertionError(f"tool not found: {name}")
+    return schemas[name]
 
 
 def _enum_of(schema: dict, prop: str) -> list[str]:
@@ -159,7 +166,6 @@ INVALID_CASES = [
 @pytest.mark.parametrize("tool_name,args,target_key", INVALID_CASES)
 def test_invalid_literal_value_raises_validation_error(tool_name, args, target_key):
     """許容値以外の文字列を渡すと ValidationError で弾かれる。"""
-    import asyncio
 
     async def _call():
         return await mcp.call_tool(tool_name, args)
@@ -179,7 +185,6 @@ class TestValidLiteralValuePassesThrough:
 
     def test_get_logs_valid_topic(self, temp_db):
         topic = add_topic(title="t", description="d", tags=DEFAULT_TAGS)
-        import asyncio
 
         async def _call():
             return await mcp.call_tool(
@@ -195,7 +200,6 @@ class TestValidLiteralValuePassesThrough:
         act = add_activity(
             title="a", description="d", tags=["intent:discuss", "domain:test"]
         )
-        import asyncio
 
         async def _call():
             return await mcp.call_tool(
@@ -208,8 +212,6 @@ class TestValidLiteralValuePassesThrough:
         assert isinstance(payload, dict)
 
     def test_search_valid_entity_type(self, temp_db, disable_embedding):
-        import asyncio
-
         async def _call():
             return await mcp.call_tool(
                 "search", {"keyword": "xx", "entity_type": "topic"}
@@ -220,20 +222,30 @@ class TestValidLiteralValuePassesThrough:
         assert isinstance(payload, dict)
 
     def test_retract_valid_decision(self, temp_db):
-        import asyncio
+        """実 decision を作って valid な ids でツール本体が成功実行されることを確認する。"""
+        topic = add_topic(title="t", description="d", tags=DEFAULT_TAGS)
+        dec = add_decision(
+            decision="d",
+            reason="r",
+            topic_id=topic["topic_id"],
+            tags=DEFAULT_TAGS,
+        )
+        decision_id = dec["decision_id"]
 
         async def _call():
-            return await mcp.call_tool("retract", {"entity_type": "decision", "ids": []})
+            return await mcp.call_tool(
+                "retract", {"entity_type": "decision", "ids": [decision_id]}
+            )
 
         result = asyncio.run(_call())
         payload = result.structured_content or result.content
-        # ids=[] は service 側でバリデーションエラー dict が返るが、それは ValidationError ではなく
-        # 「型検証は通った」ことを意味する。
+        # service 層が成功時に返す形（success リストに対象 id を含む）であること
         assert isinstance(payload, dict)
+        assert "error" not in payload
+        assert decision_id in payload.get("success", [])
 
     def test_get_timeline_valid_subset(self, temp_db, disable_embedding):
         topic = add_topic(title="t", description="d", tags=DEFAULT_TAGS)
-        import asyncio
 
         async def _call():
             return await mcp.call_tool(
