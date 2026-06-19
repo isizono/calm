@@ -283,7 +283,7 @@ def get_topics(
 
 @mcp.tool()
 def get_logs(
-    entity_type: str,
+    entity_type: Literal["topic", "activity"],
     entity_id: int,
     start_id: Optional[int] = None,
     limit: int = 30,
@@ -313,7 +313,7 @@ def get_logs(
 
 @mcp.tool()
 def get_decisions(
-    entity_type: str,
+    entity_type: Literal["topic", "activity"],
     entity_id: int,
     start_id: Optional[int] = None,
     limit: int = 30,
@@ -345,7 +345,7 @@ def get_decisions(
 def search(
     keyword: str | list[str],
     tags: Optional[list[str]] = None,
-    entity_type: Optional[str] = None,
+    entity_type: Optional[Literal["topic", "decision", "activity", "log", "material"]] = None,
     limit: int = 10,
     offset: int = 0,
     keyword_mode: str = "and",
@@ -753,7 +753,7 @@ def check_in(
 
 @mcp.tool()
 def add_relation(
-    source_type: str,
+    source_type: Literal["topic", "activity", "material", "decision", "log"],
     source_id: int,
     targets: list[dict],
     relation_type: str = "related",
@@ -786,7 +786,7 @@ def add_relation(
 
 @mcp.tool()
 def remove_relation(
-    source_type: str,
+    source_type: Literal["topic", "activity", "material", "decision", "log"],
     source_id: int,
     targets: list[dict],
     relation_type: str = "related",
@@ -815,7 +815,7 @@ def remove_relation(
 
 @mcp.tool()
 def get_map(
-    entity_type: str,
+    entity_type: Literal["topic", "activity", "material", "decision", "log"],
     entity_id: int,
     min_depth: int = 0,
     max_depth: int = 2,
@@ -860,9 +860,9 @@ def update_habit(habit_id: int, content: Optional[str] = None, active: Optional[
 
 @mcp.tool()
 def add_pin(
-    source_type: str,
+    source_type: Literal["tag", "activity", "topic", "decision", "log", "material"],
     source_ref: Union[int, str],
-    target_type: str,
+    target_type: Literal["tag", "activity", "topic", "decision", "log", "material"],
     target_ref: Union[int, str],
 ) -> dict:
     """pinを追加する（source → target）。
@@ -904,9 +904,9 @@ def add_pin(
 
 @mcp.tool()
 def remove_pin(
-    source_type: str,
+    source_type: Literal["tag", "activity", "topic", "decision", "log", "material"],
     source_ref: Union[int, str],
-    target_type: str,
+    target_type: Literal["tag", "activity", "topic", "decision", "log", "material"],
     target_ref: Union[int, str],
 ) -> dict:
     """pinを削除する（source → target）。
@@ -932,7 +932,7 @@ def remove_pin(
 
 
 @mcp.tool()
-def retract(entity_type: str, ids: list[int], undo: bool = False) -> dict:
+def retract(entity_type: Literal["decision", "log"], ids: list[int], undo: bool = False) -> dict:
     """決定事項やログを取り消す（論理削除）。取り消し済みエンティティは検索・取得でデフォルト除外される。
 
     Args:
@@ -947,7 +947,7 @@ def retract(entity_type: str, ids: list[int], undo: bool = False) -> dict:
 def get_timeline(
     topic_id: int | None = None,
     activity_id: int | None = None,
-    entity_types: list[str] | None = None,
+    entity_types: list[Literal["decision", "log", "material"]] | None = None,
     before: str | None = None,
     limit: int = 50,
     order: str = "desc",
