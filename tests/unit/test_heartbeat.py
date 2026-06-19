@@ -400,3 +400,80 @@ class TestUpdateHeartbeat:
 
         # 2回目のheartbeatは1回目以降（同一秒の可能性があるので>=）
         assert row2["last_heartbeat_at"] >= row1["last_heartbeat_at"]
+
+    def test_writes_session_id_when_provided(self, temp_db):
+        """update_heartbeat に session_id を渡すと last_heartbeat_session_id に保存される"""
+        from src.services.activity_service import add_activity
+        from hooks.heartbeat import update_heartbeat
+
+        result = add_activity(
+            title="Heartbeat session_id Test",
+            description="Desc",
+            tags=["domain:test"],
+            check_in=False,
+        )
+        activity_id = result["activity_id"]
+
+        update_heartbeat(activity_id, session_id="sess-abc-123")
+
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT last_heartbeat_at, last_heartbeat_session_id "
+            "FROM activities WHERE id = ?",
+            (activity_id,),
+        ).fetchone()
+        conn.close()
+
+        assert row["last_heartbeat_at"] is not None
+        assert row["last_heartbeat_session_id"] == "sess-abc-123"
+
+    def test_session_id_defaults_to_null(self, temp_db):
+        """session_id を渡さない場合 last_heartbeat_session_id は NULL のまま"""
+        from src.services.activity_service import add_activity
+        from hooks.heartbeat import update_heartbeat
+
+        result = add_activity(
+            title="Heartbeat no-session_id Test",
+            description="Desc",
+            tags=["domain:test"],
+            check_in=False,
+        )
+        activity_id = result["activity_id"]
+
+        update_heartbeat(activity_id)
+
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT last_heartbeat_at, last_heartbeat_session_id "
+            "FROM activities WHERE id = ?",
+            (activity_id,),
+        ).fetchone()
+        conn.close()
+
+        assert row["last_heartbeat_at"] is not None
+        assert row["last_heartbeat_session_id"] is None
+
+    def test_session_id_updated_on_subsequent_heartbeat(self, temp_db):
+        """別 session_id で再度 update_heartbeat すると上書きされる"""
+        from src.services.activity_service import add_activity
+        from hooks.heartbeat import update_heartbeat
+
+        result = add_activity(
+            title="Heartbeat session_id Overwrite Test",
+            description="Desc",
+            tags=["domain:test"],
+            check_in=False,
+        )
+        activity_id = result["activity_id"]
+
+        update_heartbeat(activity_id, session_id="sess-old")
+        update_heartbeat(activity_id, session_id="sess-new")
+
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT last_heartbeat_session_id FROM activities WHERE id = ?",
+            (activity_id,),
+        ).fetchone()
+        conn.close()
+
+        assert row["last_heartbeat_session_id"] == "sess-new"
