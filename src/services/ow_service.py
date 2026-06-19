@@ -555,6 +555,44 @@ def ensure_channel(channel_code: str) -> bool:
 # ----------------------------
 
 
+def _maybe_inject_term_ref(body: dict) -> dict:
+    """identity event の term_ref をファイルキャッシュから補完する（B案 D#2720）。
+
+    SessionStart hook (hooks/term_ref_cache.py) が worker shell の env を
+    `~/.cc-memory/ow/term_refs/<session_id>.json` に書き出している前提。
+    body が identity event で term_ref 未設定なら session_id でキャッシュを引いて補完する。
+
+    lookup 失敗時は body をそのまま返す（D#2720: 補完失敗時は素通し）。
+    元の body / data dict は破壊せず、補完時のみ shallow copy で新 dict を返す。
+    """
+    if not isinstance(body, dict) or body.get("kind") != "event":
+        return body
+    data = body.get("data")
+    if not isinstance(data, dict):
+        return body
+    if data.get("type") != "identity":
+        return body
+    if data.get("term_ref"):
+        return body
+    session_id = data.get("session_id")
+    if not session_id:
+        return body
+    cache_path = Path.home() / ".cc-memory" / "ow" / "term_refs" / f"{session_id}.json"
+    try:
+        with cache_path.open(encoding="utf-8") as f:
+            cached = json.load(f)
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return body
+    term_ref = cached.get("term_ref") if isinstance(cached, dict) else None
+    if not term_ref:
+        return body
+    new_data = dict(data)
+    new_data["term_ref"] = term_ref
+    new_body = dict(body)
+    new_body["data"] = new_data
+    return new_body
+
+
 def ow_send(
     channel: str,
     handle: str,
@@ -579,6 +617,7 @@ def ow_send(
         成功時: {"msg_id": int}
         失敗時: {"error": {...}}
     """
+    body = _maybe_inject_term_ref(body)
     payload: dict = {
         "channel": channel,
         "handle": handle,
