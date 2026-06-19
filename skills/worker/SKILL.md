@@ -83,14 +83,6 @@ ow_sendで1回だけ送信:
 
 ### 4. event:identity を送信
 
-送信前に自分の `term_ref`（ターミナル安定ID、tmux pane_id / iterm2 session UUID 等）を取得する:
-
-```bash
-TERM_REF=$(bash scripts/ow/get_term_ref.sh)
-```
-
-取得できなかった場合（`OW_TERMINAL=manual` モードや tmux/iTerm2 セッション外での実行など、安定 ID が取れず空が返るケース）は `term_ref` フィールドを省略してよい。
-
 ```json
 {
   "v":1, "kind":"event", "from":"<alias>", "to":"*", "task":"T<task_n>",
@@ -105,13 +97,12 @@ TERM_REF=$(bash scripts/ow/get_term_ref.sh)
     "activity_id":<activity_id>,
     "model":"<model>",
     "cwd":"<cwd>",
-    "session_id":"<session_id>",
-    "term_ref":"<term_ref>"
+    "session_id":"<session_id>"
   }
 }
 ```
 
-identity から **除外する属性**: `task_n`（activity_id から逆引き可能）、`user`（relay 非参加者）。`term_ref` は `ow_spawn_worker` が adapter から取得する spawn 戻り値の `term_ref` と同形式で揃える。設計詳細は設計書 v3 §6.3.1 参照。
+identity から **除外する属性**: `task_n`（activity_id から逆引き可能）、`user`（relay 非参加者）。`term_ref` は SessionStart hook が env (`TMUX_PANE` / `ITERM_SESSION_ID`) から `~/.cc-memory/ow/term_refs/<session_id>.json` にキャッシュし、`ow_send` が identity event 送信時に session_id ベースで自動補完する（手動で payload に乗せる必要なし）。設計詳細は設計書 v3 §6.3.1 参照。
 
 ### 5. event:state(loading) を送信
 
@@ -295,7 +286,7 @@ heartbeatループは draining フェーズで 30秒間隔を維持する（work
 
 ### Step 3: event:identity 再 append（terminated情報付き）
 
-terminated_atと cause を付与してidentityを再送する。起動時に取得した `term_ref` をそのまま乗せる（同じ値を維持）:
+terminated_atと cause を付与してidentityを再送する（`term_ref` は `ow_send` が再度自動補完するため payload に乗せ直す必要なし）:
 
 ```json
 {
@@ -312,7 +303,6 @@ terminated_atと cause を付与してidentityを再送する。起動時に取�
     "model":"<model>",
     "cwd":"<cwd>",
     "session_id":"<session_id>",
-    "term_ref":"<term_ref（起動時と同じ値）>",
     "terminated_at":"<現在時刻 UTC ISO8601>",
     "cause":"closed"
   }

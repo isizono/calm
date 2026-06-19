@@ -226,7 +226,7 @@ worker 起動時と terminated 直前に append される身元情報。orchは 
    "model":"...",
    "cwd":"...",
    "session_id":"...",
-   "term_ref":"<tmux pane_id / iterm2 session UUID 等>",  // worker が scripts/ow/get_term_ref.sh で取得
+   "term_ref":"<tmux pane_id / iterm2 session UUID 等>",  // SessionStart hook (hooks/term_ref_cache.py) が env から自動キャッシュ、ow_send が identity event 送信時に自動補完
    "terminated_at":"<UTC ISO8601>",   // terminated 直前の再 append でのみ set
    "cause":"closed|cancelled|dead"     // terminated 直前の再 append でのみ set
  }}
