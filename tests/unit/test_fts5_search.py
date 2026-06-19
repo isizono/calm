@@ -314,7 +314,7 @@ def test_get_by_ids_single_log(temp_db):
 
 
 def test_get_by_ids_single_material(temp_db):
-    """get_by_ids: materialの詳細取得で content/source が同梱される（P0-6）"""
+    """get_by_ids(material) はsnippetではなくcontent全文とsourceをレスポンスに含む"""
     mat = add_material(
         title="詳細取得テスト素材",
         content="素材本文の全文がレスポンスに含まれることを確認する",
@@ -332,6 +332,8 @@ def test_get_by_ids_single_material(temp_db):
     assert item["data"]["source"] == "単体テスト"
     assert "domain:test" in item["data"]["tags"]
     assert "created_at" in item["data"]
+    # hint も同梱（get_material と整合）
+    assert "hint" in item["data"]
 
 
 def test_get_by_ids_single_not_found(temp_db):

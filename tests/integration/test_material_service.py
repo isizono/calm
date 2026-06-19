@@ -238,7 +238,7 @@ class TestGetByIdMaterial:
     """get_by_id / get_by_ids でmaterialを取得するテスト"""
 
     def test_get_by_id_material(self, temp_db):
-        """get_by_idでmaterialの全文（material_id, title, content, source, tags, created_at）を取得できる（P0-6）"""
+        """get_by_idはmaterialのcontent/sourceも返し、get_materialに頼らず全文取得が完結する"""
         created = add_material(
             title="ById Test",
             content="ById content",

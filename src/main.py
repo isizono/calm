@@ -717,8 +717,8 @@ def get_material(
     """
     資材の全文を取得する。
 
-    通常はsearch/check_in/get_by_idsの応答にmaterialのcontent/sourceが同梱されるため呼ぶ必要はない。
-    material_idだけが手元にあり概要も含めて取得したい単発ケースで使う。
+    通常はcheck_in/get_by_idsの応答にmaterialのcontent/sourceが同梱されるため呼ぶ必要はない
+    （searchはsnippet止まり）。material_idだけが手元にあり概要も含めて取得したい単発ケースで使う。
 
     Args:
         material_id: 資材のID
