@@ -20,6 +20,7 @@ from src.services import (
     timeline_service,
     harness_service,
     ow_service,
+    guard_service,
 )
 from src.services.checkin_service import check_in as _check_in
 from src.services.tag_service import search_tags as _search_tags, update_tag as _update_tag, collect_tag_notes_for_injection
@@ -184,6 +185,7 @@ def add_topic(
     related: 関連エンティティ（optional）。[{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...] 形式。複数エンティティを配列で同時紐付け可能。例: [{"type": "topic", "ids": [1, 2]}, {"type": "decision", "ids": [10]}]。作成と同時にリレーションを張る
 
     レスポンスに類似トピック(similar_topics)が含まれる場合がある。重複トピックの防止やリレーション追加の参考にすること。"""
+    guard_service.check_worker_guard("add_topic")
     result = topic_service.add_topic(title, description, tags, related=related)
     if "error" not in result:
         _maybe_inject_tag_notes(result, tags)
@@ -233,6 +235,7 @@ def add_decisions(items: list[dict], ctx: Context) -> dict:
         created各要素には related_decisions（同topic内の類似decision上位3件 [{id, title, distance}]）が付く。
         既存decisionとの矛盾・重複に気づくための導線。embeddingサーバー未起動時は空配列。
     """
+    guard_service.check_worker_guard("add_decisions")
     result = decision_service.add_decisions(items)
     if "error" not in result:
         # tag_notes: 全アイテムのタグをUNIONして1回注入
@@ -844,7 +847,14 @@ def get_map(
 
 @mcp.tool()
 def add_habit(content: str) -> dict:
-    """エージェントの振る舞いを登録する。check-in時に自動注入され、以降の行動に反映される。"覚えといて"と言われた行動ルールはここに登録する"""
+    """エージェントの振る舞いを登録する。check-in時に自動注入され、以降の行動に反映される。"覚えといて"と言われた行動ルールはここに登録する
+
+    worker セッション (OW_ROLE=worker) からの直接呼び出しは
+    WorkerGuardError でブロックされる。ユーザー承認を要する書き込みなので
+    add_decisions / add_topic と同じ guard 対象。OW_ESCALATION=1 の
+    orch_proxy 経路でのみ通過する。
+    """
+    guard_service.check_worker_guard("add_habit")
     return habit_service.add_habit(content)
 
 
