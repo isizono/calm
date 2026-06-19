@@ -295,7 +295,7 @@ def get_logs(
     include_retracted: bool = False,
 ) -> dict:
     """
-    Choose: topic/activity に紐づく log 一覧が欲しいとき。決定事項一覧なら get_decisions、log/decision/material の混合時系列なら get_timeline、起点からの関連グラフ走査なら get_map。
+    Choose: topic/activity に紐づく log 一覧が欲しいとき。決定事項一覧なら get_decisions、log/decision/material の混合時系列なら get_timeline、起点からの関連グラフ走査なら get_map、activity 着手時の文脈集約なら check_in。
 
     指定エンティティの議論ログを取得する。
 
@@ -327,7 +327,7 @@ def get_decisions(
     include_retracted: bool = False,
 ) -> dict:
     """
-    Choose: topic/activity に紐づく decision 一覧が欲しいとき。議論経緯の log なら get_logs、log/decision/material の混合時系列なら get_timeline、起点からの関連グラフ走査なら get_map。
+    Choose: topic/activity に紐づく decision 一覧が欲しいとき。議論経緯の log なら get_logs、log/decision/material の混合時系列なら get_timeline、起点からの関連グラフ走査なら get_map、activity 着手時の文脈集約なら check_in。
 
     指定エンティティに関連する決定事項を取得する。
 
@@ -721,7 +721,7 @@ def get_material(
     material_id: int,
 ) -> dict:
     """
-    Choose: material_id 既知で資材の全文だけ取得したいとき。複数種別を一括なら get_by_ids、activity 配下の関連 material カタログなら check_in、起点からの関連グラフ走査なら get_map。
+    Choose: material_id 既知で資材の全文だけ取得したいとき。複数種別を一括なら get_by_ids、起点からの関連グラフ走査なら get_map、log/decision/material の混合時系列なら get_timeline。
 
     資材の全文を取得する。
 
