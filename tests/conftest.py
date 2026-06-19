@@ -24,6 +24,38 @@ def _clear_ow_env(monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _synchronous_telemetry(monkeypatch):
+    """search_telemetry 書込を同期実行に切り替える。
+
+    本番は daemon thread で非同期書込するが、テストで daemon thread が
+    生きているうちに TemporaryDirectory cleanup が走ると DB ファイルへの
+    書込と rmtree が race して `OSError: Directory not empty` が出る。
+    テスト中は書込スレッドを join してから search() を返すラッパに置き換え、
+    レース無しで cleanup できるようにする。書込挙動自体 (Thread 生成 / daemon=True)
+    は本番と同じ実装を通る (ラッパ内で original を呼ぶ) ため、
+    本番の非同期性を検証するテストは join 後でも is_alive=False を assert できる。
+
+    注意: 個別テストファイルの `capture_telemetry_threads` フィクスチャは、
+    pytest のフィクスチャ適用順序上この `synchronous_wrapper` を更にラップする
+    形になる。すなわち capture 側に渡ってくる thread は既にここで join() 済みで
+    あり、`_wait_for_telemetry()` 側の join は実質 no-op になる。
+    現状のテスト同期化はこの fixture (autouse) に依存しており、将来 autouse を
+    解除する場合は capture 側でも join() を保証する必要がある。
+    """
+    from src.services import search_service
+
+    original = search_service._record_search_telemetry_async
+
+    def synchronous_wrapper(*args, **kwargs):
+        thread = original(*args, **kwargs)
+        if thread is not None:
+            thread.join(timeout=5.0)
+        return thread
+
+    monkeypatch.setattr(search_service, "_record_search_telemetry_async", synchronous_wrapper)
+
+
 @pytest.fixture
 def disable_embedding(monkeypatch):
     """embeddingサービスを無効化する共通フィクスチャ。
