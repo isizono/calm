@@ -59,7 +59,8 @@ def capture_telemetry_threads(monkeypatch):
 
 def _wait_for_telemetry(threads, timeout=5.0):
     for t in threads:
-        t.join(timeout=timeout)
+        if t is not None:
+            t.join(timeout=timeout)
 
 
 def _fetch_all_telemetry():
@@ -196,6 +197,41 @@ def test_telemetry_write_runs_in_separate_thread(temp_db):
     assert all(tid != main_thread_id for tid in captured_thread_id), (
         "telemetry 書込が呼出元と同じスレッドで実行されている"
     )
+
+
+def test_search_unaffected_when_thread_start_fails(
+    temp_db, monkeypatch, caplog
+):
+    """Thread.start() が失敗しても search() の戻り値は壊れず、警告ログが出る
+
+    threading.Thread.start が ``RuntimeError: can't start new thread`` を出す
+    シナリオを模す。search() 外側の try で DATABASE_ERROR 化されないことを保証。
+    """
+    add_topic(
+        title="thread start 失敗フォールバック検証用トピック",
+        description="thread 起動失敗時に search 本体が影響を受けないことを検証する",
+        tags=DEFAULT_TAGS,
+    )
+
+    import threading as _threading
+
+    original_thread_cls = search_service.threading.Thread
+
+    class FailingThread(original_thread_cls):
+        def start(self):
+            raise RuntimeError("simulated thread start failure")
+
+    monkeypatch.setattr(search_service.threading, "Thread", FailingThread)
+
+    with caplog.at_level("WARNING"):
+        result = search_service.search(keyword="thread start 失敗フォールバック検証")
+
+    assert "error" not in result
+    assert "results" in result
+    assert any(
+        "search_telemetry thread start failed" in record.message
+        for record in caplog.records
+    ), f"warning log が出ていない: {[r.message for r in caplog.records]}"
 
 
 def test_search_unaffected_when_telemetry_write_fails(

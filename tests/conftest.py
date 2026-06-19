@@ -42,7 +42,8 @@ def _synchronous_telemetry(monkeypatch):
 
     def synchronous_wrapper(*args, **kwargs):
         thread = original(*args, **kwargs)
-        thread.join(timeout=5.0)
+        if thread is not None:
+            thread.join(timeout=5.0)
         return thread
 
     monkeypatch.setattr(search_service, "_record_search_telemetry_async", synchronous_wrapper)

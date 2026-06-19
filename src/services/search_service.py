@@ -1542,14 +1542,17 @@ def _record_search_telemetry_async(
     query: str | list[str],
     parameters: dict,
     result_count: int,
-) -> threading.Thread:
+) -> threading.Thread | None:
     """search 呼出の telemetry を別スレッドで非同期書込する。
 
     search() のレスポンスタイムに影響しないよう daemon thread で走らせる。
     書込中の例外は logger.warning に出して握りつぶし、search 本体を壊さない。
+    Thread 生成や start 自体が失敗（e.g. ``RuntimeError: can't start new thread``）
+    した場合も、呼出元 search() の外側 try で DATABASE_ERROR 化されないよう
+    ここで握って warning + None 返却にする。
 
     Returns:
-        起動した daemon Thread。テストから join() で完了待機できるよう返す。
+        起動した daemon Thread。起動に失敗した場合は None。
     """
     def _write() -> None:
         try:
@@ -1573,8 +1576,12 @@ def _record_search_telemetry_async(
         except Exception as e:
             logger.warning("search_telemetry write failed: %s", e)
 
-    thread = threading.Thread(target=_write, daemon=True)
-    thread.start()
+    try:
+        thread = threading.Thread(target=_write, daemon=True)
+        thread.start()
+    except Exception as e:
+        logger.warning("search_telemetry thread start failed: %s", e)
+        return None
     return thread
 
 
