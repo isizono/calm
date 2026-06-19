@@ -1,6 +1,8 @@
 """MCPサーバーのメインエントリーポイント"""
 import logging
+import os
 import random
+from pathlib import Path
 from fastmcp import FastMCP, Context
 from fastmcp.server.dependencies import get_context
 from typing import Literal, Optional, Union
@@ -1271,9 +1273,25 @@ async def session_unregister(request: Request) -> JSONResponse:
 from src.http_config import HTTP_HOST, HTTP_PORT
 
 
+def _ensure_project_root_cwd() -> Path:
+    """HTTPサーバー起動時にcwdをプロジェクトルートに固定する。
+
+    `uv run python -m src.main --transport http` をworktree内など任意の場所から
+    起動すると、HTTPサーバープロセスはその場所をcwdとして固定する。当該cwdが
+    後から削除・移動されると、ow_service内のsubprocess呼び出しや相対パス操作が
+    存在しないパスを参照し続けるリスクがある（worker spawn失敗・診断困難）。
+    cwdをこの関数の `__file__` 由来のプロジェクトルートへ強制し、構造的に防ぐ。
+
+    Returns:
+        固定後のproject_rootパス（Path）。
+    """
+    project_root = Path(__file__).resolve().parent.parent
+    os.chdir(project_root)
+    return project_root
+
+
 if __name__ == "__main__":
     import argparse
-    import os
     import signal
 
     parser = argparse.ArgumentParser(description="cc-memory MCP server")
@@ -1293,6 +1311,11 @@ if __name__ == "__main__":
         import socket
         from src.services.lock_file import acquire, release
         from src.services.session_manager import SessionManager
+
+        # 起動時cwdをプロジェクトルートに固定する。worktree内などからの起動による
+        # cwd差し替えリスクを構造的に潰す（詳細は _ensure_project_root_cwd 参照）。
+        _fixed_root = _ensure_project_root_cwd()
+        logger.info("HTTP server cwd fixed to %s", _fixed_root)
 
         # ポートの空き確認
         try:
