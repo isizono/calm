@@ -304,7 +304,7 @@ def _build_activities_section(conn, session_id: str | None = None) -> str:
     return "\n".join(parts) + "\n"
 
 
-def _build_habits_section(conn, session_id: str | None = None) -> str:
+def _build_habits_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
     """振る舞い一覧を組み立てる。"""
     contents = get_active_habit_contents_with_conn(conn)
 
@@ -318,14 +318,14 @@ def _build_habits_section(conn, session_id: str | None = None) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _build_sync_policy_section(conn, session_id: str | None = None) -> str:  # conn: buildersループの統一シグネチャ
+def _build_sync_policy_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
     """sync_policyが設定されていれば注入する。未設定時はコンテキスト消費ゼロ。"""
     if not config.SYNC_POLICY:
         return ""
     return f"# sync_policy\n{config.SYNC_POLICY}\n"
 
 
-def _build_snapshot_section(conn, session_id: str | None = None) -> str:
+def _build_snapshot_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
     """スナップショット取得＋ヘルスチェック。異常検知時のみ警告を返す。
 
     connは引数として受け取るが、snapshot.pyはdb_pathベースで動作するため
@@ -438,7 +438,8 @@ def main() -> None:
                         session_id = sid
             except json.JSONDecodeError:
                 # session_id 取得失敗時は従来挙動（self 照合なし）にフォールバック
-                session_id = None
+                # 初期値 None のまま継続するため再代入不要
+                pass
 
         context = _build_session_context(session_id)
 

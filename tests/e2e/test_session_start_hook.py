@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -636,8 +637,6 @@ class TestSessionStartHookTopicGrouping:
 
 def _set_heartbeat(activity_id: int, session_id: str | None) -> None:
     """activity の heartbeat を「今」に更新し session_id を同梱する"""
-    from datetime import datetime, timezone
-
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     conn = get_connection()
     try:
