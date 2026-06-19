@@ -648,7 +648,7 @@ def add_material(
     資材を追加する。独立エンティティとしてタグ付きで保存される。
 
     資材はセッション中の成果物・ドキュメントをDB保存する仕組み。
-    search(entity_type="material")で検索でき、全文はget_materialで取得する2段階リード設計。
+    search(entity_type="material")で概要を検索し、get_by_idsまたはget_materialで全文を取得する。
     決定事項と違って「双方の合意」が不要。成果物が出た時点でユーザーに確認せず呼ぶ。
 
     典型的な使い方:
@@ -717,7 +717,8 @@ def get_material(
     """
     資材の全文を取得する。
 
-    get_by_idsで取得したmaterial概要の詳細を取得する際に使う（2段階リードの後半）。
+    通常はsearch/check_in/get_by_idsの応答にmaterialのcontent/sourceが同梱されるため呼ぶ必要はない。
+    material_idだけが手元にあり概要も含めて取得したい単発ケースで使う。
 
     Args:
         material_id: 資材のID

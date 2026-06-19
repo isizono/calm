@@ -179,7 +179,7 @@ sequenceDiagram
 5次元統合レポートT2（Read Path分析）で次の課題が指摘されている。
 
 - **coverage の materials 分母が pin注入分を含まない**（P9）。`coverage.materials` は `relations(source=activity)` の件数しか分母に含まないため、pinで寄せた重要materialを「カバーし切ったか」の判断指標として片手落ちになる。Pr9で `pinned_materials: "K"` をcoverageに足す案あり。
-- **coverageを先頭キーに置く設計は強み**（S6）の一方で、coverageが「3呼び」（search → get_by_ids → get_material）のループを誘発する一因になっているという指摘がP4にある。
+- **coverageを先頭キーに置く設計は強み**（S6）の一方で、coverageが「3呼び」（search → get_by_ids → get_material）のループを誘発する一因になっているという指摘がP4にあった。P0-6 で `get_by_ids` の material レスポンスに `content` / `source` を同梱し、2呼びに短縮済み。
 - **hint生成が二重実装**（P8）。`_get_recompose_hints`（tag単位、増分30/初回15）と `harness_service.get_recommendations`（topic単位）が並走しており、エージェントから見ると2系統の `hints` がどちらも `result["hints"]` に乗り得る。Pr10でHintService統一を提案している。
 - **update_activityが別コネクション**で独立コミットされる（既存APIの制約）。check_inのトランザクションとは独立しており、片方だけ成功するケースがあり得る。
 - **SessionStartのトピック別グルーピング合意（D#2464-2466）と現状実装の乖離**（P7）。check-in skillのactivity選択UI体験に直接影響する。

@@ -1571,6 +1571,8 @@ def _format_row(type_name: str, data: dict, tags: list[str]) -> dict:
         return {
             "material_id": data["id"],
             "title": data["title"],
+            "content": data["content"],
+            "source": data["source"],
             "tags": tags,
             "created_at": data["created_at"],
         }

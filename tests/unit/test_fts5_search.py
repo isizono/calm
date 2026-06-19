@@ -313,6 +313,27 @@ def test_get_by_ids_single_log(temp_db):
     assert "domain:test" in item["data"]["tags"]
 
 
+def test_get_by_ids_single_material(temp_db):
+    """get_by_ids: materialの詳細取得で content/source が同梱される（P0-6）"""
+    mat = add_material(
+        title="詳細取得テスト素材",
+        content="素材本文の全文がレスポンスに含まれることを確認する",
+        tags=DEFAULT_TAGS,
+        source="単体テスト",
+    )
+    result = search_service.get_by_ids([{"type": "material", "id": mat["material_id"]}])
+    assert len(result["results"]) == 1
+    item = result["results"][0]
+    assert "error" not in item
+    assert item["type"] == "material"
+    assert item["data"]["material_id"] == mat["material_id"]
+    assert item["data"]["title"] == "詳細取得テスト素材"
+    assert item["data"]["content"] == "素材本文の全文がレスポンスに含まれることを確認する"
+    assert item["data"]["source"] == "単体テスト"
+    assert "domain:test" in item["data"]["tags"]
+    assert "created_at" in item["data"]
+
+
 def test_get_by_ids_single_not_found(temp_db):
     """get_by_ids: 存在しないIDでNOT_FOUNDエラー"""
     result = search_service.get_by_ids([{"type": "topic", "id": 999999}])
