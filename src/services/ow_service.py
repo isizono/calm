@@ -28,6 +28,12 @@ from pathlib import Path
 import yaml
 
 from src.relay import PROTOCOL_VERSION
+from src.services.ow.cache import (
+    CURRENT_SCHEMA_VERSION,
+    OwState,
+    load_state,
+    save_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1826,6 +1832,145 @@ def reconstruct_state_from_relay(channel: str, limit: int = 10000) -> dict:
             entry["latest_at"] = msg.get("created_at", "")
 
     return {"by_worker_task": by_worker_task, "max_msg_id": max_msg_id, "truncated": truncated}
+
+
+# ----------------------------
+# projector: relay → OwState → save_state (A#911 SP-2 PR-α)
+# ----------------------------
+#
+# C-2案 (D#2654-2657) の projector 経路。relay events を真実源とし
+# (D#2751)、cache JSON を派生キャッシュとして保つ。PR-α 時点では既存
+# queue write は触らず並走 (shadow write) し、consumer (ow_status 等) の
+# 挙動は不変。reducer 系の cache fastpath 化は PR-β、queue write 撤去は
+# PR-γ で行う (M#386 §6 / T94 v0)。
+#
+# orch concern 原則 (D#2749): orch は project_state_to_cache を直接呼ばず、
+# ow_status 等の状態取得 API 越しに結果を読む。本関数は ow_service 内部の
+# 隠蔽境界の中に閉じる。
+
+
+def project_state_to_cache(topic_id: int, channel: str) -> OwState | None:
+    """relay full pull → OwState 構築 → save_state を呼ぶ projector 経路。
+
+    1回の ``ow_history(since=0)`` 全件取得から、handle 単位の最新 state /
+    identity / heartbeat を集計して :class:`OwState` を組み立て、
+    :func:`save_state` でファイル先 (cache JSON) に書き出す (D#2750 ファイル先)。
+
+    既存 queue write 経路は触らない (shadow 並走、consumer 不変)。
+
+    Args:
+        topic_id: cache ファイル ``topic-<id>.json`` を決めるための topic 識別子。
+        channel: relay channel コード。OwState.channel に格納する。
+
+    Returns:
+        構築・保存できた :class:`OwState`。relay HTTP エラー等で full pull
+        に失敗した場合は ``None`` (cache ファイルは触らない)。
+    """
+    history = ow_history(channel, since=0, limit=10000)
+    if "error" in history:
+        return None
+
+    messages = history.get("messages", [])
+
+    workers: dict[str, dict] = {}
+    identity_by_handle: dict[str, dict] = {}
+    heartbeat_by_handle: dict[str, dict] = {}
+    max_msg_id = 0
+
+    for msg in messages:
+        msg_id = msg.get("msg_id", 0)
+        if isinstance(msg_id, int) and msg_id > max_msg_id:
+            max_msg_id = msg_id
+        body = msg.get("body", {})
+        if not isinstance(body, dict):
+            continue
+        if body.get("kind") != "event":
+            continue
+        data = body.get("data") or {}
+        t = data.get("type")
+        handle = body.get("from") or ""
+        if not handle:
+            continue
+
+        if t == "state":
+            state_val = data.get("state") or ""
+            if not state_val:
+                continue
+            task = body.get("task") or ""
+            entry = workers.get(handle)
+            if entry is None or msg_id >= entry.get("latest_msg_id", 0):
+                workers[handle] = {
+                    "task": task,
+                    "state": state_val,
+                    "latest_msg_id": msg_id,
+                    "latest_at": msg.get("created_at", ""),
+                }
+        elif t == "identity":
+            current = identity_by_handle.get(handle)
+            if current is None or msg_id > current["msg_id"]:
+                identity_by_handle[handle] = {
+                    "msg_id": msg_id,
+                    "data": dict(data),
+                    "created_at": msg.get("created_at", ""),
+                }
+        elif t == "heartbeat":
+            current = heartbeat_by_handle.get(handle)
+            if current is None or msg_id > current["msg_id"]:
+                heartbeat_by_handle[handle] = {
+                    "msg_id": msg_id,
+                    "phase": data.get("phase"),
+                    "created_at": msg.get("created_at", ""),
+                }
+
+    identities = {h: e["data"] for h, e in identity_by_handle.items()}
+
+    # presence: heartbeat 時刻ベースの online 判定 (ow_get_presence と同ロジック)
+    now = datetime.now(timezone.utc)
+    presence: list[str] = []
+    for handle, hb in heartbeat_by_handle.items():
+        phase = hb.get("phase") or ""
+        timeout = _HEARTBEAT_TIMEOUT_SECS.get(phase, _HEARTBEAT_TIMEOUT_DEFAULT)
+        created_at = hb.get("created_at") or ""
+        try:
+            hb_time = datetime.fromisoformat(created_at)
+            if hb_time.tzinfo is None:
+                hb_time = hb_time.replace(tzinfo=timezone.utc)
+            elapsed = (now - hb_time).total_seconds()
+        except (ValueError, TypeError):
+            continue
+        if elapsed < timeout:
+            presence.append(handle)
+
+    state: OwState = {
+        "schema_version": CURRENT_SCHEMA_VERSION,
+        "channel": channel,
+        "last_msg_id": max_msg_id,
+        "workers": workers,
+        "identities": identities,
+        "presence": sorted(presence),
+        "updated_at": now.isoformat(),
+    }
+    save_state(topic_id, state)
+    return state
+
+
+def get_or_rebuild_state(topic_id: int, channel: str) -> OwState | None:
+    """cache から load_state、None なら projector で再構築する自動 fallback ヘルパー。
+
+    :func:`src.services.ow.cache.load_state` が以下のいずれかで ``None`` を返した
+    場合に :func:`project_state_to_cache` を呼んで cache を再生成する:
+
+      1. cache ファイル不存在 (cache miss)
+      2. JSON corruption — ``load_state`` が削除して ``None``
+      3. ``schema_version`` mismatch — 同上
+      4. ``channel`` mismatch — 同上 (引数 ``channel`` を ``load_state`` に渡す)
+
+    relay full pull に失敗した場合は ``None`` (cache は書き換えない)。
+    """
+    state = load_state(topic_id, channel=channel)
+    if state is not None:
+        return state
+    return project_state_to_cache(topic_id, channel)
 
 
 def _parse_spawning_at(value: str | None) -> datetime | None:
