@@ -182,6 +182,6 @@ sequenceDiagram
 - **検索効果測定の仕組みが皆無**（P6）。`QE_DISTANCE_THRESHOLD=0.3` / `W_VEC=1.0` / `RECENCY_DECAY_RATE` などのパラメータを実データで再評価する経路がなく、調整が「感覚」になっている。Pr7で `search_telemetry` テーブル導入を提案している。
 - **QE が「素タグ前提」**（P13）。`QE_EXCLUDE_NAMESPACES=True` のため `domain:*` / `intent:*` は除外され、素タグの少ないドメインでは QE がほぼ無効化される。
 - **tag_like AND の意味論が不揃い**（P14）。「全キーワードを1つのタグ名が含む」セマンティクスはFTS/ベクトルのAND（複数語が文書内で共起）とずれる。Pr14で「タグ集合のAND」セマンティクスへの変更を提案している。
-- **3呼びラウンドトリップ**（P4）：〔解消済〕P0-6 で `get_by_ids` の material レスポンスに `content` / `source` を同梱したため、`search → get_by_ids` の2呼びで material 全文取得が完結する。`get_material` は material_id 単発取得用として残存。
+- **3呼びラウンドトリップ**（P4）：〔解消済〕`get_by_ids` の material レスポンスに `content` / `source` を同梱したため、`search → get_by_ids` の2呼びで material 全文取得が完結する。`get_material` は material_id 単発取得用として残存。
 
 未確認: `embedding_service.encode_query` / `search_similar_tags` の内部実装（モデル呼び出し経路）は今回のスコープ外で深く読んでいない。本書では「テキストからembeddingを取る」「tag_vecをKNNする」抽象レベルにとどめている。
