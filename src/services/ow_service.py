@@ -2360,10 +2360,11 @@ def ow_recover(
 # ----------------------------
 #
 # term_ref は worker セッションが住む物理単位（tmux pane / iTerm2 session 等）の安定 ID。
-# event:identity.data.term_ref として worker 自身が宣言する（scripts/ow/get_term_ref.sh
-# が取得元）。reducer（ow_get_identity / ow_list_identities）は dict(data) で透過的に
-# 保持するため、reducer 側に追加ロジックは不要。本ヘルパーは「観測値の形式分類」と
-# 「妥当性判定」を提供する純関数で、診断・ow_recover 用途に利用する。
+# SessionStart hook（hooks/term_ref_cache.py）が env キャッシュとして配置し、
+# _maybe_inject_term_ref() が ow_send 時に event:identity.data.term_ref として自動補完する。
+# reducer（ow_get_identity / ow_list_identities）は dict(data) で透過的に保持するため、
+# reducer 側に追加ロジックは不要。本ヘルパーは「観測値の形式分類」と「妥当性判定」を
+# 提供する純関数で、診断・ow_recover 用途に利用する。
 #
 # 認める形式:
 #   - tmux:    "%N"                  例: "%5", "%123"     (tmux pane_id 規約)
