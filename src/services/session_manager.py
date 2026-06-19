@@ -139,18 +139,18 @@ class SessionManager:
 
     @property
     def is_auto_shutdown_disabled(self) -> bool:
-        """auto-shutdown が env により無効化されているかを返す。"""
+        """auto-shutdown が無効化されている (``grace_period_sec=0``) かを返す。"""
         return self._grace_period == 0
 
     def _start_grace_timer(self) -> None:
         """猶予期間タイマーを（再）開始する。
 
-        env で grace_period=0 が指定されている場合は auto-shutdown 完全無効モードと
-        みなしてタイマーを起動しない。
+        ``grace_period_sec=0`` (env もしくは明示引数のいずれか経由) の場合は
+        auto-shutdown 完全無効モードとみなしてタイマーを起動しない。
         """
         if self._grace_period == 0:
             logger.info(
-                f"Auto-shutdown disabled ({GRACE_PERIOD_ENV}=0), "
+                "Auto-shutdown disabled (grace_period_sec=0), "
                 "skipping grace timer start"
             )
             return

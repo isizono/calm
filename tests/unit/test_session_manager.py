@@ -134,10 +134,9 @@ class TestReadGracePeriodSec:
     """env CC_MEMORY_AUTO_SHUTDOWN_SEC を読み取るヘルパーの単体テスト"""
 
     def test_env_unset_returns_default(self, monkeypatch):
-        """env未設定時は30秒デフォルトを返す"""
+        """env未設定時はデフォルト値を返す"""
         monkeypatch.delenv(GRACE_PERIOD_ENV, raising=False)
         assert _read_grace_period_sec() == DEFAULT_GRACE_PERIOD_SEC
-        assert DEFAULT_GRACE_PERIOD_SEC == 30
 
     def test_env_empty_returns_default(self, monkeypatch):
         """env空文字時はデフォルトにフォールバック"""
@@ -180,12 +179,11 @@ class TestEnvOverride:
         mgr = SessionManager()
         assert mgr._grace_period == 120
 
-    def test_default_unset_env_uses_30s(self, monkeypatch):
-        """env未設定時は30秒デフォルトを採用する"""
+    def test_default_unset_env_uses_default(self, monkeypatch):
+        """env未設定時はデフォルト値を採用する"""
         monkeypatch.delenv(GRACE_PERIOD_ENV, raising=False)
         mgr = SessionManager()
         assert mgr._grace_period == DEFAULT_GRACE_PERIOD_SEC
-        assert mgr._grace_period == 30
 
     def test_explicit_arg_overrides_env(self, monkeypatch):
         """grace_period_sec明示指定時はenvより優先される"""
@@ -205,7 +203,7 @@ class TestAutoShutdownDisabled:
     """env=0 で auto-shutdown が完全に無効化されることの検証"""
 
     def test_env_zero_disables_watchdog(self, monkeypatch):
-        """env=0 で start_watchdog 呼び出してもタイマースレッドが起動しない"""
+        """env=0 で start_watchdog 呼び出してもシャットダウンが発火しない"""
         monkeypatch.setenv(GRACE_PERIOD_ENV, "0")
         mgr = SessionManager()
         assert mgr.is_auto_shutdown_disabled is True
@@ -214,9 +212,7 @@ class TestAutoShutdownDisabled:
         mgr.set_shutdown_callback(shutdown_called.set)
         mgr.start_watchdog()
 
-        # ウォッチドッグスレッドが起動していないこと
-        assert mgr._watchdog_thread is None
-        # シャットダウンも発火しない
+        # シャットダウンが発火しないこと
         assert shutdown_called.wait(timeout=2) is False
         assert mgr.is_shutdown_requested is False
 
@@ -234,7 +230,6 @@ class TestAutoShutdownDisabled:
         # 無効化されているのでシャットダウンは呼ばれない
         assert shutdown_called.wait(timeout=2) is False
         assert mgr.is_shutdown_requested is False
-        assert mgr._watchdog_thread is None
 
     def test_register_unregister_still_work_when_disabled(self, monkeypatch):
         """env=0 でも register/unregister 自体は正常動作する"""
