@@ -6,14 +6,12 @@ cc-memory の MCP tool 返却で `id` フィールドが整数として返り、
 Phase 1: flavor="readable" のみ実装。
 Phase 3 (D#2724): flavor="raw" / flavor="internal" を追加し、citation parser と接続する。
 """
-from typing import Literal
+from typing import Literal, get_args
 
 ENTITY_TYPE = Literal["topic", "decision", "activity", "log", "material"]
 FLAVOR = Literal["raw", "internal", "readable"]
 
-_VALID_ENTITY_TYPES: frozenset[str] = frozenset(
-    {"topic", "decision", "activity", "log", "material"}
-)
+_VALID_ENTITY_TYPES: frozenset[str] = frozenset(get_args(ENTITY_TYPE))
 
 
 def alphaize_entity_id(
@@ -21,7 +19,7 @@ def alphaize_entity_id(
     id_int: int,
     title: str | None,
     flavor: FLAVOR = "readable",
-) -> str | int:
+) -> str:
     """エンティティ ID を α化形式で返す。
 
     Phase 1 では flavor='readable' のみ実装。Phase 3 で raw / internal を追加予定。

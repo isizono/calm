@@ -1538,10 +1538,11 @@ def _format_row(type_name: str, data: dict, tags: list[str]) -> dict:
         alphaize_result_dict_inplace(result, "topic")
         return result
     elif type_name == 'decision':
+        display_title = data.get("title") or (data["decision"] or "")[:50]
         result = {
             "id": data["id"],
             "topic_id": data["topic_id"],
-            "title": data.get("title"),
+            "title": display_title,
             "decision": data["decision"],
             "reason": data["reason"],
             "tags": tags,

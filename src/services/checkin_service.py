@@ -162,13 +162,14 @@ def _get_logs_catalog_from_topics(
     if not latest_row:
         return None, []
 
-    latest_log = {"id": latest_row["id"], "title": latest_row["title"], "content": latest_row["content"]}
+    display_title = latest_row["title"] or (latest_row["content"] or "")[:50]
+    latest_log = {"id": latest_row["id"], "title": display_title, "content": latest_row["content"]}
     alphaize_result_dict_inplace(latest_log, "log")
 
-    # 残り: id + titleのみ
+    # 残り: id + titleのみ（titleが空の場合はcontentの先頭50文字をfallback）
     catalog_rows = conn.execute(
         f"""
-        SELECT id, title
+        SELECT id, title, content
         FROM discussion_logs
         WHERE topic_id IN ({placeholders}) AND retracted_at IS NULL AND id != ?
         ORDER BY id DESC
@@ -178,7 +179,8 @@ def _get_logs_catalog_from_topics(
 
     catalog = []
     for row in catalog_rows:
-        item = {"id": row["id"], "title": row["title"]}
+        display_title = row["title"] or (row["content"] or "")[:50]
+        item = {"id": row["id"], "title": display_title}
         alphaize_result_dict_inplace(item, "log")
         catalog.append(item)
     return latest_log, catalog
