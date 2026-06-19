@@ -1262,11 +1262,22 @@ def ow_spawn_worker(
 
     if adapter_path is None:
         # manualフォールバック: 起動コマンドを返す
+        # adapter_path不在のとき、payloadだけ見ると後段の追跡で原因が分からなくなる。
+        # adapter_errorに「どのterminalで・どこを探したか」を明示する。
+        expected_adapter = (
+            Path(__file__).resolve().parent.parent.parent
+            / "scripts" / "ow" / "adapters" / f"{terminal}.sh"
+        )
+        adapter_error = (
+            f"adapter not found at {expected_adapter} (OW_TERMINAL={terminal!r})"
+        )
+        logger.error("ow_spawn_worker manual fallback: %s", adapter_error)
         return {
             "command": worker_cmd,
             "manual": True,
             "task_file": str(task_file),
             "alias": alias,
+            "adapter_error": adapter_error,
         }
 
     # アダプタ呼び出し — stdoutから安定IDを取得する
@@ -1293,7 +1304,7 @@ def ow_spawn_worker(
             term_ref = str(uuid.uuid4())
             logger.warning("adapter returned empty term_ref, using fallback UUID: %s", term_ref)
     except subprocess.TimeoutExpired:
-        logger.warning("adapter spawn timed out after 30s")
+        logger.error("ow_spawn_worker manual fallback: adapter spawn timed out after 30s")
         return {
             "command": worker_cmd,
             "manual": True,
@@ -1302,7 +1313,7 @@ def ow_spawn_worker(
             "adapter_error": "adapter spawn timed out",
         }
     except subprocess.CalledProcessError as e:
-        logger.warning("adapter spawn failed: %s", e.stderr)
+        logger.error("ow_spawn_worker manual fallback: adapter spawn failed: %s", e.stderr)
         return {
             "command": worker_cmd,
             "manual": True,
@@ -1332,9 +1343,18 @@ def ow_close_worker(term_ref: str) -> dict:
     adapter_path = _get_adapter_path(terminal) if terminal != "manual" else None
 
     if adapter_path is None:
+        expected_adapter = (
+            Path(__file__).resolve().parent.parent.parent
+            / "scripts" / "ow" / "adapters" / f"{terminal}.sh"
+        )
+        adapter_error = (
+            f"adapter not found at {expected_adapter} (OW_TERMINAL={terminal!r})"
+        )
+        logger.error("ow_close_worker manual fallback: %s", adapter_error)
         return {
             "manual": True,
             "message": f"手動でterm_ref={term_ref}のセッションをクローズしてください",
+            "adapter_error": adapter_error,
         }
 
     try:
@@ -1347,13 +1367,13 @@ def ow_close_worker(term_ref: str) -> dict:
         )
         return {"closed": True, "term_ref": term_ref}
     except subprocess.TimeoutExpired:
-        logger.warning("adapter close timed out after 15s")
+        logger.error("ow_close_worker adapter close timed out after 15s")
         return {
             "error": {"code": "ADAPTER_CLOSE_TIMEOUT", "message": "adapter close timed out"},
             "term_ref": term_ref,
         }
     except subprocess.CalledProcessError as e:
-        logger.warning("adapter close failed: %s", e.stderr)
+        logger.error("ow_close_worker adapter close failed: %s", e.stderr)
         return {
             "error": {"code": "ADAPTER_CLOSE_FAILED", "message": e.stderr},
             "term_ref": term_ref,
