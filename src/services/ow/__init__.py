@@ -8,6 +8,7 @@ relay から再生成可能な派生データに過ぎず、破損・schema mism
 from src.services.ow.cache import (
     CURRENT_SCHEMA_VERSION,
     OwState,
+    find_topic_id_by_channel,
     load_state,
     save_state,
 )
@@ -15,6 +16,7 @@ from src.services.ow.cache import (
 __all__ = [
     "CURRENT_SCHEMA_VERSION",
     "OwState",
+    "find_topic_id_by_channel",
     "load_state",
     "save_state",
 ]

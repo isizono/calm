@@ -1,10 +1,21 @@
-"""ow_service reducer 4関数のユニットテスト。"""
+"""ow_service reducer 4関数のユニットテスト。
+
+A#911 SP-2 PR-β/γ で reducer 系 4関数 (ow_get_identity / ow_list_identities /
+ow_get_presence / ow_get_workload_state) と内部ヘルパー (_query_latest_event /
+_latest_events_by_type) は relay full pull を撤去し、OwState キャッシュを読む
+だけになった。本テストは cache fastpath の振る舞いを検証する (M#386 §6)。
+
+ow_history を mock していた旧 PR-α テストは、tmp 配下に直接 OwState を save_state
+する形式に書き換えた。tmp 隔離は ``_isolated_state_dir`` で OW_STATE_DIR を切り替える。
+"""
 import logging
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
-from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
+
 from src.services import ow_service
+from src.services.ow.cache import CURRENT_SCHEMA_VERSION, save_state
 
 
 # ----------------------------
@@ -12,8 +23,17 @@ from src.services import ow_service
 # ----------------------------
 
 
+@pytest.fixture(autouse=True)
+def _isolated_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """OW_STATE_DIR を tmp に閉じて cache 副作用を分離する (PR-β/γ で reducer は
+    relay を叩かず cache のみ参照するため)。
+    """
+    monkeypatch.setenv("OW_STATE_DIR", str(tmp_path))
+    return tmp_path
+
+
 def _make_msg(msg_id, handle, body, created_at=None):
-    """テスト用リレーメッセージを生成する。"""
+    """テスト用リレーメッセージを生成する (_parse_ow_event の入力形式)。"""
     return {
         "msg_id": msg_id,
         "handle": handle,
@@ -37,13 +57,50 @@ def _make_history(messages):
     return {"messages": messages}
 
 
+def _entry(msg_id: int, data: dict, created_at: str) -> dict:
+    """OwState EventEntry 形式を組み立てる。"""
+    return {"msg_id": msg_id, "data": dict(data), "created_at": created_at}
+
+
+def _save_cache(
+    channel: str,
+    topic_id: int = 454,
+    *,
+    identity_events: dict | None = None,
+    states: dict | None = None,
+    heartbeats: dict | None = None,
+    identities: dict | None = None,
+    workers: dict | None = None,
+    last_msg_id: int = 0,
+    updated_at: str = "2026-06-19T17:00:00+00:00",
+) -> None:
+    """テストで OwState を直接 cache に書き出す。
+
+    reducer が `_load_state_by_channel(channel)` で find_topic_id_by_channel →
+    load_state する経路を通すため、channel フィールドを必ず一致させる。
+    """
+    state = {
+        "schema_version": CURRENT_SCHEMA_VERSION,
+        "channel": channel,
+        "last_msg_id": last_msg_id,
+        "workers": workers or {},
+        "identities": identities or {},
+        "identity_events": identity_events or {},
+        "states": states or {},
+        "heartbeats": heartbeats or {},
+        "presence": [],
+        "updated_at": updated_at,
+    }
+    save_state(topic_id, state)
+
+
 # ----------------------------
 # TestParseOwEvent
 # ----------------------------
 
 
 class TestParseOwEvent:
-    """_parse_ow_event のユニットテスト。"""
+    """_parse_ow_event のユニットテスト (PR-β/γ で振る舞い変化なし)。"""
 
     def test_valid_event_returns_parsed(self):
         """v=1, kind="event" → 正常にparsed dictを返す。"""
@@ -91,71 +148,98 @@ class TestParseOwEvent:
 
 
 # ----------------------------
-# TestQueryLatestEvent
+# TestQueryLatestEvent (cache fastpath)
 # ----------------------------
 
 
 class TestQueryLatestEvent:
-    """_query_latest_event のユニットテスト。"""
+    """_query_latest_event の cache fastpath ユニットテスト。
 
-    def test_returns_latest_by_msg_id(self, monkeypatch):
-        """同じdata_typeが2件 → msg_id大きい方を返す。"""
-        msgs = [
-            _make_msg(1, "w-h", _event_body("state", {"state": "loading"}), "2026-06-14T10:00:00+00:00"),
-            _make_msg(5, "w-h", _event_body("state", {"state": "working"}), "2026-06-14T10:01:00+00:00"),
-        ]
-        monkeypatch.setattr(ow_service, "ow_history", lambda *a, **kw: _make_history(msgs))
+    PR-γ で relay full pull は撤去された。本関数は OwState の states / heartbeats /
+    identity_events を読むだけ。cache miss = None。
+    """
+
+    def test_returns_event_for_cached_state(self):
+        """cache に states[w-h] がある → parsed event 形式で返る。"""
+        _save_cache(
+            "ch",
+            states={
+                "w-h": _entry(5, {"type": "state", "state": "working"}, "2026-06-14T10:01:00+00:00"),
+            },
+        )
         result = ow_service._query_latest_event("ch", "w-h", "state")
         assert result is not None
         assert result["msg_id"] == 5
+        assert result["handle"] == "w-h"
+        assert result["body"]["kind"] == "event"
+        assert result["body"]["data"]["state"] == "working"
 
-    def test_handle_filter(self, monkeypatch):
-        """複数handleがいる時、指定handleのみ返す。"""
-        msgs = [
-            _make_msg(1, "w-a", _event_body("state", {"state": "working"}, handle="w-a")),
-            _make_msg(2, "w-b", _event_body("state", {"state": "loading"}, handle="w-b")),
-        ]
-        monkeypatch.setattr(ow_service, "ow_history", lambda *a, **kw: _make_history(msgs))
+    def test_handle_filter(self):
+        """指定 handle のみマッチする (他 handle の entry は無視)。"""
+        _save_cache(
+            "ch",
+            states={
+                "w-a": _entry(1, {"type": "state", "state": "working"}, "2026-06-14T10:00:00+00:00"),
+                "w-b": _entry(2, {"type": "state", "state": "loading"}, "2026-06-14T10:01:00+00:00"),
+            },
+        )
         result = ow_service._query_latest_event("ch", "w-a", "state")
         assert result is not None
         assert result["handle"] == "w-a"
+        assert result["body"]["data"]["state"] == "working"
 
-    def test_handle_none_returns_any_handle(self, monkeypatch):
-        """handle=Noneなら全handleを対象にする。"""
-        msgs = [
-            _make_msg(1, "w-a", _event_body("state", {"state": "working"}, handle="w-a")),
-            _make_msg(3, "w-b", _event_body("state", {"state": "loading"}, handle="w-b")),
-        ]
-        monkeypatch.setattr(ow_service, "ow_history", lambda *a, **kw: _make_history(msgs))
+    def test_handle_none_returns_max_msg_id(self):
+        """handle=None → states 内の全 handle から最大 msg_id を選ぶ。"""
+        _save_cache(
+            "ch",
+            states={
+                "w-a": _entry(1, {"type": "state", "state": "working"}, "..."),
+                "w-b": _entry(3, {"type": "state", "state": "loading"}, "..."),
+            },
+        )
         result = ow_service._query_latest_event("ch", None, "state")
         assert result is not None
         assert result["msg_id"] == 3
+        assert result["handle"] == "w-b"
 
-    def test_command_kind_skipped(self, monkeypatch):
-        """kind="command" のメッセージはスキップされる。"""
-        body = {"v": 1, "kind": "command", "data": {"type": "state"}}
-        msgs = [_make_msg(1, "w-h", body)]
-        monkeypatch.setattr(ow_service, "ow_history", lambda *a, **kw: _make_history(msgs))
+    def test_cache_miss_returns_none(self):
+        """cache が無い (find_topic_id_by_channel が見つけられない) → None。"""
         result = ow_service._query_latest_event("ch", "w-h", "state")
         assert result is None
 
-    def test_history_error_returns_none(self, monkeypatch):
-        """ow_historyがerrorを返す → None。"""
-        monkeypatch.setattr(ow_service, "ow_history", lambda *a, **kw: {"error": "conn refused"})
+    def test_cache_for_other_channel_returns_none(self):
+        """cache はあるが channel mismatch → load_state が None → None。"""
+        _save_cache(
+            "another-channel",
+            states={"w-h": _entry(5, {"type": "state", "state": "working"}, "...")},
+        )
         result = ow_service._query_latest_event("ch", "w-h", "state")
         assert result is None
 
-    def test_since_parameter_passed_to_history(self, monkeypatch):
-        """sinceパラメータがow_historyに渡される。"""
-        received = {}
+    def test_since_excludes_entries_with_msg_id_le_since(self):
+        """since パラメータ: msg_id <= since の entry は除外する。"""
+        _save_cache(
+            "ch",
+            states={
+                "w-h": _entry(5, {"type": "state", "state": "working"}, "..."),
+            },
+        )
+        # since=5 → cached msg_id 5 は除外 → None
+        result = ow_service._query_latest_event("ch", "w-h", "state", since=5)
+        assert result is None
+        # since=4 → cached msg_id 5 が残る → 返る
+        result = ow_service._query_latest_event("ch", "w-h", "state", since=4)
+        assert result is not None
+        assert result["msg_id"] == 5
 
-        def fake_history(channel, since=0, limit=100):
-            received["since"] = since
-            return _make_history([])
-
-        monkeypatch.setattr(ow_service, "ow_history", fake_history)
-        ow_service._query_latest_event("ch", "w-h", "state", since=42)
-        assert received["since"] == 42
+    def test_unsupported_data_type_returns_none(self):
+        """対応していない data_type (例: "unknown") は cache に該当領域なし → None。"""
+        _save_cache(
+            "ch",
+            states={"w-h": _entry(5, {"type": "state", "state": "working"}, "...")},
+        )
+        result = ow_service._query_latest_event("ch", "w-h", "unknown_type")
+        assert result is None
 
 
 # ----------------------------
@@ -164,7 +248,10 @@ class TestQueryLatestEvent:
 
 
 class TestQueryEventsSince:
-    """_query_events_since のユニットテスト。"""
+    """_query_events_since のユニットテスト (PR-β/γ では関数自体は変更なし)。
+
+    本関数は cache fastpath の対象外で、引き続き relay full pull を行う。
+    """
 
     def test_returns_all_matching(self, monkeypatch):
         """複数件返す。"""
@@ -199,7 +286,7 @@ class TestQueryEventsSince:
 
 
 class TestInferCrashCause:
-    """_infer_crash_cause のユニットテスト。"""
+    """_infer_crash_cause のユニットテスト (PR-β/γ で振る舞い変化なし)。"""
 
     def _old_hb(self, seconds_ago=200):
         """現在時刻からseconds_ago秒前のISO文字列を返す。"""
@@ -248,42 +335,52 @@ class TestInferCrashCause:
 
 
 class TestOwGetIdentity:
-    """ow_get_identity のユニットテスト。"""
+    """ow_get_identity の cache fastpath テスト。"""
 
-    def _setup_history(self, monkeypatch, messages):
-        monkeypatch.setattr(ow_service, "ow_history", lambda *a, **kw: _make_history(messages))
-
-    def test_returns_identity_with_msg_id_and_at(self, monkeypatch):
-        """正常系: identity eventがある → bundle + msg_id + identity_at を返す。"""
-        msgs = [
-            _make_msg(
-                1, "w-h",
-                _event_body("identity", {"alias": "worker-1", "channel": "ch"}),
-                "2026-06-14T10:00:00+00:00",
-            ),
-        ]
-        self._setup_history(monkeypatch, msgs)
+    def test_returns_identity_with_msg_id_and_at(self):
+        """正常系: cache に identity_events[handle] があれば bundle + msg_id + identity_at を返す。"""
+        _save_cache(
+            "ch",
+            identity_events={
+                "w-h": _entry(
+                    1,
+                    {"type": "identity", "alias": "worker-1", "channel": "ch"},
+                    "2026-06-14T10:00:00+00:00",
+                ),
+            },
+        )
         result = ow_service.ow_get_identity("ch", "w-h")
         assert result is not None
         assert result["alias"] == "worker-1"
         assert result["msg_id"] == 1
         assert result["identity_at"] == "2026-06-14T10:00:00+00:00"
 
-    def test_returns_none_when_no_identity(self, monkeypatch):
-        """identity eventなし → None。"""
-        self._setup_history(monkeypatch, [])
+    def test_returns_none_when_no_identity(self):
+        """cache に identity_events 未登録 → None。"""
+        _save_cache("ch")  # empty cache
         result = ow_service.ow_get_identity("ch", "w-h")
         assert result is None
 
-    def test_inferred_cause_added_on_crash(self, monkeypatch):
-        """workingで古いheartbeat → inferred_cause付き。"""
+    def test_returns_none_when_cache_missing(self):
+        """cache 自体が未生成 → None (relay は叩かない)。"""
+        result = ow_service.ow_get_identity("ch", "w-h")
+        assert result is None
+
+    def test_inferred_cause_added_on_crash(self):
+        """state=working + 古い heartbeat → inferred_cause 付き。"""
         old_hb = (datetime.now(timezone.utc) - timedelta(seconds=200)).isoformat()
-        msgs = [
-            _make_msg(1, "w-h", _event_body("identity", {"alias": "worker-1"}), "2026-06-14T09:00:00+00:00"),
-            _make_msg(2, "w-h", _event_body("state", {"state": "working"}), "2026-06-14T09:01:00+00:00"),
-            _make_msg(3, "w-h", _event_body("heartbeat", {"phase": "working"}), old_hb),
-        ]
-        self._setup_history(monkeypatch, msgs)
+        _save_cache(
+            "ch",
+            identity_events={
+                "w-h": _entry(1, {"type": "identity", "alias": "worker-1"}, "2026-06-14T09:00:00+00:00"),
+            },
+            states={
+                "w-h": _entry(2, {"type": "state", "state": "working"}, "2026-06-14T09:01:00+00:00"),
+            },
+            heartbeats={
+                "w-h": _entry(3, {"type": "heartbeat", "phase": "working"}, old_hb),
+            },
+        )
         result = ow_service.ow_get_identity("ch", "w-h")
         assert result is not None
         assert result.get("inferred_cause") == "crashed (inferred)"
@@ -296,47 +393,39 @@ class TestOwGetIdentity:
             "manual:mac-mini:12345",  # manual fallback
         ],
     )
-    def test_term_ref_round_trip(self, monkeypatch, term_ref_value):
-        """段階①: event:identity の term_ref が ow_get_identity 戻り値にそのまま乗る。
-
-        reducer は dict(data) で透過保持する。tmux %N / iterm2 UUID / manual いずれの
-        形式でも値は加工せず保存される。
-        """
-        msgs = [
-            _make_msg(
-                1, "w-h",
-                _event_body("identity", {"alias": "worker-1", "term_ref": term_ref_value}),
-                "2026-06-14T10:00:00+00:00",
-            ),
-        ]
-        self._setup_history(monkeypatch, msgs)
+    def test_term_ref_round_trip(self, term_ref_value):
+        """段階①: event:identity の term_ref が reducer 戻り値にそのまま乗る。"""
+        _save_cache(
+            "ch",
+            identity_events={
+                "w-h": _entry(
+                    1,
+                    {"type": "identity", "alias": "worker-1", "term_ref": term_ref_value},
+                    "2026-06-14T10:00:00+00:00",
+                ),
+            },
+        )
         result = ow_service.ow_get_identity("ch", "w-h")
         assert result is not None
         assert result.get("term_ref") == term_ref_value
-        # validator が呼び出し側で利用できることを担保（reducer 自体は加工しない）。
         assert ow_service.is_valid_term_ref(term_ref_value) is True
 
-    def test_identity_without_term_ref_works(self, monkeypatch):
-        """後方互換: term_ref フィールドを持たない identity event でも reducer は正常動作する。
-
-        worker が manual モードや term_ref 取得失敗時に term_ref を省略するケースを想定。
-        戻り値には term_ref キーが存在しない（または None）状態となり、他のフィールドは
-        通常通り取り出せる。
-        """
-        msgs = [
-            _make_msg(
-                1, "w-h",
-                _event_body("identity", {"alias": "worker-1", "channel": "ch"}),
-                "2026-06-14T10:00:00+00:00",
-            ),
-        ]
-        self._setup_history(monkeypatch, msgs)
+    def test_identity_without_term_ref_works(self):
+        """後方互換: term_ref キーが無くても他のフィールドは正常取得できる。"""
+        _save_cache(
+            "ch",
+            identity_events={
+                "w-h": _entry(
+                    1,
+                    {"type": "identity", "alias": "worker-1", "channel": "ch"},
+                    "2026-06-14T10:00:00+00:00",
+                ),
+            },
+        )
         result = ow_service.ow_get_identity("ch", "w-h")
         assert result is not None
         assert result["alias"] == "worker-1"
-        # term_ref キーは無いか、あっても None
         assert result.get("term_ref") is None
-        # validator は欠落値を invalid と判定する
         assert ow_service.is_valid_term_ref(result.get("term_ref")) is False
 
 
@@ -346,18 +435,25 @@ class TestOwGetIdentity:
 
 
 class TestOwListIdentities:
-    """ow_list_identities のユニットテスト。"""
+    """ow_list_identities の cache fastpath テスト。"""
 
-    def test_returns_all_handles(self, monkeypatch):
-        """2つのhandleそれぞれのidentityを返す。"""
-        msgs = [
-            _make_msg(1, "w-a", _event_body("identity", {"alias": "worker-a"}, handle="w-a")),
-            _make_msg(2, "w-b", _event_body("identity", {"alias": "worker-b"}, handle="w-b")),
-        ]
-        monkeypatch.setattr(ow_service, "ow_history", lambda *a, **kw: _make_history(msgs))
+    def test_returns_all_handles(self):
+        """cache 内の identity_events の全 handle を返す。"""
+        _save_cache(
+            "ch",
+            identity_events={
+                "w-a": _entry(1, {"type": "identity", "alias": "worker-a"}, "..."),
+                "w-b": _entry(2, {"type": "identity", "alias": "worker-b"}, "..."),
+            },
+        )
         result = ow_service.ow_list_identities("ch")
         aliases = {e["alias"] for e in result}
         assert aliases == {"worker-a", "worker-b"}
+
+    def test_returns_empty_when_cache_missing(self):
+        """cache 未生成 → 空リスト (relay は叩かない)。"""
+        result = ow_service.ow_list_identities("ch")
+        assert result == []
 
     @pytest.mark.parametrize(
         "terminated_payload",
@@ -365,62 +461,62 @@ class TestOwListIdentities:
             {"cause": "closed"},
             {"cause": "cancelled"},
             {"cause": "dead"},
-            # terminated_at のみ（cause なし）も除外対象
             {"terminated_at": "2026-06-16T00:00:00Z"},
         ],
     )
-    def test_alive_only_excludes_terminated(self, monkeypatch, terminated_payload):
+    def test_alive_only_excludes_terminated(self, terminated_payload):
         """alive_only=True → cause=closed/cancelled/dead と terminated_at を除外する。"""
-        terminated_identity = {"alias": "worker-b", **terminated_payload}
-        msgs = [
-            _make_msg(1, "w-a", _event_body("identity", {"alias": "worker-a"}, handle="w-a")),
-            _make_msg(2, "w-b", _event_body("identity", terminated_identity, handle="w-b")),
-        ]
-        monkeypatch.setattr(ow_service, "ow_history", lambda *a, **kw: _make_history(msgs))
+        terminated_identity = {
+            "type": "identity",
+            "alias": "worker-b",
+            **terminated_payload,
+        }
+        _save_cache(
+            "ch",
+            identity_events={
+                "w-a": _entry(1, {"type": "identity", "alias": "worker-a"}, "..."),
+                "w-b": _entry(2, terminated_identity, "..."),
+            },
+        )
         result = ow_service.ow_list_identities("ch", alive_only=True)
         assert len(result) == 1
         assert result[0]["alias"] == "worker-a"
 
-    def test_term_ref_preserved_per_handle(self, monkeypatch):
-        """段階①: 複数 handle の identity に term_ref が個別に乗る。
-
-        ow_list_identities は handle 単位で最新 identity を集約するが、各 entry の
-        term_ref は元 event のものをそのまま保持し、混線しない。
-        """
-        msgs = [
-            _make_msg(
-                1, "w-a",
-                _event_body("identity", {"alias": "worker-a", "term_ref": "%5"}, handle="w-a"),
-            ),
-            _make_msg(
-                2, "w-b",
-                _event_body(
-                    "identity",
+    def test_term_ref_preserved_per_handle(self):
+        """段階①: 複数 handle の term_ref が個別に保持される。"""
+        _save_cache(
+            "ch",
+            identity_events={
+                "w-a": _entry(
+                    1,
+                    {"type": "identity", "alias": "worker-a", "term_ref": "%5"},
+                    "...",
+                ),
+                "w-b": _entry(
+                    2,
                     {
+                        "type": "identity",
                         "alias": "worker-b",
                         "term_ref": "12345678-1234-1234-1234-123456789ABC",
                     },
-                    handle="w-b",
+                    "...",
                 ),
-            ),
-        ]
-        monkeypatch.setattr(ow_service, "ow_history", lambda *a, **kw: _make_history(msgs))
+            },
+        )
         result = ow_service.ow_list_identities("ch")
         by_handle = {e["alias"]: e for e in result}
         assert by_handle["worker-a"]["term_ref"] == "%5"
         assert by_handle["worker-b"]["term_ref"] == "12345678-1234-1234-1234-123456789ABC"
 
-    def test_identities_without_term_ref_work(self, monkeypatch):
-        """後方互換: term_ref を持たない identity event でも ow_list_identities は正常動作する。
-
-        term_ref 省略はあくまで「フィールドが無い」状態であり、reducer は他のフィールドを
-        通常通り集約する。term_ref キーは戻り値に存在しない（None）。
-        """
-        msgs = [
-            _make_msg(1, "w-a", _event_body("identity", {"alias": "worker-a"}, handle="w-a")),
-            _make_msg(2, "w-b", _event_body("identity", {"alias": "worker-b"}, handle="w-b")),
-        ]
-        monkeypatch.setattr(ow_service, "ow_history", lambda *a, **kw: _make_history(msgs))
+    def test_identities_without_term_ref_work(self):
+        """後方互換: term_ref を持たない identity でも他フィールドは集約される。"""
+        _save_cache(
+            "ch",
+            identity_events={
+                "w-a": _entry(1, {"type": "identity", "alias": "worker-a"}, "..."),
+                "w-b": _entry(2, {"type": "identity", "alias": "worker-b"}, "..."),
+            },
+        )
         result = ow_service.ow_list_identities("ch")
         by_handle = {e["alias"]: e for e in result}
         assert set(by_handle.keys()) == {"worker-a", "worker-b"}
@@ -480,32 +576,42 @@ class TestTermRefValidation:
 
 
 class TestOwGetPresence:
-    """ow_get_presence のユニットテスト。"""
+    """ow_get_presence の cache fastpath テスト。"""
 
-    def test_online_with_recent_heartbeat(self, monkeypatch):
-        """直近heartbeat → online。"""
+    def test_online_with_recent_heartbeat(self):
+        """直近 heartbeat → online。"""
         recent = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
-        msgs = [
-            _make_msg(1, "w-h", _event_body("heartbeat", {"phase": "working"}), recent),
-        ]
-        monkeypatch.setattr(ow_service, "ow_history", lambda *a, **kw: _make_history(msgs))
+        _save_cache(
+            "ch",
+            heartbeats={
+                "w-h": _entry(1, {"type": "heartbeat", "phase": "working"}, recent),
+            },
+        )
         result = ow_service.ow_get_presence("ch", "w-h")
         assert result["status"] == "online"
         assert result["handle"] == "w-h"
 
-    def test_offline_with_old_heartbeat(self, monkeypatch):
-        """古いheartbeat → offline。"""
+    def test_offline_with_old_heartbeat(self):
+        """古い heartbeat → offline。"""
         old = (datetime.now(timezone.utc) - timedelta(seconds=200)).isoformat()
-        msgs = [
-            _make_msg(1, "w-h", _event_body("heartbeat", {"phase": "working"}), old),
-        ]
-        monkeypatch.setattr(ow_service, "ow_history", lambda *a, **kw: _make_history(msgs))
+        _save_cache(
+            "ch",
+            heartbeats={
+                "w-h": _entry(1, {"type": "heartbeat", "phase": "working"}, old),
+            },
+        )
         result = ow_service.ow_get_presence("ch", "w-h")
         assert result["status"] == "offline"
 
-    def test_unknown_when_no_heartbeat(self, monkeypatch):
-        """heartbeatなし → unknown。"""
-        monkeypatch.setattr(ow_service, "ow_history", lambda *a, **kw: _make_history([]))
+    def test_unknown_when_no_heartbeat_in_cache(self):
+        """cache に heartbeats[handle] 無し → unknown / last_heartbeat_at=None。"""
+        _save_cache("ch")
+        result = ow_service.ow_get_presence("ch", "w-h")
+        assert result["status"] == "unknown"
+        assert result["last_heartbeat_at"] is None
+
+    def test_unknown_when_cache_missing(self):
+        """cache 自体が無い → unknown (relay は叩かない)。"""
         result = ow_service.ow_get_presence("ch", "w-h")
         assert result["status"] == "unknown"
         assert result["last_heartbeat_at"] is None
@@ -517,15 +623,20 @@ class TestOwGetPresence:
 
 
 class TestOwGetWorkloadState:
-    """ow_get_workload_state のユニットテスト。"""
+    """ow_get_workload_state の cache fastpath テスト。"""
 
-    def test_returns_latest_state(self, monkeypatch):
-        """最新stateを返す。"""
-        msgs = [
-            _make_msg(1, "w-h", _event_body("state", {"state": "loading"}), "2026-06-14T10:00:00+00:00"),
-            _make_msg(2, "w-h", _event_body("state", {"state": "working", "cause": None}), "2026-06-14T10:01:00+00:00"),
-        ]
-        monkeypatch.setattr(ow_service, "ow_history", lambda *a, **kw: _make_history(msgs))
+    def test_returns_latest_state(self):
+        """cache の states[handle] を parsed event 形式で再構築し API 戻り値に変換する。"""
+        _save_cache(
+            "ch",
+            states={
+                "w-h": _entry(
+                    2,
+                    {"type": "state", "state": "working", "cause": None},
+                    "2026-06-14T10:01:00+00:00",
+                ),
+            },
+        )
         result = ow_service.ow_get_workload_state("ch", "w-h")
         assert result is not None
         assert result["state"] == "working"
@@ -533,8 +644,13 @@ class TestOwGetWorkloadState:
         assert result["msg_id"] == 2
         assert result["state_at"] == "2026-06-14T10:01:00+00:00"
 
-    def test_returns_none_when_no_state(self, monkeypatch):
-        """stateなし → None。"""
-        monkeypatch.setattr(ow_service, "ow_history", lambda *a, **kw: _make_history([]))
+    def test_returns_none_when_no_state_in_cache(self):
+        """cache に states[handle] 無し → None。"""
+        _save_cache("ch")
+        result = ow_service.ow_get_workload_state("ch", "w-h")
+        assert result is None
+
+    def test_returns_none_when_cache_missing(self):
+        """cache 自体が無い → None。"""
         result = ow_service.ow_get_workload_state("ch", "w-h")
         assert result is None
