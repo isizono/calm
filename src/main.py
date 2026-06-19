@@ -295,7 +295,7 @@ def get_logs(
     include_retracted: bool = False,
 ) -> dict:
     """
-    Choose: topic/activity に紐づく log 一覧が欲しいとき。決定事項一覧なら get_decisions、log/decision/material の混合時系列なら get_timeline、起点からの関連グラフ走査なら get_map、activity 着手時の文脈集約なら check_in。
+    Choose: topic/activity に紐づく log 一覧が欲しいとき。決定事項一覧なら get_decisions、log/decision/material の混合時系列なら get_timeline、起点からの関連グラフ走査なら get_map、activity 着手時の文脈集約なら check_in（status を in_progress に自動更新する副作用あり、着手時のみ）。
 
     指定エンティティの議論ログを取得する。
 
@@ -327,7 +327,7 @@ def get_decisions(
     include_retracted: bool = False,
 ) -> dict:
     """
-    Choose: topic/activity に紐づく decision 一覧が欲しいとき。議論経緯の log なら get_logs、log/decision/material の混合時系列なら get_timeline、起点からの関連グラフ走査なら get_map、activity 着手時の文脈集約なら check_in。
+    Choose: topic/activity に紐づく decision 一覧が欲しいとき。議論経緯の log なら get_logs、log/decision/material の混合時系列なら get_timeline、起点からの関連グラフ走査なら get_map、activity 着手時の文脈集約なら check_in（status を in_progress に自動更新する副作用あり、着手時のみ）。
 
     指定エンティティに関連する決定事項を取得する。
 
@@ -836,7 +836,7 @@ def get_map(
     max_depth: int = 2,
 ) -> dict:
     """
-    Choose: 起点エンティティから relation を辿って到達可能な topic/activity/material のカタログが欲しいとき。log/decision/material の時系列なら get_timeline、特定 activity の文脈集約なら check_in、log/decision の本文一覧なら get_logs / get_decisions。
+    Choose: 起点エンティティから relation を辿って到達可能な topic/activity/material のカタログが欲しいとき。log/decision/material の時系列なら get_timeline、特定 activity の文脈集約なら check_in（status を in_progress に自動更新する副作用あり、着手時のみ）、log/decision の本文一覧なら get_logs / get_decisions。
 
     リレーショングラフを走査し、到達可能エンティティのカタログを返す。
 
@@ -977,7 +977,7 @@ def get_timeline(
     order: str = "desc",
 ) -> dict:
     """
-    Choose: topic/activity に紐づく decision/log/material を時系列順に並べたいとき。log だけなら get_logs、decision だけなら get_decisions、関連グラフ走査なら get_map、activity の文脈集約なら check_in。
+    Choose: topic/activity に紐づく decision/log/material を時系列順に並べたいとき。log だけなら get_logs、decision だけなら get_decisions、関連グラフ走査なら get_map、activity の文脈集約なら check_in（status を in_progress に自動更新する副作用あり、着手時のみ）。
 
     トピックまたはアクティビティに紐づくdecision・log・materialを時系列で返す。
 
