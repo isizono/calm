@@ -198,10 +198,16 @@ def run(
 ) -> None:
     state = SentinelState(thresholds=thresholds)
     client = RelayClient(relay_url=relay_url)
+    # 既知トレードオフ (Phase A): last_msg_id=0 で起動するため、初回 fetch
+    # で history 全件 (=過去の state 遷移) をリプレイする。古い transitioned_at
+    # は再生時刻 (now) で上書きされるので、再起動直後 60〜90 秒は誤検知より
+    # 誤抑止寄りの挙動になる (古い遷移を「いま起きた」と見なす)。
+    # Phase B (ow_service projector hook 統合) で本ファイル廃止と同時に解消予定。
     last_msg_id = 0
     print(
         f"[ow_sentinel] start channel={channel} relay={relay_url} "
-        f"poll={poll_interval}s thresholds={state.thresholds}",
+        f"poll={poll_interval}s thresholds={state.thresholds} "
+        f"(Phase A: replay all history from msg_id=0)",
         file=sys.stderr,
         flush=True,
     )
