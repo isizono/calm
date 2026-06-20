@@ -5,6 +5,7 @@ import sqlite3
 from typing import Optional
 
 from src.db import get_connection, row_to_dict
+from src.services.citations_service import upsert_citations_for_owner_with_conn
 from src.services.readable_id import apply_readable_id_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.relation_service import _add_relation_with_conn, _validate_targets
@@ -166,6 +167,11 @@ def add_activity(
         # リレーションを追加
         if related:
             _add_relation_with_conn(conn, "activity", activity_id, related)
+
+        # 本文中の {{cite:X#NNN}} を citations テーブルに保存
+        upsert_citations_for_owner_with_conn(
+            conn, "activity", activity_id, title=title, description=description
+        )
 
         conn.commit()
 
@@ -570,6 +576,14 @@ def update_activity(
         conn.execute(
             f"UPDATE activities SET {set_clause} WHERE id = ?",
             tuple(values),
+        )
+
+        # citations 全削除→再投入 (本文無変更でも実施)
+        new_title = title if title is not None else row["title"]
+        new_description = description if description is not None else row["description"]
+        upsert_citations_for_owner_with_conn(
+            conn, "activity", activity_id,
+            title=new_title, description=new_description,
         )
 
         conn.commit()
