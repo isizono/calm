@@ -198,12 +198,12 @@ def run(
             messages = []
         for raw in messages:
             msg = _coerce_message_body(raw)
-            state.observe_event(msg, time.time())
+            state.observe_event(msg, now)
             msg_id = msg.get("msg_id")
             if isinstance(msg_id, int) and msg_id > last_msg_id:
                 last_msg_id = msg_id
 
-        for envelope in state.scan(time.time()):
+        for envelope in state.scan(now):
             try:
                 client.send_event(channel, envelope)
                 print(
