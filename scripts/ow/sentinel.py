@@ -23,6 +23,7 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Optional
@@ -137,7 +138,8 @@ class RelayClient:
         self.timeout = timeout
 
     def fetch_history(self, channel: str, since: int) -> list[dict]:
-        url = f"{self.relay_url}/history?channel={channel}&since={since}"
+        query = urllib.parse.urlencode({"channel": channel, "since": since})
+        url = f"{self.relay_url}/history?{query}"
         with urllib.request.urlopen(url, timeout=self.timeout) as resp:
             payload = json.load(resp)
         return list(payload.get("messages") or [])
