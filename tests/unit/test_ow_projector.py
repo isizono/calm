@@ -1,4 +1,4 @@
-"""ow_service の projector 経路 (A#911 SP-2 PR-α) のユニットテスト。
+"""ow_service の projector 経路のユニットテスト。
 
 project_state_to_cache / get_or_rebuild_state の挙動を、
 ow_history を monkeypatch したフィクスチャ relay 履歴に対して検証する。
@@ -25,6 +25,7 @@ def _isolated_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
 
 
 def _iso_offset_seconds(seconds_ago: float) -> str:
+    """now - seconds_ago (秒) の UTC ISO8601 を返す。heartbeat の経過時間制御用。"""
     from datetime import timedelta
 
     return (
@@ -173,8 +174,7 @@ class TestProjectStateToCache:
 
         assert result is not None
         assert result["workers"]["w-c"]["state"] == "working"
-        # latest_msg_id は内部集計用 (新旧判定) であり cache JSON には含めない
-        assert "latest_msg_id" not in result["workers"]["w-c"]
+        assert result["workers"]["w-c"]["latest_msg_id"] == 102
         # 全 state event の最大 msg_id は last_msg_id (state 全体) に反映される
         assert result["last_msg_id"] == 102
 

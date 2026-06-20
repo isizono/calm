@@ -31,6 +31,7 @@ from src.relay import PROTOCOL_VERSION
 from src.services.ow.cache import (
     CURRENT_SCHEMA_VERSION,
     OwState,
+    find_topic_id_by_channel,
     load_state,
     save_state,
 )
@@ -112,7 +113,7 @@ def _normalize_and_validate_model(model: str) -> tuple[str, str | None]:
 THINKING_EFFORTS: frozenset[str] = frozenset({"high", "xhigh", "max", "ultrathink"})
 
 # orch 側コード/skill/ドキュメントから sentinel 綴り `ultratink` を渡せるよう、最大段の
-# alias を1つ受け付ける (D#2600)。orch セッションが MCP 呼び出し時に正規綴り
+# alias を1つ受け付ける。orch セッションが MCP 呼び出し時に正規綴り
 # `ultrathink` を入力すると orch 自身の extended thinking モードが暴発するため、
 # orch は sentinel `ultratink` を使い、ow_service 側で正規綴りに畳む。
 _EFFORT_ALIASES: dict[str, str] = {"ultratink": "ultrathink"}
@@ -562,13 +563,13 @@ def ensure_channel(channel_code: str) -> bool:
 
 
 def _maybe_inject_term_ref(body: dict) -> dict:
-    """identity event の term_ref をファイルキャッシュから補完する（B案 D#2720）。
+    """identity event の term_ref をファイルキャッシュから補完する。
 
     SessionStart hook (hooks/term_ref_cache.py) が worker shell の env を
     `~/.cc-memory/ow/term_refs/<session_id>.json` に書き出している前提。
     body が identity event で term_ref 未設定なら session_id でキャッシュを引いて補完する。
 
-    lookup 失敗時は body をそのまま返す（D#2720: 補完失敗時は素通し）。
+    lookup 失敗時は body をそのまま返す（補完失敗時は素通し）。
     元の body / data dict は破壊せず、補完時のみ shallow copy で新 dict を返す。
     """
     if not isinstance(body, dict) or body.get("kind") != "event":
@@ -1327,7 +1328,7 @@ def ow_spawn_worker(
 
     # アダプタ呼び出し — stdoutから安定IDを取得する
     # tmux アダプタは positional 引数 `[target_pane] [is_thinking]` を受ける:
-    #   - is_thinking=1 のとき split-pane ではなく `tmux new-window` で別タブ起動 (D#2601)
+    #   - is_thinking=1 のとき split-pane ではなく `tmux new-window` で別タブ起動
     #   - target_pane が無い思考worker のときは空文字列をプレースホルダにして is_thinking のみ届ける
     adapter_args = ["bash", str(adapter_path), "spawn", cwd, worker_cmd]
     if terminal == "tmux":
@@ -1835,18 +1836,8 @@ def reconstruct_state_from_relay(channel: str, limit: int = 10000) -> dict:
 
 
 # ----------------------------
-# projector: relay → OwState → save_state (A#911 SP-2 PR-α)
+# projector: relay → OwState → save_state
 # ----------------------------
-#
-# C-2案 (D#2654-2657) の projector 経路。relay events を真実源とし
-# (D#2751)、cache JSON を派生キャッシュとして保つ。PR-α 時点では既存
-# queue write は触らず並走 (shadow write) し、consumer (ow_status 等) の
-# 挙動は不変。reducer 系の cache fastpath 化は PR-β、queue write 撤去は
-# PR-γ で行う (M#386 §6 / T94 v0)。
-#
-# orch concern 原則 (D#2749): orch は project_state_to_cache を直接呼ばず、
-# ow_status 等の状態取得 API 越しに結果を読む。本関数は ow_service 内部の
-# 隠蔽境界の中に閉じる。
 
 
 def project_state_to_cache(topic_id: int, channel: str) -> OwState | None:
@@ -1854,9 +1845,7 @@ def project_state_to_cache(topic_id: int, channel: str) -> OwState | None:
 
     1回の ``ow_history(since=0)`` 全件取得から、handle 単位の最新 state /
     identity / heartbeat を集計して :class:`OwState` を組み立て、
-    :func:`save_state` でファイル先 (cache JSON) に書き出す (D#2750 ファイル先)。
-
-    既存 queue write 経路は触らない (shadow 並走、consumer 不変)。
+    :func:`save_state` でファイル先 (cache JSON) に書き出す。
 
     Args:
         topic_id: cache ファイル ``topic-<id>.json`` を決めるための topic 識別子。
@@ -1876,8 +1865,8 @@ def project_state_to_cache(topic_id: int, channel: str) -> OwState | None:
 
     messages = history.get("messages", [])
     # limit に達した場合は古い state declarations が欠落して
-    # cache が不完全になる可能性がある (reconstruct_state_from_relay と同様
-    # の警告)。状態の無音欠損リスクを少なくとも logger.warning で可視化する。
+    # cache が不完全になる可能性がある。状態の無音欠損リスクを少なくとも
+    # logger.warning で可視化する。
     if len(messages) >= history_limit:
         logger.warning(
             "ow projector: relay history truncated at limit=%d for channel=%r topic=%s; "
@@ -1889,6 +1878,7 @@ def project_state_to_cache(topic_id: int, channel: str) -> OwState | None:
 
     workers: dict[str, dict] = {}
     identity_by_handle: dict[str, dict] = {}
+    state_by_handle: dict[str, dict] = {}
     heartbeat_by_handle: dict[str, dict] = {}
     max_msg_id = 0
 
@@ -1907,6 +1897,8 @@ def project_state_to_cache(topic_id: int, channel: str) -> OwState | None:
         if not handle:
             continue
 
+        created_at = msg.get("created_at", "")
+
         if t == "state":
             state_val = data.get("state") or ""
             if not state_val:
@@ -1918,7 +1910,14 @@ def project_state_to_cache(topic_id: int, channel: str) -> OwState | None:
                     "task": task,
                     "state": state_val,
                     "latest_msg_id": msg_id,
-                    "latest_at": msg.get("created_at", ""),
+                    "latest_at": created_at,
+                }
+            current_state = state_by_handle.get(handle)
+            if current_state is None or msg_id > current_state["msg_id"]:
+                state_by_handle[handle] = {
+                    "msg_id": msg_id,
+                    "data": dict(data),
+                    "created_at": created_at,
                 }
         elif t == "identity":
             current = identity_by_handle.get(handle)
@@ -1926,29 +1925,22 @@ def project_state_to_cache(topic_id: int, channel: str) -> OwState | None:
                 identity_by_handle[handle] = {
                     "msg_id": msg_id,
                     "data": dict(data),
-                    "created_at": msg.get("created_at", ""),
+                    "created_at": created_at,
                 }
         elif t == "heartbeat":
             current = heartbeat_by_handle.get(handle)
             if current is None or msg_id > current["msg_id"]:
                 heartbeat_by_handle[handle] = {
                     "msg_id": msg_id,
-                    "phase": data.get("phase"),
-                    "created_at": msg.get("created_at", ""),
+                    "data": dict(data),
+                    "created_at": created_at,
                 }
-
-    # 内部集計用の latest_msg_id を cache JSON に含めないよう取り除く
-    # (state event 新旧判定の実装詳細であり OwState.workers の公開スキーマには含めない)
-    for entry in workers.values():
-        entry.pop("latest_msg_id", None)
-
-    identities = {h: e["data"] for h, e in identity_by_handle.items()}
 
     # presence: heartbeat 時刻ベースの online 判定 (ow_get_presence と同ロジック)
     now = datetime.now(timezone.utc)
     presence: list[str] = []
     for handle, hb in heartbeat_by_handle.items():
-        phase = hb.get("phase") or ""
+        phase = (hb["data"].get("phase") if isinstance(hb.get("data"), dict) else None) or ""
         timeout = _HEARTBEAT_TIMEOUT_SECS.get(phase, _HEARTBEAT_TIMEOUT_DEFAULT)
         created_at = hb.get("created_at") or ""
         try:
@@ -1961,12 +1953,20 @@ def project_state_to_cache(topic_id: int, channel: str) -> OwState | None:
         if elapsed < timeout:
             presence.append(handle)
 
+    # ``identities`` は raw data 形式 (handle → data dict)。
+    # reducer fastpath 用には EventEntry 形式の ``identity_events`` を別途持つ
+    # (msg_id / created_at が必要なため)。
+    identities_raw = {h: e["data"] for h, e in identity_by_handle.items()}
+
     state: OwState = {
         "schema_version": CURRENT_SCHEMA_VERSION,
         "channel": channel,
         "last_msg_id": max_msg_id,
         "workers": workers,
-        "identities": identities,
+        "identities": identities_raw,
+        "identity_events": identity_by_handle,
+        "states": state_by_handle,
+        "heartbeats": heartbeat_by_handle,
         "presence": sorted(presence),
         "updated_at": now.isoformat(),
     }
@@ -2002,6 +2002,7 @@ def get_or_rebuild_state(topic_id: int, channel: str) -> OwState | None:
     if state is not None:
         return state
     return project_state_to_cache(topic_id, channel)
+
 
 
 def _parse_spawning_at(value: str | None) -> datetime | None:
@@ -2546,12 +2547,6 @@ def ow_recover(
 #   - tmux:    "%N"                  例: "%5", "%123"     (tmux pane_id 規約)
 #   - iterm2:  RFC4122 UUID 表記      例: "12345678-1234-...-123456789ABC"
 #   - manual:  "manual:host:pid"      例: "manual:mac-mini:12345"
-#
-# 段階① のスコープ:
-#   - reducer が term_ref を破棄しないことを担保するテストを追加（test_ow_reducer）
-#   - is_valid_term_ref() / classify_term_ref() を診断ヘルパーとして提供
-#
-# 段階②③（relay-side ow_recover での term_ref キー再リンク等）は D#2608 によりスコープ外。
 
 _TERM_REF_PATTERNS: dict[str, re.Pattern[str]] = {
     "tmux": re.compile(r"^%\d+$"),
@@ -2619,37 +2614,106 @@ def _parse_ow_event(msg: dict) -> dict | None:
     }
 
 
+# ----------------------------
+# reducer cache fastpath
+# ----------------------------
+#
+# `_query_latest_event` / `_latest_events_by_type` は projector
+# (`project_state_to_cache`) が書き出した OwState を読むだけのキャッシュ参照。
+# キャッシュは orch tick で `project_state_to_cache` 経由に更新される前提で、
+# reducer 自身は relay を直接叩かない (reducer は読むだけ、書き手は orch)。
+#
+# 対象 data_type: "identity" / "state" / "heartbeat" の3種。
+# それ以外の data_type で呼ばれた場合は ``None`` / ``{}`` を返す
+# (現状の呼び出し元はすべて上記3種、`_query_events_since` は対象外で従来通り)。
+
+
+_CACHE_EVENT_FIELDS = ("identity_events", "states", "heartbeats")
+_DATA_TYPE_TO_CACHE_FIELD: dict[str, str] = {
+    "identity": "identity_events",
+    "state": "states",
+    "heartbeat": "heartbeats",
+}
+
+
+def _load_state_by_channel(channel: str) -> OwState | None:
+    """channel から OwState をキャッシュ越しに読み出す。
+
+    cache ディレクトリを ``find_topic_id_by_channel`` で走査して topic_id を
+    特定し、``load_state(topic_id, channel=channel)`` で読み出す。topic_id が
+    見つからない、または cache が無効なら ``None`` を返す (relay を叩かない)。
+
+    TODO(perf): 現状 ``find_topic_id_by_channel`` と ``load_state`` で同一の
+    cache JSON を二重に読んでいる (検索フェーズと検証フェーズ)。reducer の
+    ホットパスで効くため、将来的に find_topic_id_by_channel が (topic_id, data)
+    のタプルを返すよう拡張するか、_load_state_by_channel 内で iterdir を直接
+    走査して 1 read で済ませるリファクタが望ましい。
+    """
+    topic_id = find_topic_id_by_channel(channel)
+    if topic_id is None:
+        return None
+    return load_state(topic_id, channel=channel)
+
+
+def _entry_to_parsed_event(entry: dict, handle: str, data_type: str) -> dict:
+    """OwState の EventEntry を `_query_*` 戻り値形式 (parsed event) に組み立てる。
+
+    既存呼び出し元 (ow_get_identity / ow_get_presence / ow_get_workload_state) の
+    parsed event 取り扱いと互換にするため、kind=event / from=handle / data 同梱の
+    envelope に組み戻す。
+    """
+    data = dict(entry.get("data") or {})
+    if data.get("type") is None:
+        data["type"] = data_type
+    return {
+        "msg_id": entry.get("msg_id", 0),
+        "handle": handle,
+        "body": {
+            "v": 1,
+            "kind": "event",
+            "from": handle,
+            "data": data,
+        },
+        "created_at": entry.get("created_at", ""),
+    }
+
+
 def _query_latest_event(
     channel: str, handle: str | None, data_type: str, since: int = 0
 ) -> dict | None:
-    """指定 channel/handle/data_type の最新 event を返す（kind=event のみ対象）。
+    """指定 channel/handle/data_type の最新 event をキャッシュから返す。
 
     Args:
         channel: channelコード
         handle: workerハンドル（Noneなら全handle対象）
-        data_type: eventのdata.type（例: "identity", "state", "heartbeat"）
+        data_type: eventのdata.type（"identity" / "state" / "heartbeat"）
         since: このmsg_idより大きいものを返す（0=全件）
 
     Returns:
-        最新のparsed event dict または None
+        最新の parsed event dict（OwState の EventEntry から再構築）
+        キャッシュ無し / 未サポート type / 該当 entry 無しなら None
     """
-    history = ow_history(channel, since=since, limit=10000)
-    if "error" in history:
+    field = _DATA_TYPE_TO_CACHE_FIELD.get(data_type)
+    if field is None:
         return None
-    result = None
-    for msg in history.get("messages", []):
-        if handle is not None and msg.get("handle") != handle:
+    state = _load_state_by_channel(channel)
+    if state is None:
+        return None
+    events_map = state.get(field) or {}
+    best: dict | None = None
+    for h, entry in events_map.items():
+        if not isinstance(entry, dict):
             continue
-        parsed = _parse_ow_event(msg)
-        if parsed is None:
+        if handle is not None and h != handle:
             continue
-        if parsed["body"].get("kind") != "event":
+        msg_id = entry.get("msg_id", 0)
+        if not isinstance(msg_id, int):
             continue
-        if parsed["body"].get("data", {}).get("type") != data_type:
+        if since and msg_id <= since:
             continue
-        if result is None or parsed["msg_id"] > result["msg_id"]:
-            result = parsed
-    return result
+        if best is None or msg_id > best["msg_id"]:
+            best = _entry_to_parsed_event(entry, h, data_type)
+    return best
 
 
 def _query_events_since(
@@ -2728,34 +2792,39 @@ def _infer_crash_cause(
 def _latest_events_by_type(
     channel: str, handle: str | None, data_types: tuple[str, ...]
 ) -> dict[str, dict]:
-    """指定 handle の各 data_type について最新 event を1回の ow_history で取得する。
+    """指定 handle の各 data_type について最新 event をキャッシュから返す。
 
     Args:
         channel: channelコード
         handle: workerハンドル（Noneなら全handle対象）
         data_types: 対象とする event の data.type タプル
+            ("identity" / "state" / "heartbeat" のみ対応、それ以外はキー欠落)
 
     Returns:
         {data_type: latest_event_dict} — 該当 event が無い type はキー欠落
     """
-    history = ow_history(channel, since=0, limit=10000)
-    if "error" in history:
+    state = _load_state_by_channel(channel)
+    if state is None:
         return {}
     latest: dict[str, dict] = {}
-    for msg in history.get("messages", []):
-        if handle is not None and msg.get("handle") != handle:
+    for data_type in data_types:
+        field = _DATA_TYPE_TO_CACHE_FIELD.get(data_type)
+        if field is None:
             continue
-        parsed = _parse_ow_event(msg)
-        if parsed is None:
-            continue
-        if parsed["body"].get("kind") != "event":
-            continue
-        t = parsed["body"].get("data", {}).get("type")
-        if t not in data_types:
-            continue
-        current = latest.get(t)
-        if current is None or parsed["msg_id"] > current["msg_id"]:
-            latest[t] = parsed
+        events_map = state.get(field) or {}
+        best: dict | None = None
+        for h, entry in events_map.items():
+            if not isinstance(entry, dict):
+                continue
+            if handle is not None and h != handle:
+                continue
+            msg_id = entry.get("msg_id", 0)
+            if not isinstance(msg_id, int):
+                continue
+            if best is None or msg_id > best["msg_id"]:
+                best = _entry_to_parsed_event(entry, h, data_type)
+        if best is not None:
+            latest[data_type] = best
     return latest
 
 
@@ -2803,57 +2872,43 @@ def ow_list_identities(channel: str, alive_only: bool = False) -> list[dict]:
     - identity bundle に terminated_at / cause(closed/cancelled/dead) を持つ entry を除外
     - 加えて、ow_get_identity と同様の crash 推論（state が non-terminal + heartbeat 途絶）
       で inferred_cause が付与される entry も除外する
-    handle フィールドが欠落した event は集約キーが None になるためスキップする。
 
     term_ref 透過保持: ow_get_identity と同様、entry = dict(data) により term_ref も
                       そのまま保持される。
+
+    実装: relay full pull は撤去し、``project_state_to_cache`` が書き出した
+    OwState (``identity_events`` / ``states`` / ``heartbeats``) を読むだけ。
+    キャッシュ未生成なら空リストを返す (orch 側で project_state_to_cache 必須)。
     """
-    history = ow_history(channel, since=0, limit=10000)
-    if "error" in history:
+    state = _load_state_by_channel(channel)
+    if state is None:
         return []
 
-    # handle別に identity / state / heartbeat の最新msgを収集
-    identity_by_handle: dict[str, dict] = {}
-    state_by_handle: dict[str, dict] = {}
-    heartbeat_by_handle: dict[str, dict] = {}
-    for msg in history.get("messages", []):
-        parsed = _parse_ow_event(msg)
-        if parsed is None:
-            continue
-        h = parsed["handle"]
-        if h is None:
-            continue
-        if parsed["body"].get("kind") != "event":
-            continue
-        t = parsed["body"].get("data", {}).get("type")
-        if t == "identity":
-            current = identity_by_handle.get(h)
-            if current is None or parsed["msg_id"] > current["msg_id"]:
-                identity_by_handle[h] = parsed
-        elif t == "state":
-            current = state_by_handle.get(h)
-            if current is None or parsed["msg_id"] > current["msg_id"]:
-                state_by_handle[h] = parsed
-        elif t == "heartbeat":
-            current = heartbeat_by_handle.get(h)
-            if current is None or parsed["msg_id"] > current["msg_id"]:
-                heartbeat_by_handle[h] = parsed
+    identity_by_handle: dict[str, dict] = state.get("identity_events") or {}
+    state_by_handle: dict[str, dict] = state.get("states") or {}
+    heartbeat_by_handle: dict[str, dict] = state.get("heartbeats") or {}
 
     entries = []
-    for h, parsed in identity_by_handle.items():
-        data = parsed["body"].get("data", {})
+    for h, identity_entry in identity_by_handle.items():
+        if not isinstance(identity_entry, dict):
+            continue
+        data = identity_entry.get("data") or {}
         entry = dict(data)
-        entry["msg_id"] = parsed["msg_id"]
-        entry["identity_at"] = parsed["created_at"]
+        entry["msg_id"] = identity_entry.get("msg_id", 0)
+        entry["identity_at"] = identity_entry.get("created_at", "")
 
-        state_msg = state_by_handle.get(h)
+        state_entry = state_by_handle.get(h)
         workload_state = (
-            state_msg["body"].get("data", {}).get("state")
-            if state_msg is not None
+            (state_entry.get("data") or {}).get("state")
+            if isinstance(state_entry, dict)
             else None
         )
-        hb_msg = heartbeat_by_handle.get(h)
-        last_heartbeat_at = hb_msg["created_at"] if hb_msg is not None else None
+        hb_entry = heartbeat_by_handle.get(h)
+        last_heartbeat_at = (
+            hb_entry.get("created_at")
+            if isinstance(hb_entry, dict)
+            else None
+        )
         inferred_cause = _infer_crash_cause(workload_state, last_heartbeat_at)
         if inferred_cause is not None:
             entry["inferred_cause"] = inferred_cause
