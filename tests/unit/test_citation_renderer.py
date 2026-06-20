@@ -100,6 +100,11 @@ class TestFlavorExpand:
         assert "`{{cite:M#1}}`" in out
         assert "Design v3 (M#1)" in out
 
+    def test_none_input_returns_empty_string(self, conn):
+        assert expand(None, "internal", conn) == ""
+        assert expand(None, "readable", conn) == ""
+        assert expand(None, "raw", conn) == ""
+
 
 class TestSnippetBoundary:
     def test_truncated_open_template_at_end(self):
@@ -133,3 +138,8 @@ class TestApplyFlavorToSnippet:
         s = "See {{cite:M#"
         out = apply_flavor_to_snippet(s, "internal", conn)
         assert out == "See "
+
+    def test_none_input_returns_empty_string(self, conn):
+        assert apply_flavor_to_snippet(None, "internal", conn) == ""
+        assert apply_flavor_to_snippet(None, "readable", conn) == ""
+        assert apply_flavor_to_snippet(None, "raw", conn) == ""

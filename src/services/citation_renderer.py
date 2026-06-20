@@ -38,9 +38,12 @@ RESPONSE_TEXT_FIELDS: dict[str, tuple[str, ...]] = {
 
 
 def expand(content: str, flavor: Flavor, conn: sqlite3.Connection) -> str:
-    """本文中の `{{cite:X#NNN}}` テンプレを flavor に応じて展開する。"""
+    """本文中の `{{cite:X#NNN}}` テンプレを flavor に応じて展開する。
+
+    None 入力時は空文字を返す (戻り値型 `str` 契約を維持するため)。
+    """
     if content is None:
-        return content
+        return ""
     if flavor == "raw":
         return content
     if flavor not in VALID_FLAVORS:
@@ -200,9 +203,12 @@ def _extract_entity_id(d: dict, entity_type: str, id_key: str) -> int | None:
 def apply_flavor_to_snippet(
     snippet: str, flavor: Flavor, conn: sqlite3.Connection
 ) -> str:
-    """snippet 文字列に raw 境界調整 → flavor 展開を適用する (D#2726)。"""
+    """snippet 文字列に raw 境界調整 → flavor 展開を適用する。
+
+    None 入力時は空文字を返す (戻り値型 `str` 契約を維持するため)。
+    """
     if snippet is None:
-        return snippet
+        return ""
     if flavor == "raw":
         return snippet
     adjusted = adjust_snippet_boundary(snippet)
