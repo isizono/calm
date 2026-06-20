@@ -1,6 +1,6 @@
-"""α化時の title fallback テスト (PR #405 review fix)
+"""readable_id 化時の title fallback テスト (PR #405 review fix)
 
-title が None の decision / log を α化すると `(#NNN)` のみになる問題を防ぐ。
+title が None の decision / log を readable_id 化すると `(#NNN)` のみになる問題を防ぐ。
 本文先頭50文字を fallback として `{snippet} (#NNN)` 形式にする。
 
 対応箇所:
@@ -58,7 +58,7 @@ class TestDecisionTitleFallbackInFormatRow:
         data = res["data"]
         # title フィールドに本文 fallback が乗る
         assert data["title"] == body[:50]
-        # α化された id 文字列にも fallback タイトルが組み込まれる
+        # readable_id 化された id 文字列にも fallback タイトルが組み込まれる
         assert data["id"] == f"{body[:50]} (#{did})"
         assert data["id_raw"] == did
 
