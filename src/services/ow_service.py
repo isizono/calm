@@ -1836,18 +1836,8 @@ def reconstruct_state_from_relay(channel: str, limit: int = 10000) -> dict:
 
 
 # ----------------------------
-# projector: relay → OwState → save_state (A#911 SP-2 PR-α)
+# projector: relay → OwState → save_state
 # ----------------------------
-#
-# C-2案 (D#2654-2657) の projector 経路。relay events を真実源とし
-# (D#2751)、cache JSON を派生キャッシュとして保つ。PR-α 時点では既存
-# queue write は触らず並走 (shadow write) し、consumer (ow_status 等) の
-# 挙動は不変。reducer 系の cache fastpath 化は PR-β、queue write 撤去は
-# PR-γ で行う (M#386 §6 / T94 v0)。
-#
-# orch concern 原則 (D#2749): orch は project_state_to_cache を直接呼ばず、
-# ow_status 等の状態取得 API 越しに結果を読む。本関数は ow_service 内部の
-# 隠蔽境界の中に閉じる。
 
 
 def project_state_to_cache(topic_id: int, channel: str) -> OwState | None:
@@ -1855,23 +1845,36 @@ def project_state_to_cache(topic_id: int, channel: str) -> OwState | None:
 
     1回の ``ow_history(since=0)`` 全件取得から、handle 単位の最新 state /
     identity / heartbeat を集計して :class:`OwState` を組み立て、
-    :func:`save_state` でファイル先 (cache JSON) に書き出す (D#2750 ファイル先)。
-
-    既存 queue write 経路は触らない (shadow 並走、consumer 不変)。
+    :func:`save_state` でファイル先 (cache JSON) に書き出す。
 
     Args:
         topic_id: cache ファイル ``topic-<id>.json`` を決めるための topic 識別子。
         channel: relay channel コード。OwState.channel に格納する。
 
     Returns:
-        構築・保存できた :class:`OwState`。relay HTTP エラー等で full pull
-        に失敗した場合は ``None`` (cache ファイルは触らない)。
+        構築・保存できた :class:`OwState`。以下のいずれかで ``None`` を返す
+        (cache ファイルは触らない):
+
+          - relay HTTP エラー等で full pull に失敗した場合
+          - cache ファイル書き出し (:func:`save_state`) が OSError で失敗した場合
     """
-    history = ow_history(channel, since=0, limit=10000)
+    history_limit = 10000
+    history = ow_history(channel, since=0, limit=history_limit)
     if "error" in history:
         return None
 
     messages = history.get("messages", [])
+    # limit に達した場合は古い state declarations が欠落して
+    # cache が不完全になる可能性がある。状態の無音欠損リスクを少なくとも
+    # logger.warning で可視化する。
+    if len(messages) >= history_limit:
+        logger.warning(
+            "ow projector: relay history truncated at limit=%d for channel=%r topic=%s; "
+            "oldest state declarations may be missing and cache may be incomplete",
+            history_limit,
+            channel,
+            topic_id,
+        )
 
     workers: dict[str, dict] = {}
     identity_by_handle: dict[str, dict] = {}
@@ -1950,10 +1953,9 @@ def project_state_to_cache(topic_id: int, channel: str) -> OwState | None:
         if elapsed < timeout:
             presence.append(handle)
 
-    # ``identities`` は PR-α 互換の raw data 形式 (handle → data dict)。
+    # ``identities`` は raw data 形式 (handle → data dict)。
     # reducer fastpath 用には EventEntry 形式の ``identity_events`` を別途持つ
-    # (msg_id / created_at が必要なため)。冗長だが PR-α テストとの後方互換を
-    # 優先した (cache スキーマは forward-only な fallback を備える)。
+    # (msg_id / created_at が必要なため)。
     identities_raw = {h: e["data"] for h, e in identity_by_handle.items()}
 
     state: OwState = {
@@ -1968,7 +1970,18 @@ def project_state_to_cache(topic_id: int, channel: str) -> OwState | None:
         "presence": sorted(presence),
         "updated_at": now.isoformat(),
     }
-    save_state(topic_id, state)
+    try:
+        save_state(topic_id, state)
+    except OSError as e:
+        # ファイルシステムエラー (ディスク満杯、権限不足、I/O エラー等) を
+        # 呼び出し側 (ow_status 等) に伝播させない。docstring の契約通り None を返す。
+        logger.warning(
+            "ow projector: save_state failed for topic=%s channel=%r: %s",
+            topic_id,
+            channel,
+            e,
+        )
+        return None
     return state
 
 
@@ -1989,6 +2002,7 @@ def get_or_rebuild_state(topic_id: int, channel: str) -> OwState | None:
     if state is not None:
         return state
     return project_state_to_cache(topic_id, channel)
+
 
 
 def _parse_spawning_at(value: str | None) -> datetime | None:

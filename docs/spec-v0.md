@@ -197,14 +197,14 @@ cc-memoryに関する議論を始めるとき、「これはどの層の話か�
 
 #### Read系ツールの選び方
 
-- get_by_ids: search結果のチェリーピック / ID指定の確認
-- get_material: materialの全文（searchはsnippet止まり）
+- get_by_ids: search結果のチェリーピック / ID指定の確認（materialの場合はcontent/sourceも含まれる）
+- get_material: material_idだけ手元にあり概要も含めて取りたい単発ケース
 - get_logs / get_decisions: エンティティ深掘り
 - get_timeline: 時系列変遷
 - get_map: 関連構造の俯瞰
 - check_in: 作業開始時の文脈ロード
 
-**やらないとどうなる:** 同じ情報を別ツールで何度も取って context を圧迫する。「3呼び」（get_by_ids → get_material → さらに get_logs）でラウンドトリップが増える。
+**やらないとどうなる:** 同じ情報を別ツールで何度も取って context を圧迫する。例えばmaterialならsearch→get_by_idsで完結するところを、不要な get_material を続けて呼んでラウンドトリップが増える。
 
 ---
 

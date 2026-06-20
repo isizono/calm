@@ -1,14 +1,16 @@
 """FTS5 + ベクトル ハイブリッド検索サービス"""
+import json
 import logging
 import math
 import re
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from typing import Optional
 
 from sqlite_vec import serialize_float32
 
-from src.db import execute_query, get_connection, row_to_dict
+from src.db import execute_query, get_connection, get_db_path, row_to_dict
 from src.services import embedding_service
 from src.services.tag_service import (
     get_entity_tags,
@@ -1503,6 +1505,23 @@ def search(
 
         nearby_tags = _compute_nearby_tags(results, tag_ids, offset)
 
+        _record_search_telemetry_async(
+            query=keyword,
+            parameters={
+                "tags": tags,
+                "entity_type": entity_type,
+                "limit": limit,
+                "offset": offset,
+                "keyword_mode": keyword_mode,
+                "include_details": include_details,
+                "domain": domain,
+                "date_after": date_after,
+                "date_before": date_before,
+                "include_retracted": include_retracted,
+            },
+            result_count=total_count,
+        )
+
         return {
             "results": results,
             "total_count": total_count,
@@ -1517,6 +1536,72 @@ def search(
                 "message": str(e),
             }
         }
+
+
+def _telemetry_get_connection() -> sqlite3.Connection:
+    """telemetry 書込専用の軽量コネクション。
+
+    `search_telemetry` への INSERT は sqlite-vec 拡張を必要としないため、
+    `db.get_connection()` の `enable_load_extension(True)` → 拡張ロード →
+    `enable_load_extension(False)` のオーバーヘッドや拡張ロード失敗時の
+    warning ログを避ける目的で、最小構成（WAL + busy_timeout）のみ設定する。
+    daemon thread から呼ばれることを想定。
+    """
+    conn = sqlite3.connect(get_db_path())
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+
+
+def _record_search_telemetry_async(
+    query: str | list[str],
+    parameters: dict,
+    result_count: int,
+) -> threading.Thread | None:
+    """search 呼出の telemetry を別スレッドで非同期書込する。
+
+    search() のレスポンスタイムに影響しないよう daemon thread で走らせる。
+    書込中の例外は logger.warning に出して握りつぶし、search 本体を壊さない。
+    Thread 生成や start 自体が失敗（e.g. ``RuntimeError: can't start new thread``）
+    した場合も、呼出元 search() の外側 try で DATABASE_ERROR 化されないよう
+    ここで握って warning + None 返却にする。
+
+    書込は `_telemetry_get_connection()` 経由で sqlite-vec 拡張を
+    ロードしない軽量コネクションを使う。
+
+    Returns:
+        起動した daemon Thread。起動に失敗した場合は None。
+    """
+    def _write() -> None:
+        try:
+            query_json = json.dumps(query, ensure_ascii=False)
+            parameters_json = json.dumps(parameters, ensure_ascii=False)
+        except (TypeError, ValueError) as e:
+            logger.warning("search_telemetry serialize failed: %s", e)
+            return
+
+        try:
+            conn = _telemetry_get_connection()
+            try:
+                conn.execute(
+                    "INSERT INTO search_telemetry (query, parameters, result_count) "
+                    "VALUES (?, ?, ?)",
+                    (query_json, parameters_json, int(result_count)),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.warning("search_telemetry write failed: %s", e)
+
+    try:
+        thread = threading.Thread(target=_write, daemon=True)
+        thread.start()
+    except Exception as e:
+        logger.warning("search_telemetry thread start failed: %s", e)
+        return None
+    return thread
 
 
 def _format_row(type_name: str, data: dict, tags: list[str]) -> dict:
@@ -1571,8 +1656,11 @@ def _format_row(type_name: str, data: dict, tags: list[str]) -> dict:
         return {
             "material_id": data["id"],
             "title": data["title"],
+            "content": data["content"],
+            "source": data["source"],
             "tags": tags,
             "created_at": data["created_at"],
+            "hint": "contentの先頭1-2文は内容の説明・要約にしてください（check-in時にsnippetとして表示されます）",
         }
     return data
 
