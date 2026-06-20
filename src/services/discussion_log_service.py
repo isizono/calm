@@ -3,7 +3,7 @@ import re
 import sqlite3
 from typing import Optional
 from src.db import get_connection, row_to_dict
-from src.services.alphaization import alphaize_result_dict_inplace
+from src.services.readable_id import apply_readable_id_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.tag_service import (
     validate_and_parse_tags,
@@ -224,7 +224,7 @@ def get_logs(
                 }
                 if log.get("retracted_at"):
                     item["retracted_at"] = log["retracted_at"]
-                alphaize_result_dict_inplace(item, "log")
+                apply_readable_id_inplace(item, "log")
                 logs.append(item)
 
             return {"logs": logs}
@@ -281,7 +281,7 @@ def get_logs(
                 }
                 if log.get("retracted_at"):
                     item["retracted_at"] = log["retracted_at"]
-                alphaize_result_dict_inplace(item, "log")
+                apply_readable_id_inplace(item, "log")
                 logs.append(item)
 
             return {"logs": logs}

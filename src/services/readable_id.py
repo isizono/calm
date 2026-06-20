@@ -1,10 +1,10 @@
-"""エンティティ ID α化 helper (T#465 Phase 1)
+"""エンティティ ID readable 整形 helper
 
 cc-memory の MCP tool 返却で `id` フィールドが整数として返り、AI が文脈推測なしで
 「何を指しているか」読めるよう、タイトル + (#NNN) 形式に展開する。
 
-Phase 1: flavor="readable" のみ実装。
-Phase 3 (D#2724): flavor="raw" / flavor="internal" を追加し、citation parser と接続する。
+現状は flavor="readable" のみ実装。将来 flavor="raw" / flavor="internal" を追加し、
+citation parser と接続する。
 """
 from typing import Literal, get_args
 
@@ -14,21 +14,21 @@ FLAVOR = Literal["raw", "internal", "readable"]
 _VALID_ENTITY_TYPES: frozenset[str] = frozenset(get_args(ENTITY_TYPE))
 
 
-def alphaize_entity_id(
+def format_readable_id(
     entity_type: ENTITY_TYPE,
     id_int: int,
     title: str | None,
     flavor: FLAVOR = "readable",
 ) -> str:
-    """エンティティ ID を α化形式で返す。
+    """エンティティ ID を readable 形式で返す。
 
-    Phase 1 では flavor='readable' のみ実装。Phase 3 で raw / internal を追加予定。
+    現状は flavor='readable' のみ実装。'raw' / 'internal' は将来拡張用 stub。
 
     Args:
         entity_type: エンティティ種別 ('topic'/'decision'/'activity'/'log'/'material')
         id_int: 元の整数 ID
         title: エンティティのタイトル（None や空文字列の場合は ID のみ）
-        flavor: 表示形式（'readable' のみ実装済み、'raw'/'internal' は Phase 3 で実装）
+        flavor: 表示形式（'readable' のみ実装済み、'raw'/'internal' は将来実装）
 
     Returns:
         flavor='readable': `{title} (#{id_int})` 形式の文字列。
@@ -36,7 +36,7 @@ def alphaize_entity_id(
 
     Raises:
         ValueError: entity_type が不正な場合
-        NotImplementedError: flavor='raw' / 'internal' は Phase 3 で実装予定
+        NotImplementedError: flavor='raw' / 'internal' は将来実装予定
     """
     if entity_type not in _VALID_ENTITY_TYPES:
         raise ValueError(
@@ -51,7 +51,7 @@ def alphaize_entity_id(
 
     if flavor in ("raw", "internal"):
         raise NotImplementedError(
-            f"flavor={flavor!r} は Phase 3 で実装予定 (D#2697 / D#2698)"
+            f"flavor={flavor!r} は将来実装予定"
         )
 
     raise ValueError(
@@ -59,17 +59,17 @@ def alphaize_entity_id(
     )
 
 
-def alphaize_result_dict_inplace(
+def apply_readable_id_inplace(
     result_dict: dict,
     entity_type: ENTITY_TYPE,
     flavor: FLAVOR = "readable",
     id_key: str = "id",
     title_key: str = "title",
 ) -> None:
-    """`result_dict[id_key]` を α化形式で置換する（in-place）。
+    """`result_dict[id_key]` を readable 形式で置換する（in-place）。
 
-    元の整数 ID は `{id_key}_raw` に退避し、後段 (Phase 3 parser / migration tool)
-    からアクセス可能にする。Phase 1 単独では使われないが、Phase 3 接続のため残す。
+    元の整数 ID は `{id_key}_raw` に退避し、将来の parser / migration tool から
+    アクセス可能にする。
 
     `id_key` が `result_dict` に存在しない場合や、すでに `{id_key}_raw` が存在する
     場合は何もしない（冪等性確保）。
@@ -84,16 +84,16 @@ def alphaize_result_dict_inplace(
     if id_key not in result_dict:
         return
 
-    # 冪等性: すでに α化済み（_raw に元 ID が退避されている）なら何もしない
+    # 冪等性: すでに整形済み（_raw に元 ID が退避されている）なら何もしない
     raw_key = f"{id_key}_raw"
     if raw_key in result_dict:
         return
 
     id_value = result_dict[id_key]
-    # 整数以外（既に α化文字列など）が入っている場合は触らない
+    # 整数以外（既に整形済み文字列など）が入っている場合は触らない
     if not isinstance(id_value, int):
         return
 
     title = result_dict.get(title_key)
     result_dict[raw_key] = id_value
-    result_dict[id_key] = alphaize_entity_id(entity_type, id_value, title, flavor)
+    result_dict[id_key] = format_readable_id(entity_type, id_value, title, flavor)

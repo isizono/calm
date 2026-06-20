@@ -4,7 +4,7 @@ import sqlite3
 from typing import Literal
 
 from src.db import get_connection, row_to_dict
-from src.services.alphaization import alphaize_result_dict_inplace
+from src.services.readable_id import apply_readable_id_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.relation_service import _add_relation_with_conn, _validate_targets
 from src.services.tag_service import (
@@ -31,7 +31,7 @@ def _material_to_response(material: dict, tags: list[str]) -> dict:
         "created_at": material["created_at"],
         "hint": "contentの先頭1-2文は内容の説明・要約にしてください（check-in時にsnippetとして表示されます）",
     }
-    alphaize_result_dict_inplace(result, "material", id_key="material_id")
+    apply_readable_id_inplace(result, "material", id_key="material_id")
     return result
 
 
@@ -168,7 +168,7 @@ def get_materials_by_relation_with_conn(conn, activity_id: int) -> list[dict]:
             "tags": tags_map.get(row["id"], []),
             "created_at": row["created_at"],
         }
-        alphaize_result_dict_inplace(item, "material")
+        apply_readable_id_inplace(item, "material")
         result.append(item)
     return result
 

@@ -3,7 +3,7 @@ import logging
 import sqlite3
 
 from src.db import get_connection
-from src.services.alphaization import alphaize_result_dict_inplace
+from src.services.readable_id import apply_readable_id_inplace
 from src.services.tag_service import (
     get_entity_tags_batch,
 )
@@ -601,7 +601,7 @@ def _get_map_with_conn(
             entity["materials_count"] = topic_materials_counts.get(eid, 0)
 
         # α化（type は etype 確定済み）
-        alphaize_result_dict_inplace(entity, etype)
+        apply_readable_id_inplace(entity, etype)
         entities.append(entity)
 
     # depth順、同depth内はtype→id順でソート（id_raw は α化後も整数で残るのでそれを使う）
