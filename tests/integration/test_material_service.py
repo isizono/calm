@@ -238,7 +238,7 @@ class TestGetByIdMaterial:
     """get_by_id / get_by_ids でmaterialを取得するテスト"""
 
     def test_get_by_id_material(self, temp_db):
-        """get_by_idでmaterialのカタログ（material_id, title, tags, created_at）を取得できる"""
+        """get_by_idはmaterialのcontent/sourceも返し、get_materialに頼らず全文取得が完結する"""
         created = add_material(
             title="ById Test",
             content="ById content",
@@ -253,7 +253,8 @@ class TestGetByIdMaterial:
         assert result["type"] == "material"
         assert result["data"]["material_id"] == material_id
         assert result["data"]["title"] == "ById Test"
-        assert "content" not in result["data"]  # カタログ形式: 全文なし
+        assert result["data"]["content"] == "ById content"
+        assert result["data"]["source"] == "テスト用データ"
         assert result["data"]["tags"] == ["domain:test"]  # material自身のタグ
         # activity_idが含まれないこと
         assert "activity_id" not in result["data"]
