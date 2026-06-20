@@ -263,10 +263,24 @@ def test_observe_event_ignores_non_state_non_identity_types():
 
 def test_observe_event_skips_messages_without_dict_body():
     s = SentinelState()
-    # body が文字列のまま渡されるケース (parse 失敗想定) は無視される
+    # body が parse 不能な文字列のケースは無視される
     s.observe_event({"msg_id": 1, "handle": "w-a", "body": "not a dict"}, now=0.0)
     s.observe_event({"msg_id": 2, "handle": "w-a"}, now=0.0)
     assert s.watches == {}
+
+
+def test_observe_event_coerces_json_string_body_internally():
+    """body が JSON 文字列で渡されても observe_event 内部で dict 化される。"""
+    s = SentinelState()
+    s.observe_event(
+        {
+            "msg_id": 1,
+            "handle": "w-a",
+            "body": '{"v":1,"from":"w-a","data":{"type":"state","state":"ready"}}',
+        },
+        now=0.0,
+    )
+    assert "w-a" in s.watches
 
 
 def test_observe_event_uses_handle_fallback_when_from_missing():

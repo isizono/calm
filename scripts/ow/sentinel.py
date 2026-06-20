@@ -70,7 +70,11 @@ class SentinelState:
         - state: 監視対象 state なら entry を新規作成 (再武装も兼ねる)、
           それ以外の state なら entry を削除する
         - identity: terminated_at が入っていれば entry を削除する
+
+        body が JSON 文字列のまま渡された場合は内部で dict に正規化する
+        (呼び出し側で _coerce_message_body を事前に呼ぶ必要はない)。
         """
+        message = _coerce_message_body(message)
         body = message.get("body")
         if not isinstance(body, dict):
             return
@@ -208,8 +212,8 @@ def run(
         except (urllib.error.URLError, TimeoutError) as exc:
             print(f"[ow_sentinel] fetch_history error: {exc}", file=sys.stderr, flush=True)
             messages = []
-        for raw in messages:
-            msg = _coerce_message_body(raw)
+        for msg in messages:
+            # body 文字列 → dict 正規化は observe_event 内部で行われる
             state.observe_event(msg, now)
             msg_id = msg.get("msg_id")
             if isinstance(msg_id, int) and msg_id > last_msg_id:
