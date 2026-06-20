@@ -98,16 +98,56 @@ def test_draining_90sec_triggers_stagnation():
 
 
 def test_duplicate_suppression_for_same_state():
-    """同一 (handle, state) の閾値超過中は scan を何度呼んでも 1回しか発火しない。"""
+    """同一 (handle, state) で mark_emitted 後は scan を何度呼んでも返らない。"""
     s = SentinelState()
     s.observe_event(_state_msg("w-a", "ready"), now=0.0)
 
     first = s.scan(60.0)
     assert len(first) == 1
+    # 送信成功を mark
+    s.mark_emitted("w-a", "ready")
 
     # さらに時間が経っても再発火しない
     assert s.scan(120.0) == []
     assert s.scan(600.0) == []
+
+
+def test_scan_returns_envelope_again_when_not_marked_emitted():
+    """送信失敗で mark_emitted を呼ばないと次回 scan で再度返る (retry)。"""
+    s = SentinelState()
+    s.observe_event(_state_msg("w-a", "ready"), now=0.0)
+
+    first = s.scan(60.0)
+    assert len(first) == 1
+    # mark_emitted を呼ばない (= 送信失敗を模擬)
+    second = s.scan(65.0)
+    assert len(second) == 1
+    assert second[0]["data"]["target_handle"] == "w-a"
+
+    # ようやく成功 → 以降は出ない
+    s.mark_emitted("w-a", "ready")
+    assert s.scan(70.0) == []
+
+
+def test_mark_emitted_ignores_state_mismatch_after_rearm():
+    """mark_emitted は古い state の確定が新 watch entry に影響しないこと。"""
+    s = SentinelState()
+    s.observe_event(_state_msg("w-a", "ready"), now=0.0)
+    assert len(s.scan(60.0)) == 1
+    # ready の mark を立てる前に state 遷移して draining に再武装
+    s.observe_event(_state_msg("w-a", "draining"), now=70.0)
+    # 古い state の mark は新 entry に影響しない
+    s.mark_emitted("w-a", "ready")
+    # draining 閾値超過で発火できる
+    envelopes = s.scan(170.0)
+    assert len(envelopes) == 1
+    assert envelopes[0]["data"]["target_state"] == "draining"
+
+
+def test_mark_emitted_for_unknown_handle_is_noop():
+    s = SentinelState()
+    s.mark_emitted("nonexistent", "ready")  # 例外を出さない
+    assert s.watches == {}
 
 
 def test_rearm_after_state_transition_back_to_ready():
@@ -115,6 +155,7 @@ def test_rearm_after_state_transition_back_to_ready():
     s = SentinelState()
     s.observe_event(_state_msg("w-a", "ready"), now=0.0)
     assert len(s.scan(60.0)) == 1
+    s.mark_emitted("w-a", "ready")
 
     # ready → working: 監視対象外なので watch 解除
     s.observe_event(_state_msg("w-a", "working"), now=70.0)
@@ -177,6 +218,7 @@ def test_multiple_handles_tracked_independently():
     envelopes_70 = s.scan(70.0)
     assert len(envelopes_70) == 1
     assert envelopes_70[0]["data"]["target_handle"] == "w-a"
+    s.mark_emitted("w-a", "ready")
 
     # t=100: w-b も 90秒経過で発火
     envelopes_100 = s.scan(100.0)
@@ -254,6 +296,7 @@ def test_custom_thresholds_override_defaults():
     envelopes = s.scan(10.0)
     handles = {e["data"]["target_handle"] for e in envelopes}
     assert handles == {"w-a"}
+    s.mark_emitted("w-a", "ready")
 
     envelopes2 = s.scan(20.0)
     handles2 = {e["data"]["target_handle"] for e in envelopes2}

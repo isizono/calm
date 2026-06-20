@@ -98,9 +98,10 @@ class SentinelState:
     def scan(self, now: float) -> list[dict]:
         """全 watch entry をスキャンし、閾値超え未通知の entry から envelope を返す。
 
-        発火した entry には emitted=True をセットして同一 state 内での
-        重複通知を抑止する。state 遷移時に observe_event 側で entry が
-        差し替えられた瞬間 emitted は自動的にリセットされる (再武装)。
+        この関数は副作用なしで pending envelope を返すだけ。発火を確定
+        させるには呼び出し側で送信成功を確認後 mark_emitted(handle, state)
+        を呼ぶ。送信に失敗した場合 mark しなければ次の scan で再度返り、
+        retry になる (stagnation が永続的に失われない)。
         """
         envelopes: list[dict] = []
         for handle, entry in self.watches.items():
@@ -126,8 +127,19 @@ class SentinelState:
             if entry.task is not None:
                 envelope["task"] = entry.task
             envelopes.append(envelope)
-            entry.emitted = True
         return envelopes
+
+    def mark_emitted(self, handle: str, state: str) -> None:
+        """送信成功した stagnation を確定して同一 state 内重複発火を抑止する。
+
+        scan で返した envelope を呼び出し側が relay に送信成功した直後に
+        呼ぶ。entry が既に別 state に差し替わっていた場合 (再武装) は
+        何もしない (古い state の mark は新しい watch entry に影響させない)。
+        """
+        entry = self.watches.get(handle)
+        if entry is None or entry.state != state:
+            return
+        entry.emitted = True
 
 
 class RelayClient:
@@ -204,17 +216,23 @@ def run(
                 last_msg_id = msg_id
 
         for envelope in state.scan(now):
+            target_handle = envelope["data"]["target_handle"]
+            target_state = envelope["data"]["target_state"]
             try:
                 client.send_event(channel, envelope)
-                print(
-                    f"[ow_sentinel] sent stagnation handle={envelope['data']['target_handle']} "
-                    f"state={envelope['data']['target_state']} "
-                    f"elapsed={envelope['data']['elapsed_sec']}s",
-                    file=sys.stderr,
-                    flush=True,
-                )
             except (urllib.error.URLError, TimeoutError) as exc:
+                # 送信失敗時は mark_emitted を呼ばないので次の scan で
+                # 再度同じ envelope が返り retry される (stagnation を失わない)
                 print(f"[ow_sentinel] send_event error: {exc}", file=sys.stderr, flush=True)
+                continue
+            state.mark_emitted(target_handle, target_state)
+            print(
+                f"[ow_sentinel] sent stagnation handle={target_handle} "
+                f"state={target_state} "
+                f"elapsed={envelope['data']['elapsed_sec']}s",
+                file=sys.stderr,
+                flush=True,
+            )
 
         time.sleep(poll_interval)
 
