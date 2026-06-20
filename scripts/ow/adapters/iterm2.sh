@@ -16,21 +16,36 @@ case "$ACTION" in
     CWD_B64=$(printf '%s' "$CWD" | base64 | tr -d '\n')
     CMD_B64=$(printf '%s' "$WORKER_CMD" | base64 | tr -d '\n')
 
+    # iTerm2 にウィンドウが1つも無い場合 (起動直後など) `tell current window` が落ちる。
+    # その場合は新規ウィンドウを作って起動する。フォーカス戻し (D#2447) は通常分岐のみで
+    # 行う (新規ウィンドウ作成パスにはフォーカスを奪う前画面が無い)。
     SESSION_UUID=$(osascript <<APPLESCRIPT
       tell application "iTerm2"
-        tell current window
-          set originalTab to current tab
-          set newTab to (create tab with default profile)
-          tell current session of newTab
+        activate
+        if (count of windows) is 0 then
+          set newWindow to (create window with default profile)
+          tell current session of current tab of newWindow
             set its name to "ow-worker"
             set theCwd to do shell script "echo ${CWD_B64} | base64 --decode"
             set theCmd to do shell script "echo ${CMD_B64} | base64 --decode"
             write text "cd " & quoted form of theCwd & " && " & theCmd
-            set newSessionId to id
+            return id
           end tell
-          select originalTab
-          return newSessionId
-        end tell
+        else
+          tell current window
+            set originalTab to current tab
+            set newTab to (create tab with default profile)
+            tell current session of newTab
+              set its name to "ow-worker"
+              set theCwd to do shell script "echo ${CWD_B64} | base64 --decode"
+              set theCmd to do shell script "echo ${CMD_B64} | base64 --decode"
+              write text "cd " & quoted form of theCwd & " && " & theCmd
+              set newSessionId to id
+            end tell
+            select originalTab
+            return newSessionId
+          end tell
+        end if
       end tell
 APPLESCRIPT
     )
