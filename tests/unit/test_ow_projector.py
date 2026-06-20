@@ -24,11 +24,6 @@ def _isolated_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     return tmp_path
 
 
-def _iso_now_offset(seconds: float = 0.0) -> str:
-    """now - seconds (秒) の UTC ISO8601 を返す。heartbeat の経過時間制御用。"""
-    return (datetime.now(timezone.utc).astimezone(timezone.utc)).isoformat()
-
-
 def _iso_offset_seconds(seconds_ago: float) -> str:
     from datetime import timedelta
 
