@@ -173,7 +173,10 @@ class TestProjectStateToCache:
 
         assert result is not None
         assert result["workers"]["w-c"]["state"] == "working"
-        assert result["workers"]["w-c"]["latest_msg_id"] == 102
+        # latest_msg_id は内部集計用 (新旧判定) であり cache JSON には含めない
+        assert "latest_msg_id" not in result["workers"]["w-c"]
+        # 全 state event の最大 msg_id は last_msg_id (state 全体) に反映される
+        assert result["last_msg_id"] == 102
 
     def test_heartbeat_older_than_timeout_excluded_from_presence(
         self, monkeypatch: pytest.MonkeyPatch

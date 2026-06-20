@@ -1934,6 +1934,11 @@ def project_state_to_cache(topic_id: int, channel: str) -> OwState | None:
                     "created_at": msg.get("created_at", ""),
                 }
 
+    # 内部集計用の latest_msg_id を cache JSON に含めないよう取り除く
+    # (state event 新旧判定の実装詳細であり OwState.workers の公開スキーマには含めない)
+    for entry in workers.values():
+        entry.pop("latest_msg_id", None)
+
     identities = {h: e["data"] for h, e in identity_by_handle.items()}
 
     # presence: heartbeat 時刻ベースの online 判定 (ow_get_presence と同ロジック)
