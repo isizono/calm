@@ -354,9 +354,9 @@ orchは `ow_get_workload_state(channel, handle)` で現在のstateを参照し�
 
 **spawning（ready前）タイムアウト**: spawning は orch 側 queue の状態。worker が `event:identity` または `event:state(loading)` を送る前に timeout_min 経過した場合は、spawn失敗の可能性が高い（cwd不在・aliasぶつかり・relay疎通断等）。`ow_recover` で pending_spawn として検出される。
 
-## stagnation detector (Phase A: ow_sentinel)
+## stagnation detector (ow_sentinel)
 
-watchdog が「死活 (heartbeat 途絶)」を見るのに対し、stagnation detector は「詰まり (heartbeat 継続中に state 遷移が起きない)」を見る。両者は責務分離・併走であり、stagnation が watchdog の前段に位置する fallback 仕組み (M#388 / D#2752)。
+watchdog が「死活 (heartbeat 途絶)」を見るのに対し、stagnation detector は「詰まり (heartbeat 継続中に state 遷移が起きない)」を見る。両者は責務分離・併走であり、stagnation は watchdog の前段に位置するフォールバック機構。
 
 **監視対象 state と閾値**:
 
@@ -367,7 +367,7 @@ watchdog が「死活 (heartbeat 途絶)」を見るのに対し、stagnation de
 
 `loading` / `working` / `blocked` / `escalated` は対象外 (`loading` は巨大 context warm-up を許容、他は heartbeat watchdog または人間判断側でカバー)。
 
-**Phase A 実装**: `scripts/ow/sentinel.py` を別 process として orch と並走起動する (薄実装、Phase B = ow_service projector への push hook 統合で廃止予定)。
+**起動方法**: `scripts/ow/sentinel.py` を別 process として orch と並走起動する。
 
 ```bash
 RELAY_URL=http://127.0.0.1:8765 python3 scripts/ow/sentinel.py <channel_code> &

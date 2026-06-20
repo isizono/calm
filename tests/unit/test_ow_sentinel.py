@@ -1,7 +1,6 @@
 """scripts/ow/sentinel.py の純粋ロジックを検証する unit test。
 
-ow stagnation detector Phase A (案B orch 側 watcher) の SentinelState が
-M#388 + D#2752 の仕様通りに動作することを確認する:
+SentinelState が以下の通り動作することを確認する:
 
 - ready→working は 60秒、draining→terminated は 90秒で stagnation 発火
 - 同一 (handle, state) は 1回だけ通知 (重複抑止)
@@ -191,7 +190,7 @@ def test_identity_without_terminated_does_not_clear_watch():
 
 
 def test_loading_state_is_not_monitored():
-    """loading→ready は仕様により監視対象外 (D#2752)。"""
+    """loading→ready は監視対象外 (warm-up 中の長時間滞留を許容するため)。"""
     s = SentinelState()
     s.observe_event(_state_msg("w-a", "loading"), now=0.0)
 

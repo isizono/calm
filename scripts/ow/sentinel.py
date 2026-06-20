@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ow stagnation detector — Phase A (案B: orch 側 watcher)。
+"""ow stagnation detector — orch 側 watcher。
 
 relay の /history を polling し、worker の state 遷移を追跡する。
 auto 遷移すべき state で閾値を超えた場合 ``ow_sentinel`` handle で
@@ -11,9 +11,6 @@ stagnation event を relay に append する。
   巨大 context warm-up を誤検知するため)
 - 既存 watchdog (heartbeat 途絶検知) とは責務分離して併走する
   (watchdog=死活、stagnation=詰まり)
-
-D#2752 / M#388 の仕様に基づく Phase A 実装。Phase B (ow_service
-projector への push hook 統合) で本ファイルは廃止予定。
 """
 
 from __future__ import annotations
@@ -30,7 +27,7 @@ from typing import Optional
 
 SENTINEL_HANDLE = "ow_sentinel"
 
-# state -> 閾値秒。loading は意図的に含めない (D#2752 仕様)。
+# state -> 閾値秒。loading は意図的に含めない (warm-up を誤検知しないため)。
 DEFAULT_THRESHOLDS: dict[str, int] = {
     "ready": 60,
     "draining": 90,
@@ -198,16 +195,15 @@ def run(
 ) -> None:
     state = SentinelState(thresholds=thresholds)
     client = RelayClient(relay_url=relay_url)
-    # 既知トレードオフ (Phase A): last_msg_id=0 で起動するため、初回 fetch
-    # で history 全件 (=過去の state 遷移) をリプレイする。古い transitioned_at
-    # は再生時刻 (now) で上書きされるので、再起動直後 60〜90 秒は誤検知より
-    # 誤抑止寄りの挙動になる (古い遷移を「いま起きた」と見なす)。
-    # Phase B (ow_service projector hook 統合) で本ファイル廃止と同時に解消予定。
+    # 既知トレードオフ: last_msg_id=0 で起動するため、初回 fetch で history
+    # 全件 (=過去の state 遷移) をリプレイする。古い transitioned_at は再生
+    # 時刻 (now) で上書きされるので、再起動直後 60〜90 秒は誤検知より誤抑止
+    # 寄りの挙動になる (古い遷移を「いま起きた」と見なす)。
     last_msg_id = 0
     print(
         f"[ow_sentinel] start channel={channel} relay={relay_url} "
         f"poll={poll_interval}s thresholds={state.thresholds} "
-        f"(Phase A: replay all history from msg_id=0)",
+        f"(replay all history from msg_id=0)",
         file=sys.stderr,
         flush=True,
     )
