@@ -26,6 +26,13 @@ def _bypass_preflight(monkeypatch):
     monkeypatch.setattr(ow_service, "_get_presence", lambda ch: [])
     monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
     monkeypatch.setattr(ow_service, "_ensure_worker_askuser_deny", lambda c: None)
+    # ow_spawn_worker は spawning event を broadcast するため _relay_request を no-op に
+    # 差し替えて、relay HTTP call をテストから切り離す。
+    monkeypatch.setattr(
+        ow_service,
+        "_relay_request",
+        lambda *args, **kwargs: {"msg_id": 0},
+    )
 
 
 def _build_fake_adapter(tmp_path, terminal: str = "tmux"):

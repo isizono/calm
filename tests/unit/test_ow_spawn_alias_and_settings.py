@@ -85,6 +85,13 @@ class TestSpawnPreconditionsAliasFormat:
         monkeypatch.setattr(ow_service, "ensure_channel", lambda ch: True)
         monkeypatch.setattr(ow_service, "_get_presence", lambda ch: [])
         monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
+        # ow_spawn_worker は spawning event を broadcast するため _relay_request を no-op に
+        # 差し替えて、relay HTTP call をテストから切り離す。
+        monkeypatch.setattr(
+            ow_service,
+            "_relay_request",
+            lambda *args, **kwargs: {"msg_id": 0},
+        )
 
     def test_too_short_alias_yields_warning(self, tmp_path):
         result = ow_service._validate_spawn_preconditions(
@@ -146,6 +153,13 @@ class TestSpawnWorkerAliasFormat:
         monkeypatch.setattr(ow_service, "ensure_channel", lambda ch: True)
         monkeypatch.setattr(ow_service, "_get_presence", lambda ch: [])
         monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
+        # ow_spawn_worker は spawning event を broadcast するため _relay_request を no-op に
+        # 差し替えて、relay HTTP call をテストから切り離す。
+        monkeypatch.setattr(
+            ow_service,
+            "_relay_request",
+            lambda *args, **kwargs: {"msg_id": 0},
+        )
         # 万が一 preflight をすり抜けても /tmp などを汚さない
         monkeypatch.setattr(ow_service, "_ensure_worker_askuser_deny", lambda c: None)
         monkeypatch.delenv("OW_TERMINAL", raising=False)
@@ -304,6 +318,11 @@ class TestSpawnWorkerWritesSettingsLocal:
         monkeypatch.setattr(ow_service, "ensure_channel", lambda c: True)
         monkeypatch.setattr(ow_service, "_get_presence", lambda c: [])
         monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
+        monkeypatch.setattr(
+            ow_service,
+            "_relay_request",
+            lambda *args, **kwargs: {"msg_id": 0},
+        )
         monkeypatch.delenv("OW_TERMINAL", raising=False)
 
     def test_spawn_creates_settings_local_under_cwd(self, monkeypatch, tmp_path):
