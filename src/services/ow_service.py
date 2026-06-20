@@ -1866,11 +1866,23 @@ def project_state_to_cache(topic_id: int, channel: str) -> OwState | None:
         構築・保存できた :class:`OwState`。relay HTTP エラー等で full pull
         に失敗した場合は ``None`` (cache ファイルは触らない)。
     """
-    history = ow_history(channel, since=0, limit=10000)
+    history_limit = 10000
+    history = ow_history(channel, since=0, limit=history_limit)
     if "error" in history:
         return None
 
     messages = history.get("messages", [])
+    # limit に達した場合は古い state declarations が欠落して
+    # cache が不完全になる可能性がある (reconstruct_state_from_relay と同様
+    # の警告)。状態の無音欠損リスクを少なくとも logger.warning で可視化する。
+    if len(messages) >= history_limit:
+        logger.warning(
+            "ow projector: relay history truncated at limit=%d for channel=%r topic=%s; "
+            "oldest state declarations may be missing and cache may be incomplete",
+            history_limit,
+            channel,
+            topic_id,
+        )
 
     workers: dict[str, dict] = {}
     identity_by_handle: dict[str, dict] = {}
