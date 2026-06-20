@@ -19,7 +19,43 @@ logger = logging.getLogger(__name__)
 PORT = 52836
 SERVER_URL = f"http://localhost:{PORT}"
 
-_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent)
+
+def _resolve_project_root() -> str:
+    """embedding_server を起動する cwd を決定する。
+
+    優先順位:
+      1. 環境変数 ``CC_MEMORY_PROJECT_ROOT``
+      2. ``git rev-parse --git-common-dir`` の親ディレクトリ（worktree 内からでも main repo を返す）
+      3. 上記いずれも失敗した場合は ``RuntimeError`` を raise（黙って ``__file__`` fallback はしない）
+    """
+    # 1. env var override
+    env = os.environ.get("CC_MEMORY_PROJECT_ROOT")
+    if env:
+        return str(Path(env).resolve())
+
+    # 2. git common-dir based (worktree からでも main repo を返す)
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=Path(__file__).parent,
+        )
+        common_dir = Path(result.stdout.strip())
+        # common-dir は relative の可能性があるので resolve
+        if not common_dir.is_absolute():
+            common_dir = (Path(__file__).parent / common_dir).resolve()
+        # main repo root = .git の親
+        return str(common_dir.parent.resolve())
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        raise RuntimeError(
+            "Failed to resolve project root: set CC_MEMORY_PROJECT_ROOT "
+            f"or run from within a git repo. cause: {e}"
+        )
+
+
+_PROJECT_ROOT = _resolve_project_root()
 
 # グローバル状態
 _server_initialized = False
