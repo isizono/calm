@@ -25,14 +25,14 @@ import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 logger = logging.getLogger(__name__)
 
 CURRENT_SCHEMA_VERSION = 2
 
 
-class OwState(TypedDict, total=False):
+class OwState(TypedDict):
     """topic 単位の ow ランタイム状態キャッシュ。
 
     schema_version=2 で reducer fastpath 用フィールド ``identity_events`` / ``states`` /
@@ -41,17 +41,19 @@ class OwState(TypedDict, total=False):
 
     EventEntry: ``{"msg_id": int, "data": dict, "created_at": str}``
 
-    フィールド:
+    必須フィールド (projector が常に書き出すもの):
         schema_version: 現スキーマ世代 (CURRENT_SCHEMA_VERSION と等しい)
         channel: relay channel コード
         last_msg_id: projector が走査した最大 msg_id
         workers: handle → workload 軽量サマリ {task, state, latest_msg_id, latest_at}
         identities: handle → identity event の raw data dict (PR-α 形式、後方互換)
-        identity_events: handle → identity EventEntry (PR-β 追加, reducer fastpath 用)
-        states: handle → 最新 state EventEntry (PR-β 追加)
-        heartbeats: handle → 最新 heartbeat EventEntry (PR-β 追加)
         presence: projection 時点の online handle (静的スナップショット)
         updated_at: projection を実行した UTC ISO8601
+
+    optional フィールド (PR-β 追加、reducer fastpath 用、既存 cache との後方互換のため NotRequired):
+        identity_events: handle → identity EventEntry
+        states: handle → 最新 state EventEntry
+        heartbeats: handle → 最新 heartbeat EventEntry
     """
 
     schema_version: int
@@ -59,11 +61,11 @@ class OwState(TypedDict, total=False):
     last_msg_id: int
     workers: dict[str, Any]
     identities: dict[str, Any]
-    identity_events: dict[str, Any]
-    states: dict[str, Any]
-    heartbeats: dict[str, Any]
     presence: list[str]
     updated_at: str
+    identity_events: NotRequired[dict[str, Any]]
+    states: NotRequired[dict[str, Any]]
+    heartbeats: NotRequired[dict[str, Any]]
 
 
 def _get_state_dir() -> Path:
