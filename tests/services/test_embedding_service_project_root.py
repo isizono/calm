@@ -38,19 +38,22 @@ def test_env_var_resolves_relative(monkeypatch, tmp_path):
 
 
 def test_git_common_dir_points_to_main_repo_from_worktree(monkeypatch, tmp_path):
-    """`git rev-parse --git-common-dir` が worktree 配下から呼ばれても main repo の .git を指すことを実 git で確認する。
+    """worktree 配下から呼ばれた `_resolve_project_root()` が main repo を返すことを検証する。
 
-    本テストは `_resolve_project_root()` を直接呼ぶものではない（実装は `cwd=Path(__file__).parent` 固定で
-    git を起動するため、tmp_path 内の擬似 worktree を cwd に切り替えられない）。代わりに、
-    `_resolve_project_root` が依存している git の振る舞いそのものを実 git で検証することで、
-    実装が依拠する前提が崩れていないことを保証する。
+    実装は `cwd=Path(__file__).parent` 固定で git を起動するため、tmp_path 内の擬似 worktree を
+    そのまま cwd には切り替えられない。そこで `subprocess.run` をモックして、
+    1) `cwd` 引数が `embedding_service.__file__` のあるディレクトリに渡されていること
+    2) その git の出力（worktree から見た common-dir）に対して、実装が正しく main repo の
+       パスを組み立てて返すこと
+    を検証する。
     """
     monkeypatch.delenv("CC_MEMORY_PROJECT_ROOT", raising=False)
 
     if not _git_available():
         pytest.skip("git not available")
 
-    # main repo を作成
+    # 実 git を使って worktree を作る → そこに対する `git rev-parse --git-common-dir` の
+    # 期待出力を取り、モックで実装にそれを返す。
     main_repo = tmp_path / "main_repo"
     main_repo.mkdir()
     _run(["git", "init", "-b", "main"], cwd=main_repo)
@@ -60,36 +63,44 @@ def test_git_common_dir_points_to_main_repo_from_worktree(monkeypatch, tmp_path)
     _run(["git", "add", "README.md"], cwd=main_repo)
     _run(["git", "commit", "-m", "init"], cwd=main_repo)
 
-    # worktree を作成
     worktree = tmp_path / "worktree"
     _run(
         ["git", "worktree", "add", "-b", "feature/test", str(worktree)],
         cwd=main_repo,
     )
 
-    # worktree 内のサブディレクトリから _resolve_project_root を呼ぶには
-    # cwd を切り替える必要がある。実装側は Path(__file__).parent を cwd に渡すため、
-    # ここでは _resolve_project_root の内部実装を模倣する形で
-    # worktree 配下の任意ディレクトリから git common-dir が main repo を返すかを検証する。
-    worktree_subdir = worktree / "src" / "services"
-    worktree_subdir.mkdir(parents=True)
+    expected_main_root = main_repo.resolve()
 
-    result = subprocess.run(
-        ["git", "rev-parse", "--git-common-dir"],
-        cwd=worktree_subdir,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    common_dir = Path(result.stdout.strip())
-    if not common_dir.is_absolute():
-        common_dir = (worktree_subdir / common_dir).resolve()
-    main_root = common_dir.parent.resolve()
+    # 実装が cwd に渡すパス（= embedding_service.py のあるディレクトリ）
+    impl_cwd = Path(embedding_service.__file__).parent
 
-    assert main_root == main_repo.resolve(), (
-        f"worktree subdir からの git common-dir は main repo を指す必要がある。"
-        f" got={main_root} expected={main_repo.resolve()}"
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["cwd"] = kwargs.get("cwd")
+        # worktree 配下から実行したときの git の出力を模す（絶対パス return）
+        # 実際の git は `<main_repo>/.git` を絶対パスで返す（worktree からのため）
+        completed = subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout=str(main_repo.resolve() / ".git") + "\n",
+            stderr="",
+        )
+        return completed
+
+    monkeypatch.setattr(embedding_service.subprocess, "run", fake_run)
+
+    result = embedding_service._resolve_project_root()
+
+    # 1) 正しい cwd で git が呼ばれていること
+    assert captured["cmd"] == ["git", "rev-parse", "--git-common-dir"]
+    assert Path(captured["cwd"]) == impl_cwd, (
+        f"_resolve_project_root は cwd=Path(__file__).parent で git を起動するべき。"
+        f" got={captured['cwd']} expected={impl_cwd}"
     )
+    # 2) 戻り値が main repo root を指していること（.git の親）
+    assert Path(result) == expected_main_root
 
 
 def test_raises_runtime_error_when_outside_git(monkeypatch, tmp_path):

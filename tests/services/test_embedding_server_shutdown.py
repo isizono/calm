@@ -193,21 +193,45 @@ def test_active_keeps_when_uptime_below_ttl_but_drain_idle_would_match(monkeypat
     assert server.shutdown_count == 1
 
 
-def test_env_var_defaults_loaded(monkeypatch):
-    """デフォルト値（env var 未指定時）が plan.md 通りであることを確認。
+def test_module_level_defaults_match_spec():
+    """現在ロード済みモジュールのデフォルト値が plan.md 通り (3600 / 30 / 1800) であることを確認する。
 
-    モジュール再 import せずに現在のグローバル値を確認する。
-    （CI で env var を明示的に設定していない限り、デフォルト 3600 / 30 / 1800 のはず）
+    注意: このアサーションが検証するのは「import 時の env var 未設定状態で読み込まれた値」だけ。
+    env var による上書きが実際に効くことは `test_env_var_overrides_apply_on_reimport` で別途検証する。
     """
-    # この test は env var が未設定の環境前提。設定されている場合は skip。
     import os as _os
     if any(k in _os.environ for k in (
         "CC_MEMORY_EMBEDDING_TTL_SEC",
         "CC_MEMORY_EMBEDDING_DRAIN_IDLE_SEC",
         "CC_MEMORY_EMBEDDING_DRAIN_DEADLINE_SEC",
     )):
-        pytest.skip("env var override active in CI; default values not testable here")
+        pytest.skip("env var override active; module-level defaults not observable here")
 
     assert embedding_server._TTL_SEC == 3600
     assert embedding_server._DRAIN_IDLE_SEC == 30
     assert embedding_server._DRAIN_DEADLINE_SEC == 1800
+
+
+def test_env_var_overrides_apply_on_reimport(monkeypatch):
+    """env var を設定してモジュールを再 import すると、グローバル定数が上書きされることを検証する。
+
+    モジュールトップレベルで env var を読む実装に対する正攻法のテスト。
+    importlib.reload で初期化ロジックを再走させ、グローバル値が env var の値に置き換わることを確認。
+    """
+    import importlib
+
+    monkeypatch.setenv("CC_MEMORY_EMBEDDING_TTL_SEC", "111")
+    monkeypatch.setenv("CC_MEMORY_EMBEDDING_DRAIN_IDLE_SEC", "22")
+    monkeypatch.setenv("CC_MEMORY_EMBEDDING_DRAIN_DEADLINE_SEC", "333")
+
+    try:
+        importlib.reload(embedding_server)
+        assert embedding_server._TTL_SEC == 111
+        assert embedding_server._DRAIN_IDLE_SEC == 22
+        assert embedding_server._DRAIN_DEADLINE_SEC == 333
+    finally:
+        # 後続テストへ影響しないよう env を剥がしてもう一度 reload
+        monkeypatch.delenv("CC_MEMORY_EMBEDDING_TTL_SEC", raising=False)
+        monkeypatch.delenv("CC_MEMORY_EMBEDDING_DRAIN_IDLE_SEC", raising=False)
+        monkeypatch.delenv("CC_MEMORY_EMBEDDING_DRAIN_DEADLINE_SEC", raising=False)
+        importlib.reload(embedding_server)
