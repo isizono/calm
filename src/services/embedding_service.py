@@ -55,11 +55,27 @@ def _resolve_project_root() -> str:
         )
 
 
-_PROJECT_ROOT = _resolve_project_root()
-
 # グローバル状態
+#
+# Thread safety: `_server_initialized` / `_backfill_done` / `_project_root_cache` は
+# 複数スレッドから読み書きされうるが、GIL によりアトミックな代入であり、
+# 二重初期化しても idempotent（_ensure_server_running は健在チェック→起動、
+# _resolve_project_root は冪等な解決）なので意図的にロックを取っていない。
 _server_initialized = False
 _backfill_done = False
+_project_root_cache: Optional[str] = None
+
+
+def _get_project_root() -> str:
+    """`_resolve_project_root()` の lazy + cache wrapper。
+
+    モジュール import 時に subprocess を起動する副作用を避け、最初に
+    `_start_server()` が呼ばれる時点で解決する。一度解決した値はプロセス内で再利用する。
+    """
+    global _project_root_cache
+    if _project_root_cache is None:
+        _project_root_cache = _resolve_project_root()
+    return _project_root_cache
 
 
 def _is_server_running() -> bool:
@@ -81,7 +97,7 @@ def _start_server() -> bool:
             start_new_session=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            cwd=_PROJECT_ROOT,
+            cwd=_get_project_root(),
         )
     except OSError as e:
         logger.warning(f"Failed to start embedding server: {e}")
