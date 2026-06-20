@@ -52,7 +52,7 @@ class TestSpawnThinkingRoutesToIterm2:
     ):
         paths = _make_adapters(tmp_path, "tmux", "iterm2")
         _patch_adapter_lookup(monkeypatch, paths)
-        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        monkeypatch.setenv("OW_STATE_DIR", str(tmp_path))
         monkeypatch.setenv("OW_TERMINAL", "tmux")
 
         captured: dict = {}
@@ -86,7 +86,7 @@ class TestSpawnThinkingRoutesToIterm2:
     def test_effort_unspecified_calls_tmux_adapter(self, monkeypatch, tmp_path):
         paths = _make_adapters(tmp_path, "tmux", "iterm2")
         _patch_adapter_lookup(monkeypatch, paths)
-        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        monkeypatch.setenv("OW_STATE_DIR", str(tmp_path))
         monkeypatch.setenv("OW_TERMINAL", "tmux")
 
         captured: dict = {}
@@ -118,7 +118,7 @@ class TestSpawnThinkingRoutesToIterm2:
         """iterm2.sh が存在しない場合は tmux + is_thinking=1 (従来の挙動)。"""
         paths = _make_adapters(tmp_path, "tmux")  # iterm2 なし
         _patch_adapter_lookup(monkeypatch, paths)
-        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        monkeypatch.setenv("OW_STATE_DIR", str(tmp_path))
         monkeypatch.setenv("OW_TERMINAL", "tmux")
 
         captured: dict = {}
@@ -153,7 +153,7 @@ class TestSpawnThinkingRoutesToIterm2:
 
         paths = _make_adapters(tmp_path, "tmux", "iterm2")
         _patch_adapter_lookup(monkeypatch, paths)
-        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        monkeypatch.setenv("OW_STATE_DIR", str(tmp_path))
         monkeypatch.setenv("OW_TERMINAL", "tmux")
 
         def fake_run(args, **kwargs):
