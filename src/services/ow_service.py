@@ -1275,8 +1275,21 @@ def ow_spawn_worker(
     )
 
     # アダプタ起動
+    # 思考worker (effort 指定) のときは OW_TERMINAL=tmux でも iTerm2 別タブに routing する。
+    # 理由: tmux new-window はユーザーから見ると同じ iTerm2 タブ内の隠れ window で
+    # 「画面に見えない」状態になりやすい。iTerm2 アプリ層の新タブで物理的に視認可能にする。
+    # iterm2 アダプタが取得できないときは従来の tmux + is_thinking=1 に静かにフォールバック。
     terminal = os.environ.get("OW_TERMINAL", "manual")
-    adapter_path = _get_adapter_path(terminal) if terminal != "manual" else None
+    spawn_terminal = terminal
+    spawn_adapter_path = _get_adapter_path(terminal) if terminal != "manual" else None
+    if (
+        terminal == "tmux"
+        and effort is not None
+        and (iterm2_path := _get_adapter_path("iterm2")) is not None
+    ):
+        spawn_terminal = "iterm2"
+        spawn_adapter_path = iterm2_path
+    adapter_path = spawn_adapter_path
 
     # --add-dir は commander.js の variadic option (`<directories...>`) で、空白区切り形式
     # (`--add-dir DIR PROMPT`) だと続く positional prompt を dir として吸収する。
@@ -1330,8 +1343,9 @@ def ow_spawn_worker(
     # tmux アダプタは positional 引数 `[target_pane] [is_thinking]` を受ける:
     #   - is_thinking=1 のとき split-pane ではなく `tmux new-window` で別タブ起動
     #   - target_pane が無い思考worker のときは空文字列をプレースホルダにして is_thinking のみ届ける
+    # 思考worker を iterm2 アダプタに routing した場合は positional 拡張不要。
     adapter_args = ["bash", str(adapter_path), "spawn", cwd, worker_cmd]
-    if terminal == "tmux":
+    if spawn_terminal == "tmux":
         is_thinking = "1" if effort is not None else "0"
         if tmux_target_pane:
             adapter_args.extend([tmux_target_pane, is_thinking])
@@ -1385,7 +1399,15 @@ def ow_close_worker(term_ref: str) -> dict:
     Returns:
         {"closed": True} または {"error": ...}
     """
-    terminal = os.environ.get("OW_TERMINAL", "manual")
+    # OW_TERMINAL=tmux でも思考worker は iTerm2 別タブで起動されているため (spawn 側の
+    # routing)、term_ref が iTerm2 UUID 形式なら iterm2 アダプタで close する。
+    # それ以外のケース (環境変数未設定 / 未知の terminal / 通常 tmux pane) は
+    # OW_TERMINAL を尊重して既存挙動を維持する。
+    env_terminal = os.environ.get("OW_TERMINAL", "manual")
+    if env_terminal == "tmux" and classify_term_ref(term_ref) == "iterm2":
+        terminal = "iterm2"
+    else:
+        terminal = env_terminal
     adapter_path = _get_adapter_path(terminal) if terminal != "manual" else None
 
     if adapter_path is None:

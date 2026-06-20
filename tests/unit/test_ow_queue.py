@@ -1565,18 +1565,24 @@ class TestOwSpawnWorkerThinking:
         # sentinel タイポ自体は task_file に残らない
         assert "ultratink" not in content
 
-    def test_tmux_thinking_passes_is_thinking_flag_to_adapter(
+    def test_tmux_thinking_falls_back_to_is_thinking_when_iterm2_missing(
         self, tmp_path: Path, monkeypatch
     ):
-        """OW_TERMINAL=tmux + effort指定で adapter 呼び出しに is_thinking=1 が渡される
-        (D#2601: 思考workerはtmuxでもsplit-paneではなくnew-windowで別タブに開く)"""
+        """OW_TERMINAL=tmux + effort指定で iterm2 adapter が無いとき、tmux + is_thinking=1
+        にフォールバックする。
+
+        通常経路は iTerm2 別タブ起動だが、iterm2.sh が存在しない (CI / 非macOS環境など)
+        場合は従来の `tmux new-window` 経路に静かに戻る。"""
         monkeypatch.setenv("OW_TERMINAL", "tmux")
         monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
-        # 実存するadapterパスを返すstub
+        # tmux adapter のみ存在、iterm2 adapter は無い
         adapter_stub = tmp_path / "tmux.sh"
         adapter_stub.write_text("#!/usr/bin/env bash\necho stub-pane-id\n")
         adapter_stub.chmod(0o755)
-        monkeypatch.setattr(ow_service, "_get_adapter_path", lambda t: adapter_stub)
+        monkeypatch.setattr(
+            ow_service, "_get_adapter_path",
+            lambda t: adapter_stub if t == "tmux" else None,
+        )
 
         captured: dict = {}
 
@@ -1593,7 +1599,7 @@ class TestOwSpawnWorkerThinking:
             effort="ultrathink", tmux_target_pane="%0",
         )
         assert result.get("term_ref") == "stub-pane-id"
-        # adapter には target_pane と is_thinking=1 が positional で渡される
+        # tmux 経路にフォールバック: target_pane と is_thinking=1 が positional で渡される
         assert captured["args"][-2:] == ["%0", "1"]
 
     def test_tmux_non_thinking_passes_is_thinking_zero(
