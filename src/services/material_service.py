@@ -6,6 +6,7 @@ from typing import Literal
 from src.db import get_connection, row_to_dict
 from src.services.readable_id import apply_readable_id_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
+from src.services.citations_service import upsert_citations_for_owner_with_conn
 from src.services.relation_service import _add_relation_with_conn, _validate_targets
 from src.services.tag_service import (
     validate_and_parse_tags,
@@ -105,6 +106,11 @@ def add_material(title: str, content: str, tags: list[str], source: str, related
         # リレーションを追加
         if related:
             _add_relation_with_conn(conn, "material", material_id, related)
+
+        # 本文中の {{cite:X#NNN}} を citations テーブルに保存
+        upsert_citations_for_owner_with_conn(
+            conn, "material", material_id, title=title, content=content
+        )
 
         # タグを取得（commit前）
         tag_strings = get_entity_tags(conn, "material_tags", "material_id", material_id)
@@ -305,6 +311,13 @@ def update_material(
             conn.execute("DELETE FROM material_tags WHERE material_id = ?", (material_id,))
             tag_ids = ensure_tag_ids(conn, parsed_tags)
             link_tags(conn, "material_tags", "material_id", material_id, tag_ids)
+
+        # citations 全削除→再投入 (本文無変更でも実施)
+        new_title = title if title is not None else row["title"]
+        new_content = effective_content if content is not None else row["content"]
+        upsert_citations_for_owner_with_conn(
+            conn, "material", material_id, title=new_title, content=new_content
+        )
 
         conn.commit()
 

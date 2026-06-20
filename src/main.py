@@ -25,6 +25,7 @@ from src.services import (
 from src.services.checkin_service import check_in as _check_in
 from src.services.tag_service import search_tags as _search_tags, update_tag as _update_tag, collect_tag_notes_for_injection
 from src.services.tag_analysis_service import analyze_tags as _analyze_tags
+from src.services import citation_renderer
 from src.db import get_connection
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -156,6 +157,78 @@ def _collect_result_tags(items: list[dict]) -> list[str]:
     return sorted(tags)
 
 
+_FlavorArg = Literal["raw", "internal", "readable"]
+_VALID_FLAVORS = ("raw", "internal", "readable")
+
+
+def _normalize_flavor(flavor: str | None) -> str:
+    """flavor 引数を検証し、未指定 (None) の場合は既定値 "internal" を返す。"""
+    if flavor is None:
+        return citation_renderer.DEFAULT_FLAVOR
+    if flavor not in _VALID_FLAVORS:
+        raise ValueError(
+            f"Invalid flavor {flavor!r}; must be one of {_VALID_FLAVORS}"
+        )
+    return flavor
+
+
+def _apply_flavor_to_items(
+    items: list[dict],
+    entity_type: str,
+    flavor: str,
+    id_key: str = "id",
+    attach_citations: bool = True,
+) -> None:
+    """同種エンティティのリストに対し flavor 展開 + citations_in/out 付与 (in-place)。"""
+    if not items:
+        return
+    conn = get_connection()
+    try:
+        for item in items:
+            citation_renderer.apply_flavor_to_entity_dict(
+                item, entity_type, flavor, conn,
+                id_key=id_key, attach_citations=attach_citations,
+            )
+    finally:
+        conn.close()
+
+
+def _apply_flavor_to_single(
+    item: dict,
+    entity_type: str,
+    flavor: str,
+    id_key: str = "id",
+    attach_citations: bool = True,
+) -> None:
+    """単一エンティティ dict に flavor 展開 + citations_in/out 付与 (in-place)。"""
+    if not item:
+        return
+    conn = get_connection()
+    try:
+        citation_renderer.apply_flavor_to_entity_dict(
+            item, entity_type, flavor, conn,
+            id_key=id_key, attach_citations=attach_citations,
+        )
+    finally:
+        conn.close()
+
+
+def _apply_flavor_to_snippets(items: list[dict], flavor: str) -> None:
+    """検索結果 snippet 群に raw 境界調整 → flavor 展開を適用 (in-place)。"""
+    if not items or flavor == "raw":
+        return
+    conn = get_connection()
+    try:
+        for item in items:
+            snippet = item.get("snippet")
+            if isinstance(snippet, str) and snippet:
+                item["snippet"] = citation_renderer.apply_flavor_to_snippet(
+                    snippet, flavor, conn
+                )
+    finally:
+        conn.close()
+
+
 # MCPサーバーを作成
 mcp = FastMCP("cc-memory", instructions=build_instructions())
 
@@ -271,6 +344,7 @@ def get_topics(
     offset: int = 0,
     since: str | None = None,
     until: str | None = None,
+    flavor: _FlavorArg = "internal",
 ) -> dict:
     """トピックを新しい順に取得する（ページネーション付き）。
 
@@ -278,8 +352,10 @@ def get_topics(
     since: ISO日付文字列（例: "2026-03-10"）。この日付以降に作成されたトピックのみ返す
     until: ISO日付文字列。この日付以前に作成されたトピックのみ返す
     """
+    flavor = _normalize_flavor(flavor)
     result = topic_service.get_topics(tags, limit, offset, since, until)
     if "error" not in result:
+        _apply_flavor_to_items(result.get("topics", []), "topic", flavor)
         all_tags = _collect_result_tags(result.get("topics", []))
         if all_tags:
             _maybe_inject_tag_notes(result, all_tags, mark=False)
@@ -293,6 +369,7 @@ def get_logs(
     start_id: Optional[int] = None,
     limit: int = 30,
     include_retracted: bool = False,
+    flavor: _FlavorArg = "internal",
 ) -> dict:
     """
     Choose: topic/activity に紐づく log 一覧が欲しいとき。決定事項一覧なら get_decisions、log/decision/material の混合時系列なら get_timeline、起点からの関連グラフ走査なら get_map、activity 着手時の文脈集約なら check_in（status を in_progress に自動更新する副作用あり、着手時のみ）。
@@ -310,8 +387,10 @@ def get_logs(
         議論ログ一覧（各logにtags付き）
         entity_type == "activity" の場合はrelated topics経由でlogs集約
     """
+    flavor = _normalize_flavor(flavor)
     result = discussion_log_service.get_logs(entity_type, entity_id, start_id, limit, include_retracted=include_retracted)
     if "error" not in result:
+        _apply_flavor_to_items(result.get("logs", []), "log", flavor)
         all_tags = _collect_result_tags(result.get("logs", []))
         if all_tags:
             _maybe_inject_tag_notes(result, all_tags, mark=False)
@@ -325,6 +404,7 @@ def get_decisions(
     start_id: Optional[int] = None,
     limit: int = 30,
     include_retracted: bool = False,
+    flavor: _FlavorArg = "internal",
 ) -> dict:
     """
     Choose: topic/activity に紐づく decision 一覧が欲しいとき。議論経緯の log なら get_logs、log/decision/material の混合時系列なら get_timeline、起点からの関連グラフ走査なら get_map、activity 着手時の文脈集約なら check_in（status を in_progress に自動更新する副作用あり、着手時のみ）。
@@ -342,8 +422,10 @@ def get_decisions(
         決定事項一覧（各decisionにtags付き）
         entity_type == "activity" の場合はrelated topics経由でdecisions集約
     """
+    flavor = _normalize_flavor(flavor)
     result = decision_service.get_decisions(entity_type, entity_id, start_id, limit, include_retracted=include_retracted)
     if "error" not in result:
+        _apply_flavor_to_items(result.get("decisions", []), "decision", flavor)
         all_tags = _collect_result_tags(result.get("decisions", []))
         if all_tags:
             _maybe_inject_tag_notes(result, all_tags, mark=False)
@@ -363,6 +445,7 @@ def search(
     date_after: Optional[str] = None,
     date_before: Optional[str] = None,
     include_retracted: bool = False,
+    flavor: _FlavorArg = "internal",
 ) -> dict:
     """
     キーワードで横断検索する。
@@ -398,7 +481,10 @@ def search(
         tagsはエンティティに紐づくタグ文字列のリスト。
         include_details=Trueの場合、上位10件にdetailsが追加される。
     """
+    flavor = _normalize_flavor(flavor)
     result = search_service.search(keyword, tags, entity_type, limit, offset, keyword_mode, include_details, domain, date_after, date_before, include_retracted=include_retracted)
+    if "error" not in result:
+        _apply_flavor_to_snippets(result.get("results", []), flavor)
     if "error" not in result and tags:
         _maybe_inject_tag_notes(result, tags)
     return result
@@ -407,6 +493,7 @@ def search(
 @mcp.tool()
 def get_by_ids(
     items: list[dict],
+    flavor: _FlavorArg = "internal",
 ) -> dict:
     """
     Choose: search 結果の type+id ペアを本文付きで一括取得したいとき（複数種別 OK）。material 単独なら get_material、topic/activity 起点の log/decision 集約なら get_logs / get_decisions、関連グラフ走査なら get_map。
@@ -424,8 +511,22 @@ def get_by_ids(
     Returns:
         取得結果（各アイテムの詳細情報）
     """
+    flavor = _normalize_flavor(flavor)
     result = search_service.get_by_ids(items)
     if "error" not in result:
+        conn = get_connection()
+        try:
+            for entry in result.get("results", []):
+                data = entry.get("data")
+                if not isinstance(data, dict):
+                    continue
+                etype = entry.get("type")
+                if etype in citation_renderer.RESPONSE_TEXT_FIELDS:
+                    citation_renderer.apply_flavor_to_entity_dict(
+                        data, etype, flavor, conn,
+                    )
+        finally:
+            conn.close()
         all_tags = []
         for item in result.get("results", []):
             if "data" in item:
@@ -575,6 +676,7 @@ def get_activities(
     limit: int = 5,
     since: str | None = None,
     until: str | None = None,
+    flavor: _FlavorArg = "internal",
 ) -> dict:
     """
     アクティビティ一覧を取得する（tagsでフィルタリング、statusでフィルタリング可能）。
@@ -599,8 +701,10 @@ def get_activities(
     Returns:
         アクティビティ一覧（total_countで該当ステータスの全件数を確認可能）
     """
+    flavor = _normalize_flavor(flavor)
     result = activity_service.get_activities(tags, status, limit, since, until)
     if "error" not in result:
+        _apply_flavor_to_items(result.get("activities", []), "activity", flavor)
         all_tags = _collect_result_tags(result.get("activities", []))
         if all_tags:
             _maybe_inject_tag_notes(result, all_tags, mark=False)
@@ -719,6 +823,7 @@ def update_material(
 @mcp.tool()
 def get_material(
     material_id: int,
+    flavor: _FlavorArg = "internal",
 ) -> dict:
     """
     Choose: material_id 既知で資材の全文だけ取得したいとき。複数種別を一括なら get_by_ids、起点からの関連グラフ走査なら get_map、log/decision/material の混合時系列なら get_timeline。
@@ -734,12 +839,17 @@ def get_material(
     Returns:
         資材の全文情報（material_id, title, content, source, tags, created_at）
     """
-    return material_service.get_material(material_id)
+    flavor = _normalize_flavor(flavor)
+    result = material_service.get_material(material_id)
+    if "error" not in result:
+        _apply_flavor_to_single(result, "material", flavor, id_key="material_id")
+    return result
 
 
 @mcp.tool()
 def check_in(
     activity_id: int,
+    flavor: _FlavorArg = "internal",
 ) -> dict:
     """
     Choose: アクティビティに着手するときに関連情報を一括取得したいとき（status を in_progress に自動更新）。関連グラフだけ俯瞰したいなら get_map、log/decision/material の時系列なら get_timeline、log だけなら get_logs。
@@ -758,12 +868,71 @@ def check_in(
     Returns:
         check-in結果（coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary）
     """
+    flavor = _normalize_flavor(flavor)
     try:
         ctx = get_context()
         session_id = ctx.session_id
     except RuntimeError:
         session_id = None
-    return _check_in(activity_id, session_id=session_id)
+    result = _check_in(activity_id, session_id=session_id)
+    if "error" not in result and flavor != "raw":
+        _apply_flavor_to_check_in_result(result, flavor)
+    return result
+
+
+def _apply_flavor_to_check_in_result(result: dict, flavor: str) -> None:
+    """check_in レスポンスの各セクションに flavor 展開を適用する (in-place)。
+
+    check_in は activity / related_topics / related_activities / materials /
+    recent_decisions / latest_log / logs / catalog の各セクションを持つ。
+    各 snippet には raw 境界調整 → flavor 展開、entity 詳細は dict 単位で展開。
+    """
+    conn = get_connection()
+    try:
+        activity = result.get("activity")
+        if isinstance(activity, dict):
+            citation_renderer.apply_flavor_to_entity_dict(
+                activity, "activity", flavor, conn, attach_citations=True
+            )
+        for key, etype in (
+            ("related_topics", "topic"),
+            ("related_activities", "activity"),
+        ):
+            for item in result.get(key, []) or []:
+                if isinstance(item, dict):
+                    citation_renderer.apply_flavor_to_entity_dict(
+                        item, etype, flavor, conn, attach_citations=False
+                    )
+        # snippet 系: materials / latest_log / logs / catalog
+        for item in result.get("materials", []) or []:
+            _flavor_snippet(item, flavor, conn)
+        for item in result.get("logs", []) or []:
+            _flavor_snippet(item, flavor, conn)
+        for item in result.get("catalog", []) or []:
+            _flavor_snippet(item, flavor, conn)
+        latest = result.get("latest_log")
+        if isinstance(latest, dict):
+            _flavor_snippet(latest, flavor, conn)
+            if isinstance(latest.get("content"), str):
+                latest["content"] = citation_renderer.expand(
+                    latest["content"], flavor, conn
+                )
+        for item in result.get("recent_decisions", []) or []:
+            _flavor_snippet(item, flavor, conn)
+    finally:
+        conn.close()
+
+
+def _flavor_snippet(item: dict, flavor: str, conn) -> None:
+    """item dict 内の snippet / title フィールドに flavor を適用する (in-place)。"""
+    if not isinstance(item, dict) or flavor == "raw":
+        return
+    if isinstance(item.get("snippet"), str):
+        item["snippet"] = citation_renderer.apply_flavor_to_snippet(
+            item["snippet"], flavor, conn
+        )
+    if isinstance(item.get("title"), str):
+        item["title"] = citation_renderer.expand(item["title"], flavor, conn)
 
 
 
@@ -976,6 +1145,7 @@ def get_timeline(
     before: str | None = None,
     limit: int = 50,
     order: str = "desc",
+    flavor: _FlavorArg = "internal",
 ) -> dict:
     """
     Choose: topic/activity に紐づく decision/log/material を時系列順に並べたいとき。log だけなら get_logs、decision だけなら get_decisions、関連グラフ走査なら get_map、activity の文脈集約なら check_in（status を in_progress に自動更新する副作用あり、着手時のみ）。
@@ -990,11 +1160,20 @@ def get_timeline(
         limit: 取得件数上限（デフォルト50、最大100）
         order: ソート方向（"desc"または"asc"、デフォルト"desc"）
     """
-    return timeline_service.get_timeline(
+    flavor = _normalize_flavor(flavor)
+    result = timeline_service.get_timeline(
         topic_id=topic_id, activity_id=activity_id,
         entity_types=entity_types, before=before,
         limit=limit, order=order,
     )
+    if "error" not in result and flavor != "raw":
+        conn = get_connection()
+        try:
+            for item in result.get("items", []) or []:
+                _flavor_snippet(item, flavor, conn)
+        finally:
+            conn.close()
+    return result
 
 
 @mcp.tool()

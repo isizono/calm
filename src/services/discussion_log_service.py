@@ -3,6 +3,7 @@ import re
 import sqlite3
 from typing import Optional
 from src.db import get_connection, row_to_dict
+from src.services.citations_service import upsert_citations_for_owner_with_conn
 from src.services.readable_id import apply_readable_id_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.tag_service import (
@@ -91,6 +92,11 @@ def add_logs(items: list[dict]) -> dict:
                 if parsed_tags:
                     tag_ids = ensure_tag_ids(conn, parsed_tags)
                     link_tags(conn, "log_tags", "log_id", log_id, tag_ids)
+
+                # 本文中の {{cite:X#NNN}} を citations テーブルに保存
+                upsert_citations_for_owner_with_conn(
+                    conn, "log", log_id, content=content
+                )
 
                 conn.execute(f"RELEASE SAVEPOINT item_{i}")
                 created.append({

@@ -3,6 +3,7 @@ import re
 import sqlite3
 from typing import Optional
 from src.db import get_connection, row_to_dict
+from src.services.citations_service import upsert_citations_for_owner_with_conn
 from src.services.readable_id import apply_readable_id_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.relation_service import _add_relation_with_conn, _validate_targets
@@ -179,6 +180,11 @@ def add_topic(
         # リレーションを追加
         if related:
             _add_relation_with_conn(conn, "topic", topic_id, related)
+
+        # 本文中の {{cite:X#NNN}} を citations テーブルに保存
+        upsert_citations_for_owner_with_conn(
+            conn, "topic", topic_id, title=title, description=description
+        )
 
         conn.commit()
 
