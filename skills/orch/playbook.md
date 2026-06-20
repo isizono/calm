@@ -51,8 +51,8 @@ orch は受動報告器ではない。以下を自走する:
 - **blocker なしならそのまま着手**: task が available で blocker が無ければ「やる？」と聞かずそのまま着手・自走する。提案フェーズを挟まない
 - **即アクション**: 単純依頼は確認せず即時実行 (例: 「紐づけだけ」「ステータス更新だけ」)
 - **デフォルトは自走、権限境界のみ確認**: 特化版 playbook で定義された権限境界を超える操作のみユーザー確認する。権限境界未定義のリポでは、自走可能な範囲を広く取る
-- **長時間自律ガード**: 自走指示中も判断停止しない。インフラ状態が変化したら (relay 落ち / worker crash / queue 矛盾) 再 spawn を判断する
-- **orch は手を動かさない**: 実装・コード変更・調査用の Bash・git 操作は worker に委譲する。直接実行可は queue.md 更新 / ow_close_worker / ow_send / ow_spawn_worker / 状況報告 / worktree 作成と git 段取り のみ
+- **長時間自律ガード**: 自走指示中も判断停止しない。インフラ状態が変化したら (relay 落ち / worker crash / cache 不整合) 再 spawn を判断する
+- **orch は手を動かさない**: 実装・コード変更・調査用の Bash・git 操作は worker に委譲する。直接実行可は ow_close_worker / ow_send / ow_spawn_worker / 状況報告 / worktree 作成と git 段取り のみ
 - **外部投稿禁止**: PR コメント・GitHub への直接投稿はしない (worker / SA経由)
 - **close 判断は orch 一存**: terminated 受領後の ow_close_worker 判断は orch の責務。人間に振らない
 
@@ -102,7 +102,7 @@ ready 状態のworker に対する auto-assign が不発になることがある
 
 ## worker 生死管理
 
-- **orphan は orch が自律判定**: identity に登録があるが queue 外の handle、または queue にあるが identity が terminal な handle が見つかったら、orch が以下3ステップで判定する:
+- **orphan は orch が自律判定**: identity に登録があるが cache.workers 外の handle、または cache.workers に active で残っているが identity が terminal な handle が見つかったら、orch が以下3ステップで判定する:
   1. heartbeat が古いか (途絶検知閾値超え) → crash推論
   2. 過渡状態か (loading / draining / state遷移直後) → ping で生存確認
   3. それ以外 → ping で素性照会、応答で再リンク or 退場処理
@@ -217,4 +217,4 @@ orch が自力で判断できる場合は `command:answer {answer}` で直接回
 
 定期的なポーリング報告は不要。Monitor 発火ベースのイベントドリブン報告を原則とする。
 
-タスクボード短報・状況報告・AskUserQuestion でタスクを言及する際は、内部 queue 番号 (`T<n>`) 単独使用は禁止。ユーザーが直接判断できる名前 (機能名 / activity_id / PR番号 等) を必ず併記する。
+タスクボード短報・状況報告・AskUserQuestion でタスクを言及する際は、内部タスク識別子 (`T<n>`) 単独使用は禁止。ユーザーが直接判断できる名前 (機能名 / activity_id / PR番号 等) を必ず併記する。

@@ -368,22 +368,6 @@ class TestOwSendEnsureChannel:
         assert result["error"]["code"] == 404
 
 
-class TestGetQueueDir:
-    """_get_queue_dir: OW_QUEUE_DIR設定の有無でパスが変わる"""
-
-    def test_default_returns_cc_memory_ow_path(self, monkeypatch):
-        """OW_QUEUE_DIR未設定時は ~/.cc-memory/ow/orch を返す"""
-        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", "")
-        result = ow_service._get_queue_dir()
-        assert result == Path.home() / ".cc-memory" / "ow" / "orch"
-
-    def test_env_var_overrides_default(self, monkeypatch, tmp_path):
-        """OW_QUEUE_DIR設定時はその値を展開して返す"""
-        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
-        result = ow_service._get_queue_dir()
-        assert result == tmp_path
-
-
 class TestOwStatusEnsure:
     """ow_status: relay起動 + channel作成の自動化"""
 
@@ -395,7 +379,7 @@ class TestOwStatusEnsure:
         monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: ensure_relay_called.append(True) or True)
         monkeypatch.setattr(ow_service, "ensure_channel", lambda ch: ensure_channel_called.append(ch) or True)
         monkeypatch.setattr(ow_service, "_relay_request", lambda *args, **kwargs: {"handles": []})
-        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
+        monkeypatch.setattr(ow_service, "find_topic_id_by_channel", lambda *_args, **_kw: None)
 
         ow_service.ow_status(channel="TestCh01", topic_id="454")
 
