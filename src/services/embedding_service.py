@@ -92,12 +92,19 @@ def _start_server() -> bool:
     """embedding_server.pyをdetachedプロセスとして起動する。成功でTrue。"""
     server_path = os.path.join(os.path.dirname(__file__), "embedding_server.py")
     try:
+        cwd = _get_project_root()
+    except (RuntimeError, OSError) as e:
+        # project_root が解決できなければ起動も不可能。例外を握って False で返す
+        # （呼び出し側 `_ensure_initialized` は False を graceful degradation として扱う）。
+        logger.warning(f"Failed to resolve project root for embedding server: {e}")
+        return False
+    try:
         subprocess.Popen(
             [sys.executable, server_path],
             start_new_session=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            cwd=_get_project_root(),
+            cwd=cwd,
         )
     except OSError as e:
         logger.warning(f"Failed to start embedding server: {e}")
