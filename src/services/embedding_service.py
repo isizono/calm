@@ -19,11 +19,63 @@ logger = logging.getLogger(__name__)
 PORT = 52836
 SERVER_URL = f"http://localhost:{PORT}"
 
-_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent)
+
+def _resolve_project_root() -> str:
+    """embedding_server を起動する cwd を決定する。
+
+    優先順位:
+      1. 環境変数 ``CC_MEMORY_PROJECT_ROOT``
+      2. ``git rev-parse --git-common-dir`` の親ディレクトリ（worktree 内からでも main repo を返す）
+      3. 上記いずれも失敗した場合は ``RuntimeError`` を raise（黙って ``__file__`` fallback はしない）
+    """
+    # 1. env var override
+    env = os.environ.get("CC_MEMORY_PROJECT_ROOT")
+    if env:
+        return str(Path(env).resolve())
+
+    # 2. git common-dir based (worktree からでも main repo を返す)
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=Path(__file__).parent,
+        )
+        common_dir = Path(result.stdout.strip())
+        # common-dir は relative の可能性があるので resolve
+        if not common_dir.is_absolute():
+            common_dir = (Path(__file__).parent / common_dir).resolve()
+        # main repo root = .git の親
+        return str(common_dir.parent.resolve())
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        raise RuntimeError(
+            "Failed to resolve project root: set CC_MEMORY_PROJECT_ROOT "
+            f"or run from within a git repo. cause: {e}"
+        )
+
 
 # グローバル状態
+#
+# Thread safety: `_server_initialized` / `_backfill_done` / `_project_root_cache` は
+# 複数スレッドから読み書きされうるが、GIL によりアトミックな代入であり、
+# 二重初期化しても idempotent（_ensure_server_running は健在チェック→起動、
+# _resolve_project_root は冪等な解決）なので意図的にロックを取っていない。
 _server_initialized = False
 _backfill_done = False
+_project_root_cache: Optional[str] = None
+
+
+def _get_project_root() -> str:
+    """`_resolve_project_root()` の lazy + cache wrapper。
+
+    モジュール import 時に subprocess を起動する副作用を避け、最初に
+    `_start_server()` が呼ばれる時点で解決する。一度解決した値はプロセス内で再利用する。
+    """
+    global _project_root_cache
+    if _project_root_cache is None:
+        _project_root_cache = _resolve_project_root()
+    return _project_root_cache
 
 
 def _is_server_running() -> bool:
@@ -40,12 +92,19 @@ def _start_server() -> bool:
     """embedding_server.pyをdetachedプロセスとして起動する。成功でTrue。"""
     server_path = os.path.join(os.path.dirname(__file__), "embedding_server.py")
     try:
+        cwd = _get_project_root()
+    except (RuntimeError, OSError) as e:
+        # project_root が解決できなければ起動も不可能。例外を握って False で返す
+        # （呼び出し側 `_ensure_initialized` は False を graceful degradation として扱う）。
+        logger.warning(f"Failed to resolve project root for embedding server: {e}")
+        return False
+    try:
         subprocess.Popen(
             [sys.executable, server_path],
             start_new_session=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            cwd=_PROJECT_ROOT,
+            cwd=cwd,
         )
     except OSError as e:
         logger.warning(f"Failed to start embedding server: {e}")

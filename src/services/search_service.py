@@ -1656,8 +1656,11 @@ def _format_row(type_name: str, data: dict, tags: list[str]) -> dict:
         return {
             "material_id": data["id"],
             "title": data["title"],
+            "content": data["content"],
+            "source": data["source"],
             "tags": tags,
             "created_at": data["created_at"],
+            "hint": "contentの先頭1-2文は内容の説明・要約にしてください（check-in時にsnippetとして表示されます）",
         }
     return data
 
