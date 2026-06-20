@@ -85,6 +85,13 @@ class TestSpawnPreconditionsAliasFormat:
         monkeypatch.setattr(ow_service, "ensure_channel", lambda ch: True)
         monkeypatch.setattr(ow_service, "_get_presence", lambda ch: [])
         monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
+        # ow_spawn_worker は spawning event を broadcast するため _relay_request を no-op に
+        # 差し替えて、relay HTTP call をテストから切り離す。
+        monkeypatch.setattr(
+            ow_service,
+            "_relay_request",
+            lambda *args, **kwargs: {"msg_id": 0},
+        )
 
     def test_too_short_alias_yields_warning(self, tmp_path):
         result = ow_service._validate_spawn_preconditions(
@@ -146,12 +153,18 @@ class TestSpawnWorkerAliasFormat:
         monkeypatch.setattr(ow_service, "ensure_channel", lambda ch: True)
         monkeypatch.setattr(ow_service, "_get_presence", lambda ch: [])
         monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
+        # ow_spawn_worker は spawning event を broadcast するため _relay_request を no-op に
+        # 差し替えて、relay HTTP call をテストから切り離す。
+        monkeypatch.setattr(
+            ow_service,
+            "_relay_request",
+            lambda *args, **kwargs: {"msg_id": 0},
+        )
         # 万が一 preflight をすり抜けても /tmp などを汚さない
         monkeypatch.setattr(ow_service, "_ensure_worker_askuser_deny", lambda c: None)
         monkeypatch.delenv("OW_TERMINAL", raising=False)
 
     def test_too_short_alias_returns_precondition_failed(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         result = ow_service.ow_spawn_worker(
             alias="w-a",
             channel="ch1",
@@ -164,7 +177,6 @@ class TestSpawnWorkerAliasFormat:
         assert any("too short" in w for w in result["error"]["warnings"])
 
     def test_uppercase_alias_returns_precondition_failed(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         result = ow_service.ow_spawn_worker(
             alias="W-Playbook",
             channel="ch1",
@@ -177,7 +189,6 @@ class TestSpawnWorkerAliasFormat:
         assert any("kebab-case" in w for w in result["error"]["warnings"])
 
     def test_underscore_alias_returns_precondition_failed(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         result = ow_service.ow_spawn_worker(
             alias="w_playbook",
             channel="ch1",
@@ -190,7 +201,6 @@ class TestSpawnWorkerAliasFormat:
 
     def test_valid_alias_proceeds_past_precondition(self, monkeypatch, tmp_path):
         """正常 alias なら manual fallback まで進める（preflight でブロックされない）"""
-        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         result = ow_service.ow_spawn_worker(
             alias="w-playbook",
             channel="ch1",
@@ -199,6 +209,62 @@ class TestSpawnWorkerAliasFormat:
             task_title="t", acceptance="d", task_n=1,
         )
         assert result.get("manual") is True
+
+
+# ----------------------------
+# ow_spawn_worker: spawning broadcast 失敗時は SPAWN_PRECONDITION_FAILED
+# ----------------------------
+
+
+class TestSpawnWorkerSpawningBroadcastFailure:
+    """relay への event:state(spawning) broadcast 失敗時の挙動を確認する。
+
+    新真実源モデルでは relay events が真実源のため、broadcast 失敗は spawn 中止。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
+        monkeypatch.setattr(ow_service, "ensure_channel", lambda ch: True)
+        monkeypatch.setattr(ow_service, "_get_presence", lambda ch: [])
+        monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
+        monkeypatch.setattr(ow_service, "_ensure_worker_askuser_deny", lambda c: None)
+        monkeypatch.delenv("OW_TERMINAL", raising=False)
+
+    def test_relay_error_returns_precondition_failed(self, monkeypatch, tmp_path):
+        """relay が 5xx を返して broadcast 失敗 → SPAWN_PRECONDITION_FAILED。"""
+        monkeypatch.setattr(
+            ow_service,
+            "_relay_request",
+            lambda *args, **kwargs: {"error": {"code": 503, "message": "relay unavailable"}},
+        )
+        result = ow_service.ow_spawn_worker(
+            alias="w-playbook",
+            channel="ch1",
+            cwd=str(tmp_path),
+            model="claude-opus-4-7",
+            task_title="t", acceptance="d", task_n=1,
+        )
+        assert "error" in result
+        assert result["error"]["code"] == "SPAWN_PRECONDITION_FAILED"
+        assert any("spawning" in w for w in result["error"]["warnings"])
+
+    def test_relay_error_warnings_contain_alias_and_detail(self, monkeypatch, tmp_path):
+        """broadcast 失敗の警告メッセージに alias と relay エラー詳細が含まれる。"""
+        monkeypatch.setattr(
+            ow_service,
+            "_relay_request",
+            lambda *args, **kwargs: {"error": {"code": 503, "message": "relay down"}},
+        )
+        result = ow_service.ow_spawn_worker(
+            alias="w-playbook",
+            channel="ch1",
+            cwd=str(tmp_path),
+            model="claude-opus-4-7",
+            task_title="t", acceptance="d", task_n=1,
+        )
+        warnings = result["error"]["warnings"]
+        assert any("w-playbook" in w for w in warnings)
 
 
 # ----------------------------
@@ -308,6 +374,11 @@ class TestSpawnWorkerWritesSettingsLocal:
         monkeypatch.setattr(ow_service, "ensure_channel", lambda c: True)
         monkeypatch.setattr(ow_service, "_get_presence", lambda c: [])
         monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
+        monkeypatch.setattr(
+            ow_service,
+            "_relay_request",
+            lambda *args, **kwargs: {"msg_id": 0},
+        )
         monkeypatch.delenv("OW_TERMINAL", raising=False)
 
     def test_spawn_creates_settings_local_under_cwd(self, monkeypatch, tmp_path):
@@ -315,7 +386,6 @@ class TestSpawnWorkerWritesSettingsLocal:
         worker_cwd.mkdir()
         queue_dir = tmp_path / "queue"
         queue_dir.mkdir()
-        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(queue_dir))
 
         result = ow_service.ow_spawn_worker(
             alias="w-playbook",
@@ -341,7 +411,6 @@ class TestSpawnWorkerWritesSettingsLocal:
         )
         queue_dir = tmp_path / "queue"
         queue_dir.mkdir()
-        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(queue_dir))
 
         result = ow_service.ow_spawn_worker(
             alias="w-playbook",
