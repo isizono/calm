@@ -23,6 +23,11 @@ def _bypass_preflight(monkeypatch):
     monkeypatch.setattr(ow_service, "_get_presence", lambda ch: [])
     monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
     monkeypatch.setattr(ow_service, "_ensure_worker_askuser_deny", lambda c: None)
+    monkeypatch.setattr(
+        ow_service,
+        "_relay_request",
+        lambda *args, **kwargs: {"msg_id": 0},
+    )
 
 
 def _make_adapters(tmp_path: Path, *names: str) -> dict[str, Path]:
