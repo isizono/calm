@@ -45,7 +45,6 @@ class TestSpawnManualFallbackAdapterPathNone:
         self, monkeypatch, tmp_path, caplog
     ):
         """OW_TERMINAL 未設定 (= 内部的に 'manual') → manual:true + adapter_error。"""
-        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         monkeypatch.delenv("OW_TERMINAL", raising=False)
 
         with caplog.at_level(logging.ERROR, logger=OW_SERVICE_LOGGER):
@@ -70,7 +69,6 @@ class TestSpawnManualFallbackAdapterPathNone:
         self, monkeypatch, tmp_path, caplog
     ):
         """OW_TERMINAL に登録外の値 → adapter_error に terminal 名が出る。"""
-        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         monkeypatch.setenv("OW_TERMINAL", "unknown-terminal-xyz")
 
         with caplog.at_level(logging.ERROR, logger=OW_SERVICE_LOGGER):
@@ -94,7 +92,6 @@ class TestSpawnManualFallbackSubprocessFailure:
         self, monkeypatch, tmp_path, caplog
     ):
         """CalledProcessError → adapter_error=stderr, level=ERROR (warning でない)。"""
-        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         fake_adapter = _build_fake_adapter(tmp_path, terminal="tmux")
         monkeypatch.setattr(
             ow_service,
@@ -135,7 +132,6 @@ class TestSpawnManualFallbackSubprocessFailure:
         self, monkeypatch, tmp_path, caplog
     ):
         """TimeoutExpired → adapter_error 固定文言, level=ERROR。"""
-        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         fake_adapter = _build_fake_adapter(tmp_path, terminal="tmux")
         monkeypatch.setattr(
             ow_service,

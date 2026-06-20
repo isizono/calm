@@ -151,7 +151,6 @@ class TestSpawnWorkerAliasFormat:
         monkeypatch.delenv("OW_TERMINAL", raising=False)
 
     def test_too_short_alias_returns_precondition_failed(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         result = ow_service.ow_spawn_worker(
             alias="w-a",
             channel="ch1",
@@ -164,7 +163,6 @@ class TestSpawnWorkerAliasFormat:
         assert any("too short" in w for w in result["error"]["warnings"])
 
     def test_uppercase_alias_returns_precondition_failed(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         result = ow_service.ow_spawn_worker(
             alias="W-Playbook",
             channel="ch1",
@@ -177,7 +175,6 @@ class TestSpawnWorkerAliasFormat:
         assert any("kebab-case" in w for w in result["error"]["warnings"])
 
     def test_underscore_alias_returns_precondition_failed(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         result = ow_service.ow_spawn_worker(
             alias="w_playbook",
             channel="ch1",
@@ -190,7 +187,6 @@ class TestSpawnWorkerAliasFormat:
 
     def test_valid_alias_proceeds_past_precondition(self, monkeypatch, tmp_path):
         """正常 alias なら manual fallback まで進める（preflight でブロックされない）"""
-        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(tmp_path))
         result = ow_service.ow_spawn_worker(
             alias="w-playbook",
             channel="ch1",
@@ -315,7 +311,6 @@ class TestSpawnWorkerWritesSettingsLocal:
         worker_cwd.mkdir()
         queue_dir = tmp_path / "queue"
         queue_dir.mkdir()
-        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(queue_dir))
 
         result = ow_service.ow_spawn_worker(
             alias="w-playbook",
@@ -341,7 +336,6 @@ class TestSpawnWorkerWritesSettingsLocal:
         )
         queue_dir = tmp_path / "queue"
         queue_dir.mkdir()
-        monkeypatch.setattr(ow_service, "OW_QUEUE_DIR", str(queue_dir))
 
         result = ow_service.ow_spawn_worker(
             alias="w-playbook",

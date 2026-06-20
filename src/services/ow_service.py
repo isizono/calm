@@ -24,6 +24,7 @@ import urllib.error
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -43,7 +44,9 @@ logger = logging.getLogger(__name__)
 # ----------------------------
 
 RELAY_URL = os.environ.get("RELAY_URL", "http://127.0.0.1:8765")
-OW_QUEUE_DIR = os.environ.get("OW_QUEUE_DIR", "")
+
+# orch 配下のタスクファイル / 退場ログ等を置くディレクトリ。queue.md は廃止 (D#2791)。
+_OW_ORCH_DIR = Path.home() / ".cc-memory" / "ow" / "orch"
 
 # cc-memoryリポルート（src/services/ow_service.py → src/ → repo root）
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -687,50 +690,6 @@ def ow_history(channel: str, since: int = 0, limit: int = 100) -> dict:
 # ----------------------------
 
 
-def _get_queue_dir() -> Path:
-    """queueディレクトリパスを返す。
-
-    OW_QUEUE_DIR環境変数が設定されていればそのパスを使用する。
-    未設定の場合は~/.cc-memory/ow/orchをデフォルトとして返す。
-    いずれもauto-memory管理外ディレクトリに配置する（frontmatter書き換え防止）。
-    """
-    if OW_QUEUE_DIR:
-        return Path(OW_QUEUE_DIR).expanduser()
-    return Path.home() / ".cc-memory" / "ow" / "orch"
-
-
-def _build_queue_frontmatter(
-    topic_id: str,
-    orch_activity_id: int | None,
-    channel_code: str,
-    orch_cwd: str,
-    last_seen_msg_id: int = 0,
-) -> str:
-    """queueファイルのYAML frontmatterを生成して返す。"""
-    fm_data = {
-        "topic_id": int(topic_id) if topic_id.isdigit() else topic_id,
-        "orch_activity_id": orch_activity_id,
-        "channel_code": channel_code,
-        "orch_cwd": orch_cwd,
-        "last_seen_msg_id": last_seen_msg_id,
-    }
-    fm_yaml = yaml.safe_dump(fm_data, default_flow_style=False, allow_unicode=True, sort_keys=False)
-    return f"---\n{fm_yaml}---\n"
-
-
-def _sanitize_queue_field(value: str) -> str:
-    """queueエントリの1行フィールドに埋め込む値から改行を除去する。
-
-    queueフォーマットは「1フィールド=1行」が不変条件。値に生の改行が含まれると
-    行が分割され、`## `で始まる行がファントムタスクとして誤パースされたり、
-    _upsert_queue_taskのブロック境界検出（次の`## `行まで）が内部行で誤停止して
-    ファイルが破損する。改行（CR/LF）を空白1つに畳んでこれを防ぐ。
-
-    acceptanceやnoteのようなorch自由記述フィールド（複数行が常態）が主な対象。
-    """
-    return " ".join(str(value).splitlines()).strip()
-
-
 # MCP/Claudeプロトコルで使われる予約XMLタグのパターン（antml:プレフィックス含む）
 _MCP_RESERVED_TAG_RE = re.compile(
     r"</?(?:antml:)?(?:function_calls|invoke|parameter|tool_result)(?:\s[^>]*)?>",
@@ -754,166 +713,6 @@ def _sanitize_task_body_field(value: str, field_name: str = "") -> str:
             count,
         )
     return cleaned
-
-
-def _format_queue_task_entry(
-    task_n: int,
-    title: str,
-    status: str,
-    fields: list[tuple[str, str]],
-) -> str:
-    """正式queueフォーマットのタスクエントリブロックを文字列で返す。
-
-    出力例:
-        ## T1 | タスク名 | working
-        - worker: w-a / term_ref: iterm2:xxx / session: uuid
-        - activity: 801
-        - cwd: ~/workspace/cc-memory/.trees/feature-xxx
-        - note: 実装中
-
-    末尾に改行を1つ含み、先頭に余分な空行は付けない（空白制御は_upsert_queue_task側の責務）。
-    fieldsは (キー, 値) のタプル列。順序はそのまま保持される。
-    title・status・各値は_sanitize_queue_fieldで改行を畳んでからフォーマットに埋め込む
-    （1フィールド=1行の不変条件を守り、フォーマット破壊・ファントムタスク注入を防ぐ）。
-    """
-    title = _sanitize_queue_field(title)
-    status = _sanitize_queue_field(status)
-    lines = [f"## T{task_n} | {title} | {status}"]
-    lines.extend(f"- {key}: {_sanitize_queue_field(value)}" for key, value in fields)
-    return "\n".join(lines) + "\n"
-
-
-def _upsert_queue_task(
-    queue_dir: Path,
-    topic_id: str,
-    task_n: int,
-    entry_text: str,
-    frontmatter: str | None = None,
-) -> None:
-    """queueファイルのT<n>タスクエントリを追加または置換する（queue状態更新の内部関数）。
-
-    挙動:
-    - ファイルが存在しない/空の場合: frontmatter（指定時）＋entry_textで初期化する。
-    - 同じT<n>のエントリが既に存在する場合: そのブロックのみを置換する
-      （他タスクのエントリやorchが手で編集したnote等はそのまま保持される）。
-    - 存在しない場合: ファイル末尾に空行区切りで追記する。
-
-    既存ファイルのfrontmatterには一切触れない（frontmatter更新はorchのEditツール責務）。
-    fcntl.flockで排他ロックし、並列spawn時のread-modify-write競合（lost update）を防ぐ。
-
-    MCPツール化はせず、ow_spawn_worker等のow_service内部からのみ呼び出す。
-    """
-    queue_file = queue_dir / f"queue-t{topic_id}.md"
-    queue_file.parent.mkdir(parents=True, exist_ok=True)
-    header_prefix = f"## T{task_n} | "
-
-    fd = os.open(str(queue_file), os.O_RDWR | os.O_CREAT, 0o644)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        size = os.fstat(fd).st_size
-        content = os.read(fd, size).decode("utf-8") if size else ""
-
-        if not content.strip():
-            # 新規 or 空ファイル: frontmatter（あれば）の後に空行を1つ挟んでエントリを置く
-            fm = frontmatter or ""
-            new_content = f"{fm}\n{entry_text}" if fm else entry_text
-        else:
-            lines = content.splitlines(keepends=True)
-            start = next(
-                (i for i, line in enumerate(lines) if line.startswith(header_prefix)),
-                None,
-            )
-            if start is None:
-                # 追記: 直前の内容との間に空行を1つ確保する
-                if content.endswith("\n\n"):
-                    sep = ""
-                elif content.endswith("\n"):
-                    sep = "\n"
-                else:
-                    sep = "\n\n"
-                new_content = f"{content}{sep}{entry_text}"
-            else:
-                # 既存T<n>ブロックを置換（次の'## 'ヘッダーまで、なければEOFまで）
-                end = len(lines)
-                for j in range(start + 1, len(lines)):
-                    if lines[j].startswith("## "):
-                        end = j
-                        break
-                before = "".join(lines[:start])
-                after = "".join(lines[end:])
-                # 後続ブロックがある場合は空行で区切る
-                sep = "\n" if (after and not entry_text.endswith("\n\n")) else ""
-                new_content = f"{before}{entry_text}{sep}{after}"
-
-        data = new_content.encode("utf-8")
-        os.lseek(fd, 0, os.SEEK_SET)
-        os.ftruncate(fd, 0)
-        os.write(fd, data)
-    finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
-
-
-def _write_queue_spawning(
-    queue_dir: Path,
-    topic_id: str,
-    alias: str,
-    task_n: int,
-    cwd: str,
-    task_title: str = "",
-    model: str = "",
-    acceptance: str = "",
-    orch_activity_id: int | None = None,
-    channel_code: str = "",
-    orch_cwd: str = "",
-) -> None:
-    """spawning write-aheadを正式queueフォーマットのタスクエントリとして記録する（孤児worker対策）。
-
-    旧実装のWAL風追記（`## T<n> | spawning | spawning`）をやめ、title・model・activity・
-    acceptance等を含む正式エントリ（status=spawning）を_upsert_queue_task経由で書き込む。
-    こうすることでspawning直後でもorchはqueueファイルから完全なタスク情報を読み取れ、
-    再spawn時はエントリが重複追記されず置換される。
-
-    新規ファイル作成時のみYAML frontmatter（topic_id, orch_activity_id, channel_code,
-    orch_cwd, last_seen_msg_id）を生成する。既存ファイルのfrontmatterには触れない。
-    """
-    now = datetime.now(timezone.utc).isoformat()
-
-    fields: list[tuple[str, str]] = [
-        ("worker", f"{alias} / term_ref: (pending) / session: (pending)"),
-    ]
-    if orch_activity_id is not None:
-        fields.append(("activity", str(orch_activity_id)))
-    if model:
-        fields.append(("model", model))
-    fields.append(("cwd", cwd))
-    fields.append(("spawning", now))
-    if acceptance:
-        fields.append(("acceptance", acceptance))
-    fields.append(("note", "spawning write-ahead"))
-
-    entry_text = _format_queue_task_entry(
-        task_n=task_n,
-        title=task_title or "(untitled)",
-        status="spawning",
-        fields=fields,
-    )
-
-    frontmatter = _build_queue_frontmatter(
-        topic_id=topic_id,
-        orch_activity_id=orch_activity_id,
-        channel_code=channel_code,
-        orch_cwd=orch_cwd,
-        last_seen_msg_id=0,
-    )
-
-    _upsert_queue_task(
-        queue_dir=queue_dir,
-        topic_id=topic_id,
-        task_n=task_n,
-        entry_text=entry_text,
-        frontmatter=frontmatter,
-    )
 
 
 def _slugify_task_title(title: str, max_len: int = 40) -> str:
@@ -1229,31 +1028,34 @@ def ow_spawn_worker(
     # 構造的に遮断する。既存設定があればマージ。
     _ensure_worker_askuser_deny(cwd)
 
-    queue_dir = _get_queue_dir()
-    task_dir = queue_dir / "tasks"
+    task_dir = _OW_ORCH_DIR / "tasks"
 
-    # queueへspawning write-ahead（孤児worker対策）
-    orch_cwd = os.environ.get("OW_ORCH_CWD", "")
-    if not orch_cwd:
-        orch_cwd = os.getcwd()
+    # relay へ spawning broadcast (孤児 worker 対策の真実源化、SKILL.md §通信プロトコル orch→broadcast)。
+    # projector は本 event を受信して cache.workers[alias].task_status="spawning" を書き、
+    # event:identity / event:state(loading) を送る前に worker が crash しても relay event で復元可能になる。
+    spawning_body = {
+        "v": 1,
+        "kind": "event",
+        "from": "orch",
+        "to": "*",
+        "task": f"T{task_n}",
+        "data": {
+            "type": "state",
+            "state": "spawning",
+            "target_handle": alias,
+            "spawning_at": datetime.now(timezone.utc).isoformat(),
+            "activity_id": activity_id,
+            "cwd": cwd,
+            "model": model,
+            "acceptance": acceptance,
+        },
+    }
+    spawning_result = ow_send(channel=channel, handle="orch", body=spawning_body)
+    if "error" in spawning_result:
         logger.warning(
-            "OW_ORCH_CWD not set, using cwd=%s as orch_cwd. "
-            "Crash recovery requires the same cwd.",
-            orch_cwd,
-        )
-    if topic_id is not None:
-        _write_queue_spawning(
-            queue_dir,
-            str(topic_id),
+            "ow_spawn_worker: failed to broadcast event:state(spawning) for %s: %s",
             alias,
-            task_n,
-            cwd,
-            task_title=task_title,
-            model=model,
-            acceptance=acceptance,
-            orch_activity_id=activity_id,
-            channel_code=channel,
-            orch_cwd=orch_cwd,
+            spawning_result.get("error"),
         )
 
     # task fileを書き出す
@@ -1457,136 +1259,73 @@ def _parse_frontmatter(content: str) -> tuple[dict, str]:
         return {}, rest
 
 
-def _parse_queue_file(queue_file: Path) -> tuple[dict, list[dict]]:
-    """queueファイルをパースして (frontmatter, tasks) のタプルを返す。
-
-    Returns:
-        (frontmatter_dict, tasks_list)
-        - frontmatter_dict: YAMLフロントマターのdict。存在しない場合は {}
-        - tasks_list: タスク一覧のリスト
-
-    後方互換: frontmatterなしのqueueファイルは ({}, tasks) を返す。
-    YAMLパースエラー時は ({}, tasks) にフォールバックし、タスク部分は正常パースする。
-    空ファイル・存在しないファイルは ({}, []) を返す。
-    """
-    if not queue_file.exists():
-        return {}, []
-
-    try:
-        content = queue_file.read_text(encoding="utf-8")
-    except OSError:
-        return {}, []
-
-    if not content.strip():
-        return {}, []
-
-    # frontmatterをパース
-    frontmatter, body = _parse_frontmatter(content)
-
-    tasks = []
-    current_task: dict | None = None
-
-    for line in body.splitlines():
-        line = line.strip()
-        # タスクヘッダー: ## T1 | タイトル | status
-        if line.startswith("## T") and " | " in line:
-            if current_task is not None:
-                tasks.append(current_task)
-            parts = line.lstrip("# ").split(" | ")
-            task_id = parts[0].strip() if len(parts) > 0 else "?"
-            task_status = parts[-1].strip() if len(parts) > 2 else "unknown"
-            task_title = " | ".join(parts[1:-1]).strip() if len(parts) > 2 else (parts[1].strip() if len(parts) > 1 else "")
-            current_task = {
-                "task": task_id,
-                "title": task_title,
-                "status": task_status,
-                "worker": None,
-                "term_ref": None,
-                "spawning_at": None,
-            }
-        elif current_task is not None and line.startswith("- worker:"):
-            # "- worker: w-a / term_ref: iterm2:xxx / session: <uuid>"
-            worker_info = line[len("- worker:"):].strip()
-            for part in worker_info.split("/"):
-                part = part.strip()
-                if part.startswith("term_ref:"):
-                    current_task["term_ref"] = part[len("term_ref:"):].strip()
-                elif not part.startswith("session:"):
-                    current_task["worker"] = part
-        elif current_task is not None and line.startswith("- spawning:"):
-            current_task["spawning_at"] = line[len("- spawning:"):].strip()
-
-    if current_task is not None:
-        tasks.append(current_task)
-
-    return frontmatter, tasks
-
-
 def ow_status(channel: str, topic_id: str | None = None) -> dict:
-    """queueサマリ＋GetPresence（worker死活）の合成ビュー。
+    """cache (派生1) + presence の統合ビュー (D#2751、SKILL.md §状態取得経路)。
+
+    cache は relay events を真実源として projector が再構築する派生キャッシュ。
+    本関数は load_state → cache miss なら projector で再構築する fallback 経路で
+    取得し、cache.workers 各 handle のサマリを ``tasks`` リストに整形する。
 
     Args:
         channel: channelコード（presence取得に使用）
-        topic_id: queueファイル特定に使用（OW_QUEUE_DIRと組み合わせ）
+        topic_id: cache 対象 topic。文字列も整数も受け付ける。None の場合は
+            cache ディレクトリを走査して channel に紐づく topic_id を逆引きする。
 
     Returns:
         {
-            "tasks": [...],
+            "tasks": [{task, alias, state, task_status, latest_msg_id, latest_at, online}, ...],
             "presence": [...],
-            "frontmatter": {...},  # queueのfrontmatter情報（channel_code, last_seen_msg_id等）
             "summary": {"total_tasks": int, "status_counts": dict, "online_workers": [...]}
         }
     """
-    # relayサーバー確認 → 未起動なら自動起動
     if not ensure_relay_server():
         return {"error": {"code": "RELAY_UNAVAILABLE", "message": "relay server is not available"}}
 
-    # channel指定があればensure_channel（idempotent）
     if channel:
         if not ensure_channel(channel):
             return {"error": {"code": "CHANNEL_UNAVAILABLE", "message": f"channel {channel} could not be created"}}
 
-    # presenceを取得
     presence_result = _relay_request("GET", f"/presence?{urllib.parse.urlencode({'channel': channel})}")
     if "error" in presence_result:
         handles = []
     else:
         handles = presence_result.get("handles", [])
 
-    # queueファイルをパース
-    tasks: list[dict] = []
-    frontmatter: dict = {}
-    queue_dir = _get_queue_dir()
+    # cache から worker サマリを構築する。
+    topic_id_int: int | None = None
     if topic_id is not None:
-        queue_file = queue_dir / f"queue-t{topic_id}.md"
-        frontmatter, tasks = _parse_queue_file(queue_file)
-    else:
-        # topic_id未指定の場合は存在する全queueファイルを読む
-        if queue_dir.exists():
-            for queue_file in sorted(queue_dir.glob("queue-t*.md")):
-                fm, file_tasks = _parse_queue_file(queue_file)
-                tasks.extend(file_tasks)
-                if fm and not frontmatter:
-                    # 1 orch = 1 topic のため topic_id 指定が原則。
-                    # topic_id未指定の全件走査は診断用途のみ想定し、最初のfrontmatterを代表とする。
-                    frontmatter = fm
+        try:
+            topic_id_int = int(str(topic_id))
+        except (TypeError, ValueError):
+            topic_id_int = None
+    if topic_id_int is None:
+        topic_id_int = find_topic_id_by_channel(channel)
 
-    # presenceとqueueの統合
-    for task in tasks:
-        worker = task.get("worker")
-        if worker:
-            task["online"] = worker in handles
+    tasks: list[dict] = []
+    if topic_id_int is not None:
+        state = get_or_rebuild_state(topic_id_int, channel)
+        if state is not None:
+            for handle, worker in (state.get("workers") or {}).items():
+                tasks.append(
+                    {
+                        "task": worker.get("task", ""),
+                        "alias": handle,
+                        "state": worker.get("state", ""),
+                        "task_status": worker.get("task_status", ""),
+                        "latest_msg_id": worker.get("latest_msg_id", 0),
+                        "latest_at": worker.get("latest_at", ""),
+                        "online": handle in handles,
+                    }
+                )
 
-    # サマリ
     status_counts: dict[str, int] = {}
     for task in tasks:
-        s = task.get("status", "unknown")
+        s = task.get("task_status") or task.get("state") or "unknown"
         status_counts[s] = status_counts.get(s, 0) + 1
 
     return {
         "tasks": tasks,
         "presence": handles,
-        "frontmatter": frontmatter,
         "summary": {
             "total_tasks": len(tasks),
             "status_counts": status_counts,
@@ -1600,15 +1339,14 @@ def ow_status(channel: str, topic_id: str | None = None) -> dict:
 # ----------------------------
 #
 # 設計方針:
-#   - 突合ロジックの中核は relay messages history + presence のみで成立し、queue層の物理形に依存しない
-#     (queue層が活動activity/log/material化される可能性に対する将来耐性)
-#   - queue層との接点は `_apply_queue_status_update` 1点に集約。queue層が変わったらこの関数だけ書き換えれば済む
+#   - 突合ロジックは relay messages history + cache OwState の 2 者突合で成立する
+#     (旧 queue × relay × presence の 3 者突合から、cache 集約により縮減)
 #   - reconstruct_state_from_relay と detect_crash_inconsistencies は純粋関数として実装し、テスト容易性を確保
 #
 # 突合分類:
-#   - ghost_active: queue=spawning/assigned/working かつ presence offline → relay最新stateから状態再構築
-#   - stalled_done: queue=done/closed/cancelled/failed かつ presence online → ping送信で素性照会
-#   - orphans:    queue外でpresence onlineのworker handle → ping送信で再リンク照会
+#   - ghost_active: cache.workers 活動中 (working/blocked/escalated/draining) かつ presence offline → relay 最新state から再構築候補
+#   - stalled_done: cache.workers 終端 (done/cancelled/failed) かつ presence online → ping 送信で素性照会
+#   - orphans:    cache.workers 外で presence online の worker handle → ping 送信で再リンク照会
 
 
 def _get_presence(channel: str) -> list[str]:
@@ -1628,34 +1366,53 @@ def _get_presence(channel: str) -> list[str]:
     return list(handles) if isinstance(handles, list) else []
 
 
-# queueにおける「workerが活動中」と分類する状態。spawningは含めない（C1対応）:
-# spawning 状態は ow_spawn_worker 進行中（terminal adapter 起動待ち、manual起動の人間操作待ち、
-# worker起動直後でreadyメッセージ未送信、等）の状態が混在しており、ow_recover がここに介入すると
-# 進行中のworker起動とレース条件を起こす。spawning は detect_crash_inconsistencies で別カテゴリ
-# pending_spawn として扱う。
-_ACTIVE_QUEUE_STATUSES: frozenset[str] = frozenset({"assigned", "ready", "working"})
-_TERMINAL_QUEUE_STATUSES: frozenset[str] = frozenset({"done", "closed", "cancelled", "failed"})
+# cache.workers[alias].state における「workerが活動中」と分類する workload state。
+# spawning は workload state ではなく task_status のため別カテゴリで扱う。
+_ACTIVE_WORKLOAD_STATES: frozenset[str] = frozenset({"ready", "working", "blocked", "escalated", "draining"})
+
+# cache.workers[alias].task_status における「workerが活動中」と分類する状態。
+_ACTIVE_TASK_STATUSES: frozenset[str] = frozenset({"working", "awaiting_verify", "escalated"})
+
+# cache.workers[alias].task_status における「明示的に終端済み」を示す値。
+_TERMINAL_TASK_STATUSES: frozenset[str] = frozenset({"done", "cancelled", "failed"})
 
 # identity bundle の cause として「明示的に終了済み」を示す値。
 # alive判定（INV-9）や alive_only フィルタで同じ集合を参照するため一元化する。
 _TERMINATED_IDENTITY_CAUSES: frozenset[str] = frozenset({"closed", "cancelled", "dead"})
 
-# relay最新state宣言 → queue statusへの再構築マップ。
-# presence offline & queue active のghost_activeケースで使う。
-# 終端state (done/closed/failed/cancelled) はそのまま反映、非終端 (ready/working等) は
+# projector: worker からの event:state(state) を受信したときに cache.workers[alias].task_status へ
+# マップする規則。設計書 v3 §5 と SKILL.md §projector マッピング表 に対応。
+_STATE_TO_TASK_STATUS: dict[str, str] = {
+    "loading": "spawning",
+    "ready": "spawning",
+    "working": "working",
+    "blocked": "working",
+    "escalated": "escalated",
+    "draining": "working",
+    "done": "awaiting_verify",
+}
+
+# event:state(terminated) の cause → cache.workers[alias].task_status マップ。
+_CAUSE_TO_TASK_STATUS: dict[str, str] = {
+    "closed": "done",
+    "cancelled": "cancelled",
+    "dead": "failed",
+}
+
+# relay 最新 state 宣言 → cache task_status の suggested 反映マップ。
+# presence offline & cache active の ghost_active ケースで使う。
+# 終端 state (done/closed/cancelled/failed) はそのまま反映、非終端 (ready/working等) は
 # presence offline = 異常終了とみなして "stalled" に倒す（手動介入を促す）。
-# escalated/fallback は本来presence onlineのまま継続する状態だが、offlineで残る場合は
-# 人間介入のセッションごと落ちた異常とみなして stalled に倒す（workerスキルの状態モデル参照）。
-_RELAY_STATE_TO_QUEUE_STATUS: dict[str, str] = {
+_RELAY_STATE_TO_TASK_STATUS: dict[str, str] = {
     "done": "done",
-    "closed": "closed",
+    "closed": "done",
     "failed": "failed",
     "cancelled": "cancelled",
     "ready": "stalled",
     "working": "stalled",
     "blocked": "stalled",
     "escalated": "stalled",
-    "fallback": "stalled",
+    "draining": "stalled",
     "dead": "failed",
 }
 
@@ -1718,24 +1475,28 @@ def _validate_spawn_preconditions(
             f"alias {alias} is already present (online) in channel {channel}"
         )
 
-    # 5. alias重複 (queue active task)
+    # 5. alias 重複 (cache 由来 active task)。cache.workers[alias] が active な
+    # task_status で、かつ別 task_n を持つ場合に警告する。
     if topic_id is not None:
-        queue_dir = _get_queue_dir()
-        queue_file = queue_dir / f"queue-t{topic_id}.md"
-        _, tasks = _parse_queue_file(queue_file)
-        for t in tasks:
-            t_status = t.get("status", "")
-            t_worker = t.get("worker")
-            t_task = t.get("task", "")
-            if t_worker != alias or t_status not in _ACTIVE_QUEUE_STATUSES:
-                continue
-            # 同一task_n（"T<n>"）に対する再spawnは再リンクとみなして許可
-            if task_n is not None and t_task == f"T{task_n}":
-                continue
-            warnings.append(
-                f"alias {alias} already has active queue task {t_task} (status={t_status})"
-            )
-            break
+        try:
+            topic_id_int = int(str(topic_id))
+        except (TypeError, ValueError):
+            topic_id_int = None
+        state = load_state(topic_id_int, channel) if topic_id_int is not None else None
+        if state is not None:
+            worker = (state.get("workers") or {}).get(alias)
+            if worker is not None:
+                w_state = worker.get("state", "")
+                w_task = worker.get("task", "")
+                w_task_status = worker.get("task_status", "")
+                # 終端 / spawning は重複判定対象外
+                is_active = w_state in _ACTIVE_WORKLOAD_STATES or w_task_status in _ACTIVE_TASK_STATUSES
+                if is_active:
+                    same_task = task_n is not None and w_task == f"T{task_n}"
+                    if not same_task:
+                        warnings.append(
+                            f"alias {alias} already has active task {w_task} (state={w_state})"
+                        )
 
     # 6. identity alive check (INV-9: 同一 handle で alive 期間が時間的に重複しない)
     identity = ow_get_identity(channel, alias)
@@ -1904,14 +1665,54 @@ def project_state_to_cache(topic_id: int, channel: str) -> OwState | None:
             if not state_val:
                 continue
             task = body.get("task") or ""
+            # orch broadcast event:state(spawning, target_handle=...) は target_handle が
+            # cache.workers のキーになる (worker 自身の identity 送信前から cache に entry を作るため)。
+            if (
+                state_val == "spawning"
+                and handle == "orch"
+                and isinstance(data.get("target_handle"), str)
+                and data.get("target_handle")
+            ):
+                target = data["target_handle"]
+                spawn_entry = workers.get(target)
+                if spawn_entry is None or msg_id >= spawn_entry.get("latest_msg_id", 0):
+                    workers[target] = {
+                        "task": task,
+                        "state": "loading",
+                        "task_status": "spawning",
+                        "latest_msg_id": msg_id,
+                        "latest_at": created_at,
+                        "assigned_at": data.get("spawning_at") or "",
+                        "acceptance": data.get("acceptance") or "",
+                        "model": data.get("model") or "",
+                        "cwd": data.get("cwd") or "",
+                    }
+                continue
+
             entry = workers.get(handle)
             if entry is None or msg_id >= entry.get("latest_msg_id", 0):
-                workers[handle] = {
+                prev = entry or {}
+                worker_entry: dict[str, Any] = {
                     "task": task,
                     "state": state_val,
                     "latest_msg_id": msg_id,
                     "latest_at": created_at,
                 }
+                # spawning 系メタを保持しつつ task_status をマップする
+                for k in ("assigned_at", "acceptance", "model", "cwd"):
+                    if prev.get(k):
+                        worker_entry[k] = prev[k]
+                task_status = _STATE_TO_TASK_STATUS.get(state_val)
+                if state_val == "terminated":
+                    cause = data.get("cause") or ""
+                    task_status = _CAUSE_TO_TASK_STATUS.get(cause, task_status)
+                    if cause:
+                        worker_entry["cause"] = cause
+                if task_status is None:
+                    task_status = prev.get("task_status") or ""
+                if task_status:
+                    worker_entry["task_status"] = task_status
+                workers[handle] = worker_entry
             current_state = state_by_handle.get(handle)
             if current_state is None or msg_id > current_state["msg_id"]:
                 state_by_handle[handle] = {
@@ -2023,58 +1824,46 @@ def _parse_spawning_at(value: str | None) -> datetime | None:
 
 
 def detect_crash_inconsistencies(
-    queue_tasks: list[dict],
+    cache_workers: dict[str, dict],
     reconstructed: dict,
     presence: list[str],
     pending_spawn_stalled_threshold_min: int | None = None,
     now: datetime | None = None,
 ) -> dict:
-    """queue状態 × relay最新state × presence の3つを突合し、不整合を4カテゴリに分類する。
+    """cache.workers × relay 最新 state × presence を突合し、不整合を 4 カテゴリに分類する。
 
-    純粋関数（I/Oなし）。テスト容易性のためqueue/relay/presenceは全て引数で受け取る。
+    純粋関数（I/O なし）。テスト容易性のため cache_workers / relay / presence は全て引数で受け取る。
 
     Args:
-        queue_tasks: `_parse_queue_file` の返り値相当
-            （[{task, title, status, worker, term_ref, spawning_at}, ...]）
-        reconstructed: `reconstruct_state_from_relay` の返り値
-        presence: `_get_presence` の返り値
+        cache_workers: cache.workers dict。``{alias: {task, state, task_status, latest_msg_id,
+            latest_at, assigned_at, ...}, ...}``。``OwState["workers"]`` の中身に対応する。
+        reconstructed: ``reconstruct_state_from_relay`` の返り値
+        presence: ``_get_presence`` の返り値
         pending_spawn_stalled_threshold_min: pending_spawn (has_relay_history=False) を
-            `auto_stalled` 化する経過時間閾値（分）。None または `spawning_at` 不在/不正
-            なら自動更新対象外（従来挙動）。閾値以上経過していれば
-            `suggested_status="auto_stalled"` を入れる。
-        now: 経過時間判定の基準時刻。テスト用にinject可能。Noneなら datetime.now(UTC)。
+            ``auto_stalled`` 化する経過時間閾値（分）。None または ``assigned_at`` 不在/不正
+            なら自動更新対象外。閾値以上経過していれば ``suggested_status="auto_stalled"`` を入れる。
+        now: 経過時間判定の基準時刻。テスト用に inject 可能。None なら ``datetime.now(UTC)``。
 
     Returns:
         {
-            "ghost_active": [    # queue活動中(assigned/ready/working)だがpresence offline
-                {task, alias, queue_status, latest_state, latest_msg_id, latest_at, suggested_status},
+            "ghost_active": [    # cache 活動中だが presence offline
+                {task, alias, task_status, latest_state, latest_msg_id, latest_at, suggested_status},
                 ...
             ],
-            "pending_spawn": [   # queue=spawning。relay履歴の有無で2通りに分かれる
-                {task, alias, queue_status, has_relay_history, latest_state, latest_msg_id, latest_at,
-                 spawning_at, age_min, suggested_status},
-                ...
-            ]
-            # spawning_at は常に str（queue で取れなかった場合は ""）。age_min は float または None。
-            "stalled_done": [    # queue終端だがworkerがpresenceに残存
-                {task, alias, queue_status},
+            "pending_spawn": [   # cache.task_status=spawning。relay履歴の有無で2通り
+                {task, alias, task_status, has_relay_history, latest_state, latest_msg_id, latest_at,
+                 assigned_at, age_min, suggested_status},
                 ...
             ],
-            "orphans": [         # presence onlineだがqueue外
+            "stalled_done": [    # cache 終端だが worker が presence に残存
+                {task, alias, task_status},
+                ...
+            ],
+            "orphans": [         # presence online だが cache.workers 外
                 {alias, relay_tasks: [{task, latest_state, latest_msg_id}, ...]},
                 ...
             ],
         }
-
-    pending_spawn の解釈（C1対応）:
-        - has_relay_history=True: workerが起動してstate宣言を送ったがpresence offline → ghost_active相当の
-            扱いで `suggested_status` を入れる（ow_recoverは自動更新する）
-        - has_relay_history=False:
-            - 閾値未指定 or spawning_at 取れない or 閾値未満: 起動進行中の可能性が高い。
-                ow_recoverは自動更新せず、orchに「pending_spawn 残留」を伝えるだけにする
-                （suggested_status=None）。
-            - 閾値以上経過: suggested_status="auto_stalled"。ow_recoverが queue を自動更新する。
-              （P0-7: T5 自身が実証した「2日間 failed 化されなかった pending_spawn」を解消）
     """
     by_wt = reconstructed.get("by_worker_task", {}) or {}
     presence_set = set(presence or [])
@@ -2083,78 +1872,78 @@ def detect_crash_inconsistencies(
     ghost_active: list[dict] = []
     pending_spawn: list[dict] = []
     stalled_done: list[dict] = []
-    queue_worker_aliases: set[str] = set()
+    cache_aliases: set[str] = set()
 
-    for task in queue_tasks:
-        worker = task.get("worker")
-        status = task.get("status", "") or ""
-        task_id = task.get("task", "") or ""
-        if worker:
-            queue_worker_aliases.add(worker)
+    for alias, worker_state in (cache_workers or {}).items():
+        if not alias:
+            continue
+        task_status = (worker_state.get("task_status") or "") if isinstance(worker_state, dict) else ""
+        state_val = (worker_state.get("state") or "") if isinstance(worker_state, dict) else ""
+        task_id = (worker_state.get("task") or "") if isinstance(worker_state, dict) else ""
+        cache_aliases.add(alias)
 
-        relay_entry = by_wt.get(f"{worker}:{task_id}") if worker else None
+        relay_entry = by_wt.get(f"{alias}:{task_id}") if task_id else None
 
-        if status == "spawning" and worker and worker not in presence_set:
+        if task_status == "spawning" and alias not in presence_set:
             has_history = relay_entry is not None
             latest_state = relay_entry["latest_state"] if relay_entry else None
-            spawning_at_str = task.get("spawning_at") or ""
-            spawning_at_dt = _parse_spawning_at(spawning_at_str)
+            assigned_at_str = (worker_state.get("assigned_at") or "") if isinstance(worker_state, dict) else ""
+            assigned_at_dt = _parse_spawning_at(assigned_at_str)
             age_min: float | None = None
-            if spawning_at_dt is not None:
-                age_min = (now_dt - spawning_at_dt).total_seconds() / 60.0
+            if assigned_at_dt is not None:
+                age_min = (now_dt - assigned_at_dt).total_seconds() / 60.0
 
             if has_history:
-                suggested = _RELAY_STATE_TO_QUEUE_STATUS.get(latest_state, "stalled")
+                suggested = _RELAY_STATE_TO_TASK_STATUS.get(latest_state, "stalled")
             elif (
                 pending_spawn_stalled_threshold_min is not None
                 and age_min is not None
                 and age_min >= pending_spawn_stalled_threshold_min
             ):
-                # P0-7: spawning が閾値以上経過しても relay 履歴が無い
-                # → terminal adapter 起動失敗等で worker が実体化しなかった可能性が高い。
-                # auto_stalled に倒して人間判断の俎上に乗せる。
                 suggested = "auto_stalled"
             else:
-                # 起動進行中の可能性 → ow_recoverは触らない
                 suggested = None
             pending_spawn.append(
                 {
                     "task": task_id,
-                    "alias": worker,
-                    "queue_status": status,
+                    "alias": alias,
+                    "task_status": task_status,
                     "has_relay_history": has_history,
                     "latest_state": latest_state,
                     "latest_msg_id": relay_entry["latest_msg_id"] if relay_entry else 0,
                     "latest_at": relay_entry["latest_at"] if relay_entry else "",
-                    "spawning_at": spawning_at_str,
+                    "assigned_at": assigned_at_str,
                     "age_min": age_min,
                     "suggested_status": suggested,
                 }
             )
-        elif status in _ACTIVE_QUEUE_STATUSES and worker and worker not in presence_set:
+        elif (
+            (state_val in _ACTIVE_WORKLOAD_STATES or task_status in _ACTIVE_TASK_STATUSES)
+            and alias not in presence_set
+        ):
             latest_state = relay_entry["latest_state"] if relay_entry else None
             suggested = (
-                _RELAY_STATE_TO_QUEUE_STATUS.get(latest_state, "stalled")
+                _RELAY_STATE_TO_TASK_STATUS.get(latest_state, "stalled")
                 if latest_state
                 else "stalled"
             )
             ghost_active.append(
                 {
                     "task": task_id,
-                    "alias": worker,
-                    "queue_status": status,
+                    "alias": alias,
+                    "task_status": task_status,
                     "latest_state": latest_state,
                     "latest_msg_id": relay_entry["latest_msg_id"] if relay_entry else 0,
                     "latest_at": relay_entry["latest_at"] if relay_entry else "",
                     "suggested_status": suggested,
                 }
             )
-        elif status in _TERMINAL_QUEUE_STATUSES and worker and worker in presence_set:
+        elif task_status in _TERMINAL_TASK_STATUSES and alias in presence_set:
             stalled_done.append(
                 {
                     "task": task_id,
-                    "alias": worker,
-                    "queue_status": status,
+                    "alias": alias,
+                    "task_status": task_status,
                 }
             )
 
@@ -2162,7 +1951,7 @@ def detect_crash_inconsistencies(
     for handle in sorted(presence_set):
         if not handle.startswith("w-"):
             continue
-        if handle in queue_worker_aliases:
+        if handle in cache_aliases:
             continue
         relay_tasks = [
             {
@@ -2242,86 +2031,6 @@ def _check_nonce_echo(channel: str, nonce: str, after_msg_id: int = 0) -> bool:
     return False
 
 
-def _apply_queue_status_update(
-    queue_dir: Path,
-    topic_id: str,
-    task: str,
-    new_status: str,
-    note: str = "",
-) -> None:
-    """queueファイルの指定タスクのstatusヘッダーのみを更新する（他フィールドは保持）。
-
-    queue層との接点はこの関数1箇所に集約してある。queue層がcc-memory entityに
-    置換される場合も、ここを書き換えれば突合ロジック (`detect_crash_inconsistencies`) は無改修で済む。
-
-    挙動:
-        - `## T<n> | <title> | <status>` ヘッダーのstatus部分のみ置換
-        - noteが指定されていれば既存の `- note:` 行を置換、なければブロック末尾に追加
-        - flockでwrite競合を防ぐ（`_upsert_queue_task` と同じ規律）
-    """
-    queue_file = queue_dir / f"queue-t{topic_id}.md"
-    if not queue_file.exists():
-        raise FileNotFoundError(f"queue file not found: {queue_file}")
-
-    if not task.startswith("T"):
-        raise ValueError(f"unexpected task id format: {task}")
-
-    header_prefix = f"## {task} | "
-
-    fd = os.open(str(queue_file), os.O_RDWR, 0o644)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        size = os.fstat(fd).st_size
-        content = os.read(fd, size).decode("utf-8") if size else ""
-        lines = content.splitlines(keepends=True)
-        start = next(
-            (i for i, line in enumerate(lines) if line.startswith(header_prefix)),
-            None,
-        )
-        if start is None:
-            raise KeyError(f"task {task} header not found in {queue_file}")
-
-        # ヘッダー行のstatus（最終 ' | ' フィールド）を置換
-        original = lines[start].rstrip("\n")
-        parts = original.split(" | ")
-        if len(parts) >= 3:
-            parts[-1] = new_status
-            new_header = " | ".join(parts) + "\n"
-        else:
-            # フォーマット崩れフォールバック: 強制再構築
-            new_header = f"## {task} | (recovered) | {new_status}\n"
-        lines[start] = new_header
-
-        # 当該タスクブロックの範囲: start+1 〜 次の '## ' まで
-        end = len(lines)
-        for j in range(start + 1, len(lines)):
-            if lines[j].startswith("## "):
-                end = j
-                break
-
-        if note:
-            note_idx = next(
-                (i for i in range(start + 1, end) if lines[i].startswith("- note:")),
-                None,
-            )
-            new_note_line = f"- note: {_sanitize_queue_field(note)}\n"
-            if note_idx is not None:
-                lines[note_idx] = new_note_line
-            else:
-                insert_at = end
-                while insert_at > start + 1 and lines[insert_at - 1].strip() == "":
-                    insert_at -= 1
-                lines.insert(insert_at, new_note_line)
-
-        data = "".join(lines).encode("utf-8")
-        os.lseek(fd, 0, os.SEEK_SET)
-        os.ftruncate(fd, 0)
-        os.write(fd, data)
-    finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
-
-
 def ow_recover(
     channel: str,
     topic_id: str,
@@ -2330,58 +2039,38 @@ def ow_recover(
     pending_spawn_stalled_threshold_min: int | None = None,
     now: datetime | None = None,
 ) -> dict:
-    """orch crash後のqueue × relay履歴 × presence整合チェック・自動修正のエントリポイント。
+    """orch crash 後の cache × relay 履歴 2 者突合 + 自動修正のエントリポイント。
 
     手順:
         1. ensure_relay_server / ensure_channel で前提整える
-        2. reconstruct_state_from_relay で全relay履歴から状態再構築
-        3. _get_presence で現在onlineのworker一覧取得
-        4. detect_crash_inconsistencies で4カテゴリ（ghost_active/pending_spawn/stalled_done/orphans）に分類
-        5. pending_pings が渡された場合: nonce echo 確認（前回ping送信後の応答有無）
-        6. dry_run=Falseなら:
-           - ghost_active + pending_spawn(relay履歴あり): queueをrelay最新stateで自動更新
-           - stalled_done / orphans: cmd:ping送信（応答待ちはしない）
-
-    orchはこの戻り値を見て、queueの状態が更新されたことを確認し、ping送信先からの応答を
-    通常の受信ループで処理する。nonce echo確認のユースケース:
-        1回目: ow_recover() → pings_sentにnonceが記録される
-        2回目（待機後）: ow_recover(..., pending_pings=[{alias, task, nonce, sent_after_msg_id}])
-            → nonce_echo_resultsでworkerの生存確認結果を取得
+        2. reconstruct_state_from_relay で全 relay 履歴から状態再構築
+        3. get_or_rebuild_state で cache を取得（cache miss なら projector 再構築）
+        4. _get_presence で現在 online の worker 一覧取得
+        5. detect_crash_inconsistencies で 4 カテゴリ分類
+        6. pending_pings が渡された場合: nonce echo 確認
+        7. dry_run=False なら:
+           - ghost_active + pending_spawn (suggested_status あり): cache を再構築して suggested_status を反映
+           - stalled_done / orphans: command:ping 送信
 
     Args:
         channel: channelコード
-        topic_id: トピックID（queueファイル特定用、文字列も整数も受け付ける）
-        dry_run: Trueなら検出のみ・修正/送信なし
-        pending_pings: 前回のping送信情報。各要素は:
-            {alias: str, task: str, nonce: str, sent_after_msg_id: int}
-            sent_after_msg_idより大きいmsg_idのrelayメッセージでnonce echoを探す。
+        topic_id: トピックID（文字列も整数も受け付ける）
+        dry_run: True なら検出のみ・修正 / 送信なし
+        pending_pings: 前回の ping 送信情報。各要素は ``{alias, task, nonce, sent_after_msg_id}``
         pending_spawn_stalled_threshold_min: pending_spawn (has_relay_history=False) を
-            `auto_stalled` 化する経過時間閾値（分）。None なら従来挙動（自動更新対象外）。
-            P0-7 で導入。orch が「2日経っても failed 化されない pending_spawn」を強制終端
-            するために使う。
-        now: 経過時間判定の基準時刻。テスト用に時刻を注入するため `detect_crash_inconsistencies` に
-            そのまま伝搬する。None なら datetime.now(UTC)。
+            ``auto_stalled`` 化する経過時間閾値（分）
+        now: 経過時間判定の基準時刻。テスト用に inject 可能
 
     Returns:
         {
-            "detected": {
-                ghost_active: [...],
-                pending_spawn: [...],
-                stalled_done: [...],
-                orphans: [...],
-            },
-            "applied": {queue_updates: [...], pings_sent: [...]},
+            "detected": {ghost_active, pending_spawn, stalled_done, orphans},
+            "applied": {cache_updates: [...], pings_sent: [...]},
             "warnings": [str],
             "presence": [str],
             "reconstructed_max_msg_id": int,
             "dry_run": bool,
-            "nonce_echo_results": [
-                {alias: str, task: str, nonce: str, echo_found: bool},
-                ...
-            ],
+            "nonce_echo_results": [...],
         }
-        relay/channel不可時: {"error": {"code": ..., "message": ...}}
-        relay history取得失敗時: detected全カテゴリ空 + warnings に fetch error メッセージ
     """
     warnings: list[str] = []
 
@@ -2397,10 +2086,11 @@ def ow_recover(
             }
         }
 
-    queue_dir = _get_queue_dir()
+    try:
+        topic_id_int = int(str(topic_id))
+    except (TypeError, ValueError):
+        topic_id_int = None
     topic_id_str = str(topic_id)
-    queue_file = queue_dir / f"queue-t{topic_id_str}.md"
-    _, queue_tasks = _parse_queue_file(queue_file)
 
     reconstructed = reconstruct_state_from_relay(channel)
     if "error" in reconstructed:
@@ -2411,7 +2101,7 @@ def ow_recover(
                 "stalled_done": [],
                 "orphans": [],
             },
-            "applied": {"queue_updates": [], "pings_sent": []},
+            "applied": {"cache_updates": [], "pings_sent": []},
             "warnings": [f"relay history fetch error: {reconstructed['error']}"],
             "presence": [],
             "reconstructed_max_msg_id": 0,
@@ -2423,62 +2113,66 @@ def ow_recover(
             "relay history truncated at limit=10000: oldest state declarations may be missing"
         )
 
+    cache_workers: dict[str, dict] = {}
+    if topic_id_int is not None:
+        state = get_or_rebuild_state(topic_id_int, channel)
+        if state is not None:
+            cache_workers = state.get("workers") or {}
+
     presence = _get_presence(channel)
     detected = detect_crash_inconsistencies(
-        queue_tasks,
+        cache_workers,
         reconstructed,
         presence,
         pending_spawn_stalled_threshold_min=pending_spawn_stalled_threshold_min,
         now=now,
     )
 
-    applied: dict = {"queue_updates": [], "pings_sent": []}
+    applied: dict = {"cache_updates": [], "pings_sent": []}
 
     if not dry_run:
-        # ghost_active + pending_spawn(suggested_status が決まっているもの) を自動更新対象とする。
-        # suggested_status が None の pending_spawn (起動進行中の可能性) は触らない。
-        # suggested_status は以下のいずれかで決まる:
-        #   - has_relay_history=True: relay最新stateに基づく
-        #   - has_relay_history=False & pending_spawn_stalled_threshold_min 経過: "auto_stalled"
         auto_update_targets = list(detected["ghost_active"]) + [
             p for p in detected["pending_spawn"] if p.get("suggested_status")
         ]
+        # cache.workers[alias].task_status を suggested_status に書き換えるため
+        # cache JSON を直接 mutate して save_state する。projector wire-in が
+        # 完成すれば本ブロックは不要になる (D#2750)。
+        cache_state: OwState | None = None
+        if auto_update_targets and topic_id_int is not None:
+            cache_state = get_or_rebuild_state(topic_id_int, channel)
         for ghost in auto_update_targets:
-            if ghost["suggested_status"] == "auto_stalled":
-                # auto_stalled は detect_crash_inconsistencies で
-                # age_min is not None and age_min >= threshold が成立したときのみ付与される。
-                # したがってここで age_min は float であることが保証される。
-                age_min = ghost["age_min"]
-                age_str = f"{age_min:.1f}min"
-                note = (
-                    f"crash-recovery: pending_spawn が relay履歴なしのまま "
-                    f"{age_str} 経過 (threshold={pending_spawn_stalled_threshold_min}min) "
-                    f"→ auto_stalled"
-                )
-            else:
-                note = (
-                    f"crash-recovery: relay最新state={ghost['latest_state']} "
-                    f"(msg_id={ghost['latest_msg_id']})で再構築"
-                )
-            try:
-                _apply_queue_status_update(
-                    queue_dir=queue_dir,
-                    topic_id=topic_id_str,
-                    task=ghost["task"],
-                    new_status=ghost["suggested_status"],
-                    note=note,
-                )
-                applied["queue_updates"].append(
-                    {
-                        "task": ghost["task"],
-                        "alias": ghost["alias"],
-                        "from": ghost["queue_status"],
-                        "to": ghost["suggested_status"],
-                    }
-                )
-            except (FileNotFoundError, KeyError, ValueError, OSError) as e:
+            alias = ghost.get("alias")
+            new_status = ghost.get("suggested_status")
+            if not alias or not new_status:
+                continue
+            if cache_state is None:
                 warnings.append(
-                    f"failed to update queue for {ghost['task']} ({ghost['alias']}): {e}"
+                    f"failed to update cache for {ghost.get('task')} ({alias}): cache unavailable"
+                )
+                continue
+            workers = cache_state.get("workers") or {}
+            entry = workers.get(alias)
+            if entry is None:
+                # pending_spawn で cache 側に entry が無いケース。projector が後追いで作る前提。
+                continue
+            previous = entry.get("task_status")
+            entry["task_status"] = new_status
+            workers[alias] = entry
+            cache_state["workers"] = workers
+            applied["cache_updates"].append(
+                {
+                    "task": ghost.get("task", ""),
+                    "alias": alias,
+                    "from": previous,
+                    "to": new_status,
+                }
+            )
+        if cache_state is not None and applied["cache_updates"] and topic_id_int is not None:
+            try:
+                save_state(topic_id_int, cache_state)
+            except OSError as e:
+                warnings.append(
+                    f"failed to persist cache updates for topic {topic_id_str}: {e}"
                 )
 
         for orphan in detected["orphans"]:
