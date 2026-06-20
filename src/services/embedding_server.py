@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from logging.handlers import RotatingFileHandler
 from typing import Literal, Optional
 
 HOST = "localhost"
@@ -19,6 +20,10 @@ _TTL_SEC = int(os.environ.get("CC_MEMORY_EMBEDDING_TTL_SEC", "3600"))
 _DRAIN_IDLE_SEC = int(os.environ.get("CC_MEMORY_EMBEDDING_DRAIN_IDLE_SEC", "30"))
 _DRAIN_DEADLINE_SEC = int(os.environ.get("CC_MEMORY_EMBEDDING_DRAIN_DEADLINE_SEC", "1800"))
 _WATCHDOG_INTERVAL_SEC = 10  # watchdog のチェック粒度
+
+# ログローテーション設定（env var で上書き可能）
+_LOG_MAX_BYTES = int(os.environ.get("CC_MEMORY_EMBEDDING_LOG_MAX_BYTES", str(5 * 1024 * 1024)))
+_LOG_BACKUP_COUNT = int(os.environ.get("CC_MEMORY_EMBEDDING_LOG_BACKUP_COUNT", "3"))
 
 MODEL_NAME = "cl-nagoya/ruri-v3-70m"
 DOC_PREFIX = "検索文書: "
@@ -50,7 +55,15 @@ def _setup_logging():
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, "embedding-server.log")
 
-    handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+    # ローテーション付きで追記する。複数プロセスが同一ファイルに書く構造ではないため
+    # （embedding_server は単一インスタンス想定）、RotatingFileHandler でロック競合は発生しない。
+    handler = RotatingFileHandler(
+        log_path,
+        mode="a",
+        maxBytes=_LOG_MAX_BYTES,
+        backupCount=_LOG_BACKUP_COUNT,
+        encoding="utf-8",
+    )
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
