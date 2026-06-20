@@ -1,4 +1,4 @@
-"""ow_service の projector 経路 (A#911 SP-2 PR-α) のユニットテスト。
+"""ow_service の projector 経路のユニットテスト。
 
 project_state_to_cache / get_or_rebuild_state の挙動を、
 ow_history を monkeypatch したフィクスチャ relay 履歴に対して検証する。

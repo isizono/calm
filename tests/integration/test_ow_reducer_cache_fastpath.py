@@ -1,12 +1,12 @@
-"""ow reducer cache fastpath (A#911 SP-2 PR-β/γ) の integration test。
+"""ow reducer cache fastpath の integration test。
 
 実 relay にイベントを投入 → project_state_to_cache で cache 生成 → reducer 4関数
 (ow_get_identity / ow_list_identities / ow_get_presence / ow_get_workload_state)
 と内部ヘルパー (_query_latest_event / _latest_events_by_type) を呼び、cache 経由で
 正しく事象が観測されること、および relay 直 pull は走らないことを確認する。
 
-PR-γ で reducer は relay full pull を撤去したため、本テストでは cache 未生成時の
-振る舞い (None / 空) も観測する。
+reducer は relay full pull を撤去したため、cache 未生成時の振る舞い (None / 空)
+も観測する。
 """
 from __future__ import annotations
 
@@ -96,7 +96,7 @@ class TestReducerCacheFastpathEndToEnd:
         assert aliases == ["w-x", "w-y", "w-z"]
 
     def test_reducer_without_cache_returns_empty(self, live_relay):
-        """cache を生成しないまま reducer を呼ぶ → relay は叩かず空/None を返す (PR-γ)。"""
+        """cache を生成しないまま reducer を呼ぶ → relay は叩かず空/None を返す。"""
         channel = "ReducerFastE"
         ow_service.ensure_channel(channel)
 

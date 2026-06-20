@@ -113,7 +113,7 @@ def _normalize_and_validate_model(model: str) -> tuple[str, str | None]:
 THINKING_EFFORTS: frozenset[str] = frozenset({"high", "xhigh", "max", "ultrathink"})
 
 # orch 側コード/skill/ドキュメントから sentinel 綴り `ultratink` を渡せるよう、最大段の
-# alias を1つ受け付ける (D#2600)。orch セッションが MCP 呼び出し時に正規綴り
+# alias を1つ受け付ける。orch セッションが MCP 呼び出し時に正規綴り
 # `ultrathink` を入力すると orch 自身の extended thinking モードが暴発するため、
 # orch は sentinel `ultratink` を使い、ow_service 側で正規綴りに畳む。
 _EFFORT_ALIASES: dict[str, str] = {"ultratink": "ultrathink"}
@@ -563,13 +563,13 @@ def ensure_channel(channel_code: str) -> bool:
 
 
 def _maybe_inject_term_ref(body: dict) -> dict:
-    """identity event の term_ref をファイルキャッシュから補完する（B案 D#2720）。
+    """identity event の term_ref をファイルキャッシュから補完する。
 
     SessionStart hook (hooks/term_ref_cache.py) が worker shell の env を
     `~/.cc-memory/ow/term_refs/<session_id>.json` に書き出している前提。
     body が identity event で term_ref 未設定なら session_id でキャッシュを引いて補完する。
 
-    lookup 失敗時は body をそのまま返す（D#2720: 補完失敗時は素通し）。
+    lookup 失敗時は body をそのまま返す（補完失敗時は素通し）。
     元の body / data dict は破壊せず、補完時のみ shallow copy で新 dict を返す。
     """
     if not isinstance(body, dict) or body.get("kind") != "event":
@@ -1328,7 +1328,7 @@ def ow_spawn_worker(
 
     # アダプタ呼び出し — stdoutから安定IDを取得する
     # tmux アダプタは positional 引数 `[target_pane] [is_thinking]` を受ける:
-    #   - is_thinking=1 のとき split-pane ではなく `tmux new-window` で別タブ起動 (D#2601)
+    #   - is_thinking=1 のとき split-pane ではなく `tmux new-window` で別タブ起動
     #   - target_pane が無い思考worker のときは空文字列をプレースホルダにして is_thinking のみ届ける
     adapter_args = ["bash", str(adapter_path), "spawn", cwd, worker_cmd]
     if terminal == "tmux":
@@ -2547,12 +2547,6 @@ def ow_recover(
 #   - tmux:    "%N"                  例: "%5", "%123"     (tmux pane_id 規約)
 #   - iterm2:  RFC4122 UUID 表記      例: "12345678-1234-...-123456789ABC"
 #   - manual:  "manual:host:pid"      例: "manual:mac-mini:12345"
-#
-# 段階① のスコープ:
-#   - reducer が term_ref を破棄しないことを担保するテストを追加（test_ow_reducer）
-#   - is_valid_term_ref() / classify_term_ref() を診断ヘルパーとして提供
-#
-# 段階②③（relay-side ow_recover での term_ref キー再リンク等）は D#2608 によりスコープ外。
 
 _TERM_REF_PATTERNS: dict[str, re.Pattern[str]] = {
     "tmux": re.compile(r"^%\d+$"),
@@ -2621,16 +2615,13 @@ def _parse_ow_event(msg: dict) -> dict | None:
 
 
 # ----------------------------
-# reducer cache fastpath (A#911 SP-2 PR-β/γ, M#386 §6)
+# reducer cache fastpath
 # ----------------------------
 #
-# `_query_latest_event` / `_latest_events_by_type` は、PR-α で導入した projector
-# (`project_state_to_cache`) が書き出した OwState を読むだけのキャッシュ参照に
-# 切り替えた (PR-γ で relay full pull コードは削除)。
-#
-# キャッシュは orch tick で `project_state_to_cache` 経由 (D#2750 push型projector)
-# に更新される前提。reducer 自身は relay を直接叩かない (D#2749 orch concern原則:
-# reducer は読むだけ、書き手は orch)。
+# `_query_latest_event` / `_latest_events_by_type` は projector
+# (`project_state_to_cache`) が書き出した OwState を読むだけのキャッシュ参照。
+# キャッシュは orch tick で `project_state_to_cache` 経由に更新される前提で、
+# reducer 自身は relay を直接叩かない (reducer は読むだけ、書き手は orch)。
 #
 # 対象 data_type: "identity" / "state" / "heartbeat" の3種。
 # それ以外の data_type で呼ばれた場合は ``None`` / ``{}`` を返す
@@ -2656,8 +2647,7 @@ def _load_state_by_channel(channel: str) -> OwState | None:
     cache JSON を二重に読んでいる (検索フェーズと検証フェーズ)。reducer の
     ホットパスで効くため、将来的に find_topic_id_by_channel が (topic_id, data)
     のタプルを返すよう拡張するか、_load_state_by_channel 内で iterdir を直接
-    走査して 1 read で済ませるリファクタが望ましい。本 PR では PR スコープを
-    広げないため対応せず、観測 (cache hit 数 / file read 回数) を取ってから判断する。
+    走査して 1 read で済ませるリファクタが望ましい。
     """
     topic_id = find_topic_id_by_channel(channel)
     if topic_id is None:
@@ -2876,7 +2866,7 @@ def ow_get_identity(channel: str, handle: str) -> dict | None:
 
 
 def ow_list_identities(channel: str, alive_only: bool = False) -> list[dict]:
-    """channel 上の全 handle の identity リスト（A#911 SP-2 PR-β/γ: cache fastpath 化）。
+    """channel 上の全 handle の identity リスト。
 
     alive_only=True の場合:
     - identity bundle に terminated_at / cause(closed/cancelled/dead) を持つ entry を除外

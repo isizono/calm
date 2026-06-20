@@ -1,18 +1,18 @@
-"""ow runtime state ファイルキャッシュ (C-2案, A#911 SP-1, D#2654-2657).
+"""ow runtime state ファイルキャッシュ。
 
 真実源は relay events (`ow_history`)。本モジュールが書き出す JSON ファイルは
 relay から再生成可能な派生キャッシュであり、破損・schema mismatch・channel
 mismatch を検出した場合は即削除して None を返す (cache は再生成可能なので
-backup は取らない、裁定 L3)。
+backup は取らない)。
 
 配置:
     $OW_STATE_DIR (未設定時は ~/.cc-memory/ow/cache/)
 
 ファイル名:
-    topic-<id>.json  (1 topic = 1 file、最小粒度開始 / D#2655)
+    topic-<id>.json  (1 topic = 1 file)
 
 JSON 構造:
-    schema_version をJSON先頭フィールドに置き (裁定 L4)、cat 観測で即座に
+    schema_version をJSON先頭フィールドに置き、cat 観測で即座に
     schema 世代が分かる形にする。schema 変更時は CURRENT_SCHEMA_VERSION を
     bump → mismatch fallback で自動再構築する forward-only 戦略。
 """
@@ -35,10 +35,6 @@ CURRENT_SCHEMA_VERSION = 2
 class OwState(TypedDict):
     """topic 単位の ow ランタイム状態キャッシュ。
 
-    schema_version=2 で reducer fastpath 用フィールド ``identity_events`` / ``states`` /
-    ``heartbeats`` を追加した (A#911 SP-2 PR-β)。1 → 2 の自動再構築は load_state の
-    version mismatch fallback でハンドリングされる (forward-only)。
-
     EventEntry: ``{"msg_id": int, "data": dict, "created_at": str}``
 
     必須フィールド (projector が常に書き出すもの):
@@ -46,11 +42,11 @@ class OwState(TypedDict):
         channel: relay channel コード
         last_msg_id: projector が走査した最大 msg_id
         workers: handle → workload 軽量サマリ {task, state, latest_msg_id, latest_at}
-        identities: handle → identity event の raw data dict (PR-α 形式、後方互換)
+        identities: handle → identity event の raw data dict
         presence: projection 時点の online handle (静的スナップショット)
         updated_at: projection を実行した UTC ISO8601
 
-    optional フィールド (PR-β 追加、reducer fastpath 用、既存 cache との後方互換のため NotRequired):
+    optional フィールド (reducer fastpath 用、既存 cache との後方互換のため NotRequired):
         identity_events: handle → identity EventEntry
         states: handle → 最新 state EventEntry
         heartbeats: handle → 最新 heartbeat EventEntry
@@ -72,7 +68,7 @@ def _get_state_dir() -> Path:
     """cache ディレクトリのパスを返す。
 
     OW_STATE_DIR 環境変数が設定されていればそのパスを使用する。
-    未設定の場合は ~/.cc-memory/ow/cache/ をデフォルトとして返す (裁定 L5)。
+    未設定の場合は ~/.cc-memory/ow/cache/ をデフォルトとして返す。
     """
     env = os.environ.get("OW_STATE_DIR", "")
     if env:
@@ -93,7 +89,7 @@ def find_topic_id_by_channel(channel: str) -> int | None:
     reducer 4関数 (``ow_get_identity`` 等) は ``channel`` のみを受け取り
     ``topic_id`` を知らないため、cache fastpath で load_state を呼ぶには
     channel → topic_id の解決が必要。本ヘルパーは cache 物理ファイルの
-    ``channel`` フィールドで線形検索する (A#911 SP-2 PR-β)。
+    ``channel`` フィールドで線形検索する。
 
     破損ファイル / version mismatch は **削除しない** (load_state 経路でない
     走査時の副作用を避ける)。schema_version も検証しない (channel フィールド
@@ -174,7 +170,7 @@ def save_state(topic_id: int, state: OwState) -> None:
     """state を JSON として書き出す。
 
     schema_version は呼び出し側の値より CURRENT_SCHEMA_VERSION を優先し、
-    JSON 先頭フィールドに配置する (裁定 L4)。updated_at が未設定の場合は
+    JSON 先頭フィールドに配置する。updated_at が未設定の場合は
     現在時刻 (UTC ISO8601) を埋める。
 
     書き込みは temp file + rename によるアトミック書き換え。

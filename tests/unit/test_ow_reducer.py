@@ -1,12 +1,9 @@
 """ow_service reducer 4関数のユニットテスト。
 
-A#911 SP-2 PR-β/γ で reducer 系 4関数 (ow_get_identity / ow_list_identities /
-ow_get_presence / ow_get_workload_state) と内部ヘルパー (_query_latest_event /
-_latest_events_by_type) は relay full pull を撤去し、OwState キャッシュを読む
-だけになった。本テストは cache fastpath の振る舞いを検証する (M#386 §6)。
-
-ow_history を mock していた旧 PR-α テストは、tmp 配下に直接 OwState を save_state
-する形式に書き換えた。tmp 隔離は ``_isolated_state_dir`` で OW_STATE_DIR を切り替える。
+reducer 系 4関数 (ow_get_identity / ow_list_identities / ow_get_presence /
+ow_get_workload_state) と内部ヘルパー (_query_latest_event / _latest_events_by_type)
+は OwState キャッシュを読むだけで relay を直接叩かない。本テストは cache fastpath
+の振る舞いを検証する。tmp 隔離は ``_isolated_state_dir`` で OW_STATE_DIR を切り替える。
 """
 import logging
 from datetime import datetime, timedelta, timezone
@@ -25,9 +22,7 @@ from src.services.ow.cache import CURRENT_SCHEMA_VERSION, save_state
 
 @pytest.fixture(autouse=True)
 def _isolated_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """OW_STATE_DIR を tmp に閉じて cache 副作用を分離する (PR-β/γ で reducer は
-    relay を叩かず cache のみ参照するため)。
-    """
+    """OW_STATE_DIR を tmp に閉じて cache 副作用を分離する。"""
     monkeypatch.setenv("OW_STATE_DIR", str(tmp_path))
     return tmp_path
 
@@ -100,7 +95,7 @@ def _save_cache(
 
 
 class TestParseOwEvent:
-    """_parse_ow_event のユニットテスト (PR-β/γ で振る舞い変化なし)。"""
+    """_parse_ow_event のユニットテスト。"""
 
     def test_valid_event_returns_parsed(self):
         """v=1, kind="event" → 正常にparsed dictを返す。"""
@@ -155,8 +150,8 @@ class TestParseOwEvent:
 class TestQueryLatestEvent:
     """_query_latest_event の cache fastpath ユニットテスト。
 
-    PR-γ で relay full pull は撤去された。本関数は OwState の states / heartbeats /
-    identity_events を読むだけ。cache miss = None。
+    本関数は OwState の states / heartbeats / identity_events を読むだけで、
+    relay を直接叩かない。cache miss = None。
     """
 
     def test_returns_event_for_cached_state(self):
@@ -248,9 +243,9 @@ class TestQueryLatestEvent:
 
 
 class TestQueryEventsSince:
-    """_query_events_since のユニットテスト (PR-β/γ では関数自体は変更なし)。
+    """_query_events_since のユニットテスト。
 
-    本関数は cache fastpath の対象外で、引き続き relay full pull を行う。
+    本関数は cache fastpath の対象外で、relay full pull を行う。
     """
 
     def test_returns_all_matching(self, monkeypatch):
@@ -286,7 +281,7 @@ class TestQueryEventsSince:
 
 
 class TestInferCrashCause:
-    """_infer_crash_cause のユニットテスト (PR-β/γ で振る舞い変化なし)。"""
+    """_infer_crash_cause のユニットテスト。"""
 
     def _old_hb(self, seconds_ago=200):
         """現在時刻からseconds_ago秒前のISO文字列を返す。"""

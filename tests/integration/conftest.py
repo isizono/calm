@@ -1,4 +1,4 @@
-"""Integration test 共通ヘルパー / fixture (A#911 SP-2 PR-α/β/γ)。
+"""Integration test 共通ヘルパー / fixture。
 
 `test_ow_projector.py` と `test_ow_reducer_cache_fastpath.py` で重複していた
 `_free_port` / `_wait_until_healthy` / `_send_*` / `live_relay` fixture を統合。

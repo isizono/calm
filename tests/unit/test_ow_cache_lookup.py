@@ -1,5 +1,4 @@
-"""find_topic_id_by_channel と _load_state_by_channel のユニットテスト
-(A#911 SP-2 PR-β/γ で追加した channel → topic_id 解決ヘルパー)。
+"""find_topic_id_by_channel と _load_state_by_channel のユニットテスト。
 
 reducer は channel しか持たないが cache は topic_id でキーされているため、
 cache ディレクトリ走査で channel → topic_id を逆引きする。本テストはそのスキャン

@@ -1,4 +1,4 @@
-"""ow runtime state cache layer (C-2案 / A#911, D#2654-2657).
+"""ow runtime state cache layer.
 
 真実源は relay events。本パッケージが管理する JSON ファイルキャッシュは
 relay から再生成可能な派生データに過ぎず、破損・schema mismatch時には

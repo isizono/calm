@@ -1,4 +1,4 @@
-"""ow projector 経路 (A#911 SP-2 PR-α) の integration test。
+"""ow projector 経路の integration test。
 
 実 relay サーバープロセスを起動して identity / state / heartbeat envelope を
 ow_send で投入し、project_state_to_cache → cache JSON → load_state の round-trip と
