@@ -8,6 +8,8 @@ import os
 import re
 from pathlib import Path
 
+from src.services import guard_service
+
 # --- cc-memory MCPツール判定用マーカー ---
 # ローカルプラグイン: mcp__plugin_claude-code-memory_cc-memory__*
 # リモートMCP:       mcp__claude_ai_cc-memory__*
@@ -33,11 +35,12 @@ _ORCH_MANAGED_TAG = "orch-managed"
 def _is_worker_session() -> bool:
     """ow workerとして起動されたセッションかを判定する。
 
-    ow_spawn_workerは worker起動時に環境変数 OW_ROLE=worker を設定する。
     workerはtask fileとcheck_inで文脈を得るため、個人フロー用の
     アクティビティ一覧注入・check-inブロック・nudgeは適用しない。
+    判定実体は guard_service.is_worker_session() に委譲する
+    (worker ガードと同じ env を見るための一元化)。
     """
-    return os.environ.get("OW_ROLE") == "worker"
+    return guard_service.is_worker_session()
 
 
 # --- 記録ツール ---

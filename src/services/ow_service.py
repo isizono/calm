@@ -28,6 +28,12 @@ from pathlib import Path
 import yaml
 
 from src.relay import PROTOCOL_VERSION
+from src.services.ow.cache import (
+    CURRENT_SCHEMA_VERSION,
+    OwState,
+    load_state,
+    save_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -555,6 +561,44 @@ def ensure_channel(channel_code: str) -> bool:
 # ----------------------------
 
 
+def _maybe_inject_term_ref(body: dict) -> dict:
+    """identity event の term_ref をファイルキャッシュから補完する（B案 D#2720）。
+
+    SessionStart hook (hooks/term_ref_cache.py) が worker shell の env を
+    `~/.cc-memory/ow/term_refs/<session_id>.json` に書き出している前提。
+    body が identity event で term_ref 未設定なら session_id でキャッシュを引いて補完する。
+
+    lookup 失敗時は body をそのまま返す（D#2720: 補完失敗時は素通し）。
+    元の body / data dict は破壊せず、補完時のみ shallow copy で新 dict を返す。
+    """
+    if not isinstance(body, dict) or body.get("kind") != "event":
+        return body
+    data = body.get("data")
+    if not isinstance(data, dict):
+        return body
+    if data.get("type") != "identity":
+        return body
+    if data.get("term_ref"):
+        return body
+    session_id = data.get("session_id")
+    if not session_id:
+        return body
+    cache_path = Path.home() / ".cc-memory" / "ow" / "term_refs" / f"{session_id}.json"
+    try:
+        with cache_path.open(encoding="utf-8") as f:
+            cached = json.load(f)
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return body
+    term_ref = cached.get("term_ref") if isinstance(cached, dict) else None
+    if not term_ref:
+        return body
+    new_data = dict(data)
+    new_data["term_ref"] = term_ref
+    new_body = dict(body)
+    new_body["data"] = new_data
+    return new_body
+
+
 def ow_send(
     channel: str,
     handle: str,
@@ -579,6 +623,7 @@ def ow_send(
         成功時: {"msg_id": int}
         失敗時: {"error": {...}}
     """
+    body = _maybe_inject_term_ref(body)
     payload: dict = {
         "channel": channel,
         "handle": handle,
@@ -1262,11 +1307,22 @@ def ow_spawn_worker(
 
     if adapter_path is None:
         # manualフォールバック: 起動コマンドを返す
+        # adapter_path不在のとき、payloadだけ見ると後段の追跡で原因が分からなくなる。
+        # adapter_errorに「どのterminalで・どこを探したか」を明示する。
+        expected_adapter = (
+            Path(__file__).resolve().parent.parent.parent
+            / "scripts" / "ow" / "adapters" / f"{terminal}.sh"
+        )
+        adapter_error = (
+            f"adapter not found at {expected_adapter} (OW_TERMINAL={terminal!r})"
+        )
+        logger.error("ow_spawn_worker manual fallback: %s", adapter_error)
         return {
             "command": worker_cmd,
             "manual": True,
             "task_file": str(task_file),
             "alias": alias,
+            "adapter_error": adapter_error,
         }
 
     # アダプタ呼び出し — stdoutから安定IDを取得する
@@ -1293,7 +1349,7 @@ def ow_spawn_worker(
             term_ref = str(uuid.uuid4())
             logger.warning("adapter returned empty term_ref, using fallback UUID: %s", term_ref)
     except subprocess.TimeoutExpired:
-        logger.warning("adapter spawn timed out after 30s")
+        logger.error("ow_spawn_worker manual fallback: adapter spawn timed out after 30s")
         return {
             "command": worker_cmd,
             "manual": True,
@@ -1302,7 +1358,7 @@ def ow_spawn_worker(
             "adapter_error": "adapter spawn timed out",
         }
     except subprocess.CalledProcessError as e:
-        logger.warning("adapter spawn failed: %s", e.stderr)
+        logger.error("ow_spawn_worker manual fallback: adapter spawn failed: %s", e.stderr)
         return {
             "command": worker_cmd,
             "manual": True,
@@ -1332,9 +1388,18 @@ def ow_close_worker(term_ref: str) -> dict:
     adapter_path = _get_adapter_path(terminal) if terminal != "manual" else None
 
     if adapter_path is None:
+        expected_adapter = (
+            Path(__file__).resolve().parent.parent.parent
+            / "scripts" / "ow" / "adapters" / f"{terminal}.sh"
+        )
+        adapter_error = (
+            f"adapter not found at {expected_adapter} (OW_TERMINAL={terminal!r})"
+        )
+        logger.error("ow_close_worker manual fallback: %s", adapter_error)
         return {
             "manual": True,
             "message": f"手動でterm_ref={term_ref}のセッションをクローズしてください",
+            "adapter_error": adapter_error,
         }
 
     try:
@@ -1347,13 +1412,13 @@ def ow_close_worker(term_ref: str) -> dict:
         )
         return {"closed": True, "term_ref": term_ref}
     except subprocess.TimeoutExpired:
-        logger.warning("adapter close timed out after 15s")
+        logger.error("ow_close_worker adapter close timed out after 15s")
         return {
             "error": {"code": "ADAPTER_CLOSE_TIMEOUT", "message": "adapter close timed out"},
             "term_ref": term_ref,
         }
     except subprocess.CalledProcessError as e:
-        logger.warning("adapter close failed: %s", e.stderr)
+        logger.error("ow_close_worker adapter close failed: %s", e.stderr)
         return {
             "error": {"code": "ADAPTER_CLOSE_FAILED", "message": e.stderr},
             "term_ref": term_ref,
@@ -1767,6 +1832,176 @@ def reconstruct_state_from_relay(channel: str, limit: int = 10000) -> dict:
             entry["latest_at"] = msg.get("created_at", "")
 
     return {"by_worker_task": by_worker_task, "max_msg_id": max_msg_id, "truncated": truncated}
+
+
+# ----------------------------
+# projector: relay → OwState → save_state (A#911 SP-2 PR-α)
+# ----------------------------
+#
+# C-2案 (D#2654-2657) の projector 経路。relay events を真実源とし
+# (D#2751)、cache JSON を派生キャッシュとして保つ。PR-α 時点では既存
+# queue write は触らず並走 (shadow write) し、consumer (ow_status 等) の
+# 挙動は不変。reducer 系の cache fastpath 化は PR-β、queue write 撤去は
+# PR-γ で行う (M#386 §6 / T94 v0)。
+#
+# orch concern 原則 (D#2749): orch は project_state_to_cache を直接呼ばず、
+# ow_status 等の状態取得 API 越しに結果を読む。本関数は ow_service 内部の
+# 隠蔽境界の中に閉じる。
+
+
+def project_state_to_cache(topic_id: int, channel: str) -> OwState | None:
+    """relay full pull → OwState 構築 → save_state を呼ぶ projector 経路。
+
+    1回の ``ow_history(since=0)`` 全件取得から、handle 単位の最新 state /
+    identity / heartbeat を集計して :class:`OwState` を組み立て、
+    :func:`save_state` でファイル先 (cache JSON) に書き出す (D#2750 ファイル先)。
+
+    既存 queue write 経路は触らない (shadow 並走、consumer 不変)。
+
+    Args:
+        topic_id: cache ファイル ``topic-<id>.json`` を決めるための topic 識別子。
+        channel: relay channel コード。OwState.channel に格納する。
+
+    Returns:
+        構築・保存できた :class:`OwState`。以下のいずれかで ``None`` を返す
+        (cache ファイルは触らない):
+
+          - relay HTTP エラー等で full pull に失敗した場合
+          - cache ファイル書き出し (:func:`save_state`) が OSError で失敗した場合
+    """
+    history_limit = 10000
+    history = ow_history(channel, since=0, limit=history_limit)
+    if "error" in history:
+        return None
+
+    messages = history.get("messages", [])
+    # limit に達した場合は古い state declarations が欠落して
+    # cache が不完全になる可能性がある (reconstruct_state_from_relay と同様
+    # の警告)。状態の無音欠損リスクを少なくとも logger.warning で可視化する。
+    if len(messages) >= history_limit:
+        logger.warning(
+            "ow projector: relay history truncated at limit=%d for channel=%r topic=%s; "
+            "oldest state declarations may be missing and cache may be incomplete",
+            history_limit,
+            channel,
+            topic_id,
+        )
+
+    workers: dict[str, dict] = {}
+    identity_by_handle: dict[str, dict] = {}
+    heartbeat_by_handle: dict[str, dict] = {}
+    max_msg_id = 0
+
+    for msg in messages:
+        msg_id = msg.get("msg_id", 0)
+        if isinstance(msg_id, int) and msg_id > max_msg_id:
+            max_msg_id = msg_id
+        body = msg.get("body", {})
+        if not isinstance(body, dict):
+            continue
+        if body.get("kind") != "event":
+            continue
+        data = body.get("data") or {}
+        t = data.get("type")
+        handle = body.get("from") or ""
+        if not handle:
+            continue
+
+        if t == "state":
+            state_val = data.get("state") or ""
+            if not state_val:
+                continue
+            task = body.get("task") or ""
+            entry = workers.get(handle)
+            if entry is None or msg_id >= entry.get("latest_msg_id", 0):
+                workers[handle] = {
+                    "task": task,
+                    "state": state_val,
+                    "latest_msg_id": msg_id,
+                    "latest_at": msg.get("created_at", ""),
+                }
+        elif t == "identity":
+            current = identity_by_handle.get(handle)
+            if current is None or msg_id > current["msg_id"]:
+                identity_by_handle[handle] = {
+                    "msg_id": msg_id,
+                    "data": dict(data),
+                    "created_at": msg.get("created_at", ""),
+                }
+        elif t == "heartbeat":
+            current = heartbeat_by_handle.get(handle)
+            if current is None or msg_id > current["msg_id"]:
+                heartbeat_by_handle[handle] = {
+                    "msg_id": msg_id,
+                    "phase": data.get("phase"),
+                    "created_at": msg.get("created_at", ""),
+                }
+
+    # 内部集計用の latest_msg_id を cache JSON に含めないよう取り除く
+    # (state event 新旧判定の実装詳細であり OwState.workers の公開スキーマには含めない)
+    for entry in workers.values():
+        entry.pop("latest_msg_id", None)
+
+    identities = {h: e["data"] for h, e in identity_by_handle.items()}
+
+    # presence: heartbeat 時刻ベースの online 判定 (ow_get_presence と同ロジック)
+    now = datetime.now(timezone.utc)
+    presence: list[str] = []
+    for handle, hb in heartbeat_by_handle.items():
+        phase = hb.get("phase") or ""
+        timeout = _HEARTBEAT_TIMEOUT_SECS.get(phase, _HEARTBEAT_TIMEOUT_DEFAULT)
+        created_at = hb.get("created_at") or ""
+        try:
+            hb_time = datetime.fromisoformat(created_at)
+            if hb_time.tzinfo is None:
+                hb_time = hb_time.replace(tzinfo=timezone.utc)
+            elapsed = (now - hb_time).total_seconds()
+        except (ValueError, TypeError):
+            continue
+        if elapsed < timeout:
+            presence.append(handle)
+
+    state: OwState = {
+        "schema_version": CURRENT_SCHEMA_VERSION,
+        "channel": channel,
+        "last_msg_id": max_msg_id,
+        "workers": workers,
+        "identities": identities,
+        "presence": sorted(presence),
+        "updated_at": now.isoformat(),
+    }
+    try:
+        save_state(topic_id, state)
+    except OSError as e:
+        # ファイルシステムエラー (ディスク満杯、権限不足、I/O エラー等) を
+        # 呼び出し側 (ow_status 等) に伝播させない。docstring の契約通り None を返す。
+        logger.warning(
+            "ow projector: save_state failed for topic=%s channel=%r: %s",
+            topic_id,
+            channel,
+            e,
+        )
+        return None
+    return state
+
+
+def get_or_rebuild_state(topic_id: int, channel: str) -> OwState | None:
+    """cache から load_state、None なら projector で再構築する自動 fallback ヘルパー。
+
+    :func:`src.services.ow.cache.load_state` が以下のいずれかで ``None`` を返した
+    場合に :func:`project_state_to_cache` を呼んで cache を再生成する:
+
+      1. cache ファイル不存在 (cache miss)
+      2. JSON corruption — ``load_state`` が削除して ``None``
+      3. ``schema_version`` mismatch — 同上
+      4. ``channel`` mismatch — 同上 (引数 ``channel`` を ``load_state`` に渡す)
+
+    relay full pull に失敗した場合は ``None`` (cache は書き換えない)。
+    """
+    state = load_state(topic_id, channel=channel)
+    if state is not None:
+        return state
+    return project_state_to_cache(topic_id, channel)
 
 
 def _parse_spawning_at(value: str | None) -> datetime | None:
@@ -2297,6 +2532,56 @@ def ow_recover(
 
 
 # ----------------------------
+# identity bundle ヘルパー: term_ref（端末・セッション安定 ID）
+# ----------------------------
+#
+# term_ref は worker セッションが住む物理単位（tmux pane / iTerm2 session 等）の安定 ID。
+# SessionStart hook（hooks/term_ref_cache.py）が env キャッシュとして配置し、
+# _maybe_inject_term_ref() が ow_send 時に event:identity.data.term_ref として自動補完する。
+# reducer（ow_get_identity / ow_list_identities）は dict(data) で透過的に保持するため、
+# reducer 側に追加ロジックは不要。本ヘルパーは「観測値の形式分類」と「妥当性判定」を
+# 提供する純関数で、診断・ow_recover 用途に利用する。
+#
+# 認める形式:
+#   - tmux:    "%N"                  例: "%5", "%123"     (tmux pane_id 規約)
+#   - iterm2:  RFC4122 UUID 表記      例: "12345678-1234-...-123456789ABC"
+#   - manual:  "manual:host:pid"      例: "manual:mac-mini:12345"
+#
+# 段階① のスコープ:
+#   - reducer が term_ref を破棄しないことを担保するテストを追加（test_ow_reducer）
+#   - is_valid_term_ref() / classify_term_ref() を診断ヘルパーとして提供
+#
+# 段階②③（relay-side ow_recover での term_ref キー再リンク等）は D#2608 によりスコープ外。
+
+_TERM_REF_PATTERNS: dict[str, re.Pattern[str]] = {
+    "tmux": re.compile(r"^%\d+$"),
+    "iterm2": re.compile(
+        r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
+    ),
+    "manual": re.compile(r"^manual:[^:\s]+:\d+$"),
+}
+
+
+def classify_term_ref(value: object) -> str | None:
+    """term_ref 値の形式を分類して種別名（"tmux"/"iterm2"/"manual"）を返す。
+
+    値が文字列でない、空文字、未知形式のいずれかなら None を返す。
+    形式チェックは _TERM_REF_PATTERNS の定義順（tmux→iterm2→manual）で先勝ち。
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    for name, pattern in _TERM_REF_PATTERNS.items():
+        if pattern.match(value):
+            return name
+    return None
+
+
+def is_valid_term_ref(value: object) -> bool:
+    """term_ref 値が認められた形式のいずれかに合致するかを判定する。"""
+    return classify_term_ref(value) is not None
+
+
+# ----------------------------
 # reducer: v3 event sourcing
 # ----------------------------
 
@@ -2481,6 +2766,10 @@ def ow_get_identity(channel: str, handle: str) -> dict | None:
                escalated/draining）かつ最後の event:heartbeat 受信時刻から閾値超過 →
                メモリ上で inferred_cause を付与（DB 不変）。
 
+    term_ref 透過保持: event:identity.data に term_ref が含まれていれば dict(data) で
+                      そのまま戻り値に乗る（reducer 側の加工なし）。形式判定が必要なら
+                      is_valid_term_ref() / classify_term_ref() を別途呼び出す。
+
     Returns:
         dict | None: identity bundle ＋ {msg_id, identity_at, inferred_cause?}
     """
@@ -2515,6 +2804,9 @@ def ow_list_identities(channel: str, alive_only: bool = False) -> list[dict]:
     - 加えて、ow_get_identity と同様の crash 推論（state が non-terminal + heartbeat 途絶）
       で inferred_cause が付与される entry も除外する
     handle フィールドが欠落した event は集約キーが None になるためスキップする。
+
+    term_ref 透過保持: ow_get_identity と同様、entry = dict(data) により term_ref も
+                      そのまま保持される。
     """
     history = ow_history(channel, since=0, limit=10000)
     if "error" in history:

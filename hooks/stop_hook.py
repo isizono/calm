@@ -120,7 +120,7 @@ def main() -> None:
         if in_skill_span:
             state.reset_block_count()
             _output("approve", "Skill Span中のためチェックをスキップします。")
-            _safe_post_approve(state, all_events, transcript_path)
+            _safe_post_approve(state, all_events, transcript_path, session_id=session_id)
             return
 
         # 6. check-in判定
@@ -156,6 +156,7 @@ def main() -> None:
         _safe_post_approve(
             state, all_events, transcript_path, current_turn,
             run_nudges=not suppress_personal_flow,
+            session_id=session_id,
         )
 
     except Exception as e:
@@ -217,13 +218,14 @@ def _safe_post_approve(
     current_turn: int = 0,
     *,
     run_nudges: bool = False,
+    session_id: str | None = None,
 ) -> None:
     """approve出力後の状態更新。例外はstderrログのみ（double-output防止）。
 
     各処理は独立したtryブロックで囲み、一方の失敗が他方を阻害しないようにする。
     """
     try:
-        _update_state_on_approve(state, events, transcript_path)
+        _update_state_on_approve(state, events, transcript_path, session_id=session_id)
     except Exception as e:
         print(
             f"stop_hook.py post-approve error (state): {e}\n{traceback.format_exc()}",
@@ -240,13 +242,15 @@ def _safe_post_approve(
 
 
 def _update_state_on_approve(
-    state: HookState, events: list[dict], transcript_path: str
+    state: HookState, events: list[dict], transcript_path: str,
+    *,
+    session_id: str | None = None,
 ) -> None:
     """approve時の状態更新（heartbeat）"""
     # heartbeat更新
     activity_id = state.get_checked_in_activity()
     if activity_id is not None:
-        update_heartbeat(activity_id)
+        update_heartbeat(activity_id, session_id)
 
 
 def _handle_nudges(state: HookState, events: list[dict], current_turn: int) -> None:

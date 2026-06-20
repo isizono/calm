@@ -1,6 +1,8 @@
 """MCPサーバーのメインエントリーポイント"""
 import logging
+import os
 import random
+from pathlib import Path
 from fastmcp import FastMCP, Context
 from fastmcp.server.dependencies import get_context
 from typing import Literal, Optional, Union
@@ -18,6 +20,7 @@ from src.services import (
     timeline_service,
     harness_service,
     ow_service,
+    guard_service,
 )
 from src.services.checkin_service import check_in as _check_in
 from src.services.tag_service import search_tags as _search_tags, update_tag as _update_tag, collect_tag_notes_for_injection
@@ -182,6 +185,7 @@ def add_topic(
     related: 関連エンティティ（optional）。[{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...] 形式。複数エンティティを配列で同時紐付け可能。例: [{"type": "topic", "ids": [1, 2]}, {"type": "decision", "ids": [10]}]。作成と同時にリレーションを張る
 
     レスポンスに類似トピック(similar_topics)が含まれる場合がある。重複トピックの防止やリレーション追加の参考にすること。"""
+    guard_service.check_worker_guard("add_topic")
     result = topic_service.add_topic(title, description, tags, related=related)
     if "error" not in result:
         _maybe_inject_tag_notes(result, tags)
@@ -231,6 +235,7 @@ def add_decisions(items: list[dict], ctx: Context) -> dict:
         created各要素には related_decisions（同topic内の類似decision上位3件 [{id, title, distance}]）が付く。
         既存decisionとの矛盾・重複に気づくための導線。embeddingサーバー未起動時は空配列。
     """
+    guard_service.check_worker_guard("add_decisions")
     result = decision_service.add_decisions(items)
     if "error" not in result:
         # tag_notes: 全アイテムのタグをUNIONして1回注入
@@ -290,6 +295,8 @@ def get_logs(
     include_retracted: bool = False,
 ) -> dict:
     """
+    Choose: topic/activity に紐づく log 一覧が欲しいとき。決定事項一覧なら get_decisions、log/decision/material の混合時系列なら get_timeline、起点からの関連グラフ走査なら get_map、activity 着手時の文脈集約なら check_in（status を in_progress に自動更新する副作用あり、着手時のみ）。
+
     指定エンティティの議論ログを取得する。
 
     Args:
@@ -320,6 +327,8 @@ def get_decisions(
     include_retracted: bool = False,
 ) -> dict:
     """
+    Choose: topic/activity に紐づく decision 一覧が欲しいとき。議論経緯の log なら get_logs、log/decision/material の混合時系列なら get_timeline、起点からの関連グラフ走査なら get_map、activity 着手時の文脈集約なら check_in（status を in_progress に自動更新する副作用あり、着手時のみ）。
+
     指定エンティティに関連する決定事項を取得する。
 
     Args:
@@ -400,6 +409,8 @@ def get_by_ids(
     items: list[dict],
 ) -> dict:
     """
+    Choose: search 結果の type+id ペアを本文付きで一括取得したいとき（複数種別 OK）。material 単独なら get_material、topic/activity 起点の log/decision 集約なら get_logs / get_decisions、関連グラフ走査なら get_map。
+
     search結果の詳細情報を取得する。
 
     searchツールで得られたtype + idペアを指定して、
@@ -643,7 +654,7 @@ def add_material(
     資材を追加する。独立エンティティとしてタグ付きで保存される。
 
     資材はセッション中の成果物・ドキュメントをDB保存する仕組み。
-    search(entity_type="material")で検索でき、全文はget_materialで取得する2段階リード設計。
+    search(entity_type="material")で概要を検索し、get_by_idsまたはget_materialで全文を取得する。
     決定事項と違って「双方の合意」が不要。成果物が出た時点でユーザーに確認せず呼ぶ。
 
     典型的な使い方:
@@ -710,9 +721,12 @@ def get_material(
     material_id: int,
 ) -> dict:
     """
+    Choose: material_id 既知で資材の全文だけ取得したいとき。複数種別を一括なら get_by_ids、起点からの関連グラフ走査なら get_map、log/decision/material の混合時系列なら get_timeline。
+
     資材の全文を取得する。
 
-    get_by_idsで取得したmaterial概要の詳細を取得する際に使う（2段階リードの後半）。
+    通常はcheck_in/get_by_idsの応答にmaterialのcontent/sourceが同梱されるため呼ぶ必要はない
+    （searchはsnippet止まり）。material_idだけが手元にあり概要も含めて取得したい単発ケースで使う。
 
     Args:
         material_id: 資材のID
@@ -728,6 +742,8 @@ def check_in(
     activity_id: int,
 ) -> dict:
     """
+    Choose: アクティビティに着手するときに関連情報を一括取得したいとき（status を in_progress に自動更新）。関連グラフだけ俯瞰したいなら get_map、log/decision/material の時系列なら get_timeline、log だけなら get_logs。
+
     アクティビティにcheck-inする。関連情報を集約取得しsummaryを返す。
 
     既存アクティビティに関連する作業を始めるときに呼ぶ。
@@ -821,6 +837,8 @@ def get_map(
     max_depth: int = 2,
 ) -> dict:
     """
+    Choose: 起点エンティティから relation を辿って到達可能な topic/activity/material のカタログが欲しいとき。log/decision/material の時系列なら get_timeline、特定 activity の文脈集約なら check_in（status を in_progress に自動更新する副作用あり、着手時のみ）、log/decision の本文一覧なら get_logs / get_decisions。
+
     リレーショングラフを走査し、到達可能エンティティのカタログを返す。
 
     再帰的にリレーションを辿り、指定深度範囲のエンティティをカタログ形式で返す。
@@ -842,7 +860,14 @@ def get_map(
 
 @mcp.tool()
 def add_habit(content: str) -> dict:
-    """エージェントの振る舞いを登録する。check-in時に自動注入され、以降の行動に反映される。"覚えといて"と言われた行動ルールはここに登録する"""
+    """エージェントの振る舞いを登録する。check-in時に自動注入され、以降の行動に反映される。"覚えといて"と言われた行動ルールはここに登録する
+
+    worker セッション (OW_ROLE=worker) からの直接呼び出しは
+    WorkerGuardError でブロックされる。ユーザー承認を要する書き込みなので
+    add_decisions / add_topic と同じ guard 対象。OW_ESCALATION=1 の
+    orch_proxy 経路でのみ通過する。
+    """
+    guard_service.check_worker_guard("add_habit")
     return habit_service.add_habit(content)
 
 
@@ -952,7 +977,10 @@ def get_timeline(
     limit: int = 50,
     order: str = "desc",
 ) -> dict:
-    """トピックまたはアクティビティに紐づくdecision・log・materialを時系列で返す。
+    """
+    Choose: topic/activity に紐づく decision/log/material を時系列順に並べたいとき。log だけなら get_logs、decision だけなら get_decisions、関連グラフ走査なら get_map、activity の文脈集約なら check_in（status を in_progress に自動更新する副作用あり、着手時のみ）。
+
+    トピックまたはアクティビティに紐づくdecision・log・materialを時系列で返す。
 
     Args:
         topic_id: トピックID（activity_idと排他）
@@ -1271,9 +1299,25 @@ async def session_unregister(request: Request) -> JSONResponse:
 from src.http_config import HTTP_HOST, HTTP_PORT
 
 
+def _ensure_project_root_cwd() -> Path:
+    """HTTPサーバー起動時にcwdをプロジェクトルートに固定する。
+
+    `uv run python -m src.main --transport http` をworktree内など任意の場所から
+    起動すると、HTTPサーバープロセスはその場所をcwdとして固定する。当該cwdが
+    後から削除・移動されると、ow_service内のsubprocess呼び出しや相対パス操作が
+    存在しないパスを参照し続けるリスクがある（worker spawn失敗・診断困難）。
+    cwdをこの関数の `__file__` 由来のプロジェクトルートへ強制し、構造的に防ぐ。
+
+    Returns:
+        固定後のproject_rootパス（Path）。
+    """
+    project_root = Path(__file__).resolve().parent.parent
+    os.chdir(project_root)
+    return project_root
+
+
 if __name__ == "__main__":
     import argparse
-    import os
     import signal
 
     parser = argparse.ArgumentParser(description="cc-memory MCP server")
@@ -1293,6 +1337,11 @@ if __name__ == "__main__":
         import socket
         from src.services.lock_file import acquire, release
         from src.services.session_manager import SessionManager
+
+        # 起動時cwdをプロジェクトルートに固定する。worktree内などからの起動による
+        # cwd差し替えリスクを構造的に潰す（詳細は _ensure_project_root_cwd 参照）。
+        _fixed_root = _ensure_project_root_cwd()
+        logger.info("HTTP server cwd fixed to %s", _fixed_root)
 
         # ポートの空き確認
         try:

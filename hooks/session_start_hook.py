@@ -136,10 +136,12 @@ def _shorten_topic_title(title: str) -> str:
     return title
 
 
-def _build_activities_section(conn) -> str:
+def _build_activities_section(conn, session_id: str | None = None) -> str:
     """アクティビティ一覧を組み立てる。
 
     - heartbeat 中のアクティビティは「## 作業中（別セッション）」セクションで提示（D#2466 据え置き）
+      - ただし last_heartbeat_session_id が自セッション (引数 session_id) と一致するものは
+        「別セッション」ではないので通常側へ回す（P1-7: 3軸モデル「所在」軸の可観測化）
     - それ以外は topic 別グルーピング (D#2464-2466)
       - 各アクティビティは関連 topic_id 最小を primary topic として 1 グループに配置
       - 関連 topic 無しは「その他」セクション
@@ -175,7 +177,14 @@ def _build_activities_section(conn) -> str:
             if a["id"] in seen_ids:
                 continue
             seen_ids.add(a["id"])
-            if a.get("is_heartbeat_active"):
+            # 自セッションの heartbeat は「別セッション」扱いしない (P1-7)。
+            # session_id が None（hook stdin に未同梱）の場合は照合不能なため、
+            # 従来通り heartbeat_active なら別セッションとして表示する。
+            is_own_session = (
+                session_id is not None
+                and a.get("last_heartbeat_session_id") == session_id
+            )
+            if a.get("is_heartbeat_active") and not is_own_session:
                 heartbeat_activities.append(a)
             else:
                 normal_activities.append(a)
@@ -298,7 +307,7 @@ def _build_activities_section(conn) -> str:
     return "\n".join(parts) + "\n"
 
 
-def _build_habits_section(conn) -> str:
+def _build_habits_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
     """振る舞い一覧を組み立てる。"""
     contents = get_active_habit_contents_with_conn(conn)
 
@@ -312,14 +321,14 @@ def _build_habits_section(conn) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _build_sync_policy_section(conn) -> str:  # conn: buildersループの統一シグネチャ
+def _build_sync_policy_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
     """sync_policyが設定されていれば注入する。未設定時はコンテキスト消費ゼロ。"""
     if not config.SYNC_POLICY:
         return ""
     return f"# sync_policy\n{config.SYNC_POLICY}\n"
 
 
-def _build_snapshot_section(conn) -> str:
+def _build_snapshot_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
     """スナップショット取得＋ヘルスチェック。異常検知時のみ警告を返す。
 
     connは引数として受け取るが、snapshot.pyはdb_pathベースで動作するため
@@ -382,8 +391,11 @@ _CONTEXT_FLOW_GUIDE = """\
 """
 
 
-def _build_session_context() -> str:
+def _build_session_context(session_id: str | None = None) -> str:
     """サービス層経由でセッション開始時のコンテキストを組み立てる。
+
+    session_id は session_start_hook の stdin payload に含まれる Claude Code 提供の
+    識別子。アクティビティ一覧の「自セッション heartbeat」照合に使う (P1-7)。
 
     各セクションは独立してtry/exceptで保護し、
     一部のセクションが失敗しても残りは返す。
@@ -399,7 +411,7 @@ def _build_session_context() -> str:
         ]
         for builder in builders:
             try:
-                result = builder(conn)
+                result = builder(conn, session_id)
                 if result:
                     sections.append(result)
             except Exception:
@@ -418,9 +430,21 @@ def _build_session_context() -> str:
 
 def main() -> None:
     try:
-        sys.stdin.read()  # stdinを消費（session_id等が渡されるが今は不使用）
+        raw = sys.stdin.read()
+        session_id: str | None = None
+        if raw:
+            try:
+                payload = json.loads(raw)
+                if isinstance(payload, dict):
+                    sid = payload.get("session_id")
+                    if isinstance(sid, str) and sid:
+                        session_id = sid
+            except json.JSONDecodeError:
+                # session_id 取得失敗時は従来挙動（self 照合なし）にフォールバック
+                # 初期値 None のまま継続するため再代入不要
+                pass
 
-        context = _build_session_context()
+        context = _build_session_context(session_id)
 
         output = {
             "hookSpecificOutput": {

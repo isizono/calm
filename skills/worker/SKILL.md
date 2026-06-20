@@ -102,7 +102,7 @@ ow_sendで1回だけ送信:
 }
 ```
 
-identity から **除外する属性**: `task_n`（activity_id から逆引き可能）、`user`（relay 非参加者）。設計詳細は設計書 v3 §6.3.1 参照。
+identity から **除外する属性**: `task_n`（activity_id から逆引き可能）、`user`（relay 非参加者）。`term_ref` は SessionStart hook が env (`TMUX_PANE` / `ITERM_SESSION_ID`) から `~/.cc-memory/ow/term_refs/<session_id>.json` にキャッシュし、`ow_send` が identity event 送信時に session_id ベースで自動補完する（手動で payload に乗せる必要なし）。設計詳細は設計書 v3 §6.3.1 参照。
 
 ### 5. event:state(loading) を送信
 
@@ -286,7 +286,7 @@ heartbeatループは draining フェーズで 30秒間隔を維持する（work
 
 ### Step 3: event:identity 再 append（terminated情報付き）
 
-terminated_atと cause を付与してidentityを再送する:
+terminated_atと cause を付与してidentityを再送する（`term_ref` は `ow_send` が再度自動補完するため payload に乗せ直す必要なし）:
 
 ```json
 {
