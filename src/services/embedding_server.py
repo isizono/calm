@@ -27,6 +27,16 @@ QUERY_PREFIX = "検索クエリ: "
 logger = logging.getLogger("embedding_server")
 
 # グローバル状態
+#
+# Thread safety: 以下のグローバルは ThreadingHTTPServer のリクエストスレッド（_last_access_time
+# を書く）と watchdog スレッド（_state / _drain_started_at を書き、_last_access_time を読む）から
+# 並行アクセスされる。意図的にロックを取っていない:
+#   - Python の GIL により単一の float / 参照代入はアトミックである
+#   - 書き手は各変数ごとに 1 スレッドに集約されている（_last_access_time はリクエストハンドラのみ、
+#     _state / _drain_started_at は watchdog のみが書く）
+#   - 読み取りで多少古い値を見ても shutdown 判断が 1 tick (= _WATCHDOG_INTERVAL_SEC) 遅れるだけで
+#     セマンティクスは壊れない
+# このコメントは「ロック忘れ」と「意図的なロックレス」を区別するためのもの。
 _model = None
 _started_at: float = time.time()
 _last_access_time: float = time.time()
@@ -130,16 +140,6 @@ class EmbeddingHandler(BaseHTTPRequestHandler):
             self._send_json(500, {"error": "Internal server error"})
 
 
-def _shutdown_server(server: ThreadingHTTPServer) -> None:
-    """ThreadingHTTPServer を graceful に止める（別スレッドから呼ぶ前提）。
-
-    serve_forever ループから抜けるには別スレッドから shutdown() を呼ぶ必要があるため、
-    watchdog スレッドからの呼び出しを想定する。server_close() は main() の finally で
-    呼ばれる。
-    """
-    server.shutdown()
-
-
 def _watchdog(server: ThreadingHTTPServer):
     """TTL + drain window + force deadline の 3 段階で graceful shutdown を行う watchdog。
 
@@ -147,6 +147,9 @@ def _watchdog(server: ThreadingHTTPServer):
     - active → (uptime >= _TTL_SEC) → draining
     - draining → (idle >= _DRAIN_IDLE_SEC) → shutdown（graceful）
     - draining → (drain_age >= _DRAIN_DEADLINE_SEC) → shutdown（force deadline）
+
+    serve_forever ループから抜けるには別スレッドから server.shutdown() を呼ぶ必要があり、
+    本関数は daemon thread として起動される前提。server_close() は main() の finally で呼ばれる。
     """
     global _state, _drain_started_at
     while True:
@@ -161,18 +164,24 @@ def _watchdog(server: ThreadingHTTPServer):
                     f"entering draining mode (uptime {uptime:.1f}s exceeded TTL {_TTL_SEC}s)"
                 )
         elif _state == "draining":
+            # active → draining の遷移時に必ず _drain_started_at をセットしているため、
+            # ここに到達した時点では None ではない。防衛的 fallback ではバグを silent に飲み込む
+            # 危険があるので assert で fail-fast する。
+            assert _drain_started_at is not None, (
+                "_drain_started_at must be set before entering draining state"
+            )
             idle = now - _last_access_time
-            drain_age = now - (_drain_started_at or now)
+            drain_age = now - _drain_started_at
             if idle >= _DRAIN_IDLE_SEC:
                 logger.info(f"graceful shutdown (idle {idle:.1f}s during drain)")
-                _shutdown_server(server)
+                server.shutdown()
                 return
             if drain_age >= _DRAIN_DEADLINE_SEC:
                 logger.info(
                     f"force shutdown (drain deadline {drain_age:.1f}s exceeded "
                     f"{_DRAIN_DEADLINE_SEC}s)"
                 )
-                _shutdown_server(server)
+                server.shutdown()
                 return
 
 
