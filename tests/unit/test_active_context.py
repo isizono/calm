@@ -428,13 +428,14 @@ def test_build_activities_section_multiple_domains_flat(temp_db):
 
 
 def test_build_activities_section_activity_id_in_bracket(temp_db):
-    """アクティビティIDが[id]形式で表示される"""
+    """アクティビティIDが「title (#NNN)」形式で表示される（T#465 Phase 1）"""
     activity = add_activity(title="Activity 1", description="Desc", tags=["domain:myapp"], check_in=False)
     activity_id = activity["activity_id"]
 
     result = _build_active_context_wrapper()
 
-    assert f"[{activity_id}]" in result
+    # 旧 [N] 形式は廃止、α化形式「title (#N)」を使う
+    assert f"Activity 1 (#{activity_id})" in result
 
 
 def test_build_activities_section_raises_on_invalid_db(temp_db):
@@ -567,7 +568,8 @@ def test_build_activities_section_deduplicates_multi_domain(temp_db):
 
     result = _build_active_context_wrapper()
 
-    assert result.count(f"[{aid}]") == 1
+    # α化形式「title (#N)」が1回だけ表示される
+    assert result.count(f"(#{aid})") == 1
 
 
 def test_build_activities_section_format(temp_db):

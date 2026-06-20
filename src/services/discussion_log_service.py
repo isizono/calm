@@ -3,6 +3,7 @@ import re
 import sqlite3
 from typing import Optional
 from src.db import get_connection, row_to_dict
+from src.services.readable_id import apply_readable_id_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.tag_service import (
     validate_and_parse_tags,
@@ -211,16 +212,19 @@ def get_logs(
             logs = []
             for row in rows:
                 log = row_to_dict(row)
+                # title fallback: title が空なら content の先頭 50 文字
+                display_title = log["title"] or (log["content"] or "")[:50]
                 item = {
                     "id": log["id"],
                     "topic_id": log["topic_id"],
-                    "title": log["title"],
+                    "title": display_title,
                     "content": log["content"],
                     "tags": tags_map.get(log["id"], []),
                     "created_at": log["created_at"],
                 }
                 if log.get("retracted_at"):
                     item["retracted_at"] = log["retracted_at"]
+                apply_readable_id_inplace(item, "log")
                 logs.append(item)
 
             return {"logs": logs}
@@ -265,16 +269,19 @@ def get_logs(
             logs = []
             for row in rows:
                 log = row_to_dict(row)
+                # title fallback: title が空なら content の先頭 50 文字
+                display_title = log["title"] or (log["content"] or "")[:50]
                 item = {
                     "id": log["id"],
                     "topic_id": log["topic_id"],
-                    "title": log["title"],
+                    "title": display_title,
                     "content": log["content"],
                     "tags": tags_map.get(log["id"], []),
                     "created_at": log["created_at"],
                 }
                 if log.get("retracted_at"):
                     item["retracted_at"] = log["retracted_at"]
+                apply_readable_id_inplace(item, "log")
                 logs.append(item)
 
             return {"logs": logs}

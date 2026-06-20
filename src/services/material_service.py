@@ -4,6 +4,7 @@ import sqlite3
 from typing import Literal
 
 from src.db import get_connection, row_to_dict
+from src.services.readable_id import apply_readable_id_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.relation_service import _add_relation_with_conn, _validate_targets
 from src.services.tag_service import (
@@ -21,7 +22,7 @@ SNIPPET_MAX_LEN = 200
 
 def _material_to_response(material: dict, tags: list[str]) -> dict:
     """資材データをAPIレスポンス形式に変換（全文含む）"""
-    return {
+    result = {
         "material_id": material["id"],
         "title": material["title"],
         "content": material["content"],
@@ -30,6 +31,8 @@ def _material_to_response(material: dict, tags: list[str]) -> dict:
         "created_at": material["created_at"],
         "hint": "contentの先頭1-2文は内容の説明・要約にしてください（check-in時にsnippetとして表示されます）",
     }
+    apply_readable_id_inplace(result, "material", id_key="material_id")
+    return result
 
 
 def add_material(title: str, content: str, tags: list[str], source: str, related: list[dict] | None = None) -> dict:
@@ -155,8 +158,9 @@ def get_materials_by_relation_with_conn(conn, activity_id: int) -> list[dict]:
     ).fetchall()
     material_ids = [row["id"] for row in rows]
     tags_map = get_entity_tags_batch(conn, "material_tags", "material_id", material_ids) if material_ids else {}
-    return [
-        {
+    result = []
+    for row in rows:
+        item = {
             "id": row["id"],
             "title": row["title"],
             "snippet": (row["content"] or "")[:SNIPPET_MAX_LEN],
@@ -164,8 +168,9 @@ def get_materials_by_relation_with_conn(conn, activity_id: int) -> list[dict]:
             "tags": tags_map.get(row["id"], []),
             "created_at": row["created_at"],
         }
-        for row in rows
-    ]
+        apply_readable_id_inplace(item, "material")
+        result.append(item)
+    return result
 
 
 CONTENT_JOIN_SEPARATOR = "\n\n"

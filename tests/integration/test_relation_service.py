@@ -294,7 +294,7 @@ class TestGetMap:
         assert "error" not in result
         assert result["total_count"] == 1
         assert result["entities"][0]["type"] == "topic"
-        assert result["entities"][0]["id"] == e["t1"]
+        assert result["entities"][0]["id_raw"] == e["t1"]
         assert result["entities"][0]["depth"] == 0
 
     def test_get_map_depth_1_returns_direct_relations(self, sample_entities):
@@ -310,7 +310,7 @@ class TestGetMap:
         assert "error" not in result
         # 起点(t1) + t2 + a1 = 3エンティティ
         assert result["total_count"] == 3
-        types_ids = {(ent["type"], ent["id"]) for ent in result["entities"]}
+        types_ids = {(ent["type"], ent["id_raw"]) for ent in result["entities"]}
         assert ("topic", e["t1"]) in types_ids
         assert ("topic", e["t2"]) in types_ids
         assert ("activity", e["a1"]) in types_ids
@@ -324,7 +324,7 @@ class TestGetMap:
 
         assert "error" not in result
         assert result["total_count"] == 1
-        assert result["entities"][0]["id"] == e["t2"]
+        assert result["entities"][0]["id_raw"] == e["t2"]
 
     def test_get_map_transitive_depth_2(self, sample_entities):
         """depth=2で間接関連が返る"""
@@ -338,7 +338,7 @@ class TestGetMap:
         assert "error" not in result
         # t1(0) + t2(1) + t3(2) = 3エンティティ
         assert result["total_count"] == 3
-        types_ids = {(ent["type"], ent["id"]) for ent in result["entities"]}
+        types_ids = {(ent["type"], ent["id_raw"]) for ent in result["entities"]}
         assert ("topic", e["t3"]) in types_ids
 
     def test_get_map_no_infinite_loop_on_cycle(self, sample_entities):
@@ -412,7 +412,7 @@ class TestGetMap:
 
         assert "error" not in result
         assert result["total_count"] == 1
-        assert result["entities"][0]["id"] == e["t1"]
+        assert result["entities"][0]["id_raw"] == e["t1"]
 
     def test_get_map_nonexistent_id_returns_empty(self, temp_db):
         """存在しないIDのget_mapは空結果を返す"""
@@ -433,7 +433,7 @@ class TestGetMap:
         result = get_map("topic", e["t1"], min_depth=0, max_depth=2)
 
         assert "error" not in result
-        t3_entry = next(ent for ent in result["entities"] if ent["id"] == e["t3"])
+        t3_entry = next(ent for ent in result["entities"] if ent["id_raw"] == e["t3"])
         assert t3_entry["depth"] == 1  # 直接到達の方が浅い
 
     def test_get_map_sorted_by_depth(self, sample_entities):
@@ -458,7 +458,7 @@ class TestGetMap:
         result = get_map("topic", e["t1"], min_depth=0, max_depth=0)
 
         assert "error" not in result
-        t1_entity = next(ent for ent in result["entities"] if ent["id"] == e["t1"])
+        t1_entity = next(ent for ent in result["entities"] if ent["id_raw"] == e["t1"])
         assert t1_entity["type"] == "topic"
         assert t1_entity["decisions_count"] == 2
         assert t1_entity["materials_count"] == 1
@@ -519,7 +519,7 @@ class TestGetMap:
         result = get_map("topic", e["t1"], min_depth=0, max_depth=2)
 
         assert "error" not in result
-        t1_entity = next(ent for ent in result["entities"] if ent["type"] == "topic" and ent["id"] == e["t1"])
+        t1_entity = next(ent for ent in result["entities"] if ent["type"] == "topic" and ent["id_raw"] == e["t1"])
         # 直接リレーションがないためゼロ
         assert t1_entity["materials_count"] == 0
 
@@ -539,7 +539,7 @@ class TestGetMap:
         result = get_map("topic", e["t1"], min_depth=0, max_depth=1)
 
         assert "error" not in result
-        by_id = {ent["id"]: ent for ent in result["entities"] if ent["type"] == "topic"}
+        by_id = {ent["id_raw"]: ent for ent in result["entities"] if ent["type"] == "topic"}
         assert by_id[e["t1"]]["decisions_count"] == 1
         assert by_id[e["t2"]]["decisions_count"] == 2
         assert by_id[e["t1"]]["materials_count"] == 1
@@ -743,7 +743,7 @@ class TestMaterialRelations:
         result = get_map("activity", e["a1"], min_depth=0, max_depth=1)
 
         assert "error" not in result
-        types_ids = {(ent["type"], ent["id"]) for ent in result["entities"]}
+        types_ids = {(ent["type"], ent["id_raw"]) for ent in result["entities"]}
         assert ("material", e["m1"]) in types_ids
 
     def test_get_map_material_has_tags(self, sample_entities):
@@ -1056,7 +1056,7 @@ class TestGetMapDecisionLogFilter:
         types_in_result = {ent["type"] for ent in result["entities"]}
         assert "decision" not in types_in_result
         # t1(depth=0) と t2(depth=2, decision経由) が含まれる
-        ids_in_result = {(ent["type"], ent["id"]) for ent in result["entities"]}
+        ids_in_result = {(ent["type"], ent["id_raw"]) for ent in result["entities"]}
         assert ("topic", e["t1"]) in ids_in_result
         assert ("topic", e["t2"]) in ids_in_result
 
@@ -1073,7 +1073,7 @@ class TestGetMapDecisionLogFilter:
         types_in_result = {ent["type"] for ent in result["entities"]}
         assert "log" not in types_in_result
         # a1(depth=0) と a2(depth=2, log経由) が含まれる
-        ids_in_result = {(ent["type"], ent["id"]) for ent in result["entities"]}
+        ids_in_result = {(ent["type"], ent["id_raw"]) for ent in result["entities"]}
         assert ("activity", e["a1"]) in ids_in_result
         assert ("activity", e["a2"]) in ids_in_result
 
@@ -1087,7 +1087,7 @@ class TestGetMapDecisionLogFilter:
         result = get_map("topic", e["t1"], min_depth=0, max_depth=2)
 
         assert "error" not in result
-        ids_in_result = {(ent["type"], ent["id"]) for ent in result["entities"]}
+        ids_in_result = {(ent["type"], ent["id_raw"]) for ent in result["entities"]}
         assert ("material", e["m1"]) in ids_in_result
         assert ("topic", e["t1"]) in ids_in_result
 
@@ -1102,7 +1102,7 @@ class TestGetMapDecisionLogFilter:
         types_in_result = {ent["type"] for ent in result["entities"]}
         assert "decision" not in types_in_result
         # depth=1のtopicだけ返る
-        ids_in_result = {(ent["type"], ent["id"]) for ent in result["entities"]}
+        ids_in_result = {(ent["type"], ent["id_raw"]) for ent in result["entities"]}
         assert ("topic", e["t1"]) in ids_in_result
 
     def test_get_map_traverses_supersedes_edge(self, entities_with_decision_log):
@@ -1119,7 +1119,7 @@ class TestGetMapDecisionLogFilter:
 
         assert "error" not in result
         # supersedes経由でd1に到達し、d1→t1のrelatedでt1に到達する
-        ids_in_result = {(ent["type"], ent["id"]) for ent in result["entities"]}
+        ids_in_result = {(ent["type"], ent["id_raw"]) for ent in result["entities"]}
         assert ("topic", e["t1"]) in ids_in_result
         # decision自体は出力に含まれない
         types_in_result = {ent["type"] for ent in result["entities"]}
@@ -1420,7 +1420,7 @@ class TestFKLossImpact:
 
         assert "error" not in result
         # 存在しないID 99999はカタログに含まれない
-        ids_in_result = {(ent["type"], ent["id"]) for ent in result["entities"]}
+        ids_in_result = {(ent["type"], ent["id_raw"]) for ent in result["entities"]}
         assert ("topic", 99999) not in ids_in_result
         # 存在するt2は含まれる
         assert ("topic", e["t2"]) in ids_in_result

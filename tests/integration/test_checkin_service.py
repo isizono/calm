@@ -68,7 +68,7 @@ class TestCheckIn:
 
         assert "error" not in result
         assert "activity" in result
-        assert result["activity"]["id"] == activity_id
+        assert result["activity"]["id_raw"] == activity_id
         assert result["activity"]["title"] == "[作業] タグnotesカラム追加"
         assert result["activity"]["description"] == "タグnotesカラムを追加する作業"
         assert result["activity"]["status"] == "in_progress"
@@ -319,7 +319,7 @@ class TestCheckInRelations:
         assert "error" not in result
         assert "related_activities" in result
         assert len(result["related_activities"]) == 1
-        assert result["related_activities"][0]["id"] == a2["activity_id"]
+        assert result["related_activities"][0]["id_raw"] == a2["activity_id"]
         assert result["related_activities"][0]["title"] == "子タスク"
 
     def test_no_related_activities_key_when_empty(self, activity_id):
@@ -339,7 +339,7 @@ class TestCheckInRelations:
 
         assert "error" not in result
         assert "topic" in result
-        assert result["topic"]["id"] == topic["topic_id"]
+        assert result["topic"]["id_raw"] == topic["topic_id"]
         assert result["related_topics"] == [result["topic"]]
 
     def test_multiple_related_topics_no_topic_key(self, temp_db):
@@ -390,7 +390,7 @@ class TestCheckInRelations:
         assert "error" not in result
         assert len(result["related_topics"]) == 1
         rt = result["related_topics"][0]
-        assert rt["id"] == tid
+        assert rt["id_raw"] == tid
         assert rt["decisions_count"] == 2
         # topic直接紐づけは1件のみ（activity経由のmaterialは含まない）
         assert rt["materials_count"] == 1
@@ -446,7 +446,7 @@ class TestCheckInRelations:
         result = check_in(a["activity_id"])
 
         assert "error" not in result
-        by_id = {rt["id"]: rt for rt in result["related_topics"]}
+        by_id = {rt["id_raw"]: rt for rt in result["related_topics"]}
         assert by_id[tid1]["decisions_count"] == 2
         assert by_id[tid1]["materials_count"] == 1
         assert by_id[tid2]["decisions_count"] == 1
@@ -657,7 +657,7 @@ class TestCheckInDependencies:
         assert "error" not in result
         assert "dependencies" in result
         assert len(result["dependencies"]) == 1
-        assert result["dependencies"][0]["id"] == dep["activity_id"]
+        assert result["dependencies"][0]["id_raw"] == dep["activity_id"]
         assert result["dependencies"][0]["title"] == "依存先タスク"
         assert result["dependencies"][0]["status"] == "pending"
 
@@ -692,7 +692,7 @@ class TestCheckInDependencies:
 
         assert "error" not in result
         assert len(result["dependencies"]) == 2
-        dep_ids = {d["id"] for d in result["dependencies"]}
+        dep_ids = {d["id_raw"] for d in result["dependencies"]}
         assert dep1["activity_id"] in dep_ids
         assert dep2["activity_id"] in dep_ids
 
@@ -889,7 +889,7 @@ class TestCheckInPinned:
         assert "pinned" in result
         assert "topics" in result["pinned"]
         assert len(result["pinned"]["topics"]) == 1
-        assert result["pinned"]["topics"][0]["id"] == topic["topic_id"]
+        assert result["pinned"]["topics"][0]["id_raw"] == topic["topic_id"]
         assert result["pinned"]["topics"][0]["title"] == "重要トピック"
 
     def test_activity_source_pin_injects_activity(self, temp_db):
@@ -904,7 +904,7 @@ class TestCheckInPinned:
         assert "pinned" in result
         assert "activities" in result["pinned"]
         assert len(result["pinned"]["activities"]) == 1
-        assert result["pinned"]["activities"][0]["id"] == a2["activity_id"]
+        assert result["pinned"]["activities"][0]["id_raw"] == a2["activity_id"]
         assert result["pinned"]["activities"][0]["title"] == "重要参照タスク"
         assert result["pinned"]["activities"][0]["status"] == "pending"
 

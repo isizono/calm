@@ -22,6 +22,7 @@ from src.services.activity_service import (
     get_active_domains_with_conn,
     get_active_activities_by_tag_with_conn,
 )
+from src.services.readable_id import format_readable_id
 from src.services.habit_service import get_active_habit_contents_with_conn
 from src.services.tag_service import get_entity_tags_batch
 from src.services.topic_service import get_activity_topics_batch
@@ -235,7 +236,8 @@ def _build_activities_section(conn, session_id: str | None = None) -> str:
         parts.append("## 作業中（別セッション）")
         for a in heartbeat_activities:
             days = _calc_elapsed_days(a["updated_at"])
-            parts.append(f"- [{a['id']}] {a['title']} ({days}d)")
+            display = format_readable_id("activity", a["id"], a["title"])
+            parts.append(f"- {display} ({days}d)")
         parts.append("")
 
     if normal_activities:
@@ -289,7 +291,8 @@ def _build_activities_section(conn, session_id: str | None = None) -> str:
                     if created_at_str and _is_recent_created(created_at_str)
                     else ""
                 )
-                line = f"{idx_counter}. {status_mark} [{aid}] {a['title']}{new_marker}"
+                display = format_readable_id("activity", aid, a["title"])
+                line = f"{idx_counter}. {status_mark} {display}{new_marker}"
                 meta_parts = _render_activity_meta(aid, days)
                 parts.append(line)
                 parts.append(f"   {' | '.join(meta_parts)}")

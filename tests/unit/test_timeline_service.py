@@ -625,10 +625,14 @@ class TestSupersedes:
             conn.close()
 
         result = get_timeline(topic_id=tid, entity_types=["decision"])
-        items_by_id = {item["id"]: item for item in result["items"]}
+        # α化により id は文字列になるので id_raw で索引する
+        items_by_id = {item["id_raw"]: item for item in result["items"]}
 
-        # 新決定(source)は旧決定(target)をreplaces
-        assert items_by_id[1002]["replaces"] == {"type": "decision", "id": 1001}
+        # 新決定(source)は旧決定(target)をreplaces（replaces には title が無いので id="(#1001)"）
+        replaces = items_by_id[1002]["replaces"]
+        assert replaces is not None
+        assert replaces["type"] == "decision"
+        assert replaces["id_raw"] == 1001
         assert items_by_id[1002]["replaced_by"] is None
 
     def test_decision_replaced_by_shows_source(self, topic):
@@ -654,10 +658,13 @@ class TestSupersedes:
             conn.close()
 
         result = get_timeline(topic_id=tid, entity_types=["decision"])
-        items_by_id = {item["id"]: item for item in result["items"]}
+        items_by_id = {item["id_raw"]: item for item in result["items"]}
 
         # 旧決定(target)は新決定(source)にreplaced_by
-        assert items_by_id[2001]["replaced_by"] == {"type": "decision", "id": 2002}
+        replaced_by = items_by_id[2001]["replaced_by"]
+        assert replaced_by is not None
+        assert replaced_by["type"] == "decision"
+        assert replaced_by["id_raw"] == 2002
         assert items_by_id[2001]["replaces"] is None
 
     def test_log_and_material_replaces_null_even_with_supersedes(self, topic):

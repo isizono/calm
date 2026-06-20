@@ -290,7 +290,8 @@ class TestDisplayFallback:
         finally:
             conn.close()
 
-        by_id = {d["id"]: d["title"] for d in decisions}
+        # α化後 id は文字列なので、元 ID は id_raw で索引する
+        by_id = {d["id_raw"]: d["title"] for d in decisions}
         assert by_id[with_id] == "要点X", "titleありdecisionがtitleで表示されない"
         assert by_id[without_id] == "本文Y（titleなし）", "titleなしdecisionがdecision本文にfallbackしない"
 
@@ -308,12 +309,19 @@ class TestDisplayFallback:
         # decision本文も従来通り含まれる
         assert data["decision"] == "本文"
 
-    def test_get_by_id_decision_title_none_when_omitted(self, topic):
-        """title未指定decisionのget_by_idはtitle=Noneを返す"""
+    def test_get_by_id_decision_title_fallback_when_omitted(self, topic):
+        """title未指定decisionのget_by_idはdecision本文先頭50文字をfallback表示する
+
+        α化（`{title} (#NNN)` 形式）で title None だと `(#NNN)` のみになるのを防ぐため、
+        decision本文の先頭50文字をtitleにfallbackする（_get_decisions_from_topics と同じ挙動）。
+        """
         result = add_decisions([
-            {"topic_id": topic["topic_id"], "decision": "本文", "reason": "理由"},
+            {"topic_id": topic["topic_id"], "decision": "本文だけのdecision", "reason": "理由"},
         ])
         did = result["created"][0]["decision_id"]
 
         res = get_by_id("decision", did)
-        assert res["data"]["title"] is None
+        assert res["data"]["title"] == "本文だけのdecision"
+        # α化された id 文字列にも本文先頭がのる
+        assert res["data"]["id"] == f"本文だけのdecision (#{did})"
+        assert res["data"]["id_raw"] == did

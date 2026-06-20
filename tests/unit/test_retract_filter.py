@@ -66,7 +66,7 @@ class TestGetDecisionsFilter:
         retract("decision", [retracted_id])
 
         decisions = get_decisions("topic", tid)
-        ids = [d["id"] for d in decisions["decisions"]]
+        ids = [d["id_raw"] for d in decisions["decisions"]]
         assert retracted_id not in ids
         assert len(decisions["decisions"]) == 1
 
@@ -82,7 +82,7 @@ class TestGetDecisionsFilter:
         retract("decision", [retracted_id])
 
         decisions = get_decisions("topic", tid, include_retracted=True)
-        ids = [d["id"] for d in decisions["decisions"]]
+        ids = [d["id_raw"] for d in decisions["decisions"]]
         assert retracted_id in ids
         assert len(decisions["decisions"]) == 2
 
@@ -102,7 +102,7 @@ class TestGetLogsFilter:
         retract("log", [retracted_id])
 
         logs = get_logs("topic", tid)
-        ids = [l["id"] for l in logs["logs"]]
+        ids = [l["id_raw"] for l in logs["logs"]]
         assert retracted_id not in ids
         assert len(logs["logs"]) == 1
 
@@ -118,7 +118,7 @@ class TestGetLogsFilter:
         retract("log", [retracted_id])
 
         logs = get_logs("topic", tid, include_retracted=True)
-        ids = [l["id"] for l in logs["logs"]]
+        ids = [l["id_raw"] for l in logs["logs"]]
         assert retracted_id in ids
         assert len(logs["logs"]) == 2
 
@@ -141,7 +141,7 @@ class TestCheckInFilter:
 
         checkin = check_in(aid)
         assert "error" not in checkin
-        decision_ids = [d["id"] for d in checkin.get("recent_decisions", [])]
+        decision_ids = [d["id_raw"] for d in checkin.get("recent_decisions", [])]
         assert retracted_id not in decision_ids
 
     def test_retracted_log_excluded_from_checkin(self, activity_with_topic):
@@ -164,7 +164,7 @@ class TestCheckInFilter:
 
         # latest_logがretractされたものではないことを確認
         if checkin.get("latest_log"):
-            assert checkin["latest_log"]["id"] != retracted_id
+            assert checkin["latest_log"]["id_raw"] != retracted_id
 
     def test_pinned_retracted_decision_excluded_from_checkin(self, activity_with_topic):
         """pinsテーブルでpinされたdecisionをretractすると、check-inのpinnedに含まれない"""
@@ -185,7 +185,7 @@ class TestCheckInFilter:
 
         # retractされているためpinnedセクションに含まれない
         pinned = checkin.get("pinned", {})
-        pinned_decision_ids = [d["id"] for d in pinned.get("decisions", [])]
+        pinned_decision_ids = [d["id_raw"] for d in pinned.get("decisions", [])]
         assert decision_id not in pinned_decision_ids
 
     def test_pinned_retracted_log_excluded_from_checkin(self, activity_with_topic):
@@ -207,7 +207,7 @@ class TestCheckInFilter:
 
         # retractされているためpinnedセクションに含まれない
         pinned = checkin.get("pinned", {})
-        pinned_log_ids = [l["id"] for l in pinned.get("logs", [])]
+        pinned_log_ids = [l["id_raw"] for l in pinned.get("logs", [])]
         assert log_id not in pinned_log_ids
 
     def test_retracted_excluded_from_count(self, activity_with_topic):
@@ -245,7 +245,7 @@ class TestSearchFilter:
         retract("decision", [retracted_id])
 
         search_result = search("ユニーク決定ABC")
-        ids = [(r["type"], r["id"]) for r in search_result.get("results", [])]
+        ids = [(r["type"], r["id_raw"]) for r in search_result.get("results", [])]
         assert ("decision", retracted_id) not in ids
 
     def test_retracted_log_excluded_from_search(self, topic):
@@ -261,7 +261,7 @@ class TestSearchFilter:
         retract("log", [retracted_id])
 
         search_result = search("ユニークログXYZ")
-        ids = [(r["type"], r["id"]) for r in search_result.get("results", [])]
+        ids = [(r["type"], r["id_raw"]) for r in search_result.get("results", [])]
         assert ("log", retracted_id) not in ids
 
     def test_retracted_included_with_flag(self, topic):
@@ -277,5 +277,5 @@ class TestSearchFilter:
         retract("decision", [retracted_id])
 
         search_result = search("撤回テスト用ユニーク決定DEF", include_retracted=True)
-        ids = [(r["type"], r["id"]) for r in search_result.get("results", [])]
+        ids = [(r["type"], r["id_raw"]) for r in search_result.get("results", [])]
         assert ("decision", retracted_id) in ids

@@ -208,7 +208,8 @@ class TestAddActivity:
         assert "error" not in check_in_result
         # related_topicsに関連トピックが含まれる
         assert "related_topics" in check_in_result
-        assert any(t["id"] == topic_id for t in check_in_result["related_topics"])
+        # α化: id_raw が元の整数 ID
+        assert any(t["id_raw"] == topic_id for t in check_in_result["related_topics"])
         assert "recent_decisions" in check_in_result
 
     def test_add_activity_available_intents_format(self, temp_db):

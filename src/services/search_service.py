@@ -12,6 +12,7 @@ from sqlite_vec import serialize_float32
 
 from src.db import execute_query, get_connection, get_db_path, row_to_dict
 from src.services import embedding_service
+from src.services.readable_id import apply_readable_id_inplace
 from src.services.tag_service import (
     get_entity_tags,
     get_entity_tags_batch,
@@ -1505,6 +1506,11 @@ def search(
 
         nearby_tags = _compute_nearby_tags(results, tag_ids, offset)
 
+        # readable_id 化: 各結果の id を「title (#NNN)」形式に置換し、元の id を id_raw に退避
+        # type フィールドは置換前に確定済みなのでそのまま参照する
+        for item in results:
+            apply_readable_id_inplace(item, item["type"])
+
         _record_search_telemetry_async(
             query=keyword,
             parameters={
@@ -1607,18 +1613,21 @@ def _record_search_telemetry_async(
 def _format_row(type_name: str, data: dict, tags: list[str]) -> dict:
     """typeに応じたレスポンス整形"""
     if type_name == 'topic':
-        return {
+        result = {
             "id": data["id"],
             "title": data["title"],
             "description": data["description"],
             "tags": tags,
             "created_at": data["created_at"],
         }
+        apply_readable_id_inplace(result, "topic")
+        return result
     elif type_name == 'decision':
+        display_title = data.get("title") or (data["decision"] or "")[:50]
         result = {
             "id": data["id"],
             "topic_id": data["topic_id"],
-            "title": data.get("title"),
+            "title": display_title,
             "decision": data["decision"],
             "reason": data["reason"],
             "tags": tags,
@@ -1626,9 +1635,10 @@ def _format_row(type_name: str, data: dict, tags: list[str]) -> dict:
         }
         if data.get("retracted_at"):
             result["retracted_at"] = data["retracted_at"]
+        apply_readable_id_inplace(result, "decision")
         return result
     elif type_name == 'activity':
-        return {
+        result = {
             "id": data["id"],
             "title": data["title"],
             "description": data["description"],
@@ -1637,6 +1647,8 @@ def _format_row(type_name: str, data: dict, tags: list[str]) -> dict:
             "created_at": data["created_at"],
             "updated_at": data["updated_at"],
         }
+        apply_readable_id_inplace(result, "activity")
+        return result
     elif type_name == 'log':
         title = data["title"]
         if not title:
@@ -1651,9 +1663,10 @@ def _format_row(type_name: str, data: dict, tags: list[str]) -> dict:
         }
         if data.get("retracted_at"):
             result["retracted_at"] = data["retracted_at"]
+        apply_readable_id_inplace(result, "log")
         return result
     elif type_name == 'material':
-        return {
+        result = {
             "material_id": data["id"],
             "title": data["title"],
             "content": data["content"],
@@ -1662,6 +1675,10 @@ def _format_row(type_name: str, data: dict, tags: list[str]) -> dict:
             "created_at": data["created_at"],
             "hint": "contentの先頭1-2文は内容の説明・要約にしてください（check-in時にsnippetとして表示されます）",
         }
+        apply_readable_id_inplace(
+            result, "material", id_key="material_id"
+        )
+        return result
     return data
 
 
