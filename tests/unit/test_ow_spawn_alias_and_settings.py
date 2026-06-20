@@ -212,6 +212,62 @@ class TestSpawnWorkerAliasFormat:
 
 
 # ----------------------------
+# ow_spawn_worker: spawning broadcast 失敗時は SPAWN_PRECONDITION_FAILED
+# ----------------------------
+
+
+class TestSpawnWorkerSpawningBroadcastFailure:
+    """relay への event:state(spawning) broadcast 失敗時の挙動を確認する。
+
+    新真実源モデルでは relay events が真実源のため、broadcast 失敗は spawn 中止。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: True)
+        monkeypatch.setattr(ow_service, "ensure_channel", lambda ch: True)
+        monkeypatch.setattr(ow_service, "_get_presence", lambda ch: [])
+        monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
+        monkeypatch.setattr(ow_service, "_ensure_worker_askuser_deny", lambda c: None)
+        monkeypatch.delenv("OW_TERMINAL", raising=False)
+
+    def test_relay_error_returns_precondition_failed(self, monkeypatch, tmp_path):
+        """relay が 5xx を返して broadcast 失敗 → SPAWN_PRECONDITION_FAILED。"""
+        monkeypatch.setattr(
+            ow_service,
+            "_relay_request",
+            lambda *args, **kwargs: {"error": {"code": 503, "message": "relay unavailable"}},
+        )
+        result = ow_service.ow_spawn_worker(
+            alias="w-playbook",
+            channel="ch1",
+            cwd=str(tmp_path),
+            model="claude-opus-4-7",
+            task_title="t", acceptance="d", task_n=1,
+        )
+        assert "error" in result
+        assert result["error"]["code"] == "SPAWN_PRECONDITION_FAILED"
+        assert any("spawning" in w for w in result["error"]["warnings"])
+
+    def test_relay_error_warnings_contain_alias_and_detail(self, monkeypatch, tmp_path):
+        """broadcast 失敗の警告メッセージに alias と relay エラー詳細が含まれる。"""
+        monkeypatch.setattr(
+            ow_service,
+            "_relay_request",
+            lambda *args, **kwargs: {"error": {"code": 503, "message": "relay down"}},
+        )
+        result = ow_service.ow_spawn_worker(
+            alias="w-playbook",
+            channel="ch1",
+            cwd=str(tmp_path),
+            model="claude-opus-4-7",
+            task_title="t", acceptance="d", task_n=1,
+        )
+        warnings = result["error"]["warnings"]
+        assert any("w-playbook" in w for w in warnings)
+
+
+# ----------------------------
 # _ensure_worker_askuser_deny: settings.local.json 生成 / merge
 # ----------------------------
 

@@ -361,8 +361,8 @@ projector は relay event 受信時に push 型で cache JSON と activities tab
 | relay event | cache.workers[alias] 更新 | activities table 更新 |
 |---|---|---|
 | `event:state(spawning, target_handle=h)` (orch broadcast) | workers[h]={state:"loading", task_status:"spawning", assigned_at, acceptance, model, cwd} | (触らず) |
-| `event:state(loading)` (worker) | state=loading, latest_msg_id, latest_at | (触らず) |
-| `event:state(ready)` (worker) | state=ready | (触らず) |
+| `event:state(loading)` (worker) | state=loading, task_status=spawning, latest_msg_id, latest_at | (触らず) |
+| `event:state(ready)` (worker) | state=ready, task_status=spawning | (触らず) |
 | `event:state(working)` (worker) | state=working, task_status=working | activity.status=in_progress (まだなら) |
 | `event:state(blocked)` (worker) | state=blocked | (触らず) |
 | `event:state(escalated)` (worker) | state=escalated, task_status=escalated | (触らず) |

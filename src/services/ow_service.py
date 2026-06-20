@@ -941,7 +941,7 @@ def ow_spawn_worker(
 ) -> dict:
     """workerセッションを起動する。
 
-    処理順: spawn前ヘルスチェック → queueへspawning write-ahead → task file書き出し
+    処理順: spawn前ヘルスチェック → relay へ spawning event broadcast → task file書き出し
         → アダプタ呼び出し → 安定ID返却
 
     permission_modeは常にautoに固定される。
@@ -1052,11 +1052,21 @@ def ow_spawn_worker(
     }
     spawning_result = ow_send(channel=channel, handle="orch", body=spawning_body)
     if "error" in spawning_result:
-        logger.warning(
-            "ow_spawn_worker: failed to broadcast event:state(spawning) for %s: %s",
+        err_detail = spawning_result.get("error")
+        logger.error(
+            "ow_spawn_worker: failed to broadcast event:state(spawning) for %s: %s — aborting spawn",
             alias,
-            spawning_result.get("error"),
+            err_detail,
         )
+        return {
+            "error": {
+                "code": "SPAWN_PRECONDITION_FAILED",
+                "message": "relay broadcast of event:state(spawning) failed; spawn aborted",
+                "warnings": [
+                    f"relay broadcast event:state(spawning) failed for {alias}: {err_detail}"
+                ],
+            },
+        }
 
     # task fileを書き出す
     task_file = _write_task_file(
@@ -1371,7 +1381,9 @@ def _get_presence(channel: str) -> list[str]:
 _ACTIVE_WORKLOAD_STATES: frozenset[str] = frozenset({"ready", "working", "blocked", "escalated", "draining"})
 
 # cache.workers[alias].task_status における「workerが活動中」と分類する状態。
-_ACTIVE_TASK_STATUSES: frozenset[str] = frozenset({"working", "awaiting_verify", "escalated"})
+# spawning を含めることで、cache に spawning entry が残っている alias への重複 spawn を
+# _validate_spawn_preconditions step 5 で検出できる。
+_ACTIVE_TASK_STATUSES: frozenset[str] = frozenset({"working", "awaiting_verify", "escalated", "spawning"})
 
 # cache.workers[alias].task_status における「明示的に終端済み」を示す値。
 _TERMINAL_TASK_STATUSES: frozenset[str] = frozenset({"done", "cancelled", "failed"})
@@ -1405,7 +1417,7 @@ _CAUSE_TO_TASK_STATUS: dict[str, str] = {
 # presence offline = 異常終了とみなして "stalled" に倒す（手動介入を促す）。
 _RELAY_STATE_TO_TASK_STATUS: dict[str, str] = {
     "done": "done",
-    "closed": "done",
+    "closed": "done",   # 旧プロトコル互換 (現行 worker は terminated/cause=closed で送るため state="closed" は通常来ない)
     "failed": "failed",
     "cancelled": "cancelled",
     "ready": "stalled",
@@ -1430,7 +1442,7 @@ def _validate_spawn_preconditions(
         - relayサーバー疎通: ensure_relay_serverで自己修復込み
         - channel存在: ensure_channelで自動作成
         - cwd存在: Path(cwd).expanduser()がディレクトリとして存在するか
-        - alias重複: 同aliasがpresence onlineまたはqueue上で活動中タスクのworkerとして他の
+        - alias重複: 同aliasがpresence onlineまたはcache上で活動中タスクのworkerとして他の
           task_nに割当て済みでないか（同一task_nで再spawn=再リンクは許可）
 
     Returns:
@@ -2153,7 +2165,14 @@ def ow_recover(
             workers = cache_state.get("workers") or {}
             entry = workers.get(alias)
             if entry is None:
-                # pending_spawn で cache 側に entry が無いケース。projector が後追いで作る前提。
+                # ghost_active は cache.workers 由来のため entry=None は race condition を示す
+                # (detect 後に cache が再ロードされた等)。pending_spawn は projector 未配線で
+                # entry が存在しないケースもある (D#2750)。いずれも warnings に記録して追跡可能にする。
+                warnings.append(
+                    f"cache entry missing for {ghost.get('task')} ({alias}) at update time "
+                    "(possible race between detect_crash_inconsistencies and cache reload, "
+                    "or projector not yet wired)"
+                )
                 continue
             previous = entry.get("task_status")
             entry["task_status"] = new_status
