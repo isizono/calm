@@ -1863,8 +1863,11 @@ def project_state_to_cache(topic_id: int, channel: str) -> OwState | None:
         channel: relay channel コード。OwState.channel に格納する。
 
     Returns:
-        構築・保存できた :class:`OwState`。relay HTTP エラー等で full pull
-        に失敗した場合は ``None`` (cache ファイルは触らない)。
+        構築・保存できた :class:`OwState`。以下のいずれかで ``None`` を返す
+        (cache ファイルは触らない):
+
+          - relay HTTP エラー等で full pull に失敗した場合
+          - cache ファイル書き出し (:func:`save_state`) が OSError で失敗した場合
     """
     history_limit = 10000
     history = ow_history(channel, since=0, limit=history_limit)
@@ -1967,7 +1970,18 @@ def project_state_to_cache(topic_id: int, channel: str) -> OwState | None:
         "presence": sorted(presence),
         "updated_at": now.isoformat(),
     }
-    save_state(topic_id, state)
+    try:
+        save_state(topic_id, state)
+    except OSError as e:
+        # ファイルシステムエラー (ディスク満杯、権限不足、I/O エラー等) を
+        # 呼び出し側 (ow_status 等) に伝播させない。docstring の契約通り None を返す。
+        logger.warning(
+            "ow projector: save_state failed for topic=%s channel=%r: %s",
+            topic_id,
+            channel,
+            e,
+        )
+        return None
     return state
 
 
