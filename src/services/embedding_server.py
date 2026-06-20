@@ -1,4 +1,5 @@
 """Embeddingサーバー: モデル保持 + encode を1プロセスに集約するHTTPサーバー"""
+import datetime
 import json
 import logging
 import os
@@ -6,11 +7,23 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from logging.handlers import RotatingFileHandler
+from typing import Literal, Optional
 
 HOST = "localhost"
 PORT = 52836
-IDLE_TIMEOUT_SEC = 300  # 5分
 MAX_REQUEST_BYTES = 10 * 1024 * 1024  # 10MB
+
+# shutdown policy パラメータ（env var で上書き可能）
+# 既存スタイル（src/config.py）に合わせ default は文字列で渡す。不正値はクラッシュさせて早期発見する。
+_TTL_SEC = int(os.environ.get("CC_MEMORY_EMBEDDING_TTL_SEC", "3600"))
+_DRAIN_IDLE_SEC = int(os.environ.get("CC_MEMORY_EMBEDDING_DRAIN_IDLE_SEC", "30"))
+_DRAIN_DEADLINE_SEC = int(os.environ.get("CC_MEMORY_EMBEDDING_DRAIN_DEADLINE_SEC", "1800"))
+_WATCHDOG_INTERVAL_SEC = 10  # watchdog のチェック粒度
+
+# ログローテーション設定（env var で上書き可能）
+_LOG_MAX_BYTES = int(os.environ.get("CC_MEMORY_EMBEDDING_LOG_MAX_BYTES", str(5 * 1024 * 1024)))
+_LOG_BACKUP_COUNT = int(os.environ.get("CC_MEMORY_EMBEDDING_LOG_BACKUP_COUNT", "3"))
 
 MODEL_NAME = "cl-nagoya/ruri-v3-70m"
 DOC_PREFIX = "検索文書: "
@@ -19,20 +32,44 @@ QUERY_PREFIX = "検索クエリ: "
 logger = logging.getLogger("embedding_server")
 
 # グローバル状態
+#
+# Thread safety: 以下のグローバルは ThreadingHTTPServer のリクエストスレッド（_last_access_time
+# を書く）と watchdog スレッド（_state / _drain_started_at を書き、_last_access_time を読む）から
+# 並行アクセスされる。意図的にロックを取っていない:
+#   - Python の GIL により単一の float / 参照代入はアトミックである
+#   - 書き手は各変数ごとに 1 スレッドに集約されている（_last_access_time はリクエストハンドラのみ、
+#     _state / _drain_started_at は watchdog のみが書く）
+#   - 読み取りで多少古い値を見ても shutdown 判断が 1 tick (= _WATCHDOG_INTERVAL_SEC) 遅れるだけで
+#     セマンティクスは壊れない
+# このコメントは「ロック忘れ」と「意図的なロックレス」を区別するためのもの。
 _model = None
-_last_access_time = time.time()
+_started_at: float = time.time()
+_last_access_time: float = time.time()
+_drain_started_at: Optional[float] = None
+_state: Literal["active", "draining"] = "active"
 
 
 def _setup_logging():
-    """ログを ~/.cache/cc-memory/embedding-server.log に出力する。起動のたびにトランケート。"""
+    """ログを ~/.cache/cc-memory/embedding-server.log に追記する（複数プロセス境界はヘッダー行で識別）。"""
     log_dir = os.path.expanduser("~/.cache/cc-memory")
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, "embedding-server.log")
 
-    handler = logging.FileHandler(log_path, mode="w", encoding="utf-8")
+    # ローテーション付きで追記する。複数プロセスが同一ファイルに書く構造ではないため
+    # （embedding_server は単一インスタンス想定）、RotatingFileHandler でロック競合は発生しない。
+    handler = RotatingFileHandler(
+        log_path,
+        mode="a",
+        maxBytes=_LOG_MAX_BYTES,
+        backupCount=_LOG_BACKUP_COUNT,
+        encoding="utf-8",
+    )
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
+    # プロセス境界の目印を 1 行出力
+    started_iso = datetime.datetime.now().astimezone().isoformat()
+    logger.info(f"=== PID {os.getpid()} started at {started_iso} ===")
 
 
 def _load_model():
@@ -116,15 +153,49 @@ class EmbeddingHandler(BaseHTTPRequestHandler):
             self._send_json(500, {"error": "Internal server error"})
 
 
-def _idle_watchdog(server: ThreadingHTTPServer):
-    """IDLE_TIMEOUT_SEC 無アクセスでサーバーを終了させるウォッチドッグ。"""
+def _watchdog(server: ThreadingHTTPServer):
+    """TTL + drain window + force deadline の 3 段階で graceful shutdown を行う watchdog。
+
+    状態遷移:
+    - active → (uptime >= _TTL_SEC) → draining
+    - draining → (idle >= _DRAIN_IDLE_SEC) → shutdown（graceful）
+    - draining → (drain_age >= _DRAIN_DEADLINE_SEC) → shutdown（force deadline）
+
+    serve_forever ループから抜けるには別スレッドから server.shutdown() を呼ぶ必要があり、
+    本関数は daemon thread として起動される前提。server_close() は main() の finally で呼ばれる。
+    """
+    global _state, _drain_started_at
     while True:
-        time.sleep(30)  # 30秒ごとにチェック
-        elapsed = time.time() - _last_access_time
-        if elapsed >= IDLE_TIMEOUT_SEC:
-            logger.info(f"Shutting down: no access for {int(elapsed)}s")
-            server.shutdown()
-            return
+        time.sleep(_WATCHDOG_INTERVAL_SEC)
+        now = time.time()
+        if _state == "active":
+            uptime = now - _started_at
+            if uptime >= _TTL_SEC:
+                _state = "draining"
+                _drain_started_at = now
+                logger.info(
+                    f"entering draining mode (uptime {uptime:.1f}s exceeded TTL {_TTL_SEC}s)"
+                )
+        elif _state == "draining":
+            # active → draining の遷移時に必ず _drain_started_at をセットしているため、
+            # ここに到達した時点では None ではない。防衛的 fallback ではバグを silent に飲み込む
+            # 危険があるので assert で fail-fast する。
+            assert _drain_started_at is not None, (
+                "_drain_started_at must be set before entering draining state"
+            )
+            idle = now - _last_access_time
+            drain_age = now - _drain_started_at
+            if idle >= _DRAIN_IDLE_SEC:
+                logger.info(f"graceful shutdown (idle {idle:.1f}s during drain)")
+                server.shutdown()
+                return
+            if drain_age >= _DRAIN_DEADLINE_SEC:
+                logger.info(
+                    f"force shutdown (drain deadline {drain_age:.1f}s exceeded "
+                    f"{_DRAIN_DEADLINE_SEC}s)"
+                )
+                server.shutdown()
+                return
 
 
 def main():
@@ -139,7 +210,7 @@ def main():
 
     logger.info(f"Embedding server listening on {HOST}:{PORT}")
 
-    watchdog = threading.Thread(target=_idle_watchdog, args=(server,), daemon=True)
+    watchdog = threading.Thread(target=_watchdog, args=(server,), daemon=True)
     watchdog.start()
 
     try:
