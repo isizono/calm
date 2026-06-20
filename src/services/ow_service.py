@@ -2637,6 +2637,13 @@ def _load_state_by_channel(channel: str) -> OwState | None:
     cache ディレクトリを ``find_topic_id_by_channel`` で走査して topic_id を
     特定し、``load_state(topic_id, channel=channel)`` で読み出す。topic_id が
     見つからない、または cache が無効なら ``None`` を返す (relay を叩かない)。
+
+    TODO(perf): 現状 ``find_topic_id_by_channel`` と ``load_state`` で同一の
+    cache JSON を二重に読んでいる (検索フェーズと検証フェーズ)。reducer の
+    ホットパスで効くため、将来的に find_topic_id_by_channel が (topic_id, data)
+    のタプルを返すよう拡張するか、_load_state_by_channel 内で iterdir を直接
+    走査して 1 read で済ませるリファクタが望ましい。本 PR では PR スコープを
+    広げないため対応せず、観測 (cache hit 数 / file read 回数) を取ってから判断する。
     """
     topic_id = find_topic_id_by_channel(channel)
     if topic_id is None:
