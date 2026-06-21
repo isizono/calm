@@ -53,13 +53,21 @@ class TestNoOp:
         )
         assert result == {}
 
-    def test_ow_terminal_unset(self, monkeypatch, capsys):
-        result = _run_hook(
-            {"tool_input": {"alias": "w-a"}},
-            {"OW_TERMINAL": None, "TMUX_PANE": "%81"},
-            monkeypatch, capsys,
-        )
-        assert result == {}
+    def test_ow_terminal_unset_falls_through_to_tmux_default(
+        self, monkeypatch, capsys
+    ):
+        """OW_TERMINAL 未設定時は ow_service と同じく tmux デフォルト扱いで inject に進む。"""
+        def fake_check_output(args, text=False, timeout=None):
+            return "%81\n"
+
+        with patch.object(subprocess, "check_output", side_effect=fake_check_output):
+            result = _run_hook(
+                {"tool_input": {"alias": "w-a"}},
+                {"OW_TERMINAL": None, "TMUX_PANE": "%81"},
+                monkeypatch, capsys,
+            )
+
+        assert result["hookSpecificOutput"]["updatedInput"]["tmux_target_pane"] == "%81"
 
     def test_tmux_pane_unset(self, monkeypatch, capsys):
         result = _run_hook(

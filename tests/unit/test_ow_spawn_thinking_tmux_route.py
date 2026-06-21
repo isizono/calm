@@ -214,6 +214,35 @@ class TestCloseWorkerSingleBranch:
         assert result.get("manual") is True
         assert "adapter_error" in result
 
+    def test_close_worker_manual_term_ref_forces_manual_fallback(
+        self, monkeypatch, tmp_path
+    ):
+        """OW_TERMINAL=tmux でも term_ref が manual: 形式なら manual に倒すガード。
+
+        tmux アダプタが解釈不能な term_ref を渡してサイレントに失敗するのを防ぐ。
+        adapter_error メッセージには元の env_terminal と term_ref を含めて
+        デバッグ可能にする (上書き後の "manual" だけが出る誤解を防ぐ)。
+        """
+        _patch_adapter_lookup(monkeypatch, _make_tmux_adapter(tmp_path))
+        monkeypatch.setenv("OW_TERMINAL", "tmux")
+
+        # subprocess.run が呼ばれていないことを検証するためフックを差し込む
+        called = {"count": 0}
+
+        def fake_run(args, **kwargs):
+            called["count"] += 1
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(ow_service.subprocess, "run", fake_run)
+
+        result = ow_service.ow_close_worker(term_ref="manual:mac-mini:12345")
+
+        assert result.get("manual") is True
+        assert called["count"] == 0  # tmux アダプタを呼んでいない
+        # 元の env_terminal と term_ref が adapter_error に出力されている
+        assert "OW_TERMINAL='tmux'" in result["adapter_error"]
+        assert "manual:mac-mini:12345" in result["adapter_error"]
+
 
 class TestSpawnDefaultTerminalIsTmux:
     """OW_TERMINAL 未設定時のデフォルトは "tmux" (manual fallback ではない)。"""

@@ -1203,19 +1203,27 @@ def ow_close_worker(term_ref: str) -> dict:
     # ただし term_ref が "manual:" prefix の場合は手動起動された worker なので、
     # env_terminal に関係なく manual 経路に倒す (アダプタが解釈不能な term_ref を
     # 渡してサイレントに失敗するのを防ぐ)。
-    terminal = os.environ.get("OW_TERMINAL", "tmux")
-    if classify_term_ref(term_ref) == "manual":
-        terminal = "manual"
+    env_terminal = os.environ.get("OW_TERMINAL", "tmux")
+    forced_manual_by_term_ref = (
+        env_terminal != "manual" and classify_term_ref(term_ref) == "manual"
+    )
+    terminal = "manual" if forced_manual_by_term_ref else env_terminal
     adapter_path = _get_adapter_path(terminal) if terminal != "manual" else None
 
     if adapter_path is None:
-        expected_adapter = (
-            Path(__file__).resolve().parent.parent.parent
-            / "scripts" / "ow" / "adapters" / f"{terminal}.sh"
-        )
-        adapter_error = (
-            f"adapter not found at {expected_adapter} (OW_TERMINAL={terminal!r})"
-        )
+        if forced_manual_by_term_ref:
+            adapter_error = (
+                f"manual fallback due to term_ref format "
+                f"(OW_TERMINAL={env_terminal!r}, term_ref={term_ref!r})"
+            )
+        else:
+            expected_adapter = (
+                Path(__file__).resolve().parent.parent.parent
+                / "scripts" / "ow" / "adapters" / f"{terminal}.sh"
+            )
+            adapter_error = (
+                f"adapter not found at {expected_adapter} (OW_TERMINAL={terminal!r})"
+            )
         logger.error("ow_close_worker manual fallback: %s", adapter_error)
         return {
             "manual": True,
