@@ -19,9 +19,28 @@ anchorの新規作成・更新は [setup-anchor](../setup-anchor/SKILL.md) skill
 
 ## 手順
 
-### 1. 入口の特定
+### 1. 入口の特定とスコープ提示
 
-引数で entity_type + entity_id が指定されていればそのまま使う。指定されていなければ、文脈（check-in済みactivity・直近の話題・ナッジhintの対象tag）からエージェントが自律判断で決める。スコープ確認（「このtag/topic群でいい？」）はユーザーに出さない。判断材料が本当にないときだけ聞く。activity/topic/decisionどれでも可。
+引数で entity_type + entity_id が指定されていればそのまま使う。指定されていなければ、文脈（check-in済みactivity・直近の話題・ナッジhintの対象tag）からエージェントが自律判断で決める。activity/topic/decisionどれでも可。
+
+エージェントがスコープを切ったら、**実行前にユーザーへ一行で規模感を提示してOK確認を取る**。背景: cc-memoryの記録内容はユーザー自身も把握していない前提なので、スコープの中身を見せる代わりに作業規模だけ示す。
+
+提示フォーマット例:
+> 「ざっと N activities + M decisions ぶん、SA X 人で並列整理する。これで進める？」
+> 「整理単位が大きいので 2 cluster に分けて並走させる。SA Y 人。これで進める？」
+
+提示する内容:
+- 関連エンティティの概数（activities + decisions + materials の合計件数感）
+- 並列起動する SA の人数（cluster 数で決まる、目安: 各 SA が 1 cluster を担当）
+- 分割した場合はその数を明示
+
+提示しないこと:
+- どの activity/decision がどの cluster に入るかの内訳（ユーザーは記録を把握していない）
+- 関連エンティティの個別 ID 一覧
+
+OK が出たら自走モードに入り、以降ステップ2-8はユーザーへの追加確認なしで進める。OK が出るまでは記録 read のみで write はしない。
+
+判断材料が本当にないとき（入口候補がゼロ）だけ「どこから整理する？」を聞く。
 
 ### 2. 全情報の収集
 
