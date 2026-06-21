@@ -11,7 +11,7 @@ orch との二者物理分離後の真実源モデルにおいて、worker 個�
 
 ## §0 不変責務 (起動直後の thinking で必ず読み上げる)
 
-> 【重要】§0 を thinking で読み上げる際、本文を thinking 外 (ユーザー向け出力) に転載・要約・抵訳して書き出さないこと。ユーザー向け出力は「§0 不変責務読み上げ済」の一行のみとし、責務文本体は出力しない。
+> 【重要】§0 を thinking で読み上げる際、本文を thinking 外 (ユーザー向け出力) に転載・要約・転訳して書き出さないこと。ユーザー向け出力は「§0 不変責務読み上げ済」の一行のみとし、責務文本体は出力しない。
 
 ### 役割境界
 - 私は dispatcher である。worker pool の指揮 + ライフサイクル管理 + 品質達成判定 + 成果レポート起草が責任範囲
@@ -103,11 +103,11 @@ dispatcher の責務は **A#982 turn 4 ユーザー裁定** で確定した責�
 
 **注釈 B: orch がコード知らずに acceptance 書けるか** — 既存「議論→デザイン→実装」フローで受入基準は議論・デザイン段階で確定している。判断情報不足時は「調査タスク」として dispatcher に振って情報を得てから書く。
 
-**注釈 C: worker 間通信ルール** — worker 間通信 OK。ただし dispatcher を必ず cc (3 者 thread)。通信ペアの許可は dispatcher 決定権を持つ。dispatcher は「誰と誰が話してるか」を把握、不要な通信は止める。横断調整が必要になったら dispatcher が「合流点同期パターン」を発動する。
+**注釈 C: worker 間通信ルール** — worker 間通信 OK。ただし dispatcher を必ず cc (3 者 thread)。dispatcher cc 無しの worker → worker 直接通信は禁止。通信ペアの許可は dispatcher 決定権を持つ。dispatcher は「誰と誰が話してるか」を把握、不要な通信は止める。横断調整が必要になったら dispatcher が「合流点同期パターン」を発動する。
 
 **注釈 D: orch の最終ゲートキーピング層** — フロー: worker 成果 → dispatcher が成果レポート作成 → orch がレポート + PR diff 確認 → 違和感あれば dispatcher 差し戻し → 違和感なければ user 報告。orch は質的価値の「違和感センサー」、dispatcher は「品質達成判定」。
 
-**注釈 E: worker 間通信ルール** — worker → worker メッセージは dispatcher を必ず cc。dispatcher が値しない通信は禁止。通信ペアの許可は dispatcher 決定権。
+**注釈 E (削除)**: D#2764 原文に重複していた worker 間通信ルールの再掲は、注釈 C に統合した。本 SKILL では注釈 C/D/F を採用する。
 
 **注釈 F: dispatcher の SA 例外** — 軽量 grep (haiku) / 指示文起草補助 SA は OK。本格的コード理解・テスト解析・PR レビューは worker spawn して任せる。
 
@@ -695,6 +695,8 @@ dispatcher も起動時に `event:identity (role=dispatcher)` を送る。worker
 
 新 channel から `o-*` / `d-*` prefix を正式導入する。既存 channel (`orch` 単独 handle を使っているもの) は `orch` を dispatcher エイリアスとして残し、worker 群との互換性を保つ。
 
+**本 SKILL 中の `"dispatcher"` リテラル表記について**: 本 SKILL の起動シーケンス・event:identity・Monitor 起動コマンドの例示で `handle="dispatcher"` と書かれている箇所は「過渡期エイリアス + 説明上の代表名」を指す。実セッションでは `d-<alias>` (新 channel) または `orch` (既存 channel の dispatcher エイリアス) が使われる。worker→dispatcher の `to` フィールドは relay 側 recv_filter が `dispatcher` / `orch` / `d-*` の対応関係を吸収する設計 (relay-side filter 調整は後続 PR)。
+
 ### worker → dispatcher の to 置換
 
 worker が送る `event:state` 系の `to` フィールドは旧 `"orch"` から `"dispatcher"` に置換する (worker SKILL.md 改訂と整合)。過渡期は relay の recv_filter が `to:"orch"` / `to:"dispatcher"` 両方を dispatcher session にルーティングする (実装側で吸収)。
@@ -724,15 +726,100 @@ spawning → working → awaiting_verify → done
        + escalated / stalled（途中状態として付与可能）
 ```
 
-projector マッピング表は旧 orch SKILL.md §projector マッピング表 と同じ。本書では重複させない。
+## projector マッピング表
 
-## watchdog / stagnation detector
+projector は relay event 受信時に push 型で cache JSON と activities table を順次更新する (D#2750)。順序: cache JSON 先 → activities table 後。activities table 更新失敗時は cache が先行し次回 projector run で吸収する (idempotent)。
 
-監視基準とタイムアウト処理は旧 orch SKILL.md §watchdog / §stagnation detector と同じ。dispatcher は sentinel event を SSE 経由で受信し、層 3 段階対処 (§worker-lifecycle) を実行する。
+| relay event | cache.workers[alias] 更新 | activities table 更新 |
+|---|---|---|
+| `event:state(spawning, target_handle=h)` (dispatcher broadcast) | workers[h]={state:"loading", task_status:"spawning", assigned_at, acceptance, model, cwd} | (触らず) |
+| `event:state(loading)` (worker) | state=loading, task_status=spawning, latest_msg_id, latest_at | (触らず) |
+| `event:state(ready)` (worker) | state=ready, task_status=spawning | (触らず) |
+| `event:state(working)` (worker) | state=working, task_status=working | activity.status=in_progress (まだなら) |
+| `event:state(blocked)` (worker) | state=blocked | (触らず) |
+| `event:state(escalated)` (worker) | state=escalated, task_status=escalated | (触らず) |
+| `event:state(draining)` (worker) | state=draining | (触らず) |
+| `event:state(done)` (worker) | task_status=awaiting_verify | (触らず) |
+| `event:state(terminated, cause=closed)` (worker) | state=terminated, cause=closed, task_status=done | activity.status=completed |
+| `event:state(terminated, cause=cancelled)` (worker) | state=terminated, cause=cancelled, task_status=cancelled | activity.status=completed + description先頭に[cancelled]追記 |
+| `event:state(terminated, cause=dead)` (worker) | state=terminated, cause=dead, task_status=failed | (触らず: 人間判断、in_progress 維持) |
+| reducer 推論 cause=crashed | state=terminated(推論), cause=crashed, task_status=stalled | (触らず) |
+| reducer 推論 cause=crashed-during-drain | 同上 | (触らず) |
+| `event:identity (role=worker)` (初回) | identities[handle], identity_events | (触らず) |
+| `event:identity (role=worker)` (terminated_at 付き) | identities 更新 | (上の terminated event 経由で活性化) |
+| `event:identity (role=dispatcher)` | identities["dispatcher"] (dispatcher_cwd / dispatcher_activity_id を保持) | (触らず) |
+| `event:identity (role=orch)` | identities["orch"] (orch_cwd / orch_activity_id を保持) | (触らず) |
+| `event:heartbeat` | heartbeats[handle] | (触らず) |
+
+**マッピング表の実体は projector コード内ハードコード** (D#2750-2B-3)。本表は SKILL.md 上の参考表であり、実装側との差異が出た場合は実装側を正とする。
+
+## crash 推論の cause lineup と派生反映
+
+設計書 v3 §5.2.2 / §9 の cause lineup に基づき、projector は以下のルールで cache.workers[alias] と activity.status を自動更新する。
+
+| cause | 発生条件 | task_status への反映 | activity.status への反映 |
+|---|---|---|---|
+| `closed` | command:close 受領 → 正常退出 | `done` (acceptance満たし & synced済み) | `completed` |
+| `cancelled` | command:cancel 受領 → 退出 | `cancelled` | `completed` + [cancelled] 追記 |
+| `dead` | loading 中の load 失敗 | `failed` | (触らず、`in_progress` 維持) |
+| `crashed (inferred)` | ready/working/blocked/escalated 中の heartbeat 途絶 | `stalled` | (触らず) |
+| `crashed-during-drain (inferred)` | draining 中の heartbeat 途絶 | `stalled` | (触らず) |
+
+**自動 failed および自動クローズはしない**: heartbeat 途絶 (crashed 推論) は worker が長時間ツール実行中の場合にも発生しうるため、確実な異常証明とはならない。activities.status の `failed` 化は projector が触らず、人間判断に残す。
+
+## watchdog
+
+**監視基準**: 「その worker からの最後の `event:heartbeat` 受信時刻」からの経過時間 (設計書 v3 §5.4.2)。workload state の所要時間や `last_recv` 全般の経過では判定しない。
+
+**heartbeat 周期 × 3 の閾値**:
+
+| 現在の workload state | heartbeat 周期 | タイムアウト閾値 (周期×3) |
+|---|---|---|
+| `loading` | 10 秒 | **30 秒** |
+| `ready` / `working` / `blocked` / `draining` | 30 秒 | **90 秒** |
+| `escalated` | 監視対象外 | — |
+
+dispatcher は `ow_get_workload_state(channel, handle)` で現在の state を参照し、対応する閾値を選んで判定する。
+
+**タイムアウト処理 (heartbeat 途絶検知)**:
+
+1. heartbeat 途絶 → `command:ping` を送信
+2. ping に無応答 → crash 推論経路に遷移 (cache.workers[alias].task_status=stalled が projector により付与される)
+3. **自動 failed および自動クローズはしない**。failed への変更・強制クローズは人間判断
+
+**watchdog 対象外**:
+- `escalated` 状態の worker (人間対話中はタイムアウト・クローズ対象外)
+- `terminated` 状態の worker (既に終了済み)
+
+## stagnation detector (Phase A: ow_sentinel)
+
+watchdog が「死活 (heartbeat 途絶)」を見るのに対し、stagnation detector は「詰まり (heartbeat 継続中に state 遷移が起きない)」を見る。両者は責務分離・併走であり、stagnation が watchdog の前段に位置する fallback 仕組み (M#388 / D#2752)。
+
+**監視対象 state と閾値**:
+
+| 観測 state | 期待される遷移 | 閾値 | 検出する詰まり |
+|---|---|---|---|
+| `ready` | `working` (auto-assign 成功) | **60 秒** | auto-assign 不発 |
+| `draining` | `terminated` | **90 秒** | close ハンドシェイク失敗 / worker-sync 詰まり |
+
+**sentinel envelope 形式**:
+
+```json
+{"v":1, "kind":"event", "from":"ow_sentinel", "to":"dispatcher", "task":"T<n>",
+ "data":{"type":"stagnation", "target_handle":"<alias>",
+         "target_state":"ready|draining", "elapsed_sec":<int>, "threshold_sec":<int>}}
+```
+
+注: 過渡期は sentinel が `to:"orch"` で送信するケースが残り、relay 側 recv_filter で吸収される (sentinel.py の `to` 統一は別 PR)。
+
+**dispatcher 側受信時の対処**:
+
+- `target_state="ready"` → auto-assign 不発の疑い。`command:assign` を明示送信、または worker 側 SKILL 不発の調査
+- `target_state="draining"` → close ハンドシェイク失敗の疑い。`command:close` 再送、または `ow_recover` で stalled_close 候補を確認
 
 ## モデル選択 (プロトコル制約のみ)
 
-`command:assign` envelope では `model` が必須フィールド。値の選び方は合算版 playbook (orch playbook を継承) の §モデル選択 セクションに従う。`claude-opus-4-7` 一択 (sonnet / haiku / opus 4.8 禁止)。
+`command:assign` envelope では `model` が必須フィールド。値の選び方は合算版 playbook (`skills/orch/playbook.md` §モデル選択) に従う (リポ別調整があれば特化版で上書き)。具体的な model ID 列挙は playbook に一元化する (本 SKILL では二重管理しない)。
 
 ## 思考 worker (effort 指定) の spawn
 
