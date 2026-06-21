@@ -11,21 +11,25 @@ logger = logging.getLogger(__name__)
 ENTITY_TABLE_MAP = {
     "decision": "decisions",
     "log": "discussion_logs",
+    "material": "materials",
 }
 
 # search_indexのsource_typeとENTITY_TABLE_MAPの対応
 _SEARCH_INDEX_SOURCE_TYPE = {
     "decision": "decision",
     "log": "log",
+    "material": "material",
 }
 
 # FTS5 contentless 'delete' コマンドはインサート時と同じtitle/body値を要求するため、
 # 元テーブルからbodyカラム相当を取り直すクエリ（INSERTトリガーと整合させる必要あり）。
 # - decision: trg_search_decisions_insert → VALUES (last_insert_rowid(), NEW.decision, NEW.reason)
 # - log:      trg_search_logs_insert      → VALUES (last_insert_rowid(), NEW.title, NEW.content)
+# - material: trg_search_materials_insert → VALUES (last_insert_rowid(), NEW.title, NEW.content)
 _FTS_BODY_QUERY = {
     "decision": "SELECT reason FROM decisions WHERE id = ?",
     "log": "SELECT content FROM discussion_logs WHERE id = ?",
+    "material": "SELECT content FROM materials WHERE id = ?",
 }
 
 
@@ -81,7 +85,7 @@ def retract(entity_type: str, ids: list[int], undo: bool = False) -> dict:
     場合は、別途add_decisions/add_logsで新規追加する。
 
     Args:
-        entity_type: エンティティ種別 ("decision" | "log")
+        entity_type: エンティティ種別 ("decision" | "log" | "material")
         ids: 対象エンティティのIDリスト
         undo: True=un-retract（retracted_atをNULLに戻す）、False=retract
 

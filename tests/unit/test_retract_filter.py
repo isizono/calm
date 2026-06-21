@@ -305,7 +305,7 @@ class TestSearchFilter:
         finally:
             conn.close()
 
-        # search経由でもヒットしない（include_retracted は search から撤去済み）
+        # search経由でもヒットしない（物理削除されているため）
         search_result = search("撤回テスト用ユニーク決定DEF")
         ids = [(r["type"], r["id_raw"]) for r in search_result.get("results", [])]
         assert ("decision", retracted_id) not in ids
@@ -353,6 +353,52 @@ class TestSearchFilter:
         ids = [(r["type"], r["id_raw"]) for r in search_result.get("results", [])]
         assert ("log", retracted_id) not in ids
 
+    def test_retracted_material_physically_removed_from_search_index(self, temp_db):
+        """materialもretract時にsearch_index/FTS/vec_indexから物理削除される"""
+        from src.services.material_service import add_material
+        from src.services.search_service import search
+
+        m = add_material(
+            title="物理削除テストMNO",
+            content="物理削除テスト用ユニーク資材MNO 本文",
+            tags=DEFAULT_TAGS,
+            source="unit test",
+        )
+        retracted_id = m["material_id"]
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT id FROM search_index WHERE source_type = 'material' AND source_id = ?",
+                (retracted_id,),
+            ).fetchone()
+            assert row is not None
+            search_index_id = row["id"]
+        finally:
+            conn.close()
+
+        retract("material", [retracted_id])
+
+        conn = get_connection()
+        try:
+            si_row = conn.execute(
+                "SELECT id FROM search_index WHERE source_type = 'material' AND source_id = ?",
+                (retracted_id,),
+            ).fetchone()
+            assert si_row is None
+
+            vec_row = conn.execute(
+                "SELECT rowid FROM vec_index WHERE rowid = ?",
+                (search_index_id,),
+            ).fetchone()
+            assert vec_row is None
+        finally:
+            conn.close()
+
+        search_result = search("物理削除テストMNO")
+        ids = [(r["type"], r["id_raw"]) for r in search_result.get("results", [])]
+        assert ("material", retracted_id) not in ids
+
     def test_undo_does_not_reindex(self, topic):
         """un-retractはretracted_atをNULLに戻すのみで、search経路への再登録は行わない"""
         from src.services.search_service import search
@@ -389,3 +435,56 @@ class TestSearchFilter:
         search_result = search("アンリトラクトテストJKL")
         ids = [(r["type"], r["id_raw"]) for r in search_result.get("results", [])]
         assert ("decision", decision_id) not in ids
+
+
+class TestPinnedMaterialFilter:
+    """check_in の pinned material retract フィルタ"""
+
+    def test_pinned_retracted_material_excluded_from_checkin(self, activity_with_topic):
+        """pinsテーブルでpinされたmaterialをretractすると、check-inのpinnedに含まれない"""
+        from src.services.material_service import add_material
+
+        aid = activity_with_topic["activity_id"]
+        m = add_material(
+            title="pinしてretractする資材",
+            content="本文",
+            tags=DEFAULT_TAGS,
+            source="unit test",
+        )
+        material_id = m["material_id"]
+
+        add_pin("activity", aid, "material", material_id)
+        retract("material", [material_id])
+
+        checkin = check_in(aid)
+        assert "error" not in checkin
+
+        pinned = checkin.get("pinned", {})
+        pinned_material_ids = [m["id_raw"] for m in pinned.get("materials", [])]
+        assert material_id not in pinned_material_ids
+
+
+class TestTimelineMaterialFilter:
+    """get_timeline の material retract フィルタ"""
+
+    def test_retracted_material_excluded_from_timeline(self, activity_with_topic):
+        """retracted materialはget_timelineで除外される"""
+        from src.services.material_service import add_material
+        from src.services.relation_service import add_relation
+        from src.services.timeline_service import get_timeline
+
+        tid = activity_with_topic["topic_id"]
+        m = add_material(
+            title="timeline対象",
+            content="本文",
+            tags=DEFAULT_TAGS,
+            source="unit test",
+        )
+        material_id = m["material_id"]
+        add_relation("material", material_id, [{"type": "topic", "ids": [tid]}])
+
+        retract("material", [material_id])
+
+        result = get_timeline(topic_id=tid, entity_types=["material"])
+        ids = [item["id_raw"] for item in result.get("items", [])]
+        assert material_id not in ids

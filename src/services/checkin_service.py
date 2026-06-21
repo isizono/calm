@@ -185,15 +185,15 @@ def _get_pinned_targets(conn: sqlite3.Connection, activity_id: int) -> dict:
     1. activity自身のtag_idを取得する（activity_tags経由）
     2. source=tag（activity自身のtagsのみ）と source=activity のpinsをUNIONで取得する
     3. (target_type, target_id) でDISTINCT化し、created_at降順で並べる
-    4. target_type別にcontent fetchする（decision/logはretracted_at IS NULLでフィルタ）
+    4. target_type別にcontent fetchする（decision/log/materialはretracted_at IS NULLでフィルタ）
     5. {decisions, logs, materials, topics, activities} に振り分けて返す（0件キーは省略）
 
     NOTE: target_type='tag' のpinは処理しない（tagにはcontent表現がないため）。
     pinsテーブルのCHECK制約では'tag'が許容されるが、注入対象は上記5種に限定する。
 
-    NOTE: retracted_at カラムは decisions と discussion_logs にのみ存在する（migration 0031）。
-    materials / discussion_topics / activities には存在しないため、
-    retracted_at IS NULL フィルタは decision/log のクエリにのみ付ける。
+    NOTE: retracted_at カラムは decisions / discussion_logs / materials に存在する。
+    discussion_topics / activities には存在しないため、
+    retracted_at IS NULL フィルタは decision/log/material のクエリにのみ付ける。
 
     Returns:
         0件キーを省略したdict。全種0件の場合は空dict。
@@ -295,14 +295,14 @@ def _get_pinned_targets(conn: sqlite3.Connection, activity_id: int) -> dict:
             result["logs"] = logs
 
     if "material" in by_type:
-        # materialsにはretracted_atカラムが存在しない（migration 0031参照）
+        # materialsもretracted_at IS NULLでフィルタする（migration 0043 以降）
         ids = by_type["material"]
         placeholders = ",".join("?" * len(ids))
         rows = conn.execute(
             f"""
             SELECT id, title, content, source
             FROM materials
-            WHERE id IN ({placeholders})
+            WHERE id IN ({placeholders}) AND retracted_at IS NULL
             """,
             tuple(ids),
         ).fetchall()
