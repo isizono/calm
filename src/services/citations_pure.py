@@ -16,6 +16,28 @@ from typing import Callable
 
 logger = logging.getLogger(__name__)
 
+# 同パッケージの他モジュール (citations_service / citation_renderer) と、
+# transcript sanitize hook が import する公開シンボルを明示する。アンダースコア
+# プレフィックスのままだが「pure 層が抱える公開 API」として明示的に export する。
+__all__ = [
+    "VALID_OWNER_TYPES",
+    "VALID_TARGET_TYPES",
+    "TYPE_CODE_TO_NAME",
+    "TYPE_NAME_TO_CODE",
+    "TYPE_TO_TABLE",
+    "TYPE_TO_TITLE_EXPR",
+    "TYPES_WITH_RETRACT",
+    "OWNER_TEXT_FIELDS",
+    "_CITE_PATTERN",
+    "_CITE_LIKE_PATTERN",
+    "_RAW_CITE_PATTERN",
+    "extract_citations",
+    "convert_raw_to_cite",
+    "check_target_exists",
+    "_validate_owner_type",
+    "_combine_owner_text",
+]
+
 VALID_OWNER_TYPES = ("material", "decision", "log", "activity", "topic")
 VALID_TARGET_TYPES = VALID_OWNER_TYPES
 
@@ -218,7 +240,7 @@ def _convert_line_raw_to_cite(
             continue
         # エスケープ: `\X#NNN` または `\{{cite:...}}`
         if ch == "\\":
-            # `\{{cite:...}}` は既存パーサと同じく全体スキップ
+            # `\{{cite:...}}` は既存パーサと同じく全体スキップ (エスケープ扱い)
             if line[i + 1 : i + 3] == "{{":
                 end = line.find("}}", i + 1)
                 if end == -1:
@@ -226,7 +248,7 @@ def _convert_line_raw_to_cite(
                     i += 1
                     continue
                 segment = line[i : end + 2]
-                counters["skipped_in_existing_cite"] += _count_raw_in_segment(segment)
+                counters["skipped_escape"] += _count_raw_in_segment(segment)
                 out_parts.append(segment)
                 i = end + 2
                 continue

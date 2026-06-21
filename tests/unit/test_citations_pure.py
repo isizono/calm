@@ -92,11 +92,22 @@ class TestEscape:
         assert counters["skipped_escape"] == 1
 
     def test_backslash_cite_template_passes_through(self):
-        # `\{{cite:M#1}}` 形式: 既存パーサの規律と同じく丸ごとスキップ
+        # `\{{cite:M#1}}` 形式: 既存パーサの規律と同じく丸ごとスキップ。
+        # 内部に含まれる `M#1` は escape による不変扱いとして skipped_escape に集計する。
         text = r"shown \{{cite:M#1}} only"
         out, counters = convert_raw_to_cite(text)
         assert out == text
         assert counters["sanitized_count"] == 0
+        assert counters["skipped_escape"] == 1
+        assert counters["skipped_in_existing_cite"] == 0
+
+    def test_backslash_cite_template_then_raw_literal(self):
+        # `\{{cite:M#1}}` の後ろに生リテラルがある: escape 内はスキップ、後者は変換される
+        text = r"escaped \{{cite:M#1}} then real M#2"
+        out, counters = convert_raw_to_cite(text)
+        assert out == r"escaped \{{cite:M#1}} then real {{cite:M#2}}"
+        assert counters["sanitized_count"] == 1
+        assert counters["skipped_escape"] == 1
 
 
 class TestExistingCiteSkip:
