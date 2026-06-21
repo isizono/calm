@@ -387,6 +387,8 @@ dispatcher が orch に対して送るレポート / escalate / progress / decis
 
 ### orch identity (event:identity)
 
+orch も起動時に `event:identity (role=orch)` を送る (worker と対称、真実源 = relay events 原則の徹底):
+
 ```json
 {"v":1, "kind":"event", "from":"orch", "to":"*",
  "data":{

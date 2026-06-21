@@ -109,8 +109,12 @@ def test_does_not_mutate_input_body(tmp_home):
     assert out["data"]["term_ref"] == "%5"
 
 
-def test_iterm2_uuid_form_round_trip(tmp_home):
-    """iTerm2 形式 (UUID のみ) でも普通に補完される。"""
+def test_inject_passes_through_arbitrary_cached_value(tmp_home):
+    """_maybe_inject_term_ref は format validation せず cache の値を素通しする。
+
+    cache に未知形式 (UUID 等) が残っていてもエラーにせず注入する契約
+    (validation 責任は reducer / classify_term_ref 側にある)。
+    """
     _write_cache(tmp_home, "sess-1", "42C08804-2743-49EA-BEC5-F10B5717039B")
     out = _maybe_inject_term_ref(_identity_body())
     assert out["data"]["term_ref"] == "42C08804-2743-49EA-BEC5-F10B5717039B"
