@@ -1162,13 +1162,24 @@ def _apply_recency_boost(results: list[dict], now: datetime | None = None) -> No
     """RRFスコアにrecency boost（指数減衰）を適用する（in-place）。
 
     recency_factor = max(exp(-age_days * RECENCY_DECAY_RATE), RECENCY_DECAY_FLOOR)
-    をスコアに乗算し、スコア降順で再ソートする。
+    を score_breakdown.rrf_normalized に乗算して final_score を確定する。
+    各結果に以下を付与する:
+    - score_breakdown.recency_factor: 適用された減衰係数（created_at取得不可時は1.0）
+    - final_score: rrf_normalized * recency_factor
+    - score: final_score と同値（互換のため残置。Phase Bで削除予定）
+
+    確定後、final_score 降順で再ソートする。
     """
     if not results:
         return
 
     if now is None:
         now = datetime.now(timezone.utc)
+
+    # 初期値: recency_factor=1.0 (created_at取得不可時のデフォルト)
+    for item in results:
+        item.setdefault("score_breakdown", {"fts": 0.0, "vec": 0.0, "tag": 0.0, "rrf_normalized": item.get("score", 0.0)})
+        item["score_breakdown"].setdefault("recency_factor", 1.0)
 
     # typeごとにcreated_atをバッチ取得
     by_type: dict[str, list[dict]] = {}
@@ -1192,10 +1203,18 @@ def _apply_recency_boost(results: list[dict], now: datetime | None = None) -> No
                 created = datetime.fromisoformat(created_str).replace(tzinfo=timezone.utc)
                 age_days = max(0, (now - created).days)
                 recency_factor = max(math.exp(-age_days * RECENCY_DECAY_RATE), RECENCY_DECAY_FLOOR)
-                item["score"] *= recency_factor
+                item["score_breakdown"]["recency_factor"] = recency_factor
 
-    # スコア降順で再ソート
-    results.sort(key=lambda x: x["score"], reverse=True)
+    # final_score = rrf_normalized * recency_factor を確定
+    # TODO(Phase B): 既存 score フィールドは廃止し final_score のみに統一する。
+    for item in results:
+        bd = item["score_breakdown"]
+        final_score = bd["rrf_normalized"] * bd["recency_factor"]
+        item["final_score"] = final_score
+        item["score"] = final_score
+
+    # final_score 降順で再ソート
+    results.sort(key=lambda x: x["final_score"], reverse=True)
 
 
 def _compute_adaptive_weights(fts_count: int, vec_count: int) -> tuple[float, float]:
@@ -1223,58 +1242,65 @@ def _rrf_merge(
     limit: int,
     tag_results: Optional[list[dict]] = None,
 ) -> list[dict]:
-    """RRF（Reciprocal Rank Fusion）でFTS5・ベクトル・タグLIKE結果を統合する。"""
+    """RRF（Reciprocal Rank Fusion）でFTS5・ベクトル・タグLIKE結果を統合する。
+
+    各結果に以下のスコア内訳フィールドを付与する:
+    - score_breakdown.fts: FTS5由来のRRF寄与（生値、正規化前）
+    - score_breakdown.vec: ベクトル由来のRRF寄与（生値、正規化前）
+    - score_breakdown.tag: タグLIKE由来のRRF寄与（生値、正規化前）
+    - score_breakdown.rrf_normalized: 3寄与の合計を理論最大値で割った正規化済みスコア（0〜1）
+
+    recency_factor / final_score は後段の `_apply_recency_boost` で付与される。
+    既存 score フィールドは互換のため最終的な final_score と同値で残置する。
+    """
     scores: dict[tuple, dict] = {}  # key: (type, id)
 
     # Adaptive RRF: ヒット数比率に応じてFTS/ベクトルの重みを動的調整
     w_fts, w_vec = _compute_adaptive_weights(len(fts_results), len(vec_results))
 
-    # FTS5結果にRRFスコアを付与（1始まりランク）
-    for rank, item in enumerate(fts_results, start=1):
+    def _ensure_entry(item: dict) -> dict:
         key = (item["type"], item["id"])
-        scores[key] = {
-            "type": item["type"],
-            "id": item["id"],
-            "title": item["title"],
-            "score": w_fts / (RRF_K + rank),
-        }
-
-    # ベクトル結果のRRFスコアを加算（1始まりランク）
-    for rank, item in enumerate(vec_results, start=1):
-        key = (item["type"], item["id"])
-        vec_score = w_vec / (RRF_K + rank)
-        if key in scores:
-            scores[key]["score"] += vec_score
-        else:
+        if key not in scores:
             scores[key] = {
                 "type": item["type"],
                 "id": item["id"],
                 "title": item["title"],
-                "score": vec_score,
+                "score_breakdown": {"fts": 0.0, "vec": 0.0, "tag": 0.0},
             }
+        return scores[key]
+
+    # FTS5結果にRRFスコアを付与（1始まりランク）
+    for rank, item in enumerate(fts_results, start=1):
+        entry = _ensure_entry(item)
+        entry["score_breakdown"]["fts"] += w_fts / (RRF_K + rank)
+
+    # ベクトル結果のRRFスコアを加算（1始まりランク）
+    for rank, item in enumerate(vec_results, start=1):
+        entry = _ensure_entry(item)
+        entry["score_breakdown"]["vec"] += w_vec / (RRF_K + rank)
 
     # タグLIKE結果のRRFスコアを加算（1始まりランク）
     if tag_results:
         for rank, item in enumerate(tag_results, start=1):
-            key = (item["type"], item["id"])
-            tag_score = RRF_W_TAG / (RRF_K + rank)
-            if key in scores:
-                scores[key]["score"] += tag_score
-            else:
-                scores[key] = {
-                    "type": item["type"],
-                    "id": item["id"],
-                    "title": item["title"],
-                    "score": tag_score,
-                }
+            entry = _ensure_entry(item)
+            entry["score_breakdown"]["tag"] += RRF_W_TAG / (RRF_K + rank)
 
     # 理論最大値で正規化（全ソース1位の場合のスコア）
     max_score = (w_fts + w_vec) / (RRF_K + 1)
     if tag_results:
         max_score += RRF_W_TAG / (RRF_K + 1)
-    if max_score > 0:
-        for item in scores.values():
-            item["score"] = round(item["score"] / max_score, 4)
+    for entry in scores.values():
+        bd = entry["score_breakdown"]
+        raw_sum = bd["fts"] + bd["vec"] + bd["tag"]
+        rrf_normalized = round(raw_sum / max_score, 4) if max_score > 0 else 0.0
+        bd["fts"] = round(bd["fts"], 6)
+        bd["vec"] = round(bd["vec"], 6)
+        bd["tag"] = round(bd["tag"], 6)
+        bd["rrf_normalized"] = rrf_normalized
+        # recency boost 前のスコアを score にセット。
+        # _apply_recency_boost で recency_factor 乗算後に final_score を確定する。
+        # TODO(Phase B): 既存 score フィールドは廃止し final_score のみに統一する。
+        entry["score"] = rrf_normalized
 
     # RRFスコア降順でソートし、上位limit件を返す
     merged = sorted(scores.values(), key=lambda x: x["score"], reverse=True)
@@ -1320,8 +1346,13 @@ def search(
         date_before: 日付フィルタ（以前）。YYYY-MM-DD or YYYY-MM-DD HH:MM:SS形式
 
     Returns:
-        検索結果一覧（type, id, title, score, snippet, tags）
-        scoreは0〜1に正規化された関連度スコア（RRF理論最大値基準）。
+        検索結果一覧（type, id, title, score, final_score, score_breakdown, snippet, tags）。
+        final_score は 0〜1 に正規化された関連度スコア（RRF理論最大値基準 × recency減衰）。
+        score_breakdown は以下のサブフィールドを持つ:
+          - fts / vec / tag: 各ソースのRRF生寄与（正規化前、recency適用前）
+          - rrf_normalized: 3寄与の合計を理論最大値で割った正規化済み値（0〜1、recency適用前）
+          - recency_factor: created_atに基づく指数減衰係数（0〜1）
+        既存 score フィールドは互換のため final_score と同値で残置されている（Phase Bで廃止予定）。
         snippetは各typeの対応するソースカラムの先頭200文字（materialはtitle優先表示）。
         tagsはエンティティに紐づくタグ文字列のリスト。
         include_details=Trueの場合、上位DETAILS_MAX_RESULTS件にdetailsが追加される。
