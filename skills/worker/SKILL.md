@@ -32,11 +32,11 @@ workerが送信するメッセージはすべて `kind:event`:
 
 | data.type | 意味 | toフィールド |
 |-----------|------|------------|
-| `state` | workload state 遷移宣言 | `"orch"` |
+| `state` | workload state 遷移宣言 | `"dispatcher"` (過渡期エイリアスとして `"orch"` も relay 側で吸収) |
 | `identity` | 参加者の身元情報 full snapshot | `"*"` |
 | `heartbeat` | liveness signal（バックグラウンドループが自動送信） | `"*"` |
 
-orchからworkerへ届くメッセージは `kind:command`。
+dispatcher (旧 orch handle) からworkerへ届くメッセージは `kind:command`。新 channel では handle prefix `d-*` (dispatcher) を使い、既存 channel では `orch` handle が dispatcher エイリアスとして当面維持される。
 
 ## 起動シーケンス
 
@@ -107,7 +107,7 @@ identity から **除外する属性**: `task_n`（activity_id から逆引き�
 ### 5. event:state(loading) を送信
 
 ```json
-{"v":1, "kind":"event", "from":"<alias>", "to":"orch", "task":"T<task_n>", "data":{"type":"state", "state":"loading"}}
+{"v":1, "kind":"event", "from":"<alias>", "to":"dispatcher", "task":"T<task_n>", "data":{"type":"state", "state":"loading"}}
 ```
 
 ### 6. context load（Monitorとcheck_in）
@@ -125,7 +125,7 @@ echo "ready" > /tmp/ow_hb_phase_<alias>
 ```
 
 ```json
-{"v":1, "kind":"event", "from":"<alias>", "to":"orch", "task":"T<task_n>", "data":{"type":"state", "state":"ready", "session_id":"<session_id>", "alias":"<alias>", "cwd":"<cwd>"}}
+{"v":1, "kind":"event", "from":"<alias>", "to":"dispatcher", "task":"T<task_n>", "data":{"type":"state", "state":"ready", "session_id":"<session_id>", "alias":"<alias>", "cwd":"<cwd>"}}
 ```
 
 ### 8. ow_historyでpull補完
@@ -151,7 +151,7 @@ orchから `kind:command, data.type:assign` が届いたら:
 
 1. 内容を確認し、`event:state(working)` を送信する:
    ```json
-   {"v":1, "kind":"event", "from":"<alias>", "to":"orch", "task":"T<task_n>", "data":{"type":"state", "state":"working", "phase":"starting", "note":"assign received, beginning work"}}
+   {"v":1, "kind":"event", "from":"<alias>", "to":"dispatcher", "task":"T<task_n>", "data":{"type":"state", "state":"working", "phase":"starting", "note":"assign received, beginning work"}}
    ```
 2. PHASE_FILEが `ready` になっていることを確認（なっていなければ更新）
 3. タスクの作業を開始する
@@ -161,7 +161,7 @@ orchから `kind:command, data.type:assign` が届いたら:
 - 通常の実装作業を行う（コーディング、テスト作成、PR作成等）
 - 節目ごとに `event:state(working)` を送信してorchに進捗を知らせる:
   ```json
-  {"v":1, "kind":"event", "from":"<alias>", "to":"orch", "task":"T<task_n>", "data":{"type":"state", "state":"working", "phase":"<phase>", "note":"<進捗メモ>"}}
+  {"v":1, "kind":"event", "from":"<alias>", "to":"dispatcher", "task":"T<task_n>", "data":{"type":"state", "state":"working", "phase":"<phase>", "note":"<進捗メモ>"}}
   ```
 - cc-memoryへの記録方針はworker専用の規律に従う（§記録規律）
 - SAの活用については §SAの活用 参照
@@ -191,7 +191,7 @@ workerは全部自分で調べきる必要はない。Agent/Taskツールによ�
 タスクスコープ内で判断がつかない（仕様の解釈が割れる、前提が矛盾している、設計判断が必要等）場合は、独断で進めず `event:state(blocked)` を送信してorchに判断を仰ぐ:
 
 ```json
-{"v":1, "kind":"event", "from":"<alias>", "to":"orch", "task":"T<task_n>",
+{"v":1, "kind":"event", "from":"<alias>", "to":"dispatcher", "task":"T<task_n>",
  "data":{"type":"state", "state":"blocked", "question":"<判断を仰ぎたい点>", "options":["<選択肢A>","<選択肢B>"], "context_refs":["T<task_n>","A#<activity_id>","msg_id:<n>"]}}
 ```
 
@@ -231,7 +231,7 @@ orchが人間へのエスカレーションを指示したら、以下の**エ�
    - 合意した決定事項は `add_decisions` で記録してよい（同タグ）
 3. 記録した `decision_ids` / `log_ids` を添えて `event:state(working)` に戻り、orchへ必ず通知する:
    ```json
-   {"v":1, "kind":"event", "from":"<alias>", "to":"orch", "task":"T<task_n>",
+   {"v":1, "kind":"event", "from":"<alias>", "to":"dispatcher", "task":"T<task_n>",
     "data":{"type":"state", "state":"working", "phase":"escalation_resolved", "note":"<解決内容>", "decision_ids":[...], "log_ids":[...]}}
    ```
 
@@ -244,7 +244,7 @@ orchが人間へのエスカレーションを指示したら、以下の**エ�
 2. worker専用の記録規律（§記録規律）に従い、material保存・decision_proposalsの準備を済ませる
 3. `event:state(done)` を送信する:
    ```json
-   {"v":1, "kind":"event", "from":"<alias>", "to":"orch", "task":"T<task_n>",
+   {"v":1, "kind":"event", "from":"<alias>", "to":"dispatcher", "task":"T<task_n>",
     "data":{"type":"state", "state":"done", "summary":"<作業内容の要約>", "evidence":"<acceptanceを満たす証拠>", "synced":true, "materials":[<material_id...>], "decision_proposals":[{"decision":"...","reason":"..."}]}}
    ```
    - `synced:true` は「material保存済み・decision_proposals添付済みでorchが検証可能な状態」を意味する。最終作業経緯ログの確定はcmd:close時の退場処理で行う
@@ -268,7 +268,7 @@ orchの応答:
 ### Step 1: event:state(draining) を送信
 
 ```json
-{"v":1, "kind":"event", "from":"<alias>", "to":"orch", "task":"T<task_n>", "data":{"type":"state", "state":"draining"}}
+{"v":1, "kind":"event", "from":"<alias>", "to":"dispatcher", "task":"T<task_n>", "data":{"type":"state", "state":"draining"}}
 ```
 
 PHASE_FILEを `draining` に更新する:
@@ -312,7 +312,7 @@ terminated_atと cause を付与してidentityを再送する（`term_ref` は `
 ### Step 4: event:state(terminated, cause:closed) を送信
 
 ```json
-{"v":1, "kind":"event", "from":"<alias>", "to":"orch", "task":"T<task_n>", "data":{"type":"state", "state":"terminated", "cause":"closed"}}
+{"v":1, "kind":"event", "from":"<alias>", "to":"dispatcher", "task":"T<task_n>", "data":{"type":"state", "state":"terminated", "cause":"closed"}}
 ```
 
 ### Step 5: heartbeatループ停止
@@ -348,7 +348,7 @@ SSE（Monitor）は起床信号専用。起床したら `ow_history(channel=<cha
 orchから `kind:command, data.type:ping` が届いたら、現在の state を `event:state` で返す:
 
 ```json
-{"v":1, "kind":"event", "from":"<alias>", "to":"orch", "task":"T<task_n>", "data":{"type":"state", "state":"<現在のstate>", "note":"pong"}}
+{"v":1, "kind":"event", "from":"<alias>", "to":"dispatcher", "task":"T<task_n>", "data":{"type":"state", "state":"<現在のstate>", "note":"pong"}}
 ```
 
 ## 禁止事項

@@ -115,6 +115,10 @@ class SentinelState:
             elapsed = now - entry.transitioned_at
             if elapsed < threshold:
                 continue
+            # 過渡期 (D#2757 / D#2833 role swap migration Phase 3 lazy):
+            # 既存 channel では `orch` 単独 handle が dispatcher エイリアスとして稼働し、
+            # stagnation event の受信先も `orch` のままで届く。新 channel (`d-*` prefix)
+            # への対応は relay-side recv_filter の alias マッピング拡張 (別 PR) で吸収する。
             envelope: dict = {
                 "v": 1,
                 "kind": "event",
