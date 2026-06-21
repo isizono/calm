@@ -1176,10 +1176,16 @@ def _apply_recency_boost(results: list[dict], now: datetime | None = None) -> No
     if now is None:
         now = datetime.now(timezone.utc)
 
-    # 初期値: recency_factor=1.0 (created_at取得不可時のデフォルト)
+    # 初期値: score_breakdown が無い場合は score を rrf_normalized 相当として扱い、
+    # recency_factor=1.0 で初期化。score_breakdown はあるが個別キーが欠ける場合も
+    # 各キーを setdefault で補完する（_rrf_merge 経由なら既に全キー揃っている）。
     for item in results:
-        item.setdefault("score_breakdown", {"fts": 0.0, "vec": 0.0, "tag": 0.0, "rrf_normalized": item.get("score", 0.0)})
-        item["score_breakdown"].setdefault("recency_factor", 1.0)
+        bd = item.setdefault("score_breakdown", {})
+        bd.setdefault("fts", 0.0)
+        bd.setdefault("vec", 0.0)
+        bd.setdefault("tag", 0.0)
+        bd.setdefault("rrf_normalized", item.get("score", 0.0))
+        bd.setdefault("recency_factor", 1.0)
 
     # typeごとにcreated_atをバッチ取得
     by_type: dict[str, list[dict]] = {}
@@ -1245,13 +1251,21 @@ def _rrf_merge(
     """RRF（Reciprocal Rank Fusion）でFTS5・ベクトル・タグLIKE結果を統合する。
 
     各結果に以下のスコア内訳フィールドを付与する:
-    - score_breakdown.fts: FTS5由来のRRF寄与（生値、正規化前）
-    - score_breakdown.vec: ベクトル由来のRRF寄与（生値、正規化前）
-    - score_breakdown.tag: タグLIKE由来のRRF寄与（生値、正規化前）
+    - score_breakdown.fts: FTS5由来のRRF寄与（Adaptive RRF重み w_fts 適用後、理論最大値による正規化前）
+    - score_breakdown.vec: ベクトル由来のRRF寄与（Adaptive RRF重み w_vec 適用後、理論最大値による正規化前）
+    - score_breakdown.tag: タグLIKE由来のRRF寄与（RRF_W_TAG 適用後、理論最大値による正規化前）
     - score_breakdown.rrf_normalized: 3寄与の合計を理論最大値で割った正規化済みスコア（0〜1）
+
+    重要: fts/vec の重みは `_compute_adaptive_weights` がヒット数比率で動的に決めるため、
+    同一ランクでも検索ごとに値の絶対値が異なりうる。クロス検索での絶対比較には向かない。
 
     recency_factor / final_score は後段の `_apply_recency_boost` で付与される。
     既存 score フィールドは互換のため最終的な final_score と同値で残置する。
+
+    前提: 各ソース (fts_results / vec_results / tag_results) 内に同一 (type, id) の重複は無い
+    ことを呼出元が保証する。重複があると `+=` により寄与が二重に加算され rrf_normalized が
+    1.0 を超える可能性がある。現状の `_fts_search` / `_vector_search` / `_tag_like_search` は
+    重複を返さない実装になっている。
     """
     scores: dict[tuple, dict] = {}  # key: (type, id)
 
@@ -1291,6 +1305,9 @@ def _rrf_merge(
         max_score += RRF_W_TAG / (RRF_K + 1)
     for entry in scores.values():
         bd = entry["score_breakdown"]
+        # 注: rrf_normalized は丸め前の生 raw_sum から算出する。
+        # 公開フィールド fts/vec/tag は表示用に round(.,6) するため、
+        # それらを足して max_score で割っても rrf_normalized と微小（≤1e-6 程度）にずれる。
         raw_sum = bd["fts"] + bd["vec"] + bd["tag"]
         rrf_normalized = round(raw_sum / max_score, 4) if max_score > 0 else 0.0
         bd["fts"] = round(bd["fts"], 6)
