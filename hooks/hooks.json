@@ -52,17 +52,6 @@
         ]
       }
     ],
-    "PostToolUse": [
-      {
-        "matcher": "mcp__plugin_claude-code-memory_cc-memory__add_decisions",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/remind_activity_on_decision.sh"
-          }
-        ]
-      }
-    ],
     "SessionEnd": [
       {
         "matcher": "*",

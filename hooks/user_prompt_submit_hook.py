@@ -51,6 +51,29 @@ _RECORD_NUDGE_MESSAGE = (
 )
 
 
+def _wrap_system_reminder(body: str) -> str:
+    return f"<system-reminder>{body}</system-reminder>"
+
+
+def _format_nudge_message(event: dict, ntype: str | None) -> str | None:
+    """nudgeイベントから注入文面を生成する。未知typeは None を返す。
+
+    既存type名 (follow_up / record) も HintService type 名 (follow_up_after_decision /
+    record_missing) も受け付ける。
+    """
+    if ntype in ("follow_up_after_decision", "follow_up"):
+        return _FOLLOW_UP_NUDGE_MESSAGE
+    if ntype in ("record_missing", "record"):
+        repeat = event.get("repeat", 1)
+        return _RECORD_NUDGE_MESSAGE * repeat
+    if ntype == "logs_sparse":
+        body = event.get("message", "")
+        if not body:
+            return None
+        return _wrap_system_reminder(body)
+    return None
+
+
 def main() -> None:
     try:
         # 環境変数によるテスト用オーバーライド
@@ -83,18 +106,18 @@ def main() -> None:
             if e.get("consumed"):
                 continue
 
-            # nudgeを消費済みにマーク
+            ntype = e.get("type")
+            message = _format_nudge_message(e, ntype)
+            if message is None:
+                # 未知typeはconsumed扱いせず温存する (将来バージョンが追加handlerで
+                # 消費する想定)。長期肥大化は session_end でevents.jsonlがローテート
+                # されるため抑えられる。
+                continue
+
             e["consumed"] = True
             _rewrite_events(state, events)
-
-            if e.get("type") == "follow_up":
-                print(json.dumps(_make_hook_output(_FOLLOW_UP_NUDGE_MESSAGE), ensure_ascii=False))
-                return
-            elif e.get("type") == "record":
-                repeat = e.get("repeat", 1)
-                message = _RECORD_NUDGE_MESSAGE * repeat
-                print(json.dumps(_make_hook_output(message), ensure_ascii=False))
-                return
+            print(json.dumps(_make_hook_output(message), ensure_ascii=False))
+            return
 
         # 5. 何もなし
         print("{}")
