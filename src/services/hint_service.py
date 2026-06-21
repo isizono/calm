@@ -225,6 +225,8 @@ def _get_pinned_material_max_time(
     conn: sqlite3.Connection, tag_id: int
 ) -> str | None:
     """tagにpinされたmaterialの最終更新時刻T (複数あればmax)。"""
+    # MAX() は集約関数なのでマッチ行ゼロでも1行 (t=NULL) を返す。
+    # よって row[\"t\"] が None の場合がpin不在を表す。
     row = conn.execute(
         """
         SELECT MAX(COALESCE(m.updated_at, m.created_at)) AS t
@@ -235,9 +237,7 @@ def _get_pinned_material_max_time(
         """,
         (tag_id,),
     ).fetchone()
-    if row is None:
-        return None
-    return row["t"]
+    return row["t"] if row else None
 
 
 def _count_tag_scope_decisions(
@@ -280,7 +280,7 @@ def _get_hints_for_topic(conn: sqlite3.Connection, topic_id: int) -> list[Hint]:
         (topic_id,),
     ).fetchone()
     decision_count = row["cnt"] if row else 0
-    if decision_count <= 0:
+    if decision_count == 0:
         return []
 
     row = conn.execute(
@@ -313,6 +313,12 @@ def _get_hints_for_topic(conn: sqlite3.Connection, topic_id: int) -> list[Hint]:
 def _get_topic_domain_tag_notes(
     conn: sqlite3.Connection, topic_id: int
 ) -> list[str]:
+    """topicに紐づくdomain:タグのnotesを返す。
+
+    抑制マーカーはdomain:タグの notes に書く設計。よって同じdomain:タグを持つ
+    別topicにも suppress が波及することは仕様で、軽量記述を優先した結果である
+    (トピック単位の抑制は意図的にサポートしない)。
+    """
     rows = conn.execute(
         """
         SELECT t.notes FROM tags t

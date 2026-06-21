@@ -109,7 +109,9 @@ def main() -> None:
             ntype = e.get("type")
             message = _format_nudge_message(e, ntype)
             if message is None:
-                # 未知typeはconsumed扱いせずスキップ
+                # 未知typeはconsumed扱いせず温存する (将来バージョンが追加handlerで
+                # 消費する想定)。長期肥大化は session_end でevents.jsonlがローテート
+                # されるため抑えられる。
                 continue
 
             e["consumed"] = True

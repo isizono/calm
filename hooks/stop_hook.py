@@ -329,12 +329,13 @@ def _collect_logs_sparse_nudges(
 
     try:
         from src.services import hint_service
-    except Exception as e:
+    except ImportError as e:
         print(f"stop_hook.py logs_sparse import error: {e}", file=sys.stderr)
         return []
 
     nudges: list[dict] = []
     for tid in topic_ids:
+        # 1topicのDB障害が他topicの判定を止めないようループ内で握る (フェイルオープン)
         try:
             hints = hint_service.get_hints("topic", tid)
         except Exception as e:
