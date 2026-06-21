@@ -494,6 +494,7 @@ def search(
 def get_by_ids(
     items: list[dict],
     flavor: _FlavorArg = "internal",
+    include_retracted: bool = False,
 ) -> dict:
     """
     Choose: search 結果の type+id ペアを本文付きで一括取得したいとき（複数種別 OK）。material 単独なら get_material、topic/activity 起点の log/decision 集約なら get_logs / get_decisions、関連グラフ走査なら get_map。
@@ -507,12 +508,14 @@ def get_by_ids(
         items: 取得対象のリスト。各要素は {type: str, id: int}（最大20件）
                type: データ種別（'topic', 'decision', 'activity', 'log', 'material'）
                id: データのID
+        include_retracted: Trueのとき取り消し済みの material も取得できる（デフォルトFalse）。
+                           decision/log は本フラグに関わらず retracted_at 付きで取得される。
 
     Returns:
         取得結果（各アイテムの詳細情報）
     """
     flavor = _normalize_flavor(flavor)
-    result = search_service.get_by_ids(items)
+    result = search_service.get_by_ids(items, include_retracted=include_retracted)
     if "error" not in result:
         conn = get_connection()
         try:

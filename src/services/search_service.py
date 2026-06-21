@@ -55,20 +55,33 @@ DETAILS_MAX_RESULTS = 10
 
 # retracted除外フィルタ: search_indexのsource_type='decision'/'log'/'material'を対象
 # decision/log/materialはretracted_atカラムを持つが、topic/activityは持たない
-RETRACT_FILTER_SQL = """
-  AND NOT EXISTS (
-    SELECT 1 FROM decisions d
-    WHERE d.id = si.source_id AND si.source_type = 'decision' AND d.retracted_at IS NOT NULL
-  )
-  AND NOT EXISTS (
-    SELECT 1 FROM discussion_logs dl
-    WHERE dl.id = si.source_id AND si.source_type = 'log' AND dl.retracted_at IS NOT NULL
-  )
-  AND NOT EXISTS (
-    SELECT 1 FROM materials m
-    WHERE m.id = si.source_id AND si.source_type = 'material' AND m.retracted_at IS NOT NULL
-  )
-"""
+# (source_type, table, alias) のタプルで定義し、search_index 参照名のみ可変にする。
+# retract対応エンティティを追加するときはこのリストのみ更新すればよい。
+_RETRACT_FILTER_ENTITIES: tuple[tuple[str, str, str], ...] = (
+    ("decision", "decisions", "d"),
+    ("log", "discussion_logs", "dl"),
+    ("material", "materials", "m"),
+)
+
+
+def _build_retract_filter_sql(search_index_ref: str) -> str:
+    """search_index への参照名 (例: 'si' エイリアスや 'search_index' そのもの) を受け、
+    retract 対応エンティティ各々の NOT EXISTS 句を連結したフィルタ SQL を返す。
+    """
+    clauses = []
+    for source_type, table, alias in _RETRACT_FILTER_ENTITIES:
+        clauses.append(
+            f"  AND NOT EXISTS (\n"
+            f"    SELECT 1 FROM {table} {alias}\n"
+            f"    WHERE {alias}.id = {search_index_ref}.source_id "
+            f"AND {search_index_ref}.source_type = '{source_type}' "
+            f"AND {alias}.retracted_at IS NOT NULL\n"
+            f"  )"
+        )
+    return "\n" + "\n".join(clauses) + "\n"
+
+
+RETRACT_FILTER_SQL = _build_retract_filter_sql("si")
 DETAILS_DESCRIPTION_MAX = 500
 # RRFパラメータ
 RRF_K = 60
@@ -692,20 +705,9 @@ def _vector_search(
         # retractフィルタ（search_indexのsiエイリアスを使う版）
         # _vector_searchではsearch_indexにsiエイリアスがないクエリがあるため、
         # search_index直接参照版を使う
-        retract_sql_direct = "" if include_retracted else """
-  AND NOT EXISTS (
-    SELECT 1 FROM decisions d
-    WHERE d.id = search_index.source_id AND search_index.source_type = 'decision' AND d.retracted_at IS NOT NULL
-  )
-  AND NOT EXISTS (
-    SELECT 1 FROM discussion_logs dl
-    WHERE dl.id = search_index.source_id AND search_index.source_type = 'log' AND dl.retracted_at IS NOT NULL
-  )
-  AND NOT EXISTS (
-    SELECT 1 FROM materials m
-    WHERE m.id = search_index.source_id AND search_index.source_type = 'material' AND m.retracted_at IS NOT NULL
-  )
-"""
+        # _vector_searchではsearch_indexにsiエイリアスがないクエリがあるため、
+        # search_index 直接参照版のフィルタを使う
+        retract_sql_direct = "" if include_retracted else _build_retract_filter_sql("search_index")
 
         # 日付フィルタの動的WHERE句構築
         date_clauses = []
@@ -1692,7 +1694,7 @@ def _format_row(type_name: str, data: dict, tags: list[str]) -> dict:
     return data
 
 
-def get_by_id(type: str, id: int, conn=None) -> dict:
+def get_by_id(type: str, id: int, conn=None, include_retracted: bool = False) -> dict:
     """
     search結果の詳細情報を取得する。
 
@@ -1703,6 +1705,7 @@ def get_by_id(type: str, id: int, conn=None) -> dict:
         type: データ種別（'topic', 'decision', 'activity', 'log', 'material'）
         id: データのID
         conn: 既存のDB接続（省略時は内部で新規作成・クローズ）
+        include_retracted: Trueのとき取り消し済みの material も取得できる（デフォルトFalse）
 
     Returns:
         指定した種別に応じた詳細情報
@@ -1731,7 +1734,12 @@ def get_by_id(type: str, id: int, conn=None) -> dict:
             }
         # material は retracted_at IS NULL のものだけ Read 経路に出す
         # （decision/log は retracted_at 付きで取得可能、material は完全に隠す）
-        if type == 'material' and row["retracted_at"] is not None:
+        # include_retracted=True で明示要求された場合のみ retract 済も返す
+        if (
+            type == 'material'
+            and row["retracted_at"] is not None
+            and not include_retracted
+        ):
             return {
                 "error": {
                     "code": "NOT_FOUND",
@@ -1768,12 +1776,13 @@ def get_by_id(type: str, id: int, conn=None) -> dict:
             conn.close()
 
 
-def get_by_ids(items: list[dict]) -> dict:
+def get_by_ids(items: list[dict], include_retracted: bool = False) -> dict:
     """
     複数のtype+idペアをバッチ取得する。
 
     Args:
         items: [{type: str, id: int}, ...] のリスト（最大20件）
+        include_retracted: Trueのとき取り消し済みの material も取得できる（デフォルトFalse）
 
     Returns:
         {"results": [get_by_idの結果, ...]}
@@ -1803,7 +1812,9 @@ def get_by_ids(items: list[dict]) -> dict:
                     }
                 })
                 continue
-            result = get_by_id(item_type, item_id, conn=conn)
+            result = get_by_id(
+                item_type, item_id, conn=conn, include_retracted=include_retracted
+            )
             results.append(result)
 
         return {"results": results}

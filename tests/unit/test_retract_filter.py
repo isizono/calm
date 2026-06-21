@@ -342,6 +342,31 @@ class TestGetByIdsMaterialFilter:
         assert "error" in result["results"][0]
         assert result["results"][0]["error"]["code"] == "NOT_FOUND"
 
+    def test_retracted_material_returned_when_include_retracted(self, temp_db):
+        """include_retracted=Trueでretracted materialもget_by_idsで取得できる"""
+        from src.services.material_service import add_material
+        from src.services.search_service import get_by_ids
+
+        m = add_material(
+            title="復元参照対象",
+            content="本文",
+            tags=DEFAULT_TAGS,
+            source="unit test",
+        )
+        material_id = m["material_id"]
+
+        retract("material", [material_id])
+
+        result = get_by_ids(
+            [{"type": "material", "id": material_id}], include_retracted=True
+        )
+        assert len(result["results"]) == 1
+        entry = result["results"][0]
+        assert "error" not in entry
+        assert entry["type"] == "material"
+        assert entry["data"]["material_id_raw"] == material_id
+        assert entry["data"]["retracted_at"] is not None
+
 
 class TestPinnedMaterialFilter:
     """check_in の pinned material retract フィルタ"""
