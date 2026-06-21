@@ -18,14 +18,18 @@ def _make_mock_tmux(
     kill_pane_exit: int = 0,
     target_pane_exists: bool = True,
     existing_worker_panes: str = "",
+    display_switch_at_kill: int | None = None,
 ) -> Path:
     """tmuxをモックするシェルスクリプトを作成する。
 
-    spawn時はMOCK_PANE_IDを返す。close時は何も出力しない。
+    spawn時はMOCK_PANE_IDを返す。close時はpane_pid相当のダミー値を返す。
     capture_fileが指定された場合、受け取った引数を追記する。
     kill_pane_exitが1の場合、kill-paneが失敗するモックになる。
 
     target_pane_exists=Falseのとき `tmux display` がexit 1を返す（target_pane不在シミュレーション）。
+    display_switch_at_kill=N のとき、N回目以降の kill-pane 呼び出し後に display が
+    「不在」(exit 1) に切り替わる（SIGKILL fallback シナリオの再現用）。
+
     existing_worker_panesは `tmux list-panes -F "#{pane_id}|#{@ow-worker}"` の擬似出力。
     例: "%5|1\\n%7|" を渡すと既存worker paneが1個ある状態を模擬する（"1"がworkerマーカー、空欄が非worker）。
     """
@@ -35,8 +39,11 @@ def _make_mock_tmux(
 
     has_session_exit = "0" if has_session else "1"
     capture_cmd = f'printf "%s\\n" "$*" >> "{capture_file}"' if capture_file else ""
-    display_exit = "0" if target_pane_exists else "1"
-    display_out = '"@1"' if target_pane_exists else '""'
+    display_state_file = tmp_path / "tmux_display_state"
+    kill_counter_file = tmp_path / "tmux_kill_counter"
+    display_state_file.write_text("1" if target_pane_exists else "0")
+    kill_counter_file.write_text("0")
+    switch_at = "" if display_switch_at_kill is None else str(display_switch_at_kill)
 
     mock.write_text(
         f'#!/usr/bin/env bash\n'
@@ -44,8 +51,22 @@ def _make_mock_tmux(
         f'if [ "$1" = "has-session" ]; then exit {has_session_exit}; fi\n'
         f'if [ "$1" = "new-window" ]; then echo "{MOCK_PANE_ID}"; fi\n'
         f'if [ "$1" = "split-window" ]; then echo "{MOCK_PANE_ID}"; fi\n'
-        f'if [ "$1" = "kill-pane" ]; then exit {kill_pane_exit}; fi\n'
-        f'if [ "$1" = "display" ]; then echo {display_out}; exit {display_exit}; fi\n'
+        f'if [ "$1" = "kill-pane" ]; then\n'
+        f'  cnt=$(cat "{kill_counter_file}" 2>/dev/null || echo 0)\n'
+        f'  cnt=$((cnt + 1))\n'
+        f'  echo "$cnt" > "{kill_counter_file}"\n'
+        f'  switch_at="{switch_at}"\n'
+        f'  if [ -n "$switch_at" ] && [ "$cnt" -ge "$switch_at" ]; then\n'
+        f'    echo "0" > "{display_state_file}"\n'
+        f'  fi\n'
+        f'  exit {kill_pane_exit}\n'
+        f'fi\n'
+        f'if [ "$1" = "display" ]; then\n'
+        f'  state=$(cat "{display_state_file}" 2>/dev/null || echo "1")\n'
+        f'  if [ "$state" = "0" ]; then exit 1; fi\n'
+        f'  echo "12345"\n'
+        f'  exit 0\n'
+        f'fi\n'
         f'if [ "$1" = "list-panes" ]; then printf "%b\\n" "{existing_worker_panes}"; fi\n'
         f'exit 0\n'
     )
@@ -53,10 +74,16 @@ def _make_mock_tmux(
     return mock_dir
 
 
-def _run_adapter(args: list[str], tmp_path: Path, **mock_kwargs) -> tuple["subprocess.CompletedProcess[str]", str]:
+def _run_adapter(
+    args: list[str],
+    tmp_path: Path,
+    extra_env: dict | None = None,
+    **mock_kwargs,
+) -> tuple["subprocess.CompletedProcess[str]", str]:
     """tmux.shをモックtmux環境で実行し、(result, captured_args)を返す。
 
     mock_kwargsはそのまま_make_mock_tmuxに渡す（has_session, kill_pane_exitなど）。
+    extra_env は追加環境変数（OW_CLOSE_FALLBACK_ITER 等）。
     """
     capture_file = tmp_path / "tmux_args.txt"
     capture_file.write_text("")
@@ -64,6 +91,8 @@ def _run_adapter(args: list[str], tmp_path: Path, **mock_kwargs) -> tuple["subpr
 
     env = os.environ.copy()
     env["PATH"] = str(mock_dir) + ":" + env["PATH"]
+    if extra_env:
+        env.update(extra_env)
 
     result = subprocess.run(
         [str(ADAPTER)] + args,
@@ -72,6 +101,10 @@ def _run_adapter(args: list[str], tmp_path: Path, **mock_kwargs) -> tuple["subpr
         env=env,
     )
     return result, capture_file.read_text()
+
+
+# テスト全体で close fallback の sleep を 0 にして高速化
+CLOSE_FAST_ENV = {"OW_CLOSE_FALLBACK_INTERVAL": "0", "OW_CLOSE_FALLBACK_ITER": "2"}
 
 
 class TestTmuxAdapterSpawn:
@@ -128,29 +161,68 @@ class TestTmuxAdapterSpawn:
 
 
 class TestTmuxAdapterClose:
-    def test_close_normal_pane_id(self, tmp_path):
-        """%42形式のpane IDでcloseが正常終了する。"""
-        result, captured = _run_adapter(["close", "%42"], tmp_path)
+    def test_close_already_absent_outputs_closed(self, tmp_path):
+        """既に pane が存在しない term_ref を渡すと stdout に 'closed' を出して exit 0。"""
+        result, captured = _run_adapter(
+            ["close", "%999"], tmp_path, target_pane_exists=False
+        )
         assert result.returncode == 0
+        assert result.stdout.strip().splitlines()[-1] == "closed"
+        # 既に不在のため kill-pane は呼ばれない
+        assert "kill-pane" not in captured
+
+    def test_close_kill_pane_succeeds_outputs_closed(self, tmp_path):
+        """kill-pane 後に pane が消えれば stdout 'closed' を出して exit 0。"""
+        # display_switch_at_kill=1: 1回目の kill-pane 後に display が不在に切り替わる
+        result, captured = _run_adapter(
+            ["close", "%42"],
+            tmp_path,
+            display_switch_at_kill=1,
+            extra_env=CLOSE_FAST_ENV,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip().splitlines()[-1] == "closed"
         assert "kill-pane" in captured
 
-    def test_close_pane_id_passed_to_kill(self, tmp_path):
+    def test_close_passes_pane_id_to_kill(self, tmp_path):
         """closeでtmux kill-paneにpane IDが渡される。"""
-        result, captured = _run_adapter(["close", "%99"], tmp_path)
+        result, captured = _run_adapter(
+            ["close", "%99"],
+            tmp_path,
+            display_switch_at_kill=1,
+            extra_env=CLOSE_FAST_ENV,
+        )
         assert result.returncode == 0
         assert "%99" in captured
 
-    def test_close_nonexistent_pane_exits_zero(self, tmp_path):
-        """存在しないpane IDでもcloseはゼロで終了する（エラーを無視）。"""
-        # kill-paneが失敗しても || true で無視するため、exit 0 を期待
-        result, _ = _run_adapter(["close", "%999"], tmp_path)
-        assert result.returncode == 0
 
-    def test_close_pane_kill_failure_still_exits_zero(self, tmp_path):
-        """kill-paneがexit 1を返しても、|| true によりcloseはゼロで終了する。"""
-        # kill_pane_exit=1でkill-paneが常に失敗するモックを使用
-        result, _ = _run_adapter(["close", "%999"], tmp_path, kill_pane_exit=1)
+class TestTmuxAdapterCloseSigkillFallback:
+    """SIGKILL fallback シナリオ — kill-pane が効かなかったときに 2 回目で消える"""
+
+    def test_close_sigkill_fallback_outputs_killed(self, tmp_path):
+        """1回目の kill-pane 後も残存し、SIGKILL fallback (2回目の kill-pane) で消える → 'killed'。"""
+        result, captured = _run_adapter(
+            ["close", "%42"],
+            tmp_path,
+            display_switch_at_kill=2,
+            extra_env=CLOSE_FAST_ENV,
+        )
         assert result.returncode == 0
+        assert result.stdout.strip().splitlines()[-1] == "killed"
+        # kill-pane が2回呼ばれている（1回目: SIGHUP, 2回目: SIGKILL fallback）
+        assert captured.count("kill-pane") == 2
+
+    def test_close_pane_persists_outputs_failed(self, tmp_path):
+        """SIGKILL fallback 後も pane が残るケースは 'failed' を stdout/stderr に出して exit 1。"""
+        # display_switch_at_kill=None → 常に存在する状態
+        result, _ = _run_adapter(
+            ["close", "%42"],
+            tmp_path,
+            extra_env=CLOSE_FAST_ENV,
+        )
+        assert result.returncode == 1
+        assert result.stdout.strip().splitlines()[-1] == "failed"
+        assert "failed" in result.stderr
 
 
 class TestTmuxAdapterSplit:
