@@ -24,15 +24,15 @@ Conventional Commits形式（scopeなし）。typeは英語、subjectは日本�
 
 cc-memoryはローカルディレクトリをmarketplaceとして登録しており、mainブランチからプラグインキャッシュが生成される。PRマージ後は以下を実行する:
 
-0. **メインディレクトリが main ブランチをホールドしていることを確認**: `cd ~/workspace/cc-memory && git branch --show-current` で `main` を返すこと。別ブランチに居る・別 worktree が main を握っている場合は以下で復旧してから手順 1 へ:
+1. **メインディレクトリが main ブランチをホールドしていることを確認**: プロジェクトルートで `git branch --show-current` が `main` を返すこと。別ブランチに居る・別 worktree が main を握っている場合は以下で復旧してから手順 2 へ:
    - 未コミット変更があれば `git stash push -u -m "wip"` で退避
-   - 別 worktree が main を握っていれば `git worktree remove <path>` で開放
+   - 別 worktree が main を握っていれば `git worktree remove <path>` で開放（対象 worktree に未コミット変更が残っているとコマンドが失敗するため、先に stash / commit してから実行する）
    - その上で `git checkout main`
-   - 理由: 手順 6 のサーバー起動は cwd 配下のコードで動くため、メインディレクトリが main 以外だとプラグインキャッシュ（main 由来）とサーバー本体（別ブランチ由来）のミスマッチで動作不整合が起きる
-1. `git pull origin main`
-2. マージ済みworktreeを削除: `git worktree remove .trees/<name>`
-3. ローカルブランチを削除: `git branch -D <branch>`
-4. プラグインキャッシュを削除: `rm -rf ~/.claude/plugins/cache/claude-code-memory-marketplace/`
-5. `__pycache__` を削除: `find . -type d -name __pycache__ -exec rm -rf {} +`
-6. 既存のhttpサーバーを停止・再起動: `lsof -ti :52837 | xargs kill; uv run python -m src.launcher &`
-7. Claude Codeセッションを再起動（個別でOK、全セッション同時に落とす必要なし）
+   - 理由: 手順 7 のサーバー起動は cwd 配下のコードで動くため、メインディレクトリが main 以外だとプラグインキャッシュ（main 由来）とサーバー本体（別ブランチ由来）のミスマッチで動作不整合が起きる
+2. `git pull origin main`
+3. マージ済みworktreeを削除: `git worktree remove .trees/<name>`（対象 worktree に未コミット変更が残っているとコマンドが失敗するため、先に stash / commit してから実行する）
+4. ローカルブランチを削除: `git branch -D <branch>`
+5. プラグインキャッシュを削除: `rm -rf ~/.claude/plugins/cache/claude-code-memory-marketplace/`
+6. `__pycache__` を削除: `find . -type d -name __pycache__ -exec rm -rf {} +`
+7. 既存のhttpサーバーを停止・再起動: `lsof -ti :52837 | xargs kill; uv run python -m src.launcher &`
+8. Claude Codeセッションを再起動（個別でOK、全セッション同時に落とす必要なし）
