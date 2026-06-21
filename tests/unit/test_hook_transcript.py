@@ -359,3 +359,67 @@ class TestRemoteMcpPrefix:
         events, _ = extract_events(entries, 0)
         tool_events = [e for e in events if e["e"] == "tool"]
         assert len(tool_events) == 0
+
+
+class TestExtractAddDecisionsTopicIds:
+    """add_decisions のtoolイベントにtopic_idsが付与される"""
+
+    def test_single_item_topic_id(self):
+        entries = [
+            {"type": "user", "message": {"content": "hi"}},
+            _make_assistant_entry(
+                tool_calls=[f"{_LOCAL_PREFIX}add_decisions"],
+                tool_inputs=[{"items": [{"topic_id": 42, "decision": "x", "reason": "y"}]}],
+            ),
+        ]
+        events, _ = extract_events(entries, 0)
+        tool_events = [e for e in events if e["e"] == "tool" and e["name"] == "add_decisions"]
+        assert len(tool_events) == 1
+        assert tool_events[0]["topic_ids"] == [42]
+
+    def test_multiple_items_unique_topic_ids_preserved(self):
+        entries = [
+            {"type": "user", "message": {"content": "hi"}},
+            _make_assistant_entry(
+                tool_calls=[f"{_LOCAL_PREFIX}add_decisions"],
+                tool_inputs=[{
+                    "items": [
+                        {"topic_id": 1, "decision": "a", "reason": "r"},
+                        {"topic_id": 2, "decision": "b", "reason": "r"},
+                        {"topic_id": 1, "decision": "c", "reason": "r"},
+                    ]
+                }],
+            ),
+        ]
+        events, _ = extract_events(entries, 0)
+        tool_events = [e for e in events if e["e"] == "tool" and e["name"] == "add_decisions"]
+        assert tool_events[0]["topic_ids"] == [1, 2, 1]
+
+    def test_no_topic_ids_field_when_absent(self):
+        entries = [
+            {"type": "user", "message": {"content": "hi"}},
+            _make_assistant_entry(
+                tool_calls=[f"{_LOCAL_PREFIX}add_decisions"],
+                tool_inputs=[{"items": []}],
+            ),
+        ]
+        events, _ = extract_events(entries, 0)
+        tool_events = [e for e in events if e["e"] == "tool" and e["name"] == "add_decisions"]
+        assert "topic_ids" not in tool_events[0]
+
+    def test_invalid_topic_id_silently_dropped(self):
+        entries = [
+            {"type": "user", "message": {"content": "hi"}},
+            _make_assistant_entry(
+                tool_calls=[f"{_LOCAL_PREFIX}add_decisions"],
+                tool_inputs=[{
+                    "items": [
+                        {"topic_id": "not-int", "decision": "x", "reason": "r"},
+                        {"topic_id": 7, "decision": "y", "reason": "r"},
+                    ]
+                }],
+            ),
+        ]
+        events, _ = extract_events(entries, 0)
+        tool_events = [e for e in events if e["e"] == "tool" and e["name"] == "add_decisions"]
+        assert tool_events[0]["topic_ids"] == [7]

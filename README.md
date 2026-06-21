@@ -164,9 +164,8 @@ workerセッションを自動起動するには、`OW_TERMINAL`環境変数で�
 
 | 値 | 動作 | 前提条件 |
 |----|------|---------|
-| `iterm2` | iTerm2の新規タブでworkerを起動 | macOS + iTerm2 |
-| `tmux` | tmuxの新規windowでworkerを起動 | tmuxがインストール済み |
-| `manual`（デフォルト） | 起動コマンドを返すだけ。手動で実行が必要 | なし |
+| `tmux`（デフォルト） | tmuxの新規windowでworkerを起動 | tmuxがインストール済み |
+| `manual` | 起動コマンドを返すだけ。手動で実行が必要 | なし |
 
 `.mcp.json`の`env`フィールドに追加します:
 

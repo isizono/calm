@@ -438,7 +438,7 @@ class TestNudge:
 
         events = _read_events(state_dir, "test-session")
         nudge_events = [e for e in events if e.get("e") == "nudge"]
-        follow_up_nudges = [e for e in nudge_events if e.get("type") == "follow_up"]
+        follow_up_nudges = [e for e in nudge_events if e.get("type") == "follow_up_after_decision"]
         assert len(follow_up_nudges) >= 1
 
     def test_no_follow_up_nudge_when_companion_present(self, env_setup):
@@ -465,7 +465,7 @@ class TestNudge:
         assert result["decision"] == "approve"
 
         events = _read_events(state_dir, "test-session")
-        follow_up_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "follow_up"]
+        follow_up_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "follow_up_after_decision"]
         assert len(follow_up_nudges) == 0
 
 
@@ -577,7 +577,7 @@ class TestRecordNudgeMultiplication:
         assert result["decision"] == "approve"
 
         events = _read_events(state_dir, "test-session")
-        record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record"]
+        record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record_missing"]
         assert len(record_nudges) >= 1
         assert record_nudges[-1]["repeat"] == 2
 
@@ -608,7 +608,7 @@ class TestRecordNudgeMultiplication:
         assert result["decision"] == "approve"
 
         events = _read_events(state_dir, "test-session")
-        record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record"]
+        record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record_missing"]
         assert len(record_nudges) >= 1
         assert record_nudges[-1]["repeat"] == 1
 
@@ -655,7 +655,7 @@ class TestRecordNudgeMultiplication:
         assert result["decision"] == "approve"
 
         events = _read_events(state_dir, "test-session")
-        record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record"]
+        record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record_missing"]
         assert len(record_nudges) >= 1
         assert record_nudges[-1]["repeat"] == 5
 
@@ -694,7 +694,7 @@ class TestRecordNudgeMultiplication:
         assert result["decision"] == "approve"
 
         events = _read_events(state_dir, "test-session")
-        record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record"]
+        record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record_missing"]
         assert len(record_nudges) >= 1
         assert record_nudges[-1]["repeat"] == 3
 
@@ -805,7 +805,7 @@ class TestOrchFlowSuppression:
         assert result["decision"] == "approve"
 
         events = _read_events(state_dir, "test-session")
-        record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record"]
+        record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record_missing"]
         assert len(record_nudges) == 0
 
     def test_orch_managed_activity_no_record_nudge(self, env_setup, monkeypatch):
@@ -841,7 +841,7 @@ class TestOrchFlowSuppression:
         assert result["decision"] == "approve"
 
         events = _read_events(state_dir, "test-session")
-        record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record"]
+        record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record_missing"]
         assert len(record_nudges) == 0
 
     def test_normal_activity_still_nudges(self, env_setup, monkeypatch):
@@ -890,5 +890,5 @@ class TestOrchFlowSuppression:
         assert result["decision"] == "approve"
 
         events = _read_events(state_dir, "test-session")
-        record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record"]
+        record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record_missing"]
         assert len(record_nudges) >= 1

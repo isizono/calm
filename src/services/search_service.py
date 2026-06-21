@@ -53,35 +53,6 @@ TAG_LIKE_MAX_TAG_IDS = 100
 # details付与パラメータ
 DETAILS_MAX_RESULTS = 10
 
-# retracted除外フィルタ: search_indexのsource_type='decision'/'log'/'material'を対象
-# decision/log/materialはretracted_atカラムを持つが、topic/activityは持たない
-# (source_type, table, alias) のタプルで定義し、search_index 参照名のみ可変にする。
-# retract対応エンティティを追加するときはこのリストのみ更新すればよい。
-_RETRACT_FILTER_ENTITIES: tuple[tuple[str, str, str], ...] = (
-    ("decision", "decisions", "d"),
-    ("log", "discussion_logs", "dl"),
-    ("material", "materials", "m"),
-)
-
-
-def _build_retract_filter_sql(search_index_ref: str) -> str:
-    """search_index への参照名 (例: 'si' エイリアスや 'search_index' そのもの) を受け、
-    retract 対応エンティティ各々の NOT EXISTS 句を連結したフィルタ SQL を返す。
-    """
-    clauses = []
-    for source_type, table, alias in _RETRACT_FILTER_ENTITIES:
-        clauses.append(
-            f"  AND NOT EXISTS (\n"
-            f"    SELECT 1 FROM {table} {alias}\n"
-            f"    WHERE {alias}.id = {search_index_ref}.source_id "
-            f"AND {search_index_ref}.source_type = '{source_type}' "
-            f"AND {alias}.retracted_at IS NOT NULL\n"
-            f"  )"
-        )
-    return "\n" + "\n".join(clauses) + "\n"
-
-
-RETRACT_FILTER_SQL = _build_retract_filter_sql("si")
 DETAILS_DESCRIPTION_MAX = 500
 # RRFパラメータ
 RRF_K = 60
@@ -593,14 +564,15 @@ def _fts_search(
     original_keyword_count: Optional[int] = None,
     date_after: Optional[str] = None,
     date_before: Optional[str] = None,
-    include_retracted: bool = False,
 ) -> list[dict]:
     """FTS5検索。結果はBM25ランク順のリスト。
+
+    retract時にsearch_index/search_index_fts/vec_indexから物理削除されるため、
+    取り消し済みエンティティは検索対象に現れない。
 
     Args:
         keywords: 検索キーワードリスト（QE拡張分を含む場合がある）
         tag_ids: タグフィルタ用のtag_idリスト
-        entity_type: 検索対象の絞り込み
         entity_type: 検索対象の絞り込み
         limit: 取得件数上限
         keyword_mode: キーワード結合モード（"and" / "or"）
@@ -608,7 +580,6 @@ def _fts_search(
             残りをOR追加する（Query Expansion用）。未指定時は従来通り。
         date_after: 日付フィルタ（以降）
         date_before: 日付フィルタ（以前）
-        include_retracted: Trueのとき取り消し済みdecision/logも含める
     """
     # OR時: 3文字以上のキーワードだけでFTS5クエリを組む（2文字はフィルタ除外）
     if keyword_mode == "or":
@@ -640,7 +611,6 @@ def _fts_search(
         date_clauses.append("AND si.created_at <= ?")
         date_params.append(date_before)
     date_sql = "\n          ".join(date_clauses)
-    retract_sql = "" if include_retracted else RETRACT_FILTER_SQL
 
     if tag_ids:
         cte_sql, cte_params = _build_tag_filter_cte(tag_ids)
@@ -656,7 +626,6 @@ def _fts_search(
         WHERE search_index_fts MATCH ?
           AND (? IS NULL OR si.source_type = ?)
           {date_sql}
-          {retract_sql}
         ORDER BY bm25(search_index_fts, 5.0, 1.0)
         LIMIT ?
         """
@@ -672,7 +641,6 @@ def _fts_search(
         WHERE search_index_fts MATCH ?
           AND (? IS NULL OR si.source_type = ?)
           {date_sql}
-          {retract_sql}
         ORDER BY bm25(search_index_fts, 5.0, 1.0)
         LIMIT ?
         """
@@ -698,17 +666,13 @@ def _vector_search(
     keyword_mode: str = "and",
     date_after: Optional[str] = None,
     date_before: Optional[str] = None,
-    include_retracted: bool = False,
 ) -> Optional[list[dict]]:
-    """ベクトル検索。ベクトル検索無効時はNoneを返す。"""
-    try:
-        # retractフィルタ（search_indexのsiエイリアスを使う版）
-        # _vector_searchではsearch_indexにsiエイリアスがないクエリがあるため、
-        # search_index直接参照版を使う
-        # _vector_searchではsearch_indexにsiエイリアスがないクエリがあるため、
-        # search_index 直接参照版のフィルタを使う
-        retract_sql_direct = "" if include_retracted else _build_retract_filter_sql("search_index")
+    """ベクトル検索。ベクトル検索無効時はNoneを返す。
 
+    retract時にvec_indexから物理削除されるため、取り消し済みエンティティは
+    KNNの候補スロットを食わない（KNN実効recall改善）。
+    """
+    try:
         # 日付フィルタの動的WHERE句構築
         date_clauses = []
         date_params_list: list = []
@@ -758,7 +722,6 @@ def _vector_search(
                           AND tf.source_id = search_index.source_id
                       )
                       {date_sql}
-                      {retract_sql_direct}
                     """
                     params = (*cte_params, *rowids, entity_type, entity_type, *date_params_list)
                 else:
@@ -768,7 +731,6 @@ def _vector_search(
                     WHERE id IN ({rowid_placeholders})
                       AND (? IS NULL OR source_type = ?)
                       {date_sql}
-                      {retract_sql_direct}
                     """
                     params = (*rowids, entity_type, entity_type, *date_params_list)
 
@@ -831,7 +793,6 @@ def _vector_search(
                       AND tf.source_id = search_index.source_id
                   )
                   {date_sql}
-                  {retract_sql_direct}
                 """
                 params = (*cte_params, *rowids, entity_type, entity_type, *date_params_list)
             else:
@@ -841,7 +802,6 @@ def _vector_search(
                 WHERE id IN ({rowid_placeholders})
                   AND (? IS NULL OR source_type = ?)
                   {date_sql}
-                  {retract_sql_direct}
                 """
                 params = (*rowids, entity_type, entity_type, *date_params_list)
 
@@ -1030,7 +990,6 @@ def _tag_like_search(
     keyword_mode: str = "and",
     date_after: Optional[str] = None,
     date_before: Optional[str] = None,
-    include_retracted: bool = False,
 ) -> list[dict]:
     """タグ名のLIKE検索。キーワードにマッチするタグを持つエンティティを返す。
 
@@ -1096,7 +1055,6 @@ def _tag_like_search(
         date_clauses.append("AND si.created_at <= ?")
         date_params_tl.append(date_before)
     date_sql = "\n      ".join(date_clauses)
-    retract_sql = "" if include_retracted else RETRACT_FILTER_SQL
 
     # 各中間テーブルからエンティティを収集（UNION ALL）
     query = f"""
@@ -1105,7 +1063,6 @@ def _tag_like_search(
     WHERE
       (? IS NULL OR si.source_type = ?)
       {date_sql}
-      {retract_sql}
       AND (
         EXISTS (
             SELECT 1 FROM topic_tags tt
@@ -1172,13 +1129,30 @@ def _apply_recency_boost(results: list[dict], now: datetime | None = None) -> No
     """RRFスコアにrecency boost（指数減衰）を適用する（in-place）。
 
     recency_factor = max(exp(-age_days * RECENCY_DECAY_RATE), RECENCY_DECAY_FLOOR)
-    をスコアに乗算し、スコア降順で再ソートする。
+    を score_breakdown.rrf_normalized に乗算して final_score を確定する。
+    各結果に以下を付与する:
+    - score_breakdown.recency_factor: 適用された減衰係数（created_at取得不可時は1.0）
+    - final_score: rrf_normalized * recency_factor
+    - score: final_score と同値（互換のため残置。Phase Bで削除予定）
+
+    確定後、final_score 降順で再ソートする。
     """
     if not results:
         return
 
     if now is None:
         now = datetime.now(timezone.utc)
+
+    # 初期値: score_breakdown が無い場合は score を rrf_normalized 相当として扱い、
+    # recency_factor=1.0 で初期化。score_breakdown はあるが個別キーが欠ける場合も
+    # 各キーを setdefault で補完する（_rrf_merge 経由なら既に全キー揃っている）。
+    for item in results:
+        bd = item.setdefault("score_breakdown", {})
+        bd.setdefault("fts", 0.0)
+        bd.setdefault("vec", 0.0)
+        bd.setdefault("tag", 0.0)
+        bd.setdefault("rrf_normalized", item.get("score", 0.0))
+        bd.setdefault("recency_factor", 1.0)
 
     # typeごとにcreated_atをバッチ取得
     by_type: dict[str, list[dict]] = {}
@@ -1202,10 +1176,18 @@ def _apply_recency_boost(results: list[dict], now: datetime | None = None) -> No
                 created = datetime.fromisoformat(created_str).replace(tzinfo=timezone.utc)
                 age_days = max(0, (now - created).days)
                 recency_factor = max(math.exp(-age_days * RECENCY_DECAY_RATE), RECENCY_DECAY_FLOOR)
-                item["score"] *= recency_factor
+                item["score_breakdown"]["recency_factor"] = recency_factor
 
-    # スコア降順で再ソート
-    results.sort(key=lambda x: x["score"], reverse=True)
+    # final_score = rrf_normalized * recency_factor を確定
+    # TODO(Phase B): 既存 score フィールドは廃止し final_score のみに統一する。
+    for item in results:
+        bd = item["score_breakdown"]
+        final_score = bd["rrf_normalized"] * bd["recency_factor"]
+        item["final_score"] = final_score
+        item["score"] = final_score
+
+    # final_score 降順で再ソート
+    results.sort(key=lambda x: x["final_score"], reverse=True)
 
 
 def _compute_adaptive_weights(fts_count: int, vec_count: int) -> tuple[float, float]:
@@ -1233,58 +1215,76 @@ def _rrf_merge(
     limit: int,
     tag_results: Optional[list[dict]] = None,
 ) -> list[dict]:
-    """RRF（Reciprocal Rank Fusion）でFTS5・ベクトル・タグLIKE結果を統合する。"""
+    """RRF（Reciprocal Rank Fusion）でFTS5・ベクトル・タグLIKE結果を統合する。
+
+    各結果に以下のスコア内訳フィールドを付与する:
+    - score_breakdown.fts: FTS5由来のRRF寄与（Adaptive RRF重み w_fts 適用後、理論最大値による正規化前）
+    - score_breakdown.vec: ベクトル由来のRRF寄与（Adaptive RRF重み w_vec 適用後、理論最大値による正規化前）
+    - score_breakdown.tag: タグLIKE由来のRRF寄与（RRF_W_TAG 適用後、理論最大値による正規化前）
+    - score_breakdown.rrf_normalized: 3寄与の合計を理論最大値で割った正規化済みスコア（0〜1）
+
+    重要: fts/vec の重みは `_compute_adaptive_weights` がヒット数比率で動的に決めるため、
+    同一ランクでも検索ごとに値の絶対値が異なりうる。クロス検索での絶対比較には向かない。
+
+    recency_factor / final_score は後段の `_apply_recency_boost` で付与される。
+    既存 score フィールドは互換のため最終的な final_score と同値で残置する。
+
+    前提: 各ソース (fts_results / vec_results / tag_results) 内に同一 (type, id) の重複は無い
+    ことを呼出元が保証する。重複があると `+=` により寄与が二重に加算され rrf_normalized が
+    1.0 を超える可能性がある。現状の `_fts_search` / `_vector_search` / `_tag_like_search` は
+    重複を返さない実装になっている。
+    """
     scores: dict[tuple, dict] = {}  # key: (type, id)
 
     # Adaptive RRF: ヒット数比率に応じてFTS/ベクトルの重みを動的調整
     w_fts, w_vec = _compute_adaptive_weights(len(fts_results), len(vec_results))
 
-    # FTS5結果にRRFスコアを付与（1始まりランク）
-    for rank, item in enumerate(fts_results, start=1):
+    def _ensure_entry(item: dict) -> dict:
         key = (item["type"], item["id"])
-        scores[key] = {
-            "type": item["type"],
-            "id": item["id"],
-            "title": item["title"],
-            "score": w_fts / (RRF_K + rank),
-        }
-
-    # ベクトル結果のRRFスコアを加算（1始まりランク）
-    for rank, item in enumerate(vec_results, start=1):
-        key = (item["type"], item["id"])
-        vec_score = w_vec / (RRF_K + rank)
-        if key in scores:
-            scores[key]["score"] += vec_score
-        else:
+        if key not in scores:
             scores[key] = {
                 "type": item["type"],
                 "id": item["id"],
                 "title": item["title"],
-                "score": vec_score,
+                "score_breakdown": {"fts": 0.0, "vec": 0.0, "tag": 0.0},
             }
+        return scores[key]
+
+    # FTS5結果にRRFスコアを付与（1始まりランク）
+    for rank, item in enumerate(fts_results, start=1):
+        entry = _ensure_entry(item)
+        entry["score_breakdown"]["fts"] += w_fts / (RRF_K + rank)
+
+    # ベクトル結果のRRFスコアを加算（1始まりランク）
+    for rank, item in enumerate(vec_results, start=1):
+        entry = _ensure_entry(item)
+        entry["score_breakdown"]["vec"] += w_vec / (RRF_K + rank)
 
     # タグLIKE結果のRRFスコアを加算（1始まりランク）
     if tag_results:
         for rank, item in enumerate(tag_results, start=1):
-            key = (item["type"], item["id"])
-            tag_score = RRF_W_TAG / (RRF_K + rank)
-            if key in scores:
-                scores[key]["score"] += tag_score
-            else:
-                scores[key] = {
-                    "type": item["type"],
-                    "id": item["id"],
-                    "title": item["title"],
-                    "score": tag_score,
-                }
+            entry = _ensure_entry(item)
+            entry["score_breakdown"]["tag"] += RRF_W_TAG / (RRF_K + rank)
 
     # 理論最大値で正規化（全ソース1位の場合のスコア）
     max_score = (w_fts + w_vec) / (RRF_K + 1)
     if tag_results:
         max_score += RRF_W_TAG / (RRF_K + 1)
-    if max_score > 0:
-        for item in scores.values():
-            item["score"] = round(item["score"] / max_score, 4)
+    for entry in scores.values():
+        bd = entry["score_breakdown"]
+        # 注: rrf_normalized は丸め前の生 raw_sum から算出する。
+        # 公開フィールド fts/vec/tag は表示用に round(.,6) するため、
+        # それらを足して max_score で割っても rrf_normalized と微小（≤1e-6 程度）にずれる。
+        raw_sum = bd["fts"] + bd["vec"] + bd["tag"]
+        rrf_normalized = round(raw_sum / max_score, 4) if max_score > 0 else 0.0
+        bd["fts"] = round(bd["fts"], 6)
+        bd["vec"] = round(bd["vec"], 6)
+        bd["tag"] = round(bd["tag"], 6)
+        bd["rrf_normalized"] = rrf_normalized
+        # recency boost 前のスコアを score にセット。
+        # _apply_recency_boost で recency_factor 乗算後に final_score を確定する。
+        # TODO(Phase B): 既存 score フィールドは廃止し final_score のみに統一する。
+        entry["score"] = rrf_normalized
 
     # RRFスコア降順でソートし、上位limit件を返す
     merged = sorted(scores.values(), key=lambda x: x["score"], reverse=True)
@@ -1302,7 +1302,6 @@ def search(
     domain: Optional[str] = None,
     date_after: Optional[str] = None,
     date_before: Optional[str] = None,
-    include_retracted: bool = False,
 ) -> dict:
     """
     キーワードで横断検索する。
@@ -1330,8 +1329,13 @@ def search(
         date_before: 日付フィルタ（以前）。YYYY-MM-DD or YYYY-MM-DD HH:MM:SS形式
 
     Returns:
-        検索結果一覧（type, id, title, score, snippet, tags）
-        scoreは0〜1に正規化された関連度スコア（RRF理論最大値基準）。
+        検索結果一覧（type, id, title, score, final_score, score_breakdown, snippet, tags）。
+        final_score は 0〜1 に正規化された関連度スコア（RRF理論最大値基準 × recency減衰）。
+        score_breakdown は以下のサブフィールドを持つ:
+          - fts / vec / tag: 各ソースのRRF生寄与（正規化前、recency適用前）
+          - rrf_normalized: 3寄与の合計を理論最大値で割った正規化済み値（0〜1、recency適用前）
+          - recency_factor: created_atに基づく指数減衰係数（0〜1）
+        既存 score フィールドは互換のため final_score と同値で残置されている（Phase Bで廃止予定）。
         snippetは各typeの対応するソースカラムの先頭200文字（materialはtitle優先表示）。
         tagsはエンティティに紐づくタグ文字列のリスト。
         include_details=Trueの場合、上位DETAILS_MAX_RESULTS件にdetailsが追加される。
@@ -1463,22 +1467,22 @@ def search(
         if keyword_mode == "or":
             # OR時: 3文字以上のキーワードが1つでもあればFTSを使う
             if any(len(kw) >= 3 for kw in fts_keywords):
-                fts_results = _fts_search(fts_keywords, tag_ids, entity_type, fetch_limit, keyword_mode, None, date_after, date_before, include_retracted=include_retracted)
+                fts_results = _fts_search(fts_keywords, tag_ids, entity_type, fetch_limit, keyword_mode, None, date_after, date_before)
                 methods_used.append("fts5")
         else:
             # AND時（現行通り）: 全キーワードが3文字以上の場合のみ
             # QE拡張分はOR結合で追加されるため、元のキーワードの文字数チェックを使用
             if min_len >= 3:
-                fts_results = _fts_search(fts_keywords, tag_ids, entity_type, fetch_limit, keyword_mode, original_kw_count, date_after, date_before, include_retracted=include_retracted)
+                fts_results = _fts_search(fts_keywords, tag_ids, entity_type, fetch_limit, keyword_mode, original_kw_count, date_after, date_before)
                 methods_used.append("fts5")
 
         # ベクトル検索（元のキーワードのまま、拡張なし）
-        vec_results = _vector_search(keywords, tag_ids, entity_type, fetch_limit, keyword_mode, date_after, date_before, include_retracted=include_retracted)
+        vec_results = _vector_search(keywords, tag_ids, entity_type, fetch_limit, keyword_mode, date_after, date_before)
         if vec_results is not None:
             methods_used.append("vector")
 
         # タグLIKE検索（キーワード長の制限なし）
-        tag_like_results = _tag_like_search(keywords, tag_ids, entity_type, fetch_limit, keyword_mode, date_after, date_before, include_retracted=include_retracted)
+        tag_like_results = _tag_like_search(keywords, tag_ids, entity_type, fetch_limit, keyword_mode, date_after, date_before)
         if tag_like_results:
             methods_used.append("tag_like")
 
@@ -1533,7 +1537,6 @@ def search(
                 "domain": domain,
                 "date_after": date_after,
                 "date_before": date_before,
-                "include_retracted": include_retracted,
             },
             result_count=total_count,
         )
@@ -1685,8 +1688,6 @@ def _format_row(type_name: str, data: dict, tags: list[str]) -> dict:
             "created_at": data["created_at"],
             "hint": "contentの先頭1-2文は内容の説明・要約にしてください（check-in時にsnippetとして表示されます）",
         }
-        if data.get("retracted_at"):
-            result["retracted_at"] = data["retracted_at"]
         apply_readable_id_inplace(
             result, "material", id_key="material_id"
         )
@@ -1694,7 +1695,7 @@ def _format_row(type_name: str, data: dict, tags: list[str]) -> dict:
     return data
 
 
-def get_by_id(type: str, id: int, conn=None, include_retracted: bool = False) -> dict:
+def get_by_id(type: str, id: int, conn=None) -> dict:
     """
     search結果の詳細情報を取得する。
 
@@ -1705,7 +1706,6 @@ def get_by_id(type: str, id: int, conn=None, include_retracted: bool = False) ->
         type: データ種別（'topic', 'decision', 'activity', 'log', 'material'）
         id: データのID
         conn: 既存のDB接続（省略時は内部で新規作成・クローズ）
-        include_retracted: Trueのとき取り消し済みの material も取得できる（デフォルトFalse）
 
     Returns:
         指定した種別に応じた詳細情報
@@ -1726,20 +1726,6 @@ def get_by_id(type: str, id: int, conn=None, include_retracted: bool = False) ->
     try:
         row = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (id,)).fetchone()
         if not row:
-            return {
-                "error": {
-                    "code": "NOT_FOUND",
-                    "message": f"{type} with id {id} not found"
-                }
-            }
-        # material は retracted_at IS NULL のものだけ Read 経路に出す
-        # （decision/log は retracted_at 付きで取得可能、material は完全に隠す）
-        # include_retracted=True で明示要求された場合のみ retract 済も返す
-        if (
-            type == 'material'
-            and row["retracted_at"] is not None
-            and not include_retracted
-        ):
             return {
                 "error": {
                     "code": "NOT_FOUND",
@@ -1776,13 +1762,12 @@ def get_by_id(type: str, id: int, conn=None, include_retracted: bool = False) ->
             conn.close()
 
 
-def get_by_ids(items: list[dict], include_retracted: bool = False) -> dict:
+def get_by_ids(items: list[dict]) -> dict:
     """
     複数のtype+idペアをバッチ取得する。
 
     Args:
         items: [{type: str, id: int}, ...] のリスト（最大20件）
-        include_retracted: Trueのとき取り消し済みの material も取得できる（デフォルトFalse）
 
     Returns:
         {"results": [get_by_idの結果, ...]}
@@ -1812,9 +1797,7 @@ def get_by_ids(items: list[dict], include_retracted: bool = False) -> dict:
                     }
                 })
                 continue
-            result = get_by_id(
-                item_type, item_id, conn=conn, include_retracted=include_retracted
-            )
+            result = get_by_id(item_type, item_id, conn=conn)
             results.append(result)
 
         return {"results": results}

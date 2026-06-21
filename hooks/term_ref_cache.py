@@ -1,6 +1,6 @@
-"""SessionStart hook: worker terminal ref をファイルキャッシュ（B案 D#2720）。
+"""SessionStart hook: worker terminal ref をファイルキャッシュ。
 
-env (TMUX_PANE / ITERM_SESSION_ID) を読んで
+env (TMUX_PANE) を読んで
 `~/.cc-memory/ow/term_refs/<session_id>.json` に書き込む。
 
 ow_service.ow_send が identity event を受信した際、payload.data.term_ref が
@@ -8,10 +8,8 @@ ow_service.ow_send が identity event を受信した際、payload.data.term_ref
 
 env 優先順:
 - TMUX_PANE: tmux 配下、pane_id (`%N`)
-- ITERM_SESSION_ID の `:` 以降: iTerm2 配下、session UUID
-  (adapter spawn 戻り値と同形式に揃えるため `w0t4p0:UUID` の UUID 部分のみ抽出)
 
-env が取れない場合は何も書かない（D#2720: 補完失敗時は identity event を素通し）。
+env が取れない場合は何も書かない (補完失敗時は identity event を素通し)。
 """
 import json
 import os
@@ -23,9 +21,6 @@ def _detect_term_ref() -> str | None:
     tmux_pane = os.environ.get("TMUX_PANE", "").strip()
     if tmux_pane:
         return tmux_pane
-    iterm_session = os.environ.get("ITERM_SESSION_ID", "").strip()
-    if iterm_session:
-        return iterm_session.rsplit(":", 1)[-1]
     return None
 
 

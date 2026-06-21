@@ -18,7 +18,6 @@ from src.services import (
     pin_service,
     retract_service,
     timeline_service,
-    harness_service,
     ow_service,
     guard_service,
 )
@@ -235,9 +234,6 @@ mcp = FastMCP("cc-memory", instructions=build_instructions())
 # セッション管理（HTTPモードで使用）
 _session_manager = None
 
-# ハーネス: 条件#4（整合性確認hint）のセッション別表示済みフラグ
-_shown_consistency_hints: set[str] = set()
-
 
 def get_session_manager():
     """現在のSessionManagerインスタンスを返す。HTTPモード以外ではNone。"""
@@ -269,11 +265,13 @@ def add_topic(
 def add_logs(items: list[dict]) -> dict:
     """複数のログを一括追加する（最大10件）。
 
+    呼び出し前に recording skill の判断ガイドを通すこと。
+
     items: ログ情報の配列。各要素は以下のキーを持つ:
         - topic_id (int, 必須): 対象トピックのID
         - content (str, 必須): 議論内容（マークダウン可）
         - title (str, optional): ログのタイトル。省略時はcontentの先頭行から自動生成
-        - tags (list[str], optional): 追加タグ。省略時はtopicのタグを継承。内容を表すタグを積極的に追加すること。namespace: domain:(プロジェクト)/intent:(意図)/素タグ(キーワード)。例: ["intent:discuss", "migration", "breaking-change", "schema"]
+        - tags (list[str], optional): 追加タグ。省略時はtopicのタグを継承。namespace: domain:(プロジェクト)/intent:(意図)/素タグ(キーワード)
 
     Returns: {created: [...], errors: [{index, error}]}
     """
@@ -318,22 +316,6 @@ def add_decisions(items: list[dict], ctx: Context) -> dict:
                 all_tags.update(item["tags"])
         if all_tags:
             _maybe_inject_tag_notes(result, list(all_tags))
-
-        # ハーネス: 推奨行動hintを注入
-        session_key = ctx.session_id or "__default__"
-        shown = session_key in _shown_consistency_hints
-        all_hints: list[str] = []
-        seen_topics: set[int] = set()
-        for item in items:
-            tid = item.get("topic_id")
-            if tid and tid not in seen_topics:
-                seen_topics.add(tid)
-                hints = harness_service.get_recommendations(tid, shown)
-                all_hints.extend(hints)
-        if all_hints:
-            result["hints"] = list(dict.fromkeys(all_hints))
-            if any(h == harness_service.HINT_CONSISTENCY_CHECK for h in all_hints):
-                _shown_consistency_hints.add(session_key)
     return result
 
 
@@ -444,7 +426,6 @@ def search(
     domain: Optional[str] = None,
     date_after: Optional[str] = None,
     date_before: Optional[str] = None,
-    include_retracted: bool = False,
     flavor: _FlavorArg = "internal",
 ) -> dict:
     """
@@ -471,7 +452,6 @@ def search(
         domain: ドメインフィルタ。内部でtags=["domain:{domain}"]にマージされる
         date_after: 日付フィルタ（以降）。YYYY-MM-DD or YYYY-MM-DD HH:MM:SS形式
         date_before: 日付フィルタ（以前）。YYYY-MM-DD or YYYY-MM-DD HH:MM:SS形式
-        include_retracted: Trueのとき取り消し済みのdecision/logも含める（デフォルトFalse）
 
     Returns:
         検索結果一覧（type, id, title, score, snippet, tags）
@@ -480,9 +460,13 @@ def search(
         snippetは各typeの対応するソースカラムの先頭200文字（materialはtitle優先表示）。
         tagsはエンティティに紐づくタグ文字列のリスト。
         include_details=Trueの場合、上位10件にdetailsが追加される。
+
+        取り消し済み（retracted）のdecision/logはretract時に物理削除されているため、
+        検索結果には現れない。直接取得したい場合はget_decisions/get_logsで
+        include_retracted=Trueを指定する。
     """
     flavor = _normalize_flavor(flavor)
-    result = search_service.search(keyword, tags, entity_type, limit, offset, keyword_mode, include_details, domain, date_after, date_before, include_retracted=include_retracted)
+    result = search_service.search(keyword, tags, entity_type, limit, offset, keyword_mode, include_details, domain, date_after, date_before)
     if "error" not in result:
         _apply_flavor_to_snippets(result.get("results", []), flavor)
     if "error" not in result and tags:
@@ -494,7 +478,6 @@ def search(
 def get_by_ids(
     items: list[dict],
     flavor: _FlavorArg = "internal",
-    include_retracted: bool = False,
 ) -> dict:
     """
     Choose: search 結果の type+id ペアを本文付きで一括取得したいとき（複数種別 OK）。material 単独なら get_material、topic/activity 起点の log/decision 集約なら get_logs / get_decisions、関連グラフ走査なら get_map。
@@ -508,14 +491,12 @@ def get_by_ids(
         items: 取得対象のリスト。各要素は {type: str, id: int}（最大20件）
                type: データ種別（'topic', 'decision', 'activity', 'log', 'material'）
                id: データのID
-        include_retracted: Trueのとき取り消し済みの material も取得できる（デフォルトFalse）。
-                           decision/log は本フラグに関わらず retracted_at 付きで取得される。
 
     Returns:
         取得結果（各アイテムの詳細情報）
     """
     flavor = _normalize_flavor(flavor)
-    result = search_service.get_by_ids(items, include_retracted=include_retracted)
+    result = search_service.get_by_ids(items)
     if "error" not in result:
         conn = get_connection()
         try:
@@ -760,21 +741,14 @@ def add_material(
     """
     資材を追加する。独立エンティティとしてタグ付きで保存される。
 
-    資材はセッション中の成果物・ドキュメントをDB保存する仕組み。
-    search(entity_type="material")で概要を検索し、get_by_idsまたはget_materialで全文を取得する。
-    決定事項と違って「双方の合意」が不要。成果物が出た時点でユーザーに確認せず呼ぶ。
-
-    典型的な使い方:
-    - 設計ドキュメントを保存: add_material("API設計書", "# API設計\n...", ["domain:cc-memory", "intent:design"], "コード調査")
-    - 調査結果を保存: add_material("既存実装の調査結果", "## 調査結果\n...", ["domain:cc-memory", "調査"], "公式ドキュメント")
-    - アクティビティと紐付け: add_material("設計書", "...", ["domain:cc-memory"], "ユーザー発言", related=[{"type": "activity", "ids": [123]}])
+    呼び出し前に recording skill の判断ガイドを通すこと。
 
     Args:
         title: 資材のタイトル
         content: 資材の本文（マークダウン形式推奨）。先頭1-2文は内容の説明・要約を書くこと（check-in時にsnippetとして表示される）
-        tags: タグ配列（必須、1個以上）。domain:タグに加えて内容を表すタグも付けること。namespace: domain:(プロジェクト)/intent:(意図)/素タグ(キーワード)
-        source: データの出自。典型的なソース種類: ユーザー発言、公式ドキュメント、コード調査、計測結果、外部記事、チーム議事録など。事実と推論が混在する場合はcontent内で明示的に区別すること
-        related: 関連エンティティ（optional）。[{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...] 形式。複数エンティティを配列で同時紐付け可能。例: [{"type": "activity", "ids": [123]}, {"type": "decision", "ids": [10]}]。作成と同時にリレーションを張る
+        tags: タグ配列（必須、1個以上）。namespace: domain:(プロジェクト)/intent:(意図)/素タグ(キーワード)
+        source: データの出自。典型的なソース種類: ユーザー発言、公式ドキュメント、コード調査、計測結果、外部記事、チーム議事録など
+        related: 関連エンティティ（optional）。[{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...] 形式
 
     Returns:
         作成された資材情報（material_id, title, content, source, tags, created_at）
@@ -1277,7 +1251,7 @@ def ow_spawn_worker(
     処理順: queueへspawning write-ahead → task file書き出し → アダプタ起動 → 安定ID返却。
     relay疎通確認・起動（ensure-server処理）も内包。permission_modeはautoに固定。
 
-    OW_TERMINAL環境変数でアダプタを選択（iterm2/tmux/manual。manualは起動コマンド表示のフォールバック）。
+    OW_TERMINAL環境変数でアダプタを選択（tmux/manual。未設定時は tmux。manualは起動コマンド表示のフォールバック）。
     OW_TERMINAL=tmuxのとき、tmux_target_pane（呼び出し元のTMUX_PANE）を渡すと、その
     paneと同じwindow内にworker paneを分割表示できる（最初は右に30%水平、以降は最新
     worker paneを垂直分割）。未指定時は従来の `ow-workers` 別sessionに新windowで起動する。
@@ -1336,7 +1310,7 @@ def ow_close_worker(term_ref: str) -> dict:
     OW_TERMINAL環境変数でアダプタを選択。アダプタ不在時はmanualフォールバック（手動クローズ案内）。
 
     Args:
-        term_ref: 安定ID（iTerm2のsession UUID、tmuxのpane ID等。タブindexは不安定なため使用しない）
+        term_ref: 安定ID（tmuxのpane ID 等。タブindexは不安定なため使用しない）
 
     Returns:
         成功時: {"closed": True, "term_ref": str}

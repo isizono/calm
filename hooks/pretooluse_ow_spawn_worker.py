@@ -49,7 +49,11 @@ def main() -> None:
             print("{}")
             return
 
-        if os.environ.get("OW_TERMINAL") != "tmux":
+        # OW_TERMINAL 未設定時のデフォルトは ow_service.py 側で "tmux"。
+        # hook も同じデフォルトに揃え、未設定ユーザーでも tmux_target_pane が
+        # 自動注入されるようにする (注入失敗時 worker が ow-workers 別 session に
+        # 隔離される事故を防ぐ目的)。
+        if os.environ.get("OW_TERMINAL", "tmux") != "tmux":
             print("{}")
             return
 

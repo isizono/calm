@@ -264,8 +264,8 @@ class TestSearchFilter:
         ids = [(r["type"], r["id_raw"]) for r in search_result.get("results", [])]
         assert ("log", retracted_id) not in ids
 
-    def test_retracted_included_with_flag(self, topic):
-        """include_retracted=Trueでretractされたエンティティが検索結果に含まれる"""
+    def test_retracted_physically_removed_from_search_index(self, topic):
+        """retract時にsearch_index/search_index_fts/vec_indexから物理削除される"""
         from src.services.search_service import search
 
         tid = topic["topic_id"]
@@ -274,98 +274,167 @@ class TestSearchFilter:
         ])
         retracted_id = result["created"][0]["decision_id"]
 
+        # retract前: search_indexにエントリが存在することを確認
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT id FROM search_index WHERE source_type = 'decision' AND source_id = ?",
+                (retracted_id,),
+            ).fetchone()
+            assert row is not None
+            search_index_id = row["id"]
+        finally:
+            conn.close()
+
         retract("decision", [retracted_id])
 
-        search_result = search("撤回テスト用ユニーク決定DEF", include_retracted=True)
-        ids = [(r["type"], r["id_raw"]) for r in search_result.get("results", [])]
-        assert ("decision", retracted_id) in ids
+        # retract後: search_index / search_index_fts / vec_index 全てから消えている
+        conn = get_connection()
+        try:
+            si_row = conn.execute(
+                "SELECT id FROM search_index WHERE source_type = 'decision' AND source_id = ?",
+                (retracted_id,),
+            ).fetchone()
+            assert si_row is None
 
-    def test_retracted_material_excluded_from_search(self, temp_db):
-        """retractされたmaterialはsearchでデフォルト除外される"""
+            vec_row = conn.execute(
+                "SELECT rowid FROM vec_index WHERE rowid = ?",
+                (search_index_id,),
+            ).fetchone()
+            assert vec_row is None
+        finally:
+            conn.close()
+
+        # search経由でもヒットしない（物理削除されているため）
+        search_result = search("撤回テスト用ユニーク決定DEF")
+        ids = [(r["type"], r["id_raw"]) for r in search_result.get("results", [])]
+        assert ("decision", retracted_id) not in ids
+
+    def test_retracted_log_physically_removed_from_search_index(self, topic):
+        """logもretract時にsearch_index/FTS/vec_indexから物理削除される"""
+        from src.services.search_service import search
+
+        tid = topic["topic_id"]
+        result = add_logs([
+            {"topic_id": tid, "content": "物理削除テスト用ユニークログGHI", "title": "物理削除テストGHI"},
+        ])
+        retracted_id = result["created"][0]["log_id"]
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT id FROM search_index WHERE source_type = 'log' AND source_id = ?",
+                (retracted_id,),
+            ).fetchone()
+            assert row is not None
+            search_index_id = row["id"]
+        finally:
+            conn.close()
+
+        retract("log", [retracted_id])
+
+        conn = get_connection()
+        try:
+            si_row = conn.execute(
+                "SELECT id FROM search_index WHERE source_type = 'log' AND source_id = ?",
+                (retracted_id,),
+            ).fetchone()
+            assert si_row is None
+
+            vec_row = conn.execute(
+                "SELECT rowid FROM vec_index WHERE rowid = ?",
+                (search_index_id,),
+            ).fetchone()
+            assert vec_row is None
+        finally:
+            conn.close()
+
+        search_result = search("物理削除テストGHI")
+        ids = [(r["type"], r["id_raw"]) for r in search_result.get("results", [])]
+        assert ("log", retracted_id) not in ids
+
+    def test_retracted_material_physically_removed_from_search_index(self, temp_db):
+        """materialもretract時にsearch_index/FTS/vec_indexから物理削除される"""
         from src.services.material_service import add_material
         from src.services.search_service import search
 
         m = add_material(
-            title="ユニーク資材GHI",
-            content="検索対象のユニーク資材GHI 本文",
+            title="物理削除テストMNO",
+            content="物理削除テスト用ユニーク資材MNO 本文",
             tags=DEFAULT_TAGS,
             source="unit test",
         )
         retracted_id = m["material_id"]
 
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT id FROM search_index WHERE source_type = 'material' AND source_id = ?",
+                (retracted_id,),
+            ).fetchone()
+            assert row is not None
+            search_index_id = row["id"]
+        finally:
+            conn.close()
+
         retract("material", [retracted_id])
 
-        search_result = search("ユニーク資材GHI")
+        conn = get_connection()
+        try:
+            si_row = conn.execute(
+                "SELECT id FROM search_index WHERE source_type = 'material' AND source_id = ?",
+                (retracted_id,),
+            ).fetchone()
+            assert si_row is None
+
+            vec_row = conn.execute(
+                "SELECT rowid FROM vec_index WHERE rowid = ?",
+                (search_index_id,),
+            ).fetchone()
+            assert vec_row is None
+        finally:
+            conn.close()
+
+        search_result = search("物理削除テストMNO")
         ids = [(r["type"], r["id_raw"]) for r in search_result.get("results", [])]
         assert ("material", retracted_id) not in ids
 
-    def test_retracted_material_included_with_flag(self, temp_db):
-        """include_retracted=Trueでretractされたmaterialが検索結果に含まれる"""
-        from src.services.material_service import add_material
+    def test_undo_does_not_reindex(self, topic):
+        """un-retractはretracted_atをNULLに戻すのみで、search経路への再登録は行わない"""
         from src.services.search_service import search
 
-        m = add_material(
-            title="ユニーク資材JKL",
-            content="検索対象のユニーク資材JKL 本文",
-            tags=DEFAULT_TAGS,
-            source="unit test",
-        )
-        retracted_id = m["material_id"]
+        tid = topic["topic_id"]
+        result = add_decisions([
+            {"topic_id": tid, "decision": "アンリトラクトテスト用JKL", "reason": "理由"},
+        ])
+        decision_id = result["created"][0]["decision_id"]
 
-        retract("material", [retracted_id])
+        # retract → un-retract
+        retract("decision", [decision_id])
+        retract("decision", [decision_id], undo=True)
 
-        search_result = search("ユニーク資材JKL", include_retracted=True)
+        # un-retract後: retracted_at は NULL に戻る
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT retracted_at FROM decisions WHERE id = ?",
+                (decision_id,),
+            ).fetchone()
+            assert row["retracted_at"] is None
+
+            # しかしsearch_indexエントリは復活していない（物理削除は不可逆）
+            si_row = conn.execute(
+                "SELECT id FROM search_index WHERE source_type = 'decision' AND source_id = ?",
+                (decision_id,),
+            ).fetchone()
+            assert si_row is None
+        finally:
+            conn.close()
+
+        # search経由でもヒットしない
+        search_result = search("アンリトラクトテストJKL")
         ids = [(r["type"], r["id_raw"]) for r in search_result.get("results", [])]
-        assert ("material", retracted_id) in ids
-
-
-class TestGetByIdsMaterialFilter:
-    """get_by_idsの material retract フィルタ"""
-
-    def test_retracted_material_returns_not_found(self, temp_db):
-        """retracted materialはget_by_idsでNOT_FOUNDになる"""
-        from src.services.material_service import add_material
-        from src.services.search_service import get_by_ids
-
-        m = add_material(
-            title="get_by_ids対象",
-            content="本文",
-            tags=DEFAULT_TAGS,
-            source="unit test",
-        )
-        material_id = m["material_id"]
-
-        retract("material", [material_id])
-
-        result = get_by_ids([{"type": "material", "id": material_id}])
-        assert len(result["results"]) == 1
-        assert "error" in result["results"][0]
-        assert result["results"][0]["error"]["code"] == "NOT_FOUND"
-
-    def test_retracted_material_returned_when_include_retracted(self, temp_db):
-        """include_retracted=Trueでretracted materialもget_by_idsで取得できる"""
-        from src.services.material_service import add_material
-        from src.services.search_service import get_by_ids
-
-        m = add_material(
-            title="復元参照対象",
-            content="本文",
-            tags=DEFAULT_TAGS,
-            source="unit test",
-        )
-        material_id = m["material_id"]
-
-        retract("material", [material_id])
-
-        result = get_by_ids(
-            [{"type": "material", "id": material_id}], include_retracted=True
-        )
-        assert len(result["results"]) == 1
-        entry = result["results"][0]
-        assert "error" not in entry
-        assert entry["type"] == "material"
-        assert entry["data"]["material_id_raw"] == material_id
-        assert entry["data"]["retracted_at"] is not None
+        assert ("decision", decision_id) not in ids
 
 
 class TestPinnedMaterialFilter:

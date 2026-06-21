@@ -419,7 +419,7 @@
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
-| term_ref | string | yes | - | 安定ID（iTerm2 session UUID、tmux pane ID等） |
+| term_ref | string | yes | - | 安定ID（tmux pane ID 等） |
 
 **返り値**: `{closed: True, term_ref}` または `{manual: True, message}`。
 

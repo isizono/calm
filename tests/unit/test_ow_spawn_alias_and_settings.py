@@ -162,7 +162,9 @@ class TestSpawnWorkerAliasFormat:
         )
         # 万が一 preflight をすり抜けても /tmp などを汚さない
         monkeypatch.setattr(ow_service, "_ensure_worker_askuser_deny", lambda c: None)
-        monkeypatch.delenv("OW_TERMINAL", raising=False)
+        # 明示的に "manual" を指定してアダプタ呼び出しを抑止する
+        # (デフォルトの "tmux" だと実環境の tmux 経路が走り得るためテスト分離が崩れる)
+        monkeypatch.setenv("OW_TERMINAL", "manual")
 
     def test_too_short_alias_returns_precondition_failed(self, monkeypatch, tmp_path):
         result = ow_service.ow_spawn_worker(
@@ -229,7 +231,9 @@ class TestSpawnWorkerSpawningBroadcastFailure:
         monkeypatch.setattr(ow_service, "_get_presence", lambda ch: [])
         monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
         monkeypatch.setattr(ow_service, "_ensure_worker_askuser_deny", lambda c: None)
-        monkeypatch.delenv("OW_TERMINAL", raising=False)
+        # 明示的に "manual" を指定してアダプタ呼び出しを抑止する
+        # (デフォルトの "tmux" だと実環境の tmux 経路が走り得るためテスト分離が崩れる)
+        monkeypatch.setenv("OW_TERMINAL", "manual")
 
     def test_relay_error_returns_precondition_failed(self, monkeypatch, tmp_path):
         """relay が 5xx を返して broadcast 失敗 → SPAWN_PRECONDITION_FAILED。"""
@@ -379,7 +383,9 @@ class TestSpawnWorkerWritesSettingsLocal:
             "_relay_request",
             lambda *args, **kwargs: {"msg_id": 0},
         )
-        monkeypatch.delenv("OW_TERMINAL", raising=False)
+        # 明示的に "manual" を指定してアダプタ呼び出しを抑止する
+        # (デフォルトの "tmux" だと実環境の tmux 経路が走り得るためテスト分離が崩れる)
+        monkeypatch.setenv("OW_TERMINAL", "manual")
 
     def test_spawn_creates_settings_local_under_cwd(self, monkeypatch, tmp_path):
         worker_cwd = tmp_path / "worker-ws"
