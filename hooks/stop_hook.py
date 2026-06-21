@@ -258,10 +258,10 @@ def _handle_nudges(state: HookState, events: list[dict], current_turn: int) -> N
 
     user_prompt_submit_hookがevents.jsonlを読んでnudge注入を判定するため、
     nudgeフラグの代わりにnudgeイベントをevents.jsonlに追記する。
+    typeはHintServiceの値域 (record_missing / follow_up_after_decision / logs_sparse) と統一する。
     """
     nudge_events: list[dict] = []
 
-    # record nudge: _NUDGE_INTERVAL turnごとに記録がなければ発火（増殖式）
     if current_turn > 0 and current_turn % _NUDGE_INTERVAL == 0:
         recent_turn_threshold = current_turn - _NUDGE_INTERVAL
         has_recent_record = any(
@@ -275,17 +275,17 @@ def _handle_nudges(state: HookState, events: list[dict], current_turn: int) -> N
             repeat = max(1, min(turns_since // _NUDGE_INTERVAL, 5))
             nudge_events.append({
                 "e": "nudge",
-                "type": "record",
+                "type": "record_missing",
                 "turn": current_turn,
                 "repeat": repeat,
             })
 
-    # follow_up nudge: 直近turnにadd_decisionsあり & 他の記録系/check-in系ツールなし
     recent_events = [e for e in events if e.get("turn", 0) == current_turn]
-    has_decision = any(
-        e["e"] == "tool" and e.get("name") == "add_decisions" for e in recent_events
-    )
-    if has_decision:
+    decision_events = [
+        e for e in recent_events
+        if e["e"] == "tool" and e.get("name") == "add_decisions"
+    ]
+    if decision_events:
         companion_tools = (_RECORDING_TOOLS | _CHECKIN_TOOLS) - {"add_decisions"}
         has_companion = any(
             e["e"] == "tool" and e.get("name") in companion_tools for e in recent_events
@@ -293,12 +293,66 @@ def _handle_nudges(state: HookState, events: list[dict], current_turn: int) -> N
         if not has_companion:
             nudge_events.append({
                 "e": "nudge",
-                "type": "follow_up",
+                "type": "follow_up_after_decision",
                 "turn": current_turn,
             })
 
+        nudge_events.extend(
+            _collect_logs_sparse_nudges(decision_events, current_turn)
+        )
+
     if nudge_events:
         state.append_events(nudge_events)
+
+
+def _collect_logs_sparse_nudges(
+    decision_events: list[dict], current_turn: int
+) -> list[dict]:
+    """直近turnのadd_decisions topic_idからlogs_sparse判定を行う。
+
+    HintService経由でtopic scopeの遅延hint (logs_sparse) を抽出する。
+    """
+    topic_ids: list[int] = []
+    seen: set[int] = set()
+    for e in decision_events:
+        for tid in e.get("topic_ids", []) or []:
+            try:
+                tid_int = int(tid)
+            except (ValueError, TypeError):
+                continue
+            if tid_int in seen:
+                continue
+            seen.add(tid_int)
+            topic_ids.append(tid_int)
+    if not topic_ids:
+        return []
+
+    try:
+        from src.services import hint_service
+    except Exception as e:
+        print(f"stop_hook.py logs_sparse import error: {e}", file=sys.stderr)
+        return []
+
+    nudges: list[dict] = []
+    for tid in topic_ids:
+        try:
+            hints = hint_service.get_hints("topic", tid)
+        except Exception as e:
+            print(f"stop_hook.py logs_sparse get_hints error: {e}", file=sys.stderr)
+            continue
+        for h in hints:
+            if h.get("delivery_hint") != "deferred":
+                continue
+            if h.get("type") != "logs_sparse":
+                continue
+            nudges.append({
+                "e": "nudge",
+                "type": "logs_sparse",
+                "turn": current_turn,
+                "topic_id": tid,
+                "message": h["message"],
+            })
+    return nudges
 
 
 if __name__ == "__main__":

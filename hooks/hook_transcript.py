@@ -180,7 +180,6 @@ def extract_events(entries: list[dict], current_turn: int) -> tuple[list[dict], 
                             "name": short_name,
                             "turn": current_turn,
                         }
-                        # check_inのactivity_idを保存
                         if short_name == "check_in":
                             aid = block.get("input", {}).get("activity_id")
                             if aid is not None:
@@ -188,6 +187,22 @@ def extract_events(entries: list[dict], current_turn: int) -> tuple[list[dict], 
                                     event["activity_id"] = int(aid)
                                 except (ValueError, TypeError):
                                     pass
+                        elif short_name == "add_decisions":
+                            items = block.get("input", {}).get("items", [])
+                            topic_ids: list[int] = []
+                            if isinstance(items, list):
+                                for item in items:
+                                    if not isinstance(item, dict):
+                                        continue
+                                    tid = item.get("topic_id")
+                                    if tid is None:
+                                        continue
+                                    try:
+                                        topic_ids.append(int(tid))
+                                    except (ValueError, TypeError):
+                                        pass
+                            if topic_ids:
+                                event["topic_ids"] = topic_ids
                         events.append(event)
 
     return events, current_turn

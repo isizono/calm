@@ -155,7 +155,6 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 | `hooks/user_prompt_submit_hook.py` | UserPromptSubmit | ターンカウンタ・record nudge発火判定 |
 | `hooks/stop_hook.py` | Stop | 終端でのフォローアップ提案 |
 | `hooks/heartbeat.py` | 定期 | プレゼンス維持・ハートビート送信 |
-| `hooks/remind_activity_on_decision.sh` | （シェル介入） | decision記録時のactivity紐付け促し |
 
 共通基盤:
 
@@ -184,21 +183,20 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 
 ### 4.3 フロー層 service
 
-- `src/services/checkin_service.py`: check-inの本体実装。アクティビティに紐づく tag-notes・資材カタログ・pinned・関連decisions・recent logs を一括取得し、coverage と recompose hints を計算する
-- `src/services/harness_service.py`: hint/recommendation生成（`get_recommendations`）。`_count_decisions_and_logs` 等を用いて記録忘れシグナルを判定し、フロー層のnudgeを駆動する
+- `src/services/checkin_service.py`: check-inの本体実装。アクティビティに紐づく tag-notes・資材カタログ・pinned・関連decisions・recent logs を一括取得し、coverage と recompose hints を計算する (recompose hint は HintService 経由)
+- `src/services/hint_service.py`: hint一元化（`get_hints(scope, target_id) -> list[Hint]`）。recompose_bootstrap / recompose_delta / logs_sparse / follow_up_after_decision / record_missing を統一フォーマットで返す。delivery_hint で immediate (check_in 同期注入) と deferred (Stop hook → events.jsonl → UserPromptSubmit 注入) を分岐する
 - `src/services/habit_service.py`: SessionStartでの全件注入対象
 
 ### 4.4 hookシグナルの流れ
 
 ```
 SessionStart        → session_start_hook → habits注入 / scoring / 鮮度警告
-UserPromptSubmit    → user_prompt_submit_hook → ターンカウント / record nudge判定
-PostToolUse         → remind_activity_on_decision.sh （add_decisions matcher限定）
-Stop                → stop_hook → follow_up nudge
+UserPromptSubmit    → user_prompt_submit_hook → 未消費 nudge の system-reminder 注入
+Stop                → stop_hook → record_missing / follow_up_after_decision / logs_sparse nudge を events.jsonl に追記
 SessionEnd          → session_end_hook → sync-memory連携
 ```
 
-PostToolUseは `hooks/hooks.json` に `add_decisions` matcher 限定で登録済みで、`remind_activity_on_decision.sh` が発火する。PreToolUse は `hooks/hooks.json` に登録がなく、対応する hook スクリプトも存在しない。
+PreToolUse は `hooks/hooks.json` に ow_spawn_worker matcher 限定で登録済み。PostToolUse は廃止された (旧 remind_activity_on_decision.sh は HintService の follow_up_after_decision で代替)。
 
 ### 4.5 既知の課題
 
