@@ -269,11 +269,13 @@ def add_topic(
 def add_logs(items: list[dict]) -> dict:
     """複数のログを一括追加する（最大10件）。
 
+    呼び出し前に recording skill の判断ガイドを通すこと。
+
     items: ログ情報の配列。各要素は以下のキーを持つ:
         - topic_id (int, 必須): 対象トピックのID
         - content (str, 必須): 議論内容（マークダウン可）
         - title (str, optional): ログのタイトル。省略時はcontentの先頭行から自動生成
-        - tags (list[str], optional): 追加タグ。省略時はtopicのタグを継承。内容を表すタグを積極的に追加すること。namespace: domain:(プロジェクト)/intent:(意図)/素タグ(キーワード)。例: ["intent:discuss", "migration", "breaking-change", "schema"]
+        - tags (list[str], optional): 追加タグ。省略時はtopicのタグを継承。namespace: domain:(プロジェクト)/intent:(意図)/素タグ(キーワード)
 
     Returns: {created: [...], errors: [{index, error}]}
     """
@@ -757,21 +759,14 @@ def add_material(
     """
     資材を追加する。独立エンティティとしてタグ付きで保存される。
 
-    資材はセッション中の成果物・ドキュメントをDB保存する仕組み。
-    search(entity_type="material")で概要を検索し、get_by_idsまたはget_materialで全文を取得する。
-    決定事項と違って「双方の合意」が不要。成果物が出た時点でユーザーに確認せず呼ぶ。
-
-    典型的な使い方:
-    - 設計ドキュメントを保存: add_material("API設計書", "# API設計\n...", ["domain:cc-memory", "intent:design"], "コード調査")
-    - 調査結果を保存: add_material("既存実装の調査結果", "## 調査結果\n...", ["domain:cc-memory", "調査"], "公式ドキュメント")
-    - アクティビティと紐付け: add_material("設計書", "...", ["domain:cc-memory"], "ユーザー発言", related=[{"type": "activity", "ids": [123]}])
+    呼び出し前に recording skill の判断ガイドを通すこと。
 
     Args:
         title: 資材のタイトル
         content: 資材の本文（マークダウン形式推奨）。先頭1-2文は内容の説明・要約を書くこと（check-in時にsnippetとして表示される）
-        tags: タグ配列（必須、1個以上）。domain:タグに加えて内容を表すタグも付けること。namespace: domain:(プロジェクト)/intent:(意図)/素タグ(キーワード)
-        source: データの出自。典型的なソース種類: ユーザー発言、公式ドキュメント、コード調査、計測結果、外部記事、チーム議事録など。事実と推論が混在する場合はcontent内で明示的に区別すること
-        related: 関連エンティティ（optional）。[{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...] 形式。複数エンティティを配列で同時紐付け可能。例: [{"type": "activity", "ids": [123]}, {"type": "decision", "ids": [10]}]。作成と同時にリレーションを張る
+        tags: タグ配列（必須、1個以上）。namespace: domain:(プロジェクト)/intent:(意図)/素タグ(キーワード)
+        source: データの出自。典型的なソース種類: ユーザー発言、公式ドキュメント、コード調査、計測結果、外部記事、チーム議事録など
+        related: 関連エンティティ（optional）。[{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...] 形式
 
     Returns:
         作成された資材情報（material_id, title, content, source, tags, created_at）
