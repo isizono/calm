@@ -16,8 +16,6 @@
 # (≒ watchdog 機能を壊す)、heartbeat.sh のような「1ショット send + sleep」の
 # 構造とは要件が異なる。pipefail も同様に pipeline 中の curl 失敗を errno 化して
 # しまうため未設定。未定義参照は `${VAR:-}` で個別に防御している。
-# (判断保留: 将来 set -u だけ局所的に有効化する余地はあるが、現状の `${PIPE_PID:-}`
-#  パターンで実害なし。)
 
 RELAY_URL="${RELAY_URL:-http://127.0.0.1:8765}"
 CHANNEL="$1"
@@ -30,22 +28,23 @@ if [ -z "$CHANNEL" ] || [ -z "$HANDLE" ]; then
     exit 1
 fi
 
-# B案: trap でシグナル受信時に pipeline 末尾プロセスを殺してから exit。
-# bg化された後の親 SIGHUP は macOS デフォルトで届かないため A案(PPID watchdog)
-# の補助にすぎないが、claude が正常 exit する SIGTERM 経路には反応する。
+# curl と python3 を mkfifo 経由で個別の bg job として起動することで、
+# curl と python3 双方の PID を `$!` で個別に取得できる。pipeline
+# `curl | python3` だと `$!` は末尾の python3 PID しか取れず、SSE 無音時に
+# curl が SIGPIPE 連鎖死しないケースで孤児として残るリスクが残る (M#412 §B-3)。
 #
-# PIPE_PID は `curl ... | python3 ... &` で取得した `$!` の値で、これは
-# パイプライン末尾の python3 の PID。これを kill すると python3 が死に、
-# 上流の curl は stdout への書き込み時 SIGPIPE で連鎖死する。
-# (TODO: SSE 無音時など stdout に書き込みが起きない状況では curl が孤児として
-#  生き残るリスクがある。根本対策は別 issue 扱い。)
-#
-# exit 0 は HUP/INT/TERM 経由で呼ばれた際の終了コードを明示するためのもの。
-# EXIT 経由では冗長だが、シグナル経路で「子の状態に引きずられない 0 終了」を
-# 確定させる目的で残している。
+# cleanup trap は PIPE_PID (python3) と CURL_PID (curl) の両方を明示 kill し、
+# 名前付きパイプ (FIFO) も削除する。EXIT/HUP/INT/TERM のいずれで起こされても
+# 同じ後始末経路に流れる。
 cleanup() {
     if [ -n "${PIPE_PID:-}" ]; then
         kill "$PIPE_PID" 2>/dev/null || true
+    fi
+    if [ -n "${CURL_PID:-}" ]; then
+        kill "$CURL_PID" 2>/dev/null || true
+    fi
+    if [ -n "${FIFO:-}" ] && [ -e "$FIFO" ]; then
+        rm -f "$FIFO"
     fi
     exit 0
 }
@@ -62,27 +61,41 @@ parent_alive() {
 
 while parent_alive; do
     # SSE は long-poll で意図的に hang させるため curl 自体には max-time を付けない。
-    # 親死亡を素早く検出するために curl を bg で起動し、内側ループで親監視する。
+    # mkfifo 経由で curl の stdout を python3 の stdin に繋ぐことで、両プロセスを
+    # 別々の bg job として起動できる (= 個別 PID を `$!` で取得可能)。
+    FIFO="$(mktemp -u -t ow_recv.XXXXXX)"
+    mkfifo "$FIFO"
+
     curl -sN --get \
         --data-urlencode "channel=${CHANNEL}" \
         --data-urlencode "handle=${HANDLE}" \
         "${RELAY_URL}/stream" \
-        | python3 -u "${SCRIPT_DIR}/recv_filter.py" "${HANDLE}" &
-    # $! はパイプライン末尾 (python3) の PID。これを kill すると python3 が落ち、
-    # 上流の curl は SIGPIPE で連鎖死する想定。変数名 PIPE_PID で意図を明示する。
+        > "$FIFO" &
+    CURL_PID=$!
+
+    python3 -u "${SCRIPT_DIR}/recv_filter.py" "${HANDLE}" < "$FIFO" &
     PIPE_PID=$!
 
     # pipeline 終了 or 親死亡まで待つ。1秒ごとに親監視。
+    # PIPE_PID (python3) 死亡時に CURL_PID も明示的に kill する。
+    # SSE 無音時に curl が SIGPIPE 連鎖死しないケースの保険。
     while kill -0 "$PIPE_PID" 2>/dev/null; do
         if ! parent_alive; then
             kill "$PIPE_PID" 2>/dev/null || true
+            kill "$CURL_PID" 2>/dev/null || true
             wait "$PIPE_PID" 2>/dev/null || true
+            wait "$CURL_PID" 2>/dev/null || true
             exit 0
         fi
         sleep 1
     done
+    kill "$CURL_PID" 2>/dev/null || true
     wait "$PIPE_PID" 2>/dev/null || true
-    unset PIPE_PID
+    wait "$CURL_PID" 2>/dev/null || true
+    unset PIPE_PID CURL_PID
+
+    rm -f "$FIFO"
+    unset FIFO
 
     # SSE 切断後は1秒待ってから再接続を試みる。親死亡なら次の while 条件で抜ける。
     sleep 1
