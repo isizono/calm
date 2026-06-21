@@ -264,8 +264,8 @@ class TestSearchFilter:
         ids = [(r["type"], r["id_raw"]) for r in search_result.get("results", [])]
         assert ("log", retracted_id) not in ids
 
-    def test_retracted_included_with_flag(self, topic):
-        """include_retracted=Trueでretractされたエンティティが検索結果に含まれる"""
+    def test_retracted_physically_removed_from_search_index(self, topic):
+        """retract時にsearch_index/search_index_fts/vec_indexから物理削除される"""
         from src.services.search_service import search
 
         tid = topic["topic_id"]
@@ -274,8 +274,118 @@ class TestSearchFilter:
         ])
         retracted_id = result["created"][0]["decision_id"]
 
+        # retract前: search_indexにエントリが存在することを確認
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT id FROM search_index WHERE source_type = 'decision' AND source_id = ?",
+                (retracted_id,),
+            ).fetchone()
+            assert row is not None
+            search_index_id = row["id"]
+        finally:
+            conn.close()
+
         retract("decision", [retracted_id])
 
-        search_result = search("撤回テスト用ユニーク決定DEF", include_retracted=True)
+        # retract後: search_index / search_index_fts / vec_index 全てから消えている
+        conn = get_connection()
+        try:
+            si_row = conn.execute(
+                "SELECT id FROM search_index WHERE source_type = 'decision' AND source_id = ?",
+                (retracted_id,),
+            ).fetchone()
+            assert si_row is None
+
+            vec_row = conn.execute(
+                "SELECT rowid FROM vec_index WHERE rowid = ?",
+                (search_index_id,),
+            ).fetchone()
+            assert vec_row is None
+        finally:
+            conn.close()
+
+        # search経由でもヒットしない（include_retracted は search から撤去済み）
+        search_result = search("撤回テスト用ユニーク決定DEF")
         ids = [(r["type"], r["id_raw"]) for r in search_result.get("results", [])]
-        assert ("decision", retracted_id) in ids
+        assert ("decision", retracted_id) not in ids
+
+    def test_retracted_log_physically_removed_from_search_index(self, topic):
+        """logもretract時にsearch_index/FTS/vec_indexから物理削除される"""
+        from src.services.search_service import search
+
+        tid = topic["topic_id"]
+        result = add_logs([
+            {"topic_id": tid, "content": "物理削除テスト用ユニークログGHI", "title": "物理削除テストGHI"},
+        ])
+        retracted_id = result["created"][0]["log_id"]
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT id FROM search_index WHERE source_type = 'log' AND source_id = ?",
+                (retracted_id,),
+            ).fetchone()
+            assert row is not None
+            search_index_id = row["id"]
+        finally:
+            conn.close()
+
+        retract("log", [retracted_id])
+
+        conn = get_connection()
+        try:
+            si_row = conn.execute(
+                "SELECT id FROM search_index WHERE source_type = 'log' AND source_id = ?",
+                (retracted_id,),
+            ).fetchone()
+            assert si_row is None
+
+            vec_row = conn.execute(
+                "SELECT rowid FROM vec_index WHERE rowid = ?",
+                (search_index_id,),
+            ).fetchone()
+            assert vec_row is None
+        finally:
+            conn.close()
+
+        search_result = search("物理削除テストGHI")
+        ids = [(r["type"], r["id_raw"]) for r in search_result.get("results", [])]
+        assert ("log", retracted_id) not in ids
+
+    def test_undo_does_not_reindex(self, topic):
+        """un-retractはretracted_atをNULLに戻すのみで、search経路への再登録は行わない"""
+        from src.services.search_service import search
+
+        tid = topic["topic_id"]
+        result = add_decisions([
+            {"topic_id": tid, "decision": "アンリトラクトテスト用JKL", "reason": "理由"},
+        ])
+        decision_id = result["created"][0]["decision_id"]
+
+        # retract → un-retract
+        retract("decision", [decision_id])
+        retract("decision", [decision_id], undo=True)
+
+        # un-retract後: retracted_at は NULL に戻る
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT retracted_at FROM decisions WHERE id = ?",
+                (decision_id,),
+            ).fetchone()
+            assert row["retracted_at"] is None
+
+            # しかしsearch_indexエントリは復活していない（物理削除は不可逆）
+            si_row = conn.execute(
+                "SELECT id FROM search_index WHERE source_type = 'decision' AND source_id = ?",
+                (decision_id,),
+            ).fetchone()
+            assert si_row is None
+        finally:
+            conn.close()
+
+        # search経由でもヒットしない
+        search_result = search("アンリトラクトテストJKL")
+        ids = [(r["type"], r["id_raw"]) for r in search_result.get("results", [])]
+        assert ("decision", decision_id) not in ids

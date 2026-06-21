@@ -130,7 +130,6 @@ def test_search_records_telemetry_row(temp_db, capture_telemetry_threads):
     assert "domain" in params
     assert "date_after" in params
     assert "date_before" in params
-    assert "include_retracted" in params
     assert "include_details" in params
     assert "tags" in params
     assert row["timestamp"] is not None

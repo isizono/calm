@@ -260,6 +260,15 @@ def update_embedding(search_index_id: int, embedding: list[float]) -> None:
         conn.close()
 
 
+def delete_embedding_with_conn(conn, search_index_id: int) -> None:
+    """vec_indexから1行削除する（コミットは呼び出し側の責任）。
+
+    vec0仮想テーブルは外部キー制約を持てないため、search_indexのレコード削除と
+    同じトランザクション内でこの関数を呼び、孤児レコードを残さないようにする。
+    """
+    conn.execute("DELETE FROM vec_index WHERE rowid = ?", (search_index_id,))
+
+
 _ENTITY_TEXT_QUERIES = {
     "topic": (
         "SELECT title, description FROM discussion_topics WHERE id = ?",

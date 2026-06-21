@@ -444,7 +444,6 @@ def search(
     domain: Optional[str] = None,
     date_after: Optional[str] = None,
     date_before: Optional[str] = None,
-    include_retracted: bool = False,
     flavor: _FlavorArg = "internal",
 ) -> dict:
     """
@@ -471,7 +470,6 @@ def search(
         domain: ドメインフィルタ。内部でtags=["domain:{domain}"]にマージされる
         date_after: 日付フィルタ（以降）。YYYY-MM-DD or YYYY-MM-DD HH:MM:SS形式
         date_before: 日付フィルタ（以前）。YYYY-MM-DD or YYYY-MM-DD HH:MM:SS形式
-        include_retracted: Trueのとき取り消し済みのdecision/logも含める（デフォルトFalse）
 
     Returns:
         検索結果一覧（type, id, title, score, snippet, tags）
@@ -480,9 +478,13 @@ def search(
         snippetは各typeの対応するソースカラムの先頭200文字（materialはtitle優先表示）。
         tagsはエンティティに紐づくタグ文字列のリスト。
         include_details=Trueの場合、上位10件にdetailsが追加される。
+
+        取り消し済み（retracted）のdecision/logはretract時に物理削除されているため、
+        検索結果には現れない。直接取得したい場合はget_decisions/get_logsで
+        include_retracted=Trueを指定する。
     """
     flavor = _normalize_flavor(flavor)
-    result = search_service.search(keyword, tags, entity_type, limit, offset, keyword_mode, include_details, domain, date_after, date_before, include_retracted=include_retracted)
+    result = search_service.search(keyword, tags, entity_type, limit, offset, keyword_mode, include_details, domain, date_after, date_before)
     if "error" not in result:
         _apply_flavor_to_snippets(result.get("results", []), flavor)
     if "error" not in result and tags:
