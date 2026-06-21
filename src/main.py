@@ -824,6 +824,7 @@ def update_material(
 def get_material(
     material_id: int,
     flavor: _FlavorArg = "internal",
+    include_retracted: bool = False,
 ) -> dict:
     """
     Choose: material_id 既知で資材の全文だけ取得したいとき。複数種別を一括なら get_by_ids、起点からの関連グラフ走査なら get_map、log/decision/material の混合時系列なら get_timeline。
@@ -835,12 +836,13 @@ def get_material(
 
     Args:
         material_id: 資材のID
+        include_retracted: Trueのとき取り消し済みの資材も取得できる（デフォルトFalse）
 
     Returns:
         資材の全文情報（material_id, title, content, source, tags, created_at）
     """
     flavor = _normalize_flavor(flavor)
-    result = material_service.get_material(material_id)
+    result = material_service.get_material(material_id, include_retracted=include_retracted)
     if "error" not in result:
         _apply_flavor_to_single(result, "material", flavor, id_key="material_id")
     return result
@@ -1126,11 +1128,11 @@ def remove_pin(
 
 
 @mcp.tool()
-def retract(entity_type: Literal["decision", "log"], ids: list[int], undo: bool = False) -> dict:
-    """決定事項やログを取り消す（論理削除）。取り消し済みエンティティは検索・取得でデフォルト除外される。
+def retract(entity_type: Literal["decision", "log", "material"], ids: list[int], undo: bool = False) -> dict:
+    """決定事項・ログ・資材を取り消す（論理削除）。取り消し済みエンティティは検索・取得でデフォルト除外される。
 
     Args:
-        entity_type: "decision" | "log"
+        entity_type: "decision" | "log" | "material"
         ids: 対象エンティティのIDリスト
         undo: True=取り消しを元に戻す（un-retract）、False=取り消す（retract）
     """

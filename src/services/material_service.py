@@ -32,6 +32,8 @@ def _material_to_response(material: dict, tags: list[str]) -> dict:
         "created_at": material["created_at"],
         "hint": "contentの先頭1-2文は内容の説明・要約にしてください（check-in時にsnippetとして表示されます）",
     }
+    if material.get("retracted_at"):
+        result["retracted_at"] = material["retracted_at"]
     apply_readable_id_inplace(result, "material", id_key="material_id")
     return result
 
@@ -159,6 +161,7 @@ def get_materials_by_relation_with_conn(conn, activity_id: int) -> list[dict]:
            FROM materials m
            JOIN relations r ON r.source_type = 'activity' AND r.source_id = ?
                            AND r.target_type = 'material' AND r.target_id = m.id
+           WHERE m.retracted_at IS NULL
            ORDER BY m.created_at ASC""",
         (activity_id,),
     ).fetchall()
@@ -361,12 +364,13 @@ def update_material(
         conn.close()
 
 
-def get_material(material_id: int) -> dict:
+def get_material(material_id: int, include_retracted: bool = False) -> dict:
     """
     資材を全文取得する
 
     Args:
         material_id: 資材のID
+        include_retracted: Trueのとき取り消し済みの資材も取得できる（デフォルトFalse）
 
     Returns:
         資材の全文情報
@@ -377,6 +381,13 @@ def get_material(material_id: int) -> dict:
             "SELECT * FROM materials WHERE id = ?", (material_id,)
         ).fetchone()
         if not row:
+            return {
+                "error": {
+                    "code": "NOT_FOUND",
+                    "message": f"Material with id {material_id} not found",
+                }
+            }
+        if not include_retracted and row["retracted_at"] is not None:
             return {
                 "error": {
                     "code": "NOT_FOUND",

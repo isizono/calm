@@ -1,6 +1,6 @@
 """retract_service のテスト
 
-エンティティ（decision, log）のretract/un-retract操作、
+エンティティ（decision, log, material）のretract/un-retract操作、
 冪等性、部分成功、バリデーションエラーをカバーする。
 """
 import os
@@ -11,6 +11,7 @@ from src.db import init_database, get_connection
 from src.services.topic_service import add_topic
 from src.services.discussion_log_service import add_logs
 from src.services.decision_service import add_decisions
+from src.services.material_service import add_material, get_material
 from src.services.retract_service import retract
 from src.services.tag_service import _injected_tags
 from src.services.pin_service import add_pin
@@ -205,21 +206,107 @@ class TestRetractPartialSuccess:
         assert "not found" in retract_result["errors"][0]["error"]["message"]
 
 
+class TestRetractMaterial:
+    """materialのretract/un-retract"""
+
+    def test_retract_material(self, temp_db):
+        """materialをretractするとmaterialsテーブルのretracted_atに現在時刻が設定される"""
+        m = add_material(
+            title="テスト資材",
+            content="本文",
+            tags=DEFAULT_TAGS,
+            source="unit test",
+        )
+        material_id = m["material_id"]
+
+        retract_result = retract("material", [material_id])
+        assert "error" not in retract_result
+        assert material_id in retract_result["success"]
+        assert retract_result["errors"] == []
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT retracted_at FROM materials WHERE id = ?", (material_id,)
+            ).fetchone()
+            assert row["retracted_at"] is not None
+        finally:
+            conn.close()
+
+    def test_unretract_material(self, temp_db):
+        """retract済みmaterialをun-retractするとretracted_atがNULLに戻る"""
+        m = add_material(
+            title="テスト資材",
+            content="本文",
+            tags=DEFAULT_TAGS,
+            source="unit test",
+        )
+        material_id = m["material_id"]
+
+        retract("material", [material_id])
+        unretract_result = retract("material", [material_id], undo=True)
+        assert "error" not in unretract_result
+        assert material_id in unretract_result["success"]
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT retracted_at FROM materials WHERE id = ?", (material_id,)
+            ).fetchone()
+            assert row["retracted_at"] is None
+        finally:
+            conn.close()
+
+    def test_get_material_hides_retracted_by_default(self, temp_db):
+        """get_materialはretract済みmaterialをデフォルトでNOT_FOUNDにする"""
+        m = add_material(
+            title="非表示資材",
+            content="本文",
+            tags=DEFAULT_TAGS,
+            source="unit test",
+        )
+        material_id = m["material_id"]
+
+        retract("material", [material_id])
+
+        result = get_material(material_id)
+        assert "error" in result
+        assert result["error"]["code"] == "NOT_FOUND"
+
+    def test_get_material_include_retracted_returns_material(self, temp_db):
+        """include_retracted=Trueを指定するとretract済みmaterialもretracted_at付きで取得できる"""
+        m = add_material(
+            title="復元用資材",
+            content="本文",
+            tags=DEFAULT_TAGS,
+            source="unit test",
+        )
+        material_id = m["material_id"]
+
+        retract("material", [material_id])
+
+        result = get_material(material_id, include_retracted=True)
+        assert "error" not in result
+        assert result["material_id_raw"] == material_id
+        assert "retracted_at" in result
+        assert result["retracted_at"] is not None
+
+
 class TestRetractValidationErrors:
     """バリデーションエラー"""
-
-    def test_invalid_entity_type_material(self, temp_db):
-        """materialはretract対象外でバリデーションエラーになる"""
-        result = retract("material", [1])
-        assert "error" in result
-        assert result["error"]["code"] == "VALIDATION_ERROR"
-        assert "Invalid entity_type" in result["error"]["message"]
 
     def test_invalid_entity_type_topic(self, temp_db):
         """topicはretract対象外でバリデーションエラーになる"""
         result = retract("topic", [1])
         assert "error" in result
         assert result["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_invalid_entity_type_activity(self, temp_db):
+        """activityはretract対象外でバリデーションエラーになる"""
+        result = retract("activity", [1])
+        assert "error" in result
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+        assert "Invalid entity_type" in result["error"]["message"]
 
     def test_empty_ids(self, temp_db):
         """空のidsでバリデーションエラーになる"""

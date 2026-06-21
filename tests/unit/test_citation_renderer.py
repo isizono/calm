@@ -15,7 +15,7 @@ def conn():
     c.row_factory = sqlite3.Row
     c.executescript(
         """
-        CREATE TABLE materials (id INTEGER PRIMARY KEY, title TEXT, content TEXT);
+        CREATE TABLE materials (id INTEGER PRIMARY KEY, title TEXT, content TEXT, retracted_at TEXT);
         CREATE TABLE decisions (id INTEGER PRIMARY KEY, decision TEXT, reason TEXT, title TEXT, retracted_at TEXT);
         CREATE TABLE discussion_logs (id INTEGER PRIMARY KEY, title TEXT, content TEXT, retracted_at TEXT);
         CREATE TABLE activities (id INTEGER PRIMARY KEY, title TEXT, description TEXT);
@@ -27,7 +27,7 @@ def conn():
             occurrence INTEGER,
             UNIQUE(owner_type, owner_id, occurrence)
         );
-        INSERT INTO materials VALUES (1, 'Design v3', 'body');
+        INSERT INTO materials VALUES (1, 'Design v3', 'body', NULL);
         INSERT INTO decisions VALUES (10, 'use SQLite', 'simplicity', NULL, NULL);
         INSERT INTO decisions VALUES (11, 'old choice', 'reason', NULL, '2026-01-01');
         INSERT INTO discussion_logs VALUES (100, 'kickoff', 'content here', NULL);

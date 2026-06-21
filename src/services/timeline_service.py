@@ -160,11 +160,11 @@ def get_timeline(
 
         if "material" in types:
             union_parts.append(
-                f"SELECT DISTINCT m.id, 'material' AS type, m.title, m.created_at, NULL AS replaces_id, NULL AS replaced_by_id FROM materials m JOIN relations r ON r.source_type = 'material' AND r.source_id = m.id AND r.target_type = 'topic' AND r.target_id IN ({placeholders})"
+                f"SELECT DISTINCT m.id, 'material' AS type, m.title, m.created_at, NULL AS replaces_id, NULL AS replaced_by_id FROM materials m JOIN relations r ON r.source_type = 'material' AND r.source_id = m.id AND r.target_type = 'topic' AND r.target_id IN ({placeholders}) WHERE m.retracted_at IS NULL"
             )
             params.extend(topic_ids)
             count_parts.append(
-                f"SELECT DISTINCT m.id, m.created_at FROM materials m JOIN relations r ON r.source_type = 'material' AND r.source_id = m.id AND r.target_type = 'topic' AND r.target_id IN ({placeholders})"
+                f"SELECT DISTINCT m.id, m.created_at FROM materials m JOIN relations r ON r.source_type = 'material' AND r.source_id = m.id AND r.target_type = 'topic' AND r.target_id IN ({placeholders}) WHERE m.retracted_at IS NULL"
             )
             count_params.extend(topic_ids)
 

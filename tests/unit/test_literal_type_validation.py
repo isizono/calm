@@ -114,7 +114,9 @@ class TestSchemaEnumPropagation:
 
     def test_retract_entity_type_enum(self):
         schema = _schema_for("retract")
-        assert sorted(_enum_of(schema, "entity_type")) == sorted(["decision", "log"])
+        assert sorted(_enum_of(schema, "entity_type")) == sorted(
+            ["decision", "log", "material"]
+        )
 
     def test_get_timeline_entity_types_enum(self):
         schema = _schema_for("get_timeline")
@@ -158,7 +160,7 @@ INVALID_CASES = [
         "source_type",
     ),
     ("retract", {"entity_type": "decisin", "ids": [1]}, "entity_type"),
-    ("retract", {"entity_type": "material", "ids": [1]}, "entity_type"),
+    ("retract", {"entity_type": "topic", "ids": [1]}, "entity_type"),
     ("get_timeline", {"entity_types": ["decision", "topik"]}, "entity_types"),
 ]
 

@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 ENTITY_TABLE_MAP = {
     "decision": "decisions",
     "log": "discussion_logs",
+    "material": "materials",
 }
 
 
@@ -21,7 +22,7 @@ def retract(entity_type: str, ids: list[int], undo: bool = False) -> dict:
     既に非retracted状態でun-retractしても成功扱い。
 
     Args:
-        entity_type: エンティティ種別 ("decision" | "log")
+        entity_type: エンティティ種別 ("decision" | "log" | "material")
         ids: 対象エンティティのIDリスト
         undo: True=un-retract（retracted_atをNULLに戻す）、False=retract
 

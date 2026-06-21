@@ -45,7 +45,7 @@ TYPE_TO_TITLE_EXPR: dict[str, str] = {
 }
 
 # retract カラムを持つ entity 種別
-TYPES_WITH_RETRACT = {"decision", "log"}
+TYPES_WITH_RETRACT = {"decision", "log", "material"}
 
 # owner 種別ごとに、本文中の citation 抽出対象となるテキストフィールド
 # (DB カラム名そのまま、結合順は occurrence の決定要因)

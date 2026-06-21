@@ -53,8 +53,8 @@ TAG_LIKE_MAX_TAG_IDS = 100
 # details付与パラメータ
 DETAILS_MAX_RESULTS = 10
 
-# retracted除外フィルタ: search_indexのsource_type='decision'/'log'のみ対象
-# decision/logはretracted_atカラムを持つが、topic/activity/materialは持たない
+# retracted除外フィルタ: search_indexのsource_type='decision'/'log'/'material'を対象
+# decision/log/materialはretracted_atカラムを持つが、topic/activityは持たない
 RETRACT_FILTER_SQL = """
   AND NOT EXISTS (
     SELECT 1 FROM decisions d
@@ -63,6 +63,10 @@ RETRACT_FILTER_SQL = """
   AND NOT EXISTS (
     SELECT 1 FROM discussion_logs dl
     WHERE dl.id = si.source_id AND si.source_type = 'log' AND dl.retracted_at IS NOT NULL
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM materials m
+    WHERE m.id = si.source_id AND si.source_type = 'material' AND m.retracted_at IS NOT NULL
   )
 """
 DETAILS_DESCRIPTION_MAX = 500
@@ -696,6 +700,10 @@ def _vector_search(
   AND NOT EXISTS (
     SELECT 1 FROM discussion_logs dl
     WHERE dl.id = search_index.source_id AND search_index.source_type = 'log' AND dl.retracted_at IS NOT NULL
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM materials m
+    WHERE m.id = search_index.source_id AND search_index.source_type = 'material' AND m.retracted_at IS NOT NULL
   )
 """
 
@@ -1675,6 +1683,8 @@ def _format_row(type_name: str, data: dict, tags: list[str]) -> dict:
             "created_at": data["created_at"],
             "hint": "contentの先頭1-2文は内容の説明・要約にしてください（check-in時にsnippetとして表示されます）",
         }
+        if data.get("retracted_at"):
+            result["retracted_at"] = data["retracted_at"]
         apply_readable_id_inplace(
             result, "material", id_key="material_id"
         )
@@ -1713,6 +1723,15 @@ def get_by_id(type: str, id: int, conn=None) -> dict:
     try:
         row = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (id,)).fetchone()
         if not row:
+            return {
+                "error": {
+                    "code": "NOT_FOUND",
+                    "message": f"{type} with id {id} not found"
+                }
+            }
+        # material は retracted_at IS NULL のものだけ Read 経路に出す
+        # （decision/log は retracted_at 付きで取得可能、material は完全に隠す）
+        if type == 'material' and row["retracted_at"] is not None:
             return {
                 "error": {
                     "code": "NOT_FOUND",
