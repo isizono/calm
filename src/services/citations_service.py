@@ -1,146 +1,35 @@
-"""citation 参照テンプレ (`{{cite:X#NNN}}`) の抽出・保存・引き当てを行うサービス。
+"""citation 参照テンプレ (`{{cite:X#NNN}}`) の DB 永続化を担うサービス。
 
 本文中の `{{cite:X#NNN}}` テンプレを `citations` テーブルに保存し、
 read 経路では `flavor` で展開形式を切り替える前提の参照基盤を提供する。
 
+pure (副作用なし) なロジック — 定数表・正規表現・抽出器・型バリデータ・本文結合・
+target 存在チェック — は `src.services.citations_pure` 側へ集約済み。本モジュールは
+そちらを import して DB I/O を伴う高レベル API (extract_and_insert / replace_all /
+upsert_citations_for_owner_with_conn / get_in_out 等) を提供する。
+
 X は M/D/L/A/T のいずれかで、それぞれ material/decision/log/activity/topic に対応する。
 """
-import logging
-import re
 import sqlite3
-from typing import Literal
 
 from src.db import get_connection
+from src.services.citations_pure import (
+    OWNER_TEXT_FIELDS,
+    TYPE_TO_TABLE,
+    TYPE_TO_TITLE_EXPR,
+    TYPES_WITH_RETRACT,
+    _combine_owner_text,
+    _validate_owner_type,
+    extract_citations,
+)
 
-logger = logging.getLogger(__name__)
-
-VALID_OWNER_TYPES = ("material", "decision", "log", "activity", "topic")
-VALID_TARGET_TYPES = VALID_OWNER_TYPES
-
-TYPE_CODE_TO_NAME: dict[str, str] = {
-    "M": "material",
-    "D": "decision",
-    "L": "log",
-    "A": "activity",
-    "T": "topic",
-}
-TYPE_NAME_TO_CODE: dict[str, str] = {v: k for k, v in TYPE_CODE_TO_NAME.items()}
-
-TYPE_TO_TABLE: dict[str, str] = {
-    "material": "materials",
-    "decision": "decisions",
-    "log": "discussion_logs",
-    "activity": "activities",
-    "topic": "discussion_topics",
-}
-
-# 各 entity 種別の表示タイトル取得式 (SELECT 内で使用)。
-# decision は title が NULL のとき decision 本文へ fall back する。
-TYPE_TO_TITLE_EXPR: dict[str, str] = {
-    "material": "title",
-    "decision": "COALESCE(NULLIF(TRIM(title), ''), substr(decision, 1, 80))",
-    "log": "COALESCE(NULLIF(TRIM(title), ''), substr(content, 1, 30))",
-    "activity": "title",
-    "topic": "title",
-}
-
-# retract カラムを持つ entity 種別
-TYPES_WITH_RETRACT = {"decision", "log", "material"}
-
-# owner 種別ごとに、本文中の citation 抽出対象となるテキストフィールド
-# (DB カラム名そのまま、結合順は occurrence の決定要因)
-OWNER_TEXT_FIELDS: dict[str, tuple[str, ...]] = {
-    "material": ("title", "content"),
-    "decision": ("decision", "reason"),
-    "log": ("content",),
-    "activity": ("title", "description"),
-    "topic": ("title", "description"),
-}
-
-_CITE_PATTERN = re.compile(r"\{\{cite:([MDLAT])#(\d+)\}\}")
-_CITE_LIKE_PATTERN = re.compile(r"\{\{cite:[^}]*\}\}")
-
-
-def extract_citations(content: str) -> list[tuple[str, int]]:
-    """本文から citation 参照を出現順に抽出する。
-
-    コードブロック (フェンス ``` / ~~~ と インラインバッククォート) 内の
-    テンプレはスキップする。`\\{{cite:...}}` のエスケープもスキップする。
-    不正形式 (`{{cite:Z#1}}`, `{{cite:foo}}` 等) は警告ログを出して無視する。
-
-    Returns:
-        [(target_type, target_id), ...] の出現順リスト。occurrence は 1 始まりで連番。
-    """
-    results: list[tuple[str, int]] = []
-    in_fence = False
-    for raw_line in content.split("\n"):
-        stripped = raw_line.lstrip()
-        # フェンス境界 (```/~~~ で始まる行) でトグル
-        if stripped.startswith("```") or stripped.startswith("~~~"):
-            in_fence = not in_fence
-            continue
-        if in_fence:
-            continue
-        results.extend(_scan_line(raw_line))
-    return results
-
-
-def _scan_line(line: str) -> list[tuple[str, int]]:
-    """1 行内の citation を走査。インラインバッククォート / エスケープをスキップ。"""
-    out: list[tuple[str, int]] = []
-    i = 0
-    n = len(line)
-    while i < n:
-        ch = line[i]
-        if ch == "`":
-            # 対応する閉じバッククォートまでスキップ
-            close = line.find("`", i + 1)
-            if close == -1:
-                # 未閉じインラインコード: 行末まで保守的にスキップ
-                break
-            i = close + 1
-            continue
-        if ch == "\\" and line[i + 1 : i + 3] == "{{":
-            # エスケープ `\{{cite:...}}` 全体をスキップ
-            end = line.find("}}", i + 1)
-            if end == -1:
-                i += 1
-                continue
-            i = end + 2
-            continue
-        m = _CITE_PATTERN.match(line, i)
-        if m:
-            code = m.group(1)
-            target_id_str = m.group(2)
-            target_type = TYPE_CODE_TO_NAME.get(code)
-            if target_type is None:
-                logger.warning("citation parser: unknown type code %r", code)
-                i = m.end()
-                continue
-            try:
-                target_id = int(target_id_str)
-            except ValueError:
-                logger.warning("citation parser: invalid id %r", target_id_str)
-                i = m.end()
-                continue
-            out.append((target_type, target_id))
-            i = m.end()
-            continue
-        # 不正形式テンプレ (`{{cite:foo}}` 等) は警告
-        like = _CITE_LIKE_PATTERN.match(line, i)
-        if like:
-            logger.warning("citation parser: malformed template skipped: %r", like.group(0))
-            i = like.end()
-            continue
-        i += 1
-    return out
-
-
-def _validate_owner_type(owner_type: str) -> None:
-    if owner_type not in VALID_OWNER_TYPES:
-        raise ValueError(
-            f"Invalid owner_type {owner_type!r}; must be one of {VALID_OWNER_TYPES}"
-        )
+__all__ = [
+    "extract_and_insert",
+    "replace_all",
+    "delete_all_for_owner",
+    "upsert_citations_for_owner_with_conn",
+    "get_in_out",
+]
 
 
 def extract_and_insert(owner_type: str, owner_id: int, content: str) -> int:
@@ -212,18 +101,12 @@ def _delete_all_for_owner_with_conn(
     return cur.rowcount
 
 
-def _combine_owner_text(owner_type: str, fields: dict) -> str:
-    """owner の本文を occurrence 計算用に決定的順序で結合する。"""
-    cols = OWNER_TEXT_FIELDS[owner_type]
-    return "\n".join(fields.get(c) or "" for c in cols)
-
-
 def upsert_citations_for_owner_with_conn(
     conn: sqlite3.Connection, owner_type: str, owner_id: int, **fields
 ) -> int:
     """add/update 共通: 既存 citations を全削除 → 本文結合 → 再投入。
 
-    本文無変更でも呼ぶことで occurrence の一貫性が保たれる (M#373 §3.4.4)。
+    本文無変更でも呼ぶことで occurrence の一貫性が保たれる。
     fields は OWNER_TEXT_FIELDS で定義された名前の部分集合を渡す
     (未指定キーは空文字扱い)。
     """

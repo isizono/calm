@@ -1,7 +1,7 @@
-"""citations_service.extract_citations のパーサ単体テスト"""
+"""citations_pure.extract_citations のパーサ単体テスト"""
 import pytest
 
-from src.services.citations_service import extract_citations
+from src.services.citations_pure import extract_citations
 
 
 class TestBasicParse:
