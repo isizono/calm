@@ -384,7 +384,6 @@ class TestOwGetIdentity:
         "term_ref_value",
         [
             "%5",  # tmux pane_id
-            "12345678-1234-1234-1234-123456789ABC",  # iterm2 UUID
             "manual:mac-mini:12345",  # manual fallback
         ],
     )
@@ -533,14 +532,12 @@ class TestTermRefValidation:
             ("%0", "tmux"),
             ("%5", "tmux"),
             ("%123", "tmux"),
-            ("12345678-1234-1234-1234-123456789ABC", "iterm2"),
-            ("abcdef01-2345-6789-abcd-ef0123456789", "iterm2"),
             ("manual:mac-mini:12345", "manual"),
             ("manual:host-with-dash:1", "manual"),
         ],
     )
     def test_classify_valid_formats(self, value, expected):
-        """tmux %N / iterm2 UUID / manual:host:pid を正しく分類する。"""
+        """tmux %N / manual:host:pid を正しく分類する。"""
         assert ow_service.classify_term_ref(value) == expected
         assert ow_service.is_valid_term_ref(value) is True
 
@@ -552,8 +549,7 @@ class TestTermRefValidation:
             "abc",  # 未知形式
             "%",  # tmux pattern に %N の数字部が無い
             "%abc",  # tmux pattern は数字のみ
-            "12345678-1234-1234-1234",  # UUID truncated
-            "12345678-1234-1234-1234-123456789ABCDEF",  # UUID 末尾過多
+            "12345678-1234-1234-1234-123456789ABC",  # UUID 形式は認めない
             "manual:host:abc",  # pid が数字でない
             "manual::123",  # host 部が空
             123,  # 非文字列

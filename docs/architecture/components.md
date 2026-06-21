@@ -217,7 +217,7 @@ PostToolUseは `hooks/hooks.json` に `add_decisions` matcher 限定で登録済
 - `src/relay/server.py`: 中継サーバー本体。SQLite永続化 + SSEブロードキャスト。エンドポイント: `/create` / `/stream` / `/send` / `/history` / `/presence` / `/health`。msg_idがメッセージ順序の真実源
 - `scripts/ow/recv.sh`, `scripts/ow/recv_filter.py`: メッセージ受信側のフィルタリング
 - `scripts/ow/heartbeat.sh`: presence維持
-- `scripts/ow/adapters/iterm2.sh`, `scripts/ow/adapters/tmux.sh`: ターミナル別のworker spawnアダプタ
+- `scripts/ow/adapters/tmux.sh`: tmux 用 worker spawn アダプタ
 - queueファイル配置: `~/.cc-memory/ow/orch/queue-t<topic_id>.md`（auto-memoryに記録あり）
 
 ### 5.2 協調スキル

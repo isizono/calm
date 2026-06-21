@@ -1267,7 +1267,7 @@ def ow_spawn_worker(
     処理順: queueへspawning write-ahead → task file書き出し → アダプタ起動 → 安定ID返却。
     relay疎通確認・起動（ensure-server処理）も内包。permission_modeはautoに固定。
 
-    OW_TERMINAL環境変数でアダプタを選択（iterm2/tmux/manual。manualは起動コマンド表示のフォールバック）。
+    OW_TERMINAL環境変数でアダプタを選択（tmux/manual。未設定時は tmux。manualは起動コマンド表示のフォールバック）。
     OW_TERMINAL=tmuxのとき、tmux_target_pane（呼び出し元のTMUX_PANE）を渡すと、その
     paneと同じwindow内にworker paneを分割表示できる（最初は右に30%水平、以降は最新
     worker paneを垂直分割）。未指定時は従来の `ow-workers` 別sessionに新windowで起動する。
@@ -1326,7 +1326,7 @@ def ow_close_worker(term_ref: str) -> dict:
     OW_TERMINAL環境変数でアダプタを選択。アダプタ不在時はmanualフォールバック（手動クローズ案内）。
 
     Args:
-        term_ref: 安定ID（iTerm2のsession UUID、tmuxのpane ID等。タブindexは不安定なため使用しない）
+        term_ref: 安定ID（tmuxのpane ID 等。タブindexは不安定なため使用しない）
 
     Returns:
         成功時: {"closed": True, "term_ref": str}

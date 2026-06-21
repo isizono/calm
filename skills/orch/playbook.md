@@ -151,7 +151,7 @@ CLI コマンドを bash 経由で叩いた際、UI 上に何も出ない時は�
 
 ## silent failure 防止
 
-- アダプタ (tmux / iterm2 / 外部 CLI 呼び出し) は **実機検証必須**。docs だけで通さない
+- アダプタ (tmux / 外部 CLI 呼び出し) は **実機検証必須**。docs だけで通さない
 - エラーをサイレントに握り潰さない。失敗は warnings / error として返す
 
 ## Co-Authored-By: Claude を worker commit に必ず付ける

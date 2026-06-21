@@ -250,7 +250,7 @@ worker 起動時と terminated 直前に append される身元情報。orchは 
    "model":"...",
    "cwd":"...",
    "session_id":"...",
-   "term_ref":"<tmux pane_id / iterm2 session UUID 等>",
+   "term_ref":"<tmux pane_id 等>",
    "terminated_at":"<UTC ISO8601>",
    "cause":"closed|cancelled|dead"
  }}
