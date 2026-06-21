@@ -40,11 +40,11 @@ class TestOwCloseWorkerReturnContract:
             result = ow_service.ow_close_worker(term_ref="%42")
         assert result == {"closed": True, "killed": True, "term_ref": "%42"}
 
-    def test_returns_closed_true_when_stdout_empty_legacy_adapter(self, force_tmux_terminal):
-        """旧アダプタ (stdout 空) は後方互換で closed=True を返す。"""
+    def test_returns_closed_true_killed_false_when_stdout_empty_legacy(self, force_tmux_terminal):
+        """旧アダプタ (stdout 空) は後方互換で closed=True、killed=False (キー欠如しない)。"""
         with patch("src.services.ow_service.subprocess.run", side_effect=_fake_run_factory("")):
             result = ow_service.ow_close_worker(term_ref="%42")
-        assert result == {"closed": True, "term_ref": "%42"}
+        assert result == {"closed": True, "killed": False, "term_ref": "%42"}
 
     def test_returns_closed_false_on_called_process_error(self, force_tmux_terminal):
         """adapter exit 1 (failed) では closed=False と error を返す。"""

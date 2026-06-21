@@ -43,8 +43,8 @@ cleanup() {
     if [ -n "${CURL_PID:-}" ]; then
         kill "$CURL_PID" 2>/dev/null || true
     fi
-    if [ -n "${FIFO:-}" ] && [ -e "$FIFO" ]; then
-        rm -f "$FIFO"
+    if [ -n "${FIFO_DIR:-}" ] && [ -d "$FIFO_DIR" ]; then
+        rm -rf "$FIFO_DIR"
     fi
     exit 0
 }
@@ -63,8 +63,18 @@ while parent_alive; do
     # SSE は long-poll で意図的に hang させるため curl 自体には max-time を付けない。
     # mkfifo 経由で curl の stdout を python3 の stdin に繋ぐことで、両プロセスを
     # 別々の bg job として起動できる (= 個別 PID を `$!` で取得可能)。
-    FIFO="$(mktemp -u -t ow_recv.XXXXXX)"
-    mkfifo "$FIFO"
+    #
+    # `mktemp -d` で専用ディレクトリを作り、その下に FIFO を mkfifo する。
+    # `mktemp -u` (パス名のみ生成) は TOCTOU 競合があり deprecated 的な用法。
+    # -d はディレクトリ自体を atomic に作成するため安全。
+    FIFO_DIR="$(mktemp -d -t ow_recv.XXXXXX)"
+    FIFO="$FIFO_DIR/fifo"
+    if ! mkfifo "$FIFO" 2>/dev/null; then
+        rm -rf "$FIFO_DIR"
+        unset FIFO_DIR FIFO
+        sleep 1
+        continue
+    fi
 
     curl -sN --get \
         --data-urlencode "channel=${CHANNEL}" \
@@ -94,8 +104,8 @@ while parent_alive; do
     wait "$CURL_PID" 2>/dev/null || true
     unset PIPE_PID CURL_PID
 
-    rm -f "$FIFO"
-    unset FIFO
+    rm -rf "$FIFO_DIR"
+    unset FIFO_DIR FIFO
 
     # SSE 切断後は1秒待ってから再接続を試みる。親死亡なら次の while 条件で抜ける。
     sleep 1

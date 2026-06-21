@@ -1251,7 +1251,9 @@ def ow_close_worker(term_ref: str) -> dict:
             return {"closed": True, "killed": True, "term_ref": term_ref}
         if last == "closed":
             return {"closed": True, "killed": False, "term_ref": term_ref}
-        return {"closed": True, "term_ref": term_ref}
+        # 旧アダプタ (stdout 空) / manual 経路: killed 不明だが closed 成功扱い。
+        # 呼び出し側が result["killed"] で KeyError にならないよう False を埋める。
+        return {"closed": True, "killed": False, "term_ref": term_ref}
     except subprocess.TimeoutExpired:
         logger.error("ow_close_worker adapter close timed out after 15s")
         return {

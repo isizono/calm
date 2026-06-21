@@ -165,11 +165,18 @@ case "$ACTION" in
     fi
     tmux kill-pane -t "$TERM_REF" 2>/dev/null || true
 
-    # 6. 最終確認。pane が消えていれば killed、残っていれば failed。
-    if ! tmux display -t "$TERM_REF" -p "#{pane_pid}" 2>/dev/null >/dev/null; then
-      echo "killed"
-      exit 0
-    fi
+    # 6. 最終確認。SIGKILL 直後に tmux 内部の pane 消滅処理が完了するまで
+    # 短時間リトライ (default: 0.5s × 2 = 最大 1s)。step 4 と同パラメータ。
+    j=0
+    final_iter=2
+    while [[ $j -lt $final_iter ]]; do
+      if ! tmux display -t "$TERM_REF" -p "#{pane_pid}" 2>/dev/null >/dev/null; then
+        echo "killed"
+        exit 0
+      fi
+      sleep "$FALLBACK_INTERVAL"
+      j=$((j + 1))
+    done
 
     echo "failed" >&2
     echo "failed"

@@ -346,7 +346,9 @@ if [ -n "${TMUX_PANE:-}" ]; then
   tmux kill-pane -t "$TMUX_PANE"
 elif [ -n "${ITERM_SESSION_ID:-}" ]; then
   # 経路 B: iTerm2 別タブ（思考 worker iTerm2 経路、暫定）
-  osascript -e 'tell application "iTerm2" to tell current window to close current tab' || true
+  # current tab を狙うとフォアグラウンドが別タブのときに誤って閉じうるため、
+  # ITERM_SESSION_ID で対象タブを特定して閉じる。
+  osascript -e "tell application \"iTerm2\" to tell current window to close (first tab whose current session's unique ID is \"${ITERM_SESSION_ID}\")" || true
 else
   # 経路 C: manual / その他
   # 環境変数がいずれも未設定なら dispatcher の ow_close_worker による外部 kill にフォールバック
