@@ -48,7 +48,7 @@ class TestNoOp:
     def test_ow_terminal_not_tmux(self, monkeypatch, capsys):
         result = _run_hook(
             {"tool_input": {"alias": "w-a"}},
-            {"OW_TERMINAL": "iterm2", "TMUX_PANE": "%81"},
+            {"OW_TERMINAL": "other", "TMUX_PANE": "%81"},
             monkeypatch, capsys,
         )
         assert result == {}

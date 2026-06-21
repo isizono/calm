@@ -48,11 +48,11 @@ def _build_fake_adapter(tmp_path, terminal: str = "tmux"):
 class TestSpawnManualFallbackAdapterPathNone:
     """OW_TERMINAL に対応するアダプタが存在しないとき manual:true を返す分岐。"""
 
-    def test_terminal_unset_payload_contains_adapter_error(
+    def test_explicit_manual_payload_contains_adapter_error(
         self, monkeypatch, tmp_path, caplog
     ):
-        """OW_TERMINAL 未設定 (= 内部的に 'manual') → manual:true + adapter_error。"""
-        monkeypatch.delenv("OW_TERMINAL", raising=False)
+        """OW_TERMINAL=manual を明示指定 → manual:true + adapter_error。"""
+        monkeypatch.setenv("OW_TERMINAL", "manual")
 
         with caplog.at_level(logging.ERROR, logger=OW_SERVICE_LOGGER):
             result = ow_service.ow_spawn_worker(
@@ -176,8 +176,8 @@ class TestSpawnManualFallbackSubprocessFailure:
 class TestCloseManualFallback:
     """ow_close_worker: アダプタ不在時の manual:true と adapter_error。"""
 
-    def test_terminal_unset_payload_contains_adapter_error(self, monkeypatch, caplog):
-        monkeypatch.delenv("OW_TERMINAL", raising=False)
+    def test_explicit_manual_payload_contains_adapter_error(self, monkeypatch, caplog):
+        monkeypatch.setenv("OW_TERMINAL", "manual")
         with caplog.at_level(logging.ERROR, logger=OW_SERVICE_LOGGER):
             result = ow_service.ow_close_worker(term_ref="%99")
         assert result.get("manual") is True
