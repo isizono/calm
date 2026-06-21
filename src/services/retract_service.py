@@ -19,12 +19,23 @@ _SEARCH_INDEX_SOURCE_TYPE = {
     "log": "log",
 }
 
+# FTS5 contentless 'delete' コマンドはインサート時と同じtitle/body値を要求するため、
+# 元テーブルからbodyカラム相当を取り直すクエリ（INSERTトリガーと整合させる必要あり）。
+# - decision: trg_search_decisions_insert → VALUES (last_insert_rowid(), NEW.decision, NEW.reason)
+# - log:      trg_search_logs_insert      → VALUES (last_insert_rowid(), NEW.title, NEW.content)
+_FTS_BODY_QUERY = {
+    "decision": "SELECT reason FROM decisions WHERE id = ?",
+    "log": "SELECT content FROM discussion_logs WHERE id = ?",
+}
+
 
 def _delete_search_index_entry(conn, source_type: str, source_id: int) -> None:
     """search_index / search_index_fts / vec_index から該当エントリを物理削除する。
 
     contentless FTS5は通常のDELETE FROM search_index_fts WHERE ... ができないため、
-    'delete'コマンドINSERTでマーカー消去する必要がある。
+    'delete'コマンドINSERTでマーカー消去する。SQLite公式仕様により、'delete'コマンドには
+    インサート時と同じtitle/body値を渡す必要がある（異なる値を渡すとインデックスが
+    unknown stateになり肥大化・BM25スコア歪みの原因となる）。
 
     エントリが存在しない場合は何もしない（冪等）。
     呼び出し側がトランザクション/SAVEPOINTを管理する。
@@ -39,9 +50,16 @@ def _delete_search_index_entry(conn, source_type: str, source_id: int) -> None:
     search_index_id = row["id"]
     title = row["title"] or ""
 
+    body = ""
+    body_query = _FTS_BODY_QUERY.get(source_type)
+    if body_query:
+        body_row = conn.execute(body_query, (source_id,)).fetchone()
+        if body_row is not None:
+            body = body_row[0] or ""
+
     conn.execute(
-        "INSERT INTO search_index_fts (search_index_fts, rowid, title, body) VALUES ('delete', ?, ?, '')",
-        (search_index_id, title),
+        "INSERT INTO search_index_fts (search_index_fts, rowid, title, body) VALUES ('delete', ?, ?, ?)",
+        (search_index_id, title, body),
     )
     embedding_service.delete_embedding_with_conn(conn, search_index_id)
     conn.execute("DELETE FROM search_index WHERE id = ?", (search_index_id,))
