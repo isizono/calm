@@ -20,6 +20,8 @@ description: 【必須】議論で複数案を比較して採択した、作業�
 
 `add_decisions` / `add_topic` / `add_habit` は本スキルの案内対象外。worker セッションではこれらは guard でブロックされるため、proposal として呼び出し元へ返すこと。
 
+worker 退場時の経緯 log・成果物記録は `worker-sync` スキルが専用フローを持っているため、worker-sync 経由の `add_logs` / `add_material` は本スキルの判断を通さず worker-sync の指示に従う。
+
 ## 発動例: add_logs（経緯記録）
 
 | # | トリガー | 量の目安 | 残す内容 |
@@ -51,6 +53,8 @@ description: 【必須】議論で複数案を比較して採択した、作業�
 
 - `add_logs` の content / `add_material` の content は要約せず生データを残す
 - `add_material` の content 先頭 1-2 文は内容の説明・要約を書く（check-in 時に snippet として表示される）
-- `tags` には `domain:` を必ず付け、内容を表す素タグも追加する
+- `add_material` は `add_decisions` と違って「双方の合意」が不要。成果物が出た時点でユーザーに確認せず呼ぶ
+- `add_material` の content に事実と推論が混在する場合は明示的に区別する（例: 「【事実】」「【推論】」見出しを付ける）
+- `tags` には `domain:` を必ず付け、内容を表す素タグも追加する。`intent:` namespace の例: `intent:discuss` / `intent:design` / `intent:implement` / `intent:investigate`
 - `related` で関連する activity / topic / decision / log / material と紐付ける
 - `add_logs` は `topic_id` 必須。tag だけでは紐付かない
