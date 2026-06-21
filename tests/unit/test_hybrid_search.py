@@ -599,6 +599,238 @@ def test_recency_boost_cross_type(temp_db):
 
 
 # ========================================
+# score_breakdown / final_score テスト
+# ========================================
+
+
+def test_rrf_merge_attaches_score_breakdown_fields():
+    """_rrf_merge は各結果に score_breakdown を fts/vec/tag/rrf_normalized 付きで付与する"""
+    fts = [{"type": "topic", "id": 1, "title": "A"}]
+    vec = [{"type": "topic", "id": 1, "title": "A"}]
+    tag = [{"type": "topic", "id": 1, "title": "A"}]
+
+    results = _rrf_merge(fts, vec, limit=10, tag_results=tag)
+
+    assert len(results) == 1
+    item = results[0]
+    assert "score_breakdown" in item
+    bd = item["score_breakdown"]
+    assert set(bd.keys()) == {"fts", "vec", "tag", "rrf_normalized"}
+    # 各ソース 1 位ヒットなので寄与値は w_src / (k+1)
+    assert bd["fts"] == pytest.approx(RRF_W_FTS / (RRF_K + 1), abs=1e-6)
+    assert bd["vec"] == pytest.approx(RRF_W_VEC / (RRF_K + 1), abs=1e-6)
+    assert bd["tag"] == pytest.approx(RRF_W_TAG / (RRF_K + 1), abs=1e-6)
+    # 3ソース全1位ヒット → rrf_normalized は 1.0
+    assert bd["rrf_normalized"] == pytest.approx(1.0)
+    # score は recency 未適用時点で rrf_normalized と一致
+    assert item["score"] == pytest.approx(bd["rrf_normalized"])
+
+
+def test_rrf_merge_score_breakdown_fts_only_zero_for_vec_tag():
+    """FTS のみヒット時、vec/tag は 0、fts は正値"""
+    fts = [{"type": "topic", "id": 1, "title": "A"}]
+
+    results = _rrf_merge(fts, [], limit=10)
+
+    bd = results[0]["score_breakdown"]
+    assert bd["fts"] > 0
+    assert bd["vec"] == 0.0
+    assert bd["tag"] == 0.0
+    assert bd["rrf_normalized"] > 0
+
+
+def test_rrf_merge_score_breakdown_sums_to_normalized():
+    """score_breakdown の fts+vec+tag を理論最大値で割ると rrf_normalized になる"""
+    fts = [
+        {"type": "topic", "id": 1, "title": "A"},
+        {"type": "topic", "id": 2, "title": "B"},
+    ]
+    vec = [
+        {"type": "topic", "id": 2, "title": "B"},
+        {"type": "topic", "id": 1, "title": "A"},
+    ]
+
+    results = _rrf_merge(fts, vec, limit=10)
+
+    max_score = (RRF_W_FTS + RRF_W_VEC) / (RRF_K + 1)
+    for item in results:
+        bd = item["score_breakdown"]
+        raw_sum = bd["fts"] + bd["vec"] + bd["tag"]
+        assert bd["rrf_normalized"] == pytest.approx(round(raw_sum / max_score, 4), abs=1e-4)
+
+
+def test_rrf_merge_score_breakdown_under_adaptive_weights():
+    """Adaptive RRF重み適用ケース (w_fts != w_vec) でも fts/vec/rrf_normalized が整合する"""
+    # fts_count / vec_count = 1/5 = 0.2 → ratio<0.2 ではないが ratio<0.5 なので w=(0.8, 1.2)
+    # ratio<0.2 を狙うため fts=1, vec=10 にする
+    fts = [{"type": "topic", "id": 100, "title": "F"}]
+    vec = [{"type": "topic", "id": i, "title": f"V{i}"} for i in range(1, 11)]
+
+    results = _rrf_merge(fts, vec, limit=20)
+
+    w_fts, w_vec = _compute_adaptive_weights(len(fts), len(vec))
+    # ratio = 0.1 < 0.2 → w_fts=0.5, w_vec=1.5
+    assert (w_fts, w_vec) == (0.5, 1.5)
+    max_score = (w_fts + w_vec) / (RRF_K + 1)
+
+    # id=100 は FTS のみヒット (vec にはなし)、id=1 は vec ランク1のみヒット
+    fts_only = next(r for r in results if r["id"] == 100)
+    vec_top = next(r for r in results if r["id"] == 1)
+
+    bd_f = fts_only["score_breakdown"]
+    bd_v = vec_top["score_breakdown"]
+
+    # 各寄与は Adaptive 重み適用後の値
+    assert bd_f["fts"] == pytest.approx(w_fts / (RRF_K + 1), abs=1e-6)
+    assert bd_f["vec"] == 0.0
+    assert bd_v["fts"] == 0.0
+    assert bd_v["vec"] == pytest.approx(w_vec / (RRF_K + 1), abs=1e-6)
+
+    # rrf_normalized: 各 raw_sum を max_score で割る
+    assert bd_f["rrf_normalized"] == pytest.approx(round((w_fts / (RRF_K + 1)) / max_score, 4), abs=1e-4)
+    assert bd_v["rrf_normalized"] == pytest.approx(round((w_vec / (RRF_K + 1)) / max_score, 4), abs=1e-4)
+
+    # vec_top のほうが上位 (w_vec が大きいため)
+    assert vec_top["score"] > fts_only["score"]
+
+
+def test_apply_recency_boost_attaches_recency_factor_and_final_score(temp_db):
+    """_apply_recency_boost は score_breakdown.recency_factor と final_score を付与する"""
+    t = add_topic(title="breakdown 検証用", description="テスト", tags=DEFAULT_TAGS)
+
+    # rrf_normalized 0.5 相当の score_breakdown 付き入力
+    results = [
+        {
+            "type": "topic",
+            "id": t["topic_id"],
+            "title": "breakdown 検証用",
+            "score": 0.5,
+            "score_breakdown": {"fts": 0.1, "vec": 0.2, "tag": 0.0, "rrf_normalized": 0.5},
+        }
+    ]
+
+    _apply_recency_boost(results)
+
+    item = results[0]
+    bd = item["score_breakdown"]
+    assert "recency_factor" in bd
+    assert 0 < bd["recency_factor"] <= 1.0
+    assert "final_score" in item
+    assert item["final_score"] == pytest.approx(bd["rrf_normalized"] * bd["recency_factor"])
+    # 互換: score も final_score と同値
+    assert item["score"] == pytest.approx(item["final_score"])
+
+
+def test_apply_recency_boost_fills_missing_score_breakdown_keys(temp_db):
+    """score_breakdown が空dict / 部分dict で渡されても rrf_normalized 等を補完する"""
+    t = add_topic(title="部分breakdown 検証", description="テスト", tags=DEFAULT_TAGS)
+
+    # score_breakdown は空dict（rrf_normalized も欠落）。score=0.3 をフォールバックに使う
+    results = [
+        {
+            "type": "topic",
+            "id": t["topic_id"],
+            "title": "部分breakdown 検証",
+            "score": 0.3,
+            "score_breakdown": {},
+        }
+    ]
+
+    _apply_recency_boost(results)
+
+    bd = results[0]["score_breakdown"]
+    # 欠落キーが全て補完されている
+    assert bd["fts"] == 0.0
+    assert bd["vec"] == 0.0
+    assert bd["tag"] == 0.0
+    assert bd["rrf_normalized"] == pytest.approx(0.3)
+    assert 0 < bd["recency_factor"] <= 1.0
+    assert results[0]["final_score"] == pytest.approx(0.3 * bd["recency_factor"])
+
+
+def test_apply_recency_boost_recency_factor_floor(temp_db):
+    """非常に古いアイテムの recency_factor は FLOOR で打ち止め"""
+    t = add_topic(title="floor breakdown 検証", description="テスト", tags=DEFAULT_TAGS)
+
+    created_at = datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2025, 12, 31, 0, 0, 0, tzinfo=timezone.utc)  # 730日後
+    conn = get_connection()
+    conn.execute(
+        "UPDATE discussion_topics SET created_at = ? WHERE id = ?",
+        (created_at.strftime("%Y-%m-%d %H:%M:%S"), t["topic_id"]),
+    )
+    conn.commit()
+    conn.close()
+
+    results = [
+        {
+            "type": "topic",
+            "id": t["topic_id"],
+            "title": "floor breakdown 検証",
+            "score": 1.0,
+            "score_breakdown": {"fts": 1.0, "vec": 0.0, "tag": 0.0, "rrf_normalized": 1.0},
+        }
+    ]
+
+    _apply_recency_boost(results, now=now)
+
+    bd = results[0]["score_breakdown"]
+    assert bd["recency_factor"] == pytest.approx(RECENCY_DECAY_FLOOR)
+    assert results[0]["final_score"] == pytest.approx(1.0 * RECENCY_DECAY_FLOOR)
+
+
+def test_search_returns_score_breakdown_and_final_score(temp_db, mock_embedding_model):
+    """search の各結果に score_breakdown と final_score が含まれる"""
+    add_topic(
+        title="ブレークダウン検索テスト用トピック",
+        description="score_breakdown 検証データ",
+        tags=DEFAULT_TAGS,
+    )
+
+    result = search_service.search(keyword="ブレークダウン検索テスト")
+
+    assert "error" not in result
+    assert len(result["results"]) >= 1
+    item = result["results"][0]
+    # 必須フィールド
+    assert "score_breakdown" in item
+    assert "final_score" in item
+    assert "score" in item
+    bd = item["score_breakdown"]
+    for key in ("fts", "vec", "tag", "rrf_normalized", "recency_factor"):
+        assert key in bd, f"score_breakdown に {key} が欠けている"
+    # final_score == rrf_normalized * recency_factor
+    assert item["final_score"] == pytest.approx(bd["rrf_normalized"] * bd["recency_factor"])
+    # 互換: 既存 score フィールドは final_score と同値
+    assert item["score"] == pytest.approx(item["final_score"])
+
+
+def test_search_score_breakdown_values_in_range(temp_db, mock_embedding_model):
+    """score_breakdown の各サブフィールドが妥当な値域に収まる"""
+    add_topic(
+        title="ブレークダウン値域テスト用トピック",
+        description="score_breakdown 値域確認データ",
+        tags=DEFAULT_TAGS,
+    )
+
+    result = search_service.search(keyword="ブレークダウン値域テスト")
+
+    assert "error" not in result
+    for item in result["results"]:
+        bd = item["score_breakdown"]
+        # 各ソース寄与は非負
+        assert bd["fts"] >= 0
+        assert bd["vec"] >= 0
+        assert bd["tag"] >= 0
+        # 正規化後は 0〜1
+        assert 0 <= bd["rrf_normalized"] <= 1.0
+        # recency_factor は FLOOR〜1.0
+        assert RECENCY_DECAY_FLOOR <= bd["recency_factor"] <= 1.0
+        # final_score は 0〜1（rrf_normalized * recency_factor、両者とも 0〜1 なので）
+        assert 0 <= item["final_score"] <= 1.0
+
+
+# ========================================
 # recency boost 統合テスト
 # ========================================
 
