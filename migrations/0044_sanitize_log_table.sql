@@ -16,7 +16,13 @@
 --   sanitized_count  : 実際に置換に成功した件数
 --   failed_count     : 置換失敗件数
 --   failure_reason   : 失敗時の理由 (NULL 許容)
---   recorded_at      : INSERT 時刻 (UTC)
+--   recorded_at      : INSERT 時刻 (UTC、NOT NULL)
+--
+-- 整合性 CHECK:
+--   - sanitized_count + failed_count <= occurrence_count
+--     (置換に成功・失敗した件数が検出件数を超えないこと)
+--   - session_id IS NOT NULL OR transcript_path IS NOT NULL
+--     (両方 NULL の行は追跡不能になるため許可しない)
 --
 -- ライフサイクル:
 --   transient テーブル。運用安定 (failed_count=0 が一定期間継続) で DROP migration を
@@ -31,7 +37,9 @@ CREATE TABLE sanitize_log (
     sanitized_count INTEGER NOT NULL DEFAULT 0,
     failed_count INTEGER NOT NULL DEFAULT 0,
     failure_reason TEXT,
-    recorded_at TEXT DEFAULT (datetime('now'))
+    recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
+    CHECK(sanitized_count + failed_count <= occurrence_count),
+    CHECK(session_id IS NOT NULL OR transcript_path IS NOT NULL)
 );
 
 CREATE INDEX idx_sanitize_log_session ON sanitize_log(session_id);

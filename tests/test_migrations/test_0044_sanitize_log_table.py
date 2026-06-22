@@ -141,6 +141,7 @@ class TestSanitizeLogTableCreated:
             assert cols["failure_reason"]["notnull"] == 0
 
             assert cols["recorded_at"]["type"] == "TEXT"
+            assert cols["recorded_at"]["notnull"] == 1
             assert cols["recorded_at"]["dflt_value"] is not None
             assert "datetime" in cols["recorded_at"]["dflt_value"]
         finally:
@@ -215,8 +216,8 @@ class TestSanitizeLogConstraints:
         try:
             with pytest.raises(sqlite3.IntegrityError):
                 conn.execute(
-                    "INSERT INTO sanitize_log (hook_kind) VALUES (?)",
-                    ("unknown_hook",),
+                    "INSERT INTO sanitize_log (session_id, hook_kind) VALUES (?, ?)",
+                    ("sess-001", "unknown_hook"),
                 )
                 conn.commit()
         finally:
@@ -227,8 +228,8 @@ class TestSanitizeLogConstraints:
         conn = get_connection()
         try:
             conn.execute(
-                "INSERT INTO sanitize_log (hook_kind) VALUES (?)",
-                ("post_tool_use",),
+                "INSERT INTO sanitize_log (session_id, hook_kind) VALUES (?, ?)",
+                ("sess-001", "post_tool_use"),
             )
             conn.commit()
 
@@ -247,8 +248,8 @@ class TestSanitizeLogConstraints:
         conn = get_connection()
         try:
             conn.execute(
-                "INSERT INTO sanitize_log (hook_kind) VALUES (?)",
-                ("post_tool_use",),
+                "INSERT INTO sanitize_log (session_id, hook_kind) VALUES (?, ?)",
+                ("sess-001", "post_tool_use"),
             )
             conn.commit()
 
@@ -260,6 +261,20 @@ class TestSanitizeLogConstraints:
         finally:
             conn.close()
 
+    def test_recorded_at_rejects_explicit_null(self, migrated_db):
+        """recorded_at に明示的に NULL を指定すると NOT NULL 違反"""
+        conn = get_connection()
+        try:
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute(
+                    "INSERT INTO sanitize_log (session_id, hook_kind, recorded_at) "
+                    "VALUES (?, ?, ?)",
+                    ("sess-001", "post_tool_use", None),
+                )
+                conn.commit()
+        finally:
+            conn.close()
+
     def test_hook_kind_not_null(self, migrated_db):
         """hook_kind を省略すると NOT NULL 違反"""
         conn = get_connection()
@@ -268,6 +283,46 @@ class TestSanitizeLogConstraints:
                 conn.execute(
                     "INSERT INTO sanitize_log (session_id) VALUES (?)",
                     ("sess-001",),
+                )
+                conn.commit()
+        finally:
+            conn.close()
+
+    def test_counter_integrity_check_rejects_oversum(self, migrated_db):
+        """sanitized_count + failed_count が occurrence_count を超えると CHECK 違反"""
+        conn = get_connection()
+        try:
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute(
+                    "INSERT INTO sanitize_log (session_id, hook_kind, occurrence_count, "
+                    "sanitized_count, failed_count) VALUES (?, ?, ?, ?, ?)",
+                    ("sess-001", "post_tool_use", 5, 4, 2),
+                )
+                conn.commit()
+        finally:
+            conn.close()
+
+    def test_counter_integrity_check_allows_equal(self, migrated_db):
+        """sanitized_count + failed_count == occurrence_count は許容"""
+        conn = get_connection()
+        try:
+            conn.execute(
+                "INSERT INTO sanitize_log (session_id, hook_kind, occurrence_count, "
+                "sanitized_count, failed_count) VALUES (?, ?, ?, ?, ?)",
+                ("sess-001", "post_tool_use", 5, 3, 2),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_session_or_transcript_required(self, migrated_db):
+        """session_id と transcript_path が両方 NULL の行は CHECK 違反"""
+        conn = get_connection()
+        try:
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute(
+                    "INSERT INTO sanitize_log (hook_kind) VALUES (?)",
+                    ("post_tool_use",),
                 )
                 conn.commit()
         finally:
@@ -302,14 +357,14 @@ class TestSanitizeLogQueriesByIndex:
         conn = get_connection()
         try:
             conn.execute(
-                "INSERT INTO sanitize_log (hook_kind, occurrence_count, recorded_at) "
-                "VALUES (?, ?, ?)",
-                ("post_tool_use", 1, "2026-01-01 00:00:00"),
+                "INSERT INTO sanitize_log (session_id, hook_kind, occurrence_count, recorded_at) "
+                "VALUES (?, ?, ?, ?)",
+                ("sess-old", "post_tool_use", 1, "2026-01-01 00:00:00"),
             )
             conn.execute(
-                "INSERT INTO sanitize_log (hook_kind, occurrence_count, recorded_at) "
-                "VALUES (?, ?, ?)",
-                ("post_tool_use", 2, "2026-06-01 00:00:00"),
+                "INSERT INTO sanitize_log (session_id, hook_kind, occurrence_count, recorded_at) "
+                "VALUES (?, ?, ?, ?)",
+                ("sess-new", "post_tool_use", 2, "2026-06-01 00:00:00"),
             )
             conn.commit()
 
@@ -318,6 +373,7 @@ class TestSanitizeLogQueriesByIndex:
                 "WHERE recorded_at >= ? AND recorded_at < ? ",
                 ("2026-06-01 00:00:00", "2027-01-01 00:00:00"),
             ).fetchone()
+            assert row is not None
             assert row["occurrence_count"] == 2
         finally:
             conn.close()
