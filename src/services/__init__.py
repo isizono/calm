@@ -9,6 +9,7 @@ from . import (
     pin_service,
     timeline_service,
     guard_service,
+    fts5_sync_service,
 )
 
 __all__ = [
@@ -21,4 +22,5 @@ __all__ = [
     "pin_service",
     "timeline_service",
     "guard_service",
+    "fts5_sync_service",
 ]
