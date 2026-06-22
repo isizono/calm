@@ -393,6 +393,7 @@ def get_activities(
                 "created_at": activity["created_at"],
                 "updated_at": activity["updated_at"],
                 "is_heartbeat_active": bool(activity["is_heartbeat_active"]),
+                "orch_managed": bool(activity["orch_managed"]),
             }
             apply_readable_id_inplace(item, "activity")
             activities.append(item)

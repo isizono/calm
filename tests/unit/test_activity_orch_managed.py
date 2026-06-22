@@ -8,7 +8,7 @@ temp_db / disable_embedding フィクスチャは tests/conftest.py で共有。
 import pytest
 
 from src.db import get_connection
-from src.services.activity_service import add_activity, update_activity
+from src.services.activity_service import add_activity, get_activities, update_activity
 from src.services.hint_service import is_orch_managed_activity
 from src.services.topic_service import add_topic
 from tests.helpers import add_decision
@@ -212,3 +212,88 @@ class TestUpdateActivityOrchManaged:
         assert row["title"] == "[作業] 保持確認"
         assert row["description"] == "original description"
         assert row["orch_managed"] == 1
+
+
+class TestGetActivitiesOrchManaged:
+    """get_activities の orch_managed フィルタおよび返却 dict の orch_managed フィールド"""
+
+    def test_response_includes_orch_managed_field(
+        self, temp_db, topic_with_decision
+    ):
+        """get_activities が返す各 item に orch_managed フィールドが含まれる"""
+        _, decision_id = topic_with_decision
+        add_activity(
+            title="[作業] 通常",
+            description="d",
+            tags=["domain:test", "intent:implement"],
+            related=[{"type": "decision", "ids": [decision_id]}],
+            check_in=False,
+        )
+        add_activity(
+            title="[作業] orch",
+            description="d",
+            tags=["domain:test", "intent:implement"],
+            related=[{"type": "decision", "ids": [decision_id]}],
+            check_in=False,
+            orch_managed=True,
+        )
+        result = get_activities(tags=["domain:test"], status="active")
+        assert "activities" in result, result
+        for item in result["activities"]:
+            assert "orch_managed" in item, item
+            assert isinstance(item["orch_managed"], bool)
+        flags = {item["title"]: item["orch_managed"] for item in result["activities"]}
+        assert flags.get("[作業] 通常") is False
+        assert flags.get("[作業] orch") is True
+
+    def test_filter_true_returns_only_orch_managed(
+        self, temp_db, topic_with_decision
+    ):
+        """orch_managed=True 指定で orch_managed=1 のみが返る"""
+        _, decision_id = topic_with_decision
+        add_activity(
+            title="[作業] 通常",
+            description="d",
+            tags=["domain:test", "intent:implement"],
+            related=[{"type": "decision", "ids": [decision_id]}],
+            check_in=False,
+        )
+        add_activity(
+            title="[作業] orch",
+            description="d",
+            tags=["domain:test", "intent:implement"],
+            related=[{"type": "decision", "ids": [decision_id]}],
+            check_in=False,
+            orch_managed=True,
+        )
+        result = get_activities(
+            tags=["domain:test"], status="active", orch_managed=True,
+        )
+        titles = [item["title"] for item in result["activities"]]
+        assert titles == ["[作業] orch"]
+
+    def test_filter_false_returns_only_non_orch_managed(
+        self, temp_db, topic_with_decision
+    ):
+        """orch_managed=False 指定で orch_managed=0 のみが返る"""
+        _, decision_id = topic_with_decision
+        add_activity(
+            title="[作業] 通常",
+            description="d",
+            tags=["domain:test", "intent:implement"],
+            related=[{"type": "decision", "ids": [decision_id]}],
+            check_in=False,
+        )
+        add_activity(
+            title="[作業] orch",
+            description="d",
+            tags=["domain:test", "intent:implement"],
+            related=[{"type": "decision", "ids": [decision_id]}],
+            check_in=False,
+            orch_managed=True,
+        )
+        result = get_activities(
+            tags=["domain:test"], status="active", orch_managed=False,
+        )
+        titles = [item["title"] for item in result["activities"]]
+        assert titles == ["[作業] 通常"]

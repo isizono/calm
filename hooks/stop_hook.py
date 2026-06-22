@@ -133,7 +133,7 @@ def main() -> None:
             # activity_idを抽出して保存
             _update_checked_in_activity(state, all_events, transcript_path)
 
-        # orchフロー（worker セッション or orch-managedアクティビティ）では
+        # orchフロー（worker セッション or orch_managed=1 のアクティビティ）では
         # 個人フロー用のcheck-inブロック・nudgeを抑制する。
         suppress_personal_flow = (
             _is_worker_session()
