@@ -203,15 +203,6 @@ def test_build_common_where_custom_alias():
     assert params == ["topic", "topic"]
 
 
-def test_build_common_where_exclude_entity_type():
-    """include_entity_type=False で entity_type 句を抑止できる。"""
-    ctx = _make_ctx(entity_type="decision", date_after="2026-01-01")
-    sql, params = build_common_where(ctx, include_entity_type=False)
-    assert "source_type" not in sql
-    assert "AND si.created_at >= ?" in sql
-    assert params == ["2026-01-01"]
-
-
 # ========================================
 # Phase A 等価性: search() が SearchContext 経由でも既存挙動を保つ
 # ========================================

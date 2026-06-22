@@ -4,6 +4,7 @@ import logging
 import math
 import re
 import sqlite3
+import textwrap
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -95,18 +96,6 @@ class SearchContext:
     フィールドは Validate / Normalize / Expand 完了後の確定値を保持する。
     frozen のため後段ステージで書き換える場合は dataclasses.replace を使う。
 
-    SearchPipeline 構造化は段階移行で進める。本 Phase A は SearchContext と
-    build_common_where を導入し、3 retriever (_fts_search / _vector_search /
-    _tag_like_search) が ctx を引数に取る形まで揃える。Phase B 以降は順次:
-
-    - Phase B: 3 retriever を fts_retrieve / vector_retrieve / tag_like_retrieve
-      として個別関数に整理する（_fts_search 等は薄いアダプタとして残置）
-    - Phase C: search() orchestrator を _validate / _normalize / _expand /
-      _retrieve / _merge / _rerank / _slice / _decorate に分割し、各ステージを
-      明示化する
-    - Phase D: P1-3 (score_breakdown / final_score) との接合を Decorate ステージで
-      整理する
-
     fields:
         keywords: 正規化済み元キーワード（QE 拡張を含まない）
         fts_keywords: FTS5 用キーワード（QE 拡張済みの場合がある）
@@ -141,7 +130,6 @@ def build_common_where(
     ctx: SearchContext,
     *,
     si_alias: str = "si",
-    include_entity_type: bool = True,
 ) -> tuple[str, list]:
     """3 retriever で共通する WHERE 句（entity_type / date 範囲）を組み立てる。
 
@@ -149,24 +137,20 @@ def build_common_where(
         ctx: SearchContext
         si_alias: 参照するテーブルエイリアス。空文字列の場合はカラム prefix なし
             （例: _vector_search の "FROM search_index ..." のような無エイリアス参照用）
-        include_entity_type: entity_type フィルタを含めるか
 
     Returns:
         (sql_fragment, params)
-        sql_fragment は "AND ..." で始まる WHERE 連結用フラグメント（複数 AND 句）。
+        sql_fragment は "AND ..." で始まる WHERE 連結用フラグメント（複数 AND 句を
+        改行で連結）。呼び出し元で SQL テンプレート内のインデントに合わせて
+        textwrap.indent で字下げする想定。
         params は ? の順序に沿ったパラメータリスト。
 
     retract フィルタは search_index / FTS5 / vec_index からの物理削除モデルへ移行済の
     ため含めない。
     """
     prefix = f"{si_alias}." if si_alias else ""
-    parts: list[str] = []
-    params: list = []
-
-    if include_entity_type:
-        parts.append(f"AND (? IS NULL OR {prefix}source_type = ?)")
-        params.append(ctx.entity_type)
-        params.append(ctx.entity_type)
+    parts: list[str] = [f"AND (? IS NULL OR {prefix}source_type = ?)"]
+    params: list = [ctx.entity_type, ctx.entity_type]
 
     if ctx.date_after:
         parts.append(f"AND {prefix}created_at >= ?")
@@ -176,7 +160,7 @@ def build_common_where(
         parts.append(f"AND {prefix}created_at <= ?")
         params.append(ctx.date_before)
 
-    return "\n          ".join(parts), params
+    return "\n".join(parts), params
 
 
 def _escape_fts5_query(keyword: str) -> str:
@@ -686,6 +670,7 @@ def _fts_search(ctx: SearchContext) -> list[dict]:
             escaped_keyword = " AND ".join(escaped_parts)
 
     common_where, common_params = build_common_where(ctx, si_alias="si")
+    common_where_indented = textwrap.indent(common_where, " " * 10).lstrip()
     tag_ids = list(ctx.tag_ids) if ctx.tag_ids else None
 
     if tag_ids:
@@ -700,7 +685,7 @@ def _fts_search(ctx: SearchContext) -> list[dict]:
         JOIN search_index si ON si.id = search_index_fts.rowid
         JOIN tag_filtered tf ON tf.source_type = si.source_type AND tf.source_id = si.source_id
         WHERE search_index_fts MATCH ?
-          {common_where}
+          {common_where_indented}
         ORDER BY bm25(search_index_fts, 5.0, 1.0)
         LIMIT ?
         """
@@ -714,7 +699,7 @@ def _fts_search(ctx: SearchContext) -> list[dict]:
         FROM search_index_fts
         JOIN search_index si ON si.id = search_index_fts.rowid
         WHERE search_index_fts MATCH ?
-          {common_where}
+          {common_where_indented}
         ORDER BY bm25(search_index_fts, 5.0, 1.0)
         LIMIT ?
         """
@@ -748,6 +733,8 @@ def _vector_search(ctx: SearchContext) -> Optional[list[dict]]:
 
     try:
         common_where, common_params = build_common_where(ctx, si_alias="")
+        common_where_or = textwrap.indent(common_where, " " * 22).lstrip()
+        common_where_and = textwrap.indent(common_where, " " * 18).lstrip()
 
         if ctx.keyword_mode == "or" and len(keywords) > 1:
             # OR時: 各キーワードで個別にベクトル検索し、結果をマージ
@@ -785,7 +772,7 @@ def _vector_search(ctx: SearchContext) -> Optional[list[dict]]:
                         WHERE tf.source_type = search_index.source_type
                           AND tf.source_id = search_index.source_id
                       )
-                      {common_where}
+                      {common_where_or}
                     """
                     params = (*cte_params, *rowids, *common_params)
                 else:
@@ -793,7 +780,7 @@ def _vector_search(ctx: SearchContext) -> Optional[list[dict]]:
                     SELECT id, source_type, source_id, title
                     FROM search_index
                     WHERE id IN ({rowid_placeholders})
-                      {common_where}
+                      {common_where_or}
                     """
                     params = (*rowids, *common_params)
 
@@ -854,7 +841,7 @@ def _vector_search(ctx: SearchContext) -> Optional[list[dict]]:
                     WHERE tf.source_type = search_index.source_type
                       AND tf.source_id = search_index.source_id
                   )
-                  {common_where}
+                  {common_where_and}
                 """
                 params = (*cte_params, *rowids, *common_params)
             else:
@@ -862,7 +849,7 @@ def _vector_search(ctx: SearchContext) -> Optional[list[dict]]:
                 SELECT id, source_type, source_id, title
                 FROM search_index
                 WHERE id IN ({rowid_placeholders})
-                  {common_where}
+                  {common_where_and}
                 """
                 params = (*rowids, *common_params)
 
@@ -1106,6 +1093,7 @@ def _tag_like_search(ctx: SearchContext) -> list[dict]:
     tag_placeholders = ",".join("?" * len(matched_tag_ids))
 
     common_where, common_params = build_common_where(ctx, si_alias="si")
+    common_where_indented = textwrap.indent(common_where, " " * 6).lstrip()
 
     # 各中間テーブルからエンティティを収集（UNION ALL）
     # WHERE 1=1 を起点に common_where（"AND ..." で始まる）を連結する。
@@ -1113,7 +1101,7 @@ def _tag_like_search(ctx: SearchContext) -> list[dict]:
     SELECT DISTINCT si.source_type AS type, si.source_id AS id, si.title
     FROM search_index si
     WHERE 1=1
-      {common_where}
+      {common_where_indented}
       AND (
         EXISTS (
             SELECT 1 FROM topic_tags tt
@@ -1514,8 +1502,6 @@ def search(
         # QE拡張がある場合、元のキーワード数を記録
         original_kw_count = len(keywords) if len(fts_keywords) > len(keywords) else None
 
-        # SearchPipeline Phase A: SearchContext で retriever 共通パラメータを集約する。
-        # Phase B 以降の TODO は SearchContext docstring 参照。
         ctx = SearchContext(
             keywords=tuple(keywords),
             fts_keywords=tuple(fts_keywords),
@@ -1532,7 +1518,7 @@ def search(
             domain=domain,
         )
 
-        if keyword_mode == "or":
+        if ctx.keyword_mode == "or":
             # OR時: 3文字以上のキーワードが1つでもあればFTSを使う
             if any(len(kw) >= 3 for kw in fts_keywords):
                 fts_results = _fts_search(ctx)
@@ -1558,7 +1544,7 @@ def search(
         # OR時: 3文字以上が1つでもあればFTSで検索できるのでエラーにしない
         # タグLIKE検索結果がある場合もエラーにしない
         fts_available = (
-            any(len(kw) >= 3 for kw in keywords) if keyword_mode == "or"
+            any(len(kw) >= 3 for kw in keywords) if ctx.keyword_mode == "or"
             else min_len >= 3
         )
         if not fts_available and vec_results is None and not tag_like_results:
