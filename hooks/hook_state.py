@@ -66,6 +66,20 @@ class HookState:
         """transcript差分読みのバイトオフセットを保存"""
         self._write(self._path("transcript_offset"), str(offset))
 
+    # --- sanitize_offset ---
+
+    def get_sanitize_offset(self) -> int:
+        """sanitize 用 transcript 差分読みバイトオフセットを取得。未設定 -> 0。
+
+        stop_hook の transcript_offset とは別管理。SessionStart backfill hook が
+        過去 transcript の差分 sanitize を冪等に行うために独立した offset を持つ。
+        """
+        return self._read_int(self._path("sanitize_offset"), 0)
+
+    def set_sanitize_offset(self, offset: int) -> None:
+        """sanitize 用 transcript 差分読みバイトオフセットを保存"""
+        self._write(self._path("sanitize_offset"), str(offset))
+
     # --- current_turn ---
 
     def get_current_turn(self) -> int:
