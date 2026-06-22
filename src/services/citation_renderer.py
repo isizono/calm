@@ -15,10 +15,12 @@ import re
 import sqlite3
 from typing import Literal
 
-from src.services.citations_service import (
+from src.services.citations_pure import (
     TYPE_CODE_TO_NAME,
     TYPE_NAME_TO_CODE,
     _CITE_PATTERN,
+)
+from src.services.citations_service import (
     _get_in_out_with_conn,
     _resolve_targets,
 )
