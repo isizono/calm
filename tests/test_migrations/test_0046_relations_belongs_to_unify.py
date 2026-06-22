@@ -60,16 +60,6 @@ def db_up_to_0046():
             del os.environ["DISCUSSION_DB_PATH"]
 
 
-def _apply_0046(db_path: str) -> None:
-    """db_before_0046 fixture を 0046 まで進める"""
-    parsed = parse_uri(f"sqlite:///{db_path}")
-    backend = _VecSQLiteBackend(parsed, default_migration_table)
-    all_migs = read_migrations(str(MIGRATIONS_DIR))
-    only_0046 = MigrationList([m for m in all_migs if m.id < "0047" and not m.id.startswith("0045_")])
-    with backend.lock():
-        backend.apply_migrations([m for m in all_migs if m.id.startswith("0046_")])
-
-
 class TestSchemaChanges:
     """0046 適用後のスキーマ変更を検証"""
 
@@ -99,13 +89,15 @@ class TestSchemaChanges:
             conn.close()
 
     def test_relations_check_rejects_unknown_type(self, db_up_to_0046):
-        """relations CHECK 制約が 'related'/'belongs_to' 以外を拒否する"""
+        """relations CHECK 制約が 'related'/'belongs_to' 以外を拒否する。
+        正規化制約 ('activity' < 'topic') はパスし、relation_type CHECK のみで失敗することを担保する。
+        """
         conn = sqlite3.connect(db_up_to_0046)
         try:
-            with pytest.raises(sqlite3.IntegrityError):
+            with pytest.raises(sqlite3.IntegrityError, match="relation_type"):
                 conn.execute(
                     "INSERT INTO relations (source_type, source_id, target_type, target_id, relation_type) "
-                    "VALUES ('topic', 1, 'activity', 2, 'depends_on')"
+                    "VALUES ('activity', 1, 'topic', 2, 'depends_on')"
                 )
         finally:
             conn.close()

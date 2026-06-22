@@ -249,6 +249,28 @@ def _validate_depends_on_constraints(source_type: str, targets: list[dict]) -> d
     return None
 
 
+def _validate_belongs_to_constraints(source_type: str, targets: list[dict]) -> dict | None:
+    """belongs_toリレーションの制約をバリデーションする。
+    親帰属パターン (子: decision/log/material/activity → 親: topic) のみ有効。
+    """
+    if source_type not in _PARENT_CHILD_TYPES:
+        return {
+            "error": {
+                "code": "INVALID_RELATION_TYPE",
+                "message": f"belongs_to is only valid for source_type in {sorted(_PARENT_CHILD_TYPES)} → 'topic'",
+            }
+        }
+    for target in targets:
+        if target["type"] != "topic":
+            return {
+                "error": {
+                    "code": "INVALID_RELATION_TYPE",
+                    "message": "belongs_to is only valid when target type is 'topic'",
+                }
+            }
+    return None
+
+
 def _validate_supersedes_constraints(source_type: str, targets: list[dict]) -> dict | None:
     """supersedesリレーションの制約をバリデーションする。decision→decisionのみ有効。"""
     if source_type != "decision":
@@ -371,9 +393,12 @@ def add_relation(source_type: str, source_id: int, targets: list[dict], relation
         source_type: 起点エンティティのタイプ（"topic", "activity", "material", "decision", or "log"）
         source_id: 起点エンティティのID
         targets: ターゲットリスト [{"type": "topic", "ids": [1, 2]}, ...]
-        relation_type: リレーションタイプ（"related", "depends_on", or "supersedes"）。
+        relation_type: リレーションタイプ（"related", "depends_on", "supersedes", or "belongs_to"）。
             "depends_on" はactivity同士のみ有効で、循環依存を検出した場合はエラーを返す。
             "supersedes" はdecision同士のみ有効で、循環を検出した場合はエラーを返す。
+            "belongs_to" は子 (decision/log/material/activity) → 親 (topic) の親帰属表現にのみ有効。
+            なお、"related" を渡しても親帰属パターン (子 → topic) は内部で自動的に "belongs_to"
+            に格上げされる。
 
     Returns:
         成功時: {"added": int}
@@ -401,6 +426,11 @@ def add_relation(source_type: str, source_id: int, targets: list[dict], relation
 
     if relation_type == "supersedes":
         err = _validate_supersedes_constraints(source_type, targets)
+        if err:
+            return err
+
+    if relation_type == "belongs_to":
+        err = _validate_belongs_to_constraints(source_type, targets)
         if err:
             return err
 

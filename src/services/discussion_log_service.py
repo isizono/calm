@@ -199,9 +199,11 @@ def get_logs(
         include_retracted: Trueのとき取り消し済みログも含める（デフォルトFalse）
 
     Returns:
-        議論ログ一覧（各logにtags付き）
-        entity_type == "topic": 従来通りtopic_idで直接取得
-        entity_type == "activity": related topics（上限10件）経由でlogs集約
+        議論ログ一覧（各logにtags付き）。
+        entity_type == "topic" のとき、各 item は要求された topic_id を `topic_id` フィールドで返す。
+        entity_type == "activity" のとき、各 item は `topic_id` フィールドを含まない
+        (複数 topic に belongs_to する場合に「主たる親」を一意に決められないため、
+         呼び出し側で必要なら relations.belongs_to を別途 query する設計)。
     """
     retract_filter = "" if include_retracted else " AND retracted_at IS NULL"
 
