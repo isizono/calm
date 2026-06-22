@@ -240,14 +240,15 @@ class TestActivityScope:
 
 
 class TestIsOrchManagedActivity:
-    def test_true_when_orch_managed_tag_present(self, temp_db):
+    def test_true_when_orch_managed_column_set(self, temp_db):
         topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
         dec = add_decision(decision="d", reason="r", topic_id=topic["topic_id"])
         a = add_activity(
             title="[orch] x", description="d",
-            tags=[DOMAIN_TAG, "orch-managed", "intent:implement"],
+            tags=[DOMAIN_TAG, "intent:implement"],
             related=[{"type": "decision", "ids": [dec["decision_id"]]}],
             check_in=False,
+            orch_managed=True,
         )
         conn = get_connection()
         try:
@@ -255,7 +256,7 @@ class TestIsOrchManagedActivity:
         finally:
             conn.close()
 
-    def test_false_when_tag_absent(self, temp_db):
+    def test_false_when_orch_managed_column_not_set(self, temp_db):
         topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
         dec = add_decision(decision="d", reason="r", topic_id=topic["topic_id"])
         a = add_activity(
@@ -267,6 +268,33 @@ class TestIsOrchManagedActivity:
         conn = get_connection()
         try:
             assert is_orch_managed_activity(conn, a["activity_id"]) is False
+        finally:
+            conn.close()
+
+    def test_false_when_only_tag_present_without_column(self, temp_db):
+        """orch-managed タグだけ付与しても orch_managed カラムが 0 なら False (カラム判定優先)。
+
+        移行期にタグだけ残った状態でも、判定はカラム値のみに依存する。
+        """
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        dec = add_decision(decision="d", reason="r", topic_id=topic["topic_id"])
+        a = add_activity(
+            title="[orch] x", description="d",
+            tags=[DOMAIN_TAG, "orch-managed", "intent:implement"],
+            related=[{"type": "decision", "ids": [dec["decision_id"]]}],
+            check_in=False,
+        )
+        conn = get_connection()
+        try:
+            assert is_orch_managed_activity(conn, a["activity_id"]) is False
+        finally:
+            conn.close()
+
+    def test_false_for_unknown_activity_id(self, temp_db):
+        """存在しない activity_id は False (フェイルオープン)。"""
+        conn = get_connection()
+        try:
+            assert is_orch_managed_activity(conn, 999_999) is False
         finally:
             conn.close()
 

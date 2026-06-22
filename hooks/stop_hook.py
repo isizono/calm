@@ -24,7 +24,6 @@ from hooks.heartbeat import update_heartbeat
 from hooks.hook_state import HookState
 from hooks.hook_transcript import (
     _CHECKIN_TOOLS,
-    _ORCH_MANAGED_TAG,
     _RECORDING_TOOLS,
     _is_worker_session,
     extract_events,
@@ -39,7 +38,7 @@ _NUDGE_INTERVAL = 2
 
 
 def _is_orch_managed_activity(activity_id) -> bool:
-    """指定アクティビティが orch-managed タグを持つかを判定する。
+    """指定アクティビティが orch 管理かを activities.orch_managed カラムで判定する。
 
     orchが管理するアクティビティにcheck-in済みのセッションは個人フローでなく
     orchフローなので、check-inブロック・nudgeの対象外とする。
@@ -49,16 +48,18 @@ def _is_orch_managed_activity(activity_id) -> bool:
         return False
     try:
         from src.db import get_connection
-        from src.services.tag_service import get_entity_tags_batch
 
         conn = get_connection()
         try:
-            tags_map = get_entity_tags_batch(
-                conn, "activity_tags", "activity_id", [int(activity_id)]
-            )
+            row = conn.execute(
+                "SELECT orch_managed FROM activities WHERE id = ?",
+                (int(activity_id),),
+            ).fetchone()
         finally:
             conn.close()
-        return _ORCH_MANAGED_TAG in tags_map.get(int(activity_id), [])
+        if row is None:
+            return False
+        return bool(row["orch_managed"])
     except Exception:
         return False
 
@@ -132,7 +133,7 @@ def main() -> None:
             # activity_idを抽出して保存
             _update_checked_in_activity(state, all_events, transcript_path)
 
-        # orchフロー（worker セッション or orch-managedアクティビティ）では
+        # orchフロー（worker セッション or orch_managed=1 のアクティビティ）では
         # 個人フロー用のcheck-inブロック・nudgeを抑制する。
         suppress_personal_flow = (
             _is_worker_session()

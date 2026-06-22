@@ -149,14 +149,14 @@ self-check で穴があれば dispatcher に渡さず、user 確認や過去議�
 
 - dispatcher からの progress event (semantic 単位)
 - dispatcher への drill-down 要求 (`command:relay-query`)
-- cc-memory activity の状態 (orch-managed タグ付き)
+- cc-memory activity の状態 (`orch_managed=true` の activity)
 
 ### タスク管理ループ
 
 ```
 on user 発言 / dispatcher event / 自発タイミング:
   1. dispatcher progress を確認 (最新の event:progress)
-  2. cc-memory activity 状態を確認 (orch-managed タグ)
+  2. cc-memory activity 状態を確認 (orch_managed=true の activity)
   3. user へ常時可視化更新 (§visibility) を出力
   4. 次のアクション判断:
      - 新規 task → dispatcher へ relay-spawn
@@ -302,7 +302,7 @@ orch が参照する情報は 4 層に分かれる:
 ## 起動フロー
 
 0. **§0 不変責務 + §責務 を thinking で読み上げる**
-1. **再開候補列挙**: `ow_recover_candidates()` (cache 由来候補) と `get_activities(tags=["orch-managed"], status="in_progress")` (cc-memory 由来候補) の和集合を取り、user に提示
+1. **再開候補列挙**: `ow_recover_candidates()` (cache 由来候補) と `get_activities(orch_managed=True, status="in_progress")` (cc-memory 由来候補) の和集合を取り、user に提示
 2. **relay 疎通確認**: `ow_status(channel_code, topic_id)` を呼ぶ
 3. **不在中メッセージ回収**: `ow_history(since=last_seen_msg_id)` で不在中メッセージを pull し処理する
 4. **orch identity 発火**: `ow_send` で `event:identity (role=orch)` を broadcast する。data に `orch_cwd` (現在の cwd) / `orch_activity_id` / `started_at` 等を含める
@@ -434,7 +434,7 @@ worker 個別の状態取得 (workload state / cache.workers[alias]) は dispatc
 
 ## activity との対応
 
-- orch が作成する [作業] activity には **専用タグ `orch-managed` を必須付与**する
+- orch が作成する [作業] activity には **`orch_managed=True` を必須指定**する (個人フロー一覧から除外され、Stop hook の check-in ブロック・nudge も抑制される)
 - タスク終端 (workload terminated event) → activity status のマッピングは projector が自動実行する (詳細は dispatcher SKILL.md §projector マッピング表)
 - **activity.status は projector 自動更新の派生**。orch は `update_activity` で status を直接書き換えてはならない
 
@@ -524,7 +524,7 @@ dispatcher が稼働中なら worker pool 状態は dispatcher 側で保持さ�
 | `ow_get_presence(channel, handle)` | presence 取得 |
 | `ow_get_workload_state(channel, handle)` | workload state (主に dispatcher / worker) |
 | `check_in(activity_id)` | cc-memory アクティビティ check-in |
-| `add_activity(...)` / `update_activity(...)` | アクティビティ管理 (orch-managed タグ必須、稼働状態 status 直接変更は禁止) |
+| `add_activity(...)` / `update_activity(...)` | アクティビティ管理 (`orch_managed=True` 必須、稼働状態 status 直接変更は禁止) |
 | `add_decisions(...)` | decision 物理記録 (§decision-arbitration 例外時のみ、原則は dispatcher 経由) |
 | `add_material(...)` | 議論・設計 material 書き込み (orch 主担当)、pin 操作 |
 | `search(...)` | 特化プレイブック・過去エスカレーションログ検索 |
