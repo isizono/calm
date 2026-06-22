@@ -534,6 +534,109 @@ def _is_relay_running() -> bool:
     return _get_relay_health() is not None
 
 
+# ----------------------------
+# stagnation detector (sentinel.py) auto-start
+# ----------------------------
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_SENTINEL_SCRIPT = _PROJECT_ROOT / "scripts" / "ow" / "sentinel.py"
+_SENTINEL_SCRIPT_REL = "scripts/ow/sentinel.py"
+
+
+def _sentinel_log_path(channel_code: str) -> Path:
+    """sentinel の stderr を書き出す追記ログのパス。
+
+    `Bash(run_in_background=true)` 経由で起動された場合に stderr が失われると、
+    起動失敗 / relay 接続エラー / stagnation 検知の証跡が残らないため、channel
+    ごとに固定パスへ追記する。
+    """
+    return Path("/tmp") / f"sentinel-{channel_code}.log"
+
+
+def _is_sentinel_running(channel_code: str) -> bool:
+    """同 channel の sentinel.py プロセスが既に走っているか pgrep で判定する。
+
+    pgrep が無い・タイムアウト等の例外時は False を返す (呼び出し側で spawn を
+    試みる)。sentinel.py 自体は in-memory state + 冪等 polling なので最悪重複
+    起動しても致命的にはならない。
+
+    パターン末尾に `$` アンカーを付け、`ow1` を渡したときに `ow10` / `ow100` 等の
+    prefix 衝突で誤検知するのを防ぐ。
+    """
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", f"{_SENTINEL_SCRIPT_REL}.*{channel_code}$"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        return result.returncode == 0 and bool(result.stdout.strip())
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def ensure_sentinel_process(channel_code: str) -> bool:
+    """ow stagnation detector (scripts/ow/sentinel.py) を channel ごとに 1 プロセスで起動する。
+
+    orch が `ow_status` を呼ぶたびに通過するため、AI セッションが SKILL.md の
+    起動手順を読み飛ばしても sentinel が自動的に立ち上がる (D#2752 Phase A の
+    起動配線、PR #432)。
+
+    - 既に同 channel の sentinel が pgrep で見つかれば何もしない (1 channel = 1 プロセス)
+    - `OW_SKIP_SENTINEL_AUTOSPAWN=1` 環境変数で skip 可能 (test / 一時無効化用)
+    - 起動失敗は logger.warning に流すだけで呼び出し元には伝播させない
+      (`ow_status` を fail させてはいけない)
+    - 起動コマンドは `uv run --directory <project_root> python scripts/ow/sentinel.py`。
+      hooks/hooks.json の他 Python 呼び出しと一貫させ、将来 sentinel.py に外部依存
+      が追加されても project venv で解決されるようにする。
+    - sentinel の stderr は `/tmp/sentinel-<channel>.log` に追記する。診断ログ
+      (起動失敗・relay 接続エラー・stagnation 検知) が捨てられないようにする。
+
+    Returns:
+        True なら起動成功 or 既に起動済み、False なら起動失敗 or skip。
+    """
+    if os.environ.get("OW_SKIP_SENTINEL_AUTOSPAWN") == "1":
+        return False
+    if not _SENTINEL_SCRIPT.is_file():
+        logger.warning("sentinel script not found at %s — skip auto-start", _SENTINEL_SCRIPT)
+        return False
+    if _is_sentinel_running(channel_code):
+        return True
+    log_path = _sentinel_log_path(channel_code)
+    try:
+        log_fh = open(log_path, "ab")
+    except OSError as exc:
+        logger.warning("failed to open sentinel log %s: %s — fallback to DEVNULL", log_path, exc)
+        log_fh = None
+    try:
+        subprocess.Popen(
+            [
+                "uv",
+                "run",
+                "--directory",
+                str(_PROJECT_ROOT),
+                "python",
+                _SENTINEL_SCRIPT_REL,
+                channel_code,
+            ],
+            cwd=str(_PROJECT_ROOT),
+            stdout=subprocess.DEVNULL,
+            stderr=log_fh if log_fh is not None else subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return True
+    except OSError as exc:
+        logger.warning("failed to spawn sentinel for channel=%s: %s", channel_code, exc)
+        return False
+    finally:
+        # Popen 側で fd は dup される。親プロセスのハンドルは閉じてよい。
+        if log_fh is not None:
+            try:
+                log_fh.close()
+            except OSError:
+                pass
+
+
 def ensure_channel(channel_code: str) -> bool:
     """channelが存在しなければrelayに作成する（idempotent）。
 
@@ -1326,6 +1429,9 @@ def ow_status(channel: str, topic_id: str | None = None) -> dict:
     if channel:
         if not ensure_channel(channel):
             return {"error": {"code": "CHANNEL_UNAVAILABLE", "message": f"channel {channel} could not be created"}}
+        # stagnation detector (sentinel.py) を auto-start する (PR #432, D#2752 Phase A)。
+        # orch 起動時に必ず通る経路なので、AI が SKILL.md を読み飛ばしても sentinel が起動される。
+        ensure_sentinel_process(channel)
 
     presence_result = _relay_request("GET", f"/presence?{urllib.parse.urlencode({'channel': channel})}")
     if "error" in presence_result:

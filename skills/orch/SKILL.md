@@ -314,6 +314,8 @@ orch が参照する情報は 4 層に分かれる:
 
 **起動 cwd 規約**: orch は作業ルート (例: `~/workspace`) で起動する。dispatcher にはリポジトリの cwd (もしくは worktree 親ディレクトリ) を割り当てる。
 
+**stagnation detector の自動起動**: Step 2 の `ow_status(channel_code, topic_id)` を呼んだ時点で `ensure_sentinel_process(channel_code)` が内部で実行され、`scripts/ow/sentinel.py` が channel ごとに 1 プロセスで起動される (D#2752 Phase A 配線、PR #432)。orch は明示的に sentinel を起動するアクションを取らなくてよい。起動は `uv run --directory <project_root> python scripts/ow/sentinel.py <channel_code>` 経由で、stderr は `/tmp/sentinel-<channel_code>.log` に追記される。過渡期は sentinel が `to:"orch"` で送信するケースが残り、relay 側 recv_filter の alias マッピングで吸収される (sentinel.py の `to` 統一は別 PR)。詳細仕様 / 受信時対処は `skills/dispatcher/SKILL.md` §stagnation detector を参照。
+
 ## 運転ループ
 
 Monitor 発火 (user 入力 / dispatcher event / sentinel event) を起点とする:
