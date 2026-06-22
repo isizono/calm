@@ -150,6 +150,51 @@ def test_invalid_identifier_rejected(kwargs):
         Fts5SyncSpec(**kwargs)
 
 
+@pytest.mark.parametrize(
+    "expr",
+    [
+        "NEW.title; DROP TABLE search_index",  # SQL injection 形
+        "(SELECT 'x')",  # 任意の SQL 式
+        "OLD.title",  # OLD は不可
+        "COALESCE(NEW.title)",  # 引数 1 個は許容しない (COALESCE の意味がない)
+        "COALESCE(NEW.title, 'literal')",  # NEW.<ident> 以外の引数
+        "coalesce(NEW.title, NEW.decision)",  # 小文字 (大文字のみ許容)
+        "NEW.title || NEW.decision",  # 任意の式
+    ],
+)
+def test_invalid_display_title_expr_rejected(expr):
+    with pytest.raises(ValueError):
+        Fts5SyncSpec(
+            source_type="x",
+            src_table="t",
+            trigger_basename="ts",
+            fts_title_column="a",
+            fts_body_column="b",
+            display_title_expr=expr,
+        )
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        "NEW.title",
+        "NEW.decision",
+        "COALESCE(NEW.title, NEW.decision)",
+        "COALESCE(NEW.a, NEW.b, NEW.c)",
+    ],
+)
+def test_valid_display_title_expr_accepted(expr):
+    spec = Fts5SyncSpec(
+        source_type="x",
+        src_table="t",
+        trigger_basename="ts",
+        fts_title_column="a",
+        fts_body_column="b",
+        display_title_expr=expr,
+    )
+    assert spec.display_title_expr == expr
+
+
 # ============================
 # Parity: 生成 DDL が現行 migration 最終形と等価
 # ============================

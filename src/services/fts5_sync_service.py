@@ -27,6 +27,16 @@ from dataclasses import dataclass
 # bind parameter を使えないため、事前に文字種を制限してインジェクション余地を消す。
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# display_title_expr に許可する形式:
+# - "NEW.<ident>" 単独
+# - "COALESCE(NEW.<ident>, NEW.<ident>[, NEW.<ident>...])"
+# それ以外の任意 SQL 式は受け付けない (DDL 直接補間されるため)。
+_DISPLAY_TITLE_NEW_RE = re.compile(r"^NEW\.[A-Za-z_][A-Za-z0-9_]*$")
+_DISPLAY_TITLE_COALESCE_RE = re.compile(
+    r"^COALESCE\(\s*NEW\.[A-Za-z_][A-Za-z0-9_]*"
+    r"(?:\s*,\s*NEW\.[A-Za-z_][A-Za-z0-9_]*)+\s*\)$"
+)
+
 
 @dataclass(frozen=True)
 class Fts5SyncSpec:
@@ -65,6 +75,16 @@ class Fts5SyncSpec:
                 raise ValueError(
                     f"Fts5SyncSpec.{field_name}={value!r} は識別子として不正 "
                     f"(英数字・アンダースコアのみ、先頭は英字 or _)"
+                )
+        if self.display_title_expr is not None:
+            expr = self.display_title_expr
+            if not (
+                _DISPLAY_TITLE_NEW_RE.match(expr)
+                or _DISPLAY_TITLE_COALESCE_RE.match(expr)
+            ):
+                raise ValueError(
+                    f"Fts5SyncSpec.display_title_expr={expr!r} は許可されない式 "
+                    f"('NEW.<ident>' または 'COALESCE(NEW.<ident>, NEW.<ident>[, ...])' のみ)"
                 )
 
     @property
@@ -202,7 +222,13 @@ def render_drop_triggers(spec: Fts5SyncSpec) -> tuple[str, str, str]:
 def install(conn: sqlite3.Connection, spec: Fts5SyncSpec) -> None:
     """1 spec を DB に適用する。既存同名トリガーを drop してから create する。
 
-    呼び出し側がトランザクション/コミット境界を管理する。
+    注意: Python 標準 ``sqlite3`` モジュールは default の ``isolation_level=""``
+    では DDL (CREATE/DROP TRIGGER 等) の実行直前に pending transaction を
+    暗黙 commit する。このため本関数の drop→create 系列は原子的ではなく、
+    途中失敗時には trigger が消えたまま残る可能性がある。
+    呼び出し側でこの非原子性が問題になる場合は、``isolation_level=None`` で
+    接続して BEGIN/COMMIT を明示制御するか、`DROP TRIGGER` / `CREATE TRIGGER`
+    の各 statement が独立に成功することを前提に設計すること。
     """
     for drop_sql in render_drop_triggers(spec):
         conn.execute(drop_sql)
@@ -215,7 +241,8 @@ def install_all(
 ) -> None:
     """全 spec をまとめて適用する。Contract migration から呼ぶことを想定。
 
-    呼び出し側がトランザクション/コミット境界を管理する。
+    原子性については `install` の docstring 参照 (Python sqlite3 の DDL
+    auto-commit 挙動により本関数も原子的ではない)。
     """
     for spec in specs:
         install(conn, spec)
