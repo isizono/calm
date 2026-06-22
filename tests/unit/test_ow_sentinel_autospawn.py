@@ -1,7 +1,7 @@
 """ow_service.ensure_sentinel_process の auto-start ロジックを検証する unit test。
 
-PR #432 で導入された「ow_status 呼び出し時に sentinel.py を channel ごと 1 プロセス
-起動する」配線の振る舞いを確認する。
+「ow_status 呼び出し時に sentinel.py を channel ごと 1 プロセス起動する」配線
+(D#2752 Phase A) の振る舞いを確認する。
 
 - 既に走っていれば spawn しない (pgrep でヒット時)
 - 走っていなければ subprocess.Popen で spawn する
