@@ -565,7 +565,7 @@ def _is_sentinel_running(channel_code: str) -> bool:
     """
     try:
         result = subprocess.run(
-            ["pgrep", "-f", f"{_SENTINEL_SCRIPT_REL}.*{channel_code}$"],
+            ["pgrep", "-f", f"{_SENTINEL_SCRIPT_REL}.*{re.escape(channel_code)}$"],
             capture_output=True,
             text=True,
             timeout=2,
@@ -580,7 +580,7 @@ def ensure_sentinel_process(channel_code: str) -> bool:
 
     orch が `ow_status` を呼ぶたびに通過するため、AI セッションが SKILL.md の
     起動手順を読み飛ばしても sentinel が自動的に立ち上がる (D#2752 Phase A の
-    起動配線、PR #432)。
+    起動配線)。
 
     - 既に同 channel の sentinel が pgrep で見つかれば何もしない (1 channel = 1 プロセス)
     - `OW_SKIP_SENTINEL_AUTOSPAWN=1` 環境変数で skip 可能 (test / 一時無効化用)
@@ -1429,7 +1429,7 @@ def ow_status(channel: str, topic_id: str | None = None) -> dict:
     if channel:
         if not ensure_channel(channel):
             return {"error": {"code": "CHANNEL_UNAVAILABLE", "message": f"channel {channel} could not be created"}}
-        # stagnation detector (sentinel.py) を auto-start する (PR #432, D#2752 Phase A)。
+        # stagnation detector (sentinel.py) を auto-start する (D#2752 Phase A)。
         # orch 起動時に必ず通る経路なので、AI が SKILL.md を読み飛ばしても sentinel が起動される。
         ensure_sentinel_process(channel)
 
