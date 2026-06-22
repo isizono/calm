@@ -116,6 +116,7 @@ def add_activity(
     tags: list[str],
     related: list[dict] | None = None,
     check_in: bool = True,
+    orch_managed: bool = False,
 ) -> dict:
     """
     アクティビティを作成してIDを返す
@@ -131,6 +132,10 @@ def add_activity(
             intent:implement タグを含む場合、related に type='decision' のエントリを
             最低1件含めないと IMPLEMENT_WORKFLOW_GUARD エラーで弾かれる。
         check_in: 作成後にcheck_inを実行するか（デフォルト: True）
+        orch_managed: orch が管理する activity か（デフォルト: False）。
+            True を指定すると activities.orch_managed = 1 で作成される。
+            Stop hook の check-in ブロック・nudge 抑制、SessionStart hook
+            の一覧除外、hint 抑制の一次判定に使われる。
 
     Returns:
         作成されたアクティビティ情報（check_in=Trueの場合はcheck_in_resultを含む）
@@ -155,8 +160,9 @@ def add_activity(
 
         # アクティビティをINSERT
         cursor = conn.execute(
-            "INSERT INTO activities (title, description, status) VALUES (?, ?, ?)",
-            (title, description, 'pending'),
+            "INSERT INTO activities (title, description, status, orch_managed) "
+            "VALUES (?, ?, ?, ?)",
+            (title, description, 'pending', 1 if orch_managed else 0),
         )
         activity_id = cursor.lastrowid
 
@@ -222,9 +228,10 @@ def get_activities(
     limit: int = 5,
     since: str | None = None,
     until: str | None = None,
+    orch_managed: bool | None = None,
 ) -> dict:
     """
-    アクティビティ一覧を取得（tagsでフィルタリング、statusでフィルタリング）
+    アクティビティ一覧を取得（tags/status/orch_managed でフィルタリング）
 
     Args:
         tags: タグ配列（optional。指定時はAND条件でフィルタ、未指定時は全件）
@@ -233,6 +240,8 @@ def get_activities(
         limit: 取得件数上限（デフォルト: 5）
         since: ISO日付文字列（例: "2026-03-10"）。この日付以降に更新されたアクティビティのみ返す
         until: ISO日付文字列。この日付以前に更新されたアクティビティのみ返す
+        orch_managed: True/False を指定すると activities.orch_managed カラムでフィルタする。
+            None（デフォルト）はフィルタなし。
 
     Returns:
         アクティビティ一覧とtotal_count
@@ -339,6 +348,10 @@ def get_activities(
             conditions.append("updated_at <= ?")
             where_params.append(until_value)
 
+        if orch_managed is not None:
+            conditions.append("orch_managed = ?")
+            where_params.append(1 if orch_managed else 0)
+
         if conditions:
             where_clause = "WHERE " + " AND ".join(conditions)
         else:
@@ -380,6 +393,7 @@ def get_activities(
                 "created_at": activity["created_at"],
                 "updated_at": activity["updated_at"],
                 "is_heartbeat_active": bool(activity["is_heartbeat_active"]),
+                "orch_managed": bool(activity["orch_managed"]),
             }
             apply_readable_id_inplace(item, "activity")
             activities.append(item)
@@ -434,12 +448,14 @@ def get_active_activities_by_tag_with_conn(conn, tag_id: int) -> list[dict]:
 
     Returns:
         [{"id": int, "title": str, "status": str, "updated_at": str,
-          "last_heartbeat_session_id": str | None, "is_heartbeat_active": bool}, ...]
+          "last_heartbeat_session_id": str | None, "is_heartbeat_active": bool,
+          "orch_managed": bool}, ...]
         （in_progress優先、updated_at降順）
     """
     rows = conn.execute(
         """
         SELECT a.id, a.title, a.status, a.updated_at, a.last_heartbeat_session_id,
+               a.orch_managed,
                CASE WHEN a.last_heartbeat_at > datetime('now', '-' || ? || ' minutes') THEN 1 ELSE 0 END AS is_heartbeat_active
         FROM activities a
         JOIN activity_tags at ON a.id = at.activity_id
@@ -454,6 +470,7 @@ def get_active_activities_by_tag_with_conn(conn, tag_id: int) -> list[dict]:
     for r in rows:
         d = row_to_dict(r)
         d["is_heartbeat_active"] = bool(d["is_heartbeat_active"])
+        d["orch_managed"] = bool(d["orch_managed"])
         result.append(d)
     return result
 
@@ -473,9 +490,10 @@ def update_activity(
     title: Optional[str] = None,
     description: Optional[str] = None,
     tags: Optional[list[str]] = None,
+    orch_managed: Optional[bool] = None,
 ) -> dict:
     """
-    アクティビティを更新する（ステータス、タイトル、説明、タグを変更可能）
+    アクティビティを更新する（ステータス、タイトル、説明、タグ、orch_managed を変更可能）
 
     Args:
         activity_id: アクティビティID
@@ -483,16 +501,27 @@ def update_activity(
         title: 新しいタイトル（optional）
         description: 新しい説明（optional）
         tags: 新しいタグ配列（optional、指定時は全置換。1個以上必須）
+        orch_managed: orch が管理する activity かどうかを切り替える（optional）。
+            True/False のみ受け付ける。None なら変更しない。
 
     Returns:
         更新されたアクティビティ情報
     """
     # 最低1つのオプショナルパラメータが必要
-    if status is None and title is None and description is None and tags is None:
+    if (
+        status is None
+        and title is None
+        and description is None
+        and tags is None
+        and orch_managed is None
+    ):
         return {
             "error": {
                 "code": "VALIDATION_ERROR",
-                "message": "At least one of status, title, description, or tags must be provided",
+                "message": (
+                    "At least one of status, title, description, tags, or "
+                    "orch_managed must be provided"
+                ),
             }
         }
 
@@ -561,6 +590,10 @@ def update_activity(
         if description is not None:
             set_parts.append("description = ?")
             values.append(description)
+
+        if orch_managed is not None:
+            set_parts.append("orch_managed = ?")
+            values.append(1 if orch_managed else 0)
 
         # タグの全置換（tags指定時のみ）
         if parsed_tags is not None:

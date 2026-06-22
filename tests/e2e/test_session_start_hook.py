@@ -128,6 +128,19 @@ def _tag_activity_bare(activity_id: int, tag_name: str) -> None:
         conn.close()
 
 
+def _mark_orch_managed(activity_id: int) -> None:
+    """アクティビティの orch_managed カラムを 1 に設定する"""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE activities SET orch_managed = 1 WHERE id = ?",
+            (activity_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _seed_topic(title: str) -> int:
     """テスト用トピックを作成"""
     conn = get_connection()
@@ -360,12 +373,12 @@ class TestSessionStartHookWorkerSuppression:
 
 
 class TestSessionStartHookOrchManagedExclusion:
-    """orch-managedタグ付きアクティビティの除外テスト"""
+    """orch_managed=1 アクティビティの除外テスト"""
 
     def test_orch_managed_activity_excluded(self, temp_db):
-        """orch-managedタグ付きアクティビティはアクティビティ一覧に出ない"""
+        """orch_managed=1 のアクティビティはアクティビティ一覧に出ない"""
         activity_id = _seed_activity("[作業] orch管理タスク", status="in_progress")
-        _tag_activity_bare(activity_id, "orch-managed")
+        _mark_orch_managed(activity_id)
 
         result = _run_session_start_hook(temp_db, env_remove=["OW_ROLE"])
         context = result["hookSpecificOutput"]["additionalContext"]
@@ -374,10 +387,10 @@ class TestSessionStartHookOrchManagedExclusion:
         assert f"(#{activity_id})" not in context
 
     def test_non_orch_managed_activity_still_shown(self, temp_db):
-        """orch-managedタグのない通常アクティビティは引き続き表示される"""
+        """orch_managed=0 の通常アクティビティは引き続き表示される"""
         normal_id = _seed_activity("[作業] 個人タスク", status="in_progress")
         orch_id = _seed_activity("[作業] orch管理タスク", status="in_progress")
-        _tag_activity_bare(orch_id, "orch-managed")
+        _mark_orch_managed(orch_id)
 
         result = _run_session_start_hook(temp_db, env_remove=["OW_ROLE"])
         context = result["hookSpecificOutput"]["additionalContext"]
@@ -387,10 +400,22 @@ class TestSessionStartHookOrchManagedExclusion:
         assert "orch管理タスク" not in context
         assert f"(#{orch_id})" not in context
 
-    def test_all_orch_managed_yields_no_activity_section(self, temp_db):
-        """全アクティビティがorch-managedなら一覧セクション自体が出ない"""
-        activity_id = _seed_activity("[作業] orch管理のみ", status="in_progress")
+    def test_orch_managed_tag_without_column_is_still_shown(self, temp_db):
+        """旧 orch-managed 素タグだけ付いていて orch_managed カラムが 0 のアクティビティは
+        新仕様では普通に表示される（タグ判定は撤廃済み）。"""
+        activity_id = _seed_activity("[作業] レガシータグ", status="in_progress")
         _tag_activity_bare(activity_id, "orch-managed")
+
+        result = _run_session_start_hook(temp_db, env_remove=["OW_ROLE"])
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "レガシータグ" in context
+        assert f"(#{activity_id})" in context
+
+    def test_all_orch_managed_yields_no_activity_section(self, temp_db):
+        """全アクティビティが orch_managed=1 なら一覧セクション自体が出ない"""
+        activity_id = _seed_activity("[作業] orch管理のみ", status="in_progress")
+        _mark_orch_managed(activity_id)
 
         # 初期振る舞いを削除してアクティビティ一覧の有無を純粋に判定
         conn = get_connection()

@@ -106,20 +106,19 @@ def _recompose_delta_message(tag_name: str, delta_count: int) -> str:
 
 
 def is_orch_managed_activity(conn: sqlite3.Connection, activity_id: int) -> bool:
-    """activityがorch-managed素タグを持つかを判定する。
+    """activityがorch管理かを判定する。
 
+    activities.orch_managed カラムを参照する。
     orch-managed activityでは全hint suppressとする呼出側ガードに使う。
+    存在しない activity_id は False を返す（フェイルオープン）。
     """
     row = conn.execute(
-        """
-        SELECT 1 FROM tags t
-        JOIN activity_tags at ON at.tag_id = t.id
-        WHERE at.activity_id = ? AND t.namespace = '' AND t.name = 'orch-managed'
-        LIMIT 1
-        """,
+        "SELECT orch_managed FROM activities WHERE id = ?",
         (activity_id,),
     ).fetchone()
-    return row is not None
+    if row is None:
+        return False
+    return bool(row["orch_managed"])
 
 
 def get_hints(scope: Scope, target_id: int) -> list[Hint]:

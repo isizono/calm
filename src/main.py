@@ -621,6 +621,7 @@ def add_activity(
     tags: list[str],
     related: list[dict] | None = None,
     check_in: bool = True,
+    orch_managed: bool = False,
 ) -> dict:
     """
     新しいアクティビティを追加する。デフォルトで作成後にcheck_inも実行する。
@@ -631,6 +632,7 @@ def add_activity(
     - 複数関連: add_activity("...", "...", [...], related=[{"type": "topic", "ids": [1, 2]}, {"type": "activity", "ids": [3]}])
     - intent:implementは合意済みdecisionをrelateする: add_activity("...", "...", ["domain:cc-memory", "intent:implement"], related=[{"type": "decision", "ids": [10, 11]}])
     - check_inなしで作成: add_activity("○○機能を実装", "詳細説明...", ["domain:cc-memory", "intent:implement"], check_in=False)
+    - orchが管理するアクティビティとして作成: add_activity("...", "...", [...], orch_managed=True)
 
     Args:
         title: アクティビティのタイトル
@@ -638,12 +640,14 @@ def add_activity(
         tags: タグ配列（必須、1個以上）。domain:タグとintent:タグは必須。素タグも積極的に付けること。namespace: domain:(プロジェクト)/intent:(意図)/素タグ(キーワード)。例: ["domain:cc-memory", "intent:implement", "search", "ranking"]
         related: 関連エンティティ（optional）。[{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...] 形式。複数エンティティを配列で同時紐付け可能。例: [{"type": "topic", "ids": [1]}, {"type": "decision", "ids": [10, 11]}]。作成と同時にリレーションを張る。intent:implementタグを含む場合、relatedにtype='decision'のエントリを最低1件含めないとIMPLEMENT_WORKFLOW_GUARDエラーで弾かれる（議論・設計フェーズで合意したdecisionか、いきなりimplementする理由を記録したdecisionをrelateする）
         check_in: 作成後にcheck_inを実行するか（デフォルト: True）。Trueの場合、返り値にcheck_in_resultが含まれる
+        orch_managed: orchが管理するアクティビティか（デフォルト: False）。Trueを指定すると個人フローのSessionStart一覧から除外され、Stop hookのcheck-inブロック・nudgeも抑制される。orchワークフローで作成するアクティビティに付与する
 
     Returns:
         作成されたアクティビティ情報（check_in=Trueの場合はcheck_in_resultにtag_notes等を含む）
     """
     result = activity_service.add_activity(
         title, description, tags, related=related, check_in=check_in,
+        orch_managed=orch_managed,
     )
     if "error" not in result:
         # check_in=Trueの場合、check_in_resultにtag_notesが含まれるため
@@ -661,9 +665,10 @@ def get_activities(
     since: str | None = None,
     until: str | None = None,
     flavor: _FlavorArg = "internal",
+    orch_managed: bool | None = None,
 ) -> dict:
     """
-    アクティビティ一覧を取得する（tagsでフィルタリング、statusでフィルタリング可能）。
+    アクティビティ一覧を取得する（tags/status/orch_managed でフィルタリング可能）。
 
     典型的な使い方:
     - 全アクティビティ確認: get_activities()
@@ -671,6 +676,7 @@ def get_activities(
     - 進行中のみ: get_activities(["domain:cc-memory"], status="in_progress")
     - 完了アクティビティの確認: get_activities(status="completed")
     - 最近1週間: get_activities(since="2026-03-09")
+    - orch管理のみ: get_activities(orch_managed=True, status="in_progress")
 
     ワークフロー位置: アクティビティ状況の確認時
 
@@ -681,12 +687,15 @@ def get_activities(
         limit: 取得件数上限（デフォルト: 5）
         since: ISO日付文字列（例: "2026-03-10"）。この日付以降に更新されたアクティビティのみ返す
         until: ISO日付文字列。この日付以前に更新されたアクティビティのみ返す
+        orch_managed: True/False を指定すると activities.orch_managed カラムでフィルタする。None（デフォルト）はフィルタなし
 
     Returns:
         アクティビティ一覧（total_countで該当ステータスの全件数を確認可能）
     """
     flavor = _normalize_flavor(flavor)
-    result = activity_service.get_activities(tags, status, limit, since, until)
+    result = activity_service.get_activities(
+        tags, status, limit, since, until, orch_managed=orch_managed,
+    )
     if "error" not in result:
         _apply_flavor_to_items(result.get("activities", []), "activity", flavor)
         all_tags = _collect_result_tags(result.get("activities", []))
@@ -702,9 +711,10 @@ def update_activity(
     title: Optional[str] = None,
     description: Optional[str] = None,
     tags: Optional[list[str]] = None,
+    orch_managed: Optional[bool] = None,
 ) -> dict:
     """
-    アクティビティのステータス・タイトル・説明・タグを更新する。
+    アクティビティのステータス・タイトル・説明・タグ・orch_managedを更新する。
 
     典型的な使い方:
     - アクティビティ開始: update_activity(activity_id, status="in_progress")
@@ -714,6 +724,7 @@ def update_activity(
     - タイトル変更: update_activity(activity_id, title="新しいタイトル")
     - 説明更新: update_activity(activity_id, description="新しい説明")
     - タグ変更: update_activity(activity_id, tags=["domain:cc-memory", "intent:implement"])
+    - orch管理に切り替え: update_activity(activity_id, orch_managed=True)
 
     ワークフロー位置: アクティビティ進行状況の更新時
 
@@ -723,11 +734,14 @@ def update_activity(
         title: 新しいタイトル
         description: 新しい説明
         tags: 新しいタグ配列（指定時は全置換。1個以上必須）
+        orch_managed: orchが管理するアクティビティかを切り替える（True/False/None）。Noneなら変更しない
 
     Returns:
         更新されたアクティビティ情報
     """
-    return activity_service.update_activity(activity_id, status, title, description, tags)
+    return activity_service.update_activity(
+        activity_id, status, title, description, tags, orch_managed=orch_managed,
+    )
 
 
 @mcp.tool()

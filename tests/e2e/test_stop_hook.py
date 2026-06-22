@@ -729,7 +729,7 @@ class TestRecordNudgeMultiplication:
 
 
 def _seed_orch_managed_db(db_path: str, activity_id: int, monkeypatch) -> None:
-    """テスト用DBを初期化し、orch-managed素タグ付きアクティビティを作成する"""
+    """テスト用DBを初期化し、orch_managed=1 のアクティビティを作成する"""
     import src.config
     from src.db import init_database, get_connection
 
@@ -740,16 +740,9 @@ def _seed_orch_managed_db(db_path: str, activity_id: int, monkeypatch) -> None:
     conn = get_connection()
     try:
         conn.execute(
-            "INSERT INTO activities (id, title, description, status) VALUES (?, ?, ?, ?)",
-            (activity_id, "[作業] orch管理タスク", "desc", "in_progress"),
-        )
-        cursor = conn.execute(
-            "INSERT INTO tags (namespace, name) VALUES ('', 'orch-managed')"
-        )
-        tag_id = cursor.lastrowid
-        conn.execute(
-            "INSERT INTO activity_tags (activity_id, tag_id) VALUES (?, ?)",
-            (activity_id, tag_id),
+            "INSERT INTO activities (id, title, description, status, orch_managed) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (activity_id, "[作業] orch管理タスク", "desc", "in_progress", 1),
         )
         conn.commit()
     finally:
@@ -757,7 +750,7 @@ def _seed_orch_managed_db(db_path: str, activity_id: int, monkeypatch) -> None:
 
 
 class TestOrchFlowSuppression:
-    """orchフロー（worker セッション・orch-managedアクティビティ）でのcheck-inブロック/nudge抑制"""
+    """orchフロー（worker セッション・orch_managed=1 アクティビティ）でのcheck-inブロック/nudge抑制"""
 
     def test_worker_session_no_checkin_block(self, env_setup):
         """OW_ROLE=worker時はcheck-in未呼出でもturn>=2でblockしない"""
@@ -809,7 +802,7 @@ class TestOrchFlowSuppression:
         assert len(record_nudges) == 0
 
     def test_orch_managed_activity_no_record_nudge(self, env_setup, monkeypatch):
-        """orch-managedアクティビティにcheck-in済みなら記録なしでもrecord nudgeを生成しない"""
+        """orch_managed=1 アクティビティにcheck-in済みなら記録なしでもrecord nudgeを生成しない"""
         state_dir = env_setup["state_dir"]
         db_path = str(env_setup["tmp_path"] / "orch.db")
         _seed_orch_managed_db(db_path, activity_id=1, monkeypatch=monkeypatch)
@@ -835,7 +828,7 @@ class TestOrchFlowSuppression:
         )
 
         env_override = {**env_setup["env_override"], "DISCUSSION_DB_PATH": db_path}
-        # OW_ROLEは設定しない（orch-managedタグのみで抑制されることを確認）
+        # OW_ROLEは設定しない（orch_managed=1 カラムのみで抑制されることを確認）
         env_override.pop("OW_ROLE", None)
         result = _run_stop_hook(str(transcript), "test-session", env_override)
         assert result["decision"] == "approve"
@@ -845,10 +838,10 @@ class TestOrchFlowSuppression:
         assert len(record_nudges) == 0
 
     def test_normal_activity_still_nudges(self, env_setup, monkeypatch):
-        """orch-managedでない通常アクティビティでは従来通りrecord nudgeを生成する"""
+        """orch_managed=0 の通常アクティビティでは record nudge を生成する"""
         state_dir = env_setup["state_dir"]
         db_path = str(env_setup["tmp_path"] / "normal.db")
-        # 通常アクティビティ（orch-managedタグなし）のDBを作る
+        # 通常アクティビティ（orch_managed=0、デフォルト）のDBを作る
         import src.config
         from src.db import init_database, get_connection
         monkeypatch.setenv("DISCUSSION_DB_PATH", db_path)

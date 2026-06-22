@@ -29,8 +29,6 @@ def _extract_short_name(name: str) -> str:
 
 # --- ow worker判定 ---
 
-_ORCH_MANAGED_TAG = "orch-managed"
-
 
 def _is_worker_session() -> bool:
     """ow workerとして起動されたセッションかを判定する。
