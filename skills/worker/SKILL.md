@@ -322,6 +322,44 @@ PHASE_FILEを削除してheartbeatループを終了させる:
 rm /tmp/ow_hb_phase_<alias>
 ```
 
+### Step 6: auto-close（worker 自身による pane/タブ kill）
+
+`event:state(terminated, cause:closed)` または `event:state(terminated, cause:cancelled)` の relay 送信が**完了したあと**、worker は自身の pane/タブを kill して退場する（worker 完結方式）。
+
+kill タイミングは relay POST の**完了後**で固定する。送信前に kill すると process が死んで POST が relay に届かず、orch / dispatcher が `crashed-during-drain` と誤判定するリスクがある。
+
+`cause` 別の対応:
+
+| cause | auto-close 対象 | 理由 |
+|-------|-----------------|------|
+| `closed` | ✅ 対象 | 正常終了（dispatcher の `cmd:close` 受領済み） |
+| `cancelled` | ✅ 対象 | 中断終了（dispatcher の `cmd:cancel` 受領済み） |
+| `dead` | ❌ 対象外 | 起動失敗。人間判断ステージに残す |
+| `crashed` | ❌ 対象外 | reducer 推論のみで本 step を実行する worker は存在しない |
+| `crashed-during-drain` | ❌ 対象外 | 同上 |
+
+起動環境（環境変数）別の経路:
+
+```bash
+if [ -n "${TMUX_PANE:-}" ]; then
+  # 経路 A: tmux pane で起動（通常 worker / 思考 worker tmux new-window 経路）
+  tmux kill-pane -t "$TMUX_PANE"
+elif [ -n "${ITERM_SESSION_ID:-}" ]; then
+  # 経路 B: iTerm2 別タブ（思考 worker iTerm2 経路、暫定）
+  # current tab を狙うとフォアグラウンドが別タブのときに誤って閉じうるため、
+  # ITERM_SESSION_ID で対象タブを特定して閉じる。
+  osascript -e "tell application \"iTerm2\" to tell current window to close (first tab whose current session's unique ID is \"${ITERM_SESSION_ID}\")" || true
+else
+  # 経路 C: manual / その他
+  # 環境変数がいずれも未設定なら dispatcher の ow_close_worker による外部 kill にフォールバック
+  :
+fi
+```
+
+注意:
+- 本 step が失敗（pane が消えない）した場合は `ow_close_worker` 側の SIGKILL fallback が二重防御として補完する
+- 経路 B (iTerm2) は思考 worker 別タブ実装方針の確定後に再評価する（tmux 一本化なら削除可）
+
 ## 記録規律（worker専用）
 
 workerは会話相手（ユーザー）がいないため、通常のsync-memoryではなく `worker-sync` スキルの規律に従う:

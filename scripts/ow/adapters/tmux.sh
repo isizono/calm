@@ -126,8 +126,61 @@ case "$ACTION" in
       exit 1
     fi
     TERM_REF="$2"
-    # pane IDでpaneをkill (存在しない場合はエラーを無視)
+    # close 契約: stdout に "closed" / "killed" / "failed" を 1 行返す。
+    # ow_close_worker (src/services/ow_service.py) はこの最終行を読んで
+    # closed/killed bool を組み立てる。
+    #
+    # 環境変数で fallback 待機を調整可能 (テスト・運用調整用):
+    #   OW_CLOSE_FALLBACK_ITER     pane 不在確認のリトライ回数 (default: 6)
+    #   OW_CLOSE_FALLBACK_INTERVAL リトライ間隔の秒数 (default: 0.5)
+    FALLBACK_ITER="${OW_CLOSE_FALLBACK_ITER:-6}"
+    FALLBACK_INTERVAL="${OW_CLOSE_FALLBACK_INTERVAL:-0.5}"
+
+    # 1. pane の生存確認。既に不在ならそのまま closed 扱い。
+    if ! tmux display -t "$TERM_REF" -p "#{pane_pid}" 2>/dev/null >/dev/null; then
+      echo "closed"
+      exit 0
+    fi
+
+    # 2. pane 内 claude の PID を取得 (SIGKILL fallback 用に先に押さえる)。
+    PANE_PID="$(tmux display -t "$TERM_REF" -p "#{pane_pid}" 2>/dev/null || true)"
+
+    # 3. tmux kill-pane で SIGHUP 経由の正常 close を試みる。
     tmux kill-pane -t "$TERM_REF" 2>/dev/null || true
+
+    # 4. pane 不在になるまで短時間リトライ (default: 0.5s × 6 = 最大 3s)。
+    i=0
+    while [[ $i -lt $FALLBACK_ITER ]]; do
+      if ! tmux display -t "$TERM_REF" -p "#{pane_pid}" 2>/dev/null >/dev/null; then
+        echo "closed"
+        exit 0
+      fi
+      sleep "$FALLBACK_INTERVAL"
+      i=$((i + 1))
+    done
+
+    # 5. SIGKILL fallback: pane 内 PID に直接 SIGKILL を送って再度 kill-pane。
+    if [[ -n "$PANE_PID" ]]; then
+      kill -KILL "$PANE_PID" 2>/dev/null || true
+    fi
+    tmux kill-pane -t "$TERM_REF" 2>/dev/null || true
+
+    # 6. 最終確認。SIGKILL 直後に tmux 内部の pane 消滅処理が完了するまで
+    # 短時間リトライ (default: 0.5s × 2 = 最大 1s)。step 4 と同パラメータ。
+    j=0
+    final_iter=2
+    while [[ $j -lt $final_iter ]]; do
+      if ! tmux display -t "$TERM_REF" -p "#{pane_pid}" 2>/dev/null >/dev/null; then
+        echo "killed"
+        exit 0
+      fi
+      sleep "$FALLBACK_INTERVAL"
+      j=$((j + 1))
+    done
+
+    echo "failed" >&2
+    echo "failed"
+    exit 1
     ;;
 
   *)

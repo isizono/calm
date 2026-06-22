@@ -1232,23 +1232,39 @@ def ow_close_worker(term_ref: str) -> dict:
         }
 
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["bash", str(adapter_path), "close", term_ref],
             check=True,
             capture_output=True,
             text=True,
             timeout=15,
         )
-        return {"closed": True, "term_ref": term_ref}
+        # tmux.sh は stdout 最終行に "closed" / "killed" のいずれかを返す契約。
+        # 旧アダプタ (stdout 空) や manual 経路は後方互換で closed=True 扱いに倒す。
+        stdout_lines = (result.stdout or "").strip().splitlines()
+        last = stdout_lines[-1] if stdout_lines else ""
+        if last == "killed":
+            logger.warning(
+                "ow_close_worker: pane survived kill-pane, SIGKILL fallback succeeded (term_ref=%s)",
+                term_ref,
+            )
+            return {"closed": True, "killed": True, "term_ref": term_ref}
+        if last == "closed":
+            return {"closed": True, "killed": False, "term_ref": term_ref}
+        # 旧アダプタ (stdout 空) / manual 経路: killed 不明だが closed 成功扱い。
+        # 呼び出し側が result["killed"] で KeyError にならないよう False を埋める。
+        return {"closed": True, "killed": False, "term_ref": term_ref}
     except subprocess.TimeoutExpired:
         logger.error("ow_close_worker adapter close timed out after 15s")
         return {
+            "closed": False,
             "error": {"code": "ADAPTER_CLOSE_TIMEOUT", "message": "adapter close timed out"},
             "term_ref": term_ref,
         }
     except subprocess.CalledProcessError as e:
         logger.error("ow_close_worker adapter close failed: %s", e.stderr)
         return {
+            "closed": False,
             "error": {"code": "ADAPTER_CLOSE_FAILED", "message": e.stderr},
             "term_ref": term_ref,
         }
