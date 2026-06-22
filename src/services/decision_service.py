@@ -14,6 +14,7 @@ from src.services.tag_service import (
     _append_tag_notes_with_conn,
 )
 from src.services.habit_service import _add_habit_with_conn
+from src.services.relation_service import _add_relation_with_conn
 
 PROPAGATE_TYPES = {"habit", "tag_note"}
 
@@ -77,12 +78,30 @@ def add_decisions(items: list[dict]) -> dict:
                     if isinstance(parsed_tags, dict):
                         raise ValueError(parsed_tags["error"]["message"])
 
-                # decisionをINSERT
+                # 親 topic の存在チェック (旧 FK 制約相当の不変条件を維持)
+                if topic_id is not None:
+                    exists = conn.execute(
+                        "SELECT 1 FROM discussion_topics WHERE id = ?",
+                        (topic_id,),
+                    ).fetchone()
+                    if not exists:
+                        raise sqlite3.IntegrityError(
+                            f"topic_id {topic_id} does not exist in discussion_topics"
+                        )
+
+                # decisionをINSERT (親 topic は relations.belongs_to で表現するため topic_id は持たせない)
                 cursor = conn.execute(
-                    "INSERT INTO decisions (topic_id, decision, reason, title) VALUES (?, ?, ?, ?)",
-                    (topic_id, decision, reason, title),
+                    "INSERT INTO decisions (decision, reason, title) VALUES (?, ?, ?)",
+                    (decision, reason, title),
                 )
                 decision_id = cursor.lastrowid
+
+                # 親 topic との belongs_to リレーションを記録
+                if topic_id is not None:
+                    _add_relation_with_conn(
+                        conn, "decision", decision_id,
+                        [{"type": "topic", "ids": [topic_id]}],
+                    )
 
                 # タグをリンク（指定された場合のみ）
                 if parsed_tags:
@@ -244,12 +263,17 @@ def get_decisions(
                     "decisions": [],
                 }
 
+            # decisions の親 topic は relations.belongs_to 経由で解決する
+            decision_retract_filter = retract_filter.replace("retracted_at", "d.retracted_at")
             if start_id is None:
                 rows = conn.execute(
                     f"""
-                    SELECT * FROM decisions
-                    WHERE topic_id = ?{retract_filter}
-                    ORDER BY created_at ASC, id ASC
+                    SELECT d.* FROM decisions d
+                    JOIN relations r ON r.source_type = 'decision' AND r.source_id = d.id
+                                    AND r.target_type = 'topic' AND r.target_id = ?
+                                    AND r.relation_type = 'belongs_to'
+                    WHERE 1=1{decision_retract_filter}
+                    ORDER BY d.created_at ASC, d.id ASC
                     LIMIT ?
                     """,
                     (topic_id, limit),
@@ -257,9 +281,12 @@ def get_decisions(
             else:
                 rows = conn.execute(
                     f"""
-                    SELECT * FROM decisions
-                    WHERE topic_id = ? AND id >= ?{retract_filter}
-                    ORDER BY created_at ASC, id ASC
+                    SELECT d.* FROM decisions d
+                    JOIN relations r ON r.source_type = 'decision' AND r.source_id = d.id
+                                    AND r.target_type = 'topic' AND r.target_id = ?
+                                    AND r.relation_type = 'belongs_to'
+                    WHERE d.id >= ?{decision_retract_filter}
+                    ORDER BY d.created_at ASC, d.id ASC
                     LIMIT ?
                     """,
                     (topic_id, start_id, limit),
@@ -304,12 +331,18 @@ def get_decisions(
                 return {"decisions": []}
 
             placeholders = ",".join("?" * len(topic_ids))
+            # decisions の親 topic 集約も relations.belongs_to 経由。
+            # DISTINCT で複数 topic に belongs_to する decision の重複を抑制
+            decision_retract_filter = retract_filter.replace("retracted_at", "d.retracted_at")
             if start_id is None:
                 rows = conn.execute(
                     f"""
-                    SELECT * FROM decisions
-                    WHERE topic_id IN ({placeholders}){retract_filter}
-                    ORDER BY id DESC
+                    SELECT DISTINCT d.* FROM decisions d
+                    JOIN relations r ON r.source_type = 'decision' AND r.source_id = d.id
+                                    AND r.target_type = 'topic' AND r.relation_type = 'belongs_to'
+                                    AND r.target_id IN ({placeholders})
+                    WHERE 1=1{decision_retract_filter}
+                    ORDER BY d.id DESC
                     LIMIT ?
                     """,
                     tuple(topic_ids) + (limit,),
@@ -317,9 +350,12 @@ def get_decisions(
             else:
                 rows = conn.execute(
                     f"""
-                    SELECT * FROM decisions
-                    WHERE topic_id IN ({placeholders}) AND id <= ?{retract_filter}
-                    ORDER BY id DESC
+                    SELECT DISTINCT d.* FROM decisions d
+                    JOIN relations r ON r.source_type = 'decision' AND r.source_id = d.id
+                                    AND r.target_type = 'topic' AND r.relation_type = 'belongs_to'
+                                    AND r.target_id IN ({placeholders})
+                    WHERE d.id <= ?{decision_retract_filter}
+                    ORDER BY d.id DESC
                     LIMIT ?
                     """,
                     tuple(topic_ids) + (start_id, limit),

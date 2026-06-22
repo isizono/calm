@@ -351,8 +351,8 @@ def test_runtime_sync_decision_display_title_null(temp_db):
         conn.execute("INSERT INTO discussion_topics (title, description) VALUES ('t', 'd')")
         topic_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         conn.execute(
-            "INSERT INTO decisions (topic_id, decision, reason, title) VALUES (?, ?, ?, NULL)",
-            (topic_id, "決定本文 uniqdectoken", "理由 uniqreasontoken"),
+            "INSERT INTO decisions (decision, reason, title) VALUES (?, ?, NULL)",
+            ("決定本文 uniqdectoken", "理由 uniqreasontoken"),
         )
         d_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
@@ -382,8 +382,8 @@ def test_runtime_sync_decision_display_title_set(temp_db):
         conn.execute("INSERT INTO discussion_topics (title, description) VALUES ('t2', 'd2')")
         topic_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         conn.execute(
-            "INSERT INTO decisions (topic_id, decision, reason, title) VALUES (?, ?, ?, ?)",
-            (topic_id, "本文タイトルではない", "理由本文", "短いタイトル uniqshort"),
+            "INSERT INTO decisions (decision, reason, title) VALUES (?, ?, ?)",
+            ("本文タイトルではない", "理由本文", "短いタイトル uniqshort"),
         )
         d_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
@@ -411,10 +411,9 @@ def test_runtime_sync_all_specs_after_install_all(temp_db):
         conn.execute(
             "INSERT INTO activities (title, description, status) VALUES ('act uniqA003', 'desc uniqA004', 'in_progress')"
         )
-        # log (discussion_logs requires topic_id)
+        # log (親 topic との紐付けは relations.belongs_to に移行済み、topic_id カラムは廃止)
         conn.execute(
-            "INSERT INTO discussion_logs (topic_id, title, content) VALUES (?, 'log uniqA005', 'cont uniqA006')",
-            (topic_id,),
+            "INSERT INTO discussion_logs (title, content) VALUES ('log uniqA005', 'cont uniqA006')"
         )
         # material
         conn.execute(
@@ -422,8 +421,7 @@ def test_runtime_sync_all_specs_after_install_all(temp_db):
         )
         # decision
         conn.execute(
-            "INSERT INTO decisions (topic_id, decision, reason, title) VALUES (?, 'dec uniqA009', 'rea uniqA010', NULL)",
-            (topic_id,),
+            "INSERT INTO decisions (decision, reason, title) VALUES ('dec uniqA009', 'rea uniqA010', NULL)"
         )
 
         for token in [

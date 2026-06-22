@@ -115,7 +115,7 @@ def get_timeline(
         # --- topic_ids の解決 ---
         if activity_id is not None:
             rows = conn.execute(
-                "SELECT target_id FROM relations WHERE source_type = 'activity' AND source_id = ? AND target_type = 'topic'",
+                "SELECT target_id FROM relations WHERE source_type = 'activity' AND source_id = ? AND target_type = 'topic' AND relation_type = 'belongs_to'",
                 (activity_id,),
             ).fetchall()
             topic_ids = [row["target_id"] for row in rows]
@@ -134,11 +134,21 @@ def get_timeline(
 
         if "log" in types:
             union_parts.append(
-                f"SELECT id, 'log' AS type, title, created_at, NULL AS replaces_id, NULL AS replaced_by_id FROM discussion_logs WHERE topic_id IN ({placeholders}) AND retracted_at IS NULL"
+                f"SELECT DISTINCT l.id, 'log' AS type, l.title, l.created_at, NULL AS replaces_id, NULL AS replaced_by_id"
+                f" FROM discussion_logs l"
+                f" JOIN relations r ON r.source_type = 'log' AND r.source_id = l.id"
+                f"                 AND r.target_type = 'topic' AND r.relation_type = 'belongs_to'"
+                f"                 AND r.target_id IN ({placeholders})"
+                f" WHERE l.retracted_at IS NULL"
             )
             params.extend(topic_ids)
             count_parts.append(
-                f"SELECT id, created_at FROM discussion_logs WHERE topic_id IN ({placeholders}) AND retracted_at IS NULL"
+                f"SELECT DISTINCT l.id, l.created_at"
+                f" FROM discussion_logs l"
+                f" JOIN relations r ON r.source_type = 'log' AND r.source_id = l.id"
+                f"                 AND r.target_type = 'topic' AND r.relation_type = 'belongs_to'"
+                f"                 AND r.target_id IN ({placeholders})"
+                f" WHERE l.retracted_at IS NULL"
             )
             count_params.extend(topic_ids)
 
@@ -147,24 +157,33 @@ def get_timeline(
             # decision_supersedesは多対多のスキーマだが、APIレスポンスのreplaces/replaced_byは
             # {type, id}のスカラーと定義されているため、最新の1件のみ返す。
             union_parts.append(
-                f"SELECT d.id, 'decision' AS type, COALESCE(d.title, d.decision) AS title, d.created_at,"
+                f"SELECT DISTINCT d.id, 'decision' AS type, COALESCE(d.title, d.decision) AS title, d.created_at,"
                 f" (SELECT target_id FROM decision_supersedes WHERE source_id = d.id ORDER BY created_at DESC LIMIT 1) AS replaces_id,"
                 f" (SELECT source_id FROM decision_supersedes WHERE target_id = d.id ORDER BY created_at DESC LIMIT 1) AS replaced_by_id"
-                f" FROM decisions d WHERE d.topic_id IN ({placeholders}) AND d.retracted_at IS NULL"
+                f" FROM decisions d"
+                f" JOIN relations r ON r.source_type = 'decision' AND r.source_id = d.id"
+                f"                 AND r.target_type = 'topic' AND r.relation_type = 'belongs_to'"
+                f"                 AND r.target_id IN ({placeholders})"
+                f" WHERE d.retracted_at IS NULL"
             )
             params.extend(topic_ids)
             count_parts.append(
-                f"SELECT id, created_at FROM decisions WHERE topic_id IN ({placeholders}) AND retracted_at IS NULL"
+                f"SELECT DISTINCT d.id, d.created_at"
+                f" FROM decisions d"
+                f" JOIN relations r ON r.source_type = 'decision' AND r.source_id = d.id"
+                f"                 AND r.target_type = 'topic' AND r.relation_type = 'belongs_to'"
+                f"                 AND r.target_id IN ({placeholders})"
+                f" WHERE d.retracted_at IS NULL"
             )
             count_params.extend(topic_ids)
 
         if "material" in types:
             union_parts.append(
-                f"SELECT DISTINCT m.id, 'material' AS type, m.title, m.created_at, NULL AS replaces_id, NULL AS replaced_by_id FROM materials m JOIN relations r ON r.source_type = 'material' AND r.source_id = m.id AND r.target_type = 'topic' AND r.target_id IN ({placeholders}) WHERE m.retracted_at IS NULL"
+                f"SELECT DISTINCT m.id, 'material' AS type, m.title, m.created_at, NULL AS replaces_id, NULL AS replaced_by_id FROM materials m JOIN relations r ON r.source_type = 'material' AND r.source_id = m.id AND r.target_type = 'topic' AND r.relation_type = 'belongs_to' AND r.target_id IN ({placeholders}) WHERE m.retracted_at IS NULL"
             )
             params.extend(topic_ids)
             count_parts.append(
-                f"SELECT DISTINCT m.id, m.created_at FROM materials m JOIN relations r ON r.source_type = 'material' AND r.source_id = m.id AND r.target_type = 'topic' AND r.target_id IN ({placeholders}) WHERE m.retracted_at IS NULL"
+                f"SELECT DISTINCT m.id, m.created_at FROM materials m JOIN relations r ON r.source_type = 'material' AND r.source_id = m.id AND r.target_type = 'topic' AND r.relation_type = 'belongs_to' AND r.target_id IN ({placeholders}) WHERE m.retracted_at IS NULL"
             )
             count_params.extend(topic_ids)
 

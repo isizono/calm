@@ -327,13 +327,15 @@ def _attach_details(results: list[dict]) -> None:
             desc_map = {r["id"]: (r["description"] or "")[:DETAILS_DESCRIPTION_MAX] for r in rows}
 
             # recent_decisions取得（各topicの最新3件）
-            # topic_idごとにまとめてクエリし、ROW_NUMBERで上位3件に絞る
+            # topicごとにまとめてクエリし、ROW_NUMBERで上位3件に絞る
             decision_rows = execute_query(
                 f"""
-                SELECT topic_id, decision, reason,
-                       ROW_NUMBER() OVER (PARTITION BY topic_id ORDER BY id DESC) AS rn
-                FROM decisions
-                WHERE topic_id IN ({placeholders})
+                SELECT r.target_id AS topic_id, d.decision, d.reason,
+                       ROW_NUMBER() OVER (PARTITION BY r.target_id ORDER BY d.id DESC) AS rn
+                FROM decisions d
+                JOIN relations r ON r.source_type='decision' AND r.source_id=d.id
+                                AND r.target_type='topic' AND r.relation_type='belongs_to'
+                WHERE r.target_id IN ({placeholders})
                 """,
                 tuple(ids),
             )
@@ -584,7 +586,10 @@ def _build_tag_filter_cte(tag_ids: list[int]) -> tuple[str, list]:
         -- decision (UNION継承)
         SELECT 'decision', decision_id FROM (
             SELECT d.id AS decision_id, tt.tag_id
-            FROM decisions d JOIN topic_tags tt ON tt.topic_id = d.topic_id
+            FROM decisions d
+            JOIN relations r ON r.source_type='decision' AND r.source_id=d.id
+                            AND r.target_type='topic' AND r.relation_type='belongs_to'
+            JOIN topic_tags tt ON tt.topic_id = r.target_id
             WHERE tt.tag_id IN ({placeholders})
             UNION
             SELECT dt.decision_id, dt.tag_id
@@ -595,7 +600,10 @@ def _build_tag_filter_cte(tag_ids: list[int]) -> tuple[str, list]:
         -- log (UNION継承)
         SELECT 'log', log_id FROM (
             SELECT dl.id AS log_id, tt.tag_id
-            FROM discussion_logs dl JOIN topic_tags tt ON tt.topic_id = dl.topic_id
+            FROM discussion_logs dl
+            JOIN relations r ON r.source_type='log' AND r.source_id=dl.id
+                            AND r.target_type='topic' AND r.relation_type='belongs_to'
+            JOIN topic_tags tt ON tt.topic_id = r.target_id
             WHERE tt.tag_id IN ({placeholders})
             UNION
             SELECT lt.log_id, lt.tag_id
@@ -1004,10 +1012,12 @@ def find_similar_decisions(
             SELECT si.id, si.source_id, COALESCE(d.title, d.decision) AS title
             FROM search_index si
             JOIN decisions d ON d.id = si.source_id
+            JOIN relations r ON r.source_type='decision' AND r.source_id=d.id
+                            AND r.target_type='topic' AND r.relation_type='belongs_to'
             WHERE si.id IN ({rowid_placeholders})
               AND si.source_type = 'decision'
               AND si.source_id != ?
-              AND d.topic_id = ?
+              AND r.target_id = ?
               AND d.retracted_at IS NULL
             """,
             (*rowids, exclude_id, topic_id),
@@ -1130,13 +1140,17 @@ def _tag_like_search(ctx: SearchContext) -> list[dict]:
         )
         OR EXISTS (
             SELECT 1 FROM decisions d
-            JOIN topic_tags tt2 ON tt2.topic_id = d.topic_id
+            JOIN relations r2 ON r2.source_type='decision' AND r2.source_id=d.id
+                             AND r2.target_type='topic' AND r2.relation_type='belongs_to'
+            JOIN topic_tags tt2 ON tt2.topic_id = r2.target_id
             WHERE d.id = si.source_id AND si.source_type = 'decision'
               AND tt2.tag_id IN ({tag_placeholders})
         )
         OR EXISTS (
             SELECT 1 FROM discussion_logs dl
-            JOIN topic_tags tt3 ON tt3.topic_id = dl.topic_id
+            JOIN relations r3 ON r3.source_type='log' AND r3.source_id=dl.id
+                             AND r3.target_type='topic' AND r3.relation_type='belongs_to'
+            JOIN topic_tags tt3 ON tt3.topic_id = r3.target_id
             WHERE dl.id = si.source_id AND si.source_type = 'log'
               AND tt3.tag_id IN ({tag_placeholders})
         )
@@ -1802,7 +1816,18 @@ def get_by_id(type: str, id: int, conn=None) -> dict:
         else:
             tags = []
 
-        return {"type": type, "data": _format_row(type, row_to_dict(row), tags)}
+        data = row_to_dict(row)
+        # decision/log の親 topic は relations.belongs_to 経由で解決し data に詰める
+        # (DB カラムから物理削除済みのため、_format_row が data["topic_id"] を参照できるよう補完)
+        if type in ('decision', 'log'):
+            r = conn.execute(
+                "SELECT target_id FROM relations WHERE source_type=? AND source_id=? "
+                "AND target_type='topic' AND relation_type='belongs_to' LIMIT 1",
+                (type, id),
+            ).fetchone()
+            data["topic_id"] = r["target_id"] if r else None
+
+        return {"type": type, "data": _format_row(type, data, tags)}
 
     except Exception as e:
         return {

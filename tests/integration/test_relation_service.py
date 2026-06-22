@@ -786,21 +786,31 @@ class TestMaterialRelations:
 
 
 def _create_decision(conn, topic_id, title="Test Decision"):
-    """テスト用decisionを作成する"""
+    """テスト用decisionを作成する。親 topic との紐付けは relations.belongs_to で表現"""
     cursor = conn.execute(
-        "INSERT INTO decisions (topic_id, decision, reason) VALUES (?, ?, ?)",
-        (topic_id, title, f"Reason for {title}"),
+        "INSERT INTO decisions (decision, reason) VALUES (?, ?)",
+        (title, f"Reason for {title}"),
     )
-    return cursor.lastrowid
+    decision_id = cursor.lastrowid
+    conn.execute(
+        "INSERT INTO relations (source_type, source_id, target_type, target_id, relation_type) VALUES ('decision', ?, 'topic', ?, 'belongs_to')",
+        (decision_id, topic_id),
+    )
+    return decision_id
 
 
 def _create_log(conn, topic_id, title="Test Log"):
-    """テスト用discussion_logを作成する"""
+    """テスト用discussion_logを作成する。親 topic との紐付けは relations.belongs_to で表現"""
     cursor = conn.execute(
-        "INSERT INTO discussion_logs (topic_id, content) VALUES (?, ?)",
-        (topic_id, f"Content for {title}"),
+        "INSERT INTO discussion_logs (content) VALUES (?)",
+        (f"Content for {title}",),
     )
-    return cursor.lastrowid
+    log_id = cursor.lastrowid
+    conn.execute(
+        "INSERT INTO relations (source_type, source_id, target_type, target_id, relation_type) VALUES ('log', ?, 'topic', ?, 'belongs_to')",
+        (log_id, topic_id),
+    )
+    return log_id
 
 
 @pytest.fixture
@@ -859,7 +869,8 @@ class TestNewEntityTypeRelations:
     def test_topic_decision_related(self, entities_with_decision_log):
         """topic↔decisionのrelatedリレーションが追加できる"""
         e = entities_with_decision_log
-        result = add_relation("topic", e["t1"], [{"type": "decision", "ids": [e["d1"]]}])
+        # d1 は fixture で t1 に belongs_to 済みなので、未紐付の (t2, d1) で検証する
+        result = add_relation("topic", e["t2"], [{"type": "decision", "ids": [e["d1"]]}])
         assert "error" not in result
         assert result["added"] == 1
 
@@ -880,7 +891,8 @@ class TestNewEntityTypeRelations:
     def test_log_topic_related(self, entities_with_decision_log):
         """log→topicのrelatedリレーション（逆方向指定）が追加できる"""
         e = entities_with_decision_log
-        result = add_relation("log", e["l1"], [{"type": "topic", "ids": [e["t1"]]}])
+        # l1 は fixture で t1 に belongs_to 済みなので、未紐付の (l1, t2) で検証する
+        result = add_relation("log", e["l1"], [{"type": "topic", "ids": [e["t2"]]}])
         assert "error" not in result
         assert result["added"] == 1
 
