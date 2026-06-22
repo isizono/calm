@@ -635,16 +635,17 @@ def _build_tag_filter_cte(tag_ids: list[int]) -> tuple[str, list]:
     return cte_sql, params
 
 
-def _fts_search(ctx: SearchContext) -> list[dict]:
-    """FTS5検索。結果はBM25ランク順のリスト。
+def fts_retrieve(ctx: SearchContext, conn) -> list[dict]:
+    """FTS5 retriever。bm25 ランク順の結果リストを返す。
 
-    retract時にsearch_index/search_index_fts/vec_indexから物理削除されるため、
+    retract 時に search_index / search_index_fts / vec_index から物理削除されるため、
     取り消し済みエンティティは検索対象に現れない。
 
     Args:
         ctx: SearchContext。ctx.fts_keywords / ctx.keyword_mode /
             ctx.original_keyword_count / ctx.tag_ids / ctx.entity_type /
             ctx.fetch_limit / ctx.date_after / ctx.date_before を参照する。
+        conn: 呼出元 (orchestrator) が開いた共有 SQLite コネクション。
     """
     keywords = list(ctx.fts_keywords)
 
@@ -705,7 +706,7 @@ def _fts_search(ctx: SearchContext) -> list[dict]:
         """
         params = (escaped_keyword, *common_params, ctx.fetch_limit)
 
-    rows = execute_query(query, params)
+    rows = conn.execute(query, params).fetchall()
     results = []
     for row in rows:
         r = row_to_dict(row)
@@ -717,15 +718,25 @@ def _fts_search(ctx: SearchContext) -> list[dict]:
     return results
 
 
-def _vector_search(ctx: SearchContext) -> Optional[list[dict]]:
-    """ベクトル検索。ベクトル検索無効時はNoneを返す。
+def _fts_search(ctx: SearchContext) -> list[dict]:
+    """旧シグネチャアダプタ。自前で conn を開閉して fts_retrieve に委譲する。"""
+    conn = get_connection()
+    try:
+        return fts_retrieve(ctx, conn)
+    finally:
+        conn.close()
 
-    retract時にvec_indexから物理削除されるため、取り消し済みエンティティは
-    KNNの候補スロットを食わない（KNN実効recall改善）。
+
+def vector_retrieve(ctx: SearchContext, conn) -> Optional[list[dict]]:
+    """ベクトル retriever。ベクトル検索が無効/失敗時は None を返す。
+
+    retract 時に vec_index から物理削除されるため、取り消し済みエンティティは
+    KNN の候補スロットを食わない（KNN 実効 recall 改善）。
 
     Args:
         ctx: SearchContext。ベクトル検索は元の ctx.keywords を使用し、
             QE 拡張済みの ctx.fts_keywords は参照しない。
+        conn: 呼出元 (orchestrator) が開いた共有 SQLite コネクション。
     """
     keywords = list(ctx.keywords)
     fetch_limit = ctx.fetch_limit
@@ -745,10 +756,10 @@ def _vector_search(ctx: SearchContext) -> Optional[list[dict]]:
                     continue
 
                 blob = serialize_float32(query_embedding)
-                vec_rows = execute_query(
+                vec_rows = conn.execute(
                     "SELECT rowid, distance FROM vec_index WHERE embedding MATCH ? AND k = ?",
                     (blob, fetch_limit),
-                )
+                ).fetchall()
                 if not vec_rows:
                     continue
 
@@ -784,7 +795,7 @@ def _vector_search(ctx: SearchContext) -> Optional[list[dict]]:
                     """
                     params = (*rowids, *common_params)
 
-                filter_rows = execute_query(query, params)
+                filter_rows = conn.execute(query, params).fetchall()
                 for row in filter_rows:
                     r = row_to_dict(row)
                     key = (r["source_type"], r["source_id"])
@@ -813,10 +824,10 @@ def _vector_search(ctx: SearchContext) -> Optional[list[dict]]:
 
             # vec_indexからKNN取得（タグフィルタ不可なので多めに取得）
             # fetch_limitはsearch()側で (offset+limit)*FETCH_LIMIT_MULTIPLIER に拡大済み
-            vec_rows = execute_query(
+            vec_rows = conn.execute(
                 "SELECT rowid, distance FROM vec_index WHERE embedding MATCH ? AND k = ?",
                 (blob, fetch_limit),
-            )
+            ).fetchall()
 
             if not vec_rows:
                 return []
@@ -853,7 +864,7 @@ def _vector_search(ctx: SearchContext) -> Optional[list[dict]]:
                 """
                 params = (*rowids, *common_params)
 
-            filter_rows = execute_query(query, params)
+            filter_rows = conn.execute(query, params).fetchall()
 
             results = []
             for row in filter_rows:
@@ -872,6 +883,15 @@ def _vector_search(ctx: SearchContext) -> Optional[list[dict]]:
     except (ValueError, RuntimeError, OSError):
         logger.warning("Vector search failed, falling back to FTS-only", exc_info=True)
         return None
+
+
+def _vector_search(ctx: SearchContext) -> Optional[list[dict]]:
+    """旧シグネチャアダプタ。自前で conn を開閉して vector_retrieve に委譲する。"""
+    conn = get_connection()
+    try:
+        return vector_retrieve(ctx, conn)
+    finally:
+        conn.close()
 
 
 def find_similar_topics(
@@ -1030,19 +1050,19 @@ def find_similar_decisions(
         return []
 
 
-def _tag_like_search(ctx: SearchContext) -> list[dict]:
-    """タグ名のLIKE検索。キーワードにマッチするタグを持つエンティティを返す。
+def tag_like_retrieve(ctx: SearchContext, conn) -> list[dict]:
+    """タグ名 LIKE retriever。キーワードにマッチするタグを持つエンティティを返す。
 
-    entity_tagsの各中間テーブルからタグ名LIKE検索し、
-    search_index経由で結果を返す。
+    entity_tags の各中間テーブルからタグ名 LIKE 検索し、search_index 経由で結果を返す。
 
-    ANDモードでは「全キーワードを名前に含む単一タグ」を探す。
-    FTS/ベクトルのAND（複数語を含む文書）とは異なる意味論であり、
+    AND モードでは「全キーワードを名前に含む単一タグ」を探す。
+    FTS/ベクトルの AND（複数語を含む文書）とは異なる意味論であり、
     マッチするのは "domain:api-design" のような複合タグ名に限られる。
 
     Args:
         ctx: SearchContext。タグ LIKE 検索は元の ctx.keywords を使用し、
             QE 拡張済みの ctx.fts_keywords は参照しない。
+        conn: 呼出元 (orchestrator) が開いた共有 SQLite コネクション。
     """
     keywords = list(ctx.keywords)
     tag_ids = list(ctx.tag_ids) if ctx.tag_ids else None
@@ -1071,10 +1091,10 @@ def _tag_like_search(ctx: SearchContext) -> list[dict]:
         for p in like_patterns:
             params.extend([p, p])
 
-    matching_tags = execute_query(
+    matching_tags = conn.execute(
         f"SELECT id FROM tags WHERE {conditions}",
         tuple(params),
-    )
+    ).fetchall()
     if not matching_tags:
         return []
 
@@ -1150,7 +1170,7 @@ def _tag_like_search(ctx: SearchContext) -> list[dict]:
         query_params.extend(matched_tag_ids)
     query_params.append(ctx.fetch_limit)
 
-    rows = execute_query(query, tuple(query_params))
+    rows = conn.execute(query, tuple(query_params)).fetchall()
     results = []
     for row in rows:
         r = row_to_dict(row)
@@ -1161,6 +1181,14 @@ def _tag_like_search(ctx: SearchContext) -> list[dict]:
         })
     return results
 
+
+def _tag_like_search(ctx: SearchContext) -> list[dict]:
+    """旧シグネチャアダプタ。自前で conn を開閉して tag_like_retrieve に委譲する。"""
+    conn = get_connection()
+    try:
+        return tag_like_retrieve(ctx, conn)
+    finally:
+        conn.close()
 
 
 def _apply_recency_boost(results: list[dict], now: datetime | None = None) -> None:
