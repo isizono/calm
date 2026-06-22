@@ -1,4 +1,5 @@
 """FTS5 + ベクトル ハイブリッド検索サービス"""
+import dataclasses
 import json
 import logging
 import math
@@ -718,13 +719,6 @@ def fts_retrieve(ctx: SearchContext, conn) -> list[dict]:
     return results
 
 
-def _fts_search(ctx: SearchContext) -> list[dict]:
-    """旧シグネチャアダプタ。自前で conn を開閉して fts_retrieve に委譲する。"""
-    conn = get_connection()
-    try:
-        return fts_retrieve(ctx, conn)
-    finally:
-        conn.close()
 
 
 def vector_retrieve(ctx: SearchContext, conn) -> Optional[list[dict]]:
@@ -885,13 +879,6 @@ def vector_retrieve(ctx: SearchContext, conn) -> Optional[list[dict]]:
         return None
 
 
-def _vector_search(ctx: SearchContext) -> Optional[list[dict]]:
-    """旧シグネチャアダプタ。自前で conn を開閉して vector_retrieve に委譲する。"""
-    conn = get_connection()
-    try:
-        return vector_retrieve(ctx, conn)
-    finally:
-        conn.close()
 
 
 def find_similar_topics(
@@ -1182,13 +1169,6 @@ def tag_like_retrieve(ctx: SearchContext, conn) -> list[dict]:
     return results
 
 
-def _tag_like_search(ctx: SearchContext) -> list[dict]:
-    """旧シグネチャアダプタ。自前で conn を開閉して tag_like_retrieve に委譲する。"""
-    conn = get_connection()
-    try:
-        return tag_like_retrieve(ctx, conn)
-    finally:
-        conn.close()
 
 
 def _apply_recency_boost(results: list[dict], now: datetime | None = None) -> None:
@@ -1199,7 +1179,7 @@ def _apply_recency_boost(results: list[dict], now: datetime | None = None) -> No
     各結果に以下を付与する:
     - score_breakdown.recency_factor: 適用された減衰係数（created_at取得不可時は1.0）
     - final_score: rrf_normalized * recency_factor
-    - score: final_score と同値（互換のため残置。Phase Bで削除予定）
+    - score: final_score と同値（旧 API 互換のため残置）
 
     確定後、final_score 降順で再ソートする。
     """
@@ -1245,7 +1225,6 @@ def _apply_recency_boost(results: list[dict], now: datetime | None = None) -> No
                 item["score_breakdown"]["recency_factor"] = recency_factor
 
     # final_score = rrf_normalized * recency_factor を確定
-    # TODO(Phase B): 既存 score フィールドは廃止し final_score のみに統一する。
     for item in results:
         bd = item["score_breakdown"]
         final_score = bd["rrf_normalized"] * bd["recency_factor"]
@@ -1347,14 +1326,315 @@ def _rrf_merge(
         bd["vec"] = round(bd["vec"], 6)
         bd["tag"] = round(bd["tag"], 6)
         bd["rrf_normalized"] = rrf_normalized
-        # recency boost 前のスコアを score にセット。
+        # recency boost 前のスコアを score にセット (旧 API 互換)。
         # _apply_recency_boost で recency_factor 乗算後に final_score を確定する。
-        # TODO(Phase B): 既存 score フィールドは廃止し final_score のみに統一する。
         entry["score"] = rrf_normalized
 
     # RRFスコア降順でソートし、上位limit件を返す
     merged = sorted(scores.values(), key=lambda x: x["score"], reverse=True)
     return merged[:limit]
+
+
+class _SearchEarlyReturn(Exception):
+    """search パイプラインのステージから早期 return を要求するための内部 sentinel。
+
+    バリデーションエラーやタグ未登録などで途中ステージが「ここで終了して
+    特定のレスポンスを返したい」と判断したとき、orchestrator まで例外で抜けて
+    レスポンス dict を組み立てる。
+    """
+
+    def __init__(self, response: dict):
+        self.response = response
+        super().__init__()
+
+
+def _validate(
+    keyword: str | list[str],
+    keyword_mode: str,
+    entity_type: Optional[str],
+    domain: Optional[str],
+    date_after: Optional[str],
+    date_before: Optional[str],
+) -> tuple[list[str], Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """search 引数のバリデーションと表層的な正規化 (空文字 → None, strip) を行う。
+
+    Returns:
+        (keywords, entity_type, domain, date_after, date_before) — 検証後の値。
+
+    Raises:
+        _SearchEarlyReturn: バリデーションエラー時、対応する error dict を載せて投げる。
+    """
+    if keyword_mode not in ("and", "or"):
+        raise _SearchEarlyReturn({
+            "error": {
+                "code": "INVALID_KEYWORD_MODE",
+                "message": f"Invalid keyword_mode: {keyword_mode}. Must be 'and' or 'or'",
+            }
+        })
+
+    if isinstance(keyword, str):
+        keywords = [keyword.strip()]
+    else:
+        keywords = [k.strip() for k in keyword]
+
+    if not keywords:
+        raise _SearchEarlyReturn({
+            "error": {
+                "code": "KEYWORD_TOO_SHORT",
+                "message": "keyword must be at least 2 characters",
+            }
+        })
+
+    for kw in keywords:
+        if len(kw) < 2:
+            raise _SearchEarlyReturn({
+                "error": {
+                    "code": "KEYWORD_TOO_SHORT",
+                    "message": "keyword must be at least 2 characters",
+                }
+            })
+
+    if entity_type == "":
+        entity_type = None
+    if domain == "":
+        domain = None
+    if date_after == "":
+        date_after = None
+    if date_before == "":
+        date_before = None
+
+    if entity_type is not None and entity_type not in SEARCHABLE_TYPES:
+        raise _SearchEarlyReturn({
+            "error": {
+                "code": "INVALID_ENTITY_TYPE",
+                "message": f"Invalid entity_type: {entity_type}. Must be one of {sorted(SEARCHABLE_TYPES)}",
+            }
+        })
+
+    date_pattern = re.compile(r"^\d{4}-\d{2}-\d{2}( \d{2}:\d{2}:\d{2})?$")
+    for param_name, param_value in [("date_after", date_after), ("date_before", date_before)]:
+        if param_value is None:
+            continue
+        if not date_pattern.match(param_value):
+            raise _SearchEarlyReturn({
+                "error": {
+                    "code": "INVALID_PARAMETER",
+                    "message": f"{param_name} must be ISO date format (YYYY-MM-DD or YYYY-MM-DD HH:MM:SS), got '{param_value}'",
+                }
+            })
+        try:
+            fmt = "%Y-%m-%d %H:%M:%S" if len(param_value) > 10 else "%Y-%m-%d"
+            datetime.strptime(param_value, fmt)
+        except ValueError:
+            raise _SearchEarlyReturn({
+                "error": {
+                    "code": "INVALID_PARAMETER",
+                    "message": f"{param_name} contains invalid date value: '{param_value}'",
+                }
+            })
+
+    return keywords, entity_type, domain, date_after, date_before
+
+
+def _normalize(
+    keywords: list[str],
+    tags: Optional[list[str]],
+    entity_type: Optional[str],
+    domain: Optional[str],
+    date_after: Optional[str],
+    date_before: Optional[str],
+    limit: int,
+    offset: int,
+    keyword_mode: str,
+    include_details: bool,
+    conn,
+) -> tuple[SearchContext, Optional[list[int]], Optional[list[str]]]:
+    """SearchContext を組み立てるステージ。
+
+    - domain → tags マージ (元 list があれば破壊的更新、None なら新規生成)
+    - date_before に時刻が無ければ " 23:59:59" 補完
+    - limit / offset の範囲補正
+    - fetch_limit = (offset + limit) * FETCH_LIMIT_MULTIPLIER を計算
+    - tag_ids を DB 解決 (一部が見つからなければ早期 return = 空結果)
+
+    Returns:
+        (ctx, query_tag_ids, effective_tags) — effective_tags は domain 補完後の tags
+        (telemetry parameters 用に保持)。
+
+    Raises:
+        _SearchEarlyReturn: 指定タグの一部が DB に存在しないとき、空結果 dict を載せて投げる。
+    """
+    if domain:
+        domain_tag = f"domain:{domain}"
+        if tags is None:
+            tags = [domain_tag]
+        elif domain_tag not in tags:
+            tags.append(domain_tag)
+
+    if date_before is not None and len(date_before) == 10:
+        date_before = date_before + " 23:59:59"
+
+    limit = max(1, min(limit, 50))
+    offset = max(0, offset)
+
+    tag_ids: Optional[list[int]] = None
+    if tags:
+        tag_ids = _resolve_tag_ids_readonly(conn, tags)
+        # 指定タグの一部でも DB に存在しない場合、AND フィルタは必ず空結果
+        if len(tag_ids) < len(tags):
+            raise _SearchEarlyReturn({
+                "results": [],
+                "total_count": 0,
+                "search_methods_used": [],
+            })
+
+    fetch_limit = (offset + limit) * FETCH_LIMIT_MULTIPLIER
+
+    ctx = SearchContext(
+        keywords=tuple(keywords),
+        fts_keywords=tuple(keywords),
+        original_keyword_count=None,
+        tag_ids=tuple(tag_ids) if tag_ids is not None else None,
+        entity_type=entity_type,
+        limit=limit,
+        offset=offset,
+        fetch_limit=fetch_limit,
+        keyword_mode=keyword_mode,
+        include_details=include_details,
+        date_after=date_after,
+        date_before=date_before,
+        domain=domain,
+    )
+    return ctx, tag_ids, tags
+
+
+def _expand(ctx: SearchContext) -> SearchContext:
+    """Query Expansion: tag_vec KNN で fts_keywords を構築した新 ctx を返す。
+
+    元キーワードは ctx.keywords に保持されたまま。ベクトル検索・タグ LIKE 検索は
+    元キーワードを使い、FTS のみが拡張済み fts_keywords を使う。
+    """
+    fts_keywords = _expand_query_with_tags(list(ctx.keywords))
+    original_kw_count: Optional[int] = None
+    if len(fts_keywords) > len(ctx.keywords):
+        logger.info(
+            "Query expanded: %s -> %s",
+            ctx.keywords,
+            fts_keywords[len(ctx.keywords):],
+        )
+        original_kw_count = len(ctx.keywords)
+
+    return dataclasses.replace(
+        ctx,
+        fts_keywords=tuple(fts_keywords),
+        original_keyword_count=original_kw_count,
+    )
+
+
+def _retrieve(ctx: SearchContext, conn) -> dict:
+    """3 retriever (fts / vector / tag_like) を逐次呼び出して結果を集約する。
+
+    Returns:
+        {"fts": list[dict], "vec": list[dict] | None, "tag": list[dict],
+         "methods_used": list[str]}
+
+    Raises:
+        _SearchEarlyReturn: 2 文字以下キーワード + ベクトル無効 + tag_like 空、で
+            ハイブリッド検索が成立しないとき KEYWORD_TOO_SHORT を投げる。
+    """
+    keywords = list(ctx.keywords)
+    fts_keywords = list(ctx.fts_keywords)
+    min_len = min(len(kw) for kw in keywords)
+    methods_used: list[str] = []
+
+    fts_results: list[dict] = []
+    if ctx.keyword_mode == "or":
+        # OR時: 3文字以上のキーワードが1つでもあればFTSを使う
+        if any(len(kw) >= 3 for kw in fts_keywords):
+            fts_results = fts_retrieve(ctx, conn)
+            methods_used.append("fts5")
+    else:
+        # AND時: 全キーワードが3文字以上のときのみ FTS を使う
+        # (QE 拡張分は OR 結合で追加されるので、元キーワードの文字数で判定する)
+        if min_len >= 3:
+            fts_results = fts_retrieve(ctx, conn)
+            methods_used.append("fts5")
+
+    vec_results = vector_retrieve(ctx, conn)
+    if vec_results is not None:
+        methods_used.append("vector")
+
+    tag_like_results = tag_like_retrieve(ctx, conn)
+    if tag_like_results:
+        methods_used.append("tag_like")
+
+    fts_available = (
+        any(len(kw) >= 3 for kw in keywords) if ctx.keyword_mode == "or"
+        else min_len >= 3
+    )
+    if not fts_available and vec_results is None and not tag_like_results:
+        raise _SearchEarlyReturn({
+            "error": {
+                "code": "KEYWORD_TOO_SHORT",
+                "message": "keyword must be at least 3 characters when vector search is unavailable",
+            }
+        })
+
+    return {
+        "fts": fts_results,
+        "vec": vec_results,
+        "tag": tag_like_results,
+        "methods_used": methods_used,
+    }
+
+
+def _merge(ctx: SearchContext, retrieval: dict) -> list[dict]:
+    """RRF 統合ステージ。各 result に score_breakdown.{fts,vec,tag,rrf_normalized} を付与する。"""
+    effective_vec = retrieval["vec"] if retrieval["vec"] is not None else []
+    return _rrf_merge(
+        retrieval["fts"],
+        effective_vec,
+        ctx.fetch_limit,
+        tag_results=retrieval["tag"],
+    )
+
+
+def _rerank(ctx: SearchContext, merged: list[dict]) -> list[dict]:
+    """recency boost ステージ。score_breakdown.recency_factor / final_score を確定し、final_score 降順に再ソートする。"""
+    _apply_recency_boost(merged)
+    return merged
+
+
+def _slice(ctx: SearchContext, results: list[dict]) -> tuple[list[dict], int]:
+    """offset + limit で切り出す。total_count は切り出し前の件数。"""
+    total_count = len(results)
+    sliced = results[ctx.offset:ctx.offset + ctx.limit]
+    return sliced, total_count
+
+
+def _decorate(
+    ctx: SearchContext,
+    sliced: list[dict],
+    query_tag_ids: Optional[list[int]],
+) -> list[dict]:
+    """検索結果に snippet / tags / details / readable_id を付与し、nearby_tags を返す。
+
+    Returns:
+        nearby_tags: [{"tag": "...", "co_count": N}, ...]。offset>0 の場合は空リスト。
+    """
+    _attach_snippets(sliced)
+    _attach_tags(sliced)
+    if ctx.include_details:
+        _attach_details(sliced[:DETAILS_MAX_RESULTS])
+
+    nearby_tags = _compute_nearby_tags(sliced, query_tag_ids, ctx.offset)
+
+    # readable_id 化: 各結果の id を「title (#NNN)」形式に置換し、元の id を id_raw に退避
+    # type フィールドは置換前に確定済みなのでそのまま参照する
+    for item in sliced:
+        apply_readable_id_inplace(item, item["type"])
+
+    return nearby_tags
 
 
 def search(
@@ -1385,7 +1665,6 @@ def search(
         keyword: 検索キーワード（2文字以上）。配列で複数指定時はAND検索
         tags: タグフィルタ（AND条件。未指定=全件検索）
         entity_type: 検索対象の絞り込み（'topic', 'decision', 'activity', 'log', 'material'。未指定で全種類）
-        entity_type: 検索対象の絞り込み（'topic', 'decision', 'activity', 'log', 'material'。未指定で全種類）
         limit: 取得件数上限（デフォルト10件、最大50件）
         offset: スキップ件数（デフォルト0）。ページネーション用
         keyword_mode: キーワード結合モード（"and" または "or"。デフォルト "and"）
@@ -1401,219 +1680,38 @@ def search(
           - fts / vec / tag: 各ソースのRRF生寄与（正規化前、recency適用前）
           - rrf_normalized: 3寄与の合計を理論最大値で割った正規化済み値（0〜1、recency適用前）
           - recency_factor: created_atに基づく指数減衰係数（0〜1）
-        既存 score フィールドは互換のため final_score と同値で残置されている（Phase Bで廃止予定）。
+        既存 score フィールドは final_score と同値で互換のため残置されている。
         snippetは各typeの対応するソースカラムの先頭200文字（materialはtitle優先表示）。
         tagsはエンティティに紐づくタグ文字列のリスト。
         include_details=Trueの場合、上位DETAILS_MAX_RESULTS件にdetailsが追加される。
     """
-    # keyword_modeバリデーション
-    if keyword_mode not in ("and", "or"):
-        return {
-            "error": {
-                "code": "INVALID_KEYWORD_MODE",
-                "message": f"Invalid keyword_mode: {keyword_mode}. Must be 'and' or 'or'"
-            }
-        }
-
-    # 正規化: str → list[str]
-    if isinstance(keyword, str):
-        keywords = [keyword.strip()]
-    else:
-        keywords = [k.strip() for k in keyword]
-
-    # 空配列チェック
-    if not keywords:
-        return {
-            "error": {
-                "code": "KEYWORD_TOO_SHORT",
-                "message": "keyword must be at least 2 characters"
-            }
-        }
-
-    # バリデーション: 各要素2文字以上
-    for kw in keywords:
-        if len(kw) < 2:
-            return {
-                "error": {
-                    "code": "KEYWORD_TOO_SHORT",
-                    "message": "keyword must be at least 2 characters"
-                }
-            }
-
-    # 空文字→None正規化（entity_type, domain, date_after, date_before）
-    if entity_type is not None and entity_type == "":
-        entity_type = None
-    if domain is not None and domain == "":
-        domain = None
-    if date_after is not None and date_after == "":
-        date_after = None
-    if date_before is not None and date_before == "":
-        date_before = None
-
-    if entity_type is not None and entity_type not in SEARCHABLE_TYPES:
-        return {
-            "error": {
-                "code": "INVALID_ENTITY_TYPE",
-                "message": f"Invalid entity_type: {entity_type}. Must be one of {sorted(SEARCHABLE_TYPES)}"
-            }
-        }
-
-    # 日付バリデーション（形式チェック + 値の妥当性チェック）
-    date_pattern = re.compile(r"^\d{4}-\d{2}-\d{2}( \d{2}:\d{2}:\d{2})?$")
-    for param_name, param_value in [("date_after", date_after), ("date_before", date_before)]:
-        if param_value is not None:
-            if not date_pattern.match(param_value):
-                return {
-                    "error": {
-                        "code": "INVALID_PARAMETER",
-                        "message": f"{param_name} must be ISO date format (YYYY-MM-DD or YYYY-MM-DD HH:MM:SS), got '{param_value}'",
-                    }
-                }
-            try:
-                fmt = "%Y-%m-%d %H:%M:%S" if len(param_value) > 10 else "%Y-%m-%d"
-                datetime.strptime(param_value, fmt)
-            except ValueError:
-                return {
-                    "error": {
-                        "code": "INVALID_PARAMETER",
-                        "message": f"{param_name} contains invalid date value: '{param_value}'",
-                    }
-                }
-
-    # date_before: 日付のみ指定時に" 23:59:59"を付与して当日を含む
-    if date_before is not None and len(date_before) == 10:
-        date_before = date_before + " 23:59:59"
-
-    # domain → tagsマージ（重複除去）
-    if domain:
-        domain_tag = f"domain:{domain}"
-        if tags is None:
-            tags = [domain_tag]
-        elif domain_tag not in tags:
-            tags.append(domain_tag)
-
-    limit = max(1, min(limit, 50))
-    offset = max(0, offset)
-
     try:
-        # タグフィルタの解決
-        tag_ids = None
-        if tags:
-            conn = get_connection()
-            try:
-                tag_ids = _resolve_tag_ids_readonly(conn, tags)
-                # 指定タグの一部でもDBに存在しない場合、ANDフィルタは必ず空結果
-                if len(tag_ids) < len(tags):
-                    return {"results": [], "total_count": 0, "search_methods_used": []}
-            finally:
-                conn.close()
+        keywords, entity_type, domain, date_after, date_before = _validate(
+            keyword, keyword_mode, entity_type, domain, date_after, date_before,
+        )
 
-        # RRFで両ソースをマージした後にoffset+limitで切るため、各ソースから多めに取得する
-        fetch_limit = (offset + limit) * FETCH_LIMIT_MULTIPLIER
-
-        # 使用された検索手法を追跡
-        methods_used: list[str] = []
-
-        # Query Expansion: tag_vec KNN検索でFTSクエリを拡張
-        # ベクトル検索には元のキーワードをそのまま渡す
-        fts_keywords = _expand_query_with_tags(keywords)
-        if len(fts_keywords) > len(keywords):
-            logger.info(
-                "Query expanded: %s -> %s",
-                keywords,
-                fts_keywords[len(keywords):],
+        conn = get_connection()
+        try:
+            ctx, query_tag_ids, effective_tags = _normalize(
+                keywords, tags, entity_type, domain, date_after, date_before,
+                limit, offset, keyword_mode, include_details, conn,
             )
-
-        # FTS5検索判定
-        min_len = min(len(kw) for kw in keywords)
-        fts_results = []
-        # QE拡張がある場合、元のキーワード数を記録
-        original_kw_count = len(keywords) if len(fts_keywords) > len(keywords) else None
-
-        ctx = SearchContext(
-            keywords=tuple(keywords),
-            fts_keywords=tuple(fts_keywords),
-            original_keyword_count=original_kw_count,
-            tag_ids=tuple(tag_ids) if tag_ids is not None else None,
-            entity_type=entity_type,
-            limit=limit,
-            offset=offset,
-            fetch_limit=fetch_limit,
-            keyword_mode=keyword_mode,
-            include_details=include_details,
-            date_after=date_after,
-            date_before=date_before,
-            domain=domain,
-        )
-
-        if ctx.keyword_mode == "or":
-            # OR時: 3文字以上のキーワードが1つでもあればFTSを使う
-            if any(len(kw) >= 3 for kw in fts_keywords):
-                fts_results = _fts_search(ctx)
-                methods_used.append("fts5")
-        else:
-            # AND時（現行通り）: 全キーワードが3文字以上の場合のみ
-            # QE拡張分はOR結合で追加されるため、元のキーワードの文字数チェックを使用
-            if min_len >= 3:
-                fts_results = _fts_search(ctx)
-                methods_used.append("fts5")
-
-        # ベクトル検索（元のキーワードのまま、拡張なし）
-        vec_results = _vector_search(ctx)
-        if vec_results is not None:
-            methods_used.append("vector")
-
-        # タグLIKE検索（キーワード長の制限なし）
-        tag_like_results = _tag_like_search(ctx)
-        if tag_like_results:
-            methods_used.append("tag_like")
-
-        # 2文字キーワード + ベクトル検索無効 → エラー
-        # OR時: 3文字以上が1つでもあればFTSで検索できるのでエラーにしない
-        # タグLIKE検索結果がある場合もエラーにしない
-        fts_available = (
-            any(len(kw) >= 3 for kw in keywords) if ctx.keyword_mode == "or"
-            else min_len >= 3
-        )
-        if not fts_available and vec_results is None and not tag_like_results:
-            return {
-                "error": {
-                    "code": "KEYWORD_TOO_SHORT",
-                    "message": "keyword must be at least 3 characters when vector search is unavailable"
-                }
-            }
-
-        # RRF統合（recency boost前なのでfetch_limitで多めに保持）
-        effective_vec = vec_results if vec_results is not None else []
-        results = _rrf_merge(fts_results, effective_vec, fetch_limit, tag_results=tag_like_results)
-
-        _apply_recency_boost(results)
-
-        # recency boost後にoffset+limitで切り詰め
-        total_count = len(results)
-        results = results[offset:offset + limit]
-
-        _attach_snippets(results)
-        _attach_tags(results)
-
-        if include_details:
-            details_targets = results[:DETAILS_MAX_RESULTS]
-            _attach_details(details_targets)
-
-        nearby_tags = _compute_nearby_tags(results, tag_ids, offset)
-
-        # readable_id 化: 各結果の id を「title (#NNN)」形式に置換し、元の id を id_raw に退避
-        # type フィールドは置換前に確定済みなのでそのまま参照する
-        for item in results:
-            apply_readable_id_inplace(item, item["type"])
+            ctx = _expand(ctx)
+            retrieval = _retrieve(ctx, conn)
+            merged = _merge(ctx, retrieval)
+            merged = _rerank(ctx, merged)
+            sliced, total_count = _slice(ctx, merged)
+            nearby_tags = _decorate(ctx, sliced, query_tag_ids)
+        finally:
+            conn.close()
 
         _record_search_telemetry_async(
             query=keyword,
             parameters={
-                "tags": tags,
+                "tags": effective_tags,
                 "entity_type": entity_type,
-                "limit": limit,
-                "offset": offset,
+                "limit": ctx.limit,
+                "offset": ctx.offset,
                 "keyword_mode": keyword_mode,
                 "include_details": include_details,
                 "domain": domain,
@@ -1624,12 +1722,14 @@ def search(
         )
 
         return {
-            "results": results,
+            "results": sliced,
             "total_count": total_count,
-            "search_methods_used": methods_used,
+            "search_methods_used": retrieval["methods_used"],
             "nearby_tags": nearby_tags,
         }
 
+    except _SearchEarlyReturn as early:
+        return early.response
     except Exception as e:
         return {
             "error": {
