@@ -14,8 +14,9 @@ import pytest
 import src.services.embedding_service as emb
 from src.db import get_connection, init_database
 from src.services import search_service
-from src.services.search_service import SearchContext, vector_retrieve
+from src.services.search_service import vector_retrieve
 from src.services.topic_service import add_topic
+from tests.helpers import make_search_context as _make_ctx
 
 EMBEDDING_DIM = 384
 DEFAULT_TAGS = ["domain:test"]
@@ -54,26 +55,6 @@ def disable_embedding(monkeypatch):
     monkeypatch.setattr(emb, "_server_initialized", False)
     monkeypatch.setattr(emb, "_backfill_done", True)
     monkeypatch.setattr(emb, "_ensure_server_running", lambda: False)
-
-
-def _make_ctx(**overrides) -> SearchContext:
-    defaults = dict(
-        keywords=("alpha",),
-        fts_keywords=("alpha",),
-        original_keyword_count=None,
-        tag_ids=None,
-        entity_type=None,
-        limit=10,
-        offset=0,
-        fetch_limit=50,
-        keyword_mode="and",
-        include_details=False,
-        date_after=None,
-        date_before=None,
-        domain=None,
-    )
-    defaults.update(overrides)
-    return SearchContext(**defaults)
 
 
 def test_vector_retrieve_returns_none_when_embedding_disabled(temp_db, disable_embedding):

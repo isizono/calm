@@ -164,6 +164,18 @@ def build_common_where(
     return "\n".join(parts), params
 
 
+def _exec_select(conn: sqlite3.Connection, query: str, params=()) -> list[sqlite3.Row]:
+    """共有 conn 上で SELECT を実行する内部ヘルパ。
+
+    旧 ``execute_query`` (自前で conn を開閉する版) と同じ ``sqlite3.Error`` ラップ規約
+    (``"クエリ実行エラー: {e}"``) を維持するため、retriever 群はこのヘルパを使う。
+    """
+    try:
+        return conn.execute(query, params).fetchall()
+    except sqlite3.Error as e:
+        raise sqlite3.Error(f"クエリ実行エラー: {e}") from e
+
+
 def _escape_fts5_query(keyword: str) -> str:
     """FTS5クエリ用のエスケープ処理。ダブルクォートで囲む。"""
     # ダブルクォート内のダブルクォートは2つ重ねてエスケープ
@@ -636,7 +648,7 @@ def _build_tag_filter_cte(tag_ids: list[int]) -> tuple[str, list]:
     return cte_sql, params
 
 
-def fts_retrieve(ctx: SearchContext, conn) -> list[dict]:
+def fts_retrieve(ctx: SearchContext, conn: sqlite3.Connection) -> list[dict]:
     """FTS5 retriever。bm25 ランク順の結果リストを返す。
 
     retract 時に search_index / search_index_fts / vec_index から物理削除されるため、
@@ -707,7 +719,7 @@ def fts_retrieve(ctx: SearchContext, conn) -> list[dict]:
         """
         params = (escaped_keyword, *common_params, ctx.fetch_limit)
 
-    rows = conn.execute(query, params).fetchall()
+    rows = _exec_select(conn, query, params)
     results = []
     for row in rows:
         r = row_to_dict(row)
@@ -719,9 +731,7 @@ def fts_retrieve(ctx: SearchContext, conn) -> list[dict]:
     return results
 
 
-
-
-def vector_retrieve(ctx: SearchContext, conn) -> Optional[list[dict]]:
+def vector_retrieve(ctx: SearchContext, conn: sqlite3.Connection) -> Optional[list[dict]]:
     """ベクトル retriever。ベクトル検索が無効/失敗時は None を返す。
 
     retract 時に vec_index から物理削除されるため、取り消し済みエンティティは
@@ -750,10 +760,11 @@ def vector_retrieve(ctx: SearchContext, conn) -> Optional[list[dict]]:
                     continue
 
                 blob = serialize_float32(query_embedding)
-                vec_rows = conn.execute(
+                vec_rows = _exec_select(
+                    conn,
                     "SELECT rowid, distance FROM vec_index WHERE embedding MATCH ? AND k = ?",
                     (blob, fetch_limit),
-                ).fetchall()
+                )
                 if not vec_rows:
                     continue
 
@@ -789,7 +800,7 @@ def vector_retrieve(ctx: SearchContext, conn) -> Optional[list[dict]]:
                     """
                     params = (*rowids, *common_params)
 
-                filter_rows = conn.execute(query, params).fetchall()
+                filter_rows = _exec_select(conn, query, params)
                 for row in filter_rows:
                     r = row_to_dict(row)
                     key = (r["source_type"], r["source_id"])
@@ -818,10 +829,11 @@ def vector_retrieve(ctx: SearchContext, conn) -> Optional[list[dict]]:
 
             # vec_indexからKNN取得（タグフィルタ不可なので多めに取得）
             # fetch_limitはsearch()側で (offset+limit)*FETCH_LIMIT_MULTIPLIER に拡大済み
-            vec_rows = conn.execute(
+            vec_rows = _exec_select(
+                conn,
                 "SELECT rowid, distance FROM vec_index WHERE embedding MATCH ? AND k = ?",
                 (blob, fetch_limit),
-            ).fetchall()
+            )
 
             if not vec_rows:
                 return []
@@ -858,7 +870,7 @@ def vector_retrieve(ctx: SearchContext, conn) -> Optional[list[dict]]:
                 """
                 params = (*rowids, *common_params)
 
-            filter_rows = conn.execute(query, params).fetchall()
+            filter_rows = _exec_select(conn, query, params)
 
             results = []
             for row in filter_rows:
@@ -877,8 +889,6 @@ def vector_retrieve(ctx: SearchContext, conn) -> Optional[list[dict]]:
     except (ValueError, RuntimeError, OSError):
         logger.warning("Vector search failed, falling back to FTS-only", exc_info=True)
         return None
-
-
 
 
 def find_similar_topics(
@@ -1037,7 +1047,7 @@ def find_similar_decisions(
         return []
 
 
-def tag_like_retrieve(ctx: SearchContext, conn) -> list[dict]:
+def tag_like_retrieve(ctx: SearchContext, conn: sqlite3.Connection) -> list[dict]:
     """タグ名 LIKE retriever。キーワードにマッチするタグを持つエンティティを返す。
 
     entity_tags の各中間テーブルからタグ名 LIKE 検索し、search_index 経由で結果を返す。
@@ -1078,10 +1088,11 @@ def tag_like_retrieve(ctx: SearchContext, conn) -> list[dict]:
         for p in like_patterns:
             params.extend([p, p])
 
-    matching_tags = conn.execute(
+    matching_tags = _exec_select(
+        conn,
         f"SELECT id FROM tags WHERE {conditions}",
         tuple(params),
-    ).fetchall()
+    )
     if not matching_tags:
         return []
 
@@ -1157,7 +1168,7 @@ def tag_like_retrieve(ctx: SearchContext, conn) -> list[dict]:
         query_params.extend(matched_tag_ids)
     query_params.append(ctx.fetch_limit)
 
-    rows = conn.execute(query, tuple(query_params)).fetchall()
+    rows = _exec_select(conn, query, tuple(query_params))
     results = []
     for row in rows:
         r = row_to_dict(row)
@@ -1167,8 +1178,6 @@ def tag_like_retrieve(ctx: SearchContext, conn) -> list[dict]:
             "title": r["title"],
         })
     return results
-
-
 
 
 def _apply_recency_boost(results: list[dict], now: datetime | None = None) -> None:
@@ -1447,7 +1456,7 @@ def _normalize(
     offset: int,
     keyword_mode: str,
     include_details: bool,
-    conn,
+    conn: sqlite3.Connection,
 ) -> tuple[SearchContext, Optional[list[int]], Optional[list[str]]]:
     """SearchContext を組み立てるステージ。
 
@@ -1531,7 +1540,7 @@ def _expand(ctx: SearchContext) -> SearchContext:
     )
 
 
-def _retrieve(ctx: SearchContext, conn) -> dict:
+def _retrieve(ctx: SearchContext, conn: sqlite3.Connection) -> dict:
     """3 retriever (fts / vector / tag_like) を逐次呼び出して結果を集約する。
 
     Returns:
@@ -1600,7 +1609,13 @@ def _merge(ctx: SearchContext, retrieval: dict) -> list[dict]:
 
 
 def _rerank(ctx: SearchContext, merged: list[dict]) -> list[dict]:
-    """recency boost ステージ。score_breakdown.recency_factor / final_score を確定し、final_score 降順に再ソートする。"""
+    """recency boost ステージ。score_breakdown.recency_factor / final_score を確定し、final_score 降順に再ソートする。
+
+    ``ctx`` は他ステージとシグネチャを揃えるために受け取るが、現状の recency 減衰は
+    created_at と RECENCY_DECAY_RATE / RECENCY_DECAY_FLOOR のみで決まるため、本関数内では
+    ``ctx`` を参照しない。ctx 依存のブースト (domain 別重み付け等) を後段で追加する余地を
+    残しておく。
+    """
     _apply_recency_boost(merged)
     return merged
 
@@ -1616,10 +1631,16 @@ def _decorate(
     ctx: SearchContext,
     sliced: list[dict],
     query_tag_ids: Optional[list[int]],
-) -> list[dict]:
-    """検索結果に snippet / tags / details / readable_id を付与し、nearby_tags を返す。
+) -> tuple[list[dict], list[dict]]:
+    """検索結果に snippet / tags / details / readable_id を付与し、nearby_tags を計算する。
+
+    ``sliced`` は in-place で書き換わるが、データフローを明示するため戻り値にも含める。
+    呼出元 (orchestrator) は ``decorated, nearby_tags = _decorate(...)`` のパターンで
+    両方を受け取る。
 
     Returns:
+        (decorated, nearby_tags)
+        decorated: 引数 sliced と同一の list (in-place 装飾済)。
         nearby_tags: [{"tag": "...", "co_count": N}, ...]。offset>0 の場合は空リスト。
     """
     _attach_snippets(sliced)
@@ -1634,7 +1655,7 @@ def _decorate(
     for item in sliced:
         apply_readable_id_inplace(item, item["type"])
 
-    return nearby_tags
+    return sliced, nearby_tags
 
 
 def search(
@@ -1701,7 +1722,7 @@ def search(
             merged = _merge(ctx, retrieval)
             merged = _rerank(ctx, merged)
             sliced, total_count = _slice(ctx, merged)
-            nearby_tags = _decorate(ctx, sliced, query_tag_ids)
+            sliced, nearby_tags = _decorate(ctx, sliced, query_tag_ids)
         finally:
             conn.close()
 

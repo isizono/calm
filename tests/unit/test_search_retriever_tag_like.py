@@ -11,8 +11,9 @@ import pytest
 import src.services.embedding_service as emb
 from src.db import get_connection, init_database
 from src.services import search_service
-from src.services.search_service import SearchContext, tag_like_retrieve
+from src.services.search_service import tag_like_retrieve
 from src.services.topic_service import add_topic
+from tests.helpers import make_search_context as _make_ctx
 
 
 @pytest.fixture(autouse=True)
@@ -31,26 +32,6 @@ def temp_db():
         yield db_path
         if "DISCUSSION_DB_PATH" in os.environ:
             del os.environ["DISCUSSION_DB_PATH"]
-
-
-def _make_ctx(**overrides) -> SearchContext:
-    defaults = dict(
-        keywords=("alpha",),
-        fts_keywords=("alpha",),
-        original_keyword_count=None,
-        tag_ids=None,
-        entity_type=None,
-        limit=10,
-        offset=0,
-        fetch_limit=50,
-        keyword_mode="and",
-        include_details=False,
-        date_after=None,
-        date_before=None,
-        domain=None,
-    )
-    defaults.update(overrides)
-    return SearchContext(**defaults)
 
 
 def test_tag_like_retrieve_uses_shared_conn(temp_db, monkeypatch):

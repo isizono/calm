@@ -13,27 +13,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.services import search_service
-from src.services.search_service import SearchContext, _SearchEarlyReturn
-
-
-def _make_ctx(**overrides) -> SearchContext:
-    defaults = dict(
-        keywords=("alpha",),
-        fts_keywords=("alpha",),
-        original_keyword_count=None,
-        tag_ids=None,
-        entity_type=None,
-        limit=10,
-        offset=0,
-        fetch_limit=50,
-        keyword_mode="and",
-        include_details=False,
-        date_after=None,
-        date_before=None,
-        domain=None,
-    )
-    defaults.update(overrides)
-    return SearchContext(**defaults)
+from src.services.search_service import _SearchEarlyReturn
+from tests.helpers import make_search_context as _make_ctx
 
 
 @pytest.fixture
@@ -57,7 +38,7 @@ def stub_stages(monkeypatch):
         "_merge": MagicMock(return_value=merged_results),
         "_rerank": MagicMock(return_value=merged_results),
         "_slice": MagicMock(return_value=(sliced_results, 1)),
-        "_decorate": MagicMock(return_value=nearby_tags),
+        "_decorate": MagicMock(return_value=(sliced_results, nearby_tags)),
         "get_connection": MagicMock(return_value=MagicMock()),
         "_record_search_telemetry_async": MagicMock(return_value=None),
     }
