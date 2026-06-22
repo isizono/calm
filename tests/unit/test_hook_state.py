@@ -70,6 +70,25 @@ class TestSanitizeOffset:
         assert hook_state.get_sanitize_offset() == 200
 
 
+class TestSanitizeFailureCount:
+    def test_get_returns_zero_when_no_file(self, hook_state):
+        assert hook_state.get_sanitize_failure_count() == 0
+
+    def test_set_then_get(self, hook_state):
+        hook_state.set_sanitize_failure_count(2)
+        assert hook_state.get_sanitize_failure_count() == 2
+
+    def test_corrupted_file_returns_zero(self, hook_state):
+        path = hook_state._path("sanitize_failure_count")
+        path.write_text("not-an-int")
+        assert hook_state.get_sanitize_failure_count() == 0
+
+    def test_cleared_by_clear_session(self, hook_state, tmp_path):
+        hook_state.set_sanitize_failure_count(3)
+        HookState.clear_session("test-session-123")
+        assert hook_state.get_sanitize_failure_count() == 0
+
+
 class TestCurrentTurn:
     def test_get_returns_zero_when_no_file(self, hook_state):
         assert hook_state.get_current_turn() == 0

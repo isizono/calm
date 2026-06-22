@@ -358,9 +358,10 @@ def test_case_07_skip_codeblock_escape_existing_cite(fixture_db, state_dir, tmp_
     assert "{{cite:D#1}}" in out  # 通常の D#1 のみ変換
 
     logs = _read_sanitize_logs(fixture_db)
-    # コードブロック等は occurrence に含まれるが sanitized されない
+    # コードブロック等は occurrence に含まれるが sanitized されない。
+    # sanitized=1 (D#1) + dangling=0 + skipped=4 (M#1 inline / fence / escape / existing cite) = 5
     assert logs[0]["sanitized_count"] == 1
-    assert logs[0]["occurrence_count"] >= 5  # codeblock + escape + existing_cite を含む
+    assert logs[0]["occurrence_count"] == 5
 
 
 # ---------------------------------------------------------------------------
@@ -444,10 +445,39 @@ def test_case_10_exception_warns_logs_and_keeps_offset(fixture_db, state_dir, tm
 
     # offset は更新されない (失敗時は据え置き)
     assert HookState("sess-1").get_sanitize_offset() == 0
+    # スキャン/sanitize フェーズ例外も連続失敗カウンタを進める
+    assert HookState("sess-1").get_sanitize_failure_count() == 1
 
     logs = _read_sanitize_logs(fixture_db)
     assert len(logs) == 1
     assert logs[0]["failure_reason"] == "database is locked"
+
+
+def test_case_10_repeated_scan_exceptions_trigger_skip(fixture_db, state_dir, tmp_path, monkeypatch):
+    """同一例外が 3 回連続したら以降の SessionStart はスキップする (loop guard)。"""
+    transcript = tmp_path / "transcript.jsonl"
+    entries = [
+        _make_assistant_entry("toolu_01"),
+        _make_user_tool_result_entry("toolu_01", "ref M#1"),
+    ]
+    _write_transcript(transcript, entries)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("schema mismatch")
+
+    monkeypatch.setattr(sanitize_backfill_hook, "_sanitize_transcript_bytes", boom)
+
+    for _ in range(3):
+        _, _, code = _run_hook(_payload(str(transcript)))
+        assert code == 0
+    assert HookState("sess-1").get_sanitize_failure_count() == 3
+    logs_at_3 = _read_sanitize_logs(fixture_db)
+    assert len(logs_at_3) == 3
+
+    # 4 回目は loop guard で何もしない (log 件数据え置き)
+    _, _, code = _run_hook(_payload(str(transcript)))
+    assert code == 0
+    assert _read_sanitize_logs(fixture_db) == logs_at_3
 
 
 # ---------------------------------------------------------------------------

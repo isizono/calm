@@ -375,6 +375,7 @@ def _write_back_transcript(
         os.replace(tmp_path, transcript_path)
     except OSError as exc:
         tmp_path.unlink(missing_ok=True)
+        backup_path.unlink(missing_ok=True)
         return f"rename_failed: {exc}"
 
     try:
@@ -441,35 +442,6 @@ def _log_sanitize_event(
 
 
 # ---------------------------------------------------------------------------
-# 連続失敗カウンタ (3 回連続失敗で本セッションでの backfill をスキップ)
-# ---------------------------------------------------------------------------
-
-
-def _failure_count_path(session_id: str) -> Path:
-    safe = session_id.replace("/", "_")
-    return HookState.BASE_DIR / f"sanitize_failure_count_{safe}"
-
-
-def _read_failure_count(session_id: str | None) -> int:
-    if not session_id:
-        return 0
-    try:
-        return int(_failure_count_path(session_id).read_text().strip())
-    except (FileNotFoundError, ValueError, OSError):
-        return 0
-
-
-def _write_failure_count(session_id: str | None, count: int) -> None:
-    if not session_id:
-        return
-    try:
-        HookState.BASE_DIR.mkdir(parents=True, exist_ok=True)
-        _failure_count_path(session_id).write_text(str(count))
-    except OSError:
-        pass
-
-
-# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -478,6 +450,8 @@ def main() -> int:
     db_path = _resolve_db_path()
     session_id: str | None = None
     transcript_path: str | None = None
+    state: HookState | None = None
+    failure_count = 0
 
     try:
         if os.environ.get("CC_MEMORY_SANITIZE_DISABLE") == "1":
@@ -501,11 +475,11 @@ def main() -> int:
         if not path.exists():
             return 0
 
-        failure_count = _read_failure_count(session_id)
+        state = HookState(session_id) if session_id else None
+        failure_count = state.get_sanitize_failure_count() if state else 0
         if failure_count >= _MAX_CONSECUTIVE_FAILURES:
             return 0
 
-        state = HookState(session_id) if session_id else None
         offset = state.get_sanitize_offset() if state else 0
 
         try:
@@ -548,7 +522,7 @@ def main() -> int:
             if state:
                 new_offset = len(new_bytes) if modified else file_size
                 state.set_sanitize_offset(new_offset)
-            _write_failure_count(session_id, 0)
+                state.set_sanitize_failure_count(0)
         else:
             _log_sanitize_event(
                 db_path,
@@ -559,7 +533,8 @@ def main() -> int:
                 failed_count=sanitized + dangling,
                 failure_reason=failure_reason,
             )
-            _write_failure_count(session_id, failure_count + 1)
+            if state:
+                state.set_sanitize_failure_count(failure_count + 1)
 
         return 0
 
@@ -577,6 +552,14 @@ def main() -> int:
             )
         except Exception:
             pass
+        # スキャン / sanitize フェーズの例外も連続失敗カウンタに積む。
+        # 毎セッションで同じ例外が出続けるケース (DB スキーマ不一致等) で
+        # _MAX_CONSECUTIVE_FAILURES に達したら以降の SessionStart をスキップしループを止める。
+        if state is not None:
+            try:
+                state.set_sanitize_failure_count(failure_count + 1)
+            except Exception:
+                pass
         return 0
 
 
