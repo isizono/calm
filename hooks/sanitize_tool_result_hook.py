@@ -62,7 +62,10 @@ def _replace_dangling_in_line(line: str) -> tuple[str, int]:
     """1 行内の生 `X#NNN` を `[deleted X#NNN]` に置換する。
 
     インラインバッククォート / 既存 `{{cite:...}}` / エスケープ `\\X#NNN` ・
-    `\\{{cite:...}}` 内はスキップする。convert_raw_to_cite と同じスキップ規則。
+    `\\{{cite:...}}` 内はスキップする。convert_raw_to_cite と同じスキップ規則を
+    意図的に複製する: pure 関数 (citations_pure._convert_line_raw_to_cite) は
+    本 PR スコープ外で変更しない方針のため、dangling → `[deleted]` 変換は hook
+    側で post-process パスとして独立に実装する。
     """
     out: list[str] = []
     i = 0
@@ -197,14 +200,20 @@ def _log_sanitize_event(
 def _sanitize_content(content: str, db_path: str) -> tuple[str, dict]:
     """content を read-only conn で sanitize する。
 
+    sqlite3.Connection のコンテキストマネージャは `__exit__` で commit/rollback のみ
+    呼び `close()` は呼ばないため、try/finally で明示的に閉じて fd リークを防ぐ。
+
     Returns (sanitized_text, counters)。counters は convert_raw_to_cite 由来 +
     `deleted_count` (dangling → [deleted] に変換した件数)。
     """
-    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as ro_conn:
+    ro_conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
         def validator(target_type: str, target_id: int) -> bool:
             return check_target_exists(ro_conn, target_type, target_id)
 
         converted, counters = convert_raw_to_cite(content, target_validator=validator)
+    finally:
+        ro_conn.close()
     deleted_text, deleted_count = convert_dangling_to_deleted(converted)
     counters["deleted_count"] = deleted_count
     return deleted_text, counters
@@ -248,21 +257,37 @@ def main() -> int:
             }
         }
         print(json.dumps(output))
-        sanitized = counters.get("sanitized_count", 0)
-        failed = counters.get("deleted_count", 0)
+        # occurrence_count = 検出した全 X#NNN (sanitized + dangling + 全 skip カテゴリ)。
+        # コードブロック等で意図的に skip した件数も「検出件数」に含める (運用監視の
+        # 完全性のため)。
+        # sanitized_count = 実際に {{cite:}} に変換した件数。
+        # failed_count は例外による失敗のみを表現する (本 try ブロック内は成功パスなので
+        # 常に 0)。dangling は正常変換 ([deleted X#NNN]) として扱い failed には含めない。
+        # dangling 件数は occurrence と sanitized の差から算出可能 (但し skip カテゴリ
+        # との内訳までは schema 上区別できない: 受容したトレードオフ)。
+        occurrence_count = (
+            counters.get("sanitized_count", 0)
+            + counters.get("skipped_dangling", 0)
+            + counters.get("skipped_in_codeblock", 0)
+            + counters.get("skipped_in_existing_cite", 0)
+            + counters.get("skipped_escape", 0)
+        )
         _log_sanitize_event(
             db_path,
             session_id=session_id,
             transcript_path=transcript_path,
-            occurrence_count=sanitized + failed,
-            sanitized_count=sanitized,
-            failed_count=failed,
+            occurrence_count=occurrence_count,
+            sanitized_count=counters.get("sanitized_count", 0),
+            failed_count=0,
             failure_reason=None,
         )
         return 0
     except Exception as exc:
         sys.stderr.write(f"[sanitize_tool_result_hook] {exc}\n")
         try:
+            # 例外時は failure_reason に発生内容を記録する。failed_count は CHECK 制約
+            # (sanitized + failed <= occurrence) を満たすため 0 に固定する (count 系は
+            # 例外前に確定していない可能性がある)。
             _log_sanitize_event(
                 db_path,
                 session_id=session_id,

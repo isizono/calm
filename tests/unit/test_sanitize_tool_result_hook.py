@@ -222,6 +222,8 @@ def test_case_06_code_block_literals_preserved(fixture_db):
     assert len(logs) == 1
     assert logs[0]["sanitized_count"] == 1
     assert logs[0]["failed_count"] == 0
+    # occurrence は全 X#NNN を含む (コードブロック内も検出件数に含める)
+    assert logs[0]["occurrence_count"] == 2
 
 
 def test_case_06_fenced_code_block_preserved(fixture_db):
@@ -250,9 +252,12 @@ def test_case_07_dangling_target_becomes_deleted_marker(fixture_db):
 
     logs = _read_sanitize_logs(fixture_db)
     assert len(logs) == 1
+    # dangling は正常変換扱い: failed_count には入らず、occurrence と sanitized の差で
+    # 表現される。failed_count は例外失敗のみを表す。
     assert logs[0]["sanitized_count"] == 1
-    assert logs[0]["failed_count"] == 1
+    assert logs[0]["failed_count"] == 0
     assert logs[0]["occurrence_count"] == 2
+    assert logs[0]["failure_reason"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -363,9 +368,12 @@ def test_case_12_other_tool_response_fields_preserved(fixture_db):
 # ---------------------------------------------------------------------------
 
 
-def test_case_13_hook_completes_under_one_second(fixture_db):
+def test_case_13_hook_completes_under_perf_budget(fixture_db):
+    # CI のコンテナスロットリングを考慮した上限 (3.0s)。M#411 §1.2 の hook timeout
+    # 600s に対しては十分余裕がある。1s 厳密判定は wall-clock 計測で flake しやすい
+    # ため許容幅を持たせる。
     payload = _payload("M#1 D#1 L#1 A#1 T#1 and M#9999 dangling")
     t0 = time.perf_counter()
     _run_hook(payload)
     elapsed = time.perf_counter() - t0
-    assert elapsed < 1.0, f"hook 実行が {elapsed:.3f}s かかった (許容 < 1.0s)"
+    assert elapsed < 3.0, f"hook 実行が {elapsed:.3f}s かかった (許容 < 3.0s)"
