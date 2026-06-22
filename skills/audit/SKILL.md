@@ -385,7 +385,7 @@ audit skill は HintService (`src/services/hint_service.py`) とは**経路と�
 | 発火経路 | `check_in` 同期 / Stop hook 経由 additionalContext | description トリガー + ユーザー発話 |
 | 永続化 | hint type 表現 + tag note 内ハッシュタグマーカー (`#audited-YYYY-MM-DD` 等の suppress 用途) | audit material + 各種 pin |
 | severity | info/warn のみ (block 不採用) | severity 概念なし (skill は手続き) |
-| orch-managed activity | 全 suppress | orch では発動可 (worker 制限) |
+| orch_managed=True activity | 全 suppress | orch では発動可 (worker 制限) |
 
 完了マーカー `#audited-YYYY-MM-DD` は HintService 側 hint 重複抑制と共通の仕組みを意図しているが、audit skill 自身の 24h 重複防止 (T-C2) の判定にも使う。
 

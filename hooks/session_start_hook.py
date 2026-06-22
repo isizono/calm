@@ -27,7 +27,7 @@ from src.services.habit_service import get_active_habit_contents_with_conn
 from src.services.tag_service import get_entity_tags_batch
 from src.services.topic_service import get_activity_topics_batch
 from scripts.snapshot import health_check, should_take_snapshot, take_snapshot
-from hooks.hook_transcript import _ORCH_MANAGED_TAG, _is_worker_session
+from hooks.hook_transcript import _is_worker_session
 
 # description先頭の切り出し文字数
 _DESCRIPTION_SNIPPET_LENGTH = 100
@@ -153,7 +153,7 @@ def _build_activities_section(conn, session_id: str | None = None) -> str:
     - 末尾にスコアリング指示を付与
 
     worker セッション（OW_ROLE=worker）はメインセッション作業文脈なので注入しない (D#2662)。
-    通常セッションでは orch-managed タグ付きアクティビティを除外する。
+    通常セッションでは activities.orch_managed = 1 のアクティビティを除外する。
     """
     # P0-8 (D#2662): worker は担当 activity に閉じて動く設計のため、
     # メインセッション作業文脈であるアクティビティ一覧は注入しない。
@@ -189,25 +189,24 @@ def _build_activities_section(conn, session_id: str | None = None) -> str:
             else:
                 normal_activities.append(a)
 
-    # 収集した全アクティビティのタグを一括取得し、orch-managedを除外する。
-    # heartbeat/normal両セクションが対象（個人フローからorchフローを分離）。
-    collected_ids = [a["id"] for a in heartbeat_activities + normal_activities]
-    tags_map = get_entity_tags_batch(
-        conn, "activity_tags", "activity_id", collected_ids
-    )
+    # activities.orch_managed=1 のアクティビティを除外する
+    # （個人フローからorchフローを分離）。
+    # get_active_activities_by_tag_with_conn が返す dict に orch_managed が含まれる。
     heartbeat_activities = [
-        a for a in heartbeat_activities
-        if _ORCH_MANAGED_TAG not in tags_map.get(a["id"], [])
+        a for a in heartbeat_activities if not a.get("orch_managed")
     ]
     normal_activities = [
-        a for a in normal_activities
-        if _ORCH_MANAGED_TAG not in tags_map.get(a["id"], [])
+        a for a in normal_activities if not a.get("orch_managed")
     ]
 
     if not heartbeat_activities and not normal_activities:
         return ""
 
-    # メタデータ一括取得（tags_mapは収集時に取得済み・全idを網羅）
+    # メタデータ一括取得
+    collected_ids = [a["id"] for a in heartbeat_activities + normal_activities]
+    tags_map = get_entity_tags_batch(
+        conn, "activity_tags", "activity_id", collected_ids
+    )
     all_ids = [a["id"] for a in normal_activities]
     unresolved_deps = _get_unresolved_deps(conn, all_ids)
     descriptions = _get_descriptions(conn, all_ids)
