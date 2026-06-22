@@ -117,7 +117,7 @@ audit する**主題** (decision 1 件 / 設計テーマ / 同 tag の方針推�
 
 1. **対象 decision の本文**: `get_by_ids(items=[{"type":"decision","id":...}])`
 2. **対象 decision の supersedes チェーン**: `get_map(entity_type="decision", entity_id=..., max_depth=3)` で前後関係 (relation_type=supersedes フィルタが効くなら活用)
-3. **anchor 参照先**: 該当 decision を pin している material (`search(tags=["anchor", domain_tag])`) があれば取得し anchor 対応表の検証先を読む
+3. **anchor 参照先**: `search(tags=["anchor", "<domain_tag>"], entity_type="material")` で取得。`tags` リストは **AND フィルタ** (両方を持つ material が hit する)。`<domain_tag>` は Step 2 で確定した主題が属する `domain:<domain>` タグ (例: `domain:cc-memory`)。hit した material の anchor 対応表から検証先を読む
 4. **コード anchor**: 「実装済」anchor のコードパスを `Read` で確認 (variable / function 名で `grep` 補完)
 
 「最新 decision を静的参照」は不可 (setup-anchor の「anchor の型」と整合)。
@@ -396,7 +396,7 @@ audit skill は HintService (`src/services/hint_service.py`) とは**経路と�
 | audit 対象 decision が retract 済 | audit material の `## 検証結果` に「対象は既 retract」と記録し、supersede 先の決定が今も妥当かを副次 audit |
 | 対象 topic が他 worker で並行修正中 | 並行修正の log を Step 4 で拾い、現在 in-flight な議論を `## 残課題` に明示 |
 | 一次リソース (コード) が存在しない (anchor リンク切れ) | `## 文脈不足の分析` に「anchor が剥がれている」と記録し、setup-anchor 起動候補としてマーク |
-| 「過去 decision を引用」した直後で実際にはマッチしていた (T-A1 誤検知) | Step 1 の発端明文化時点で「マッチ確認済」と書き、Step 2 でスコープなしとして audit 中断 (空 audit) |
+| 「過去 decision を引用」した直後で実際にはマッチしていた (T-A1 誤検知) | Step 1 の発端明文化時点で「マッチ確認済」と書き、Step 2 でスコープなしとして audit 中断 (空 audit)。誤検知パターン分析のため log 1 件は必ず残す (発端 + 「マッチ確認済」 + 何故 T-A1 が立ったかの観察) が、audit material は作らない (Step 5 以降の成果が無いため)。完了マーカーも追記しない |
 | ユーザーが Step 5 途中で「もういい、わかった」と中断 | 部分的な audit material を「下書き」として保存 (§ 中断・再開) |
 | audit を recompose-context が呼んだ場合 | recompose 中の発見 (ズレ・矛盾) を発端として audit に降ろす経路は OK。audit 完了後に recompose に戻る |
 | skill 実行中 (他 skill 実行中) に audit トリガー | 現在 skill 完了まで待ち、終了後に audit 起動。skill 入れ子は禁止 |

@@ -68,8 +68,13 @@ class TestAuditSkillTriggers:
         assert "グルグル" in skill_md
 
     def test_worker_session_excluded(self, skill_md):
-        # T-C5 で worker セッションを発動対象外と明示
-        assert "worker" in skill_md
+        # T-C5 で worker セッションを発動対象外と明示している行があること
+        lines = skill_md.splitlines()
+        t_c5_lines = [ln for ln in lines if "T-C5" in ln]
+        assert t_c5_lines, "T-C5 行が見つからない"
+        assert any("worker" in ln for ln in t_c5_lines), (
+            "T-C5 行に worker セッションが対象外である記述が無い"
+        )
 
 
 class TestAuditSkillPlaybook:
@@ -97,11 +102,13 @@ class TestAuditSkillPlaybook:
 
 class TestAuditSkillMaterialFormat:
     def test_material_title_format(self, skill_md):
-        # `audit: {主題} ({YYYY-MM-DD})` 形式
-        assert "audit: {主題の要約}" in skill_md or "audit: {主題" in skill_md
+        # `audit: {主題の要約} ({YYYY-MM-DD})` 形式
+        assert "audit: {主題の要約}" in skill_md
+        assert "({YYYY-MM-DD})" in skill_md
 
     def test_required_tags(self, skill_md):
-        for tag in ("audit", "reconsider", "intent:audit"):
+        # `domain:<domain>` テンプレート変数も必須タグの 1 つとして明記される
+        for tag in ("audit", "reconsider", "intent:audit", "domain:"):
             assert tag in skill_md, f"必須タグ '{tag}' の記載が無い"
 
     def test_content_sections(self, skill_md):
@@ -170,4 +177,4 @@ class TestAuditSkillSessionScope:
 
     def test_24h_dedup_section(self, skill_md):
         # T-C2 (24h 重複) の判定方法を明文化
-        assert "24h" in skill_md or "24 h" in skill_md
+        assert "24h" in skill_md
