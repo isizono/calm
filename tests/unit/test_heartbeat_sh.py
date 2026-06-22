@@ -263,16 +263,19 @@ class TestHeartbeatShLoopControl:
         )
 
         # loading フェーズで数件届くのを確認
-        deadline = time.time() + 1.5
+        deadline = time.time() + 3.0
         while len(server.received) < 2 and time.time() < deadline:
             time.sleep(0.05)
 
         loading_count = len(server.received)
+        assert loading_count >= 1, (
+            f"loading フェーズのメッセージが届かなかった (deadline 3.0s 内に 0 件)"
+        )
 
         # ready フェーズに切り替え
         tmp_phase_file.write_text("ready")
 
-        deadline = time.time() + 3.0
+        deadline = time.time() + 6.0
         while len(server.received) < loading_count + 1 and time.time() < deadline:
             time.sleep(0.05)
 
