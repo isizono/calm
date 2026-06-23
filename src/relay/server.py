@@ -35,6 +35,10 @@ DB_PATH = os.environ.get(
     str(Path.home() / ".cc-memory" / "ow" / "relay" / "relay.db"),
 )
 
+# SSE 無送信時に出すコメントフレーム間隔。flush が定期的に走ることで blocked
+# client は BrokenPipeError で finally に到達し subscriber がリークしない。
+KEEPALIVE_INTERVAL_SEC = int(os.environ.get("RELAY_KEEPALIVE_SEC", "10"))
+
 # channel_code → list of (handle, queue.Queue)
 # presence も兼用: 接続中の handle はこのリストに現れる
 _subscribers: dict[str, list[tuple[str, queue.Queue]]] = {}
@@ -433,8 +437,11 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b": connected\n\n")
             self.wfile.flush()
             while True:
-                msg = q.get()
-                self.wfile.write(f"data: {msg}\n\n".encode("utf-8"))
+                try:
+                    msg = q.get(timeout=KEEPALIVE_INTERVAL_SEC)
+                    self.wfile.write(f"data: {msg}\n\n".encode("utf-8"))
+                except queue.Empty:
+                    self.wfile.write(b": keepalive\n\n")
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
