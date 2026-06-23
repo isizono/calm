@@ -66,6 +66,35 @@ class HookState:
         """transcript差分読みのバイトオフセットを保存"""
         self._write(self._path("transcript_offset"), str(offset))
 
+    # --- sanitize_offset ---
+
+    def get_sanitize_offset(self) -> int:
+        """sanitize 用 transcript 差分読みバイトオフセットを取得。未設定 -> 0。
+
+        stop_hook の transcript_offset とは別管理。SessionStart backfill hook が
+        過去 transcript の差分 sanitize を冪等に行うために独立した offset を持つ。
+        """
+        return self._read_int(self._path("sanitize_offset"), 0)
+
+    def set_sanitize_offset(self, offset: int) -> None:
+        """sanitize 用 transcript 差分読みバイトオフセットを保存"""
+        self._write(self._path("sanitize_offset"), str(offset))
+
+    # --- sanitize_failure_count ---
+
+    def get_sanitize_failure_count(self) -> int:
+        """SessionStart backfill hook の連続失敗回数を取得。未設定 -> 0。
+
+        書き戻し失敗 (harness_race / io_error / rename_failed) や scan/sanitize 例外で
+        インクリメントされ、成功時にリセットされる。閾値 (hook 側で N=3) に達したら
+        その session の backfill は以降スキップする (ループ防止)。
+        """
+        return self._read_int(self._path("sanitize_failure_count"), 0)
+
+    def set_sanitize_failure_count(self, count: int) -> None:
+        """SessionStart backfill hook の連続失敗回数を保存"""
+        self._write(self._path("sanitize_failure_count"), str(count))
+
     # --- current_turn ---
 
     def get_current_turn(self) -> int:
