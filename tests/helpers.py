@@ -2,11 +2,40 @@
 
 add_logs / add_decisions のバッチAPIを単件呼び出し形式でラップする。
 旧 add_log / add_decision と同じインターフェースを提供する。
+
+検索 retriever / orchestrator のテストで使う SearchContext のファクトリも
+ここに集約する。
 """
 from typing import Optional
 from src.services.discussion_log_service import add_logs
 from src.services.decision_service import add_decisions
 from src.services.retract_service import retract
+from src.services.search_service import SearchContext
+
+
+def make_search_context(**overrides) -> SearchContext:
+    """テスト用のデフォルト SearchContext を生成する。
+
+    overrides で必要なフィールドだけ上書きできる。検索 retriever / orchestrator の
+    各テストで重複していた _make_ctx を集約したもの。
+    """
+    defaults = dict(
+        keywords=("alpha",),
+        fts_keywords=("alpha",),
+        original_keyword_count=None,
+        tag_ids=None,
+        entity_type=None,
+        limit=10,
+        offset=0,
+        fetch_limit=50,
+        keyword_mode="and",
+        include_details=False,
+        date_after=None,
+        date_before=None,
+        domain=None,
+    )
+    defaults.update(overrides)
+    return SearchContext(**defaults)
 
 
 def add_log(
