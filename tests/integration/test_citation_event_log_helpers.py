@@ -341,6 +341,70 @@ class TestApplyRawToCiteDangling:
         assert decoded["dangling_count"] == 1
         assert decoded["dangling_targets"] == [{"type": "material", "id": 1}]
 
+    def test_dangling_inside_codeblock_is_preserved(self, temp_db):
+        """同一 dangling target がコードブロックの内外に混在しても、コードブロック内の
+        リテラルは raw のまま温存される (= スキップ区間内は書き換え対象外)。"""
+        # M#1 は seed しない (= dangling)
+        conn = get_connection()
+        original = "```\nM#1\n```\n\nSee M#1 here"
+        expected = "```\nM#1\n```\n\nSee [deleted M#1] here"
+        try:
+            with conn:
+                res = apply_raw_to_cite_conversion(
+                    conn,
+                    entity_type="material",
+                    entity_id=999,
+                    fields_payload={"title": "t", "content": original},
+                    tool_name="add_material",
+                )
+        finally:
+            conn.close()
+        assert res["fields"]["content"] == expected
+
+    def test_dangling_inside_inline_backticks_is_preserved(self, temp_db):
+        """インラインバッククォート内の同一 dangling リテラルも温存される。"""
+        conn = get_connection()
+        original = "in code `M#1` and outside M#1"
+        expected = "in code `M#1` and outside [deleted M#1]"
+        try:
+            with conn:
+                res = apply_raw_to_cite_conversion(
+                    conn,
+                    entity_type="material",
+                    entity_id=999,
+                    fields_payload={"title": "t", "content": original},
+                    tool_name="add_material",
+                )
+        finally:
+            conn.close()
+        assert res["fields"]["content"] == expected
+
+    def test_dangling_occurrence_count_vs_unique_count(self, temp_db):
+        """同一 dangling target が複数回出ると、unique 数と総置換数が乖離する。
+        stats は両方を提供する。"""
+        conn = get_connection()
+        # M#1 (dangling) が変換対象区間に 3 回登場
+        original = "first M#1, second M#1, third M#1"
+        try:
+            with conn:
+                res = apply_raw_to_cite_conversion(
+                    conn,
+                    entity_type="material",
+                    entity_id=999,
+                    fields_payload={"title": "t", "content": original},
+                    tool_name="add_material",
+                )
+        finally:
+            conn.close()
+        # 全 3 箇所が [deleted M#1] に書き換わる
+        assert res["fields"]["content"] == (
+            "first [deleted M#1], second [deleted M#1], third [deleted M#1]"
+        )
+        field_stats = res["stats"]["content"]
+        # unique target 数 = 1, 総置換回数 = 3
+        assert field_stats["dangling_count"] == 1
+        assert field_stats["dangling_occurrence_count"] == 3
+
     def test_mixed_existing_and_dangling(self, temp_db):
         """同一 field 内に 存在 target / dangling target が混在しても両方処理"""
         target_id = _seed_material()

@@ -11,7 +11,6 @@ upsert_citations_for_owner_with_conn / get_in_out 等) を提供する。
 X は M/D/L/A/T のいずれかで、それぞれ material/decision/log/activity/topic に対応する。
 """
 import json
-import re
 import sqlite3
 from datetime import datetime, timezone
 from typing import Any
@@ -303,6 +302,106 @@ def _utc_now_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _replace_dangling_in_line(
+    line: str, dangling_set: set[tuple[str, int]]
+) -> str:
+    """1 行内の raw `X#NNN` のうち dangling_set に属する target を
+    `[deleted X#NNN]` に置換する。
+
+    インラインバッククォート区間、`\\{{cite:...}}` / `\\X#NNN` エスケープ、
+    既存 `{{cite:X#NNN}}` テンプレ内のリテラルは書き換えない (citations_pure の
+    `_convert_line_raw_to_cite` と同じスキップ構造)。
+    """
+    out_parts: list[str] = []
+    i = 0
+    n = len(line)
+    while i < n:
+        ch = line[i]
+        if ch == "`":
+            close = line.find("`", i + 1)
+            if close == -1:
+                out_parts.append(line[i:])
+                i = n
+                continue
+            out_parts.append(line[i : close + 1])
+            i = close + 1
+            continue
+        if line[i : i + 7] == "{{cite:":
+            end = line.find("}}", i + 7)
+            if end == -1:
+                out_parts.append(ch)
+                i += 1
+                continue
+            out_parts.append(line[i : end + 2])
+            i = end + 2
+            continue
+        if ch == "\\":
+            if line[i + 1 : i + 3] == "{{":
+                end = line.find("}}", i + 1)
+                if end == -1:
+                    out_parts.append(ch)
+                    i += 1
+                    continue
+                out_parts.append(line[i : end + 2])
+                i = end + 2
+                continue
+            tail = line[i + 1 : i + 2]
+            if tail in TYPE_CODE_TO_NAME:
+                m = _RAW_CITE_PATTERN.match(line, i + 1)
+                if m and m.start() == i + 1:
+                    out_parts.append(line[i : m.end()])
+                    i = m.end()
+                    continue
+            out_parts.append(ch)
+            i += 1
+            continue
+        m = _RAW_CITE_PATTERN.match(line, i)
+        if m:
+            code = m.group(1)
+            tid = int(m.group(2))
+            target_type = TYPE_CODE_TO_NAME[code]
+            if (target_type, tid) in dangling_set:
+                out_parts.append(f"[deleted {code}#{tid}]")
+                i = m.end()
+                continue
+            out_parts.append(line[i : m.end()])
+            i = m.end()
+            continue
+        out_parts.append(ch)
+        i += 1
+    return "".join(out_parts)
+
+
+def _replace_dangling_with_deleted_marker(
+    text: str, dangling_set: set[tuple[str, int]]
+) -> str:
+    """`text` 中の dangling target を `[deleted X#NNN]` に確定書き換えする。
+
+    フェンスコードブロック (``` / ~~~)・インラインバッククォート・エスケープ
+    (`\\X#NNN` / `\\{{cite:...}}`)・既存 `{{cite:X#NNN}}` テンプレ内のリテラルは
+    `dangling_set` に同一 (type, id) があっても書き換えない。これによりコードブロック
+    内に「文字列リテラルとして」書かれた `X#NNN` を破壊しない。
+
+    `convert_raw_to_cite` のスキップ構造を踏襲しているが、本関数は変換ではなく
+    マーカー置換に責務を限定する。
+    """
+    if not dangling_set:
+        return text
+    out_lines: list[str] = []
+    in_fence = False
+    for raw_line in text.split("\n"):
+        stripped = raw_line.lstrip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            out_lines.append(raw_line)
+            continue
+        if in_fence:
+            out_lines.append(raw_line)
+            continue
+        out_lines.append(_replace_dangling_in_line(raw_line, dangling_set))
+    return "\n".join(out_lines)
+
+
 def apply_raw_to_cite_conversion(
     conn: sqlite3.Connection,
     entity_type: str,
@@ -361,27 +460,22 @@ def apply_raw_to_cite_conversion(
             original, target_validator=validator
         )
 
-        # dangling target は出力に raw `X#NNN` として残るので、確定書き換えで
-        # `[deleted X#NNN]` に置換する。codeblock / escape / 既存 cite 区間内の
-        # 同一リテラルは validator が呼ばれていないため dangling_set には含まれず、
-        # 下記 sub の置換対象からも除外される (= raw のまま温存)。
-        if dangling_set:
-
-            def replace_dangling(m: "re.Match[str]") -> str:
-                code = m.group(1)
-                tid = int(m.group(2))
-                target_type = TYPE_CODE_TO_NAME[code]
-                if (target_type, tid) in dangling_set:
-                    return f"[deleted {code}#{tid}]"
-                return m.group(0)
-
-            converted = _RAW_CITE_PATTERN.sub(replace_dangling, converted)
+        # dangling target は出力に raw `X#NNN` として残るので、`[deleted X#NNN]` に
+        # 確定書き換えする。コードブロック / エスケープ / 既存 cite 区間内の同一
+        # (type, id) リテラルは、変換区間外で validator に通った target と同じ場合でも
+        # 書き換え対象から外す (`_replace_dangling_with_deleted_marker` が
+        # フェンス追跡 + バッククォート / エスケープ / 既存 cite スキップを行う)。
+        converted = _replace_dangling_with_deleted_marker(converted, dangling_set)
 
         result_fields[field_name] = converted
 
+        # `dangling_count` はユニーク (target_type, target_id) 数、
+        # `dangling_occurrence_count` は本文中の総置換回数。
+        # 同一 dangling target が複数箇所に登場した場合に乖離する。
         field_stats = {
             "sanitized_count": counters["sanitized_count"],
             "dangling_count": len(dangling_set),
+            "dangling_occurrence_count": counters["skipped_dangling"],
             "skipped_in_codeblock": counters["skipped_in_codeblock"],
             "skipped_in_existing_cite": counters["skipped_in_existing_cite"],
             "skipped_escape": counters["skipped_escape"],
