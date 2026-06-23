@@ -173,3 +173,32 @@ class TestInitDbIndexes:
         db_path = str(tmp_path / "relay.db")
         srv.init_db(db_path)
         srv.init_db(db_path)
+
+
+class TestParseKeepaliveSec:
+    """_parse_keepalive_sec の不正値バリデーション。"""
+
+    def test_none_returns_default(self):
+        assert srv._parse_keepalive_sec(None) == 10
+
+    def test_empty_string_returns_default(self):
+        assert srv._parse_keepalive_sec("") == 10
+
+    def test_positive_integer(self):
+        assert srv._parse_keepalive_sec("5") == 5
+
+    def test_zero_raises(self):
+        with pytest.raises(ValueError, match="must be >= 1"):
+            srv._parse_keepalive_sec("0")
+
+    def test_negative_raises(self):
+        with pytest.raises(ValueError, match="must be >= 1"):
+            srv._parse_keepalive_sec("-1")
+
+    def test_non_integer_raises(self):
+        with pytest.raises(ValueError, match="must be a positive integer"):
+            srv._parse_keepalive_sec("10.5")
+
+    def test_garbage_raises(self):
+        with pytest.raises(ValueError, match="must be a positive integer"):
+            srv._parse_keepalive_sec("abc")
