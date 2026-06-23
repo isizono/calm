@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -o pipefail
 # /history を周期 pull して自分宛メッセージを Monitor に流す fallback wrapper。
 # 使い方: recv_poll.sh <channel> <handle>
 #

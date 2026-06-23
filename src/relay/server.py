@@ -37,7 +37,21 @@ DB_PATH = os.environ.get(
 
 # SSE 無送信時に出すコメントフレーム間隔。flush が定期的に走ることで blocked
 # client は BrokenPipeError で finally に到達し subscriber がリークしない。
-KEEPALIVE_INTERVAL_SEC = int(os.environ.get("RELAY_KEEPALIVE_SEC", "10"))
+def _parse_keepalive_sec(raw: str | None) -> int:
+    if raw is None or raw == "":
+        return 10
+    try:
+        v = int(raw)
+    except ValueError as e:
+        raise ValueError(
+            f"RELAY_KEEPALIVE_SEC must be a positive integer, got {raw!r}"
+        ) from e
+    if v < 1:
+        raise ValueError(f"RELAY_KEEPALIVE_SEC must be >= 1, got {v}")
+    return v
+
+
+KEEPALIVE_INTERVAL_SEC = _parse_keepalive_sec(os.environ.get("RELAY_KEEPALIVE_SEC"))
 
 # channel_code → list of (handle, queue.Queue)
 # presence も兼用: 接続中の handle はこのリストに現れる
