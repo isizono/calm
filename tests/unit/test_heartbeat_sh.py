@@ -410,6 +410,267 @@ class TestHeartbeatShTrap:
         assert not phase_file.exists(), "trap EXIT で PHASE_FILE が削除されなかった"
 
 
+class TestHeartbeatShSelfExit:
+    """MCP /health 連続失敗時に safe state の worker が self-exit する"""
+
+    @staticmethod
+    def _start_health_relay(health_alive=True):
+        """relay と MCP /health を兼ねるスタブ。/send と /health を両方受ける。"""
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        class _Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == "/health":
+                    if self.server.health_alive:
+                        self.send_response(200)
+                        self.end_headers()
+                        self.wfile.write(b'{"status":"ok"}')
+                    else:
+                        self.send_response(503)
+                        self.end_headers()
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length)
+                try:
+                    data = json.loads(body)
+                except json.JSONDecodeError:
+                    data = {}
+                self.server.received.append(data)
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'{"msg_id": 1}')
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        server.received = []
+        server.health_alive = health_alive
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+        return server, f"http://127.0.0.1:{port}"
+
+    def test_no_self_exit_when_mcp_alive(self, tmp_phase_file):
+        """MCP /health が ok を返している間は self-exit しない"""
+        server, url = self._start_health_relay(health_alive=True)
+        tmp_phase_file.write_text("ready")
+        env = {
+            **os.environ,
+            "RELAY_URL": url,
+            "OW_MCP_URL": url,
+            "PHASE_FILE": str(tmp_phase_file),
+            "HEARTBEAT_INTERVAL_LOADING": "0",
+            "HEARTBEAT_INTERVAL_DEFAULT": "0",
+            "OW_MCP_FAIL_THRESHOLD": "1",
+            "OW_MCP_UPTIME_MIN_SEC": "0",
+        }
+        proc = subprocess.Popen(
+            ["bash", str(SCRIPT_PATH), "CH_OK", "w-ok"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        time.sleep(1.0)
+        # まだ生きているはず
+        alive = proc.poll() is None
+        tmp_phase_file.unlink()
+        proc.terminate()
+        proc.wait(timeout=3)
+        server.shutdown()
+        assert alive, "MCP /health 応答中に self-exit してしまった"
+
+    def test_self_exit_when_mcp_down_and_safe(self, tmp_phase_file):
+        """w-* handle + PHASE=ready + uptime >= 閾値 + MCP 失敗 N回 で self-exit"""
+        server, url = self._start_health_relay(health_alive=False)
+        tmp_phase_file.write_text("ready")
+        env = {
+            **os.environ,
+            "RELAY_URL": url,
+            "OW_MCP_URL": url,
+            "PHASE_FILE": str(tmp_phase_file),
+            "HEARTBEAT_INTERVAL_LOADING": "0",
+            "HEARTBEAT_INTERVAL_DEFAULT": "0",
+            "OW_MCP_FAIL_THRESHOLD": "2",
+            "OW_MCP_UPTIME_MIN_SEC": "0",
+        }
+        env.pop("TMUX_PANE", None)  # kill-pane は noop 化（テスト環境）
+        proc = subprocess.Popen(
+            ["bash", str(SCRIPT_PATH), "CH_DOWN", "w-down"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        # 失敗 2回 → self-exit するはず
+        try:
+            proc.wait(timeout=10)
+            exited = True
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+            proc.wait()
+            exited = False
+        # relay に event:self-exit が届いているか
+        self_exit_events = [
+            r for r in server.received
+            if r.get("body", {}).get("data", {}).get("type") == "self-exit"
+        ]
+        if tmp_phase_file.exists():
+            tmp_phase_file.unlink()
+        server.shutdown()
+        assert exited, "MCP down + safe state で self-exit しなかった"
+        assert len(self_exit_events) >= 1, "event:self-exit が relay に届いていない"
+        assert self_exit_events[0]["body"]["data"]["reason"] == "mcp-loss"
+
+    def test_no_self_exit_when_uptime_below_threshold(self, tmp_phase_file):
+        """uptime が閾値未満なら MCP 失敗続いても self-exit しない"""
+        server, url = self._start_health_relay(health_alive=False)
+        tmp_phase_file.write_text("ready")
+        env = {
+            **os.environ,
+            "RELAY_URL": url,
+            "OW_MCP_URL": url,
+            "PHASE_FILE": str(tmp_phase_file),
+            "HEARTBEAT_INTERVAL_LOADING": "0",
+            "HEARTBEAT_INTERVAL_DEFAULT": "0",
+            "OW_MCP_FAIL_THRESHOLD": "1",
+            "OW_MCP_UPTIME_MIN_SEC": "9999",  # 事実上発火させない
+        }
+        proc = subprocess.Popen(
+            ["bash", str(SCRIPT_PATH), "CH_UP", "w-up"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        time.sleep(1.0)
+        alive = proc.poll() is None
+        tmp_phase_file.unlink()
+        proc.terminate()
+        proc.wait(timeout=3)
+        server.shutdown()
+        assert alive, "uptime 閾値未満で self-exit してしまった"
+
+    def test_no_self_exit_for_non_w_handle(self, tmp_phase_file):
+        """handle が w-* 以外なら self-exit 対象外（orch / dispatcher 保護）"""
+        server, url = self._start_health_relay(health_alive=False)
+        tmp_phase_file.write_text("ready")
+        env = {
+            **os.environ,
+            "RELAY_URL": url,
+            "OW_MCP_URL": url,
+            "PHASE_FILE": str(tmp_phase_file),
+            "HEARTBEAT_INTERVAL_LOADING": "0",
+            "HEARTBEAT_INTERVAL_DEFAULT": "0",
+            "OW_MCP_FAIL_THRESHOLD": "1",
+            "OW_MCP_UPTIME_MIN_SEC": "0",
+        }
+        proc = subprocess.Popen(
+            ["bash", str(SCRIPT_PATH), "CH_ORCH", "orch"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        time.sleep(1.0)
+        alive = proc.poll() is None
+        tmp_phase_file.unlink()
+        proc.terminate()
+        proc.wait(timeout=3)
+        server.shutdown()
+        assert alive, "orch handle が self-exit してしまった"
+
+    def test_no_self_exit_for_non_ready_phase(self, tmp_phase_file):
+        """PHASE != ready なら self-exit 対象外（working/draining 保護）"""
+        server, url = self._start_health_relay(health_alive=False)
+        tmp_phase_file.write_text("working")
+        env = {
+            **os.environ,
+            "RELAY_URL": url,
+            "OW_MCP_URL": url,
+            "PHASE_FILE": str(tmp_phase_file),
+            "HEARTBEAT_INTERVAL_LOADING": "0",
+            "HEARTBEAT_INTERVAL_DEFAULT": "0",
+            "OW_MCP_FAIL_THRESHOLD": "1",
+            "OW_MCP_UPTIME_MIN_SEC": "0",
+        }
+        proc = subprocess.Popen(
+            ["bash", str(SCRIPT_PATH), "CH_W", "w-busy"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        time.sleep(1.0)
+        alive = proc.poll() is None
+        tmp_phase_file.unlink()
+        proc.terminate()
+        proc.wait(timeout=3)
+        server.shutdown()
+        assert alive, "PHASE=working で self-exit してしまった"
+
+    def test_disable_flag_skips_self_exit(self, tmp_phase_file):
+        """OW_DISABLE_MCP_SELF_EXIT=1 で self-exit を完全無効化できる"""
+        server, url = self._start_health_relay(health_alive=False)
+        tmp_phase_file.write_text("ready")
+        env = {
+            **os.environ,
+            "RELAY_URL": url,
+            "OW_MCP_URL": url,
+            "PHASE_FILE": str(tmp_phase_file),
+            "HEARTBEAT_INTERVAL_LOADING": "0",
+            "HEARTBEAT_INTERVAL_DEFAULT": "0",
+            "OW_MCP_FAIL_THRESHOLD": "1",
+            "OW_MCP_UPTIME_MIN_SEC": "0",
+            "OW_DISABLE_MCP_SELF_EXIT": "1",
+        }
+        proc = subprocess.Popen(
+            ["bash", str(SCRIPT_PATH), "CH_DIS", "w-dis"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        time.sleep(1.0)
+        alive = proc.poll() is None
+        tmp_phase_file.unlink()
+        proc.terminate()
+        proc.wait(timeout=3)
+        server.shutdown()
+        assert alive, "OW_DISABLE_MCP_SELF_EXIT=1 でも self-exit してしまった"
+
+    def test_recovery_resets_fail_counter(self, tmp_phase_file):
+        """MCP が復活したらカウンタが 0 リセットされる（復帰後 N 回未満なら exit しない）"""
+        server, url = self._start_health_relay(health_alive=False)
+        tmp_phase_file.write_text("ready")
+        env = {
+            **os.environ,
+            "RELAY_URL": url,
+            "OW_MCP_URL": url,
+            "PHASE_FILE": str(tmp_phase_file),
+            "HEARTBEAT_INTERVAL_LOADING": "0.3",
+            "HEARTBEAT_INTERVAL_DEFAULT": "0.3",
+            "OW_MCP_FAIL_THRESHOLD": "3",
+            "OW_MCP_UPTIME_MIN_SEC": "0",
+        }
+        proc = subprocess.Popen(
+            ["bash", str(SCRIPT_PATH), "CH_REC", "w-rec"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        # 1回失敗した段階で MCP 復活
+        time.sleep(0.1)
+        server.health_alive = True
+        # 0.3 * 4 周期分待つ。カウンタが 0 にリセットされて self-exit しないことを確認
+        time.sleep(1.5)
+        alive = proc.poll() is None
+        proc.terminate()
+        proc.wait(timeout=3)
+        tmp_phase_file.unlink(missing_ok=True)
+        server.shutdown()
+        assert alive, "MCP 復活後にカウンタがリセットされず self-exit してしまった"
+
+
 class TestHeartbeatShCurlTimeout:
     """C案: curl --max-time でhang時に sleep に進める"""
 

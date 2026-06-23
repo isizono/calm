@@ -2,6 +2,7 @@
 import logging
 import os
 import random
+from datetime import datetime, timezone
 from pathlib import Path
 from fastmcp import FastMCP, Context
 from fastmcp.server.dependencies import get_context
@@ -230,6 +231,9 @@ def _apply_flavor_to_snippets(items: list[dict], flavor: str) -> None:
 
 # MCPサーバーを作成
 mcp = FastMCP("cc-memory", instructions=build_instructions())
+
+# サーバー起動時刻（/health で uptime 算出に使用）
+_SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 # セッション管理（HTTPモードで使用）
 _session_manager = None
@@ -1410,6 +1414,18 @@ def ow_recover(
         dry_run,
         pending_spawn_stalled_threshold_min=pending_spawn_stalled_threshold_min,
     )
+
+
+# ヘルスチェックエンドポイント（worker self-exit on MCP loss 用）
+@mcp.custom_route("/health", methods=["GET"])
+async def health(_request: Request) -> JSONResponse:
+    now = datetime.now(timezone.utc)
+    return JSONResponse({
+        "status": "ok",
+        "pid": os.getpid(),
+        "started_at": _SERVER_STARTED_AT.isoformat(),
+        "uptime_sec": int((now - _SERVER_STARTED_AT).total_seconds()),
+    })
 
 
 # セッションエンドポイント（HTTPモード用カスタムルート）
