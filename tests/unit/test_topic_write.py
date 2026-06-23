@@ -390,15 +390,26 @@ def test_add_decision_without_tags(temp_db):
 
 
 def test_add_decision_without_topic(temp_db):
-    """topic_id=Noneで決定事項を追加するとCONSTRAINT_VIOLATIONが返る"""
+    """topic_id=Noneでもdecisionは作成できる（relations.belongs_toが登録されない）"""
     result = add_decision(
         decision="グローバルな決定事項",
         reason="サブジェクト全体に関わる",
         topic_id=None,
     )
 
-    assert "error" in result
-    assert result["error"]["code"] == "CONSTRAINT_VIOLATION"
+    assert "error" not in result
+    assert "decision_id" in result
+    # relations.belongs_to が登録されていないことを確認
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM relations WHERE source_type='decision' AND source_id=? "
+            "AND target_type='topic' AND relation_type='belongs_to'",
+            (result["decision_id"],),
+        ).fetchone()
+        assert row[0] == 0
+    finally:
+        conn.close()
 
 
 def test_add_decision_multiple(temp_db):
@@ -437,11 +448,17 @@ def _delete_topic(topic_id: int) -> None:
 
 
 def _count_decisions(topic_id: int) -> int:
-    """テスト用: 指定トピックのdecisions件数を返すヘルパー"""
+    """テスト用: 指定トピックのdecisions件数を返すヘルパー (relations.belongs_to 経由)"""
     conn = get_connection()
     try:
         cursor = conn.execute(
-            "SELECT COUNT(*) FROM decisions WHERE topic_id = ?", (topic_id,)
+            """
+            SELECT COUNT(*) FROM decisions d
+            JOIN relations r ON r.source_type='decision' AND r.source_id=d.id
+                            AND r.target_type='topic' AND r.relation_type='belongs_to'
+                            AND r.target_id = ?
+            """,
+            (topic_id,),
         )
         return cursor.fetchone()[0]
     finally:
@@ -449,11 +466,17 @@ def _count_decisions(topic_id: int) -> int:
 
 
 def _count_logs(topic_id: int) -> int:
-    """テスト用: 指定トピックのdiscussion_logs件数を返すヘルパー"""
+    """テスト用: 指定トピックのdiscussion_logs件数を返すヘルパー (relations.belongs_to 経由)"""
     conn = get_connection()
     try:
         cursor = conn.execute(
-            "SELECT COUNT(*) FROM discussion_logs WHERE topic_id = ?", (topic_id,)
+            """
+            SELECT COUNT(*) FROM discussion_logs l
+            JOIN relations r ON r.source_type='log' AND r.source_id=l.id
+                            AND r.target_type='topic' AND r.relation_type='belongs_to'
+                            AND r.target_id = ?
+            """,
+            (topic_id,),
         )
         return cursor.fetchone()[0]
     finally:

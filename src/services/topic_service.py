@@ -71,10 +71,15 @@ def count_decisions_per_topic(conn: sqlite3.Connection, topic_ids: list[int]) ->
     placeholders = ",".join("?" * len(topic_ids))
     rows = conn.execute(
         f"""
-        SELECT topic_id, COUNT(*) AS cnt
-        FROM decisions
-        WHERE topic_id IN ({placeholders}) AND retracted_at IS NULL
-        GROUP BY topic_id
+        SELECT r.target_id AS topic_id, COUNT(*) AS cnt
+        FROM decisions d
+        JOIN relations r
+          ON r.source_type = 'decision' AND r.source_id = d.id
+         AND r.target_type = 'topic'
+         AND r.relation_type = 'belongs_to'
+         AND r.target_id IN ({placeholders})
+        WHERE d.retracted_at IS NULL
+        GROUP BY r.target_id
         """,
         tuple(topic_ids),
     ).fetchall()
@@ -84,19 +89,11 @@ def count_decisions_per_topic(conn: sqlite3.Connection, topic_ids: list[int]) ->
 def count_materials_per_topic(conn: sqlite3.Connection, topic_ids: list[int]) -> dict[int, int]:
     """トピックごとに直接紐づくmaterials件数を取得する。
 
-    relations_viewを通じてtopic→materialの直接リレーション件数をカウントする。
+    material→topic の親帰属は relations.relation_type='belongs_to' で表現される
+    (正規化制約により source=material, target=topic で格納)。
+    partial index `idx_relations_belongs_to_tgt` がこの WHERE 条件でヒットする。
 
-    実装上のポイント:
-    relationsテーブルは_normalize_pairにより source_type < target_type の辞書順で
-    正規化して格納する。'material' < 'topic' のため、topic-materialペアは常に
-    source=(material), target=(topic) として保存される。
-    そのためrelationsを直接 source_type='topic' で引くと0件になる。
-    双方向ビューであるrelations_viewは逆方向UNIONを含むため、
-    source_type='topic' AND target_type='material' で正しくマッチする。
-    各ペアはビュー内で1方向にしかマッチしないため二重計上は起きない。
-
-    relation_type='related' フィルタにより、supersedes/depends_on経由の
-    リレーションは除外される。activity経由の間接リレーションも含めない。
+    activity経由の間接リレーションは含めない (それは別経路で集約)。
 
     Returns:
         {topic_id: count, ...} — materialsが0件のtopic_idはキーに含まれない
@@ -106,13 +103,13 @@ def count_materials_per_topic(conn: sqlite3.Connection, topic_ids: list[int]) ->
     placeholders = ",".join("?" * len(topic_ids))
     rows = conn.execute(
         f"""
-        SELECT source_id AS topic_id, COUNT(*) AS cnt
-        FROM relations_view
-        WHERE source_type = 'topic'
-          AND target_type = 'material'
-          AND relation_type = 'related'
-          AND source_id IN ({placeholders})
-        GROUP BY source_id
+        SELECT target_id AS topic_id, COUNT(*) AS cnt
+        FROM relations
+        WHERE source_type = 'material'
+          AND target_type = 'topic'
+          AND relation_type = 'belongs_to'
+          AND target_id IN ({placeholders})
+        GROUP BY target_id
         """,
         tuple(topic_ids),
     ).fetchall()

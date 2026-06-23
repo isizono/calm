@@ -23,6 +23,58 @@ from src.services.tag_service import _injected_tags
 DEFAULT_TAGS = ["domain:test"]
 
 
+def _insert_log(conn, topic_id, content, title, created_at=None):
+    """discussion_logsに直接INSERTし、relations.belongs_toも併せて作成するヘルパー。"""
+    if created_at is not None:
+        cur = conn.execute(
+            "INSERT INTO discussion_logs (content, title, created_at) VALUES (?, ?, ?)",
+            (content, title, created_at),
+        )
+    else:
+        cur = conn.execute(
+            "INSERT INTO discussion_logs (content, title) VALUES (?, ?)",
+            (content, title),
+        )
+    log_id = cur.lastrowid
+    conn.execute(
+        "INSERT INTO relations (source_type, source_id, target_type, target_id, relation_type) "
+        "VALUES ('log', ?, 'topic', ?, 'belongs_to')",
+        (log_id, topic_id),
+    )
+    return log_id
+
+
+def _insert_decision(conn, topic_id, decision, reason, created_at=None, decision_id=None):
+    """decisionsに直接INSERTし、relations.belongs_toも併せて作成するヘルパー。"""
+    if decision_id is not None and created_at is not None:
+        cur = conn.execute(
+            "INSERT INTO decisions (id, decision, reason, created_at) VALUES (?, ?, ?, ?)",
+            (decision_id, decision, reason, created_at),
+        )
+    elif decision_id is not None:
+        cur = conn.execute(
+            "INSERT INTO decisions (id, decision, reason) VALUES (?, ?, ?)",
+            (decision_id, decision, reason),
+        )
+    elif created_at is not None:
+        cur = conn.execute(
+            "INSERT INTO decisions (decision, reason, created_at) VALUES (?, ?, ?)",
+            (decision, reason, created_at),
+        )
+    else:
+        cur = conn.execute(
+            "INSERT INTO decisions (decision, reason) VALUES (?, ?)",
+            (decision, reason),
+        )
+    did = decision_id if decision_id is not None else cur.lastrowid
+    conn.execute(
+        "INSERT INTO relations (source_type, source_id, target_type, target_id, relation_type) "
+        "VALUES ('decision', ?, 'topic', ?, 'belongs_to')",
+        (did, topic_id),
+    )
+    return did
+
+
 @pytest.fixture
 def temp_db():
     """テスト用の一時的なデータベースを作成する"""
@@ -292,14 +344,8 @@ class TestPagination:
         # 異なるcreated_atを持つデータを作成
         conn = get_connection()
         try:
-            conn.execute(
-                "INSERT INTO discussion_logs (topic_id, content, title, created_at) VALUES (?, ?, ?, ?)",
-                (tid, "古いログ", "古いログ", "2025-01-01 00:00:00"),
-            )
-            conn.execute(
-                "INSERT INTO discussion_logs (topic_id, content, title, created_at) VALUES (?, ?, ?, ?)",
-                (tid, "新しいログ", "新しいログ", "2025-06-01 00:00:00"),
-            )
+            _insert_log(conn, tid, "古いログ", "古いログ", "2025-01-01 00:00:00")
+            _insert_log(conn, tid, "新しいログ", "新しいログ", "2025-06-01 00:00:00")
             conn.commit()
         finally:
             conn.close()
@@ -316,18 +362,9 @@ class TestPagination:
 
         conn = get_connection()
         try:
-            conn.execute(
-                "INSERT INTO discussion_logs (topic_id, content, title, created_at) VALUES (?, ?, ?, ?)",
-                (tid, "ログ1", "ログ1", "2025-01-01 00:00:00"),
-            )
-            conn.execute(
-                "INSERT INTO discussion_logs (topic_id, content, title, created_at) VALUES (?, ?, ?, ?)",
-                (tid, "ログ2", "ログ2", "2025-03-01 00:00:00"),
-            )
-            conn.execute(
-                "INSERT INTO discussion_logs (topic_id, content, title, created_at) VALUES (?, ?, ?, ?)",
-                (tid, "ログ3", "ログ3", "2025-06-01 00:00:00"),
-            )
+            _insert_log(conn, tid, "ログ1", "ログ1", "2025-01-01 00:00:00")
+            _insert_log(conn, tid, "ログ2", "ログ2", "2025-03-01 00:00:00")
+            _insert_log(conn, tid, "ログ3", "ログ3", "2025-06-01 00:00:00")
             conn.commit()
         finally:
             conn.close()
@@ -343,10 +380,7 @@ class TestPagination:
         conn = get_connection()
         try:
             for i in range(5):
-                conn.execute(
-                    "INSERT INTO discussion_logs (topic_id, content, title, created_at) VALUES (?, ?, ?, ?)",
-                    (tid, f"ログ{i}", f"ログ{i}", f"2025-01-0{i+1} 00:00:00"),
-                )
+                _insert_log(conn, tid, f"ログ{i}", f"ログ{i}", f"2025-01-0{i+1} 00:00:00")
             conn.commit()
         finally:
             conn.close()
@@ -365,14 +399,8 @@ class TestSortOrder:
 
         conn = get_connection()
         try:
-            conn.execute(
-                "INSERT INTO discussion_logs (topic_id, content, title, created_at) VALUES (?, ?, ?, ?)",
-                (tid, "古い", "古いログ", "2025-01-01 00:00:00"),
-            )
-            conn.execute(
-                "INSERT INTO discussion_logs (topic_id, content, title, created_at) VALUES (?, ?, ?, ?)",
-                (tid, "新しい", "新しいログ", "2025-06-01 00:00:00"),
-            )
+            _insert_log(conn, tid, "古い", "古いログ", "2025-01-01 00:00:00")
+            _insert_log(conn, tid, "新しい", "新しいログ", "2025-06-01 00:00:00")
             conn.commit()
         finally:
             conn.close()
@@ -387,14 +415,8 @@ class TestSortOrder:
 
         conn = get_connection()
         try:
-            conn.execute(
-                "INSERT INTO discussion_logs (topic_id, content, title, created_at) VALUES (?, ?, ?, ?)",
-                (tid, "古い", "古いログ", "2025-01-01 00:00:00"),
-            )
-            conn.execute(
-                "INSERT INTO discussion_logs (topic_id, content, title, created_at) VALUES (?, ?, ?, ?)",
-                (tid, "新しい", "新しいログ", "2025-06-01 00:00:00"),
-            )
+            _insert_log(conn, tid, "古い", "古いログ", "2025-01-01 00:00:00")
+            _insert_log(conn, tid, "新しい", "新しいログ", "2025-06-01 00:00:00")
             conn.commit()
         finally:
             conn.close()
@@ -419,10 +441,7 @@ class TestLimitClamping:
 
         conn = get_connection()
         try:
-            conn.execute(
-                "INSERT INTO discussion_logs (topic_id, content, title) VALUES (?, ?, ?)",
-                (tid, "ログ内容", "テストログ"),
-            )
+            _insert_log(conn, tid, "ログ内容", "テストログ")
             conn.commit()
         finally:
             conn.close()
@@ -442,10 +461,7 @@ class TestTotalCount:
         conn = get_connection()
         try:
             for i in range(10):
-                conn.execute(
-                    "INSERT INTO discussion_logs (topic_id, content, title) VALUES (?, ?, ?)",
-                    (tid, f"ログ{i}", f"ログ{i}"),
-                )
+                _insert_log(conn, tid, f"ログ{i}", f"ログ{i}")
             conn.commit()
         finally:
             conn.close()
@@ -468,18 +484,9 @@ class TestTotalCount:
 
         conn = get_connection()
         try:
-            conn.execute(
-                "INSERT INTO discussion_logs (topic_id, content, title, created_at) VALUES (?, ?, ?, ?)",
-                (tid, "ログ1", "ログ1", "2025-01-01 00:00:00"),
-            )
-            conn.execute(
-                "INSERT INTO discussion_logs (topic_id, content, title, created_at) VALUES (?, ?, ?, ?)",
-                (tid, "ログ2", "ログ2", "2025-06-01 00:00:00"),
-            )
-            conn.execute(
-                "INSERT INTO decisions (topic_id, decision, reason, created_at) VALUES (?, ?, ?, ?)",
-                (tid, "決定1", "理由1", "2025-03-01 00:00:00"),
-            )
+            _insert_log(conn, tid, "ログ1", "ログ1", "2025-01-01 00:00:00")
+            _insert_log(conn, tid, "ログ2", "ログ2", "2025-06-01 00:00:00")
+            _insert_decision(conn, tid, "決定1", "理由1", "2025-03-01 00:00:00")
             conn.commit()
         finally:
             conn.close()
@@ -567,14 +574,8 @@ class TestMixedTimeline:
 
         conn = get_connection()
         try:
-            conn.execute(
-                "INSERT INTO discussion_logs (topic_id, content, title, created_at) VALUES (?, ?, ?, ?)",
-                (tid, "ログ", "ログA", "2025-01-01 00:00:00"),
-            )
-            conn.execute(
-                "INSERT INTO decisions (topic_id, decision, reason, created_at) VALUES (?, ?, ?, ?)",
-                (tid, "決定B", "理由", "2025-02-01 00:00:00"),
-            )
+            _insert_log(conn, tid, "ログ", "ログA", "2025-01-01 00:00:00")
+            _insert_decision(conn, tid, "決定B", "理由", "2025-02-01 00:00:00")
             # material: relationsテーブルを直接作成（正規化: 'material' < 'topic'）
             cursor = conn.execute(
                 "INSERT INTO materials (title, content, source, created_at) VALUES (?, ?, ?, ?)",
@@ -582,7 +583,7 @@ class TestMixedTimeline:
             )
             mat_id = cursor.lastrowid
             conn.execute(
-                "INSERT INTO relations (source_type, source_id, target_type, target_id) VALUES ('material', ?, 'topic', ?)",
+                "INSERT INTO relations (source_type, source_id, target_type, target_id, relation_type) VALUES ('material', ?, 'topic', ?, 'belongs_to')",
                 (mat_id, tid),
             )
             conn.commit()
@@ -608,14 +609,8 @@ class TestSupersedes:
 
         conn = get_connection()
         try:
-            conn.execute(
-                "INSERT INTO decisions (id, topic_id, decision, reason) VALUES (?, ?, ?, ?)",
-                (1001, tid, "旧決定", "理由"),
-            )
-            conn.execute(
-                "INSERT INTO decisions (id, topic_id, decision, reason) VALUES (?, ?, ?, ?)",
-                (1002, tid, "新決定", "理由"),
-            )
+            _insert_decision(conn, tid, "旧決定", "理由", decision_id=1001)
+            _insert_decision(conn, tid, "新決定", "理由", decision_id=1002)
             conn.execute(
                 "INSERT INTO decision_supersedes (source_id, target_id) VALUES (?, ?)",
                 (1002, 1001),
@@ -641,14 +636,8 @@ class TestSupersedes:
 
         conn = get_connection()
         try:
-            conn.execute(
-                "INSERT INTO decisions (id, topic_id, decision, reason) VALUES (?, ?, ?, ?)",
-                (2001, tid, "旧決定", "理由"),
-            )
-            conn.execute(
-                "INSERT INTO decisions (id, topic_id, decision, reason) VALUES (?, ?, ?, ?)",
-                (2002, tid, "新決定", "理由"),
-            )
+            _insert_decision(conn, tid, "旧決定", "理由", decision_id=2001)
+            _insert_decision(conn, tid, "新決定", "理由", decision_id=2002)
             conn.execute(
                 "INSERT INTO decision_supersedes (source_id, target_id) VALUES (?, ?)",
                 (2002, 2001),
@@ -674,14 +663,8 @@ class TestSupersedes:
         # supersedes関係のあるdecisionを作成
         conn = get_connection()
         try:
-            conn.execute(
-                "INSERT INTO decisions (id, topic_id, decision, reason) VALUES (?, ?, ?, ?)",
-                (3001, tid, "旧決定", "理由"),
-            )
-            conn.execute(
-                "INSERT INTO decisions (id, topic_id, decision, reason) VALUES (?, ?, ?, ?)",
-                (3002, tid, "新決定", "理由"),
-            )
+            _insert_decision(conn, tid, "旧決定", "理由", decision_id=3001)
+            _insert_decision(conn, tid, "新決定", "理由", decision_id=3002)
             conn.execute(
                 "INSERT INTO decision_supersedes (source_id, target_id) VALUES (?, ?)",
                 (3002, 3001),

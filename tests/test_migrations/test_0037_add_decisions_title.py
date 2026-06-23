@@ -52,6 +52,32 @@ def db_before_0037():
             del os.environ["DISCUSSION_DB_PATH"]
 
 
+@pytest.fixture
+def migrated_db_up_to_0037():
+    """0037までのmigrationを適用したDBを提供する。
+
+    後続 migration（0046/0047 等）で decisions.topic_id が物理削除されるため、
+    0037 直後の「title 列追加と search_index トリガが topic_id 前提で動く」状態を
+    検証するテストはここを使う。
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = os.path.join(tmpdir, "test.db")
+        os.environ["DISCUSSION_DB_PATH"] = db_path
+
+        parsed = parse_uri(f"sqlite:///{db_path}")
+        backend = _VecSQLiteBackend(parsed, default_migration_table)
+        backend.init_database()
+        all_migs = read_migrations(str(MIGRATIONS_DIR))
+        up_to_0037 = MigrationList([m for m in all_migs if m.id < "0038"])
+        with backend.lock():
+            backend.apply_migrations(up_to_0037)
+
+        _injected_tags.clear()
+        yield db_path
+        if "DISCUSSION_DB_PATH" in os.environ:
+            del os.environ["DISCUSSION_DB_PATH"]
+
+
 def _apply_migration_0037(db_path: str) -> None:
     """db_pathに対してmigration 0037のみを適用する。"""
     parsed = parse_uri(f"sqlite:///{db_path}")
@@ -100,7 +126,7 @@ class TestTitleColumnAdded:
         finally:
             conn.close()
 
-    def test_other_columns_intact_after_0037(self, migrated_db):
+    def test_other_columns_intact_after_0037(self, migrated_db_up_to_0037):
         """0037適用後、decisionsのid/topic_id/decision/reason/created_at/retracted_atが保持される"""
         conn = get_connection()
         try:
@@ -143,7 +169,7 @@ class TestTitleColumnAdded:
 class TestSearchIndexTitleFallback:
     """search_index投入トリガーが title優先のdisplay titleを格納する確認"""
 
-    def test_insert_decision_with_title_indexes_title(self, migrated_db):
+    def test_insert_decision_with_title_indexes_title(self, migrated_db_up_to_0037):
         """titleを指定したdecisionのsearch_index.titleがtitleになる"""
         conn = get_connection()
         try:
@@ -168,7 +194,7 @@ class TestSearchIndexTitleFallback:
         finally:
             conn.close()
 
-    def test_insert_decision_without_title_falls_back_to_decision(self, migrated_db):
+    def test_insert_decision_without_title_falls_back_to_decision(self, migrated_db_up_to_0037):
         """title未指定のdecisionのsearch_index.titleがdecision本文にfallbackする"""
         conn = get_connection()
         try:
@@ -193,7 +219,7 @@ class TestSearchIndexTitleFallback:
         finally:
             conn.close()
 
-    def test_update_decision_title_updates_search_index(self, migrated_db):
+    def test_update_decision_title_updates_search_index(self, migrated_db_up_to_0037):
         """decisionのtitleを後からUPDATEするとsearch_index.titleも追従する"""
         conn = get_connection()
         try:
@@ -222,7 +248,7 @@ class TestSearchIndexTitleFallback:
         finally:
             conn.close()
 
-    def test_fts_body_still_matches_decision_text(self, migrated_db):
+    def test_fts_body_still_matches_decision_text(self, migrated_db_up_to_0037):
         """title指定decisionでも、FTSは decision本文/reason で全文検索できる（マッチ用indexは不変）"""
         conn = get_connection()
         try:

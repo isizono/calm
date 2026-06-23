@@ -13,6 +13,7 @@ from src.services.tag_service import (
     get_effective_tags_batch,
     get_effective_tags_batch_by_ids,
 )
+from src.services.relation_service import _add_relation_with_conn
 
 
 def _auto_generate_title(content: str) -> str | None:
@@ -81,12 +82,30 @@ def add_logs(items: list[dict]) -> dict:
                     if isinstance(parsed_tags, dict):
                         raise ValueError(parsed_tags["error"]["message"])
 
-                # ログをINSERT
+                # 親 topic の存在チェック (旧 FK 制約相当の不変条件を維持)
+                if topic_id is not None:
+                    exists = conn.execute(
+                        "SELECT 1 FROM discussion_topics WHERE id = ?",
+                        (topic_id,),
+                    ).fetchone()
+                    if not exists:
+                        raise sqlite3.IntegrityError(
+                            f"topic_id {topic_id} does not exist in discussion_topics"
+                        )
+
+                # ログをINSERT (親 topic は relations.belongs_to で表現するため topic_id は持たせない)
                 cursor = conn.execute(
-                    "INSERT INTO discussion_logs (topic_id, title, content) VALUES (?, ?, ?)",
-                    (topic_id, title, content),
+                    "INSERT INTO discussion_logs (title, content) VALUES (?, ?)",
+                    (title, content),
                 )
                 log_id = cursor.lastrowid
+
+                # 親 topic との belongs_to リレーションを記録
+                if topic_id is not None:
+                    _add_relation_with_conn(
+                        conn, "log", log_id,
+                        [{"type": "topic", "ids": [topic_id]}],
+                    )
 
                 # タグをリンク（指定された場合のみ）
                 if parsed_tags:
@@ -99,6 +118,8 @@ def add_logs(items: list[dict]) -> dict:
                 )
 
                 conn.execute(f"RELEASE SAVEPOINT item_{i}")
+                # topic_id は API 互換のため返す (DB カラムは 0047 で物理削除済み、
+                # 親 topic 情報は relations.belongs_to が正)
                 created.append({
                     "log_id": log_id,
                     "topic_id": topic_id,
@@ -178,9 +199,11 @@ def get_logs(
         include_retracted: Trueのとき取り消し済みログも含める（デフォルトFalse）
 
     Returns:
-        議論ログ一覧（各logにtags付き）
-        entity_type == "topic": 従来通りtopic_idで直接取得
-        entity_type == "activity": related topics（上限10件）経由でlogs集約
+        議論ログ一覧（各logにtags付き）。
+        entity_type == "topic" のとき、各 item は要求された topic_id を `topic_id` フィールドで返す。
+        entity_type == "activity" のとき、各 item は `topic_id` フィールドを含まない
+        (複数 topic に belongs_to する場合に「主たる親」を一意に決められないため、
+         呼び出し側で必要なら relations.belongs_to を別途 query する設計)。
     """
     retract_filter = "" if include_retracted else " AND retracted_at IS NULL"
 
@@ -191,12 +214,18 @@ def get_logs(
 
         if entity_type == "topic":
             topic_id = entity_id
+            include_topic_id = topic_id
+            # discussion_logs の親 topic は relations.belongs_to 経由で解決
+            log_retract_filter = retract_filter.replace("retracted_at", "l.retracted_at")
             if start_id is None:
                 rows = conn.execute(
                     f"""
-                    SELECT * FROM discussion_logs
-                    WHERE topic_id = ?{retract_filter}
-                    ORDER BY created_at ASC, id ASC
+                    SELECT l.* FROM discussion_logs l
+                    JOIN relations r ON r.source_type = 'log' AND r.source_id = l.id
+                                    AND r.target_type = 'topic' AND r.target_id = ?
+                                    AND r.relation_type = 'belongs_to'
+                    WHERE 1=1{log_retract_filter}
+                    ORDER BY l.created_at ASC, l.id ASC
                     LIMIT ?
                     """,
                     (topic_id, limit),
@@ -204,9 +233,12 @@ def get_logs(
             else:
                 rows = conn.execute(
                     f"""
-                    SELECT * FROM discussion_logs
-                    WHERE topic_id = ? AND id >= ?{retract_filter}
-                    ORDER BY created_at ASC, id ASC
+                    SELECT l.* FROM discussion_logs l
+                    JOIN relations r ON r.source_type = 'log' AND r.source_id = l.id
+                                    AND r.target_type = 'topic' AND r.target_id = ?
+                                    AND r.relation_type = 'belongs_to'
+                    WHERE l.id >= ?{log_retract_filter}
+                    ORDER BY l.created_at ASC, l.id ASC
                     LIMIT ?
                     """,
                     (topic_id, start_id, limit),
@@ -222,7 +254,7 @@ def get_logs(
                 display_title = log["title"] or (log["content"] or "")[:50]
                 item = {
                     "id": log["id"],
-                    "topic_id": log["topic_id"],
+                    "topic_id": include_topic_id,
                     "title": display_title,
                     "content": log["content"],
                     "tags": tags_map.get(log["id"], []),
@@ -247,12 +279,16 @@ def get_logs(
                 return {"logs": []}
 
             placeholders = ",".join("?" * len(topic_ids))
+            log_retract_filter = retract_filter.replace("retracted_at", "l.retracted_at")
             if start_id is None:
                 rows = conn.execute(
                     f"""
-                    SELECT * FROM discussion_logs
-                    WHERE topic_id IN ({placeholders}){retract_filter}
-                    ORDER BY id DESC
+                    SELECT DISTINCT l.* FROM discussion_logs l
+                    JOIN relations r ON r.source_type = 'log' AND r.source_id = l.id
+                                    AND r.target_type = 'topic' AND r.relation_type = 'belongs_to'
+                                    AND r.target_id IN ({placeholders})
+                    WHERE 1=1{log_retract_filter}
+                    ORDER BY l.id DESC
                     LIMIT ?
                     """,
                     tuple(topic_ids) + (limit,),
@@ -260,9 +296,12 @@ def get_logs(
             else:
                 rows = conn.execute(
                     f"""
-                    SELECT * FROM discussion_logs
-                    WHERE topic_id IN ({placeholders}) AND id <= ?{retract_filter}
-                    ORDER BY id DESC
+                    SELECT DISTINCT l.* FROM discussion_logs l
+                    JOIN relations r ON r.source_type = 'log' AND r.source_id = l.id
+                                    AND r.target_type = 'topic' AND r.relation_type = 'belongs_to'
+                                    AND r.target_id IN ({placeholders})
+                    WHERE l.id <= ?{log_retract_filter}
+                    ORDER BY l.id DESC
                     LIMIT ?
                     """,
                     tuple(topic_ids) + (start_id, limit),
@@ -279,7 +318,6 @@ def get_logs(
                 display_title = log["title"] or (log["content"] or "")[:50]
                 item = {
                     "id": log["id"],
-                    "topic_id": log["topic_id"],
                     "title": display_title,
                     "content": log["content"],
                     "tags": tags_map.get(log["id"], []),

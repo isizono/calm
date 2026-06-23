@@ -244,7 +244,8 @@ def _count_tag_scope_decisions(
 ) -> int:
     """tagスコープのdecision件数 (retracted除外)。
 
-    tagスコープは decision_tags 直付け OR decisions.topic_id 経由で topic_tags 継承の和。
+    tagスコープは decision_tags 直付け OR relations.belongs_to 経由で
+    親 topic の topic_tags 継承の和。
     """
     sql = """
         SELECT COUNT(*) FROM decisions d
@@ -255,8 +256,12 @@ def _count_tag_scope_decisions(
                 WHERE dt.decision_id = d.id AND dt.tag_id = ?
             )
             OR EXISTS (
-                SELECT 1 FROM topic_tags tt
-                WHERE tt.topic_id = d.topic_id AND tt.tag_id = ?
+                SELECT 1 FROM relations r
+                JOIN topic_tags tt ON tt.topic_id = r.target_id
+                WHERE r.source_type = 'decision' AND r.source_id = d.id
+                  AND r.target_type = 'topic'
+                  AND r.relation_type = 'belongs_to'
+                  AND tt.tag_id = ?
             )
           )
     """
@@ -274,8 +279,15 @@ def _count_tag_scope_decisions(
 def _get_hints_for_topic(conn: sqlite3.Connection, topic_id: int) -> list[Hint]:
     """topicに対するlogs_sparse判定 (素朴閾値: log<5 かつ decision>0)。"""
     row = conn.execute(
-        "SELECT COUNT(*) AS cnt FROM decisions"
-        " WHERE topic_id = ? AND retracted_at IS NULL",
+        """
+        SELECT COUNT(*) AS cnt FROM decisions d
+        JOIN relations r
+          ON r.source_type = 'decision' AND r.source_id = d.id
+         AND r.target_type = 'topic'
+         AND r.relation_type = 'belongs_to'
+         AND r.target_id = ?
+        WHERE d.retracted_at IS NULL
+        """,
         (topic_id,),
     ).fetchone()
     decision_count = row["cnt"] if row else 0
@@ -283,8 +295,15 @@ def _get_hints_for_topic(conn: sqlite3.Connection, topic_id: int) -> list[Hint]:
         return []
 
     row = conn.execute(
-        "SELECT COUNT(*) AS cnt FROM discussion_logs"
-        " WHERE topic_id = ? AND retracted_at IS NULL",
+        """
+        SELECT COUNT(*) AS cnt FROM discussion_logs dl
+        JOIN relations r
+          ON r.source_type = 'log' AND r.source_id = dl.id
+         AND r.target_type = 'topic'
+         AND r.relation_type = 'belongs_to'
+         AND r.target_id = ?
+        WHERE dl.retracted_at IS NULL
+        """,
         (topic_id,),
     ).fetchone()
     log_count = row["cnt"] if row else 0

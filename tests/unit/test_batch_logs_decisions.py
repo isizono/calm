@@ -655,11 +655,16 @@ class TestSavepointAtomicity:
         assert len(result["errors"]) == 1
         assert result["errors"][0]["index"] == 1
 
-        # DBに2件だけ存在することを確認
+        # DBに2件だけ存在することを確認 (親 topic は relations.belongs_to 経由)
         conn = get_connection()
         try:
             rows = conn.execute(
-                "SELECT COUNT(*) FROM discussion_logs WHERE topic_id = ?",
+                """
+                SELECT COUNT(*) FROM discussion_logs l
+                JOIN relations r ON r.source_type='log' AND r.source_id=l.id
+                                AND r.target_type='topic' AND r.relation_type='belongs_to'
+                                AND r.target_id = ?
+                """,
                 (tid,),
             ).fetchone()
             assert rows[0] == 2
@@ -681,7 +686,12 @@ class TestSavepointAtomicity:
         conn = get_connection()
         try:
             rows = conn.execute(
-                "SELECT COUNT(*) FROM decisions WHERE topic_id = ?",
+                """
+                SELECT COUNT(*) FROM decisions d
+                JOIN relations r ON r.source_type='decision' AND r.source_id=d.id
+                                AND r.target_type='topic' AND r.relation_type='belongs_to'
+                                AND r.target_id = ?
+                """,
                 (tid,),
             ).fetchone()
             assert rows[0] == 2

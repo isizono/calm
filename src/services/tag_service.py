@@ -405,13 +405,16 @@ def get_effective_tags_batch(
     junction_table = f"{entity_type}_tags"
     id_column = f"{entity_type}_id"
 
+    # decision/log の親 topic は relations.belongs_to 経由で解決
     rows = conn.execute(
         f"""
         SELECT e.id AS entity_id, t.namespace, t.name
         FROM {entity_table} e
-        JOIN topic_tags tt ON tt.topic_id = e.topic_id
+        JOIN relations r ON r.source_type = ? AND r.source_id = e.id
+                        AND r.target_type = 'topic' AND r.relation_type = 'belongs_to'
+        JOIN topic_tags tt ON tt.topic_id = r.target_id
         JOIN tags t ON t.id = tt.tag_id
-        WHERE e.topic_id = ?
+        WHERE r.target_id = ?
 
         UNION
 
@@ -419,10 +422,12 @@ def get_effective_tags_batch(
         FROM {junction_table} et
         JOIN tags t ON t.id = et.tag_id
         WHERE et.{id_column} IN (
-            SELECT id FROM {entity_table} WHERE topic_id = ?
+            SELECT r2.source_id FROM relations r2
+            WHERE r2.source_type = ? AND r2.target_type = 'topic'
+              AND r2.relation_type = 'belongs_to' AND r2.target_id = ?
         )
         """,
-        (parent_topic_id, parent_topic_id),
+        (entity_type, parent_topic_id, entity_type, parent_topic_id),
     ).fetchall()
 
     # entity_idごとにグルーピング
@@ -456,11 +461,14 @@ def get_effective_tags_batch_by_ids(
     id_column = f"{entity_type}_id"
 
     placeholders = ",".join("?" * len(entity_ids))
+    # 継承元 topic は relations.belongs_to 経由で解決
     rows = conn.execute(
         f"""
         SELECT e.id AS entity_id, t.namespace, t.name
         FROM {entity_table} e
-        JOIN topic_tags tt ON tt.topic_id = e.topic_id
+        JOIN relations r ON r.source_type = ? AND r.source_id = e.id
+                        AND r.target_type = 'topic' AND r.relation_type = 'belongs_to'
+        JOIN topic_tags tt ON tt.topic_id = r.target_id
         JOIN tags t ON t.id = tt.tag_id
         WHERE e.id IN ({placeholders})
 
@@ -471,7 +479,7 @@ def get_effective_tags_batch_by_ids(
         JOIN tags t ON t.id = et.tag_id
         WHERE et.{id_column} IN ({placeholders})
         """,
-        (*entity_ids, *entity_ids),
+        (entity_type, *entity_ids, *entity_ids),
     ).fetchall()
 
     # entity_idごとにグルーピング
@@ -491,6 +499,7 @@ def get_effective_tags(conn: sqlite3.Connection, entity_type: str, entity_id: in
     junction_table = f"{entity_type}_tags"
     id_column = f"{entity_type}_id"
 
+    # 継承元 topic は relations.belongs_to 経由で解決
     rows = conn.execute(
         f"""
         SELECT DISTINCT t.namespace, t.name
@@ -498,8 +507,9 @@ def get_effective_tags(conn: sqlite3.Connection, entity_type: str, entity_id: in
         WHERE t.id IN (
             SELECT tt.tag_id
             FROM topic_tags tt
-            JOIN {entity_table} e ON e.topic_id = tt.topic_id
-            WHERE e.id = ?
+            JOIN relations r ON r.target_type = 'topic' AND r.target_id = tt.topic_id
+                            AND r.source_type = ? AND r.relation_type = 'belongs_to'
+            WHERE r.source_id = ?
 
             UNION
 
@@ -508,7 +518,7 @@ def get_effective_tags(conn: sqlite3.Connection, entity_type: str, entity_id: in
             WHERE et.{id_column} = ?
         )
         """,
-        (entity_id, entity_id),
+        (entity_type, entity_id, entity_id),
     ).fetchall()
     return format_tags(rows)
 

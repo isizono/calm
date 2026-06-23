@@ -57,21 +57,31 @@ def _seed_rows(db_path: str, table: str, count: int) -> None:
                     (f"topic_{i}", "desc"),
                 )
         elif table == "decisions":
-            # decisions には topic_id が必要
+            # 親 topic との紐付けは relations.belongs_to で表現する
             topic_row = conn.execute("SELECT id FROM discussion_topics LIMIT 1").fetchone()
             topic_id = topic_row[0] if topic_row else 1
             for i in range(count):
+                cur = conn.execute(
+                    "INSERT INTO decisions (decision, reason) VALUES (?, ?)",
+                    (f"decision_{i}", "reason"),
+                )
                 conn.execute(
-                    "INSERT INTO decisions (topic_id, decision, reason) VALUES (?, ?, ?)",
-                    (topic_id, f"decision_{i}", "reason"),
+                    "INSERT INTO relations (source_type, source_id, target_type, target_id, relation_type) "
+                    "VALUES ('decision', ?, 'topic', ?, 'belongs_to')",
+                    (cur.lastrowid, topic_id),
                 )
         elif table == "discussion_logs":
             topic_row = conn.execute("SELECT id FROM discussion_topics LIMIT 1").fetchone()
             topic_id = topic_row[0] if topic_row else 1
             for i in range(count):
+                cur = conn.execute(
+                    "INSERT INTO discussion_logs (content) VALUES (?)",
+                    (f"log_{i}",),
+                )
                 conn.execute(
-                    "INSERT INTO discussion_logs (topic_id, content) VALUES (?, ?)",
-                    (topic_id, f"log_{i}"),
+                    "INSERT INTO relations (source_type, source_id, target_type, target_id, relation_type) "
+                    "VALUES ('log', ?, 'topic', ?, 'belongs_to')",
+                    (cur.lastrowid, topic_id),
                 )
         elif table == "activities":
             for i in range(count):

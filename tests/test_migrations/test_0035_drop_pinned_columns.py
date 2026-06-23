@@ -50,6 +50,32 @@ def db_before_0035():
             del os.environ["DISCUSSION_DB_PATH"]
 
 
+@pytest.fixture
+def migrated_db_up_to_0035():
+    """0035までのmigrationを適用したDBを提供する。
+
+    後続 migration（0046/0047 等）で decisions.topic_id / discussion_logs.topic_id が
+    物理削除されるため、0035 直後の「topic_id NOT NULL FK が残っている」状態を
+    検証するテストはここを使う。
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = os.path.join(tmpdir, "test.db")
+        os.environ["DISCUSSION_DB_PATH"] = db_path
+
+        parsed = parse_uri(f"sqlite:///{db_path}")
+        backend = _VecSQLiteBackend(parsed, default_migration_table)
+        backend.init_database()
+        all_migs = read_migrations(str(MIGRATIONS_DIR))
+        up_to_0035 = MigrationList([m for m in all_migs if m.id < "0036"])
+        with backend.lock():
+            backend.apply_migrations(up_to_0035)
+
+        _injected_tags.clear()
+        yield db_path
+        if "DISCUSSION_DB_PATH" in os.environ:
+            del os.environ["DISCUSSION_DB_PATH"]
+
+
 def _apply_migration_0035(db_path: str) -> None:
     """db_pathに対してmigration 0035のみを適用する。"""
     parsed = parse_uri(f"sqlite:///{db_path}")
@@ -157,7 +183,7 @@ class TestPinnedColumnsDropped:
 class TestOtherColumnsUnaffected:
     """0035でDROPされるべきでないカラムへの影響がないことの確認"""
 
-    def test_discussion_logs_other_columns_intact(self, migrated_db):
+    def test_discussion_logs_other_columns_intact(self, migrated_db_up_to_0035):
         """0035適用後、discussion_logsのid/title/content/topic_id/retracted_atカラムが保持される"""
         conn = get_connection()
         try:
@@ -169,7 +195,7 @@ class TestOtherColumnsUnaffected:
         finally:
             conn.close()
 
-    def test_decisions_other_columns_intact(self, migrated_db):
+    def test_decisions_other_columns_intact(self, migrated_db_up_to_0035):
         """0035適用後、decisionsのid/decision/reason/topic_id/retracted_atカラムが保持される"""
         conn = get_connection()
         try:
@@ -208,7 +234,7 @@ class TestOtherColumnsUnaffected:
 class TestDataIntegrity:
     """0035適用後のデータ操作確認"""
 
-    def test_insert_discussion_log_without_pinned(self, migrated_db):
+    def test_insert_discussion_log_without_pinned(self, migrated_db_up_to_0035):
         """0035適用後、discussion_logsにpinned列なしでINSERTできる"""
         conn = get_connection()
         try:
@@ -234,7 +260,7 @@ class TestDataIntegrity:
         finally:
             conn.close()
 
-    def test_insert_decision_without_pinned(self, migrated_db):
+    def test_insert_decision_without_pinned(self, migrated_db_up_to_0035):
         """0035適用後、decisionsにpinned列なしでINSERTできる"""
         conn = get_connection()
         try:

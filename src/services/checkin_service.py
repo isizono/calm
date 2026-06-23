@@ -93,10 +93,13 @@ def _get_decisions_from_topics(conn: sqlite3.Connection, topic_ids: list[int]) -
     placeholders = ",".join("?" * len(topic_ids))
     rows = conn.execute(
         f"""
-        SELECT id, decision, title
-        FROM decisions
-        WHERE topic_id IN ({placeholders}) AND retracted_at IS NULL
-        ORDER BY id DESC
+        SELECT DISTINCT d.id, d.decision, d.title
+        FROM decisions d
+        JOIN relations r ON r.source_type = 'decision' AND r.source_id = d.id
+                        AND r.target_type = 'topic' AND r.relation_type = 'belongs_to'
+                        AND r.target_id IN ({placeholders})
+        WHERE d.retracted_at IS NULL
+        ORDER BY d.id DESC
         LIMIT {DECISIONS_FULL_LIMIT}
         """,
         tuple(topic_ids),
@@ -117,7 +120,14 @@ def _count_decisions_from_topics(conn: sqlite3.Connection, topic_ids: list[int])
         return 0
     placeholders = ",".join("?" * len(topic_ids))
     row = conn.execute(
-        f"SELECT COUNT(*) FROM decisions WHERE topic_id IN ({placeholders}) AND retracted_at IS NULL",
+        f"""
+        SELECT COUNT(DISTINCT d.id)
+        FROM decisions d
+        JOIN relations r ON r.source_type = 'decision' AND r.source_id = d.id
+                        AND r.target_type = 'topic' AND r.relation_type = 'belongs_to'
+                        AND r.target_id IN ({placeholders})
+        WHERE d.retracted_at IS NULL
+        """,
         tuple(topic_ids),
     ).fetchone()
     return row[0] if row else 0
@@ -143,10 +153,13 @@ def _get_logs_catalog_from_topics(
     # 最新1件: content付き
     latest_row = conn.execute(
         f"""
-        SELECT id, title, content
-        FROM discussion_logs
-        WHERE topic_id IN ({placeholders}) AND retracted_at IS NULL
-        ORDER BY id DESC
+        SELECT DISTINCT l.id, l.title, l.content
+        FROM discussion_logs l
+        JOIN relations r ON r.source_type = 'log' AND r.source_id = l.id
+                        AND r.target_type = 'topic' AND r.relation_type = 'belongs_to'
+                        AND r.target_id IN ({placeholders})
+        WHERE l.retracted_at IS NULL
+        ORDER BY l.id DESC
         LIMIT 1
         """,
         params,
@@ -162,10 +175,13 @@ def _get_logs_catalog_from_topics(
     # 残り: id + titleのみ（titleが空の場合はcontentの先頭50文字をfallback）
     catalog_rows = conn.execute(
         f"""
-        SELECT id, title, content
-        FROM discussion_logs
-        WHERE topic_id IN ({placeholders}) AND retracted_at IS NULL AND id != ?
-        ORDER BY id DESC
+        SELECT DISTINCT l.id, l.title, l.content
+        FROM discussion_logs l
+        JOIN relations r ON r.source_type = 'log' AND r.source_id = l.id
+                        AND r.target_type = 'topic' AND r.relation_type = 'belongs_to'
+                        AND r.target_id IN ({placeholders})
+        WHERE l.retracted_at IS NULL AND l.id != ?
+        ORDER BY l.id DESC
         """,
         params + (latest_row["id"],),
     ).fetchall()

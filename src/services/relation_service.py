@@ -11,7 +11,22 @@ from src.services.tag_service import (
 logger = logging.getLogger(__name__)
 
 VALID_ENTITY_TYPES = {"topic", "activity", "material", "decision", "log"}
-VALID_RELATION_TYPES = {"related", "depends_on", "supersedes"}
+VALID_RELATION_TYPES = {"related", "depends_on", "supersedes", "belongs_to"}
+
+# 親帰属パターン: 子→親 (decision/log/material/activity → topic) を表す relations 行は
+# 自動的に 'belongs_to' で書き込む。正規化制約により親が必ず target 側に来る
+_PARENT_CHILD_TYPES = {"activity", "material", "decision", "log"}
+
+
+def _resolve_relation_type(n_stype: str, n_ttype: str, requested: str) -> str:
+    """正規化後のペアと要求された relation_type から、実際に書き込む relation_type を決める。
+
+    親帰属パターン (子 → topic) の 'related' は自動的に 'belongs_to' に格上げする。
+    親帰属でないペアに対する 'belongs_to' の指定は呼び出し元側で弾く想定。
+    """
+    if n_ttype == "topic" and n_stype in _PARENT_CHILD_TYPES:
+        return "belongs_to"
+    return requested
 
 
 def _validate_entity_type(entity_type: str) -> dict | None:
@@ -140,8 +155,18 @@ def _add_depends_on_with_conn(conn: sqlite3.Connection, source_id: int, target_i
     return added
 
 
-def _add_relation_with_conn(conn: sqlite3.Connection, source_type: str, source_id: int, targets: list[dict]) -> int:
-    """conn共有版: リレーションを追加する。追加件数を返す。"""
+def _add_relation_with_conn(
+    conn: sqlite3.Connection,
+    source_type: str,
+    source_id: int,
+    targets: list[dict],
+    relation_type: str = "related",
+) -> int:
+    """conn共有版: リレーションを追加する。追加件数を返す。
+
+    親帰属パターン (子 → topic) は自動的に 'belongs_to' に格上げされる。
+    それ以外は relation_type 引数の値 (default: 'related') で書き込む。
+    """
     added = 0
     for target in targets:
         target_type = target["type"]
@@ -151,9 +176,10 @@ def _add_relation_with_conn(conn: sqlite3.Connection, source_type: str, source_i
                 # 自己参照はスキップ
                 continue
             n_stype, n_sid, n_ttype, n_tid = normalized
+            rtype = _resolve_relation_type(n_stype, n_ttype, relation_type)
             conn.execute(
-                "INSERT OR IGNORE INTO relations (source_type, source_id, target_type, target_id) VALUES (?, ?, ?, ?)",
-                (n_stype, n_sid, n_ttype, n_tid),
+                "INSERT OR IGNORE INTO relations (source_type, source_id, target_type, target_id, relation_type) VALUES (?, ?, ?, ?, ?)",
+                (n_stype, n_sid, n_ttype, n_tid, rtype),
             )
             # INSERT OR IGNOREの場合、重複時はchanges()=0
             if conn.execute("SELECT changes()").fetchone()[0] > 0:
@@ -218,6 +244,28 @@ def _validate_depends_on_constraints(source_type: str, targets: list[dict]) -> d
                 "error": {
                     "code": "INVALID_RELATION_TYPE",
                     "message": "depends_on relation is only valid for activity→activity",
+                }
+            }
+    return None
+
+
+def _validate_belongs_to_constraints(source_type: str, targets: list[dict]) -> dict | None:
+    """belongs_toリレーションの制約をバリデーションする。
+    親帰属パターン (子: decision/log/material/activity → 親: topic) のみ有効。
+    """
+    if source_type not in _PARENT_CHILD_TYPES:
+        return {
+            "error": {
+                "code": "INVALID_RELATION_TYPE",
+                "message": f"belongs_to is only valid for source_type in {sorted(_PARENT_CHILD_TYPES)} → 'topic'",
+            }
+        }
+    for target in targets:
+        if target["type"] != "topic":
+            return {
+                "error": {
+                    "code": "INVALID_RELATION_TYPE",
+                    "message": "belongs_to is only valid when target type is 'topic'",
                 }
             }
     return None
@@ -345,9 +393,12 @@ def add_relation(source_type: str, source_id: int, targets: list[dict], relation
         source_type: 起点エンティティのタイプ（"topic", "activity", "material", "decision", or "log"）
         source_id: 起点エンティティのID
         targets: ターゲットリスト [{"type": "topic", "ids": [1, 2]}, ...]
-        relation_type: リレーションタイプ（"related", "depends_on", or "supersedes"）。
+        relation_type: リレーションタイプ（"related", "depends_on", "supersedes", or "belongs_to"）。
             "depends_on" はactivity同士のみ有効で、循環依存を検出した場合はエラーを返す。
             "supersedes" はdecision同士のみ有効で、循環を検出した場合はエラーを返す。
+            "belongs_to" は子 (decision/log/material/activity) → 親 (topic) の親帰属表現にのみ有効。
+            なお、"related" を渡しても親帰属パターン (子 → topic) は内部で自動的に "belongs_to"
+            に格上げされる。
 
     Returns:
         成功時: {"added": int}
@@ -378,6 +429,11 @@ def add_relation(source_type: str, source_id: int, targets: list[dict], relation
         if err:
             return err
 
+    if relation_type == "belongs_to":
+        err = _validate_belongs_to_constraints(source_type, targets)
+        if err:
+            return err
+
     conn = get_connection()
     try:
         if relation_type == "depends_on":
@@ -403,7 +459,7 @@ def add_relation(source_type: str, source_id: int, targets: list[dict], relation
                 )
             return result
         else:
-            added = _add_relation_with_conn(conn, source_type, source_id, targets)
+            added = _add_relation_with_conn(conn, source_type, source_id, targets, relation_type)
         conn.commit()
         return {"added": added}
     except ValueError as e:
