@@ -337,6 +337,7 @@ kill タイミングは relay POST の**完了後**で固定する。送信前�
 | `dead` | ❌ 対象外 | 起動失敗。人間判断ステージに残す |
 | `crashed` | ❌ 対象外 | reducer 推論のみで本 step を実行する worker は存在しない |
 | `crashed-during-drain` | ❌ 対象外 | 同上 |
+| `idle-timeout` | ✅ 対象 (bash 側で kill 済み) | heartbeat.sh が自分で event 送信 + pane kill する (D#2853 機構1/2)。worker AI が SKILL を踏まなくても確実に退場する仕組みなので、本 Step 6 が worker AI 側で発火する経路は通常存在しない |
 
 起動環境（環境変数）別の経路:
 
