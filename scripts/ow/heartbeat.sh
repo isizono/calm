@@ -24,6 +24,9 @@
 #   OW_MCP_UPTIME_MIN_SEC
 #                      self-exit を発火するために必要な heartbeat プロセスの最小経過秒
 #                      (default: 300=5分)。spawn 直後の不安定期保護。
+#   OW_MCP_CONNECT_TIMEOUT
+#                      MCP /health curl の connect timeout（秒）。default: 2
+#   OW_MCP_MAX_TIME    MCP /health curl の全体タイムアウト（秒）。default: 3
 #   OW_DISABLE_MCP_SELF_EXIT
 #                      "1" を渡すと self-exit を無効化（デバッグ・検証用）。
 
@@ -39,6 +42,8 @@ OW_CURL_CONNECT_TIMEOUT="${OW_CURL_CONNECT_TIMEOUT:-5}"
 OW_MCP_URL="${OW_MCP_URL:-http://127.0.0.1:52837}"
 OW_MCP_FAIL_THRESHOLD="${OW_MCP_FAIL_THRESHOLD:-5}"
 OW_MCP_UPTIME_MIN_SEC="${OW_MCP_UPTIME_MIN_SEC:-300}"
+OW_MCP_CONNECT_TIMEOUT="${OW_MCP_CONNECT_TIMEOUT:-2}"
+OW_MCP_MAX_TIME="${OW_MCP_MAX_TIME:-3}"
 OW_DISABLE_MCP_SELF_EXIT="${OW_DISABLE_MCP_SELF_EXIT:-0}"
 
 MCP_FAIL_COUNT_FILE="/tmp/ow-mcp-fail-$$"
@@ -67,7 +72,10 @@ parent_alive() {
 
 # MCP /health の死活確認。成功=0 / 失敗=1。
 mcp_health_check() {
-    curl -sf --connect-timeout 2 --max-time 3 "${OW_MCP_URL}/health" > /dev/null 2>&1
+    curl -sf \
+        --connect-timeout "$OW_MCP_CONNECT_TIMEOUT" \
+        --max-time "$OW_MCP_MAX_TIME" \
+        "${OW_MCP_URL}/health" > /dev/null 2>&1
 }
 
 # self-exit の安全条件: w-* handle かつ PHASE=ready かつ uptime>=閾値。
@@ -78,8 +86,12 @@ is_safe_for_self_exit() {
         *) return 1 ;;
     esac
     [ "$PHASE" = "ready" ] || return 1
-    local now=$(date +%s)
-    local elapsed=$(( now - HEARTBEAT_STARTED_AT ))
+    # `local var=$(cmd)` は local の exit code が常に 0 になり set -e をすり抜ける。
+    # 宣言と代入は分ける。
+    local now
+    now=$(date +%s)
+    local elapsed
+    elapsed=$(( now - HEARTBEAT_STARTED_AT ))
     [ "$elapsed" -ge "$OW_MCP_UPTIME_MIN_SEC" ] || return 1
     return 0
 }
@@ -99,6 +111,14 @@ self_exit_due_to_mcp_loss() {
         "${RELAY_URL}/send" > /dev/null 2>&1 || true
     if [ -n "${TMUX_PANE:-}" ]; then
         tmux kill-pane -t "$TMUX_PANE" 2>/dev/null || true
+    elif [ -n "$OW_PARENT_PID" ]; then
+        # tmux pane が不明な場合は worker (claude) 本体を親PID経由で kill する。
+        # 主目的「累積メモリ解放」は worker プロセス終了で達成されるため、ここを抜くと
+        # heartbeat.sh だけ消えて worker が居残り、PR の意図を満たさなくなる。
+        echo "heartbeat.sh: TMUX_PANE unset; killing OW_PARENT_PID=$OW_PARENT_PID" >&2
+        kill -TERM "$OW_PARENT_PID" 2>/dev/null || true
+    else
+        echo "heartbeat.sh: TMUX_PANE and OW_PARENT_PID both unset; worker process will leak" >&2
     fi
     exit 0
 }

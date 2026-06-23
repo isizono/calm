@@ -658,8 +658,11 @@ class TestHeartbeatShSelfExit:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        # 1回失敗した段階で MCP 復活
-        time.sleep(0.1)
+        # 1〜2 周期失敗した段階で MCP 復活。
+        # 0.1s だと CI のスケジューラ次第で最初のループの curl 中にも当たり、
+        # 失敗回数が 0/1/2 でブレうる。0.5s 待てば最低 1 回は必ず失敗を経由する。
+        # OW_MCP_FAIL_THRESHOLD=3 なので 2 回程度の揺れは許容される。
+        time.sleep(0.5)
         server.health_alive = True
         # 0.3 * 4 周期分待つ。カウンタが 0 にリセットされて self-exit しないことを確認
         time.sleep(1.5)
