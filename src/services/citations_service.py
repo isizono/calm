@@ -10,16 +10,25 @@ upsert_citations_for_owner_with_conn / get_in_out 等) を提供する。
 
 X は M/D/L/A/T のいずれかで、それぞれ material/decision/log/activity/topic に対応する。
 """
+import json
+import re
 import sqlite3
+from datetime import datetime, timezone
+from typing import Any
 
 from src.db import get_connection
 from src.services.citations_pure import (
     OWNER_TEXT_FIELDS,
+    TYPE_CODE_TO_NAME,
     TYPE_TO_TABLE,
     TYPE_TO_TITLE_EXPR,
     TYPES_WITH_RETRACT,
+    VALID_TARGET_TYPES,
+    _RAW_CITE_PATTERN,
     _combine_owner_text,
     _validate_owner_type,
+    check_target_exists,
+    convert_raw_to_cite,
     extract_citations,
 )
 
@@ -29,7 +38,23 @@ __all__ = [
     "delete_all_for_owner",
     "upsert_citations_for_owner_with_conn",
     "get_in_out",
+    "record_citation_event",
+    "apply_raw_to_cite_conversion",
+    "VALID_EVENT_SOURCES",
+    "VALID_VERIFICATION_RESULTS",
 ]
+
+# citation_event_log.source の許容値 (migration 0046 の CHECK 制約と一致させる)
+VALID_EVENT_SOURCES: tuple[str, ...] = (
+    "write_auto_convert",
+    "bulk_migration",
+    "transcript_post_tool_use",
+    "transcript_session_start_backfill",
+    "external_doc_sanitize",
+)
+
+# citation_event_log.verification_result の許容値 (CHECK 制約と一致)
+VALID_VERIFICATION_RESULTS: tuple[str, ...] = ("exists", "dangling", "skip")
 
 
 def extract_and_insert(owner_type: str, owner_id: int, content: str) -> int:
@@ -200,3 +225,190 @@ def _format_in_out_entry(entity_type: str, entity_id: int, meta: dict) -> dict:
     if meta["retracted"]:
         entry["retracted"] = True
     return entry
+
+
+def record_citation_event(
+    conn: sqlite3.Connection,
+    source: str,
+    tool_name: str | None,
+    target_entity_type: str | None,
+    target_entity_id: int | None,
+    target_field: str | None,
+    before_text: str,
+    after_text: str,
+    verified_at: str | None = None,
+    verification_result: str | None = None,
+    extra: dict | None = None,
+) -> int:
+    """citation_event_log に 1 件 INSERT し、その row id を返す。
+
+    呼び出し元が開いた conn にぶら下げる (autocommit 制御は呼び出し元側)。
+
+    Args:
+        source: VALID_EVENT_SOURCES のいずれか
+        tool_name: write 経路の MCP tool 名等 (任意)
+        target_entity_type: 'decision' / 'activity' / 'log' / 'material' / 'topic' / None
+        target_entity_id: 対象エンティティ ID (任意)
+        target_field: 対象 field 名 (任意、content / title 等)
+        before_text: 変換前テキスト (空文字 OK、NULL 不可)
+        after_text: 変換後テキスト (空文字 OK、NULL 不可)
+        verified_at: target 存在チェック時刻 (UTC, "YYYY-MM-DD HH:MM:SS" 形式)
+        verification_result: 'exists' / 'dangling' / 'skip' / None
+        extra: 追加メタ情報 (JSON シリアライズ可能な dict、None なら extra_json は NULL)
+    """
+    if source not in VALID_EVENT_SOURCES:
+        raise ValueError(
+            f"Invalid source {source!r}; must be one of {VALID_EVENT_SOURCES}"
+        )
+    if (
+        target_entity_type is not None
+        and target_entity_type not in VALID_TARGET_TYPES
+    ):
+        raise ValueError(
+            f"Invalid target_entity_type {target_entity_type!r}; "
+            f"must be one of {VALID_TARGET_TYPES} or None"
+        )
+    if (
+        verification_result is not None
+        and verification_result not in VALID_VERIFICATION_RESULTS
+    ):
+        raise ValueError(
+            f"Invalid verification_result {verification_result!r}; "
+            f"must be one of {VALID_VERIFICATION_RESULTS} or None"
+        )
+    extra_json = json.dumps(extra, ensure_ascii=False) if extra is not None else None
+    cur = conn.execute(
+        "INSERT INTO citation_event_log ("
+        "source, tool_name, target_entity_type, target_entity_id, target_field, "
+        "before_text, after_text, verified_at, verification_result, extra_json"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            source,
+            tool_name,
+            target_entity_type,
+            target_entity_id,
+            target_field,
+            before_text,
+            after_text,
+            verified_at,
+            verification_result,
+            extra_json,
+        ),
+    )
+    return int(cur.lastrowid)
+
+
+def _utc_now_stamp() -> str:
+    """SQLite の datetime('now') と整合する UTC タイムスタンプ。"""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def apply_raw_to_cite_conversion(
+    conn: sqlite3.Connection,
+    entity_type: str,
+    entity_id: int,
+    fields_payload: dict[str, Any],
+    tool_name: str | None,
+) -> dict:
+    """write 経路の自動変換を行う統合 helper。
+
+    OWNER_TEXT_FIELDS (field map) を引いて entity_type ごとの対象 field を抽出し、
+    各 field に対し pure 関数 convert_raw_to_cite を呼んで生 `X#NNN` を
+    `{{cite:X#NNN}}` に変換する。target が DB に存在しない (dangling) リテラルは
+    `[deleted X#NNN]` に確定書き換えする。変換が発生した field ごとに
+    citation_event_log に 1 件 record_citation_event する。
+
+    冪等性: 既に `{{cite:X#NNN}}` 形式のものは convert_raw_to_cite 内でスキップされ、
+    入力テキストと出力テキストが一致するため event は記録されない。コードブロック内 /
+    インラインバッククォート内 / `\\X#NNN` エスケープも同様にスキップされる。
+
+    Args:
+        entity_type: 'material' / 'decision' / 'log' / 'activity' / 'topic'
+        entity_id: 対象エンティティ ID
+        fields_payload: 対象 field の現在値 ({field_name: text})。OWNER_TEXT_FIELDS に
+                        定義された field のみが変換対象、その他の key は素通し。
+        tool_name: write tool 名 (event 記録の tool_name 列に入る)
+
+    Returns:
+        {
+          "fields": {変換後 fields_payload 全 key},
+          "event_ids": [int, ...],   # 変換が発生した field 単位の event id
+          "stats":    {field_name: {sanitized_count / dangling_count / skipped_*}}
+        }
+    """
+    if entity_type not in OWNER_TEXT_FIELDS:
+        raise ValueError(
+            f"Invalid entity_type {entity_type!r}; "
+            f"must be one of {tuple(OWNER_TEXT_FIELDS)}"
+        )
+    result_fields: dict[str, Any] = dict(fields_payload)
+    event_ids: list[int] = []
+    stats: dict[str, dict] = {}
+    for field_name in OWNER_TEXT_FIELDS[entity_type]:
+        original = fields_payload.get(field_name)
+        if not isinstance(original, str) or not original:
+            continue
+
+        dangling_set: set[tuple[str, int]] = set()
+
+        def validator(target_type: str, target_id: int) -> bool:
+            exists = check_target_exists(conn, target_type, target_id)
+            if not exists:
+                dangling_set.add((target_type, target_id))
+            return exists
+
+        converted, counters = convert_raw_to_cite(
+            original, target_validator=validator
+        )
+
+        # dangling target は出力に raw `X#NNN` として残るので、確定書き換えで
+        # `[deleted X#NNN]` に置換する。codeblock / escape / 既存 cite 区間内の
+        # 同一リテラルは validator が呼ばれていないため dangling_set には含まれず、
+        # 下記 sub の置換対象からも除外される (= raw のまま温存)。
+        if dangling_set:
+
+            def replace_dangling(m: "re.Match[str]") -> str:
+                code = m.group(1)
+                tid = int(m.group(2))
+                target_type = TYPE_CODE_TO_NAME[code]
+                if (target_type, tid) in dangling_set:
+                    return f"[deleted {code}#{tid}]"
+                return m.group(0)
+
+            converted = _RAW_CITE_PATTERN.sub(replace_dangling, converted)
+
+        result_fields[field_name] = converted
+
+        field_stats = {
+            "sanitized_count": counters["sanitized_count"],
+            "dangling_count": len(dangling_set),
+            "skipped_in_codeblock": counters["skipped_in_codeblock"],
+            "skipped_in_existing_cite": counters["skipped_in_existing_cite"],
+            "skipped_escape": counters["skipped_escape"],
+        }
+        stats[field_name] = field_stats
+
+        if converted == original:
+            continue
+        verification_result = "dangling" if dangling_set else "exists"
+        extra: dict = dict(field_stats)
+        if dangling_set:
+            extra["dangling_targets"] = [
+                {"type": t, "id": i}
+                for (t, i) in sorted(dangling_set, key=lambda p: (p[0], p[1]))
+            ]
+        event_id = record_citation_event(
+            conn,
+            source="write_auto_convert",
+            tool_name=tool_name,
+            target_entity_type=entity_type,
+            target_entity_id=entity_id,
+            target_field=field_name,
+            before_text=original,
+            after_text=converted,
+            verified_at=_utc_now_stamp(),
+            verification_result=verification_result,
+            extra=extra,
+        )
+        event_ids.append(event_id)
+    return {"fields": result_fields, "event_ids": event_ids, "stats": stats}
