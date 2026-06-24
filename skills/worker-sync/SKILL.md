@@ -31,6 +31,20 @@ workerは記録ストア上をorchフローとして走るため、知識層へ�
 このスキルは `worker` スキルの退場処理から、`cmd:close` 受信後・`state:closed` 送信前に呼ばれる。
 task fileの `topic_id` / `activity_id` を記録の紐づけ先に使う。
 
+### 0. fail-safe: done envelope 送信済みチェック (terminated 直前 guard)
+
+worker-sync は `cmd:close` 受信を前提として呼ばれる。`cmd:close` は dispatcher が `event:state(done)` を受領し検証 OK と判定した時のみ送る規約 (dispatcher SKILL.md §クローズハンドシェイク)。逆に言えば、worker-sync が呼ばれた時点で worker は **必ず `event:state(done)` を送信済み** のはず。
+
+呼び出し経路バグや worker 側 SKILL 解釈ズレで「done 未送信なのに worker-sync に到達」した場合は、本スキルを即中止して worker SKILL.md §完了 → done に戻り `event:state(done)` を送信してから `cmd:close` 受領を再度待ち直す。
+
+具体チェック:
+
+1. `ow_history(channel=<channel_code>, since=<spawn-bundle msg_id>)` で自分が `from` の `data.type=state` envelope を pull (since には worker SKILL.md Step 7 で取得した spawn-bundle envelope の msg_id を使い、過去セッションで同 alias が再利用された際の取り違えを避ける)
+2. abort 条件: `event:state(done)` (= `data.state == "done"`) が **無い**、または唯一の done envelope の msg_id が `cmd:close` 受信時の msg_id より **新しい** (= cmd:close より後に送られた異常順序) 場合
+3. abort 時の挙動: worker-sync の以降のステップを実行せず、`event:state(working, phase="recovery-from-skip", note="done envelope was not sent before drain; resuming work to send done envelope")` を上長に送り、worker SKILL.md §完了 → done に戻る
+
+この guard は「Goal achieved」recap で done envelope を省略して退場処理に直行する経路 (worker SKILL.md §完了 → done で禁止された動き) を、worker-sync 側でも最後にトラップするための fail-safe。本 guard が発火する状況は本来あってはならず、発火そのものを `intent:dispatch-log` 相当の log にも残してから revert する。
+
 ### 1. log記録（必須） — add_logs
 
 セッション中の作業経緯を **1件のログ** として記録する。`state:done` のsummaryより詳細に残す。次に来るセッション（同一workerの再spawnや、orchによる別worker割り当て）が経緯を引き継げることが目的。
@@ -71,3 +85,4 @@ workerは決定事項を **直接記録しない**。`state:done` の `decision_
 - topic・activityを新規作成しない
 - decisionを直接記録しない（エスカレーション例外を除く）
 - 棚卸し・remember・ふりかえりをしない
+- `event:state(done)` 送信済みチェック (Step 0) を skip しない。done 未送信で worker-sync を実行して terminated に向かうと、上長は worker 死亡と区別がつかず成果検証不能になる (本 guard の存在理由)
