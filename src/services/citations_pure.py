@@ -14,6 +14,12 @@ import re
 import sqlite3
 from typing import Callable
 
+from src.services.internal_id_patterns import (
+    FULLWORD_TO_CODE,
+    RAW_CITE_CODE_PATTERN as _RAW_CITE_PATTERN,
+    RAW_CITE_FULLWORD_PATTERN as _RAW_CITE_FULLWORD_PATTERN,
+)
+
 logger = logging.getLogger(__name__)
 
 # 同パッケージの他モジュール (citations_service / citation_renderer) と、
@@ -83,10 +89,6 @@ OWNER_TEXT_FIELDS: dict[str, tuple[str, ...]] = {
 
 _CITE_PATTERN = re.compile(r"\{\{cite:([MDLAT])#(\d+)\}\}")
 _CITE_LIKE_PATTERN = re.compile(r"\{\{cite:[^}]*\}\}")
-
-# 生 `X#NNN` 検出パターン。word boundary を lookbehind/lookahead で明示する
-# (前後が英数字/_/ なら識別子の一部とみなして非マッチ)。
-_RAW_CITE_PATTERN = re.compile(r"(?<![A-Za-z0-9_/])([MDLAT])#(\d+)(?![A-Za-z0-9_])")
 
 
 def extract_citations(content: str) -> list[tuple[str, int]]:
@@ -188,8 +190,11 @@ def _new_convert_counters() -> dict:
 
 
 def _count_raw_in_segment(segment: str) -> int:
-    """セグメント内の生 `X#NNN` パターン数を boundary 付きで数える。"""
-    return len(_RAW_CITE_PATTERN.findall(segment))
+    """セグメント内の生リテラルパターン数を boundary 付きで数える (code + fullword)。"""
+    return (
+        len(_RAW_CITE_PATTERN.findall(segment))
+        + len(_RAW_CITE_FULLWORD_PATTERN.findall(segment))
+    )
 
 
 def _convert_line_raw_to_cite(
@@ -261,10 +266,18 @@ def _convert_line_raw_to_cite(
                     counters["skipped_escape"] += 1
                     i = m.end()
                     continue
+            # `\log #123` 等 fullword エスケープ: バックスラッシュ直後が
+            # fullword の type 名なら全体スキップ
+            m_fw = _RAW_CITE_FULLWORD_PATTERN.match(line, i + 1)
+            if m_fw and m_fw.start() == i + 1:
+                out_parts.append(line[i : m_fw.end()])
+                counters["skipped_escape"] += 1
+                i = m_fw.end()
+                continue
             out_parts.append(ch)
             i += 1
             continue
-        # 生 `X#NNN`
+        # 生 `X#NNN` (code 形式)
         m = _RAW_CITE_PATTERN.match(line, i)
         if m:
             code = m.group(1)
@@ -278,6 +291,23 @@ def _convert_line_raw_to_cite(
             out_parts.append("{{cite:" + code + "#" + str(target_id) + "}}")
             counters["sanitized_count"] += 1
             i = m.end()
+            continue
+        # 生 fullword (`log #123` 等)。マッチしたら大文字 code に正規化して
+        # `{{cite:L#NNN}}` 形式に統一する。
+        m_fw = _RAW_CITE_FULLWORD_PATTERN.match(line, i)
+        if m_fw:
+            name = m_fw.group(1).lower()
+            code = FULLWORD_TO_CODE[name]
+            target_id = int(m_fw.group(2))
+            target_type = TYPE_CODE_TO_NAME[code]
+            if target_validator is not None and not target_validator(target_type, target_id):
+                out_parts.append(line[i : m_fw.end()])
+                counters["skipped_dangling"] += 1
+                i = m_fw.end()
+                continue
+            out_parts.append("{{cite:" + code + "#" + str(target_id) + "}}")
+            counters["sanitized_count"] += 1
+            i = m_fw.end()
             continue
         out_parts.append(ch)
         i += 1

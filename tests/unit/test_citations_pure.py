@@ -302,3 +302,120 @@ class TestConvertWithValidatorAgainstDb:
         assert out == "exists {{cite:M#1}} missing M#999"
         assert counters["sanitized_count"] == 1
         assert counters["skipped_dangling"] == 1
+
+
+class TestFullwordConversion:
+    """英語フルワード形式 (log/decision/activity/material/topic + #NNN) の変換。
+
+    既存 code 形式と並行して変換され、結果は大文字 code 形式に正規化される
+    (例: `log #123` → `{{cite:L#123}}`)。
+    """
+
+    def test_lowercase_with_space(self):
+        out, counters = convert_raw_to_cite("see log #123 here")
+        assert out == "see {{cite:L#123}} here"
+        assert counters["sanitized_count"] == 1
+
+    def test_lowercase_no_space(self):
+        out, counters = convert_raw_to_cite("see log#123 here")
+        assert out == "see {{cite:L#123}} here"
+        assert counters["sanitized_count"] == 1
+
+    def test_case_insensitive(self):
+        out, counters = convert_raw_to_cite("Log #1 and LOG #2 and LoG #3")
+        assert out == "{{cite:L#1}} and {{cite:L#2}} and {{cite:L#3}}"
+        assert counters["sanitized_count"] == 3
+
+    def test_all_five_typenames(self):
+        out, _ = convert_raw_to_cite(
+            "log #1 decision #2 activity #3 material #4 topic #5"
+        )
+        assert out == (
+            "{{cite:L#1}} {{cite:D#2}} {{cite:A#3}} "
+            "{{cite:M#4}} {{cite:T#5}}"
+        )
+
+    def test_double_space_does_not_convert(self):
+        out, counters = convert_raw_to_cite("log  #1")
+        assert out == "log  #1"
+        assert counters["sanitized_count"] == 0
+
+    def test_colon_does_not_convert(self):
+        out, _ = convert_raw_to_cite("log: #1 and log:#2")
+        assert out == "log: #1 and log:#2"
+
+    def test_japanese_does_not_convert(self):
+        out, _ = convert_raw_to_cite("ログ #1 and 決定事項 #2")
+        assert out == "ログ #1 and 決定事項 #2"
+
+    def test_word_boundary_blog_not_match(self):
+        out, _ = convert_raw_to_cite("the blog #1 was published")
+        assert out == "the blog #1 was published"
+
+    def test_word_boundary_path_log_not_match(self):
+        out, _ = convert_raw_to_cite("/var/log #1 is full")
+        assert out == "/var/log #1 is full"
+
+    def test_word_boundary_trailing_alnum_not_match(self):
+        out, _ = convert_raw_to_cite("log #1abc is junk")
+        assert out == "log #1abc is junk"
+
+    def test_escape_backslash_not_converted(self):
+        out, counters = convert_raw_to_cite("see \\log #1 literal")
+        assert out == "see \\log #1 literal"
+        assert counters["sanitized_count"] == 0
+        assert counters["skipped_escape"] == 1
+
+    def test_escape_works_for_all_typenames(self):
+        out, counters = convert_raw_to_cite(
+            "\\log #1 \\decision #2 \\activity #3 \\material #4 \\topic #5"
+        )
+        assert out == (
+            "\\log #1 \\decision #2 \\activity #3 \\material #4 \\topic #5"
+        )
+        assert counters["sanitized_count"] == 0
+        assert counters["skipped_escape"] == 5
+
+    def test_codeblock_skips_fullword(self):
+        text = "before log #1\n```\nlog #2\n```\nafter log #3"
+        out, counters = convert_raw_to_cite(text)
+        assert out == (
+            "before {{cite:L#1}}\n```\nlog #2\n```\nafter {{cite:L#3}}"
+        )
+        assert counters["sanitized_count"] == 2
+        assert counters["skipped_in_codeblock"] == 1
+
+    def test_inline_backtick_skips_fullword(self):
+        out, counters = convert_raw_to_cite("convert log #1 but not `log #2` here")
+        assert out == "convert {{cite:L#1}} but not `log #2` here"
+        assert counters["sanitized_count"] == 1
+        assert counters["skipped_in_codeblock"] == 1
+
+    def test_mixed_code_and_fullword(self):
+        out, counters = convert_raw_to_cite(
+            "M#1 and log #2 and D#3 and decision #4"
+        )
+        assert out == (
+            "{{cite:M#1}} and {{cite:L#2}} and "
+            "{{cite:D#3}} and {{cite:D#4}}"
+        )
+        assert counters["sanitized_count"] == 4
+
+    def test_idempotent_existing_cite_not_reconverted(self):
+        text = "{{cite:L#1}} and log #2"
+        out, _ = convert_raw_to_cite(text)
+        assert out == "{{cite:L#1}} and {{cite:L#2}}"
+        # 2 回適用しても同じ結果
+        out2, _ = convert_raw_to_cite(out)
+        assert out2 == out
+
+    def test_validator_blocks_dangling_fullword(self):
+        def validator(t: str, i: int) -> bool:
+            return t == "log" and i == 1
+
+        out, counters = convert_raw_to_cite(
+            "log #1 and log #999", target_validator=validator
+        )
+        assert out == "{{cite:L#1}} and log #999"
+        assert counters["sanitized_count"] == 1
+        assert counters["skipped_dangling"] == 1
