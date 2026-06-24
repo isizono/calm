@@ -843,6 +843,7 @@ def _build_spawn_bundle_data(
     acceptance_clean = _sanitize_task_body_field(acceptance, "acceptance")
     context_clean = _sanitize_task_body_field(context, "context")
     playbook_clean = _sanitize_task_body_field(playbook, "playbook")
+    goal_text_clean = _sanitize_task_body_field(goal_text, "goal_text") if goal_text else ""
 
     if effort:
         thinking_section = (
@@ -863,7 +864,7 @@ def _build_spawn_bundle_data(
         "activity_id": activity_id,
         "topic_id": topic_id,
         "effort": effort,
-        "goal_text": goal_text or task_title_clean,
+        "goal_text": goal_text_clean or task_title_clean,
     }
     return data
 
@@ -1171,7 +1172,7 @@ def ow_spawn_worker(
     # 起動 prompt は `/goal <goal_text>` で worker をゴール完了まで自走モードにする (D#2962)。
     # worker は起動後 env から識別子を読んで relay 接続、spawn-bundle を pull、check_in、
     # working 状態に直行する (ready 状態は廃止)。
-    goal_for_prompt = goal_text or task_title or alias
+    goal_for_prompt = bundle_data["goal_text"] or alias
     prompt_text = f"/goal {goal_for_prompt}。workerスキルに従って check_in からぜんぶやって。"
 
     # OW_PARENT_PID=$$ + exec claude で「shell PID → claude PID」の継承を行い、

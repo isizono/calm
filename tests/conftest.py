@@ -10,7 +10,7 @@ import tempfile
 
 import pytest
 
-_OW_ENV_KEYS = ("OW_ROLE", "OW_ALIAS", "OW_CHANNEL", "OW_TASK_N", "OW_TASK_FILE")
+_OW_ENV_KEYS = ("OW_ROLE", "OW_ALIAS", "OW_CHANNEL", "OW_TASK_N")
 
 
 @pytest.fixture(autouse=True)

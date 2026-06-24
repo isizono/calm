@@ -136,10 +136,10 @@ class TestHeartbeatShEnvelope:
         assert data.get("type") == "heartbeat"
         assert data.get("phase") == "loading"
 
-    def test_sends_v3_envelope_with_ready_phase(self, mock_relay, tmp_phase_file):
-        """ready フェーズで v3 envelope の phase フィールドが ready になる"""
+    def test_sends_v3_envelope_with_working_phase(self, mock_relay, tmp_phase_file):
+        """working フェーズで v3 envelope の phase フィールドが working になる"""
         server, relay_url = mock_relay
-        tmp_phase_file.write_text("ready")
+        tmp_phase_file.write_text("working")
 
         env = {
             **os.environ,
@@ -166,7 +166,7 @@ class TestHeartbeatShEnvelope:
 
         assert len(server.received) >= 1
         body = server.received[0].get("body", {})
-        assert body.get("data", {}).get("phase") == "ready"
+        assert body.get("data", {}).get("phase") == "working"
 
     def test_channel_and_handle_in_request(self, mock_relay, tmp_phase_file):
         """channel と handle が relay /send リクエストに含まれる"""
@@ -243,7 +243,7 @@ class TestHeartbeatShLoopControl:
         assert exited, "PHASE_FILE 削除後にスクリプトが終了しなかった"
 
     def test_interval_switches_with_phase(self, mock_relay, tmp_phase_file):
-        """PHASE_FILE を loading → ready に変更すると interval が変わる"""
+        """PHASE_FILE を loading → working に変更すると interval が変わる"""
         server, relay_url = mock_relay
         tmp_phase_file.write_text("loading")
 
@@ -272,23 +272,23 @@ class TestHeartbeatShLoopControl:
             f"loading フェーズのメッセージが届かなかった (deadline 3.0s 内に 0 件)"
         )
 
-        # ready フェーズに切り替え
-        tmp_phase_file.write_text("ready")
+        # working フェーズに切り替え
+        tmp_phase_file.write_text("working")
 
         deadline = time.time() + 6.0
         while len(server.received) < loading_count + 1 and time.time() < deadline:
             time.sleep(0.05)
 
-        # ready フェーズのメッセージが届いているはず
+        # working フェーズのメッセージが届いているはず
         tmp_phase_file.unlink()
         proc.terminate()
         proc.wait(timeout=3)
 
-        ready_msgs = [
+        working_msgs = [
             m for m in server.received
-            if m.get("body", {}).get("data", {}).get("phase") == "ready"
+            if m.get("body", {}).get("data", {}).get("phase") == "working"
         ]
-        assert len(ready_msgs) >= 1
+        assert len(working_msgs) >= 1
 
 
 class TestHeartbeatShParentWatchdog:
@@ -297,7 +297,7 @@ class TestHeartbeatShParentWatchdog:
     def test_exits_when_parent_dies(self, mock_relay, tmp_phase_file):
         """OW_PARENT_PID で指定された親 PID が消えたら loop が終了する"""
         server, relay_url = mock_relay
-        tmp_phase_file.write_text("ready")
+        tmp_phase_file.write_text("working")
 
         # ダミー親 process を sleep で起動
         parent = subprocess.Popen(["sleep", "30"])
@@ -379,7 +379,7 @@ class TestHeartbeatShTrap:
         """SIGTERM 受信で PHASE_FILE が削除される（trap cleanup）"""
         server, relay_url = mock_relay
         phase_file = tmp_path / "ow_hb_phase_trap_test"
-        phase_file.write_text("ready")
+        phase_file.write_text("working")
 
         env = {
             **os.environ,
@@ -458,7 +458,7 @@ class TestHeartbeatShSelfExit:
     def test_no_self_exit_when_mcp_alive(self, tmp_phase_file):
         """MCP /health が ok を返している間は self-exit しない"""
         server, url = self._start_health_relay(health_alive=True)
-        tmp_phase_file.write_text("ready")
+        tmp_phase_file.write_text("working")
         env = {
             **os.environ,
             "RELAY_URL": url,
@@ -485,9 +485,9 @@ class TestHeartbeatShSelfExit:
         assert alive, "MCP /health 応答中に self-exit してしまった"
 
     def test_self_exit_when_mcp_down_and_safe(self, tmp_phase_file):
-        """w-* handle + PHASE=ready + uptime >= 閾値 + MCP 失敗 N回 で self-exit"""
+        """w-* handle + PHASE=working + uptime >= 閾値 + MCP 失敗 N回 で self-exit"""
         server, url = self._start_health_relay(health_alive=False)
-        tmp_phase_file.write_text("ready")
+        tmp_phase_file.write_text("working")
         env = {
             **os.environ,
             "RELAY_URL": url,
@@ -528,7 +528,7 @@ class TestHeartbeatShSelfExit:
     def test_no_self_exit_when_uptime_below_threshold(self, tmp_phase_file):
         """uptime が閾値未満なら MCP 失敗続いても self-exit しない"""
         server, url = self._start_health_relay(health_alive=False)
-        tmp_phase_file.write_text("ready")
+        tmp_phase_file.write_text("working")
         env = {
             **os.environ,
             "RELAY_URL": url,
@@ -556,7 +556,7 @@ class TestHeartbeatShSelfExit:
     def test_no_self_exit_for_non_w_handle(self, tmp_phase_file):
         """handle が w-* 以外なら self-exit 対象外（orch / dispatcher 保護）"""
         server, url = self._start_health_relay(health_alive=False)
-        tmp_phase_file.write_text("ready")
+        tmp_phase_file.write_text("working")
         env = {
             **os.environ,
             "RELAY_URL": url,
@@ -581,10 +581,10 @@ class TestHeartbeatShSelfExit:
         server.shutdown()
         assert alive, "orch handle が self-exit してしまった"
 
-    def test_no_self_exit_for_non_ready_phase(self, tmp_phase_file):
-        """PHASE != ready なら self-exit 対象外（working/draining 保護）"""
+    def test_no_self_exit_for_non_working_phase(self, tmp_phase_file):
+        """PHASE != working なら self-exit 対象外（loading/draining 保護）"""
         server, url = self._start_health_relay(health_alive=False)
-        tmp_phase_file.write_text("working")
+        tmp_phase_file.write_text("loading")
         env = {
             **os.environ,
             "RELAY_URL": url,
@@ -607,12 +607,12 @@ class TestHeartbeatShSelfExit:
         proc.terminate()
         proc.wait(timeout=3)
         server.shutdown()
-        assert alive, "PHASE=working で self-exit してしまった"
+        assert alive, "PHASE=loading で self-exit してしまった"
 
     def test_disable_flag_skips_self_exit(self, tmp_phase_file):
         """OW_DISABLE_MCP_SELF_EXIT=1 で self-exit を完全無効化できる"""
         server, url = self._start_health_relay(health_alive=False)
-        tmp_phase_file.write_text("ready")
+        tmp_phase_file.write_text("working")
         env = {
             **os.environ,
             "RELAY_URL": url,
@@ -641,7 +641,7 @@ class TestHeartbeatShSelfExit:
     def test_recovery_resets_fail_counter(self, tmp_phase_file):
         """MCP が復活したらカウンタが 0 リセットされる（復帰後 N 回未満なら exit しない）"""
         server, url = self._start_health_relay(health_alive=False)
-        tmp_phase_file.write_text("ready")
+        tmp_phase_file.write_text("working")
         env = {
             **os.environ,
             "RELAY_URL": url,
@@ -707,7 +707,7 @@ class TestHeartbeatShCurlTimeout:
         port = server.server_address[1]
         relay_url = f"http://127.0.0.1:{port}"
 
-        tmp_phase_file.write_text("ready")
+        tmp_phase_file.write_text("working")
         env = {
             **os.environ,
             "RELAY_URL": relay_url,
