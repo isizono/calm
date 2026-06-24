@@ -30,6 +30,11 @@ from src.services.internal_id_patterns import (  # noqa: E402
     RAW_CITE_FULLWORD_PATTERN,
 )
 
+# converter (`_convert_line_raw_to_cite`) が `\` 直後の TYPE_CODE 判定に使う集合と
+# 揃えるためのローカル定数。converter 側は TYPE_CODE_TO_NAME のキーを参照しているが、
+# hook は citations_pure に依存しないので最小集合だけ持つ。
+_TYPE_CODES: frozenset[str] = frozenset("MDLAT")
+
 ALLOWLIST_PREFIXES: tuple[str, ...] = (
     "mcp__plugin_claude-code-memory_cc-memory__",
 )
@@ -70,27 +75,46 @@ def _is_allowed(tool_name: str) -> bool:
 def _scan_text_for_literals(text: str) -> list[str]:
     """1 個の文字列に対し code + fullword 両方を検出し、マッチした raw 文字列を返す。
 
-    バックスラッシュエスケープ (`\\M#123`, `\\log #123`) は事前に取り除いた
-    擬似テキストで scan する: hook の責務は「AI が tool に渡そうとした文字列に
-    内部 ID 形式が現れたら止める」であり、エスケープ表現で書かれた箇所は
-    字義扱いとして block 対象から外す。
+    バックスラッシュエスケープ (`\\M#123`, `\\log #123`) は字義扱いとして block 対象
+    から外す。エスケープ判定は converter (`_convert_line_raw_to_cite`) と同じ条件:
+    `\\` の直後が「TYPE_CODE 1 文字 + リテラル形式」または「fullword リテラル形式」で
+    あるときだけ、その全体をスキップする。それ以外の `\\` は単なる文字として残し、
+    後段の `\\X` (X は TYPE_CODE) が独立したリテラルとして検出される機会を保つ。
+
+    例:
+      - `\\M#1`  (`\\` 1 個): converter はエスケープ扱い → ここでも skip
+      - `\\\\M#1` (`\\` 2 個): converter は i=0 で `\\` を文字残し、i=1 の `\\M#1` を
+        エスケープ扱い → ここでも同じ判定で skip
+      - `\\hello` (`\\` の直後が TYPE_CODE でも fullword でもない): `\\` は単なる
+        文字として残し、続く `hello` を通常テキストとして scan する
     """
-    matches: list[str] = []
-    # エスケープされた箇所を空白で潰してから scan する。
-    # `\X#NNN` / `\log #NNN` 等の直後文字数は最大 16 + 1 程度なので十分な余白を取る。
-    sanitized = []
+    # converter と同じ走査経路でエスケープ済み区間を boundary 用空白に置換する。
+    # 元テキストと長さを揃え、word boundary の lookbehind/lookahead に影響を与えない。
+    sanitized: list[str] = []
     i = 0
     n = len(text)
     while i < n:
-        if text[i] == "\\" and i + 1 < n:
-            # バックスラッシュとその直後 1 文字をスキップする (字義扱い)
-            sanitized.append(" ")  # boundary を保つため空白で置換
-            sanitized.append(" ")
-            i += 2
-            continue
-        sanitized.append(text[i])
+        ch = text[i]
+        if ch == "\\" and i + 1 < n:
+            tail = text[i + 1]
+            # `\\X#NNN` (X は TYPE_CODE) のエスケープ。
+            if tail in _TYPE_CODES:
+                m = RAW_CITE_CODE_PATTERN.match(text, i + 1)
+                if m and m.start() == i + 1:
+                    sanitized.append(" " * (m.end() - i))
+                    i = m.end()
+                    continue
+            # `\\log #NNN` 等の fullword エスケープ。
+            m_fw = RAW_CITE_FULLWORD_PATTERN.match(text, i + 1)
+            if m_fw and m_fw.start() == i + 1:
+                sanitized.append(" " * (m_fw.end() - i))
+                i = m_fw.end()
+                continue
+            # 上記いずれのリテラルにも該当しない `\\X` は単なる文字。`\\` を残す。
+        sanitized.append(ch)
         i += 1
     haystack = "".join(sanitized)
+    matches: list[str] = []
     for m in RAW_CITE_CODE_PATTERN.finditer(haystack):
         matches.append(m.group(0))
     for m in RAW_CITE_FULLWORD_PATTERN.finditer(haystack):
