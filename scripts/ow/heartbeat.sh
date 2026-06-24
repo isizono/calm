@@ -4,8 +4,10 @@
 # 使い方:
 #   PHASE_FILE=/tmp/ow_hb_phase_<alias> bash heartbeat.sh <channel_code> <handle> &
 #   echo "loading" > $PHASE_FILE   # loading=10s
-#   echo "ready"   > $PHASE_FILE   # ready/working/draining=30s
+#   echo "working" > $PHASE_FILE   # working/draining=30s
 #   rm $PHASE_FILE                 # ファイル削除でループ終了
+#
+# 注: ready 状態は D#2962 で廃止 (loading → working 直行)。
 #
 # 環境変数:
 #   RELAY_URL          中継サーバーURL (default: http://127.0.0.1:8765)
@@ -78,14 +80,17 @@ mcp_health_check() {
         "${OW_MCP_URL}/health" > /dev/null 2>&1
 }
 
-# self-exit の安全条件: w-* handle かつ PHASE=ready かつ uptime>=閾値。
+# self-exit の安全条件: w-* handle かつ PHASE=working かつ uptime>=閾値。
+# working 中の MCP unreachable は cc-memory ツール (add_logs/check_in 等) が呼べず
+# worker が詰まる状態のため、殺す方がコスト低い (D#2962 ready 廃止に伴い旧
+# PHASE=ready 条件から working に変更)。
 # 安全とみなせば 0、対象外なら 1 を返す。
 is_safe_for_self_exit() {
     case "$HANDLE" in
         w-*) ;;
         *) return 1 ;;
     esac
-    [ "$PHASE" = "ready" ] || return 1
+    [ "$PHASE" = "working" ] || return 1
     # `local var=$(cmd)` は local の exit code が常に 0 になり set -e をすり抜ける。
     # 宣言と代入は分ける。
     local now
@@ -124,7 +129,7 @@ self_exit_due_to_mcp_loss() {
 }
 
 while [ -f "$PHASE_FILE" ] && parent_alive; do
-    PHASE=$(cat "$PHASE_FILE" 2>/dev/null || echo "ready")
+    PHASE=$(cat "$PHASE_FILE" 2>/dev/null || echo "working")
 
     if [ "$PHASE" = "loading" ]; then
         INTERVAL="${HEARTBEAT_INTERVAL_LOADING:-10}"

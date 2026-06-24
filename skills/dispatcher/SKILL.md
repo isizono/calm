@@ -383,7 +383,7 @@ escalate_count_in_pack: <数>                  # §escalation ガイドライン
 
 ### 層 1: 機械的検知 (既存機構を event 化)
 
-- D#2752 stagnation detector (`ow_sentinel`) が ready→working / draining→terminated の遅延を検知
+- D#2752 stagnation detector (`ow_sentinel`) が draining→terminated の遅延を検知 (ready→working は D#2962 で廃止)
 - `scripts/ow/heartbeat.sh` 等の watchdog が heartbeat 途絶を検知
 - 既存 `ow_recover` が ghost_active を検知
 - これらの event を dispatcher が SSE subscribe する
@@ -398,7 +398,7 @@ sentinel event 受信時に dispatcher が以下を順に実行する:
 
 1. `command:ping` で alive 確認
 2. 状態把握 (worker 状態問い合わせ or tmux capture-pane 相当)
-3. 復帰可能 → 指示送信 (明示 `command:assign`、blocked 解除支援)
+3. 復帰可能 → 指示送信 (`command:answer` で軌道修正、blocked 解除支援)
 4. 復帰不能 → close + reassign (新 worker spawn、同 worktree + WIP commit 渡して継続)
 5. 構造的に詰まり (acceptance 矛盾 / 依存待ち / 新 decision 必要) → orch escalate
 
@@ -528,7 +528,7 @@ dispatcher が参照する情報は 4 層に分かれる:
   - **派生 1 = cache JSON** (ow_service 内部の派生キャッシュ、projector 自動再生成)
   - **派生 2 = activity.status** (projector が cause → status マッピングに従い自動更新)
 - **dispatcher concern 原則**: dispatcher が直接触ってよい操作は以下のみ:
-  - (a) worker への命令送信 (`ow_send` で `command:assign|close|cancel|answer|ping`)
+  - (a) worker への命令送信 (`ow_send` で `command:close|cancel|answer|ping`)
   - (b) 状態取得 API (`ow_status` / `ow_get_identity` / `ow_get_presence` / `ow_get_workload_state` / `ow_list_identities` / `ow_recover` / `ow_recover_candidates` / `ow_history`)
   - (c) worker 起動・終了 (`ow_spawn_worker` / `ow_close_worker`)
   - (d) orch から受領した `command:relay-spawn` / `relay-close` / `relay-cancel` / `relay-query` の受信処理
@@ -591,7 +591,7 @@ orch がタスク管理判断 (どの worker を spawn するか、どの worker
 
 | data.type | data 内容 | 補足 |
 |---|---|---|
-| `relay-spawn` | `{semantic_role, activity_id, topic_id, cwd, model（必須）, context_pack（必須）}` | dispatcher は worker を spawn し `command:assign` 送出 |
+| `relay-spawn` | `{semantic_role, activity_id, topic_id, cwd, model（必須）, context_pack（必須）}` | dispatcher は `ow_spawn_worker` で worker を起動し、spawn-bundle envelope を relay に書き込む (D#2952) |
 | `relay-close` | `{target_semantic, reason}` | dispatcher は対応 worker に `command:close` 送出 |
 | `relay-cancel` | `{target_semantic, reason}` | dispatcher は対応 worker に `command:cancel` 送出 |
 | `relay-query` | `{target_semantic, query_type}` | dispatcher は drill-down 結果を返す (§progress-report user 質問駆動 lookup) |
@@ -658,7 +658,7 @@ projector はこの event を受信して `cache.workers[target_handle].task_sta
 
 ### workload state
 
-worker の workload state machine は worker SKILL.md と整合 (loading → ready → working → [blocked → escalated → working] → done → draining → terminated)。watchdog / projector マッピングは旧 orch SKILL.md と同じものを dispatcher が引き継ぐ。
+worker の workload state machine は worker SKILL.md と整合 (loading → working → [blocked → escalated → working] → done → draining → terminated)。ready 状態は廃止 (D#2962)、loading → working 直行。watchdog / projector マッピングは旧 orch SKILL.md と同じものを dispatcher が引き継ぐ。
 
 ### identity (event:identity)
 
@@ -734,7 +734,6 @@ projector は relay event 受信時に push 型で cache JSON と activities tab
 |---|---|---|
 | `event:state(spawning, target_handle=h)` (dispatcher broadcast) | workers[h]={state:"loading", task_status:"spawning", assigned_at, acceptance, model, cwd} | (触らず) |
 | `event:state(loading)` (worker) | state=loading, task_status=spawning, latest_msg_id, latest_at | (触らず) |
-| `event:state(ready)` (worker) | state=ready, task_status=spawning | (触らず) |
 | `event:state(working)` (worker) | state=working, task_status=working | activity.status=in_progress (まだなら) |
 | `event:state(blocked)` (worker) | state=blocked | (触らず) |
 | `event:state(escalated)` (worker) | state=escalated, task_status=escalated | (触らず) |
@@ -762,7 +761,7 @@ projector は relay event 受信時に push 型で cache JSON と activities tab
 | `closed` | command:close 受領 → 正常退出 | `done` (acceptance満たし & synced済み) | `completed` |
 | `cancelled` | command:cancel 受領 → 退出 | `cancelled` | `completed` + [cancelled] 追記 |
 | `dead` | loading 中の load 失敗 | `failed` | (触らず、`in_progress` 維持) |
-| `crashed (inferred)` | ready/working/blocked/escalated 中の heartbeat 途絶 | `stalled` | (触らず) |
+| `crashed (inferred)` | working/blocked/escalated 中の heartbeat 途絶 | `stalled` | (触らず) |
 | `crashed-during-drain (inferred)` | draining 中の heartbeat 途絶 | `stalled` | (触らず) |
 
 **自動 failed および自動クローズはしない**: heartbeat 途絶 (crashed 推論) は worker が長時間ツール実行中の場合にも発生しうるため、確実な異常証明とはならない。activities.status の `failed` 化は projector が触らず、人間判断に残す。
@@ -776,7 +775,7 @@ projector は relay event 受信時に push 型で cache JSON と activities tab
 | 現在の workload state | heartbeat 周期 | タイムアウト閾値 (周期×3) |
 |---|---|---|
 | `loading` | 10 秒 | **30 秒** |
-| `ready` / `working` / `blocked` / `draining` | 30 秒 | **90 秒** |
+| `working` / `blocked` / `draining` | 30 秒 | **90 秒** |
 | `escalated` | 監視対象外 | — |
 
 dispatcher は `ow_get_workload_state(channel, handle)` で現在の state を参照し、対応する閾値を選んで判定する。
@@ -799,27 +798,27 @@ watchdog が「死活 (heartbeat 途絶)」を見るのに対し、stagnation de
 
 | 観測 state | 期待される遷移 | 閾値 | 検出する詰まり |
 |---|---|---|---|
-| `ready` | `working` (auto-assign 成功) | **60 秒** | auto-assign 不発 |
 | `draining` | `terminated` | **90 秒** | close ハンドシェイク失敗 / worker-sync 詰まり |
+
+ready 状態は D#2962 で廃止されたため、stagnation 監視対象からも除外 (旧: ready→working 60 秒検出は廃止)。
 
 **sentinel envelope 形式**:
 
 ```json
 {"v":1, "kind":"event", "from":"ow_sentinel", "to":"dispatcher", "task":"T<n>",
  "data":{"type":"stagnation", "target_handle":"<alias>",
-         "target_state":"ready|draining", "elapsed_sec":<int>, "threshold_sec":<int>}}
+         "target_state":"draining", "elapsed_sec":<int>, "threshold_sec":<int>}}
 ```
 
 注: 過渡期は sentinel が `to:"orch"` で送信するケースが残り、relay 側 recv_filter で吸収される (sentinel.py の `to` 統一は別 PR)。
 
 **dispatcher 側受信時の対処**:
 
-- `target_state="ready"` → auto-assign 不発の疑い。`command:assign` を明示送信、または worker 側 SKILL 不発の調査
 - `target_state="draining"` → close ハンドシェイク失敗の疑い。`command:close` 再送、または `ow_recover` で stalled_close 候補を確認
 
 ## モデル選択 (プロトコル制約のみ)
 
-`command:assign` envelope では `model` が必須フィールド。値の選び方は合算版 playbook (`skills/orch/playbook.md` §モデル選択) に従う (リポ別調整があれば特化版で上書き)。具体的な model ID 列挙は playbook に一元化する (本 SKILL では二重管理しない)。
+`ow_spawn_worker` 引数の `model` は必須フィールド。値の選び方は合算版 playbook (`skills/orch/playbook.md` §モデル選択) に従う (リポ別調整があれば特化版で上書き)。具体的な model ID 列挙は playbook に一元化する (本 SKILL では二重管理しない)。
 
 ## 思考 worker (effort 指定) の spawn
 
