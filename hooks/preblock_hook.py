@@ -4,7 +4,7 @@
 cc-memory 開発現場以外で内部 ID 形式の文字列を外部に出すケースは想定されないため、
 tool 引数段階で機械的に止めることで AI 経由の漏出を防ぐ (scope A 方針)。
 
-cc-memory project 内 (pyproject.toml の name が cc-memory) のみで有効。
+cc-memory project 内 (pyproject.toml の `[project].name` が `_PROJECT_NAMES` のいずれかに一致) のみで有効。
 `CC_MEMORY_LEAK_GUARD=off` 環境変数で緊急時に opt-out 可能。
 allowlist tool (cc-memory 自身の MCP / Read 系 / harness 内部 tool) は素通し。
 バックスラッシュエスケープ (`\\M#123`, `\\log #123`) は字義扱いで非 block。
@@ -63,7 +63,7 @@ LOG_PATH = pathlib.Path.home() / ".cc-memory" / "logs" / "preblock_hook.jsonl"
 # pyproject.toml `[project].name` がこのいずれかに一致したら cc-memory project と判定する。
 # 実プロジェクトの name は "claude-code-memory" だが、過去ドキュメントや一部 fixture が
 # "cc-memory" 表記を持つので両方を受け入れる。
-_PROJECT_NAMES = ("cc-memory", "claude-code-memory")
+_PROJECT_NAMES: tuple[str, ...] = ("cc-memory", "claude-code-memory")
 
 
 def _is_allowed(tool_name: str) -> bool:
@@ -131,9 +131,10 @@ def _scan_tool_input(value) -> list[dict]:
 def _is_in_cc_memory_project() -> bool:
     """cwd から上方向に pyproject.toml を探索して cc-memory project か判定する。
 
-    `[project].name` を tomllib で厳密パースする。コメント行や別フィールドに
-    たまたま `name = "cc-memory"` を含むケースで誤判定しないよう、文字列の
-    部分一致ではなくパース済みの構造から取り出す。
+    `[project].name` を tomllib で厳密パースし、`_PROJECT_NAMES` のいずれかに
+    一致するケースを cc-memory project とみなす。コメント行や別フィールドに
+    たまたま許容値を含むケースで誤判定しないよう、文字列の部分一致ではなく
+    パース済みの構造から取り出す。
     """
     cwd = pathlib.Path.cwd()
     for p in (cwd, *cwd.parents):
