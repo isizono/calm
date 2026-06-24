@@ -233,6 +233,10 @@ def _apply_flavor_to_snippets(items: list[dict], flavor: str) -> None:
 # MCPサーバーを作成
 mcp = FastMCP("cc-memory", instructions=build_instructions())
 
+# role 別の tools/list 可視性を制御する middleware を登録する
+from src.services.visibility_middleware import CapabilityVisibilityMiddleware
+mcp.add_middleware(CapabilityVisibilityMiddleware())
+
 # サーバー起動時刻（/health で uptime 算出に使用）
 _SERVER_STARTED_AT = datetime.now(timezone.utc)
 
