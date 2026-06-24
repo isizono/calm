@@ -376,6 +376,70 @@ class TestTmuxAdapterThinking:
         assert "target_pane not found" in result.stderr
 
 
+class TestTmuxAdapterRebalance:
+    """worker pane 均等再分配 (D#2830) のテスト。
+
+    モックの `tmux display` は引数を問わず "12345" を返すため、rebalance 内の
+    `display -p "#{window_height}"` も win_h=12345 として扱われる。
+    target = (12345 - (count - 1)) / count を計算して各 worker pane に resize-pane する。
+    """
+
+    def test_no_resize_when_single_worker(self, tmp_path):
+        """既存 worker 0 + 新規 1 = 1 個のみのとき、count<2 で skip するので resize-pane は呼ばれない。"""
+        result, captured = _run_adapter(
+            ["spawn", "/tmp/work", "claude", "%0"],
+            tmp_path,
+            existing_worker_panes="",
+        )
+        assert result.returncode == 0
+        assert "resize-pane" not in captured
+
+    def test_resize_called_when_multiple_workers(self, tmp_path):
+        """worker pane が 2 個以上あれば resize-pane が呼ばれる。"""
+        result, captured = _run_adapter(
+            ["spawn", "/tmp/work", "claude", "%0"],
+            tmp_path,
+            existing_worker_panes="%5|1\\n%7|1",
+        )
+        assert result.returncode == 0
+        assert "resize-pane" in captured
+
+    def test_resize_excludes_largest_pane_id(self, tmp_path):
+        """最大 pane_id (= 物理的に最下) は resize-pane の対象外 (残り高さ自動吸収)。"""
+        result, captured = _run_adapter(
+            ["spawn", "/tmp/work", "claude", "%0"],
+            tmp_path,
+            existing_worker_panes="%5|1\\n%7|1\\n%9|1",
+        )
+        assert result.returncode == 0
+        resize_targets = [l for l in captured.splitlines() if "resize-pane" in l]
+        assert any("-t %5" in l for l in resize_targets)
+        assert any("-t %7" in l for l in resize_targets)
+        assert not any("-t %9" in l for l in resize_targets)
+
+    def test_resize_target_height_subtracts_separator_rows(self, tmp_path):
+        """target = (window_height - (count-1)) / count。セパレータ行を引かないと最後の pane が
+        geometric に小さくなる。window_height=12345, count=3 → target=(12345-2)/3=4114。"""
+        result, captured = _run_adapter(
+            ["spawn", "/tmp/work", "claude", "%0"],
+            tmp_path,
+            existing_worker_panes="%5|1\\n%7|1\\n%9|1",
+        )
+        assert result.returncode == 0
+        assert "-y 4114" in captured
+        assert "-y 4115" not in captured  # 旧式バグ (window_height/count) の検出
+
+    def test_no_resize_when_no_worker_panes(self, tmp_path):
+        """`@ow-worker=1` の pane が 0 個ならフラグなしの空欄 pane 群があっても skip。"""
+        result, captured = _run_adapter(
+            ["spawn", "/tmp/work", "claude", "%0"],
+            tmp_path,
+            existing_worker_panes="%5|\\n%7|",
+        )
+        assert result.returncode == 0
+        assert "resize-pane" not in captured
+
+
 class TestTmuxAdapterErrors:
     def test_unknown_action_exits_nonzero(self, tmp_path):
         """未知のactionはゼロ以外のexit codeとエラーメッセージを返す。"""

@@ -28,7 +28,10 @@ THINKING_WINDOW_NAME="ow-worker-thinking"
 
 # worker pane (@ow-worker=1) を window 内で縦方向に均等再分配する (D#2830)。
 # 同一カラム内の縦分割を前提に、pane_id 昇順 (= 上から下) で最後を除く各 worker
-# pane の高さを window_height/N に揃える。最後の pane は残り高さを自動で吸収する。
+# pane の高さを target = (window_height - (count-1)) / count に揃える。最後の pane は
+# 残り高さを自動で吸収する。window_height は N pane 縦積みで sum(pane_height) + (N-1)
+# セパレータ行と等しいため、セパレータを引いた値を分母 count で割る必要がある (引かないと
+# 最後の pane が geometric に小さくなる)。
 # orch pane (水平分割側) の幅には触らない。worker 数 0/1 や window 高さ取得失敗時は no-op。
 rebalance_worker_panes() {
   local window_id="$1"
@@ -47,7 +50,7 @@ rebalance_worker_panes() {
   win_h=$(tmux display -t "$window_id" -p "#{window_height}" 2>/dev/null || true)
   [[ -z "$win_h" || "$win_h" -le 0 ]] && return 0
 
-  local target=$(( win_h / count ))
+  local target=$(( (win_h - (count - 1)) / count ))
   [[ "$target" -le 0 ]] && return 0
 
   local i=0
