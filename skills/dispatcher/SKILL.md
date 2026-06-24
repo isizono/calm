@@ -184,6 +184,18 @@ context_pack:
 - minor dispatch は log として記録 (`intent:dispatch-log` タグ)
 - audit log として後追い可能、次回 pack 改善ヒント蓄積に活用
 
+### dispatcher 必須責務: 上長 done envelope 報告完了の enforcement
+
+dispatcher が worker を spawn する際 (`ow_spawn_worker` 経由 / `command:assign` 経由いずれも)、worker 側 acceptance + context に **「dispatcher が `event:state(done)` envelope を受領するまで terminated に向かわない」** を必ず含める。pack 個別の AC が material 保存・PR 作成までで止まる場合でも、上長報告まで含めて初めて「完了」と見なす規律にする。
+
+具体的に worker に渡す要件 (pack 構築時に context に明文化する):
+
+- `event:state(done)` の `summary` には「保存済 material id / log id + 1-2 行の成果文」を必ず含める
+- 成果が PR の場合は `summary` 末尾に PR URL を 1 件添える (dispatcher が diff 確認に直接アクセスできるため)
+- 「Goal achieved」recap 表示だけで終了とせず、必ず `event:state(done)` 送信 + `command:close` 受領 + draining → terminated の正規退場プロトコルを踏む
+
+これは worker SKILL.md §完了→done / §禁止事項 と整合する。worker 側でも明文化されているが、dispatcher は pack 構築時に context に「本規約を踏むこと」を含め、二重で担保する (規約だけでは「Goal achieved」recap で省略される観察事例があるため)。
+
 ### tacit_knowledge は pack に含めない
 
 user の趣味・嗜好レベルは CLAUDE.md / glossary / 自明で伝わるべき。orch 判断前提・曖昧事項は re-query / 事前確認で処理。pack に tacit_knowledge セクションは置かない。
@@ -836,6 +848,14 @@ ready 状態は D#2962 で廃止されたため、stagnation 監視対象から�
 5. dispatcher は `event:state(terminated, cause:closed)` 受信後に `ow_close_worker(term_ref)` でセッションをクローズ
 6. terminated が来なければ閉じずに orch に notify する
 
+### done envelope 未受領のまま terminated を観測したら異常扱い
+
+worker が `event:state(done)` envelope を送らずに `event:state(terminated)` に向かう、または heartbeat 途絶で stalled 経由で実質的に terminated に至る経路は **規約違反**。dispatcher は以下を実施する:
+
+- 該当 worker の成果 (worktree diff / cc-memory log・material) を pull で能動回収する
+- worker 死亡原因と「done envelope 省略」の事実を `intent:dispatch-log` で記録し、orch に `escalate` (reason_class: `high_uncertainty` or `pack_violation`) で異常報告 push する
+- 次回 pack 構築時に context へ「done envelope 報告完了の enforcement」明記が抜けていなかったか自己点検する (§dispatcher 必須責務: 上長 done envelope 報告完了の enforcement 参照)
+
 ## 受信処理 (SSE はベル、真実源は /history)
 
 1. SSE (Monitor 監視) は起床信号専用。届いた data 行の中身は処理に使わない
@@ -884,3 +904,5 @@ Monitor recv.sh --me dispatcher (persistent)
 - failed 設定および強制クローズの自律判断は禁止
 - 本格的なコード理解・テスト解析・PR レビューを SA で済ませるのは禁止 (worker spawn する)
 - 「着手待ち」を残すのは禁止 (§visibility 着手待ち禁止規律)
+- worker に渡す context_pack / acceptance に「上長 done envelope 報告完了」要件が欠落した状態で spawn するのは禁止 (§dispatcher 必須責務 参照)
+- worker が done envelope 未送信のまま terminated に向かった事象を観察したのに orch に異常報告しないのは禁止 (§クローズハンドシェイク 参照)

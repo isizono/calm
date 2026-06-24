@@ -269,16 +269,27 @@ orchが人間へのエスカレーションを指示したら、以下の**エ�
 
 ## 完了 → done
 
-作業が完了したら:
+worker は claude CLI の `/goal` 自走モードで goal_text を満たした時点で recap を表示する習性があるが、recap 表示は **正規退場ではない**。recap で止まったまま idle に落ちると、上長 (dispatcher / orch) に `event:state(done)` envelope が届かず、上長から見ると「成果は不可視 / 検証不能 / 自分で pull せざるを得ない」状態になる。
+
+「Goal achieved (= acceptance を満たしたと自己判定)」と「正規退場」は別物。両者を直結させず、必ず以下を踏む:
+
 1. acceptanceを満たしていることを確認し、証拠（evidence: テスト結果・PR URL等）を揃える
 2. worker専用の記録規律（§記録規律）に従い、material保存・decision_proposalsの準備を済ませる
-3. `event:state(done)` を送信する:
+3. `event:state(done)` を**必ず**送信する:
    ```json
    {"v":1, "kind":"event", "from":"<alias>", "to":"dispatcher", "task":"T<task_n>",
-    "data":{"type":"state", "state":"done", "summary":"<作業内容の要約>", "evidence":"<acceptanceを満たす証拠>", "synced":true, "materials":[<material_id...>], "decision_proposals":[{"decision":"...","reason":"..."}]}}
+    "data":{"type":"state", "state":"done",
+            "summary":"M#<id> / L#<id>: <1-2 行で成果>",
+            "evidence":"<acceptanceを満たす証拠>",
+            "synced":true,
+            "materials":[<material_id...>],
+            "decision_proposals":[{"decision":"...","reason":"..."}]}}
    ```
-   - `synced:true` は「material保存済み・decision_proposals添付済みでorchが検証可能な状態」を意味する。最終作業経緯ログの確定はcmd:close時の退場処理で行う
-4. orchからの応答を待つ（§完了後の待機）
+   - `summary` は **「保存済 material id / log id の列挙」+「1-2 行の成果文」** の両方を必ず含める。dispatcher / orch が SSE notification の truncated body (約 200 文字) でも成果と紐付き先を即時判定できるよう、id を `summary` 先頭に置いて truncation で落ちないようにする
+   - `summary` に載せる id は `materials[]` の中身と整合させる (引き合い検証フィールド)
+   - 成果が PR の場合は `summary` 末尾に PR URL を 1 件添える (dispatcher が diff 確認に直接アクセスできるように)
+   - `synced:true` は「material保存済み・decision_proposals添付済みで上長が検証可能な状態」を意味する。最終作業経緯ログの確定はcmd:close時の退場処理で行う
+4. done envelope 送信後は `command:close` 受領まで待機する（§完了後の待機）。recap が表示されても、`event:state(done)` を送らず terminated に向かう動きは禁止 (§禁止事項)
 
 ## 完了後の待機
 
@@ -427,4 +438,6 @@ orchから `kind:command, data.type:ping` が届いたら、現在の state を 
 - decisionを直接記録しない（エスカレーション例外を除く。原則decision_proposalsでorchに提案）
 - `event:state(terminated)` 送信後にツールを呼ばない
 - done送信後、closeを受けるまで新しい作業を始めない・cc-memoryへ追記しない（退場処理を除く）
+- **`event:state(done)` envelope を送信せずに `event:state(terminated)` に向かわない**: 「Goal achieved」recap だけで作業終了と判断せず、必ず `event:state(done)` → `command:close` 受領 → 退場処理 (draining → terminated) の正規プロトコルを踏む。recap 表示だけで idle に落ちると上長は worker 死亡と区別がつかず成果検証不能になる (本規約の存在理由)
+- **done envelope の summary に material id / log id を省略しない**: SSE notification truncation 対策。`materials[]` 列挙だけで済まさず、`summary` 先頭にも id を埋め込む
 - **AskUserQuestion 禁止**: worker は人間に直接質問しない。質問は `event:state(blocked)` envelope で orch 経由。AskUserQuestion ツールは ow_spawn_worker の settings injection で deny されているが、明示的に守ること
