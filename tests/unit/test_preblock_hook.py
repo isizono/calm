@@ -60,6 +60,22 @@ class TestScanTextForLiterals:
     def test_escape_fullword_not_matched(self):
         assert preblock_hook._scan_text_for_literals("\\log #1 is literal") == []
 
+    def test_double_backslash_code_not_matched(self):
+        # `\\M#1` (`\` 2 個) は converter で i=1 のエスケープが効き全体スキップになるため、
+        # hook も block しないでなければ UX が converter と食い違う。
+        assert preblock_hook._scan_text_for_literals("\\\\M#1 is literal") == []
+
+    def test_double_backslash_fullword_not_matched(self):
+        # `\\log #1` (`\` 2 個) も同様。
+        assert preblock_hook._scan_text_for_literals("\\\\log #1 is literal") == []
+
+    def test_single_backslash_then_unrelated_char_does_not_consume_following_literal(self):
+        # converter は `\` 直後が TYPE_CODE / fullword のリテラル形でない限り
+        # `\` を単なる文字として残す。hook も同様で、後続の `M#1` を盲目的に
+        # 食わずに通常リテラルとして検出する。
+        result = preblock_hook._scan_text_for_literals("\\x M#1")
+        assert result == ["M#1"]
+
     def test_word_boundary_blog_not_match(self):
         assert preblock_hook._scan_text_for_literals("blog #1 was published") == []
 
@@ -344,6 +360,43 @@ class TestMainBlockFlow:
             capsys,
         )
         assert out == {}
+
+    def test_double_backslash_code_not_blocked(self, capsys, cc_memory_cwd):
+        # `\\M#1` (`\` 2 個) は converter ではエスケープ扱いで sanitize されるため、
+        # hook 側も block してはいけない (UX 整合)。
+        out = _run_main_with_event(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "echo \\\\M#1 literal"},
+                "session_id": "s1",
+            },
+            capsys,
+        )
+        assert out == {}
+
+    def test_double_backslash_fullword_not_blocked(self, capsys, cc_memory_cwd):
+        out = _run_main_with_event(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "echo \\\\log #1 literal"},
+                "session_id": "s1",
+            },
+            capsys,
+        )
+        assert out == {}
+
+    def test_plain_literal_still_blocks_regression(self, capsys, cc_memory_cwd):
+        # backslash なしの素の `M#1` は引き続き block する (regression 防止)。
+        out = _run_main_with_event(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "echo M#1 leak"},
+                "session_id": "s1",
+            },
+            capsys,
+        )
+        assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "M#1" in out["hookSpecificOutput"]["permissionDecisionReason"]
 
     def test_allowlist_tool_passes_through(self, capsys, cc_memory_cwd):
         # cc-memory MCP は scan されない
