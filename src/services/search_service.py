@@ -1664,8 +1664,8 @@ def _decorate(
 
     nearby_tags = _compute_nearby_tags(sliced, query_tag_ids, ctx.offset)
 
-    # readable_id 化: 各結果の id を「title (#NNN)」形式に置換し、元の id を id_raw に退避
-    # type フィールドは置換前に確定済みなのでそのまま参照する
+    # readable_id 化: 各結果の id を削除し、整数 id を id_raw に退避する
+    # type フィールドは適用前に確定済みなのでそのまま参照する
     for item in sliced:
         apply_readable_id_inplace(item, item["type"])
 
