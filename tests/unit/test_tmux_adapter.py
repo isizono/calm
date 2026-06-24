@@ -415,7 +415,7 @@ class TestTmuxAdapterRebalance:
 
     def test_rebalance_excludes_largest_pane_id(self, tmp_path):
         """最大 pane_id (= 物理的に最下) は resize-pane の対象外 (残り高さ自動吸収)。
-        win_h=40, N=3 → target=(40-2)/3=12。%9 は最大 pane_id なので除外。"""
+        win_h=40, N=3 → target=(40-2)/3=12（切り捨て）。%9 は最大 pane_id なので除外。"""
         result, captured = _run_adapter(
             ["spawn", "/tmp/work", "claude", "%0"],
             tmp_path,
@@ -423,11 +423,12 @@ class TestTmuxAdapterRebalance:
             window_height="40",
         )
         assert result.returncode == 0
-        resize_lines = [l for l in captured.splitlines() if "resize-pane" in l]
-        assert any("-t %5" in l for l in resize_lines)
-        assert any("-t %7" in l for l in resize_lines)
-        assert not any("-t %9" in l for l in resize_lines)
+        resize_lines = [line for line in captured.splitlines() if "resize-pane" in line]
+        assert any("-t %5" in line for line in resize_lines)
+        assert any("-t %7" in line for line in resize_lines)
+        assert not any("-t %9" in line for line in resize_lines)
         assert "-y 12" in captured
+        assert "-y 13" not in captured  # 旧式バグ (window_height/count = 40/3 = 13) の検出
 
     def test_rebalance_skipped_when_no_worker_panes(self, tmp_path):
         """`@ow-worker=1` フラグ付き pane が 0 個ならフラグなしの pane 群があっても skip。"""
