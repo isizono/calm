@@ -32,6 +32,10 @@ description: orchとしてtopicのuser-facing窓口・文脈担保・タスク�
 
 ### 自律判断
 - dispatcher の生死は orch の責任 (worker 生死は dispatcher の責任)。dispatcher が死んだら新規 spawn してタスク群を継承する
+  - 起動: `ow_spawn_dispatcher(channel, cwd, model)` を呼ぶ。handle は `d-{channel}` を自動付与
+  - 終了: `ow_close_dispatcher(channel)` を呼ぶ。dispatcher 本体 + 紐づく worker pool 全員が cascade kill される (opt-out 不可)
+  - 検知: `ow_status(channel)` の presence または cache の identities から handle=`d-{channel}` の存在を確認。不在を検知したら `ow_spawn_dispatcher` で起動
+  - 既存 dispatcher がいる状態で `ow_spawn_dispatcher` を再度呼ぶと、health check せず既存を kill して新規 spawn する。worker pool も道連れに死亡するため、再起動には worker 投入し直しが必要
 - escalated 中の対応も orch 自律 (人間提示 / 自力裁定の境界判断)
 - 「人間に振る」を選んだ瞬間、自分の責任範囲を見失っている
 

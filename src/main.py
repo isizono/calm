@@ -1339,6 +1339,63 @@ def ow_close_worker(term_ref: str) -> dict:
 
 
 @mcp.tool()
+def ow_spawn_dispatcher(
+    channel: str,
+    cwd: str,
+    model: str,
+    tmux_target_pane: str | None = None,
+) -> dict:
+    """dispatcher session を起動する。
+
+    handle は d-{channel} を自動付与する。channel に既存 dispatcher があれば
+    cascade kill (既存 dispatcher + 紐づく worker pool 全員) してから新規 spawn する。
+    health check や idempotent reject は行わない。
+
+    Args:
+        channel: channelコード (handle に d- prefix で組み込まれる)
+        cwd: dispatcher セッションの作業ディレクトリ
+        model: 使用モデル。claude-opus-4-7 のみ許可。
+            sonnet / haiku / opus-4-8 はバリデーションで拒否
+        tmux_target_pane: OW_TERMINAL=tmux のとき分割表示の基準 pane ID (optional)
+
+    Returns:
+        成功時: {"term_ref": str, "bundle_msg_id": int, "spawning": "ok", "alias": str}
+        失敗時: {"error": {"code": str, "message": str, ...}}
+    """
+    guard_service.check_worker_guard("ow_spawn_dispatcher")
+    return ow_service.ow_spawn_dispatcher(
+        channel=channel,
+        cwd=cwd,
+        model=model,
+        tmux_target_pane=tmux_target_pane,
+    )
+
+
+@mcp.tool()
+def ow_close_dispatcher(channel: str) -> dict:
+    """dispatcher session を kill し、紐づく worker pool も cascade kill する。
+
+    channel に dispatcher (handle=d-{channel}) が存在しない場合はエラーを返す
+    (no-op success は採らない)。close は graceful shutdown を試みず即 process kill。
+
+    Args:
+        channel: channelコード
+
+    Returns:
+        成功時: {
+            "closed": True,
+            "channel": str,
+            "dispatcher_handle": str,
+            "killed_workers": [handle, ...],
+            "failed_workers": [{"handle": str, "reason"/"error": ...}, ...]
+        }
+        失敗時: {"error": {"code": str, "message": str}, "killed_workers": [...], ...}
+    """
+    guard_service.check_worker_guard("ow_close_dispatcher")
+    return ow_service.ow_close_dispatcher(channel)
+
+
+@mcp.tool()
 def ow_status(channel: str, topic_id: str | None = None) -> dict:
     """queueサマリ＋GetPresence（worker死活）の合成ビュー。
 
