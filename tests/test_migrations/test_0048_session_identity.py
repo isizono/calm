@@ -15,6 +15,7 @@ from yoyo.migrations import MigrationList
 
 from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection, init_database
 from src.services.tag_service import _injected_tags
+from test_migrations.conftest import get_column_names, index_names, table_exists
 
 
 @pytest.fixture
@@ -61,30 +62,6 @@ def _apply_migration_0048(db_path: str) -> None:
         backend.apply_migrations(only_0048)
 
 
-def _get_column_names(conn: sqlite3.Connection, table: str) -> set[str]:
-    """指定テーブルのカラム名セットを返す。"""
-    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-    return {row["name"] for row in rows}
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    """指定テーブルが sqlite_master に存在するか確認する。"""
-    row = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-        (table,),
-    ).fetchone()
-    return row is not None
-
-
-def _index_names(conn: sqlite3.Connection, name_pattern: str) -> set[str]:
-    """sqlite_master から name LIKE pattern のインデックス名セットを返す。"""
-    rows = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE ?",
-        (name_pattern,),
-    ).fetchall()
-    return {row["name"] for row in rows}
-
-
 class TestSessionIdentityTableCreated:
     """0048 適用後に session_identity テーブルが作成されることの確認"""
 
@@ -92,7 +69,7 @@ class TestSessionIdentityTableCreated:
         """migration 0048 適用後、session_identity テーブルが存在する"""
         conn = get_connection()
         try:
-            assert _table_exists(conn, "session_identity"), (
+            assert table_exists(conn, "session_identity"), (
                 "session_identity テーブルが 0048 適用後に存在しない"
             )
         finally:
@@ -102,7 +79,7 @@ class TestSessionIdentityTableCreated:
         """0048 適用前は session_identity テーブルが存在しない（前提確認）"""
         conn = get_connection()
         try:
-            assert not _table_exists(conn, "session_identity"), (
+            assert not table_exists(conn, "session_identity"), (
                 "0048 適用前に session_identity テーブルが既に存在している"
             )
         finally:
@@ -112,7 +89,7 @@ class TestSessionIdentityTableCreated:
         """0048 適用後、session_identity テーブルに必須カラムが全部存在する"""
         conn = get_connection()
         try:
-            column_names = _get_column_names(conn, "session_identity")
+            column_names = get_column_names(conn, "session_identity")
             required = {
                 "session_id",
                 "role",
@@ -134,7 +111,7 @@ class TestSessionIdentityTableCreated:
         """0048 適用後、session_identity の 3 つのインデックスが作成されている"""
         conn = get_connection()
         try:
-            idx_names = _index_names(conn, "idx_session_identity_%")
+            idx_names = index_names(conn, "idx_session_identity_%")
             expected = {
                 "idx_session_identity_role",
                 "idx_session_identity_handle",
@@ -164,7 +141,7 @@ class TestCallerSessionIdColumnsAdded:
         conn = get_connection()
         try:
             for table in self.TABLES:
-                col_names = _get_column_names(conn, table)
+                col_names = get_column_names(conn, table)
                 assert "caller_session_id" in col_names, (
                     f"{table}.caller_session_id が 0048 適用後に存在しない"
                 )
@@ -176,7 +153,7 @@ class TestCallerSessionIdColumnsAdded:
         conn = get_connection()
         try:
             for table in self.TABLES:
-                col_names = _get_column_names(conn, table)
+                col_names = get_column_names(conn, table)
                 assert "caller_session_id" not in col_names, (
                     f"0048 適用前に {table}.caller_session_id が既に存在している"
                 )
@@ -208,152 +185,78 @@ class TestCallerSessionIdColumnsAdded:
 class TestExistingRowsPreserved:
     """0048 適用前に挿入した行が、適用後も破壊されないことの確認"""
 
-    def test_existing_activities_preserved(self, db_before_0048):
-        """0048 適用前の activities 行は、適用後に caller_session_id が NULL のまま他カラムを保持する"""
-        conn = get_connection()
-        try:
-            conn.execute(
+    @pytest.mark.parametrize(
+        "table,insert_sql,params,where_col,where_val,expected",
+        [
+            (
+                "activities",
                 "INSERT INTO activities (title, description, status) VALUES (?, ?, ?)",
                 ("既存 activity", "既存の説明", "in_progress"),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-
-        _apply_migration_0048(db_before_0048)
-
-        conn = get_connection()
-        try:
-            row = conn.execute(
-                "SELECT title, description, status, caller_session_id "
-                "FROM activities WHERE title = ?",
-                ("既存 activity",),
-            ).fetchone()
-            assert row is not None
-            assert row["title"] == "既存 activity"
-            assert row["description"] == "既存の説明"
-            assert row["status"] == "in_progress"
-            assert row["caller_session_id"] is None, (
-                "既存行の caller_session_id は NULL であるべき"
-            )
-        finally:
-            conn.close()
-
-    def test_existing_decisions_preserved(self, db_before_0048):
-        """0048 適用前の decisions 行は、適用後に caller_session_id が NULL のまま他カラムを保持する"""
-        conn = get_connection()
-        try:
-            conn.execute(
+                "title",
+                "既存 activity",
+                {"title": "既存 activity", "description": "既存の説明", "status": "in_progress"},
+            ),
+            (
+                "decisions",
                 "INSERT INTO decisions (decision, reason) VALUES (?, ?)",
                 ("既存の決定", "既存の理由"),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-
-        _apply_migration_0048(db_before_0048)
-
-        conn = get_connection()
-        try:
-            row = conn.execute(
-                "SELECT decision, reason, caller_session_id FROM decisions WHERE decision = ?",
-                ("既存の決定",),
-            ).fetchone()
-            assert row is not None
-            assert row["decision"] == "既存の決定"
-            assert row["reason"] == "既存の理由"
-            assert row["caller_session_id"] is None, (
-                "既存行の decisions.caller_session_id は NULL であるべき"
-            )
-        finally:
-            conn.close()
-
-    def test_existing_discussion_logs_preserved(self, db_before_0048):
-        """0048 適用前の discussion_logs 行は、適用後に caller_session_id が NULL のまま他カラムを保持する"""
-        conn = get_connection()
-        try:
-            conn.execute(
+                "decision",
+                "既存の決定",
+                {"decision": "既存の決定", "reason": "既存の理由"},
+            ),
+            (
+                "discussion_logs",
                 "INSERT INTO discussion_logs (title, content) VALUES (?, ?)",
                 ("既存ログタイトル", "既存のログ内容"),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-
-        _apply_migration_0048(db_before_0048)
-
-        conn = get_connection()
-        try:
-            row = conn.execute(
-                "SELECT title, content, caller_session_id "
-                "FROM discussion_logs WHERE title = ?",
-                ("既存ログタイトル",),
-            ).fetchone()
-            assert row is not None
-            assert row["title"] == "既存ログタイトル"
-            assert row["content"] == "既存のログ内容"
-            assert row["caller_session_id"] is None, (
-                "既存行の discussion_logs.caller_session_id は NULL であるべき"
-            )
-        finally:
-            conn.close()
-
-    def test_existing_discussion_topics_preserved(self, db_before_0048):
-        """0048 適用前の discussion_topics 行は、適用後に caller_session_id が NULL のまま他カラムを保持する"""
-        conn = get_connection()
-        try:
-            conn.execute(
+                "title",
+                "既存ログタイトル",
+                {"title": "既存ログタイトル", "content": "既存のログ内容"},
+            ),
+            (
+                "discussion_topics",
                 "INSERT INTO discussion_topics (title, description) VALUES (?, ?)",
                 ("既存トピック", "既存の説明"),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-
-        _apply_migration_0048(db_before_0048)
-
-        conn = get_connection()
-        try:
-            row = conn.execute(
-                "SELECT title, description, caller_session_id "
-                "FROM discussion_topics WHERE title = ?",
-                ("既存トピック",),
-            ).fetchone()
-            assert row is not None
-            assert row["title"] == "既存トピック"
-            assert row["description"] == "既存の説明"
-            assert row["caller_session_id"] is None, (
-                "既存行の discussion_topics.caller_session_id は NULL であるべき"
-            )
-        finally:
-            conn.close()
-
-    def test_existing_materials_preserved(self, db_before_0048):
-        """0048 適用前の materials 行は、適用後に caller_session_id が NULL のまま他カラムを保持する"""
-        conn = get_connection()
-        try:
-            conn.execute(
+                "title",
+                "既存トピック",
+                {"title": "既存トピック", "description": "既存の説明"},
+            ),
+            (
+                "materials",
                 "INSERT INTO materials (title, content) VALUES (?, ?)",
                 ("既存マテリアル", "既存の内容"),
-            )
+                "title",
+                "既存マテリアル",
+                {"title": "既存マテリアル", "content": "既存の内容"},
+            ),
+        ],
+    )
+    def test_existing_rows_preserved(
+        self, db_before_0048, table, insert_sql, params, where_col, where_val, expected
+    ):
+        """0048 適用前の各テーブルの行は、適用後に caller_session_id が NULL のまま他カラムを保持する"""
+        conn = get_connection()
+        try:
+            conn.execute(insert_sql, params)
             conn.commit()
         finally:
             conn.close()
 
         _apply_migration_0048(db_before_0048)
 
+        select_cols = ", ".join([*expected.keys(), "caller_session_id"])
         conn = get_connection()
         try:
             row = conn.execute(
-                "SELECT title, content, caller_session_id "
-                "FROM materials WHERE title = ?",
-                ("既存マテリアル",),
+                f"SELECT {select_cols} FROM {table} WHERE {where_col} = ?",
+                (where_val,),
             ).fetchone()
             assert row is not None
-            assert row["title"] == "既存マテリアル"
-            assert row["content"] == "既存の内容"
+            for col, value in expected.items():
+                assert row[col] == value, (
+                    f"既存行の {table}.{col} が保持されていない"
+                )
             assert row["caller_session_id"] is None, (
-                "既存行の materials.caller_session_id は NULL であるべき"
+                f"既存行の {table}.caller_session_id は NULL であるべき"
             )
         finally:
             conn.close()
@@ -470,6 +373,7 @@ class TestSessionIdentityCRUD:
         （parent_session_id の relax FK との対照: REFERENCES が機能していることの確認）"""
         conn = get_connection()
         try:
+            # PRAGMA foreign_keys = ON が get_connection() で設定されることを前提とする
             with pytest.raises(sqlite3.IntegrityError):
                 conn.execute(
                     "INSERT INTO session_identity (session_id, role, topic_id) "
@@ -477,6 +381,39 @@ class TestSessionIdentityCRUD:
                     ("sess-006", "worker", 999999),
                 )
                 conn.commit()
+        finally:
+            conn.close()
+
+    def test_topic_id_set_null_on_topic_delete(self, migrated_db):
+        """参照先 discussion_topics 行を削除すると session_identity.topic_id が NULL になる
+        （ON DELETE SET NULL の確認）"""
+        conn = get_connection()
+        try:
+            # PRAGMA foreign_keys = ON が get_connection() で設定されることを前提とする
+            cur = conn.execute(
+                "INSERT INTO discussion_topics (title, description) VALUES (?, ?)",
+                ("削除対象トピック", "テスト"),
+            )
+            topic_id = cur.lastrowid
+            conn.execute(
+                "INSERT INTO session_identity (session_id, role, topic_id) VALUES (?, ?, ?)",
+                ("sess-del-001", "worker", topic_id),
+            )
+            conn.commit()
+
+            conn.execute("DELETE FROM discussion_topics WHERE id = ?", (topic_id,))
+            conn.commit()
+
+            row = conn.execute(
+                "SELECT topic_id FROM session_identity WHERE session_id = ?",
+                ("sess-del-001",),
+            ).fetchone()
+            assert row is not None, (
+                "topic 削除後も session_identity 行自体は残るべき（ON DELETE SET NULL）"
+            )
+            assert row["topic_id"] is None, (
+                "参照先 topic 削除後は topic_id が NULL になるべき"
+            )
         finally:
             conn.close()
 
