@@ -140,9 +140,10 @@ class TestCheckIn:
 
         assert "error" not in result
         assert len(result["materials"]) == 2
-        # カタログ形式: id, title, snippet, source, created_at（contentなし）
+        # カタログ形式: id_raw, title, snippet, source, created_at (contentなし)
         for m in result["materials"]:
-            assert "id" in m
+            assert "id_raw" in m
+            assert "id" not in m
             assert "title" in m
             assert "snippet" in m
             assert "source" in m

@@ -69,31 +69,25 @@ def test_format_readable_id_internal_flavor_not_implemented():
 
 
 def test_apply_readable_id_inplace_normal():
-    """通常 dict は id を readable 化し、id_raw に元 ID を退避する"""
+    """通常 dict は id を削除し、id_raw に元 ID (int) を退避する。title は触らない"""
     d = {"id": 123, "title": "T", "other": "x"}
     apply_readable_id_inplace(d, "topic")
-    assert d == {"id": "T (#123)", "id_raw": 123, "title": "T", "other": "x"}
+    assert d == {"id_raw": 123, "title": "T", "other": "x"}
 
 
-def test_apply_readable_id_inplace_missing_title():
-    """title キーが無い場合は (#NNN) のみ"""
+def test_apply_readable_id_inplace_does_not_touch_title():
+    """title フィールドは値の有無に関わらず一切変更されない"""
     d = {"id": 50}
     apply_readable_id_inplace(d, "log")
-    assert d == {"id": "(#50)", "id_raw": 50}
+    assert d == {"id_raw": 50}
 
+    d2 = {"id": 9, "title": ""}
+    apply_readable_id_inplace(d2, "material")
+    assert d2 == {"id_raw": 9, "title": ""}
 
-def test_apply_readable_id_inplace_empty_title():
-    """title が空文字列の場合は (#NNN) のみ"""
-    d = {"id": 9, "title": ""}
-    apply_readable_id_inplace(d, "material")
-    assert d == {"id": "(#9)", "id_raw": 9, "title": ""}
-
-
-def test_apply_readable_id_inplace_none_title():
-    """title が None の場合は (#NNN) のみ"""
-    d = {"id": 11, "title": None}
-    apply_readable_id_inplace(d, "decision")
-    assert d == {"id": "(#11)", "id_raw": 11, "title": None}
+    d3 = {"id": 11, "title": None}
+    apply_readable_id_inplace(d3, "decision")
+    assert d3 == {"id_raw": 11, "title": None}
 
 
 def test_apply_readable_id_inplace_missing_id_key():
@@ -103,28 +97,31 @@ def test_apply_readable_id_inplace_missing_id_key():
     assert d == {"title": "x"}
 
 
-def test_apply_readable_id_inplace_custom_keys():
-    """id_key / title_key を変更できる"""
+def test_apply_readable_id_inplace_custom_id_key():
+    """id_key を変更できる"""
     d = {"decision_id": 7, "decision_title": "D"}
-    apply_readable_id_inplace(
-        d, "decision", id_key="decision_id", title_key="decision_title"
-    )
+    apply_readable_id_inplace(d, "decision", id_key="decision_id")
     assert d == {
-        "decision_id": "D (#7)",
         "decision_id_raw": 7,
         "decision_title": "D",
     }
 
 
 def test_apply_readable_id_inplace_idempotent():
-    """すでに整形済み（id_raw が存在）の dict には何もしない"""
-    d = {"id": "T (#1)", "id_raw": 1, "title": "T"}
+    """すでに整形済み (id_raw が存在) の dict には何もしない"""
+    d = {"id_raw": 1, "title": "T"}
     apply_readable_id_inplace(d, "topic")
-    assert d == {"id": "T (#1)", "id_raw": 1, "title": "T"}
+    assert d == {"id_raw": 1, "title": "T"}
 
 
 def test_apply_readable_id_inplace_non_int_id():
-    """id が int でない（既に整形済み文字列など）場合は何もしない"""
+    """id が int でない場合 (例: 既に文字列化済み) は何もしない"""
     d = {"id": "already (#1)", "title": "x"}
     apply_readable_id_inplace(d, "topic")
     assert d == {"id": "already (#1)", "title": "x"}
+
+
+def test_apply_readable_id_inplace_invalid_entity_type():
+    """不正な entity_type は ValueError"""
+    with pytest.raises(ValueError, match="Invalid entity_type"):
+        apply_readable_id_inplace({"id": 1}, "unknown")  # type: ignore[arg-type]
