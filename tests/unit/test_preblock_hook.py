@@ -199,10 +199,27 @@ class TestIsInCcMemoryProject:
         monkeypatch.chdir(tmp_path)
         assert preblock_hook._is_in_cc_memory_project() is True
 
+    def test_pyproject_with_claude_code_memory_name(self, tmp_path, monkeypatch):
+        # 実プロジェクトの pyproject.toml は name = "claude-code-memory" なので
+        # こちらも cc-memory project として受理されること
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "claude-code-memory"\n'
+        )
+        monkeypatch.chdir(tmp_path)
+        assert preblock_hook._is_in_cc_memory_project() is True
+
     def test_pyproject_with_literal_string(self, tmp_path, monkeypatch):
         # TOML literal string (single quotes) も同様に受理される
         (tmp_path / "pyproject.toml").write_text(
             "[project]\nname = 'cc-memory'\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        assert preblock_hook._is_in_cc_memory_project() is True
+
+    def test_pyproject_with_claude_code_memory_literal_string(self, tmp_path, monkeypatch):
+        # claude-code-memory も literal string (single quotes) で受理される
+        (tmp_path / "pyproject.toml").write_text(
+            "[project]\nname = 'claude-code-memory'\n"
         )
         monkeypatch.chdir(tmp_path)
         assert preblock_hook._is_in_cc_memory_project() is True
