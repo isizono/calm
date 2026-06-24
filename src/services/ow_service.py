@@ -110,9 +110,9 @@ def _normalize_and_validate_model(model: str) -> tuple[str, str | None]:
 
 
 # 思考worker (thinking worker) の effort enum。Claude のreasoning effort と対応する4段。
-# None = 通常 worker。値が指定された場合は task_file 本文に思考トリガー語マーカー (正規綴り
-# `ultrathink`) が埋め込まれ、OW_TERMINAL=tmux では split-pane ではなく new-window で
-# 別タブに開かれる。
+# None = 通常 worker。値が指定された場合は spawn-bundle envelope の data.effort と本文
+# context に思考トリガー語マーカー (正規綴り `ultrathink`) が含まれ、OW_TERMINAL=tmux
+# では split-pane ではなく new-window で別タブに開かれる。
 THINKING_EFFORTS: frozenset[str] = frozenset({"high", "xhigh", "max", "ultrathink"})
 
 # orch 側コード/skill/ドキュメントから sentinel 綴り `ultratink` を渡せるよう、最大段の
@@ -124,8 +124,9 @@ _EFFORT_ALIASES: dict[str, str] = {"ultratink": "ultrathink"}
 # worker alias の書式制約。kebab-case（小文字英数字+ハイフン、先頭は英字、末尾は英数字、
 # 連続ハイフン禁止）かつ最小長 8 文字以上。短すぎる alias は名前衝突や視認性低下を招き、
 # queue/relay 識別子として再利用しづらいため一律で拒否する。
-# alias の上限長は意図的に設けない（task_file / queue / relay messages に埋め込まれるが、
-# 物理上限はファイルシステム側に委ねる。orch 運用上は kebab-case の自然な命名で十分短く収まる）。
+# alias の上限長は意図的に設けない（relay messages の handle / spawn-bundle envelope の
+# `to` フィールドに埋め込まれるが、物理上限は relay 側に委ねる。orch 運用上は
+# kebab-case の自然な命名で十分短く収まる）。
 _ALIAS_MIN_LENGTH: int = 8
 _ALIAS_PATTERN: re.Pattern[str] = re.compile(r"^[a-z]([a-z0-9]|-(?!-))*[a-z0-9]$")
 
@@ -154,7 +155,7 @@ def _validate_alias_format(alias: str) -> str | None:
 
 # reducer: v3 workload state 分類
 _NON_TERMINAL_WORKLOAD_STATES: frozenset[str] = frozenset(
-    {"loading", "ready", "working", "blocked", "escalated", "draining"}
+    {"loading", "working", "blocked", "escalated", "draining"}
 )
 # heartbeat タイムアウト閾値（周期×3）。
 # キーは workload_state または heartbeat body の phase。両者は worker 側で同期される
@@ -162,7 +163,7 @@ _NON_TERMINAL_WORKLOAD_STATES: frozenset[str] = frozenset(
 _HEARTBEAT_TIMEOUT_SECS: dict[str, float] = {
     "loading": 30.0,  # 10s × 3
 }
-_HEARTBEAT_TIMEOUT_DEFAULT: float = 90.0  # 30s × 3（ready/working/draining共通）
+_HEARTBEAT_TIMEOUT_DEFAULT: float = 90.0  # 30s × 3（working/draining共通）
 
 
 # ----------------------------
@@ -801,130 +802,71 @@ _MCP_RESERVED_TAG_RE = re.compile(
 
 
 def _sanitize_task_body_field(value: str, field_name: str = "") -> str:
-    """task_file本文フィールド（acceptance/context等）からMCP予約XMLタグを除去する。
+    """spawn-bundle envelope の本文フィールド（acceptance/context等）からMCP予約XMLタグを除去する。
 
     orchがtool callの引数としてフィールド値を渡すとき、XML構文ミスでタグ残骸
     （例: </parameter>, <invoke name="..."> 等）が混入することがある。
-    workerがtask_fileとして読むとき、これらがMCPプロトコルの一部として
+    workerが spawn-bundle として読むとき、これらがMCPプロトコルの一部として
     誤解釈される恐れがあるため、既知の予約タグは除去する。
     """
     cleaned, count = _MCP_RESERVED_TAG_RE.subn("", value)
     if count:
         logger.warning(
-            "_write_task_file: %sフィールドにMCP予約XMLタグが%d件混入していました（除去済み）",
+            "_build_spawn_bundle: %sフィールドにMCP予約XMLタグが%d件混入していました（除去済み）",
             field_name or "unknown",
             count,
         )
     return cleaned
 
 
-def _slugify_task_title(title: str, max_len: int = 40) -> str:
-    """task fileのファイル名に使うslugをタイトルから生成する。
-
-    「main — detail」構造のタイトルはmain部分のみを採用し、
-    空白・パス上危険な文字（/ \\ | : # ? * < > " ' 改行等）を `-` に畳む。
-    日本語はそのまま残す（日本語話者がファイル名から内容を即把握できるようにするため）。
-    連続する `-` は1つに畳み、max_len文字で切り詰める。空文字列なら "" を返す。
-    """
-    if not title:
-        return ""
-    # 「main — detail」構造ならmain部分のみを使う
-    for sep in (" — ", " – ", " - ", "—", "–"):
-        if sep in title:
-            title = title.split(sep, 1)[0]
-            break
-    slug = re.sub(r"""[\s/\\|:#?*<>"']+""", "-", title.strip())
-    slug = re.sub(r"-+", "-", slug).strip("-")
-    if len(slug) > max_len:
-        slug = slug[:max_len].rstrip("-")
-    return slug
-
-
-def _write_task_file(
-    task_dir: Path,
+def _build_spawn_bundle_data(
     task_n: int,
-    alias: str,
-    channel: str,
-    cwd: str,
-    model: str,
     task_title: str,
     acceptance: str,
     context: str,
     playbook: str,
-    timeout_min: int,
     activity_id: int | None,
     topic_id: str | None,
-    effort: str | None = None,
-) -> Path:
-    """task fileをマークダウン（YAML frontmatter + 本文）で書き出す。
+    effort: str | None,
+    goal_text: str | None,
+) -> dict:
+    """spawn-bundle envelope の data フィールドを組み立てる。
 
-    機械可読フィールド（task/alias/channel/cwd/model等）はfrontmatterに、
-    人間可読な内容（タイトル・acceptance・context・playbook）は本文に置く。
-    workerはfrontmatterから起動パラメータを、本文からタスク内容を読み取る。
+    本文フィールド (task_title/acceptance/context/playbook) は MCP 予約 XML タグを
+    除去してから格納する。effort が指定された場合は本文 context の末尾に思考worker
+    マーカーセクションを差し込み、正規綴り `ultrathink` トリガー語を埋め込む。
 
-    ファイル名は `t<topic_id>-T<n>-<title-slug>.md`。topic prefixでtopic間の名前衝突を、
-    title slugで人間がファイルを開かずに内容を把握できることを担保する。
-    topic_idが未指定の場合は `T<n>-<title-slug>.md`、slugが空なら接尾辞を省く。
-
-    effort が指定された場合 (THINKING_EFFORTS の値) は思考workerとして扱い、本文冒頭
-    （タイトル直後）に思考workerマーカーセクションを挿入する。マーカーには正規綴り
-    `ultrathink` （claude の extended thinking トリガー語）を埋め込む。frontmatterにも
-    `effort: <値>` を残す。
-
-    Note: ドキュメント・skill・チャット文中で本トリガー語に言及する場合は、orch
-    セッション側で extended thinking モードが暴発しないよう sentinel `ultratink`
-    （意図的タイポ）を使う運用とする。worker 埋め込みの実体は正規綴り `ultrathink`。
+    goal_text は `/goal` 起動コマンドに埋める短文。omit (None) 時は task_title を
+    フォールバックに使う。
     """
-    base = f"t{topic_id}-T{task_n}" if (topic_id is not None and str(topic_id)) else f"T{task_n}"
-    slug = _slugify_task_title(task_title)
-    name = f"{base}-{slug}" if slug else base
-    task_file = task_dir / f"{name}.md"
-    task_file.parent.mkdir(parents=True, exist_ok=True)
-
-    fm_data = {
-        "v": 1,
-        "task": f"T{task_n}",
-        "alias": alias,
-        "channel": channel,
-        "cwd": cwd,
-        "model": model,
-        "permission_mode": "auto",
-        "timeout_min": timeout_min,
-        "activity_id": activity_id,
-        "topic_id": topic_id,
-    }
-    if effort:
-        fm_data["effort"] = effort
-    fm_yaml = yaml.safe_dump(fm_data, default_flow_style=False, allow_unicode=True, sort_keys=False)
-
+    task_title_clean = _sanitize_task_body_field(task_title, "task_title")
     acceptance_clean = _sanitize_task_body_field(acceptance, "acceptance")
     context_clean = _sanitize_task_body_field(context, "context")
     playbook_clean = _sanitize_task_body_field(playbook, "playbook")
+    goal_text_clean = _sanitize_task_body_field(goal_text, "goal_text") if goal_text else ""
 
-    body_lines = [f"# {fm_data['task']}: {task_title}".rstrip()]
     if effort:
-        body_lines += [
-            "",
-            "## Thinking worker",
-            "",
-            "ultrathink",
-            "",
+        thinking_section = (
+            "\n\n## Thinking worker\n\n"
+            "ultrathink\n\n"
             f"このタスクは思考worker (effort: {effort}) 扱い。実装ではなく深い議論・"
             "設計検討・調査を行う。上記キーワード `ultrathink` は claude の extended "
-            "thinking モードトリガー語。worker セッションは長考モードで動作する。",
-        ]
-    if acceptance_clean:
-        body_lines += ["", "## Acceptance", "", acceptance_clean]
-    if context_clean:
-        body_lines += ["", "## Context", "", context_clean]
-    if playbook_clean:
-        body_lines += ["", "## Playbook", "", playbook_clean]
-    body = "\n".join(body_lines) + "\n"
+            "thinking モードトリガー語。worker セッションは長考モードで動作する。"
+        )
+        context_clean = (context_clean + thinking_section) if context_clean else thinking_section.lstrip("\n")
 
-    content = f"---\n{fm_yaml}---\n\n{body}"
-    task_file.write_text(content, encoding="utf-8")
-
-    return task_file
+    data = {
+        "type": "spawn-bundle",
+        "task_title": task_title_clean,
+        "acceptance": acceptance_clean,
+        "context": context_clean,
+        "playbook": playbook_clean,
+        "activity_id": activity_id,
+        "topic_id": topic_id,
+        "effort": effort,
+        "goal_text": goal_text_clean or task_title_clean,
+    }
+    return data
 
 
 def _get_adapter_path(terminal: str) -> Path | None:
@@ -1041,11 +983,12 @@ def ow_spawn_worker(
     task_n: int = 1,
     tmux_target_pane: str | None = None,
     effort: str | None = None,
+    goal_text: str | None = None,
 ) -> dict:
     """workerセッションを起動する。
 
-    処理順: spawn前ヘルスチェック → relay へ spawning event broadcast → task file書き出し
-        → アダプタ呼び出し → 安定ID返却
+    処理順: spawn前ヘルスチェック → relay へ spawning event broadcast →
+        event:spawn-bundle を relay に送信 → アダプタ呼び出し → 安定ID返却
 
     permission_modeは常にautoに固定される。
 
@@ -1071,15 +1014,18 @@ def ow_spawn_worker(
             参照できない。
         effort: 思考worker（深い議論・設計検討・調査向けworker）として起動するなら
             THINKING_EFFORTS の値 (`"high"` / `"xhigh"` / `"max"` / `"ultrathink"`) のい
-            ずれかを指定する。指定時は task_file 本文に正規綴り `ultrathink` マーカー
-            セクションが挿入され、frontmatter にも `effort: <値>` が残る。OW_TERMINAL=
-            tmux のときは split-pane ではなく `tmux new-window` で別タブに開く。role は
-            worker のまま（新role不要）。対応activityには `intent:thinking` タグを別途
-            付与すること。None（デフォルト）は通常 worker。
+            ずれかを指定する。指定時は spawn-bundle data.effort に値が入り、data.context
+            末尾に正規綴り `ultrathink` マーカーセクションが差し込まれる。OW_TERMINAL=tmux
+            のときは split-pane ではなく `tmux new-window` で別タブに開く。role は worker
+            のまま。対応activityには `intent:thinking` タグを別途付与すること。
+            None（デフォルト）は通常 worker。
+        goal_text: claude CLI 起動 prompt の `/goal` コマンドに埋めるテキスト。None または
+            空のときは task_title をフォールバックに使う。`/goal` ネイティブ機能で worker
+            はゴール完了 (state:done) まで自走モードで動く。
 
     Returns:
-        {"term_ref": str, "task_file": str, "spawning": "ok"}
-        manualフォールバック時: {"command": str, "manual": True, "task_file": str}
+        {"term_ref": str, "bundle_msg_id": int, "spawning": "ok", "alias": str}
+        manualフォールバック時: {"command": str, "manual": True, "bundle_msg_id": int, "alias": str}
         spawn前検証失敗時: {"error": {"code": "SPAWN_PRECONDITION_FAILED", "warnings": [...]}}
         effort不正値時: {"error": {"code": "INVALID_EFFORT", "message": ...}}
     """
@@ -1110,8 +1056,8 @@ def ow_spawn_worker(
 
     # task_title未指定 かつ activity_id指定時は activities.title を自動解決する。
     # 呼び出し側（orch等）に task_title を毎回詰めさせず、activity名と一貫させる。
-    # この task_title は task file frontmatter / ファイル名スラッグ / worker_cmd の
-    # --name（セッション表示名）すべてに伝播する。
+    # この task_title は spawn-bundle envelope の data.task_title / worker_cmd の
+    # --name（セッション表示名） / goal_text 未指定時のフォールバックに伝播する。
     if not task_title and activity_id is not None:
         task_title = _resolve_activity_title(activity_id)
 
@@ -1130,8 +1076,6 @@ def ow_spawn_worker(
     # Claude Code CLI の permission deny を使って worker セッションから AskUserQuestion を
     # 構造的に遮断する。既存設定があればマージ。
     _ensure_worker_askuser_deny(cwd)
-
-    task_dir = _OW_ORCH_DIR / "tasks"
 
     # relay へ spawning broadcast (孤児 worker 対策の真実源化、SKILL.md §通信プロトコル orch→broadcast)。
     # projector は本 event を受信して cache.workers[alias].task_status="spawning" を書き、
@@ -1171,23 +1115,49 @@ def ow_spawn_worker(
             },
         }
 
-    # task fileを書き出す
-    task_file = _write_task_file(
-        task_dir=task_dir,
+    # event:spawn-bundle を relay に送信する (D#2952 / D#2953)。
+    # worker は起動後に env から OW_CHANNEL / OW_ALIAS / OW_TASK_N を読み、relay に接続して
+    # ow_history(since=0) で自分宛 spawn-bundle を pull する。task_title / acceptance /
+    # context / playbook / activity_id / topic_id / effort / goal_text を bundle data に含める。
+    # claude プロセス起動「前」に send する順序保証必須 (worker が history pull する時点で
+    # bundle が messages テーブルに存在している必要があるため)。
+    bundle_data = _build_spawn_bundle_data(
         task_n=task_n,
-        alias=alias,
-        channel=channel,
-        cwd=cwd,
-        model=model,
         task_title=task_title,
         acceptance=acceptance,
         context=context,
         playbook=playbook,
-        timeout_min=timeout_min,
         activity_id=activity_id,
         topic_id=topic_id,
         effort=effort,
+        goal_text=goal_text,
     )
+    bundle_body = {
+        "v": 1,
+        "kind": "event",
+        "from": "orch",
+        "to": alias,
+        "task": f"T{task_n}",
+        "data": bundle_data,
+    }
+    bundle_result = ow_send(channel=channel, handle="orch", body=bundle_body)
+    if "error" in bundle_result:
+        err_detail = bundle_result.get("error")
+        logger.error(
+            "ow_spawn_worker: failed to send event:spawn-bundle for %s: %s — aborting spawn",
+            alias,
+            err_detail,
+        )
+        return {
+            "error": {
+                "code": "SPAWN_PRECONDITION_FAILED",
+                "message": "relay send of event:spawn-bundle failed; spawn aborted",
+                "warnings": [
+                    f"relay send event:spawn-bundle failed for {alias}: {err_detail}"
+                ],
+            },
+        }
+    bundle_msg_id = bundle_result.get("msg_id")
 
     # アダプタ起動
     # OW_TERMINAL 未設定時は "tmux" にフォールバックする (原則 tmux 運用)。
@@ -1195,19 +1165,22 @@ def ow_spawn_worker(
     terminal = os.environ.get("OW_TERMINAL", "tmux")
     adapter_path = _get_adapter_path(terminal) if terminal != "manual" else None
 
-    # --add-dir は commander.js の variadic option (`<directories...>`) で、空白区切り形式
-    # (`--add-dir DIR PROMPT`) だと続く positional prompt を dir として吸収する。
-    # `=` 形式 (`--add-dir=DIR`) は単一値として確定的にパースされ、複数指定は
-    # `--add-dir=DIR1 --add-dir=DIR2` の append 形で渡せる。後続 prompt の吸収リスクが
-    # 構造的に発生しないため、`--` separator なしで positional が確実に届く。
     # --name はセッション表示名（プロンプトボックス・/resume picker・端末タイトル）。
     # workerはtask_titleをActivity名としてそのまま渡し、orch側で見分けやすくする。
     session_name = task_title or alias
+
+    # 起動 prompt は `/goal <goal_text>` で worker をゴール完了まで自走モードにする (D#2962)。
+    # worker は起動後 env から識別子を読んで relay 接続、spawn-bundle を pull、check_in、
+    # working 状態に直行する (ready 状態は廃止)。
+    goal_for_prompt = bundle_data["goal_text"] or alias
+    prompt_text = f"/goal {goal_for_prompt}。workerスキルに従って check_in からぜんぶやって。"
+
     # OW_PARENT_PID=$$ + exec claude で「shell PID → claude PID」の継承を行い、
     # claude プロセスに OW_PARENT_PID 環境変数として自身の PID を埋め込む。
     # claude の子（Bash tool / Monitor で起動される recv.sh / heartbeat.sh）はこの env を
     # 継承するため、claude 本体死亡時に watchdog が自動 exit する。
-    # worker SKILL.md 依存ゼロ（A案 + ow_service spawn 経路で完結）。
+    # OW_CHANNEL / OW_ALIAS / OW_TASK_N は worker bootstrap 識別子 (D#2952 / D#2953)。
+    # worker SKILL.md は env からこれらを読んで relay に接続し、spawn-bundle を pull する。
     #
     # 注: `$$` はこの Python 文字列ではエスケープされず、tmux.sh の `eval` 実行時
     # （base64 経由で運搬された後）に「その bash プロセスの PID」へ展開される。
@@ -1216,11 +1189,10 @@ def ow_spawn_worker(
     worker_cmd = (
         f'OW_PARENT_PID=$$ '
         f'OW_ROLE=worker OW_ALIAS={shlex.quote(alias)} OW_CHANNEL={shlex.quote(channel)} '
-        f'OW_TASK_FILE={shlex.quote(str(task_file))} '
+        f'OW_TASK_N={shlex.quote(str(task_n))} '
         f'exec claude --model {shlex.quote(model)} --permission-mode auto '
         f'--name {shlex.quote(session_name)} '
-        f'--add-dir={shlex.quote(str(task_file.parent))} '
-        f'{shlex.quote(f"workerスキルに従って作業を開始して。task: {task_file}")}'
+        f'{shlex.quote(prompt_text)}'
     )
 
     if adapter_path is None:
@@ -1238,7 +1210,7 @@ def ow_spawn_worker(
         return {
             "command": worker_cmd,
             "manual": True,
-            "task_file": str(task_file),
+            "bundle_msg_id": bundle_msg_id,
             "alias": alias,
             "adapter_error": adapter_error,
         }
@@ -1271,7 +1243,7 @@ def ow_spawn_worker(
         return {
             "command": worker_cmd,
             "manual": True,
-            "task_file": str(task_file),
+            "bundle_msg_id": bundle_msg_id,
             "alias": alias,
             "adapter_error": "adapter spawn timed out",
         }
@@ -1280,14 +1252,14 @@ def ow_spawn_worker(
         return {
             "command": worker_cmd,
             "manual": True,
-            "task_file": str(task_file),
+            "bundle_msg_id": bundle_msg_id,
             "alias": alias,
             "adapter_error": e.stderr,
         }
 
     return {
         "term_ref": term_ref,
-        "task_file": str(task_file),
+        "bundle_msg_id": bundle_msg_id,
         "spawning": "ok",
         "alias": alias,
     }
@@ -1516,7 +1488,7 @@ def _get_presence(channel: str) -> list[str]:
 
 # cache.workers[alias].state における「workerが活動中」と分類する workload state。
 # spawning は workload state ではなく task_status のため別カテゴリで扱う。
-_ACTIVE_WORKLOAD_STATES: frozenset[str] = frozenset({"ready", "working", "blocked", "escalated", "draining"})
+_ACTIVE_WORKLOAD_STATES: frozenset[str] = frozenset({"working", "blocked", "escalated", "draining"})
 
 # cache.workers[alias].task_status における「workerが活動中」と分類する状態。
 # spawning を含めることで、cache に spawning entry が残っている alias への重複 spawn を
@@ -1532,9 +1504,9 @@ _TERMINATED_IDENTITY_CAUSES: frozenset[str] = frozenset({"closed", "cancelled", 
 
 # projector: worker からの event:state(state) を受信したときに cache.workers[alias].task_status へ
 # マップする規則。設計書 v3 §5 と SKILL.md §projector マッピング表 に対応。
+# ready 状態は D#2962 で廃止 (loading から working へ直行)。
 _STATE_TO_TASK_STATUS: dict[str, str] = {
     "loading": "spawning",
-    "ready": "spawning",
     "working": "working",
     "blocked": "working",
     "escalated": "escalated",
@@ -1551,14 +1523,13 @@ _CAUSE_TO_TASK_STATUS: dict[str, str] = {
 
 # relay 最新 state 宣言 → cache task_status の suggested 反映マップ。
 # presence offline & cache active の ghost_active ケースで使う。
-# 終端 state (done/closed/cancelled/failed) はそのまま反映、非終端 (ready/working等) は
+# 終端 state (done/closed/cancelled/failed) はそのまま反映、非終端 (working等) は
 # presence offline = 異常終了とみなして "stalled" に倒す（手動介入を促す）。
 _RELAY_STATE_TO_TASK_STATUS: dict[str, str] = {
     "done": "done",
     "closed": "done",   # 旧プロトコル互換 (現行 worker は terminated/cause=closed で送るため state="closed" は通常来ない)
     "failed": "failed",
     "cancelled": "cancelled",
-    "ready": "stalled",
     "working": "stalled",
     "blocked": "stalled",
     "escalated": "stalled",
@@ -2678,7 +2649,7 @@ def _latest_events_by_type(
 def ow_get_identity(channel: str, handle: str) -> dict | None:
     """指定 handle の最新 identity bundle を返す。crash 推論を含む。
 
-    crash 推論: 最新の event:state が terminal でない（loading/ready/working/blocked/
+    crash 推論: 最新の event:state が terminal でない（loading/working/blocked/
                escalated/draining）かつ最後の event:heartbeat 受信時刻から閾値超過 →
                メモリ上で inferred_cause を付与（DB 不変）。
 
