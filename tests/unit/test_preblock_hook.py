@@ -177,17 +177,55 @@ class TestIsAllowed:
 
 class TestIsInCcMemoryProject:
     def test_pyproject_with_cc_memory_name(self, tmp_path, monkeypatch):
-        (tmp_path / "pyproject.toml").write_text('name = "cc-memory"\n')
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "cc-memory"\n'
+        )
         monkeypatch.chdir(tmp_path)
         assert preblock_hook._is_in_cc_memory_project() is True
 
-    def test_pyproject_with_single_quotes(self, tmp_path, monkeypatch):
-        (tmp_path / "pyproject.toml").write_text("name = 'cc-memory'\n")
+    def test_pyproject_with_literal_string(self, tmp_path, monkeypatch):
+        # TOML literal string (single quotes) も同様に受理される
+        (tmp_path / "pyproject.toml").write_text(
+            "[project]\nname = 'cc-memory'\n"
+        )
         monkeypatch.chdir(tmp_path)
         assert preblock_hook._is_in_cc_memory_project() is True
 
     def test_pyproject_with_other_name(self, tmp_path, monkeypatch):
-        (tmp_path / "pyproject.toml").write_text('name = "other-project"\n')
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "other-project"\n'
+        )
+        monkeypatch.chdir(tmp_path)
+        assert preblock_hook._is_in_cc_memory_project() is False
+
+    def test_pyproject_with_name_only_in_comment(self, tmp_path, monkeypatch):
+        # コメント行に `name = "cc-memory"` があっても [project].name は別ならば False
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\n# name = "cc-memory"\nname = "other-project"\n'
+        )
+        monkeypatch.chdir(tmp_path)
+        assert preblock_hook._is_in_cc_memory_project() is False
+
+    def test_pyproject_with_name_in_other_table(self, tmp_path, monkeypatch):
+        # 別 table の name が "cc-memory" でも [project].name でなければ False
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "other-project"\n\n'
+            '[tool.foo]\nname = "cc-memory"\n'
+        )
+        monkeypatch.chdir(tmp_path)
+        assert preblock_hook._is_in_cc_memory_project() is False
+
+    def test_pyproject_without_project_table(self, tmp_path, monkeypatch):
+        # [project] table が無ければ False (defensive)
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.foo]\nname = "cc-memory"\n'
+        )
+        monkeypatch.chdir(tmp_path)
+        assert preblock_hook._is_in_cc_memory_project() is False
+
+    def test_pyproject_invalid_toml(self, tmp_path, monkeypatch):
+        # 壊れた TOML はパース失敗 → False
+        (tmp_path / "pyproject.toml").write_text("this is = = not toml [[[\n")
         monkeypatch.chdir(tmp_path)
         assert preblock_hook._is_in_cc_memory_project() is False
 
@@ -203,7 +241,9 @@ class TestIsInCcMemoryProject:
         assert result is False
 
     def test_pyproject_found_in_parent(self, tmp_path, monkeypatch):
-        (tmp_path / "pyproject.toml").write_text('name = "cc-memory"\n')
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "cc-memory"\n'
+        )
         subdir = tmp_path / "src" / "deep" / "path"
         subdir.mkdir(parents=True)
         monkeypatch.chdir(subdir)
@@ -232,7 +272,9 @@ def _run_main_with_event(event: dict, capsys) -> dict:
 @pytest.fixture
 def cc_memory_cwd(tmp_path, monkeypatch):
     """cc-memory project 内っぽい cwd を用意する fixture。"""
-    (tmp_path / "pyproject.toml").write_text('name = "cc-memory"\n')
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "cc-memory"\n'
+    )
     monkeypatch.chdir(tmp_path)
     # opt-out 環境変数は明示的に消しておく
     monkeypatch.delenv("CC_MEMORY_LEAK_GUARD", raising=False)
@@ -326,6 +368,28 @@ class TestMainBlockFlow:
         )
         assert out == {}
 
+    def test_allowlist_skips_project_check_io(
+        self, capsys, cc_memory_cwd, monkeypatch
+    ):
+        # allowlist tool では _is_in_cc_memory_project が呼ばれないこと
+        # (頻出 tool で pyproject.toml の読み直しを避ける最適化)
+        call_count = {"n": 0}
+
+        def _spy() -> bool:
+            call_count["n"] += 1
+            return True
+
+        monkeypatch.setattr(preblock_hook, "_is_in_cc_memory_project", _spy)
+        _run_main_with_event(
+            {
+                "tool_name": "Read",
+                "tool_input": {"file_path": "/tmp/x.md"},
+                "session_id": "s1",
+            },
+            capsys,
+        )
+        assert call_count["n"] == 0
+
     def test_opt_out_env_var_passes_through(
         self, capsys, cc_memory_cwd, monkeypatch
     ):
@@ -370,7 +434,9 @@ class TestMainBlockFlow:
     def test_non_cc_memory_project_passes_through(
         self, capsys, tmp_path, monkeypatch
     ):
-        (tmp_path / "pyproject.toml").write_text('name = "other-project"\n')
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "other-project"\n'
+        )
         monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("CC_MEMORY_LEAK_GUARD", raising=False)
         out = _run_main_with_event(

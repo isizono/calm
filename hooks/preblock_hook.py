@@ -16,6 +16,7 @@ import json
 import os
 import pathlib
 import sys
+import tomllib
 from datetime import datetime, timezone
 
 # プラグイン経由で `${CLAUDE_PLUGIN_ROOT}` を cwd として起動されるため、
@@ -123,17 +124,26 @@ def _scan_tool_input(value) -> list[dict]:
 
 
 def _is_in_cc_memory_project() -> bool:
-    """cwd から上方向に pyproject.toml を探索して cc-memory project か判定する。"""
+    """cwd から上方向に pyproject.toml を探索して cc-memory project か判定する。
+
+    `[project].name` を tomllib で厳密パースする。コメント行や別フィールドに
+    たまたま `name = "cc-memory"` を含むケースで誤判定しないよう、文字列の
+    部分一致ではなくパース済みの構造から取り出す。
+    """
     cwd = pathlib.Path.cwd()
     for p in (cwd, *cwd.parents):
         pj = p / "pyproject.toml"
         if not pj.exists():
             continue
         try:
-            text = pj.read_text(encoding="utf-8")
-        except OSError:
+            with pj.open("rb") as fp:
+                data = tomllib.load(fp)
+        except (OSError, tomllib.TOMLDecodeError):
             return False
-        return 'name = "cc-memory"' in text or "name = 'cc-memory'" in text
+        project = data.get("project")
+        if not isinstance(project, dict):
+            return False
+        return project.get("name") == "cc-memory"
     return False
 
 
@@ -163,13 +173,15 @@ def main() -> None:
             print("{}")
             return
 
-        # cwd 判定: cc-memory project 内のみ有効
-        if not _is_in_cc_memory_project():
+        # allowlist: scan 不要 tool は素通し
+        # cwd 判定より先に行うことで、Read/Grep/Glob 等の頻出 tool で
+        # 毎回 pyproject.toml を読み直す I/O を回避する。
+        if _is_allowed(tool_name):
             print("{}")
             return
 
-        # allowlist: scan 不要 tool は素通し
-        if _is_allowed(tool_name):
+        # cwd 判定: cc-memory project 内のみ有効
+        if not _is_in_cc_memory_project():
             print("{}")
             return
 
