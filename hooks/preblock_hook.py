@@ -60,6 +60,11 @@ ALLOWLIST_EXACT: frozenset[str] = frozenset(
 
 LOG_PATH = pathlib.Path.home() / ".cc-memory" / "logs" / "preblock_hook.jsonl"
 
+# pyproject.toml `[project].name` がこのいずれかに一致したら cc-memory project と判定する。
+# 実プロジェクトの name は "claude-code-memory" だが、過去ドキュメントや一部 fixture が
+# "cc-memory" 表記を持つので両方を受け入れる。
+_PROJECT_NAMES = ("cc-memory", "claude-code-memory")
+
 
 def _is_allowed(tool_name: str) -> bool:
     if tool_name in ALLOWLIST_EXACT:
@@ -143,7 +148,7 @@ def _is_in_cc_memory_project() -> bool:
         project = data.get("project")
         if not isinstance(project, dict):
             return False
-        return project.get("name") == "cc-memory"
+        return project.get("name") in _PROJECT_NAMES
     return False
 
 
