@@ -810,7 +810,17 @@ def ow_send(
             )
         else:
             try:
-                ow_close_worker(term_ref)
+                close_result = ow_close_worker(term_ref)
+                if close_result.get("closed") is False:
+                    logger.warning(
+                        "auto-close: tmux kill failed for term_ref=%s on channel=%s handle=%s, result=%s",
+                        term_ref, channel, handle, close_result,
+                    )
+                elif close_result.get("manual"):
+                    logger.warning(
+                        "auto-close: manual term_ref=%s on channel=%s handle=%s requires operator action: %s",
+                        term_ref, channel, handle, close_result.get("message"),
+                    )
             except Exception as exc:
                 logger.warning(
                     "auto-close failed for term_ref=%s on channel=%s handle=%s: %s",

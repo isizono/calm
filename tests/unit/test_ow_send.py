@@ -586,6 +586,53 @@ class TestOwSendAutoClose:
         assert "error" not in result
         assert any("auto-close failed" in rec.message for rec in caplog.records)
 
+    def test_close_worker_returns_closed_false_warns(self, monkeypatch, stub_relay_success, caplog):
+        """ow_close_worker が {"closed": False} を返した場合 warn log が出る"""
+        monkeypatch.setattr(
+            ow_service, "ow_get_identity",
+            lambda ch, h: {"term_ref": "%42"},
+        )
+        monkeypatch.setattr(
+            ow_service, "ow_close_worker",
+            lambda _term_ref: {"closed": False, "error": "tmux kill failed"},
+        )
+
+        body = {"v": 1, "kind": "event", "from": "w-a", "to": "*",
+                "data": {"type": "state", "state": "terminated", "cause": "closed"}}
+        with caplog.at_level("WARNING", logger="src.services.ow_service"):
+            result = ow_service.ow_send(channel="AbCdEfGh", handle="w-a", body=body)
+
+        assert result.get("msg_id") == 123
+        assert "error" not in result
+        assert any(
+            "auto-close: tmux kill failed" in rec.message for rec in caplog.records
+        )
+
+    def test_close_worker_returns_manual_warns(self, monkeypatch, stub_relay_success, caplog):
+        """ow_close_worker が {"manual": True} を返した場合 warn log が出る"""
+        monkeypatch.setattr(
+            ow_service, "ow_get_identity",
+            lambda ch, h: {"term_ref": "%42"},
+        )
+        monkeypatch.setattr(
+            ow_service, "ow_close_worker",
+            lambda _term_ref: {
+                "manual": True,
+                "message": "manual: prefix detected, operator action required",
+            },
+        )
+
+        body = {"v": 1, "kind": "event", "from": "w-a", "to": "*",
+                "data": {"type": "state", "state": "terminated", "cause": "closed"}}
+        with caplog.at_level("WARNING", logger="src.services.ow_service"):
+            result = ow_service.ow_send(channel="AbCdEfGh", handle="w-a", body=body)
+
+        assert result.get("msg_id") == 123
+        assert "error" not in result
+        assert any(
+            "auto-close: manual" in rec.message for rec in caplog.records
+        )
+
     def test_relay_post_failure_does_not_trigger_close(self, monkeypatch):
         """relay POST 失敗 (msg_id 未取得) では ow_close_worker は呼ばれない"""
 
