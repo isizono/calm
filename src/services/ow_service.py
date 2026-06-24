@@ -24,6 +24,7 @@ import urllib.error
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 import yaml
@@ -152,6 +153,42 @@ def _validate_alias_format(alias: str) -> str | None:
             "end with letter or digit, no consecutive hyphens)"
         )
     return None
+
+
+_DISPATCHER_HANDLE_MIN_LENGTH: int = 4
+_DISPATCHER_HANDLE_PREFIX: str = "d-"
+
+
+def _validate_dispatcher_handle(handle: str) -> str | None:
+    """dispatcher handle (d-{channel}) の書式検証。OK なら None、NG ならエラーメッセージを返す。
+
+    検証項目:
+        - 最小長: 4 文字以上 (例: "d-XX")
+        - d- prefix 必須
+        - prefix 後は kebab-case (小文字英数字 + ハイフン、末尾英数字、連続ハイフン禁止)
+    """
+    if not isinstance(handle, str) or not handle:
+        return "dispatcher handle must be a non-empty string"
+    if not handle.startswith(_DISPATCHER_HANDLE_PREFIX):
+        return (
+            f"dispatcher handle '{handle}' must start with "
+            f"'{_DISPATCHER_HANDLE_PREFIX}' prefix"
+        )
+    if len(handle) < _DISPATCHER_HANDLE_MIN_LENGTH:
+        return (
+            f"dispatcher handle '{handle}' is too short "
+            f"(length={len(handle)}, min={_DISPATCHER_HANDLE_MIN_LENGTH})"
+        )
+    rest = handle[len(_DISPATCHER_HANDLE_PREFIX):]
+    if not _ALIAS_PATTERN.match(rest):
+        return (
+            f"dispatcher handle '{handle}' has invalid characters after "
+            f"'{_DISPATCHER_HANDLE_PREFIX}' "
+            "(lowercase letters/digits/hyphen, start with letter, "
+            "end with letter or digit, no consecutive hyphens)"
+        )
+    return None
+
 
 # reducer: v3 workload state 分類
 _NON_TERMINAL_WORKLOAD_STATES: frozenset[str] = frozenset(
@@ -1062,6 +1099,7 @@ def ow_spawn_worker(
     tmux_target_pane: str | None = None,
     effort: str | None = None,
     goal_text: str | None = None,
+    _alias_validator: Callable[[str], str | None] | None = None,
 ) -> dict:
     """workerセッションを起動する。
 
@@ -1140,7 +1178,9 @@ def ow_spawn_worker(
         task_title = _resolve_activity_title(activity_id)
 
     # spawn前ヘルスチェック (relay疎通・channel存在・cwd存在・alias重複)
-    preflight = _validate_spawn_preconditions(alias, channel, cwd, topic_id=topic_id, task_n=task_n)
+    preflight = _validate_spawn_preconditions(
+        alias, channel, cwd, topic_id=topic_id, task_n=task_n, alias_validator=_alias_validator,
+    )
     if not preflight["ok"]:
         return {
             "error": {
@@ -1622,6 +1662,7 @@ def _validate_spawn_preconditions(
     cwd: str,
     topic_id: str | None = None,
     task_n: int | None = None,
+    alias_validator: Callable[[str], str | None] | None = None,
 ) -> dict:
     """ow_spawn_worker起動前の一括ヘルスチェック。
 
@@ -1631,6 +1672,10 @@ def _validate_spawn_preconditions(
         - cwd存在: Path(cwd).expanduser()がディレクトリとして存在するか
         - alias重複: 同aliasがpresence onlineまたはcache上で活動中タスクのworkerとして他の
           task_nに割当て済みでないか（同一task_nで再spawn=再リンクは許可）
+
+    Args:
+        alias_validator: alias 書式の検証関数。None なら worker 用 _validate_alias_format。
+            dispatcher 経路からは _validate_dispatcher_handle を渡す。
 
     Returns:
         {
@@ -1644,7 +1689,8 @@ def _validate_spawn_preconditions(
 
     # 0. alias書式（最小長 + kebab-case）。relay 接続前に純粋な書式検証で弾く。
     # 書式エラー時は relay 接続を行わずに早期return（無効aliasで relay 接続を発生させない）。
-    alias_err = _validate_alias_format(alias)
+    validator = alias_validator if alias_validator is not None else _validate_alias_format
+    alias_err = validator(alias)
     if alias_err is not None:
         warnings.append(alias_err)
         return {"ok": False, "warnings": warnings}
@@ -2429,6 +2475,223 @@ def ow_recover(
         "reconstructed_max_msg_id": reconstructed.get("max_msg_id", 0),
         "dry_run": dry_run,
         "nonce_echo_results": nonce_echo_results,
+    }
+
+
+# ----------------------------
+# ow_spawn_dispatcher / ow_close_dispatcher
+# ----------------------------
+# orch 専用 dispatcher session lifecycle ツール。既存 ow_spawn_worker /
+# ow_close_worker の subprocess 起動・終了経路を共有し、tool API 層と引数の正規化だけ
+# 分ける。handle は d-{channel} を自動付与。既存 dispatcher があれば cascade kill
+# (dispatcher + 紐づく worker pool 全員) してから新規 spawn する。close 時も cascade を
+# 強制する (opt-out 引数なし)。recover は対象外。
+
+
+def ow_spawn_dispatcher(
+    channel: str,
+    cwd: str,
+    model: str,
+    tmux_target_pane: str | None = None,
+) -> dict:
+    """dispatcher session を起動する。
+
+    handle は d-{channel} を自動付与する。channel に既存 dispatcher があれば
+    cascade kill (既存 dispatcher + 紐づく worker pool 全員) してから新規 spawn する。
+    health check や idempotent reject は行わない。
+
+    cascade kill が失敗した場合は warning ログを出すだけで spawn を続行するが、旧
+    dispatcher の alive identity が state に残ったままになる。続く ow_spawn_worker は
+    identity alive check (INV-9) で同一 alias を弾くため、戻り値が
+    SPAWN_PRECONDITION_FAILED の error response になる可能性が高い。呼び出し側は
+    error code を見て、必要なら手動で ow_close_worker / ow_recover を打って残骸を
+    片付けてから再 spawn する。
+
+    Args:
+        channel: channel コード (handle に d- prefix で組み込まれる)
+        cwd: dispatcher セッションの作業ディレクトリ
+        model: 使用モデル (claude-opus-4-7 のみ許可。ow_spawn_worker と同じ制約)
+        tmux_target_pane: tmux 分割表示用 (optional、ow_spawn_worker と同じ意味)
+
+    Returns:
+        成功時: ow_spawn_worker と同形式 (term_ref / alias / bundle_msg_id 等)
+        失敗時: ow_spawn_worker と同形式の error response
+    """
+    if not isinstance(channel, str) or not channel:
+        return {
+            "error": {
+                "code": "INVALID_CHANNEL",
+                "message": "channel must be a non-empty string",
+            },
+        }
+
+    dispatcher_handle = f"{_DISPATCHER_HANDLE_PREFIX}{channel}"
+
+    handle_err = _validate_dispatcher_handle(dispatcher_handle)
+    if handle_err is not None:
+        return {
+            "error": {
+                "code": "INVALID_HANDLE",
+                "message": handle_err,
+            },
+        }
+
+    topic_id = find_topic_id_by_channel(channel)
+    if topic_id is not None:
+        existing_state = load_state(topic_id, channel)
+        if existing_state is not None:
+            workers = existing_state.get("workers") or {}
+            identities = existing_state.get("identities") or {}
+            if dispatcher_handle in workers or dispatcher_handle in identities:
+                cascade_result = ow_close_dispatcher(channel)
+                if not cascade_result.get("closed"):
+                    logger.warning(
+                        "ow_spawn_dispatcher: cascade kill of existing dispatcher failed for "
+                        "channel %s: %s",
+                        channel,
+                        cascade_result.get("error"),
+                    )
+
+    return ow_spawn_worker(
+        alias=dispatcher_handle,
+        channel=channel,
+        cwd=cwd,
+        model=model,
+        task_title=f"dispatcher for channel {channel}",
+        acceptance="",
+        context="",
+        playbook="",
+        timeout_min=60 * 24,
+        activity_id=None,
+        topic_id=str(topic_id) if topic_id is not None else None,
+        task_n=0,
+        tmux_target_pane=tmux_target_pane,
+        _alias_validator=_validate_dispatcher_handle,
+    )
+
+
+def ow_close_dispatcher(channel: str) -> dict:
+    """dispatcher session を kill し、紐づく worker pool も cascade kill する。
+
+    channel に dispatcher (handle=d-{channel}) が存在しない場合はエラーを返す。
+    no-op success は採らない (失敗の物理顕在化原則)。
+
+    Args:
+        channel: channel コード
+
+    Returns:
+        成功時: {
+            "closed": True,
+            "channel": str,
+            "dispatcher_handle": str,
+            "killed_workers": [handle, ...],
+            "failed_workers": [{"handle": str, "reason"/"error": ...}, ...],
+        }
+        失敗時: {"error": {"code": str, "message": str}, "killed_workers": [...], ...}
+    """
+    if not isinstance(channel, str) or not channel:
+        return {
+            "error": {
+                "code": "INVALID_CHANNEL",
+                "message": "channel must be a non-empty string",
+            },
+        }
+
+    dispatcher_handle = f"{_DISPATCHER_HANDLE_PREFIX}{channel}"
+
+    topic_id = find_topic_id_by_channel(channel)
+    state = load_state(topic_id, channel) if topic_id is not None else None
+
+    if state is None:
+        return {
+            "error": {
+                "code": "DISPATCHER_NOT_FOUND",
+                "message": (
+                    f"no cached state for channel {channel}, dispatcher absent"
+                ),
+            },
+        }
+
+    workers_map = state.get("workers") or {}
+    identities_map = state.get("identities") or {}
+
+    if dispatcher_handle not in workers_map and dispatcher_handle not in identities_map:
+        return {
+            "error": {
+                "code": "DISPATCHER_NOT_FOUND",
+                "message": (
+                    f"no dispatcher (handle={dispatcher_handle}) in channel {channel}"
+                ),
+            },
+        }
+
+    killed_workers: list[str] = []
+    failed_workers: list[dict] = []
+
+    for handle in list(workers_map.keys()):
+        if not handle.startswith("w-"):
+            continue
+        identity = ow_get_identity(channel, handle)
+        if identity is None:
+            failed_workers.append({"handle": handle, "reason": "no identity event"})
+            continue
+        term_ref = identity.get("term_ref") if isinstance(identity, dict) else None
+        if not term_ref:
+            failed_workers.append({"handle": handle, "reason": "no term_ref in identity"})
+            continue
+        close_result = ow_close_worker(term_ref)
+        if close_result.get("closed"):
+            killed_workers.append(handle)
+        else:
+            failed_workers.append({
+                "handle": handle,
+                "error": close_result.get("error"),
+            })
+
+    dispatcher_identity = ow_get_identity(channel, dispatcher_handle)
+    if dispatcher_identity is None:
+        return {
+            "error": {
+                "code": "DISPATCHER_IDENTITY_MISSING",
+                "message": (
+                    f"dispatcher (handle={dispatcher_handle}) has no identity event"
+                ),
+            },
+            "killed_workers": killed_workers,
+            "failed_workers": failed_workers,
+        }
+
+    dispatcher_term_ref = (
+        dispatcher_identity.get("term_ref") if isinstance(dispatcher_identity, dict) else None
+    )
+    if not dispatcher_term_ref:
+        return {
+            "error": {
+                "code": "DISPATCHER_NO_TERM_REF",
+                "message": "dispatcher identity has no term_ref",
+            },
+            "killed_workers": killed_workers,
+            "failed_workers": failed_workers,
+        }
+
+    dispatcher_close_result = ow_close_worker(dispatcher_term_ref)
+    if not dispatcher_close_result.get("closed"):
+        return {
+            "error": {
+                "code": "DISPATCHER_CLOSE_FAILED",
+                "message": "failed to close dispatcher process",
+                "detail": dispatcher_close_result.get("error"),
+            },
+            "killed_workers": killed_workers,
+            "failed_workers": failed_workers,
+        }
+
+    return {
+        "closed": True,
+        "channel": channel,
+        "dispatcher_handle": dispatcher_handle,
+        "killed_workers": killed_workers,
+        "failed_workers": failed_workers,
     }
 
 
