@@ -263,7 +263,7 @@ def add_topic(
     related: 関連エンティティ（optional）。[{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...] 形式。複数エンティティを配列で同時紐付け可能。例: [{"type": "topic", "ids": [1, 2]}, {"type": "decision", "ids": [10]}]。作成と同時にリレーションを張る
 
     レスポンスに類似トピック(similar_topics)が含まれる場合がある。重複トピックの防止やリレーション追加の参考にすること。"""
-    guard_service.check_worker_guard("add_topic")
+    guard_service.check_capability("add_topic")
     caller_session_id = get_caller_session_id()
     result = topic_service.add_topic(title, description, tags, related=related, caller_session_id=caller_session_id)
     if "error" not in result:
@@ -317,7 +317,7 @@ def add_decisions(items: list[dict], ctx: Context) -> dict:
         created各要素には related_decisions（同topic内の類似decision上位3件 [{id, title, distance}]）が付く。
         既存decisionとの矛盾・重複に気づくための導線。embeddingサーバー未起動時は空配列。
     """
-    guard_service.check_worker_guard("add_decisions")
+    guard_service.check_capability("add_decisions")
     caller_session_id = get_caller_session_id()
     result = decision_service.add_decisions(items, caller_session_id=caller_session_id)
     if "error" not in result:
@@ -1043,7 +1043,7 @@ def add_habit(content: str) -> dict:
     add_decisions / add_topic と同じ guard 対象。OW_ESCALATION=1 の
     orch_proxy 経路でのみ通過する。
     """
-    guard_service.check_worker_guard("add_habit")
+    guard_service.check_capability("add_habit")
     return habit_service.add_habit(content)
 
 
