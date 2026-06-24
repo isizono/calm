@@ -177,6 +177,9 @@ case "$ACTION" in
     FALLBACK_INTERVAL="${OW_CLOSE_FALLBACK_INTERVAL:-0.5}"
 
     # 1. pane の生存確認。既に不在ならそのまま closed 扱い。
+    # 注: pane が既に不在の場合 (worker が想定外に死亡 or 自己終了済み) は #{window_id}
+    # を取得できないため、残存 worker pane の縦再分配は実行できない。再分配が必要なら
+    # 呼び出し元が spawn 時に控えた window_id を close へ引き渡す必要がある。
     if ! tmux display -t "$TERM_REF" -p "#{pane_pid}" 2>/dev/null >/dev/null; then
       echo "closed"
       exit 0

@@ -19,6 +19,7 @@ def _make_mock_tmux(
     target_pane_exists: bool = True,
     existing_worker_panes: str = "",
     display_switch_at_kill: int | None = None,
+    window_height: str = "12345",
 ) -> Path:
     """tmuxをモックするシェルスクリプトを作成する。
 
@@ -32,6 +33,9 @@ def _make_mock_tmux(
 
     existing_worker_panesは `tmux list-panes -F "#{pane_id}|#{@ow-worker}"` の擬似出力。
     例: "%5|1\\n%7|" を渡すと既存worker paneが1個ある状態を模擬する（"1"がworkerマーカー、空欄が非worker）。
+
+    window_height は `tmux display -p "#{window_height}"` が返す値（rebalance の高さ計算用）。
+    既定 "12345"。window_height を問わない display クエリ（pane_pid 等）は従来通り "12345" を返す。
     """
     mock_dir = tmp_path / "mock_bin"
     mock_dir.mkdir(exist_ok=True)
@@ -64,7 +68,10 @@ def _make_mock_tmux(
         f'if [ "$1" = "display" ]; then\n'
         f'  state=$(cat "{display_state_file}" 2>/dev/null || echo "1")\n'
         f'  if [ "$state" = "0" ]; then exit 1; fi\n'
-        f'  echo "12345"\n'
+        f'  case "$*" in\n'
+        f'    *window_height*) echo "{window_height}";;\n'
+        f'    *) echo "12345";;\n'
+        f'  esac\n'
         f'  exit 0\n'
         f'fi\n'
         f'if [ "$1" = "list-panes" ]; then printf "%b\\n" "{existing_worker_panes}"; fi\n'
@@ -321,6 +328,90 @@ class TestTmuxAdapterSplit:
         )
         assert result.returncode != 0
         assert "target_pane not found" in result.stderr
+
+
+class TestTmuxAdapterRebalance:
+    """rebalance_worker_panes の縦再分配ロジックのテスト。
+
+    spawn 経路（target_pane 指定 + 既存 worker あり → 垂直分割後に rebalance 実行）で
+    検証する。rebalance が参照する list-panes 出力は existing_worker_panes、window 高さは
+    window_height で直接制御し、resize-pane 呼び出しの有無と -y 引数値を assert する。
+    """
+
+    # 5 個の worker pane（@ow-worker=1）を縦積みした状態の list-panes 擬似出力
+    FIVE_WORKERS = "%1|1\\n%2|1\\n%3|1\\n%4|1\\n%5|1"
+
+    def test_rebalance_uses_separator_aware_target(self, tmp_path):
+        """win_h=40, N=5 のとき target=(40-(5-1))/5=7。先頭から (N-1)=4 個の pane が
+        `resize-pane -y 7` でリサイズされる（最後の pane は残り高さを吸収するため触らない）。"""
+        result, captured = _run_adapter(
+            ["spawn", "/tmp/work", "claude", "%0"],
+            tmp_path,
+            existing_worker_panes=self.FIVE_WORKERS,
+            window_height="40",
+        )
+        assert result.returncode == 0
+        assert "-y 7" in captured
+        assert captured.count("resize-pane") == 4
+
+    def test_rebalance_formula_regression_guard(self, tmp_path):
+        """セパレータ行を無視する旧式 win_h/count=40/5=8 への退行を防ぐ。
+        正しい target は 7 なので `-y 8` が出てはならない。"""
+        result, captured = _run_adapter(
+            ["spawn", "/tmp/work", "claude", "%0"],
+            tmp_path,
+            existing_worker_panes=self.FIVE_WORKERS,
+            window_height="40",
+        )
+        assert result.returncode == 0
+        assert "-y 8" not in captured
+
+    def test_rebalance_last_pane_not_resized(self, tmp_path):
+        """N 個の worker pane に対し resize-pane は (N-1) 回だけ呼ばれる（最後は吸収）。"""
+        result, captured = _run_adapter(
+            ["spawn", "/tmp/work", "claude", "%0"],
+            tmp_path,
+            existing_worker_panes=self.FIVE_WORKERS,
+            window_height="60",
+        )
+        assert result.returncode == 0
+        # win_h=60, N=5 → target=(60-4)/5=11
+        assert "-y 11" in captured
+        assert captured.count("resize-pane") == 4
+
+    def test_rebalance_skipped_for_single_worker(self, tmp_path):
+        """worker pane が 1 個（count<2）のとき rebalance は no-op で resize-pane を呼ばない。"""
+        result, captured = _run_adapter(
+            ["spawn", "/tmp/work", "claude", "%0"],
+            tmp_path,
+            existing_worker_panes="%5|1",
+            window_height="40",
+        )
+        assert result.returncode == 0
+        assert "resize-pane" not in captured
+
+    def test_rebalance_skipped_when_target_nonpositive(self, tmp_path):
+        """window 高さが pane 数に対して小さく target<=0 になるとき resize-pane を呼ばない。
+        win_h=3, N=5 → (3-4)/5=0（切り捨て）→ no-op。"""
+        result, captured = _run_adapter(
+            ["spawn", "/tmp/work", "claude", "%0"],
+            tmp_path,
+            existing_worker_panes=self.FIVE_WORKERS,
+            window_height="3",
+        )
+        assert result.returncode == 0
+        assert "resize-pane" not in captured
+
+    def test_rebalance_skipped_when_window_height_unavailable(self, tmp_path):
+        """window_height 取得が空文字のとき rebalance は no-op（resize-pane を呼ばない）。"""
+        result, captured = _run_adapter(
+            ["spawn", "/tmp/work", "claude", "%0"],
+            tmp_path,
+            existing_worker_panes=self.FIVE_WORKERS,
+            window_height="",
+        )
+        assert result.returncode == 0
+        assert "resize-pane" not in captured
 
 
 class TestTmuxAdapterThinking:
