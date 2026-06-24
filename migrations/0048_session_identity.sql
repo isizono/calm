@@ -13,7 +13,7 @@
 --   - parent_session_id は relax FK (FOREIGN KEY 制約自体張らない)。
 --     削除済み親への参照や、session_identity 外部での親セッションへの参照を許容する。
 --   - handle は UNIQUE 制約を張らない。同名 handle の別セッション再利用を許容する。
---   - topic_id は既存 discussion_topics を参照。FK は単純 REFERENCES のみ (ON DELETE 句なし)。
+--   - topic_id は既存 discussion_topics を参照。NULL 許容のため topic 削除時は ON DELETE SET NULL。
 --   - caller_session_id は全 entity テーブルに NULL 許容で追加。
 --     FK は張らず文字列として保持する (session 越え identity 連続性なし方針と整合)。
 --     index は当面張らない (audit query 必要性が出たら別 migration で追加)。
@@ -28,7 +28,7 @@ CREATE TABLE session_identity (
   session_id TEXT PRIMARY KEY,
   role TEXT NOT NULL,
   handle TEXT,
-  topic_id INTEGER REFERENCES discussion_topics(id),
+  topic_id INTEGER REFERENCES discussion_topics(id) ON DELETE SET NULL,
   parent_session_id TEXT,
   spawned_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   last_heartbeat TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
