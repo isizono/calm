@@ -893,7 +893,7 @@ def test_search_offset_skips_results(temp_db, mock_embedding_model):
     assert "error" not in result_offset
     assert len(result_all["results"]) >= 3
     # offset=2 の結果は、全体の3番目以降と一致する
-    assert result_offset["results"][0]["id"] == result_all["results"][2]["id"]
+    assert result_offset["results"][0]["id_raw"] == result_all["results"][2]["id_raw"]
 
 
 def test_search_offset_with_limit(temp_db, mock_embedding_model):
@@ -912,7 +912,7 @@ def test_search_offset_with_limit(temp_db, mock_embedding_model):
     assert "error" not in result_page
     assert len(result_page["results"]) <= 2
     if len(result_all["results"]) > 1:
-        assert result_page["results"][0]["id"] == result_all["results"][1]["id"]
+        assert result_page["results"][0]["id_raw"] == result_all["results"][1]["id_raw"]
 
 
 def test_search_offset_beyond_results(temp_db, mock_embedding_model):
@@ -944,7 +944,7 @@ def test_search_offset_zero_is_default(temp_db, mock_embedding_model):
     assert "error" not in result_zero
     assert len(result_default["results"]) == len(result_zero["results"])
     for r1, r2 in zip(result_default["results"], result_zero["results"]):
-        assert r1["id"] == r2["id"]
+        assert r1["id_raw"] == r2["id_raw"]
 
 
 def test_search_offset_negative_treated_as_zero(temp_db, mock_embedding_model):

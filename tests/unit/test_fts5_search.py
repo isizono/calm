@@ -60,7 +60,8 @@ def test_search_response_format(temp_db):
     if result["results"]:
         item = result["results"][0]
         assert "type" in item
-        assert "id" in item
+        assert "id_raw" in item
+        assert "id" not in item
         assert "title" in item
         assert "score" in item
         assert "snippet" in item
