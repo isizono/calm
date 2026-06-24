@@ -61,9 +61,9 @@ OW_HB_FAIL_THRESHOLD="${OW_HB_FAIL_THRESHOLD:-5}"
 OW_DONE_TIMEOUT_SEC="${OW_DONE_TIMEOUT_SEC:-600}"
 OW_DISABLE_IDLE_TIMEOUT="${OW_DISABLE_IDLE_TIMEOUT:-0}"
 
-MCP_FAIL_COUNT_FILE="/tmp/ow-mcp-fail-$$"
-HB_FAIL_COUNT_FILE="/tmp/ow-hb-fail-$$"
-DONE_SINCE_FILE="/tmp/ow-done-since-$$"
+MCP_FAIL_COUNT_FILE="${MCP_FAIL_COUNT_FILE:-/tmp/ow-mcp-fail-$$}"
+HB_FAIL_COUNT_FILE="${HB_FAIL_COUNT_FILE:-/tmp/ow-hb-fail-$$}"
+DONE_SINCE_FILE="${DONE_SINCE_FILE:-/tmp/ow-done-since-$$}"
 HEARTBEAT_STARTED_AT=$(date +%s)
 
 # B案: trap で PHASE_FILE を自殺時に掃除する。bg化された後の親 SIGHUP は
@@ -184,8 +184,15 @@ while [ -f "$PHASE_FILE" ] && parent_alive; do
             if [ ! -f "$DONE_SINCE_FILE" ]; then
                 date +%s > "$DONE_SINCE_FILE"
             fi
-            done_since=$(cat "$DONE_SINCE_FILE" 2>/dev/null || echo 0)
             done_now=$(date +%s)
+            done_since=$(cat "$DONE_SINCE_FILE" 2>/dev/null || echo 0)
+            # ゼロバイト書き込み（/tmp 容量不足等）で done_since が空文字になると
+            # 算術展開で 0 扱いされ done_elapsed が epoch 秒大になり即時誤 kill する。
+            # 空文字・非数値・非正値はいずれも「今」起点に書き直して誤発火を防ぐ。
+            if [ -z "$done_since" ] || ! [ "$done_since" -gt 0 ] 2>/dev/null; then
+                done_since=$done_now
+                echo "$done_since" > "$DONE_SINCE_FILE"
+            fi
             done_elapsed=$(( done_now - done_since ))
             if [ "$done_elapsed" -ge "$OW_DONE_TIMEOUT_SEC" ]; then
                 shutdown_for_idle_timeout "done-stall" "${done_elapsed}s in done phase (threshold ${OW_DONE_TIMEOUT_SEC}s)"
@@ -201,12 +208,14 @@ while [ -f "$PHASE_FILE" ] && parent_alive; do
     # C案: curl にタイムアウトを付与。relay hang による heartbeat 停止を防ぐ。
     # --connect-timeout: TCP 接続確立まで / --max-time: 全体（接続+送受信）。
     # 機構1 (D#2853): 送信成否で連続失敗カウンタを更新、閾値超過で worker を kill。
-    if curl -s -X POST \
+    # stdout のみ捨て stderr は残す。連続失敗 kill 発動後に curl のエラー
+    # （Failed to connect 等）を辿れないと事後調査ができないため。
+    if curl -sS -X POST \
         --connect-timeout "$OW_CURL_CONNECT_TIMEOUT" \
         --max-time "$OW_CURL_TIMEOUT" \
         -H "Content-Type: application/json" \
         -d "{\"channel\":\"${CHANNEL}\",\"handle\":\"${HANDLE}\",\"body\":${BODY}}" \
-        "${RELAY_URL}/send" > /dev/null 2>&1; then
+        "${RELAY_URL}/send" > /dev/null; then
         echo 0 > "$HB_FAIL_COUNT_FILE"
     else
         if [ "$OW_DISABLE_IDLE_TIMEOUT" != "1" ]; then

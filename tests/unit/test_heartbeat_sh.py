@@ -745,3 +745,136 @@ class TestHeartbeatShCurlTimeout:
             f"curl --max-time が機能していない (試行 {len(server.received)} 件、"
             f"timeout 1s なら 4秒で 2件以上届くはず)"
         )
+
+
+class TestHeartbeatShDoneTimeout:
+    """機構2 (D#2853): PHASE=done 継続で done-stall idle-timeout が発火する。
+    DONE_SINCE_FILE 環境変数で since 記録ファイルを注入してタイマー起点を制御する。"""
+
+    def test_empty_done_since_file_does_not_false_kill(self, mock_relay, tmp_path):
+        """DONE_SINCE_FILE がゼロバイト（/tmp 容量不足等）でも即時誤 kill しない。
+
+        空文字は算術展開で 0 扱いされ done_elapsed が epoch 秒大になり
+        即時 kill されうるが、ガードが「今」起点に書き直して誤発火を防ぐ。"""
+        server, relay_url = mock_relay
+        phase_file = tmp_path / "ow_hb_phase_done_empty"
+        phase_file.write_text("done")
+        done_since_file = tmp_path / "ow_done_since_empty"
+        done_since_file.write_text("")  # ゼロバイト
+
+        env = {
+            **os.environ,
+            "RELAY_URL": relay_url,
+            "PHASE_FILE": str(phase_file),
+            "DONE_SINCE_FILE": str(done_since_file),
+            "HEARTBEAT_INTERVAL_LOADING": "0.2",
+            "HEARTBEAT_INTERVAL_DEFAULT": "0.2",
+            "OW_DONE_TIMEOUT_SEC": "5",
+            "OW_DISABLE_MCP_SELF_EXIT": "1",  # MCP self-exit を切り idle-timeout のみ検証
+        }
+
+        proc = subprocess.Popen(
+            ["bash", str(SCRIPT_PATH), "CH_DONE_EMPTY", "w-done-empty"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        # 閾値 5s 未満の 1.5s 経過後も生存しているはず（ガードで起点が「今」に補正）
+        time.sleep(1.5)
+        alive = proc.poll() is None
+
+        phase_file.unlink(missing_ok=True)
+        proc.terminate()
+        proc.wait(timeout=3)
+        if done_since_file.exists():
+            done_since_file.unlink()
+
+        # ガードが効いていれば done_since が「今」に書き直されているはず（空のままではない）
+        assert alive, "空 DONE_SINCE_FILE で done-stall が即時誤発火し worker が kill された"
+
+    def test_done_stall_kills_when_threshold_exceeded(self, mock_relay, tmp_path):
+        """DONE_SINCE_FILE が閾値超過の過去 timestamp なら done-stall で kill + 通知。"""
+        server, relay_url = mock_relay
+        phase_file = tmp_path / "ow_hb_phase_done_stall"
+        phase_file.write_text("done")
+        done_since_file = tmp_path / "ow_done_since_stall"
+        # 十分過去の epoch（done に入ってから長時間経過した状態を模擬）
+        done_since_file.write_text("1000000000")
+
+        env = {
+            **os.environ,
+            "RELAY_URL": relay_url,
+            "PHASE_FILE": str(phase_file),
+            "DONE_SINCE_FILE": str(done_since_file),
+            "HEARTBEAT_INTERVAL_LOADING": "0.2",
+            "HEARTBEAT_INTERVAL_DEFAULT": "0.2",
+            "OW_DONE_TIMEOUT_SEC": "5",
+            "OW_DISABLE_MCP_SELF_EXIT": "1",
+        }
+        env.pop("TMUX_PANE", None)  # kill-pane は noop 化（テスト環境）
+
+        proc = subprocess.Popen(
+            ["bash", str(SCRIPT_PATH), "CH_DONE_STALL", "w-done-stall"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            proc.wait(timeout=5)
+            exited = True
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+            proc.wait()
+            exited = False
+
+        terminated_events = [
+            r for r in server.received
+            if r.get("body", {}).get("data", {}).get("state") == "terminated"
+        ]
+
+        phase_file.unlink(missing_ok=True)
+        if done_since_file.exists():
+            done_since_file.unlink()
+
+        assert exited, "done-stall 閾値超過で worker が exit しなかった"
+        assert len(terminated_events) >= 1, "terminated(idle-timeout) が relay に届いていない"
+        data = terminated_events[0]["body"]["data"]
+        assert data["cause"] == "idle-timeout"
+        assert data["reason"] == "done-stall"
+
+    def test_disable_idle_timeout_skips_done_stall(self, mock_relay, tmp_path):
+        """OW_DISABLE_IDLE_TIMEOUT=1 なら done-stall 閾値超過でも kill しない。"""
+        server, relay_url = mock_relay
+        phase_file = tmp_path / "ow_hb_phase_done_dis"
+        phase_file.write_text("done")
+        done_since_file = tmp_path / "ow_done_since_dis"
+        done_since_file.write_text("1000000000")  # 閾値を確実に超える過去
+
+        env = {
+            **os.environ,
+            "RELAY_URL": relay_url,
+            "PHASE_FILE": str(phase_file),
+            "DONE_SINCE_FILE": str(done_since_file),
+            "HEARTBEAT_INTERVAL_LOADING": "0.2",
+            "HEARTBEAT_INTERVAL_DEFAULT": "0.2",
+            "OW_DONE_TIMEOUT_SEC": "5",
+            "OW_DISABLE_IDLE_TIMEOUT": "1",
+            "OW_DISABLE_MCP_SELF_EXIT": "1",
+        }
+
+        proc = subprocess.Popen(
+            ["bash", str(SCRIPT_PATH), "CH_DONE_DIS", "w-done-dis"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        time.sleep(1.5)
+        alive = proc.poll() is None
+
+        phase_file.unlink(missing_ok=True)
+        proc.terminate()
+        proc.wait(timeout=3)
+        if done_since_file.exists():
+            done_since_file.unlink()
+
+        assert alive, "OW_DISABLE_IDLE_TIMEOUT=1 でも done-stall kill が発火した"
