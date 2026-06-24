@@ -190,7 +190,7 @@ dispatcher が worker を spawn する際 (`ow_spawn_worker` 経由 / `command:a
 
 具体的に worker に渡す要件 (pack 構築時に context に明文化する):
 
-- `event:state(done)` の `summary` には「保存済 material id / log id + 1-2 行の成果文」を必ず含める
+- `event:state(done)` の `summary` には「保存済 material id + 1-2 行の成果文」を必ず含める (log id は done 送信時点ではまだ worker-sync で確定していないため summary に載せない)
 - 成果が PR の場合は `summary` 末尾に PR URL を 1 件添える (dispatcher が diff 確認に直接アクセスできるため)
 - 「Goal achieved」recap 表示だけで終了とせず、必ず `event:state(done)` 送信 + `command:close` 受領 + draining → terminated の正規退場プロトコルを踏む
 

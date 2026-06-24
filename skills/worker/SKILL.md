@@ -279,15 +279,16 @@ worker は claude CLI の `/goal` 自走モードで goal_text を満たした�
    ```json
    {"v":1, "kind":"event", "from":"<alias>", "to":"dispatcher", "task":"T<task_n>",
     "data":{"type":"state", "state":"done",
-            "summary":"M#<id> / L#<id>: <1-2 行で成果>",
+            "summary":"M#<id>: <1-2 行で成果>",
             "evidence":"<acceptanceを満たす証拠>",
             "synced":true,
             "materials":[<material_id...>],
             "decision_proposals":[{"decision":"...","reason":"..."}]}}
    ```
-   - `summary` は **「保存済 material id / log id の列挙」+「1-2 行の成果文」** の両方を必ず含める。dispatcher / orch が SSE notification の truncated body (約 200 文字) でも成果と紐付き先を即時判定できるよう、id を `summary` 先頭に置いて truncation で落ちないようにする
+   - `summary` は **「保存済 material id の列挙」+「1-2 行の成果文」** の両方を必ず含める。dispatcher / orch が SSE notification の truncated body (約 200 文字) でも成果と紐付き先を即時判定できるよう、material id を `summary` 先頭に置いて truncation で落ちないようにする
    - `summary` に載せる id は `materials[]` の中身と整合させる (引き合い検証フィールド)
    - 成果が PR の場合は `summary` 末尾に PR URL を 1 件添える (dispatcher が diff 確認に直接アクセスできるように)
+   - **log id は載せない**: 最終作業経緯 log は `cmd:close` 受信後の退場処理 (worker-sync) で確定するため、done envelope 送信時点ではまだ id が存在しない。log は退場処理で記録され、dispatcher は activity 経由で逆引きできる
    - `synced:true` は「material保存済み・decision_proposals添付済みで上長が検証可能な状態」を意味する。最終作業経緯ログの確定はcmd:close時の退場処理で行う
 4. done envelope 送信後は `command:close` 受領まで待機する（§完了後の待機）。recap が表示されても、`event:state(done)` を送らず terminated に向かう動きは禁止 (§禁止事項)
 
@@ -439,5 +440,5 @@ orchから `kind:command, data.type:ping` が届いたら、現在の state を 
 - `event:state(terminated)` 送信後にツールを呼ばない
 - done送信後、closeを受けるまで新しい作業を始めない・cc-memoryへ追記しない（退場処理を除く）
 - **`event:state(done)` envelope を送信せずに `event:state(terminated)` に向かわない**: 「Goal achieved」recap だけで作業終了と判断せず、必ず `event:state(done)` → `command:close` 受領 → 退場処理 (draining → terminated) の正規プロトコルを踏む。recap 表示だけで idle に落ちると上長は worker 死亡と区別がつかず成果検証不能になる (本規約の存在理由)
-- **done envelope の summary に material id / log id を省略しない**: SSE notification truncation 対策。`materials[]` 列挙だけで済まさず、`summary` 先頭にも id を埋め込む
+- **done envelope の summary に material id を省略しない**: SSE notification truncation 対策。`materials[]` 列挙だけで済まさず、`summary` 先頭にも material id を埋め込む (log id は done 送信時点ではまだ確定していないので summary には載せない)
 - **AskUserQuestion 禁止**: worker は人間に直接質問しない。質問は `event:state(blocked)` envelope で orch 経由。AskUserQuestion ツールは ow_spawn_worker の settings injection で deny されているが、明示的に守ること

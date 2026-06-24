@@ -39,8 +39,8 @@ worker-sync は `cmd:close` 受信を前提として呼ばれる。`cmd:close` �
 
 具体チェック:
 
-1. `ow_history(channel=<channel_code>, since=0)` で自分が `from` の `data.type=state` envelope を pull
-2. `event:state(done)` (= `data.state == "done"`) が **無い** または `cmd:close` 受信より新しくない場合は abort
+1. `ow_history(channel=<channel_code>, since=<spawn-bundle msg_id>)` で自分が `from` の `data.type=state` envelope を pull (since には worker SKILL.md Step 7 で取得した spawn-bundle envelope の msg_id を使い、過去セッションで同 alias が再利用された際の取り違えを避ける)
+2. abort 条件: `event:state(done)` (= `data.state == "done"`) が **無い**、または唯一の done envelope の msg_id が `cmd:close` 受信時の msg_id より **新しい** (= cmd:close より後に送られた異常順序) 場合
 3. abort 時の挙動: worker-sync の以降のステップを実行せず、`event:state(working, phase="recovery-from-skip", note="done envelope was not sent before drain; resuming work to send done envelope")` を上長に送り、worker SKILL.md §完了 → done に戻る
 
 この guard は「Goal achieved」recap で done envelope を省略して退場処理に直行する経路 (worker SKILL.md §完了 → done で禁止された動き) を、worker-sync 側でも最後にトラップするための fail-safe。本 guard が発火する状況は本来あってはならず、発火そのものを `intent:dispatch-log` 相当の log にも残してから revert する。
