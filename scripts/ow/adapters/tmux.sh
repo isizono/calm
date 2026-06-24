@@ -26,6 +26,41 @@ SESSION_NAME="${OW_TMUX_SESSION:-ow-workers}"
 WORKER_MARKER_OPT="@ow-worker"
 THINKING_WINDOW_NAME="ow-worker-thinking"
 
+# worker pane (@ow-worker=1) を window 内で縦方向に均等再分配する (D#2830)。
+# 同一カラム内の縦分割を前提に、pane_id 昇順 (= 上から下) で最後を除く各 worker
+# pane の高さを window_height/N に揃える。最後の pane は残り高さを自動で吸収する。
+# orch pane (水平分割側) の幅には触らない。worker 数 0/1 や window 高さ取得失敗時は no-op。
+rebalance_worker_panes() {
+  local window_id="$1"
+  [[ -z "$window_id" ]] && return 0
+
+  local panes
+  panes=$(tmux list-panes -t "$window_id" -F "#{pane_id}|#{@ow-worker}" 2>/dev/null \
+    | awk -F'|' '$2 == "1" { print $1 }' \
+    | sort -t'%' -k2 -n)
+
+  local count
+  count=$(printf '%s\n' "$panes" | awk '/^%/ {n++} END {print n+0}')
+  [[ "$count" -lt 2 ]] && return 0
+
+  local win_h
+  win_h=$(tmux display -t "$window_id" -p "#{window_height}" 2>/dev/null || true)
+  [[ -z "$win_h" || "$win_h" -le 0 ]] && return 0
+
+  local target=$(( win_h / count ))
+  [[ "$target" -le 0 ]] && return 0
+
+  local i=0
+  local last_idx=$(( count - 1 ))
+  while IFS= read -r pane; do
+    [[ -z "$pane" ]] && continue
+    if [[ "$i" -lt "$last_idx" ]]; then
+      tmux resize-pane -t "$pane" -y "$target" 2>/dev/null || true
+    fi
+    i=$((i + 1))
+  done <<< "$panes"
+}
+
 case "$ACTION" in
   spawn)
     if [[ $# -lt 3 ]]; then
@@ -107,6 +142,8 @@ case "$ACTION" in
       # （非対応バージョン以外にも pane消失・tmux server断などが要因になりうるため、原因は断定しない）。
       tmux set-option -p -t "$PANE_ID" "$WORKER_MARKER_OPT" 1 \
         || echo "warn: tmux set-option -p @ow-worker failed (possibly tmux <1.8 or pane gone), worker marker not set" >&2
+
+      rebalance_worker_panes "$WINDOW_ID"
     else
       # フォールバック: 従来の ow-workers 別session方式
       if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
@@ -142,8 +179,9 @@ case "$ACTION" in
       exit 0
     fi
 
-    # 2. pane 内 claude の PID を取得 (SIGKILL fallback 用に先に押さえる)。
+    # 2. pane 内 claude の PID と所属 window_id を取得 (SIGKILL fallback / 再分配用に先に押さえる)。
     PANE_PID="$(tmux display -t "$TERM_REF" -p "#{pane_pid}" 2>/dev/null || true)"
+    CLOSE_WINDOW_ID="$(tmux display -t "$TERM_REF" -p "#{window_id}" 2>/dev/null || true)"
 
     # 3. tmux kill-pane で SIGHUP 経由の正常 close を試みる。
     tmux kill-pane -t "$TERM_REF" 2>/dev/null || true
@@ -152,6 +190,7 @@ case "$ACTION" in
     i=0
     while [[ $i -lt $FALLBACK_ITER ]]; do
       if ! tmux display -t "$TERM_REF" -p "#{pane_pid}" 2>/dev/null >/dev/null; then
+        rebalance_worker_panes "$CLOSE_WINDOW_ID"
         echo "closed"
         exit 0
       fi
@@ -171,6 +210,7 @@ case "$ACTION" in
     final_iter=2
     while [[ $j -lt $final_iter ]]; do
       if ! tmux display -t "$TERM_REF" -p "#{pane_pid}" 2>/dev/null >/dev/null; then
+        rebalance_worker_panes "$CLOSE_WINDOW_ID"
         echo "killed"
         exit 0
       fi
