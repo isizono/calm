@@ -707,6 +707,49 @@ def _maybe_inject_term_ref(body: dict) -> dict:
     return new_body
 
 
+def _resolve_term_ref(channel: str, handle: str) -> str | None:
+    """(channel, handle) から term_ref を引き当てる。
+
+    cache の identity_events に格納された event:identity.data.term_ref を
+    優先で返す。cache miss / identity 未送信 / term_ref フィールド欠落の
+    いずれでも None を返す (handler 側で warn log のみ、tool error にしない)。
+    """
+    try:
+        identity = ow_get_identity(channel, handle)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "_resolve_term_ref: ow_get_identity raised for channel=%s handle=%s: %s",
+            channel, handle, exc,
+        )
+        return None
+    if not isinstance(identity, dict):
+        return None
+    term_ref = identity.get("term_ref")
+    if not isinstance(term_ref, str) or not term_ref:
+        return None
+    return term_ref
+
+
+def _is_terminated_close_event(body: dict) -> bool:
+    """ow_send body が auto-close 対象の terminated event か判定する。
+
+    判定条件: kind==event AND data.type==state AND data.state==terminated
+    AND data.cause in {"closed", "cancelled"}。dead / crashed / 他 state は対象外。
+    """
+    if not isinstance(body, dict):
+        return False
+    if body.get("kind") != "event":
+        return False
+    data = body.get("data")
+    if not isinstance(data, dict):
+        return False
+    if data.get("type") != "state":
+        return False
+    if data.get("state") != "terminated":
+        return False
+    return data.get("cause") in ("closed", "cancelled")
+
+
 def ow_send(
     channel: str,
     handle: str,
@@ -719,6 +762,12 @@ def ow_send(
     bodyはow固有JSONを格納するdict（relay schemaは無改修）。
     4xx即失敗、5xx/接続断のみ3回指数バックオフ。
     channel未存在（404）の場合はensure_channelで自動作成してから再送する。
+
+    auto-close 副作用: body が event:state(terminated, cause:closed|cancelled) の
+    場合、relay POST 成功直後に ow_close_worker(term_ref) を同期発火する。
+    冪等性は adapter (tmux kill-pane) 側で吸収する。
+    term_ref 解決失敗 / kill 失敗時は warn log のみで tool error には伝播
+    させない (relay POST は成功しているため呼び出し側には成功を返す)。
 
     Args:
         channel: channelコード
@@ -748,6 +797,35 @@ def ow_send(
         logger.info("ow_send: channel %s not found, attempting ensure_channel", channel)
         if ensure_channel(channel):
             result = _relay_request("POST", "/send", payload)
+
+    # auto-close: terminated(closed|cancelled) を観測したら term_ref を引き当てて
+    # ow_close_worker を同期発火する。relay POST が成功した場合のみ (msg_id 取得)
+    # 副作用を起こす。失敗時は warn のみで tool error には伝播させない。
+    if "msg_id" in result and _is_terminated_close_event(body):
+        term_ref = _resolve_term_ref(channel, handle)
+        if term_ref is None:
+            logger.warning(
+                "auto-close skipped: term_ref not found for handle=%s on channel=%s",
+                handle, channel,
+            )
+        else:
+            try:
+                close_result = ow_close_worker(term_ref)
+                if close_result.get("closed") is False:
+                    logger.warning(
+                        "auto-close: tmux kill failed for term_ref=%s on channel=%s handle=%s, result=%s",
+                        term_ref, channel, handle, close_result,
+                    )
+                elif close_result.get("manual"):
+                    logger.warning(
+                        "auto-close: manual term_ref=%s on channel=%s handle=%s requires operator action: %s",
+                        term_ref, channel, handle, close_result.get("message"),
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "auto-close failed for term_ref=%s on channel=%s handle=%s: %s",
+                    term_ref, channel, handle, exc,
+                )
 
     return result
 
