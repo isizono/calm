@@ -189,6 +189,7 @@ def _validate_dispatcher_handle(handle: str) -> str | None:
         )
     return None
 
+
 # reducer: v3 workload state 分類
 _NON_TERMINAL_WORKLOAD_STATES: frozenset[str] = frozenset(
     {"loading", "working", "blocked", "escalated", "draining"}
@@ -2420,6 +2421,13 @@ def ow_spawn_dispatcher(
     handle は d-{channel} を自動付与する。channel に既存 dispatcher があれば
     cascade kill (既存 dispatcher + 紐づく worker pool 全員) してから新規 spawn する。
     health check や idempotent reject は行わない。
+
+    cascade kill が失敗した場合は warning ログを出すだけで spawn を続行するが、旧
+    dispatcher の alive identity が state に残ったままになる。続く ow_spawn_worker は
+    identity alive check (INV-9) で同一 alias を弾くため、戻り値が
+    SPAWN_PRECONDITION_FAILED の error response になる可能性が高い。呼び出し側は
+    error code を見て、必要なら手動で ow_close_worker / ow_recover を打って残骸を
+    片付けてから再 spawn する。
 
     Args:
         channel: channel コード (handle に d- prefix で組み込まれる)

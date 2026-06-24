@@ -19,6 +19,8 @@
 """
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from src.services import ow_service
@@ -162,11 +164,13 @@ class TestOwSpawnDispatcher:
             lambda _ch: {"error": {"code": "DISPATCHER_CLOSE_FAILED", "message": "oops"}},
         )
 
-        result = ow_service.ow_spawn_dispatcher(
-            channel="ow-w1", cwd="/tmp", model="claude-opus-4-7"
-        )
+        with caplog.at_level(logging.WARNING, logger=ow_service.logger.name):
+            result = ow_service.ow_spawn_dispatcher(
+                channel="ow-w1", cwd="/tmp", model="claude-opus-4-7"
+            )
         assert result.get("spawning") == "ok"
         assert len(spawn_calls) == 1
+        assert "cascade kill of existing dispatcher failed" in caplog.text
 
     def test_spawn_worker_error_passes_through(self, monkeypatch):
         """ow_spawn_worker が error を返したらそのまま透過"""
