@@ -134,6 +134,7 @@ def add_topic(
     description: str,
     tags: list[str],
     related: list[dict] | None = None,
+    caller_session_id: Optional[str] = None,
 ) -> dict:
     """
     新しい議論トピックを追加する。
@@ -165,8 +166,8 @@ def add_topic(
     try:
         # トピックをINSERT
         cursor = conn.execute(
-            "INSERT INTO discussion_topics (title, description) VALUES (?, ?)",
-            (title, description),
+            "INSERT INTO discussion_topics (title, description, caller_session_id) VALUES (?, ?, ?)",
+            (title, description, caller_session_id),
         )
         topic_id = cursor.lastrowid
 

@@ -22,6 +22,7 @@ from src.services.activity_service import (
     get_active_domains_with_conn,
     get_active_activities_by_tag_with_conn,
 )
+from src.services.role_service import register_session
 from src.services.readable_id import format_readable_id
 from src.services.habit_service import get_active_habit_contents_with_conn
 from src.services.tag_service import get_entity_tags_batch
@@ -390,6 +391,29 @@ _CONTEXT_FLOW_GUIDE = """\
 """
 
 
+def _auto_register_session(conn, session_id: str | None) -> None:
+    """OW_ROLE が設定されている場合のみ session_identity に register する。
+
+    普通の claude セッション（OW_ROLE 未設定）はスキップする。
+    ow_spawn_worker 経由の worker / orch セッションは OW_ROLE + session_id の
+    両方が揃うため登録対象となる。session_id が None の場合はスキップする。
+    """
+    ow_role = os.environ.get("OW_ROLE")
+    if not ow_role or not session_id:
+        return
+
+    _VALID_ROLES = ("orch", "dispatcher", "worker", "user")
+    if ow_role not in _VALID_ROLES:
+        return
+
+    ow_handle = os.environ.get("OW_HANDLE")
+    try:
+        register_session(conn, session_id, ow_role, handle=ow_handle or None)  # type: ignore[arg-type]
+        conn.commit()
+    except Exception as e:
+        print(f"session_start_hook: register_session failed: {e}", file=sys.stderr)
+
+
 def _build_session_context(session_id: str | None = None) -> str:
     """サービス層経由でセッション開始時のコンテキストを組み立てる。
 
@@ -401,6 +425,10 @@ def _build_session_context(session_id: str | None = None) -> str:
     """
     conn = get_connection()
     try:
+        # OW_ROLE が設定されている worker/orch セッションを session_identity に登録する。
+        # 通常の claude セッション（OW_ROLE 未設定）はスキップされる。
+        _auto_register_session(conn, session_id)
+
         sections = []
         builders = [
             _build_snapshot_section,

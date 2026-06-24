@@ -26,6 +26,7 @@ from src.services.checkin_service import check_in as _check_in
 from src.services.tag_service import search_tags as _search_tags, update_tag as _update_tag, collect_tag_notes_for_injection
 from src.services.tag_analysis_service import analyze_tags as _analyze_tags
 from src.services import citation_renderer
+from src.services.role_service import get_caller_session_id
 from src.db import get_connection
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -259,7 +260,8 @@ def add_topic(
 
     レスポンスに類似トピック(similar_topics)が含まれる場合がある。重複トピックの防止やリレーション追加の参考にすること。"""
     guard_service.check_worker_guard("add_topic")
-    result = topic_service.add_topic(title, description, tags, related=related)
+    caller_session_id = get_caller_session_id()
+    result = topic_service.add_topic(title, description, tags, related=related, caller_session_id=caller_session_id)
     if "error" not in result:
         _maybe_inject_tag_notes(result, tags)
     return result
@@ -279,7 +281,8 @@ def add_logs(items: list[dict]) -> dict:
 
     Returns: {created: [...], errors: [{index, error}]}
     """
-    result = discussion_log_service.add_logs(items)
+    caller_session_id = get_caller_session_id()
+    result = discussion_log_service.add_logs(items, caller_session_id=caller_session_id)
     if "error" not in result:
         # tag_notes: 全アイテムのタグをUNIONして1回注入
         all_tags = set()
@@ -311,7 +314,8 @@ def add_decisions(items: list[dict], ctx: Context) -> dict:
         既存decisionとの矛盾・重複に気づくための導線。embeddingサーバー未起動時は空配列。
     """
     guard_service.check_worker_guard("add_decisions")
-    result = decision_service.add_decisions(items)
+    caller_session_id = get_caller_session_id()
+    result = decision_service.add_decisions(items, caller_session_id=caller_session_id)
     if "error" not in result:
         # tag_notes: 全アイテムのタグをUNIONして1回注入
         all_tags = set()
@@ -649,9 +653,10 @@ def add_activity(
     Returns:
         作成されたアクティビティ情報（check_in=Trueの場合はcheck_in_resultにtag_notes等を含む）
     """
+    caller_session_id = get_caller_session_id()
     result = activity_service.add_activity(
         title, description, tags, related=related, check_in=check_in,
-        orch_managed=orch_managed,
+        orch_managed=orch_managed, caller_session_id=caller_session_id,
     )
     if "error" not in result:
         # check_in=Trueの場合、check_in_resultにtag_notesが含まれるため
@@ -771,7 +776,8 @@ def add_material(
     Returns:
         作成された資材情報（material_id, title, content, source, tags, created_at）
     """
-    return material_service.add_material(title, content, tags, source, related=related)
+    caller_session_id = get_caller_session_id()
+    return material_service.add_material(title, content, tags, source, related=related, caller_session_id=caller_session_id)
 
 
 @mcp.tool()

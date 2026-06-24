@@ -9,6 +9,10 @@ OW_ESCALATION=1 を立てて通過させる。
 note: add_logs は worker-sync の退場処理で必須呼び出しなのでガード対象外。
 """
 import os
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.services.role_service import Role
 
 
 class WorkerGuardError(RuntimeError):
@@ -28,6 +32,24 @@ def is_worker_session() -> bool:
     エスカレーション状態 (OW_ESCALATION) はここでは見ない。
     """
     return os.environ.get(_ROLE_ENV) == _ROLE_WORKER
+
+
+def current_role() -> Optional["Role"]:
+    """現在のセッションの role を返す。
+
+    lookup_role を経由して DB → env の順で解決する。
+    MCP コンテキスト外（テスト・hook など）でも安全に呼べる。
+    新規コードではこちらを使う。
+    """
+    from src.services.role_service import lookup_role, get_caller_session_id
+    from src.db import get_connection
+
+    session_id = get_caller_session_id()
+    conn = get_connection()
+    try:
+        return lookup_role(conn, session_id)
+    finally:
+        conn.close()
 
 
 def is_escalation_mode() -> bool:
