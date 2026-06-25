@@ -46,6 +46,8 @@ ALLOWLIST_EXACT: frozenset[str] = frozenset(
         "Glob",
         "WebFetch",
         "WebSearch",
+        "Agent",
+        "Task",
         "TaskCreate",
         "TaskGet",
         "TaskUpdate",

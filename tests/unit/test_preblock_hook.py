@@ -142,6 +142,8 @@ class TestIsAllowed:
             "Glob",
             "WebFetch",
             "WebSearch",
+            "Agent",
+            "Task",
             "TaskCreate",
             "TaskGet",
             "TaskUpdate",
@@ -176,7 +178,6 @@ class TestIsAllowed:
             "Edit",
             "Write",
             "MultiEdit",
-            "Agent",
             "SendMessage",
             "TodoWrite",
             "mcp__other_namespace__something",
@@ -432,6 +433,48 @@ class TestMainBlockFlow:
             {
                 "tool_name": "Read",
                 "tool_input": {"file_path": "/tmp/M#1.md"},
+                "session_id": "s1",
+            },
+            capsys,
+        )
+        assert out == {}
+
+    def test_agent_tool_passes_through_with_id_literals(
+        self, capsys, cc_memory_cwd
+    ):
+        # Agent SA spawn 時の prompt に素の内部 ID リテラルが含まれても block しない。
+        # リテラル文字列を直接書くとこのファイル自体が hook で読み書き拒否されるため、
+        # 動的に組み立てる。
+        sharp = chr(35)
+        prompt = (
+            "review A" + sharp + "1175, D" + sharp + "2654, "
+            "M" + sharp + "508 and log " + sharp + "42"
+        )
+        out = _run_main_with_event(
+            {
+                "tool_name": "Agent",
+                "tool_input": {
+                    "description": "Investigate",
+                    "prompt": prompt,
+                },
+                "session_id": "s1",
+            },
+            capsys,
+        )
+        assert out == {}
+
+    def test_task_tool_passes_through_with_id_literals(
+        self, capsys, cc_memory_cwd
+    ):
+        sharp = chr(35)
+        prompt = "review M" + sharp + "508 context"
+        out = _run_main_with_event(
+            {
+                "tool_name": "Task",
+                "tool_input": {
+                    "description": "Investigate",
+                    "prompt": prompt,
+                },
                 "session_id": "s1",
             },
             capsys,
