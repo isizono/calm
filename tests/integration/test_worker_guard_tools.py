@@ -10,7 +10,6 @@ add_logs は worker-sync の退場処理で必須の直接呼び出しになる�
 """
 import os
 import tempfile
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -124,17 +123,8 @@ class TestAddLogsBypassesGuard:
 class TestAddDecisionsWorkerGuard:
     """add_decisions への worker ガード。"""
 
-    def _make_ctx(self):
-        """add_decisions は ctx.session_id を参照するため最小ダミーを渡す。"""
-        ctx = MagicMock()
-        ctx.session_id = "test-session"
-        return ctx
-
     def test_worker_session_raises(self, temp_db, monkeypatch):
-        """OW_ROLE=worker のとき WorkerGuardError を raise する。
-
-        ctx は guard 通過前に raise されるため参照されない。
-        """
+        """OW_ROLE=worker のとき WorkerGuardError を raise する。"""
         from src.main import add_decisions
 
         monkeypatch.setenv("OW_ROLE", "worker")
@@ -145,7 +135,6 @@ class TestAddDecisionsWorkerGuard:
                     "decision": "blocked",
                     "reason": "blocked",
                 }],
-                ctx=self._make_ctx(),
             )
         assert "add_decisions" in str(exc_info.value)
 
@@ -161,7 +150,6 @@ class TestAddDecisionsWorkerGuard:
                 "decision": "Pass through under escalation.",
                 "reason": "orch_proxy escalation path.",
             }],
-            ctx=self._make_ctx(),
         )
         assert "error" not in result
         assert "created" in result
@@ -177,7 +165,6 @@ class TestAddDecisionsWorkerGuard:
                 "decision": "Orch decision.",
                 "reason": "Orch may record directly.",
             }],
-            ctx=self._make_ctx(),
         )
         assert "error" not in result
         assert "created" in result
@@ -193,7 +180,6 @@ class TestAddDecisionsWorkerGuard:
                 "decision": "Normal decision.",
                 "reason": "Regular session.",
             }],
-            ctx=self._make_ctx(),
         )
         assert "error" not in result
         assert "created" in result
