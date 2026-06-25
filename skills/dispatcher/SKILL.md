@@ -775,7 +775,7 @@ projector は relay event 受信時に push 型で cache JSON と activities tab
 | `dead` | loading 中の load 失敗 | `failed` | (触らず、`in_progress` 維持) |
 | `crashed (inferred)` | working/blocked/escalated 中の heartbeat 途絶 | `stalled` | (触らず) |
 | `crashed-during-drain (inferred)` | draining 中の heartbeat 途絶 | `stalled` | (触らず) |
-| `idle-timeout` | heartbeat.sh が relay /send 連続失敗 N=5 を検知、または PHASE=done のまま M=10分経過 (D#2853) | `stalled` | (触らず) |
+| `idle-timeout` | heartbeat.sh が relay /send 連続失敗 N=5 + heartbeat uptime>=300s を同時に検知、または PHASE=done のまま M=10分経過 (D#2853) | `stalled` | (触らず) |
 
 `idle-timeout` は worker が自身で kill する経路 (heartbeat.sh が `event:state(terminated, cause:idle-timeout)` を送信した後 tmux kill-pane / SIGTERM)。auto-close 対象軸 (D#2609) では `closed` / `cancelled` と並ぶ auto-close 対象 (pane も kill 済みで人間判断不要)。
 
