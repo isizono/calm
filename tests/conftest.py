@@ -14,7 +14,7 @@ _OW_ENV_KEYS = (
     "OW_ROLE",
     "OW_ALIAS",
     "OW_CHANNEL",
-    "OW_TASK_FILE",
+    "OW_TASK_N",
     "OW_ESCALATION",
 )
 

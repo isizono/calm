@@ -1,7 +1,7 @@
-"""readable_id 化時の title fallback テスト (PR #405 review fix)
+"""title fallback テスト
 
-title が None の decision / log を readable_id 化すると `(#NNN)` のみになる問題を防ぐ。
-本文先頭50文字を fallback として `{snippet} (#NNN)` 形式にする。
+title が None の decision / log を返却する際、title フィールドが None のままになる
+のを防ぐため本文先頭50文字を fallback として title に入れる挙動を検証する。
 
 対応箇所:
 - search_service._format_row (decision ブランチ) → get_by_id / get_by_ids 経由
@@ -46,7 +46,7 @@ class TestDecisionTitleFallbackInFormatRow:
     """_format_row decision ブランチで title None 時に decision 本文へ fallback する"""
 
     def test_get_by_id_uses_decision_body_when_title_none(self, topic):
-        """get_by_id(decision) は title なしのとき decision 本文先頭50文字を表示する"""
+        """get_by_id(decision) は title なしのとき decision 本文先頭50文字を title に入れる"""
         body = "これがdecision本文の中身でtitleは指定されていない"
         result = add_decisions([
             {"topic_id": topic["topic_id"], "decision": body, "reason": "理由"},
@@ -56,11 +56,9 @@ class TestDecisionTitleFallbackInFormatRow:
         res = get_by_id("decision", did)
         assert "error" not in res
         data = res["data"]
-        # title フィールドに本文 fallback が乗る
         assert data["title"] == body[:50]
-        # readable_id 化された id 文字列にも fallback タイトルが組み込まれる
-        assert data["id"] == f"{body[:50]} (#{did})"
         assert data["id_raw"] == did
+        assert "id" not in data
 
     def test_get_by_ids_uses_decision_body_when_title_none(self, topic):
         """get_by_ids(decision) も同様に本文 fallback する"""
@@ -76,7 +74,8 @@ class TestDecisionTitleFallbackInFormatRow:
         assert len(items) == 1
         data = items[0]["data"]
         assert data["title"] == body
-        assert data["id"] == f"{body} (#{did})"
+        assert data["id_raw"] == did
+        assert "id" not in data
 
     def test_get_by_id_prefers_title_when_provided(self, topic):
         """title 指定済みなら本文 fallback ではなく title が使われる"""
@@ -93,7 +92,8 @@ class TestDecisionTitleFallbackInFormatRow:
         res = get_by_id("decision", did)
         data = res["data"]
         assert data["title"] == "正しい題名"
-        assert data["id"] == f"正しい題名 (#{did})"
+        assert data["id_raw"] == did
+        assert "id" not in data
 
 
 class TestLogsCatalogTitleFallback:
@@ -113,9 +113,9 @@ class TestLogsCatalogTitleFallback:
             conn.close()
 
         assert latest_log is not None
-        log_id = latest_log["id_raw"]
         assert latest_log["title"] == content[:50]
-        assert latest_log["id"] == f"{content[:50]} (#{log_id})"
+        assert "id_raw" in latest_log
+        assert "id" not in latest_log
 
     def test_catalog_falls_back_to_content_when_title_none(self, topic):
         """catalog の各 log も title None なら content 先頭50文字に fallback"""
@@ -123,7 +123,7 @@ class TestLogsCatalogTitleFallback:
         add_logs([
             {"topic_id": tid, "content": "旧log本文1"},
             {"topic_id": tid, "content": "旧log本文2"},
-            {"topic_id": tid, "content": "最新log本文（latest側）"},
+            {"topic_id": tid, "content": "最新log本文(latest側)"},
         ])
 
         conn = get_connection()
@@ -133,13 +133,13 @@ class TestLogsCatalogTitleFallback:
             conn.close()
 
         assert latest_log is not None
-        # catalog には残り2件が新しい順に入る
         assert len(catalog) == 2
         for item in catalog:
             assert "id_raw" in item
-            # title None だと "(#NNN)" のみになる挙動を回避できているか
-            assert not item["id"].startswith("(#"), (
-                f"catalog item id should embed content fallback, got {item['id']!r}"
+            assert "id" not in item
+            # title None だと None のままになる挙動を回避できているか
+            assert item["title"] is not None and item["title"] != "", (
+                f"catalog item title should embed content fallback, got {item['title']!r}"
             )
 
     def test_latest_log_prefers_title_when_provided(self, topic):
@@ -155,6 +155,6 @@ class TestLogsCatalogTitleFallback:
             conn.close()
 
         assert latest_log is not None
-        log_id = latest_log["id_raw"]
         assert latest_log["title"] == "ログ題名"
-        assert latest_log["id"] == f"ログ題名 (#{log_id})"
+        assert "id_raw" in latest_log
+        assert "id" not in latest_log

@@ -110,6 +110,14 @@ CLAUDE.mdのタグ版として機能し、そのタグに遭遇したとき（�
 全セッション共通の行動ルールはhabitsとして記録できます。SessionStart時に全件注入されます。
 ユーザーからもらったfeedbackのうち、タグやファイルに依存しない横断的なルールはauto-memoryではなくhabitsに記録してください。
 
+## 内部識別子は本文に出さない
+
+`M#123` `D#456` `L#789` `A#321` `T#654` のような大文字コード形式や、`material #123`・`decision #456` のような英語フルワード形式は、AIからの発話・コミット・PR本文・コードコメント・READMEその他あらゆる外部出力に書かないでください。これらはcc-memory内部の参照記号で、開発コンテキスト外では読み手に意味が伝わりません。
+
+cc-memory project内ではPreToolUse hookでtool引数中の内部識別子を機械的にblockします。blockされたら回避策を探すのではなく、エンティティタイトル（例:「○○の議論で決めた通り」）で本文を書き直してください。
+
+なおcc-memory内に保存するtitle・本文・タグ等は対象外です（記録の利便性を優先）。
+
 ---
 
 あなたにはユーザーの壁打ち相手であり、記録係としての役割が期待されています。
@@ -1346,6 +1354,63 @@ def ow_close_worker(term_ref: str) -> dict:
         失敗時: {"error": {...}}
     """
     return ow_service.ow_close_worker(term_ref)
+
+
+@mcp.tool()
+def ow_spawn_dispatcher(
+    channel: str,
+    cwd: str,
+    model: str,
+    tmux_target_pane: str | None = None,
+) -> dict:
+    """dispatcher session を起動する。
+
+    handle は d-{channel} を自動付与する。channel に既存 dispatcher があれば
+    cascade kill (既存 dispatcher + 紐づく worker pool 全員) してから新規 spawn する。
+    health check や idempotent reject は行わない。
+
+    Args:
+        channel: channelコード (handle に d- prefix で組み込まれる)
+        cwd: dispatcher セッションの作業ディレクトリ
+        model: 使用モデル。claude-opus-4-7 のみ許可。
+            sonnet / haiku / opus-4-8 はバリデーションで拒否
+        tmux_target_pane: OW_TERMINAL=tmux のとき分割表示の基準 pane ID (optional)
+
+    Returns:
+        成功時: {"term_ref": str, "bundle_msg_id": int, "spawning": "ok", "alias": str}
+        失敗時: {"error": {"code": str, "message": str, ...}}
+    """
+    guard_service.check_worker_guard("ow_spawn_dispatcher")
+    return ow_service.ow_spawn_dispatcher(
+        channel=channel,
+        cwd=cwd,
+        model=model,
+        tmux_target_pane=tmux_target_pane,
+    )
+
+
+@mcp.tool()
+def ow_close_dispatcher(channel: str) -> dict:
+    """dispatcher session を kill し、紐づく worker pool も cascade kill する。
+
+    channel に dispatcher (handle=d-{channel}) が存在しない場合はエラーを返す
+    (no-op success は採らない)。close は graceful shutdown を試みず即 process kill。
+
+    Args:
+        channel: channelコード
+
+    Returns:
+        成功時: {
+            "closed": True,
+            "channel": str,
+            "dispatcher_handle": str,
+            "killed_workers": [handle, ...],
+            "failed_workers": [{"handle": str, "reason"/"error": ...}, ...]
+        }
+        失敗時: {"error": {"code": str, "message": str}, "killed_workers": [...], ...}
+    """
+    guard_service.check_worker_guard("ow_close_dispatcher")
+    return ow_service.ow_close_dispatcher(channel)
 
 
 @mcp.tool()

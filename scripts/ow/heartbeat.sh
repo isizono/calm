@@ -4,8 +4,10 @@
 # 使い方:
 #   PHASE_FILE=/tmp/ow_hb_phase_<alias> bash heartbeat.sh <channel_code> <handle> &
 #   echo "loading" > $PHASE_FILE   # loading=10s
-#   echo "ready"   > $PHASE_FILE   # ready/working/draining=30s
+#   echo "working" > $PHASE_FILE   # working/draining=30s
 #   rm $PHASE_FILE                 # ファイル削除でループ終了
+#
+# 注: ready 状態は D#2962 で廃止 (loading → working 直行)。
 #
 # 環境変数:
 #   RELAY_URL          中継サーバーURL (default: http://127.0.0.1:8765)
@@ -22,13 +24,34 @@
 #                      MCP /health 連続失敗回数の閾値 (default: 5)。
 #                      これを超えると safe state の worker は self-exit する。
 #   OW_MCP_UPTIME_MIN_SEC
-#                      self-exit を発火するために必要な heartbeat プロセスの最小経過秒
-#                      (default: 300=5分)。spawn 直後の不安定期保護。
+#                      self-exit / hb-fail idle-timeout を発火するために必要な
+#                      heartbeat プロセスの最小経過秒 (default: 300=5分)。
+#                      spawn 直後の不安定期保護として、MCP /health 連続失敗による
+#                      self-exit (OW_MCP_FAIL_THRESHOLD) と relay /send 連続失敗による
+#                      hb-fail idle-timeout (OW_HB_FAIL_THRESHOLD) の両方に同閾値が
+#                      適用される。MCP cold start 対策で本変数を大きくすると、
+#                      hb-fail idle-timeout の発火タイミングも同じだけ後ろ倒しになる。
 #   OW_MCP_CONNECT_TIMEOUT
 #                      MCP /health curl の connect timeout（秒）。default: 2
 #   OW_MCP_MAX_TIME    MCP /health curl の全体タイムアウト（秒）。default: 3
 #   OW_DISABLE_MCP_SELF_EXIT
 #                      "1" を渡すと self-exit を無効化（デバッグ・検証用）。
+#   OW_HB_FAIL_THRESHOLD
+#                      relay /send 連続失敗回数の閾値 (default: 5)。
+#                      hb_n >= OW_HB_FAIL_THRESHOLD かつ heartbeat 経過秒 >=
+#                      OW_MCP_UPTIME_MIN_SEC の両方を満たしたときに idle-timeout
+#                      として worker を kill する。uptime gate により spawn 直後の
+#                      relay cold start や transient hang を「永続 idle」と
+#                      誤判定しない
+#                      (D#2853 機構1: relay 不通検知)。
+#   OW_DONE_TIMEOUT_SEC
+#                      PHASE=done になってから close 未受領で kill する閾値秒
+#                      (default: 600=10分)。dispatcher が done 検証 + close 送信
+#                      を完了しないまま worker が滞留するのを防ぐ
+#                      (D#2853 機構2: done 後タイマー)。
+#   OW_DISABLE_IDLE_TIMEOUT
+#                      "1" を渡すと idle-timeout (機構1+機構2) を無効化
+#                      （デバッグ・検証用）。
 
 set -euo pipefail
 
@@ -45,8 +68,13 @@ OW_MCP_UPTIME_MIN_SEC="${OW_MCP_UPTIME_MIN_SEC:-300}"
 OW_MCP_CONNECT_TIMEOUT="${OW_MCP_CONNECT_TIMEOUT:-2}"
 OW_MCP_MAX_TIME="${OW_MCP_MAX_TIME:-3}"
 OW_DISABLE_MCP_SELF_EXIT="${OW_DISABLE_MCP_SELF_EXIT:-0}"
+OW_HB_FAIL_THRESHOLD="${OW_HB_FAIL_THRESHOLD:-5}"
+OW_DONE_TIMEOUT_SEC="${OW_DONE_TIMEOUT_SEC:-600}"
+OW_DISABLE_IDLE_TIMEOUT="${OW_DISABLE_IDLE_TIMEOUT:-0}"
 
-MCP_FAIL_COUNT_FILE="/tmp/ow-mcp-fail-$$"
+MCP_FAIL_COUNT_FILE="${MCP_FAIL_COUNT_FILE:-/tmp/ow-mcp-fail-$$}"
+HB_FAIL_COUNT_FILE="${HB_FAIL_COUNT_FILE:-/tmp/ow-hb-fail-$$}"
+DONE_SINCE_FILE="${DONE_SINCE_FILE:-/tmp/ow-done-since-$$}"
 HEARTBEAT_STARTED_AT=$(date +%s)
 
 # B案: trap で PHASE_FILE を自殺時に掃除する。bg化された後の親 SIGHUP は
@@ -55,6 +83,8 @@ HEARTBEAT_STARTED_AT=$(date +%s)
 cleanup() {
     rm -f "$PHASE_FILE" 2>/dev/null || true
     rm -f "$MCP_FAIL_COUNT_FILE" 2>/dev/null || true
+    rm -f "$HB_FAIL_COUNT_FILE" 2>/dev/null || true
+    rm -f "$DONE_SINCE_FILE" 2>/dev/null || true
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -78,14 +108,17 @@ mcp_health_check() {
         "${OW_MCP_URL}/health" > /dev/null 2>&1
 }
 
-# self-exit の安全条件: w-* handle かつ PHASE=ready かつ uptime>=閾値。
+# self-exit の安全条件: w-* handle かつ PHASE=working かつ uptime>=閾値。
+# working 中の MCP unreachable は cc-memory ツール (add_logs/check_in 等) が呼べず
+# worker が詰まる状態のため、殺す方がコスト低い (D#2962 ready 廃止に伴い旧
+# PHASE=ready 条件から working に変更)。
 # 安全とみなせば 0、対象外なら 1 を返す。
 is_safe_for_self_exit() {
     case "$HANDLE" in
         w-*) ;;
         *) return 1 ;;
     esac
-    [ "$PHASE" = "ready" ] || return 1
+    [ "$PHASE" = "working" ] || return 1
     # `local var=$(cmd)` は local の exit code が常に 0 になり set -e をすり抜ける。
     # 宣言と代入は分ける。
     local now
@@ -123,8 +156,34 @@ self_exit_due_to_mcp_loss() {
     exit 0
 }
 
+# idle-timeout self-shutdown (D#2853): relay に terminated(cause:idle-timeout) を
+# 通知してから worker を kill する。reason は "hb-fail" (機構1) または
+# "done-stall" (機構2) を渡す。
+shutdown_for_idle_timeout() {
+    local reason="$1"
+    local detail="$2"
+    local body
+    body=$(printf '{"v":1,"kind":"event","from":"%s","to":"dispatcher","data":{"type":"state","state":"terminated","cause":"idle-timeout","reason":"%s","detail":"%s"}}' \
+        "$HANDLE" "$reason" "$detail")
+    curl -s -X POST \
+        --connect-timeout "$OW_CURL_CONNECT_TIMEOUT" \
+        --max-time "$OW_CURL_TIMEOUT" \
+        -H "Content-Type: application/json" \
+        -d "{\"channel\":\"${CHANNEL}\",\"handle\":\"${HANDLE}\",\"body\":${body}}" \
+        "${RELAY_URL}/send" > /dev/null 2>&1 || true
+    if [ -n "${TMUX_PANE:-}" ]; then
+        tmux kill-pane -t "$TMUX_PANE" 2>/dev/null || true
+    elif [ -n "$OW_PARENT_PID" ]; then
+        echo "heartbeat.sh: idle-timeout (reason=$reason); killing OW_PARENT_PID=$OW_PARENT_PID" >&2
+        kill -TERM "$OW_PARENT_PID" 2>/dev/null || true
+    else
+        echo "heartbeat.sh: idle-timeout (reason=$reason); TMUX_PANE and OW_PARENT_PID both unset; worker process will leak" >&2
+    fi
+    exit 0
+}
+
 while [ -f "$PHASE_FILE" ] && parent_alive; do
-    PHASE=$(cat "$PHASE_FILE" 2>/dev/null || echo "ready")
+    PHASE=$(cat "$PHASE_FILE" 2>/dev/null || echo "working")
 
     if [ "$PHASE" = "loading" ]; then
         INTERVAL="${HEARTBEAT_INTERVAL_LOADING:-10}"
@@ -132,17 +191,60 @@ while [ -f "$PHASE_FILE" ] && parent_alive; do
         INTERVAL="${HEARTBEAT_INTERVAL_DEFAULT:-30}"
     fi
 
+    # 機構2 (D#2853): PHASE=done が継続している秒数を計測し、閾値超過で
+    # worker を kill する。done 以外に戻ったらカウンタファイルを消してリセット。
+    if [ "$OW_DISABLE_IDLE_TIMEOUT" != "1" ]; then
+        if [ "$PHASE" = "done" ]; then
+            if [ ! -f "$DONE_SINCE_FILE" ]; then
+                date +%s > "$DONE_SINCE_FILE"
+            fi
+            done_now=$(date +%s)
+            done_since=$(cat "$DONE_SINCE_FILE" 2>/dev/null || echo 0)
+            # ゼロバイト書き込み（/tmp 容量不足等）で done_since が空文字になると
+            # 算術展開で 0 扱いされ done_elapsed が epoch 秒大になり即時誤 kill する。
+            # 空文字・非数値・非正値はいずれも「今」起点に書き直して誤発火を防ぐ。
+            if [ -z "$done_since" ] || ! [ "$done_since" -gt 0 ] 2>/dev/null; then
+                done_since=$done_now
+                echo "$done_since" > "$DONE_SINCE_FILE"
+            fi
+            done_elapsed=$(( done_now - done_since ))
+            if [ "$done_elapsed" -ge "$OW_DONE_TIMEOUT_SEC" ]; then
+                shutdown_for_idle_timeout "done-stall" "${done_elapsed}s in done phase (threshold ${OW_DONE_TIMEOUT_SEC}s)"
+            fi
+        else
+            rm -f "$DONE_SINCE_FILE" 2>/dev/null || true
+        fi
+    fi
+
     BODY=$(printf '{"v":1,"kind":"event","from":"%s","to":"*","data":{"type":"heartbeat","phase":"%s"}}' \
         "$HANDLE" "$PHASE")
 
     # C案: curl にタイムアウトを付与。relay hang による heartbeat 停止を防ぐ。
     # --connect-timeout: TCP 接続確立まで / --max-time: 全体（接続+送受信）。
-    curl -s -X POST \
+    # 機構1 (D#2853): 送信成否で連続失敗カウンタを更新、閾値超過で worker を kill。
+    # stdout のみ捨て stderr は残す。連続失敗 kill 発動後に curl のエラー
+    # （Failed to connect 等）を辿れないと事後調査ができないため。
+    if curl -sS -X POST \
         --connect-timeout "$OW_CURL_CONNECT_TIMEOUT" \
         --max-time "$OW_CURL_TIMEOUT" \
         -H "Content-Type: application/json" \
         -d "{\"channel\":\"${CHANNEL}\",\"handle\":\"${HANDLE}\",\"body\":${BODY}}" \
-        "${RELAY_URL}/send" > /dev/null || true
+        "${RELAY_URL}/send" > /dev/null; then
+        echo 0 > "$HB_FAIL_COUNT_FILE"
+    else
+        if [ "$OW_DISABLE_IDLE_TIMEOUT" != "1" ]; then
+            hb_n=$(( $(cat "$HB_FAIL_COUNT_FILE" 2>/dev/null || echo 0) + 1 ))
+            echo "$hb_n" > "$HB_FAIL_COUNT_FILE"
+            # spawn 直後の relay cold start や transient hang を「永続 idle」と
+            # 誤判定しないため、MCP self-exit と同じ閾値 OW_MCP_UPTIME_MIN_SEC を
+            # 再利用して uptime gate を入れる。
+            hb_now=$(date +%s)
+            hb_elapsed=$(( hb_now - HEARTBEAT_STARTED_AT ))
+            if [ "$hb_n" -ge "$OW_HB_FAIL_THRESHOLD" ] && [ "$hb_elapsed" -ge "$OW_MCP_UPTIME_MIN_SEC" ]; then
+                shutdown_for_idle_timeout "hb-fail" "${hb_n} consecutive heartbeat send failures"
+            fi
+        fi
+    fi
 
     # MCP /health チェックと self-exit 判定。
     # OW_DISABLE_MCP_SELF_EXIT=1 で無効化可能。

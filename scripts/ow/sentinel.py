@@ -5,10 +5,10 @@ relay の /history を polling し、worker の state 遷移を追跡する。
 auto 遷移すべき state で閾値を超えた場合 ``ow_sentinel`` handle で
 stagnation event を relay に append する。
 
-- 監視対象: state=ready (60秒で working/terminated に遷移すべき),
-  state=draining (90秒で terminated に遷移すべき)
-- loading→ready は対象外 (heartbeat 継続中の長時間 loading は許容、
+- 監視対象: state=draining (90秒で terminated に遷移すべき)
+- loading→working は対象外 (heartbeat 継続中の長時間 loading は許容、
   巨大 context warm-up を誤検知するため)
+- ready 状態は D#2962 で廃止 (loading→working 直行) のため監視対象から除外
 - 既存 watchdog (heartbeat 途絶検知) とは責務分離して併走する
   (watchdog=死活、stagnation=詰まり)
 
@@ -31,8 +31,8 @@ from typing import Optional
 SENTINEL_HANDLE = "ow_sentinel"
 
 # state -> 閾値秒。loading は意図的に含めない (D#2752 仕様)。
+# ready 状態は D#2962 で廃止されたため監視対象から除外。
 DEFAULT_THRESHOLDS: dict[str, int] = {
-    "ready": 60,
     "draining": 90,
 }
 

@@ -201,10 +201,11 @@ class TestGetTimelineByTopicId:
         assert types == {"decision", "log", "material"}
 
     def test_each_item_has_required_fields(self, topic_with_data):
-        """各アイテムがid, type, title, created_at, replaces, replaced_byを持つ"""
+        """各アイテムがid_raw, type, title, created_at, replaces, replaced_byを持つ"""
         result = get_timeline(topic_id=topic_with_data["topic_id"])
         for item in result["items"]:
-            assert "id" in item
+            assert "id_raw" in item
+            assert "id" not in item
             assert "type" in item
             assert "title" in item
             assert "created_at" in item
@@ -513,7 +514,7 @@ class TestRetractedExclusion:
 
         result = get_timeline(topic_id=tid)
         assert result["total"] == 1
-        assert all(item["id"] != retract_id for item in result["items"])
+        assert all(item["id_raw"] != retract_id for item in result["items"])
 
     def test_retracted_log_excluded(self, topic):
         """retractされたlogはタイムラインに表示されない"""
@@ -528,7 +529,7 @@ class TestRetractedExclusion:
 
         result = get_timeline(topic_id=tid)
         assert result["total"] == 1
-        assert all(item["id"] != retract_id for item in result["items"])
+        assert all(item["id_raw"] != retract_id for item in result["items"])
 
 
 class TestMaterialDedup:
@@ -560,7 +561,7 @@ class TestMaterialDedup:
         )
 
         result = get_timeline(activity_id=aid, entity_types=["material"])
-        material_ids = [item["id"] for item in result["items"]]
+        material_ids = [item["id_raw"] for item in result["items"]]
         assert len(material_ids) == 1
         assert result["total"] == 1
 

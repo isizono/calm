@@ -50,6 +50,26 @@
             "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python hooks/pretooluse_ow_spawn_worker.py"
           }
         ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python hooks/preblock_hook.py"
+          }
+        ]
+      }
+    ],
+    "MessageDisplay": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python hooks/message_display_id_titles.py"
+          }
+        ]
       }
     ],
     "SessionEnd": [

@@ -24,6 +24,7 @@ import urllib.error
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 import yaml
@@ -110,9 +111,9 @@ def _normalize_and_validate_model(model: str) -> tuple[str, str | None]:
 
 
 # 思考worker (thinking worker) の effort enum。Claude のreasoning effort と対応する4段。
-# None = 通常 worker。値が指定された場合は task_file 本文に思考トリガー語マーカー (正規綴り
-# `ultrathink`) が埋め込まれ、OW_TERMINAL=tmux では split-pane ではなく new-window で
-# 別タブに開かれる。
+# None = 通常 worker。値が指定された場合は spawn-bundle envelope の data.effort と本文
+# context に思考トリガー語マーカー (正規綴り `ultrathink`) が含まれ、OW_TERMINAL=tmux
+# では split-pane ではなく new-window で別タブに開かれる。
 THINKING_EFFORTS: frozenset[str] = frozenset({"high", "xhigh", "max", "ultrathink"})
 
 # orch 側コード/skill/ドキュメントから sentinel 綴り `ultratink` を渡せるよう、最大段の
@@ -124,8 +125,9 @@ _EFFORT_ALIASES: dict[str, str] = {"ultratink": "ultrathink"}
 # worker alias の書式制約。kebab-case（小文字英数字+ハイフン、先頭は英字、末尾は英数字、
 # 連続ハイフン禁止）かつ最小長 8 文字以上。短すぎる alias は名前衝突や視認性低下を招き、
 # queue/relay 識別子として再利用しづらいため一律で拒否する。
-# alias の上限長は意図的に設けない（task_file / queue / relay messages に埋め込まれるが、
-# 物理上限はファイルシステム側に委ねる。orch 運用上は kebab-case の自然な命名で十分短く収まる）。
+# alias の上限長は意図的に設けない（relay messages の handle / spawn-bundle envelope の
+# `to` フィールドに埋め込まれるが、物理上限は relay 側に委ねる。orch 運用上は
+# kebab-case の自然な命名で十分短く収まる）。
 _ALIAS_MIN_LENGTH: int = 8
 _ALIAS_PATTERN: re.Pattern[str] = re.compile(r"^[a-z]([a-z0-9]|-(?!-))*[a-z0-9]$")
 
@@ -152,9 +154,45 @@ def _validate_alias_format(alias: str) -> str | None:
         )
     return None
 
+
+_DISPATCHER_HANDLE_MIN_LENGTH: int = 4
+_DISPATCHER_HANDLE_PREFIX: str = "d-"
+
+
+def _validate_dispatcher_handle(handle: str) -> str | None:
+    """dispatcher handle (d-{channel}) の書式検証。OK なら None、NG ならエラーメッセージを返す。
+
+    検証項目:
+        - 最小長: 4 文字以上 (例: "d-XX")
+        - d- prefix 必須
+        - prefix 後は kebab-case (小文字英数字 + ハイフン、末尾英数字、連続ハイフン禁止)
+    """
+    if not isinstance(handle, str) or not handle:
+        return "dispatcher handle must be a non-empty string"
+    if not handle.startswith(_DISPATCHER_HANDLE_PREFIX):
+        return (
+            f"dispatcher handle '{handle}' must start with "
+            f"'{_DISPATCHER_HANDLE_PREFIX}' prefix"
+        )
+    if len(handle) < _DISPATCHER_HANDLE_MIN_LENGTH:
+        return (
+            f"dispatcher handle '{handle}' is too short "
+            f"(length={len(handle)}, min={_DISPATCHER_HANDLE_MIN_LENGTH})"
+        )
+    rest = handle[len(_DISPATCHER_HANDLE_PREFIX):]
+    if not _ALIAS_PATTERN.match(rest):
+        return (
+            f"dispatcher handle '{handle}' has invalid characters after "
+            f"'{_DISPATCHER_HANDLE_PREFIX}' "
+            "(lowercase letters/digits/hyphen, start with letter, "
+            "end with letter or digit, no consecutive hyphens)"
+        )
+    return None
+
+
 # reducer: v3 workload state 分類
 _NON_TERMINAL_WORKLOAD_STATES: frozenset[str] = frozenset(
-    {"loading", "ready", "working", "blocked", "escalated", "draining"}
+    {"loading", "working", "blocked", "escalated", "draining"}
 )
 # heartbeat タイムアウト閾値（周期×3）。
 # キーは workload_state または heartbeat body の phase。両者は worker 側で同期される
@@ -162,7 +200,7 @@ _NON_TERMINAL_WORKLOAD_STATES: frozenset[str] = frozenset(
 _HEARTBEAT_TIMEOUT_SECS: dict[str, float] = {
     "loading": 30.0,  # 10s × 3
 }
-_HEARTBEAT_TIMEOUT_DEFAULT: float = 90.0  # 30s × 3（ready/working/draining共通）
+_HEARTBEAT_TIMEOUT_DEFAULT: float = 90.0  # 30s × 3（working/draining共通）
 
 
 # ----------------------------
@@ -706,6 +744,49 @@ def _maybe_inject_term_ref(body: dict) -> dict:
     return new_body
 
 
+def _resolve_term_ref(channel: str, handle: str) -> str | None:
+    """(channel, handle) から term_ref を引き当てる。
+
+    cache の identity_events に格納された event:identity.data.term_ref を
+    優先で返す。cache miss / identity 未送信 / term_ref フィールド欠落の
+    いずれでも None を返す (handler 側で warn log のみ、tool error にしない)。
+    """
+    try:
+        identity = ow_get_identity(channel, handle)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "_resolve_term_ref: ow_get_identity raised for channel=%s handle=%s: %s",
+            channel, handle, exc,
+        )
+        return None
+    if not isinstance(identity, dict):
+        return None
+    term_ref = identity.get("term_ref")
+    if not isinstance(term_ref, str) or not term_ref:
+        return None
+    return term_ref
+
+
+def _is_terminated_close_event(body: dict) -> bool:
+    """ow_send body が auto-close 対象の terminated event か判定する。
+
+    判定条件: kind==event AND data.type==state AND data.state==terminated
+    AND data.cause in {"closed", "cancelled"}。dead / crashed / 他 state は対象外。
+    """
+    if not isinstance(body, dict):
+        return False
+    if body.get("kind") != "event":
+        return False
+    data = body.get("data")
+    if not isinstance(data, dict):
+        return False
+    if data.get("type") != "state":
+        return False
+    if data.get("state") != "terminated":
+        return False
+    return data.get("cause") in ("closed", "cancelled")
+
+
 def ow_send(
     channel: str,
     handle: str,
@@ -718,6 +799,12 @@ def ow_send(
     bodyはow固有JSONを格納するdict（relay schemaは無改修）。
     4xx即失敗、5xx/接続断のみ3回指数バックオフ。
     channel未存在（404）の場合はensure_channelで自動作成してから再送する。
+
+    auto-close 副作用: body が event:state(terminated, cause:closed|cancelled) の
+    場合、relay POST 成功直後に ow_close_worker(term_ref) を同期発火する。
+    冪等性は adapter (tmux kill-pane) 側で吸収する。
+    term_ref 解決失敗 / kill 失敗時は warn log のみで tool error には伝播
+    させない (relay POST は成功しているため呼び出し側には成功を返す)。
 
     Args:
         channel: channelコード
@@ -747,6 +834,35 @@ def ow_send(
         logger.info("ow_send: channel %s not found, attempting ensure_channel", channel)
         if ensure_channel(channel):
             result = _relay_request("POST", "/send", payload)
+
+    # auto-close: terminated(closed|cancelled) を観測したら term_ref を引き当てて
+    # ow_close_worker を同期発火する。relay POST が成功した場合のみ (msg_id 取得)
+    # 副作用を起こす。失敗時は warn のみで tool error には伝播させない。
+    if "msg_id" in result and _is_terminated_close_event(body):
+        term_ref = _resolve_term_ref(channel, handle)
+        if term_ref is None:
+            logger.warning(
+                "auto-close skipped: term_ref not found for handle=%s on channel=%s",
+                handle, channel,
+            )
+        else:
+            try:
+                close_result = ow_close_worker(term_ref)
+                if close_result.get("closed") is False:
+                    logger.warning(
+                        "auto-close: tmux kill failed for term_ref=%s on channel=%s handle=%s, result=%s",
+                        term_ref, channel, handle, close_result,
+                    )
+                elif close_result.get("manual"):
+                    logger.warning(
+                        "auto-close: manual term_ref=%s on channel=%s handle=%s requires operator action: %s",
+                        term_ref, channel, handle, close_result.get("message"),
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "auto-close failed for term_ref=%s on channel=%s handle=%s: %s",
+                    term_ref, channel, handle, exc,
+                )
 
     return result
 
@@ -801,130 +917,71 @@ _MCP_RESERVED_TAG_RE = re.compile(
 
 
 def _sanitize_task_body_field(value: str, field_name: str = "") -> str:
-    """task_file本文フィールド（acceptance/context等）からMCP予約XMLタグを除去する。
+    """spawn-bundle envelope の本文フィールド（acceptance/context等）からMCP予約XMLタグを除去する。
 
     orchがtool callの引数としてフィールド値を渡すとき、XML構文ミスでタグ残骸
     （例: </parameter>, <invoke name="..."> 等）が混入することがある。
-    workerがtask_fileとして読むとき、これらがMCPプロトコルの一部として
+    workerが spawn-bundle として読むとき、これらがMCPプロトコルの一部として
     誤解釈される恐れがあるため、既知の予約タグは除去する。
     """
     cleaned, count = _MCP_RESERVED_TAG_RE.subn("", value)
     if count:
         logger.warning(
-            "_write_task_file: %sフィールドにMCP予約XMLタグが%d件混入していました（除去済み）",
+            "_build_spawn_bundle: %sフィールドにMCP予約XMLタグが%d件混入していました（除去済み）",
             field_name or "unknown",
             count,
         )
     return cleaned
 
 
-def _slugify_task_title(title: str, max_len: int = 40) -> str:
-    """task fileのファイル名に使うslugをタイトルから生成する。
-
-    「main — detail」構造のタイトルはmain部分のみを採用し、
-    空白・パス上危険な文字（/ \\ | : # ? * < > " ' 改行等）を `-` に畳む。
-    日本語はそのまま残す（日本語話者がファイル名から内容を即把握できるようにするため）。
-    連続する `-` は1つに畳み、max_len文字で切り詰める。空文字列なら "" を返す。
-    """
-    if not title:
-        return ""
-    # 「main — detail」構造ならmain部分のみを使う
-    for sep in (" — ", " – ", " - ", "—", "–"):
-        if sep in title:
-            title = title.split(sep, 1)[0]
-            break
-    slug = re.sub(r"""[\s/\\|:#?*<>"']+""", "-", title.strip())
-    slug = re.sub(r"-+", "-", slug).strip("-")
-    if len(slug) > max_len:
-        slug = slug[:max_len].rstrip("-")
-    return slug
-
-
-def _write_task_file(
-    task_dir: Path,
+def _build_spawn_bundle_data(
     task_n: int,
-    alias: str,
-    channel: str,
-    cwd: str,
-    model: str,
     task_title: str,
     acceptance: str,
     context: str,
     playbook: str,
-    timeout_min: int,
     activity_id: int | None,
     topic_id: str | None,
-    effort: str | None = None,
-) -> Path:
-    """task fileをマークダウン（YAML frontmatter + 本文）で書き出す。
+    effort: str | None,
+    goal_text: str | None,
+) -> dict:
+    """spawn-bundle envelope の data フィールドを組み立てる。
 
-    機械可読フィールド（task/alias/channel/cwd/model等）はfrontmatterに、
-    人間可読な内容（タイトル・acceptance・context・playbook）は本文に置く。
-    workerはfrontmatterから起動パラメータを、本文からタスク内容を読み取る。
+    本文フィールド (task_title/acceptance/context/playbook) は MCP 予約 XML タグを
+    除去してから格納する。effort が指定された場合は本文 context の末尾に思考worker
+    マーカーセクションを差し込み、正規綴り `ultrathink` トリガー語を埋め込む。
 
-    ファイル名は `t<topic_id>-T<n>-<title-slug>.md`。topic prefixでtopic間の名前衝突を、
-    title slugで人間がファイルを開かずに内容を把握できることを担保する。
-    topic_idが未指定の場合は `T<n>-<title-slug>.md`、slugが空なら接尾辞を省く。
-
-    effort が指定された場合 (THINKING_EFFORTS の値) は思考workerとして扱い、本文冒頭
-    （タイトル直後）に思考workerマーカーセクションを挿入する。マーカーには正規綴り
-    `ultrathink` （claude の extended thinking トリガー語）を埋め込む。frontmatterにも
-    `effort: <値>` を残す。
-
-    Note: ドキュメント・skill・チャット文中で本トリガー語に言及する場合は、orch
-    セッション側で extended thinking モードが暴発しないよう sentinel `ultratink`
-    （意図的タイポ）を使う運用とする。worker 埋め込みの実体は正規綴り `ultrathink`。
+    goal_text は `/goal` 起動コマンドに埋める短文。omit (None) 時は task_title を
+    フォールバックに使う。
     """
-    base = f"t{topic_id}-T{task_n}" if (topic_id is not None and str(topic_id)) else f"T{task_n}"
-    slug = _slugify_task_title(task_title)
-    name = f"{base}-{slug}" if slug else base
-    task_file = task_dir / f"{name}.md"
-    task_file.parent.mkdir(parents=True, exist_ok=True)
-
-    fm_data = {
-        "v": 1,
-        "task": f"T{task_n}",
-        "alias": alias,
-        "channel": channel,
-        "cwd": cwd,
-        "model": model,
-        "permission_mode": "auto",
-        "timeout_min": timeout_min,
-        "activity_id": activity_id,
-        "topic_id": topic_id,
-    }
-    if effort:
-        fm_data["effort"] = effort
-    fm_yaml = yaml.safe_dump(fm_data, default_flow_style=False, allow_unicode=True, sort_keys=False)
-
+    task_title_clean = _sanitize_task_body_field(task_title, "task_title")
     acceptance_clean = _sanitize_task_body_field(acceptance, "acceptance")
     context_clean = _sanitize_task_body_field(context, "context")
     playbook_clean = _sanitize_task_body_field(playbook, "playbook")
+    goal_text_clean = _sanitize_task_body_field(goal_text, "goal_text") if goal_text else ""
 
-    body_lines = [f"# {fm_data['task']}: {task_title}".rstrip()]
     if effort:
-        body_lines += [
-            "",
-            "## Thinking worker",
-            "",
-            "ultrathink",
-            "",
+        thinking_section = (
+            "\n\n## Thinking worker\n\n"
+            "ultrathink\n\n"
             f"このタスクは思考worker (effort: {effort}) 扱い。実装ではなく深い議論・"
             "設計検討・調査を行う。上記キーワード `ultrathink` は claude の extended "
-            "thinking モードトリガー語。worker セッションは長考モードで動作する。",
-        ]
-    if acceptance_clean:
-        body_lines += ["", "## Acceptance", "", acceptance_clean]
-    if context_clean:
-        body_lines += ["", "## Context", "", context_clean]
-    if playbook_clean:
-        body_lines += ["", "## Playbook", "", playbook_clean]
-    body = "\n".join(body_lines) + "\n"
+            "thinking モードトリガー語。worker セッションは長考モードで動作する。"
+        )
+        context_clean = (context_clean + thinking_section) if context_clean else thinking_section.lstrip("\n")
 
-    content = f"---\n{fm_yaml}---\n\n{body}"
-    task_file.write_text(content, encoding="utf-8")
-
-    return task_file
+    data = {
+        "type": "spawn-bundle",
+        "task_title": task_title_clean,
+        "acceptance": acceptance_clean,
+        "context": context_clean,
+        "playbook": playbook_clean,
+        "activity_id": activity_id,
+        "topic_id": topic_id,
+        "effort": effort,
+        "goal_text": goal_text_clean or task_title_clean,
+    }
+    return data
 
 
 def _get_adapter_path(terminal: str) -> Path | None:
@@ -1041,11 +1098,13 @@ def ow_spawn_worker(
     task_n: int = 1,
     tmux_target_pane: str | None = None,
     effort: str | None = None,
+    goal_text: str | None = None,
+    _alias_validator: Callable[[str], str | None] | None = None,
 ) -> dict:
     """workerセッションを起動する。
 
-    処理順: spawn前ヘルスチェック → relay へ spawning event broadcast → task file書き出し
-        → アダプタ呼び出し → 安定ID返却
+    処理順: spawn前ヘルスチェック → relay へ spawning event broadcast →
+        event:spawn-bundle を relay に送信 → アダプタ呼び出し → 安定ID返却
 
     permission_modeは常にautoに固定される。
 
@@ -1071,15 +1130,18 @@ def ow_spawn_worker(
             参照できない。
         effort: 思考worker（深い議論・設計検討・調査向けworker）として起動するなら
             THINKING_EFFORTS の値 (`"high"` / `"xhigh"` / `"max"` / `"ultrathink"`) のい
-            ずれかを指定する。指定時は task_file 本文に正規綴り `ultrathink` マーカー
-            セクションが挿入され、frontmatter にも `effort: <値>` が残る。OW_TERMINAL=
-            tmux のときは split-pane ではなく `tmux new-window` で別タブに開く。role は
-            worker のまま（新role不要）。対応activityには `intent:thinking` タグを別途
-            付与すること。None（デフォルト）は通常 worker。
+            ずれかを指定する。指定時は spawn-bundle data.effort に値が入り、data.context
+            末尾に正規綴り `ultrathink` マーカーセクションが差し込まれる。OW_TERMINAL=tmux
+            のときは split-pane ではなく `tmux new-window` で別タブに開く。role は worker
+            のまま。対応activityには `intent:thinking` タグを別途付与すること。
+            None（デフォルト）は通常 worker。
+        goal_text: claude CLI 起動 prompt の `/goal` コマンドに埋めるテキスト。None または
+            空のときは task_title をフォールバックに使う。`/goal` ネイティブ機能で worker
+            はゴール完了 (state:done) まで自走モードで動く。
 
     Returns:
-        {"term_ref": str, "task_file": str, "spawning": "ok"}
-        manualフォールバック時: {"command": str, "manual": True, "task_file": str}
+        {"term_ref": str, "bundle_msg_id": int, "spawning": "ok", "alias": str}
+        manualフォールバック時: {"command": str, "manual": True, "bundle_msg_id": int, "alias": str}
         spawn前検証失敗時: {"error": {"code": "SPAWN_PRECONDITION_FAILED", "warnings": [...]}}
         effort不正値時: {"error": {"code": "INVALID_EFFORT", "message": ...}}
     """
@@ -1110,13 +1172,15 @@ def ow_spawn_worker(
 
     # task_title未指定 かつ activity_id指定時は activities.title を自動解決する。
     # 呼び出し側（orch等）に task_title を毎回詰めさせず、activity名と一貫させる。
-    # この task_title は task file frontmatter / ファイル名スラッグ / worker_cmd の
-    # --name（セッション表示名）すべてに伝播する。
+    # この task_title は spawn-bundle envelope の data.task_title / worker_cmd の
+    # --name（セッション表示名） / goal_text 未指定時のフォールバックに伝播する。
     if not task_title and activity_id is not None:
         task_title = _resolve_activity_title(activity_id)
 
     # spawn前ヘルスチェック (relay疎通・channel存在・cwd存在・alias重複)
-    preflight = _validate_spawn_preconditions(alias, channel, cwd, topic_id=topic_id, task_n=task_n)
+    preflight = _validate_spawn_preconditions(
+        alias, channel, cwd, topic_id=topic_id, task_n=task_n, alias_validator=_alias_validator,
+    )
     if not preflight["ok"]:
         return {
             "error": {
@@ -1130,8 +1194,6 @@ def ow_spawn_worker(
     # Claude Code CLI の permission deny を使って worker セッションから AskUserQuestion を
     # 構造的に遮断する。既存設定があればマージ。
     _ensure_worker_askuser_deny(cwd)
-
-    task_dir = _OW_ORCH_DIR / "tasks"
 
     # relay へ spawning broadcast (孤児 worker 対策の真実源化、SKILL.md §通信プロトコル orch→broadcast)。
     # projector は本 event を受信して cache.workers[alias].task_status="spawning" を書き、
@@ -1171,23 +1233,49 @@ def ow_spawn_worker(
             },
         }
 
-    # task fileを書き出す
-    task_file = _write_task_file(
-        task_dir=task_dir,
+    # event:spawn-bundle を relay に送信する (D#2952 / D#2953)。
+    # worker は起動後に env から OW_CHANNEL / OW_ALIAS / OW_TASK_N を読み、relay に接続して
+    # ow_history(since=0) で自分宛 spawn-bundle を pull する。task_title / acceptance /
+    # context / playbook / activity_id / topic_id / effort / goal_text を bundle data に含める。
+    # claude プロセス起動「前」に send する順序保証必須 (worker が history pull する時点で
+    # bundle が messages テーブルに存在している必要があるため)。
+    bundle_data = _build_spawn_bundle_data(
         task_n=task_n,
-        alias=alias,
-        channel=channel,
-        cwd=cwd,
-        model=model,
         task_title=task_title,
         acceptance=acceptance,
         context=context,
         playbook=playbook,
-        timeout_min=timeout_min,
         activity_id=activity_id,
         topic_id=topic_id,
         effort=effort,
+        goal_text=goal_text,
     )
+    bundle_body = {
+        "v": 1,
+        "kind": "event",
+        "from": "orch",
+        "to": alias,
+        "task": f"T{task_n}",
+        "data": bundle_data,
+    }
+    bundle_result = ow_send(channel=channel, handle="orch", body=bundle_body)
+    if "error" in bundle_result:
+        err_detail = bundle_result.get("error")
+        logger.error(
+            "ow_spawn_worker: failed to send event:spawn-bundle for %s: %s — aborting spawn",
+            alias,
+            err_detail,
+        )
+        return {
+            "error": {
+                "code": "SPAWN_PRECONDITION_FAILED",
+                "message": "relay send of event:spawn-bundle failed; spawn aborted",
+                "warnings": [
+                    f"relay send event:spawn-bundle failed for {alias}: {err_detail}"
+                ],
+            },
+        }
+    bundle_msg_id = bundle_result.get("msg_id")
 
     # アダプタ起動
     # OW_TERMINAL 未設定時は "tmux" にフォールバックする (原則 tmux 運用)。
@@ -1195,19 +1283,22 @@ def ow_spawn_worker(
     terminal = os.environ.get("OW_TERMINAL", "tmux")
     adapter_path = _get_adapter_path(terminal) if terminal != "manual" else None
 
-    # --add-dir は commander.js の variadic option (`<directories...>`) で、空白区切り形式
-    # (`--add-dir DIR PROMPT`) だと続く positional prompt を dir として吸収する。
-    # `=` 形式 (`--add-dir=DIR`) は単一値として確定的にパースされ、複数指定は
-    # `--add-dir=DIR1 --add-dir=DIR2` の append 形で渡せる。後続 prompt の吸収リスクが
-    # 構造的に発生しないため、`--` separator なしで positional が確実に届く。
     # --name はセッション表示名（プロンプトボックス・/resume picker・端末タイトル）。
     # workerはtask_titleをActivity名としてそのまま渡し、orch側で見分けやすくする。
     session_name = task_title or alias
+
+    # 起動 prompt は `/goal <goal_text>` で worker をゴール完了まで自走モードにする (D#2962)。
+    # worker は起動後 env から識別子を読んで relay 接続、spawn-bundle を pull、check_in、
+    # working 状態に直行する (ready 状態は廃止)。
+    goal_for_prompt = bundle_data["goal_text"] or alias
+    prompt_text = f"/goal {goal_for_prompt}。workerスキルに従って check_in からぜんぶやって。"
+
     # OW_PARENT_PID=$$ + exec claude で「shell PID → claude PID」の継承を行い、
     # claude プロセスに OW_PARENT_PID 環境変数として自身の PID を埋め込む。
     # claude の子（Bash tool / Monitor で起動される recv.sh / heartbeat.sh）はこの env を
     # 継承するため、claude 本体死亡時に watchdog が自動 exit する。
-    # worker SKILL.md 依存ゼロ（A案 + ow_service spawn 経路で完結）。
+    # OW_CHANNEL / OW_ALIAS / OW_TASK_N は worker bootstrap 識別子 (D#2952 / D#2953)。
+    # worker SKILL.md は env からこれらを読んで relay に接続し、spawn-bundle を pull する。
     #
     # 注: `$$` はこの Python 文字列ではエスケープされず、tmux.sh の `eval` 実行時
     # （base64 経由で運搬された後）に「その bash プロセスの PID」へ展開される。
@@ -1216,11 +1307,10 @@ def ow_spawn_worker(
     worker_cmd = (
         f'OW_PARENT_PID=$$ '
         f'OW_ROLE=worker OW_ALIAS={shlex.quote(alias)} OW_CHANNEL={shlex.quote(channel)} '
-        f'OW_TASK_FILE={shlex.quote(str(task_file))} '
+        f'OW_TASK_N={shlex.quote(str(task_n))} '
         f'exec claude --model {shlex.quote(model)} --permission-mode auto '
         f'--name {shlex.quote(session_name)} '
-        f'--add-dir={shlex.quote(str(task_file.parent))} '
-        f'{shlex.quote(f"workerスキルに従って作業を開始して。task: {task_file}")}'
+        f'{shlex.quote(prompt_text)}'
     )
 
     if adapter_path is None:
@@ -1238,7 +1328,7 @@ def ow_spawn_worker(
         return {
             "command": worker_cmd,
             "manual": True,
-            "task_file": str(task_file),
+            "bundle_msg_id": bundle_msg_id,
             "alias": alias,
             "adapter_error": adapter_error,
         }
@@ -1271,7 +1361,7 @@ def ow_spawn_worker(
         return {
             "command": worker_cmd,
             "manual": True,
-            "task_file": str(task_file),
+            "bundle_msg_id": bundle_msg_id,
             "alias": alias,
             "adapter_error": "adapter spawn timed out",
         }
@@ -1280,14 +1370,14 @@ def ow_spawn_worker(
         return {
             "command": worker_cmd,
             "manual": True,
-            "task_file": str(task_file),
+            "bundle_msg_id": bundle_msg_id,
             "alias": alias,
             "adapter_error": e.stderr,
         }
 
     return {
         "term_ref": term_ref,
-        "task_file": str(task_file),
+        "bundle_msg_id": bundle_msg_id,
         "spawning": "ok",
         "alias": alias,
     }
@@ -1516,7 +1606,7 @@ def _get_presence(channel: str) -> list[str]:
 
 # cache.workers[alias].state における「workerが活動中」と分類する workload state。
 # spawning は workload state ではなく task_status のため別カテゴリで扱う。
-_ACTIVE_WORKLOAD_STATES: frozenset[str] = frozenset({"ready", "working", "blocked", "escalated", "draining"})
+_ACTIVE_WORKLOAD_STATES: frozenset[str] = frozenset({"working", "blocked", "escalated", "draining"})
 
 # cache.workers[alias].task_status における「workerが活動中」と分類する状態。
 # spawning を含めることで、cache に spawning entry が残っている alias への重複 spawn を
@@ -1532,9 +1622,9 @@ _TERMINATED_IDENTITY_CAUSES: frozenset[str] = frozenset({"closed", "cancelled", 
 
 # projector: worker からの event:state(state) を受信したときに cache.workers[alias].task_status へ
 # マップする規則。設計書 v3 §5 と SKILL.md §projector マッピング表 に対応。
+# ready 状態は D#2962 で廃止 (loading から working へ直行)。
 _STATE_TO_TASK_STATUS: dict[str, str] = {
     "loading": "spawning",
-    "ready": "spawning",
     "working": "working",
     "blocked": "working",
     "escalated": "escalated",
@@ -1551,14 +1641,13 @@ _CAUSE_TO_TASK_STATUS: dict[str, str] = {
 
 # relay 最新 state 宣言 → cache task_status の suggested 反映マップ。
 # presence offline & cache active の ghost_active ケースで使う。
-# 終端 state (done/closed/cancelled/failed) はそのまま反映、非終端 (ready/working等) は
+# 終端 state (done/closed/cancelled/failed) はそのまま反映、非終端 (working等) は
 # presence offline = 異常終了とみなして "stalled" に倒す（手動介入を促す）。
 _RELAY_STATE_TO_TASK_STATUS: dict[str, str] = {
     "done": "done",
     "closed": "done",   # 旧プロトコル互換 (現行 worker は terminated/cause=closed で送るため state="closed" は通常来ない)
     "failed": "failed",
     "cancelled": "cancelled",
-    "ready": "stalled",
     "working": "stalled",
     "blocked": "stalled",
     "escalated": "stalled",
@@ -1573,6 +1662,7 @@ def _validate_spawn_preconditions(
     cwd: str,
     topic_id: str | None = None,
     task_n: int | None = None,
+    alias_validator: Callable[[str], str | None] | None = None,
 ) -> dict:
     """ow_spawn_worker起動前の一括ヘルスチェック。
 
@@ -1582,6 +1672,10 @@ def _validate_spawn_preconditions(
         - cwd存在: Path(cwd).expanduser()がディレクトリとして存在するか
         - alias重複: 同aliasがpresence onlineまたはcache上で活動中タスクのworkerとして他の
           task_nに割当て済みでないか（同一task_nで再spawn=再リンクは許可）
+
+    Args:
+        alias_validator: alias 書式の検証関数。None なら worker 用 _validate_alias_format。
+            dispatcher 経路からは _validate_dispatcher_handle を渡す。
 
     Returns:
         {
@@ -1595,7 +1689,8 @@ def _validate_spawn_preconditions(
 
     # 0. alias書式（最小長 + kebab-case）。relay 接続前に純粋な書式検証で弾く。
     # 書式エラー時は relay 接続を行わずに早期return（無効aliasで relay 接続を発生させない）。
-    alias_err = _validate_alias_format(alias)
+    validator = alias_validator if alias_validator is not None else _validate_alias_format
+    alias_err = validator(alias)
     if alias_err is not None:
         warnings.append(alias_err)
         return {"ok": False, "warnings": warnings}
@@ -2384,6 +2479,223 @@ def ow_recover(
 
 
 # ----------------------------
+# ow_spawn_dispatcher / ow_close_dispatcher
+# ----------------------------
+# orch 専用 dispatcher session lifecycle ツール。既存 ow_spawn_worker /
+# ow_close_worker の subprocess 起動・終了経路を共有し、tool API 層と引数の正規化だけ
+# 分ける。handle は d-{channel} を自動付与。既存 dispatcher があれば cascade kill
+# (dispatcher + 紐づく worker pool 全員) してから新規 spawn する。close 時も cascade を
+# 強制する (opt-out 引数なし)。recover は対象外。
+
+
+def ow_spawn_dispatcher(
+    channel: str,
+    cwd: str,
+    model: str,
+    tmux_target_pane: str | None = None,
+) -> dict:
+    """dispatcher session を起動する。
+
+    handle は d-{channel} を自動付与する。channel に既存 dispatcher があれば
+    cascade kill (既存 dispatcher + 紐づく worker pool 全員) してから新規 spawn する。
+    health check や idempotent reject は行わない。
+
+    cascade kill が失敗した場合は warning ログを出すだけで spawn を続行するが、旧
+    dispatcher の alive identity が state に残ったままになる。続く ow_spawn_worker は
+    identity alive check (INV-9) で同一 alias を弾くため、戻り値が
+    SPAWN_PRECONDITION_FAILED の error response になる可能性が高い。呼び出し側は
+    error code を見て、必要なら手動で ow_close_worker / ow_recover を打って残骸を
+    片付けてから再 spawn する。
+
+    Args:
+        channel: channel コード (handle に d- prefix で組み込まれる)
+        cwd: dispatcher セッションの作業ディレクトリ
+        model: 使用モデル (claude-opus-4-7 のみ許可。ow_spawn_worker と同じ制約)
+        tmux_target_pane: tmux 分割表示用 (optional、ow_spawn_worker と同じ意味)
+
+    Returns:
+        成功時: ow_spawn_worker と同形式 (term_ref / alias / bundle_msg_id 等)
+        失敗時: ow_spawn_worker と同形式の error response
+    """
+    if not isinstance(channel, str) or not channel:
+        return {
+            "error": {
+                "code": "INVALID_CHANNEL",
+                "message": "channel must be a non-empty string",
+            },
+        }
+
+    dispatcher_handle = f"{_DISPATCHER_HANDLE_PREFIX}{channel}"
+
+    handle_err = _validate_dispatcher_handle(dispatcher_handle)
+    if handle_err is not None:
+        return {
+            "error": {
+                "code": "INVALID_HANDLE",
+                "message": handle_err,
+            },
+        }
+
+    topic_id = find_topic_id_by_channel(channel)
+    if topic_id is not None:
+        existing_state = load_state(topic_id, channel)
+        if existing_state is not None:
+            workers = existing_state.get("workers") or {}
+            identities = existing_state.get("identities") or {}
+            if dispatcher_handle in workers or dispatcher_handle in identities:
+                cascade_result = ow_close_dispatcher(channel)
+                if not cascade_result.get("closed"):
+                    logger.warning(
+                        "ow_spawn_dispatcher: cascade kill of existing dispatcher failed for "
+                        "channel %s: %s",
+                        channel,
+                        cascade_result.get("error"),
+                    )
+
+    return ow_spawn_worker(
+        alias=dispatcher_handle,
+        channel=channel,
+        cwd=cwd,
+        model=model,
+        task_title=f"dispatcher for channel {channel}",
+        acceptance="",
+        context="",
+        playbook="",
+        timeout_min=60 * 24,
+        activity_id=None,
+        topic_id=str(topic_id) if topic_id is not None else None,
+        task_n=0,
+        tmux_target_pane=tmux_target_pane,
+        _alias_validator=_validate_dispatcher_handle,
+    )
+
+
+def ow_close_dispatcher(channel: str) -> dict:
+    """dispatcher session を kill し、紐づく worker pool も cascade kill する。
+
+    channel に dispatcher (handle=d-{channel}) が存在しない場合はエラーを返す。
+    no-op success は採らない (失敗の物理顕在化原則)。
+
+    Args:
+        channel: channel コード
+
+    Returns:
+        成功時: {
+            "closed": True,
+            "channel": str,
+            "dispatcher_handle": str,
+            "killed_workers": [handle, ...],
+            "failed_workers": [{"handle": str, "reason"/"error": ...}, ...],
+        }
+        失敗時: {"error": {"code": str, "message": str}, "killed_workers": [...], ...}
+    """
+    if not isinstance(channel, str) or not channel:
+        return {
+            "error": {
+                "code": "INVALID_CHANNEL",
+                "message": "channel must be a non-empty string",
+            },
+        }
+
+    dispatcher_handle = f"{_DISPATCHER_HANDLE_PREFIX}{channel}"
+
+    topic_id = find_topic_id_by_channel(channel)
+    state = load_state(topic_id, channel) if topic_id is not None else None
+
+    if state is None:
+        return {
+            "error": {
+                "code": "DISPATCHER_NOT_FOUND",
+                "message": (
+                    f"no cached state for channel {channel}, dispatcher absent"
+                ),
+            },
+        }
+
+    workers_map = state.get("workers") or {}
+    identities_map = state.get("identities") or {}
+
+    if dispatcher_handle not in workers_map and dispatcher_handle not in identities_map:
+        return {
+            "error": {
+                "code": "DISPATCHER_NOT_FOUND",
+                "message": (
+                    f"no dispatcher (handle={dispatcher_handle}) in channel {channel}"
+                ),
+            },
+        }
+
+    killed_workers: list[str] = []
+    failed_workers: list[dict] = []
+
+    for handle in list(workers_map.keys()):
+        if not handle.startswith("w-"):
+            continue
+        identity = ow_get_identity(channel, handle)
+        if identity is None:
+            failed_workers.append({"handle": handle, "reason": "no identity event"})
+            continue
+        term_ref = identity.get("term_ref") if isinstance(identity, dict) else None
+        if not term_ref:
+            failed_workers.append({"handle": handle, "reason": "no term_ref in identity"})
+            continue
+        close_result = ow_close_worker(term_ref)
+        if close_result.get("closed"):
+            killed_workers.append(handle)
+        else:
+            failed_workers.append({
+                "handle": handle,
+                "error": close_result.get("error"),
+            })
+
+    dispatcher_identity = ow_get_identity(channel, dispatcher_handle)
+    if dispatcher_identity is None:
+        return {
+            "error": {
+                "code": "DISPATCHER_IDENTITY_MISSING",
+                "message": (
+                    f"dispatcher (handle={dispatcher_handle}) has no identity event"
+                ),
+            },
+            "killed_workers": killed_workers,
+            "failed_workers": failed_workers,
+        }
+
+    dispatcher_term_ref = (
+        dispatcher_identity.get("term_ref") if isinstance(dispatcher_identity, dict) else None
+    )
+    if not dispatcher_term_ref:
+        return {
+            "error": {
+                "code": "DISPATCHER_NO_TERM_REF",
+                "message": "dispatcher identity has no term_ref",
+            },
+            "killed_workers": killed_workers,
+            "failed_workers": failed_workers,
+        }
+
+    dispatcher_close_result = ow_close_worker(dispatcher_term_ref)
+    if not dispatcher_close_result.get("closed"):
+        return {
+            "error": {
+                "code": "DISPATCHER_CLOSE_FAILED",
+                "message": "failed to close dispatcher process",
+                "detail": dispatcher_close_result.get("error"),
+            },
+            "killed_workers": killed_workers,
+            "failed_workers": failed_workers,
+        }
+
+    return {
+        "closed": True,
+        "channel": channel,
+        "dispatcher_handle": dispatcher_handle,
+        "killed_workers": killed_workers,
+        "failed_workers": failed_workers,
+    }
+
+
+# ----------------------------
 # identity bundle ヘルパー: term_ref（端末・セッション安定 ID）
 # ----------------------------
 #
@@ -2678,7 +2990,7 @@ def _latest_events_by_type(
 def ow_get_identity(channel: str, handle: str) -> dict | None:
     """指定 handle の最新 identity bundle を返す。crash 推論を含む。
 
-    crash 推論: 最新の event:state が terminal でない（loading/ready/working/blocked/
+    crash 推論: 最新の event:state が terminal でない（loading/working/blocked/
                escalated/draining）かつ最後の event:heartbeat 受信時刻から閾値超過 →
                メモリ上で inferred_cause を付与（DB 不変）。
 

@@ -13,9 +13,8 @@ owフレームワークのworkerとして動作する。orchからの指示を�
 
 | state | 意味 |
 |-------|------|
-| `loading` | 起動中・コンテキスト読み込み中 |
-| `ready` | 起動完了・assign待ち |
-| `working` | assign受諾・作業中 |
+| `loading` | 起動中・spawn-bundle pull / context load 中 |
+| `working` | 作業中 (loading → working 直行、ready 状態は廃止) |
 | `blocked` | 判断要請中（orch回答待ち） |
 | `escalated` | 人間へのエスカレーション中 |
 | `done` | 作業完了・orch検証待ち |
@@ -40,48 +39,108 @@ dispatcher (旧 orch handle) からworkerへ届くメッセージは `kind:comma
 
 ## 起動シーケンス
 
-### 1. task fileを読み込む
+worker は ow_spawn_worker (`OW_ROLE=worker` 経由) で起動される。起動 prompt は `/goal <goal_text>。workerスキルに従って check_in からぜんぶやって。` の形式で、claude CLI ネイティブの `/goal` 自走モードでゴール完了 (`event:state(done)`) まで動き続ける。
 
-orchのbootstrapプロンプトで渡されたパス（`.md`）を読む。task fileはYAML frontmatter（起動パラメータ）＋本文（タスク内容）のマークダウン形式。
+### 1. env 読み込み
 
-frontmatterから取得するパラメータ:
-- `channel` (channel_code), `alias`, `task` (task_n), `cwd`, `model`, `timeout_min`, `activity_id`, `topic_id`
+以下の環境変数から worker bootstrap 識別子を取得する:
 
-本文から取得する情報:
-- タイトル（H1）, `## Acceptance`, `## Context`, `## Playbook`
-- `## Thinking worker` セクションが存在する場合は「思考worker」モード (深い議論・設計検討・調査向け; D#2599)。frontmatter にも `effort: <値>` (`high`/`xhigh`/`max`/`ultrathink`) が入る。マーカー直下に thinking トリガー語 (正規綴り) が埋め込まれており、worker セッション全体が長考モードで動作する。実装ではなく議論・設計・調査が役割範囲なので、コード変更には踏み込まない (related: `intent:thinking` notes)。
+- `OW_CHANNEL`: 自分が参加する channel code
+- `OW_ALIAS`: 自分の handle (alias)
+- `OW_TASK_N`: タスク番号 (Tn)
 
-**task fileが存在しない / 読めない場合の処理（起動失敗）:**
-```
-可能ならば: event:identity（最小bundle + terminated_at + cause:"dead"）を送信
-           → event:state(terminated, cause:"dead") を送信
-不可能な場合: event:state(terminated, cause:"dead") のみ送信
-→ 終了
-```
+これらが未設定 / 空のいずれかなら起動失敗扱い。relay 接続できないため envelope 送信もできず、exit code 非ゼロで即終了する。
 
-### 2. heartbeatループ起動
+### 2. heartbeat ループ起動
 
 `scripts/ow/heartbeat.sh` をバックグラウンドで起動し、`PHASE_FILE`（`/tmp/ow_hb_phase_<alias>`）を `loading` に設定する:
 
 ```bash
-PHASE_FILE="/tmp/ow_hb_phase_<alias>"
+PHASE_FILE="/tmp/ow_hb_phase_$OW_ALIAS"
 echo "loading" > "$PHASE_FILE"
-PHASE_FILE="$PHASE_FILE" bash ~/workspace/cc-memory/scripts/ow/heartbeat.sh <channel_code> <alias> &
+PHASE_FILE="$PHASE_FILE" bash ~/workspace/cc-memory/scripts/ow/heartbeat.sh "$OW_CHANNEL" "$OW_ALIAS" &
 ```
 
-heartbeatループは `PHASE_FILE` の内容を読んで送信間隔を決定する:
+heartbeat ループは `PHASE_FILE` の内容を読んで送信間隔を決定する:
 - `loading` → 10秒間隔
-- それ以外 → 30秒間隔
+- それ以外 (`working` / `draining` 等) → 30秒間隔
 
 ### 3. event:heartbeat(alive) を即時送信
 
-ow_sendで1回だけ送信:
+ow_send で1回だけ送信:
 
 ```json
 {"v":1, "kind":"event", "from":"<alias>", "to":"*", "task":"T<task_n>", "data":{"type":"heartbeat", "phase":"alive"}}
 ```
 
-### 4. event:identity を送信
+### 4. event:identity を送信（最小フィールド）
+
+bundle 受信前のため bundle 由来の `task_title` / `activity_id` / `topic_id` は null で送る。Step 9 で bundle 受信後にフル identity を再送する。
+
+```json
+{
+  "v":1, "kind":"event", "from":"<alias>", "to":"*", "task":"T<task_n>",
+  "data":{
+    "type":"identity",
+    "role":"worker",
+    "handle":"<alias>",
+    "channel_code":"<channel_code>",
+    "topic_id": null,
+    "started_at":"<UTC ISO8601>",
+    "alias":"<alias>",
+    "activity_id": null,
+    "model":"<model>",
+    "cwd":"<cwd>",
+    "session_id":"<session_id>"
+  }
+}
+```
+
+identity から **除外する属性**: `task_n`（activity_id から逆引き可能）、`user`（relay 非参加者）。`term_ref` は SessionStart hook が env (`TMUX_PANE`) から `~/.cc-memory/ow/term_refs/<session_id>.json` にキャッシュし、`ow_send` が identity event 送信時に session_id ベースで自動補完する（手動で payload に乗せる必要なし）。
+
+### 5. event:state(loading) を送信
+
+```json
+{"v":1, "kind":"event", "from":"<alias>", "to":"dispatcher", "task":"T<task_n>", "data":{"type":"state", "state":"loading"}}
+```
+
+### 6. Monitor 起動
+
+- `Monitor recv.sh <channel_code> <alias> (persistent)`
+- `recv.sh` は `~/workspace/cc-memory/scripts/ow/recv.sh` にある
+
+### 7. spawn-bundle pull
+
+`ow_history(channel=OW_CHANNEL, since=0)` で channel 全 messages を pull する。pull 結果から以下の条件をすべて満たす envelope を filter する:
+
+- `body.to == OW_ALIAS` または `body.to == "*"`
+- `body.task == "T<OW_TASK_N>"`
+- `body.data.type == "spawn-bundle"`
+
+複数該当する場合は msg_id 最大の 1 件を採用する。bundle data から以下を取得する:
+
+- `task_title`: タスクのタイトル
+- `acceptance`: 完了条件
+- `context`: タスクコンテキスト (思考 worker の場合、末尾に `ultrathink` マーカーセクションが含まれる)
+- `playbook`: プレイブック抜粋
+- `activity_id`: アクティビティID
+- `topic_id`: トピックID
+- `effort`: 思考 worker effort (None または `high`/`xhigh`/`max`/`ultrathink`)
+- `goal_text`: `/goal` 起動 prompt に埋められた短文 (claude が起動時点で自走モードのトリガーに使用済み、本文 context として参照可)
+
+**失敗時挙動:**
+
+- **relay 接続失敗** (HTTP error / curl timeout): 1 秒待ち + 最大 3 回 retry
+- 3 回連続失敗 → `event:state(terminated, cause:"dead", note:"relay unreachable at bundle pull")` を送信して終了
+- **bundle 不在** (pull 成功だが該当 envelope なし): retry しない。spawn 設計上、bundle 送信「後」に worker 起動が固定されているため、bundle 不在 = spawn 側バグ。`event:state(terminated, cause:"dead", note:"spawn-bundle not found in channel")` で即終了
+
+### 8. check_in
+
+bundle から取得した activity_id で `check_in(activity_id)` を実行し、アクティビティの関連情報を取得する。activity_id が null の場合は check_in をスキップする (任意作業 worker の例外運用)。
+
+### 9. event:identity 再送（フルフィールド）
+
+bundle 由来フィールドを含めて identity を再 append する。reducer は最新を採用するため、Step 4 の最小 identity は上書きされる。
 
 ```json
 {
@@ -92,49 +151,31 @@ ow_sendで1回だけ送信:
     "handle":"<alias>",
     "channel_code":"<channel_code>",
     "topic_id":"<topic_id>",
-    "started_at":"<UTC ISO8601>",
+    "started_at":"<起動時と同じ値>",
     "alias":"<alias>",
     "activity_id":<activity_id>,
     "model":"<model>",
     "cwd":"<cwd>",
-    "session_id":"<session_id>"
+    "session_id":"<session_id>",
+    "task_title":"<bundle data.task_title>"
   }
 }
 ```
 
-identity から **除外する属性**: `task_n`（activity_id から逆引き可能）、`user`（relay 非参加者）。`term_ref` は SessionStart hook が env (`TMUX_PANE`) から `~/.cc-memory/ow/term_refs/<session_id>.json` にキャッシュし、`ow_send` が identity event 送信時に session_id ベースで自動補完する（手動で payload に乗せる必要なし）。設計詳細は設計書 v3 §6.3.1 参照。
+### 10. event:state(working, phase="briefing") を送信
 
-### 5. event:state(loading) を送信
-
-```json
-{"v":1, "kind":"event", "from":"<alias>", "to":"dispatcher", "task":"T<task_n>", "data":{"type":"state", "state":"loading"}}
-```
-
-### 6. context load（Monitorとcheck_in）
-
-- Monitorを起動: `Monitor recv.sh <channel_code> <alias> (persistent)`
-  - `recv.sh` は `~/workspace/cc-memory/scripts/ow/recv.sh` にある
-- `check_in(activity_id)` でアクティビティの関連情報を取得する
-
-### 7. event:state(ready) を送信
-
-context load完了後、PHASE_FILEを `ready` に更新してからstateを宣言:
+context load 完了で working 状態に直行する。ready 状態は廃止 (D#2962)。PHASE_FILE を `working` に更新してから state を宣言する:
 
 ```bash
-echo "ready" > /tmp/ow_hb_phase_<alias>
+echo "working" > /tmp/ow_hb_phase_<alias>
 ```
 
 ```json
-{"v":1, "kind":"event", "from":"<alias>", "to":"dispatcher", "task":"T<task_n>", "data":{"type":"state", "state":"ready", "session_id":"<session_id>", "alias":"<alias>", "cwd":"<cwd>"}}
+{"v":1, "kind":"event", "from":"<alias>", "to":"dispatcher", "task":"T<task_n>",
+ "data":{"type":"state", "state":"working", "phase":"briefing", "note":"bundle pulled, context loaded"}}
 ```
 
-### 8. ow_historyでpull補完
-
-```
-ow_history(channel=<channel_code>, since=<ready_msg_id>)
-```
-
-orchがready受信後にすぐ送ったcmd:assignをSSE接続前に取りこぼす場合があるため、自分でpullして補完する。
+その後、§作業中（working） に進む。dispatcher / orch から軌道修正が必要な場合は `command:answer` で差し戻される (旧 `command:assign` 経路は廃止)。
 
 ## alias 命名ガイドライン
 
@@ -144,17 +185,6 @@ aliasは**連番（w-a, w-b）ではなく任意の単語**を推奨する。orc
 - 例（role寄り）: `designer-1`, `implementer-2`, `reviewer-3`
 
 理由: 連番は並行worker数が増えると識別性が低い。固有名のほうがorchの認知負荷が下がる。
-
-## cmd:assign の受信 → working
-
-orchから `kind:command, data.type:assign` が届いたら:
-
-1. 内容を確認し、`event:state(working)` を送信する:
-   ```json
-   {"v":1, "kind":"event", "from":"<alias>", "to":"dispatcher", "task":"T<task_n>", "data":{"type":"state", "state":"working", "phase":"starting", "note":"assign received, beginning work"}}
-   ```
-2. PHASE_FILEが `ready` になっていることを確認（なっていなければ更新）
-3. タスクの作業を開始する
 
 ## 作業中（working）
 
@@ -239,16 +269,28 @@ orchが人間へのエスカレーションを指示したら、以下の**エ�
 
 ## 完了 → done
 
-作業が完了したら:
+worker は claude CLI の `/goal` 自走モードで goal_text を満たした時点で recap を表示する習性があるが、recap 表示は **正規退場ではない**。recap で止まったまま idle に落ちると、上長 (dispatcher / orch) に `event:state(done)` envelope が届かず、上長から見ると「成果は不可視 / 検証不能 / 自分で pull せざるを得ない」状態になる。
+
+「Goal achieved (= acceptance を満たしたと自己判定)」と「正規退場」は別物。両者を直結させず、必ず以下を踏む:
+
 1. acceptanceを満たしていることを確認し、証拠（evidence: テスト結果・PR URL等）を揃える
 2. worker専用の記録規律（§記録規律）に従い、material保存・decision_proposalsの準備を済ませる
-3. `event:state(done)` を送信する:
+3. `event:state(done)` を**必ず**送信する:
    ```json
    {"v":1, "kind":"event", "from":"<alias>", "to":"dispatcher", "task":"T<task_n>",
-    "data":{"type":"state", "state":"done", "summary":"<作業内容の要約>", "evidence":"<acceptanceを満たす証拠>", "synced":true, "materials":[<material_id...>], "decision_proposals":[{"decision":"...","reason":"..."}]}}
+    "data":{"type":"state", "state":"done",
+            "summary":"M#<id>: <1-2 行で成果>",
+            "evidence":"<acceptanceを満たす証拠>",
+            "synced":true,
+            "materials":[<material_id...>],
+            "decision_proposals":[{"decision":"...","reason":"..."}]}}
    ```
-   - `synced:true` は「material保存済み・decision_proposals添付済みでorchが検証可能な状態」を意味する。最終作業経緯ログの確定はcmd:close時の退場処理で行う
-4. orchからの応答を待つ（§完了後の待機）
+   - `summary` は **「保存済 material id の列挙」+「1-2 行の成果文」** の両方を必ず含める。dispatcher / orch が SSE notification の truncated body (約 200 文字) でも成果と紐付き先を即時判定できるよう、material id を `summary` 先頭に置いて truncation で落ちないようにする
+   - `summary` に載せる id は `materials[]` の中身と整合させる (引き合い検証フィールド)
+   - 成果が PR の場合は `summary` 末尾に PR URL を 1 件添える (dispatcher が diff 確認に直接アクセスできるように)
+   - **log id は載せない**: 最終作業経緯 log は `cmd:close` 受信後の退場処理 (worker-sync) で確定するため、done envelope 送信時点ではまだ id が存在しない。log は退場処理で記録され、dispatcher は activity 経由で逆引きできる
+   - `synced:true` は「material保存済み・decision_proposals添付済みで上長が検証可能な状態」を意味する。最終作業経緯ログの確定はcmd:close時の退場処理で行う
+4. done envelope 送信後は `command:close` 受領まで待機する（§完了後の待機）。recap が表示されても、`event:state(done)` を送らず terminated に向かう動きは禁止 (§禁止事項)
 
 ## 完了後の待機
 
@@ -337,6 +379,7 @@ kill タイミングは relay POST の**完了後**で固定する。送信前�
 | `dead` | ❌ 対象外 | 起動失敗。人間判断ステージに残す |
 | `crashed` | ❌ 対象外 | reducer 推論のみで本 step を実行する worker は存在しない |
 | `crashed-during-drain` | ❌ 対象外 | 同上 |
+| `idle-timeout` | ✅ 対象 (bash 側で kill 済み) | heartbeat.sh が自分で event 送信 + pane kill する (D#2853 機構1/2)。worker AI が SKILL を踏まなくても確実に退場する仕組みなので、本 Step 6 が worker AI 側で発火する経路は通常存在しない |
 
 起動環境（環境変数）別の経路:
 
@@ -396,4 +439,6 @@ orchから `kind:command, data.type:ping` が届いたら、現在の state を 
 - decisionを直接記録しない（エスカレーション例外を除く。原則decision_proposalsでorchに提案）
 - `event:state(terminated)` 送信後にツールを呼ばない
 - done送信後、closeを受けるまで新しい作業を始めない・cc-memoryへ追記しない（退場処理を除く）
+- **`event:state(done)` envelope を送信せずに `event:state(terminated)` に向かわない**: 「Goal achieved」recap だけで作業終了と判断せず、必ず `event:state(done)` → `command:close` 受領 → 退場処理 (draining → terminated) の正規プロトコルを踏む。recap 表示だけで idle に落ちると上長は worker 死亡と区別がつかず成果検証不能になる (本規約の存在理由)
+- **done envelope の summary に material id を省略しない**: SSE notification truncation 対策。`materials[]` 列挙だけで済まさず、`summary` 先頭にも material id を埋め込む (log id は done 送信時点ではまだ確定していないので summary には載せない)
 - **AskUserQuestion 禁止**: worker は人間に直接質問しない。質問は `event:state(blocked)` envelope で orch 経由。AskUserQuestion ツールは ow_spawn_worker の settings injection で deny されているが、明示的に守ること

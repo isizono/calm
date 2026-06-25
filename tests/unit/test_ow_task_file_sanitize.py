@@ -1,6 +1,9 @@
-"""_write_task_file / _sanitize_task_body_field のサニタイズ動作テスト"""
-from pathlib import Path
+"""_build_spawn_bundle_data / _sanitize_task_body_field のサニタイズ動作テスト
 
+旧 _write_task_file は D#2955 で廃止された (task_file 経路の代わりに
+event:spawn-bundle envelope を relay に送る、D#2952)。本テストは spawn-bundle
+data フィールドが MCP 予約 XML タグから保護されていることを検証する。
+"""
 import pytest
 
 from src.services import ow_service
@@ -76,93 +79,148 @@ class TestSanitizeTaskBodyField:
         assert ow_service._sanitize_task_body_field("", "acceptance") == ""
 
 
-class TestWriteTaskFileSanitize:
-    def test_acceptance_with_mcp_tags_written_clean(self, tmp_path: Path):
-        """acceptanceにMCPタグが混入してもtask_fileのAcceptanceセクションにタグが残らない"""
-        task_file = ow_service._write_task_file(
-            task_dir=tmp_path,
+class TestBuildSpawnBundleData:
+    def test_acceptance_with_mcp_tags_sanitized(self):
+        """acceptance に MCP タグが混入しても bundle data から除去される"""
+        data = ow_service._build_spawn_bundle_data(
             task_n=99,
-            alias="w-test",
-            channel="testchan",
-            cwd="/tmp",
-            model="claude-opus-4-7",
-
             task_title="サニタイズテスト",
             acceptance="テスト全通過</parameter>",
             context="",
             playbook="",
-            timeout_min=30,
             activity_id=None,
             topic_id=None,
+            effort=None,
+            goal_text=None,
         )
-        content = task_file.read_text(encoding="utf-8")
-        assert "</parameter>" not in content
-        assert "テスト全通過" in content
-        assert "## Acceptance" in content
+        assert data["type"] == "spawn-bundle"
+        assert "</parameter>" not in data["acceptance"]
+        assert data["acceptance"] == "テスト全通過"
 
-    def test_context_with_invoke_tags_written_clean(self, tmp_path: Path):
-        """contextに<invoke>タグが混入してもtask_fileのContextセクションにタグが残らない"""
-        task_file = ow_service._write_task_file(
-            task_dir=tmp_path,
+    def test_context_with_invoke_tags_sanitized(self):
+        """context に <invoke> タグが混入しても bundle data から除去される"""
+        data = ow_service._build_spawn_bundle_data(
             task_n=99,
-            alias="w-test",
-            channel="testchan",
-            cwd="/tmp",
-            model="claude-opus-4-7",
-
             task_title="サニタイズテスト",
             acceptance="",
             context='<invoke name="foo">背景情報</invoke>',
             playbook="",
-            timeout_min=30,
             activity_id=None,
             topic_id=None,
+            effort=None,
+            goal_text=None,
         )
-        content = task_file.read_text(encoding="utf-8")
-        assert "<invoke" not in content
-        assert "</invoke>" not in content
-        assert "背景情報" in content
-        assert "## Context" in content
+        assert "<invoke" not in data["context"]
+        assert "</invoke>" not in data["context"]
+        assert data["context"] == "背景情報"
 
-    def test_acceptance_empty_after_sanitize_omits_section(self, tmp_path: Path):
-        """サニタイズ後にacceptanceが空になった場合はAcceptanceセクション自体を出力しない"""
-        task_file = ow_service._write_task_file(
-            task_dir=tmp_path,
+    def test_acceptance_empty_after_sanitize(self):
+        """サニタイズ後に acceptance が空になった場合 bundle data には空文字列が入る"""
+        data = ow_service._build_spawn_bundle_data(
             task_n=99,
-            alias="w-test",
-            channel="testchan",
-            cwd="/tmp",
-            model="claude-opus-4-7",
-
             task_title="サニタイズテスト",
             acceptance="</parameter>",
             context="",
             playbook="",
-            timeout_min=30,
             activity_id=None,
             topic_id=None,
+            effort=None,
+            goal_text=None,
         )
-        content = task_file.read_text(encoding="utf-8")
-        assert "## Acceptance" not in content
+        assert data["acceptance"] == ""
 
-    def test_clean_input_acceptance_preserved(self, tmp_path: Path):
-        """タグを含まないacceptanceはそのまま書き出される"""
-        task_file = ow_service._write_task_file(
-            task_dir=tmp_path,
+    def test_clean_input_preserved(self):
+        """タグを含まない acceptance/context はそのまま bundle data に入る"""
+        data = ow_service._build_spawn_bundle_data(
             task_n=1,
-            alias="w-a",
-            channel="chan",
-            cwd="/tmp",
-            model="claude-opus-4-7",
-
             task_title="クリーンテスト",
             acceptance="PRを作成してCIが通ること",
             context="背景情報",
             playbook="",
-            timeout_min=60,
             activity_id=None,
             topic_id=None,
+            effort=None,
+            goal_text=None,
         )
-        content = task_file.read_text(encoding="utf-8")
-        assert "PRを作成してCIが通ること" in content
-        assert "背景情報" in content
+        assert data["acceptance"] == "PRを作成してCIが通ること"
+        assert data["context"] == "背景情報"
+
+    def test_goal_text_fallback_to_task_title(self):
+        """goal_text 未指定時は task_title をフォールバックに使う"""
+        data = ow_service._build_spawn_bundle_data(
+            task_n=1,
+            task_title="フォールバックテスト",
+            acceptance="",
+            context="",
+            playbook="",
+            activity_id=None,
+            topic_id=None,
+            effort=None,
+            goal_text=None,
+        )
+        assert data["goal_text"] == "フォールバックテスト"
+
+    def test_goal_text_explicit(self):
+        """goal_text 明示時はそのまま使う"""
+        data = ow_service._build_spawn_bundle_data(
+            task_n=1,
+            task_title="タイトル",
+            acceptance="",
+            context="",
+            playbook="",
+            activity_id=None,
+            topic_id=None,
+            effort=None,
+            goal_text="明示ゴール",
+        )
+        assert data["goal_text"] == "明示ゴール"
+
+    def test_goal_text_with_mcp_tags_sanitized(self):
+        """goal_text に MCP タグが混入しても bundle data から除去される"""
+        data = ow_service._build_spawn_bundle_data(
+            task_n=1,
+            task_title="タイトル",
+            acceptance="",
+            context="",
+            playbook="",
+            activity_id=None,
+            topic_id=None,
+            effort=None,
+            goal_text='ゴール達成</parameter><invoke name="foo">',
+        )
+        assert "</parameter>" not in data["goal_text"]
+        assert "<invoke" not in data["goal_text"]
+        assert data["goal_text"] == "ゴール達成"
+
+    def test_goal_text_empty_after_sanitize_falls_back_to_title(self):
+        """サニタイズ後に goal_text が空になった場合は task_title をフォールバックに使う"""
+        data = ow_service._build_spawn_bundle_data(
+            task_n=1,
+            task_title="サニタイズタイトル",
+            acceptance="",
+            context="",
+            playbook="",
+            activity_id=None,
+            topic_id=None,
+            effort=None,
+            goal_text="</parameter>",
+        )
+        assert data["goal_text"] == "サニタイズタイトル"
+
+    def test_effort_injects_thinking_marker(self):
+        """effort 指定時は context 末尾に思考worker マーカー (`ultrathink`) が差し込まれる"""
+        data = ow_service._build_spawn_bundle_data(
+            task_n=1,
+            task_title="思考タスク",
+            acceptance="",
+            context="既存コンテキスト",
+            playbook="",
+            activity_id=None,
+            topic_id=None,
+            effort="ultrathink",
+            goal_text=None,
+        )
+        assert "既存コンテキスト" in data["context"]
+        assert "ultrathink" in data["context"]
+        assert "## Thinking worker" in data["context"]
+        assert data["effort"] == "ultrathink"
