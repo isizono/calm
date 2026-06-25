@@ -113,15 +113,17 @@ class TestEscalationAcrossRoles:
         check_capability(denied_tools[0])
 
 
-class TestUserRoleAbsence:
-    """matrix に未登録の role (例: "user") はデフォルト deny。"""
+class TestUnknownRoleAbsence:
+    """matrix に未登録の role は is_allowed / hidden_tools_for で deny 扱い。
 
-    def test_unknown_role_denies_all(self, temp_db, monkeypatch):
-        monkeypatch.setenv("OW_ROLE", "user")
-        with pytest.raises(CapabilityError):
-            check_capability("add_decisions")
+    check_capability 経路では role_service.lookup_role が _VALID_ROLES 外を None として返すため
+    非 ow session 扱いで通過する (guard_service.check_capability の backward compat 仕様)。
+    capability_matrix 単体での deny 挙動のみを保証する。
+    """
+
+    def test_unknown_role_is_allowed_returns_false(self):
+        assert capability_matrix.is_allowed("add_decisions", "unknown") is False
 
     def test_unknown_role_hidden_set_is_full(self):
-        hidden = capability_matrix.hidden_tools_for("user")
-        # "user" は matrix に登録されてないので全 tool が hidden
+        hidden = capability_matrix.hidden_tools_for("unknown")
         assert hidden == set(CAPABILITY_MATRIX.keys())

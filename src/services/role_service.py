@@ -7,10 +7,10 @@ import os
 import sqlite3
 from typing import Literal, Optional
 
-Role = Literal["orch", "dispatcher", "worker", "user"]
+Role = Literal["orch", "dispatcher", "worker"]
 
 _ROLE_ENV = "OW_ROLE"
-_VALID_ROLES = ("orch", "dispatcher", "worker", "user")
+_VALID_ROLES = ("orch", "dispatcher", "worker")
 
 
 def lookup_role(conn: sqlite3.Connection, session_id: Optional[str]) -> Optional[Role]:
