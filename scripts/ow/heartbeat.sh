@@ -24,8 +24,13 @@
 #                      MCP /health 連続失敗回数の閾値 (default: 5)。
 #                      これを超えると safe state の worker は self-exit する。
 #   OW_MCP_UPTIME_MIN_SEC
-#                      self-exit を発火するために必要な heartbeat プロセスの最小経過秒
-#                      (default: 300=5分)。spawn 直後の不安定期保護。
+#                      self-exit / hb-fail idle-timeout を発火するために必要な
+#                      heartbeat プロセスの最小経過秒 (default: 300=5分)。
+#                      spawn 直後の不安定期保護として、MCP /health 連続失敗による
+#                      self-exit (OW_MCP_FAIL_THRESHOLD) と relay /send 連続失敗による
+#                      hb-fail idle-timeout (OW_HB_FAIL_THRESHOLD) の両方に同閾値が
+#                      適用される。MCP cold start 対策で本変数を大きくすると、
+#                      hb-fail idle-timeout の発火タイミングも同じだけ後ろ倒しになる。
 #   OW_MCP_CONNECT_TIMEOUT
 #                      MCP /health curl の connect timeout（秒）。default: 2
 #   OW_MCP_MAX_TIME    MCP /health curl の全体タイムアウト（秒）。default: 3
@@ -33,7 +38,11 @@
 #                      "1" を渡すと self-exit を無効化（デバッグ・検証用）。
 #   OW_HB_FAIL_THRESHOLD
 #                      relay /send 連続失敗回数の閾値 (default: 5)。
-#                      これを超えると idle-timeout として worker を kill する
+#                      hb_n >= OW_HB_FAIL_THRESHOLD かつ heartbeat 経過秒 >=
+#                      OW_MCP_UPTIME_MIN_SEC の両方を満たしたときに idle-timeout
+#                      として worker を kill する。uptime gate により spawn 直後の
+#                      relay cold start や transient hang を「永続 idle」と
+#                      誤判定しない
 #                      (D#2853 機構1: relay 不通検知)。
 #   OW_DONE_TIMEOUT_SEC
 #                      PHASE=done になってから close 未受領で kill する閾値秒
