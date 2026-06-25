@@ -116,6 +116,8 @@ class TestAddDecisionsTitleLength:
             ]
         )
         assert result["errors"]
+        # items ループ内の error は全 ITEM_ERROR に分類される既存設計
+        assert result["errors"][0]["error"]["code"] == "ITEM_ERROR"
         assert "exceeds maximum" in result["errors"][0]["error"]["message"]
 
     def test_none_title_passes(self, temp_db):

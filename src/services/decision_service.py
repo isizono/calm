@@ -15,7 +15,7 @@ from src.services.tag_service import (
 )
 from src.services.habit_service import _add_habit_with_conn
 from src.services.relation_service import _add_relation_with_conn
-from src.services.title_validation import TITLE_MAX_LEN, validate_title
+from src.services.title_validation import validate_title
 
 PROPAGATE_TYPES = {"habit", "tag_note"}
 

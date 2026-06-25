@@ -8,7 +8,7 @@ from src.services.readable_id import apply_readable_id_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.relation_service import _add_relation_with_conn, _validate_targets
 from src.services.search_service import find_similar_topics
-from src.services.title_validation import TITLE_MAX_LEN, validate_title
+from src.services.title_validation import validate_title
 from src.services.tag_service import (
     validate_and_parse_tags,
     ensure_tag_ids,
