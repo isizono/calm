@@ -226,7 +226,12 @@ while [ -f "$PHASE_FILE" ] && parent_alive; do
         if [ "$OW_DISABLE_IDLE_TIMEOUT" != "1" ]; then
             hb_n=$(( $(cat "$HB_FAIL_COUNT_FILE" 2>/dev/null || echo 0) + 1 ))
             echo "$hb_n" > "$HB_FAIL_COUNT_FILE"
-            if [ "$hb_n" -ge "$OW_HB_FAIL_THRESHOLD" ]; then
+            # spawn 直後の relay cold start や transient hang を「永続 idle」と
+            # 誤判定しないため、MCP self-exit と同じ閾値 OW_MCP_UPTIME_MIN_SEC を
+            # 再利用して uptime gate を入れる。
+            hb_now=$(date +%s)
+            hb_elapsed=$(( hb_now - HEARTBEAT_STARTED_AT ))
+            if [ "$hb_n" -ge "$OW_HB_FAIL_THRESHOLD" ] && [ "$hb_elapsed" -ge "$OW_MCP_UPTIME_MIN_SEC" ]; then
                 shutdown_for_idle_timeout "hb-fail" "${hb_n} consecutive heartbeat send failures"
             fi
         fi
