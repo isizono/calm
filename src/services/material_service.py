@@ -8,6 +8,7 @@ from src.services.readable_id import apply_readable_id_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.citations_service import upsert_citations_for_owner_with_conn
 from src.services.relation_service import _add_relation_with_conn, _validate_targets
+from src.services.title_validation import TITLE_MAX_LEN, validate_title
 from src.services.tag_service import (
     validate_and_parse_tags,
     ensure_tag_ids,
@@ -43,7 +44,7 @@ def add_material(title: str, content: str, tags: list[str], source: str, related
     資材を追加する
 
     Args:
-        title: 資材のタイトル
+        title: 資材のタイトル（40字以内）
         content: 資材の本文
         tags: タグ配列（必須、1個以上）
         source: データの出自
@@ -62,6 +63,10 @@ def add_material(title: str, content: str, tags: list[str], source: str, related
                 "message": "title must not be empty",
             }
         }
+
+    title_err = validate_title(title)
+    if title_err:
+        return title_err
 
     if not content or not content.strip():
         return {
@@ -199,7 +204,7 @@ def update_material(
     Args:
         material_id: ID of the material to update
         content: New content (optional)
-        title: New title (optional)
+        title: New title (optional, 40 chars or less)
         tags: New tags (full replace, optional. At least 1 required when specified)
         source: New source (optional)
         mode: content指定時の結合動作。"overwrite"=既定で上書き、"prepend"=新+区切り+既存、
@@ -240,6 +245,10 @@ def update_material(
                 "message": "title must not be empty",
             }
         }
+
+    title_err = validate_title(title)
+    if title_err:
+        return title_err
 
     if content is not None and not content.strip():
         return {
