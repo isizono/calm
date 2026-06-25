@@ -2,8 +2,8 @@
 
 initialize 時にセッションの role を解決し、その role から見える tool 集合だけ
 tools/list に出るよう FastMCP の session-level visibility rules を設定する。
-判定ロジック自体は guard_service.check_capability (PR-d) が担当する二層構造の
-hide 側を担う。
+本 middleware は二層構造の hide 側のみを担い、実際の呼び出し可否判定 (reject) は
+別途 guard 層が担当する。
 """
 from __future__ import annotations
 
