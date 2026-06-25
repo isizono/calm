@@ -48,6 +48,7 @@ ALLOWLIST_EXACT: frozenset[str] = frozenset(
         "WebSearch",
         "Agent",
         "Task",
+        "Workflow",
         "TaskCreate",
         "TaskGet",
         "TaskUpdate",

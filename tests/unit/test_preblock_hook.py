@@ -144,6 +144,7 @@ class TestIsAllowed:
             "WebSearch",
             "Agent",
             "Task",
+            "Workflow",
             "TaskCreate",
             "TaskGet",
             "TaskUpdate",
@@ -466,6 +467,9 @@ class TestMainBlockFlow:
     def test_task_tool_passes_through_with_id_literals(
         self, capsys, cc_memory_cwd
     ):
+        # Task SA spawn 時も Agent と同様に prompt 内の内部 ID は委譲先への文脈伝達。
+        # リテラル文字列を直接書くとこのファイル自体が hook で読み書き拒否されるため、
+        # 動的に組み立てる。
         sharp = chr(35)
         prompt = "review M" + sharp + "508 context"
         out = _run_main_with_event(
@@ -474,6 +478,29 @@ class TestMainBlockFlow:
                 "tool_input": {
                     "description": "Investigate",
                     "prompt": prompt,
+                },
+                "session_id": "s1",
+            },
+            capsys,
+        )
+        assert out == {}
+
+    def test_workflow_tool_passes_through_with_id_literals(
+        self, capsys, cc_memory_cwd
+    ):
+        # Workflow tool は script 内で agent() を呼ぶ。script / args に内部 ID が含まれても
+        # サブ workflow / agent への文脈委譲として正当 (Agent / Task と同じ扱い)。
+        # リテラル文字列を直接書くとこのファイル自体が hook で読み書き拒否されるため、
+        # 動的に組み立てる。
+        sharp = chr(35)
+        script = (
+            "agent('review A" + sharp + "1175 and D" + sharp + "2654')"
+        )
+        out = _run_main_with_event(
+            {
+                "tool_name": "Workflow",
+                "tool_input": {
+                    "script": script,
                 },
                 "session_id": "s1",
             },
