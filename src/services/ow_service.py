@@ -122,36 +122,104 @@ THINKING_EFFORTS: frozenset[str] = frozenset({"high", "xhigh", "max", "ultrathin
 # orch は sentinel `ultratink` を使い、ow_service 側で正規綴りに畳む。
 _EFFORT_ALIASES: dict[str, str] = {"ultratink": "ultrathink"}
 
-# worker alias の書式制約。kebab-case（小文字英数字+ハイフン、先頭は英字、末尾は英数字、
-# 連続ハイフン禁止）かつ最小長 8 文字以上。短すぎる alias は名前衝突や視認性低下を招き、
-# queue/relay 識別子として再利用しづらいため一律で拒否する。
+# worker alias の書式制約。`w-` prefix 必須、kebab-case（小文字英数字+ハイフン、末尾は
+# 英数字、連続ハイフン禁止）、最小長 8 文字以上。短すぎる alias は名前衝突や視認性低下を
+# 招き、queue/relay 識別子として再利用しづらいため一律で拒否する。
 # alias の上限長は意図的に設けない（relay messages の handle / spawn-bundle envelope の
-# `to` フィールドに埋め込まれるが、物理上限は relay 側に委ねる。orch 運用上は
-# kebab-case の自然な命名で十分短く収まる）。
+# `to` フィールドに埋め込まれるが、物理上限は relay 側に委ねる。orch 運用上は kebab-case
+# の自然な命名で十分短く収まる）。
+# 推奨命名規約: `w-<purpose>-<activity_id>` (例 `w-design-1064`)。
 _ALIAS_MIN_LENGTH: int = 8
+_ALIAS_PREFIX: str = "w-"
+# prefix 後の残り部分に対する kebab-case パターン。先頭は英字、末尾は英数字、間は英数字
+# またはハイフン、連続ハイフン禁止。dispatcher 版 `_validate_dispatcher_handle` と同じ
+# パターンを流用し、prefix を剥がした残りに対して適用する。
 _ALIAS_PATTERN: re.Pattern[str] = re.compile(r"^[a-z]([a-z0-9]|-(?!-))*[a-z0-9]$")
+_ALIAS_RECOMMENDATION: str = (
+    "Recommended: w-<purpose>-<activity_id> (e.g. w-design-1064)."
+)
 
 
 def _validate_alias_format(alias: str) -> str | None:
     """alias の書式検証。OK なら None、NG ならユーザー向けエラーメッセージ文字列を返す。
 
-    検証項目:
+    検証項目（順番に評価し、最初に違反したものを返す）:
+        - 非空 string
+        - prefix `w-` 必須
         - 最小長: 8 文字以上
-        - kebab-case: 小文字英数字とハイフンのみ。先頭は英字、末尾は英数字、連続ハイフン禁止
+        - kebab-case (prefix 後の残り): 小文字英数字とハイフン、先頭英字、末尾英数字、連続ハイフン禁止
+
+    エラー時は推奨命名規約をメッセージに添えて、呼び出し側 AI が次の試行で何を渡せばよいか
+    判断できるようにする。
     """
     if not isinstance(alias, str) or not alias:
         return "alias must be a non-empty string"
+    if not alias.startswith(_ALIAS_PREFIX):
+        return (
+            f"alias '{alias}' must start with '{_ALIAS_PREFIX}' prefix. "
+            f"{_ALIAS_RECOMMENDATION}"
+        )
     if len(alias) < _ALIAS_MIN_LENGTH:
         return (
             f"alias '{alias}' is too short "
-            f"(length={len(alias)}, min={_ALIAS_MIN_LENGTH})"
+            f"(length={len(alias)}, min={_ALIAS_MIN_LENGTH}). "
+            f"{_ALIAS_RECOMMENDATION}"
         )
-    if not _ALIAS_PATTERN.match(alias):
+    rest = alias[len(_ALIAS_PREFIX):]
+    if not _ALIAS_PATTERN.match(rest):
         return (
-            f"alias '{alias}' does not match required kebab-case pattern "
+            f"alias '{alias}' does not match required kebab-case pattern after "
+            f"'{_ALIAS_PREFIX}' "
             "(lowercase letters/digits/hyphen, start with letter, "
-            "end with letter or digit, no consecutive hyphens)"
+            "end with letter or digit, no consecutive hyphens). "
+            f"{_ALIAS_RECOMMENDATION}"
         )
+    return None
+
+
+def _suggest_alias(
+    alias: str, activity_id: int | None, task_n: int | None,
+) -> str | None:
+    """書式違反 alias から修正候補を組み立てる。validation を通る候補のみ返す。
+
+    生成戦略:
+        1. 元 alias の英数字とハイフン以外を簡易にハイフン置換し、連続ハイフン・先頭/末尾
+           ハイフンを整理して core を作る
+        2. prefix `w-` がなければ補完
+        3. activity_id があれば suffix `-<activity_id>` を、なければ task_n fallback で
+           `-t<task_n>` を、いずれもなければそのまま核として候補化
+        4. 候補が `_validate_alias_format` を通れば返却、通らなければ None
+
+    呼び出し側に「修正候補」として提示することで、AI が次の試行で具体的な alias を組み立て
+    やすくする。auto-suffix で勝手に置換する副作用は持たない（友達的なエラーメッセージに
+    乗せて返すだけで、呼び出し側に再 spawn の判断を委ねる）。
+    """
+    if not isinstance(alias, str):
+        return None
+    raw = alias.lower()
+    cleaned_chars: list[str] = []
+    for ch in raw:
+        if ch.isalnum() or ch == "-":
+            cleaned_chars.append(ch)
+        else:
+            cleaned_chars.append("-")
+    cleaned = "".join(cleaned_chars).strip("-")
+    while "--" in cleaned:
+        cleaned = cleaned.replace("--", "-")
+    if not cleaned:
+        return None
+    if cleaned.startswith(_ALIAS_PREFIX):
+        core = cleaned
+    else:
+        core = f"{_ALIAS_PREFIX}{cleaned.lstrip('-')}"
+    if activity_id is not None:
+        candidate = f"{core}-{activity_id}"
+    elif task_n is not None:
+        candidate = f"{core}-t{task_n}"
+    else:
+        candidate = core
+    if _validate_alias_format(candidate) is None:
+        return candidate
     return None
 
 
@@ -1109,7 +1177,10 @@ def ow_spawn_worker(
     permission_modeは常にautoに固定される。
 
     Args:
-        alias: workerのhandle（例: "w-a"）
+        alias: workerのhandle。`w-<purpose>-<activity_id>` 形式を推奨（例: `w-design-1064`）。
+            制約: `w-` prefix 必須、最小 8 文字、kebab-case（小文字英数字+ハイフン、
+            連続ハイフン禁止）。違反時は SPAWN_PRECONDITION_FAILED が返り、warnings に
+            修正候補 `Suggested alias: ...` が添えられる。
         channel: channelコード
         cwd: workerの作業ディレクトリ
         model: 使用モデル（claude-opus-4-7 のみ許可。"opus", "opus-4-7" 等の
@@ -1179,7 +1250,11 @@ def ow_spawn_worker(
 
     # spawn前ヘルスチェック (relay疎通・channel存在・cwd存在・alias重複)
     preflight = _validate_spawn_preconditions(
-        alias, channel, cwd, topic_id=topic_id, task_n=task_n, alias_validator=_alias_validator,
+        alias, channel, cwd,
+        topic_id=topic_id,
+        task_n=task_n,
+        alias_validator=_alias_validator,
+        activity_id=activity_id,
     )
     if not preflight["ok"]:
         return {
@@ -1663,6 +1738,7 @@ def _validate_spawn_preconditions(
     topic_id: str | None = None,
     task_n: int | None = None,
     alias_validator: Callable[[str], str | None] | None = None,
+    activity_id: int | None = None,
 ) -> dict:
     """ow_spawn_worker起動前の一括ヘルスチェック。
 
@@ -1676,6 +1752,8 @@ def _validate_spawn_preconditions(
     Args:
         alias_validator: alias 書式の検証関数。None なら worker 用 _validate_alias_format。
             dispatcher 経路からは _validate_dispatcher_handle を渡す。
+        activity_id: 書式違反 alias の修正候補 (`_suggest_alias`) を組み立てるための
+            ヒント。worker validator 経路でのみ参照される。
 
     Returns:
         {
@@ -1687,12 +1765,18 @@ def _validate_spawn_preconditions(
     """
     warnings: list[str] = []
 
-    # 0. alias書式（最小長 + kebab-case）。relay 接続前に純粋な書式検証で弾く。
+    # 0. alias書式（prefix + 最小長 + kebab-case）。relay 接続前に純粋な書式検証で弾く。
     # 書式エラー時は relay 接続を行わずに早期return（無効aliasで relay 接続を発生させない）。
+    # worker 経路で書式違反時は修正候補を warnings に添えて、呼び出し側が次の試行で何を
+    # 渡せばよいかを判断できるようにする。
     validator = alias_validator if alias_validator is not None else _validate_alias_format
     alias_err = validator(alias)
     if alias_err is not None:
         warnings.append(alias_err)
+        if validator is _validate_alias_format:
+            suggested = _suggest_alias(alias, activity_id, task_n)
+            if suggested is not None and suggested != alias:
+                warnings.append(f"Suggested alias: {suggested}")
         return {"ok": False, "warnings": warnings}
 
     # 1. relay疎通
