@@ -27,6 +27,7 @@ _PLUGIN_ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(_PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(_PLUGIN_ROOT))
 
+from hooks.hook_state import HookState  # noqa: E402
 from src.services.internal_id_patterns import FULLWORD_TO_CODE  # noqa: E402
 
 # code 形式と fullword 形式を 1 つの regex にまとめる。2 段階 sub にすると
@@ -147,9 +148,27 @@ def main() -> None:
     except Exception:
         sys.exit(0)
 
+    # 環境変数による HookState BASE_DIR オーバーライド (テスト用)
+    if os.environ.get("HOOK_STATE_DIR"):
+        HookState.BASE_DIR = pathlib.Path(os.environ["HOOK_STATE_DIR"])
+
     message = payload.get("delta") or payload.get("assistant_message")
     if not isinstance(message, str) or not message:
         sys.exit(0)
+
+    # 観測副作用: assistant 発話に含まれる cc-memory 内部 ID リテラル件数を
+    # session 単位 state に蓄積する。UserPromptSubmit hook が次ターンに
+    # この値を参照して system-reminder を注入する。DB アクセスより前に
+    # 実行するため DB 不在でも観測は有効。
+    session_id = payload.get("session_id", "")
+    if session_id:
+        try:
+            matches = _COMBINED_PATTERN.findall(message)
+            if matches:
+                HookState(session_id).increment_id_leak_count(len(matches))
+        except Exception:
+            # 観測失敗で本体の補完表示動作を止めない
+            pass
 
     db_path = _db_path()
     if not pathlib.Path(db_path).exists():
