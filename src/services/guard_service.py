@@ -31,7 +31,6 @@ class WorkerGuardError(CapabilityError):
     """
 
 
-_ROLE_ENV = "OW_ROLE"
 _ROLE_WORKER = "worker"
 _ESCALATION_ENV = "OW_ESCALATION"
 _ESCALATION_PASS = "1"
