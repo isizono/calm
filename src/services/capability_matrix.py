@@ -10,7 +10,7 @@ matrix の値:
 """
 from typing import Literal
 
-Role = Literal["orch", "dispatcher", "worker", "user"]
+Role = Literal["orch", "dispatcher", "worker"]
 Decision = bool | Literal["self"]
 CapabilityMatrix = dict[str, dict[str, Decision]]
 
