@@ -64,6 +64,40 @@ rebalance_worker_panes() {
   done <<< "$panes"
 }
 
+# spawn 直後の pane が生存しているか短時間遅延後に検証する。
+# tmux は new-window / split-window コマンドを受理した瞬間に pane_id を払い出すため、
+# bash -c で走る worker_cmd が即時失敗して pane が消滅しても adapter は exit 0 を返してしまう
+# (silent failure)。本関数で短時間 sleep してから pane の存在 + プロセス生存を両方検証する。
+# tmux 側の pane structure cleanup は process exit より少し遅れるため、pane が見えても中身が
+# zombie/reap 済のケースがある。pane_pid を取得して kill -0 で生存確認する二段検査で確実に捕まえる。
+# OW_PANE_SURVIVAL_DELAY 環境変数で sleep 時間を調整可能 (default: 1.0 秒)。
+# 1.0s は claude startup が完了する前のタイミングだが、claude 起動失敗時の bash プロセス即死は
+# bash の exec 前か直後で起きるためこの幅で十分捕まえられる。
+# OW_SKIP_PANE_SURVIVAL_CHECK=1 で本検査全体を skip (テスト用、本番 spawn では設定しない)。
+verify_pane_alive() {
+  local pane_id="$1"
+  if [[ "${OW_SKIP_PANE_SURVIVAL_CHECK:-0}" == "1" ]]; then
+    return 0
+  fi
+  local delay="${OW_PANE_SURVIVAL_DELAY:-1.0}"
+  if ! sleep "$delay" 2>/dev/null; then
+    echo "adapter_error: invalid OW_PANE_SURVIVAL_DELAY: $delay (sleep failed)" >&2
+    return 1
+  fi
+  local pane_pid
+  pane_pid=$(tmux display -t "$pane_id" -p "#{pane_pid}" 2>/dev/null || true)
+  if [[ -z "$pane_pid" ]]; then
+    echo "adapter_error: pane $pane_id missing within ${delay}s of spawn (pane cleanup done, worker_cmd failed)" >&2
+    return 1
+  fi
+  if ! kill -0 "$pane_pid" 2>/dev/null; then
+    echo "adapter_error: pane $pane_id process pid=$pane_pid not alive within ${delay}s of spawn (worker_cmd terminated immediately)" >&2
+    tmux kill-pane -t "$pane_id" 2>/dev/null || true
+    return 1
+  fi
+  return 0
+}
+
 case "$ACTION" in
   spawn)
     if [[ $# -lt 3 ]]; then
@@ -103,12 +137,14 @@ case "$ACTION" in
         fi
         PANE_ID=$(tmux new-window -t "$SESSION_ID" -n "$THINKING_WINDOW_NAME" -d -P -F "#{pane_id}" -- \
           bash -c "$SHELL_CMD")
+        verify_pane_alive "$PANE_ID" || exit 1
       else
         if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
           tmux new-session -d -s "$SESSION_NAME" -n "ow-base"
         fi
         PANE_ID=$(tmux new-window -t "$SESSION_NAME" -n "$THINKING_WINDOW_NAME" -P -F "#{pane_id}" -- \
           bash -c "$SHELL_CMD")
+        verify_pane_alive "$PANE_ID" || exit 1
       fi
       tmux set-option -p -t "$PANE_ID" "$WORKER_MARKER_OPT" 1 \
         || echo "warn: tmux set-option -p @ow-worker failed (possibly tmux <1.8 or pane gone), worker marker not set" >&2
@@ -138,6 +174,7 @@ case "$ACTION" in
         PANE_ID=$(tmux split-window -v -d -t "$EXISTING_WORKER" -P -F "#{pane_id}" -- \
           bash -c "$SHELL_CMD")
       fi
+      verify_pane_alive "$PANE_ID" || exit 1
 
       # pane user option で識別用マーカーを設定（claudeの escape sequence では上書き不可）。
       # set-option -p は pane-local オプション、@<name> カスタムオプションは tmux 1.8+ 対応。
@@ -155,6 +192,7 @@ case "$ACTION" in
 
       PANE_ID=$(tmux new-window -t "$SESSION_NAME" -n "ow-worker" -P -F "#{pane_id}" -- \
         bash -c "$SHELL_CMD")
+      verify_pane_alive "$PANE_ID" || exit 1
     fi
 
     echo "$PANE_ID"
