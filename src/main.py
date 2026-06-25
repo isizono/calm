@@ -27,6 +27,7 @@ from src.services.tag_service import search_tags as _search_tags, update_tag as 
 from src.services.tag_analysis_service import analyze_tags as _analyze_tags
 from src.services import citation_renderer
 from src.services.role_service import get_caller_session_id
+from src.services.visibility_middleware import CapabilityVisibilityMiddleware
 from src.db import get_connection
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -234,7 +235,6 @@ def _apply_flavor_to_snippets(items: list[dict], flavor: str) -> None:
 mcp = FastMCP("cc-memory", instructions=build_instructions())
 
 # role 別の tools/list 可視性を制御する middleware を登録する
-from src.services.visibility_middleware import CapabilityVisibilityMiddleware
 mcp.add_middleware(CapabilityVisibilityMiddleware())
 
 # サーバー起動時刻（/health で uptime 算出に使用）

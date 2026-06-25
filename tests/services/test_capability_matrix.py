@@ -15,7 +15,7 @@ from src.services.capability_matrix import (
 class TestMatrixCoverage:
     """matrix が想定 role を全行で扱っていることを保証する。"""
 
-    @pytest.mark.parametrize("role", ["orch", "dispatcher", "worker"])
+    @pytest.mark.parametrize("role", ["orch", "dispatcher", "worker", "user"])
     def test_every_tool_has_decision_for_role(self, role):
         for tool_name, matrix_row in CAPABILITY_MATRIX.items():
             assert role in matrix_row, (
@@ -61,6 +61,12 @@ class TestHiddenToolsFor:
         hidden = hidden_tools_for("nobody")
         assert hidden == set(CAPABILITY_MATRIX.keys())
 
+    def test_user_role_hides_everything(self):
+        # user role は MCP tool 呼び出し主体にならない想定で、matrix 上は
+        # 全 tool が False。hidden_tools_for は全 tool を返す。
+        hidden = hidden_tools_for("user")
+        assert hidden == set(CAPABILITY_MATRIX.keys())
+
     def test_read_tools_visible_to_all(self):
         for role in ("orch", "dispatcher", "worker"):
             hidden = hidden_tools_for(role)
@@ -87,3 +93,8 @@ class TestIsAllowed:
 
     def test_unknown_role_default_deny(self):
         assert is_allowed("search", "nobody") is False
+
+    def test_user_role_default_deny(self):
+        # user role は matrix 上では全 tool に対して False。
+        assert is_allowed("search", "user") is False
+        assert is_allowed("add_decisions", "user") is False
