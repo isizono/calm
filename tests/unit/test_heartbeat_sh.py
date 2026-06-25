@@ -674,6 +674,102 @@ class TestHeartbeatShSelfExit:
         assert alive, "MCP 復活後にカウンタがリセットされず self-exit してしまった"
 
 
+class TestHeartbeatShHbFailIdleTimeout:
+    """機構1: relay /send 連続失敗で hb-fail idle-timeout が発火する。
+    uptime gate (OW_MCP_UPTIME_MIN_SEC) で spawn 直後の relay cold start
+    や transient hang を「永続 idle」と誤判定しないことを検証する。"""
+
+    def _get_dead_url(self):
+        """connect refused になる URL を返す。
+
+        bind→close 方式だと s.close() の直後に別プロセスが同ポートを bind して
+        curl が接続成功する TOCTOU 競合があるため、socket を bind したまま
+        listen() せず保持する。listen() を呼ばない socket への connect() は
+        OS が ECONNREFUSED を返すため、ポート占有 + 接続拒否を同時に実現できる。
+        socket オブジェクトは呼び出し側で保持してテスト終了まで close しない。
+        """
+        import socket as _socket
+
+        s = _socket.socket()
+        s.bind(("127.0.0.1", 0))
+        # listen() を呼ばないので接続は ECONNREFUSED になる
+        port = s.getsockname()[1]
+        return s, f"http://127.0.0.1:{port}"
+
+    def test_hb_fail_kill_when_uptime_above_threshold(self, tmp_phase_file):
+        """relay /send 失敗 N 回 + uptime >= 閾値 で idle-timeout 発火 → exit"""
+        dead_sock, url = self._get_dead_url()
+        tmp_phase_file.write_text("working")
+        env = {
+            **os.environ,
+            "RELAY_URL": url,
+            "OW_MCP_URL": url,
+            "PHASE_FILE": str(tmp_phase_file),
+            "HEARTBEAT_INTERVAL_LOADING": "0",
+            "HEARTBEAT_INTERVAL_DEFAULT": "0",
+            "OW_HB_FAIL_THRESHOLD": "2",
+            "OW_MCP_UPTIME_MIN_SEC": "0",
+            "OW_DISABLE_MCP_SELF_EXIT": "1",
+            "OW_CURL_CONNECT_TIMEOUT": "1",
+            "OW_CURL_TIMEOUT": "1",
+        }
+        env.pop("TMUX_PANE", None)
+        proc = subprocess.Popen(
+            ["bash", str(SCRIPT_PATH), "CH_HBDOWN", "w-hbdown"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            proc.wait(timeout=10)
+            exited = True
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+            proc.wait()
+            exited = False
+        if tmp_phase_file.exists():
+            tmp_phase_file.unlink()
+        dead_sock.close()
+        assert exited, (
+            "relay /send 連続失敗 + uptime gate 通過で idle-timeout が発火しなかった"
+        )
+
+    def test_no_hb_fail_kill_when_uptime_below_threshold(self, tmp_phase_file):
+        """uptime < 閾値 なら relay /send 失敗続いても idle-timeout 発火しない"""
+        dead_sock, url = self._get_dead_url()
+        tmp_phase_file.write_text("working")
+        env = {
+            **os.environ,
+            "RELAY_URL": url,
+            "OW_MCP_URL": url,
+            "PHASE_FILE": str(tmp_phase_file),
+            "HEARTBEAT_INTERVAL_LOADING": "0",
+            "HEARTBEAT_INTERVAL_DEFAULT": "0",
+            "OW_HB_FAIL_THRESHOLD": "1",
+            "OW_MCP_UPTIME_MIN_SEC": "9999",
+            "OW_DISABLE_MCP_SELF_EXIT": "1",
+            "OW_CURL_CONNECT_TIMEOUT": "1",
+            "OW_CURL_TIMEOUT": "1",
+        }
+        # uptime gate=9999s で shutdown_for_idle_timeout は発火しない前提だが、
+        # 万一の誤発火時にテストランナーの tmux pane が kill されないよう
+        # 防御的に TMUX_PANE を env から除去する（第1テストと対称）。
+        env.pop("TMUX_PANE", None)
+        proc = subprocess.Popen(
+            ["bash", str(SCRIPT_PATH), "CH_HBUP", "w-hbup"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        time.sleep(1.5)
+        alive = proc.poll() is None
+        tmp_phase_file.unlink()
+        proc.terminate()
+        proc.wait(timeout=3)
+        dead_sock.close()
+        assert alive, "uptime gate 未達で hb-fail idle-timeout が誤発火した"
+
+
 class TestHeartbeatShCurlTimeout:
     """C案: curl --max-time でhang時に sleep に進める"""
 
