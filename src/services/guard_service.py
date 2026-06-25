@@ -40,18 +40,17 @@ _ESCALATION_PASS = "1"
 def is_worker_session() -> bool:
     """ow worker として起動されたセッションかを判定する。
 
-    OW_ROLE=worker (env) または session_identity.role=worker (DB) のいずれかで真。
+    lookup_role が DB → env fallback を内包しているため、その結果が worker かを返す。
+    DB 優先 (DB に session が登録済みなら DB が真実) で、env 二重チェックは行わない。
     """
     from src.services.role_service import lookup_role, get_caller_session_id
 
     session_id = get_caller_session_id()
     conn = get_connection()
     try:
-        if lookup_role(conn, session_id) == _ROLE_WORKER:
-            return True
+        return lookup_role(conn, session_id) == _ROLE_WORKER
     finally:
         conn.close()
-    return os.environ.get(_ROLE_ENV) == _ROLE_WORKER
 
 
 def current_role() -> Optional["Role"]:
@@ -163,21 +162,42 @@ def _check_self_target(
             )
         return
 
-    if tool_name == "ow_close_worker":
-        target = args.get("target_session_id") or args.get("term_ref")
-        if target is None or session_id is None:
-            raise CapabilityError(
-                _SELF_VIOLATION_MESSAGE_TMPL.format(tool_name=tool_name, role=role)
-            )
-        if target != session_id:
-            raise CapabilityError(
-                _SELF_VIOLATION_MESSAGE_TMPL.format(tool_name=tool_name, role=role)
-            )
-        return
-
     raise CapabilityError(
         f"self-target check is not implemented for {tool_name}"
     )
+
+
+# matrix で "self" を返す tool 名と、_check_self_target が処理する tool 名は一致しなければならない。
+# 新たに matrix に "self" エントリを追加した際、ここを更新し忘れると実行時に
+# `self-target check is not implemented for ...` で初めて発覚するため、起動時に検出するための集合。
+_SELF_TARGET_HANDLERS: frozenset[str] = frozenset({"update_material"})
+
+
+def _matrix_self_tools() -> set[str]:
+    """capability matrix で "self" decision を持つ tool 名を集める。"""
+    from src.services.capability_matrix import CAPABILITY_MATRIX
+
+    return {
+        name
+        for name, row in CAPABILITY_MATRIX.items()
+        if any(d == "self" for d in row.values())
+    }
+
+
+def assert_self_target_handlers_consistent() -> None:
+    """matrix の "self" 集合と _check_self_target が処理する集合の不一致を検出する。
+
+    起動時 or テストから呼ぶ。不一致は AssertionError として早期に顕在化させる。
+    """
+    matrix_self = _matrix_self_tools()
+    missing = matrix_self - _SELF_TARGET_HANDLERS
+    extra = _SELF_TARGET_HANDLERS - matrix_self
+    if missing or extra:
+        raise AssertionError(
+            "self-target handler set is out of sync with capability matrix: "
+            f"missing handlers for {sorted(missing)}, "
+            f"extra handlers for {sorted(extra)}"
+        )
 
 
 # ---------------------------------------------------------------------------

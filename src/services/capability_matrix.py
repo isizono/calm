@@ -18,7 +18,7 @@ CapabilityMatrix = dict[str, dict[str, Decision]]
 CAPABILITY_MATRIX: CapabilityMatrix = {
     # ow tools (worker lifecycle / messaging)
     "ow_spawn_worker":   {"orch": False, "dispatcher": True,  "worker": False},
-    "ow_close_worker":   {"orch": False, "dispatcher": True,  "worker": "self"},
+    "ow_close_worker":   {"orch": False, "dispatcher": True,  "worker": False},
     "ow_recover":        {"orch": False, "dispatcher": True,  "worker": False},
     "ow_send":           {"orch": True,  "dispatcher": True,  "worker": True},
     "ow_status":         {"orch": True,  "dispatcher": True,  "worker": True},

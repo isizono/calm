@@ -168,31 +168,26 @@ class TestSelfTargetUpdateMaterial:
         check_capability("update_material", args={"material_id": material_id})
 
 
-class TestSelfTargetOwCloseWorker:
-    """ow_close_worker の self 判定。"""
+class TestOwCloseWorkerDeniedForWorker:
+    """ow_close_worker は worker から呼べない (dispatcher 専用)。
 
-    def test_self_close_passes(self, migrated_db, monkeypatch):
-        monkeypatch.setenv("OW_ROLE", "worker")
-        with monkeypatch.context() as m:
-            m.setattr(
-                "src.services.role_service.get_caller_session_id",
-                lambda: "sess-w1",
-            )
-            check_capability(
-                "ow_close_worker", args={"target_session_id": "sess-w1"}
-            )
+    term_ref は tmux pane id 等の terminal ID であり caller_session_id とは別軸のため
+    "self" 比較が成立しない。worker は ow_close_worker を呼ばずに他経路で終了する。
+    """
 
-    def test_close_other_worker_rejected(self, migrated_db, monkeypatch):
+    def test_worker_rejected(self, migrated_db, monkeypatch):
         monkeypatch.setenv("OW_ROLE", "worker")
-        with monkeypatch.context() as m:
-            m.setattr(
-                "src.services.role_service.get_caller_session_id",
-                lambda: "sess-w1",
-            )
-            with pytest.raises(CapabilityError):
-                check_capability(
-                    "ow_close_worker", args={"target_session_id": "sess-w2"}
-                )
+        with pytest.raises(CapabilityError):
+            check_capability("ow_close_worker", args={"term_ref": "%5"})
+
+
+class TestSelfTargetHandlerConsistency:
+    """matrix の "self" 集合と _check_self_target の handler 集合が一致する。"""
+
+    def test_self_target_handlers_consistent(self):
+        from src.services.guard_service import assert_self_target_handlers_consistent
+
+        assert_self_target_handlers_consistent()
 
 
 class TestWorkerGuardWrapper:
@@ -240,3 +235,16 @@ class TestIsWorkerSession:
 
     def test_no_role_returns_false(self, migrated_db):
         assert guard_service.is_worker_session() is False
+
+    def test_db_orch_with_stale_env_worker_returns_false(
+        self, migrated_db, monkeypatch
+    ):
+        """DB が orch を返すなら env に worker が残っていても False (DB > env)。"""
+        _register("sess-o1", "orch")
+        monkeypatch.setenv("OW_ROLE", "worker")
+        with monkeypatch.context() as m:
+            m.setattr(
+                "src.services.role_service.get_caller_session_id",
+                lambda: "sess-o1",
+            )
+            assert guard_service.is_worker_session() is False
