@@ -1,39 +1,17 @@
 """check_capability の挙動を検証する unit test。
 
 role/matrix/escalation/self-target/grace period の各分岐を網羅する。
-fixture は test_role_service.py と同じ migrated_db パターン。
+DB fixture は conftest の temp_db を使う。
 """
-import os
-import tempfile
-
 import pytest
 
-from src.db import get_connection, init_database
+from src.db import get_connection
 from src.services import guard_service
 from src.services.guard_service import (
     CapabilityError,
     WorkerGuardError,
     check_capability,
 )
-from src.services.tag_service import _injected_tags
-
-
-@pytest.fixture
-def migrated_db():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        _injected_tags.clear()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
-
-
-@pytest.fixture(autouse=True)
-def clear_ow_env(monkeypatch):
-    monkeypatch.delenv("OW_ROLE", raising=False)
-    monkeypatch.delenv("OW_ESCALATION", raising=False)
 
 
 def _register(session_id: str, role: str) -> None:
@@ -51,23 +29,23 @@ def _register(session_id: str, role: str) -> None:
 class TestRolePassThrough:
     """非 ow セッション (role None) は通過する。"""
 
-    def test_no_role_passes_through(self, migrated_db, monkeypatch):
+    def test_no_role_passes_through(self, temp_db, monkeypatch):
         check_capability("add_decisions")
 
 
 class TestEnvFallback:
     """env OW_ROLE 経由で role が解決され matrix が適用される。"""
 
-    def test_env_worker_rejects_admin_write(self, migrated_db, monkeypatch):
+    def test_env_worker_rejects_admin_write(self, temp_db, monkeypatch):
         monkeypatch.setenv("OW_ROLE", "worker")
         with pytest.raises(CapabilityError):
             check_capability("add_decisions")
 
-    def test_env_orch_allowed_for_admin_write(self, migrated_db, monkeypatch):
+    def test_env_orch_allowed_for_admin_write(self, temp_db, monkeypatch):
         monkeypatch.setenv("OW_ROLE", "orch")
         check_capability("add_decisions")
 
-    def test_env_dispatcher_rejected_for_admin_write(self, migrated_db, monkeypatch):
+    def test_env_dispatcher_rejected_for_admin_write(self, temp_db, monkeypatch):
         monkeypatch.setenv("OW_ROLE", "dispatcher")
         with pytest.raises(CapabilityError):
             check_capability("add_decisions")
@@ -76,7 +54,7 @@ class TestEnvFallback:
 class TestEscalationPassValve:
     """OW_ESCALATION=1 のとき role 違反でも通過する。"""
 
-    def test_escalation_overrides_worker_block(self, migrated_db, monkeypatch):
+    def test_escalation_overrides_worker_block(self, temp_db, monkeypatch):
         monkeypatch.setenv("OW_ROLE", "worker")
         monkeypatch.setenv("OW_ESCALATION", "1")
         check_capability("add_decisions")
@@ -85,18 +63,18 @@ class TestEscalationPassValve:
 class TestMatrixDenial:
     """matrix の False / 未登録 tool は CapabilityError を返す。"""
 
-    def test_orch_blocked_from_spawn_worker(self, migrated_db, monkeypatch):
+    def test_orch_blocked_from_spawn_worker(self, temp_db, monkeypatch):
         monkeypatch.setenv("OW_ROLE", "orch")
         with pytest.raises(CapabilityError) as exc:
             check_capability("ow_spawn_worker")
         assert "orch" in str(exc.value)
 
-    def test_worker_blocked_from_update_activity(self, migrated_db, monkeypatch):
+    def test_worker_blocked_from_update_activity(self, temp_db, monkeypatch):
         monkeypatch.setenv("OW_ROLE", "worker")
         with pytest.raises(CapabilityError):
             check_capability("update_activity")
 
-    def test_unknown_tool_default_deny(self, migrated_db, monkeypatch):
+    def test_unknown_tool_default_deny(self, temp_db, monkeypatch):
         monkeypatch.setenv("OW_ROLE", "orch")
         with pytest.raises(CapabilityError):
             check_capability("nonexistent_tool")
@@ -105,7 +83,7 @@ class TestMatrixDenial:
 class TestSelfTargetUpdateMaterial:
     """update_material の self 判定。"""
 
-    def test_self_owned_material_passes(self, migrated_db, monkeypatch):
+    def test_self_owned_material_passes(self, temp_db, monkeypatch):
         monkeypatch.setenv("OW_ROLE", "worker")
         conn = get_connection()
         try:
@@ -126,7 +104,7 @@ class TestSelfTargetUpdateMaterial:
             )
             check_capability("update_material", args={"material_id": material_id})
 
-    def test_others_material_rejected(self, migrated_db, monkeypatch):
+    def test_others_material_rejected(self, temp_db, monkeypatch):
         monkeypatch.setenv("OW_ROLE", "worker")
         conn = get_connection()
         try:
@@ -151,7 +129,7 @@ class TestSelfTargetUpdateMaterial:
                 )
             assert "self-target" in str(exc.value)
 
-    def test_orch_can_update_anyones_material(self, migrated_db, monkeypatch):
+    def test_orch_can_update_anyones_material(self, temp_db, monkeypatch):
         monkeypatch.setenv("OW_ROLE", "orch")
         conn = get_connection()
         try:
@@ -171,7 +149,7 @@ class TestSelfTargetUpdateMaterial:
 class TestSelfTargetOwCloseWorker:
     """ow_close_worker の self 判定。"""
 
-    def test_self_close_passes(self, migrated_db, monkeypatch):
+    def test_self_close_passes(self, temp_db, monkeypatch):
         monkeypatch.setenv("OW_ROLE", "worker")
         with monkeypatch.context() as m:
             m.setattr(
@@ -182,7 +160,7 @@ class TestSelfTargetOwCloseWorker:
                 "ow_close_worker", args={"target_session_id": "sess-w1"}
             )
 
-    def test_close_other_worker_rejected(self, migrated_db, monkeypatch):
+    def test_close_other_worker_rejected(self, temp_db, monkeypatch):
         monkeypatch.setenv("OW_ROLE", "worker")
         with monkeypatch.context() as m:
             m.setattr(
@@ -198,17 +176,17 @@ class TestSelfTargetOwCloseWorker:
 class TestWorkerGuardWrapper:
     """check_worker_guard 旧 API の wrapper 動作 (後方互換)。"""
 
-    def test_worker_env_blocks(self, migrated_db, monkeypatch):
+    def test_worker_env_blocks(self, temp_db, monkeypatch):
         monkeypatch.setenv("OW_ROLE", "worker")
         with pytest.raises(WorkerGuardError):
             guard_service.check_worker_guard("add_topic")
 
-    def test_escalation_passes(self, migrated_db, monkeypatch):
+    def test_escalation_passes(self, temp_db, monkeypatch):
         monkeypatch.setenv("OW_ROLE", "worker")
         monkeypatch.setenv("OW_ESCALATION", "1")
         guard_service.check_worker_guard("add_topic")
 
-    def test_orch_env_passes(self, migrated_db, monkeypatch):
+    def test_orch_env_passes(self, temp_db, monkeypatch):
         monkeypatch.setenv("OW_ROLE", "orch")
         guard_service.check_worker_guard("add_topic")
 
@@ -216,7 +194,7 @@ class TestWorkerGuardWrapper:
 class TestIsWorkerSession:
     """is_worker_session が lookup_role 経由 (DB) + env fallback で動く。"""
 
-    def test_db_role_worker_returns_true(self, migrated_db, monkeypatch):
+    def test_db_role_worker_returns_true(self, temp_db, monkeypatch):
         _register("sess-w1", "worker")
         with monkeypatch.context() as m:
             m.setattr(
@@ -225,7 +203,7 @@ class TestIsWorkerSession:
             )
             assert guard_service.is_worker_session() is True
 
-    def test_db_role_orch_returns_false(self, migrated_db, monkeypatch):
+    def test_db_role_orch_returns_false(self, temp_db, monkeypatch):
         _register("sess-o1", "orch")
         with monkeypatch.context() as m:
             m.setattr(
@@ -234,9 +212,9 @@ class TestIsWorkerSession:
             )
             assert guard_service.is_worker_session() is False
 
-    def test_env_worker_returns_true(self, migrated_db, monkeypatch):
+    def test_env_worker_returns_true(self, temp_db, monkeypatch):
         monkeypatch.setenv("OW_ROLE", "worker")
         assert guard_service.is_worker_session() is True
 
-    def test_no_role_returns_false(self, migrated_db):
+    def test_no_role_returns_false(self, temp_db):
         assert guard_service.is_worker_session() is False

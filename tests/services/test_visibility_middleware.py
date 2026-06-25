@@ -2,33 +2,13 @@
 
 on_initialize で resolve した role に応じて disable_components が呼ばれ、
 hidden_tools_for と同じ tool 集合が渡ることを検証する。
+DB fixture は conftest の temp_db を使う。
 """
-import os
-import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.db import get_connection, init_database
-from src.services.tag_service import _injected_tags
-
-
-@pytest.fixture
-def migrated_db():
-    """全 migration を適用済みのテスト用 DB を提供する。"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        _injected_tags.clear()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
-
-
-@pytest.fixture(autouse=True)
-def clear_ow_role(monkeypatch):
-    monkeypatch.delenv("OW_ROLE", raising=False)
+from src.db import get_connection
 
 
 def _make_mw_context(session_id: str | None = "sess-1"):
@@ -45,7 +25,7 @@ def _make_mw_context(session_id: str | None = "sess-1"):
 
 
 @pytest.mark.asyncio
-async def test_hides_orch_disallowed_tools_when_role_is_orch(migrated_db):
+async def test_hides_orch_disallowed_tools_when_role_is_orch(temp_db):
     from src.services.visibility_middleware import CapabilityVisibilityMiddleware
     from src.services.capability_matrix import hidden_tools_for
 
@@ -77,7 +57,7 @@ async def test_hides_orch_disallowed_tools_when_role_is_orch(migrated_db):
 
 
 @pytest.mark.asyncio
-async def test_does_nothing_when_role_is_unresolved(migrated_db):
+async def test_does_nothing_when_role_is_unresolved(temp_db):
     from src.services.visibility_middleware import CapabilityVisibilityMiddleware
 
     middleware = CapabilityVisibilityMiddleware()
@@ -95,7 +75,7 @@ async def test_does_nothing_when_role_is_unresolved(migrated_db):
 
 
 @pytest.mark.asyncio
-async def test_falls_back_to_env_ow_role(migrated_db, monkeypatch):
+async def test_falls_back_to_env_ow_role(temp_db, monkeypatch):
     from src.services.visibility_middleware import CapabilityVisibilityMiddleware
     from src.services.capability_matrix import hidden_tools_for
 
@@ -115,7 +95,7 @@ async def test_falls_back_to_env_ow_role(migrated_db, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_no_fastmcp_context_skips_hiding(migrated_db):
+async def test_no_fastmcp_context_skips_hiding(temp_db):
     from src.services.visibility_middleware import CapabilityVisibilityMiddleware
 
     middleware = CapabilityVisibilityMiddleware()
@@ -134,7 +114,7 @@ async def test_no_fastmcp_context_skips_hiding(migrated_db):
 
 
 @pytest.mark.asyncio
-async def test_session_id_runtime_error_uses_env_fallback(migrated_db, monkeypatch):
+async def test_session_id_runtime_error_uses_env_fallback(temp_db, monkeypatch):
     from src.services.visibility_middleware import CapabilityVisibilityMiddleware
     from src.services.capability_matrix import hidden_tools_for
 

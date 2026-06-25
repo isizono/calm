@@ -1,36 +1,20 @@
 """role_service の unit test。
 
 lookup_role / register_session / unregister_session / update_heartbeat の
-各関数をカバーする。fixture は test_0048_session_identity.py の
-migrated_db パターンに倣い、全 migration 適用済み DB を使う。
+各関数をカバーする。DB fixture は conftest の temp_db を使う。
 """
 import os
-import tempfile
 import time
 
 import pytest
 
-from src.db import get_connection, init_database
-from src.services.tag_service import _injected_tags
+from src.db import get_connection
 from src.services.role_service import (
     lookup_role,
     register_session,
     unregister_session,
     update_heartbeat,
 )
-
-
-@pytest.fixture
-def migrated_db():
-    """全 migration（0048 含む）を適用済みのテスト用 DB を提供する。"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        _injected_tags.clear()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 # ---------------------------------------------------------------------------
@@ -40,7 +24,7 @@ def migrated_db():
 class TestLookupRole:
     """lookup_role の各経路をカバーするテスト群。"""
 
-    def test_db_active_row_returns_role(self, migrated_db):
+    def test_db_active_row_returns_role(self, temp_db):
         """DB に active な role がある場合はそのまま返す。"""
         conn = get_connection()
         try:
@@ -54,7 +38,7 @@ class TestLookupRole:
         finally:
             conn.close()
 
-    def test_db_ended_row_returns_none(self, migrated_db):
+    def test_db_ended_row_returns_none(self, temp_db):
         """ended_at が設定済みの row は lookup 対象外（None を返す）。"""
         conn = get_connection()
         try:
@@ -69,7 +53,7 @@ class TestLookupRole:
         finally:
             conn.close()
 
-    def test_no_db_row_env_role_returned(self, migrated_db):
+    def test_no_db_row_env_role_returned(self, temp_db):
         """DB に row がなく OW_ROLE が設定されている場合は env の値を返す。"""
         conn = get_connection()
         try:
@@ -80,7 +64,7 @@ class TestLookupRole:
             del os.environ["OW_ROLE"]
             conn.close()
 
-    def test_no_db_no_env_returns_none(self, migrated_db):
+    def test_no_db_no_env_returns_none(self, temp_db):
         """DB に row がなく OW_ROLE も未設定なら None を返す。"""
         conn = get_connection()
         try:
@@ -90,7 +74,7 @@ class TestLookupRole:
         finally:
             conn.close()
 
-    def test_db_takes_priority_over_env(self, migrated_db):
+    def test_db_takes_priority_over_env(self, temp_db):
         """DB と env 両方ある場合は DB を優先する。"""
         conn = get_connection()
         try:
@@ -106,7 +90,7 @@ class TestLookupRole:
             os.environ.pop("OW_ROLE", None)
             conn.close()
 
-    def test_invalid_role_in_db_falls_back_to_env(self, migrated_db):
+    def test_invalid_role_in_db_falls_back_to_env(self, temp_db):
         """DB の role 値が不正（空文字など）の場合は env にフォールバックする。
 
         NOTE: NOT NULL 制約のため空文字は通るが、_VALID_ROLES に含まれないため
@@ -126,7 +110,7 @@ class TestLookupRole:
             os.environ.pop("OW_ROLE", None)
             conn.close()
 
-    def test_none_session_id_falls_back_to_env(self, migrated_db):
+    def test_none_session_id_falls_back_to_env(self, temp_db):
         """session_id が None の場合は DB lookup をスキップして env を返す。"""
         conn = get_connection()
         try:
@@ -137,7 +121,7 @@ class TestLookupRole:
             os.environ.pop("OW_ROLE", None)
             conn.close()
 
-    def test_invalid_env_role_returns_none(self, migrated_db):
+    def test_invalid_env_role_returns_none(self, temp_db):
         """OW_ROLE に不正な値が設定されている場合は None を返す。"""
         conn = get_connection()
         try:
@@ -156,7 +140,7 @@ class TestLookupRole:
 class TestRegisterSession:
     """register_session の動作確認。"""
 
-    def test_insert_new_session(self, migrated_db):
+    def test_insert_new_session(self, temp_db):
         """新規 session_id を INSERT できる。"""
         conn = get_connection()
         try:
@@ -171,7 +155,7 @@ class TestRegisterSession:
         finally:
             conn.close()
 
-    def test_insert_with_all_fields(self, migrated_db):
+    def test_insert_with_all_fields(self, temp_db):
         """handle / topic_id / parent_session_id を指定して INSERT できる。"""
         conn = get_connection()
         try:
@@ -205,7 +189,7 @@ class TestRegisterSession:
         finally:
             conn.close()
 
-    def test_on_conflict_updates_role_and_handle(self, migrated_db):
+    def test_on_conflict_updates_role_and_handle(self, temp_db):
         """既存 session_id を再 register すると role / handle が更新される（ON CONFLICT）。"""
         conn = get_connection()
         try:
@@ -224,7 +208,7 @@ class TestRegisterSession:
         finally:
             conn.close()
 
-    def test_register_updates_last_heartbeat_on_conflict(self, migrated_db):
+    def test_register_updates_last_heartbeat_on_conflict(self, temp_db):
         """ON CONFLICT 時に last_heartbeat が更新される。"""
         conn = get_connection()
         try:
@@ -259,7 +243,7 @@ class TestRegisterSession:
 class TestUnregisterSession:
     """unregister_session の動作確認。"""
 
-    def test_sets_ended_at(self, migrated_db):
+    def test_sets_ended_at(self, temp_db):
         """unregister_session を呼ぶと ended_at が NULL でなくなる。"""
         conn = get_connection()
         try:
@@ -278,7 +262,7 @@ class TestUnregisterSession:
         finally:
             conn.close()
 
-    def test_unregistered_session_not_returned_by_lookup(self, migrated_db):
+    def test_unregistered_session_not_returned_by_lookup(self, temp_db):
         """unregister 済みのセッションは lookup_role で返されない。"""
         conn = get_connection()
         try:
@@ -301,7 +285,7 @@ class TestUnregisterSession:
 class TestUpdateHeartbeat:
     """update_heartbeat の動作確認。"""
 
-    def test_last_heartbeat_is_updated(self, migrated_db):
+    def test_last_heartbeat_is_updated(self, temp_db):
         """update_heartbeat を呼ぶと last_heartbeat が更新される。"""
         conn = get_connection()
         try:
