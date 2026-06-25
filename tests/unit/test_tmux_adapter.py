@@ -576,10 +576,11 @@ class TestTmuxAdapterPaneSurvival:
         assert "not alive" in result.stderr
 
     def test_spawn_detects_pane_missing(self, tmp_path):
-        """spawn 直後に display が pane_pid を空で返すケース (pane cleanup 完了) を検出。
+        """display が exit 0 で空文字列を返すエッジケースを検出 (pane_pid 空)。
 
         worker_cmd が即時失敗して pane も即消滅し、tmux 側の cleanup も完了している
-        さらに severe な silent failure。
+        さらに severe な silent failure。display 自身が exit 1 を返す典型ケースは
+        test_spawn_detects_pane_missing_via_display_exit_1 でカバー。
         """
         result, _ = _run_adapter(
             ["spawn", "/tmp/work", "exec /usr/bin/true"],
@@ -590,6 +591,77 @@ class TestTmuxAdapterPaneSurvival:
         assert result.returncode == 1
         assert "adapter_error" in result.stderr
         assert "missing" in result.stderr
+
+    def test_spawn_detects_pane_missing_via_display_exit_1(self, tmp_path):
+        """pane 消滅時に tmux display 自体が exit 1 を返す典型ケースを検出。
+
+        実 tmux 挙動: pane が存在しない pane_id を指定すると display は exit 1 を返す
+        (空文字列 exit 0 ではない)。adapter 側は `2>/dev/null || true` で吸収するため
+        最終的に pane_pid="" の missing ブランチに入る。本テストでは
+        target_pane_exists=False で display 一律 exit 1 を模擬し、実 tmux と同じ
+        失敗経路で missing 検出が機能することを保証する。
+        """
+        result, _ = _run_adapter(
+            ["spawn", "/tmp/work", "exec /usr/bin/true"],
+            tmp_path,
+            extra_env=self.CHECK_ON_ENV,
+            target_pane_exists=False,
+        )
+        assert result.returncode == 1
+        assert "adapter_error" in result.stderr
+        assert "missing" in result.stderr
+
+    def test_spawn_kills_orphan_pane_on_dead_process(self, tmp_path):
+        """kill -0 失敗時に tmux kill-pane で orphan pane を後始末する。
+
+        verify_pane_alive が dead process を検知して return 1 する際、サーバーは
+        PANE_ID を知らないまま spawn が失敗し、`remain-on-exit on` の tmux 環境では
+        pane structure が zombie として残る。verify_pane_alive 側で kill-pane を
+        呼んで後始末していることを capture で確認する。
+        """
+        capture_file = tmp_path / "tmux_args.txt"
+        capture_file.write_text("")
+        mock_dir = _make_mock_tmux(
+            tmp_path,
+            capture_file=capture_file,
+            pane_pid="999999999",
+        )
+
+        env = os.environ.copy()
+        env["PATH"] = str(mock_dir) + ":" + env["PATH"]
+        env["OW_SKIP_PANE_SURVIVAL_CHECK"] = "0"
+        env["OW_PANE_SURVIVAL_DELAY"] = "0"
+
+        result = subprocess.run(
+            [str(ADAPTER), "spawn", "/tmp/work", "exec /usr/bin/true"],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        captured = capture_file.read_text()
+
+        assert result.returncode == 1
+        assert "adapter_error" in result.stderr
+        assert "not alive" in result.stderr
+        # kill -0 失敗ブランチで kill-pane が呼ばれている (orphan pane の後始末)
+        assert "kill-pane" in captured
+        assert MOCK_PANE_ID in captured
+
+    def test_spawn_invalid_survival_delay_returns_adapter_error(self, tmp_path):
+        """OW_PANE_SURVIVAL_DELAY が不正値のとき adapter_error prefix 付きで失敗する。
+
+        set -euo pipefail 配下で sleep が失敗するとスクリプトが中断し、サーバー側で
+        エラー分類が困難になる。verify_pane_alive 側で sleep 失敗を明示的に拾って
+        adapter_error: prefix で stderr に出すことを保証する。
+        """
+        result, _ = _run_adapter(
+            ["spawn", "/tmp/work", "claude"],
+            tmp_path,
+            extra_env={"OW_SKIP_PANE_SURVIVAL_CHECK": "0", "OW_PANE_SURVIVAL_DELAY": "abc"},
+        )
+        assert result.returncode == 1
+        assert "adapter_error" in result.stderr
+        assert "OW_PANE_SURVIVAL_DELAY" in result.stderr
 
     def test_spawn_with_target_pane_also_checks_survival(self, tmp_path):
         """split-window 経路 (target_pane 指定) でも survival check が機能する。"""

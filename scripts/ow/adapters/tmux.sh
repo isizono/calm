@@ -80,7 +80,10 @@ verify_pane_alive() {
     return 0
   fi
   local delay="${OW_PANE_SURVIVAL_DELAY:-1.0}"
-  sleep "$delay"
+  if ! sleep "$delay" 2>/dev/null; then
+    echo "adapter_error: invalid OW_PANE_SURVIVAL_DELAY: $delay (sleep failed)" >&2
+    return 1
+  fi
   local pane_pid
   pane_pid=$(tmux display -t "$pane_id" -p "#{pane_pid}" 2>/dev/null || true)
   if [[ -z "$pane_pid" ]]; then
@@ -89,6 +92,7 @@ verify_pane_alive() {
   fi
   if ! kill -0 "$pane_pid" 2>/dev/null; then
     echo "adapter_error: pane $pane_id process pid=$pane_pid not alive within ${delay}s of spawn (worker_cmd terminated immediately)" >&2
+    tmux kill-pane -t "$pane_id" 2>/dev/null || true
     return 1
   fi
   return 0
