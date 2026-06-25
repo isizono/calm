@@ -36,6 +36,34 @@ class TestBlockCount:
         assert hook_state.get_block_count() == 0
 
 
+class TestIdLeakCount:
+    def test_get_returns_zero_when_no_file(self, hook_state):
+        assert hook_state.get_id_leak_count() == 0
+
+    def test_increment_default_by_one(self, hook_state):
+        assert hook_state.increment_id_leak_count() == 1
+        assert hook_state.increment_id_leak_count() == 2
+
+    def test_increment_with_by(self, hook_state):
+        assert hook_state.increment_id_leak_count(3) == 3
+        assert hook_state.increment_id_leak_count(2) == 5
+
+    def test_reset_then_get(self, hook_state):
+        hook_state.increment_id_leak_count(4)
+        hook_state.reset_id_leak_count()
+        assert hook_state.get_id_leak_count() == 0
+
+    def test_corrupted_file_returns_zero(self, hook_state):
+        path = hook_state._path("id_leak_count")
+        path.write_text("abc")
+        assert hook_state.get_id_leak_count() == 0
+
+    def test_cleared_by_clear_session(self, hook_state):
+        hook_state.increment_id_leak_count(2)
+        HookState.clear_session("test-session-123")
+        assert hook_state.get_id_leak_count() == 0
+
+
 class TestTranscriptOffset:
     def test_get_returns_zero_when_no_file(self, hook_state):
         assert hook_state.get_transcript_offset() == 0

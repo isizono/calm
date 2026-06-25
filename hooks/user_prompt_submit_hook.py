@@ -5,9 +5,11 @@
 2. session_idが空/null → 空JSON出力して終了
 3. events.jsonl全読み
 4. 未消費のnudgeイベント判定 → system-reminder注入
-5. 何もなし → 空JSON出力
+5. id_leak_count > 0 → 内部 ID 漏出 system-reminder 注入 + count reset
+6. 何もなし → 空JSON出力
 
 Stop hookでnudge判定とevents.jsonl追記を行い、本hookで消費して注入する。
+MessageDisplay hookが内部IDリテラル件数をid_leak_countに蓄積し、本hookで参照する。
 注入タイミングが「ユーザーの次の発言時」になるため、文面もその文脈に合わせている。
 """
 import json
@@ -47,6 +49,14 @@ _RECORD_NUDGE_MESSAGE = (
     "直近の応答で記録ツール（add_logs/add_decisions/add_topic）が呼ばれていません。"
     "ユーザーの今回の発言に応答する前に、これまでの議論で残すべき事項がないか振り返ってください。"
     "該当があれば応答冒頭で記録してから本題に入ってください。"
+    "</system-reminder>"
+)
+
+_ID_LEAK_NUDGE_MESSAGE = (
+    "<system-reminder>"
+    "Your previous response included internal IDs (e.g., `A#xxx`, `M#xxx`, `log #xxx`). "
+    "Before responding to the user, revisit your reference style and switch to descriptive "
+    "natural language; the user cannot resolve raw IDs."
     "</system-reminder>"
 )
 
@@ -94,11 +104,7 @@ def main() -> None:
         state = HookState(session_id)
         events = state.read_events()
 
-        if not events:
-            print("{}")
-            return
-
-        # 4. 未消費のnudgeイベント判定
+        # 4. 未消費のnudgeイベント判定（events空なら for loop は即抜ける）
         # 最新のnudgeイベントを探す（consumed=Trueでないもの）
         for e in reversed(events):
             if e.get("e") != "nudge":
@@ -119,7 +125,17 @@ def main() -> None:
             print(json.dumps(_make_hook_output(message), ensure_ascii=False))
             return
 
-        # 5. 何もなし
+        # 5. id_leak count チェック（既存 nudge を消費せず loop 抜けた場合のみ）
+        # MessageDisplay hook が観測した内部 ID 漏出件数 > 0 ならリマインダー注入。
+        # 既存 nudge と同 turn に立っていた場合は既存 nudge を優先し id_leak は
+        # 次ターンに繰り越す (count は reset しない)。1 turn に 1 リマインダー
+        # で認知負荷を抑える方針。
+        if state.get_id_leak_count() > 0:
+            state.reset_id_leak_count()
+            print(json.dumps(_make_hook_output(_ID_LEAK_NUDGE_MESSAGE), ensure_ascii=False))
+            return
+
+        # 6. 何もなし
         print("{}")
 
     except Exception as e:

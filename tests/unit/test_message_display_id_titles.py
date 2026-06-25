@@ -274,3 +274,116 @@ class TestMain:
         except SystemExit:
             pass
         assert out.getvalue() == ""
+
+
+class TestIdLeakObservation:
+    """MessageDisplay hook が内部 ID リテラル件数を id_leak_count に蓄積する副作用検証。"""
+
+    def _run(self, monkeypatch, payload):
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+        out = io.StringIO()
+        monkeypatch.setattr("sys.stdout", out)
+        try:
+            mdid.main()
+        except SystemExit:
+            pass
+        return out.getvalue()
+
+    @pytest.fixture
+    def state_dir(self, tmp_path, monkeypatch):
+        from hooks.hook_state import HookState
+        monkeypatch.setattr(HookState, "BASE_DIR", tmp_path)
+        monkeypatch.setenv("HOOK_STATE_DIR", str(tmp_path))
+        return tmp_path
+
+    def test_increment_called_when_match_found(
+        self, monkeypatch, fake_db, state_dir
+    ):
+        from hooks.hook_state import HookState
+
+        self._run(
+            monkeypatch,
+            {
+                "hook_event_name": "MessageDisplay",
+                "session_id": "obs-test-001",
+                "delta": f"see {_MN('M', 1)} and {_MN('D', 10)}",
+            },
+        )
+        assert HookState("obs-test-001").get_id_leak_count() == 2
+
+    def test_no_increment_when_no_match(self, monkeypatch, fake_db, state_dir):
+        from hooks.hook_state import HookState
+
+        self._run(
+            monkeypatch,
+            {
+                "hook_event_name": "MessageDisplay",
+                "session_id": "obs-test-002",
+                "delta": "plain text no ids",
+            },
+        )
+        assert HookState("obs-test-002").get_id_leak_count() == 0
+
+    def test_no_increment_when_session_id_empty(
+        self, monkeypatch, fake_db, state_dir
+    ):
+        from hooks.hook_state import HookState
+
+        # session_id 空でも display 動作は走るが state file は作られない
+        self._run(
+            monkeypatch,
+            {
+                "hook_event_name": "MessageDisplay",
+                "session_id": "",
+                "delta": f"see {_MN('M', 1)}",
+            },
+        )
+        # state_dir 下にどの session 名でも count は 0
+        assert HookState("any-session-name").get_id_leak_count() == 0
+
+    def test_fullword_form_also_counted(self, monkeypatch, fake_db, state_dir):
+        from hooks.hook_state import HookState
+
+        self._run(
+            monkeypatch,
+            {
+                "hook_event_name": "MessageDisplay",
+                "session_id": "obs-test-003",
+                "delta": f"see {_FW('material', 1)} and {_MN('D', 10)}",
+            },
+        )
+        assert HookState("obs-test-003").get_id_leak_count() == 2
+
+    def test_increment_accumulates_across_chunks(
+        self, monkeypatch, fake_db, state_dir
+    ):
+        from hooks.hook_state import HookState
+
+        session = "obs-test-004"
+        for _ in range(3):
+            self._run(
+                monkeypatch,
+                {
+                    "hook_event_name": "MessageDisplay",
+                    "session_id": session,
+                    "delta": f"ref {_MN('M', 1)}",
+                },
+            )
+        # 3 chunks × 1 match = 3
+        assert HookState(session).get_id_leak_count() == 3
+
+    def test_observation_runs_even_without_db(self, monkeypatch, tmp_path, state_dir):
+        from hooks.hook_state import HookState
+
+        # DB を存在しないパスに向けて display 動作を skip させても、
+        # 観測副作用は走ること (観測は DB アクセス前)
+        monkeypatch.setenv("CC_MEMORY_DB_PATH", str(tmp_path / "nonexistent.db"))
+        self._run(
+            monkeypatch,
+            {
+                "hook_event_name": "MessageDisplay",
+                "session_id": "obs-test-005",
+                "delta": f"ref {_MN('M', 1)}",
+            },
+        )
+        assert HookState("obs-test-005").get_id_leak_count() == 1
