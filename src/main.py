@@ -26,6 +26,7 @@ from src.services.checkin_service import check_in as _check_in
 from src.services.tag_service import search_tags as _search_tags, update_tag as _update_tag, collect_tag_notes_for_injection
 from src.services.tag_analysis_service import analyze_tags as _analyze_tags
 from src.services import citation_renderer
+from src.services.role_service import get_caller_session_id
 from src.db import get_connection
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -240,6 +241,10 @@ def _apply_flavor_to_snippets(items: list[dict], flavor: str) -> None:
 # MCPサーバーを作成
 mcp = FastMCP("cc-memory", instructions=build_instructions())
 
+# role 別の tools/list 可視性を制御する middleware を登録する
+from src.services.visibility_middleware import CapabilityVisibilityMiddleware
+mcp.add_middleware(CapabilityVisibilityMiddleware())
+
 # サーバー起動時刻（/health で uptime 算出に使用）
 _SERVER_STARTED_AT = datetime.now(timezone.utc)
 
@@ -266,8 +271,9 @@ def add_topic(
     related: 関連エンティティ（optional）。[{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...] 形式。複数エンティティを配列で同時紐付け可能。例: [{"type": "topic", "ids": [1, 2]}, {"type": "decision", "ids": [10]}]。作成と同時にリレーションを張る
 
     レスポンスに類似トピック(similar_topics)が含まれる場合がある。重複トピックの防止やリレーション追加の参考にすること。"""
-    guard_service.check_worker_guard("add_topic")
-    result = topic_service.add_topic(title, description, tags, related=related)
+    guard_service.check_capability("add_topic")
+    caller_session_id = get_caller_session_id()
+    result = topic_service.add_topic(title, description, tags, related=related, caller_session_id=caller_session_id)
     if "error" not in result:
         _maybe_inject_tag_notes(result, tags)
     return result
@@ -287,7 +293,8 @@ def add_logs(items: list[dict]) -> dict:
 
     Returns: {created: [...], errors: [{index, error}]}
     """
-    result = discussion_log_service.add_logs(items)
+    caller_session_id = get_caller_session_id()
+    result = discussion_log_service.add_logs(items, caller_session_id=caller_session_id)
     if "error" not in result:
         # tag_notes: 全アイテムのタグをUNIONして1回注入
         all_tags = set()
@@ -318,8 +325,9 @@ def add_decisions(items: list[dict], ctx: Context) -> dict:
         created各要素には related_decisions（同topic内の類似decision上位3件 [{id, title, distance}]）が付く。
         既存decisionとの矛盾・重複に気づくための導線。embeddingサーバー未起動時は空配列。
     """
-    guard_service.check_worker_guard("add_decisions")
-    result = decision_service.add_decisions(items)
+    guard_service.check_capability("add_decisions")
+    caller_session_id = get_caller_session_id()
+    result = decision_service.add_decisions(items, caller_session_id=caller_session_id)
     if "error" not in result:
         # tag_notes: 全アイテムのタグをUNIONして1回注入
         all_tags = set()
@@ -657,9 +665,10 @@ def add_activity(
     Returns:
         作成されたアクティビティ情報（check_in=Trueの場合はcheck_in_resultにtag_notes等を含む）
     """
+    caller_session_id = get_caller_session_id()
     result = activity_service.add_activity(
         title, description, tags, related=related, check_in=check_in,
-        orch_managed=orch_managed,
+        orch_managed=orch_managed, caller_session_id=caller_session_id,
     )
     if "error" not in result:
         # check_in=Trueの場合、check_in_resultにtag_notesが含まれるため
@@ -779,7 +788,8 @@ def add_material(
     Returns:
         作成された資材情報（material_id, title, content, source, tags, created_at）
     """
-    return material_service.add_material(title, content, tags, source, related=related)
+    caller_session_id = get_caller_session_id()
+    return material_service.add_material(title, content, tags, source, related=related, caller_session_id=caller_session_id)
 
 
 @mcp.tool()
@@ -1041,7 +1051,7 @@ def add_habit(content: str) -> dict:
     add_decisions / add_topic と同じ guard 対象。OW_ESCALATION=1 の
     orch_proxy 経路でのみ通過する。
     """
-    guard_service.check_worker_guard("add_habit")
+    guard_service.check_capability("add_habit")
     return habit_service.add_habit(content)
 
 

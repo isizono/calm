@@ -23,7 +23,7 @@ def _auto_generate_title(content: str) -> str | None:
     return title if title else None
 
 
-def add_logs(items: list[dict]) -> dict:
+def add_logs(items: list[dict], caller_session_id: Optional[str] = None) -> dict:
     """
     複数のログを一括追加する（最大10件）。
 
@@ -95,8 +95,8 @@ def add_logs(items: list[dict]) -> dict:
 
                 # ログをINSERT (親 topic は relations.belongs_to で表現するため topic_id は持たせない)
                 cursor = conn.execute(
-                    "INSERT INTO discussion_logs (title, content) VALUES (?, ?)",
-                    (title, content),
+                    "INSERT INTO discussion_logs (title, content, caller_session_id) VALUES (?, ?, ?)",
+                    (title, content, caller_session_id),
                 )
                 log_id = cursor.lastrowid
 

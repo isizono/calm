@@ -1,7 +1,7 @@
 """資材管理サービス"""
 import logging
 import sqlite3
-from typing import Literal
+from typing import Literal, Optional
 
 from src.db import get_connection, row_to_dict
 from src.services.readable_id import apply_readable_id_inplace
@@ -38,7 +38,7 @@ def _material_to_response(material: dict, tags: list[str]) -> dict:
     return result
 
 
-def add_material(title: str, content: str, tags: list[str], source: str, related: list[dict] | None = None) -> dict:
+def add_material(title: str, content: str, tags: list[str], source: str, related: list[dict] | None = None, caller_session_id: Optional[str] = None) -> dict:
     """
     資材を追加する
 
@@ -95,9 +95,9 @@ def add_material(title: str, content: str, tags: list[str], source: str, related
         # updated_at は created_at と同値で初期化する（recomposeナッジ判定の基準時刻T用）。
         # created_at の DEFAULT 式に揃え、INSERT内で同一の strftime 値をセットする。
         cursor = conn.execute(
-            "INSERT INTO materials (title, content, source, updated_at) "
-            "VALUES (?, ?, ?, strftime('%Y-%m-%d %H:%M:%S', 'now'))",
-            (title, content, source),
+            "INSERT INTO materials (title, content, source, updated_at, caller_session_id) "
+            "VALUES (?, ?, ?, strftime('%Y-%m-%d %H:%M:%S', 'now'), ?)",
+            (title, content, source, caller_session_id),
         )
         material_id = cursor.lastrowid
 

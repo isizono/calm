@@ -10,7 +10,13 @@ import tempfile
 
 import pytest
 
-_OW_ENV_KEYS = ("OW_ROLE", "OW_ALIAS", "OW_CHANNEL", "OW_TASK_N")
+_OW_ENV_KEYS = (
+    "OW_ROLE",
+    "OW_ALIAS",
+    "OW_CHANNEL",
+    "OW_TASK_N",
+    "OW_ESCALATION",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -90,10 +96,12 @@ def temp_db():
     スキーマを構築する。テスト終了時にtmpdirごと破棄される。
     """
     from src.db import init_database
+    from src.services.tag_service import _injected_tags
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
         os.environ["DISCUSSION_DB_PATH"] = db_path
         init_database()
+        _injected_tags.clear()
         yield db_path
         if "DISCUSSION_DB_PATH" in os.environ:
             del os.environ["DISCUSSION_DB_PATH"]

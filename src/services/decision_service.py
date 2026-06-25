@@ -19,7 +19,7 @@ from src.services.relation_service import _add_relation_with_conn
 PROPAGATE_TYPES = {"habit", "tag_note"}
 
 
-def add_decisions(items: list[dict]) -> dict:
+def add_decisions(items: list[dict], caller_session_id: Optional[str] = None) -> dict:
     """
     複数の決定事項を一括記録する（最大10件）。
 
@@ -91,8 +91,8 @@ def add_decisions(items: list[dict]) -> dict:
 
                 # decisionをINSERT (親 topic は relations.belongs_to で表現するため topic_id は持たせない)
                 cursor = conn.execute(
-                    "INSERT INTO decisions (decision, reason, title) VALUES (?, ?, ?)",
-                    (decision, reason, title),
+                    "INSERT INTO decisions (decision, reason, title, caller_session_id) VALUES (?, ?, ?, ?)",
+                    (decision, reason, title, caller_session_id),
                 )
                 decision_id = cursor.lastrowid
 

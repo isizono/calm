@@ -117,6 +117,7 @@ def add_activity(
     related: list[dict] | None = None,
     check_in: bool = True,
     orch_managed: bool = False,
+    caller_session_id: Optional[str] = None,
 ) -> dict:
     """
     アクティビティを作成してIDを返す
@@ -160,9 +161,9 @@ def add_activity(
 
         # アクティビティをINSERT
         cursor = conn.execute(
-            "INSERT INTO activities (title, description, status, orch_managed) "
-            "VALUES (?, ?, ?, ?)",
-            (title, description, 'pending', 1 if orch_managed else 0),
+            "INSERT INTO activities (title, description, status, orch_managed, caller_session_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (title, description, 'pending', 1 if orch_managed else 0, caller_session_id),
         )
         activity_id = cursor.lastrowid
 
