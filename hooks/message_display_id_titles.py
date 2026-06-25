@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import sqlite3
 import sys
 
@@ -26,10 +27,20 @@ _PLUGIN_ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(_PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(_PLUGIN_ROOT))
 
-from src.services.internal_id_patterns import (  # noqa: E402
-    FULLWORD_TO_CODE,
-    RAW_CITE_CODE_PATTERN,
-    RAW_CITE_FULLWORD_PATTERN,
+from src.services.internal_id_patterns import FULLWORD_TO_CODE  # noqa: E402
+
+# code 形式と fullword 形式を 1 つの regex にまとめる。2 段階 sub にすると
+# 第 1 パスで挿入したタイトル中に含まれる fullword リテラル (タイトルに
+# fullword 形式の参照が混入しているケース) を第 2 パスが再 enrich してネスト
+# 括弧になるため、単一 regex の単一パスで処理する (re.sub は置換結果を scan
+# しないので、title 内に偶然マッチする ID が含まれても再 enrich されない)。
+# code 部分は大文字限定、fullword 部分のみ inline flag (?i:...) で
+# case-insensitive にする。
+_COMBINED_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_/])"
+    r"(?:([MDLAT])#|(?i:(log|decision|activity|material|topic) ?#))"
+    r"(\d+)"
+    r"(?![A-Za-z0-9_])"
 )
 
 DEFAULT_DB_PATH = pathlib.Path.home() / ".claude" / ".claude-code-memory" / "discussion.db"
@@ -120,20 +131,14 @@ def _wrap(
 def _enrich(text: str, conn: sqlite3.Connection) -> str:
     cache: dict[tuple[str, int], str | None] = {}
 
-    def replace_code(match):
-        code = match.group(1)
-        id_int = int(match.group(2))
+    def replace(match):
+        code_letter = match.group(1)
+        fullword = match.group(2)
+        id_int = int(match.group(3))
+        code = code_letter if code_letter is not None else FULLWORD_TO_CODE[fullword.lower()]
         return _wrap(match, code, id_int, cache, conn)
 
-    def replace_fullword(match):
-        word = match.group(1).lower()
-        code = FULLWORD_TO_CODE[word]
-        id_int = int(match.group(2))
-        return _wrap(match, code, id_int, cache, conn)
-
-    enriched = RAW_CITE_CODE_PATTERN.sub(replace_code, text)
-    enriched = RAW_CITE_FULLWORD_PATTERN.sub(replace_fullword, enriched)
-    return enriched
+    return _COMBINED_PATTERN.sub(replace, text)
 
 
 def main() -> None:

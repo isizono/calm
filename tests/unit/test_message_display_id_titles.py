@@ -40,6 +40,8 @@ def fake_db(tmp_path, monkeypatch):
             (1, "short title", None),
             (2, "a" * 40, None),
             (3, "retired material", "2026-01-01"),
+            # title に fullword 形式の ID が含まれるケース (二段階 enrich 回避テスト用)
+            (4, f"{_FW('material', 2)} info", None),
         ],
     )
     conn.executemany(
@@ -186,6 +188,14 @@ class TestEnrich:
 
     def test_no_match_returns_original(self, fake_db):
         assert self._enrich("plain text", fake_db) == "plain text"
+
+    def test_title_containing_fullword_id_not_double_enriched(self, fake_db):
+        # title 自体に fullword 形式の ID 参照が混入しているケースで、
+        # 単一 regex の単一パスなので置換結果中の fullword は再 enrich されず
+        # ネスト括弧にならないことを検証する (id=4 の material を利用)。
+        text = f"see {_MN('M', 4)} here"
+        expected = f"see {_MN('M', 4)} ({_FW('material', 2)} info) here"
+        assert self._enrich(text, fake_db) == expected
 
 
 class TestMain:
