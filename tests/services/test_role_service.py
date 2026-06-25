@@ -13,6 +13,7 @@ import pytest
 from src.db import get_connection, init_database
 from src.services.tag_service import _injected_tags
 from src.services.role_service import (
+    get_caller_session_id,
     lookup_role,
     register_session,
     unregister_session,
@@ -224,6 +225,86 @@ class TestRegisterSession:
         finally:
             conn.close()
 
+    def test_on_conflict_updates_topic_and_parent(self, migrated_db):
+        """既存 session_id を再 register すると topic_id / parent_session_id も更新される。
+
+        session 再起動で別 topic・別 parent に紐づけ直したいユースケースを担保。
+        """
+        conn = get_connection()
+        try:
+            cur1 = conn.execute(
+                "INSERT INTO discussion_topics (title, description) VALUES (?, ?)",
+                ("topic-1", "desc-1"),
+            )
+            topic_id_1 = cur1.lastrowid
+            cur2 = conn.execute(
+                "INSERT INTO discussion_topics (title, description) VALUES (?, ?)",
+                ("topic-2", "desc-2"),
+            )
+            topic_id_2 = cur2.lastrowid
+            conn.commit()
+
+            register_session(
+                conn,
+                "sess-rebind",
+                "worker",
+                topic_id=topic_id_1,
+                parent_session_id="parent-A",
+            )
+            conn.commit()
+
+            register_session(
+                conn,
+                "sess-rebind",
+                "worker",
+                topic_id=topic_id_2,
+                parent_session_id="parent-B",
+            )
+            conn.commit()
+
+            row = conn.execute(
+                "SELECT topic_id, parent_session_id "
+                "FROM session_identity WHERE session_id = ?",
+                ("sess-rebind",),
+            ).fetchone()
+            assert row["topic_id"] == topic_id_2
+            assert row["parent_session_id"] == "parent-B"
+        finally:
+            conn.close()
+
+    def test_on_conflict_clears_topic_and_parent_when_none(self, migrated_db):
+        """再 register で topic_id / parent_session_id を省略すると NULL クリアされる。"""
+        conn = get_connection()
+        try:
+            cur = conn.execute(
+                "INSERT INTO discussion_topics (title, description) VALUES (?, ?)",
+                ("topic-x", "desc"),
+            )
+            topic_id = cur.lastrowid
+            conn.commit()
+
+            register_session(
+                conn,
+                "sess-clear",
+                "worker",
+                topic_id=topic_id,
+                parent_session_id="parent-X",
+            )
+            conn.commit()
+
+            register_session(conn, "sess-clear", "worker")
+            conn.commit()
+
+            row = conn.execute(
+                "SELECT topic_id, parent_session_id "
+                "FROM session_identity WHERE session_id = ?",
+                ("sess-clear",),
+            ).fetchone()
+            assert row["topic_id"] is None
+            assert row["parent_session_id"] is None
+        finally:
+            conn.close()
+
     def test_register_updates_last_heartbeat_on_conflict(self, migrated_db):
         """ON CONFLICT 時に last_heartbeat が更新される。"""
         conn = get_connection()
@@ -326,3 +407,39 @@ class TestUpdateHeartbeat:
             assert after >= before
         finally:
             conn.close()
+
+
+# ---------------------------------------------------------------------------
+# get_caller_session_id
+# ---------------------------------------------------------------------------
+
+class TestGetCallerSessionId:
+    """get_caller_session_id の例外分岐確認。"""
+
+    def test_returns_none_outside_mcp_context(self):
+        """MCP context 外 (LookupError) では None を返す。"""
+        # MCP ツール実行外なので fastmcp が LookupError を投げる経路。
+        assert get_caller_session_id() is None
+
+    def test_unexpected_exception_is_propagated(self, monkeypatch):
+        """LookupError / RuntimeError 以外の例外は黙殺せず再 raise する。
+
+        fastmcp の API 変更などで AttributeError が出た場合、None に化けて
+        全 add_* の caller_session_id が無言で欠落するのを防ぐ。
+        """
+        from src.services import role_service
+
+        class _FakeCtx:
+            @property
+            def session_id(self):
+                raise AttributeError("session_id removed in upstream")
+
+        def fake_get_context():
+            return _FakeCtx()
+
+        monkeypatch.setattr(
+            "fastmcp.server.dependencies.get_context",
+            fake_get_context,
+        )
+        with pytest.raises(AttributeError):
+            role_service.get_caller_session_id()

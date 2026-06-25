@@ -22,7 +22,7 @@ from src.services.activity_service import (
     get_active_domains_with_conn,
     get_active_activities_by_tag_with_conn,
 )
-from src.services.role_service import register_session
+from src.services.role_service import register_session, _VALID_ROLES
 from src.services.readable_id import format_readable_id
 from src.services.habit_service import get_active_habit_contents_with_conn
 from src.services.tag_service import get_entity_tags_batch
@@ -402,16 +402,23 @@ def _auto_register_session(conn, session_id: str | None) -> None:
     if not ow_role or not session_id:
         return
 
-    _VALID_ROLES = ("orch", "dispatcher", "worker", "user")
+    # role_service と単一の真実源を共有する。新ロール追加時の更新漏れを防ぐ。
     if ow_role not in _VALID_ROLES:
         return
 
     ow_handle = os.environ.get("OW_HANDLE")
+    # register_session の SQL 失敗と conn.commit() 失敗を分けて報告する。
+    # どちらが落ちたかが stderr で区別できないと、INSERT 漏れか commit 失敗かの
+    # 切り分けができなくなる。
     try:
         register_session(conn, session_id, ow_role, handle=ow_handle or None)  # type: ignore[arg-type]
-        conn.commit()
     except Exception as e:
         print(f"session_start_hook: register_session failed: {e}", file=sys.stderr)
+        return
+    try:
+        conn.commit()
+    except Exception as e:
+        print(f"session_start_hook: commit after register_session failed: {e}", file=sys.stderr)
 
 
 def _build_session_context(session_id: str | None = None) -> str:

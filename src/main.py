@@ -4,7 +4,7 @@ import os
 import random
 from datetime import datetime, timezone
 from pathlib import Path
-from fastmcp import FastMCP, Context
+from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_context
 from typing import Literal, Optional, Union
 from src.services import (
@@ -295,7 +295,7 @@ def add_logs(items: list[dict]) -> dict:
 
 
 @mcp.tool()
-def add_decisions(items: list[dict], ctx: Context) -> dict:
+def add_decisions(items: list[dict]) -> dict:
     """複数の決定事項を一括記録する（最大10件）。
 
     items: 決定事項情報の配列。各要素は以下のキーを持つ:

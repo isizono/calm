@@ -46,7 +46,9 @@ def register_session(
 ) -> None:
     """session_identity に INSERT ON CONFLICT で idempotent に register する。
 
-    既存 session_id があれば role / handle / last_heartbeat を更新する。
+    既存 session_id があれば role / handle / topic_id / parent_session_id /
+    last_heartbeat を最新値で更新する。session 再起動で別 topic・別 parent に
+    紐づけ直す可能性があるため、シグネチャで受け取る全フィールドを SET する。
     """
     conn.execute(
         """
@@ -55,6 +57,8 @@ def register_session(
         ON CONFLICT(session_id) DO UPDATE SET
           role = excluded.role,
           handle = excluded.handle,
+          topic_id = excluded.topic_id,
+          parent_session_id = excluded.parent_session_id,
           last_heartbeat = CURRENT_TIMESTAMP
         """,
         (session_id, role, handle, topic_id, parent_session_id),
@@ -80,11 +84,14 @@ def update_heartbeat(conn: sqlite3.Connection, session_id: str) -> None:
 def get_caller_session_id() -> Optional[str]:
     """MCP context から caller の session_id を取得する。
 
-    MCP サーバーのツール実行コンテキスト外では None を返す。
+    MCP サーバーのツール実行コンテキスト外 (LookupError / RuntimeError) では
+    None を返す。それ以外の例外 (例: fastmcp 側 API 変更による AttributeError)
+    は黙殺せず再 raise して、上位で気付けるようにする。
     """
     try:
         from fastmcp.server.dependencies import get_context
         ctx = get_context()
-        return ctx.session_id
-    except Exception:
+    except (LookupError, RuntimeError):
+        # MCP context 外（hook 経由・テスト直呼び等）
         return None
+    return ctx.session_id
