@@ -8,6 +8,7 @@ from src.services.readable_id import apply_readable_id_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.relation_service import _add_relation_with_conn, _validate_targets
 from src.services.search_service import find_similar_topics
+from src.services.title_validation import validate_title
 from src.services.tag_service import (
     validate_and_parse_tags,
     ensure_tag_ids,
@@ -140,7 +141,7 @@ def add_topic(
     新しい議論トピックを追加する。
 
     Args:
-        title: トピックのタイトル
+        title: トピックのタイトル（40字以内）
         description: トピックの説明（必須）
         tags: タグ配列（必須、1個以上）
         related: 関連エンティティ（optional）。
@@ -151,6 +152,10 @@ def add_topic(
     Returns:
         作成されたトピック情報
     """
+    # titleのバリデーション
+    title_err = validate_title(title)
+    if title_err:
+        return title_err
     # タグのバリデーション
     parsed_tags = validate_and_parse_tags(tags, required=True)
     if isinstance(parsed_tags, dict):

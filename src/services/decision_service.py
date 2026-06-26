@@ -15,6 +15,7 @@ from src.services.tag_service import (
 )
 from src.services.habit_service import _add_habit_with_conn
 from src.services.relation_service import _add_relation_with_conn
+from src.services.title_validation import validate_title
 
 PROPAGATE_TYPES = {"habit", "tag_note"}
 
@@ -31,7 +32,7 @@ def add_decisions(items: list[dict], caller_session_id: Optional[str] = None) ->
             - topic_id (int, 必須): 関連するトピックのID
             - decision (str, 必須): 決定内容
             - reason (str, 必須): 決定の理由
-            - title (str, optional): 決定の要点を表す1行。省略時はNULL（表示はdecision本文にfallback）
+            - title (str, optional): 決定の要点を表す1行（40字以内）。省略時はNULL（表示はdecision本文にfallback）
             - tags (list[str], optional): 追加タグ。省略時はtopicのタグを継承
 
     Returns:
@@ -70,6 +71,11 @@ def add_decisions(items: list[dict], caller_session_id: Optional[str] = None) ->
                 # 意味論が分かれるため、""をNULLに寄せて全箇所の挙動を一致させる。
                 title = (item.get("title") or "").strip() or None
                 tags = item.get("tags")
+
+                # titleのバリデーション（None は skip）
+                title_err = validate_title(title)
+                if title_err:
+                    raise ValueError(title_err["error"]["message"])
 
                 # タグのバリデーション（tagsが指定された場合のみ）
                 parsed_tags = None

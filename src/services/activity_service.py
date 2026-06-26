@@ -9,6 +9,7 @@ from src.services.citations_service import upsert_citations_for_owner_with_conn
 from src.services.readable_id import apply_readable_id_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.relation_service import _add_relation_with_conn, _validate_targets
+from src.services.title_validation import validate_title
 from src.services.tag_service import (
     validate_and_parse_tags,
     ensure_tag_ids,
@@ -123,7 +124,7 @@ def add_activity(
     アクティビティを作成してIDを返す
 
     Args:
-        title: アクティビティのタイトル
+        title: アクティビティのタイトル（40字以内）
         description: アクティビティの説明
         tags: タグ配列（必須、1個以上）
         related: 関連エンティティ（optional）。
@@ -141,6 +142,10 @@ def add_activity(
     Returns:
         作成されたアクティビティ情報（check_in=Trueの場合はcheck_in_resultを含む）
     """
+    # titleのバリデーション
+    title_err = validate_title(title)
+    if title_err:
+        return title_err
     # タグのバリデーション
     parsed_tags = validate_and_parse_tags(tags, required=True)
     if isinstance(parsed_tags, dict):
@@ -499,7 +504,7 @@ def update_activity(
     Args:
         activity_id: アクティビティID
         status: 新しいステータス（optional）
-        title: 新しいタイトル（optional）
+        title: 新しいタイトル（optional、40字以内）
         description: 新しい説明（optional）
         tags: 新しいタグ配列（optional、指定時は全置換。1個以上必須）
         orch_managed: orch が管理する activity かどうかを切り替える（optional）。
@@ -541,6 +546,11 @@ def update_activity(
                 "message": f"Invalid status: {status}. Must be one of {sorted(REAL_STATUSES)}",
             }
         }
+
+    # titleのバリデーション
+    title_err = validate_title(title)
+    if title_err:
+        return title_err
 
     # 空文字バリデーション
     if title is not None and title.strip() == "":

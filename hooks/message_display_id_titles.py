@@ -45,7 +45,7 @@ _COMBINED_PATTERN = re.compile(
 )
 
 DEFAULT_DB_PATH = pathlib.Path.home() / ".claude" / ".claude-code-memory" / "discussion.db"
-TITLE_MAX = 20
+TITLE_MAX = 40
 _COLON_CHARS = (":", "：")
 
 CODE_TO_TABLE: dict[str, tuple[str, bool]] = {

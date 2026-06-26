@@ -38,7 +38,7 @@ def fake_db(tmp_path, monkeypatch):
         "INSERT INTO materials (id, title, retracted_at) VALUES (?, ?, ?)",
         [
             (1, "short title", None),
-            (2, "a" * 40, None),
+            (2, "a" * (mdid.TITLE_MAX + 5), None),
             (3, "retired material", "2026-01-01"),
             # title に fullword 形式の ID が含まれるケース (二段階 enrich 回避テスト用)
             (4, f"{_FW('material', 2)} info", None),
