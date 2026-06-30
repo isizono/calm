@@ -123,34 +123,42 @@ THINKING_EFFORTS: frozenset[str] = frozenset({"high", "xhigh", "max", "ultrathin
 _EFFORT_ALIASES: dict[str, str] = {"ultratink": "ultrathink"}
 
 # worker alias の書式制約。kebab-case（小文字英数字+ハイフン、先頭は英字、末尾は英数字、
-# 連続ハイフン禁止）かつ最小長 8 文字以上。短すぎる alias は名前衝突や視認性低下を招き、
-# queue/relay 識別子として再利用しづらいため一律で拒否する。
+# 連続ハイフン禁止）かつ最小長 4 文字以上。命名規約 (推奨 prefix `w-` / purpose / activity_id)
+# は強制せず、ow_spawn_worker の docstring を正本としてソフトに伝える。
 # alias の上限長は意図的に設けない（relay messages の handle / spawn-bundle envelope の
-# `to` フィールドに埋め込まれるが、物理上限は relay 側に委ねる。orch 運用上は
-# kebab-case の自然な命名で十分短く収まる）。
-_ALIAS_MIN_LENGTH: int = 8
+# `to` フィールドに埋め込まれるが、物理上限は relay 側に委ねる）。
+_ALIAS_MIN_LENGTH: int = 4
 _ALIAS_PATTERN: re.Pattern[str] = re.compile(r"^[a-z]([a-z0-9]|-(?!-))*[a-z0-9]$")
+_ALIAS_RECOMMENDED_HINT: str = (
+    "Recommended: w-<purpose>-<activity_id> (e.g. w-design-1064)."
+)
 
 
 def _validate_alias_format(alias: str) -> str | None:
     """alias の書式検証。OK なら None、NG ならユーザー向けエラーメッセージ文字列を返す。
 
     検証項目:
-        - 最小長: 8 文字以上
+        - 最小長: 4 文字以上
         - kebab-case: 小文字英数字とハイフンのみ。先頭は英字、末尾は英数字、連続ハイフン禁止
+
+    命名規約 (prefix `w-` / purpose / activity_id の組合せ) は強制せず、エラー文言に
+    推奨形式ヒントを添えて呼び出し側に方向を伝える（ソフト誘導）。正本は
+    ``ow_spawn_worker`` の docstring。
     """
     if not isinstance(alias, str) or not alias:
         return "alias must be a non-empty string"
     if len(alias) < _ALIAS_MIN_LENGTH:
         return (
             f"alias '{alias}' is too short "
-            f"(length={len(alias)}, min={_ALIAS_MIN_LENGTH})"
+            f"(length={len(alias)}, min={_ALIAS_MIN_LENGTH}). "
+            f"{_ALIAS_RECOMMENDED_HINT}"
         )
     if not _ALIAS_PATTERN.match(alias):
         return (
             f"alias '{alias}' does not match required kebab-case pattern "
             "(lowercase letters/digits/hyphen, start with letter, "
-            "end with letter or digit, no consecutive hyphens)"
+            "end with letter or digit, no consecutive hyphens). "
+            f"{_ALIAS_RECOMMENDED_HINT}"
         )
     return None
 
@@ -1109,7 +1117,9 @@ def ow_spawn_worker(
     permission_modeは常にautoに固定される。
 
     Args:
-        alias: workerのhandle（例: "w-a"）
+        alias: worker の handle。命名規約の正本は MCP tool ラッパー側 docstring
+            (src/main.py の ``ow_spawn_worker``) に置く。書式制約は
+            ``_validate_alias_format`` を参照（最小 4 文字、kebab-case）。
         channel: channelコード
         cwd: workerの作業ディレクトリ
         model: 使用モデル（claude-opus-4-7 のみ許可。"opus", "opus-4-7" 等の
