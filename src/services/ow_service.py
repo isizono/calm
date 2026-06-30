@@ -156,7 +156,7 @@ def _validate_alias_format(alias: str) -> str | None:
     if not _ALIAS_PATTERN.match(alias):
         return (
             f"alias '{alias}' does not match required kebab-case pattern "
-            "(lowercase letters/digits/hyphen, start with letter, "
+            "(lowercase letters/digits/hyphen, start with lowercase letter, "
             "end with letter or digit, no consecutive hyphens). "
             f"{_ALIAS_RECOMMENDED_HINT}"
         )
@@ -192,7 +192,7 @@ def _validate_dispatcher_handle(handle: str) -> str | None:
         return (
             f"dispatcher handle '{handle}' has invalid characters after "
             f"'{_DISPATCHER_HANDLE_PREFIX}' "
-            "(lowercase letters/digits/hyphen, start with letter, "
+            "(lowercase letters/digits/hyphen, start with lowercase letter, "
             "end with letter or digit, no consecutive hyphens)"
         )
     return None
