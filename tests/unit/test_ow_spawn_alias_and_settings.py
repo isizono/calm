@@ -36,6 +36,9 @@ class TestValidateAliasFormat:
             "w-alpha01",       # 9 chars, digit suffix OK
             "w-pp",            # 4 chars 境界, prefix あり
             "impl",            # 4 chars 境界, prefix なし → prefix 強制しないので OK
+            "w-tiny",          # 6 chars, 旧 8 文字制約では reject、緩和後 valid
+            "w-abcde",         # 7 chars, 同上
+            "abcdefg",         # 7 chars, prefix なし、同上
             "worker01",        # 8 chars, prefix なし OK
             "abcdefgh",        # 8 chars, ハイフンなし OK
             "w-a-b-c-d",       # 9 chars, 連続ハイフンを含まない多ハイフン OK

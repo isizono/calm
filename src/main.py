@@ -1296,7 +1296,7 @@ def ow_spawn_worker(
         alias: worker の handle。命名規約の正本はここに置く。
             推奨形式: w-<purpose>-<activity_id> （例: w-design-1064）
             必須制約: 最小 4 文字、kebab-case（小文字英数字とハイフン、
-                先頭は英字、末尾は英数字、連続ハイフン禁止）
+                先頭は小文字英字、末尾は英数字、連続ハイフン禁止）
             prefix `w-` は推奨だが必須ではない（role 識別のため追従推奨）
             purpose は task の簡潔記述（例: design / impl / fixup / migrate）
         channel: channelコード

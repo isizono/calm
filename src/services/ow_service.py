@@ -122,7 +122,7 @@ THINKING_EFFORTS: frozenset[str] = frozenset({"high", "xhigh", "max", "ultrathin
 # orch は sentinel `ultratink` を使い、ow_service 側で正規綴りに畳む。
 _EFFORT_ALIASES: dict[str, str] = {"ultratink": "ultrathink"}
 
-# worker alias の書式制約。kebab-case（小文字英数字+ハイフン、先頭は英字、末尾は英数字、
+# worker alias の書式制約。kebab-case（小文字英数字+ハイフン、先頭は小文字英字、末尾は英数字、
 # 連続ハイフン禁止）かつ最小長 4 文字以上。命名規約 (推奨 prefix `w-` / purpose / activity_id)
 # は強制せず、ow_spawn_worker の docstring を正本としてソフトに伝える。
 # alias の上限長は意図的に設けない（relay messages の handle / spawn-bundle envelope の
@@ -139,7 +139,7 @@ def _validate_alias_format(alias: str) -> str | None:
 
     検証項目:
         - 最小長: 4 文字以上
-        - kebab-case: 小文字英数字とハイフンのみ。先頭は英字、末尾は英数字、連続ハイフン禁止
+        - kebab-case: 小文字英数字とハイフンのみ。先頭は小文字英字、末尾は英数字、連続ハイフン禁止
 
     命名規約 (prefix `w-` / purpose / activity_id の組合せ) は強制せず、エラー文言に
     推奨形式ヒントを添えて呼び出し側に方向を伝える（ソフト誘導）。正本は
