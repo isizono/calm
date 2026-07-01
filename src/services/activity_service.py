@@ -490,6 +490,52 @@ def get_active_activities_by_tag(tag_id: int) -> list[dict]:
         conn.close()
 
 
+def get_pinned_active_activities_with_conn(conn) -> list[dict]:
+    """pinsテーブルでtargetがactivityになっているactive activitiesを取得する（conn共有版）。
+
+    pinsテーブルを介したpin関係のうち target_type='activity' のものを引き、
+    status IN ('in_progress', 'pending') かつ orch_managed=0 の activity を返す。
+    複数の source（tag/activity 等）から同じ activity にpinされている場合でも
+    DISTINCT で1件に集約する。
+
+    Returns:
+        [{"id": int, "title": str, "status": str, "updated_at": str,
+          "last_heartbeat_session_id": str | None, "is_heartbeat_active": bool,
+          "orch_managed": bool}, ...]
+        （updated_at 降順、id を tie-breaker）
+    """
+    rows = conn.execute(
+        """
+        SELECT DISTINCT a.id, a.title, a.status, a.updated_at,
+               a.last_heartbeat_session_id,
+               a.orch_managed,
+               CASE WHEN a.last_heartbeat_at > datetime('now', '-' || ? || ' minutes') THEN 1 ELSE 0 END AS is_heartbeat_active
+        FROM activities a
+        JOIN pins p ON p.target_type = 'activity' AND p.target_id = a.id
+        WHERE a.status IN ('in_progress', 'pending')
+          AND a.orch_managed = 0
+        ORDER BY a.updated_at DESC, a.id DESC
+        """,
+        (HEARTBEAT_TIMEOUT_MINUTES,),
+    ).fetchall()
+    result = []
+    for r in rows:
+        d = row_to_dict(r)
+        d["is_heartbeat_active"] = bool(d["is_heartbeat_active"])
+        d["orch_managed"] = bool(d["orch_managed"])
+        result.append(d)
+    return result
+
+
+def get_pinned_active_activities() -> list[dict]:
+    """pinsテーブルでtargetがactivityになっているactive activitiesを取得する。"""
+    conn = get_connection()
+    try:
+        return get_pinned_active_activities_with_conn(conn)
+    finally:
+        conn.close()
+
+
 def update_activity(
     activity_id: int,
     status: Optional[str] = None,

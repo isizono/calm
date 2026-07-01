@@ -484,7 +484,7 @@ class TestSessionStartHookSyncPolicy:
 
 
 class TestSessionStartHookTopicGrouping:
-    """topic別グルーピング表示のテスト (D#2464-2466)"""
+    """topic別グルーピング表示のテスト"""
 
     @staticmethod
     def _set_created_at(activity_id: int, created_at_iso: str) -> None:
@@ -525,24 +525,72 @@ class TestSessionStartHookTopicGrouping:
         assert "## \U0001f195 直近作成（24h以内）" not in context
         assert "## スコアリング対象" not in context
 
+    @staticmethod
+    def _set_updated_at(activity_id: int, updated_at_iso: str) -> None:
+        """アクティビティのupdated_atを指定値に上書きする"""
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE activities SET updated_at = ? WHERE id = ?",
+                (updated_at_iso, activity_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _seed_tier4_activity(self, title: str, status: str = "pending") -> int:
+        """階層 4（updated_at 30日以内かつ 24h より古く、in_progress でない）に落ちる
+        アクティビティを作成する"""
+        from datetime import datetime, timedelta, timezone
+
+        activity_id = _seed_activity(title, status=status)
+        old_iso = (datetime.now(timezone.utc) - timedelta(days=3)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        self._set_created_at(activity_id, old_iso)
+        self._set_updated_at(activity_id, old_iso)
+        return activity_id
+
     def test_activity_grouped_under_related_topic(self, temp_db):
-        """関連topicを持つアクティビティはそのtopic見出しの下に出力される"""
+        """階層 4 で関連 topic を持つアクティビティはその topic 見出しの下に出力される"""
         topic_id = _seed_topic("検索リファインメント")
-        activity_id = _seed_activity("[作業] 検索改善", status="in_progress")
+        activity_id = self._seed_tier4_activity("[作業] 検索改善")
         self._relate_activity_to_topic(activity_id, topic_id)
 
         result = _run_session_start_hook(temp_db)
         context = result["hookSpecificOutput"]["additionalContext"]
 
         assert "## 検索リファインメント" in context
-        # トピック見出し以降にアクティビティが現れる
         topic_idx = context.index("## 検索リファインメント")
         assert f"(#{activity_id})" in context[topic_idx:]
         assert "検索改善" in context[topic_idx:]
 
+    def test_tier4_line_format_no_number_no_status_marker(self, temp_db):
+        """階層 4 の行は『- タイトル』形式（番号なし・status マーカー(●/○) なし・meta 行なし）"""
+        topic_id = _seed_topic("tier4 test topic")
+        activity_id = self._seed_tier4_activity("[作業] tier4 タスク")
+        self._relate_activity_to_topic(activity_id, topic_id)
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        target_line: str | None = None
+        for line in context.splitlines():
+            if f"(#{activity_id})" in line:
+                target_line = line
+                break
+        assert target_line is not None, f"activity (#{activity_id}) の行が見つからない"
+        stripped = target_line.lstrip()
+        assert stripped.startswith("- "), (
+            f"tier 4 行が番号付きになっている: {target_line!r}"
+        )
+        assert "●" not in target_line and "○" not in target_line, (
+            f"tier 4 に status マーカーが混入: {target_line!r}"
+        )
+
     def test_topicless_activity_in_other_section(self, temp_db):
-        """関連topicを持たないアクティビティは『その他』セクションに出る"""
-        activity_id = _seed_activity("[作業] 孤立タスク", status="in_progress")
+        """階層 4 で関連 topic を持たないアクティビティは『その他』セクションに出る"""
+        activity_id = self._seed_tier4_activity("[作業] 孤立タスク")
 
         result = _run_session_start_hook(temp_db)
         context = result["hookSpecificOutput"]["additionalContext"]
@@ -552,21 +600,19 @@ class TestSessionStartHookTopicGrouping:
         assert f"(#{activity_id})" in context[other_idx:]
 
     def test_topic_title_em_dash_stripped(self, temp_db):
-        """topic見出しは em-dash 以降を除去した短縮版で出力される (D#2466)"""
+        """topic 見出しは em-dash 以降を除去した短縮版で出力される"""
         topic_id = _seed_topic("検索改善 — Phase 2 詳細設計")
-        activity_id = _seed_activity("[作業] 検索改善実装", status="in_progress")
+        activity_id = self._seed_tier4_activity("[作業] 検索改善実装")
         self._relate_activity_to_topic(activity_id, topic_id)
 
         result = _run_session_start_hook(temp_db)
         context = result["hookSpecificOutput"]["additionalContext"]
 
-        # 短縮済み見出しが出る
         assert "## 検索改善" in context
-        # フルタイトルは見出しとして出ない
         assert "## 検索改善 — Phase 2 詳細設計" not in context
 
     def test_new_marker_inline_for_recent_activity(self, temp_db):
-        """24h以内に作成されたアクティビティにはタイトル末尾に🆕がインライン付与される (D#2466)"""
+        """24h以内に作成されたアクティビティにはタイトル末尾に🆕がインライン付与される"""
         from datetime import datetime, timedelta, timezone
 
         activity_id = _seed_activity("[作業] 新着タスク", status="pending")
@@ -629,35 +675,39 @@ class TestSessionStartHookTopicGrouping:
         # heartbeat activity は topic grouping に重複出現しない
         assert context.count(f"(#{activity_id})") == 1
 
-    def test_numbering_continuous_across_groups(self, temp_db):
-        """番号付けは複数 topic グループにまたがって連番になる"""
-        topic_a = _seed_topic("グループA")
-        topic_b = _seed_topic("グループB")
+    def test_numbering_continuous_in_priority_tier(self, temp_db):
+        """階層 2『優先』は flat リストで連番になる"""
         a1 = _seed_activity("[作業] A-1", status="in_progress")
         a2 = _seed_activity("[作業] A-2", status="in_progress")
         b1 = _seed_activity("[作業] B-1", status="in_progress")
-        self._relate_activity_to_topic(a1, topic_a)
-        self._relate_activity_to_topic(a2, topic_a)
-        self._relate_activity_to_topic(b1, topic_b)
 
         result = _run_session_start_hook(temp_db)
         context = result["hookSpecificOutput"]["additionalContext"]
 
-        # アクティビティ番号1〜3が status_mark 付きで出現する（status_markで static guide と区別）
         for expected in ("1. ● ", "2. ● ", "3. ● "):
             assert expected in context, f"番号 '{expected}' のアクティビティ行が無い"
-        # 番号4以降のアクティビティ行は出ない（合計3件）
         assert "4. ● " not in context
         assert "4. ○ " not in context
 
-    def test_scoring_instructions_present(self, temp_db):
-        """通常アクティビティが1件以上あればスコアリング指示が末尾に付く"""
-        _seed_activity("[作業] スコア対象", status="in_progress")
+    def test_deterministic_render_notice_present(self, temp_db):
+        """通常アクティビティが1件以上あれば末尾固定文が付く"""
+        _seed_activity("[作業] 通常タスク", status="in_progress")
 
         result = _run_session_start_hook(temp_db)
         context = result["hookSpecificOutput"]["additionalContext"]
 
-        assert "# スコアリング指示" in context
+        assert "決定論的に組み立てた表示用 markdown" in context
+        assert "再フォーマットや優先順の再評価をせず" in context
+
+    def test_scoring_instructions_absent(self, temp_db):
+        """旧スコアリング指示文は出力されない"""
+        _seed_activity("[作業] タスク", status="in_progress")
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "# スコアリング指示" not in context
+        assert "優先度の高い上位5件を選び" not in context
 
 
 def _set_heartbeat(activity_id: int, session_id: str | None) -> None:
@@ -740,3 +790,233 @@ class TestSessionStartHookSelfSessionHeartbeat:
         assert "## 作業中（別セッション）" in context
         heartbeat_idx = context.index("## 作業中（別セッション）")
         assert f"(#{activity_id})" in context[heartbeat_idx:]
+
+
+def _set_updated_at(activity_id: int, updated_at_iso: str) -> None:
+    """アクティビティのupdated_atを指定値に上書きする"""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE activities SET updated_at = ? WHERE id = ?",
+            (updated_at_iso, activity_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _set_created_at(activity_id: int, created_at_iso: str) -> None:
+    """アクティビティのcreated_atを指定値に上書きする"""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE activities SET created_at = ? WHERE id = ?",
+            (created_at_iso, activity_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _add_pin_activity(source_type: str, source_id, target_activity_id: int) -> None:
+    """pins テーブルに source → target_activity のpinを挿入する"""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO pins (source_type, source_id, target_type, target_id) "
+            "VALUES (?, ?, 'activity', ?)",
+            (source_type, source_id, target_activity_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _add_activity_dependency(dependent_id: int, dependency_id: int) -> None:
+    """activity_dependencies テーブルに依存関係を挿入する"""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO activity_dependencies (dependent_id, dependency_id) "
+            "VALUES (?, ?)",
+            (dependent_id, dependency_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+class TestSessionStartHook4TierDashboard:
+    """4 階層ダッシュボード（優先 / 直近作成 / その他）のテスト"""
+
+    def _seed_old_activity(
+        self,
+        title: str,
+        status: str = "pending",
+        days_ago: int = 3,
+    ) -> int:
+        """created_at / updated_at を N 日前に設定した activity を作成する"""
+        from datetime import datetime, timedelta, timezone
+
+        activity_id = _seed_activity(title, status=status)
+        iso = (datetime.now(timezone.utc) - timedelta(days=days_ago)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        _set_created_at(activity_id, iso)
+        _set_updated_at(activity_id, iso)
+        return activity_id
+
+    def test_tier_sections_in_expected_order(self, temp_db):
+        """階層 1（別セッション）→ 階層 2（優先）→ 階層 3（直近作成）→ 階層 4 の順で出る"""
+        from datetime import datetime, timedelta, timezone
+
+        heartbeat_id = _seed_activity("[作業] heartbeat別", status="in_progress")
+        _set_heartbeat(heartbeat_id, session_id="sess-other")
+
+        priority_id = _seed_activity("[作業] 優先タスク", status="in_progress")
+
+        recent_id = _seed_activity("[作業] 新着タスク", status="pending")
+        recent_iso = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        _set_created_at(recent_id, recent_iso)
+
+        other_id = self._seed_old_activity("[作業] 過去タスク")
+
+        result = _run_session_start_hook(
+            temp_db, stdin_payload={"session_id": "sess-self"}
+        )
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        idx_tier1 = context.index("## 作業中（別セッション）")
+        idx_tier2 = context.index("## 優先")
+        idx_tier3 = context.index("## 直近作成（24h以内）")
+        idx_tier4 = context.index("## その他")
+
+        assert idx_tier1 < idx_tier2 < idx_tier3 < idx_tier4
+        assert f"(#{heartbeat_id})" in context[idx_tier1:idx_tier2]
+        assert f"(#{priority_id})" in context[idx_tier2:idx_tier3]
+        assert f"(#{recent_id})" in context[idx_tier3:idx_tier4]
+        assert f"(#{other_id})" in context[idx_tier4:]
+
+    def test_pinned_pending_activity_in_priority_tier(self, temp_db):
+        """pinned な pending activity は階層 2『優先』に入る。📌 マーカー付き"""
+        pinned_id = self._seed_old_activity("[作業] 保留中の優先", status="pending")
+        source_topic_id = _seed_topic("pin source topic")
+        _add_pin_activity("topic", source_topic_id, pinned_id)
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "## 優先" in context
+        idx_tier2 = context.index("## 優先")
+        idx_next = context.find("\n## ", idx_tier2 + 1)
+        tier2_block = context[idx_tier2:] if idx_next == -1 else context[idx_tier2:idx_next]
+
+        assert f"(#{pinned_id})" in tier2_block, "pinned pending が階層 2 に入っていない"
+        assert "\U0001f4cc" in tier2_block, "📌 マーカーが階層 2 に出ていない"
+
+        for line in tier2_block.splitlines():
+            if f"(#{pinned_id})" in line:
+                assert "\U0001f4cc" in line, "対象 pinned 行に 📌 が付いていない"
+                break
+
+    def test_tier2_pinned_precedes_newer_in_progress(self, temp_db):
+        """階層 2 内で pinned は updated_at が古くても新しい in_progress より上位に来る"""
+        old_pinned_id = self._seed_old_activity(
+            "[作業] 古い pinned", status="pending", days_ago=3
+        )
+        source_topic_id = _seed_topic("pin source topic")
+        _add_pin_activity("topic", source_topic_id, old_pinned_id)
+
+        new_ip_id = _seed_activity("[作業] 新しい進行中", status="in_progress")
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        idx_tier2 = context.index("## 優先")
+        idx_next = context.find("\n## ", idx_tier2 + 1)
+        tier2_block = context[idx_tier2:] if idx_next == -1 else context[idx_tier2:idx_next]
+
+        old_pos = tier2_block.index(f"(#{old_pinned_id})")
+        new_pos = tier2_block.index(f"(#{new_ip_id})")
+        assert old_pos < new_pos, (
+            "pinned が新しい in_progress より下位に出ている（pinned-first 順序違反）"
+        )
+
+    def test_tier3_omitted_when_all_activities_are_old(self, temp_db):
+        """階層 3 の対象 activity が 0 件（全て 24h より古い作成）のとき、セクション見出しごと省略"""
+        _seed_activity("[作業] 進行中タスク", status="in_progress")
+        self._seed_old_activity("[作業] 古い pending 1", status="pending", days_ago=3)
+        self._seed_old_activity("[作業] 古い pending 2", status="pending", days_ago=5)
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "## 直近作成（24h以内）" not in context
+        assert "## 優先" in context
+
+    def test_recent_created_tier_omitted_when_empty(self, temp_db):
+        """階層 3 の対象 activity が 0 件のとき、セクション見出しごと省略される"""
+        _seed_activity("[作業] 通常タスク", status="in_progress")
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "## 直近作成（24h以内）" not in context
+
+    def test_tier4_excludes_activity_older_than_30_days(self, temp_db):
+        """階層 4 は updated_at 30 日以上の activity を除外する"""
+        excluded_id = self._seed_old_activity(
+            "[作業] 古すぎタスク", days_ago=45
+        )
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert f"(#{excluded_id})" not in context
+
+    def test_meta_line_shown_only_when_blocked_by_present(self, temp_db):
+        """階層 2/3 で blocked_by 未解決の依存があるときのみ meta 行が出る"""
+        blocker_id = _seed_activity("[作業] blocker", status="pending")
+        blocked_id = _seed_activity("[作業] blocked", status="in_progress")
+        _add_activity_dependency(blocked_id, blocker_id)
+
+        plain_id = _seed_activity("[作業] plain", status="in_progress")
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        lines = context.splitlines()
+        blocked_line_idx = None
+        plain_line_idx = None
+        for i, line in enumerate(lines):
+            if f"(#{blocked_id})" in line and line.lstrip().startswith(
+                ("1.", "2.", "3.", "4.", "5.")
+            ):
+                blocked_line_idx = i
+            if f"(#{plain_id})" in line and line.lstrip().startswith(
+                ("1.", "2.", "3.", "4.", "5.")
+            ):
+                plain_line_idx = i
+        assert blocked_line_idx is not None, "blocked activity の番号付き行が見つからない"
+        assert plain_line_idx is not None, "plain activity の番号付き行が見つからない"
+
+        assert lines[blocked_line_idx + 1].strip().startswith("blocked_by:")
+        assert "blocker" in lines[blocked_line_idx + 1]
+
+        next_after_plain = lines[plain_line_idx + 1] if plain_line_idx + 1 < len(lines) else ""
+        assert not next_after_plain.strip().startswith("blocked_by:"), (
+            "blocked_by 無しの activity に meta 行が出てしまっている"
+        )
+
+    def test_worker_session_returns_empty_activities_section(self, temp_db):
+        """worker session ではアクティビティセクションが空になる"""
+        _seed_activity("[作業] worker下タスク", status="in_progress")
+
+        result = _run_session_start_hook(temp_db, extra_env={"OW_ROLE": "worker"})
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "# アクティビティ一覧" not in context
+        assert "## 優先" not in context
+        assert "## その他" not in context
