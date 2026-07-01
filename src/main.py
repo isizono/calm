@@ -267,6 +267,7 @@ def add_topic(
 ) -> dict:
     """新しい議論トピックを追加する。
 
+    title: トピックのタイトル（40字以内）
     tags: タグ配列(必須、1個以上)。domain:タグに加えて内容を表すタグも付けること。namespace: domain:(プロジェクト)/intent:(意図)/素タグ(キーワード)。例: ["domain:cc-memory", "intent:implement", "error-handling", "validation", "stdin"]
     related: 関連エンティティ（optional）。[{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...] 形式。複数エンティティを配列で同時紐付け可能。例: [{"type": "topic", "ids": [1, 2]}, {"type": "decision", "ids": [10]}]。作成と同時にリレーションを張る
 
@@ -314,7 +315,7 @@ def add_decisions(items: list[dict], ctx: Context) -> dict:
         - topic_id (int, 必須): 関連するトピックのID
         - decision (str, 必須): 決定内容
         - reason (str, 必須): 決定の理由
-        - title (str, optional): 決定の要点を表す1行。**付けることを強く推奨**。check-in・timeline・search等の一覧表示でdecision本文の代わりに見出しとして使われ、可読性が大きく上がる。省略時はdecision本文にfallbackする
+        - title (str, optional): 決定の要点を表す1行（40字以内）。**付けることを強く推奨**。check-in・timeline・search等の一覧表示でdecision本文の代わりに見出しとして使われ、可読性が大きく上がる。省略時はdecision本文にfallbackする
         - tags (list[str], optional): 追加タグ。省略時はtopicのタグを継承。内容を表すタグを積極的に追加すること。namespace: domain:(プロジェクト)/intent:(意図)/素タグ(キーワード)。例: ["intent:design", "naming-convention", "backward-compat"]
         - propagate_to (dict, optional): 決定事項を注入先に伝搬する。
             - type: "habit" | "tag_note"
@@ -655,7 +656,7 @@ def add_activity(
     - orchが管理するアクティビティとして作成: add_activity("...", "...", [...], orch_managed=True)
 
     Args:
-        title: アクティビティのタイトル
+        title: アクティビティのタイトル（40字以内）
         description: アクティビティの詳細説明（必須）。スコアリングに活用されるため、以下の情報があれば記載を推奨: 締め切り、ブロッカー（自分が/外部）、影響度・緊急度
         tags: タグ配列（必須、1個以上）。domain:タグとintent:タグは必須。素タグも積極的に付けること。namespace: domain:(プロジェクト)/intent:(意図)/素タグ(キーワード)。例: ["domain:cc-memory", "intent:implement", "search", "ranking"]
         related: 関連エンティティ（optional）。[{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...] 形式。複数エンティティを配列で同時紐付け可能。例: [{"type": "topic", "ids": [1]}, {"type": "decision", "ids": [10, 11]}]。作成と同時にリレーションを張る。intent:implementタグを含む場合、relatedにtype='decision'のエントリを最低1件含めないとIMPLEMENT_WORKFLOW_GUARDエラーで弾かれる（議論・設計フェーズで合意したdecisionか、いきなりimplementする理由を記録したdecisionをrelateする）
@@ -752,7 +753,7 @@ def update_activity(
     Args:
         activity_id: アクティビティID
         status: 新しいステータス（pending/in_progress/completed/snoozed/shelved）
-        title: 新しいタイトル
+        title: 新しいタイトル（40字以内）
         description: 新しい説明
         tags: 新しいタグ配列（指定時は全置換。1個以上必須）
         orch_managed: orchが管理するアクティビティかを切り替える（True/False/None）。Noneなら変更しない
@@ -779,7 +780,7 @@ def add_material(
     呼び出し前に recording skill の判断ガイドを通すこと。
 
     Args:
-        title: 資材のタイトル
+        title: 資材のタイトル（40字以内）
         content: 資材の本文（マークダウン形式推奨）。先頭1-2文は内容の説明・要約を書くこと（check-in時にsnippetとして表示される）
         tags: タグ配列（必須、1個以上）。namespace: domain:(プロジェクト)/intent:(意図)/素タグ(キーワード)
         source: データの出自。典型的なソース種類: ユーザー発言、公式ドキュメント、コード調査、計測結果、外部記事、チーム議事録など
@@ -822,7 +823,7 @@ def update_material(
     Args:
         material_id: 資材のID
         content: 新しい本文（optional）。先頭1-2文は内容の説明・要約を書くこと（check-inやsearchのsnippetに使われるため）
-        title: 新しいタイトル（optional）
+        title: 新しいタイトル（optional、40字以内）
         tags: 新しいタグ配列（指定時は全置換。1個以上必須。optional）
         source: 新しいソース（optional）
         mode: content指定時の結合動作。"overwrite"=上書き(既定、後方互換)、"prepend"=新+"\n\n"+既存、"append"=既存+"\n\n"+新
