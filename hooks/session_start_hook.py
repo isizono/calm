@@ -122,11 +122,11 @@ def _build_activities_section(conn, session_id: str | None = None) -> str:
         pinned 先頭 → updated_at 降順で上位 5 件（flat、topic 別グルーピングなし）。
     階層 3「直近作成（24h以内）」: 上位階層で消費されなかった created_at 24h 以内、
         created_at 降順の flat リスト。0 件時はセクション自体省略。
-    階層 4「その他」: 残り active のうち updated_at 30 日以内。
+    階層 4「その他」: 残り active のうち updated_at 30 日以内、または pinned。
         topic 別グルーピングでタイトル一行のみ（番号・status マーカー・meta 行なし）。
 
     行フォーマット:
-        - 階層 1: `- タイトル (#id) (Nd)`
+        - 階層 1: `- 📌 タイトル (#id) (Nd)`（📌 は pinned 時のみ）
         - 階層 2/3: 番号 + status マーカー (●/○) + 📌（pinned 時）+ タイトル (#id)
           + (Nd) + 🆕（24h 以内作成時）。blocked_by 未解決依存があるときのみ
           meta 行 1 行を続ける。
@@ -153,6 +153,8 @@ def _build_activities_section(conn, session_id: str | None = None) -> str:
             seen_collect.add(a["id"])
             all_active.append(a)
 
+    # pinned は active domain の有無と独立して存在しうるため、
+    # domain が 0 件でも早期 return せず必ず pinned を引く。
     pinned_all = get_pinned_active_activities_with_conn(conn)
     pinned_ids = {a["id"] for a in pinned_all}
     for a in pinned_all:
@@ -165,11 +167,6 @@ def _build_activities_section(conn, session_id: str | None = None) -> str:
 
     if not all_active:
         return ""
-
-    all_ids = [a["id"] for a in all_active]
-    unresolved_deps = _get_unresolved_deps(conn, all_ids)
-    created_ats = _get_created_ats(conn, all_ids)
-    activity_topics = get_activity_topics_batch(conn, all_ids)
 
     seen_ids: set[int] = set()
     parts: list[str] = ["# アクティビティ一覧", ""]
@@ -193,6 +190,13 @@ def _build_activities_section(conn, session_id: str | None = None) -> str:
             display = format_readable_id("activity", a["id"], a["title"])
             parts.append(f"- {pin_mark}{display} ({days}d)")
         parts.append("")
+
+    # 階層 1 は updated_at と pin だけで描画し created_at / 依存 / topic を参照しない。
+    # 階層 1 で消費済みの id はバッチ取得対象から外す。
+    lower_ids = [a["id"] for a in all_active if a["id"] not in seen_ids]
+    unresolved_deps = _get_unresolved_deps(conn, lower_ids)
+    created_ats = _get_created_ats(conn, lower_ids)
+    activity_topics = get_activity_topics_batch(conn, lower_ids)
 
     tier2_pool = [
         a
@@ -232,11 +236,16 @@ def _build_activities_section(conn, session_id: str | None = None) -> str:
             )
         parts.append("")
 
+    # pinned は staleness で脱落させない。上位階層の件数上限で溢れた pinned が
+    # 30 日フィルタでも除外されると、どの階層にも出ずダッシュボードから消えるため。
     tier4_pool = [
         a
         for a in all_active
         if a["id"] not in seen_ids
-        and _calc_elapsed_days(a["updated_at"]) <= _TIER4_STALE_DAYS
+        and (
+            a["id"] in pinned_ids
+            or _calc_elapsed_days(a["updated_at"]) <= _TIER4_STALE_DAYS
+        )
     ]
 
     if tier4_pool:

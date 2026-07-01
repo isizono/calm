@@ -487,19 +487,6 @@ class TestSessionStartHookTopicGrouping:
     """topic別グルーピング表示のテスト"""
 
     @staticmethod
-    def _set_created_at(activity_id: int, created_at_iso: str) -> None:
-        """アクティビティのcreated_atを指定値に上書きする"""
-        conn = get_connection()
-        try:
-            conn.execute(
-                "UPDATE activities SET created_at = ? WHERE id = ?",
-                (created_at_iso, activity_id),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-
-    @staticmethod
     def _relate_activity_to_topic(activity_id: int, topic_id: int) -> None:
         """activity と topic の関係を relations テーブルに挿入する。
         _normalize_pair の正規化順 (source_type < target_type 辞書順) では
@@ -525,19 +512,6 @@ class TestSessionStartHookTopicGrouping:
         assert "## \U0001f195 直近作成（24h以内）" not in context
         assert "## スコアリング対象" not in context
 
-    @staticmethod
-    def _set_updated_at(activity_id: int, updated_at_iso: str) -> None:
-        """アクティビティのupdated_atを指定値に上書きする"""
-        conn = get_connection()
-        try:
-            conn.execute(
-                "UPDATE activities SET updated_at = ? WHERE id = ?",
-                (updated_at_iso, activity_id),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-
     def _seed_tier4_activity(self, title: str, status: str = "pending") -> int:
         """階層 4（updated_at 30日以内かつ 24h より古く、in_progress でない）に落ちる
         アクティビティを作成する"""
@@ -547,8 +521,8 @@ class TestSessionStartHookTopicGrouping:
         old_iso = (datetime.now(timezone.utc) - timedelta(days=3)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
-        self._set_created_at(activity_id, old_iso)
-        self._set_updated_at(activity_id, old_iso)
+        _set_created_at(activity_id, old_iso)
+        _set_updated_at(activity_id, old_iso)
         return activity_id
 
     def test_activity_grouped_under_related_topic(self, temp_db):
@@ -619,7 +593,7 @@ class TestSessionStartHookTopicGrouping:
         recent_time = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
-        self._set_created_at(activity_id, recent_time)
+        _set_created_at(activity_id, recent_time)
 
         result = _run_session_start_hook(temp_db)
         context = result["hookSpecificOutput"]["additionalContext"]
@@ -640,7 +614,7 @@ class TestSessionStartHookTopicGrouping:
         old_time = (datetime.now(timezone.utc) - timedelta(hours=48)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
-        self._set_created_at(activity_id, old_time)
+        _set_created_at(activity_id, old_time)
 
         result = _run_session_start_hook(temp_db)
         context = result["hookSpecificOutput"]["additionalContext"]
@@ -1009,6 +983,79 @@ class TestSessionStartHook4TierDashboard:
         assert not next_after_plain.strip().startswith("blocked_by:"), (
             "blocked_by 無しの activity に meta 行が出てしまっている"
         )
+
+    def test_pinned_overflow_and_stale_still_appears(self, temp_db):
+        """pinned が階層 2 の上限(5)を溢れ、かつ updated_at 30 日超でも消えず階層 4 に残る"""
+        source_topic_id = _seed_topic("pin source topic")
+
+        # 階層 2 の上限 5 件を埋める pinned（updated_at は新しめ、created_at は
+        # 24h より前で階層 3 対象外）
+        for i in range(5):
+            filler_id = self._seed_old_activity(
+                f"[作業] pinned filler {i}", status="pending", days_ago=2
+            )
+            _add_pin_activity("topic", source_topic_id, filler_id)
+
+        # updated_at が最も古く（45 日前）階層 2 上位 5 件から溢れ、
+        # かつ階層 4 の 30 日フィルタにも掛かる pinned
+        stale_id = self._seed_old_activity(
+            "[作業] 消えないはずの pinned", status="pending", days_ago=45
+        )
+        _add_pin_activity("topic", source_topic_id, stale_id)
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        # どの階層からも脱落せず、ダッシュボードに残っている
+        assert f"(#{stale_id})" in context, (
+            "pinned が上限溢れ＋30日超で消えている（脱落バグ回帰）"
+        )
+
+        # 階層 2『優先』には上位 5 件のみ入り、最古の stale pinned は溢れている
+        idx_tier2 = context.index("## 優先")
+        idx_next = context.find("\n## ", idx_tier2 + 1)
+        tier2_block = (
+            context[idx_tier2:] if idx_next == -1 else context[idx_tier2:idx_next]
+        )
+        assert f"(#{stale_id})" not in tier2_block, (
+            "stale pinned が階層 2 の上限を無視して入っている"
+        )
+
+        # 溢れた pinned は 📌 付きで下位階層に残る
+        stale_line = None
+        for line in context.splitlines():
+            if f"(#{stale_id})" in line:
+                stale_line = line
+                break
+        assert stale_line is not None
+        assert "\U0001f4cc" in stale_line, "残存 pinned 行に 📌 が付いていない"
+
+    def test_pinned_heartbeat_activity_shows_pin_marker_in_tier1(self, temp_db):
+        """pinned かつ別セッション heartbeat の activity は階層 1 で 📌 付きで出る"""
+        heartbeat_id = _seed_activity("[作業] pinned heartbeat", status="in_progress")
+        _set_heartbeat(heartbeat_id, session_id="sess-other")
+        source_topic_id = _seed_topic("pin source topic")
+        _add_pin_activity("topic", source_topic_id, heartbeat_id)
+
+        result = _run_session_start_hook(
+            temp_db, stdin_payload={"session_id": "sess-self"}
+        )
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "## 作業中（別セッション）" in context
+        idx_tier1 = context.index("## 作業中（別セッション）")
+        idx_next = context.find("\n## ", idx_tier1 + 1)
+        tier1_block = (
+            context[idx_tier1:] if idx_next == -1 else context[idx_tier1:idx_next]
+        )
+
+        target_line = None
+        for line in tier1_block.splitlines():
+            if f"(#{heartbeat_id})" in line:
+                target_line = line
+                break
+        assert target_line is not None, "pinned heartbeat が階層 1 に出ていない"
+        assert "\U0001f4cc" in target_line, "階層 1 の pinned 行に 📌 が付いていない"
 
     def test_worker_session_returns_empty_activities_section(self, temp_db):
         """worker session ではアクティビティセクションが空になる"""

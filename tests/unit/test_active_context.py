@@ -16,6 +16,7 @@ from src.services.activity_service import (
     update_activity,
     get_active_domains,
     get_active_activities_by_tag,
+    get_pinned_active_activities,
 )
 import src.services.embedding_service as emb
 from tests.helpers import add_decision
@@ -224,6 +225,61 @@ def test_get_active_activities_by_tag_empty(temp_db):
     tag_id = _get_tag_id("domain", "no-activities")
     activities = get_active_activities_by_tag(tag_id)
     assert activities == []
+
+
+def _pin_activity(activity_id: int) -> None:
+    """テスト用: pins テーブルに activity 宛の pin を挿入する"""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO pins (source_type, source_id, target_type, target_id) "
+            "VALUES ('topic', 1, 'activity', ?)",
+            (activity_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_get_pinned_active_activities_returns_pinned(temp_db):
+    result = add_activity(
+        title="Pinned Activity", description="Desc",
+        tags=["domain:pinproj"], check_in=False,
+    )
+    _pin_activity(result["activity_id"])
+    pinned = get_pinned_active_activities()
+    ids = [a["id"] for a in pinned]
+    assert result["activity_id"] in ids
+
+
+def test_get_pinned_active_activities_excludes_unpinned(temp_db):
+    add_activity(
+        title="Unpinned Activity", description="Desc",
+        tags=["domain:pinproj"], check_in=False,
+    )
+    pinned = get_pinned_active_activities()
+    titles = [a["title"] for a in pinned]
+    assert "Unpinned Activity" not in titles
+
+
+def test_get_pinned_active_activities_excludes_completed(temp_db):
+    result = add_activity(
+        title="Done Pinned", description="Desc",
+        tags=["domain:pinproj"], check_in=False,
+    )
+    _pin_activity(result["activity_id"])
+    update_activity(result["activity_id"], status="completed")
+    pinned = get_pinned_active_activities()
+    ids = [a["id"] for a in pinned]
+    assert result["activity_id"] not in ids
+
+
+def test_get_pinned_active_activities_empty(temp_db):
+    add_activity(
+        title="Plain Activity", description="Desc",
+        tags=["domain:pinproj"], check_in=False,
+    )
+    assert get_pinned_active_activities() == []
 
 
 def test_build_activities_section_empty(temp_db):
