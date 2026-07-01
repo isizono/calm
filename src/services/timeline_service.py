@@ -156,10 +156,12 @@ def get_timeline(
             # supersedes関係はスカラー（1:1前提）で返す。
             # decision_supersedesは多対多のスキーマだが、APIレスポンスのreplaces/replaced_byは
             # {type, id}のスカラーと定義されているため、最新の1件のみ返す。
+            # created_atが同一秒で並んだ場合は選択列のid降順で決定的に1件へ絞る
+            # （最新superseder判定を supersede_service 側と一致させる）。
             union_parts.append(
                 f"SELECT DISTINCT d.id, 'decision' AS type, COALESCE(d.title, d.decision) AS title, d.created_at,"
-                f" (SELECT target_id FROM decision_supersedes WHERE source_id = d.id ORDER BY created_at DESC LIMIT 1) AS replaces_id,"
-                f" (SELECT source_id FROM decision_supersedes WHERE target_id = d.id ORDER BY created_at DESC LIMIT 1) AS replaced_by_id"
+                f" (SELECT target_id FROM decision_supersedes WHERE source_id = d.id ORDER BY created_at DESC, target_id DESC LIMIT 1) AS replaces_id,"
+                f" (SELECT source_id FROM decision_supersedes WHERE target_id = d.id ORDER BY created_at DESC, source_id DESC LIMIT 1) AS replaced_by_id"
                 f" FROM decisions d"
                 f" JOIN relations r ON r.source_type = 'decision' AND r.source_id = d.id"
                 f"                 AND r.target_type = 'topic' AND r.relation_type = 'belongs_to'"

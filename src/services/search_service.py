@@ -16,6 +16,7 @@ from sqlite_vec import serialize_float32
 from src.db import execute_query, get_connection, get_db_path, row_to_dict
 from src.services import embedding_service
 from src.services.readable_id import apply_readable_id_inplace
+from src.services.supersede_service import get_superseded_by_batch
 from src.services.tag_service import (
     get_entity_tags,
     get_entity_tags_batch,
@@ -1641,12 +1642,32 @@ def _slice(ctx: SearchContext, results: list[dict]) -> tuple[list[dict], int]:
     return sliced, total_count
 
 
+def _attach_superseded_by(results: list[dict]) -> None:
+    """decision タイプの結果に superseded_by を付与する (in-place)。
+
+    supersede されている decision の最新 superseder id を「早期警告」として乗せる軽量
+    マーカー。詳細な chain は get_decisions 側で取り直す前提のため、supersede されて
+    いなければ None、複数 superseder があれば最新1件のみ返す。
+    """
+    decision_ids = [item["id"] for item in results if item["type"] == "decision"]
+    if not decision_ids:
+        return
+    conn = get_connection()
+    try:
+        superseded_by_map = get_superseded_by_batch(conn, decision_ids)
+    finally:
+        conn.close()
+    for item in results:
+        if item["type"] == "decision":
+            item["superseded_by"] = superseded_by_map.get(item["id"])
+
+
 def _decorate(
     ctx: SearchContext,
     sliced: list[dict],
     query_tag_ids: Optional[list[int]],
 ) -> tuple[list[dict], list[dict]]:
-    """検索結果に snippet / tags / details / readable_id を付与し、nearby_tags を計算する。
+    """検索結果に snippet / tags / details / superseded_by / readable_id を付与し、nearby_tags を計算する。
 
     ``sliced`` は in-place で書き換わるが、データフローを明示するため戻り値にも含める。
     呼出元 (orchestrator) は ``decorated, nearby_tags = _decorate(...)`` のパターンで
@@ -1659,6 +1680,7 @@ def _decorate(
     """
     _attach_snippets(sliced)
     _attach_tags(sliced)
+    _attach_superseded_by(sliced)
     if ctx.include_details:
         _attach_details(sliced[:DETAILS_MAX_RESULTS])
 

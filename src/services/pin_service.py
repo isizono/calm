@@ -4,6 +4,7 @@ import sqlite3
 from typing import Optional, Union
 
 from src.db import get_connection
+from src.services.supersede_service import get_superseded_by_batch
 from src.services.tag_service import parse_tag, resolve_tag_ids
 
 logger = logging.getLogger(__name__)
@@ -21,15 +22,11 @@ ENTITY_TABLE_MAP = {
 def _is_decision_superseded(conn: sqlite3.Connection, decision_id: int) -> Optional[int]:
     """decisionがsupersedeされていれば、supersederのdecision_id（1件）を返す。
 
-    複数のsupersederがある場合は最新の created_at の1件を返す。
+    複数のsupersederがある場合は最新の1件を返す（最新判定の tie-break は
+    get_superseded_by_batch に委譲して全経路で一致させる）。
     superseded されていなければ None。
     """
-    row = conn.execute(
-        "SELECT source_id FROM decision_supersedes WHERE target_id = ? "
-        "ORDER BY created_at DESC LIMIT 1",
-        (decision_id,),
-    ).fetchone()
-    return row["source_id"] if row else None
+    return get_superseded_by_batch(conn, [decision_id])[decision_id]
 
 
 def _transfer_pins_with_conn(
