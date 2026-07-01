@@ -1,7 +1,11 @@
 """資材管理サービス"""
 import logging
+import os
+import re
 import sqlite3
 from typing import Literal, Optional
+
+import yaml
 
 from src.db import get_connection, row_to_dict
 from src.services.readable_id import apply_readable_id_inplace
@@ -418,3 +422,148 @@ def get_material(material_id: int, include_retracted: bool = False) -> dict:
         }
     finally:
         conn.close()
+
+
+DEFAULT_EXPORT_DIR = "~/cc-memory-export"
+SLUG_MAX_LEN = 50
+
+
+def _slugify_title(title: str) -> str:
+    """ファイル名に安全な slug を返す。
+
+    ASCII 英数字とハイフン以外を "-" に置換し、連続 "-" を圧縮、
+    先頭末尾 "-" を除去、SLUG_MAX_LEN で切り詰め、空文字なら "untitled"。
+    日本語 title は事実上全てハイフン化されるため、"untitled" にフォールバックする。
+    """
+    slug = re.sub(r"[^A-Za-z0-9-]+", "-", title or "")
+    slug = re.sub(r"-+", "-", slug).strip("-")
+    if len(slug) > SLUG_MAX_LEN:
+        slug = slug[:SLUG_MAX_LEN].rstrip("-")
+    return slug or "untitled"
+
+
+def _resolve_dest_path(entity_id: int, title: str, dest_path: Optional[str]) -> str:
+    """dest_path を 3 パターンで振り分けて絶対パスを返す。
+
+    - None: DEFAULT_EXPORT_DIR/M-{id}-{slug}.md
+    - 既存ディレクトリ: そこに M-{id}-{slug}.md
+    - それ以外: ユーザー指定パスをそのまま使用（親ディレクトリの自動作成対象）
+    """
+    slug = _slugify_title(title)
+    filename = f"M-{entity_id}-{slug}.md"
+    if dest_path is None:
+        return os.path.join(os.path.expanduser(DEFAULT_EXPORT_DIR), filename)
+    expanded = os.path.expanduser(dest_path)
+    if os.path.isdir(expanded):
+        return os.path.join(expanded, filename)
+    return expanded
+
+
+def _get_material_relations_with_conn(conn, entity_id: int) -> list[dict]:
+    """material が source または target として参加している relations を related 配列にする。"""
+    rows = conn.execute(
+        """
+        SELECT target_type AS type, target_id AS eid FROM relations
+          WHERE source_type = 'material' AND source_id = ?
+        UNION
+        SELECT source_type AS type, source_id AS eid FROM relations
+          WHERE target_type = 'material' AND target_id = ?
+        ORDER BY type, eid
+        """,
+        (entity_id, entity_id),
+    ).fetchall()
+    return [{"type": r["type"], "id": r["eid"]} for r in rows]
+
+
+def _build_frontmatter(
+    entity_id: int,
+    title: str,
+    tags: list[str],
+    source: str,
+    related: list[dict],
+    created_at: str,
+    updated_at: str,
+) -> str:
+    """YAML frontmatter 文字列（`---\\n...\\n---\\n`）を返す。"""
+    data = {
+        "material_id": entity_id,
+        "title": title,
+        "tags": list(tags),
+        "source": source,
+        "related": related,
+        "created_at": created_at,
+        "updated_at": updated_at,
+    }
+    body = yaml.safe_dump(
+        data,
+        allow_unicode=True,
+        sort_keys=False,
+        default_flow_style=False,
+    )
+    return f"---\n{body}---\n"
+
+
+def export_material_to_file(material_id: int, dest_path: Optional[str] = None) -> dict:
+    """資材を md ファイルとして出力する。
+
+    Returns:
+        成功時: {"path": str, "overwritten": bool, "material_id": int, "title": str}
+        失敗時: {"error": {"code": str, "message": str}}
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM materials WHERE id = ?", (material_id,)
+        ).fetchone()
+        if not row or row["retracted_at"] is not None:
+            return {
+                "error": {
+                    "code": "NOT_FOUND",
+                    "message": f"Material with id {material_id} not found",
+                }
+            }
+
+        material = row_to_dict(row)
+        tags = get_entity_tags(conn, "material_tags", "material_id", material_id)
+        related = _get_material_relations_with_conn(conn, material_id)
+    except Exception as e:
+        return {"error": {"code": "DATABASE_ERROR", "message": str(e)}}
+    finally:
+        conn.close()
+
+    title = material["title"]
+    content = material["content"] or ""
+    frontmatter = _build_frontmatter(
+        entity_id=material_id,
+        title=title,
+        tags=tags,
+        source=material["source"],
+        related=related,
+        created_at=material["created_at"],
+        updated_at=material.get("updated_at") or material["created_at"],
+    )
+    body = f"{frontmatter}\n# {title}\n\n{content}"
+    if not body.endswith("\n"):
+        body += "\n"
+
+    path = _resolve_dest_path(material_id, title, dest_path)
+    parent = os.path.dirname(path)
+    if parent:
+        try:
+            os.makedirs(parent, exist_ok=True)
+        except OSError as e:
+            return {"error": {"code": "IO_ERROR", "message": str(e)}}
+
+    overwritten = os.path.exists(path)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(body)
+    except OSError as e:
+        return {"error": {"code": "IO_ERROR", "message": str(e)}}
+
+    return {
+        "path": path,
+        "overwritten": overwritten,
+        "material_id": material_id,
+        "title": title,
+    }

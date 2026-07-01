@@ -862,6 +862,46 @@ def get_material(
 
 
 @mcp.tool()
+def export_material(
+    material_id: int,
+    dest_path: Optional[str] = None,
+) -> dict:
+    """
+    Choose: 資材の全文を cc-memory 外で参照したい（obsidian vault に置く / docs リポに commit する / third-party レビュー用に配布する）とき。cc-memory 内で読むだけなら get_material、複数種別を横断で全文取得したいなら get_by_ids。
+
+    資材を YAML frontmatter + h1 + content 形式の md ファイルとして出力する。
+
+    出力ファイル構造:
+        ---
+        <YAML frontmatter>
+        ---
+
+        # <title>
+
+        <content>
+
+    frontmatter には資材のメタ情報（識別子・title・tags・source・関連エンティティ・
+    created_at・updated_at）を含む。往復同期の鍵として資材IDを frontmatter に保持する。
+
+    dest_path の 3 パターン振り分け:
+    - 省略時: ~/cc-memory-export/M-{id}-{title-slug}.md に出力
+    - 既存ディレクトリを指定: そのディレクトリ配下に M-{id}-{title-slug}.md として出力
+    - ファイルパスを指定: そのパスをそのまま使用（親ディレクトリは自動作成）
+
+    上書き確認はしない。既存ファイルは無警告で上書きされる（戻り値の overwritten で通知）。
+
+    Args:
+        material_id: 資材のID
+        dest_path: 出力先パス（optional）。省略/ディレクトリ/ファイルパスで振り分ける
+
+    Returns:
+        成功時: {"path": 絶対パス, "overwritten": 既存ファイルを上書きしたか, "material_id": ID, "title": タイトル}
+        失敗時: {"error": {"code": "NOT_FOUND" | "IO_ERROR" | "DATABASE_ERROR", "message": str}}
+    """
+    return material_service.export_material_to_file(material_id, dest_path=dest_path)
+
+
+@mcp.tool()
 def check_in(
     activity_id: int,
     flavor: _FlavorArg = "internal",
