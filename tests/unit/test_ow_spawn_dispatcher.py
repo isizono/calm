@@ -75,6 +75,8 @@ class TestValidateDispatcherHandle:
     def test_invalid_chars_after_prefix_rejected(self, handle: str):
         err = ow_service._validate_dispatcher_handle(handle)
         assert err is not None
+        assert "invalid characters" in err
+        assert "lowercase letter" in err
 
 
 # ----------------------------

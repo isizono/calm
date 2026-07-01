@@ -1,6 +1,8 @@
 """ow_service: alias 書式バリデーションと worker workspace 用 settings.local.json 生成のテスト。
 
-- `_validate_alias_format`: 単独でのOK/NG分類（最小長 + kebab-case regex）
+- `_validate_alias_format`: 単独での OK/NG 分類。最小長は 4 文字、kebab-case 制約のみ。
+  prefix `w-` は推奨だが必須ではない。長さ・kebab-case 違反のエラー文言に推奨形式ヒント
+  (`Recommended:`) が含まれる
 - `_validate_spawn_preconditions` 経由での alias 書式違反 → ok=False
 - `ow_spawn_worker` 経由での書式違反 → SPAWN_PRECONDITION_FAILED
 - `_ensure_worker_askuser_deny`: 新規作成 / 既存 merge / dedup / 壊れた JSON 上書き
@@ -21,17 +23,25 @@ from src.services import ow_service
 
 
 class TestValidateAliasFormat:
-    """alias の書式（min-length 8 + kebab-case）のユニットテスト"""
+    """alias の書式 (最小長 4 + kebab-case) のユニットテスト。
+
+    prefix `w-` は強制しない（推奨にとどめる）。長さ違反・kebab-case 違反のエラー文言には
+    推奨形式ヒント (`Recommended:`) が必ず含まれる。
+    """
 
     @pytest.mark.parametrize(
         "alias",
         [
-            "w-playbook",      # 10 chars
+            "w-playbook",      # 10 chars, 推奨形式
             "w-alpha01",       # 9 chars, digit suffix OK
-            "w-tinyworker",    # 12 chars
-            "worker01",        # 8 chars exact
-            "abcdefgh",        # 8 chars, no hyphen
-            "w-a-b-c-d",       # 9 chars, multi-hyphen OK (末尾は英字)
+            "w-pp",            # 4 chars 境界, prefix あり
+            "impl",            # 4 chars 境界, prefix なし → prefix 強制しないので OK
+            "w-tiny",          # 6 chars, 旧 8 文字制約では reject、緩和後 valid
+            "w-abcde",         # 7 chars, 同上
+            "abcdefg",         # 7 chars, prefix なし、同上
+            "worker01",        # 8 chars, prefix なし OK
+            "abcdefgh",        # 8 chars, ハイフンなし OK
+            "w-a-b-c-d",       # 9 chars, 連続ハイフンを含まない多ハイフン OK
         ],
     )
     def test_valid_aliases_return_none(self, alias: str):
@@ -39,20 +49,26 @@ class TestValidateAliasFormat:
 
     @pytest.mark.parametrize(
         "alias",
-        ["", "w", "w-a", "w-tiny", "w-abcde", "abcdefg"],  # all < 8 chars
+        ["w", "w-a", "xx"],  # 3 文字以下は長さ違反
     )
-    def test_too_short_aliases_rejected(self, alias: str):
+    def test_too_short_aliases_rejected_with_recommended_hint(self, alias: str):
         err = ow_service._validate_alias_format(alias)
         assert err is not None
-        # 空文字は別メッセージ
-        if alias:
-            assert "too short" in err
+        assert "too short" in err
+        assert "Recommended:" in err
+
+    def test_empty_string_rejected_without_recommended_hint(self):
+        """空文字は型ガード相当の別系統エラー。推奨ヒントは付かない。"""
+        err = ow_service._validate_alias_format("")
+        assert err is not None
+        assert "non-empty" in err
 
     @pytest.mark.parametrize(
         "alias",
         [
             "W-playbook",      # 大文字始まり
             "w-Playbook",      # 大文字混入
+            "w-Abc",           # 大文字混入 (4 文字以上、長さは満たす)
             "w_playbook",      # アンダースコア禁止
             "-playbook",       # 先頭ハイフン
             "playbook-",       # 末尾ハイフン
@@ -60,13 +76,16 @@ class TestValidateAliasFormat:
             "w-play book",     # スペース
             "w-play.book",     # ドット
             "w-プレイブック",   # 非ASCII
+            "w--p",            # 連続ハイフン (4 文字、長さは満たす)
             "w--playbook",     # 連続ハイフン
             "abc---def",       # 3連続ハイフン
         ],
     )
-    def test_invalid_kebab_case_rejected(self, alias: str):
+    def test_invalid_kebab_case_rejected_with_recommended_hint(self, alias: str):
         err = ow_service._validate_alias_format(alias)
         assert err is not None
+        assert "kebab-case" in err
+        assert "Recommended:" in err
 
     def test_non_string_rejected(self):
         # 型ガードも兼ねる
