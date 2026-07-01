@@ -69,6 +69,16 @@ class TestResolveDestPath:
         path = _resolve_dest_path(1, "t", "~/nonexistent-cc-memory-test-file.md")
         assert not path.startswith("~")
 
+    def test_relative_file_path_is_made_absolute(self):
+        path = _resolve_dest_path(3, "t", "out.md")
+        assert os.path.isabs(path)
+        assert path == os.path.abspath("out.md")
+
+    def test_relative_subdir_file_path_is_made_absolute(self):
+        path = _resolve_dest_path(4, "t", os.path.join("sub", "out.md"))
+        assert os.path.isabs(path)
+        assert path == os.path.abspath(os.path.join("sub", "out.md"))
+
 
 class TestBuildFrontmatter:
     def test_wraps_body_with_hyphen_fences(self):

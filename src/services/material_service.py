@@ -447,7 +447,7 @@ def _resolve_dest_path(entity_id: int, title: str, dest_path: Optional[str]) -> 
 
     - None: DEFAULT_EXPORT_DIR/M-{id}-{slug}.md
     - 既存ディレクトリ: そこに M-{id}-{slug}.md
-    - それ以外: ユーザー指定パスをそのまま使用（親ディレクトリの自動作成対象）
+    - それ以外: ユーザー指定パスを絶対パス化して使用（親ディレクトリの自動作成対象）
     """
     slug = _slugify_title(title)
     filename = f"M-{entity_id}-{slug}.md"
@@ -455,24 +455,35 @@ def _resolve_dest_path(entity_id: int, title: str, dest_path: Optional[str]) -> 
         return os.path.join(os.path.expanduser(DEFAULT_EXPORT_DIR), filename)
     expanded = os.path.expanduser(dest_path)
     if os.path.isdir(expanded):
-        return os.path.join(expanded, filename)
-    return expanded
+        return os.path.abspath(os.path.join(expanded, filename))
+    return os.path.abspath(expanded)
+
+
+def _is_within_export_dir(path: str) -> bool:
+    """path が DEFAULT_EXPORT_DIR のサブツリー内かを realpath 基準で判定する。
+
+    許可ルート・対象パス双方を realpath で正規化してから比較するため、
+    シンボリックリンク経由で許可ルート外へ抜けるパスも配下外と判定される。
+    """
+    export_root = os.path.realpath(os.path.expanduser(DEFAULT_EXPORT_DIR))
+    resolved = os.path.realpath(path)
+    return resolved == export_root or resolved.startswith(export_root + os.sep)
 
 
 def _get_material_relations_with_conn(conn, entity_id: int) -> list[dict]:
-    """material が source または target として参加している relations を related 配列にする。"""
+    """material に直接紐づく関連エンティティを related 配列にする。
+
+    relations_view は related の正方向・逆方向を UNION ALL 済みのため、material を
+    source とする1クエリで双方向の直接関連が揃う。depends_on / supersedes は
+    activity / decision 専用で material には該当しない。
+    """
     rows = conn.execute(
-        """
-        SELECT target_type AS type, target_id AS eid FROM relations
-          WHERE source_type = 'material' AND source_id = ?
-        UNION
-        SELECT source_type AS type, source_id AS eid FROM relations
-          WHERE target_type = 'material' AND target_id = ?
-        ORDER BY type, eid
-        """,
-        (entity_id, entity_id),
+        "SELECT target_type, target_id FROM relations_view "
+        "WHERE source_type = ? AND source_id = ? "
+        "ORDER BY target_type, target_id",
+        ("material", entity_id),
     ).fetchall()
-    return [{"type": r["type"], "id": r["eid"]} for r in rows]
+    return [{"type": r["target_type"], "id": r["target_id"]} for r in rows]
 
 
 def _build_frontmatter(
@@ -505,6 +516,10 @@ def _build_frontmatter(
 
 def export_material_to_file(material_id: int, dest_path: Optional[str] = None) -> dict:
     """資材を md ファイルとして出力する。
+
+    書き込み先は DEFAULT_EXPORT_DIR のサブツリー内に限定する。配下外を指す
+    dest_path（シンボリックリンク経由の脱出を含む）は VALIDATION_ERROR で拒否し、
+    ディレクトリ作成もファイル書き込みも一切行わない。
 
     Returns:
         成功時: {"path": str, "overwritten": bool, "material_id": int, "title": str}
@@ -547,6 +562,17 @@ def export_material_to_file(material_id: int, dest_path: Optional[str] = None) -
         body += "\n"
 
     path = _resolve_dest_path(material_id, title, dest_path)
+    if not _is_within_export_dir(path):
+        allowed = os.path.expanduser(DEFAULT_EXPORT_DIR)
+        return {
+            "error": {
+                "code": "VALIDATION_ERROR",
+                "message": (
+                    f"dest_path must resolve to a location within {allowed}. "
+                    f"resolved path: {path}"
+                ),
+            }
+        }
     parent = os.path.dirname(path)
     if parent:
         try:

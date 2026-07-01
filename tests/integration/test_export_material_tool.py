@@ -60,6 +60,17 @@ def material_with_related(temp_db):
     return result["material_id"], activity_id
 
 
+@pytest.fixture(autouse=True)
+def _export_dir_under_tmp(monkeypatch, tmp_path):
+    """書き込みガードの許可ルートを各テストの tmp_path に向ける。
+
+    export_material_to_file は DEFAULT_EXPORT_DIR 配下のみ書き込みを許可する。
+    テストの dest_path はすべて tmp_path 配下を指すため、許可ルートを tmp_path に
+    合わせることで通常ケースを許可し、配下外テストは tmp_path 外を指して検証する。
+    """
+    monkeypatch.setattr("src.services.material_service.DEFAULT_EXPORT_DIR", str(tmp_path))
+
+
 def _read(path: str) -> str:
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
@@ -172,6 +183,39 @@ class TestErrors:
         )
         assert "error" in result
         assert result["error"]["code"] == "NOT_FOUND"
+
+
+class TestPathGuard:
+    def test_path_outside_export_dir_is_rejected(self, material_id, tmp_path):
+        with tempfile.TemporaryDirectory() as outside:
+            target = os.path.join(outside, "escape.md")
+            result = export_material_to_file(material_id, dest_path=target)
+            assert "error" in result
+            assert result["error"]["code"] == "VALIDATION_ERROR"
+            assert not os.path.exists(target)
+
+    def test_rejection_does_not_create_parent_dir(self, material_id, tmp_path):
+        with tempfile.TemporaryDirectory() as outside:
+            target = os.path.join(outside, "new-sub", "escape.md")
+            result = export_material_to_file(material_id, dest_path=target)
+            assert result["error"]["code"] == "VALIDATION_ERROR"
+            assert not os.path.exists(os.path.join(outside, "new-sub"))
+
+    def test_symlink_escape_is_rejected(self, material_id, tmp_path):
+        with tempfile.TemporaryDirectory() as outside:
+            link = tmp_path / "vault-link"
+            os.symlink(outside, str(link))
+            target = link / "escape.md"
+            result = export_material_to_file(material_id, dest_path=str(target))
+            assert "error" in result
+            assert result["error"]["code"] == "VALIDATION_ERROR"
+            assert not os.path.exists(os.path.join(outside, "escape.md"))
+
+    def test_error_message_names_allowed_dir(self, material_id, tmp_path):
+        with tempfile.TemporaryDirectory() as outside:
+            target = os.path.join(outside, "escape.md")
+            result = export_material_to_file(material_id, dest_path=target)
+            assert str(tmp_path) in result["error"]["message"]
 
 
 class TestMcpTool:

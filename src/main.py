@@ -888,15 +888,21 @@ def export_material(
     - 既存ディレクトリを指定: そのディレクトリ配下に M-{id}-{title-slug}.md として出力
     - ファイルパスを指定: そのパスをそのまま使用（親ディレクトリは自動作成）
 
+    書き込み先は ~/cc-memory-export 配下に限定される。配下外を指す dest_path
+    （シンボリックリンク経由の脱出を含む）は VALIDATION_ERROR で拒否され、
+    ファイルもディレクトリも作成されない。cc-memory 管理外の場所（obsidian vault や
+    docs リポ等）へ置きたい場合は、この配下に出力してから移動する。
+
     上書き確認はしない。既存ファイルは無警告で上書きされる（戻り値の overwritten で通知）。
 
     Args:
         material_id: 資材のID
-        dest_path: 出力先パス（optional）。省略/ディレクトリ/ファイルパスで振り分ける
+        dest_path: 出力先パス（optional）。省略/ディレクトリ/ファイルパスで振り分ける。
+            指定する場合は ~/cc-memory-export 配下でなければならない
 
     Returns:
         成功時: {"path": 絶対パス, "overwritten": 既存ファイルを上書きしたか, "material_id": ID, "title": タイトル}
-        失敗時: {"error": {"code": "NOT_FOUND" | "IO_ERROR" | "DATABASE_ERROR", "message": str}}
+        失敗時: {"error": {"code": "NOT_FOUND" | "VALIDATION_ERROR" | "IO_ERROR" | "DATABASE_ERROR", "message": str}}
     """
     return material_service.export_material_to_file(material_id, dest_path=dest_path)
 
