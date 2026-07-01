@@ -15,6 +15,7 @@ from src.services.tag_service import (
 )
 from src.services.habit_service import _add_habit_with_conn
 from src.services.relation_service import _add_relation_with_conn
+from src.services.supersede_service import compute_supersede_info_batch
 from src.services.title_validation import validate_title
 
 PROPAGATE_TYPES = {"habit", "tag_note"}
@@ -224,6 +225,39 @@ def add_decisions(items: list[dict], caller_session_id: Optional[str] = None) ->
         conn.close()
 
 
+def _build_decision_item(
+    dec: dict,
+    tags_map: dict[int, list[str]],
+    supersede_map: dict[int, dict],
+) -> dict:
+    """SELECT * FROM decisions の 1 行から返却用の decision item を組み立てる。
+
+    is_superseded / is_retracted / supersede_chain をここで付与する。詳細:
+    - is_retracted は decisions.retracted_at の NOT NULL 判定
+    - is_superseded / supersede_chain は supersede_service.compute_supersede_info_batch の結果
+    - retracted_at 生値は従来通り retracted 済みのときのみ含める (retract 時刻が呼出側で必要)
+    """
+    display_title = dec.get("title") or (dec["decision"] or "")[:50]
+    supersede_info = supersede_map.get(
+        dec["id"], {"is_superseded": False, "supersede_chain": [dec["id"]]}
+    )
+    item = {
+        "id": dec["id"],
+        "title": display_title,
+        "decision": dec["decision"],
+        "reason": dec["reason"],
+        "tags": tags_map.get(dec["id"], []),
+        "created_at": dec["created_at"],
+        "is_superseded": supersede_info["is_superseded"],
+        "is_retracted": bool(dec.get("retracted_at")),
+        "supersede_chain": supersede_info["supersede_chain"],
+    }
+    if dec.get("retracted_at"):
+        item["retracted_at"] = dec["retracted_at"]
+    apply_readable_id_inplace(item, "decision")
+    return item
+
+
 def get_decisions(
     entity_type: str,
     entity_id: int,
@@ -300,23 +334,13 @@ def get_decisions(
 
             # バッチでタグ取得
             tags_map = get_effective_tags_batch(conn, "decision", topic_id)
+            decision_ids = [row_to_dict(row)["id"] for row in rows]
+            supersede_map = compute_supersede_info_batch(conn, decision_ids)
 
             decisions = []
             for row in rows:
                 dec = row_to_dict(row)
-                # α化用 title: 明示 title 優先、無ければ decision 本文先頭をフォールバック
-                display_title = dec.get("title") or (dec["decision"] or "")[:50]
-                item = {
-                    "id": dec["id"],
-                    "title": display_title,
-                    "decision": dec["decision"],
-                    "reason": dec["reason"],
-                    "tags": tags_map.get(dec["id"], []),
-                    "created_at": dec["created_at"],
-                }
-                if dec.get("retracted_at"):
-                    item["retracted_at"] = dec["retracted_at"]
-                apply_readable_id_inplace(item, "decision")
+                item = _build_decision_item(dec, tags_map, supersede_map)
                 decisions.append(item)
 
             return {
@@ -370,23 +394,12 @@ def get_decisions(
             # 全topic_idを横断してバッチでタグ取得
             decision_ids = [row_to_dict(row)["id"] for row in rows]
             tags_map = get_effective_tags_batch_by_ids(conn, "decision", decision_ids) if decision_ids else {}
+            supersede_map = compute_supersede_info_batch(conn, decision_ids)
 
             decisions = []
             for row in rows:
                 dec = row_to_dict(row)
-                # α化用 title: 明示 title 優先、無ければ decision 本文先頭をフォールバック
-                display_title = dec.get("title") or (dec["decision"] or "")[:50]
-                item = {
-                    "id": dec["id"],
-                    "title": display_title,
-                    "decision": dec["decision"],
-                    "reason": dec["reason"],
-                    "tags": tags_map.get(dec["id"], []),
-                    "created_at": dec["created_at"],
-                }
-                if dec.get("retracted_at"):
-                    item["retracted_at"] = dec["retracted_at"]
-                apply_readable_id_inplace(item, "decision")
+                item = _build_decision_item(dec, tags_map, supersede_map)
                 decisions.append(item)
 
             return {"decisions": decisions}
