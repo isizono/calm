@@ -81,18 +81,77 @@ def compute_supersede_info(
     }
 
 
+def _reach_in_memory(start_id: int, adjacency: dict[int, list[int]]) -> set[int]:
+    """メモリ上の隣接リストを BFS で辿り、start_id から到達可能な id を返す (start 自身は含まない)。"""
+    reached: set[int] = set()
+    visited: set[int] = {start_id}
+    queue: list[int] = [start_id]
+    while queue:
+        current = queue.pop(0)
+        for nid in adjacency.get(current, ()):
+            if nid not in visited:
+                visited.add(nid)
+                reached.add(nid)
+                queue.append(nid)
+    return reached
+
+
 def compute_supersede_info_batch(
     conn: sqlite3.Connection,
     decision_ids: list[int],
 ) -> dict[int, dict]:
     """複数 decision に対して supersede chain / is_superseded を一括算出する。
 
+    decision_supersedes を全件1クエリで読み、方向別の隣接リストをメモリ上に構築してから
+    各 decision の到達可能集合を辿る。supersede 関係は疎なため全件読みでも軽量で、decision
+    数に比例した追加クエリ (N+1) を避けられる。chain 内 id の created_at も1クエリで一括取得
+    してソートに使う。
+
     Returns:
         {decision_id: {"is_superseded": bool, "supersede_chain": [ids...]}}
     """
     if not decision_ids:
         return {}
-    return {did: compute_supersede_info(conn, did) for did in decision_ids}
+
+    # source が target を supersede する。older 方向は source→target、newer 方向は target→source。
+    older_adj: dict[int, list[int]] = {}
+    newer_adj: dict[int, list[int]] = {}
+    for r in conn.execute("SELECT source_id, target_id FROM decision_supersedes").fetchall():
+        s, t = r["source_id"], r["target_id"]
+        older_adj.setdefault(s, []).append(t)
+        newer_adj.setdefault(t, []).append(s)
+
+    chain_ids_by_decision: dict[int, set[int]] = {}
+    is_superseded_by_decision: dict[int, bool] = {}
+    all_chain_ids: set[int] = set()
+    for did in decision_ids:
+        older = _reach_in_memory(did, older_adj)
+        newer = _reach_in_memory(did, newer_adj)
+        chain_ids = older | newer | {did}
+        chain_ids_by_decision[did] = chain_ids
+        is_superseded_by_decision[did] = bool(newer)
+        all_chain_ids |= chain_ids
+
+    # chain を created_at 昇順 (同時刻は id 昇順) に並べるためのソートキーを一括取得する
+    order_key: dict[int, tuple] = {}
+    placeholders = ",".join("?" * len(all_chain_ids))
+    for r in conn.execute(
+        f"SELECT id, created_at FROM decisions WHERE id IN ({placeholders})",
+        tuple(all_chain_ids),
+    ).fetchall():
+        order_key[r["id"]] = (r["created_at"], r["id"])
+
+    result: dict[int, dict] = {}
+    for did in decision_ids:
+        chain = sorted(
+            (i for i in chain_ids_by_decision[did] if i in order_key),
+            key=lambda i: order_key[i],
+        )
+        result[did] = {
+            "is_superseded": is_superseded_by_decision[did],
+            "supersede_chain": chain,
+        }
+    return result
 
 
 def get_superseded_by_batch(

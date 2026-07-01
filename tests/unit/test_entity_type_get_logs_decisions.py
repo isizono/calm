@@ -436,3 +436,63 @@ class TestGetDecisionsSupersedeMetadata:
         assert len(result["decisions"]) == 1
         item = result["decisions"][0]
         assert item["is_retracted"] is True
+
+
+class TestGetDecisionsActivitySupersedeMetadata:
+    """get_decisions(entity_type="activity") も is_superseded / is_retracted / supersede_chain を返す"""
+
+    def _activity_for_topic(self, topic_id: int) -> int:
+        """topic に belongs_to で紐づく activity を作って activity_id を返す。"""
+        act = add_activity(title="[作業] タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
+        add_relation("activity", act["activity_id"], [{"type": "topic", "ids": [topic_id]}])
+        return act["activity_id"]
+
+    def test_solo_decision_marks_chain_as_self_only(self, topic):
+        """supersede 関係が無い decision は chain=[self]、is_superseded=False、is_retracted=False"""
+        tid = topic["topic_id"]
+        d = add_decision(decision="独立", reason="理由", topic_id=tid)
+        activity_id = self._activity_for_topic(tid)
+
+        result = get_decisions("activity", activity_id)
+
+        assert "error" not in result
+        assert len(result["decisions"]) == 1
+        item = result["decisions"][0]
+        assert item["is_superseded"] is False
+        assert item["is_retracted"] is False
+        assert item["supersede_chain"] == [d["decision_id"]]
+
+    def test_linear_chain_returns_full_history_ordered(self, topic):
+        """d_old→d_new の chain で両方の supersede_chain が [old, new]、is_superseded が向き別に返る"""
+        tid = topic["topic_id"]
+        d_old = add_decision(decision="古", reason="理由", topic_id=tid)
+        d_new = add_decision(decision="新", reason="理由", topic_id=tid)
+        add_relation(
+            "decision", d_new["decision_id"],
+            [{"type": "decision", "ids": [d_old["decision_id"]]}],
+            relation_type="supersedes",
+        )
+        activity_id = self._activity_for_topic(tid)
+
+        result = get_decisions("activity", activity_id)
+        by_id = {item["id_raw"]: item for item in result["decisions"]}
+
+        chain = [d_old["decision_id"], d_new["decision_id"]]
+        assert by_id[d_old["decision_id"]]["supersede_chain"] == chain
+        assert by_id[d_old["decision_id"]]["is_superseded"] is True
+        assert by_id[d_new["decision_id"]]["supersede_chain"] == chain
+        assert by_id[d_new["decision_id"]]["is_superseded"] is False
+
+    def test_retracted_decision_flag_true(self, topic):
+        """retract 済み decision は is_retracted=True (include_retracted 経由で確認)"""
+        tid = topic["topic_id"]
+        d = add_decision(decision="retracted", reason="r", topic_id=tid)
+        retract("decision", [d["decision_id"]])
+        activity_id = self._activity_for_topic(tid)
+
+        result = get_decisions("activity", activity_id, include_retracted=True)
+
+        assert "error" not in result
+        assert len(result["decisions"]) == 1
+        item = result["decisions"][0]
+        assert item["is_retracted"] is True
