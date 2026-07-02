@@ -459,17 +459,6 @@ def _resolve_dest_path(entity_id: int, title: str, dest_path: Optional[str]) -> 
     return os.path.abspath(expanded)
 
 
-def _is_within_export_dir(path: str) -> bool:
-    """path が DEFAULT_EXPORT_DIR のサブツリー内かを realpath 基準で判定する。
-
-    許可ルート・対象パス双方を realpath で正規化してから比較するため、
-    シンボリックリンク経由で許可ルート外へ抜けるパスも配下外と判定される。
-    """
-    export_root = os.path.realpath(os.path.expanduser(DEFAULT_EXPORT_DIR))
-    resolved = os.path.realpath(path)
-    return resolved == export_root or resolved.startswith(export_root + os.sep)
-
-
 def _get_material_relations_with_conn(conn, entity_id: int) -> list[dict]:
     """material に直接紐づく関連エンティティを related 配列にする。
 
@@ -517,9 +506,10 @@ def _build_frontmatter(
 def export_material_to_file(material_id: int, dest_path: Optional[str] = None) -> dict:
     """資材を md ファイルとして出力する。
 
-    書き込み先は DEFAULT_EXPORT_DIR のサブツリー内に限定する。配下外を指す
-    dest_path（シンボリックリンク経由の脱出を含む）は VALIDATION_ERROR で拒否し、
-    ディレクトリ作成もファイル書き込みも一切行わない。
+    dest_path 省略時は DEFAULT_EXPORT_DIR 配下、既存ディレクトリ指定時はその
+    配下、ファイルパス指定時はそのパスをそのまま使う（DEFAULT_EXPORT_DIR 外も
+    許可）。capability matrix で本 tool は orch 専用に制限されており、
+    worker/dispatcher からは呼び出せない。
 
     Returns:
         成功時: {"path": str, "overwritten": bool, "material_id": int, "title": str}
@@ -562,17 +552,6 @@ def export_material_to_file(material_id: int, dest_path: Optional[str] = None) -
         body += "\n"
 
     path = _resolve_dest_path(material_id, title, dest_path)
-    if not _is_within_export_dir(path):
-        allowed = os.path.expanduser(DEFAULT_EXPORT_DIR)
-        return {
-            "error": {
-                "code": "VALIDATION_ERROR",
-                "message": (
-                    f"dest_path must resolve to a location within {allowed}. "
-                    f"resolved path: {path}"
-                ),
-            }
-        }
     parent = os.path.dirname(path)
     if parent:
         try:

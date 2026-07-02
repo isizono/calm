@@ -57,7 +57,7 @@ CAPABILITY_MATRIX: CapabilityMatrix = {
     "get_logs":          {"orch": True,  "dispatcher": True,  "worker": True},
     "get_topics":        {"orch": True,  "dispatcher": True,  "worker": True},
     "get_material":      {"orch": True,  "dispatcher": True,  "worker": True},
-    "export_material":   {"orch": True,  "dispatcher": True,  "worker": True},
+    "export_material":   {"orch": True,  "dispatcher": False, "worker": False},
     "get_habits":        {"orch": True,  "dispatcher": True,  "worker": True},
     "get_map":           {"orch": True,  "dispatcher": True,  "worker": True},
     "get_timeline":      {"orch": True,  "dispatcher": True,  "worker": True},
