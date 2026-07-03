@@ -1,4 +1,4 @@
-"""search_telemetry テーブル書込のテスト
+"""search_telemetry / fetch_telemetry テーブル書込のテスト
 
 検証項目:
 1. migration 0041 後に search_telemetry テーブルが存在する (id / query / parameters /
@@ -7,6 +7,10 @@
    が期待する JSON / 整数で記録される
 3. 書込は別スレッドで行われる (`_record_search_telemetry_async` が Thread を返す)
 4. 書込中に例外が発生しても search() の戻り値は通常通りで、本体を壊さない
+5. search_telemetry に results_json / diagnostics_json 列が追加され、search() 呼出ごとに
+   返却ページと retriever 内訳が記録される
+6. fetch_telemetry テーブルが新設され、get_by_ids 呼出が非同期で記録される
+7. fetch_telemetry の書込失敗は get_by_ids の戻り値に波及しない
 """
 import json
 import os
@@ -17,6 +21,7 @@ import pytest
 from src.db import get_connection, init_database
 from src.services import search_service
 from src.services.topic_service import add_topic
+from src.services.decision_service import add_decisions
 import src.services.embedding_service as emb
 
 
@@ -57,6 +62,21 @@ def capture_telemetry_threads(monkeypatch):
     return threads
 
 
+@pytest.fixture
+def capture_fetch_telemetry_threads(monkeypatch):
+    """get_by_ids が起動する fetch_telemetry 書込 thread を捕捉して join() できるようにする"""
+    threads = []
+    original = search_service._record_fetch_telemetry_async
+
+    def wrapped(*args, **kwargs):
+        thread = original(*args, **kwargs)
+        threads.append(thread)
+        return thread
+
+    monkeypatch.setattr(search_service, "_record_fetch_telemetry_async", wrapped)
+    return threads
+
+
 def _wait_for_telemetry(threads, timeout=5.0):
     for t in threads:
         if t is not None:
@@ -67,7 +87,7 @@ def _fetch_all_telemetry():
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT id, query, parameters, result_count, timestamp "
+            "SELECT id, query, parameters, result_count, results_json, diagnostics_json, timestamp "
             "FROM search_telemetry ORDER BY id"
         ).fetchall()
         return [dict(r) for r in rows]
@@ -75,19 +95,36 @@ def _fetch_all_telemetry():
         conn.close()
 
 
+def _fetch_all_fetch_telemetry():
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id, tool, items_json, timestamp FROM fetch_telemetry ORDER BY id"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 def test_search_telemetry_table_schema(temp_db):
-    """migration 0041 で search_telemetry テーブルと必要なカラムが作られる"""
+    """migration 0041 + 0049 で search_telemetry テーブルと必要なカラムが作られる"""
     conn = get_connection()
     try:
         rows = conn.execute("PRAGMA table_info(search_telemetry)").fetchall()
     finally:
         conn.close()
     columns = {r["name"]: r for r in rows}
-    assert {"id", "query", "parameters", "result_count", "timestamp"}.issubset(columns)
+    assert {
+        "id", "query", "parameters", "result_count",
+        "results_json", "diagnostics_json", "timestamp",
+    }.issubset(columns)
     assert columns["query"]["notnull"] == 1
     assert columns["parameters"]["notnull"] == 1
     assert columns["result_count"]["notnull"] == 1
     assert columns["timestamp"]["notnull"] == 1
+    # results_json / diagnostics_json は既存行 (NULL) との後方互換のため NULL 許容
+    assert columns["results_json"]["notnull"] == 0
+    assert columns["diagnostics_json"]["notnull"] == 0
 
 
 def test_search_telemetry_index_on_timestamp(temp_db):
@@ -102,6 +139,34 @@ def test_search_telemetry_index_on_timestamp(temp_db):
         conn.close()
     index_names = {r["name"] for r in rows}
     assert "idx_search_telemetry_timestamp" in index_names
+
+
+def test_fetch_telemetry_table_schema(temp_db):
+    """migration 0049 で fetch_telemetry テーブルと必要なカラムが作られる"""
+    conn = get_connection()
+    try:
+        rows = conn.execute("PRAGMA table_info(fetch_telemetry)").fetchall()
+    finally:
+        conn.close()
+    columns = {r["name"]: r for r in rows}
+    assert {"id", "tool", "items_json", "timestamp"}.issubset(columns)
+    assert columns["tool"]["notnull"] == 1
+    assert columns["items_json"]["notnull"] == 1
+    assert columns["timestamp"]["notnull"] == 1
+
+
+def test_fetch_telemetry_index_on_timestamp(temp_db):
+    """fetch_telemetry.timestamp に index が張られている"""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='index' AND tbl_name='fetch_telemetry'"
+        ).fetchall()
+    finally:
+        conn.close()
+    index_names = {r["name"] for r in rows}
+    assert "idx_fetch_telemetry_timestamp" in index_names
 
 
 def test_search_records_telemetry_row(temp_db, capture_telemetry_threads):
@@ -133,6 +198,24 @@ def test_search_records_telemetry_row(temp_db, capture_telemetry_threads):
     assert "include_details" in params
     assert "tags" in params
     assert row["timestamp"] is not None
+
+    # results_json: 返却ページの (type, id, final_score)
+    results = json.loads(row["results_json"])
+    assert len(results) == result["total_count"]
+    returned_ids = {(r["type"], r["id"]) for r in results}
+    assert ("topic", result["results"][0]["id_raw"]) in returned_ids
+    for r in results:
+        assert set(r.keys()) == {"type", "id", "final_score"}
+
+    # diagnostics_json: retriever 内訳
+    diagnostics = json.loads(row["diagnostics_json"])
+    assert diagnostics["fts_hits"] >= 1
+    assert diagnostics["vec_hits"] is None  # disable_embedding によりベクトル検索無効
+    assert diagnostics["tag_hits"] == 0
+    assert diagnostics["methods_used"] == result["search_methods_used"]
+    assert diagnostics["candidate_set_size"] is None
+    assert diagnostics["qe_expansions"] == []
+    assert set(diagnostics["adaptive_weights"].keys()) == {"w_fts", "w_vec"}
 
 
 def test_search_records_list_keyword_and_parameters(temp_db, capture_telemetry_threads):
@@ -264,4 +347,81 @@ def test_search_unaffected_when_telemetry_write_fails(
     assert call_counter["writer"] >= 1
     assert any(
         "search_telemetry write failed" in record.message for record in caplog.records
+    ), f"warning log が出ていない: {[r.message for r in caplog.records]}"
+
+
+def test_get_by_ids_records_fetch_telemetry(temp_db, capture_fetch_telemetry_threads):
+    """get_by_ids 呼出ごとに fetch_telemetry に 1 行追加される"""
+    topic = add_topic(
+        title="fetch telemetry 記録テスト",
+        description="get_by_ids 呼出で fetch_telemetry が書かれることを検証する",
+        tags=DEFAULT_TAGS,
+    )
+    decision = add_decisions([{
+        "topic_id": topic["topic_id"],
+        "decision": "fetch telemetry 検証用の決定内容",
+        "reason": "fetch telemetry 検証用の理由",
+    }])["created"][0]
+
+    result = search_service.get_by_ids([
+        {"type": "topic", "id": topic["topic_id"]},
+        {"type": "decision", "id": decision["decision_id"]},
+    ])
+    assert "error" not in result
+
+    _wait_for_telemetry(capture_fetch_telemetry_threads)
+
+    rows = _fetch_all_fetch_telemetry()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["tool"] == "get_by_ids"
+    items = json.loads(row["items_json"])
+    assert items == [
+        {"type": "topic", "id": topic["topic_id"]},
+        {"type": "decision", "id": decision["decision_id"]},
+    ]
+    assert row["timestamp"] is not None
+
+
+def test_get_by_ids_empty_items_records_nothing(temp_db):
+    """items=[] の no-op 呼出は fetch_telemetry に記録されない"""
+    result = search_service.get_by_ids([])
+    assert result == {"results": []}
+    assert _fetch_all_fetch_telemetry() == []
+
+
+def test_get_by_ids_too_many_items_records_nothing(temp_db):
+    """TOO_MANY_ITEMS エラーになる呼出は fetch_telemetry に記録されない"""
+    items = [{"type": "topic", "id": i} for i in range(search_service.GET_BY_IDS_MAX + 1)]
+
+    result = search_service.get_by_ids(items)
+
+    assert result["error"]["code"] == "TOO_MANY_ITEMS"
+    assert _fetch_all_fetch_telemetry() == []
+
+
+def test_get_by_ids_unaffected_when_fetch_telemetry_write_fails(
+    temp_db, capture_fetch_telemetry_threads, monkeypatch, caplog
+):
+    """fetch_telemetry 書込に失敗しても get_by_ids の戻り値は壊れず、警告ログが出る"""
+    topic = add_topic(
+        title="fetch telemetry 書込失敗フォールバック検証",
+        description="例外発生時に get_by_ids 本体が影響を受けないことを検証する",
+        tags=DEFAULT_TAGS,
+    )
+
+    def flaky_get_connection():
+        raise RuntimeError("simulated fetch_telemetry write failure")
+
+    monkeypatch.setattr(search_service, "_telemetry_get_connection", flaky_get_connection)
+
+    with caplog.at_level("WARNING"):
+        result = search_service.get_by_ids([{"type": "topic", "id": topic["topic_id"]}])
+
+    _wait_for_telemetry(capture_fetch_telemetry_threads)
+
+    assert "error" not in result
+    assert result["results"][0]["type"] == "topic"
+    assert any(
+        "fetch_telemetry write failed" in record.message for record in caplog.records
     ), f"warning log が出ていない: {[r.message for r in caplog.records]}"
