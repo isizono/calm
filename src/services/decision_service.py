@@ -11,7 +11,14 @@ from src.services.tag_service import (
     link_tags,
     get_effective_tags_batch,
     get_effective_tags_batch_by_ids,
+    parse_tag,
+    resolve_tag_ids,
     _append_tag_notes_with_conn,
+)
+from src.services.direction_service import (
+    DIRECTION_NAMESPACE,
+    DIRECTION_NAME,
+    get_direction_decisions,
 )
 from src.services.habit_service import _add_habit_with_conn
 from src.services.precedent_pure import parse_precedent_sections, summarize_precedent
@@ -34,12 +41,16 @@ def add_decisions(items: list[dict], caller_session_id: Optional[str] = None) ->
             - topic_id (int, 必須): 関連するトピックのID
             - decision (str, 必須): 決定内容
             - reason (str, 必須): 決定の理由
-            - title (str, optional): 決定の要点を表す1行（40字以内）。省略時はNULL（表示はdecision本文にfallback）
-            - tags (list[str], optional): 追加タグ。省略時はtopicのタグを継承
+            - title (str, optional): 決定の要点を表す1行（40字以内）。省略時はNULL（表示はdecision本文にfallback）。
+              tagsに layer:direction を含む場合は必須（省略・空文字はエラー）
+            - tags (list[str], optional): 追加タグ。省略時はtopicのタグを継承。layer:direction は
+              人間の抽象方向性判断であることを明示するタグ（付けた場合はtitle必須）
 
     Returns:
         {created: [...], errors: [{index, error}]}
         created各要素には related_decisions（同topic内の類似decision上位3件 [{id, title, distance}]）が付く。
+        tagsに layer:direction を含む要素には existing_direction_decisions（同domainの有効な
+        方向性decision全件、自身除外・非ランク）と direction_note（supersede/併存の判断を促す文言）も付く。
     """
     # バリデーション: 1 <= len(items) <= 10
     if not items:
@@ -85,6 +96,16 @@ def add_decisions(items: list[dict], caller_session_id: Optional[str] = None) ->
                     parsed_tags = validate_and_parse_tags(tags)
                     if isinstance(parsed_tags, dict):
                         raise ValueError(parsed_tags["error"]["message"])
+
+                # layer:direction タグ付きitemはtitle必須（少数・明示の原則。
+                # 一覧で一目で識別できる必要があるため通常decisionより摩擦を高くする）
+                is_direction_item = bool(
+                    parsed_tags and (DIRECTION_NAMESPACE, DIRECTION_NAME) in parsed_tags
+                )
+                if is_direction_item and title is None:
+                    raise ValueError(
+                        f"title is required for {DIRECTION_NAMESPACE}:{DIRECTION_NAME} decisions"
+                    )
 
                 # 親 topic の存在チェック (旧 FK 制約相当の不変条件を維持)
                 if topic_id is not None:
@@ -152,6 +173,7 @@ def add_decisions(items: list[dict], caller_session_id: Optional[str] = None) ->
                     "topic_id": topic_id,
                     "decision": decision,
                     "reason": reason,
+                    "_is_direction_item": is_direction_item,
                 }
                 if propagation_result:
                     created_item["propagation"] = propagation_result
@@ -204,7 +226,29 @@ def add_decisions(items: list[dict], caller_session_id: Optional[str] = None) ->
                     )
                 c["related_decisions"] = related
 
-            # レスポンス軽量化: embedding生成後はdecision_id/related_decisions以外を除去
+                # layer:direction item には同domainの既存active方向性decisionを
+                # 網羅列挙して付ける（矛盾・重複気づき導線のrelated_decisionsと違い
+                # ランク検索に依存しない全件。少数性の前提でrecallを壊さない）
+                if c.pop("_is_direction_item", False):
+                    domain_tag_ids = resolve_tag_ids(
+                        conn,
+                        [parse_tag(t) for t in c["tags"] if t.startswith("domain:")],
+                    )
+                    existing = [
+                        d for d in get_direction_decisions(conn, domain_tag_ids=domain_tag_ids)
+                        if d["id"] != c["decision_id"]
+                    ]
+                    c["existing_direction_decisions"] = [
+                        {"id": d["id"], "title": d["title"], "created_at": d["created_at"]}
+                        for d in existing
+                    ]
+                    c["direction_note"] = (
+                        f"同domainに有効な方向性decisionが{len(existing)}件あります。"
+                        "この決定が置き換えるものにはadd_relation(relation_type='supersedes')"
+                        "を張ってください。併存する場合は、併存理由をreasonに明記してください。"
+                    )
+
+            # レスポンス軽量化: embedding生成後はdecision_id/related_decisions(+direction系)以外を除去
             for c in created:
                 c.pop("decision", None)
                 c.pop("reason", None)

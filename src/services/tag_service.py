@@ -4,7 +4,7 @@ from typing import Optional, Union
 
 from src.db import execute_query, get_connection, row_to_dict
 
-VALID_NAMESPACES = {'', 'domain', 'intent', 'glossary'}
+VALID_NAMESPACES = {'', 'domain', 'intent', 'glossary', 'layer'}
 
 # resolve_tags 定数
 MERGE_THRESHOLD = 0.15  # コサイン距離。これ未満なら統合
