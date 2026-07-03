@@ -14,7 +14,7 @@ from typing import Literal, Optional
 from sqlite_vec import serialize_float32
 
 from src.db import execute_query, get_connection, get_db_path, row_to_dict
-from src.services import embedding_service
+from src.services import embedding_service, precedent_pure
 from src.services.readable_id import apply_readable_id_inplace
 from src.services.supersede_service import get_superseded_by_batch
 from src.services.tag_service import (
@@ -1862,8 +1862,11 @@ def _record_search_telemetry_async(
     return thread
 
 
-def _format_row(type_name: str, data: dict, tags: list[str]) -> dict:
-    """typeに応じたレスポンス整形"""
+def _format_row(type_name: str, data: dict, tags: list[str], conn: sqlite3.Connection) -> dict:
+    """typeに応じたレスポンス整形
+
+    conn: decision 分岐で is_superseded / superseded_by を引くための DB 接続。
+    """
     if type_name == 'topic':
         result = {
             "id": data["id"],
@@ -1887,6 +1890,12 @@ def _format_row(type_name: str, data: dict, tags: list[str]) -> dict:
         }
         if data.get("retracted_at"):
             result["retracted_at"] = data["retracted_at"]
+        superseded_by = get_superseded_by_batch(conn, [data["id"]]).get(data["id"])
+        result["is_superseded"] = superseded_by is not None
+        result["superseded_by"] = superseded_by
+        parsed_precedent = precedent_pure.parse_precedent_sections(data.get("reason") or "")
+        if parsed_precedent is not None:
+            result["precedent"] = precedent_pure.summarize_precedent(parsed_precedent)
         apply_readable_id_inplace(result, "decision")
         return result
     elif type_name == 'activity':
@@ -1947,7 +1956,8 @@ def get_by_id(type: str, id: int, conn=None) -> dict:
         conn: 既存のDB接続（省略時は内部で新規作成・クローズ）
 
     Returns:
-        指定した種別に応じた詳細情報
+        指定した種別に応じた詳細情報。type='decision' のとき is_superseded（bool）と
+        superseded_by（最新1hopのsupersede元id、無ければNone）が常に付く。
     """
     if type not in VALID_TYPES:
         return {
@@ -1998,7 +2008,7 @@ def get_by_id(type: str, id: int, conn=None) -> dict:
             ).fetchone()
             data["topic_id"] = r["target_id"] if r else None
 
-        return {"type": type, "data": _format_row(type, data, tags)}
+        return {"type": type, "data": _format_row(type, data, tags, conn)}
 
     except Exception as e:
         return {
