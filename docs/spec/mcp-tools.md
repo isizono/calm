@@ -1,3 +1,11 @@
+<!-- ccm-doc-sync
+watch-tags: domain:cc-memory
+watch-direction: true
+watch-migrations: true
+last-synced: 2026-07-04
+last-synced-migration: 0048
+-->
+
 # cc-memory MCPツール仕様書 v0
 
 ## 0. 読み方
@@ -14,7 +22,7 @@
 
 ## 1. ツール一覧
 
-全36ツール。カテゴリ別に一覧する。
+全39ツール。カテゴリ別に一覧する。
 
 ### 1.1 記録系（add系）
 
@@ -86,12 +94,20 @@
 | `ow_close_worker` | workerセッションをクローズする |
 | `ow_status` | queueサマリ + presence の合成ビューを返す |
 | `ow_recover` | orch crash後の queue × relay × presence 整合チェック・自動修正 |
+| `ow_spawn_dispatcher` | dispatcherセッションを起動する |
+| `ow_close_dispatcher` | dispatcherセッションと紐づくworker poolをcascade killする |
 
 ### 1.8 その他
 
 | ツール | 概要 |
 | --- | --- |
 | `roll_dice` | ダイスを振る（デフォルト1d10） |
+
+### 1.9 エクスポート系
+
+| ツール | 概要 |
+| --- | --- |
+| `export_material` | 資材をmd形式のファイルとしてcc-memory外に出力する |
 
 ---
 
@@ -441,6 +457,37 @@
 | dry_run | bool | no | false | trueなら検出のみ |
 
 **返り値**: `{detected: {ghost_active, pending_spawn, stalled_done, orphans}, applied, warnings, presence, reconstructed_max_msg_id, dry_run}`。orch crash後の queue × relay × presence 整合チェック・自動修正に用いる。
+
+### 2.32 ow_spawn_dispatcher
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| channel | string | yes | - | channelコード（handleに`d-`prefixで組み込まれる） |
+| cwd | string | yes | - | dispatcherセッションの作業ディレクトリ |
+| model | string | yes | - | `claude-opus-4-7` のみ許可 |
+| tmux_target_pane | string | no | null | tmux分割表示用の基準pane ID |
+
+**制約**: modelは `claude-opus-4-7` 固定。sonnet/haiku/opus-4-8 はバリデーションで拒否される。
+**返り値**: `{term_ref, bundle_msg_id, spawning: "ok", alias}`。channelに既存dispatcherがあればcascade kill（既存dispatcher + 紐づくworker pool全員）してから新規spawnする。health checkやidempotent rejectは行わない。
+
+### 2.33 ow_close_dispatcher
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| channel | string | yes | - | channelコード |
+
+**返り値**: `{closed: True, channel, dispatcher_handle, killed_workers: [handle, ...], failed_workers: [{handle, reason/error}, ...]}`。dispatcher sessionをkillし、紐づくworker poolもcascade killする。channelにdispatcher（handle=d-{channel}）が存在しない場合はエラー（no-op successは採らない）。closeはgraceful shutdownを試みず即process kill。
+
+### 2.34 export_material
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| material_id | int | yes | - | 資材のID |
+| dest_path | string | no | null | 出力先パス。省略/既存ディレクトリ/ファイルパスの3パターンで振り分ける |
+
+**返り値**: 成功時 `{path, overwritten, material_id, title}`。失敗時 `{error: {code: "NOT_FOUND"|"VALIDATION_ERROR"|"IO_ERROR"|"DATABASE_ERROR", message}}`。
+**制約**: 資材をYAML frontmatter + h1 + content形式のmdファイルとして出力する。書き込み先は`~/cc-memory-export`配下に限定され、配下外を指すdest_path（シンボリックリンク経由の脱出を含む）はVALIDATION_ERRORで拒否される。上書き確認はしない（既存ファイルは無警告で上書きされ、`overwritten`で通知）。
+**関連**: cc-memory内で読むだけなら`get_material`、複数種別横断で全文取得したいなら`get_by_ids`を使う。
 
 ---
 
