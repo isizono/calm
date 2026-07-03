@@ -24,6 +24,7 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 from hooks.hook_state import HookState
+from hooks.signal_capture import try_capture_signal
 
 
 def _make_hook_output(message: str) -> dict:
@@ -141,6 +142,7 @@ def main() -> None:
     except Exception as e:
         # フェイルオープン: 例外時は空JSON + stderrログ
         print(f"user_prompt_submit_hook.py error: {e}", file=sys.stderr)
+        try_capture_signal(kind="machine_error", source="hook:user_prompt_submit", summary=str(e)[:200])
         print("{}")
 
 
