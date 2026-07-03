@@ -21,6 +21,7 @@ from src.services import (
     timeline_service,
     ow_service,
     guard_service,
+    signal_service,
 )
 from src.services.checkin_service import check_in as _check_in
 from src.services.tag_service import search_tags as _search_tags, update_tag as _update_tag, collect_tag_notes_for_injection
@@ -244,6 +245,10 @@ mcp = FastMCP("cc-memory", instructions=build_instructions())
 # role 別の tools/list 可視性を制御する middleware を登録する
 from src.services.visibility_middleware import CapabilityVisibilityMiddleware
 mcp.add_middleware(CapabilityVisibilityMiddleware())
+
+# tool呼び出し中の未捕捉例外を signal_events へ自動捕捉する middleware を登録する
+from src.services.signal_middleware import SignalCaptureMiddleware
+mcp.add_middleware(SignalCaptureMiddleware())
 
 # サーバー起動時刻（/health で uptime 算出に使用）
 _SERVER_STARTED_AT = datetime.now(timezone.utc)
@@ -1259,6 +1264,118 @@ def get_config() -> dict:
 def roll_dice(sides: int = 10) -> dict:
     """指定面数のダイスを振る。デフォルト1d10。"""
     return {"result": random.randint(1, sides)}
+
+
+# ----------------------------
+# シグナル吸い上げ
+# ----------------------------
+
+
+@mcp.tool()
+def report_signal(
+    kind: str,
+    summary: str,
+    detail: str | None = None,
+    refs: list[dict] | None = None,
+    context: dict | None = None,
+) -> dict:
+    """cc-memory 自身への故障報告・使用感不満・矛盾検出・運用計測イベントの統一入口。
+
+    kind（7種類、いずれか必須）:
+      - "machine_error": ツールエラー・hook 失敗・サーバー異常を観察した
+      - "friction": cc-memory の使い勝手への不満・違和感（ユーザー発話由来を含む）
+      - "contradiction": 既存記録(decision/material/log)と矛盾する結論を出した/検出した。
+        refs に矛盾の両側の id を必ず含めること。summary は
+        「<新しい結論の要旨> ↔ <矛盾する既存記録の title>」形式。
+        detail にはどちらの検証アンカー(コミット・日付・検証手段)が強いかの観察を書く。
+        context.resolution に existing_correct / new_correct / unresolved を書く
+      - "precedent_miss" / "precedent_misapplied": 判例参照の見落とし・誤類推の事後発覚。
+        context に missed_ids / cited_id 等の規約キーを書く
+      - "boundary_case" / "rollback": 運用上の案件記録。summary に PR 番号等の
+        案件識別子を含める（dedup の集約単位を案件ごとに分けるため）
+
+    同一内容の再報告は自動で集約される(occurrence_count)。
+
+    Args:
+        kind: 上記7種のいずれか
+        summary: 1行要約（空文字不可）
+        detail: traceback・引数ダイジェスト・自由記述（optional）
+        refs: [{"type": "decision", "id": 123}, ...] 形式の参照リスト（optional）
+        context: kind ごとの構造化ペイロード（optional）
+
+    Returns:
+        成功時: {"id": int, "deduped": bool, "occurrence_count": int}
+        失敗時: {"error": {"code": "VALIDATION_ERROR", "message": ...}}
+    """
+    caller_session_id = get_caller_session_id()
+    try:
+        return signal_service.record_signal(
+            kind,
+            summary,
+            detail=detail,
+            refs=refs,
+            context=context,
+            session_id=caller_session_id,
+        )
+    except ValueError as e:
+        return {"error": {"code": "VALIDATION_ERROR", "message": str(e)}}
+
+
+@mcp.tool()
+def get_signals(
+    status: str | None = "new",
+    kind: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+    include_stats: bool = False,
+) -> dict:
+    """report_signal で記録されたシグナルを一覧・集計する。
+
+    Args:
+        status: フィルタ対象のstatus（"new"|"triaged"|"promoted"|"dismissed"）。
+            null指定で全status横断。デフォルトは未トリアージの"new"のみ
+        kind: フィルタ対象のkind。null指定で全kind横断
+        limit: 取得件数上限（最大100件、デフォルト20）
+        offset: 取得開始位置（ページネーション用）
+        include_stats: Trueのとき kind×status のクロス集計と直近30日サマリを付与
+
+    Returns:
+        成功時: {"signals": [...], "total_count": int, "stats": {...}(include_stats時のみ)}
+        失敗時: {"error": {"code": ..., "message": ...}}
+    """
+    return signal_service.get_signals(
+        status=status, kind=kind, limit=limit, offset=offset, include_stats=include_stats
+    )
+
+
+@mcp.tool()
+def update_signal(
+    signal_id: int,
+    status: str,
+    promoted_type: str | None = None,
+    promoted_id: int | None = None,
+) -> dict:
+    """シグナルのトリアージ状態を遷移する（orch/親セッション専用）。
+
+    promoted_type/promoted_id は既存エンティティ（topic/activity/decision/log/material）
+    への参照であり、両方指定時のみ実在チェックの上でリンクする。実体の作成は行わない
+    （昇格実体は既存の add 系ツールで別途作成する）。
+
+    Args:
+        signal_id: 対象シグナルID
+        status: 遷移先status（"new"|"triaged"|"promoted"|"dismissed"）
+        promoted_type: 昇格先エンティティ種別（"topic"|"activity"|"decision"|"log"|"material"）。
+            省略時は既存の紐付けを変更しない
+        promoted_id: 昇格先エンティティID。promoted_typeと同時に指定する
+
+    Returns:
+        成功時: {"signal": {...}}（更新後の行）
+        失敗時: {"error": {"code": ..., "message": ...}}
+    """
+    guard_service.check_capability("update_signal")
+    return signal_service.update_signal(
+        signal_id, status, promoted_type=promoted_type, promoted_id=promoted_id
+    )
 
 
 # ----------------------------
