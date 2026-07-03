@@ -210,33 +210,33 @@ description: "「sync-memory改善」トピックで議論中。ステップ4の
 - transcriptを見直し、記録済みの内容と照合する
 - 落ちているトピック・アクティビティ・資材・決定事項・ログがあれば、その場で追加記録する
 
-### 9. 棚卸し・remember・提案
+### 9. 棚卸し・remember（自動実行）
 
-ステップ9a〜9bの結果をまとめて、**1回のAskUserQuestion**でユーザーに提案する（ステップ9c）。**9a〜9bがすべて空ならステップ9全体をサイレントスキップする。**
+ステップ9a〜9bの判定に基づき、ユーザーに確認せずClaudeが判断してその場で処理する。処理内容はステップ10の完了報告にまとめて記載する。**9a〜9bが何も無ければステップ9全体をサイレントスキップする。**
 
 #### 9a. アクティビティの棚卸し
 
 **まずスキップ判定:** ステップ0で取得したアクティビティを以下のカテゴリに照合し、**該当が1件もなければ即座にスキップする。** ユーザーにアクティビティ一覧を見せたり、「該当なし」と報告する必要はない。
 
-**判断基準 — いずれかに該当するアクティビティがある場合のみ報告:**
+**判断基準 — いずれかに該当するアクティビティがある場合のみ処理対象とする:**
 
 （確信度「高」のアクティビティはStep 2で自動クローズ済みのため、ここでは扱わない）
 
 **確信度「中」（完了の可能性が高いがエージェント判断では確定できないもの）:**
 - 前回セッションであと一歩だったもの（残タスクが軽微）
 - 外部で完了した可能性が高いもの（transcript外の状況変化を示唆する情報がある）
+→ `update_activity(status="completed")` で自動的にcompletedにする（Step 2の確信度「高」と同様の扱い）
 
 **確信度「低」（整理・棚卸し対象）:**
-1. **重複**: 同じ目的・内容のアクティビティが複数存在する場合の片方
-2. **7日以上放置**: `updated_at` から7日以上経過しているpendingアクティビティ
-3. **状況変化で不要**: 前提条件が変わり、もうやる意味がないアクティビティ
+1. **重複**: 同じ目的・内容のアクティビティが複数存在する場合の片方 → 情報量が少ない方・古い方を `update_activity(status="completed")` にする
+2. **7日以上放置**: `updated_at` から7日以上経過しているpendingアクティビティ → 前提が変わらずまだ必要と判断すれば `update_activity(activity_id, status="snoozed")` で寝かせる（snooze期間経過後に自動でpendingに復活する）、状況を見て不要と判断すれば `completed` にする
+3. **状況変化で不要**: 前提条件が変わり、もうやる意味がないアクティビティ → `update_activity(status="completed")` にする。description先頭に理由を追記する（例: 「YYYY-MM-DD sync-memoryで前提変更によりcompleted」）
 4. **フェーズ移行済み**: in_progressの議論アクティビティ（intent:discuss）で、後続フェーズが既に動いているもの。以下のいずれかで検出する:
    - depends_onで下流アクティビティ（intent:design/implement）がin_progress以降
    - 同トピック内でintent:discussがin_progressかつ、intent:design/implementのアクティビティが存在する
+   → `update_activity(status="completed")` にする
 
-**ユーザーの回答に応じた処理:**
-- 放置アクティビティを「まだいる」と言われた場合 → `update_activity(activity_id, status="snoozed")` で寝かせる（snooze期間経過後に自動でpendingに復活する）
-- 「状況変化で不要」の削除提案を却下された場合 → そのアクティビティの description 先頭に経緯を追記する（例: 「YYYY-MM-DD sync-memoryで前提変更により削除を提案したが、残すことになった。理由: ...」）
+いずれも判断に迷う場合は、より安全な側（消さない・completedにしない、現状のまま残す）に倒す。
 
 #### 9b. 記憶すべき知見の判定（remember）
 
@@ -257,89 +257,18 @@ description: "「sync-memory改善」トピックで議論中。ステップ4の
 **tag notes の手順:**
 1. `search_tags` で対象タグの現在の notes を確認する（include_notes=True）
 2. 既存 notes がある場合は内容を保持しつつマージ（上書き方式なので全文を書く）
-3. ステップ9cでユーザーに提案し、承認後に `update_tag` で書き込む
+3. `update_tag` でそのまま書き込む
 
 **habits の手順:**
 1. `get_habits` で既存 habits を確認する
 2. 新規ルールか、既存 habit の改善・修正かを判定する
-3. 登録・更新する内容のドラフトを準備する（この時点では API 呼び出ししない）
-4. ステップ9cでユーザーに提案し、承認後に `add_habit` または `update_habit(habit_id, content)` で書き込む
+3. `add_habit` または `update_habit(habit_id, content)` でそのまま書き込む
 
 **auto-memory の記録先判断（エージェント裁量）:**
 - 短い（数行）→ MEMORY.mdに直接追記
 - 長い → auto memoryの別ファイルに書き、MEMORY.mdにリンク
 
-記録すべきものがなければ9bは空とする。
-
-#### 9c. ユーザーに提案
-
-9a〜9bの結果を **AskUserQuestionの別々のquestion** として提案する。各項目は独立した関心事なので、1つのquestionにまとめず分離する。
-
-**AskUserQuestionの構成:**
-- 9aが空でなければ → 棚卸し用のquestionを追加
-- 9bの結果を保存先ごとに分けてquestionを追加（tag notes / habits / auto-memoryそれぞれ該当があれば）
-- すべて空なら → ステップ9全体をスキップ
-
-**棚卸しquestion:**
-```
-header: "アクティビティ棚卸し"
-question: |
-  **completedにするアクティビティ（確認）:**
-  - id:XXX タイトル → 理由（例: PR#77でマージ済み）
-
-  **対応が必要なアクティビティ（判断をお願い）:**
-  - id:XXX タイトル → 理由（例: 7日以上放置、id:YYYと重複、前提変更で不要 など）
-options: [提案通り進める, スキップ]
-```
-
-**remember question（保存先ごとに分けて出す。該当がある保存先のみ）:**
-
-```
-header: "tag notes"
-question: |
-  タグnotesを更新する？
-  - [tag名] 変更内容の概要（新規追記 / 修正 / 削除）
-options:
-  - label: 更新する
-    markdown: |
-      **tag名:**
-      (更新後のnotes全文)
-  - label: 不要
-```
-
-```
-header: "habits"
-question: |
-  habitsを登録／更新する？（check-in時にAIへ毎回注入される）
-  - {ルールの概要}（新規 or 既存habit id:XX の更新）
-options:
-  - label: 登録／更新する
-    markdown: |
-      {登録・更新するhabitsの全文}
-  - label: 不要
-```
-
-```
-header: "auto memory"
-question: |
-  auto memoryに記録する？
-  - [記録先] 内容の概要
-options:
-  - label: 記録する
-    markdown: |
-      （記録内容のプレビューをここに入れる）
-  - label: 不要
-```
-
-- 判断に迷うものは載せない（誤って消すより残すほうが安全）
-- tag notes では `markdown` で更新後の notes 全文をプレビューする（update_tag は全文置換のため）
-- auto memory / habits では `markdown` で記録内容をプレビューする
-
-**ユーザーの回答に応じて処理:**
-- 棚卸し: ユーザーの指示に従って処理（completed、削除、そのまま残す等）
-- tag notes: ユーザーが承認した場合 `update_tag(tag, notes)` で書き込む
-- habits: ユーザーが承認した場合 `add_habit(content)` で登録する（既存を改善・修正するなら `update_habit(habit_id, content)` で更新する）
-- auto memory: ユーザーが承認した項目をauto memoryに書き込む
+判断に迷うものは書き込まない（誤って書くより書かないほうが安全）。tag notesは`update_tag`が全文置換である点に注意し、既存notesを失わないよう必ずマージしてから書き込む。記録すべきものがなければ9bは空とする。
 
 ## 10. 完了報告
 
@@ -376,7 +305,7 @@ options:
 - (更新した内容の概要を列挙)
 
 ### 注意事項
-- (確認が必要な事項や曖昧な点があれば記載)
+- (判断に迷って何もしなかった項目、ユーザーが把握しておくべき事項があれば記載)
 
 ### ふりかえり
 まず `get_config()` を呼ぶ。`sync_disable_retrospective` が `true` の場合、このセクションをスキップする。
@@ -394,4 +323,4 @@ options:
 - 判断に迷う場合は、記録する方向で進める（後で修正可能）
 - **既に記録済みのものは重複して記録しない** - ステップ0で取得した既存データと照合すること
 - **現在進行中の作業がある場合は `add_activity` で登録し、`update_activity` で `in_progress` にする**
-- **ステップ1〜9ではツール呼び出しの前後に判断理由・中間分析・進捗報告のテキストを出力しない。ユーザーに見せるのはステップ9cのAskUserQuestion（該当がある場合）とステップ10の完了報告のみ**
+- **ステップ1〜9ではツール呼び出しの前後に判断理由・中間分析・進捗報告のテキストを出力しない。ユーザーに見せるのはステップ10の完了報告のみ**
