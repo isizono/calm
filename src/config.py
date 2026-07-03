@@ -29,3 +29,11 @@ SYNC_DISABLE_RETROSPECTIVE: bool = os.environ.get(
     "CCM_SYNC_DISABLE_RETROSPECTIVE", "false"
 ).lower() in ("true", "1")
 SYNC_POLICY: str | None = os.environ.get("CCM_SYNC_POLICY") or None  # 空文字→None正規化
+
+# --- Migration Safety ---
+# premigration スナップショット取得を無効化する緊急脱出弁（"0" で無効化）
+CCM_MIGRATION_SNAPSHOT: bool = os.environ.get("CCM_MIGRATION_SNAPSHOT", "1") != "0"
+# 実DBコピーへのdry-run適用ゲートを無効化する緊急脱出弁（"0" で無効化）
+CCM_MIGRATION_DRYRUN: bool = os.environ.get("CCM_MIGRATION_DRYRUN", "1") != "0"
+# migration_ledger内容ハッシュ不一致時の既定動作。"error"（既定、起動中断）| "warn"（警告のみで続行）
+CCM_MIGRATION_HASH_ENFORCE: str = os.environ.get("CCM_MIGRATION_HASH_ENFORCE", "error").lower()
