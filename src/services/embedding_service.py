@@ -166,6 +166,7 @@ def _ensure_initialized() -> bool:
         _server_initialized = True
         if not _backfill_done:
             backfill_embeddings()
+            backfill_topic_embeddings()
             _backfill_done = True
     return running
 
@@ -531,6 +532,89 @@ def backfill_tag_embeddings() -> int:
 
     except Exception as e:
         logger.warning(f"Tag embedding backfill failed: {e}")
+        return 0
+    finally:
+        conn.close()
+
+
+# ========================================
+# Topic embedding ヘルパー
+# ========================================
+
+
+def _insert_topic_embedding_row(conn, topic_id: int, embedding: list[float]) -> None:
+    """topic_vecに1行UPSERT（DELETE+INSERT）する（コミットは呼び出し側の責任）。"""
+    blob = serialize_float32(embedding)
+    conn.execute("DELETE FROM topic_vec WHERE rowid = ?", (topic_id,))
+    conn.execute(
+        "INSERT INTO topic_vec(rowid, embedding) VALUES (?, ?)",
+        (topic_id, blob),
+    )
+
+
+def insert_topic_embedding(topic_id: int, embedding: list[float]) -> None:
+    """topic_vecにembeddingをINSERTする。
+
+    add_topicが既に生成したembeddingをそのまま渡す想定であり、
+    ここでは再エンコードしない。
+    """
+    conn = get_connection()
+    try:
+        _insert_topic_embedding_row(conn, topic_id, embedding)
+        conn.commit()
+    except Exception as e:
+        logger.warning(f"Failed to insert topic embedding for topic_id={topic_id}: {e}")
+    finally:
+        conn.close()
+
+
+def delete_topic_embedding_with_conn(conn, topic_id: int) -> None:
+    """topic_vecから1行削除する（コミットは呼び出し側の責任）。
+
+    vec0仮想テーブルは外部キー制約を持てないため、topic削除処理を実装する際は
+    同じトランザクション内でこの関数を呼び、孤児レコードを残さないようにする。
+    """
+    conn.execute("DELETE FROM topic_vec WHERE rowid = ?", (topic_id,))
+
+
+def backfill_topic_embeddings() -> int:
+    """topic_vecにembeddingが無いtopicへ、vec_index格納済みのembeddingを複製する。
+
+    add_topic時に生成されvec_indexへ格納済みのembeddingをsearch_index経由で
+    引き当てて複製するだけであり、再エンコードは行わない。vec_indexにも
+    embeddingが無いtopic（embeddingサーバー停止中に作成された等）は対象外となる。
+    その場合はbackfill_embeddings()でvec_indexが埋まった後の呼び出しで拾われる。
+
+    Returns: 複製したembedding数
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT dt.id AS topic_id, vi.embedding AS embedding
+            FROM discussion_topics dt
+            INNER JOIN search_index si ON si.source_type = 'topic' AND si.source_id = dt.id
+            INNER JOIN vec_index vi ON vi.rowid = si.id
+            LEFT JOIN topic_vec tv ON tv.rowid = dt.id
+            WHERE tv.rowid IS NULL
+            """
+        ).fetchall()
+
+        if not rows:
+            return 0
+
+        total = 0
+        for row in rows:
+            conn.execute(
+                "INSERT INTO topic_vec(rowid, embedding) VALUES (?, ?)",
+                (row["topic_id"], row["embedding"]),
+            )
+            total += 1
+        conn.commit()
+        logger.info(f"Backfilled {total} topic embeddings")
+        return total
+    except Exception as e:
+        logger.warning(f"Topic embedding backfill failed: {e}")
         return 0
     finally:
         conn.close()

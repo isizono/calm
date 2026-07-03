@@ -5,7 +5,11 @@ from typing import Optional
 from src.db import get_connection, row_to_dict
 from src.services.citations_service import upsert_citations_for_owner_with_conn
 from src.services.readable_id import apply_readable_id_inplace
-from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
+from src.services.embedding_service import (
+    build_embedding_text,
+    generate_and_store_embedding,
+    insert_topic_embedding,
+)
 from src.services.relation_service import _add_relation_with_conn, _validate_targets
 from src.services.search_service import find_similar_topics
 from src.services.title_validation import validate_title
@@ -198,6 +202,9 @@ def add_topic(
         tag_text = " ".join(tag_strings) if tag_strings else ""
         embedding_text = build_embedding_text(title, description, tag_text)
         embedding_vec = generate_and_store_embedding("topic", topic_id, embedding_text)
+        # topic routing 専用索引にも同じベクトルを書き込む（再エンコードしない）
+        if embedding_vec is not None:
+            insert_topic_embedding(topic_id, embedding_vec)
 
         # 類似トピックをサジェスト（生成済みembeddingを再利用しHTTPリクエストを削減）
         similar = find_similar_topics(embedding_text, exclude_id=topic_id, embedding=embedding_vec)
