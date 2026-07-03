@@ -14,7 +14,7 @@ from typing import Literal, Optional
 from sqlite_vec import serialize_float32
 
 from src.db import execute_query, get_connection, get_db_path, row_to_dict
-from src.services import embedding_service
+from src.services import embedding_service, precedent_pure
 from src.services.readable_id import apply_readable_id_inplace
 from src.services.supersede_service import get_superseded_by_batch
 from src.services.tag_service import (
@@ -1887,6 +1887,9 @@ def _format_row(type_name: str, data: dict, tags: list[str]) -> dict:
         }
         if data.get("retracted_at"):
             result["retracted_at"] = data["retracted_at"]
+        parsed_precedent = precedent_pure.parse_precedent_sections(data.get("reason") or "")
+        if parsed_precedent is not None:
+            result["precedent"] = precedent_pure.summarize_precedent(parsed_precedent)
         apply_readable_id_inplace(result, "decision")
         return result
     elif type_name == 'activity':

@@ -424,6 +424,11 @@ def get_decisions(
     Returns:
         決定事項一覧（各decisionにtags付き）
         entity_type == "activity" の場合はrelated topics経由でdecisions集約
+        reasonに定型節（却下案:/適用条件:/適用外:/検証:。書式は docs/precedent-format.md）が
+        あるdecisionには precedent（{rejected_alternatives: 件数, scope: bool,
+        verification_anchors: [文字列, ...]}）が付く。節が無いdecisionにはキー自体が無い
+        （legacy本文と規約準拠本文の区別に使える。検証アンカーが空のdecisionは
+        「決定のみ・実測未確認」を意味する）
     """
     flavor = _normalize_flavor(flavor)
     result = decision_service.get_decisions(entity_type, entity_id, start_id, limit, include_retracted=include_retracted)
@@ -515,6 +520,9 @@ def get_by_ids(
 
     Returns:
         取得結果（各アイテムの詳細情報）
+        typeが'decision'のとき、reasonに定型節（却下案:/適用条件:/適用外:/検証:。書式は
+        docs/precedent-format.md）があれば precedent（get_decisionsと同形のコンパクト形）が付く。
+        節が無いdecisionにはキー自体が無い
     """
     flavor = _normalize_flavor(flavor)
     result = search_service.get_by_ids(items)
