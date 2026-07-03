@@ -14,7 +14,7 @@
 
 ## 1. ツール一覧
 
-全36ツール。カテゴリ別に一覧する。
+全39ツール。カテゴリ別に一覧する。
 
 ### 1.1 記録系（add系）
 
@@ -92,6 +92,16 @@
 | ツール | 概要 |
 | --- | --- |
 | `roll_dice` | ダイスを振る（デフォルト1d10） |
+
+### 1.9 シグナル系（signal_events）
+
+cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベントの記録先。`add_logs` / `add_decisions` とは異なり合意不要の生の観測データであり、専用テーブル（`signal_events`）に記録される。
+
+| ツール | 概要 |
+| --- | --- |
+| `report_signal` | cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベントを記録する（orch/dispatcher/workerいずれからも呼べる） |
+| `get_signals` | 記録されたシグナルを一覧・集計する |
+| `update_signal` | シグナルのトリアージ状態を遷移する（orch専用） |
 
 ---
 
@@ -442,6 +452,44 @@
 
 **返り値**: `{detected: {ghost_active, pending_spawn, stalled_done, orphans}, applied, warnings, presence, reconstructed_max_msg_id, dry_run}`。orch crash後の queue × relay × presence 整合チェック・自動修正に用いる。
 
+### 2.32 report_signal
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| kind | string | yes | - | `machine_error` / `friction` / `contradiction` / `precedent_miss` / `precedent_misapplied` / `boundary_case` / `rollback` の7種のいずれか |
+| summary | string | yes | - | 1行要約（空文字不可） |
+| detail | string | no | null | traceback・引数ダイジェスト・自由記述 |
+| refs | list[{"type", "id"}] | no | null | 参照リスト。`contradiction` では矛盾の両側のidを必須とする |
+| context | object | no | null | kindごとの構造化ペイロード（例: `contradiction` は `resolution`、`precedent_miss` は `missed_ids`） |
+
+**返り値**: 成功時 `{id: int, deduped: bool, occurrence_count: int}`、失敗時 `{error: {code: "VALIDATION_ERROR", message: ...}}`。
+**動作**: 同一 `fingerprint`（kind+source+正規化summaryのハッシュ）を持つ未トリアージ行が既にあれば新規行を作らず `occurrence_count` を加算する（dedup）。
+**関連**: MCPツール例外の middleware 捕捉やhooksのtop-level捕捉からも自動的に呼ばれる（`source` がそれぞれ `tool:*` / `hook:*` になる）。
+
+### 2.33 get_signals
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| status | string \| null | no | "new" | `new`/`triaged`/`promoted`/`dismissed`。nullで全status横断 |
+| kind | string \| null | no | null | フィルタ対象のkind。nullで全kind横断 |
+| limit | int | no | 20 | 最大100 |
+| offset | int | no | 0 | ページネーション |
+| include_stats | bool | no | false | trueでkind×statusのクロス集計と直近30日サマリを付与 |
+
+**返り値**: `{signals: [...], total_count: int, stats?: {by_kind_status, last_30d}}`。
+
+### 2.34 update_signal
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| signal_id | int | yes | - | 対象シグナルID |
+| status | string | yes | - | 遷移先status（`new`/`triaged`/`promoted`/`dismissed`） |
+| promoted_type | string | no | null | 昇格先エンティティ種別（`topic`/`activity`/`decision`/`log`/`material`） |
+| promoted_id | int | no | null | 昇格先エンティティID。promoted_typeと同時に指定する |
+
+**返り値**: `{signal: {...}}`（更新後の行）。
+**動作**: リンクを張るだけで昇格実体は作らない（実体の作成は既存のadd系ツールで行う）。orch専用（capability_matrixでdispatcher/workerは拒否）。
+
 ---
 
 ## 3. 共通エンティティ型
@@ -503,7 +551,7 @@ cc-memoryが扱うエンティティの内部表現。詳細スキーマは `doc
 `src/main.py` の `@mcp.tool` 関数群に **OW_ROLE=worker を理由とした直接的なツール拒否ロジックは確認できなかった**（v0時点）。worker側で何らかのツール利用を制限する場合は、ハーネス層（task_file・instructions注入）または運用ルールで間接的に行うものと推測される。要追加調査。
 
 ### 4.2 orch-managed 運用
-ow系ツール（特に `ow_spawn_worker` / `ow_close_worker` / `ow_status` / `ow_recover`）はorchロールでの利用を想定している。worker側からも `ow_send` / `ow_history` は呼べる。
+ow系ツール（特に `ow_spawn_worker` / `ow_close_worker` / `ow_status` / `ow_recover`）はorchロールでの利用を想定している。worker側からも `ow_send` / `ow_history` は呼べる。`report_signal` / `get_signals` はcapability_matrixでorch/dispatcher/workerいずれにも開放されている（観測データの記録に合意形成が不要なため）。`update_signal` のみトリアージ操作としてorch専用。
 
 ### 4.3 check-in 先行が前提のツール
 - `add_decisions` の hints はharness_service経由で「整合性確認」「pin見直し」などを示唆する。直前にcheck-inしていない場合、文脈不足のためhintsを過信しない方がよい。
@@ -522,6 +570,7 @@ ow系ツール（特に `ow_spawn_worker` / `ow_close_worker` / `ow_status` / `o
 - `search`: limit最大50
 - `get_timeline`: limit最大100
 - `get_map`: max_depth上限10
+- `get_signals`: limit最大100
 
 ---
 

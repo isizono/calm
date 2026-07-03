@@ -142,20 +142,22 @@ cc-memoryはセッション開始時（SessionStart hook）にDBの自動スナ�
 
 **スナップショットからの復元手順:**
 
-1. **全てのClaude Codeセッションを閉じる**（DBへの書き込みを停止するため）
-2. スナップショット一覧を確認する:
+1. **全てのClaude Codeセッションを閉じる**（DBへの書き込みを停止するため）。サーバーが稼働中のままだと復元コマンド自体が検知して中断する
+2. ワンコマンドで最新のスナップショットから復元する:
    ```
-   ls ~/.claude/.claude-code-memory/snapshots/
+   uv run python scripts/snapshot.py restore --latest
    ```
-3. 復元を実行する:
-   ```
-   python scripts/snapshot.py restore <snapshot_db_path>
-   ```
+   特定の世代を指定したい場合は `uv run python scripts/snapshot.py restore <snapshot_db_path>` を使う（パスは次項の一覧コマンドで確認する）
+3. 復元前の現行DBは自動で退避される（`prerestore`スナップショット）ため、復元操作自体を誤っても退避先からやり直せる
 4. Claude Codeを再起動する
 
 **スナップショット一覧の確認:**
 
-`snapshots/` ディレクトリ内の `.json` ファイルにメタデータ（作成日時、DBサイズ、各テーブルの行数）が記録されている。復元先を選ぶ際の参考にできる。
+```
+uv run python scripts/snapshot.py list
+```
+
+全kind横断のスナップショット一覧（kind・作成日時・サイズ・整合性チェック結果・パス）が表示される。復元先を選ぶ際の参考にできる。
 
 #### カスタマイズできるもの
 

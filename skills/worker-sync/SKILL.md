@@ -68,14 +68,18 @@ worker-sync は `cmd:close` 受信を前提として呼ばれる。`cmd:close` �
 - `related` で担当activity（`activity_id`）・topic（`topic_id`）に紐づける
 - tags: `domain:<topic_domain>` ＋ 内容を表す素タグ
 
-### 3. decisionの扱い — 原則 add_decisions しない
+### 3. signal報告の確認 — report_signal
+
+セッション中に cc-memory 自身の故障・使用感不満・既存記録との矛盾を観測したにもかかわらず `report_signal` をまだ呼んでいなければ、退場前にここで呼ぶ。kind は `machine_error`（ツールエラー・hook 失敗・サーバー異常）/ `friction`（使い勝手への不満・違和感）/ `contradiction`（既存記録と矛盾する結論）等（recording スキル「report_signal との切り分け」参照）。`report_signal` は worker からも直接呼べる（capability matrix で開放済み）ため、orch への提案を経由する必要はない。
+
+### 4. decisionの扱い — 原則 add_decisions しない
 
 workerは決定事項を **直接記録しない**。`state:done` の `decision_proposals[]` でorchに提案済みのはずなので、ここで `add_decisions` を呼ぶ必要はない。
 
 - done時に提案し忘れた決定事項があることに気づいた場合は、`add_decisions` ではなく、その内容を `state` メッセージ（`working` のnote等）でorchに伝える
 - **例外**: エスカレーションで人間がこのworkerセッション内で **直接合意** した決定事項は、すでにエスカレーション処理時にworkerが記録済みのはずである（worker スキル §エスカレーション）。その記録漏れがあればここで `add_decisions`（タグ `escalation`・`user-decision`・`domain:<topic_domain>`）し、記録したD#を退場後のorch通知に含める
 
-### 4. 完了
+### 5. 完了
 
 記録が完了したら `worker` スキルの退場処理に戻り、`state:closed` を送信する。
 

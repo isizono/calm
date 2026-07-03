@@ -136,6 +136,9 @@ PRが複数になる場合、全PRをmainに直接向けるか、統合ブラン
 ## 類型
 {A-E のどれか}
 
+## サイズ見込み
+{変更予定ファイル数と行数（追加+削除）の見立て。テスト・docsは目安から除外してよい。800行超になる見込みならこの時点でさらに分割を検討する}
+
 ## ブランチ
 - ブランチ名: feature/{名前}
 - base: {main or 依存先ブランチ}
@@ -165,6 +168,14 @@ PRが複数になる場合、全PRをmainに直接向けるか、統合ブラン
 {テストの実行コマンド}
 ```
 
+**類型 B（スキーマ・データ変更）のサブプランには以下も追加する:**
+
+```markdown
+## migration / revert
+- migration lint 宣言要否: {DROP TABLE / DROP COLUMN / DELETE FROM / WHERE なし UPDATE 等を含み `-- destructive:` 宣言が要るか}
+- revert 分類: {R1（migration非接触・revert commitのみで戻る）/ R2（migration接触・戻し方を具体的に書く）}
+```
+
 #### plan.md テンプレート（単一PR）
 
 ```markdown
@@ -176,6 +187,9 @@ PRが複数になる場合、全PRをmainに直接向けるか、統合ブラン
 ## 関連情報
 - cc-memory タスク: #{タスクID}
 - 関連 decisions: #{ID}, #{ID}, ...
+
+## サイズ見込み
+{変更予定ファイル数と行数（追加+削除）の見立て。テスト・docsは目安から除外してよい。800行超になる見込みなら複数PRへの分割を検討する}
 
 ## ブランチ
 - ブランチ名: feature/{名前}

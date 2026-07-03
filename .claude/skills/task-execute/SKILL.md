@@ -182,8 +182,11 @@ PR作成**前に**、ユーザーに以下を報告する。
 ### Step 7: コミット + PR
 
 1. CLAUDE.mdの規約に従ってコミットを作成
-2. PRを作成
-3. plan.mdの当該サブプランの状態を✅完了に更新
+2. PRを作成する前に `uv run python scripts/pr_size_check.py --local` を実行してサイズを確認する
+   - verdict が `oversized` の場合、PRを出す前に分割を検討する（サブプランをさらに分けるか、変更範囲を見直す）
+   - verdict が `ok` / `large` ならそのまま進めてよい
+3. PRを作成
+4. plan.mdの当該サブプランの状態を✅完了に更新
 
 ### Step 8: 統合マージチェック
 

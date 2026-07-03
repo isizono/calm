@@ -98,6 +98,7 @@ erDiagram
 | `vec_index` | — | search_index と rowid 連動する sqlite-vec 仮想テーブル（384次元） |
 | `tag_vec` | — | tags と rowid 連動する sqlite-vec 仮想テーブル（384次元） |
 | `relations_view` | — | relations / activity_dependencies / decision_supersedes を統合した VIEW |
+| `signal_events` | signal | cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベントの記録先 |
 
 行数感（規模）はランタイム情報のため本ドキュメントでは未記載とする。
 
@@ -460,6 +461,37 @@ tags テーブル用の sqlite-vec 仮想テーブル（384次元）。tag embed
 - `supersedes`: `decision_supersedes` をそのまま（非対称）
 
 関連 migration: 0020（初版）/ 0023（material 系拡張）/ 0028（depends_on 追加）/ 0033（relations 統合 + supersedes 追加）
+
+### 3.18 signal_events
+
+cc-memory自身の故障報告・使用感不満・矛盾検出・運用計測イベントの統一記録先。decision / log とは異なり「双方の合意」も文脈タグ体系も要らない生の観測データであり、量が多く状態遷移（トリアージ）を持つ。他コンポーネント（運用計測の集計、境界判定の突合ミラー）もこのテーブルを共有し、独自テーブルは作らない。
+
+| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
+|---|---|---|---|---|---|
+| id | INTEGER | NO | autoincrement | PRIMARY KEY | シグナルID |
+| kind | TEXT | NO | — | — | シグナル種別。妥当性はDB制約でなくPython層（`signal_service.KNOWN_KINDS`）で検証する |
+| source | TEXT | NO | — | — | 発生源。`tool:<name>` / `hook:<name>` / `migration` / `backup` / `agent` / `user` / `gate` 等の自由文字列 |
+| summary | TEXT | NO | — | — | 1行要約 |
+| detail | TEXT | YES | — | — | traceback・引数ダイジェスト・自由記述 |
+| refs | TEXT | YES | — | — | JSON配列 `[{"type","id"}, ...]` |
+| context | TEXT | YES | — | — | JSON。kindごとの構造化ペイロード |
+| fingerprint | TEXT | NO | — | — | `sha256(kind\|source\|正規化summary)` 先頭16hex。dedupキー |
+| occurrence_count | INTEGER | NO | `1` | — | 同一fingerprintの再発回数 |
+| first_seen_at | TIMESTAMP | NO | CURRENT_TIMESTAMP | — | 初回記録時刻 |
+| last_seen_at | TIMESTAMP | NO | CURRENT_TIMESTAMP | — | 最終記録時刻（dedup時に更新） |
+| session_id | TEXT | YES | — | — | 記録元セッションID |
+| status | TEXT | NO | `'new'` | CHECK IN ('new','triaged','promoted','dismissed') | トリアージ状態 |
+| promoted_type | TEXT | YES | — | — | 昇格先エンティティ種別（`topic`/`activity`/`decision`/`log`/`material`） |
+| promoted_id | INTEGER | YES | — | CHECK `(promoted_type IS NULL) = (promoted_id IS NULL)` | 昇格先エンティティID |
+
+補足:
+- 同一 `fingerprint` を持つ `status='new'` 行が既存の場合、部分 UNIQUE インデックス（`fingerprint WHERE status='new'`）が競合を検知し、アプリ層は新規行を作らず `occurrence_count` を加算する。トリアージ済み（status が new 以外）の同型イベント再発は新規行になる
+- タグ・リレーション・検索インデックス（search_index）・embeddingのいずれにも接続しない。habits と同様、事実上「観測ログ」として独立している
+- `status` はライフサイクル列（§6）の `activities.status`（pending/in_progress/completed/snoozed/shelved）とは別の値集合（new/triaged/promoted/dismissed）を持つ
+
+インデックス: `idx_signal_fingerprint_new`（UNIQUE, `fingerprint` WHERE `status='new'`）/ `idx_signal_status`（`status, last_seen_at`）/ `idx_signal_kind`（`kind, last_seen_at`）
+
+関連 migration: 0049_add_signal_events
 
 ---
 
