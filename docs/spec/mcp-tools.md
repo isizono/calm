@@ -163,7 +163,7 @@
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
-| keyword | string \| list[string] | yes | - | 2文字以上。配列でAND |
+| keyword | string \| list[string] | yes | - | 2文字以上。配列でAND。完全一致検索(FTS5)は3文字以上のみ発動、2文字はベクトル検索のみ |
 | tags | list[string] | no | null | AND条件 |
 | entity_type | string | no | null | `topic`/`decision`/`activity`/`log`/`material` |
 | limit | int | no | 10 | 最大50 |
@@ -175,7 +175,7 @@
 | date_before | string | no | null | 同上 |
 | include_retracted | bool | no | false | 取り消し済み含む |
 
-**返り値**: `{results: [SearchHit]}`。scoreは0〜1正規化（1.0=全ソース1位、片方ヒットは最大0.5）。0.4以上=高関連、0.15〜0.4=中、0.15未満=低の目安。
+**返り値**: `{results: [SearchHit]}`。scoreは0〜1正規化（1.0=全ソース1位、片方ヒットは最大0.5）。0.4以上=高関連、0.15〜0.4=中、0.15未満=低の目安。snippetでなく全文が必要な場合は結果のtype+idを`get_by_ids`に渡す。
 **実装**: FTS5 trigram + ベクトル検索のRRF統合。
 
 ### 2.7 get_by_ids
@@ -244,6 +244,7 @@
 | until | string | no | null | ISO日付（以前） |
 
 **返り値**: `{activities: [Activity], total_count: int}`。statusの`active`は pending+in_progress のエイリアス（snoozed/shelvedは含まない）。
+**副作用**: 呼び出し時、updated_atがSNOOZE_DURATION_DAYS（デフォルト3日）を超過したsnoozedアクティビティをpendingへ一括自動復活させる。
 
 ### 2.13 update_activity
 
@@ -254,6 +255,8 @@
 | title | string | no | null | 新しいタイトル |
 | description | string | no | null | 新しい説明 |
 | tags | list[string] | no | null | 全置換。1個以上 |
+
+**副作用**: snoozed状態のアクティビティにstatusを指定せず他フィールドのみ更新すると、自動的にstatus="pending"へ復活する。
 
 ### 2.14 add_material
 
@@ -320,7 +323,7 @@
 
 ### 2.20 add_habit / get_habits / update_habit
 
-- `add_habit(content: string) -> dict`: habitを登録。check-in時に自動注入される。
+- `add_habit(content: string) -> dict`: habitを登録。SessionStart時に全件注入される（セッション途中の登録は次セッション以降に有効）。
 - `get_habits() -> dict`: 登録済みhabit一覧。
 - `update_habit(habit_id: int, content?: string, active?: bool) -> dict`: active=Falseで無効化。
 
@@ -507,7 +510,7 @@ ow系ツール（特に `ow_spawn_worker` / `ow_close_worker` / `ow_status` / `o
 
 ### 4.3 check-in 先行が前提のツール
 - `add_decisions` の hints はharness_service経由で「整合性確認」「pin見直し」などを示唆する。直前にcheck-inしていない場合、文脈不足のためhintsを過信しない方がよい。
-- `check_in` を経由しないアクティビティへの操作（`update_activity` 等）は可能だが、その場合 tag_notes / habits の注入は行われない。
+- `check_in` を経由しないアクティビティへの操作（`update_activity` 等）は可能だが、その場合 tag_notes の自動注入は行われない。habitsはSessionStart時に全件注入されるため、check_inの有無に関係なく反映される。
 
 ### 4.4 モデル指定の固定
 `ow_spawn_worker(model=...)` は `claude-opus-4-7` のみ許可。sonnet/haiku/opus-4-8 はバリデーションで弾かれる。

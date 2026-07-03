@@ -453,7 +453,9 @@ def search(
     キーワードで横断検索する。
 
     FTS5 trigramとベクトル検索のハイブリッド。RRFスコアで統合・ランキング。
-    2文字以上のキーワードを指定する。
+    2文字以上のキーワードを指定する。3文字以上のキーワードのみFTS5（完全一致trigram）が
+    発動し、ベクトル検索と併用される。2文字のキーワードはベクトル検索のみで評価され、
+    ベクトル検索が無効な環境ではKEYWORD_TOO_SHORTエラーになる。
     配列で複数キーワードを渡すとAND検索（すべてを含む結果のみ返す）。
     keyword_mode="or"でOR検索（いずれかを含む結果を返す）。
     tagsでフィルタリング可能（AND結合）。未指定で全件検索。
@@ -463,7 +465,7 @@ def search(
     特にdomain:タグでスコープを絞ると、無関係な結果を排除できる。
 
     Args:
-        keyword: 検索キーワード（2文字以上）。配列で複数指定時はAND検索
+        keyword: 検索キーワード（2文字以上。完全一致検索は3文字以上のみ発動）。配列で複数指定時はAND検索
         tags: タグフィルタ（AND条件。未指定=全件検索）
         entity_type: 検索対象の絞り込み（'topic', 'decision', 'activity', 'log', 'material'。未指定で全種類）
         limit: 取得件数上限（デフォルト10件、最大50件）
@@ -485,6 +487,8 @@ def search(
         取り消し済み（retracted）のdecision/logはretract時に物理削除されているため、
         検索結果には現れない。直接取得したい場合はget_decisions/get_logsで
         include_retracted=Trueを指定する。
+
+        snippetでなく全文が必要な場合は、結果のtype+idをget_by_idsに渡す。
     """
     flavor = _normalize_flavor(flavor)
     result = search_service.search(keyword, tags, entity_type, limit, offset, keyword_mode, include_details, domain, date_after, date_before)
@@ -711,6 +715,9 @@ def get_activities(
         until: ISO日付文字列。この日付以前に更新されたアクティビティのみ返す
         orch_managed: True/False を指定すると activities.orch_managed カラムでフィルタする。None（デフォルト）はフィルタなし
 
+    呼び出し時、更新日時がSNOOZE_DURATION_DAYS（デフォルト3日）を超過したsnoozedアクティビティは
+    pendingへ自動的に一括復活する（このツールの呼び出し自体が復活のトリガーになる）。
+
     Returns:
         アクティビティ一覧（total_countで該当ステータスの全件数を確認可能）
     """
@@ -749,6 +756,9 @@ def update_activity(
     - orch管理に切り替え: update_activity(activity_id, orch_managed=True)
 
     ワークフロー位置: アクティビティ進行状況の更新時
+
+    snoozed状態のアクティビティに対しstatusを指定せずtitle/description等のみ更新すると、
+    自動的にstatus="pending"へ復活する（明示的にsnoozedを維持したい更新はできない）。
 
     Args:
         activity_id: アクティビティID
@@ -845,8 +855,9 @@ def get_material(
 
     資材の全文を取得する。
 
-    通常はcheck_in/get_by_idsの応答にmaterialのcontent/sourceが同梱されるため呼ぶ必要はない
-    （searchはsnippet止まり）。material_idだけが手元にあり概要も含めて取得したい単発ケースで使う。
+    check_inのmaterialsセクションはsnippet（先頭200字）止まりで全文は含まれない。
+    全文が同梱されるのはpinされた資材とget_by_idsの応答のみ。check_in経由でsnippetしか
+    見ていない資材の全文が必要なときや、material_idだけが手元にある単発ケースで使う。
 
     Args:
         material_id: 資材のID
@@ -914,7 +925,7 @@ def check_in(
     flavor: _FlavorArg = "internal",
 ) -> dict:
     """
-    Choose: アクティビティに着手するときに関連情報を一括取得したいとき（status を in_progress に自動更新）。関連グラフだけ俯瞰したいなら get_map、log/decision/material の時系列なら get_timeline、log だけなら get_logs。
+    Choose: アクティビティに着手するときに関連情報を一括取得したいとき（status を in_progress に自動更新）。関連グラフだけ俯瞰したいなら get_map、log/decision/material の時系列なら get_timeline、log だけなら get_logs、decision だけなら get_decisions。
 
     アクティビティにcheck-inする。関連情報を集約取得しsummaryを返す。
 
@@ -1017,12 +1028,19 @@ def add_relation(
     - 依存関係を追加: add_relation("activity", 1, [{"type": "activity", "ids": [2]}], relation_type="depends_on")
     - 上書き関係を追加: add_relation("decision", 2, [{"type": "decision", "ids": [1]}], relation_type="supersedes")
 
+    子（activity/material/decision/log）→topicの関連付けは、relation_typeに何を指定しても
+    常に親帰属（belongs_to）で書き込まれる。これはget_decisions/get_timeline/check_inの
+    トピック帰属集計やget_by_idsのtopic_id解決の基盤になっている。参考リンクのつもりで
+    decision/logを別のtopicにrelated付けしても、そのtopicの「決定事項」「ログ」として
+    扱われる点に注意する。
+
     Args:
         source_type: 起点エンティティのタイプ（"topic", "activity", "material", "decision", or "log"）
         source_id: 起点エンティティのID
         targets: ターゲットリスト [{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...]
         relation_type: リレーションタイプ（"related", "depends_on", or "supersedes"）。
             depends_onはactivity同士のみ、supersedesはdecision同士のみ有効。
+            子→topicのペアはrelation_typeに関わらずbelongs_toとして書き込まれる。
 
     Returns:
         成功時: {"added": int}（実際に追加された件数。重複はカウントしない）
@@ -1046,12 +1064,18 @@ def remove_relation(
     - 依存関係削除: remove_relation("activity", 1, [{"type": "activity", "ids": [2]}], relation_type="depends_on")
     - 上書き関係削除: remove_relation("decision", 2, [{"type": "decision", "ids": [1]}], relation_type="supersedes")
 
+    depends_on/supersedes以外（relation_type="related"を含む）を指定した場合、
+    relation_typeの値に関わらずsource/targetが一致する行を削除する。子→topicの関連は
+    実際にはbelongs_toで書き込まれているため、relation_type="related"を指定して
+    削除しても該当ペアの帰属関係ごと削除される。
+
     Args:
         source_type: 起点エンティティのタイプ（"topic", "activity", "material", "decision", or "log"）
         source_id: 起点エンティティのID
         targets: ターゲットリスト [{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...]
         relation_type: リレーションタイプ（"related", "depends_on", or "supersedes"）。
             depends_onはactivity同士のみ、supersedesはdecision同士のみ有効。
+            related指定時はrelation_type指定に関わらず該当ペアの行を削除する。
 
     Returns:
         成功時: {"removed": int}（実際に削除された件数）
@@ -1091,7 +1115,7 @@ def get_map(
 
 @mcp.tool()
 def add_habit(content: str) -> dict:
-    """エージェントの振る舞いを登録する。check-in時に自動注入され、以降の行動に反映される。"覚えといて"と言われた行動ルールはここに登録する
+    """エージェントの振る舞いを登録する。SessionStart時に全件注入される（セッション途中の登録は次セッション以降に有効）。"覚えといて"と言われた行動ルールはここに登録する
 
     worker セッション (OW_ROLE=worker) からの直接呼び出しは
     WorkerGuardError でブロックされる。ユーザー承認を要する書き込みなので
@@ -1190,6 +1214,11 @@ def remove_pin(
 @mcp.tool()
 def retract(entity_type: Literal["decision", "log", "material"], ids: list[int], undo: bool = False) -> dict:
     """決定事項・ログ・資材を取り消す（論理削除）。取り消し済みエンティティは検索・取得でデフォルト除外される。
+
+    retract時はsearch_index/FTS/vecインデックスからも物理削除される。undo（un-retract）は
+    retracted_atをNULLに戻すだけで、検索インデックスへの再登録は行わない（不可逆）。
+    un-retract後に再び検索でヒットさせたい場合は、add_decisions/add_logs/add_materialで
+    新規に追加し直す必要がある。
 
     Args:
         entity_type: "decision" | "log" | "material"
