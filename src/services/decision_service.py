@@ -258,6 +258,39 @@ def _build_decision_item(
     return item
 
 
+def _count_decisions_for_topic(conn: sqlite3.Connection, topic_id: int, decision_retract_filter: str) -> int:
+    """topicにbelongs_toするdecisionの総件数を返す（start_id/limitの影響を受けない）。"""
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS cnt FROM decisions d
+        JOIN relations r ON r.source_type = 'decision' AND r.source_id = d.id
+                        AND r.target_type = 'topic' AND r.target_id = ?
+                        AND r.relation_type = 'belongs_to'
+        WHERE 1=1{decision_retract_filter}
+        """,
+        (topic_id,),
+    ).fetchone()
+    return row["cnt"] if row else 0
+
+
+def _count_decisions_for_topics(conn: sqlite3.Connection, topic_ids: list[int], decision_retract_filter: str) -> int:
+    """複数topicにbelongs_toするdecisionの総件数（重複除外）を返す（start_id/limitの影響を受けない）。"""
+    if not topic_ids:
+        return 0
+    placeholders = ",".join("?" * len(topic_ids))
+    row = conn.execute(
+        f"""
+        SELECT COUNT(DISTINCT d.id) AS cnt FROM decisions d
+        JOIN relations r ON r.source_type = 'decision' AND r.source_id = d.id
+                        AND r.target_type = 'topic' AND r.relation_type = 'belongs_to'
+                        AND r.target_id IN ({placeholders})
+        WHERE 1=1{decision_retract_filter}
+        """,
+        tuple(topic_ids),
+    ).fetchone()
+    return row["cnt"] if row else 0
+
+
 def get_decisions(
     entity_type: str,
     entity_id: int,
@@ -278,6 +311,9 @@ def get_decisions(
         決定事項一覧（各decisionにtags付き）
         entity_type == "topic": 従来通りtopic_idで直接取得
         entity_type == "activity": related topics（上限10件）経由でdecisions集約
+        total_count: retractフィルタ適用後の対象decision総件数（limit/start_idの影響を受けない）
+        truncated: len(decisions) < total_count のとき true。limit 30 による黙示的な切り捨てが
+            発生していることを示す。網羅的な判例確認が必要な場面は pull_precedents を使う
     """
     retract_filter = "" if include_retracted else " AND retracted_at IS NULL"
 
@@ -301,6 +337,8 @@ def get_decisions(
                     "topic_id": topic_id,
                     "topic_name": None,
                     "decisions": [],
+                    "total_count": 0,
+                    "truncated": False,
                 }
 
             # decisions の親 topic は relations.belongs_to 経由で解決する
@@ -343,10 +381,14 @@ def get_decisions(
                 item = _build_decision_item(dec, tags_map, supersede_map)
                 decisions.append(item)
 
+            total_count = _count_decisions_for_topic(conn, topic_id, decision_retract_filter)
+
             return {
                 "topic_id": topic_id,
                 "topic_name": topic_name,
                 "decisions": decisions,
+                "total_count": total_count,
+                "truncated": len(decisions) < total_count,
             }
 
         elif entity_type == "activity":
@@ -358,7 +400,7 @@ def get_decisions(
             topic_ids = [r["target_id"] for r in relation_rows if r["target_type"] == "topic"][:10]
 
             if not topic_ids:
-                return {"decisions": []}
+                return {"decisions": [], "total_count": 0, "truncated": False}
 
             placeholders = ",".join("?" * len(topic_ids))
             # decisions の親 topic 集約も relations.belongs_to 経由。
@@ -402,7 +444,13 @@ def get_decisions(
                 item = _build_decision_item(dec, tags_map, supersede_map)
                 decisions.append(item)
 
-            return {"decisions": decisions}
+            total_count = _count_decisions_for_topics(conn, topic_ids, decision_retract_filter)
+
+            return {
+                "decisions": decisions,
+                "total_count": total_count,
+                "truncated": len(decisions) < total_count,
+            }
 
         else:
             return {

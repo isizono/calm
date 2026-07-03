@@ -424,6 +424,9 @@ def get_decisions(
     Returns:
         決定事項一覧（各decisionにtags付き）
         entity_type == "activity" の場合はrelated topics経由でdecisions集約
+        total_count: retractフィルタ適用後の対象decision総件数（limit/start_idの影響を受けない）
+        truncated: len(decisions) < total_count のとき true。limit 30 による黙示的な切り捨てが
+            発生していることを示す。網羅的な判例確認が必要な場面は pull_precedents を使う
     """
     flavor = _normalize_flavor(flavor)
     result = decision_service.get_decisions(entity_type, entity_id, start_id, limit, include_retracted=include_retracted)
