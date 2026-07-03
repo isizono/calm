@@ -36,7 +36,10 @@ if str(_project_root) not in sys.path:
 
 MIGRATIONS_DIR = _project_root / "migrations"
 
-_MARKER_RE = re.compile(r"<!--\s*ccm-doc-sync(.*?)-->", re.DOTALL)
+# 先頭（前置空白のみ許容）に固定するfront-matter形式。ドキュメント本文中のコード例
+# として ccm-doc-sync マーカーの書式を引用している箇所（例: doc-sync-convention.md
+# 自身の説明文）を実マーカーと誤認しないようにする。
+_MARKER_RE = re.compile(r"\A\s*<!--\s*ccm-doc-sync(.*?)-->", re.DOTALL)
 _FIELD_RE = re.compile(r"^([a-z-]+):\s*(.*?)\s*$", re.MULTILINE)
 _MIGRATION_NUM_RE = re.compile(r"^(\d+)_")
 

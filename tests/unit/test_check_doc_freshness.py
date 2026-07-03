@@ -95,15 +95,15 @@ def _set_created_at(table: str, entity_id: int, created_at: str) -> None:
 
 
 def test_parse_marker_extracts_all_fields():
-    text = """# doc
-
-<!-- ccm-doc-sync
+    text = """<!-- ccm-doc-sync
 watch-tags: domain:cc-memory, domain:ow
 watch-direction: true
 watch-migrations: true
 last-synced: 2026-07-01
 last-synced-migration: 0048
 -->
+
+# doc
 
 本文
 """
@@ -128,6 +128,29 @@ def test_parse_marker_defaults_when_fields_omitted():
     assert marker.watch_direction is False
     assert marker.watch_migrations is False
     assert marker.last_synced_migration is None
+
+
+def test_parse_marker_ignores_example_marker_in_body():
+    """本文中（コードフェンス例示等）に ccm-doc-sync 記法があっても、
+    ドキュメント先頭（front-matter位置）でなければ実マーカーとして扱わない。"""
+    text = (
+        "# 規約説明doc\n\n"
+        "マーカーの書式例:\n\n"
+        "```html\n"
+        "<!-- ccm-doc-sync\n"
+        "watch-tags: domain:cc-memory\n"
+        "last-synced: 2026-01-01\n"
+        "-->\n"
+        "```\n"
+    )
+    assert parse_marker(text, Path("dummy.md")) is None
+
+
+def test_parse_marker_allows_leading_whitespace_before_marker():
+    text = "\n\n  <!-- ccm-doc-sync\nlast-synced: 2026-01-01\n-->\n# doc\n"
+    marker = parse_marker(text, Path("dummy.md"))
+    assert marker is not None
+    assert marker.last_synced == "2026-01-01"
 
 
 # --- find_marked_docs ---
