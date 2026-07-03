@@ -63,6 +63,7 @@ CAPABILITY_MATRIX: CapabilityMatrix = {
     "get_timeline":      {"orch": True,  "dispatcher": True,  "worker": True},
     "get_by_ids":        {"orch": True,  "dispatcher": True,  "worker": True},
     "get_config":        {"orch": True,  "dispatcher": True,  "worker": True},
+    "pull_precedents":   {"orch": True,  "dispatcher": True,  "worker": True},
 
     # その他
     "roll_dice":         {"orch": True,  "dispatcher": True,  "worker": True},

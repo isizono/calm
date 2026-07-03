@@ -21,6 +21,7 @@ from src.services import (
     timeline_service,
     ow_service,
     guard_service,
+    precedent_pull_service,
 )
 from src.services.checkin_service import check_in as _check_in
 from src.services.tag_service import search_tags as _search_tags, update_tag as _update_tag, collect_tag_notes_for_injection
@@ -438,6 +439,106 @@ def get_decisions(
         if all_tags:
             _maybe_inject_tag_notes(result, all_tags, mark=False)
     return result
+
+
+@mcp.tool()
+def pull_precedents(
+    context: str,
+    topic_ids: Optional[list[int]] = None,
+    k: int = 3,
+    budget_chars: Optional[int] = None,
+    include_materials: bool = True,
+    flavor: _FlavorArg = "internal",
+) -> dict:
+    """
+    Choose: 設計・裁定の前に、近傍 topic の判例(decision)を確率的発見ではなく網羅的に
+    確認したいとき。ランクtop-Nの確率的発見ならsearch、topic直下の一覧（LIMIT30・
+    truncationの可視化なし）ならget_decisions。
+
+    設計文脈から近傍 topic を特定し、topic 内の決定事項(decision)を
+    ランク競争なしに網羅列挙して返す。
+
+    search がランク top-N の確率的発見であるのに対し、本ツールは「routing が
+    当たった topic の非 retract decision は全件、最低でも索引粒度で応答に現れる」
+    ことを保証する。予算超過時は本文展開数を絞るが切り捨てはせず、truncated と
+    budget で縮退を明示する。read-only（status 更新等の副作用なし）。
+
+    Args:
+        context: これから決めようとしている論点の記述（自由記述の長文可、2文字以上）。
+                 routing のクエリになる。topic_ids 指定時も telemetry 用に必須
+        topic_ids: 対象 topic を明示指定して routing をスキップする
+                   （アンカー済みの場合）。embedding サーバー停止時でも動作する
+        k: routing で採用する topic 数の上限（1..5にclamp）
+        budget_chars: 本文展開の文字数予算。省略時は config 既定値
+        include_materials: decision に紐づく material と topic 直下 material の
+                           カタログを同時展開する
+        flavor: citation 展開モード（internal / readable / raw）
+
+    Returns:
+        {guarantee, routing, topics, budget, truncated}
+        guarantee: "enumerated"（routing成立+全件列挙完了。判例保証あり） /
+        "routing_miss"（近傍topicなし。真の前例なしかrouting失敗の区別はつかないため
+        前例なし扱い=事前確認側に倒すこと） / "routing_unavailable"（embeddingサーバー
+        停止でrouting不能。topic_ids明示指定で回避できる）
+        routing.candidates: 各 {topic_id_raw, title, distance, selected}
+        （topic_ids指定時はdistanceなし。存在しないtopic_idはerror: "not_found"）
+        topics[].decisions の各要素は detail="full"（decision/reason全文 + tags +
+        sections + supersede_chain）または detail="index"（id/title/created_at/
+        is_superseded/superseded_byのみ）。index落ち分の本文はget_by_idsで追補できる。
+        複数topicにbelongs_toするdecisionは最初に選ばれたtopic側にのみ本文を置き、
+        他方ではindex + also_in（本文を持つtopic_idの配列）が付く。
+        reasonに定型節（却下案:/適用条件:/適用外:/検証:。書式はdocs/precedent-format.md）が
+        あるdecisionにはsections（構造化済み）が付く。節が無ければキー自体が無い。
+        material_ids / linked_decision_ids はdecision↔material間のrelated/citation
+        エッジ（depth-1）から双方向に対応する。
+    """
+    flavor = _normalize_flavor(flavor)
+    result = precedent_pull_service.pull_precedents(
+        context,
+        topic_ids=topic_ids,
+        k=k,
+        budget_chars=budget_chars,
+        include_materials=include_materials,
+    )
+    if "error" not in result:
+        _apply_flavor_to_pull_precedents_result(result, flavor)
+        all_tags: set[str] = set()
+        for topic in result.get("topics", []) or []:
+            for dec in topic.get("decisions", []) or []:
+                all_tags.update(dec.get("tags", []) or [])
+        if all_tags:
+            _maybe_inject_tag_notes(result, sorted(all_tags), mark=False)
+    return result
+
+
+def _apply_flavor_to_pull_precedents_result(result: dict, flavor: str) -> None:
+    """pull_precedents レスポンスの各セクションに flavor 展開を適用する (in-place)。
+
+    full decision の decision/reason/title は citations 展開 + citations_in/out 付与、
+    index decision / material / topic 候補は title・snippet の展開のみ（citations 非付与、
+    check_in の related_topics 等と同方針）。
+    """
+    conn = get_connection()
+    try:
+        for candidate in result.get("routing", {}).get("candidates", []) or []:
+            citation_renderer.apply_flavor_to_entity_dict(
+                candidate, "topic", flavor, conn, id_key="topic_id", attach_citations=False,
+            )
+        for topic in result.get("topics", []) or []:
+            citation_renderer.apply_flavor_to_entity_dict(
+                topic, "topic", flavor, conn, id_key="topic_id", attach_citations=False,
+            )
+            for dec in topic.get("decisions", []) or []:
+                if dec.get("detail") == "full":
+                    citation_renderer.apply_flavor_to_entity_dict(
+                        dec, "decision", flavor, conn, attach_citations=True,
+                    )
+                else:
+                    _flavor_snippet(dec, flavor, conn)
+            for mat in topic.get("materials", []) or []:
+                _flavor_snippet(mat, flavor, conn)
+    finally:
+        conn.close()
 
 
 @mcp.tool()

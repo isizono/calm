@@ -60,18 +60,29 @@ def _synchronous_telemetry(monkeypatch):
     あり、`_wait_for_telemetry()` 側の join は実質 no-op になる。
     現状のテスト同期化はこの fixture (autouse) に依存しており、将来 autouse を
     解除する場合は capture 側でも join() を保証する必要がある。
+
+    precedent_telemetry（pull_precedents）も同じ daemon thread 非同期書込パターンを
+    踏襲しているため、同じ race を避けるために同様に同期化する。
     """
-    from src.services import search_service
+    from src.services import precedent_pull_service, search_service
 
-    original = search_service._record_search_telemetry_async
+    def _make_synchronous_wrapper(original):
+        def synchronous_wrapper(*args, **kwargs):
+            thread = original(*args, **kwargs)
+            if thread is not None:
+                thread.join(timeout=5.0)
+            return thread
 
-    def synchronous_wrapper(*args, **kwargs):
-        thread = original(*args, **kwargs)
-        if thread is not None:
-            thread.join(timeout=5.0)
-        return thread
+        return synchronous_wrapper
 
-    monkeypatch.setattr(search_service, "_record_search_telemetry_async", synchronous_wrapper)
+    monkeypatch.setattr(
+        search_service, "_record_search_telemetry_async",
+        _make_synchronous_wrapper(search_service._record_search_telemetry_async),
+    )
+    monkeypatch.setattr(
+        precedent_pull_service, "_record_precedent_telemetry_async",
+        _make_synchronous_wrapper(precedent_pull_service._record_precedent_telemetry_async),
+    )
 
 
 @pytest.fixture
