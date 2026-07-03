@@ -1650,8 +1650,8 @@ if __name__ == "__main__":
 
     if args.transport == "http":
         import socket
-        from src.services.lock_file import acquire, release
-        from src.services.session_manager import SessionManager
+        from src.infra.lock_file import acquire, release
+        from src.infra.session_manager import SessionManager
 
         # 起動時cwdをプロジェクトルートに固定する。worktree内などからの起動による
         # cwd差し替えリスクを構造的に潰す（詳細は _ensure_project_root_cwd 参照）。
