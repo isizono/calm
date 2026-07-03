@@ -1,25 +1,24 @@
-"""scripts/snapshot.py の E2E テスト
+"""scripts/snapshot.py (backup_service) の E2E テスト
 
-スナップショット取得・ヘルスチェック・ローテーション・復元、
-および session_start_hook.py との統合テスト。
+スナップショット取得・ヘルスチェック・ローテーション、
+session_start_hook.py との統合、CLIエントリポイントの疎通テスト。
+
+restore_snapshot() の安全装置（サーバー稼働中チェック・互換性警告等）を
+含む詳細な検証は tests/unit/test_backup_service.py で行う。
 """
 import json
 import os
 import subprocess
 import sys
-import tempfile
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
-from src.db import init_database
-from scripts.snapshot import (
-    get_row_counts,
+from src.services.backup_service import (
     health_check,
     should_take_snapshot,
     take_snapshot,
-    restore_snapshot,
     HealthCheckResult,
     SNAPSHOT_PREFIX,
     SNAPSHOT_JSON_SUFFIX,
@@ -27,21 +26,6 @@ from scripts.snapshot import (
 
 # プロジェクトルート
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
-
-@pytest.fixture
-def temp_db():
-    """テスト用の一時的なデータベースを作成する"""
-    import src.config
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        src.config.DB_PATH = db_path
-        init_database()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
-        src.config.DB_PATH = None
 
 
 def _seed_rows(db_path: str, table: str, count: int) -> None:
@@ -238,39 +222,46 @@ class TestShouldTakeSnapshot:
         assert should_take_snapshot(snapshot_dir, interval_hours=12) is True
 
 
-class TestRestoreSnapshot:
-    """復元のテスト"""
+class TestSnapshotCLI:
+    """scripts/snapshot.py CLIエントリポイントの疎通テスト（list/take/verify）。
 
-    def test_restore_snapshot(self, temp_db):
-        """復元後にデータが戻る"""
-        snapshot_dir = Path(temp_db).parent / "snapshots"
+    restoreは安全装置（サーバー稼働中チェック等）が実機の状態に左右されるため
+    tests/unit/test_backup_service.py で関数レベルに隔離して検証する。
+    """
 
-        # データを追加してスナップショット取得
-        _seed_rows(temp_db, "activities", 50)
-        snapshot_path = take_snapshot(temp_db, snapshot_dir)
+    def _run_cli(self, db_path: str, *cli_args: str) -> subprocess.CompletedProcess:
+        env = {**os.environ, "DISCUSSION_DB_PATH": db_path}
+        return subprocess.run(
+            [sys.executable, "scripts/snapshot.py", *cli_args],
+            capture_output=True,
+            text=True,
+            cwd=str(PROJECT_ROOT),
+            env=env,
+        )
 
-        # 取得時の行数を記録
-        original_counts = get_row_counts(temp_db)
+    def test_list_empty(self, temp_db):
+        result = self._run_cli(temp_db, "list")
+        assert result.returncode == 0
+        assert "スナップショットはありません" in result.stdout
 
-        # データを削除
-        import sqlite3
-        conn = sqlite3.connect(temp_db)
-        try:
-            conn.execute("DELETE FROM activities")
-            conn.commit()
-        finally:
-            conn.close()
+    def test_take_then_list_then_verify(self, temp_db):
+        take_result = self._run_cli(temp_db, "take", "--kind", "manual")
+        assert take_result.returncode == 0, take_result.stderr
+        assert "取得完了" in take_result.stdout
 
-        # 削除後の行数確認
-        deleted_counts = get_row_counts(temp_db)
-        assert deleted_counts["activities"] == 0
+        list_result = self._run_cli(temp_db, "list")
+        assert list_result.returncode == 0
+        assert "manual" in list_result.stdout
 
-        # 復元
-        restore_snapshot(str(snapshot_path), temp_db)
+        # list出力からスナップショットのdbパスを抜き出してverifyする
+        snapshot_dir = Path(temp_db).parent / "snapshots" / "manual"
+        db_files = list(snapshot_dir.glob(f"{SNAPSHOT_PREFIX}*.db"))
+        assert len(db_files) == 1
 
-        # 復元後の行数確認
-        restored_counts = get_row_counts(temp_db)
-        assert restored_counts["activities"] == original_counts["activities"]
+        verify_result = self._run_cli(temp_db, "verify", str(db_files[0]))
+        assert verify_result.returncode == 0
+        payload = json.loads(verify_result.stdout)
+        assert payload["ok"] is True
 
 
 def _run_session_start_hook(db_path: str) -> dict:
