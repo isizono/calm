@@ -150,7 +150,7 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 
 | hookファイル | 発火タイミング | 主な仕事 |
 |---|---|---|
-| `hooks/session_start_hook.py` | SessionStart | habits注入、未完アクティビティscoring、鮮度警告 |
+| `hooks/session_start_hook.py` | SessionStart | habits注入、アクティビティダッシュボード注入、鮮度警告 |
 | `hooks/session_end_hook.py` | SessionEnd | sync-memory連携・終了処理 |
 | `hooks/user_prompt_submit_hook.py` | UserPromptSubmit | ターンカウンタ・record nudge発火判定 |
 | `hooks/stop_hook.py` | Stop | 終端でのフォローアップ提案 |
@@ -190,7 +190,7 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 ### 4.4 hookシグナルの流れ
 
 ```
-SessionStart        → session_start_hook → habits注入 / scoring / 鮮度警告
+SessionStart        → session_start_hook → habits注入 / アクティビティダッシュボード / 鮮度警告
 UserPromptSubmit    → user_prompt_submit_hook → 未消費 nudge の system-reminder 注入
 Stop                → stop_hook → record_missing / follow_up_after_decision / logs_sparse nudge を events.jsonl に追記
 SessionEnd          → session_end_hook → sync-memory連携
