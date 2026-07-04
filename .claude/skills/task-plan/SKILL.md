@@ -172,7 +172,7 @@ PRが複数になる場合、全PRをmainに直接向けるか、統合ブラン
 
 ```markdown
 ## migration / revert
-- migration lint 宣言要否: {DROP TABLE / DROP COLUMN / DELETE FROM / WHERE なし UPDATE 等を含み `-- destructive:` 宣言が要るか}
+- 破壊的変更 lint 該当有無: {DROP TABLE / DROP COLUMN / DELETE FROM / WHERE なし UPDATE / rmtree・os.remove 等を含むか。含む場合 `scripts/gate_check.py` の破壊的変更検出（追加行への正規表現マッチ）でフラグが立つため、意図的である旨と安全確認の観点を書く}
 - revert 分類: {R1（migration非接触・revert commitのみで戻る）/ R2（migration接触・戻し方を具体的に書く）}
 ```
 

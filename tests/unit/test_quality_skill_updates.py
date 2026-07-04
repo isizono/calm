@@ -4,11 +4,14 @@ skill文面・spec docsの契約テスト。
 既存の test_worker_skill_md.py / test_audit_skill_md.py と同じパターンで、
 SKILL.md / spec docs 本文に必要な記述が存在することをassertする。
 """
+import re
 from pathlib import Path
 
 import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+SRC_MAIN = _REPO_ROOT / "src" / "main.py"
 
 TASK_PLAN_SKILL_MD = _REPO_ROOT / ".claude" / "skills" / "task-plan" / "SKILL.md"
 TASK_EXECUTE_SKILL_MD = _REPO_ROOT / ".claude" / "skills" / "task-execute" / "SKILL.md"
@@ -36,7 +39,7 @@ class TestTaskPlanSkillSizeEstimate:
 
     def test_type_b_subplan_has_migration_revert_fields(self):
         content = _read(TASK_PLAN_SKILL_MD)
-        assert "migration lint 宣言要否" in content
+        assert "破壊的変更 lint 該当有無" in content
         assert "revert 分類" in content
         assert "R1" in content and "R2" in content
 
@@ -112,14 +115,40 @@ class TestMcpToolsSpecSignalSection:
 
     def test_all_three_signal_tools_have_detail_sections(self):
         content = _read(MCP_TOOLS_SPEC)
-        assert "### 2.32 report_signal" in content
-        assert "### 2.33 get_signals" in content
-        assert "### 2.34 update_signal" in content
+        assert "### 2.35 report_signal" in content
+        assert "### 2.36 get_signals" in content
+        assert "### 2.37 update_signal" in content
 
     def test_tool_count_updated(self):
         content = _read(MCP_TOOLS_SPEC)
-        assert "全39ツール" in content
-        assert "全36ツール" not in content
+        assert "全42ツール" in content
+        assert "全39ツール" not in content
+
+
+class TestMcpToolsSpecToolCount:
+    """spec docのツール総数が src/main.py の実装（@mcp.tool 実カウント）と一致すること。"""
+
+    def _actual_tool_count(self) -> int:
+        content = _read(SRC_MAIN)
+        return len(re.findall(r"@mcp\.tool\(", content))
+
+    def _declared_tool_count(self) -> int:
+        content = _read(MCP_TOOLS_SPEC)
+        match = re.search(r"全(\d+)ツール", content)
+        assert match is not None, "spec docに『全Nツール』の記載が見つからない"
+        return int(match.group(1))
+
+    def test_declared_count_matches_impl(self):
+        assert self._declared_tool_count() == self._actual_tool_count()
+
+    def test_previously_missing_tools_documented(self):
+        content = _read(MCP_TOOLS_SPEC)
+        # カテゴリ一覧と詳細セクションの両方に3ツールが記載されていること
+        for tool in ("export_material", "ow_spawn_dispatcher", "ow_close_dispatcher"):
+            assert f"`{tool}`" in content, f"{tool} がカテゴリ一覧に無い"
+            assert re.search(rf"^### 2\.\d+ .*\b{tool}\b", content, re.MULTILINE), (
+                f"{tool} の詳細セクションが無い"
+            )
 
 
 class TestDbSchemaSpecSignalEventsTable:

@@ -14,7 +14,7 @@
 
 ## 1. ツール一覧
 
-全39ツール。カテゴリ別に一覧する。
+全42ツール。カテゴリ別に一覧する。
 
 ### 1.1 記録系（add系）
 
@@ -38,6 +38,7 @@
 | `get_decisions` | 指定エンティティの決定事項を取得する |
 | `get_activities` | アクティビティ一覧をフィルタ付きで取得する |
 | `get_material` | 資材の全文を取得する |
+| `export_material` | 資材を md ファイルとして cc-memory 外へ出力する |
 | `get_habits` | 登録済み振る舞い一覧を取得する |
 | `get_by_ids` | search結果の詳細を type+id 指定で取得する |
 | `get_map` | リレーショングラフを走査し到達可能カタログを返す |
@@ -84,6 +85,8 @@
 | `ow_history` | ow channel履歴を取得する |
 | `ow_spawn_worker` | workerセッションを起動する |
 | `ow_close_worker` | workerセッションをクローズする |
+| `ow_spawn_dispatcher` | dispatcherセッションを起動する（既存があればcascade kill後にspawn） |
+| `ow_close_dispatcher` | dispatcherセッションをkillし、紐づくworker poolもcascade killする |
 | `ow_status` | queueサマリ + presence の合成ビューを返す |
 | `ow_recover` | orch crash後の queue × relay × presence 整合チェック・自動修正 |
 
@@ -295,7 +298,17 @@ cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベ�
 
 **返り値**: 資材の全文。
 
-### 2.17 check_in
+### 2.17 export_material
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| material_id | int | yes | - | 資材のID |
+| dest_path | string | no | null | 出力先パス。省略/既存ディレクトリ/ファイルパスで振り分ける。`~/cc-memory-export` 配下でなければならない |
+
+**返り値**: 成功時 `{path, overwritten, material_id, title}`。失敗時 `{error: {code: "NOT_FOUND" | "VALIDATION_ERROR" | "IO_ERROR" | "DATABASE_ERROR", message}}`。
+**動作**: 資材を YAML frontmatter + h1 + content 形式の md ファイルとして出力する。frontmatter に資材IDを保持し往復同期の鍵とする。書き込み先は `~/cc-memory-export` 配下に限定（配下外・シンボリックリンク経由の脱出は VALIDATION_ERROR で拒否）。上書き確認はせず既存ファイルは無警告で上書きする（`overwritten` で通知）。
+
+### 2.18 check_in
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -305,7 +318,7 @@ cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベ�
 **副作用**: statusがin_progress以外なら自動的にin_progressに更新。
 **呼び出し基準**: 既存アクティビティに関連する作業を始めるとき。summaryフィールドはそのまま出力することが推奨される。
 
-### 2.18 add_relation / remove_relation
+### 2.19 add_relation / remove_relation
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -317,7 +330,7 @@ cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベ�
 **制約**: `depends_on` はactivity同士のみ、`supersedes` はdecision同士のみ有効。
 **返り値**: `{added: int}` または `{removed: int}`。重複は冪等。
 
-### 2.19 get_map
+### 2.20 get_map
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -328,13 +341,13 @@ cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベ�
 
 **返り値**: `{entities: [{type, id, title, tags, depth}], total_count: int}`。decision/logノードは経由ノードとして使うが、返却カタログにはtopic/activity/materialのみ含まれる。
 
-### 2.20 add_habit / get_habits / update_habit
+### 2.21 add_habit / get_habits / update_habit
 
 - `add_habit(content: string) -> dict`: habitを登録。check-in時に自動注入される。
 - `get_habits() -> dict`: 登録済みhabit一覧。
 - `update_habit(habit_id: int, content?: string, active?: bool) -> dict`: active=Falseで無効化。
 
-### 2.21 add_pin / remove_pin
+### 2.22 add_pin / remove_pin
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -347,7 +360,7 @@ cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベ�
 **エラー**: source/targetが存在しないとき `NOT_FOUND`。
 **返り値**: 追加時は `{source_type, source_id, target_type, target_id}`、削除時は `{removed: int}`。
 
-### 2.22 retract
+### 2.23 retract
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -357,7 +370,7 @@ cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベ�
 
 **動作**: 論理削除。検索・取得でデフォルト除外される（include_retracted=Trueで含められる）。
 
-### 2.23 get_timeline
+### 2.24 get_timeline
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -368,11 +381,11 @@ cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベ�
 | limit | int | no | 50 | 最大100 |
 | order | string | no | "desc" | `"desc"` または `"asc"` |
 
-### 2.24 get_config
+### 2.25 get_config
 
 引数なし。返り値: `{heartbeat_timeout, in_progress_limit, pending_limit, recency_decay_rate, sync_disable_retrospective, sync_policy, snapshot_interval_hours, snapshot_max_count, snapshot_anomaly_threshold}`。スキルが環境変数ベースの設定を参照するときに使う。
 
-### 2.25 roll_dice
+### 2.26 roll_dice
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -380,7 +393,7 @@ cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベ�
 
 **返り値**: `{result: int}`。
 
-### 2.26 ow_send
+### 2.27 ow_send
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -393,7 +406,7 @@ cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベ�
 **返り値**: `{msg_id: int}`。
 **エラー処理**: 4xxは即失敗、5xx/接続断のみ3回指数バックオフ。
 
-### 2.27 ow_history
+### 2.28 ow_history
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -403,7 +416,7 @@ cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベ�
 
 **返り値**: `{messages: [{msg_id, handle, body, ...}]}`。SSEは起床信号専用で、実体取得はこちらで行う。
 
-### 2.28 ow_spawn_worker
+### 2.29 ow_spawn_worker
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -425,7 +438,7 @@ cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベ�
 **制約**: modelは `claude-opus-4-7` 固定。sonnet/haiku/opus-4-8 はバリデーションで拒否される。
 **返り値**: 通常時 `{term_ref, task_file, spawning: "ok", alias}`。manualフォールバック時 `{command, manual: True, task_file, alias}`。
 
-### 2.29 ow_close_worker
+### 2.30 ow_close_worker
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -433,7 +446,28 @@ cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベ�
 
 **返り値**: `{closed: True, term_ref}` または `{manual: True, message}`。
 
-### 2.30 ow_status
+### 2.31 ow_spawn_dispatcher
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| channel | string | yes | - | channelコード（handleに `d-` prefixで組み込まれる） |
+| cwd | string | yes | - | dispatcherセッションの作業ディレクトリ |
+| model | string | yes | - | `claude-opus-4-7` のみ許可 |
+| tmux_target_pane | string | no | null | tmux分割表示用の基準pane ID |
+
+**制約**: modelは `claude-opus-4-7` 固定。sonnet/haiku/opus-4-8 はバリデーションで拒否される。channelに既存dispatcherがあればcascade kill（既存dispatcher + 紐づくworker pool全員）してから新規spawnする。health check や idempotent reject は行わない。
+**返り値**: 成功時 `{term_ref, bundle_msg_id, spawning: "ok", alias}`。失敗時 `{error: {code, message, ...}}`。
+
+### 2.32 ow_close_dispatcher
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| channel | string | yes | - | channelコード |
+
+**動作**: dispatcher（handle=`d-{channel}`）をkillし、紐づくworker poolもcascade killする。dispatcherが存在しない場合はエラーを返す（no-op successは採らない）。graceful shutdownは試みず即process kill。
+**返り値**: 成功時 `{closed: True, channel, dispatcher_handle, killed_workers, failed_workers}`。失敗時 `{error: {code, message}, killed_workers, ...}`。
+
+### 2.33 ow_status
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -442,7 +476,7 @@ cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベ�
 
 **返り値**: `{tasks, presence, frontmatter, summary}`。queueの論理状態とrelayのpresence（物理接続）を統合した単一ビュー。
 
-### 2.31 ow_recover
+### 2.34 ow_recover
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -452,7 +486,7 @@ cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベ�
 
 **返り値**: `{detected: {ghost_active, pending_spawn, stalled_done, orphans}, applied, warnings, presence, reconstructed_max_msg_id, dry_run}`。orch crash後の queue × relay × presence 整合チェック・自動修正に用いる。
 
-### 2.32 report_signal
+### 2.35 report_signal
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -466,7 +500,7 @@ cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベ�
 **動作**: 同一 `fingerprint`（kind+source+正規化summaryのハッシュ）を持つ未トリアージ行が既にあれば新規行を作らず `occurrence_count` を加算する（dedup）。
 **関連**: MCPツール例外の middleware 捕捉やhooksのtop-level捕捉からも自動的に呼ばれる（`source` がそれぞれ `tool:*` / `hook:*` になる）。
 
-### 2.33 get_signals
+### 2.36 get_signals
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -478,7 +512,7 @@ cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベ�
 
 **返り値**: `{signals: [...], total_count: int, stats?: {by_kind_status, last_30d}}`。
 
-### 2.34 update_signal
+### 2.37 update_signal
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |

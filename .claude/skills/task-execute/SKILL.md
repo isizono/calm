@@ -183,6 +183,7 @@ PR作成**前に**、ユーザーに以下を報告する。
 
 1. CLAUDE.mdの規約に従ってコミットを作成
 2. PRを作成する前に `uv run python scripts/pr_size_check.py --local` を実行してサイズを確認する
+   - `--local` の既定 base は `origin/main`。サブプランの base が main 以外（依存先ブランチにスタックしている）場合は `--base <依存先ブランチ>` を明示する。指定しないと依存元ブランチの差分ごと巻き込んだ過大な verdict になる
    - verdict が `oversized` の場合、PRを出す前に分割を検討する（サブプランをさらに分けるか、変更範囲を見直す）
    - verdict が `ok` / `large` ならそのまま進めてよい
 3. PRを作成
