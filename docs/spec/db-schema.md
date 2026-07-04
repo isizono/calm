@@ -302,9 +302,9 @@ namespace + name による分類タグ。
 
 インデックス:
 - `idx_material_tags_tag` ON `material_tags(tag_id)`（0023）
-- 他の junction には逆引きインデックスが張られていない（未確認: 0009 以降でも追加なし）
+- `idx_topic_tags_tag` / `idx_activity_tags_tag` / `idx_decision_tags_tag` / `idx_log_tags_tag` ON 各 `<junction>(tag_id)`（0049）
 
-関連 migration: 0009 / 0011 / 0023
+関連 migration: 0009 / 0011 / 0023 / 0049
 
 ### 3.9 relations
 
@@ -418,8 +418,9 @@ decision 間の有向 `supersedes` 関係（新→旧）。
 
 インデックス:
 - `idx_search_index_source` ON `search_index(source_type, source_id)`
+- `idx_search_index_created_at` ON `search_index(created_at)`（0049）
 
-関連 migration: 0002 / 0003 / 0008 / 0010 / 0018 / 0030 / 0037
+関連 migration: 0002 / 0003 / 0008 / 0010 / 0018 / 0030 / 0037 / 0049
 
 ### 3.14 search_index_fts
 

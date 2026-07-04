@@ -30,6 +30,7 @@ from hooks.hook_transcript import (
     extract_last_activity_id,
     read_transcript_from_offset,
 )
+from hooks.signal_capture import try_capture_signal
 
 _BLOCK_LIMIT = 1
 _CHECKIN_DEFER_TURNS = 2
@@ -163,6 +164,7 @@ def main() -> None:
     except Exception as e:
         # フェイルオープン: 例外時はapprove
         print(f"stop_hook.py error: {e}", file=sys.stderr)
+        try_capture_signal(kind="machine_error", source="hook:stop", summary=str(e)[:200])
         _output("approve", f"stop_hook.py internal error: {e}")
 
 

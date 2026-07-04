@@ -2,6 +2,7 @@
 import os
 import tempfile
 import urllib.request
+from pathlib import Path
 import pytest
 import numpy as np
 
@@ -506,6 +507,30 @@ def test_start_server_failure_returns_false(temp_db, monkeypatch):
 
     result = emb._start_server()
     assert result is False
+
+
+def test_start_server_uses_existing_infra_path(temp_db, monkeypatch):
+    """_start_server: Popenに渡すserver_pathが実在する src/infra/embedding_server.py を指す"""
+    import subprocess
+
+    captured = {}
+
+    def capturing_popen(args, **kwargs):
+        captured["args"] = args
+        return object()  # _start_serverは返り値を使わない
+
+    # project rootをこのチェックアウト自身に固定する。
+    # emb.__file__ = <root>/src/services/embedding_service.py なので parents[2] が <root>。
+    root = Path(emb.__file__).resolve().parents[2]
+    monkeypatch.setenv("CC_MEMORY_PROJECT_ROOT", str(root))
+    monkeypatch.setattr(emb, "_project_root_cache", None)  # env反映のためキャッシュをクリア
+    monkeypatch.setattr(subprocess, "Popen", capturing_popen)
+
+    assert emb._start_server() is True
+
+    server_path = captured["args"][1]
+    assert server_path == os.path.join(str(root), "src", "infra", "embedding_server.py")
+    assert os.path.isfile(server_path)
 
 
 def test_ensure_server_running_handles_start_failure(temp_db, monkeypatch):

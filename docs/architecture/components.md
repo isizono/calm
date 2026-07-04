@@ -135,7 +135,7 @@ graph TB
 ### 3.4 埋め込み
 
 - `src/services/embedding_service.py`: アプリ側からembedding取得を呼ぶクライアント
-- `src/services/embedding_server.py`: モデル保持・encodeを1プロセスに集約するHTTPサーバー（localhost:52836、idle timeout 5分、モデル `cl-nagoya/ruri-v3-70m`）。横断インフラ寄りだが本体はストア層が読むため §3 にも記載
+- `src/infra/embedding_server.py`: モデル保持・encodeを1プロセスに集約するHTTPサーバー（localhost:52836、idle timeout 5分、モデル `cl-nagoya/ruri-v3-70m`）。横断インフラ寄りだが本体はストア層が読むため §3 にも記載
 
 ### 3.5 公開IF
 
@@ -253,8 +253,8 @@ powwow（外部協調ラッパー）に該当する記述は本リポ内には�
 - `src/launcher.py`: stdio ↔ HTTPブリッジ。Claude Codeがstdioで接続してくる入口で、HTTPサーバー未起動なら自動でデーモン起動し、stdin JSON-RPCをStreamable HTTP経由で転送する。stdin EOFでセッション解除
 - `src/main.py`: FastMCPサーバーエントリ（HTTPモード起動の本体）
 - `src/http_config.py`: HTTPサーバー設定
-- `src/services/session_manager.py`: HTTPセッションカウントと自動停止ウォッチドッグ。セッション数0で猶予期間後にshutdown
-- `src/services/lock_file.py`: プロセス間ロック
+- `src/infra/session_manager.py`: HTTPセッションカウントと自動停止ウォッチドッグ。セッション数0で猶予期間後にshutdown
+- `src/infra/lock_file.py`: プロセス間ロック
 
 ### 6.2 リモート公開
 

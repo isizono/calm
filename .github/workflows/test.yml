@@ -14,7 +14,7 @@ jobs:
       matrix:
         include:
           - name: unit
-            path: tests/unit
+            path: tests/unit tests/test_migrations
           - name: integration-e2e
             path: tests/integration tests/e2e
 
@@ -61,3 +61,35 @@ jobs:
           uv run python scripts/lint_doc_cochange.py \
             --base ${{ github.event.pull_request.base.sha }} \
             --head ${{ github.event.pull_request.head.sha }}
+
+  migration-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Fetch origin/main
+        run: git fetch origin main
+
+      - name: Lint changed migrations for undeclared destructive changes
+        run: uv run python scripts/migration_lint.py --changed --base origin/main
+
+      - name: Reject changes to already-applied migrations
+        run: |
+          changed="$(git diff --name-status origin/main...HEAD -- migrations/ | awk '$1 !~ /^A/ {print}')"
+          if [ -n "$changed" ]; then
+            echo "migrations/ 配下の既存ファイルへの変更を検出しました(追記オンリー規約違反。新しいmigrationを積んでください):"
+            echo "$changed"
+            exit 1
+          fi

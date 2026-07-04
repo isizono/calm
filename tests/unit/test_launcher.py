@@ -150,7 +150,7 @@ class TestEnsureServerRunningStaleLock:
 
     def test_stale_lock_pid_dead(self, monkeypatch, tmp_path):
         """PIDが死んでいるロックファイルはstaleとして削除し、サーバーを起動する"""
-        from src.services import lock_file
+        from src.infra import lock_file
 
         lock_dir = tmp_path / ".cc-memory"
         lock_dir.mkdir()
@@ -175,7 +175,7 @@ class TestEnsureServerRunningStaleLock:
 
     def test_lock_pid_alive_waits_for_server(self, monkeypatch, tmp_path):
         """PIDが生きているロックファイルがあれば、サーバーの準備完了を待つ"""
-        from src.services import lock_file
+        from src.infra import lock_file
 
         lock_dir = tmp_path / ".cc-memory"
         lock_dir.mkdir()

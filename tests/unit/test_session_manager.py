@@ -2,7 +2,7 @@
 import threading
 import time
 
-from src.services.session_manager import (
+from src.infra.session_manager import (
     DEFAULT_GRACE_PERIOD_SEC,
     GRACE_PERIOD_ENV,
     SessionManager,

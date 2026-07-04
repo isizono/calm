@@ -1,9 +1,10 @@
 """ow runtime state ファイルキャッシュ。
 
-真実源は relay events (`ow_history`)。本モジュールが書き出す JSON ファイルは
-relay から再生成可能な派生キャッシュであり、破損・schema mismatch・channel
-mismatch を検出した場合は即削除して None を返す (cache は再生成可能なので
-backup は取らない)。
+本モジュールが書き出す JSON ファイルは relay events (`ow_history`) から再生成
+可能な派生キャッシュであり、真実源ではない (耐久的事実の真実源は cc-memory、
+relay は bounded transport buffer で liveness の直近窓のみを担う)。破損・
+schema mismatch・channel mismatch を検出した場合は即削除して None を返す
+(cache は再生成可能なので backup は取らない)。
 
 配置:
     $OW_STATE_DIR (未設定時は ~/.cc-memory/ow/cache/)
