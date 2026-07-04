@@ -12,7 +12,7 @@ jobs:
       matrix:
         include:
           - name: unit
-            path: tests/unit
+            path: tests/unit tests/test_migrations
           - name: integration-e2e
             path: tests/integration tests/e2e
 
