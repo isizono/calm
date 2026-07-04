@@ -337,12 +337,28 @@ class LintResult:
         return 1 if self.errors else 0
 
 
+def _normalize_ref(ref: object) -> str:
+    """判例参照文字列を突合用に正規化する。
+
+    `gray_resolution.basis[].{type,id}` を `"<type> <id>"` に組み立てた key と
+    `precedents[].ref` を照合する際、表記ゆれ(大文字小文字・番号記号 `#`・区切りの
+    `-` や連続空白)を吸収する。型語と id の境界は1空白へ畳み込むだけなので、
+    番号記号や `-` 区切り・大文字始まりの書き方は `"decision 42"` と同一視されるが、
+    `"decision 4"` と `"decision 42"` のような id 相違は区別される。
+    """
+    return re.sub(r"[\s#\-]+", " ", str(ref).strip().lower()).strip()
+
+
 def _basis_all_cited(basis: list[dict], precedents: list[dict]) -> bool:
-    cited_refs = {p.get("ref") for p in precedents if isinstance(p, dict) and p.get("stance")}
+    cited_refs = {
+        _normalize_ref(p.get("ref"))
+        for p in precedents
+        if isinstance(p, dict) and p.get("stance")
+    }
     for b in basis:
         if not isinstance(b, dict):
             return False
-        ref = f"{b.get('type')} {b.get('id')}"
+        ref = _normalize_ref(f"{b.get('type')} {b.get('id')}")
         if ref not in cited_refs:
             return False
     return True
@@ -573,30 +589,33 @@ def run_gate_check(repo: Path, base: str, head: str) -> tuple[dict, str, str]:
 
     origin/main 版の検出器で判定される(改竄耐性)。origin/main に検出器が
     未マージのときは worktree 版にフォールバックする(gate_check.sh 自身の挙動)。
+
+    verdict JSON と markdown レンダリングは `--format both` の1回の呼び出しで
+    まとめて取得する。gate_check.sh は呼ばれるたびに `git fetch origin main` と
+    diff 解析を行うため、json と render を分けて2回叩くとフェッチ・計算が二重化する。
+    both 出力は `<verdict_to_json>\n\n<render_markdown>` の連結で、JSON 部は
+    indent=2 のため内部に空行(`\n\n`)を持たない。よって最初の `\n\n` が両者の
+    境界となり、verdict_text は `--format json` 単独出力とバイト同一になる
+    (verdict_sha256 の互換性を保つ)。
     """
     gate_sh = str(Path(__file__).resolve().parent / "gate_check.sh")
     with tempfile.TemporaryDirectory() as tmp:
-        verdict_path = Path(tmp) / "verdict.json"
+        out_path = Path(tmp) / "gate_out.txt"
         proc = subprocess.run(
-            ["sh", gate_sh, "--base", base, "--head", head, "--repo", str(repo), "--format", "json", "--out", str(verdict_path)],
+            ["sh", gate_sh, "--base", base, "--head", head, "--repo", str(repo), "--format", "both", "--out", str(out_path)],
             cwd=str(repo),
             capture_output=True,
             text=True,
         )
         if proc.returncode != 0:
             raise RuntimeError(f"gate_check.sh failed (exit {proc.returncode}): {proc.stderr}")
-        verdict_text = verdict_path.read_text(encoding="utf-8")
-        verdict = json.loads(verdict_text)
+        combined = out_path.read_text(encoding="utf-8")
 
-        render_proc = subprocess.run(
-            ["sh", gate_sh, "--render", str(verdict_path)],
-            cwd=str(repo),
-            capture_output=True,
-            text=True,
-        )
-        if render_proc.returncode != 0:
-            raise RuntimeError(f"gate_check.sh --render failed (exit {render_proc.returncode}): {render_proc.stderr}")
-        gate_render_md = render_proc.stdout
+    parts = combined.split("\n\n", 1)
+    if len(parts) != 2:
+        raise RuntimeError("gate_check.sh --format both の出力を verdict/render に分割できなかった")
+    verdict_text, gate_render_md = parts
+    verdict = json.loads(verdict_text)
     return verdict, verdict_text, gate_render_md
 
 
