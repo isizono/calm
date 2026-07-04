@@ -8,7 +8,10 @@ set -eu
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-git fetch -q origin main
+# fetch 失敗(ネットワーク不通・origin 未設定など)でスクリプトごと落とさない。
+# set -e 配下でも下の分岐へ必ず進み、ローカルに既存の origin/main があればそれで、
+# 無ければ worktree 版へフォールバックして必ず verdict を返す。
+git fetch -q origin main 2>/dev/null || true
 
 if git show origin/main:scripts/gate_check.py > "$tmp/gate_check.py" 2>/dev/null; then
   exec python3 "$tmp/gate_check.py" "$@"
