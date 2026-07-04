@@ -34,6 +34,12 @@ _project_root = Path(__file__).resolve().parents[1]
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
+# tag scope の継承ロジック（直付け decision_tags OR relations.belongs_to 経由の
+# 親 topic の topic_tags 継承 / retracted 除外）は hint_service の実装を単一の真実と
+# して再利用する。ここで SQL を複製すると将来 hint_service 側が変わったとき checker の
+# 判定基準がサイレントに乖離するため import で共有する。
+from src.services.hint_service import _count_tag_scope_decisions  # noqa: E402
+
 MIGRATIONS_DIR = _project_root / "migrations"
 
 # 先頭（前置空白のみ許容）に固定するfront-matter形式。ドキュメント本文中のコード例
@@ -103,37 +109,15 @@ def count_new_tagged_decisions(
     """watch-tags 該当タグの decision（直付け OR 親 topic の topic_tags 継承）のうち、
     after より後に作成された件数を返す。retracted済みは除外する。
 
-    継承規則は hint_service._count_tag_scope_decisions と同じ
-    （直付け decision_tags OR relations.belongs_to 経由の親 topic の topic_tags）。
+    tag 文字列を tag_id に解決したうえで、件数算出そのものは
+    hint_service._count_tag_scope_decisions に委譲する（継承規則の単一の真実）。
+    タグが存在しなければ 0 を返す。
     """
     namespace, name = _parse_tag(tag_str)
     tag_id = _tag_id(conn, namespace, name)
     if tag_id is None:
         return 0
-    sql = """
-        SELECT COUNT(*) FROM decisions d
-        WHERE d.retracted_at IS NULL
-          AND (
-            EXISTS (
-                SELECT 1 FROM decision_tags dt
-                WHERE dt.decision_id = d.id AND dt.tag_id = ?
-            )
-            OR EXISTS (
-                SELECT 1 FROM relations r
-                JOIN topic_tags tt ON tt.topic_id = r.target_id
-                WHERE r.source_type = 'decision' AND r.source_id = d.id
-                  AND r.target_type = 'topic'
-                  AND r.relation_type = 'belongs_to'
-                  AND tt.tag_id = ?
-            )
-          )
-    """
-    params: list = [tag_id, tag_id]
-    if after is not None:
-        sql += " AND d.created_at > ?"
-        params.append(after)
-    row = conn.execute(sql, tuple(params)).fetchone()
-    return row[0] if row else 0
+    return _count_tag_scope_decisions(conn, tag_id, after=after)
 
 
 def count_new_direction_events(conn: sqlite3.Connection, after: str | None) -> int:

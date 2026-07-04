@@ -60,7 +60,7 @@ git diff だけで判定できる規約を CI（`.github/workflows/test.yml`）�
 
 判定不能（`ast.parse` 失敗等）は警告のみで pass する。doc lint で開発を止めないためで、締め領域の防壁（マージ可否の最終ゲート）は別コンポーネントの管轄であり、この lint は地図メンテの補助輪という位置づけである。
 
-PR 本文をチェック対象に含めるには環境変数 `CCM_PR_BODY` に本文を渡す（`.github/workflows/test.yml` では `${{ github.event.pull_request.body }}` を渡している）。
+PR 本文をチェック対象に含めるには環境変数 `CCM_PR_BODY` に本文を渡す（`.github/workflows/test.yml` では `${{ github.event.pull_request.body }}` を渡している）。CI fail 後に PR 本文へ例外マーカーを追記したときそれを反映させるため、ワークフローの `pull_request.types` に `edited` を含めている（本文編集で lint が再実行される）。
 
 ---
 
@@ -79,6 +79,8 @@ PR 本文をチェック対象に含めるには環境変数 `CCM_PR_BODY` に�
 | `docs/spec/db-schema.md` | スキーマ写し | `migrations/` への変更 |
 | `docs/spec/mcp-tools.md` | ツール IF | `src/main.py` のツール定義変更 |
 | `docs/architecture/components.md` | 構成地図 | サービス追加・依存変化 |
+
+各文書のマーカーはこのトリガー表に対応させる。`watch-migrations: true` は migration がトリガーである `db-schema.md` にのみ付ける。`mcp-tools.md` / `components.md` のトリガーは migration ではないため `watch-migrations: false` とし、`src/main.py` のツール定義変更は §3 の lint（`lint_doc_cochange.py` ルール2）が別途強制する。checker が migration 番号の増加だけで stale 判定する仕様上、`watch-migrations: true` を付けると index 追加のみの migration でも当該文書が無条件で stale 扱いになるためである。
 
 3 文書とも本規約導入時点でマーカーを敷設済み。`docs/spec/db-schema.md` は当時判明していた陳腐化（`decisions.topic_id` / `discussion_logs.topic_id` の直接 FK 記載が migration 0047 で既に削除済みだったこと、および 0040〜0048 の未反映）を修正したうえでマーカーを敷設した。他の 2 文書はマーカー敷設時点の内容をそのまま起点とし、以降の drift を checker / lint で捕捉する。
 

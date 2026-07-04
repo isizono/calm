@@ -2,7 +2,9 @@ name: Test
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    # edited を含めるのは、CI fail 後に PR 本文へ例外マーカー
+    # ([no-schema-shape-change] 等) を追記したとき lint-docs を再実行させるため。
+    types: [opened, synchronize, reopened, edited]
 
 jobs:
   test:
