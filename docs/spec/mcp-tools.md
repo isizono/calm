@@ -52,7 +52,7 @@
 | `update_material` | 資材のcontent/title/tags/sourceを更新する |
 | `update_habit` | 振る舞いを更新する（content/active） |
 | `update_tag` | タグのnotes/canonical/rename/descriptionを更新する |
-| `retract` | 決定事項やログを論理削除する（undoで戻せる） |
+| `retract` | 決定事項・ログ・資材を論理削除する（undoで復帰可能だが検索インデックスは再登録されない） |
 
 ### 1.4 検索系
 
@@ -163,7 +163,7 @@
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
-| keyword | string \| list[string] | yes | - | 2文字以上。配列でAND |
+| keyword | string \| list[string] | yes | - | 2文字以上。配列でAND。完全一致検索(FTS5)は3文字以上のみ発動、2文字はベクトル検索のみ |
 | tags | list[string] | no | null | AND条件 |
 | entity_type | string | no | null | `topic`/`decision`/`activity`/`log`/`material` |
 | limit | int | no | 10 | 最大50 |
@@ -175,7 +175,7 @@
 | date_before | string | no | null | 同上 |
 | include_retracted | bool | no | false | 取り消し済み含む |
 
-**返り値**: `{results: [SearchHit]}`。scoreは0〜1正規化（1.0=全ソース1位、片方ヒットは最大0.5）。0.4以上=高関連、0.15〜0.4=中、0.15未満=低の目安。
+**返り値**: `{results: [SearchHit]}`。scoreは0〜1正規化（1.0=全ソース1位、片方ヒットは最大0.5）。0.4以上=高関連、0.15〜0.4=中、0.15未満=低の目安。snippetでなく全文が必要な場合は結果のtype+idを`get_by_ids`に渡す。
 **実装**: FTS5 trigram + ベクトル検索のRRF統合。
 
 ### 2.7 get_by_ids
@@ -244,6 +244,7 @@
 | until | string | no | null | ISO日付（以前） |
 
 **返り値**: `{activities: [Activity], total_count: int}`。statusの`active`は pending+in_progress のエイリアス（snoozed/shelvedは含まない）。
+**副作用**: 呼び出し時、updated_atがSNOOZE_DURATION_DAYS（デフォルト3日）を超過したsnoozedアクティビティをpendingへ一括自動復活させる。
 
 ### 2.13 update_activity
 
@@ -254,6 +255,8 @@
 | title | string | no | null | 新しいタイトル |
 | description | string | no | null | 新しい説明 |
 | tags | list[string] | no | null | 全置換。1個以上 |
+
+**副作用**: snoozed状態のアクティビティにstatusを指定せず他フィールドのみ更新すると、自動的にstatus="pending"へ復活する。
 
 ### 2.14 add_material
 
@@ -302,9 +305,10 @@
 | source_type | string | yes | - | `topic`/`activity`/`material`/`decision`/`log` |
 | source_id | int | yes | - | 起点ID |
 | targets | list[RelatedRef] | yes | - | ターゲット |
-| relation_type | string | no | "related" | `related`/`depends_on`/`supersedes` |
+| relation_type | string | no | "related" | `related`/`depends_on`/`supersedes`/`belongs_to` |
 
 **制約**: `depends_on` はactivity同士のみ、`supersedes` はdecision同士のみ有効。
+**親帰属の自動書き込み**: 子（activity/material/decision/log）→topicの関連付けは、`relation_type` が `related`（デフォルト）または明示的な `belongs_to` のときに限り `belongs_to` として書き込まれる。`depends_on`/`supersedes` を指定するとtargetがtopicのためバリデーションエラーになり何も書き込まれない。この帰属はget_decisions/get_timeline/check_inのトピック帰属集計やget_by_idsのtopic_id解決の基盤になっており、`remove_relation` で `related`/`belongs_to` を指定すると帰属関係ごと削除される。
 **返り値**: `{added: int}` または `{removed: int}`。重複は冪等。
 
 ### 2.19 get_map
@@ -320,7 +324,7 @@
 
 ### 2.20 add_habit / get_habits / update_habit
 
-- `add_habit(content: string) -> dict`: habitを登録。check-in時に自動注入される。
+- `add_habit(content: string) -> dict`: habitを登録。SessionStart時に全件注入される（セッション途中の登録は次セッション以降に有効）。
 - `get_habits() -> dict`: 登録済みhabit一覧。
 - `update_habit(habit_id: int, content?: string, active?: bool) -> dict`: active=Falseで無効化。
 
@@ -341,11 +345,12 @@
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
-| entity_type | string | yes | - | `"decision"` または `"log"` |
+| entity_type | string | yes | - | `"decision"` / `"log"` / `"material"` |
 | ids | list[int] | yes | - | 対象IDリスト |
-| undo | bool | no | false | trueで取り消しを戻す |
+| undo | bool | no | false | trueで取り消しを戻す（un-retract） |
 
-**動作**: 論理削除。検索・取得でデフォルト除外される（include_retracted=Trueで含められる）。
+**動作**: 論理削除。検索・取得でデフォルト除外される（include_retracted=Trueで含められる）。retract時はsearch_index/FTS/vecインデックスからも物理削除される。
+**undoの不可逆性**: undo（un-retract）はretracted_atをNULLに戻すだけで、検索インデックスへの再登録は行わない。un-retract後に再び検索でヒットさせたい場合はadd_decisions/add_logs/add_materialで新規に追加し直す必要がある。
 
 ### 2.23 get_timeline
 
@@ -507,7 +512,7 @@ ow系ツール（特に `ow_spawn_worker` / `ow_close_worker` / `ow_status` / `o
 
 ### 4.3 check-in 先行が前提のツール
 - `add_decisions` の hints はharness_service経由で「整合性確認」「pin見直し」などを示唆する。直前にcheck-inしていない場合、文脈不足のためhintsを過信しない方がよい。
-- `check_in` を経由しないアクティビティへの操作（`update_activity` 等）は可能だが、その場合 tag_notes / habits の注入は行われない。
+- `check_in` を経由しないアクティビティへの操作（`update_activity` 等）は可能だが、その場合 tag_notes の自動注入は行われない。habitsはSessionStart時に全件注入されるため、check_inの有無に関係なく反映される。
 
 ### 4.4 モデル指定の固定
 `ow_spawn_worker(model=...)` は `claude-opus-4-7` のみ許可。sonnet/haiku/opus-4-8 はバリデーションで弾かれる。
