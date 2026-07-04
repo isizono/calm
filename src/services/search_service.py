@@ -1872,7 +1872,8 @@ def search(
 def _telemetry_get_connection() -> sqlite3.Connection:
     """telemetry 書込専用の軽量コネクション。
 
-    `search_telemetry` への INSERT は sqlite-vec 拡張を必要としないため、
+    telemetry テーブル（`search_telemetry` / `fetch_telemetry`）への INSERT は
+    sqlite-vec 拡張を必要としないため、
     `db.get_connection()` の `enable_load_extension(True)` → 拡張ロード →
     `enable_load_extension(False)` のオーバーヘッドや拡張ロード失敗時の
     warning ログを避ける目的で、最小構成（WAL + busy_timeout）のみ設定する。
