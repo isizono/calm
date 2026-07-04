@@ -373,6 +373,21 @@ def test_lint_l5_gray_resolution_exception_allows_post_veto():
     assert not any("L5" in e for e in result.errors)
 
 
+def test_lint_l5_gray_resolution_exception_allows_ref_format_variations():
+    """ref の表記ゆれ(大文字・ハイフン区切り)があっても basis との一致判定は通る"""
+    block = _base_block(
+        precedents=[{"ref": "Decision-42", "stance": "applied", "note": "根拠"}],
+        **{
+            "gate.machine": "gray",
+            "gate.effective": "post_veto_candidate",
+            "gray_resolution": {"resolved_to": "post_veto_candidate", "basis": [{"type": "decision", "id": 42}]},
+        },
+    )
+    doc = _filled_doc(block)
+    result = lint_document(doc, mode="shadow", allow_placeholder=True)
+    assert not any("L5" in e for e in result.errors)
+
+
 def test_lint_l5_gray_resolution_without_basis_citation_is_error():
     block = _base_block(
         precedents=[],
@@ -623,6 +638,33 @@ def test_run_gate_check_returns_post_veto_candidate_for_small_clean_change(gate_
     assert json.loads(verdict_text) == verdict
     assert "ブラスト半径" in gate_render_md
     assert "revert容易性" in gate_render_md
+
+
+def test_run_gate_check_invokes_gate_check_sh_exactly_once(gate_repos: Path, monkeypatch):
+    """gate_check.sh は1回だけ実行される(verdict/renderの2回叩きに戻る回帰を検知する)。
+
+    gate_check.sh は呼ばれるたびに git fetch + diff 解析を行うため、2回叩くと
+    フェッチ・計算コストが二重化する(--format both による単一呼び出し最適化の回帰防止)。
+    """
+    import scripts.go_package as go_package_module
+
+    (gate_repos / "src").mkdir()
+    (gate_repos / "src" / "foo.py").write_text("x = 1\n", encoding="utf-8")
+    base = _commit_all(gate_repos, "base")
+    (gate_repos / "src" / "foo.py").write_text("x = 2\n", encoding="utf-8")
+    head = _commit_all(gate_repos, "small change")
+
+    real_run = go_package_module.subprocess.run
+    call_count = 0
+
+    def counting_run(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(go_package_module.subprocess, "run", counting_run)
+    run_gate_check(gate_repos, base, head)
+    assert call_count == 1
 
 
 def test_cmd_new_writes_valid_package_to_out_file(gate_repos: Path, tmp_path: Path):

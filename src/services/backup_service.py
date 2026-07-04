@@ -670,7 +670,8 @@ def restore_snapshot(
     # 5. 復元本体
     if file_copy:
         shutil.copy2(snapshot_file, db_path)
-        for suffix in ("-wal", "-shm"):
+        # -journalを残すと次回オープン時にSQLiteが古いjournalで意図しないロールバックを試みうる。
+        for suffix in ("-wal", "-shm", "-journal"):
             Path(f"{db_path}{suffix}").unlink(missing_ok=True)
     else:
         source = sqlite3.connect(str(snapshot_file))

@@ -20,6 +20,7 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 from hooks.hook_transcript import is_user_message
+from hooks.signal_capture import try_capture_signal
 
 _SYNC_MARKER = "claude-code-memory:sync-memory"
 _LOG_FILE = Path("/tmp/claude-session-end.log")
@@ -145,6 +146,7 @@ def main() -> None:
 
     except Exception as e:
         print(f"session_end_hook.py error: {e}", file=sys.stderr)
+        try_capture_signal(kind="machine_error", source="hook:session_end", summary=str(e)[:200])
         _approve()
 
 

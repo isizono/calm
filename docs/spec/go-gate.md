@@ -9,16 +9,18 @@
 
 ## 現状の実装範囲
 
-リポジトリに存在するのは検出器本体(`scripts/gate_check.py`、`scripts/gate_check.sh`)と
-GO判定パッケージツール(`scripts/go_package.py`)、このドキュメントである。以下は未実装である:
+現時点でリポジトリに存在するのは検出器本体(`scripts/gate_check.py`、`scripts/gate_check.sh`)、
+GO判定パッケージツール(`scripts/go_package.py`)、CI ワークフロー(`.github/workflows/gate.yml`)、
+このドキュメントである。以下は未実装である:
 
-- CI ワークフロー(`.github/workflows/gate.yml`)による PR ごとの自動判定
 - plan.md / task-plan・task-execute skill への組み込み(分類予測欄、パッケージ生成手順)
 - 判例 pull 機構(`pull_precedents` ツール)本体。`go_package.py new --pull-json` は
   その応答 JSON を受け取る入力口のみを用意している
 
-検出器・パッケージツールは現状、手元で以下のように単体で呼び出せる状態にある。
-shadow 校正期の運用(下記)は CI 組み込みと skill 組み込みが揃ってから開始する。
+検出器は手元で `uv run python3 scripts/gate_check.py --base <ref> --head <ref>` として、
+CI では PR ごとに `.github/workflows/gate.yml` から自動で呼び出せる状態にある。
+GO判定パッケージツール(`scripts/go_package.py`、`shadow-report` サブコマンド含む)も
+手元で単体で呼び出せる。shadow 校正期の運用(下記)は skill 組み込みが揃ってから開始する。
 
 ## 3値分類
 
@@ -74,6 +76,25 @@ shadow 校正期の運用(下記)は CI 組み込みと skill 組み込みが揃
 PR のワークツリーには変更済みの検出器が含まれ得るため、正規の判定は常に **origin/main 版の
 検出器**で行う。ローカルは `scripts/gate_check.sh`(origin/main から取り出して実行する)を使う。
 `scripts/gate_check.py` を直接叩いた結果は、ブランチ側の改変を反映した参考値でしかない。
+
+CI(`.github/workflows/gate.yml`)も同じ原則で動く。PR の base ブランチから
+`git show origin/<base>:scripts/gate_check.py` で検出器を取り出して実行するため、PR 側で
+`scripts/gate_check.py` 自体を改変(判定ロジックの無力化など)しても CI の判定には反映されない。
+PR がその改変自体を含む場合は、diff 上の `scripts/gate_check.py` 接触が自己保護パスに
+ヒットして `pre_go`(`self_protection`)になる。
+
+## CI組み込み(`.github/workflows/gate.yml`)
+
+- トリガー: PR の `opened` / `synchronize` / `reopened`
+- 判定は base ブランチ版の検出器で行う(上記の改竄耐性)。base ブランチにまだ検出器が
+  存在しない(導入初期)場合は `git show` が失敗し、`pre_go`(`detector_error`)のフォールバック
+  verdict でジョブを正常終了させる
+- ジョブは **non-blocking** である。verdict の分類がどうであれジョブ自体は成功する。ゲートは
+  merge を機械的に阻止する装置ではなく、人間の注意を routing する装置であり、その方針は
+  shadow 期間中もshadow期後(本番化後)も変わらない。拒否権の行使主体は常に人間である
+- verdict は job summary(`--render` の markdown)と `verdict.json`(artifact)の両方に残る。
+  PR へのコメント投稿は行わない(bot ノイズ回避)
+- 検出器自体が例外で落ちた場合はジョブ失敗として可視化される(検出器のバグシグナル)
 
 ## 軸A: ブラスト半径検出器
 
@@ -154,10 +175,10 @@ scripts/gate_check.sh --base origin/main --head HEAD   # 正規経路。origin/m
 
 exit code は verdict を返せた場合は常に0。内部例外(検出器自身のバグ)のみ非0になる。
 
-## shadow 校正期の運用(パッケージツール・CI導入後に開始)
+## shadow 校正期の運用(パッケージツール導入後に開始)
 
-以下は設計時点の運用方針であり、`go_package.py` と `.github/workflows/gate.yml` が揃うまでは
-実施できない。揃った時点でこの節を実運用の起点とする。
+以下は設計時点の運用方針であり、`go_package.py` が揃うまでは実施できない。揃った時点で
+この節を実運用の起点とする。
 
 ### 何を影判定するか
 

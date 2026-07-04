@@ -2050,8 +2050,21 @@ def _record_fetch_telemetry_async(
     )
 
 
-def _format_row(type_name: str, data: dict, tags: list[str]) -> dict:
-    """typeに応じたレスポンス整形"""
+def _format_row(
+    type_name: str,
+    data: dict,
+    tags: list[str],
+    conn: sqlite3.Connection,
+    superseded_by_map: Optional[dict[int, Optional[int]]] = None,
+) -> dict:
+    """typeに応じたレスポンス整形
+
+    conn: decision 分岐で is_superseded / superseded_by を引くための DB 接続。
+    superseded_by_map: 事前に一括算出した {decision_id: 最新superseder id or None}。
+        渡された場合は decision 分岐で本マップを引き、conn への追加問い合わせを行わない
+        (複数 decision をまとめて整形する呼出元が N+1 を避けるための経路)。None のときは
+        対象 decision 1件だけを conn へ問い合わせる。
+    """
     if type_name == 'topic':
         result = {
             "id": data["id"],
@@ -2075,6 +2088,12 @@ def _format_row(type_name: str, data: dict, tags: list[str]) -> dict:
         }
         if data.get("retracted_at"):
             result["retracted_at"] = data["retracted_at"]
+        if superseded_by_map is not None:
+            superseded_by = superseded_by_map.get(data["id"])
+        else:
+            superseded_by = get_superseded_by_batch(conn, [data["id"]]).get(data["id"])
+        result["is_superseded"] = superseded_by is not None
+        result["superseded_by"] = superseded_by
         precedent_pure.attach_precedent(result, data.get("reason"))
         apply_readable_id_inplace(result, "decision")
         return result
@@ -2123,7 +2142,7 @@ def _format_row(type_name: str, data: dict, tags: list[str]) -> dict:
     return data
 
 
-def get_by_id(type: str, id: int, conn=None) -> dict:
+def get_by_id(type: str, id: int, conn=None, superseded_by_map=None) -> dict:
     """
     search結果の詳細情報を取得する。
 
@@ -2134,9 +2153,13 @@ def get_by_id(type: str, id: int, conn=None) -> dict:
         type: データ種別（'topic', 'decision', 'activity', 'log', 'material'）
         id: データのID
         conn: 既存のDB接続（省略時は内部で新規作成・クローズ）
+        superseded_by_map: 事前に一括算出した {decision_id: 最新superseder id or None}。
+            複数件をまとめて取得する呼出元が decision ごとの N+1 問い合わせを避けるために渡す。
+            省略時は decision 1件だけを問い合わせる。
 
     Returns:
-        指定した種別に応じた詳細情報
+        指定した種別に応じた詳細情報。type='decision' のとき is_superseded（bool）と
+        superseded_by（最新1hopのsupersede元id、無ければNone）が常に付く。
     """
     if type not in VALID_TYPES:
         return {
@@ -2187,7 +2210,10 @@ def get_by_id(type: str, id: int, conn=None) -> dict:
             ).fetchone()
             data["topic_id"] = r["target_id"] if r else None
 
-        return {"type": type, "data": _format_row(type, data, tags)}
+        return {
+            "type": type,
+            "data": _format_row(type, data, tags, conn, superseded_by_map=superseded_by_map),
+        }
 
     except Exception as e:
         return {
@@ -2235,6 +2261,15 @@ def get_by_ids(items: list[dict], caller_session_id: Optional[str] = None) -> di
 
     conn = get_connection()
     try:
+        # decision の superseded_by は decision id を一括収集して1クエリで解決する
+        # (decision 1件ずつ get_superseded_by_batch を呼ぶと N+1 になるため)
+        decision_ids = [
+            item["id"]
+            for item in items
+            if item.get("type") == "decision" and item.get("id") is not None
+        ]
+        superseded_by_map = get_superseded_by_batch(conn, decision_ids)
+
         results = []
         for item in items:
             item_type = item.get("type")
@@ -2247,7 +2282,9 @@ def get_by_ids(items: list[dict], caller_session_id: Optional[str] = None) -> di
                     }
                 })
                 continue
-            result = get_by_id(item_type, item_id, conn=conn)
+            result = get_by_id(
+                item_type, item_id, conn=conn, superseded_by_map=superseded_by_map
+            )
             results.append(result)
 
         return {"results": results}
