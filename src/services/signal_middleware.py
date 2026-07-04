@@ -16,9 +16,15 @@ from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from src.services import signal_service
 from src.services.guard_service import CapabilityError
 
-# detail に書き込む traceback + 引数ダイジェストの最大文字数。値そのものは含めず
-# key と型のみを記録する（機密情報混入の回避）。DB カラムに上限は無いが、
-# detail が肥大化しないよう妥当な長さで切る。
+# detail に書き込む traceback + 引数ダイジェストの最大文字数。DB カラムに上限は
+# 無いが、detail が肥大化しないよう妥当な長さで切る。
+#
+# 注意（機密情報）: 「値そのものを含めない」保護は _traceback_and_args_digest が
+# 自前で組み立てる引数ダイジェスト（key:型 のみ）にしか効かない。実際に記録される
+# summary（str(e)）と detail 中の traceback 本文は例外オブジェクトの文字列表現
+# そのものであり、この保護の対象外。既存サービスには例外メッセージへ引数の実値を
+# 直接埋め込む箇所があるため（例: f"Tag {tag!r} not found"）、summary/detail は
+# 値を含みうる自由文字列として扱うこと。マスキングは未実装。
 _DETAIL_MAX_LEN = 500
 
 

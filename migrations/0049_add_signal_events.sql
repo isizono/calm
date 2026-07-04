@@ -26,7 +26,8 @@
 --   fingerprint      sha256(kind|source|正規化summary) 先頭16hex。dedup のキー
 --   occurrence_count 同一fingerprintの再発回数
 --   first_seen_at    初回記録時刻
---   last_seen_at     最終記録時刻（dedup 時に更新）
+--   last_seen_at     最後に実際に再発した時刻（新規記録・dedup 時のみ更新。
+--                    トリアージ状態遷移では更新しない）
 --   session_id       記録元セッションID（任意）
 --   status           トリアージ状態。new → triaged / promoted / dismissed
 --   promoted_type    promote先エンティティ種別（'topic'|'activity'|'decision'|'log'|'material'）

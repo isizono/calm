@@ -319,7 +319,11 @@ def add_decisions(items: list[dict], ctx: Context) -> dict:
     items: 決定事項情報の配列。各要素は以下のキーを持つ:
         - topic_id (int, 必須): 関連するトピックのID
         - decision (str, 必須): 決定内容
-        - reason (str, 必須): 決定の理由
+        - reason (str, 必須): 決定の理由。任意で本文末尾に定型節（却下案:/適用条件:/適用外:/検証:。
+          書式は docs/precedent-format.md）を書ける。却下案・適用条件・適用外は将来の再提案・誤類推を
+          防ぐための情報。検証行が無いdecisionは「決定のみ・実測未確認」を意味する（実装状態を本文に
+          書かず、検証行の有無で表す）。節はすべて任意で、「該当なし」を埋めるための空項目・ダミー項目は
+          書かないこと。
         - title (str, optional): 決定の要点を表す1行（40字以内）。**付けることを強く推奨**。check-in・timeline・search等の一覧表示でdecision本文の代わりに見出しとして使われ、可読性が大きく上がる。省略時はdecision本文にfallbackする
         - tags (list[str], optional): 追加タグ。省略時はtopicのタグを継承。内容を表すタグを積極的に追加すること。namespace: domain:(プロジェクト)/intent:(意図)/素タグ(キーワード)。例: ["intent:design", "naming-convention", "backward-compat"]
         - propagate_to (dict, optional): 決定事項を注入先に伝搬する。
@@ -330,6 +334,10 @@ def add_decisions(items: list[dict], ctx: Context) -> dict:
     Returns: {created: [...], errors: [{index, error}]}
         created各要素には related_decisions（同topic内の類似decision上位3件 [{id, title, distance}]）が付く。
         既存decisionとの矛盾・重複に気づくための導線。embeddingサーバー未起動時は空配列。
+        reasonに定型節があれば precedent（{rejected_alternatives: 件数, scope: bool,
+        verification_anchors: [文字列, ...]}）をecho。書式ゆれ・空節・アンカー日付欠落等が
+        あれば precedent_warnings（文字列のリスト）も付く。これはsoft validationであり、
+        warningがあってもdecision作成自体は拒否しない。
     """
     guard_service.check_capability("add_decisions")
     caller_session_id = get_caller_session_id()
@@ -428,7 +436,18 @@ def get_decisions(
 
     Returns:
         決定事項一覧（各decisionにtags付き）
-        entity_type == "activity" の場合はrelated topics経由でdecisions集約
+        entity_type == "activity" の場合はrelated topics（上限10件）経由でdecisions集約。
+            related topics が10件を超える場合、11件目以降の topic に属する decision は
+            total_count / truncated の対象外（この上限による切り捨ては可視化されない）
+        total_count: 対象 topic 全体の decision 総件数（retractフィルタ適用後、limit/start_idの影響を受けない）
+        truncated: この応答が limit/start_id により後続の decision を打ち切ったとき true
+            （＝続きのページが存在する）。start_id 未指定時は total_count > limit と一致し、
+            start_id 指定時は start_id 以降にさらに残件があるかを表す
+        reasonに定型節（却下案:/適用条件:/適用外:/検証:。書式は docs/precedent-format.md）が
+        あるdecisionには precedent（{rejected_alternatives: 件数, scope: bool,
+        verification_anchors: [文字列, ...]}）が付く。節が無いdecisionにはキー自体が無い
+        （legacy本文と規約準拠本文の区別に使える。検証アンカーが空のdecisionは
+        「決定のみ・実測未確認」を意味する）
     """
     flavor = _normalize_flavor(flavor)
     result = decision_service.get_decisions(entity_type, entity_id, start_id, limit, include_retracted=include_retracted)
@@ -492,7 +511,8 @@ def search(
         include_retracted=Trueを指定する。
     """
     flavor = _normalize_flavor(flavor)
-    result = search_service.search(keyword, tags, entity_type, limit, offset, keyword_mode, include_details, domain, date_after, date_before)
+    caller_session_id = get_caller_session_id()
+    result = search_service.search(keyword, tags, entity_type, limit, offset, keyword_mode, include_details, domain, date_after, date_before, caller_session_id=caller_session_id)
     if "error" not in result:
         _apply_flavor_to_snippets(result.get("results", []), flavor)
     if "error" not in result and tags:
@@ -520,9 +540,13 @@ def get_by_ids(
 
     Returns:
         取得結果（各アイテムの詳細情報）
+        typeが'decision'のとき、reasonに定型節（却下案:/適用条件:/適用外:/検証:。書式は
+        docs/precedent-format.md）があれば precedent（get_decisionsと同形のコンパクト形）が付く。
+        節が無いdecisionにはキー自体が無い
     """
     flavor = _normalize_flavor(flavor)
-    result = search_service.get_by_ids(items)
+    caller_session_id = get_caller_session_id()
+    result = search_service.get_by_ids(items, caller_session_id=caller_session_id)
     if "error" not in result:
         conn = get_connection()
         try:
