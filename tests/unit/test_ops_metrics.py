@@ -208,6 +208,13 @@ class TestLoadPackages:
         with pytest.raises(ValueError):
             load_packages(str(packages_file))
 
+    def test_load_packages_rejects_non_dict_element(self, tmp_path):
+        packages_file = tmp_path / "packages.json"
+        packages_file.write_text(json.dumps([{"precedents": []}, 42]), encoding="utf-8")
+
+        with pytest.raises(ValueError):
+            load_packages(str(packages_file))
+
     @staticmethod
     def _sample():
         return [{"precedents": [], "pull": {"presented": "unavailable"}}]
@@ -257,3 +264,26 @@ class TestMainCli:
 
         assert exit_code == 1
         assert "読み込みに失敗" in capsys.readouterr().err
+
+    def test_main_rejects_non_dict_package_element(self, temp_db, tmp_path, capsys):
+        """トップレベル要素が JSON object でない --packages-file を load 時に弾く。"""
+        packages_file = tmp_path / "bad.json"
+        packages_file.write_text(json.dumps(["not an object"]), encoding="utf-8")
+
+        exit_code = main(["--db", temp_db, "--packages-file", str(packages_file)])
+
+        assert exit_code == 1
+        assert "読み込みに失敗" in capsys.readouterr().err
+
+    def test_main_converts_malformed_precedents_to_controlled_error(self, temp_db, tmp_path, capsys):
+        """precedents に dict でない要素が混じる --packages-file を素の traceback にせず終了コード1へ変換する。"""
+        packages_file = tmp_path / "bad.json"
+        packages_file.write_text(
+            json.dumps([{"precedents": ["not a dict"], "pull": {"presented": []}}]),
+            encoding="utf-8",
+        )
+
+        exit_code = main(["--db", temp_db, "--packages-file", str(packages_file)])
+
+        assert exit_code == 1
+        assert "データ形式が不正" in capsys.readouterr().err

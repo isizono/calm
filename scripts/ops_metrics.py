@@ -27,11 +27,25 @@ if str(_project_root) not in sys.path:
 # 汎用の故障・不満報告であり率指標の対象外（品質投資コンポーネントの管轄）。
 _CONTRADICTION_RESOLUTIONS = ("existing_correct", "new_correct", "unresolved")
 
+# boundary_case / rollback の context スキーマ（mode / machine_verdict / divergence の
+# 許容値）を規定する唯一の箇所。生成側とこの定義がずれると、率指標の分母が 0 になり
+# _rate() が黙って N/A を返すだけで計測破綻に気づけない（検知手段のない既知の制約）。
+_BOUNDARY_MODE_LIVE = "live"
+_BOUNDARY_MODE_SHADOW = "shadow"
+_BOUNDARY_VERDICT_POST_VETO = "post_veto_candidate"
+_DIVERGENCE_NONE = "none"
+_DIVERGENCE_FALSE_NEGATIVE = "false_negative"
+
 
 def _connect(db_path: str) -> sqlite3.Connection:
-    """読み取り専用の軽量接続を作る（sqlite-vec拡張のロードは不要なため素の sqlite3 を使う）。"""
+    """読み取り専用の軽量接続を作る（sqlite-vec拡張のロードは不要なため素の sqlite3 を使う）。
+
+    他の DB 接続経路（src.db.get_connection / sanitize hook）に揃えて busy_timeout を
+    設定し、WAL チェックポイント等での一時ロックに即エラーを返さずリトライ待機させる。
+    """
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
@@ -81,15 +95,25 @@ def _contradiction_metrics(conn: sqlite3.Connection, window_days: Optional[int])
     return {"count": len(rows), "by_resolution": by_resolution}
 
 
-def _rollback_metrics(conn: sqlite3.Connection, window_days: Optional[int]) -> dict:
-    """巻き戻し率 = rollback件数 / boundary_case(mode=live, machine_verdict=post_veto_candidate)件数。"""
+def _rollback_metrics(
+    conn: sqlite3.Connection,
+    window_days: Optional[int],
+    boundary_rows: list[dict],
+) -> dict:
+    """巻き戻し率 = rollback件数 / boundary_case(mode=live, machine_verdict=post_veto_candidate)件数。
+
+    分子(rollback)と分母(boundary_case)は案件IDでリンクしておらず、それぞれ
+    first_seen_at の window で独立に絞り込むだけである。境界案件の記録時点と
+    rollback 時点が window 境界をまたぐと、分子が分母を上回るなど実態と乖離した
+    値になり得る。案件IDによる突合は生成側（境界ゲート）が未実装のため、現状は
+    独立カウントの近似値として扱う（既知の制約）。
+    """
     rollback_rows = _fetch_signals(conn, "rollback", window_days)
-    boundary_rows = _fetch_signals(conn, "boundary_case", window_days)
     denom_rows = [
         row
         for row in boundary_rows
-        if (row["context"] or {}).get("mode") == "live"
-        and (row["context"] or {}).get("machine_verdict") == "post_veto_candidate"
+        if (row["context"] or {}).get("mode") == _BOUNDARY_MODE_LIVE
+        and (row["context"] or {}).get("machine_verdict") == _BOUNDARY_VERDICT_POST_VETO
     ]
     numerator = len(rollback_rows)
     denominator = len(denom_rows)
@@ -100,16 +124,21 @@ def _rollback_metrics(conn: sqlite3.Connection, window_days: Optional[int]) -> d
     }
 
 
-def _shadow_divergence_metrics(conn: sqlite3.Connection, window_days: Optional[int]) -> dict:
+def _shadow_divergence_metrics(boundary_rows: list[dict]) -> dict:
     """shadow乖離率 = boundary_case(mode=shadow)のうちdivergence!=noneの割合。false_negativeは別掲。"""
-    boundary_rows = _fetch_signals(conn, "boundary_case", window_days)
-    shadow_rows = [row for row in boundary_rows if (row["context"] or {}).get("mode") == "shadow"]
+    shadow_rows = [
+        row for row in boundary_rows if (row["context"] or {}).get("mode") == _BOUNDARY_MODE_SHADOW
+    ]
     total = len(shadow_rows)
     diverged = [
-        row for row in shadow_rows if (row["context"] or {}).get("divergence", "none") != "none"
+        row
+        for row in shadow_rows
+        if (row["context"] or {}).get("divergence", _DIVERGENCE_NONE) != _DIVERGENCE_NONE
     ]
     false_negative = [
-        row for row in shadow_rows if (row["context"] or {}).get("divergence") == "false_negative"
+        row
+        for row in shadow_rows
+        if (row["context"] or {}).get("divergence") == _DIVERGENCE_FALSE_NEGATIVE
     ]
     return {
         "shadow_total": total,
@@ -187,11 +216,14 @@ def compute_metrics(
     """
     conn = _connect(db_path)
     try:
+        # rollback率と shadow乖離率はどちらも同一 kind・同一 window の boundary_case を
+        # 参照するため、ここで一度だけ取得して両者へ渡す。
+        boundary_rows = _fetch_signals(conn, "boundary_case", window_days)
         return {
             "window_days": window_days,
             "contradiction": _contradiction_metrics(conn, window_days),
-            "rollback": _rollback_metrics(conn, window_days),
-            "shadow_divergence": _shadow_divergence_metrics(conn, window_days),
+            "rollback": _rollback_metrics(conn, window_days, boundary_rows),
+            "shadow_divergence": _shadow_divergence_metrics(boundary_rows),
             "pull": _pull_metrics(conn, window_days, packages),
             "precedent_misapplied": _misapplied_metrics(conn, window_days, packages),
         }
@@ -210,6 +242,8 @@ def load_packages(packages_file: Optional[str]) -> Optional[list[dict]]:
     data = json.loads(text)
     if not isinstance(data, list):
         raise ValueError("--packages-file must contain a JSON array of go-package blocks")
+    if not all(isinstance(item, dict) for item in data):
+        raise ValueError("--packages-file の各要素は go-package オブジェクト(JSON object)でなければなりません")
     return data
 
 
@@ -300,7 +334,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"--packages-file の読み込みに失敗しました: {e}", file=sys.stderr)
         return 1
 
-    metrics = compute_metrics(db_path, window_days=window_days, packages=packages)
+    # load_packages はトップレベルが dict の配列であることまでしか検証しない。
+    # precedents/pull など入れ子のフォーマット逸脱は集計中に AttributeError/
+    # TypeError として現れるため、素の traceback を出さず制御されたエラーに変換する。
+    try:
+        metrics = compute_metrics(db_path, window_days=window_days, packages=packages)
+    except (AttributeError, TypeError) as e:
+        print(f"--packages-file のデータ形式が不正です: {e}", file=sys.stderr)
+        return 1
 
     if args.json:
         print(json.dumps(metrics, ensure_ascii=False, indent=2))
