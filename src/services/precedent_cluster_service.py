@@ -16,7 +16,7 @@ from src.services.decision_service import _build_decision_item
 from src.services.material_service import SNIPPET_MAX_LEN
 from src.services.readable_id import apply_readable_id_inplace
 from src.services.supersede_service import compute_supersede_info_batch, get_superseded_by_batch
-from src.services.tag_service import get_effective_tags_batch_by_ids
+from src.services.tag_service import get_effective_tags_batch_by_ids, get_entity_tags_batch
 
 DEFAULT_MAX_EXPANSION_NODES = 30
 
@@ -84,7 +84,7 @@ def expand_decision_cluster(
           }, ...],
           "materials": [{
               "id_raw": int, "title": str, "source": str, "created_at": str,
-              "snippet": str, "membership": [...],
+              "snippet": str, "tags": [str, ...], "membership": [...],
           }, ...],
           "edges": [{"source": "decision:12", "target": "decision:8", "via": "supersedes"}, ...],
           "catalog_overflow": [{"type": str, "id_raw": int, "title": str}, ...],
@@ -266,7 +266,12 @@ def expand_decision_cluster(
     material_rows: dict[int, dict] = dict(expansion_material_rows)
 
     tags_map = get_effective_tags_batch_by_ids(conn, "decision", decision_ids_final) if decision_ids_final else {}
-    supersede_map = compute_supersede_info_batch(conn, decision_ids_final)
+    # supersede 情報は decision id 単位で決まり batch 構成に依存しない。seed 分は closure
+    # 算出で既に得ているため再利用し、未算出の id（chain メンバー・拡張 decision）だけ追加取得する。
+    supersede_map = {did: seed_supersede_map[did] for did in decision_ids_final if did in seed_supersede_map}
+    missing_supersede_ids = [did for did in decision_ids_final if did not in supersede_map]
+    if missing_supersede_ids:
+        supersede_map.update(compute_supersede_info_batch(conn, missing_supersede_ids))
     superseded_by_map = get_superseded_by_batch(conn, decision_ids_final)
 
     decisions_out: list[dict] = []
@@ -284,6 +289,11 @@ def expand_decision_cluster(
         decisions_out.append(item)
     decisions_out.sort(key=lambda i: (i["created_at"], i["id_raw"]))
 
+    material_tags_map = (
+        get_entity_tags_batch(conn, "material_tags", "material_id", material_ids_final)
+        if material_ids_final
+        else {}
+    )
     materials_out: list[dict] = []
     for mid in material_ids_final:
         row = material_rows.get(mid)
@@ -295,6 +305,7 @@ def expand_decision_cluster(
             "source": row["source"],
             "created_at": row["created_at"],
             "snippet": (row["content"] or "")[:SNIPPET_MAX_LEN],
+            "tags": material_tags_map.get(mid, []),
             "membership": [m for m in _MEMBERSHIP_ORDER if m in membership[("material", mid)]],
         }
         apply_readable_id_inplace(item, "material")

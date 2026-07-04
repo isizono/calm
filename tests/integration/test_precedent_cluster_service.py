@@ -206,6 +206,26 @@ class TestCitationBothDirections:
         assert {"source": f"decision:{d2}", "target": f"decision:{d1}", "via": "citation"} in result["edges"]
 
 
+class TestMaterialTags:
+    def test_material_output_includes_tags(self, temp_db, topic_id):
+        """展開で到達した material は紐づくタグ一覧を tags フィールドに含む"""
+        d1 = _decision(topic_id, "seed", "r")
+        m1 = add_material(
+            title="tagged-material", content="内容", tags=["domain:test", "precedent"], source="test"
+        )["material_id"]
+        _link_related("decision", d1, "material", m1)
+
+        conn = get_connection()
+        try:
+            result = expand_decision_cluster(conn, [d1])
+        finally:
+            conn.close()
+
+        by_material = {m["id_raw"]: m for m in result["materials"]}
+        assert m1 in by_material
+        assert by_material[m1]["tags"] == ["domain:test", "precedent"]
+
+
 class TestBudgetOverflow:
     def test_expansion_budget_demotes_overflow_to_catalog(self, temp_db, topic_id):
         """拡張ノードが予算を超えたら超過分が catalog_overflow に降格し truncated=true になる。
