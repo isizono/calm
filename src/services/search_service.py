@@ -1283,6 +1283,7 @@ def _rrf_merge(
     vec_results: list[dict],
     limit: int,
     tag_results: Optional[list[dict]] = None,
+    adaptive_weights: Optional[tuple[float, float]] = None,
 ) -> list[dict]:
     """RRF（Reciprocal Rank Fusion）でFTS5・ベクトル・タグLIKE結果を統合する。
 
@@ -1302,11 +1303,18 @@ def _rrf_merge(
     ことを呼出元が保証する。重複があると `+=` により寄与が二重に加算され rrf_normalized が
     1.0 を超える可能性がある。現状の `_fts_search` / `_vector_search` / `_tag_like_search` は
     重複を返さない実装になっている。
+
+    ``adaptive_weights`` が渡された場合はそれを (w_fts, w_vec) として使い、内部の
+    `_compute_adaptive_weights` 再計算を省く。同一 search 呼出内で diagnostics 側と
+    重みを共有し二重計算を避けるための入口。None のときは従来通り自前で算出する。
     """
     scores: dict[tuple, dict] = {}  # key: (type, id)
 
     # Adaptive RRF: ヒット数比率に応じてFTS/ベクトルの重みを動的調整
-    w_fts, w_vec = _compute_adaptive_weights(len(fts_results), len(vec_results))
+    if adaptive_weights is None:
+        w_fts, w_vec = _compute_adaptive_weights(len(fts_results), len(vec_results))
+    else:
+        w_fts, w_vec = adaptive_weights
 
     def _ensure_entry(item: dict) -> dict:
         key = (item["type"], item["id"])
@@ -1612,10 +1620,15 @@ def _retrieve(ctx: SearchContext, conn: sqlite3.Connection) -> dict:
     }
 
 
-def _build_diagnostics(ctx: SearchContext, retrieval: dict) -> dict:
+def _build_diagnostics(
+    ctx: SearchContext, retrieval: dict, adaptive_weights: tuple[float, float],
+) -> dict:
     """telemetry 用の retriever 内訳を組み立てる。
 
     ``_retrieve`` の戻り値と ``ctx``（QE 拡張後）だけから計算できる範囲に留める。
+    ``adaptive_weights`` は呼出元 (``search``) が 1 回だけ算出した (w_fts, w_vec) を
+    そのまま受け取る。RRF 統合 (`_rrf_merge`) と同じ重みを共有し、同一 search 呼出内で
+    `_compute_adaptive_weights` が二重に走るのを避ける。
 
     Returns:
         {"fts_hits": int, "vec_hits": int | None, "tag_hits": int,
@@ -1631,9 +1644,7 @@ def _build_diagnostics(ctx: SearchContext, retrieval: dict) -> dict:
     qe_expansions: list[str] = []
     if ctx.original_keyword_count is not None:
         qe_expansions = list(ctx.fts_keywords[ctx.original_keyword_count:])
-    w_fts, w_vec = _compute_adaptive_weights(
-        len(retrieval["fts"]), len(vec_results) if vec_results is not None else 0,
-    )
+    w_fts, w_vec = adaptive_weights
     return {
         "fts_hits": len(retrieval["fts"]),
         "vec_hits": len(vec_results) if vec_results is not None else None,
@@ -1645,14 +1656,21 @@ def _build_diagnostics(ctx: SearchContext, retrieval: dict) -> dict:
     }
 
 
-def _merge(ctx: SearchContext, retrieval: dict) -> list[dict]:
-    """RRF 統合ステージ。各 result に score_breakdown.{fts,vec,tag,rrf_normalized} を付与する。"""
+def _merge(
+    ctx: SearchContext, retrieval: dict, adaptive_weights: tuple[float, float],
+) -> list[dict]:
+    """RRF 統合ステージ。各 result に score_breakdown.{fts,vec,tag,rrf_normalized} を付与する。
+
+    ``adaptive_weights`` は呼出元 (``search``) が 1 回だけ算出した (w_fts, w_vec)。
+    diagnostics 側と同じ重みを共有し `_compute_adaptive_weights` の二重計算を避ける。
+    """
     effective_vec = retrieval["vec"] if retrieval["vec"] is not None else []
     return _rrf_merge(
         retrieval["fts"],
         effective_vec,
         ctx.fetch_limit,
         tag_results=retrieval["tag"],
+        adaptive_weights=adaptive_weights,
     )
 
 
@@ -1750,6 +1768,7 @@ def search(
     domain: Optional[str] = None,
     date_after: Optional[str] = None,
     date_before: Optional[str] = None,
+    caller_session_id: Optional[str] = None,
 ) -> dict:
     """
     キーワードで横断検索する。
@@ -1774,6 +1793,8 @@ def search(
         domain: ドメインフィルタ。内部でtags=["domain:{domain}"]にマージされる
         date_after: 日付フィルタ（以降）。YYYY-MM-DD or YYYY-MM-DD HH:MM:SS形式
         date_before: 日付フィルタ（以前）。YYYY-MM-DD or YYYY-MM-DD HH:MM:SS形式
+        caller_session_id: 呼出セッションの相関キー。telemetry に記録し fetch_telemetry と
+            突合するために使う。MCP context 外の直接呼出では None（記録は NULL）。
 
     Returns:
         検索結果一覧（type, id, title, score, final_score, score_breakdown, snippet, tags）。
@@ -1800,8 +1821,10 @@ def search(
             )
             ctx = _expand(ctx)
             retrieval = _retrieve(ctx, conn)
-            diagnostics = _build_diagnostics(ctx, retrieval)
-            merged = _merge(ctx, retrieval)
+            vec_hits = len(retrieval["vec"]) if retrieval["vec"] is not None else 0
+            adaptive_weights = _compute_adaptive_weights(len(retrieval["fts"]), vec_hits)
+            diagnostics = _build_diagnostics(ctx, retrieval, adaptive_weights)
+            merged = _merge(ctx, retrieval, adaptive_weights)
             merged = _rerank(ctx, merged)
             sliced, total_count = _slice(ctx, merged)
             results_snapshot = _build_results_snapshot(sliced)
@@ -1825,6 +1848,7 @@ def search(
             result_count=total_count,
             results=results_snapshot,
             diagnostics=diagnostics,
+            caller_session_id=caller_session_id,
         )
 
         return {
@@ -1875,6 +1899,18 @@ class _JsonCol:
         self.value = value
 
 
+# telemetry テーブルごとに書込を許す列の allowlist。
+# `_record_telemetry_async` は table / column 名を検証なしで SQL に埋め込むため、
+# ここに載っていない table / column の書込は組立前に弾く（f-string 埋込前の安全弁）。
+_TELEMETRY_WRITABLE_COLUMNS: dict[str, frozenset[str]] = {
+    "search_telemetry": frozenset(
+        {"query", "parameters", "result_count", "results_json",
+         "diagnostics_json", "caller_session_id"}
+    ),
+    "fetch_telemetry": frozenset({"tool", "items_json", "caller_session_id"}),
+}
+
+
 def _record_telemetry_async(table: str, payload: dict) -> threading.Thread | None:
     """telemetry テーブルへの 1 行 INSERT を daemon thread で非同期に行う共通ヘルパ。
 
@@ -1885,14 +1921,25 @@ def _record_telemetry_async(table: str, payload: dict) -> threading.Thread | Non
     含む）は全て `_write` 内、すなわち daemon thread 側で行う。呼出元スレッドで例外が
     発生する余地を残さないため。
 
+    table / column 名は SQL に f-string で埋め込まれる。呼出元がハードコードした定数を
+    渡す前提だが、`_TELEMETRY_WRITABLE_COLUMNS` の allowlist に対して同期部分で assert し、
+    想定外の table / column が混入した場合は SQL 組立前に開発時点で気付けるようにする。
+
     Args:
-        table: 書込先テーブル名。呼出元がハードコードした定数文字列を渡す前提で
-            それ自体はエスケープ・検証しない（ユーザー入力を渡さないこと）。
+        table: 書込先テーブル名。allowlist に載っている定数文字列のみ許す
+            （ユーザー入力を渡さないこと）。
         payload: カラム名 → 値 の dict。JSON エンコードが必要な値は `_JsonCol` で包む。
 
     Returns:
         起動した daemon Thread。起動に失敗した場合は None。
     """
+    allowed = _TELEMETRY_WRITABLE_COLUMNS.get(table)
+    assert allowed is not None, f"unknown telemetry table: {table!r}"
+    unknown_columns = set(payload) - allowed
+    assert not unknown_columns, (
+        f"unknown telemetry columns for {table!r}: {sorted(unknown_columns)}"
+    )
+
     def _write() -> None:
         columns = list(payload.keys())
         try:
@@ -1934,6 +1981,7 @@ def _record_search_telemetry_async(
     result_count: int,
     results: Optional[list[dict]] = None,
     diagnostics: Optional[dict] = None,
+    caller_session_id: Optional[str] = None,
 ) -> threading.Thread | None:
     """search 呼出の telemetry を別スレッドで非同期書込する。
 
@@ -1952,6 +2000,8 @@ def _record_search_telemetry_async(
         result_count: 返却件数（total_count）。
         results: 返却ページの [{"type", "id", "final_score"}, ...]。省略時は空リストとして記録する。
         diagnostics: retriever 内訳（`_build_diagnostics` の戻り値）。省略時は空 dict として記録する。
+        caller_session_id: 呼出セッションの相関キー。fetch_telemetry と突合するために記録する。
+            None のとき NULL で記録する（MCP context 外の呼出）。
 
     Returns:
         起動した daemon Thread。起動に失敗した場合は None。
@@ -1964,6 +2014,7 @@ def _record_search_telemetry_async(
             "result_count": result_count,
             "results_json": _JsonCol(results if results is not None else []),
             "diagnostics_json": _JsonCol(diagnostics if diagnostics is not None else {}),
+            "caller_session_id": caller_session_id,
         },
     )
 
@@ -1971,16 +2022,19 @@ def _record_search_telemetry_async(
 def _record_fetch_telemetry_async(
     tool: str,
     items: list[dict],
+    caller_session_id: Optional[str] = None,
 ) -> threading.Thread | None:
     """取得系ツール呼出（get_by_ids 等）を fetch_telemetry へ非同期書込する。
 
     search_telemetry の results_json と突合することで、検索結果が実際に後続取得
     されたか（pull hit 率のプロキシ）を後から算出できるようにするための生データ記録。
+    caller_session_id を両テーブルに持たせ、同一セッションにスコープして突合する。
     書込方針は `_record_search_telemetry_async` と同じ（非同期・失敗握りつぶし）。
 
     Args:
         tool: 計装元ツール名（例: 'get_by_ids'）。
         items: 取得対象の [{"type": str, "id": int}, ...]。
+        caller_session_id: 呼出セッションの相関キー。None のとき NULL で記録する。
 
     Returns:
         起動した daemon Thread。起動に失敗した場合は None。
@@ -1990,6 +2044,7 @@ def _record_fetch_telemetry_async(
         {
             "tool": tool,
             "items_json": _JsonCol(items),
+            "caller_session_id": caller_session_id,
         },
     )
 
@@ -2144,7 +2199,7 @@ def get_by_id(type: str, id: int, conn=None) -> dict:
             conn.close()
 
 
-def get_by_ids(items: list[dict]) -> dict:
+def get_by_ids(items: list[dict], caller_session_id: Optional[str] = None) -> dict:
     """
     複数のtype+idペアをバッチ取得する。
 
@@ -2153,6 +2208,8 @@ def get_by_ids(items: list[dict]) -> dict:
 
     Args:
         items: [{type: str, id: int}, ...] のリスト（最大20件）
+        caller_session_id: 呼出セッションの相関キー。telemetry に記録し search_telemetry と
+            突合するために使う。MCP context 外の直接呼出では None（記録は NULL）。
 
     Returns:
         {"results": [get_by_idの結果, ...]}
@@ -2171,6 +2228,7 @@ def get_by_ids(items: list[dict]) -> dict:
     _record_fetch_telemetry_async(
         "get_by_ids",
         [{"type": item.get("type"), "id": item.get("id")} for item in items],
+        caller_session_id=caller_session_id,
     )
 
     conn = get_connection()
