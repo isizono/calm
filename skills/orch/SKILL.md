@@ -254,16 +254,8 @@ orch は decision の「裁定者」、dispatcher は「記録者」。
 5. dispatcher が `add_decisions` を呼んで cc-memory に物理記録を確定
 
 裁定は複数案を比較して1つを選ぶ形になることが多い。dispatcher は下書き段階で、reasonの
-末尾に定型節（正本 `docs/precedent-format.md`）を書く:
-
-```
-却下案:
-- <選ばなかった案>: <却下理由>
-
-検証: <検証手段> / <対象コミットSHA等> / <日付 YYYY-MM-DD>
-```
-
-却下案が無い裁定（比較対象が無かった）や検証を伴わない裁定では、該当節を書かない
+末尾に定型節（却下案:/適用条件:/適用外:/検証:。書式は正本 `docs/precedent-format.md`）を
+書く。却下案が無い裁定（比較対象が無かった）や検証を伴わない裁定では、該当節を書かない
 （空項目・ダミー項目は作らない）。`add_decisions` のレスポンスの `precedent` / `precedent_warnings`
 で書式が正しくパースされたか確認できる。
 

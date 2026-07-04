@@ -78,8 +78,8 @@ class TestScanPrecedentsCounts:
         assert report["without_sections"] == 1
         # 検証アンカーがあるのは d1 のみ
         assert report["with_verification_anchor"] == 1
-        # d3 に近似見出しwarningが1件
-        assert report["warnings_total"] >= 1
+        # d3 に近似見出しwarningが1件（他decisionはwarningを出さない）
+        assert report["warnings_total"] == 1
         assert report["warning_counts"].get("near_miss_heading") == 1
 
     def test_excludes_retracted_decisions(self, topic, temp_db):

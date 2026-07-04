@@ -314,24 +314,11 @@ def add_decisions(items: list[dict], ctx: Context) -> dict:
     items: 決定事項情報の配列。各要素は以下のキーを持つ:
         - topic_id (int, 必須): 関連するトピックのID
         - decision (str, 必須): 決定内容
-        - reason (str, 必須): 決定の理由。任意で本文末尾に定型節を書ける（正本 docs/precedent-format.md）。
-          節はすべて任意で、「該当なし」を埋めるための空項目・ダミー項目は書かないこと。
-          ```
-          <自由記述の理由本文>
-
-          却下案:
-          - <案の要約>: <却下理由>
-
-          適用条件:
-          - <この決定が適用される文脈・前提>
-
-          適用外:
-          - <適用されない文脈。隣接するが別扱いの領域>
-
-          検証: <検証手段> / <対象コミットSHA・バージョン等> / <日付 YYYY-MM-DD>
-          ```
-          却下案・適用条件・適用外は将来の再提案・誤類推を防ぐための情報。検証行が無いdecisionは
-          「決定のみ・実測未確認」を意味する（実装状態を本文に書かず、検証行の有無で表す）。
+        - reason (str, 必須): 決定の理由。任意で本文末尾に定型節（却下案:/適用条件:/適用外:/検証:。
+          書式は docs/precedent-format.md）を書ける。却下案・適用条件・適用外は将来の再提案・誤類推を
+          防ぐための情報。検証行が無いdecisionは「決定のみ・実測未確認」を意味する（実装状態を本文に
+          書かず、検証行の有無で表す）。節はすべて任意で、「該当なし」を埋めるための空項目・ダミー項目は
+          書かないこと。
         - title (str, optional): 決定の要点を表す1行（40字以内）。**付けることを強く推奨**。check-in・timeline・search等の一覧表示でdecision本文の代わりに見出しとして使われ、可読性が大きく上がる。省略時はdecision本文にfallbackする
         - tags (list[str], optional): 追加タグ。省略時はtopicのタグを継承。内容を表すタグを積極的に追加すること。namespace: domain:(プロジェクト)/intent:(意図)/素タグ(キーワード)。例: ["intent:design", "naming-convention", "backward-compat"]
         - propagate_to (dict, optional): 決定事項を注入先に伝搬する。
