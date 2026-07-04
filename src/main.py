@@ -645,7 +645,8 @@ def get_by_ids(
 
     Returns:
         取得結果（各アイテムの詳細情報）
-        typeが'decision'のとき、reasonに定型節（却下案:/適用条件:/適用外:/検証:。書式は
+        typeが'decision'のとき、is_superseded（bool）とsuperseded_by（最新1hopのsupersede元id、
+        無ければnull）が常に付く。reasonに定型節（却下案:/適用条件:/適用外:/検証:。書式は
         docs/precedent-format.md）があれば precedent（get_decisionsと同形のコンパクト形）が付く。
         節が無いdecisionにはキー自体が無い
     """
