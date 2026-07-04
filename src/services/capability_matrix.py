@@ -63,6 +63,7 @@ CAPABILITY_MATRIX: CapabilityMatrix = {
     "get_timeline":      {"orch": True,  "dispatcher": True,  "worker": True},
     "get_by_ids":        {"orch": True,  "dispatcher": True,  "worker": True},
     "get_config":        {"orch": True,  "dispatcher": True,  "worker": True},
+    "pull_precedents":   {"orch": True,  "dispatcher": True,  "worker": True},
 
     # シグナル吸い上げ（機械エラー・使用感不満・矛盾検出・運用計測イベント）
     "report_signal":     {"orch": True,  "dispatcher": True,  "worker": True},   # 入口は全開放
