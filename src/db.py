@@ -157,6 +157,10 @@ def _apply_migrations() -> None:
             mismatches = verify_migration_ledger(backend.connection, migrations)
             if mismatches:
                 _handle_hash_mismatch(mismatches)
+            # 本適用（yoyo側コミット）とledger記録が別コミットのため、その間で
+            # プロセスが落ちると「適用済みだがledger未記録」のmigrationが残る。
+            # 毎起動でこの欠落を補填する（INSERT OR IGNOREで既存エントリは不変）。
+            _backfill_migration_ledger(backend.connection, backend, migrations)
 
         if not pending:
             return
@@ -302,7 +306,9 @@ def _record_content_hashes(conn: sqlite3.Connection, migrations) -> None:
 def _backfill_migration_ledger(conn: sqlite3.Connection, backend: "_VecSQLiteBackend", migrations) -> None:
     """ledger未登録の既存適用済みmigrationを、現存ファイルの内容ハッシュで埋める。
 
-    「現在のファイルが適用当時のものである」ことを仮定する導入時点限りの一括登録。
+    「現在のファイルが適用当時のものである」ことを仮定する。ledger導入時の一括登録と、
+    本適用とledger記録の間でのクラッシュで生じた欠落の補填（毎起動のreconcile）の両方で使う。
+    既存エントリは上書きしない（INSERT OR IGNORE）。
     ファイルが現存しない適用済みIDは対象外（警告ログのみ、ledger未登録のまま）。
     """
     applied_hashes = set(backend.get_applied_migration_hashes())

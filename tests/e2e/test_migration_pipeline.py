@@ -235,3 +235,38 @@ class TestVerifyMigrationLedgerIntegration:
         finally:
             conn.close()
         assert mismatches == []
+
+
+class TestLedgerGapReconcile:
+    def test_applied_but_unrecorded_migration_is_backfilled_on_startup(
+        self, temp_db, extended_migrations_dir, monkeypatch
+    ):
+        """本適用とledger記録の間でクラッシュした想定（適用済みだがledger未記録）を、
+        次回起動時に現ファイル内容ハッシュで補填する"""
+        monkeypatch.setattr(db, "MIGRATIONS_DIR", extended_migrations_dir)
+
+        # 適用済み(temp_dbで全migration適用済み)のうち1件のledger行を消し、クラッシュ欠落を再現する
+        target_id = "0001_initial_schema"
+        conn = sqlite3.connect(temp_db)
+        try:
+            conn.execute("DELETE FROM migration_ledger WHERE migration_id = ?", (target_id,))
+            conn.commit()
+            gone = conn.execute(
+                "SELECT COUNT(*) FROM migration_ledger WHERE migration_id = ?", (target_id,)
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        assert gone == 0, "前提: 欠落を再現したこと"
+
+        db._apply_migrations()  # pendingは無いが、reconcileで欠落を補填するはず
+
+        expected_hash = db._content_sha256(str(extended_migrations_dir / f"{target_id}.sql"))
+        conn = sqlite3.connect(temp_db)
+        try:
+            row = conn.execute(
+                "SELECT content_sha256 FROM migration_ledger WHERE migration_id = ?", (target_id,)
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None, "適用済みだがledger未記録のmigrationが起動時に補填されるはず"
+        assert row[0] == expected_hash

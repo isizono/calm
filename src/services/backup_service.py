@@ -599,8 +599,19 @@ def restore_snapshot(
             # backup APIで読めないほど破損している場合はファイルコピーで退避する
             prerestore_dir = snapshot_dir_for(db_path, "prerestore")
             prerestore_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-            fallback_path, _fallback_json_path = _unique_snapshot_paths(prerestore_dir)
+            fallback_path, fallback_json_path = _unique_snapshot_paths(prerestore_dir)
             shutil.copy2(db_path, fallback_path)
+            # メタデータJSONを書かないとlist_snapshots()に載らず、_rotate_snapshots()の
+            # クォータ超過で無警告に削除されうる（破損DBからの復元直前という最も必要な退避）。
+            fallback_metadata = {
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "db_size_bytes": fallback_path.stat().st_size,
+                "kind": "prerestore",
+                "note": "実DBがsqlite3.backup()で読めないほど破損していたためファイルコピーで退避した",
+            }
+            fallback_json_path.write_text(
+                json.dumps(fallback_metadata, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
             prerestore_path = str(fallback_path)
             prerestore_row_counts = {}
             _rotate_snapshots(prerestore_dir, KIND_QUOTAS["prerestore"])
@@ -608,7 +619,8 @@ def restore_snapshot(
     # 5. 復元本体
     if file_copy:
         shutil.copy2(snapshot_file, db_path)
-        for suffix in ("-wal", "-shm"):
+        # -journalを残すと次回オープン時にSQLiteが古いjournalで意図しないロールバックを試みうる。
+        for suffix in ("-wal", "-shm", "-journal"):
             Path(f"{db_path}{suffix}").unlink(missing_ok=True)
     else:
         source = sqlite3.connect(str(snapshot_file))

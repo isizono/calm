@@ -22,6 +22,7 @@ from src.db import (  # noqa: E402
     _VecSQLiteBackend,
     _content_sha256,
     _migration_ledger_table_exists,
+    _record_content_hashes,
     dry_run_migrations,
     get_db_path,
 )
@@ -106,15 +107,7 @@ def cmd_mark(args: argparse.Namespace) -> int:
             backend.mark_one(target)
 
         if _migration_ledger_table_exists(backend.connection):
-            content_hash = _content_sha256(target.path)
-            backend.connection.execute(
-                "INSERT INTO migration_ledger (migration_id, content_sha256, applied_at) "
-                "VALUES (?, ?, CURRENT_TIMESTAMP) "
-                "ON CONFLICT(migration_id) DO UPDATE SET "
-                "content_sha256 = excluded.content_sha256, applied_at = excluded.applied_at",
-                (target.id, content_hash),
-            )
-            backend.connection.commit()
+            _record_content_hashes(backend.connection, [target])
 
     print(f"'{args.migration_id}' をapplied済みとしてmarkしました")
     return 0
@@ -136,15 +129,7 @@ def cmd_re_mark(args: argparse.Namespace) -> int:
         print("migration_ledgerテーブルがまだ存在しません（サーバーを一度起動してください）", file=sys.stderr)
         return 1
 
-    content_hash = _content_sha256(target.path)
-    backend.connection.execute(
-        "INSERT INTO migration_ledger (migration_id, content_sha256, applied_at) "
-        "VALUES (?, ?, CURRENT_TIMESTAMP) "
-        "ON CONFLICT(migration_id) DO UPDATE SET "
-        "content_sha256 = excluded.content_sha256, applied_at = excluded.applied_at",
-        (target.id, content_hash),
-    )
-    backend.connection.commit()
+    _record_content_hashes(backend.connection, [target])
     print(f"'{args.migration_id}' のledgerハッシュを現ファイル内容で更新しました")
     return 0
 
