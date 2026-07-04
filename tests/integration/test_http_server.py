@@ -10,8 +10,8 @@ import time
 
 import pytest
 
-from src.services import lock_file
-from src.services.session_manager import SessionManager
+from src.infra import lock_file
+from src.infra.session_manager import SessionManager
 
 
 @pytest.fixture(autouse=True)

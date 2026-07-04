@@ -1925,8 +1925,8 @@ if __name__ == "__main__":
 
     if args.transport == "http":
         import socket
-        from src.services.lock_file import acquire, release
-        from src.services.session_manager import SessionManager
+        from src.infra.lock_file import acquire, release
+        from src.infra.session_manager import SessionManager
 
         _log_dir = _setup_server_logging(get_db_path())
         logger.info("Server log persisted to %s", _log_dir / "server.log")
