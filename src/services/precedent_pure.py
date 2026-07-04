@@ -18,6 +18,7 @@ __all__ = [
     "NEAR_MISS_HEADERS",
     "parse_precedent_sections",
     "summarize_precedent",
+    "attach_precedent",
 ]
 
 # 正規の節見出し語彙（行頭に置き、`:` で終える）
@@ -28,10 +29,11 @@ NEAR_MISS_HEADERS = (
     "却下例", "棄却案", "不採用案", "適用範囲", "対象外", "検証済み", "rejected", "scope",
 )
 
-# 却下案 / 適用条件 / 適用外: 見出し行のみで完結し、以降の箇条書き行が項目になる
-_LIST_HEADING_RE = re.compile(r"^(却下案|適用条件|適用外)\s*:\s*$")
+# 却下案 / 適用条件 / 適用外: 見出し行のみで完結し、以降の箇条書き行が項目になる。
+# コロンは半角・全角どちらも許容する（却下案項目の区切りが全角を許すのと揃える）。
+_LIST_HEADING_RE = re.compile(r"^(却下案|適用条件|適用外)\s*[:：]\s*$")
 # 検証: 見出しと内容が同一行（複数行許容、行ごとに独立したアンカーとして扱う）
-_VERIFY_HEADING_RE = re.compile(r"^検証\s*:\s*(.*)$")
+_VERIFY_HEADING_RE = re.compile(r"^検証\s*[:：]\s*(.*)$")
 # 節本文の箇条書き項目
 _ITEM_RE = re.compile(r"^-\s+(.*)$")
 
@@ -46,7 +48,7 @@ _SECTION_KEY = {
 }
 
 _NEAR_MISS_PATTERNS = tuple(
-    (header, re.compile(rf"^{re.escape(header)}\s*:", re.IGNORECASE))
+    (header, re.compile(rf"^{re.escape(header)}\s*[:：]", re.IGNORECASE))
     for header in NEAR_MISS_HEADERS
 )
 
@@ -69,10 +71,11 @@ def _split_rejected_item(text: str) -> tuple[str, str, bool]:
 def parse_precedent_sections(reason: str) -> dict | None:
     """reason（または material の content）本文から定型節をパースする。
 
-    行単位の状態機械で処理する。`^(却下案|適用条件|適用外)\\s*:\\s*$`（見出し行のみ）
-    で節を開き、次の見出しか本文終端で閉じる。`^検証\\s*:` は同一行に内容を取り、
-    行ごとに独立したアンカーとして扱う（複数行許容）。見出し行より前・節の外に
-    あるテキストは自由記述本文としてそのまま無視する（本文を書き換えない）。
+    行単位の状態機械で処理する。`^(却下案|適用条件|適用外)\\s*[:：]\\s*$`（見出し行
+    のみ）で節を開き、次の見出しか本文終端で閉じる。`^検証\\s*[:：]` は同一行に内容を
+    取り、行ごとに独立したアンカーとして扱う（複数行許容）。見出しのコロンは半角・
+    全角どちらも許容する。見出し行より前・節の外にあるテキストは自由記述本文として
+    そのまま無視する（本文を書き換えない）。
 
     Args:
         reason: パース対象の本文（decision の reason、または material の content）。
@@ -137,6 +140,11 @@ def parse_precedent_sections(reason: str) -> dict | None:
             _close_section()
             any_marker = True
             raw_content = m_verify.group(1).strip()
+            if not raw_content:
+                # 内容の無い `検証:` 行はアンカーとして採らない（空文字 raw が
+                # verification_anchors に混ざると「空リスト=決定のみ」判別が崩れる）。
+                warnings.append("empty verification heading: 検証:")
+                continue
             date_m = _DATE_RE.search(raw_content)
             sha_m = _SHA_RE.search(raw_content)
             anchor = {
@@ -203,12 +211,32 @@ def summarize_precedent(parsed: dict) -> dict:
           "rejected_alternatives": <件数>,
           "scope": <適用条件/適用外のいずれかが非空か bool>,
           "verification_anchors": [<raw 文字列>, ...],   # 生テキストのまま。空リスト=決定のみ
+          "warnings": [str, ...],   # 書式崩れがある場合のみ付与（無ければキー自体を省く）
         }
     """
-    return {
+    compact = {
         "rejected_alternatives": len(parsed.get("rejected_alternatives") or []),
         "scope": bool(parsed.get("scope_in")) or bool(parsed.get("scope_out")),
         "verification_anchors": [
             anchor["raw"] for anchor in (parsed.get("verification_anchors") or [])
         ],
     }
+    # 書式崩れは書き手にフィードバックする経路が無いと気づけないため、warning が
+    # あるときだけコンパクト形にも載せて読み出し面（get_decisions / get_by_ids）へ
+    # 露出する。崩れの無い precedent は 3 キーのまま（legacy との差分を最小化）。
+    warnings = parsed.get("warnings") or []
+    if warnings:
+        compact["warnings"] = list(warnings)
+    return compact
+
+
+def attach_precedent(item: dict, reason: str | None) -> None:
+    """reason に定型節があれば item["precedent"] にコンパクト形を付与する（in-place）。
+
+    節が無い（parse が None を返す）場合はキーを付けない（legacy 本文と規約準拠本文を
+    区別できるようにする）。読み出し面の付与手順を 1 箇所に集約するためのヘルパーで、
+    decision の item 組み立て側はこれを呼ぶだけにする。
+    """
+    parsed = parse_precedent_sections(reason or "")
+    if parsed is not None:
+        item["precedent"] = summarize_precedent(parsed)

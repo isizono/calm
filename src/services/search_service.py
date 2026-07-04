@@ -1887,9 +1887,7 @@ def _format_row(type_name: str, data: dict, tags: list[str]) -> dict:
         }
         if data.get("retracted_at"):
             result["retracted_at"] = data["retracted_at"]
-        parsed_precedent = precedent_pure.parse_precedent_sections(data.get("reason") or "")
-        if parsed_precedent is not None:
-            result["precedent"] = precedent_pure.summarize_precedent(parsed_precedent)
+        precedent_pure.attach_precedent(result, data.get("reason"))
         apply_readable_id_inplace(result, "decision")
         return result
     elif type_name == 'activity':

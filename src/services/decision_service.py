@@ -14,7 +14,7 @@ from src.services.tag_service import (
     _append_tag_notes_with_conn,
 )
 from src.services.habit_service import _add_habit_with_conn
-from src.services.precedent_pure import parse_precedent_sections, summarize_precedent
+from src.services.precedent_pure import attach_precedent
 from src.services.relation_service import _add_relation_with_conn
 from src.services.supersede_service import compute_supersede_info_batch
 from src.services.title_validation import validate_title
@@ -259,9 +259,7 @@ def _build_decision_item(
     }
     if dec.get("retracted_at"):
         item["retracted_at"] = dec["retracted_at"]
-    parsed_precedent = parse_precedent_sections(dec.get("reason") or "")
-    if parsed_precedent is not None:
-        item["precedent"] = summarize_precedent(parsed_precedent)
+    attach_precedent(item, dec.get("reason"))
     apply_readable_id_inplace(item, "decision")
     return item
 
