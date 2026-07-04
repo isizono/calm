@@ -539,33 +539,26 @@ def backfill_tag_embeddings() -> int:
 
 # ========================================
 # Topic embedding ヘルパー
+#
+# topic_vec は distance_metric=cosine で作成される（migration 0049）。同じく非正規化
+# embedding を格納する vec_index（0005）と tag_vec（0009）は vec0 既定の L2 のままで、
+# topic_vec の distance とはスケールが異なり直接比較できない。topic_vec の近傍距離に
+# 閾値を掛ける際は L2 前提の既存しきい値（QE_DISTANCE_THRESHOLD 等）を流用しないこと。
 # ========================================
 
 
-def _insert_topic_embedding_row(conn, topic_id: int, embedding: list[float]) -> None:
-    """topic_vecに1行UPSERT（DELETE+INSERT）する（コミットは呼び出し側の責任）。"""
+def insert_topic_embedding_with_conn(conn, topic_id: int, embedding: list[float]) -> None:
+    """呼び出し側の conn で topic_vec に1行UPSERT（DELETE+INSERT）する（コミットは呼び出し側の責任）。
+
+    add_topic が既に生成した embedding をそのまま渡す想定であり、ここでは再エンコードしない。
+    リクエストパス上で新規コネクションを開かないため、sqlite-vec 拡張の再ロードも発生しない。
+    """
     blob = serialize_float32(embedding)
     conn.execute("DELETE FROM topic_vec WHERE rowid = ?", (topic_id,))
     conn.execute(
         "INSERT INTO topic_vec(rowid, embedding) VALUES (?, ?)",
         (topic_id, blob),
     )
-
-
-def insert_topic_embedding(topic_id: int, embedding: list[float]) -> None:
-    """topic_vecにembeddingをINSERTする。
-
-    add_topicが既に生成したembeddingをそのまま渡す想定であり、
-    ここでは再エンコードしない。
-    """
-    conn = get_connection()
-    try:
-        _insert_topic_embedding_row(conn, topic_id, embedding)
-        conn.commit()
-    except Exception as e:
-        logger.warning(f"Failed to insert topic embedding for topic_id={topic_id}: {e}")
-    finally:
-        conn.close()
 
 
 def delete_topic_embedding_with_conn(conn, topic_id: int) -> None:
@@ -585,8 +578,14 @@ def backfill_topic_embeddings() -> int:
     embeddingが無いtopic（embeddingサーバー停止中に作成された等）は対象外となる。
     その場合はbackfill_embeddings()でvec_indexが埋まった後の呼び出しで拾われる。
 
+    embeddingサーバー未起動時は何もせず0を返す（backfill_embeddings /
+    backfill_tag_embeddings と揃えたガード）。
+
     Returns: 複製したembedding数
     """
+    if not _is_server_running():
+        return 0
+
     conn = get_connection()
     try:
         rows = conn.execute(
