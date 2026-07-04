@@ -85,6 +85,26 @@ def _synchronous_telemetry(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _synchronous_fetch_telemetry(monkeypatch):
+    """fetch_telemetry (get_by_ids 計装) 書込を同期実行に切り替える。
+
+    `_synchronous_telemetry` と同じ理由（daemon thread と TemporaryDirectory cleanup
+    のレース回避）で、get_by_ids を呼ぶ既存テスト全般に波及するため autouse にする。
+    """
+    from src.services import search_service
+
+    original = search_service._record_fetch_telemetry_async
+
+    def synchronous_wrapper(*args, **kwargs):
+        thread = original(*args, **kwargs)
+        if thread is not None:
+            thread.join(timeout=5.0)
+        return thread
+
+    monkeypatch.setattr(search_service, "_record_fetch_telemetry_async", synchronous_wrapper)
+
+
 @pytest.fixture
 def disable_embedding(monkeypatch):
     """embeddingサービスを無効化する共通フィクスチャ。

@@ -186,32 +186,32 @@ def test_knn_population_is_topic_only(temp_db, mock_embedding_server):
 # ========================================
 
 
-def test_insert_topic_embedding(temp_db):
-    """insert_topic_embedding: topic_vecに1行追加される"""
+def test_insert_topic_embedding_with_conn(temp_db):
+    """insert_topic_embedding_with_conn: 渡したconnでtopic_vecに1行追加される"""
     topic = add_topic(title="insert単体テスト", description="テスト", tags=DEFAULT_TAGS)
     topic_id = topic["topic_id"]
 
     embedding = [0.5] * EMBEDDING_DIM
-    emb.insert_topic_embedding(topic_id, embedding)
-
     conn = get_connection()
     try:
+        emb.insert_topic_embedding_with_conn(conn, topic_id, embedding)
+        conn.commit()
         row = _topic_vec_row(conn, topic_id)
         assert row is not None
     finally:
         conn.close()
 
 
-def test_insert_topic_embedding_upserts(temp_db):
-    """insert_topic_embedding: 既存rowidへの再INSERTはUPSERT（DELETE+INSERT）される"""
+def test_insert_topic_embedding_with_conn_upserts(temp_db):
+    """insert_topic_embedding_with_conn: 既存rowidへの再INSERTはUPSERT（DELETE+INSERT）される"""
     topic = add_topic(title="upsertテスト", description="テスト", tags=DEFAULT_TAGS)
     topic_id = topic["topic_id"]
 
-    emb.insert_topic_embedding(topic_id, [0.1] * EMBEDDING_DIM)
-    emb.insert_topic_embedding(topic_id, [0.9] * EMBEDDING_DIM)
-
     conn = get_connection()
     try:
+        emb.insert_topic_embedding_with_conn(conn, topic_id, [0.1] * EMBEDDING_DIM)
+        emb.insert_topic_embedding_with_conn(conn, topic_id, [0.9] * EMBEDDING_DIM)
+        conn.commit()
         rows = conn.execute(
             "SELECT rowid FROM topic_vec WHERE rowid = ?", (topic_id,)
         ).fetchall()
@@ -252,6 +252,7 @@ def test_backfill_reuses_vec_index_embedding_without_reencoding(temp_db, monkeyp
     monkeypatch.setattr(emb, '_encode_batch', counting_encode_batch)
     monkeypatch.setattr(emb, '_server_initialized', True)
     monkeypatch.setattr(emb, '_backfill_done', True)
+    monkeypatch.setattr(emb, '_is_server_running', lambda: True)
 
     topic = add_topic(title="バックフィル再利用テスト", description="テスト", tags=DEFAULT_TAGS)
     topic_id = topic["topic_id"]
@@ -289,6 +290,9 @@ def test_backfill_skips_topic_without_vec_index_embedding(temp_db, monkeypatch):
     )
     topic_id = topic["topic_id"]
 
+    # backfill 自体はサーバー復帰後に走る想定。vec_index が無いこのtopicが
+    # 複製対象外であることを検証するため、backfillガードは通過させる。
+    monkeypatch.setattr(emb, '_is_server_running', lambda: True)
     filled = emb.backfill_topic_embeddings()
 
     conn = get_connection()
@@ -300,8 +304,9 @@ def test_backfill_skips_topic_without_vec_index_embedding(temp_db, monkeypatch):
     # 既にvec_indexを持っていれば0件とは限らないため filled の値自体は断定しない
 
 
-def test_backfill_noop_when_all_filled(temp_db, mock_embedding_server):
+def test_backfill_noop_when_all_filled(temp_db, mock_embedding_server, monkeypatch):
     """backfill_topic_embeddings: 全topicが既にtopic_vecを持つ場合は0を返す"""
+    monkeypatch.setattr(emb, '_is_server_running', lambda: True)
     add_topic(title="全件充足テスト", description="テスト", tags=DEFAULT_TAGS)
     # 既存の未充足分（init_database由来等）を先に埋めておく
     emb.backfill_topic_embeddings()

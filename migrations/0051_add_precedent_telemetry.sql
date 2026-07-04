@@ -1,6 +1,6 @@
--- Migration 0050: precedent_telemetry テーブル追加
+-- Migration 0051: precedent_telemetry テーブル追加
 --
--- depends: 0049_add_topic_vec
+-- depends: 0050_add_topic_vec
 --
 -- 背景:
 --   判例（decision）を topic 単位で網羅列挙して提示する機能のための計測テーブル。

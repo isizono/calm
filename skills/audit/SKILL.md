@@ -342,7 +342,7 @@ Q5: その知識は経緯・調査結果そのものか?
 | pin (tag → material) | 主題の代表 tag が決まり、anchor 化が必要な場合 | `add_pin(source_type="tag", ...)` |
 | tag note 更新 | tag note に書くべき横断ルールが新たに見えた場合 | `update_tag(notes=...)` |
 | habit 追加 | tag 非依存の行動ルールが見えた場合 | `add_habit(...)` (ユーザー承認後) |
-| decision 改訂提案 | 既存 decision を retract / supersede すべきと判断した場合 | audit material 内 `## 検証結果` テーブルに「改訂提案」として記載 (直接 retract はしない) |
+| decision 改訂提案 | 既存 decision を retract / supersede すべきと判断した場合 | audit material 内 `## 検証結果` テーブルに「改訂提案」として記載 (直接 retract はしない)。頻繁に参照されるのに定型節（`docs/precedent-format.md`）が無い decision に遭遇した場合は、supersede 再記録時に定型節（特に却下案・検証）付きの reason で書き直すことを提案に含める。単純な retract は却下理由・射程の情報を失うため、頻出参照の decision は supersede を優先する |
 | 新規 activity 起票 | フォローアップ作業が必要な場合 | `add_activity(intent:implement / discuss)` |
 
 ## 関連 skill との境界
