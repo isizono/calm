@@ -68,6 +68,41 @@ def test_record_signal_dedups_same_fingerprint(temp_db):
     assert rows[0]["detail"] == "second"
 
 
+def test_record_signal_dedup_updates_refs_context_session_id(temp_db):
+    """dedup 時に refs / context / session_id が最新 occurrence の値で上書きされる。"""
+    r1 = ss.record_signal(
+        "contradiction",
+        "X contradicts Y",
+        source="agent",
+        refs=[{"type": "decision", "id": 1}, {"type": "decision", "id": 2}],
+        context={"resolution": "old_correct"},
+        session_id="sess-1",
+    )
+    r2 = ss.record_signal(
+        "contradiction",
+        "X contradicts Y",
+        source="agent",
+        refs=[{"type": "decision", "id": 1}, {"type": "decision", "id": 3}],
+        context={"resolution": "new_correct"},
+        session_id="sess-2",
+    )
+
+    assert r2["id"] == r1["id"]
+    assert r2["deduped"] is True
+
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM signal_events WHERE id = ?", (r1["id"],)
+        ).fetchone()
+    finally:
+        conn.close()
+    signal = ss._signal_row_to_dict(row)
+    assert signal["refs"] == [{"type": "decision", "id": 1}, {"type": "decision", "id": 3}]
+    assert signal["context"] == {"resolution": "new_correct"}
+    assert signal["session_id"] == "sess-2"
+
+
 def test_record_signal_does_not_dedup_after_triage(temp_db):
     r1 = ss.record_signal("machine_error", "Something broke", source="tool:foo")
     ss.update_signal(r1["id"], "triaged")
@@ -153,6 +188,19 @@ class TestGetSignals:
 
         assert result["total_count"] == 1
         assert result["signals"][0]["kind"] == "friction"
+
+    def test_status_and_kind_filter_combined(self, temp_db):
+        r1 = ss.record_signal("machine_error", "a", source="s1")
+        ss.update_signal(r1["id"], "dismissed")  # machine_error / dismissed
+        ss.record_signal("machine_error", "b", source="s2")  # machine_error / new
+        ss.record_signal("friction", "c", source="s3")  # friction / new
+
+        result = ss.get_signals(status="new", kind="machine_error")
+
+        assert result["total_count"] == 1
+        assert result["signals"][0]["summary"] == "b"
+        assert result["signals"][0]["kind"] == "machine_error"
+        assert result["signals"][0]["status"] == "new"
 
     def test_invalid_status_returns_validation_error(self, temp_db):
         result = ss.get_signals(status="not_a_status")
@@ -256,6 +304,47 @@ class TestUpdateSignal:
     def test_nonexistent_signal_returns_not_found(self, temp_db):
         result = ss.update_signal(999999, "triaged")
         assert result["error"]["code"] == "NOT_FOUND"
+
+    def _set_last_seen_at(self, signal_id, value):
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE signal_events SET last_seen_at = ? WHERE id = ?",
+                (value, signal_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _read_last_seen_at(self, signal_id):
+        conn = get_connection()
+        try:
+            return conn.execute(
+                "SELECT last_seen_at FROM signal_events WHERE id = ?", (signal_id,)
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+    def test_status_transition_does_not_touch_last_seen_at(self, temp_db):
+        r1 = ss.record_signal("friction", "a")
+        self._set_last_seen_at(r1["id"], "2020-01-01 00:00:00")
+
+        ss.update_signal(r1["id"], "dismissed")
+
+        assert self._read_last_seen_at(r1["id"]) == "2020-01-01 00:00:00"
+
+    def test_promote_does_not_touch_last_seen_at(self, temp_db):
+        from src.services.topic_service import add_topic
+
+        topic = add_topic(title="t", description="d", tags=["domain:test"])
+        r1 = ss.record_signal("precedent_miss", "missed something")
+        self._set_last_seen_at(r1["id"], "2020-01-01 00:00:00")
+
+        ss.update_signal(
+            r1["id"], "promoted", promoted_type="topic", promoted_id=topic["topic_id"]
+        )
+
+        assert self._read_last_seen_at(r1["id"]) == "2020-01-01 00:00:00"
 
     def test_preserves_existing_promotion_when_omitted(self, temp_db):
         from src.services.topic_service import add_topic
