@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from src.infra import lock_file
 from src.services import backup_service as bs
-from src.services import lock_file
 
 
 @pytest.fixture(autouse=True)
