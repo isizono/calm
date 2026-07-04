@@ -80,7 +80,7 @@ PR のワークツリーには変更済みの検出器が含まれ得るため�
 | 検出器 | 対象 |
 |---|---|
 | `migration_touch` | `migrations/` 配下への接触(追加・変更・削除・rename すべて) |
-| `ddl_in_code` | コード内の DDL(`CREATE`/`ALTER`/`DROP` + `TABLE`/`INDEX`/`TRIGGER`/`VIEW`/`VIRTUAL TABLE`、書き込み `PRAGMA`)。追加行・削除行の両方を走査する |
+| `ddl_in_code` | コード内の DDL(`CREATE`/`ALTER`/`DROP` + `TABLE`/`INDEX`/`TRIGGER`/`VIEW`。動詞と対象の間に `UNIQUE`/`TEMP`/`TEMPORARY`/`VIRTUAL` 等の修飾語を挟む形も拾う。書き込み `PRAGMA`)。追加行・削除行の両方を走査する |
 | `public_if` | 公開IF(`src/main.py`、`src/remote.py`、`src/http_config.py`、`src/services/visibility_middleware.py`、`docs/spec/openapi.yaml`、`hooks/hooks.json`、`marketplace.json`)への接触 |
 | `data_destructive` | 追加行の破壊的SQL(`DELETE FROM`/`UPDATE ... SET`/`TRUNCATE`)・破壊的ファイル操作(`shutil.rmtree`/`os.remove`等) |
 | `binary_change` | numstat が `-`(バイナリ)を返す変更 |
