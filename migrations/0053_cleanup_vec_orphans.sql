@@ -1,6 +1,6 @@
--- Migration 050: vec_index孤児行の掃除
+-- Migration 0053: vec_index孤児行の掃除
 --
--- depends: 0049_add_tag_junction_indexes
+-- depends: 0052_add_tag_junction_indexes
 --
 -- 背景:
 --   vec_indexはsearch_indexのidと同値のrowidで運用される仮想テーブルだが、

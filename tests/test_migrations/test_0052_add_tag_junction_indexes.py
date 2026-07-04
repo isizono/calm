@@ -1,6 +1,6 @@
-"""migration 0049_add_tag_junction_indexes のテスト
+"""migration 0052_add_tag_junction_indexes のテスト
 
-0049 適用後に topic_tags / activity_tags / decision_tags / log_tags への
+0052 適用後に topic_tags / activity_tags / decision_tags / log_tags への
 tag_id 逆引き index と search_index(created_at) の index が作成され、
 既存データ・タグフィルタ結果が変わらないことを確認する。
 """
@@ -19,7 +19,7 @@ from test_migrations.conftest import index_names
 
 @pytest.fixture
 def migrated_db():
-    """全 migration（0049 含む）を適用済みのテスト用 DB を提供する。"""
+    """全 migration（0052 含む）を適用済みのテスト用 DB を提供する。"""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
         os.environ["DISCUSSION_DB_PATH"] = db_path
@@ -31,8 +31,8 @@ def migrated_db():
 
 
 @pytest.fixture
-def db_before_0049():
-    """0048 までの migration を適用した DB を提供する。0049 の挙動を分離検証するために使う。"""
+def db_before_0052():
+    """0048 までの migration を適用した DB を提供する。0052 の挙動を分離検証するために使う。"""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
         os.environ["DISCUSSION_DB_PATH"] = db_path
@@ -41,9 +41,9 @@ def db_before_0049():
         backend = _VecSQLiteBackend(parsed, default_migration_table)
         backend.init_database()
         all_migs = read_migrations(str(MIGRATIONS_DIR))
-        pre_0049 = MigrationList([m for m in all_migs if m.id < "0049"])
+        pre_0052 = MigrationList([m for m in all_migs if m.id < "0052"])
         with backend.lock():
-            backend.apply_migrations(pre_0049)
+            backend.apply_migrations(pre_0052)
 
         _injected_tags.clear()
         yield db_path
@@ -51,18 +51,18 @@ def db_before_0049():
             del os.environ["DISCUSSION_DB_PATH"]
 
 
-def _apply_migration_0049(db_path: str) -> None:
-    """db_path に対して migration 0049 のみを適用する。"""
+def _apply_migration_0052(db_path: str) -> None:
+    """db_path に対して migration 0052 のみを適用する。"""
     parsed = parse_uri(f"sqlite:///{db_path}")
     backend = _VecSQLiteBackend(parsed, default_migration_table)
     all_migs = read_migrations(str(MIGRATIONS_DIR))
-    only_0049 = MigrationList([m for m in all_migs if m.id.startswith("0049")])
+    only_0052 = MigrationList([m for m in all_migs if m.id.startswith("0052")])
     with backend.lock():
-        backend.apply_migrations(only_0049)
+        backend.apply_migrations(only_0052)
 
 
 class TestIndexesCreated:
-    """0049 適用後に 5 本の index が作成されることの確認"""
+    """0052 適用後に 5 本の index が作成されることの確認"""
 
     EXPECTED_INDEXES = {
         "idx_topic_tags_tag",
@@ -72,8 +72,8 @@ class TestIndexesCreated:
         "idx_search_index_created_at",
     }
 
-    def test_indexes_exist_after_0049(self, migrated_db):
-        """0049 適用後、5 本の index すべてが sqlite_master に存在する"""
+    def test_indexes_exist_after_0052(self, migrated_db):
+        """0052 適用後、5 本の index すべてが sqlite_master に存在する"""
         conn = get_connection()
         try:
             existing = set()
@@ -82,12 +82,12 @@ class TestIndexesCreated:
                              "idx_search_index_created_at"]:
                 existing |= index_names(conn, pattern)
             for idx in self.EXPECTED_INDEXES:
-                assert idx in existing, f"インデックス {idx} が 0049 適用後に存在しない"
+                assert idx in existing, f"インデックス {idx} が 0052 適用後に存在しない"
         finally:
             conn.close()
 
-    def test_indexes_not_exist_before_0049(self, db_before_0049):
-        """0049 適用前は 5 本の index がいずれも存在しない（前提確認）"""
+    def test_indexes_not_exist_before_0052(self, db_before_0052):
+        """0052 適用前は 5 本の index がいずれも存在しない（前提確認）"""
         conn = get_connection()
         try:
             existing = set()
@@ -96,7 +96,7 @@ class TestIndexesCreated:
                              "idx_search_index_created_at"]:
                 existing |= index_names(conn, pattern)
             assert existing.isdisjoint(self.EXPECTED_INDEXES), (
-                "0049 適用前に対象インデックスが既に存在している"
+                "0052 適用前に対象インデックスが既に存在している"
             )
         finally:
             conn.close()
@@ -133,10 +133,10 @@ class TestIndexesCreated:
 
 
 class TestExistingDataPreserved:
-    """0049 適用前に投入したタグ紐付けデータが、適用後も破壊されないことの確認"""
+    """0052 適用前に投入したタグ紐付けデータが、適用後も破壊されないことの確認"""
 
-    def test_existing_tag_links_preserved(self, db_before_0049):
-        """0049 適用前の topic_tags / activity_tags / decision_tags / log_tags 行は
+    def test_existing_tag_links_preserved(self, db_before_0052):
+        """0052 適用前の topic_tags / activity_tags / decision_tags / log_tags 行は
         適用後も残る"""
         conn = get_connection()
         try:
@@ -171,7 +171,7 @@ class TestExistingDataPreserved:
         finally:
             conn.close()
 
-        _apply_migration_0049(db_before_0049)
+        _apply_migration_0052(db_before_0052)
 
         conn = get_connection()
         try:

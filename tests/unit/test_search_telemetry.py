@@ -113,7 +113,7 @@ def _fetch_all_fetch_telemetry():
 
 
 def test_search_telemetry_table_schema(temp_db):
-    """migration 0041 + 0049 で search_telemetry テーブルと必要なカラムが作られる"""
+    """migration 0041 + 0054 で search_telemetry テーブルと必要なカラムが作られる"""
     conn = get_connection()
     try:
         rows = conn.execute("PRAGMA table_info(search_telemetry)").fetchall()
@@ -149,7 +149,7 @@ def test_search_telemetry_index_on_timestamp(temp_db):
 
 
 def test_fetch_telemetry_table_schema(temp_db):
-    """migration 0049 で fetch_telemetry テーブルと必要なカラムが作られる"""
+    """migration 0054 で fetch_telemetry テーブルと必要なカラムが作られる"""
     conn = get_connection()
     try:
         rows = conn.execute("PRAGMA table_info(fetch_telemetry)").fetchall()

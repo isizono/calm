@@ -1,6 +1,6 @@
-"""migration 0049_add_topic_vec のテスト
+"""migration 0050_add_topic_vec のテスト
 
-0049 適用後に topic_vec 仮想テーブルが作成され、rowid をキーにした
+0050 適用後に topic_vec 仮想テーブルが作成され、rowid をキーにした
 ベクトルの INSERT / KNN 検索ができることを確認する。
 """
 import os
@@ -21,7 +21,7 @@ EMBEDDING_DIM = 384
 
 @pytest.fixture
 def migrated_db():
-    """全 migration（0049 含む）を適用済みのテスト用 DB を提供する。"""
+    """全 migration（0050 含む）を適用済みのテスト用 DB を提供する。"""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
         os.environ["DISCUSSION_DB_PATH"] = db_path
@@ -33,8 +33,8 @@ def migrated_db():
 
 
 @pytest.fixture
-def db_before_0049():
-    """0048 までの migration を適用した DB を提供する。0049 の挙動を分離検証するために使う。"""
+def db_before_0050():
+    """0048 までの migration を適用した DB を提供する。0050 の挙動を分離検証するために使う。"""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
         os.environ["DISCUSSION_DB_PATH"] = db_path
@@ -43,9 +43,9 @@ def db_before_0049():
         backend = _VecSQLiteBackend(parsed, default_migration_table)
         backend.init_database()
         all_migs = read_migrations(str(MIGRATIONS_DIR))
-        pre_0049 = MigrationList([m for m in all_migs if m.id < "0049"])
+        pre_0050 = MigrationList([m for m in all_migs if m.id < "0050"])
         with backend.lock():
-            backend.apply_migrations(pre_0049)
+            backend.apply_migrations(pre_0050)
 
         _injected_tags.clear()
         yield db_path
@@ -53,33 +53,33 @@ def db_before_0049():
             del os.environ["DISCUSSION_DB_PATH"]
 
 
-def _apply_migration_0049(db_path: str) -> None:
-    """db_path に対して migration 0049 のみを適用する。"""
+def _apply_migration_0050(db_path: str) -> None:
+    """db_path に対して migration 0050 のみを適用する。"""
     parsed = parse_uri(f"sqlite:///{db_path}")
     backend = _VecSQLiteBackend(parsed, default_migration_table)
     all_migs = read_migrations(str(MIGRATIONS_DIR))
-    only_0049 = MigrationList([m for m in all_migs if m.id.startswith("0049")])
+    only_0050 = MigrationList([m for m in all_migs if m.id.startswith("0050")])
     with backend.lock():
-        backend.apply_migrations(only_0049)
+        backend.apply_migrations(only_0050)
 
 
 class TestTopicVecTableCreated:
-    def test_topic_vec_table_exists_after_0049(self, migrated_db):
-        """migration 0049 適用後、topic_vec テーブルが存在する"""
+    def test_topic_vec_table_exists_after_0050(self, migrated_db):
+        """migration 0050 適用後、topic_vec テーブルが存在する"""
         conn = get_connection()
         try:
             assert table_exists(conn, "topic_vec"), (
-                "topic_vec テーブルが 0049 適用後に存在しない"
+                "topic_vec テーブルが 0050 適用後に存在しない"
             )
         finally:
             conn.close()
 
-    def test_topic_vec_table_not_exists_before_0049(self, db_before_0049):
-        """0049 適用前は topic_vec テーブルが存在しない（前提確認）"""
+    def test_topic_vec_table_not_exists_before_0050(self, db_before_0050):
+        """0050 適用前は topic_vec テーブルが存在しない（前提確認）"""
         conn = get_connection()
         try:
             assert not table_exists(conn, "topic_vec"), (
-                "0049 適用前に topic_vec テーブルが既に存在している"
+                "0050 適用前に topic_vec テーブルが既に存在している"
             )
         finally:
             conn.close()
