@@ -497,7 +497,8 @@ def search(
         include_retracted=Trueを指定する。
     """
     flavor = _normalize_flavor(flavor)
-    result = search_service.search(keyword, tags, entity_type, limit, offset, keyword_mode, include_details, domain, date_after, date_before)
+    caller_session_id = get_caller_session_id()
+    result = search_service.search(keyword, tags, entity_type, limit, offset, keyword_mode, include_details, domain, date_after, date_before, caller_session_id=caller_session_id)
     if "error" not in result:
         _apply_flavor_to_snippets(result.get("results", []), flavor)
     if "error" not in result and tags:
@@ -530,7 +531,8 @@ def get_by_ids(
         節が無いdecisionにはキー自体が無い
     """
     flavor = _normalize_flavor(flavor)
-    result = search_service.get_by_ids(items)
+    caller_session_id = get_caller_session_id()
+    result = search_service.get_by_ids(items, caller_session_id=caller_session_id)
     if "error" not in result:
         conn = get_connection()
         try:
