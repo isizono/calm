@@ -148,6 +148,32 @@ def test_build_verdict_migrations_counted_as_code_and_flagged(git_repo: Path):
     assert verdict["lines_docs"] == 0
 
 
+def test_build_verdict_flags_migrations_touched_when_renamed_out_of_dir(git_repo: Path):
+    _write(git_repo, "migrations/0050_add_x.sql", "ALTER TABLE foo ADD COLUMN x TEXT;\n")
+    base_sha = _commit_all(git_repo, "base")
+
+    # migrations/ 配下から別ディレクトリへ内容不変で移動(-M で 100% rename 検出)
+    (git_repo / "migrations" / "0050_add_x.sql").unlink()
+    _write(git_repo, "archive/0050_add_x.sql", "ALTER TABLE foo ADD COLUMN x TEXT;\n")
+    head_sha = _commit_all(git_repo, "move migration out of migrations/")
+
+    verdict = build_verdict(git_repo, base_sha, head_sha)
+    # 新パス(archive/)だけを見ると False になるが、旧パスも突き合わせて True になる
+    assert verdict["migrations_touched"] is True
+
+
+def test_build_verdict_flags_tests_touched_when_renamed_out_of_dir(git_repo: Path):
+    _write(git_repo, "tests/unit/test_foo.py", "def test_x():\n    assert True\n")
+    base_sha = _commit_all(git_repo, "base")
+
+    (git_repo / "tests" / "unit" / "test_foo.py").unlink()
+    _write(git_repo, "src/foo_helpers.py", "def test_x():\n    assert True\n")
+    head_sha = _commit_all(git_repo, "move test out of tests/")
+
+    verdict = build_verdict(git_repo, base_sha, head_sha)
+    assert verdict["tests_touched"] is True
+
+
 def test_build_verdict_oversized_when_code_lines_exceed_800(git_repo: Path):
     _write(git_repo, "src/foo.py", "x = 1\n")
     base_sha = _commit_all(git_repo, "base")
@@ -475,6 +501,68 @@ def test_run_ci_posts_comment_via_upserted_call(monkeypatch, git_repo: Path):
 
     post_calls = [c for c in calls if "POST" in c and "issues/7/comments" in " ".join(c)]
     assert len(post_calls) == 1
+
+
+def _make_ci_event(git_repo: Path, *, labels: list | None = None) -> Path:
+    event = {"pull_request": {"number": 7, "body": "", "labels": labels or [], "base": {"ref": "main"}}}
+    event_path = git_repo / "event.json"
+    event_path.write_text(json.dumps(event))
+    return event_path
+
+
+def test_run_ci_does_not_fail_when_comment_post_fails_and_enforce_warn(monkeypatch, git_repo: Path, capsys):
+    _write(git_repo, "src/foo.py", "x = 1\n")
+    base_sha = _commit_all(git_repo, "base")
+    _write(git_repo, "src/foo.py", "x = 2\n")
+    head_sha = _commit_all(git_repo, "small change")
+
+    event_path = _make_ci_event(git_repo)
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setenv("PR_SIZE_ENFORCE", "warn")
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:1] != ["gh"]:
+            return _REAL_SUBPROCESS_RUN(cmd, **kwargs)
+        if cmd[:2] == ["gh", "api"] and "--paginate" in cmd:
+            return _FakeCompletedProcess(stdout=b"[]")
+        # コメント投稿(POST)が read-only トークン等で失敗するのを模す
+        raise subprocess.CalledProcessError(1, cmd)
+
+    monkeypatch.setattr("scripts.pr_size_check.subprocess.run", fake_run)
+
+    parser = build_arg_parser()
+    args = parser.parse_args(["--ci", "--repo", str(git_repo), "--base", base_sha, "--head", head_sha])
+    rc = run_ci(args)
+    assert rc == 0  # コメント投稿失敗でもジョブは緑
+    assert "投稿に失敗" in capsys.readouterr().err  # 警告ログが stderr に出る
+
+
+def test_run_ci_still_fails_on_oversized_when_comment_post_fails_and_enforce_fail(monkeypatch, git_repo: Path):
+    _write(git_repo, "src/foo.py", "x = 1\n")
+    base_sha = _commit_all(git_repo, "base")
+    big_content = "\n".join(f"line_{i} = {i}" for i in range(900)) + "\n"
+    _write(git_repo, "src/foo.py", big_content)
+    head_sha = _commit_all(git_repo, "large change")
+
+    event_path = _make_ci_event(git_repo)
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setenv("PR_SIZE_ENFORCE", "fail")
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:1] != ["gh"]:
+            return _REAL_SUBPROCESS_RUN(cmd, **kwargs)
+        if cmd[:2] == ["gh", "api"] and "--paginate" in cmd:
+            return _FakeCompletedProcess(stdout=b"[]")
+        raise subprocess.CalledProcessError(1, cmd)
+
+    monkeypatch.setattr("scripts.pr_size_check.subprocess.run", fake_run)
+
+    parser = build_arg_parser()
+    args = parser.parse_args(["--ci", "--repo", str(git_repo), "--base", base_sha, "--head", head_sha])
+    rc = run_ci(args)
+    assert rc == 1  # enforce 判定はコメント投稿の成否と独立
 
 
 def test_run_ci_raises_without_github_event_path(monkeypatch, git_repo: Path):

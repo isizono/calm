@@ -1,8 +1,9 @@
 """ow runtime state cache layer.
 
-真実源は relay events。本パッケージが管理する JSON ファイルキャッシュは
-relay から再生成可能な派生データに過ぎず、破損・schema mismatch時には
-削除して呼び出し側に full pull を促す。
+本パッケージが管理する JSON ファイルキャッシュは relay events から再生成可能な
+派生データに過ぎず、真実源ではない (耐久的事実の真実源は cc-memory、relay は
+bounded transport buffer で liveness の直近窓のみを担う)。破損・schema mismatch
+時には削除して呼び出し側に full pull を促す。
 """
 
 from src.services.ow.cache import (

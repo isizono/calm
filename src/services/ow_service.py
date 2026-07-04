@@ -1507,7 +1507,9 @@ def _parse_frontmatter(content: str) -> tuple[dict, str]:
 def ow_status(channel: str, topic_id: str | None = None) -> dict:
     """cache (派生1) + presence の統合ビュー (D#2751、SKILL.md §状態取得経路)。
 
-    cache は relay events を真実源として projector が再構築する派生キャッシュ。
+    cache は relay events (`ow_history`) から projector が再構築する派生キャッシュ
+    であり、真実源ではない (耐久的事実の真実源は cc-memory、relay は bounded
+    transport buffer で liveness の直近窓のみを担う)。
     本関数は load_state → cache miss なら projector で再構築する fallback 経路で
     取得し、cache.workers 各 handle のサマリを ``tasks`` リストに整形する。
 

@@ -150,8 +150,8 @@ def _ensure_server_running() -> bool:
     # ロックファイルが存在する場合、別のランチャーが起動中の可能性がある。
     # 二重起動を避けてサーバーの準備完了を待つだけにする。
     # ただしプロセスが死んでいる場合はstale lockとして削除し、新規起動する。
-    from src.services.lock_file import read as read_lock, is_process_alive
-    from src.services.lock_file import LOCK_FILE
+    from src.infra.lock_file import read as read_lock, is_process_alive
+    from src.infra.lock_file import LOCK_FILE
 
     lock_info = read_lock()
     if lock_info is not None and not is_process_alive(lock_info["pid"]):

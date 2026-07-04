@@ -82,7 +82,7 @@ def retract(entity_type: str, ids: list[int], undo: bool = False) -> dict:
 
     undo時はretracted_atをNULLに戻すのみで、search経路への再登録は行わない。
     物理削除は不可逆として扱う。un-retractしたエンティティを再び検索可能にしたい
-    場合は、別途add_decisions/add_logsで新規追加する。
+    場合は、別途add_decisions/add_logs/add_materialで新規追加する。
 
     Args:
         entity_type: エンティティ種別 ("decision" | "log" | "material")

@@ -55,14 +55,14 @@ _NEXT_HEADING_RE = re.compile(r"^##\s", re.MULTILINE)
 # ---------------------------------------------------------------------------
 
 
-def _diff_numstat(repo: Path, merge_base: str, head_ref: str) -> str:
+def _diff_numstat(repo: Path, merge_base: str, head_ref: str) -> bytes:
     result = subprocess.run(
-        ["git", "-C", str(repo), "diff", "--numstat", "-M", merge_base, head_ref],
+        ["git", "-C", str(repo), "diff", "--numstat", "-M", "-z", merge_base, head_ref],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=True,
     )
-    return result.stdout.decode("utf-8")
+    return result.stdout
 
 
 def _bucket(path: str) -> str:
@@ -76,6 +76,16 @@ def _bucket(path: str) -> str:
 
 def _sum_lines(rows: list[NumstatRow]) -> int:
     return sum(r.additions + r.deletions for r in rows if not r.is_binary)
+
+
+def _row_paths(row: NumstatRow) -> list[str]:
+    """rename 検出(-M)時の旧パスも含めた、この行が触れる全パス。
+
+    tests_touched / migrations_touched の判定を新パスだけで行うと、対象
+    ディレクトリ配下から外へリネームされた変更を見落とす。gate_check の
+    detect_migration_touch と同じく旧パスも突き合わせる。
+    """
+    return [row.path, row.old_path] if row.old_path else [row.path]
 
 
 def classify_verdict(lines_code: int, files: int) -> str:
@@ -99,8 +109,8 @@ def build_verdict(repo: Path, base_ref: str, head_ref: str) -> dict:
     lines_docs = _sum_lines([r for r in rows if _bucket(r.path) == "docs"])
     lines_total = lines_code + lines_test + lines_docs
 
-    tests_touched = any(_bucket(r.path) == "test" for r in rows)
-    migrations_touched = any(r.path.startswith("migrations/") for r in rows)
+    tests_touched = any(_bucket(p) == "test" for r in rows for p in _row_paths(r))
+    migrations_touched = any(p.startswith("migrations/") for r in rows for p in _row_paths(r))
 
     return {
         "schema_version": 1,
@@ -298,7 +308,13 @@ def run_ci(args: argparse.Namespace) -> int:
 
     revert_note = check_revert_mismatch(pr_body, verdict["migrations_touched"])
     body = render_comment_body(verdict, revert_note)
-    upsert_pr_comment(repo_slug, pr_number, body)
+    # コメント投稿の失敗(fork PR の read-only トークン・API 障害等)は判定結果と独立。
+    # ここで例外を握り潰さないと PR_SIZE_ENFORCE の値に関わらずジョブが落ち、
+    # warn モードの「コメントのみで知らせ、ジョブは失敗させない」意図が壊れる。
+    try:
+        upsert_pr_comment(repo_slug, pr_number, body)
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write(f"warning: PR サイズ検査コメントの投稿に失敗しました(ジョブは継続します): {exc}\n")
 
     sys.stdout.write(json.dumps(verdict, ensure_ascii=False, sort_keys=True, indent=2) + "\n")
 

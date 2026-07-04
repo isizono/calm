@@ -254,26 +254,34 @@ def should_take_snapshot(snapshot_dir: Path | None = None, interval_hours: int |
 
 
 def _unique_snapshot_paths(snapshot_dir: Path) -> tuple[Path, Path]:
-    """衝突しないスナップショットの.db/.jsonパスを発行する。
+    """衝突しないスナップショットの.db/.jsonパスを発行し、.dbを空ファイルとして確保する。
 
-    同一秒内に複数回取得される場合（restore()のprerestore退避が短時間に連続する等）に
-    既存ファイルを上書きしないよう、衝突時は連番を振って別名にする。
+    同一秒内に複数回取得される場合（restore()のprerestore退避が短時間に連続する、
+    複数プロセスがほぼ同時にSessionStart hookを発火する等）に既存ファイルを上書き
+    しないよう、open(path, "x")（O_CREAT | O_EXCL）で.dbをアトミックに排他作成して
+    ファイル名を確定する。.existsチェック→作成の間に別プロセスが割り込むTOCTOUを避ける。
+    確保される.dbは0バイトの空ファイル（＝空DB扱い）で、呼び出し側がbackup()または
+    copy2()で内容を上書きする前提。
     """
+    snapshot_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+
     now = datetime.now(timezone.utc)
     timestamp = now.strftime("%Y%m%d_%H%M%S")
     base_stem = f"{SNAPSHOT_PREFIX}{timestamp}"
 
     stem = base_stem
-    db_path = snapshot_dir / f"{stem}{SNAPSHOT_DB_SUFFIX}"
-    json_path = snapshot_dir / f"{stem}{SNAPSHOT_JSON_SUFFIX}"
     suffix = 1
-    while db_path.exists() or json_path.exists():
-        suffix += 1
-        stem = f"{base_stem}_{suffix}"
+    while True:
         db_path = snapshot_dir / f"{stem}{SNAPSHOT_DB_SUFFIX}"
         json_path = snapshot_dir / f"{stem}{SNAPSHOT_JSON_SUFFIX}"
-
-    return db_path, json_path
+        try:
+            with open(db_path, "x"):
+                pass
+        except FileExistsError:
+            suffix += 1
+            stem = f"{base_stem}_{suffix}"
+            continue
+        return db_path, json_path
 
 
 def take_snapshot(
@@ -282,12 +290,15 @@ def take_snapshot(
     max_snapshots: int | None = None,
     kind: SnapshotKind = "periodic",
     extra_metadata: dict | None = None,
+    protect_paths: set[Path] | None = None,
 ) -> Path:
     """sqlite3.backup()でスナップショットを取得し、メタデータJSONを保存する。
 
     取得直後にPRAGMA quick_checkを実行し結果をメタデータに記録する（破損検知）。
     ローテーション: max_snapshots超過時に古いペア(.db + .json)を処理する。
     kind="periodic"の場合のみ、削除の代わりにdaily/への昇格を試みる。
+    protect_paths: ローテーションで削除・昇格させないファイルの集合。復元元スナップショットが
+    自kindのローテーション対象と衝突して消えるのを防ぐ用途で復元経路から渡される。
     """
     if snapshot_dir is None:
         snapshot_dir = snapshot_dir_for(db_path, kind)
@@ -328,30 +339,57 @@ def take_snapshot(
 
     # ローテーション
     if kind == "periodic":
-        _rotate_periodic_with_promotion(db_path, snapshot_dir, max_snapshots)
+        _rotate_periodic_with_promotion(db_path, snapshot_dir, max_snapshots, protect_paths)
     else:
-        _rotate_snapshots(snapshot_dir, max_snapshots)
+        _rotate_snapshots(snapshot_dir, max_snapshots, protect_paths)
 
     return snapshot_db_path
 
 
-def _rotate_snapshots(snapshot_dir: Path, max_snapshots: int) -> None:
-    """max_snapshots超過時に古い.db + .jsonペアを削除する。"""
+def _resolve_protected(protect_paths: set[Path] | None) -> set[Path]:
+    """protect_pathsを解決済み絶対パスの集合に正規化する（比較用）。"""
+    resolved: set[Path] = set()
+    for p in protect_paths or ():
+        try:
+            resolved.add(Path(p).resolve())
+        except OSError:
+            continue
+    return resolved
+
+
+def _rotate_snapshots(
+    snapshot_dir: Path, max_snapshots: int, protect_paths: set[Path] | None = None
+) -> None:
+    """max_snapshots超過時に古い.db + .jsonペアを削除する。
+
+    protect_pathsに含まれるファイルは削除対象から除外する（超過分は次に古い非保護ファイルで
+    賄う）。除外により一時的にmax_snapshotsを超えることは許容する。
+    """
+    protected = _resolve_protected(protect_paths)
     db_files = sorted(snapshot_dir.glob(f"{SNAPSHOT_PREFIX}*{SNAPSHOT_DB_SUFFIX}"))
-    while len(db_files) > max_snapshots:
-        oldest_db = db_files.pop(0)
+    excess = len(db_files) - max_snapshots
+    for oldest_db in db_files:
+        if excess <= 0:
+            break
+        if oldest_db.resolve() in protected:
+            continue
         oldest_json = oldest_db.with_suffix(SNAPSHOT_JSON_SUFFIX)
         oldest_db.unlink(missing_ok=True)
         oldest_json.unlink(missing_ok=True)
+        excess -= 1
 
 
-def _rotate_periodic_with_promotion(db_path: str, periodic_dir: Path, max_snapshots: int) -> None:
+def _rotate_periodic_with_promotion(
+    db_path: str, periodic_dir: Path, max_snapshots: int, protect_paths: set[Path] | None = None
+) -> None:
     """periodicのローテーション。
 
     最古を削除する代わりに、その日付のdaily/スナップショットが未存在なら
     削除せずdaily/へ移動（rename）する。移動先が既にあれば通常通り削除する。
     daily/自体は独立クォータ（KIND_QUOTAS["daily"]）でローテーションする。
+    protect_pathsに含まれるファイルは削除・昇格の対象から除外する。
     """
+    protected = _resolve_protected(protect_paths)
     daily_dir = snapshot_dir_for(db_path, "daily")
     daily_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     daily_dates = {
@@ -359,8 +397,12 @@ def _rotate_periodic_with_promotion(db_path: str, periodic_dir: Path, max_snapsh
     }
 
     db_files = sorted(periodic_dir.glob(f"{SNAPSHOT_PREFIX}*{SNAPSHOT_DB_SUFFIX}"))
-    while len(db_files) > max_snapshots:
-        oldest_db = db_files.pop(0)
+    excess = len(db_files) - max_snapshots
+    for oldest_db in db_files:
+        if excess <= 0:
+            break
+        if oldest_db.resolve() in protected:
+            continue
         oldest_json = oldest_db.with_suffix(SNAPSHOT_JSON_SUFFIX)
         date_part = _date_part(oldest_db.name)
 
@@ -372,6 +414,7 @@ def _rotate_periodic_with_promotion(db_path: str, periodic_dir: Path, max_snapsh
             if oldest_json.exists():
                 oldest_json.rename(daily_dir / oldest_json.name)
             daily_dates.add(date_part)
+        excess -= 1
 
     _rotate_snapshots(daily_dir, KIND_QUOTAS["daily"])
 
@@ -513,8 +556,8 @@ def _check_health_endpoint(timeout: float = 2.0) -> bool:
 
 def _server_appears_running() -> tuple[bool, str]:
     """lock file生存 または /healthエンドポイント応答のいずれかでrunningと判定する。"""
-    from src.services.lock_file import is_process_alive
-    from src.services.lock_file import read as read_lock
+    from src.infra.lock_file import is_process_alive
+    from src.infra.lock_file import read as read_lock
 
     reasons = []
     running = False
@@ -588,27 +631,47 @@ def restore_snapshot(
         raise RestoreBlockedError(f"{compat.warning} 承知の上で続行する場合は --yes を指定してください。")
 
     # 4. prerestore退避
+    #    復元元snapshot_fileがprerestore種別かつ最古の場合、退避のローテーションが復元元を
+    #    削除してしまうと、続く手順5が存在しないファイルを空DBとして開き現行DBを無警告で
+    #    消し去る。protect_pathsで復元元をローテーション対象から除外して衝突を防ぐ。
+    protect = {snapshot_file}
     prerestore_path: str | None = None
     prerestore_row_counts: dict[str, int] = {}
     if Path(db_path).exists():
         try:
             prerestore_row_counts = get_row_counts(db_path)
-            prerestore_db = take_snapshot(db_path, kind="prerestore")
+            prerestore_db = take_snapshot(db_path, kind="prerestore", protect_paths=protect)
             prerestore_path = str(prerestore_db)
         except sqlite3.Error:
             # backup APIで読めないほど破損している場合はファイルコピーで退避する
             prerestore_dir = snapshot_dir_for(db_path, "prerestore")
             prerestore_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-            fallback_path, _fallback_json_path = _unique_snapshot_paths(prerestore_dir)
+            fallback_path, fallback_json_path = _unique_snapshot_paths(prerestore_dir)
             shutil.copy2(db_path, fallback_path)
             prerestore_path = str(fallback_path)
             prerestore_row_counts = {}
-            _rotate_snapshots(prerestore_dir, KIND_QUOTAS["prerestore"])
+            # 破損DBの生コピーにもメタデータJSONを添える。JSONが無いとlist_snapshots()の
+            # 列挙対象から漏れ、破損時の「最後の砦」がユーザーから不可視になる。
+            fallback_metadata = {
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "db_size_bytes": fallback_path.stat().st_size,
+                "row_counts": {},
+                "kind": "prerestore",
+                "schema_head": None,
+                "quick_check": _quick_check(fallback_path),
+                "fallback": True,
+                "note": "backup API失敗のため生ファイルコピーで退避（現行DB破損の可能性）",
+            }
+            fallback_json_path.write_text(
+                json.dumps(fallback_metadata, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            _rotate_snapshots(prerestore_dir, KIND_QUOTAS["prerestore"], protect_paths=protect)
 
     # 5. 復元本体
     if file_copy:
         shutil.copy2(snapshot_file, db_path)
-        for suffix in ("-wal", "-shm"):
+        # -journalを残すと次回オープン時にSQLiteが古いjournalで意図しないロールバックを試みうる。
+        for suffix in ("-wal", "-shm", "-journal"):
             Path(f"{db_path}{suffix}").unlink(missing_ok=True)
     else:
         source = sqlite3.connect(str(snapshot_file))

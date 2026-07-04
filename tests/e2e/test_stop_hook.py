@@ -196,6 +196,42 @@ class TestExceptionFailOpen:
         assert result["decision"] == "approve"
         assert "error" in result.get("reason", "").lower()
 
+    def test_exception_records_machine_error_signal(self, env_setup, temp_db):
+        """top-level except到達時にsignal_eventsへmachine_errorが記録される"""
+        from src.db import get_connection
+
+        state_as_file = env_setup["tmp_path"] / "state_as_file_signal"
+        state_as_file.write_text("not a directory")
+
+        env_override = {
+            "HOOK_STATE_DIR": str(state_as_file),
+            "DISCUSSION_DB_PATH": temp_db,
+        }
+
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("hi"),
+                _make_assistant_entry(text="response"),
+            ],
+            transcript,
+        )
+
+        result = _run_stop_hook(
+            str(transcript), "test-session", env_override,
+        )
+        assert result["decision"] == "approve"
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT * FROM signal_events WHERE source = 'hook:stop'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert row["kind"] == "machine_error"
+
     def test_post_approve_exception_no_double_output(self, env_setup):
         """approve後の状態更新で例外 → stdoutは1行のみ（double-output防止の回帰テスト）"""
         state_dir = env_setup["state_dir"]
