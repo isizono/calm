@@ -12,23 +12,10 @@ from yoyo import default_migration_table, read_migrations
 from yoyo.connections import parse_uri
 from yoyo.migrations import MigrationList
 
-from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection, init_database
+from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection
 from src.services.tag_service import _injected_tags
 
 EMBEDDING_DIM = 384
-
-
-@pytest.fixture
-def migrated_db():
-    """全 migration（0050 含む）を適用済みのテスト用 DB を提供する。"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        _injected_tags.clear()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 @pytest.fixture
@@ -203,11 +190,57 @@ class TestNonOrphanRowsPreserved:
         finally:
             conn.close()
 
-    def test_no_orphans_no_op(self, migrated_db):
-        """孤児が無い状態でも 0050 適用済みDBの初期化は正常に完走する（no-op確認）"""
+    def test_no_orphans_no_op(self, db_before_0050):
+        """孤児が 1 行も無い状態（vec_index の全行が search_index の行に対応）で
+        0050 を適用しても、vec_index の行は 1 行も削除されないことを確認する。
+
+        search_index には行があるが vec_index には対応行が無いエントリを混在させ、
+        それらが誤って削除の巻き添えにならないことも合わせて確認する。
+        """
         conn = get_connection()
         try:
-            count = conn.execute("SELECT COUNT(*) AS c FROM vec_index").fetchone()["c"]
-            assert count == 0
+            # search_index に登録される複数エンティティを作成
+            search_ids = []
+            for i in range(4):
+                cur = conn.execute(
+                    "INSERT INTO decisions (decision, reason) VALUES (?, ?)",
+                    (f"決定{i}", f"理由{i}"),
+                )
+                conn.commit()
+                sid = conn.execute(
+                    "SELECT id FROM search_index WHERE source_type='decision' AND source_id=?",
+                    (cur.lastrowid,),
+                ).fetchone()["id"]
+                search_ids.append(sid)
+
+            # 前半のみ vec_index に登録する（後半は search_index 行だけ存在し vec 行なし）。
+            # vec_index の全行が search_index の行に対応する = 孤児ゼロの状態。
+            vec_rowids = search_ids[:2]
+            for i, sid in enumerate(vec_rowids):
+                conn.execute(
+                    "INSERT INTO vec_index(rowid, embedding) VALUES (?, ?)",
+                    (sid, _make_embedding(0.05 * (i + 1))),
+                )
+            conn.commit()
+
+            before = {
+                row["rowid"]
+                for row in conn.execute("SELECT rowid FROM vec_index").fetchall()
+            }
+            assert before == set(vec_rowids)
+        finally:
+            conn.close()
+
+        _apply_migration_0050(db_before_0050)
+
+        conn = get_connection()
+        try:
+            after = {
+                row["rowid"]
+                for row in conn.execute("SELECT rowid FROM vec_index").fetchall()
+            }
+            assert after == before, (
+                "孤児が 1 行も無い状態で 0050 が vec_index の行を削除してしまった"
+            )
         finally:
             conn.close()
