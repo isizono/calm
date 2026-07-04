@@ -29,7 +29,7 @@ def extended_migrations_dir(tmp_path):
 
 def _write_new_migration(mig_dir: Path, filename: str, sql: str) -> Path:
     path = mig_dir / filename
-    path.write_text(f"-- depends: 0049_add_migration_ledger\n\n{sql}\n", encoding="utf-8")
+    path.write_text(f"-- depends: 0051_add_migration_ledger\n\n{sql}\n", encoding="utf-8")
     return path
 
 

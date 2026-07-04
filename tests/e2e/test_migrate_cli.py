@@ -29,11 +29,11 @@ class TestStatusCommand:
         result = _run_cli(temp_db, "status")
         assert result.returncode == 0, result.stderr
         assert "0001_initial_schema" in result.stdout
-        assert "0049_add_migration_ledger" in result.stdout
+        assert "0051_add_migration_ledger" in result.stdout
         # temp_dbはinit_database()でfresh DBパスを通っており、全migrationが
         # applied=yes / ledger=ok になっているはず
         for line in result.stdout.splitlines():
-            if line.startswith("0049_add_migration_ledger"):
+            if line.startswith("0051_add_migration_ledger"):
                 assert "yes" in line
                 assert "ok" in line
 

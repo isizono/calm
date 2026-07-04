@@ -1,6 +1,6 @@
-"""migration 0049_add_migration_ledger のテスト
+"""migration 0051_add_migration_ledger のテスト
 
-0049 適用後に migration_ledger テーブルが作成され、
+0051 適用後に migration_ledger テーブルが作成され、
 migration_id を PRIMARY KEY として content_sha256 / applied_at を保持することを確認する。
 """
 import os
@@ -19,7 +19,7 @@ from test_migrations.conftest import get_column_names, table_exists
 
 @pytest.fixture
 def migrated_db():
-    """全 migration（0049 含む）を適用済みのテスト用 DB を提供する。"""
+    """全 migration（0051 含む）を適用済みのテスト用 DB を提供する。"""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
         os.environ["DISCUSSION_DB_PATH"] = db_path
@@ -31,8 +31,8 @@ def migrated_db():
 
 
 @pytest.fixture
-def db_before_0049():
-    """0048 までの migration を適用した DB を提供する。0049 の挙動を分離検証するために使う。"""
+def db_before_0051():
+    """0048 までの migration を適用した DB を提供する。0051 の挙動を分離検証するために使う。"""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
         os.environ["DISCUSSION_DB_PATH"] = db_path
@@ -41,9 +41,9 @@ def db_before_0049():
         backend = _VecSQLiteBackend(parsed, default_migration_table)
         backend.init_database()
         all_migs = read_migrations(str(MIGRATIONS_DIR))
-        pre_0049 = MigrationList([m for m in all_migs if m.id < "0049"])
+        pre_0051 = MigrationList([m for m in all_migs if m.id < "0051"])
         with backend.lock():
-            backend.apply_migrations(pre_0049)
+            backend.apply_migrations(pre_0051)
 
         _injected_tags.clear()
         yield db_path
@@ -51,31 +51,31 @@ def db_before_0049():
             del os.environ["DISCUSSION_DB_PATH"]
 
 
-def _apply_migration_0049(db_path: str) -> None:
-    """db_path に対して migration 0049 のみを適用する。"""
+def _apply_migration_0051(db_path: str) -> None:
+    """db_path に対して migration 0051 のみを適用する。"""
     parsed = parse_uri(f"sqlite:///{db_path}")
     backend = _VecSQLiteBackend(parsed, default_migration_table)
     all_migs = read_migrations(str(MIGRATIONS_DIR))
-    only_0049 = MigrationList([m for m in all_migs if m.id.startswith("0049")])
+    only_0051 = MigrationList([m for m in all_migs if m.id.startswith("0051")])
     with backend.lock():
-        backend.apply_migrations(only_0049)
+        backend.apply_migrations(only_0051)
 
 
 class TestMigrationLedgerTableCreated:
-    def test_table_exists_after_0049(self, migrated_db):
+    def test_table_exists_after_0051(self, migrated_db):
         conn = get_connection()
         try:
             assert table_exists(conn, "migration_ledger"), (
-                "migration_ledger テーブルが 0049 適用後に存在しない"
+                "migration_ledger テーブルが 0051 適用後に存在しない"
             )
         finally:
             conn.close()
 
-    def test_table_not_exists_before_0049(self, db_before_0049):
+    def test_table_not_exists_before_0051(self, db_before_0051):
         conn = get_connection()
         try:
             assert not table_exists(conn, "migration_ledger"), (
-                "0049 適用前に migration_ledger テーブルが既に存在している"
+                "0051 適用前に migration_ledger テーブルが既に存在している"
             )
         finally:
             conn.close()
@@ -85,7 +85,7 @@ class TestMigrationLedgerTableCreated:
         try:
             column_names = get_column_names(conn, "migration_ledger")
             for col in {"migration_id", "content_sha256", "applied_at"}:
-                assert col in column_names, f"migration_ledger.{col} が 0049 適用後に存在しない"
+                assert col in column_names, f"migration_ledger.{col} が 0051 適用後に存在しない"
         finally:
             conn.close()
 
@@ -185,8 +185,8 @@ class TestMigrationLedgerCRUD:
 
 
 class TestExistingRowsUnaffected:
-    def test_0049_does_not_touch_other_tables(self, db_before_0049):
-        """0049 は追加専用のmigrationであり、既存テーブルの行を変更しない"""
+    def test_0051_does_not_touch_other_tables(self, db_before_0051):
+        """0051 は追加専用のmigrationであり、既存テーブルの行を変更しない"""
         conn = get_connection()
         try:
             conn.execute(
@@ -197,7 +197,7 @@ class TestExistingRowsUnaffected:
         finally:
             conn.close()
 
-        _apply_migration_0049(db_before_0049)
+        _apply_migration_0051(db_before_0051)
 
         conn = get_connection()
         try:

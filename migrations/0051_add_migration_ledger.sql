@@ -1,4 +1,4 @@
--- Migration 0049: migration_ledger テーブル追加
+-- Migration 0051: migration_ledger テーブル追加
 --
 -- depends: 0048_session_identity
 --
