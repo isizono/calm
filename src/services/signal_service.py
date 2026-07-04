@@ -90,7 +90,11 @@ def record_signal(
 
     同一 fingerprint (sha256(kind|source|正規化summary) 先頭16hex) の
     status='new' 行が既存なら、新規行を作らず occurrence_count を +1 し
-    last_seen_at / detail を更新する（dedup）。トリアージ済み（new 以外）の
+    last_seen_at / detail / refs / context / session_id を今回の値で上書きする
+    （dedup、last-write-wins）。refs/context/session_id を最新 occurrence の値で
+    更新するのは、contradiction のように refs で矛盾の両側を指す kind で
+    2 回目以降の参照が失われるのを防ぐため、および再発したセッションを追える
+    ようにするため。トリアージ済み（new 以外）の
     同型イベント再発は新規行になる。dedup 判定は idx_signal_fingerprint_new
     (部分 UNIQUE index) を conflict target にした INSERT ... ON CONFLICT で
     アトミックに行うため、並行書き込みでも競合が起きない。
@@ -133,7 +137,10 @@ def record_signal(
             DO UPDATE SET
                 occurrence_count = signal_events.occurrence_count + 1,
                 last_seen_at = CURRENT_TIMESTAMP,
-                detail = excluded.detail
+                detail = excluded.detail,
+                refs = excluded.refs,
+                context = excluded.context,
+                session_id = excluded.session_id
             RETURNING id, occurrence_count
             """,
             (kind, source, summary, detail, refs_json, context_json, fingerprint, session_id),
@@ -309,6 +316,10 @@ def update_signal(
     両方指定時は昇格先エンティティの実在チェックを行った上でリンクする。
     省略時は既存の promoted_type/promoted_id を変更しない（status のみ更新）。
 
+    last_seen_at は「最後に実際に再発した時刻」を表すため、トリアージ状態遷移では
+    更新しない（更新は新規記録・dedup のみ）。人手のトリアージで last_seen_at を
+    書き換えると get_signals のデフォルトソートが古いシグナルを上位へ押し上げる。
+
     Args:
         signal_id: 対象シグナルID
         status: 遷移先status（new/triaged/promoted/dismissed）
@@ -372,14 +383,14 @@ def update_signal(
             conn.execute(
                 """
                 UPDATE signal_events
-                SET status = ?, promoted_type = ?, promoted_id = ?, last_seen_at = CURRENT_TIMESTAMP
+                SET status = ?, promoted_type = ?, promoted_id = ?
                 WHERE id = ?
                 """,
                 (status, promoted_type, promoted_id, signal_id),
             )
         else:
             conn.execute(
-                "UPDATE signal_events SET status = ?, last_seen_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "UPDATE signal_events SET status = ? WHERE id = ?",
                 (status, signal_id),
             )
         conn.commit()
