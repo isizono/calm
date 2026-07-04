@@ -576,7 +576,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0039_extend_tag_namespace | tags の namespace CHECK 制約撤廃（テーブル再構築）、妥当性は Python 層検証へ |
 | 0039_intent_thinking | intent:thinking タグ新設、description / notes 設定（**0039 番号重複**） |
 
-重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。
+重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）の 4 組。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。なお上表は 0039 までを列挙しており、0040 以降（0046 の重複対を含む）はこの表には未掲載である。
 
 ---
 
