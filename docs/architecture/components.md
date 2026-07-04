@@ -73,7 +73,7 @@ graph TB
 
 - `migrations/0001_initial_schema.sql` 〜 `migrations/0039_*` 系: テーブル・インデックス・トリガー定義。エンティティ型（topics / decisions / discussion_logs / activities / materials / pins / relations / habits / tags / tag_canonicals）と関係（supersedes / depends_on / pin / relation）のスキーマはここに具現化されている
 - `migrations/0033_relation_expansion.sql`, `migrations/0034_pins_directed_relation.sql`: 関係の汎化と方向性導入
-- `migrations/0009_tag_infrastructure.sql`, `migrations/0014_intent_namespace.sql`, `migrations/0015_tag_canonical.sql`, `migrations/0024_tag_description.sql`, `migrations/0039_extend_tag_namespace.sql`, `migrations/0039_intent_thinking.sql`: タグ名前空間と二段防御（tag_canonicals）。なお `0039_*.sql` は番号重複（`docs/spec/db-schema.md` §7 を参照）
+- `migrations/0009_tag_infrastructure.sql`, `migrations/0014_intent_namespace.sql`, `migrations/0015_tag_canonical.sql`, `migrations/0024_tag_description.sql`, `migrations/0039_extend_tag_namespace.sql`, `migrations/0039_intent_thinking.sql`: タグ名前空間と二段防御（tag_canonicals）。なお `0039_*.sql` は番号重複（他に 0005 / 0015 / 0046 でも番号重複がある。`docs/spec/db-schema.md` §7 を参照）
 
 ### 2.2 操作の実体
 

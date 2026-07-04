@@ -28,7 +28,7 @@ cc-memory は 4 つの独立プロセスで構成される。
 
 ## 2. ログの所在
 
-現状、**HTTP サーバー内部の未処理例外は永続化されていない**。launcher がサーバーを `stdout=DEVNULL, stderr=DEVNULL` で起動するため（`src/launcher.py` `_start_http_server`）、起動時 migration 失敗などサーバープロセスがクラッシュする類の障害は標準出力に何を書いても消える。ログファイルへの永続化は本書執筆時点で未実装。
+現状、**HTTP サーバー内部の未処理例外は永続化されていない**。launcher がサーバーを `stdout=DEVNULL, stderr=DEVNULL` で起動するため（`src/launcher.py` `_start_http_server`）、起動時 migration 失敗などサーバープロセスがクラッシュする類の障害は標準出力に何を書いても消える。HTTP サーバーのログファイルへの永続化は本書執筆時点で未実装（embedding server は別途永続ログを持つ。下表参照）。
 
 「どの故障がどこに痕跡を残すか」の対応表:
 
@@ -37,6 +37,7 @@ cc-memory は 4 つの独立プロセスで構成される。
 | HTTP サーバー起動時の例外（migration 失敗等） | **どこにも残らない**（上記の理由）。launcher 側のログ（`_ensure_server_running` の `logger.warning`）に「30秒以内に起動できなかった」旨が出るのみで、原因は分からない。原因調査は §5 の手動再現に頼る |
 | MCP tool 呼び出し中の未捕捉例外 | (1) 呼び出し元に MCP エラーレスポンスとして返る、(2) `signal_events` テーブルに `kind="machine_error"` で自動記録される（`SignalCaptureMiddleware`, `src/services/signal_middleware.py`）。role guard による正常な拒否（`CapabilityError`）は記録対象外 |
 | hooks（SessionStart 等）内の例外 | 各 hook の top-level try/except で stderr に print されるのみ（例: `hooks/session_start_hook.py:483-485`）。stderr は Claude Code 側にしか出ず、集約されない。hook からの signal 自動捕捉は本書執筆時点で未実装 |
+| embedding server の起動・モデルロード・shutdown・内部エラー | `~/.cache/cc-memory/embedding-server.log`（`RotatingFileHandler` で永続化。デフォルト 5MB × 3 世代ローテーション、`_setup_logging`, `src/services/embedding_server.py`）。プロセス境界は `=== PID ... started at ... ===` ヘッダー行で識別する。起動失敗・モデルロード失敗の原因はここに残る |
 | 検索呼び出し（`search`）の挙動 | `search_telemetry` テーブル（非同期記録。query / parameters / result_count、`migrations/0041_add_search_telemetry.sql`） |
 | citation sanitize 系の変換イベント | `citation_event_log` テーブル（逐次行型、`migrations/0046_sanitize_log_to_citation_event_log.sql`） |
 | 故障報告・使用感不満・矛盾検出の統一入口 | `signal_events` テーブル。`get_signals` ツールで一覧・集計取得（§7） |
@@ -118,7 +119,7 @@ EXT=$(uv run python -c "import sqlite_vec; print(sqlite_vec.loadable_path())")
 | HTTP サーバーが起動しない（`port 52837 is already in use`） | 別プロセスが既にポートを握っている、または前回プロセスが正常終了せず残っている | `lsof -i :52837` でプロセスを特定 | 生きていて不要なら `kill`。ゾンビ（ロックファイルはあるがプロセス死亡）は `lock_file.acquire` が stale 判定で自動掃除するので、通常は再起動を待てば直る |
 | sqlite-vec ロード失敗（パターン A: `enable_load_extension` が無い） | Python が `--enable-loadable-sqlite-extensions` 無しでビルドされている（pyenv 由来等） | 起動ログに `sqlite-vec startup check failed` + fix 手順が出る（`src/db.py` `verify_sqlite_vec`） | Homebrew Python を使う: `UV_PYTHON=/opt/homebrew/opt/python@3.12/bin/python3.12 uv sync` |
 | sqlite-vec ロード失敗（パターン B: ネイティブ拡張が非互換） | sqlite-vec バイナリが環境と非互換 | 同上の起動ログで判別 | sqlite-vec 再インストール、または上記と同じ Python 切替 |
-| embedding server が応答しない | 未起動、または起動に失敗（`_resolve_project_root` が git worktree の common-dir 解決に失敗する等） | `curl -s http://localhost:52836/health` | ベクトル検索のみ劣化し、キーワード検索は生きる（graceful degradation）。プロセス自体は次回 embedding 要求時に再起動を試みる |
+| embedding server が応答しない | 未起動、または起動に失敗（`_resolve_project_root` が git worktree の common-dir 解決に失敗する等） | `curl -s http://localhost:52836/health` で生存確認。起動失敗・モデルロード失敗の原因は `~/.cache/cc-memory/embedding-server.log`（§2）を見る | ベクトル検索のみ劣化し、キーワード検索は生きる（graceful degradation）。プロセス自体は次回 embedding 要求時に再起動を試みる |
 | DB ファイル破損 | ディスク異常・強制終了時の書き込み中断等 | `sqlite3 discussion.db "PRAGMA integrity_check;"` を直接実行して確認（現状、起動時の自動整合性チェックは無い） | `python scripts/snapshot.py restore <snapshot_db_path>`（§4） |
 | migration 失敗 | migration ファイルの SQL エラー、既存データとの制約違反 | §5 の手順でフォアグラウンド起動し、例外を直接確認 | コード側（migration ファイル）を直す。実 DB は無傷（§5） |
 | プラグインキャッシュとサーバーコードの不整合 | PR マージ後、プラグインキャッシュ（main ブランチ由来）と HTTP サーバープロセス（起動時点のコード）がずれる | ツールの挙動が最新 PR の変更を反映していない | `rm -rf ~/.claude/plugins/cache/claude-code-memory-marketplace/` + `__pycache__` 削除 + サーバー再起動（`CLAUDE.md` の PR マージ後手順を参照） |
