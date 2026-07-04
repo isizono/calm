@@ -51,11 +51,17 @@ def route_topics(context: str, k: int, conn: sqlite3.Connection) -> dict:
     if query_embedding is None:
         return {"mode": "unavailable", "candidates": []}
 
-    blob = serialize_float32(query_embedding)
-    knn_rows = conn.execute(
-        "SELECT rowid, distance FROM topic_vec WHERE embedding MATCH ? AND k = ?",
-        (blob, PRECEDENT_ROUTING_CANDIDATES),
-    ).fetchall()
+    try:
+        blob = serialize_float32(query_embedding)
+        knn_rows = conn.execute(
+            "SELECT rowid, distance FROM topic_vec WHERE embedding MATCH ? AND k = ?",
+            (blob, PRECEDENT_ROUTING_CANDIDATES),
+        ).fetchall()
+    except (ValueError, RuntimeError, OSError, sqlite3.Error):
+        # sqlite-vec 拡張未ロード・topic_vec 不整合等での KNN 失敗は routing 不能として
+        # 縮退させる（例外にしない）。encode_query の None と同じ unavailable に倒す。
+        logger.warning("topic_vec KNN failed, treating routing as unavailable", exc_info=True)
+        return {"mode": "unavailable", "candidates": []}
     if not knn_rows:
         return {"mode": "vector", "candidates": []}
 
@@ -208,16 +214,25 @@ def _allocate_budget(
 def _collect_material_links(
     conn: sqlite3.Connection,
     all_ids: list[int],
-) -> tuple[dict[int, dict], dict[int, set[int]]]:
+) -> tuple[dict[int, dict], dict[int, set[int]], bool]:
     """all_ids を seed に depth-1 のクラスタ展開を行い、material カタログと
     decision→material リンクを構築する（expand_decision_cluster を利用）。
 
-    Returns: (materials_by_id, material_ids_by_decision)
+    expand_decision_cluster は拡張ノード（related/citation で到達した material・
+    decision）を既定 30 件で打ち切り、超過分を catalog_overflow に降格する。この経路は
+    decision 網羅保証の対象外の補助情報なので超過 material は応答に載せないが、黙って
+    落とすと利用側が全 material を見たと誤認するため、超過発生を bool で返して呼出側で
+    materials_truncated として明示する。
+
+    Returns: (materials_by_id, material_ids_by_decision, materials_truncated)
     """
     materials_by_id: dict[int, dict] = {}
     material_ids_by_decision: dict[int, set[int]] = {}
 
     cluster = expand_decision_cluster(conn, all_ids, include_bodies=False)
+    materials_truncated = any(
+        entry.get("type") == "material" for entry in cluster["catalog_overflow"]
+    )
     for entry in cluster["materials"]:
         mid = entry["id_raw"]
         materials_by_id[mid] = {
@@ -245,7 +260,7 @@ def _collect_material_links(
             continue
         material_ids_by_decision.setdefault(did, set()).add(mid)
 
-    return materials_by_id, material_ids_by_decision
+    return materials_by_id, material_ids_by_decision, materials_truncated
 
 
 def _build_topic_materials(
@@ -318,13 +333,18 @@ def collect_precedents_with_conn(
     件数（decisions_total）はこの重複排除より前、topic ごとの実件数で数える。
 
     Returns:
-        {"topics": [...], "budget": {"limit", "used", "full", "index_only"}, "truncated": bool}
+        {"topics": [...], "budget": {"limit", "used", "full", "index_only"},
+         "truncated": bool, "materials_truncated": bool}
+
+    truncated は decision 本文の予算縮退（index 落ち）を、materials_truncated は
+    material カタログ展開の 30 件キャップ超過（include_materials 時のみ）を表す。
     """
     if not topic_ids:
         return {
             "topics": [],
             "budget": {"limit": budget_chars, **_EMPTY_BUDGET_TEMPLATE},
             "truncated": False,
+            "materials_truncated": False,
         }
 
     topic_titles: dict[int, Optional[str]] = {}
@@ -374,6 +394,7 @@ def collect_precedents_with_conn(
             "topics": topics_out,
             "budget": {"limit": budget_chars, **_EMPTY_BUDGET_TEMPLATE},
             "truncated": False,
+            "materials_truncated": False,
         }
 
     supersede_map = compute_supersede_info_batch(conn, all_ids)
@@ -384,8 +405,11 @@ def collect_precedents_with_conn(
 
     materials_by_id: dict[int, dict] = {}
     material_ids_by_decision: dict[int, set[int]] = {}
+    materials_truncated = False
     if include_materials:
-        materials_by_id, material_ids_by_decision = _collect_material_links(conn, all_ids)
+        materials_by_id, material_ids_by_decision, materials_truncated = _collect_material_links(
+            conn, all_ids
+        )
 
     topics_out = []
     for topic_id in topic_ids:
@@ -422,7 +446,12 @@ def collect_precedents_with_conn(
     index_only = len(all_ids) - len(full_ids)
     budget = {"limit": budget_chars, "used": used, "full": len(full_ids), "index_only": index_only}
     truncated = index_only > 0
-    return {"topics": topics_out, "budget": budget, "truncated": truncated}
+    return {
+        "topics": topics_out,
+        "budget": budget,
+        "truncated": truncated,
+        "materials_truncated": materials_truncated,
+    }
 
 
 def pull_precedents(
@@ -443,8 +472,10 @@ def pull_precedents(
         include_materials: decision に紐づく material と topic 直下 material を同時展開する
 
     Returns:
-        {"guarantee", "routing", "topics", "budget", "truncated"}。
+        {"guarantee", "routing", "topics", "budget", "truncated", "materials_truncated"}。
         guarantee は "enumerated" / "routing_miss" / "routing_unavailable"。
+        materials_truncated は material カタログ展開が 30 件キャップを超えて一部 material を
+        載せ切れなかったことを表す（include_materials 時のみ true になり得る）。
     """
     if not context or len(context.strip()) < 2:
         return {
@@ -475,6 +506,7 @@ def pull_precedents(
                 "topics": [],
                 "budget": {"limit": budget, **_EMPTY_BUDGET_TEMPLATE},
                 "truncated": False,
+                "materials_truncated": False,
             }
         elif not selected_ids:
             guarantee = "routing_miss"
@@ -482,6 +514,7 @@ def pull_precedents(
                 "topics": [],
                 "budget": {"limit": budget, **_EMPTY_BUDGET_TEMPLATE},
                 "truncated": False,
+                "materials_truncated": False,
             }
         else:
             guarantee = "enumerated"

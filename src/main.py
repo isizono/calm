@@ -471,11 +471,12 @@ def pull_precedents(
         k: routing で採用する topic 数の上限（1..5にclamp）
         budget_chars: 本文展開の文字数予算。省略時は config 既定値
         include_materials: decision に紐づく material と topic 直下 material の
-                           カタログを同時展開する
+                           カタログを同時展開する。related/citation 経由の展開は
+                           30 件で打ち切られ、超過時は materials_truncated=true になる
         flavor: citation 展開モード（internal / readable / raw）
 
     Returns:
-        {guarantee, routing, topics, budget, truncated}
+        {guarantee, routing, topics, budget, truncated, materials_truncated}
         guarantee: "enumerated"（routing成立+全件列挙完了。判例保証あり） /
         "routing_miss"（近傍topicなし。真の前例なしかrouting失敗の区別はつかないため
         前例なし扱い=事前確認側に倒すこと） / "routing_unavailable"（embeddingサーバー
@@ -491,6 +492,9 @@ def pull_precedents(
         あるdecisionにはsections（構造化済み）が付く。節が無ければキー自体が無い。
         material_ids / linked_decision_ids はdecision↔material間のrelated/citation
         エッジ（depth-1）から双方向に対応する。
+        materials_truncated: material カタログ展開が30件キャップを超え一部materialを
+        載せ切れなかったとき true（include_materials時のみ）。decision網羅保証は本文の
+        truncated/budgetが担い、materials_truncatedとは独立。
     """
     flavor = _normalize_flavor(flavor)
     result = precedent_pull_service.pull_precedents(

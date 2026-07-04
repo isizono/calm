@@ -6,6 +6,7 @@ routing（topic_vec KNN・explicit指定・miss/unavailable）、browse保証（
 flavor適用を検証する。
 """
 import math
+import sqlite3
 
 import pytest
 from sqlite_vec import serialize_float32
@@ -215,6 +216,32 @@ class TestRouting:
         assert result["routing"]["mode"] == "unavailable"
         assert result["topics"] == []
 
+    def test_knn_execute_failure_falls_back_to_unavailable(self, temp_db, mock_embedding_server, monkeypatch):
+        """topic_vec の KNN クエリ自体が失敗（拡張未ロード・テーブル不整合等）しても
+        例外にせず mode=unavailable に縮退する"""
+        _make_topic("t", 0)
+        monkeypatch.setattr(pps, "encode_query", lambda context: _basis_vector(0))
+
+        class _RaisingConn:
+            """topic_vec への MATCH クエリだけ失敗させ、他は実 conn に委譲するラッパー。"""
+
+            def __init__(self, real):
+                self._real = real
+
+            def execute(self, sql, *args, **kwargs):
+                if "topic_vec" in sql:
+                    raise sqlite3.OperationalError("no such module: vec0")
+                return self._real.execute(sql, *args, **kwargs)
+
+        conn = get_connection()
+        try:
+            routing = pps.route_topics("query", 3, _RaisingConn(conn))
+        finally:
+            conn.close()
+
+        assert routing["mode"] == "unavailable"
+        assert routing["candidates"] == []
+
     def test_topic_ids_explicit_works_even_when_embedding_server_down(
         self, temp_db, mock_embedding_server, monkeypatch
     ):
@@ -385,6 +412,61 @@ class TestBrowseGuarantee:
             conn.close()
 
         assert before == after
+
+
+# ========================================
+# material 展開キャップ
+# ========================================
+
+
+class TestMaterialTruncation:
+    def test_within_cap_not_truncated(self, temp_db, mock_embedding_server):
+        """material が30件キャップ内なら materials_truncated=false で全件載る"""
+        topic_id = _make_topic("t", 0)
+        decision_id = _decision(topic_id, "d", "r")
+        mids = []
+        for i in range(3):
+            mid = add_material(title=f"m{i}", content="c", tags=DEFAULT_TAGS, source="test")["material_id"]
+            _link_related("decision", decision_id, "material", mid)
+            mids.append(mid)
+
+        result = pps.pull_precedents("文脈", topic_ids=[topic_id], include_materials=True)
+
+        assert result["materials_truncated"] is False
+        topic_entry = _topic_by_id(result, topic_id)
+        item = _decision_by_id(topic_entry, decision_id)
+        assert set(item["material_ids"]) == set(mids)
+
+    def test_over_cap_sets_materials_truncated_and_drops_excess(self, temp_db, mock_embedding_server):
+        """related 経由の material が30件を超えると materials_truncated=true になり、
+        載る material は30件以下に切り詰められる（黙って落とさず縮退を明示する）"""
+        topic_id = _make_topic("t", 0)
+        decision_id = _decision(topic_id, "d", "r")
+        for i in range(40):
+            mid = add_material(title=f"m{i}", content="c", tags=DEFAULT_TAGS, source="test")["material_id"]
+            _link_related("decision", decision_id, "material", mid)
+
+        result = pps.pull_precedents("文脈", topic_ids=[topic_id], include_materials=True)
+
+        assert result["materials_truncated"] is True
+        topic_entry = _topic_by_id(result, topic_id)
+        item = _decision_by_id(topic_entry, decision_id)
+        assert len(item["material_ids"]) <= 30
+        # decision 網羅保証（本文側）は material 縮退と独立
+        assert topic_entry["decisions_total"] == 1
+        assert result["truncated"] is False
+
+    def test_materials_truncated_false_when_materials_disabled(self, temp_db, mock_embedding_server):
+        """include_materials=false のときは materials_truncated は常に false"""
+        topic_id = _make_topic("t", 0)
+        decision_id = _decision(topic_id, "d", "r")
+        for i in range(40):
+            mid = add_material(title=f"m{i}", content="c", tags=DEFAULT_TAGS, source="test")["material_id"]
+            _link_related("decision", decision_id, "material", mid)
+
+        result = pps.pull_precedents("文脈", topic_ids=[topic_id], include_materials=False)
+
+        assert result["materials_truncated"] is False
 
 
 # ========================================
