@@ -258,35 +258,36 @@ def _build_decision_item(
     return item
 
 
-def _count_decisions_for_topic(conn: sqlite3.Connection, topic_id: int, decision_retract_filter: str) -> int:
-    """topicにbelongs_toするdecisionの総件数を返す（start_id/limitの影響を受けない）。"""
-    row = conn.execute(
-        f"""
-        SELECT COUNT(*) AS cnt FROM decisions d
-        JOIN relations r ON r.source_type = 'decision' AND r.source_id = d.id
-                        AND r.target_type = 'topic' AND r.target_id = ?
-                        AND r.relation_type = 'belongs_to'
-        WHERE 1=1{decision_retract_filter}
-        """,
-        (topic_id,),
-    ).fetchone()
-    return row["cnt"] if row else 0
+def _count_decisions_for_topics(
+    conn: sqlite3.Connection,
+    topic_ids: list[int],
+    decision_retract_filter: str,
+    id_bound: Optional[tuple[str, int]] = None,
+) -> int:
+    """topic_ids にbelongs_toするdecision件数（DISTINCTで重複除外）を返す。
 
-
-def _count_decisions_for_topics(conn: sqlite3.Connection, topic_ids: list[int], decision_retract_filter: str) -> int:
-    """複数topicにbelongs_toするdecisionの総件数（重複除外）を返す（start_id/limitの影響を受けない）。"""
+    id_bound=None なら topic 全体の総件数（start_id/limit の影響を受けない）。
+    id_bound=(op, value) を渡すと `d.id op value` の範囲制約を追加する（op は内部
+    生成の ">=" / "<=" リテラルのみ）。ページの残件数算出に使う。
+    """
     if not topic_ids:
         return 0
     placeholders = ",".join("?" * len(topic_ids))
+    params: list[int] = list(topic_ids)
+    bound_clause = ""
+    if id_bound is not None:
+        op, value = id_bound
+        bound_clause = f" AND d.id {op} ?"
+        params.append(value)
     row = conn.execute(
         f"""
         SELECT COUNT(DISTINCT d.id) AS cnt FROM decisions d
         JOIN relations r ON r.source_type = 'decision' AND r.source_id = d.id
                         AND r.target_type = 'topic' AND r.relation_type = 'belongs_to'
                         AND r.target_id IN ({placeholders})
-        WHERE 1=1{decision_retract_filter}
+        WHERE 1=1{decision_retract_filter}{bound_clause}
         """,
-        tuple(topic_ids),
+        tuple(params),
     ).fetchone()
     return row["cnt"] if row else 0
 
@@ -309,11 +310,14 @@ def get_decisions(
 
     Returns:
         決定事項一覧（各decisionにtags付き）
-        entity_type == "topic": 従来通りtopic_idで直接取得
-        entity_type == "activity": related topics（上限10件）経由でdecisions集約
-        total_count: retractフィルタ適用後の対象decision総件数（limit/start_idの影響を受けない）
-        truncated: len(decisions) < total_count のとき true。limit 30 による黙示的な切り捨てが
-            発生していることを示す。網羅的な判例確認が必要な場面は pull_precedents を使う
+        entity_type == "topic": topic_id で直接取得
+        entity_type == "activity": related topics（上限10件）経由でdecisions集約。
+            related topics が10件を超える場合、11件目以降の topic に属する decision は
+            total_count / truncated の対象外（この上限による切り捨ては可視化されない）
+        total_count: 対象 topic 全体の decision 総件数（retractフィルタ適用後、limit/start_idの影響を受けない）
+        truncated: この応答が limit/start_id により後続の decision を打ち切ったとき true
+            （＝続きのページが存在する）。start_id 未指定時は total_count > limit と一致し、
+            start_id 指定時は start_id 以降にさらに残件があるかを表す
     """
     retract_filter = "" if include_retracted else " AND retracted_at IS NULL"
 
@@ -381,14 +385,20 @@ def get_decisions(
                 item = _build_decision_item(dec, tags_map, supersede_map)
                 decisions.append(item)
 
-            total_count = _count_decisions_for_topic(conn, topic_id, decision_retract_filter)
+            total_count = _count_decisions_for_topics(conn, [topic_id], decision_retract_filter)
+            if start_id is None:
+                remaining_count = total_count
+            else:
+                remaining_count = _count_decisions_for_topics(
+                    conn, [topic_id], decision_retract_filter, id_bound=(">=", start_id)
+                )
 
             return {
                 "topic_id": topic_id,
                 "topic_name": topic_name,
                 "decisions": decisions,
                 "total_count": total_count,
-                "truncated": len(decisions) < total_count,
+                "truncated": len(decisions) < remaining_count,
             }
 
         elif entity_type == "activity":
@@ -445,11 +455,17 @@ def get_decisions(
                 decisions.append(item)
 
             total_count = _count_decisions_for_topics(conn, topic_ids, decision_retract_filter)
+            if start_id is None:
+                remaining_count = total_count
+            else:
+                remaining_count = _count_decisions_for_topics(
+                    conn, topic_ids, decision_retract_filter, id_bound=("<=", start_id)
+                )
 
             return {
                 "decisions": decisions,
                 "total_count": total_count,
-                "truncated": len(decisions) < total_count,
+                "truncated": len(decisions) < remaining_count,
             }
 
         else:

@@ -134,6 +134,43 @@ class TestGetDecisionsTotalCountTruncatedTopic:
         )
         assert len(result2["decisions"]) == 2
         assert result2["decisions"][0]["id_raw"] == decisions[3]["decision_id"]
+        # total_count は topic 全体件数（start_id の影響を受けない）
+        assert result2["total_count"] == 5
+        # start_id 以降の残り2件を全て返しているので打ち切りは発生していない
+        assert result2["truncated"] is False
+
+    def test_truncated_false_when_start_id_page_fits_exactly(self, topic):
+        """start_id 指定でちょうど limit 件返り後続が無い場合、truncated は False
+
+        len(decisions) == limit でも「後続あり」とは限らない。残件数と比較して判定する。
+        """
+        tid = topic["topic_id"]
+        decisions = [
+            add_decision(decision=f"決定{i}", reason=f"理由{i}", topic_id=tid)
+            for i in range(5)
+        ]
+        # decisions[2] 以降は3件（[2],[3],[4]）。limit=3 でちょうど収まる
+        result = get_decisions(
+            "topic", tid, start_id=decisions[2]["decision_id"], limit=3
+        )
+        assert len(result["decisions"]) == 3
+        assert result["total_count"] == 5
+        assert result["truncated"] is False
+
+    def test_truncated_true_when_more_after_start_id_page(self, topic):
+        """start_id 指定で後続がさらに残る場合、truncated は True"""
+        tid = topic["topic_id"]
+        decisions = [
+            add_decision(decision=f"決定{i}", reason=f"理由{i}", topic_id=tid)
+            for i in range(5)
+        ]
+        # decisions[1] 以降は4件。limit=2 → 2件返し、後続2件が残る
+        result = get_decisions(
+            "topic", tid, start_id=decisions[1]["decision_id"], limit=2
+        )
+        assert len(result["decisions"]) == 2
+        assert result["total_count"] == 5
+        assert result["truncated"] is True
 
 
 class TestGetDecisionsTotalCountTruncatedActivity:
@@ -217,3 +254,35 @@ class TestGetDecisionsTotalCountTruncatedActivity:
         assert len(result["decisions"]) == 1
         assert result["total_count"] == 1
         assert result["truncated"] is False
+
+    def test_truncated_false_on_last_page_with_start_id(self, topic):
+        """activity（id DESC）で start_id 指定の最終ページ、後続が無ければ truncated は False"""
+        tid = topic["topic_id"]
+        decisions = [
+            add_decision(decision=f"決定{i}", reason=f"理由{i}", topic_id=tid)
+            for i in range(5)
+        ]
+        activity_id = self._activity_for_topic(tid)
+        # DESC 順: [4],[3],[2],[1],[0]。start_id=decisions[2].id で id<=2 → [2],[1],[0] の3件
+        result = get_decisions(
+            "activity", activity_id, start_id=decisions[2]["decision_id"], limit=3
+        )
+        assert len(result["decisions"]) == 3
+        assert result["total_count"] == 5
+        assert result["truncated"] is False
+
+    def test_truncated_true_when_more_after_start_id_page(self, topic):
+        """activity（id DESC）で start_id 指定、後続が残れば truncated は True"""
+        tid = topic["topic_id"]
+        decisions = [
+            add_decision(decision=f"決定{i}", reason=f"理由{i}", topic_id=tid)
+            for i in range(5)
+        ]
+        activity_id = self._activity_for_topic(tid)
+        # start_id=decisions[3].id で id<=3 → [3],[2],[1],[0] の4件が対象。limit=2 で後続2件が残る
+        result = get_decisions(
+            "activity", activity_id, start_id=decisions[3]["decision_id"], limit=2
+        )
+        assert len(result["decisions"]) == 2
+        assert result["total_count"] == 5
+        assert result["truncated"] is True
