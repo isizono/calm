@@ -14,6 +14,7 @@ from src.services.tag_service import (
     _append_tag_notes_with_conn,
 )
 from src.services.habit_service import _add_habit_with_conn
+from src.services.precedent_pure import attach_precedent
 from src.services.relation_service import _add_relation_with_conn
 from src.services.supersede_service import compute_supersede_info_batch
 from src.services.title_validation import validate_title
@@ -236,6 +237,10 @@ def _build_decision_item(
     - is_retracted は decisions.retracted_at の NOT NULL 判定
     - is_superseded / supersede_chain は supersede_service.compute_supersede_info_batch の結果
     - retracted_at 生値は従来通り retracted 済みのときのみ含める (retract 時刻が呼出側で必要)
+
+    reason に `docs/precedent-format.md` の定型節（却下案:/適用条件:/適用外:/検証:）が
+    あれば precedent（コンパクト形）を付与する。節が無い decision にはキーを付けない
+    （legacy 本文と規約準拠本文を区別できるようにする）。
     """
     display_title = dec.get("title") or (dec["decision"] or "")[:50]
     supersede_info = supersede_map.get(
@@ -254,6 +259,7 @@ def _build_decision_item(
     }
     if dec.get("retracted_at"):
         item["retracted_at"] = dec["retracted_at"]
+    attach_precedent(item, dec.get("reason"))
     apply_readable_id_inplace(item, "decision")
     return item
 
