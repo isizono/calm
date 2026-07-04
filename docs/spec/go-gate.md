@@ -9,17 +9,18 @@
 
 ## 現状の実装範囲
 
-現時点でリポジトリに存在するのは検出器本体(`scripts/gate_check.py`、`scripts/gate_check.sh`)と
-このドキュメントのみである。以下は未実装である:
+現時点でリポジトリに存在するのは検出器本体(`scripts/gate_check.py`、`scripts/gate_check.sh`)、
+GO判定パッケージツール(`scripts/go_package.py`)、CI ワークフロー(`.github/workflows/gate.yml`)、
+このドキュメントである。以下は未実装である:
 
-- GO判定パッケージのテンプレート・雛形生成・lint ツール(`scripts/go_package.py`)
-- CI ワークフロー(`.github/workflows/gate.yml`)による PR ごとの自動判定
-- shadow 集計ツール(`go_package.py shadow-report`)
 - plan.md / task-plan・task-execute skill への組み込み(分類予測欄、パッケージ生成手順)
+- 判例 pull 機構(`pull_precedents` ツール)本体。`go_package.py new --pull-json` は
+  その応答 JSON を受け取る入力口のみを用意している
 
-検出器は現状、手元で `uv run python3 scripts/gate_check.py --base <ref> --head <ref>` として
-単体で呼び出せる状態にあるのみで、shadow 校正期の運用(下記)はこれらの後続コンポーネントが
-揃ってから開始する。
+検出器は手元で `uv run python3 scripts/gate_check.py --base <ref> --head <ref>` として、
+CI では PR ごとに `.github/workflows/gate.yml` から自動で呼び出せる状態にある。
+GO判定パッケージツール(`scripts/go_package.py`、`shadow-report` サブコマンド含む)も
+手元で単体で呼び出せる。shadow 校正期の運用(下記)は skill 組み込みが揃ってから開始する。
 
 ## 3値分類
 
@@ -75,6 +76,25 @@
 PR のワークツリーには変更済みの検出器が含まれ得るため、正規の判定は常に **origin/main 版の
 検出器**で行う。ローカルは `scripts/gate_check.sh`(origin/main から取り出して実行する)を使う。
 `scripts/gate_check.py` を直接叩いた結果は、ブランチ側の改変を反映した参考値でしかない。
+
+CI(`.github/workflows/gate.yml`)も同じ原則で動く。PR の base ブランチから
+`git show origin/<base>:scripts/gate_check.py` で検出器を取り出して実行するため、PR 側で
+`scripts/gate_check.py` 自体を改変(判定ロジックの無力化など)しても CI の判定には反映されない。
+PR がその改変自体を含む場合は、diff 上の `scripts/gate_check.py` 接触が自己保護パスに
+ヒットして `pre_go`(`self_protection`)になる。
+
+## CI組み込み(`.github/workflows/gate.yml`)
+
+- トリガー: PR の `opened` / `synchronize` / `reopened`
+- 判定は base ブランチ版の検出器で行う(上記の改竄耐性)。base ブランチにまだ検出器が
+  存在しない(導入初期)場合は `git show` が失敗し、`pre_go`(`detector_error`)のフォールバック
+  verdict でジョブを正常終了させる
+- ジョブは **non-blocking** である。verdict の分類がどうであれジョブ自体は成功する。ゲートは
+  merge を機械的に阻止する装置ではなく、人間の注意を routing する装置であり、その方針は
+  shadow 期間中もshadow期後(本番化後)も変わらない。拒否権の行使主体は常に人間である
+- verdict は job summary(`--render` の markdown)と `verdict.json`(artifact)の両方に残る。
+  PR へのコメント投稿は行わない(bot ノイズ回避)
+- 検出器自体が例外で落ちた場合はジョブ失敗として可視化される(検出器のバグシグナル)
 
 ## 軸A: ブラスト半径検出器
 
@@ -155,10 +175,10 @@ scripts/gate_check.sh --base origin/main --head HEAD   # 正規経路。origin/m
 
 exit code は verdict を返せた場合は常に0。内部例外(検出器自身のバグ)のみ非0になる。
 
-## shadow 校正期の運用(パッケージツール・CI導入後に開始)
+## shadow 校正期の運用(パッケージツール導入後に開始)
 
-以下は設計時点の運用方針であり、`go_package.py` と `.github/workflows/gate.yml` が揃うまでは
-実施できない。揃った時点でこの節を実運用の起点とする。
+以下は設計時点の運用方針であり、`go_package.py` が揃うまでは実施できない。揃った時点で
+この節を実運用の起点とする。
 
 ### 何を影判定するか
 
@@ -222,6 +242,80 @@ shadow 期の観察対象として記録しておく。`false_negative` とし�
 - `public_if` の広すぎるヒット: `src/main.py` はツール定義とヘルパーが同居しており、任意行の
   接触で hit する。ツール表面 vs ヘルパーのみ、の内訳を AST差分で分類集計し、同じく昇格前の
   校正課題とする
+
+## GO判定パッケージツール(go_package.py)
+
+1設計案 = 1パッケージ。markdown文書で、先頭に機械可読ブロック(` ```go-package ` フェンス内
+YAML)、続いて人間が読む3区分本文(1-a 分類判定材料 / 1-b 地図メンテ材料 / 1-c 品質証跡、
+計10小見出し)を置く。保存先は cc-memory material(素タグ `go-package` + `domain:cc-memory`
+必須)であり、PR本文には載せない(判例idを含む文書であり、PR本文の記述規則と衝突するため)。
+
+### サブコマンド
+
+```
+uv run python3 scripts/go_package.py template
+    テンプレートmarkdownをstdoutへ出す。機械可読ブロック・3区分本文とも空欄の
+    プレースホルダのみで、`lint --allow-placeholder` を通る状態にある
+
+uv run python3 scripts/go_package.py new --activity <id> [--base origin/main] [--head HEAD] \
+    [--predicted pre_go|gray|post_veto_candidate] [--pull-json <file>] [--out <path>] \
+    [--repo <path>]
+    scripts/gate_check.sh(正規呼び出し経路)を実行し、機械判定欄(gate.machine /
+    gate.effective / detector_sha256 / verdict_sha256)とブラスト半径・revert容易性の
+    2小見出しを実データで充填した雛形を生成する。--pull-json に pull_precedents 応答
+    (JSON、design-pull-core.md 3-3-1 のスキーマ)を渡すと pull.presented / pull.guarantee
+    を機械転記する(手書きしない)。人間記述欄(判例引用・判例が無かった論点・1-b・1-c・
+    shadow)はプレースホルダのまま
+
+uv run python3 scripts/go_package.py lint <file.md> [--mode shadow|live] [--allow-placeholder]
+    L1〜L8 を検証する(下記)。--allow-placeholder は L2(セクション非空)・L6(shadowブロック
+    必須)のみを緩和し、未記入のドラフト状態を許容する。exit code: エラーあり=1 / 警告のみ
+    または問題なし=0
+
+uv run python3 scripts/go_package.py extract <file.md>
+    機械可読ブロックをJSONでstdoutへ出す(観測装置の取り込み用)
+
+uv run python3 scripts/go_package.py shadow-report [--db <path>] [--prs-file <json>]
+    素タグ go-package の material 群(`src.db.get_connection()` 経由、read-only)から
+    機械可読ブロックを抽出し、divergenceの件数・detector_sha256別の連続false_negative
+    ゼロ数を集計する。--prs-file に merge済みPR番号一覧のJSON配列を渡すと、パッケージの
+    `prs` フィールドと突合してパッケージ欠落PRを検出する(7-4の昇格条件のカバレッジ判定に使う)
+```
+
+`shadow-report` のみ `src.db` に依存する(遅延import)。他のサブコマンドは標準ライブラリ +
+pyyaml のみで動く。
+
+### lintルール
+
+| ID | 内容 | エラー/警告 |
+|---|---|---|
+| L1 | 機械可読ブロックが存在しYAMLとしてparseでき、`schema_version` が既知 | エラー |
+| L2 | 1-a×4・1-b×4・1-c×2 の10小見出しが存在し非空(`--allow-placeholder` で非空チェックのみ緩和) | エラー |
+| L3 | `precedents` の `stance` が列挙値内、判例引用テーブルの行数と件数が一致 | エラー |
+| L4 | `novel_points` キーが存在(空リスト可、キー欠落は不可) | エラー |
+| L5 | `strictness(gate.effective) >= strictness(gate.machine)`(pre_go=2 > gray=1 > post_veto_candidate=0)。厳格化方向(effectiveの方が強い)は `gate.escalated_by` 必須。唯一の緩和例外は `machine: gray` から `gray_resolution.resolved_to: post_veto_candidate` かつ `basis` が非空かつ各基底判例が `precedents` にstance付きで存在する場合のみ | エラー |
+| L6 | `--mode shadow` のとき `shadow` ブロックが必須(`--allow-placeholder` で必須チェックのみ緩和)。存在する場合は `shadow.human` が妥当な値で、`shadow.divergence` が下表の対応表から正しく導出されている | エラー |
+| L7 | `gate.predicted` と `gate.machine` が乖離している | 警告のみ |
+| L8 | `--mode live` のとき `pull.presented: unavailable` はエラー(pull_precedents 稼働後の実行漏れ検知) | エラー |
+
+divergence対応表(3-7、`expected_divergence()` が単一ソース):
+
+| machine | human | divergence |
+|---|---|---|
+| post_veto_candidate | post_veto_candidate | none |
+| pre_go | pre_go | none |
+| post_veto_candidate | pre_go | false_negative |
+| pre_go | post_veto_candidate | false_positive |
+| gray | いずれか | gray_case |
+
+### 運用フロー(想定)
+
+1. 設計着手時に `pull_precedents` を実行し、応答JSONを保存する(pull稼働後。稼働前は省略可)
+2. PR作成時に `go_package.py new --activity <id> --pull-json <保存した応答>` でパッケージ雛形を生成する
+3. 人間が1-a判例引用・判例が無かった論点・1-b・1-cを記入する
+4. shadow期は `shadow.human` / `shadow.divergence` を追記する
+5. `go_package.py lint <file> --mode shadow` で検証し、通ったら material として保存しユーザーへ提示する
+6. PRの機械可読ブロック `prs` フィールドへ、open後のPR番号を追記する
 
 ## 他コンポーネントとの共有物
 

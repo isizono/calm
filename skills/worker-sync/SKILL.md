@@ -14,7 +14,7 @@ owフレームワークの **worker** が退場処理（`cmd:close` 受信時）
 
 | 項目 | sync-memory（通常） | worker-sync |
 |------|---------------------|-------------|
-| ユーザー対話（AskUserQuestion） | あり | **なし** |
+| ユーザー対話（AskUserQuestion） | なし | なし |
 | topic作成 | あり | **なし** |
 | activity作成 | あり | **なし** |
 | log記録 | あり | あり（実装経緯・障害・orchやり取り） |
@@ -74,6 +74,8 @@ workerは決定事項を **直接記録しない**。`state:done` の `decision_
 
 - done時に提案し忘れた決定事項があることに気づいた場合は、`add_decisions` ではなく、その内容を `state` メッセージ（`working` のnote等）でorchに伝える
 - **例外**: エスカレーションで人間がこのworkerセッション内で **直接合意** した決定事項は、すでにエスカレーション処理時にworkerが記録済みのはずである（worker スキル §エスカレーション）。その記録漏れがあればここで `add_decisions`（タグ `escalation`・`user-decision`・`domain:<topic_domain>`）し、記録したD#を退場後のorch通知に含める
+  - エスカレーションで他の案を検討して採らなかった場合は、reason末尾に定型節（正本
+    `docs/precedent-format.md`）で却下案を書く。書式は `却下案:\n- <案>: <却下理由>`
 
 ### 4. 完了
 

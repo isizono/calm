@@ -29,3 +29,29 @@ SYNC_DISABLE_RETROSPECTIVE: bool = os.environ.get(
     "CCM_SYNC_DISABLE_RETROSPECTIVE", "false"
 ).lower() in ("true", "1")
 SYNC_POLICY: str | None = os.environ.get("CCM_SYNC_POLICY") or None  # 空文字→None正規化
+
+# --- Migration Safety ---
+# premigration スナップショット取得を無効化する緊急脱出弁（"0" で無効化）
+CCM_MIGRATION_SNAPSHOT: bool = os.environ.get("CCM_MIGRATION_SNAPSHOT", "1") != "0"
+# 実DBコピーへのdry-run適用ゲートを無効化する緊急脱出弁（"0" で無効化）
+CCM_MIGRATION_DRYRUN: bool = os.environ.get("CCM_MIGRATION_DRYRUN", "1") != "0"
+# migration_ledger内容ハッシュ不一致時の既定動作。"error"（既定、起動中断）| "warn"（警告のみで続行）
+CCM_MIGRATION_HASH_ENFORCE: str = os.environ.get("CCM_MIGRATION_HASH_ENFORCE", "error").lower()
+
+# --- Precedent pull ---
+# 本文展開（decision + reason）の予算（文字数）。index行・material snippet・routing
+# メタデータは対象外（別途有界のため予算計算に含めない）
+PRECEDENT_BUDGET_CHARS: int = int(os.environ.get("CCM_PRECEDENT_BUDGET_CHARS", "24000"))
+PRECEDENT_ROUTING_K_MAX: int = 5
+# topic_vec KNNで取得する候補数（selected上限のPRECEDENT_ROUTING_K_MAXより広めに取る）
+PRECEDENT_ROUTING_CANDIDATES: int = int(os.environ.get("CCM_PRECEDENT_ROUTING_CANDIDATES", "10"))
+# topic_vecはdistance_metric=cosineで作成されるため、この閾値もcosineスケール
+# （0=完全一致、1=無相関）で解釈する。実DBコピー（decision reason本文を検索クエリ、
+# 所属topicを正解として使う実測）では、正解topicへの距離は中央値0.19付近、
+# 無関係topicへの距離は中央値0.22付近で重なりが大きく、単一閾値による分離力は
+# 強くない。閾値を上げるほど正解の取りこぼし（miss）は減るが無関係topicの
+# 誤選定も増えるため、本閾値は「無関係topicを誤ってselected扱いする率を1割前後に
+# 抑える」側に倒した値（正解の取りこぼし率は実測で5割弱）。運用データで再調整する
+# 前提の初期値であり、0.6のような緩い値は実測上ほぼ全topicが閾値内に入ってしまい
+# routing_missが機能しなくなるため使わない。
+PRECEDENT_ROUTING_MISS_DISTANCE: float = float(os.environ.get("CCM_PRECEDENT_ROUTING_MISS_DISTANCE", "0.19"))

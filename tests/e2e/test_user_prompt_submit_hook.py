@@ -272,3 +272,28 @@ class TestFailOpen:
         assert proc.returncode == 0
         assert json.loads(proc.stdout) == {}
         assert "error" in proc.stderr.lower()
+
+    def test_invalid_json_input_records_machine_error_signal(self, state_dir, temp_db):
+        """top-level except到達時にsignal_eventsへmachine_errorが記録される"""
+        from src.db import get_connection
+
+        proc = subprocess.run(
+            [sys.executable, "hooks/user_prompt_submit_hook.py"],
+            input="not valid json",
+            capture_output=True,
+            text=True,
+            cwd=str(_PROJECT_ROOT),
+            env={**os.environ, "HOOK_STATE_DIR": str(state_dir), "DISCUSSION_DB_PATH": temp_db},
+        )
+        assert proc.returncode == 0
+        assert json.loads(proc.stdout) == {}
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT * FROM signal_events WHERE source = 'hook:user_prompt_submit'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert row["kind"] == "machine_error"

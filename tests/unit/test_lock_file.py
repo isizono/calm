@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from src.services import lock_file
+from src.infra import lock_file
 
 
 @pytest.fixture(autouse=True)
