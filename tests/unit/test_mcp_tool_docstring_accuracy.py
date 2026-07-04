@@ -4,18 +4,7 @@ docstring監査で見つかった、実装との事実乖離を再発させな�
 主張の正しさそのもの（実装挙動）は各サービス層のテストで担保されるため、ここでは
 「docstringが誤った/古い文言に戻っていないか」「正しい語彙が含まれているか」のみを見る。
 """
-import asyncio
-import functools
-
-from src.main import mcp
-
-
-@functools.lru_cache(maxsize=1)
-def _all_tool_descriptions() -> dict[str, str]:
-    async def _fetch():
-        return {t.name: t.description for t in await mcp.list_tools()}
-
-    return asyncio.run(_fetch())
+from tests.helpers import all_tool_descriptions as _all_tool_descriptions
 
 
 class TestGetMaterialDescriptionAccuracy:

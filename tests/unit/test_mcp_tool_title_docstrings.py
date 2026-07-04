@@ -4,10 +4,7 @@ src.services.* 側の docstring には既に「40字以内」が明記されて�
 実際にエージェントへ配信される MCP tool description は src.main の @mcp.tool() 関数の docstring から
 生成されるため、そちらへの転記漏れは別途この層で検証する必要がある。
 """
-import asyncio
-import functools
-
-from src.main import mcp
+from tests.helpers import all_tool_descriptions as _all_tool_descriptions
 
 
 TITLE_TOOLS = [
@@ -18,14 +15,6 @@ TITLE_TOOLS = [
     "add_material",
     "update_material",
 ]
-
-
-@functools.lru_cache(maxsize=1)
-def _all_tool_descriptions() -> dict[str, str]:
-    async def _fetch():
-        return {t.name: t.description for t in await mcp.list_tools()}
-
-    return asyncio.run(_fetch())
 
 
 class TestToolDescriptionMentionsTitleLimit:

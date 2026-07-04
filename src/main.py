@@ -1028,11 +1028,13 @@ def add_relation(
     - 依存関係を追加: add_relation("activity", 1, [{"type": "activity", "ids": [2]}], relation_type="depends_on")
     - 上書き関係を追加: add_relation("decision", 2, [{"type": "decision", "ids": [1]}], relation_type="supersedes")
 
-    子（activity/material/decision/log）→topicの関連付けは、relation_typeに何を指定しても
-    常に親帰属（belongs_to）で書き込まれる。これはget_decisions/get_timeline/check_inの
-    トピック帰属集計やget_by_idsのtopic_id解決の基盤になっている。参考リンクのつもりで
-    decision/logを別のtopicにrelated付けしても、そのtopicの「決定事項」「ログ」として
-    扱われる点に注意する。
+    子（activity/material/decision/log）→topicの関連付けは、relation_typeが
+    "related"（デフォルト）または明示的な "belongs_to" のときに限り、親帰属（belongs_to）
+    として書き込まれる。"depends_on"/"supersedes" を指定するとtargetがtopicのため
+    バリデーションエラーになり、何も書き込まれない。この親帰属の書き込みは
+    get_decisions/get_timeline/check_inのトピック帰属集計やget_by_idsのtopic_id解決の
+    基盤になっている。参考リンクのつもりでdecision/logを別のtopicにrelated付けしても、
+    そのtopicの「決定事項」「ログ」として扱われる点に注意する。
 
     Args:
         source_type: 起点エンティティのタイプ（"topic", "activity", "material", "decision", or "log"）
@@ -1040,7 +1042,8 @@ def add_relation(
         targets: ターゲットリスト [{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...]
         relation_type: リレーションタイプ（"related", "depends_on", or "supersedes"）。
             depends_onはactivity同士のみ、supersedesはdecision同士のみ有効。
-            子→topicのペアはrelation_typeに関わらずbelongs_toとして書き込まれる。
+            子→topicのペアは"related"（デフォルト）または"belongs_to"指定時にbelongs_toとして
+            書き込まれる（"depends_on"/"supersedes"はtopic targetでバリデーションエラー）。
 
     Returns:
         成功時: {"added": int}（実際に追加された件数。重複はカウントしない）
