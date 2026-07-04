@@ -265,6 +265,32 @@ class TestRestoreRoundTrip:
         bs.restore_snapshot(result.prerestore_path, temp_db)
         assert bs.get_row_counts(temp_db)["activities"] == 0
 
+    def test_repeated_restore_from_prerestore_survives_quota_rotation(self, temp_db):
+        """prerestore退避のquota超過ローテーションが復元元を消してDBを空にしないこと。
+
+        prerestore quota=2。同一prerestoreスナップショットからの復元を3回続けると、
+        3回目の退避で古いprerestoreが1件ローテーション削除される。復元元がその最古と
+        一致する場合、削除直後にそのファイルから復元しようとして空DBで上書きされうる。
+        復元元をローテーションから保護することで、復元後も行数が保たれることを検証する。
+        """
+        _seed_activities(temp_db, 5)
+        manual_snapshot = bs.take_snapshot(temp_db, kind="manual")
+
+        # 1回目: prerestore P1（5件の状態）を生成
+        result1 = bs.restore_snapshot(str(manual_snapshot), temp_db)
+        p1 = result1.prerestore_path
+        assert p1 is not None
+
+        # 2回目: P1から復元 → prerestore P2 生成（prerestoreは2件、quota内）
+        bs.restore_snapshot(p1, temp_db)
+        assert bs.get_row_counts(temp_db)["activities"] == 5
+
+        # 3回目: P1から復元 → prerestore P3 生成で最古(=P1)がローテーション対象になる。
+        # 保護が無いとP1が消え、空DBで現行DBが上書きされ0件になる。
+        bs.restore_snapshot(p1, temp_db)
+        assert Path(p1).exists()  # 復元元は保護され生存している
+        assert bs.get_row_counts(temp_db)["activities"] == 5  # 無警告のデータ消失が起きていない
+
 
 class TestRestoreServerRunningGuard:
     def test_blocked_when_lock_file_shows_alive_process(self, temp_db):
@@ -355,6 +381,49 @@ class TestRestorePrerestoreFallback:
         assert prerestore_bytes.startswith(b"corrupted-not-a-db")
         # 復元後は正常なDBに戻っている
         assert isinstance(bs.get_row_counts(temp_db), dict)
+
+    def test_fallback_copy_writes_json_and_is_listed(self, temp_db):
+        """破損DBフォールバック退避にもJSONが添えられ、list_snapshotsから可視になること。
+
+        JSONが無いとlist_snapshots()（.json起点で列挙）から漏れ、破損時の唯一の退避先が
+        ユーザーに見えなくなる。フォールバックコピーがメタデータJSON付きで作られ、
+        一覧にfallbackフラグ付きで現れることを検証する。
+        """
+        snapshot_path = bs.take_snapshot(temp_db, kind="manual")
+
+        Path(temp_db).write_bytes(b"corrupted-not-a-db" * 20)
+
+        result = bs.restore_snapshot(str(snapshot_path), temp_db, file_copy=True)
+        fallback_db = Path(result.prerestore_path)
+        fallback_json = fallback_db.with_suffix(".json")
+
+        assert fallback_json.exists()
+        meta = json.loads(fallback_json.read_text(encoding="utf-8"))
+        assert meta["kind"] == "prerestore"
+        assert meta["fallback"] is True
+
+        listed = bs.list_snapshots(temp_db)
+        listed_db_paths = {entry["db_path"] for entry in listed}
+        assert str(fallback_db) in listed_db_paths
+
+
+class TestUniqueSnapshotPaths:
+    def test_reserves_db_atomically_to_avoid_collision(self, tmp_path):
+        """_unique_snapshot_pathsが.dbをその場で確保し、連続呼び出しで別名を返すこと。
+
+        名前を計算するだけで確保しないと、同一秒内の複数プロセス/連続呼び出しが同じ名前を
+        選び片方の書き込みが失われうる。呼び出し即座に.dbを排他作成することで衝突を防ぐ。
+        """
+        snapshot_dir = tmp_path / "snaps"
+
+        first_db, first_json = bs._unique_snapshot_paths(snapshot_dir)
+        assert first_db.exists()  # 呼び出し時点で.dbが確保済み
+        assert first_db.suffix == ".db"
+        assert first_json.suffix == ".json"
+
+        second_db, _second_json = bs._unique_snapshot_paths(snapshot_dir)
+        assert second_db.exists()
+        assert second_db != first_db  # 確保済みの第1と衝突しない別名
 
 
 class TestCLIHandlers:

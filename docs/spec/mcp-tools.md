@@ -156,7 +156,7 @@
 | limit | int | no | 30 | 最大30件 |
 | include_retracted | bool | no | false | trueで取り消し済みも含む |
 
-**返り値**: `{logs: [DiscussionLog]}` または `{decisions: [Decision]}`。
+**返り値**: `get_logs` は `{logs: [DiscussionLog]}`、`get_decisions` は `{decisions: [Decision], total_count: int, truncated: bool}`。`total_count` は対象decisionの総件数（limit/start_idの影響を受けない）、`truncated` は limit/start_id で後続を打ち切ったとき true（続きのページが存在する）。
 **特殊挙動**: entity_type="activity" の場合、related topics経由で集約される。
 
 ### 2.6 search

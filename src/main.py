@@ -21,6 +21,8 @@ from src.services import (
     timeline_service,
     ow_service,
     guard_service,
+    precedent_pull_service,
+    signal_service,
 )
 from src.services.checkin_service import check_in as _check_in
 from src.services.tag_service import search_tags as _search_tags, update_tag as _update_tag, collect_tag_notes_for_injection
@@ -245,6 +247,10 @@ mcp = FastMCP("cc-memory", instructions=build_instructions())
 from src.services.visibility_middleware import CapabilityVisibilityMiddleware
 mcp.add_middleware(CapabilityVisibilityMiddleware())
 
+# tool呼び出し中の未捕捉例外を signal_events へ自動捕捉する middleware を登録する
+from src.services.signal_middleware import SignalCaptureMiddleware
+mcp.add_middleware(SignalCaptureMiddleware())
+
 # サーバー起動時刻（/health で uptime 算出に使用）
 _SERVER_STARTED_AT = datetime.now(timezone.utc)
 
@@ -314,7 +320,11 @@ def add_decisions(items: list[dict], ctx: Context) -> dict:
     items: 決定事項情報の配列。各要素は以下のキーを持つ:
         - topic_id (int, 必須): 関連するトピックのID
         - decision (str, 必須): 決定内容
-        - reason (str, 必須): 決定の理由
+        - reason (str, 必須): 決定の理由。任意で本文末尾に定型節（却下案:/適用条件:/適用外:/検証:。
+          書式は docs/precedent-format.md）を書ける。却下案・適用条件・適用外は将来の再提案・誤類推を
+          防ぐための情報。検証行が無いdecisionは「決定のみ・実測未確認」を意味する（実装状態を本文に
+          書かず、検証行の有無で表す）。節はすべて任意で、「該当なし」を埋めるための空項目・ダミー項目は
+          書かないこと。
         - title (str, optional): 決定の要点を表す1行（40字以内）。**付けることを強く推奨**。check-in・timeline・search等の一覧表示でdecision本文の代わりに見出しとして使われ、可読性が大きく上がる。省略時はdecision本文にfallbackする
         - tags (list[str], optional): 追加タグ。省略時はtopicのタグを継承。内容を表すタグを積極的に追加すること。namespace: domain:(プロジェクト)/intent:(意図)/素タグ(キーワード)。例: ["intent:design", "naming-convention", "backward-compat"]
         - propagate_to (dict, optional): 決定事項を注入先に伝搬する。
@@ -325,6 +335,10 @@ def add_decisions(items: list[dict], ctx: Context) -> dict:
     Returns: {created: [...], errors: [{index, error}]}
         created各要素には related_decisions（同topic内の類似decision上位3件 [{id, title, distance}]）が付く。
         既存decisionとの矛盾・重複に気づくための導線。embeddingサーバー未起動時は空配列。
+        reasonに定型節があれば precedent（{rejected_alternatives: 件数, scope: bool,
+        verification_anchors: [文字列, ...]}）をecho。書式ゆれ・空節・アンカー日付欠落等が
+        あれば precedent_warnings（文字列のリスト）も付く。これはsoft validationであり、
+        warningがあってもdecision作成自体は拒否しない。
     """
     guard_service.check_capability("add_decisions")
     caller_session_id = get_caller_session_id()
@@ -423,7 +437,18 @@ def get_decisions(
 
     Returns:
         決定事項一覧（各decisionにtags付き）
-        entity_type == "activity" の場合はrelated topics経由でdecisions集約
+        entity_type == "activity" の場合はrelated topics（上限10件）経由でdecisions集約。
+            related topics が10件を超える場合、11件目以降の topic に属する decision は
+            total_count / truncated の対象外（この上限による切り捨ては可視化されない）
+        total_count: 対象 topic 全体の decision 総件数（retractフィルタ適用後、limit/start_idの影響を受けない）
+        truncated: この応答が limit/start_id により後続の decision を打ち切ったとき true
+            （＝続きのページが存在する）。start_id 未指定時は total_count > limit と一致し、
+            start_id 指定時は start_id 以降にさらに残件があるかを表す
+        reasonに定型節（却下案:/適用条件:/適用外:/検証:。書式は docs/precedent-format.md）が
+        あるdecisionには precedent（{rejected_alternatives: 件数, scope: bool,
+        verification_anchors: [文字列, ...]}）が付く。節が無いdecisionにはキー自体が無い
+        （legacy本文と規約準拠本文の区別に使える。検証アンカーが空のdecisionは
+        「決定のみ・実測未確認」を意味する）
     """
     flavor = _normalize_flavor(flavor)
     result = decision_service.get_decisions(entity_type, entity_id, start_id, limit, include_retracted=include_retracted)
@@ -433,6 +458,110 @@ def get_decisions(
         if all_tags:
             _maybe_inject_tag_notes(result, all_tags, mark=False)
     return result
+
+
+@mcp.tool()
+def pull_precedents(
+    context: str,
+    topic_ids: Optional[list[int]] = None,
+    k: int = 3,
+    budget_chars: Optional[int] = None,
+    include_materials: bool = True,
+    flavor: _FlavorArg = "internal",
+) -> dict:
+    """
+    Choose: 設計・裁定の前に、近傍 topic の判例(decision)を確率的発見ではなく網羅的に
+    確認したいとき。ランクtop-Nの確率的発見ならsearch、topic直下の一覧（LIMIT30・
+    truncationの可視化なし）ならget_decisions。
+
+    設計文脈から近傍 topic を特定し、topic 内の決定事項(decision)を
+    ランク競争なしに網羅列挙して返す。
+
+    search がランク top-N の確率的発見であるのに対し、本ツールは「routing が
+    当たった topic の非 retract decision は全件、最低でも索引粒度で応答に現れる」
+    ことを保証する。予算超過時は本文展開数を絞るが切り捨てはせず、truncated と
+    budget で縮退を明示する。read-only（status 更新等の副作用なし）。
+
+    Args:
+        context: これから決めようとしている論点の記述（自由記述の長文可、2文字以上）。
+                 routing のクエリになる。topic_ids 指定時も telemetry 用に必須
+        topic_ids: 対象 topic を明示指定して routing をスキップする
+                   （アンカー済みの場合）。embedding サーバー停止時でも動作する
+        k: routing で採用する topic 数の上限（1..5にclamp）
+        budget_chars: 本文展開の文字数予算。省略時は config 既定値
+        include_materials: decision に紐づく material と topic 直下 material の
+                           カタログを同時展開する。related/citation 経由の展開は
+                           30 件で打ち切られ、超過時は materials_truncated=true になる
+        flavor: citation 展開モード（internal / readable / raw）
+
+    Returns:
+        {guarantee, routing, topics, budget, truncated, materials_truncated}
+        guarantee: "enumerated"（routing成立+全件列挙完了。判例保証あり） /
+        "routing_miss"（近傍topicなし。真の前例なしかrouting失敗の区別はつかないため
+        前例なし扱い=事前確認側に倒すこと） / "routing_unavailable"（embeddingサーバー
+        停止でrouting不能。topic_ids明示指定で回避できる）
+        routing.candidates: 各 {topic_id_raw, title, distance, selected}
+        （topic_ids指定時はdistanceなし。存在しないtopic_idはerror: "not_found"）
+        topics[].decisions の各要素は detail="full"（decision/reason全文 + tags +
+        sections + supersede_chain）または detail="index"（id/title/created_at/
+        is_superseded/superseded_byのみ）。index落ち分の本文はget_by_idsで追補できる。
+        複数topicにbelongs_toするdecisionは最初に選ばれたtopic側にのみ本文を置き、
+        他方ではindex + also_in（本文を持つtopic_idの配列）が付く。
+        reasonに定型節（却下案:/適用条件:/適用外:/検証:。書式はdocs/precedent-format.md）が
+        あるdecisionにはsections（構造化済み）が付く。節が無ければキー自体が無い。
+        material_ids / linked_decision_ids はdecision↔material間のrelated/citation
+        エッジ（depth-1）から双方向に対応する。
+        materials_truncated: material カタログ展開が30件キャップを超え一部materialを
+        載せ切れなかったとき true（include_materials時のみ）。decision網羅保証は本文の
+        truncated/budgetが担い、materials_truncatedとは独立。
+    """
+    flavor = _normalize_flavor(flavor)
+    result = precedent_pull_service.pull_precedents(
+        context,
+        topic_ids=topic_ids,
+        k=k,
+        budget_chars=budget_chars,
+        include_materials=include_materials,
+    )
+    if "error" not in result:
+        _apply_flavor_to_pull_precedents_result(result, flavor)
+        all_tags: set[str] = set()
+        for topic in result.get("topics", []) or []:
+            for dec in topic.get("decisions", []) or []:
+                all_tags.update(dec.get("tags", []) or [])
+        if all_tags:
+            _maybe_inject_tag_notes(result, sorted(all_tags), mark=False)
+    return result
+
+
+def _apply_flavor_to_pull_precedents_result(result: dict, flavor: str) -> None:
+    """pull_precedents レスポンスの各セクションに flavor 展開を適用する (in-place)。
+
+    full decision の decision/reason/title は citations 展開 + citations_in/out 付与、
+    index decision / material / topic 候補は title・snippet の展開のみ（citations 非付与、
+    check_in の related_topics 等と同方針）。
+    """
+    conn = get_connection()
+    try:
+        for candidate in result.get("routing", {}).get("candidates", []) or []:
+            citation_renderer.apply_flavor_to_entity_dict(
+                candidate, "topic", flavor, conn, id_key="topic_id", attach_citations=False,
+            )
+        for topic in result.get("topics", []) or []:
+            citation_renderer.apply_flavor_to_entity_dict(
+                topic, "topic", flavor, conn, id_key="topic_id", attach_citations=False,
+            )
+            for dec in topic.get("decisions", []) or []:
+                if dec.get("detail") == "full":
+                    citation_renderer.apply_flavor_to_entity_dict(
+                        dec, "decision", flavor, conn, attach_citations=True,
+                    )
+                else:
+                    _flavor_snippet(dec, flavor, conn)
+            for mat in topic.get("materials", []) or []:
+                _flavor_snippet(mat, flavor, conn)
+    finally:
+        conn.close()
 
 
 @mcp.tool()
@@ -487,7 +616,8 @@ def search(
         include_retracted=Trueを指定する。
     """
     flavor = _normalize_flavor(flavor)
-    result = search_service.search(keyword, tags, entity_type, limit, offset, keyword_mode, include_details, domain, date_after, date_before)
+    caller_session_id = get_caller_session_id()
+    result = search_service.search(keyword, tags, entity_type, limit, offset, keyword_mode, include_details, domain, date_after, date_before, caller_session_id=caller_session_id)
     if "error" not in result:
         _apply_flavor_to_snippets(result.get("results", []), flavor)
     if "error" not in result and tags:
@@ -515,9 +645,13 @@ def get_by_ids(
 
     Returns:
         取得結果（各アイテムの詳細情報）
+        typeが'decision'のとき、reasonに定型節（却下案:/適用条件:/適用外:/検証:。書式は
+        docs/precedent-format.md）があれば precedent（get_decisionsと同形のコンパクト形）が付く。
+        節が無いdecisionにはキー自体が無い
     """
     flavor = _normalize_flavor(flavor)
-    result = search_service.get_by_ids(items)
+    caller_session_id = get_caller_session_id()
+    result = search_service.get_by_ids(items, caller_session_id=caller_session_id)
     if "error" not in result:
         conn = get_connection()
         try:
@@ -1262,6 +1396,118 @@ def roll_dice(sides: int = 10) -> dict:
 
 
 # ----------------------------
+# シグナル吸い上げ
+# ----------------------------
+
+
+@mcp.tool()
+def report_signal(
+    kind: str,
+    summary: str,
+    detail: str | None = None,
+    refs: list[dict] | None = None,
+    context: dict | None = None,
+) -> dict:
+    """cc-memory 自身への故障報告・使用感不満・矛盾検出・運用計測イベントの統一入口。
+
+    kind（7種類、いずれか必須）:
+      - "machine_error": ツールエラー・hook 失敗・サーバー異常を観察した
+      - "friction": cc-memory の使い勝手への不満・違和感（ユーザー発話由来を含む）
+      - "contradiction": 既存記録(decision/material/log)と矛盾する結論を出した/検出した。
+        refs に矛盾の両側の id を必ず含めること。summary は
+        「<新しい結論の要旨> ↔ <矛盾する既存記録の title>」形式。
+        detail にはどちらの検証アンカー(コミット・日付・検証手段)が強いかの観察を書く。
+        context.resolution に existing_correct / new_correct / unresolved を書く
+      - "precedent_miss" / "precedent_misapplied": 判例参照の見落とし・誤類推の事後発覚。
+        context に missed_ids / cited_id 等の規約キーを書く
+      - "boundary_case" / "rollback": 運用上の案件記録。summary に PR 番号等の
+        案件識別子を含める（dedup の集約単位を案件ごとに分けるため）
+
+    同一内容の再報告は自動で集約される(occurrence_count)。
+
+    Args:
+        kind: 上記7種のいずれか
+        summary: 1行要約（空文字不可）
+        detail: traceback・引数ダイジェスト・自由記述（optional）
+        refs: [{"type": "decision", "id": 123}, ...] 形式の参照リスト（optional）
+        context: kind ごとの構造化ペイロード（optional）
+
+    Returns:
+        成功時: {"id": int, "deduped": bool, "occurrence_count": int}
+        失敗時: {"error": {"code": "VALIDATION_ERROR", "message": ...}}
+    """
+    caller_session_id = get_caller_session_id()
+    try:
+        return signal_service.record_signal(
+            kind,
+            summary,
+            detail=detail,
+            refs=refs,
+            context=context,
+            session_id=caller_session_id,
+        )
+    except ValueError as e:
+        return {"error": {"code": "VALIDATION_ERROR", "message": str(e)}}
+
+
+@mcp.tool()
+def get_signals(
+    status: str | None = "new",
+    kind: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+    include_stats: bool = False,
+) -> dict:
+    """report_signal で記録されたシグナルを一覧・集計する。
+
+    Args:
+        status: フィルタ対象のstatus（"new"|"triaged"|"promoted"|"dismissed"）。
+            null指定で全status横断。デフォルトは未トリアージの"new"のみ
+        kind: フィルタ対象のkind。null指定で全kind横断
+        limit: 取得件数上限（最大100件、デフォルト20）
+        offset: 取得開始位置（ページネーション用）
+        include_stats: Trueのとき kind×status のクロス集計と直近30日サマリを付与
+
+    Returns:
+        成功時: {"signals": [...], "total_count": int, "stats": {...}(include_stats時のみ)}
+        失敗時: {"error": {"code": ..., "message": ...}}
+    """
+    return signal_service.get_signals(
+        status=status, kind=kind, limit=limit, offset=offset, include_stats=include_stats
+    )
+
+
+@mcp.tool()
+def update_signal(
+    signal_id: int,
+    status: str,
+    promoted_type: str | None = None,
+    promoted_id: int | None = None,
+) -> dict:
+    """シグナルのトリアージ状態を遷移する（orch/親セッション専用）。
+
+    promoted_type/promoted_id は既存エンティティ（topic/activity/decision/log/material）
+    への参照であり、両方指定時のみ実在チェックの上でリンクする。実体の作成は行わない
+    （昇格実体は既存の add 系ツールで別途作成する）。
+
+    Args:
+        signal_id: 対象シグナルID
+        status: 遷移先status（"new"|"triaged"|"promoted"|"dismissed"）
+        promoted_type: 昇格先エンティティ種別（"topic"|"activity"|"decision"|"log"|"material"）。
+            省略時は既存の紐付けを変更しない
+        promoted_id: 昇格先エンティティID。promoted_typeと同時に指定する
+
+    Returns:
+        成功時: {"signal": {...}}（更新後の行）
+        失敗時: {"error": {"code": ..., "message": ...}}
+    """
+    guard_service.check_capability("update_signal")
+    return signal_service.update_signal(
+        signal_id, status, promoted_type=promoted_type, promoted_id=promoted_id
+    )
+
+
+# ----------------------------
 # ow（orch/worker）ツール群
 # ----------------------------
 
@@ -1631,6 +1877,34 @@ def _ensure_project_root_cwd() -> Path:
     return project_root
 
 
+def _setup_server_logging(db_path: str) -> Path:
+    """HTTPサーバーのログをファイルへ永続化する。
+
+    launcher（`src/launcher.py`）はサーバープロセスを `stdout=DEVNULL, stderr=DEVNULL`
+    で起動する（stdout はMCPプロトコル用途のため塞げない）。このハンドラを
+    明示的に追加しない限り、ツール呼び出し以外のサーバー内部エラー（migration の
+    安全装置ログ等を含む）は一切観測できない。
+
+    ログは DB ファイルと同階層の `logs/server.log` に書き、10MBごとに
+    最大3世代までローテーションする。
+
+    Args:
+        db_path: DBファイルのパス。ログディレクトリはこの親ディレクトリ配下に作る。
+
+    Returns:
+        作成したログディレクトリのパス。
+    """
+    from logging.handlers import RotatingFileHandler
+
+    log_dir = Path(db_path).parent / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    handler = RotatingFileHandler(log_dir / "server.log", maxBytes=10_000_000, backupCount=3)
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(levelname)s %(message)s"))
+    logging.getLogger().addHandler(handler)
+    logging.getLogger().setLevel(logging.INFO)
+    return log_dir
+
+
 if __name__ == "__main__":
     import argparse
     import signal
@@ -1644,7 +1918,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    from src.db import verify_sqlite_vec, init_database
+    from src.db import verify_sqlite_vec, init_database, get_db_path
     verify_sqlite_vec()
     init_database()
 
@@ -1652,6 +1926,9 @@ if __name__ == "__main__":
         import socket
         from src.services.lock_file import acquire, release
         from src.services.session_manager import SessionManager
+
+        _log_dir = _setup_server_logging(get_db_path())
+        logger.info("Server log persisted to %s", _log_dir / "server.log")
 
         # 起動時cwdをプロジェクトルートに固定する。worktree内などからの起動による
         # cwd差し替えリスクを構造的に潰す（詳細は _ensure_project_root_cwd 参照）。
