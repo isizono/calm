@@ -1,6 +1,6 @@
-"""migration 0050_add_precedent_telemetry のテスト
+"""migration 0051_add_precedent_telemetry のテスト
 
-0050 適用後に precedent_telemetry テーブルとタイムスタンプ index が作成され、
+0051 適用後に precedent_telemetry テーブルとタイムスタンプ index が作成され、
 NOT NULL 制約とデフォルト timestamp が機能することを確認する。
 """
 import os
@@ -19,7 +19,7 @@ from test_migrations.conftest import get_column_names, index_names, table_exists
 
 @pytest.fixture
 def migrated_db():
-    """全 migration（0050 含む）を適用済みのテスト用 DB を提供する。"""
+    """全 migration（0051 含む）を適用済みのテスト用 DB を提供する。"""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
         os.environ["DISCUSSION_DB_PATH"] = db_path
@@ -31,8 +31,8 @@ def migrated_db():
 
 
 @pytest.fixture
-def db_before_0050():
-    """0049 までの migration を適用した DB を提供する。0050 の挙動を分離検証するために使う。"""
+def db_before_0051():
+    """0050 までの migration を適用した DB を提供する。0051 の挙動を分離検証するために使う。"""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
         os.environ["DISCUSSION_DB_PATH"] = db_path
@@ -41,9 +41,9 @@ def db_before_0050():
         backend = _VecSQLiteBackend(parsed, default_migration_table)
         backend.init_database()
         all_migs = read_migrations(str(MIGRATIONS_DIR))
-        pre_0050 = MigrationList([m for m in all_migs if m.id < "0050"])
+        pre_0051 = MigrationList([m for m in all_migs if m.id < "0051"])
         with backend.lock():
-            backend.apply_migrations(pre_0050)
+            backend.apply_migrations(pre_0051)
 
         _injected_tags.clear()
         yield db_path
@@ -52,28 +52,28 @@ def db_before_0050():
 
 
 class TestPrecedentTelemetryTableCreated:
-    def test_table_exists_after_0050(self, migrated_db):
-        """migration 0050 適用後、precedent_telemetry テーブルが存在する"""
+    def test_table_exists_after_0051(self, migrated_db):
+        """migration 0051 適用後、precedent_telemetry テーブルが存在する"""
         conn = get_connection()
         try:
             assert table_exists(conn, "precedent_telemetry"), (
-                "precedent_telemetry テーブルが 0050 適用後に存在しない"
+                "precedent_telemetry テーブルが 0051 適用後に存在しない"
             )
         finally:
             conn.close()
 
-    def test_table_not_exists_before_0050(self, db_before_0050):
-        """0050 適用前は precedent_telemetry テーブルが存在しない（前提確認）"""
+    def test_table_not_exists_before_0051(self, db_before_0051):
+        """0051 適用前は precedent_telemetry テーブルが存在しない（前提確認）"""
         conn = get_connection()
         try:
             assert not table_exists(conn, "precedent_telemetry"), (
-                "0050 適用前に precedent_telemetry テーブルが既に存在している"
+                "0051 適用前に precedent_telemetry テーブルが既に存在している"
             )
         finally:
             conn.close()
 
     def test_required_columns_exist(self, migrated_db):
-        """0050 適用後、precedent_telemetry テーブルに必須カラムが全部存在する"""
+        """0051 適用後、precedent_telemetry テーブルに必須カラムが全部存在する"""
         conn = get_connection()
         try:
             column_names = get_column_names(conn, "precedent_telemetry")
@@ -89,13 +89,13 @@ class TestPrecedentTelemetryTableCreated:
             }
             for col in required:
                 assert col in column_names, (
-                    f"precedent_telemetry.{col} が 0050 適用後に存在しない"
+                    f"precedent_telemetry.{col} が 0051 適用後に存在しない"
                 )
         finally:
             conn.close()
 
     def test_timestamp_index_created(self, migrated_db):
-        """0050 適用後、timestamp に index が作成されている"""
+        """0051 適用後、timestamp に index が作成されている"""
         conn = get_connection()
         try:
             idx_names = index_names(conn, "idx_precedent_telemetry_%")

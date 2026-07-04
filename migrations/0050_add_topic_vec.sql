@@ -1,4 +1,4 @@
--- Migration 0049: topic_vec 仮想テーブル追加（topic 専用ベクトル索引）
+-- Migration 0050: topic_vec 仮想テーブル追加（topic 専用ベクトル索引）
 --
 -- depends: 0048_session_identity
 --

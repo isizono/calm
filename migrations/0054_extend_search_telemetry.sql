@@ -1,4 +1,4 @@
--- Migration 0049: search_telemetry に results_json / diagnostics_json を追加 + fetch_telemetry 新設
+-- Migration 0054: search_telemetry に results_json / diagnostics_json を追加 + fetch_telemetry 新設
 --
 -- depends: 0048_session_identity
 --
