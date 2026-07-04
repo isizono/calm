@@ -239,6 +239,9 @@ def get_activities(
     """
     アクティビティ一覧を取得（tags/status/orch_managed でフィルタリング）
 
+    呼び出し時、updated_atがSNOOZE_DURATION_DAYS（デフォルト3日）を超過したsnoozed
+    アクティビティをpendingへ一括自動復活させてから検索する（lazy evaluation）。
+
     Args:
         tags: タグ配列（optional。指定時はAND条件でフィルタ、未指定時は全件）
         status: フィルタするステータス（active/pending/in_progress/completed/snoozed/shelved、デフォルト: active）
@@ -500,6 +503,9 @@ def update_activity(
 ) -> dict:
     """
     アクティビティを更新する（ステータス、タイトル、説明、タグ、orch_managed を変更可能）
+
+    snoozed状態のアクティビティに対しstatusを指定せず他フィールドのみ更新すると、
+    自動的にstatus="pending"へ復活する。
 
     Args:
         activity_id: アクティビティID

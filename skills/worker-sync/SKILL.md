@@ -14,7 +14,7 @@ owフレームワークの **worker** が退場処理（`cmd:close` 受信時）
 
 | 項目 | sync-memory（通常） | worker-sync |
 |------|---------------------|-------------|
-| ユーザー対話（AskUserQuestion） | あり | **なし** |
+| ユーザー対話（AskUserQuestion） | なし | なし |
 | topic作成 | あり | **なし** |
 | activity作成 | あり | **なし** |
 | log記録 | あり | あり（実装経緯・障害・orchやり取り） |
