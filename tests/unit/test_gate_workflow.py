@@ -64,12 +64,18 @@ def test_gate_step_uses_base_ref_for_detector_extraction():
     job = _get_gate_job(_load_workflow())
     gate_steps = [s for s in job["steps"] if s.get("name") == "Run gate with base-branch detector"]
     assert len(gate_steps) == 1
-    run_script = gate_steps[0]["run"]
+    step = gate_steps[0]
+    run_script = step["run"]
+    # base_ref は run: に直接式展開せず env: 経由で環境変数として渡す
+    # (シェルスクリプトインジェクション対策: `${{ }}` 式を run ブロックに
+    # 直接埋め込まない)
+    assert step["env"]["BASE_REF"] == "${{ github.base_ref }}"
+    assert "${{" not in run_script
     # origin/main 版(base_ref)から検出器を取り出す一文が存在する
     assert "git show" in run_script
-    assert 'origin/${{ github.base_ref }}:scripts/gate_check.py' in run_script
+    assert 'origin/$BASE_REF:scripts/gate_check.py' in run_script
     # PR head との比較にも base_ref を使う(改竄された worktree 版の base_ref ではなく)
-    assert '--base "origin/${{ github.base_ref }}" --head HEAD' in run_script
+    assert '--base "origin/$BASE_REF" --head HEAD' in run_script
     # フォールバック時は pre_go/detector_error で正常終了する
     assert '"classification":"pre_go"' in run_script
     assert '"reason":"detector_error"' in run_script

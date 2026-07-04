@@ -2,12 +2,12 @@
 実シェルスクリプトを実 git リポジトリに対して実行し、改竄耐性・フォールバック挙動
 を検証するE2Eテスト。
 
-ワークフローYAMLに埋め込まれたシェルスクリプトの文字列をそのまま抽出して実行する
-(再実装しない)。これにより、設計とワークフローファイルの実体との乖離もテストが
-検出する。
+ワークフローYAMLに埋め込まれたシェルスクリプトの文字列と env: マッピングを
+そのまま抽出して実行する(再実装しない)。これにより、設計とワークフローファイルの
+実体との乖離もテストが検出する。
 
-2つのテストはどちらも固定パス `/tmp/gate_check.py`(ワークフロー本体の設計)へ
-書き込むため、同一 xdist worker 上で直列実行させる。
+各テストはワークフローが `mktemp -d` で確保する一意な一時ディレクトリに検出器を
+取り出すため、固定パスの衝突が無く並列実行しても互いに干渉しない。
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ import os
 import subprocess
 from pathlib import Path
 
-import pytest
 import yaml
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -25,11 +24,10 @@ _WORKFLOW_PATH = _PROJECT_ROOT / ".github" / "workflows" / "gate.yml"
 _REAL_DETECTOR_PATH = _PROJECT_ROOT / "scripts" / "gate_check.py"
 
 
-def _extract_gate_run_script() -> str:
+def _extract_gate_step() -> dict:
     workflow = yaml.safe_load(_WORKFLOW_PATH.read_text(encoding="utf-8"))
     steps = workflow["jobs"]["gate"]["steps"]
-    step = next(s for s in steps if s.get("name") == "Run gate with base-branch detector")
-    return step["run"]
+    return next(s for s in steps if s.get("name") == "Run gate with base-branch detector")
 
 
 def _init_repo(path: Path) -> None:
@@ -54,12 +52,17 @@ def _set_remote_tracking_ref(path: Path, branch: str, sha: str) -> None:
 
 
 def _run_gate_script(repo: Path, base_ref: str, step_summary: Path) -> subprocess.CompletedProcess:
-    script = _extract_gate_run_script().replace("${{ github.base_ref }}", base_ref)
+    step = _extract_gate_step()
     env = dict(os.environ)
     env["GITHUB_STEP_SUMMARY"] = str(step_summary)
+    # ステップの env: マッピングをそのまま採用し、GitHub コンテキスト式
+    # `${{ github.base_ref }}` だけを実行時の base_ref に解決する。実ランナーが
+    # 式を展開して run ブロックへ環境変数を注入するのと同じ経路をなぞる。
+    for key, value in (step.get("env") or {}).items():
+        env[key] = value.replace("${{ github.base_ref }}", base_ref)
     # GitHub Actions の run ステップは既定で `bash -eo pipefail -c` 相当で実行される
     return subprocess.run(
-        ["bash", "-eo", "pipefail", "-c", script],
+        ["bash", "-eo", "pipefail", "-c", step["run"]],
         cwd=str(repo),
         env=env,
         capture_output=True,
@@ -67,7 +70,6 @@ def _run_gate_script(repo: Path, base_ref: str, step_summary: Path) -> subproces
     )
 
 
-@pytest.mark.xdist_group(name="gate_workflow_e2e")
 def test_gate_script_uses_base_branch_detector_even_if_pr_branch_tampers(tmp_path: Path):
     """PRブランチが scripts/gate_check.py 自体を「常に安全」と嘘をつく検出器に
     書き換えても、CIは origin/main 版(未改竄)の検出器で判定することを確認する。
@@ -107,7 +109,6 @@ def test_gate_script_uses_base_branch_detector_even_if_pr_branch_tampers(tmp_pat
     assert "self_protection" in summary_text
 
 
-@pytest.mark.xdist_group(name="gate_workflow_e2e")
 def test_gate_script_falls_back_to_pre_go_when_base_lacks_detector(tmp_path: Path):
     """導入初期(検出器がまだ base ブランチにマージされていない)は
     git show が失敗し、pre_go/detector_error のフォールバック verdict で

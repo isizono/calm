@@ -16,15 +16,19 @@ jobs:
           fetch-depth: 0
 
       - name: Run gate with base-branch detector
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
           # base ブランチ(通常 main)版の検出器で判定する。PR が検出器を
           # 改変していても判定ロジックは base 版が使われる
-          git show "origin/${{ github.base_ref }}:scripts/gate_check.py" > /tmp/gate_check.py \
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          git show "origin/$BASE_REF:scripts/gate_check.py" > "$tmp/gate_check.py" \
             || { echo '{"classification":"pre_go","reason":"detector_error","errors":["detector not on base"]}' > verdict.json; exit 0; }
-          python3 /tmp/gate_check.py \
-            --base "origin/${{ github.base_ref }}" --head HEAD \
+          python3 "$tmp/gate_check.py" \
+            --base "origin/$BASE_REF" --head HEAD \
             --format json --out verdict.json
-          python3 /tmp/gate_check.py --render verdict.json >> "$GITHUB_STEP_SUMMARY"
+          python3 "$tmp/gate_check.py" --render verdict.json >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
         with:
