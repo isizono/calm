@@ -1772,6 +1772,34 @@ def _ensure_project_root_cwd() -> Path:
     return project_root
 
 
+def _setup_server_logging(db_path: str) -> Path:
+    """HTTPサーバーのログをファイルへ永続化する。
+
+    launcher（`src/launcher.py`）はサーバープロセスを `stdout=DEVNULL, stderr=DEVNULL`
+    で起動する（stdout はMCPプロトコル用途のため塞げない）。このハンドラを
+    明示的に追加しない限り、ツール呼び出し以外のサーバー内部エラー（migration の
+    安全装置ログ等を含む）は一切観測できない。
+
+    ログは DB ファイルと同階層の `logs/server.log` に書き、10MBごとに
+    最大3世代までローテーションする。
+
+    Args:
+        db_path: DBファイルのパス。ログディレクトリはこの親ディレクトリ配下に作る。
+
+    Returns:
+        作成したログディレクトリのパス。
+    """
+    from logging.handlers import RotatingFileHandler
+
+    log_dir = Path(db_path).parent / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    handler = RotatingFileHandler(log_dir / "server.log", maxBytes=10_000_000, backupCount=3)
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(levelname)s %(message)s"))
+    logging.getLogger().addHandler(handler)
+    logging.getLogger().setLevel(logging.INFO)
+    return log_dir
+
+
 if __name__ == "__main__":
     import argparse
     import signal
@@ -1785,7 +1813,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    from src.db import verify_sqlite_vec, init_database
+    from src.db import verify_sqlite_vec, init_database, get_db_path
     verify_sqlite_vec()
     init_database()
 
@@ -1793,6 +1821,9 @@ if __name__ == "__main__":
         import socket
         from src.services.lock_file import acquire, release
         from src.services.session_manager import SessionManager
+
+        _log_dir = _setup_server_logging(get_db_path())
+        logger.info("Server log persisted to %s", _log_dir / "server.log")
 
         # 起動時cwdをプロジェクトルートに固定する。worktree内などからの起動による
         # cwd差し替えリスクを構造的に潰す（詳細は _ensure_project_root_cwd 参照）。
