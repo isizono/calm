@@ -145,3 +145,74 @@ class TestGetByIdsSupersedeInfo:
         assert data["is_superseded"] is True
         assert data["superseded_by"] == d_new["decision_id"]
         assert data["retracted_at"] is not None
+
+
+class TestGetByIdsSupersedeQueryCount:
+    def test_multiple_decisions_issue_single_supersede_query(self, topic_id, monkeypatch):
+        """decisionが複数件でも get_superseded_by_batch は1回だけ呼ばれる（N+1回避）"""
+        import src.services.search_service as search_service
+
+        d_old = add_decision(decision="古い決定Q", reason="古い理由Q", topic_id=topic_id)
+        d_new = add_decision(decision="新しい決定Q", reason="新しい理由Q", topic_id=topic_id)
+        d_indep = add_decision(decision="独立決定Q", reason="独立理由Q", topic_id=topic_id)
+        _link_supersede(d_new["decision_id"], d_old["decision_id"])
+
+        real = search_service.get_superseded_by_batch
+        calls: list[list[int]] = []
+
+        def _spy(conn, decision_ids):
+            calls.append(list(decision_ids))
+            return real(conn, decision_ids)
+
+        monkeypatch.setattr(search_service, "get_superseded_by_batch", _spy)
+
+        res = get_by_ids(
+            [
+                {"type": "decision", "id": d_old["decision_id"]},
+                {"type": "decision", "id": d_new["decision_id"]},
+                {"type": "decision", "id": d_indep["decision_id"]},
+            ]
+        )
+
+        assert "error" not in res
+        # decision 3件でも decision_supersedes への問い合わせは1回に集約される
+        assert len(calls) == 1
+        assert set(calls[0]) == {
+            d_old["decision_id"],
+            d_new["decision_id"],
+            d_indep["decision_id"],
+        }
+        # 一括経路でも各 decision の supersede 情報は個別に正しい
+        results = res["results"]
+        assert results[0]["data"]["is_superseded"] is True
+        assert results[0]["data"]["superseded_by"] == d_new["decision_id"]
+        assert results[1]["data"]["is_superseded"] is False
+        assert results[1]["data"]["superseded_by"] is None
+        assert results[2]["data"]["is_superseded"] is False
+        assert results[2]["data"]["superseded_by"] is None
+
+    def test_mixed_types_still_single_supersede_query(self, topic_id, monkeypatch):
+        """decision以外が混在してもsupersedeクエリは1回で、decisionのみ対象になる"""
+        import src.services.search_service as search_service
+
+        d = add_decision(decision="混在decision", reason="理由", topic_id=topic_id)
+
+        calls: list[list[int]] = []
+        real = search_service.get_superseded_by_batch
+
+        def _spy(conn, decision_ids):
+            calls.append(list(decision_ids))
+            return real(conn, decision_ids)
+
+        monkeypatch.setattr(search_service, "get_superseded_by_batch", _spy)
+
+        res = get_by_ids(
+            [
+                {"type": "topic", "id": topic_id},
+                {"type": "decision", "id": d["decision_id"]},
+            ]
+        )
+
+        assert "error" not in res
+        assert len(calls) == 1
+        assert calls[0] == [d["decision_id"]]
