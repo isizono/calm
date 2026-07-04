@@ -1,4 +1,4 @@
--- Migration 049: タグjunctionテーブルへのtag_id逆引きindex + search_index.created_atのindex
+-- Migration 0052: タグjunctionテーブルへのtag_id逆引きindex + search_index.created_atのindex
 --
 -- depends: 0048_session_identity
 --

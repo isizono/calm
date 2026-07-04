@@ -486,9 +486,12 @@ def remove_relation(source_type: str, source_id: int, targets: list[dict], relat
         source_type: 起点エンティティのタイプ（"topic", "activity", "material", "decision", or "log"）
         source_id: 起点エンティティのID
         targets: ターゲットリスト [{"type": "topic", "ids": [1, 2]}, ...]
-        relation_type: リレーションタイプ（"related", "depends_on", or "supersedes"）。
-            "depends_on" はactivity同士のみ有効。
-            "supersedes" はdecision同士のみ有効。
+        relation_type: リレーションタイプ（"related", "depends_on", "supersedes", or "belongs_to"）。
+            "depends_on" はactivity同士のみ有効で、activity_dependenciesテーブルから削除する。
+            "supersedes" はdecision同士のみ有効で、decision_supersedesテーブルから削除する。
+            それ以外（"related" / "belongs_to"）は、relation_typeの値に関わらず
+            source/targetが一致するrelations行を削除する（belongs_toで書き込まれた
+            行もrelated指定で削除される）。
 
     Returns:
         成功時: {"removed": int}

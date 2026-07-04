@@ -123,6 +123,32 @@ class TestAlwaysApprove:
         output = json.loads(result.stdout.strip())
         assert output["decision"] == "approve"
 
+    def test_invalid_json_input_records_machine_error_signal(self, temp_db):
+        """top-level except到達時にsignal_eventsへmachine_errorが記録される"""
+        from src.db import get_connection
+
+        result = subprocess.run(
+            [sys.executable, str(PROJECT_ROOT / "hooks" / "session_end_hook.py")],
+            input="not json",
+            capture_output=True,
+            text=True,
+            cwd=str(PROJECT_ROOT),
+            timeout=10,
+            env={**os.environ, "DISCUSSION_DB_PATH": temp_db},
+        )
+        output = json.loads(result.stdout.strip())
+        assert output["decision"] == "approve"
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT * FROM signal_events WHERE source = 'hook:session_end'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert row["kind"] == "machine_error"
+
 
 class TestSyncMarkerCheck:
     """sync-memoryマーカーがあればスキップ"""

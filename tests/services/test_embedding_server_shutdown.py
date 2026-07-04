@@ -12,7 +12,7 @@ import threading
 
 import pytest
 
-from src.services import embedding_server
+from src.infra import embedding_server
 
 
 class FakeServer:

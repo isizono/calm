@@ -80,6 +80,15 @@ class TestGetDecisionsPrecedent:
         item = result["decisions"][0]
         assert "precedent" not in item
 
+    def test_format_warning_surfaces_in_precedent(self, topic):
+        # 書式崩れ（区切り無し却下案項目）が読み出し面の precedent.warnings に露出する
+        malformed = "却下案:\n- 区切りの無い項目だけ\n"
+        add_decision("採用する", malformed, topic_id=topic["topic_id"], tags=DEFAULT_TAGS)
+        result = get_decisions("topic", topic["topic_id"])
+        item = result["decisions"][0]
+        assert "warnings" in item["precedent"]
+        assert any("separator" in w for w in item["precedent"]["warnings"])
+
     def test_existing_fields_unchanged(self, topic):
         add_decision("採用する", PRECEDENT_REASON, topic_id=topic["topic_id"], tags=DEFAULT_TAGS)
         result = get_decisions("topic", topic["topic_id"])

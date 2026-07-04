@@ -10,7 +10,6 @@ src/main.py の entity_type / source_type / target_type / entity_types
 を確認する。
 """
 import asyncio
-import functools
 import json
 
 import pytest
@@ -19,25 +18,15 @@ from pydantic import ValidationError
 from src.main import mcp
 from src.services.activity_service import add_activity
 from src.services.topic_service import add_topic
-from tests.helpers import add_decision
+from tests.helpers import add_decision, all_tool_schemas
 
 
 DEFAULT_TAGS = ["domain:test"]
 
 
-@functools.lru_cache(maxsize=1)
-def _all_schemas() -> dict[str, dict]:
-    """全ツールのスキーマを一括取得しキャッシュする（list_tools を 1 回に抑える）。"""
-
-    async def _fetch():
-        return {t.name: t.parameters for t in await mcp.list_tools()}
-
-    return asyncio.run(_fetch())
-
-
 def _schema_for(name: str) -> dict:
     """指定ツールの入力スキーマ（properties）を取り出す。"""
-    schemas = _all_schemas()
+    schemas = all_tool_schemas()
     if name not in schemas:
         raise AssertionError(f"tool not found: {name}")
     return schemas[name]

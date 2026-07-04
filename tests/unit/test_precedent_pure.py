@@ -7,6 +7,7 @@ docs/precedent-format.md。
 from src.services.precedent_pure import (
     NEAR_MISS_HEADERS,
     SECTION_HEADERS,
+    attach_precedent,
     parse_precedent_sections,
     summarize_precedent,
 )
@@ -241,6 +242,116 @@ class TestSummarizePrecedent:
         assert compact["scope"] is False
         assert compact["verification_anchors"] == []
         assert compact["rejected_alternatives"] == 1
+
+
+class TestFullwidthColonHeadings:
+    """見出しのコロンは半角・全角どちらも受理する（項目区切りの全角許容と揃える）"""
+
+    def test_fullwidth_colon_list_headings_detected(self):
+        reason = (
+            "却下案：\n- 案A: 理由A\n\n"
+            "適用条件：\n- 条件1\n\n"
+            "適用外：\n- 除外1\n"
+        )
+        parsed = parse_precedent_sections(reason)
+        assert parsed is not None
+        assert parsed["rejected_alternatives"] == [
+            {"alternative": "案A", "reason": "理由A"}
+        ]
+        assert parsed["scope_in"] == ["条件1"]
+        assert parsed["scope_out"] == ["除外1"]
+        assert parsed["warnings"] == []
+
+    def test_fullwidth_colon_verification_heading_detected(self):
+        reason = "検証：実機確認 / 2026-07-04\n"
+        parsed = parse_precedent_sections(reason)
+        assert parsed is not None
+        assert len(parsed["verification_anchors"]) == 1
+        assert parsed["verification_anchors"][0]["date"] == "2026-07-04"
+        assert parsed["warnings"] == []
+
+    def test_fullwidth_colon_only_reason_not_none(self):
+        # 全角コロン見出しのみでも any_marker が立ち None にならない（検出漏れの回帰）
+        reason = "適用条件：\n- 条件だけ\n"
+        parsed = parse_precedent_sections(reason)
+        assert parsed is not None
+        assert parsed["scope_in"] == ["条件だけ"]
+
+    def test_fullwidth_colon_near_miss_still_warns(self):
+        reason = "本文\n却下例：\n- これは節にならない\n"
+        parsed = parse_precedent_sections(reason)
+        assert parsed is not None
+        assert parsed["rejected_alternatives"] == []
+        assert any("却下例" in w for w in parsed["warnings"])
+
+
+class TestEmptyVerificationHeading:
+    """内容の無い `検証:` 行はアンカーに採らず warning を出す"""
+
+    def test_empty_verification_line_produces_no_anchor(self):
+        reason = "検証:\n"
+        parsed = parse_precedent_sections(reason)
+        assert parsed is not None
+        assert parsed["verification_anchors"] == []
+        assert any("empty verification" in w for w in parsed["warnings"])
+
+    def test_empty_verification_fullwidth_colon_and_trailing_space(self):
+        reason = "検証：  \n"
+        parsed = parse_precedent_sections(reason)
+        assert parsed is not None
+        assert parsed["verification_anchors"] == []
+        assert any("empty verification" in w for w in parsed["warnings"])
+
+    def test_empty_verification_keeps_compact_anchor_list_empty(self):
+        # 空検証行が空文字 raw として混ざらず「空リスト=決定のみ」判別を保つ
+        reason = "却下案:\n- 案A: 理由A\n検証:\n"
+        parsed = parse_precedent_sections(reason)
+        compact = summarize_precedent(parsed)
+        assert compact["verification_anchors"] == []
+
+    def test_nonempty_verification_still_added(self):
+        reason = "検証: 実機確認 / 2026-07-04\n"
+        parsed = parse_precedent_sections(reason)
+        assert parsed["verification_anchors"][0]["raw"] == "実機確認 / 2026-07-04"
+
+
+class TestSummarizeWarningsExposure:
+    """書式崩れがあるとき summarize が warnings を載せ、崩れが無いときは省く"""
+
+    def test_warnings_present_added_to_compact(self):
+        reason = "却下案:\n- 区切り無し項目\n"
+        parsed = parse_precedent_sections(reason)
+        compact = summarize_precedent(parsed)
+        assert "warnings" in compact
+        assert any("separator" in w for w in compact["warnings"])
+
+    def test_no_warnings_key_when_clean(self):
+        reason = "却下案:\n- 案A: 理由A\n\n検証: 実機確認 / 2026-07-04\n"
+        parsed = parse_precedent_sections(reason)
+        compact = summarize_precedent(parsed)
+        assert "warnings" not in compact
+        assert set(compact.keys()) == {
+            "rejected_alternatives", "scope", "verification_anchors",
+        }
+
+
+class TestAttachPrecedent:
+    """attach_precedent は節があるときのみ item['precedent'] を in-place 付与する"""
+
+    def test_attaches_when_sections_present(self):
+        item = {"id": 1}
+        attach_precedent(item, "却下案:\n- 案A: 理由A\n")
+        assert item["precedent"]["rejected_alternatives"] == 1
+
+    def test_no_key_when_no_sections(self):
+        item = {"id": 1}
+        attach_precedent(item, "節の無い普通の理由本文。")
+        assert "precedent" not in item
+
+    def test_none_reason_adds_no_key(self):
+        item = {"id": 1}
+        attach_precedent(item, None)
+        assert "precedent" not in item
 
 
 def test_section_headers_constant():
