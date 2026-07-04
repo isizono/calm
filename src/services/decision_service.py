@@ -14,7 +14,9 @@ from src.services.tag_service import (
     _append_tag_notes_with_conn,
 )
 from src.services.habit_service import _add_habit_with_conn
+from src.services.precedent_pure import attach_precedent, parse_precedent_sections, summarize_precedent
 from src.services.relation_service import _add_relation_with_conn
+from src.services.supersede_service import compute_supersede_info_batch
 from src.services.title_validation import validate_title
 
 PROPAGATE_TYPES = {"habit", "tag_note"}
@@ -38,6 +40,10 @@ def add_decisions(items: list[dict], caller_session_id: Optional[str] = None) ->
     Returns:
         {created: [...], errors: [{index, error}]}
         created各要素には related_decisions（同topic内の類似decision上位3件 [{id, title, distance}]）が付く。
+        reasonに `docs/precedent-format.md` の定型節（却下案:/適用条件:/適用外:/検証:）があれば
+        precedent（コンパクト形）をechoする。節はすべて任意で、書式ゆれ等のwarningが
+        あってもdecision作成自体は拒否しない（soft validation）。warningがあればcreated
+        要素に precedent_warnings（文字列のリスト）を付ける。
     """
     # バリデーション: 1 <= len(items) <= 10
     if not items:
@@ -151,6 +157,14 @@ def add_decisions(items: list[dict], caller_session_id: Optional[str] = None) ->
                     "decision": decision,
                     "reason": reason,
                 }
+                # soft validation: 定型節（docs/precedent-format.md）があれば
+                # precedentをecho、書式ゆれ等のwarningがあればprecedent_warningsを付ける。
+                # パースに失敗してもdecision作成自体は拒否しない。
+                parsed_precedent = parse_precedent_sections(reason)
+                if parsed_precedent is not None:
+                    created_item["precedent"] = summarize_precedent(parsed_precedent)
+                    if parsed_precedent["warnings"]:
+                        created_item["precedent_warnings"] = parsed_precedent["warnings"]
                 if propagation_result:
                     created_item["propagation"] = propagation_result
                 created.append(created_item)
@@ -202,7 +216,8 @@ def add_decisions(items: list[dict], caller_session_id: Optional[str] = None) ->
                     )
                 c["related_decisions"] = related
 
-            # レスポンス軽量化: embedding生成後はdecision_id/related_decisions以外を除去
+            # レスポンス軽量化: embedding生成後は decision/reason/topic_id/tags/created_at を除去
+            # （decision_id/related_decisions/precedent/precedent_warnings/propagation は残す）
             for c in created:
                 c.pop("decision", None)
                 c.pop("reason", None)
@@ -224,6 +239,78 @@ def add_decisions(items: list[dict], caller_session_id: Optional[str] = None) ->
         conn.close()
 
 
+def _build_decision_item(
+    dec: dict,
+    tags_map: dict[int, list[str]],
+    supersede_map: dict[int, dict],
+) -> dict:
+    """SELECT * FROM decisions の 1 行から返却用の decision item を組み立てる。
+
+    is_superseded / is_retracted / supersede_chain をここで付与する。詳細:
+    - is_retracted は decisions.retracted_at の NOT NULL 判定
+    - is_superseded / supersede_chain は supersede_service.compute_supersede_info_batch の結果
+    - retracted_at 生値は従来通り retracted 済みのときのみ含める (retract 時刻が呼出側で必要)
+
+    reason に `docs/precedent-format.md` の定型節（却下案:/適用条件:/適用外:/検証:）が
+    あれば precedent（コンパクト形）を付与する。節が無い decision にはキーを付けない
+    （legacy 本文と規約準拠本文を区別できるようにする）。
+    """
+    display_title = dec.get("title") or (dec["decision"] or "")[:50]
+    supersede_info = supersede_map.get(
+        dec["id"], {"is_superseded": False, "supersede_chain": [dec["id"]]}
+    )
+    item = {
+        "id": dec["id"],
+        "title": display_title,
+        "decision": dec["decision"],
+        "reason": dec["reason"],
+        "tags": tags_map.get(dec["id"], []),
+        "created_at": dec["created_at"],
+        "is_superseded": supersede_info["is_superseded"],
+        "is_retracted": bool(dec.get("retracted_at")),
+        "supersede_chain": supersede_info["supersede_chain"],
+    }
+    if dec.get("retracted_at"):
+        item["retracted_at"] = dec["retracted_at"]
+    attach_precedent(item, dec.get("reason"))
+    apply_readable_id_inplace(item, "decision")
+    return item
+
+
+def _count_decisions_for_topics(
+    conn: sqlite3.Connection,
+    topic_ids: list[int],
+    decision_retract_filter: str,
+    id_bound: Optional[tuple[str, int]] = None,
+) -> int:
+    """topic_ids にbelongs_toするdecision件数（DISTINCTで重複除外）を返す。
+
+    id_bound=None なら topic 全体の総件数（start_id/limit の影響を受けない）。
+    id_bound=(op, value) を渡すと `d.id op value` の範囲制約を追加する（op は内部
+    生成の ">=" / "<=" リテラルのみ）。ページの残件数算出に使う。
+    """
+    if not topic_ids:
+        return 0
+    placeholders = ",".join("?" * len(topic_ids))
+    params: list[int] = list(topic_ids)
+    bound_clause = ""
+    if id_bound is not None:
+        op, value = id_bound
+        bound_clause = f" AND d.id {op} ?"
+        params.append(value)
+    row = conn.execute(
+        f"""
+        SELECT COUNT(DISTINCT d.id) AS cnt FROM decisions d
+        JOIN relations r ON r.source_type = 'decision' AND r.source_id = d.id
+                        AND r.target_type = 'topic' AND r.relation_type = 'belongs_to'
+                        AND r.target_id IN ({placeholders})
+        WHERE 1=1{decision_retract_filter}{bound_clause}
+        """,
+        tuple(params),
+    ).fetchone()
+    return row["cnt"] if row else 0
+
+
 def get_decisions(
     entity_type: str,
     entity_id: int,
@@ -242,8 +329,14 @@ def get_decisions(
 
     Returns:
         決定事項一覧（各decisionにtags付き）
-        entity_type == "topic": 従来通りtopic_idで直接取得
-        entity_type == "activity": related topics（上限10件）経由でdecisions集約
+        entity_type == "topic": topic_id で直接取得
+        entity_type == "activity": related topics（上限10件）経由でdecisions集約。
+            related topics が10件を超える場合、11件目以降の topic に属する decision は
+            total_count / truncated の対象外（この上限による切り捨ては可視化されない）
+        total_count: 対象 topic 全体の decision 総件数（retractフィルタ適用後、limit/start_idの影響を受けない）
+        truncated: この応答が limit/start_id により後続の decision を打ち切ったとき true
+            （＝続きのページが存在する）。start_id 未指定時は total_count > limit と一致し、
+            start_id 指定時は start_id 以降にさらに残件があるかを表す
     """
     retract_filter = "" if include_retracted else " AND retracted_at IS NULL"
 
@@ -267,6 +360,8 @@ def get_decisions(
                     "topic_id": topic_id,
                     "topic_name": None,
                     "decisions": [],
+                    "total_count": 0,
+                    "truncated": False,
                 }
 
             # decisions の親 topic は relations.belongs_to 経由で解決する
@@ -300,29 +395,29 @@ def get_decisions(
 
             # バッチでタグ取得
             tags_map = get_effective_tags_batch(conn, "decision", topic_id)
+            decision_ids = [row_to_dict(row)["id"] for row in rows]
+            supersede_map = compute_supersede_info_batch(conn, decision_ids)
 
             decisions = []
             for row in rows:
                 dec = row_to_dict(row)
-                # α化用 title: 明示 title 優先、無ければ decision 本文先頭をフォールバック
-                display_title = dec.get("title") or (dec["decision"] or "")[:50]
-                item = {
-                    "id": dec["id"],
-                    "title": display_title,
-                    "decision": dec["decision"],
-                    "reason": dec["reason"],
-                    "tags": tags_map.get(dec["id"], []),
-                    "created_at": dec["created_at"],
-                }
-                if dec.get("retracted_at"):
-                    item["retracted_at"] = dec["retracted_at"]
-                apply_readable_id_inplace(item, "decision")
+                item = _build_decision_item(dec, tags_map, supersede_map)
                 decisions.append(item)
+
+            total_count = _count_decisions_for_topics(conn, [topic_id], decision_retract_filter)
+            if start_id is None:
+                remaining_count = total_count
+            else:
+                remaining_count = _count_decisions_for_topics(
+                    conn, [topic_id], decision_retract_filter, id_bound=(">=", start_id)
+                )
 
             return {
                 "topic_id": topic_id,
                 "topic_name": topic_name,
                 "decisions": decisions,
+                "total_count": total_count,
+                "truncated": len(decisions) < remaining_count,
             }
 
         elif entity_type == "activity":
@@ -334,7 +429,7 @@ def get_decisions(
             topic_ids = [r["target_id"] for r in relation_rows if r["target_type"] == "topic"][:10]
 
             if not topic_ids:
-                return {"decisions": []}
+                return {"decisions": [], "total_count": 0, "truncated": False}
 
             placeholders = ",".join("?" * len(topic_ids))
             # decisions の親 topic 集約も relations.belongs_to 経由。
@@ -370,26 +465,27 @@ def get_decisions(
             # 全topic_idを横断してバッチでタグ取得
             decision_ids = [row_to_dict(row)["id"] for row in rows]
             tags_map = get_effective_tags_batch_by_ids(conn, "decision", decision_ids) if decision_ids else {}
+            supersede_map = compute_supersede_info_batch(conn, decision_ids)
 
             decisions = []
             for row in rows:
                 dec = row_to_dict(row)
-                # α化用 title: 明示 title 優先、無ければ decision 本文先頭をフォールバック
-                display_title = dec.get("title") or (dec["decision"] or "")[:50]
-                item = {
-                    "id": dec["id"],
-                    "title": display_title,
-                    "decision": dec["decision"],
-                    "reason": dec["reason"],
-                    "tags": tags_map.get(dec["id"], []),
-                    "created_at": dec["created_at"],
-                }
-                if dec.get("retracted_at"):
-                    item["retracted_at"] = dec["retracted_at"]
-                apply_readable_id_inplace(item, "decision")
+                item = _build_decision_item(dec, tags_map, supersede_map)
                 decisions.append(item)
 
-            return {"decisions": decisions}
+            total_count = _count_decisions_for_topics(conn, topic_ids, decision_retract_filter)
+            if start_id is None:
+                remaining_count = total_count
+            else:
+                remaining_count = _count_decisions_for_topics(
+                    conn, topic_ids, decision_retract_filter, id_bound=("<=", start_id)
+                )
+
+            return {
+                "decisions": decisions,
+                "total_count": total_count,
+                "truncated": len(decisions) < remaining_count,
+            }
 
         else:
             return {

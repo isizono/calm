@@ -27,8 +27,9 @@ from src.services.role_service import register_session
 from src.services.readable_id import format_readable_id
 from src.services.habit_service import get_active_habit_contents_with_conn
 from src.services.topic_service import get_activity_topics_batch
-from scripts.snapshot import health_check, should_take_snapshot, take_snapshot
+from src.services.backup_service import health_check, should_take_snapshot, take_snapshot
 from hooks.hook_transcript import _is_worker_session
+from hooks.signal_capture import try_capture_signal
 
 _TIER4_STALE_DAYS = 30
 _RECENT_CREATED_HOURS = 24
@@ -358,6 +359,24 @@ def _build_sync_policy_section(conn, session_id: str | None = None) -> str:  # c
     return f"# sync_policy\n{config.SYNC_POLICY}\n"
 
 
+def _build_signals_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
+    """未トリアージ(status='new')のシグナル件数をkind内訳付きで1行表示する。
+
+    0件時はコンテキスト消費ゼロ（空文字を返す）。signal_events テーブルが
+    存在しない場合は例外が呼び出し元のsection単位try/exceptで握られ、
+    セクション非表示にフォールバックする。
+    """
+    rows = conn.execute(
+        "SELECT kind, COUNT(*) AS c FROM signal_events WHERE status = 'new' GROUP BY kind"
+    ).fetchall()
+    if not rows:
+        return ""
+
+    total = sum(row["c"] for row in rows)
+    breakdown = " / ".join(f"{row['kind']} {row['c']}" for row in rows)
+    return f"未トリアージのシグナル: {total}件 ({breakdown}) → get_signals で確認\n"
+
+
 def _build_snapshot_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
     """スナップショット取得＋ヘルスチェック。異常検知時のみ警告を返す。
 
@@ -465,6 +484,7 @@ def _build_session_context(session_id: str | None = None) -> str:
             _build_activities_section,
             _build_habits_section,
             _build_sync_policy_section,
+            _build_signals_section,
         ]
         for builder in builders:
             try:
@@ -512,6 +532,7 @@ def main() -> None:
         print(json.dumps(output, ensure_ascii=False))
     except Exception as e:
         print(f"session_start_hook.py error: {e}", file=sys.stderr)
+        try_capture_signal(kind="machine_error", source="hook:session_start", summary=str(e)[:200])
         print("{}")
 
 

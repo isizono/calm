@@ -6,11 +6,38 @@ add_logs / add_decisions のバッチAPIを単件呼び出し形式でラップ�
 検索 retriever / orchestrator のテストで使う SearchContext のファクトリも
 ここに集約する。
 """
+import asyncio
+import functools
 from typing import Optional
 from src.services.discussion_log_service import add_logs
 from src.services.decision_service import add_decisions
 from src.services.retract_service import retract
 from src.services.search_service import SearchContext
+
+
+@functools.lru_cache(maxsize=1)
+def all_tool_descriptions() -> dict[str, str]:
+    """全 MCP ツールの name→description を一括取得しキャッシュする（list_tools を 1 回に抑える）。
+
+    ToolSearch/エージェントから見える tool description 文面を検証するテストで共有する。
+    """
+    from src.main import mcp
+
+    async def _fetch():
+        return {t.name: t.description for t in await mcp.list_tools()}
+
+    return asyncio.run(_fetch())
+
+
+@functools.lru_cache(maxsize=1)
+def all_tool_schemas() -> dict[str, dict]:
+    """全 MCP ツールの name→input schema を一括取得しキャッシュする（list_tools を 1 回に抑える）。"""
+    from src.main import mcp
+
+    async def _fetch():
+        return {t.name: t.parameters for t in await mcp.list_tools()}
+
+    return asyncio.run(_fetch())
 
 
 def make_search_context(**overrides) -> SearchContext:

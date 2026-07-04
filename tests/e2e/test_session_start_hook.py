@@ -103,6 +103,14 @@ def _seed_activity(title: str, status: str = "pending", domain: str = "test") ->
         conn.close()
 
 
+def _seed_signal(kind: str, summary: str, source: str = "tool:test") -> int:
+    """テスト用シグナル（status='new'）を作成する"""
+    from src.services.signal_service import record_signal
+
+    result = record_signal(kind, summary, source=source)
+    return result["id"]
+
+
 def _tag_activity_bare(activity_id: int, tag_name: str) -> None:
     """アクティビティに素タグ（namespaceなし）を付与する"""
     conn = get_connection()
@@ -452,6 +460,28 @@ class TestSessionStartHookErrorHandling:
         parsed = json.loads(stdout)
         # エラー時は空JSON
         assert parsed == {}
+
+    def test_invalid_db_signal_capture_failure_does_not_crash_hook(self):
+        """シグナル捕捉自体が失敗する状況（DB到達不能）でもhookはクラッシュしない。
+
+        try_capture_signal 経由の capture_signal_safe はDB接続不能を内部で握りつぶし、
+        stderrにログを残した上でhookは空JSONを返し続ける（多層防御の内側の層が
+        先に捕まえる想定通りの経路）。
+        """
+        env = {**os.environ, "DISCUSSION_DB_PATH": "/nonexistent/path/db.sqlite"}
+
+        result = subprocess.run(
+            [sys.executable, "hooks/session_start_hook.py"],
+            input="{}",
+            capture_output=True,
+            text=True,
+            cwd=str(PROJECT_ROOT),
+            env=env,
+        )
+
+        stdout = result.stdout.strip()
+        assert json.loads(stdout) == {}
+        assert "capture_signal_safe failed" in result.stderr
 
 
 class TestSessionStartHookSyncPolicy:
@@ -1067,3 +1097,48 @@ class TestSessionStartHook4TierDashboard:
         assert "# アクティビティ一覧" not in context
         assert "## 優先" not in context
         assert "## その他" not in context
+
+
+class TestSessionStartHookSignals:
+    """未トリアージシグナルの1行表示テスト"""
+
+    def test_no_signals_section_absent(self, temp_db):
+        """新規シグナルが0件のときセクション自体が出ない"""
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "未トリアージのシグナル" not in context
+
+    def test_new_signal_shown_with_count(self, temp_db):
+        """新規シグナルが1件以上あるとき件数付きで1行表示される"""
+        _seed_signal("machine_error", "boom")
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "未トリアージのシグナル: 1件 (machine_error 1) → get_signals で確認" in context
+
+    def test_signal_breakdown_by_kind(self, temp_db):
+        """複数kindのシグナルが件数内訳付きで表示される"""
+        _seed_signal("machine_error", "boom 1")
+        _seed_signal("machine_error", "boom 2")
+        _seed_signal("friction", "使いにくい")
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "未トリアージのシグナル: 3件" in context
+        assert "machine_error 2" in context
+        assert "friction 1" in context
+
+    def test_triaged_signal_not_counted(self, temp_db):
+        """status='new'以外のシグナルは件数に含まれない"""
+        from src.services.signal_service import update_signal
+
+        signal_id = _seed_signal("machine_error", "boom")
+        update_signal(signal_id, status="dismissed")
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "未トリアージのシグナル" not in context
