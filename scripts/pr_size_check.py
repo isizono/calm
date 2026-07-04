@@ -55,14 +55,14 @@ _NEXT_HEADING_RE = re.compile(r"^##\s", re.MULTILINE)
 # ---------------------------------------------------------------------------
 
 
-def _diff_numstat(repo: Path, merge_base: str, head_ref: str) -> str:
+def _diff_numstat(repo: Path, merge_base: str, head_ref: str) -> bytes:
     result = subprocess.run(
-        ["git", "-C", str(repo), "diff", "--numstat", "-M", merge_base, head_ref],
+        ["git", "-C", str(repo), "diff", "--numstat", "-M", "-z", merge_base, head_ref],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=True,
     )
-    return result.stdout.decode("utf-8")
+    return result.stdout
 
 
 def _bucket(path: str) -> str:
