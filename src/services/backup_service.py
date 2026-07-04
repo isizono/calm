@@ -556,8 +556,8 @@ def _check_health_endpoint(timeout: float = 2.0) -> bool:
 
 def _server_appears_running() -> tuple[bool, str]:
     """lock file生存 または /healthエンドポイント応答のいずれかでrunningと判定する。"""
-    from src.services.lock_file import is_process_alive
-    from src.services.lock_file import read as read_lock
+    from src.infra.lock_file import is_process_alive
+    from src.infra.lock_file import read as read_lock
 
     reasons = []
     running = False
