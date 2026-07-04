@@ -14,7 +14,7 @@ from src.services.tag_service import (
     _append_tag_notes_with_conn,
 )
 from src.services.habit_service import _add_habit_with_conn
-from src.services.precedent_pure import attach_precedent
+from src.services.precedent_pure import attach_precedent, parse_precedent_sections, summarize_precedent
 from src.services.relation_service import _add_relation_with_conn
 from src.services.supersede_service import compute_supersede_info_batch
 from src.services.title_validation import validate_title
@@ -40,6 +40,10 @@ def add_decisions(items: list[dict], caller_session_id: Optional[str] = None) ->
     Returns:
         {created: [...], errors: [{index, error}]}
         created各要素には related_decisions（同topic内の類似decision上位3件 [{id, title, distance}]）が付く。
+        reasonに `docs/precedent-format.md` の定型節（却下案:/適用条件:/適用外:/検証:）があれば
+        precedent（コンパクト形）をechoする。節はすべて任意で、書式ゆれ等のwarningが
+        あってもdecision作成自体は拒否しない（soft validation）。warningがあればcreated
+        要素に precedent_warnings（文字列のリスト）を付ける。
     """
     # バリデーション: 1 <= len(items) <= 10
     if not items:
@@ -153,6 +157,14 @@ def add_decisions(items: list[dict], caller_session_id: Optional[str] = None) ->
                     "decision": decision,
                     "reason": reason,
                 }
+                # soft validation: 定型節（docs/precedent-format.md）があれば
+                # precedentをecho、書式ゆれ等のwarningがあればprecedent_warningsを付ける。
+                # パースに失敗してもdecision作成自体は拒否しない。
+                parsed_precedent = parse_precedent_sections(reason)
+                if parsed_precedent is not None:
+                    created_item["precedent"] = summarize_precedent(parsed_precedent)
+                    if parsed_precedent["warnings"]:
+                        created_item["precedent_warnings"] = parsed_precedent["warnings"]
                 if propagation_result:
                     created_item["propagation"] = propagation_result
                 created.append(created_item)
@@ -204,7 +216,8 @@ def add_decisions(items: list[dict], caller_session_id: Optional[str] = None) ->
                     )
                 c["related_decisions"] = related
 
-            # レスポンス軽量化: embedding生成後はdecision_id/related_decisions以外を除去
+            # レスポンス軽量化: embedding生成後は decision/reason/topic_id/tags/created_at を除去
+            # （decision_id/related_decisions/precedent/precedent_warnings/propagation は残す）
             for c in created:
                 c.pop("decision", None)
                 c.pop("reason", None)

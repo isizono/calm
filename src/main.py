@@ -319,7 +319,11 @@ def add_decisions(items: list[dict], ctx: Context) -> dict:
     items: 決定事項情報の配列。各要素は以下のキーを持つ:
         - topic_id (int, 必須): 関連するトピックのID
         - decision (str, 必須): 決定内容
-        - reason (str, 必須): 決定の理由
+        - reason (str, 必須): 決定の理由。任意で本文末尾に定型節（却下案:/適用条件:/適用外:/検証:。
+          書式は docs/precedent-format.md）を書ける。却下案・適用条件・適用外は将来の再提案・誤類推を
+          防ぐための情報。検証行が無いdecisionは「決定のみ・実測未確認」を意味する（実装状態を本文に
+          書かず、検証行の有無で表す）。節はすべて任意で、「該当なし」を埋めるための空項目・ダミー項目は
+          書かないこと。
         - title (str, optional): 決定の要点を表す1行（40字以内）。**付けることを強く推奨**。check-in・timeline・search等の一覧表示でdecision本文の代わりに見出しとして使われ、可読性が大きく上がる。省略時はdecision本文にfallbackする
         - tags (list[str], optional): 追加タグ。省略時はtopicのタグを継承。内容を表すタグを積極的に追加すること。namespace: domain:(プロジェクト)/intent:(意図)/素タグ(キーワード)。例: ["intent:design", "naming-convention", "backward-compat"]
         - propagate_to (dict, optional): 決定事項を注入先に伝搬する。
@@ -330,6 +334,10 @@ def add_decisions(items: list[dict], ctx: Context) -> dict:
     Returns: {created: [...], errors: [{index, error}]}
         created各要素には related_decisions（同topic内の類似decision上位3件 [{id, title, distance}]）が付く。
         既存decisionとの矛盾・重複に気づくための導線。embeddingサーバー未起動時は空配列。
+        reasonに定型節があれば precedent（{rejected_alternatives: 件数, scope: bool,
+        verification_anchors: [文字列, ...]}）をecho。書式ゆれ・空節・アンカー日付欠落等が
+        あれば precedent_warnings（文字列のリスト）も付く。これはsoft validationであり、
+        warningがあってもdecision作成自体は拒否しない。
     """
     guard_service.check_capability("add_decisions")
     caller_session_id = get_caller_session_id()
