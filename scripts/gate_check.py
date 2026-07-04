@@ -38,7 +38,9 @@ from typing import Literal, Optional, Union
 # ---------------------------------------------------------------------------
 
 DDL_PATTERNS: tuple[str, ...] = (
-    r"(?i)\b(CREATE|ALTER|DROP)\s+(TABLE|INDEX|TRIGGER|VIEW|VIRTUAL\s+TABLE)\b",
+    # 動詞と対象キーワードの間に UNIQUE / TEMP / TEMPORARY / VIRTUAL などの修飾語を
+    # 挟む形(CREATE UNIQUE INDEX / CREATE TEMP TABLE / CREATE VIRTUAL TABLE 等)も拾う。
+    r"(?i)\b(CREATE|ALTER|DROP)\s+(?:(?:UNIQUE|TEMP|TEMPORARY|VIRTUAL)\s+)*(TABLE|INDEX|TRIGGER|VIEW)\b",
     r"(?i)\bPRAGMA\s+\w+\s*=",  # PRAGMA の「書き込み」のみ。読み取りは対象外
 )
 
@@ -232,35 +234,42 @@ def parse_name_status(raw: bytes) -> list[FileChange]:
     return changes
 
 
-_RENAME_BRACE_RE = re.compile(r"\{([^{}]*) => ([^{}]*)\}")
+def parse_numstat(raw: bytes) -> list[NumstatRow]:
+    """`git diff --numstat -M -z` の出力をパースする。
 
-
-def _resolve_numstat_path(pathspec: str) -> tuple[str, Optional[str]]:
-    """numstat のパス欄(rename時は `{old => new}` または `old => new` 形式)を解決する。"""
-    if "{" in pathspec and " => " in pathspec:
-        new_path = _RENAME_BRACE_RE.sub(lambda m: m.group(2), pathspec)
-        old_path = _RENAME_BRACE_RE.sub(lambda m: m.group(1), pathspec)
-        return new_path, old_path
-    if " => " in pathspec:
-        old_path, new_path = pathspec.split(" => ", 1)
-        return new_path, old_path
-    return pathspec, None
-
-
-def parse_numstat(raw: str) -> list[NumstatRow]:
-    """`git diff --numstat -M` の出力をパースする。"""
+    -z のため各レコードは NUL 区切り。通常の変更は `add<TAB>del<TAB>path` が
+    1 要素で来るが、rename/copy は `add<TAB>del<TAB>`(path 欄が空)の後に
+    old-path・new-path が別々の NUL 要素として続く。-z を付けることで
+    name-status 側と同様に生パスを受け取れ、非ASCII・空白入りパスの
+    quotepath エスケープ差異を避けられる。
+    """
+    text = raw.decode("utf-8")
+    tokens = text.split("\0")
+    if tokens and tokens[-1] == "":
+        tokens.pop()
     rows: list[NumstatRow] = []
-    for line in raw.split("\n"):
-        if not line:
-            continue
-        parts = line.split("\t")
+    i = 0
+    while i < len(tokens):
+        head = tokens[i]
+        i += 1
+        parts = head.split("\t")
         if len(parts) != 3:
-            raise ValueError(f"unparseable numstat line: {line!r}")
+            raise ValueError(f"unparseable numstat record: {head!r}")
         added_s, deleted_s, pathspec = parts
         is_binary = added_s == "-" or deleted_s == "-"
         additions = -1 if is_binary else int(added_s)
         deletions = -1 if is_binary else int(deleted_s)
-        new_path, old_path = _resolve_numstat_path(pathspec)
+        if pathspec == "":
+            # rename/copy: old-path・new-path が後続の NUL 要素として続く
+            if i + 1 >= len(tokens):
+                raise ValueError(f"truncated numstat rename record: {head!r}")
+            old_path: Optional[str] = tokens[i]
+            i += 1
+            new_path = tokens[i]
+            i += 1
+        else:
+            old_path = None
+            new_path = pathspec
         rows.append(NumstatRow(path=new_path, old_path=old_path, additions=additions, deletions=deletions, is_binary=is_binary))
     return rows
 
@@ -694,10 +703,10 @@ def run_detector(repo: Path, base_ref: str, head_ref: str, detector_source: str 
         head_sha = get_head_sha(repo, head_ref)
         name_status_raw = _run_git_bytes(repo, ["diff", "--name-status", "-M", "-z", merge_base, head_ref])
         changes = parse_name_status(name_status_raw)
-        numstat_raw = _run_git_text(repo, ["diff", "--numstat", "-M", merge_base, head_ref])
+        numstat_raw = _run_git_bytes(repo, ["diff", "--numstat", "-M", "-z", merge_base, head_ref])
         numstat_rows = parse_numstat(numstat_raw)
         changes = merge_numstat_into_changes(changes, numstat_rows)
-        diff_text = _run_git_text(repo, ["diff", "--unified=0", "--no-color", merge_base, head_ref])
+        diff_text = _run_git_text(repo, ["diff", "--unified=0", "--no-color", "-M", merge_base, head_ref])
         diff_lines = parse_diff_lines(diff_text)
     except Exception as exc:  # noqa: BLE001 — F1: 判定不能は握り潰さず errors へ積む
         errors.append(f"{type(exc).__name__}: {exc}")
