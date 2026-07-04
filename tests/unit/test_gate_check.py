@@ -124,6 +124,10 @@ def test_migration_touch_no_hit_for_non_migration_path():
         "conn.execute('ALTER TABLE foo DROP COLUMN bar')",
         "conn.execute('DROP INDEX idx_foo')",
         "conn.execute('CREATE VIRTUAL TABLE foo USING fts5(x)')",
+        "conn.execute('CREATE UNIQUE INDEX idx_x ON foo(x)')",
+        "conn.execute('CREATE TEMP TABLE foo (id INTEGER)')",
+        "conn.execute('CREATE TEMPORARY TABLE foo (id INTEGER)')",
+        "conn.execute('CREATE TEMP VIEW v AS SELECT 1')",
         "conn.execute('PRAGMA foreign_keys = ON')",
     ],
 )
@@ -406,17 +410,36 @@ def test_parse_name_status_handles_add_modify_delete_rename():
 
 
 def test_parse_numstat_binary_row():
-    rows = parse_numstat("-\t-\tassets/logo.png\n")
+    rows = parse_numstat(b"-\t-\tassets/logo.png\0")
     assert len(rows) == 1
     assert rows[0].is_binary is True
     assert rows[0].additions == -1
     assert rows[0].deletions == -1
 
 
-def test_parse_numstat_rename_with_common_prefix():
-    rows = parse_numstat("1\t0\tscripts/{snapshot.py => snapshot_renamed.py}\n")
+def test_parse_numstat_rename_uses_separate_z_tokens():
+    # -z では rename は `add<TAB>del<TAB>`(path欄空) + old-path + new-path の3要素
+    rows = parse_numstat(b"1\t0\t\0scripts/snapshot.py\0scripts/snapshot_renamed.py\0")
     assert rows[0].path == "scripts/snapshot_renamed.py"
     assert rows[0].old_path == "scripts/snapshot.py"
+    assert rows[0].additions == 1
+    assert rows[0].deletions == 0
+
+
+def test_parse_numstat_preserves_non_ascii_path_verbatim():
+    # -z は quotepath エスケープをせず生パスをそのまま返す
+    rows = parse_numstat("1\t0\tsrc/なまえ.py\0".encode("utf-8"))
+    assert rows[0].path == "src/なまえ.py"
+    assert rows[0].old_path is None
+
+
+def test_parse_numstat_handles_add_and_rename_together():
+    raw = "1\t0\ta b.txt\0".encode("utf-8") + b"0\t0\t\0old.py\0new.py\0"
+    rows = parse_numstat(raw)
+    by_path = {r.path: r for r in rows}
+    assert by_path["a b.txt"].old_path is None
+    assert by_path["a b.txt"].additions == 1
+    assert by_path["new.py"].old_path == "old.py"
 
 
 def test_parse_diff_lines_tracks_added_and_removed_line_numbers():
@@ -600,6 +623,28 @@ def test_run_detector_findings_are_sorted_by_detector_then_path(git_repo: Path):
     assert detectors == sorted(detectors)
 
 
+def test_run_detector_handles_quoted_non_ascii_paths(git_repo: Path):
+    """非ASCIIパス(非-z numstat では quotepath でエスケープされ name-status と
+    食い違う)でも numstat と name-status が突合し、binary 検出とサイズ計数が
+    崩れないことを保証する。core.quotepath=true を明示して回帰を意味あるものにする。"""
+    subprocess.run(["git", "-C", str(git_repo), "config", "core.quotepath", "true"], check=True)
+    (git_repo / "src").mkdir()
+    (git_repo / "src" / "foo.py").write_text("x = 1\n")
+    base_sha = _commit_all(git_repo, "base")
+    # 非ASCII名の本体コード: 追加行がサイズ計数される
+    (git_repo / "src" / "名前.py").write_text("a = 1\nb = 2\nc = 3\n")
+    # 非ASCII名のバイナリ: binary_change 検出対象
+    (git_repo / "画像.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x01\x02")
+    head_sha = _commit_all(git_repo, "add non-ascii files")
+
+    verdict = run_detector(git_repo, base_sha, head_sha)
+    binary_paths = [f["path"] for f in verdict["axis_a"]["findings"] if f["detector"] == "binary_change"]
+    assert binary_paths == ["画像.png"]
+    assert verdict["axis_b"]["lines_changed"] == 3
+    assert verdict["classification"] == "pre_go"
+    assert verdict["reason"] == "axis_a_hit"
+
+
 def test_render_markdown_produces_expected_sections():
     verdict = {
         "classification": "pre_go",
@@ -629,3 +674,28 @@ def test_run_detector_end_to_end_smoke_matches_classify(git_repo: Path):
     assert verdict["reason"] == "axis_b_met"
     # JSON化してもクラッシュしない
     json.loads(verdict_to_json(verdict))
+
+
+def test_gate_check_sh_falls_back_to_worktree_when_fetch_fails(tmp_path: Path):
+    """gate_check.sh は origin 未設定などで git fetch が失敗しても非0終了せず、
+    worktree 版検出器へフォールバックして verdict を返す(フェイルセーフ)。"""
+    gate_sh = _PROJECT_ROOT / "scripts" / "gate_check.sh"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    (repo / "src").mkdir()
+    (repo / "src" / "foo.py").write_text("x = 1\n")
+    base_sha = _commit_all(repo, "base")
+    (repo / "src" / "foo.py").write_text("x = 2\n")
+    head_sha = _commit_all(repo, "change")
+    # origin remote 未設定のため `git fetch origin main` は失敗する
+
+    result = subprocess.run(
+        ["sh", str(gate_sh), "--repo", str(repo), "--base", base_sha, "--head", head_sha, "--format", "json"],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    verdict = json.loads(result.stdout)
+    assert verdict["detector_source"] == "worktree"

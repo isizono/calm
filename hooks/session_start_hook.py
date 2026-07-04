@@ -27,7 +27,7 @@ from src.services.readable_id import format_readable_id
 from src.services.habit_service import get_active_habit_contents_with_conn
 from src.services.tag_service import get_entity_tags_batch
 from src.services.topic_service import get_activity_topics_batch
-from scripts.snapshot import health_check, should_take_snapshot, take_snapshot
+from src.services.backup_service import health_check, should_take_snapshot, take_snapshot
 from hooks.hook_transcript import _is_worker_session
 
 # description先頭の切り出し文字数
