@@ -242,8 +242,14 @@ def add_decisions(items: list[dict], caller_session_id: Optional[str] = None) ->
                         {"id": d["id"], "title": d["title"], "created_at": d["created_at"]}
                         for d in existing
                     ]
+                    # domainタグが解決できないと get_direction_decisions は全domain横断で
+                    # 返すため、文言も「同domain」ではなく横断であることを正確に示す
+                    scope_label = (
+                        "同domainに" if domain_tag_ids
+                        else "全domain横断で（このdecisionにdomainタグが無いため）"
+                    )
                     c["direction_note"] = (
-                        f"同domainに有効な方向性decisionが{len(existing)}件あります。"
+                        f"{scope_label}有効な方向性decisionが{len(existing)}件あります。"
                         "この決定が置き換えるものにはadd_relation(relation_type='supersedes')"
                         "を張ってください。併存する場合は、併存理由をreasonに明記してください。"
                     )

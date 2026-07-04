@@ -34,7 +34,7 @@ from typing import Any, Literal, TypedDict
 
 from src.config import DIRECTION_OVERFLOW_THRESHOLD
 from src.db import get_connection
-from src.services.direction_service import get_direction_decisions
+from src.services.direction_service import count_direction_decisions
 
 # --- 型定義 ---
 
@@ -223,7 +223,7 @@ def _get_hints_for_tag(conn: sqlite3.Connection, tag_id: int) -> list[Hint]:
                 })
 
     if MARKER_DIRECTION_OVERFLOW not in notes:
-        direction_count = len(get_direction_decisions(conn, domain_tag_ids=[tag_id]))
+        direction_count = count_direction_decisions(conn, domain_tag_ids=[tag_id])
         if direction_count >= DIRECTION_OVERFLOW_THRESHOLD:
             hints.append({
                 "type": "direction_overflow",

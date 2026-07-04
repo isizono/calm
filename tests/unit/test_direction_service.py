@@ -9,6 +9,7 @@ from src.services.decision_service import add_decisions
 from src.services.direction_service import (
     DIRECTION_NAME,
     DIRECTION_NAMESPACE,
+    count_direction_decisions,
     get_direction_decisions,
     get_direction_tag_id,
 )
@@ -200,3 +201,62 @@ class TestGetDirectionDecisions:
         assert "staleness" in results[0]
         assert results[0]["staleness"]["is_superseded"] is False
         assert results[0]["staleness"]["chain_heads"] == [created["decision_id"]]
+
+
+class TestCountDirectionDecisions:
+    def test_zero_when_no_direction_tag(self, temp_db):
+        conn = get_connection()
+        try:
+            assert count_direction_decisions(conn) == 0
+        finally:
+            conn.close()
+
+    def test_counts_active_excluding_superseded(self, temp_db, topic_id):
+        old = _add_direction_decision(topic_id, "旧方向性", "旧")
+        new = _add_direction_decision(topic_id, "新方向性", "新")
+        _link_supersede(new["decision_id"], old["decision_id"])
+
+        conn = get_connection()
+        try:
+            assert count_direction_decisions(conn) == 1
+        finally:
+            conn.close()
+
+    def test_excludes_retracted(self, temp_db, topic_id):
+        created = _add_direction_decision(topic_id, "撤回される方向性", "撤回予定")
+        retract_decision(created["decision_id"])
+
+        conn = get_connection()
+        try:
+            assert count_direction_decisions(conn) == 0
+        finally:
+            conn.close()
+
+    def test_domain_filter(self, temp_db, topic_id):
+        _add_direction_decision(topic_id, "対象domainの方向性", "対象")
+        other_topic = add_topic(title="別domain", description="d", tags=[OTHER_DOMAIN_TAG])
+        _add_direction_decision(other_topic["topic_id"], "別domainの方向性", "別")
+
+        conn = get_connection()
+        try:
+            scoped = count_direction_decisions(
+                conn, domain_tag_ids=[_domain_tag_id(DOMAIN_TAG)]
+            )
+            unscoped = count_direction_decisions(conn)
+        finally:
+            conn.close()
+        assert scoped == 1
+        assert unscoped == 2
+
+    def test_matches_get_direction_decisions_length(self, temp_db, topic_id):
+        """COUNT版とget版のactive件数が一致する（supersede除外規則の等価性を保証）"""
+        old = _add_direction_decision(topic_id, "旧", "旧")
+        _add_direction_decision(topic_id, "中", "中")
+        new = _add_direction_decision(topic_id, "新", "新")
+        _link_supersede(new["decision_id"], old["decision_id"])
+
+        conn = get_connection()
+        try:
+            assert count_direction_decisions(conn) == len(get_direction_decisions(conn))
+        finally:
+            conn.close()
