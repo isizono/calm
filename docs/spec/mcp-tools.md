@@ -96,8 +96,6 @@ last-synced-migration: 0048
 | `ow_close_dispatcher` | dispatcherセッションをkillし、紐づくworker poolもcascade killする |
 | `ow_status` | queueサマリ + presence の合成ビューを返す |
 | `ow_recover` | orch crash後の queue × relay × presence 整合チェック・自動修正 |
-| `ow_spawn_dispatcher` | dispatcherセッションを起動する |
-| `ow_close_dispatcher` | dispatcherセッションと紐づくworker poolをcascade killする |
 
 ### 1.8 その他
 
