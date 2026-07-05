@@ -226,13 +226,18 @@ GO判定パッケージの生成にはこの時点でのコミットが要る。
 
 ### Step 8: PR作成
 
-1. push（`git push -u origin {branch}`）してPRを作成する
-2. GO判定パッケージ（`iterations/{nn}-go-package.md`）の機械可読ブロック `prs` フィールドに、
+1. PRを作成する前に `uv run python scripts/pr_size_check.py --local` を実行してサイズを確認する
+   - `--local` の既定 base は `origin/main`。サブプランの base が main 以外（依存先ブランチにスタックしている）場合は `--base <依存先ブランチ>` を明示する。指定しないと依存元ブランチの差分ごと巻き込んだ過大な verdict になる
+   - verdict が `oversized` の場合、PRを出す前に分割を検討する（サブプランをさらに分けるか、変更範囲を見直す）
+   - verdict が `ok` / `large` ならそのまま進めてよい
+2. push（`git push -u origin {branch}`）する
+3. PRを作成
+4. GO判定パッケージ（`iterations/{nn}-go-package.md`）の機械可読ブロック `prs` フィールドに、
    作成したPR番号を追記する
-3. `add_material` でGO判定パッケージ全文を保存する（title 40字以内、素タグ `go-package` +
+5. `add_material` でGO判定パッケージ全文を保存する（title 40字以内、素タグ `go-package` +
    `domain:cc-memory`、`related` にタスクのactivityを指定）。**GO判定パッケージはPR本文には
    載せない**（判例idを含む文書のため。PRとの対応は `prs` フィールドが持つ）
-4. plan.mdの当該サブプランの状態を✅完了に更新
+6. plan.mdの当該サブプランの状態を✅完了に更新
 
 ### Step 9: 統合マージチェック
 

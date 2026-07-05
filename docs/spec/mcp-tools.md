@@ -22,7 +22,7 @@ last-synced-migration: 0048
 
 ## 1. ツール一覧
 
-全39ツール。カテゴリ別に一覧する。
+全43ツール。カテゴリ別に一覧する。
 
 ### 1.1 記録系（add系）
 
@@ -92,10 +92,10 @@ last-synced-migration: 0048
 | `ow_history` | ow channel履歴を取得する |
 | `ow_spawn_worker` | workerセッションを起動する |
 | `ow_close_worker` | workerセッションをクローズする |
+| `ow_spawn_dispatcher` | dispatcherセッションを起動する（既存があればcascade kill後にspawn） |
+| `ow_close_dispatcher` | dispatcherセッションをkillし、紐づくworker poolもcascade killする |
 | `ow_status` | queueサマリ + presence の合成ビューを返す |
 | `ow_recover` | orch crash後の queue × relay × presence 整合チェック・自動修正 |
-| `ow_spawn_dispatcher` | dispatcherセッションを起動する |
-| `ow_close_dispatcher` | dispatcherセッションと紐づくworker poolをcascade killする |
 
 ### 1.8 その他
 
@@ -108,6 +108,16 @@ last-synced-migration: 0048
 | ツール | 概要 |
 | --- | --- |
 | `export_material` | 資材をmd形式のファイルとしてcc-memory外に出力する |
+
+### 1.10 シグナル系（signal_events）
+
+cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベントの記録先。`add_logs` / `add_decisions` とは異なり合意不要の生の観測データであり、専用テーブル（`signal_events`）に記録される。
+
+| ツール | 概要 |
+| --- | --- |
+| `report_signal` | cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベントを記録する（orch/dispatcher/workerいずれからも呼べる） |
+| `get_signals` | 記録されたシグナルを一覧・集計する |
+| `update_signal` | シグナルのトリアージ状態を遷移する（orch専用） |
 
 ---
 
@@ -304,7 +314,17 @@ last-synced-migration: 0048
 
 **返り値**: 資材の全文。
 
-### 2.17 check_in
+### 2.17 export_material
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| material_id | int | yes | - | 資材のID |
+| dest_path | string | no | null | 出力先パス。省略/既存ディレクトリ/ファイルパスで振り分ける。`~/cc-memory-export` 配下でなければならない |
+
+**返り値**: 成功時 `{path, overwritten, material_id, title}`。失敗時 `{error: {code: "NOT_FOUND" | "VALIDATION_ERROR" | "IO_ERROR" | "DATABASE_ERROR", message}}`。
+**動作**: 資材を YAML frontmatter + h1 + content 形式の md ファイルとして出力する。frontmatter に資材IDを保持し往復同期の鍵とする。書き込み先は `~/cc-memory-export` 配下に限定（配下外・シンボリックリンク経由の脱出は VALIDATION_ERROR で拒否）。上書き確認はせず既存ファイルは無警告で上書きする（`overwritten` で通知）。
+
+### 2.18 check_in
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -314,7 +334,7 @@ last-synced-migration: 0048
 **副作用**: statusがin_progress以外なら自動的にin_progressに更新。
 **呼び出し基準**: 既存アクティビティに関連する作業を始めるとき。summaryフィールドはそのまま出力することが推奨される。
 
-### 2.18 add_relation / remove_relation
+### 2.19 add_relation / remove_relation
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -327,7 +347,7 @@ last-synced-migration: 0048
 **親帰属の自動書き込み**: 子（activity/material/decision/log）→topicの関連付けは、`relation_type` が `related`（デフォルト）または明示的な `belongs_to` のときに限り `belongs_to` として書き込まれる。`depends_on`/`supersedes` を指定するとtargetがtopicのためバリデーションエラーになり何も書き込まれない。この帰属はget_decisions/get_timeline/check_inのトピック帰属集計やget_by_idsのtopic_id解決の基盤になっており、`remove_relation` で `related`/`belongs_to` を指定すると帰属関係ごと削除される。
 **返り値**: `{added: int}` または `{removed: int}`。重複は冪等。
 
-### 2.19 get_map
+### 2.20 get_map
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -338,13 +358,13 @@ last-synced-migration: 0048
 
 **返り値**: `{entities: [{type, id, title, tags, depth}], total_count: int}`。decision/logノードは経由ノードとして使うが、返却カタログにはtopic/activity/materialのみ含まれる。
 
-### 2.20 add_habit / get_habits / update_habit
+### 2.21 add_habit / get_habits / update_habit
 
 - `add_habit(content: string) -> dict`: habitを登録。SessionStart時に全件注入される（セッション途中の登録は次セッション以降に有効）。
 - `get_habits() -> dict`: 登録済みhabit一覧。
 - `update_habit(habit_id: int, content?: string, active?: bool) -> dict`: active=Falseで無効化。
 
-### 2.21 add_pin / remove_pin
+### 2.22 add_pin / remove_pin
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -357,7 +377,7 @@ last-synced-migration: 0048
 **エラー**: source/targetが存在しないとき `NOT_FOUND`。
 **返り値**: 追加時は `{source_type, source_id, target_type, target_id}`、削除時は `{removed: int}`。
 
-### 2.22 retract
+### 2.23 retract
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -368,7 +388,7 @@ last-synced-migration: 0048
 **動作**: 論理削除。検索・取得でデフォルト除外される（include_retracted=Trueで含められる）。retract時はsearch_index/FTS/vecインデックスからも物理削除される。
 **undoの不可逆性**: undo（un-retract）はretracted_atをNULLに戻すだけで、検索インデックスへの再登録は行わない。un-retract後に再び検索でヒットさせたい場合はadd_decisions/add_logs/add_materialで新規に追加し直す必要がある。
 
-### 2.23 get_timeline
+### 2.24 get_timeline
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -379,11 +399,11 @@ last-synced-migration: 0048
 | limit | int | no | 50 | 最大100 |
 | order | string | no | "desc" | `"desc"` または `"asc"` |
 
-### 2.24 get_config
+### 2.25 get_config
 
 引数なし。返り値: `{heartbeat_timeout, in_progress_limit, pending_limit, recency_decay_rate, sync_disable_retrospective, sync_policy, snapshot_interval_hours, snapshot_max_count, snapshot_anomaly_threshold}`。スキルが環境変数ベースの設定を参照するときに使う。
 
-### 2.25 roll_dice
+### 2.26 roll_dice
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -391,7 +411,7 @@ last-synced-migration: 0048
 
 **返り値**: `{result: int}`。
 
-### 2.26 ow_send
+### 2.27 ow_send
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -404,7 +424,7 @@ last-synced-migration: 0048
 **返り値**: `{msg_id: int}`。
 **エラー処理**: 4xxは即失敗、5xx/接続断のみ3回指数バックオフ。
 
-### 2.27 ow_history
+### 2.28 ow_history
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -414,7 +434,7 @@ last-synced-migration: 0048
 
 **返り値**: `{messages: [{msg_id, handle, body, ...}]}`。SSEは起床信号専用で、実体取得はこちらで行う。
 
-### 2.28 ow_spawn_worker
+### 2.29 ow_spawn_worker
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -436,7 +456,7 @@ last-synced-migration: 0048
 **制約**: modelは `claude-opus-4-7` 固定。sonnet/haiku/opus-4-8 はバリデーションで拒否される。
 **返り値**: 通常時 `{term_ref, task_file, spawning: "ok", alias}`。manualフォールバック時 `{command, manual: True, task_file, alias}`。
 
-### 2.29 ow_close_worker
+### 2.30 ow_close_worker
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -444,7 +464,28 @@ last-synced-migration: 0048
 
 **返り値**: `{closed: True, term_ref}` または `{manual: True, message}`。
 
-### 2.30 ow_status
+### 2.31 ow_spawn_dispatcher
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| channel | string | yes | - | channelコード（handleに `d-` prefixで組み込まれる） |
+| cwd | string | yes | - | dispatcherセッションの作業ディレクトリ |
+| model | string | yes | - | `claude-opus-4-7` のみ許可 |
+| tmux_target_pane | string | no | null | tmux分割表示用の基準pane ID |
+
+**制約**: modelは `claude-opus-4-7` 固定。sonnet/haiku/opus-4-8 はバリデーションで拒否される。channelに既存dispatcherがあればcascade kill（既存dispatcher + 紐づくworker pool全員）してから新規spawnする。health check や idempotent reject は行わない。
+**返り値**: 成功時 `{term_ref, bundle_msg_id, spawning: "ok", alias}`。失敗時 `{error: {code, message, ...}}`。
+
+### 2.32 ow_close_dispatcher
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| channel | string | yes | - | channelコード |
+
+**動作**: dispatcher（handle=`d-{channel}`）をkillし、紐づくworker poolもcascade killする。dispatcherが存在しない場合はエラーを返す（no-op successは採らない）。graceful shutdownは試みず即process kill。
+**返り値**: 成功時 `{closed: True, channel, dispatcher_handle, killed_workers, failed_workers}`。失敗時 `{error: {code, message}, killed_workers, ...}`。
+
+### 2.33 ow_status
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -453,7 +494,7 @@ last-synced-migration: 0048
 
 **返り値**: `{tasks, presence, frontmatter, summary}`。queueの論理状態とrelayのpresence（物理接続）を統合した単一ビュー。
 
-### 2.31 ow_recover
+### 2.34 ow_recover
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -463,36 +504,43 @@ last-synced-migration: 0048
 
 **返り値**: `{detected: {ghost_active, pending_spawn, stalled_done, orphans}, applied, warnings, presence, reconstructed_max_msg_id, dry_run}`。orch crash後の queue × relay × presence 整合チェック・自動修正に用いる。
 
-### 2.32 ow_spawn_dispatcher
+### 2.35 report_signal
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
-| channel | string | yes | - | channelコード（handleに`d-`prefixで組み込まれる） |
-| cwd | string | yes | - | dispatcherセッションの作業ディレクトリ |
-| model | string | yes | - | `claude-opus-4-7` のみ許可 |
-| tmux_target_pane | string | no | null | tmux分割表示用の基準pane ID |
+| kind | string | yes | - | `machine_error` / `friction` / `contradiction` / `precedent_miss` / `precedent_misapplied` / `boundary_case` / `rollback` の7種のいずれか |
+| summary | string | yes | - | 1行要約（空文字不可） |
+| detail | string | no | null | traceback・引数ダイジェスト・自由記述 |
+| refs | list[{"type", "id"}] | no | null | 参照リスト。`contradiction` では矛盾の両側のidを必須とする |
+| context | object | no | null | kindごとの構造化ペイロード（例: `contradiction` は `resolution`、`precedent_miss` は `missed_ids`） |
 
-**制約**: modelは `claude-opus-4-7` 固定。sonnet/haiku/opus-4-8 はバリデーションで拒否される。
-**返り値**: `{term_ref, bundle_msg_id, spawning: "ok", alias}`。channelに既存dispatcherがあればcascade kill（既存dispatcher + 紐づくworker pool全員）してから新規spawnする。health checkやidempotent rejectは行わない。
+**返り値**: 成功時 `{id: int, deduped: bool, occurrence_count: int}`、失敗時 `{error: {code: "VALIDATION_ERROR", message: ...}}`。
+**動作**: 同一 `fingerprint`（kind+source+正規化summaryのハッシュ）を持つ未トリアージ行が既にあれば新規行を作らず `occurrence_count` を加算する（dedup）。
+**関連**: MCPツール例外の middleware 捕捉やhooksのtop-level捕捉からも自動的に呼ばれる（`source` がそれぞれ `tool:*` / `hook:*` になる）。
 
-### 2.33 ow_close_dispatcher
-
-| 名前 | 型 | 必須 | デフォルト | 説明 |
-| --- | --- | --- | --- | --- |
-| channel | string | yes | - | channelコード |
-
-**返り値**: `{closed: True, channel, dispatcher_handle, killed_workers: [handle, ...], failed_workers: [{handle, reason/error}, ...]}`。dispatcher sessionをkillし、紐づくworker poolもcascade killする。channelにdispatcher（handle=d-{channel}）が存在しない場合はエラー（no-op successは採らない）。closeはgraceful shutdownを試みず即process kill。
-
-### 2.34 export_material
+### 2.36 get_signals
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
-| material_id | int | yes | - | 資材のID |
-| dest_path | string | no | null | 出力先パス。省略/既存ディレクトリ/ファイルパスの3パターンで振り分ける |
+| status | string \| null | no | "new" | `new`/`triaged`/`promoted`/`dismissed`。nullで全status横断 |
+| kind | string \| null | no | null | フィルタ対象のkind。nullで全kind横断 |
+| limit | int | no | 20 | 最大100 |
+| offset | int | no | 0 | ページネーション |
+| include_stats | bool | no | false | trueでkind×statusのクロス集計と直近30日サマリを付与 |
 
-**返り値**: 成功時 `{path, overwritten, material_id, title}`。失敗時 `{error: {code: "NOT_FOUND"|"VALIDATION_ERROR"|"IO_ERROR"|"DATABASE_ERROR", message}}`。
-**制約**: 資材をYAML frontmatter + h1 + content形式のmdファイルとして出力する。書き込み先は`~/cc-memory-export`配下に限定され、配下外を指すdest_path（シンボリックリンク経由の脱出を含む）はVALIDATION_ERRORで拒否される。上書き確認はしない（既存ファイルは無警告で上書きされ、`overwritten`で通知）。
-**関連**: cc-memory内で読むだけなら`get_material`、複数種別横断で全文取得したいなら`get_by_ids`を使う。
+**返り値**: `{signals: [...], total_count: int, stats?: {by_kind_status, last_30d}}`。
+
+### 2.37 update_signal
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| signal_id | int | yes | - | 対象シグナルID |
+| status | string | yes | - | 遷移先status（`new`/`triaged`/`promoted`/`dismissed`） |
+| promoted_type | string | no | null | 昇格先エンティティ種別（`topic`/`activity`/`decision`/`log`/`material`） |
+| promoted_id | int | no | null | 昇格先エンティティID。promoted_typeと同時に指定する |
+
+**返り値**: `{signal: {...}}`（更新後の行）。
+**動作**: リンクを張るだけで昇格実体は作らない（実体の作成は既存のadd系ツールで行う）。orch専用（capability_matrixでdispatcher/workerは拒否）。
 
 ---
 
@@ -555,7 +603,7 @@ cc-memoryが扱うエンティティの内部表現。詳細スキーマは `doc
 `src/main.py` の `@mcp.tool` 関数群に **OW_ROLE=worker を理由とした直接的なツール拒否ロジックは確認できなかった**（v0時点）。worker側で何らかのツール利用を制限する場合は、ハーネス層（task_file・instructions注入）または運用ルールで間接的に行うものと推測される。要追加調査。
 
 ### 4.2 orch-managed 運用
-ow系ツール（特に `ow_spawn_worker` / `ow_close_worker` / `ow_status` / `ow_recover`）はorchロールでの利用を想定している。worker側からも `ow_send` / `ow_history` は呼べる。
+ow系ツール（特に `ow_spawn_worker` / `ow_close_worker` / `ow_status` / `ow_recover`）はorchロールでの利用を想定している。worker側からも `ow_send` / `ow_history` は呼べる。`report_signal` / `get_signals` はcapability_matrixでorch/dispatcher/workerいずれにも開放されている（観測データの記録に合意形成が不要なため）。`update_signal` のみトリアージ操作としてorch専用。
 
 ### 4.3 check-in 先行が前提のツール
 - `add_decisions` の hints はharness_service経由で「整合性確認」「pin見直し」などを示唆する。直前にcheck-inしていない場合、文脈不足のためhintsを過信しない方がよい。
@@ -574,6 +622,7 @@ ow系ツール（特に `ow_spawn_worker` / `ow_close_worker` / `ow_status` / `o
 - `search`: limit最大50
 - `get_timeline`: limit最大100
 - `get_map`: max_depth上限10
+- `get_signals`: limit最大100
 
 ---
 

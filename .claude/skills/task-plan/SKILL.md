@@ -153,6 +153,9 @@ PRが複数になる場合、全PRをmainに直接向けるか、統合ブラン
 ## 類型
 {A-E のどれか}
 
+## サイズ見込み
+{変更予定ファイル数と行数（追加+削除）の見立て。テスト・docsは目安から除外してよい。800行超になる見込みならこの時点でさらに分割を検討する}
+
 ## GO判定予測
 - predicted: {pre_go/gray/post_veto_candidate}
 
@@ -185,6 +188,14 @@ PRが複数になる場合、全PRをmainに直接向けるか、統合ブラン
 {テストの実行コマンド}
 ```
 
+**類型 B（スキーマ・データ変更）のサブプランには以下も追加する:**
+
+```markdown
+## migration / revert
+- 破壊的変更 lint 該当有無: {DROP TABLE / DROP COLUMN / DELETE FROM / WHERE なし UPDATE / rmtree・os.remove 等を含むか。含む場合 `scripts/gate_check.py` の破壊的変更検出（追加行への正規表現マッチ）でフラグが立つため、意図的である旨と安全確認の観点を書く}
+- revert 分類: {R1（migration非接触・revert commitのみで戻る）/ R2（migration接触・戻し方を具体的に書く）}
+```
+
 #### plan.md テンプレート（単一PR）
 
 ```markdown
@@ -196,6 +207,9 @@ PRが複数になる場合、全PRをmainに直接向けるか、統合ブラン
 ## 関連情報
 - cc-memory タスク: #{タスクID}
 - 関連 decisions: #{ID}, #{ID}, ...
+
+## サイズ見込み
+{変更予定ファイル数と行数（追加+削除）の見立て。テスト・docsは目安から除外してよい。800行超になる見込みなら複数PRへの分割を検討する}
 
 ## ブランチ
 - ブランチ名: feature/{名前}

@@ -70,6 +70,11 @@ CAPABILITY_MATRIX: CapabilityMatrix = {
     "get_signals":       {"orch": True,  "dispatcher": True,  "worker": True},
     "update_signal":     {"orch": True,  "dispatcher": False, "worker": False},  # トリアージはorch/親のみ
 
+    # シグナル吸い上げ（機械エラー・使用感不満・矛盾検出・運用計測イベント）
+    "report_signal":     {"orch": True,  "dispatcher": True,  "worker": True},   # 入口は全開放
+    "get_signals":       {"orch": True,  "dispatcher": True,  "worker": True},
+    "update_signal":     {"orch": True,  "dispatcher": False, "worker": False},  # トリアージはorch/親のみ
+
     # その他
     "roll_dice":         {"orch": True,  "dispatcher": True,  "worker": True},
 }
