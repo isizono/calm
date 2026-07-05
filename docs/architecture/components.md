@@ -48,8 +48,7 @@ graph TB
     subgraph Coord["協調層 / 指揮系統"]
         OwService["ow_service"]
         Relay["src/relay/server.py<br/>SSE+SQLite中継"]
-        OwScripts["scripts/ow/<br/>recv/heartbeat/adapters"]
-        OrchSkills["skills/orch<br/>skills/worker<br/>skills/worker-sync"]
+        OwScripts["scripts/ow/<br/>recv系"]
     end
 
     subgraph Infra["横断インフラ"]
@@ -187,7 +186,6 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 - `skills/scribe`: cc-memory記録からドキュメント生成
 - `skills/guide`: pull型の使い方説明
 
-協調層に属するスキル（`orch` / `worker` / `worker-sync`）は §5 で扱う。
 
 ### 4.3 フロー層 service
 
@@ -204,7 +202,7 @@ Stop                → stop_hook → record_missing / follow_up_after_decision 
 SessionEnd          → session_end_hook → sync-memory連携
 ```
 
-PreToolUse は `hooks/hooks.json` に ow_spawn_worker matcher 限定で登録済み。PostToolUse は廃止された (旧 remind_activity_on_decision.sh は HintService の follow_up_after_decision で代替)。
+PreToolUse は `hooks/hooks.json` に全ツール対象（`*` matcher）の preblock hook が登録済み。PostToolUse は廃止された (旧 remind_activity_on_decision.sh は HintService の follow_up_after_decision で代替)。
 
 ### 4.5 既知の課題
 
@@ -213,34 +211,20 @@ PreToolUse は `hooks/hooks.json` に ow_spawn_worker matcher 限定で登録済
 
 ---
 
-## 5. 協調層 — orch/worker
+## 5. 協調層 — セッション間メッセージング
 
-協調層はorch/workerフレームワーク全体に対応するが、本ドキュメントの対象はcc-memory本体に内蔵されている協調機構に絞る（powwowのような外部ラッパーには触れない）。
+協調層はcc-memory本体に内蔵されているセッション間メッセージング基盤に絞って扱う。
 
 ### 5.1 cc-memory本体の協調コンポーネント
 
-- `src/services/ow_service.py`: ow_send / ow_history / ow_spawn_worker / ow_close_worker / ow_status / ow_recover / プレゼンス・identity管理（`ow_get_identity`, `ow_list_identities`, `ow_get_presence`, `ow_get_workload_state`）。relayサーバーの自動起動・健全性チェック（`ensure_relay_server` / `_wait_for_relay_health`）、queueファイルの生成と更新（`_upsert_queue_task` / `_write_task_file`）、crash検出と復旧（`detect_crash_inconsistencies` / `ow_recover` / `_send_recovery_ping`）を担う
+- `src/services/ow_service.py`: ow_send / ow_history を提供する。relayサーバーの起動・健全性チェックのヘルパー（`ensure_relay_server` / `_wait_for_relay_health`）も同居するが、ツール実行経路からは呼ばれない（relayサーバーの起動は手動）
 - `src/relay/server.py`: 中継サーバー本体。SQLite永続化 + SSEブロードキャスト。エンドポイント: `/create` / `/stream` / `/send` / `/history` / `/presence` / `/health`。msg_idがメッセージ順序の真実源
-- `scripts/ow/recv.sh`, `scripts/ow/recv_filter.py`: メッセージ受信側のフィルタリング
-- `scripts/ow/heartbeat.sh`: presence維持
-- `scripts/ow/adapters/tmux.sh`: tmux 用 worker spawn アダプタ
-- queueファイル配置: `~/.cc-memory/ow/orch/queue-t<topic_id>.md`（auto-memoryに記録あり）
+- `scripts/ow/recv.sh`, `scripts/ow/recv_poll.sh`, `scripts/ow/recv_filter.py`: メッセージ受信側の購読・フィルタリング
 
-### 5.2 協調スキル
+### 5.2 cc-memoryとの接点（`docs/spec-v0.md` §5 と対応）
 
-- `skills/orch`: orchとしてtopicのプロジェクト進捗管理・worker指揮
-- `skills/worker`: worker動作
-- `skills/worker-sync`: worker退場時の簡易sync（decisionはorchへ提案、自分で書かない）
-
-### 5.3 cc-memoryとの接点（`docs/spec-v0.md` §5 と対応）
-
-- 接点1 記録ガード: workerは `add_decisions` を直接呼ばずrelay経由でorchへ提案する。これは文面規律（スキル本文）で表現されており、コード強制はまだない
-- 接点2 orch-managed: orch運用下で生成された entity は `orch-managed` タグを付与する規律。検索・SessionStartの除外はタグフィルタで実現される
-- 接点3 サブセッション間文脈分断: 複数Claude Codeセッションがcc-memoryを共有基盤として参照する側面。本体のコードに専用機構は薄い（要検証）
-
-### 5.4 powwowとの境界
-
-powwow（外部協調ラッパー）に該当する記述は本リポ内には見当たらない。「powwowとの境界」については本ドキュメント v0 では未確認領域として保留する。
+- 接点1 orch-managed: 協調運用下で生成された entity は `orch-managed` タグを付与する規律。検索・SessionStartの除外はタグフィルタで実現される
+- 接点2 サブセッション間文脈分断: 複数Claude Codeセッションがcc-memoryを共有基盤として参照する側面。本体のコードに専用機構は薄い（要検証）
 
 ---
 
@@ -265,7 +249,6 @@ powwow（外部協調ラッパー）に該当する記述は本リポ内には�
 
 - DB本体: `~/.claude/.claude-code-memory/discussion.db`
 - 状態ファイル群: `~/.claude/.claude-code-memory/state/` 配下に `block_count_<sid>` / `transcript_offset_<sid>` / `current_turn_<sid>` / `checked_in_activity_<sid>` / `events_<sid>.jsonl`（`hooks/hook_state.py` 参照）
-- queueファイル: `~/.cc-memory/ow/orch/queue-t<topic_id>.md`
 - relayサーバーのDB: `src/relay/server.py` がSQLite WALモードで永続化（パスは要検証）
 - embedding_server: localhost:52836
 
@@ -290,7 +273,7 @@ graph LR
         F[hooks + skills + checkin/harness]
     end
     subgraph L4["協調層"]
-        C[ow_service + relay + orch/worker skills]
+        C[ow_service + relay]
     end
     subgraph L0["横断インフラ"]
         I[launcher / http / embedding_server / config]
@@ -316,7 +299,7 @@ graph LR
 潜在的な循環・癒着:
 
 - フロー層のhookが直接 `src/services/*` をimportする箇所がある（hookプロセスからDB直アクセス）。MCPツール経由ではないため、ストア層のCRUD変更がhookの内部実装に影響しうる
-- `ow_service` は relayサーバー（`src/relay/server.py`）を子プロセスとして起動・管理する。ow_service と relay server間で状態整合（events.jsonl と relay DB）が二系統存在しうる（`docs/spec-v0.md` §6 T-E マルチセッション境界）
+- `ow_service` は relayサーバー（`src/relay/server.py`）を子プロセスとして起動するヘルパーを持つ（ツール実行経路からは呼ばれない）。ow_service と relay server間で状態整合（events.jsonl と relay DB）が二系統存在しうる（`docs/spec-v0.md` §6 T-E マルチセッション境界）
 - service間の循環import懸念は5次元統合レポート（material 312、要参照）で指摘されている。本ドキュメントでは具体ファイル間の特定は未実施
 
 ---
