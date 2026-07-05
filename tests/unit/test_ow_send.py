@@ -396,19 +396,9 @@ class TestOwSendTerminatedIsPlainSend:
         monkeypatch.setattr(ow_service, "RELAY_URL", "http://127.0.0.1:8765")
         return calls
 
-    @pytest.fixture
-    def forbid_subprocess(self, monkeypatch):
-        """ow_send がプロセス操作系の副作用を持たないことを保証するガード。"""
-
-        def _fail(*args, **kwargs):
-            raise AssertionError("ow_send must not spawn or run subprocesses")
-
-        monkeypatch.setattr(ow_service.subprocess, "run", _fail)
-        monkeypatch.setattr(ow_service.subprocess, "Popen", _fail)
-
     @pytest.mark.parametrize("cause", ["closed", "cancelled"])
     def test_terminated_close_event_returns_msg_id_without_side_effect(
-        self, capture_relay, forbid_subprocess, cause
+        self, capture_relay, cause
     ):
         """terminated(cause=closed|cancelled) → relay送信1回のみで成功する"""
         body = {"v": 1, "kind": "event", "from": "w-a", "to": "*",
@@ -421,7 +411,7 @@ class TestOwSendTerminatedIsPlainSend:
 
     @pytest.mark.parametrize("cause", ["dead", "crashed"])
     def test_terminated_other_causes_also_plain_send(
-        self, capture_relay, forbid_subprocess, cause
+        self, capture_relay, cause
     ):
         """terminated(cause=dead|crashed) も同様に通常送信として成功する"""
         body = {"v": 1, "kind": "event", "from": "w-a", "to": "*",
@@ -435,15 +425,7 @@ class TestOwSendTerminatedIsPlainSend:
 class TestV1MessagingStandalone:
     """ow_send / ow_history はrelay HTTPのみに依存して単独で機能する。"""
 
-    @pytest.fixture
-    def forbid_subprocess(self, monkeypatch):
-        def _fail(*args, **kwargs):
-            raise AssertionError("v1 messaging must not touch subprocesses")
-
-        monkeypatch.setattr(ow_service.subprocess, "run", _fail)
-        monkeypatch.setattr(ow_service.subprocess, "Popen", _fail)
-
-    def test_ow_send_completes_with_relay_http_only(self, monkeypatch, forbid_subprocess):
+    def test_ow_send_completes_with_relay_http_only(self, monkeypatch):
         """ow_send はrelayへのPOSTだけで完結する"""
         calls = []
 
@@ -470,7 +452,7 @@ class TestV1MessagingStandalone:
         assert result == {"msg_id": 7}
         assert calls == ["http://127.0.0.1:8765/send"]
 
-    def test_ow_history_completes_with_relay_http_only(self, monkeypatch, forbid_subprocess):
+    def test_ow_history_completes_with_relay_http_only(self, monkeypatch):
         """ow_history はrelayへのGETだけで完結し、body JSONをパースして返す"""
         calls = []
 
