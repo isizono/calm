@@ -30,6 +30,11 @@ SYNC_DISABLE_RETROSPECTIVE: bool = os.environ.get(
 ).lower() in ("true", "1")
 SYNC_POLICY: str | None = os.environ.get("CCM_SYNC_POLICY") or None  # 空文字→None正規化
 
+# --- Direction Layer ---
+# domainごとのactiveな方向性decision(layer:direction)件数がこの値以上になったら
+# direction_overflow hintを発火する（少数原則の維持を促す）
+DIRECTION_OVERFLOW_THRESHOLD: int = int(os.environ.get("CCM_DIRECTION_OVERFLOW_THRESHOLD", "8"))
+
 # --- Migration Safety ---
 # premigration スナップショット取得を無効化する緊急脱出弁（"0" で無効化）
 CCM_MIGRATION_SNAPSHOT: bool = os.environ.get("CCM_MIGRATION_SNAPSHOT", "1") != "0"

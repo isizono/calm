@@ -9,11 +9,13 @@ hintの種別と発火条件は仕様確定decisionに従う。
 - logs_sparse (deferred): topic scope, log < 5 かつ decision > 0
 - follow_up_after_decision (deferred): 直近turnでadd_decisions単独、他記録系なし
 - record_missing (deferred): 一定turn記録系ツール未呼出
+- direction_overflow (immediate): tag scope, domain: namespaceのみ,
+  layer:direction decisionのactive件数 ≥ DIRECTION_OVERFLOW_THRESHOLD
 
 抑制:
 - tag_notesに以下のハッシュタグマーカーがあれば該当hintをスキップ:
   #recompose-skipped, #recompose-bootstrap-skipped, #recompose-delta-skipped,
-  #logs-sparse-ack
+  #logs-sparse-ack, #direction-overflow-ack
 - orch-managed activityでの全suppressは呼出側責務 (本moduleは判定しない)
 
 severity値域: info | warn のみ (block不採用)
@@ -30,7 +32,9 @@ import sqlite3
 import sys
 from typing import Any, Literal, TypedDict
 
+from src.config import DIRECTION_OVERFLOW_THRESHOLD
 from src.db import get_connection
+from src.services.direction_service import count_direction_decisions
 
 # --- 型定義 ---
 
@@ -40,6 +44,7 @@ HintType = Literal[
     "logs_sparse",
     "follow_up_after_decision",
     "record_missing",
+    "direction_overflow",
 ]
 Severity = Literal["info", "warn"]
 DeliveryHint = Literal["immediate", "deferred"]
@@ -75,6 +80,7 @@ MARKER_RECOMPOSE_GENERIC = "#recompose-skipped"
 MARKER_RECOMPOSE_BOOTSTRAP = "#recompose-bootstrap-skipped"
 MARKER_RECOMPOSE_DELTA = "#recompose-delta-skipped"
 MARKER_LOGS_SPARSE = "#logs-sparse-ack"
+MARKER_DIRECTION_OVERFLOW = "#direction-overflow-ack"
 
 
 # --- 文言 ---
@@ -99,6 +105,13 @@ def _recompose_delta_message(tag_name: str, delta_count: int) -> str:
         f"tag「{tag_name}」はrecomposed materialの最終更新以降にdecisionが"
         f"{delta_count}件増えています。recompose-context skillでのメンテを"
         f"ユーザーに提案してください。"
+    )
+
+
+def _direction_overflow_message(tag_name: str, count: int) -> str:
+    return (
+        f"tag「{tag_name}」の有効な方向性decision（layer:direction）が{count}件"
+        f"あります。少数原則の維持のため、統合・supersede整理をユーザーに提案してください。"
     )
 
 
@@ -154,7 +167,7 @@ def get_hints_with_conn(
 
 
 def _get_hints_for_tag(conn: sqlite3.Connection, tag_id: int) -> list[Hint]:
-    """tagに対するrecompose_bootstrap/recompose_delta判定。
+    """tagに対するrecompose_bootstrap/recompose_delta/direction_overflow判定。
 
     対象tagはdomain: namespaceに限定する。
     """
@@ -173,47 +186,56 @@ def _get_hints_for_tag(conn: sqlite3.Connection, tag_id: int) -> list[Hint]:
 
     base_time = _get_pinned_material_max_time(conn, tag_id)
     if base_time is not None:
-        if (
-            MARKER_RECOMPOSE_GENERIC in notes
-            or MARKER_RECOMPOSE_DELTA in notes
-        ):
-            return hints
-        delta = _count_tag_scope_decisions(conn, tag_id, after=base_time)
-        if delta >= RECOMPOSE_DELTA_THRESHOLD:
-            hints.append({
-                "type": "recompose_delta",
-                "severity": "info",
-                "message": _recompose_delta_message(tag_name, delta),
-                "suggested_action": {
-                    "skill": "recompose-context",
-                    "args_hint": {"tag": tag_name},
-                    "natural_language": (
-                        f"tag「{tag_name}」のrecompose-context skillでメンテを提案する"
-                    ),
-                },
-                "source": f"recompose_delta:tag:{tag_id}",
-                "delivery_hint": "immediate",
-            })
+        if not (MARKER_RECOMPOSE_GENERIC in notes or MARKER_RECOMPOSE_DELTA in notes):
+            delta = _count_tag_scope_decisions(conn, tag_id, after=base_time)
+            if delta >= RECOMPOSE_DELTA_THRESHOLD:
+                hints.append({
+                    "type": "recompose_delta",
+                    "severity": "info",
+                    "message": _recompose_delta_message(tag_name, delta),
+                    "suggested_action": {
+                        "skill": "recompose-context",
+                        "args_hint": {"tag": tag_name},
+                        "natural_language": (
+                            f"tag「{tag_name}」のrecompose-context skillでメンテを提案する"
+                        ),
+                    },
+                    "source": f"recompose_delta:tag:{tag_id}",
+                    "delivery_hint": "immediate",
+                })
     else:
-        if (
-            MARKER_RECOMPOSE_GENERIC in notes
-            or MARKER_RECOMPOSE_BOOTSTRAP in notes
-        ):
-            return hints
-        total = _count_tag_scope_decisions(conn, tag_id)
-        if total >= RECOMPOSE_BOOTSTRAP_THRESHOLD:
+        if not (MARKER_RECOMPOSE_GENERIC in notes or MARKER_RECOMPOSE_BOOTSTRAP in notes):
+            total = _count_tag_scope_decisions(conn, tag_id)
+            if total >= RECOMPOSE_BOOTSTRAP_THRESHOLD:
+                hints.append({
+                    "type": "recompose_bootstrap",
+                    "severity": "info",
+                    "message": _recompose_bootstrap_message(tag_name, total),
+                    "suggested_action": {
+                        "skill": "recompose-context",
+                        "args_hint": {"tag": tag_name},
+                        "natural_language": (
+                            f"tag「{tag_name}」の初回統合をrecompose-context skillで提案する"
+                        ),
+                    },
+                    "source": f"recompose_bootstrap:tag:{tag_id}",
+                    "delivery_hint": "immediate",
+                })
+
+    if MARKER_DIRECTION_OVERFLOW not in notes:
+        direction_count = count_direction_decisions(conn, domain_tag_ids=[tag_id])
+        if direction_count >= DIRECTION_OVERFLOW_THRESHOLD:
             hints.append({
-                "type": "recompose_bootstrap",
+                "type": "direction_overflow",
                 "severity": "info",
-                "message": _recompose_bootstrap_message(tag_name, total),
+                "message": _direction_overflow_message(tag_name, direction_count),
                 "suggested_action": {
-                    "skill": "recompose-context",
-                    "args_hint": {"tag": tag_name},
                     "natural_language": (
-                        f"tag「{tag_name}」の初回統合をrecompose-context skillで提案する"
+                        f"tag「{tag_name}」の方向性decisionの統合・supersede整理を"
+                        "ユーザーに提案する"
                     ),
                 },
-                "source": f"recompose_bootstrap:tag:{tag_id}",
+                "source": f"direction_overflow:tag:{tag_id}",
                 "delivery_hint": "immediate",
             })
 
