@@ -33,7 +33,24 @@ plan.mdのPR分割テーブルを読み、依存関係を満たす未着手（�
 
 **単一PRの場合**: plan.md自体がサブプラン相当なので、このステップはスキップ。
 
-### Step 2: worktree作成
+### Step 2: 判例確認（pull_precedents）
+
+実装着手前に `pull_precedents` MCPツールを実行し、応答JSONを保存する。過去の関連判例（decision）を
+把握しないまま設計・実装判断を進めることを防ぐための必須ステップである。
+
+1. `pull_precedents` を `context`（このサブプランが解決しようとしている論点の記述。plan.mdの
+   「作業背景」やTODOの要約でよい）で呼ぶ
+2. 応答JSONを `iterations/{nn}-pull.json` に保存する（Step 7でGO判定パッケージの
+   `pull.presented` / `pull.guarantee` に機械転記する）
+3. `guarantee` が `routing_miss` / `routing_unavailable` の場合は判例保証が成立していない
+   （前例なし、または保証不成立）として扱い、`pre_go`寄りの判断に倒す。`enumerated` の場合は
+   列挙された判例を実装方針の参考にする
+
+**注記**: `pull_precedents` ツールが未稼働の環境（判例pull機構の実装がまだmainに反映されて
+いない場合）はこのステップを省略してよい。省略した場合、Step 7で生成するGO判定パッケージの
+`pull.presented` は `unavailable` のままになる。
+
+### Step 3: worktree作成
 
 メインエージェントが以下を実行する（SAには委譲しない）：
 
@@ -48,7 +65,7 @@ git worktree add .trees/{branch-name} -b {branch-name} origin/{base-branch}
 
 **重要: worktreeの準備が完了するまで、いかなるファイル操作も行わないこと。**
 
-### Step 3: 実装SA起動
+### Step 4: 実装SA起動
 
 `task-implementer` サブエージェントを **バックグラウンド（`run_in_background: true`）** で起動する。
 
@@ -94,7 +111,7 @@ iterations/{nn}-impl.md に以下を記録:
 - イテレーション番号（01〜）
 - 設計書・参考実装の絶対パス
 
-### Step 4: レビューSA起動
+### Step 5: レビューSA起動
 
 実装SA完了後、`task-reviewer` サブエージェントを **バックグラウンド（`run_in_background: true`）** で起動する。
 
@@ -132,7 +149,7 @@ iterations/{nn}-review.md に出力してください。
 - 変更されたファイル一覧
 - 設計書の絶対パス
 
-### Step 5: レビュー結果に基づく判定
+### Step 6: レビュー結果に基づく判定
 
 メインエージェントがレビュー結果を読み、**自律的に**判定する。
 
@@ -140,18 +157,35 @@ iterations/{nn}-review.md に出力してください。
 
 | 判定 | 条件 | アクション |
 |------|------|-----------|
-| **PASS** | Critical: 0, Major: 0 | → Step 6（報告）へ |
-| **DIRECT_FIX** | Critical: 0-1, 修正量が少ない | → メインが直接修正 → Step 6 へ |
-| **RE_DELEGATE** | Critical: 2+, または大規模修正 | → 修正SA再起動 → Step 4 に戻る |
+| **PASS** | Critical: 0, Major: 0 | → Step 7（報告）へ |
+| **DIRECT_FIX** | Critical: 0-1, 修正量が少ない | → メインが直接修正 → Step 7 へ |
+| **RE_DELEGATE** | Critical: 2+, または大規模修正 | → 修正SA再起動 → Step 5 に戻る |
 
 「修正量が少ない」の目安：
 - 修正対象ファイルが3個以内
 - 修正行数が合計50行以内
 - 新規ファイル作成を伴わない
 
-### Step 6: ユーザーへ報告
+### Step 7: コミット + GO判定パッケージ + ユーザーへ報告
 
-PR作成**前に**、ユーザーに以下を報告する。
+`scripts/gate_check.py`（境界ゲート検出器）はコミット済みの差分を対象に動くため、
+GO判定パッケージの生成にはこの時点でのコミットが要る。PRはまだ作らない。
+
+1. **コミットを作成する**（CLAUDE.mdの規約に従う。pushはまだしない）
+2. **GO判定パッケージの雛形を生成する**：
+
+   ```
+   uv run python scripts/go_package.py new --activity {タスクID} --base {base branch} \
+       --head HEAD --predicted {plan.md/サブプランのpredicted値} \
+       [--pull-json iterations/{nn}-pull.json] \
+       --out iterations/{nn}-go-package.md
+   ```
+
+   Step 2で `pull_precedents` を省略した場合は `--pull-json` を付けずに実行する。
+3. **人間記述欄を埋める**: 「1-a 分類判定材料」の判例引用・判例が無かった論点、
+   「1-b 地図メンテ材料」「1-c 品質証跡」の各欄。判例が無ければ「なし」と明記する（空欄禁止）
+4. 埋めた雛形を `uv run python scripts/go_package.py lint iterations/{nn}-go-package.md --mode shadow --allow-placeholder` に通す（`shadow`欄はまだ未記入のため `--allow-placeholder` を付ける）
+5. 下記テンプレートで、GO判定パッケージの分類判定材料を含めてユーザーに報告する
 
 **報告テンプレート：**
 
@@ -174,20 +208,35 @@ PR作成**前に**、ユーザーに以下を報告する。
 **目的**: {なぜ必要か}
 **方式**: {どう実現したか（1行）}
 
+### GO判定
+- machine: {classification}（{reason}）
+- predicted: {plan.md/サブプランの値}
+- ブラスト半径・revert容易性の要点: {1-2行}
+
+→ この変更、コード読みが必要な類（事前go相当）？ パッケージだけで判断できる類（事後拒否権相当）？
 → PR出してOK？
 ```
 
-**ユーザーのOKが出てから**コミット+PRに進む。
+6. ユーザーの回答を機械可読ブロックの `shadow.human` に記入し、`shadow.divergence` を
+   `docs/spec/go-gate.md` の対応表（machine × human）から導出して追記する
+7. `uv run python scripts/go_package.py lint iterations/{nn}-go-package.md --mode shadow`
+   を（`--allow-placeholder` なしで）再度通す
 
-### Step 7: コミット + PR
+**ユーザーのOKが出てから**PR作成に進む。
 
-1. CLAUDE.mdの規約に従ってコミットを作成
-2. PRを作成
-3. plan.mdの当該サブプランの状態を✅完了に更新
+### Step 8: PR作成
 
-### Step 8: 統合マージチェック
+1. push（`git push -u origin {branch}`）してPRを作成する
+2. GO判定パッケージ（`iterations/{nn}-go-package.md`）の機械可読ブロック `prs` フィールドに、
+   作成したPR番号を追記する
+3. `add_material` でGO判定パッケージ全文を保存する（title 40字以内、素タグ `go-package` +
+   `domain:cc-memory`、`related` にタスクのactivityを指定）。**GO判定パッケージはPR本文には
+   載せない**（判例idを含む文書のため。PRとの対応は `prs` フィールドが持つ）
+4. plan.mdの当該サブプランの状態を✅完了に更新
 
-Step 7完了後、plan.mdを確認し、残りの🔲が `final`（統合マージ）のみかをチェックする。
+### Step 9: 統合マージチェック
+
+Step 8完了後、plan.mdを確認し、残りの🔲が `final`（統合マージ）のみかをチェックする。
 
 該当する場合：
 1. ユーザーに「全サブプラン完了。統合ブランチからmainへのマージPR出していい？」と確認
@@ -207,8 +256,10 @@ Step 7完了後、plan.mdを確認し、残りの🔲が `final`（統合マー�
 ├── plan-a.md（サブプラン、あれば）
 ├── plan-b.md
 └── iterations/
+    ├── 01-pull.json（pull_precedents応答、Step 2で保存。省略時はなし）
     ├── 01-impl.md
     ├── 01-review.md
+    ├── 01-go-package.md（GO判定パッケージ、Step 7で生成しmaterial化）
     ├── 02-impl.md（RE_DELEGATEの場合）
     └── 02-review.md
 ```
