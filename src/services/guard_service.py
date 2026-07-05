@@ -5,10 +5,9 @@ capability_matrix に基づき role 違反を CapabilityError で拒否する。
 hide 層 (visibility_middleware) と二層構造で動作し、本 guard は
 LLM が hide をすり抜けて tool を呼んだ場合の最終防御を担う。
 
-非 ow セッション (lookup_role が None) は role 不明扱いとして通過させる。
-これは regular Claude session の従来挙動を維持するため。ow セッションは
-SessionStart hook で auto-register されるか env OW_ROLE で fallback されるため、
-role None になるのは非 ow セッションのみという前提。
+role は session_identity (DB) → env OW_ROLE の順で解決する。どちらでも
+解決できないセッション (lookup_role が None) は role 不明扱いとして通過させる。
+これは regular Claude session の従来挙動を維持するため。
 """
 import os
 import sqlite3

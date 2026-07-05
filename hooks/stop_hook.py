@@ -25,7 +25,6 @@ from hooks.hook_state import HookState
 from hooks.hook_transcript import (
     _CHECKIN_TOOLS,
     _RECORDING_TOOLS,
-    _is_worker_session,
     extract_events,
     extract_last_activity_id,
     read_transcript_from_offset,
@@ -134,11 +133,10 @@ def main() -> None:
             # activity_idを抽出して保存
             _update_checked_in_activity(state, all_events, transcript_path)
 
-        # orchフロー（worker セッション or orch_managed=1 のアクティビティ）では
+        # orch_managed=1 のアクティビティにcheck-in済みのセッションでは
         # 個人フロー用のcheck-inブロック・nudgeを抑制する。
-        suppress_personal_flow = (
-            _is_worker_session()
-            or _is_orch_managed_activity(state.get_checked_in_activity())
+        suppress_personal_flow = _is_orch_managed_activity(
+            state.get_checked_in_activity()
         )
 
         if not has_checkin and not suppress_personal_flow:
