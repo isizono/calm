@@ -1,7 +1,7 @@
 """品質投資コンポーネント（バックアップ / シグナル吸い上げ / 小PR化支援）に接続する
 skill文面・spec docsの契約テスト。
 
-既存の test_worker_skill_md.py / test_audit_skill_md.py と同じパターンで、
+既存の test_audit_skill_md.py と同じパターンで、
 SKILL.md / spec docs 本文に必要な記述が存在することをassertする。
 """
 import re
@@ -16,7 +16,6 @@ SRC_MAIN = _REPO_ROOT / "src" / "main.py"
 TASK_PLAN_SKILL_MD = _REPO_ROOT / ".claude" / "skills" / "task-plan" / "SKILL.md"
 TASK_EXECUTE_SKILL_MD = _REPO_ROOT / ".claude" / "skills" / "task-execute" / "SKILL.md"
 RECORDING_SKILL_MD = _REPO_ROOT / "skills" / "recording" / "SKILL.md"
-WORKER_SYNC_SKILL_MD = _REPO_ROOT / "skills" / "worker-sync" / "SKILL.md"
 GUIDE_SKILL_MD = _REPO_ROOT / "skills" / "guide" / "SKILL.md"
 MCP_TOOLS_SPEC = _REPO_ROOT / "docs" / "spec" / "mcp-tools.md"
 DB_SCHEMA_SPEC = _REPO_ROOT / "docs" / "spec" / "db-schema.md"
@@ -77,21 +76,6 @@ class TestRecordingSkillSignalRouting:
         assert "L5" in content
 
 
-class TestWorkerSyncSkillSignalCheck:
-    def test_signal_report_step_exists(self):
-        content = _read(WORKER_SYNC_SKILL_MD)
-        assert "report_signal" in content
-
-    def test_steps_renumbered_without_gaps(self):
-        content = _read(WORKER_SYNC_SKILL_MD)
-        assert "### 3. signal報告の確認" in content
-        assert "### 4. decisionの扱い" in content
-        assert "### 5. 完了" in content
-        # 旧採番 "### 3. decisionの扱い" / "### 4. 完了" が残っていない
-        assert "### 3. decisionの扱い" not in content
-        assert "### 4. 完了" not in content
-
-
 class TestGuideSkillRestoreCommand:
     def test_restore_latest_command_documented(self):
         content = _read(GUIDE_SKILL_MD)
@@ -115,14 +99,14 @@ class TestMcpToolsSpecSignalSection:
 
     def test_all_three_signal_tools_have_detail_sections(self):
         content = _read(MCP_TOOLS_SPEC)
-        assert "### 2.35 report_signal" in content
-        assert "### 2.36 get_signals" in content
-        assert "### 2.37 update_signal" in content
+        assert "### 2.29 report_signal" in content
+        assert "### 2.30 get_signals" in content
+        assert "### 2.31 update_signal" in content
 
     def test_tool_count_updated(self):
         content = _read(MCP_TOOLS_SPEC)
-        assert "全43ツール" in content
-        assert "全39ツール" not in content
+        assert "全37ツール" in content
+        assert "全43ツール" not in content
 
 
 class TestMcpToolsSpecToolCount:
@@ -143,8 +127,8 @@ class TestMcpToolsSpecToolCount:
 
     def test_previously_missing_tools_documented(self):
         content = _read(MCP_TOOLS_SPEC)
-        # カテゴリ一覧と詳細セクションの両方に3ツールが記載されていること
-        for tool in ("export_material", "ow_spawn_dispatcher", "ow_close_dispatcher"):
+        # カテゴリ一覧と詳細セクションの両方に記載されていること
+        for tool in ("export_material",):
             assert f"`{tool}`" in content, f"{tool} がカテゴリ一覧に無い"
             assert re.search(rf"^### 2\.\d+ .*\b{tool}\b", content, re.MULTILINE), (
                 f"{tool} の詳細セクションが無い"

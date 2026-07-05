@@ -8,8 +8,6 @@
 import json
 import urllib.error
 import urllib.request
-from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -368,41 +366,17 @@ class TestOwSendEnsureChannel:
         assert result["error"]["code"] == 404
 
 
-class TestOwStatusEnsure:
-    """ow_status: relay起動 + channel作成の自動化"""
+class TestOwSendTerminatedIsPlainSend:
+    """event:state(terminated) の送信は通常のrelay送信として完結する。
 
-    def test_ow_status_calls_ensure_relay_and_channel(self, monkeypatch, tmp_path):
-        """ow_statusはensure_relay_serverとensure_channelを自動実行する"""
-        ensure_relay_called = []
-        ensure_channel_called = []
-
-        monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: ensure_relay_called.append(True) or True)
-        monkeypatch.setattr(ow_service, "ensure_channel", lambda ch: ensure_channel_called.append(ch) or True)
-        monkeypatch.setattr(ow_service, "_relay_request", lambda *args, **kwargs: {"handles": []})
-        monkeypatch.setattr(ow_service, "find_topic_id_by_channel", lambda *_args, **_kw: None)
-
-        ow_service.ow_status(channel="TestCh01", topic_id="454")
-
-        assert len(ensure_relay_called) == 1
-        assert ensure_channel_called == ["TestCh01"]
-
-    def test_ow_status_relay_unavailable_returns_error(self, monkeypatch):
-        """relayが起動できない場合はエラーを返す"""
-        monkeypatch.setattr(ow_service, "ensure_relay_server", lambda: False)
-
-        result = ow_service.ow_status(channel="TestCh01")
-
-        assert "error" in result
-        assert result["error"]["code"] == "RELAY_UNAVAILABLE"
-
-
-class TestOwSendAutoClose:
-    """ow_send: event:state(terminated, cause:closed|cancelled) 観測時に
-    ow_close_worker を同期発火する副作用。"""
+    terminated(cause=closed|cancelled) を含むstate eventを送信しても、
+    relay POST /send 以外の副作用（プロセス操作等）は一切発生しない。
+    """
 
     @pytest.fixture
-    def stub_relay_success(self, monkeypatch):
-        """relay POST 成功 (msg_id 返却) を固定で返す stub。"""
+    def capture_relay(self, monkeypatch):
+        """relay POST 成功 (msg_id 返却) を固定で返し、呼び出しURLを記録する stub。"""
+        calls = []
 
         class FakeResponse:
             def read(self):
@@ -414,248 +388,95 @@ class TestOwSendAutoClose:
             def __exit__(self, *args):
                 pass
 
-        monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: FakeResponse())
-        monkeypatch.setattr(ow_service, "RELAY_URL", "http://127.0.0.1:8765")
-
-    def test_terminated_cause_closed_triggers_close_worker(self, monkeypatch, stub_relay_success):
-        """cause=closed → ow_close_worker(term_ref) が同期呼び出しされる"""
-        monkeypatch.setattr(
-            ow_service, "ow_get_identity",
-            lambda ch, h: {"term_ref": "%42", "session_id": "s1"},
-        )
-        called: list = []
-        monkeypatch.setattr(
-            ow_service, "ow_close_worker",
-            lambda term_ref: called.append(term_ref) or {"closed": True, "killed": False, "term_ref": term_ref},
-        )
-
-        body = {"v": 1, "kind": "event", "from": "w-a", "to": "*",
-                "data": {"type": "state", "state": "terminated", "cause": "closed"}}
-        result = ow_service.ow_send(channel="AbCdEfGh", handle="w-a", body=body)
-
-        assert result.get("msg_id") == 123
-        assert called == ["%42"]
-
-    def test_terminated_cause_cancelled_triggers_close_worker(self, monkeypatch, stub_relay_success):
-        """cause=cancelled でも呼ばれる"""
-        monkeypatch.setattr(
-            ow_service, "ow_get_identity",
-            lambda ch, h: {"term_ref": "%99"},
-        )
-        called: list = []
-        monkeypatch.setattr(
-            ow_service, "ow_close_worker",
-            lambda term_ref: called.append(term_ref) or {"closed": True, "killed": False, "term_ref": term_ref},
-        )
-
-        body = {"v": 1, "kind": "event", "from": "w-a", "to": "*",
-                "data": {"type": "state", "state": "terminated", "cause": "cancelled"}}
-        ow_service.ow_send(channel="AbCdEfGh", handle="w-a", body=body)
-
-        assert called == ["%99"]
-
-    def test_terminated_cause_dead_does_not_trigger(self, monkeypatch, stub_relay_success):
-        """cause=dead では呼ばれない"""
-        monkeypatch.setattr(
-            ow_service, "ow_get_identity",
-            lambda ch, h: {"term_ref": "%42"},
-        )
-        called: list = []
-        monkeypatch.setattr(
-            ow_service, "ow_close_worker",
-            lambda term_ref: called.append(term_ref),
-        )
-
-        body = {"v": 1, "kind": "event", "from": "w-a", "to": "*",
-                "data": {"type": "state", "state": "terminated", "cause": "dead"}}
-        ow_service.ow_send(channel="AbCdEfGh", handle="w-a", body=body)
-
-        assert called == []
-
-    def test_terminated_cause_crashed_does_not_trigger(self, monkeypatch, stub_relay_success):
-        """cause=crashed では呼ばれない"""
-        monkeypatch.setattr(
-            ow_service, "ow_get_identity",
-            lambda ch, h: {"term_ref": "%42"},
-        )
-        called: list = []
-        monkeypatch.setattr(
-            ow_service, "ow_close_worker",
-            lambda term_ref: called.append(term_ref),
-        )
-
-        body = {"v": 1, "kind": "event", "from": "w-a", "to": "*",
-                "data": {"type": "state", "state": "terminated", "cause": "crashed"}}
-        ow_service.ow_send(channel="AbCdEfGh", handle="w-a", body=body)
-
-        assert called == []
-
-    def test_state_draining_does_not_trigger(self, monkeypatch, stub_relay_success):
-        """state=draining (terminated 以外) では呼ばれない"""
-        monkeypatch.setattr(
-            ow_service, "ow_get_identity",
-            lambda ch, h: {"term_ref": "%42"},
-        )
-        called: list = []
-        monkeypatch.setattr(
-            ow_service, "ow_close_worker",
-            lambda term_ref: called.append(term_ref),
-        )
-
-        body = {"v": 1, "kind": "event", "from": "w-a", "to": "*",
-                "data": {"type": "state", "state": "draining"}}
-        ow_service.ow_send(channel="AbCdEfGh", handle="w-a", body=body)
-
-        assert called == []
-
-    def test_command_kind_does_not_trigger(self, monkeypatch, stub_relay_success):
-        """kind=command では呼ばれない (event 以外)"""
-        monkeypatch.setattr(
-            ow_service, "ow_get_identity",
-            lambda ch, h: {"term_ref": "%42"},
-        )
-        called: list = []
-        monkeypatch.setattr(
-            ow_service, "ow_close_worker",
-            lambda term_ref: called.append(term_ref),
-        )
-
-        # kind=command で data に terminated っぽい中身を入れても発火しない
-        body = {"v": 1, "kind": "command", "from": "orch", "to": "w-a",
-                "data": {"type": "state", "state": "terminated", "cause": "closed"}}
-        ow_service.ow_send(channel="AbCdEfGh", handle="orch", body=body)
-
-        assert called == []
-
-    def test_term_ref_cache_miss_logs_warning_no_op(self, monkeypatch, stub_relay_success, caplog):
-        """term_ref が引き当てられないとき: warn log のみ、ow_close_worker は呼ばれない"""
-        monkeypatch.setattr(ow_service, "ow_get_identity", lambda ch, h: None)
-        called: list = []
-        monkeypatch.setattr(
-            ow_service, "ow_close_worker",
-            lambda term_ref: called.append(term_ref),
-        )
-
-        body = {"v": 1, "kind": "event", "from": "w-a", "to": "*",
-                "data": {"type": "state", "state": "terminated", "cause": "closed"}}
-        with caplog.at_level("WARNING", logger="src.services.ow_service"):
-            result = ow_service.ow_send(channel="AbCdEfGh", handle="w-a", body=body)
-
-        assert result.get("msg_id") == 123
-        assert called == []
-        assert any("auto-close skipped" in rec.message for rec in caplog.records)
-
-    def test_duplicate_terminated_calls_close_worker_each_time(self, monkeypatch, stub_relay_success):
-        """同 term_ref で 2 回 ow_send (terminated) → handler は 2 回とも ow_close_worker を呼ぶ。
-        adapter 側冪等性に乗る設計のため handler 内フラグは持たない。"""
-        monkeypatch.setattr(
-            ow_service, "ow_get_identity",
-            lambda ch, h: {"term_ref": "%77"},
-        )
-        called: list = []
-        monkeypatch.setattr(
-            ow_service, "ow_close_worker",
-            lambda term_ref: called.append(term_ref) or {"closed": True, "killed": False, "term_ref": term_ref},
-        )
-
-        body = {"v": 1, "kind": "event", "from": "w-a", "to": "*",
-                "data": {"type": "state", "state": "terminated", "cause": "closed"}}
-        ow_service.ow_send(channel="AbCdEfGh", handle="w-a", body=body)
-        ow_service.ow_send(channel="AbCdEfGh", handle="w-a", body=body)
-
-        assert called == ["%77", "%77"]
-
-    def test_close_worker_exception_does_not_propagate(self, monkeypatch, stub_relay_success, caplog):
-        """ow_close_worker が例外を投げても ow_send は msg_id を成功返却し warn log のみ残す"""
-        monkeypatch.setattr(
-            ow_service, "ow_get_identity",
-            lambda ch, h: {"term_ref": "%42"},
-        )
-
-        def _raising(_term_ref):
-            raise RuntimeError("adapter boom")
-
-        monkeypatch.setattr(ow_service, "ow_close_worker", _raising)
-
-        body = {"v": 1, "kind": "event", "from": "w-a", "to": "*",
-                "data": {"type": "state", "state": "terminated", "cause": "closed"}}
-        with caplog.at_level("WARNING", logger="src.services.ow_service"):
-            result = ow_service.ow_send(channel="AbCdEfGh", handle="w-a", body=body)
-
-        assert result.get("msg_id") == 123
-        assert "error" not in result
-        assert any("auto-close failed" in rec.message for rec in caplog.records)
-
-    def test_close_worker_returns_closed_false_warns(self, monkeypatch, stub_relay_success, caplog):
-        """ow_close_worker が {"closed": False} を返した場合 warn log が出る"""
-        monkeypatch.setattr(
-            ow_service, "ow_get_identity",
-            lambda ch, h: {"term_ref": "%42"},
-        )
-        monkeypatch.setattr(
-            ow_service, "ow_close_worker",
-            lambda _term_ref: {"closed": False, "error": "tmux kill failed"},
-        )
-
-        body = {"v": 1, "kind": "event", "from": "w-a", "to": "*",
-                "data": {"type": "state", "state": "terminated", "cause": "closed"}}
-        with caplog.at_level("WARNING", logger="src.services.ow_service"):
-            result = ow_service.ow_send(channel="AbCdEfGh", handle="w-a", body=body)
-
-        assert result.get("msg_id") == 123
-        assert "error" not in result
-        assert any(
-            "auto-close: tmux kill failed" in rec.message for rec in caplog.records
-        )
-
-    def test_close_worker_returns_manual_warns(self, monkeypatch, stub_relay_success, caplog):
-        """ow_close_worker が {"manual": True} を返した場合 warn log が出る"""
-        monkeypatch.setattr(
-            ow_service, "ow_get_identity",
-            lambda ch, h: {"term_ref": "%42"},
-        )
-        monkeypatch.setattr(
-            ow_service, "ow_close_worker",
-            lambda _term_ref: {
-                "manual": True,
-                "message": "manual: prefix detected, operator action required",
-            },
-        )
-
-        body = {"v": 1, "kind": "event", "from": "w-a", "to": "*",
-                "data": {"type": "state", "state": "terminated", "cause": "closed"}}
-        with caplog.at_level("WARNING", logger="src.services.ow_service"):
-            result = ow_service.ow_send(channel="AbCdEfGh", handle="w-a", body=body)
-
-        assert result.get("msg_id") == 123
-        assert "error" not in result
-        assert any(
-            "auto-close: manual" in rec.message for rec in caplog.records
-        )
-
-    def test_relay_post_failure_does_not_trigger_close(self, monkeypatch):
-        """relay POST 失敗 (msg_id 未取得) では ow_close_worker は呼ばれない"""
-
         def fake_urlopen(req, timeout=None):
-            raise urllib.error.HTTPError(
-                url=req.full_url, code=400, msg="bad request", hdrs={}, fp=None
-            )
+            calls.append(req.full_url)
+            return FakeResponse()
 
         monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
         monkeypatch.setattr(ow_service, "RELAY_URL", "http://127.0.0.1:8765")
-        monkeypatch.setattr(
-            ow_service, "ow_get_identity",
-            lambda ch, h: {"term_ref": "%42"},
-        )
-        called: list = []
-        monkeypatch.setattr(
-            ow_service, "ow_close_worker",
-            lambda term_ref: called.append(term_ref),
-        )
+        return calls
 
+    @pytest.mark.parametrize("cause", ["closed", "cancelled"])
+    def test_terminated_close_event_returns_msg_id_without_side_effect(
+        self, capture_relay, cause
+    ):
+        """terminated(cause=closed|cancelled) → relay送信1回のみで成功する"""
         body = {"v": 1, "kind": "event", "from": "w-a", "to": "*",
-                "data": {"type": "state", "state": "terminated", "cause": "closed"}}
+                "data": {"type": "state", "state": "terminated", "cause": cause}}
         result = ow_service.ow_send(channel="AbCdEfGh", handle="w-a", body=body)
 
-        assert "error" in result
-        assert called == []
+        assert result == {"msg_id": 123}
+        # relay POST /send 1回のみ。追加のHTTP呼び出しは発生しない
+        assert capture_relay == ["http://127.0.0.1:8765/send"]
+
+    @pytest.mark.parametrize("cause", ["dead", "crashed"])
+    def test_terminated_other_causes_also_plain_send(
+        self, capture_relay, cause
+    ):
+        """terminated(cause=dead|crashed) も同様に通常送信として成功する"""
+        body = {"v": 1, "kind": "event", "from": "w-a", "to": "*",
+                "data": {"type": "state", "state": "terminated", "cause": cause}}
+        result = ow_service.ow_send(channel="AbCdEfGh", handle="w-a", body=body)
+
+        assert result == {"msg_id": 123}
+        assert capture_relay == ["http://127.0.0.1:8765/send"]
+
+
+class TestV1MessagingStandalone:
+    """ow_send / ow_history はrelay HTTPのみに依存して単独で機能する。"""
+
+    def test_ow_send_completes_with_relay_http_only(self, monkeypatch):
+        """ow_send はrelayへのPOSTだけで完結する"""
+        calls = []
+
+        class FakeResponse:
+            def read(self):
+                return json.dumps({"msg_id": 7}).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+        def fake_urlopen(req, timeout=None):
+            calls.append(req.full_url)
+            return FakeResponse()
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(ow_service, "RELAY_URL", "http://127.0.0.1:8765")
+
+        body = {"v": 1, "kind": "command", "from": "orch", "to": "w-a", "verb": "ping"}
+        result = ow_service.ow_send(channel="AbCdEfGh", handle="orch", body=body)
+
+        assert result == {"msg_id": 7}
+        assert calls == ["http://127.0.0.1:8765/send"]
+
+    def test_ow_history_completes_with_relay_http_only(self, monkeypatch):
+        """ow_history はrelayへのGETだけで完結し、body JSONをパースして返す"""
+        calls = []
+
+        class FakeResponse:
+            def read(self):
+                return json.dumps({"messages": [
+                    {"msg_id": 5, "handle": "w-a", "body": '{"v":1}'},
+                ]}).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+        def fake_urlopen(req, timeout=None):
+            calls.append(req.full_url)
+            return FakeResponse()
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(ow_service, "RELAY_URL", "http://127.0.0.1:8765")
+
+        result = ow_service.ow_history(channel="AbCdEfGh", since=0, limit=10)
+
+        assert len(calls) == 1
+        assert "/history?" in calls[0]
+        assert result["messages"][0]["body"] == {"v": 1}
