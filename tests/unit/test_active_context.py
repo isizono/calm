@@ -16,14 +16,16 @@ from src.services.activity_service import (
     update_activity,
     get_active_domains,
     get_active_activities_by_tag,
+    get_pinned_active_activities,
 )
 import src.services.embedding_service as emb
 from tests.helpers import add_decision
 from hooks.session_start_hook import (
     _build_activities_section,
     _calc_elapsed_days,
-    _SCORING_INSTRUCTIONS,
-    _DESCRIPTION_SNIPPET_LENGTH,
+    _DETERMINISTIC_RENDER_NOTICE,
+    _TIER2_MAX_ITEMS,
+    _TIER4_STALE_DAYS,
 )
 
 
@@ -69,205 +71,215 @@ def _build_active_context_wrapper():
         conn.close()
 
 
-def _age_all_activities(hours: int = 48) -> None:
-    """スコアリング対象セクション検証用: 全アクティビティのcreated_atを指定時間前に書き戻す。"""
+def _age_activities(hours: int = 48) -> None:
+    """全アクティビティの created_at / updated_at を指定時間前に書き戻す。
+
+    階層 3 (created_at 24h) から外し、階層 4 (updated_at 30d) に落とすためのヘルパ。
+    """
     conn = get_connection()
     try:
         past = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
-        conn.execute("UPDATE activities SET created_at = ?", (past,))
+        conn.execute(
+            "UPDATE activities SET created_at = ?, updated_at = ?", (past, past)
+        )
         conn.commit()
     finally:
         conn.close()
 
 
-# ========================================
-# 定数の確認
-# ========================================
+def test_deterministic_render_notice_constant():
+    """末尾固定文の文言が仕様通りである"""
+    assert "決定論的に組み立てた表示用 markdown" in _DETERMINISTIC_RENDER_NOTICE
+    assert "再フォーマットや優先順の再評価をせず" in _DETERMINISTIC_RENDER_NOTICE
 
 
-def test_description_snippet_length():
-    """description切り出し文字数が100"""
-    assert _DESCRIPTION_SNIPPET_LENGTH == 100
+def test_tier2_max_items_constant():
+    """階層 2 の上限は 5"""
+    assert _TIER2_MAX_ITEMS == 5
 
 
-# ========================================
-# _calc_elapsed_days のテスト
-# ========================================
+def test_tier4_stale_days_constant():
+    """階層 4 の updated_at 上限は 30 日"""
+    assert _TIER4_STALE_DAYS == 30
 
 
 def test_calc_elapsed_days_today():
-    """本日更新なら0日"""
     now = datetime.now(timezone.utc).isoformat()
     assert _calc_elapsed_days(now) == 0
 
 
 def test_calc_elapsed_days_3_days_ago():
-    """3日前なら3"""
     three_days_ago = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
     assert _calc_elapsed_days(three_days_ago) == 3
 
 
 def test_calc_elapsed_days_sqlite_format():
-    """SQLiteのCURRENT_TIMESTAMP形式（スペース区切り、TZ情報なし）でも正しく計算"""
     assert _calc_elapsed_days("2026-03-14 10:00:00") >= 0
 
 
 def test_calc_elapsed_days_invalid_string():
-    """不正な文字列なら0"""
     assert _calc_elapsed_days("not-a-date") == 0
 
 
 def test_calc_elapsed_days_none():
-    """Noneなら0"""
     assert _calc_elapsed_days(None) == 0
 
 
 def test_calc_elapsed_days_empty():
-    """空文字列なら0"""
     assert _calc_elapsed_days("") == 0
 
 
-# ========================================
-# get_active_domains のテスト
-# ========================================
-
-
 def test_get_active_domains_with_active_activity(temp_db):
-    """アクティブなアクティビティがあるdomainが返る"""
     add_activity(
         title="Activity 1", description="Desc",
         tags=["domain:myproject"], check_in=False,
     )
-
     domains = get_active_domains()
     names = [d["name"] for d in domains]
     assert "myproject" in names
 
 
 def test_get_active_domains_excludes_completed(temp_db):
-    """completedアクティビティのみのdomainは返らない"""
     result = add_activity(
         title="Done", description="Desc",
         tags=["domain:completed-proj"], check_in=False,
     )
     update_activity(result["activity_id"], status="completed")
-
     domains = get_active_domains()
     names = [d["name"] for d in domains]
     assert "completed-proj" not in names
 
 
 def test_get_active_domains_excludes_non_domain(temp_db):
-    """domain以外のnamespaceは返らない"""
     add_activity(
         title="Activity 1", description="Desc",
         tags=["intent:design"], check_in=False,
     )
-
     domains = get_active_domains()
     names = [d["name"] for d in domains]
     assert "design" not in names
 
 
 def test_get_active_domains_sorted_by_name(temp_db):
-    """name順ソート"""
     add_activity(title="Z", description="Desc", tags=["domain:zzz"], check_in=False)
     add_activity(title="A", description="Desc", tags=["domain:aaa"], check_in=False)
-
     domains = get_active_domains()
     names = [d["name"] for d in domains]
-    aaa_idx = names.index("aaa")
-    zzz_idx = names.index("zzz")
-    assert aaa_idx < zzz_idx
+    assert names.index("aaa") < names.index("zzz")
 
 
 def test_get_active_domains_deduplicates(temp_db):
-    """同じdomain:タグを持つ複数アクティビティで重複しない"""
     add_activity(title="A1", description="Desc", tags=["domain:myproject"], check_in=False)
     add_activity(title="A2", description="Desc", tags=["domain:myproject"], check_in=False)
-
     domains = get_active_domains()
-    myproject_domains = [d for d in domains if d["name"] == "myproject"]
-    assert len(myproject_domains) == 1
+    assert len([d for d in domains if d["name"] == "myproject"]) == 1
 
 
 def test_get_active_domains_no_activities(temp_db):
-    """アクティビティがないdomainは返らない（トピックだけでは返らない）"""
     add_topic(title="Topic Only", description="Desc", tags=["domain:topic-only-proj"])
-
     domains = get_active_domains()
     names = [d["name"] for d in domains]
     assert "topic-only-proj" not in names
 
 
-# ========================================
-# get_active_activities_by_tag のテスト
-# ========================================
-
-
 def test_get_active_activities_by_tag_basic(temp_db):
-    """domain:タグに紐づくホットアクティビティが返る"""
     add_activity(title="Activity 1", description="Desc", tags=["domain:test-proj"], check_in=False)
-
     tag_id = _get_tag_id("domain", "test-proj")
     activities = get_active_activities_by_tag(tag_id)
-
     assert len(activities) == 1
     assert activities[0]["title"] == "Activity 1"
     assert activities[0]["status"] == "pending"
 
 
 def test_get_active_activities_by_tag_has_updated_at(temp_db):
-    """updated_atフィールドが含まれる"""
     add_activity(title="Activity 1", description="Desc", tags=["domain:test-proj"], check_in=False)
-
     tag_id = _get_tag_id("domain", "test-proj")
     activities = get_active_activities_by_tag(tag_id)
-
     assert "updated_at" in activities[0]
     assert activities[0]["updated_at"] is not None
 
 
 def test_get_active_activities_by_tag_excludes_completed(temp_db):
-    """completedアクティビティは含まれない"""
     result = add_activity(title="Done Activity", description="Desc", tags=["domain:test-proj"], check_in=False)
     update_activity(result["activity_id"], status="completed")
-
     tag_id = _get_tag_id("domain", "test-proj")
     activities = get_active_activities_by_tag(tag_id)
-
     assert len(activities) == 0
 
 
 def test_get_active_activities_by_tag_sort_order(temp_db):
-    """in_progressが先、その後pending"""
     r1 = add_activity(title="Pending Activity", description="Desc", tags=["domain:test-proj"], check_in=False)
     r2 = add_activity(title="In Progress Activity", description="Desc", tags=["domain:test-proj"], check_in=False)
     update_activity(r2["activity_id"], status="in_progress")
-
     tag_id = _get_tag_id("domain", "test-proj")
     activities = get_active_activities_by_tag(tag_id)
-
     assert len(activities) == 2
     assert activities[0]["status"] == "in_progress"
     assert activities[1]["status"] == "pending"
 
 
 def test_get_active_activities_by_tag_empty(temp_db):
-    """紐づくアクティビティがなければ空リスト"""
     add_topic(title="Topic Only", description="Desc", tags=["domain:no-activities"])
-
     tag_id = _get_tag_id("domain", "no-activities")
     activities = get_active_activities_by_tag(tag_id)
-
     assert activities == []
 
 
-# ========================================
-# _build_activities_section のテスト
-# ========================================
+def _pin_activity(activity_id: int) -> None:
+    """テスト用: pins テーブルに activity 宛の pin を挿入する"""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO pins (source_type, source_id, target_type, target_id) "
+            "VALUES ('topic', 1, 'activity', ?)",
+            (activity_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_get_pinned_active_activities_returns_pinned(temp_db):
+    result = add_activity(
+        title="Pinned Activity", description="Desc",
+        tags=["domain:pinproj"], check_in=False,
+    )
+    _pin_activity(result["activity_id"])
+    pinned = get_pinned_active_activities()
+    ids = [a["id"] for a in pinned]
+    assert result["activity_id"] in ids
+
+
+def test_get_pinned_active_activities_excludes_unpinned(temp_db):
+    add_activity(
+        title="Unpinned Activity", description="Desc",
+        tags=["domain:pinproj"], check_in=False,
+    )
+    pinned = get_pinned_active_activities()
+    titles = [a["title"] for a in pinned]
+    assert "Unpinned Activity" not in titles
+
+
+def test_get_pinned_active_activities_excludes_completed(temp_db):
+    result = add_activity(
+        title="Done Pinned", description="Desc",
+        tags=["domain:pinproj"], check_in=False,
+    )
+    _pin_activity(result["activity_id"])
+    update_activity(result["activity_id"], status="completed")
+    pinned = get_pinned_active_activities()
+    ids = [a["id"] for a in pinned]
+    assert result["activity_id"] not in ids
+
+
+def test_get_pinned_active_activities_empty(temp_db):
+    add_activity(
+        title="Plain Activity", description="Desc",
+        tags=["domain:pinproj"], check_in=False,
+    )
+    assert get_pinned_active_activities() == []
 
 
 def test_build_activities_section_empty(temp_db):
@@ -279,28 +291,24 @@ def test_build_activities_section_empty(temp_db):
 def test_build_activities_section_empty_with_only_topics(temp_db):
     """トピックだけでアクティビティがない場合も空文字列"""
     add_topic(title="Topic Only", description="Desc", tags=["domain:myapp"])
-
     result = _build_active_context_wrapper()
     assert result == ""
 
 
 def test_build_activities_section_with_activities(temp_db):
-    """アクティビティがある場合、topic別グルーピング (関連topic無しは『その他』) で表示される (D#2464-2466)"""
+    """階層 4 でアクティビティが topic 別グルーピング（topic 無しは『その他』）で表示される"""
     add_activity(title="[作業] 実装する", description="Desc", tags=["domain:myapp"], check_in=False)
-    _age_all_activities()
+    _age_activities()
 
     result = _build_active_context_wrapper()
 
     assert "# アクティビティ一覧" in result
-    # 旧 "## スコアリング対象" フラットセクションは廃止 (D#2466)
-    assert "## スコアリング対象" not in result
-    # 関連topicなしは『その他』セクションに集約
     assert "## その他" in result
     assert "[作業] 実装する" in result
 
 
-def test_build_activities_section_status_marker_pending(temp_db):
-    """pendingアクティビティに○マーカーが付く"""
+def test_build_activities_section_status_marker_pending_in_recent_tier(temp_db):
+    """階層 3 の pending アクティビティに○マーカーが付く"""
     add_activity(title="[作業] 実装する", description="Desc", tags=["domain:myapp"], check_in=False)
 
     result = _build_active_context_wrapper()
@@ -309,7 +317,7 @@ def test_build_activities_section_status_marker_pending(temp_db):
 
 
 def test_build_activities_section_status_marker_in_progress(temp_db):
-    """in_progressアクティビティに●マーカーが付く"""
+    """in_progress アクティビティは階層 2 で●マーカーが付く"""
     r = add_activity(title="[作業] 実装する", description="Desc", tags=["domain:myapp"], check_in=False)
     update_activity(r["activity_id"], status="in_progress")
 
@@ -318,17 +326,27 @@ def test_build_activities_section_status_marker_in_progress(temp_db):
     assert "●" in result
 
 
-def test_build_activities_section_elapsed_days(temp_db):
-    """経過日数がメタデータ行に 'updated: Nd ago' 形式で表示される"""
+def test_build_activities_section_elapsed_days_in_title_line(temp_db):
+    """経過日数はタイトル行末尾に `(Nd)` として付く"""
     add_activity(title="[作業] 実装する", description="Desc", tags=["domain:myapp"], check_in=False)
 
     result = _build_active_context_wrapper()
 
-    assert "updated: 0d ago" in result
+    assert "(0d)" in result
+
+
+def test_build_activities_section_no_meta_updated_line(temp_db):
+    """`updated: Nd ago` の meta 行は出力されない"""
+    add_activity(title="[作業] 実装する", description="Desc", tags=["domain:myapp"], check_in=False)
+
+    result = _build_active_context_wrapper()
+
+    assert "updated:" not in result
+    assert "d ago" not in result
 
 
 def test_build_activities_section_no_topic_section(temp_db):
-    """トピックセクション（最新トピック:）が出力されない"""
+    """旧トピックセクション（最新トピック:）は出力されない"""
     add_topic(title="My Topic", description="Desc", tags=["domain:myapp"])
     add_activity(title="[作業] 実装する", description="Desc", tags=["domain:myapp"], check_in=False)
 
@@ -348,29 +366,29 @@ def test_build_activities_section_no_recent_tags_section(temp_db):
     assert "## 最近使われたタグ" not in result
 
 
-def test_build_activities_section_all_items_shown(temp_db):
-    """全アクティビティが番号付きフラットリストで表示される（件数制限なし）"""
+def test_build_activities_section_tier2_capped_at_five(temp_db):
+    """階層 2『優先』は上位 5 件までに絞られる"""
     for i in range(7):
         r = add_activity(
             title=f"[作業] Activity {i}", description="Desc",
             tags=["domain:myapp"], check_in=False,
         )
-        if i < 4:
-            update_activity(r["activity_id"], status="in_progress")
-    _age_all_activities()
+        update_activity(r["activity_id"], status="in_progress")
+    _age_activities()
 
     result = _build_active_context_wrapper()
 
-    # 全7件が番号付きで表示される
-    assert "1. ●" in result
-    assert "全7件" in result
-    # 全アクティビティが含まれている
-    for i in range(7):
-        assert f"Activity {i}" in result
+    idx_tier2 = result.index("## 優先")
+    next_section = result.find("\n## ", idx_tier2 + 1)
+    tier2_block = result[idx_tier2:] if next_section == -1 else result[idx_tier2:next_section]
+    for expected in ("1. ●", "2. ●", "3. ●", "4. ●", "5. ●"):
+        assert expected in tier2_block, f"番号 '{expected}' が階層 2 に無い"
+    assert "6. ●" not in tier2_block
+    assert "6. ○" not in tier2_block
 
 
 def test_build_activities_section_numbered_list(temp_db):
-    """アクティビティが連番で表示される"""
+    """階層 2/3 で連番が振られる"""
     add_activity(title="First", description="Desc", tags=["domain:myapp"], check_in=False)
     add_activity(title="Second", description="Desc", tags=["domain:myapp"], check_in=False)
 
@@ -380,25 +398,25 @@ def test_build_activities_section_numbered_list(temp_db):
     assert "2. " in result
 
 
-def test_build_activities_section_total_count(temp_db):
-    """全N件の合計が表示される"""
+def test_build_activities_section_no_total_count_line(temp_db):
+    """全N件の合計行は出力されない（新仕様で撤去）"""
     for i in range(3):
         add_activity(
             title=f"[作業] Activity {i}", description="Desc",
             tags=["domain:myapp"], check_in=False,
         )
-    _age_all_activities()
+    _age_activities()
 
     result = _build_active_context_wrapper()
 
-    assert "全3件" in result
+    assert "全3件" not in result
+    assert "全" not in result or "全件" not in result
 
 
 def test_build_activities_section_domain_with_zero_activities_skipped(temp_db):
     """アクティビティ0件のdomainセクションはスキップ"""
     add_activity(title="Activity", description="Desc", tags=["domain:myapp"], check_in=False)
 
-    # domain:emptyのタグだけ作成（アクティビティなし）
     conn = get_connection()
     try:
         from src.services.tag_service import ensure_tag_ids
@@ -413,28 +431,26 @@ def test_build_activities_section_domain_with_zero_activities_skipped(temp_db):
     assert "empty-domain" not in result
 
 
-def test_build_activities_section_multiple_domains_flat(temp_db):
-    """複数domainのアクティビティが topic 別グルーピング (D#2466) で統合表示される"""
+def test_build_activities_section_multiple_domains_grouped(temp_db):
+    """複数 domain の pending アクティビティは階層 4 の『その他』に集約される"""
     add_activity(title="App Activity", description="Desc", tags=["domain:app"], check_in=False)
     add_activity(title="Lib Activity", description="Desc", tags=["domain:lib"], check_in=False)
-    _age_all_activities()
+    _age_activities()
 
     result = _build_active_context_wrapper()
 
     assert "App Activity" in result
     assert "Lib Activity" in result
-    # 関連topicが無い両アクティビティは「その他」セクション配下に統合される
     assert "## その他" in result
 
 
 def test_build_activities_section_activity_id_in_bracket(temp_db):
-    """アクティビティIDが「title (#NNN)」形式で表示される（T#465 Phase 1）"""
+    """アクティビティIDが「title (#NNN)」形式で表示される"""
     activity = add_activity(title="Activity 1", description="Desc", tags=["domain:myapp"], check_in=False)
     activity_id = activity["activity_id"]
 
     result = _build_active_context_wrapper()
 
-    # 旧 [N] 形式は廃止、α化形式「title (#N)」を使う
     assert f"Activity 1 (#{activity_id})" in result
 
 
@@ -445,7 +461,6 @@ def test_build_activities_section_raises_on_invalid_db(temp_db):
     with pytest.raises(Exception):
         _build_active_context_wrapper()
 
-    # 元に戻す
     os.environ["DISCUSSION_DB_PATH"] = temp_db
 
 
@@ -459,20 +474,30 @@ def test_build_activities_section_completed_activities_excluded(temp_db):
     assert "Done Activity" not in ctx
 
 
-def test_build_activities_section_scoring_instructions(temp_db):
-    """スコアリング指示が末尾に含まれる"""
+def test_build_activities_section_deterministic_render_notice(temp_db):
+    """通常アクティビティが1件以上あれば末尾固定文が末尾に付く"""
     add_activity(title="[作業] Task", description="Desc", tags=["domain:myapp"], check_in=False)
-    _age_all_activities()
+    _age_activities()
 
     result = _build_active_context_wrapper()
 
-    assert "# スコアリング指示" in result
-    assert "上位5件を選び" in result
-    assert "depends_on未完了" in result
+    assert "決定論的に組み立てた表示用 markdown" in result
 
 
-def test_build_activities_section_tags_in_metadata(temp_db):
-    """メタデータ行にタグ情報が含まれる"""
+def test_build_activities_section_no_scoring_instructions(temp_db):
+    """旧スコアリング指示文は出力されない"""
+    add_activity(title="[作業] Task", description="Desc", tags=["domain:myapp"], check_in=False)
+    _age_activities()
+
+    result = _build_active_context_wrapper()
+
+    assert "# スコアリング指示" not in result
+    assert "上位5件を選び" not in result
+    assert "depends_on未完了" not in result
+
+
+def test_build_activities_section_no_tags_metadata(temp_db):
+    """新仕様では tags meta 行は出力されない"""
     topic = add_topic(title="t", description="d", tags=["domain:myapp"])
     dec = add_decision(decision="d", reason="r", topic_id=topic["topic_id"])
     add_activity(
@@ -484,12 +509,11 @@ def test_build_activities_section_tags_in_metadata(temp_db):
 
     result = _build_active_context_wrapper()
 
-    assert "tags:" in result
-    assert "domain:myapp" in result
+    assert "tags:" not in result
 
 
-def test_build_activities_section_description_snippet(temp_db):
-    """メタデータ行にdescriptionスニペットが含まれる"""
+def test_build_activities_section_no_description_snippet(temp_db):
+    """新仕様では desc snippet 行は出力されない"""
     add_activity(
         title="[作業] Task", description="締め切りは来週金曜日",
         tags=["domain:myapp"], check_in=False,
@@ -497,30 +521,16 @@ def test_build_activities_section_description_snippet(temp_db):
 
     result = _build_active_context_wrapper()
 
-    assert "desc: 締め切りは来週金曜日" in result
+    assert "desc:" not in result
+    assert "締め切り" not in result
 
 
-def test_build_activities_section_description_snippet_truncated(temp_db):
-    """descriptionが長い場合、先頭100文字に切り詰められる"""
-    long_desc = "あ" * 200
-    add_activity(
-        title="[作業] Task", description=long_desc,
-        tags=["domain:myapp"], check_in=False,
-    )
-
-    result = _build_active_context_wrapper()
-
-    # 100文字に切り詰められている
-    assert f"desc: {'あ' * 100}" in result
-    assert "あ" * 101 not in result
-
-
-def test_build_activities_section_blocked_by_metadata(temp_db):
-    """未完了の依存先がblocked_byとしてメタデータに表示される"""
+def test_build_activities_section_blocked_by_meta_shown(temp_db):
+    """未完了の依存先がある in_progress activity には blocked_by meta 行が付く"""
     r1 = add_activity(title="Dependency Task", description="Desc", tags=["domain:myapp"], check_in=False)
     r2 = add_activity(title="Blocked Task", description="Desc", tags=["domain:myapp"], check_in=False)
+    update_activity(r2["activity_id"], status="in_progress")
 
-    # r2 depends_on r1
     conn = get_connection()
     try:
         conn.execute(
@@ -568,35 +578,26 @@ def test_build_activities_section_deduplicates_multi_domain(temp_db):
 
     result = _build_active_context_wrapper()
 
-    # α化形式「title (#N)」が1回だけ表示される
     assert result.count(f"(#{aid})") == 1
 
 
-def test_build_activities_section_format(temp_db):
-    """出力フォーマット: ヘッダ + topic別見出し（topicless は『その他』）+ 番号付き行 + メタデータ行 (D#2466)"""
-    r = add_activity(
+def test_build_activities_section_tier2_flat_no_topic_grouping(temp_db):
+    """階層 2『優先』は flat リストで、topic 見出しを持たない"""
+    topic_a = add_topic(title="TopicA", description="d", tags=["domain:myapp"])
+    r1 = add_activity(
         title="[議論] stop_hookのスキップ機能", description="機能の設計",
-        tags=["domain:cc-memory"], check_in=False,
+        tags=["domain:myapp"],
+        related=[{"type": "topic", "ids": [topic_a["topic_id"]]}],
+        check_in=False,
     )
-    update_activity(r["activity_id"], status="in_progress")
-    add_activity(
-        title="[作業] アクティブコンテキスト改善", description="改善作業",
-        tags=["domain:cc-memory"], check_in=False,
-    )
-    _age_all_activities()
+    update_activity(r1["activity_id"], status="in_progress")
 
     result = _build_active_context_wrapper()
 
-    lines = result.strip().split("\n")
-    assert lines[0] == "# アクティビティ一覧"
-    assert lines[1] == ""
-    # 関連topicを持たないため『その他』セクション直下に並ぶ
-    assert lines[2] == "## その他"
-    # in_progressが先に来る（番号付き、グループ通し連番）
-    assert lines[3].startswith("1. ●")
-    assert "[議論] stop_hookのスキップ機能" in lines[3]
-    # メタデータ行
-    assert "updated:" in lines[4]
-    # pendingが後に来る
-    assert lines[5].startswith("2. ○")
-    assert "[作業] アクティブコンテキスト改善" in lines[5]
+    idx_tier2 = result.index("## 優先")
+    next_section = result.find("\n## ", idx_tier2 + 1)
+    tier2_block = result[idx_tier2:] if next_section == -1 else result[idx_tier2:next_section]
+
+    assert "## TopicA" not in tier2_block
+    assert "1. ●" in tier2_block
+    assert "[議論] stop_hookのスキップ機能" in tier2_block
