@@ -1,3 +1,11 @@
+<!-- ccm-doc-sync
+watch-tags: domain:cc-memory
+watch-direction: true
+watch-migrations: false
+last-synced: 2026-07-04
+last-synced-migration: 0048
+-->
+
 # cc-memory コンポーネント構成図 v0
 
 ## 0. 読み方
