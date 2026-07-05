@@ -163,18 +163,6 @@ def _check_self_target(
             )
         return
 
-    if tool_name == "ow_close_worker":
-        target = args.get("target_session_id") or args.get("term_ref")
-        if target is None or session_id is None:
-            raise CapabilityError(
-                _SELF_VIOLATION_MESSAGE_TMPL.format(tool_name=tool_name, role=role)
-            )
-        if target != session_id:
-            raise CapabilityError(
-                _SELF_VIOLATION_MESSAGE_TMPL.format(tool_name=tool_name, role=role)
-            )
-        return
-
     raise CapabilityError(
         f"self-target check is not implemented for {tool_name}"
     )

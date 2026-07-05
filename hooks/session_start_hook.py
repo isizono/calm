@@ -444,8 +444,8 @@ def _auto_register_session(conn, session_id: str | None) -> None:
     """OW_ROLE が設定されている場合のみ session_identity に register する。
 
     普通の claude セッション（OW_ROLE 未設定）はスキップする。
-    ow_spawn_worker 経由の worker / orch セッションは OW_ROLE + session_id の
-    両方が揃うため登録対象となる。session_id が None の場合はスキップする。
+    OW_ROLE + session_id の両方が揃う場合のみ登録対象となる。
+    session_id が None の場合はスキップする。
     """
     ow_role = os.environ.get("OW_ROLE")
     if not ow_role or not session_id:

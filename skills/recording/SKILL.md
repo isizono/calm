@@ -18,9 +18,7 @@ description: 【必須】議論で複数案を比較して採択した、作業�
 - `add_logs`（経緯記録）
 - `add_material`（成果物保存）
 
-`add_decisions` / `add_topic` / `add_habit` は本スキルの案内対象外。worker セッションではこれらは guard でブロックされるため、proposal として呼び出し元へ返すこと。
-
-worker 退場時の経緯 log・成果物記録は `worker-sync` スキルが専用フローを持っているため、worker-sync 経由の `add_logs` / `add_material` は本スキルの判断を通さず worker-sync の指示に従う。
+`add_decisions` / `add_topic` / `add_habit` は本スキルの案内対象外。
 
 cc-memory 自身の故障・使用感不満・既存記録との矛盾は `add_logs` ではなく `report_signal` を使う（下記「report_signal との切り分け」参照）。
 
