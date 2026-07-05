@@ -21,18 +21,21 @@ from src.db import get_connection, get_db_path
 from src.services.activity_service import (
     get_active_domains_with_conn,
     get_active_activities_by_tag_with_conn,
+    get_pinned_active_activities_with_conn,
 )
 from src.services.role_service import register_session
 from src.services.readable_id import format_readable_id
 from src.services.habit_service import get_active_habit_contents_with_conn
-from src.services.tag_service import get_entity_tags_batch
 from src.services.topic_service import get_activity_topics_batch
 from src.services.backup_service import health_check, should_take_snapshot, take_snapshot
 from hooks.hook_transcript import _is_worker_session
 from hooks.signal_capture import try_capture_signal
 
-# description先頭の切り出し文字数
-_DESCRIPTION_SNIPPET_LENGTH = 100
+_TIER4_STALE_DAYS = 30
+_RECENT_CREATED_HOURS = 24
+_TIER2_MAX_ITEMS = 5
+_PIN_MARK = "\U0001f4cc"
+_NEW_MARK = "\U0001f195"
 
 
 def _calc_elapsed_days(updated_at_str: str) -> int:
@@ -71,26 +74,6 @@ def _get_unresolved_deps(conn, activity_ids: list[int]) -> dict[int, list[dict]]
     return result
 
 
-def _get_descriptions(conn, activity_ids: list[int]) -> dict[int, str]:
-    """アクティビティIDリストに対し、descriptionを一括取得する。
-
-    Returns:
-        {activity_id: description_snippet, ...}
-    """
-    if not activity_ids:
-        return {}
-    placeholders = ",".join("?" * len(activity_ids))
-    rows = conn.execute(
-        f"SELECT id, description FROM activities WHERE id IN ({placeholders})",
-        tuple(activity_ids),
-    ).fetchall()
-    result: dict[int, str] = {}
-    for r in rows:
-        desc = r["description"] or ""
-        result[r["id"]] = desc[:_DESCRIPTION_SNIPPET_LENGTH]
-    return result
-
-
 def _get_created_ats(conn, activity_ids: list[int]) -> dict[int, str]:
     """アクティビティIDリストに対し、created_atを一括取得する。
 
@@ -107,7 +90,7 @@ def _get_created_ats(conn, activity_ids: list[int]) -> dict[int, str]:
     return {r["id"]: r["created_at"] for r in rows}
 
 
-def _is_recent_created(created_at_str: str, hours: int = 24) -> bool:
+def _is_recent_created(created_at_str: str, hours: int = _RECENT_CREATED_HOURS) -> bool:
     """created_atが指定時間以内かを判定する。"""
     try:
         created = datetime.fromisoformat(created_at_str).replace(tzinfo=timezone.utc)
@@ -117,140 +100,161 @@ def _is_recent_created(created_at_str: str, hours: int = 24) -> bool:
         return False
 
 
-_SCORING_INSTRUCTIONS = """\
-# スコアリング指示
-上記アクティビティから優先度の高い上位5件を選び、番号付きで表示してください。
-判断基準:
-- depends_on未完了 → 大幅減点（折りたたみ推奨）
-- 締め切りが近い（descriptionから判断）→ 加点
-- 自分がブロッカーになっている → 加点
-- 鮮度が高い（最近更新） → やや加点（更新頻度が高いものは継続中の作業）
-"""
+_DETERMINISTIC_RENDER_NOTICE = (
+    "この一覧は cc-memory hook が決定論的に組み立てた表示用 markdown です。"
+    "再フォーマットや優先順の再評価をせず、必要時はそのまま提示してください。"
+)
 
-# topic別グルーピングで関連topicを持たないアクティビティの見出し
 _TOPICLESS_GROUP_LABEL = "その他"
 
 
 def _shorten_topic_title(title: str) -> str:
-    """topic見出しは「 — 」(em dash) 以降を除去した短縮版を使う (D#2466)。"""
+    """topic見出しは「 — 」(em dash) 以降を除去した短縮版を使う。"""
     if " — " in title:
         return title.split(" — ", 1)[0].strip()
     return title
 
 
 def _build_activities_section(conn, session_id: str | None = None) -> str:
-    """アクティビティ一覧を組み立てる。
+    """アクティビティ一覧を 4 階層ダッシュボードで組み立てる。
 
-    - heartbeat 中のアクティビティは「## 作業中（別セッション）」セクションで提示（D#2466 据え置き）
-      - ただし last_heartbeat_session_id が自セッション (引数 session_id) と一致するものは
-        「別セッション」ではないので通常側へ回す（P1-7: 3軸モデル「所在」軸の可観測化）
-    - それ以外は topic 別グルーピング (D#2464-2466)
-      - 各アクティビティは関連 topic_id 最小を primary topic として 1 グループに配置
-      - 関連 topic 無しは「その他」セクション
-      - topic 見出しは em-dash 以降を除去した短縮版
-      - 24h 以内に作成されたアクティビティはタイトル末尾に 🆕 マーカーをインライン付与
-      - 番号はグループ通しで連番
-      - グループ内の並び順は in_progress を先頭にし、その中で updated_at 降順
-        （旧フラット表示の rank 基準を踏襲。domain タグ反復順への暗黙依存を排除）
-    - 末尾にスコアリング指示を付与
+    階層 1「作業中（別セッション）」: heartbeat 中で自セッションでないもの。
+    階層 2「優先」: 階層 1 に入らなかった in_progress または pinned を集約し、
+        pinned 先頭 → updated_at 降順で上位 5 件（flat、topic 別グルーピングなし）。
+    階層 3「直近作成（24h以内）」: 上位階層で消費されなかった created_at 24h 以内、
+        created_at 降順の flat リスト。0 件時はセクション自体省略。
+    階層 4「その他」: 残り active のうち updated_at 30 日以内、または pinned。
+        topic 別グルーピングでタイトル一行のみ（番号・status マーカー・meta 行なし）。
 
-    worker セッション（OW_ROLE=worker）はメインセッション作業文脈なので注入しない (D#2662)。
-    通常セッションでは activities.orch_managed = 1 のアクティビティを除外する。
+    行フォーマット:
+        - 階層 1: `- 📌 タイトル (#id) (Nd)`（📌 は pinned 時のみ）
+        - 階層 2/3: 番号 + status マーカー (●/○) + 📌（pinned 時）+ タイトル (#id)
+          + (Nd) + 🆕（24h 以内作成時）。blocked_by 未解決依存があるときのみ
+          meta 行 1 行を続ける。
+        - 階層 4: `- 📌 タイトル (#id) (Nd) 🆕`（📌/🆕 は該当時のみ）
+
+    重複排除: 上位階層に採用された activity は下位階層から除外する。
+
+    worker セッション（OW_ROLE=worker）はメインセッション作業文脈なので注入しない。
+    orch_managed=1 のアクティビティは全階層で除外する。
     """
-    # P0-8 (D#2662): worker は担当 activity に閉じて動く設計のため、
-    # メインセッション作業文脈であるアクティビティ一覧は注入しない。
     if _is_worker_session():
         return ""
 
     domains = get_active_domains_with_conn(conn)
 
-    if not domains:
-        return ""
-
-    # 全アクティブアクティビティを収集（重複排除）
-    seen_ids: set[int] = set()
-    heartbeat_activities: list[dict] = []
-    normal_activities: list[dict] = []
-
+    seen_collect: set[int] = set()
+    all_active: list[dict] = []
     for domain in domains:
-        tag_id = domain["tag_id"]
-        activities = get_active_activities_by_tag_with_conn(conn, tag_id)
-        for a in activities:
-            if a["id"] in seen_ids:
+        for a in get_active_activities_by_tag_with_conn(conn, domain["tag_id"]):
+            if a["id"] in seen_collect:
                 continue
-            seen_ids.add(a["id"])
-            # 自セッションの heartbeat は「別セッション」扱いしない (P1-7)。
-            # session_id が None（hook stdin に未同梱）の場合は照合不能なため、
-            # 従来通り heartbeat_active なら別セッションとして表示する。
-            is_own_session = (
-                session_id is not None
-                and a.get("last_heartbeat_session_id") == session_id
-            )
-            if a.get("is_heartbeat_active") and not is_own_session:
-                heartbeat_activities.append(a)
-            else:
-                normal_activities.append(a)
+            if a.get("orch_managed"):
+                continue
+            seen_collect.add(a["id"])
+            all_active.append(a)
 
-    # activities.orch_managed=1 のアクティビティを除外する
-    # （個人フローからorchフローを分離）。
-    # get_active_activities_by_tag_with_conn が返す dict に orch_managed が含まれる。
-    heartbeat_activities = [
-        a for a in heartbeat_activities if not a.get("orch_managed")
-    ]
-    normal_activities = [
-        a for a in normal_activities if not a.get("orch_managed")
-    ]
+    # pinned は active domain の有無と独立して存在しうるため、
+    # domain が 0 件でも早期 return せず必ず pinned を引く。
+    pinned_all = get_pinned_active_activities_with_conn(conn)
+    pinned_ids = {a["id"] for a in pinned_all}
+    for a in pinned_all:
+        if a["id"] in seen_collect:
+            continue
+        if a.get("orch_managed"):
+            continue
+        seen_collect.add(a["id"])
+        all_active.append(a)
 
-    if not heartbeat_activities and not normal_activities:
+    if not all_active:
         return ""
 
-    # メタデータ一括取得
-    collected_ids = [a["id"] for a in heartbeat_activities + normal_activities]
-    tags_map = get_entity_tags_batch(
-        conn, "activity_tags", "activity_id", collected_ids
-    )
-    all_ids = [a["id"] for a in normal_activities]
-    unresolved_deps = _get_unresolved_deps(conn, all_ids)
-    descriptions = _get_descriptions(conn, all_ids)
-    created_ats = _get_created_ats(conn, all_ids)
-    # D#2465: relations_view から activity → topic を1クエリでバッチ取得
-    activity_topics = get_activity_topics_batch(conn, all_ids)
+    seen_ids: set[int] = set()
+    parts: list[str] = ["# アクティビティ一覧", ""]
 
-    def _render_activity_meta(aid: int, days: int) -> list[str]:
-        meta_parts = [f"updated: {days}d ago"]
-        tags = tags_map.get(aid, [])
-        deps = unresolved_deps.get(aid, [])
-        desc_snippet = descriptions.get(aid, "")
-        if tags:
-            meta_parts.append(f"tags: {', '.join(tags)}")
-        if deps:
-            dep_titles = [f"{d['title']}({d['status']})" for d in deps]
-            meta_parts.append(f"blocked_by: {', '.join(dep_titles)}")
-        if desc_snippet:
-            meta_parts.append(f"desc: {desc_snippet}")
-        return meta_parts
+    tier1: list[dict] = []
+    for a in all_active:
+        is_own_session = (
+            session_id is not None
+            and a.get("last_heartbeat_session_id") == session_id
+        )
+        if a.get("is_heartbeat_active") and not is_own_session:
+            tier1.append(a)
 
-    parts = ["# アクティビティ一覧", ""]
-
-    # heartbeat 中は別セクション（D#2466 据え置き）
-    if heartbeat_activities:
+    if tier1:
+        tier1.sort(key=lambda a: (a["updated_at"], a["id"]), reverse=True)
         parts.append("## 作業中（別セッション）")
-        for a in heartbeat_activities:
+        for a in tier1:
+            seen_ids.add(a["id"])
             days = _calc_elapsed_days(a["updated_at"])
+            pin_mark = f"{_PIN_MARK} " if a["id"] in pinned_ids else ""
             display = format_readable_id("activity", a["id"], a["title"])
-            parts.append(f"- {display} ({days}d)")
+            parts.append(f"- {pin_mark}{display} ({days}d)")
         parts.append("")
 
-    if normal_activities:
-        # topic別グルーピング: 各アクティビティは関連 topic_id 最小を primary topic として
-        # 1 グループに配置する。複数 topic 関連でも重複表示しない（番号通し維持のため）。
-        # topicなしは _TOPICLESS_GROUP_LABEL に集約。
-        # primary_topic_id (None=topicless) -> {"title": str, "activities": list[dict]}
+    # 階層 1 は updated_at と pin だけで描画し created_at / 依存 / topic を参照しない。
+    # 階層 1 で消費済みの id はバッチ取得対象から外す。
+    lower_ids = [a["id"] for a in all_active if a["id"] not in seen_ids]
+    unresolved_deps = _get_unresolved_deps(conn, lower_ids)
+    created_ats = _get_created_ats(conn, lower_ids)
+    activity_topics = get_activity_topics_batch(conn, lower_ids)
+
+    tier2_pool = [
+        a
+        for a in all_active
+        if a["id"] not in seen_ids
+        and (a["status"] == "in_progress" or a["id"] in pinned_ids)
+    ]
+    tier2_pool.sort(key=lambda a: (a["updated_at"], a["id"]), reverse=True)
+    tier2_pool.sort(key=lambda a: 0 if a["id"] in pinned_ids else 1)
+    tier2 = tier2_pool[:_TIER2_MAX_ITEMS]
+
+    if tier2:
+        parts.append("## 優先")
+        for idx, a in enumerate(tier2, start=1):
+            seen_ids.add(a["id"])
+            parts.extend(
+                _render_numbered_line(a, idx, pinned_ids, created_ats, unresolved_deps)
+            )
+        parts.append("")
+
+    tier3_pool = [
+        a
+        for a in all_active
+        if a["id"] not in seen_ids
+        and _is_recent_created(created_ats.get(a["id"], ""))
+    ]
+    tier3_pool.sort(
+        key=lambda a: (created_ats.get(a["id"], ""), a["id"]), reverse=True
+    )
+
+    if tier3_pool:
+        parts.append("## 直近作成（24h以内）")
+        for idx, a in enumerate(tier3_pool, start=1):
+            seen_ids.add(a["id"])
+            parts.extend(
+                _render_numbered_line(a, idx, pinned_ids, created_ats, unresolved_deps)
+            )
+        parts.append("")
+
+    # pinned は staleness で脱落させない。上位階層の件数上限で溢れた pinned が
+    # 30 日フィルタでも除外されると、どの階層にも出ずダッシュボードから消えるため。
+    tier4_pool = [
+        a
+        for a in all_active
+        if a["id"] not in seen_ids
+        and (
+            a["id"] in pinned_ids
+            or _calc_elapsed_days(a["updated_at"]) <= _TIER4_STALE_DAYS
+        )
+    ]
+
+    if tier4_pool:
         groups: dict[int | None, dict] = {}
-        for a in normal_activities:
+        for a in tier4_pool:
             topics = activity_topics.get(a["id"], [])
             if topics:
-                primary = topics[0]  # get_activity_topics_batch は topic_id 昇順
+                primary = topics[0]
                 primary_id: int | None = primary["id"]
                 primary_title = _shorten_topic_title(primary["title"])
             else:
@@ -261,51 +265,77 @@ def _build_activities_section(conn, session_id: str | None = None) -> str:
             )
             group["activities"].append(a)
 
-        # 見出しは topic_id 昇順で安定化、topicless は最後尾
         topic_ids_sorted: list[int | None] = sorted(
             tid for tid in groups.keys() if tid is not None
         )
         if None in groups:
             topic_ids_sorted.append(None)
 
-        # グループ内ソート: in_progress 優先、updated_at 降順（決定的）。
-        # get_active_activities_by_tag_with_conn は同順で返すが、複数 domain を
-        # 横断するこの関数では domain 反復順に依存して順序がブレるため、ここで
-        # 最終形を再確定する。updated_at は ISO8601 文字列なので、安定ソートを
-        # 利用して updated_at 降順 → status 優先の 2 段階で並べる。
-        idx_counter = 1
         for tid in topic_ids_sorted:
             group = groups[tid]
-            group["activities"].sort(key=lambda a: a["updated_at"], reverse=True)
             group["activities"].sort(
-                key=lambda a: 0 if a["status"] == "in_progress" else 1
+                key=lambda a: (a["updated_at"], a["id"]), reverse=True
             )
             parts.append(f"## {group['title']}")
             for a in group["activities"]:
-                aid = a["id"]
-                days = _calc_elapsed_days(a["updated_at"])
-                status_mark = "●" if a["status"] == "in_progress" else "○"
-                created_at_str = created_ats.get(aid, "")
-                # 24h以内作成は 🆕 をインラインで付与 (D#2466)
-                new_marker = (
-                    " \U0001f195"
-                    if created_at_str and _is_recent_created(created_at_str)
-                    else ""
-                )
-                display = format_readable_id("activity", aid, a["title"])
-                line = f"{idx_counter}. {status_mark} {display}{new_marker}"
-                meta_parts = _render_activity_meta(aid, days)
-                parts.append(line)
-                parts.append(f"   {' | '.join(meta_parts)}")
-                idx_counter += 1
+                seen_ids.add(a["id"])
+                parts.append(_render_tier4_line(a, pinned_ids, created_ats))
             parts.append("")
 
-        total = sum(len(g["activities"]) for g in groups.values())
-        parts.append(f"全{total}件")
-        parts.append("")
-        parts.append(_SCORING_INSTRUCTIONS)
+    parts.append(_DETERMINISTIC_RENDER_NOTICE)
+    parts.append("")
 
     return "\n".join(parts) + "\n"
+
+
+def _render_numbered_line(
+    a: dict,
+    idx: int,
+    pinned_ids: set[int],
+    created_ats: dict[int, str],
+    unresolved_deps: dict[int, list[dict]],
+) -> list[str]:
+    """階層 2/3 用の 1 activity 分の行群を返す。
+
+    タイトル行 1 行と、blocked_by 未解決依存があるとき meta 行 1 行を続ける。
+    """
+    aid = a["id"]
+    days = _calc_elapsed_days(a["updated_at"])
+    status_mark = "●" if a["status"] == "in_progress" else "○"
+    pin_mark = f"{_PIN_MARK} " if aid in pinned_ids else ""
+    created_at_str = created_ats.get(aid, "")
+    new_marker = (
+        f" {_NEW_MARK}"
+        if created_at_str and _is_recent_created(created_at_str)
+        else ""
+    )
+    display = format_readable_id("activity", aid, a["title"])
+    lines = [f"{idx}. {status_mark} {pin_mark}{display} ({days}d){new_marker}"]
+
+    deps = unresolved_deps.get(aid, [])
+    if deps:
+        dep_titles = [f"{d['title']}({d['status']})" for d in deps]
+        lines.append(f"   blocked_by: {', '.join(dep_titles)}")
+    return lines
+
+
+def _render_tier4_line(
+    a: dict,
+    pinned_ids: set[int],
+    created_ats: dict[int, str],
+) -> str:
+    """階層 4 用のタイトル一行のみを返す。番号・status マーカー・meta 行なし。"""
+    aid = a["id"]
+    days = _calc_elapsed_days(a["updated_at"])
+    pin_mark = f"{_PIN_MARK} " if aid in pinned_ids else ""
+    created_at_str = created_ats.get(aid, "")
+    new_marker = (
+        f" {_NEW_MARK}"
+        if created_at_str and _is_recent_created(created_at_str)
+        else ""
+    )
+    display = format_readable_id("activity", aid, a["title"])
+    return f"- {pin_mark}{display} ({days}d){new_marker}"
 
 
 def _build_habits_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
@@ -437,7 +467,7 @@ def _build_session_context(session_id: str | None = None) -> str:
     """サービス層経由でセッション開始時のコンテキストを組み立てる。
 
     session_id は session_start_hook の stdin payload に含まれる Claude Code 提供の
-    識別子。アクティビティ一覧の「自セッション heartbeat」照合に使う (P1-7)。
+    識別子。アクティビティ一覧の「自セッション heartbeat」照合に使う。
 
     各セクションは独立してtry/exceptで保護し、
     一部のセクションが失敗しても残りは返す。

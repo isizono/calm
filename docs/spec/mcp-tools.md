@@ -1,3 +1,11 @@
+<!-- ccm-doc-sync
+watch-tags: domain:cc-memory
+watch-direction: true
+watch-migrations: false
+last-synced: 2026-07-04
+last-synced-migration: 0048
+-->
+
 # cc-memory MCPツール仕様書 v0
 
 ## 0. 読み方
@@ -38,7 +46,6 @@
 | `get_decisions` | 指定エンティティの決定事項を取得する |
 | `get_activities` | アクティビティ一覧をフィルタ付きで取得する |
 | `get_material` | 資材の全文を取得する |
-| `export_material` | 資材を md ファイルとして cc-memory 外へ出力する |
 | `get_habits` | 登録済み振る舞い一覧を取得する |
 | `get_by_ids` | search結果の詳細を type+id 指定で取得する |
 | `get_map` | リレーショングラフを走査し到達可能カタログを返す |
@@ -89,6 +96,8 @@
 | `ow_close_dispatcher` | dispatcherセッションをkillし、紐づくworker poolもcascade killする |
 | `ow_status` | queueサマリ + presence の合成ビューを返す |
 | `ow_recover` | orch crash後の queue × relay × presence 整合チェック・自動修正 |
+| `ow_spawn_dispatcher` | dispatcherセッションを起動する |
+| `ow_close_dispatcher` | dispatcherセッションと紐づくworker poolをcascade killする |
 
 ### 1.8 その他
 
@@ -96,7 +105,13 @@
 | --- | --- |
 | `roll_dice` | ダイスを振る（デフォルト1d10） |
 
-### 1.9 シグナル系（signal_events）
+### 1.9 エクスポート系
+
+| ツール | 概要 |
+| --- | --- |
+| `export_material` | 資材をmd形式のファイルとしてcc-memory外に出力する |
+
+### 1.10 シグナル系（signal_events）
 
 cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベントの記録先。`add_logs` / `add_decisions` とは異なり合意不要の生の観測データであり、専用テーブル（`signal_events`）に記録される。
 

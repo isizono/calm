@@ -6,9 +6,13 @@ import pytest
 
 from src.db import get_connection, init_database
 from src.services.activity_service import add_activity
+from src.services.decision_service import add_decisions
+from src.services.direction_service import DIRECTION_NAME, DIRECTION_NAMESPACE
 from src.services.hint_service import (
+    DIRECTION_OVERFLOW_THRESHOLD,
     HINT_LOGS_SPARSE_MESSAGE,
     LOGS_SPARSE_LOG_THRESHOLD,
+    MARKER_DIRECTION_OVERFLOW,
     MARKER_LOGS_SPARSE,
     MARKER_RECOMPOSE_BOOTSTRAP,
     MARKER_RECOMPOSE_DELTA,
@@ -27,6 +31,16 @@ from tests.helpers import add_decision
 
 DOMAIN_TAG_NAME = "hint-domain"
 DOMAIN_TAG = f"domain:{DOMAIN_TAG_NAME}"
+DIRECTION_TAG = f"{DIRECTION_NAMESPACE}:{DIRECTION_NAME}"
+
+
+def _add_direction_decision(topic_id: int, i: int) -> dict:
+    result = add_decisions([{
+        "topic_id": topic_id, "decision": f"方向性{i}", "reason": "r", "title": f"方向性{i}の要点",
+        "tags": [DIRECTION_TAG],
+    }])
+    assert "error" not in result, result
+    return result["created"][0]
 
 
 @pytest.fixture
@@ -186,6 +200,78 @@ class TestRecomposeDelta:
         update_tag(DOMAIN_TAG, notes=f"{MARKER_RECOMPOSE_DELTA}")
 
         assert get_hints("tag", _tag_id(DOMAIN_TAG_NAME)) == []
+
+
+class TestDirectionOverflow:
+    def test_fires_at_threshold(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        for i in range(DIRECTION_OVERFLOW_THRESHOLD):
+            _add_direction_decision(topic["topic_id"], i)
+
+        hints = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        direction_hints = [h for h in hints if h["type"] == "direction_overflow"]
+        assert len(direction_hints) == 1
+        assert direction_hints[0]["delivery_hint"] == "immediate"
+        assert direction_hints[0]["severity"] == "info"
+        assert str(DIRECTION_OVERFLOW_THRESHOLD) in direction_hints[0]["message"]
+
+    def test_silent_below_threshold(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        for i in range(DIRECTION_OVERFLOW_THRESHOLD - 1):
+            _add_direction_decision(topic["topic_id"], i)
+
+        hints = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        assert [h for h in hints if h["type"] == "direction_overflow"] == []
+
+    def test_suppressed_by_direction_marker(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        for i in range(DIRECTION_OVERFLOW_THRESHOLD):
+            _add_direction_decision(topic["topic_id"], i)
+        update_tag(DOMAIN_TAG, notes=f"{MARKER_DIRECTION_OVERFLOW}")
+
+        hints = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        assert [h for h in hints if h["type"] == "direction_overflow"] == []
+
+    def test_not_suppressed_by_generic_recompose_marker(self, temp_db):
+        """direction_overflowはrecompose系と独立した抑制マーカーを持つ。
+        汎用recomposeマーカーでは抑制されない"""
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        for i in range(DIRECTION_OVERFLOW_THRESHOLD):
+            _add_direction_decision(topic["topic_id"], i)
+        update_tag(DOMAIN_TAG, notes=f"{MARKER_RECOMPOSE_GENERIC}")
+
+        hints = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        assert [h for h in hints if h["type"] == "direction_overflow"] != []
+
+    def test_excludes_retracted_and_superseded_from_count(self, temp_db):
+        """有効(active)件数のみをカウントする。件数不足ならfireしない"""
+        from src.services.relation_service import add_relation
+        from tests.helpers import retract_decision
+
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        decisions = [_add_direction_decision(topic["topic_id"], i) for i in range(DIRECTION_OVERFLOW_THRESHOLD)]
+        retract_decision(decisions[0]["decision_id"])
+        add_relation(
+            "decision", decisions[1]["decision_id"],
+            [{"type": "decision", "ids": [decisions[2]["decision_id"]]}],
+            relation_type="supersedes",
+        )
+
+        hints = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        assert [h for h in hints if h["type"] == "direction_overflow"] == []
+
+    def test_recompose_marker_does_not_suppress_when_scoped_to_delta(self, temp_db):
+        """coexistence: recompose_bootstrapとdirection_overflowが同時に発火しうる"""
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        for i in range(RECOMPOSE_BOOTSTRAP_THRESHOLD):
+            add_decision(decision=f"d{i}", reason="r", topic_id=topic["topic_id"])
+        for i in range(DIRECTION_OVERFLOW_THRESHOLD):
+            _add_direction_decision(topic["topic_id"], i)
+
+        hints = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        types = {h["type"] for h in hints}
+        assert "recompose_bootstrap" in types
+        assert "direction_overflow" in types
 
 
 class TestLogsSparse:

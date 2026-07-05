@@ -62,6 +62,10 @@ class TestParseTag:
         """glossary namespaceをパースできる (D#2787 ユビキタス言語 namespace)"""
         assert parse_tag("glossary:ow") == ("glossary", "ow")
 
+    def test_layer_namespace(self):
+        """layer namespaceをパースできる（方向性decisionの区別用）"""
+        assert parse_tag("layer:direction") == ("layer", "direction")
+
     def test_colon_in_name(self):
         """nameにコロンが含まれる場合、最初のコロンで分割"""
         assert parse_tag("domain:cc:memory") == ("domain", "cc:memory")
@@ -124,6 +128,12 @@ class TestValidateAndParseTags:
         assert isinstance(result, list)
         assert ("glossary", "ow") in result
         assert ("glossary", "cc-memory") in result
+
+    def test_layer_namespace_accepted(self):
+        """layer namespaceが受理される（方向性decisionの区別用）"""
+        result = validate_and_parse_tags(["layer:direction"])
+        assert isinstance(result, list)
+        assert ("layer", "direction") in result
 
     def test_invalid_namespace(self):
         """不正なnamespaceでINVALID_TAG_NAMESPACEエラー"""

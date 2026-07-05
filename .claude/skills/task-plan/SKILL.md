@@ -68,7 +68,24 @@ plan.md作成までが責務。実装はtask-executeが担う。
 | D. 既存コードの振る舞い変更 | ロジック変更、API変更 | before/afterの差分を精査 |
 | E. 削除/廃止 | 旧コード除去 | 参照残りがないか確認 |
 
-### Step 2: ブランチ戦略の判断
+### Step 2: GO判定予測（predicted）の決定
+
+Step 1で分類した各PR（単一PRの場合は1件のみ）について、GO判定の予測分類（`predicted`）を決める。
+PR作成時に境界ゲート検出器（`scripts/gate_check.py`）が diff から出す機械判定（`machine`）と
+後で突き合わせるための、plan時点の見立てである。外れても構わない（乖離自体が検出器の校正データになる）。
+
+分類は3値: `pre_go`（事前にコードを読んで確認すべき）/ `gray`（機械的にどちらとも判定し切れない）/
+`post_veto_candidate`（事後の拒否権行使で足りる候補）。
+
+- **類型B（スキーマ/データ変更）**、および**類型Eのうちデータに触れるもの**（テーブル削除・
+  データ移行を伴う廃止等）: 必ず `pre_go` とする
+- それ以外（類型A/C/D、データ非接触の類型E）: ブラスト半径（migration・公開IF・破壊的操作への
+  接触見込み）とrevert容易性（PRサイズ・機械revertの成立見込み）から `pre_go` / `gray` /
+  `post_veto_candidate` のいずれかを判断する。判断に迷う場合は安全側（`pre_go`）を選ぶ
+
+各PRのpredictedはplan.md（単一PRの場合）またはサブプラン（複数PRの場合）に記録する（Step 4参照）。
+
+### Step 3: ブランチ戦略の判断
 
 PRが複数になる場合、全PRをmainに直接向けるか、統合ブランチ（feature branch）を経由するかを判断する。
 
@@ -80,7 +97,7 @@ PRが複数になる場合、全PRをmainに直接向けるか、統合ブラン
 - 各サブPRのbaseは統合ブランチとし、finalのbaseはmainとする
 - finalの依存先は他の全サブプラン
 
-### Step 3: plan.md 作成
+### Step 4: plan.md 作成
 
 出力先: `~/.claude/projects/<project>/work/{task-name}/`
 
@@ -107,12 +124,12 @@ PRが複数になる場合、全PRをmainに直接向けるか、統合ブラン
 
 ## PR分割
 
-| # | 類型 | 内容 | ブランチ名 | base | 状態 |
-|---|------|------|-----------|------|------|
-| a | {A-E} | {概要} | feature/{名前} | main | 🔲未着手 |
-| b | {A-E} | {概要} | feature/{名前} | main or PR-aのブランチ | 🔲未着手 |
-| c | {A-E} | {概要} | feature/{名前} | main or 依存先 | 🔲未着手 |
-| final | - | 統合マージ | feature/{統合ブランチ名} | main | 🔲未着手 |
+| # | 類型 | 内容 | ブランチ名 | base | predicted | 状態 |
+|---|------|------|-----------|------|-----------|------|
+| a | {A-E} | {概要} | feature/{名前} | main | {pre_go/gray/post_veto_candidate} | 🔲未着手 |
+| b | {A-E} | {概要} | feature/{名前} | main or PR-aのブランチ | {pre_go/gray/post_veto_candidate} | 🔲未着手 |
+| c | {A-E} | {概要} | feature/{名前} | main or 依存先 | {pre_go/gray/post_veto_candidate} | 🔲未着手 |
+| final | - | 統合マージ | feature/{統合ブランチ名} | main | - | 🔲未着手 |
 
 状態: 🔲未着手 → 🔄着手中 → ✅完了
 ※ final行は統合ブランチ戦略の場合のみ。main直撃の場合は不要。
@@ -138,6 +155,9 @@ PRが複数になる場合、全PRをmainに直接向けるか、統合ブラン
 
 ## サイズ見込み
 {変更予定ファイル数と行数（追加+削除）の見立て。テスト・docsは目安から除外してよい。800行超になる見込みならこの時点でさらに分割を検討する}
+
+## GO判定予測
+- predicted: {pre_go/gray/post_veto_candidate}
 
 ## ブランチ
 - ブランチ名: feature/{名前}
@@ -195,6 +215,9 @@ PRが複数になる場合、全PRをmainに直接向けるか、統合ブラン
 - ブランチ名: feature/{名前}
 - base: {main or 指定ブランチ}
 
+## GO判定予測
+- predicted: {pre_go/gray/post_veto_candidate}
+
 ## TODOリスト
 - [ ] TODO 1: {内容}
 - [ ] TODO 2: {内容}
@@ -219,7 +242,7 @@ PRが複数になる場合、全PRをmainに直接向けるか、統合ブラン
 {テストの実行コマンド}
 ```
 
-### Step 4: ユーザー確認
+### Step 5: ユーザー確認
 
 plan.md（とサブプラン）を作成したら、**必ずユーザーに確認を取る**。
 
@@ -227,6 +250,7 @@ plan.md（とサブプラン）を作成したら、**必ずユーザーに確�
 - PR分割テーブル（何をどう分けたか）
 - 依存関係（どの順で進めるか）
 - ブランチ名とbase branch
+- GO判定予測（predicted、各PR）
 - plan.md の絶対パス
 
 **実装には絶対に進まない。** ユーザーが確認してOKを出すまで待つ。
