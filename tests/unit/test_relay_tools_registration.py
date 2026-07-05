@@ -1,0 +1,49 @@
+"""relay 4 動詞 tool の MCP 登録・capability matrix・docstring 契約のテスト。
+
+matrix 未登録 tool は default deny で呼べなくなるため、登録漏れの回帰を防ぐ。
+"""
+from src.services.capability_matrix import CAPABILITY_MATRIX
+from tests.helpers import all_tool_descriptions as _all_tool_descriptions
+
+RELAY_TOOLS = ("relay_post", "relay_publish", "relay_subscribe", "relay_receive")
+
+
+class TestCapabilityMatrixRegistration:
+    def test_all_relay_tools_are_registered(self):
+        for name in RELAY_TOOLS:
+            assert name in CAPABILITY_MATRIX, f"{name} が capability matrix に未登録"
+
+    def test_relay_tools_are_open_to_all_roles(self):
+        for name in RELAY_TOOLS:
+            decisions = set(CAPABILITY_MATRIX[name].values())
+            assert decisions == {True}, f"{name} は全 role に開放されるべき"
+
+
+class TestToolRegistration:
+    def test_all_relay_tools_are_exposed_via_mcp(self):
+        descriptions = _all_tool_descriptions()
+        for name in RELAY_TOOLS:
+            assert name in descriptions, f"{name} が MCP tool として未登録"
+
+
+class TestReceiveDocstringContract:
+    def test_receive_mentions_at_least_once_duplication(self):
+        """受信契約（at-least-once・重複到達がありうる）が description に明記されている。"""
+        desc = _all_tool_descriptions()["relay_receive"]
+        assert "at-least-once" in desc
+        assert "重複" in desc
+
+
+class TestPostDocstringContract:
+    def test_post_mentions_single_identity_scope(self):
+        """自 server 名義の stream のみ扱う制約が description に明記されている。"""
+        desc = _all_tool_descriptions()["relay_post"]
+        assert "自 server 名義" in desc
+
+
+class TestPublishDocstringContract:
+    def test_publish_mentions_curation_target_classes(self):
+        """curation 対象は entity 系 labels のみ（routing 系は対象外）の規約が明記されている。"""
+        desc = _all_tool_descriptions()["relay_publish"]
+        assert "curation" in desc
+        assert "entity" in desc
