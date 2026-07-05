@@ -2,7 +2,7 @@
 watch-tags: domain:cc-memory
 watch-direction: true
 watch-migrations: false
-last-synced: 2026-07-04
+last-synced: 2026-07-05
 last-synced-migration: 0048
 -->
 
@@ -22,7 +22,7 @@ last-synced-migration: 0048
 
 ## 1. ツール一覧
 
-全43ツール。カテゴリ別に一覧する。
+全47ツール。カテゴリ別に一覧する。
 
 ### 1.1 記録系（add系）
 
@@ -118,6 +118,17 @@ cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベ�
 | `report_signal` | cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベントを記録する（orch/dispatcher/workerいずれからも呼べる） |
 | `get_signals` | 記録されたシグナルを一覧・集計する |
 | `update_signal` | シグナルのトリアージ状態を遷移する（orch専用） |
+
+### 1.11 relay系（セッション間通信 4動詞）
+
+Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サーバー（HTTP、既定 `http://localhost:8770`）を transport とし、cc-memory server 単一 identity 名義で代理購読・代理投函する。ack・lease renew・購読解除・SSE再接続はサーバー側で自動管理され、ツール面にはこの4動詞のみを見せる。
+
+| ツール | 概要 |
+| --- | --- |
+| `relay_post` | 場（stream）にメッセージを投函する（未存在streamは自動作成） |
+| `relay_publish` | labels routingでメッセージを配布する（outbox経由・at-least-once） |
+| `relay_subscribe` | labelsの購読を宣言する（同一labels集合の再呼び出しは冪等） |
+| `relay_receive` | 自session宛の未読メッセージをinboxからdrainする |
 
 ---
 
@@ -541,6 +552,50 @@ cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベ�
 
 **返り値**: `{signal: {...}}`（更新後の行）。
 **動作**: リンクを張るだけで昇格実体は作らない（実体の作成は既存のadd系ツールで行う）。orch専用（capability_matrixでdispatcher/workerは拒否）。
+
+### 2.38 relay_post
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| stream_name | string | yes | - | stream名。`:` と `/` は使用不可。実体のstream_idはserver名義で `<identity>:<stream_name>` に修飾される |
+| body | string | yes | - | メッセージ本文（非空） |
+| ttl | int | no | null | メッセージ保持秒数（60〜86400）。省略時はstreamの既定値 |
+
+**返り値**: `{stream_id: string, publish_id: int, matched_members: int}`。
+**動作**: 投函先streamが未存在（404）なら自動作成し、自identityを`read_write` memberに設定して1回だけ再投函する。作成の同時競合（409）も1回の再投函で解消する。自server名義のstreamのみ扱う。
+**エラー処理**: `RELAY_TOKEN`未設定は設定方法を含む明示エラー（`config_missing`）。認証エラー（401）・close済みstream（410）・rate limit（429）はそのまま明示エラーとして返す（silent fallbackしない）。
+
+### 2.39 relay_publish
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| labels | list[string] | yes | - | 配送先マッチング用labels（1個以上）。routing系（`handle:`/`channel:`/`task:`）とcc-memory既存語彙（entity系）を併用可。entity系のみでも有効。未知prefixは不透明labelとして受理。`role:` は廃止済みでエラー |
+| body | string | yes | - | メッセージ本文（非空） |
+| title | string | no | null | 一覧表示用の見出し（200字以内） |
+
+**返り値**: `{outbox_id: int, labels: list[string], handle: string}`。
+**動作**: 送信者の`handle:` labelを自動付与し、`relay_outbox`テーブルへINSERTして完結する（transactional outbox）。relayへの配達はserver内の常駐配達ループが非同期に行い、保証はat-least-once。labelsが空のpublishは宛先が決まらないため拒否する。curationの対象になるのはentity系labelsのみで、routing系はcuration対象外。
+**エラー処理**: `RELAY_TOKEN`未設定・session_id未解決・labels/body不正はいずれも明示エラー。
+
+### 2.40 relay_subscribe
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| labels | list[string] | yes | - | 購読条件labels（publish側labelsをすべて含む発話が届く）。空配列なら自handle宛のみの購読。`role:` はエラー |
+
+**返り値**: `{subscription_id: string, labels: list[string], lease_expires_at: string, handle: string, reused: bool}`。
+**動作**: 自sessionの`handle:` labelを自動付与し、subscription declaration file（`~/.cc-memory/relay/subscriptions/session-<session_id>.json`）とrelayの購読登録を同期する。同一labels集合の再呼び出しは冪等で、leaseが有効なら既存購読を返し（`reused: true`）、失効・不明なら新規購読してdeclaration fileのidを差し替える。lease更新・再購読・購読解除はserver側常駐処理が自動管理する。
+**エラー処理**: `RELAY_TOKEN`未設定・session_id未解決は明示エラー。relayエラー時はdeclaration fileを更新しない。
+
+### 2.41 relay_receive
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| limit | int | no | null | 最大取得件数（1以上）。省略時は未読全件 |
+
+**返り値**: `{messages: list[object], count: int}`。
+**動作**: 自sessionのinbox（`~/.cc-memory/relay/inbox/session-<session_id>.jsonl`）をcursor位置からdrainして返す。既読分は返さない。inbox不在（未購読・未配達）は空リストの正常応答（エラーにしない）。relayへのHTTPアクセスは発生しない（ローカル完結）。
+**配達契約**: at-least-once。同一メッセージが重複して届くことがあるため、受信側は冪等に扱うこと。
 
 ---
 

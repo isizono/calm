@@ -25,6 +25,7 @@ from src.services import (
     signal_service,
 )
 from src.services.checkin_service import check_in as _check_in
+from src.services.relay import service as relay_session_service
 from src.services.tag_service import search_tags as _search_tags, update_tag as _update_tag, collect_tag_notes_for_injection
 from src.services.tag_analysis_service import analyze_tags as _analyze_tags
 from src.services import citation_renderer
@@ -1821,6 +1822,98 @@ def ow_recover(
         topic_id,
         dry_run,
         pending_spawn_stalled_threshold_min=pending_spawn_stalled_threshold_min,
+    )
+
+
+@mcp.tool()
+def relay_post(stream_name: str, body: str, ttl: int | None = None) -> dict:
+    """場（stream）にメッセージを投函する。
+
+    投函先 stream が未存在なら自動作成して投函する（事前の stream 作成操作は不要）。
+    自 server 名義の stream のみ扱う（他名義の stream には投函できない）。
+
+    Args:
+        stream_name: stream 名（":" と "/" は使用不可）。実体の stream_id は server 名義で修飾される
+        body: メッセージ本文（必須・非空文字列）
+        ttl: メッセージ保持秒数（optional、60〜86400。省略時は stream の既定値）
+
+    Returns:
+        成功時: {"stream_id": str, "publish_id": int, "matched_members": int}
+        失敗時: {"error": {"code": str, "message": str}}
+    """
+    guard_service.check_capability("relay_post")
+    return relay_session_service.relay_post(stream_name, body, ttl=ttl)
+
+
+@mcp.tool()
+def relay_publish(labels: list[str], body: str, title: str | None = None) -> dict:
+    """labels routing でメッセージを配布する（labels を購読中の session にマッチング配送）。
+
+    送信者の handle: label が自動付与される。配送は送信キュー経由の非同期・at-least-once。
+    labels には routing 系（handle:/channel:/task:）と cc-memory 既存語彙（decision: 等の
+    entity 系）を併用でき、entity 系のみでも有効。未知 prefix も不透明 label として受理する。
+    role: は廃止済みのため指定するとエラー。curation の対象になるのは entity 系 labels のみで、
+    routing 系は curation 対象外。
+
+    Args:
+        labels: 配送先マッチング用 labels（必須・1 個以上）
+        body: メッセージ本文（必須・非空文字列）
+        title: 一覧表示用の見出し（optional、200字以内）
+
+    Returns:
+        成功時: {"outbox_id": int, "labels": [str], "handle": str}
+        失敗時: {"error": {"code": str, "message": str}}
+    """
+    guard_service.check_capability("relay_publish")
+    caller_session_id = get_caller_session_id()
+    return relay_session_service.relay_publish(
+        labels, body, title=title, caller_session_id=caller_session_id
+    )
+
+
+@mcp.tool()
+def relay_subscribe(labels: list[str]) -> dict:
+    """labels の購読を宣言する。宣言後は relay_receive で受信できる。
+
+    自 session の handle: label が自動付与される。labels が空配列の場合は自分の handle 宛
+    （直接メッセージ）のみの購読になる。同一 labels 集合での再呼び出しは冪等で、lease が
+    有効なら既存の購読をそのまま返し、失効していれば新規に購読し直して差し替える。
+    lease 更新・再接続・購読解除は server 側で自動管理される（呼び出し側の操作は不要）。
+
+    Args:
+        labels: 購読条件 labels（配列。publish 側の labels をすべて含む発話が届く）
+
+    Returns:
+        成功時: {"subscription_id": str, "labels": [str], "lease_expires_at": str,
+                 "handle": str, "reused": bool}
+        失敗時: {"error": {"code": str, "message": str}}
+    """
+    guard_service.check_capability("relay_subscribe")
+    caller_session_id = get_caller_session_id()
+    return relay_session_service.relay_subscribe(
+        labels, caller_session_id=caller_session_id
+    )
+
+
+@mcp.tool()
+def relay_receive(limit: int | None = None) -> dict:
+    """自 session 宛に届いたメッセージの未読分を受信する。
+
+    配達契約は at-least-once のため、同一メッセージが重複して届くことがある
+    （受信側で冪等に扱うこと）。既読分は返さない。未読が無ければ空リストを
+    正常応答として返す（エラーにしない）。
+
+    Args:
+        limit: 最大取得件数（optional、1 以上。省略時は未読全件）
+
+    Returns:
+        成功時: {"messages": [dict, ...], "count": int}
+        失敗時: {"error": {"code": str, "message": str}}
+    """
+    guard_service.check_capability("relay_receive")
+    caller_session_id = get_caller_session_id()
+    return relay_session_service.relay_receive(
+        limit, caller_session_id=caller_session_id
     )
 
 

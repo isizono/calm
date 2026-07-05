@@ -621,6 +621,34 @@ cc-memory自身の故障報告・使用感不満・矛盾検出・運用計測�
 
 関連 migration: 0049_add_signal_events
 
+### 3.23 relay_outbox
+
+セッション間通信の publish（labels routing 配布）の送信キュー（transactional outbox）。`relay_publish` ツールが INSERT し、server 内の常駐配達ループが pending 行を relay サーバーへ配達する。at-least-once 保証は本テーブルだけで閉じる（relay サーバー側は永続真実を持たない）。
+
+スキーマの単一の真実源は vendored relay_sdk の DDL（`src/relay_sdk/outbox/schema.py`）であり、migration 0056 はそれと同一形状を migration chain に組み込んだもの。
+
+| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
+|---|---|---|---|---|---|
+| id | INTEGER | NO | autoincrement | PRIMARY KEY | outbox 行 ID（idempotency_key の生成元にも流用） |
+| ref_type | TEXT | NO | — | — | 通知が指す対象の種別 |
+| ref_id | TEXT | NO | — | — | 通知が指す対象の識別子 |
+| labels | TEXT | NO | — | — | JSON array（配送マッチング用 labels） |
+| title | TEXT | YES | — | — | 一覧表示用の見出し |
+| idempotency_key | TEXT | NO | — | — | relay 側 dedup 用キー（SDK が id から自動生成） |
+| created_at | TEXT | NO | — | — | ISO8601 UTC |
+| processed_at | TEXT | YES | — | — | NULL = 配達待ち（pending） |
+| retry_count | INTEGER | NO | `0` | — | 配達リトライ回数 |
+| last_error | TEXT | YES | — | — | 直近の配達エラー |
+| dead_at | TEXT | YES | — | — | NOT NULL = 配達断念（DLQ 行き。7日後に物理削除） |
+
+補足:
+- タグ・リレーション・検索インデックス（search_index）・embeddingのいずれにも接続しない。通信レイヤ専用のキューであり、cc-memoryのエンティティモデルからは独立している
+- SDK 側を再同期して DDL の形状が変わった場合は、新規 migration で追従する（0056 は事後改変しない）
+
+インデックス: `idx_relay_outbox_pending`（`id` WHERE `processed_at IS NULL AND dead_at IS NULL`。配達ループの pending 走査用の部分インデックス）
+
+関連 migration: 0056_add_relay_outbox
+
 ---
 
 ## 4. 関係メカニズム
