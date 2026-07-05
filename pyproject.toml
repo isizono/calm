@@ -5,7 +5,7 @@ description = "Claude Codeの記憶を外部DBに保存し、セッション間�
 requires-python = ">=3.12"
 dependencies = [
     "fastmcp>=3.2.0,<4",
-    "httpx>=0.27",
+    "httpx>=0.28.1",
     "pyyaml>=6.0",
     "sentence-transformers>=5,<6",
     "sqlite-vec>=0.1.6,<0.2",
