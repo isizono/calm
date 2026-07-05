@@ -158,7 +158,7 @@ class TestDbSchemaSpecSignalEventsTable:
 
     def test_signal_events_detail_section_exists(self):
         content = _read(DB_SCHEMA_SPEC)
-        assert "### 3.18 signal_events" in content
+        assert re.search(r"^### 3\.\d+ signal_events$", content, re.MULTILINE)
 
     def test_signal_events_migration_reference(self):
         content = _read(DB_SCHEMA_SPEC)
