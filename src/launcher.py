@@ -60,6 +60,43 @@ MAX_RETRIES: int | None = _read_max_retries()
 # 長時間のHTTPサーバー復旧待ちでもリトライ間隔を上限内に抑える。
 BACKOFF_CAP_SEC = 60
 
+# bridge identity ヘッダ名。全MCPリクエストに付与し、cc-memory server 再起動を
+# またいで安定な呼び出し元識別子として relay 側（identity.py）が読む。
+BRIDGE_SESSION_HEADER = "X-CC-Memory-Bridge-Session-Id"
+
+HEARTBEAT_INTERVAL_ENV = "CC_MEMORY_LAUNCHER_HEARTBEAT_SEC"
+DEFAULT_HEARTBEAT_INTERVAL_SEC = 60.0
+
+
+def _read_heartbeat_interval_sec() -> float:
+    """env `CC_MEMORY_LAUNCHER_HEARTBEAT_SEC` から heartbeat 間隔を読む。
+
+    未設定・無効値・0以下の場合は既定値にフォールバックする。
+    """
+    raw = os.environ.get(HEARTBEAT_INTERVAL_ENV)
+    if raw is None or raw == "":
+        return DEFAULT_HEARTBEAT_INTERVAL_SEC
+    try:
+        value = float(raw)
+    except ValueError:
+        print(
+            f"[launcher] WARNING Invalid {HEARTBEAT_INTERVAL_ENV}={raw!r}, "
+            f"falling back to default {DEFAULT_HEARTBEAT_INTERVAL_SEC}s",
+            file=sys.stderr,
+        )
+        return DEFAULT_HEARTBEAT_INTERVAL_SEC
+    if value <= 0:
+        print(
+            f"[launcher] WARNING {HEARTBEAT_INTERVAL_ENV} must be > 0, "
+            f"got {value}, falling back to default {DEFAULT_HEARTBEAT_INTERVAL_SEC}s",
+            file=sys.stderr,
+        )
+        return DEFAULT_HEARTBEAT_INTERVAL_SEC
+    return value
+
+
+HEARTBEAT_INTERVAL_SEC = _read_heartbeat_interval_sec()
+
 
 class ServerDisconnected(Exception):
     """サーバー側の切断を示す例外。stdin EOFとの区別に使用する。"""
@@ -237,6 +274,7 @@ async def _bridge() -> None:
     import anyio
     from mcp import types
     from mcp.client.streamable_http import streamable_http_client
+    from mcp.shared._httpx_utils import create_mcp_http_client
     from mcp.shared.message import SessionMessage
 
     # stdin EOFとサーバー切断を区別するためのフラグ
@@ -244,84 +282,103 @@ async def _bridge() -> None:
     # サーバー切断: server_to_stdoutが先に終了 → stdin_eofがFalse → ServerDisconnected
     stdin_eof = False
 
-    # terminate_on_close=True: 切断時に DELETE でMCPセッションを終了させる。
-    # ブリッジは再接続時にセッションを再利用せず毎回新規に張るため、DELETE を
-    # 送らないとサーバー側の StreamableHTTPSessionManager が旧セッション
-    # （タスク+トランスポート）をサーバー停止まで保持し続けてメモリが単調増加する。
-    # サーバー側切断が原因で閉じる場合の DELETE 失敗は SDK 内で握りつぶされる。
-    async with streamable_http_client(
-        url=MCP_ENDPOINT,
-        terminate_on_close=True,
-    ) as (read_stream, write_stream, _get_session_id):
+    # 全MCPリクエストに bridge identity ヘッダを同梱する。cc-memory server が
+    # 再起動しても launcher プロセス（＝ _session_id）が生きている限り不変な値で、
+    # relay の declaration/inbox/subscription キー解決（identity.py）が読む。
+    http_client = create_mcp_http_client(headers={BRIDGE_SESSION_HEADER: _session_id})
+    async with http_client:
+        # terminate_on_close=True: 切断時に DELETE でMCPセッションを終了させる。
+        # ブリッジは再接続時にセッションを再利用せず毎回新規に張るため、DELETE を
+        # 送らないとサーバー側の StreamableHTTPSessionManager が旧セッション
+        # （タスク+トランスポート）をサーバー停止まで保持し続けてメモリが単調増加する。
+        # サーバー側切断が原因で閉じる場合の DELETE 失敗は SDK 内で握りつぶされる。
+        async with streamable_http_client(
+            url=MCP_ENDPOINT,
+            http_client=http_client,
+            terminate_on_close=True,
+        ) as (read_stream, write_stream, _get_session_id):
 
-        async def stdin_to_server() -> None:
-            """stdinから1行ずつ読み、write_streamに送る。"""
-            nonlocal stdin_eof
-            loop = asyncio.get_running_loop()
-            reader = asyncio.StreamReader()
-            transport, _ = await loop.connect_read_pipe(
-                lambda: asyncio.StreamReaderProtocol(reader),
-                sys.stdin.buffer,
-            )
-            try:
-                buffer = b""
-                while True:
-                    chunk = await reader.read(65536)
-                    if not chunk:
-                        stdin_eof = True
-                        break
-                    buffer += chunk
-                    while b"\n" in buffer:
-                        line, buffer = buffer.split(b"\n", 1)
-                        line = line.strip()
-                        if not line:
+            async def stdin_to_server() -> None:
+                """stdinから1行ずつ読み、write_streamに送る。"""
+                nonlocal stdin_eof
+                loop = asyncio.get_running_loop()
+                reader = asyncio.StreamReader()
+                transport, _ = await loop.connect_read_pipe(
+                    lambda: asyncio.StreamReaderProtocol(reader),
+                    sys.stdin.buffer,
+                )
+                try:
+                    buffer = b""
+                    while True:
+                        chunk = await reader.read(65536)
+                        if not chunk:
+                            stdin_eof = True
+                            break
+                        buffer += chunk
+                        while b"\n" in buffer:
+                            line, buffer = buffer.split(b"\n", 1)
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                message = types.JSONRPCMessage.model_validate_json(line)
+                                session_msg = SessionMessage(message)
+                                await write_stream.send(session_msg)
+                            except Exception:
+                                logger.exception("Failed to parse stdin message")
+                except Exception:
+                    stdin_eof = True  # stdin エラーも「stdin 側起因」として扱う
+                    logger.debug("stdin reader ended")
+                finally:
+                    if buffer.strip():
+                        logger.warning(
+                            f"Discarding {len(buffer)} bytes of incomplete data in stdin buffer"
+                        )
+                    transport.close()
+                    await write_stream.aclose()
+
+            async def server_to_stdout() -> None:
+                """read_streamからメッセージを受信し、stdoutに書く。
+
+                read_streamが終了したとき、stdin_eofがFalseならサーバー側切断と判断し
+                ServerDisconnectedをraiseしてtask group全体をキャンセルする。
+                """
+                try:
+                    async for session_msg_or_exc in read_stream:
+                        if isinstance(session_msg_or_exc, Exception):
+                            logger.warning(f"Received exception from server: {session_msg_or_exc}")
                             continue
-                        try:
-                            message = types.JSONRPCMessage.model_validate_json(line)
-                            session_msg = SessionMessage(message)
-                            await write_stream.send(session_msg)
-                        except Exception:
-                            logger.exception("Failed to parse stdin message")
-            except Exception:
-                stdin_eof = True  # stdin エラーも「stdin 側起因」として扱う
-                logger.debug("stdin reader ended")
-            finally:
-                if buffer.strip():
-                    logger.warning(
-                        f"Discarding {len(buffer)} bytes of incomplete data in stdin buffer"
-                    )
-                transport.close()
-                await write_stream.aclose()
+                        message = session_msg_or_exc.message
+                        json_bytes = message.model_dump_json(
+                            by_alias=True, exclude_none=True
+                        ).encode("utf-8")
 
-        async def server_to_stdout() -> None:
-            """read_streamからメッセージを受信し、stdoutに書く。
+                        sys.stdout.buffer.write(json_bytes + b"\n")
+                        sys.stdout.buffer.flush()
+                except anyio.ClosedResourceError:
+                    pass
+                except Exception:
+                    logger.debug("stdout writer ended", exc_info=True)
+                finally:
+                    if not stdin_eof:
+                        raise ServerDisconnected("Server connection lost")
 
-            read_streamが終了したとき、stdin_eofがFalseならサーバー側切断と判断し
-            ServerDisconnectedをraiseしてtask group全体をキャンセルする。
-            """
-            try:
-                async for session_msg_or_exc in read_stream:
-                    if isinstance(session_msg_or_exc, Exception):
-                        logger.warning(f"Received exception from server: {session_msg_or_exc}")
-                        continue
-                    message = session_msg_or_exc.message
-                    json_bytes = message.model_dump_json(
-                        by_alias=True, exclude_none=True
-                    ).encode("utf-8")
+            async def heartbeat_loop() -> None:
+                """一定間隔で /session/register を再送し、SessionManager 側の
+                last_seen を更新し続ける（session_manager.py の TTL 失効に対する
+                生存申告）。登録エンドポイントを持たない接続先（例: セッションAPI
+                を持たない remote 展開）でも _register_session() が例外を握り
+                つぶして False を返すだけなので、この loop は次回間隔まで待って
+                再試行するだけで致命化しない。
+                """
+                while True:
+                    await anyio.sleep(HEARTBEAT_INTERVAL_SEC)
+                    await anyio.to_thread.run_sync(_register_session)
 
-                    sys.stdout.buffer.write(json_bytes + b"\n")
-                    sys.stdout.buffer.flush()
-            except anyio.ClosedResourceError:
-                pass
-            except Exception:
-                logger.debug("stdout writer ended", exc_info=True)
-            finally:
-                if not stdin_eof:
-                    raise ServerDisconnected("Server connection lost")
-
-        async with anyio.create_task_group() as tg:
-            tg.start_soon(stdin_to_server)
-            tg.start_soon(server_to_stdout)
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(stdin_to_server)
+                tg.start_soon(server_to_stdout)
+                tg.start_soon(heartbeat_loop)
 
 
 def main() -> None:
@@ -337,11 +394,12 @@ def main() -> None:
         stream=sys.stderr,
     )
 
-    if _IS_LOCAL:
-        # ローカル接続: セッション管理あり
-        atexit.register(_cleanup)
-        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))  # atexitが発火する
-    else:
+    # セッション解除(atexit/SIGTERM)はローカル/リモード問わず常時登録する。
+    # _unregister_session()は失敗を握りつぶすため、登録エンドポイントを持たない
+    # 接続先（例: セッションAPIを持たないremote展開）でも安全に呼べる。
+    atexit.register(_cleanup)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))  # atexitが発火する
+    if not _IS_LOCAL:
         logger.info("Remote mode: connecting to %s", MCP_ENDPOINT)
 
     max_retries = MAX_RETRIES
@@ -353,10 +411,21 @@ def main() -> None:
             logger.error("Failed to ensure HTTP server is running")
             sys.exit(1)
 
-        # 2. セッション登録（ローカルのみ。リモートサーバーにはセッションAPIがない）
-        if _IS_LOCAL and not _register_session():
+        # 2. セッション登録（ローカル/リモート問わず試行する）。
+        #    ローカルは登録失敗を致命エラーとして扱う（ローカルサーバーは常に
+        #    このAPIを持つため、失敗は異常事態）。リモートは接続先がセッション
+        #    APIを持たない場合があるため、警告ログのみで続行する（bridge identity
+        #    ヘッダによる declaration/inbox 安定化自体はセッション登録の成否に
+        #    依存しない。ただしこの場合 lease_loop の生存ゲート対象には含まれない）。
+        registered = _register_session()
+        if _IS_LOCAL and not registered:
             logger.error("Failed to register session")
             sys.exit(1)
+        if not _IS_LOCAL and not registered:
+            logger.warning(
+                "Session register failed (destination may not support "
+                "the session API); continuing without liveness heartbeat"
+            )
 
         # 3. stdio <-> HTTP ブリッジ起動
         try:
@@ -377,8 +446,7 @@ def main() -> None:
             )
             time.sleep(backoff)
 
-    if _IS_LOCAL:
-        _cleanup()
+    _cleanup()
 
 
 if __name__ == "__main__":

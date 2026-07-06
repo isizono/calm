@@ -497,8 +497,8 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 | body | string | yes | - | メッセージ本文（非空） |
 | title | string | no | null | 一覧表示用の見出し（200字以内） |
 
-**返り値**: `{outbox_id: int, labels: list[string], handle: string}`。
-**動作**: 送信者の`handle:` labelを自動付与し、`relay_outbox`テーブルへINSERTして完結する（transactional outbox）。relayへの配達はserver内の常駐配達ループが非同期に行い、保証はat-least-once。labelsが空のpublishは宛先が決まらないため拒否する。curationの対象になるのはentity系labelsのみで、routing系はcuration対象外。
+**返り値**: `{outbox_id: int, labels: list[string], handle: string, identity: string}`。
+**動作**: 送信者の`handle:` labelを自動付与し、`relay_outbox`テーブルへINSERTして完結する（transactional outbox）。relayへの配達はserver内の常駐配達ループが非同期に行い、保証はat-least-once。labelsが空のpublishは宛先が決まらないため拒否する。curationの対象になるのはentity系labelsのみで、routing系はcuration対象外。`identity`は呼び出し元セッションの識別子（cc-memory server再起動をまたいで安定）。
 **エラー処理**: `RELAY_BEARER_TOKEN`未設定・session_id未解決・labels/body不正はいずれも明示エラー。
 
 ### 2.40 relay_subscribe
@@ -507,8 +507,8 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 | --- | --- | --- | --- | --- |
 | labels | list[string] | yes | - | 購読条件labels（publish側labelsをすべて含む発話が届く）。空配列なら自handle宛のみの購読。`role:` はエラー |
 
-**返り値**: `{subscription_id: string, labels: list[string], lease_expires_at: string, handle: string, reused: bool}`。
-**動作**: 自sessionの`handle:` labelを自動付与し、subscription declaration file（`~/.cc-memory/relay/subscriptions/session-<session_id>.json`）とrelayの購読登録を同期する。同一labels集合の再呼び出しは冪等で、leaseが有効なら既存購読を返し（`reused: true`）、失効・不明なら新規購読してdeclaration fileのidを差し替える。lease更新・再購読・購読解除はserver側常駐処理が自動管理する。
+**返り値**: `{subscription_id: string, labels: list[string], lease_expires_at: string, handle: string, reused: bool, identity: string}`。
+**動作**: 自sessionの`handle:` labelを自動付与し、subscription declaration file（`~/.cc-memory/relay/subscriptions/session-<session_id>.json`）とrelayの購読登録を同期する。同一labels集合の再呼び出しは冪等で、leaseが有効なら既存購読を返し（`reused: true`）、失効・不明なら新規購読してdeclaration fileのidを差し替える。lease更新・再購読・購読解除はserver側常駐処理が自動管理する。`identity`は呼び出し元セッションの識別子（cc-memory server再起動をまたいで安定。`scripts/relay/watch_inbox.sh`等に渡す値として使える）。
 **エラー処理**: `RELAY_BEARER_TOKEN`未設定・session_id未解決は明示エラー。relayエラー時はdeclaration fileを更新しない。
 
 ### 2.41 relay_receive
@@ -517,8 +517,8 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 | --- | --- | --- | --- | --- |
 | limit | int | no | null | 最大取得件数（1以上）。省略時は未読全件 |
 
-**返り値**: `{messages: list[object], count: int}`。
-**動作**: 自sessionのinbox（`~/.cc-memory/relay/inbox/session-<session_id>.jsonl`）をcursor位置からdrainして返す。既読分は返さない。inbox不在（未購読・未配達）は空リストの正常応答（エラーにしない）。relayへのHTTPアクセスは発生しない（ローカル完結）。
+**返り値**: `{messages: list[object], count: int, identity: string}`。
+**動作**: 自sessionのinbox（`~/.cc-memory/relay/inbox/session-<session_id>.jsonl`）をcursor位置からdrainして返す。既読分は返さない。inbox不在（未購読・未配達）は空リストの正常応答（エラーにしない）。relayへのHTTPアクセスは発生しない（ローカル完結）。`identity`は呼び出し元セッションの識別子（cc-memory server再起動をまたいで安定）。
 **配達契約**: at-least-once。同一メッセージが重複して届くことがあるため、受信側は冪等に扱うこと。
 
 ---

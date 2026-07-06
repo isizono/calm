@@ -4,9 +4,12 @@ import time
 
 from src.infra.session_manager import (
     DEFAULT_GRACE_PERIOD_SEC,
+    DEFAULT_LIVENESS_TIMEOUT_SEC,
     GRACE_PERIOD_ENV,
+    LIVENESS_TIMEOUT_ENV,
     SessionManager,
     _read_grace_period_sec,
+    _read_liveness_timeout_sec,
 )
 
 
@@ -242,3 +245,101 @@ class TestAutoShutdownDisabled:
         assert mgr.session_ids == {"s1", "s2"}
         assert mgr.unregister("s1") is True
         assert mgr.active_count == 1
+
+
+class TestReadLivenessTimeoutSec:
+    """env CC_MEMORY_SESSION_LIVENESS_TIMEOUT_SEC を読み取るヘルパーの単体テスト"""
+
+    def test_env_unset_returns_default(self, monkeypatch):
+        """env未設定時はデフォルト値を返す"""
+        monkeypatch.delenv(LIVENESS_TIMEOUT_ENV, raising=False)
+        assert _read_liveness_timeout_sec() == DEFAULT_LIVENESS_TIMEOUT_SEC
+
+    def test_env_numeric_returns_value(self, monkeypatch):
+        """env数値指定時はその値を返す"""
+        monkeypatch.setenv(LIVENESS_TIMEOUT_ENV, "120")
+        assert _read_liveness_timeout_sec() == 120.0
+
+    def test_env_zero_returns_zero(self, monkeypatch):
+        """env=0 は0をそのまま返す（reaper無効化マーカー）"""
+        monkeypatch.setenv(LIVENESS_TIMEOUT_ENV, "0")
+        assert _read_liveness_timeout_sec() == 0.0
+
+    def test_env_invalid_returns_default(self, monkeypatch, capsys):
+        """env無効値時はデフォルトにフォールバック + stderr警告"""
+        monkeypatch.setenv(LIVENESS_TIMEOUT_ENV, "abc")
+        assert _read_liveness_timeout_sec() == DEFAULT_LIVENESS_TIMEOUT_SEC
+        captured = capsys.readouterr()
+        assert "WARNING" in captured.err
+        assert "Invalid" in captured.err
+
+    def test_env_negative_returns_default(self, monkeypatch, capsys):
+        """env負値時はデフォルトにフォールバック + stderr警告"""
+        monkeypatch.setenv(LIVENESS_TIMEOUT_ENV, "-1")
+        assert _read_liveness_timeout_sec() == DEFAULT_LIVENESS_TIMEOUT_SEC
+        captured = capsys.readouterr()
+        assert "WARNING" in captured.err
+        assert ">= 0" in captured.err
+
+
+class TestRegisterHeartbeat:
+    """register() の heartbeat 再送（is_new/last_seen 更新）に関する契約"""
+
+    def test_second_register_returns_false_but_updates_last_seen(self):
+        """1回目はTrue（新規）・2回目はFalse（heartbeat）を返し、両方last_seenが更新される"""
+        mgr = SessionManager(liveness_timeout_sec=0)
+        assert mgr.register("s1") is True
+        first_seen = mgr._last_seen["s1"]
+        time.sleep(0.05)
+        assert mgr.register("s1") is False
+        second_seen = mgr._last_seen["s1"]
+        assert second_seen > first_seen
+
+
+class TestLivenessReaper:
+    """liveness TTL 失効（heartbeat 途絶セッションの自動 unregister）の検証
+
+    reaperのスキャン間隔（LIVENESS_SWEEP_INTERVAL_SEC、既定30秒）はテストを
+    高速化するため小さい値に差し替える。ワーカーはこの定数をループのたびに
+    モジュールグローバルとして参照するため、monkeypatchが次回スキャンから
+    反映される。
+    """
+
+    def test_stale_session_evicted_after_timeout(self, monkeypatch):
+        """TTLを超えてregister()（heartbeat）が呼ばれないsessionは失効する"""
+        from src.infra import session_manager as sm_module
+
+        monkeypatch.setattr(sm_module, "LIVENESS_SWEEP_INTERVAL_SEC", 0.05)
+        mgr = SessionManager(grace_period_sec=0, liveness_timeout_sec=0.2)
+        mgr.register("s1")
+        mgr.start_watchdog()
+        try:
+            deadline = time.monotonic() + 5
+            while "s1" in mgr.session_ids and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert "s1" not in mgr.session_ids
+        finally:
+            mgr._liveness_stop_event.set()
+
+    def test_heartbeat_within_ttl_prevents_eviction(self, monkeypatch):
+        """TTL内にregister()（heartbeat）が再度呼ばれたsessionは失効しない"""
+        from src.infra import session_manager as sm_module
+
+        monkeypatch.setattr(sm_module, "LIVENESS_SWEEP_INTERVAL_SEC", 0.05)
+        mgr = SessionManager(grace_period_sec=0, liveness_timeout_sec=0.3)
+        mgr.register("s1")
+        mgr.start_watchdog()
+        try:
+            # TTLの半分程度でheartbeatを送り続け、失効しないことを確認する
+            for _ in range(4):
+                time.sleep(0.15)
+                mgr.register("s1")
+            assert "s1" in mgr.session_ids
+        finally:
+            mgr._liveness_stop_event.set()
+
+    def test_liveness_timeout_zero_disables_reaper_thread(self):
+        """liveness_timeout_sec=0 の場合、reaperスレッドを起動しない"""
+        mgr = SessionManager(liveness_timeout_sec=0)
+        mgr._start_liveness_reaper()
+        assert mgr._liveness_thread is None

@@ -95,9 +95,18 @@ scripts/relay/watch_inbox.sh sess-abc123
 
 inbox path は `RELAY_STATE_DIR`（未設定なら `~/.cc-memory/relay`）配下の `inbox/session-<safe_session_id>.jsonl`。cc-memory server 本体と env を合わせて使うこと。
 
+`<session_id>` に渡す値は `relay_publish` / `relay_subscribe` / `relay_receive` の返り値の `identity` フィールドから取得できる。この値は launcher.py（Claude Code CLI と cc-memory server を繋ぐ stdio ブリッジ）が発行する bridge identity であり、cc-memory server の再起動をまたいで不変（Claude Code セッション自体を再起動しない限り変わらない）。
+
+### launcher の bridge identity・生存管理 env
+
+| 環境変数 | 説明 | 既定値 |
+|---|---|---|
+| `CC_MEMORY_LAUNCHER_HEARTBEAT_SEC` | launcher.py が `/session/register` を再送する間隔（秒） | `60` |
+| `CC_MEMORY_SESSION_LIVENESS_TIMEOUT_SEC` | SessionManager が heartbeat 途絶から liveness TTL 失効までの猶予（秒）。`0` で無効化 | `300` |
+
 ## トラブルシューティング
 
 - **cc-memory 起動時のログに「RELAY_BEARER_TOKEN が未設定のため RelayRuntime を起動しません」と出る**: cc-memory を起動する launchd / shell に `RELAY_BEARER_TOKEN` を注入する。`launchctl setenv RELAY_BEARER_TOKEN <token>` は再起動で消えるため、`~/Library/LaunchAgents/com.isizono.cc-memory-remote.plist` の `EnvironmentVariables` に書く。
 - **relay 起動後も cc-memory が SSE 接続に失敗する**: `RELAY_BASE_URL` の port が relay server と一致しているか確認する。cc-memory 側の既定は 8770、relay v1 の既定は 8765。
-- **declaration file が増え続ける**: cc-memory server の B-2 lease loop が「lease_expires_at の最大値が 24 時間以上前」の declaration file を定期的に削除する（起動時 1 回 + 1 時間毎）。それでも増える場合は該当 session が生存していて renew が回っている可能性がある（生存判定は `SessionManager.session_ids`）。
+- **declaration file が増え続ける**: cc-memory server の B-2 lease loop が「lease_expires_at の最大値が 24 時間以上前」の declaration file を定期的に削除する（起動時 1 回 + 1 時間毎）。それでも増える場合は該当 session が生存していて renew が回っている可能性がある（生存判定は `SessionManager.session_ids`。SIGKILL 等で launcher が異常終了した場合も `CC_MEMORY_SESSION_LIVENESS_TIMEOUT_SEC` 経過後に自動で対象から外れる）。
 - **relay v1（既存 `python -m src.relay.server`）と併走させたい**: v1 と v2 で port が異なれば同時起動可能。cc-memory server は `RELAY_BASE_URL` だけを見るため、v2 未導入の状態では `RELAY_BEARER_TOKEN` を未設定にしておけば v1 のみの環境として動く。
