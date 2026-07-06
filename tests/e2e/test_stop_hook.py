@@ -279,7 +279,29 @@ class TestActivityCheckinBlock:
     """activity check-in チェック"""
 
     def test_no_checkin_after_defer_turns_blocks(self, env_setup):
-        """猶予期間後（turn>=2）でcheck-in未呼出 → block"""
+        """猶予期間後（turn==3）でcheck-in未呼出 → block"""
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("hi"),
+                CONTEXT_RETRIEVAL_ENTRY,
+                _make_assistant_entry(text="response 1"),
+                _make_user_entry("continue"),
+                _make_assistant_entry(text="response 2"),
+                _make_user_entry("continue2"),
+                _make_assistant_entry(text="response 3"),
+            ],
+            transcript,
+        )
+
+        result = _run_stop_hook(
+            str(transcript), "test-session", env_setup["env_override"],
+        )
+        assert result["decision"] == "block"
+        assert "check-in" in result["reason"]
+
+    def test_two_turn_session_never_blocks(self, env_setup):
+        """2件のユーザー発言で終わるセッション（軽量セッション）はcheck-in未呼出でもblockされない"""
         transcript = env_setup["tmp_path"] / "transcript.jsonl"
         _write_transcript(
             [
@@ -295,8 +317,7 @@ class TestActivityCheckinBlock:
         result = _run_stop_hook(
             str(transcript), "test-session", env_setup["env_override"],
         )
-        assert result["decision"] == "block"
-        assert "check-in" in result["reason"]
+        assert result["decision"] == "approve"
 
     def test_checkin_called_approves(self, env_setup):
         """check_in呼出済み → approve"""
@@ -617,6 +638,38 @@ class TestRecordNudgeMultiplication:
         assert len(record_nudges) >= 1
         assert record_nudges[-1]["repeat"] == 2
 
+    def test_4_turns_without_recording_nudge_includes_turns_since(self, env_setup):
+        """nudgeイベントにturns_since(経過ターン数の実測値)が保存される"""
+        state_dir = env_setup["state_dir"]
+        _write_events(
+            [
+                {"e": "tool", "name": "check_in", "turn": 1, "activity_id": 1},
+            ],
+            state_dir, "test-session",
+        )
+        Path(state_dir, "current_turn_test-session").write_text("1")
+        Path(state_dir, "checked_in_activity_test-session").write_text("1")
+
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("turn2"),
+                _make_assistant_entry(text="response 2"),
+                _make_user_entry("turn3"),
+                _make_assistant_entry(text="response 3"),
+                _make_user_entry("turn4"),
+                _make_assistant_entry(text="response 4"),
+            ],
+            transcript,
+        )
+
+        _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+
+        events = _read_events(state_dir, "test-session")
+        record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record_missing"]
+        assert record_nudges[-1]["turns_since"] == 4
+        assert record_nudges[-1]["repeat"] == 2
+
     def test_2_turns_without_recording_nudge_repeat_1(self, env_setup):
         """2ターン記録なし → nudge repeat=1"""
         state_dir = env_setup["state_dir"]
@@ -789,7 +842,7 @@ class TestOrchFlowSuppression:
     """orch_managed=1 アクティビティでのcheck-inブロック/nudge抑制と、残存OW_ROLE envの無視"""
 
     def test_stale_ow_role_env_still_blocks_checkin(self, env_setup):
-        """OW_ROLE=workerが環境に残存していてもcheck-in未呼出のturn>=2ではblockする"""
+        """OW_ROLE=workerが環境に残存していてもcheck-in未呼出のturn==3ではblockする"""
         transcript = env_setup["tmp_path"] / "transcript.jsonl"
         _write_transcript(
             [
@@ -798,6 +851,8 @@ class TestOrchFlowSuppression:
                 _make_assistant_entry(text="response 1"),
                 _make_user_entry("continue"),
                 _make_assistant_entry(text="response 2"),
+                _make_user_entry("continue2"),
+                _make_assistant_entry(text="response 3"),
             ],
             transcript,
         )

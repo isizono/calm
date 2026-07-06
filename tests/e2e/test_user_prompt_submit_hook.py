@@ -99,34 +99,11 @@ class TestRecordNudge:
 
 
 class TestRecordNudgeMultiplication:
-    """record nudge増殖: repeatフィールドに応じてメッセージが繰り返される"""
-
-    def test_repeat_2_doubles_message(self, state_dir):
-        """repeat=2 → メッセージが2回注入される"""
-        _write_events(
-            [{"e": "nudge", "type": "record", "turn": 4, "repeat": 2}],
-            state_dir,
-        )
-
-        result = _run_hook({"session_id": _SESSION_ID}, state_dir)
-        output = json.loads(result.stdout)
-        ctx = output["hookSpecificOutput"]["additionalContext"]
-        assert ctx.count("直近の応答で記録ツール") == 2
-
-    def test_repeat_5_quintuples_message(self, state_dir):
-        """repeat=5 → メッセージが5回注入される（上限到達）"""
-        _write_events(
-            [{"e": "nudge", "type": "record", "turn": 10, "repeat": 5}],
-            state_dir,
-        )
-
-        result = _run_hook({"session_id": _SESSION_ID}, state_dir)
-        output = json.loads(result.stdout)
-        ctx = output["hookSpecificOutput"]["additionalContext"]
-        assert ctx.count("直近の応答で記録ツール") == 5
+    """record nudge文言: repeat段階に応じてtierが変わり、実測ターン数(turns_since)が
+    文中に埋め込まれる（旧: 同一文言をrepeat回連結する仕様だった）"""
 
     def test_no_repeat_field_defaults_to_1(self, state_dir):
-        """repeatフィールドなし → メッセージ1回（デフォルト値）"""
+        """repeatフィールドなし → tier=lowの文言が1回だけ出力され、反復連結は発生しない"""
         _write_events(
             [{"e": "nudge", "type": "record", "turn": 2}],
             state_dir,
@@ -136,6 +113,48 @@ class TestRecordNudgeMultiplication:
         output = json.loads(result.stdout)
         ctx = output["hookSpecificOutput"]["additionalContext"]
         assert ctx.count("直近の応答で記録ツール") == 1
+
+    def test_repeat_3_uses_mid_tier_with_turns_since_embedded(self, state_dir):
+        """repeat=3 → tier=midの文言が使われ、turns_sinceの実測値が本文に埋め込まれる"""
+        _write_events(
+            [{"e": "nudge", "type": "record", "turn": 6, "repeat": 3, "turns_since": 6}],
+            state_dir,
+        )
+
+        result = _run_hook({"session_id": _SESSION_ID}, state_dir)
+        output = json.loads(result.stdout)
+        ctx = output["hookSpecificOutput"]["additionalContext"]
+        assert "6ターン記録ツール" in ctx
+        assert "経緯が失われつつあります" in ctx
+        # tier=lowの文言(旧仕様の単純反復)は混入しない
+        assert "該当なしなら無視してOK" not in ctx
+
+    def test_repeat_5_uses_high_tier_with_turns_since_embedded(self, state_dir):
+        """repeat=5（上限到達） → tier=highの強い文言が使われ、turns_sinceが埋め込まれる"""
+        _write_events(
+            [{"e": "nudge", "type": "record", "turn": 10, "repeat": 5, "turns_since": 10}],
+            state_dir,
+        )
+
+        result = _run_hook({"session_id": _SESSION_ID}, state_dir)
+        output = json.loads(result.stdout)
+        ctx = output["hookSpecificOutput"]["additionalContext"]
+        assert "10ターン以上記録ツールが呼ばれていません" in ctx
+        assert "セッションの経緯が失われる可能性が高い" in ctx
+
+    def test_turns_since_missing_falls_back_to_repeat_times_two(self, state_dir):
+        """turns_sinceフィールドがない旧形式のnudgeイベント（後方互換）でも例外にならず、
+        repeat*2の近似値で文言が生成される"""
+        _write_events(
+            [{"e": "nudge", "type": "record", "turn": 6, "repeat": 3}],
+            state_dir,
+        )
+
+        result = _run_hook({"session_id": _SESSION_ID}, state_dir)
+        assert result.returncode == 0
+        output = json.loads(result.stdout)
+        ctx = output["hookSpecificOutput"]["additionalContext"]
+        assert "6ターン記録ツール" in ctx  # repeat(3) * 2 = 6 で近似
 
 
 class TestFollowUpNudge:
