@@ -124,7 +124,7 @@ def add_activity(
     アクティビティを作成してIDを返す
 
     Args:
-        title: アクティビティのタイトル（40字以内）
+        title: アクティビティのタイトル（35字以内）
         description: アクティビティの説明
         tags: タグ配列（必須、1個以上）
         related: 関連エンティティ（optional）。
@@ -556,7 +556,7 @@ def update_activity(
     Args:
         activity_id: アクティビティID
         status: 新しいステータス（optional）
-        title: 新しいタイトル（optional、40字以内）
+        title: 新しいタイトル（optional、35字以内）
         description: 新しい説明（optional）
         tags: 新しいタグ配列（optional、指定時は全置換。1個以上必須）
         orch_managed: orch が管理する activity かどうかを切り替える（optional）。

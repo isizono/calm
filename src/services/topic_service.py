@@ -145,7 +145,7 @@ def add_topic(
     新しい議論トピックを追加する。
 
     Args:
-        title: トピックのタイトル（40字以内）
+        title: トピックのタイトル（35字以内）
         description: トピックの説明（必須）
         tags: タグ配列（必須、1個以上）
         related: 関連エンティティ（optional）。
