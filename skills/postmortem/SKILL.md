@@ -10,7 +10,7 @@ completedアクティビティの行動を時系列で振り返り、ユーザ�
 ## 1. 対象アクティビティの選択
 
 1. 引数で `activity_id` が指定されていればそのまま使う
-2. 指定されていなければ `get_activities(status="completed", limit=15)` で一覧を表示し、ユーザーに選んでもらう
+2. 指定されていなければ `get_activities(status="completed", limit=15, orch_managed=False)` で一覧を表示し、ユーザーに選んでもらう
 
 ## 2. ポストモーテムアクティビティの作成
 

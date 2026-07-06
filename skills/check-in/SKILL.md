@@ -12,7 +12,7 @@ description: アクティビティにcheck-inして関連情報を集約取得�
 1. 引数で `activity_id` が指定されていればそのまま使う
 2. 指定されていなければ、SessionStart hookで注入済みのトピック別アクティビティ一覧を提示する:
    a. SessionStart hookの出力にトピック別グルーピングが含まれていればそのまま使う
-   b. グルーピングがなければ `get_activities()` でフラットに取得しフォールバック表示する
+   b. グルーピングがなければ `get_activities(orch_managed=False)` でフラットに取得しフォールバック表示する
    c. IDは一切表示しない（トピックID・アクティビティIDともに非表示）。トピック名とアクティビティ名のみ
    d. ユーザーが名前やキーワードで選択したら、対応するactivity_idでステップ3へ進む
 3. `check_in(activity_id=...)` を呼び出す
