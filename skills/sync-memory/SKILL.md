@@ -22,7 +22,7 @@ description: セッション終了前にtranscriptを解析し、トピック・
 
 **アクション:**
 - セッション中に使ったトピックの `get_decisions(topic_id=...)` と `get_logs(topic_id=...)` を実行し、直近の決定事項・ログを取得
-- `get_activities(status="active")` で未完了アクティビティを取得（pending + in_progress）
+- `get_activities(status="active", orch_managed=False)` で未完了アクティビティを取得（pending + in_progress）
 - 取得した既存データと会話内容を照合し、**既に記録済みの内容は記録しない**
 
 **重複の判定基準:**

@@ -10,7 +10,7 @@ cc-memoryの記録（decisions, logs, materials）を元に、外部共有可能
 ## 1. 対象アクティビティの選択
 
 1. 引数で `activity_id` が指定されていればそのまま使う
-2. 指定されていなければ `get_activities(status="completed")` で候補を表示し、ユーザーに選んでもらう
+2. 指定されていなければ `get_activities(status="completed", orch_managed=False)` で候補を表示し、ユーザーに選んでもらう
 3. 複数のアクティビティをまとめて1つのドキュメントにすることもできる。ユーザーに確認する
 
 ## 2. [執筆]アクティビティの作成
