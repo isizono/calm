@@ -217,7 +217,7 @@ PreToolUse は `hooks/hooks.json` に全ツール対象（`*` matcher）の preb
 
 ### 5.1 cc-memory本体の協調コンポーネント
 
-- `src/services/ow_service.py`: ow_send / ow_history を提供する。relayサーバーの起動・健全性チェックのヘルパー（`ensure_relay_server` / `_wait_for_relay_health`）も同居するが、ツール実行経路からは呼ばれない（relayサーバーの起動は手動）
+- `src/services/ow_service.py`: ow_send / ow_history を提供する。relayサーバー自体の起動は手動（`python -m src.relay.server`）
 - `src/relay/server.py`: 中継サーバー本体。SQLite永続化 + SSEブロードキャスト。エンドポイント: `/create` / `/stream` / `/send` / `/history` / `/presence` / `/health`。msg_idがメッセージ順序の真実源
 - `scripts/ow/recv.sh`, `scripts/ow/recv_poll.sh`, `scripts/ow/recv_filter.py`: メッセージ受信側の購読・フィルタリング
 
@@ -299,7 +299,7 @@ graph LR
 潜在的な循環・癒着:
 
 - フロー層のhookが直接 `src/services/*` をimportする箇所がある（hookプロセスからDB直アクセス）。MCPツール経由ではないため、ストア層のCRUD変更がhookの内部実装に影響しうる
-- `ow_service` は relayサーバー（`src/relay/server.py`）を子プロセスとして起動するヘルパーを持つ（ツール実行経路からは呼ばれない）。ow_service と relay server間で状態整合（events.jsonl と relay DB）が二系統存在しうる（`docs/spec-v0.md` §6 T-E マルチセッション境界）
+- `ow_service` と relay server（`src/relay/server.py`）間で状態整合（events.jsonl と relay DB）が二系統存在しうる（`docs/spec-v0.md` §6 T-E マルチセッション境界）
 - service間の循環import懸念は5次元統合レポート（material 312、要参照）で指摘されている。本ドキュメントでは具体ファイル間の特定は未実施
 
 ---
