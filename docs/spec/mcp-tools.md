@@ -488,28 +488,31 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 **返り値**: `{stream_id: string, publish_id: int, matched_members: int}`。
 **動作**: 投函先streamが未存在（404）なら自動作成し、自identityを`read_write` memberに設定して1回だけ再投函する。作成の同時競合（409）も1回の再投函で解消する。自server名義のstreamのみ扱う。
 **エラー処理**: `RELAY_BEARER_TOKEN`未設定は設定方法を含む明示エラー（`config_missing`）。認証エラー（401）・close済みstream（410）・rate limit（429）はそのまま明示エラーとして返す（silent fallbackしない）。
+**関連**: 旧`ow_send`の後継。`ow_send`は同期呼び出しで4xxは即座に失敗として返るが、`relay_post`も relay への同期呼び出しである一方、成功応答の`matched_members`は投函時点の購読者数を示すのみで実配達は relay 側の非同期配信を経由する（配達完了そのものは保証しない）。
 
 ### 2.39 relay_publish
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
-| labels | list[string] | yes | - | 配送先マッチング用labels（1個以上）。routing系（`handle:`/`channel:`/`task:`）とcc-memory既存語彙（entity系）を併用可。entity系のみでも有効。未知prefixは不透明labelとして受理。`role:` は廃止済みでエラー |
+| labels | list[string] | yes | - | 配送先マッチング用labels（1個以上）。routing系（`handle:`/`room:`/`task:`）とtag namespace（`domain:`/`intent:`等）を併用可。これらのみでも有効。未知prefixは不透明labelとして受理。`role:`（廃止済みnamespace）と中核entity namespace（`topic:`/`activity:`/`decision:`/`log:`/`material:`。実在チェックなしの不透明文字列にしかならないため予約済み）はエラー |
 | body | string | yes | - | メッセージ本文（非空） |
 | title | string | no | null | 一覧表示用の見出し（200字以内） |
 
 **返り値**: `{outbox_id: int, labels: list[string], handle: string}`。
-**動作**: 送信者の`handle:` labelを自動付与し、`relay_outbox`テーブルへINSERTして完結する（transactional outbox）。relayへの配達はserver内の常駐配達ループが非同期に行い、保証はat-least-once。labelsが空のpublishは宛先が決まらないため拒否する。curationの対象になるのはentity系labelsのみで、routing系はcuration対象外。
+**動作**: 送信者の`handle:` labelを自動付与し、`relay_outbox`テーブルへINSERTして完結する（transactional outbox）。relayへの配達はserver内の常駐配達ループが非同期に行い、保証はat-least-once。labelsが空のpublishは宛先が決まらないため拒否する。
 **エラー処理**: `RELAY_BEARER_TOKEN`未設定・session_id未解決・labels/body不正はいずれも明示エラー。
+**関連**: 旧`ow_send`の後継。`ow_send`は同期呼び出しで4xxは即座に失敗として返るのに対し、`relay_publish`は`relay_outbox`への受理のみで即座に成功応答を返す非同期方式で、実際の配達はserver内の常駐配達ループがat-least-onceで行う（成功応答は配達完了を意味しない）。
 
 ### 2.40 relay_subscribe
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
-| labels | list[string] | yes | - | 購読条件labels（publish側labelsをすべて含む発話が届く）。空配列なら自handle宛のみの購読。`role:` はエラー |
+| labels | list[string] | yes | - | 購読条件labels（publish側labelsをすべて含む発話が届く）。空配列なら自handle宛のみの購読。`role:`と中核entity namespace（`topic:`/`activity:`/`decision:`/`log:`/`material:`）はエラー |
 
 **返り値**: `{subscription_id: string, labels: list[string], lease_expires_at: string, handle: string, reused: bool}`。
 **動作**: 自sessionの`handle:` labelを自動付与し、subscription declaration file（`~/.cc-memory/relay/subscriptions/session-<session_id>.json`）とrelayの購読登録を同期する。同一labels集合の再呼び出しは冪等で、leaseが有効なら既存購読を返し（`reused: true`）、失効・不明なら新規購読してdeclaration fileのidを差し替える。lease更新・再購読・購読解除はserver側常駐処理が自動管理する。
 **エラー処理**: `RELAY_BEARER_TOKEN`未設定・session_id未解決は明示エラー。relayエラー時はdeclaration fileを更新しない。
+**関連**: 旧`ow_history`の後継。`ow_history`は呼び出しのたびに履歴を同期pullするのに対し、relayは購読宣言（`relay_subscribe`）と受信（`relay_receive`）が分離しており、実際のメッセージ受信は`relay_receive`側が担う。
 
 ### 2.41 relay_receive
 
@@ -520,6 +523,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 **返り値**: `{messages: list[object], count: int}`。
 **動作**: 自sessionのinbox（`~/.cc-memory/relay/inbox/session-<session_id>.jsonl`）をcursor位置からdrainして返す。既読分は返さない。inbox不在（未購読・未配達）は空リストの正常応答（エラーにしない）。relayへのHTTPアクセスは発生しない（ローカル完結）。
 **配達契約**: at-least-once。同一メッセージが重複して届くことがあるため、受信側は冪等に扱うこと。
+**関連**: 旧`ow_history`の後継。`ow_history`はchannel引数でrelayから履歴を直接pullするのに対し、`relay_receive`は`relay_subscribe`で宣言したlabelsにマッチしてserver内の受信スレッドが既に自sessionのinboxへ配達済みのメッセージをローカルからdrainするのみで、呼び出し自体はrelayと通信しない。
 
 ---
 

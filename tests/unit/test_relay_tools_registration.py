@@ -42,8 +42,22 @@ class TestPostDocstringContract:
 
 
 class TestPublishDocstringContract:
-    def test_publish_mentions_curation_target_classes(self):
-        """curation 対象は entity 系 labels のみ（routing 系は対象外）の規約が明記されている。"""
+    def test_publish_mentions_entity_namespace_reservation(self):
+        """cc-memory の中核 entity namespace は label として使えずエラーになる契約が明記されている。"""
         desc = _all_tool_descriptions()["relay_publish"]
-        assert "curation" in desc
         assert "entity" in desc
+        assert "エラー" in desc
+
+
+class TestLegacyCrossReference:
+    """relay 4 動詞それぞれが v1 の対応 tool（ow_send/ow_history）への相互参照を持つ。"""
+
+    def test_post_and_publish_reference_ow_send(self):
+        descriptions = _all_tool_descriptions()
+        assert "ow_send" in descriptions["relay_post"]
+        assert "ow_send" in descriptions["relay_publish"]
+
+    def test_subscribe_and_receive_reference_ow_history(self):
+        descriptions = _all_tool_descriptions()
+        assert "ow_history" in descriptions["relay_subscribe"]
+        assert "ow_history" in descriptions["relay_receive"]
