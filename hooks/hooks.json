@@ -11,10 +11,6 @@
           {
             "type": "command",
             "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python hooks/session_start_hook.py"
-          },
-          {
-            "type": "command",
-            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python hooks/term_ref_cache.py"
           }
         ]
       }

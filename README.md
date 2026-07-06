@@ -154,10 +154,6 @@ claude.ai → Settings → Integrations → Add Integration からリモート�
 
 </details>
 
-## セッション間メッセージング（ow_send / ow_history）
-
-複数のClaude Codeセッション間でメッセージを中継する実験的な基盤です。`ow_send`・`ow_history` MCPツールが、リポ内にvendoringされたrelayサーバー（`src/relay/`）経由でチャンネル単位のメッセージ送受信を提供します。送信先channelが未存在の場合は初回送信時に自動作成されます。relayサーバー自体は自動起動されないため、事前に `uv run python -m src.relay.server` で起動しておく必要があります（未起動のまま送信すると接続エラーになります）。
-
 ## ライセンス
 
 MIT
