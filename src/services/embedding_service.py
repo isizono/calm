@@ -4,6 +4,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -12,6 +13,7 @@ from typing import Optional
 from sqlite_vec import serialize_float32
 
 from src.db import execute_query, get_connection
+from src.infra.lock_file import is_port_listening
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +67,18 @@ _server_initialized = False
 _backfill_done = False
 _project_root_cache: Optional[str] = None
 
+# spawn 直列化ロック。FastMCP は sync ツールを threadpool で並行実行するため、
+# ロックなしだとサーバー停止中の並行呼び出しが全スレッド分の embedding_server を
+# spawn する（各子プロセスがモデルロード分のメモリを確保する）。
+_spawn_lock = threading.Lock()
+
+# 起動失敗後の spawn 再試行クールダウン。モデルロードが恒久的に失敗する環境
+# （ネットワーク遮断等）で encode 呼び出しごとに spawn→即死ループになるのを防ぐ。
+# 子プロセスは失敗までに sentence_transformers の import 分のメモリを毎回確保する
+# ため、失敗直後の再 spawn は許可しない。_spawn_lock 保持中のみ読み書きする。
+_SPAWN_RETRY_COOLDOWN_SEC = 30.0
+_last_spawn_failed_at: Optional[float] = None
+
 
 def _get_project_root() -> str:
     """`_resolve_project_root()` の lazy + cache wrapper。
@@ -88,18 +102,18 @@ def _is_server_running() -> bool:
         return False
 
 
-def _start_server() -> bool:
-    """embedding_server.pyをdetachedプロセスとして起動する。成功でTrue。"""
+def _start_server() -> Optional[subprocess.Popen]:
+    """embedding_server.pyをdetachedプロセスとして起動する。成功でPopen、失敗でNone。"""
     try:
         cwd = _get_project_root()
     except (RuntimeError, OSError) as e:
-        # project_root が解決できなければ起動も不可能。例外を握って False で返す
+        # project_root が解決できなければ起動も不可能。例外を握って None で返す
         # （呼び出し側 `_ensure_initialized` は False を graceful degradation として扱う）。
         logger.warning(f"Failed to resolve project root for embedding server: {e}")
-        return False
+        return None
     server_path = os.path.join(cwd, "src", "infra", "embedding_server.py")
     try:
-        subprocess.Popen(
+        proc = subprocess.Popen(
             [sys.executable, server_path],
             start_new_session=True,
             stdout=subprocess.DEVNULL,
@@ -108,25 +122,70 @@ def _start_server() -> bool:
         )
     except OSError as e:
         logger.warning(f"Failed to start embedding server: {e}")
-        return False
+        return None
     logger.info("Embedding server process started")
-    return True
+    return proc
 
 
 def _ensure_server_running() -> bool:
-    """ヘルスチェック→起動→待機のフロー。成功でTrue、タイムアウトでFalse。"""
+    """ヘルスチェック→起動→待機のフロー。成功でTrue、タイムアウトでFalse。
+
+    spawn は _spawn_lock でプロセス内直列化する。ロック取得後の再チェックで
+    先行スレッドが起動済みなら spawn しない。
+    """
+    global _last_spawn_failed_at
     if _is_server_running():
         return True
-    if not _start_server():
-        return False
-    # 最大30秒待機（0.5秒間隔 × 60回）
-    for _ in range(60):
-        time.sleep(0.5)
+    with _spawn_lock:
+        # ロック待ちの間に別スレッドが起動を完了しているケース
         if _is_server_running():
-            logger.info("Embedding server is ready")
             return True
-    logger.warning("Embedding server failed to start within 30 seconds")
-    return False
+        if (
+            _last_spawn_failed_at is not None
+            and time.time() - _last_spawn_failed_at < _SPAWN_RETRY_COOLDOWN_SEC
+        ):
+            return False
+        proc = _start_server()
+        if proc is None:
+            _last_spawn_failed_at = time.time()
+            return False
+        # 最大30秒待機（0.5秒間隔 × 60回）
+        for _ in range(60):
+            time.sleep(0.5)
+            if _is_server_running():
+                logger.info("Embedding server is ready")
+                _last_spawn_failed_at = None
+                return True
+            if proc.poll() is not None:
+                # 子が終了済み。別プロセス起点のサーバーにbind負けした直後なら
+                # health が通るはずなので、最後にもう一度だけ確認してから諦める
+                if _is_server_running():
+                    logger.info("Embedding server is ready")
+                    _last_spawn_failed_at = None
+                    return True
+                logger.warning(
+                    f"Embedding server exited early (returncode={proc.returncode})"
+                )
+                _last_spawn_failed_at = time.time()
+                return False
+        # タイムアウト。bind 済み（= ロード進行中で、完了すれば応答する）なら生かし、
+        # bind 前に固まっている子は回収する。放置すると stdout/stderr が DEVNULL の
+        # 不可視プロセスとしてモデルロード分のメモリを抱えたまま残留するため。
+        if is_port_listening(PORT):
+            logger.warning(
+                "Embedding server not ready within 30 seconds (port bound, still loading)"
+            )
+        else:
+            logger.warning(
+                "Embedding server failed to start within 30 seconds, terminating child"
+            )
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        _last_spawn_failed_at = time.time()
+        return False
 
 
 def _encode_batch(texts: list[str], prefix: str) -> Optional[list[list[float]]]:

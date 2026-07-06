@@ -135,6 +135,75 @@ class TestTagNotesInjection:
         finally:
             conn.close()
 
+    def test_session_eviction_caps_tracked_sessions(self, temp_db):
+        """セッション追跡数が上限に達したら最古セッションから追い出される"""
+        from src.services import tag_service
+
+        add_topic(title="Test", description="Desc", tags=["domain:test"])
+        update_tag("domain:test", "重要な教訓")
+
+        conn = get_connection()
+        try:
+            for i in range(tag_service._INJECTED_TAGS_MAX_SESSIONS + 10):
+                collect_tag_notes_for_injection(
+                    conn, ["domain:test"], session_id=f"session-{i}"
+                )
+            assert len(_injected_tags) == tag_service._INJECTED_TAGS_MAX_SESSIONS
+            # 最古セッションは追い出され、再遭遇時には再度注入される
+            assert "session-0" not in _injected_tags
+            result = collect_tag_notes_for_injection(
+                conn, ["domain:test"], session_id="session-0"
+            )
+            assert result is not None
+        finally:
+            conn.close()
+
+    def test_session_eviction_concurrent_new_sessions(self, temp_db):
+        """上限到達状態で複数スレッドが同時に新規セッションを登録しても例外が出ない"""
+        import threading
+        from src.services import tag_service
+
+        add_topic(title="Test", description="Desc", tags=["domain:test"])
+        update_tag("domain:test", "重要な教訓")
+
+        conn = get_connection()
+        try:
+            # 上限まで埋める
+            for i in range(tag_service._INJECTED_TAGS_MAX_SESSIONS):
+                collect_tag_notes_for_injection(
+                    conn, ["domain:test"], session_id=f"warmup-{i}"
+                )
+        finally:
+            conn.close()
+
+        errors = []
+        barrier = threading.Barrier(8)
+
+        def worker(i):
+            # スレッドごとに独立したDB接続を使う
+            worker_conn = get_connection()
+            try:
+                barrier.wait(timeout=5)
+                for j in range(20):
+                    collect_tag_notes_for_injection(
+                        worker_conn,
+                        ["domain:test"],
+                        session_id=f"concurrent-{i}-{j}",
+                    )
+            except Exception as e:  # KeyError等の競合起因の例外を捕捉
+                errors.append(e)
+            finally:
+                worker_conn.close()
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert errors == []
+        assert len(_injected_tags) <= tag_service._INJECTED_TAGS_MAX_SESSIONS
+
     def test_no_notes_returns_none(self, temp_db):
         """notes がないタグでは None が返る"""
         add_topic(title="Test", description="Desc", tags=["domain:test"])

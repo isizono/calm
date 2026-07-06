@@ -317,6 +317,41 @@ class TestProjectRoot:
         assert os.path.isfile(os.path.join(launcher._PROJECT_ROOT, "pyproject.toml"))
 
 
+class TestBridgeSessionTermination:
+    def test_bridge_passes_terminate_on_close_true(self, monkeypatch):
+        """_bridge: streamable_http_clientにterminate_on_close=Trueを渡す
+
+        DELETEを送らないとサーバー側のStreamableHTTPSessionManagerが
+        切断済みセッションを保持し続けるため、この値の回帰を検知する。
+        """
+        import asyncio
+        from contextlib import asynccontextmanager
+
+        import mcp.client.streamable_http as streamable_http_module
+
+        captured = {}
+
+        class _Abort(Exception):
+            """接続確立前にブリッジを打ち切るためのセンチネル例外"""
+
+        @asynccontextmanager
+        async def fake_client(**kwargs):
+            captured.update(kwargs)
+            raise _Abort()
+            yield  # pragma: no cover
+
+        # _bridge内の遅延import（from mcp.client.streamable_http import ...）が
+        # 参照するモジュール属性を差し替える
+        monkeypatch.setattr(
+            streamable_http_module, "streamable_http_client", fake_client
+        )
+
+        with pytest.raises(_Abort):
+            asyncio.run(launcher._bridge())
+
+        assert captured["terminate_on_close"] is True
+
+
 class TestServerDisconnected:
     def test_is_exception(self):
         """ServerDisconnectedがExceptionのサブクラスである"""
