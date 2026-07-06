@@ -244,9 +244,14 @@ async def _bridge() -> None:
     # サーバー切断: server_to_stdoutが先に終了 → stdin_eofがFalse → ServerDisconnected
     stdin_eof = False
 
+    # terminate_on_close=True: 切断時に DELETE でMCPセッションを終了させる。
+    # ブリッジは再接続時にセッションを再利用せず毎回新規に張るため、DELETE を
+    # 送らないとサーバー側の StreamableHTTPSessionManager が旧セッション
+    # （タスク+トランスポート）をサーバー停止まで保持し続けてメモリが単調増加する。
+    # サーバー側切断が原因で閉じる場合の DELETE 失敗は SDK 内で握りつぶされる。
     async with streamable_http_client(
         url=MCP_ENDPOINT,
-        terminate_on_close=False,
+        terminate_on_close=True,
     ) as (read_stream, write_stream, _get_session_id):
 
         async def stdin_to_server() -> None:
