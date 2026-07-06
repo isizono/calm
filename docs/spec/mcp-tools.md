@@ -488,7 +488,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 **返り値**: `{stream_id: string, publish_id: int, matched_members: int}`。
 **動作**: 投函先streamが未存在（404）なら自動作成し、自identityを`read_write` memberに設定して1回だけ再投函する。作成の同時競合（409）も1回の再投函で解消する。自server名義のstreamのみ扱う。
 **エラー処理**: `RELAY_BEARER_TOKEN`未設定は設定方法を含む明示エラー（`config_missing`）。認証エラー（401）・close済みstream（410）・rate limit（429）はそのまま明示エラーとして返す（silent fallbackしない）。
-**関連**: 旧`ow_send`の後継。`ow_send`は同期呼び出しで4xxは即座に失敗として返るが、`relay_post`も relay への同期呼び出しである一方、成功応答の`matched_members`は投函時点の購読者数を示すのみで実配達は relay 側の非同期配信を経由する（配達完了そのものは保証しない）。
+**関連**: 旧`ow_send`の後継。`ow_send`は同期呼び出しで4xxは即座に失敗として返るが、`relay_post`も relay への同期呼び出しである一方、成功応答の`matched_members`は投函時点の購読者数を示すのみで実配達は relay 側の非同期配信を経由する（配達完了そのものは保証しない）。投函内容はcc-memory本体（search/get_timeline/pull_precedents等）には自動反映されない。後から参照できる形で残したい場合は受信後にadd_logs/add_material等で明示的に保存すること。
 
 ### 2.39 relay_publish
 
@@ -501,7 +501,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 **返り値**: `{outbox_id: int, labels: list[string], handle: string}`。
 **動作**: 送信者の`handle:` labelを自動付与し、`relay_outbox`テーブルへINSERTして完結する（transactional outbox）。relayへの配達はserver内の常駐配達ループが非同期に行い、保証はat-least-once。labelsが空のpublishは宛先が決まらないため拒否する。
 **エラー処理**: `RELAY_BEARER_TOKEN`未設定・session_id未解決・labels/body不正はいずれも明示エラー。
-**関連**: 旧`ow_send`の後継。`ow_send`は同期呼び出しで4xxは即座に失敗として返るのに対し、`relay_publish`は`relay_outbox`への受理のみで即座に成功応答を返す非同期方式で、実際の配達はserver内の常駐配達ループがat-least-onceで行う（成功応答は配達完了を意味しない）。
+**関連**: 旧`ow_send`の後継。`ow_send`は同期呼び出しで4xxは即座に失敗として返るのに対し、`relay_publish`は`relay_outbox`への受理のみで即座に成功応答を返す非同期方式で、実際の配達はserver内の常駐配達ループがat-least-onceで行う（成功応答は配達完了を意味しない）。配布内容はcc-memory本体（search/get_timeline/pull_precedents等）には自動反映されない。後から参照できる形で残したい場合は受信後にadd_logs/add_material等で明示的に保存すること。
 
 ### 2.40 relay_subscribe
 
@@ -518,10 +518,11 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
-| limit | int | no | null | 最大取得件数（1以上）。省略時は未読全件 |
+| limit | int | no | 50 | 最大取得件数（1以上）。200を超える値は200に切り詰める |
+| peek | bool | no | false | trueのとき既読化せず内容だけ返す（cursor前進なし） |
 
-**返り値**: `{messages: list[object], count: int}`。
-**動作**: 自sessionのinbox（`~/.cc-memory/relay/inbox/session-<session_id>.jsonl`）をcursor位置からdrainして返す。既読分は返さない。inbox不在（未購読・未配達）は空リストの正常応答（エラーにしない）。relayへのHTTPアクセスは発生しない（ローカル完結）。
+**返り値**: `{messages: list[object], count: int, has_more: bool}`。`has_more`はtrueのときlimitに収まらない未読が残っている（同じ呼び出しを繰り返すかlimitを上げて追加取得できる）。
+**動作**: 自sessionのinbox（`~/.cc-memory/relay/inbox/session-<session_id>.jsonl`）をcursor位置から読み出す。既定（peek=false）はconsume（読んだら既読=cursor前進、末尾まで読み切ったらtruncate）。peek=trueはcursor・inbox fileを一切変更せず読むだけで、同じ範囲を何度でも読み直せる。実際に既読化するには同じ呼び出しをpeek=false（既定）で呼び直す。推奨パターン: (1) `peek=true`で内容確認 (2) add_logs/add_material等で保存 (3) 同じ呼び出しを`peek=false`で呼び直し既読化し、その返り値のmessagesも必ず確認する（手順1・3の間に新着があれば手順3の返り値に含まれるため）。inbox不在（未購読・未配達）は空リストの正常応答（エラーにしない）。relayへのHTTPアクセスは発生しない（ローカル完結）。受信内容はcc-memory本体に自動記録されない。重要な内容は受信側がadd_logs/add_material等で明示的に保存すること。
 **配達契約**: at-least-once。同一メッセージが重複して届くことがあるため、受信側は冪等に扱うこと。
 **関連**: 旧`ow_history`の後継。`ow_history`はchannel引数でrelayから履歴を直接pullするのに対し、`relay_receive`は`relay_subscribe`で宣言したlabelsにマッチしてserver内の受信スレッドが既に自sessionのinboxへ配達済みのメッセージをローカルからdrainするのみで、呼び出し自体はrelayと通信しない。
 

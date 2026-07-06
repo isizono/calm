@@ -132,8 +132,8 @@ class TestDispatchSubFrame:
         result = dispatch_frame(frame, snapshot, tracker)
         assert result.written_sessions == ["sess-a"]
         assert tracker.sub_pending == {"s-1": 5}
-        assert [m for m in inbox.drain("sess-a")] == [{"n": 1}]
-        assert inbox.drain("sess-b") == []
+        assert inbox.drain("sess-a")["records"] == [{"n": 1}]
+        assert inbox.drain("sess-b")["records"] == []
 
     def test_sub_frame_with_no_owner_is_dropped_without_ack(self):
         snapshot = declarations.load_all()  # 空
@@ -196,8 +196,8 @@ class TestDispatchStreamFrame:
         result = dispatch_frame(frame, snapshot, tracker)
         assert set(result.written_sessions) == {"sess-a", "sess-b"}
         assert tracker.stream_pending == {"cc-memory:planning": 9}
-        assert inbox.drain("sess-a") == [{"body": "hello"}]
-        assert inbox.drain("sess-b") == [{"body": "hello"}]
+        assert inbox.drain("sess-a")["records"] == [{"body": "hello"}]
+        assert inbox.drain("sess-b")["records"] == [{"body": "hello"}]
 
     def test_stream_frame_with_no_declarer_is_dropped_and_acked(self):
         snapshot = declarations.load_all()  # 空

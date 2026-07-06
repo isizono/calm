@@ -1605,6 +1605,10 @@ def relay_post(stream_name: str, body: str, ttl: int | None = None) -> dict:
     への実配達は relay 側の非同期配信を経由する（配達完了そのものは保証しない）。詳細・
     使い分けは ow_send の docstring を参照。
 
+    投函した内容は cc-memory 本体（search/get_timeline/pull_precedents 等）には自動で
+    反映されない。受信側が後から参照できる形で残したい場合は、受信後に add_logs/
+    add_material 等で明示的に保存すること。
+
     Args:
         stream_name: stream 名（":" と "/" は使用不可）。実体の stream_id は server 名義で修飾される
         body: メッセージ本文（必須・非空文字列）
@@ -1633,6 +1637,10 @@ def relay_publish(labels: list[str], body: str, title: str | None = None) -> dic
     prefix も不透明 label として受理する。role:（廃止済み namespace）と cc-memory の中核
     entity namespace（topic:/activity:/decision:/log:/material:。実在チェックなしの不透明
     文字列にしかならないため予約済み）は指定するとエラー。
+
+    配布した内容は cc-memory 本体（search/get_timeline/pull_precedents 等）には自動で
+    反映されない。受信側が後から参照できる形で残したい場合は、受信後に add_logs/
+    add_material 等で明示的に保存すること。
 
     Args:
         labels: 配送先マッチング用 labels（必須・1 個以上）
@@ -1682,7 +1690,7 @@ def relay_subscribe(labels: list[str]) -> dict:
 
 
 @mcp.tool()
-def relay_receive(limit: int | None = None) -> dict:
+def relay_receive(limit: int | None = None, peek: bool = False) -> dict:
     """自 session 宛に届いたメッセージの未読分を受信する。
     旧 ow_history の後継（セッション間メッセージングの受信）。
 
@@ -1692,20 +1700,38 @@ def relay_receive(limit: int | None = None) -> dict:
     通信しない。詳細・使い分けは ow_history の docstring を参照。
 
     配達契約は at-least-once のため、同一メッセージが重複して届くことがある
-    （受信側で冪等に扱うこと）。既読分は返さない。未読が無ければ空リストを
-    正常応答として返す（エラーにしない）。
+    （受信側で冪等に扱うこと）。未読が無ければ空リストを正常応答として返す
+    （エラーにしない）。受信内容は cc-memory 本体に自動記録されない。重要な内容は
+    受信側が add_logs/add_material 等で明示的に保存すること。
+
+    既定（peek=False）は consume（読んだら既読 = cursor 前進、末尾まで読み切ったら
+    truncate）。受信した内容を保存する前にエージェントの処理が中断すると、
+    consume 済みの内容は再取得できない。再取得可能性を残したいときは、まず
+    peek=True で内容を確認し、add_logs/add_material 等で保存できたことを確認
+    してから、同じ呼び出しを peek=False（既定）で呼び直して既読化する。
+    peek=True の呼び出しは cursor・inbox file を一切変更しないため、成功する
+    まで何度でも安全に呼び直せる。peek=True から peek=False へ呼び直すまでの
+    間に新規メッセージが到着していた場合、peek=False の返り値の messages には
+    その新着分も含まれる。この呼び直しを既読化のための記帳とみなして返り値を
+    見ずに捨てると、その新着分だけが未保存のまま既読化される。peek=False の
+    返り値も必ず確認すること。
 
     Args:
-        limit: 最大取得件数（optional、1 以上。省略時は未読全件）
+        limit: 最大取得件数（optional、1 以上）。省略時 50、200 を超える値は
+            200 に切り詰める
+        peek: True のとき既読化せず内容だけ返す（cursor 前進なし）。省略時
+            False（consume）
 
     Returns:
-        成功時: {"messages": [dict, ...], "count": int}
+        成功時: {"messages": [dict, ...], "count": int, "has_more": bool}
+            has_more: True のとき limit に収まらない未読が残っている
+            （同じ呼び出しを繰り返すか limit を上げて追加取得できる）
         失敗時: {"error": {"code": str, "message": str}}
     """
     guard_service.check_capability("relay_receive")
     caller_session_id = get_caller_session_id()
     return relay_session_service.relay_receive(
-        limit, caller_session_id=caller_session_id
+        limit, peek=peek, caller_session_id=caller_session_id
     )
 
 # ヘルスチェックエンドポイント
