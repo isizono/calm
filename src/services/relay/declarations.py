@@ -53,6 +53,41 @@ def generate_handle(session_id: str) -> str:
     return f"session-{short}"
 
 
+def load_all() -> list[dict]:
+    """subscriptions dir 配下の全 declaration file を読み込んで返す。
+
+    壊れた JSON / dict 以外の file は skip する（スキャンを止めない）。
+    file 順序は listdir 順に依存する（呼び出し側で必要なら sort する）。
+    """
+    subs_dir = config.subscriptions_dir()
+    if not subs_dir.exists():
+        return []
+    result: list[dict] = []
+    for path in sorted(subs_dir.iterdir()):
+        if not (path.name.startswith("session-") and path.name.endswith(".json")):
+            continue
+        try:
+            raw = path.read_text(encoding="utf-8")
+            decl = json.loads(raw)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(decl, dict):
+            continue
+        decl.setdefault("subscriptions", [])
+        result.append(decl)
+    return result
+
+
+def delete(session_id: str) -> bool:
+    """declaration file を削除する。存在しなければ False。"""
+    path = declaration_path(session_id)
+    try:
+        path.unlink()
+        return True
+    except FileNotFoundError:
+        return False
+
+
 def load(session_id: str) -> Optional[dict]:
     """declaration file を読み込む。不在・壊れた JSON は None（新規作成扱い）。"""
     path = declaration_path(session_id)

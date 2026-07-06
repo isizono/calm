@@ -48,7 +48,7 @@ def add_material(title: str, content: str, tags: list[str], source: str, related
     資材を追加する
 
     Args:
-        title: 資材のタイトル（40字以内）
+        title: 資材のタイトル（35字以内）
         content: 資材の本文
         tags: タグ配列（必須、1個以上）
         source: データの出自
@@ -208,7 +208,7 @@ def update_material(
     Args:
         material_id: ID of the material to update
         content: New content (optional)
-        title: New title (optional, 40 chars or less)
+        title: New title (optional, 35 chars or less)
         tags: New tags (full replace, optional. At least 1 required when specified)
         source: New source (optional)
         mode: content指定時の結合動作。"overwrite"=既定で上書き、"prepend"=新+区切り+既存、

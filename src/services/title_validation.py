@@ -4,6 +4,9 @@ cc-memory の add/update ツール群で title 引数を TITLE_MAX_LEN 字以内
 docstring 明記と validation の両輪で AI 側に制約を伝える。
 """
 
+# 実際の上限は40のまま。AIエージェント向けdocstringでは安全マージンとして
+# 「35字以内」と案内している（AIは字数を数え間違えやすく、40字ちょうど狙いだと
+# 実際に超過することがあるため）。
 TITLE_MAX_LEN = 40
 
 

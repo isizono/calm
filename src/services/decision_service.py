@@ -41,7 +41,7 @@ def add_decisions(items: list[dict], caller_session_id: Optional[str] = None) ->
             - topic_id (int, 必須): 関連するトピックのID
             - decision (str, 必須): 決定内容
             - reason (str, 必須): 決定の理由
-            - title (str, optional): 決定の要点を表す1行（40字以内）。省略時はNULL（表示はdecision本文にfallback）。
+            - title (str, optional): 決定の要点を表す1行（35字以内）。省略時はNULL（表示はdecision本文にfallback）。
               tagsに layer:direction を含む場合は必須（省略・空文字はエラー）
             - tags (list[str], optional): 追加タグ。省略時はtopicのタグを継承。layer:direction は
               人間の抽象方向性判断であることを明示するタグ（付けた場合はtitle必須）
