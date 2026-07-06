@@ -53,7 +53,14 @@ L5（バグ観察）はユーザーが取り組んでいる対象システムの
 | `friction` | 検索で引けるべき記録が引けなかった等、cc-memory の使い勝手への不満・違和感を感じた |
 | `contradiction` | 設計・実装中に既存 decision と矛盾する結論に達した / `add_decisions` の `related_decisions` で矛盾に気づいた |
 
-同一内容の再報告は `report_signal` 側で自動集約されるため、迷ったら報告してよい。
+上記3種は頻出例であり、`report_signal` の kind は全7種ある（`precedent_miss` /
+`precedent_misapplied` / `boundary_case` / `rollback` を含む）。全種の定義は
+`report_signal` ツールのdocstringを正とする。同一内容の再報告は `report_signal`
+側で自動集約されるため、迷ったら報告してよい。
+
+より詳しい発動例・判断に迷う場合の追加基準は `docs/recording-taxonomy.md`
+（1章・2章・4章）に整理してある。本ページの表と食い違う場合は
+`docs/recording-taxonomy.md` を正とする。
 
 ## 優先方針
 
