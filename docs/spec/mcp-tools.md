@@ -22,7 +22,7 @@ last-synced-migration: 0048
 
 ## 1. ツール一覧
 
-全41ツール。カテゴリ別に一覧する。
+全42ツール。カテゴリ別に一覧する。
 
 ### 1.1 記録系（add系）
 
@@ -115,7 +115,7 @@ cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベ�
 
 ### 1.11 relay系（セッション間通信 4動詞）
 
-Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サーバー（HTTP、既定 `http://localhost:8770`）を transport とし、cc-memory server 単一 identity 名義で代理購読・代理投函する。ack・lease renew・購読解除・SSE再接続はサーバー側で自動管理され、ツール面にはこの4動詞のみを見せる。
+Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サーバー（HTTP、既定 `http://localhost:8770`）を transport とし、cc-memory server 単一 identity 名義で代理購読・代理投函する。ack・lease renew・購読解除・SSE再接続はサーバー側で自動管理され、ツール面にはこの4動詞のみを見せる。配送状況・runtime健全性の確認は診断専用の`relay_status`（1.12）を使う。
 
 | ツール | 概要 |
 | --- | --- |
@@ -123,6 +123,14 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 | `relay_publish` | labels routingでメッセージを配布する（outbox経由・at-least-once） |
 | `relay_subscribe` | labelsの購読を宣言する（同一labels集合の再呼び出しは冪等） |
 | `relay_receive` | 自session宛の未読メッセージをinboxからdrainする |
+
+### 1.12 relay観測系（診断・非動詞）
+
+4動詞（1.11）のいずれの代替でもない、読み取り専用の診断面。relayサーバーへのHTTPアクセスは行わず、ローカルDBとruntimeのin-memory状態のみで完結する。
+
+| ツール | 概要 |
+| --- | --- |
+| `relay_status` | outbox行の配送状況（pending/delivered/dead）とruntime健全性（3スレッド生存・再起動回数）を確認する |
 
 ---
 
@@ -520,6 +528,16 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 **返り値**: `{messages: list[object], count: int}`。
 **動作**: 自sessionのinbox（`~/.cc-memory/relay/inbox/session-<session_id>.jsonl`）をcursor位置からdrainして返す。既読分は返さない。inbox不在（未購読・未配達）は空リストの正常応答（エラーにしない）。relayへのHTTPアクセスは発生しない（ローカル完結）。
 **配達契約**: at-least-once。同一メッセージが重複して届くことがあるため、受信側は冪等に扱うこと。
+
+### 2.42 relay_status
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| outbox_id | int | no | null | relay_publishの返り値のoutbox_id。指定するとその行の配送状況を返す。省略時はoutboxセクションを返り値から省く |
+
+**返り値**: `{outbox: {outbox_id, status, labels, title, created_at, processed_at, dead_at, retry_count, last_error} | null, runtime: {configured, running, threads: {<thread名>: {alive, restart_count, last_restart_at, last_error}}}}`。
+**動作**: outbox行の配送状況はrelay_outboxテーブルのローカルSELECTのみで判定する（`processed_at`セット済み=delivered、`dead_at`セット済み=dead、いずれも無ければpending）。message本文（`ref_id`）は返さない（同一プロセス内の他sessionが発行した行にも越境してアクセスできてしまうため、意図的に除外）。runtimeセクションは常に返る。`running: false`はこのプロセスでrelay v2常駐処理が起動していないことを示す（エラーではない）。relayサーバー本体へのHTTPアクセスは一切発生しない。
+**エラー処理**: outbox_idが正の整数でない場合は`validation`。指定したIDの行が存在しない場合（存在しないID、またはdead化から一定期間経過後にDLQ物理削除済み。保持日数は`relay_sdk`側の設定値）は`not_found`。
 
 ---
 

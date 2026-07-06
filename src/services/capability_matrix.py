@@ -25,6 +25,7 @@ CAPABILITY_MATRIX: CapabilityMatrix = {
     "relay_publish":     {"orch": True,  "dispatcher": True,  "worker": True},
     "relay_subscribe":   {"orch": True,  "dispatcher": True,  "worker": True},
     "relay_receive":     {"orch": True,  "dispatcher": True,  "worker": True},
+    "relay_status":      {"orch": True,  "dispatcher": True,  "worker": True},
 
     # relay セッション面（セッション間通信 4 動詞。全 session に開放）
     "relay_post":        {"orch": True,  "dispatcher": True,  "worker": True},

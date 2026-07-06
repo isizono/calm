@@ -6,6 +6,7 @@ from src.services.capability_matrix import CAPABILITY_MATRIX
 from tests.helpers import all_tool_descriptions as _all_tool_descriptions
 
 RELAY_TOOLS = ("relay_post", "relay_publish", "relay_subscribe", "relay_receive")
+RELAY_DIAGNOSTIC_TOOLS = ("relay_status",)
 
 
 class TestCapabilityMatrixRegistration:
@@ -47,3 +48,33 @@ class TestPublishDocstringContract:
         desc = _all_tool_descriptions()["relay_publish"]
         assert "curation" in desc
         assert "entity" in desc
+
+
+class TestDiagnosticCapabilityMatrixRegistration:
+    def test_all_diagnostic_tools_are_registered(self):
+        for name in RELAY_DIAGNOSTIC_TOOLS:
+            assert name in CAPABILITY_MATRIX, f"{name} が capability matrix に未登録"
+
+    def test_diagnostic_tools_are_open_to_all_roles(self):
+        for name in RELAY_DIAGNOSTIC_TOOLS:
+            decisions = set(CAPABILITY_MATRIX[name].values())
+            assert decisions == {True}, f"{name} は全 role に開放されるべき"
+
+
+class TestDiagnosticToolRegistration:
+    def test_all_diagnostic_tools_are_exposed_via_mcp(self):
+        descriptions = _all_tool_descriptions()
+        for name in RELAY_DIAGNOSTIC_TOOLS:
+            assert name in descriptions, f"{name} が MCP tool として未登録"
+
+
+class TestRelayStatusDocstringContract:
+    def test_mentions_not_a_replacement_for_the_four_verbs(self):
+        """4動詞のいずれの代替でもない診断専用の面であることが明記されている。"""
+        desc = _all_tool_descriptions()["relay_status"]
+        assert "代替でもない" in desc
+
+    def test_mentions_no_http_access(self):
+        """relay server がダウンしていても機能する（HTTPアクセスを行わない）ことが明記されている。"""
+        desc = _all_tool_descriptions()["relay_status"]
+        assert "HTTPアクセスは行わない" in desc

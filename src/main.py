@@ -26,6 +26,7 @@ from src.services import (
 )
 from src.services.checkin_service import check_in as _check_in
 from src.services.relay import service as relay_session_service
+from src.services.relay import diagnostics as relay_diagnostics_service
 from src.services.tag_service import search_tags as _search_tags, update_tag as _update_tag, collect_tag_notes_for_injection
 from src.services.tag_analysis_service import analyze_tags as _analyze_tags
 from src.services import citation_renderer
@@ -262,6 +263,15 @@ _session_manager = None
 def get_session_manager():
     """現在のSessionManagerインスタンスを返す。HTTPモード以外ではNone。"""
     return _session_manager
+
+
+# relay v2 runtime管理（HTTPモードで使用。stdio/remoteプロセスではNoneのまま）
+_relay_runtime = None
+
+
+def get_relay_runtime():
+    """現在のRelayRuntimeインスタンスを返す。HTTPモード以外、または未起動時はNone。"""
+    return _relay_runtime
 
 
 # MCPツール定義
@@ -1684,6 +1694,55 @@ def relay_receive(limit: int | None = None) -> dict:
     return relay_session_service.relay_receive(
         limit, caller_session_id=caller_session_id
     )
+
+
+@mcp.tool()
+def relay_status(outbox_id: int | None = None) -> dict:
+    """relay v2 の配送状況・runtime健全性を確認する診断エンドポイント。
+
+    4動詞（relay_post/relay_publish/relay_subscribe/relay_receive）のいずれの
+    代替でもない、読み取り専用の観測面。relayサーバーへのHTTPアクセスは行わない
+    （ローカルDB読み取りとruntimeのin-memory状態読み取りのみで完結する）。
+
+    Args:
+        outbox_id: relay_publishの返り値のoutbox_id（optional）。指定するとその行の
+            配送状況（pending/delivered/dead）を返す。省略時はoutboxセクションを
+            返り値から省く（runtimeセクションのみ）
+
+    Returns:
+        成功時: {
+          "outbox": {"outbox_id": int, "status": "pending"|"delivered"|"dead",
+                     "labels": [str], "title": str|None, "created_at": str,
+                     "processed_at": str|None, "dead_at": str|None,
+                     "retry_count": int, "last_error": str|None} | null,
+          "runtime": {"configured": bool, "running": bool,
+                      "threads": {"<thread名>": {"alive": bool, "restart_count": int,
+                                  "last_restart_at": str|None, "last_error": str|None}}}
+        }
+        失敗時: {"error": {"code": "validation"|"not_found", "message": str}}
+
+        runtime.running が false の場合、このプロセスでは relay v2 の常駐処理
+        （intake/lease_loop/dispatcher）が起動していない（stdio transport、
+        remoteプロセス、またはRELAY_BEARER_TOKEN未設定のいずれか）。
+    """
+    guard_service.check_capability("relay_status")
+    outbox_result = relay_diagnostics_service.outbox_status(outbox_id)
+    if isinstance(outbox_result, dict) and "error" in outbox_result:
+        return outbox_result
+
+    from src.services.relay.runtime import RelayRuntime
+
+    runtime = get_relay_runtime()
+    if runtime is not None:
+        runtime_health = runtime.health_snapshot()
+    else:
+        runtime_health = {
+            "configured": RelayRuntime.is_configured(),
+            "running": False,
+            "threads": {},
+        }
+    return {"outbox": outbox_result, "runtime": runtime_health}
+
 
 # ヘルスチェックエンドポイント
 @mcp.custom_route("/health", methods=["GET"])
