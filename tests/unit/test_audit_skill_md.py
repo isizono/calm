@@ -57,7 +57,7 @@ class TestAuditSkillTriggers:
             assert label in skill_md, f"ユーザー起点トリガー {label} が記載されていない"
 
     def test_t_c_non_triggers_present(self, skill_md):
-        for label in ("T-C1", "T-C2", "T-C3", "T-C4", "T-C5"):
+        for label in ("T-C1", "T-C2", "T-C3", "T-C4"):
             assert label in skill_md, f"非発動条件 {label} が記載されていない"
 
     def test_user_utterance_examples(self, skill_md):
@@ -66,10 +66,6 @@ class TestAuditSkillTriggers:
         assert "また同じ話してる" in skill_md
         assert "矛盾してない" in skill_md
         assert "グルグル" in skill_md
-
-    def test_worker_session_excluded(self, skill_md):
-        # T-C5 で worker セッションを発動対象外と明示
-        assert "worker" in skill_md
 
 
 class TestAuditSkillPlaybook:
@@ -164,7 +160,7 @@ class TestAuditSkillEdgeCases:
 
 class TestAuditSkillSessionScope:
     def test_session_scope_section(self, skill_md):
-        # recording / worker skill と同パターンのセッション適用宣言
+        # recording skill と同パターンのセッション適用宣言
         assert "## 適用範囲" in skill_md
         assert "本セッション内のすべての後続ターン" in skill_md
 

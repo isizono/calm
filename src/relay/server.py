@@ -407,12 +407,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": "not found"})
 
     def _handle_health(self) -> None:
-        """ヘルスチェック。protocol_version を含む dict を返す。
-
-        ow_service側の `_get_relay_health` がこのレスポンスを叩いて
-        「相手のrelayが現在のowコードと互換か」を判定する。版不一致なら
-        kill+restartで自己修復する（acceptance③）。
-        """
+        """ヘルスチェック。protocol_version を含む dict を返す。"""
         self._send_json(200, {
             "status": "ok",
             "protocol_version": PROTOCOL_VERSION,

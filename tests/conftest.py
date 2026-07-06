@@ -31,18 +31,6 @@ def _clear_ow_env(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _skip_sentinel_autospawn(monkeypatch):
-    """ow_status 呼び出し時の sentinel.py auto-spawn をテストでは抑止する。
-
-    ensure_sentinel_process (D#2752 Phase A 配線) はテスト中に呼ばれると
-    永続 polling プロセスを残し、test runner 終了後もゾンビになる。
-    OW_SKIP_SENTINEL_AUTOSPAWN=1 で default skip。auto-spawn 自体を検証する
-    テストは個別に monkeypatch.delenv で外す。
-    """
-    monkeypatch.setenv("OW_SKIP_SENTINEL_AUTOSPAWN", "1")
-
-
-@pytest.fixture(autouse=True)
 def _synchronous_telemetry(monkeypatch):
     """search_telemetry 書込を同期実行に切り替える。
 

@@ -31,12 +31,6 @@ class TestMatrixCoverage:
 
 
 class TestHiddenToolsFor:
-    def test_orch_hides_dispatcher_only_tools(self):
-        hidden = hidden_tools_for("orch")
-        assert "ow_spawn_worker" in hidden
-        assert "ow_recover" in hidden
-        assert "ow_close_worker" in hidden  # decision=False for orch
-
     def test_worker_hides_write_admin_tools(self):
         hidden = hidden_tools_for("worker")
         assert "add_topic" in hidden
@@ -54,7 +48,6 @@ class TestHiddenToolsFor:
 
     def test_self_tools_are_not_hidden(self):
         hidden_worker = hidden_tools_for("worker")
-        assert "ow_close_worker" not in hidden_worker
         assert "update_material" not in hidden_worker
 
     def test_unknown_role_hides_everything(self):
@@ -79,7 +72,6 @@ class TestIsAllowed:
         assert is_allowed("update_activity", "worker") is False
 
     def test_self_tools_return_self_token(self):
-        assert is_allowed("ow_close_worker", "worker") == "self"
         assert is_allowed("update_material", "worker") == "self"
 
     def test_unknown_tool_default_deny(self):

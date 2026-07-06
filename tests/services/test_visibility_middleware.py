@@ -25,9 +25,40 @@ def _make_mw_context(session_id: str | None = "sess-1"):
 
 
 @pytest.mark.asyncio
-async def test_hides_orch_disallowed_tools_when_role_is_orch(temp_db):
+async def test_hides_disallowed_tools_when_role_resolved_from_db(temp_db):
     from src.services.visibility_middleware import CapabilityVisibilityMiddleware
     from src.services.capability_matrix import hidden_tools_for
+
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO session_identity (session_id, role) VALUES (?, ?)",
+            ("sess-disp", "dispatcher"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    middleware = CapabilityVisibilityMiddleware()
+    mw_context, _ = _make_mw_context("sess-disp")
+    call_next = AsyncMock(return_value="initialize-result")
+
+    with patch(
+        "src.services.visibility_middleware.disable_components",
+        new=AsyncMock(),
+    ) as mock_disable:
+        result = await middleware.on_initialize(mw_context, call_next)
+
+    assert result == "initialize-result"
+    mock_disable.assert_called_once()
+    call_kwargs = mock_disable.call_args.kwargs
+    assert call_kwargs["names"] == hidden_tools_for("dispatcher")
+    assert call_kwargs["components"] == {"tool"}
+
+
+@pytest.mark.asyncio
+async def test_role_with_empty_hidden_set_skips_hiding(temp_db):
+    from src.services.visibility_middleware import CapabilityVisibilityMiddleware
 
     conn = get_connection()
     try:
@@ -50,10 +81,7 @@ async def test_hides_orch_disallowed_tools_when_role_is_orch(temp_db):
         result = await middleware.on_initialize(mw_context, call_next)
 
     assert result == "initialize-result"
-    mock_disable.assert_called_once()
-    call_kwargs = mock_disable.call_args.kwargs
-    assert call_kwargs["names"] == hidden_tools_for("orch")
-    assert call_kwargs["components"] == {"tool"}
+    mock_disable.assert_not_called()
 
 
 @pytest.mark.asyncio

@@ -1544,7 +1544,7 @@ def update_signal(
 
 
 # ----------------------------
-# ow（orch/worker）ツール群
+# セッション間メッセージングツール群
 # ----------------------------
 
 
@@ -1592,237 +1592,6 @@ def ow_history(channel: str, since: int = 0, limit: int = 100) -> dict:
         失敗時: {"error": {...}}
     """
     return ow_service.ow_history(channel, since, limit)
-
-
-@mcp.tool()
-def ow_spawn_worker(
-    alias: str,
-    channel: str,
-    cwd: str,
-    model: str,
-    task_title: str = "",
-    acceptance: str = "",
-    context: str = "",
-    playbook: str = "",
-    timeout_min: int = 60,
-    activity_id: int | None = None,
-    topic_id: str | None = None,
-    task_n: int = 1,
-    tmux_target_pane: str | None = None,
-    effort: str | None = None,
-) -> dict:
-    """workerセッションを起動する。
-
-    処理順: queueへspawning write-ahead → task file書き出し → アダプタ起動 → 安定ID返却。
-    relay疎通確認・起動（ensure-server処理）も内包。permission_modeはautoに固定。
-
-    OW_TERMINAL環境変数でアダプタを選択（tmux/manual。未設定時は tmux。manualは起動コマンド表示のフォールバック）。
-    OW_TERMINAL=tmuxのとき、tmux_target_pane（呼び出し元のTMUX_PANE）を渡すと、その
-    paneと同じwindow内にworker paneを分割表示できる（最初は右に30%水平、以降は最新
-    worker paneを垂直分割）。未指定時は従来の `ow-workers` 別sessionに新windowで起動する。
-
-    Args:
-        alias: worker の handle。命名規約の正本はここに置く。
-            推奨形式: w-<purpose>-<activity_id> （例: w-design-1064）
-            必須制約: 最小 4 文字、kebab-case（小文字英数字とハイフン、
-                先頭は小文字英字、末尾は英数字、連続ハイフン禁止）
-            prefix `w-` は推奨だが必須ではない（role 識別のため追従推奨）
-            purpose は task の簡潔記述（例: design / impl / fixup / migrate）
-        channel: channelコード
-        cwd: workerの作業ディレクトリ
-        model: 使用モデル。claude-opus-4-7 のみ許可。sonnet/haiku/opus-4-8 はバリデーションで拒否
-        task_title: タスクタイトル
-        acceptance: 完了条件
-        context: タスクコンテキスト
-        playbook: プレイブック抜粋（assignのplaybookフィールド）
-        timeout_min: タイムアウト（分、デフォルト: 60）
-        activity_id: 対応するアクティビティID（optional）
-        topic_id: 対応するトピックID（optional）
-        task_n: タスク番号（T<n>）
-        tmux_target_pane: tmux分割表示用の基準pane ID（例: "%0"）。クライアント側で
-            os.environ['TMUX_PANE']を読んで渡す。MCPサーバープロセスのenvは起動時に
-            フリーズするためサーバー側で参照できない。
-        effort: 思考worker（深い議論・設計検討・調査向けworker）として起動するなら
-            `"high"` / `"xhigh"` / `"max"` / `"ultrathink"` のいずれかを指定する
-            （デフォルト: None=通常worker）。指定時は task_file 本文に正規綴り
-            `ultrathink` マーカーセクションが挿入され、frontmatter にも
-            `effort: <値>` が残る。OW_TERMINAL=tmux のときは split-pane ではなく
-            `tmux new-window` で別タブに開く。role は worker のまま。対応activity
-            には `intent:thinking` タグを別途付与すること。
-
-    Returns:
-        成功時: {"term_ref": str, "task_file": str, "spawning": "ok", "alias": str}
-        manualフォールバック時: {"command": str, "manual": True, "task_file": str, "alias": str}
-        失敗時: {"error": {...}}
-    """
-    return ow_service.ow_spawn_worker(
-        alias=alias,
-        channel=channel,
-        cwd=cwd,
-        model=model,
-        task_title=task_title,
-        acceptance=acceptance,
-        context=context,
-        playbook=playbook,
-        timeout_min=timeout_min,
-        activity_id=activity_id,
-        topic_id=topic_id,
-        task_n=task_n,
-        tmux_target_pane=tmux_target_pane,
-        effort=effort,
-    )
-
-
-@mcp.tool()
-def ow_close_worker(term_ref: str) -> dict:
-    """アダプタ経由でworkerセッションをクローズする。
-
-    OW_TERMINAL環境変数でアダプタを選択。アダプタ不在時はmanualフォールバック（手動クローズ案内）。
-
-    Args:
-        term_ref: 安定ID（tmuxのpane ID 等。タブindexは不安定なため使用しない）
-
-    Returns:
-        成功時: {"closed": True, "term_ref": str}
-        manualフォールバック時: {"manual": True, "message": str}
-        失敗時: {"error": {...}}
-    """
-    return ow_service.ow_close_worker(term_ref)
-
-
-@mcp.tool()
-def ow_spawn_dispatcher(
-    channel: str,
-    cwd: str,
-    model: str,
-    tmux_target_pane: str | None = None,
-) -> dict:
-    """dispatcher session を起動する。
-
-    handle は d-{channel} を自動付与する。channel に既存 dispatcher があれば
-    cascade kill (既存 dispatcher + 紐づく worker pool 全員) してから新規 spawn する。
-    health check や idempotent reject は行わない。
-
-    Args:
-        channel: channelコード (handle に d- prefix で組み込まれる)
-        cwd: dispatcher セッションの作業ディレクトリ
-        model: 使用モデル。claude-opus-4-7 のみ許可。
-            sonnet / haiku / opus-4-8 はバリデーションで拒否
-        tmux_target_pane: OW_TERMINAL=tmux のとき分割表示の基準 pane ID (optional)
-
-    Returns:
-        成功時: {"term_ref": str, "bundle_msg_id": int, "spawning": "ok", "alias": str}
-        失敗時: {"error": {"code": str, "message": str, ...}}
-    """
-    guard_service.check_worker_guard("ow_spawn_dispatcher")
-    return ow_service.ow_spawn_dispatcher(
-        channel=channel,
-        cwd=cwd,
-        model=model,
-        tmux_target_pane=tmux_target_pane,
-    )
-
-
-@mcp.tool()
-def ow_close_dispatcher(channel: str) -> dict:
-    """dispatcher session を kill し、紐づく worker pool も cascade kill する。
-
-    channel に dispatcher (handle=d-{channel}) が存在しない場合はエラーを返す
-    (no-op success は採らない)。close は graceful shutdown を試みず即 process kill。
-
-    Args:
-        channel: channelコード
-
-    Returns:
-        成功時: {
-            "closed": True,
-            "channel": str,
-            "dispatcher_handle": str,
-            "killed_workers": [handle, ...],
-            "failed_workers": [{"handle": str, "reason"/"error": ...}, ...]
-        }
-        失敗時: {"error": {"code": str, "message": str}, "killed_workers": [...], ...}
-    """
-    guard_service.check_worker_guard("ow_close_dispatcher")
-    return ow_service.ow_close_dispatcher(channel)
-
-
-@mcp.tool()
-def ow_status(channel: str, topic_id: str | None = None) -> dict:
-    """queueサマリ＋GetPresence（worker死活）の合成ビュー。
-
-    queueの論理状態とrelayのpresence（物理接続）を統合して、orchが判断に使える単一ビューを返す。
-    frontmatterフィールドにはqueueのYAMLフロントマター情報（channel_code, last_seen_msg_id等）が含まれる。
-
-    Args:
-        channel: channelコード（presence取得に使用）
-        topic_id: queueファイル特定に使用（OW_QUEUE_DIRと組み合わせ）
-
-    Returns:
-        {
-            "tasks": [...],
-            "presence": [...],
-            "frontmatter": {"topic_id": int, "orch_activity_id": int, "channel_code": str,
-                           "orch_cwd": str, "last_seen_msg_id": int},
-            "summary": {"total_tasks": int, "status_counts": dict, "online_workers": [...]}
-        }
-    """
-    return ow_service.ow_status(channel, topic_id)
-
-
-@mcp.tool()
-def ow_recover(
-    channel: str,
-    topic_id: str,
-    dry_run: bool = False,
-    pending_spawn_stalled_threshold_min: int | None = None,
-) -> dict:
-    """orch crash後のqueue × relay履歴 × presence整合チェック・自動修正。
-
-    relay履歴を since=0 で全件再走査して各worker毎の最新state宣言を集計し、queueと
-    presenceに突合した上で次の4カテゴリに分類する。
-
-    - ghost_active: queue=assigned/working なのに presence offline
-      → relay 最新state宣言から queue ステータスを自動再構築（dry_run=Falseのみ）
-    - pending_spawn: queue=spawning なのに presence offline
-      → relay履歴に当該workerのstate宣言があれば自動更新、無く `pending_spawn_stalled_threshold_min`
-        を超えた経過時間なら `auto_stalled` 化、それ未満なら起動進行中として放置
-    - stalled_done: queue=done/closed/cancelled/failed なのに worker が presence onlineで残存
-      → cmd:ping を送信して素性照会
-    - orphans: presence online だが queue に登場しない w-* handle
-      → cmd:ping で再リンク照会
-
-    ping応答は orch の通常受信ループで処理する（本ツールは送信のみ）。queueの更新は
-    ow_service内部の単一の接点関数経由のため、queue層の物理形が将来変わっても
-    呼び出し側の影響範囲は最小。
-
-    Args:
-        channel: channelコード
-        topic_id: トピックID（queue-t<topic_id>.md 特定に使用）
-        dry_run: Trueなら検出のみ・修正/ping送信なし
-        pending_spawn_stalled_threshold_min: pending_spawn (has_relay_history=False) を
-            `auto_stalled` 化する経過時間閾値（分）。None なら従来挙動（自動更新対象外）。
-            P0-7 で導入。「2日経っても failed 化されない pending_spawn」を orch が
-            強制終端するために使う。
-
-    Returns:
-        成功時:
-            {
-                "detected": {"ghost_active": [...], "pending_spawn": [...], "stalled_done": [...], "orphans": [...]},
-                "applied": {"queue_updates": [...], "pings_sent": [...]},
-                "warnings": [str],
-                "presence": [str],
-                "reconstructed_max_msg_id": int,
-                "dry_run": bool,
-            }
-        relay/channel不可時: {"error": {"code": ..., "message": ...}}
-    """
-    return ow_service.ow_recover(
-        channel,
-        topic_id,
-        dry_run,
-        pending_spawn_stalled_threshold_min=pending_spawn_stalled_threshold_min,
-    )
 
 
 @mcp.tool()
@@ -1916,8 +1685,7 @@ def relay_receive(limit: int | None = None) -> dict:
         limit, caller_session_id=caller_session_id
     )
 
-
-# ヘルスチェックエンドポイント（worker self-exit on MCP loss 用）
+# ヘルスチェックエンドポイント
 @mcp.custom_route("/health", methods=["GET"])
 async def health(_request: Request) -> JSONResponse:
     now = datetime.now(timezone.utc)
@@ -1994,7 +1762,7 @@ def _ensure_project_root_cwd() -> Path:
     `uv run python -m src.main --transport http` をworktree内など任意の場所から
     起動すると、HTTPサーバープロセスはその場所をcwdとして固定する。当該cwdが
     後から削除・移動されると、ow_service内のsubprocess呼び出しや相対パス操作が
-    存在しないパスを参照し続けるリスクがある（worker spawn失敗・診断困難）。
+    存在しないパスを参照し続けるリスクがある（relay起動失敗・診断困難）。
     cwdをこの関数の `__file__` 由来のプロジェクトルートへ強制し、構造的に防ぐ。
 
     Returns:

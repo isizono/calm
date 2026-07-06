@@ -22,7 +22,7 @@ last-synced-migration: 0048
 
 ## 1. ツール一覧
 
-全47ツール。カテゴリ別に一覧する。
+全41ツール。カテゴリ別に一覧する。
 
 ### 1.1 記録系（add系）
 
@@ -84,18 +84,12 @@ last-synced-migration: 0048
 | --- | --- |
 | `check_in` | アクティビティにcheck-inして関連情報を集約取得する |
 
-### 1.7 ow系（orch/worker メッセージング）
+### 1.7 ow系（セッション間メッセージング）
 
 | ツール | 概要 |
 | --- | --- |
 | `ow_send` | ow channelにメッセージを送信する |
 | `ow_history` | ow channel履歴を取得する |
-| `ow_spawn_worker` | workerセッションを起動する |
-| `ow_close_worker` | workerセッションをクローズする |
-| `ow_spawn_dispatcher` | dispatcherセッションを起動する（既存があればcascade kill後にspawn） |
-| `ow_close_dispatcher` | dispatcherセッションをkillし、紐づくworker poolもcascade killする |
-| `ow_status` | queueサマリ + presence の合成ビューを返す |
-| `ow_recover` | orch crash後の queue × relay × presence 整合チェック・自動修正 |
 
 ### 1.8 その他
 
@@ -445,77 +439,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 
 **返り値**: `{messages: [{msg_id, handle, body, ...}]}`。SSEは起床信号専用で、実体取得はこちらで行う。
 
-### 2.29 ow_spawn_worker
-
-| 名前 | 型 | 必須 | デフォルト | 説明 |
-| --- | --- | --- | --- | --- |
-| alias | string | yes | - | workerのhandle（例: "w-a"） |
-| channel | string | yes | - | channelコード |
-| cwd | string | yes | - | workerの作業ディレクトリ |
-| model | string | yes | - | `claude-opus-4-7` のみ許可 |
-| task_title | string | no | "" | タスクタイトル |
-| acceptance | string | no | "" | 完了条件 |
-| context | string | no | "" | タスクコンテキスト |
-| playbook | string | no | "" | プレイブック抜粋 |
-| timeout_min | int | no | 60 | タイムアウト（分） |
-| activity_id | int | no | null | 対応するアクティビティID |
-| topic_id | string | no | null | 対応するトピックID |
-| task_n | int | no | 1 | タスク番号 |
-| tmux_target_pane | string | no | null | tmux分割表示用の基準pane ID |
-| effort | string | no | null | `high`/`xhigh`/`max`/`ultrathink` |
-
-**制約**: modelは `claude-opus-4-7` 固定。sonnet/haiku/opus-4-8 はバリデーションで拒否される。
-**返り値**: 通常時 `{term_ref, task_file, spawning: "ok", alias}`。manualフォールバック時 `{command, manual: True, task_file, alias}`。
-
-### 2.30 ow_close_worker
-
-| 名前 | 型 | 必須 | デフォルト | 説明 |
-| --- | --- | --- | --- | --- |
-| term_ref | string | yes | - | 安定ID（tmux pane ID 等） |
-
-**返り値**: `{closed: True, term_ref}` または `{manual: True, message}`。
-
-### 2.31 ow_spawn_dispatcher
-
-| 名前 | 型 | 必須 | デフォルト | 説明 |
-| --- | --- | --- | --- | --- |
-| channel | string | yes | - | channelコード（handleに `d-` prefixで組み込まれる） |
-| cwd | string | yes | - | dispatcherセッションの作業ディレクトリ |
-| model | string | yes | - | `claude-opus-4-7` のみ許可 |
-| tmux_target_pane | string | no | null | tmux分割表示用の基準pane ID |
-
-**制約**: modelは `claude-opus-4-7` 固定。sonnet/haiku/opus-4-8 はバリデーションで拒否される。channelに既存dispatcherがあればcascade kill（既存dispatcher + 紐づくworker pool全員）してから新規spawnする。health check や idempotent reject は行わない。
-**返り値**: 成功時 `{term_ref, bundle_msg_id, spawning: "ok", alias}`。失敗時 `{error: {code, message, ...}}`。
-
-### 2.32 ow_close_dispatcher
-
-| 名前 | 型 | 必須 | デフォルト | 説明 |
-| --- | --- | --- | --- | --- |
-| channel | string | yes | - | channelコード |
-
-**動作**: dispatcher（handle=`d-{channel}`）をkillし、紐づくworker poolもcascade killする。dispatcherが存在しない場合はエラーを返す（no-op successは採らない）。graceful shutdownは試みず即process kill。
-**返り値**: 成功時 `{closed: True, channel, dispatcher_handle, killed_workers, failed_workers}`。失敗時 `{error: {code, message}, killed_workers, ...}`。
-
-### 2.33 ow_status
-
-| 名前 | 型 | 必須 | デフォルト | 説明 |
-| --- | --- | --- | --- | --- |
-| channel | string | yes | - | channelコード |
-| topic_id | string | no | null | queueファイル特定用 |
-
-**返り値**: `{tasks, presence, frontmatter, summary}`。queueの論理状態とrelayのpresence（物理接続）を統合した単一ビュー。
-
-### 2.34 ow_recover
-
-| 名前 | 型 | 必須 | デフォルト | 説明 |
-| --- | --- | --- | --- | --- |
-| channel | string | yes | - | channelコード |
-| topic_id | string | yes | - | queue-t<topic_id>.md 特定用 |
-| dry_run | bool | no | false | trueなら検出のみ |
-
-**返り値**: `{detected: {ghost_active, pending_spawn, stalled_done, orphans}, applied, warnings, presence, reconstructed_max_msg_id, dry_run}`。orch crash後の queue × relay × presence 整合チェック・自動修正に用いる。
-
-### 2.35 report_signal
+### 2.29 report_signal
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -529,7 +453,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 **動作**: 同一 `fingerprint`（kind+source+正規化summaryのハッシュ）を持つ未トリアージ行が既にあれば新規行を作らず `occurrence_count` を加算する（dedup）。
 **関連**: MCPツール例外の middleware 捕捉やhooksのtop-level捕捉からも自動的に呼ばれる（`source` がそれぞれ `tool:*` / `hook:*` になる）。
 
-### 2.36 get_signals
+### 2.30 get_signals
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -541,7 +465,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 
 **返り値**: `{signals: [...], total_count: int, stats?: {by_kind_status, last_30d}}`。
 
-### 2.37 update_signal
+### 2.31 update_signal
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
@@ -658,19 +582,16 @@ cc-memoryが扱うエンティティの内部表現。詳細スキーマは `doc
 `src/main.py` の `@mcp.tool` 関数群に **OW_ROLE=worker を理由とした直接的なツール拒否ロジックは確認できなかった**（v0時点）。worker側で何らかのツール利用を制限する場合は、ハーネス層（task_file・instructions注入）または運用ルールで間接的に行うものと推測される。要追加調査。
 
 ### 4.2 orch-managed 運用
-ow系ツール（特に `ow_spawn_worker` / `ow_close_worker` / `ow_status` / `ow_recover`）はorchロールでの利用を想定している。worker側からも `ow_send` / `ow_history` は呼べる。`report_signal` / `get_signals` はcapability_matrixでorch/dispatcher/workerいずれにも開放されている（観測データの記録に合意形成が不要なため）。`update_signal` のみトリアージ操作としてorch専用。
+`ow_send` / `ow_history` はorch/dispatcher/workerいずれのロールからも呼べる。`report_signal` / `get_signals` はcapability_matrixでorch/dispatcher/workerいずれにも開放されている（観測データの記録に合意形成が不要なため）。`update_signal` のみトリアージ操作としてorch専用。
 
 ### 4.3 check-in 先行が前提のツール
 - `add_decisions` の hints はharness_service経由で「整合性確認」「pin見直し」などを示唆する。直前にcheck-inしていない場合、文脈不足のためhintsを過信しない方がよい。
 - `check_in` を経由しないアクティビティへの操作（`update_activity` 等）は可能だが、その場合 tag_notes の自動注入は行われない。habitsはSessionStart時に全件注入されるため、check_inの有無に関係なく反映される。
 
-### 4.4 モデル指定の固定
-`ow_spawn_worker(model=...)` は `claude-opus-4-7` のみ許可。sonnet/haiku/opus-4-8 はバリデーションで弾かれる。
-
-### 4.5 取り消し済みエンティティの扱い
+### 4.4 取り消し済みエンティティの扱い
 `retract` で論理削除されたdecision/logは、`search` / `get_logs` / `get_decisions` でデフォルト除外される。`include_retracted=true` で明示的に含められる。
 
-### 4.6 上限値
+### 4.5 上限値
 - 一括追加系（`add_logs` / `add_decisions`）: 最大10件
 - `get_by_ids`: 最大20件
 - `get_logs` / `get_decisions`: limit最大30
@@ -688,13 +609,12 @@ ow系ツール（特に `ow_spawn_worker` / `ow_close_worker` / `ow_status` / `o
 1. **docstring内の判断ロジック残置**: 各ツールのdocstringが「いつ呼ぶか」「いつ呼ばないか」の判断基準を含んでおり、スキルレイヤとの責務境界が曖昧。仕様（What）と運用（When/How）が混在している。
 2. **entity_type が文字列フリー**: `topic` / `activity` / `material` / `decision` / `log` の5値は型としてLiteralやEnumで縛られておらず、ツール間で許容値の差（`add_relation` は全5種、`get_logs` は2種のみ等）が散在している。
 3. **Read系ツール選択基準の不在**: `search` / `get_by_ids` / `get_map` / `get_timeline` / `check_in` の使い分け方針が一元化されていない。エージェントが最適なツールを選びにくい。
-4. **OW_ROLE による直接的なガードの不在**: workerロール時の意図しない高権限操作（spawn_worker / recover 等）を防ぐコードレベルの仕組みが確認できなかった。運用ルールでカバーする現状は脆い。
-5. **2段階リード（search → get_by_ids → get_material）の冗長性**: 〔解消済〕`get_by_ids`の`material`レスポンスに`content`/`source`を同梱したため、`search → get_by_ids` の2ステップで全文取得が完結する。`get_material`はmaterial_id単発取得用として残存。
-6. **`propagate_to` の二重記録経路**: `add_decisions(propagate_to=...)` で habit / tag_note を派生生成できるが、直接 `add_habit` や `update_tag(notes=)` を呼ぶ経路と並存している。どちらを使うべきかが明確でない。
-7. **`related_decisions` の embedding 依存**: embedding サーバー未起動時は空配列を返すが、それを呼び出し側が判別する手段がレスポンスにない。
-8. **タグnamespaceのリテラル化**: `domain:` / `intent:` / 素タグの3区分は文字列パースに依存しており、型安全ではない。
-9. **status="active" のエイリアス挙動**: pending+in_progress を返すが、snoozed/shelvedは含まない。明示しないと誤解の温床になる。
-10. **`include_retracted` がツール間で揃っていない**: `search` / `get_logs` / `get_decisions` にはあるが、`get_timeline` には無い。
+4. **2段階リード（search → get_by_ids → get_material）の冗長性**: 〔解消済〕`get_by_ids`の`material`レスポンスに`content`/`source`を同梱したため、`search → get_by_ids` の2ステップで全文取得が完結する。`get_material`はmaterial_id単発取得用として残存。
+5. **`propagate_to` の二重記録経路**: `add_decisions(propagate_to=...)` で habit / tag_note を派生生成できるが、直接 `add_habit` や `update_tag(notes=)` を呼ぶ経路と並存している。どちらを使うべきかが明確でない。
+6. **`related_decisions` の embedding 依存**: embedding サーバー未起動時は空配列を返すが、それを呼び出し側が判別する手段がレスポンスにない。
+7. **タグnamespaceのリテラル化**: `domain:` / `intent:` / 素タグの3区分は文字列パースに依存しており、型安全ではない。
+8. **status="active" のエイリアス挙動**: pending+in_progress を返すが、snoozed/shelvedは含まない。明示しないと誤解の温床になる。
+9. **`include_retracted` がツール間で揃っていない**: `search` / `get_logs` / `get_decisions` にはあるが、`get_timeline` には無い。
 
 ---
 

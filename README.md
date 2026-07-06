@@ -154,48 +154,9 @@ claude.ai → Settings → Integrations → Add Integration からリモート�
 
 </details>
 
-## orch/worker フレームワーク
+## セッション間メッセージング（ow_send / ow_history）
 
-複数のClaude Codeセッションを協調動作させる実験的なマルチエージェント基盤です。`ow_spawn_worker`・`ow_close_worker`などのMCPツールで、orchセッションからworkerセッションを起動・管理できます。
-
-### ターミナルアダプタの設定
-
-workerセッションを自動起動するには、`OW_TERMINAL`環境変数でターミナルアプリを指定します。
-
-| 値 | 動作 | 前提条件 |
-|----|------|---------|
-| `tmux`（デフォルト） | tmuxの新規windowでworkerを起動 | tmuxがインストール済み |
-| `manual` | 起動コマンドを返すだけ。手動で実行が必要 | なし |
-
-`.mcp.json`の`env`フィールドに追加します:
-
-```json
-{
-  "mcpServers": {
-    "claude-code-memory": {
-      "env": {
-        "OW_TERMINAL": "tmux"
-      }
-    }
-  }
-}
-```
-
-#### tmuxアダプタの動作
-
-- `OW_TERMINAL=tmux` に設定すると、`ow_spawn_worker`呼び出し時に自動でtmuxセッション（`ow-workers`）を作成し、新規windowでworkerを起動します
-- 既存の`ow-workers`セッションがある場合は、そこに新規windowを追加します
-- `ow_close_worker`を呼ぶと、対応するpaneをkillします
-- workerの安定IDにはtmux pane ID（`%0`、`%1`のような形式）を使用します
-
-#### tmuxの推奨設定
-
-Claude Codeをtmux内で使うには、`~/.tmux.conf`に以下を追加してください:
-
-```tmux
-set -g allow-passthrough on
-set -g extended-keys on
-```
+複数のClaude Codeセッション間でメッセージを中継する実験的な基盤です。`ow_send`・`ow_history` MCPツールが、リポ内にvendoringされたrelayサーバー（`src/relay/`）経由でチャンネル単位のメッセージ送受信を提供します。送信先channelが未存在の場合は初回送信時に自動作成されます。relayサーバー自体は自動起動されないため、事前に `uv run python -m src.relay.server` で起動しておく必要があります（未起動のまま送信すると接続エラーになります）。
 
 ## ライセンス
 

@@ -36,8 +36,9 @@ git -C ~/workspace/relay log --oneline -1
 rsync -a --delete --exclude='__pycache__' --exclude='VENDORED.md' \
   ~/workspace/relay/relay_sdk/ src/relay_sdk/
 
-# 3. import を機械的に書き換え
-find src/relay_sdk -name '*.py' -exec sed -i '' 's/^from relay_sdk/from src.relay_sdk/' {} +
+# 3. import を機械的に書き換え（BSD/GNU sed両対応のためバックアップ拡張子経由で書き換え、直後に削除）
+find src/relay_sdk -name '*.py' -exec sed -i.bak 's/^from relay_sdk/from src.relay_sdk/' {} +
+find src/relay_sdk -name '*.bak' -delete
 
 # 4. 差分が import 書き換えのみであることを確認
 diff -r --exclude=__pycache__ --exclude=VENDORED.md ~/workspace/relay/relay_sdk src/relay_sdk

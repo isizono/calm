@@ -1,6 +1,6 @@
 ---
 name: audit
-description: 【必須】過去 decision の正当性を疑った状況、同一 tag 内で 3 件目の方針変更 (supersedes 連鎖 / [議論中] 含む) を検知した状況、既決を見落として議論を始めかけた状況、同じバグを 2 回以上観察した状況、設計レビューで「この案前回却下した気がする」と感じた状況、ユーザーから「これ前に決めなかったっけ?」「また同じ話してる」「過去の情報と矛盾してない?」「グルグル回ってない?」「ちゃんと過去の議論を踏まえてる?」など過去判断への疑問・矛盾を表明された状況などで発動。一次リソース + 経緯 log を読み、全体像と文脈不足を分析し、知識を正しい場所 (tag note / habit / anchor / material / decision 改訂提案) に pin する長プロセス skill。このスキルを経由せずに decision の retract / supersede を直接提案してはいけない。TRIGGER: 上記の自発トリガー (T-A1〜T-A5) または ユーザー起点トリガー (T-B1〜T-B3) のいずれか。DO NOT TRIGGER: 設計議論中で挙動が未確定の論点 / 同主題 24h 内 audit 済 / ユーザーが「audit はいい」と明示拒否した直後 / 他 topic 管轄の仕組みのバグ観察 (それは cross-topic-bug-report) / worker セッション (worker は escalate 経路を取る)。
+description: 【必須】過去 decision の正当性を疑った状況、同一 tag 内で 3 件目の方針変更 (supersedes 連鎖 / [議論中] 含む) を検知した状況、既決を見落として議論を始めかけた状況、同じバグを 2 回以上観察した状況、設計レビューで「この案前回却下した気がする」と感じた状況、ユーザーから「これ前に決めなかったっけ?」「また同じ話してる」「過去の情報と矛盾してない?」「グルグル回ってない?」「ちゃんと過去の議論を踏まえてる?」など過去判断への疑問・矛盾を表明された状況などで発動。一次リソース + 経緯 log を読み、全体像と文脈不足を分析し、知識を正しい場所 (tag note / habit / anchor / material / decision 改訂提案) に pin する長プロセス skill。このスキルを経由せずに decision の retract / supersede を直接提案してはいけない。TRIGGER: 上記の自発トリガー (T-A1〜T-A5) または ユーザー起点トリガー (T-B1〜T-B3) のいずれか。DO NOT TRIGGER: 設計議論中で挙動が未確定の論点 / 同主題 24h 内 audit 済 / ユーザーが「audit はいい」と明示拒否した直後 / 他 topic 管轄の仕組みのバグ観察 (それは cross-topic-bug-report)。
 ---
 
 # audit
@@ -14,14 +14,10 @@ description: 【必須】過去 decision の正当性を疑った状況、同一
 | 項目 | 内容 |
 |---|---|
 | 配置 | `skills/audit/SKILL.md` |
-| 発動セッション | main / orch (思考の発端側) を主、worker は発動不可 |
+| 発動セッション | main / orch (思考の発端側) |
 | 対象 | 過去 decision / 設計判断 / 同 tag の方針推移 (1 audit = 1 主題) |
 | 種別 | 自律発動スキル |
 | 重さ | 長プロセス (1 audit ≈ 1 セッション内、複数ターン消費) |
-
-### worker での発動可否
-
-worker からの直接発動は禁止 (worker SKILL.md `禁止事項` と整合)。worker が「audit が必要そう」と感じた場合は `event:state(blocked)` で orch に escalate する。blocked envelope の `question` に「decision D#X の正当性が疑わしい (理由: …)。本 task で踏み込むより orch 経由で audit skill を回した方がよいか?」を含める。
 
 ## 適用範囲
 
@@ -57,7 +53,6 @@ worker からの直接発動は禁止 (worker SKILL.md `禁止事項` と整合)
 | T-C2 | 同 audit を 24h 以内に同主題で実行済み | 重複 (前回 material を参照すべき) |
 | T-C3 | ユーザーが「audit はいい、進めて」と明示拒否した直後 | 明示否認尊重 |
 | T-C4 | スコープが他 topic 管轄の仕組みのバグ観察である | `cross-topic-bug-report` skill の責務 |
-| T-C5 | worker セッション | worker は escalate 経路 (上記 § worker での発動可否) |
 
 ## 起動時確認フロー
 
@@ -385,7 +380,7 @@ audit skill は HintService (`src/services/hint_service.py`) とは**経路と�
 | 発火経路 | `check_in` 同期 / Stop hook 経由 additionalContext | description トリガー + ユーザー発話 |
 | 永続化 | hint type 表現 + tag note 内ハッシュタグマーカー (`#audited-YYYY-MM-DD` 等の suppress 用途) | audit material + 各種 pin |
 | severity | info/warn のみ (block 不採用) | severity 概念なし (skill は手続き) |
-| orch_managed=True activity | 全 suppress | orch では発動可 (worker 制限) |
+| orch_managed=True activity | 全 suppress | 発動可 |
 
 完了マーカー `#audited-YYYY-MM-DD` は HintService 側 hint 重複抑制と共通の仕組みを意図しているが、audit skill 自身の 24h 重複防止 (T-C2) の判定にも使う。
 
@@ -394,7 +389,7 @@ audit skill は HintService (`src/services/hint_service.py`) とは**経路と�
 | ケース | 期待挙動 |
 |---|---|
 | audit 対象 decision が retract 済 | audit material の `## 検証結果` に「対象は既 retract」と記録し、supersede 先の決定が今も妥当かを副次 audit |
-| 対象 topic が他 worker で並行修正中 | 並行修正の log を Step 4 で拾い、現在 in-flight な議論を `## 残課題` に明示 |
+| 対象 topic が他セッションで並行修正中 | 並行修正の log を Step 4 で拾い、現在 in-flight な議論を `## 残課題` に明示 |
 | 一次リソース (コード) が存在しない (anchor リンク切れ) | `## 文脈不足の分析` に「anchor が剥がれている」と記録し、setup-anchor 起動候補としてマーク |
 | 「過去 decision を引用」した直後で実際にはマッチしていた (T-A1 誤検知) | Step 1 の発端明文化時点で「マッチ確認済」と書き、Step 2 でスコープなしとして audit 中断 (空 audit) |
 | ユーザーが Step 5 途中で「もういい、わかった」と中断 | 部分的な audit material を「下書き」として保存 (§ 中断・再開) |

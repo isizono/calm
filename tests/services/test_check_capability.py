@@ -63,12 +63,6 @@ class TestEscalationPassValve:
 class TestMatrixDenial:
     """matrix の False / 未登録 tool は CapabilityError を返す。"""
 
-    def test_orch_blocked_from_spawn_worker(self, temp_db, monkeypatch):
-        monkeypatch.setenv("OW_ROLE", "orch")
-        with pytest.raises(CapabilityError) as exc:
-            check_capability("ow_spawn_worker")
-        assert "orch" in str(exc.value)
-
     def test_worker_blocked_from_update_activity(self, temp_db, monkeypatch):
         monkeypatch.setenv("OW_ROLE", "worker")
         with pytest.raises(CapabilityError):
@@ -144,33 +138,6 @@ class TestSelfTargetUpdateMaterial:
             conn.close()
 
         check_capability("update_material", args={"material_id": material_id})
-
-
-class TestSelfTargetOwCloseWorker:
-    """ow_close_worker の self 判定。"""
-
-    def test_self_close_passes(self, temp_db, monkeypatch):
-        monkeypatch.setenv("OW_ROLE", "worker")
-        with monkeypatch.context() as m:
-            m.setattr(
-                "src.services.role_service.get_caller_session_id",
-                lambda: "sess-w1",
-            )
-            check_capability(
-                "ow_close_worker", args={"target_session_id": "sess-w1"}
-            )
-
-    def test_close_other_worker_rejected(self, temp_db, monkeypatch):
-        monkeypatch.setenv("OW_ROLE", "worker")
-        with monkeypatch.context() as m:
-            m.setattr(
-                "src.services.role_service.get_caller_session_id",
-                lambda: "sess-w1",
-            )
-            with pytest.raises(CapabilityError):
-                check_capability(
-                    "ow_close_worker", args={"target_session_id": "sess-w2"}
-                )
 
 
 class TestWorkerGuardWrapper:

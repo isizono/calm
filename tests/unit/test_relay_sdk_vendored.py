@@ -5,12 +5,19 @@ SDK 自体の網羅テストは出自リポジトリ（relay）側にあるた�
 """
 from __future__ import annotations
 
+import pytest
+
 from src.relay_sdk.client import Event, subscribe
 from src.relay_sdk.testing import FakeRelay
 
 
+@pytest.mark.timeout(10)
 def test_subscribe_publish_receive_round_trip():
-    """FakeRelay に subscribe し、publish した event が receive() で届く。"""
+    """FakeRelay に subscribe し、publish した event が receive() で届く。
+
+    receive() は無応答時に無限再接続するループのため、イベントが届かない
+    リグレッションが起きるとテストがハングする。pytest-timeout で打ち切る。
+    """
     with FakeRelay() as fake:
         with subscribe(
             relay_base_url=fake.base_url,
