@@ -20,6 +20,12 @@ CAPABILITY_MATRIX: CapabilityMatrix = {
     "ow_send":           {"orch": True,  "dispatcher": True,  "worker": True},
     "ow_history":        {"orch": True,  "dispatcher": True,  "worker": True},
 
+    # relay セッション面（セッション間通信 4 動詞。全 session に開放）
+    "relay_post":        {"orch": True,  "dispatcher": True,  "worker": True},
+    "relay_publish":     {"orch": True,  "dispatcher": True,  "worker": True},
+    "relay_subscribe":   {"orch": True,  "dispatcher": True,  "worker": True},
+    "relay_receive":     {"orch": True,  "dispatcher": True,  "worker": True},
+
     # 書き込み
     "add_topic":         {"orch": True,  "dispatcher": False, "worker": False},
     "add_activity":      {"orch": True,  "dispatcher": False, "worker": False},

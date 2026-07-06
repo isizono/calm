@@ -1,0 +1,114 @@
+"""relay_publish（labels routing 配布）の unit test。
+
+publish は relay へ直接 HTTP せず relay_outbox への INSERT で完結する
+（配達は server 内の常駐配達ループの責務）。labels 検証と handle 自動付与を検証する。
+"""
+import json
+import sqlite3
+
+import pytest
+
+from src.relay_sdk.outbox import create_outbox_table
+from src.services.relay import declarations, service
+
+
+@pytest.fixture(autouse=True)
+def relay_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("RELAY_STATE_DIR", str(tmp_path / "relay-state"))
+    monkeypatch.setenv("RELAY_BEARER_TOKEN", "test-token")
+    monkeypatch.delenv("RELAY_BASE_URL", raising=False)
+    monkeypatch.delenv("RELAY_IDENTITY", raising=False)
+
+
+@pytest.fixture
+def conn():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    create_outbox_table(conn)
+    yield conn
+    conn.close()
+
+
+def _publish(conn, labels, body="hello", title=None, session_id="sess-1"):
+    return service.publish_with_conn(
+        conn, caller_session_id=session_id, labels=labels, body=body, title=title
+    )
+
+
+class TestPublishSuccess:
+    def test_inserts_one_outbox_row_with_auto_handle(self, conn):
+        result = _publish(conn, ["decision:123"])
+        assert "error" not in result
+
+        rows = conn.execute("SELECT * FROM relay_outbox").fetchall()
+        assert len(rows) == 1
+        stored_labels = json.loads(rows[0]["labels"])
+        handle = declarations.load("sess-1")["handle"]
+        assert f"handle:{handle}" in stored_labels
+        assert "decision:123" in stored_labels
+        assert rows[0]["ref_id"] == "hello"
+
+    def test_returns_outbox_id_and_final_labels(self, conn):
+        result = _publish(conn, ["decision:123"])
+        assert isinstance(result["outbox_id"], int)
+        assert f"handle:{result['handle']}" in result["labels"]
+
+    def test_entity_only_labels_are_accepted(self, conn):
+        """routing 系 label が無くても entity 系 labels のみで有効な publish になる。"""
+        result = _publish(conn, ["decision:123", "topic:45", "domain:cc-memory"])
+        assert "error" not in result
+
+    def test_opaque_prefixes_are_accepted(self, conn):
+        """channel:/task:/未知 prefix は不透明 label として受理される。"""
+        result = _publish(conn, ["channel:planning", "task:build", "custom:thing"])
+        assert "error" not in result
+
+    def test_existing_own_handle_label_is_not_duplicated(self, conn):
+        handle = declarations.ensure("sess-1")["handle"]
+        result = _publish(conn, [f"handle:{handle}", "decision:1"])
+        assert result["labels"].count(f"handle:{handle}") == 1
+
+    def test_title_is_stored(self, conn):
+        _publish(conn, ["decision:123"], title="見出し")
+        row = conn.execute("SELECT title FROM relay_outbox").fetchone()
+        assert row["title"] == "見出し"
+
+
+class TestPublishValidation:
+    def test_empty_labels_rejected(self, conn):
+        result = _publish(conn, [])
+        assert result["error"]["code"] == "validation"
+
+    def test_role_prefix_rejected(self, conn):
+        result = _publish(conn, ["role:navigator", "decision:1"])
+        assert result["error"]["code"] == "validation"
+        assert "role:" in result["error"]["message"]
+
+    def test_empty_body_rejected(self, conn):
+        result = _publish(conn, ["decision:1"], body="")
+        assert result["error"]["code"] == "validation"
+
+    def test_non_string_label_rejected(self, conn):
+        result = _publish(conn, ["decision:1", 42])
+        assert result["error"]["code"] == "validation"
+
+    def test_overlong_title_rejected(self, conn):
+        result = _publish(conn, ["decision:1"], title="x" * 201)
+        assert result["error"]["code"] == "validation"
+
+    def test_no_row_inserted_on_validation_error(self, conn):
+        _publish(conn, [])
+        _publish(conn, ["role:navigator"])
+        assert conn.execute("SELECT COUNT(*) FROM relay_outbox").fetchone()[0] == 0
+
+
+class TestPublishPreconditions:
+    def test_missing_token_returns_explicit_error(self, conn, monkeypatch):
+        monkeypatch.delenv("RELAY_BEARER_TOKEN")
+        result = _publish(conn, ["decision:1"])
+        assert result["error"]["code"] == "config_missing"
+        assert "RELAY_BEARER_TOKEN" in result["error"]["message"]
+
+    def test_unresolved_session_returns_explicit_error(self, conn):
+        result = _publish(conn, ["decision:1"], session_id=None)
+        assert result["error"]["code"] == "session_unresolved"
