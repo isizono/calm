@@ -29,6 +29,12 @@ def temp_db():
             del os.environ["DISCUSSION_DB_PATH"]
 
 
+@pytest.fixture(autouse=True)
+def reset_spawn_cooldown(monkeypatch):
+    """テスト間でspawn失敗クールダウンが持ち越されないようリセットする"""
+    monkeypatch.setattr(emb, "_last_spawn_failed_at", None)
+
+
 @pytest.fixture
 def mock_embedding_server(monkeypatch):
     """embedding_serverへのHTTPリクエストをモック化"""
@@ -651,6 +657,58 @@ def test_ensure_server_running_gives_up_when_child_exits_early(temp_db, monkeypa
 
     assert emb._ensure_server_running() is False
     assert sleep_count["n"] < 60  # 60回ループを使い切らず早期リターン
+
+
+def test_ensure_server_running_cooldown_blocks_respawn_after_failure(temp_db, monkeypatch):
+    """_ensure_server_running: 起動失敗直後はクールダウンで再spawnしない"""
+    import time as time_mod
+
+    spawns = {"n": 0}
+
+    def counting_start():
+        spawns["n"] += 1
+        return _FakeProc(returncode=1)  # 即死する子（モデルロード失敗等）
+
+    monkeypatch.setattr(emb, "_is_server_running", lambda: False)
+    monkeypatch.setattr(emb, "_start_server", counting_start)
+    monkeypatch.setattr(time_mod, "sleep", lambda s: None)
+
+    assert emb._ensure_server_running() is False
+    assert spawns["n"] == 1
+    # クールダウン中の再呼び出しはspawnせずFalse
+    assert emb._ensure_server_running() is False
+    assert spawns["n"] == 1
+    # クールダウン経過後は再spawnを試みる
+    monkeypatch.setattr(
+        emb, "_last_spawn_failed_at",
+        time_mod.time() - emb._SPAWN_RETRY_COOLDOWN_SEC - 1,
+    )
+    assert emb._ensure_server_running() is False
+    assert spawns["n"] == 2
+
+
+def test_ensure_server_running_success_clears_cooldown(temp_db, monkeypatch):
+    """_ensure_server_running: 起動成功でクールダウンがクリアされる"""
+    import time as time_mod
+
+    monkeypatch.setattr(emb, "_is_server_running", lambda: False)
+    monkeypatch.setattr(emb, "_start_server", lambda: _FakeProc(returncode=1))
+    monkeypatch.setattr(time_mod, "sleep", lambda s: None)
+    assert emb._ensure_server_running() is False
+    assert emb._last_spawn_failed_at is not None
+
+    # 次のspawnが成功するケース（1回目のhealth checkで即ready）
+    monkeypatch.setattr(emb, "_last_spawn_failed_at", None)
+    calls = {"n": 0}
+
+    def health_after_start():
+        calls["n"] += 1
+        return calls["n"] > 2  # 事前チェック・ロック内再チェックはFalse、以降True
+
+    monkeypatch.setattr(emb, "_is_server_running", health_after_start)
+    monkeypatch.setattr(emb, "_start_server", lambda: _FakeProc(returncode=None))
+    assert emb._ensure_server_running() is True
+    assert emb._last_spawn_failed_at is None
 
 
 # ========================================

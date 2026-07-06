@@ -72,6 +72,13 @@ _project_root_cache: Optional[str] = None
 # spawn する（各子プロセスがモデルロード分のメモリを確保する）。
 _spawn_lock = threading.Lock()
 
+# 起動失敗後の spawn 再試行クールダウン。モデルロードが恒久的に失敗する環境
+# （ネットワーク遮断等）で encode 呼び出しごとに spawn→即死ループになるのを防ぐ。
+# 子プロセスは失敗までに sentence_transformers の import 分のメモリを毎回確保する
+# ため、失敗直後の再 spawn は許可しない。_spawn_lock 保持中のみ読み書きする。
+_SPAWN_RETRY_COOLDOWN_SEC = 30.0
+_last_spawn_failed_at: Optional[float] = None
+
 
 def _get_project_root() -> str:
     """`_resolve_project_root()` の lazy + cache wrapper。
@@ -126,30 +133,40 @@ def _ensure_server_running() -> bool:
     spawn は _spawn_lock でプロセス内直列化する。ロック取得後の再チェックで
     先行スレッドが起動済みなら spawn しない。
     """
+    global _last_spawn_failed_at
     if _is_server_running():
         return True
     with _spawn_lock:
         # ロック待ちの間に別スレッドが起動を完了しているケース
         if _is_server_running():
             return True
+        if (
+            _last_spawn_failed_at is not None
+            and time.time() - _last_spawn_failed_at < _SPAWN_RETRY_COOLDOWN_SEC
+        ):
+            return False
         proc = _start_server()
         if proc is None:
+            _last_spawn_failed_at = time.time()
             return False
         # 最大30秒待機（0.5秒間隔 × 60回）
         for _ in range(60):
             time.sleep(0.5)
             if _is_server_running():
                 logger.info("Embedding server is ready")
+                _last_spawn_failed_at = None
                 return True
             if proc.poll() is not None:
                 # 子が終了済み。別プロセス起点のサーバーにbind負けした直後なら
                 # health が通るはずなので、最後にもう一度だけ確認してから諦める
                 if _is_server_running():
                     logger.info("Embedding server is ready")
+                    _last_spawn_failed_at = None
                     return True
                 logger.warning(
                     f"Embedding server exited early (returncode={proc.returncode})"
                 )
+                _last_spawn_failed_at = time.time()
                 return False
         # タイムアウト。bind 済み（= ロード進行中で、完了すれば応答する）なら生かし、
         # bind 前に固まっている子は回収する。放置すると stdout/stderr が DEVNULL の
@@ -167,6 +184,7 @@ def _ensure_server_running() -> bool:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+        _last_spawn_failed_at = time.time()
         return False
 
 
