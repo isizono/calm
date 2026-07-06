@@ -393,7 +393,14 @@ class TestSessionStartHookOwRoleEnvIgnored:
         assert rows == []
 
     def test_stale_session_identity_row_does_not_affect_new_session(self, temp_db):
-        """session_identityに残存する過去のworker行は別session_idのhook挙動に影響しない"""
+        """session_identity に残存する過去の worker 行が別 session_id の
+        hook 挙動に影響しないことを保証する回帰ガード。
+
+        現状 hook は role / session_identity を一切参照しないため、この
+        assertion は session_identity の中身に関わらず通過する（現時点では
+        実質的な検証力を持たない）。将来 hook 側に role 参照が再導入された
+        場合に、残存 worker 行が新規セッションのアクティビティ一覧を誤って
+        抑制する回帰を検出するためのガードとして残す。"""
         conn = get_connection()
         try:
             conn.execute(
