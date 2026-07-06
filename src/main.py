@@ -616,6 +616,28 @@ def search(
         tagsはエンティティに紐づくタグ文字列のリスト。
         include_details=Trueの場合、上位10件にdetailsが追加される。
 
+        search_methods_used: 実際に使われた検索手法のリスト（"fts5" / "vector" / "tag_like" の
+        部分集合）。"vector" が含まれないときはベクトル検索（embeddingサーバー）がこの呼び出し
+        時点で利用不可だったことを意味する。
+
+        degraded: bool。True はこの呼び出し時点でベクトル検索（embeddingサーバー）が利用不可
+        だったことを示す明示フラグ（search_methods_used に "vector" が無いことと等価）。
+        embeddingサーバーのコールドスタート（起動待ちが最大30秒でタイムアウトした場合）や障害時
+        に True になる。この場合、結果はFTS5キーワード一致・タグ名一致のみに基づいており、
+        意味的には関連するが字面が異なる項目を取りこぼしている可能性がある。「類似する情報が
+        見つからない」と判断する前に degraded を確認し、True であれば少し時間を置いて再試行する
+        か、embeddingサーバーの起動を待ってから再検索することを検討する。False のときはベクトル
+        検索が実際に実行されたことを示し、ヒット件数が0件だった場合も False のままである
+        （「使えたが該当なし」と「使えなかった」を区別する）。タグ指定の一部がDB未登録で空結果が
+        確定するケースなど、ベクトル検索を試す前に結果が確定する場合は degraded キー自体が
+        レスポンスに存在しない。エラー時も同様で、error.code が "KEYWORD_TOO_SHORT" であっても
+        degraded の有無は発生条件により異なる（ベクトル検索を実際に試した上で利用不可だった
+        場合のみ degraded: True が付く。1文字以下キーワードなど、ベクトル検索を試す前に確定
+        するバリデーションエラーには degraded キーが無い）。
+
+        nearby_tags: 検索結果に共起するタグの上位5件 [{"tag": str, "co_count": int}, ...]。
+        offset>0 のときは常に空リスト。
+
         取り消し済み（retracted）のdecision/logはretract時に物理削除されているため、
         検索結果には現れない。直接取得したい場合はget_decisions/get_logsで
         include_retracted=Trueを指定する。

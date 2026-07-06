@@ -1609,7 +1609,8 @@ def _retrieve(ctx: SearchContext, conn: sqlite3.Connection) -> dict:
             "error": {
                 "code": "KEYWORD_TOO_SHORT",
                 "message": "keyword must be at least 3 characters when vector search is unavailable",
-            }
+            },
+            "degraded": True,
         })
 
     return {
@@ -1633,10 +1634,13 @@ def _build_diagnostics(
     Returns:
         {"fts_hits": int, "vec_hits": int | None, "tag_hits": int,
          "methods_used": list[str], "candidate_set_size": None,
-         "qe_expansions": list[str], "adaptive_weights": {"w_fts": float, "w_vec": float}}
+         "qe_expansions": list[str], "adaptive_weights": {"w_fts": float, "w_vec": float},
+         "degraded": bool}
 
         vec_hits はベクトル検索自体が無効（embedding サーバー未起動等）のとき None、
         有効だがヒット 0 件のとき 0 になる（`retrieval["vec"] is None` で区別する）。
+        degraded は vec_hits is None と等価な bool 表現で、search() の戻り値にも
+        同じキー・同じ意味で転記される。
         candidate_set_size は post-filter 方式の vector_retrieve では算出できないため
         常に None。qe_expansions は Query Expansion で追加されたキーワードのみ（元キーワードは含まない）。
     """
@@ -1653,6 +1657,7 @@ def _build_diagnostics(
         "candidate_set_size": None,
         "qe_expansions": qe_expansions,
         "adaptive_weights": {"w_fts": w_fts, "w_vec": w_vec},
+        "degraded": vec_results is None,
     }
 
 
@@ -1807,6 +1812,15 @@ def search(
         snippetは各typeの対応するソースカラムの先頭200文字（materialはtitle優先表示）。
         tagsはエンティティに紐づくタグ文字列のリスト。
         include_details=Trueの場合、上位DETAILS_MAX_RESULTS件にdetailsが追加される。
+
+        search_methods_used は実際に使われた検索手法のリスト（"fts5" / "vector" / "tag_like" の
+        部分集合）。"vector" が含まれないときはベクトル検索（embeddingサーバー）が利用不可だった
+        ことを意味する。
+        degraded は bool。True はこの呼び出し時点でベクトル検索が利用不可だったことを表す明示
+        フラグで、search_methods_used に "vector" が無いことと等価だが判定の手間なく直接参照
+        できる。embeddingサーバーのコールドスタート（起動待ち最大30秒がタイムアウト）や障害時に
+        True になる。False のときはベクトル検索が実行されたことを示し、ヒット件数が0件だった
+        場合も False のままである。
     """
     try:
         keywords, entity_type, domain, date_after, date_before = _validate(
@@ -1822,6 +1836,7 @@ def search(
             ctx = _expand(ctx)
             retrieval = _retrieve(ctx, conn)
             vec_hits = len(retrieval["vec"]) if retrieval["vec"] is not None else 0
+            degraded = retrieval["vec"] is None
             adaptive_weights = _compute_adaptive_weights(len(retrieval["fts"]), vec_hits)
             diagnostics = _build_diagnostics(ctx, retrieval, adaptive_weights)
             merged = _merge(ctx, retrieval, adaptive_weights)
@@ -1855,6 +1870,7 @@ def search(
             "results": sliced,
             "total_count": total_count,
             "search_methods_used": retrieval["methods_used"],
+            "degraded": degraded,
             "nearby_tags": nearby_tags,
         }
 

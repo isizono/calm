@@ -1014,6 +1014,78 @@ def test_search_methods_used_fts_only_vec_disabled(temp_db, disable_embedding):
     assert result["search_methods_used"] == ["fts5"]
 
 
+# ========================================
+# degraded フィールドテスト
+# ========================================
+
+
+def test_degraded_false_when_vector_available_with_hits(temp_db, mock_embedding_model):
+    """3文字以上 + ベクトル有効 + ヒットあり: degraded は False"""
+    add_topic(
+        title="デグレードフラグ確認テスト用トピック",
+        description="ベクトル検索が有効な場合のdegraded確認",
+        tags=DEFAULT_TAGS,
+    )
+
+    result = search_service.search(keyword="デグレードフラグ確認テスト")
+
+    assert "error" not in result
+    assert result["degraded"] is False
+
+
+def test_degraded_false_when_vector_available_zero_hits(temp_db, mock_embedding_model):
+    """3文字以上 + ベクトル有効 + ヒット0件: degraded は False のまま
+    （「使えたが該当なし」と「使えなかった」を区別する）"""
+    result = search_service.search(keyword="データが1件も存在しない状態の検索キーワード")
+
+    assert "error" not in result
+    assert result["results"] == []
+    assert result["degraded"] is False
+
+
+def test_degraded_true_when_vector_disabled_fts_fallback(temp_db, disable_embedding):
+    """3文字以上 + ベクトル無効: FTSにフォールバックしdegradedはTrue"""
+    add_topic(
+        title="デグレードフラグ確認フォールバックテスト",
+        description="ベクトル検索が無効な場合のdegraded確認",
+        tags=DEFAULT_TAGS,
+    )
+
+    result = search_service.search(keyword="デグレードフラグ確認フォールバックテスト")
+
+    assert "error" not in result
+    assert result["degraded"] is True
+
+
+def test_degraded_shape_differs_by_keyword_too_short_origin(temp_db, disable_embedding):
+    """同一 error.code == "KEYWORD_TOO_SHORT" でも degraded の有無が発生条件で異なる。
+
+    1文字キーワードは _validate() 段階（ベクトル検索を試す前）で確定するため
+    degraded キー自体を含まない。2文字キーワード + ベクトル無効は _retrieve() で
+    実際にベクトル検索を試みた結果が None だったため degraded: True を含む。
+    """
+    result_1char = search_service.search(keyword="設")
+    result_2char = search_service.search(keyword="設計")
+
+    assert result_1char["error"]["code"] == "KEYWORD_TOO_SHORT"
+    assert "degraded" not in result_1char
+
+    assert result_2char["error"]["code"] == "KEYWORD_TOO_SHORT"
+    assert result_2char["degraded"] is True
+
+
+def test_degraded_key_absent_when_tag_not_found(temp_db, disable_embedding):
+    """指定タグの一部がDB未登録で空結果が確定するケースでは degraded キー自体が存在しない
+    （vector_retrieve() を試す前に確定するため False との取り違えを避ける）"""
+    add_topic(title="degraded不在確認用トピック", description="テスト", tags=DEFAULT_TAGS)
+
+    result = search_service.search(keyword="degraded不在確認用トピック", tags=["domain:nonexistent"])
+
+    assert "error" not in result
+    assert result["results"] == []
+    assert "degraded" not in result
+
+
 
 # ========================================
 # find_similar_topics テスト
