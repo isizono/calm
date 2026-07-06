@@ -156,7 +156,6 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 | hookファイル | 発火タイミング | 主な仕事 |
 |---|---|---|
 | `hooks/session_start_hook.py` | SessionStart | habits注入、アクティビティダッシュボード注入、鮮度警告 |
-| `hooks/session_end_hook.py` | SessionEnd | sync-memory連携・終了処理 |
 | `hooks/user_prompt_submit_hook.py` | UserPromptSubmit | ターンカウンタ・record nudge発火判定 |
 | `hooks/stop_hook.py` | Stop | 終端でのフォローアップ提案 |
 | `hooks/heartbeat.py` | 定期 | プレゼンス維持・ハートビート送信 |
@@ -165,7 +164,6 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 
 - `hooks/hook_state.py`: 状態ファイル群（`block_count` / `transcript_offset` / `current_turn` / `checked_in_activity`）と events.jsonl の読み書きを一元化（`HookState` クラス）。永続化先は `~/.claude/.claude-code-memory/state/`
 - `hooks/hook_transcript.py`: transcriptの差分抽出
-- `hooks/auto_sync_prompt.txt`: sync-memory自動起動のプロンプト文面
 
 ### 4.2 skills/
 
@@ -197,7 +195,6 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 SessionStart        → session_start_hook → habits注入 / アクティビティダッシュボード / 鮮度警告
 UserPromptSubmit    → user_prompt_submit_hook → 未消費 nudge の system-reminder 注入
 Stop                → stop_hook → record_missing / follow_up_after_decision / logs_sparse nudge を events.jsonl に追記
-SessionEnd          → session_end_hook → sync-memory連携
 ```
 
 PreToolUse は `hooks/hooks.json` に全ツール対象（`*` matcher）の preblock hook が登録済み。PostToolUse は廃止された (旧 remind_activity_on_decision.sh は HintService の follow_up_after_decision で代替)。
