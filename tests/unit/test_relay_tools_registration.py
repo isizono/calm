@@ -68,6 +68,15 @@ class TestDiagnosticToolRegistration:
             assert name in descriptions, f"{name} が MCP tool として未登録"
 
 
+class TestSubscribeDocstringContract:
+    def test_mentions_reconnect_notification_and_no_message_loss(self):
+        """新規購読時の反映指示・上限遅延・喪失なしの保証が description に明記されている。"""
+        desc = _all_tool_descriptions()["relay_subscribe"]
+        assert "reused: false" in desc
+        assert "60 秒" in desc
+        assert "喪失しない" in desc
+
+
 class TestRelayStatusDocstringContract:
     def test_mentions_not_a_replacement_for_the_four_verbs(self):
         """4動詞のいずれの代替でもない診断専用の面であることが明記されている。"""

@@ -1659,6 +1659,11 @@ def relay_subscribe(labels: list[str]) -> dict:
     有効なら既存の購読をそのまま返し、失効していれば新規に購読し直して差し替える。
     lease 更新・再接続・購読解除は server 側で自動管理される（呼び出し側の操作は不要）。
 
+    新規に購読が作られた場合（reused: false）、server 内の常駐 SSE 接続へ即座に反映指示を
+    送る。実際の反映は次の SSE フレーム到達時点までかかることがあり、既定設定では上限
+    概ね 60 秒（典型的には数十秒以内）に収まる。この間に届いたメッセージは relay 側で
+    保持されており喪失しない（遅延するだけで、反映後に取りこぼしなく届く）。
+
     Args:
         labels: 購読条件 labels（配列。publish 側の labels をすべて含む発話が届く）
 
@@ -1669,9 +1674,14 @@ def relay_subscribe(labels: list[str]) -> dict:
     """
     guard_service.check_capability("relay_subscribe")
     caller_session_id = get_caller_session_id()
-    return relay_session_service.relay_subscribe(
+    result = relay_session_service.relay_subscribe(
         labels, caller_session_id=caller_session_id
     )
+    if "error" not in result and result.get("reused") is False:
+        runtime = get_relay_runtime()
+        if runtime is not None:
+            runtime.notify_reconfigure()
+    return result
 
 
 @mcp.tool()

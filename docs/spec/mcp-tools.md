@@ -516,7 +516,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 | labels | list[string] | yes | - | 購読条件labels（publish側labelsをすべて含む発話が届く）。空配列なら自handle宛のみの購読。`role:` はエラー |
 
 **返り値**: `{subscription_id: string, labels: list[string], lease_expires_at: string, handle: string, reused: bool}`。
-**動作**: 自sessionの`handle:` labelを自動付与し、subscription declaration file（`~/.cc-memory/relay/subscriptions/session-<session_id>.json`）とrelayの購読登録を同期する。同一labels集合の再呼び出しは冪等で、leaseが有効なら既存購読を返し（`reused: true`）、失効・不明なら新規購読してdeclaration fileのidを差し替える。lease更新・再購読・購読解除はserver側常駐処理が自動管理する。
+**動作**: 自sessionの`handle:` labelを自動付与し、subscription declaration file（`~/.cc-memory/relay/subscriptions/session-<session_id>.json`）とrelayの購読登録を同期する。同一labels集合の再呼び出しは冪等で、leaseが有効なら既存購読を返し（`reused: true`）、失効・不明なら新規購読してdeclaration fileのidを差し替える。lease更新・再購読・購読解除はserver側常駐処理が自動管理する。新規購読（`reused: false`）が成立すると、server内の常駐SSE受信スレッドへ即座に反映指示を送る。反映は次のSSEフレーム到達時点で完了し、既定設定では上限概ね60秒に収まる。この間に届いたメッセージはrelay側のsubscription outboxに保持されるため取りこぼされない。
 **エラー処理**: `RELAY_BEARER_TOKEN`未設定・session_id未解決は明示エラー。relayエラー時はdeclaration fileを更新しない。
 
 ### 2.41 relay_receive
