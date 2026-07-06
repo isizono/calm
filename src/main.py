@@ -1855,10 +1855,22 @@ if __name__ == "__main__":
         _session_manager.set_shutdown_callback(_shutdown_server)
         _session_manager.start_watchdog()
 
+        # relay v2 常駐 3 系統 thread（B-1 intake / B-2 lease loop / B-3 outbox dispatcher）。
+        # RELAY_BEARER_TOKEN 未設定なら起動をスキップして log を 1 行残す（v1 が並走している
+        # 移行期間の環境で server 起動を壊さないための静かな縮退。tool 側は未設定を
+        # 明示エラーで顕在化させる）。
+        from src.services.relay.runtime import RelayRuntime
+
+        _relay_runtime = RelayRuntime(
+            active_sessions_getter=lambda: _session_manager.session_ids
+        )
+        _relay_runtime.start()
+
         try:
             logger.info(f"Starting HTTP server on {HTTP_HOST}:{HTTP_PORT}")
             mcp.run(transport="http", host=HTTP_HOST, port=HTTP_PORT)
         finally:
+            _relay_runtime.stop()
             release()
     else:
         mcp.run()
