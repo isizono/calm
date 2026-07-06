@@ -22,7 +22,7 @@ last-synced-migration: 0048
 
 ## 1. ツール一覧
 
-全41ツール。カテゴリ別に一覧する。
+全39ツール。カテゴリ別に一覧する。
 
 ### 1.1 記録系（add系）
 
@@ -83,13 +83,6 @@ last-synced-migration: 0048
 | ツール | 概要 |
 | --- | --- |
 | `check_in` | アクティビティにcheck-inして関連情報を集約取得する |
-
-### 1.7 ow系（セッション間メッセージング）
-
-| ツール | 概要 |
-| --- | --- |
-| `ow_send` | ow channelにメッセージを送信する |
-| `ow_history` | ow channel履歴を取得する |
 
 ### 1.8 その他
 
@@ -416,29 +409,6 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 
 **返り値**: `{result: int}`。
 
-### 2.27 ow_send
-
-| 名前 | 型 | 必須 | デフォルト | 説明 |
-| --- | --- | --- | --- | --- |
-| channel | string | yes | - | channelコード |
-| handle | string | yes | - | 送信者handle |
-| body | object | yes | - | ow固有JSON。`{v:1, kind:"command"|"event", ...}` |
-| needs_reply | bool | no | false | 返信を期待するか |
-| in_reply_to | int | no | null | 返信先のmsg_id |
-
-**返り値**: `{msg_id: int}`。
-**エラー処理**: 4xxは即失敗、5xx/接続断のみ3回指数バックオフ。
-
-### 2.28 ow_history
-
-| 名前 | 型 | 必須 | デフォルト | 説明 |
-| --- | --- | --- | --- | --- |
-| channel | string | yes | - | channelコード |
-| since | int | no | 0 | このmsg_idより大きいものを返す |
-| limit | int | no | 100 | 最大取得件数 |
-
-**返り値**: `{messages: [{msg_id, handle, body, ...}]}`。SSEは起床信号専用で、実体取得はこちらで行う。
-
 ### 2.29 report_signal
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
@@ -579,7 +549,7 @@ cc-memoryが扱うエンティティの内部表現。詳細スキーマは `doc
 ## 4. ガード・前提
 
 ### 4.1 orch-managed 運用
-`ow_send` / `ow_history` はorch/dispatcher/workerいずれのロールからも呼べる。`report_signal` / `get_signals` はcapability_matrixでorch/dispatcher/workerいずれにも開放されている（観測データの記録に合意形成が不要なため）。`update_signal` のみトリアージ操作としてorch専用。
+`report_signal` / `get_signals` はcapability_matrixでorch/dispatcher/workerいずれにも開放されている（観測データの記録に合意形成が不要なため）。`update_signal` のみトリアージ操作としてorch専用。
 
 ### 4.2 check-in 先行が前提のツール
 - `add_decisions` の hints はharness_service経由で「整合性確認」「pin見直し」などを示唆する。直前にcheck-inしていない場合、文脈不足のためhintsを過信しない方がよい。

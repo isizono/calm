@@ -2,7 +2,7 @@
 watch-tags: domain:cc-memory
 watch-direction: true
 watch-migrations: false
-last-synced: 2026-07-04
+last-synced: 2026-07-07
 last-synced-migration: 0048
 -->
 
@@ -46,9 +46,7 @@ graph TB
     end
 
     subgraph Coord["協調層 / 指揮系統"]
-        OwService["ow_service"]
-        Relay["src/relay/server.py<br/>SSE+SQLite中継"]
-        OwScripts["scripts/ow/<br/>recv系"]
+        RelayV2["(v1撤去済み、後継はrelay v2 4動詞tool。<br/>詳細はsrc/services/relay/参照)"]
     end
 
     subgraph Infra["横断インフラ"]
@@ -213,18 +211,7 @@ PreToolUse は `hooks/hooks.json` に全ツール対象（`*` matcher）の preb
 
 ## 5. 協調層 — セッション間メッセージング
 
-協調層はcc-memory本体に内蔵されているセッション間メッセージング基盤に絞って扱う。
-
-### 5.1 cc-memory本体の協調コンポーネント
-
-- `src/services/ow_service.py`: ow_send / ow_history を提供する。relayサーバー自体の起動は手動（`python -m src.relay.server`）
-- `src/relay/server.py`: 中継サーバー本体。SQLite永続化 + SSEブロードキャスト。エンドポイント: `/create` / `/stream` / `/send` / `/history` / `/presence` / `/health`。msg_idがメッセージ順序の真実源
-- `scripts/ow/recv.sh`, `scripts/ow/recv_poll.sh`, `scripts/ow/recv_filter.py`: メッセージ受信側の購読・フィルタリング
-
-### 5.2 cc-memoryとの接点（`docs/spec-v0.md` §5 と対応）
-
-- 接点1 orch-managed: 協調運用下で生成された entity は `orch-managed` タグを付与する規律。検索・SessionStartの除外はタグフィルタで実現される
-- 接点2 サブセッション間文脈分断: 複数Claude Codeセッションがcc-memoryを共有基盤として参照する側面。本体のコードに専用機構は薄い（要検証）
+v1通信系（`ow_service` / `src/relay/`のvendoringされたSSE+SQLite中継サーバー / `scripts/ow/`のrecv系スクリプト）は撤去済みである。後継は relay v2 4動詞tool（`relay_post` / `relay_publish` / `relay_subscribe` / `relay_receive`、実体は `src/services/relay/` + `src/relay_sdk/`）だが、本ドキュメントはまだそちらの構成に追従できていない。詳細は該当ディレクトリのコードを参照のこと。
 
 ---
 
@@ -249,7 +236,6 @@ PreToolUse は `hooks/hooks.json` に全ツール対象（`*` matcher）の preb
 
 - DB本体: `~/.claude/.claude-code-memory/discussion.db`
 - 状態ファイル群: `~/.claude/.claude-code-memory/state/` 配下に `block_count_<sid>` / `transcript_offset_<sid>` / `current_turn_<sid>` / `checked_in_activity_<sid>` / `events_<sid>.jsonl`（`hooks/hook_state.py` 参照）
-- relayサーバーのDB: `src/relay/server.py` がSQLite WALモードで永続化（パスは要検証）
 - embedding_server: localhost:52836
 
 ### 6.4 hooks/utils相当
@@ -273,7 +259,7 @@ graph LR
         F[hooks + skills + checkin/harness]
     end
     subgraph L4["協調層"]
-        C[ow_service + relay]
+        C["(v1撤去済み)"]
     end
     subgraph L0["横断インフラ"]
         I[launcher / http / embedding_server / config]
@@ -281,25 +267,20 @@ graph LR
 
     P -. スキーマ参照 .-> S
     F -->|読み書き| S
-    C -->|読み書き| S
-    C -->|nudgeトリガ等| F
     I -->|プロセス・接続| S
     I -->|プロセス・接続| F
-    I -->|プロセス・接続| C
     F -.| MCPツール経由 |.- S
-    C -.| MCPツール経由 |.- S
 ```
 
 健全な依存方向:
 
-- フロー層・協調層 → ストア層（読み書き）
+- フロー層 → ストア層（読み書き）
 - 全層 → プロトコル層（スキーマ参照）
 - 横断インフラ → 全層（プロセス起動・接続管理）
 
 潜在的な循環・癒着:
 
 - フロー層のhookが直接 `src/services/*` をimportする箇所がある（hookプロセスからDB直アクセス）。MCPツール経由ではないため、ストア層のCRUD変更がhookの内部実装に影響しうる
-- `ow_service` と relay server（`src/relay/server.py`）間で状態整合（events.jsonl と relay DB）が二系統存在しうる（`docs/spec-v0.md` §6 T-E マルチセッション境界）
 - service間の循環import懸念は5次元統合レポート（material 312、要参照）で指摘されている。本ドキュメントでは具体ファイル間の特定は未実施
 
 ---
@@ -313,8 +294,7 @@ graph LR
 3. **circular import懸念**: `src/main.py` から services を読み、 services 同士の相互参照や、tag_serviceとtag_analysis_serviceの分担境界など整理余地がある（具体特定は未実施）
 4. **プロトコル層が薄い**: 独立した型/スキーマ定義モジュールがなく、エンティティ型はDBスキーマと各serviceの返却dictで表現される。型レベル規律が弱い
 5. **retract連鎖の未完**: `retract_service` が論理削除を立てるが、search_index物理クリーンアップなし、material/topic/activityにretracted_at列なし、関連pin/relationの扱いが未統一（`docs/spec-v0.md` §2.2）
-6. **協調層と本体の二系統真実源**: `events.jsonl`（hook側）と relay DB（ow_service側）の整合性、queueファイル（markdown）と activities テーブルの二重管理（`docs/spec-v0.md` §6 T-E）
-7. **HintService単一窓口の不在**: nudge発火源（hooks/各種、harness_service、checkin_serviceのrecompose hints、tag_service経由のtag-notes）が並走しており、しきい値・状態管理がバラバラ
-8. **効果測定基盤の不在**: 検索のスコアリング・nudgeの効果・タグ付与の精度を測定する仕組みがない（`docs/spec-v0.md` §6 T-D）。search_telemetry導入が処方箋候補
+6. **HintService単一窓口の不在**: nudge発火源（hooks/各種、harness_service、checkin_serviceのrecompose hints、tag_service経由のtag-notes）が並走しており、しきい値・状態管理がバラバラ
+7. **効果測定基盤の不在**: 検索のスコアリング・nudgeの効果・タグ付与の精度を測定する仕組みがない（`docs/spec-v0.md` §6 T-D）。search_telemetry導入が処方箋候補
 
 各課題の詳細・処方箋候補は5次元統合レポート本文（cc-memory material、要参照）と `docs/spec-v0.md` §6 横断テーマを参照のこと。
