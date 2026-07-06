@@ -19,7 +19,6 @@ from src.services import (
     pin_service,
     retract_service,
     timeline_service,
-    ow_service,
     guard_service,
     precedent_pull_service,
     signal_service,
@@ -1544,54 +1543,8 @@ def update_signal(
 
 
 # ----------------------------
-# セッション間メッセージングツール群
+# relayセッション面ツール群（4動詞）
 # ----------------------------
-
-
-@mcp.tool()
-def ow_send(
-    channel: str,
-    handle: str,
-    body: dict,
-    needs_reply: bool = False,
-    in_reply_to: int | None = None,
-) -> dict:
-    """ow channelにメッセージを送信する。
-
-    bodyはow固有JSONを格納するdict（{"v":1, "kind":"command"|"event", ...}）。
-    4xx即失敗、5xx/接続断のみ3回指数バックオフ。
-
-    Args:
-        channel: channelコード
-        handle: 送信者handle（例: "orch", "w-a"）
-        body: ow固有JSON。relayのbody内に格納される
-        needs_reply: 返信を期待するか（デフォルト: False）
-        in_reply_to: 返信先のmsg_id（optional）
-
-    Returns:
-        成功時: {"msg_id": int}
-        失敗時: {"error": {...}}
-    """
-    return ow_service.ow_send(channel, handle, body, needs_reply, in_reply_to)
-
-
-@mcp.tool()
-def ow_history(channel: str, since: int = 0, limit: int = 100) -> dict:
-    """ow channelの履歴を取得する。受信処理の本体。
-
-    since自身を含まない（msg_id > since）。
-    SSEは起床信号専用。起床後はこのツールで未処理メッセージを全件pull。
-
-    Args:
-        channel: channelコード
-        since: このmsg_idより大きいものを返す（0=全件）
-        limit: 最大取得件数（デフォルト: 100）
-
-    Returns:
-        {"messages": [{"msg_id": int, "handle": str, "body": dict, ...}, ...]}
-        失敗時: {"error": {...}}
-    """
-    return ow_service.ow_history(channel, since, limit)
 
 
 @mcp.tool()
@@ -1761,8 +1714,8 @@ def _ensure_project_root_cwd() -> Path:
 
     `uv run python -m src.main --transport http` をworktree内など任意の場所から
     起動すると、HTTPサーバープロセスはその場所をcwdとして固定する。当該cwdが
-    後から削除・移動されると、ow_service内のsubprocess呼び出しや相対パス操作が
-    存在しないパスを参照し続けるリスクがある（relay起動失敗・診断困難）。
+    後から削除・移動されると、embedding_service等のsubprocess呼び出しや相対パス
+    操作が存在しないパスを参照し続けるリスクがある（起動失敗・診断困難）。
     cwdをこの関数の `__file__` 由来のプロジェクトルートへ強制し、構造的に防ぐ。
 
     Returns:
