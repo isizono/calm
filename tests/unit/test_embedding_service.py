@@ -496,8 +496,8 @@ def test_recovery_after_encode_batch_failure(temp_db, monkeypatch):
 # ========================================
 
 
-def test_start_server_failure_returns_false(temp_db, monkeypatch):
-    """_start_server: subprocess.Popen失敗時にFalseを返す"""
+def test_start_server_failure_returns_none(temp_db, monkeypatch):
+    """_start_server: subprocess.Popen失敗時にNoneを返す"""
     import subprocess
 
     def failing_popen(*args, **kwargs):
@@ -506,7 +506,7 @@ def test_start_server_failure_returns_false(temp_db, monkeypatch):
     monkeypatch.setattr(subprocess, 'Popen', failing_popen)
 
     result = emb._start_server()
-    assert result is False
+    assert result is None
 
 
 def test_start_server_uses_existing_infra_path(temp_db, monkeypatch):
@@ -514,10 +514,11 @@ def test_start_server_uses_existing_infra_path(temp_db, monkeypatch):
     import subprocess
 
     captured = {}
+    sentinel = object()
 
     def capturing_popen(args, **kwargs):
         captured["args"] = args
-        return object()  # _start_serverは返り値を使わない
+        return sentinel  # _start_serverは子プロセスハンドルをそのまま返す
 
     # project rootをこのチェックアウト自身に固定する。
     # emb.__file__ = <root>/src/services/embedding_service.py なので parents[2] が <root>。
@@ -526,7 +527,7 @@ def test_start_server_uses_existing_infra_path(temp_db, monkeypatch):
     monkeypatch.setattr(emb, "_project_root_cache", None)  # env反映のためキャッシュをクリア
     monkeypatch.setattr(subprocess, "Popen", capturing_popen)
 
-    assert emb._start_server() is True
+    assert emb._start_server() is sentinel
 
     server_path = captured["args"][1]
     assert server_path == os.path.join(str(root), "src", "infra", "embedding_server.py")
@@ -536,10 +537,120 @@ def test_start_server_uses_existing_infra_path(temp_db, monkeypatch):
 def test_ensure_server_running_handles_start_failure(temp_db, monkeypatch):
     """_ensure_server_running: _start_server失敗時にFalseを返す"""
     monkeypatch.setattr(emb, '_is_server_running', lambda: False)
-    monkeypatch.setattr(emb, '_start_server', lambda: False)
+    monkeypatch.setattr(emb, '_start_server', lambda: None)
 
     result = emb._ensure_server_running()
     assert result is False
+
+
+# ========================================
+# spawn 直列化・タイムアウト回収テスト
+# ========================================
+
+
+class _FakeProc:
+    """Popen の poll/terminate/wait/kill だけを模したスタブ。"""
+
+    def __init__(self, returncode=None):
+        self.returncode = returncode
+        self.terminated = False
+        self.killed = False
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self):
+        self.terminated = True
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
+
+
+def test_ensure_server_running_single_spawn_under_concurrency(temp_db, monkeypatch):
+    """_ensure_server_running: 並行呼び出しでも spawn は1回に直列化される"""
+    import threading
+    import time as time_mod
+
+    state = {"running": False, "spawns": 0}
+    spawn_entered = threading.Event()
+    spawn_release = threading.Event()
+
+    def fake_start():
+        state["spawns"] += 1
+        spawn_entered.set()
+        spawn_release.wait(timeout=5)
+        state["running"] = True
+        return _FakeProc()
+
+    monkeypatch.setattr(emb, "_is_server_running", lambda: state["running"])
+    monkeypatch.setattr(emb, "_start_server", fake_start)
+    monkeypatch.setattr(time_mod, "sleep", lambda s: None)
+
+    results = []
+    t1 = threading.Thread(target=lambda: results.append(emb._ensure_server_running()))
+    t1.start()
+    assert spawn_entered.wait(timeout=5)  # t1 がロック内で spawn 中
+
+    # t2 は事前チェック（未起動）を通過後、ロック待ちに入る
+    t2 = threading.Thread(target=lambda: results.append(emb._ensure_server_running()))
+    t2.start()
+    time_mod.sleep(0)  # 明示 yield（sleepはno-op化済みのため実質即時）
+    spawn_release.set()
+    t1.join(timeout=5)
+    t2.join(timeout=5)
+
+    assert results == [True, True]
+    assert state["spawns"] == 1  # t2 はロック取得後の再チェックで spawn せず復帰
+
+
+def test_ensure_server_running_kills_hung_child_on_timeout(temp_db, monkeypatch):
+    """_ensure_server_running: bind前に固まった子はタイムアウト時に回収される"""
+    import time as time_mod
+
+    fake = _FakeProc(returncode=None)
+    monkeypatch.setattr(emb, "_is_server_running", lambda: False)
+    monkeypatch.setattr(emb, "_start_server", lambda: fake)
+    monkeypatch.setattr(emb, "is_port_listening", lambda port: False)
+    monkeypatch.setattr(time_mod, "sleep", lambda s: None)
+
+    assert emb._ensure_server_running() is False
+    assert fake.terminated is True
+
+
+def test_ensure_server_running_spares_child_still_loading(temp_db, monkeypatch):
+    """_ensure_server_running: bind済み（ロード進行中）の子はタイムアウトでも殺さない"""
+    import time as time_mod
+
+    fake = _FakeProc(returncode=None)
+    monkeypatch.setattr(emb, "_is_server_running", lambda: False)
+    monkeypatch.setattr(emb, "_start_server", lambda: fake)
+    monkeypatch.setattr(emb, "is_port_listening", lambda port: True)
+    monkeypatch.setattr(time_mod, "sleep", lambda s: None)
+
+    assert emb._ensure_server_running() is False
+    assert fake.terminated is False
+    assert fake.killed is False
+
+
+def test_ensure_server_running_gives_up_when_child_exits_early(temp_db, monkeypatch):
+    """_ensure_server_running: 子が即終了し health も通らなければ30秒待たずFalse"""
+    import time as time_mod
+
+    sleep_count = {"n": 0}
+
+    def counting_sleep(s):
+        sleep_count["n"] += 1
+
+    fake = _FakeProc(returncode=1)  # bind負け等で終了済み
+    monkeypatch.setattr(emb, "_is_server_running", lambda: False)
+    monkeypatch.setattr(emb, "_start_server", lambda: fake)
+    monkeypatch.setattr(time_mod, "sleep", counting_sleep)
+
+    assert emb._ensure_server_running() is False
+    assert sleep_count["n"] < 60  # 60回ループを使い切らず早期リターン
 
 
 # ========================================
