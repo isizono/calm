@@ -1025,7 +1025,11 @@ def get_available_intents() -> list[dict]:
 # ========================================
 
 # セッション別の注入済みタグ追跡（ctx.session_idキー）
+# セッション終了はこのモジュールに通知されないため、上限超過時に挿入順の
+# 最古セッションから追い出す（放置するとセッション数ぶん永久に成長する）。
+# 追い出された長寿セッションは同じタグの notes を再度受け取るだけで実害はない。
 _injected_tags: dict[str, set[str]] = {}
+_INJECTED_TAGS_MAX_SESSIONS = 256
 
 
 def collect_tag_notes_for_injection(
@@ -1067,6 +1071,9 @@ def collect_tag_notes_for_injection(
             normal_parsed.append((ns, name))
 
     if mark:
+        if session_key not in _injected_tags:
+            while len(_injected_tags) >= _INJECTED_TAGS_MAX_SESSIONS:
+                del _injected_tags[next(iter(_injected_tags))]
         session_set = _injected_tags.setdefault(session_key, set())
         new_normal = [
             (t, p) for t, p in zip(normal_tags, normal_parsed)

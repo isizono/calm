@@ -135,6 +135,29 @@ class TestTagNotesInjection:
         finally:
             conn.close()
 
+    def test_session_eviction_caps_tracked_sessions(self, temp_db):
+        """セッション追跡数が上限に達したら最古セッションから追い出される"""
+        from src.services import tag_service
+
+        add_topic(title="Test", description="Desc", tags=["domain:test"])
+        update_tag("domain:test", "重要な教訓")
+
+        conn = get_connection()
+        try:
+            for i in range(tag_service._INJECTED_TAGS_MAX_SESSIONS + 10):
+                collect_tag_notes_for_injection(
+                    conn, ["domain:test"], session_id=f"session-{i}"
+                )
+            assert len(_injected_tags) == tag_service._INJECTED_TAGS_MAX_SESSIONS
+            # 最古セッションは追い出され、再遭遇時には再度注入される
+            assert "session-0" not in _injected_tags
+            result = collect_tag_notes_for_injection(
+                conn, ["domain:test"], session_id="session-0"
+            )
+            assert result is not None
+        finally:
+            conn.close()
+
     def test_no_notes_returns_none(self, temp_db):
         """notes がないタグでは None が返る"""
         add_topic(title="Test", description="Desc", tags=["domain:test"])
