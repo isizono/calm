@@ -113,6 +113,23 @@ CLAUDE.mdのタグ版として機能し、そのタグに遭遇したとき（�
 全セッション共通の行動ルールはhabitsとして記録できます。SessionStart時に全件注入されます。
 ユーザーからもらったfeedbackのうち、タグやファイルに依存しない横断的なルールはauto-memoryではなくhabitsに記録してください。
 
+## 近傍情報を取得するには
+
+取得系toolは目的に応じて使い分けてください。
+
+- 確率的に関連情報を探索したい（ランクtop-N）: `search` → 詳細が必要な候補だけ `get_by_ids` で本文取得
+- topic/activityに紐づく決定事項・ログをそのまま一覧したい: `get_decisions` / `get_logs`
+- log/decision/materialを時系列で俯瞰したい: `get_timeline`
+- リレーショングラフを辿って到達可能なエンティティを走査したい: `get_map`
+- activityに着手・再開し、関連情報を一括取得したい: `check_in`（statusをin_progressに自動更新）
+- 設計判断の前に、近傍topicの決定事項を確率的発見ではなく網羅的に確認したい: `pull_precedents`
+
+判断に迷ったらまず`search`で当たりをつけ、設計・裁定に関わる場面では網羅性が要るため`pull_precedents`も併用してください。
+
+## セッション間でメッセージを送るには
+
+他のClaude Codeセッションとやり取りするにはrelayの4動詞を使います。`relay_post`は場（stream）を名指しした一方向の投函、`relay_publish`/`relay_subscribe`はlabelsによる配信・購読のペア、`relay_receive`はどちらの経路で届いたメッセージも自sessionのinboxから受信する共通の受け口です。送ったら届く保証ではなく、受信側が`relay_receive`を呼んで初めて内容が分かるpull型である点に注意してください。
+
 ## 内部識別子は本文に出さない
 
 `M#123` `D#456` `L#789` `A#321` `T#654` のような大文字コード形式や、`material #123`・`decision #456` のような英語フルワード形式は、AIからの発話・コミット・PR本文・コードコメント・READMEその他あらゆる外部出力に書かないでください。これらはcc-memory内部の参照記号で、開発コンテキスト外では読み手に意味が伝わりません。
@@ -371,6 +388,8 @@ def get_topics(
     tags: タグ配列（optional）。指定時はAND条件でフィルタ。未指定時は全件返す。例: ["domain:cc-memory"]
     since: ISO日付文字列（例: "2026-03-10"）。この日付以降に作成されたトピックのみ返す
     until: ISO日付文字列。この日付以前に作成されたトピックのみ返す
+    flavor: citation展開モード（raw/internal/readable、既定internal）。3値の意味・出力例は
+        docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
     """
     flavor = _normalize_flavor(flavor)
     result = topic_service.get_topics(tags, limit, offset, since, until)
@@ -402,6 +421,8 @@ def get_logs(
         start_id: 取得開始位置のログID（ページネーション用）
         limit: 取得件数上限（最大30件）
         include_retracted: Trueのとき取り消し済みログも含める（デフォルトFalse）
+        flavor: citation展開モード（raw/internal/readable、既定internal）。3値の意味・出力例は
+            docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
 
     Returns:
         議論ログ一覧（各logにtags付き）
@@ -427,7 +448,7 @@ def get_decisions(
     flavor: _FlavorArg = "internal",
 ) -> dict:
     """
-    Choose: topic/activity に紐づく decision 一覧が欲しいとき。議論経緯の log なら get_logs、log/decision/material の混合時系列なら get_timeline、起点からの関連グラフ走査なら get_map、activity 着手時の文脈集約なら check_in（status を in_progress に自動更新する副作用あり、着手時のみ）。
+    Choose: topic/activity に紐づく decision 一覧が欲しいとき。議論経緯の log なら get_logs、log/decision/material の混合時系列なら get_timeline、起点からの関連グラフ走査なら get_map、activity 着手時の文脈集約なら check_in（status を in_progress に自動更新する副作用あり、着手時のみ）、設計判断前に近傍 topic の判例を網羅確認したいなら pull_precedents。
 
     指定エンティティに関連する決定事項を取得する。
 
@@ -437,6 +458,8 @@ def get_decisions(
         start_id: 取得開始位置の決定事項ID（ページネーション用）
         limit: 取得件数上限（最大30件）
         include_retracted: Trueのとき取り消し済み決定事項も含める（デフォルトFalse）
+        flavor: citation展開モード（raw/internal/readable、既定internal）。3値の意味・出力例は
+            docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
 
     Returns:
         決定事項一覧（各decisionにtags付き）
@@ -495,7 +518,8 @@ def pull_precedents(
         include_materials: decision に紐づく material と topic 直下 material の
                            カタログを同時展開する。related/citation 経由の展開は
                            30 件で打ち切られ、超過時は materials_truncated=true になる
-        flavor: citation 展開モード（internal / readable / raw）
+        flavor: citation展開モード（raw/internal/readable、既定internal）。3値の意味・出力例は
+                docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
 
     Returns:
         {guarantee, routing, topics, budget, truncated, materials_truncated}
@@ -607,6 +631,8 @@ def search(
         domain: ドメインフィルタ。内部でtags=["domain:{domain}"]にマージされる
         date_after: 日付フィルタ（以降）。YYYY-MM-DD or YYYY-MM-DD HH:MM:SS形式
         date_before: 日付フィルタ（以前）。YYYY-MM-DD or YYYY-MM-DD HH:MM:SS形式
+        flavor: citation展開モード（raw/internal/readable、既定internal）。3値の意味・出力例は
+            docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
 
     Returns:
         検索結果一覧（type, id, title, score, snippet, tags）
@@ -649,6 +675,8 @@ def get_by_ids(
         items: 取得対象のリスト。各要素は {type: str, id: int}（最大20件）
                type: データ種別（'topic', 'decision', 'activity', 'log', 'material'）
                id: データのID
+        flavor: citation展開モード（raw/internal/readable、既定internal）。3値の意味・出力例は
+                docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
 
     Returns:
         取得結果（各アイテムの詳細情報）
@@ -851,6 +879,8 @@ def get_activities(
         limit: 取得件数上限（デフォルト: 5）
         since: ISO日付文字列（例: "2026-03-10"）。この日付以降に更新されたアクティビティのみ返す
         until: ISO日付文字列。この日付以前に更新されたアクティビティのみ返す
+        flavor: citation展開モード（raw/internal/readable、既定internal）。3値の意味・出力例は
+                docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
         orch_managed: True/False を指定すると activities.orch_managed カラムでフィルタする。None（デフォルト）はフィルタなし
 
     呼び出し時、更新日時がSNOOZE_DURATION_DAYS（デフォルト3日）を超過したsnoozedアクティビティは
@@ -999,6 +1029,8 @@ def get_material(
 
     Args:
         material_id: 資材のID
+        flavor: citation展開モード（raw/internal/readable、既定internal）。3値の意味・出力例は
+                docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
         include_retracted: Trueのとき取り消し済みの資材も取得できる（デフォルトFalse）
 
     Returns:
@@ -1063,7 +1095,7 @@ def check_in(
     flavor: _FlavorArg = "internal",
 ) -> dict:
     """
-    Choose: アクティビティに着手するときに関連情報を一括取得したいとき（status を in_progress に自動更新）。関連グラフだけ俯瞰したいなら get_map、log/decision/material の時系列なら get_timeline、log だけなら get_logs、decision だけなら get_decisions。
+    Choose: アクティビティに着手するときに関連情報を一括取得したいとき（status を in_progress に自動更新）。関連グラフだけ俯瞰したいなら get_map、log/decision/material の時系列なら get_timeline、log だけなら get_logs、decision だけなら get_decisions、設計判断前に近傍 topic の判例を網羅確認したいなら pull_precedents。
 
     アクティビティにcheck-inする。関連情報を集約取得しsummaryを返す。
 
@@ -1075,6 +1107,8 @@ def check_in(
 
     Args:
         activity_id: アクティビティID
+        flavor: citation展開モード（raw/internal/readable、既定internal）。3値の意味・出力例は
+            docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
 
     Returns:
         check-in結果（coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary）
@@ -1258,10 +1292,10 @@ def get_map(
 def add_habit(content: str) -> dict:
     """エージェントの振る舞いを登録する。SessionStart時に全件注入される（セッション途中の登録は次セッション以降に有効）。"覚えといて"と言われた行動ルールはここに登録する
 
-    worker セッション (OW_ROLE=worker) からの直接呼び出しは
-    WorkerGuardError でブロックされる。ユーザー承認を要する書き込みなので
-    add_decisions / add_topic と同じ guard 対象。OW_ESCALATION=1 の
-    orch_proxy 経路でのみ通過する。
+    add_decisions / add_topic と同じ guard 対象として capability gating の
+    チェックを経由するが、role解決が現状ほぼ機能していないため（詳細は
+    guard_service.py のモジュールdocstring）、実際にはどのセッションから
+    直接呼び出してもブロックされない。
     """
     guard_service.check_capability("add_habit")
     return habit_service.add_habit(content)
@@ -1391,6 +1425,8 @@ def get_timeline(
         before: ページネーション用カーソル（ISO 8601形式のcreated_at）
         limit: 取得件数上限（デフォルト50、最大100）
         order: ソート方向（"desc"または"asc"、デフォルト"desc"）
+        flavor: citation展開モード（raw/internal/readable、既定internal）。3値の意味・出力例は
+            docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
     """
     flavor = _normalize_flavor(flavor)
     result = timeline_service.get_timeline(
@@ -1410,7 +1446,12 @@ def get_timeline(
 
 @mcp.tool()
 def get_config() -> dict:
-    """現在の設定値を返す。スキルが環境変数ベースの設定を参照するために使用する。"""
+    """現在の設定値を返す。スキルが環境変数ベースの設定を参照するために使用する。
+
+    read_tool_limitsはtool呼び出し前にレスポンスサイズを見積もるための既定上限一覧。
+    search/get_logs/get_decisions/get_timelineの上限は各serviceにハードコードされており
+    環境変数では変更できない（precedent_budget_charsのみCCM_PRECEDENT_BUDGET_CHARSで変更可）。
+    """
     from src import config
     return {
         "heartbeat_timeout": config.HEARTBEAT_TIMEOUT_MINUTES,
@@ -1422,6 +1463,16 @@ def get_config() -> dict:
         "snapshot_interval_hours": config.SNAPSHOT_INTERVAL_HOURS,
         "snapshot_max_count": config.SNAPSHOT_MAX_COUNT,
         "snapshot_anomaly_threshold": config.SNAPSHOT_ANOMALY_THRESHOLD,
+        "precedent_budget_chars": config.PRECEDENT_BUDGET_CHARS,
+        "read_tool_limits": {
+            "search": {"default": 10, "max": 50},
+            "get_logs": {"default": 30, "max": 30},
+            "get_decisions": {"default": 30, "max": 30},
+            "get_activities": {"default": 5},
+            "get_timeline": {"default": 50, "max": timeline_service.MAX_LIMIT},
+            "get_by_ids": {"max_items": search_service.GET_BY_IDS_MAX},
+            "pull_precedents": {"k_max": config.PRECEDENT_ROUTING_K_MAX},
+        },
     }
 
 

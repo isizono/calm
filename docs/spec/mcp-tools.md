@@ -51,6 +51,7 @@ last-synced-migration: 0048
 | `get_map` | リレーショングラフを走査し到達可能カタログを返す |
 | `get_timeline` | トピックまたはアクティビティの時系列を返す |
 | `get_config` | 現在の設定値を返す |
+| `pull_precedents` | 設計判断前に近傍topicの決定事項を網羅列挙する（判例pull） |
 
 ### 1.3 更新系（update系）
 
@@ -117,12 +118,14 @@ cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベ�
 
 Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サーバー（HTTP、既定 `http://localhost:8770`）を transport とし、cc-memory server 単一 identity 名義で代理購読・代理投函する。ack・lease renew・購読解除・SSE再接続はサーバー側で自動管理され、ツール面にはこの4動詞のみを見せる。
 
-| ツール | 概要 |
-| --- | --- |
-| `relay_post` | 場（stream）にメッセージを投函する（未存在streamは自動作成） |
-| `relay_publish` | labels routingでメッセージを配布する（outbox経由・at-least-once） |
-| `relay_subscribe` | labelsの購読を宣言する（同一labels集合の再呼び出しは冪等） |
-| `relay_receive` | 自session宛の未読メッセージをinboxからdrainする |
+4動詞はフラットな並列ではなく、「1. 名指し送信」「2. labelペアでの配信」「3. 受信（両方に共通）」の2+1構造を持つ。真に対をなすのは publish/subscribe のみで、post は対になる購読動詞を持たない一方通行の送信、receive は post/publish どちらの経路で届いたメッセージも受け取る共通の受け口である。
+
+| # | ツール | 役割 | 概要 |
+| --- | --- | --- | --- |
+| 1 | `relay_post` | 名指し送信 | 場（stream）にメッセージを投函する（未存在streamは自動作成） |
+| 2 | `relay_publish` | label配信（送信側） | labels routingでメッセージを配布する（outbox経由・at-least-once） |
+| 2 | `relay_subscribe` | label配信（受信側） | labelsの購読を宣言する（同一labels集合の再呼び出しは冪等） |
+| 3 | `relay_receive` | 受信（共通） | 自session宛の未読メッセージをinboxからdrainする |
 
 ---
 
@@ -477,6 +480,22 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 **返り値**: `{signal: {...}}`（更新後の行）。
 **動作**: リンクを張るだけで昇格実体は作らない（実体の作成は既存のadd系ツールで行う）。orch専用（capability_matrixでdispatcher/workerは拒否）。
 
+### 2.32 pull_precedents
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| context | string | yes | - | これから決めようとしている論点の記述（自由記述、2文字以上）。routingのクエリ兼telemetry用（topic_ids指定時も必須） |
+| topic_ids | list[int] | no | null | 対象topicを明示指定してroutingをスキップする（embeddingサーバー停止時でも動作する） |
+| k | int | no | 3 | routingで採用するtopic数の上限（1〜5にclamp） |
+| budget_chars | int | no | null | 本文展開の文字数予算。省略時はconfig既定値（`get_config()`の`precedent_budget_chars`で確認可） |
+| include_materials | bool | no | true | decision/topicに紐づくmaterialカタログを同時展開する（30件で打ち切り、超過時`materials_truncated=true`） |
+
+**返り値**: `{guarantee, routing, topics, budget, truncated, materials_truncated}`。`guarantee`は`enumerated`（routing成立・全件列挙完了）/ `routing_miss`（近傍topicなし）/ `routing_unavailable`（embeddingサーバー停止）のいずれか。`topics[].decisions`各要素は`detail="full"`（本文展開）または`detail="index"`（id/title等のみ、`get_by_ids`で本文追補可）。
+**動作**: `search`がランクtop-Nの確率的発見であるのに対し、本ツールは選ばれたtopicの非retract decisionを全件（最低でも索引粒度で）応答に含めることを保証する。read-only（statusを更新する副作用なし）。
+**関連**: 設計・裁定の前に近傍topicの判例を網羅確認したい場面で`get_decisions`/`check_in`のChoose節から参照される。
+
+> relay 4動詞（2.38〜2.41）は post（名指し送信）/ publish・subscribe（labelペア）/ receive（受信、共通）の2+1構造を持つ。並びの意図は §1.11 を参照。
+
 ### 2.38 relay_post
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
@@ -612,6 +631,20 @@ cc-memoryが扱うエンティティの内部表現。詳細スキーマは `doc
 7. **タグnamespaceのリテラル化**: `domain:` / `intent:` / 素タグの3区分は文字列パースに依存しており、型安全ではない。
 8. **status="active" のエイリアス挙動**: pending+in_progress を返すが、snoozed/shelvedは含まない。明示しないと誤解の温床になる。
 9. **`include_retracted` がツール間で揃っていない**: `search` / `get_logs` / `get_decisions` にはあるが、`get_timeline` には無い。
+
+---
+
+## flavor共通引数
+
+`get_topics` / `get_logs` / `get_decisions` / `pull_precedents` / `search` / `get_by_ids` / `get_activities` / `get_material` / `check_in` / `get_timeline` の10ツールに共通する `flavor: "raw" | "internal" | "readable"` 引数（既定値 `internal`）。本文中の `{{cite:X#NNN}}` citationテンプレートと、削除・取り消し済みエンティティへの参照の表示形式を切り替える。正確な変換ロジックは `src/services/citation_renderer.py` のモジュールdocstringを一次情報とする。
+
+| flavor | citationテンプレートの展開 | 削除/取り消し済み参照 | 想定用途 |
+| --- | --- | --- | --- |
+| `raw` | 無加工（テンプレのまま） | 無加工 | 生データが必要な特殊用途（再エクスポート等） |
+| `internal`（既定） | `<title> (X#NNN)` 形式。IDを保持 | `[deleted X#NNN]` / `[retracted X#NNN]` | エージェントが結果を保持し、以降のtool呼び出しにIDで追跡させたい場合 |
+| `readable` | `<title>` 形式。IDなし | `[deleted item]` / `[retracted item]` | 人間への最終出力（cc-memory内部識別子を露出させたくない場合） |
+
+選定基準: ユーザーに提示する最終出力なら`readable`、エージェントが内部処理を続けるなら`internal`、生データのままの特殊用途のみ`raw`。コードブロック内やエスケープ済み（`\{{cite:...}}`）のテンプレートはどのflavorでも展開されない。
 
 ---
 
