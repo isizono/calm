@@ -62,17 +62,6 @@
           }
         ]
       }
-    ],
-    "SessionEnd": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python hooks/session_end_hook.py"
-          }
-        ]
-      }
     ]
   }
 }
