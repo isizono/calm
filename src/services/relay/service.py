@@ -18,7 +18,11 @@ import httpx
 from src.db import get_connection
 from src.relay_sdk.errors import PermanentError, RelayProtocolError, TransientError
 from src.relay_sdk.http.auth import make_client
-from src.relay_sdk.http.request import post_subscription, raise_for_relay_status
+from src.relay_sdk.http.request import (
+    _request,
+    post_subscription,
+    raise_for_relay_status,
+)
 from src.relay_sdk.outbox import publish as outbox_publish
 from src.services.relay import config, declarations, inbox
 from src.services.relay.config import RelayConfigError
@@ -27,6 +31,10 @@ logger = logging.getLogger(__name__)
 
 _ROLE_PREFIX = "role:"
 _HANDLE_PREFIX = "handle:"
+
+# relay_post の ttl 許容範囲（秒）。
+TTL_MIN_SECONDS = 60
+TTL_MAX_SECONDS = 86400
 
 # publish で outbox 行に載せる ref の種別。ref_id にメッセージ本文をそのまま格納し、
 # 配達に必要な情報が outbox 行だけで閉じるようにする（別置きの本文ストアを作ると
@@ -51,16 +59,6 @@ def _relay_error(exc: Exception) -> dict:
     if isinstance(exc, PermanentError):
         return _error("relay_gone", str(exc))
     return _error("relay_error", str(exc))
-
-
-def _send(client: httpx.Client, method: str, url: str, **kwargs: Any) -> httpx.Response:
-    """httpx リクエストを投げ、transport 由来のエラーを TransientError に翻訳する。"""
-    try:
-        return client.request(method, url, **kwargs)
-    except httpx.TimeoutException as exc:
-        raise TransientError(f"timeout: {exc}") from exc
-    except httpx.TransportError as exc:
-        raise TransientError(f"接続不能: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +109,15 @@ def relay_post(stream_name: str, body: str, ttl: Optional[int] = None) -> dict:
         return _error("validation", "stream_name に ':' と '/' は使用できません")
     if not isinstance(body, str) or not body:
         return _error("validation", "body は非空文字列で指定してください")
+    if ttl is not None and (
+        not isinstance(ttl, int)
+        or isinstance(ttl, bool)
+        or not (TTL_MIN_SECONDS <= ttl <= TTL_MAX_SECONDS)
+    ):
+        return _error(
+            "validation",
+            f"ttl は {TTL_MIN_SECONDS}〜{TTL_MAX_SECONDS} の整数（秒）で指定してください",
+        )
 
     try:
         token = config.require_token()
@@ -125,11 +132,11 @@ def relay_post(stream_name: str, body: str, ttl: Optional[int] = None) -> dict:
 
     try:
         with make_client(config.get_base_url(), bearer_token=token) as client:
-            response = _send(client, "POST", f"/streams/{stream_id}/messages", json=payload)
+            response = _request(client, "POST", f"/streams/{stream_id}/messages", json=payload)
             if response.status_code == 404:
                 # v0 は自 identity 名義の stream のみ扱うため、404 は「未作成」を意味する
                 _ensure_stream(client, stream_name, stream_id, identity)
-                response = _send(
+                response = _request(
                     client, "POST", f"/streams/{stream_id}/messages", json=payload
                 )
             raise_for_relay_status(response)
@@ -152,13 +159,13 @@ def _ensure_stream(
     同時作成競合（409）は「既に存在する」として成功扱いにする（呼び出し側が
     投函を 1 回だけ再試行する）。
     """
-    response = _send(client, "POST", "/streams", json={"name": stream_name})
+    response = _request(client, "POST", "/streams", json={"name": stream_name})
     if response.status_code == 409:
         return
     raise_for_relay_status(response)
     # 作成者の初期 access は write のみで、自分の投函を受信できない。
     # 投函と受信の両方を成立させるため read_write へ引き上げる。
-    member = _send(
+    member = _request(
         client,
         "PUT",
         f"/streams/{stream_id}/members",

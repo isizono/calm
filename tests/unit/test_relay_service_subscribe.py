@@ -14,7 +14,7 @@ from src.services.relay import declarations, inbox, service
 @pytest.fixture(autouse=True)
 def relay_env(tmp_path, monkeypatch):
     monkeypatch.setenv("RELAY_STATE_DIR", str(tmp_path / "relay-state"))
-    monkeypatch.setenv("RELAY_TOKEN", "test-token")
+    monkeypatch.setenv("RELAY_BEARER_TOKEN", "test-token")
     monkeypatch.delenv("RELAY_BASE_URL", raising=False)
     monkeypatch.delenv("RELAY_IDENTITY", raising=False)
 
@@ -126,10 +126,10 @@ class TestSubscribe:
     def test_missing_token_returns_explicit_error(self, monkeypatch):
         stub = SubscriptionStub()
         stub.install(monkeypatch)
-        monkeypatch.delenv("RELAY_TOKEN")
+        monkeypatch.delenv("RELAY_BEARER_TOKEN")
         result = service.relay_subscribe(["a"], caller_session_id="sess-1")
         assert result["error"]["code"] == "config_missing"
-        assert "RELAY_TOKEN" in result["error"]["message"]
+        assert "RELAY_BEARER_TOKEN" in result["error"]["message"]
         assert stub.counter == 0
 
     def test_unresolved_session_returns_explicit_error(self, monkeypatch):

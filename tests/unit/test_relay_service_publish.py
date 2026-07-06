@@ -15,7 +15,7 @@ from src.services.relay import declarations, service
 @pytest.fixture(autouse=True)
 def relay_env(tmp_path, monkeypatch):
     monkeypatch.setenv("RELAY_STATE_DIR", str(tmp_path / "relay-state"))
-    monkeypatch.setenv("RELAY_TOKEN", "test-token")
+    monkeypatch.setenv("RELAY_BEARER_TOKEN", "test-token")
     monkeypatch.delenv("RELAY_BASE_URL", raising=False)
     monkeypatch.delenv("RELAY_IDENTITY", raising=False)
 
@@ -104,10 +104,10 @@ class TestPublishValidation:
 
 class TestPublishPreconditions:
     def test_missing_token_returns_explicit_error(self, conn, monkeypatch):
-        monkeypatch.delenv("RELAY_TOKEN")
+        monkeypatch.delenv("RELAY_BEARER_TOKEN")
         result = _publish(conn, ["decision:1"])
         assert result["error"]["code"] == "config_missing"
-        assert "RELAY_TOKEN" in result["error"]["message"]
+        assert "RELAY_BEARER_TOKEN" in result["error"]["message"]
 
     def test_unresolved_session_returns_explicit_error(self, conn):
         result = _publish(conn, ["decision:1"], session_id=None)

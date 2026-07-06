@@ -14,7 +14,7 @@ from src.services.relay import service
 @pytest.fixture(autouse=True)
 def relay_env(tmp_path, monkeypatch):
     monkeypatch.setenv("RELAY_STATE_DIR", str(tmp_path / "relay-state"))
-    monkeypatch.setenv("RELAY_TOKEN", "test-token")
+    monkeypatch.setenv("RELAY_BEARER_TOKEN", "test-token")
     monkeypatch.delenv("RELAY_BASE_URL", raising=False)
     monkeypatch.delenv("RELAY_IDENTITY", raising=False)
 
@@ -158,15 +158,44 @@ class TestValidation:
             assert "error" in service.relay_post(name, "hello")
         assert stub.requests == []
 
+    def test_ttl_out_of_range_is_rejected_before_any_http_call(self, monkeypatch):
+        stub = StubRelay()
+        stub.install(monkeypatch)
+        for bad_ttl in (59, 86401, 0, -1):
+            result = service.relay_post("general", "hello", ttl=bad_ttl)
+            assert result["error"]["code"] == "validation"
+            assert "ttl" in result["error"]["message"]
+        assert stub.requests == []
+
+    def test_ttl_boundary_values_are_accepted(self, monkeypatch):
+        stub = StubRelay()
+        stub.handlers[("POST", MESSAGES_PATH)] = lambda request: httpx.Response(
+            202, json={"publish_id": 3, "matched_members": 0}
+        )
+        stub.install(monkeypatch)
+        for good_ttl in (60, 86400):
+            assert (
+                service.relay_post("general", "hello", ttl=good_ttl)["publish_id"] == 3
+            )
+
+    def test_ttl_non_int_is_rejected_before_any_http_call(self, monkeypatch):
+        stub = StubRelay()
+        stub.install(monkeypatch)
+        for bad_ttl in ("120", 120.0, True):
+            result = service.relay_post("general", "hello", ttl=bad_ttl)
+            assert result["error"]["code"] == "validation"
+            assert "ttl" in result["error"]["message"]
+        assert stub.requests == []
+
 
 class TestErrorPropagation:
     def test_missing_token_returns_explicit_error(self, monkeypatch):
         stub = StubRelay()
         stub.install(monkeypatch)
-        monkeypatch.delenv("RELAY_TOKEN")
+        monkeypatch.delenv("RELAY_BEARER_TOKEN")
         result = service.relay_post("general", "hello")
         assert result["error"]["code"] == "config_missing"
-        assert "RELAY_TOKEN" in result["error"]["message"]
+        assert "RELAY_BEARER_TOKEN" in result["error"]["message"]
         assert stub.requests == []
 
     def test_invalid_token_401_propagates(self, monkeypatch):

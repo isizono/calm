@@ -11,12 +11,13 @@ from pathlib import Path
 DEFAULT_BASE_URL = "http://localhost:8770"
 DEFAULT_IDENTITY = "cc-memory"
 
-_TOKEN_ENV = "RELAY_TOKEN"
+_TOKEN_ENV = "RELAY_BEARER_TOKEN"
 
 TOKEN_MISSING_MESSAGE = (
-    "RELAY_TOKEN が未設定のため relay に接続できません。"
+    "RELAY_BEARER_TOKEN が未設定のため relay に接続できません。"
     "relay サーバー側 RELAY_AUTH_TOKENS に登録済みの Bearer token を"
-    "環境変数 RELAY_TOKEN に設定してください（例: export RELAY_TOKEN=<token>）。"
+    "環境変数 RELAY_BEARER_TOKEN に設定してください"
+    "（例: export RELAY_BEARER_TOKEN=<token>）。"
 )
 
 
@@ -39,7 +40,7 @@ def get_identity() -> str:
 
 
 def get_token() -> str | None:
-    """Bearer token（env RELAY_TOKEN）。未設定なら None。"""
+    """Bearer token（env RELAY_BEARER_TOKEN）。未設定なら None。"""
     return os.environ.get(_TOKEN_ENV) or None
 
 

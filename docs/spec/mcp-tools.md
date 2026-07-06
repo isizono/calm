@@ -563,7 +563,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 
 **返り値**: `{stream_id: string, publish_id: int, matched_members: int}`。
 **動作**: 投函先streamが未存在（404）なら自動作成し、自identityを`read_write` memberに設定して1回だけ再投函する。作成の同時競合（409）も1回の再投函で解消する。自server名義のstreamのみ扱う。
-**エラー処理**: `RELAY_TOKEN`未設定は設定方法を含む明示エラー（`config_missing`）。認証エラー（401）・close済みstream（410）・rate limit（429）はそのまま明示エラーとして返す（silent fallbackしない）。
+**エラー処理**: `RELAY_BEARER_TOKEN`未設定は設定方法を含む明示エラー（`config_missing`）。認証エラー（401）・close済みstream（410）・rate limit（429）はそのまま明示エラーとして返す（silent fallbackしない）。
 
 ### 2.39 relay_publish
 
@@ -575,7 +575,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 
 **返り値**: `{outbox_id: int, labels: list[string], handle: string}`。
 **動作**: 送信者の`handle:` labelを自動付与し、`relay_outbox`テーブルへINSERTして完結する（transactional outbox）。relayへの配達はserver内の常駐配達ループが非同期に行い、保証はat-least-once。labelsが空のpublishは宛先が決まらないため拒否する。curationの対象になるのはentity系labelsのみで、routing系はcuration対象外。
-**エラー処理**: `RELAY_TOKEN`未設定・session_id未解決・labels/body不正はいずれも明示エラー。
+**エラー処理**: `RELAY_BEARER_TOKEN`未設定・session_id未解決・labels/body不正はいずれも明示エラー。
 
 ### 2.40 relay_subscribe
 
@@ -585,7 +585,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 
 **返り値**: `{subscription_id: string, labels: list[string], lease_expires_at: string, handle: string, reused: bool}`。
 **動作**: 自sessionの`handle:` labelを自動付与し、subscription declaration file（`~/.cc-memory/relay/subscriptions/session-<session_id>.json`）とrelayの購読登録を同期する。同一labels集合の再呼び出しは冪等で、leaseが有効なら既存購読を返し（`reused: true`）、失効・不明なら新規購読してdeclaration fileのidを差し替える。lease更新・再購読・購読解除はserver側常駐処理が自動管理する。
-**エラー処理**: `RELAY_TOKEN`未設定・session_id未解決は明示エラー。relayエラー時はdeclaration fileを更新しない。
+**エラー処理**: `RELAY_BEARER_TOKEN`未設定・session_id未解決は明示エラー。relayエラー時はdeclaration fileを更新しない。
 
 ### 2.41 relay_receive
 

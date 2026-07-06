@@ -7,7 +7,7 @@ from src.services.relay.config import RelayConfigError
 
 @pytest.fixture(autouse=True)
 def _clean_relay_env(monkeypatch):
-    for key in ("RELAY_BASE_URL", "RELAY_TOKEN", "RELAY_STATE_DIR", "RELAY_IDENTITY"):
+    for key in ("RELAY_BASE_URL", "RELAY_BEARER_TOKEN", "RELAY_STATE_DIR", "RELAY_IDENTITY"):
         monkeypatch.delenv(key, raising=False)
 
 
@@ -50,8 +50,8 @@ class TestToken:
     def test_require_token_raises_with_setup_instructions(self):
         with pytest.raises(RelayConfigError) as excinfo:
             config.require_token()
-        assert "RELAY_TOKEN" in str(excinfo.value)
+        assert "RELAY_BEARER_TOKEN" in str(excinfo.value)
 
     def test_require_token_returns_value(self, monkeypatch):
-        monkeypatch.setenv("RELAY_TOKEN", "secret")
+        monkeypatch.setenv("RELAY_BEARER_TOKEN", "secret")
         assert config.require_token() == "secret"
