@@ -46,7 +46,7 @@ def _run_session_start_hook(
     (P1-7 の自セッション照合テスト用)。
     """
     env = {**os.environ, "DISCUSSION_DB_PATH": db_path}
-    # runnerのOW_ROLEを継承しない（テストの決定性確保。worker抑制テストはextra_envで明示設定する）
+    # runnerのOW_ROLEを継承しない（テストの決定性確保。残存env検証テストはextra_envで明示設定する）
     env.pop("OW_ROLE", None)
     if extra_env:
         env.update(extra_env)
@@ -345,31 +345,10 @@ class TestSessionStartHookHabits:
         assert "無効な振る舞い" not in context
 
 
-class TestSessionStartHookWorkerSuppression:
-    """OW_ROLE=worker セッションでのアクティビティ一覧抑制テスト"""
+class TestSessionStartHookOwRoleEnvIgnored:
+    """残存する OW_ROLE 環境変数がhook挙動に影響しないことのテスト"""
 
-    def test_worker_session_suppresses_activity_list(self, temp_db):
-        """OW_ROLE=worker時はアクティビティがあってもアクティビティ一覧セクションが出ない"""
-        _seed_activity("[作業] worker抑制テスト", status="in_progress")
-
-        result = _run_session_start_hook(temp_db, extra_env={"OW_ROLE": "worker"})
-        context = result["hookSpecificOutput"]["additionalContext"]
-
-        assert "# アクティビティ一覧" not in context
-        assert "worker抑制テスト" not in context
-
-    def test_worker_session_keeps_habits_and_guide(self, temp_db):
-        """OW_ROLE=worker時もアクティビティ以外（振る舞い・取得フローガイド）は注入される"""
-        _seed_habit("worker向け振る舞い")
-
-        result = _run_session_start_hook(temp_db, extra_env={"OW_ROLE": "worker"})
-        context = result["hookSpecificOutput"]["additionalContext"]
-
-        assert "コンテキスト取得フロー" in context
-        assert "# 振る舞い" in context
-        assert "worker向け振る舞い" in context
-
-    def test_non_worker_session_shows_activity_list(self, temp_db):
+    def test_no_ow_role_env_shows_activity_list(self, temp_db):
         """OW_ROLE未設定（通常セッション）ではアクティビティ一覧が出る"""
         _seed_activity("[作業] 通常表示テスト", status="in_progress")
 
@@ -378,6 +357,70 @@ class TestSessionStartHookWorkerSuppression:
 
         assert "# アクティビティ一覧" in context
         assert "通常表示テスト" in context
+
+    def test_stale_ow_role_env_still_shows_activity_list(self, temp_db):
+        """OW_ROLE=workerが環境に残存していてもアクティビティ一覧は注入される"""
+        _seed_activity("[作業] 残存env下タスク", status="in_progress")
+        _seed_habit("残存env下振る舞い")
+
+        result = _run_session_start_hook(
+            temp_db,
+            extra_env={"OW_ROLE": "worker"},
+            stdin_payload={"session_id": "sess-stale-env"},
+        )
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "# アクティビティ一覧" in context
+        assert "残存env下タスク" in context
+        assert "コンテキスト取得フロー" in context
+        assert "# 振る舞い" in context
+        assert "残存env下振る舞い" in context
+
+    def test_stale_ow_role_env_does_not_register_session_identity(self, temp_db):
+        """OW_ROLE=worker + session_idが揃っていてもsession_identityには登録されない"""
+        result = _run_session_start_hook(
+            temp_db,
+            extra_env={"OW_ROLE": "worker", "OW_HANDLE": "stale-handle"},
+            stdin_payload={"session_id": "sess-no-register"},
+        )
+        assert "hookSpecificOutput" in result
+
+        conn = get_connection()
+        try:
+            rows = conn.execute("SELECT session_id FROM session_identity").fetchall()
+        finally:
+            conn.close()
+        assert rows == []
+
+    def test_stale_session_identity_row_does_not_affect_new_session(self, temp_db):
+        """session_identity に残存する過去の worker 行が別 session_id の
+        hook 挙動に影響しないことを保証する回帰ガード。
+
+        現状 hook は role / session_identity を一切参照しないため、この
+        assertion は session_identity の中身に関わらず通過する（現時点では
+        実質的な検証力を持たない）。将来 hook 側に role 参照が再導入された
+        場合に、残存 worker 行が新規セッションのアクティビティ一覧を誤って
+        抑制する回帰を検出するためのガードとして残す。"""
+        conn = get_connection()
+        try:
+            conn.execute(
+                "INSERT INTO session_identity (session_id, role) VALUES (?, ?)",
+                ("sess-old-worker", "worker"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        _seed_activity("[作業] 新規セッション表示テスト", status="in_progress")
+
+        result = _run_session_start_hook(
+            temp_db,
+            env_remove=["OW_ROLE"],
+            stdin_payload={"session_id": "sess-new"},
+        )
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "# アクティビティ一覧" in context
+        assert "新規セッション表示テスト" in context
 
 
 class TestSessionStartHookOrchManagedExclusion:
@@ -1086,17 +1129,6 @@ class TestSessionStartHook4TierDashboard:
                 break
         assert target_line is not None, "pinned heartbeat が階層 1 に出ていない"
         assert "\U0001f4cc" in target_line, "階層 1 の pinned 行に 📌 が付いていない"
-
-    def test_worker_session_returns_empty_activities_section(self, temp_db):
-        """worker session ではアクティビティセクションが空になる"""
-        _seed_activity("[作業] worker下タスク", status="in_progress")
-
-        result = _run_session_start_hook(temp_db, extra_env={"OW_ROLE": "worker"})
-        context = result["hookSpecificOutput"]["additionalContext"]
-
-        assert "# アクティビティ一覧" not in context
-        assert "## 優先" not in context
-        assert "## その他" not in context
 
 
 class TestSessionStartHookSignals:
