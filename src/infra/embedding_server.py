@@ -87,6 +87,17 @@ def _load_model():
         sys.exit(1)
 
 
+class EmbeddingHTTPServer(ThreadingHTTPServer):
+    """backlog を拡張した ThreadingHTTPServer。
+
+    bind はモデルロード前に行うため（main() 参照）、ロード中（accept 開始前）の
+    ヘルスチェック接続が listen backlog に溜まる。既定値 5 では数十秒のロード中に
+    枯渇して SYN がドロップされ、クライアント側から「ポート未 bind」と区別が
+    つかなくなるため余裕を持たせる。
+    """
+    request_queue_size = 128
+
+
 class EmbeddingHandler(BaseHTTPRequestHandler):
     """HTTPリクエストハンドラ"""
 
@@ -200,13 +211,19 @@ def _watchdog(server: ThreadingHTTPServer):
 
 def main():
     _setup_logging()
-    _load_model()
 
+    # bind をモデルロードより先に行う。多重起動の敗者判定は bind 失敗で行われるため、
+    # ロードを先にすると敗者も数百MBのモデルをロードし終えてから退場することになり、
+    # 並行 spawn 時にロード分のメモリが spawn 数だけ積み上がる。bind 済み・ロード中の
+    # 接続は backlog に溜まり、serve_forever 開始後に処理される（/health はロード完了
+    # まで応答しないので、クライアントは起動待ちを継続する）。
     try:
-        server = ThreadingHTTPServer((HOST, PORT), EmbeddingHandler)
+        server = EmbeddingHTTPServer((HOST, PORT), EmbeddingHandler)
     except OSError as e:
         logger.error(f"server_bind failed: {e}")
         sys.exit(1)
+
+    _load_model()
 
     logger.info(f"Embedding server listening on {HOST}:{PORT}")
 
