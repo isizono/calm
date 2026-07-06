@@ -16,15 +16,15 @@ CapabilityMatrix = dict[str, dict[str, Decision]]
 
 
 CAPABILITY_MATRIX: CapabilityMatrix = {
-    # ow tools (worker lifecycle / messaging)
-    "ow_spawn_worker":   {"orch": False, "dispatcher": True,  "worker": False},
-    "ow_close_worker":   {"orch": False, "dispatcher": True,  "worker": "self"},
-    "ow_recover":        {"orch": False, "dispatcher": True,  "worker": False},
+    # ow tools (messaging)
     "ow_send":           {"orch": True,  "dispatcher": True,  "worker": True},
-    "ow_status":         {"orch": True,  "dispatcher": True,  "worker": True},
     "ow_history":        {"orch": True,  "dispatcher": True,  "worker": True},
-    "ow_spawn_dispatcher": {"orch": True,  "dispatcher": False, "worker": False},
-    "ow_close_dispatcher": {"orch": True,  "dispatcher": False, "worker": False},
+
+    # relay セッション面（セッション間通信 4 動詞。全 session に開放）
+    "relay_post":        {"orch": True,  "dispatcher": True,  "worker": True},
+    "relay_publish":     {"orch": True,  "dispatcher": True,  "worker": True},
+    "relay_subscribe":   {"orch": True,  "dispatcher": True,  "worker": True},
+    "relay_receive":     {"orch": True,  "dispatcher": True,  "worker": True},
 
     # relay セッション面（セッション間通信 4 動詞。全 session に開放）
     "relay_post":        {"orch": True,  "dispatcher": True,  "worker": True},

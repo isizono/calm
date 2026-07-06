@@ -113,7 +113,7 @@ def test_inject_passes_through_arbitrary_cached_value(tmp_home):
     """_maybe_inject_term_ref は format validation せず cache の値を素通しする。
 
     cache に未知形式 (UUID 等) が残っていてもエラーにせず注入する契約
-    (validation 責任は reducer / classify_term_ref 側にある)。
+    (format validation は注入側の責務ではない)。
     """
     _write_cache(tmp_home, "sess-1", "42C08804-2743-49EA-BEC5-F10B5717039B")
     out = _maybe_inject_term_ref(_identity_body())

@@ -4,11 +4,8 @@
 レガシー関数（Phase 3で廃止予定）を含む。
 """
 import json
-import os
 import re
 from pathlib import Path
-
-from src.services import guard_service
 
 # --- cc-memory MCPツール判定用マーカー ---
 # ローカルプラグイン: mcp__plugin_claude-code-memory_cc-memory__*
@@ -26,20 +23,6 @@ def _is_cc_memory_tool(name: str) -> bool:
 def _extract_short_name(name: str) -> str:
     """ツール名からshort_name（check_in, add_logs等）を取り出す。"""
     return name.split(_CC_MEMORY_MARKER, 1)[1]
-
-# --- ow worker判定 ---
-
-
-def _is_worker_session() -> bool:
-    """ow workerとして起動されたセッションかを判定する。
-
-    workerはtask fileとcheck_inで文脈を得るため、個人フロー用の
-    アクティビティ一覧注入・check-inブロック・nudgeは適用しない。
-    判定実体は guard_service.is_worker_session() に委譲する
-    (worker ガードと同じ env を見るための一元化)。
-    """
-    return guard_service.is_worker_session()
-
 
 # --- 記録ツール ---
 

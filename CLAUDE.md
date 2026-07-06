@@ -34,5 +34,5 @@ cc-memoryはローカルディレクトリをmarketplaceとして登録してお
 4. ローカルブランチを削除: `git branch -D <branch>`
 5. プラグインキャッシュを削除: `rm -rf ~/.claude/plugins/cache/claude-code-memory-marketplace/`
 6. `__pycache__` を削除: `find . -type d -name __pycache__ -exec rm -rf {} +`
-7. 既存のhttpサーバーを停止・再起動: `lsof -ti :52837 | xargs kill; uv run python -m src.launcher &`
+7. 既存のhttpサーバーを停止・再起動: `lsof -ti tcp:52837 -sTCP:LISTEN | xargs kill; uv run python -m src.launcher &`（`-sTCP:LISTEN` を付けないと :52837 に接続中のブリッジプロセスまで巻き添えで kill され、生存セッションの再接続競争を誘発する）
 8. Claude Codeセッションを再起動（個別でOK、全セッション同時に落とす必要なし）

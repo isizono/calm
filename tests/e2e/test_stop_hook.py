@@ -95,7 +95,7 @@ def _run_stop_hook(
     })
 
     env = {**os.environ}
-    # runnerのOW_ROLEを継承しない（テストの決定性確保。worker抑制テストはenv_overrideで明示設定する）
+    # runnerのOW_ROLEを継承しない（テストの決定性確保。残存env検証テストはenv_overrideで明示設定する）
     env.pop("OW_ROLE", None)
     if env_override:
         env.update(env_override)
@@ -786,10 +786,10 @@ def _seed_orch_managed_db(db_path: str, activity_id: int, monkeypatch) -> None:
 
 
 class TestOrchFlowSuppression:
-    """orchフロー（worker セッション・orch_managed=1 アクティビティ）でのcheck-inブロック/nudge抑制"""
+    """orch_managed=1 アクティビティでのcheck-inブロック/nudge抑制と、残存OW_ROLE envの無視"""
 
-    def test_worker_session_no_checkin_block(self, env_setup):
-        """OW_ROLE=worker時はcheck-in未呼出でもturn>=2でblockしない"""
+    def test_stale_ow_role_env_still_blocks_checkin(self, env_setup):
+        """OW_ROLE=workerが環境に残存していてもcheck-in未呼出のturn>=2ではblockする"""
         transcript = env_setup["tmp_path"] / "transcript.jsonl"
         _write_transcript(
             [
@@ -804,10 +804,11 @@ class TestOrchFlowSuppression:
 
         env_override = {**env_setup["env_override"], "OW_ROLE": "worker"}
         result = _run_stop_hook(str(transcript), "test-session", env_override)
-        assert result["decision"] == "approve"
+        assert result["decision"] == "block"
+        assert "check-in" in result["reason"]
 
-    def test_worker_session_no_record_nudge(self, env_setup):
-        """OW_ROLE=worker時は記録なしターンが続いてもrecord nudgeを生成しない"""
+    def test_stale_ow_role_env_still_generates_record_nudge(self, env_setup):
+        """OW_ROLE=workerが環境に残存していても記録なしターンが続けばrecord nudgeを生成する"""
         state_dir = env_setup["state_dir"]
         _write_events(
             [{"e": "tool", "name": "check_in", "turn": 1, "activity_id": 1}],
@@ -835,7 +836,7 @@ class TestOrchFlowSuppression:
 
         events = _read_events(state_dir, "test-session")
         record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record_missing"]
-        assert len(record_nudges) == 0
+        assert len(record_nudges) >= 1
 
     def test_orch_managed_activity_no_record_nudge(self, env_setup, monkeypatch):
         """orch_managed=1 アクティビティにcheck-in済みなら記録なしでもrecord nudgeを生成しない"""

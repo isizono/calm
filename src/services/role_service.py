@@ -17,9 +17,15 @@ def lookup_role(conn: sqlite3.Connection, session_id: Optional[str]) -> Optional
     """session_id から role を解決する。
 
     優先順:
-    1. session_identity.role (auto-db-register 後、active row のみ)
-    2. env OW_ROLE (env 経路、worker session の現行互換)
-    3. None (役割未判定 = grace period)
+    1. session_identity.role (active row のみ)
+    2. env OW_ROLE
+    3. None (役割未判定)
+
+    ただし現状はどちらの経路も新規セッションには機能せず、事実上常に None を
+    返す。session_identity への登録経路は撤去済みで新規セッションは登録されず、
+    env OW_ROLE は複数セッションが接続する共有 HTTP デーモン (単一プロセス) の
+    環境変数を見るため per-session の role を反映しない。この関数が実質常に None
+    を返す結果、これに依存する role gating は現状ほぼ無効化された状態にある。
     """
     if session_id:
         row = conn.execute(

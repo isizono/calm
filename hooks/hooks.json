@@ -43,15 +43,6 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "mcp__plugin_claude-code-memory_cc-memory__ow_spawn_worker",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python hooks/pretooluse_ow_spawn_worker.py"
-          }
-        ]
-      },
-      {
         "matcher": "*",
         "hooks": [
           {

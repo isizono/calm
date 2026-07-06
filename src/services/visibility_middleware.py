@@ -2,7 +2,7 @@
 
 initialize 時にセッションの role を解決し、その role から見える tool 集合だけ
 tools/list に出るよう FastMCP の session-level visibility rules を設定する。
-判定ロジック自体は guard_service.check_capability (PR-d) が担当する二層構造の
+判定ロジック自体は guard_service.check_capability が担当する二層構造の
 hide 側を担う。
 """
 from __future__ import annotations
@@ -63,6 +63,14 @@ class CapabilityVisibilityMiddleware(Middleware):
 
     @staticmethod
     def _resolve_role(session_id: str | None) -> str | None:
+        """session_id から role を解決する。
+
+        role_service.lookup_role に委譲するが、session_identity への登録経路が
+        撤去され、env OW_ROLE も共有 HTTP デーモン (単一プロセス) では per-session
+        の role を反映しないため、現状は事実上すべてのセッションで None を返す。
+        role が None なら hide を行わないため、tool visibility の絞り込みは現状
+        ほぼ効かない。
+        """
         conn = get_connection()
         try:
             return role_service.lookup_role(conn, session_id)

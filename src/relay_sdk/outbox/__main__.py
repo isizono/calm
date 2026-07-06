@@ -63,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
         daemon=True,
     )
     thread.start()
-    while thread.is_alive():
+    while thread.is_alive() and not stop_event.is_set():
         thread.join(timeout=0.5)
     # stop_event が立った後、in-flight リクエストの猶予として最大 30 秒待つ
     # （run_dispatcher の finally が client.close() まで到達するのを待つ）。

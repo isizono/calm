@@ -5,10 +5,18 @@ capability_matrix に基づき role 違反を CapabilityError で拒否する。
 hide 層 (visibility_middleware) と二層構造で動作し、本 guard は
 LLM が hide をすり抜けて tool を呼んだ場合の最終防御を担う。
 
-非 ow セッション (lookup_role が None) は role 不明扱いとして通過させる。
-これは regular Claude session の従来挙動を維持するため。ow セッションは
-SessionStart hook で auto-register されるか env OW_ROLE で fallback されるため、
-role None になるのは非 ow セッションのみという前提。
+role は role_service.lookup_role が session_identity (DB) → env OW_ROLE の
+順で解決する。ただし現状はどちらの経路も新規セッションでは機能せず、
+lookup_role は事実上すべてのセッションで None を返す:
+
+- DB 経路: session_identity への登録は hooks 側で行われていたが、その登録
+  経路は撤去済みで、新規セッションは誰も登録されない。
+- env 経路: tool を実行するのは複数セッションが接続する共有 HTTP デーモン
+  (単一プロセス) で、その os.environ は個々のセッションの role を反映しない。
+
+check_capability は role None を通過扱いにするため、この状態では capability
+gating も tool hiding も実質無効化されている。capability gating 層自体を残す
+かどうかは別途判断待ちのため、機構はそのまま残している。
 """
 import os
 import sqlite3
@@ -158,18 +166,6 @@ def _check_self_target(
             (material_id,),
         ).fetchone()
         if not row or row[0] != session_id:
-            raise CapabilityError(
-                _SELF_VIOLATION_MESSAGE_TMPL.format(tool_name=tool_name, role=role)
-            )
-        return
-
-    if tool_name == "ow_close_worker":
-        target = args.get("target_session_id") or args.get("term_ref")
-        if target is None or session_id is None:
-            raise CapabilityError(
-                _SELF_VIOLATION_MESSAGE_TMPL.format(tool_name=tool_name, role=role)
-            )
-        if target != session_id:
             raise CapabilityError(
                 _SELF_VIOLATION_MESSAGE_TMPL.format(tool_name=tool_name, role=role)
             )
