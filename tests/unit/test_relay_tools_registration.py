@@ -1,22 +1,7 @@
-"""relay 4 動詞 tool の MCP 登録・capability matrix・docstring 契約のテスト。
-
-matrix 未登録 tool は default deny で呼べなくなるため、登録漏れの回帰を防ぐ。
-"""
-from src.services.capability_matrix import CAPABILITY_MATRIX
+"""relay 4 動詞 tool の MCP 登録・docstring 契約のテスト。"""
 from tests.helpers import all_tool_descriptions as _all_tool_descriptions
 
 RELAY_TOOLS = ("relay_post", "relay_publish", "relay_subscribe", "relay_receive")
-
-
-class TestCapabilityMatrixRegistration:
-    def test_all_relay_tools_are_registered(self):
-        for name in RELAY_TOOLS:
-            assert name in CAPABILITY_MATRIX, f"{name} が capability matrix に未登録"
-
-    def test_relay_tools_are_open_to_all_roles(self):
-        for name in RELAY_TOOLS:
-            decisions = set(CAPABILITY_MATRIX[name].values())
-            assert decisions == {True}, f"{name} は全 role に開放されるべき"
 
 
 class TestToolRegistration:

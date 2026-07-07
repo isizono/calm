@@ -19,7 +19,6 @@ from src.services import (
     pin_service,
     retract_service,
     timeline_service,
-    guard_service,
     precedent_pull_service,
     signal_service,
 )
@@ -28,7 +27,6 @@ from src.services.relay import service as relay_session_service
 from src.services.tag_service import search_tags as _search_tags, update_tag as _update_tag, collect_tag_notes_for_injection
 from src.services.tag_analysis_service import analyze_tags as _analyze_tags
 from src.services import citation_renderer
-from src.services.role_service import get_caller_session_id
 from src.db import get_connection
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -260,10 +258,6 @@ def _apply_flavor_to_snippets(items: list[dict], flavor: str) -> None:
 # MCPサーバーを作成
 mcp = FastMCP("cc-memory", instructions=build_instructions())
 
-# role 別の tools/list 可視性を制御する middleware を登録する
-from src.services.visibility_middleware import CapabilityVisibilityMiddleware
-mcp.add_middleware(CapabilityVisibilityMiddleware())
-
 # tool呼び出し中の未捕捉例外を signal_events へ自動捕捉する middleware を登録する
 from src.services.signal_middleware import SignalCaptureMiddleware
 mcp.add_middleware(SignalCaptureMiddleware())
@@ -278,6 +272,17 @@ _session_manager = None
 def get_session_manager():
     """現在のSessionManagerインスタンスを返す。HTTPモード以外ではNone。"""
     return _session_manager
+
+
+def _current_session_id() -> Optional[str]:
+    """MCP context から呼び出しセッションの session_id を取得する。
+
+    MCP のツール実行コンテキスト外（テスト等）では None を返す。
+    """
+    try:
+        return get_context().session_id
+    except RuntimeError:
+        return None
 
 
 # MCPツール定義
@@ -295,9 +300,7 @@ def add_topic(
     related: 関連エンティティ（optional）。[{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...] 形式。複数エンティティを配列で同時紐付け可能。例: [{"type": "topic", "ids": [1, 2]}, {"type": "decision", "ids": [10]}]。作成と同時にリレーションを張る
 
     レスポンスに類似トピック(similar_topics)が含まれる場合がある。重複トピックの防止やリレーション追加の参考にすること。"""
-    guard_service.check_capability("add_topic")
-    caller_session_id = get_caller_session_id()
-    result = topic_service.add_topic(title, description, tags, related=related, caller_session_id=caller_session_id)
+    result = topic_service.add_topic(title, description, tags, related=related)
     if "error" not in result:
         _maybe_inject_tag_notes(result, tags)
     return result
@@ -317,8 +320,7 @@ def add_logs(items: list[dict]) -> dict:
 
     Returns: {created: [...], errors: [{index, error}]}
     """
-    caller_session_id = get_caller_session_id()
-    result = discussion_log_service.add_logs(items, caller_session_id=caller_session_id)
+    result = discussion_log_service.add_logs(items)
     if "error" not in result:
         # tag_notes: 全アイテムのタグをUNIONして1回注入
         all_tags = set()
@@ -359,9 +361,7 @@ def add_decisions(items: list[dict], ctx: Context) -> dict:
         あれば precedent_warnings（文字列のリスト）も付く。これはsoft validationであり、
         warningがあってもdecision作成自体は拒否しない。
     """
-    guard_service.check_capability("add_decisions")
-    caller_session_id = get_caller_session_id()
-    result = decision_service.add_decisions(items, caller_session_id=caller_session_id)
+    result = decision_service.add_decisions(items)
     if "error" not in result:
         # tag_notes: 全アイテムのタグをUNIONして1回注入
         all_tags = set()
@@ -648,8 +648,7 @@ def search(
         snippetでなく全文が必要な場合は、結果のtype+idをget_by_idsに渡す。
     """
     flavor = _normalize_flavor(flavor)
-    caller_session_id = get_caller_session_id()
-    result = search_service.search(keyword, tags, entity_type, limit, offset, keyword_mode, include_details, domain, date_after, date_before, caller_session_id=caller_session_id)
+    result = search_service.search(keyword, tags, entity_type, limit, offset, keyword_mode, include_details, domain, date_after, date_before)
     if "error" not in result:
         _apply_flavor_to_snippets(result.get("results", []), flavor)
     if "error" not in result and tags:
@@ -685,8 +684,7 @@ def get_by_ids(
         節が無いdecisionにはキー自体が無い
     """
     flavor = _normalize_flavor(flavor)
-    caller_session_id = get_caller_session_id()
-    result = search_service.get_by_ids(items, caller_session_id=caller_session_id)
+    result = search_service.get_by_ids(items)
     if "error" not in result:
         conn = get_connection()
         try:
@@ -835,10 +833,9 @@ def add_activity(
     Returns:
         作成されたアクティビティ情報（check_in=Trueの場合はcheck_in_resultにtag_notes等を含む）
     """
-    caller_session_id = get_caller_session_id()
     result = activity_service.add_activity(
         title, description, tags, related=related, check_in=check_in,
-        orch_managed=orch_managed, caller_session_id=caller_session_id,
+        orch_managed=orch_managed,
     )
     if "error" not in result:
         # check_in=Trueの場合、check_in_resultにtag_notesが含まれるため
@@ -966,8 +963,7 @@ def add_material(
     Returns:
         作成された資材情報（material_id, title, content, source, tags, created_at）
     """
-    caller_session_id = get_caller_session_id()
-    return material_service.add_material(title, content, tags, source, related=related, caller_session_id=caller_session_id)
+    return material_service.add_material(title, content, tags, source, related=related)
 
 
 @mcp.tool()
@@ -1289,14 +1285,7 @@ def get_map(
 
 @mcp.tool()
 def add_habit(content: str) -> dict:
-    """エージェントの振る舞いを登録する。SessionStart時に全件注入される（セッション途中の登録は次セッション以降に有効）。"覚えといて"と言われた行動ルールはここに登録する
-
-    add_decisions / add_topic と同じ guard 対象として capability gating の
-    チェックを経由するが、role解決が現状ほぼ機能していないため（詳細は
-    guard_service.py のモジュールdocstring）、実際にはどのセッションから
-    直接呼び出してもブロックされない。
-    """
-    guard_service.check_capability("add_habit")
+    """エージェントの振る舞いを登録する。SessionStart時に全件注入される（セッション途中の登録は次セッション以降に有効）。"覚えといて"と言われた行動ルールはここに登録する"""
     return habit_service.add_habit(content)
 
 
@@ -1522,7 +1511,6 @@ def report_signal(
         成功時: {"id": int, "deduped": bool, "occurrence_count": int}
         失敗時: {"error": {"code": "VALIDATION_ERROR", "message": ...}}
     """
-    caller_session_id = get_caller_session_id()
     try:
         return signal_service.record_signal(
             kind,
@@ -1530,7 +1518,7 @@ def report_signal(
             detail=detail,
             refs=refs,
             context=context,
-            session_id=caller_session_id,
+            session_id=_current_session_id(),
         )
     except ValueError as e:
         return {"error": {"code": "VALIDATION_ERROR", "message": str(e)}}
@@ -1587,7 +1575,6 @@ def update_signal(
         成功時: {"signal": {...}}（更新後の行）
         失敗時: {"error": {"code": ..., "message": ...}}
     """
-    guard_service.check_capability("update_signal")
     return signal_service.update_signal(
         signal_id, status, promoted_type=promoted_type, promoted_id=promoted_id
     )
@@ -1614,7 +1601,6 @@ def relay_post(stream_name: str, body: str, ttl: int | None = None) -> dict:
         成功時: {"stream_id": str, "publish_id": int, "matched_members": int}
         失敗時: {"error": {"code": str, "message": str}}
     """
-    guard_service.check_capability("relay_post")
     return relay_session_service.relay_post(stream_name, body, ttl=ttl)
 
 
@@ -1637,10 +1623,8 @@ def relay_publish(labels: list[str], body: str, title: str | None = None) -> dic
         成功時: {"outbox_id": int, "labels": [str], "handle": str}
         失敗時: {"error": {"code": str, "message": str}}
     """
-    guard_service.check_capability("relay_publish")
-    caller_session_id = get_caller_session_id()
     return relay_session_service.relay_publish(
-        labels, body, title=title, caller_session_id=caller_session_id
+        labels, body, title=title, caller_session_id=_current_session_id()
     )
 
 
@@ -1661,10 +1645,8 @@ def relay_subscribe(labels: list[str]) -> dict:
                  "handle": str, "reused": bool}
         失敗時: {"error": {"code": str, "message": str}}
     """
-    guard_service.check_capability("relay_subscribe")
-    caller_session_id = get_caller_session_id()
     return relay_session_service.relay_subscribe(
-        labels, caller_session_id=caller_session_id
+        labels, caller_session_id=_current_session_id()
     )
 
 
@@ -1683,10 +1665,8 @@ def relay_receive(limit: int | None = None) -> dict:
         成功時: {"messages": [dict, ...], "count": int}
         失敗時: {"error": {"code": str, "message": str}}
     """
-    guard_service.check_capability("relay_receive")
-    caller_session_id = get_caller_session_id()
     return relay_session_service.relay_receive(
-        limit, caller_session_id=caller_session_id
+        limit, caller_session_id=_current_session_id()
     )
 
 # ヘルスチェックエンドポイント

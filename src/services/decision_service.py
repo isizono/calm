@@ -29,7 +29,7 @@ from src.services.title_validation import validate_title
 PROPAGATE_TYPES = {"habit", "tag_note"}
 
 
-def add_decisions(items: list[dict], caller_session_id: Optional[str] = None) -> dict:
+def add_decisions(items: list[dict]) -> dict:
     """
     複数の決定事項を一括記録する（最大10件）。
 
@@ -124,8 +124,8 @@ def add_decisions(items: list[dict], caller_session_id: Optional[str] = None) ->
 
                 # decisionをINSERT (親 topic は relations.belongs_to で表現するため topic_id は持たせない)
                 cursor = conn.execute(
-                    "INSERT INTO decisions (decision, reason, title, caller_session_id) VALUES (?, ?, ?, ?)",
-                    (decision, reason, title, caller_session_id),
+                    "INSERT INTO decisions (decision, reason, title) VALUES (?, ?, ?)",
+                    (decision, reason, title),
                 )
                 decision_id = cursor.lastrowid
 

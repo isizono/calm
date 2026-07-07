@@ -11,8 +11,8 @@
    返却ページと retriever 内訳が記録される
 6. fetch_telemetry テーブルが新設され、get_by_ids 呼出が非同期で記録される
 7. fetch_telemetry の書込失敗は get_by_ids の戻り値に波及しない
-8. search_telemetry / fetch_telemetry に caller_session_id 列が追加され、search() /
-   get_by_ids() に渡した相関キーが記録される（未指定時は NULL）
+8. search_telemetry / fetch_telemetry の caller_session_id 列は後方互換のため残るが、
+   search() / get_by_ids() はもう値を書き込まず常に NULL になる
 9. _build_diagnostics の分岐（vec_hits の整数/None/0、tag_hits>0、qe_expansions 非空、
    methods_used への vector / tag_like 混入）が期待通り diagnostics に反映される
 """
@@ -438,44 +438,6 @@ def test_get_by_ids_unaffected_when_fetch_telemetry_write_fails(
     assert any(
         "fetch_telemetry write failed" in record.message for record in caplog.records
     ), f"warning log が出ていない: {[r.message for r in caplog.records]}"
-
-
-def test_search_records_caller_session_id(temp_db, capture_telemetry_threads):
-    """search() に渡した caller_session_id が search_telemetry に記録される"""
-    add_topic(
-        title="相関キー記録テスト用トピック",
-        description="caller_session_id が telemetry に載ることを検証する",
-        tags=DEFAULT_TAGS,
-    )
-
-    search_service.search(keyword="相関キー記録テスト", caller_session_id="sess-search-1")
-
-    _wait_for_telemetry(capture_telemetry_threads)
-
-    rows = _fetch_all_telemetry()
-    assert len(rows) == 1
-    assert rows[0]["caller_session_id"] == "sess-search-1"
-
-
-def test_get_by_ids_records_caller_session_id(temp_db, capture_fetch_telemetry_threads):
-    """get_by_ids() に渡した caller_session_id が fetch_telemetry に記録される"""
-    topic = add_topic(
-        title="fetch 相関キー記録テスト",
-        description="caller_session_id が fetch_telemetry に載ることを検証する",
-        tags=DEFAULT_TAGS,
-    )
-
-    result = search_service.get_by_ids(
-        [{"type": "topic", "id": topic["topic_id"]}],
-        caller_session_id="sess-fetch-1",
-    )
-    assert "error" not in result
-
-    _wait_for_telemetry(capture_fetch_telemetry_threads)
-
-    rows = _fetch_all_fetch_telemetry()
-    assert len(rows) == 1
-    assert rows[0]["caller_session_id"] == "sess-fetch-1"
 
 
 def _make_search_context(**overrides):
