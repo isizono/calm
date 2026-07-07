@@ -127,3 +127,45 @@ def test_vector_retrieve_or_mode_merges_per_keyword(temp_db, mock_embedding_mode
     # OR モードで両 keyword に対応する KNN を回すので None ではないはず
     assert result is not None
     assert isinstance(result, list)
+
+
+def test_vector_retrieve_or_mode_zero_hits_returns_empty_list_not_none(temp_db, mock_embedding_model):
+    """OR モード + 複数キーワードで embedding 取得自体は全キーワードで成功したが
+    ヒット0件（vec_index が空）の場合、None ではなく [] を返す。
+
+    「使えたが該当なし」と「使えなかった」を区別する契約を OR + 複数キーワードの
+    分岐でも満たすことを確認する（AND / 単一キーワード分岐は既存テストで担保済み）。
+    """
+    # add_topic を呼ばないため vec_index は空のまま。encode_query 自体は
+    # mock_embedding_model によりどのキーワードでも成功する。
+    conn = get_connection()
+    try:
+        ctx = _make_ctx(
+            keywords=("alpha", "beta"),
+            fts_keywords=("alpha", "beta"),
+            keyword_mode="or",
+        )
+        result = vector_retrieve(ctx, conn)
+    finally:
+        conn.close()
+
+    assert result == []
+
+
+def test_vector_retrieve_or_mode_all_embeddings_fail_returns_none(temp_db, disable_embedding):
+    """OR モード + 複数キーワードで全キーワードの embedding 取得自体に失敗した場合は None。
+
+    zero-hits ケース（[] を返す）と区別できることを確認する。
+    """
+    conn = get_connection()
+    try:
+        ctx = _make_ctx(
+            keywords=("alpha", "beta"),
+            fts_keywords=("alpha", "beta"),
+            keyword_mode="or",
+        )
+        result = vector_retrieve(ctx, conn)
+    finally:
+        conn.close()
+
+    assert result is None

@@ -2,8 +2,8 @@
 watch-tags: domain:cc-memory
 watch-direction: true
 watch-migrations: true
-last-synced: 2026-07-04
-last-synced-migration: 0048
+last-synced: 2026-07-07
+last-synced-migration: 0057
 -->
 
 # cc-memory DBスキーマ v0
@@ -77,7 +77,8 @@ erDiagram
 - decision / log の親 topic 帰属も 0046 以降は `relations`（`relation_type='belongs_to'`）で表現する。旧 `decisions.topic_id` / `discussion_logs.topic_id` の直接 FK は 0047 で物理削除済みのため、図上に個別の辺としては描いていない（§3.3 / §3.4 / §4 参照）
 - `tag_vec` / `vec_index` は sqlite-vec の仮想テーブルで、外部 FK を張れないためアプリ層で同期する
 - `habits` は他エンティティ群とは独立しており、タグ・リレーション・検索インデックスのいずれにも接続していない
-- 図には含めていないが、`search_telemetry`（0041）/ `citations`（0042）/ `citation_event_log`（0046）/ `session_identity`（0048）の4テーブルが 0040 以降に追加されている。いずれも既存5エンティティのライフサイクル（タグ・relations・search_index）には接続しない補助テーブルのため省略した。詳細は §2 / §3 を参照
+- 図には含めていないが、`search_telemetry`（0041）/ `citations`（0042）/ `citation_event_log`（0046）の3テーブルが 0040 以降に追加されている。いずれも既存5エンティティのライフサイクル（タグ・relations・search_index）には接続しない補助テーブルのため省略した。詳細は §2 / §3 を参照
+- `session_identity` テーブルと5エンティティの `caller_session_id` カラムは 0048 で追加されたが、role-based capability gating 機構（呼び出し元の指揮層解体に伴い不要化）の撤去とあわせて 0057 で削除された
 
 ---
 
@@ -109,7 +110,6 @@ erDiagram
 | `search_telemetry` | — | search() 呼出ごとのquery/parameters/結果件数の記録（運用計測用） |
 | `citations` | — | 本文中の `{{cite:X#NNN}}` 参照の構造化保存 |
 | `citation_event_log` | — | write時sanitize等のテキスト変換イベントの逐次記録（旧 sanitize_log の後継） |
-| `session_identity` | — | Claude Codeセッション（orch/worker/standalone）のidentity・alive状態管理 |
 | `signal_events` | signal | cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベントの記録先 |
 
 行数感（規模）はランタイム情報のため本ドキュメントでは未記載とする。
@@ -128,16 +128,15 @@ erDiagram
 | title | VARCHAR(255) | NO | — | — | トピック名 |
 | description | TEXT | NO | — | — | 説明 |
 | created_at | TIMESTAMP | NO | CURRENT_TIMESTAMP | — | 作成時刻 |
-| caller_session_id | TEXT | YES | — | — | 作成元セッションID（FK無し、文字列保持のみ） |
 
 補足:
 - 0001 で project_id / parent_topic_id を持つ階層構造として作成されたが、0010 で両カラムとも削除された
 - 親子帰属は現状もたず、トピック間関連は `relations` テーブル（`source_type='topic'`）で表現する
-- caller_session_id は 0048 で追加。session_identity（§3.21）との突合はアプリ層の責務で、DB側FKは張らない
+- caller_session_id カラムは 0048 で追加されたが、0057 で削除された（§6）
 
 インデックス: なし（id 以外には現状張られていない）
 
-関連 migration: 0001（新設）/ 0003（project→subject リネーム）/ 0010（subject_id, parent_topic_id 削除）/ 0048（caller_session_id 追加）
+関連 migration: 0001（新設）/ 0003（project→subject リネーム）/ 0010（subject_id, parent_topic_id 削除）/ 0048（caller_session_id 追加、のち0057で削除）
 
 ### 3.2 activities
 
@@ -154,7 +153,6 @@ erDiagram
 | last_heartbeat_at | TEXT | YES | — | — | 最終ハートビート時刻 |
 | last_heartbeat_session_id | TEXT | YES | — | — | 直近heartbeatの書込元セッションID |
 | orch_managed | BOOLEAN | NO | `0` | — | orch管轄activityかどうか（SQLiteはINTEGER affinityで0/1保持） |
-| caller_session_id | TEXT | YES | — | — | 作成元セッションID |
 
 補足:
 - 0001 で tasks として作成され、0011 で activities にリネーム
@@ -162,11 +160,12 @@ erDiagram
 - topic_id は 0001 で存在 → 0010 で削除 → 0016 で復活 → 0021 で relations 化に伴い再削除、という往復履歴を持つ。現状は relations テーブル経由でトピックに紐づける
 - last_heartbeat_session_id は 0040 で追加。自セッションのheartbeatを「別セッション扱い」と誤表示していた問題の解消用
 - orch_managed は 0045 で追加。従来の素タグ `orch-managed` の存在/不在で表現していた属性を構造的カラムへ昇格したもの（同migrationで既存タグ付きactivityへの一括反映も実施）
+- caller_session_id カラムは 0048 で追加されたが、0057 で削除された（§6）
 
 インデックス:
 - `idx_activities_status` ON `activities(status)`
 
-関連 migration: 0001 / 0007 / 0010 / 0011 / 0016 / 0017 / 0021 / 0026 / 0027 / 0040（last_heartbeat_session_id）/ 0045（orch_managed）/ 0048（caller_session_id）
+関連 migration: 0001 / 0007 / 0010 / 0011 / 0016 / 0017 / 0021 / 0026 / 0027 / 0040（last_heartbeat_session_id）/ 0045（orch_managed）/ 0048（caller_session_id追加、のち0057で削除）
 
 ### 3.3 decisions
 
@@ -180,18 +179,17 @@ erDiagram
 | reason | TEXT | NO | — | — | 理由 |
 | created_at | TIMESTAMP | NO | CURRENT_TIMESTAMP | — | 作成時刻 |
 | retracted_at | TIMESTAMP | YES | — | — | 取消し時刻（NULL=有効） |
-| caller_session_id | TEXT | YES | — | — | 作成元セッションID |
 
 補足:
 - 0001 では topic_id が NULL 許容だったが、0005（重複番号片方）で NOT NULL 化された（`first_topic` への移行付き）。0006 で ON DELETE CASCADE 追加
 - 0031 で retracted_at 導入、0037 で title 追加
 - pinned カラムは 0029 で追加されたが、0034/0035 で pins テーブル化により削除された
 - **`topic_id` カラムは現在存在しない**。0046 で NULLABLE 化 + FK 制約撤去、0047 で物理削除された。親 topic 帰属は `relations`（`source_type='decision', target_type='topic', relation_type='belongs_to'`）で表現する（§3.9 / §4 参照）。旧 `idx_decisions_topic_id` インデックスも 0046 で撤去済み
-- caller_session_id は 0048 で追加
+- caller_session_id カラムは 0048 で追加されたが、0057 で削除された（§6）
 
 インデックス: id 以外には現状張られていない（旧 `idx_decisions_topic_id` は 0046 で撤去）
 
-関連 migration: 0001 / 0005（topic_id NOT NULL、のち撤去）/ 0006 / 0029 / 0031 / 0035 / 0037 / 0046（topic_id NULLABLE化・belongs_to複製）/ 0047（topic_id 物理削除）/ 0048（caller_session_id）
+関連 migration: 0001 / 0005（topic_id NOT NULL、のち撤去）/ 0006 / 0029 / 0031 / 0035 / 0037 / 0046（topic_id NULLABLE化・belongs_to複製）/ 0047（topic_id 物理削除）/ 0048（caller_session_id追加、のち0057で削除）
 
 ### 3.4 discussion_logs
 
@@ -204,7 +202,6 @@ erDiagram
 | content | TEXT | NO | — | — | 本文 |
 | created_at | TIMESTAMP | NO | CURRENT_TIMESTAMP | — | 作成時刻 |
 | retracted_at | TIMESTAMP | YES | — | — | 取消し時刻 |
-| caller_session_id | TEXT | YES | — | — | 作成元セッションID |
 
 補足:
 - 0001 では content のみ。0008 で title カラム追加 + 検索インデックス登録
@@ -212,11 +209,11 @@ erDiagram
 - 0031 で retracted_at 導入
 - pinned カラムは 0029 で追加 → 0035 で削除
 - **`topic_id` カラムは現在存在しない**（decisions と同じ経緯。0046 で NULLABLE化、0047 で物理削除）。親 topic 帰属は `relations`（`relation_type='belongs_to'`）で表現する。旧 `idx_logs_topic_id` インデックスも 0046 で撤去済み
-- caller_session_id は 0048 で追加
+- caller_session_id カラムは 0048 で追加されたが、0057 で削除された（§6）
 
 インデックス: id 以外には現状張られていない（旧 `idx_logs_topic_id` は 0046 で撤去）
 
-関連 migration: 0001 / 0006 / 0008 / 0029 / 0031 / 0035 / 0046（topic_id NULLABLE化・belongs_to複製）/ 0047（topic_id 物理削除）/ 0048（caller_session_id）
+関連 migration: 0001 / 0006 / 0008 / 0029 / 0031 / 0035 / 0046（topic_id NULLABLE化・belongs_to複製）/ 0047（topic_id 物理削除）/ 0048（caller_session_id追加、のち0057で削除）
 
 ### 3.5 materials
 
@@ -231,19 +228,18 @@ erDiagram
 | created_at | TEXT | NO | `strftime('%Y-%m-%d %H:%M:%S', 'now')` | — | 作成時刻 |
 | updated_at | TIMESTAMP | YES | — | — | 更新時刻（NULL 不可避：ALTER の非定数 DEFAULT 制約のため） |
 | retracted_at | TIMESTAMP | YES | — | — | 取消し時刻（NULL=有効） |
-| caller_session_id | TEXT | YES | — | — | 作成元セッションID |
 
 補足:
 - 0013 で activity_id FK 直結エンティティとして新設 → 0023 で activity_id 削除し独立エンティティ化、relations 経由で activity に紐づく構成へ
 - 0029 で pinned カラム追加 → 0034 で pins テーブルへ移行 → 0035 で pinned カラム削除
 - 0032 で source カラム追加、0036 で updated_at カラム追加
 - retracted_at は 0043 で追加された（decision/log の retract 機構（0031）に対称化）。§6 の記載（「decision/log にのみあり material には無い」）は 0043 時点で古くなっている
-- caller_session_id は 0048 で追加
+- caller_session_id カラムは 0048 で追加されたが、0057 で削除された（§6）
 
 インデックス:
 - `idx_materials_activity_id`（0013で作成）は 0023 で削除済み。現状 id 以外のインデックスはない
 
-関連 migration: 0013 / 0018 / 0023 / 0029 / 0032 / 0034 / 0035 / 0036 / 0043（retracted_at）/ 0048（caller_session_id）
+関連 migration: 0013 / 0018 / 0023 / 0029 / 0032 / 0034 / 0035 / 0036 / 0043（retracted_at）/ 0048（caller_session_id追加、のち0057で削除）
 
 ### 3.6 habits
 
@@ -564,33 +560,7 @@ VIEW 3本（同migrationで新設）:
 
 関連 migration: 0044（sanitize_log として新設、forward-onlyでDROP済み）/ 0046（citation_event_logとして作り直し）
 
-### 3.21 session_identity
-
-複数のClaude Codeセッション（orch/worker/standalone）が並行稼働する構成での、各セッションのidentity（role/handle/topic紐付け）とalive状態を一元管理するテーブル。1セッション1行。
-
-| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
-|---|---|---|---|---|---|
-| session_id | TEXT | NO | — | PRIMARY KEY | セッションID |
-| role | TEXT | NO | — | — | セッションロール |
-| handle | TEXT | YES | — | — | 表示用ハンドル（UNIQUE制約なし。同名別セッションの再利用を許容） |
-| topic_id | INTEGER | YES | — | REFERENCES discussion_topics(id) ON DELETE SET NULL | 対応するtopic |
-| parent_session_id | TEXT | YES | — | — | 親セッションID（FK無し、relax参照） |
-| spawned_at | TIMESTAMP | NO | CURRENT_TIMESTAMP | — | spawn時刻 |
-| last_heartbeat | TIMESTAMP | NO | CURRENT_TIMESTAMP | — | 最終heartbeat時刻 |
-| ended_at | TIMESTAMP | YES | — | — | 終了時刻（NULL=生存中） |
-
-補足:
-- parent_session_idはFK制約を張らない（削除済み親への参照やsession_identity外部の親セッションへの参照を許容するため）
-- 各entityテーブル（decisions/discussion_logs/discussion_topics/activities/materials）のcaller_session_idともFKを張らない（session越えidentity連続性なし方針と整合）
-
-インデックス:
-- `idx_session_identity_role` ON `session_identity(role)`
-- `idx_session_identity_handle` ON `session_identity(handle) WHERE handle IS NOT NULL`
-- `idx_session_identity_ended` ON `session_identity(ended_at) WHERE ended_at IS NULL`
-
-関連 migration: 0048（新設。同migrationで5エンティティへのcaller_session_id追加も実施）
-
-### 3.22 signal_events
+### 3.21 signal_events
 
 cc-memory自身の故障報告・使用感不満・矛盾検出・運用計測イベントの統一記録先。decision / log とは異なり「双方の合意」も文脈タグ体系も要らない生の観測データであり、量が多く状態遷移（トリアージ）を持つ。他コンポーネント（運用計測の集計、境界判定の突合ミラー）もこのテーブルを共有し、独自テーブルは作らない。
 
@@ -621,7 +591,7 @@ cc-memory自身の故障報告・使用感不満・矛盾検出・運用計測�
 
 関連 migration: 0049_add_signal_events
 
-### 3.23 relay_outbox
+### 3.22 relay_outbox
 
 セッション間通信の publish（labels routing 配布）の送信キュー（transactional outbox）。`relay_publish` ツールが INSERT し、server 内の常駐配達ループが pending 行を relay サーバーへ配達する。at-least-once 保証は本テーブルだけで閉じる（relay サーバー側は永続真実を持たない）。
 
@@ -711,7 +681,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | `last_heartbeat_at` | activities | 他全テーブル | 最終ハートビート時刻 |
 | `status` | activities | 他全テーブル | pending / in_progress / completed / snoozed / shelved |
 | `active` | habits | 他全テーブル | 有効/無効フラグ（数値） |
-| `caller_session_id` | decisions / discussion_logs / discussion_topics / activities / materials | habits | 作成元セッションID（0048） |
+| `caller_session_id`（廃止） | — | 全テーブル | 0048 で decisions/discussion_logs/discussion_topics/activities/materials に追加 → 0057 でcapability gating機構撤去に伴い削除済み |
 | `pinned`（廃止） | — | 全テーブル | 0029 で decisions/logs/materials に追加 → 0035 で pins テーブル化により撤去済み |
 
 補足:
@@ -775,7 +745,8 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0046_relations_belongs_to_unify | relations.relation_type CHECK を `('related','belongs_to')` に緩和、partial index 2本追加、既存 material/activity/decision/log→topic の `related` 行を `belongs_to` に変換、decisions/discussion_logs.topic_id を relations.belongs_to へ複製したうえで NULLABLE 化・FK 削除（トリガー再作成込み） |
 | 0046_sanitize_log_to_citation_event_log | sanitize_log を DROP し citation_event_log として作り直し（逐次行型 + VIEW 3本、§3.20）（**0046 番号重複**） |
 | 0047_drop_decisions_logs_topic_id | decisions.topic_id / discussion_logs.topic_id カラムを物理削除（0046で確保した前提条件を受けての Contract） |
-| 0048_session_identity | session_identity テーブル新設 + decisions/discussion_logs/discussion_topics/activities/materials に caller_session_id 追加（§3.21） |
+| 0048_session_identity | session_identity テーブル新設 + decisions/discussion_logs/discussion_topics/activities/materials に caller_session_id 追加（0057で全て削除） |
+| 0057_drop_capability_gating | session_identity テーブル削除 + decisions/discussion_logs/discussion_topics/activities/materials の caller_session_id カラム削除（role-based capability gating機構の呼び出し元解体に伴う撤去） |
 
 重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。
 
@@ -801,7 +772,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 
 8. **タグ解決 `resolve_tags()` のアトミック性欠如**: tag_service の `resolve_tags()` はループ内で中間 commit を行うため、複数タグ処理途中のエラーで前半 INSERT がロールバックされず中途半端な状態が残る。
 
-9. **スキーマ進化のデザインデット**: migration 番号の重複（0005×2 / 0015×2 / 0039×2 / 0046×2）と、materials の高頻度改修（0013 / 0018 / 0023 / 0029 / 0032 / 0034 / 0035 / 0036 / 0043 / 0048 で計10回）。
+9. **スキーマ進化のデザインデット**: migration 番号の重複（0005×2 / 0015×2 / 0039×2 / 0046×2）と、materials の高頻度改修（0013 / 0018 / 0023 / 0029 / 0032 / 0034 / 0035 / 0036 / 0043 / 0048 / 0057 で計11回）。
 
 10. **`update_tag()` の単一関数4操作**: tag_service の `update_tag()` は rename / notes / canonical / description の4種を1関数に集約し if 分岐している。
 

@@ -14,7 +14,6 @@ import mcp.types as mt
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 
 from src.services import signal_service
-from src.services.guard_service import CapabilityError
 
 # detail に書き込む traceback + 引数ダイジェストの最大文字数。DB カラムに上限は
 # 無いが、detail が肥大化しないよう妥当な長さで切る。
@@ -29,7 +28,7 @@ _DETAIL_MAX_LEN = 500
 
 
 class SignalCaptureMiddleware(Middleware):
-    """role guard による正常な拒否 (CapabilityError) を除く全ての例外を machine_error として記録する。"""
+    """ツール呼び出し中の未捕捉例外を machine_error として記録する。"""
 
     async def on_call_tool(
         self,
@@ -38,8 +37,6 @@ class SignalCaptureMiddleware(Middleware):
     ) -> Any:
         try:
             return await call_next(context)
-        except CapabilityError:
-            raise  # ガードによる正常な拒否は故障ではない
         except Exception as e:
             signal_service.capture_signal_safe(
                 kind="machine_error",

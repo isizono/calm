@@ -8,7 +8,7 @@ cc-memory の get 系 tool 返却で、整数 `id` を `id_raw` に退避し、`
 """
 from typing import Literal, get_args
 
-ENTITY_TYPE = Literal["topic", "decision", "activity", "log", "material"]
+ENTITY_TYPE = Literal["topic", "decision", "activity", "log", "material", "signal"]
 FLAVOR = Literal["raw", "internal", "readable"]
 
 _VALID_ENTITY_TYPES: frozenset[str] = frozenset(get_args(ENTITY_TYPE))
@@ -27,7 +27,7 @@ def format_readable_id(
     新規 caller を増やさないこと。
 
     Args:
-        entity_type: エンティティ種別 ('topic'/'decision'/'activity'/'log'/'material')
+        entity_type: エンティティ種別 ('topic'/'decision'/'activity'/'log'/'material'/'signal')
         id_int: 元の整数 ID
         title: エンティティのタイトル (None や空文字列の場合は ID のみ)
         flavor: 表示形式 ('readable' のみ実装済み、'raw'/'internal' は将来実装)

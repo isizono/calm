@@ -1,7 +1,7 @@
 """server 内常駐 B-1: SSE 受信 → session inbox 振り分け → ack。
 
 server identity 名義で発行済みの全 subscription を単一 SSE 接続で多重受信する。
-relay の SSE stream は subscription レーンと stream レーン（`channel:<name>` に相当する
+relay の SSE stream は subscription レーンと stream レーン（`room:<name>` に相当する
 場）の両方を相乗り配達する（`GET /events?subscription_ids=...`）。SDK 付属の
 `Subscription.receive()` は `delivery_target` が `sub:` 始まりでないフレームを黙って
 捨てるため、場レーンの受信は SDK の subscribe() 経路では扱えない。ここでは SDK の
@@ -14,7 +14,7 @@ http 層（`open_sse` / SSE parser）だけを利用し、フレーム振り分�
   inbox にのみ書く。ack は `POST /subscriptions/{id}/ack`（cumulative）で、宛先の
   identity（= server identity）に紐づく。
 - stream レーン（`delivery_target=stream:<identity>:<stream_name>`）:
-  `channel:<stream_name>` label を含む subscription を宣言した全 session の inbox に
+  `room:<stream_name>` label を含む subscription を宣言した全 session の inbox に
   書く。宛先ゼロならフレームは捨て、debug ログを 1 行だけ残す（at-least-once の
   対象は「購読宣言のある宛先」に限る）。ack は `POST /streams/{stream_id}/ack`
   （cumulative、identity 単位）で outbox から掃く。
@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 _STREAM_PREFIX = "stream:"
 _SUB_PREFIX = "sub:"
-_CHANNEL_LABEL_PREFIX = "channel:"
+_ROOM_LABEL_PREFIX = "room:"
 
 
 # ---------------------------------------------------------------------------
@@ -64,7 +64,7 @@ class SubFrame:
 @dataclass(frozen=True)
 class StreamFrame:
     stream_id: str        # relay wire 上の canonical id（`identity:name` そのまま）
-    stream_name: str      # 上の `name` 部分（`channel:<name>` 逆引き用）
+    stream_name: str      # 上の `name` 部分（`room:<name>` 逆引き用）
     publish_id: int
     payload: dict
 
@@ -118,8 +118,8 @@ def resolve_sub_owner(declarations_snapshot: list[dict], subscription_id: str) -
 def resolve_stream_targets(
     declarations_snapshot: list[dict], stream_name: str
 ) -> list[str]:
-    """`channel:<stream_name>` label を含む subscription を宣言した session_id の一覧。"""
-    target_label = f"{_CHANNEL_LABEL_PREFIX}{stream_name}"
+    """`room:<stream_name>` label を含む subscription を宣言した session_id の一覧。"""
+    target_label = f"{_ROOM_LABEL_PREFIX}{stream_name}"
     result: list[str] = []
     for decl in declarations_snapshot:
         session_id = decl.get("session_id")

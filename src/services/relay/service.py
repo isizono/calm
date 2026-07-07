@@ -24,6 +24,7 @@ from src.relay_sdk.http.request import (
     raise_for_relay_status,
 )
 from src.relay_sdk.outbox import publish as outbox_publish
+from src.services.relation_service import VALID_ENTITY_TYPES
 from src.services.relay import config, declarations, inbox
 from src.services.relay.config import RelayConfigError
 
@@ -31,6 +32,11 @@ logger = logging.getLogger(__name__)
 
 _ROLE_PREFIX = "role:"
 _HANDLE_PREFIX = "handle:"
+
+# cc-memory の中核 entity 種別（relation_service.VALID_ENTITY_TYPES と同一集合）を
+# label prefix として予約する。relay label は実在チェックを行わない不透明文字列の
+# ため、これらの語彙と衝突すると存在しない/未検証の entity への関連付けを誤認させる。
+_RESERVED_ENTITY_PREFIXES = tuple(sorted(f"{entity_type}:" for entity_type in VALID_ENTITY_TYPES))
 
 # relay_post の ttl 許容範囲（秒）。
 TTL_MIN_SECONDS = 60
@@ -47,14 +53,29 @@ SESSION_UNRESOLVED_MESSAGE = (
 )
 
 
-def _error(code: str, message: str) -> dict:
-    return {"error": {"code": code, "message": message}}
+def _error(code: str, message: str, **extra: Any) -> dict:
+    """{"error": {"code", "message", ...extra}} を組み立てる。
+
+    extra に渡したキーは error dict にそのまま展開される（例: retry_after）。
+    """
+    payload: dict[str, Any] = {"code": code, "message": message}
+    payload.update(extra)
+    return {"error": payload}
 
 
 def _relay_error(exc: Exception) -> dict:
+    """relay_sdk の 3 例外を呼び出し元向けのエラー dict に翻訳する。
+
+    TransientError のうち 429（rate limit）は `rate_limited` として他の transient
+    failure（5xx・timeout・接続不能）と区別し、`retry_after`（秒、Retry-After
+    ヘッダが無ければ null）を構造化フィールドで返す。429 以外の TransientError は
+    従来通り `relay_unavailable`（`retry_after` フィールドなし）。
+    """
     if isinstance(exc, RelayProtocolError):
         return _error(exc.code or "relay_protocol_error", str(exc))
     if isinstance(exc, TransientError):
+        if exc.status_code == 429:
+            return _error("rate_limited", str(exc), retry_after=exc.retry_after)
         return _error("relay_unavailable", str(exc))
     if isinstance(exc, PermanentError):
         return _error("relay_gone", str(exc))
@@ -69,8 +90,10 @@ def _relay_error(exc: Exception) -> dict:
 def validate_labels(labels: Any, *, allow_empty: bool = False) -> Optional[str]:
     """labels の妥当性を検査し、問題があればエラーメッセージを返す（正常は None）。
 
-    role: prefix のみ拒否する（廃止済み namespace）。handle:/channel:/task:・
-    cc-memory 既存語彙・未知 prefix は不透明 label として受理する。
+    role:（廃止済み namespace）と、cc-memory の中核 entity namespace
+    （topic:/activity:/decision:/log:/material:）を予約済みとして拒否する。
+    handle:/room:/task:・domain:/intent: 等の tag namespace・その他未知 prefix は
+    不透明 label として受理する。
     """
     if not isinstance(labels, list):
         return "labels は文字列の配列で指定してください"
@@ -82,8 +105,16 @@ def validate_labels(labels: Any, *, allow_empty: bool = False) -> Optional[str]:
         if label.startswith(_ROLE_PREFIX):
             return (
                 f"label '{label}' は使用できません。"
-                "role: namespace は廃止済みです（routing には handle:/channel:/task: を使う）"
+                "role: namespace は廃止済みです（routing には handle:/room:/task: を使う）"
             )
+        for prefix in _RESERVED_ENTITY_PREFIXES:
+            if label.startswith(prefix):
+                return (
+                    f"label '{label}' は使用できません。"
+                    f"'{prefix}' は cc-memory の中核 entity namespace として予約されています。"
+                    "relay label は実在チェックを行わない不透明文字列のため、"
+                    "実 entity と関連付けたい場合は body に記述してください"
+                )
     return None
 
 

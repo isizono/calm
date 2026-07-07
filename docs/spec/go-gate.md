@@ -10,12 +10,12 @@
 ## 現状の実装範囲
 
 現時点でリポジトリに存在するのは検出器本体(`scripts/gate_check.py`、`scripts/gate_check.sh`)、
-GO判定パッケージツール(`scripts/go_package.py`)、CI ワークフロー(`.github/workflows/gate.yml`)、
-このドキュメントである。以下は未実装である:
+GO判定パッケージツール(`scripts/go_package.py`)、判例 pull 機構(`pull_precedents` ツール)、
+CI ワークフロー(`.github/workflows/gate.yml`)、このドキュメントである。以下は未実装である:
 
 - plan.md / task-plan・task-execute skill への組み込み(分類予測欄、パッケージ生成手順)
-- 判例 pull 機構(`pull_precedents` ツール)本体。`go_package.py new --pull-json` は
-  その応答 JSON を受け取る入力口のみを用意している
+- `go_package.py new --pull-json` から `pull_precedents` を自動実行する配線。現状は
+  応答 JSON を受け取る入力口のみを用意しており、実行と保存は手動で行う
 
 検出器は手元で `uv run python3 scripts/gate_check.py --base <ref> --head <ref>` として、
 CI では PR ごとに `.github/workflows/gate.yml` から自動で呼び出せる状態にある。
@@ -102,7 +102,7 @@ PR がその改変自体を含む場合は、diff 上の `scripts/gate_check.py`
 |---|---|
 | `migration_touch` | `migrations/` 配下への接触(追加・変更・削除・rename すべて) |
 | `ddl_in_code` | コード内の DDL(`CREATE`/`ALTER`/`DROP` + `TABLE`/`INDEX`/`TRIGGER`/`VIEW`。動詞と対象の間に `UNIQUE`/`TEMP`/`TEMPORARY`/`VIRTUAL` 等の修飾語を挟む形も拾う。書き込み `PRAGMA`)。追加行・削除行の両方を走査する |
-| `public_if` | 公開IF(`src/main.py`、`src/remote.py`、`src/http_config.py`、`src/services/visibility_middleware.py`、`docs/spec/openapi.yaml`、`hooks/hooks.json`、`marketplace.json`)への接触 |
+| `public_if` | 公開IF(`src/main.py`、`src/remote.py`、`src/http_config.py`、`docs/spec/openapi.yaml`、`hooks/hooks.json`、`marketplace.json`)への接触 |
 | `data_destructive` | 追加行の破壊的SQL(`DELETE FROM`/`UPDATE ... SET`/`TRUNCATE`)・破壊的ファイル操作(`shutil.rmtree`/`os.remove`等) |
 | `binary_change` | numstat が `-`(バイナリ)を返す変更 |
 | `dependency_change` | `pyproject.toml` / `uv.lock` への接触。軸Aヒットではなく強制グレー(`policy_pending`) |
@@ -296,7 +296,7 @@ pyyaml のみで動く。
 | L5 | `strictness(gate.effective) >= strictness(gate.machine)`(pre_go=2 > gray=1 > post_veto_candidate=0)。厳格化方向(effectiveの方が強い)は `gate.escalated_by` 必須。唯一の緩和例外は `machine: gray` から `gray_resolution.resolved_to: post_veto_candidate` かつ `basis` が非空かつ各基底判例が `precedents` にstance付きで存在する場合のみ | エラー |
 | L6 | `--mode shadow` のとき `shadow` ブロックが必須(`--allow-placeholder` で必須チェックのみ緩和)。存在する場合は `shadow.human` が妥当な値で、`shadow.divergence` が下表の対応表から正しく導出されている | エラー |
 | L7 | `gate.predicted` と `gate.machine` が乖離している | 警告のみ |
-| L8 | `--mode live` のとき `pull.presented: unavailable` はエラー(pull_precedents 稼働後の実行漏れ検知) | エラー |
+| L8 | `--mode live` のとき `pull.presented: unavailable` はエラー(pull_precedents の実行漏れ検知) | エラー |
 
 divergence対応表(3-7、`expected_divergence()` が単一ソース):
 
@@ -310,7 +310,7 @@ divergence対応表(3-7、`expected_divergence()` が単一ソース):
 
 ### 運用フロー(想定)
 
-1. 設計着手時に `pull_precedents` を実行し、応答JSONを保存する(pull稼働後。稼働前は省略可)
+1. 設計着手時に `pull_precedents` を実行し、応答JSONを保存する
 2. PR作成時に `go_package.py new --activity <id> --pull-json <保存した応答>` でパッケージ雛形を生成する
 3. 人間が1-a判例引用・判例が無かった論点・1-b・1-cを記入する
 4. shadow期は `shadow.human` / `shadow.divergence` を追記する

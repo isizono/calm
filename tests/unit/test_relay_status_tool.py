@@ -6,8 +6,34 @@ tests/unit/test_relay_diagnostics_service.py・tests/unit/test_relay_runtime.py 
 早期return、runtime インスタンス有無による切り替え）を検証する。
 """
 import src.main as main_module
+from src.db import get_connection
 from src.main import get_relay_runtime, relay_status
 from src.services.relay.runtime import RelayRuntime
+
+
+def _insert_outbox_row(
+    *,
+    labels='["decision:1"]',
+    title="見出し",
+    created_at="2026-07-01T00:00:00Z",
+    processed_at=None,
+    retry_count=0,
+    last_error=None,
+    dead_at=None,
+):
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            "INSERT INTO relay_outbox"
+            " (ref_type, ref_id, labels, title, idempotency_key, created_at,"
+            "  processed_at, retry_count, last_error, dead_at)"
+            " VALUES ('publish', 'body', ?, ?, 'idem-1', ?, ?, ?, ?, ?)",
+            (labels, title, created_at, processed_at, retry_count, last_error, dead_at),
+        )
+        conn.commit()
+        return cursor.lastrowid
+    finally:
+        conn.close()
 
 
 class TestGetRelayRuntimeNoneSafety:
@@ -41,6 +67,32 @@ class TestRelayStatusOutboxValidation:
         result = relay_status(outbox_id=-1)
         assert result["error"]["code"] == "validation"
         assert "runtime" not in result
+
+
+class TestRelayStatusOutboxAndRuntimeTogether:
+    def test_existing_outbox_row_and_runtime_are_both_returned(self, temp_db, monkeypatch):
+        """outbox_id指定時、実在する行の配送状況とruntimeセクションが両方組み合わさって返る。"""
+        monkeypatch.delenv("RELAY_BEARER_TOKEN", raising=False)
+        outbox_id = _insert_outbox_row(processed_at="2026-07-01T00:01:00Z")
+
+        result = relay_status(outbox_id=outbox_id)
+
+        assert result["outbox"] == {
+            "outbox_id": outbox_id,
+            "status": "delivered",
+            "labels": ["decision:1"],
+            "title": "見出し",
+            "created_at": "2026-07-01T00:00:00Z",
+            "processed_at": "2026-07-01T00:01:00Z",
+            "dead_at": None,
+            "retry_count": 0,
+            "last_error": None,
+        }
+        assert result["runtime"] == {
+            "configured": False,
+            "running": False,
+            "threads": {},
+        }
 
 
 class TestRelayStatusUsesLiveRuntimeInstance:

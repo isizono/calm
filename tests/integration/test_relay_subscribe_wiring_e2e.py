@@ -56,7 +56,7 @@ def test_second_subscribe_via_tool_wrapper_notifies_runtime_and_is_received(
         # rescan_interval_seconds（5秒）しか指定できないため、intake 起動時点で
         # declaration が既に存在していれば、rescan 待ちなしに初回接続へ入れる。
         first = service.relay_subscribe(
-            ["topic:planning"], caller_session_id="sess-1"
+            ["room:planning"], caller_session_id="sess-1"
         )
         assert "error" not in first, first
         assert first["reused"] is False
@@ -90,10 +90,10 @@ def test_second_subscribe_via_tool_wrapper_notifies_runtime_and_is_received(
             # ここから配線本体の検証: tool wrapper 経由で2件目（別labels）を subscribe。
             monkeypatch.setattr(main_module, "_relay_runtime", runtime)
             monkeypatch.setattr(
-                main_module, "get_caller_session_id", lambda: "sess-1"
+                main_module.relay_identity, "get_relay_identity", lambda: "sess-1"
             )
 
-            second = main_module.relay_subscribe(["topic:other"])
+            second = main_module.relay_subscribe(["room:other"])
             assert "error" not in second, second
             assert second["reused"] is False
             assert second["subscription_id"] != first["subscription_id"]
@@ -135,7 +135,7 @@ def test_reused_subscribe_via_tool_wrapper_does_not_trigger_reconfigure(
         monkeypatch.setenv("RELAY_BASE_URL", fake.base_url)
 
         first = service.relay_subscribe(
-            ["topic:planning"], caller_session_id="sess-1"
+            ["room:planning"], caller_session_id="sess-1"
         )
         assert "error" not in first, first
         assert first["reused"] is False
@@ -165,11 +165,11 @@ def test_reused_subscribe_via_tool_wrapper_does_not_trigger_reconfigure(
 
             monkeypatch.setattr(main_module, "_relay_runtime", runtime)
             monkeypatch.setattr(
-                main_module, "get_caller_session_id", lambda: "sess-1"
+                main_module.relay_identity, "get_relay_identity", lambda: "sess-1"
             )
 
             # 同一 labels での再 subscribe。lease が有効なので reused: true のはず。
-            second = main_module.relay_subscribe(["topic:planning"])
+            second = main_module.relay_subscribe(["room:planning"])
             assert "error" not in second, second
             assert second["reused"] is True
             assert second["subscription_id"] == first["subscription_id"]

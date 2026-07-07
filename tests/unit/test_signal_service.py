@@ -221,8 +221,56 @@ class TestGetSignals:
         result = ss.get_signals(status=None)
 
         signal = result["signals"][0]
-        assert signal["refs"] == [{"type": "decision", "id": 1}]
+        # refs内の各要素もid_rawへ退避される（他エンティティへの内部ID参照のため）
+        assert signal["refs"] == [{"type": "decision", "id_raw": 1}]
+        # context.resolutionは参照形状({"type":..,"id":..})ではないためそのまま
         assert signal["context"] == {"resolution": "new_correct"}
+
+    def test_context_nested_refs_are_converted_to_id_raw(self, temp_db):
+        """precedent_miss/precedent_misappliedのmissed_ids/cited_id等、contextに
+        ネストした{"type":..,"id":..}形状の参照もid_raw化される。"""
+        ss.record_signal(
+            "precedent_miss",
+            "missed decision 9",
+            source="agent",
+            context={"missed_ids": [{"type": "decision", "id": 9}]},
+        )
+        ss.record_signal(
+            "precedent_misapplied",
+            "decision 1 out of scope",
+            source="agent",
+            context={"cited_id": {"type": "decision", "id": 1}},
+        )
+
+        result = ss.get_signals(status=None)
+
+        by_kind = {s["kind"]: s for s in result["signals"]}
+        assert by_kind["precedent_miss"]["context"] == {
+            "missed_ids": [{"type": "decision", "id_raw": 9}]
+        }
+        assert by_kind["precedent_misapplied"]["context"] == {
+            "cited_id": {"type": "decision", "id_raw": 1}
+        }
+
+    def test_response_hides_raw_session_id_and_fingerprint(self, temp_db):
+        """session_id/fingerprintは記録側の内部専用フィールドで、レスポンスに現れない。"""
+        ss.record_signal("machine_error", "boom", source="tool:foo", session_id="sess-1")
+
+        result = ss.get_signals(status=None)
+
+        signal = result["signals"][0]
+        assert "session_id" not in signal
+        assert "fingerprint" not in signal
+
+    def test_response_uses_id_raw_not_bare_id(self, temp_db):
+        """idは他のget系ツールと同じreadable_id変換でid_rawに退避され、idキーは残らない。"""
+        r1 = ss.record_signal("machine_error", "boom", source="tool:foo")
+
+        result = ss.get_signals(status=None)
+
+        signal = result["signals"][0]
+        assert "id" not in signal
+        assert signal["id_raw"] == r1["id"]
 
     def test_include_stats_cross_tabulates_kind_and_status(self, temp_db):
         r1 = ss.record_signal("machine_error", "a", source="s1")
@@ -255,6 +303,18 @@ class TestUpdateSignal:
         assert result["signal"]["status"] == "triaged"
         assert result["signal"]["promoted_type"] is None
 
+    def test_response_hides_raw_session_id_fingerprint_and_bare_id(self, temp_db):
+        """get_signalsと同様、内部識別子はレスポンスに現れずidはid_rawで返る。"""
+        r1 = ss.record_signal("friction", "a", session_id="sess-1")
+
+        result = ss.update_signal(r1["id"], "triaged")
+
+        signal = result["signal"]
+        assert "session_id" not in signal
+        assert "fingerprint" not in signal
+        assert "id" not in signal
+        assert signal["id_raw"] == r1["id"]
+
     def test_promote_links_existing_entity(self, temp_db):
         from src.services.topic_service import add_topic
 
@@ -267,7 +327,9 @@ class TestUpdateSignal:
 
         assert result["signal"]["status"] == "promoted"
         assert result["signal"]["promoted_type"] == "topic"
-        assert result["signal"]["promoted_id"] == topic["topic_id"]
+        # promoted_idも他エンティティへの内部ID参照のためid_rawへ退避される
+        assert "promoted_id" not in result["signal"]
+        assert result["signal"]["promoted_id_raw"] == topic["topic_id"]
 
     def test_promote_rejects_nonexistent_entity(self, temp_db):
         r1 = ss.record_signal("precedent_miss", "missed something")
@@ -357,4 +419,4 @@ class TestUpdateSignal:
 
         assert result["signal"]["status"] == "dismissed"
         assert result["signal"]["promoted_type"] == "topic"
-        assert result["signal"]["promoted_id"] == topic["topic_id"]
+        assert result["signal"]["promoted_id_raw"] == topic["topic_id"]

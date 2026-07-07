@@ -54,8 +54,10 @@ def test_publish_reaches_session_inbox_via_intake(monkeypatch):
         monkeypatch.setenv("RELAY_BASE_URL", fake.base_url)
 
         # cc-memory の relay_subscribe を通して subscription を張る。
+        # "topic:" は cc-memory の中核 entity namespace として予約済みのため使えない
+        # （validate_labels が拒否する）。ここでは非予約 namespace の "room:" を使う。
         result = service.relay_subscribe(
-            ["topic:planning"], caller_session_id="sess-1"
+            ["room:planning"], caller_session_id="sess-1"
         )
         assert "error" not in result, result
         subscription_id = result["subscription_id"]

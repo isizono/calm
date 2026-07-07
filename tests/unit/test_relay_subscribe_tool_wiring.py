@@ -13,16 +13,10 @@ import src.main as main_module
 
 
 @pytest.fixture(autouse=True)
-def _stub_capability_check(monkeypatch):
-    """capability gate は本テストの対象外。DB 依存を避けるため常に通過させる。"""
-    monkeypatch.setattr(
-        main_module.guard_service, "check_capability", lambda *a, **k: None
-    )
-
-
-@pytest.fixture(autouse=True)
 def _fixed_caller_session_id(monkeypatch):
-    monkeypatch.setattr(main_module, "get_caller_session_id", lambda: "sess-1")
+    monkeypatch.setattr(
+        main_module.relay_identity, "get_relay_identity", lambda: "sess-1"
+    )
 
 
 def _stub_service_result(monkeypatch, result: dict) -> None:
@@ -85,7 +79,8 @@ class TestNotifyReconfigureWiring:
         """get_relay_runtime() が None（stdio 相当）でも例外を出さず成功応答をそのまま返す。"""
         monkeypatch.setattr(main_module, "_relay_runtime", None)
         expected = dict(_NEW_SUBSCRIPTION_RESULT)
-        _stub_service_result(monkeypatch, dict(expected))
+        expected["identity"] = "sess-1"
+        _stub_service_result(monkeypatch, dict(_NEW_SUBSCRIPTION_RESULT))
 
         result = main_module.relay_subscribe(["a"])
 

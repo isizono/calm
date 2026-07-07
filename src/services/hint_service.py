@@ -16,6 +16,9 @@ hintの種別と発火条件は仕様確定decisionに従う。
 - tag_notesに以下のハッシュタグマーカーがあれば該当hintをスキップ:
   #recompose-skipped, #recompose-bootstrap-skipped, #recompose-delta-skipped,
   #logs-sparse-ack, #direction-overflow-ack
+- 各マーカーは素の形（恒久抑制）に加えて `<marker>-until:YYYY-MM-DD` の形式
+  （指定日当日まで有効な期限付き抑制）も受け付ける。不正な日付形式は無視される
+  （フェイルオープン、抑制しない側に倒す）。判定は_is_marker_activeに集約する
 - orch-managed activityでの全suppressは呼出側責務 (本moduleは判定しない)
 
 severity値域: info | warn のみ (block不採用)
@@ -28,8 +31,10 @@ Edge cases (フェイルオープン):
 - DB失敗 → 空リスト + stderrログ
 """
 
+import re
 import sqlite3
 import sys
+from datetime import date
 from typing import Any, Literal, TypedDict
 
 from src.config import DIRECTION_OVERFLOW_THRESHOLD
@@ -82,6 +87,38 @@ MARKER_RECOMPOSE_DELTA = "#recompose-delta-skipped"
 MARKER_LOGS_SPARSE = "#logs-sparse-ack"
 MARKER_DIRECTION_OVERFLOW = "#direction-overflow-ack"
 
+# マーカーは素の形（恒久抑制）に加えて `<marker>-until:YYYY-MM-DD`（期限付き抑制、
+# 指定日当日まで有効）も受け付ける。判定は_is_marker_activeに集約する。
+_DATED_MARKER_SUFFIX = "-until:"
+
+
+def _dated_marker_pattern(marker: str) -> re.Pattern[str]:
+    return re.compile(re.escape(marker) + re.escape(_DATED_MARKER_SUFFIX) + r"(\d{4}-\d{2}-\d{2})")
+
+
+def _is_marker_active(notes: str, marker: str) -> bool:
+    """notes内でmarkerが有効な抑制指示として存在するかを判定する。
+
+    2形態をサポートする:
+    - 素のmarker（例: "#recompose-skipped"）: 恒久抑制
+    - 日付付き（例: "#recompose-skipped-until:2026-08-01"）: date.today() <= 指定日
+      の間だけ抑制。不正な日付形式は無視する（フェイルオープン、抑制しない側に倒す）
+
+    日付付きの出現は素のmarkerを部分文字列として含む（prefix関係）ため、日付付き
+    パターンを先に検出して本文から除去してから素のmarker判定を行う。これを怠ると
+    期限切れの日付付きマーカーが恒久マーカーとして誤って残り続けてしまう。
+    """
+    pattern = _dated_marker_pattern(marker)
+    for date_str in pattern.findall(notes):
+        try:
+            until = date.fromisoformat(date_str)
+        except ValueError:
+            continue
+        if date.today() <= until:
+            return True
+    remainder = pattern.sub("", notes)
+    return marker in remainder
+
 
 # --- 文言 ---
 
@@ -89,6 +126,10 @@ HINT_LOGS_SPARSE_MESSAGE = (
     "このトピックはdecisionsに対してlogsが少ないです。"
     "議論の経緯をadd_logsで記録してください。"
     "決定事項だけでは、なぜその結論に至ったかが将来のセッションで失われます。"
+    f"今は都合が悪い場合、対象topicのdomain:タグのnotesに"
+    f"「{MARKER_LOGS_SPARSE}-until:YYYY-MM-DD」（任意の未来日）を追記すると、"
+    f"その日まで一時的に黙らせられます。恒久的に不要なら日付なしの"
+    f"「{MARKER_LOGS_SPARSE}」を追記してください。"
 )
 
 
@@ -97,6 +138,10 @@ def _recompose_bootstrap_message(tag_name: str, total_count: int) -> str:
         f"tag「{tag_name}」にdecisionが{total_count}件蓄積していますが、"
         f"統合material（recomposed material）がありません。"
         f"recompose-context skillでの初回整理をユーザーに提案してください。"
+        f"今は都合が悪い場合、tag notesに"
+        f"「{MARKER_RECOMPOSE_BOOTSTRAP}-until:YYYY-MM-DD」（任意の未来日）を"
+        f"追記すると、その日まで一時的に黙らせられます。恒久的に不要なら日付なしの"
+        f"「{MARKER_RECOMPOSE_BOOTSTRAP}」を追記してください。"
     )
 
 
@@ -105,6 +150,10 @@ def _recompose_delta_message(tag_name: str, delta_count: int) -> str:
         f"tag「{tag_name}」はrecomposed materialの最終更新以降にdecisionが"
         f"{delta_count}件増えています。recompose-context skillでのメンテを"
         f"ユーザーに提案してください。"
+        f"今は都合が悪い場合、tag notesに"
+        f"「{MARKER_RECOMPOSE_DELTA}-until:YYYY-MM-DD」（任意の未来日）を"
+        f"追記すると、その日まで一時的に黙らせられます。恒久的に不要なら日付なしの"
+        f"「{MARKER_RECOMPOSE_DELTA}」を追記してください。"
     )
 
 
@@ -112,6 +161,10 @@ def _direction_overflow_message(tag_name: str, count: int) -> str:
     return (
         f"tag「{tag_name}」の有効な方向性decision（layer:direction）が{count}件"
         f"あります。少数原則の維持のため、統合・supersede整理をユーザーに提案してください。"
+        f"今は都合が悪い場合、tag notesに"
+        f"「{MARKER_DIRECTION_OVERFLOW}-until:YYYY-MM-DD」（任意の未来日）を"
+        f"追記すると、その日まで一時的に黙らせられます。恒久的に不要なら日付なしの"
+        f"「{MARKER_DIRECTION_OVERFLOW}」を追記してください。"
     )
 
 
@@ -186,7 +239,8 @@ def _get_hints_for_tag(conn: sqlite3.Connection, tag_id: int) -> list[Hint]:
 
     base_time = _get_pinned_material_max_time(conn, tag_id)
     if base_time is not None:
-        if not (MARKER_RECOMPOSE_GENERIC in notes or MARKER_RECOMPOSE_DELTA in notes):
+        if not (_is_marker_active(notes, MARKER_RECOMPOSE_GENERIC)
+                or _is_marker_active(notes, MARKER_RECOMPOSE_DELTA)):
             delta = _count_tag_scope_decisions(conn, tag_id, after=base_time)
             if delta >= RECOMPOSE_DELTA_THRESHOLD:
                 hints.append({
@@ -204,7 +258,8 @@ def _get_hints_for_tag(conn: sqlite3.Connection, tag_id: int) -> list[Hint]:
                     "delivery_hint": "immediate",
                 })
     else:
-        if not (MARKER_RECOMPOSE_GENERIC in notes or MARKER_RECOMPOSE_BOOTSTRAP in notes):
+        if not (_is_marker_active(notes, MARKER_RECOMPOSE_GENERIC)
+                or _is_marker_active(notes, MARKER_RECOMPOSE_BOOTSTRAP)):
             total = _count_tag_scope_decisions(conn, tag_id)
             if total >= RECOMPOSE_BOOTSTRAP_THRESHOLD:
                 hints.append({
@@ -222,7 +277,7 @@ def _get_hints_for_tag(conn: sqlite3.Connection, tag_id: int) -> list[Hint]:
                     "delivery_hint": "immediate",
                 })
 
-    if MARKER_DIRECTION_OVERFLOW not in notes:
+    if not _is_marker_active(notes, MARKER_DIRECTION_OVERFLOW):
         direction_count = count_direction_decisions(conn, domain_tag_ids=[tag_id])
         if direction_count >= DIRECTION_OVERFLOW_THRESHOLD:
             hints.append({
@@ -333,7 +388,7 @@ def _get_hints_for_topic(conn: sqlite3.Connection, topic_id: int) -> list[Hint]:
         return []
 
     for notes in _get_topic_domain_tag_notes(conn, topic_id):
-        if MARKER_LOGS_SPARSE in notes:
+        if _is_marker_active(notes, MARKER_LOGS_SPARSE):
             return []
 
     return [{

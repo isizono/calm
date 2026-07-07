@@ -42,7 +42,8 @@ def outbox_status(outbox_id: Optional[int]) -> Optional[dict]:
     """outbox_id を指定した場合のみ relay_outbox 行の配送状況を返す。
 
     Returns:
-        outbox_id が None: None（呼び出し側で outbox セクションを省く合図）
+        outbox_id が None: None（呼び出し側で outbox キーの値を null にする合図。
+            キー自体は main.py 側で常に返り値に含める）
         見つかった場合: {"outbox_id", "status", "labels", "title", "created_at",
                         "processed_at", "dead_at", "retry_count", "last_error"}
         見つからない場合: {"error": {"code": "not_found", "message": str}}
