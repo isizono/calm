@@ -105,9 +105,11 @@ class TestMcpToolsSpecSignalSection:
 
     def test_tool_count_updated(self):
         content = _read(MCP_TOOLS_SPEC)
-        assert "全42ツール" in content
+        assert "全40ツール" in content
         assert "全37ツール" not in content
+        assert "全39ツール" not in content
         assert "全41ツール" not in content
+        assert "全42ツール" not in content
 
 
 class TestMcpToolsSpecToolCount:

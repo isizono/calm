@@ -19,8 +19,6 @@ from src.services import (
     pin_service,
     retract_service,
     timeline_service,
-    ow_service,
-    guard_service,
     precedent_pull_service,
     signal_service,
 )
@@ -30,7 +28,6 @@ from src.services.relay import diagnostics as relay_diagnostics_service
 from src.services.tag_service import search_tags as _search_tags, update_tag as _update_tag, collect_tag_notes_for_injection
 from src.services.tag_analysis_service import analyze_tags as _analyze_tags
 from src.services import citation_renderer
-from src.services.role_service import get_caller_session_id
 from src.db import get_connection
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -113,6 +110,23 @@ CLAUDE.mdのタグ版として機能し、そのタグに遭遇したとき（�
 
 全セッション共通の行動ルールはhabitsとして記録できます。SessionStart時に全件注入されます。
 ユーザーからもらったfeedbackのうち、タグやファイルに依存しない横断的なルールはauto-memoryではなくhabitsに記録してください。
+
+## 近傍情報を取得するには
+
+取得系toolは目的に応じて使い分けてください。
+
+- 確率的に関連情報を探索したい（ランクtop-N）: `search` → 詳細が必要な候補だけ `get_by_ids` で本文取得
+- topic/activityに紐づく決定事項・ログをそのまま一覧したい: `get_decisions` / `get_logs`
+- log/decision/materialを時系列で俯瞰したい: `get_timeline`
+- リレーショングラフを辿って到達可能なエンティティを走査したい: `get_map`
+- activityに着手・再開し、関連情報を一括取得したい: `check_in`（statusをin_progressに自動更新）
+- 設計判断の前に、近傍topicの決定事項を確率的発見ではなく網羅的に確認したい: `pull_precedents`
+
+判断に迷ったらまず`search`で当たりをつけ、設計・裁定に関わる場面では網羅性が要るため`pull_precedents`も併用してください。
+
+## セッション間でメッセージを送るには
+
+他のClaude Codeセッションとやり取りするにはrelayの4動詞を使います。`relay_post`は場（stream）を名指しした一方向の投函、`relay_publish`/`relay_subscribe`はlabelsによる配信・購読のペア、`relay_receive`はどちらの経路で届いたメッセージも自sessionのinboxから受信する共通の受け口です。送ったら届く保証ではなく、受信側が`relay_receive`を呼んで初めて内容が分かるpull型である点に注意してください。
 
 ## 内部識別子は本文に出さない
 
@@ -245,10 +259,6 @@ def _apply_flavor_to_snippets(items: list[dict], flavor: str) -> None:
 # MCPサーバーを作成
 mcp = FastMCP("cc-memory", instructions=build_instructions())
 
-# role 別の tools/list 可視性を制御する middleware を登録する
-from src.services.visibility_middleware import CapabilityVisibilityMiddleware
-mcp.add_middleware(CapabilityVisibilityMiddleware())
-
 # tool呼び出し中の未捕捉例外を signal_events へ自動捕捉する middleware を登録する
 from src.services.signal_middleware import SignalCaptureMiddleware
 mcp.add_middleware(SignalCaptureMiddleware())
@@ -274,6 +284,17 @@ def get_relay_runtime():
     return _relay_runtime
 
 
+def _current_session_id() -> Optional[str]:
+    """MCP context から呼び出しセッションの session_id を取得する。
+
+    MCP のツール実行コンテキスト外（テスト等）では None を返す。
+    """
+    try:
+        return get_context().session_id
+    except RuntimeError:
+        return None
+
+
 # MCPツール定義
 @mcp.tool()
 def add_topic(
@@ -289,9 +310,7 @@ def add_topic(
     related: 関連エンティティ（optional）。[{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...] 形式。複数エンティティを配列で同時紐付け可能。例: [{"type": "topic", "ids": [1, 2]}, {"type": "decision", "ids": [10]}]。作成と同時にリレーションを張る
 
     レスポンスに類似トピック(similar_topics)が含まれる場合がある。重複トピックの防止やリレーション追加の参考にすること。"""
-    guard_service.check_capability("add_topic")
-    caller_session_id = get_caller_session_id()
-    result = topic_service.add_topic(title, description, tags, related=related, caller_session_id=caller_session_id)
+    result = topic_service.add_topic(title, description, tags, related=related)
     if "error" not in result:
         _maybe_inject_tag_notes(result, tags)
     return result
@@ -311,8 +330,7 @@ def add_logs(items: list[dict]) -> dict:
 
     Returns: {created: [...], errors: [{index, error}]}
     """
-    caller_session_id = get_caller_session_id()
-    result = discussion_log_service.add_logs(items, caller_session_id=caller_session_id)
+    result = discussion_log_service.add_logs(items)
     if "error" not in result:
         # tag_notes: 全アイテムのタグをUNIONして1回注入
         all_tags = set()
@@ -353,9 +371,7 @@ def add_decisions(items: list[dict], ctx: Context) -> dict:
         あれば precedent_warnings（文字列のリスト）も付く。これはsoft validationであり、
         warningがあってもdecision作成自体は拒否しない。
     """
-    guard_service.check_capability("add_decisions")
-    caller_session_id = get_caller_session_id()
-    result = decision_service.add_decisions(items, caller_session_id=caller_session_id)
+    result = decision_service.add_decisions(items)
     if "error" not in result:
         # tag_notes: 全アイテムのタグをUNIONして1回注入
         all_tags = set()
@@ -381,6 +397,8 @@ def get_topics(
     tags: タグ配列（optional）。指定時はAND条件でフィルタ。未指定時は全件返す。例: ["domain:cc-memory"]
     since: ISO日付文字列（例: "2026-03-10"）。この日付以降に作成されたトピックのみ返す
     until: ISO日付文字列。この日付以前に作成されたトピックのみ返す
+    flavor: citation展開モード（raw/internal/readable、既定internal）。3値の意味・出力例は
+        docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
     """
     flavor = _normalize_flavor(flavor)
     result = topic_service.get_topics(tags, limit, offset, since, until)
@@ -412,6 +430,8 @@ def get_logs(
         start_id: 取得開始位置のログID（ページネーション用）
         limit: 取得件数上限（最大30件）
         include_retracted: Trueのとき取り消し済みログも含める（デフォルトFalse）
+        flavor: citation展開モード（raw/internal/readable、既定internal）。3値の意味・出力例は
+            docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
 
     Returns:
         議論ログ一覧（各logにtags付き）
@@ -437,7 +457,7 @@ def get_decisions(
     flavor: _FlavorArg = "internal",
 ) -> dict:
     """
-    Choose: topic/activity に紐づく decision 一覧が欲しいとき。議論経緯の log なら get_logs、log/decision/material の混合時系列なら get_timeline、起点からの関連グラフ走査なら get_map、activity 着手時の文脈集約なら check_in（status を in_progress に自動更新する副作用あり、着手時のみ）。
+    Choose: topic/activity に紐づく decision 一覧が欲しいとき。議論経緯の log なら get_logs、log/decision/material の混合時系列なら get_timeline、起点からの関連グラフ走査なら get_map、activity 着手時の文脈集約なら check_in（status を in_progress に自動更新する副作用あり、着手時のみ）、設計判断前に近傍 topic の判例を網羅確認したいなら pull_precedents。
 
     指定エンティティに関連する決定事項を取得する。
 
@@ -447,6 +467,8 @@ def get_decisions(
         start_id: 取得開始位置の決定事項ID（ページネーション用）
         limit: 取得件数上限（最大30件）
         include_retracted: Trueのとき取り消し済み決定事項も含める（デフォルトFalse）
+        flavor: citation展開モード（raw/internal/readable、既定internal）。3値の意味・出力例は
+            docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
 
     Returns:
         決定事項一覧（各decisionにtags付き）
@@ -505,7 +527,8 @@ def pull_precedents(
         include_materials: decision に紐づく material と topic 直下 material の
                            カタログを同時展開する。related/citation 経由の展開は
                            30 件で打ち切られ、超過時は materials_truncated=true になる
-        flavor: citation 展開モード（internal / readable / raw）
+        flavor: citation展開モード（raw/internal/readable、既定internal）。3値の意味・出力例は
+                docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
 
     Returns:
         {guarantee, routing, topics, budget, truncated, materials_truncated}
@@ -617,6 +640,8 @@ def search(
         domain: ドメインフィルタ。内部でtags=["domain:{domain}"]にマージされる
         date_after: 日付フィルタ（以降）。YYYY-MM-DD or YYYY-MM-DD HH:MM:SS形式
         date_before: 日付フィルタ（以前）。YYYY-MM-DD or YYYY-MM-DD HH:MM:SS形式
+        flavor: citation展開モード（raw/internal/readable、既定internal）。3値の意味・出力例は
+            docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
 
     Returns:
         検索結果一覧（type, id, title, score, snippet, tags）
@@ -626,6 +651,22 @@ def search(
         tagsはエンティティに紐づくタグ文字列のリスト。
         include_details=Trueの場合、上位10件にdetailsが追加される。
 
+        search_methods_used: 実際に使われた検索手法のリスト（"fts5" / "vector" / "tag_like" の
+        部分集合）。"vector" が含まれないときはベクトル検索（embeddingサーバー）がこの呼び出し
+        時点で利用不可だったことを意味する。
+
+        degraded: bool。True はこの呼び出し時点でベクトル検索（embeddingサーバー）が利用不可
+        だったことを示す。この場合、結果はFTS5キーワード一致・タグ名一致のみに基づいており、
+        意味的には関連するが字面が異なる項目を取りこぼしている可能性がある。「類似する情報が
+        見つからない」と判断する前に degraded を確認し、True であれば少し時間を置くか
+        embeddingサーバーの起動を待ってから再検索することを検討する。False のときはベクトル
+        検索が実際に実行されたことを示し、ヒット件数が0件だった場合も False のままである
+        （「使えたが該当なし」と「使えなかった」を区別する）。バリデーションエラーなどベクトル
+        検索を試す前に結果が確定するケースでは degraded キー自体がレスポンスに存在しない。
+
+        nearby_tags: 検索結果に共起するタグの上位5件 [{"tag": str, "co_count": int}, ...]。
+        offset>0 のときは常に空リスト。
+
         取り消し済み（retracted）のdecision/logはretract時に物理削除されているため、
         検索結果には現れない。直接取得したい場合はget_decisions/get_logsで
         include_retracted=Trueを指定する。
@@ -633,8 +674,10 @@ def search(
         snippetでなく全文が必要な場合は、結果のtype+idをget_by_idsに渡す。
     """
     flavor = _normalize_flavor(flavor)
-    caller_session_id = get_caller_session_id()
-    result = search_service.search(keyword, tags, entity_type, limit, offset, keyword_mode, include_details, domain, date_after, date_before, caller_session_id=caller_session_id)
+    result = search_service.search(
+        keyword, tags, entity_type, limit, offset, keyword_mode, include_details,
+        domain, date_after, date_before, caller_session_id=_current_session_id(),
+    )
     if "error" not in result:
         _apply_flavor_to_snippets(result.get("results", []), flavor)
     if "error" not in result and tags:
@@ -659,6 +702,8 @@ def get_by_ids(
         items: 取得対象のリスト。各要素は {type: str, id: int}（最大20件）
                type: データ種別（'topic', 'decision', 'activity', 'log', 'material'）
                id: データのID
+        flavor: citation展開モード（raw/internal/readable、既定internal）。3値の意味・出力例は
+                docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
 
     Returns:
         取得結果（各アイテムの詳細情報）
@@ -668,8 +713,7 @@ def get_by_ids(
         節が無いdecisionにはキー自体が無い
     """
     flavor = _normalize_flavor(flavor)
-    caller_session_id = get_caller_session_id()
-    result = search_service.get_by_ids(items, caller_session_id=caller_session_id)
+    result = search_service.get_by_ids(items, caller_session_id=_current_session_id())
     if "error" not in result:
         conn = get_connection()
         try:
@@ -818,10 +862,9 @@ def add_activity(
     Returns:
         作成されたアクティビティ情報（check_in=Trueの場合はcheck_in_resultにtag_notes等を含む）
     """
-    caller_session_id = get_caller_session_id()
     result = activity_service.add_activity(
         title, description, tags, related=related, check_in=check_in,
-        orch_managed=orch_managed, caller_session_id=caller_session_id,
+        orch_managed=orch_managed,
     )
     if "error" not in result:
         # check_in=Trueの場合、check_in_resultにtag_notesが含まれるため
@@ -861,6 +904,8 @@ def get_activities(
         limit: 取得件数上限（デフォルト: 5）
         since: ISO日付文字列（例: "2026-03-10"）。この日付以降に更新されたアクティビティのみ返す
         until: ISO日付文字列。この日付以前に更新されたアクティビティのみ返す
+        flavor: citation展開モード（raw/internal/readable、既定internal）。3値の意味・出力例は
+                docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
         orch_managed: True/False を指定すると activities.orch_managed カラムでフィルタする。None（デフォルト）はフィルタなし
 
     呼び出し時、更新日時がSNOOZE_DURATION_DAYS（デフォルト3日）を超過したsnoozedアクティビティは
@@ -947,8 +992,7 @@ def add_material(
     Returns:
         作成された資材情報（material_id, title, content, source, tags, created_at）
     """
-    caller_session_id = get_caller_session_id()
-    return material_service.add_material(title, content, tags, source, related=related, caller_session_id=caller_session_id)
+    return material_service.add_material(title, content, tags, source, related=related)
 
 
 @mcp.tool()
@@ -1009,6 +1053,8 @@ def get_material(
 
     Args:
         material_id: 資材のID
+        flavor: citation展開モード（raw/internal/readable、既定internal）。3値の意味・出力例は
+                docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
         include_retracted: Trueのとき取り消し済みの資材も取得できる（デフォルトFalse）
 
     Returns:
@@ -1073,7 +1119,7 @@ def check_in(
     flavor: _FlavorArg = "internal",
 ) -> dict:
     """
-    Choose: アクティビティに着手するときに関連情報を一括取得したいとき（status を in_progress に自動更新）。関連グラフだけ俯瞰したいなら get_map、log/decision/material の時系列なら get_timeline、log だけなら get_logs、decision だけなら get_decisions。
+    Choose: アクティビティに着手するときに関連情報を一括取得したいとき（status を in_progress に自動更新）。関連グラフだけ俯瞰したいなら get_map、log/decision/material の時系列なら get_timeline、log だけなら get_logs、decision だけなら get_decisions、設計判断前に近傍 topic の判例を網羅確認したいなら pull_precedents。
 
     アクティビティにcheck-inする。関連情報を集約取得しsummaryを返す。
 
@@ -1085,6 +1131,8 @@ def check_in(
 
     Args:
         activity_id: アクティビティID
+        flavor: citation展開モード（raw/internal/readable、既定internal）。3値の意味・出力例は
+            docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
 
     Returns:
         check-in結果（coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary）
@@ -1266,14 +1314,7 @@ def get_map(
 
 @mcp.tool()
 def add_habit(content: str) -> dict:
-    """エージェントの振る舞いを登録する。SessionStart時に全件注入される（セッション途中の登録は次セッション以降に有効）。"覚えといて"と言われた行動ルールはここに登録する
-
-    worker セッション (OW_ROLE=worker) からの直接呼び出しは
-    WorkerGuardError でブロックされる。ユーザー承認を要する書き込みなので
-    add_decisions / add_topic と同じ guard 対象。OW_ESCALATION=1 の
-    orch_proxy 経路でのみ通過する。
-    """
-    guard_service.check_capability("add_habit")
+    """エージェントの振る舞いを登録する。SessionStart時に全件注入される（セッション途中の登録は次セッション以降に有効）。"覚えといて"と言われた行動ルールはここに登録する"""
     return habit_service.add_habit(content)
 
 
@@ -1401,6 +1442,8 @@ def get_timeline(
         before: ページネーション用カーソル（ISO 8601形式のcreated_at）
         limit: 取得件数上限（デフォルト50、最大100）
         order: ソート方向（"desc"または"asc"、デフォルト"desc"）
+        flavor: citation展開モード（raw/internal/readable、既定internal）。3値の意味・出力例は
+            docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
     """
     flavor = _normalize_flavor(flavor)
     result = timeline_service.get_timeline(
@@ -1420,7 +1463,12 @@ def get_timeline(
 
 @mcp.tool()
 def get_config() -> dict:
-    """現在の設定値を返す。スキルが環境変数ベースの設定を参照するために使用する。"""
+    """現在の設定値を返す。スキルが環境変数ベースの設定を参照するために使用する。
+
+    read_tool_limitsはtool呼び出し前にレスポンスサイズを見積もるための既定上限一覧。
+    search/get_logs/get_decisions/get_timelineの上限は各serviceにハードコードされており
+    環境変数では変更できない（precedent_budget_charsのみCCM_PRECEDENT_BUDGET_CHARSで変更可）。
+    """
     from src import config
     return {
         "heartbeat_timeout": config.HEARTBEAT_TIMEOUT_MINUTES,
@@ -1432,6 +1480,16 @@ def get_config() -> dict:
         "snapshot_interval_hours": config.SNAPSHOT_INTERVAL_HOURS,
         "snapshot_max_count": config.SNAPSHOT_MAX_COUNT,
         "snapshot_anomaly_threshold": config.SNAPSHOT_ANOMALY_THRESHOLD,
+        "precedent_budget_chars": config.PRECEDENT_BUDGET_CHARS,
+        "read_tool_limits": {
+            "search": {"default": 10, "max": 50},
+            "get_logs": {"default": 30, "max": 30},
+            "get_decisions": {"default": 30, "max": 30},
+            "get_activities": {"default": 5},
+            "get_timeline": {"default": 50, "max": timeline_service.MAX_LIMIT},
+            "get_by_ids": {"max_items": search_service.GET_BY_IDS_MAX},
+            "pull_precedents": {"k_max": config.PRECEDENT_ROUTING_K_MAX},
+        },
     }
 
 
@@ -1482,7 +1540,6 @@ def report_signal(
         成功時: {"id": int, "deduped": bool, "occurrence_count": int}
         失敗時: {"error": {"code": "VALIDATION_ERROR", "message": ...}}
     """
-    caller_session_id = get_caller_session_id()
     try:
         return signal_service.record_signal(
             kind,
@@ -1490,7 +1547,7 @@ def report_signal(
             detail=detail,
             refs=refs,
             context=context,
-            session_id=caller_session_id,
+            session_id=_current_session_id(),
         )
     except ValueError as e:
         return {"error": {"code": "VALIDATION_ERROR", "message": str(e)}}
@@ -1517,6 +1574,10 @@ def get_signals(
     Returns:
         成功時: {"signals": [...], "total_count": int, "stats": {...}(include_stats時のみ)}
         失敗時: {"error": {"code": ..., "message": ...}}
+        各signalのidは他のget系ツールと同様id_rawとして返る（idキー自体は含まない）。
+        refs内の各要素のid・promoted_id・context内にネストした参照（missed_ids等）も
+        同じ変換で対応する`{id_key}_raw`に退避される。
+        session_id/fingerprintは記録側の内部相関・dedup専用フィールドのため含まない
     """
     return signal_service.get_signals(
         status=status, kind=kind, limit=limit, offset=offset, include_stats=include_stats
@@ -1544,72 +1605,30 @@ def update_signal(
         promoted_id: 昇格先エンティティID。promoted_typeと同時に指定する
 
     Returns:
-        成功時: {"signal": {...}}（更新後の行）
+        成功時: {"signal": {...}}（更新後の行。idはid_rawとして返り、
+            session_id/fingerprintは含まない。refs/promoted_id/context内参照の
+            id_raw化も含め、get_signalsと同じ整形）
         失敗時: {"error": {"code": ..., "message": ...}}
     """
-    guard_service.check_capability("update_signal")
     return signal_service.update_signal(
         signal_id, status, promoted_type=promoted_type, promoted_id=promoted_id
     )
 
 
 # ----------------------------
-# セッション間メッセージングツール群
+# relayセッション面ツール群（4動詞）
 # ----------------------------
 
 
 @mcp.tool()
-def ow_send(
-    channel: str,
-    handle: str,
-    body: dict,
-    needs_reply: bool = False,
-    in_reply_to: int | None = None,
-) -> dict:
-    """ow channelにメッセージを送信する。
-
-    bodyはow固有JSONを格納するdict（{"v":1, "kind":"command"|"event", ...}）。
-    4xx即失敗、5xx/接続断のみ3回指数バックオフ。
-
-    Args:
-        channel: channelコード
-        handle: 送信者handle（例: "orch", "w-a"）
-        body: ow固有JSON。relayのbody内に格納される
-        needs_reply: 返信を期待するか（デフォルト: False）
-        in_reply_to: 返信先のmsg_id（optional）
-
-    Returns:
-        成功時: {"msg_id": int}
-        失敗時: {"error": {...}}
-    """
-    return ow_service.ow_send(channel, handle, body, needs_reply, in_reply_to)
-
-
-@mcp.tool()
-def ow_history(channel: str, since: int = 0, limit: int = 100) -> dict:
-    """ow channelの履歴を取得する。受信処理の本体。
-
-    since自身を含まない（msg_id > since）。
-    SSEは起床信号専用。起床後はこのツールで未処理メッセージを全件pull。
-
-    Args:
-        channel: channelコード
-        since: このmsg_idより大きいものを返す（0=全件）
-        limit: 最大取得件数（デフォルト: 100）
-
-    Returns:
-        {"messages": [{"msg_id": int, "handle": str, "body": dict, ...}, ...]}
-        失敗時: {"error": {...}}
-    """
-    return ow_service.ow_history(channel, since, limit)
-
-
-@mcp.tool()
 def relay_post(stream_name: str, body: str, ttl: int | None = None) -> dict:
-    """場（stream）にメッセージを投函する。
+    """場（stream）にメッセージを投函する（セッション間メッセージング）。
 
     投函先 stream が未存在なら自動作成して投函する（事前の stream 作成操作は不要）。
     自 server 名義の stream のみ扱う（他名義の stream には投函できない）。
+    relay への呼び出し自体は同期だが、成功応答の matched_members は投函時点の購読者数を
+    示すのみで、各購読者への実配達は relay 側の非同期配信を経由する（配達完了そのものは
+    保証しない）。
 
     Args:
         stream_name: stream 名（":" と "/" は使用不可）。実体の stream_id は server 名義で修飾される
@@ -1618,21 +1637,26 @@ def relay_post(stream_name: str, body: str, ttl: int | None = None) -> dict:
 
     Returns:
         成功時: {"stream_id": str, "publish_id": int, "matched_members": int}
-        失敗時: {"error": {"code": str, "message": str}}
+        失敗時: {"error": {"code": str, "message": str, "retry_after"?: float | None}}
+                （code == "rate_limited"（429）のときのみ retry_after が付与される。
+                 Retry-After ヘッダ未提供時は null。この秒数だけ待ってからリトライすること）
     """
-    guard_service.check_capability("relay_post")
     return relay_session_service.relay_post(stream_name, body, ttl=ttl)
 
 
 @mcp.tool()
 def relay_publish(labels: list[str], body: str, title: str | None = None) -> dict:
-    """labels routing でメッセージを配布する（labels を購読中の session にマッチング配送）。
+    """labels routing でメッセージを配布する（labels を購読中の session にマッチング配送、
+    セッション間メッセージング）。
 
-    送信者の handle: label が自動付与される。配送は送信キュー経由の非同期・at-least-once。
-    labels には routing 系（handle:/channel:/task:）と cc-memory 既存語彙（decision: 等の
-    entity 系）を併用でき、entity 系のみでも有効。未知 prefix も不透明 label として受理する。
-    role: は廃止済みのため指定するとエラー。curation の対象になるのは entity 系 labels のみで、
-    routing 系は curation 対象外。
+    relay_outbox への受理のみで即座に成功応答を返す非同期方式で、実際の配達は server 内の
+    常駐配達ループが at-least-once で行う（成功応答は配達完了を意味しない）。
+
+    送信者の handle: label が自動付与される。labels には routing 系（handle:/room:/task:）と
+    cc-memory の tag namespace（domain:/intent: 等）を併用でき、これらのみでも有効。未知
+    prefix も不透明 label として受理する。role:（廃止済み namespace）と cc-memory の中核
+    entity namespace（topic:/activity:/decision:/log:/material:。実在チェックなしの不透明
+    文字列にしかならないため予約済み）は指定するとエラー。
 
     Args:
         labels: 配送先マッチング用 labels（必須・1 個以上）
@@ -1643,21 +1667,23 @@ def relay_publish(labels: list[str], body: str, title: str | None = None) -> dic
         成功時: {"outbox_id": int, "labels": [str], "handle": str}
         失敗時: {"error": {"code": str, "message": str}}
     """
-    guard_service.check_capability("relay_publish")
-    caller_session_id = get_caller_session_id()
     return relay_session_service.relay_publish(
-        labels, body, title=title, caller_session_id=caller_session_id
+        labels, body, title=title, caller_session_id=_current_session_id()
     )
 
 
 @mcp.tool()
 def relay_subscribe(labels: list[str]) -> dict:
-    """labels の購読を宣言する。宣言後は relay_receive で受信できる。
+    """labels の購読を宣言する（セッション間メッセージングの受信登録）。宣言後は
+    relay_receive で受信できる。購読宣言（relay_subscribe）と受信（relay_receive）は
+    分離しており、実際のメッセージ受信は relay_receive 側が担う。
 
     自 session の handle: label が自動付与される。labels が空配列の場合は自分の handle 宛
     （直接メッセージ）のみの購読になる。同一 labels 集合での再呼び出しは冪等で、lease が
     有効なら既存の購読をそのまま返し、失効していれば新規に購読し直して差し替える。
     lease 更新・再接続・購読解除は server 側で自動管理される（呼び出し側の操作は不要）。
+    role:（廃止済み namespace）と cc-memory の中核 entity namespace
+    （topic:/activity:/decision:/log:/material:）は relay_publish と同様に指定するとエラー。
 
     Args:
         labels: 購読条件 labels（配列。publish 側の labels をすべて含む発話が届く）
@@ -1665,18 +1691,22 @@ def relay_subscribe(labels: list[str]) -> dict:
     Returns:
         成功時: {"subscription_id": str, "labels": [str], "lease_expires_at": str,
                  "handle": str, "reused": bool}
-        失敗時: {"error": {"code": str, "message": str}}
+        失敗時: {"error": {"code": str, "message": str, "retry_after"?: float | None}}
+                （code == "rate_limited"（429）のときのみ retry_after が付与される。
+                 Retry-After ヘッダ未提供時は null。この秒数だけ待ってからリトライすること）
     """
-    guard_service.check_capability("relay_subscribe")
-    caller_session_id = get_caller_session_id()
     return relay_session_service.relay_subscribe(
-        labels, caller_session_id=caller_session_id
+        labels, caller_session_id=_current_session_id()
     )
 
 
 @mcp.tool()
 def relay_receive(limit: int | None = None) -> dict:
-    """自 session 宛に届いたメッセージの未読分を受信する。
+    """自 session 宛に届いたメッセージの未読分を受信する（セッション間メッセージングの受信）。
+
+    relay_subscribe で宣言した labels にマッチして server 内の受信スレッドが既に自 session
+    の inbox へ配達済みのメッセージをローカルから drain するのみで、呼び出し自体は relay と
+    通信しない。
 
     配達契約は at-least-once のため、同一メッセージが重複して届くことがある
     （受信側で冪等に扱うこと）。既読分は返さない。未読が無ければ空リストを
@@ -1689,10 +1719,8 @@ def relay_receive(limit: int | None = None) -> dict:
         成功時: {"messages": [dict, ...], "count": int}
         失敗時: {"error": {"code": str, "message": str}}
     """
-    guard_service.check_capability("relay_receive")
-    caller_session_id = get_caller_session_id()
     return relay_session_service.relay_receive(
-        limit, caller_session_id=caller_session_id
+        limit, caller_session_id=_current_session_id()
     )
 
 
@@ -1820,8 +1848,8 @@ def _ensure_project_root_cwd() -> Path:
 
     `uv run python -m src.main --transport http` をworktree内など任意の場所から
     起動すると、HTTPサーバープロセスはその場所をcwdとして固定する。当該cwdが
-    後から削除・移動されると、ow_service内のsubprocess呼び出しや相対パス操作が
-    存在しないパスを参照し続けるリスクがある（relay起動失敗・診断困難）。
+    後から削除・移動されると、embedding_service等のsubprocess呼び出しや相対パス
+    操作が存在しないパスを参照し続けるリスクがある（起動失敗・診断困難）。
     cwdをこの関数の `__file__` 由来のプロジェクトルートへ強制し、構造的に防ぐ。
 
     Returns:

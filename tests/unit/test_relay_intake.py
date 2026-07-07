@@ -97,15 +97,15 @@ class TestResolvers:
     def test_stream_targets_return_all_declaring_sessions(self):
         _write_declaration(
             "sess-a",
-            [{"subscription_id": "s-1", "labels": ["channel:planning"]}],
+            [{"subscription_id": "s-1", "labels": ["room:planning"]}],
         )
         _write_declaration(
             "sess-b",
-            [{"subscription_id": "s-2", "labels": ["channel:planning", "other"]}],
+            [{"subscription_id": "s-2", "labels": ["room:planning", "other"]}],
         )
         _write_declaration(
             "sess-c",
-            [{"subscription_id": "s-3", "labels": ["channel:release"]}],
+            [{"subscription_id": "s-3", "labels": ["room:release"]}],
         )
         snapshot = declarations.load_all()
         assert set(resolve_stream_targets(snapshot, "planning")) == {"sess-a", "sess-b"}
@@ -179,11 +179,11 @@ class TestDispatchStreamFrame:
     def test_stream_frame_fans_out_to_all_declaring_sessions(self):
         _write_declaration(
             "sess-a",
-            [{"subscription_id": "s-1", "labels": ["channel:planning"]}],
+            [{"subscription_id": "s-1", "labels": ["room:planning"]}],
         )
         _write_declaration(
             "sess-b",
-            [{"subscription_id": "s-2", "labels": ["channel:planning"]}],
+            [{"subscription_id": "s-2", "labels": ["room:planning"]}],
         )
         snapshot = declarations.load_all()
         tracker = AckTracker()
@@ -217,11 +217,11 @@ class TestDispatchStreamFrame:
     def test_stream_frame_partial_write_failure_does_not_ack(self, monkeypatch):
         _write_declaration(
             "sess-a",
-            [{"subscription_id": "s-1", "labels": ["channel:planning"]}],
+            [{"subscription_id": "s-1", "labels": ["room:planning"]}],
         )
         _write_declaration(
             "sess-b",
-            [{"subscription_id": "s-2", "labels": ["channel:planning"]}],
+            [{"subscription_id": "s-2", "labels": ["room:planning"]}],
         )
         snapshot = declarations.load_all()
         tracker = AckTracker()

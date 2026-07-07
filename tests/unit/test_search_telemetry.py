@@ -519,6 +519,7 @@ def test_build_diagnostics_vector_and_tag_hits():
     assert "tag_like" in diag["methods_used"]
     assert diag["qe_expansions"] == []
     assert diag["adaptive_weights"] == {"w_fts": weights[0], "w_vec": weights[1]}
+    assert diag["degraded"] is False  # vec が None でないため
 
 
 def test_build_diagnostics_vec_hits_zero_when_enabled_but_no_hits():
@@ -536,6 +537,7 @@ def test_build_diagnostics_vec_hits_zero_when_enabled_but_no_hits():
     assert diag["vec_hits"] == 0
     assert diag["tag_hits"] == 0
     assert "vector" in diag["methods_used"]
+    assert diag["degraded"] is False  # ヒット0件でも vec は None ではない
 
 
 def test_build_diagnostics_qe_expansions_populated():
@@ -556,3 +558,4 @@ def test_build_diagnostics_qe_expansions_populated():
 
     assert diag["qe_expansions"] == ["bar", "baz"]  # 元キーワードは含まない
     assert diag["vec_hits"] is None  # 無効時は None
+    assert diag["degraded"] is True  # vec_hits is None と等価

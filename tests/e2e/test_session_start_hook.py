@@ -376,52 +376,6 @@ class TestSessionStartHookOwRoleEnvIgnored:
         assert "# 振る舞い" in context
         assert "残存env下振る舞い" in context
 
-    def test_stale_ow_role_env_does_not_register_session_identity(self, temp_db):
-        """OW_ROLE=worker + session_idが揃っていてもsession_identityには登録されない"""
-        result = _run_session_start_hook(
-            temp_db,
-            extra_env={"OW_ROLE": "worker", "OW_HANDLE": "stale-handle"},
-            stdin_payload={"session_id": "sess-no-register"},
-        )
-        assert "hookSpecificOutput" in result
-
-        conn = get_connection()
-        try:
-            rows = conn.execute("SELECT session_id FROM session_identity").fetchall()
-        finally:
-            conn.close()
-        assert rows == []
-
-    def test_stale_session_identity_row_does_not_affect_new_session(self, temp_db):
-        """session_identity に残存する過去の worker 行が別 session_id の
-        hook 挙動に影響しないことを保証する回帰ガード。
-
-        現状 hook は role / session_identity を一切参照しないため、この
-        assertion は session_identity の中身に関わらず通過する（現時点では
-        実質的な検証力を持たない）。将来 hook 側に role 参照が再導入された
-        場合に、残存 worker 行が新規セッションのアクティビティ一覧を誤って
-        抑制する回帰を検出するためのガードとして残す。"""
-        conn = get_connection()
-        try:
-            conn.execute(
-                "INSERT INTO session_identity (session_id, role) VALUES (?, ?)",
-                ("sess-old-worker", "worker"),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-        _seed_activity("[作業] 新規セッション表示テスト", status="in_progress")
-
-        result = _run_session_start_hook(
-            temp_db,
-            env_remove=["OW_ROLE"],
-            stdin_payload={"session_id": "sess-new"},
-        )
-        context = result["hookSpecificOutput"]["additionalContext"]
-
-        assert "# アクティビティ一覧" in context
-        assert "新規セッション表示テスト" in context
-
 
 class TestSessionStartHookOrchManagedExclusion:
     """orch_managed=1 アクティビティの除外テスト"""

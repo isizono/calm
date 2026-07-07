@@ -230,3 +230,38 @@ class TestErrorPropagation:
         monkeypatch.setattr(service, "make_client", factory)
         result = service.relay_post("general", "hello")
         assert result["error"]["code"] == "relay_unavailable"
+        assert "retry_after" not in result["error"]
+
+
+class TestRateLimiting:
+    def test_429_with_retry_after_header_returns_rate_limited_code(self, monkeypatch):
+        stub = StubRelay()
+        stub.handlers[("POST", MESSAGES_PATH)] = lambda request: httpx.Response(
+            429,
+            json={"code": "RATE_LIMITED", "message": "しばらく待ってください"},
+            headers={"Retry-After": "12.5"},
+        )
+        stub.install(monkeypatch)
+        result = service.relay_post("general", "hello")
+        assert result["error"]["code"] == "rate_limited"
+        assert result["error"]["retry_after"] == 12.5
+
+    def test_429_without_retry_after_header_returns_null_retry_after(self, monkeypatch):
+        stub = StubRelay()
+        stub.handlers[("POST", MESSAGES_PATH)] = lambda request: httpx.Response(
+            429, json={"code": "RATE_LIMITED", "message": "しばらく待ってください"}
+        )
+        stub.install(monkeypatch)
+        result = service.relay_post("general", "hello")
+        assert result["error"]["code"] == "rate_limited"
+        assert result["error"]["retry_after"] is None
+
+    def test_non_rate_limit_errors_do_not_carry_retry_after_key(self, monkeypatch):
+        """validation 等、`_error()` に extra を渡さない既存呼び出しには
+        `retry_after` 等の余計なキーが混入しない。
+        """
+        stub = StubRelay()
+        stub.install(monkeypatch)
+        result = service.relay_post("general", "")
+        assert result["error"]["code"] == "validation"
+        assert "retry_after" not in result["error"]

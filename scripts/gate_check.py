@@ -60,7 +60,6 @@ PUBLIC_IF_PATHS: tuple[str, ...] = (
     "src/main.py",
     "src/remote.py",
     "src/http_config.py",
-    "src/services/visibility_middleware.py",
     "docs/spec/openapi.yaml",
     "hooks/hooks.json",
     "marketplace.json",

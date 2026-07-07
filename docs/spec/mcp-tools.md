@@ -22,7 +22,7 @@ last-synced-migration: 0048
 
 ## 1. ツール一覧
 
-全42ツール。カテゴリ別に一覧する。
+全40ツール。カテゴリ別に一覧する。
 
 ### 1.1 記録系（add系）
 
@@ -51,6 +51,7 @@ last-synced-migration: 0048
 | `get_map` | リレーショングラフを走査し到達可能カタログを返す |
 | `get_timeline` | トピックまたはアクティビティの時系列を返す |
 | `get_config` | 現在の設定値を返す |
+| `pull_precedents` | 設計判断前に近傍topicの決定事項を網羅列挙する（判例pull） |
 
 ### 1.3 更新系（update系）
 
@@ -84,13 +85,6 @@ last-synced-migration: 0048
 | --- | --- |
 | `check_in` | アクティビティにcheck-inして関連情報を集約取得する |
 
-### 1.7 ow系（セッション間メッセージング）
-
-| ツール | 概要 |
-| --- | --- |
-| `ow_send` | ow channelにメッセージを送信する |
-| `ow_history` | ow channel履歴を取得する |
-
 ### 1.8 その他
 
 | ツール | 概要 |
@@ -109,20 +103,22 @@ cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベ�
 
 | ツール | 概要 |
 | --- | --- |
-| `report_signal` | cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベントを記録する（orch/dispatcher/workerいずれからも呼べる） |
+| `report_signal` | cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベントを記録する |
 | `get_signals` | 記録されたシグナルを一覧・集計する |
-| `update_signal` | シグナルのトリアージ状態を遷移する（orch専用） |
+| `update_signal` | シグナルのトリアージ状態を遷移する |
 
 ### 1.11 relay系（セッション間通信 4動詞）
 
 Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サーバー（HTTP、既定 `http://localhost:8770`）を transport とし、cc-memory server 単一 identity 名義で代理購読・代理投函する。ack・lease renew・購読解除・SSE再接続はサーバー側で自動管理され、ツール面にはこの4動詞のみを見せる。配送状況・runtime健全性の確認は診断専用の`relay_status`（1.12）を使う。
 
-| ツール | 概要 |
-| --- | --- |
-| `relay_post` | 場（stream）にメッセージを投函する（未存在streamは自動作成） |
-| `relay_publish` | labels routingでメッセージを配布する（outbox経由・at-least-once） |
-| `relay_subscribe` | labelsの購読を宣言する（同一labels集合の再呼び出しは冪等） |
-| `relay_receive` | 自session宛の未読メッセージをinboxからdrainする |
+4動詞はフラットな並列ではなく、「1. 名指し送信」「2. labelペアでの配信」「3. 受信（両方に共通）」の2+1構造を持つ。真に対をなすのは publish/subscribe のみで、post は対になる購読動詞を持たない一方通行の送信、receive は post/publish どちらの経路で届いたメッセージも受け取る共通の受け口である。
+
+| # | ツール | 役割 | 概要 |
+| --- | --- | --- | --- |
+| 1 | `relay_post` | 名指し送信 | 場（stream）にメッセージを投函する（未存在streamは自動作成） |
+| 2 | `relay_publish` | label配信（送信側） | labels routingでメッセージを配布する（outbox経由・at-least-once） |
+| 2 | `relay_subscribe` | label配信（受信側） | labelsの購読を宣言する（同一labels集合の再呼び出しは冪等） |
+| 3 | `relay_receive` | 受信（共通） | 自session宛の未読メッセージをinboxからdrainする |
 
 ### 1.12 relay観測系（診断・非動詞）
 
@@ -424,29 +420,6 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 
 **返り値**: `{result: int}`。
 
-### 2.27 ow_send
-
-| 名前 | 型 | 必須 | デフォルト | 説明 |
-| --- | --- | --- | --- | --- |
-| channel | string | yes | - | channelコード |
-| handle | string | yes | - | 送信者handle |
-| body | object | yes | - | ow固有JSON。`{v:1, kind:"command"|"event", ...}` |
-| needs_reply | bool | no | false | 返信を期待するか |
-| in_reply_to | int | no | null | 返信先のmsg_id |
-
-**返り値**: `{msg_id: int}`。
-**エラー処理**: 4xxは即失敗、5xx/接続断のみ3回指数バックオフ。
-
-### 2.28 ow_history
-
-| 名前 | 型 | 必須 | デフォルト | 説明 |
-| --- | --- | --- | --- | --- |
-| channel | string | yes | - | channelコード |
-| since | int | no | 0 | このmsg_idより大きいものを返す |
-| limit | int | no | 100 | 最大取得件数 |
-
-**返り値**: `{messages: [{msg_id, handle, body, ...}]}`。SSEは起床信号専用で、実体取得はこちらで行う。
-
 ### 2.29 report_signal
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
@@ -483,7 +456,23 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 | promoted_id | int | no | null | 昇格先エンティティID。promoted_typeと同時に指定する |
 
 **返り値**: `{signal: {...}}`（更新後の行）。
-**動作**: リンクを張るだけで昇格実体は作らない（実体の作成は既存のadd系ツールで行う）。orch専用（capability_matrixでdispatcher/workerは拒否）。
+**動作**: リンクを張るだけで昇格実体は作らない（実体の作成は既存のadd系ツールで行う）。
+
+### 2.32 pull_precedents
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| context | string | yes | - | これから決めようとしている論点の記述（自由記述、2文字以上）。routingのクエリ兼telemetry用（topic_ids指定時も必須） |
+| topic_ids | list[int] | no | null | 対象topicを明示指定してroutingをスキップする（embeddingサーバー停止時でも動作する） |
+| k | int | no | 3 | routingで採用するtopic数の上限（1〜5にclamp） |
+| budget_chars | int | no | null | 本文展開の文字数予算。省略時はconfig既定値（`get_config()`の`precedent_budget_chars`で確認可） |
+| include_materials | bool | no | true | decision/topicに紐づくmaterialカタログを同時展開する（30件で打ち切り、超過時`materials_truncated=true`） |
+
+**返り値**: `{guarantee, routing, topics, budget, truncated, materials_truncated}`。`guarantee`は`enumerated`（routing成立・全件列挙完了）/ `routing_miss`（近傍topicなし）/ `routing_unavailable`（embeddingサーバー停止）のいずれか。`routing.mode`は`vector`（embedding routingで解決）/ `explicit`（topic_ids指定でrouting skip）/ `unavailable`（embeddingサーバー停止でrouting不能）。`routing.candidates`は各`{topic_id_raw, title, distance, selected}`（topic_ids指定時はdistanceなし。存在しないtopic_idを指定した場合は`{topic_id_raw, error: "not_found"}`）。`topics[].decisions`各要素は`detail="full"`（本文展開）または`detail="index"`（id/title等のみ、`get_by_ids`で本文追補可）。
+**動作**: `search`がランクtop-Nの確率的発見であるのに対し、本ツールは選ばれたtopicの非retract decisionを全件（最低でも索引粒度で）応答に含めることを保証する。read-only（statusを更新する副作用なし）。
+**関連**: 設計・裁定の前に近傍topicの判例を網羅確認したい場面で`get_decisions`/`check_in`のChoose節から参照される。
+
+> relay 4動詞（2.38〜2.41）は post（名指し送信）/ publish・subscribe（labelペア）/ receive（受信、共通）の2+1構造を持つ。並びの意図は §1.11 を参照。
 
 ### 2.38 relay_post
 
@@ -494,30 +483,31 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 | ttl | int | no | null | メッセージ保持秒数（60〜86400）。省略時はstreamの既定値 |
 
 **返り値**: `{stream_id: string, publish_id: int, matched_members: int}`。
-**動作**: 投函先streamが未存在（404）なら自動作成し、自identityを`read_write` memberに設定して1回だけ再投函する。作成の同時競合（409）も1回の再投函で解消する。自server名義のstreamのみ扱う。
-**エラー処理**: `RELAY_BEARER_TOKEN`未設定は設定方法を含む明示エラー（`config_missing`）。認証エラー（401）・close済みstream（410）・rate limit（429）はそのまま明示エラーとして返す（silent fallbackしない）。
+**動作**: 投函先streamが未存在（404）なら自動作成し、自identityを`read_write` memberに設定して1回だけ再投函する。作成の同時競合（409）も1回の再投函で解消する。自server名義のstreamのみ扱う。relayへの呼び出し自体は同期だが、成功応答の`matched_members`は投函時点の購読者数を示すのみで、実配達は relay 側の非同期配信を経由する（配達完了そのものは保証しない）。
+**エラー処理**: `RELAY_BEARER_TOKEN`未設定は設定方法を含む明示エラー（`config_missing`）。認証エラー（401）・close済みstream（410）はそのまま明示エラーとして返す（silent fallbackしない）。rate limit（429）は専用コード`rate_limited`で返し、`retry_after`（秒、`Retry-After`ヘッダ未提供時は`null`）を構造化フィールドで付与する。呼び出し側はこの秒数だけ待ってからリトライすること。
 
 ### 2.39 relay_publish
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
-| labels | list[string] | yes | - | 配送先マッチング用labels（1個以上）。routing系（`handle:`/`channel:`/`task:`）とcc-memory既存語彙（entity系）を併用可。entity系のみでも有効。未知prefixは不透明labelとして受理。`role:` は廃止済みでエラー |
+| labels | list[string] | yes | - | 配送先マッチング用labels（1個以上）。routing系（`handle:`/`room:`/`task:`）とtag namespace（`domain:`/`intent:`等）を併用可。これらのみでも有効。未知prefixは不透明labelとして受理。`role:`（廃止済みnamespace）と中核entity namespace（`topic:`/`activity:`/`decision:`/`log:`/`material:`。実在チェックなしの不透明文字列にしかならないため予約済み）はエラー |
 | body | string | yes | - | メッセージ本文（非空） |
 | title | string | no | null | 一覧表示用の見出し（200字以内） |
 
 **返り値**: `{outbox_id: int, labels: list[string], handle: string}`。
-**動作**: 送信者の`handle:` labelを自動付与し、`relay_outbox`テーブルへINSERTして完結する（transactional outbox）。relayへの配達はserver内の常駐配達ループが非同期に行い、保証はat-least-once。labelsが空のpublishは宛先が決まらないため拒否する。curationの対象になるのはentity系labelsのみで、routing系はcuration対象外。
+**動作**: 送信者の`handle:` labelを自動付与し、`relay_outbox`テーブルへINSERTして完結する（transactional outbox）。relayへの配達はserver内の常駐配達ループが非同期に行い、保証はat-least-once。labelsが空のpublishは宛先が決まらないため拒否する。
 **エラー処理**: `RELAY_BEARER_TOKEN`未設定・session_id未解決・labels/body不正はいずれも明示エラー。
 
 ### 2.40 relay_subscribe
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
-| labels | list[string] | yes | - | 購読条件labels（publish側labelsをすべて含む発話が届く）。空配列なら自handle宛のみの購読。`role:` はエラー |
+| labels | list[string] | yes | - | 購読条件labels（publish側labelsをすべて含む発話が届く）。空配列なら自handle宛のみの購読。`role:`と中核entity namespace（`topic:`/`activity:`/`decision:`/`log:`/`material:`）はエラー |
 
 **返り値**: `{subscription_id: string, labels: list[string], lease_expires_at: string, handle: string, reused: bool}`。
 **動作**: 自sessionの`handle:` labelを自動付与し、subscription declaration file（`~/.cc-memory/relay/subscriptions/session-<session_id>.json`）とrelayの購読登録を同期する。同一labels集合の再呼び出しは冪等で、leaseが有効なら既存購読を返し（`reused: true`）、失効・不明なら新規購読してdeclaration fileのidを差し替える。lease更新・再購読・購読解除はserver側常駐処理が自動管理する。
-**エラー処理**: `RELAY_BEARER_TOKEN`未設定・session_id未解決は明示エラー。relayエラー時はdeclaration fileを更新しない。
+**エラー処理**: `RELAY_BEARER_TOKEN`未設定・session_id未解決は明示エラー。relayエラー時はdeclaration fileを更新しない。rate limit（429）は専用コード`rate_limited`で返し、`retry_after`（秒、`Retry-After`ヘッダ未提供時は`null`）を構造化フィールドで付与する。呼び出し側はこの秒数だけ待ってからリトライすること。
+**関連**: 購読宣言（`relay_subscribe`）と受信（`relay_receive`）は分離しており、実際のメッセージ受信は`relay_receive`側が担う。
 
 ### 2.41 relay_receive
 
@@ -528,6 +518,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 **返り値**: `{messages: list[object], count: int}`。
 **動作**: 自sessionのinbox（`~/.cc-memory/relay/inbox/session-<session_id>.jsonl`）をcursor位置からdrainして返す。既読分は返さない。inbox不在（未購読・未配達）は空リストの正常応答（エラーにしない）。relayへのHTTPアクセスは発生しない（ローカル完結）。
 **配達契約**: at-least-once。同一メッセージが重複して届くことがあるため、受信側は冪等に扱うこと。
+**関連**: `relay_subscribe`で宣言したlabelsにマッチした配達のみをdrainする（受信対象の決定は`relay_subscribe`側で行う）。
 
 ### 2.42 relay_status
 
@@ -596,17 +587,14 @@ cc-memoryが扱うエンティティの内部表現。詳細スキーマは `doc
 
 ## 4. ガード・前提
 
-### 4.1 orch-managed 運用
-`ow_send` / `ow_history` はorch/dispatcher/workerいずれのロールからも呼べる。`report_signal` / `get_signals` はcapability_matrixでorch/dispatcher/workerいずれにも開放されている（観測データの記録に合意形成が不要なため）。`update_signal` のみトリアージ操作としてorch専用。
-
-### 4.2 check-in 先行が前提のツール
+### 4.1 check-in 先行が前提のツール
 - `add_decisions` の hints はharness_service経由で「整合性確認」「pin見直し」などを示唆する。直前にcheck-inしていない場合、文脈不足のためhintsを過信しない方がよい。
 - `check_in` を経由しないアクティビティへの操作（`update_activity` 等）は可能だが、その場合 tag_notes の自動注入は行われない。habitsはSessionStart時に全件注入されるため、check_inの有無に関係なく反映される。
 
-### 4.3 取り消し済みエンティティの扱い
+### 4.2 取り消し済みエンティティの扱い
 `retract` で論理削除されたdecision/logは、`search` / `get_logs` / `get_decisions` でデフォルト除外される。`include_retracted=true` で明示的に含められる。
 
-### 4.4 上限値
+### 4.3 上限値
 - 一括追加系（`add_logs` / `add_decisions`）: 最大10件
 - `get_by_ids`: 最大20件
 - `get_logs` / `get_decisions`: limit最大30
@@ -630,6 +618,20 @@ cc-memoryが扱うエンティティの内部表現。詳細スキーマは `doc
 7. **タグnamespaceのリテラル化**: `domain:` / `intent:` / 素タグの3区分は文字列パースに依存しており、型安全ではない。
 8. **status="active" のエイリアス挙動**: pending+in_progress を返すが、snoozed/shelvedは含まない。明示しないと誤解の温床になる。
 9. **`include_retracted` がツール間で揃っていない**: `search` / `get_logs` / `get_decisions` にはあるが、`get_timeline` には無い。
+
+---
+
+## flavor共通引数
+
+`get_topics` / `get_logs` / `get_decisions` / `pull_precedents` / `search` / `get_by_ids` / `get_activities` / `get_material` / `check_in` / `get_timeline` の10ツールに共通する `flavor: "raw" | "internal" | "readable"` 引数（既定値 `internal`）。本文中の `{{cite:X#NNN}}` citationテンプレートと、削除・取り消し済みエンティティへの参照の表示形式を切り替える。正確な変換ロジックは `src/services/citation_renderer.py` のモジュールdocstringを一次情報とする。
+
+| flavor | citationテンプレートの展開 | 削除/取り消し済み参照 | 想定用途 |
+| --- | --- | --- | --- |
+| `raw` | 無加工（テンプレのまま） | 無加工 | 生データが必要な特殊用途（再エクスポート等） |
+| `internal`（既定） | `<title> (X#NNN)` 形式。IDを保持 | `[deleted X#NNN]` / `[retracted X#NNN]` | エージェントが結果を保持し、以降のtool呼び出しにIDで追跡させたい場合 |
+| `readable` | `<title>` 形式。IDなし | `[deleted item]` / `[retracted item]` | 人間への最終出力（cc-memory内部識別子を露出させたくない場合） |
+
+選定基準: ユーザーに提示する最終出力なら`readable`、エージェントが内部処理を続けるなら`internal`、生データのままの特殊用途のみ`raw`。コードブロック内やエスケープ済み（`\{{cite:...}}`）のテンプレートはどのflavorでも展開されない。
 
 ---
 
