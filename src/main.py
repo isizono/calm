@@ -25,6 +25,7 @@ from src.services import (
 from src.services.checkin_service import check_in as _check_in
 from src.services.relay import service as relay_session_service
 from src.services.relay import diagnostics as relay_diagnostics_service
+from src.services.relay import identity as relay_identity
 from src.services.tag_service import search_tags as _search_tags, update_tag as _update_tag, collect_tag_notes_for_injection
 from src.services.tag_analysis_service import analyze_tags as _analyze_tags
 from src.services import citation_renderer
@@ -1664,12 +1665,19 @@ def relay_publish(labels: list[str], body: str, title: str | None = None) -> dic
         title: 一覧表示用の見出し（optional、200字以内）
 
     Returns:
-        成功時: {"outbox_id": int, "labels": [str], "handle": str}
+        成功時: {"outbox_id": int, "labels": [str], "handle": str, "identity": str}
         失敗時: {"error": {"code": str, "message": str}}
+
+    identity は呼び出し元セッションの識別子（cc-memory server 再起動をまたいで
+    安定。scripts/relay/watch_inbox.sh 等に渡す値として使える）。
     """
-    return relay_session_service.relay_publish(
-        labels, body, title=title, caller_session_id=_current_session_id()
+    caller_session_id = relay_identity.get_relay_identity()
+    result = relay_session_service.relay_publish(
+        labels, body, title=title, caller_session_id=caller_session_id
     )
+    if "error" not in result:
+        result["identity"] = caller_session_id
+    return result
 
 
 @mcp.tool()
@@ -1690,14 +1698,21 @@ def relay_subscribe(labels: list[str]) -> dict:
 
     Returns:
         成功時: {"subscription_id": str, "labels": [str], "lease_expires_at": str,
-                 "handle": str, "reused": bool}
+                 "handle": str, "reused": bool, "identity": str}
         失敗時: {"error": {"code": str, "message": str, "retry_after"?: float | None}}
                 （code == "rate_limited"（429）のときのみ retry_after が付与される。
                  Retry-After ヘッダ未提供時は null。この秒数だけ待ってからリトライすること）
+
+    identity は呼び出し元セッションの識別子（cc-memory server 再起動をまたいで
+    安定。scripts/relay/watch_inbox.sh 等に渡す値として使える）。
     """
-    return relay_session_service.relay_subscribe(
-        labels, caller_session_id=_current_session_id()
+    caller_session_id = relay_identity.get_relay_identity()
+    result = relay_session_service.relay_subscribe(
+        labels, caller_session_id=caller_session_id
     )
+    if "error" not in result:
+        result["identity"] = caller_session_id
+    return result
 
 
 @mcp.tool()
@@ -1716,12 +1731,19 @@ def relay_receive(limit: int | None = None) -> dict:
         limit: 最大取得件数（optional、1 以上。省略時は未読全件）
 
     Returns:
-        成功時: {"messages": [dict, ...], "count": int}
+        成功時: {"messages": [dict, ...], "count": int, "identity": str}
         失敗時: {"error": {"code": str, "message": str}}
+
+    identity は呼び出し元セッションの識別子（cc-memory server 再起動をまたいで
+    安定。scripts/relay/watch_inbox.sh 等に渡す値として使える）。
     """
-    return relay_session_service.relay_receive(
-        limit, caller_session_id=_current_session_id()
+    caller_session_id = relay_identity.get_relay_identity()
+    result = relay_session_service.relay_receive(
+        limit, caller_session_id=caller_session_id
     )
+    if "error" not in result:
+        result["identity"] = caller_session_id
+    return result
 
 
 @mcp.tool()
