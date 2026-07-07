@@ -285,11 +285,58 @@ def _sanitize_signal_for_response(signal: dict) -> dict:
     session_id / fingerprintはrecord_signalのdedup・相関目的の内部専用フィールドで、
     他の read 系ツールがcaller_session_idを返却しない慣習と同様レスポンスから除去する。
     idは他のget系ツールと同じreadable_id変換でid_rawに退避する。
+
+    signal自身のidだけでなく、他エンティティへの内部ID参照も同じ変換パターンで
+    id_raw化する（timeline_serviceのreplaces/replaced_byと同様）:
+    - refs配列内の各要素（{"type": ..., "id": 123}形式）
+    - promoted_id（promoted_typeと対でエンティティ実体を指す。material_serviceの
+      material_id同様id_key引数でid以外のキー名を指定する）
+    - context内にネストした{"type": ..., "id": ...}形状の参照（precedent_missの
+      missed_ids・precedent_misapplied のcited_id等、kindごとの規約キーを
+      列挙しきれないため、キー名ではなく参照の形状で判定する）
     """
     signal.pop("session_id", None)
     signal.pop("fingerprint", None)
+
+    refs = signal.get("refs")
+    if isinstance(refs, list):
+        for ref in refs:
+            _apply_readable_id_if_ref_shaped(ref)
+
+    promoted_type = signal.get("promoted_type")
+    if promoted_type in PROMOTED_ENTITY_TABLE:
+        apply_readable_id_inplace(signal, promoted_type, id_key="promoted_id")
+
+    context = signal.get("context")
+    if isinstance(context, (dict, list)):
+        _apply_readable_id_recursive(context)
+
     apply_readable_id_inplace(signal, "signal")
     return signal
+
+
+def _apply_readable_id_if_ref_shaped(value: object) -> None:
+    """valueが{"type": <PROMOTED_ENTITY_TABLEのいずれか>, "id": int}形状ならid_raw化する。"""
+    if isinstance(value, dict) and value.get("type") in PROMOTED_ENTITY_TABLE:
+        apply_readable_id_inplace(value, value["type"])
+
+
+def _apply_readable_id_recursive(value: object) -> None:
+    """dict/listを再帰的に走査し、ネストしたエンティティ参照をすべてid_raw化する(in-place)。
+
+    contextはkindごとに自由形式のペイロード（migration 0049コメント・
+    report_signalの docstring 参照）で、missed_ids/cited_id等の規約キーを
+    将来のkind追加も含めて列挙しきれない。そのためキー名ではなく
+    refs/replaces/replaced_by と同じ{"type": ..., "id": ...}という参照の
+    "形状"だけを手がかりに変換対象を判定する。
+    """
+    if isinstance(value, dict):
+        _apply_readable_id_if_ref_shaped(value)
+        for v in value.values():
+            _apply_readable_id_recursive(v)
+    elif isinstance(value, list):
+        for item in value:
+            _apply_readable_id_recursive(item)
 
 
 def _compute_stats(conn: sqlite3.Connection) -> dict:
