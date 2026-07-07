@@ -49,15 +49,10 @@ class TestPublishDocstringContract:
         assert "エラー" in desc
 
 
-class TestLegacyCrossReference:
-    """relay 4 動詞それぞれが v1 の対応 tool（ow_send/ow_history）への相互参照を持つ。"""
+class TestSubscribeReceivePairing:
+    """relay_subscribe と relay_receive が購読宣言/受信で役割分担していることの相互参照。"""
 
-    def test_post_and_publish_reference_ow_send(self):
+    def test_subscribe_and_receive_reference_each_other(self):
         descriptions = _all_tool_descriptions()
-        assert "ow_send" in descriptions["relay_post"]
-        assert "ow_send" in descriptions["relay_publish"]
-
-    def test_subscribe_and_receive_reference_ow_history(self):
-        descriptions = _all_tool_descriptions()
-        assert "ow_history" in descriptions["relay_subscribe"]
-        assert "ow_history" in descriptions["relay_receive"]
+        assert "relay_receive" in descriptions["relay_subscribe"]
+        assert "relay_subscribe" in descriptions["relay_receive"]
