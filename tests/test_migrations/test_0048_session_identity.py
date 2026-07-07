@@ -3,6 +3,11 @@
 0048 適用後に session_identity テーブルが作成され、
 decisions / discussion_logs / discussion_topics / activities / materials に
 caller_session_id 列が追加されることを確認する。
+
+session_identity テーブルと caller_session_id 列は後続の migration
+（capability gating 撤去に伴う 0057）で削除されるため、本テストは
+「0048 まで適用した時点」の DB で検証する（最新までの全 migration を
+適用した DB では 0057 によりこれらは既に存在しない）。
 """
 import os
 import sqlite3
@@ -13,18 +18,30 @@ from yoyo import default_migration_table, read_migrations
 from yoyo.connections import parse_uri
 from yoyo.migrations import MigrationList
 
-from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection, init_database
+from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection
 from src.services.tag_service import _injected_tags
 from test_migrations.conftest import get_column_names, index_names, table_exists
 
 
 @pytest.fixture
 def migrated_db():
-    """全 migration（0048 含む）を適用済みのテスト用 DB を提供する。"""
+    """0048 まで（0048 含む）を適用したテスト用 DB を提供する。
+
+    session_identity / caller_session_id は 0057 で削除されるため、
+    最新までの全 migration を適用した DB では検証できない。
+    """
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
         os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
+
+        parsed = parse_uri(f"sqlite:///{db_path}")
+        backend = _VecSQLiteBackend(parsed, default_migration_table)
+        backend.init_database()
+        all_migs = read_migrations(str(MIGRATIONS_DIR))
+        upto_0048 = MigrationList([m for m in all_migs if m.id < "0049"])
+        with backend.lock():
+            backend.apply_migrations(upto_0048)
+
         _injected_tags.clear()
         yield db_path
         if "DISCUSSION_DB_PATH" in os.environ:

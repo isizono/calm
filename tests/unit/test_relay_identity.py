@@ -18,17 +18,17 @@ class TestGetRelayIdentity:
             called["fallback"] = True
             return "ephemeral-session-id"
 
-        monkeypatch.setattr(relay_identity, "get_caller_session_id", fake_fallback)
+        monkeypatch.setattr(relay_identity, "_ephemeral_session_id", fake_fallback)
         assert relay_identity.get_relay_identity() == "bridge-uuid-1"
         assert called["fallback"] is False
 
     def test_falls_back_when_header_absent(self, monkeypatch):
-        """ヘッダが無い場合は ctx.session_id（get_caller_session_id）にフォールバックする"""
+        """ヘッダが無い場合は ctx.session_id（_ephemeral_session_id）にフォールバックする"""
         monkeypatch.setattr(
             "fastmcp.server.dependencies.get_http_headers", lambda: {}
         )
         monkeypatch.setattr(
-            relay_identity, "get_caller_session_id", lambda: "ephemeral-session-id"
+            relay_identity, "_ephemeral_session_id", lambda: "ephemeral-session-id"
         )
         assert relay_identity.get_relay_identity() == "ephemeral-session-id"
 
@@ -39,7 +39,7 @@ class TestGetRelayIdentity:
             lambda: {relay_identity.BRIDGE_SESSION_HEADER: "   "},
         )
         monkeypatch.setattr(
-            relay_identity, "get_caller_session_id", lambda: "ephemeral-session-id"
+            relay_identity, "_ephemeral_session_id", lambda: "ephemeral-session-id"
         )
         assert relay_identity.get_relay_identity() == "ephemeral-session-id"
 
@@ -56,7 +56,7 @@ class TestGetRelayIdentity:
 
         monkeypatch.setattr(builtins, "__import__", fake_import)
         monkeypatch.setattr(
-            relay_identity, "get_caller_session_id", lambda: "ephemeral-session-id"
+            relay_identity, "_ephemeral_session_id", lambda: "ephemeral-session-id"
         )
         assert relay_identity.get_relay_identity() == "ephemeral-session-id"
 
@@ -72,7 +72,7 @@ class TestGetRelayIdentity:
             raising_get_http_headers,
         )
         monkeypatch.setattr(
-            relay_identity, "get_caller_session_id", lambda: "ephemeral-session-id"
+            relay_identity, "_ephemeral_session_id", lambda: "ephemeral-session-id"
         )
         assert relay_identity.get_relay_identity() == "ephemeral-session-id"
 

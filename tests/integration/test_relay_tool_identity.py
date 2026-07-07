@@ -9,16 +9,7 @@
 """
 import pytest
 
-from src.services import guard_service
 from src.services.relay import identity as relay_identity
-
-
-@pytest.fixture(autouse=True)
-def _no_capability_gate(monkeypatch):
-    """capability gate 自体は test_relay_tools_registration.py 側で検証済みのため、
-    ここでは常に通過させて identity 配線だけを見る。
-    """
-    monkeypatch.setattr(guard_service, "check_capability", lambda *a, **k: None)
 
 
 @pytest.fixture(autouse=True)

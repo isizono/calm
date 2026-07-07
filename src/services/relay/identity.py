@@ -1,8 +1,8 @@
 """relay 呼び出し元の安定 identity 解決。
 
 cc-memory の caller_session_id は本来 MCP 接続単位の ephemeral な値
-（`role_service.get_caller_session_id()` 経由、fastmcp の `ctx.session_id`）
-であり、cc-memory server の再起動のたびに新しい値へ切り替わる。
+（fastmcp の `ctx.session_id`）であり、cc-memory server の再起動のたびに
+新しい値へ切り替わる。
 
 relay の declaration/inbox/subscription は「後から同じ相手に配達を続ける」
 ことを前提にした永続状態であり、この ephemeral な値をキーにすると server
@@ -17,9 +17,20 @@ from __future__ import annotations
 
 from typing import Optional
 
-from src.services.role_service import get_caller_session_id
-
 BRIDGE_SESSION_HEADER = "x-cc-memory-bridge-session-id"
+
+
+def _ephemeral_session_id() -> Optional[str]:
+    """MCP context から呼び出しセッションの session_id を取得する（ephemeral）。
+
+    MCP のツール実行コンテキスト外（テスト等）では None を返す。
+    """
+    try:
+        from fastmcp.server.dependencies import get_context
+
+        return get_context().session_id
+    except RuntimeError:
+        return None
 
 
 def get_relay_identity() -> Optional[str]:
@@ -37,12 +48,12 @@ def get_relay_identity() -> Optional[str]:
 
         headers = get_http_headers()
     except Exception:
-        return get_caller_session_id()
+        return _ephemeral_session_id()
 
     stable_id = headers.get(BRIDGE_SESSION_HEADER)
     if isinstance(stable_id, str) and stable_id.strip():
         return stable_id.strip()
-    return get_caller_session_id()
+    return _ephemeral_session_id()
 
 
 __all__ = ["BRIDGE_SESSION_HEADER", "get_relay_identity"]
