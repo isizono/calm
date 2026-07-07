@@ -1706,8 +1706,8 @@ def relay_status(outbox_id: int | None = None) -> dict:
 
     Args:
         outbox_id: relay_publishの返り値のoutbox_id（optional）。指定するとその行の
-            配送状況（pending/delivered/dead）を返す。省略時はoutboxセクションを
-            返り値から省く（runtimeセクションのみ）
+            配送状況（pending/delivered/dead）を返す。省略時は`outbox`キーの値が
+            nullになる（キー自体は常に存在する）
 
     Returns:
         成功時: {

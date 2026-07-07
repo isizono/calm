@@ -533,7 +533,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
-| outbox_id | int | no | null | relay_publishの返り値のoutbox_id。指定するとその行の配送状況を返す。省略時はoutboxセクションを返り値から省く |
+| outbox_id | int | no | null | relay_publishの返り値のoutbox_id。指定するとその行の配送状況を返す。省略時は`outbox`キーの値がnullになる（キー自体は常に存在する） |
 
 **返り値**: `{outbox: {outbox_id, status, labels, title, created_at, processed_at, dead_at, retry_count, last_error} | null, runtime: {configured, running, threads: {<thread名>: {alive, restart_count, last_restart_at, last_error}}}}`。
 **動作**: outbox行の配送状況はrelay_outboxテーブルのローカルSELECTのみで判定する（`processed_at`セット済み=delivered、`dead_at`セット済み=dead、いずれも無ければpending）。message本文（`ref_id`）は返さない（同一プロセス内の他sessionが発行した行にも越境してアクセスできてしまうため、意図的に除外）。runtimeセクションは常に返る。`running: false`はこのプロセスでrelay v2常駐処理が起動していないことを示す（エラーではない）。relayサーバー本体へのHTTPアクセスは一切発生しない。
