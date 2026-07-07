@@ -296,6 +296,7 @@ def _current_session_id() -> Optional[str]:
         return None
 
 
+
 # MCPツール定義
 @mcp.tool()
 def add_topic(
@@ -1693,6 +1694,12 @@ def relay_subscribe(labels: list[str]) -> dict:
     role:（廃止済み namespace）と cc-memory の中核 entity namespace
     （topic:/activity:/decision:/log:/material:）は relay_publish と同様に指定するとエラー。
 
+    新規に購読が作られた場合（reused: false）、server 内の常駐 SSE 接続へ即座に反映指示を
+    送る。実際の反映は次に SSE フレーム（実メッセージだけでなく keepalive のコメント
+    フレーム到達でも判定される）が届いた時点までかかることがあり、既定設定では上限
+    概ね 60 秒（典型的には数十秒以内）に収まる。この間に届いたメッセージは relay 側で
+    保持されており喪失しない（遅延するだけで、反映後に取りこぼしなく届く）。
+
     Args:
         labels: 購読条件 labels（配列。publish 側の labels をすべて含む発話が届く）
 
@@ -1710,6 +1717,10 @@ def relay_subscribe(labels: list[str]) -> dict:
     result = relay_session_service.relay_subscribe(
         labels, caller_session_id=caller_session_id
     )
+    if "error" not in result and result.get("reused") is False:
+        runtime = get_relay_runtime()
+        if runtime is not None:
+            runtime.notify_reconfigure()
     if "error" not in result:
         result["identity"] = caller_session_id
     return result
@@ -1775,7 +1786,6 @@ def relay_status(outbox_id: int | None = None) -> dict:
         （intake/lease_loop/dispatcher）が起動していない（stdio transport、
         remoteプロセス、またはRELAY_BEARER_TOKEN未設定のいずれか）。
     """
-    guard_service.check_capability("relay_status")
     outbox_result = relay_diagnostics_service.outbox_status(outbox_id)
     if isinstance(outbox_result, dict) and "error" in outbox_result:
         return outbox_result
