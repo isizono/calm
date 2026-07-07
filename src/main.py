@@ -1612,7 +1612,9 @@ def relay_post(stream_name: str, body: str, ttl: int | None = None) -> dict:
 
     Returns:
         成功時: {"stream_id": str, "publish_id": int, "matched_members": int}
-        失敗時: {"error": {"code": str, "message": str}}
+        失敗時: {"error": {"code": str, "message": str, "retry_after"?: float | None}}
+                （code == "rate_limited"（429）のときのみ retry_after が付与される。
+                 Retry-After ヘッダ未提供時は null。この秒数だけ待ってからリトライすること）
     """
     guard_service.check_capability("relay_post")
     return relay_session_service.relay_post(stream_name, body, ttl=ttl)
@@ -1659,7 +1661,9 @@ def relay_subscribe(labels: list[str]) -> dict:
     Returns:
         成功時: {"subscription_id": str, "labels": [str], "lease_expires_at": str,
                  "handle": str, "reused": bool}
-        失敗時: {"error": {"code": str, "message": str}}
+        失敗時: {"error": {"code": str, "message": str, "retry_after"?: float | None}}
+                （code == "rate_limited"（429）のときのみ retry_after が付与される。
+                 Retry-After ヘッダ未提供時は null。この秒数だけ待ってからリトライすること）
     """
     guard_service.check_capability("relay_subscribe")
     caller_session_id = get_caller_session_id()
