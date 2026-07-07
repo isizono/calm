@@ -1173,6 +1173,8 @@ class TestSessionStartHookSignals:
         result = _run_session_start_hook(temp_db)
         context = result["hookSpecificOutput"]["additionalContext"]
 
+        assert "未トリアージのシグナル" not in context
+
 
 class TestSessionStartHookRelayInbox:
     """relay inbox未読件数の1行表示テスト
@@ -1211,5 +1213,3 @@ class TestSessionStartHookRelayInbox:
         context = result["hookSpecificOutput"]["additionalContext"]
 
         assert "relay inbox 未読" not in context
-
-        assert "未トリアージのシグナル" not in context

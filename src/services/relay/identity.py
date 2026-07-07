@@ -27,15 +27,18 @@ def get_relay_identity() -> Optional[str]:
 
     launcher.py 経由（X-CC-Memory-Bridge-Session-Id ヘッダ）の呼び出しは、
     cc-memory server の再起動をまたいで不変な識別子を返す。ヘッダが無い
-    呼び出し元（本ヘッダを付与しない MCP クライアント）は、従来通り
-    ctx.session_id（ephemeral、MCP 接続単位）にフォールバックする。
+    呼び出し元（本ヘッダを付与しない MCP クライアント）、および HTTP
+    リクエストコンテキスト外からの呼び出し（import失敗・get_http_headers()
+    自体の失敗を含む）は、従来通り ctx.session_id（ephemeral、MCP 接続単位）
+    にフォールバックする。
     """
     try:
         from fastmcp.server.dependencies import get_http_headers
+
+        headers = get_http_headers()
     except Exception:
         return get_caller_session_id()
 
-    headers = get_http_headers()
     stable_id = headers.get(BRIDGE_SESSION_HEADER)
     if isinstance(stable_id, str) and stable_id.strip():
         return stable_id.strip()

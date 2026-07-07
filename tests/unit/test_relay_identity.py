@@ -60,6 +60,22 @@ class TestGetRelayIdentity:
         )
         assert relay_identity.get_relay_identity() == "ephemeral-session-id"
 
+    def test_falls_back_when_get_http_headers_call_raises(self, monkeypatch):
+        """import自体は成功しても、HTTPリクエストコンテキスト外呼び出し等で
+        get_http_headers()の呼び出しが例外を投げた場合もフォールバックする"""
+
+        def raising_get_http_headers():
+            raise RuntimeError("no active HTTP request context")
+
+        monkeypatch.setattr(
+            "fastmcp.server.dependencies.get_http_headers",
+            raising_get_http_headers,
+        )
+        monkeypatch.setattr(
+            relay_identity, "get_caller_session_id", lambda: "ephemeral-session-id"
+        )
+        assert relay_identity.get_relay_identity() == "ephemeral-session-id"
+
     def test_strips_whitespace_from_header_value(self, monkeypatch):
         """ヘッダ値の前後空白は取り除いて返す"""
         monkeypatch.setattr(

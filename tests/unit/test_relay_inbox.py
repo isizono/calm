@@ -125,3 +125,12 @@ class TestCountUnread:
         inbox.append("s1", {"n": 1})
         inbox._write_cursor("s1", 10_000)
         assert inbox.count_unread("s1") == 1
+
+    def test_malformed_line_is_not_counted(self):
+        """drain()が実際に返す件数と一致させるため、壊れた行はcountに含めない"""
+        inbox.append("s1", {"n": 1})
+        with open(inbox.inbox_path("s1"), "ab") as f:
+            f.write(b"{broken json\n")
+        inbox.append("s1", {"n": 2})
+        assert inbox.count_unread("s1") == 2
+        assert [r["n"] for r in inbox.drain("s1")] == [1, 2]

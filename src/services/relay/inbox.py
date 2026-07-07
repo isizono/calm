@@ -127,8 +127,10 @@ def count_unread(session_id: str) -> int:
     """未読メッセージ数を非破壊に数える（drain()と異なりcursorを前進させない）。
 
     inbox file 不在、または cursor が末尾に達している場合は 0。
-    末尾の改行未達（書きかけ）行は数えない。flock(LOCK_SH) で読み取り中の
-    append() と排他し、書きかけの途中状態を読まないようにする。
+    末尾の改行未達（書きかけ）行は数えない。JSON として読めない行・dict でない
+    行は drain() 同様に数えない（drain() で実際に受け取れる件数と一致させる）。
+    flock(LOCK_SH) で読み取り中の append() と排他し、書きかけの途中状態を
+    読まないようにする。
     """
     path = inbox_path(session_id)
     try:
@@ -149,4 +151,13 @@ def count_unread(session_id: str) -> int:
             tail = f.read()
         finally:
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-    return tail.count(b"\n")
+
+    count = 0
+    for line in tail.split(b"\n")[:-1]:
+        try:
+            record = json.loads(line.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if isinstance(record, dict):
+            count += 1
+    return count
