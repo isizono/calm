@@ -641,6 +641,22 @@ def search(
         tagsはエンティティに紐づくタグ文字列のリスト。
         include_details=Trueの場合、上位10件にdetailsが追加される。
 
+        search_methods_used: 実際に使われた検索手法のリスト（"fts5" / "vector" / "tag_like" の
+        部分集合）。"vector" が含まれないときはベクトル検索（embeddingサーバー）がこの呼び出し
+        時点で利用不可だったことを意味する。
+
+        degraded: bool。True はこの呼び出し時点でベクトル検索（embeddingサーバー）が利用不可
+        だったことを示す。この場合、結果はFTS5キーワード一致・タグ名一致のみに基づいており、
+        意味的には関連するが字面が異なる項目を取りこぼしている可能性がある。「類似する情報が
+        見つからない」と判断する前に degraded を確認し、True であれば少し時間を置くか
+        embeddingサーバーの起動を待ってから再検索することを検討する。False のときはベクトル
+        検索が実際に実行されたことを示し、ヒット件数が0件だった場合も False のままである
+        （「使えたが該当なし」と「使えなかった」を区別する）。バリデーションエラーなどベクトル
+        検索を試す前に結果が確定するケースでは degraded キー自体がレスポンスに存在しない。
+
+        nearby_tags: 検索結果に共起するタグの上位5件 [{"tag": str, "co_count": int}, ...]。
+        offset>0 のときは常に空リスト。
+
         取り消し済み（retracted）のdecision/logはretract時に物理削除されているため、
         検索結果には現れない。直接取得したい場合はget_decisions/get_logsで
         include_retracted=Trueを指定する。

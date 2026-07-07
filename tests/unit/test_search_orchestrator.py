@@ -59,9 +59,11 @@ def test_orchestrator_runs_stages_in_order(stub_stages):
         assert stub_stages[name].call_count == 1, f"{name} not called once"
 
     # レスポンス dict のキーは契約通り
-    assert set(result.keys()) == {"results", "total_count", "search_methods_used", "nearby_tags"}
+    assert set(result.keys()) == {"results", "total_count", "search_methods_used", "degraded", "nearby_tags"}
     assert result["total_count"] == 1
     assert result["search_methods_used"] == ["fts5"]
+    # stub_stages の _retrieve は vec=None を返すため degraded は True
+    assert result["degraded"] is True
     assert result["nearby_tags"] == [{"tag": "x", "co_count": 3}]
 
 
