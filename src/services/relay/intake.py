@@ -306,6 +306,9 @@ def _snapshot_subscription_ids(snapshot: list[dict]) -> list[str]:
     return ids
 
 
+RECONFIGURE_DEBOUNCE_SECONDS = 0.5
+
+
 def run(
     stop_event: threading.Event,
     reconfigure_event: threading.Event,
@@ -313,12 +316,18 @@ def run(
     rescan_interval_seconds: float = 5.0,
     reconnect_backoff_initial: float = 1.0,
     reconnect_backoff_cap: Optional[float] = None,
+    reconfigure_debounce_seconds: float = RECONFIGURE_DEBOUNCE_SECONDS,
 ) -> None:
     """B-1 常駐 loop。stop_event が set されるまで SSE を受信し続ける。
 
     - subscription_ids は declaration file scan で毎接続時に組み立てる。
       lease_loop（B-2）が新規 subscribe / resubscribe を行ったら reconfigure_event
       を set してもらい、intake は現接続を切って新しい id 集合で再接続する。
+    - reconfigure_event 由来の切断では、次の接続を確立する前に
+      reconfigure_debounce_seconds だけ待つ。複数 session が短時間に連続して
+      notify_reconfigure() を呼んだ場合（起動直後の同時多発 subscribe 等）でも、
+      この待機中に来た分をまとめて 1 回の再接続に合流させ、既に接続済みの他
+      session の受信に再接続が連鎖して波及するのを抑える。
     - 接続エラー / SSE 切断 / read timeout はいずれも短い backoff で reconnect する
       （backoff は SDK と同じく指数、cap で頭打ち）。
     """
@@ -347,7 +356,7 @@ def run(
         token = config.get_token()
         try:
             with make_client(base_url, bearer_token=token, timeout=keepalive * 2) as client:
-                _consume(
+                reconfigured = _consume(
                     client,
                     subscription_ids=sub_ids,
                     stop_event=stop_event,
@@ -356,6 +365,9 @@ def run(
                     keepalive=keepalive,
                 )
             backoff = reconnect_backoff_initial
+            if reconfigured and not stop_event.is_set():
+                if stop_event.wait(reconfigure_debounce_seconds):
+                    return
         except (TransientError, PermanentError, RelayProtocolError) as exc:
             logger.warning("SSE 接続エラー（%.1fs 後に再接続）: %s", backoff, exc)
             if stop_event.wait(backoff):
@@ -376,11 +388,12 @@ def _consume(
     reconfigure_event: threading.Event,
     tracker: AckTracker,
     keepalive: float,
-) -> None:
+) -> bool:
     """1 本の SSE 接続で流れてくる frame を dispatch し続ける。
 
-    reconfigure_event が set されたら接続を切って呼び出し側に戻す。read timeout
-    到達（無音）も上位に TransientError で伝播させ、backoff → 再接続経路に載せる。
+    reconfigure_event が set されたら接続を切って呼び出し側に戻す（戻り値 True）。
+    stop_event による終了・接続の自然な終端は False を返す。read timeout 到達
+    （無音）も上位に TransientError で伝播させ、backoff → 再接続経路に載せる。
     """
     read_timeout = keepalive * 2
     with open_sse(
@@ -394,10 +407,10 @@ def _consume(
                 max_buffer_bytes=sdk_config.SSE_MAX_BUFFER_BYTES,
             ):
                 if stop_event.is_set():
-                    return
+                    return False
                 if reconfigure_event.is_set():
                     reconfigure_event.clear()
-                    return
+                    return True
                 if sse_frame.kind == "overflow":
                     logger.warning("SSE frame を破棄しました（受信量上限超過）")
                     continue
@@ -422,6 +435,7 @@ def _consume(
             raise TransientError(f"SSE 無音タイムアウト: {exc}") from exc
         except httpx.TransportError as exc:
             raise TransientError(f"SSE 接続エラー: {exc}") from exc
+    return False
 
 
 __all__ = [

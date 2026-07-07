@@ -119,3 +119,82 @@ def test_second_subscribe_via_tool_wrapper_notifies_runtime_and_is_received(
             )
         finally:
             runtime.stop()
+
+
+def test_reused_subscribe_via_tool_wrapper_does_not_trigger_reconfigure(
+    monkeypatch, temp_db
+):
+    """同一 labels での再 subscribe（reused: true）は SSE 再接続をトリガーしない
+    ことを、実際の RelayRuntime + FakeRelay を使った統合レベルで検証する。
+
+    reused: false 側の再接続反映は上のテストで検証済み。ここでは reused: true が
+    reconfigure_event を set しない（＝無用な再接続 churn を起こさない）ことと、
+    それに伴い既存 subscription の受信が継続して機能することを確認する。
+    """
+    with FakeRelay() as fake:
+        monkeypatch.setenv("RELAY_BASE_URL", fake.base_url)
+
+        first = service.relay_subscribe(
+            ["topic:planning"], caller_session_id="sess-1"
+        )
+        assert "error" not in first, first
+        assert first["reused"] is False
+
+        runtime = RelayRuntime(active_sessions_getter=lambda: {"sess-1"})
+        monkeypatch.setattr(
+            runtime, "_run_lease_loop", lambda: runtime._stop_event.wait()
+        )
+        monkeypatch.setattr(
+            runtime, "_run_dispatcher", lambda: runtime._stop_event.wait()
+        )
+        assert runtime.start() is True
+
+        try:
+            fake.publish(
+                ref_type="message", ref_id="warm-up", labels=first["labels"]
+            )
+
+            def _first_delivered():
+                result = service.relay_receive(caller_session_id="sess-1")
+                return result if result["count"] >= 1 else None
+
+            assert _wait_until(_first_delivered, timeout=5.0) is not None, (
+                "1件目 subscription が intake の初回接続で反映されなかった"
+            )
+            assert not runtime._reconfigure_event.is_set()
+
+            monkeypatch.setattr(main_module, "_relay_runtime", runtime)
+            monkeypatch.setattr(
+                main_module, "get_caller_session_id", lambda: "sess-1"
+            )
+
+            # 同一 labels での再 subscribe。lease が有効なので reused: true のはず。
+            second = main_module.relay_subscribe(["topic:planning"])
+            assert "error" not in second, second
+            assert second["reused"] is True
+            assert second["subscription_id"] == first["subscription_id"]
+
+            # reused: true では notify_reconfigure() が呼ばれないため、
+            # reconfigure_event は set されないまま（再接続 churn が起きていない）。
+            time.sleep(0.2)
+            assert not runtime._reconfigure_event.is_set()
+
+            # 既存 subscription 宛のメッセージが reused 呼び出し後も引き続き正常に
+            # 届くこと（再接続 churn で受信経路が壊れていないことの傍証）。
+            fake.publish(
+                ref_type="message", ref_id="after-reused", labels=first["labels"]
+            )
+
+            def _after_reused_delivered():
+                result = service.relay_receive(caller_session_id="sess-1")
+                for msg in result["messages"]:
+                    if msg["ref"] == {"type": "message", "id": "after-reused"}:
+                        return msg
+                return None
+
+            delivered = _wait_until(_after_reused_delivered, timeout=5.0)
+            assert delivered is not None, (
+                "reused: true 後、既存 subscription 宛のメッセージ受信が機能しなくなった"
+            )
+        finally:
+            runtime.stop()
