@@ -352,6 +352,226 @@ class TestBridgeSessionTermination:
         assert captured["terminate_on_close"] is True
 
 
+class TestBridgeIdentityHeader:
+    """_bridge: 全MCPリクエストに bridge identity ヘッダを付与することの検証"""
+
+    def _run_bridge_and_capture_http_client(self, monkeypatch):
+        import asyncio
+        from contextlib import asynccontextmanager
+
+        import mcp.client.streamable_http as streamable_http_module
+
+        captured = {}
+
+        class _Abort(Exception):
+            """接続確立前にブリッジを打ち切るためのセンチネル例外"""
+
+        @asynccontextmanager
+        async def fake_client(**kwargs):
+            captured.update(kwargs)
+            raise _Abort()
+            yield  # pragma: no cover
+
+        monkeypatch.setattr(
+            streamable_http_module, "streamable_http_client", fake_client
+        )
+
+        with pytest.raises(_Abort):
+            asyncio.run(launcher._bridge())
+
+        return captured
+
+    def test_bridge_attaches_bridge_session_header(self, monkeypatch):
+        """streamable_http_client に渡す http_client のデフォルトヘッダに
+        X-CC-Memory-Bridge-Session-Id: <_session_id> が含まれる。
+        """
+        captured = self._run_bridge_and_capture_http_client(monkeypatch)
+        http_client = captured["http_client"]
+        assert (
+            http_client.headers.get(launcher.BRIDGE_SESSION_HEADER)
+            == launcher._session_id
+        )
+
+    def test_bridge_uses_same_header_value_across_reconnects(self, monkeypatch):
+        """複数回の再接続（リトライループの複数周回）でも毎回同じ値が使われる。"""
+        first = self._run_bridge_and_capture_http_client(monkeypatch)
+        second = self._run_bridge_and_capture_http_client(monkeypatch)
+        assert (
+            first["http_client"].headers.get(launcher.BRIDGE_SESSION_HEADER)
+            == second["http_client"].headers.get(launcher.BRIDGE_SESSION_HEADER)
+            == launcher._session_id
+        )
+
+
+class TestHeartbeatLoop:
+    """_bridge 実行中、heartbeat_interval_sec ごとに _register_session 相当の
+
+    呼び出しが発生することの検証。stdin を実パイプの読み込み端に差し替え、
+    書き込み端を閉じないことで stdin EOF に達せずブリッジを稼働させ続ける。
+    """
+
+    def test_heartbeat_loop_calls_register_periodically(self, monkeypatch):
+        import asyncio
+        import os
+        import types
+        from contextlib import asynccontextmanager
+
+        import anyio
+        import mcp.client.streamable_http as streamable_http_module
+
+        monkeypatch.setattr(launcher, "HEARTBEAT_INTERVAL_SEC", 0.05)
+
+        register_calls: list[int] = []
+
+        def fake_register_session() -> bool:
+            register_calls.append(1)
+            return True
+
+        monkeypatch.setattr(launcher, "_register_session", fake_register_session)
+
+        @asynccontextmanager
+        async def fake_streamable_http_client(**kwargs):
+            # read_stream 側には何も流さない（server_to_stdout をブロックさせ続ける）
+            _read_send, read_recv = anyio.create_memory_object_stream(10)
+            write_send, _write_recv = anyio.create_memory_object_stream(10)
+
+            async def _get_session_id():
+                return None
+
+            try:
+                yield (read_recv, write_send, _get_session_id)
+            finally:
+                await _read_send.aclose()
+                await _write_recv.aclose()
+
+        monkeypatch.setattr(
+            streamable_http_module,
+            "streamable_http_client",
+            fake_streamable_http_client,
+        )
+
+        # stdin をEOFに達しない実パイプに差し替える（write側を閉じない限りブロックする）
+        read_fd, write_fd = os.pipe()
+        read_file = os.fdopen(read_fd, "rb", buffering=0)
+        fake_stdin = types.SimpleNamespace(buffer=read_file)
+        monkeypatch.setattr(launcher.sys, "stdin", fake_stdin)
+
+        async def _run_with_timeout() -> None:
+            # asyncio.wait_forがタイムアウトでtask groupをcancelすると、
+            # server_to_stdoutのfinally節がstdin_eof=False（stdinは意図的に
+            # ブロックさせ続けている）としてServerDisconnectedを送出し、
+            # anyioがこれをExceptionGroupにまとめて再送出する。ここでの
+            # 関心はheartbeat_loopが実際に register を複数回呼んだかどうかで
+            # あり、cancel経路の具体的な例外形状は問わない。
+            try:
+                await asyncio.wait_for(launcher._bridge(), timeout=0.6)
+            except Exception:
+                pass
+
+        try:
+            asyncio.run(_run_with_timeout())
+        finally:
+            os.close(write_fd)
+            read_file.close()
+
+        assert len(register_calls) >= 2
+
+
+class TestBridgeStdinEofWithHeartbeat:
+    """_bridge 実行中に実際の stdin EOF が発生した場合、heartbeat_loop が
+
+    並行動作していても _bridge() が正常に return することの検証。
+
+    heartbeat_loop は自発的に終了しない無限ループのため、
+    stdin_to_server / server_to_stdout が例外なく完了しただけでは
+    task group 全体は終了しない。本テストは fake の read/write ストリームを
+    相互に連動させ、「送信側 (write_stream) を閉じると受信側 (read_stream) も
+    自然終了する」という実際のサーバー接続の挙動を模したうえで、実パイプ経由の
+    stdin EOF から _bridge() が完走することをタイムアウト付きで確認する。
+    """
+
+    def test_bridge_returns_normally_on_stdin_eof_with_heartbeat_running(
+        self, monkeypatch
+    ):
+        import asyncio
+        import os
+        import types
+        from contextlib import asynccontextmanager
+
+        import anyio
+        import mcp.client.streamable_http as streamable_http_module
+
+        monkeypatch.setattr(launcher, "HEARTBEAT_INTERVAL_SEC", 0.02)
+
+        register_calls: list[int] = []
+
+        def fake_register_session() -> bool:
+            register_calls.append(1)
+            return True
+
+        monkeypatch.setattr(launcher, "_register_session", fake_register_session)
+
+        @asynccontextmanager
+        async def fake_streamable_http_client(**kwargs):
+            read_send, read_recv = anyio.create_memory_object_stream(10)
+            write_send, write_recv = anyio.create_memory_object_stream(10)
+
+            async def _get_session_id():
+                return None
+
+            async def _mirror_write_closure() -> None:
+                # write_stream（stdin_to_server が stdin EOF 後に aclose する側）
+                # のクローズを検知したら read_stream 側も閉じる。
+                try:
+                    async for _ in write_recv:
+                        pass
+                finally:
+                    await read_send.aclose()
+
+            async with anyio.create_task_group() as watcher_tg:
+                watcher_tg.start_soon(_mirror_write_closure)
+                try:
+                    yield (read_recv, write_send, _get_session_id)
+                finally:
+                    await write_recv.aclose()
+                    await read_recv.aclose()
+
+        monkeypatch.setattr(
+            streamable_http_module,
+            "streamable_http_client",
+            fake_streamable_http_client,
+        )
+
+        # 実パイプを使い、本物の stdin EOF を発生させる。
+        # heartbeat_loop が並行動作している証拠を残すため、書き込み端は
+        # 即座にではなく別スレッドで少し待ってから閉じる
+        # （heartbeat_interval_sec=0.02sより十分長い待ちを挟み、EOF前に
+        # 複数回 register が呼ばれることを保証する）。
+        import threading
+
+        read_fd, write_fd = os.pipe()
+
+        def _close_write_end_later() -> None:
+            import time as _time
+            _time.sleep(0.1)
+            os.close(write_fd)
+
+        threading.Thread(target=_close_write_end_later, daemon=True).start()
+
+        read_file = os.fdopen(read_fd, "rb", buffering=0)
+        fake_stdin = types.SimpleNamespace(buffer=read_file)
+        monkeypatch.setattr(launcher.sys, "stdin", fake_stdin)
+
+        try:
+            # ハングするバグがあればここでタイムアウトしテストが失敗する
+            asyncio.run(asyncio.wait_for(launcher._bridge(), timeout=3.0))
+        finally:
+            read_file.close()
+
+        # heartbeat_loopが並行して動作していたことの確認
+        assert len(register_calls) >= 1
+
+
 class TestServerDisconnected:
     def test_is_exception(self):
         """ServerDisconnectedがExceptionのサブクラスである"""
@@ -516,6 +736,54 @@ class TestMainRetryLoop:
         )
         launcher.main()
         assert call_count["bridge"] == 6
+
+
+class TestSessionRegistrationGating:
+    """main(): セッション登録の _IS_LOCAL による致命度の切り替え検証"""
+
+    def _setup(self, monkeypatch, is_local: bool, register_result: bool):
+        monkeypatch.setattr(launcher, "MAX_RETRIES", 0)
+        monkeypatch.setattr(launcher, "_IS_LOCAL", is_local)
+        monkeypatch.setattr(launcher, "_cleanup_done", False)
+        monkeypatch.setattr(launcher, "_ensure_server_running", lambda: True)
+        monkeypatch.setattr(launcher, "_register_session", lambda: register_result)
+        monkeypatch.setattr(launcher, "_unregister_session", lambda: True)
+        monkeypatch.setattr(launcher.time, "sleep", lambda _: None)
+
+        def fake_asyncio_run(coro):
+            coro.close()
+            return None
+
+        monkeypatch.setattr(launcher.asyncio, "run", fake_asyncio_run)
+
+    def test_local_register_failure_exits(self, monkeypatch):
+        """_IS_LOCAL=True で登録失敗すると sys.exit(1) する"""
+        self._setup(monkeypatch, is_local=True, register_result=False)
+        with pytest.raises(SystemExit) as exc_info:
+            launcher.main()
+        assert exc_info.value.code == 1
+
+    def test_remote_register_failure_continues_with_warning(self, monkeypatch, caplog):
+        """_IS_LOCAL=False で登録失敗しても警告ログのみで _bridge() に進む"""
+        self._setup(monkeypatch, is_local=False, register_result=False)
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="src.launcher"):
+            launcher.main()  # 例外を出さず正常終了する
+        assert any(
+            "Session register failed" in record.message for record in caplog.records
+        )
+
+    def test_remote_register_success_no_warning(self, monkeypatch, caplog):
+        """_IS_LOCAL=False で登録成功時は警告ログを出さない"""
+        self._setup(monkeypatch, is_local=False, register_result=True)
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="src.launcher"):
+            launcher.main()
+        assert not any(
+            "Session register failed" in record.message for record in caplog.records
+        )
 
 
 class TestReadMaxRetries:
