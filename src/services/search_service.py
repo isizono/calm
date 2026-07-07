@@ -1768,6 +1768,7 @@ def search(
     domain: Optional[str] = None,
     date_after: Optional[str] = None,
     date_before: Optional[str] = None,
+    caller_session_id: Optional[str] = None,
 ) -> dict:
     """
     キーワードで横断検索する。
@@ -1792,6 +1793,8 @@ def search(
         domain: ドメインフィルタ。内部でtags=["domain:{domain}"]にマージされる
         date_after: 日付フィルタ（以降）。YYYY-MM-DD or YYYY-MM-DD HH:MM:SS形式
         date_before: 日付フィルタ（以前）。YYYY-MM-DD or YYYY-MM-DD HH:MM:SS形式
+        caller_session_id: 呼出セッションの相関キー。telemetry に記録し fetch_telemetry と
+            突合するために使う。MCP context 外の直接呼出では None（記録は NULL）。
 
     Returns:
         検索結果一覧（type, id, title, score, final_score, score_breakdown, snippet, tags）。
@@ -1845,6 +1848,7 @@ def search(
             result_count=total_count,
             results=results_snapshot,
             diagnostics=diagnostics,
+            caller_session_id=caller_session_id,
         )
 
         return {
@@ -1901,9 +1905,10 @@ class _JsonCol:
 # ここに載っていない table / column の書込は組立前に弾く（f-string 埋込前の安全弁）。
 _TELEMETRY_WRITABLE_COLUMNS: dict[str, frozenset[str]] = {
     "search_telemetry": frozenset(
-        {"query", "parameters", "result_count", "results_json", "diagnostics_json"}
+        {"query", "parameters", "result_count", "results_json",
+         "diagnostics_json", "caller_session_id"}
     ),
-    "fetch_telemetry": frozenset({"tool", "items_json"}),
+    "fetch_telemetry": frozenset({"tool", "items_json", "caller_session_id"}),
 }
 
 
@@ -1977,6 +1982,7 @@ def _record_search_telemetry_async(
     result_count: int,
     results: Optional[list[dict]] = None,
     diagnostics: Optional[dict] = None,
+    caller_session_id: Optional[str] = None,
 ) -> threading.Thread | None:
     """search 呼出の telemetry を別スレッドで非同期書込する。
 
@@ -1995,6 +2001,8 @@ def _record_search_telemetry_async(
         result_count: 返却件数（total_count）。
         results: 返却ページの [{"type", "id", "final_score"}, ...]。省略時は空リストとして記録する。
         diagnostics: retriever 内訳（`_build_diagnostics` の戻り値）。省略時は空 dict として記録する。
+        caller_session_id: 呼出セッションの相関キー。fetch_telemetry と突合するために記録する。
+            None のとき NULL で記録する（MCP context 外の呼出）。
 
     Returns:
         起動した daemon Thread。起動に失敗した場合は None。
@@ -2007,6 +2015,7 @@ def _record_search_telemetry_async(
             "result_count": result_count,
             "results_json": _JsonCol(results if results is not None else []),
             "diagnostics_json": _JsonCol(diagnostics if diagnostics is not None else {}),
+            "caller_session_id": caller_session_id,
         },
     )
 
@@ -2014,16 +2023,19 @@ def _record_search_telemetry_async(
 def _record_fetch_telemetry_async(
     tool: str,
     items: list[dict],
+    caller_session_id: Optional[str] = None,
 ) -> threading.Thread | None:
     """取得系ツール呼出（get_by_ids 等）を fetch_telemetry へ非同期書込する。
 
     search_telemetry の results_json と突合することで、検索結果が実際に後続取得
     されたか（pull hit 率のプロキシ）を後から算出できるようにするための生データ記録。
+    caller_session_id を両テーブルに持たせ、同一セッションにスコープして突合する。
     書込方針は `_record_search_telemetry_async` と同じ（非同期・失敗握りつぶし）。
 
     Args:
         tool: 計装元ツール名（例: 'get_by_ids'）。
         items: 取得対象の [{"type": str, "id": int}, ...]。
+        caller_session_id: 呼出セッションの相関キー。None のとき NULL で記録する。
 
     Returns:
         起動した daemon Thread。起動に失敗した場合は None。
@@ -2033,6 +2045,7 @@ def _record_fetch_telemetry_async(
         {
             "tool": tool,
             "items_json": _JsonCol(items),
+            "caller_session_id": caller_session_id,
         },
     )
 
@@ -2214,7 +2227,7 @@ def get_by_id(type: str, id: int, conn=None, superseded_by_map=None) -> dict:
             conn.close()
 
 
-def get_by_ids(items: list[dict]) -> dict:
+def get_by_ids(items: list[dict], caller_session_id: Optional[str] = None) -> dict:
     """
     複数のtype+idペアをバッチ取得する。
 
@@ -2223,6 +2236,8 @@ def get_by_ids(items: list[dict]) -> dict:
 
     Args:
         items: [{type: str, id: int}, ...] のリスト（最大20件）
+        caller_session_id: 呼出セッションの相関キー。telemetry に記録し search_telemetry と
+            突合するために使う。MCP context 外の直接呼出では None（記録は NULL）。
 
     Returns:
         {"results": [get_by_idの結果, ...]}
@@ -2241,6 +2256,7 @@ def get_by_ids(items: list[dict]) -> dict:
     _record_fetch_telemetry_async(
         "get_by_ids",
         [{"type": item.get("type"), "id": item.get("id")} for item in items],
+        caller_session_id=caller_session_id,
     )
 
     conn = get_connection()

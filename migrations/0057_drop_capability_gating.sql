@@ -23,8 +23,9 @@
 --
 -- 対象外（本 migration では触れない）:
 --   - search_telemetry / fetch_telemetry の caller_session_id 列（0054 で追加）は
---     search / fetch 呼出の相関キーという別目的で使われており、書込コードは停止するが
---     カラム自体はこの migration の対象外（後方互換のため残置）
+--     search / fetch 呼出の相関キーという別目的で使われており、gating 撤去とは無関係の
+--     ため対象外。書込は継続する（取得元のみ role_service 依存から main.py の
+--     MCP context 直接参照に差し替え済み）
 
 DROP TABLE session_identity;
 
