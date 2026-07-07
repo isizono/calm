@@ -34,6 +34,18 @@ cc-memory server（`python -m src.main --transport http`）は以下の env を�
 
 `RELAY_BEARER_TOKEN` が未設定のとき cc-memory は常駐 3 系統 thread を起動しない（log 1 行のみで縮退）。この状態でも server 本体の起動と既存機能は影響を受けない。relay を使う MCP tool（`relay_post` / `relay_publish` / `relay_subscribe` / `relay_receive`）は明示的な `config_missing` エラーを返す。
 
+### outbox dispatcher の retry 既定値
+
+`relay_publish` の配達は outbox 経由の非同期 retry で行われる。以下の環境変数で retry 挙動を調整できる。
+
+| 環境変数 | 説明 | 既定値（cc-memory組み込み） | 既定値（スタンドアロンCLI） |
+| --- | --- | --- | --- |
+| `RELAY_OUTBOX_MAX_RETRY` | outbox 行 1 件あたりの retry 上限回数 | `10` | `5` |
+| `RELAY_OUTBOX_INITIAL_BACKOFF_MS` | retry 初回バックオフ（ミリ秒） | `1000` | `100` |
+| `RELAY_OUTBOX_BACKOFF_FACTOR` | retry 指数バックオフ係数 | `2.0` | `2.0` |
+
+`RELAY_OUTBOX_*` は cc-memory 組み込みの dispatcher（`RelayRuntime`）にも、スタンドアロン CLI（`python -m src.relay_sdk.outbox`）にも同じ環境変数名で効く。ただし未設定時のフォールバック既定値は異なる。cc-memory 組み込み経路は relay server の手動再起動断絶を生き延びる目的でスタンドアロン CLI より長い既定値（合計約 8.5 分）を持つ。
+
 ## macOS launchd で常駐化する例
 
 `~/Library/LaunchAgents/com.isizono.relay-v2.plist`:

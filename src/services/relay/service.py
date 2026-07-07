@@ -47,14 +47,29 @@ SESSION_UNRESOLVED_MESSAGE = (
 )
 
 
-def _error(code: str, message: str) -> dict:
-    return {"error": {"code": code, "message": message}}
+def _error(code: str, message: str, **extra: Any) -> dict:
+    """{"error": {"code", "message", ...extra}} を組み立てる。
+
+    extra に渡したキーは error dict にそのまま展開される（例: retry_after）。
+    """
+    payload: dict[str, Any] = {"code": code, "message": message}
+    payload.update(extra)
+    return {"error": payload}
 
 
 def _relay_error(exc: Exception) -> dict:
+    """relay_sdk の 3 例外を呼び出し元向けのエラー dict に翻訳する。
+
+    TransientError のうち 429（rate limit）は `rate_limited` として他の transient
+    failure（5xx・timeout・接続不能）と区別し、`retry_after`（秒、Retry-After
+    ヘッダが無ければ null）を構造化フィールドで返す。429 以外の TransientError は
+    従来通り `relay_unavailable`（`retry_after` フィールドなし）。
+    """
     if isinstance(exc, RelayProtocolError):
         return _error(exc.code or "relay_protocol_error", str(exc))
     if isinstance(exc, TransientError):
+        if exc.status_code == 429:
+            return _error("rate_limited", str(exc), retry_after=exc.retry_after)
         return _error("relay_unavailable", str(exc))
     if isinstance(exc, PermanentError):
         return _error("relay_gone", str(exc))
