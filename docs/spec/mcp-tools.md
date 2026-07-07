@@ -103,9 +103,9 @@ cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベ�
 
 | ツール | 概要 |
 | --- | --- |
-| `report_signal` | cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベントを記録する（orch/dispatcher/workerいずれからも呼べる） |
+| `report_signal` | cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベントを記録する |
 | `get_signals` | 記録されたシグナルを一覧・集計する |
-| `update_signal` | シグナルのトリアージ状態を遷移する（orch専用） |
+| `update_signal` | シグナルのトリアージ状態を遷移する |
 
 ### 1.11 relay系（セッション間通信 4動詞）
 
@@ -448,7 +448,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 | promoted_id | int | no | null | 昇格先エンティティID。promoted_typeと同時に指定する |
 
 **返り値**: `{signal: {...}}`（更新後の行）。
-**動作**: リンクを張るだけで昇格実体は作らない（実体の作成は既存のadd系ツールで行う）。orch専用（capability_matrixでdispatcher/workerは拒否）。
+**動作**: リンクを張るだけで昇格実体は作らない（実体の作成は既存のadd系ツールで行う）。
 
 ### 2.32 pull_precedents
 
@@ -567,17 +567,14 @@ cc-memoryが扱うエンティティの内部表現。詳細スキーマは `doc
 
 ## 4. ガード・前提
 
-### 4.1 orch-managed 運用
-`report_signal` / `get_signals` はcapability_matrixでorch/dispatcher/workerいずれにも開放されている（観測データの記録に合意形成が不要なため）。`update_signal` のみトリアージ操作としてorch専用。
-
-### 4.2 check-in 先行が前提のツール
+### 4.1 check-in 先行が前提のツール
 - `add_decisions` の hints はharness_service経由で「整合性確認」「pin見直し」などを示唆する。直前にcheck-inしていない場合、文脈不足のためhintsを過信しない方がよい。
 - `check_in` を経由しないアクティビティへの操作（`update_activity` 等）は可能だが、その場合 tag_notes の自動注入は行われない。habitsはSessionStart時に全件注入されるため、check_inの有無に関係なく反映される。
 
-### 4.3 取り消し済みエンティティの扱い
+### 4.2 取り消し済みエンティティの扱い
 `retract` で論理削除されたdecision/logは、`search` / `get_logs` / `get_decisions` でデフォルト除外される。`include_retracted=true` で明示的に含められる。
 
-### 4.4 上限値
+### 4.3 上限値
 - 一括追加系（`add_logs` / `add_decisions`）: 最大10件
 - `get_by_ids`: 最大20件
 - `get_logs` / `get_decisions`: limit最大30
