@@ -309,7 +309,7 @@ paths:
                       candidates:
                         type: array
                         items: { type: object }
-                        description: 各要素は{topic_id, title, distance, selected}（explicit時はdistanceなし）。topic_ids指定時に存在しないtopic_idを指定した場合は{topic_id, error:"not_found"}になる
+                        description: 各要素は{topic_id_raw, title, distance, selected}（explicit時はdistanceなし）。topic_ids指定時に存在しないtopic_idを指定した場合は{topic_id_raw, error:"not_found"}になる
                   topics:
                     type: array
                     items: { $ref: '#/components/schemas/PrecedentTopic' }
