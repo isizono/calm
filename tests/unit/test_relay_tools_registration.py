@@ -27,8 +27,17 @@ class TestPostDocstringContract:
 
 
 class TestPublishDocstringContract:
-    def test_publish_mentions_curation_target_classes(self):
-        """curation 対象は entity 系 labels のみ（routing 系は対象外）の規約が明記されている。"""
+    def test_publish_mentions_entity_namespace_reservation(self):
+        """cc-memory の中核 entity namespace は label として使えずエラーになる契約が明記されている。"""
         desc = _all_tool_descriptions()["relay_publish"]
-        assert "curation" in desc
         assert "entity" in desc
+        assert "エラー" in desc
+
+
+class TestSubscribeReceivePairing:
+    """relay_subscribe と relay_receive が購読宣言/受信で役割分担していることの相互参照。"""
+
+    def test_subscribe_and_receive_reference_each_other(self):
+        descriptions = _all_tool_descriptions()
+        assert "relay_receive" in descriptions["relay_subscribe"]
+        assert "relay_subscribe" in descriptions["relay_receive"]

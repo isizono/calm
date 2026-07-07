@@ -55,7 +55,7 @@ class TestSubscribe:
         stub = SubscriptionStub()
         stub.install(monkeypatch)
 
-        result = service.relay_subscribe(["decision:123"], caller_session_id="sess-1")
+        result = service.relay_subscribe(["task:123"], caller_session_id="sess-1")
         assert result["subscription_id"] == "sub-1"
         assert result["reused"] is False
 
@@ -70,7 +70,7 @@ class TestSubscribe:
     def test_subscriber_is_server_identity(self, monkeypatch):
         stub = SubscriptionStub()
         stub.install(monkeypatch)
-        service.relay_subscribe(["decision:123"], caller_session_id="sess-1")
+        service.relay_subscribe(["task:123"], caller_session_id="sess-1")
         assert stub.requests[0]["subscriber"] == "cc-memory"
 
     def test_same_labels_with_active_lease_is_reused(self, monkeypatch):
@@ -109,7 +109,7 @@ class TestSubscribe:
         stub = SubscriptionStub()
         stub.install(monkeypatch)
         result = service.relay_subscribe(
-            ["channel:planning", "task:build", "custom:thing"],
+            ["room:planning", "task:build", "custom:thing"],
             caller_session_id="sess-1",
         )
         assert "error" not in result
@@ -121,6 +121,20 @@ class TestSubscribe:
             ["role:navigator"], caller_session_id="sess-1"
         )
         assert result["error"]["code"] == "validation"
+        assert stub.counter == 0
+
+    @pytest.mark.parametrize(
+        "entity_type", ["topic", "activity", "decision", "log", "material"]
+    )
+    def test_core_entity_prefix_rejected(self, monkeypatch, entity_type):
+        """cc-memory の中核 entity namespace は relay_publish と同様に拒否される。"""
+        stub = SubscriptionStub()
+        stub.install(monkeypatch)
+        result = service.relay_subscribe(
+            ["task:build", f"{entity_type}:1"], caller_session_id="sess-1"
+        )
+        assert result["error"]["code"] == "validation"
+        assert f"{entity_type}:" in result["error"]["message"]
         assert stub.counter == 0
 
     def test_missing_token_returns_explicit_error(self, monkeypatch):

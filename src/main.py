@@ -1612,10 +1612,13 @@ def update_signal(
 
 @mcp.tool()
 def relay_post(stream_name: str, body: str, ttl: int | None = None) -> dict:
-    """場（stream）にメッセージを投函する。
+    """場（stream）にメッセージを投函する（セッション間メッセージング）。
 
     投函先 stream が未存在なら自動作成して投函する（事前の stream 作成操作は不要）。
     自 server 名義の stream のみ扱う（他名義の stream には投函できない）。
+    relay への呼び出し自体は同期だが、成功応答の matched_members は投函時点の購読者数を
+    示すのみで、各購読者への実配達は relay 側の非同期配信を経由する（配達完了そのものは
+    保証しない）。
 
     Args:
         stream_name: stream 名（":" と "/" は使用不可）。実体の stream_id は server 名義で修飾される
@@ -1633,13 +1636,17 @@ def relay_post(stream_name: str, body: str, ttl: int | None = None) -> dict:
 
 @mcp.tool()
 def relay_publish(labels: list[str], body: str, title: str | None = None) -> dict:
-    """labels routing でメッセージを配布する（labels を購読中の session にマッチング配送）。
+    """labels routing でメッセージを配布する（labels を購読中の session にマッチング配送、
+    セッション間メッセージング）。
 
-    送信者の handle: label が自動付与される。配送は送信キュー経由の非同期・at-least-once。
-    labels には routing 系（handle:/channel:/task:）と cc-memory 既存語彙（decision: 等の
-    entity 系）を併用でき、entity 系のみでも有効。未知 prefix も不透明 label として受理する。
-    role: は廃止済みのため指定するとエラー。curation の対象になるのは entity 系 labels のみで、
-    routing 系は curation 対象外。
+    relay_outbox への受理のみで即座に成功応答を返す非同期方式で、実際の配達は server 内の
+    常駐配達ループが at-least-once で行う（成功応答は配達完了を意味しない）。
+
+    送信者の handle: label が自動付与される。labels には routing 系（handle:/room:/task:）と
+    cc-memory の tag namespace（domain:/intent: 等）を併用でき、これらのみでも有効。未知
+    prefix も不透明 label として受理する。role:（廃止済み namespace）と cc-memory の中核
+    entity namespace（topic:/activity:/decision:/log:/material:。実在チェックなしの不透明
+    文字列にしかならないため予約済み）は指定するとエラー。
 
     Args:
         labels: 配送先マッチング用 labels（必須・1 個以上）
@@ -1657,12 +1664,16 @@ def relay_publish(labels: list[str], body: str, title: str | None = None) -> dic
 
 @mcp.tool()
 def relay_subscribe(labels: list[str]) -> dict:
-    """labels の購読を宣言する。宣言後は relay_receive で受信できる。
+    """labels の購読を宣言する（セッション間メッセージングの受信登録）。宣言後は
+    relay_receive で受信できる。購読宣言（relay_subscribe）と受信（relay_receive）は
+    分離しており、実際のメッセージ受信は relay_receive 側が担う。
 
     自 session の handle: label が自動付与される。labels が空配列の場合は自分の handle 宛
     （直接メッセージ）のみの購読になる。同一 labels 集合での再呼び出しは冪等で、lease が
     有効なら既存の購読をそのまま返し、失効していれば新規に購読し直して差し替える。
     lease 更新・再接続・購読解除は server 側で自動管理される（呼び出し側の操作は不要）。
+    role:（廃止済み namespace）と cc-memory の中核 entity namespace
+    （topic:/activity:/decision:/log:/material:）は relay_publish と同様に指定するとエラー。
 
     Args:
         labels: 購読条件 labels（配列。publish 側の labels をすべて含む発話が届く）
@@ -1681,7 +1692,11 @@ def relay_subscribe(labels: list[str]) -> dict:
 
 @mcp.tool()
 def relay_receive(limit: int | None = None) -> dict:
-    """自 session 宛に届いたメッセージの未読分を受信する。
+    """自 session 宛に届いたメッセージの未読分を受信する（セッション間メッセージングの受信）。
+
+    relay_subscribe で宣言した labels にマッチして server 内の受信スレッドが既に自 session
+    の inbox へ配達済みのメッセージをローカルから drain するのみで、呼び出し自体は relay と
+    通信しない。
 
     配達契約は at-least-once のため、同一メッセージが重複して届くことがある
     （受信側で冪等に扱うこと）。既読分は返さない。未読が無ければ空リストを
