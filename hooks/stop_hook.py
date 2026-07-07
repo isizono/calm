@@ -32,7 +32,11 @@ from hooks.hook_transcript import (
 from hooks.signal_capture import try_capture_signal
 
 _BLOCK_LIMIT = 1
-_CHECKIN_DEFER_TURNS = 2
+# ユーザー発言がちょうどこのturn数に達した瞬間にcheck-in強制blockを1回発火する
+# (one-shot等値判定、下記143行目参照)。2だと「hi」→「continue」のような2発言で
+# 終わる軽量セッションが境界値そのものに一致してしまいほぼ確実にblockされていた。
+# 3に引き上げることで2発言以内のセッションはblockを経験しない。
+_CHECKIN_DEFER_TURNS = 3
 _MAX_SKILL_SPAN_TURNS = 20
 _NUDGE_INTERVAL = 2
 
@@ -279,6 +283,7 @@ def _handle_nudges(state: HookState, events: list[dict], current_turn: int) -> N
                 "type": "record_missing",
                 "turn": current_turn,
                 "repeat": repeat,
+                "turns_since": turns_since,
             })
 
     recent_events = [e for e in events if e.get("turn", 0) == current_turn]

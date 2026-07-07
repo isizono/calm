@@ -19,7 +19,7 @@ uv run uvicorn relay.app:app --host 127.0.0.1 --port 8770
 
 - `RELAY_AUTH_TOKENS` は `{"<token>": "<identity>"}` の JSON。cc-memory server は `RELAY_BEARER_TOKEN` に `<token>` を、`RELAY_IDENTITY` に `<identity>`（省略時は `cc-memory`）を設定する。
 - `RELAY_DB_PATH` は outbox / publish_log / agent_cards の永続化先。subscription / stream registry は in-memory なので server 再起動で消える（cc-memory 側の B-2 lease loop が自己修復する）。
-- ポート番号は relay v1（既存 `python -m src.relay.server` の 8765）と衝突しない値を選ぶ。上例では 8770 を使う。
+- ポート番号は他プロセスと衝突しない値を選ぶ。上例では 8770 を使う。
 
 ## cc-memory 側の設定
 
@@ -33,6 +33,18 @@ cc-memory server（`python -m src.main --transport http`）は以下の env を�
 | `RELAY_STATE_DIR` | declaration / inbox / cursor の置き場 | `~/.cc-memory/relay` |
 
 `RELAY_BEARER_TOKEN` が未設定のとき cc-memory は常駐 3 系統 thread を起動しない（log 1 行のみで縮退）。この状態でも server 本体の起動と既存機能は影響を受けない。relay を使う MCP tool（`relay_post` / `relay_publish` / `relay_subscribe` / `relay_receive`）は明示的な `config_missing` エラーを返す。
+
+### outbox dispatcher の retry 既定値
+
+`relay_publish` の配達は outbox 経由の非同期 retry で行われる。以下の環境変数で retry 挙動を調整できる。
+
+| 環境変数 | 説明 | 既定値（cc-memory組み込み） | 既定値（スタンドアロンCLI） |
+| --- | --- | --- | --- |
+| `RELAY_OUTBOX_MAX_RETRY` | outbox 行 1 件あたりの retry 上限回数 | `10` | `5` |
+| `RELAY_OUTBOX_INITIAL_BACKOFF_MS` | retry 初回バックオフ（ミリ秒） | `1000` | `100` |
+| `RELAY_OUTBOX_BACKOFF_FACTOR` | retry 指数バックオフ係数 | `2.0` | `2.0` |
+
+`RELAY_OUTBOX_*` は cc-memory 組み込みの dispatcher（`RelayRuntime`）にも、スタンドアロン CLI（`python -m src.relay_sdk.outbox`）にも同じ環境変数名で効く。ただし未設定時のフォールバック既定値は異なる。cc-memory 組み込み経路は relay server の手動再起動断絶を生き延びる目的でスタンドアロン CLI より長い既定値（合計約 8.5 分）を持つ。
 
 ## macOS launchd で常駐化する例
 
@@ -107,6 +119,5 @@ inbox path は `RELAY_STATE_DIR`（未設定なら `~/.cc-memory/relay`）配下
 ## トラブルシューティング
 
 - **cc-memory 起動時のログに「RELAY_BEARER_TOKEN が未設定のため RelayRuntime を起動しません」と出る**: cc-memory を起動する launchd / shell に `RELAY_BEARER_TOKEN` を注入する。`launchctl setenv RELAY_BEARER_TOKEN <token>` は再起動で消えるため、`~/Library/LaunchAgents/com.isizono.cc-memory-remote.plist` の `EnvironmentVariables` に書く。
-- **relay 起動後も cc-memory が SSE 接続に失敗する**: `RELAY_BASE_URL` の port が relay server と一致しているか確認する。cc-memory 側の既定は 8770、relay v1 の既定は 8765。
+- **relay 起動後も cc-memory が SSE 接続に失敗する**: `RELAY_BASE_URL` の port が relay server と一致しているか確認する。cc-memory 側の既定は 8770。
 - **declaration file が増え続ける**: cc-memory server の B-2 lease loop が「lease_expires_at の最大値が 24 時間以上前」の declaration file を定期的に削除する（起動時 1 回 + 1 時間毎）。それでも増える場合は該当 session が生存していて renew が回っている可能性がある（生存判定は `SessionManager.session_ids`。SIGKILL 等で launcher が異常終了した場合も `CC_MEMORY_SESSION_LIVENESS_TIMEOUT_SEC` 経過後に自動で対象から外れる）。
-- **relay v1（既存 `python -m src.relay.server`）と併走させたい**: v1 と v2 で port が異なれば同時起動可能。cc-memory server は `RELAY_BASE_URL` だけを見るため、v2 未導入の状態では `RELAY_BEARER_TOKEN` を未設定にしておけば v1 のみの環境として動く。

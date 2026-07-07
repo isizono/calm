@@ -19,7 +19,6 @@ claude-code-memoryは、こうした文脈をSQLiteデータベースに保存�
 - **タグシステム** — トピック・決定・ログ・アクティビティを横断的にタグで分類します。タグにnotesを付けて作業開始時にAIへ自動注入できます
 - **振る舞い（habits）** — check-in時にAIへ毎回注入される運用ルールを管理します
 - **ハイブリッド検索** — キーワード検索（FTS5）とベクトル検索を組み合わせて関連情報を見つけます
-- **自動同期** — セッション終了時にstop hookで自動起動し、会話内容をcc-memoryに同期します
 
 ## インストール
 
@@ -153,10 +152,6 @@ cloudflared tunnel run cc-memory
 claude.ai → Settings → Integrations → Add Integration からリモートサーバーのURLを追加する。
 
 </details>
-
-## セッション間メッセージング（ow_send / ow_history）
-
-複数のClaude Codeセッション間でメッセージを中継する実験的な基盤です。`ow_send`・`ow_history` MCPツールが、リポ内にvendoringされたrelayサーバー（`src/relay/`）経由でチャンネル単位のメッセージ送受信を提供します。送信先channelが未存在の場合は初回送信時に自動作成されます。relayサーバー自体は自動起動されないため、事前に `uv run python -m src.relay.server` で起動しておく必要があります（未起動のまま送信すると接続エラーになります）。
 
 ## ライセンス
 

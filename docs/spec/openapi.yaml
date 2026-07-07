@@ -38,8 +38,6 @@ tags:
     description: アクティビティ check-in
   - name: retract
     description: 取り消し（論理削除）
-  - name: ow
-    description: orch/worker 間メッセージング
   - name: misc
     description: 設定取得・ユーティリティ
 
@@ -958,60 +956,6 @@ paths:
                 type: object
                 properties:
                   result: { type: integer }
-
-  /tools/ow_send:
-    post:
-      tags: [ow]
-      summary: ow channel にメッセージを送信
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [channel, handle, body]
-              properties:
-                channel: { type: string }
-                handle: { type: string }
-                body: { type: object }
-                needs_reply: { type: boolean, default: false }
-                in_reply_to: { type: integer, nullable: true }
-      responses:
-        '200':
-          description: msg_id
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  msg_id: { type: integer }
-
-  /tools/ow_history:
-    post:
-      tags: [ow]
-      summary: ow channel 履歴を取得
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [channel]
-              properties:
-                channel: { type: string }
-                since: { type: integer, default: 0 }
-                limit: { type: integer, default: 100 }
-      responses:
-        '200':
-          description: messages 配列
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  messages:
-                    type: array
-                    items: { type: object }
 
 components:
   schemas:

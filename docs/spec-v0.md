@@ -304,7 +304,7 @@ orch運用下で生成される activity/decision/material 等には `orch-manag
 
 **アンカー:**
 
-- コードベース: cc-memoryリポのservices/ow_service、hooks/session_*
+- コードベース: cc-memoryリポのhooks/session_*（v1通信系の`services/ow_service`は撤去済み。後継はrelay v2 4動詞tool、`src/services/relay/` + `src/relay_sdk/`）
 - 既存資料: ow統合設計書 v3、orch役割境界 設計書 v2、5次元統合レポート マルチセッション章
 - 既存決定: 「orchは原則手を動かさない、workerに任せる」習慣、「workerはdecisionを直接書かない」習慣
 
