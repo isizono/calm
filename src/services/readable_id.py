@@ -27,7 +27,7 @@ def format_readable_id(
     新規 caller を増やさないこと。
 
     Args:
-        entity_type: エンティティ種別 ('topic'/'decision'/'activity'/'log'/'material')
+        entity_type: エンティティ種別 ('topic'/'decision'/'activity'/'log'/'material'/'signal')
         id_int: 元の整数 ID
         title: エンティティのタイトル (None や空文字列の場合は ID のみ)
         flavor: 表示形式 ('readable' のみ実装済み、'raw'/'internal' は将来実装)
