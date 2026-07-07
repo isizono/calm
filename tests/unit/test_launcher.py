@@ -477,6 +477,101 @@ class TestHeartbeatLoop:
         assert len(register_calls) >= 2
 
 
+class TestBridgeStdinEofWithHeartbeat:
+    """_bridge 実行中に実際の stdin EOF が発生した場合、heartbeat_loop が
+
+    並行動作していても _bridge() が正常に return することの検証。
+
+    heartbeat_loop は自発的に終了しない無限ループのため、
+    stdin_to_server / server_to_stdout が例外なく完了しただけでは
+    task group 全体は終了しない。本テストは fake の read/write ストリームを
+    相互に連動させ、「送信側 (write_stream) を閉じると受信側 (read_stream) も
+    自然終了する」という実際のサーバー接続の挙動を模したうえで、実パイプ経由の
+    stdin EOF から _bridge() が完走することをタイムアウト付きで確認する。
+    """
+
+    def test_bridge_returns_normally_on_stdin_eof_with_heartbeat_running(
+        self, monkeypatch
+    ):
+        import asyncio
+        import os
+        import types
+        from contextlib import asynccontextmanager
+
+        import anyio
+        import mcp.client.streamable_http as streamable_http_module
+
+        monkeypatch.setattr(launcher, "HEARTBEAT_INTERVAL_SEC", 0.02)
+
+        register_calls: list[int] = []
+
+        def fake_register_session() -> bool:
+            register_calls.append(1)
+            return True
+
+        monkeypatch.setattr(launcher, "_register_session", fake_register_session)
+
+        @asynccontextmanager
+        async def fake_streamable_http_client(**kwargs):
+            read_send, read_recv = anyio.create_memory_object_stream(10)
+            write_send, write_recv = anyio.create_memory_object_stream(10)
+
+            async def _get_session_id():
+                return None
+
+            async def _mirror_write_closure() -> None:
+                # write_stream（stdin_to_server が stdin EOF 後に aclose する側）
+                # のクローズを検知したら read_stream 側も閉じる。
+                try:
+                    async for _ in write_recv:
+                        pass
+                finally:
+                    await read_send.aclose()
+
+            async with anyio.create_task_group() as watcher_tg:
+                watcher_tg.start_soon(_mirror_write_closure)
+                try:
+                    yield (read_recv, write_send, _get_session_id)
+                finally:
+                    await write_recv.aclose()
+                    await read_recv.aclose()
+
+        monkeypatch.setattr(
+            streamable_http_module,
+            "streamable_http_client",
+            fake_streamable_http_client,
+        )
+
+        # 実パイプを使い、本物の stdin EOF を発生させる。
+        # heartbeat_loop が並行動作している証拠を残すため、書き込み端は
+        # 即座にではなく別スレッドで少し待ってから閉じる
+        # （heartbeat_interval_sec=0.02sより十分長い待ちを挟み、EOF前に
+        # 複数回 register が呼ばれることを保証する）。
+        import threading
+
+        read_fd, write_fd = os.pipe()
+
+        def _close_write_end_later() -> None:
+            import time as _time
+            _time.sleep(0.1)
+            os.close(write_fd)
+
+        threading.Thread(target=_close_write_end_later, daemon=True).start()
+
+        read_file = os.fdopen(read_fd, "rb", buffering=0)
+        fake_stdin = types.SimpleNamespace(buffer=read_file)
+        monkeypatch.setattr(launcher.sys, "stdin", fake_stdin)
+
+        try:
+            # ハングするバグがあればここでタイムアウトしテストが失敗する
+            asyncio.run(asyncio.wait_for(launcher._bridge(), timeout=3.0))
+        finally:
+            read_file.close()
+
+        # heartbeat_loopが並行して動作していたことの確認
+        assert len(register_calls) >= 1
+
+
 class TestServerDisconnected:
     def test_is_exception(self):
         """ServerDisconnectedがExceptionのサブクラスである"""

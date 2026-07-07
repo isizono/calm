@@ -370,14 +370,31 @@ async def _bridge() -> None:
                 を持たない remote 展開）でも _register_session() が例外を握り
                 つぶして False を返すだけなので、この loop は次回間隔まで待って
                 再試行するだけで致命化しない。
+
+                このループ自体は自発的に終了しないため、io_tasks() 側から
+                明示的にキャンセルされて初めて終了する。
                 """
                 while True:
                     await anyio.sleep(HEARTBEAT_INTERVAL_SEC)
                     await anyio.to_thread.run_sync(_register_session)
 
+            async def io_tasks() -> None:
+                """stdin_to_server / server_to_stdout をまとめて実行する。
+
+                この内側 task group が例外なく完了するのは stdin EOF による
+                正常終了時のみ（サーバー切断時は server_to_stdout が
+                ServerDisconnected を raise し、ここで捕まえずそのまま外側の
+                tg へ伝播させて全タスクをキャンセルさせる）。
+                正常終了時は heartbeat_loop が無限ループのため自発的に終わらず、
+                外側 tg の cancel_scope を明示的にキャンセルして道連れにする。
+                """
+                async with anyio.create_task_group() as io_tg:
+                    io_tg.start_soon(stdin_to_server)
+                    io_tg.start_soon(server_to_stdout)
+                tg.cancel_scope.cancel()
+
             async with anyio.create_task_group() as tg:
-                tg.start_soon(stdin_to_server)
-                tg.start_soon(server_to_stdout)
+                tg.start_soon(io_tasks)
                 tg.start_soon(heartbeat_loop)
 
 

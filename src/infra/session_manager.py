@@ -170,18 +170,29 @@ class SessionManager:
             解除に成功した場合True、未登録の場合False
         """
         with self._lock:
-            if session_id not in self._active_sessions:
-                logger.warning(f"Session not found: {session_id}")
-                return False
-            self._active_sessions.discard(session_id)
-            self._last_seen.pop(session_id, None)
-            count = len(self._active_sessions)
+            count = self._remove_session_locked(session_id)
+
+        if count is None:
+            logger.warning(f"Session not found: {session_id}")
+            return False
 
         logger.info(f"Session unregistered: {session_id} (active: {count})")
 
         if count == 0:
             self._start_grace_timer()
         return True
+
+    def _remove_session_locked(self, session_id: str) -> Optional[int]:
+        """``self._lock`` 保持中に呼び出すこと。
+
+        セッションを除去し、除去後のアクティブ数を返す。未登録の場合は
+        ``None`` を返す（除去は行わない）。
+        """
+        if session_id not in self._active_sessions:
+            return None
+        self._active_sessions.discard(session_id)
+        self._last_seen.pop(session_id, None)
+        return len(self._active_sessions)
 
     def set_shutdown_callback(self, callback: Callable[[], None]) -> None:
         """シャットダウン時に呼ばれるコールバックを設定する。"""
@@ -228,8 +239,30 @@ class SessionManager:
                     if now - last > self._liveness_timeout
                 ]
             for sid in stale:
-                logger.warning(f"Session liveness timeout, evicting: {sid}")
-                self.unregister(sid)
+                self._evict_if_still_stale(sid)
+
+    def _evict_if_still_stale(self, session_id: str) -> None:
+        """stale判定されたsessionを、除去直前に再チェックしてから失効させる。
+
+        stale一覧のスナップショット取得（ロック外）からこの呼び出しまでの間に
+        別スレッドから register()（heartbeat）が届くと、その session は既に
+        TTL内へ復帰している可能性がある。再チェックと除去を同一ロック区間で
+        行うことで、直前に生存申告のあったsessionを誤って失効させることを
+        防ぐ（TOCTOU対策）。
+        """
+        with self._lock:
+            last_seen = self._last_seen.get(session_id)
+            if last_seen is None:
+                return  # 既に unregister 済み
+            if time.monotonic() - last_seen <= self._liveness_timeout:
+                return  # 再チェック時点では生存（heartbeatが届いていた）
+            count = self._remove_session_locked(session_id)
+
+        if count is None:
+            return
+        logger.warning(f"Session liveness timeout, evicting: {session_id} (active: {count})")
+        if count == 0:
+            self._start_grace_timer()
 
     @property
     def is_auto_shutdown_disabled(self) -> bool:

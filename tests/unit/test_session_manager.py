@@ -343,3 +343,34 @@ class TestLivenessReaper:
         mgr = SessionManager(liveness_timeout_sec=0)
         mgr._start_liveness_reaper()
         assert mgr._liveness_thread is None
+
+    def test_evict_if_still_stale_toctou_race(self):
+        """staleスナップショット取得後、除去直前にheartbeatが届いた場合は
+
+        失効させない（TOCTOUレース対策）。reaperがスキャン時にstale判定
+        した後・実際に除去する前にregister()（heartbeat）が割り込むケースを
+        直接シミュレートする。
+        """
+        mgr = SessionManager(grace_period_sec=0, liveness_timeout_sec=0.2)
+        mgr.register("s1")
+        # reaperのスキャン時点でstaleだった状態を模す
+        with mgr._lock:
+            mgr._last_seen["s1"] = time.monotonic() - 10
+        # スナップショット取得後、除去呼び出し前にheartbeatが届いたケース
+        mgr.register("s1")
+        mgr._evict_if_still_stale("s1")
+        assert "s1" in mgr.session_ids
+
+    def test_evict_if_still_stale_removes_when_genuinely_stale(self):
+        """再チェック時点でもTTL超過していれば失効させる"""
+        mgr = SessionManager(grace_period_sec=0, liveness_timeout_sec=0.2)
+        mgr.register("s1")
+        with mgr._lock:
+            mgr._last_seen["s1"] = time.monotonic() - 10
+        mgr._evict_if_still_stale("s1")
+        assert "s1" not in mgr.session_ids
+
+    def test_evict_if_still_stale_missing_session_is_noop(self):
+        """既に unregister 済みの session_id を渡してもエラーにならない"""
+        mgr = SessionManager(grace_period_sec=0, liveness_timeout_sec=0.2)
+        mgr._evict_if_still_stale("not-registered")  # raiseしないことの確認
