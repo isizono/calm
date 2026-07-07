@@ -100,8 +100,8 @@ class TestDryRunMigrationsFailure:
         _write_migration(
             mig_dir,
             "9003_probe_fk_violation.sql",
-            "INSERT INTO session_identity (session_id, role, topic_id) "
-            "VALUES ('dryrun-fk-probe', 'worker', 999999);",
+            "INSERT INTO activity_dependencies (dependent_id, dependency_id) "
+            "VALUES (999999, 999998);",
         )
         pending = _read_pending(mig_dir)
 

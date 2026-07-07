@@ -19,6 +19,7 @@ from src.services.hint_service import (
     MARKER_RECOMPOSE_GENERIC,
     RECOMPOSE_BOOTSTRAP_THRESHOLD,
     RECOMPOSE_DELTA_THRESHOLD,
+    _is_marker_active,
     get_hints,
     get_hints_with_conn,
     is_orch_managed_activity,
@@ -383,6 +384,86 @@ class TestIsOrchManagedActivity:
             assert is_orch_managed_activity(conn, 999_999) is False
         finally:
             conn.close()
+
+
+class TestIsMarkerActiveHelper:
+    """_is_marker_active: 恒久/期限付きマーカー判定の純粋関数テスト（DB不要）"""
+
+    def test_plain_marker_active(self):
+        assert _is_marker_active(f"foo {MARKER_LOGS_SPARSE} bar", MARKER_LOGS_SPARSE) is True
+
+    def test_absent_marker_inactive(self):
+        assert _is_marker_active("no markers here", MARKER_LOGS_SPARSE) is False
+
+    def test_future_dated_marker_active(self):
+        assert _is_marker_active(f"{MARKER_LOGS_SPARSE}-until:2099-01-01", MARKER_LOGS_SPARSE) is True
+
+    def test_past_dated_marker_inactive(self):
+        assert _is_marker_active(f"{MARKER_LOGS_SPARSE}-until:2000-01-01", MARKER_LOGS_SPARSE) is False
+
+    def test_invalid_date_format_inactive(self):
+        """不正な日付形式(存在しない13月99日)は無視される(フェイルオープン、抑制しない側に倒す)"""
+        assert _is_marker_active(f"{MARKER_LOGS_SPARSE}-until:2026-13-99", MARKER_LOGS_SPARSE) is False
+
+    def test_expired_dated_marker_not_mistaken_for_permanent(self):
+        """期限切れの日付付きマーカーだけが存在する場合、素の恒久マーカーとして
+        誤検出されない(prefix関係の回帰防止: `#foo-until:...`は`#foo`を部分文字列
+        として含む)"""
+        assert _is_marker_active(f"{MARKER_LOGS_SPARSE}-until:2000-01-01", MARKER_LOGS_SPARSE) is False
+
+    def test_permanent_marker_wins_when_expired_dated_also_present(self):
+        notes = f"{MARKER_LOGS_SPARSE} {MARKER_LOGS_SPARSE}-until:2000-01-01"
+        assert _is_marker_active(notes, MARKER_LOGS_SPARSE) is True
+
+
+class TestDatedMarkerSnooze:
+    """スヌーズマーカー(`<marker>-until:YYYY-MM-DD`)による期限付き抑制の結線テスト"""
+
+    def test_future_dated_marker_suppresses_recompose_bootstrap(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        for i in range(RECOMPOSE_BOOTSTRAP_THRESHOLD):
+            add_decision(decision=f"d{i}", reason="r", topic_id=topic["topic_id"])
+        update_tag(DOMAIN_TAG, notes=f"{MARKER_RECOMPOSE_BOOTSTRAP}-until:2099-01-01")
+
+        assert get_hints("tag", _tag_id(DOMAIN_TAG_NAME)) == []
+
+    def test_past_dated_marker_does_not_suppress_recompose_bootstrap(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        for i in range(RECOMPOSE_BOOTSTRAP_THRESHOLD):
+            add_decision(decision=f"d{i}", reason="r", topic_id=topic["topic_id"])
+        update_tag(DOMAIN_TAG, notes=f"{MARKER_RECOMPOSE_BOOTSTRAP}-until:2000-01-01")
+
+        hints = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        assert any(h["type"] == "recompose_bootstrap" for h in hints)
+
+    def test_future_dated_marker_suppresses_logs_sparse(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        add_decision(decision="d", reason="r", topic_id=topic["topic_id"])
+        update_tag(DOMAIN_TAG, notes=f"{MARKER_LOGS_SPARSE}-until:2099-01-01")
+
+        assert get_hints("topic", topic["topic_id"]) == []
+
+    def test_past_dated_marker_does_not_suppress_logs_sparse(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        add_decision(decision="d", reason="r", topic_id=topic["topic_id"])
+        update_tag(DOMAIN_TAG, notes=f"{MARKER_LOGS_SPARSE}-until:2000-01-01")
+
+        hints = get_hints("topic", topic["topic_id"])
+        assert any(h["type"] == "logs_sparse" for h in hints)
+
+    def test_recompose_bootstrap_message_includes_snooze_instructions(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        for i in range(RECOMPOSE_BOOTSTRAP_THRESHOLD):
+            add_decision(decision=f"d{i}", reason="r", topic_id=topic["topic_id"])
+
+        hints = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        bootstrap_hint = next(h for h in hints if h["type"] == "recompose_bootstrap")
+        assert "-until:" in bootstrap_hint["message"]
+        assert MARKER_RECOMPOSE_BOOTSTRAP in bootstrap_hint["message"]
+
+    def test_logs_sparse_message_includes_snooze_instructions(self):
+        assert "-until:" in HINT_LOGS_SPARSE_MESSAGE
+        assert MARKER_LOGS_SPARSE in HINT_LOGS_SPARSE_MESSAGE
 
 
 class TestEdgeCases:

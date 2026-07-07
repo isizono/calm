@@ -376,52 +376,6 @@ class TestSessionStartHookOwRoleEnvIgnored:
         assert "# 振る舞い" in context
         assert "残存env下振る舞い" in context
 
-    def test_stale_ow_role_env_does_not_register_session_identity(self, temp_db):
-        """OW_ROLE=worker + session_idが揃っていてもsession_identityには登録されない"""
-        result = _run_session_start_hook(
-            temp_db,
-            extra_env={"OW_ROLE": "worker", "OW_HANDLE": "stale-handle"},
-            stdin_payload={"session_id": "sess-no-register"},
-        )
-        assert "hookSpecificOutput" in result
-
-        conn = get_connection()
-        try:
-            rows = conn.execute("SELECT session_id FROM session_identity").fetchall()
-        finally:
-            conn.close()
-        assert rows == []
-
-    def test_stale_session_identity_row_does_not_affect_new_session(self, temp_db):
-        """session_identity に残存する過去の worker 行が別 session_id の
-        hook 挙動に影響しないことを保証する回帰ガード。
-
-        現状 hook は role / session_identity を一切参照しないため、この
-        assertion は session_identity の中身に関わらず通過する（現時点では
-        実質的な検証力を持たない）。将来 hook 側に role 参照が再導入された
-        場合に、残存 worker 行が新規セッションのアクティビティ一覧を誤って
-        抑制する回帰を検出するためのガードとして残す。"""
-        conn = get_connection()
-        try:
-            conn.execute(
-                "INSERT INTO session_identity (session_id, role) VALUES (?, ?)",
-                ("sess-old-worker", "worker"),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-        _seed_activity("[作業] 新規セッション表示テスト", status="in_progress")
-
-        result = _run_session_start_hook(
-            temp_db,
-            env_remove=["OW_ROLE"],
-            stdin_payload={"session_id": "sess-new"},
-        )
-        context = result["hookSpecificOutput"]["additionalContext"]
-
-        assert "# アクティビティ一覧" in context
-        assert "新規セッション表示テスト" in context
-
 
 class TestSessionStartHookOrchManagedExclusion:
     """orch_managed=1 アクティビティの除外テスト"""
@@ -1174,3 +1128,42 @@ class TestSessionStartHookSignals:
         context = result["hookSpecificOutput"]["additionalContext"]
 
         assert "未トリアージのシグナル" not in context
+
+
+class TestSessionStartHookRelayInbox:
+    """relay inbox未読件数の1行表示テスト
+
+    hookは実プロセスとしてsubprocess経由で起動され、MCPリクエストコンテキストを
+    一切持たない。そのためget_relay_identity()は常にNoneへ解決し、実際に未読が
+    存在してもこのセクションは常に空文字（ゼロコスト）になる。
+    """
+
+    def test_no_relay_section_when_no_unread(self, temp_db):
+        """relay状態が何もない通常時はセクション自体が出ない"""
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "relay inbox 未読" not in context
+
+    def test_relay_section_absent_even_with_real_unread_backlog(
+        self, temp_db, tmp_path
+    ):
+        """実在のinboxに未読が積まれていても、hookプロセスはidentityを解決
+        できないためセクションは表示されない（今回のバッチが対応する範囲では
+        SessionStart側は常に無出力）。
+        """
+        state_dir = tmp_path / "relay-state"
+        from src.services.relay import inbox as relay_inbox
+
+        os.environ["RELAY_STATE_DIR"] = str(state_dir)
+        try:
+            relay_inbox.append("some-identity", {"body": "hello"})
+        finally:
+            del os.environ["RELAY_STATE_DIR"]
+
+        result = _run_session_start_hook(
+            temp_db, extra_env={"RELAY_STATE_DIR": str(state_dir)}
+        )
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "relay inbox 未読" not in context

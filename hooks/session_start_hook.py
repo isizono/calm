@@ -370,6 +370,34 @@ def _build_signals_section(conn, session_id: str | None = None) -> str:  # conn,
     return f"未トリアージのシグナル: {total}件 ({breakdown}) → get_signals で確認\n"
 
 
+def _build_relay_inbox_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
+    """relay inboxの未読件数を1行表示する。
+
+    identity解決はsrc.services.relay.identity.get_relay_identity()に委ねる。
+    この関数はMCPリクエストのHTTPヘッダ（X-CC-Memory-Bridge-Session-Id）を
+    読んで識別子を得るが、本hookはClaude Code CLIが起動する独立プロセスで
+    あり、実行中はMCPリクエストコンテキストを一切持たない。そのためここから
+    呼ぶとヘッダ・ctx.session_idのいずれも解決できずNoneが返り、本セクションは
+    常に空文字（コンテキスト消費ゼロ）になる。get_relay_identity()自体は
+    コンテキスト外呼び出しで例外を投げない実装であり、それに依存して安全に
+    無出力へフォールバックしている。identityが解決できた場合のみ
+    count_unreadで未読件数を数えて表示する。
+    """
+    from src.services.relay.identity import get_relay_identity
+
+    identity = get_relay_identity()
+    if not identity:
+        return ""
+
+    from src.services.relay.inbox import count_unread
+
+    count = count_unread(identity)
+    if count <= 0:
+        return ""
+
+    return f"relay inbox 未読: {count}件 → relay_receive で確認\n"
+
+
 def _build_snapshot_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
     """スナップショット取得＋ヘルスチェック。異常検知時のみ警告を返す。
 
@@ -451,6 +479,7 @@ def _build_session_context(session_id: str | None = None) -> str:
             _build_habits_section,
             _build_sync_policy_section,
             _build_signals_section,
+            _build_relay_inbox_section,
         ]
         for builder in builders:
             try:

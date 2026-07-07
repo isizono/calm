@@ -170,6 +170,26 @@ class TestSubscribe:
         decl = declarations.load("sess-1")
         assert decl is None or decl.get("subscriptions") == []
 
+    def test_429_returns_rate_limited_code_with_retry_after(self, monkeypatch):
+        """429 は relay_post と同様 `rate_limited` に分類され、retry_after が付与される。"""
+
+        def factory(base_url, **kwargs):
+            def rate_limited(request):
+                return httpx.Response(
+                    429,
+                    json={"code": "RATE_LIMITED", "message": "しばらく待ってください"},
+                    headers={"Retry-After": "3"},
+                )
+
+            return httpx.Client(
+                transport=httpx.MockTransport(rate_limited), base_url=base_url
+            )
+
+        monkeypatch.setattr(service, "make_client", factory)
+        result = service.relay_subscribe(["a"], caller_session_id="sess-1")
+        assert result["error"]["code"] == "rate_limited"
+        assert result["error"]["retry_after"] == 3.0
+
 
 class TestReceive:
     def test_no_inbox_returns_empty_list(self):

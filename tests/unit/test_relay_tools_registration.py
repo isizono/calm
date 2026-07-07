@@ -1,22 +1,8 @@
-"""relay 4 動詞 tool の MCP 登録・capability matrix・docstring 契約のテスト。
-
-matrix 未登録 tool は default deny で呼べなくなるため、登録漏れの回帰を防ぐ。
-"""
-from src.services.capability_matrix import CAPABILITY_MATRIX
+"""relay 4 動詞 tool の MCP 登録・docstring 契約のテスト。"""
 from tests.helpers import all_tool_descriptions as _all_tool_descriptions
 
 RELAY_TOOLS = ("relay_post", "relay_publish", "relay_subscribe", "relay_receive")
-
-
-class TestCapabilityMatrixRegistration:
-    def test_all_relay_tools_are_registered(self):
-        for name in RELAY_TOOLS:
-            assert name in CAPABILITY_MATRIX, f"{name} が capability matrix に未登録"
-
-    def test_relay_tools_are_open_to_all_roles(self):
-        for name in RELAY_TOOLS:
-            decisions = set(CAPABILITY_MATRIX[name].values())
-            assert decisions == {True}, f"{name} は全 role に開放されるべき"
+RELAY_DIAGNOSTIC_TOOLS = ("relay_status",)
 
 
 class TestToolRegistration:
@@ -57,15 +43,38 @@ class TestPublishDocstringContract:
         assert "エラー" in desc
 
 
-class TestLegacyCrossReference:
-    """relay 4 動詞それぞれが v1 の対応 tool（ow_send/ow_history）への相互参照を持つ。"""
+class TestSubscribeReceivePairing:
+    """relay_subscribe と relay_receive が購読宣言/受信で役割分担していることの相互参照。"""
 
-    def test_post_and_publish_reference_ow_send(self):
+    def test_subscribe_and_receive_reference_each_other(self):
         descriptions = _all_tool_descriptions()
-        assert "ow_send" in descriptions["relay_post"]
-        assert "ow_send" in descriptions["relay_publish"]
+        assert "relay_receive" in descriptions["relay_subscribe"]
+        assert "relay_subscribe" in descriptions["relay_receive"]
 
-    def test_subscribe_and_receive_reference_ow_history(self):
+
+class TestDiagnosticToolRegistration:
+    def test_all_diagnostic_tools_are_exposed_via_mcp(self):
         descriptions = _all_tool_descriptions()
-        assert "ow_history" in descriptions["relay_subscribe"]
-        assert "ow_history" in descriptions["relay_receive"]
+        for name in RELAY_DIAGNOSTIC_TOOLS:
+            assert name in descriptions, f"{name} が MCP tool として未登録"
+
+
+class TestSubscribeDocstringContract:
+    def test_mentions_reconnect_notification_and_no_message_loss(self):
+        """新規購読時の反映指示・上限遅延・喪失なしの保証が description に明記されている。"""
+        desc = _all_tool_descriptions()["relay_subscribe"]
+        assert "reused: false" in desc
+        assert "60 秒" in desc
+        assert "喪失しない" in desc
+
+
+class TestRelayStatusDocstringContract:
+    def test_mentions_not_a_replacement_for_the_four_verbs(self):
+        """4動詞のいずれの代替でもない診断専用の面であることが明記されている。"""
+        desc = _all_tool_descriptions()["relay_status"]
+        assert "代替でもない" in desc
+
+    def test_mentions_no_http_access(self):
+        """relay server がダウンしていても機能する（HTTPアクセスを行わない）ことが明記されている。"""
+        desc = _all_tool_descriptions()["relay_status"]
+        assert "HTTPアクセスは行わない" in desc

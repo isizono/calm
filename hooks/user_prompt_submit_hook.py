@@ -45,12 +45,21 @@ _FOLLOW_UP_NUDGE_MESSAGE = (
     "</system-reminder>"
 )
 
-_RECORD_NUDGE_MESSAGE = (
-    "<system-reminder>"
+_RECORD_NUDGE_TIER_LOW = (
     "直近の応答で記録ツール（add_logs/add_decisions/add_topic）が呼ばれていません。"
-    "ユーザーの今回の発言に応答する前に、これまでの議論で残すべき事項がないか振り返ってください。"
-    "該当があれば応答冒頭で記録してから本題に入ってください。"
-    "</system-reminder>"
+    "ユーザーの今回の発言に応答する前に、これまでの議論で残すべき事項がないか"
+    "振り返ってください。該当があれば応答冒頭で記録してから本題に入ってください。"
+    "該当なしなら無視してOK。"
+)
+_RECORD_NUDGE_TIER_MID = (
+    "{turns_since}ターン記録ツール（add_logs/add_decisions/add_topic）が"
+    "呼ばれていません。議論や作業が進んでいる場合、経緯が失われつつあります。"
+    "応答前に記録すべき内容がないか確認してください。"
+)
+_RECORD_NUDGE_TIER_HIGH = (
+    "{turns_since}ターン以上記録ツールが呼ばれていません。このまま進むと"
+    "セッションの経緯が失われる可能性が高い状態です。今すぐ振り返って記録するか、"
+    "記録すべき内容が本当にないかを明示的に判断してください。"
 )
 
 _ID_LEAK_NUDGE_MESSAGE = (
@@ -66,6 +75,17 @@ def _wrap_system_reminder(body: str) -> str:
     return f"<system-reminder>{body}</system-reminder>"
 
 
+def _record_nudge_body(repeat: int, turns_since: int) -> str:
+    """repeat段階に応じた文面を返す（1-2: 軽い促し, 3-4: 中程度, 5: 強い）。"""
+    if repeat >= 5:
+        template = _RECORD_NUDGE_TIER_HIGH
+    elif repeat >= 3:
+        template = _RECORD_NUDGE_TIER_MID
+    else:
+        return _RECORD_NUDGE_TIER_LOW
+    return template.format(turns_since=turns_since)
+
+
 def _format_nudge_message(event: dict, ntype: str | None) -> str | None:
     """nudgeイベントから注入文面を生成する。未知typeは None を返す。
 
@@ -76,7 +96,11 @@ def _format_nudge_message(event: dict, ntype: str | None) -> str | None:
         return _FOLLOW_UP_NUDGE_MESSAGE
     if ntype in ("record_missing", "record"):
         repeat = event.get("repeat", 1)
-        return _RECORD_NUDGE_MESSAGE * repeat
+        # turns_sinceは後方互換フィールド。旧events.jsonl(本フィールド追加前に
+        # 書かれたnudgeイベント)には存在しないため、_NUDGE_INTERVALから逆算した
+        # 近似値(repeat*2)にフォールバックする。
+        turns_since = event.get("turns_since", repeat * 2)
+        return _wrap_system_reminder(_record_nudge_body(repeat, turns_since))
     if ntype == "logs_sparse":
         body = event.get("message", "")
         if not body:

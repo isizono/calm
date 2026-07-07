@@ -1,7 +1,6 @@
 """議論トピック管理サービス"""
 import re
 import sqlite3
-from typing import Optional
 from src.db import get_connection, row_to_dict
 from src.services.citations_service import upsert_citations_for_owner_with_conn
 from src.services.readable_id import apply_readable_id_inplace
@@ -139,7 +138,6 @@ def add_topic(
     description: str,
     tags: list[str],
     related: list[dict] | None = None,
-    caller_session_id: Optional[str] = None,
 ) -> dict:
     """
     新しい議論トピックを追加する。
@@ -175,8 +173,8 @@ def add_topic(
     try:
         # トピックをINSERT
         cursor = conn.execute(
-            "INSERT INTO discussion_topics (title, description, caller_session_id) VALUES (?, ?, ?)",
-            (title, description, caller_session_id),
+            "INSERT INTO discussion_topics (title, description) VALUES (?, ?)",
+            (title, description),
         )
         topic_id = cursor.lastrowid
 
