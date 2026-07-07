@@ -67,19 +67,31 @@ def append(session_id: str, record: dict) -> None:
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
-def drain(session_id: str, limit: Optional[int] = None) -> list[dict]:
-    """cursor 位置から未読レコードを読み出して返し、cursor を前進させる。
+def drain(
+    session_id: str, limit: Optional[int] = None, peek: bool = False
+) -> dict:
+    """cursor 位置から未読レコードを読み出す。
 
-    - inbox file 不在（未配達）は空リスト（エラーにしない）
-    - 改行で終端していない末尾の書きかけ行は消費しない（次回 drain に持ち越す）
+    - peek=False（既定、consume）: 従来通り cursor を前進させ、末尾まで読み切ったら
+      file を truncate(0) して cursor を 0 に戻す。既読になるのはこの呼び出しのみ。
+    - peek=True: cursor・file を一切変更しない（読むだけ）。同じ範囲を何度でも
+      読み直せる。実際に既読化するには同じ呼び出しを peek=False で呼び直す。
+
+    - inbox file 不在（未配達）は `{"records": [], "has_more": False}`（エラーにしない）
+    - 改行で終端していない末尾の書きかけ行は消費しない（次回に持ち越す）
     - JSON として読めない行はスキップして先へ進む（1 行の破損で inbox 全体を殺さない）
-    - 末尾まで読み切ったら file を切り詰めて cursor を 0 に戻す（inbox の肥大防止）
+    - peek=False で末尾まで読み切ったら file を切り詰める（inbox の肥大防止）
+
+    Returns:
+        {"records": list[dict], "has_more": bool}
+        has_more は今回読み終えた位置より先に未消費のバイトが残っているかどうか
+        （limit 到達による打ち切り・書きかけ行の持ち越し、いずれの場合も True）
     """
     path = inbox_path(session_id)
     try:
         f = open(path, "r+b")
     except FileNotFoundError:
-        return []
+        return {"records": [], "has_more": False}
 
     records: list[dict] = []
     with f:
@@ -113,14 +125,16 @@ def drain(session_id: str, limit: Optional[int] = None) -> list[dict]:
                 if isinstance(record, dict):
                     records.append(record)
             new_offset = f.tell()
-            if new_offset >= size:
-                f.truncate(0)
-                _write_cursor(session_id, 0)
-            else:
-                _write_cursor(session_id, new_offset)
+            has_more = new_offset < size
+            if not peek:
+                if new_offset >= size:
+                    f.truncate(0)
+                    _write_cursor(session_id, 0)
+                else:
+                    _write_cursor(session_id, new_offset)
         finally:
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-    return records
+    return {"records": records, "has_more": has_more}
 
 
 def count_unread(session_id: str) -> int:

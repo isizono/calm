@@ -194,7 +194,7 @@ class TestSubscribe:
 class TestReceive:
     def test_no_inbox_returns_empty_list(self):
         result = service.relay_receive(caller_session_id="sess-1")
-        assert result == {"messages": [], "count": 0}
+        assert result == {"messages": [], "count": 0, "has_more": False}
 
     def test_drains_only_unread_records(self):
         inbox.append("sess-1", {"n": 1})
@@ -211,9 +211,15 @@ class TestReceive:
             inbox.append("sess-1", {"n": n})
         result = service.relay_receive(limit=2, caller_session_id="sess-1")
         assert result["count"] == 2
+        assert result["has_more"] is True
 
     def test_invalid_limit_rejected(self):
         result = service.relay_receive(limit=0, caller_session_id="sess-1")
+        assert result["error"]["code"] == "validation"
+
+    def test_bool_limit_rejected(self):
+        """bool は int のサブクラスのため、明示チェックが無いと誤って通過する。"""
+        result = service.relay_receive(limit=True, caller_session_id="sess-1")
         assert result["error"]["code"] == "validation"
 
     def test_unresolved_session_returns_explicit_error(self):
@@ -224,3 +230,38 @@ class TestReceive:
         inbox.append("sess-other", {"n": 99})
         result = service.relay_receive(caller_session_id="sess-1")
         assert result["messages"] == []
+
+    def test_default_limit_is_50(self):
+        for n in range(60):
+            inbox.append("sess-1", {"n": n})
+        result = service.relay_receive(caller_session_id="sess-1")
+        assert result["count"] == 50
+        assert result["has_more"] is True
+
+    def test_limit_above_max_is_clamped_to_200(self):
+        for n in range(210):
+            inbox.append("sess-1", {"n": n})
+        result = service.relay_receive(limit=500, caller_session_id="sess-1")
+        assert result["count"] == 200
+        assert result["has_more"] is True
+
+    def test_peek_does_not_consume(self):
+        inbox.append("sess-1", {"n": 1})
+        peeked = service.relay_receive(peek=True, caller_session_id="sess-1")
+        assert [m["n"] for m in peeked["messages"]] == [1]
+
+        again = service.relay_receive(peek=True, caller_session_id="sess-1")
+        assert [m["n"] for m in again["messages"]] == [1]
+
+    def test_peek_then_default_consumes(self):
+        inbox.append("sess-1", {"n": 1})
+        service.relay_receive(peek=True, caller_session_id="sess-1")
+        consumed = service.relay_receive(caller_session_id="sess-1")
+        assert [m["n"] for m in consumed["messages"]] == [1]
+
+        after = service.relay_receive(caller_session_id="sess-1")
+        assert after["messages"] == []
+
+    def test_invalid_peek_type_rejected(self):
+        result = service.relay_receive(peek="yes", caller_session_id="sess-1")
+        assert result["error"]["code"] == "validation"

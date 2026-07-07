@@ -47,6 +47,10 @@ TTL_MAX_SECONDS = 86400
 # at-least-once の再配達時に本文が先に消えるモードが生まれるため持たない）。
 MESSAGE_REF_TYPE = "message"
 
+# relay_receive の limit 既定値・上限（search/get_timeline 等の読み取り系 tool の慣例に合わせる）。
+DEFAULT_RECEIVE_LIMIT = 50
+MAX_RECEIVE_LIMIT = 200
+
 SESSION_UNRESOLVED_MESSAGE = (
     "呼び出し元の session_id を解決できません。"
     "MCP セッション経由で呼び出してください（session 外からの実行は非対応）。"
@@ -133,7 +137,10 @@ def _attach_handle(labels: list[str], handle: str) -> list[str]:
 
 
 def relay_post(stream_name: str, body: str, ttl: Optional[int] = None) -> dict:
-    """stream にメッセージを投函する。未存在 stream は自動作成して 1 回だけ再試行する。"""
+    """stream にメッセージを投函する。未存在 stream は自動作成して 1 回だけ再試行する。
+
+    投函内容は cc-memory 本体（search/get_timeline 等）には自動反映されない。
+    """
     if not isinstance(stream_name, str) or not stream_name:
         return _error("validation", "stream_name は非空文字列で指定してください")
     if ":" in stream_name or "/" in stream_name:
@@ -257,7 +264,10 @@ def relay_publish(
     *,
     caller_session_id: Optional[str] = None,
 ) -> dict:
-    """publish_with_conn の自前 connection 版（成功時に commit する）。"""
+    """publish_with_conn の自前 connection 版（成功時に commit する）。
+
+    配布内容は cc-memory 本体（search/get_timeline 等）には自動反映されない。
+    """
     conn = get_connection()
     try:
         result = publish_with_conn(
@@ -345,13 +355,32 @@ def relay_subscribe(
 
 
 def relay_receive(
-    limit: Optional[int] = None, *, caller_session_id: Optional[str] = None
+    limit: Optional[int] = None,
+    peek: bool = False,
+    *,
+    caller_session_id: Optional[str] = None,
 ) -> dict:
-    """自 session の inbox を cursor から drain して返す。未読が無ければ空リスト。"""
+    """自 session の inbox を cursor から読み出す。既定（peek=False）は consume。
+
+    limit 省略時は DEFAULT_RECEIVE_LIMIT 件、MAX_RECEIVE_LIMIT を超える値は
+    それに切り詰める。peek=True は cursor・inbox file を変更せず読むだけで、
+    既読化するには同じ呼び出しを peek=False（既定）で呼び直す。
+    """
     if not caller_session_id:
         return _error("session_unresolved", SESSION_UNRESOLVED_MESSAGE)
-    if limit is not None and (not isinstance(limit, int) or limit <= 0):
+    if limit is not None and (
+        not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0
+    ):
         return _error("validation", "limit は 1 以上の整数で指定してください")
+    if not isinstance(peek, bool):
+        return _error("validation", "peek は真偽値で指定してください")
 
-    messages = inbox.drain(caller_session_id, limit)
-    return {"messages": messages, "count": len(messages)}
+    effective_limit = (
+        DEFAULT_RECEIVE_LIMIT if limit is None else min(limit, MAX_RECEIVE_LIMIT)
+    )
+    result = inbox.drain(caller_session_id, effective_limit, peek=peek)
+    return {
+        "messages": result["records"],
+        "count": len(result["records"]),
+        "has_more": result["has_more"],
+    }

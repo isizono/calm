@@ -20,6 +20,14 @@ class TestReceiveDocstringContract:
         assert "重複" in desc
 
 
+class TestReceiveHasMoreDocstringContract:
+    def test_receive_mentions_peek_and_has_more(self):
+        """peek/has_more の2段階読み取り契約が description に明記されている。"""
+        desc = _all_tool_descriptions()["relay_receive"]
+        assert "peek" in desc
+        assert "has_more" in desc
+
+
 class TestPostDocstringContract:
     def test_post_mentions_single_identity_scope(self):
         """自 server 名義の stream のみ扱う制約が description に明記されている。"""
