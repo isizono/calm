@@ -185,3 +185,101 @@ class TestSupervisorRestart:
         runtime.stop()
         thread.join(timeout=3.0)
         assert not thread.is_alive()
+
+
+class TestHealthSnapshot:
+    def test_before_start_is_unconfigured_and_empty(self, monkeypatch):
+        monkeypatch.delenv("RELAY_BEARER_TOKEN", raising=False)
+        runtime = RelayRuntime(active_sessions_getter=lambda: set())
+        snapshot = runtime.health_snapshot()
+        assert snapshot == {"configured": False, "running": False, "threads": {}}
+
+    def test_after_start_all_three_threads_are_registered_alive(self, monkeypatch):
+        monkeypatch.setenv("RELAY_BEARER_TOKEN", "test-token")
+        runtime = RelayRuntime(active_sessions_getter=lambda: set())
+
+        def _block_until_stop():
+            runtime._stop_event.wait()
+
+        monkeypatch.setattr(runtime, "_run_intake", _block_until_stop)
+        monkeypatch.setattr(runtime, "_run_lease_loop", _block_until_stop)
+        monkeypatch.setattr(runtime, "_run_dispatcher", _block_until_stop)
+
+        assert runtime.start() is True
+        try:
+            snapshot = runtime.health_snapshot()
+            assert snapshot["configured"] is True
+            assert snapshot["running"] is True
+            assert set(snapshot["threads"].keys()) == {
+                "relay-intake",
+                "relay-lease-loop",
+                "relay-dispatcher",
+            }
+            for info in snapshot["threads"].values():
+                assert info == {
+                    "alive": True,
+                    "restart_count": 0,
+                    "last_restart_at": None,
+                    "last_error": None,
+                }
+        finally:
+            runtime.stop()
+
+    def test_restart_increments_count_and_records_last_error(self, monkeypatch):
+        monkeypatch.setenv("RELAY_BEARER_TOKEN", "test-token")
+        runtime = RelayRuntime(active_sessions_getter=lambda: set())
+        counter = {"n": 0}
+
+        def _fail_once_then_block():
+            counter["n"] += 1
+            if counter["n"] == 1:
+                raise RuntimeError("boom")
+            runtime._stop_event.wait()
+
+        monkeypatch.setattr(runtime, "_run_intake", _fail_once_then_block)
+        monkeypatch.setattr(runtime, "_run_lease_loop", lambda: runtime._stop_event.wait())
+        monkeypatch.setattr(runtime, "_run_dispatcher", lambda: runtime._stop_event.wait())
+
+        assert runtime.start() is True
+        try:
+            deadline = time.monotonic() + 5.0
+            while (
+                runtime.health_snapshot()["threads"]["relay-intake"]["restart_count"] < 1
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.05)
+            snapshot = runtime.health_snapshot()
+            intake_health = snapshot["threads"]["relay-intake"]
+            assert intake_health["restart_count"] == 1
+            assert intake_health["last_restart_at"] is not None
+            assert "RuntimeError: boom" in intake_health["last_error"]
+        finally:
+            runtime.stop()
+
+    def test_supervise_direct_call_without_spawn_does_not_raise_keyerror(self):
+        """_spawn() を経由せず _supervise() を直接呼んでも health_snapshot 更新側で例外にならない。
+
+        既存回帰テスト（TestSupervisorRestart）と同じ呼び出し形を踏襲し、
+        self._health への setdefault 自己登録が機能することを確認する。
+        """
+        runtime = RelayRuntime(active_sessions_getter=lambda: set())
+        counter = {"n": 0}
+
+        def target():
+            counter["n"] += 1
+            if counter["n"] < 2:
+                raise RuntimeError("boom")
+            runtime._stop_event.wait(0.05)
+
+        thread = threading.Thread(
+            target=runtime._supervise, args=("t-test", target), daemon=True
+        )
+        thread.start()
+        deadline = time.monotonic() + 5.0
+        while counter["n"] < 2 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert counter["n"] >= 2
+        with runtime._health_lock:
+            assert runtime._health["t-test"]["restart_count"] == 1
+        runtime.stop()
+        thread.join(timeout=3.0)

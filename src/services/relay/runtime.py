@@ -27,11 +27,22 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from typing import Callable, Optional
+from datetime import datetime, timezone
+from typing import Callable, Optional, TypedDict
 
 from src.services.relay import config, intake, lease_loop
 
 logger = logging.getLogger(__name__)
+
+
+class ThreadHealth(TypedDict):
+    restart_count: int
+    last_restart_at: Optional[str]
+    last_error: Optional[str]
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # --- cc-memory 組み込み dispatcher 専用の既定値 -----------------------------------
@@ -78,7 +89,9 @@ class RelayRuntime:
         self._outbox_db_path = outbox_db_path
         self._stop_event = threading.Event()
         self._reconfigure_event = threading.Event()
-        self._threads: list[threading.Thread] = []
+        self._threads: dict[str, threading.Thread] = {}
+        self._health: dict[str, ThreadHealth] = {}
+        self._health_lock = threading.Lock()
         self._started = False
         self._start_lock = threading.Lock()
 
@@ -135,8 +148,14 @@ class RelayRuntime:
             daemon=True,
             name=name,
         )
+        with self._health_lock:
+            self._health[name] = {
+                "restart_count": 0,
+                "last_restart_at": None,
+                "last_error": None,
+            }
+            self._threads[name] = thread
         thread.start()
-        self._threads.append(thread)
 
     def _supervise(self, name: str, target: Callable[[], None]) -> None:
         """target を実行し、例外が出たら指数バックオフで再起動する。
@@ -151,11 +170,51 @@ class RelayRuntime:
                 target()
                 logger.info("%s thread が正常終了しました", name)
                 return
-            except Exception:
+            except Exception as exc:
                 logger.exception("%s thread が例外で停止（%.1fs 後に再起動）", name, backoff)
+                with self._health_lock:
+                    # _spawn() を経由せず _supervise() が直接呼ばれるケース（既存テスト等）
+                    # では self._health に name が未登録なので setdefault で自己登録する。
+                    # _spawn() 経由なら既に登録済みの dict をそのまま返す。
+                    health = self._health.setdefault(
+                        name,
+                        {
+                            "restart_count": 0,
+                            "last_restart_at": None,
+                            "last_error": None,
+                        },
+                    )
+                    health["restart_count"] += 1
+                    health["last_restart_at"] = _now_iso()
+                    health["last_error"] = f"{type(exc).__name__}: {exc}"
                 if self._stop_event.wait(backoff):
                     return
                 backoff = min(backoff * 2, cap)
+
+    def health_snapshot(self) -> dict:
+        """runtime の稼働状態を返す（relay_status から呼ばれる）。
+
+        thread の生存判定は毎回 `Thread.is_alive()` で問い合わせる（in-memory bool を
+        手動管理すると `_supervise` の更新タイミングとズレるため、常に OS 側の実際の
+        thread 状態を正とする）。self._health と self._threads は常に同じキー集合を
+        持つ（_spawn() が両方を同一ロック区間内で登録するため）ため、1回のロック
+        区間内で両方を読み切ってよい。
+        """
+        with self._health_lock:
+            threads = {
+                name: {
+                    "alive": self._threads[name].is_alive(),
+                    "restart_count": info["restart_count"],
+                    "last_restart_at": info["last_restart_at"],
+                    "last_error": info["last_error"],
+                }
+                for name, info in self._health.items()
+            }
+        return {
+            "configured": self.is_configured(),
+            "running": self._started,
+            "threads": threads,
+        }
 
     # -- thread targets ---------------------------------------------------
 
