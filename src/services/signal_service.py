@@ -15,6 +15,7 @@ import sys
 from typing import Optional
 
 from src.db import get_connection, row_to_dict
+from src.services.readable_id import apply_readable_id_inplace
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +214,8 @@ def get_signals(
     Returns:
         {"signals": [...], "total_count": int, "stats": {...} (include_stats時のみ)}
         失敗時: {"error": {"code": ..., "message": ...}}
+        各signalはidをid_rawへ退避しsession_id/fingerprintを含まない
+        （_sanitize_signal_for_response参照）
     """
     if status is not None and status not in VALID_STATUSES:
         return {
@@ -257,7 +260,7 @@ def get_signals(
             params + [limit, offset],
         ).fetchall()
 
-        signals = [_signal_row_to_dict(row) for row in rows]
+        signals = [_sanitize_signal_for_response(_signal_row_to_dict(row)) for row in rows]
 
         result: dict = {"signals": signals, "total_count": total_count}
         if include_stats:
@@ -273,6 +276,19 @@ def _signal_row_to_dict(row: sqlite3.Row) -> dict:
     signal = row_to_dict(row)
     signal["refs"] = json.loads(signal["refs"]) if signal.get("refs") else None
     signal["context"] = json.loads(signal["context"]) if signal.get("context") else None
+    return signal
+
+
+def _sanitize_signal_for_response(signal: dict) -> dict:
+    """get_signals / update_signal のレスポンス用にsignal dictを整形する(in-place)。
+
+    session_id / fingerprintはrecord_signalのdedup・相関目的の内部専用フィールドで、
+    他の read 系ツールがcaller_session_idを返却しない慣習と同様レスポンスから除去する。
+    idは他のget系ツールと同じreadable_id変換でid_rawに退避する。
+    """
+    signal.pop("session_id", None)
+    signal.pop("fingerprint", None)
+    apply_readable_id_inplace(signal, "signal")
     return signal
 
 
@@ -327,7 +343,8 @@ def update_signal(
         promoted_id: 昇格先エンティティID
 
     Returns:
-        {"signal": {...}}（更新後の行）
+        {"signal": {...}}（更新後の行。get_signalsと同様idをid_rawへ退避し
+        session_id/fingerprintを含まない）
         失敗時: {"error": {"code": ..., "message": ...}}
     """
     if status not in VALID_STATUSES:
@@ -398,7 +415,7 @@ def update_signal(
         updated = conn.execute(
             "SELECT * FROM signal_events WHERE id = ?", (signal_id,)
         ).fetchone()
-        return {"signal": _signal_row_to_dict(updated)}
+        return {"signal": _sanitize_signal_for_response(_signal_row_to_dict(updated))}
     except Exception as e:
         conn.rollback()
         return {"error": {"code": "DATABASE_ERROR", "message": str(e)}}

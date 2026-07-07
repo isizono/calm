@@ -224,6 +224,26 @@ class TestGetSignals:
         assert signal["refs"] == [{"type": "decision", "id": 1}]
         assert signal["context"] == {"resolution": "new_correct"}
 
+    def test_response_hides_raw_session_id_and_fingerprint(self, temp_db):
+        """session_id/fingerprintは記録側の内部専用フィールドで、レスポンスに現れない。"""
+        ss.record_signal("machine_error", "boom", source="tool:foo", session_id="sess-1")
+
+        result = ss.get_signals(status=None)
+
+        signal = result["signals"][0]
+        assert "session_id" not in signal
+        assert "fingerprint" not in signal
+
+    def test_response_uses_id_raw_not_bare_id(self, temp_db):
+        """idは他のget系ツールと同じreadable_id変換でid_rawに退避され、idキーは残らない。"""
+        r1 = ss.record_signal("machine_error", "boom", source="tool:foo")
+
+        result = ss.get_signals(status=None)
+
+        signal = result["signals"][0]
+        assert "id" not in signal
+        assert signal["id_raw"] == r1["id"]
+
     def test_include_stats_cross_tabulates_kind_and_status(self, temp_db):
         r1 = ss.record_signal("machine_error", "a", source="s1")
         ss.update_signal(r1["id"], "promoted", promoted_type=None, promoted_id=None)
@@ -254,6 +274,18 @@ class TestUpdateSignal:
 
         assert result["signal"]["status"] == "triaged"
         assert result["signal"]["promoted_type"] is None
+
+    def test_response_hides_raw_session_id_fingerprint_and_bare_id(self, temp_db):
+        """get_signalsと同様、内部識別子はレスポンスに現れずidはid_rawで返る。"""
+        r1 = ss.record_signal("friction", "a", session_id="sess-1")
+
+        result = ss.update_signal(r1["id"], "triaged")
+
+        signal = result["signal"]
+        assert "session_id" not in signal
+        assert "fingerprint" not in signal
+        assert "id" not in signal
+        assert signal["id_raw"] == r1["id"]
 
     def test_promote_links_existing_entity(self, temp_db):
         from src.services.topic_service import add_topic

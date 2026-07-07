@@ -8,7 +8,7 @@ cc-memory の get 系 tool 返却で、整数 `id` を `id_raw` に退避し、`
 """
 from typing import Literal, get_args
 
-ENTITY_TYPE = Literal["topic", "decision", "activity", "log", "material"]
+ENTITY_TYPE = Literal["topic", "decision", "activity", "log", "material", "signal"]
 FLAVOR = Literal["raw", "internal", "readable"]
 
 _VALID_ENTITY_TYPES: frozenset[str] = frozenset(get_args(ENTITY_TYPE))
