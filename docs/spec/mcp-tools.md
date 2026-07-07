@@ -460,7 +460,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 | budget_chars | int | no | null | 本文展開の文字数予算。省略時はconfig既定値（`get_config()`の`precedent_budget_chars`で確認可） |
 | include_materials | bool | no | true | decision/topicに紐づくmaterialカタログを同時展開する（30件で打ち切り、超過時`materials_truncated=true`） |
 
-**返り値**: `{guarantee, routing, topics, budget, truncated, materials_truncated}`。`guarantee`は`enumerated`（routing成立・全件列挙完了）/ `routing_miss`（近傍topicなし）/ `routing_unavailable`（embeddingサーバー停止）のいずれか。`topics[].decisions`各要素は`detail="full"`（本文展開）または`detail="index"`（id/title等のみ、`get_by_ids`で本文追補可）。
+**返り値**: `{guarantee, routing, topics, budget, truncated, materials_truncated}`。`guarantee`は`enumerated`（routing成立・全件列挙完了）/ `routing_miss`（近傍topicなし）/ `routing_unavailable`（embeddingサーバー停止）のいずれか。`routing.mode`は`vector`（embedding routingで解決）/ `explicit`（topic_ids指定でrouting skip）/ `unavailable`（embeddingサーバー停止でrouting不能）。`routing.candidates`は各`{topic_id_raw, title, distance, selected}`（topic_ids指定時はdistanceなし。存在しないtopic_idを指定した場合は`{topic_id_raw, error: "not_found"}`）。`topics[].decisions`各要素は`detail="full"`（本文展開）または`detail="index"`（id/title等のみ、`get_by_ids`で本文追補可）。
 **動作**: `search`がランクtop-Nの確率的発見であるのに対し、本ツールは選ばれたtopicの非retract decisionを全件（最低でも索引粒度で）応答に含めることを保証する。read-only（statusを更新する副作用なし）。
 **関連**: 設計・裁定の前に近傍topicの判例を網羅確認したい場面で`get_decisions`/`check_in`のChoose節から参照される。
 

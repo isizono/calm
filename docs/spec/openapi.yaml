@@ -252,6 +252,77 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/Decision' }
 
+  /tools/pull_precedents:
+    post:
+      tags: [decision]
+      summary: 設計判断前に近傍topicの決定事項を網羅列挙（判例pull）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [context]
+              properties:
+                context:
+                  type: string
+                  description: これから決めようとしている論点の記述（自由記述、2文字以上）。routingのクエリ兼telemetry用（topic_ids指定時も必須）
+                topic_ids:
+                  type: array
+                  items: { type: integer }
+                  nullable: true
+                  description: 対象topicを明示指定してroutingをスキップする（embeddingサーバー停止時でも動作する）
+                k:
+                  type: integer
+                  default: 3
+                  description: routingで採用するtopic数の上限（1〜5にclamp）
+                budget_chars:
+                  type: integer
+                  nullable: true
+                  description: 本文展開の文字数予算。省略時はconfig既定値
+                include_materials:
+                  type: boolean
+                  default: true
+                  description: decision/topicに紐づくmaterialカタログを同時展開する（30件で打ち切り、超過時materials_truncated=true）
+                flavor:
+                  type: string
+                  enum: [raw, internal, readable]
+                  default: internal
+      responses:
+        '200':
+          description: routingが当たったtopicの非retract decisionを全件（最低でも索引粒度で）列挙
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  guarantee:
+                    type: string
+                    enum: [enumerated, routing_miss, routing_unavailable]
+                  routing:
+                    type: object
+                    properties:
+                      mode:
+                        type: string
+                        enum: [vector, explicit, unavailable]
+                        description: vector=embedding routingで解決 / explicit=topic_ids指定でrouting skip / unavailable=embeddingサーバー停止でrouting不能
+                      candidates:
+                        type: array
+                        items: { type: object }
+                        description: 各要素は{topic_id_raw, title, distance, selected}（explicit時はdistanceなし）。topic_ids指定時に存在しないtopic_idを指定した場合は{topic_id_raw, error:"not_found"}になる
+                  topics:
+                    type: array
+                    items: { $ref: '#/components/schemas/PrecedentTopic' }
+                  budget:
+                    type: object
+                    properties:
+                      limit: { type: integer, nullable: true }
+                      used: { type: integer }
+                      full: { type: integer }
+                      index_only: { type: integer }
+                  truncated: { type: boolean }
+                  materials_truncated: { type: boolean }
+
   /tools/search:
     post:
       tags: [search]
@@ -1159,3 +1230,16 @@ components:
           items: { $ref: '#/components/schemas/DiscussionLog' }
         catalog: { type: object }
         summary: { type: string }
+
+    PrecedentTopic:
+      type: object
+      properties:
+        topic_id_raw: { type: integer }
+        title: { type: string, nullable: true }
+        decisions_total: { type: integer }
+        decisions:
+          type: array
+          items: { type: object }
+        materials:
+          type: array
+          items: { type: object }
