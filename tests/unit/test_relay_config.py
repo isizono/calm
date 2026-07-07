@@ -29,6 +29,7 @@ class TestDefaults:
         monkeypatch.setenv("RELAY_STATE_DIR", str(tmp_path))
         assert config.subscriptions_dir() == tmp_path / "subscriptions"
         assert config.inbox_dir() == tmp_path / "inbox"
+        assert config.sessions_dir() == tmp_path / "sessions"
 
 
 class TestEnvOverrides:

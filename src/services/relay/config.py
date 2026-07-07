@@ -106,3 +106,8 @@ def subscriptions_dir() -> Path:
 def inbox_dir() -> Path:
     """per-session inbox（JSONL）と cursor file の置き場。"""
     return get_state_dir() / "inbox"
+
+
+def sessions_dir() -> Path:
+    """launcher プロセス登録ファイル（launcher-<pid>.json）の置き場。"""
+    return get_state_dir() / "sessions"

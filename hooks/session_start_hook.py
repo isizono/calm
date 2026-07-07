@@ -371,31 +371,42 @@ def _build_signals_section(conn, session_id: str | None = None) -> str:  # conn,
 
 
 def _build_relay_inbox_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
-    """relay inboxの未読件数を1行表示する。
+    """relay inboxの未読件数 + Monitor監視の指示を表示する。
 
-    identity解決はsrc.services.relay.identity.get_relay_identity()に委ねる。
-    この関数はMCPリクエストのHTTPヘッダ（X-CC-Memory-Bridge-Session-Id）を
-    読んで識別子を得るが、本hookはClaude Code CLIが起動する独立プロセスで
-    あり、実行中はMCPリクエストコンテキストを一切持たない。そのためここから
-    呼ぶとヘッダ・ctx.session_idのいずれも解決できずNoneが返り、本セクションは
-    常に空文字（コンテキスト消費ゼロ）になる。get_relay_identity()自体は
-    コンテキスト外呼び出しで例外を投げない実装であり、それに依存して安全に
-    無出力へフォールバックしている。identityが解決できた場合のみ
-    count_unreadで未読件数を数えて表示する。
+    identity解決はまずsrc.services.relay.identity.get_relay_identity()
+    （MCPリクエストのHTTPヘッダ経由）を試す。本hookはClaude Code CLIが
+    起動する独立プロセスでMCPリクエストコンテキストを持たないため、この経路は
+    常にNoneを返す。その場合はresolve_identity_by_ancestry()（祖先pid
+    チェーンの一致でlauncherプロセスを特定する経路）にフォールバックする。
+
+    identityが解決できても、relay未構成（token未設定）またはinbox file
+    未作成（このidentity宛のrelayメッセージが一度も無い）の場合は、
+    そこで打ち切ってコンテキスト消費ゼロを維持する。
     """
-    from src.services.relay.identity import get_relay_identity
+    from src.services.relay.identity import get_relay_identity, resolve_identity_by_ancestry
 
-    identity = get_relay_identity()
+    identity = get_relay_identity() or resolve_identity_by_ancestry()
     if not identity:
         return ""
 
-    from src.services.relay.inbox import count_unread
+    from src.services.relay import config as relay_config
 
-    count = count_unread(identity)
-    if count <= 0:
+    if not relay_config.get_token():
         return ""
 
-    return f"relay inbox 未読: {count}件 → relay_receive で確認\n"
+    from src.services.relay.inbox import count_unread, inbox_path
+
+    path = inbox_path(identity)
+    if not path.exists():
+        return ""
+
+    count = count_unread(identity)
+    return (
+        f"relay inbox 未読: {count}件\n"
+        f"relay通知の受信待機: Monitorツールで {path} を監視し、変更を検知したら"
+        " relay_receive で新着を読んでください。未読がある場合は先に"
+        " relay_receive で消化してください。\n"
+    )
 
 
 def _build_snapshot_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
