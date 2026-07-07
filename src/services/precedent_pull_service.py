@@ -23,6 +23,7 @@ from src.config import (
     PRECEDENT_ROUTING_MISS_DISTANCE,
 )
 from src.db import get_connection, get_db_path, row_to_dict
+from src.services.budget_service import allocate_decision_budget
 from src.services.embedding_service import encode_query
 from src.services.material_service import SNIPPET_MAX_LEN
 from src.services.precedent_cluster_service import expand_decision_cluster
@@ -179,36 +180,6 @@ def _build_full_item(
         item["material_ids"] = sorted(mids)
     apply_readable_id_inplace(item, "decision")
     return item
-
-
-def _allocate_budget(
-    all_ids: list[int],
-    decision_by_id: dict[int, dict],
-    supersede_map: dict[int, dict],
-    budget_chars: int,
-) -> tuple[set[int], int]:
-    """配分順（非superseded→新しい順 → superseded→新しい順）に予算内へ detail=full を割り当てる。
-
-    予算に収まらなくなった時点で以降は index 固定にする（配分順への信頼を優先し、
-    後続のより小さい項目を先に昇格させるビンパッキングは行わない）。
-
-    Returns: (full_ids, used_chars)
-    """
-    order = list(all_ids)
-    order.sort(key=lambda did: did, reverse=True)
-    order.sort(key=lambda did: decision_by_id[did]["created_at"], reverse=True)
-    order.sort(key=lambda did: 1 if supersede_map.get(did, {}).get("is_superseded") else 0)
-
-    full_ids: set[int] = set()
-    used = 0
-    for did in order:
-        dec = decision_by_id[did]
-        cost = len(dec.get("decision") or "") + len(dec.get("reason") or "")
-        if used + cost > budget_chars:
-            break
-        full_ids.add(did)
-        used += cost
-    return full_ids, used
 
 
 def _collect_material_links(
@@ -401,7 +372,7 @@ def collect_precedents_with_conn(
     superseded_by_map = get_superseded_by_batch(conn, all_ids)
     tags_map = get_effective_tags_batch_by_ids(conn, "decision", all_ids)
 
-    full_ids, used = _allocate_budget(all_ids, decision_by_id, supersede_map, budget_chars)
+    full_ids, used = allocate_decision_budget(all_ids, decision_by_id, supersede_map, budget_chars)
 
     materials_by_id: dict[int, dict] = {}
     material_ids_by_decision: dict[int, set[int]] = {}

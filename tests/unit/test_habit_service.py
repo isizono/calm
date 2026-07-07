@@ -87,6 +87,43 @@ class TestGetHabits:
         ids = [r["habit_id"] for r in result["habits"]]
         assert ids == sorted(ids)
 
+    def test_get_habits_default_excludes_inactive(self, temp_db):
+        """デフォルト（active省略）ではactive=1のみ返る"""
+        created = add_habit("無効化される振る舞い")
+        update_habit(created["habit_id"], active=False)
+        add_habit("有効な振る舞い")
+
+        result = get_habits()
+
+        assert "error" not in result
+        contents = [r["content"] for r in result["habits"]]
+        assert "無効化される振る舞い" not in contents
+        assert "有効な振る舞い" in contents
+        assert all(r["active"] for r in result["habits"])
+
+    def test_get_habits_active_false_returns_all(self, temp_db):
+        """active=Falseを明示すると無効化済みも含めた全件が返る"""
+        created = add_habit("無効化される振る舞い")
+        update_habit(created["habit_id"], active=False)
+        add_habit("有効な振る舞い")
+
+        result = get_habits(active=False)
+
+        assert "error" not in result
+        contents = [r["content"] for r in result["habits"]]
+        assert "無効化される振る舞い" in contents
+        assert "有効な振る舞い" in contents
+
+    def test_get_habits_active_true_explicit_same_as_default(self, temp_db):
+        """active=Trueを明示指定してもデフォルトと同じ（active=1のみ）挙動になる"""
+        created = add_habit("無効化される振る舞い")
+        update_habit(created["habit_id"], active=False)
+
+        result_default = get_habits()
+        result_explicit = get_habits(active=True)
+
+        assert result_default["total_count"] == result_explicit["total_count"]
+
 
 class TestUpdateHabit:
     """update_habitのテスト"""

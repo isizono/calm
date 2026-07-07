@@ -181,6 +181,41 @@ def add_logs(items: list[dict]) -> dict:
         conn.close()
 
 
+def _count_logs_for_topics(
+    conn: sqlite3.Connection,
+    topic_ids: list[int],
+    log_retract_filter: str,
+    id_bound: Optional[tuple[str, int]] = None,
+) -> int:
+    """topic_ids にbelongs_toするlog件数（DISTINCTで重複除外）を返す。
+
+    id_bound=None なら topic 全体の総件数（start_id/limit の影響を受けない）。
+    id_bound=(op, value) を渡すと `l.id op value` の範囲制約を追加する（op は内部
+    生成の ">=" / "<=" リテラルのみ）。ページの残件数算出に使う。
+    decision_service._count_decisions_for_topics と対称のヘルパー。
+    """
+    if not topic_ids:
+        return 0
+    placeholders = ",".join("?" * len(topic_ids))
+    params: list[int] = list(topic_ids)
+    bound_clause = ""
+    if id_bound is not None:
+        op, value = id_bound
+        bound_clause = f" AND l.id {op} ?"
+        params.append(value)
+    row = conn.execute(
+        f"""
+        SELECT COUNT(DISTINCT l.id) AS cnt FROM discussion_logs l
+        JOIN relations r ON r.source_type = 'log' AND r.source_id = l.id
+                        AND r.target_type = 'topic' AND r.relation_type = 'belongs_to'
+                        AND r.target_id IN ({placeholders})
+        WHERE 1=1{log_retract_filter}{bound_clause}
+        """,
+        tuple(params),
+    ).fetchone()
+    return row["cnt"] if row else 0
+
+
 def get_logs(
     entity_type: str,
     entity_id: int,
@@ -204,6 +239,9 @@ def get_logs(
         entity_type == "activity" のとき、各 item は `topic_id` フィールドを含まない
         (複数 topic に belongs_to する場合に「主たる親」を一意に決められないため、
          呼び出し側で必要なら relations.belongs_to を別途 query する設計)。
+        total_count: 対象 topic 全体の log 総件数（retractフィルタ適用後、limit/start_idの影響を受けない）
+        truncated: この応答が limit/start_id により後続の log を打ち切ったとき true
+            （＝続きのページが存在する）
     """
     retract_filter = "" if include_retracted else " AND retracted_at IS NULL"
 
@@ -265,7 +303,19 @@ def get_logs(
                 apply_readable_id_inplace(item, "log")
                 logs.append(item)
 
-            return {"logs": logs}
+            total_count = _count_logs_for_topics(conn, [topic_id], log_retract_filter)
+            if start_id is None:
+                remaining_count = total_count
+            else:
+                remaining_count = _count_logs_for_topics(
+                    conn, [topic_id], log_retract_filter, id_bound=(">=", start_id)
+                )
+
+            return {
+                "logs": logs,
+                "total_count": total_count,
+                "truncated": len(logs) < remaining_count,
+            }
 
         elif entity_type == "activity":
             # activity → related topics（上限10件）→ logs集約
@@ -276,7 +326,7 @@ def get_logs(
             topic_ids = [r["target_id"] for r in relation_rows if r["target_type"] == "topic"][:10]
 
             if not topic_ids:
-                return {"logs": []}
+                return {"logs": [], "total_count": 0, "truncated": False}
 
             placeholders = ",".join("?" * len(topic_ids))
             log_retract_filter = retract_filter.replace("retracted_at", "l.retracted_at")
@@ -328,7 +378,19 @@ def get_logs(
                 apply_readable_id_inplace(item, "log")
                 logs.append(item)
 
-            return {"logs": logs}
+            total_count = _count_logs_for_topics(conn, topic_ids, log_retract_filter)
+            if start_id is None:
+                remaining_count = total_count
+            else:
+                remaining_count = _count_logs_for_topics(
+                    conn, topic_ids, log_retract_filter, id_bound=("<=", start_id)
+                )
+
+            return {
+                "logs": logs,
+                "total_count": total_count,
+                "truncated": len(logs) < remaining_count,
+            }
 
         else:
             return {
