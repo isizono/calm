@@ -9,6 +9,7 @@ from src.services.citations_service import upsert_citations_for_owner_with_conn
 from src.services.readable_id import apply_readable_id_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.relation_service import _add_relation_with_conn, _validate_targets
+from src.services.relay.entity_publish import publish_entity_event_with_conn
 from src.services.title_validation import validate_title
 from src.services.tag_service import (
     validate_and_parse_tags,
@@ -182,6 +183,10 @@ def add_activity(
         # 本文中の {{cite:X#NNN}} を citations テーブルに保存
         upsert_citations_for_owner_with_conn(
             conn, "activity", activity_id, title=title, description=description
+        )
+
+        publish_entity_event_with_conn(
+            conn, entity_type="activity", entity_id=activity_id, event="created"
         )
 
         conn.commit()
@@ -634,8 +639,20 @@ def update_activity(
             }
 
         # snoozed中にstatus指定なしでフィールド更新 → 自動復活
-        if status is None and row["status"] == "snoozed":
+        old_status = row["status"]
+        if status is None and old_status == "snoozed":
             status = "pending"
+
+        # publish判定（decision 3076）: statusはold_status != new_statusの遷移時のみ、
+        # 他フィールド（title/description/tags/orch_managed）はno-op含めて無条件でpublish対象。
+        # statusはsnoozed自動復活後の値（上のブロック）で判定するため、自動復活も遷移として拾う。
+        should_publish = (
+            title is not None
+            or description is not None
+            or parsed_tags is not None
+            or orch_managed is not None
+            or (status is not None and status != old_status)
+        )
 
         # 動的SQL構築: 指定されたフィールドのみUPDATEする
         set_parts = []
@@ -680,6 +697,11 @@ def update_activity(
             conn, "activity", activity_id,
             title=new_title, description=new_description,
         )
+
+        if should_publish:
+            publish_entity_event_with_conn(
+                conn, entity_type="activity", entity_id=activity_id, event="updated"
+            )
 
         conn.commit()
 

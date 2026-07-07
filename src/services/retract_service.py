@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from src.db import get_connection
 from src.services import embedding_service
+from src.services.relay.entity_publish import publish_entity_event_with_conn
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,9 @@ def retract(entity_type: str, ids: list[int], undo: bool = False) -> dict:
                         )
                         _delete_search_index_entry(
                             conn, _SEARCH_INDEX_SOURCE_TYPE[entity_type], entity_id
+                        )
+                        publish_entity_event_with_conn(
+                            conn, entity_type=entity_type, entity_id=entity_id, event="retracted"
                         )
 
                 conn.execute(f"RELEASE SAVEPOINT retract_{i}")

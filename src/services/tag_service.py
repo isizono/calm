@@ -115,25 +115,46 @@ def ensure_tag_ids(conn: sqlite3.Connection, parsed_tags: list[tuple[str, str]])
 
     connを受け取り、呼び出し元のトランザクション内で動作する。
     エイリアスタグの場合はcanonical側のIDを返す。
+    新規にINSERTされたタグ（未使用だったnamespace:name）はrelay publish
+    （entity:tag, event:created）の対象にする（decision 3075）。
     """
     if not parsed_tags:
         return []
-    conn.executemany(
-        "INSERT OR IGNORE INTO tags (namespace, name) VALUES (?, ?)",
-        parsed_tags,
-    )
     placeholders = " OR ".join(
         "(namespace = ? AND name = ?)" for _ in parsed_tags
     )
     flat_params = [v for pair in parsed_tags for v in pair]
+
+    # INSERT前に既存タグを控えておき、INSERT OR IGNORE後との差分で新規作成分を判定する
+    # （executemanyのINSERT OR IGNOREは行単位の成否を返さないため）。
+    existing_before = conn.execute(
+        f"SELECT namespace, name FROM tags WHERE {placeholders}", flat_params
+    ).fetchall()
+    existing_keys = {(row["namespace"], row["name"]) for row in existing_before}
+
+    conn.executemany(
+        "INSERT OR IGNORE INTO tags (namespace, name) VALUES (?, ?)",
+        parsed_tags,
+    )
     rows = conn.execute(
         f"SELECT id, namespace, name, canonical_id FROM tags WHERE {placeholders}",
         flat_params,
     ).fetchall()
     id_map = {}
+    newly_created_ids = []
     for row in rows:
+        key = (row["namespace"], row["name"])
         effective_id = row["canonical_id"] if row["canonical_id"] is not None else row["id"]
-        id_map[(row["namespace"], row["name"])] = effective_id
+        id_map[key] = effective_id
+        if key not in existing_keys:
+            newly_created_ids.append(row["id"])
+
+    if newly_created_ids:
+        # entity_publishがtag_serviceを import するため、循環import回避のためlocal import
+        from src.services.relay.entity_publish import publish_entity_event_with_conn
+        for tag_id in newly_created_ids:
+            publish_entity_event_with_conn(conn, entity_type="tag", entity_id=tag_id, event="created")
+
     return [id_map[(ns, name)] for ns, name in parsed_tags]
 
 
@@ -754,6 +775,10 @@ def update_tag(
                 {"tag": str, "description": str | None, "updated": True} (description更新時)
         失敗時: {"error": {"code": ..., "message": ...}}
     """
+    # entity_publishがtag_serviceをimportするため、循環import回避のためlocal import
+    # （モジュールtopでのimportはこのモジュールがロードされる時点で循環になる）
+    from src.services.relay.entity_publish import publish_entity_event_with_conn
+
     # バリデーション: 相互排他（notes, canonical, rename, description は1つだけ指定可能）
     specified = [p for p in (notes, canonical, rename, description) if p is not None]
     if len(specified) > 1:
@@ -838,6 +863,7 @@ def update_tag(
                 "UPDATE tags SET namespace = ?, name = ? WHERE id = ?",
                 (new_namespace, new_name, tag_id),
             )
+            publish_entity_event_with_conn(conn, entity_type="tag", entity_id=tag_id, event="updated")
             conn.commit()
             new_tag_str = f"{new_namespace}:{new_name}" if new_namespace else new_name
             return {"tag": tag_str, "renamed_to": new_tag_str, "updated": True}
@@ -851,6 +877,7 @@ def update_tag(
                 "UPDATE tags SET description = ? WHERE id = ?",
                 (description, tag_id),
             )
+            publish_entity_event_with_conn(conn, entity_type="tag", entity_id=tag_id, event="updated")
             conn.commit()
             return {"tag": tag_str, "description": description, "updated": True}
 
@@ -860,6 +887,7 @@ def update_tag(
                 "UPDATE tags SET notes = ? WHERE id = ?",
                 (notes, tag_id),
             )
+            publish_entity_event_with_conn(conn, entity_type="tag", entity_id=tag_id, event="updated")
             conn.commit()
             return {"tag": tag_str, "notes": notes, "updated": True}
 
@@ -870,6 +898,7 @@ def update_tag(
                 "UPDATE tags SET canonical_id = NULL WHERE id = ?",
                 (tag_id,),
             )
+            publish_entity_event_with_conn(conn, entity_type="tag", entity_id=tag_id, event="updated")
             conn.commit()
             return {"tag": tag_str, "canonical": None, "updated": True}
 
@@ -980,6 +1009,7 @@ def update_tag(
                 (canonical_id, tag_id),
             )
 
+        publish_entity_event_with_conn(conn, entity_type="tag", entity_id=tag_id, event="updated")
         conn.commit()
 
         # タグ変更に伴うembedding再生成（コミット後に同期的に実行）

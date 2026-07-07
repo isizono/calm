@@ -12,6 +12,7 @@ from src.services.readable_id import apply_readable_id_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.citations_service import upsert_citations_for_owner_with_conn
 from src.services.relation_service import _add_relation_with_conn, _validate_targets
+from src.services.relay.entity_publish import publish_entity_event_with_conn
 from src.services.title_validation import validate_title
 from src.services.tag_service import (
     validate_and_parse_tags,
@@ -125,6 +126,10 @@ def add_material(title: str, content: str, tags: list[str], source: str, related
 
         # タグを取得（commit前）
         tag_strings = get_entity_tags(conn, "material_tags", "material_id", material_id)
+
+        publish_entity_event_with_conn(
+            conn, entity_type="material", entity_id=material_id, event="created"
+        )
 
         conn.commit()
 
@@ -333,6 +338,10 @@ def update_material(
         new_content = effective_content if content is not None else row["content"]
         upsert_citations_for_owner_with_conn(
             conn, "material", material_id, title=new_title, content=new_content
+        )
+
+        publish_entity_event_with_conn(
+            conn, entity_type="material", entity_id=material_id, event="updated"
         )
 
         conn.commit()
