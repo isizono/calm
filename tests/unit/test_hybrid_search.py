@@ -1074,6 +1074,20 @@ def test_degraded_shape_differs_by_keyword_too_short_origin(temp_db, disable_emb
     assert result_2char["degraded"] is True
 
 
+def test_degraded_false_when_vector_available_zero_hits_or_multi_keyword(temp_db, mock_embedding_model):
+    """OR + 複数キーワード + ベクトル有効 + 全キーワードでヒット0件: degraded は False のまま
+    （AND/単一キーワード分岐は上のテストで担保済み。OR + 複数キーワード分岐は
+    embedding取得と0件判定が別扱いになっているため個別に確認する）"""
+    result = search_service.search(
+        keyword=["データが1件も存在しない検索キーワードA", "データが1件も存在しない検索キーワードB"],
+        keyword_mode="or",
+    )
+
+    assert "error" not in result
+    assert result["results"] == []
+    assert result["degraded"] is False
+
+
 def test_degraded_key_absent_when_tag_not_found(temp_db, disable_embedding):
     """指定タグの一部がDB未登録で空結果が確定するケースでは degraded キー自体が存在しない
     （vector_retrieve() を試す前に確定するため False との取り違えを避ける）"""
