@@ -31,6 +31,18 @@ class TestGetSignalsTool:
         assert result["total_count"] == 1
         assert result["signals"][0]["summary"] == "使いにくい"
 
+    def test_does_not_expose_internal_identifiers(self, temp_db):
+        """session_id/fingerprintは露出せず、idはid_rawのreadable形式で返る。"""
+        created = report_signal("friction", "使いにくい")
+
+        result = get_signals()
+
+        signal = result["signals"][0]
+        assert "session_id" not in signal
+        assert "fingerprint" not in signal
+        assert "id" not in signal
+        assert signal["id_raw"] == created["id"]
+
 
 class TestUpdateSignalTool:
     def test_can_update(self, temp_db):

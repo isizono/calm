@@ -1548,6 +1548,10 @@ def get_signals(
     Returns:
         成功時: {"signals": [...], "total_count": int, "stats": {...}(include_stats時のみ)}
         失敗時: {"error": {"code": ..., "message": ...}}
+        各signalのidは他のget系ツールと同様id_rawとして返る（idキー自体は含まない）。
+        refs内の各要素のid・promoted_id・context内にネストした参照（missed_ids等）も
+        同じ変換で対応する`{id_key}_raw`に退避される。
+        session_id/fingerprintは記録側の内部相関・dedup専用フィールドのため含まない
     """
     return signal_service.get_signals(
         status=status, kind=kind, limit=limit, offset=offset, include_stats=include_stats
@@ -1575,7 +1579,9 @@ def update_signal(
         promoted_id: 昇格先エンティティID。promoted_typeと同時に指定する
 
     Returns:
-        成功時: {"signal": {...}}（更新後の行）
+        成功時: {"signal": {...}}（更新後の行。idはid_rawとして返り、
+            session_id/fingerprintは含まない。refs/promoted_id/context内参照の
+            id_raw化も含め、get_signalsと同じ整形）
         失敗時: {"error": {"code": ..., "message": ...}}
     """
     return signal_service.update_signal(

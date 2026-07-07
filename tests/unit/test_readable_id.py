@@ -125,3 +125,10 @@ def test_apply_readable_id_inplace_invalid_entity_type():
     """不正な entity_type は ValueError"""
     with pytest.raises(ValueError, match="Invalid entity_type"):
         apply_readable_id_inplace({"id": 1}, "unknown")  # type: ignore[arg-type]
+
+
+def test_apply_readable_id_inplace_accepts_signal_entity_type():
+    """signal も get 系ツールと同じ id → id_raw 変換の対象になる"""
+    d = {"id": 99, "kind": "friction"}
+    apply_readable_id_inplace(d, "signal")
+    assert d == {"id_raw": 99, "kind": "friction"}
