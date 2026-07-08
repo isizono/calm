@@ -25,18 +25,24 @@ description: 直近の記録を期間横断で俯瞰するダイジェストを�
 
 `get_activities`と`get_timeline`のみを使う。record系ツール（`add_*`/`update_*`/`retract`等）は呼ばない。
 
-1. `get_activities(status="active", since={期間開始日}, limit=適宜)` で期間内に更新された進行中・保留中のアクティビティを取得する
-2. `get_activities(status="completed", since={期間開始日}, limit=適宜)` で期間内に完了したアクティビティを取得する
-3. 1・2で取得した各アクティビティについて `get_timeline(activity_id=activity.id, entity_types=["decision","log","material"], order="desc")` を呼び、紐づくdecision/log/materialを取得する
-   - `get_timeline`に期間指定引数は無い。`order="desc"`（新しい順）で取得し、`created_at`が期間開始日より古いitemが現れた時点で以降は全て期間外なので打ち切ってよい
+1. `get_activities(status="active", since={期間開始日}, limit=50)` で期間内に更新された進行中・保留中のアクティビティを取得する。返り値の`total_count`が取得件数を超えていたら`limit`を引き上げるかページを分けて追加取得し、期間内の対象を取りこぼさないようにする
+2. `get_activities(status="completed", since={期間開始日}, limit=50)` で期間内に更新のあった（`updated_at`基準）完了アクティビティを取得する。1と同様に`total_count`と突き合わせて不足分を追加取得する
+3. 1・2で取得した各アクティビティの`id_raw`（get_activitiesは整数idを`id_raw`として返す。返り値に`id`キー自体は含まれない）を使い、`get_timeline(activity_id={id_raw}, entity_types=["decision","log","material"], order="desc")` を呼び、紐づくdecision/log/materialを取得する
+   - `get_timeline`に期間指定引数は無い。デフォルトlimit=50・最大100。`order="desc"`（新しい順）で取得し、`created_at`が期間開始日より古いitemが現れた時点で以降は全て期間外なので打ち切ってよい
+   - 取得件数がlimitに達してもまだ期間開始日まで遡れていない場合は、最後のitemの`created_at`を`before`カーソルに指定して追加ページを取得する（silent truncation防止）
    - `activity_id`指定時は関連する全topicのエンティティを集約して返すため、そのアクティビティに紐づく決定・ログ・成果物を漏れなく拾える
 
-アクティビティに紐づかない独立トピックの決定事項は本skillの収集対象外（アクティビティ起点の集約のため）。該当topicの深掘りを求められたらcheck-inや`get_timeline(topic_id=...)`へ誘導する。
+アクティビティに紐づかない独立トピックの決定事項は本skillの収集対象外（アクティビティ起点の集約のため）。該当topicの深掘りを求められたら`get_timeline(topic_id=...)`へ誘導する。
 
 ### 3. グルーピング
 
 - 各アクティビティの`tags`から`domain:`タグを抽出し、domainごとにアクティビティをまとめる
 - domainタグが無いアクティビティは「未分類」として最後にまとめる
+- 複数アクティビティが同一topicを共有していると同一decision/log/materialが複数回取得されることがある。出力前に`id_raw`（無ければtitle）で重複排除する
+- decisionは以下の順で分類する:
+  1. `replaced_by`が設定されている（＝supersede済み）decisionは「決まったこと」から除外するか、「上書き済み」と明記して提示する。期間内の方針転換で古くなった決定を最新のように見せない
+  2. `title`が`[議論中]`または`[未完]`で始まるものは「継続中の論点」に分類する
+  3. 上記以外は「決まったこと」に分類する
 - 各domain内では、アクティビティごとに収集したdecision/log/materialを種別（decision/log/material）で整理する
 
 ### 4. 出力
@@ -67,7 +73,7 @@ digest: {期間の説明}（{開始日} 〜 {終了日}）
 ## 注意
 
 - 読み取り専用skill。`add_*`/`update_*`/`retract`等の記録・更新系ツールは一切呼ばない
-- ユーザーへの提示はタイトルベースで行い、内部ID（activity_id, decision idなど）は表示しない
+- ユーザーへの提示はタイトルベースで行い、内部ID（`id_raw`など）は表示しない
 - 量が多い場合はdomainごとの要約を優先し、詳細はユーザーが指名したものだけ展開する
 
 ## 関連skillとの境界
