@@ -5,7 +5,7 @@ description: 【必須】過去の記録が現状と矛盾・陳腐化してい�
 
 # forget
 
-過去の記録（decision/habit/tag-notes/auto-memory/CLAUDE.md/rules/skill）が現状と矛盾・陳腐化していると判断したときに、撤回候補を提示し、ユーザー確認を経て撤回を実行するclaude自律発動スキル。撤回専用であり、新規の記憶・保存は `remember` skillの担当。
+過去の記録（decision/log/material/habit/tag-notes/auto-memory/CLAUDE.md/rules/skill）が現状と矛盾・陳腐化していると判断したときに、撤回候補を提示し、ユーザー確認を経て撤回を実行するclaude自律発動スキル。撤回専用であり、新規の記憶・保存は `remember` skillの担当。
 
 ## トリガー
 
@@ -50,7 +50,7 @@ B選択時は何も実行せず終了する。
 
 ### 2. 保存先判定
 
-候補ごとに保存先を判定し、実行方式（`retract`ツール or 物理削除）を決める。判定表は § 保存先別の撤回方式 を参照。
+候補ごとに保存先を判定し、実行方式を決める。実行方式は保存先によって`retract`ツール・`update_habit(active=False)`・`update_tag`全文置換・物理削除のいずれかになる。判定表は § 保存先別の撤回方式 を参照。
 
 対象がskillの場合は、実行前に § skill撤回時の依存検出 を行う。
 
@@ -77,21 +77,22 @@ B選択時は何も実行せず終了する。
 
 承認された候補のみ実行する。却下された候補は何もしない。
 
-- cc-memory decision/log/material/habit/tag-notes → `retract`実行
-  - tag-notesのみ`retract`ツール非対応のため、`update_tag`で対象箇所を除いた全文を書き込む方式で代替する
+- cc-memory decision/log/material → `retract`実行
+- habit → `update_habit(habit_id, active=False)`で無効化（`retract`はhabitを受け付けない）
+- tag-notes → `retract`ツール非対応のため、`update_tag`で対象箇所を除いた全文を書き込む方式で代替する
 - auto-memory / CLAUDE.md / rules ファイル → 物理削除
 - skill → § skill撤回時の依存検出 で問題ないことを確認したうえで物理削除
 
 ### 5. 実行結果をlogとして記録
 
-撤回実行した内容を `add_logs` で記録する。発端（a〜d）・撤回対象・却下された候補（あれば）を含める。
+撤回実行した内容を `recording` skill経由で `add_logs` に記録する。発端（a〜d）・撤回対象・却下された候補（あれば）を含める。
 
 ## 保存先別の撤回方式
 
 | 保存先 | 撤回方式 | 備考 |
 |---|---|---|
 | cc-memory decision/log/material | `retract` | 論理削除 |
-| habit | `retract` | 論理削除 |
+| habit | `update_habit(habit_id, active=False)` | `retract`はhabitを受け付けない（`ENTITY_TABLE_MAP`にhabitは存在しない） |
 | tag-notes | `update_tag`で対象箇所を除いた全文を書き込む | tag-notesに`retract`概念はない（全文置換方式） |
 | auto-memory（MEMORY.md / feedback_*.md等） | 物理削除 | ファイル削除 + MEMORY.mdの参照行削除をセットで行う |
 | CLAUDE.md | 物理削除（行編集） | 周辺コンテキストを保全し、対象行のみ削除 |
@@ -102,7 +103,7 @@ B選択時は何も実行せず終了する。
 
 skillの撤回はgrepベースの簡易検出で十分とする（AST解析は過剰）。
 
-1. 対象skill名で他skillのSKILL.md本文・hooks・settings.jsonをgrep検索し、参照されていないか確認する
+1. 対象skill名で他skillのSKILL.md本文・`hooks/hooks.json`をgrep検索し、参照されていないか確認する
 2. 参照が見つかった場合、依存箇所をユーザーに提示し、撤回を続けるか確認する（依存があっても最終判断はユーザー）
 3. 参照が見つからなければそのまま物理削除に進む
 
