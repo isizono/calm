@@ -5,6 +5,7 @@ from typing import Optional
 from src.db import get_connection, row_to_dict
 from src.services.citations_service import upsert_citations_for_owner_with_conn
 from src.services.readable_id import apply_readable_id_inplace
+from src.services.budget_service import count_entities_for_topics
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.tag_service import (
     validate_and_parse_tags,
@@ -192,28 +193,10 @@ def _count_logs_for_topics(
     id_bound=None なら topic 全体の総件数（start_id/limit の影響を受けない）。
     id_bound=(op, value) を渡すと `l.id op value` の範囲制約を追加する（op は内部
     生成の ">=" / "<=" リテラルのみ）。ページの残件数算出に使う。
-    decision_service._count_decisions_for_topics と対称のヘルパー。
     """
-    if not topic_ids:
-        return 0
-    placeholders = ",".join("?" * len(topic_ids))
-    params: list[int] = list(topic_ids)
-    bound_clause = ""
-    if id_bound is not None:
-        op, value = id_bound
-        bound_clause = f" AND l.id {op} ?"
-        params.append(value)
-    row = conn.execute(
-        f"""
-        SELECT COUNT(DISTINCT l.id) AS cnt FROM discussion_logs l
-        JOIN relations r ON r.source_type = 'log' AND r.source_id = l.id
-                        AND r.target_type = 'topic' AND r.relation_type = 'belongs_to'
-                        AND r.target_id IN ({placeholders})
-        WHERE 1=1{log_retract_filter}{bound_clause}
-        """,
-        tuple(params),
-    ).fetchone()
-    return row["cnt"] if row else 0
+    return count_entities_for_topics(
+        conn, "discussion_logs", "l", "log", topic_ids, log_retract_filter, id_bound
+    )
 
 
 def get_logs(

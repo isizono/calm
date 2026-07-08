@@ -12,6 +12,8 @@ relevance_score / size_penalty は今後の予算面拡張のために新設し�
 予算値はハードコードせず src.config から読む。
 """
 import math
+import sqlite3
+from typing import Optional
 
 from src.config import (
     PRECEDENT_BUDGET_CHARS,
@@ -89,3 +91,46 @@ def allocate_decision_budget(
         full_ids.add(did)
         used += cost
     return full_ids, used
+
+
+def count_entities_for_topics(
+    conn: sqlite3.Connection,
+    table_name: str,
+    alias: str,
+    source_type: str,
+    topic_ids: list[int],
+    retract_filter: str,
+    id_bound: Optional[tuple[str, int]] = None,
+) -> int:
+    """topic_ids にbelongs_toするエンティティ件数（DISTINCTで重複除外）を返す。
+
+    decision_service.get_decisions / discussion_log_service.get_logs の
+    ページネーション用件数算出（total_count / truncated判定）で共有する。
+    table_name/alias/source_typeで対象（decisions/d/decision, discussion_logs/l/log等）を切り替える。
+
+    id_bound=None なら対象全体の総件数（start_id/limit の影響を受けない）。
+    id_bound=(op, value) を渡すと `{alias}.id op value` の範囲制約を追加する（op は
+    呼び出し側が内部生成する ">=" / "<=" リテラルのみを渡すこと）。
+    retract_filter は呼び出し側で組み立てた ` AND {alias}.retracted_at IS NULL` 等の
+    文字列をそのまま渡す（alias は呼び出し側と一致させること）。
+    """
+    if not topic_ids:
+        return 0
+    placeholders = ",".join("?" * len(topic_ids))
+    params: list = [source_type, *topic_ids]
+    bound_clause = ""
+    if id_bound is not None:
+        op, value = id_bound
+        bound_clause = f" AND {alias}.id {op} ?"
+        params.append(value)
+    row = conn.execute(
+        f"""
+        SELECT COUNT(DISTINCT {alias}.id) AS cnt FROM {table_name} {alias}
+        JOIN relations r ON r.source_type = ? AND r.source_id = {alias}.id
+                        AND r.target_type = 'topic' AND r.relation_type = 'belongs_to'
+                        AND r.target_id IN ({placeholders})
+        WHERE 1=1{retract_filter}{bound_clause}
+        """,
+        tuple(params),
+    ).fetchone()
+    return row["cnt"] if row else 0

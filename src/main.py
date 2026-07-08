@@ -1477,19 +1477,21 @@ def get_config() -> dict:
     search/get_logs/get_decisions/get_timelineの上限は各serviceにハードコードされており
     環境変数では変更できない（precedent_budget_charsのみCCM_PRECEDENT_BUDGET_CHARSで変更可）。
     budget_defaultsはbudget_serviceが把握する予算関連の既定値一覧（同じくsrc.configから読む）。
+    recency_decay_rate/precedent_budget_chars（トップレベル）はbudget_defaultsと同じ値を指す
+    後方互換フィールドで、定義元はbudget_service.BUDGET_DEFAULTS（重複ハードコードを避ける）。
     """
     from src import config
     return {
         "heartbeat_timeout": config.HEARTBEAT_TIMEOUT_MINUTES,
         "in_progress_limit": config.IN_PROGRESS_LIMIT,
         "pending_limit": config.PENDING_LIMIT,
-        "recency_decay_rate": config.RECENCY_DECAY_RATE,
+        "recency_decay_rate": budget_service.BUDGET_DEFAULTS["recency_decay_rate"],
         "sync_disable_retrospective": config.SYNC_DISABLE_RETROSPECTIVE,
         "sync_policy": config.SYNC_POLICY,
         "snapshot_interval_hours": config.SNAPSHOT_INTERVAL_HOURS,
         "snapshot_max_count": config.SNAPSHOT_MAX_COUNT,
         "snapshot_anomaly_threshold": config.SNAPSHOT_ANOMALY_THRESHOLD,
-        "precedent_budget_chars": config.PRECEDENT_BUDGET_CHARS,
+        "precedent_budget_chars": budget_service.BUDGET_DEFAULTS["precedent_budget_chars"],
         "budget_defaults": budget_service.BUDGET_DEFAULTS,
         "read_tool_limits": {
             "search": {"default": 10, "max": 50},

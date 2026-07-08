@@ -20,6 +20,7 @@ from src.services.direction_service import (
     DIRECTION_NAME,
     get_direction_decisions,
 )
+from src.services.budget_service import count_entities_for_topics
 from src.services.habit_service import _add_habit_with_conn
 from src.services.precedent_pure import attach_precedent, parse_precedent_sections, summarize_precedent
 from src.services.relation_service import _add_relation_with_conn
@@ -340,26 +341,9 @@ def _count_decisions_for_topics(
     id_bound=(op, value) を渡すと `d.id op value` の範囲制約を追加する（op は内部
     生成の ">=" / "<=" リテラルのみ）。ページの残件数算出に使う。
     """
-    if not topic_ids:
-        return 0
-    placeholders = ",".join("?" * len(topic_ids))
-    params: list[int] = list(topic_ids)
-    bound_clause = ""
-    if id_bound is not None:
-        op, value = id_bound
-        bound_clause = f" AND d.id {op} ?"
-        params.append(value)
-    row = conn.execute(
-        f"""
-        SELECT COUNT(DISTINCT d.id) AS cnt FROM decisions d
-        JOIN relations r ON r.source_type = 'decision' AND r.source_id = d.id
-                        AND r.target_type = 'topic' AND r.relation_type = 'belongs_to'
-                        AND r.target_id IN ({placeholders})
-        WHERE 1=1{decision_retract_filter}{bound_clause}
-        """,
-        tuple(params),
-    ).fetchone()
-    return row["cnt"] if row else 0
+    return count_entities_for_topics(
+        conn, "decisions", "d", "decision", topic_ids, decision_retract_filter, id_bound
+    )
 
 
 def get_decisions(
