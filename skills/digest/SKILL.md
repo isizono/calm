@@ -25,11 +25,12 @@ description: 直近の記録を期間横断で俯瞰するダイジェストを�
 
 `get_activities`と`get_timeline`のみを使う。record系ツール（`add_*`/`update_*`/`retract`等）は呼ばない。
 
-1. `get_activities(status="active", since={期間開始日}, limit=50)` で期間内に更新された進行中・保留中のアクティビティを取得する。返り値の`total_count`が取得件数を超えていたら`limit`を引き上げるかページを分けて追加取得し、期間内の対象を取りこぼさないようにする
-2. `get_activities(status="completed", since={期間開始日}, limit=50)` で期間内に更新のあった（`updated_at`基準）完了アクティビティを取得する。1と同様に`total_count`と突き合わせて不足分を追加取得する
+1. `get_activities(status="active", since={期間開始日}, limit=50)` で期間内に更新された進行中・保留中のアクティビティを取得する。返り値の`total_count`が取得件数を超えていたら`limit`を引き上げて再取得し、期間内の対象を取りこぼさないようにする（`get_activities`にoffset/カーソル等のページネーション手段は無く、取れる手段は`limit`引き上げのみ）
+2. `get_activities(status="completed", since={期間開始日}, limit=50)` で期間内に更新のあった（`updated_at`基準）完了アクティビティを取得する。1と同様に`total_count`と突き合わせて`limit`を引き上げて再取得する
 3. 1・2で取得した各アクティビティの`id_raw`（get_activitiesは整数idを`id_raw`として返す。返り値に`id`キー自体は含まれない）を使い、`get_timeline(activity_id={id_raw}, entity_types=["decision","log","material"], order="desc")` を呼び、紐づくdecision/log/materialを取得する
+   - アクティビティ数が多い期間（active＋completed合計で20件超）では、この呼び出しがアクティビティ数に比例して増え応答が遅くなる。その場合は`updated_at`降順で直近20件のみ`get_timeline`を呼び出し、超過分はタイトルのみで一覧化して「他N件は詳細省略」と明記する（応答性を優先し全件深掘りはしない）
    - `get_timeline`に期間指定引数は無い。デフォルトlimit=50・最大100。`order="desc"`（新しい順）で取得し、`created_at`が期間開始日より古いitemが現れた時点で以降は全て期間外なので打ち切ってよい
-   - 取得件数がlimitに達してもまだ期間開始日まで遡れていない場合は、最後のitemの`created_at`を`before`カーソルに指定して追加ページを取得する（silent truncation防止）
+   - 取得件数がlimitに達してもまだ期間開始日まで遡れていない場合は、最後のitemの`created_at`を`before`カーソルに指定して追加ページを取得する（silent truncation防止）。ただし`before`は`created_at`への厳密な`<`比較のため、ページ境界と同一`created_at`（同秒）の未取得itemがあった場合はそのitemを取りこぼす可能性がある。本skillは概観目的の読み取り専用skillであり、この境界ケースでの完全性までは保証しない
    - `activity_id`指定時は関連する全topicのエンティティを集約して返すため、そのアクティビティに紐づく決定・ログ・成果物を漏れなく拾える
 
 アクティビティに紐づかない独立トピックの決定事項は本skillの収集対象外（アクティビティ起点の集約のため）。該当topicの深掘りを求められたら`get_timeline(topic_id=...)`へ誘導する。
@@ -41,7 +42,7 @@ description: 直近の記録を期間横断で俯瞰するダイジェストを�
 - 複数アクティビティが同一topicを共有していると同一decision/log/materialが複数回取得されることがある。出力前に`id_raw`（無ければtitle）で重複排除する
 - decisionは以下の順で分類する:
   1. `replaced_by`が設定されている（＝supersede済み）decisionは「決まったこと」から除外するか、「上書き済み」と明記して提示する。期間内の方針転換で古くなった決定を最新のように見せない
-  2. `title`が`[議論中]`または`[未完]`で始まるものは「継続中の論点」に分類する
+  2. `title`が`[議論中]`で始まるものは「継続中の論点」に分類する（`[未完]`はactivity側のプレフィックスでありdecisionには付与されないため判定対象にしない）
   3. 上記以外は「決まったこと」に分類する
 - 各domain内では、アクティビティごとに収集したdecision/log/materialを種別（decision/log/material）で整理する
 
