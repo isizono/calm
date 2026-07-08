@@ -1130,40 +1130,19 @@ class TestSessionStartHookSignals:
         assert "未トリアージのシグナル" not in context
 
 
-class TestSessionStartHookRelayInbox:
-    """relay inbox未読件数の1行表示テスト
+class TestSessionStartHookRelayCheckGuide:
+    """relay確認を促す静的ガイドのテスト
 
     hookは実プロセスとしてsubprocess経由で起動され、MCPリクエストコンテキストを
-    一切持たない。そのためget_relay_identity()は常にNoneへ解決し、実際に未読が
-    存在してもこのセクションは常に空文字（ゼロコスト）になる。
+    一切持たない。そのためget_relay_identity()は常にNoneへ解決し、未読件数を
+    hook側で数えて表示することはできない。代わりに、identity解決に依存しない
+    静的な指示（relay_receiveを呼んで確認するようアシスタントに促す）を常に
+    注入する。
     """
 
-    def test_no_relay_section_when_no_unread(self, temp_db):
-        """relay状態が何もない通常時はセクション自体が出ない"""
+    def test_relay_check_guide_always_present(self, temp_db):
+        """relay状態の有無によらず、確認を促す静的ガイドが常に出る"""
         result = _run_session_start_hook(temp_db)
         context = result["hookSpecificOutput"]["additionalContext"]
 
-        assert "relay inbox 未読" not in context
-
-    def test_relay_section_absent_even_with_real_unread_backlog(
-        self, temp_db, tmp_path
-    ):
-        """実在のinboxに未読が積まれていても、hookプロセスはidentityを解決
-        できないためセクションは表示されない（今回のバッチが対応する範囲では
-        SessionStart側は常に無出力）。
-        """
-        state_dir = tmp_path / "relay-state"
-        from src.services.relay import inbox as relay_inbox
-
-        os.environ["RELAY_STATE_DIR"] = str(state_dir)
-        try:
-            relay_inbox.append("some-identity", {"body": "hello"})
-        finally:
-            del os.environ["RELAY_STATE_DIR"]
-
-        result = _run_session_start_hook(
-            temp_db, extra_env={"RELAY_STATE_DIR": str(state_dir)}
-        )
-        context = result["hookSpecificOutput"]["additionalContext"]
-
-        assert "relay inbox 未読" not in context
+        assert "relay_receive" in context
