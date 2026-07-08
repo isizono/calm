@@ -183,7 +183,7 @@ def _build_activities_section(conn, session_id: str | None = None) -> str:
             seen_ids.add(a["id"])
             days = _calc_elapsed_days(a["updated_at"])
             pin_mark = f"{_PIN_MARK} " if a["id"] in pinned_ids else ""
-            display = format_readable_id("activity", a["id"], a["title"])
+            display = format_readable_id(a["id"], a["title"])
             parts.append(f"- {pin_mark}{display} ({days}d)")
         parts.append("")
 
@@ -304,7 +304,7 @@ def _render_numbered_line(
         if created_at_str and _is_recent_created(created_at_str)
         else ""
     )
-    display = format_readable_id("activity", aid, a["title"])
+    display = format_readable_id(aid, a["title"])
     lines = [f"{idx}. {status_mark} {pin_mark}{display} ({days}d){new_marker}"]
 
     deps = unresolved_deps.get(aid, [])
@@ -329,7 +329,7 @@ def _render_tier4_line(
         if created_at_str and _is_recent_created(created_at_str)
         else ""
     )
-    display = format_readable_id("activity", aid, a["title"])
+    display = format_readable_id(aid, a["title"])
     return f"- {pin_mark}{display} ({days}d){new_marker}"
 
 
