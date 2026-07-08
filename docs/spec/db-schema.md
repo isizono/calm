@@ -756,7 +756,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0047_drop_decisions_logs_topic_id | decisions.topic_id / discussion_logs.topic_id カラムを物理削除（0046で確保した前提条件を受けての Contract） |
 | 0048_session_identity | session_identity テーブル新設 + decisions/discussion_logs/discussion_topics/activities/materials に caller_session_id 追加（0057で全て削除） |
 | 0057_drop_capability_gating | session_identity テーブル削除 + decisions/discussion_logs/discussion_topics/activities/materials の caller_session_id カラム削除（role-based capability gating機構の呼び出し元解体に伴う撤去） |
-| 0058_add_habit_trigger_mode | habits に description / trigger_mode / importance_score / last_recalled_at を追加、既存habits一部をtrigger_mode='intelligently'に更新 |
+| 0058_add_habit_trigger_mode | habits に description / trigger_mode / importance_score / last_recalled_at を追加（スキーマ変更のみ、データ移行なし。trigger_modeの切り替えはupdate_habit経由で個別適用） |
 
 重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。
 
