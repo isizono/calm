@@ -693,7 +693,7 @@ def _get_map_with_conn(
         strip_entity_id_inplace(entity)
         entities.append(entity)
 
-    # depth順、同depth内はtype→id順でソート（id_raw は α化後も整数で残るのでそれを使う）
+    # depth順、同depth内はtype→id順でソート（id_raw は strip_entity_id_inplace後も整数で残るのでそれを使う）
     entities.sort(key=lambda e: (e["depth"], e["type"], e["id_raw"]))
 
     return entities

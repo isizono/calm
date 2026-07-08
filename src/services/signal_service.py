@@ -284,7 +284,7 @@ def _sanitize_signal_for_response(signal: dict) -> dict:
 
     session_id / fingerprintはrecord_signalのdedup・相関目的の内部専用フィールドで、
     他の read 系ツールがcaller_session_idを返却しない慣習と同様レスポンスから除去する。
-    idは他のget系ツールと同じreadable_id変換でid_rawに退避する。
+    idは他のget系ツールと同じstrip_entity_id_inplaceでid_rawに退避する。
 
     signal自身のidだけでなく、他エンティティへの内部ID参照も同じ変換パターンで
     id_raw化する（timeline_serviceのreplaces/replaced_byと同様）:
@@ -301,7 +301,7 @@ def _sanitize_signal_for_response(signal: dict) -> dict:
     refs = signal.get("refs")
     if isinstance(refs, list):
         for ref in refs:
-            _apply_readable_id_if_ref_shaped(ref)
+            _strip_entity_id_if_ref_shaped(ref)
 
     promoted_type = signal.get("promoted_type")
     if promoted_type in PROMOTED_ENTITY_TABLE:
@@ -309,19 +309,19 @@ def _sanitize_signal_for_response(signal: dict) -> dict:
 
     context = signal.get("context")
     if isinstance(context, (dict, list)):
-        _apply_readable_id_recursive(context)
+        _strip_entity_id_recursive(context)
 
     strip_entity_id_inplace(signal)
     return signal
 
 
-def _apply_readable_id_if_ref_shaped(value: object) -> None:
+def _strip_entity_id_if_ref_shaped(value: object) -> None:
     """valueが{"type": <PROMOTED_ENTITY_TABLEのいずれか>, "id": int}形状ならid_raw化する。"""
     if isinstance(value, dict) and value.get("type") in PROMOTED_ENTITY_TABLE:
         strip_entity_id_inplace(value)
 
 
-def _apply_readable_id_recursive(value: object) -> None:
+def _strip_entity_id_recursive(value: object) -> None:
     """dict/listを再帰的に走査し、ネストしたエンティティ参照をすべてid_raw化する(in-place)。
 
     contextはkindごとに自由形式のペイロード（migration 0049コメント・
@@ -331,12 +331,12 @@ def _apply_readable_id_recursive(value: object) -> None:
     "形状"だけを手がかりに変換対象を判定する。
     """
     if isinstance(value, dict):
-        _apply_readable_id_if_ref_shaped(value)
+        _strip_entity_id_if_ref_shaped(value)
         for v in value.values():
-            _apply_readable_id_recursive(v)
+            _strip_entity_id_recursive(v)
     elif isinstance(value, list):
         for item in value:
-            _apply_readable_id_recursive(item)
+            _strip_entity_id_recursive(item)
 
 
 def _compute_stats(conn: sqlite3.Connection) -> dict:
