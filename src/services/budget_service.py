@@ -1,17 +1,13 @@
 """予算配分の共通プリミティブ。
 
-複数の read tool 予算面（pull_precedents 等）で共通に使う優先度スコア関数と、
-予算配分の中核ロジックを集約する。
+pull_precedents の予算配分ロジックと、decision/log のページネーション用件数
+カウントを集約する。
 
 allocate_decision_budget は precedent_pull_service の既存配分ロジックをそのまま
-移設したものであり、挙動は一切変えない。importance_score / recency_score /
-relevance_score / size_penalty は今後の予算面拡張のために新設した汎用スコア関数で、
-現時点では allocate_decision_budget の配分順序には使われていない
-（配分順の決定性を壊さないため）。
+移設したものであり、挙動は一切変えない。
 
 予算値はハードコードせず src.config から読む。
 """
-import math
 import sqlite3
 from typing import Optional
 
@@ -28,37 +24,6 @@ BUDGET_DEFAULTS: dict = {
     "recency_decay_rate": RECENCY_DECAY_RATE,
     "recency_decay_floor": RECENCY_DECAY_FLOOR,
 }
-
-
-def importance_score(is_pinned: bool = False, weight: float = 1.0) -> float:
-    """明示的重要度シグナル（pin等）を0〜weightのスコアに変換する。"""
-    return weight if is_pinned else 0.0
-
-
-def recency_score(age_days: float) -> float:
-    """created_at からの経過日数を0〜1の recency スコアに変換する（指数減衰、下限あり）。
-
-    search_service._apply_recency_boost と同じ減衰式・設定値（RECENCY_DECAY_RATE /
-    RECENCY_DECAY_FLOOR）を共有する。
-    """
-    return max(math.exp(-age_days * RECENCY_DECAY_RATE), RECENCY_DECAY_FLOOR)
-
-
-def relevance_score(rank: int, total: int) -> float:
-    """順位ベースの関連度スコア（0〜1、rank=0が最高）。totalが0以下なら0.0を返す。"""
-    if total <= 0:
-        return 0.0
-    return max(0.0, 1.0 - (rank / total))
-
-
-def size_penalty(size_chars: int, budget_chars: int) -> float:
-    """本文サイズが予算に占める割合をペナルティ（0〜1、大きいほど高ペナルティ）として返す。
-
-    budget_chars が0以下のときは1.0（最大ペナルティ）を返す。
-    """
-    if budget_chars <= 0:
-        return 1.0
-    return min(1.0, size_chars / budget_chars)
 
 
 def allocate_decision_budget(
