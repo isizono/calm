@@ -310,6 +310,26 @@ class TestTriggerModeSplit:
         finally:
             conn.close()
 
+    def test_manifest_orders_by_importance_score_desc(self, temp_db):
+        """importance_score降順（同値はid昇順）で並ぶ"""
+        conn = get_connection()
+        try:
+            low_id = add_habit("低優先度")["habit_id"]
+            high_id = add_habit("高優先度")["habit_id"]
+            mid_id = add_habit("中優先度")["habit_id"]
+            conn.executemany(
+                "UPDATE habits SET trigger_mode = 'intelligently', importance_score = ? WHERE id = ?",
+                [(0.5, low_id), (2.0, high_id), (1.0, mid_id)],
+            )
+            conn.commit()
+
+            manifest = list_intelligently_habit_manifest_with_conn(conn)
+            manifest_ids = [m["habit_id"] for m in manifest]
+
+            assert manifest_ids == [high_id, mid_id, low_id]
+        finally:
+            conn.close()
+
 
 class TestGetHabitsSingleFetch:
     """get_habitsのhabit_id単一取得と参照スタンプのテスト"""

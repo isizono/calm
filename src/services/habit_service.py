@@ -25,13 +25,15 @@ def list_intelligently_habit_manifest_with_conn(conn) -> list[dict]:
     タグに相当する仕組みが habits に存在しないため tags は含めない。
     title は description を優先し、未設定（棚卸し前等）なら content の
     先頭50文字にフォールバックする。
+    importance_score降順（同値はid昇順）で並べ、優先度の高いものを先頭に出す。
 
     Returns:
         [{habit_id, title, trigger_mode}, ...]
     """
     rows = conn.execute(
         "SELECT id, content, description FROM habits "
-        "WHERE active = 1 AND trigger_mode = 'intelligently' ORDER BY id"
+        "WHERE active = 1 AND trigger_mode = 'intelligently' "
+        "ORDER BY importance_score DESC, id ASC"
     ).fetchall()
     manifest = []
     for row in rows:
@@ -101,10 +103,6 @@ def get_habits(active: bool = True, habit_id: int | None = None) -> dict:
             全件（無効化済み含む）取得したい場合はFalseを明示的に渡す。
         habit_id: 指定時は該当habitのみ返す（activeは無視される）。取得と同時に
             last_recalled_atを現在時刻に更新する（intelligently層の参照実績記録）。
-
-    Args:
-        active: Trueのとき（既定）active=1の振る舞いのみ返す。全件（無効化済み含む）
-            取得したい場合はFalseを明示的に渡す。
 
     Returns:
         振る舞い一覧とtotal_count（habit_id指定時はhabitsが0件または1件）
