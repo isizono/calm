@@ -331,6 +331,73 @@ class TestRelationPublish:
         assert len(after) == before + 1
         assert "event:updated" in after[-1]["labels"]
 
+    def test_related_relation_does_not_add_parent_label(self, temp_db, disable_embedding):
+        """relation_type='related'（デフォルト）はどちらの向きにも親帰属を表さないため、
+        source/target双方のpublishに相手をparent labelとして混入させない。"""
+        material = add_material(title="m", content="c", tags=DEFAULT_TAGS, source="test")
+        activity = add_activity(title="a", description="d", tags=DEFAULT_TAGS, check_in=False)
+
+        result = add_relation(
+            "activity", activity["activity_id"],
+            [{"type": "material", "ids": [material["material_id"]]}],
+        )
+        assert result["added"] == 1
+
+        activity_rows = _rows_for("activity", activity["activity_id"])
+        material_rows = _rows_for("material", material["material_id"])
+        assert f"material:{material['material_id']}" not in activity_rows[-1]["labels"]
+        assert f"activity:{activity['activity_id']}" not in material_rows[-1]["labels"]
+
+    def test_depends_on_relation_does_not_add_parent_label(self, temp_db, disable_embedding):
+        """depends_onはactivity同士の依存関係であり、親帰属ではないため
+        依存先をparent labelとして混入させない。"""
+        dependency = add_activity(title="dependency", description="d", tags=DEFAULT_TAGS, check_in=False)
+        dependent = add_activity(title="dependent", description="d", tags=DEFAULT_TAGS, check_in=False)
+
+        result = add_relation(
+            "activity", dependent["activity_id"],
+            [{"type": "activity", "ids": [dependency["activity_id"]]}],
+            relation_type="depends_on",
+        )
+        assert result["added"] == 1
+
+        dependent_rows = _rows_for("activity", dependent["activity_id"])
+        assert f"activity:{dependency['activity_id']}" not in dependent_rows[-1]["labels"]
+
+    def test_supersedes_relation_does_not_add_parent_label(self, temp_db, disable_embedding):
+        """supersedesはdecision同士の置き換え関係であり、親帰属ではないため
+        置き換え先(旧decision)をparent labelとして混入させない。"""
+        topic = add_topic(title="t", description="d", tags=DEFAULT_TAGS)
+        old = add_decisions([{"topic_id": topic["topic_id"], "decision": "old", "reason": "r"}])
+        new = add_decisions([{"topic_id": topic["topic_id"], "decision": "new", "reason": "r"}])
+        old_id = old["created"][0]["decision_id"]
+        new_id = new["created"][0]["decision_id"]
+
+        result = add_relation(
+            "decision", new_id,
+            [{"type": "decision", "ids": [old_id]}],
+            relation_type="supersedes",
+        )
+        assert result["added"] == 1
+
+        new_rows = _rows_for("decision", new_id)
+        assert f"decision:{old_id}" not in new_rows[-1]["labels"]
+
+    def test_belongs_to_relation_adds_parent_label(self, temp_db, disable_embedding):
+        """親帰属パターン（子→topic）はrelation_type='related'指定でも内部でbelongs_toに
+        自動格上げされ、この場合のみparent labelが付く。"""
+        topic = add_topic(title="t", description="d", tags=DEFAULT_TAGS)
+        material = add_material(title="m", content="c", tags=DEFAULT_TAGS, source="test")
+
+        result = add_relation(
+            "material", material["material_id"],
+            [{"type": "topic", "ids": [topic["topic_id"]]}],
+        )
+        assert result["added"] == 1
+
+        material_rows = _rows_for("material", material["material_id"])
+        assert f"topic:{topic['topic_id']}" in material_rows[-1]["labels"]
+
 
 class TestPinPublish:
     def test_add_pin_publishes_both_endpoints(self, temp_db, disable_embedding):

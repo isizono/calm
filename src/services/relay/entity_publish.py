@@ -60,7 +60,8 @@ def _one_hop_parent_labels(conn: sqlite3.Connection, entity_type: str, entity_id
     placeholders = ",".join("?" * len(_ONE_HOP_PARENT_TARGET_TYPES))
     rows = conn.execute(
         f"SELECT DISTINCT target_type, target_id FROM relations_view "
-        f"WHERE source_type = ? AND source_id = ? AND target_type IN ({placeholders})",
+        f"WHERE source_type = ? AND source_id = ? AND relation_type = 'belongs_to' "
+        f"AND target_type IN ({placeholders})",
         (entity_type, entity_id, *_ONE_HOP_PARENT_TARGET_TYPES),
     ).fetchall()
     return [f"{row['target_type']}:{row['target_id']}" for row in rows]
