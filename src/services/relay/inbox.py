@@ -6,6 +6,10 @@ cursor は「どこまで読んだか」のバイトオフセットで、対に�
 配達契約は at-least-once。cursor の欠落・巻き戻りは「重複して返す」側に倒す
 （取りこぼす側には倒さない）。append と drain は inbox ファイルの flock で相互排他し、
 別プロセスの書き手（server 側 intake）と安全に共存する。
+
+count_unread() は drain() と同じファイルを読むが、cursor は前進させない
+（peek専用）。SessionStart hook 等、実際に受信するかどうかをまだ決めていない
+呼び出し元のための軽量な件数確認手段。
 """
 from __future__ import annotations
 
@@ -131,3 +135,43 @@ def drain(
         finally:
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
     return {"records": records, "has_more": has_more}
+
+
+def count_unread(session_id: str) -> int:
+    """未読メッセージ数を非破壊に数える（drain()と異なりcursorを前進させない）。
+
+    inbox file 不在、または cursor が末尾に達している場合は 0。
+    末尾の改行未達（書きかけ）行は数えない。JSON として読めない行・dict でない
+    行は drain() 同様に数えない（drain() で実際に受け取れる件数と一致させる）。
+    flock(LOCK_SH) で読み取り中の append() と排他し、書きかけの途中状態を
+    読まないようにする。
+    """
+    path = inbox_path(session_id)
+    try:
+        f = open(path, "rb")
+    except FileNotFoundError:
+        return 0
+    with f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+        try:
+            size = os.fstat(f.fileno()).st_size
+            offset = read_cursor(session_id)
+            if offset > size:
+                # drain() と同じ規約: 不整合時は先頭からとみなす
+                offset = 0
+            if offset >= size:
+                return 0
+            f.seek(offset)
+            tail = f.read()
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+    count = 0
+    for line in tail.split(b"\n")[:-1]:
+        try:
+            record = json.loads(line.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if isinstance(record, dict):
+            count += 1
+    return count

@@ -142,3 +142,55 @@ class TestDrainHasMore:
             f.write(b'{"n": 2')
         result = inbox.drain("s1")
         assert result["has_more"] is True
+
+
+class TestCountUnread:
+    def test_missing_inbox_returns_zero(self):
+        assert inbox.count_unread("never-subscribed") == 0
+
+    def test_fully_drained_inbox_returns_zero(self):
+        inbox.append("s1", {"n": 1})
+        inbox.drain("s1")
+        assert inbox.count_unread("s1") == 0
+
+    def test_counts_unread_records(self):
+        inbox.append("s1", {"n": 1})
+        inbox.append("s1", {"n": 2})
+        inbox.append("s1", {"n": 3})
+        assert inbox.count_unread("s1") == 3
+
+    def test_counts_only_records_after_cursor(self):
+        inbox.append("s1", {"n": 1})
+        inbox.drain("s1")
+        inbox.append("s1", {"n": 2})
+        inbox.append("s1", {"n": 3})
+        assert inbox.count_unread("s1") == 2
+
+    def test_partial_trailing_line_is_not_counted(self):
+        inbox.append("s1", {"n": 1})
+        with open(inbox.inbox_path("s1"), "ab") as f:
+            f.write(b'{"n": 2')
+        assert inbox.count_unread("s1") == 1
+
+    def test_does_not_advance_cursor(self):
+        inbox.append("s1", {"n": 1})
+        inbox.append("s1", {"n": 2})
+        cursor_before = inbox.read_cursor("s1")
+        assert inbox.count_unread("s1") == 2
+        assert inbox.read_cursor("s1") == cursor_before
+        # drain後も同じ2件が読めることでcursorが前進していないことを確認する
+        assert [r["n"] for r in inbox.drain("s1")["records"]] == [1, 2]
+
+    def test_cursor_beyond_file_size_rereads_from_start(self):
+        inbox.append("s1", {"n": 1})
+        inbox._write_cursor("s1", 10_000)
+        assert inbox.count_unread("s1") == 1
+
+    def test_malformed_line_is_not_counted(self):
+        """drain()が実際に返す件数と一致させるため、壊れた行はcountに含めない"""
+        inbox.append("s1", {"n": 1})
+        with open(inbox.inbox_path("s1"), "ab") as f:
+            f.write(b"{broken json\n")
+        inbox.append("s1", {"n": 2})
+        assert inbox.count_unread("s1") == 2
+        assert [r["n"] for r in inbox.drain("s1")["records"]] == [1, 2]
