@@ -491,7 +491,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
-| labels | list[string] | yes | - | 配送先マッチング用labels（1個以上）。routing系（`handle:`/`room:`/`task:`）とtag namespace（`domain:`/`intent:`等）を併用可。これらのみでも有効。未知prefixは不透明labelとして受理。`role:`（廃止済みnamespace）と中核entity namespace（`topic:`/`activity:`/`decision:`/`log:`/`material:`。実在チェックなしの不透明文字列にしかならないため予約済み）はエラー |
+| labels | list[string] | yes | - | 配送先マッチング用labels（1個以上、1個あたり200字以内）。routing系（`handle:`/`room:`/`task:`）とtag namespace（`domain:`/`intent:`等）を併用可。これらのみでも有効。未知prefixは不透明labelとして受理。`role:`（廃止済みnamespace）とcc-memoryの予約namespace（`entity:`/`event:`/`topic:`/`activity:`/`decision:`/`log:`/`material:`/`tag:`/`habit:`。entity更新のrelay publishが使うnamespaceで、実在チェックなしの不透明文字列にしかならないため予約済み）はエラー |
 | body | string | yes | - | メッセージ本文（非空） |
 | title | string | no | null | 一覧表示用の見出し（200字以内） |
 
@@ -504,7 +504,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
-| labels | list[string] | yes | - | 購読条件labels（publish側labelsをすべて含む発話が届く）。空配列なら自handle宛のみの購読。`role:`と中核entity namespace（`topic:`/`activity:`/`decision:`/`log:`/`material:`）はエラー |
+| labels | list[string] | yes | - | 購読条件labels（publish側labelsをすべて含む発話が届く）。空配列なら自handle宛のみの購読。`role:`はエラー。cc-memoryの予約namespace（`entity:`/`event:`/`topic:`/`activity:`/`decision:`/`log:`/`material:`/`tag:`/`habit:`）はrelay_publishと異なりここでは許可（entity更新のrelay publishを購読するために必要。例: `["activity:1183", "event:updated"]`） |
 
 **返り値**: `{subscription_id: string, labels: list[string], lease_expires_at: string, handle: string, reused: bool, identity: string}`。
 **動作**: 自sessionの`handle:` labelを自動付与し、subscription declaration file（`~/.cc-memory/relay/subscriptions/session-<session_id>.json`）とrelayの購読登録を同期する。同一labels集合の再呼び出しは冪等で、leaseが有効なら既存購読を返し（`reused: true`）、失効・不明なら新規購読してdeclaration fileのidを差し替える。lease更新・再購読・購読解除はserver側常駐処理が自動管理する。新規購読（`reused: false`）が成立すると、server内の常駐SSE受信スレッドへ即座に反映指示を送る。反映は次にSSEフレーム（実メッセージだけでなくkeepaliveのコメントフレーム到達でも判定される）が届いた時点で完了し、既定設定では上限概ね60秒に収まる。この間に届いたメッセージはrelay側のsubscription outboxに保持されるため取りこぼされない。`identity`は呼び出し元セッションの識別子（cc-memory server再起動をまたいで安定。`scripts/relay/watch_inbox.sh`等に渡す値として使える）。

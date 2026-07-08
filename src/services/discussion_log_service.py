@@ -14,6 +14,7 @@ from src.services.tag_service import (
     get_effective_tags_batch_by_ids,
 )
 from src.services.relation_service import _add_relation_with_conn
+from src.services.relay.entity_publish import publish_entity_event_with_conn
 
 
 def _auto_generate_title(content: str) -> str | None:
@@ -115,6 +116,10 @@ def add_logs(items: list[dict]) -> dict:
                 # 本文中の {{cite:X#NNN}} を citations テーブルに保存
                 upsert_citations_for_owner_with_conn(
                     conn, "log", log_id, content=content
+                )
+
+                publish_entity_event_with_conn(
+                    conn, entity_type="log", entity_id=log_id, event="created"
                 )
 
                 conn.execute(f"RELEASE SAVEPOINT item_{i}")

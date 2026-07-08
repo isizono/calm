@@ -1662,9 +1662,10 @@ def relay_publish(labels: list[str], body: str, title: str | None = None) -> dic
 
     送信者の handle: label が自動付与される。labels には routing 系（handle:/room:/task:）と
     cc-memory の tag namespace（domain:/intent: 等）を併用でき、これらのみでも有効。未知
-    prefix も不透明 label として受理する。role:（廃止済み namespace）と cc-memory の中核
-    entity namespace（topic:/activity:/decision:/log:/material:。実在チェックなしの不透明
-    文字列にしかならないため予約済み）は指定するとエラー。
+    prefix も不透明 label として受理する。role:（廃止済み namespace）と cc-memory の予約
+    namespace（entity:/event:/topic:/activity:/decision:/log:/material:/tag:/habit:。
+    entity 更新の relay publish が使う namespace で、実在チェックなしの不透明文字列に
+    しかならないため予約済み）は指定するとエラー。
 
     配布した内容は cc-memory 本体（search/get_timeline/pull_precedents 等）には自動で
     反映されない。受信側が後から参照できる形で残したい場合は、受信後に add_logs/
@@ -1701,8 +1702,11 @@ def relay_subscribe(labels: list[str]) -> dict:
     （直接メッセージ）のみの購読になる。同一 labels 集合での再呼び出しは冪等で、lease が
     有効なら既存の購読をそのまま返し、失効していれば新規に購読し直して差し替える。
     lease 更新・再接続・購読解除は server 側で自動管理される（呼び出し側の操作は不要）。
-    role:（廃止済み namespace）と cc-memory の中核 entity namespace
-    （topic:/activity:/decision:/log:/material:）は relay_publish と同様に指定するとエラー。
+    role:（廃止済み namespace）は relay_publish と同様に指定するとエラー。cc-memory の
+    予約 namespace（entity:/event:/topic:/activity:/decision:/log:/material:/tag:/
+    habit:）は relay_publish と異なりここでは許可される（entity 更新の relay publish を
+    購読するために必要。例: ["activity:1183", "event:updated"] で activity 1183 の
+    状態遷移を購読、["entity:decision", "event:retracted"] で全 decision の retract を購読）。
 
     新規に購読が作られた場合（reused: false）、server 内の常駐 SSE 接続へ即座に反映指示を
     送る。実際の反映は次に SSE フレーム（実メッセージだけでなく keepalive のコメント

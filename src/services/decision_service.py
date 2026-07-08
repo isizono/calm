@@ -23,6 +23,7 @@ from src.services.direction_service import (
 from src.services.habit_service import _add_habit_with_conn
 from src.services.precedent_pure import attach_precedent, parse_precedent_sections, summarize_precedent
 from src.services.relation_service import _add_relation_with_conn
+from src.services.relay.entity_publish import publish_entity_event_with_conn
 from src.services.supersede_service import compute_supersede_info_batch
 from src.services.title_validation import validate_title
 
@@ -144,6 +145,10 @@ def add_decisions(items: list[dict]) -> dict:
                 # 本文中の {{cite:X#NNN}} を citations テーブルに保存
                 upsert_citations_for_owner_with_conn(
                     conn, "decision", decision_id, decision=decision, reason=reason
+                )
+
+                publish_entity_event_with_conn(
+                    conn, entity_type="decision", entity_id=decision_id, event="created"
                 )
 
                 # propagate_to 処理

@@ -24,7 +24,6 @@ from src.relay_sdk.http.request import (
     raise_for_relay_status,
 )
 from src.relay_sdk.outbox import publish as outbox_publish
-from src.services.relation_service import VALID_ENTITY_TYPES
 from src.services.relay import config, declarations, inbox
 from src.services.relay.config import RelayConfigError
 
@@ -33,10 +32,20 @@ logger = logging.getLogger(__name__)
 _ROLE_PREFIX = "role:"
 _HANDLE_PREFIX = "handle:"
 
-# cc-memory の中核 entity 種別（relation_service.VALID_ENTITY_TYPES と同一集合）を
-# label prefix として予約する。relay label は実在チェックを行わない不透明文字列の
-# ため、これらの語彙と衝突すると存在しない/未検証の entity への関連付けを誤認させる。
-_RESERVED_ENTITY_PREFIXES = tuple(sorted(f"{entity_type}:" for entity_type in VALID_ENTITY_TYPES))
+# entity 更新 → relay publish（core内部専用、src.services.relay.entity_publish）が
+# ref.type として使う 7 種類（cc-memory 内呼称と完全一致）。
+PUBLISH_ENTITY_TYPES = ("decision", "log", "material", "activity", "topic", "tag", "habit")
+
+# labels の予約 namespace。cc-memory の中核 entity 種別 7 つ（PUBLISH_ENTITY_TYPES）に
+# 加えて、entity 種別そのものを表す `entity:` と write event 種別を表す `event:` も
+# 予約する。relay label は実在チェックを行わない不透明文字列のため、これらの語彙と
+# 衝突すると存在しない/未検証の entity への関連付けを誤認させる。
+_RESERVED_LABEL_PREFIXES = tuple(
+    sorted(f"{entity_type}:" for entity_type in PUBLISH_ENTITY_TYPES) + ["entity:", "event:"]
+)
+
+# 1 つの label string の上限文字数。
+MAX_LABEL_CHARS = 200
 
 # relay_post の ttl 許容範囲（秒）。
 TTL_MIN_SECONDS = 60
@@ -91,13 +100,20 @@ def _relay_error(exc: Exception) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def validate_labels(labels: Any, *, allow_empty: bool = False) -> Optional[str]:
+def validate_labels(
+    labels: Any, *, allow_empty: bool = False, check_reserved: bool = True
+) -> Optional[str]:
     """labels の妥当性を検査し、問題があればエラーメッセージを返す（正常は None）。
 
-    role:（廃止済み namespace）と、cc-memory の中核 entity namespace
-    （topic:/activity:/decision:/log:/material:）を予約済みとして拒否する。
-    handle:/room:/task:・domain:/intent: 等の tag namespace・その他未知 prefix は
-    不透明 label として受理する。
+    型・非空文字列・200 chars 上限（MAX_LABEL_CHARS）は 3 モード共通の基礎検証。
+    role:（廃止済み namespace）は常に拒否する。
+
+    check_reserved=True（既定、relay_publish/relay_subscribe の中核 entity
+    予約 namespace チェック用）のときは、cc-memory の予約 namespace
+    （entity:/event:/topic:/activity:/decision:/log:/material:/tag:/habit:）も
+    拒否する。entity write → relay outbox の core 内部 publish
+    （src.services.relay.entity_publish）はこれらの namespace を自ら組み立てる
+    ため check_reserved=False で呼ぶ。
     """
     if not isinstance(labels, list):
         return "labels は文字列の配列で指定してください"
@@ -106,19 +122,22 @@ def validate_labels(labels: Any, *, allow_empty: bool = False) -> Optional[str]:
     for label in labels:
         if not isinstance(label, str) or not label:
             return "labels の各要素は非空文字列で指定してください"
+        if len(label) > MAX_LABEL_CHARS:
+            return f"label は {MAX_LABEL_CHARS} chars 以内にしてください: '{label[:50]}...'"
         if label.startswith(_ROLE_PREFIX):
             return (
                 f"label '{label}' は使用できません。"
                 "role: namespace は廃止済みです（routing には handle:/room:/task: を使う）"
             )
-        for prefix in _RESERVED_ENTITY_PREFIXES:
-            if label.startswith(prefix):
-                return (
-                    f"label '{label}' は使用できません。"
-                    f"'{prefix}' は cc-memory の中核 entity namespace として予約されています。"
-                    "relay label は実在チェックを行わない不透明文字列のため、"
-                    "実 entity と関連付けたい場合は body に記述してください"
-                )
+        if check_reserved:
+            for prefix in _RESERVED_LABEL_PREFIXES:
+                if label.startswith(prefix):
+                    return (
+                        f"label '{label}' は使用できません。"
+                        f"'{prefix}' は cc-memory の中核 entity namespace として予約されています。"
+                        "relay label は実在チェックを行わない不透明文字列のため、"
+                        "実 entity と関連付けたい場合は body に記述してください"
+                    )
     return None
 
 
@@ -296,10 +315,15 @@ def relay_subscribe(
 
     lease が有効な既存宣言はそのまま返し、失効・不明なら新規に subscribe して
     declaration file の subscription_id を差し替える。
+
+    cc-memory の予約 namespace（entity:/event:/topic:/activity:/decision:/log:/
+    material:/tag:/habit:）は relay_publish（メッセージ配布）とは異なり許可する。
+    entity 更新 → relay publish の labels（例: ["activity:1183", "event:updated"]）を
+    購読するのに必要なため。role:（廃止済み namespace）は引き続き拒否する。
     """
     if not caller_session_id:
         return _error("session_unresolved", SESSION_UNRESOLVED_MESSAGE)
-    message = validate_labels(labels, allow_empty=True)
+    message = validate_labels(labels, allow_empty=True, check_reserved=False)
     if message:
         return _error("validation", message)
 
