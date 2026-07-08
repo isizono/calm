@@ -1340,9 +1340,24 @@ def get_habits(active: bool = True, habit_id: int | None = None) -> dict:
 
 
 @mcp.tool()
-def update_habit(habit_id: int, content: Optional[str] = None, active: Optional[bool] = None) -> dict:
-    """振る舞いを更新する。active=Falseで無効化、active=Trueで再有効化"""
-    return habit_service.update_habit(habit_id, content=content, active=active)
+def update_habit(
+    habit_id: int,
+    content: Optional[str] = None,
+    active: Optional[bool] = None,
+    trigger_mode: Optional[str] = None,
+    description: Optional[str] = None,
+) -> dict:
+    """振る舞いを更新する。active=Falseで無効化、active=Trueで再有効化。
+    trigger_modeは'always'（全文常時注入）/'intelligently'（マニフェストのみ、
+    詳細はget_habits(habit_id=...)でon-demand取得）のいずれか。descriptionは
+    intelligentlyのマニフェスト表示に使う要旨"""
+    return habit_service.update_habit(
+        habit_id,
+        content=content,
+        active=active,
+        trigger_mode=trigger_mode,
+        description=description,
+    )
 
 
 @mcp.tool()

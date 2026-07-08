@@ -220,6 +220,50 @@ class TestUpdateHabit:
         assert result["error"]["code"] == "VALIDATION_ERROR"
         assert "active must be True or False" in result["error"]["message"]
 
+    def test_update_trigger_mode_to_intelligently(self, temp_db):
+        """trigger_mode='intelligently'に更新できる"""
+        created = add_habit("intelligently化する振る舞い")
+        habit_id = created["habit_id"]
+
+        result = update_habit(habit_id, trigger_mode="intelligently")
+
+        assert "error" not in result
+        assert result["trigger_mode"] == "intelligently"
+
+    def test_update_trigger_mode_invalid_value(self, temp_db):
+        """trigger_modeが'always'/'intelligently'以外だとバリデーションエラーになる"""
+        created = add_habit("元の振る舞い")
+        habit_id = created["habit_id"]
+
+        result = update_habit(habit_id, trigger_mode="sometimes")
+
+        assert "error" in result
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+        assert "trigger_mode" in result["error"]["message"]
+
+    def test_update_description(self, temp_db):
+        """descriptionを更新できる"""
+        created = add_habit("要旨をつける振る舞い")
+        habit_id = created["habit_id"]
+
+        result = update_habit(habit_id, description="短い要旨")
+
+        assert "error" not in result
+        assert result["description"] == "短い要旨"
+
+    def test_update_trigger_mode_and_description_together(self, temp_db):
+        """trigger_modeとdescriptionを同時に更新できる"""
+        created = add_habit("まとめて更新する振る舞い")
+        habit_id = created["habit_id"]
+
+        result = update_habit(
+            habit_id, trigger_mode="intelligently", description="要旨テキスト"
+        )
+
+        assert "error" not in result
+        assert result["trigger_mode"] == "intelligently"
+        assert result["description"] == "要旨テキスト"
+
 
 class TestTriggerModeSplit:
     """trigger_mode（always/intelligently）分割のテスト"""

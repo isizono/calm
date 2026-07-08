@@ -157,22 +157,35 @@ def get_habits(active: bool = True, habit_id: int | None = None) -> dict:
         conn.close()
 
 
-def update_habit(habit_id: int, content: str | None = None, active: bool | None = None) -> dict:
+_VALID_TRIGGER_MODES = ("always", "intelligently")
+
+
+def update_habit(
+    habit_id: int,
+    content: str | None = None,
+    active: bool | None = None,
+    trigger_mode: str | None = None,
+    description: str | None = None,
+) -> dict:
     """振る舞いを更新する。
 
     Args:
         habit_id: 振る舞いID
         content: 新しい内容（optional）
         active: 有効/無効フラグ（True/False、optional）
+        trigger_mode: 'always'（全文をSessionStartで常時注入）または
+            'intelligently'（マニフェストのみ表示、詳細はget_habits(habit_id=...)で
+            on-demand取得）のいずれか（optional）
+        description: intelligently層のマニフェスト表示に使う要旨（optional）
 
     Returns:
         更新された振る舞い情報
     """
-    if content is None and active is None:
+    if content is None and active is None and trigger_mode is None and description is None:
         return {
             "error": {
                 "code": "VALIDATION_ERROR",
-                "message": "At least one of content or active must be provided",
+                "message": "At least one of content, active, trigger_mode or description must be provided",
             }
         }
 
@@ -189,6 +202,14 @@ def update_habit(habit_id: int, content: str | None = None, active: bool | None 
             "error": {
                 "code": "VALIDATION_ERROR",
                 "message": "active must be True or False",
+            }
+        }
+
+    if trigger_mode is not None and trigger_mode not in _VALID_TRIGGER_MODES:
+        return {
+            "error": {
+                "code": "VALIDATION_ERROR",
+                "message": f"trigger_mode must be one of: {', '.join(_VALID_TRIGGER_MODES)}",
             }
         }
 
@@ -219,6 +240,14 @@ def update_habit(habit_id: int, content: str | None = None, active: bool | None 
             set_parts.append("active = ?")
             values.append(active)
 
+        if trigger_mode is not None:
+            set_parts.append("trigger_mode = ?")
+            values.append(trigger_mode)
+
+        if description is not None:
+            set_parts.append("description = ?")
+            values.append(description)
+
         set_clause = ", ".join(set_parts)
         values.append(habit_id)
 
@@ -243,6 +272,8 @@ def update_habit(habit_id: int, content: str | None = None, active: bool | None 
             "content": habit["content"],
             "active": habit["active"],
             "created_at": habit["created_at"],
+            "trigger_mode": habit["trigger_mode"],
+            "description": habit["description"],
         }
 
     except Exception as e:
