@@ -1301,3 +1301,60 @@ class TestSessionStartHookRelayInbox:
         context = result["hookSpecificOutput"]["additionalContext"]
 
         assert "relay inbox 未読" not in context
+
+
+class TestSessionStartHookBacklogReview:
+    """backlog_review_due hintのSessionStart表示テスト"""
+
+    def _seed_untriaged_backlog_logs(self, count: int) -> int:
+        from src.services.discussion_log_service import add_logs
+        from src.services.topic_service import add_topic
+
+        topic = add_topic(
+            title="要望会テスト用topic", description="d", tags=["domain:cc-memory"],
+        )
+        items = [
+            {
+                "topic_id": topic["topic_id"],
+                "title": f"要望{i}",
+                "content": "c",
+                "tags": ["improvement-backlog"],
+            }
+            for i in range(count)
+        ]
+        result = add_logs(items)
+        assert not result["errors"], result["errors"]
+        return topic["topic_id"]
+
+    def test_hidden_below_threshold(self, temp_db):
+        from src.config import BACKLOG_REVIEW_THRESHOLD
+
+        self._seed_untriaged_backlog_logs(BACKLOG_REVIEW_THRESHOLD - 1)
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "要望会タイミングです" not in context
+
+    def test_shown_at_threshold(self, temp_db):
+        from src.config import BACKLOG_REVIEW_THRESHOLD
+
+        self._seed_untriaged_backlog_logs(BACKLOG_REVIEW_THRESHOLD)
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "要望会タイミングです" in context
+        assert str(BACKLOG_REVIEW_THRESHOLD) in context
+
+    def test_hidden_when_suppressed_by_marker(self, temp_db):
+        from src.config import BACKLOG_REVIEW_THRESHOLD
+        from src.services.tag_service import update_tag
+
+        self._seed_untriaged_backlog_logs(BACKLOG_REVIEW_THRESHOLD)
+        update_tag("domain:cc-memory", notes="#backlog-review-ack")
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "要望会タイミングです" not in context

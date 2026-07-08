@@ -9,9 +9,11 @@ from src.services.activity_service import add_activity
 from src.services.decision_service import add_decisions
 from src.services.direction_service import DIRECTION_NAME, DIRECTION_NAMESPACE
 from src.services.hint_service import (
+    BACKLOG_REVIEW_THRESHOLD,
     DIRECTION_OVERFLOW_THRESHOLD,
     HINT_LOGS_SPARSE_MESSAGE,
     LOGS_SPARSE_LOG_THRESHOLD,
+    MARKER_BACKLOG_REVIEW,
     MARKER_DIRECTION_OVERFLOW,
     MARKER_LOGS_SPARSE,
     MARKER_RECOMPOSE_BOOTSTRAP,
@@ -29,7 +31,7 @@ from src.services.material_service import add_material
 from src.services.pin_service import add_pin
 from src.services.topic_service import add_topic
 from src.services.tag_service import _injected_tags, update_tag
-from tests.helpers import add_decision
+from tests.helpers import add_decision, add_log
 
 DOMAIN_TAG_NAME = "hint-domain"
 DOMAIN_TAG = f"domain:{DOMAIN_TAG_NAME}"
@@ -510,3 +512,83 @@ class TestEdgeCases:
 
         intent_tag_id = _tag_id("design", namespace="intent")
         assert get_hints("tag", intent_tag_id) == []
+
+
+CC_MEMORY_DOMAIN_TAG = "domain:cc-memory"
+
+
+class TestBacklogReviewDue:
+    def test_fires_at_threshold(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[CC_MEMORY_DOMAIN_TAG])
+        for i in range(BACKLOG_REVIEW_THRESHOLD):
+            add_log(
+                topic["topic_id"], title=f"要望{i}", content="c",
+                tags=["improvement-backlog"],
+            )
+
+        hints = get_hints("tag", _tag_id("cc-memory"))
+        backlog_hints = [h for h in hints if h["type"] == "backlog_review_due"]
+        assert len(backlog_hints) == 1
+        assert backlog_hints[0]["delivery_hint"] == "immediate"
+        assert backlog_hints[0]["severity"] == "info"
+        assert str(BACKLOG_REVIEW_THRESHOLD) in backlog_hints[0]["message"]
+
+    def test_silent_below_threshold(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[CC_MEMORY_DOMAIN_TAG])
+        for i in range(BACKLOG_REVIEW_THRESHOLD - 1):
+            add_log(
+                topic["topic_id"], title=f"要望{i}", content="c",
+                tags=["improvement-backlog"],
+            )
+
+        hints = get_hints("tag", _tag_id("cc-memory"))
+        assert [h for h in hints if h["type"] == "backlog_review_due"] == []
+
+    def test_triaged_items_excluded_from_count(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[CC_MEMORY_DOMAIN_TAG])
+        for i in range(BACKLOG_REVIEW_THRESHOLD):
+            add_log(
+                topic["topic_id"], title=f"要望{i}", content="c",
+                tags=["improvement-backlog", "improvement-backlog-triaged"],
+            )
+
+        hints = get_hints("tag", _tag_id("cc-memory"))
+        assert [h for h in hints if h["type"] == "backlog_review_due"] == []
+
+    def test_material_items_also_counted(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[CC_MEMORY_DOMAIN_TAG])
+        for i in range(BACKLOG_REVIEW_THRESHOLD - 1):
+            add_log(
+                topic["topic_id"], title=f"要望{i}", content="c",
+                tags=["improvement-backlog"],
+            )
+        add_material(
+            title="要望material", content="c", tags=["improvement-backlog"],
+            source="test",
+        )
+
+        hints = get_hints("tag", _tag_id("cc-memory"))
+        assert [h for h in hints if h["type"] == "backlog_review_due"] != []
+
+    def test_suppressed_by_marker(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[CC_MEMORY_DOMAIN_TAG])
+        for i in range(BACKLOG_REVIEW_THRESHOLD):
+            add_log(
+                topic["topic_id"], title=f"要望{i}", content="c",
+                tags=["improvement-backlog"],
+            )
+        update_tag(CC_MEMORY_DOMAIN_TAG, notes=MARKER_BACKLOG_REVIEW)
+
+        hints = get_hints("tag", _tag_id("cc-memory"))
+        assert [h for h in hints if h["type"] == "backlog_review_due"] == []
+
+    def test_not_fired_for_other_domain(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        for i in range(BACKLOG_REVIEW_THRESHOLD):
+            add_log(
+                topic["topic_id"], title=f"要望{i}", content="c",
+                tags=["improvement-backlog"],
+            )
+
+        hints = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        assert [h for h in hints if h["type"] == "backlog_review_due"] == []

@@ -35,6 +35,11 @@ SYNC_POLICY: str | None = os.environ.get("CCM_SYNC_POLICY") or None  # 空文字
 # direction_overflow hintを発火する（少数原則の維持を促す）
 DIRECTION_OVERFLOW_THRESHOLD: int = int(os.environ.get("CCM_DIRECTION_OVERFLOW_THRESHOLD", "8"))
 
+# --- Backlog Review ---
+# improvement-backlogタグ付きlog/materialのうちimprovement-backlog-triagedが
+# 付いていない(未処理)件数がこの値以上になったらbacklog_review_due hintを発火する
+BACKLOG_REVIEW_THRESHOLD: int = int(os.environ.get("CCM_BACKLOG_REVIEW_THRESHOLD", "10"))
+
 # --- Migration Safety ---
 # premigration スナップショット取得を無効化する緊急脱出弁（"0" で無効化）
 CCM_MIGRATION_SNAPSHOT: bool = os.environ.get("CCM_MIGRATION_SNAPSHOT", "1") != "0"

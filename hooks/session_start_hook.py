@@ -372,6 +372,21 @@ def _build_signals_section(conn, session_id: str | None = None) -> str:  # conn,
     return f"未トリアージのシグナル: {total}件 ({breakdown}) → get_signals で確認\n"
 
 
+def _build_backlog_review_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
+    """improvement-backlog未処理累積のbacklog_review_due hintをSessionStartでも表示する。"""
+    from src.services.hint_service import get_hints_with_conn
+
+    row = conn.execute(
+        "SELECT id FROM tags WHERE namespace = 'domain' AND name = 'cc-memory'"
+    ).fetchone()
+    if row is None:
+        return ""
+    for hint in get_hints_with_conn(conn, "tag", row["id"]):
+        if hint["type"] == "backlog_review_due":
+            return hint["message"] + "\n"
+    return ""
+
+
 def _build_relay_inbox_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
     """relay inboxの未読件数 + Monitor監視の指示を表示する。
 
@@ -508,6 +523,7 @@ def _build_session_context(session_id: str | None = None) -> str:
             _build_habits_section,
             _build_sync_policy_section,
             _build_signals_section,
+            _build_backlog_review_section,
             _build_relay_inbox_section,
         ]
         for builder in builders:

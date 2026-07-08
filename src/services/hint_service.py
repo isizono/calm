@@ -11,11 +11,13 @@ hintの種別と発火条件は仕様確定decisionに従う。
 - record_missing (deferred): 一定turn記録系ツール未呼出
 - direction_overflow (immediate): tag scope, domain: namespaceのみ,
   layer:direction decisionのactive件数 ≥ DIRECTION_OVERFLOW_THRESHOLD
+- backlog_review_due (immediate): tag scope, domain:cc-memory固定, improvement-backlog
+  タグ付きlog/materialの未処理(triaged無し)件数 ≥ BACKLOG_REVIEW_THRESHOLD
 
 抑制:
 - tag_notesに以下のハッシュタグマーカーがあれば該当hintをスキップ:
   #recompose-skipped, #recompose-bootstrap-skipped, #recompose-delta-skipped,
-  #logs-sparse-ack, #direction-overflow-ack
+  #logs-sparse-ack, #direction-overflow-ack, #backlog-review-ack
 - 各マーカーは素の形（恒久抑制）に加えて `<marker>-until:YYYY-MM-DD` の形式
   （指定日当日まで有効な期限付き抑制）も受け付ける。不正な日付形式は無視される
   （フェイルオープン、抑制しない側に倒す）。判定は_is_marker_activeに集約する
@@ -37,9 +39,10 @@ import sys
 from datetime import date
 from typing import Any, Literal, TypedDict
 
-from src.config import DIRECTION_OVERFLOW_THRESHOLD
+from src.config import BACKLOG_REVIEW_THRESHOLD, DIRECTION_OVERFLOW_THRESHOLD
 from src.db import get_connection
 from src.services.direction_service import count_direction_decisions
+from src.services.tag_service import resolve_tag_ids
 
 # --- 型定義 ---
 
@@ -50,6 +53,7 @@ HintType = Literal[
     "follow_up_after_decision",
     "record_missing",
     "direction_overflow",
+    "backlog_review_due",
 ]
 Severity = Literal["info", "warn"]
 DeliveryHint = Literal["immediate", "deferred"]
@@ -86,6 +90,7 @@ MARKER_RECOMPOSE_BOOTSTRAP = "#recompose-bootstrap-skipped"
 MARKER_RECOMPOSE_DELTA = "#recompose-delta-skipped"
 MARKER_LOGS_SPARSE = "#logs-sparse-ack"
 MARKER_DIRECTION_OVERFLOW = "#direction-overflow-ack"
+MARKER_BACKLOG_REVIEW = "#backlog-review-ack"
 
 # マーカーは素の形（恒久抑制）に加えて `<marker>-until:YYYY-MM-DD`（期限付き抑制、
 # 指定日当日まで有効）も受け付ける。判定は_is_marker_activeに集約する。
@@ -174,6 +179,16 @@ def _direction_overflow_message(tag_name: str, count: int) -> str:
         f"「{MARKER_DIRECTION_OVERFLOW}-until:YYYY-MM-DD」（任意の未来日）を"
         f"追記すると、その日まで一時的に黙らせられます。恒久的に不要なら日付なしの"
         f"「{MARKER_DIRECTION_OVERFLOW}」を追記してください。"
+    )
+
+
+def _backlog_review_message(count: int) -> str:
+    return (
+        f"要望会タイミングです（未処理{count}件）。/backlog-review で着手してください。"
+        f"今は都合が悪い場合、domain:cc-memoryのtag notesに"
+        f"「{MARKER_BACKLOG_REVIEW}-until:YYYY-MM-DD」（任意の未来日）を追記すると、"
+        f"その日まで一時的に黙らせられます。恒久的に不要なら日付なしの"
+        f"「{MARKER_BACKLOG_REVIEW}」を追記してください。"
     )
 
 
@@ -303,6 +318,24 @@ def _get_hints_for_tag(conn: sqlite3.Connection, tag_id: int) -> list[Hint]:
                 "delivery_hint": "immediate",
             })
 
+    if tag_name == "domain:cc-memory" and not _is_marker_active(notes, MARKER_BACKLOG_REVIEW):
+        untriaged = _count_untriaged_backlog_items(conn)
+        if untriaged >= BACKLOG_REVIEW_THRESHOLD:
+            hints.append({
+                "type": "backlog_review_due",
+                "severity": "info",
+                "message": _backlog_review_message(untriaged),
+                "suggested_action": {
+                    "skill": "backlog-review",
+                    "natural_language": (
+                        f"improvement-backlog未処理{untriaged}件の要望会着手を"
+                        "ユーザーに提案する"
+                    ),
+                },
+                "source": "backlog_review_due",
+                "delivery_hint": "immediate",
+            })
+
     return hints
 
 
@@ -357,6 +390,45 @@ def _count_tag_scope_decisions(
         params.append(after)
     row = conn.execute(sql, tuple(params)).fetchone()
     return row[0] if row else 0
+
+
+def _count_untriaged_backlog_items(conn: sqlite3.Connection) -> int:
+    """improvement-backlogタグ付きでimprovement-backlog-triagedが付いていない
+    log/material件数（retracted除外）。"""
+    backlog_ids = resolve_tag_ids(conn, [("", "improvement-backlog")])
+    if not backlog_ids:
+        return 0
+    backlog_id = backlog_ids[0]
+    triaged_ids = resolve_tag_ids(conn, [("", "improvement-backlog-triaged")])
+    triaged_id = triaged_ids[0] if triaged_ids else -1
+
+    log_count = conn.execute(
+        """
+        SELECT COUNT(*) FROM log_tags lt
+        JOIN discussion_logs dl ON dl.id = lt.log_id
+        WHERE lt.tag_id = ? AND dl.retracted_at IS NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM log_tags lt2
+              WHERE lt2.log_id = lt.log_id AND lt2.tag_id = ?
+          )
+        """,
+        (backlog_id, triaged_id),
+    ).fetchone()[0]
+
+    material_count = conn.execute(
+        """
+        SELECT COUNT(*) FROM material_tags mt
+        JOIN materials m ON m.id = mt.material_id
+        WHERE mt.tag_id = ? AND m.retracted_at IS NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM material_tags mt2
+              WHERE mt2.material_id = mt.material_id AND mt2.tag_id = ?
+          )
+        """,
+        (backlog_id, triaged_id),
+    ).fetchone()[0]
+
+    return log_count + material_count
 
 
 # --- scope=topic ---
