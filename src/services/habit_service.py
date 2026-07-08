@@ -2,6 +2,7 @@
 import logging
 
 from src.db import get_connection, row_to_dict
+from src.services.relay.entity_publish import publish_entity_event_with_conn
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,9 @@ def _add_habit_with_conn(conn, content: str) -> int:
         "INSERT INTO habits (content) VALUES (?)",
         (content,),
     )
-    return cursor.lastrowid
+    habit_id = cursor.lastrowid
+    publish_entity_event_with_conn(conn, entity_type="habit", entity_id=habit_id, event="created")
+    return habit_id
 
 
 def add_habit(content: str) -> dict:
@@ -73,11 +76,7 @@ def add_habit(content: str) -> dict:
 
     conn = get_connection()
     try:
-        cursor = conn.execute(
-            "INSERT INTO habits (content) VALUES (?)",
-            (content,),
-        )
-        habit_id = cursor.lastrowid
+        habit_id = _add_habit_with_conn(conn, content)
         conn.commit()
 
         return {"habit_id": habit_id}
@@ -102,6 +101,10 @@ def get_habits(active: bool = True, habit_id: int | None = None) -> dict:
             全件（無効化済み含む）取得したい場合はFalseを明示的に渡す。
         habit_id: 指定時は該当habitのみ返す（activeは無視される）。取得と同時に
             last_recalled_atを現在時刻に更新する（intelligently層の参照実績記録）。
+
+    Args:
+        active: Trueのとき（既定）active=1の振る舞いのみ返す。全件（無効化済み含む）
+            取得したい場合はFalseを明示的に渡す。
 
     Returns:
         振る舞い一覧とtotal_count（habit_id指定時はhabitsが0件または1件）
@@ -225,6 +228,7 @@ def update_habit(habit_id: int, content: str | None = None, active: bool | None 
             f"UPDATE habits SET {set_clause} WHERE id = ?",
             tuple(values),
         )
+        publish_entity_event_with_conn(conn, entity_type="habit", entity_id=habit_id, event="updated")
         conn.commit()
 
         # 更新後の振る舞いを取得

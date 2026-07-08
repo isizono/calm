@@ -3,6 +3,8 @@
 サービス層経由でDBからデータを取得し、セッション開始時のコンテキストを注入する。
 - アクティビティ一覧（active = in_progress + pending。階層3・4は統計行に縮退）
 - 振る舞い（trigger_mode='always'は全文、'intelligently'はタイトルのみのマニフェスト）
+- relay確認を促す静的ガイド（静的テキスト）
+- relay inbox未読件数（identity解決に成功した場合のみ、動的）
 
 コンテキスト取得フローガイドはここでは注入しない（check_in初回呼び出し時に
 checkin_service側が埋め込む。3ヶ月未決着だった注入面の役割分担の裁定による）。
@@ -332,31 +334,48 @@ def _build_signals_section(conn, session_id: str | None = None) -> str:  # conn,
 
 
 def _build_relay_inbox_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
-    """relay inboxの未読件数を1行表示する。
+    """relay inboxの未読件数 + Monitor監視の指示を表示する。
 
-    identity解決はsrc.services.relay.identity.get_relay_identity()に委ねる。
-    この関数はMCPリクエストのHTTPヘッダ（X-CC-Memory-Bridge-Session-Id）を
-    読んで識別子を得るが、本hookはClaude Code CLIが起動する独立プロセスで
-    あり、実行中はMCPリクエストコンテキストを一切持たない。そのためここから
-    呼ぶとヘッダ・ctx.session_idのいずれも解決できずNoneが返り、本セクションは
-    常に空文字（コンテキスト消費ゼロ）になる。get_relay_identity()自体は
-    コンテキスト外呼び出しで例外を投げない実装であり、それに依存して安全に
-    無出力へフォールバックしている。identityが解決できた場合のみ
-    count_unreadで未読件数を数えて表示する。
+    relay未構成（token未設定）ならidentity解決を試みる前に打ち切る。
+    本hookはSessionStart（Claude Code起動をブロックする経路）で毎回実行される
+    ため、identity解決の前にコストの小さいtokenチェックを行い、無駄な
+    プロセスspawnを避ける。
+
+    relay構成済みの場合、identity解決はまずsrc.services.relay.identity.
+    get_relay_identity()（MCPリクエストのHTTPヘッダ経由）を試す。本hookは
+    Claude Code CLIが起動する独立プロセスでMCPリクエストコンテキストを
+    持たないため、この経路は常にNoneを返す。その場合はresolve_identity_by_
+    ancestry()（祖先pidチェーンの一致でlauncherプロセスを特定する経路、
+    ps最大5回spawn）にフォールバックする。
+
+    identityが解決できてもinbox file未作成（このidentity宛のrelay
+    メッセージが一度も無い）の場合は、そこで打ち切ってコンテキスト消費
+    ゼロを維持する。
     """
-    from src.services.relay.identity import get_relay_identity
+    from src.services.relay import config as relay_config
 
-    identity = get_relay_identity()
+    if not relay_config.get_token():
+        return ""
+
+    from src.services.relay.identity import get_relay_identity, resolve_identity_by_ancestry
+
+    identity = get_relay_identity() or resolve_identity_by_ancestry()
     if not identity:
         return ""
 
-    from src.services.relay.inbox import count_unread
+    from src.services.relay.inbox import count_unread, inbox_path
 
-    count = count_unread(identity)
-    if count <= 0:
+    path = inbox_path(identity)
+    if not path.exists():
         return ""
 
-    return f"relay inbox 未読: {count}件 → relay_receive で確認\n"
+    count = count_unread(identity)
+    return (
+        f"relay inbox 未読: {count}件\n"
+        f"relay通知の受信待機: Monitorツールで {path} を監視し、変更を検知したら"
+        " relay_receive で新着を読んでください。未読がある場合は先に"
+        " relay_receive で消化してください。\n"
+    )
 
 
 def _build_snapshot_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
@@ -397,6 +416,17 @@ def _build_snapshot_section(conn, session_id: str | None = None) -> str:  # conn
     return ""
 
 
+_RELAY_CHECK_GUIDE = """\
+# relay
+
+セッション開始時に `relay_receive` で他セッションからの未読メッセージがないか確認してください。
+まず `peek=True` で呼び、内容を確認して必要なら add_logs/add_material 等で保存してください。
+保存できたことを確認してから、同じ呼び出しを `peek=False`（既定）で呼び直して既読化して
+ください。既定の `peek=False` は consume（既読化）のため、保存前に処理が中断すると
+その内容は再取得できません。
+"""
+
+
 def _build_session_context(session_id: str | None = None) -> str:
     """サービス層経由でセッション開始時のコンテキストを組み立てる。
 
@@ -425,6 +455,9 @@ def _build_session_context(session_id: str | None = None) -> str:
             except Exception:
                 # セクション単位で失敗を許容し、残りのセクションは返す
                 pass
+
+        # 静的セクション（DB不要）
+        sections.append(_RELAY_CHECK_GUIDE)
 
         context = "\n".join(sections)
         return context

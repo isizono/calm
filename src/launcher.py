@@ -19,6 +19,12 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+from src.services.relay import config as relay_config
+from src.services.relay.identity import (
+    register_launcher_session,
+    unregister_launcher_session,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -250,12 +256,13 @@ def _unregister_session() -> bool:
 
 
 def _cleanup():
-    """セッション解除 + ログ出力"""
+    """セッション解除 + 登録ファイル削除 + ログ出力"""
     global _cleanup_done
     if _cleanup_done:
         return
     _cleanup_done = True
     _unregister_session()
+    unregister_launcher_session()
 
 
 # =============================================
@@ -416,6 +423,16 @@ def main() -> None:
     # 接続先（例: セッションAPIを持たないremote展開）でも安全に呼べる。
     atexit.register(_cleanup)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))  # atexitが発火する
+
+    # SessionStart hook（Claude Code CLI プロセスの別の子孫）が祖先 pid チェーン
+    # 経由で自分を見つけられるよう、HTTPサーバー起動待機（最大30秒）より前に
+    # 登録ファイルを書く。書込失敗は非致命（ベストエフォート）。
+    # relay未構成（token未設定）では登録ファイルを誰も参照しないため、
+    # register_launcher_session内部のancestor_pids（ps最大5回spawn）の
+    # コストを払う意味がなく、事前にスキップする。
+    if relay_config.get_token():
+        register_launcher_session(_session_id)
+
     if not _IS_LOCAL:
         logger.info("Remote mode: connecting to %s", MCP_ENDPOINT)
 

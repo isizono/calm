@@ -92,7 +92,7 @@ class TestRelayReceiveIdentity:
         monkeypatch.setattr(
             relay_session_service,
             "relay_receive",
-            lambda limit, caller_session_id=None: {
+            lambda limit, peek=False, caller_session_id=None: {
                 "messages": [],
                 "count": 0,
                 "_caller_session_id_seen": caller_session_id,

@@ -20,6 +20,14 @@ class TestReceiveDocstringContract:
         assert "重複" in desc
 
 
+class TestReceiveHasMoreDocstringContract:
+    def test_receive_mentions_peek_and_has_more(self):
+        """peek/has_more の2段階読み取り契約が description に明記されている。"""
+        desc = _all_tool_descriptions()["relay_receive"]
+        assert "peek" in desc
+        assert "has_more" in desc
+
+
 class TestPostDocstringContract:
     def test_post_mentions_single_identity_scope(self):
         """自 server 名義の stream のみ扱う制約が description に明記されている。"""
@@ -49,6 +57,15 @@ class TestDiagnosticToolRegistration:
         descriptions = _all_tool_descriptions()
         for name in RELAY_DIAGNOSTIC_TOOLS:
             assert name in descriptions, f"{name} が MCP tool として未登録"
+
+
+class TestSubscribeDocstringContract:
+    def test_mentions_reconnect_notification_and_no_message_loss(self):
+        """新規購読時の反映指示・上限遅延・喪失なしの保証が description に明記されている。"""
+        desc = _all_tool_descriptions()["relay_subscribe"]
+        assert "reused: false" in desc
+        assert "60 秒" in desc
+        assert "喪失しない" in desc
 
 
 class TestRelayStatusDocstringContract:

@@ -124,11 +124,15 @@ class TestGetHabits:
         """active=Trueを明示指定してもデフォルトと同じ（active=1のみ）挙動になる"""
         created = add_habit("無効化される振る舞い")
         update_habit(created["habit_id"], active=False)
+        add_habit("有効な振る舞い")
 
         result_default = get_habits()
         result_explicit = get_habits(active=True)
 
         assert result_default["total_count"] == result_explicit["total_count"]
+        assert result_default["habits"] == result_explicit["habits"]
+        habit_ids = {h["habit_id"] for h in result_default["habits"]}
+        assert created["habit_id"] not in habit_ids
 
 
 class TestUpdateHabit:

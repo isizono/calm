@@ -204,8 +204,9 @@ class TestSessionStartHookBasic:
         assert "additionalContext" in result["hookSpecificOutput"]
 
     def test_empty_db_returns_empty_context(self, temp_db):
-        """データが空の場合、additionalContextは空文字列になる（静的フローガイドは
-        SessionStartから撤去済み。check_in初回呼び出し時のflow_guideに移設された）"""
+        """データが空の場合、動的セクション（アクティビティ一覧・振る舞い）は出力されない。
+        relay確認ガイドは静的セクションとして常に出力される（コンテキスト取得フロー
+        ガイドはSessionStartから撤去済み。check_in初回呼び出し時のflow_guideに移設された）"""
         # 初期データを削除
         conn = get_connection()
         try:
@@ -219,7 +220,7 @@ class TestSessionStartHookBasic:
         result = _run_session_start_hook(temp_db, env_remove=["CCM_SYNC_POLICY"])
 
         context = result["hookSpecificOutput"]["additionalContext"]
-        assert context == ""
+        assert "# relay" in context
         assert "# アクティビティ一覧" not in context
         assert "振る舞い" not in context
 
@@ -1141,27 +1142,61 @@ class TestSessionStartHookSignals:
         assert "未トリアージのシグナル" not in context
 
 
-class TestSessionStartHookRelayInbox:
-    """relay inbox未読件数の1行表示テスト
+class TestSessionStartHookRelayCheckGuide:
+    """relay確認を促す静的ガイドのテスト
 
     hookは実プロセスとしてsubprocess経由で起動され、MCPリクエストコンテキストを
-    一切持たない。そのためget_relay_identity()は常にNoneへ解決し、実際に未読が
-    存在してもこのセクションは常に空文字（ゼロコスト）になる。
+    一切持たない。そのためget_relay_identity()は常にNoneへ解決し、未読件数を
+    hook側で数えて表示することはできない。代わりに、identity解決に依存しない
+    静的な指示（relay_receiveを呼んで確認するようアシスタントに促す）を常に
+    注入する。
     """
 
-    def test_no_relay_section_when_no_unread(self, temp_db):
-        """relay状態が何もない通常時はセクション自体が出ない"""
+    def test_relay_check_guide_always_present(self, temp_db):
+        """relay状態の有無によらず、確認を促す静的ガイドが常に出る"""
         result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "relay_receive" in context
+
+
+class TestSessionStartHookRelayInbox:
+    """relay inbox未読件数 + Monitor監視指示の表示テスト
+
+    hookは実プロセスとしてsubprocess経由で起動され、MCPリクエストコンテキストを
+    一切持たない。そのためget_relay_identity()（ヘッダ/ctx.session_id経路）は
+    常にNoneへ解決する。祖先pidチェーンによるフォールバック
+    （resolve_identity_by_ancestry）は、hook subprocessの祖先チェーンと共通の
+    祖先pidを持つ launcher 登録ファイルが実在する場合にのみ解決できる。
+    以下のテストのうち登録ファイルを置かないケースは、この経路も解決できず
+    従来通りゼロコストになることの確認であり、登録ファイルを置くケースは
+    このテストプロセス自身のpidを共通祖先に見立てて実際に解決できることの
+    確認である。
+    """
+
+    def test_no_relay_section_when_no_unread(self, temp_db, tmp_path):
+        """relay状態が何もない通常時はセクション自体が出ない
+
+        RELAY_STATE_DIR を空のtmp_pathへ隔離する（実行マシン上に本物の
+        launcher登録ファイル・credential.jsonが存在すると、祖先pidチェーンが
+        たまたま実launcherと共通祖先を持つケースでテストが非決定的になり得る
+        ため）。
+        """
+        state_dir = tmp_path / "relay-state"
+        result = _run_session_start_hook(
+            temp_db,
+            extra_env={"RELAY_STATE_DIR": str(state_dir)},
+            env_remove=["RELAY_BEARER_TOKEN"],
+        )
         context = result["hookSpecificOutput"]["additionalContext"]
 
         assert "relay inbox 未読" not in context
 
-    def test_relay_section_absent_even_with_real_unread_backlog(
+    def test_relay_section_absent_without_matching_launcher_registration(
         self, temp_db, tmp_path
     ):
-        """実在のinboxに未読が積まれていても、hookプロセスはidentityを解決
-        できないためセクションは表示されない（今回のバッチが対応する範囲では
-        SessionStart側は常に無出力）。
+        """実在のinboxに未読が積まれていても、共通祖先を持つ launcher 登録
+        ファイルが無ければidentityを解決できずセクションは表示されない。
         """
         state_dir = tmp_path / "relay-state"
         from src.services.relay import inbox as relay_inbox
@@ -1173,7 +1208,107 @@ class TestSessionStartHookRelayInbox:
             del os.environ["RELAY_STATE_DIR"]
 
         result = _run_session_start_hook(
-            temp_db, extra_env={"RELAY_STATE_DIR": str(state_dir)}
+            temp_db,
+            extra_env={
+                "RELAY_STATE_DIR": str(state_dir),
+                "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
+            },
+        )
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "relay inbox 未読" not in context
+
+    def _register_launcher_matching_this_test_process(self, state_dir) -> str:
+        """このテストプロセス自身のpidを共通祖先に見立てた launcher 登録
+        ファイルを作る。
+
+        `_run_session_start_hook` は `subprocess.run` でhookを直接の子プロセス
+        として起動するため、hook subprocess の ppid は必ずこのテストプロセスの
+        pid（`os.getpid()`）になる。ここをancestor_pidsに含めておけば、hook側の
+        resolve_identity_by_ancestry が実際に共通祖先を発見して解決できる。
+        """
+        session_id = "resolved-by-ancestry"
+        sessions_dir = state_dir / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        registration = {
+            "session_id": session_id,
+            "pid": os.getpid(),
+            "ancestor_pids": [os.getpid()],
+            "created_at": "2026-07-08T00:00:00Z",
+        }
+        (sessions_dir / f"launcher-{os.getpid()}.json").write_text(
+            json.dumps(registration), encoding="utf-8"
+        )
+        return session_id
+
+    def test_relay_section_shown_via_ancestry_fallback_when_registered(
+        self, temp_db, tmp_path
+    ):
+        """共通祖先を持つ launcher 登録ファイルが実在する場合、hookは
+        resolve_identity_by_ancestryでidentityを解決し、未読件数 + Monitor
+        監視の指示を表示する。
+        """
+        state_dir = tmp_path / "relay-state"
+        from src.services.relay import inbox as relay_inbox
+
+        os.environ["RELAY_STATE_DIR"] = str(state_dir)
+        try:
+            session_id = self._register_launcher_matching_this_test_process(state_dir)
+            relay_inbox.append(session_id, {"body": "hello"})
+        finally:
+            del os.environ["RELAY_STATE_DIR"]
+
+        result = _run_session_start_hook(
+            temp_db,
+            extra_env={
+                "RELAY_STATE_DIR": str(state_dir),
+                "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
+            },
+        )
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "relay inbox 未読: 1件" in context
+        assert "Monitorツール" in context
+        assert "relay_receive" in context
+
+    def test_relay_section_absent_when_token_not_configured(self, temp_db, tmp_path):
+        """identityは解決できてもrelay未構成（token未設定）ならセクションは出ない"""
+        state_dir = tmp_path / "relay-state"
+        from src.services.relay import inbox as relay_inbox
+
+        os.environ["RELAY_STATE_DIR"] = str(state_dir)
+        try:
+            session_id = self._register_launcher_matching_this_test_process(state_dir)
+            relay_inbox.append(session_id, {"body": "hello"})
+        finally:
+            del os.environ["RELAY_STATE_DIR"]
+
+        result = _run_session_start_hook(
+            temp_db,
+            extra_env={"RELAY_STATE_DIR": str(state_dir)},
+            env_remove=["RELAY_BEARER_TOKEN"],
+        )
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "relay inbox 未読" not in context
+
+    def test_relay_section_absent_when_inbox_never_created(self, temp_db, tmp_path):
+        """identity解決・relay構成済みでも、このidentity宛のinbox fileが
+        一度も作られていなければセクションは出ない（touchしない・zero-cost維持）"""
+        state_dir = tmp_path / "relay-state"
+
+        os.environ["RELAY_STATE_DIR"] = str(state_dir)
+        try:
+            self._register_launcher_matching_this_test_process(state_dir)
+        finally:
+            del os.environ["RELAY_STATE_DIR"]
+
+        result = _run_session_start_hook(
+            temp_db,
+            extra_env={
+                "RELAY_STATE_DIR": str(state_dir),
+                "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
+            },
         )
         context = result["hookSpecificOutput"]["additionalContext"]
 

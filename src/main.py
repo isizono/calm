@@ -297,6 +297,7 @@ def _current_session_id() -> Optional[str]:
         return None
 
 
+
 # MCPツール定義
 @mcp.tool()
 def add_topic(
@@ -347,6 +348,8 @@ def add_logs(items: list[dict]) -> dict:
 @mcp.tool()
 def add_decisions(items: list[dict], ctx: Context) -> dict:
     """複数の決定事項を一括記録する（最大10件）。
+
+    呼び出し前に decision-record skill の判断ガイドを通すこと。
 
     items: 決定事項情報の配列。各要素は以下のキーを持つ:
         - topic_id (int, 必須): 関連するトピックのID
@@ -1481,19 +1484,21 @@ def get_config() -> dict:
     search/get_logs/get_decisions/get_timelineの上限は各serviceにハードコードされており
     環境変数では変更できない（precedent_budget_charsのみCCM_PRECEDENT_BUDGET_CHARSで変更可）。
     budget_defaultsはbudget_serviceが把握する予算関連の既定値一覧（同じくsrc.configから読む）。
+    recency_decay_rate/precedent_budget_chars（トップレベル）はbudget_defaultsと同じ値を指す
+    後方互換フィールドで、定義元はbudget_service.BUDGET_DEFAULTS（重複ハードコードを避ける）。
     """
     from src import config
     return {
         "heartbeat_timeout": config.HEARTBEAT_TIMEOUT_MINUTES,
         "in_progress_limit": config.IN_PROGRESS_LIMIT,
         "pending_limit": config.PENDING_LIMIT,
-        "recency_decay_rate": config.RECENCY_DECAY_RATE,
+        "recency_decay_rate": budget_service.BUDGET_DEFAULTS["recency_decay_rate"],
         "sync_disable_retrospective": config.SYNC_DISABLE_RETROSPECTIVE,
         "sync_policy": config.SYNC_POLICY,
         "snapshot_interval_hours": config.SNAPSHOT_INTERVAL_HOURS,
         "snapshot_max_count": config.SNAPSHOT_MAX_COUNT,
         "snapshot_anomaly_threshold": config.SNAPSHOT_ANOMALY_THRESHOLD,
-        "precedent_budget_chars": config.PRECEDENT_BUDGET_CHARS,
+        "precedent_budget_chars": budget_service.BUDGET_DEFAULTS["precedent_budget_chars"],
         "budget_defaults": budget_service.BUDGET_DEFAULTS,
         "read_tool_limits": {
             "search": {"default": 10, "max": 50},
@@ -1644,6 +1649,10 @@ def relay_post(stream_name: str, body: str, ttl: int | None = None) -> dict:
     示すのみで、各購読者への実配達は relay 側の非同期配信を経由する（配達完了そのものは
     保証しない）。
 
+    投函した内容は cc-memory 本体（search/get_timeline/pull_precedents 等）には自動で
+    反映されない。受信側が後から参照できる形で残したい場合は、受信後に add_logs/
+    add_material 等で明示的に保存すること。
+
     Args:
         stream_name: stream 名（":" と "/" は使用不可）。実体の stream_id は server 名義で修飾される
         body: メッセージ本文（必須・非空文字列）
@@ -1668,9 +1677,14 @@ def relay_publish(labels: list[str], body: str, title: str | None = None) -> dic
 
     送信者の handle: label が自動付与される。labels には routing 系（handle:/room:/task:）と
     cc-memory の tag namespace（domain:/intent: 等）を併用でき、これらのみでも有効。未知
-    prefix も不透明 label として受理する。role:（廃止済み namespace）と cc-memory の中核
-    entity namespace（topic:/activity:/decision:/log:/material:。実在チェックなしの不透明
-    文字列にしかならないため予約済み）は指定するとエラー。
+    prefix も不透明 label として受理する。role:（廃止済み namespace）と cc-memory の予約
+    namespace（entity:/event:/topic:/activity:/decision:/log:/material:/tag:/habit:。
+    entity 更新の relay publish が使う namespace で、実在チェックなしの不透明文字列に
+    しかならないため予約済み）は指定するとエラー。
+
+    配布した内容は cc-memory 本体（search/get_timeline/pull_precedents 等）には自動で
+    反映されない。受信側が後から参照できる形で残したい場合は、受信後に add_logs/
+    add_material 等で明示的に保存すること。
 
     Args:
         labels: 配送先マッチング用 labels（必須・1 個以上）
@@ -1703,8 +1717,17 @@ def relay_subscribe(labels: list[str]) -> dict:
     （直接メッセージ）のみの購読になる。同一 labels 集合での再呼び出しは冪等で、lease が
     有効なら既存の購読をそのまま返し、失効していれば新規に購読し直して差し替える。
     lease 更新・再接続・購読解除は server 側で自動管理される（呼び出し側の操作は不要）。
-    role:（廃止済み namespace）と cc-memory の中核 entity namespace
-    （topic:/activity:/decision:/log:/material:）は relay_publish と同様に指定するとエラー。
+    role:（廃止済み namespace）は relay_publish と同様に指定するとエラー。cc-memory の
+    予約 namespace（entity:/event:/topic:/activity:/decision:/log:/material:/tag:/
+    habit:）は relay_publish と異なりここでは許可される（entity 更新の relay publish を
+    購読するために必要。例: ["activity:1183", "event:updated"] で activity 1183 の
+    状態遷移を購読、["entity:decision", "event:retracted"] で全 decision の retract を購読）。
+
+    新規に購読が作られた場合（reused: false）、server 内の常駐 SSE 接続へ即座に反映指示を
+    送る。実際の反映は次に SSE フレーム（実メッセージだけでなく keepalive のコメント
+    フレーム到達でも判定される）が届いた時点までかかることがあり、既定設定では上限
+    概ね 60 秒（典型的には数十秒以内）に収まる。この間に届いたメッセージは relay 側で
+    保持されており喪失しない（遅延するだけで、反映後に取りこぼしなく届く）。
 
     Args:
         labels: 購読条件 labels（配列。publish 側の labels をすべて含む発話が届く）
@@ -1723,13 +1746,17 @@ def relay_subscribe(labels: list[str]) -> dict:
     result = relay_session_service.relay_subscribe(
         labels, caller_session_id=caller_session_id
     )
+    if "error" not in result and result.get("reused") is False:
+        runtime = get_relay_runtime()
+        if runtime is not None:
+            runtime.notify_reconfigure()
     if "error" not in result:
         result["identity"] = caller_session_id
     return result
 
 
 @mcp.tool()
-def relay_receive(limit: int | None = None) -> dict:
+def relay_receive(limit: int | None = None, peek: bool = False) -> dict:
     """自 session 宛に届いたメッセージの未読分を受信する（セッション間メッセージングの受信）。
 
     relay_subscribe で宣言した labels にマッチして server 内の受信スレッドが既に自 session
@@ -1737,14 +1764,32 @@ def relay_receive(limit: int | None = None) -> dict:
     通信しない。
 
     配達契約は at-least-once のため、同一メッセージが重複して届くことがある
-    （受信側で冪等に扱うこと）。既読分は返さない。未読が無ければ空リストを
-    正常応答として返す（エラーにしない）。
+    （受信側で冪等に扱うこと）。未読が無ければ空リストを正常応答として返す
+    （エラーにしない）。受信内容は cc-memory 本体に自動記録されない。重要な内容は
+    受信側が add_logs/add_material 等で明示的に保存すること。
+
+    既定（peek=False）は consume（読んだら既読 = cursor 前進、末尾まで読み切ったら
+    truncate）。受信した内容を保存する前にエージェントの処理が中断すると、
+    consume 済みの内容は再取得できない。再取得可能性を残したいときは、まず
+    peek=True で内容を確認し、add_logs/add_material 等で保存できたことを確認
+    してから、同じ呼び出しを peek=False（既定）で呼び直して既読化する。
+    peek=True の呼び出しは cursor・inbox file を一切変更しないため、成功する
+    まで何度でも安全に呼び直せる。peek=True から peek=False へ呼び直すまでの
+    間に新規メッセージが到着していた場合、peek=False の返り値の messages には
+    その新着分も含まれる。この呼び直しを既読化のための記帳とみなして返り値を
+    見ずに捨てると、その新着分だけが未保存のまま既読化される。peek=False の
+    返り値も必ず確認すること。
 
     Args:
-        limit: 最大取得件数（optional、1 以上。省略時は未読全件）
+        limit: 最大取得件数（optional、1 以上）。省略時 50、200 を超える値は
+            200 に切り詰める
+        peek: True のとき既読化せず内容だけ返す（cursor 前進なし）。省略時
+            False（consume）
 
     Returns:
-        成功時: {"messages": [dict, ...], "count": int, "identity": str}
+        成功時: {"messages": [dict, ...], "count": int, "has_more": bool, "identity": str}
+            has_more: True のとき limit に収まらない未読が残っている
+            （同じ呼び出しを繰り返すか limit を上げて追加取得できる）
         失敗時: {"error": {"code": str, "message": str}}
 
     identity は呼び出し元セッションの識別子（cc-memory server 再起動をまたいで
@@ -1752,7 +1797,7 @@ def relay_receive(limit: int | None = None) -> dict:
     """
     caller_session_id = relay_identity.get_relay_identity()
     result = relay_session_service.relay_receive(
-        limit, caller_session_id=caller_session_id
+        limit, peek=peek, caller_session_id=caller_session_id
     )
     if "error" not in result:
         result["identity"] = caller_session_id
@@ -1788,7 +1833,6 @@ def relay_status(outbox_id: int | None = None) -> dict:
         （intake/lease_loop/dispatcher）が起動していない（stdio transport、
         remoteプロセス、またはRELAY_BEARER_TOKEN未設定のいずれか）。
     """
-    guard_service.check_capability("relay_status")
     outbox_result = relay_diagnostics_service.outbox_status(outbox_id)
     if isinstance(outbox_result, dict) and "error" in outbox_result:
         return outbox_result

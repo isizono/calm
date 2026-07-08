@@ -124,18 +124,43 @@ class TestSubscribe:
         assert stub.counter == 0
 
     @pytest.mark.parametrize(
-        "entity_type", ["topic", "activity", "decision", "log", "material"]
+        "entity_type",
+        ["topic", "activity", "decision", "log", "material", "tag", "habit"],
     )
-    def test_core_entity_prefix_rejected(self, monkeypatch, entity_type):
-        """cc-memory の中核 entity namespace は relay_publish と同様に拒否される。"""
+    def test_core_entity_prefix_is_accepted(self, monkeypatch, entity_type):
+        """cc-memory の予約 namespace は relay_publish と異なり subscribe では許可される。
+
+        entity 更新 → relay publish の labels（例: ["activity:1183", "event:updated"]）を
+        購読するのに必要（material 522 D.5）。
+        """
         stub = SubscriptionStub()
         stub.install(monkeypatch)
         result = service.relay_subscribe(
             ["task:build", f"{entity_type}:1"], caller_session_id="sess-1"
         )
-        assert result["error"]["code"] == "validation"
-        assert f"{entity_type}:" in result["error"]["message"]
-        assert stub.counter == 0
+        assert "error" not in result
+        assert stub.counter == 1
+
+    @pytest.mark.parametrize("meta_namespace", ["entity", "event"])
+    def test_meta_namespace_is_accepted(self, monkeypatch, meta_namespace):
+        stub = SubscriptionStub()
+        stub.install(monkeypatch)
+        result = service.relay_subscribe(
+            [f"{meta_namespace}:decision"], caller_session_id="sess-1"
+        )
+        assert "error" not in result
+
+    def test_entity_publish_subscribe_examples_from_spec(self, monkeypatch):
+        """material 522 D.5 の購読例が通ることを確認する。"""
+        stub = SubscriptionStub()
+        stub.install(monkeypatch)
+        for labels in (
+            ["activity:1183", "event:updated"],
+            ["domain:cc-memory", "entity:activity", "event:updated"],
+            ["entity:decision", "event:retracted"],
+        ):
+            result = service.relay_subscribe(labels, caller_session_id="sess-1")
+            assert "error" not in result, result
 
     def test_missing_token_returns_explicit_error(self, monkeypatch):
         stub = SubscriptionStub()
@@ -194,7 +219,7 @@ class TestSubscribe:
 class TestReceive:
     def test_no_inbox_returns_empty_list(self):
         result = service.relay_receive(caller_session_id="sess-1")
-        assert result == {"messages": [], "count": 0}
+        assert result == {"messages": [], "count": 0, "has_more": False}
 
     def test_drains_only_unread_records(self):
         inbox.append("sess-1", {"n": 1})
@@ -211,9 +236,15 @@ class TestReceive:
             inbox.append("sess-1", {"n": n})
         result = service.relay_receive(limit=2, caller_session_id="sess-1")
         assert result["count"] == 2
+        assert result["has_more"] is True
 
     def test_invalid_limit_rejected(self):
         result = service.relay_receive(limit=0, caller_session_id="sess-1")
+        assert result["error"]["code"] == "validation"
+
+    def test_bool_limit_rejected(self):
+        """bool は int のサブクラスのため、明示チェックが無いと誤って通過する。"""
+        result = service.relay_receive(limit=True, caller_session_id="sess-1")
         assert result["error"]["code"] == "validation"
 
     def test_unresolved_session_returns_explicit_error(self):
@@ -224,3 +255,38 @@ class TestReceive:
         inbox.append("sess-other", {"n": 99})
         result = service.relay_receive(caller_session_id="sess-1")
         assert result["messages"] == []
+
+    def test_default_limit_is_50(self):
+        for n in range(60):
+            inbox.append("sess-1", {"n": n})
+        result = service.relay_receive(caller_session_id="sess-1")
+        assert result["count"] == 50
+        assert result["has_more"] is True
+
+    def test_limit_above_max_is_clamped_to_200(self):
+        for n in range(210):
+            inbox.append("sess-1", {"n": n})
+        result = service.relay_receive(limit=500, caller_session_id="sess-1")
+        assert result["count"] == 200
+        assert result["has_more"] is True
+
+    def test_peek_does_not_consume(self):
+        inbox.append("sess-1", {"n": 1})
+        peeked = service.relay_receive(peek=True, caller_session_id="sess-1")
+        assert [m["n"] for m in peeked["messages"]] == [1]
+
+        again = service.relay_receive(peek=True, caller_session_id="sess-1")
+        assert [m["n"] for m in again["messages"]] == [1]
+
+    def test_peek_then_default_consumes(self):
+        inbox.append("sess-1", {"n": 1})
+        service.relay_receive(peek=True, caller_session_id="sess-1")
+        consumed = service.relay_receive(caller_session_id="sess-1")
+        assert [m["n"] for m in consumed["messages"]] == [1]
+
+        after = service.relay_receive(caller_session_id="sess-1")
+        assert after["messages"] == []
+
+    def test_invalid_peek_type_rejected(self):
+        result = service.relay_receive(peek="yes", caller_session_id="sess-1")
+        assert result["error"]["code"] == "validation"

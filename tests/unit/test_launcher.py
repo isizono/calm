@@ -277,6 +277,7 @@ class TestCleanup:
             return True
 
         monkeypatch.setattr(launcher, "_unregister_session", fake_unregister)
+        monkeypatch.setattr(launcher, "unregister_launcher_session", lambda *a, **kw: None)
         # _cleanup_doneをリセット
         monkeypatch.setattr(launcher, "_cleanup_done", False)
         launcher._cleanup()
@@ -291,10 +292,25 @@ class TestCleanup:
             return True
 
         monkeypatch.setattr(launcher, "_unregister_session", fake_unregister)
+        monkeypatch.setattr(launcher, "unregister_launcher_session", lambda *a, **kw: None)
         monkeypatch.setattr(launcher, "_cleanup_done", False)
         launcher._cleanup()
         launcher._cleanup()
         assert call_count["unregister"] == 1
+
+    def test_cleanup_calls_unregister_launcher_session(self, monkeypatch):
+        """クリーンアップで登録ファイル解除（unregister_launcher_session）も呼ばれる"""
+        called = {"launcher_session": False}
+
+        monkeypatch.setattr(launcher, "_unregister_session", lambda: True)
+        monkeypatch.setattr(
+            launcher,
+            "unregister_launcher_session",
+            lambda *a, **kw: called.__setitem__("launcher_session", True),
+        )
+        monkeypatch.setattr(launcher, "_cleanup_done", False)
+        launcher._cleanup()
+        assert called["launcher_session"] is True
 
 
 class TestSessionId:
@@ -598,6 +614,8 @@ class TestMainRetryLoop:
         monkeypatch.setattr(launcher, "_ensure_server_running", lambda: True)
         monkeypatch.setattr(launcher, "_register_session", lambda: True)
         monkeypatch.setattr(launcher, "_unregister_session", lambda: True)
+        monkeypatch.setattr(launcher, "register_launcher_session", lambda *a, **kw: None)
+        monkeypatch.setattr(launcher, "unregister_launcher_session", lambda *a, **kw: None)
         monkeypatch.setattr(launcher.time, "sleep", lambda _: None)
 
         call_count = {"bridge": 0}
@@ -698,6 +716,7 @@ class TestMainRetryLoop:
         monkeypatch.setattr(launcher, "_cleanup", counting_cleanup)
         monkeypatch.setattr(launcher, "_ensure_server_running", lambda: True)
         monkeypatch.setattr(launcher, "_register_session", lambda: True)
+        monkeypatch.setattr(launcher, "register_launcher_session", lambda *a, **kw: None)
         monkeypatch.setattr(launcher.time, "sleep", lambda _: None)
 
         def fake_asyncio_run(coro):
@@ -748,6 +767,8 @@ class TestSessionRegistrationGating:
         monkeypatch.setattr(launcher, "_ensure_server_running", lambda: True)
         monkeypatch.setattr(launcher, "_register_session", lambda: register_result)
         monkeypatch.setattr(launcher, "_unregister_session", lambda: True)
+        monkeypatch.setattr(launcher, "register_launcher_session", lambda *a, **kw: None)
+        monkeypatch.setattr(launcher, "unregister_launcher_session", lambda *a, **kw: None)
         monkeypatch.setattr(launcher.time, "sleep", lambda _: None)
 
         def fake_asyncio_run(coro):
@@ -784,6 +805,130 @@ class TestSessionRegistrationGating:
         assert not any(
             "Session register failed" in record.message for record in caplog.records
         )
+
+
+class TestLauncherSessionRegistrationWiring:
+    """main(): register_launcher_session の呼び出しタイミング・引数の検証"""
+
+    def test_main_registers_launcher_session_with_own_session_id(self, monkeypatch):
+        """register_launcher_session が自身の _session_id で呼ばれる"""
+        received = {}
+
+        def fake_register(session_id, pid=None):
+            received["session_id"] = session_id
+
+        monkeypatch.setattr(launcher, "MAX_RETRIES", 0)
+        monkeypatch.setattr(launcher, "_IS_LOCAL", True)
+        monkeypatch.setattr(launcher, "_cleanup_done", False)
+        monkeypatch.setattr(launcher, "_ensure_server_running", lambda: True)
+        monkeypatch.setattr(launcher, "_register_session", lambda: True)
+        monkeypatch.setattr(launcher, "_unregister_session", lambda: True)
+        monkeypatch.setattr(launcher, "register_launcher_session", fake_register)
+        monkeypatch.setattr(launcher, "unregister_launcher_session", lambda *a, **kw: None)
+        monkeypatch.setattr(launcher.time, "sleep", lambda _: None)
+        monkeypatch.setattr(launcher.relay_config, "get_token", lambda: "dummy-token")
+
+        def fake_asyncio_run(coro):
+            coro.close()
+            return None
+
+        monkeypatch.setattr(launcher.asyncio, "run", fake_asyncio_run)
+        launcher.main()
+        assert received["session_id"] == launcher._session_id
+
+    def test_main_registers_before_server_wait(self, monkeypatch):
+        """register_launcher_session は _ensure_server_running（最大30秒待機）より前に呼ばれる"""
+        order: list[str] = []
+
+        def fake_register(session_id, pid=None):
+            order.append("register_launcher_session")
+
+        def fake_ensure_server_running():
+            order.append("_ensure_server_running")
+            return True
+
+        monkeypatch.setattr(launcher, "MAX_RETRIES", 0)
+        monkeypatch.setattr(launcher, "_IS_LOCAL", True)
+        monkeypatch.setattr(launcher, "_cleanup_done", False)
+        monkeypatch.setattr(launcher, "_ensure_server_running", fake_ensure_server_running)
+        monkeypatch.setattr(launcher, "_register_session", lambda: True)
+        monkeypatch.setattr(launcher, "_unregister_session", lambda: True)
+        monkeypatch.setattr(launcher, "register_launcher_session", fake_register)
+        monkeypatch.setattr(launcher, "unregister_launcher_session", lambda *a, **kw: None)
+        monkeypatch.setattr(launcher.time, "sleep", lambda _: None)
+        monkeypatch.setattr(launcher.relay_config, "get_token", lambda: "dummy-token")
+
+        def fake_asyncio_run(coro):
+            coro.close()
+            return None
+
+        monkeypatch.setattr(launcher.asyncio, "run", fake_asyncio_run)
+        launcher.main()
+        assert order == ["register_launcher_session", "_ensure_server_running"]
+
+
+class TestLauncherSessionRegistrationTokenGate:
+    """main(): register_launcher_session はrelay token未設定時は呼ばれず、
+    祖先pidチェーン解決（ps最大5回spawn）のコストを払わないことの検証。
+    """
+
+    def _setup_common(self, monkeypatch):
+        monkeypatch.setattr(launcher, "MAX_RETRIES", 0)
+        monkeypatch.setattr(launcher, "_IS_LOCAL", True)
+        monkeypatch.setattr(launcher, "_cleanup_done", False)
+        monkeypatch.setattr(launcher, "_ensure_server_running", lambda: True)
+        monkeypatch.setattr(launcher, "_register_session", lambda: True)
+        monkeypatch.setattr(launcher, "_unregister_session", lambda: True)
+        monkeypatch.setattr(launcher, "unregister_launcher_session", lambda *a, **kw: None)
+        monkeypatch.setattr(launcher.time, "sleep", lambda _: None)
+
+        def fake_asyncio_run(coro):
+            coro.close()
+            return None
+
+        monkeypatch.setattr(launcher.asyncio, "run", fake_asyncio_run)
+
+    def test_skips_registration_when_token_unset(self, monkeypatch):
+        """token未設定時はregister_launcher_session自体が呼ばれない"""
+        called = {"count": 0}
+
+        def fake_register(session_id, pid=None):
+            called["count"] += 1
+
+        monkeypatch.setattr(launcher, "register_launcher_session", fake_register)
+        self._setup_common(monkeypatch)
+        monkeypatch.setattr(launcher.relay_config, "get_token", lambda: None)
+        launcher.main()
+        assert called["count"] == 0
+
+    def test_ancestor_pid_resolution_not_invoked_when_token_unset(self, monkeypatch):
+        """token未設定時は、本体のregister_launcher_session実装が使う
+        ancestor_pids（ps最大5回spawnの実体）が一切実行されない（ゼロコスト）。
+        """
+        import src.services.relay.identity as relay_identity
+
+        def boom(*a, **kw):
+            raise AssertionError(
+                "ancestor_pids should not run when relay token is unset"
+            )
+
+        monkeypatch.setattr(relay_identity, "ancestor_pids", boom)
+        self._setup_common(monkeypatch)
+        monkeypatch.setattr(launcher.relay_config, "get_token", lambda: None)
+        launcher.main()  # 例外なく完走すれば ancestor_pids は呼ばれていない
+
+    def test_registers_when_token_set(self, monkeypatch):
+        """token設定済みなら従来通りregister_launcher_sessionを呼ぶ"""
+        called = {"count": 0}
+
+        def fake_register(session_id, pid=None):
+            called["count"] += 1
+
+        monkeypatch.setattr(launcher, "register_launcher_session", fake_register)
+        self._setup_common(monkeypatch)
+        monkeypatch.setattr(launcher.relay_config, "get_token", lambda: "dummy-token")
+        launcher.main()
+        assert called["count"] == 1
 
 
 class TestReadMaxRetries:

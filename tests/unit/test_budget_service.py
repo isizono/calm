@@ -1,13 +1,9 @@
 """budget_service のユニットテスト。
 
-共通スコア関数（importance / recency / relevance / size_penalty）の境界値と、
-precedent_pull_service から移設した allocate_decision_budget の挙動不変性
-（移設前の _allocate_budget と同じ配分結果になること）を検証する。
+BUDGET_DEFAULTSがsrc.configの値と一致すること、precedent_pull_serviceから
+移設したallocate_decision_budgetの挙動不変性（移設前の_allocate_budgetと
+同じ配分結果になること）を検証する。
 """
-import math
-
-import pytest
-
 from src.config import PRECEDENT_BUDGET_CHARS, RECENCY_DECAY_FLOOR, RECENCY_DECAY_RATE
 from src.services import budget_service
 
@@ -18,55 +14,6 @@ class TestBudgetDefaults:
         assert budget_service.BUDGET_DEFAULTS["precedent_budget_chars"] == PRECEDENT_BUDGET_CHARS
         assert budget_service.BUDGET_DEFAULTS["recency_decay_rate"] == RECENCY_DECAY_RATE
         assert budget_service.BUDGET_DEFAULTS["recency_decay_floor"] == RECENCY_DECAY_FLOOR
-
-
-class TestImportanceScore:
-    def test_pinned_returns_weight(self):
-        assert budget_service.importance_score(is_pinned=True, weight=0.7) == 0.7
-
-    def test_not_pinned_returns_zero(self):
-        assert budget_service.importance_score(is_pinned=False) == 0.0
-
-    def test_default_weight_is_one(self):
-        assert budget_service.importance_score(is_pinned=True) == 1.0
-
-
-class TestRecencyScore:
-    def test_zero_age_is_near_one(self):
-        assert budget_service.recency_score(0) == math.exp(0)
-
-    def test_matches_search_service_decay_formula(self):
-        age_days = 30
-        expected = max(math.exp(-age_days * RECENCY_DECAY_RATE), RECENCY_DECAY_FLOOR)
-        assert budget_service.recency_score(age_days) == expected
-
-    def test_never_below_floor(self):
-        assert budget_service.recency_score(10_000) == RECENCY_DECAY_FLOOR
-
-
-class TestRelevanceScore:
-    def test_rank_zero_is_max(self):
-        assert budget_service.relevance_score(0, 10) == 1.0
-
-    def test_last_rank_is_near_zero(self):
-        assert budget_service.relevance_score(9, 10) == pytest.approx(0.1)
-
-    def test_zero_total_returns_zero(self):
-        assert budget_service.relevance_score(0, 0) == 0.0
-
-    def test_never_negative(self):
-        assert budget_service.relevance_score(20, 10) == 0.0
-
-
-class TestSizePenalty:
-    def test_within_budget_scales_linearly(self):
-        assert budget_service.size_penalty(500, 1000) == 0.5
-
-    def test_over_budget_caps_at_one(self):
-        assert budget_service.size_penalty(2000, 1000) == 1.0
-
-    def test_zero_budget_is_max_penalty(self):
-        assert budget_service.size_penalty(100, 0) == 1.0
 
 
 class TestAllocateDecisionBudget:

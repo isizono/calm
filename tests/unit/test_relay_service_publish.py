@@ -103,18 +103,26 @@ class TestPublishValidation:
 
 
 class TestReservedEntityNamespace:
-    """cc-memory の中核 entity namespace（topic:/activity:/decision:/log:/material:）は
-    label として使えず拒否される。relay label は実在チェックを行わない不透明文字列のため、
-    これらの語彙をそのまま許すと存在しない/未検証の entity への関連付けを誤認させる。
+    """cc-memory の予約 namespace（entity:/event:/topic:/activity:/decision:/log:/
+    material:/tag:/habit:）は label として使えず拒否される。relay label は実在
+    チェックを行わない不透明文字列のため、これらの語彙をそのまま許すと存在しない/
+    未検証の entity への関連付けを誤認させる。
     """
 
     @pytest.mark.parametrize(
-        "entity_type", ["topic", "activity", "decision", "log", "material"]
+        "entity_type",
+        ["topic", "activity", "decision", "log", "material", "tag", "habit"],
     )
     def test_core_entity_prefix_rejected(self, conn, entity_type):
         result = _publish(conn, ["task:build", f"{entity_type}:1"])
         assert result["error"]["code"] == "validation"
         assert f"{entity_type}:" in result["error"]["message"]
+
+    @pytest.mark.parametrize("meta_namespace", ["entity", "event"])
+    def test_meta_namespace_rejected(self, conn, meta_namespace):
+        result = _publish(conn, ["task:build", f"{meta_namespace}:decision"])
+        assert result["error"]["code"] == "validation"
+        assert f"{meta_namespace}:" in result["error"]["message"]
 
     def test_core_entity_prefix_blocks_call_even_with_other_valid_labels(self, conn):
         """中核 entity prefix が1つでも含まれれば、他の label が有効でも呼び出し全体を拒否する（部分成功しない）。"""
@@ -124,6 +132,18 @@ class TestReservedEntityNamespace:
     def test_no_row_inserted_when_entity_prefix_rejected(self, conn):
         _publish(conn, ["decision:1"])
         assert conn.execute("SELECT COUNT(*) FROM relay_outbox").fetchone()[0] == 0
+
+
+class TestLabelLengthCap:
+    """1 つの label string は 200 chars 以内（decision 3074 D.1）。"""
+
+    def test_label_within_cap_is_accepted(self, conn):
+        result = _publish(conn, ["x" * 200])
+        assert "error" not in result
+
+    def test_overlong_label_rejected(self, conn):
+        result = _publish(conn, ["x" * 201])
+        assert result["error"]["code"] == "validation"
 
 
 class TestPublishPreconditions:
@@ -136,3 +156,33 @@ class TestPublishPreconditions:
     def test_unresolved_session_returns_explicit_error(self, conn):
         result = _publish(conn, ["task:1"], session_id=None)
         assert result["error"]["code"] == "session_unresolved"
+
+
+class TestValidateLabelsCoreMode:
+    """check_reserved=False（entity write → relay outbox の core内部 publish 専用）の
+    検証モード。予約 namespace を許可しつつ、role: と200字capは維持する。
+    """
+
+    @pytest.mark.parametrize(
+        "label",
+        [
+            "entity:decision", "event:created", "event:updated", "event:retracted",
+            "topic:1", "activity:1", "decision:1", "log:1", "material:1",
+            "tag:1", "habit:1",
+        ],
+    )
+    def test_reserved_namespace_is_accepted(self, label):
+        from src.services.relay.service import validate_labels
+        assert validate_labels([label], check_reserved=False) is None
+
+    def test_role_prefix_still_rejected(self):
+        from src.services.relay.service import validate_labels
+        message = validate_labels(["role:navigator"], check_reserved=False)
+        assert message is not None
+        assert "role:" in message
+
+    def test_label_length_cap_still_enforced(self):
+        from src.services.relay.service import validate_labels
+        assert validate_labels(["entity:decision"], check_reserved=False) is None
+        message = validate_labels(["x" * 201], check_reserved=False)
+        assert message is not None
