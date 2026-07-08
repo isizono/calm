@@ -2,8 +2,8 @@
 watch-tags: domain:cc-memory
 watch-direction: true
 watch-migrations: true
-last-synced: 2026-07-07
-last-synced-migration: 0057
+last-synced: 2026-07-08
+last-synced-migration: 0058
 -->
 
 # cc-memory DBスキーマ v0
@@ -69,6 +69,10 @@ erDiagram
     int id
     text content
     int active
+    text description
+    text trigger_mode
+    real importance_score
+    timestamp last_recalled_at
   }
 ```
 
@@ -251,14 +255,19 @@ erDiagram
 | content | TEXT | NO | — | — | 内容 |
 | active | INTEGER | NO | `1` | — | 有効フラグ（1=有効） |
 | created_at | TEXT | YES | `datetime('now')` | — | 作成時刻 |
+| description | TEXT | NO | `''` | — | 要旨（intelligently層のマニフェスト表示に使う） |
+| trigger_mode | TEXT | NO | `'always'` | CHECK IN ('always', 'intelligently') | SessionStartでの注入方式。alwaysは全文、intelligentlyはタイトルのみのマニフェストにとどめ詳細はon-demand取得 |
+| importance_score | REAL | NO | `1.0` | — | 優先度スコア |
+| last_recalled_at | TIMESTAMP | YES | — | — | `get_habits(habit_id=...)` でon-demand取得された直近時刻 |
 
 補足:
 - 0019 で reminders として新設、0025 で habits にリネーム
 - タグ・リレーション・検索インデックス・embedding のいずれにも接続しない。事実上「設定/ポリシー」として独立
+- 0058 で description / trigger_mode / importance_score / last_recalled_at を追加し、SessionStart全件全文注入からalways/intelligently分割注入に変更
 
 インデックス: なし
 
-関連 migration: 0019 / 0022（初期データ追加）/ 0025
+関連 migration: 0019 / 0022（初期データ追加）/ 0025 / 0058（description / trigger_mode / importance_score / last_recalled_at 追加）
 
 ### 3.7 tags
 
@@ -747,6 +756,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0047_drop_decisions_logs_topic_id | decisions.topic_id / discussion_logs.topic_id カラムを物理削除（0046で確保した前提条件を受けての Contract） |
 | 0048_session_identity | session_identity テーブル新設 + decisions/discussion_logs/discussion_topics/activities/materials に caller_session_id 追加（0057で全て削除） |
 | 0057_drop_capability_gating | session_identity テーブル削除 + decisions/discussion_logs/discussion_topics/activities/materials の caller_session_id カラム削除（role-based capability gating機構の呼び出し元解体に伴う撤去） |
+| 0058_add_habit_trigger_mode | habits に description / trigger_mode / importance_score / last_recalled_at を追加、既存habits一部をtrigger_mode='intelligently'に更新 |
 
 重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。
 
@@ -768,7 +778,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 
 6. **retract / supersedes ライフサイクルの未閉鎖**: (a) supersedes（新→旧）を張っても旧 decision は自動 retract されない。(b) 〔0043 以前の記述、解消済み〕retract 時は search_index / search_index_fts / vec_index を物理削除するようになった（§5.4）。ただし decisions/discussion_logs/materials 本体の行は残るため、これらを直接読む経路（get_decisions等）は引き続き `retracted_at IS NULL` フィルタが必要。(c) 〔一部解消〕retracted_at は decision / log（0031）に加え material（0043）にもあるが、topic / activity には存在しない。
 
-7. **habit エンティティの孤立**: habits は `content + active + created_at` だけのテーブルで、タグ・embedding・relation・search_index のいずれにも接続しない。他5エンティティと並べる位置づけにはなっていない。
+7. **habit エンティティの孤立**: habits は `content + active + created_at + description + trigger_mode + importance_score + last_recalled_at` を持つが、タグ・embedding・relation・search_index のいずれにも接続しない。他5エンティティと並べる位置づけにはなっていない。
 
 8. **タグ解決 `resolve_tags()` のアトミック性欠如**: tag_service の `resolve_tags()` はループ内で中間 commit を行うため、複数タグ処理途中のエラーで前半 INSERT がロールバックされず中途半端な状態が残る。
 
