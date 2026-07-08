@@ -19,6 +19,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+from src.services.relay import config as relay_config
 from src.services.relay.identity import (
     register_launcher_session,
     unregister_launcher_session,
@@ -426,7 +427,11 @@ def main() -> None:
     # SessionStart hook（Claude Code CLI プロセスの別の子孫）が祖先 pid チェーン
     # 経由で自分を見つけられるよう、HTTPサーバー起動待機（最大30秒）より前に
     # 登録ファイルを書く。書込失敗は非致命（ベストエフォート）。
-    register_launcher_session(_session_id)
+    # relay未構成（token未設定）では登録ファイルを誰も参照しないため、
+    # register_launcher_session内部のancestor_pids（ps最大5回spawn）の
+    # コストを払う意味がなく、事前にスキップする。
+    if relay_config.get_token():
+        register_launcher_session(_session_id)
 
     if not _IS_LOCAL:
         logger.info("Remote mode: connecting to %s", MCP_ENDPOINT)

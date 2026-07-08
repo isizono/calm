@@ -373,25 +373,31 @@ def _build_signals_section(conn, session_id: str | None = None) -> str:  # conn,
 def _build_relay_inbox_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
     """relay inboxの未読件数 + Monitor監視の指示を表示する。
 
-    identity解決はまずsrc.services.relay.identity.get_relay_identity()
-    （MCPリクエストのHTTPヘッダ経由）を試す。本hookはClaude Code CLIが
-    起動する独立プロセスでMCPリクエストコンテキストを持たないため、この経路は
-    常にNoneを返す。その場合はresolve_identity_by_ancestry()（祖先pid
-    チェーンの一致でlauncherプロセスを特定する経路）にフォールバックする。
+    relay未構成（token未設定）ならidentity解決を試みる前に打ち切る。
+    本hookはSessionStart（Claude Code起動をブロックする経路）で毎回実行される
+    ため、identity解決の前にコストの小さいtokenチェックを行い、無駄な
+    プロセスspawnを避ける。
 
-    identityが解決できても、relay未構成（token未設定）またはinbox file
-    未作成（このidentity宛のrelayメッセージが一度も無い）の場合は、
-    そこで打ち切ってコンテキスト消費ゼロを維持する。
+    relay構成済みの場合、identity解決はまずsrc.services.relay.identity.
+    get_relay_identity()（MCPリクエストのHTTPヘッダ経由）を試す。本hookは
+    Claude Code CLIが起動する独立プロセスでMCPリクエストコンテキストを
+    持たないため、この経路は常にNoneを返す。その場合はresolve_identity_by_
+    ancestry()（祖先pidチェーンの一致でlauncherプロセスを特定する経路、
+    ps最大5回spawn）にフォールバックする。
+
+    identityが解決できてもinbox file未作成（このidentity宛のrelay
+    メッセージが一度も無い）の場合は、そこで打ち切ってコンテキスト消費
+    ゼロを維持する。
     """
+    from src.services.relay import config as relay_config
+
+    if not relay_config.get_token():
+        return ""
+
     from src.services.relay.identity import get_relay_identity, resolve_identity_by_ancestry
 
     identity = get_relay_identity() or resolve_identity_by_ancestry()
     if not identity:
-        return ""
-
-    from src.services.relay import config as relay_config
-
-    if not relay_config.get_token():
         return ""
 
     from src.services.relay.inbox import count_unread, inbox_path

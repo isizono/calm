@@ -88,6 +88,29 @@ class TestGateConditions:
         monkeypatch.setattr(relay_identity, "get_relay_identity", lambda: "stable-id-1")
         assert _build_relay_inbox_section(None) == ""
 
+    def test_does_not_resolve_identity_when_relay_not_configured(self, monkeypatch, tmp_path):
+        """relay未構成（token未設定）ならget_relay_identity/
+        resolve_identity_by_ancestry（祖先pidチェーン解決、ps最大5回spawn）を
+        一切呼ばない（tokenチェックがidentity解決より先に実行されるゼロコスト経路）。
+        """
+        monkeypatch.setattr(relay_config, "get_state_dir", lambda: tmp_path)
+        monkeypatch.delenv("RELAY_BEARER_TOKEN", raising=False)
+
+        def boom_get_relay_identity():
+            raise AssertionError("get_relay_identity should not be called when token unset")
+
+        def boom_resolve_identity_by_ancestry():
+            raise AssertionError(
+                "resolve_identity_by_ancestry (ps spawn) should not be called "
+                "when token unset"
+            )
+
+        monkeypatch.setattr(relay_identity, "get_relay_identity", boom_get_relay_identity)
+        monkeypatch.setattr(
+            relay_identity, "resolve_identity_by_ancestry", boom_resolve_identity_by_ancestry
+        )
+        assert _build_relay_inbox_section(None) == ""
+
     def test_returns_empty_when_inbox_file_not_created(self, monkeypatch, relay_configured):
         """identity解決・relay構成済みでも、このidentity宛のinbox fileが
         一度も作られていなければ空文字を返す（touchしない・zero-cost維持）"""
@@ -141,10 +164,14 @@ class TestIdentityResolved:
 
 class TestSessionContextProtection:
     def test_relay_section_exception_does_not_break_other_sections(
-        self, temp_db, monkeypatch
+        self, temp_db, monkeypatch, relay_configured
     ):
         """本セクションが例外を投げても、buildersループの他セクション（静的
         セクション含む）の出力は失われない（per-builder try/exceptの保護範囲）。
+
+        tokenチェックがidentity解決より先に実行されるため、relay_configured
+        （token設定済み）でなければget_relay_identity()自体が呼ばれず本テストの
+        意図（例外発生時の保護）を検証できない。
         """
 
         def boom():
