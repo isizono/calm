@@ -187,7 +187,7 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 
 - `src/services/checkin_service.py`: check-inの本体実装。アクティビティに紐づく tag-notes・資材カタログ・pinned・関連decisions・recent logs を一括取得し、coverage と recompose hints を計算する (recompose hint は HintService 経由)
 - `src/services/hint_service.py`: hint一元化（`get_hints(scope, target_id) -> list[Hint]`）。recompose_bootstrap / recompose_delta / logs_sparse / follow_up_after_decision / record_missing を統一フォーマットで返す。delivery_hint で immediate (check_in 同期注入) と deferred (Stop hook → events.jsonl → UserPromptSubmit 注入) を分岐する
-- `src/services/habit_service.py`: SessionStartでの全件注入対象
+- `src/services/habit_service.py`: SessionStartでの注入対象。`trigger_mode='always'`は全文、`'intelligently'`はタイトルのみのマニフェスト
 
 ### 4.4 hookシグナルの流れ
 

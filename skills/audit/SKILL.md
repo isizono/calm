@@ -279,7 +279,7 @@ Step 7 の核となる判定。「正しい場所」とは、**知識を再利�
 | 永続化先 | 適用範囲 | 注入契機 | 更新コスト | 容量 |
 |---|---|---|---|---|
 | **tag note** | 特定 tag を持つ entity に遭遇したとき | tag が活きるセッションで自動注入 | `update_tag` で上書き | 中 |
-| **habit** | 全セッション横断、tag 非依存 | SessionStart で全件注入 | `update_habit` で上書き、ユーザー承認必要 | 小 (件数制限) |
+| **habit** | 全セッション横断、tag 非依存 | SessionStart で注入（`trigger_mode='always'`は全文、`'intelligently'`はタイトルのみのマニフェスト） | `update_habit` で上書き、ユーザー承認必要 | 小 (件数制限) |
 | **anchor (material 内)** | 特定合意の真偽判定先 | recompose-context 経由 or 個別 audit で参照 | recompose-context で再生成 / setup-anchor で更新 | 大 (material 単位) |
 | **material (新規 audit 結果)** | 経緯・調査結果そのもの | search hit / 関連 entity 経由 | `update_material` で上書き | 大 |
 | (参考) decision | 単発の合意事項 | get_decisions / search hit | 直接更新不可 (新規 + supersedes) | 小 |
