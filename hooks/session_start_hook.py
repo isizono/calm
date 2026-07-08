@@ -24,7 +24,7 @@ from src.services.activity_service import (
     get_active_activities_by_tag_with_conn,
     get_pinned_active_activities_with_conn,
 )
-from src.services.readable_id import format_readable_id
+from hooks.readable_id_format import format_readable_id
 from src.services.habit_service import get_active_habit_contents_with_conn
 from src.services.topic_service import get_activity_topics_batch
 from src.services.backup_service import health_check, should_take_snapshot, take_snapshot

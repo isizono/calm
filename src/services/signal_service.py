@@ -15,7 +15,7 @@ import sys
 from typing import Optional
 
 from src.db import get_connection, row_to_dict
-from src.services.readable_id import apply_readable_id_inplace
+from src.services.readable_id import strip_entity_id_inplace
 
 logger = logging.getLogger(__name__)
 
@@ -305,20 +305,20 @@ def _sanitize_signal_for_response(signal: dict) -> dict:
 
     promoted_type = signal.get("promoted_type")
     if promoted_type in PROMOTED_ENTITY_TABLE:
-        apply_readable_id_inplace(signal, promoted_type, id_key="promoted_id")
+        strip_entity_id_inplace(signal, id_key="promoted_id")
 
     context = signal.get("context")
     if isinstance(context, (dict, list)):
         _apply_readable_id_recursive(context)
 
-    apply_readable_id_inplace(signal, "signal")
+    strip_entity_id_inplace(signal)
     return signal
 
 
 def _apply_readable_id_if_ref_shaped(value: object) -> None:
     """valueが{"type": <PROMOTED_ENTITY_TABLEのいずれか>, "id": int}形状ならid_raw化する。"""
     if isinstance(value, dict) and value.get("type") in PROMOTED_ENTITY_TABLE:
-        apply_readable_id_inplace(value, value["type"])
+        strip_entity_id_inplace(value)
 
 
 def _apply_readable_id_recursive(value: object) -> None:

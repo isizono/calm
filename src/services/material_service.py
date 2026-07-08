@@ -8,7 +8,7 @@ from typing import Literal, Optional
 import yaml
 
 from src.db import get_connection, row_to_dict
-from src.services.readable_id import apply_readable_id_inplace
+from src.services.readable_id import strip_entity_id_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.citations_service import upsert_citations_for_owner_with_conn
 from src.services.relation_service import _add_relation_with_conn, _validate_targets
@@ -40,7 +40,7 @@ def _material_to_response(material: dict, tags: list[str]) -> dict:
     }
     if material.get("retracted_at"):
         result["retracted_at"] = material["retracted_at"]
-    apply_readable_id_inplace(result, "material", id_key="material_id")
+    strip_entity_id_inplace(result, id_key="material_id")
     return result
 
 
@@ -191,7 +191,7 @@ def get_materials_by_relation_with_conn(conn, activity_id: int) -> list[dict]:
             "tags": tags_map.get(row["id"], []),
             "created_at": row["created_at"],
         }
-        apply_readable_id_inplace(item, "material")
+        strip_entity_id_inplace(item)
         result.append(item)
     return result
 

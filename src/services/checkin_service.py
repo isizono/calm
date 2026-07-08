@@ -4,7 +4,7 @@ import sqlite3
 
 from src.db import get_connection, row_to_dict
 from src.services import activity_service, hint_service
-from src.services.readable_id import apply_readable_id_inplace
+from src.services.readable_id import strip_entity_id_inplace
 from src.services.material_service import get_materials_by_relation_with_conn
 from src.services.relation_service import _get_map_with_conn
 from src.services.tag_service import (
@@ -61,7 +61,7 @@ def _get_topics_info(conn: sqlite3.Connection, topic_ids: list[int]) -> list[dic
             "decisions_count": dec_counts.get(row["id"], 0),
             "materials_count": mat_counts.get(row["id"], 0),
         }
-        apply_readable_id_inplace(item, "topic")
+        strip_entity_id_inplace(item)
         result.append(item)
     return result
 
@@ -78,7 +78,7 @@ def _get_activities_overview(conn: sqlite3.Connection, activity_ids: list[int]) 
     result = []
     for row in rows:
         item = {"id": row["id"], "title": row["title"], "status": row["status"]}
-        apply_readable_id_inplace(item, "activity")
+        strip_entity_id_inplace(item)
         result.append(item)
     return result
 
@@ -109,7 +109,7 @@ def _get_decisions_from_topics(conn: sqlite3.Connection, topic_ids: list[int]) -
     for row in rows:
         # title優先・decision本文fallback
         item = {"id": row["id"], "title": row["title"] or row["decision"]}
-        apply_readable_id_inplace(item, "decision")
+        strip_entity_id_inplace(item)
         decisions.append(item)
     return decisions
 
@@ -170,7 +170,7 @@ def _get_logs_catalog_from_topics(
 
     display_title = latest_row["title"] or (latest_row["content"] or "")[:50]
     latest_log = {"id": latest_row["id"], "title": display_title, "content": latest_row["content"]}
-    apply_readable_id_inplace(latest_log, "log")
+    strip_entity_id_inplace(latest_log)
 
     # 残り: id + titleのみ（titleが空の場合はcontentの先頭50文字をfallback）
     catalog_rows = conn.execute(
@@ -190,7 +190,7 @@ def _get_logs_catalog_from_topics(
     for row in catalog_rows:
         display_title = row["title"] or (row["content"] or "")[:50]
         item = {"id": row["id"], "title": display_title}
-        apply_readable_id_inplace(item, "log")
+        strip_entity_id_inplace(item)
         catalog.append(item)
     return latest_log, catalog
 
@@ -283,7 +283,7 @@ def _get_pinned_targets(conn: sqlite3.Connection, activity_id: int) -> dict:
                 row = row_map[did]
                 # title優先・decision本文fallback
                 item = {"id": row["id"], "title": row["title"] or row["decision"], "reason": row["reason"]}
-                apply_readable_id_inplace(item, "decision")
+                strip_entity_id_inplace(item)
                 decisions.append(item)
         if decisions:
             result["decisions"] = decisions
@@ -305,7 +305,7 @@ def _get_pinned_targets(conn: sqlite3.Connection, activity_id: int) -> dict:
             if lid in row_map:
                 row = row_map[lid]
                 item = {"id": row["id"], "title": row["title"], "content": row["content"]}
-                apply_readable_id_inplace(item, "log")
+                strip_entity_id_inplace(item)
                 logs.append(item)
         if logs:
             result["logs"] = logs
@@ -328,7 +328,7 @@ def _get_pinned_targets(conn: sqlite3.Connection, activity_id: int) -> dict:
             if mid in row_map:
                 row = row_map[mid]
                 item = {"id": row["id"], "title": row["title"], "content": row["content"], "source": row["source"]}
-                apply_readable_id_inplace(item, "material")
+                strip_entity_id_inplace(item)
                 materials.append(item)
         if materials:
             result["materials"] = materials
@@ -351,7 +351,7 @@ def _get_pinned_targets(conn: sqlite3.Connection, activity_id: int) -> dict:
             if tid in row_map:
                 row = row_map[tid]
                 item = {"id": row["id"], "title": row["title"]}
-                apply_readable_id_inplace(item, "topic")
+                strip_entity_id_inplace(item)
                 topics.append(item)
         if topics:
             result["topics"] = topics
@@ -374,7 +374,7 @@ def _get_pinned_targets(conn: sqlite3.Connection, activity_id: int) -> dict:
             if aid in row_map:
                 row = row_map[aid]
                 item = {"id": row["id"], "title": row["title"], "status": row["status"]}
-                apply_readable_id_inplace(item, "activity")
+                strip_entity_id_inplace(item)
                 activities.append(item)
         if activities:
             result["activities"] = activities
@@ -500,7 +500,7 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
         dependencies = []
         for r in dep_rows:
             dep_item = {"id": r["id"], "title": r["title"], "status": r["status"]}
-            apply_readable_id_inplace(dep_item, "activity")
+            strip_entity_id_inplace(dep_item)
             dependencies.append(dep_item)
 
         # 4. pinsテーブル経由のpinned targets取得（新pinsテーブル経由）
@@ -562,7 +562,7 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
             "status": activity["status"],
             "tags": tags,
         }
-        apply_readable_id_inplace(activity_block, "activity")
+        strip_entity_id_inplace(activity_block)
         result = {
             "coverage": coverage,
             "activity": activity_block,

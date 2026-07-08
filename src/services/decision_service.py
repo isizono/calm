@@ -3,7 +3,7 @@ import sqlite3
 from typing import Optional
 from src.db import get_connection, row_to_dict
 from src.services.citations_service import upsert_citations_for_owner_with_conn
-from src.services.readable_id import apply_readable_id_inplace
+from src.services.readable_id import strip_entity_id_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.tag_service import (
     validate_and_parse_tags,
@@ -330,7 +330,7 @@ def _build_decision_item(
     if dec.get("retracted_at"):
         item["retracted_at"] = dec["retracted_at"]
     attach_precedent(item, dec.get("reason"))
-    apply_readable_id_inplace(item, "decision")
+    strip_entity_id_inplace(item)
     return item
 
 
