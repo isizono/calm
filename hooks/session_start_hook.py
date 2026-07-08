@@ -436,7 +436,11 @@ _CONTEXT_FLOW_GUIDE = """\
 _RELAY_CHECK_GUIDE = """\
 # relay
 
-セッション開始時に `relay_receive` を呼び、他セッションからの未読メッセージがないか確認してください。
+セッション開始時に `relay_receive` で他セッションからの未読メッセージがないか確認してください。
+まず `peek=True` で呼び、内容を確認して必要なら add_logs/add_material 等で保存してください。
+保存できたことを確認してから、同じ呼び出しを `peek=False`（既定）で呼び直して既読化して
+ください。既定の `peek=False` は consume（既読化）のため、保存前に処理が中断すると
+その内容は再取得できません。
 """
 
 
