@@ -1142,7 +1142,8 @@ def check_in(
             docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
 
     Returns:
-        check-in結果（coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary）
+        check-in結果（coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary）。
+        セッション内でcheck_inを初めて呼んだときのみflow_guide（コンテキスト取得の手がかり）も含まれる
     """
     flavor = _normalize_flavor(flavor)
     try:
@@ -1326,10 +1327,13 @@ def add_habit(content: str) -> dict:
 
 
 @mcp.tool()
-def get_habits(active: bool = True) -> dict:
+def get_habits(active: bool = True, habit_id: int | None = None) -> dict:
     """登録済みの振る舞い一覧を取得する。既定でactive=1のみ返す。無効化済みも含む全件が
-    欲しいときはactive=Falseを渡す"""
-    return habit_service.get_habits(active=active)
+    欲しいときはactive=Falseを渡す。SessionStartで全文注入されるのはtrigger_mode='always'
+    のみで、'intelligently'はタイトルのみのマニフェスト表示になる。habit_idを渡すとその
+    1件だけを本文付きで取得でき、intelligentlyな振る舞いの詳細を引くときに使う
+    （取得と同時にlast_recalled_atが更新される）"""
+    return habit_service.get_habits(active=active, habit_id=habit_id)
 
 
 @mcp.tool()

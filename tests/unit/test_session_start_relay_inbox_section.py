@@ -84,4 +84,7 @@ class TestSessionContextProtection:
 
         monkeypatch.setattr(relay_identity, "get_relay_identity", boom)
         context = _build_session_context()
-        assert "# コンテキスト取得フロー" in context
+        # SessionStartからは撤去された（check_in初回呼び出し時埋め込みに変更）ため
+        # 「# コンテキスト取得フロー」ではなく、デフォルトseed済みhabitsを持つ
+        # 「# 振る舞い」セクションで他セクションの生存を確認する
+        assert "# 振る舞い" in context

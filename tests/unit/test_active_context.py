@@ -296,24 +296,25 @@ def test_build_activities_section_empty_with_only_topics(temp_db):
 
 
 def test_build_activities_section_with_activities(temp_db):
-    """階層 4 でアクティビティが topic 別グルーピング（topic 無しは『その他』）で表示される"""
+    """階層 3/4 は個別列挙をせず統計行 1 行に縮退する"""
     add_activity(title="[作業] 実装する", description="Desc", tags=["domain:myapp"], check_in=False)
     _age_activities()
 
     result = _build_active_context_wrapper()
 
     assert "# アクティビティ一覧" in result
-    assert "## その他" in result
-    assert "[作業] 実装する" in result
+    assert "30日以内 1件" in result
+    assert "[作業] 実装する" not in result
 
 
 def test_build_activities_section_status_marker_pending_in_recent_tier(temp_db):
-    """階層 3 の pending アクティビティに○マーカーが付く"""
+    """階層 3 (pending, 非pinned) は統計行に縮退し、個別の ○ マーカーは付かない"""
     add_activity(title="[作業] 実装する", description="Desc", tags=["domain:myapp"], check_in=False)
 
     result = _build_active_context_wrapper()
 
-    assert "○" in result
+    assert "直近24h 1件" in result
+    assert "○" not in result
 
 
 def test_build_activities_section_status_marker_in_progress(temp_db):
@@ -327,8 +328,9 @@ def test_build_activities_section_status_marker_in_progress(temp_db):
 
 
 def test_build_activities_section_elapsed_days_in_title_line(temp_db):
-    """経過日数はタイトル行末尾に `(Nd)` として付く"""
-    add_activity(title="[作業] 実装する", description="Desc", tags=["domain:myapp"], check_in=False)
+    """経過日数はタイトル行末尾に `(Nd)` として付く（個別表示は階層 2 のみ対象）"""
+    r = add_activity(title="[作業] 実装する", description="Desc", tags=["domain:myapp"], check_in=False)
+    update_activity(r["activity_id"], status="in_progress")
 
     result = _build_active_context_wrapper()
 
@@ -388,9 +390,11 @@ def test_build_activities_section_tier2_capped_at_five(temp_db):
 
 
 def test_build_activities_section_numbered_list(temp_db):
-    """階層 2/3 で連番が振られる"""
-    add_activity(title="First", description="Desc", tags=["domain:myapp"], check_in=False)
-    add_activity(title="Second", description="Desc", tags=["domain:myapp"], check_in=False)
+    """階層 2 で連番が振られる（階層 3/4 は統計行のため連番を持たない）"""
+    r1 = add_activity(title="First", description="Desc", tags=["domain:myapp"], check_in=False)
+    r2 = add_activity(title="Second", description="Desc", tags=["domain:myapp"], check_in=False)
+    update_activity(r1["activity_id"], status="in_progress")
+    update_activity(r2["activity_id"], status="in_progress")
 
     result = _build_active_context_wrapper()
 
@@ -427,27 +431,28 @@ def test_build_activities_section_domain_with_zero_activities_skipped(temp_db):
 
     result = _build_active_context_wrapper()
 
-    assert "Activity" in result
+    assert "直近24h 1件" in result
     assert "empty-domain" not in result
 
 
 def test_build_activities_section_multiple_domains_grouped(temp_db):
-    """複数 domain の pending アクティビティは階層 4 の『その他』に集約される"""
+    """複数 domain の pending アクティビティも階層 4 の統計行に集約される"""
     add_activity(title="App Activity", description="Desc", tags=["domain:app"], check_in=False)
     add_activity(title="Lib Activity", description="Desc", tags=["domain:lib"], check_in=False)
     _age_activities()
 
     result = _build_active_context_wrapper()
 
-    assert "App Activity" in result
-    assert "Lib Activity" in result
-    assert "## その他" in result
+    assert "30日以内 2件" in result
+    assert "App Activity" not in result
+    assert "Lib Activity" not in result
 
 
 def test_build_activities_section_activity_id_in_bracket(temp_db):
-    """アクティビティIDが「title (#NNN)」形式で表示される"""
+    """アクティビティIDが「title (#NNN)」形式で表示される（個別表示は階層 2 のみ対象）"""
     activity = add_activity(title="Activity 1", description="Desc", tags=["domain:myapp"], check_in=False)
     activity_id = activity["activity_id"]
+    update_activity(activity_id, status="in_progress")
 
     result = _build_active_context_wrapper()
 
@@ -569,16 +574,15 @@ def test_build_activities_section_no_blocked_by_when_dep_completed(temp_db):
 
 
 def test_build_activities_section_deduplicates_multi_domain(temp_db):
-    """複数domainに属するアクティビティは1回だけ表示される"""
-    r = add_activity(
+    """複数domainに属するアクティビティは統計行でも1件として重複なく数えられる"""
+    add_activity(
         title="Multi Domain Task", description="Desc",
         tags=["domain:app", "domain:lib"], check_in=False,
     )
-    aid = r["activity_id"]
 
     result = _build_active_context_wrapper()
 
-    assert result.count(f"(#{aid})") == 1
+    assert "直近24h 1件" in result
 
 
 def test_build_activities_section_tier2_flat_no_topic_grouping(temp_db):

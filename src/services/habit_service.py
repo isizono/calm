@@ -7,15 +7,40 @@ logger = logging.getLogger(__name__)
 
 
 def get_active_habit_contents_with_conn(conn) -> list[str]:
-    """有効な振る舞いのcontent一覧を取得する（conn共有版）。
+    """有効かつtrigger_mode='always'な振る舞いのcontent一覧を取得する（conn共有版）。
 
     Returns:
         [content, ...]
     """
     rows = conn.execute(
-        "SELECT content FROM habits WHERE active = 1"
+        "SELECT content FROM habits WHERE active = 1 AND trigger_mode = 'always'"
     ).fetchall()
     return [r["content"] for r in rows]
+
+
+def list_intelligently_habit_manifest_with_conn(conn) -> list[dict]:
+    """trigger_mode='intelligently'な振る舞いのマニフェストを取得する（conn共有版）。
+
+    タグに相当する仕組みが habits に存在しないため tags は含めない。
+    title は description を優先し、未設定（棚卸し前等）なら content の
+    先頭50文字にフォールバックする。
+
+    Returns:
+        [{habit_id, title, trigger_mode}, ...]
+    """
+    rows = conn.execute(
+        "SELECT id, content, description FROM habits "
+        "WHERE active = 1 AND trigger_mode = 'intelligently' ORDER BY id"
+    ).fetchall()
+    manifest = []
+    for row in rows:
+        title = row["description"] or row["content"][:50]
+        manifest.append({
+            "habit_id": row["id"],
+            "title": title,
+            "trigger_mode": "intelligently",
+        })
+    return manifest
 
 
 def _add_habit_with_conn(conn, content: str) -> int:
@@ -69,19 +94,30 @@ def add_habit(content: str) -> dict:
         conn.close()
 
 
-def get_habits(active: bool = True) -> dict:
-    """振る舞い一覧を取得する。
+def get_habits(active: bool = True, habit_id: int | None = None) -> dict:
+    """振る舞い一覧を取得する。habit_id指定時はその1件のみを取得する。
 
     Args:
-        active: Trueのとき（既定）active=1の振る舞いのみ返す。全件（無効化済み含む）
-            取得したい場合はFalseを明示的に渡す。
+        active: habit_id未指定時のみ有効。Trueのとき（既定）active=1の振る舞いのみ返す。
+            全件（無効化済み含む）取得したい場合はFalseを明示的に渡す。
+        habit_id: 指定時は該当habitのみ返す（activeは無視される）。取得と同時に
+            last_recalled_atを現在時刻に更新する（intelligently層の参照実績記録）。
 
     Returns:
-        振る舞い一覧とtotal_count
+        振る舞い一覧とtotal_count（habit_id指定時はhabitsが0件または1件）
     """
     conn = get_connection()
     try:
-        if active:
+        if habit_id is not None:
+            conn.execute(
+                "UPDATE habits SET last_recalled_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (habit_id,),
+            )
+            conn.commit()
+            rows = conn.execute(
+                "SELECT * FROM habits WHERE id = ?", (habit_id,)
+            ).fetchall()
+        elif active:
             rows = conn.execute(
                 "SELECT * FROM habits WHERE active = 1 ORDER BY id"
             ).fetchall()
@@ -98,6 +134,10 @@ def get_habits(active: bool = True) -> dict:
                 "content": habit["content"],
                 "active": habit["active"],
                 "created_at": habit["created_at"],
+                "trigger_mode": habit["trigger_mode"],
+                "description": habit["description"],
+                "importance_score": habit["importance_score"],
+                "last_recalled_at": habit["last_recalled_at"],
             })
 
         return {

@@ -1,9 +1,11 @@
 """SessionStart hook: セッションレベル文脈注入
 
 サービス層経由でDBからデータを取得し、セッション開始時のコンテキストを注入する。
-- アクティビティ一覧（active = in_progress + pending）
-- 振る舞い（active=1）
-- コンテキスト取得フロー・補助ツール認知（静的テキスト）
+- アクティビティ一覧（active = in_progress + pending。階層3・4は統計行に縮退）
+- 振る舞い（trigger_mode='always'は全文、'intelligently'はタイトルのみのマニフェスト）
+
+コンテキスト取得フローガイドはここでは注入しない（check_in初回呼び出し時に
+checkin_service側が埋め込む。3ヶ月未決着だった注入面の役割分担の裁定による）。
 """
 import json
 import sys
@@ -23,8 +25,10 @@ from src.services.activity_service import (
     get_pinned_active_activities_with_conn,
 )
 from src.services.readable_id import format_readable_id
-from src.services.habit_service import get_active_habit_contents_with_conn
-from src.services.topic_service import get_activity_topics_batch
+from src.services.habit_service import (
+    get_active_habit_contents_with_conn,
+    list_intelligently_habit_manifest_with_conn,
+)
 from src.services.backup_service import health_check, should_take_snapshot, take_snapshot
 from hooks.signal_capture import try_capture_signal
 
@@ -102,15 +106,6 @@ _DETERMINISTIC_RENDER_NOTICE = (
     "再フォーマットや優先順の再評価をせず、必要時はそのまま提示してください。"
 )
 
-_TOPICLESS_GROUP_LABEL = "その他"
-
-
-def _shorten_topic_title(title: str) -> str:
-    """topic見出しは「 — 」(em dash) 以降を除去した短縮版を使う。"""
-    if " — " in title:
-        return title.split(" — ", 1)[0].strip()
-    return title
-
 
 def _build_activities_section(conn, session_id: str | None = None) -> str:
     """アクティビティ一覧を 4 階層ダッシュボードで組み立てる。
@@ -118,19 +113,20 @@ def _build_activities_section(conn, session_id: str | None = None) -> str:
     階層 1「作業中（別セッション）」: heartbeat 中で自セッションでないもの。
     階層 2「優先」: 階層 1 に入らなかった in_progress または pinned を集約し、
         pinned 先頭 → updated_at 降順で上位 5 件（flat、topic 別グルーピングなし）。
-    階層 3「直近作成（24h以内）」: 上位階層で消費されなかった created_at 24h 以内、
-        created_at 降順の flat リスト。0 件時はセクション自体省略。
-    階層 4「その他」: 残り active のうち updated_at 30 日以内、または pinned。
-        topic 別グルーピングでタイトル一行のみ（番号・status マーカー・meta 行なし）。
+    階層 3「直近作成（24h以内）」・階層 4「その他」: 選定ロジック自体は階層 2 までと
+        同じ条件式で計算するが、個別列挙はせず件数のみの統計行 1 行に縮退する
+        （SessionStart 予算削減のため。詳細は check_in / get_activities で取得する）。
 
     行フォーマット:
         - 階層 1: `- 📌 タイトル (#id) (Nd)`（📌 は pinned 時のみ）
-        - 階層 2/3: 番号 + status マーカー (●/○) + 📌（pinned 時）+ タイトル (#id)
+        - 階層 2: 番号 + status マーカー (●/○) + 📌（pinned 時）+ タイトル (#id)
           + (Nd) + 🆕（24h 以内作成時）。blocked_by 未解決依存があるときのみ
           meta 行 1 行を続ける。
-        - 階層 4: `- 📌 タイトル (#id) (Nd) 🆕`（📌/🆕 は該当時のみ）
+        - 階層 3/4: 「他: 直近24h N件 / 30日以内 M件 / pinned K件 →
+          check_in・get_activitiesで確認」の統計行（該当件数 0 の項目は省略、
+          全件 0 なら行自体を出さない）。
 
-    重複排除: 上位階層に採用された activity は下位階層から除外する。
+    重複排除: 上位階層に採用された activity は下位階層（および統計対象）から除外する。
 
     orch_managed=1 のアクティビティは全階層で除外する。
     """
@@ -185,12 +181,11 @@ def _build_activities_section(conn, session_id: str | None = None) -> str:
             parts.append(f"- {pin_mark}{display} ({days}d)")
         parts.append("")
 
-    # 階層 1 は updated_at と pin だけで描画し created_at / 依存 / topic を参照しない。
+    # 階層 1 は updated_at と pin だけで描画し created_at / 依存を参照しない。
     # 階層 1 で消費済みの id はバッチ取得対象から外す。
     lower_ids = [a["id"] for a in all_active if a["id"] not in seen_ids]
     unresolved_deps = _get_unresolved_deps(conn, lower_ids)
     created_ats = _get_created_ats(conn, lower_ids)
-    activity_topics = get_activity_topics_batch(conn, lower_ids)
 
     tier2_pool = [
         a
@@ -211,24 +206,15 @@ def _build_activities_section(conn, session_id: str | None = None) -> str:
             )
         parts.append("")
 
+    # 階層 3・4 は選定ロジックはそのままに、個別列挙をやめて件数のみ集計する。
     tier3_pool = [
         a
         for a in all_active
         if a["id"] not in seen_ids
         and _is_recent_created(created_ats.get(a["id"], ""))
     ]
-    tier3_pool.sort(
-        key=lambda a: (created_ats.get(a["id"], ""), a["id"]), reverse=True
-    )
-
-    if tier3_pool:
-        parts.append("## 直近作成（24h以内）")
-        for idx, a in enumerate(tier3_pool, start=1):
-            seen_ids.add(a["id"])
-            parts.extend(
-                _render_numbered_line(a, idx, pinned_ids, created_ats, unresolved_deps)
-            )
-        parts.append("")
+    for a in tier3_pool:
+        seen_ids.add(a["id"])
 
     # pinned は staleness で脱落させない。上位階層の件数上限で溢れた pinned が
     # 30 日フィルタでも除外されると、どの階層にも出ずダッシュボードから消えるため。
@@ -241,39 +227,19 @@ def _build_activities_section(conn, session_id: str | None = None) -> str:
             or _calc_elapsed_days(a["updated_at"]) <= _TIER4_STALE_DAYS
         )
     ]
+    tier4_pinned_count = sum(1 for a in tier4_pool if a["id"] in pinned_ids)
 
+    stats_parts = []
+    if tier3_pool:
+        stats_parts.append(f"直近24h {len(tier3_pool)}件")
     if tier4_pool:
-        groups: dict[int | None, dict] = {}
-        for a in tier4_pool:
-            topics = activity_topics.get(a["id"], [])
-            if topics:
-                primary = topics[0]
-                primary_id: int | None = primary["id"]
-                primary_title = _shorten_topic_title(primary["title"])
-            else:
-                primary_id = None
-                primary_title = _TOPICLESS_GROUP_LABEL
-            group = groups.setdefault(
-                primary_id, {"title": primary_title, "activities": []}
-            )
-            group["activities"].append(a)
+        stats_parts.append(f"30日以内 {len(tier4_pool)}件")
+    if tier4_pinned_count:
+        stats_parts.append(f"pinned {tier4_pinned_count}件")
 
-        topic_ids_sorted: list[int | None] = sorted(
-            tid for tid in groups.keys() if tid is not None
-        )
-        if None in groups:
-            topic_ids_sorted.append(None)
-
-        for tid in topic_ids_sorted:
-            group = groups[tid]
-            group["activities"].sort(
-                key=lambda a: (a["updated_at"], a["id"]), reverse=True
-            )
-            parts.append(f"## {group['title']}")
-            for a in group["activities"]:
-                seen_ids.add(a["id"])
-                parts.append(_render_tier4_line(a, pinned_ids, created_ats))
-            parts.append("")
+    if stats_parts:
+        parts.append(f"他: {' / '.join(stats_parts)} → check_in・get_activitiesで確認")
+        parts.append("")
 
     parts.append(_DETERMINISTIC_RENDER_NOTICE)
     parts.append("")
@@ -312,35 +278,30 @@ def _render_numbered_line(
     return lines
 
 
-def _render_tier4_line(
-    a: dict,
-    pinned_ids: set[int],
-    created_ats: dict[int, str],
-) -> str:
-    """階層 4 用のタイトル一行のみを返す。番号・status マーカー・meta 行なし。"""
-    aid = a["id"]
-    days = _calc_elapsed_days(a["updated_at"])
-    pin_mark = f"{_PIN_MARK} " if aid in pinned_ids else ""
-    created_at_str = created_ats.get(aid, "")
-    new_marker = (
-        f" {_NEW_MARK}"
-        if created_at_str and _is_recent_created(created_at_str)
-        else ""
-    )
-    display = format_readable_id("activity", aid, a["title"])
-    return f"- {pin_mark}{display} ({days}d){new_marker}"
-
-
 def _build_habits_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
-    """振る舞い一覧を組み立てる。"""
-    contents = get_active_habit_contents_with_conn(conn)
+    """振る舞い一覧を組み立てる。
 
-    if not contents:
+    trigger_mode='always'は全文を表示し、'intelligently'はタイトルのみの
+    マニフェスト（案内1行＋タイトル列挙）にとどめ、詳細はget_habits(habit_id=...)
+    でon-demand取得する前提にする。
+    """
+    always_contents = get_active_habit_contents_with_conn(conn)
+    manifest = list_intelligently_habit_manifest_with_conn(conn)
+
+    if not always_contents and not manifest:
         return ""
 
     lines = ["# 振る舞い"]
-    for content in contents:
+    for content in always_contents:
         lines.append(f"- {content}")
+
+    if manifest:
+        lines.append("")
+        lines.append(
+            "他の振る舞い（タイトルのみ、詳細は get_habits(habit_id=...) で取得）:"
+        )
+        for item in manifest:
+            lines.append(f"- {item['title']} (habit_id={item['habit_id']})")
 
     return "\n".join(lines) + "\n"
 
@@ -436,31 +397,6 @@ def _build_snapshot_section(conn, session_id: str | None = None) -> str:  # conn
     return ""
 
 
-_CONTEXT_FLOW_GUIDE = """\
-# コンテキスト取得フロー
-
-1. ユーザーの発言やアクティビティ一覧から該当するものを判定し、`check_in`で作業コンテキストを取得する
-   - ぴったりなアクティビティがなければ`add_activity`で作成してからcheck-inする
-   - check-inするとtag_notes・資材・関連decisionsが一括で返り、statusも自動更新される
-   - 返ってきたsummaryフィールドはそのまま出力すること
-2. 特定エンティティの深掘りには`get_decisions`・`get_logs`を使う
-   （議論の詳細な経緯はlogsに入っていることが多い）
-3. キーワードベースの探索には`search`を使う。結果の詳細は`get_by_ids`でピンポイント取得する
-4. `get_by_ids`の典型ユースケース:
-   - search結果からのチェリーピック（関連する上位N件をまとめて詳細取得）
-   - ログ・decision内の参照先をまとめて取得
-   - ユーザーがIDで「これ何？」と聞いたとき
-
-# 補助ツール・概念
-
-- `update_pin`: 重要なエンティティをピン留めする。check-in時に必ず返されるので、長期にわたって参照され続けるエンティティにはピン留めを自律的に行うこと
-  - 例: ユビキタス言語を定義したmaterial、方針を決定づけるdecision
-- `get_map`: トピックやアクティビティの関連構造を俯瞰できる。全体像の把握や探索に有用
-- `get_timeline`: エンティティの時系列変遷を追える。経緯を辿りたいときに有用
-- リレーションタイプ `supersedes`・`depends_on`（`add_relation`で設定）: 差し替えられたdecisionやブロッカーのあるアクティビティの管理に使う
-"""
-
-
 def _build_session_context(session_id: str | None = None) -> str:
     """サービス層経由でセッション開始時のコンテキストを組み立てる。
 
@@ -489,9 +425,6 @@ def _build_session_context(session_id: str | None = None) -> str:
             except Exception:
                 # セクション単位で失敗を許容し、残りのセクションは返す
                 pass
-
-        # 静的セクション（DB不要）
-        sections.append(_CONTEXT_FLOW_GUIDE)
 
         context = "\n".join(sections)
         return context
