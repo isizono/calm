@@ -369,9 +369,9 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 
 ### 2.21 add_habit / get_habits / update_habit
 
-- `add_habit(content: string) -> dict`: habitを登録。SessionStart時に全件注入される（セッション途中の登録は次セッション以降に有効）。
+- `add_habit(content: string, importance_score: int = 3, status: string = "active") -> dict`: habitを登録。SessionStart時に全件注入される（セッション途中の登録は次セッション以降に有効）。importance_scoreは1(critical)/2(important)/3(default)のいずれかで、intelligently層マニフェストのソートに使う。statusは`'active'`/`'archived'`のいずれか。
 - `get_habits(active: bool = true, habit_id?: int) -> dict`: 登録済みhabit一覧。既定でactive=1のみ返す。無効化済みも含む全件が欲しいときは`active=false`を渡す。SessionStartで全文注入されるのは`trigger_mode='always'`のみで、`'intelligently'`はタイトルのみのマニフェスト表示になる。`habit_id`を渡すとその1件だけを本文付きで取得でき、intelligentlyな振る舞いの詳細を引くときに使う（取得と同時に`last_recalled_at`が更新される）。
-- `update_habit(habit_id: int, content?: string, active?: bool, trigger_mode?: string, description?: string) -> dict`: active=Falseで無効化。trigger_modeは`'always'`（全文常時注入）/`'intelligently'`（マニフェストのみ表示、詳細は`get_habits(habit_id=...)`でon-demand取得）のいずれか。descriptionはintelligently層のマニフェスト表示に使う要旨。
+- `update_habit(habit_id: int, content?: string, active?: bool, trigger_mode?: string, description?: string, importance_score?: int, status?: string) -> dict`: active=Falseで無効化。trigger_modeは`'always'`（全文常時注入）/`'intelligently'`（マニフェストのみ表示、詳細は`get_habits(habit_id=...)`でon-demand取得）のいずれか。descriptionはintelligently層のマニフェスト表示に使う要旨（100文字以内）。importance_scoreは1(critical)/2(important)/3(default)のいずれかでマニフェストのソートに使う。statusは`'active'`/`'archived'`のいずれかで、`'archived'`はマニフェストから除外される。
 
 ### 2.22 add_pin / remove_pin
 

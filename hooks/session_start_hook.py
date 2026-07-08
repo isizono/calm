@@ -285,7 +285,8 @@ def _build_habits_section(conn, session_id: str | None = None) -> str:  # conn, 
 
     trigger_mode='always'は全文を表示し、'intelligently'はタイトルのみの
     マニフェスト（案内1行＋タイトル列挙）にとどめ、詳細はget_habits(habit_id=...)
-    でon-demand取得する前提にする。
+    でon-demand取得する前提にする。マニフェストの各行には[critical]/[important]/
+    [default]のimportance_score由来ラベルを前置し、優先度の高いものを先頭に出す。
     """
     always_contents = get_active_habit_contents_with_conn(conn)
     manifest = list_intelligently_habit_manifest_with_conn(conn)
@@ -300,10 +301,12 @@ def _build_habits_section(conn, session_id: str | None = None) -> str:  # conn, 
     if manifest:
         lines.append("")
         lines.append(
-            "他の振る舞い（タイトルのみ、詳細は get_habits(habit_id=...) で取得）:"
+            "他の振る舞い（詳細は get_habits(habit_id=...) で取得）:"
         )
+        label_width = max(len(f"[{item['importance_label']}]") for item in manifest)
         for item in manifest:
-            lines.append(f"- {item['title']} (habit_id={item['habit_id']})")
+            label = f"[{item['importance_label']}]".ljust(label_width)
+            lines.append(f"- {label} #{item['habit_id']}  {item['title']}")
 
     return "\n".join(lines) + "\n"
 

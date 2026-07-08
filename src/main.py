@@ -1324,9 +1324,12 @@ def get_map(
 
 
 @mcp.tool()
-def add_habit(content: str) -> dict:
-    """エージェントの振る舞いを登録する。SessionStart時に全件注入される（セッション途中の登録は次セッション以降に有効）。"覚えといて"と言われた行動ルールはここに登録する"""
-    return habit_service.add_habit(content)
+def add_habit(content: str, importance_score: int = 3, status: str = "active") -> dict:
+    """エージェントの振る舞いを登録する。SessionStart時に全件注入される（セッション途中の登録は次セッション以降に有効）。"覚えといて"と言われた行動ルールはここに登録する。
+    importance_scoreは1(critical)/2(important)/3(default、既定)のいずれかで、
+    trigger_mode='intelligently'なhabitのマニフェスト表示順に使われる。
+    statusは'active'/'archived'（既定'active'）"""
+    return habit_service.add_habit(content, importance_score=importance_score, status=status)
 
 
 @mcp.tool()
@@ -1346,17 +1349,23 @@ def update_habit(
     active: Optional[bool] = None,
     trigger_mode: Optional[str] = None,
     description: Optional[str] = None,
+    importance_score: Optional[int] = None,
+    status: Optional[str] = None,
 ) -> dict:
     """振る舞いを更新する。active=Falseで無効化、active=Trueで再有効化。
     trigger_modeは'always'（全文常時注入）/'intelligently'（マニフェストのみ、
     詳細はget_habits(habit_id=...)でon-demand取得）のいずれか。descriptionは
-    intelligentlyのマニフェスト表示に使う要旨"""
+    intelligentlyのマニフェスト表示に使う要旨（100文字以内）。importance_scoreは
+    1(critical)/2(important)/3(default)のいずれかでマニフェスト表示順に使われる。
+    statusは'active'/'archived'のいずれかで、'archived'はマニフェストから除外される"""
     return habit_service.update_habit(
         habit_id,
         content=content,
         active=active,
         trigger_mode=trigger_mode,
         description=description,
+        importance_score=importance_score,
+        status=status,
     )
 
 
