@@ -2,6 +2,7 @@
 import os
 import tempfile
 import pytest
+import src.services.checkin_service as checkin_service
 from src.db import init_database, get_connection
 from src.services.activity_service import add_activity, update_activity
 from tests.helpers import add_decision, add_log, retract_decision
@@ -14,6 +15,7 @@ from src.services.checkin_service import (
     DECISIONS_FULL_LIMIT,
 )
 from src.services.hint_service import (
+    MARKER_RECOMPOSE_BOOTSTRAP,
     RECOMPOSE_BOOTSTRAP_THRESHOLD as _RECOMPOSE_HINT_BOOTSTRAP_THRESHOLD,
     RECOMPOSE_DELTA_THRESHOLD as _RECOMPOSE_HINT_DELTA_THRESHOLD,
 )
@@ -1054,6 +1056,19 @@ def _set_decision_created_at(decision_id: int, ts: str) -> None:
         conn.close()
 
 
+def _get_tag_notes(name: str, namespace: str = "domain") -> str:
+    """指定タグのnotesを別connで読み出す（commit有無の検証用）。"""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT notes FROM tags WHERE namespace = ? AND name = ?",
+            (namespace, name),
+        ).fetchone()
+        return row["notes"] or "" if row else ""
+    finally:
+        conn.close()
+
+
 def _make_activity_with_domain_tag() -> int:
     """domain:タグ DOMAIN_TAG を持つアクティビティを作成しIDを返す。
 
@@ -1289,3 +1304,36 @@ class TestRecomposeHints:
 
         assert "error" not in result
         assert "hints" not in result
+
+
+class TestRecomposeCooldownTransaction:
+    """hint取得後にcheck_in本体が失敗した場合のトランザクション境界のテスト"""
+
+    def test_cooldown_marker_not_committed_when_check_in_fails_after_hint(
+        self, temp_db, monkeypatch
+    ):
+        """_get_recompose_hints呼び出し後、check_in本体が例外で失敗した場合、
+        hintは応答されずDATABASE_ERRORになる一方、クールダウンマーカーの書き込みも
+        ロールバックされ、notesには残らないこと（hint未達のまま消費されない）"""
+        activity_id = _make_activity_with_domain_tag()
+        topic_id = _make_topic_with_domain_tag()
+        for i in range(_RECOMPOSE_HINT_BOOTSTRAP_THRESHOLD):
+            add_decision(decision=f"決定{i}", reason="理由", topic_id=topic_id)
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("boom after hint generation")
+
+        monkeypatch.setattr(checkin_service, "_build_summary", _boom)
+
+        result = check_in(activity_id)
+
+        assert result.get("error", {}).get("code") == "DATABASE_ERROR"
+        assert MARKER_RECOMPOSE_BOOTSTRAP not in _get_tag_notes(DOMAIN_TAG_NAME)
+
+        # マーカーがロールバックされているため、パッチを戻して再度check_inすれば
+        # hintが再発火する
+        monkeypatch.undo()
+        result_retry = check_in(activity_id)
+        assert "error" not in result_retry
+        assert "hints" in result_retry
+        assert any("蓄積しています" in h for h in result_retry["hints"])

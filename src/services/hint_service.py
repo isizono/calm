@@ -154,14 +154,14 @@ def _apply_cooldown_marker(
 ) -> str:
     """hint発火に伴い、対象tagのnotesへ日次クールダウンマーカーを書き込む。
 
+    conn共有版の規約に従い、commitは呼び出し元に委ねる（本関数はcommitしない）。
     _merge_cooldown_markerがno-opと判定した場合はDB書き込みを行わない。
-    書き込みが発生した場合のみcommitする。呼び出し元（_get_hints_for_tag）は
-    後続の判定で更新後のnotesを参照する必要があるため、返り値を使い回すこと。
+    呼び出し元（_get_hints_for_tag）は後続の判定で更新後のnotesを参照する必要が
+    あるため、返り値を使い回すこと。
     """
     new_notes = _merge_cooldown_marker(notes, marker, date.today())
     if new_notes != notes:
         _set_tag_notes_by_id_with_conn(conn, tag_id, new_notes)
-        conn.commit()
     return new_notes
 
 
@@ -245,11 +245,15 @@ def get_hints(scope: Scope, target_id: int) -> list[Hint]:
     """指定scope/target_idに該当するhintを返す。
 
     呼出側はorch-managed等のsuppress判定を別途行うこと。本moduleはDB状態のみで判定する。
+    本関数は自前のconnを所有するため、クールダウンマーカー書き込みのcommitは
+    ここで行う（conn共有版のget_hints_with_connはcommitしない）。
     """
     try:
         conn = get_connection()
         try:
-            return get_hints_with_conn(conn, scope, target_id)
+            hints = get_hints_with_conn(conn, scope, target_id)
+            conn.commit()
+            return hints
         finally:
             conn.close()
     except Exception as e:
