@@ -70,7 +70,9 @@ kind の全種一覧は `report_signal` ツールのdocstring（`src/main.py`）
 
 L5（バグ観察、add_logs 対象）との違い: L5 はユーザーが取り組んでいる対象システムのバグ。cc-memory 自身の不具合・違和感は report_signal。
 
-## 5. 呼び出し元別の適用範囲
+## 5. 呼び出し元別の記録先カテゴリ
+
+以下は各呼び出し元が実際に使う記録先カテゴリの運用上の対応表であり、0章で述べた「本ドキュメントへの直接参照の有無」とは別軸である。sync-memory skill は本ドキュメントを直接参照しないが、記録先カテゴリとしては log/material/decision/report_signal のすべてを扱う（decision は sync-memory 側の Step 4 に判定基準がインラインで存在する）。
 
 | 呼び出し元 | 対象カテゴリ |
 |---|---|
