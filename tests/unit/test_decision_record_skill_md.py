@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.helpers import all_tool_descriptions
+
 SKILL_MD = (
     Path(__file__).resolve().parent.parent.parent
     / "skills"
@@ -14,10 +16,22 @@ SKILL_MD = (
     / "SKILL.md"
 )
 
+SYNC_MEMORY_SKILL_MD = (
+    Path(__file__).resolve().parent.parent.parent
+    / "skills"
+    / "sync-memory"
+    / "SKILL.md"
+)
+
 
 @pytest.fixture
 def skill_md() -> str:
     return SKILL_MD.read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def sync_memory_skill_md() -> str:
+    return SYNC_MEMORY_SKILL_MD.read_text(encoding="utf-8")
 
 
 class TestDecisionRecordSkillFrontmatter:
@@ -109,6 +123,30 @@ class TestDecisionRecordSkillPrecedentFormat:
         assert "soft validation" in skill_md
         assert "拒否" in skill_md
 
+    def test_references_canonical_format_doc(self, skill_md):
+        # 書式の正本はdocs/precedent-format.mdであり、本スキルは複製しない
+        assert "docs/precedent-format.md" in skill_md
+        assert "正本" in skill_md
+
+    def test_does_not_duplicate_full_template(self, skill_md):
+        # precedent-format.md固有のプレースホルダ付きfenced templateを複製していないこと
+        assert "<案の要約>: <却下理由>" not in skill_md
+        assert "<対象コミットSHA・バージョン等>" not in skill_md
+
+    def test_mentions_near_miss_headings(self, skill_md):
+        # precedent_warningsの原因診断として近似見出し（docs/precedent-format.md 4章）に触れる
+        for near_miss in (
+            "却下例",
+            "棄却案",
+            "不採用案",
+            "適用範囲",
+            "対象外",
+            "検証済み",
+            "rejected",
+            "scope",
+        ):
+            assert near_miss in skill_md, f"近似見出し '{near_miss}' への言及が無い"
+
 
 class TestDecisionRecordSkillContradiction:
     def test_contradiction_section_exists(self, skill_md):
@@ -125,3 +163,42 @@ class TestDecisionRecordSkillBoundaries:
 
     def test_sync_memory_relation_section(self, skill_md):
         assert "## sync-memory との関係" in skill_md
+
+
+class TestDecisionRecordSyncMemoryCanonicalSource:
+    """decision-record ⇔ sync-memory 間の重複記述に正本規定があることを検証する。
+
+    sync-memory は本スキルの発動を前提とせず単体で完結する必要があるため
+    合意判定基準・[議論中]記録基準を意図的にインラインで残す（docs/recording-taxonomy.md
+    の「各skill本文は自己完結」方針と同じ）。重複そのものは許容するが、食い違った
+    場合にどちらを正とするかの規定が両ファイルに要る。
+    """
+
+    def test_decision_record_declares_itself_canonical(self, skill_md):
+        assert "正本とする" in skill_md
+        assert "sync-memory" in skill_md
+
+    def test_sync_memory_step4_references_decision_record(self, sync_memory_skill_md):
+        assert "### 4. 決定事項・ログの記録" in sync_memory_skill_md
+        assert "decision-record" in sync_memory_skill_md
+        assert "合意判定基準" in sync_memory_skill_md
+
+    def test_sync_memory_step6_references_decision_record(self, sync_memory_skill_md):
+        assert "### 6. 未決定の論点を記録" in sync_memory_skill_md
+        assert "未決論点の記録" in sync_memory_skill_md
+
+
+class TestAddDecisionsToolGatedByDecisionRecordSkill:
+    """add_decisionsのdocstringにdecision-record skillへの誘導があることを検証する。
+
+    add_logsのdocstring（recording skillへの誘導）と対称にする。
+    """
+
+    def test_add_decisions_mentions_decision_record_skill(self):
+        desc = all_tool_descriptions()["add_decisions"]
+        assert "decision-record" in desc
+
+    def test_add_logs_mentions_recording_skill(self):
+        # 対称性の回帰確認: add_logs側の既存の誘導文言が壊れていないこと
+        desc = all_tool_descriptions()["add_logs"]
+        assert "recording" in desc

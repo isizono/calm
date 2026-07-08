@@ -348,6 +348,8 @@ def add_logs(items: list[dict]) -> dict:
 def add_decisions(items: list[dict], ctx: Context) -> dict:
     """複数の決定事項を一括記録する（最大10件）。
 
+    呼び出し前に decision-record skill の判断ガイドを通すこと。
+
     items: 決定事項情報の配列。各要素は以下のキーを持つ:
         - topic_id (int, 必須): 関連するトピックのID
         - decision (str, 必須): 決定内容
