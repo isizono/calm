@@ -595,6 +595,29 @@ class TestBacklogReviewDue:
         hints = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
         assert [h for h in hints if h["type"] == "backlog_review_due"] == []
 
+    def test_other_domain_material_not_counted_toward_cc_memory(self, temp_db):
+        """他domainのimprovement-backlog付きmaterialがcc-memory向けの集計に混入しないこと。
+
+        materialはtopic継承を持たず直付けタグのみでスコープ判定するためlogとは別クエリを
+        通る。cc-memory側はしきい値未満のlogのみとし、他domainを直付けしたmaterialを
+        追加してもcc-memory向けhintが発火しないことを確認する。
+        """
+        cc_topic = add_topic(title="t", description="d", tags=[CC_MEMORY_DOMAIN_TAG])
+
+        for i in range(BACKLOG_REVIEW_THRESHOLD - 1):
+            add_log(
+                cc_topic["topic_id"], title=f"cc要望{i}", content="c",
+                tags=["improvement-backlog"],
+            )
+        add_material(
+            title="他domain要望material", content="c",
+            tags=["improvement-backlog", DOMAIN_TAG],
+            source="test",
+        )
+
+        hints = get_hints("tag", _tag_id("cc-memory"))
+        assert [h for h in hints if h["type"] == "backlog_review_due"] == []
+
     def test_other_domain_items_not_counted_toward_cc_memory(self, temp_db):
         """他domainのimprovement-backlog項目がcc-memory向けの集計に混入しないこと。
 
