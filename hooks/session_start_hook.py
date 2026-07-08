@@ -4,6 +4,8 @@
 - アクティビティ一覧（active = in_progress + pending）
 - 振る舞い（active=1）
 - コンテキスト取得フロー・補助ツール認知（静的テキスト）
+- relay確認を促す静的ガイド（静的テキスト）
+- relay inbox未読件数（identity解決に成功した場合のみ、動的）
 """
 import json
 import sys
@@ -477,6 +479,16 @@ _CONTEXT_FLOW_GUIDE = """\
 - リレーションタイプ `supersedes`・`depends_on`（`add_relation`で設定）: 差し替えられたdecisionやブロッカーのあるアクティビティの管理に使う
 """
 
+_RELAY_CHECK_GUIDE = """\
+# relay
+
+セッション開始時に `relay_receive` で他セッションからの未読メッセージがないか確認してください。
+まず `peek=True` で呼び、内容を確認して必要なら add_logs/add_material 等で保存してください。
+保存できたことを確認してから、同じ呼び出しを `peek=False`（既定）で呼び直して既読化して
+ください。既定の `peek=False` は consume（既読化）のため、保存前に処理が中断すると
+その内容は再取得できません。
+"""
+
 
 def _build_session_context(session_id: str | None = None) -> str:
     """サービス層経由でセッション開始時のコンテキストを組み立てる。
@@ -509,6 +521,7 @@ def _build_session_context(session_id: str | None = None) -> str:
 
         # 静的セクション（DB不要）
         sections.append(_CONTEXT_FLOW_GUIDE)
+        sections.append(_RELAY_CHECK_GUIDE)
 
         context = "\n".join(sections)
         return context

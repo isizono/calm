@@ -1,6 +1,6 @@
 ---
 name: postmortem
-description: completedアクティビティを選択し、行動を1ステップずつ振り返って教訓を永続化するポストモーテム
+description: completedアクティビティを選択し、行動を1ステップずつ振り返って教訓を永続化するポストモーテム。「/postmortem」「ポストモーテムやろう」「振り返りしたい」「反省会」「この作業を振り返りたい」など、完了した作業の振り返り意図で発動する。完了操作そのもの（activity-finish）や記録の同期（sync-memory）には発動しない。
 ---
 
 # ポストモーテム
@@ -11,6 +11,7 @@ completedアクティビティの行動を時系列で振り返り、ユーザ�
 
 1. 引数で `activity_id` が指定されていればそのまま使う
 2. 指定されていなければ `get_activities(status="completed", limit=15, orch_managed=False)` で一覧を表示し、ユーザーに選んでもらう
+3. 一覧はタイトルのみで提示し、内部IDは表示しない
 
 ## 2. ポストモーテムアクティビティの作成
 

@@ -4,6 +4,7 @@ import sqlite3
 from typing import Optional, Union
 
 from src.db import get_connection
+from src.services.relay.entity_publish import bump_updated_at_and_publish_with_conn
 from src.services.supersede_service import get_superseded_by_batch
 from src.services.tag_service import parse_tag, resolve_tag_ids
 
@@ -216,6 +217,11 @@ def add_pin(
             "INSERT OR IGNORE INTO pins (source_type, source_id, target_type, target_id) VALUES (?, ?, ?, ?)",
             (source_type, source_id, target_type, target_id),
         )
+        # 実際に新規追加された（冪等な再呼び出しでない）ときのみ、pin自体は独立
+        # publishせずsource/target両entityをevent:updatedでpublishする
+        if conn.execute("SELECT changes()").fetchone()[0] > 0:
+            bump_updated_at_and_publish_with_conn(conn, source_type, source_id)
+            bump_updated_at_and_publish_with_conn(conn, target_type, target_id)
         conn.commit()
 
         result = {
@@ -316,6 +322,9 @@ def remove_pin(
             "DELETE FROM pins WHERE source_type=? AND source_id=? AND target_type=? AND target_id=?",
             (source_type, source_id, target_type, target_id),
         )
+        if cursor.rowcount > 0:
+            bump_updated_at_and_publish_with_conn(conn, source_type, source_id)
+            bump_updated_at_and_publish_with_conn(conn, target_type, target_id)
         conn.commit()
 
         return {"removed": cursor.rowcount}

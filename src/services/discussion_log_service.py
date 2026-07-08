@@ -5,6 +5,7 @@ from typing import Optional
 from src.db import get_connection, row_to_dict
 from src.services.citations_service import upsert_citations_for_owner_with_conn
 from src.services.readable_id import apply_readable_id_inplace
+from src.services.budget_service import count_entities_for_topics
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.tag_service import (
     validate_and_parse_tags,
@@ -14,6 +15,7 @@ from src.services.tag_service import (
     get_effective_tags_batch_by_ids,
 )
 from src.services.relation_service import _add_relation_with_conn
+from src.services.relay.entity_publish import publish_entity_event_with_conn
 
 
 def _auto_generate_title(content: str) -> str | None:
@@ -117,6 +119,10 @@ def add_logs(items: list[dict]) -> dict:
                     conn, "log", log_id, content=content
                 )
 
+                publish_entity_event_with_conn(
+                    conn, entity_type="log", entity_id=log_id, event="created"
+                )
+
                 conn.execute(f"RELEASE SAVEPOINT item_{i}")
                 # topic_id は API 互換のため返す (DB カラムは 0047 で物理削除済み、
                 # 親 topic 情報は relations.belongs_to が正)
@@ -181,6 +187,23 @@ def add_logs(items: list[dict]) -> dict:
         conn.close()
 
 
+def _count_logs_for_topics(
+    conn: sqlite3.Connection,
+    topic_ids: list[int],
+    log_retract_filter: str,
+    id_bound: Optional[tuple[str, int]] = None,
+) -> int:
+    """topic_ids にbelongs_toするlog件数（DISTINCTで重複除外）を返す。
+
+    id_bound=None なら topic 全体の総件数（start_id/limit の影響を受けない）。
+    id_bound=(op, value) を渡すと `l.id op value` の範囲制約を追加する（op は内部
+    生成の ">=" / "<=" リテラルのみ）。ページの残件数算出に使う。
+    """
+    return count_entities_for_topics(
+        conn, "discussion_logs", "l", "log", topic_ids, log_retract_filter, id_bound
+    )
+
+
 def get_logs(
     entity_type: str,
     entity_id: int,
@@ -204,6 +227,9 @@ def get_logs(
         entity_type == "activity" のとき、各 item は `topic_id` フィールドを含まない
         (複数 topic に belongs_to する場合に「主たる親」を一意に決められないため、
          呼び出し側で必要なら relations.belongs_to を別途 query する設計)。
+        total_count: 対象 topic 全体の log 総件数（retractフィルタ適用後、limit/start_idの影響を受けない）
+        truncated: この応答が limit/start_id により後続の log を打ち切ったとき true
+            （＝続きのページが存在する）
     """
     retract_filter = "" if include_retracted else " AND retracted_at IS NULL"
 
@@ -265,7 +291,19 @@ def get_logs(
                 apply_readable_id_inplace(item, "log")
                 logs.append(item)
 
-            return {"logs": logs}
+            total_count = _count_logs_for_topics(conn, [topic_id], log_retract_filter)
+            if start_id is None:
+                remaining_count = total_count
+            else:
+                remaining_count = _count_logs_for_topics(
+                    conn, [topic_id], log_retract_filter, id_bound=(">=", start_id)
+                )
+
+            return {
+                "logs": logs,
+                "total_count": total_count,
+                "truncated": len(logs) < remaining_count,
+            }
 
         elif entity_type == "activity":
             # activity → related topics（上限10件）→ logs集約
@@ -276,7 +314,7 @@ def get_logs(
             topic_ids = [r["target_id"] for r in relation_rows if r["target_type"] == "topic"][:10]
 
             if not topic_ids:
-                return {"logs": []}
+                return {"logs": [], "total_count": 0, "truncated": False}
 
             placeholders = ",".join("?" * len(topic_ids))
             log_retract_filter = retract_filter.replace("retracted_at", "l.retracted_at")
@@ -328,7 +366,19 @@ def get_logs(
                 apply_readable_id_inplace(item, "log")
                 logs.append(item)
 
-            return {"logs": logs}
+            total_count = _count_logs_for_topics(conn, topic_ids, log_retract_filter)
+            if start_id is None:
+                remaining_count = total_count
+            else:
+                remaining_count = _count_logs_for_topics(
+                    conn, topic_ids, log_retract_filter, id_bound=("<=", start_id)
+                )
+
+            return {
+                "logs": logs,
+                "total_count": total_count,
+                "truncated": len(logs) < remaining_count,
+            }
 
         else:
             return {

@@ -124,18 +124,43 @@ class TestSubscribe:
         assert stub.counter == 0
 
     @pytest.mark.parametrize(
-        "entity_type", ["topic", "activity", "decision", "log", "material"]
+        "entity_type",
+        ["topic", "activity", "decision", "log", "material", "tag", "habit"],
     )
-    def test_core_entity_prefix_rejected(self, monkeypatch, entity_type):
-        """cc-memory の中核 entity namespace は relay_publish と同様に拒否される。"""
+    def test_core_entity_prefix_is_accepted(self, monkeypatch, entity_type):
+        """cc-memory の予約 namespace は relay_publish と異なり subscribe では許可される。
+
+        entity 更新 → relay publish の labels（例: ["activity:1183", "event:updated"]）を
+        購読するのに必要（material 522 D.5）。
+        """
         stub = SubscriptionStub()
         stub.install(monkeypatch)
         result = service.relay_subscribe(
             ["task:build", f"{entity_type}:1"], caller_session_id="sess-1"
         )
-        assert result["error"]["code"] == "validation"
-        assert f"{entity_type}:" in result["error"]["message"]
-        assert stub.counter == 0
+        assert "error" not in result
+        assert stub.counter == 1
+
+    @pytest.mark.parametrize("meta_namespace", ["entity", "event"])
+    def test_meta_namespace_is_accepted(self, monkeypatch, meta_namespace):
+        stub = SubscriptionStub()
+        stub.install(monkeypatch)
+        result = service.relay_subscribe(
+            [f"{meta_namespace}:decision"], caller_session_id="sess-1"
+        )
+        assert "error" not in result
+
+    def test_entity_publish_subscribe_examples_from_spec(self, monkeypatch):
+        """material 522 D.5 の購読例が通ることを確認する。"""
+        stub = SubscriptionStub()
+        stub.install(monkeypatch)
+        for labels in (
+            ["activity:1183", "event:updated"],
+            ["domain:cc-memory", "entity:activity", "event:updated"],
+            ["entity:decision", "event:retracted"],
+        ):
+            result = service.relay_subscribe(labels, caller_session_id="sess-1")
+            assert "error" not in result, result
 
     def test_missing_token_returns_explicit_error(self, monkeypatch):
         stub = SubscriptionStub()

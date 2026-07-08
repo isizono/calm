@@ -1,6 +1,6 @@
 ---
 name: sync-memory
-description: セッション終了前にtranscriptを解析し、トピック・決定事項・ログ・アクティビティを一括で記録・更新する
+description: セッション終了前にtranscriptを解析し、トピック・決定事項・ログ・アクティビティを一括で記録・更新する。「/sync-memory」「同期して」「今日の分を記録して」「セッション終わるから残しておいて」など、セッション内容の一括記録の意図で発動する。個別の経緯・成果物のその場記録はrecordingが担当する。
 ---
 
 # sync-memory
@@ -112,6 +112,8 @@ transcriptを解析し、議論されたテーマを特定する。
 - AIの提案に対して明示的な同意があった
 - 「〜で決定」「〜に決めた」等の表現がある
 
+（正本は `decision-record` skill の「合意判定基準」節。本ステップの記述と食い違う場合はそちらに従う）
+
 **ログの記録対象（議論の流れ・判断プロセス）:**
 - 議論の流れ（ユーザーの発言とAIの応答の要点）
 - 検討した選択肢とその比較
@@ -133,8 +135,8 @@ transcriptを解析し、議論されたテーマを特定する。
 - **記録したdecisionの中に、今後の作業や継続議論を伴うものがあれば、対応するアクティビティを `add_activity` で作成する**（Step 2で未登録の場合）
 
 cc-memory自身の不具合・使用感の違和感・既存記録との矛盾に気づいた場合は
-add_logs ではなく report_signal を使う（詳細は `docs/recording-taxonomy.md`
-4章、kind一覧は `report_signal` ツールのdocstringを正とする）。
+add_logs ではなく report_signal を使う（kind一覧は `report_signal` ツールの
+docstringを正とする）。
 
 **reasonの定型節（任意、書式は `docs/precedent-format.md`）:**
 
@@ -167,6 +169,8 @@ add_logs ではなく report_signal を使う（詳細は `docs/recording-taxono
 ### 6. 未決定の論点を記録 (add_decision)
 
 議論が途中で終わった論点・アイデア・検討事項を記録する。**決定していなくても記録する**。
+
+`[議論中]` の記録基準の正本は `decision-record` skill の「未決論点の記録: `[議論中]`」節であり、本ステップの記述と食い違う場合はそちらに従う。`[未完]` はアクティビティ側の関心事であり、Step 7 で扱う。
 
 **記録すべきもの:**
 - 議論に出たが結論が出ていない論点

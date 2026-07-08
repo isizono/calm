@@ -21,6 +21,7 @@ from src.services import (
     timeline_service,
     precedent_pull_service,
     signal_service,
+    budget_service,
 )
 from src.services.checkin_service import check_in as _check_in
 from src.services.relay import service as relay_session_service
@@ -348,6 +349,8 @@ def add_logs(items: list[dict]) -> dict:
 def add_decisions(items: list[dict], ctx: Context) -> dict:
     """複数の決定事項を一括記録する（最大10件）。
 
+    呼び出し前に decision-record skill の判断ガイドを通すこと。
+
     items: 決定事項情報の配列。各要素は以下のキーを持つ:
         - topic_id (int, 必須): 関連するトピックのID
         - decision (str, 必須): 決定内容
@@ -437,7 +440,12 @@ def get_logs(
 
     Returns:
         議論ログ一覧（各logにtags付き）
-        entity_type == "activity" の場合はrelated topics経由でlogs集約
+        entity_type == "activity" の場合はrelated topics（上限10件）経由でlogs集約。
+            related topics が10件を超える場合、11件目以降の topic に属する log は
+            total_count / truncated の対象外（この上限による切り捨ては可視化されない）
+        total_count: 対象 topic 全体の log 総件数（retractフィルタ適用後、limit/start_idの影響を受けない）
+        truncated: この応答が limit/start_id により後続の log を打ち切ったとき true
+            （＝続きのページが存在する）
     """
     flavor = _normalize_flavor(flavor)
     result = discussion_log_service.get_logs(entity_type, entity_id, start_id, limit, include_retracted=include_retracted)
@@ -1321,9 +1329,10 @@ def add_habit(content: str) -> dict:
 
 
 @mcp.tool()
-def get_habits() -> dict:
-    """登録済みの振る舞い一覧を取得する"""
-    return habit_service.get_habits()
+def get_habits(active: bool = True) -> dict:
+    """登録済みの振る舞い一覧を取得する。既定でactive=1のみ返す。無効化済みも含む全件が
+    欲しいときはactive=Falseを渡す"""
+    return habit_service.get_habits(active=active)
 
 
 @mcp.tool()
@@ -1470,19 +1479,23 @@ def get_config() -> dict:
     read_tool_limitsはtool呼び出し前にレスポンスサイズを見積もるための既定上限一覧。
     search/get_logs/get_decisions/get_timelineの上限は各serviceにハードコードされており
     環境変数では変更できない（precedent_budget_charsのみCCM_PRECEDENT_BUDGET_CHARSで変更可）。
+    budget_defaultsはbudget_serviceが把握する予算関連の既定値一覧（同じくsrc.configから読む）。
+    recency_decay_rate/precedent_budget_chars（トップレベル）はbudget_defaultsと同じ値を指す
+    後方互換フィールドで、定義元はbudget_service.BUDGET_DEFAULTS（重複ハードコードを避ける）。
     """
     from src import config
     return {
         "heartbeat_timeout": config.HEARTBEAT_TIMEOUT_MINUTES,
         "in_progress_limit": config.IN_PROGRESS_LIMIT,
         "pending_limit": config.PENDING_LIMIT,
-        "recency_decay_rate": config.RECENCY_DECAY_RATE,
+        "recency_decay_rate": budget_service.BUDGET_DEFAULTS["recency_decay_rate"],
         "sync_disable_retrospective": config.SYNC_DISABLE_RETROSPECTIVE,
         "sync_policy": config.SYNC_POLICY,
         "snapshot_interval_hours": config.SNAPSHOT_INTERVAL_HOURS,
         "snapshot_max_count": config.SNAPSHOT_MAX_COUNT,
         "snapshot_anomaly_threshold": config.SNAPSHOT_ANOMALY_THRESHOLD,
-        "precedent_budget_chars": config.PRECEDENT_BUDGET_CHARS,
+        "precedent_budget_chars": budget_service.BUDGET_DEFAULTS["precedent_budget_chars"],
+        "budget_defaults": budget_service.BUDGET_DEFAULTS,
         "read_tool_limits": {
             "search": {"default": 10, "max": 50},
             "get_logs": {"default": 30, "max": 30},
@@ -1660,9 +1673,10 @@ def relay_publish(labels: list[str], body: str, title: str | None = None) -> dic
 
     送信者の handle: label が自動付与される。labels には routing 系（handle:/room:/task:）と
     cc-memory の tag namespace（domain:/intent: 等）を併用でき、これらのみでも有効。未知
-    prefix も不透明 label として受理する。role:（廃止済み namespace）と cc-memory の中核
-    entity namespace（topic:/activity:/decision:/log:/material:。実在チェックなしの不透明
-    文字列にしかならないため予約済み）は指定するとエラー。
+    prefix も不透明 label として受理する。role:（廃止済み namespace）と cc-memory の予約
+    namespace（entity:/event:/topic:/activity:/decision:/log:/material:/tag:/habit:。
+    entity 更新の relay publish が使う namespace で、実在チェックなしの不透明文字列に
+    しかならないため予約済み）は指定するとエラー。
 
     配布した内容は cc-memory 本体（search/get_timeline/pull_precedents 等）には自動で
     反映されない。受信側が後から参照できる形で残したい場合は、受信後に add_logs/
@@ -1699,8 +1713,11 @@ def relay_subscribe(labels: list[str]) -> dict:
     （直接メッセージ）のみの購読になる。同一 labels 集合での再呼び出しは冪等で、lease が
     有効なら既存の購読をそのまま返し、失効していれば新規に購読し直して差し替える。
     lease 更新・再接続・購読解除は server 側で自動管理される（呼び出し側の操作は不要）。
-    role:（廃止済み namespace）と cc-memory の中核 entity namespace
-    （topic:/activity:/decision:/log:/material:）は relay_publish と同様に指定するとエラー。
+    role:（廃止済み namespace）は relay_publish と同様に指定するとエラー。cc-memory の
+    予約 namespace（entity:/event:/topic:/activity:/decision:/log:/material:/tag:/
+    habit:）は relay_publish と異なりここでは許可される（entity 更新の relay publish を
+    購読するために必要。例: ["activity:1183", "event:updated"] で activity 1183 の
+    状態遷移を購読、["entity:decision", "event:retracted"] で全 decision の retract を購読）。
 
     新規に購読が作られた場合（reused: false）、server 内の常駐 SSE 接続へ即座に反映指示を
     送る。実際の反映は次に SSE フレーム（実メッセージだけでなく keepalive のコメント

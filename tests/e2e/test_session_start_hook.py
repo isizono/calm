@@ -1130,6 +1130,24 @@ class TestSessionStartHookSignals:
         assert "未トリアージのシグナル" not in context
 
 
+class TestSessionStartHookRelayCheckGuide:
+    """relay確認を促す静的ガイドのテスト
+
+    hookは実プロセスとしてsubprocess経由で起動され、MCPリクエストコンテキストを
+    一切持たない。そのためget_relay_identity()は常にNoneへ解決し、未読件数を
+    hook側で数えて表示することはできない。代わりに、identity解決に依存しない
+    静的な指示（relay_receiveを呼んで確認するようアシスタントに促す）を常に
+    注入する。
+    """
+
+    def test_relay_check_guide_always_present(self, temp_db):
+        """relay状態の有無によらず、確認を促す静的ガイドが常に出る"""
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "relay_receive" in context
+
+
 class TestSessionStartHookRelayInbox:
     """relay inbox未読件数 + Monitor監視指示の表示テスト
 
