@@ -44,7 +44,7 @@ _RESERVED_LABEL_PREFIXES = tuple(
     sorted(f"{entity_type}:" for entity_type in PUBLISH_ENTITY_TYPES) + ["entity:", "event:"]
 )
 
-# 1 つの label string の上限文字数（decision 3074 D.1）。
+# 1 つの label string の上限文字数。
 MAX_LABEL_CHARS = 200
 
 # relay_post の ttl 許容範囲（秒）。

@@ -390,7 +390,7 @@ def _remove_supersedes_with_conn(conn: sqlite3.Connection, source_id: int, targe
 def _bump_and_publish_endpoints_with_conn(
     conn: sqlite3.Connection, source_type: str, source_id: int, targets: list[dict]
 ) -> None:
-    """add_relation/remove_relationのsource + target各entityをbump+publishする（decision 3065）。
+    """add_relation/remove_relationのsource + target各entityをbump+publishする。
 
     relation自体は独立publishせず、source/target両方のentityのupdated_atを進めて
     event:updatedとしてpublishすることで代替する。呼び出し元が実際に変化があった

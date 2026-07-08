@@ -643,7 +643,7 @@ def update_activity(
         if status is None and old_status == "snoozed":
             status = "pending"
 
-        # publish判定（decision 3076）: statusはold_status != new_statusの遷移時のみ、
+        # publish判定: statusはold_status != new_statusの遷移時のみ、
         # 他フィールド（title/description/tags/orch_managed）はno-op含めて無条件でpublish対象。
         # statusはsnoozed自動復活後の値（上のブロック）で判定するため、自動復活も遷移として拾う。
         should_publish = (

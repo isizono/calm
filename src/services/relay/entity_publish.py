@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 EventType = Literal["created", "updated", "retracted"]
 
 # ref.type として publish 対象になる entity 種別と、対応する DB テーブル名
-# （decision 3065 A.2、cc-memory 内呼称と完全一致）。
+# （cc-memory 内呼称と完全一致）。
 ENTITY_TABLE_MAP: dict[str, str] = {
     "decision": "decisions",
     "log": "discussion_logs",
@@ -44,7 +44,7 @@ _TAG_JUNCTION: dict[str, tuple[str, str]] = {
     "material": ("material_tags", "material_id"),
 }
 
-# 1 hop 親方向の ID 参照（decision 3058 A.4.3）を relations 経由で引く対象。
+# 1 hop 親方向の ID 参照を relations 経由で引く対象。
 # topic は階層の最上位で親を持たないため除外する（除外しないと relations_view の
 # 対称展開で「この topic に属する全 entity」を親扱いしてしまい、publish のたびに
 # 件数が entity 数に比例して膨張する）。tag/habit は relations テーブルに現れない
@@ -54,7 +54,7 @@ _ONE_HOP_PARENT_TARGET_TYPES = ("topic", "activity", "material", "decision", "lo
 
 
 def _one_hop_parent_labels(conn: sqlite3.Connection, entity_type: str, entity_id: int) -> list[str]:
-    """1 hop 親方向の ID を labels として返す（N hop transitive は含めない、decision 3058）。"""
+    """1 hop 親方向の ID を labels として返す（N hop transitive は含めない）。"""
     if entity_type not in _ONE_HOP_PARENT_LOOKUP_TYPES:
         return []
     placeholders = ",".join("?" * len(_ONE_HOP_PARENT_TARGET_TYPES))
@@ -67,7 +67,7 @@ def _one_hop_parent_labels(conn: sqlite3.Connection, entity_type: str, entity_id
 
 
 def _build_title(conn: sqlite3.Connection, entity_type: str, entity_id: int) -> Optional[str]:
-    """A.4.4 の表に従い title を組み立てる（200 UTF-8 chars で truncate、publisher 側責務）。"""
+    """entity 種別ごとの取得元から title を組み立てる（200 UTF-8 chars で truncate、publisher 側責務）。"""
     if entity_type == "tag":
         row = conn.execute(
             "SELECT namespace, name FROM tags WHERE id = ?", (entity_id,)
@@ -165,12 +165,10 @@ def bump_updated_at_and_publish_with_conn(
     conn: sqlite3.Connection, entity_type: str, entity_id: int
 ) -> Optional[int]:
     """relation/pin の add/remove 用: entity の updated_at を（カラムがあれば）進めて
-    event:updated を publish する（decision 3065: relation/pin 自体は独立 publish
-    せず、source/target 両方の entity 側で表現する）。
+    event:updated を publish する。
 
-    updated_at カラムを持たない entity 種別（decisions/discussion_logs/
-    discussion_topics/tags/habits）は UPDATE 文をスキップし publish のみ行う
-    （該当テーブルに存在しないカラムへの UPDATE はできないための縮退）。
+    updated_at カラムは activities/materials にしか存在しないため、他の entity
+    種別は UPDATE 文をスキップし publish のみ行う。
     """
     if entity_type in _HAS_UPDATED_AT_COLUMN:
         table = ENTITY_TABLE_MAP[entity_type]

@@ -116,7 +116,7 @@ def ensure_tag_ids(conn: sqlite3.Connection, parsed_tags: list[tuple[str, str]])
     connを受け取り、呼び出し元のトランザクション内で動作する。
     エイリアスタグの場合はcanonical側のIDを返す。
     新規にINSERTされたタグ（未使用だったnamespace:name）はrelay publish
-    （entity:tag, event:created）の対象にする（decision 3075）。
+    （entity:tag, event:created）の対象にする。
     """
     if not parsed_tags:
         return []

@@ -218,7 +218,7 @@ def add_pin(
             (source_type, source_id, target_type, target_id),
         )
         # 実際に新規追加された（冪等な再呼び出しでない）ときのみ、pin自体は独立
-        # publishせずsource/target両entityをevent:updatedでpublishする（decision 3065）
+        # publishせずsource/target両entityをevent:updatedでpublishする
         if conn.execute("SELECT changes()").fetchone()[0] > 0:
             bump_updated_at_and_publish_with_conn(conn, source_type, source_id)
             bump_updated_at_and_publish_with_conn(conn, target_type, target_id)
