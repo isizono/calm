@@ -64,9 +64,10 @@ class TestDecisionRecordSkillOpenIssues:
     def test_open_issue_no_agreement_needed(self, skill_md):
         assert "合意なしに記録してよい" in skill_md
 
-    def test_mikan_prefix_out_of_scope(self, skill_md):
-        # [未完] は activity 側の概念であり本スキルの対象外である旨
+    def test_mikan_prefix_mentioned_neutrally(self, skill_md):
+        # [未完] を「decisionでは使わない」と否定せず、sync-memory側の整理観点として言及する
         assert "[未完]" in skill_md
+        assert "sync-memory" in skill_md
 
 
 class TestDecisionRecordSkillQualityBar:
@@ -102,6 +103,11 @@ class TestDecisionRecordSkillPrecedentFormat:
 
     def test_response_echo_check(self, skill_md):
         assert "precedent_warnings" in skill_md
+
+    def test_warnings_are_soft_validation(self, skill_md):
+        # warningがあってもdecision作成自体は拒否されないことの明記
+        assert "soft validation" in skill_md
+        assert "拒否" in skill_md
 
 
 class TestDecisionRecordSkillContradiction:
