@@ -562,8 +562,10 @@ class TestBacklogReviewDue:
                 topic["topic_id"], title=f"要望{i}", content="c",
                 tags=["improvement-backlog"],
             )
+        # materialはtopic継承を持たないため、domainタグを直付けする
         add_material(
-            title="要望material", content="c", tags=["improvement-backlog"],
+            title="要望material", content="c",
+            tags=["improvement-backlog", CC_MEMORY_DOMAIN_TAG],
             source="test",
         )
 
@@ -591,4 +593,27 @@ class TestBacklogReviewDue:
             )
 
         hints = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        assert [h for h in hints if h["type"] == "backlog_review_due"] == []
+
+    def test_other_domain_items_not_counted_toward_cc_memory(self, temp_db):
+        """他domainのimprovement-backlog項目がcc-memory向けの集計に混入しないこと。
+
+        cc-memory側はしきい値未満だが、他domain側の件数を合算すればしきい値に
+        届く状況を作り、それでもcc-memory向けhintが発火しないことを確認する。
+        """
+        cc_topic = add_topic(title="t", description="d", tags=[CC_MEMORY_DOMAIN_TAG])
+        other_topic = add_topic(title="t2", description="d2", tags=[DOMAIN_TAG])
+
+        for i in range(BACKLOG_REVIEW_THRESHOLD - 1):
+            add_log(
+                cc_topic["topic_id"], title=f"cc要望{i}", content="c",
+                tags=["improvement-backlog"],
+            )
+        for i in range(5):
+            add_log(
+                other_topic["topic_id"], title=f"他要望{i}", content="c",
+                tags=["improvement-backlog"],
+            )
+
+        hints = get_hints("tag", _tag_id("cc-memory"))
         assert [h for h in hints if h["type"] == "backlog_review_due"] == []

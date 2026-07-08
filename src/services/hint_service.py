@@ -83,6 +83,15 @@ RECOMPOSE_DELTA_THRESHOLD = 50
 LOGS_SPARSE_LOG_THRESHOLD = 5
 
 
+# --- backlog_review_due 固有のタグ識別子 ---
+
+BACKLOG_REVIEW_DOMAIN_NAMESPACE = "domain"
+BACKLOG_REVIEW_DOMAIN_NAME = "cc-memory"
+BACKLOG_REVIEW_DOMAIN_TAG = f"{BACKLOG_REVIEW_DOMAIN_NAMESPACE}:{BACKLOG_REVIEW_DOMAIN_NAME}"
+BACKLOG_TAG_NAME = "improvement-backlog"
+BACKLOG_TRIAGED_TAG_NAME = "improvement-backlog-triaged"
+
+
 # --- 抑制マーカー ---
 
 MARKER_RECOMPOSE_GENERIC = "#recompose-skipped"
@@ -185,7 +194,7 @@ def _direction_overflow_message(tag_name: str, count: int) -> str:
 def _backlog_review_message(count: int) -> str:
     return (
         f"要望会タイミングです（未処理{count}件）。/backlog-review で着手してください。"
-        f"今は都合が悪い場合、domain:cc-memoryのtag notesに"
+        f"今は都合が悪い場合、{BACKLOG_REVIEW_DOMAIN_TAG}のtag notesに"
         f"「{MARKER_BACKLOG_REVIEW}-until:YYYY-MM-DD」（任意の未来日）を追記すると、"
         f"その日まで一時的に黙らせられます。恒久的に不要なら日付なしの"
         f"「{MARKER_BACKLOG_REVIEW}」を追記してください。"
@@ -318,25 +327,54 @@ def _get_hints_for_tag(conn: sqlite3.Connection, tag_id: int) -> list[Hint]:
                 "delivery_hint": "immediate",
             })
 
-    if tag_name == "domain:cc-memory" and not _is_marker_active(notes, MARKER_BACKLOG_REVIEW):
-        untriaged = _count_untriaged_backlog_items(conn)
-        if untriaged >= BACKLOG_REVIEW_THRESHOLD:
-            hints.append({
-                "type": "backlog_review_due",
-                "severity": "info",
-                "message": _backlog_review_message(untriaged),
-                "suggested_action": {
-                    "skill": "backlog-review",
-                    "natural_language": (
-                        f"improvement-backlog未処理{untriaged}件の要望会着手を"
-                        "ユーザーに提案する"
-                    ),
-                },
-                "source": "backlog_review_due",
-                "delivery_hint": "immediate",
-            })
+    backlog_hint = get_backlog_review_hint(conn, tag_id)
+    if backlog_hint is not None:
+        hints.append(backlog_hint)
 
     return hints
+
+
+def get_backlog_review_hint(conn: sqlite3.Connection, tag_id: int) -> Hint | None:
+    """指定tag_idがdomain:cc-memoryの場合のみbacklog_review_due hintを判定する。
+
+    _get_hints_for_tagの内部判定に加えて、backlog_review_due単体だけが必要な経路
+    （session_start_hookなど）向けの軽量エントリポイントを兼ねる。tag_id以外の
+    引数を要求しないため、呼び出し側は_get_hints_for_tagが行うrecompose/direction系
+    の付随クエリ（pinned material時刻・tag scope decision件数・direction decision
+    件数の集計）を発生させずに済む。
+    """
+    tag_row = conn.execute(
+        "SELECT namespace, name, notes FROM tags WHERE id = ?", (tag_id,)
+    ).fetchone()
+    if tag_row is None:
+        return None
+    if (tag_row["namespace"], tag_row["name"]) != (
+        BACKLOG_REVIEW_DOMAIN_NAMESPACE, BACKLOG_REVIEW_DOMAIN_NAME
+    ):
+        return None
+
+    notes = tag_row["notes"] or ""
+    if _is_marker_active(notes, MARKER_BACKLOG_REVIEW):
+        return None
+
+    untriaged = _count_untriaged_backlog_items(conn, tag_id)
+    if untriaged < BACKLOG_REVIEW_THRESHOLD:
+        return None
+
+    return {
+        "type": "backlog_review_due",
+        "severity": "info",
+        "message": _backlog_review_message(untriaged),
+        "suggested_action": {
+            "skill": "backlog-review",
+            "natural_language": (
+                f"improvement-backlog未処理{untriaged}件の要望会着手を"
+                "ユーザーに提案する"
+            ),
+        },
+        "source": "backlog_review_due",
+        "delivery_hint": "immediate",
+    }
 
 
 def _get_pinned_material_max_time(
@@ -392,14 +430,20 @@ def _count_tag_scope_decisions(
     return row[0] if row else 0
 
 
-def _count_untriaged_backlog_items(conn: sqlite3.Connection) -> int:
-    """improvement-backlogタグ付きでimprovement-backlog-triagedが付いていない
-    log/material件数（retracted除外）。"""
-    backlog_ids = resolve_tag_ids(conn, [("", "improvement-backlog")])
+def _count_untriaged_backlog_items(conn: sqlite3.Connection, domain_tag_id: int) -> int:
+    """domain_tag_idにスコープした、improvement-backlogタグ付きで
+    improvement-backlog-triagedが付いていないlog/material件数（retracted除外）。
+
+    このDBは複数domainを横断して1つに格納する前提のため、domainでスコープしないと
+    別domainのimprovement-backlog項目が混入する。logはdecisionと同様、直付けタグ
+    OR 親topicからの継承タグのいずれかで判定する。materialはtopic継承を持たない
+    設計（get_effective_tagsの対象外）のため、直付けタグのみで判定する。
+    """
+    backlog_ids = resolve_tag_ids(conn, [("", BACKLOG_TAG_NAME)])
     if not backlog_ids:
         return 0
     backlog_id = backlog_ids[0]
-    triaged_ids = resolve_tag_ids(conn, [("", "improvement-backlog-triaged")])
+    triaged_ids = resolve_tag_ids(conn, [("", BACKLOG_TRIAGED_TAG_NAME)])
     triaged_id = triaged_ids[0] if triaged_ids else -1
 
     log_count = conn.execute(
@@ -411,8 +455,21 @@ def _count_untriaged_backlog_items(conn: sqlite3.Connection) -> int:
               SELECT 1 FROM log_tags lt2
               WHERE lt2.log_id = lt.log_id AND lt2.tag_id = ?
           )
+          AND (
+              EXISTS (
+                  SELECT 1 FROM log_tags lt3
+                  WHERE lt3.log_id = lt.log_id AND lt3.tag_id = ?
+              )
+              OR EXISTS (
+                  SELECT 1 FROM relations r
+                  JOIN topic_tags tt ON tt.topic_id = r.target_id
+                  WHERE r.source_type = 'log' AND r.source_id = lt.log_id
+                    AND r.target_type = 'topic' AND r.relation_type = 'belongs_to'
+                    AND tt.tag_id = ?
+              )
+          )
         """,
-        (backlog_id, triaged_id),
+        (backlog_id, triaged_id, domain_tag_id, domain_tag_id),
     ).fetchone()[0]
 
     material_count = conn.execute(
@@ -424,8 +481,12 @@ def _count_untriaged_backlog_items(conn: sqlite3.Connection) -> int:
               SELECT 1 FROM material_tags mt2
               WHERE mt2.material_id = mt.material_id AND mt2.tag_id = ?
           )
+          AND EXISTS (
+              SELECT 1 FROM material_tags mt3
+              WHERE mt3.material_id = mt.material_id AND mt3.tag_id = ?
+          )
         """,
-        (backlog_id, triaged_id),
+        (backlog_id, triaged_id, domain_tag_id),
     ).fetchone()[0]
 
     return log_count + material_count

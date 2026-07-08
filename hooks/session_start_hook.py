@@ -373,18 +373,26 @@ def _build_signals_section(conn, session_id: str | None = None) -> str:  # conn,
 
 
 def _build_backlog_review_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
-    """improvement-backlog未処理累積のbacklog_review_due hintをSessionStartでも表示する。"""
-    from src.services.hint_service import get_hints_with_conn
+    """improvement-backlog未処理累積のbacklog_review_due hintをSessionStartでも表示する。
+
+    get_hints_with_conn(scope="tag")ではなくget_backlog_review_hintを直接呼ぶことで、
+    _get_hints_for_tagが行うrecompose/direction系の付随クエリ（本セクションでは使わ
+    ない）を回避する。SessionStartは毎セッション実行される経路のため、この差が効く。
+    """
+    from src.services.hint_service import (
+        BACKLOG_REVIEW_DOMAIN_NAME,
+        BACKLOG_REVIEW_DOMAIN_NAMESPACE,
+        get_backlog_review_hint,
+    )
 
     row = conn.execute(
-        "SELECT id FROM tags WHERE namespace = 'domain' AND name = 'cc-memory'"
+        "SELECT id FROM tags WHERE namespace = ? AND name = ?",
+        (BACKLOG_REVIEW_DOMAIN_NAMESPACE, BACKLOG_REVIEW_DOMAIN_NAME),
     ).fetchone()
     if row is None:
         return ""
-    for hint in get_hints_with_conn(conn, "tag", row["id"]):
-        if hint["type"] == "backlog_review_due":
-            return hint["message"] + "\n"
-    return ""
+    hint = get_backlog_review_hint(conn, row["id"])
+    return (hint["message"] + "\n") if hint is not None else ""
 
 
 def _build_relay_inbox_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
