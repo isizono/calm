@@ -65,7 +65,7 @@ B選択時は何も実行せず終了する。
 
 1. [対象] 撤回候補の要約
    根拠: なぜ撤回候補と判断したか
-   方式: retract / 物理削除
+   方式: retract / update_habit / update_tag / 物理削除
    → Yes / No？
 
 2. ...
