@@ -16,6 +16,7 @@ description: 【必須】新しいアクティビティを開始する。「/as�
 2. 3つのうち推定できないものがあれば、**1ターンだけ**聞いてよい。それ以上は聞かない
 3. **重複チェック**: `add_activity` を呼ぶ前に、タイトルのキーワードで `search` を実行し、同じ目的のactivity・topicが既にないか確認する（`entity_type` は指定せず横断検索し、結果の `type` が `activity` / `topic` の項目を見る）。過去セッションや並行セッションが同じテーマを扱っている可能性があるため、再発明・二重管理を防ぐための必須ステップ
    - 同じ目的のactivityが見つかった場合は新規作成を提案せず、**そのactivityへのcheck-in（再開）** を提案する
+   - 承認された場合、`check_in` ツールを直接呼ばず [check-in](../check-in/SKILL.md) skillに委譲する（pinned/hintsフィールドの扱いや出力フォーマットをスキップしないため）
    - 見つからなかった場合、またはユーザーが新規作成を選んだ場合のみ次のステップに進む
 4. **related候補の特定**: 手順3の検索結果を流用し、関連するtopic/activity/decisionを能動的に洗い出す。会話の文脈から得られる関連先も合わせて候補にする
 5. **intent:implementガードの先回り**: intentが `implement` と判定された場合、`add_activity` は `related` に `type: "decision"` のエントリを最低1件含めないと `IMPLEMENT_WORKFLOW_GUARD` エラーで弾かれる（`add_activity` ツールdocstring参照）
