@@ -191,7 +191,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 | limit | int | no | 30 | 最大30件 |
 | include_retracted | bool | no | false | trueで取り消し済みも含む |
 
-**返り値**: `get_logs` は `{logs: [DiscussionLog]}`、`get_decisions` は `{decisions: [Decision], total_count: int, truncated: bool}`。`total_count` は対象decisionの総件数（limit/start_idの影響を受けない）、`truncated` は limit/start_id で後続を打ち切ったとき true（続きのページが存在する）。
+**返り値**: `get_logs` は `{logs: [DiscussionLog], total_count: int, truncated: bool}`、`get_decisions` は `{decisions: [Decision], total_count: int, truncated: bool}`。`total_count` は対象log/decisionの総件数（limit/start_idの影響を受けない）、`truncated` は limit/start_id で後続を打ち切ったとき true（続きのページが存在する）。
 **特殊挙動**: entity_type="activity" の場合、related topics経由で集約される。
 
 ### 2.6 search
@@ -370,7 +370,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 ### 2.21 add_habit / get_habits / update_habit
 
 - `add_habit(content: string) -> dict`: habitを登録。SessionStart時に全件注入される（セッション途中の登録は次セッション以降に有効）。
-- `get_habits() -> dict`: 登録済みhabit一覧。
+- `get_habits(active: bool = true) -> dict`: 登録済みhabit一覧。既定でactive=1のみ返す。無効化済みも含む全件が欲しいときは`active=false`を渡す。
 - `update_habit(habit_id: int, content?: string, active?: bool) -> dict`: active=Falseで無効化。
 
 ### 2.22 add_pin / remove_pin
@@ -410,7 +410,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 
 ### 2.25 get_config
 
-引数なし。返り値: `{heartbeat_timeout, in_progress_limit, pending_limit, recency_decay_rate, sync_disable_retrospective, sync_policy, snapshot_interval_hours, snapshot_max_count, snapshot_anomaly_threshold}`。スキルが環境変数ベースの設定を参照するときに使う。
+引数なし。返り値: `{heartbeat_timeout, in_progress_limit, pending_limit, recency_decay_rate, sync_disable_retrospective, sync_policy, snapshot_interval_hours, snapshot_max_count, snapshot_anomaly_threshold, precedent_budget_chars, budget_defaults, read_tool_limits}`。スキルが環境変数ベースの設定を参照するときに使う。`budget_defaults` は `budget_service` が把握する予算関連の既定値一覧（`precedent_budget_chars` / `recency_decay_rate` / `recency_decay_floor`。いずれもsrc.config由来）。
 
 ### 2.26 roll_dice
 

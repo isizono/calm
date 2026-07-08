@@ -68,17 +68,26 @@ def add_habit(content: str) -> dict:
         conn.close()
 
 
-def get_habits() -> dict:
+def get_habits(active: bool = True) -> dict:
     """振る舞い一覧を取得する。
+
+    Args:
+        active: Trueのとき（既定）active=1の振る舞いのみ返す。全件（無効化済み含む）
+            取得したい場合はFalseを明示的に渡す。
 
     Returns:
         振る舞い一覧とtotal_count
     """
     conn = get_connection()
     try:
-        rows = conn.execute(
-            "SELECT * FROM habits ORDER BY id"
-        ).fetchall()
+        if active:
+            rows = conn.execute(
+                "SELECT * FROM habits WHERE active = 1 ORDER BY id"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM habits ORDER BY id"
+            ).fetchall()
 
         habits = []
         for row in rows:
