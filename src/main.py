@@ -265,6 +265,10 @@ mcp = FastMCP("cc-memory", instructions=build_instructions())
 from src.services.signal_middleware import SignalCaptureMiddleware
 mcp.add_middleware(SignalCaptureMiddleware())
 
+# check_in以降の関連topicスコープの鮮度差分をツールレスポンスに注入する middleware を登録する
+from src.middleware.delta_middleware import DeltaNotificationMiddleware
+mcp.add_middleware(DeltaNotificationMiddleware())
+
 # サーバー起動時刻（/health で uptime 算出に使用）
 _SERVER_STARTED_AT = datetime.now(timezone.utc)
 
