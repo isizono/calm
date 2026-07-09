@@ -212,7 +212,7 @@ cc-memoryに関する議論を始めるとき、「これはどの層の話か�
 
 ### 4.1 spec: check-in / status / scoring / nudge / habits / tag-notes の論理像
 
-**check-in:** アクティビティに紐づく文脈を一括取得する入り口。返却内容は tag-notes、資材カタログ、pinned、関連decisions、recent logs、coverage。statusはin_progressへ自動更新される。
+**check-in:** アクティビティに紐づく文脈を一括取得する入り口。返却内容は tag-notes、資材カタログ、pinned、関連decisions、recent logs、coverage。セッション内で初めて呼ばれたときのみコンテキスト取得フローガイド（flow_guide）も返す。statusはin_progressへ自動更新される。
 
 **status:** pending / in_progress / completed / snoozed / shelved の5値。「active」はpending+in_progressのエイリアス。
 

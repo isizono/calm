@@ -91,18 +91,26 @@ def verify_sqlite_vec() -> None:
     logger.info("sqlite-vec startup check passed")
 
 
-def get_connection() -> sqlite3.Connection:
-    """データベース接続を取得する"""
+def get_connection(load_vec: bool = True) -> sqlite3.Connection:
+    """データベース接続を取得する
+
+    Args:
+        load_vec: sqlite-vecネイティブ拡張をロードするか。デフォルトTrue。
+            ベクトル検索を使わない呼び出し元（例: delta_middlewareの純relational
+            クエリ）はFalseを指定することで、拡張ロード（enable_load_extension +
+            sqlite_vec.load）のコストを毎回の接続オープンから省ける。
+    """
     db_path = get_db_path()
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row  # 辞書ライクなアクセスを可能にする
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA foreign_keys = ON")  # 外部キー制約を有効化
-    try:
-        _load_sqlite_vec(conn)
-    except Exception:
-        logger.warning("sqlite-vec could not be loaded. Vector search will be unavailable.")
+    if load_vec:
+        try:
+            _load_sqlite_vec(conn)
+        except Exception:
+            logger.warning("sqlite-vec could not be loaded. Vector search will be unavailable.")
     return conn
 
 

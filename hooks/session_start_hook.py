@@ -157,7 +157,7 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
     0 件（activity が 1 件も無い場合を含む）のときは、ヘッダ・末尾固定文の
     空殻を出さず固定ナビだけを返す。
 
-    重複排除: 上位階層に採用された activity は下位階層から除外する。
+    重複排除: 上位階層に採用された activity は下位階層（および統計対象）から除外する。
 
     orch_managed=1 のアクティビティは全階層で除外する。
     """
@@ -268,7 +268,7 @@ def _render_numbered_line(
     created_ats: dict[int, str],
     unresolved_deps: dict[int, list[dict]],
 ) -> list[str]:
-    """階層 2/3 用の 1 activity 分の行群を返す。
+    """階層 2 用の 1 activity 分の行群を返す。
 
     タイトル行 1 行と、blocked_by 未解決依存があるとき meta 行 1 行を続ける。
     """
@@ -478,7 +478,7 @@ def _build_snapshot_section(conn, session_id: str | None = None, source: str | N
             "\u26a1 データ消失インシデントの可能性があります。",
             "\u26a1 スナップショットからの復元が可能です。",
             "\u26a1 ユーザーに即座に状況を報告し、復元するか確認してください。",
-            "\u26a1 復元手順は cc-memory:guide を参照してください。",
+            "\u26a1 db-recovery スキルを発動して自律復旧を進めてください(手動手順は cc-memory:guide を参照)。",
         ])
         return "\n".join(lines) + "\n"
 

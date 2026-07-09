@@ -161,7 +161,7 @@ cc-memoryはセッション開始時（SessionStart hook）にDBの自動スナ�
 
 コマンドはcc-memoryのインストールディレクトリ（プラグイン導入時はプラグインのインストールパス）で実行する。
 
-1. **全てのClaude Codeセッションを閉じ、稼働中のMCPサーバーを停止する**（DBへの書き込みを停止するため）。サーバーが稼働中（lock file または `/health` 応答で検知）のままだと復元コマンド自体が中断する。停止は `lsof -ti :52837 | xargs kill` を実行する（復元コマンドが中断した場合も同じコマンドを案内する。停止済みを確認済みで続行したい場合のみ `restore` に `--force` を付ける）
+1. **全てのClaude Codeセッションを閉じ、稼働中のMCPサーバーを停止する**（DBへの書き込みを停止するため）。サーバーが稼働中（lock file または `/health` 応答で検知）のままだと復元コマンド自体が中断する。停止は `lsof -ti :52837 -sTCP:LISTEN | xargs kill` を実行する（`-sTCP:LISTEN` を外すと :52837 に接続中のブリッジプロセスまで巻き添えでkillされる。復元コマンドが中断した場合も同じコマンドを案内する。停止済みを確認済みで続行したい場合のみ `restore` に `--force` を付ける）
 2. ワンコマンドで最新のスナップショットから復元する:
    ```
    uv run python scripts/snapshot.py restore --latest
@@ -191,6 +191,8 @@ uv run python scripts/snapshot.py list
 | `CCM_HEARTBEAT_TIMEOUT` | `20` | ホットアクティビティ判定の閾値（分） |
 | `CCM_IN_PROGRESS_LIMIT` | `3` | アクティブコンテキストのin_progress表示件数 |
 | `CCM_PENDING_LIMIT` | `2` | アクティブコンテキストのpending表示件数 |
+| `CCM_TIER2_MAX_AGE_DAYS` | `7` | SessionStart一覧の階層2にin_progressアクティビティを載せるupdated_at上限（日） |
+| `CCM_PIN_SURFACE_DECAY_DAYS` | `60` | pinnedアクティビティが階層2表示を維持できるupdated_at上限（日） |
 | `CCM_RECENCY_DECAY_RATE` | `0.0014` | 検索の時間減衰率 |
 | `CCM_SYNC_DISABLE_RETROSPECTIVE` | `false` | `/sync-memory`のふりかえりセクションを非表示にする |
 | `CCM_SNAPSHOT_INTERVAL` | `12` | スナップショット取得間隔（時間） |

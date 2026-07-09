@@ -68,9 +68,13 @@ RULES = """# cc-memory 利用ガイド
 
 全セッション共通の行動ルールはhabitsとして記録できます。正はhabits DBで、内容は~/.claude/rules配下の自動生成ファイル経由でセッション起動時に配信されます。タグやファイルに依存しない横断的なルールはhabitsに記録してください。詳細はget_habitsで確認できます。
 
+## セッション間でメッセージを送るには
+
+他セッションへ連絡するにはrelayの4関数を使います。`relay_post`は場（stream）宛の一方向投函、`relay_publish`/`relay_subscribe`はlabelsによる配信・購読のペア、`relay_receive`はどちらで届いたメッセージも自sessionのinboxから受け取る共通口です。送信=到達ではなく、受信側が`relay_receive`をpollして初めて内容が分かるpull型です。
+
 ## 内部識別子は本文に出さない
 
-英字+#+数字形式のcc-memory内部参照記号を、発話・コミット・PR本文・コードコメント等の外部出力に書かないでください。開発コンテキスト外では読み手に意味が伝わりません。cc-memory内に保存するtitle・本文・タグは対象外です。
+cc-memoryが記録に振る内部の番号・記号は、表記の形式を問わず、発話・コミット・PR本文・コードコメント等の外部出力に書かないでください。番号は外部の読み手には解決できません。記録に言及するときはタイトルや内容の要約を主体に書きます。cc-memory内に保存するtitle・本文・タグ、ツール引数のID指定は対象外です。
 
 ---
 
@@ -196,6 +200,10 @@ mcp = FastMCP("cc-memory", instructions=build_instructions())
 # tool呼び出し中の未捕捉例外を signal_events へ自動捕捉する middleware を登録する
 from src.services.signal_middleware import SignalCaptureMiddleware
 mcp.add_middleware(SignalCaptureMiddleware())
+
+# check_in以降の関連topicスコープの鮮度差分をツールレスポンスに注入する middleware を登録する
+from src.middleware.delta_middleware import DeltaNotificationMiddleware
+mcp.add_middleware(DeltaNotificationMiddleware())
 
 # サーバー起動時刻（/health で uptime 算出に使用）
 _SERVER_STARTED_AT = datetime.now(timezone.utc)
@@ -1077,7 +1085,8 @@ def check_in(
             docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
 
     Returns:
-        check-in結果（coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary）
+        check-in結果（coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary）。
+        セッション内でcheck_inを初めて呼んだときのみflow_guide（コンテキスト取得の手がかり）も含まれる
     """
     flavor = _normalize_flavor(flavor)
     try:

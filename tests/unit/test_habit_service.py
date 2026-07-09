@@ -571,3 +571,77 @@ class TestAlwaysPromotionGate:
 
         assert "error" not in result
         assert result["active"] == 0
+
+    def test_promotion_and_deactivate_in_one_call_rejects_long_content(self, temp_db):
+        """trigger_mode='always'とactive=Falseを同時指定しても、
+        100字以上のcontentは拒否される（レビュー指摘の手順Aの1呼び出し目）"""
+        habit_id = add_habit("あ" * 50)["habit_id"]
+
+        result = update_habit(
+            habit_id, trigger_mode="always", active=False, content="あ" * 300
+        )
+
+        assert "error" in result
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+        # 昇格ゲートで拒否されているため、DB上もintelligentyのままで
+        # 100字以上のcontentが保存されていないこと
+        row = get_habits(habit_id=habit_id)["habits"][0]
+        assert row["trigger_mode"] == "intelligently"
+        assert row["content"] == "あ" * 50
+
+    def test_promotion_then_deactivate_then_reactivate_rejects_long_content(self, temp_db):
+        """trigger_mode='always'とactive=Falseを同時指定する手順が拒否された後、
+        短いcontentで正規に無効化→再有効化しても100字制限は健全に機能する
+        （レビュー指摘の手順A: 複数手順による回避ができないこと）"""
+        habit_id = add_habit("あ" * 90)["habit_id"]
+
+        promote_result = update_habit(habit_id, trigger_mode="always")
+        assert "error" not in promote_result
+
+        deactivate_result = update_habit(habit_id, active=False)
+        assert "error" not in deactivate_result
+
+        # 無効化中にtrigger_modeを再指定しつつcontentを100字以上に伸ばそうとすると拒否される
+        bypass_result = update_habit(
+            habit_id, trigger_mode="always", content="あ" * 300
+        )
+        assert "error" in bypass_result
+        assert bypass_result["error"]["code"] == "VALIDATION_ERROR"
+
+        reactivate_result = update_habit(habit_id, active=True)
+        assert "error" not in reactivate_result
+
+        row = get_habits(habit_id=habit_id)["habits"][0]
+        assert row["content"] == "あ" * 90
+
+    def test_content_update_on_active_always_habit_rejects_long_content(self, temp_db):
+        """既にtrigger_mode='always'かつactiveなhabitへのcontent更新も、
+        trigger_modeを指定しない場合でも100字制限が課される
+        （レビュー指摘の手順B: 昇格後にcontentを伸ばす回避）"""
+        habit_id = add_habit("あ" * 90)["habit_id"]
+
+        promote_result = update_habit(habit_id, trigger_mode="always")
+        assert "error" not in promote_result
+
+        result = update_habit(habit_id, content="あ" * 300)
+
+        assert "error" in result
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+        row = get_habits(habit_id=habit_id)["habits"][0]
+        assert row["content"] == "あ" * 90
+        assert row["trigger_mode"] == "always"
+
+    def test_content_update_on_active_always_habit_allows_short_content(self, temp_db):
+        """既にalwaysかつactiveなhabitでも、100字未満のcontent更新は許可される
+        （正常系が壊れていないことの確認）"""
+        habit_id = add_habit("あ" * 90)["habit_id"]
+
+        promote_result = update_habit(habit_id, trigger_mode="always")
+        assert "error" not in promote_result
+
+        result = update_habit(habit_id, content="あ" * 95)
+
+        assert "error" not in result
+        assert result["content"] == "あ" * 95

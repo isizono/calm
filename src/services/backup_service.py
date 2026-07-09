@@ -608,7 +608,7 @@ def restore_snapshot(
         raise RestoreBlockedError(
             "サーバーが稼働中のため復元を中断しました"
             f"（{detail}）。"
-            "先にサーバーを停止してください: lsof -ti :52837 | xargs kill "
+            "先にサーバーを停止してください: lsof -ti :52837 -sTCP:LISTEN | xargs kill "
             "（停止済みであることを確認の上で続行する場合は --force を指定）"
         )
 

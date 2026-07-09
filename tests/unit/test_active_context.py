@@ -556,7 +556,7 @@ def test_build_activities_section_domain_with_zero_activities_skipped(temp_db):
 
 
 def test_build_activities_section_activity_id_in_bracket(temp_db):
-    """アクティビティIDが「title (#NNN)」形式で表示される"""
+    """アクティビティIDが「title (#NNN)」形式で表示される（個別表示は階層 2 のみ対象）"""
     activity = add_activity(title="Activity 1", description="Desc", tags=["domain:myapp"], check_in=False)
     activity_id = activity["activity_id"]
     update_activity(activity_id, status="in_progress")

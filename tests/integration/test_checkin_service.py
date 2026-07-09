@@ -12,6 +12,7 @@ from src.services.topic_service import add_topic
 from src.services.checkin_service import (
     check_in,
     DECISIONS_FULL_LIMIT,
+    _greeted_sessions,
 )
 from src.services.hint_service import (
     RECOMPOSE_BOOTSTRAP_THRESHOLD as _RECOMPOSE_HINT_BOOTSTRAP_THRESHOLD,
@@ -32,6 +33,8 @@ def temp_db():
         init_database()
         # tag_notes注入済みセットをリセット（テスト間の干渉防止）
         _injected_tags.clear()
+        # flow_guide初回判定セットをリセット（テスト間の干渉防止）
+        _greeted_sessions.clear()
         yield db_path
         if "DISCUSSION_DB_PATH" in os.environ:
             del os.environ["DISCUSSION_DB_PATH"]
