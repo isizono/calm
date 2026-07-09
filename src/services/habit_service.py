@@ -14,11 +14,14 @@ _ALWAYS_PROMOTION_MAX_CONTENT_CHARS = 100
 def get_active_habit_contents_with_conn(conn) -> list[str]:
     """有効かつtrigger_mode='always'な振る舞いのcontent一覧を取得する（conn共有版）。
 
+    id昇順で返す（habit_projectionのハッシュ比較が同一DB状態から決定論的な出力を
+    要求するため）。
+
     Returns:
         [content, ...]
     """
     rows = conn.execute(
-        "SELECT content FROM habits WHERE active = 1 AND trigger_mode = 'always'"
+        "SELECT content FROM habits WHERE active = 1 AND trigger_mode = 'always' ORDER BY id"
     ).fetchall()
     return [r["content"] for r in rows]
 
@@ -75,7 +78,9 @@ def add_habit(content: str) -> dict:
         content: 振る舞いの内容（空文字不可）
 
     Returns:
-        作成された振る舞い情報
+        作成された振る舞い情報。DB更新成功後に~/.claude/rules配下への投影ファイル
+        書き出しを試み、失敗時のみ"rules_projection"キーが付く（DB更新自体の成否には
+        影響しない）
     """
     if not content or not content.strip():
         return {
@@ -90,7 +95,12 @@ def add_habit(content: str) -> dict:
         habit_id = _add_habit_with_conn(conn, content)
         conn.commit()
 
-        return {"habit_id": habit_id}
+        result = {"habit_id": habit_id}
+
+        from src.services import habit_projection
+        habit_projection.export_and_annotate(result)
+
+        return result
 
     except Exception as e:
         conn.rollback()
@@ -257,7 +267,9 @@ def update_habit(
         description: intelligently層のマニフェスト表示に使う要旨（optional）
 
     Returns:
-        更新された振る舞い情報
+        更新された振る舞い情報。DB更新成功後に~/.claude/rules配下への投影ファイル
+        書き出しを試み、失敗時のみ"rules_projection"キーが付く（DB更新自体の成否には
+        影響しない）
     """
     if content is None and active is None and trigger_mode is None and description is None:
         return {
@@ -357,7 +369,7 @@ def update_habit(
             raise Exception("Failed to retrieve updated habit")
 
         habit = row_to_dict(row)
-        return {
+        result = {
             "habit_id": habit["id"],
             "content": habit["content"],
             "active": habit["active"],
@@ -365,6 +377,11 @@ def update_habit(
             "trigger_mode": habit["trigger_mode"],
             "description": habit["description"],
         }
+
+        from src.services import habit_projection
+        habit_projection.export_and_annotate(result)
+
+        return result
 
     except Exception as e:
         conn.rollback()
