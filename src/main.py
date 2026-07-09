@@ -68,6 +68,10 @@ RULES = """# cc-memory 利用ガイド
 
 全セッション共通の行動ルールはhabitsとして記録できます。SessionStart時に全件注入されます。タグやファイルに依存しない横断的なルールはhabitsに記録してください。
 
+## セッション間でメッセージを送るには
+
+他セッションへ連絡するにはrelayの4関数を使います。`relay_post`は場（stream）宛の一方向投函、`relay_publish`/`relay_subscribe`はlabelsによる配信・購読のペア、`relay_receive`はどちらで届いたメッセージも自sessionのinboxから受け取る共通口です。送信=到達ではなく、受信側が`relay_receive`をpollして初めて内容が分かるpull型です。
+
 ## 内部識別子は本文に出さない
 
 英字+#+数字形式のcc-memory内部参照記号を、発話・コミット・PR本文・コードコメント等の外部出力に書かないでください。開発コンテキスト外では読み手に意味が伝わりません。cc-memory内に保存するtitle・本文・タグは対象外です。
