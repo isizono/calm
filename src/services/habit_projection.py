@@ -8,11 +8,17 @@
 export()（または export_and_annotate()）を呼ぶこと。呼び忘れても次のセッション
 開始時のリコンサイル（verify_and_heal）が自己修復するため事故にはならないが、
 反映が1セッション分遅れる。
+
+注: verify_and_healはこのモジュール内に実装済みだが、本PR時点ではSessionStart
+hookからまだ呼び出されていない（接続は別PRで実施予定）。そのためこの docstring
+が説明する自己修復は現時点では発生せず、export呼び忘れは次にexportが呼ばれる
+（もしくはhook接続後のセッション開始）までそのまま反映されない。
 """
 import hashlib
 import logging
 import os
 import re
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -58,6 +64,17 @@ _BODY_MARKER = "-->\n"
 _CONTENT_HASH_RE = re.compile(r"content_hash:\s*sha256:([0-9a-fA-F]{64})")
 
 
+def _normalize_inline(text: str) -> str:
+    """箇条書き1行に安全に埋め込めるよう、改行・連続空白をスペース1個へ正規化する。
+
+    content/titleに改行が含まれたまま「- {text}」として出力すると、2行目以降が
+    箇条書きプレフィックスなしでそのまま出力され、投影ファイルのMarkdown構造が
+    崩れる。add_habit/update_habitのバリデーションは非空チェックのみで改行を
+    拒否・除去しないため、レンダリング直前にここで正規化する。
+    """
+    return " ".join(text.split())
+
+
 def render_body(conn) -> str:
     """active habitsから投影ファイル本文（メタデータコメントを除く部分）を組み立てる。
 
@@ -74,7 +91,9 @@ def render_body(conn) -> str:
     sections = [_HEADER]
 
     if always_contents:
-        sections.append("\n".join(f"- {content}" for content in always_contents))
+        sections.append(
+            "\n".join(f"- {_normalize_inline(content)}" for content in always_contents)
+        )
 
     if manifest:
         sections.append(_render_manifest_section(manifest))
@@ -92,7 +111,9 @@ def _render_manifest_section(manifest: list[dict]) -> str:
     selected = manifest[:max_items]
     remainder = len(manifest) - len(selected)
 
-    lines = [f"- {m['title']} (habit_id={m['habit_id']})" for m in selected]
+    lines = [
+        f"- {_normalize_inline(m['title'])} (habit_id={m['habit_id']})" for m in selected
+    ]
     if remainder > 0:
         lines.append(f"- 他{remainder}件 → get_habits で確認")
 
@@ -173,7 +194,11 @@ def _write(body: str, *, force: bool) -> dict:
 
     forceでない場合、既存ファイルの本文ハッシュが新body一致すれば書き込みをスキップする
     （mtimeを不変に保つ）。同一ディレクトリに一時ファイルを書いてからos.replaceで
-    差し替えるため、プロセスクラッシュ時も本体は無傷。例外はすべて捕捉して
+    差し替えるため、プロセスクラッシュ時も本体は無傷。一時ファイル名にはos.getpid()に
+    加えてthreading.get_ident()も含める。本サーバーはFastMCP上でsyncなツール関数
+    (add_habit/update_habit/add_decisions)を提供しており、同一プロセス内の複数
+    スレッドから並行してexportが呼ばれうるため、pidのみでは一時ファイル名が衝突しうる
+    （pidは同一プロセス内の全スレッドで同じ値になる）。例外はすべて捕捉して
     {"status": "failed", "message": ...}を返す（呼び出し元に伝播させない）。
     """
     path = Path(config.HABITS_RULES_PATH)
@@ -188,7 +213,10 @@ def _write(body: str, *, force: bool) -> dict:
         now = datetime.now().astimezone()
         file_content = render_file(body, now)
 
-        tmp_path = path.parent / f"{_TMP_FILE_PREFIX}{os.getpid()}{_TMP_FILE_SUFFIX}"
+        tmp_path = (
+            path.parent
+            / f"{_TMP_FILE_PREFIX}{os.getpid()}-{threading.get_ident()}{_TMP_FILE_SUFFIX}"
+        )
         tmp_path.write_text(file_content, encoding="utf-8")
         os.replace(tmp_path, path)
 
