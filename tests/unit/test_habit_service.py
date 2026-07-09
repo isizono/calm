@@ -2,8 +2,14 @@
 import os
 import tempfile
 import pytest
-from src.db import init_database
-from src.services.habit_service import add_habit, get_habits, update_habit
+from src.db import get_connection, init_database
+from src.services.habit_service import (
+    add_habit,
+    get_active_habit_contents_with_conn,
+    get_habits,
+    list_intelligently_habit_manifest_with_conn,
+    update_habit,
+)
 
 
 @pytest.fixture
@@ -213,3 +219,199 @@ class TestUpdateHabit:
         assert "error" in result
         assert result["error"]["code"] == "VALIDATION_ERROR"
         assert "active must be True or False" in result["error"]["message"]
+
+    def test_update_trigger_mode_to_intelligently(self, temp_db):
+        """trigger_mode='intelligently'に更新できる"""
+        created = add_habit("intelligently化する振る舞い")
+        habit_id = created["habit_id"]
+
+        result = update_habit(habit_id, trigger_mode="intelligently")
+
+        assert "error" not in result
+        assert result["trigger_mode"] == "intelligently"
+
+    def test_update_trigger_mode_invalid_value(self, temp_db):
+        """trigger_modeが'always'/'intelligently'以外だとバリデーションエラーになる"""
+        created = add_habit("元の振る舞い")
+        habit_id = created["habit_id"]
+
+        result = update_habit(habit_id, trigger_mode="sometimes")
+
+        assert "error" in result
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+        assert "trigger_mode" in result["error"]["message"]
+
+    def test_update_description(self, temp_db):
+        """descriptionを更新できる"""
+        created = add_habit("要旨をつける振る舞い")
+        habit_id = created["habit_id"]
+
+        result = update_habit(habit_id, description="短い要旨")
+
+        assert "error" not in result
+        assert result["description"] == "短い要旨"
+
+    def test_update_trigger_mode_and_description_together(self, temp_db):
+        """trigger_modeとdescriptionを同時に更新できる"""
+        created = add_habit("まとめて更新する振る舞い")
+        habit_id = created["habit_id"]
+
+        result = update_habit(
+            habit_id, trigger_mode="intelligently", description="要旨テキスト"
+        )
+
+        assert "error" not in result
+        assert result["trigger_mode"] == "intelligently"
+        assert result["description"] == "要旨テキスト"
+
+
+class TestTriggerModeSplit:
+    """trigger_mode（always/intelligently）分割のテスト"""
+
+    def test_new_habit_defaults_to_always(self, temp_db):
+        """新規追加した振る舞いはtrigger_mode='always'になる"""
+        created = add_habit("新規振る舞い")
+
+        result = get_habits(habit_id=created["habit_id"])
+
+        assert result["habits"][0]["trigger_mode"] == "always"
+
+    def test_get_active_habit_contents_excludes_intelligently(self, temp_db):
+        """get_active_habit_contents_with_connはintelligently層を含まない"""
+        conn = get_connection()
+        try:
+            always_id = add_habit("always振る舞い")["habit_id"]
+            intelligently_id = add_habit("intelligently振る舞い")["habit_id"]
+            conn.execute(
+                "UPDATE habits SET trigger_mode = 'intelligently' WHERE id = ?",
+                (intelligently_id,),
+            )
+            conn.commit()
+
+            contents = get_active_habit_contents_with_conn(conn)
+
+            assert "always振る舞い" in contents
+            assert "intelligently振る舞い" not in contents
+        finally:
+            conn.close()
+
+    def test_manifest_lists_intelligently_only(self, temp_db):
+        """list_intelligently_habit_manifest_with_connはintelligently層のみ返す"""
+        conn = get_connection()
+        try:
+            always_id = add_habit("always振る舞い")["habit_id"]
+            intelligently_id = add_habit("intelligently振る舞い")["habit_id"]
+            conn.execute(
+                "UPDATE habits SET trigger_mode = 'intelligently' WHERE id = ?",
+                (intelligently_id,),
+            )
+            conn.commit()
+
+            manifest = list_intelligently_habit_manifest_with_conn(conn)
+            manifest_ids = [m["habit_id"] for m in manifest]
+
+            assert intelligently_id in manifest_ids
+            assert always_id not in manifest_ids
+            entry = next(m for m in manifest if m["habit_id"] == intelligently_id)
+            assert entry["trigger_mode"] == "intelligently"
+            assert entry["title"] == "intelligently振る舞い"
+        finally:
+            conn.close()
+
+    def test_manifest_title_uses_description_when_present(self, temp_db):
+        """descriptionが設定されていればtitleにdescriptionを使う"""
+        conn = get_connection()
+        try:
+            habit_id = add_habit("本文は長め" * 10)["habit_id"]
+            conn.execute(
+                "UPDATE habits SET trigger_mode = 'intelligently', description = ? WHERE id = ?",
+                ("短い要旨", habit_id),
+            )
+            conn.commit()
+
+            manifest = list_intelligently_habit_manifest_with_conn(conn)
+
+            entry = next(m for m in manifest if m["habit_id"] == habit_id)
+            assert entry["title"] == "短い要旨"
+        finally:
+            conn.close()
+
+    def test_manifest_excludes_inactive(self, temp_db):
+        """active=0のintelligently振る舞いはマニフェストに出ない"""
+        conn = get_connection()
+        try:
+            created = add_habit("無効化されるintelligently")
+            habit_id = created["habit_id"]
+            conn.execute(
+                "UPDATE habits SET trigger_mode = 'intelligently', active = 0 WHERE id = ?",
+                (habit_id,),
+            )
+            conn.commit()
+
+            manifest = list_intelligently_habit_manifest_with_conn(conn)
+
+            assert habit_id not in [m["habit_id"] for m in manifest]
+        finally:
+            conn.close()
+
+    def test_manifest_orders_by_importance_score_desc(self, temp_db):
+        """importance_score降順（同値はid昇順）で並ぶ"""
+        conn = get_connection()
+        try:
+            low_id = add_habit("低優先度")["habit_id"]
+            high_id = add_habit("高優先度")["habit_id"]
+            mid_id = add_habit("中優先度")["habit_id"]
+            conn.executemany(
+                "UPDATE habits SET trigger_mode = 'intelligently', importance_score = ? WHERE id = ?",
+                [(0.5, low_id), (2.0, high_id), (1.0, mid_id)],
+            )
+            conn.commit()
+
+            manifest = list_intelligently_habit_manifest_with_conn(conn)
+            manifest_ids = [m["habit_id"] for m in manifest]
+
+            assert manifest_ids == [high_id, mid_id, low_id]
+        finally:
+            conn.close()
+
+
+class TestGetHabitsSingleFetch:
+    """get_habitsのhabit_id単一取得と参照スタンプのテスト"""
+
+    def test_habit_id_returns_single_habit(self, temp_db):
+        """habit_id指定時はその1件のみが返る"""
+        target = add_habit("対象の振る舞い")
+        add_habit("別の振る舞い")
+
+        result = get_habits(habit_id=target["habit_id"])
+
+        assert result["total_count"] == 1
+        assert result["habits"][0]["habit_id"] == target["habit_id"]
+        assert result["habits"][0]["content"] == "対象の振る舞い"
+
+    def test_habit_id_updates_last_recalled_at(self, temp_db):
+        """habit_id指定での取得はlast_recalled_atを更新する"""
+        created = add_habit("参照される振る舞い")
+        habit_id = created["habit_id"]
+
+        before = get_habits(active=False)
+        before_stamp = next(
+            h["last_recalled_at"] for h in before["habits"] if h["habit_id"] == habit_id
+        )
+        assert before_stamp is None
+
+        get_habits(habit_id=habit_id)
+
+        after = get_habits(active=False)
+        after_stamp = next(
+            h["last_recalled_at"] for h in after["habits"] if h["habit_id"] == habit_id
+        )
+        assert after_stamp is not None
+
+    def test_habit_id_not_found_returns_empty(self, temp_db):
+        """存在しないhabit_idを指定すると空一覧が返る（エラーにしない）"""
+        result = get_habits(habit_id=9999)
+
+        assert "error" not in result
+        assert result["total_count"] == 0
+        assert result["habits"] == []

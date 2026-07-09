@@ -1145,7 +1145,8 @@ def check_in(
             docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
 
     Returns:
-        check-in結果（coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary）
+        check-in結果（coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary）。
+        セッション内でcheck_inを初めて呼んだときのみflow_guide（コンテキスト取得の手がかり）も含まれる
     """
     flavor = _normalize_flavor(flavor)
     try:
@@ -1329,16 +1330,34 @@ def add_habit(content: str) -> dict:
 
 
 @mcp.tool()
-def get_habits(active: bool = True) -> dict:
+def get_habits(active: bool = True, habit_id: int | None = None) -> dict:
     """登録済みの振る舞い一覧を取得する。既定でactive=1のみ返す。無効化済みも含む全件が
-    欲しいときはactive=Falseを渡す"""
-    return habit_service.get_habits(active=active)
+    欲しいときはactive=Falseを渡す。SessionStartで全文注入されるのはtrigger_mode='always'
+    のみで、'intelligently'はタイトルのみのマニフェスト表示になる。habit_idを渡すとその
+    1件だけを本文付きで取得でき、intelligentlyな振る舞いの詳細を引くときに使う
+    （取得と同時にlast_recalled_atが更新される）"""
+    return habit_service.get_habits(active=active, habit_id=habit_id)
 
 
 @mcp.tool()
-def update_habit(habit_id: int, content: Optional[str] = None, active: Optional[bool] = None) -> dict:
-    """振る舞いを更新する。active=Falseで無効化、active=Trueで再有効化"""
-    return habit_service.update_habit(habit_id, content=content, active=active)
+def update_habit(
+    habit_id: int,
+    content: Optional[str] = None,
+    active: Optional[bool] = None,
+    trigger_mode: Optional[str] = None,
+    description: Optional[str] = None,
+) -> dict:
+    """振る舞いを更新する。active=Falseで無効化、active=Trueで再有効化。
+    trigger_modeは'always'（全文常時注入）/'intelligently'（マニフェストのみ、
+    詳細はget_habits(habit_id=...)でon-demand取得）のいずれか。descriptionは
+    intelligentlyのマニフェスト表示に使う要旨"""
+    return habit_service.update_habit(
+        habit_id,
+        content=content,
+        active=active,
+        trigger_mode=trigger_mode,
+        description=description,
+    )
 
 
 @mcp.tool()
