@@ -12,7 +12,6 @@ from src.services.topic_service import add_topic
 from src.services.checkin_service import (
     check_in,
     DECISIONS_FULL_LIMIT,
-    _greeted_sessions,
 )
 from src.services.hint_service import (
     RECOMPOSE_BOOTSTRAP_THRESHOLD as _RECOMPOSE_HINT_BOOTSTRAP_THRESHOLD,
@@ -33,8 +32,6 @@ def temp_db():
         init_database()
         # tag_notes注入済みセットをリセット（テスト間の干渉防止）
         _injected_tags.clear()
-        # flow_guide初回判定セットをリセット（テスト間の干渉防止）
-        _greeted_sessions.clear()
         yield db_path
         if "DISCUSSION_DB_PATH" in os.environ:
             del os.environ["DISCUSSION_DB_PATH"]
@@ -206,41 +203,6 @@ class TestCheckInSummary:
 
         assert "error" not in result
         assert "intent: (未設定)" in result["summary"]
-
-
-class TestCheckInFlowGuide:
-    """flow_guide（セッション内初回のみのコンテキスト取得フローガイド）の確認"""
-
-    def test_flow_guide_present_on_first_call(self, activity_id):
-        """セッション内初回のcheck_inではflow_guideが含まれる"""
-        result = check_in(activity_id, session_id="sess-1")
-
-        assert "error" not in result
-        assert "flow_guide" in result
-        assert "get_decisions" in result["flow_guide"]
-
-    def test_flow_guide_absent_on_second_call_same_session(self, activity_id):
-        """同一セッションの2回目以降のcheck_inではflow_guideが含まれない"""
-        check_in(activity_id, session_id="sess-1")
-        result = check_in(activity_id, session_id="sess-1")
-
-        assert "error" not in result
-        assert "flow_guide" not in result
-
-    def test_flow_guide_present_again_for_different_session(self, activity_id):
-        """異なるセッションではそれぞれ初回にflow_guideが含まれる"""
-        check_in(activity_id, session_id="sess-1")
-        result = check_in(activity_id, session_id="sess-2")
-
-        assert "error" not in result
-        assert "flow_guide" in result
-
-    def test_flow_guide_present_on_first_call_without_session_id(self, activity_id):
-        """session_id未指定（既定キー扱い）でも初回はflow_guideが含まれる"""
-        result = check_in(activity_id)
-
-        assert "error" not in result
-        assert "flow_guide" in result
 
 
 class TestCheckInTagNotes:

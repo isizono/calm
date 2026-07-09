@@ -1,7 +1,6 @@
 """check-inサービス"""
 import logging
 import sqlite3
-import threading
 
 from src.db import get_connection, row_to_dict
 from src.services import activity_service, hint_service
@@ -18,36 +17,6 @@ logger = logging.getLogger(__name__)
 
 # 1次 decisions の展開上限
 DECISIONS_FULL_LIMIT = 15
-
-# セッション別のcheck_in初回呼び出し追跡（session_idキー）。
-# セッション終了はこのモジュールに通知されないため、tag_serviceの_injected_tagsと
-# 同様に、上限超過時は挿入順の最古セッションから追い出す（dictは挿入順を保持する）。
-# 追い出された長寿セッションは次回check_inでガイドを再度受け取るだけで実害はない。
-_greeted_sessions: dict[str, bool] = {}
-_greeted_sessions_lock = threading.Lock()
-_GREETED_SESSIONS_MAX = 256
-
-_FLOW_GUIDE_COMPACT = (
-    "深掘りの手がかり: 経緯の詳細はget_decisions・get_logsで辿れる（議論の経緯は"
-    "logsにあることが多い）。キーワード探索はsearch、結果の本文取得はget_by_ids"
-    "（search結果のチェリーピック・参照先の一括取得・IDで聞かれたときに使う）。"
-    "長期的に参照し続けるエンティティ（ユビキタス言語のmaterial、方針を決める"
-    "decision等）はupdate_pinでピン留めする。関連構造の俯瞰はget_map、時系列の"
-    "変遷はget_timelineで追える。supersedes・depends_onリレーション"
-    "（add_relationで設定）は差し替えやブロッカーの管理に使う。"
-)
-
-
-def _consume_first_call_flag(session_id: str | None) -> bool:
-    """このセッションでのcheck_in初回呼び出しならTrueを返し、以後はFalseにする。"""
-    session_key = session_id or "__default__"
-    with _greeted_sessions_lock:
-        if session_key in _greeted_sessions:
-            return False
-        while len(_greeted_sessions) >= _GREETED_SESSIONS_MAX:
-            del _greeted_sessions[next(iter(_greeted_sessions))]
-        _greeted_sessions[session_key] = True
-        return True
 
 
 def _get_direct_relations(conn: sqlite3.Connection, entity_type: str, entity_id: int) -> dict[str, list[int]]:
@@ -476,18 +445,12 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
     - (target_type, target_id) でDISTINCT化してレスポンスのpinnedキーに注入する
     - retracted済みのdecision/logはpins経由でも注入されない（retracted_at IS NULL除外）
 
-    flow_guideの注入ルール:
-    - セッション内でcheck_inが初めて呼ばれたときのみ、圧縮版のコンテキスト取得
-      フローガイド（flow_guide）をレスポンスに含める。2回目以降のcheck_inでは
-      含めない（_greeted_sessions管理、tag_notesの_injected_tagsと同じ方式）。
-
     Args:
         activity_id: アクティビティID
 
     Returns:
         check-in結果（coverage, activity, related_topics, related_activities, pinned,
-        tag_notes, materials, recent_decisions, logs, catalog, summary。セッション内
-        初回呼び出し時のみflow_guideも含む）
+        tag_notes, materials, recent_decisions, logs, catalog, summary）
     """
     if session_id is None:
         try:
@@ -629,8 +592,6 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
         if recompose_hints:
             result["hints"] = recompose_hints
         result["summary"] = summary
-        if _consume_first_call_flag(session_id):
-            result["flow_guide"] = _FLOW_GUIDE_COMPACT
 
         return result
 
