@@ -2,7 +2,8 @@
 
 サービス層経由でDBからデータを取得し、セッション開始時のコンテキストを注入する。
 - アクティビティ一覧（作業中・優先のみ個別表示。末尾に固定ナビ+未表示件数句）
-- 振る舞い（trigger_mode='always'は全文、'intelligently'はタイトルのみのマニフェスト）
+- 振る舞い（正は~/.claude/rules配下の自動生成ファイル。本hookは投影ファイルの
+  鮮度検証と、読み込めていないセッションへの縮退フォールバックのみを担う）
 - relay inbox未読件数（identity解決に成功した場合のみ、動的。未読0件は非表示）
 
 コンテキスト取得フローガイドはここでは注入しない（check_in初回呼び出し時に
@@ -30,6 +31,7 @@ from src.services.habit_service import (
     get_active_habit_contents_with_conn,
     list_intelligently_habit_manifest_with_conn,
 )
+from src.services import habit_projection
 from src.services.backup_service import health_check, should_take_snapshot, take_snapshot
 from hooks.signal_capture import try_capture_signal
 
@@ -290,12 +292,19 @@ def _render_numbered_line(
     return lines
 
 
-def _build_habits_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
-    """振る舞い一覧を組み立てる。
+_HABITS_STALE_NOTICE = (
+    "habits rulesファイルが古かったため最新化した。今回のセッションには未反映のため、"
+    "反映は次回セッション起動から。\n"
+)
 
-    trigger_mode='always'は全文を表示し、'intelligently'はタイトルのみの
-    マニフェスト（案内1行＋タイトル列挙）にとどめ、詳細はget_habits(habit_id=...)
-    でon-demand取得する前提にする。
+
+def _build_degraded_habits_fallback(conn) -> str:
+    """habits rules投影ファイルが当該セッションに効いていない前提の縮退注入。
+
+    verify_and_healのabsent系（不在・破損・修復失敗を含む）とkill switch
+    （CCM_HABITS_RULES_EXPORT=0）の両方から呼ばれる。always層は全文、
+    intelligently層はタイトルを列挙せず件数1行にとどめる（全文9,500字級の
+    注入はpersisted-output退避を再発させるため行わない。詳細はget_habits）。
     """
     always_contents = get_active_habit_contents_with_conn(conn)
     manifest = list_intelligently_habit_manifest_with_conn(conn)
@@ -308,14 +317,31 @@ def _build_habits_section(conn, session_id: str | None = None) -> str:  # conn, 
         lines.append(f"- {content}")
 
     if manifest:
-        lines.append("")
-        lines.append(
-            "他の振る舞い（タイトルのみ、詳細は get_habits(habit_id=...) で取得）:"
-        )
-        for item in manifest:
-            lines.append(f"- {item['title']} (habit_id={item['habit_id']})")
+        lines.append(f"他の振る舞い: {len(manifest)}件 → get_habits で確認")
 
     return "\n".join(lines) + "\n"
+
+
+def _build_habits_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
+    """振る舞いセクションを組み立てる。
+
+    正はhabits DBで、通常の配信は~/.claude/rules配下の自動生成ファイル
+    （habit_projection.export、書き込み経路のcommit直後に実行）が担う。
+    本セクションは当該セッションがその投影ファイルを読み込めているかを
+    verify_and_healで検証するだけの縮退面であり、fresh（投影ファイルが
+    最新で読み込み済み）なら何も注入しない。stale（投影ファイルは存在するが
+    読み込んだ内容が古い可能性がある）なら1行の通知のみ、absent（投影ファイル
+    が存在しない・読めない。修復失敗を含む）またはkill switch中は、投影経由の
+    配信が効いていない前提で_build_degraded_habits_fallbackへ委譲する。
+    """
+    result = habit_projection.verify_and_heal(conn)
+    status = result["status"]
+
+    if status == "fresh":
+        return ""
+    if status in ("healed_stale", "failed_stale"):
+        return _HABITS_STALE_NOTICE
+    return _build_degraded_habits_fallback(conn)
 
 
 def _build_sync_policy_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ

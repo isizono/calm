@@ -22,9 +22,16 @@ class TestAddHabitDescriptionAccuracy:
         desc = _all_tool_descriptions()["add_habit"]
         assert "check-in時に自動注入" not in desc
 
-    def test_mentions_session_start_injection(self):
+    def test_does_not_claim_session_start_injection(self):
+        """habitsの常時配信経路はSessionStart hookの直接注入ではなく、
+        ~/.claude/rules配下の自動生成ファイル投影である"""
         desc = _all_tool_descriptions()["add_habit"]
-        assert "SessionStart時に全件注入" in desc
+        assert "SessionStart時に全件注入" not in desc
+
+    def test_mentions_rules_projection_delivery(self):
+        desc = _all_tool_descriptions()["add_habit"]
+        assert "~/.claude/rules" in desc
+        assert "trigger_mode='always'" in desc
 
 
 class TestRelationDescriptionMentionsBelongsTo:

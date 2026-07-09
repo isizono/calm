@@ -66,7 +66,7 @@ RULES = """# cc-memory 利用ガイド
 
 ## 振る舞い（habits）
 
-全セッション共通の行動ルールはhabitsとして記録できます。SessionStart時に全件注入されます。タグやファイルに依存しない横断的なルールはhabitsに記録してください。
+全セッション共通の行動ルールはhabitsとして記録できます。正はhabits DBで、内容は~/.claude/rules配下の自動生成ファイル経由でセッション起動時に配信されます。タグやファイルに依存しない横断的なルールはhabitsに記録してください。詳細はget_habitsで確認できます。
 
 ## 内部識別子は本文に出さない
 
@@ -1258,20 +1258,20 @@ def get_map(
 def add_habit(content: str) -> dict:
     """エージェントの振る舞いを登録する。新規habitはtrigger_mode='intelligently'
     （マニフェスト表示のみ、詳細はget_habits(habit_id=...)でon-demand取得）で作成され、
-    SessionStart時に全件注入されるのはtrigger_mode='always'のみ（セッション途中の登録は
-    次セッション以降に有効）。常時注入層への昇格はupdate_habit(trigger_mode='always')で
-    行い、content短さとalwaysプール定員の検査を通過する必要がある。
-    "覚えといて"と言われた行動ルールはここに登録する"""
+    ~/.claude/rules配下の自動生成ファイル経由で常時配信されるのはtrigger_mode='always'
+    のみ（セッション途中の登録は次セッション起動から反映）。常時配信層への昇格は
+    update_habit(trigger_mode='always')で行い、content短さとalwaysプール定員の検査を
+    通過する必要がある。"覚えといて"と言われた行動ルールはここに登録する"""
     return habit_service.add_habit(content)
 
 
 @mcp.tool()
 def get_habits(active: bool = True, habit_id: int | None = None) -> dict:
     """登録済みの振る舞い一覧を取得する。既定でactive=1のみ返す。無効化済みも含む全件が
-    欲しいときはactive=Falseを渡す。SessionStartで全文注入されるのはtrigger_mode='always'
-    のみで、'intelligently'はタイトルのみのマニフェスト表示になる。habit_idを渡すとその
-    1件だけを本文付きで取得でき、intelligentlyな振る舞いの詳細を引くときに使う
-    （取得と同時にlast_recalled_atが更新される）"""
+    欲しいときはactive=Falseを渡す。~/.claude/rules配下の自動生成ファイルで全文配信
+    されるのはtrigger_mode='always'のみで、'intelligently'はタイトルのみのマニフェスト
+    表示になる。habit_idを渡すとその1件だけを本文付きで取得でき、intelligentlyな
+    振る舞いの詳細を引くときに使う（取得と同時にlast_recalled_atが更新される）"""
     return habit_service.get_habits(active=active, habit_id=habit_id)
 
 
@@ -1284,8 +1284,9 @@ def update_habit(
     description: Optional[str] = None,
 ) -> dict:
     """振る舞いを更新する。active=Falseで無効化、active=Trueで再有効化。
-    trigger_modeは'always'（全文常時注入）/'intelligently'（マニフェストのみ、
-    詳細はget_habits(habit_id=...)でon-demand取得）のいずれか。'intelligently'から
+    trigger_modeは'always'（~/.claude/rules配下の自動生成ファイルで全文常時配信）/
+    'intelligently'（マニフェストのみ、詳細はget_habits(habit_id=...)でon-demand取得）
+    のいずれか。'intelligently'から
     'always'への昇格には検査を課す: contentが100字未満であること、かつ昇格後の
     alwaysプール合計文字数が昇格前の合計以下または定員（既定1,500字）以下の
     いずれかを満たすこと。違反時はVALIDATION_ERRORで拒否し、content圧縮または

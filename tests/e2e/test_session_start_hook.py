@@ -2,9 +2,16 @@
 
 subprocess.run で session_start_hook.py を呼び出し、stdin→stdout の入出力をテスト。
 DISCUSSION_DB_PATH 環境変数でテスト用DBを指定する。
+
+hookはhabits rules投影ファイル（既定 ~/.claude/rules/cc-memory-habits.md）を
+verify_and_heal経由で検証・書き込みしうる。テストプロセスとhookは別プロセス
+なのでconftestのmonkeypatch（_isolate_habits_rules_projection）は伝播しない。
+_run_session_start_hookが呼び出しごとに使い捨てのCCM_HABITS_RULES_PATHを
+強制注入し、実ファイルへの書き込みを防ぐ。
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -39,34 +46,50 @@ def _run_session_start_hook(
     extra_env: dict | None = None,
     env_remove: list[str] | None = None,
     stdin_payload: dict | None = None,
+    habits_rules_path: str | None = None,
 ) -> dict:
     """session_start_hook.pyを実行してJSON出力を返す。
 
     stdin_payload を指定すると {session_id: ...} などを stdin に流し込める
     (P1-7 の自セッション照合テスト用)。
+
+    habits_rules_path 未指定時は呼び出しごとの使い捨てディレクトリを生成し、
+    CCM_HABITS_RULES_PATH で強制的に隔離する（実ファイルへの書き込み防止）。
+    ファイル修復の検証等でパスを固定したいテストは明示的に渡すこと。
     """
     env = {**os.environ, "DISCUSSION_DB_PATH": db_path}
     # runnerのOW_ROLEを継承しない（テストの決定性確保。残存env検証テストはextra_envで明示設定する）
     env.pop("OW_ROLE", None)
+
+    cleanup_dir: str | None = None
+    if habits_rules_path is None:
+        cleanup_dir = tempfile.mkdtemp(prefix="ccm-habits-rules-")
+        habits_rules_path = str(Path(cleanup_dir) / "cc-memory-habits.md")
+    env["CCM_HABITS_RULES_PATH"] = habits_rules_path
+
     if extra_env:
         env.update(extra_env)
     if env_remove:
         for key in env_remove:
             env.pop(key, None)
 
-    payload_str = "{}" if stdin_payload is None else json.dumps(stdin_payload)
-    result = subprocess.run(
-        [sys.executable, "hooks/session_start_hook.py"],
-        input=payload_str,
-        capture_output=True,
-        text=True,
-        cwd=str(PROJECT_ROOT),
-        env=env,
-    )
+    try:
+        payload_str = "{}" if stdin_payload is None else json.dumps(stdin_payload)
+        result = subprocess.run(
+            [sys.executable, "hooks/session_start_hook.py"],
+            input=payload_str,
+            capture_output=True,
+            text=True,
+            cwd=str(PROJECT_ROOT),
+            env=env,
+        )
 
-    stdout = result.stdout.strip()
-    assert stdout, f"session_start_hook.py produced no output. stderr: {result.stderr}"
-    return json.loads(stdout)
+        stdout = result.stdout.strip()
+        assert stdout, f"session_start_hook.py produced no output. stderr: {result.stderr}"
+        return json.loads(stdout)
+    finally:
+        if cleanup_dir is not None:
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
 
 
 def _seed_activity(title: str, status: str = "pending", domain: str = "test") -> int:
@@ -372,17 +395,20 @@ class TestSessionStartHookHabits:
 
         assert "無効な振る舞い" not in context
 
-    def test_intelligently_habit_shown_as_manifest_title_only(self, temp_db):
-        """trigger_mode='intelligently'の振る舞いは全文でなくタイトルのみで出る"""
+    def test_intelligently_habit_degrades_to_count_only(self, temp_db):
+        """trigger_mode='intelligently'の振る舞いは、投影ファイル未生成時の縮退フォール
+        バックではタイトルも全文も出ず、件数1行にとどまる（全文はrulesファイル経由で
+        配信され、hookのフォールバックは全文9,500字級の再注入を避ける設計のため）"""
         habit_id = _seed_habit("intelligently層の本文全部が長い振る舞い内容")
         _set_habit_trigger_mode(habit_id, "intelligently", description="短い要旨")
 
         result = _run_session_start_hook(temp_db)
         context = result["hookSpecificOutput"]["additionalContext"]
 
-        assert "短い要旨" in context
+        assert "短い要旨" not in context
         assert "intelligently層の本文全部が長い振る舞い内容" not in context
-        assert f"habit_id={habit_id}" in context
+        assert f"habit_id={habit_id}" not in context
+        assert "他の振る舞い: 1件" in context
 
     def test_always_habit_shown_in_full(self, temp_db):
         """trigger_mode='always'（既定）の振る舞いは全文が出る"""
@@ -392,6 +418,134 @@ class TestSessionStartHookHabits:
         context = result["hookSpecificOutput"]["additionalContext"]
 
         assert "always層の振る舞い全文" in context
+
+
+class TestSessionStartHookHabitsProjectionCutover:
+    """habits rules投影ファイルの鮮度に応じた、hookの検証+縮退注入のテスト
+
+    正の配信経路は~/.claude/rules配下の自動生成ファイル（launch時読み込み）で
+    あり、本hookはverify_and_heal経由でそのファイルの鮮度を検証するだけの
+    縮退面になる。各テストはhabits_rules_pathを固定してファイル状態を
+    テスト間で制御する。
+    """
+
+    def test_fresh_projection_yields_no_habits_injection(self, temp_db, tmp_path):
+        """投影ファイルがDB内容と一致(fresh)なら、hookはhabitsセクションを注入しない
+        （habitsはrulesファイル経由で既にコンテキストへ読み込まれている前提のため）"""
+        _seed_habit("fresh判定用の振る舞い")
+        habits_path = tmp_path / "cc-memory-habits.md"
+
+        # 1回目: ファイル不在(absent)のため生成される
+        _run_session_start_hook(temp_db, habits_rules_path=str(habits_path))
+
+        # 2回目: DBに変化なし → ファイルはfreshのはず
+        result = _run_session_start_hook(temp_db, habits_rules_path=str(habits_path))
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "振る舞い" not in context
+
+    def test_stale_projection_yields_single_line_and_heals_file(self, temp_db, tmp_path):
+        """投影ファイルがDBより古い(stale)場合、1行通知のみを注入しファイルを修復する"""
+        _seed_habit("stale判定用の振る舞い1")
+        habits_path = tmp_path / "cc-memory-habits.md"
+        _run_session_start_hook(temp_db, habits_rules_path=str(habits_path))  # 初回生成
+
+        # サービス層のexport経路を経由せずDBだけ変更し、ファイルを古い状態のまま残す
+        _seed_habit("stale判定用の振る舞い2")
+
+        result = _run_session_start_hook(temp_db, habits_rules_path=str(habits_path))
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "次回セッション起動から" in context
+        assert "stale判定用の振る舞い1" not in context
+        assert "stale判定用の振る舞い2" not in context
+        assert "stale判定用の振る舞い2" in habits_path.read_text(encoding="utf-8")
+
+    def test_absent_projection_degrades_to_always_full_and_manifest_count(self, temp_db, tmp_path):
+        """投影ファイル不在(absent)時は、always層は全文、intelligently層は件数1行に
+        減格したうえでファイルを新規生成する"""
+        _seed_habit("absent時のalways全文振る舞い")
+        intelligently_id = _seed_habit("absent時のintelligently本文（全文は出ないはず）")
+        _set_habit_trigger_mode(intelligently_id, "intelligently", description="短い要旨")
+
+        habits_path = tmp_path / "cc-memory-habits.md"
+        assert not habits_path.exists()
+
+        result = _run_session_start_hook(temp_db, habits_rules_path=str(habits_path))
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "absent時のalways全文振る舞い" in context
+        assert "absent時のintelligently本文（全文は出ないはず）" not in context
+        assert "短い要旨" not in context
+        assert "他の振る舞い: 1件" in context
+        assert habits_path.exists()
+
+    def test_kill_switch_degrades_without_being_treated_as_fresh(self, temp_db, tmp_path):
+        """kill switch（CCM_HABITS_RULES_EXPORT=0）中はfresh扱いにせず、
+        always全文+件数1行の縮退注入にフォールバックする（プレースホルダ運用中の
+        ファイルがそのまま読まれ続ける事態を避けるため）"""
+        _seed_habit("kill switch下のalways振る舞い")
+        habits_path = tmp_path / "cc-memory-habits.md"
+
+        result = _run_session_start_hook(
+            temp_db,
+            habits_rules_path=str(habits_path),
+            extra_env={"CCM_HABITS_RULES_EXPORT": "0"},
+        )
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "kill switch下のalways振る舞い" in context
+
+    def test_verify_and_heal_exception_does_not_break_other_sections(self, temp_db, tmp_path):
+        """habitsセクションが例外を投げても、他セクション（アクティビティ一覧等）は
+        引き続き返る（builders統一IFのセクション単位try/exceptの回帰確認）"""
+        _seed_activity("[作業] habits例外時も表示される", status="in_progress")
+
+        conn = get_connection()
+        try:
+            conn.execute("DROP TABLE habits")
+            conn.commit()
+        finally:
+            conn.close()
+
+        habits_path = tmp_path / "cc-memory-habits.md"
+        result = _run_session_start_hook(temp_db, habits_rules_path=str(habits_path))
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "habits例外時も表示される" in context
+        assert "振る舞い" not in context
+
+    def test_standard_fixture_context_within_budget_on_fresh_habits_path(self, temp_db, tmp_path):
+        """habits投影ファイルがfresh（配信済み）な標準fixtureでも、additionalContext
+        合計が1,900字以下である。fresh経路はhabitsセクションが0字になるため、既存の
+        絶対経路（初回=absent）の回帰テストとは別に、fresh判定自体が字数超過を
+        起こさないことを確認する"""
+        for i in range(3):
+            _seed_activity(f"[作業] 通常タスク{i}", status="in_progress")
+
+        pinned_id = _seed_activity("[設計] pinned設計作業", status="pending")
+        topic_id = _seed_topic("pin source")
+        _add_pin_activity("topic", topic_id, pinned_id)
+
+        for i in range(2):
+            _seed_habit(f"標準的な長さの振る舞い内容その{i}")
+
+        habits_path = tmp_path / "cc-memory-habits.md"
+        # 1回目: absentからのheal。DB状態を投影ファイルへ反映させる
+        _run_session_start_hook(
+            temp_db, habits_rules_path=str(habits_path), env_remove=["CCM_SYNC_POLICY"]
+        )
+
+        # 2回目: freshのはず
+        result = _run_session_start_hook(
+            temp_db, habits_rules_path=str(habits_path), env_remove=["CCM_SYNC_POLICY"]
+        )
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "振る舞い" not in context
+        assert len(context) <= 1900, (
+            f"additionalContextが1,900字を超えている（実測{len(context)}字）"
+        )
 
 
 class TestSessionStartHookOwRoleEnvIgnored:
