@@ -200,31 +200,43 @@ def _check_always_promotion_gate_with_conn(
 ) -> dict | None:
     """always昇格ゲートを検査する。違反時はエラー辞書、問題なければNoneを返す。
 
-    降格（'always'→'intelligently'）・無効化（active=False）は無条件で通す。
-    昇格（'intelligently'→'always'）は短さ検査（100字未満）を追加で課す。
-    既にalwaysなhabitのcontent更新は、プール合計の増分についてのみラチェット検査を課す。
+    降格（'always'→'intelligently'）は無条件で通す。
+    content・trigger_modeのいずれも指定しない純粋なactiveトグル（無効化/再有効化）は、
+    既存データ（棚卸し未実施等）を巻き込まないよう短さ検査の対象外とする。
+    それ以外——post_trigger_mode='always'として保存されるcontentを、content または
+    trigger_modeの明示的な指定を伴って確定させる更新（昇格の瞬間・既にalwaysな
+    habitへのcontent更新・trigger_mode='always'とactive=Falseの同時指定を含む）——は
+    すべて、active状態に関わらず短さ検査（100字未満）を課す。これにより、
+    「trigger_mode='always'とactive=Falseを同時指定してゲートをすり抜けてから
+    再有効化する」経路、および「昇格後にtrigger_modeを指定せずcontentだけを
+    100字以上へ伸長する」経路の両方を塞ぐ。
+    プール合計の増分についてのラチェット検査は、post_active=Trueの場合のみ課す
+    （無効化される/されたままのentryは実際のプール集計に含まれないため）。
     """
     post_content = content if content is not None else pre_content
     post_trigger_mode = trigger_mode if trigger_mode is not None else pre_trigger_mode
     post_active = active if active is not None else bool(pre_active)
 
-    if post_trigger_mode != "always" or not post_active:
+    if post_trigger_mode != "always":
         return None
 
-    is_promotion = pre_trigger_mode != "always"
+    is_content_or_mode_change = content is not None or trigger_mode is not None
 
-    if is_promotion and len(post_content) >= _ALWAYS_PROMOTION_MAX_CONTENT_CHARS:
+    if is_content_or_mode_change and len(post_content) >= _ALWAYS_PROMOTION_MAX_CONTENT_CHARS:
         return {
             "error": {
                 "code": "VALIDATION_ERROR",
                 "message": (
-                    "trigger_mode='always'への昇格にはcontentが"
+                    "trigger_mode='always'のcontentは"
                     f"{_ALWAYS_PROMOTION_MAX_CONTENT_CHARS}字未満である必要があります"
                     f"（現在{len(post_content)}字）。contentを圧縮するか、"
                     "要旨をdescriptionに分けてcontentを短くしてください。"
                 ),
             }
         }
+
+    if not post_active:
+        return None
 
     old_total = _always_pool_total_with_conn(conn)
     pre_in_pool = bool(pre_active) and pre_trigger_mode == "always"
