@@ -136,7 +136,7 @@ def _build_fixed_nav(undisplayed_count: int, pinned_undisplayed_count: int) -> s
     return base + remainder
 
 
-def _build_activities_section(conn, session_id: str | None = None) -> str:
+def _build_activities_section(conn, session_id: str | None = None, source: str | None = None) -> str:  # source: buildersループの統一シグネチャ（本セクションは未使用）
     """アクティビティ一覧を組み立てる。
 
     階層 1「作業中（別セッション）」: heartbeat 中で自セッションでないもの。
@@ -297,17 +297,35 @@ _HABITS_STALE_NOTICE = (
     "反映は次回セッション起動から。\n"
 )
 
+_HABITS_STALE_HEAL_FAILED_NOTICE = (
+    "habits rulesファイルが古かったが、修復（書き込み）に失敗した。"
+    "ファイルの内容は更新されていない可能性がある。最新のhabits内容を以下に直接表示する。\n"
+)
 
-def _build_degraded_habits_fallback(conn) -> str:
+
+def _build_degraded_habits_fallback(
+    conn,
+    *,
+    always_contents: list[str] | None = None,
+    manifest: list[dict] | None = None,
+) -> str:
     """habits rules投影ファイルが当該セッションに効いていない前提の縮退注入。
 
-    verify_and_healのabsent系（不在・破損・修復失敗を含む）とkill switch
-    （CCM_HABITS_RULES_EXPORT=0）の両方から呼ばれる。always層は全文、
-    intelligently層はタイトルを列挙せず件数1行にとどめる（全文9,500字級の
-    注入はpersisted-output退避を再発させるため行わない。詳細はget_habits）。
+    verify_and_healのabsent系（不在・破損・修復失敗を含む）・failed_stale
+    （staleを検知したが修復書き込みに失敗し、最新内容が読めていない可能性がある
+    ケース）・kill switch（CCM_HABITS_RULES_EXPORT=0）・SessionStart(source=
+    compact)（rulesファイル内容がcompact後も保持されるかの実機検証が未了のため
+    安全側に倒し無条件で呼ばれる）から呼ばれる。always層は全文、intelligently層は
+    タイトルを列挙せず件数1行にとどめる（全文9,500字級の注入はpersisted-output
+    退避を再発させるため行わない。詳細はget_habits）。
+
+    always_contents/manifestを呼び出し元が既に取得済み（verify_and_healの戻り値）
+    なら渡すことで、DBクエリの再実行を避ける。未指定（None）の場合のみ自前で
+    クエリする（disabled statusなどverify_and_healがDBに触れていないケース向け）。
     """
-    always_contents = get_active_habit_contents_with_conn(conn)
-    manifest = list_intelligently_habit_manifest_with_conn(conn)
+    if always_contents is None or manifest is None:
+        always_contents = get_active_habit_contents_with_conn(conn)
+        manifest = list_intelligently_habit_manifest_with_conn(conn)
 
     if not always_contents and not manifest:
         return ""
@@ -322,7 +340,7 @@ def _build_degraded_habits_fallback(conn) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _build_habits_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
+def _build_habits_section(conn, session_id: str | None = None, source: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
     """振る舞いセクションを組み立てる。
 
     正はhabits DBで、通常の配信は~/.claude/rules配下の自動生成ファイル
@@ -330,28 +348,49 @@ def _build_habits_section(conn, session_id: str | None = None) -> str:  # conn, 
     本セクションは当該セッションがその投影ファイルを読み込めているかを
     verify_and_healで検証するだけの縮退面であり、fresh（投影ファイルが
     最新で読み込み済み）なら何も注入しない。stale（投影ファイルは存在するが
-    読み込んだ内容が古い可能性がある）なら1行の通知のみ、absent（投影ファイル
-    が存在しない・読めない。修復失敗を含む）またはkill switch中は、投影経由の
-    配信が効いていない前提で_build_degraded_habits_fallbackへ委譲する。
+    読み込んだ内容が古い可能性がある）で修復に成功した（healed_stale）場合は
+    1行の通知のみ、修復（書き込み）に失敗した（failed_stale）場合はファイルが
+    実際には更新されていないため、成功したかのような通知は返さず失敗が分かる
+    通知＋_build_degraded_habits_fallbackによるalways層全文フォールバックを
+    行う。absent（投影ファイルが存在しない・読めない。修復失敗を含む）または
+    kill switch中も同様に_build_degraded_habits_fallbackへ委譲する。
+
+    source == "compact" のときは、compact後にrulesファイルの内容が
+    コンテキストに保持されるかが実機未検証のため、鮮度判定の結果に関わらず
+    安全側に倒してalways層全文フォールバックを注入する（verify_and_healによる
+    ファイル修復自体は通常通り行う）。
     """
     result = habit_projection.verify_and_heal(conn)
     status = result["status"]
+    always_contents = result.get("always_contents")
+    manifest = result.get("manifest")
+
+    if source == "compact":
+        return _build_degraded_habits_fallback(
+            conn, always_contents=always_contents, manifest=manifest
+        )
 
     if status == "fresh":
         return ""
-    if status in ("healed_stale", "failed_stale"):
+    if status == "healed_stale":
         return _HABITS_STALE_NOTICE
-    return _build_degraded_habits_fallback(conn)
+    if status == "failed_stale":
+        return _HABITS_STALE_HEAL_FAILED_NOTICE + _build_degraded_habits_fallback(
+            conn, always_contents=always_contents, manifest=manifest
+        )
+    return _build_degraded_habits_fallback(
+        conn, always_contents=always_contents, manifest=manifest
+    )
 
 
-def _build_sync_policy_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
+def _build_sync_policy_section(conn, session_id: str | None = None, source: str | None = None) -> str:  # conn, session_id, source: buildersループの統一シグネチャ
     """sync_policyが設定されていれば注入する。未設定時はコンテキスト消費ゼロ。"""
     if not config.SYNC_POLICY:
         return ""
     return f"# sync_policy\n{config.SYNC_POLICY}\n"
 
 
-def _build_signals_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
+def _build_signals_section(conn, session_id: str | None = None, source: str | None = None) -> str:  # conn, session_id, source: buildersループの統一シグネチャ
     """未トリアージ(status='new')のシグナル件数をkind内訳付きで1行表示する。
 
     0件時はコンテキスト消費ゼロ（空文字を返す）。signal_events テーブルが
@@ -369,7 +408,7 @@ def _build_signals_section(conn, session_id: str | None = None) -> str:  # conn,
     return f"未トリアージのシグナル: {total}件 ({breakdown}) → get_signals で確認\n"
 
 
-def _build_relay_inbox_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
+def _build_relay_inbox_section(conn, session_id: str | None = None, source: str | None = None) -> str:  # conn, session_id, source: buildersループの統一シグネチャ
     """relay inboxの未読件数を表示する。未読0件はコンテキスト消費ゼロ。
 
     relay未構成（token未設定）ならidentity解決を試みる前に打ち切る。
@@ -415,7 +454,7 @@ def _build_relay_inbox_section(conn, session_id: str | None = None) -> str:  # c
     )
 
 
-def _build_snapshot_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
+def _build_snapshot_section(conn, session_id: str | None = None, source: str | None = None) -> str:  # conn, session_id, source: buildersループの統一シグネチャ
     """スナップショット取得＋ヘルスチェック。異常検知時のみ警告を返す。
 
     connは引数として受け取るが、snapshot.pyはdb_pathベースで動作するため
@@ -453,11 +492,14 @@ def _build_snapshot_section(conn, session_id: str | None = None) -> str:  # conn
     return ""
 
 
-def _build_session_context(session_id: str | None = None) -> str:
+def _build_session_context(session_id: str | None = None, source: str | None = None) -> str:
     """サービス層経由でセッション開始時のコンテキストを組み立てる。
 
     session_id は session_start_hook の stdin payload に含まれる Claude Code 提供の
     識別子。アクティビティ一覧の「自セッション heartbeat」照合に使う。
+    source は同 payload の "source"（startup|resume|clear|compact）。現状
+    _build_habits_section のみが参照し、compact後にrulesファイル内容が
+    コンテキストに保持されるかの実機未検証を安全側に倒すため使う。
 
     各セクションは独立してtry/exceptで保護し、
     一部のセクションが失敗しても残りは返す。
@@ -475,7 +517,7 @@ def _build_session_context(session_id: str | None = None) -> str:
         ]
         for builder in builders:
             try:
-                result = builder(conn, session_id)
+                result = builder(conn, session_id, source)
                 if result:
                     sections.append(result)
             except Exception:
@@ -493,6 +535,7 @@ def main() -> None:
     try:
         raw = sys.stdin.read()
         session_id: str | None = None
+        source: str | None = None
         if raw:
             try:
                 payload = json.loads(raw)
@@ -500,12 +543,15 @@ def main() -> None:
                     sid = payload.get("session_id")
                     if isinstance(sid, str) and sid:
                         session_id = sid
+                    src = payload.get("source")
+                    if isinstance(src, str) and src:
+                        source = src
             except json.JSONDecodeError:
-                # session_id 取得失敗時は従来挙動（self 照合なし）にフォールバック
-                # 初期値 None のまま継続するため再代入不要
+                # session_id/source 取得失敗時は従来挙動（self 照合なし・compact判定
+                # なし）にフォールバック。初期値 None のまま継続するため再代入不要
                 pass
 
-        context = _build_session_context(session_id)
+        context = _build_session_context(session_id, source)
 
         output = {
             "hookSpecificOutput": {

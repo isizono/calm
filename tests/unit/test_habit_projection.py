@@ -440,6 +440,83 @@ class TestVerifyAndHeal:
         assert result["status"] == "disabled"
         assert not projection_path.exists()
 
+    def test_healed_absent_returns_always_contents_and_manifest_for_reuse(self, temp_db, projection_path):
+        """healed_absentはalways_contents/manifestを併せて返す（hook側の
+        フォールバック注入がDBへ再クエリせず再利用するための値）"""
+        _add_always("再利用確認用のhabit")
+        projection_path.unlink()
+
+        conn = get_connection()
+        try:
+            result = habit_projection.verify_and_heal(conn)
+        finally:
+            conn.close()
+
+        assert result["status"] == "healed_absent"
+        assert result["always_contents"] is not None
+        assert any("再利用確認用のhabit" in c for c in result["always_contents"])
+        assert result["manifest"] is not None
+
+    def test_disabled_returns_none_layers(self, temp_db, projection_path, monkeypatch):
+        """disabled(kill switch)はDBに触れないため、always_contents/manifestは
+        None（未取得）で返る"""
+        add_habit("kill switch下のhabit")
+        monkeypatch.setattr(config, "HABITS_RULES_EXPORT_ENABLED", False)
+
+        conn = get_connection()
+        try:
+            result = habit_projection.verify_and_heal(conn)
+        finally:
+            conn.close()
+
+        assert result["status"] == "disabled"
+        assert result["always_contents"] is None
+        assert result["manifest"] is None
+
+    def test_absent_file_write_failure_returns_failed_absent(self, temp_db, projection_path, monkeypatch):
+        """absent検知後の書き込みが失敗した場合、healed_absent（成功扱い）ではなく
+        failed_absentを返す。bodyにはDBの最新レンダリング結果を含める。"""
+        add_habit("absent修復失敗habit")
+        projection_path.unlink()
+        monkeypatch.setattr(
+            habit_projection,
+            "_write",
+            lambda body, *, force: {"status": "failed", "message": "boom"},
+        )
+
+        conn = get_connection()
+        try:
+            result = habit_projection.verify_and_heal(conn)
+        finally:
+            conn.close()
+
+        assert result["status"] == "failed_absent"
+        assert "absent修復失敗habit" in result["body"]
+        assert result["always_contents"] is not None
+        assert not projection_path.exists()
+
+    def test_stale_file_write_failure_returns_failed_stale(self, temp_db, projection_path, monkeypatch):
+        """stale検知後の修復書き込みが失敗した場合、healed_stale（成功扱い）ではなく
+        failed_staleを返す。書き込みに失敗しているためファイルは古い内容のまま残る。"""
+        add_habit("最初のhabit")
+        tampered = projection_path.read_text(encoding="utf-8") + "\n改変された行\n"
+        projection_path.write_text(tampered, encoding="utf-8")
+        monkeypatch.setattr(
+            habit_projection,
+            "_write",
+            lambda body, *, force: {"status": "failed", "message": "boom"},
+        )
+
+        conn = get_connection()
+        try:
+            result = habit_projection.verify_and_heal(conn)
+        finally:
+            conn.close()
+
+        assert result["status"] == "failed_stale"
+        assert "改変された行" in projection_path.read_text(encoding="utf-8")
+        assert result["always_contents"] is not None
+
 
 class TestWritePathIntegration:
     """add_habit / update_habit / add_decisions からの投影反映テスト"""
