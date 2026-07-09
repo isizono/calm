@@ -1,8 +1,8 @@
 """search() orchestrator のステージ駆動構造のテスト。
 
 各ステージ関数 (_validate / _normalize / _expand / _retrieve / _merge / _rerank /
-_slice / _decorate) を monkeypatch で差し替えて、orchestrator が期待される順序で
-呼び出し、戻り値を組み立てることを検証する。
+_demote_archived / _slice / _decorate) を monkeypatch で差し替えて、orchestrator が
+期待される順序で呼び出し、戻り値を組み立てることを検証する。
 
 DB を立ち上げないことでオーケストレータ単独の挙動 (ステージ呼び出し順序、
 戻り値合成、_SearchEarlyReturn のキャッチ、例外時の DATABASE_ERROR 化) を
@@ -37,6 +37,7 @@ def stub_stages(monkeypatch):
         "_retrieve": MagicMock(return_value=retrieval),
         "_merge": MagicMock(return_value=merged_results),
         "_rerank": MagicMock(return_value=merged_results),
+        "_demote_archived": MagicMock(return_value=merged_results),
         "_slice": MagicMock(return_value=(sliced_results, 1)),
         "_decorate": MagicMock(return_value=(sliced_results, nearby_tags)),
         "get_connection": MagicMock(return_value=MagicMock()),
@@ -48,13 +49,13 @@ def stub_stages(monkeypatch):
 
 
 def test_orchestrator_runs_stages_in_order(stub_stages):
-    """search() は _validate → _normalize → _expand → _retrieve → _merge → _rerank → _slice → _decorate の順で呼び、レスポンス dict を組み立てる。"""
+    """search() は _validate → _normalize → _expand → _retrieve → _merge → _rerank → _demote_archived → _slice → _decorate の順で呼び、レスポンス dict を組み立てる。"""
     result = search_service.search(keyword="alpha")
 
-    # 8 ステージはすべて 1 回ずつ呼ばれる
+    # 9 ステージはすべて 1 回ずつ呼ばれる
     for name in [
         "_validate", "_normalize", "_expand", "_retrieve",
-        "_merge", "_rerank", "_slice", "_decorate",
+        "_merge", "_rerank", "_demote_archived", "_slice", "_decorate",
     ]:
         assert stub_stages[name].call_count == 1, f"{name} not called once"
 

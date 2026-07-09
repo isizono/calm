@@ -54,6 +54,10 @@ CCM_MIGRATION_DRYRUN: bool = os.environ.get("CCM_MIGRATION_DRYRUN", "1") != "0"
 # migration_ledger内容ハッシュ不一致時の既定動作。"error"（既定、起動中断）| "warn"（警告のみで続行）
 CCM_MIGRATION_HASH_ENFORCE: str = os.environ.get("CCM_MIGRATION_HASH_ENFORCE", "error").lower()
 
+# --- Archived tags ---
+# 全タグがarchivedのアイテムに適用する final_score の降格係数
+ARCHIVED_DEMOTION_FACTOR: float = float(os.environ.get("CCM_ARCHIVED_DEMOTION_FACTOR", "0.3"))
+
 # --- Precedent pull ---
 # 本文展開（decision + reason）の予算（文字数）。index行・material snippet・routing
 # メタデータは対象外（別途有界のため予算計算に含めない）
