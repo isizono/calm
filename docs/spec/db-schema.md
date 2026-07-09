@@ -762,7 +762,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0047_drop_decisions_logs_topic_id | decisions.topic_id / discussion_logs.topic_id カラムを物理削除（0046で確保した前提条件を受けての Contract） |
 | 0048_session_identity | session_identity テーブル新設 + decisions/discussion_logs/discussion_topics/activities/materials に caller_session_id 追加（0057で全て削除） |
 | 0057_drop_capability_gating | session_identity テーブル削除 + decisions/discussion_logs/discussion_topics/activities/materials の caller_session_id カラム削除（role-based capability gating機構の呼び出し元解体に伴う撤去） |
-| 0058_add_habit_trigger_mode | habits に description / trigger_mode / importance_score / last_recalled_at を追加、既存habits一部をtrigger_mode='intelligently'に更新 |
+| 0058_add_habit_trigger_mode | habits に description / trigger_mode / importance_score / last_recalled_at を追加（既存habitsへの一括UPDATEは後続コミットで撤去、intelligently化はupdate_habit経由の個別設定に変更） |
 | 0059_add_habit_status | habits に status（'active'/'archived'、既定'active'）を追加 |
 | 0060_add_habit_importance_score_check | trigger_mode='intelligently'かつimportance_score=1.0(未設定)のhabitを3に補正したうえで、importance_scoreにCHECK(IN (1, 2, 3))を追加（テーブル再構築） |
 
