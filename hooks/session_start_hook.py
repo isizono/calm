@@ -266,7 +266,7 @@ def _render_numbered_line(
     created_ats: dict[int, str],
     unresolved_deps: dict[int, list[dict]],
 ) -> list[str]:
-    """階層 2/3 用の 1 activity 分の行群を返す。
+    """階層 2 用の 1 activity 分の行群を返す。
 
     タイトル行 1 行と、blocked_by 未解決依存があるとき meta 行 1 行を続ける。
     """
