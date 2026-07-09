@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -58,6 +59,7 @@ _MANIFEST_INTRO = (
 
 _TMP_FILE_PREFIX = ".cc-memory-habits-"
 _TMP_FILE_SUFFIX = ".tmp"
+_TMP_STALE_SECONDS = 60
 
 _METADATA_PREFIX = "<!-- cc-memory:habits-projection"
 _BODY_MARKER = "-->\n"
@@ -247,9 +249,18 @@ def _write(body: str, *, force: bool) -> dict:
 
 
 def _cleanup_stale_tmp_files(directory: Path) -> None:
-    """os.replace後に残った他プロセス由来の一時ファイル（クラッシュの取り残し）を掃除する。"""
+    """os.replace後に残った一時ファイル（クラッシュの取り残し）を掃除する。
+
+    並行exportが書き込み中の一時ファイルを消さないよう、更新から
+    _TMP_STALE_SECONDS を過ぎたものだけを対象にする。書き込み中のtmpは
+    直前に作られたばかりで必ず閾値未満に収まり、クラッシュの取り残しは
+    時間経過で必ず閾値を超える。
+    """
+    now = time.time()
     for tmp_file in directory.glob(f"{_TMP_FILE_PREFIX}*{_TMP_FILE_SUFFIX}"):
         try:
+            if now - tmp_file.stat().st_mtime < _TMP_STALE_SECONDS:
+                continue
             tmp_file.unlink()
         except OSError:
             pass
