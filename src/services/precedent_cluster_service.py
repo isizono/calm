@@ -14,7 +14,7 @@ import sqlite3
 from src.db import row_to_dict
 from src.services.decision_service import _build_decision_item
 from src.services.material_service import SNIPPET_MAX_LEN
-from src.services.readable_id import apply_readable_id_inplace
+from src.services.readable_id import strip_entity_id_inplace
 from src.services.supersede_service import compute_supersede_info_batch, get_superseded_by_batch
 from src.services.tag_service import get_effective_tags_batch_by_ids, get_entity_tags_batch
 
@@ -245,7 +245,7 @@ def expand_decision_cluster(
         row = _row_for(node_key)
         title = _decision_display_title(row) if ntype == "decision" else row["title"]
         entry = {"type": ntype, "id": nid, "title": title}
-        apply_readable_id_inplace(entry, ntype)
+        strip_entity_id_inplace(entry)
         catalog_overflow.append(entry)
 
     included_node_keys = set(membership.keys())
@@ -308,7 +308,7 @@ def expand_decision_cluster(
             "tags": material_tags_map.get(mid, []),
             "membership": [m for m in _MEMBERSHIP_ORDER if m in membership[("material", mid)]],
         }
-        apply_readable_id_inplace(item, "material")
+        strip_entity_id_inplace(item)
         materials_out.append(item)
     materials_out.sort(key=lambda i: (i["created_at"], i["id_raw"]))
 

@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 
 from src.db import get_connection
-from src.services.readable_id import apply_readable_id_inplace
+from src.services.readable_id import strip_entity_id_inplace
 
 logger = logging.getLogger(__name__)
 
@@ -214,11 +214,11 @@ def get_timeline(
             if row["replaces_id"]:
                 replaces = {"type": "decision", "id": row["replaces_id"]}
                 # replaces 内には title が無いので id_raw 退避のみ（title=None）
-                apply_readable_id_inplace(replaces, "decision")
+                strip_entity_id_inplace(replaces)
             replaced_by = None
             if row["replaced_by_id"]:
                 replaced_by = {"type": "decision", "id": row["replaced_by_id"]}
-                apply_readable_id_inplace(replaced_by, "decision")
+                strip_entity_id_inplace(replaced_by)
 
             item = {
                 "id": row["id"],
@@ -228,8 +228,7 @@ def get_timeline(
                 "replaces": replaces,
                 "replaced_by": replaced_by,
             }
-            # type は α化前に決定済みなのでそのまま渡す
-            apply_readable_id_inplace(item, row["type"])
+            strip_entity_id_inplace(item)
             items.append(item)
 
         return {"items": items, "total": total}

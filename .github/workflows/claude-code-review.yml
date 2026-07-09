@@ -41,6 +41,7 @@ jobs:
             - パフォーマンスへの考慮
             - セキュリティ上の懸念
             - テストカバレッジ
+            - テスト規約への適合（docs/spec/test-convention.md）
 
             ## 重要なルール
 
@@ -59,6 +60,14 @@ jobs:
 
             `gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments` で既存のレビューコメントを確認し、同じ指摘を繰り返さないでください。
             また `gh pr view ${{ github.event.pull_request.number }} --comments` でPRコメントも確認してください。
+
+            ### テスト変更を含むPRの確認
+
+            tests/ 配下のファイルを追加・変更するPRでは、docs/spec/test-convention.md（テスト規約）に照らして確認してください。特に:
+            - SKILL.md や docs の文言の存在を assert するテストが追加されていないか（規約§2で禁止。許可されるのは実装から期待値を導出する整合性lintと、frontmatter等の構造smokeのみ）
+            - 規約§3のアンチパターン（assertion-weak / no-assertion / implementation-mirror / constant-mirror / pr-diff-echo / phrase-pinning）に該当するテストがないか。該当する場合はパターン名を挙げて指摘してください
+
+            skills/ 配下のSKILL.mdのdescription行を変更するPRでは、既存のトリガーフレーズや非発動条件の言及が意図せず失われていないかをdiffで確認してください（この確認はテストではなくレビューの責務です）。
 
             ## 出力
 

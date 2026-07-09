@@ -187,7 +187,7 @@ def apply_flavor_to_entity_dict(
 def _extract_entity_id(d: dict, entity_type: str, id_key: str) -> int | None:
     """response dict から整数 ID を取り出す。
 
-    apply_readable_id_inplace で `id` / `<entity>_id` キーが削除されているため、
+    strip_entity_id_inplace で `id` / `<entity>_id` キーが削除されているため、
     `<key>_raw` フィールドにフォールバックする。"""
     for key in (
         id_key,
