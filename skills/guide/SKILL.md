@@ -191,6 +191,8 @@ uv run python scripts/snapshot.py list
 | `CCM_HEARTBEAT_TIMEOUT` | `20` | ホットアクティビティ判定の閾値（分） |
 | `CCM_IN_PROGRESS_LIMIT` | `3` | アクティブコンテキストのin_progress表示件数 |
 | `CCM_PENDING_LIMIT` | `2` | アクティブコンテキストのpending表示件数 |
+| `CCM_TIER2_MAX_AGE_DAYS` | `7` | SessionStart一覧の階層2にin_progressアクティビティを載せるupdated_at上限（日） |
+| `CCM_PIN_SURFACE_DECAY_DAYS` | `60` | pinnedアクティビティが階層2表示を維持できるupdated_at上限（日） |
 | `CCM_RECENCY_DECAY_RATE` | `0.0014` | 検索の時間減衰率 |
 | `CCM_SYNC_DISABLE_RETROSPECTIVE` | `false` | `/sync-memory`のふりかえりセクションを非表示にする |
 | `CCM_SNAPSHOT_INTERVAL` | `12` | スナップショット取得間隔（時間） |

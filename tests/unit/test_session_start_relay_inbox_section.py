@@ -120,24 +120,23 @@ class TestGateConditions:
 
 
 class TestIdentityResolved:
-    def test_shows_zero_count_with_monitor_instruction(self, monkeypatch, relay_configured):
-        """未読0件でも、inbox fileが存在すればMonitor監視の指示を表示する
-        （バックログではなく今後の着信を待ち受けるための指示のため）"""
+    def test_returns_empty_when_unread_is_zero(self, monkeypatch, relay_configured):
+        """未読0件はinbox fileが存在してもコンテキスト消費ゼロ（空文字）を返す"""
         monkeypatch.setattr(relay_identity, "get_relay_identity", lambda: "stable-id-1")
         _make_inbox_file(relay_configured, "stable-id-1")
         monkeypatch.setattr(relay_inbox, "count_unread", lambda session_id: 0)
-        result = _build_relay_inbox_section(None)
-        assert "relay inbox 未読: 0件" in result
-        assert "Monitorツール" in result
-        assert "relay_receive" in result
+        assert _build_relay_inbox_section(None) == ""
 
     def test_shows_count_when_unread_is_positive(self, monkeypatch, relay_configured):
+        """未読>0のときは「未読N件 → relay_receiveで消化」+ Monitor監視指示の2行以内"""
         monkeypatch.setattr(relay_identity, "get_relay_identity", lambda: "stable-id-1")
         _make_inbox_file(relay_configured, "stable-id-1")
         monkeypatch.setattr(relay_inbox, "count_unread", lambda session_id: 3)
         result = _build_relay_inbox_section(None)
         assert "relay inbox 未読: 3件" in result
+        assert "relay_receive" in result
         assert "Monitorツール" in result
+        assert len([line for line in result.splitlines() if line]) <= 2
 
     def test_passes_resolved_identity_to_count_unread(self, monkeypatch, relay_configured):
         """count_unreadに渡される引数がget_relay_identity()の返り値と一致する"""

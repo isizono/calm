@@ -12,6 +12,11 @@ SNOOZE_DURATION_DAYS: int = int(os.environ.get("CCM_SNOOZE_DURATION_DAYS", "3"))
 # --- Active Context 表示 ---
 IN_PROGRESS_LIMIT: int = int(os.environ.get("CCM_IN_PROGRESS_LIMIT", "3"))
 PENDING_LIMIT: int = int(os.environ.get("CCM_PENDING_LIMIT", "2"))
+# SessionStart一覧の階層2（優先）に in_progress アクティビティを載せる updated_at 上限（日）
+TIER2_MAX_AGE_DAYS: int = int(os.environ.get("CCM_TIER2_MAX_AGE_DAYS", "7"))
+# pinned アクティビティが階層2表示を維持できる updated_at 上限（日）。
+# 超過すると階層2から外れ固定ナビの未表示件数句に計上される（pin自体は残る）
+PIN_SURFACE_DECAY_DAYS: int = int(os.environ.get("CCM_PIN_SURFACE_DECAY_DAYS", "60"))
 
 # --- Search ---
 # Recency boost の減衰率（指数減衰 e^(-kt)）。30日で約0.70倍、半減期約58日
