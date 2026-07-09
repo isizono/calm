@@ -35,6 +35,12 @@ SYNC_DISABLE_RETROSPECTIVE: bool = os.environ.get(
 ).lower() in ("true", "1")
 SYNC_POLICY: str | None = os.environ.get("CCM_SYNC_POLICY") or None  # 空文字→None正規化
 
+# --- Habits ---
+# always層（常時注入枠）の定員（文字数）。update_habitでtrigger_mode='always'に
+# 昇格する際、昇格後のプール合計文字数がこの値と昇格前合計の大きい方を超えると
+# 拒否する（プールが定員超過中でも、合計を増やさない変更は許可するラチェット）
+ALWAYS_POOL_CAPACITY: int = int(os.environ.get("CCM_ALWAYS_POOL_CAPACITY", "1500"))
+
 # --- Direction Layer ---
 # domainごとのactiveな方向性decision(layer:direction)件数がこの値以上になったら
 # direction_overflow hintを発火する（少数原則の維持を促す）

@@ -2,8 +2,10 @@
 import os
 import tempfile
 import pytest
+from src.config import ALWAYS_POOL_CAPACITY
 from src.db import get_connection, init_database
 from src.services.habit_service import (
+    _add_habit_with_conn,
     add_habit,
     get_active_habit_contents_with_conn,
     get_habits,
@@ -268,23 +270,24 @@ class TestUpdateHabit:
 class TestTriggerModeSplit:
     """trigger_mode（always/intelligently）分割のテスト"""
 
-    def test_new_habit_defaults_to_always(self, temp_db):
-        """新規追加した振る舞いはtrigger_mode='always'になる"""
+    def test_new_habit_defaults_to_intelligently(self, temp_db):
+        """新規追加した振る舞いはtrigger_mode='intelligently'になる
+        （常時注入層への自動着地を防ぐための既定値）"""
         created = add_habit("新規振る舞い")
 
         result = get_habits(habit_id=created["habit_id"])
 
-        assert result["habits"][0]["trigger_mode"] == "always"
+        assert result["habits"][0]["trigger_mode"] == "intelligently"
 
     def test_get_active_habit_contents_excludes_intelligently(self, temp_db):
         """get_active_habit_contents_with_connはintelligently層を含まない"""
         conn = get_connection()
         try:
             always_id = add_habit("always振る舞い")["habit_id"]
-            intelligently_id = add_habit("intelligently振る舞い")["habit_id"]
+            add_habit("intelligently振る舞い")
             conn.execute(
-                "UPDATE habits SET trigger_mode = 'intelligently' WHERE id = ?",
-                (intelligently_id,),
+                "UPDATE habits SET trigger_mode = 'always' WHERE id = ?",
+                (always_id,),
             )
             conn.commit()
 
@@ -302,8 +305,8 @@ class TestTriggerModeSplit:
             always_id = add_habit("always振る舞い")["habit_id"]
             intelligently_id = add_habit("intelligently振る舞い")["habit_id"]
             conn.execute(
-                "UPDATE habits SET trigger_mode = 'intelligently' WHERE id = ?",
-                (intelligently_id,),
+                "UPDATE habits SET trigger_mode = 'always' WHERE id = ?",
+                (always_id,),
             )
             conn.commit()
 
@@ -415,3 +418,156 @@ class TestGetHabitsSingleFetch:
         assert "error" not in result
         assert result["total_count"] == 0
         assert result["habits"] == []
+
+
+def _neutralize_seed_always_pool(conn) -> None:
+    """migration由来の初期habit（trigger_mode='always'）をintelligently化し、
+    alwaysプール合計をテストごとに0からの決定論的な値にする。"""
+    conn.execute(
+        "UPDATE habits SET trigger_mode = 'intelligently' WHERE trigger_mode = 'always'"
+    )
+    conn.commit()
+
+
+def _make_always(conn, content: str) -> int:
+    """ゲートを経由せず、指定contentの振る舞いを直接trigger_mode='always'にする。
+
+    棚卸し未実施でプールが定員超過している現状データを模した fixture 用。
+    """
+    habit_id = add_habit(content)["habit_id"]
+    conn.execute("UPDATE habits SET trigger_mode = 'always' WHERE id = ?", (habit_id,))
+    conn.commit()
+    return habit_id
+
+
+class TestAlwaysPromotionGate:
+    """update_habitのalways昇格ゲート（短さ検査+プール定員のラチェット検査）のテスト"""
+
+    def test_add_habit_shared_entry_point_defaults_to_intelligently(self, temp_db):
+        """add_habitとdecision propagateが共有する_add_habit_with_connも
+        trigger_mode='intelligently'で作成する"""
+        conn = get_connection()
+        try:
+            habit_id = _add_habit_with_conn(conn, "propagate経由相当の振る舞い")
+            conn.commit()
+
+            row = conn.execute(
+                "SELECT trigger_mode FROM habits WHERE id = ?", (habit_id,)
+            ).fetchone()
+
+            assert row["trigger_mode"] == "intelligently"
+        finally:
+            conn.close()
+
+    def test_promotion_rejects_content_exactly_100_chars(self, temp_db):
+        """contentがちょうど100字だと昇格を拒否する（境界値）"""
+        habit_id = add_habit("あ" * 100)["habit_id"]
+
+        result = update_habit(habit_id, trigger_mode="always")
+
+        assert "error" in result
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_promotion_allows_content_99_chars(self, temp_db):
+        """contentが99字だと昇格を許可する（境界値）"""
+        habit_id = add_habit("あ" * 99)["habit_id"]
+
+        result = update_habit(habit_id, trigger_mode="always")
+
+        assert "error" not in result
+        assert result["trigger_mode"] == "always"
+
+    def test_promotion_rejected_when_pool_over_capacity_and_total_increases(self, temp_db):
+        """プールが定員超過状態のとき、合計を増やす昇格は拒否される"""
+        conn = get_connection()
+        try:
+            _neutralize_seed_always_pool(conn)
+            _make_always(conn, "あ" * (ALWAYS_POOL_CAPACITY + 100))
+        finally:
+            conn.close()
+
+        habit_id = add_habit("あ" * 50)["habit_id"]
+
+        result = update_habit(habit_id, trigger_mode="always")
+
+        assert "error" in result
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_demote_then_promote_swap_reduces_total(self, temp_db):
+        """プール超過状態でも、降格→昇格の順で合計が減る操作列は通る"""
+        conn = get_connection()
+        try:
+            _neutralize_seed_always_pool(conn)
+            big_id = _make_always(conn, "あ" * (ALWAYS_POOL_CAPACITY + 100))
+        finally:
+            conn.close()
+
+        small_id = add_habit("あ" * 50)["habit_id"]
+
+        demote_result = update_habit(big_id, trigger_mode="intelligently")
+        assert "error" not in demote_result
+
+        promote_result = update_habit(small_id, trigger_mode="always")
+
+        assert "error" not in promote_result
+        assert promote_result["trigger_mode"] == "always"
+
+    def test_promotion_allowed_within_capacity(self, temp_db):
+        """プールが定員以下のとき、定員内に収まる昇格は通る"""
+        conn = get_connection()
+        try:
+            _neutralize_seed_always_pool(conn)
+            _make_always(conn, "あ" * (ALWAYS_POOL_CAPACITY - 100))
+        finally:
+            conn.close()
+
+        habit_id = add_habit("あ" * 50)["habit_id"]
+
+        result = update_habit(habit_id, trigger_mode="always")
+
+        assert "error" not in result
+        assert result["trigger_mode"] == "always"
+
+    def test_promotion_rejected_when_exceeding_capacity(self, temp_db):
+        """プールが定員以下のとき、定員を超える昇格は拒否される"""
+        conn = get_connection()
+        try:
+            _neutralize_seed_always_pool(conn)
+            _make_always(conn, "あ" * (ALWAYS_POOL_CAPACITY - 30))
+        finally:
+            conn.close()
+
+        habit_id = add_habit("あ" * 50)["habit_id"]
+
+        result = update_habit(habit_id, trigger_mode="always")
+
+        assert "error" in result
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_demotion_allowed_even_when_pool_over_capacity(self, temp_db):
+        """降格はプール超過状態でも無条件で通る"""
+        conn = get_connection()
+        try:
+            _neutralize_seed_always_pool(conn)
+            big_id = _make_always(conn, "あ" * (ALWAYS_POOL_CAPACITY + 100))
+        finally:
+            conn.close()
+
+        result = update_habit(big_id, trigger_mode="intelligently")
+
+        assert "error" not in result
+        assert result["trigger_mode"] == "intelligently"
+
+    def test_deactivation_allowed_even_when_pool_over_capacity(self, temp_db):
+        """無効化はプール超過状態でも無条件で通る"""
+        conn = get_connection()
+        try:
+            _neutralize_seed_always_pool(conn)
+            big_id = _make_always(conn, "あ" * (ALWAYS_POOL_CAPACITY + 100))
+        finally:
+            conn.close()
+
+        result = update_habit(big_id, active=False)
+
+        assert "error" not in result
+        assert result["active"] == 0
