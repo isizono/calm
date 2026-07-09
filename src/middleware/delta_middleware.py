@@ -126,7 +126,9 @@ def _handle_check_in(session_key: str, result: Any, nested_key: str | None = Non
         if isinstance(t, dict) and "id_raw" in t
     ]
 
-    conn = get_connection()
+    # delta_service.get_baselineは純relationalクエリでベクトル検索を使わないため、
+    # sqlite-vecネイティブ拡張のロードをスキップしてオープンコストを削減する。
+    conn = get_connection(load_vec=False)
     try:
         baseline = delta_service.get_baseline(conn, topic_ids, activity_id)
     finally:
@@ -171,7 +173,8 @@ def _handle_write(session_key: str, tool_name: str, result: Any) -> None:
     if not created_ids:
         return
 
-    conn = get_connection()
+    # _scoped_idsも純relationalクエリのみ（vec不要）。理由は_handle_check_in参照。
+    conn = get_connection(load_vec=False)
     try:
         scoped_ids = _scoped_ids(conn, entity_type, created_ids, wm["topic_ids"], wm["activity_id"])
     finally:
@@ -193,7 +196,12 @@ def _handle_other(session_key: str, result: Any) -> None:
     if wm is None:
         return
 
-    conn = get_connection()
+    # delta_service.compute_deltaも純relationalクエリのみ（vec不要）。
+    # PR #550レビュー指摘: check-in済みセッションの以降の全ツール呼び出しで無条件に
+    # 発生するmiddleware専用接続のコストのうち、拡張ロード分だけでも削減する
+    # （接続オープン自体・クエリ3本のコストは残る。deltaの有無を事前に知る手段が
+    # ないため、これ以上の早期リターンは設計を変えないと難しいと判断し見送った）。
+    conn = get_connection(load_vec=False)
     try:
         delta = delta_service.compute_delta(conn, wm["topic_ids"], wm["activity_id"], wm)
     finally:
