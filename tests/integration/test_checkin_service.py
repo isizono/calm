@@ -210,6 +210,41 @@ class TestCheckInSummary:
         assert "intent: (未設定)" in result["summary"]
 
 
+class TestCheckInFlowGuide:
+    """flow_guide（セッション内初回のみのコンテキスト取得フローガイド）の確認"""
+
+    def test_flow_guide_present_on_first_call(self, activity_id):
+        """セッション内初回のcheck_inではflow_guideが含まれる"""
+        result = check_in(activity_id, session_id="sess-1")
+
+        assert "error" not in result
+        assert "flow_guide" in result
+        assert "get_decisions" in result["flow_guide"]
+
+    def test_flow_guide_absent_on_second_call_same_session(self, activity_id):
+        """同一セッションの2回目以降のcheck_inではflow_guideが含まれない"""
+        check_in(activity_id, session_id="sess-1")
+        result = check_in(activity_id, session_id="sess-1")
+
+        assert "error" not in result
+        assert "flow_guide" not in result
+
+    def test_flow_guide_present_again_for_different_session(self, activity_id):
+        """異なるセッションではそれぞれ初回にflow_guideが含まれる"""
+        check_in(activity_id, session_id="sess-1")
+        result = check_in(activity_id, session_id="sess-2")
+
+        assert "error" not in result
+        assert "flow_guide" in result
+
+    def test_flow_guide_present_on_first_call_without_session_id(self, activity_id):
+        """session_id未指定（既定キー扱い）でも初回はflow_guideが含まれる"""
+        result = check_in(activity_id)
+
+        assert "error" not in result
+        assert "flow_guide" in result
+
+
 class TestCheckInTagNotes:
     """tag_notes注入の確認"""
 

@@ -1264,14 +1264,17 @@ def get_map(
 
 
 @mcp.tool()
-def add_habit(content: str) -> dict:
+def add_habit(content: str, importance_score: int = 3, status: str = "active") -> dict:
     """エージェントの振る舞いを登録する。新規habitはtrigger_mode='intelligently'
     （マニフェスト表示のみ、詳細はget_habits(habit_id=...)でon-demand取得）で作成され、
     ~/.claude/rules配下の自動生成ファイル経由で常時配信されるのはtrigger_mode='always'
     のみ（セッション途中の登録は次セッション起動から反映）。常時配信層への昇格は
     update_habit(trigger_mode='always')で行い、content短さとalwaysプール定員の検査を
-    通過する必要がある。"覚えといて"と言われた行動ルールはここに登録する"""
-    return habit_service.add_habit(content)
+    通過する必要がある。"覚えといて"と言われた行動ルールはここに登録する。
+    importance_scoreは1(critical)/2(important)/3(default、既定)のいずれかで、
+    trigger_mode='intelligently'なhabitのマニフェスト表示順に使われる。
+    statusは'active'/'archived'（既定'active'）"""
+    return habit_service.add_habit(content, importance_score=importance_score, status=status)
 
 
 @mcp.tool()
@@ -1291,6 +1294,8 @@ def update_habit(
     active: Optional[bool] = None,
     trigger_mode: Optional[str] = None,
     description: Optional[str] = None,
+    importance_score: Optional[int] = None,
+    status: Optional[str] = None,
 ) -> dict:
     """振る舞いを更新する。active=Falseで無効化、active=Trueで再有効化。
     trigger_modeは'always'（~/.claude/rules配下の自動生成ファイルで全文常時配信）/
@@ -1300,13 +1305,18 @@ def update_habit(
     alwaysプール合計文字数が昇格前の合計以下または定員（既定1,500字）以下の
     いずれかを満たすこと。違反時はVALIDATION_ERRORで拒否し、content圧縮または
     既存always振る舞いの降格を提案するメッセージを返す。降格・無効化は無条件で
-    許可される。descriptionはintelligentlyのマニフェスト表示に使う要旨"""
+    許可される。descriptionはintelligentlyのマニフェスト表示に使う要旨（100文字以内）。
+    importance_scoreは1(critical)/2(important)/3(default)のいずれかでマニフェスト
+    表示順に使われる。statusは'active'/'archived'のいずれかで、'archived'は
+    マニフェストから除外される"""
     return habit_service.update_habit(
         habit_id,
         content=content,
         active=active,
         trigger_mode=trigger_mode,
         description=description,
+        importance_score=importance_score,
+        status=status,
     )
 
 

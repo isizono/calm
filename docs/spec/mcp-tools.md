@@ -369,9 +369,9 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 
 ### 2.21 add_habit / get_habits / update_habit
 
-- `add_habit(content: string) -> dict`: habitを登録。新規habitは`trigger_mode='intelligently'`（マニフェスト表示のみ）で作成され、`~/.claude/rules`配下の自動生成ファイル経由で常時配信されるのは`'always'`のみ（セッション途中の登録は次セッション起動から反映）。常時配信層への昇格は`update_habit(trigger_mode='always')`で行い、後述のゲートを通過する必要がある。
+- `add_habit(content: string, importance_score: int = 3, status: string = "active") -> dict`: habitを登録。新規habitは`trigger_mode='intelligently'`（マニフェスト表示のみ）で作成され、`~/.claude/rules`配下の自動生成ファイル経由で常時配信されるのは`'always'`のみ（セッション途中の登録は次セッション起動から反映）。常時配信層への昇格は`update_habit(trigger_mode='always')`で行い、後述のゲートを通過する必要がある。importance_scoreは1(critical)/2(important)/3(default)のいずれかで、intelligently層マニフェストのソートに使う。statusは`'active'`/`'archived'`のいずれか。
 - `get_habits(active: bool = true, habit_id?: int) -> dict`: 登録済みhabit一覧。既定でactive=1のみ返す。無効化済みも含む全件が欲しいときは`active=false`を渡す。`~/.claude/rules`配下の自動生成ファイルで全文配信されるのは`trigger_mode='always'`のみで、`'intelligently'`はタイトルのみのマニフェスト表示になる。`habit_id`を渡すとその1件だけを本文付きで取得でき、intelligentlyな振る舞いの詳細を引くときに使う（取得と同時に`last_recalled_at`が更新される）。
-- `update_habit(habit_id: int, content?: string, active?: bool, trigger_mode?: string, description?: string) -> dict`: active=Falseで無効化。trigger_modeは`'always'`（`~/.claude/rules`配下の自動生成ファイルで全文常時配信）/`'intelligently'`（マニフェストのみ表示、詳細は`get_habits(habit_id=...)`でon-demand取得）のいずれか。`'intelligently'`から`'always'`への昇格には、contentが100字未満であること、かつ昇格後のalwaysプール合計文字数が昇格前の合計以下または定員（`CCM_ALWAYS_POOL_CAPACITY`、既定1,500字）以下のいずれかを満たすことを要求するゲートがある（違反時はVALIDATION_ERROR）。降格・無効化は無条件で許可される。descriptionはintelligently層のマニフェスト表示に使う要旨。
+- `update_habit(habit_id: int, content?: string, active?: bool, trigger_mode?: string, description?: string, importance_score?: int, status?: string) -> dict`: active=Falseで無効化。trigger_modeは`'always'`（`~/.claude/rules`配下の自動生成ファイルで全文常時配信）/`'intelligently'`（マニフェストのみ表示、詳細は`get_habits(habit_id=...)`でon-demand取得）のいずれか。`'intelligently'`から`'always'`への昇格には、contentが100字未満であること、かつ昇格後のalwaysプール合計文字数が昇格前の合計以下または定員（`CCM_ALWAYS_POOL_CAPACITY`、既定1,500字）以下のいずれかを満たすことを要求するゲートがある（違反時はVALIDATION_ERROR）。降格・無効化は無条件で許可される。descriptionはintelligently層のマニフェスト表示に使う要旨（100文字以内）。importance_scoreは1(critical)/2(important)/3(default)のいずれかでマニフェストのソートに使う。statusは`'active'`/`'archived'`のいずれかで、`'archived'`はマニフェストから除外される。
 
 ### 2.22 add_pin / remove_pin
 
