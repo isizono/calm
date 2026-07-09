@@ -1,10 +1,14 @@
 """振る舞い管理サービス"""
 import logging
 
+from src.config import ALWAYS_POOL_CAPACITY
 from src.db import get_connection, row_to_dict
 from src.services.relay.entity_publish import publish_entity_event_with_conn
 
 logger = logging.getLogger(__name__)
+
+# always昇格ゲート: 昇格対象contentの上限文字数（境界の100字ちょうども拒否）
+_ALWAYS_PROMOTION_MAX_CONTENT_CHARS = 100
 
 
 def get_active_habit_contents_with_conn(conn) -> list[str]:
@@ -47,12 +51,17 @@ def list_intelligently_habit_manifest_with_conn(conn) -> list[dict]:
 
 
 def _add_habit_with_conn(conn, content: str) -> int:
-    """振る舞いをINSERTしてhabit_idを返す（conn共有版）。バリデーションエラー時はValueError。"""
+    """振る舞いをINSERTしてhabit_idを返す（conn共有版）。バリデーションエラー時はValueError。
+
+    新規habitはtrigger_mode='intelligently'（マニフェスト表示、詳細はon-demand取得）で
+    作成される。常時注入層（'always'）への入場はupdate_habitのtrigger_mode変更経由の
+    昇格ゲートを通過した場合のみ。
+    """
     if not content or not content.strip():
         raise ValueError("content must not be empty")
     cursor = conn.execute(
-        "INSERT INTO habits (content) VALUES (?)",
-        (content,),
+        "INSERT INTO habits (content, trigger_mode) VALUES (?, ?)",
+        (content, "intelligently"),
     )
     habit_id = cursor.lastrowid
     publish_entity_event_with_conn(conn, entity_type="habit", entity_id=habit_id, event="created")
@@ -160,6 +169,86 @@ def get_habits(active: bool = True, habit_id: int | None = None) -> dict:
 _VALID_TRIGGER_MODES = ("always", "intelligently")
 
 
+def _always_pool_total_with_conn(conn) -> int:
+    """有効かつtrigger_mode='always'なhabitのcontent合計文字数を返す。"""
+    row = conn.execute(
+        "SELECT COALESCE(SUM(LENGTH(content)), 0) AS total FROM habits "
+        "WHERE active = 1 AND trigger_mode = 'always'"
+    ).fetchone()
+    return row["total"]
+
+
+def _check_always_promotion_gate_with_conn(
+    conn,
+    *,
+    pre_content: str,
+    pre_trigger_mode: str,
+    pre_active,
+    content: str | None,
+    trigger_mode: str | None,
+    active: bool | None,
+) -> dict | None:
+    """always昇格ゲートを検査する。違反時はエラー辞書、問題なければNoneを返す。
+
+    降格（'always'→'intelligently'）は無条件で通す。
+    content・trigger_modeのいずれも指定しない純粋なactiveトグル（無効化/再有効化）は、
+    既存データ（棚卸し未実施等）を巻き込まないよう短さ検査の対象外とする。
+    それ以外——post_trigger_mode='always'として保存されるcontentを、content または
+    trigger_modeの明示的な指定を伴って確定させる更新（昇格の瞬間・既にalwaysな
+    habitへのcontent更新・trigger_mode='always'とactive=Falseの同時指定を含む）——は
+    すべて、active状態に関わらず短さ検査（100字未満）を課す。これにより、
+    「trigger_mode='always'とactive=Falseを同時指定してゲートをすり抜けてから
+    再有効化する」経路、および「昇格後にtrigger_modeを指定せずcontentだけを
+    100字以上へ伸長する」経路の両方を塞ぐ。
+    プール合計の増分についてのラチェット検査は、post_active=Trueの場合のみ課す
+    （無効化される/されたままのentryは実際のプール集計に含まれないため）。
+    """
+    post_content = content if content is not None else pre_content
+    post_trigger_mode = trigger_mode if trigger_mode is not None else pre_trigger_mode
+    post_active = active if active is not None else bool(pre_active)
+
+    if post_trigger_mode != "always":
+        return None
+
+    is_content_or_mode_change = content is not None or trigger_mode is not None
+
+    if is_content_or_mode_change and len(post_content) >= _ALWAYS_PROMOTION_MAX_CONTENT_CHARS:
+        return {
+            "error": {
+                "code": "VALIDATION_ERROR",
+                "message": (
+                    "trigger_mode='always'のcontentは"
+                    f"{_ALWAYS_PROMOTION_MAX_CONTENT_CHARS}字未満である必要があります"
+                    f"（現在{len(post_content)}字）。contentを圧縮するか、"
+                    "要旨をdescriptionに分けてcontentを短くしてください。"
+                ),
+            }
+        }
+
+    if not post_active:
+        return None
+
+    old_total = _always_pool_total_with_conn(conn)
+    pre_in_pool = bool(pre_active) and pre_trigger_mode == "always"
+    new_total = old_total - (len(pre_content) if pre_in_pool else 0) + len(post_content)
+    capacity = ALWAYS_POOL_CAPACITY
+
+    if new_total > max(old_total, capacity):
+        return {
+            "error": {
+                "code": "VALIDATION_ERROR",
+                "message": (
+                    f"この変更でalwaysプール合計が{new_total}字になり、"
+                    f"定員{capacity}字・変更前合計{old_total}字のいずれも超えるため"
+                    "拒否しました。contentを圧縮するか、他のalways振る舞いを"
+                    "trigger_mode='intelligently'に降格してから再度実行してください。"
+                ),
+            }
+        }
+
+    return None
+
+
 def update_habit(
     habit_id: int,
     content: str | None = None,
@@ -175,7 +264,8 @@ def update_habit(
         active: 有効/無効フラグ（True/False、optional）
         trigger_mode: 'always'（全文をSessionStartで常時注入）または
             'intelligently'（マニフェストのみ表示、詳細はget_habits(habit_id=...)で
-            on-demand取得）のいずれか（optional）
+            on-demand取得）のいずれか（optional）。'intelligently'から'always'への
+            昇格は_check_always_promotion_gate_with_connの検査を通過する必要がある
         description: intelligently層のマニフェスト表示に使う要旨（optional）
 
     Returns:
@@ -227,6 +317,18 @@ def update_habit(
                     "message": f"Habit with id {habit_id} not found",
                 }
             }
+
+        gate_error = _check_always_promotion_gate_with_conn(
+            conn,
+            pre_content=row["content"],
+            pre_trigger_mode=row["trigger_mode"],
+            pre_active=row["active"],
+            content=content,
+            trigger_mode=trigger_mode,
+            active=active,
+        )
+        if gate_error is not None:
+            return gate_error
 
         # 動的SQL構築
         set_parts = []

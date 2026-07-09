@@ -2,8 +2,10 @@
 import os
 import tempfile
 import pytest
+from src.config import ALWAYS_POOL_CAPACITY
 from src.db import get_connection, init_database
 from src.services.habit_service import (
+    _add_habit_with_conn,
     add_habit,
     get_active_habit_contents_with_conn,
     get_habits,
@@ -268,23 +270,24 @@ class TestUpdateHabit:
 class TestTriggerModeSplit:
     """trigger_mode（always/intelligently）分割のテスト"""
 
-    def test_new_habit_defaults_to_always(self, temp_db):
-        """新規追加した振る舞いはtrigger_mode='always'になる"""
+    def test_new_habit_defaults_to_intelligently(self, temp_db):
+        """新規追加した振る舞いはtrigger_mode='intelligently'になる
+        （常時注入層への自動着地を防ぐための既定値）"""
         created = add_habit("新規振る舞い")
 
         result = get_habits(habit_id=created["habit_id"])
 
-        assert result["habits"][0]["trigger_mode"] == "always"
+        assert result["habits"][0]["trigger_mode"] == "intelligently"
 
     def test_get_active_habit_contents_excludes_intelligently(self, temp_db):
         """get_active_habit_contents_with_connはintelligently層を含まない"""
         conn = get_connection()
         try:
             always_id = add_habit("always振る舞い")["habit_id"]
-            intelligently_id = add_habit("intelligently振る舞い")["habit_id"]
+            add_habit("intelligently振る舞い")
             conn.execute(
-                "UPDATE habits SET trigger_mode = 'intelligently' WHERE id = ?",
-                (intelligently_id,),
+                "UPDATE habits SET trigger_mode = 'always' WHERE id = ?",
+                (always_id,),
             )
             conn.commit()
 
@@ -302,8 +305,8 @@ class TestTriggerModeSplit:
             always_id = add_habit("always振る舞い")["habit_id"]
             intelligently_id = add_habit("intelligently振る舞い")["habit_id"]
             conn.execute(
-                "UPDATE habits SET trigger_mode = 'intelligently' WHERE id = ?",
-                (intelligently_id,),
+                "UPDATE habits SET trigger_mode = 'always' WHERE id = ?",
+                (always_id,),
             )
             conn.commit()
 
@@ -415,3 +418,230 @@ class TestGetHabitsSingleFetch:
         assert "error" not in result
         assert result["total_count"] == 0
         assert result["habits"] == []
+
+
+def _neutralize_seed_always_pool(conn) -> None:
+    """migration由来の初期habit（trigger_mode='always'）をintelligently化し、
+    alwaysプール合計をテストごとに0からの決定論的な値にする。"""
+    conn.execute(
+        "UPDATE habits SET trigger_mode = 'intelligently' WHERE trigger_mode = 'always'"
+    )
+    conn.commit()
+
+
+def _make_always(conn, content: str) -> int:
+    """ゲートを経由せず、指定contentの振る舞いを直接trigger_mode='always'にする。
+
+    棚卸し未実施でプールが定員超過している現状データを模した fixture 用。
+    """
+    habit_id = add_habit(content)["habit_id"]
+    conn.execute("UPDATE habits SET trigger_mode = 'always' WHERE id = ?", (habit_id,))
+    conn.commit()
+    return habit_id
+
+
+class TestAlwaysPromotionGate:
+    """update_habitのalways昇格ゲート（短さ検査+プール定員のラチェット検査）のテスト"""
+
+    def test_add_habit_shared_entry_point_defaults_to_intelligently(self, temp_db):
+        """add_habitとdecision propagateが共有する_add_habit_with_connも
+        trigger_mode='intelligently'で作成する"""
+        conn = get_connection()
+        try:
+            habit_id = _add_habit_with_conn(conn, "propagate経由相当の振る舞い")
+            conn.commit()
+
+            row = conn.execute(
+                "SELECT trigger_mode FROM habits WHERE id = ?", (habit_id,)
+            ).fetchone()
+
+            assert row["trigger_mode"] == "intelligently"
+        finally:
+            conn.close()
+
+    def test_promotion_rejects_content_exactly_100_chars(self, temp_db):
+        """contentがちょうど100字だと昇格を拒否する（境界値）"""
+        habit_id = add_habit("あ" * 100)["habit_id"]
+
+        result = update_habit(habit_id, trigger_mode="always")
+
+        assert "error" in result
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_promotion_allows_content_99_chars(self, temp_db):
+        """contentが99字だと昇格を許可する（境界値）"""
+        habit_id = add_habit("あ" * 99)["habit_id"]
+
+        result = update_habit(habit_id, trigger_mode="always")
+
+        assert "error" not in result
+        assert result["trigger_mode"] == "always"
+
+    def test_promotion_rejected_when_pool_over_capacity_and_total_increases(self, temp_db):
+        """プールが定員超過状態のとき、合計を増やす昇格は拒否される"""
+        conn = get_connection()
+        try:
+            _neutralize_seed_always_pool(conn)
+            _make_always(conn, "あ" * (ALWAYS_POOL_CAPACITY + 100))
+        finally:
+            conn.close()
+
+        habit_id = add_habit("あ" * 50)["habit_id"]
+
+        result = update_habit(habit_id, trigger_mode="always")
+
+        assert "error" in result
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_demote_then_promote_swap_reduces_total(self, temp_db):
+        """プール超過状態でも、降格→昇格の順で合計が減る操作列は通る"""
+        conn = get_connection()
+        try:
+            _neutralize_seed_always_pool(conn)
+            big_id = _make_always(conn, "あ" * (ALWAYS_POOL_CAPACITY + 100))
+        finally:
+            conn.close()
+
+        small_id = add_habit("あ" * 50)["habit_id"]
+
+        demote_result = update_habit(big_id, trigger_mode="intelligently")
+        assert "error" not in demote_result
+
+        promote_result = update_habit(small_id, trigger_mode="always")
+
+        assert "error" not in promote_result
+        assert promote_result["trigger_mode"] == "always"
+
+    def test_promotion_allowed_within_capacity(self, temp_db):
+        """プールが定員以下のとき、定員内に収まる昇格は通る"""
+        conn = get_connection()
+        try:
+            _neutralize_seed_always_pool(conn)
+            _make_always(conn, "あ" * (ALWAYS_POOL_CAPACITY - 100))
+        finally:
+            conn.close()
+
+        habit_id = add_habit("あ" * 50)["habit_id"]
+
+        result = update_habit(habit_id, trigger_mode="always")
+
+        assert "error" not in result
+        assert result["trigger_mode"] == "always"
+
+    def test_promotion_rejected_when_exceeding_capacity(self, temp_db):
+        """プールが定員以下のとき、定員を超える昇格は拒否される"""
+        conn = get_connection()
+        try:
+            _neutralize_seed_always_pool(conn)
+            _make_always(conn, "あ" * (ALWAYS_POOL_CAPACITY - 30))
+        finally:
+            conn.close()
+
+        habit_id = add_habit("あ" * 50)["habit_id"]
+
+        result = update_habit(habit_id, trigger_mode="always")
+
+        assert "error" in result
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_demotion_allowed_even_when_pool_over_capacity(self, temp_db):
+        """降格はプール超過状態でも無条件で通る"""
+        conn = get_connection()
+        try:
+            _neutralize_seed_always_pool(conn)
+            big_id = _make_always(conn, "あ" * (ALWAYS_POOL_CAPACITY + 100))
+        finally:
+            conn.close()
+
+        result = update_habit(big_id, trigger_mode="intelligently")
+
+        assert "error" not in result
+        assert result["trigger_mode"] == "intelligently"
+
+    def test_deactivation_allowed_even_when_pool_over_capacity(self, temp_db):
+        """無効化はプール超過状態でも無条件で通る"""
+        conn = get_connection()
+        try:
+            _neutralize_seed_always_pool(conn)
+            big_id = _make_always(conn, "あ" * (ALWAYS_POOL_CAPACITY + 100))
+        finally:
+            conn.close()
+
+        result = update_habit(big_id, active=False)
+
+        assert "error" not in result
+        assert result["active"] == 0
+
+    def test_promotion_and_deactivate_in_one_call_rejects_long_content(self, temp_db):
+        """trigger_mode='always'とactive=Falseを同時指定しても、
+        100字以上のcontentは拒否される（レビュー指摘の手順Aの1呼び出し目）"""
+        habit_id = add_habit("あ" * 50)["habit_id"]
+
+        result = update_habit(
+            habit_id, trigger_mode="always", active=False, content="あ" * 300
+        )
+
+        assert "error" in result
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+        # 昇格ゲートで拒否されているため、DB上もintelligentyのままで
+        # 100字以上のcontentが保存されていないこと
+        row = get_habits(habit_id=habit_id)["habits"][0]
+        assert row["trigger_mode"] == "intelligently"
+        assert row["content"] == "あ" * 50
+
+    def test_promotion_then_deactivate_then_reactivate_rejects_long_content(self, temp_db):
+        """trigger_mode='always'とactive=Falseを同時指定する手順が拒否された後、
+        短いcontentで正規に無効化→再有効化しても100字制限は健全に機能する
+        （レビュー指摘の手順A: 複数手順による回避ができないこと）"""
+        habit_id = add_habit("あ" * 90)["habit_id"]
+
+        promote_result = update_habit(habit_id, trigger_mode="always")
+        assert "error" not in promote_result
+
+        deactivate_result = update_habit(habit_id, active=False)
+        assert "error" not in deactivate_result
+
+        # 無効化中にtrigger_modeを再指定しつつcontentを100字以上に伸ばそうとすると拒否される
+        bypass_result = update_habit(
+            habit_id, trigger_mode="always", content="あ" * 300
+        )
+        assert "error" in bypass_result
+        assert bypass_result["error"]["code"] == "VALIDATION_ERROR"
+
+        reactivate_result = update_habit(habit_id, active=True)
+        assert "error" not in reactivate_result
+
+        row = get_habits(habit_id=habit_id)["habits"][0]
+        assert row["content"] == "あ" * 90
+
+    def test_content_update_on_active_always_habit_rejects_long_content(self, temp_db):
+        """既にtrigger_mode='always'かつactiveなhabitへのcontent更新も、
+        trigger_modeを指定しない場合でも100字制限が課される
+        （レビュー指摘の手順B: 昇格後にcontentを伸ばす回避）"""
+        habit_id = add_habit("あ" * 90)["habit_id"]
+
+        promote_result = update_habit(habit_id, trigger_mode="always")
+        assert "error" not in promote_result
+
+        result = update_habit(habit_id, content="あ" * 300)
+
+        assert "error" in result
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+        row = get_habits(habit_id=habit_id)["habits"][0]
+        assert row["content"] == "あ" * 90
+        assert row["trigger_mode"] == "always"
+
+    def test_content_update_on_active_always_habit_allows_short_content(self, temp_db):
+        """既にalwaysかつactiveなhabitでも、100字未満のcontent更新は許可される
+        （正常系が壊れていないことの確認）"""
+        habit_id = add_habit("あ" * 90)["habit_id"]
+
+        promote_result = update_habit(habit_id, trigger_mode="always")
+        assert "error" not in promote_result
+
+        result = update_habit(habit_id, content="あ" * 95)
+
+        assert "error" not in result
+        assert result["content"] == "あ" * 95

@@ -1265,7 +1265,12 @@ def get_map(
 
 @mcp.tool()
 def add_habit(content: str) -> dict:
-    """エージェントの振る舞いを登録する。SessionStart時に全件注入される（セッション途中の登録は次セッション以降に有効）。"覚えといて"と言われた行動ルールはここに登録する"""
+    """エージェントの振る舞いを登録する。新規habitはtrigger_mode='intelligently'
+    （マニフェスト表示のみ、詳細はget_habits(habit_id=...)でon-demand取得）で作成され、
+    SessionStart時に全件注入されるのはtrigger_mode='always'のみ（セッション途中の登録は
+    次セッション以降に有効）。常時注入層への昇格はupdate_habit(trigger_mode='always')で
+    行い、content短さとalwaysプール定員の検査を通過する必要がある。
+    "覚えといて"と言われた行動ルールはここに登録する"""
     return habit_service.add_habit(content)
 
 
@@ -1289,8 +1294,12 @@ def update_habit(
 ) -> dict:
     """振る舞いを更新する。active=Falseで無効化、active=Trueで再有効化。
     trigger_modeは'always'（全文常時注入）/'intelligently'（マニフェストのみ、
-    詳細はget_habits(habit_id=...)でon-demand取得）のいずれか。descriptionは
-    intelligentlyのマニフェスト表示に使う要旨"""
+    詳細はget_habits(habit_id=...)でon-demand取得）のいずれか。'intelligently'から
+    'always'への昇格には検査を課す: contentが100字未満であること、かつ昇格後の
+    alwaysプール合計文字数が昇格前の合計以下または定員（既定1,500字）以下の
+    いずれかを満たすこと。違反時はVALIDATION_ERRORで拒否し、content圧縮または
+    既存always振る舞いの降格を提案するメッセージを返す。降格・無効化は無条件で
+    許可される。descriptionはintelligentlyのマニフェスト表示に使う要旨"""
     return habit_service.update_habit(
         habit_id,
         content=content,
