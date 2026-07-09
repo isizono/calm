@@ -2,7 +2,7 @@
 
 session_start_hook の activity 一覧表示で、整数 ID を `{title} (#NNN)` 形式の
 文字列に整形するために使う。タイトル + (#NNN) 形式の文字列展開は tool レスポンス
-整形経路 (id 削除 + id_raw 退避、src/services/readable_id.py) では廃止済みで、
+整形経路 (id 削除 + id_raw 退避、src/services/readable_id.py) では廃止済み (D#2966) で、
 本 helper はそれとは別経路の hook 専用実装であり、新規 caller を増やさないこと。
 """
 
