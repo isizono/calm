@@ -208,7 +208,7 @@ class TestBuildActiveContextHeartbeat:
     def test_normal_activity_in_hot_section(self, temp_db):
         """heartbeat非活性アクティビティは●/○マーカーで表示
 
-        階層3・4は統計行に縮退するため、pending活動を個別行として検証するには
+        階層3・4は廃止されpending活動は個別表示されないため、検証するには
         pinで階層2（優先）に載せる必要がある。
         """
         add_topic(title="Topic", description="Desc", tags=["domain:hb-ctx2"])
@@ -226,7 +226,7 @@ class TestBuildActiveContextHeartbeat:
     def test_mixed_heartbeat_and_normal(self, temp_db):
         """heartbeat活性と非活性が混在する場合、両セクションに分離される
 
-        階層3・4は統計行に縮退するため、非活性側のpending活動を個別行として
+        階層3・4は廃止されpending活動は個別表示されないため、非活性側の活動を
         検証するにはpinで階層2（優先）に載せる必要がある。
         """
         add_topic(title="Topic", description="Desc", tags=["domain:hb-mix"])
@@ -261,7 +261,7 @@ class TestBuildActiveContextHeartbeat:
     def test_expired_heartbeat_in_normal_section(self, temp_db):
         """heartbeat期限切れアクティビティは通常セクションに表示
 
-        階層3・4は統計行に縮退するため、pending活動を個別行として検証するには
+        階層3・4は廃止されpending活動は個別表示されないため、検証するには
         pinで階層2（優先）に載せる必要がある。
         """
         add_topic(title="Topic", description="Desc", tags=["domain:hb-exp"])
