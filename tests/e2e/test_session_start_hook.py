@@ -179,13 +179,15 @@ def _seed_habit(content: str, active: int = 1) -> int:
         conn.close()
 
 
-def _set_habit_trigger_mode(habit_id: int, trigger_mode: str, description: str = "") -> None:
-    """テスト用振る舞いのtrigger_mode/descriptionを更新する"""
+def _set_habit_trigger_mode(
+    habit_id: int, trigger_mode: str, description: str = "", importance_score: int = 3
+) -> None:
+    """テスト用振る舞いのtrigger_mode/description/importance_scoreを更新する"""
     conn = get_connection()
     try:
         conn.execute(
-            "UPDATE habits SET trigger_mode = ?, description = ? WHERE id = ?",
-            (trigger_mode, description, habit_id),
+            "UPDATE habits SET trigger_mode = ?, description = ?, importance_score = ? WHERE id = ?",
+            (trigger_mode, description, importance_score, habit_id),
         )
         conn.commit()
     finally:
@@ -382,7 +384,35 @@ class TestSessionStartHookHabits:
 
         assert "短い要旨" in context
         assert "intelligently層の本文全部が長い振る舞い内容" not in context
-        assert f"habit_id={habit_id}" in context
+        assert f"#{habit_id}" in context
+
+    def test_intelligently_manifest_prefixes_importance_label(self, temp_db):
+        """intelligently層のマニフェスト各行にimportance_score由来のラベルが前置される"""
+        critical_id = _seed_habit("critical振る舞い")
+        _set_habit_trigger_mode(
+            critical_id, "intelligently", description="critical要旨", importance_score=1
+        )
+        important_id = _seed_habit("important振る舞い")
+        _set_habit_trigger_mode(
+            important_id, "intelligently", description="important要旨", importance_score=2
+        )
+        default_id = _seed_habit("default振る舞い")
+        _set_habit_trigger_mode(
+            default_id, "intelligently", description="default要旨", importance_score=3
+        )
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "[critical]" in context
+        assert "[important]" in context
+        assert "[default]" in context
+
+        # criticalがimportantより前、importantがdefaultより前に出る（優先度順）
+        critical_pos = context.index("critical要旨")
+        important_pos = context.index("important要旨")
+        default_pos = context.index("default要旨")
+        assert critical_pos < important_pos < default_pos
 
     def test_always_habit_shown_in_full(self, temp_db):
         """trigger_mode='always'（既定）の振る舞いは全文が出る"""
