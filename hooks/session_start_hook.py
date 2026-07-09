@@ -7,7 +7,7 @@
 - relay inbox未読件数（identity解決に成功した場合のみ、動的）
 
 コンテキスト取得フローガイドはここでは注入しない（check_in初回呼び出し時に
-checkin_service側が埋め込む。3ヶ月未決着だった注入面の役割分担の裁定による）。
+checkin_service側が埋め込む）。
 """
 import json
 import sys

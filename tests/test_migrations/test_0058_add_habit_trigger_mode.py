@@ -142,7 +142,7 @@ class TestNoDataMutation:
         """0057時点で存在するhabitは、idにかかわらず0058適用後も全てtrigger_mode='always'のまま"""
         conn = get_connection()
         try:
-            # migration 0058 が過去に対象としていた id 群を含め、複数habitを作成する
+            # idの値に関わらずtrigger_modeが書き換わらないことを確認するため、複数habitを作成する
             ids = [_insert_habit(conn, f"habit-{i}") for i in range(1, 21)]
             conn.commit()
         finally:

@@ -339,7 +339,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 | --- | --- | --- | --- | --- |
 | activity_id | int | yes | - | アクティビティID |
 
-**返り値**: `{coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary}`。
+**返り値**: `{coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary}`。セッション内でcheck_inを初めて呼んだときのみ`flow_guide`（コンテキスト取得の手がかり）も含まれる。
 **副作用**: statusがin_progress以外なら自動的にin_progressに更新。
 **呼び出し基準**: 既存アクティビティに関連する作業を始めるとき。summaryフィールドはそのまま出力することが推奨される。
 
@@ -602,7 +602,7 @@ cc-memoryが扱うエンティティの内部表現。詳細スキーマは `doc
 
 ### 4.1 check-in 先行が前提のツール
 - `add_decisions` の hints はharness_service経由で「整合性確認」「pin見直し」などを示唆する。直前にcheck-inしていない場合、文脈不足のためhintsを過信しない方がよい。
-- `check_in` を経由しないアクティビティへの操作（`update_activity` 等）は可能だが、その場合 tag_notes の自動注入は行われない。habitsはSessionStart時に全件注入されるため、check_inの有無に関係なく反映される。
+- `check_in` を経由しないアクティビティへの操作（`update_activity` 等）は可能だが、その場合 tag_notes の自動注入は行われない。habitsのうち`trigger_mode='always'`のものはSessionStart時に全文注入されるため、check_inの有無に関係なく反映される（`'intelligently'`はタイトルのみのマニフェスト表示にとどまる）。
 
 ### 4.2 取り消し済みエンティティの扱い
 `retract` で論理削除されたdecision/logは、`search` / `get_logs` / `get_decisions` でデフォルト除外される。`include_retracted=true` で明示的に含められる。
