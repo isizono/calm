@@ -1,9 +1,11 @@
 """hint_service: 統一hint APIのユニットテスト"""
 import os
 import tempfile
+from datetime import date
 
 import pytest
 
+import src.services.hint_service as hint_service
 from src.db import get_connection, init_database
 from src.services.activity_service import add_activity
 from src.services.decision_service import add_decisions
@@ -21,6 +23,7 @@ from src.services.hint_service import (
     RECOMPOSE_BOOTSTRAP_THRESHOLD,
     RECOMPOSE_DELTA_THRESHOLD,
     _is_marker_active,
+    _merge_cooldown_marker,
     get_hints,
     get_hints_with_conn,
     is_orch_managed_activity,
@@ -67,6 +70,30 @@ def _tag_id(name: str, namespace: str = "domain") -> int:
         return row["id"]
     finally:
         conn.close()
+
+
+def _get_tag_notes(name: str, namespace: str = "domain") -> str:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT notes FROM tags WHERE namespace = ? AND name = ?",
+            (namespace, name),
+        ).fetchone()
+        return row["notes"] or ""
+    finally:
+        conn.close()
+
+
+def _fixed_date(y: int, m: int, d: int) -> type:
+    """date.today()が固定値を返すdateサブクラスを生成する(monkeypatch用)。"""
+    fixed = date(y, m, d)
+
+    class _FixedDate(date):
+        @classmethod
+        def today(cls):
+            return fixed
+
+    return _FixedDate
 
 
 def _set_material_updated_at(material_id: int, ts: str) -> None:
@@ -488,6 +515,131 @@ class TestDatedMarkerSnooze:
     def test_logs_sparse_message_includes_snooze_instructions(self):
         assert "-until:" in HINT_LOGS_SPARSE_MESSAGE
         assert MARKER_LOGS_SPARSE in HINT_LOGS_SPARSE_MESSAGE
+
+
+class TestMergeCooldownMarkerHelper:
+    """_merge_cooldown_marker: 日次クールダウンマーカー更新の純粋関数テスト（DB不要）"""
+
+    def test_no_existing_marker_appends_today(self):
+        today = date(2026, 1, 15)
+        result = _merge_cooldown_marker("既存メモ", MARKER_RECOMPOSE_BOOTSTRAP, today)
+        assert f"{MARKER_RECOMPOSE_BOOTSTRAP}-until:2026-01-15" in result
+        assert "既存メモ" in result
+
+    def test_past_dated_marker_updated_to_today(self):
+        today = date(2026, 1, 15)
+        notes = f"メモ {MARKER_RECOMPOSE_BOOTSTRAP}-until:2026-01-01"
+        result = _merge_cooldown_marker(notes, MARKER_RECOMPOSE_BOOTSTRAP, today)
+        assert f"{MARKER_RECOMPOSE_BOOTSTRAP}-until:2026-01-15" in result
+        assert "2026-01-01" not in result
+
+    def test_today_dated_marker_updated(self):
+        """境界値: 既存マーカーの日付がtodayと同一の場合も"今日以前"として更新処理を通す"""
+        today = date(2026, 1, 15)
+        notes = f"{MARKER_RECOMPOSE_BOOTSTRAP}-until:2026-01-15"
+        result = _merge_cooldown_marker(notes, MARKER_RECOMPOSE_BOOTSTRAP, today)
+        assert f"{MARKER_RECOMPOSE_BOOTSTRAP}-until:2026-01-15" in result
+
+    def test_future_dated_marker_not_overwritten(self):
+        """ユーザーが意図的に設定した未来日の長期抑制は上書きしない"""
+        today = date(2026, 1, 15)
+        notes = f"メモ {MARKER_RECOMPOSE_BOOTSTRAP}-until:2099-01-01"
+        result = _merge_cooldown_marker(notes, MARKER_RECOMPOSE_BOOTSTRAP, today)
+        assert result == notes
+
+    def test_invalid_date_format_replaced(self):
+        today = date(2026, 1, 15)
+        notes = f"{MARKER_RECOMPOSE_BOOTSTRAP}-until:2026-13-99"
+        result = _merge_cooldown_marker(notes, MARKER_RECOMPOSE_BOOTSTRAP, today)
+        assert f"{MARKER_RECOMPOSE_BOOTSTRAP}-until:2026-01-15" in result
+        assert "2026-13-99" not in result
+
+    def test_empty_notes_produces_marker_only(self):
+        today = date(2026, 1, 15)
+        result = _merge_cooldown_marker("", MARKER_RECOMPOSE_DELTA, today)
+        assert result == f"{MARKER_RECOMPOSE_DELTA}-until:2026-01-15"
+
+
+class TestRecomposeCooldownMarker:
+    """hint発火に伴う日次クールダウンマーカーの自動追記・DB結線テスト"""
+
+    def test_bootstrap_fire_appends_cooldown_marker(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        for i in range(RECOMPOSE_BOOTSTRAP_THRESHOLD):
+            add_decision(decision=f"d{i}", reason="r", topic_id=topic["topic_id"])
+
+        hints = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        assert any(h["type"] == "recompose_bootstrap" for h in hints)
+
+        today = date.today().isoformat()
+        assert f"{MARKER_RECOMPOSE_BOOTSTRAP}-until:{today}" in _get_tag_notes(DOMAIN_TAG_NAME)
+
+    def test_delta_fire_appends_cooldown_marker(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        mat = add_material(title="m", content="c", tags=[DOMAIN_TAG], source="s")
+        add_pin("tag", DOMAIN_TAG, "material", mat["material_id"])
+        _set_material_updated_at(mat["material_id"], "2024-06-01 00:00:00")
+
+        for i in range(RECOMPOSE_DELTA_THRESHOLD):
+            d = add_decision(decision=f"d{i}", reason="r", topic_id=topic["topic_id"])
+            _set_decision_created_at(d["decision_id"], "2024-07-01 00:00:00")
+
+        hints = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        assert any(h["type"] == "recompose_delta" for h in hints)
+
+        today = date.today().isoformat()
+        assert f"{MARKER_RECOMPOSE_DELTA}-until:{today}" in _get_tag_notes(DOMAIN_TAG_NAME)
+
+    def test_same_day_refire_is_suppressed_by_auto_marker(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        for i in range(RECOMPOSE_BOOTSTRAP_THRESHOLD):
+            add_decision(decision=f"d{i}", reason="r", topic_id=topic["topic_id"])
+
+        hints_first = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        assert any(h["type"] == "recompose_bootstrap" for h in hints_first)
+
+        # decision数(発火条件)は満たしたままだが、直前の発火で付いた当日付き
+        # クールダウンマーカーにより2回目は抑制される
+        hints_second = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        assert not any(h["type"] == "recompose_bootstrap" for h in hints_second)
+
+    def test_next_day_refires_after_cooldown(self, temp_db, monkeypatch):
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        for i in range(RECOMPOSE_BOOTSTRAP_THRESHOLD):
+            add_decision(decision=f"d{i}", reason="r", topic_id=topic["topic_id"])
+
+        monkeypatch.setattr(hint_service, "date", _fixed_date(2026, 1, 1))
+        hints_day1 = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        assert any(h["type"] == "recompose_bootstrap" for h in hints_day1)
+        assert f"{MARKER_RECOMPOSE_BOOTSTRAP}-until:2026-01-01" in _get_tag_notes(DOMAIN_TAG_NAME)
+
+        monkeypatch.setattr(hint_service, "date", _fixed_date(2026, 1, 2))
+        hints_day2 = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        assert any(h["type"] == "recompose_bootstrap" for h in hints_day2)
+        assert f"{MARKER_RECOMPOSE_BOOTSTRAP}-until:2026-01-02" in _get_tag_notes(DOMAIN_TAG_NAME)
+
+    def test_manual_future_marker_is_not_overwritten_by_auto_cooldown(self, temp_db):
+        """手動で未来日のuntilマーカーを設定済みの場合、hint自体が抑制され続け、
+        そのマーカーの日付もget_hints呼び出しによって書き換えられない"""
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        for i in range(RECOMPOSE_BOOTSTRAP_THRESHOLD):
+            add_decision(decision=f"d{i}", reason="r", topic_id=topic["topic_id"])
+        update_tag(DOMAIN_TAG, notes=f"{MARKER_RECOMPOSE_BOOTSTRAP}-until:2099-01-01")
+
+        hints = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        assert not any(h["type"] == "recompose_bootstrap" for h in hints)
+        assert f"{MARKER_RECOMPOSE_BOOTSTRAP}-until:2099-01-01" in _get_tag_notes(DOMAIN_TAG_NAME)
+
+    def test_direction_overflow_not_subject_to_cooldown(self, temp_db):
+        """direction_overflowは日次クールダウンの対象外。連続発火してもマーカーは付かない"""
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        for i in range(DIRECTION_OVERFLOW_THRESHOLD):
+            _add_direction_decision(topic["topic_id"], i)
+
+        get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        hints_second = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        assert any(h["type"] == "direction_overflow" for h in hints_second)
+        assert MARKER_DIRECTION_OVERFLOW not in _get_tag_notes(DOMAIN_TAG_NAME)
 
 
 class TestEdgeCases:

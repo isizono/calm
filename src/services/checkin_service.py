@@ -585,7 +585,8 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
             else:
                 activity["status"] = "in_progress"
 
-        # 9. recomposeナッジhint生成（既存connを共有して読み取り）
+        # 9. recomposeナッジhint生成（既存connを共有。hint発火時は日次クールダウン
+        #    マーカーのnotes書き込みを伴うが、commitは本関数末尾でまとめて行う）
         recompose_hints = _get_recompose_hints(conn, activity_id)
 
         # 10. summary生成
@@ -632,9 +633,11 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
         if _consume_first_call_flag(session_id):
             result["flow_guide"] = _FLOW_GUIDE_COMPACT
 
+        conn.commit()
         return result
 
     except Exception as e:
+        conn.rollback()
         return {
             "error": {
                 "code": "DATABASE_ERROR",

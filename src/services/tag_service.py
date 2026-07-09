@@ -1141,6 +1141,11 @@ def collect_tag_notes_for_injection(
     return results if results else None
 
 
+def _set_tag_notes_by_id_with_conn(conn: sqlite3.Connection, tag_id: int, notes: str) -> None:
+    """tag_id指定でnotesを全文置換する。commitは呼び出し元が行う。"""
+    conn.execute("UPDATE tags SET notes = ? WHERE id = ?", (notes, tag_id))
+
+
 def _append_tag_notes_with_conn(conn, tag_str: str, content: str) -> int:
     """タグのnotesにcontentを追記しtag_idを返す。タグ不在時はValueError。"""
     if not content or not content.strip():
