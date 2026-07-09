@@ -40,111 +40,47 @@ logger = logging.getLogger(__name__)
 # Instructions injected into the MCP server
 RULES = """# cc-memory 利用ガイド
 
-このツール群は、過去の会話コンテキスト（トピック・決定事項・ログ・アクティビティ・資材）の取得と記録を行います。
-取得と記録の両輪を回すことで、ユーザーの繰り返し説明を防ぎ、次のAIセッションに文脈を引き継いだり、あなたの作業に必要な情報を入手できたりします。
-この仕組みがうまく回るには、あなたの協力が不可欠です。
-記録は自分のためだけでなく、次に来るエージェントのためのものです。責任を持って残してください。
+このツール群は過去の会話コンテキスト（トピック・決定事項・ログ・アクティビティ・資材）の取得と記録を行います。取得と記録の両輪を回すことで、ユーザーの繰り返し説明を防ぎ、次のAIセッションへ文脈を引き継ぎます。記録は自分のためだけでなく、次に来るエージェントのためのものです。
 
 ## コンテキスト取得
 
-最初の応答を組み立てる前に、関連する記録を取得してください。
-これがこのツール群が存在する最も重要な理由です。ユーザーからの入力が単純でも省略しないでください。
-ユーザーに意図を直接聞く前に検索、です。
-
-## トピック管理
-
-トピックは1つの関心事・問題・機能を表します。
-タグで整理できるので、話題に応じてdomainやintentといったタグを積極的に付けてください。
-
-後からの分割は困難なので、会話が進んで話題が具体化・分岐したら、その時点で新しいトピックを切ってください。
-最初はざっくりしたスコープでも構いません。一時的な会話でもトピックは必要です。
-スコープが小さくなってきたら、新しいトピックを作って紐づけるか、元のトピックのタイトルを更新してください。
+最初の応答を組み立てる前に、関連する記録を取得してください。これがこのツール群が存在する最も重要な理由です。ユーザーからの入力が単純でも省略しないでください。ユーザーに意図を直接聞く前に検索、です。
 
 ## アクティビティ
 
-セッションで何らかの作業を行う場合は、規模に関係なくアクティビティを作成してcheck-inしてください。
-「SV（主語＋動詞）で何をするか表せるならアクティビティ」が判断基準です。
+セッションで何らかの作業を行う場合は、規模に関係なくアクティビティを作成し`check_in`してください。「SV（主語＋動詞）で何をするか表せるならアクティビティ」が判断基準です。`check_in`は関連情報（タグnotes・決定事項・ログ・資材等）を一括取得し、statusをin_progressに更新します。作業アクティビティには詳しい背景情報を書いてください。別のセッションが引き継ぐ可能性があります。
 
-主なintent:タグの例: 議論（discuss）・設計（design）・作業（implement）。
-アクティビティ名にはintentに応じた接頭辞をつけます: [議論]/[設計]/[作業]。
-作業アクティビティには詳しい背景情報を書いてください。別のセッションが引き継ぐ可能性があります。
+## 記録の使い分け
 
-## 決定事項の記録
-
-あなたとユーザーが何かに合意したら、`add_decisions`または`add_logs`で記録してください。
-この記録は、将来あなたの代わりにやってくるAIセッションが一番頼りにするものです。
-記録がなければ、同じ議論を繰り返すことになり、ユーザーとあなたの作業が無駄になります。
-
-## ログの記録
-
-決定事項は結論を記録しますが、そこに至る経緯は残りません。
-ログはその経緯を保存するためのものです。
-普段は見返されないかもしれませんが、いざ必要になったときに
-そのトピックについての詳細な情報が失われていないことがとても重要です。
-
-## 資材（material）
-
-セッション中に生成された情報（ドラフト、分析結果、調査レポートなど）はセッション終了とともに消えます。
-迷ったら保存してください。保存しすぎて困ることはありませんが、保存し忘れた情報は二度と戻りません。
-要約や整理はせず、生データをそのまま保存してください。要約の過程で失われる詳細こそが将来価値を持ちます。
-資材は決定事項と違って「双方の合意」が不要な成果物です。成果物が出た時点でユーザーに確認せず`add_material`してください。
-`related`で関連するアクティビティやトピックとリレーションを張れます。
-
-## リレーション
-
-エンティティ同士を紐づけることで、関連する情報をまとめて辿れるようになります。
-まとめて取得されるべきエンティティは、必ず紐づけを行ってください。紐づけがないことは文脈の喪失に等しいです。
-記録時には`related`引数や`add_relation`で、関連するエンティティと積極的に紐づけてください。
+- 決定事項: あなたとユーザーが何かに合意したら`add_decisions`で記録してください。将来のAIセッションが最も頼りにする記録で、なければ同じ議論を繰り返すことになります。
+- ログ: 決定に至る経緯は決定事項だけでは残りません。詳細な議論の経緯は`add_logs`で保存してください。
+- 資材: ドラフト・分析結果・調査レポート等セッション中に生成された情報は`add_material`で保存してください。双方の合意は不要で、成果物が出た時点で保存します。要約はせず生データのまま残してください。要約の過程で失われる詳細こそ将来価値を持ちます。
 
 ## タグ
 
-トピック・決定事項・ログ・アクティビティはすべてタグで整理されます。
-記録時には必ずタグを付けてください。`domain:`タグは必須。アクティビティには`intent:`タグも必須です。素タグも積極的に付けてください。
-namespace: `domain:`（関心領域）/ `intent:`（作業意図）/ 素タグ（キーワード）
+記録には必ずタグを付けてください。`domain:`（関心領域）は必須、アクティビティには`intent:`（作業意図）も必須です。素タグも積極的に付けてください。タグにはnotes（教訓・運用ルール）を紐づけられ、そのタグに遭遇した際にAIへ自動注入されます。
 
-### tag notes
+## トピックとリレーション
 
-タグには教訓・運用ルール（notes）を紐づけられます。
-CLAUDE.mdのタグ版として機能し、そのタグに遭遇したとき（セッション内初回）にAIへ自動注入されます。
-将来のエージェントのためを思い、必要だと思われる情報をどんどん記録してあげてください。
+トピックは1つの関心事・問題・機能を表します。会話が具体化・分岐したら新しいトピックを切ってください。関連するエンティティは`related`引数や`add_relation`で積極的に紐づけてください。まとめて取得されるべき情報の紐づけ漏れは文脈の喪失に等しいです。
 
 ## 振る舞い（habits）
 
-全セッション共通の行動ルールはhabitsとして記録できます。SessionStart時に全件注入されます。
-ユーザーからもらったfeedbackのうち、タグやファイルに依存しない横断的なルールはauto-memoryではなくhabitsに記録してください。
-
-## 近傍情報を取得するには
-
-取得系toolは目的に応じて使い分けてください。
-
-- 確率的に関連情報を探索したい（ランクtop-N）: `search` → 詳細が必要な候補だけ `get_by_ids` で本文取得
-- topic/activityに紐づく決定事項・ログをそのまま一覧したい: `get_decisions` / `get_logs`
-- log/decision/materialを時系列で俯瞰したい: `get_timeline`
-- リレーショングラフを辿って到達可能なエンティティを走査したい: `get_map`
-- activityに着手・再開し、関連情報を一括取得したい: `check_in`（statusをin_progressに自動更新）
-- 設計判断の前に、近傍topicの決定事項を確率的発見ではなく網羅的に確認したい: `pull_precedents`
-
-判断に迷ったらまず`search`で当たりをつけ、設計・裁定に関わる場面では網羅性が要るため`pull_precedents`も併用してください。
+全セッション共通の行動ルールはhabitsとして記録できます。SessionStart時に全件注入されます。タグやファイルに依存しない横断的なルールはhabitsに記録してください。
 
 ## セッション間でメッセージを送るには
 
-他のClaude Codeセッションとやり取りするにはrelayの4動詞を使います。`relay_post`は場（stream）を名指しした一方向の投函、`relay_publish`/`relay_subscribe`はlabelsによる配信・購読のペア、`relay_receive`はどちらの経路で届いたメッセージも自sessionのinboxから受信する共通の受け口です。送ったら届く保証ではなく、受信側が`relay_receive`を呼んで初めて内容が分かるpull型である点に注意してください。
+他セッションへ連絡するにはrelayの4関数を使います。`relay_post`は場（stream）宛の一方向投函、`relay_publish`/`relay_subscribe`はlabelsによる配信・購読のペア、`relay_receive`はどちらで届いたメッセージも自sessionのinboxから受け取る共通口です。送信=到達ではなく、受信側が`relay_receive`をpollして初めて内容が分かるpull型です。
 
 ## 内部識別子は本文に出さない
 
-`M#123` `D#456` `L#789` `A#321` `T#654` のような大文字コード形式や、`material #123`・`decision #456` のような英語フルワード形式は、AIからの発話・コミット・PR本文・コードコメント・READMEその他あらゆる外部出力に書かないでください。これらはcc-memory内部の参照記号で、開発コンテキスト外では読み手に意味が伝わりません。
-
-cc-memory project内ではPreToolUse hookでtool引数中の内部識別子を機械的にblockします。blockされたら回避策を探すのではなく、エンティティタイトル（例:「○○の議論で決めた通り」）で本文を書き直してください。
-
-なおcc-memory内に保存するtitle・本文・タグ等は対象外です（記録の利便性を優先）。
+cc-memoryが記録に振る内部の番号・記号は、表記の形式を問わず、発話・コミット・PR本文・コードコメント等の外部出力に書かないでください。番号は外部の読み手には解決できません。記録に言及するときはタイトルや内容の要約を主体に書きます。cc-memory内に保存するtitle・本文・タグ、ツール引数のID指定は対象外です。
 
 ---
 
-あなたにはユーザーの壁打ち相手であり、記録係としての役割が期待されています。
-ユーザーの発言は提案であり、決定ではありません。
-懸念や代替案を積極的に提示し、双方が合意してから記録してください。
+あなたにはユーザーの壁打ち相手であり、記録係としての役割が期待されています。ユーザーの発言は提案であり決定ではありません。懸念や代替案を積極的に提示し、双方が合意してから記録してください。
 
-このツールがあなたとユーザーの仕事をより良くすることを願っています。Good luck!
+使い方の詳細はcc-memory:guide skillを参照してください。
 """
 
 
@@ -264,6 +200,10 @@ mcp = FastMCP("cc-memory", instructions=build_instructions())
 # tool呼び出し中の未捕捉例外を signal_events へ自動捕捉する middleware を登録する
 from src.services.signal_middleware import SignalCaptureMiddleware
 mcp.add_middleware(SignalCaptureMiddleware())
+
+# check_in以降の関連topicスコープの鮮度差分をツールレスポンスに注入する middleware を登録する
+from src.middleware.delta_middleware import DeltaNotificationMiddleware
+mcp.add_middleware(DeltaNotificationMiddleware())
 
 # サーバー起動時刻（/health で uptime 算出に使用）
 _SERVER_STARTED_AT = datetime.now(timezone.utc)
@@ -1145,7 +1085,8 @@ def check_in(
             docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
 
     Returns:
-        check-in結果（coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary）
+        check-in結果（coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary）。
+        セッション内でcheck_inを初めて呼んだときのみflow_guide（コンテキスト取得の手がかり）も含まれる
     """
     flavor = _normalize_flavor(flavor)
     try:
@@ -1324,21 +1265,48 @@ def get_map(
 
 @mcp.tool()
 def add_habit(content: str) -> dict:
-    """エージェントの振る舞いを登録する。SessionStart時に全件注入される（セッション途中の登録は次セッション以降に有効）。"覚えといて"と言われた行動ルールはここに登録する"""
+    """エージェントの振る舞いを登録する。新規habitはtrigger_mode='intelligently'
+    （マニフェスト表示のみ、詳細はget_habits(habit_id=...)でon-demand取得）で作成され、
+    SessionStart時に全件注入されるのはtrigger_mode='always'のみ（セッション途中の登録は
+    次セッション以降に有効）。常時注入層への昇格はupdate_habit(trigger_mode='always')で
+    行い、content短さとalwaysプール定員の検査を通過する必要がある。
+    "覚えといて"と言われた行動ルールはここに登録する"""
     return habit_service.add_habit(content)
 
 
 @mcp.tool()
-def get_habits(active: bool = True) -> dict:
+def get_habits(active: bool = True, habit_id: int | None = None) -> dict:
     """登録済みの振る舞い一覧を取得する。既定でactive=1のみ返す。無効化済みも含む全件が
-    欲しいときはactive=Falseを渡す"""
-    return habit_service.get_habits(active=active)
+    欲しいときはactive=Falseを渡す。SessionStartで全文注入されるのはtrigger_mode='always'
+    のみで、'intelligently'はタイトルのみのマニフェスト表示になる。habit_idを渡すとその
+    1件だけを本文付きで取得でき、intelligentlyな振る舞いの詳細を引くときに使う
+    （取得と同時にlast_recalled_atが更新される）"""
+    return habit_service.get_habits(active=active, habit_id=habit_id)
 
 
 @mcp.tool()
-def update_habit(habit_id: int, content: Optional[str] = None, active: Optional[bool] = None) -> dict:
-    """振る舞いを更新する。active=Falseで無効化、active=Trueで再有効化"""
-    return habit_service.update_habit(habit_id, content=content, active=active)
+def update_habit(
+    habit_id: int,
+    content: Optional[str] = None,
+    active: Optional[bool] = None,
+    trigger_mode: Optional[str] = None,
+    description: Optional[str] = None,
+) -> dict:
+    """振る舞いを更新する。active=Falseで無効化、active=Trueで再有効化。
+    trigger_modeは'always'（全文常時注入）/'intelligently'（マニフェストのみ、
+    詳細はget_habits(habit_id=...)でon-demand取得）のいずれか。'intelligently'から
+    'always'への昇格には検査を課す: contentが100字未満であること、かつ昇格後の
+    alwaysプール合計文字数が昇格前の合計以下または定員（既定1,500字）以下の
+    いずれかを満たすこと。違反時はVALIDATION_ERRORで拒否し、content圧縮または
+    既存always振る舞いの降格を提案するメッセージを返す。降格・無効化は無条件で
+    許可される。descriptionはintelligentlyのマニフェスト表示に使う要旨"""
+    return habit_service.update_habit(
+        habit_id,
+        content=content,
+        active=active,
+        trigger_mode=trigger_mode,
+        description=description,
+    )
 
 
 @mcp.tool()

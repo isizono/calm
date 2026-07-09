@@ -1,5 +1,6 @@
 """cc-memory 設定モジュール。環境変数で定数をオーバーライド可能にする。"""
 import os
+from pathlib import Path
 
 # --- Database ---
 # CCM_DB_PATH を優先、なければ既存の DISCUSSION_DB_PATH にフォールバック
@@ -12,6 +13,11 @@ SNOOZE_DURATION_DAYS: int = int(os.environ.get("CCM_SNOOZE_DURATION_DAYS", "3"))
 # --- Active Context 表示 ---
 IN_PROGRESS_LIMIT: int = int(os.environ.get("CCM_IN_PROGRESS_LIMIT", "3"))
 PENDING_LIMIT: int = int(os.environ.get("CCM_PENDING_LIMIT", "2"))
+# SessionStart一覧の階層2（優先）に in_progress アクティビティを載せる updated_at 上限（日）
+TIER2_MAX_AGE_DAYS: int = int(os.environ.get("CCM_TIER2_MAX_AGE_DAYS", "7"))
+# pinned アクティビティが階層2表示を維持できる updated_at 上限（日）。
+# 超過すると階層2から外れ固定ナビの未表示件数句に計上される（pin自体は残る）
+PIN_SURFACE_DECAY_DAYS: int = int(os.environ.get("CCM_PIN_SURFACE_DECAY_DAYS", "60"))
 
 # --- Search ---
 # Recency boost の減衰率（指数減衰 e^(-kt)）。30日で約0.70倍、半減期約58日
@@ -29,6 +35,25 @@ SYNC_DISABLE_RETROSPECTIVE: bool = os.environ.get(
     "CCM_SYNC_DISABLE_RETROSPECTIVE", "false"
 ).lower() in ("true", "1")
 SYNC_POLICY: str | None = os.environ.get("CCM_SYNC_POLICY") or None  # 空文字→None正規化
+
+# --- Habits ---
+# always層（常時注入枠）の定員（文字数）。update_habitでtrigger_mode='always'に
+# 昇格する際、昇格後のプール合計文字数がこの値と昇格前合計の大きい方を超えると
+# 拒否する（プールが定員超過中でも、合計を増やさない変更は許可するラチェット）
+ALWAYS_POOL_CAPACITY: int = int(os.environ.get("CCM_ALWAYS_POOL_CAPACITY", "1500"))
+
+# habits DBから ~/.claude/rules 配下へ投影する自動生成ファイルの書き込み先パス
+HABITS_RULES_PATH: str = os.environ.get("CCM_HABITS_RULES_PATH") or str(
+    Path.home() / ".claude" / "rules" / "cc-memory-habits.md"
+)
+# 投影のkill switch。"0"で無効化すると、以後の投影はプレースホルダ本文で
+# 上書きされたまま停止する（stale化したファイルが注入され続けるのを防ぐ）
+HABITS_RULES_EXPORT_ENABLED: bool = os.environ.get("CCM_HABITS_RULES_EXPORT", "1") != "0"
+# intelligently層マニフェストの独立予算（件数）。importance_score降順で選抜し、
+# 超過分は本文を切断せず件数行1行に縮退する
+PROJECTION_MANIFEST_MAX_ITEMS: int = int(
+    os.environ.get("CCM_PROJECTION_MANIFEST_MAX_ITEMS", "30")
+)
 
 # --- Direction Layer ---
 # domainごとのactiveな方向性decision(layer:direction)件数がこの値以上になったら

@@ -15,6 +15,7 @@ from src.services.activity_service import (
     get_active_activities_by_tag,
 )
 from src.services.tag_service import _injected_tags
+from src.services.pin_service import add_pin
 from hooks.session_start_hook import _build_activities_section
 from src.services.topic_service import add_topic
 import src.services.embedding_service as emb
@@ -205,11 +206,16 @@ class TestBuildActiveContextHeartbeat:
         assert "[作業] HB機能実装" in result
 
     def test_normal_activity_in_hot_section(self, temp_db):
-        """heartbeat非活性アクティビティは●/○マーカーで表示"""
+        """heartbeat非活性アクティビティは●/○マーカーで表示
+
+        階層3・4は廃止されpending活動は個別表示されないため、検証するには
+        pinで階層2（優先）に載せる必要がある。
+        """
         add_topic(title="Topic", description="Desc", tags=["domain:hb-ctx2"])
-        add_activity(
+        activity = add_activity(
             title="[作業] 通常タスク", description="Desc", tags=["domain:hb-ctx2"], check_in=False,
         )
+        add_pin("tag", "domain:hb-ctx2", "activity", activity["activity_id"])
 
         result = _build_activities_section_wrapper()
 
@@ -218,7 +224,11 @@ class TestBuildActiveContextHeartbeat:
         assert "## 作業中（別セッション）" not in result
 
     def test_mixed_heartbeat_and_normal(self, temp_db):
-        """heartbeat活性と非活性が混在する場合、両セクションに分離される"""
+        """heartbeat活性と非活性が混在する場合、両セクションに分離される
+
+        階層3・4は廃止されpending活動は個別表示されないため、非活性側の活動を
+        検証するにはpinで階層2（優先）に載せる必要がある。
+        """
         add_topic(title="Topic", description="Desc", tags=["domain:hb-mix"])
 
         hb_activity = add_activity(
@@ -230,6 +240,7 @@ class TestBuildActiveContextHeartbeat:
         normal_activity = add_activity(
             title="[作業] 通常", description="Desc", tags=["domain:hb-mix"], check_in=False,
         )
+        add_pin("tag", "domain:hb-mix", "activity", normal_activity["activity_id"])
 
         # HB活性化
         conn = get_connection()
@@ -248,12 +259,17 @@ class TestBuildActiveContextHeartbeat:
         assert "[作業] 通常" in result
 
     def test_expired_heartbeat_in_normal_section(self, temp_db):
-        """heartbeat期限切れアクティビティは通常セクションに表示"""
+        """heartbeat期限切れアクティビティは通常セクションに表示
+
+        階層3・4は廃止されpending活動は個別表示されないため、検証するには
+        pinで階層2（優先）に載せる必要がある。
+        """
         add_topic(title="Topic", description="Desc", tags=["domain:hb-exp"])
         activity = add_activity(
             title="[作業] 期限切れHB", description="Desc", tags=["domain:hb-exp"], check_in=False,
         )
         aid = activity["activity_id"]
+        add_pin("tag", "domain:hb-exp", "activity", aid)
 
         # 30分前にheartbeat更新
         conn = get_connection()

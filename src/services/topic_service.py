@@ -30,7 +30,7 @@ def get_activity_topics_batch(
 ) -> dict[int, list[dict]]:
     """アクティビティID群に対し、関連する全topicの (id, title) を一括取得する。
 
-    SessionStart hook の topic別グルーピング用に relations_view を1クエリで叩く
+    relations_view を1クエリで叩く
     （D#2465: スキル層から get_map をN回叩かずバックエンドでバッチ取得）。
     relations_view は逆方向展開を含むが、`source_type='activity' AND target_type='topic'`
     でフィルタすることで activity 側を source とする行のみに絞られる。

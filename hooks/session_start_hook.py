@@ -1,11 +1,12 @@
 """SessionStart hook: セッションレベル文脈注入
 
 サービス層経由でDBからデータを取得し、セッション開始時のコンテキストを注入する。
-- アクティビティ一覧（active = in_progress + pending）
-- 振る舞い（active=1）
-- コンテキスト取得フロー・補助ツール認知（静的テキスト）
-- relay確認を促す静的ガイド（静的テキスト）
-- relay inbox未読件数（identity解決に成功した場合のみ、動的）
+- アクティビティ一覧（作業中・優先のみ個別表示。末尾に固定ナビ+未表示件数句）
+- 振る舞い（trigger_mode='always'は全文、'intelligently'はタイトルのみのマニフェスト）
+- relay inbox未読件数（identity解決に成功した場合のみ、動的。未読0件は非表示）
+
+コンテキスト取得フローガイドはここでは注入しない（check_in初回呼び出し時に
+checkin_service側が埋め込む）。
 """
 import json
 import sys
@@ -25,12 +26,14 @@ from src.services.activity_service import (
     get_pinned_active_activities_with_conn,
 )
 from hooks.readable_id_format import format_readable_id
-from src.services.habit_service import get_active_habit_contents_with_conn
+from src.services.habit_service import (
+    get_active_habit_contents_with_conn,
+    list_intelligently_habit_manifest_with_conn,
+)
 from src.services.topic_service import get_activity_topics_batch
 from src.services.backup_service import health_check, should_take_snapshot, take_snapshot
 from hooks.signal_capture import try_capture_signal
 
-_TIER4_STALE_DAYS = 30
 _RECENT_CREATED_HOURS = 24
 _TIER2_MAX_ITEMS = 5
 _PIN_MARK = "\U0001f4cc"
@@ -104,35 +107,56 @@ _DETERMINISTIC_RENDER_NOTICE = (
     "再フォーマットや優先順の再評価をせず、必要時はそのまま提示してください。"
 )
 
-_TOPICLESS_GROUP_LABEL = "その他"
 
+def _build_fixed_nav(undisplayed_count: int, pinned_undisplayed_count: int) -> str:
+    """一覧セクション末尾の固定ナビを組み立てる。
 
-def _shorten_topic_title(title: str) -> str:
-    """topic見出しは「 — 」(em dash) 以降を除去した短縮版を使う。"""
-    if " — " in title:
-        return title.split(" — ", 1)[0].strip()
-    return title
+    check_in（なければactivity-start経由で作成）への導線が唯一の静的文。
+    undisplayed_count（表示対象母集団=active全件から実際に表示した件数を
+    引いた値）とpinned_undisplayed_count（そのうちpinnedの数）は呼び出し元が
+    機械算出した値をそのまま渡す想定（概算・手書き禁止）。
+    undisplayed_count が 0 なら件数句ごと省略し前半文のみ、
+    pinned_undisplayed_count が 0 なら括弧句のみ省略する。
+    """
+    base = "作業開始時は該当アクティビティにcheck_in（なければ作成 — activity-start）。"
+    if undisplayed_count <= 0:
+        return base
+    if pinned_undisplayed_count > 0:
+        remainder = (
+            f"未表示のアクティビティ{undisplayed_count}件"
+            f"（pinned {pinned_undisplayed_count}件含む）"
+            "や過去の文脈はget_activities・search・get系で取得する。"
+        )
+    else:
+        remainder = (
+            f"未表示のアクティビティ{undisplayed_count}件や"
+            "過去の文脈はget_activities・search・get系で取得する。"
+        )
+    return base + remainder
 
 
 def _build_activities_section(conn, session_id: str | None = None) -> str:
-    """アクティビティ一覧を 4 階層ダッシュボードで組み立てる。
+    """アクティビティ一覧を組み立てる。
 
     階層 1「作業中（別セッション）」: heartbeat 中で自セッションでないもの。
-    階層 2「優先」: 階層 1 に入らなかった in_progress または pinned を集約し、
+    階層 2「優先」: 階層 1 に入らなかった activity のうち、
+        (in_progress かつ updated_at が config.TIER2_MAX_AGE_DAYS 日以内) または
+        (pinned かつ updated_at が config.PIN_SURFACE_DECAY_DAYS 日以内) を集約し、
         pinned 先頭 → updated_at 降順で上位 5 件（flat、topic 別グルーピングなし）。
-    階層 3「直近作成（24h以内）」: 上位階層で消費されなかった created_at 24h 以内、
-        created_at 降順の flat リスト。0 件時はセクション自体省略。
-    階層 4「その他」: 残り active のうち updated_at 30 日以内、または pinned。
-        topic 別グルーピングでタイトル一行のみ（番号・status マーカー・meta 行なし）。
+        pinned が decay 日数を超えると階層 2 から外れる（pin 自体は残り、
+        activity を touch すれば updated_at 更新により自動復帰する）。
 
     行フォーマット:
         - 階層 1: `- 📌 タイトル (#id) (Nd)`（📌 は pinned 時のみ）
-        - 階層 2/3: 番号 + status マーカー (●/○) + 📌（pinned 時）+ タイトル (#id)
+        - 階層 2: 番号 + status マーカー (●/○) + 📌（pinned 時）+ タイトル (#id)
           + (Nd) + 🆕（24h 以内作成時）。blocked_by 未解決依存があるときのみ
           meta 行 1 行を続ける。
-        - 階層 4: `- 📌 タイトル (#id) (Nd) 🆕`（📌/🆕 は該当時のみ）
 
-    重複排除: 上位階層に採用された activity は下位階層から除外する。
+    末尾には固定ナビ（_build_fixed_nav）を必ず付与する。階層 1・2 がともに
+    0 件（activity が 1 件も無い場合を含む）のときは、ヘッダ・末尾固定文の
+    空殻を出さず固定ナビだけを返す。
+
+    重複排除: 上位階層に採用された activity は下位階層（および統計対象）から除外する。
 
     orch_managed=1 のアクティビティは全階層で除外する。
     """
@@ -161,11 +185,7 @@ def _build_activities_section(conn, session_id: str | None = None) -> str:
         seen_collect.add(a["id"])
         all_active.append(a)
 
-    if not all_active:
-        return ""
-
     seen_ids: set[int] = set()
-    parts: list[str] = ["# アクティビティ一覧", ""]
 
     tier1: list[dict] = []
     for a in all_active:
@@ -175,110 +195,67 @@ def _build_activities_section(conn, session_id: str | None = None) -> str:
         )
         if a.get("is_heartbeat_active") and not is_own_session:
             tier1.append(a)
+    for a in tier1:
+        seen_ids.add(a["id"])
+
+    # 階層 1 で消費済みの id はバッチ取得対象から外す。
+    lower_ids = [a["id"] for a in all_active if a["id"] not in seen_ids]
+    unresolved_deps = _get_unresolved_deps(conn, lower_ids)
+    created_ats = _get_created_ats(conn, lower_ids)
+
+    tier2_pool = [
+        a
+        for a in all_active
+        if a["id"] not in seen_ids
+        and (
+            (
+                a["status"] == "in_progress"
+                and _calc_elapsed_days(a["updated_at"]) <= config.TIER2_MAX_AGE_DAYS
+            )
+            or (
+                a["id"] in pinned_ids
+                and _calc_elapsed_days(a["updated_at"]) <= config.PIN_SURFACE_DECAY_DAYS
+            )
+        )
+    ]
+    tier2_pool.sort(key=lambda a: (a["updated_at"], a["id"]), reverse=True)
+    tier2_pool.sort(key=lambda a: 0 if a["id"] in pinned_ids else 1)
+    tier2 = tier2_pool[:_TIER2_MAX_ITEMS]
+    for a in tier2:
+        seen_ids.add(a["id"])
+
+    undisplayed = [a for a in all_active if a["id"] not in seen_ids]
+    nav = _build_fixed_nav(
+        len(undisplayed),
+        sum(1 for a in undisplayed if a["id"] in pinned_ids),
+    )
+
+    if not tier1 and not tier2:
+        return nav
+
+    parts: list[str] = ["# アクティビティ一覧", ""]
 
     if tier1:
         tier1.sort(key=lambda a: (a["updated_at"], a["id"]), reverse=True)
         parts.append("## 作業中（別セッション）")
         for a in tier1:
-            seen_ids.add(a["id"])
             days = _calc_elapsed_days(a["updated_at"])
             pin_mark = f"{_PIN_MARK} " if a["id"] in pinned_ids else ""
             display = format_readable_id(a["id"], a["title"])
             parts.append(f"- {pin_mark}{display} ({days}d)")
         parts.append("")
 
-    # 階層 1 は updated_at と pin だけで描画し created_at / 依存 / topic を参照しない。
-    # 階層 1 で消費済みの id はバッチ取得対象から外す。
-    lower_ids = [a["id"] for a in all_active if a["id"] not in seen_ids]
-    unresolved_deps = _get_unresolved_deps(conn, lower_ids)
-    created_ats = _get_created_ats(conn, lower_ids)
-    activity_topics = get_activity_topics_batch(conn, lower_ids)
-
-    tier2_pool = [
-        a
-        for a in all_active
-        if a["id"] not in seen_ids
-        and (a["status"] == "in_progress" or a["id"] in pinned_ids)
-    ]
-    tier2_pool.sort(key=lambda a: (a["updated_at"], a["id"]), reverse=True)
-    tier2_pool.sort(key=lambda a: 0 if a["id"] in pinned_ids else 1)
-    tier2 = tier2_pool[:_TIER2_MAX_ITEMS]
-
     if tier2:
         parts.append("## 優先")
         for idx, a in enumerate(tier2, start=1):
-            seen_ids.add(a["id"])
             parts.extend(
                 _render_numbered_line(a, idx, pinned_ids, created_ats, unresolved_deps)
             )
         parts.append("")
-
-    tier3_pool = [
-        a
-        for a in all_active
-        if a["id"] not in seen_ids
-        and _is_recent_created(created_ats.get(a["id"], ""))
-    ]
-    tier3_pool.sort(
-        key=lambda a: (created_ats.get(a["id"], ""), a["id"]), reverse=True
-    )
-
-    if tier3_pool:
-        parts.append("## 直近作成（24h以内）")
-        for idx, a in enumerate(tier3_pool, start=1):
-            seen_ids.add(a["id"])
-            parts.extend(
-                _render_numbered_line(a, idx, pinned_ids, created_ats, unresolved_deps)
-            )
-        parts.append("")
-
-    # pinned は staleness で脱落させない。上位階層の件数上限で溢れた pinned が
-    # 30 日フィルタでも除外されると、どの階層にも出ずダッシュボードから消えるため。
-    tier4_pool = [
-        a
-        for a in all_active
-        if a["id"] not in seen_ids
-        and (
-            a["id"] in pinned_ids
-            or _calc_elapsed_days(a["updated_at"]) <= _TIER4_STALE_DAYS
-        )
-    ]
-
-    if tier4_pool:
-        groups: dict[int | None, dict] = {}
-        for a in tier4_pool:
-            topics = activity_topics.get(a["id"], [])
-            if topics:
-                primary = topics[0]
-                primary_id: int | None = primary["id"]
-                primary_title = _shorten_topic_title(primary["title"])
-            else:
-                primary_id = None
-                primary_title = _TOPICLESS_GROUP_LABEL
-            group = groups.setdefault(
-                primary_id, {"title": primary_title, "activities": []}
-            )
-            group["activities"].append(a)
-
-        topic_ids_sorted: list[int | None] = sorted(
-            tid for tid in groups.keys() if tid is not None
-        )
-        if None in groups:
-            topic_ids_sorted.append(None)
-
-        for tid in topic_ids_sorted:
-            group = groups[tid]
-            group["activities"].sort(
-                key=lambda a: (a["updated_at"], a["id"]), reverse=True
-            )
-            parts.append(f"## {group['title']}")
-            for a in group["activities"]:
-                seen_ids.add(a["id"])
-                parts.append(_render_tier4_line(a, pinned_ids, created_ats))
-            parts.append("")
 
     parts.append(_DETERMINISTIC_RENDER_NOTICE)
     parts.append("")
+    parts.append(nav)
 
     return "\n".join(parts) + "\n"
 
@@ -290,7 +267,7 @@ def _render_numbered_line(
     created_ats: dict[int, str],
     unresolved_deps: dict[int, list[dict]],
 ) -> list[str]:
-    """階層 2/3 用の 1 activity 分の行群を返す。
+    """階層 2 用の 1 activity 分の行群を返す。
 
     タイトル行 1 行と、blocked_by 未解決依存があるとき meta 行 1 行を続ける。
     """
@@ -314,35 +291,30 @@ def _render_numbered_line(
     return lines
 
 
-def _render_tier4_line(
-    a: dict,
-    pinned_ids: set[int],
-    created_ats: dict[int, str],
-) -> str:
-    """階層 4 用のタイトル一行のみを返す。番号・status マーカー・meta 行なし。"""
-    aid = a["id"]
-    days = _calc_elapsed_days(a["updated_at"])
-    pin_mark = f"{_PIN_MARK} " if aid in pinned_ids else ""
-    created_at_str = created_ats.get(aid, "")
-    new_marker = (
-        f" {_NEW_MARK}"
-        if created_at_str and _is_recent_created(created_at_str)
-        else ""
-    )
-    display = format_readable_id(aid, a["title"])
-    return f"- {pin_mark}{display} ({days}d){new_marker}"
-
-
 def _build_habits_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
-    """振る舞い一覧を組み立てる。"""
-    contents = get_active_habit_contents_with_conn(conn)
+    """振る舞い一覧を組み立てる。
 
-    if not contents:
+    trigger_mode='always'は全文を表示し、'intelligently'はタイトルのみの
+    マニフェスト（案内1行＋タイトル列挙）にとどめ、詳細はget_habits(habit_id=...)
+    でon-demand取得する前提にする。
+    """
+    always_contents = get_active_habit_contents_with_conn(conn)
+    manifest = list_intelligently_habit_manifest_with_conn(conn)
+
+    if not always_contents and not manifest:
         return ""
 
     lines = ["# 振る舞い"]
-    for content in contents:
+    for content in always_contents:
         lines.append(f"- {content}")
+
+    if manifest:
+        lines.append("")
+        lines.append(
+            "他の振る舞い（タイトルのみ、詳細は get_habits(habit_id=...) で取得）:"
+        )
+        for item in manifest:
+            lines.append(f"- {item['title']} (habit_id={item['habit_id']})")
 
     return "\n".join(lines) + "\n"
 
@@ -373,7 +345,7 @@ def _build_signals_section(conn, session_id: str | None = None) -> str:  # conn,
 
 
 def _build_relay_inbox_section(conn, session_id: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
-    """relay inboxの未読件数 + Monitor監視の指示を表示する。
+    """relay inboxの未読件数を表示する。未読0件はコンテキスト消費ゼロ。
 
     relay未構成（token未設定）ならidentity解決を試みる前に打ち切る。
     本hookはSessionStart（Claude Code起動をブロックする経路）で毎回実行される
@@ -388,8 +360,8 @@ def _build_relay_inbox_section(conn, session_id: str | None = None) -> str:  # c
     ps最大5回spawn）にフォールバックする。
 
     identityが解決できてもinbox file未作成（このidentity宛のrelay
-    メッセージが一度も無い）の場合は、そこで打ち切ってコンテキスト消費
-    ゼロを維持する。
+    メッセージが一度も無い）場合や、ファイルはあっても未読が0件の場合は、
+    そこで打ち切ってコンテキスト消費ゼロを維持する。
     """
     from src.services.relay import config as relay_config
 
@@ -409,11 +381,12 @@ def _build_relay_inbox_section(conn, session_id: str | None = None) -> str:  # c
         return ""
 
     count = count_unread(identity)
+    if count == 0:
+        return ""
+
     return (
-        f"relay inbox 未読: {count}件\n"
-        f"relay通知の受信待機: Monitorツールで {path} を監視し、変更を検知したら"
-        " relay_receive で新着を読んでください。未読がある場合は先に"
-        " relay_receive で消化してください。\n"
+        f"relay inbox 未読: {count}件 → relay_receiveで消化\n"
+        f"新着の待ち受けはMonitorツールで {path} を監視してください。\n"
     )
 
 
@@ -441,7 +414,7 @@ def _build_snapshot_section(conn, session_id: str | None = None) -> str:  # conn
             "\u26a1 データ消失インシデントの可能性があります。",
             "\u26a1 スナップショットからの復元が可能です。",
             "\u26a1 ユーザーに即座に状況を報告し、復元するか確認してください。",
-            "\u26a1 復元手順は cc-memory:guide を参照してください。",
+            "\u26a1 db-recovery スキルを発動して自律復旧を進めてください(手動手順は cc-memory:guide を参照)。",
         ])
         return "\n".join(lines) + "\n"
 
@@ -453,41 +426,6 @@ def _build_snapshot_section(conn, session_id: str | None = None) -> str:  # conn
             print(f"snapshot error: {e}", file=sys.stderr)
 
     return ""
-
-
-_CONTEXT_FLOW_GUIDE = """\
-# コンテキスト取得フロー
-
-1. ユーザーの発言やアクティビティ一覧から該当するものを判定し、`check_in`で作業コンテキストを取得する
-   - ぴったりなアクティビティがなければ`add_activity`で作成してからcheck-inする
-   - check-inするとtag_notes・資材・関連decisionsが一括で返り、statusも自動更新される
-   - 返ってきたsummaryフィールドはそのまま出力すること
-2. 特定エンティティの深掘りには`get_decisions`・`get_logs`を使う
-   （議論の詳細な経緯はlogsに入っていることが多い）
-3. キーワードベースの探索には`search`を使う。結果の詳細は`get_by_ids`でピンポイント取得する
-4. `get_by_ids`の典型ユースケース:
-   - search結果からのチェリーピック（関連する上位N件をまとめて詳細取得）
-   - ログ・decision内の参照先をまとめて取得
-   - ユーザーがIDで「これ何？」と聞いたとき
-
-# 補助ツール・概念
-
-- `update_pin`: 重要なエンティティをピン留めする。check-in時に必ず返されるので、長期にわたって参照され続けるエンティティにはピン留めを自律的に行うこと
-  - 例: ユビキタス言語を定義したmaterial、方針を決定づけるdecision
-- `get_map`: トピックやアクティビティの関連構造を俯瞰できる。全体像の把握や探索に有用
-- `get_timeline`: エンティティの時系列変遷を追える。経緯を辿りたいときに有用
-- リレーションタイプ `supersedes`・`depends_on`（`add_relation`で設定）: 差し替えられたdecisionやブロッカーのあるアクティビティの管理に使う
-"""
-
-_RELAY_CHECK_GUIDE = """\
-# relay
-
-セッション開始時に `relay_receive` で他セッションからの未読メッセージがないか確認してください。
-まず `peek=True` で呼び、内容を確認して必要なら add_logs/add_material 等で保存してください。
-保存できたことを確認してから、同じ呼び出しを `peek=False`（既定）で呼び直して既読化して
-ください。既定の `peek=False` は consume（既読化）のため、保存前に処理が中断すると
-その内容は再取得できません。
-"""
 
 
 def _build_session_context(session_id: str | None = None) -> str:
@@ -518,10 +456,6 @@ def _build_session_context(session_id: str | None = None) -> str:
             except Exception:
                 # セクション単位で失敗を許容し、残りのセクションは返す
                 pass
-
-        # 静的セクション（DB不要）
-        sections.append(_CONTEXT_FLOW_GUIDE)
-        sections.append(_RELAY_CHECK_GUIDE)
 
         context = "\n".join(sections)
         return context

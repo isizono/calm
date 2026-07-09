@@ -318,6 +318,10 @@ class TestSessionStartHookSnapshot:
         assert "DBデータ異常減少" in context
         assert "activities" in context
         assert "復元" in context
+        # db-recoveryスキルへの誘導が含まれる
+        assert "db-recovery" in context
+        # 手動手順の参照先(cc-memory:guide)も併記されている
+        assert "cc-memory:guide" in context
 
     def test_session_start_hook_anomaly_no_new_snapshot(self, temp_db):
         """hookのE2E: 異常検知時にスナップショットが新規作成されない"""

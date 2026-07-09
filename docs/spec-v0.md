@@ -212,7 +212,7 @@ cc-memoryに関する議論を始めるとき、「これはどの層の話か�
 
 ### 4.1 spec: check-in / status / scoring / nudge / habits / tag-notes の論理像
 
-**check-in:** アクティビティに紐づく文脈を一括取得する入り口。返却内容は tag-notes、資材カタログ、pinned、関連decisions、recent logs、coverage。statusはin_progressへ自動更新される。
+**check-in:** アクティビティに紐づく文脈を一括取得する入り口。返却内容は tag-notes、資材カタログ、pinned、関連decisions、recent logs、coverage。セッション内で初めて呼ばれたときのみコンテキスト取得フローガイド（flow_guide）も返す。statusはin_progressへ自動更新される。
 
 **status:** pending / in_progress / completed / snoozed / shelved の5値。「active」はpending+in_progressのエイリアス。
 
@@ -224,7 +224,7 @@ cc-memoryに関する議論を始めるとき、「これはどの層の話か�
 - follow_up nudge: add_decisionsを呼んだが補完エンティティ（topic/logs/activity/material/tag_notes）が更新されてない時に発火
 - recompose hint: 素タグに対するrecompose-context実行のメンテナンスナッジ
 
-**habits:** 全セッション共通の行動ルール。SessionStart時に全件注入される。タグやファイルに依存しない横断ルール。
+**habits:** 全セッション共通の行動ルール。タグやファイルに依存しない横断ルール。SessionStart時、`trigger_mode='always'`は全文注入、`'intelligently'`はタイトルのみのマニフェスト表示（詳細は`get_habits(habit_id=...)`でon-demand取得）。
 
 **tag-notes:** タグに紐づく教訓・運用ルール。そのタグに遭遇したとき（セッション内初回）にAIへ自動注入される。CLAUDE.mdのタグ版。
 
@@ -389,7 +389,7 @@ session_id を捨てる heartbeat、events.jsonl と relay の二系統真実源
 
 **tag-notes**: タグに紐づく教訓・運用ルール。タグ遭遇時にAIへ自動注入される。
 
-**habits**: 全セッション共通の行動ルール。SessionStart時に全件注入。
+**habits**: 全セッション共通の行動ルール。SessionStart時、`trigger_mode='always'`は全文注入、`'intelligently'`はタイトルのみのマニフェスト表示。
 
 **check-in**: アクティビティに紐づく文脈を一括取得する作業開始の入り口。
 
