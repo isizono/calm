@@ -74,7 +74,8 @@ CREATE TABLE injection_telemetry (
     rank               INTEGER NOT NULL,     -- 1〜3
     similarity         REAL,                 -- distance/score等（NULL可）
     diagnostics_json   TEXT,                 -- 将来の retriever 内訳等（NULL可）
-    timestamp          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    timestamp          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    hint_shown_at      TIMESTAMP              -- relation-ratchet.md が追加提案する制御列。NULL可。本設計の write path / analysis SQL では参照しない
 );
 
 CREATE INDEX idx_injection_telemetry_session_ts
@@ -83,6 +84,8 @@ CREATE INDEX idx_injection_telemetry_session_ts
 CREATE INDEX idx_injection_telemetry_attached
     ON injection_telemetry(attached_type, attached_id);
 ```
+
+`hint_shown_at` について: この列は本設計（追随カウンタ）自身の計測結果ではなく、`docs/design/relation-ratchet.md` が「取得まで至った候補にヒントを一度だけ添える」ための制御状態として利用する列である。新規常駐ストアを作らない方針の範囲で、relation-ratchet 側が本テーブルに間借りする形の追加を提案しており、本設計側はこれを受け入れる（テーブルの所有権は本設計にあるため、CREATE TABLE 定義への同梱も本設計の migration の管轄とする）。ただし本設計の `_record_injection_telemetry_async`・`_TELEMETRY_WRITABLE_COLUMNS` allowlist（3.4節）・3.7節の効果測定 SQL のいずれもこの列を書かず・読まない。書込は relation-ratchet.md 側が get_by_ids / get_material の同期経路で行う UPDATE であり、本設計の非同期 present 書込とは別のコードパスである。両設計の実装順序が前後する場合の migration の割り当て方は relation-ratchet.md 7節を参照。
 
 意図と設計判断:
 
@@ -250,7 +253,7 @@ GROUP BY p.trigger_tool;
 
 # 4. 変更ファイル一覧
 
-- migrations/NNNN_add_injection_telemetry.sql: 新規テーブルとインデックス
+- migrations/NNNN_add_injection_telemetry.sql: 新規テーブルとインデックス（`hint_shown_at` 列を含む。同列は relation-ratchet.md が定義・利用する制御列で、本設計の write path / analysis SQL では使用しない。relation-ratchet.md の実装が本設計より後にずれ込む場合は、当該列とそのための追加 INDEX を relation-ratchet.md 側の ALTER TABLE migration に切り出してよい。詳細は同設計7節）
 - src/services/search_service.py: `_TELEMETRY_WRITABLE_COLUMNS` に `injection_telemetry` 追加、`_record_injection_telemetry_async` 追加
 - src/main.py: `get_material` ラッパー内で `_record_fetch_telemetry_async("get_material", ...)` 呼び出し追加
 - src/main.py: `add_logs` / `add_decisions` / `add_material` の第3層添付組立直後に `_record_injection_telemetry_async` 呼び出し追加（第3層実装 PR で同時挿入）
