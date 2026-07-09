@@ -496,6 +496,63 @@ class TestSessionStartHookHabitsProjectionCutover:
 
         assert "kill switch下のalways振る舞い" in context
 
+    def test_absent_write_failure_yields_failure_fallback_not_silent_success(self, temp_db, tmp_path):
+        """投影ファイルが不在(absent)で、かつ修復の書き込み自体が失敗するケース
+        (failed_absent)。投影先の親パスコンポーネントを通常ファイルにすることで
+        os.replaceベースの書き込みを構造的に失敗させる（root権限でも回避できない
+        FS制約であり、chmodベースの権限テストと違って実行ユーザーに依存しない）。
+        healed_absentと違い実際にはファイルは書けていないが、常に安全側の
+        always層全文フォールバックが注入され、例外で握りつぶされないことを確認する"""
+        _seed_habit("absent書き込み失敗時に注入されるべきalways全文")
+        blocker_file = tmp_path / "blocker"
+        blocker_file.write_text("this is a file, not a directory", encoding="utf-8")
+        # 親ディレクトリ相当のパスコンポーネントが既存の通常ファイルなので、
+        # habit_projection._write 内の path.parent.mkdir が必ず失敗する
+        habits_path = blocker_file / "cc-memory-habits.md"
+
+        result = _run_session_start_hook(temp_db, habits_rules_path=str(habits_path))
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "absent書き込み失敗時に注入されるべきalways全文" in context
+        assert not habits_path.exists()
+
+    def test_compact_source_reinjects_habits_even_when_fresh(self, temp_db, tmp_path):
+        """マージ前ゲート対応確認: SessionStart(source=compact)時は、compact後に
+        rulesファイル内容がコンテキストへ保持されるかの実機検証が未了なため、
+        投影ファイルがfresh（通常なら注入なし）でも安全側に倒してhabitsの
+        always層全文フォールバックを再注入する"""
+        _seed_habit("compact再注入対象の振る舞い")
+        habits_path = tmp_path / "cc-memory-habits.md"
+
+        # 1回目: absentからのheal。2回目以降がfresh判定になる前提を作る
+        _run_session_start_hook(temp_db, habits_rules_path=str(habits_path))
+
+        # 2回目: DBに変化なし（freshのはず）だが source=compact を明示
+        result = _run_session_start_hook(
+            temp_db,
+            habits_rules_path=str(habits_path),
+            stdin_payload={"source": "compact"},
+        )
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "compact再注入対象の振る舞い" in context
+
+    def test_non_compact_source_still_yields_no_injection_when_fresh(self, temp_db, tmp_path):
+        """source=startup等（compact以外）では従来通り、freshなら注入なし"""
+        _seed_habit("fresh判定確認用の振る舞い")
+        habits_path = tmp_path / "cc-memory-habits.md"
+
+        _run_session_start_hook(temp_db, habits_rules_path=str(habits_path))
+
+        result = _run_session_start_hook(
+            temp_db,
+            habits_rules_path=str(habits_path),
+            stdin_payload={"source": "startup"},
+        )
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "振る舞い" not in context
+
     def test_verify_and_heal_exception_does_not_break_other_sections(self, temp_db, tmp_path):
         """habitsセクションが例外を投げても、他セクション（アクティビティ一覧等）は
         引き続き返る（builders統一IFのセクション単位try/exceptの回帰確認）"""

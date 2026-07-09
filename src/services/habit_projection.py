@@ -58,16 +58,23 @@ _BODY_MARKER = "-->\n"
 _CONTENT_HASH_RE = re.compile(r"content_hash:\s*sha256:([0-9a-fA-F]{64})")
 
 
-def render_body(conn) -> str:
-    """active habitsから投影ファイル本文（メタデータコメントを除く部分）を組み立てる。
-
-    純関数（時刻に依存する述語をここに入れない）。同一DB状態からは常に同一本文を返す。
-    always層は全文、intelligently層はマニフェスト（タイトル+habit_id）で構成する。
-    有効なhabitsが0件のときは1行のプレースホルダ本文にする。
+def _fetch_habit_layers(conn) -> tuple[list[str], list[dict]]:
+    """habitsの2層データ（always全文・intelligentlyマニフェスト）を1回のクエリ
+    セットで取得する。render_body・verify_and_healの共通経路（呼び出し元が
+    同じ2クエリを重複実行しないよう、ここに集約する）。
     """
     always_contents = get_active_habit_contents_with_conn(conn)
     manifest = list_intelligently_habit_manifest_with_conn(conn)
+    return always_contents, manifest
 
+
+def _render_body_from_layers(always_contents: list[str], manifest: list[dict]) -> str:
+    """_fetch_habit_layersが返す2層データから投影ファイル本文を組み立てる。
+
+    純関数（時刻に依存する述語をここに入れない）。同一入力からは常に同一本文を返す。
+    always層は全文、intelligently層はマニフェスト（タイトル+habit_id）で構成する。
+    有効なhabitsが0件のときは1行のプレースホルダ本文にする。
+    """
     if not always_contents and not manifest:
         return f"{_HEADER}\n\n{_NO_HABITS_LINE}\n"
 
@@ -80,6 +87,17 @@ def render_body(conn) -> str:
         sections.append(_render_manifest_section(manifest))
 
     return "\n\n".join(sections) + "\n"
+
+
+def render_body(conn) -> str:
+    """active habitsから投影ファイル本文（メタデータコメントを除く部分）を組み立てる。
+
+    純関数（時刻に依存する述語をここに入れない）。同一DB状態からは常に同一本文を返す。
+    always層は全文、intelligently層はマニフェスト（タイトル+habit_id）で構成する。
+    有効なhabitsが0件のときは1行のプレースホルダ本文にする。
+    """
+    always_contents, manifest = _fetch_habit_layers(conn)
+    return _render_body_from_layers(always_contents, manifest)
 
 
 def _render_manifest_section(manifest: list[dict]) -> str:
@@ -266,27 +284,34 @@ def verify_and_heal(conn) -> dict:
     stale系として1つに扱う。
 
     kill switchが立っているときはexportを呼ばず、フォールバック注入も行わない
-    （"disabled"を返す。完全停止スイッチの意味論を守る）。
+    （"disabled"を返す。完全停止スイッチの意味論を守る）。この場合DBに触れない
+    ため、always_contents/manifestはNone（未取得）で返す。呼び出し元
+    （hook側のフォールバック注入）は、必要ならそこで自前にクエリすること。
 
     Returns:
         {"status": "disabled"|"fresh"|"healed_absent"|"healed_stale"
                     |"failed_absent"|"failed_stale",
-         "body": <レンダリング済み本文>}   # hookがフォールバック注入に再利用する
+         "body": <レンダリング済み本文>,
+         "always_contents": <always層の全文リスト> | None,
+         "manifest": <intelligently層マニフェスト> | None}
+        # body/always_contents/manifestはhookがフォールバック注入時にDBクエリを
+        # 再実行せず再利用するためのもの（disabled以外は常にリストで返る）。
     """
     if not config.HABITS_RULES_EXPORT_ENABLED:
-        return {"status": "disabled", "body": ""}
+        return {"status": "disabled", "body": "", "always_contents": None, "manifest": None}
 
-    body = render_body(conn)
+    always_contents, manifest = _fetch_habit_layers(conn)
+    body = _render_body_from_layers(always_contents, manifest)
     h_db = compute_hash(body)
     state = read_file_state(config.HABITS_RULES_PATH)
 
     if state.status == "absent":
         result = _write(body, force=True)
         status = "healed_absent" if result["status"] != "failed" else "failed_absent"
-        return {"status": status, "body": body}
+        return {"status": status, "body": body, "always_contents": always_contents, "manifest": manifest}
 
     if state.body_hash == h_db and state.meta_hash == h_db:
-        return {"status": "fresh", "body": body}
+        return {"status": "fresh", "body": body, "always_contents": always_contents, "manifest": manifest}
 
     if state.meta_hash != state.body_hash:
         logger.warning(
@@ -295,4 +320,4 @@ def verify_and_heal(conn) -> dict:
 
     result = _write(body, force=True)
     status = "healed_stale" if result["status"] != "failed" else "failed_stale"
-    return {"status": status, "body": body}
+    return {"status": status, "body": body, "always_contents": always_contents, "manifest": manifest}
