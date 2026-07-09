@@ -26,7 +26,7 @@ from src.services.activity_service import (
     get_active_activities_by_tag_with_conn,
     get_pinned_active_activities_with_conn,
 )
-from src.services.readable_id import format_readable_id
+from hooks.readable_id_format import format_readable_id
 from src.services.habit_service import (
     get_active_habit_contents_with_conn,
     list_intelligently_habit_manifest_with_conn,
@@ -242,7 +242,7 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
         for a in tier1:
             days = _calc_elapsed_days(a["updated_at"])
             pin_mark = f"{_PIN_MARK} " if a["id"] in pinned_ids else ""
-            display = format_readable_id("activity", a["id"], a["title"])
+            display = format_readable_id(a["id"], a["title"])
             parts.append(f"- {pin_mark}{display} ({days}d)")
         parts.append("")
 
@@ -282,7 +282,7 @@ def _render_numbered_line(
         if created_at_str and _is_recent_created(created_at_str)
         else ""
     )
-    display = format_readable_id("activity", aid, a["title"])
+    display = format_readable_id(aid, a["title"])
     lines = [f"{idx}. {status_mark} {pin_mark}{display} ({days}d){new_marker}"]
 
     deps = unresolved_deps.get(aid, [])
