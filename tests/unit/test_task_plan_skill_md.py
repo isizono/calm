@@ -76,9 +76,10 @@ class TestPlanTemplatesCarryPredicted:
         assert "| final | - | 統合マージ | feature/{統合ブランチ名} | main | - | 🔲未着手 |" in skill_md
 
 
-class TestUserConfirmationIncludesPredicted:
-    def test_step5_presents_predicted(self, skill_md):
-        step5_idx = skill_md.find("### Step 5: ユーザー確認")
-        assert step5_idx != -1
-        step5_body = skill_md[step5_idx:]
-        assert "GO判定予測（predicted、各PR）" in step5_body
+class TestUserConfirmationReportsPredictedWithoutAsking:
+    def test_step6_reports_predicted_as_non_confirmation_item(self, skill_md):
+        step6_idx = skill_md.find("### Step 6: ユーザー確認")
+        assert step6_idx != -1
+        step6_body = skill_md[step6_idx:]
+        assert "GO判定予測" in step6_body
+        assert "確認対象ではない" in step6_body

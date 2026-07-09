@@ -119,7 +119,7 @@ graph TB
 | `material_service` | materials |
 | `pin_service` | pins（directed relation） |
 | `relation_service` | relations（双方向関連の汎化） |
-| `habit_service` | habits（SessionStart注入対象） |
+| `habit_service` | habits（正はDB、`~/.claude/rules`配下の自動生成ファイルへ投影配信） |
 | `tag_service` | tags / tag_canonicals / tag_notes |
 
 ### 3.3 横断クエリ・読み出し
@@ -155,7 +155,7 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 
 | hookファイル | 発火タイミング | 主な仕事 |
 |---|---|---|
-| `hooks/session_start_hook.py` | SessionStart | habits注入、アクティビティダッシュボード注入、鮮度警告 |
+| `hooks/session_start_hook.py` | SessionStart | habits投影ファイルの鮮度検証+縮退フォールバック、アクティビティダッシュボード注入、鮮度警告 |
 | `hooks/user_prompt_submit_hook.py` | UserPromptSubmit | ターンカウンタ・record nudge発火判定 |
 | `hooks/stop_hook.py` | Stop | 終端でのフォローアップ提案 |
 | `hooks/heartbeat.py` | 定期 | プレゼンス維持・ハートビート送信 |
@@ -187,12 +187,12 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 
 - `src/services/checkin_service.py`: check-inの本体実装。アクティビティに紐づく tag-notes・資材カタログ・pinned・関連decisions・recent logs を一括取得し、coverage と recompose hints を計算する (recompose hint は HintService 経由)
 - `src/services/hint_service.py`: hint一元化（`get_hints(scope, target_id) -> list[Hint]`）。recompose_bootstrap / recompose_delta / logs_sparse / follow_up_after_decision / record_missing を統一フォーマットで返す。delivery_hint で immediate (check_in 同期注入) と deferred (Stop hook → events.jsonl → UserPromptSubmit 注入) を分岐する
-- `src/services/habit_service.py`: SessionStartでの注入対象。`trigger_mode='always'`は全文、`'intelligently'`はタイトルのみのマニフェスト
+- `src/services/habit_service.py`: habitのCRUD。書き込み後は`habit_projection`経由で`~/.claude/rules`配下の自動生成ファイルへ投影する。`trigger_mode='always'`は全文、`'intelligently'`はタイトルのみのマニフェストとして投影される
 
 ### 4.4 hookシグナルの流れ
 
 ```
-SessionStart        → session_start_hook → habits注入 / アクティビティダッシュボード / 鮮度警告
+SessionStart        → session_start_hook → habits投影ファイルの鮮度検証 / アクティビティダッシュボード / 鮮度警告
 UserPromptSubmit    → user_prompt_submit_hook → 未消費 nudge の system-reminder 注入
 Stop                → stop_hook → record_missing / follow_up_after_decision / logs_sparse nudge を events.jsonl に追記
 ```
