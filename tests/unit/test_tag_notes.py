@@ -96,6 +96,242 @@ class TestUpdateTag:
 
 
 # ========================================
+# update_tag archived テスト
+# ========================================
+
+
+class TestUpdateTagArchived:
+    """update_tag の archived / archived_reason 更新のテスト"""
+
+    def test_archive_tag(self, temp_db):
+        """archived=True でタグを退役できる"""
+        add_topic(title="Test", description="Desc", tags=["domain:legacy"])
+
+        result = update_tag("domain:legacy", archived=True, archived_reason="解体済み")
+        assert "error" not in result
+        assert result["tag"] == "domain:legacy"
+        assert result["archived"] is True
+        assert result["archived_at"] is not None
+        assert result["archived_reason"] == "解体済み"
+        assert result["updated"] is True
+
+    def test_archive_idempotent_no_change(self, temp_db):
+        """既にarchivedのタグへarchived=Trueを再適用してもarchived_atは不変・updated: False（エッジケース#2）"""
+        add_topic(title="Test", description="Desc", tags=["domain:legacy"])
+        first = update_tag("domain:legacy", archived=True, archived_reason="最初の理由")
+
+        second = update_tag("domain:legacy", archived=True, archived_reason="別の理由")
+        assert "error" not in second
+        assert second["archived"] is True
+        assert second["archived_at"] == first["archived_at"]
+        assert second["updated"] is False
+        # archived_reasonの後追い書き換えはしない（5. Edge cases参照）
+        assert second["archived_reason"] == "最初の理由"
+
+    def test_archive_and_notes_conflicting_params(self, temp_db):
+        """notesとarchivedの同時指定はCONFLICTING_PARAMSエラー（エッジケース#3）"""
+        add_topic(title="Test", description="Desc", tags=["domain:legacy"])
+
+        result = update_tag("domain:legacy", notes="x", archived=True)
+        assert "error" in result
+        assert result["error"]["code"] == "CONFLICTING_PARAMS"
+
+    def test_archived_reason_alone_is_orphan(self, temp_db):
+        """archived_reason単独指定はORPHAN_ARCHIVED_REASONエラー（エッジケース#4）"""
+        add_topic(title="Test", description="Desc", tags=["domain:legacy"])
+
+        result = update_tag("domain:legacy", archived_reason="理由だけ")
+        assert "error" in result
+        assert result["error"]["code"] == "ORPHAN_ARCHIVED_REASON"
+
+    def test_archived_reason_with_archived_false_is_orphan(self, temp_db):
+        """archived=Falseとarchived_reasonの同時指定もORPHAN_ARCHIVED_REASONエラー"""
+        add_topic(title="Test", description="Desc", tags=["domain:legacy"])
+
+        result = update_tag("domain:legacy", archived=False, archived_reason="理由")
+        assert "error" in result
+        assert result["error"]["code"] == "ORPHAN_ARCHIVED_REASON"
+
+    def test_unarchive_clears_reason(self, temp_db):
+        """archived=Falseでarchived_at・archived_reasonが両方NULLに戻る（エッジケース#5）"""
+        add_topic(title="Test", description="Desc", tags=["domain:legacy"])
+        update_tag("domain:legacy", archived=True, archived_reason="理由")
+
+        result = update_tag("domain:legacy", archived=False)
+        assert "error" not in result
+        assert result["archived"] is False
+        assert result["updated"] is True
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT archived_at, archived_reason FROM tags WHERE namespace='domain' AND name='legacy'"
+            ).fetchone()
+            assert row["archived_at"] is None
+            assert row["archived_reason"] is None
+        finally:
+            conn.close()
+
+    def test_unarchive_idempotent_no_change(self, temp_db):
+        """既に非archivedのタグへarchived=Falseを適用してもupdated: False（冪等）"""
+        add_topic(title="Test", description="Desc", tags=["domain:active"])
+
+        result = update_tag("domain:active", archived=False)
+        assert "error" not in result
+        assert result["archived"] is False
+        assert result["updated"] is False
+
+    def test_archived_tag_cannot_be_canonical_target(self, temp_db):
+        """archivedタグをcanonical先に指定するとARCHIVED_CANONICAL_INVALID（エッジケース#6）"""
+        add_topic(title="Test", description="Desc", tags=["domain:legacy", "domain:alias-src"])
+        update_tag("domain:legacy", archived=True, archived_reason="退役済み")
+
+        result = update_tag("domain:alias-src", canonical="domain:legacy")
+        assert "error" in result
+        assert result["error"]["code"] == "ARCHIVED_CANONICAL_INVALID"
+
+    def test_archived_tag_cannot_become_alias(self, temp_db):
+        """archivedタグ自身をcanonicalに設定（新規エイリアス化）するとARCHIVED_CANONICAL_INVALID"""
+        add_topic(title="Test", description="Desc", tags=["domain:legacy", "domain:target"])
+        update_tag("domain:legacy", archived=True, archived_reason="退役済み")
+
+        result = update_tag("domain:legacy", canonical="domain:target")
+        assert "error" in result
+        assert result["error"]["code"] == "ARCHIVED_CANONICAL_INVALID"
+
+    def test_archiving_canonical_target_with_dependents_is_blocked(self, temp_db):
+        """他タグのcanonical先になっているタグはarchived化できない"""
+        add_topic(title="Test", description="Desc", tags=["domain:target", "domain:alias-src"])
+        update_tag("domain:alias-src", canonical="domain:target")
+
+        result = update_tag("domain:target", archived=True, archived_reason="退役したい")
+        assert "error" in result
+        assert result["error"]["code"] == "ARCHIVED_CANONICAL_INVALID"
+
+    def test_archiving_alias_source_is_allowed(self, temp_db):
+        """エイリアス元（canonical_idを持つタグ自身）はarchived化できる（5. Edge cases参照）"""
+        add_topic(title="Test", description="Desc", tags=["domain:target", "domain:alias-src"])
+        update_tag("domain:alias-src", canonical="domain:target")
+
+        result = update_tag("domain:alias-src", archived=True, archived_reason="不要になったエイリアス")
+        assert "error" not in result
+        assert result["archived"] is True
+
+    def test_canonical_target_archived_via_bypass_keeps_existing_links_rejects_new(self, temp_db):
+        """canonical先が(直接SQLで)archivedになった状態でも既存の紐付けは維持され、
+        新規の紐付けだけ拒否される（5. Edge cases参照）。
+
+        update_tag経由ではdependentを持つタグをarchived化できない（他テストで確認済み）
+        ため、この状態は「migrationの手動適用や直接SQL操作」（設計§3.3が明示するAPI契約
+        外のケース）でのみ再現できる。ここではその状態を直接SQLで作り、
+        (1) archived化以前からの紐付けは読み出し側で壊れないこと
+        (2) archived化後の新規紐付け操作はAPI経由で拒否されること
+        の両方を固定する。
+        """
+        add_topic(
+            title="Test", description="Desc",
+            tags=["domain:target", "domain:alias-src", "domain:new-alias-attempt"],
+        )
+        update_tag("domain:alias-src", canonical="domain:target")
+
+        # alias-src経由で新規エンティティをタグ付け（canonical解決によりtarget側のtag_idに
+        # 紐付く）。この紐付けが「既存の紐付け」にあたる
+        tagged_topic = add_topic(title="TaggedViaAlias", description="Desc", tags=["domain:alias-src"])
+        assert "error" not in tagged_topic
+
+        conn = get_connection()
+        try:
+            target_row = conn.execute(
+                "SELECT id FROM tags WHERE namespace='domain' AND name='target'"
+            ).fetchone()
+            target_id = target_row["id"]
+
+            # update_tag経由では到達できない状態（dependent保持のままarchived化）を
+            # 直接SQLで再現する
+            conn.execute(
+                "UPDATE tags SET archived_at = CURRENT_TIMESTAMP, archived_reason = ? WHERE id = ?",
+                ("直接SQLでの退役", target_id),
+            )
+            conn.commit()
+
+            # (1) 既存の紐付け: alias-src経由でタグ付けしたエンティティは、archived化後も
+            # target(domain:target)への紐付けが読み出せる
+            linked = conn.execute(
+                "SELECT 1 FROM topic_tags WHERE topic_id = ? AND tag_id = ?",
+                (tagged_topic["topic_id"], target_id),
+            ).fetchone()
+            assert linked is not None
+        finally:
+            conn.close()
+
+        # (2) 新規の紐付け: archived化後に別タグをtargetへエイリアスしようとするとAPI経由では拒否
+        result = update_tag("domain:new-alias-attempt", canonical="domain:target")
+        assert "error" in result
+        assert result["error"]["code"] == "ARCHIVED_CANONICAL_INVALID"
+
+    def test_archived_state_preserved_after_rename(self, temp_db):
+        """archivedタグをrenameしてもarchived状態はtag_idベースで維持される（5. Edge cases参照）"""
+        add_topic(title="Test", description="Desc", tags=["domain:legacy"])
+        update_tag("domain:legacy", archived=True, archived_reason="退役済み")
+
+        rename_result = update_tag("domain:legacy", rename="domain:legacy-renamed")
+        assert "error" not in rename_result
+        assert rename_result["renamed_to"] == "domain:legacy-renamed"
+
+        # 新名で再度archived=Trueを呼ぶと冪等（archived状態が保持されている証拠）
+        result = update_tag("domain:legacy-renamed", archived=True)
+        assert "error" not in result
+        assert result["archived"] is True
+        assert result["updated"] is False
+        assert result["archived_reason"] == "退役済み"
+
+    def test_archived_at_removed_with_physical_tag_deletion(self, temp_db):
+        """タグ行が物理削除されればarchived_at列も一緒に消える（同一行の列のため。5. Edge cases参照）"""
+        from src.services.tag_service import get_archived_tags_for_strings
+
+        add_topic(title="Test", description="Desc", tags=["domain:legacy"])
+        update_tag("domain:legacy", archived=True, archived_reason="退役済み")
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT id FROM tags WHERE namespace='domain' AND name='legacy'"
+            ).fetchone()
+            tag_id = row["id"]
+            conn.execute("DELETE FROM tags WHERE id = ?", (tag_id,))
+            conn.commit()
+
+            remaining = conn.execute(
+                "SELECT * FROM tags WHERE id = ?", (tag_id,)
+            ).fetchone()
+            assert remaining is None
+
+            # 存在しなくなったタグ文字列を渡してもエラーにならず空扱いになる
+            archived = get_archived_tags_for_strings(conn, ["domain:legacy"])
+            assert archived == []
+        finally:
+            conn.close()
+
+    def test_notes_update_works_while_archived(self, temp_db):
+        """archived状態のタグでもarchivedを指定しないnotes更新は1コールで完結する"""
+        add_topic(title="Test", description="Desc", tags=["domain:legacy"])
+        update_tag("domain:legacy", archived=True, archived_reason="退役済み")
+
+        result = update_tag("domain:legacy", notes="archived中でも更新できる教訓")
+        assert "error" not in result
+        assert result["notes"] == "archived中でも更新できる教訓"
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT archived_at FROM tags WHERE namespace='domain' AND name='legacy'"
+            ).fetchone()
+            assert row["archived_at"] is not None
+        finally:
+            conn.close()
+
+
+# ========================================
 # 遭遇時注入テスト
 # ========================================
 
@@ -970,5 +1206,152 @@ class TestMultiSessionIsolation:
         try:
             collect_tag_notes_for_injection(conn, ["domain:test"])
             assert "domain:test" in _injected_tags["__default__"]
+        finally:
+            conn.close()
+
+
+# ========================================
+# archived タグの push 除外テスト
+# ========================================
+
+
+class TestArchivedPushExclusion:
+    """archived タグの tag notes 自動注入からの除外（エッジケース#1・#10・#11）"""
+
+    def test_archived_tag_notes_excluded_from_injection(self, temp_db):
+        """archived=Trueのタグはnotesがあっても注入結果に含まれない（エッジケース#1）"""
+        add_topic(title="Test", description="Desc", tags=["domain:legacy", "domain:active"])
+        update_tag("domain:legacy", "退役システムの教訓")
+        update_tag("domain:active", "現役の教訓")
+        update_tag("domain:legacy", archived=True, archived_reason="解体済み")
+
+        conn = get_connection()
+        try:
+            result = collect_tag_notes_for_injection(conn, ["domain:legacy", "domain:active"])
+            assert result is not None
+            tag_strs = {r["tag"] for r in result}
+            assert "domain:legacy" not in tag_strs
+            assert "domain:active" in tag_strs
+        finally:
+            conn.close()
+
+    def test_archived_only_tag_returns_none(self, temp_db):
+        """archivedタグしか渡さなければ None が返る（notes自体は存在するのに）"""
+        add_topic(title="Test", description="Desc", tags=["domain:legacy"])
+        update_tag("domain:legacy", "退役システムの教訓")
+        update_tag("domain:legacy", archived=True, archived_reason="解体済み")
+
+        conn = get_connection()
+        try:
+            result = collect_tag_notes_for_injection(conn, ["domain:legacy"])
+            assert result is None
+        finally:
+            conn.close()
+
+    def test_new_entity_with_archived_tag_still_excluded(self, temp_db):
+        """archivedタグを新規エンティティに付与しても、そのタグのnotesはpush除外され続ける（エッジケース#11）"""
+        add_topic(title="Test", description="Desc", tags=["domain:legacy"])
+        update_tag("domain:legacy", "退役システムの教訓")
+        update_tag("domain:legacy", archived=True, archived_reason="解体済み")
+
+        # archived後に新規エンティティへ同タグを付与（エラー・警告なし）
+        second = add_topic(title="Test2", description="別トピック", tags=["domain:legacy"])
+        assert "error" not in second
+
+        conn = get_connection()
+        try:
+            result = collect_tag_notes_for_injection(
+                conn, ["domain:legacy"], session_id="fresh-session"
+            )
+            assert result is None
+        finally:
+            conn.close()
+
+    def test_unregistered_archived_tag_unarchive_injects_in_same_session(self, temp_db):
+        """未参照のarchivedタグを同セッション内で解除 → 解除後の初回参照でnotesが注入される（エッジケース#10）"""
+        add_topic(title="Test", description="Desc", tags=["domain:legacy"])
+        update_tag("domain:legacy", "退役システムの教訓")
+        update_tag("domain:legacy", archived=True, archived_reason="解体済み")
+
+        conn = get_connection()
+        try:
+            # このセッションではまだ一度も domain:legacy を参照していない
+            update_tag("domain:legacy", archived=False)
+            result = collect_tag_notes_for_injection(
+                conn, ["domain:legacy"], session_id="session-fresh"
+            )
+            assert result is not None
+            assert result[0]["tag"] == "domain:legacy"
+        finally:
+            conn.close()
+
+    def test_checkin_excludes_archived_tag_notes(self, temp_db):
+        """check_in経由でもarchivedタグのnotesはtag_notesから除外される
+
+        checkin_service.pyは本設計では変更しない（collect_tag_notes_for_injection経由の
+        除外が自動的に効く前提）。実際にcheck_in()を呼んで観察する。
+        """
+        from src.services.checkin_service import check_in
+        from src.services.activity_service import add_activity
+
+        act = add_activity(
+            title="CheckinArchivedExclusion", description="Desc",
+            tags=["domain:legacy-checkin", "domain:active-checkin"],
+            check_in=False,
+        )
+        update_tag("domain:legacy-checkin", "退役システムの教訓")
+        update_tag("domain:active-checkin", "現役の教訓")
+        update_tag("domain:legacy-checkin", archived=True, archived_reason="解体済み")
+
+        result = check_in(act["activity_id"])
+        assert "error" not in result
+        tag_notes = result.get("tag_notes", [])
+        tag_strs = {n["tag"] for n in tag_notes}
+        assert "domain:legacy-checkin" not in tag_strs
+        assert "domain:active-checkin" in tag_strs
+
+    def test_checkin_response_keys_unchanged_by_archived(self, temp_db):
+        """archivedタグの有無でcheck_in応答のトップレベルキー集合が変わらない（新規フィールド追加なし）"""
+        from src.services.checkin_service import check_in
+        from src.services.activity_service import add_activity
+
+        act_plain = add_activity(
+            title="CheckinKeysPlain", description="Desc",
+            tags=["domain:checkin-keys-plain"], check_in=False,
+        )
+        act_archived = add_activity(
+            title="CheckinKeysArchived", description="Desc",
+            tags=["domain:checkin-keys-legacy"], check_in=False,
+        )
+        update_tag("domain:checkin-keys-legacy", archived=True, archived_reason="解体済み")
+
+        result_plain = check_in(act_plain["activity_id"])
+        result_archived = check_in(act_archived["activity_id"])
+        assert "error" not in result_plain
+        assert "error" not in result_archived
+        assert set(result_plain.keys()) == set(result_archived.keys())
+
+    def test_registered_archived_tag_unarchive_not_injected_same_session(self, temp_db):
+        """同セッション内で一度参照済みのarchivedタグを解除しても、そのセッションでは注入されない（エッジケース#10）"""
+        add_topic(title="Test", description="Desc", tags=["domain:legacy"])
+        update_tag("domain:legacy", "退役システムの教訓")
+        update_tag("domain:legacy", archived=True, archived_reason="解体済み")
+
+        conn = get_connection()
+        try:
+            # archived状態で一度参照（_injected_tagsに登録される。notesは除外され返らない）
+            first = collect_tag_notes_for_injection(
+                conn, ["domain:legacy"], session_id="session-same"
+            )
+            assert first is None
+
+            # 同セッション内でarchived解除
+            update_tag("domain:legacy", archived=False)
+
+            # 同じセッションで再参照 → 登録済みのためSELECT自体がスキップされ、注入されない
+            second = collect_tag_notes_for_injection(
+                conn, ["domain:legacy"], session_id="session-same"
+            )
+            assert second is None
         finally:
             conn.close()
