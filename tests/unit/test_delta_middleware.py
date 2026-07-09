@@ -86,6 +86,55 @@ async def test_check_in_records_baseline_and_scope(scope):
 
 
 @pytest.mark.asyncio
+async def test_add_activity_default_checkin_records_baseline(temp_db):
+    """add_activity(check_in=True、デフォルト)経由でもbaselineが記録されること。
+
+    check_in結果はresult["check_in_result"]にネストして返るため、ツール名
+    "check_in"の場合と同じ処理では拾えない。add_activityは"典型的な使い方"の
+    主要経路（新規アクティビティ作成時にそのまま着手する）のため、これが
+    未対応だとbaselineが一切セットされずデルタ通知が発動しない（PR #550レビュー指摘）。
+    """
+    topic = add_topic(title="Scope Topic via add_activity", description="d", tags=["domain:test"])
+    tid = topic["topic_id"]
+    middleware = DeltaNotificationMiddleware()
+
+    add_activity_result = add_activity(
+        title="Activity via default check_in", description="d", tags=["domain:test"],
+        related=[{"type": "topic", "ids": [tid]}],
+    )
+    aid = add_activity_result["activity_id"]
+
+    await middleware.on_call_tool(
+        _make_context("add_activity", "session-A"),
+        _call_next_returning(ToolResult(structured_content=add_activity_result)),
+    )
+
+    wm = _watermarks["session-A"]
+    assert wm["activity_id"] == aid
+    assert wm["topic_ids"] == [tid]
+
+
+@pytest.mark.asyncio
+async def test_add_activity_explicit_no_checkin_does_not_record_baseline(temp_db):
+    """add_activity(check_in=False)はcheck_in_resultを含まないため、baselineは記録されない。"""
+    topic = add_topic(title="Scope Topic no checkin", description="d", tags=["domain:test"])
+    tid = topic["topic_id"]
+    middleware = DeltaNotificationMiddleware()
+
+    add_activity_result = add_activity(
+        title="Activity without check_in", description="d", tags=["domain:test"],
+        related=[{"type": "topic", "ids": [tid]}], check_in=False,
+    )
+
+    await middleware.on_call_tool(
+        _make_context("add_activity", "session-B"),
+        _call_next_returning(ToolResult(structured_content=add_activity_result)),
+    )
+
+    assert "session-B" not in _watermarks
+
+
+@pytest.mark.asyncio
 async def test_cross_session_delta_injected_then_announce_once(scope):
     tid, aid = scope
     middleware = DeltaNotificationMiddleware()

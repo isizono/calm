@@ -30,6 +30,12 @@ _WATERMARKS_MAX_SESSIONS = 256
 
 _CHECK_IN_TOOL_NAMES = frozenset({"check_in"})
 
+# check_inの結果を直接ではなくネストしたキーで返すツール名 → キー名。
+# add_activity(check_in=True、デフォルト)はcheck_inの結果をトップレベルではなく
+# result["check_in_result"]に入れて返す（activity_service.add_activity参照）ため、
+# _CHECK_IN_TOOL_NAMESとは別扱いにしないとbaselineが一切セットされない。
+_CHECK_IN_NESTED_KEY_TOOL_NAMES: dict[str, str] = {"add_activity": "check_in_result"}
+
 # write系ツール名 → 対応するエンティティ種別
 _WRITE_TOOL_ENTITY_TYPES: dict[str, str] = {
     "add_decisions": "decision",
@@ -70,6 +76,8 @@ class DeltaNotificationMiddleware(Middleware):
         try:
             if tool_name in _CHECK_IN_TOOL_NAMES:
                 _handle_check_in(session_key, result)
+            elif tool_name in _CHECK_IN_NESTED_KEY_TOOL_NAMES:
+                _handle_check_in(session_key, result, nested_key=_CHECK_IN_NESTED_KEY_TOOL_NAMES[tool_name])
             elif tool_name in _WRITE_TOOL_ENTITY_TYPES:
                 _handle_write(session_key, tool_name, result)
             else:
@@ -88,15 +96,24 @@ def _session_key(context: MiddlewareContext) -> str:
     return session_id or "__default__"
 
 
-def _handle_check_in(session_key: str, result: Any) -> None:
+def _handle_check_in(session_key: str, result: Any, nested_key: str | None = None) -> None:
     """check_in結果からscope（topic_ids/activity_id）を読み取り、baselineで初期化する。
 
-    activityのid_rawが取れない場合（error応答等）は何もしない
-    （直前のwatermarkがあればそのまま残す）。
+    nested_keyが指定された場合、structured_content自体ではなく
+    structured_content[nested_key]をcheck_in結果として扱う（add_activity(check_in=True)
+    がcheck_in結果をresult["check_in_result"]にネストして返すため）。
+
+    activityのid_rawが取れない場合（error応答・nested_keyの値が辞書でない＝
+    add_activity(check_in=False)相当等）は何もしない（直前のwatermarkがあれば
+    そのまま残す）。
     """
     structured = getattr(result, "structured_content", None)
     if not structured:
         return
+    if nested_key is not None:
+        structured = structured.get(nested_key)
+        if not isinstance(structured, dict):
+            return
     activity = structured.get("activity")
     if not isinstance(activity, dict):
         return
