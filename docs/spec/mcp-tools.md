@@ -339,7 +339,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 | --- | --- | --- | --- | --- |
 | activity_id | int | yes | - | アクティビティID |
 
-**返り値**: `{coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary}`。
+**返り値**: `{coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary}`。セッション内でcheck_inを初めて呼んだときのみ`flow_guide`（コンテキスト取得の手がかり）も含まれる。
 **副作用**: statusがin_progress以外なら自動的にin_progressに更新。
 **呼び出し基準**: 既存アクティビティに関連する作業を始めるとき。summaryフィールドはそのまま出力することが推奨される。
 
