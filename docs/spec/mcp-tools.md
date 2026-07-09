@@ -369,9 +369,9 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 
 ### 2.21 add_habit / get_habits / update_habit
 
-- `add_habit(content: string) -> dict`: habitを登録。新規habitは`trigger_mode='intelligently'`（マニフェスト表示のみ）で作成され、SessionStartで全件注入されるのは`'always'`のみ（セッション途中の登録は次セッション以降に有効）。常時注入層への昇格は`update_habit(trigger_mode='always')`で行い、後述のゲートを通過する必要がある。
-- `get_habits(active: bool = true, habit_id?: int) -> dict`: 登録済みhabit一覧。既定でactive=1のみ返す。無効化済みも含む全件が欲しいときは`active=false`を渡す。SessionStartで全文注入されるのは`trigger_mode='always'`のみで、`'intelligently'`はタイトルのみのマニフェスト表示になる。`habit_id`を渡すとその1件だけを本文付きで取得でき、intelligentlyな振る舞いの詳細を引くときに使う（取得と同時に`last_recalled_at`が更新される）。
-- `update_habit(habit_id: int, content?: string, active?: bool, trigger_mode?: string, description?: string) -> dict`: active=Falseで無効化。trigger_modeは`'always'`（全文常時注入）/`'intelligently'`（マニフェストのみ表示、詳細は`get_habits(habit_id=...)`でon-demand取得）のいずれか。`'intelligently'`から`'always'`への昇格には、contentが100字未満であること、かつ昇格後のalwaysプール合計文字数が昇格前の合計以下または定員（`CCM_ALWAYS_POOL_CAPACITY`、既定1,500字）以下のいずれかを満たすことを要求するゲートがある（違反時はVALIDATION_ERROR）。降格・無効化は無条件で許可される。descriptionはintelligently層のマニフェスト表示に使う要旨。
+- `add_habit(content: string) -> dict`: habitを登録。新規habitは`trigger_mode='intelligently'`（マニフェスト表示のみ）で作成され、`~/.claude/rules`配下の自動生成ファイル経由で常時配信されるのは`'always'`のみ（セッション途中の登録は次セッション起動から反映）。常時配信層への昇格は`update_habit(trigger_mode='always')`で行い、後述のゲートを通過する必要がある。
+- `get_habits(active: bool = true, habit_id?: int) -> dict`: 登録済みhabit一覧。既定でactive=1のみ返す。無効化済みも含む全件が欲しいときは`active=false`を渡す。`~/.claude/rules`配下の自動生成ファイルで全文配信されるのは`trigger_mode='always'`のみで、`'intelligently'`はタイトルのみのマニフェスト表示になる。`habit_id`を渡すとその1件だけを本文付きで取得でき、intelligentlyな振る舞いの詳細を引くときに使う（取得と同時に`last_recalled_at`が更新される）。
+- `update_habit(habit_id: int, content?: string, active?: bool, trigger_mode?: string, description?: string) -> dict`: active=Falseで無効化。trigger_modeは`'always'`（`~/.claude/rules`配下の自動生成ファイルで全文常時配信）/`'intelligently'`（マニフェストのみ表示、詳細は`get_habits(habit_id=...)`でon-demand取得）のいずれか。`'intelligently'`から`'always'`への昇格には、contentが100字未満であること、かつ昇格後のalwaysプール合計文字数が昇格前の合計以下または定員（`CCM_ALWAYS_POOL_CAPACITY`、既定1,500字）以下のいずれかを満たすことを要求するゲートがある（違反時はVALIDATION_ERROR）。降格・無効化は無条件で許可される。descriptionはintelligently層のマニフェスト表示に使う要旨。
 
 ### 2.22 add_pin / remove_pin
 
@@ -602,7 +602,7 @@ cc-memoryが扱うエンティティの内部表現。詳細スキーマは `doc
 
 ### 4.1 check-in 先行が前提のツール
 - `add_decisions` の hints はharness_service経由で「整合性確認」「pin見直し」などを示唆する。直前にcheck-inしていない場合、文脈不足のためhintsを過信しない方がよい。
-- `check_in` を経由しないアクティビティへの操作（`update_activity` 等）は可能だが、その場合 tag_notes の自動注入は行われない。habitsのうち`trigger_mode='always'`のものはSessionStart時に全文注入されるため、check_inの有無に関係なく反映される（`'intelligently'`はタイトルのみのマニフェスト表示にとどまる）。
+- `check_in` を経由しないアクティビティへの操作（`update_activity` 等）は可能だが、その場合 tag_notes の自動注入は行われない。habitsのうち`trigger_mode='always'`のものは`~/.claude/rules`配下の自動生成ファイル経由でセッション起動時に配信されるため、check_inの有無に関係なく反映される（`'intelligently'`はタイトルのみのマニフェスト表示にとどまる）。
 
 ### 4.2 取り消し済みエンティティの扱い
 `retract` で論理削除されたdecision/logは、`search` / `get_logs` / `get_decisions` でデフォルト除外される。`include_retracted=true` で明示的に含められる。

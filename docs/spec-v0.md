@@ -224,7 +224,7 @@ cc-memoryに関する議論を始めるとき、「これはどの層の話か�
 - follow_up nudge: add_decisionsを呼んだが補完エンティティ（topic/logs/activity/material/tag_notes）が更新されてない時に発火
 - recompose hint: 素タグに対するrecompose-context実行のメンテナンスナッジ
 
-**habits:** 全セッション共通の行動ルール。タグやファイルに依存しない横断ルール。SessionStart時、`trigger_mode='always'`は全文注入、`'intelligently'`はタイトルのみのマニフェスト表示（詳細は`get_habits(habit_id=...)`でon-demand取得）。
+**habits:** 全セッション共通の行動ルール。タグやファイルに依存しない横断ルール。正はDBで、`trigger_mode='always'`は`~/.claude/rules`配下の自動生成ファイル経由で全文配信、`'intelligently'`はタイトルのみのマニフェスト表示（詳細は`get_habits(habit_id=...)`でon-demand取得）。SessionStart hookは投影ファイルの鮮度検証と縮退フォールバックのみを担う。
 
 **tag-notes:** タグに紐づく教訓・運用ルール。そのタグに遭遇したとき（セッション内初回）にAIへ自動注入される。CLAUDE.mdのタグ版。
 
@@ -250,7 +250,7 @@ cc-memoryに関する議論を始めるとき、「これはどの層の話か�
 #### skillsとの三層責務分担
 
 - **guide = pull型説明**: ユーザーが「使い方教えて」とpullしたとき発動
-- **SessionStart = 静的認知**: 毎セッション同じものを注入（habits + アクティビティ一覧 + 鮮度警告）
+- **SessionStart = 静的認知**: 毎セッション同じものを注入（habits投影ファイルの鮮度検証 + アクティビティ一覧 + 鮮度警告）
 - **nudge = 文脈依存の機会提示**: シグナル検出 → 提案（pin提案、recompose提案、記録忘れ警告）
 
 **やらないとどうなる:** guideに動的情報を入れすぎる、SessionStartにcontext依存情報を入れて毎回スキャンする、nudgeで静的情報を再注入する、といった責務混線で注入予算が浪費される。
@@ -389,7 +389,7 @@ session_id を捨てる heartbeat、events.jsonl と relay の二系統真実源
 
 **tag-notes**: タグに紐づく教訓・運用ルール。タグ遭遇時にAIへ自動注入される。
 
-**habits**: 全セッション共通の行動ルール。SessionStart時、`trigger_mode='always'`は全文注入、`'intelligently'`はタイトルのみのマニフェスト表示。
+**habits**: 全セッション共通の行動ルール。正はDBで、`trigger_mode='always'`は`~/.claude/rules`配下の自動生成ファイル経由で全文配信、`'intelligently'`はタイトルのみのマニフェスト表示。
 
 **check-in**: アクティビティに紐づく文脈を一括取得する作業開始の入り口。
 
