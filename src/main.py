@@ -201,6 +201,10 @@ mcp = FastMCP("cc-memory", instructions=build_instructions())
 from src.services.signal_middleware import SignalCaptureMiddleware
 mcp.add_middleware(SignalCaptureMiddleware())
 
+# check_in以降の関連topicスコープの鮮度差分をツールレスポンスに注入する middleware を登録する
+from src.middleware.delta_middleware import DeltaNotificationMiddleware
+mcp.add_middleware(DeltaNotificationMiddleware())
+
 # サーバー起動時刻（/health で uptime 算出に使用）
 _SERVER_STARTED_AT = datetime.now(timezone.utc)
 
@@ -1081,7 +1085,8 @@ def check_in(
             docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
 
     Returns:
-        check-in結果（coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary）
+        check-in結果（coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary）。
+        セッション内でcheck_inを初めて呼んだときのみflow_guide（コンテキスト取得の手がかり）も含まれる
     """
     flavor = _normalize_flavor(flavor)
     try:

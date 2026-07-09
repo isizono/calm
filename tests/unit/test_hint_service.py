@@ -17,6 +17,7 @@ from src.services.hint_service import (
     MARKER_RECOMPOSE_BOOTSTRAP,
     MARKER_RECOMPOSE_DELTA,
     MARKER_RECOMPOSE_GENERIC,
+    RECOMPOSE_AUTOTRIGGER_GUARD,
     RECOMPOSE_BOOTSTRAP_THRESHOLD,
     RECOMPOSE_DELTA_THRESHOLD,
     _is_marker_active,
@@ -105,6 +106,14 @@ class TestRecomposeBootstrap:
         assert hints[0]["severity"] == "info"
         assert str(RECOMPOSE_BOOTSTRAP_THRESHOLD) in hints[0]["message"]
 
+    def test_message_includes_autotrigger_guard(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        for i in range(RECOMPOSE_BOOTSTRAP_THRESHOLD):
+            add_decision(decision=f"d{i}", reason="r", topic_id=topic["topic_id"])
+
+        hints = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        assert RECOMPOSE_AUTOTRIGGER_GUARD in hints[0]["message"]
+
     def test_silent_below_threshold(self, temp_db):
         topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
         for i in range(RECOMPOSE_BOOTSTRAP_THRESHOLD - 1):
@@ -158,6 +167,21 @@ class TestRecomposeDelta:
         assert hints[0]["type"] == "recompose_delta"
         assert hints[0]["delivery_hint"] == "immediate"
         assert str(RECOMPOSE_DELTA_THRESHOLD) in hints[0]["message"]
+
+    def test_message_includes_autotrigger_guard(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        mat = add_material(
+            title="m", content="c", tags=[DOMAIN_TAG], source="s",
+        )
+        add_pin("tag", DOMAIN_TAG, "material", mat["material_id"])
+        _set_material_updated_at(mat["material_id"], "2024-06-01 00:00:00")
+
+        for i in range(RECOMPOSE_DELTA_THRESHOLD):
+            d = add_decision(decision=f"d{i}", reason="r", topic_id=topic["topic_id"])
+            _set_decision_created_at(d["decision_id"], "2024-07-01 00:00:00")
+
+        hints = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        assert RECOMPOSE_AUTOTRIGGER_GUARD in hints[0]["message"]
 
     def test_silent_below_threshold(self, temp_db):
         topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])

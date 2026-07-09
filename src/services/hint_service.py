@@ -133,11 +133,19 @@ HINT_LOGS_SPARSE_MESSAGE = (
 )
 
 
+RECOMPOSE_AUTOTRIGGER_GUARD = (
+    "別セッションで実施しても構わない旨をユーザーに伝えてください。"
+    "ユーザーがこのセッションでの実施を明示的に求めない限り、"
+    "このセッションでrecompose-context skillを自発的に実行してはいけません。"
+)
+
+
 def _recompose_bootstrap_message(tag_name: str, total_count: int) -> str:
     return (
         f"tag「{tag_name}」にdecisionが{total_count}件蓄積していますが、"
         f"統合material（recomposed material）がありません。"
         f"recompose-context skillでの初回整理をユーザーに提案してください。"
+        f"{RECOMPOSE_AUTOTRIGGER_GUARD}"
         f"今は都合が悪い場合、tag notesに"
         f"「{MARKER_RECOMPOSE_BOOTSTRAP}-until:YYYY-MM-DD」（任意の未来日）を"
         f"追記すると、その日まで一時的に黙らせられます。恒久的に不要なら日付なしの"
@@ -150,6 +158,7 @@ def _recompose_delta_message(tag_name: str, delta_count: int) -> str:
         f"tag「{tag_name}」はrecomposed materialの最終更新以降にdecisionが"
         f"{delta_count}件増えています。recompose-context skillでのメンテを"
         f"ユーザーに提案してください。"
+        f"{RECOMPOSE_AUTOTRIGGER_GUARD}"
         f"今は都合が悪い場合、tag notesに"
         f"「{MARKER_RECOMPOSE_DELTA}-until:YYYY-MM-DD」（任意の未来日）を"
         f"追記すると、その日まで一時的に黙らせられます。恒久的に不要なら日付なしの"
