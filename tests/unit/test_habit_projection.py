@@ -4,6 +4,8 @@ tests/conftest.py の autouse fixture (_isolate_habits_rules_projection) が
 投影ファイルの書き込み先をテストごとの一時パスへ差し替えている。実際の
 ~/.claude/rules/cc-memory-habits.md には一切書き込まない。
 """
+import os
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -91,6 +93,50 @@ class TestRenderBody:
             conn.close()
 
         assert "（現在有効な habits はない）" in body
+
+    def test_multiline_content_normalized_to_single_line(self, temp_db):
+        """always層のcontentに改行が含まれても箇条書き1行に正規化されること。
+
+        正規化前は「- 1行目\n2行目」のように2行目以降が箇条書きプレフィックス
+        なしで出力され、投影ファイルのMarkdown構造が崩れていた。
+        """
+        conn = get_connection()
+        try:
+            _clear_seed_habits(conn)
+        finally:
+            conn.close()
+
+        _add_always("1行目\n2行目\n3行目")
+
+        conn = get_connection()
+        try:
+            body = habit_projection.render_body(conn)
+        finally:
+            conn.close()
+
+        assert "- 1行目 2行目 3行目" in body
+        assert "\n2行目" not in body
+        assert "\n3行目" not in body
+
+    def test_multiline_title_normalized_in_manifest(self, temp_db):
+        """intelligently層マニフェストのtitle（content先頭50文字）に改行が
+        含まれても箇条書き1行に正規化されること。
+        """
+        conn = get_connection()
+        try:
+            _clear_seed_habits(conn)
+        finally:
+            conn.close()
+
+        habit_id = add_habit("マニフェスト\n改行タイトル用habit")["habit_id"]
+
+        conn = get_connection()
+        try:
+            body = habit_projection.render_body(conn)
+        finally:
+            conn.close()
+
+        assert f"- マニフェスト 改行タイトル用habit (habit_id={habit_id})" in body
 
     def test_deterministic_same_db_state(self, temp_db):
         conn = get_connection()
@@ -227,6 +273,56 @@ class TestExport:
 
         assert result["status"] == "failed"
         assert "message" in result
+
+    def test_concurrent_export_from_multiple_threads_does_not_corrupt_file(
+        self, temp_db, projection_path, monkeypatch
+    ):
+        """同一プロセス内の複数スレッドから export() を並行呼び出ししても、
+        一時ファイル名の衝突による書き込み失敗・破損が起きないこと。
+
+        本サーバーはFastMCP上でsyncなツール関数を提供しており、複数セッションから
+        のツール呼び出しが同一プロセス内で並行実行されうる。修正前は一時ファイル名が
+        os.getpid()のみで構成され、同一プロセス内の全スレッドで同じ値になるため、
+        2スレッドがほぼ同時にexportすると一方の os.replace が既に相手に消費された
+        一時ファイルを対象にして FileNotFoundError で失敗しうる。os.replace の直前に
+        barrierで両スレッドの足並みを揃えることで、そのレースを決定論的に再現する。
+        """
+        add_habit("並行書き込みテスト用habit")
+
+        barrier = threading.Barrier(2)
+        original_replace = os.replace
+
+        def synced_replace(src, dst):
+            # 両スレッドがtmpファイルへのwrite_textを終えた後、os.replace直前で
+            # 足並みを揃える。tmpファイル名が衝突していれば、一方のreplaceが
+            # 相手に消費された後の実体無きパスを掴んで失敗する。
+            barrier.wait(timeout=5)
+            return original_replace(src, dst)
+
+        monkeypatch.setattr(habit_projection.os, "replace", synced_replace)
+
+        results = []
+        errors = []
+
+        def worker():
+            try:
+                results.append(habit_projection.export(force=True))
+            except Exception as e:  # pragma: no cover - 発生したら即バグ
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert errors == []
+        assert all(r["status"] == "written" for r in results), results
+        assert list(projection_path.parent.glob(".cc-memory-habits-*.tmp")) == []
+
+        state = habit_projection.read_file_state(projection_path)
+        assert state.status == "ok"
+        assert "並行書き込みテスト用habit" in projection_path.read_text(encoding="utf-8")
 
 
 class TestKillSwitch:
