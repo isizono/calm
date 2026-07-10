@@ -152,6 +152,24 @@ class TestUpdateTagArchived:
         assert "error" in result
         assert result["error"]["code"] == "ORPHAN_ARCHIVED_REASON"
 
+    def test_archived_reason_100_chars_ok(self, temp_db):
+        """archived_reasonが100文字ちょうどはOK"""
+        add_topic(title="Test", description="Desc", tags=["domain:legacy"])
+
+        reason_100 = "a" * 100
+        result = update_tag("domain:legacy", archived=True, archived_reason=reason_100)
+        assert "error" not in result
+        assert result["archived_reason"] == reason_100
+
+    def test_archived_reason_too_long(self, temp_db):
+        """archived_reasonが101文字でCHECK制約エラー"""
+        add_topic(title="Test", description="Desc", tags=["domain:legacy"])
+
+        reason_101 = "a" * 101
+        result = update_tag("domain:legacy", archived=True, archived_reason=reason_101)
+        assert "error" in result
+        assert result["error"]["code"] == "DATABASE_ERROR"
+
     def test_unarchive_clears_reason(self, temp_db):
         """archived=Falseでarchived_at・archived_reasonが両方NULLに戻る（エッジケース#5）"""
         add_topic(title="Test", description="Desc", tags=["domain:legacy"])

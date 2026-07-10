@@ -834,8 +834,8 @@ def update_tag(
     他タグのcanonical先になっているタグはarchived化できない（先にエイリアスを
     解除すること）。
 
-    archived_reason: 退役理由の短いテキスト。archived=Trueと同時指定のときのみ有効
-    （単独指定はORPHAN_ARCHIVED_REASONエラー）。
+    archived_reason: 退役理由の短いテキスト（最大100文字）。archived=Trueと同時指定の
+    ときのみ有効（単独指定はORPHAN_ARCHIVED_REASONエラー）。
 
     Args:
         tag: 対象タグ（例: "domain:cc-memory", "hooks"）
@@ -844,7 +844,7 @@ def update_tag(
         rename: 新しいタグ名（例: "domain:hooks"）
         description: タグの短い説明文（最大100文字）
         archived: Trueで退役、Falseで解除
-        archived_reason: 退役理由（archived=Trueと同時指定のときのみ有効）
+        archived_reason: 退役理由（最大100文字。archived=Trueと同時指定のときのみ有効）
 
     Returns:
         更新結果

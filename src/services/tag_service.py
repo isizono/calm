@@ -810,10 +810,11 @@ def update_tag(
         description: タグの短い説明文（最大100文字）。空文字はNULLに正規化される。
         archived: Trueで退役、Falseで解除。既に同状態のときは変更せず updated: False
                   を返す（冪等）。解除時は archived_reason も自動的にNULLへ戻る。
-        archived_reason: 退役理由の短いテキスト。archived=True と同時指定のときのみ有効。
-                         既に archived 状態のタグへ archived=True を再適用した場合、
-                         このパラメータで理由を書き換えることはできない
-                         （一度 archived=False で解除してから再設定する）。
+        archived_reason: 退役理由の短いテキスト（最大100文字）。archived=True と
+                         同時指定のときのみ有効。既に archived 状態のタグへ
+                         archived=True を再適用した場合、このパラメータで理由を
+                         書き換えることはできない（一度 archived=False で解除して
+                         から再設定する）。
 
     Returns:
         成功時: {"tag": str, "notes": str, "updated": True} (notes更新時)
