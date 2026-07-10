@@ -10,7 +10,7 @@ import tempfile
 import pytest
 
 from src.config import ARCHIVED_DEMOTION_FACTOR
-from src.db import init_database, get_connection
+from src.db import init_database
 from src.services import search_service
 from src.services.search_service import _apply_archived_demotion
 from src.services.tag_service import update_tag
