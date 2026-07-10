@@ -37,7 +37,7 @@ def stub_stages(monkeypatch):
         "_retrieve": MagicMock(return_value=retrieval),
         "_merge": MagicMock(return_value=merged_results),
         "_rerank": MagicMock(return_value=merged_results),
-        "_demote_archived": MagicMock(return_value=merged_results),
+        "_demote_archived": MagicMock(return_value=(merged_results, {})),
         "_slice": MagicMock(return_value=(sliced_results, 1)),
         "_decorate": MagicMock(return_value=(sliced_results, nearby_tags)),
         "get_connection": MagicMock(return_value=MagicMock()),
@@ -60,12 +60,17 @@ def test_orchestrator_runs_stages_in_order(stub_stages):
         assert stub_stages[name].call_count == 1, f"{name} not called once"
 
     # レスポンス dict のキーは契約通り
-    assert set(result.keys()) == {"results", "total_count", "search_methods_used", "degraded", "nearby_tags"}
+    assert set(result.keys()) == {
+        "results", "total_count", "search_methods_used", "degraded",
+        "nearby_tags", "archived_tags",
+    }
     assert result["total_count"] == 1
     assert result["search_methods_used"] == ["fts5"]
     # stub_stages の _retrieve は vec=None を返すため degraded は True
     assert result["degraded"] is True
     assert result["nearby_tags"] == [{"tag": "x", "co_count": 3}]
+    # _demote_archived のスタブは archived_lookup={} を返すため空配列
+    assert result["archived_tags"] == []
 
 
 def test_orchestrator_opens_conn_once_and_closes_it(stub_stages):

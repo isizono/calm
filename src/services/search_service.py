@@ -1269,7 +1269,7 @@ def _apply_recency_boost(results: list[dict], now: datetime | None = None) -> No
     results.sort(key=lambda x: x["final_score"], reverse=True)
 
 
-def _apply_archived_demotion(results: list[dict]) -> None:
+def _apply_archived_demotion(results: list[dict]) -> dict[str, Optional[str]]:
     """archived タグしか付いていないアイテムを下位表示に降格する（in-place）。
 
     各結果の item["tags"]（_attach_tags 済み前提）を見て、1つでも非 archived タグを
@@ -1278,9 +1278,15 @@ def _apply_archived_demotion(results: list[dict]) -> None:
     全タグが archived の場合のみ final_score に ARCHIVED_DEMOTION_FACTOR を乗算し、
     archived / archived_tags / score_breakdown.archived_factor を付与する。
     確定後、final_score 降順で再ソートする。
+
+    Returns:
+        archived_lookup: results から集めた全タグ文字列のうち archived なものだけを
+            tag -> archived_reason で引ける dict。呼出元がこれを再利用すれば、
+            offset/limit 切り出し後のトップレベル archived_tags サマリを
+            同じテーブルへの再クエリなしで組み立てられる。
     """
     if not results:
-        return
+        return {}
 
     all_tag_strings: set[str] = set()
     for item in results:
@@ -1310,6 +1316,7 @@ def _apply_archived_demotion(results: list[dict]) -> None:
             item["archived_tags"] = []
 
     results.sort(key=lambda x: x["final_score"], reverse=True)
+    return archived_lookup
 
 
 def _compute_adaptive_weights(fts_count: int, vec_count: int) -> tuple[float, float]:
@@ -1744,7 +1751,7 @@ def _rerank(ctx: SearchContext, merged: list[dict]) -> list[dict]:
     return merged
 
 
-def _demote_archived(merged: list[dict]) -> list[dict]:
+def _demote_archived(merged: list[dict]) -> tuple[list[dict], dict[str, Optional[str]]]:
     """archived 降格ステージ。tags を付与した上で降格判定・再ソートする。
 
     降格判定には各アイテムのタグ集合が要る。tags 付与（`_attach_tags`）を
@@ -1752,10 +1759,14 @@ def _demote_archived(merged: list[dict]) -> list[dict]:
     final_score が変わった結果が切り出しに反映される必要があるため
     （切り出し後に降格すると、切り出し境界をまたぐ入れ替わりが起こらない）。
     以降の `_decorate` は tags が付与済みの前提で動く。
+
+    Returns:
+        (merged, archived_lookup) — archived_lookup は `_apply_archived_demotion` が
+        構築した tag -> archived_reason の dict をそのまま呼出元に返す。
     """
     _attach_tags(merged)
-    _apply_archived_demotion(merged)
-    return merged
+    archived_lookup = _apply_archived_demotion(merged)
+    return merged, archived_lookup
 
 
 def _slice(ctx: SearchContext, results: list[dict]) -> tuple[list[dict], int]:
@@ -1900,6 +1911,10 @@ def search(
         （ベクトル検索を実際に試した上で利用不可だった場合のみ degraded: True が付く。1文字
         以下キーワードなど、ベクトル検索を試す前に確定するバリデーションエラーには degraded
         キーが無い）。
+
+        archived_tags: この応答の results に含まれる全アイテムのタグのうちarchivedなものの
+        集約（{tag, archived_reason}の配列。該当なしでも空配列で常に付く）。バリデーション
+        エラー等の早期returnではキー自体が無い。
     """
     try:
         keywords, entity_type, domain, date_after, date_before = _validate(
@@ -1920,12 +1935,18 @@ def search(
             degraded = diagnostics["degraded"]
             merged = _merge(ctx, retrieval, adaptive_weights)
             merged = _rerank(ctx, merged)
-            merged = _demote_archived(merged)
+            merged, archived_lookup = _demote_archived(merged)
             sliced, total_count = _slice(ctx, merged)
             results_snapshot = _build_results_snapshot(sliced)
             sliced, nearby_tags = _decorate(ctx, sliced, query_tag_ids)
         finally:
             conn.close()
+
+        sliced_tags = sorted({t for item in sliced for t in item.get("tags", [])})
+        archived_tags_summary = [
+            {"tag": t, "archived_reason": archived_lookup[t]}
+            for t in sliced_tags if t in archived_lookup
+        ]
 
         _record_search_telemetry_async(
             query=keyword,
@@ -1952,6 +1973,7 @@ def search(
             "search_methods_used": retrieval["methods_used"],
             "degraded": degraded,
             "nearby_tags": nearby_tags,
+            "archived_tags": archived_tags_summary,
         }
 
     except _SearchEarlyReturn as early:

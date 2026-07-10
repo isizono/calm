@@ -703,7 +703,9 @@ def search(
         _apply_flavor_to_snippets(result.get("results", []), flavor)
     if "error" not in result and tags:
         _maybe_inject_tag_notes(result, tags)
-    if "error" not in result:
+    if "error" not in result and "archived_tags" not in result:
+        # search_service.search()が既にarchived_lookupを再利用してarchived_tagsを
+        # 付与済みの場合はここでの再クエリを行わない（早期return等で未付与の場合のみ補う）
         all_tags = _collect_result_tags(result.get("results", []))
         _attach_archived_tags_summary(result, all_tags)
     return result
