@@ -4,7 +4,7 @@ import sqlite3
 from typing import Optional
 from src.db import get_connection, row_to_dict
 from src.services.citations_service import upsert_citations_for_owner_with_conn
-from src.services.readable_id import apply_readable_id_inplace
+from src.services.readable_id import strip_entity_id_inplace
 from src.services.budget_service import count_entities_for_topics
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.tag_service import (
@@ -288,7 +288,7 @@ def get_logs(
                 }
                 if log.get("retracted_at"):
                     item["retracted_at"] = log["retracted_at"]
-                apply_readable_id_inplace(item, "log")
+                strip_entity_id_inplace(item)
                 logs.append(item)
 
             total_count = _count_logs_for_topics(conn, [topic_id], log_retract_filter)
@@ -363,7 +363,7 @@ def get_logs(
                 }
                 if log.get("retracted_at"):
                     item["retracted_at"] = log["retracted_at"]
-                apply_readable_id_inplace(item, "log")
+                strip_entity_id_inplace(item)
                 logs.append(item)
 
             total_count = _count_logs_for_topics(conn, topic_ids, log_retract_filter)

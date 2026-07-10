@@ -20,6 +20,20 @@ _OW_ENV_KEYS = (
 
 
 @pytest.fixture(autouse=True)
+def _isolate_habits_rules_projection(tmp_path, monkeypatch):
+    """habits投影ファイルの書き込み先をテストごとの一時パスへ差し替える。
+
+    add_habit / update_habit / add_decisions はDBコミット成功後に
+    ~/.claude/rules 配下の投影ファイルへの書き出しを自動で試みる。これが無いと、
+    これらを呼ぶ既存テストが軒並み実際の ~/.claude/rules/cc-memory-habits.md を
+    上書きしてしまう。
+    """
+    import src.config as config
+
+    monkeypatch.setattr(config, "HABITS_RULES_PATH", str(tmp_path / "cc-memory-habits.md"))
+
+
+@pytest.fixture(autouse=True)
 def _clear_ow_env(monkeypatch):
     """ow関連の環境変数をテストごとに除去する。
 

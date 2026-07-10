@@ -3,7 +3,7 @@ import sqlite3
 from typing import Optional
 from src.db import get_connection, row_to_dict
 from src.services.citations_service import upsert_citations_for_owner_with_conn
-from src.services.readable_id import apply_readable_id_inplace
+from src.services.readable_id import strip_entity_id_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.tag_service import (
     validate_and_parse_tags,
@@ -57,6 +57,9 @@ def add_decisions(items: list[dict]) -> dict:
         precedent（コンパクト形）をechoする。節はすべて任意で、書式ゆれ等のwarningが
         あってもdecision作成自体は拒否しない（soft validation）。warningがあればcreated
         要素に precedent_warnings（文字列のリスト）を付ける。
+        propagate_to type='habit' が1件以上成功していれば~/.claude/rules配下への
+        投影ファイル書き出しを試み、失敗時のみ "rules_projection" キーが付く（decision
+        作成自体の成否には影響しない）。
     """
     # バリデーション: 1 <= len(items) <= 10
     if not items:
@@ -76,6 +79,7 @@ def add_decisions(items: list[dict]) -> dict:
 
     created = []
     errors = []
+    habit_propagated = False
 
     conn = get_connection()
     try:
@@ -165,6 +169,7 @@ def add_decisions(items: list[dict]) -> dict:
                         if p_type == "habit":
                             p_id = _add_habit_with_conn(conn, p_content)
                             propagation_result = {"status": "ok", "type": "habit", "id": p_id}
+                            habit_propagated = True
                         elif p_type == "tag_note":
                             p_tag = propagate_to.get("tag")
                             if not p_tag:
@@ -282,7 +287,13 @@ def add_decisions(items: list[dict]) -> dict:
                 c.pop("tags", None)
                 c.pop("created_at", None)
 
-        return {"created": created, "errors": errors}
+        response = {"created": created, "errors": errors}
+
+        if habit_propagated:
+            from src.services import habit_projection
+            habit_projection.export_and_annotate(response)
+
+        return response
 
     except Exception as e:
         conn.rollback()
@@ -330,7 +341,7 @@ def _build_decision_item(
     if dec.get("retracted_at"):
         item["retracted_at"] = dec["retracted_at"]
     attach_precedent(item, dec.get("reason"))
-    apply_readable_id_inplace(item, "decision")
+    strip_entity_id_inplace(item)
     return item
 
 

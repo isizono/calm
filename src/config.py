@@ -1,5 +1,6 @@
 """cc-memory 設定モジュール。環境変数で定数をオーバーライド可能にする。"""
 import os
+from pathlib import Path
 
 # --- Database ---
 # CCM_DB_PATH を優先、なければ既存の DISCUSSION_DB_PATH にフォールバック
@@ -40,6 +41,19 @@ SYNC_POLICY: str | None = os.environ.get("CCM_SYNC_POLICY") or None  # 空文字
 # 昇格する際、昇格後のプール合計文字数がこの値と昇格前合計の大きい方を超えると
 # 拒否する（プールが定員超過中でも、合計を増やさない変更は許可するラチェット）
 ALWAYS_POOL_CAPACITY: int = int(os.environ.get("CCM_ALWAYS_POOL_CAPACITY", "1500"))
+
+# habits DBから ~/.claude/rules 配下へ投影する自動生成ファイルの書き込み先パス
+HABITS_RULES_PATH: str = os.environ.get("CCM_HABITS_RULES_PATH") or str(
+    Path.home() / ".claude" / "rules" / "cc-memory-habits.md"
+)
+# 投影のkill switch。"0"で無効化すると、以後の投影はプレースホルダ本文で
+# 上書きされたまま停止する（stale化したファイルが注入され続けるのを防ぐ）
+HABITS_RULES_EXPORT_ENABLED: bool = os.environ.get("CCM_HABITS_RULES_EXPORT", "1") != "0"
+# intelligently層マニフェストの独立予算（件数）。importance_score降順で選抜し、
+# 超過分は本文を切断せず件数行1行に縮退する
+PROJECTION_MANIFEST_MAX_ITEMS: int = int(
+    os.environ.get("CCM_PROJECTION_MANIFEST_MAX_ITEMS", "30")
+)
 
 # --- Direction Layer ---
 # domainごとのactiveな方向性decision(layer:direction)件数がこの値以上になったら

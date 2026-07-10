@@ -3,7 +3,7 @@ import re
 import sqlite3
 from src.db import get_connection, row_to_dict
 from src.services.citations_service import upsert_citations_for_owner_with_conn
-from src.services.readable_id import apply_readable_id_inplace
+from src.services.readable_id import strip_entity_id_inplace
 from src.services.embedding_service import (
     build_embedding_text,
     generate_and_store_embedding,
@@ -377,7 +377,7 @@ def get_topics(
                     "tags": tags_map.get(topic["id"], []),
                     "created_at": topic["created_at"],
                 }
-                apply_readable_id_inplace(item, "topic")
+                strip_entity_id_inplace(item)
                 topics.append(item)
 
             return {"topics": topics, "total_count": total_count}

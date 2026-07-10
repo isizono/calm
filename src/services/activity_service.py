@@ -6,7 +6,7 @@ from typing import Optional
 
 from src.db import get_connection, row_to_dict
 from src.services.citations_service import upsert_citations_for_owner_with_conn
-from src.services.readable_id import apply_readable_id_inplace
+from src.services.readable_id import strip_entity_id_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.relation_service import _add_relation_with_conn, _validate_targets
 from src.services.relay.entity_publish import publish_entity_event_with_conn
@@ -408,7 +408,7 @@ def get_activities(
                 "is_heartbeat_active": bool(activity["is_heartbeat_active"]),
                 "orch_managed": bool(activity["orch_managed"]),
             }
-            apply_readable_id_inplace(item, "activity")
+            strip_entity_id_inplace(item)
             activities.append(item)
 
         return {"activities": activities, "total_count": total_count}

@@ -3,7 +3,7 @@ watch-tags: domain:cc-memory
 watch-direction: true
 watch-migrations: true
 last-synced: 2026-07-10
-last-synced-migration: 0059
+last-synced-migration: 0061
 -->
 
 # cc-memory DBスキーマ v0
@@ -73,6 +73,7 @@ erDiagram
     text trigger_mode
     real importance_score
     timestamp last_recalled_at
+    text status
   }
 ```
 
@@ -257,17 +258,22 @@ erDiagram
 | created_at | TEXT | YES | `datetime('now')` | — | 作成時刻 |
 | description | TEXT | NO | `''` | — | 要旨（intelligently層のマニフェスト表示に使う） |
 | trigger_mode | TEXT | NO | `'always'` | CHECK IN ('always', 'intelligently') | SessionStartでの注入方式。alwaysは全文、intelligentlyはタイトルのみのマニフェストにとどめ詳細はon-demand取得 |
-| importance_score | REAL | NO | `1.0` | — | 優先度スコア |
+| importance_score | REAL | NO | `1.0` | CHECK IN (1, 2, 3) | 優先度（1=critical/2=important/3=default）。intelligently層マニフェストのソートに使う |
 | last_recalled_at | TIMESTAMP | YES | — | — | `get_habits(habit_id=...)` でon-demand取得された直近時刻 |
+| status | TEXT | NO | `'active'` | CHECK IN ('active', 'archived') | 棚卸し状態。active とは独立した軸で、マニフェスト取得は両方をANDで絞り込む |
 
 補足:
 - 0019 で reminders として新設、0025 で habits にリネーム
 - タグ・リレーション・検索インデックス・embedding のいずれにも接続しない。事実上「設定/ポリシー」として独立
 - 0058 で description / trigger_mode / importance_score / last_recalled_at を追加し、SessionStart全件全文注入からalways/intelligently分割注入に変更
+- 0059 で status を追加し、intelligently層マニフェストのソートに importance_score（昇順、1が最優先）を使うよう変更
+- 0060 で、0058時点の既定値1.0が新しい意味づけ（1=critical）と衝突しないよう
+  trigger_mode='intelligently'かつimportance_score=1.0（未設定）のhabitを3（default）に
+  補正したうえで、importance_scoreにCHECK(IN (1, 2, 3))を追加（テーブル再構築）
 
 インデックス: なし
 
-関連 migration: 0019 / 0022（初期データ追加）/ 0025 / 0058（description / trigger_mode / importance_score / last_recalled_at 追加）
+関連 migration: 0019 / 0022（初期データ追加）/ 0025 / 0058（description / trigger_mode / importance_score / last_recalled_at 追加）/ 0059（status 追加）/ 0060（importance_score データ補正 + CHECK制約追加）
 
 ### 3.7 tags
 
@@ -290,14 +296,14 @@ namespace + name による分類タグ。
 - 0014 で `scope` を素タグに降格、`mode` → `intent` リネーム、CHECK = `('', 'domain', 'intent')`
 - 0012 で notes、0015（重複番号片方）で canonical_id、0024 で description 追加
 - 0039（重複番号片方 `extend_tag_namespace`）で namespace CHECK 制約自体を撤廃し、任意 TEXT を受け付ける形に再構築（妥当性は Python 層で検証）
-- 0059 で archived_at / archived_reason 追加。tag notes の自動注入からは除外しつつ、
+- 0061 で archived_at / archived_reason 追加。tag notes の自動注入からは除外しつつ、
   search 等の取得系では削除せずラベル付きで下位表示するための退役フラグ
 
 インデックス:
 - 暗黙インデックス `UNIQUE(namespace, name)`
-- `idx_tags_archived_at` ON `tags(archived_at)`（`archived_at IS NOT NULL` の部分インデックス、0059）
+- `idx_tags_archived_at` ON `tags(archived_at)`（`archived_at IS NOT NULL` の部分インデックス、0061）
 
-関連 migration: 0009 / 0012 / 0014 / 0015_tag_canonical / 0024 / 0039_extend_tag_namespace / 0059_add_tag_archived
+関連 migration: 0009 / 0012 / 0014 / 0015_tag_canonical / 0024 / 0039_extend_tag_namespace / 0061_add_tag_archived
 
 ### 3.8 topic_tags / activity_tags / decision_tags / log_tags / material_tags
 
@@ -763,7 +769,9 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0048_session_identity | session_identity テーブル新設 + decisions/discussion_logs/discussion_topics/activities/materials に caller_session_id 追加（0057で全て削除） |
 | 0057_drop_capability_gating | session_identity テーブル削除 + decisions/discussion_logs/discussion_topics/activities/materials の caller_session_id カラム削除（role-based capability gating機構の呼び出し元解体に伴う撤去） |
 | 0058_add_habit_trigger_mode | habits に description / trigger_mode / importance_score / last_recalled_at を追加（スキーマ変更のみ、データ移行なし。trigger_modeの切り替えはupdate_habit経由で個別適用） |
-| 0059_add_tag_archived | tags に archived_at（退役日時）/ archived_reason（退役理由、100文字以内のCHECK制約付き）を追加、archived_at 用の部分インデックス idx_tags_archived_at を新設（スキーマ変更のみ、データ移行なし） |
+| 0059_add_habit_status | habits に status（'active'/'archived'、既定'active'）を追加 |
+| 0060_add_habit_importance_score_check | trigger_mode='intelligently'かつimportance_score=1.0(未設定)のhabitを3に補正したうえで、importance_scoreにCHECK(IN (1, 2, 3))を追加（テーブル再構築） |
+| 0061_add_tag_archived | tags に archived_at（退役日時）/ archived_reason（退役理由、100文字以内のCHECK制約付き）を追加、archived_at 用の部分インデックス idx_tags_archived_at を新設（スキーマ変更のみ、データ移行なし） |
 
 重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。
 

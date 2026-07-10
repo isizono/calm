@@ -15,7 +15,7 @@ from sqlite_vec import serialize_float32
 
 from src.db import execute_query, get_connection, get_db_path, row_to_dict
 from src.services import embedding_service, precedent_pure
-from src.services.readable_id import apply_readable_id_inplace
+from src.services.readable_id import strip_entity_id_inplace
 from src.services.supersede_service import get_superseded_by_batch
 from src.services.tag_service import (
     get_archived_tags_for_strings,
@@ -1833,10 +1833,9 @@ def _decorate(
 
     nearby_tags = _compute_nearby_tags(sliced, query_tag_ids, ctx.offset)
 
-    # readable_id 化: 各結果の id を削除し、整数 id を id_raw に退避する
-    # type フィールドは適用前に確定済みなのでそのまま参照する
+    # id を削除し、整数 id を id_raw に退避する
     for item in sliced:
-        apply_readable_id_inplace(item, item["type"])
+        strip_entity_id_inplace(item)
 
     return sliced, nearby_tags
 
@@ -2191,7 +2190,7 @@ def _format_row(
             "tags": tags,
             "created_at": data["created_at"],
         }
-        apply_readable_id_inplace(result, "topic")
+        strip_entity_id_inplace(result)
         return result
     elif type_name == 'decision':
         display_title = data.get("title") or (data["decision"] or "")[:50]
@@ -2213,7 +2212,7 @@ def _format_row(
         result["is_superseded"] = superseded_by is not None
         result["superseded_by"] = superseded_by
         precedent_pure.attach_precedent(result, data.get("reason"))
-        apply_readable_id_inplace(result, "decision")
+        strip_entity_id_inplace(result)
         return result
     elif type_name == 'activity':
         result = {
@@ -2225,7 +2224,7 @@ def _format_row(
             "created_at": data["created_at"],
             "updated_at": data["updated_at"],
         }
-        apply_readable_id_inplace(result, "activity")
+        strip_entity_id_inplace(result)
         return result
     elif type_name == 'log':
         title = data["title"]
@@ -2241,7 +2240,7 @@ def _format_row(
         }
         if data.get("retracted_at"):
             result["retracted_at"] = data["retracted_at"]
-        apply_readable_id_inplace(result, "log")
+        strip_entity_id_inplace(result)
         return result
     elif type_name == 'material':
         result = {
@@ -2253,9 +2252,7 @@ def _format_row(
             "created_at": data["created_at"],
             "hint": "contentの先頭1-2文は内容の説明・要約にしてください（check-in時にsnippetとして表示されます）",
         }
-        apply_readable_id_inplace(
-            result, "material", id_key="material_id"
-        )
+        strip_entity_id_inplace(result, id_key="material_id")
         return result
     return data
 

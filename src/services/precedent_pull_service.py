@@ -28,7 +28,7 @@ from src.services.embedding_service import encode_query
 from src.services.material_service import SNIPPET_MAX_LEN
 from src.services.precedent_cluster_service import expand_decision_cluster
 from src.services.precedent_pure import parse_precedent_sections
-from src.services.readable_id import apply_readable_id_inplace
+from src.services.readable_id import strip_entity_id_inplace
 from src.services.supersede_service import compute_supersede_info_batch, get_superseded_by_batch
 from src.services.tag_service import get_effective_tags_batch_by_ids
 
@@ -147,7 +147,7 @@ def _build_index_item(
     mids = material_ids_by_decision.get(did)
     if mids:
         item["material_ids"] = sorted(mids)
-    apply_readable_id_inplace(item, "decision")
+    strip_entity_id_inplace(item)
     return item
 
 
@@ -178,7 +178,7 @@ def _build_full_item(
     mids = material_ids_by_decision.get(did)
     if mids:
         item["material_ids"] = sorted(mids)
-    apply_readable_id_inplace(item, "decision")
+    strip_entity_id_inplace(item)
     return item
 
 
@@ -359,7 +359,7 @@ def collect_precedents_with_conn(
             }
             if include_materials:
                 entry["materials"] = []
-            apply_readable_id_inplace(entry, "topic", id_key="topic_id")
+            strip_entity_id_inplace(entry, id_key="topic_id")
             topics_out.append(entry)
         return {
             "topics": topics_out,
@@ -411,7 +411,7 @@ def collect_precedents_with_conn(
             topic_entry["materials"] = _build_topic_materials(
                 conn, topic_id, topic_dec_ids, materials_by_id, material_ids_by_decision
             )
-        apply_readable_id_inplace(topic_entry, "topic", id_key="topic_id")
+        strip_entity_id_inplace(topic_entry, id_key="topic_id")
         topics_out.append(topic_entry)
 
     index_only = len(all_ids) - len(full_ids)
@@ -467,7 +467,7 @@ def pull_precedents(
             routing = route_topics(context, k, conn)
 
         for candidate in routing["candidates"]:
-            apply_readable_id_inplace(candidate, "topic", id_key="topic_id")
+            strip_entity_id_inplace(candidate, id_key="topic_id")
 
         selected_ids = [c["topic_id_raw"] for c in routing["candidates"] if c.get("selected")]
 

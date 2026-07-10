@@ -60,6 +60,36 @@ class TestAddHabit:
         assert "error" not in result2
         assert result1["habit_id"] != result2["habit_id"]
 
+    @pytest.mark.parametrize("importance_score", [0, 4, -1, 1.5])
+    def test_add_habit_invalid_importance_score(self, temp_db, importance_score):
+        """importance_scoreが1/2/3以外だとバリデーションエラーになる"""
+        result = add_habit("不正なスコアの振る舞い", importance_score=importance_score)
+
+        assert "error" in result
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+        assert "importance_score" in result["error"]["message"]
+
+    @pytest.mark.parametrize("importance_score", [1, 2, 3])
+    def test_add_habit_valid_importance_score(self, temp_db, importance_score):
+        """importance_scoreが1/2/3ならエラーにならない"""
+        result = add_habit("有効なスコアの振る舞い", importance_score=importance_score)
+
+        assert "error" not in result
+
+    def test_add_habit_invalid_status(self, temp_db):
+        """statusがactive/archived以外だとバリデーションエラーになる"""
+        result = add_habit("不正なstatusの振る舞い", status="deleted")
+
+        assert "error" in result
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+        assert "status" in result["error"]["message"]
+
+    def test_add_habit_status_archived(self, temp_db):
+        """status='archived'を指定して追加できる"""
+        result = add_habit("最初からアーカイブする振る舞い", status="archived")
+
+        assert "error" not in result
+
 
 class TestGetHabits:
     """get_habitsのテスト"""
@@ -266,6 +296,70 @@ class TestUpdateHabit:
         assert result["trigger_mode"] == "intelligently"
         assert result["description"] == "要旨テキスト"
 
+    def test_update_description_too_long(self, temp_db):
+        """descriptionが100字を超えるとバリデーションエラーになる"""
+        created = add_habit("要旨が長すぎる振る舞い")
+        habit_id = created["habit_id"]
+
+        result = update_habit(habit_id, description="あ" * 101)
+
+        assert "error" in result
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+        assert "description" in result["error"]["message"]
+
+    def test_update_description_exactly_max_length(self, temp_db):
+        """descriptionがちょうど100字ならエラーにならない"""
+        created = add_habit("要旨がちょうど上限の振る舞い")
+        habit_id = created["habit_id"]
+
+        result = update_habit(habit_id, description="あ" * 100)
+
+        assert "error" not in result
+        assert result["description"] == "あ" * 100
+
+    @pytest.mark.parametrize("importance_score", [0, 4, -1])
+    def test_update_invalid_importance_score(self, temp_db, importance_score):
+        """importance_scoreが1/2/3以外だとバリデーションエラーになる"""
+        created = add_habit("スコア更新対象の振る舞い")
+        habit_id = created["habit_id"]
+
+        result = update_habit(habit_id, importance_score=importance_score)
+
+        assert "error" in result
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+        assert "importance_score" in result["error"]["message"]
+
+    def test_update_importance_score_valid(self, temp_db):
+        """importance_scoreを1/2/3に更新できる"""
+        created = add_habit("スコア更新対象の振る舞い")
+        habit_id = created["habit_id"]
+
+        result = update_habit(habit_id, importance_score=1)
+
+        assert "error" not in result
+        assert result["importance_score"] == 1
+
+    def test_update_invalid_status(self, temp_db):
+        """statusがactive/archived以外だとバリデーションエラーになる"""
+        created = add_habit("status更新対象の振る舞い")
+        habit_id = created["habit_id"]
+
+        result = update_habit(habit_id, status="deleted")
+
+        assert "error" in result
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+        assert "status" in result["error"]["message"]
+
+    def test_update_status_to_archived(self, temp_db):
+        """status='archived'に更新できる"""
+        created = add_habit("アーカイブする振る舞い")
+        habit_id = created["habit_id"]
+
+        result = update_habit(habit_id, status="archived")
+
+        assert "error" not in result
+        assert result["status"] == "archived"
+
 
 class TestTriggerModeSplit:
     """trigger_mode（always/intelligently）分割のテスト"""
@@ -357,8 +451,8 @@ class TestTriggerModeSplit:
         finally:
             conn.close()
 
-    def test_manifest_orders_by_importance_score_desc(self, temp_db):
-        """importance_score降順（同値はid昇順）で並ぶ"""
+    def test_manifest_orders_by_importance_score_asc(self, temp_db):
+        """importance_score昇順（同値はid昇順）で並び、1(critical)が先頭に出る"""
         conn = get_connection()
         try:
             low_id = add_habit("低優先度")["habit_id"]
@@ -366,7 +460,7 @@ class TestTriggerModeSplit:
             mid_id = add_habit("中優先度")["habit_id"]
             conn.executemany(
                 "UPDATE habits SET trigger_mode = 'intelligently', importance_score = ? WHERE id = ?",
-                [(0.5, low_id), (2.0, high_id), (1.0, mid_id)],
+                [(3, low_id), (1, high_id), (2, mid_id)],
             )
             conn.commit()
 
@@ -374,6 +468,71 @@ class TestTriggerModeSplit:
             manifest_ids = [m["habit_id"] for m in manifest]
 
             assert manifest_ids == [high_id, mid_id, low_id]
+        finally:
+            conn.close()
+
+    def test_manifest_orders_by_id_when_importance_score_tied(self, temp_db):
+        """importance_scoreが同値のときはid昇順で並ぶ"""
+        conn = get_connection()
+        try:
+            first_id = add_habit("先に追加")["habit_id"]
+            second_id = add_habit("後に追加")["habit_id"]
+            conn.executemany(
+                "UPDATE habits SET trigger_mode = 'intelligently', importance_score = ? WHERE id = ?",
+                [(2, first_id), (2, second_id)],
+            )
+            conn.commit()
+
+            manifest = list_intelligently_habit_manifest_with_conn(conn)
+            manifest_ids = [m["habit_id"] for m in manifest]
+
+            assert manifest_ids == [first_id, second_id]
+        finally:
+            conn.close()
+
+    def test_manifest_includes_importance_label(self, temp_db):
+        """importance_scoreからcritical/important/defaultラベルが導出される"""
+        conn = get_connection()
+        try:
+            critical_id = add_habit("critical振る舞い")["habit_id"]
+            important_id = add_habit("important振る舞い")["habit_id"]
+            default_id = add_habit("default振る舞い")["habit_id"]
+            conn.executemany(
+                "UPDATE habits SET trigger_mode = 'intelligently', importance_score = ? WHERE id = ?",
+                [(1, critical_id), (2, important_id), (3, default_id)],
+            )
+            conn.commit()
+
+            manifest = list_intelligently_habit_manifest_with_conn(conn)
+            labels = {m["habit_id"]: m["importance_label"] for m in manifest}
+
+            assert labels[critical_id] == "critical"
+            assert labels[important_id] == "important"
+            assert labels[default_id] == "default"
+        finally:
+            conn.close()
+
+    def test_manifest_excludes_archived_status(self, temp_db):
+        """status='archived'の振る舞いはマニフェストから除外される"""
+        conn = get_connection()
+        try:
+            archived_id = add_habit("アーカイブ済み")["habit_id"]
+            active_id = add_habit("現役")["habit_id"]
+            conn.execute(
+                "UPDATE habits SET trigger_mode = 'intelligently', status = 'archived' WHERE id = ?",
+                (archived_id,),
+            )
+            conn.execute(
+                "UPDATE habits SET trigger_mode = 'intelligently' WHERE id = ?",
+                (active_id,),
+            )
+            conn.commit()
+
+            manifest = list_intelligently_habit_manifest_with_conn(conn)
+            manifest_ids = [m["habit_id"] for m in manifest]
+
+            assert archived_id not in manifest_ids
+            assert active_id in manifest_ids
         finally:
             conn.close()
 

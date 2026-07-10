@@ -1,10 +1,10 @@
-"""migration 0059_add_tag_archived のテスト
+"""migration 0061_add_tag_archived のテスト
 
-0059適用後に tags テーブルへ archived_at / archived_reason の2列と、
+0061適用後に tags テーブルへ archived_at / archived_reason の2列と、
 archived_at 用の部分インデックス idx_tags_archived_at が追加され、
 archived_reason の長さ制約（100文字以内）が effectiveであることを確認する。
 
-0059はスキーマ変更のみで、既存タグの archived_at / archived_reason を書き換える
+0061はスキーマ変更のみで、既存タグの archived_at / archived_reason を書き換える
 データ移行を含まない（既存タグは全てNULLのまま非archived扱いになる）。
 """
 import os
@@ -22,7 +22,7 @@ from src.services.tag_service import _injected_tags
 
 @pytest.fixture
 def migrated_db():
-    """全migration（0059含む）を適用済みのテスト用DBを提供する。"""
+    """全migration（0061含む）を適用済みのテスト用DBを提供する。"""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
         os.environ["DISCUSSION_DB_PATH"] = db_path
@@ -34,8 +34,8 @@ def migrated_db():
 
 
 @pytest.fixture
-def db_before_0059():
-    """0058までのmigrationを適用したDBを提供する。0059の挙動を分離検証するために使う。"""
+def db_before_0061():
+    """0058までのmigrationを適用したDBを提供する。0061の挙動を分離検証するために使う。"""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
         os.environ["DISCUSSION_DB_PATH"] = db_path
@@ -44,9 +44,9 @@ def db_before_0059():
         backend = _VecSQLiteBackend(parsed, default_migration_table)
         backend.init_database()
         all_migs = read_migrations(str(MIGRATIONS_DIR))
-        pre_0059 = MigrationList([m for m in all_migs if m.id < "0059"])
+        pre_0061 = MigrationList([m for m in all_migs if m.id < "0061"])
         with backend.lock():
-            backend.apply_migrations(pre_0059)
+            backend.apply_migrations(pre_0061)
 
         _injected_tags.clear()
         yield db_path
@@ -54,14 +54,14 @@ def db_before_0059():
             del os.environ["DISCUSSION_DB_PATH"]
 
 
-def _apply_migration_0059(db_path: str) -> None:
-    """db_pathに対してmigration 0059のみを適用する。"""
+def _apply_migration_0061(db_path: str) -> None:
+    """db_pathに対してmigration 0061のみを適用する。"""
     parsed = parse_uri(f"sqlite:///{db_path}")
     backend = _VecSQLiteBackend(parsed, default_migration_table)
     all_migs = read_migrations(str(MIGRATIONS_DIR))
-    only_0059 = MigrationList([m for m in all_migs if m.id.startswith("0059")])
+    only_0061 = MigrationList([m for m in all_migs if m.id.startswith("0061")])
     with backend.lock():
-        backend.apply_migrations(only_0059)
+        backend.apply_migrations(only_0061)
 
 
 def _get_column_names(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -85,39 +85,39 @@ def _insert_tag(conn: sqlite3.Connection, namespace: str, name: str) -> int:
 
 
 class TestColumnsAndIndexAdded:
-    """0059適用後にarchived_at/archived_reason列とpartial indexが追加されていることの確認"""
+    """0061適用後にarchived_at/archived_reason列とpartial indexが追加されていることの確認"""
 
-    def test_tags_has_new_columns_after_0059(self, migrated_db):
-        """migration 0059 適用後、tags テーブルに archived_at / archived_reason が存在する"""
+    def test_tags_has_new_columns_after_0061(self, migrated_db):
+        """migration 0061 適用後、tags テーブルに archived_at / archived_reason が存在する"""
         conn = get_connection()
         try:
             column_names = _get_column_names(conn, "tags")
             for col in ("archived_at", "archived_reason"):
-                assert col in column_names, f"tags.{col} が 0059 適用後に存在しない"
+                assert col in column_names, f"tags.{col} が 0061 適用後に存在しない"
         finally:
             conn.close()
 
-    def test_tags_has_no_new_columns_before_0059(self, db_before_0059):
+    def test_tags_has_no_new_columns_before_0061(self, db_before_0061):
         """0058 適用時点では archived_at / archived_reason が存在しない（前提確認）"""
         conn = get_connection()
         try:
             column_names = _get_column_names(conn, "tags")
             for col in ("archived_at", "archived_reason"):
                 assert col not in column_names, (
-                    f"0059 適用前の tags に {col} 列が既に存在している"
+                    f"0061 適用前の tags に {col} 列が既に存在している"
                 )
         finally:
             conn.close()
 
-    def test_partial_index_exists_after_0059(self, migrated_db):
-        """migration 0059 適用後、idx_tags_archived_at インデックスが存在する"""
+    def test_partial_index_exists_after_0061(self, migrated_db):
+        """migration 0061 適用後、idx_tags_archived_at インデックスが存在する"""
         conn = get_connection()
         try:
             assert "idx_tags_archived_at" in _get_index_names(conn, "tags")
         finally:
             conn.close()
 
-    def test_partial_index_absent_before_0059(self, db_before_0059):
+    def test_partial_index_absent_before_0061(self, db_before_0061):
         """0058 適用時点では idx_tags_archived_at インデックスが存在しない（前提確認）"""
         conn = get_connection()
         try:
@@ -126,10 +126,10 @@ class TestColumnsAndIndexAdded:
             conn.close()
 
     def test_default_values_for_new_rows(self, migrated_db):
-        """0059 適用後、archived_at/archived_reasonを指定せず INSERT した行は両方NULL"""
+        """0061 適用後、archived_at/archived_reasonを指定せず INSERT した行は両方NULL"""
         conn = get_connection()
         try:
-            tag_id = _insert_tag(conn, "domain", "new-tag-for-0059-test")
+            tag_id = _insert_tag(conn, "domain", "new-tag-for-0061-test")
             conn.commit()
             row = conn.execute(
                 "SELECT archived_at, archived_reason FROM tags WHERE id = ?",
@@ -172,10 +172,10 @@ class TestColumnsAndIndexAdded:
 
 
 class TestNoDataMutation:
-    """0059がスキーマ変更のみで、既存タグのarchived_at/archived_reasonを書き換えないことの確認"""
+    """0061がスキーマ変更のみで、既存タグのarchived_at/archived_reasonを書き換えないことの確認"""
 
-    def test_existing_tags_remain_non_archived_after_0059(self, db_before_0059):
-        """0058時点で存在するタグは、idにかかわらず0059適用後も全てarchived_at=NULLのまま"""
+    def test_existing_tags_remain_non_archived_after_0061(self, db_before_0061):
+        """0058時点で存在するタグは、idにかかわらず0061適用後も全てarchived_at=NULLのまま"""
         conn = get_connection()
         try:
             ids = [
@@ -186,7 +186,7 @@ class TestNoDataMutation:
         finally:
             conn.close()
 
-        _apply_migration_0059(db_before_0059)
+        _apply_migration_0061(db_before_0061)
 
         conn = get_connection()
         try:
@@ -199,7 +199,7 @@ class TestNoDataMutation:
             assert len(rows) == len(ids)
             for row in rows:
                 assert row["archived_at"] is None, (
-                    f"tag id={row['id']} が 0059 適用だけで archived_at を "
+                    f"tag id={row['id']} が 0061 適用だけで archived_at を "
                     "書き換えられている（データ移行を含まない前提に反する）"
                 )
                 assert row["archived_reason"] is None

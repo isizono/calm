@@ -1,6 +1,6 @@
--- Migration 0059: タグの退役(archived)状態を管理する列を追加
+-- Migration 0061: タグの退役(archived)状態を管理する列を追加
 --
--- depends: 0058_add_habit_trigger_mode
+-- depends: 0060_add_habit_importance_score_check
 --
 -- 背景:
 --   タグに退役フラグを持たせ、tag notes の自動注入からは完全除外しつつ、
