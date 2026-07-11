@@ -111,21 +111,30 @@ class TestGateConditions:
         )
         assert _build_relay_inbox_section(None) == ""
 
-    def test_returns_empty_when_inbox_file_not_created(self, monkeypatch, relay_configured):
-        """identity解決・relay構成済みでも、このidentity宛のinbox fileが
-        一度も作られていなければ空文字を返す（touchしない・zero-cost維持）"""
+    def test_shows_monitor_instruction_when_inbox_file_not_created(
+        self, monkeypatch, relay_configured
+    ):
+        """identity解決・relay構成済みなら、このidentity宛のinbox fileが
+        一度も作られていなくてもMonitor監視指示を返す（新着を取りこぼさないため
+        既存メッセージの有無を問わず常時発火する。ファイル自体はtouchしない）"""
         monkeypatch.setattr(relay_identity, "get_relay_identity", lambda: "never-messaged")
-        assert _build_relay_inbox_section(None) == ""
+        result = _build_relay_inbox_section(None)
+        assert "Monitorツール" in result
+        assert "未読" not in result
         assert not relay_inbox.inbox_path("never-messaged").exists()
 
 
 class TestIdentityResolved:
-    def test_returns_empty_when_unread_is_zero(self, monkeypatch, relay_configured):
-        """未読0件はinbox fileが存在してもコンテキスト消費ゼロ（空文字）を返す"""
+    def test_shows_monitor_instruction_only_when_unread_is_zero(
+        self, monkeypatch, relay_configured
+    ):
+        """未読0件でもMonitor監視指示は返す（未読N件の報告行のみ省く）"""
         monkeypatch.setattr(relay_identity, "get_relay_identity", lambda: "stable-id-1")
         _make_inbox_file(relay_configured, "stable-id-1")
         monkeypatch.setattr(relay_inbox, "count_unread", lambda session_id: 0)
-        assert _build_relay_inbox_section(None) == ""
+        result = _build_relay_inbox_section(None)
+        assert "Monitorツール" in result
+        assert "未読" not in result
 
     def test_shows_count_when_unread_is_positive(self, monkeypatch, relay_configured):
         """未読>0のときは「未読N件 → relay_receiveで消化」+ Monitor監視指示の2行以内"""
