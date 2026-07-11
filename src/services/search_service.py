@@ -18,6 +18,7 @@ from src.services import embedding_service, precedent_pure
 from src.services.readable_id import strip_entity_id_inplace
 from src.services.supersede_service import get_superseded_by_batch
 from src.services.tag_service import (
+    get_archived_tags_for_strings,
     get_entity_tags,
     get_entity_tags_batch,
     get_effective_tags,
@@ -76,7 +77,7 @@ assert all(
     for i in range(len(ADAPTIVE_RRF_THRESHOLDS) - 1)
 ), "ADAPTIVE_RRF_THRESHOLDS must be sorted in ascending order of threshold"
 
-from src.config import RECENCY_DECAY_FLOOR, RECENCY_DECAY_RATE
+from src.config import ARCHIVED_DEMOTION_FACTOR, RECENCY_DECAY_FLOOR, RECENCY_DECAY_RATE
 
 # Query Expansion パラメータ
 QE_DISTANCE_THRESHOLD = 0.3   # コサイン距離。これ未満のタグを拡張候補とする
@@ -1268,6 +1269,56 @@ def _apply_recency_boost(results: list[dict], now: datetime | None = None) -> No
     results.sort(key=lambda x: x["final_score"], reverse=True)
 
 
+def _apply_archived_demotion(results: list[dict]) -> dict[str, Optional[str]]:
+    """archived タグしか付いていないアイテムを下位表示に降格する（in-place）。
+
+    各結果の item["tags"]（_attach_tags 済み前提）を見て、1つでも非 archived タグを
+    持てば対象外（archived_factor=1.0）。タグを1つも持たないアイテムも対象外
+    （空リストに対する all() の真値化を避けるため明示的にガードする）。
+    全タグが archived の場合のみ final_score に ARCHIVED_DEMOTION_FACTOR を乗算し、
+    archived / archived_tags / score_breakdown.archived_factor を付与する。
+    確定後、final_score 降順で再ソートする。
+
+    Returns:
+        archived_lookup: results から集めた全タグ文字列のうち archived なものだけを
+            tag -> archived_reason で引ける dict。呼出元がこれを再利用すれば、
+            offset/limit 切り出し後のトップレベル archived_tags サマリを
+            同じテーブルへの再クエリなしで組み立てられる。
+    """
+    if not results:
+        return {}
+
+    all_tag_strings: set[str] = set()
+    for item in results:
+        all_tag_strings.update(item.get("tags", []))
+
+    archived_lookup: dict[str, Optional[str]] = {}
+    if all_tag_strings:
+        conn = get_connection()
+        try:
+            archived_rows = get_archived_tags_for_strings(conn, list(all_tag_strings))
+        finally:
+            conn.close()
+        archived_lookup = {row["tag"]: row["archived_reason"] for row in archived_rows}
+
+    for item in results:
+        tags = item.get("tags") or []
+        bd = item.setdefault("score_breakdown", {})
+        if tags and all(t in archived_lookup for t in tags):
+            bd["archived_factor"] = ARCHIVED_DEMOTION_FACTOR
+            item["final_score"] = item["final_score"] * ARCHIVED_DEMOTION_FACTOR
+            item["score"] = item["final_score"]
+            item["archived"] = True
+            item["archived_tags"] = sorted(tags)
+        else:
+            bd["archived_factor"] = 1.0
+            item["archived"] = False
+            item["archived_tags"] = []
+
+    results.sort(key=lambda x: x["final_score"], reverse=True)
+    return archived_lookup
+
+
 def _compute_adaptive_weights(fts_count: int, vec_count: int) -> tuple[float, float]:
     """FTS/ベクトルのヒット数比率に応じてRRF重みを動的に算出する。
 
@@ -1700,6 +1751,24 @@ def _rerank(ctx: SearchContext, merged: list[dict]) -> list[dict]:
     return merged
 
 
+def _demote_archived(merged: list[dict]) -> tuple[list[dict], dict[str, Optional[str]]]:
+    """archived 降格ステージ。tags を付与した上で降格判定・再ソートする。
+
+    降格判定には各アイテムのタグ集合が要る。tags 付与（`_attach_tags`）を
+    offset/limit 切り出し（`_slice`）より前のこの段階で行う理由は、降格で
+    final_score が変わった結果が切り出しに反映される必要があるため
+    （切り出し後に降格すると、切り出し境界をまたぐ入れ替わりが起こらない）。
+    以降の `_decorate` は tags が付与済みの前提で動く。
+
+    Returns:
+        (merged, archived_lookup) — archived_lookup は `_apply_archived_demotion` が
+        構築した tag -> archived_reason の dict をそのまま呼出元に返す。
+    """
+    _attach_tags(merged)
+    archived_lookup = _apply_archived_demotion(merged)
+    return merged, archived_lookup
+
+
 def _slice(ctx: SearchContext, results: list[dict]) -> tuple[list[dict], int]:
     """offset + limit で切り出す。total_count は切り出し前の件数。"""
     total_count = len(results)
@@ -1744,7 +1813,9 @@ def _decorate(
     sliced: list[dict],
     query_tag_ids: Optional[list[int]],
 ) -> tuple[list[dict], list[dict]]:
-    """検索結果に snippet / tags / details / superseded_by / readable_id を付与し、nearby_tags を計算する。
+    """検索結果に snippet / details / superseded_by / readable_id を付与し、nearby_tags を計算する。
+
+    tags は `_demote_archived` で切り出し前に付与済みの前提で、ここでは再付与しない。
 
     ``sliced`` は in-place で書き換わるが、データフローを明示するため戻り値にも含める。
     呼出元 (orchestrator) は ``decorated, nearby_tags = _decorate(...)`` のパターンで
@@ -1756,7 +1827,6 @@ def _decorate(
         nearby_tags: [{"tag": "...", "co_count": N}, ...]。offset>0 の場合は空リスト。
     """
     _attach_snippets(sliced)
-    _attach_tags(sliced)
     _attach_superseded_by(sliced)
     if ctx.include_details:
         _attach_details(sliced[:DETAILS_MAX_RESULTS])
@@ -1816,9 +1886,14 @@ def search(
           - fts / vec / tag: 各ソースのRRF生寄与（正規化前、recency適用前）
           - rrf_normalized: 3寄与の合計を理論最大値で割った正規化済み値（0〜1、recency適用前）
           - recency_factor: created_atに基づく指数減衰係数（0〜1）
+          - archived_factor: 全タグがarchivedのアイテムに適用した降格係数（それ以外は1.0）
         既存 score フィールドは final_score と同値で互換のため残置されている。
         snippetは各typeの対応するソースカラムの先頭200文字（materialはtitle優先表示）。
         tagsはエンティティに紐づくタグ文字列のリスト。
+        archived（bool）とarchived_tags（配列）は全アイテムに常に付く。全タグがarchivedの
+        アイテムのみarchived: True・archived_tagsにそのタグ一覧が入り、final_scoreが
+        archived_factor分減衰する（下位表示。除外はしない）。1つでも非archivedタグを
+        持つアイテム、タグを持たないアイテムはarchived: False・archived_tags: []になる。
         include_details=Trueの場合、上位DETAILS_MAX_RESULTS件にdetailsが追加される。
 
         search_methods_used は実際に使われた検索手法のリスト（"fts5" / "vector" / "tag_like" の
@@ -1835,6 +1910,10 @@ def search(
         （ベクトル検索を実際に試した上で利用不可だった場合のみ degraded: True が付く。1文字
         以下キーワードなど、ベクトル検索を試す前に確定するバリデーションエラーには degraded
         キーが無い）。
+
+        archived_tags: この応答の results に含まれる全アイテムのタグのうちarchivedなものの
+        集約（{tag, archived_reason}の配列。該当なしでも空配列で常に付く）。バリデーション
+        エラー等の早期returnではキー自体が無い。
     """
     try:
         keywords, entity_type, domain, date_after, date_before = _validate(
@@ -1855,11 +1934,18 @@ def search(
             degraded = diagnostics["degraded"]
             merged = _merge(ctx, retrieval, adaptive_weights)
             merged = _rerank(ctx, merged)
+            merged, archived_lookup = _demote_archived(merged)
             sliced, total_count = _slice(ctx, merged)
             results_snapshot = _build_results_snapshot(sliced)
             sliced, nearby_tags = _decorate(ctx, sliced, query_tag_ids)
         finally:
             conn.close()
+
+        sliced_tags = sorted({t for item in sliced for t in item.get("tags", [])})
+        archived_tags_summary = [
+            {"tag": t, "archived_reason": archived_lookup[t]}
+            for t in sliced_tags if t in archived_lookup
+        ]
 
         _record_search_telemetry_async(
             query=keyword,
@@ -1886,6 +1972,7 @@ def search(
             "search_methods_used": retrieval["methods_used"],
             "degraded": degraded,
             "nearby_tags": nearby_tags,
+            "archived_tags": archived_tags_summary,
         }
 
     except _SearchEarlyReturn as early:

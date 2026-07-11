@@ -27,7 +27,12 @@ from src.services.checkin_service import check_in as _check_in
 from src.services.relay import service as relay_session_service
 from src.services.relay import diagnostics as relay_diagnostics_service
 from src.services.relay import identity as relay_identity
-from src.services.tag_service import search_tags as _search_tags, update_tag as _update_tag, collect_tag_notes_for_injection
+from src.services.tag_service import (
+    search_tags as _search_tags,
+    update_tag as _update_tag,
+    collect_tag_notes_for_injection,
+    get_archived_tags_for_strings,
+)
 from src.services.tag_analysis_service import analyze_tags as _analyze_tags
 from src.services import citation_renderer
 from src.db import get_connection
@@ -120,6 +125,47 @@ def _collect_result_tags(items: list[dict]) -> list[str]:
     for item in items:
         tags.update(item.get("tags", []))
     return sorted(tags)
+
+
+def _attach_archived_tags_summary(result: dict, all_tags: list[str]) -> None:
+    """応答トップレベルにarchivedタグの集約を付与する（in-place）。
+
+    all_tagsは応答内の全アイテムから集めたユニークなタグ文字列（_collect_result_tags等）。
+    archivedタグが1件もない場合も archived_tags: [] を常に付与する（キー自体の有無で
+    分岐させない）。
+    """
+    if not all_tags:
+        result["archived_tags"] = []
+        return
+    conn = get_connection()
+    try:
+        result["archived_tags"] = get_archived_tags_for_strings(conn, all_tags)
+    finally:
+        conn.close()
+
+
+def _attach_archived_tags_per_item(items: list[dict], all_tags: list[str], tags_key: str = "tags") -> None:
+    """items各要素にarchivedタグの一覧を付与する（in-place、アイテム単位）。
+
+    all_tagsは事前にitems全体から集めたユニークなタグ文字列（1クエリで済ませるため）。
+    各itemのtags_keyに含まれるタグのうちarchivedなものだけをitem["archived_tags"]に積む。
+    """
+    if not all_tags:
+        for item in items:
+            item["archived_tags"] = []
+        return
+    conn = get_connection()
+    try:
+        archived_rows = get_archived_tags_for_strings(conn, all_tags)
+    finally:
+        conn.close()
+    archived_map = {row["tag"]: row["archived_reason"] for row in archived_rows}
+    for item in items:
+        item_tags = item.get(tags_key) or []
+        item["archived_tags"] = [
+            {"tag": t, "archived_reason": archived_map[t]}
+            for t in item_tags if t in archived_map
+        ]
 
 
 _FlavorArg = Literal["raw", "internal", "readable"]
@@ -344,6 +390,10 @@ def get_topics(
     until: ISO日付文字列。この日付以前に作成されたトピックのみ返す
     flavor: citation展開モード（raw/internal/readable、既定internal）。3値の意味・出力例は
         docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
+
+    Returns:
+        トピック一覧。archived_tags（応答に含まれるトピックのタグのうちarchivedなものの
+        集約、{tag, archived_reason}の配列。該当なしでも空配列で常に付く）が付く。
     """
     flavor = _normalize_flavor(flavor)
     result = topic_service.get_topics(tags, limit, offset, since, until)
@@ -352,6 +402,7 @@ def get_topics(
         all_tags = _collect_result_tags(result.get("topics", []))
         if all_tags:
             _maybe_inject_tag_notes(result, all_tags, mark=False)
+        _attach_archived_tags_summary(result, all_tags)
     return result
 
 
@@ -386,6 +437,8 @@ def get_logs(
         total_count: 対象 topic 全体の log 総件数（retractフィルタ適用後、limit/start_idの影響を受けない）
         truncated: この応答が limit/start_id により後続の log を打ち切ったとき true
             （＝続きのページが存在する）
+        archived_tags: 応答に含まれるlogのタグのうちarchivedなものの集約
+            （{tag, archived_reason}の配列。該当なしでも空配列で常に付く）
     """
     flavor = _normalize_flavor(flavor)
     result = discussion_log_service.get_logs(entity_type, entity_id, start_id, limit, include_retracted=include_retracted)
@@ -394,6 +447,7 @@ def get_logs(
         all_tags = _collect_result_tags(result.get("logs", []))
         if all_tags:
             _maybe_inject_tag_notes(result, all_tags, mark=False)
+        _attach_archived_tags_summary(result, all_tags)
     return result
 
 
@@ -434,6 +488,8 @@ def get_decisions(
         verification_anchors: [文字列, ...]}）が付く。節が無いdecisionにはキー自体が無い
         （legacy本文と規約準拠本文の区別に使える。検証アンカーが空のdecisionは
         「決定のみ・実測未確認」を意味する）
+        archived_tags: 応答に含まれるdecisionのタグのうちarchivedなものの集約
+            （{tag, archived_reason}の配列。該当なしでも空配列で常に付く）
     """
     flavor = _normalize_flavor(flavor)
     result = decision_service.get_decisions(entity_type, entity_id, start_id, limit, include_retracted=include_retracted)
@@ -442,6 +498,7 @@ def get_decisions(
         all_tags = _collect_result_tags(result.get("decisions", []))
         if all_tags:
             _maybe_inject_tag_notes(result, all_tags, mark=False)
+        _attach_archived_tags_summary(result, all_tags)
     return result
 
 
@@ -500,6 +557,10 @@ def pull_precedents(
         materials_truncated: material カタログ展開が30件キャップを超え一部materialを
         載せ切れなかったとき true（include_materials時のみ）。decision網羅保証は本文の
         truncated/budgetが担い、materials_truncatedとは独立。
+        detail="full"のdecisionには archived_tags（そのdecisionのタグのうちarchivedな
+        ものの集約、{tag, archived_reason}の配列。該当なしでも空配列で常に付く）が付く。
+        detail="index"のdecisionはtags自体を持たないためarchived_tagsも付かない
+        （必要ならget_by_idsで本文と併せて確認する）。
     """
     flavor = _normalize_flavor(flavor)
     result = precedent_pull_service.pull_precedents(
@@ -511,12 +572,17 @@ def pull_precedents(
     )
     if "error" not in result:
         _apply_flavor_to_pull_precedents_result(result, flavor)
+        full_decisions: list[dict] = []
         all_tags: set[str] = set()
         for topic in result.get("topics", []) or []:
             for dec in topic.get("decisions", []) or []:
-                all_tags.update(dec.get("tags", []) or [])
+                dec_tags = dec.get("tags")
+                if dec_tags:
+                    full_decisions.append(dec)
+                    all_tags.update(dec_tags)
         if all_tags:
             _maybe_inject_tag_notes(result, sorted(all_tags), mark=False)
+        _attach_archived_tags_per_item(full_decisions, sorted(all_tags))
     return result
 
 
@@ -622,6 +688,11 @@ def search(
         include_retracted=Trueを指定する。
 
         snippetでなく全文が必要な場合は、結果のtype+idをget_by_idsに渡す。
+
+        archived_tags: 応答に含まれる全結果のタグのうちarchivedなものの集約
+        （{tag, archived_reason}の配列。該当なしでも空配列で常に付く）。各結果アイテム
+        自体にもarchived（bool）・archived_tags（配列）・score_breakdown.archived_factor
+        が付く（全タグがarchivedのアイテムのみdemoteされ、archived: Trueになる）。
     """
     flavor = _normalize_flavor(flavor)
     result = search_service.search(
@@ -632,6 +703,11 @@ def search(
         _apply_flavor_to_snippets(result.get("results", []), flavor)
     if "error" not in result and tags:
         _maybe_inject_tag_notes(result, tags)
+    if "error" not in result and "archived_tags" not in result:
+        # search_service.search()が既にarchived_lookupを再利用してarchived_tagsを
+        # 付与済みの場合はここでの再クエリを行わない（早期return等で未付与の場合のみ補う）
+        all_tags = _collect_result_tags(result.get("results", []))
+        _attach_archived_tags_summary(result, all_tags)
     return result
 
 
@@ -661,6 +737,8 @@ def get_by_ids(
         無ければnull）が常に付く。reasonに定型節（却下案:/適用条件:/適用外:/検証:。書式は
         docs/precedent-format.md）があれば precedent（get_decisionsと同形のコンパクト形）が付く。
         節が無いdecisionにはキー自体が無い
+        archived_tags: 応答に含まれる全アイテムのタグのうちarchivedなものの集約
+            （{tag, archived_reason}の配列。該当なしでも空配列で常に付く）
     """
     flavor = _normalize_flavor(flavor)
     result = search_service.get_by_ids(items, caller_session_id=_current_session_id())
@@ -684,6 +762,7 @@ def get_by_ids(
                 all_tags.extend(item["data"].get("tags", []))
         if all_tags:
             _maybe_inject_tag_notes(result, all_tags)
+        _attach_archived_tags_summary(result, all_tags)
     return result
 
 
@@ -707,7 +786,7 @@ def search_tags(
         limit: 取得件数上限（デフォルト20）
 
     Returns:
-        検索結果（tags配列、各要素にscore付き）
+        検索結果（tags配列、各要素にscore・archived（bool）・archived_reason（str|None）付き）
     """
     return _search_tags(query, namespace, include_notes, limit)
 
@@ -719,12 +798,15 @@ def update_tag(
     canonical: Optional[str] = None,
     rename: Optional[str] = None,
     description: Optional[str] = None,
+    archived: Optional[bool] = None,
+    archived_reason: Optional[str] = None,
 ) -> dict:
     """
     既存タグの notes（教訓・運用ルール）、canonical（エイリアス先）、name（リネーム）、
-    またはdescription（短い説明文）を更新する。
+    description（短い説明文）、またはarchived（退役状態）を更新する。
 
-    notes / canonical / rename / description は相互排他（1つだけ指定可能）。少なくとも1つを指定する。
+    notes / canonical / rename / description / archived は相互排他（1つだけ指定可能）。
+    少なくとも1つを指定する。
 
     notes: タグに紐づく教訓や運用ルールを記録する。CLAUDE.mdのタグ版として機能し、
     そのタグの文脈で作業するときに自動的にAIに注入される。上書き方式（全文置換）。
@@ -735,6 +817,8 @@ def update_tag(
     この付け替えは設定時の1回のみで、canonical上書き時に旧付け替え分は戻らない。
     canonical=""で解除。連鎖（エイリアスのエイリアス）は禁止。
     notes付きタグはエイリアスにできない（先にnotesを除去すること）。
+    archivedなタグをcanonical先に指定する、またはarchivedなタグ自身をcanonical化する
+    ことはできない（ARCHIVED_CANONICAL_INVALID）。
 
     rename: 新しいタグ名。namespace変更も可能（例: "hooks" → "domain:hooks"）。
     IDベースの参照なので紐付けはそのまま維持される。
@@ -742,17 +826,40 @@ def update_tag(
 
     description: タグの短い説明文（最大100文字）。空文字はNULLに正規化される。
 
+    archived: Trueで退役、Falseで解除。退役タグは以下の効果を持つ:
+    - tag notesの自動注入（push）から完全除外される
+    - search結果では削除されず、全タグがarchivedのアイテムのみarchived_factor分
+      final_scoreが下がる形で下位表示される（pull経路では消えない）
+    既にarchivedのタグへarchived=Trueを再適用しても冪等（archived_atは更新されず
+    updated: Falseを返す。archived_reasonの後追い書き換えも不可）。
+    archived=Falseに戻すとarchived_reasonも自動的にNULLへ戻る。
+    他タグのcanonical先になっているタグはarchived化できない（先にエイリアスを
+    解除すること）。
+
+    archived_reason: 退役理由の短いテキスト（最大100文字）。archived=Trueと同時指定の
+    ときのみ有効（単独指定はORPHAN_ARCHIVED_REASONエラー）。
+
     Args:
         tag: 対象タグ（例: "domain:cc-memory", "hooks"）
         notes: 教訓・運用ルールのテキスト（全文置換）
         canonical: エイリアス先タグ（""で解除）
         rename: 新しいタグ名（例: "domain:hooks"）
         description: タグの短い説明文（最大100文字）
+        archived: Trueで退役、Falseで解除
+        archived_reason: 退役理由（最大100文字。archived=Trueと同時指定のときのみ有効）
 
     Returns:
         更新結果
     """
-    return _update_tag(tag, notes=notes, canonical=canonical, rename=rename, description=description)
+    return _update_tag(
+        tag,
+        notes=notes,
+        canonical=canonical,
+        rename=rename,
+        description=description,
+        archived=archived,
+        archived_reason=archived_reason,
+    )
 
 
 @mcp.tool()
@@ -775,7 +882,8 @@ def analyze_tags(
     Returns:
         co_occurrences: 共起ペア（PMI降順）
         clusters: PMI閾値ベースの連結成分クラスタ
-        orphans: 使用頻度が低い孤児タグ
+        orphans: 使用頻度が低い孤児タグ。各要素にarchived（bool）とarchived_reason
+            （str|None）が付く
         suspected_duplicates: embedding類似度ベースの重複候補
     """
     return _analyze_tags(domain, include_domain_tags, focus_tag, min_usage, top_n)
@@ -863,6 +971,8 @@ def get_activities(
 
     Returns:
         アクティビティ一覧（total_countで該当ステータスの全件数を確認可能）
+        archived_tags: 応答に含まれるアクティビティのタグのうちarchivedなものの集約
+            （{tag, archived_reason}の配列。該当なしでも空配列で常に付く）
     """
     flavor = _normalize_flavor(flavor)
     result = activity_service.get_activities(
@@ -873,6 +983,7 @@ def get_activities(
         all_tags = _collect_result_tags(result.get("activities", []))
         if all_tags:
             _maybe_inject_tag_notes(result, all_tags, mark=False)
+        _attach_archived_tags_summary(result, all_tags)
     return result
 
 

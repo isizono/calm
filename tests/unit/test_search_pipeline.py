@@ -210,7 +210,7 @@ def test_build_common_where_custom_alias():
 
 def test_phase_a_search_preserves_response_keys(temp_db):
     """search() の返却辞書は results / total_count / search_methods_used /
-    degraded / nearby_tags の5キーを保つ。"""
+    degraded / nearby_tags / archived_tags の6キーを保つ。"""
     add_topic(
         title="SearchPipelineテストトピック",
         description="Phase A 等価性確認用",
@@ -224,12 +224,14 @@ def test_phase_a_search_preserves_response_keys(temp_db):
         "search_methods_used",
         "degraded",
         "nearby_tags",
+        "archived_tags",
     }
     assert isinstance(result["results"], list)
     assert isinstance(result["total_count"], int)
     assert isinstance(result["search_methods_used"], list)
     assert isinstance(result["degraded"], bool)
     assert isinstance(result["nearby_tags"], list)
+    assert isinstance(result["archived_tags"], list)
 
 
 def test_phase_a_search_entity_type_filter(temp_db):

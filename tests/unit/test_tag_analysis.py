@@ -160,17 +160,19 @@ class TestOrphans:
         total = 20
         tag_names = {1: "orphan-tag", 2: "common-tag", 3: "popular-tag"}
 
-        orphans = _find_orphans(usage_counts, co_counts, total, tag_names, min_usage=2)
+        orphans = _find_orphans(usage_counts, co_counts, total, tag_names, {}, min_usage=2)
         assert len(orphans) == 1
         assert orphans[0]["tag"] == "orphan-tag"
         assert orphans[0]["usage"] == 1
         assert orphans[0]["nearest"] == "common-tag"
         assert orphans[0]["pmi_to_nearest"] is not None
+        assert orphans[0]["archived"] is False
+        assert orphans[0]["archived_reason"] is None
 
     def test_no_orphans(self):
         """全タグがmin_usage以上の場合"""
         usage_counts = {1: 5, 2: 5}
-        orphans = _find_orphans(usage_counts, {}, 10, {1: "a", 2: "b"}, min_usage=2)
+        orphans = _find_orphans(usage_counts, {}, 10, {1: "a", 2: "b"}, {}, min_usage=2)
         assert len(orphans) == 0
 
     def test_orphan_without_co_occurrence(self):
@@ -179,7 +181,7 @@ class TestOrphans:
         co_counts = {}  # 共起なし
         tag_names = {1: "lone-tag", 2: "common-tag"}
 
-        orphans = _find_orphans(usage_counts, co_counts, 10, tag_names, min_usage=2)
+        orphans = _find_orphans(usage_counts, co_counts, 10, tag_names, {}, min_usage=2)
         assert len(orphans) == 1
         assert orphans[0]["tag"] == "lone-tag"
         assert orphans[0]["nearest"] is None
@@ -188,8 +190,19 @@ class TestOrphans:
     def test_min_usage_boundary(self):
         """min_usageちょうどのタグは孤児にならない"""
         usage_counts = {1: 2, 2: 5}
-        orphans = _find_orphans(usage_counts, {}, 10, {1: "a", 2: "b"}, min_usage=2)
+        orphans = _find_orphans(usage_counts, {}, 10, {1: "a", 2: "b"}, {}, min_usage=2)
         assert len(orphans) == 0
+
+    def test_orphan_archived_field_populated_from_tag_info(self):
+        """tag_infoにarchived情報があればorphanエントリに反映される"""
+        usage_counts = {1: 1, 2: 5}
+        tag_names = {1: "legacy-orphan", 2: "common-tag"}
+        tag_info = {1: {"archived": True, "archived_reason": "退役済み"}}
+
+        orphans = _find_orphans(usage_counts, {}, 10, tag_names, tag_info, min_usage=2)
+        assert len(orphans) == 1
+        assert orphans[0]["archived"] is True
+        assert orphans[0]["archived_reason"] == "退役済み"
 
 
 # ========================================

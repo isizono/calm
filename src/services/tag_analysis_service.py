@@ -161,13 +161,14 @@ def _build_tag_maps(conn, tag_ids):
     Returns:
         (tag_names, tag_info)
         tag_names: {tag_id: "namespace:name" or "name"}
-        tag_info: {tag_id: {"namespace": str, "name": str}}
+        tag_info: {tag_id: {"namespace": str, "name": str, "archived": bool,
+                             "archived_reason": str | None}}
     """
     if not tag_ids:
         return {}, {}
     placeholders = ",".join("?" * len(tag_ids))
     rows = conn.execute(
-        f"SELECT id, namespace, name FROM tags WHERE id IN ({placeholders})",
+        f"SELECT id, namespace, name, archived_at, archived_reason FROM tags WHERE id IN ({placeholders})",
         tuple(tag_ids),
     ).fetchall()
     tag_names = {}
@@ -176,7 +177,12 @@ def _build_tag_maps(conn, tag_ids):
         ns = row["namespace"]
         name = row["name"]
         tag_names[row["id"]] = f"{ns}:{name}" if ns else name
-        tag_info[row["id"]] = {"namespace": ns, "name": name}
+        tag_info[row["id"]] = {
+            "namespace": ns,
+            "name": name,
+            "archived": row["archived_at"] is not None,
+            "archived_reason": row["archived_reason"],
+        }
     return tag_names, tag_info
 
 
@@ -298,7 +304,7 @@ def _find_clusters(co_counts, usage_counts, total, tag_names, threshold=CLUSTER_
     return results
 
 
-def _find_orphans(usage_counts, co_counts, total, tag_names, min_usage):
+def _find_orphans(usage_counts, co_counts, total, tag_names, tag_info, min_usage):
     """孤児タグを検出する。
 
     usage < min_usage のタグを孤児とし、最近傍タグ（PMIが最大のペア相手）を付与する。
@@ -308,10 +314,12 @@ def _find_orphans(usage_counts, co_counts, total, tag_names, min_usage):
         co_counts: {(tag_a, tag_b): co_count}
         total: 全エンティティ数
         tag_names: {tag_id: tag_string}
+        tag_info: {tag_id: {"archived": bool, "archived_reason": str|None, ...}}
         min_usage: 孤児判定の閾値
 
     Returns:
-        [{"tag": str, "usage": int, "nearest": str|None, "pmi_to_nearest": float|None}, ...]
+        [{"tag": str, "usage": int, "nearest": str|None, "pmi_to_nearest": float|None,
+          "archived": bool, "archived_reason": str|None}, ...]
     """
     orphan_ids = {tid for tid, cnt in usage_counts.items() if cnt < min_usage}
 
@@ -340,11 +348,14 @@ def _find_orphans(usage_counts, co_counts, total, tag_names, min_usage):
                 best_pmi = pmi
                 best_neighbor = neighbor_id
 
+        info = tag_info.get(orphan_id, {})
         result = {
             "tag": name,
             "usage": usage,
             "nearest": tag_names.get(best_neighbor, None) if best_neighbor is not None else None,
             "pmi_to_nearest": round(best_pmi, 2) if best_pmi is not None else None,
+            "archived": info.get("archived", False),
+            "archived_reason": info.get("archived_reason"),
         }
         results.append(result)
 
@@ -548,7 +559,7 @@ def analyze_tags(
         clusters = _find_clusters(co_counts, usage_counts, total, tag_names)
 
         # 6. 孤児検出
-        orphans = _find_orphans(usage_counts, co_counts, total, tag_names, min_usage)
+        orphans = _find_orphans(usage_counts, co_counts, total, tag_names, tag_info, min_usage)
 
         # 7. 重複候補検出
         analysis_tag_ids = list(usage_counts.keys())

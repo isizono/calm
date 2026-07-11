@@ -2,7 +2,7 @@
 watch-tags: domain:cc-memory
 watch-direction: true
 watch-migrations: false
-last-synced: 2026-07-05
+last-synced: 2026-07-10
 last-synced-migration: 0048
 -->
 
@@ -177,7 +177,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 | since | string | no | null | ISO日付（以降） |
 | until | string | no | null | ISO日付（以前） |
 
-**返り値**: `{topics: [Topic], total_count: int, tag_notes?: [TagNote]}`。
+**返り値**: `{topics: [Topic], total_count: int, tag_notes?: [TagNote], archived_tags: [{tag, archived_reason}]}`。`archived_tags` は応答に含まれるtopicのタグのうちarchivedなものの集約で、該当なしでも常に空配列で付く。
 
 ### 2.5 get_logs / get_decisions
 
@@ -191,7 +191,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 | limit | int | no | 30 | 最大30件 |
 | include_retracted | bool | no | false | trueで取り消し済みも含む |
 
-**返り値**: `get_logs` は `{logs: [DiscussionLog], total_count: int, truncated: bool}`、`get_decisions` は `{decisions: [Decision], total_count: int, truncated: bool}`。`total_count` は対象log/decisionの総件数（limit/start_idの影響を受けない）、`truncated` は limit/start_id で後続を打ち切ったとき true（続きのページが存在する）。
+**返り値**: `get_logs` は `{logs: [DiscussionLog], total_count: int, truncated: bool, archived_tags: [{tag, archived_reason}]}`、`get_decisions` は `{decisions: [Decision], total_count: int, truncated: bool, archived_tags: [{tag, archived_reason}]}`。`total_count` は対象log/decisionの総件数（limit/start_idの影響を受けない）、`truncated` は limit/start_id で後続を打ち切ったとき true（続きのページが存在する）。`archived_tags` は応答に含まれるlog/decisionのタグのうちarchivedなものの集約で、該当なしでも常に空配列で付く。
 **特殊挙動**: entity_type="activity" の場合、related topics経由で集約される。
 
 ### 2.6 search
@@ -210,7 +210,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 | date_before | string | no | null | 同上 |
 | include_retracted | bool | no | false | 取り消し済み含む |
 
-**返り値**: `{results: [SearchHit]}`。scoreは0〜1正規化（1.0=全ソース1位、片方ヒットは最大0.5）。0.4以上=高関連、0.15〜0.4=中、0.15未満=低の目安。snippetでなく全文が必要な場合は結果のtype+idを`get_by_ids`に渡す。
+**返り値**: `{results: [SearchHit], archived_tags: [{tag, archived_reason}]}`。scoreは0〜1正規化（1.0=全ソース1位、片方ヒットは最大0.5）。0.4以上=高関連、0.15〜0.4=中、0.15未満=低の目安。snippetでなく全文が必要な場合は結果のtype+idを`get_by_ids`に渡す。各結果アイテムには`archived`（bool）・`archived_tags`（配列）・`score_breakdown.archived_factor`も付く（全タグがarchivedのアイテムのみ`archived: true`になりfinal_scoreが下位表示側に減衰する。除外はしない）。トップレベルの`archived_tags`は応答内の全アイテムのタグのうちarchivedなものの集約で、該当なしでも常に空配列で付く。
 **実装**: FTS5 trigram + ベクトル検索のRRF統合。
 
 ### 2.7 get_by_ids
@@ -219,7 +219,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 | --- | --- | --- | --- | --- |
 | items | list[{type, id}] | yes | - | 最大20件 |
 
-**返り値**: `{results: [{type, id, data}, ...]}`。2段階リード（searchで概要→get_by_idsで全文）の後半に位置する。materialは`data`に`content`/`source`が含まれ、追加で`get_material`を呼ぶ必要はない。
+**返り値**: `{results: [{type, id, data}, ...], archived_tags: [{tag, archived_reason}]}`。2段階リード（searchで概要→get_by_idsで全文）の後半に位置する。materialは`data`に`content`/`source`が含まれ、追加で`get_material`を呼ぶ必要はない。`archived_tags`は応答に含まれる全アイテムのタグのうちarchivedなものの集約で、該当なしでも常に空配列で付く。
 
 ### 2.8 search_tags
 
@@ -230,7 +230,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 | include_notes | bool | no | false | trueでnotesも返す |
 | limit | int | no | 20 | 取得件数上限 |
 
-**返り値**: `{tags: [{tag, namespace, score, notes?}]}`。
+**返り値**: `{tags: [{tag, namespace, score, notes?, archived, archived_reason}]}`。`archived`はbool、`archived_reason`はarchived時のみ非null。
 
 ### 2.9 update_tag
 
@@ -241,8 +241,10 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 | canonical | string | no | null | エイリアス先。`""` で解除 |
 | rename | string | no | null | 新しいタグ名 |
 | description | string | no | null | 短い説明文（最大100文字） |
+| archived | bool | no | null | trueで退役、falseで解除 |
+| archived_reason | string | no | null | 退役理由（最大100文字）。archived=trueと同時指定のときのみ有効 |
 
-**制約**: notes/canonical/rename/description は相互排他。少なくとも1つ指定。canonical連鎖（エイリアスのエイリアス）は禁止。notes付きタグはエイリアス化不可。
+**制約**: notes/canonical/rename/description/archived は相互排他。少なくとも1つ指定。canonical連鎖（エイリアスのエイリアス）は禁止。notes付きタグはエイリアス化不可。archivedなタグをcanonical先に指定する・archivedなタグ自身をcanonical化することはできない。他タグのcanonical先になっているタグはarchived化できない。archived_reasonの単独指定（archived未指定またはfalseとの同時指定）はエラー。既にarchivedなタグへarchived=trueを再適用しても冪等（archived_atもarchived_reasonも更新されない）。archived=falseに戻すとarchived_reasonも自動的にnullへ戻る。
 
 ### 2.10 analyze_tags
 
@@ -254,7 +256,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 | min_usage | int | no | 2 | 孤児判定閾値 |
 | top_n | int | no | 20 | co_occurrences の返却件数 |
 
-**返り値**: `{co_occurrences, clusters, orphans, suspected_duplicates}`。
+**返り値**: `{co_occurrences, clusters, orphans, suspected_duplicates}`。`orphans`の各要素には`archived`（bool）と`archived_reason`（archived時のみ非null）が付く。
 
 ### 2.11 add_activity
 
@@ -278,7 +280,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 | since | string | no | null | ISO日付（以降） |
 | until | string | no | null | ISO日付（以前） |
 
-**返り値**: `{activities: [Activity], total_count: int}`。statusの`active`は pending+in_progress のエイリアス（snoozed/shelvedは含まない）。
+**返り値**: `{activities: [Activity], total_count: int, archived_tags: [{tag, archived_reason}]}`。statusの`active`は pending+in_progress のエイリアス（snoozed/shelvedは含まない）。`archived_tags`は応答に含まれるアクティビティのタグのうちarchivedなものの集約で、該当なしでも常に空配列で付く。
 **副作用**: 呼び出し時、updated_atがSNOOZE_DURATION_DAYS（デフォルト3日）を超過したsnoozedアクティビティをpendingへ一括自動復活させる。
 
 ### 2.13 update_activity
@@ -468,7 +470,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 | budget_chars | int | no | null | 本文展開の文字数予算。省略時はconfig既定値（`get_config()`の`precedent_budget_chars`で確認可） |
 | include_materials | bool | no | true | decision/topicに紐づくmaterialカタログを同時展開する（30件で打ち切り、超過時`materials_truncated=true`） |
 
-**返り値**: `{guarantee, routing, topics, budget, truncated, materials_truncated}`。`guarantee`は`enumerated`（routing成立・全件列挙完了）/ `routing_miss`（近傍topicなし）/ `routing_unavailable`（embeddingサーバー停止）のいずれか。`routing.mode`は`vector`（embedding routingで解決）/ `explicit`（topic_ids指定でrouting skip）/ `unavailable`（embeddingサーバー停止でrouting不能）。`routing.candidates`は各`{topic_id_raw, title, distance, selected}`（topic_ids指定時はdistanceなし。存在しないtopic_idを指定した場合は`{topic_id_raw, error: "not_found"}`）。`topics[].decisions`各要素は`detail="full"`（本文展開）または`detail="index"`（id/title等のみ、`get_by_ids`で本文追補可）。
+**返り値**: `{guarantee, routing, topics, budget, truncated, materials_truncated}`。`guarantee`は`enumerated`（routing成立・全件列挙完了）/ `routing_miss`（近傍topicなし）/ `routing_unavailable`（embeddingサーバー停止）のいずれか。`routing.mode`は`vector`（embedding routingで解決）/ `explicit`（topic_ids指定でrouting skip）/ `unavailable`（embeddingサーバー停止でrouting不能）。`routing.candidates`は各`{topic_id_raw, title, distance, selected}`（topic_ids指定時はdistanceなし。存在しないtopic_idを指定した場合は`{topic_id_raw, error: "not_found"}`）。`topics[].decisions`各要素は`detail="full"`（本文展開）または`detail="index"`（id/title等のみ、`get_by_ids`で本文追補可）。`detail="full"`のdecisionには`archived_tags`（{tag, archived_reason}の配列、該当なしでも空配列で常に付く）が付く。`detail="index"`のdecisionはtags自体を持たないためarchived_tagsも付かない。
 **動作**: `search`がランクtop-Nの確率的発見であるのに対し、本ツールは選ばれたtopicの非retract decisionを全件（最低でも索引粒度で）応答に含めることを保証する。read-only（statusを更新する副作用なし）。
 **関連**: 設計・裁定の前に近傍topicの判例を網羅確認したい場面で`get_decisions`/`check_in`のChoose節から参照される。
 
@@ -594,7 +596,8 @@ cc-memoryが扱うエンティティの内部表現。詳細スキーマは `doc
 ### 3.8 Tag
 - 文字列としては `namespace:name` または素タグ
 - namespace: `domain` / `intent` / 空
-- 補助フィールド: `notes`（教訓）、`canonical`（エイリアス先）、`description`（短い説明）
+- 補助フィールド: `notes`（教訓）、`canonical`（エイリアス先）、`description`（短い説明）、
+  `archived`（退役状態、bool）、`archived_reason`（退役理由、archived時のみ非null）
 
 ---
 

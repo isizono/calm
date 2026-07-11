@@ -3,7 +3,7 @@ watch-tags: domain:cc-memory
 watch-direction: true
 watch-migrations: true
 last-synced: 2026-07-10
-last-synced-migration: 0060
+last-synced-migration: 0061
 -->
 
 # cc-memory DBスキーマ v0
@@ -288,16 +288,22 @@ namespace + name による分類タグ。
 | description | TEXT | YES | — | CHECK(description IS NULL OR LENGTH(description) <= 100) | 短い説明（100文字以内） |
 | canonical_id | INTEGER | YES | — | REFERENCES tags(id) | エイリアス先 tag ID（表記ゆれ統合用） |
 | created_at | TIMESTAMP | NO | CURRENT_TIMESTAMP | — | 作成時刻 |
+| archived_at | TIMESTAMP | YES | NULL | — | 退役日時。NULL は非archived |
+| archived_reason | TEXT | YES | NULL | CHECK(archived_reason IS NULL OR LENGTH(archived_reason) <= 100) | 退役理由（100文字以内） |
 
 補足:
 - 0009 で新設。当初 namespace CHECK は `('', 'domain', 'scope', 'mode')`
 - 0014 で `scope` を素タグに降格、`mode` → `intent` リネーム、CHECK = `('', 'domain', 'intent')`
 - 0012 で notes、0015（重複番号片方）で canonical_id、0024 で description 追加
 - 0039（重複番号片方 `extend_tag_namespace`）で namespace CHECK 制約自体を撤廃し、任意 TEXT を受け付ける形に再構築（妥当性は Python 層で検証）
+- 0061 で archived_at / archived_reason 追加。tag notes の自動注入からは除外しつつ、
+  search 等の取得系では削除せずラベル付きで下位表示するための退役フラグ
 
-インデックス: 暗黙インデックス `UNIQUE(namespace, name)` のみ
+インデックス:
+- 暗黙インデックス `UNIQUE(namespace, name)`
+- `idx_tags_archived_at` ON `tags(archived_at)`（`archived_at IS NOT NULL` の部分インデックス、0061）
 
-関連 migration: 0009 / 0012 / 0014 / 0015_tag_canonical / 0024 / 0039_extend_tag_namespace
+関連 migration: 0009 / 0012 / 0014 / 0015_tag_canonical / 0024 / 0039_extend_tag_namespace / 0061_add_tag_archived
 
 ### 3.8 topic_tags / activity_tags / decision_tags / log_tags / material_tags
 
@@ -765,6 +771,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0058_add_habit_trigger_mode | habits に description / trigger_mode / importance_score / last_recalled_at を追加（スキーマ変更のみ、データ移行なし。trigger_modeの切り替えはupdate_habit経由で個別適用） |
 | 0059_add_habit_status | habits に status（'active'/'archived'、既定'active'）を追加 |
 | 0060_add_habit_importance_score_check | trigger_mode='intelligently'かつimportance_score=1.0(未設定)のhabitを3に補正したうえで、importance_scoreにCHECK(IN (1, 2, 3))を追加（テーブル再構築） |
+| 0061_add_tag_archived | tags に archived_at（退役日時）/ archived_reason（退役理由、100文字以内のCHECK制約付き）を追加、archived_at 用の部分インデックス idx_tags_archived_at を新設（スキーマ変更のみ、データ移行なし） |
 
 重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。
 

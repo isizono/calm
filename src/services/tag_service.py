@@ -545,6 +545,40 @@ def get_effective_tags(conn: sqlite3.Connection, entity_type: str, entity_id: in
     return format_tags(rows)
 
 
+def get_archived_tags_for_strings(conn: sqlite3.Connection, tag_strings: list[str]) -> list[dict]:
+    """タグ文字列集合のうちarchivedなものだけを抽出する。
+
+    呼び出し元がエンティティ横断で集めたタグ文字列（例: 応答内の全アイテムの
+    tagsを1つにまとめたもの）を渡すと、1クエリでそのうちarchivedなものだけを返す。
+
+    Args:
+        conn: DB接続
+        tag_strings: タグ文字列のリスト（例: ["domain:cc-memory", "domain:orch-legacy"]）
+
+    Returns:
+        [{"tag": "domain:orch-legacy", "archived_reason": "..."}, ...]
+        （tag昇順ソート。非archivedタグ・存在しないタグは結果に含まれない）
+    """
+    if not tag_strings:
+        return []
+    parsed = list({parse_tag(t) for t in tag_strings})
+    placeholders = " OR ".join(["(namespace = ? AND name = ?)"] * len(parsed))
+    params = [v for pair in parsed for v in pair]
+    rows = conn.execute(
+        f"SELECT namespace, name, archived_reason FROM tags WHERE ({placeholders}) AND archived_at IS NOT NULL",
+        params,
+    ).fetchall()
+    results = [
+        {
+            "tag": f"{r['namespace']}:{r['name']}" if r["namespace"] else r["name"],
+            "archived_reason": r["archived_reason"],
+        }
+        for r in rows
+    ]
+    results.sort(key=lambda x: x["tag"])
+    return results
+
+
 # search_tags RRFパラメータ
 _SEARCH_TAGS_RRF_K = 60
 _SEARCH_TAGS_W_LIKE = 1.0
@@ -589,6 +623,7 @@ def search_tags(
                 like_rows = conn.execute(
                     """
                     SELECT t.id, t.namespace, t.name, t.notes, t.description, t.canonical_id,
+                      t.archived_at, t.archived_reason,
                       ct.namespace AS canonical_namespace, ct.name AS canonical_name,
                       (SELECT COUNT(*) FROM topic_tags WHERE tag_id = t.id) +
                       (SELECT COUNT(*) FROM activity_tags WHERE tag_id = t.id) +
@@ -607,6 +642,7 @@ def search_tags(
                 like_rows = conn.execute(
                     """
                     SELECT t.id, t.namespace, t.name, t.notes, t.description, t.canonical_id,
+                      t.archived_at, t.archived_reason,
                       ct.namespace AS canonical_namespace, ct.name AS canonical_name,
                       (SELECT COUNT(*) FROM topic_tags WHERE tag_id = t.id) +
                       (SELECT COUNT(*) FROM activity_tags WHERE tag_id = t.id) +
@@ -679,6 +715,7 @@ def search_tags(
                 missing_rows = conn.execute(
                     f"""
                     SELECT t.id, t.namespace, t.name, t.notes, t.description, t.canonical_id,
+                      t.archived_at, t.archived_reason,
                       ct.namespace AS canonical_namespace, ct.name AS canonical_name,
                       (SELECT COUNT(*) FROM topic_tags WHERE tag_id = t.id) +
                       (SELECT COUNT(*) FROM activity_tags WHERE tag_id = t.id) +
@@ -720,6 +757,8 @@ def search_tags(
                     "score": round(score, 4),
                     "canonical": canonical,
                     "description": r["description"],
+                    "archived": r["archived_at"] is not None,
+                    "archived_reason": r["archived_reason"],
                 }
                 if include_notes:
                     entry["notes"] = r["notes"]
@@ -754,9 +793,11 @@ def update_tag(
     canonical: str | None = None,
     rename: str | None = None,
     description: str | None = None,
+    archived: bool | None = None,
+    archived_reason: str | None = None,
 ) -> dict:
     """既存タグの notes（教訓・運用ルール）、canonical（エイリアス先）、name（リネーム）、
-    またはdescription（短い説明文）を更新する。
+    description（短い説明文）、またはarchived（退役状態）を更新する。
 
     Args:
         tag: タグ文字列（例: "domain:cc-memory", "hooks"）
@@ -767,25 +808,44 @@ def update_tag(
         rename: 新しいタグ名。namespace変更も可能（例: "hooks" → "domain:hooks"）。
                 新名が既存タグと衝突する場合はエラー。
         description: タグの短い説明文（最大100文字）。空文字はNULLに正規化される。
+        archived: Trueで退役、Falseで解除。既に同状態のときは変更せず updated: False
+                  を返す（冪等）。解除時は archived_reason も自動的にNULLへ戻る。
+        archived_reason: 退役理由の短いテキスト（最大100文字）。archived=True と
+                         同時指定のときのみ有効。既に archived 状態のタグへ
+                         archived=True を再適用した場合、このパラメータで理由を
+                         書き換えることはできない（一度 archived=False で解除して
+                         から再設定する）。
 
     Returns:
         成功時: {"tag": str, "notes": str, "updated": True} (notes更新時)
                 {"tag": str, "canonical": str | None, "updated": True} (canonical更新時)
                 {"tag": str, "renamed_to": str, "updated": True} (rename時)
                 {"tag": str, "description": str | None, "updated": True} (description更新時)
+                {"tag": str, "archived": bool, "archived_at": str | None,
+                 "archived_reason": str | None, "updated": bool} (archived更新時)
         失敗時: {"error": {"code": ..., "message": ...}}
     """
     # entity_publishがtag_serviceをimportするため、循環import回避のためlocal import
     # （モジュールtopでのimportはこのモジュールがロードされる時点で循環になる）
     from src.services.relay.entity_publish import publish_entity_event_with_conn
 
-    # バリデーション: 相互排他（notes, canonical, rename, description は1つだけ指定可能）
-    specified = [p for p in (notes, canonical, rename, description) if p is not None]
+    # archived_reason は archived=True と同時指定のときのみ有効（archived=False・未指定への
+    # 単独付随は不可）
+    if archived_reason is not None and archived is not True:
+        return {
+            "error": {
+                "code": "ORPHAN_ARCHIVED_REASON",
+                "message": "archived_reason requires archived=True in the same call.",
+            }
+        }
+
+    # バリデーション: 相互排他（notes, canonical, rename, description, archived は1つだけ指定可能）
+    specified = [p for p in (notes, canonical, rename, description, archived) if p is not None]
     if len(specified) > 1:
         return {
             "error": {
                 "code": "CONFLICTING_PARAMS",
-                "message": "Only one of 'notes', 'canonical', 'rename', or 'description' can be specified. Use separate calls.",
+                "message": "Only one of 'notes', 'canonical', 'rename', 'description', or 'archived' can be specified. Use separate calls.",
             }
         }
 
@@ -794,7 +854,7 @@ def update_tag(
         return {
             "error": {
                 "code": "MISSING_PARAMS",
-                "message": "At least one of 'notes', 'canonical', 'rename', or 'description' must be specified.",
+                "message": "At least one of 'notes', 'canonical', 'rename', 'description', or 'archived' must be specified.",
             }
         }
 
@@ -806,7 +866,7 @@ def update_tag(
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT id, notes, canonical_id FROM tags WHERE namespace = ? AND name = ?",
+            "SELECT id, notes, canonical_id, archived_at, archived_reason FROM tags WHERE namespace = ? AND name = ?",
             (namespace, name),
         ).fetchone()
 
@@ -891,6 +951,60 @@ def update_tag(
             conn.commit()
             return {"tag": tag_str, "notes": notes, "updated": True}
 
+        # --- archived 更新 ---
+        if archived is not None:
+            if archived:
+                if row["archived_at"] is not None:
+                    # 冪等: 既にarchived。archived_reasonの後追い書き換えはしない
+                    # （解除→再設定運用。5. Edge cases参照）
+                    return {
+                        "tag": tag_str,
+                        "archived": True,
+                        "archived_at": row["archived_at"],
+                        "archived_reason": row["archived_reason"],
+                        "updated": False,
+                    }
+                # 自分がcanonical先として他タグから参照されている場合、参照元が
+                # 気づかないままarchivedになるのを避けるため拒否する
+                dependent = conn.execute(
+                    "SELECT id FROM tags WHERE canonical_id = ? LIMIT 1",
+                    (tag_id,),
+                ).fetchone()
+                if dependent:
+                    return {
+                        "error": {
+                            "code": "ARCHIVED_CANONICAL_INVALID",
+                            "message": f"Tag '{tag_str}' is the canonical target of other aliases. "
+                                       "Remove those aliases first.",
+                        }
+                    }
+                conn.execute(
+                    "UPDATE tags SET archived_at = CURRENT_TIMESTAMP, archived_reason = ? WHERE id = ?",
+                    (archived_reason, tag_id),
+                )
+                publish_entity_event_with_conn(conn, entity_type="tag", entity_id=tag_id, event="updated")
+                conn.commit()
+                new_row = conn.execute(
+                    "SELECT archived_at FROM tags WHERE id = ?", (tag_id,)
+                ).fetchone()
+                return {
+                    "tag": tag_str,
+                    "archived": True,
+                    "archived_at": new_row["archived_at"],
+                    "archived_reason": archived_reason,
+                    "updated": True,
+                }
+            else:
+                if row["archived_at"] is None:
+                    return {"tag": tag_str, "archived": False, "updated": False}
+                conn.execute(
+                    "UPDATE tags SET archived_at = NULL, archived_reason = NULL WHERE id = ?",
+                    (tag_id,),
+                )
+                publish_entity_event_with_conn(conn, entity_type="tag", entity_id=tag_id, event="updated")
+                conn.commit()
+                return {"tag": tag_str, "archived": False, "updated": True}
+
         # --- canonical 更新 ---
         # canonical="" → エイリアス解除
         if canonical == "":
@@ -911,6 +1025,15 @@ def update_tag(
                 }
             }
 
+        # archived中のタグは新規にエイリアスにできない
+        if row["archived_at"] is not None:
+            return {
+                "error": {
+                    "code": "ARCHIVED_CANONICAL_INVALID",
+                    "message": f"Tag '{tag_str}' is archived. Cannot set canonical while archived.",
+                }
+            }
+
         # canonical先タグを解決
         parsed_canonical = validate_and_parse_tags([canonical])
         if isinstance(parsed_canonical, dict):
@@ -918,7 +1041,7 @@ def update_tag(
         c_namespace, c_name = parsed_canonical[0]
 
         c_row = conn.execute(
-            "SELECT id, canonical_id FROM tags WHERE namespace = ? AND name = ?",
+            "SELECT id, canonical_id, archived_at FROM tags WHERE namespace = ? AND name = ?",
             (c_namespace, c_name),
         ).fetchone()
 
@@ -928,6 +1051,15 @@ def update_tag(
                 "error": {
                     "code": "NOT_FOUND",
                     "message": f"Canonical tag '{c_display}' not found",
+                }
+            }
+
+        if c_row["archived_at"] is not None:
+            c_display = f"{c_namespace}:{c_name}" if c_namespace else c_name
+            return {
+                "error": {
+                    "code": "ARCHIVED_CANONICAL_INVALID",
+                    "message": f"Canonical target '{c_display}' is archived. Cannot alias to an archived tag.",
                 }
             }
 
@@ -1126,7 +1258,7 @@ def collect_tag_notes_for_injection(
     placeholders = " OR ".join(["(namespace = ? AND name = ?)"] * len(parsed))
     params = [v for pair in parsed for v in pair]
     rows = conn.execute(
-        f"SELECT namespace, name, notes FROM tags WHERE ({placeholders}) AND notes IS NOT NULL",
+        f"SELECT namespace, name, notes FROM tags WHERE ({placeholders}) AND notes IS NOT NULL AND archived_at IS NULL",
         params
     ).fetchall()
 
