@@ -1381,9 +1381,10 @@ class TestSessionStartHookRelayInbox:
 
         assert "relay inbox 未読" not in context
 
-    def test_relay_section_absent_when_inbox_never_created(self, temp_db, tmp_path):
-        """identity解決・relay構成済みでも、このidentity宛のinbox fileが
-        一度も作られていなければセクションは出ない（touchしない・zero-cost維持）"""
+    def test_monitor_instruction_shown_when_inbox_never_created(self, temp_db, tmp_path):
+        """identity解決・relay構成済みなら、このidentity宛のinbox fileが
+        一度も作られていなくてもMonitor監視指示は出る（未読N件の報告行のみ省く。
+        セッション作業中に届く新着を取りこぼさないための常時発火）"""
         state_dir = tmp_path / "relay-state"
 
         os.environ["RELAY_STATE_DIR"] = str(state_dir)
@@ -1401,11 +1402,12 @@ class TestSessionStartHookRelayInbox:
         )
         context = result["hookSpecificOutput"]["additionalContext"]
 
+        assert "Monitorツール" in context
         assert "relay inbox 未読" not in context
 
-    def test_relay_section_absent_when_unread_is_zero(self, temp_db, tmp_path):
-        """identity解決・relay構成済みでinbox fileが存在しても、既読化済みで
-        未読が0件ならセクションは出ない"""
+    def test_monitor_instruction_shown_when_unread_is_zero(self, temp_db, tmp_path):
+        """identity解決・relay構成済みでinbox fileが存在し、既読化済みで
+        未読が0件でもMonitor監視指示は出る（未読N件の報告行のみ省く）"""
         state_dir = tmp_path / "relay-state"
         from src.services.relay import inbox as relay_inbox
 
@@ -1427,6 +1429,7 @@ class TestSessionStartHookRelayInbox:
         )
         context = result["hookSpecificOutput"]["additionalContext"]
 
+        assert "Monitorツール" in context
         assert "relay inbox 未読" not in context
 
 

@@ -409,7 +409,7 @@ def _build_signals_section(conn, session_id: str | None = None, source: str | No
 
 
 def _build_relay_inbox_section(conn, session_id: str | None = None, source: str | None = None) -> str:  # conn, session_id, source: buildersループの統一シグネチャ
-    """relay inboxの未読件数を表示する。未読0件はコンテキスト消費ゼロ。
+    """identityが解決できる限りMonitor監視指示を常時出す。未読件数の表示のみ0件時は省く。
 
     relay未構成（token未設定）ならidentity解決を試みる前に打ち切る。
     本hookはSessionStart（Claude Code起動をブロックする経路）で毎回実行される
@@ -423,9 +423,10 @@ def _build_relay_inbox_section(conn, session_id: str | None = None, source: str 
     ancestry()（祖先pidチェーンの一致でlauncherプロセスを特定する経路、
     ps最大5回spawn）にフォールバックする。
 
-    identityが解決できてもinbox file未作成（このidentity宛のrelay
-    メッセージが一度も無い）場合や、ファイルはあっても未読が0件の場合は、
-    そこで打ち切ってコンテキスト消費ゼロを維持する。
+    Monitor監視指示はセッション作業中に届く新着を取りこぼさないための
+    ものなので、既存の未読・inbox file有無に関わらずidentity解決できた
+    時点で常に出す（inbox_path/count_unreadはファイル不在でも安全に動作する）。
+    未読N件の報告行のみ、未読が実在するときに追加する。
     """
     from src.services.relay import config as relay_config
 
@@ -441,17 +442,13 @@ def _build_relay_inbox_section(conn, session_id: str | None = None, source: str 
     from src.services.relay.inbox import count_unread, inbox_path
 
     path = inbox_path(identity)
-    if not path.exists():
-        return ""
-
     count = count_unread(identity)
-    if count == 0:
-        return ""
 
-    return (
-        f"relay inbox 未読: {count}件 → relay_receiveで消化\n"
-        f"新着の待ち受けはMonitorツールで {path} を監視してください。\n"
-    )
+    lines = []
+    if count > 0:
+        lines.append(f"relay inbox 未読: {count}件 → relay_receiveで消化")
+    lines.append(f"新着の待ち受けはMonitorツールで {path} を監視してください。")
+    return "\n".join(lines) + "\n"
 
 
 def _build_snapshot_section(conn, session_id: str | None = None, source: str | None = None) -> str:  # conn, session_id, source: buildersループの統一シグネチャ
