@@ -52,6 +52,20 @@ def _write_cursor(session_id: str, offset: int) -> None:
     os.replace(tmp, path)
 
 
+def ensure_inbox_file(session_id: str) -> Path:
+    """inbox fileが存在しなければ空ファイルとして先行生成する（touch、冪等）。
+
+    Monitorツールで `tail -f` する監視対象は事前に存在している必要がある。
+    ファイル不在のまま `tail -f` すると即座に失敗して監視が成立しないため、
+    identity解決に成功した時点（SessionStart hook等）でこれを呼び、
+    未配達（unread=0）セッションでも監視を開始できる状態を作る。
+    """
+    path = inbox_path(session_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch(exist_ok=True)
+    return path
+
+
 def append(session_id: str, record: dict) -> None:
     """inbox に 1 レコードを追記する（flock 排他 + fsync）。"""
     path = inbox_path(session_id)

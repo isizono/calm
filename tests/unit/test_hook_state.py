@@ -64,6 +64,20 @@ class TestIdLeakCount:
         assert hook_state.get_id_leak_count() == 0
 
 
+class TestMonitorStarted:
+    def test_get_returns_false_when_no_file(self, hook_state):
+        assert hook_state.get_monitor_started() is False
+
+    def test_set_then_get(self, hook_state):
+        hook_state.set_monitor_started()
+        assert hook_state.get_monitor_started() is True
+
+    def test_cleared_by_clear_session(self, hook_state):
+        hook_state.set_monitor_started()
+        HookState.clear_session("test-session-123")
+        assert hook_state.get_monitor_started() is False
+
+
 class TestTranscriptOffset:
     def test_get_returns_zero_when_no_file(self, hook_state):
         assert hook_state.get_transcript_offset() == 0

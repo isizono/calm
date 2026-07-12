@@ -6,11 +6,17 @@
 3. events.jsonl全読み
 4. 未消費のnudgeイベント判定 → system-reminder注入
 5. id_leak_count > 0 → 内部 ID 漏出 system-reminder 注入 + count reset
-6. 何もなし → 空JSON出力
+6. relay session-aware nudge（CCM_RELAY_SESSION_AWARE=1のときのみ） →
+   system-reminder注入
+7. 何もなし → 空JSON出力
 
 Stop hookでnudge判定とevents.jsonl追記を行い、本hookで消費して注入する。
 MessageDisplay hookが内部IDリテラル件数をid_leak_countに蓄積し、本hookで参照する。
 注入タイミングが「ユーザーの次の発言時」になるため、文面もその文脈に合わせている。
+relay session-aware nudge（手順6）はSessionStartの一回きりの起動指示が読み流されて
+機能しない問題への対応で、events.jsonl/id_leakとは独立にHookState.monitor_started
+マーカー（hooks/relay_monitor_watch_hook.pyがPostToolUseで書く）とrelay inboxの
+未読件数を毎ターン判定する。
 """
 import json
 import os
@@ -25,6 +31,7 @@ if str(_project_root) not in sys.path:
 
 from hooks.hook_state import HookState
 from hooks.signal_capture import try_capture_signal
+from src import config
 
 
 def _make_hook_output(message: str) -> dict:
@@ -109,6 +116,55 @@ def _format_nudge_message(event: dict, ntype: str | None) -> str | None:
     return None
 
 
+def _build_relay_turn_nudge(state: HookState) -> str | None:
+    """relay session-aware毎ターンnudge（CCM_RELAY_SESSION_AWARE=1のときのみ動作）。
+
+    SessionStart一回きりの起動指示はエージェントに読み流されて機能しないことが
+    確認されたため、毎ターン判定してリマインダーを注入する。
+
+    relay未構成（token未設定）・identity解決失敗（祖先pidチェーンで同一launcher
+    プロセスを特定できない）のセッションはrelay非参加とみなし、Noneを返す
+    （fail-open。エラーにしない）。
+
+    Monitor監視が未起動（HookState.get_monitor_startedがFalse）なら起動指示、
+    未読が1件以上あれば消化指示を、該当する行だけ束ねて返す。どちらも
+    非該当（起動済みかつ未読0件）ならNoneを返す。
+    """
+    if not config.RELAY_SESSION_AWARE_ENABLED:
+        return None
+
+    from src.services.relay import config as relay_config
+
+    if not relay_config.get_token():
+        return None
+
+    from src.services.relay.identity import get_relay_identity, resolve_identity_by_ancestry
+
+    identity = get_relay_identity() or resolve_identity_by_ancestry()
+    if not identity:
+        return None
+
+    from src.services.relay.inbox import count_unread, inbox_path
+
+    monitor_started = state.get_monitor_started()
+    unread = count_unread(identity)
+
+    if monitor_started and unread <= 0:
+        return None
+
+    lines = []
+    if not monitor_started:
+        path = inbox_path(identity)
+        lines.append(
+            f"relay inboxの監視がまだ起動されていません。"
+            f"Monitorツールで {path} を監視してください。"
+        )
+    if unread > 0:
+        lines.append(f"relay inbox 未読: {unread}件 → relay_receiveで消化してください。")
+
+    return _wrap_system_reminder("\n".join(lines))
+
+
 def main() -> None:
     try:
         # 環境変数によるテスト用オーバーライド
@@ -160,7 +216,14 @@ def main() -> None:
             print(json.dumps(_make_hook_output(_ID_LEAK_NUDGE_MESSAGE), ensure_ascii=False))
             return
 
-        # 6. 何もなし
+        # 6. relay session-aware nudge（CCM_RELAY_SESSION_AWARE=1のときのみ、
+        # 既存nudge・id_leakのどちらも非該当だった場合のみ判定）
+        relay_message = _build_relay_turn_nudge(state)
+        if relay_message:
+            print(json.dumps(_make_hook_output(relay_message), ensure_ascii=False))
+            return
+
+        # 7. 何もなし
         print("{}")
 
     except Exception as e:

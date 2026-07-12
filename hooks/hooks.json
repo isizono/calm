@@ -48,6 +48,17 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "matcher": "Monitor",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python hooks/relay_monitor_watch_hook.py"
+          }
+        ]
+      }
+    ],
     "MessageDisplay": [
       {
         "matcher": "*",

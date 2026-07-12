@@ -68,6 +68,12 @@ CCM_MIGRATION_DRYRUN: bool = os.environ.get("CCM_MIGRATION_DRYRUN", "1") != "0"
 # migration_ledger内容ハッシュ不一致時の既定動作。"error"（既定、起動中断）| "warn"（警告のみで続行）
 CCM_MIGRATION_HASH_ENFORCE: str = os.environ.get("CCM_MIGRATION_HASH_ENFORCE", "error").lower()
 
+# --- Relay session awareness ---
+# relay Monitor監視指示・毎ターンnudgeのopt-in kill switch。デフォルトOFF（"1"でON）。
+# OFF時はSessionStart/UserPromptSubmitのどちらからもrelay関連の文言を一切出さず、
+# relayを使わないユーザー・セッションにコンテキストを注入しない。
+RELAY_SESSION_AWARE_ENABLED: bool = os.environ.get("CCM_RELAY_SESSION_AWARE", "0") == "1"
+
 # --- Archived tags ---
 # 全タグがarchivedのアイテムに適用する final_score の降格係数
 ARCHIVED_DEMOTION_FACTOR: float = float(os.environ.get("CCM_ARCHIVED_DEMOTION_FACTOR", "0.3"))

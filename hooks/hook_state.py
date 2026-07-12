@@ -139,6 +139,17 @@ class HookState:
         """checked_in_activity_{session_id} に書く"""
         self._write(self._path("checked_in_activity"), str(activity_id))
 
+    # --- monitor_started (relay inbox監視) ---
+
+    def get_monitor_started(self) -> bool:
+        """このセッションでrelay inbox監視用のMonitorが起動済みかを取得。
+        未設定（ファイルなし） -> False。"""
+        return self._path("monitor_started").exists()
+
+    def set_monitor_started(self) -> None:
+        """monitor_started_{session_id} マーカーファイルを作成する（冪等）。"""
+        self._write(self._path("monitor_started"), "1")
+
     # --- events.jsonl ---
 
     @property
