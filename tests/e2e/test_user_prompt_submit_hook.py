@@ -276,6 +276,58 @@ class TestIdLeakNudge:
         assert HookState(_SESSION_ID).get_id_leak_count() == 0
 
 
+class TestEmptyStdin:
+    """stdin空/空白のみ → 空JSON、machine_errorシグナルは記録しない"""
+
+    def test_empty_stdin_returns_empty_json(self, state_dir):
+        proc = subprocess.run(
+            [sys.executable, "hooks/user_prompt_submit_hook.py"],
+            input="",
+            capture_output=True,
+            text=True,
+            cwd=str(_PROJECT_ROOT),
+            env={**os.environ, "HOOK_STATE_DIR": str(state_dir)},
+        )
+        assert proc.returncode == 0
+        assert json.loads(proc.stdout) == {}
+
+    def test_whitespace_only_stdin_returns_empty_json(self, state_dir):
+        proc = subprocess.run(
+            [sys.executable, "hooks/user_prompt_submit_hook.py"],
+            input="   \n\t",
+            capture_output=True,
+            text=True,
+            cwd=str(_PROJECT_ROOT),
+            env={**os.environ, "HOOK_STATE_DIR": str(state_dir)},
+        )
+        assert proc.returncode == 0
+        assert json.loads(proc.stdout) == {}
+
+    def test_empty_stdin_does_not_record_signal(self, state_dir, temp_db):
+        """空stdinはjson.loadsの例外経路に入らず、signal_eventsへ記録されない"""
+        from src.db import get_connection
+
+        proc = subprocess.run(
+            [sys.executable, "hooks/user_prompt_submit_hook.py"],
+            input="",
+            capture_output=True,
+            text=True,
+            cwd=str(_PROJECT_ROOT),
+            env={**os.environ, "HOOK_STATE_DIR": str(state_dir), "DISCUSSION_DB_PATH": temp_db},
+        )
+        assert proc.returncode == 0
+        assert json.loads(proc.stdout) == {}
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT * FROM signal_events WHERE source = 'hook:user_prompt_submit'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is None
+
+
 class TestFailOpen:
     """例外→空JSON（フェイルオープン）"""
 
