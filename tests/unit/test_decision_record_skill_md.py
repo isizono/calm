@@ -124,8 +124,11 @@ class TestDecisionRecordSkillPrecedentFormat:
         assert "拒否" in skill_md
 
     def test_references_canonical_format_doc(self, skill_md):
-        # 書式の正本はdocs/precedent-format.mdであり、本スキルは複製しない
+        # 書式の正本はdocs/precedent-format.md。配布先CWDでは解決しないため、
+        # skill同梱の references/precedent-format.md（正本と内容一致、整合性は
+        # test_precedent_format_sync.py で検証）を実際の参照先とする
         assert "docs/precedent-format.md" in skill_md
+        assert "references/precedent-format.md" in skill_md
         assert "正本" in skill_md
 
     def test_does_not_duplicate_full_template(self, skill_md):
