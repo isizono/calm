@@ -112,7 +112,7 @@ cc-memoryは「着手 → 記録 → 完了 → 同期」のライフサイク�
 - **リレーション**: トピック・アクティビティ間の関連。check-inで2親等まで自動取得され、`get_map`でさらに探索できる
 - **資材（material）**: 長い生情報のオフロード先。独立エンティティとしてタグ付きで保存され、リレーションでトピック・アクティビティと関連付けられる
 - **タグノート**: タグに紐づく常備情報。関連作業時にAIへ自動注入される
-- **振る舞い（habits）**: 全セッション共通で従ってほしいルール。alwaysタイプは全文が`~/.claude/rules`配下の自動生成ファイルに投影され、毎セッション開始時にシステムプロンプトへ自動的に読み込まれる。intelligentlyタイプは同じファイルに重要度順のタイトル一覧（マニフェスト）だけが載り、本文が必要になれば`get_habits`をhabit_id指定で呼んで取得する。「materialの書き方」「コミット前の確認事項」など、常に従ってほしいルールを登録できる。AIに「覚えといて」と言えばOK
+- **振る舞い（habits）**: 全セッション共通で従ってほしいルール。alwaysタイプは全文が`~/.claude/rules`配下の自動生成ファイルに投影され、毎セッション開始時にシステムプロンプトへ自動的に読み込まれる。intelligentlyタイプは同じファイルに重要度順のタイトル一覧（マニフェスト、既定30件まで。`CCM_PROJECTION_MANIFEST_MAX_ITEMS`で変更可）だけが載り、超過分は本文を切断せず「他N件 → get_habits で確認」の1行に縮退する。本文が必要になれば`get_habits`をhabit_id指定で呼んで取得する。「materialの書き方」「コミット前の確認事項」など、常に従ってほしいルールを登録できる。AIに「覚えといて」と言えばOK
 
 ## 熟練度別アドバイス
 
@@ -209,6 +209,7 @@ uv run python scripts/snapshot.py list
 | `CCM_SNAPSHOT_INTERVAL` | `12` | スナップショット取得間隔（時間） |
 | `CCM_SNAPSHOT_MAX_COUNT` | `5` | スナップショット最大保持数 |
 | `CCM_SNAPSHOT_ANOMALY_THRESHOLD` | `100` | 行数減少の異常検知閾値（件） |
+| `CCM_PROJECTION_MANIFEST_MAX_ITEMS` | `30` | intelligently habitsマニフェストの掲載件数上限 |
 
 現在の設定値は`get_config()`ツールで確認できる。
 
