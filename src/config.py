@@ -69,9 +69,9 @@ CCM_MIGRATION_DRYRUN: bool = os.environ.get("CCM_MIGRATION_DRYRUN", "1") != "0"
 CCM_MIGRATION_HASH_ENFORCE: str = os.environ.get("CCM_MIGRATION_HASH_ENFORCE", "error").lower()
 
 # --- Relay session awareness ---
-# relay Monitor監視指示・毎ターンnudgeのopt-in kill switch。デフォルトOFF（"1"でON）。
-# OFF時はSessionStart/UserPromptSubmitのどちらからもrelay関連の文言を一切出さず、
-# relayを使わないユーザー・セッションにコンテキストを注入しない。
+# relay Monitor監視指示のopt-in kill switch。デフォルトOFF（"1"でON）。
+# OFF時はSessionStartからrelay関連の文言を一切出さず、relayを使わない
+# ユーザー・セッションにコンテキストを注入しない。
 RELAY_SESSION_AWARE_ENABLED: bool = os.environ.get("CCM_RELAY_SESSION_AWARE", "0") == "1"
 
 # --- Archived tags ---
