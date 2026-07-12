@@ -6,6 +6,7 @@ renew/resubscribe 判定・孤児 sweep 判定・active session の生存ゲー�
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -15,8 +16,10 @@ from src.services.relay import config, declarations, inbox, lease_loop
 from src.services.relay.lease_loop import (
     RenewAction,
     apply_action,
+    compute_orphan_inbox_files,
     compute_orphan_sessions,
     compute_renew_actions,
+    delete_orphan_inbox_file,
     delete_orphan_state,
 )
 
@@ -245,6 +248,124 @@ class TestDeleteOrphanState:
         assert declarations.load("sess-old") is None
         assert not inbox.inbox_path("sess-old").exists()
         assert not inbox.cursor_path("sess-old").exists()
+
+
+# ---------------------------------------------------------------------------
+# compute_orphan_inbox_files
+# ---------------------------------------------------------------------------
+
+
+class TestComputeOrphanInboxFiles:
+    def test_file_older_than_threshold_without_declaration_is_orphan(self):
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        inbox.ensure_inbox_file("precreated-only")
+        path = inbox.inbox_path("precreated-only")
+        old_ts = (now - timedelta(hours=25)).timestamp()
+        os.utime(path, (old_ts, old_ts))
+
+        orphans = compute_orphan_inbox_files(
+            inbox.list_inbox_files(),
+            declared_session_ids=set(),
+            now=now,
+            threshold_seconds=24 * 3600,
+        )
+        assert orphans == [("precreated-only", path)]
+
+    def test_file_within_threshold_is_not_orphan(self):
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        inbox.ensure_inbox_file("recent")
+        path = inbox.inbox_path("recent")
+        recent_ts = (now - timedelta(hours=1)).timestamp()
+        os.utime(path, (recent_ts, recent_ts))
+
+        orphans = compute_orphan_inbox_files(
+            inbox.list_inbox_files(),
+            declared_session_ids=set(),
+            now=now,
+            threshold_seconds=24 * 3600,
+        )
+        assert orphans == []
+
+    def test_file_with_declaration_is_excluded_even_if_old(self):
+        """declarationがあるsessionのinbox fileはcompute_orphan_sessions側が
+        扱うため、ここでは古くても孤児判定しない(declared_session_idsで除外)。"""
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        inbox.ensure_inbox_file("has-declaration")
+        path = inbox.inbox_path("has-declaration")
+        old_ts = (now - timedelta(hours=25)).timestamp()
+        os.utime(path, (old_ts, old_ts))
+
+        orphans = compute_orphan_inbox_files(
+            inbox.list_inbox_files(),
+            declared_session_ids={"has-declaration"},
+            now=now,
+            threshold_seconds=24 * 3600,
+        )
+        assert orphans == []
+
+
+# ---------------------------------------------------------------------------
+# delete_orphan_inbox_file
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteOrphanInboxFile:
+    def test_removes_inbox_and_cursor_file(self):
+        inbox.append("precreated-only", {"n": 1})
+        inbox.drain("precreated-only", limit=0)  # cursor fileを作る
+        path = inbox.inbox_path("precreated-only")
+        assert path.exists()
+        assert inbox.cursor_path("precreated-only").exists()
+
+        delete_orphan_inbox_file("precreated-only", path)
+
+        assert not path.exists()
+        assert not inbox.cursor_path("precreated-only").exists()
+
+    def test_missing_cursor_file_does_not_raise(self):
+        inbox.ensure_inbox_file("no-cursor")
+        path = inbox.inbox_path("no-cursor")
+        assert not inbox.cursor_path("no-cursor").exists()
+
+        delete_orphan_inbox_file("no-cursor", path)
+
+        assert not path.exists()
+
+
+# ---------------------------------------------------------------------------
+# _sweep_orphans（declarationベース・precreateベース両方の配線確認）
+# ---------------------------------------------------------------------------
+
+
+class TestSweepOrphans:
+    def test_sweeps_both_declaration_and_precreated_inbox_orphans(self):
+        now = datetime.now(timezone.utc)
+        _write_declaration(
+            "declared-orphan",
+            [
+                {
+                    "subscription_id": "s-1",
+                    "labels": ["x"],
+                    "lease_expires_at": _iso(now - timedelta(hours=25)),
+                }
+            ],
+        )
+        inbox.ensure_inbox_file("precreated-orphan")
+        old_ts = (now - timedelta(hours=25)).timestamp()
+        os.utime(inbox.inbox_path("precreated-orphan"), (old_ts, old_ts))
+
+        lease_loop._sweep_orphans(24 * 3600)
+
+        assert declarations.load("declared-orphan") is None
+        assert not inbox.inbox_path("declared-orphan").exists()
+        assert not inbox.inbox_path("precreated-orphan").exists()
+
+    def test_does_not_sweep_recent_precreated_inbox_file(self):
+        inbox.ensure_inbox_file("precreated-recent")
+
+        lease_loop._sweep_orphans(24 * 3600)
+
+        assert inbox.inbox_path("precreated-recent").exists()
 
 
 # ---------------------------------------------------------------------------
