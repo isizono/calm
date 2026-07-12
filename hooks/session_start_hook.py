@@ -4,7 +4,8 @@
 - アクティビティ一覧（作業中・優先のみ個別表示。末尾に固定ナビ+未表示件数句）
 - 振る舞い（正は~/.claude/rules配下の自動生成ファイル。本hookは投影ファイルの
   鮮度検証と、読み込めていないセッションへの縮退フォールバックのみを担う）
-- relay Monitor監視指示（identity解決に成功した場合は常時。未読N件の報告行のみ未読が実在するときに追加）
+- relay Monitor監視指示（CCM_RELAY_SESSION_AWARE=1のときのみ。identity解決に
+  成功した場合は常時、未読N件の報告行のみ未読が実在するときに追加）
 
 コンテキスト取得フローガイドはここでは注入しない（check_in初回呼び出し時に
 checkin_service側が埋め込む）。
@@ -411,7 +412,11 @@ def _build_signals_section(conn, session_id: str | None = None, source: str | No
 def _build_relay_inbox_section(conn, session_id: str | None = None, source: str | None = None) -> str:  # conn, session_id, source: buildersループの統一シグネチャ
     """identityが解決できる限りMonitor監視指示を常時出す。未読件数の表示のみ0件時は省く。
 
-    relay未構成（token未設定）ならidentity解決を試みる前に打ち切る。
+    CCM_RELAY_SESSION_AWARE（デフォルトOFF）のkill switch。OFF時はtokenチェック・
+    identity解決を一切試みず空文字を返す。relayを使わないユーザー・セッションに
+    関連コンテキストを注入しないための入口ゲート。
+
+    ON時、relay未構成（token未設定）ならidentity解決を試みる前に打ち切る。
     本hookはSessionStart（Claude Code起動をブロックする経路）で毎回実行される
     ため、identity解決の前にコストの小さいtokenチェックを行い、無駄な
     プロセスspawnを避ける。
@@ -427,7 +432,15 @@ def _build_relay_inbox_section(conn, session_id: str | None = None, source: str 
     ものなので、既存の未読・inbox file有無に関わらずidentity解決できた
     時点で常に出す（inbox_path/count_unreadはファイル不在でも安全に動作する）。
     未読N件の報告行のみ、未読が実在するときに追加する。
+
+    identity解決に成功した時点でensure_inbox_fileを呼び、inbox fileを
+    先行生成する。Monitorツールでの `tail -f` はファイル不在だと即座に
+    失敗するため、未読0件（inbox未配達）のセッションでも監視を開始できる
+    状態を作っておく。
     """
+    if not config.RELAY_SESSION_AWARE_ENABLED:
+        return ""
+
     from src.services.relay import config as relay_config
 
     if not relay_config.get_token():
@@ -439,9 +452,9 @@ def _build_relay_inbox_section(conn, session_id: str | None = None, source: str 
     if not identity:
         return ""
 
-    from src.services.relay.inbox import count_unread, inbox_path
+    from src.services.relay.inbox import count_unread, ensure_inbox_file
 
-    path = inbox_path(identity)
+    path = ensure_inbox_file(identity)
     count = count_unread(identity)
 
     lines = []

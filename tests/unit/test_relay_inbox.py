@@ -144,6 +144,30 @@ class TestDrainHasMore:
         assert result["has_more"] is True
 
 
+class TestEnsureInboxFile:
+    """ensure_inbox_file: Monitorの `tail -f` がファイル不在で即座に失敗しない
+    よう、inbox fileを先行生成（touch）する。"""
+
+    def test_creates_empty_file_when_absent(self):
+        path = inbox.ensure_inbox_file("never-messaged")
+        assert path == inbox.inbox_path("never-messaged")
+        assert path.exists()
+        assert path.read_bytes() == b""
+
+    def test_is_idempotent_and_does_not_truncate_existing_content(self):
+        inbox.append("s1", {"n": 1})
+        path = inbox.ensure_inbox_file("s1")
+        assert path.exists()
+        # 既存レコードが消えていない（truncateしない）ことを確認
+        assert inbox.count_unread("s1") == 1
+
+    def test_creates_parent_directory(self, tmp_path, monkeypatch):
+        fresh_state_dir = tmp_path / "not-yet-created"
+        monkeypatch.setenv("RELAY_STATE_DIR", str(fresh_state_dir))
+        path = inbox.ensure_inbox_file("s2")
+        assert path.exists()
+
+
 class TestCountUnread:
     def test_missing_inbox_returns_zero(self):
         assert inbox.count_unread("never-subscribed") == 0
