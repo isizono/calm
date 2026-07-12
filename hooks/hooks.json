@@ -11,6 +11,10 @@
           {
             "type": "command",
             "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python hooks/session_start_hook.py"
+          },
+          {
+            "type": "command",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python hooks/sanitize_backfill_hook.py"
           }
         ]
       }
@@ -44,6 +48,17 @@
           {
             "type": "command",
             "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python hooks/preblock_hook.py"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python hooks/sanitize_tool_result_hook.py"
           }
         ]
       }

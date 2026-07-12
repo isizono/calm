@@ -117,6 +117,9 @@ def main() -> None:
 
         # 1. stdin読み込み
         raw = sys.stdin.read()
+        if not raw.strip():
+            print("{}")
+            return
         data = json.loads(raw)
         session_id = data.get("session_id", "")
 

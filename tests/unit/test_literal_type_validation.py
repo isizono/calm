@@ -155,7 +155,7 @@ INVALID_CASES = [
 
 
 @pytest.mark.parametrize("tool_name,args,target_key", INVALID_CASES)
-def test_invalid_literal_value_raises_validation_error(tool_name, args, target_key):
+def test_invalid_literal_value_raises_validation_error(tool_name, args, target_key, temp_db):
     """許容値以外の文字列を渡すと ValidationError で弾かれる。"""
 
     async def _call():
