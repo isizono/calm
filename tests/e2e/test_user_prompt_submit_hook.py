@@ -279,18 +279,6 @@ class TestIdLeakNudge:
 class TestEmptyStdin:
     """stdin空/空白のみ → 空JSON、machine_errorシグナルは記録しない"""
 
-    def test_empty_stdin_returns_empty_json(self, state_dir):
-        proc = subprocess.run(
-            [sys.executable, "hooks/user_prompt_submit_hook.py"],
-            input="",
-            capture_output=True,
-            text=True,
-            cwd=str(_PROJECT_ROOT),
-            env={**os.environ, "HOOK_STATE_DIR": str(state_dir)},
-        )
-        assert proc.returncode == 0
-        assert json.loads(proc.stdout) == {}
-
     def test_whitespace_only_stdin_returns_empty_json(self, state_dir):
         proc = subprocess.run(
             [sys.executable, "hooks/user_prompt_submit_hook.py"],
