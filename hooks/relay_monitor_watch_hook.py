@@ -1,15 +1,24 @@
 """PostToolUse hook (matcher: Monitor): relay inbox監視の起動判定。
 
 CCM_RELAY_SESSION_AWARE（デフォルトOFF）が有効なとき、Monitorツール呼び出しの
-tool_inputがそのセッションのrelay inbox pathを監視するコマンドだったことを
-検知し、セッションIDキーのマーカーファイル（HookState.set_monitor_started）を
-書く。user_prompt_submit_hookはこのマーカーの有無で「そのセッション中に
-Monitor監視が起動済みか」を判定し、未起動なら毎ターンリマインダーを注入する。
+tool_inputがそのセッションのrelay inbox pathを`persistent: true`で監視する
+コマンドだったことを検知し、セッションIDキーのマーカーファイル
+（HookState.set_monitor_started）を書く。user_prompt_submit_hookはこの
+マーカーの有無で「そのセッション中にMonitor監視が起動済みか」を判定し、
+未起動なら毎ターンリマインダーを注入する。
+
+`persistent: true`を必須条件とするのは、既定の`persistent: false`だと
+MonitorはtimeoutMs既定値（5分）で自動終了するため。マーカーだけ立てて
+watch実体が5分後にサイレントに切れると、本hookが解決しようとしている
+「起動指示の読み流しによる機能停止」を「監視のサイレント終了」という
+形で再発させてしまう。
 
 本hookはPostToolUse（ツール呼び出し完了後）で発火する独立プロセスであり、
 SessionStart hook同様Claude Code CLIが起動する独立プロセスでMCPリクエスト
 コンテキストを持たないため、identity解決はresolve_identity_by_ancestry()
-（祖先pidチェーン一致、ps最大5回spawn）に依存する。
+（祖先pidチェーン一致、ps最大5回spawn）に依存する。HookState.relay_identity
+キャッシュを読み書きし、user_prompt_submit_hookと双方向で共有する
+（どちらか一方が先に解決すれば、もう片方はps spawnを避けられる）。
 
 tool_response の内部構造はMonitorツール（ハーネス実装）依存で公開仕様が
 無いため、判定は保守的に倒す: dict形式で明確に `is_error` が真のときのみ
@@ -69,9 +78,22 @@ def main() -> None:
             print("{}")
             return
 
-        from src.services.relay.identity import get_relay_identity, resolve_identity_by_ancestry
+        if tool_input.get("persistent") is not True:
+            # persistent:false（既定）はtimeout_msの既定5分でwatchが自動終了する。
+            # マーカーだけ立てるとその後の生存確認手段が無いため、persistent:true
+            # で呼ばれた場合のみ起動成功とみなす。
+            print("{}")
+            return
 
-        identity = get_relay_identity() or resolve_identity_by_ancestry()
+        state = HookState(session_id)
+
+        identity = state.get_cached_relay_identity()
+        if not identity:
+            from src.services.relay.identity import get_relay_identity, resolve_identity_by_ancestry
+
+            identity = get_relay_identity() or resolve_identity_by_ancestry()
+            if identity:
+                state.set_cached_relay_identity(identity)
         if not identity:
             # identity解決に失敗するセッションはrelay非参加とみなし何もしない（fail-open）
             print("{}")
@@ -89,7 +111,7 @@ def main() -> None:
             print("{}")
             return
 
-        HookState(session_id).set_monitor_started()
+        state.set_monitor_started()
         print("{}")
 
     except Exception as e:

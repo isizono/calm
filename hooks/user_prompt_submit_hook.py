@@ -130,6 +130,10 @@ def _resolve_relay_identity_cached(state: HookState) -> str | None:
     解決に失敗した（None）場合はキャッシュしない。launcher登録が後から
     間に合うタイミング差を想定し、次ターン以降も解決を再試行できるように
     しておく（恒久的にNoneを確定させない）。
+
+    このキャッシュはhooks/relay_monitor_watch_hook.py（PostToolUse、matcher:
+    Monitor）とも共有される（同じHookState.relay_identityを読み書きする）。
+    どちらか一方が先に解決すれば、もう片方はps spawnを避けられる。
     """
     cached = state.get_cached_relay_identity()
     if cached:
