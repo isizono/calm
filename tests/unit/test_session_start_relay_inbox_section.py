@@ -116,12 +116,27 @@ class TestGateConditions:
     ):
         """identity解決・relay構成済みなら、このidentity宛のinbox fileが
         一度も作られていなくてもMonitor監視指示を返す（新着を取りこぼさないため
-        既存メッセージの有無を問わず常時発火する。ファイル自体はtouchしない）"""
+        既存メッセージの有無を問わず常時発火する）"""
         monkeypatch.setattr(relay_identity, "get_relay_identity", lambda: "never-messaged")
         result = _build_relay_inbox_section(None)
         assert "Monitorツール" in result
         assert "未読" not in result
+
+    def test_precreates_inbox_file_when_not_yet_created(self, monkeypatch, relay_configured):
+        """一度もappendされていないidentityでも、指示を返す前にinbox fileを
+        先行生成する（tail -f等のfile不在即死ツールを回避するため）"""
+        monkeypatch.setattr(relay_identity, "get_relay_identity", lambda: "never-messaged")
         assert not relay_inbox.inbox_path("never-messaged").exists()
+        _build_relay_inbox_section(None)
+        assert relay_inbox.inbox_path("never-messaged").exists()
+
+    def test_does_not_truncate_existing_inbox_file_content(self, monkeypatch, relay_configured):
+        """既にメッセージが届いているinbox fileは、先行生成処理によって
+        中身を消されない"""
+        monkeypatch.setattr(relay_identity, "get_relay_identity", lambda: "already-messaged")
+        relay_inbox.append("already-messaged", {"n": 1})
+        _build_relay_inbox_section(None)
+        assert relay_inbox.count_unread("already-messaged") == 1
 
 
 class TestIdentityResolved:

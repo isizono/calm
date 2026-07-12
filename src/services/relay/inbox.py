@@ -67,6 +67,19 @@ def append(session_id: str, record: dict) -> None:
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
+def ensure_inbox_file(session_id: str) -> Path:
+    """inbox file が無ければ空で作成する。
+
+    `tail -f` 等でinbox fileを監視する際、file不在だと即座にエラー終了する
+    ツールがある（本file自体はappend()されるまで生成されない設計のため）。
+    既に生成済みなら何もしない（既存の内容・cursorは変更しない）。
+    """
+    path = inbox_path(session_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch(exist_ok=True)
+    return path
+
+
 def drain(
     session_id: str, limit: Optional[int] = None, peek: bool = False
 ) -> dict:

@@ -427,6 +427,10 @@ def _build_relay_inbox_section(conn, session_id: str | None = None, source: str 
     ものなので、既存の未読・inbox file有無に関わらずidentity解決できた
     時点で常に出す（inbox_path/count_unreadはファイル不在でも安全に動作する）。
     未読N件の報告行のみ、未読が実在するときに追加する。
+
+    inbox fileはメッセージが1件もappendされるまで実体が無く、指示通りに
+    `tail -f`する等のツールはfile不在だと即座に失敗する。表示前に
+    ensure_inbox_file()でfileを先行生成し、この失敗を防ぐ。
     """
     from src.services.relay import config as relay_config
 
@@ -439,9 +443,9 @@ def _build_relay_inbox_section(conn, session_id: str | None = None, source: str 
     if not identity:
         return ""
 
-    from src.services.relay.inbox import count_unread, inbox_path
+    from src.services.relay.inbox import count_unread, ensure_inbox_file
 
-    path = inbox_path(identity)
+    path = ensure_inbox_file(identity)
     count = count_unread(identity)
 
     lines = []
