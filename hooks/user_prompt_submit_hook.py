@@ -6,11 +6,19 @@
 3. events.jsonl全読み
 4. 未消費のnudgeイベント判定 → system-reminder注入
 5. id_leak_count > 0 → 内部 ID 漏出 system-reminder 注入 + count reset
-6. 何もなし → 空JSON出力
+6. relay session-aware nudge（CCM_RELAY_SESSION_AWARE=1のときのみ） →
+   system-reminder注入
+7. 何もなし → 空JSON出力
 
 Stop hookでnudge判定とevents.jsonl追記を行い、本hookで消費して注入する。
 MessageDisplay hookが内部IDリテラル件数をid_leak_countに蓄積し、本hookで参照する。
 注入タイミングが「ユーザーの次の発言時」になるため、文面もその文脈に合わせている。
+relay session-aware nudge（手順6）はSessionStartの一回きりの起動指示が読み流されて
+機能しない問題への対応で、events.jsonl/id_leakとは独立にHookState.monitor_started
+マーカー（hooks/relay_monitor_watch_hook.pyがPostToolUseで書く）とrelay inboxの
+未読件数を毎ターン判定する。identity解決結果はHookState.relay_identityにセッション
+単位でキャッシュし、resolve_identity_by_ancestry（ps最大5回spawn）を毎ターン
+払わないようにする。起動指示は `persistent: true` の使用を明記する。
 """
 import json
 import os
@@ -25,6 +33,7 @@ if str(_project_root) not in sys.path:
 
 from hooks.hook_state import HookState
 from hooks.signal_capture import try_capture_signal
+from src import config
 
 
 def _make_hook_output(message: str) -> dict:
@@ -109,6 +118,92 @@ def _format_nudge_message(event: dict, ntype: str | None) -> str | None:
     return None
 
 
+def _resolve_relay_identity_cached(state: HookState) -> str | None:
+    """relay identityをHookStateのセッション単位キャッシュ経由で解決する。
+
+    resolve_identity_by_ancestryはps最大5回spawn（各2秒timeout）を伴うため、
+    UserPromptSubmitのように毎ターン呼ばれる経路でこれを無条件に払うと、
+    `ps`が詰まった環境ではターンあたり最大10秒近いレイテンシが積み上がる。
+    一度解決できたidentityはlauncherプロセスが生存し続ける限り不変なので、
+    キャッシュに乗せて以降のターンはps spawnをスキップする。
+
+    解決に失敗した（None）場合はキャッシュしない。launcher登録が後から
+    間に合うタイミング差を想定し、次ターン以降も解決を再試行できるように
+    しておく（恒久的にNoneを確定させない）。
+    """
+    cached = state.get_cached_relay_identity()
+    if cached:
+        return cached
+
+    from src.services.relay.identity import get_relay_identity, resolve_identity_by_ancestry
+
+    identity = get_relay_identity() or resolve_identity_by_ancestry()
+    if identity:
+        state.set_cached_relay_identity(identity)
+    return identity
+
+
+def _build_relay_turn_nudge(state: HookState) -> str | None:
+    """relay session-aware毎ターンnudge（CCM_RELAY_SESSION_AWARE=1のときのみ動作）。
+
+    SessionStart一回きりの起動指示はエージェントに読み流されて機能しないことが
+    確認されたため、毎ターン判定してリマインダーを注入する。
+
+    relay未構成（token未設定）・identity解決失敗（祖先pidチェーンで同一launcher
+    プロセスを特定できない）のセッションはrelay非参加とみなし、Noneを返す
+    （fail-open。エラーにしない）。
+
+    Monitor監視が未起動（HookState.get_monitor_startedがFalse）なら起動指示、
+    未読が1件以上あれば消化指示を、該当する行だけ束ねて返す。どちらも
+    非該当（起動済みかつ未読0件）ならNoneを返す。
+
+    起動指示は `persistent: true` の使用を明記する。既定の `persistent: false`
+    だとMonitorはtimeout_ms既定値（5分）で自動終了するが、monitor_startedは
+    一度立つと消えない（消えるのはcompact以外のクリア経路のみ）ため、
+    `persistent: false` のまま5分経過すると監視が切れたことに誰も気づけなく
+    なる（本PRが解決しようとしている「起動指示が読み流される」問題を、
+    「監視がサイレントに止まる」という形で再発させてしまう）。
+    """
+    if not config.RELAY_SESSION_AWARE_ENABLED:
+        return None
+
+    from src.services.relay import config as relay_config
+
+    if not relay_config.get_token():
+        return None
+
+    identity = _resolve_relay_identity_cached(state)
+    if not identity:
+        return None
+
+    from src.services.relay.inbox import count_unread, ensure_inbox_file
+
+    monitor_started = state.get_monitor_started()
+    unread = count_unread(identity)
+
+    if monitor_started and unread <= 0:
+        return None
+
+    lines = []
+    if not monitor_started:
+        # ensure_inbox_file: SessionStart hook側の_build_relay_inbox_sectionが
+        # 何らかの理由（per-builder try/exceptで握られる例外）で先行touchに
+        # 失敗していた場合のフォールバック。ここでも呼んでおくことで、
+        # 未読0件セッションでinbox fileが未生成のままMonitorの`tail -f`が
+        # 即座に失敗する既知バグを、この経路でも防ぐ。
+        path = ensure_inbox_file(identity)
+        lines.append(
+            f"relay inboxの監視がまだ起動されていません。"
+            f"Monitorツールで {path} を `persistent: true` で監視してください"
+            f"（`persistent: false` だと既定5分でwatchが自動終了し、"
+            f"以降の新着に気づけなくなります）。"
+        )
+    if unread > 0:
+        lines.append(f"relay inbox 未読: {unread}件 → relay_receiveで消化してください。")
+
+    return _wrap_system_reminder("\n".join(lines))
+
+
 def main() -> None:
     try:
         # 環境変数によるテスト用オーバーライド
@@ -160,7 +255,14 @@ def main() -> None:
             print(json.dumps(_make_hook_output(_ID_LEAK_NUDGE_MESSAGE), ensure_ascii=False))
             return
 
-        # 6. 何もなし
+        # 6. relay session-aware nudge（CCM_RELAY_SESSION_AWARE=1のときのみ、
+        # 既存nudge・id_leakのどちらも非該当だった場合のみ判定）
+        relay_message = _build_relay_turn_nudge(state)
+        if relay_message:
+            print(json.dumps(_make_hook_output(relay_message), ensure_ascii=False))
+            return
+
+        # 7. 何もなし
         print("{}")
 
     except Exception as e:
