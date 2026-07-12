@@ -186,6 +186,7 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 - `skills/digest`: 期間横断の記録ダイジェスト生成
 - `skills/forget`: 陳腐化・矛盾した記録の撤回
 - `skills/db-recovery`: DBデータ異常減少の検知〜復旧
+- `skills/audit`: 過去decisionの正当性検証・矛盾解消
 
 
 ### 4.3 フロー層 service
