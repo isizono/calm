@@ -53,6 +53,23 @@ def generate_handle(session_id: str) -> str:
     return f"session-{short}"
 
 
+def list_declared_session_ids() -> set[str]:
+    """subscriptions dir 配下に declaration file が存在する session の
+    safe session_id（ファイル名から抽出、_safe_session_id適用後の形）集合を返す。
+
+    declaration の中身（JSON）は読まず、ファイル名一覧のみを見る軽量版。
+    inbox file 側（safe_session_id ベース）との突き合わせ用。
+    """
+    subs_dir = config.subscriptions_dir()
+    if not subs_dir.exists():
+        return set()
+    return {
+        path.name[len("session-") : -len(".json")]
+        for path in subs_dir.iterdir()
+        if path.name.startswith("session-") and path.name.endswith(".json")
+    }
+
+
 def load_all() -> list[dict]:
     """subscriptions dir 配下の全 declaration file を読み込んで返す。
 

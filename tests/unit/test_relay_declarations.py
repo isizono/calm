@@ -64,6 +64,29 @@ class TestLoadSave:
         assert decl["session_id"] == "weird/../id"
 
 
+class TestListDeclaredSessionIds:
+    def test_returns_empty_set_when_dir_missing(self, relay_state):
+        assert declarations.list_declared_session_ids() == set()
+
+    def test_returns_safe_session_ids_from_filenames(self, relay_state):
+        declarations.ensure("sess-1")
+        declarations.ensure("sess-2")
+        assert declarations.list_declared_session_ids() == {"sess-1", "sess-2"}
+
+    def test_ignores_non_declaration_files(self, relay_state, tmp_path):
+        declarations.ensure("sess-1")
+        (declarations.config.subscriptions_dir() / "not-a-declaration.txt").write_text("x")
+        assert declarations.list_declared_session_ids() == {"sess-1"}
+
+    def test_does_not_require_reading_file_contents(self, relay_state):
+        """declaration_path() が指すfileが壊れたJSONでも、ファイル名一覧としては拾える
+        （中身は読まない軽量版のため、load_all()と違い破損に影響されない）。"""
+        path = declarations.declaration_path("sess-corrupt")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not json", encoding="utf-8")
+        assert declarations.list_declared_session_ids() == {"sess-corrupt"}
+
+
 class TestSubscriptionLookup:
     def _decl(self):
         return {

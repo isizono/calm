@@ -194,3 +194,50 @@ class TestCountUnread:
         inbox.append("s1", {"n": 2})
         assert inbox.count_unread("s1") == 2
         assert [r["n"] for r in inbox.drain("s1")["records"]] == [1, 2]
+
+
+class TestEnsureInboxFile:
+    def test_creates_missing_file(self):
+        assert not inbox.inbox_path("s1").exists()
+        inbox.ensure_inbox_file("s1")
+        assert inbox.inbox_path("s1").exists()
+
+    def test_creates_parent_directory(self, tmp_path):
+        assert not inbox.inbox_path("s1").parent.exists()
+        inbox.ensure_inbox_file("s1")
+        assert inbox.inbox_path("s1").parent.is_dir()
+
+    def test_returns_inbox_path(self):
+        assert inbox.ensure_inbox_file("s1") == inbox.inbox_path("s1")
+
+    def test_does_not_truncate_existing_content(self):
+        inbox.append("s1", {"n": 1})
+        inbox.ensure_inbox_file("s1")
+        assert [r["n"] for r in inbox.drain("s1")["records"]] == [1]
+
+    def test_does_not_reset_cursor_of_existing_file(self):
+        inbox.append("s1", {"n": 1})
+        inbox.append("s1", {"n": 2})
+        inbox.drain("s1", limit=1)
+        inbox.ensure_inbox_file("s1")
+        assert [r["n"] for r in inbox.drain("s1")["records"]] == [2]
+
+
+class TestListInboxFiles:
+    def test_returns_empty_list_when_dir_missing(self):
+        assert inbox.list_inbox_files() == []
+
+    def test_returns_session_id_and_path_pairs(self):
+        inbox.append("s1", {"n": 1})
+        inbox.ensure_inbox_file("s2")
+        result = dict(inbox.list_inbox_files())
+        assert set(result.keys()) == {"s1", "s2"}
+        assert result["s1"] == inbox.inbox_path("s1")
+        assert result["s2"] == inbox.inbox_path("s2")
+
+    def test_ignores_cursor_files(self):
+        inbox.append("s1", {"n": 1})
+        inbox.drain("s1", limit=0)
+        assert inbox.cursor_path("s1").exists()
+        result = dict(inbox.list_inbox_files())
+        assert list(result.keys()) == ["s1"]
