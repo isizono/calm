@@ -5,7 +5,7 @@ description: 【必須】過去の記録が現状と矛盾・陳腐化してい�
 
 # forget
 
-過去の記録（decision/log/material/habit/tag-notes/auto-memory/CLAUDE.md/rules/skill）が現状と矛盾・陳腐化していると判断したときに、撤回候補を提示し、ユーザー確認を経て撤回を実行するclaude自律発動スキル。撤回専用であり、新規の記憶・保存は `remember` skillの担当。
+過去の記録（decision/log/material/habit/tag-notes/auto-memory/CLAUDE.md/rules/skill）が現状と矛盾・陳腐化していると判断したときに、撤回候補を提示し、ユーザー確認を経て撤回を実行するclaude自律発動スキル。撤回専用であり、新規の記憶・保存は [remember](../remember/SKILL.md) skillの担当。
 
 ## トリガー
 
@@ -20,7 +20,7 @@ description: 【必須】過去の記録が現状と矛盾・陳腐化してい�
 
 ### 発動しない状況
 
-- 新規の記憶・保存依頼（`remember` skillの担当）
+- 新規の記憶・保存依頼（[remember](../remember/SKILL.md) skillの担当）
 - 議論中でまだ結論が出ていない論点（撤回ではなく`[議論中]`decision、`decision-record` skillの担当）
 - ユーザーが直前に「forgetはいい」等、発動を明示的に拒否した直後
 
@@ -96,7 +96,7 @@ B選択時は何も実行せず終了する。
 | tag-notes | `update_tag`で対象箇所を除いた全文を書き込む | tag-notesに`retract`概念はない（全文置換方式） |
 | auto-memory（MEMORY.md / feedback_*.md等） | 物理削除 | ファイル削除 + MEMORY.mdの参照行削除をセットで行う |
 | CLAUDE.md | 物理削除（行編集） | 周辺コンテキストを保全し、対象行のみ削除 |
-| ~/.claude/rules/ | 物理削除 | ファイル削除。git管理下ならgit rm |
+| ~/.claude/rules/ | 物理削除 | ファイル削除。git管理下ならgit rm。`cc-memory-habits.md`はhabitsの自動投影ファイルで対象外（habitの撤回はhabit行の方式を使う） |
 | skill | 物理削除（重い確認 + 依存検出必須） | 実行前に § skill撤回時の依存検出 |
 
 ## skill撤回時の依存検出
@@ -113,6 +113,6 @@ skillの撤回はgrepベースの簡易検出で十分とする（AST解析は�
 
 ## 注意
 
-- 撤回専用スキル。新規の記憶・保存は`remember` skillの担当
+- 撤回専用スキル。新規の記憶・保存は[remember](../remember/SKILL.md) skillの担当
 - ユーザー確認を経ない撤回実行は行わない（自律発動＝全自動ではない）
 - 判断に迷う場合は撤回しない側に倒す（false-positiveによる重要記録消失の方が実害が大きい）

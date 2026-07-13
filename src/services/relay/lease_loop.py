@@ -10,6 +10,9 @@ declaration file を定期スキャンし、以下を実行する:
 3. **孤児 sweep**: 起動時 1 回 + 定期（既定 1 時間毎）。declaration file 内の全
    subscription の lease_expires_at 最大値が閾値（既定 24 時間）以上前なら「誰も
    renew していない退場済み session」とみなし、file と inbox / cursor を一括削除する。
+   これとは別に、declaration を経由しない precreate inbox file（SessionStart hook の
+   `ensure_inbox_file()`）は declaration ベースの判定に現れないため、inbox dir を
+   直接走査し mtime が閾値より古いものを個別に削除する（`compute_orphan_inbox_files`）。
 
 **renew の生存ゲート**: `SessionManager` に登録されていない session_id の
 declaration は renew しない。これで死んだ session の lease は自然失効し、孤児
@@ -153,6 +156,40 @@ def compute_orphan_sessions(
     return orphans
 
 
+def compute_orphan_inbox_files(
+    inbox_files: list[tuple[str, Path]],
+    declared_session_ids: set[str],
+    *,
+    now: Optional[datetime] = None,
+    threshold_seconds: float = DEFAULT_ORPHAN_THRESHOLD_SECONDS,
+) -> list[tuple[str, Path]]:
+    """declaration を経由しない孤児 inbox file を検出する。
+
+    `ensure_inbox_file()` による precreate file は declaration
+    （`relay_subscribe`）を経由しないため、declaration ベースの
+    `compute_orphan_sessions` の走査対象にならず孤児化する。ここでは
+    inbox dir を直接走査した `inbox_files` のうち、`declared_session_ids`
+    に無く（= declaration が一度も作られていない）、かつ mtime が
+    `now - threshold_seconds` より前のものを孤児と判定する。
+
+    declaration が存在する session の inbox file は compute_orphan_sessions
+    側で扱うため、ここでは対象外にする（declared_session_ids に含まれる）。
+    """
+    now = now or datetime.now(timezone.utc)
+    cutoff_ts = (now - timedelta(seconds=threshold_seconds)).timestamp()
+    orphans: list[tuple[str, Path]] = []
+    for safe_session_id, path in inbox_files:
+        if safe_session_id in declared_session_ids:
+            continue
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if mtime < cutoff_ts:
+            orphans.append((safe_session_id, path))
+    return orphans
+
+
 def _parse_iso(value: object) -> Optional[datetime]:
     if not isinstance(value, str) or not value:
         return None
@@ -180,6 +217,23 @@ def delete_orphan_state(session_id: str) -> None:
             pass
         except OSError as exc:
             logger.warning("孤児 sweep で削除に失敗: path=%s error=%s", path, exc)
+
+
+def delete_orphan_inbox_file(safe_session_id: str, path: Path) -> None:
+    """declaration を経由しない孤児 inbox file とその cursor を削除する。
+
+    declaration file が無い（= inbox_path()/cursor_path() を非safe
+    session_id 経由で引けない）ため、`compute_orphan_inbox_files()` が
+    返す path から直接 cursor path を導出する（拡張子だけ違う命名規則、
+    `inbox.cursor_path()` と同じ）。
+    """
+    for target in (path, path.with_suffix(".cursor")):
+        try:
+            target.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logger.warning("孤児 inbox file の削除に失敗: path=%s error=%s", target, exc)
 
 
 def apply_action(
@@ -325,6 +379,19 @@ def _sweep_orphans(threshold_seconds: float) -> None:
         logger.info("孤児 declaration を削除: session=%s", session_id)
         delete_orphan_state(session_id)
 
+    # declaration を経由しない precreate inbox file（ensure_inbox_file）の孤児掃除。
+    # declaration が存在する session の inbox file は上記の declaration ベース sweep
+    # に既に含まれるため、ここでは declared_session_ids で除外する。
+    declared_session_ids = declarations.list_declared_session_ids()
+    inbox_orphans = compute_orphan_inbox_files(
+        inbox.list_inbox_files(),
+        declared_session_ids,
+        threshold_seconds=threshold_seconds,
+    )
+    for safe_session_id, path in inbox_orphans:
+        logger.info("孤児 precreate inbox file を削除: session=%s", safe_session_id)
+        delete_orphan_inbox_file(safe_session_id, path)
+
 
 def _monotonic() -> float:
     import time
@@ -335,8 +402,10 @@ def _monotonic() -> float:
 __all__ = [
     "RenewAction",
     "apply_action",
+    "compute_orphan_inbox_files",
     "compute_orphan_sessions",
     "compute_renew_actions",
+    "delete_orphan_inbox_file",
     "delete_orphan_state",
     "run",
 ]

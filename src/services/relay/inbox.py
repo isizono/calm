@@ -52,20 +52,6 @@ def _write_cursor(session_id: str, offset: int) -> None:
     os.replace(tmp, path)
 
 
-def ensure_inbox_file(session_id: str) -> Path:
-    """inbox fileが存在しなければ空ファイルとして先行生成する（touch、冪等）。
-
-    Monitorツールで `tail -f` する監視対象は事前に存在している必要がある。
-    ファイル不在のまま `tail -f` すると即座に失敗して監視が成立しないため、
-    identity解決に成功した時点（SessionStart hook等）でこれを呼び、
-    未配達（unread=0）セッションでも監視を開始できる状態を作る。
-    """
-    path = inbox_path(session_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.touch(exist_ok=True)
-    return path
-
-
 def append(session_id: str, record: dict) -> None:
     """inbox に 1 レコードを追記する（flock 排他 + fsync）。"""
     path = inbox_path(session_id)
@@ -79,6 +65,41 @@ def append(session_id: str, record: dict) -> None:
             os.fsync(f.fileno())
         finally:
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
+def ensure_inbox_file(session_id: str) -> Path:
+    """inbox file が無ければ空で作成する。
+
+    `tail -f` 等でinbox fileを監視する際、file不在だと即座にエラー終了する
+    ツールがある（本file自体はappend()されるまで生成されない設計のため）。
+    既に生成済みなら何もしない（既存の内容・cursorは変更しない）。
+
+    本関数で precreate された file は declaration（`relay_subscribe`）を
+    経由しないため、declaration ベースの孤児 sweep（lease_loop.py の
+    `compute_orphan_sessions`）の対象にならない。孤児化対策は
+    `list_inbox_files()` を参照。
+    """
+    path = inbox_path(session_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch(exist_ok=True)
+    return path
+
+
+def list_inbox_files() -> list[tuple[str, Path]]:
+    """inbox dir 配下の全 inbox file から (safe session_id, path) の一覧を返す。
+
+    safe session_id は `_safe_session_id` 適用後の形（ファイル名から抽出した
+    ものであり、逆変換はできない）。lease_loop.py の孤児 sweep が、
+    declaration を経由しない precreate file（`ensure_inbox_file`）を検出する
+    ために使う。
+    """
+    dir_path = config.inbox_dir()
+    if not dir_path.is_dir():
+        return []
+    return [
+        (path.name[len("session-") : -len(".jsonl")], path)
+        for path in sorted(dir_path.glob("session-*.jsonl"))
+    ]
 
 
 def drain(

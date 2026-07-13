@@ -60,8 +60,8 @@ usage が低く、吸収先がありそうなタグ。canonical 化を提案す�
 ```
 
 提案の方針:
-- nearest と PMI を参考に吸収先を提案
-- nearest が null の場合は「削除候補？」と提示（ただし削除は慎重に）
+- nearest と PMI を参考に吸収先があれば canonical 化を提案する
+- 吸収先が無い（nearest が null）、または統合ではなくタグ自体を使わなくする場合は archived 化（退役）を提案する。archived は物理削除ではなく `archived=False` でいつでも解除できるため、判断に迷う孤児タグはまず archived を優先する
 
 ### 4. 共起情報（co_occurrences）
 
@@ -80,6 +80,7 @@ usage が低く、吸収先がありそうなタグ。canonical 化を提案す�
 
 - **canonical 化**: `update_tag(tag="旧タグ", canonical="正規タグ")`
 - **rename**: `update_tag(tag="旧タグ", rename="新タグ")`
+- **archived 化（退役）**: `update_tag(tag="対象タグ", archived=True, archived_reason="理由")`。他タグの canonical 先になっているタグは archived 化できない（先にエイリアス解除が必要）
 - 実行後、変更内容を一覧で報告する
 
 ## 結果の保存

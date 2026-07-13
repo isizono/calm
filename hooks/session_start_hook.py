@@ -433,10 +433,9 @@ def _build_relay_inbox_section(conn, session_id: str | None = None, source: str 
     時点で常に出す（inbox_path/count_unreadはファイル不在でも安全に動作する）。
     未読N件の報告行のみ、未読が実在するときに追加する。
 
-    identity解決に成功した時点でensure_inbox_fileを呼び、inbox fileを
-    先行生成する。Monitorツールでの `tail -f` はファイル不在だと即座に
-    失敗するため、未読0件（inbox未配達）のセッションでも監視を開始できる
-    状態を作っておく。
+    inbox fileはメッセージが1件もappendされるまで実体が無く、指示通りに
+    `tail -f`する等のツールはfile不在だと即座に失敗する。表示前に
+    ensure_inbox_file()でfileを先行生成し、この失敗を防ぐ。
     """
     if not config.RELAY_SESSION_AWARE_ENABLED:
         return ""

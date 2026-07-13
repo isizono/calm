@@ -177,10 +177,16 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 - `skills/setup-anchor`: anchor確定
 - `skills/remember`: 記憶要望の保存先振り分け
 - `skills/tag-notes` / `skills/tag-cleanup`: タグnotes管理・整理
-- `skills/activity-start` / `skills/activity-finish`: アクティビティのライフサイクル操作
+- `skills/activity-start` / `skills/activity-finish` / `skills/activity-pause`: アクティビティのライフサイクル操作
 - `skills/postmortem`: 完了アクティビティの振り返り
 - `skills/scribe`: cc-memory記録からドキュメント生成
 - `skills/guide`: pull型の使い方説明
+- `skills/decision-record`: 合意・未決論点の`add_decisions`記録ガイド
+- `skills/recording`: 経緯（log）・成果物（material）の記録判断基準
+- `skills/digest`: 期間横断の記録ダイジェスト生成
+- `skills/forget`: 陳腐化・矛盾した記録の撤回
+- `skills/db-recovery`: DBデータ異常減少の検知〜復旧
+- `skills/audit`: 過去decisionの正当性検証・矛盾解消
 
 
 ### 4.3 フロー層 service
