@@ -571,6 +571,10 @@ def pull_precedents(
         budget.full/index_only はこの追加降格を反映しない一次予算時点の値のまま
         （実際のfull件数はbudget.full - demoted）。truncatedはこの追加降格も
         反映して更新される。
+        なおこの実サイズゲートはservice層の返却直前で確定するため、本関数が
+        後段で行うtag_notes注入・archived_tags付与はbudget.response_chars.measured
+        に反映されない。これらの追加分だけ実際のレスポンスサイズがmeasuredを
+        上回りうる。
     """
     flavor = _normalize_flavor(flavor)
     result = precedent_pull_service.pull_precedents(

@@ -323,6 +323,9 @@ def _apply_response_size_gate(
     """
 
     def _measure() -> int:
+        # ensure_ascii=False で純文字数を測る。MCP送信層がensure_ascii=Trueで
+        # 再直列化すると非ASCII文字は\uXXXX表記（1字→6字）に膨張しうるが、
+        # response_chars_max の既定値はその差分を安全マージンとして吸収する前提。
         body = {
             "topics": topics_out,
             "budget": budget,
@@ -372,6 +375,8 @@ def _apply_response_size_gate(
 
     budget["response_chars"] = {
         "limit": response_chars_max,
+        # measured はこの代入直前の実測値のため、response_chars フィールド自身
+        # （数十字程度）は含まない。
         "measured": measured,
         "demoted": demoted,
     }
