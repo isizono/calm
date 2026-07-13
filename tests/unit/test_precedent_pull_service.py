@@ -2,8 +2,9 @@
 
 routing（topic_vec KNN・explicit指定・miss/unavailable）、browse保証（30件超の
 全件列挙・retract除外・supersede保持・複数topic帰属の重複排除・material紐付け・
-副作用なし）、予算縮退（全件index保証・full昇格の決定性）、precedent_pure連携、
-flavor適用を検証する。
+副作用なし）、予算縮退（全件index保証・full昇格の決定性）、レスポンス実サイズ
+ゲート（一次予算内でも実サイズ超過時にfull→index降格・materialカタログ縮退）、
+precedent_pure連携、flavor適用を検証する。
 """
 import math
 import sqlite3
@@ -11,6 +12,7 @@ import sqlite3
 import pytest
 from sqlite_vec import serialize_float32
 
+from src.config import PRECEDENT_RESPONSE_CHARS_MAX
 from src.db import get_connection
 from src.services import precedent_pull_service as pps
 from src.services.material_service import add_material
@@ -552,6 +554,122 @@ class TestBudget:
             assert "created_at" in item
             assert "is_superseded" in item
             assert "superseded_by" in item
+
+
+# ========================================
+# レスポンス実サイズゲート
+# ========================================
+
+
+def _reason_with_sections(filler_len: int) -> str:
+    """定型節を含み、指定文字数分のfillerでsections展開後のサイズを膨らませるreason。"""
+    filler = "x" * filler_len
+    return (
+        f"却下案:\n- A案: {filler}\n"
+        f"適用条件:\n- {filler}\n"
+        f"適用外:\n- {filler}\n"
+        f"検証:\n2026-01-01 実測 {filler}\n"
+    )
+
+
+class TestResponseSizeGate:
+    def test_response_chars_present_and_zero_demoted_when_within_limit(
+        self, temp_db, mock_embedding_server
+    ):
+        """通常時もbudget.response_chars（limit/measured/demoted）が常に付き、demoted=0"""
+        topic_id = _make_topic("t", 0)
+        _decision(topic_id, "d", "r")
+
+        result = pps.pull_precedents("文脈", topic_ids=[topic_id])
+
+        response_chars = result["budget"]["response_chars"]
+        assert response_chars["limit"] == PRECEDENT_RESPONSE_CHARS_MAX
+        assert response_chars["demoted"] == 0
+        assert response_chars["measured"] > 0
+        assert response_chars["measured"] <= PRECEDENT_RESPONSE_CHARS_MAX
+
+    def test_sufficient_char_budget_but_oversized_response_demotes_full_items(
+        self, temp_db, mock_embedding_server
+    ):
+        """decision+reasonの一次予算(budget_chars)には十分収まっても、tags/sections等の
+        重複計上でレスポンス実サイズが上限を超える場合、full itemが配分逆順で
+        indexへ降格され、実測サイズが上限以下に収まる"""
+        topic_id = _make_topic("t", 0)
+        for i in range(15):
+            _decision(topic_id, f"decision-{i}", _reason_with_sections(300))
+
+        result = pps.pull_precedents("文脈", topic_ids=[topic_id], budget_chars=1_000_000)
+
+        # 一次予算(budget_chars)は十分なので、char予算上は全件fullが配分されている
+        assert result["budget"]["index_only"] == 0
+        assert result["budget"]["full"] == 15
+
+        response_chars = result["budget"]["response_chars"]
+        assert response_chars["demoted"] > 0
+        assert response_chars["measured"] <= PRECEDENT_RESPONSE_CHARS_MAX
+
+        # だが実際のレスポンスでは降格分がindexになっている
+        topic_entry = _topic_by_id(result, topic_id)
+        actual_full_count = sum(1 for d in topic_entry["decisions"] if d["detail"] == "full")
+        assert actual_full_count == 15 - response_chars["demoted"]
+        assert result["truncated"] is True
+
+    def test_all_decisions_remain_enumerated_after_demotion(self, temp_db, mock_embedding_server):
+        """降格が発生しても全decisionはfull/indexいずれかとして応答に残る（網羅保証を壊さない）"""
+        topic_id = _make_topic("t", 0)
+        ids = [_decision(topic_id, f"decision-{i}", _reason_with_sections(300)) for i in range(15)]
+
+        result = pps.pull_precedents("文脈", topic_ids=[topic_id], budget_chars=1_000_000)
+
+        topic_entry = _topic_by_id(result, topic_id)
+        assert topic_entry["decisions_total"] == 15
+        assert len(topic_entry["decisions"]) == 15
+        assert {d["id_raw"] for d in topic_entry["decisions"]} == set(ids)
+
+    def test_demotion_selection_is_deterministic(self, temp_db, mock_embedding_server):
+        """同一入力に対して同じ降格結果(full/index割当)が得られる"""
+        topic_id = _make_topic("t", 0)
+        for i in range(15):
+            _decision(topic_id, f"decision-{i}", _reason_with_sections(300))
+
+        result1 = pps.pull_precedents("文脈", topic_ids=[topic_id], budget_chars=1_000_000)
+        result2 = pps.pull_precedents("文脈", topic_ids=[topic_id], budget_chars=1_000_000)
+
+        full_ids1 = sorted(
+            d["id_raw"] for d in _topic_by_id(result1, topic_id)["decisions"] if d["detail"] == "full"
+        )
+        full_ids2 = sorted(
+            d["id_raw"] for d in _topic_by_id(result2, topic_id)["decisions"] if d["detail"] == "full"
+        )
+        assert full_ids1 == full_ids2
+        assert result1["budget"]["response_chars"]["demoted"] == result2["budget"]["response_chars"]["demoted"]
+
+    def test_materials_catalog_degraded_when_demotion_alone_is_insufficient(
+        self, temp_db, mock_embedding_server
+    ):
+        """decision本文がほぼ無くてもmaterialカタログ自体が巨大でレスポンスが超過する場合、
+        materialsがcatalog_overflow相当(type/id_raw/titleのみ)へ縮退しmaterials_truncated=trueになる。
+        decisionの網羅保証(decisions_total)はこの縮退と独立に維持される"""
+        topic_id = _make_topic("t", 0)
+        _decision(topic_id, "d", "r")
+        for i in range(150):
+            mid = add_material(
+                title=f"material-{i}", content="c" * 200, tags=DEFAULT_TAGS, source="test"
+            )["material_id"]
+            _link_related("material", mid, "topic", topic_id)
+
+        result = pps.pull_precedents(
+            "文脈", topic_ids=[topic_id], budget_chars=100_000, include_materials=True
+        )
+
+        topic_entry = _topic_by_id(result, topic_id)
+        assert len(topic_entry["materials"]) == 150
+        for m in topic_entry["materials"]:
+            assert set(m.keys()) == {"type", "id_raw", "title"}
+            assert m["type"] == "material"
+        assert result["materials_truncated"] is True
+        assert result["budget"]["response_chars"]["measured"] <= PRECEDENT_RESPONSE_CHARS_MAX
+        assert topic_entry["decisions_total"] == 1
 
 
 # ========================================

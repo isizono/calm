@@ -95,3 +95,10 @@ PRECEDENT_ROUTING_CANDIDATES: int = int(os.environ.get("CCM_PRECEDENT_ROUTING_CA
 # 前提の初期値であり、0.6のような緩い値は実測上ほぼ全topicが閾値内に入ってしまい
 # routing_missが機能しなくなるため使わない。
 PRECEDENT_ROUTING_MISS_DISTANCE: float = float(os.environ.get("CCM_PRECEDENT_ROUTING_MISS_DISTANCE", "0.19"))
+# レスポンス全体（JSON文字列化後）の実測文字数上限。PRECEDENT_BUDGET_CHARSは
+# decision本文（decision+reason）のみを計上するが、full itemにはtags/sections/
+# supersede_chain/material_idsが、レスポンス全体にはmaterialカタログやindex行群も
+# 乗るため、本文予算内でも実サイズはその数倍になり得る。MCPツール結果の実用上限
+# （約2.5万トークン）に対する日本語主体レスポンスの文字/トークン比の安全側見積もり
+# から逆算した値
+PRECEDENT_RESPONSE_CHARS_MAX: int = int(os.environ.get("CCM_PRECEDENT_RESPONSE_CHARS_MAX", "32000"))

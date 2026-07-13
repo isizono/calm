@@ -555,12 +555,22 @@ def pull_precedents(
         material_ids / linked_decision_ids はdecision↔material間のrelated/citation
         エッジ（depth-1）から双方向に対応する。
         materials_truncated: material カタログ展開が30件キャップを超え一部materialを
-        載せ切れなかったとき true（include_materials時のみ）。decision網羅保証は本文の
+        載せ切れなかった、またはレスポンス実サイズ超過でmaterialカタログを縮退した
+        とき true（include_materials時のみ）。decision網羅保証は本文の
         truncated/budgetが担い、materials_truncatedとは独立。
         detail="full"のdecisionには archived_tags（そのdecisionのタグのうちarchivedな
         ものの集約、{tag, archived_reason}の配列。該当なしでも空配列で常に付く）が付く。
         detail="index"のdecisionはtags自体を持たないためarchived_tagsも付かない
         （必要ならget_by_idsで本文と併せて確認する）。
+        budget_charsはdecision+reason本文のみを計上する一次予算であり、実際の
+        レスポンスにはtags/sections/supersede_chain/materialカタログ等も乗るため
+        一次予算内でも応答全体が実サイズ上限（既定32000字、CCM_PRECEDENT_RESPONSE_CHARS_MAX）
+        を超えることがある。超過時はfull itemを配分順の逆順で追加降格し
+        （それでも超過するときはmaterialカタログを縮退）、budget.response_chars
+        に{limit, measured, demoted}として結果が付く。demoted>0のときは
+        budget.full/index_only はこの追加降格を反映しない一次予算時点の値のまま
+        （実際のfull件数はbudget.full - demoted）。truncatedはこの追加降格も
+        反映して更新される。
     """
     flavor = _normalize_flavor(flavor)
     result = precedent_pull_service.pull_precedents(

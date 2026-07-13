@@ -25,3 +25,9 @@ class TestGetConfigBudgetDefaults:
         result = _call_get_config()
         assert "precedent_budget_chars" in result
         assert "read_tool_limits" in result
+
+    def test_budget_defaults_includes_response_chars_max(self):
+        from src.config import PRECEDENT_RESPONSE_CHARS_MAX
+
+        result = _call_get_config()
+        assert result["budget_defaults"]["precedent_response_chars_max"] == PRECEDENT_RESPONSE_CHARS_MAX

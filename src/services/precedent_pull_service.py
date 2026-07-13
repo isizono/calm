@@ -18,12 +18,13 @@ from sqlite_vec import serialize_float32
 
 from src.config import (
     PRECEDENT_BUDGET_CHARS,
+    PRECEDENT_RESPONSE_CHARS_MAX,
     PRECEDENT_ROUTING_CANDIDATES,
     PRECEDENT_ROUTING_K_MAX,
     PRECEDENT_ROUTING_MISS_DISTANCE,
 )
 from src.db import get_connection, get_db_path, row_to_dict
-from src.services.budget_service import allocate_decision_budget
+from src.services.budget_service import allocate_decision_budget, compute_allocation_order
 from src.services.embedding_service import encode_query
 from src.services.material_service import SNIPPET_MAX_LEN
 from src.services.precedent_cluster_service import expand_decision_cluster
@@ -291,6 +292,92 @@ def _build_topic_materials(
     return result
 
 
+def _apply_response_size_gate(
+    topics_out: list[dict],
+    budget: dict,
+    truncated: bool,
+    materials_truncated: bool,
+    full_ids: set[int],
+    full_item_locations: dict[int, tuple[int, int]],
+    decision_by_id: dict[int, dict],
+    supersede_map: dict[int, dict],
+    superseded_by_map: dict[int, Optional[int]],
+    material_ids_by_decision: dict[int, set[int]],
+    response_chars_max: int,
+) -> tuple[bool, bool]:
+    """本文文字数予算（PRECEDENT_BUDGET_CHARS）内に収まっていても、tags/sections/
+    supersede_chain の重複計上やmaterialカタログの併載で実レスポンスが数倍に
+    膨れることがある。ここでレスポンス実サイズを最終計測し、超過分を
+    full item の降格（配分順の逆順、最後に昇格したものから）で解消する。
+
+    実測対象は topics/budget/truncated/materials_truncated（pull_precedents が
+    この後付け足す guarantee/routing は候補数が高々 PRECEDENT_ROUTING_K_MAX 件と
+    小さく、実測から除いても上限判定に実質影響しない）。
+
+    降格だけでは解消しない場合は topics[].materials を catalog_overflow 相当
+    （type/id_raw/titleのみ）へ縮退する。それでも超過するときはベストエフォートで
+    そのまま返す（decisionの網羅保証を壊す削除は行わない）。
+
+    budget dict を in-place で更新し（response_chars キーを追加）、
+    (truncated, materials_truncated) の更新後の値を返す。
+    """
+
+    def _measure() -> int:
+        body = {
+            "topics": topics_out,
+            "budget": budget,
+            "truncated": truncated,
+            "materials_truncated": materials_truncated,
+        }
+        return len(json.dumps(body, ensure_ascii=False))
+
+    measured = _measure()
+    demoted = 0
+
+    if measured > response_chars_max:
+        order = compute_allocation_order(list(full_ids), decision_by_id, supersede_map)
+        excess = measured - response_chars_max
+        accumulated = 0
+        for did in reversed(order):
+            location = full_item_locations.get(did)
+            if location is None:
+                continue
+            topic_idx, dec_idx = location
+            full_item = topics_out[topic_idx]["decisions"][dec_idx]
+            index_item = _build_index_item(
+                decision_by_id[did], supersede_map, superseded_by_map, material_ids_by_decision
+            )
+            cost_full = len(json.dumps(full_item, ensure_ascii=False))
+            cost_index = len(json.dumps(index_item, ensure_ascii=False))
+            topics_out[topic_idx]["decisions"][dec_idx] = index_item
+            demoted += 1
+            accumulated += cost_full - cost_index
+            if accumulated >= excess:
+                break
+        measured = _measure()
+
+    if demoted:
+        truncated = True
+
+    if measured > response_chars_max:
+        for topic in topics_out:
+            materials = topic.get("materials")
+            if not materials:
+                continue
+            topic["materials"] = [
+                {"type": "material", "id_raw": m["id_raw"], "title": m["title"]} for m in materials
+            ]
+        materials_truncated = True
+        measured = _measure()
+
+    budget["response_chars"] = {
+        "limit": response_chars_max,
+        "measured": measured,
+        "demoted": demoted,
+    }
+    return truncated, materials_truncated
+
+
 def collect_precedents_with_conn(
     conn: sqlite3.Connection,
     topic_ids: list[int],
@@ -304,11 +391,19 @@ def collect_precedents_with_conn(
     件数（decisions_total）はこの重複排除より前、topic ごとの実件数で数える。
 
     Returns:
-        {"topics": [...], "budget": {"limit", "used", "full", "index_only"},
+        {"topics": [...], "budget": {"limit", "used", "full", "index_only", "response_chars"},
          "truncated": bool, "materials_truncated": bool}
 
     truncated は decision 本文の予算縮退（index 落ち）を、materials_truncated は
     material カタログ展開の 30 件キャップ超過（include_materials 時のみ）を表す。
+
+    budget.limit/used/full/index_only は PRECEDENT_BUDGET_CHARS（decision+reason の
+    文字数のみを計上する一次予算）に基づく配分結果であり、この後段のレスポンス
+    実サイズゲートによる降格が発生しても再計算しない。budget.response_chars
+    （{"limit", "measured", "demoted"}）がレスポンス全体の実測文字数と、その
+    ゲートで full から index へ降格した件数を表す。demoted > 0 のときは
+    budget.full の一部が実際には detail="index" になっている（実際の full 件数は
+    budget.full - demoted）。truncated はこの降格も反映して更新される。
     """
     if not topic_ids:
         return {
@@ -383,6 +478,7 @@ def collect_precedents_with_conn(
         )
 
     topics_out = []
+    full_item_locations: dict[int, tuple[int, int]] = {}
     for topic_id in topic_ids:
         topic_dec_ids = {dec["id"] for dec in topic_decisions[topic_id]}
         decisions_out = []
@@ -397,6 +493,7 @@ def collect_precedents_with_conn(
                 item = _build_full_item(
                     dec, tags_map, supersede_map, superseded_by_map, material_ids_by_decision
                 )
+                full_item_locations[did] = (len(topics_out), len(decisions_out))
             else:
                 item = _build_index_item(dec, supersede_map, superseded_by_map, material_ids_by_decision)
             decisions_out.append(item)
@@ -417,6 +514,19 @@ def collect_precedents_with_conn(
     index_only = len(all_ids) - len(full_ids)
     budget = {"limit": budget_chars, "used": used, "full": len(full_ids), "index_only": index_only}
     truncated = index_only > 0
+    truncated, materials_truncated = _apply_response_size_gate(
+        topics_out,
+        budget,
+        truncated,
+        materials_truncated,
+        full_ids,
+        full_item_locations,
+        decision_by_id,
+        supersede_map,
+        superseded_by_map,
+        material_ids_by_decision,
+        PRECEDENT_RESPONSE_CHARS_MAX,
+    )
     return {
         "topics": topics_out,
         "budget": budget,
@@ -446,7 +556,17 @@ def pull_precedents(
         {"guarantee", "routing", "topics", "budget", "truncated", "materials_truncated"}。
         guarantee は "enumerated" / "routing_miss" / "routing_unavailable"。
         materials_truncated は material カタログ展開が 30 件キャップを超えて一部 material を
-        載せ切れなかったことを表す（include_materials 時のみ true になり得る）。
+        載せ切れなかったこと、またはレスポンス実サイズゲート（下記）による material
+        カタログ縮退が発生したことを表す（include_materials 時のみ true になり得る）。
+
+        budget_chars は decision+reason 本文のみを計上する一次予算であり、実際の
+        レスポンスには tags/sections/supersede_chain/material カタログ等も乗るため、
+        この一次予算内でも応答全体が PRECEDENT_RESPONSE_CHARS_MAX を超えることがある。
+        超過時は full item を配分順の逆順で index item へ降格して解消し（それでも
+        超過するときは material カタログを縮退）、budget.response_chars に
+        {"limit", "measured", "demoted"} として結果を記録する。budget.full/index_only
+        はこの降格を反映せず一次予算の配分結果のまま（詳細は collect_precedents_with_conn
+        docstring参照）。
     """
     if not context or len(context.strip()) < 2:
         return {
