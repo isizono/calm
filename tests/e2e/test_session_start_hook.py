@@ -1393,12 +1393,14 @@ class TestSessionStartHookRelayInbox:
     def test_monitor_instruction_shown_when_inbox_never_created(self, temp_db, tmp_path):
         """identity解決・relay構成済みなら、このidentity宛のinbox fileが
         一度も作られていなくてもMonitor監視指示は出る（未読N件の報告行のみ省く。
-        セッション作業中に届く新着を取りこぼさないための常時発火）"""
+        セッション作業中に届く新着を取りこぼさないための常時発火）。
+        呼び出し後、inbox fileがtail -fの即時失敗を防ぐため先行生成されている"""
         state_dir = tmp_path / "relay-state"
+        from src.services.relay import inbox as relay_inbox
 
         os.environ["RELAY_STATE_DIR"] = str(state_dir)
         try:
-            self._register_launcher_matching_this_test_process(state_dir)
+            session_id = self._register_launcher_matching_this_test_process(state_dir)
         finally:
             del os.environ["RELAY_STATE_DIR"]
 
@@ -1414,6 +1416,11 @@ class TestSessionStartHookRelayInbox:
 
         assert "Monitorツール" in context
         assert "relay inbox 未読" not in context
+        os.environ["RELAY_STATE_DIR"] = str(state_dir)
+        try:
+            assert relay_inbox.inbox_path(session_id).exists()
+        finally:
+            del os.environ["RELAY_STATE_DIR"]
 
     def test_monitor_instruction_shown_when_unread_is_zero(self, temp_db, tmp_path):
         """identity解決・relay構成済みでinbox fileが存在し、既読化済みで

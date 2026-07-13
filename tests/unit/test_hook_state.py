@@ -64,6 +64,34 @@ class TestIdLeakCount:
         assert hook_state.get_id_leak_count() == 0
 
 
+class TestMonitorStarted:
+    def test_get_returns_false_when_no_file(self, hook_state):
+        assert hook_state.get_monitor_started() is False
+
+    def test_set_then_get(self, hook_state):
+        hook_state.set_monitor_started()
+        assert hook_state.get_monitor_started() is True
+
+    def test_cleared_by_clear_session(self, hook_state):
+        hook_state.set_monitor_started()
+        HookState.clear_session("test-session-123")
+        assert hook_state.get_monitor_started() is False
+
+
+class TestRelayIdentityCache:
+    def test_get_returns_none_when_no_file(self, hook_state):
+        assert hook_state.get_cached_relay_identity() is None
+
+    def test_set_then_get(self, hook_state):
+        hook_state.set_cached_relay_identity("resolved-id-1")
+        assert hook_state.get_cached_relay_identity() == "resolved-id-1"
+
+    def test_cleared_by_clear_session(self, hook_state):
+        hook_state.set_cached_relay_identity("resolved-id-1")
+        HookState.clear_session("test-session-123")
+        assert hook_state.get_cached_relay_identity() is None
+
+
 class TestTranscriptOffset:
     def test_get_returns_zero_when_no_file(self, hook_state):
         assert hook_state.get_transcript_offset() == 0
@@ -209,6 +237,44 @@ class TestClearSession:
         assert not state.events_path.exists()
 
 
+class TestClearSessionPreserve:
+    """clear_session(preserve=...): 指定prefixのファイルをクリア対象から除外する。
+
+    compact（セッションを継続したまま発火するイベント）で、生存中のMonitor
+    watchを表すmonitor_startedや解決済みidentityをクリアしないための機構。
+    """
+
+    def test_preserve_excludes_specified_prefix(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(HookState, "BASE_DIR", tmp_path)
+        state = HookState("sess-preserve")
+        state.set_monitor_started()
+        state.set_current_turn(5)
+
+        HookState.clear_session("sess-preserve", preserve={"monitor_started"})
+
+        assert state.get_monitor_started() is True
+        assert state.get_current_turn() == 0
+
+    def test_preserve_events_keeps_events_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(HookState, "BASE_DIR", tmp_path)
+        state = HookState("sess-preserve-events")
+        state.append_events([{"e": "meta", "topic": "t", "turn": 1}])
+
+        HookState.clear_session("sess-preserve-events", preserve={"events"})
+
+        assert state.events_path.exists()
+
+    def test_no_preserve_arg_clears_everything(self, tmp_path, monkeypatch):
+        """デフォルト（preserve未指定）は従来通り全削除する（後方互換）"""
+        monkeypatch.setattr(HookState, "BASE_DIR", tmp_path)
+        state = HookState("sess-no-preserve")
+        state.set_monitor_started()
+
+        HookState.clear_session("sess-no-preserve")
+
+        assert state.get_monitor_started() is False
+
+
 class TestSessionIdSlash:
     def test_slash_replaced_with_underscore(self, tmp_path, monkeypatch):
         """session_idに含まれる '/' がファイル名では '_' に置換される"""
@@ -252,3 +318,54 @@ class TestMainCli:
         # CLIで実際にファイルが削除されたことを確認
         assert state.get_current_turn() == 0
         assert state.get_block_count() == 0
+
+    def test_compact_source_preserves_monitor_marker_and_identity_cache(
+        self, tmp_path, monkeypatch
+    ):
+        """source=compactのclear呼び出しでは、生存中のMonitor watchを表す
+        monitor_startedマーカーと解決済みidentityキャッシュがクリアされない
+        （compactはセッションを継続したまま発火するイベントであり、watch自体も
+        launcherプロセスもcompactで終了しないため）。他の状態は通常通りクリア
+        される"""
+        monkeypatch.setattr(HookState, "BASE_DIR", tmp_path)
+        state = HookState("cli-compact-sess")
+        state.set_monitor_started()
+        state.set_cached_relay_identity("cached-id-1")
+        state.set_current_turn(3)
+
+        project_root = Path(__file__).resolve().parents[2]
+        input_json = json.dumps({"session_id": "cli-compact-sess", "source": "compact"})
+        result = subprocess.run(
+            [sys.executable, "hooks/hook_state.py", "clear"],
+            input=input_json,
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            env={**os.environ, "HOOK_STATE_DIR": str(tmp_path)},
+        )
+        assert result.returncode == 0
+
+        assert state.get_monitor_started() is True
+        assert state.get_cached_relay_identity() == "cached-id-1"
+        assert state.get_current_turn() == 0
+
+    def test_non_compact_source_clears_monitor_marker(self, tmp_path, monkeypatch):
+        """source=startup等の通常clearでは従来通りmonitor_startedもクリアされる"""
+        monkeypatch.setattr(HookState, "BASE_DIR", tmp_path)
+        state = HookState("cli-startup-sess")
+        state.set_monitor_started()
+        state.set_cached_relay_identity("cached-id-1")
+
+        project_root = Path(__file__).resolve().parents[2]
+        input_json = json.dumps({"session_id": "cli-startup-sess", "source": "startup"})
+        result = subprocess.run(
+            [sys.executable, "hooks/hook_state.py", "clear"],
+            input=input_json,
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            env={**os.environ, "HOOK_STATE_DIR": str(tmp_path)},
+        )
+        assert result.returncode == 0
+        assert state.get_monitor_started() is False
+        assert state.get_cached_relay_identity() is None
