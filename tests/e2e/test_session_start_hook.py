@@ -1252,6 +1252,10 @@ class TestSessionStartHookSignals:
 class TestSessionStartHookRelayInbox:
     """relay inbox未読件数 + Monitor監視指示の表示テスト
 
+    CCM_RELAY_SESSION_AWARE=1（本クラスの既定extra_env）を渡した場合のON時の
+    振る舞いを検証する。OFF時（未設定）の振る舞いはTestSessionStartHookRelay
+    SessionAwareGateで検証する。
+
     hookは実プロセスとしてsubprocess経由で起動され、MCPリクエストコンテキストを
     一切持たない。そのためget_relay_identity()（ヘッダ/ctx.session_id経路）は
     常にNoneへ解決する。祖先pidチェーンによるフォールバック
@@ -1274,7 +1278,10 @@ class TestSessionStartHookRelayInbox:
         state_dir = tmp_path / "relay-state"
         result = _run_session_start_hook(
             temp_db,
-            extra_env={"RELAY_STATE_DIR": str(state_dir)},
+            extra_env={
+                "RELAY_STATE_DIR": str(state_dir),
+                "CCM_RELAY_SESSION_AWARE": "1",
+            },
             env_remove=["RELAY_BEARER_TOKEN"],
         )
         context = result["hookSpecificOutput"]["additionalContext"]
@@ -1301,6 +1308,7 @@ class TestSessionStartHookRelayInbox:
             extra_env={
                 "RELAY_STATE_DIR": str(state_dir),
                 "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
+                "CCM_RELAY_SESSION_AWARE": "1",
             },
         )
         context = result["hookSpecificOutput"]["additionalContext"]
@@ -1352,6 +1360,7 @@ class TestSessionStartHookRelayInbox:
             extra_env={
                 "RELAY_STATE_DIR": str(state_dir),
                 "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
+                "CCM_RELAY_SESSION_AWARE": "1",
             },
         )
         context = result["hookSpecificOutput"]["additionalContext"]
@@ -1374,7 +1383,7 @@ class TestSessionStartHookRelayInbox:
 
         result = _run_session_start_hook(
             temp_db,
-            extra_env={"RELAY_STATE_DIR": str(state_dir)},
+            extra_env={"RELAY_STATE_DIR": str(state_dir), "CCM_RELAY_SESSION_AWARE": "1"},
             env_remove=["RELAY_BEARER_TOKEN"],
         )
         context = result["hookSpecificOutput"]["additionalContext"]
@@ -1398,6 +1407,7 @@ class TestSessionStartHookRelayInbox:
             extra_env={
                 "RELAY_STATE_DIR": str(state_dir),
                 "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
+                "CCM_RELAY_SESSION_AWARE": "1",
             },
         )
         context = result["hookSpecificOutput"]["additionalContext"]
@@ -1425,12 +1435,59 @@ class TestSessionStartHookRelayInbox:
             extra_env={
                 "RELAY_STATE_DIR": str(state_dir),
                 "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
+                "CCM_RELAY_SESSION_AWARE": "1",
             },
         )
         context = result["hookSpecificOutput"]["additionalContext"]
 
         assert "Monitorツール" in context
         assert "relay inbox 未読" not in context
+
+
+class TestSessionStartHookRelaySessionAwareGate:
+    """CCM_RELAY_SESSION_AWARE（kill switch）未設定時（デフォルトOFF）の振る舞い。
+
+    token設定済み・launcher登録済みでidentity解決可能・未読ありという
+    「本来なら表示される」全条件を満たしていても、env var未設定なら
+    relay関連の文言が一切出ないことを検証する。
+    """
+
+    def test_no_relay_text_when_env_var_unset_even_if_fully_configured(
+        self, temp_db, tmp_path
+    ):
+        state_dir = tmp_path / "relay-state"
+        from src.services.relay import inbox as relay_inbox
+
+        os.environ["RELAY_STATE_DIR"] = str(state_dir)
+        try:
+            sessions_dir = state_dir / "sessions"
+            sessions_dir.mkdir(parents=True, exist_ok=True)
+            session_id = "resolved-by-ancestry-gate-test"
+            registration = {
+                "session_id": session_id,
+                "pid": os.getpid(),
+                "ancestor_pids": [os.getpid()],
+                "created_at": "2026-07-08T00:00:00Z",
+            }
+            (sessions_dir / f"launcher-{os.getpid()}.json").write_text(
+                json.dumps(registration), encoding="utf-8"
+            )
+            relay_inbox.append(session_id, {"body": "hello"})
+        finally:
+            del os.environ["RELAY_STATE_DIR"]
+
+        result = _run_session_start_hook(
+            temp_db,
+            extra_env={
+                "RELAY_STATE_DIR": str(state_dir),
+                "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
+            },
+            env_remove=["CCM_RELAY_SESSION_AWARE"],
+        )
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "relay inbox" not in context
+        assert "Monitorツール" not in context
 
 
 class TestSessionStartHookContextBudget:

@@ -11,11 +11,20 @@ import tempfile
 
 import pytest
 
+import src.config as ccm_config
 import src.services.relay.config as relay_config
 import src.services.relay.identity as relay_identity
 import src.services.relay.inbox as relay_inbox
 from src.db import init_database
 from hooks.session_start_hook import _build_relay_inbox_section, _build_session_context
+
+
+@pytest.fixture(autouse=True)
+def relay_session_aware_on(monkeypatch):
+    """本ファイルの大半のテストはCCM_RELAY_SESSION_AWARE=1（ON）時の表示ロジックを
+    検証するため、autouseでデフォルトONにする。OFF時（kill switch）の振る舞いは
+    TestEnvVarGateで個別にFalseへ上書きして検証する。"""
+    monkeypatch.setattr(ccm_config, "RELAY_SESSION_AWARE_ENABLED", True)
 
 
 @pytest.fixture
@@ -183,6 +192,35 @@ class TestIdentityResolved:
         monkeypatch.setattr(relay_inbox, "count_unread", lambda session_id: 1)
         result = _build_relay_inbox_section(None)
         assert str(path) in result
+
+
+class TestEnvVarGate:
+    """CCM_RELAY_SESSION_AWARE（kill switch）の振る舞い。
+
+    autouse fixtureがデフォルトONにしているため、ここでは個別にFalseへ
+    上書きしてOFF時の振る舞いを検証する。
+    """
+
+    def test_returns_empty_when_disabled_even_if_fully_configured(
+        self, monkeypatch, relay_configured
+    ):
+        """OFF時は、token設定済み・identity解決可能・未読ありでも空文字を返す
+        （relayを使わないセッションへの注入を止める入口ゲート）"""
+        monkeypatch.setattr(ccm_config, "RELAY_SESSION_AWARE_ENABLED", False)
+        monkeypatch.setattr(relay_identity, "get_relay_identity", lambda: "stable-id-1")
+        _make_inbox_file(relay_configured, "stable-id-1")
+        monkeypatch.setattr(relay_inbox, "count_unread", lambda session_id: 3)
+        assert _build_relay_inbox_section(None) == ""
+
+    def test_does_not_check_token_when_disabled(self, monkeypatch, tmp_path):
+        """OFF時はget_token()すら呼ばない（tokenチェックより手前のゼロコスト経路）"""
+        monkeypatch.setattr(ccm_config, "RELAY_SESSION_AWARE_ENABLED", False)
+
+        def boom_get_token():
+            raise AssertionError("get_token should not be called when disabled")
+
+        monkeypatch.setattr(relay_config, "get_token", boom_get_token)
+        assert _build_relay_inbox_section(None) == ""
 
 
 class TestSessionContextProtection:
