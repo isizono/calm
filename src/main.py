@@ -486,9 +486,10 @@ def get_decisions(
         truncated: この応答が limit/start_id により後続の decision を打ち切ったとき true
             （＝続きのページが存在する）。start_id 未指定時は total_count > limit と一致し、
             start_id 指定時は start_id 以降にさらに残件があるかを表す
-        reasonに定型節（却下案:/適用条件:/適用外:/検証:。書式は docs/precedent-format.md）が
-        あるdecisionには precedent（{rejected_alternatives: 件数, scope: bool,
-        verification_anchors: [文字列, ...]}）が付く。節が無いdecisionにはキー自体が無い
+        reasonに定型節（却下案:/適用条件:/適用外:/検証:/隣接確認:。書式は
+        docs/precedent-format.md）があるdecisionには precedent（{rejected_alternatives: 件数,
+        scope: bool, verification_anchors: [文字列, ...], adjacent_check: [文字列, ...]}）が
+        付く。節が無いdecisionにはキー自体が無い
         （legacy本文と規約準拠本文の区別に使える。検証アンカーが空のdecisionは
         「決定のみ・実測未確認」を意味する）
         archived_tags: 応答に含まれるdecisionのタグのうちarchivedなものの集約
@@ -553,8 +554,9 @@ def pull_precedents(
         is_superseded/superseded_byのみ）。index落ち分の本文はget_by_idsで追補できる。
         複数topicにbelongs_toするdecisionは最初に選ばれたtopic側にのみ本文を置き、
         他方ではindex + also_in（本文を持つtopic_idの配列）が付く。
-        reasonに定型節（却下案:/適用条件:/適用外:/検証:。書式はdocs/precedent-format.md）が
-        あるdecisionにはsections（構造化済み）が付く。節が無ければキー自体が無い。
+        reasonに定型節（却下案:/適用条件:/適用外:/検証:/隣接確認:。書式は
+        docs/precedent-format.md）があるdecisionにはsections（構造化済み）が付く。
+        節が無ければキー自体が無い。
         material_ids / linked_decision_ids はdecision↔material間のrelated/citation
         エッジ（depth-1）から双方向に対応する。
         materials_truncated: material カタログ展開が30件キャップを超え一部materialを
@@ -737,9 +739,9 @@ def get_by_ids(
     Returns:
         取得結果（各アイテムの詳細情報）
         typeが'decision'のとき、is_superseded（bool）とsuperseded_by（最新1hopのsupersede元id、
-        無ければnull）が常に付く。reasonに定型節（却下案:/適用条件:/適用外:/検証:。書式は
-        docs/precedent-format.md）があれば precedent（get_decisionsと同形のコンパクト形）が付く。
-        節が無いdecisionにはキー自体が無い
+        無ければnull）が常に付く。reasonに定型節（却下案:/適用条件:/適用外:/検証:/隣接確認:。
+        書式は docs/precedent-format.md）があれば precedent（get_decisionsと同形のコンパクト形）
+        が付く。節が無いdecisionにはキー自体が無い
         archived_tags: 応答に含まれる全アイテムのタグのうちarchivedなものの集約
             （{tag, archived_reason}の配列。該当なしでも空配列で常に付く）
     """

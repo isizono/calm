@@ -215,6 +215,31 @@ class TestAdjacentCheckWarning:
         assert len(created["precedent_warnings"]) == 2
         assert any("却下例" in w for w in created["precedent_warnings"])
         assert any("intent:design" in w for w in created["precedent_warnings"])
+        # precedent.warnings（ネスト）とprecedent_warnings（トップレベル）は
+        # 同一ソースから導出され、内容が一致していなければならない
+        assert created["precedent"]["warnings"] == created["precedent_warnings"]
+
+    def test_warning_matches_nested_precedent_warnings_when_section_present(self, topic):
+        """節がある場合、precedent.warningsとprecedent_warningsが食い違わないこと。"""
+        tid = topic["topic_id"]
+        result = add_decisions([
+            {
+                "topic_id": tid,
+                "decision": "採用する",
+                "reason": PLAIN_REASON,
+                "tags": ["intent:design"],
+            },
+        ])
+
+        assert "error" not in result
+        created = result["created"][0]
+        # PLAIN_REASONは節が一つも無いのでprecedentキー自体は新設されない
+        # （legacy本文との区別を崩さない）。precedent_warningsのみ単独で付く。
+        assert "precedent" not in created
+        assert created["precedent_warnings"] == [
+            "intent:design decision missing '隣接確認:' section "
+            "(axes to consider: 実行時, 関連既決との整合)"
+        ]
 
 
 class TestExistingResponseKeysUnchanged:

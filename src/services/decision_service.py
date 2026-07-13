@@ -207,14 +207,14 @@ def add_decisions(items: list[dict]) -> dict:
                 # precedentをecho、書式ゆれ等のwarningがあればprecedent_warningsを付ける。
                 # パースに失敗してもdecision作成自体は拒否しない。
                 parsed_precedent = parse_precedent_sections(reason)
-                if parsed_precedent is not None:
-                    created_item["precedent"] = summarize_precedent(parsed_precedent)
-                    if parsed_precedent["warnings"]:
-                        created_item["precedent_warnings"] = parsed_precedent["warnings"]
 
-                # soft validation: intent:design タグ付きitemに「隣接確認:」節が無ければ
-                # warningを付ける（decision作成自体は拒否しない）。precedent_warningsが
-                # 既にあれば合流、無ければ新規に作る。
+                # intent:design タグ付きitemに「隣接確認:」節が無ければwarningを合流する。
+                # parsed_precedentがNoneでなければsummarize_precedent呼び出し前にwarningsへ
+                # 追記し、precedent.warningsとprecedent_warningsが同一ソースになるようにする
+                # （食い違いを防ぐ）。parsed_precedentがNone（節が一つも無い）場合は
+                # precedentキー自体を新設せず（legacy本文との区別を崩さない）、
+                # precedent_warningsのみ単独で付ける。
+                design_warning = None
                 if is_design_item and (
                     parsed_precedent is None or not parsed_precedent.get("adjacent_check")
                 ):
@@ -222,7 +222,15 @@ def add_decisions(items: list[dict]) -> dict:
                         "intent:design decision missing '隣接確認:' section "
                         "(axes to consider: 実行時, 関連既決との整合)"
                     )
-                    created_item.setdefault("precedent_warnings", []).append(design_warning)
+                    if parsed_precedent is not None:
+                        parsed_precedent["warnings"].append(design_warning)
+
+                if parsed_precedent is not None:
+                    created_item["precedent"] = summarize_precedent(parsed_precedent)
+                    if parsed_precedent["warnings"]:
+                        created_item["precedent_warnings"] = parsed_precedent["warnings"]
+                elif design_warning is not None:
+                    created_item["precedent_warnings"] = [design_warning]
 
                 if propagation_result:
                     created_item["propagation"] = propagation_result
@@ -345,9 +353,9 @@ def _build_decision_item(
     - is_superseded / supersede_chain は supersede_service.compute_supersede_info_batch の結果
     - retracted_at 生値は従来通り retracted 済みのときのみ含める (retract 時刻が呼出側で必要)
 
-    reason に `docs/precedent-format.md` の定型節（却下案:/適用条件:/適用外:/検証:）が
-    あれば precedent（コンパクト形）を付与する。節が無い decision にはキーを付けない
-    （legacy 本文と規約準拠本文を区別できるようにする）。
+    reason に `docs/precedent-format.md` の定型節（却下案:/適用条件:/適用外:/検証:/
+    隣接確認:）があれば precedent（コンパクト形）を付与する。節が無い decision には
+    キーを付けない（legacy 本文と規約準拠本文を区別できるようにする）。
     """
     display_title = dec.get("title") or (dec["decision"] or "")[:50]
     supersede_info = supersede_map.get(

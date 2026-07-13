@@ -56,10 +56,11 @@ _NEAR_MISS_PATTERNS = tuple(
 
 
 def _split_rejected_item(text: str) -> tuple[str, str, bool]:
-    """却下案の箇条書き項目を `案: 理由` の 2 分割にする。
+    """箇条書き項目を `見出し: 内容` の 2 分割にする（却下案の `案: 理由`、隣接確認の
+    `軸名: 内容` の両方で共用する）。
 
-    区切りが無ければ alternative のみとし、reason は空文字にする。
-    Returns: (alternative, reason, has_separator)
+    区切りが無ければ前半部分のみとし、後半は空文字にする。
+    Returns: (前半, 後半, has_separator)
     """
     idx = text.find(": ")
     if idx != -1:
