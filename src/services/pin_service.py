@@ -119,15 +119,21 @@ def _resolve_ref(
         })
 
 
-def add_pin(
+def _add_pin_with_conn(
+    conn: sqlite3.Connection,
     source_type: str,
     source_ref: Union[int, str],
     target_type: str,
     target_ref: Union[int, str],
 ) -> dict:
-    """pinを追加する（source → target）。
+    """conn共有版: pinを追加する（source → target）。
+
+    add_pin本体、およびエンティティ作成と同時にpinを張る経路
+    （activity_service.add_activity等）の両方から呼ばれる中核処理。
+    commit/rollback/closeは呼び出し元の責務。
 
     Args:
+        conn: DB接続（呼び出し元のトランザクションに参加）
         source_type: 起点エンティティ種別
         source_ref: 起点エンティティのID（intまたはstr）。tagのみnamespace:name形式を許容
         target_type: 終点エンティティ種別
@@ -153,107 +159,130 @@ def add_pin(
             }
         }
 
-    conn = get_connection()
-    try:
-        # ref解決
-        source_id, err = _resolve_ref(conn, source_type, source_ref)
-        if err:
-            return err
-        if source_id is None:
-            return {
-                "error": {
-                    "code": "NOT_FOUND",
-                    "message": f"tag '{source_ref}' not found",
-                }
+    # ref解決
+    source_id, err = _resolve_ref(conn, source_type, source_ref)
+    if err:
+        return err
+    if source_id is None:
+        return {
+            "error": {
+                "code": "NOT_FOUND",
+                "message": f"tag '{source_ref}' not found",
             }
-
-        target_id, err = _resolve_ref(conn, target_type, target_ref)
-        if err:
-            return err
-        if target_id is None:
-            return {
-                "error": {
-                    "code": "NOT_FOUND",
-                    "message": f"tag '{target_ref}' not found",
-                }
-            }
-
-        # 自己参照拒否
-        if source_type == target_type and source_id == target_id:
-            return {
-                "error": {
-                    "code": "VALIDATION_ERROR",
-                    "message": f"Self-reference is not allowed: {source_type}#{source_id} → {target_type}#{target_id}",
-                }
-            }
-
-        # 存在性チェック
-        source_table = ENTITY_TABLE_MAP[source_type]
-        row = conn.execute(
-            f"SELECT id FROM {source_table} WHERE id = ?", (source_id,)
-        ).fetchone()
-        if not row:
-            return {
-                "error": {
-                    "code": "NOT_FOUND",
-                    "message": f"{source_type} with id {source_id} not found",
-                }
-            }
-
-        target_table = ENTITY_TABLE_MAP[target_type]
-        row = conn.execute(
-            f"SELECT id FROM {target_table} WHERE id = ?", (target_id,)
-        ).fetchone()
-        if not row:
-            return {
-                "error": {
-                    "code": "NOT_FOUND",
-                    "message": f"{target_type} with id {target_id} not found",
-                }
-            }
-
-        # INSERT OR IGNORE（冪等）
-        conn.execute(
-            "INSERT OR IGNORE INTO pins (source_type, source_id, target_type, target_id) VALUES (?, ?, ?, ?)",
-            (source_type, source_id, target_type, target_id),
-        )
-        # 実際に新規追加された（冪等な再呼び出しでない）ときのみ、pin自体は独立
-        # publishせずsource/target両entityをevent:updatedでpublishする
-        if conn.execute("SELECT changes()").fetchone()[0] > 0:
-            bump_updated_at_and_publish_with_conn(conn, source_type, source_id)
-            bump_updated_at_and_publish_with_conn(conn, target_type, target_id)
-        conn.commit()
-
-        result = {
-            "source_type": source_type,
-            "source_id": source_id,
-            "target_type": target_type,
-            "target_id": target_id,
         }
 
-        # supersededへのpinはhintを付与する（自動解決はしない）。
-        # hintクエリはcommit済みpinへの補足情報。失敗してもpin挿入は維持しhintなしで返す。
-        try:
-            hints = []
-            if source_type == "decision":
-                superseder_id = _is_decision_superseded(conn, source_id)
-                if superseder_id is not None:
-                    hints.append(
-                        f"decision#{source_id} は decision#{superseder_id} に superseded されています。"
-                        f"古い decision を意図的に pin する場合はそのままで問題ありません。"
-                    )
-            if target_type == "decision":
-                superseder_id = _is_decision_superseded(conn, target_id)
-                if superseder_id is not None:
-                    hints.append(
-                        f"decision#{target_id} は decision#{superseder_id} に superseded されています。"
-                        f"古い decision を意図的に pin する場合はそのままで問題ありません。"
-                    )
-            if hints:
-                result["hint"] = "\n".join(hints)
-        except Exception:
-            pass
+    target_id, err = _resolve_ref(conn, target_type, target_ref)
+    if err:
+        return err
+    if target_id is None:
+        return {
+            "error": {
+                "code": "NOT_FOUND",
+                "message": f"tag '{target_ref}' not found",
+            }
+        }
 
+    # 自己参照拒否
+    if source_type == target_type and source_id == target_id:
+        return {
+            "error": {
+                "code": "VALIDATION_ERROR",
+                "message": f"Self-reference is not allowed: {source_type}#{source_id} → {target_type}#{target_id}",
+            }
+        }
+
+    # 存在性チェック
+    source_table = ENTITY_TABLE_MAP[source_type]
+    row = conn.execute(
+        f"SELECT id FROM {source_table} WHERE id = ?", (source_id,)
+    ).fetchone()
+    if not row:
+        return {
+            "error": {
+                "code": "NOT_FOUND",
+                "message": f"{source_type} with id {source_id} not found",
+            }
+        }
+
+    target_table = ENTITY_TABLE_MAP[target_type]
+    row = conn.execute(
+        f"SELECT id FROM {target_table} WHERE id = ?", (target_id,)
+    ).fetchone()
+    if not row:
+        return {
+            "error": {
+                "code": "NOT_FOUND",
+                "message": f"{target_type} with id {target_id} not found",
+            }
+        }
+
+    # INSERT OR IGNORE（冪等）
+    conn.execute(
+        "INSERT OR IGNORE INTO pins (source_type, source_id, target_type, target_id) VALUES (?, ?, ?, ?)",
+        (source_type, source_id, target_type, target_id),
+    )
+    # 実際に新規追加された（冪等な再呼び出しでない）ときのみ、pin自体は独立
+    # publishせずsource/target両entityをevent:updatedでpublishする
+    if conn.execute("SELECT changes()").fetchone()[0] > 0:
+        bump_updated_at_and_publish_with_conn(conn, source_type, source_id)
+        bump_updated_at_and_publish_with_conn(conn, target_type, target_id)
+
+    result = {
+        "source_type": source_type,
+        "source_id": source_id,
+        "target_type": target_type,
+        "target_id": target_id,
+    }
+
+    # supersededへのpinはhintを付与する（自動解決はしない）。
+    # hintクエリはpin挿入への補足情報。失敗してもpin挿入は維持しhintなしで返す。
+    try:
+        hints = []
+        if source_type == "decision":
+            superseder_id = _is_decision_superseded(conn, source_id)
+            if superseder_id is not None:
+                hints.append(
+                    f"decision#{source_id} は decision#{superseder_id} に superseded されています。"
+                    f"古い decision を意図的に pin する場合はそのままで問題ありません。"
+                )
+        if target_type == "decision":
+            superseder_id = _is_decision_superseded(conn, target_id)
+            if superseder_id is not None:
+                hints.append(
+                    f"decision#{target_id} は decision#{superseder_id} に superseded されています。"
+                    f"古い decision を意図的に pin する場合はそのままで問題ありません。"
+                )
+        if hints:
+            result["hint"] = "\n".join(hints)
+    except Exception:
+        pass
+
+    return result
+
+
+def add_pin(
+    source_type: str,
+    source_ref: Union[int, str],
+    target_type: str,
+    target_ref: Union[int, str],
+) -> dict:
+    """pinを追加する（source → target）。
+
+    Args:
+        source_type: 起点エンティティ種別
+        source_ref: 起点エンティティのID（intまたはstr）。tagのみnamespace:name形式を許容
+        target_type: 終点エンティティ種別
+        target_ref: 終点エンティティのID（intまたはstr）。tagのみnamespace:name形式を許容
+
+    Returns:
+        成功時: {"source_type": str, "source_id": int, "target_type": str, "target_id": int}
+        失敗時: {"error": {"code": str, "message": str}}
+    """
+    conn = get_connection()
+    try:
+        result = _add_pin_with_conn(conn, source_type, source_ref, target_type, target_ref)
+        if "error" not in result:
+            conn.commit()
         return result
 
     except Exception as e:

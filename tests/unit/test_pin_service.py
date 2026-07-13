@@ -527,6 +527,109 @@ class TestTransferPinsWithConn:
         assert old_count == 0
 
 
+class TestAddPinWithConnExtraction:
+    """_add_pin_with_conn: add_pinから抽出したconn共有版が呼び出し元のトランザクションに参加すること"""
+
+    def test_participates_in_caller_transaction_uncommitted_invisible(self, activity, material):
+        """呼び出し元がcommitするまで、他connからpinは見えない"""
+        from src.services.pin_service import _add_pin_with_conn
+
+        activity_id = activity["activity_id"]
+        material_id = material["material_id"]
+
+        conn = get_connection()
+        try:
+            result = _add_pin_with_conn(conn, "activity", activity_id, "material", material_id)
+            assert "error" not in result
+            assert result["target_type"] == "material"
+            assert result["target_id"] == material_id
+
+            other_conn = get_connection()
+            try:
+                row = other_conn.execute(
+                    "SELECT * FROM pins WHERE source_type='activity' AND source_id=? "
+                    "AND target_type='material' AND target_id=?",
+                    (activity_id, material_id),
+                ).fetchone()
+                assert row is None
+            finally:
+                other_conn.close()
+
+            conn.commit()
+
+            row = conn.execute(
+                "SELECT * FROM pins WHERE source_type='activity' AND source_id=? "
+                "AND target_type='material' AND target_id=?",
+                (activity_id, material_id),
+            ).fetchone()
+            assert row is not None
+        finally:
+            conn.close()
+
+    def test_error_result_lets_caller_rollback_without_partial_write(self, activity, material):
+        """存在しないtargetの場合はエラーdictを返し、呼び出し元のrollbackで何も残らない"""
+        from src.services.pin_service import _add_pin_with_conn
+
+        activity_id = activity["activity_id"]
+        material_id = material["material_id"]
+
+        conn = get_connection()
+        try:
+            # 先に無関係のpinをINSERT（同一トランザクション内、まだcommitしていない）
+            conn.execute(
+                "INSERT INTO pins (source_type, source_id, target_type, target_id) "
+                "VALUES ('activity', ?, 'material', ?)",
+                (activity_id, material_id),
+            )
+            result = _add_pin_with_conn(conn, "activity", activity_id, "material", 99999)
+            assert "error" in result
+            assert result["error"]["code"] == "NOT_FOUND"
+            conn.rollback()
+        finally:
+            conn.close()
+
+        # rollbackにより、事前INSERT分もまとめて消えている
+        verify_conn = get_connection()
+        try:
+            row = verify_conn.execute(
+                "SELECT * FROM pins WHERE source_type='activity' AND source_id=? "
+                "AND target_type='material' AND target_id=?",
+                (activity_id, material_id),
+            ).fetchone()
+            assert row is None
+        finally:
+            verify_conn.close()
+
+    def test_still_computes_superseded_hint_when_shared_conn(self, topic, activity):
+        """conn共有呼び出しでもsupersededなdecisionへのhint付与は動く"""
+        from src.services.pin_service import _add_pin_with_conn
+        from src.services.relation_service import add_relation
+
+        topic_id = topic["topic_id"]
+        activity_id = activity["activity_id"]
+
+        d_old_res = add_decisions([{"topic_id": topic_id, "decision": "古い決定", "reason": "旧"}])
+        d_new_res = add_decisions([{"topic_id": topic_id, "decision": "新しい決定", "reason": "新"}])
+        d_old = d_old_res["created"][0]["decision_id"]
+        d_new = d_new_res["created"][0]["decision_id"]
+        add_relation(
+            "decision", d_new, [{"type": "decision", "ids": [d_old]}],
+            relation_type="supersedes",
+        )
+
+        conn = get_connection()
+        try:
+            result = _add_pin_with_conn(conn, "activity", activity_id, "decision", d_old)
+            conn.commit()
+        finally:
+            conn.close()
+
+        assert "error" not in result
+        assert "hint" in result
+        assert f"decision#{d_old}" in result["hint"]
+        assert f"decision#{d_new}" in result["hint"]
+
+
 class TestPinsCascadeDelete:
     """migration 0038: 各entityのDELETE時にpinsがCASCADE削除されること"""
 

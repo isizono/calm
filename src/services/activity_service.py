@@ -8,6 +8,7 @@ from src.db import get_connection, row_to_dict
 from src.services.citations_service import upsert_citations_for_owner_with_conn
 from src.services.readable_id import strip_entity_id_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
+from src.services.pin_service import ENTITY_TABLE_MAP as PIN_ENTITY_TABLE_MAP, _add_pin_with_conn
 from src.services.relation_service import _add_relation_with_conn, _validate_targets
 from src.services.relay.entity_publish import publish_entity_event_with_conn
 from src.services.title_validation import validate_title
@@ -112,11 +113,39 @@ def _check_implement_workflow_guard(
     }
 
 
+def _validate_pins(pins: list[dict]) -> dict | None:
+    """add_activityのpins引数をバリデーションする。不正な場合はエラーdictを返す。"""
+    if not pins:
+        return {
+            "error": {
+                "code": "VALIDATION_ERROR",
+                "message": "pins must not be empty",
+            }
+        }
+    for pin in pins:
+        if "type" not in pin or "ref" not in pin:
+            return {
+                "error": {
+                    "code": "VALIDATION_ERROR",
+                    "message": "Each pin must have 'type' and 'ref' fields",
+                }
+            }
+        if pin["type"] not in PIN_ENTITY_TABLE_MAP:
+            return {
+                "error": {
+                    "code": "VALIDATION_ERROR",
+                    "message": f"Invalid pin type: {pin['type']}. Must be one of: {', '.join(sorted(PIN_ENTITY_TABLE_MAP.keys()))}",
+                }
+            }
+    return None
+
+
 def add_activity(
     title: str,
     description: str,
     tags: list[str],
     related: list[dict] | None = None,
+    pins: list[dict] | None = None,
     check_in: bool = True,
     orch_managed: bool = False,
 ) -> dict:
@@ -133,6 +162,12 @@ def add_activity(
             例: [{"type": "topic", "ids": [1, 2]}, {"type": "decision", "ids": [10]}]
             intent:implement タグを含む場合、related に type='decision' のエントリを
             最低1件含めないと IMPLEMENT_WORKFLOW_GUARD エラーで弾かれる。
+        pins: 作成したactivity自身から張るpin（optional）。
+            [{"type": "tag" | "activity" | "topic" | "decision" | "log" | "material", "ref": int | str}, ...] 形式。
+            source は作成された activity 自身になる。ref は add_pin の target_ref と同じ形式
+            （tag のみ namespace:name 文字列を許容、それ以外は整数ID）。
+            いずれかの pin が解決できない・存在しない場合、activity 自体の作成も含めて
+            全体が失敗する（部分成功はしない）。
         check_in: 作成後にcheck_inを実行するか（デフォルト: True）
         orch_managed: orch が管理する activity か（デフォルト: False）。
             True を指定すると activities.orch_managed = 1 で作成される。
@@ -154,6 +189,12 @@ def add_activity(
     # relatedのバリデーション
     if related:
         err = _validate_targets("activity", related)
+        if err:
+            return err
+
+    # pinsのバリデーション
+    if pins:
+        err = _validate_pins(pins)
         if err:
             return err
 
@@ -179,6 +220,17 @@ def add_activity(
         # リレーションを追加
         if related:
             _add_relation_with_conn(conn, "activity", activity_id, related)
+
+        # pinを追加（source は作成した activity 自身）。
+        # いずれかが失敗したらトランザクション全体を破棄し、activity作成自体も失敗させる。
+        if pins:
+            for pin in pins:
+                pin_result = _add_pin_with_conn(
+                    conn, "activity", activity_id, pin["type"], pin["ref"]
+                )
+                if "error" in pin_result:
+                    conn.rollback()
+                    return pin_result
 
         # 本文中の {{cite:X#NNN}} を citations テーブルに保存
         upsert_citations_for_owner_with_conn(
