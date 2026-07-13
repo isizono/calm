@@ -80,7 +80,9 @@ def _load_model():
     try:
         from sentence_transformers import SentenceTransformer
 
-        _model = SentenceTransformer(MODEL_NAME)
+        # Apple SiliconではMPSが自動選択され、過去にMetal GPUの数十GB級メモリ暴走を
+        # 起こしたため、小型モデルはCPU固定とする。
+        _model = SentenceTransformer(MODEL_NAME, device="cpu")
         logger.info(f"Model loaded successfully: {MODEL_NAME}")
     except Exception as e:
         logger.error(f"Model loading failed: {e}")

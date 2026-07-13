@@ -8,6 +8,7 @@ import socket
 
 import pytest
 
+import sentence_transformers
 from src.infra import embedding_server
 from src.infra.lock_file import is_port_listening
 
@@ -47,3 +48,24 @@ def test_main_binds_port_before_model_load(monkeypatch):
             created["server"].server_close()
 
     assert load_observed["port_bound"] is True
+
+
+def test_load_model_passes_cpu_device(monkeypatch):
+    """_load_model(): SentenceTransformer に device="cpu" を明示で渡す。
+
+    Apple SiliconではMPSが自動選択されるため、明示なしだと device 引数不足の
+    まま MPS にフォールバックしてしまう。
+    """
+    recorded_kwargs = {}
+
+    class FakeSentenceTransformer:
+        def __init__(self, model_name, **kwargs):
+            recorded_kwargs["model_name"] = model_name
+            recorded_kwargs.update(kwargs)
+
+    monkeypatch.setattr(sentence_transformers, "SentenceTransformer", FakeSentenceTransformer)
+
+    embedding_server._load_model()
+
+    assert recorded_kwargs["model_name"] == embedding_server.MODEL_NAME
+    assert recorded_kwargs["device"] == "cpu"
