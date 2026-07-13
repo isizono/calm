@@ -412,7 +412,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 
 ### 2.25 get_config
 
-引数なし。返り値: `{heartbeat_timeout, in_progress_limit, pending_limit, recency_decay_rate, sync_disable_retrospective, sync_policy, snapshot_interval_hours, snapshot_max_count, snapshot_anomaly_threshold, precedent_budget_chars, budget_defaults, read_tool_limits}`。スキルが環境変数ベースの設定を参照するときに使う。`budget_defaults` は `budget_service` が把握する予算関連の既定値一覧（`precedent_budget_chars` / `recency_decay_rate` / `recency_decay_floor`。いずれもsrc.config由来）。
+引数なし。返り値: `{heartbeat_timeout, in_progress_limit, pending_limit, recency_decay_rate, sync_disable_retrospective, sync_policy, snapshot_interval_hours, snapshot_max_count, snapshot_anomaly_threshold, precedent_budget_chars, budget_defaults, read_tool_limits}`。スキルが環境変数ベースの設定を参照するときに使う。`budget_defaults` は `budget_service` が把握する予算関連の既定値一覧（`precedent_budget_chars` / `recency_decay_rate` / `recency_decay_floor` / `precedent_response_chars_max`。いずれもsrc.config由来）。
 
 ### 2.26 roll_dice
 
