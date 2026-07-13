@@ -120,7 +120,7 @@ class TestGateConditions:
         )
         assert _build_relay_inbox_section(None) == ""
 
-    def test_shows_monitor_instruction_when_inbox_file_not_created(
+    def test_shows_monitor_instruction_and_touches_inbox_when_never_created(
         self, monkeypatch, relay_configured
     ):
         """identity解決・relay構成済みなら、このidentity宛のinbox fileが

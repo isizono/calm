@@ -1,8 +1,8 @@
 """hook共通: 状態ファイル管理クラス HookState
 
 hookが利用する状態ファイル（block_count, transcript_offset, current_turn,
-checked_in_activity）とイベントファイル（events_{session_id}.jsonl）の読み書きを一元管理する。
-標準ライブラリのみに依存。
+checked_in_activity, monitor_started, relay_identity）とイベントファイル
+（events_{session_id}.jsonl）の読み書きを一元管理する。標準ライブラリのみに依存。
 """
 import json
 from pathlib import Path
@@ -139,6 +139,32 @@ class HookState:
         """checked_in_activity_{session_id} に書く"""
         self._write(self._path("checked_in_activity"), str(activity_id))
 
+    # --- monitor_started (relay inbox監視) ---
+
+    def get_monitor_started(self) -> bool:
+        """このセッションでrelay inbox監視用のMonitorが起動済みかを取得。
+        未設定（ファイルなし） -> False。"""
+        return self._path("monitor_started").exists()
+
+    def set_monitor_started(self) -> None:
+        """monitor_started_{session_id} マーカーファイルを作成する（冪等）。"""
+        self._write(self._path("monitor_started"), "1")
+
+    # --- relay_identity (resolve_identity_by_ancestryの解決結果キャッシュ) ---
+
+    def get_cached_relay_identity(self) -> str | None:
+        """セッション単位でキャッシュ済みのrelay identityを取得。
+        未設定（ファイルなし） -> None。
+
+        resolve_identity_by_ancestryはps最大5回spawn（各2秒timeout）を伴う
+        コストのある解決経路のため、一度成功した結果はセッション内で使い回す。
+        """
+        return self._read_str(self._path("relay_identity"))
+
+    def set_cached_relay_identity(self, identity: str) -> None:
+        """relay identityをセッション単位でキャッシュする（ps spawn回避）。"""
+        self._write(self._path("relay_identity"), identity)
+
     # --- events.jsonl ---
 
     @property
@@ -176,16 +202,29 @@ class HookState:
     # --- clear_session ---
 
     @classmethod
-    def clear_session(cls, session_id: str) -> None:
-        """BASE_DIR内の全状態ファイルとeventsファイルを削除する"""
+    def clear_session(cls, session_id: str, *, preserve: set[str] | None = None) -> None:
+        """BASE_DIR内の全状態ファイルとeventsファイルを削除する。
+
+        preserveにprefix名（例: "monitor_started"）を指定すると、そのファイルは
+        削除対象から除外する。compact（セッションを継続したまま発火するイベント）
+        では、生存中のMonitor watchや解決済みidentityはクリアすべきでない
+        （watch自体はcompactで終了せず、launcherプロセスもcompactをまたいで
+        生存するため）。
+        """
         session_id_safe = session_id.replace("/", "_")
         if not cls.BASE_DIR.exists():
             return
-        for f in cls.BASE_DIR.glob(f"*_{session_id_safe}"):
+        preserve = preserve or set()
+        suffix = f"_{session_id_safe}"
+        for f in cls.BASE_DIR.glob(f"*{suffix}"):
+            prefix = f.name[: -len(suffix)]
+            if prefix in preserve:
+                continue
             f.unlink(missing_ok=True)
         # events.jsonl は命名規則が異なるので個別削除
-        events_file = cls.BASE_DIR / f"events_{session_id_safe}.jsonl"
-        events_file.unlink(missing_ok=True)
+        if "events" not in preserve:
+            events_file = cls.BASE_DIR / f"events_{session_id_safe}.jsonl"
+            events_file.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
@@ -196,8 +235,15 @@ if __name__ == "__main__":
     if os.environ.get("HOOK_STATE_DIR"):
         HookState.BASE_DIR = Path(os.environ["HOOK_STATE_DIR"])
 
+    # compact時にクリア対象から除外するprefix。生存中のMonitor watch（
+    # monitor_started）と解決済みidentity（relay_identity）はcompactで
+    # 消える情報ではないため保持する。
+    _COMPACT_PRESERVE = {"monitor_started", "relay_identity"}
+
     if len(sys.argv) >= 2 and sys.argv[1] == "clear":
         data = json.loads(sys.stdin.read())
         session_id = data.get("session_id", "")
+        source = data.get("source")
         if session_id:
-            HookState.clear_session(session_id)
+            preserve = _COMPACT_PRESERVE if source == "compact" else None
+            HookState.clear_session(session_id, preserve=preserve)

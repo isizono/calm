@@ -24,15 +24,20 @@ def state_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _run_hook(input_data: dict, state_dir: Path) -> subprocess.CompletedProcess:
+def _run_hook(
+    input_data: dict, state_dir: Path, extra_env: dict | None = None
+) -> subprocess.CompletedProcess:
     """user_prompt_submit_hook.pyをサブプロセスで実行する"""
+    env = {**os.environ, "HOOK_STATE_DIR": str(state_dir)}
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         [sys.executable, "hooks/user_prompt_submit_hook.py"],
         input=json.dumps(input_data),
         capture_output=True,
         text=True,
         cwd=str(_PROJECT_ROOT),
-        env={**os.environ, "HOOK_STATE_DIR": str(state_dir)},
+        env=env,
     )
 
 
@@ -274,6 +279,230 @@ class TestIdLeakNudge:
         ctx2 = json.loads(result2.stdout)["hookSpecificOutput"]["additionalContext"]
         assert "internal IDs" in ctx2
         assert HookState(_SESSION_ID).get_id_leak_count() == 0
+
+
+class TestRelaySessionAwareNudge:
+    """relay session-aware毎ターんnudge（CCM_RELAY_SESSION_AWARE=1のときのみ）
+
+    identity解決はresolve_identity_by_ancestry（祖先pidチェーン一致）に依存する。
+    _run_hookはsubprocess.runでhookを直接の子プロセスとして起動するため、hook
+    subprocessのppidは必ずこのテストプロセスのpid（os.getpid()）になる。
+    """
+
+    def _register_launcher(self, state_dir: Path) -> str:
+        session_id = "relay-nudge-resolved-by-ancestry"
+        sessions_dir = state_dir / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        registration = {
+            "session_id": session_id,
+            "pid": os.getpid(),
+            "ancestor_pids": [os.getpid()],
+            "created_at": "2026-07-08T00:00:00Z",
+        }
+        (sessions_dir / f"launcher-{os.getpid()}.json").write_text(
+            json.dumps(registration), encoding="utf-8"
+        )
+        return session_id
+
+    def test_no_injection_when_env_var_off(self, state_dir, tmp_path):
+        """env var OFF（デフォルト）なら、identity解決可能・未読ありでも何も注入しない"""
+        relay_state_dir = tmp_path / "relay-state"
+        from src.services.relay import inbox as relay_inbox
+
+        os.environ["RELAY_STATE_DIR"] = str(relay_state_dir)
+        try:
+            identity = self._register_launcher(relay_state_dir)
+            relay_inbox.append(identity, {"body": "hello"})
+        finally:
+            del os.environ["RELAY_STATE_DIR"]
+
+        result = _run_hook(
+            {"session_id": _SESSION_ID},
+            state_dir,
+            extra_env={
+                "RELAY_STATE_DIR": str(relay_state_dir),
+                "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
+            },
+        )
+        assert json.loads(result.stdout) == {}
+
+    def test_injection_when_monitor_not_started(self, state_dir, tmp_path):
+        """env var ON・identity解決成功・Monitor未起動なら起動指示を注入する"""
+        relay_state_dir = tmp_path / "relay-state"
+
+        os.environ["RELAY_STATE_DIR"] = str(relay_state_dir)
+        try:
+            self._register_launcher(relay_state_dir)
+        finally:
+            del os.environ["RELAY_STATE_DIR"]
+
+        result = _run_hook(
+            {"session_id": _SESSION_ID},
+            state_dir,
+            extra_env={
+                "RELAY_STATE_DIR": str(relay_state_dir),
+                "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
+                "CCM_RELAY_SESSION_AWARE": "1",
+            },
+        )
+        output = json.loads(result.stdout)
+        ctx = output["hookSpecificOutput"]["additionalContext"]
+        assert "Monitorツール" in ctx
+        assert "未読" not in ctx
+        # 指摘1: persistent:falseの既定5分timeoutでwatchがサイレントに止まる
+        # のを避けるため、起動指示はpersistent:trueの使用を明記する
+        assert "persistent: true" in ctx
+        # 指摘2: 解決できたidentityはHookStateにキャッシュされる（ps spawn回避）
+        assert HookState(_SESSION_ID).get_cached_relay_identity() == "relay-nudge-resolved-by-ancestry"
+        # 指摘3: この経路でもensure_inbox_fileを呼び、inbox fileを先行生成する
+        # （SessionStart側のtry/exceptで先行touchがスキップされていた場合の
+        # フォールバック）
+        os.environ["RELAY_STATE_DIR"] = str(relay_state_dir)
+        try:
+            from src.services.relay import inbox as relay_inbox
+
+            assert relay_inbox.inbox_path("relay-nudge-resolved-by-ancestry").exists()
+        finally:
+            del os.environ["RELAY_STATE_DIR"]
+
+    def test_second_turn_does_not_reresolve_identity_via_ancestry(self, state_dir, tmp_path):
+        """指摘2の回帰テスト: 1回目のターンでidentityがキャッシュされたら、
+        2回目のターンはlauncher登録ファイルが消えていてもidentity解決済みの
+        前提で動作し続ける（=resolve_identity_by_ancestryのps spawnに頼って
+        いない）"""
+        relay_state_dir = tmp_path / "relay-state"
+        from src.services.relay import inbox as relay_inbox
+
+        os.environ["RELAY_STATE_DIR"] = str(relay_state_dir)
+        try:
+            identity = self._register_launcher(relay_state_dir)
+        finally:
+            del os.environ["RELAY_STATE_DIR"]
+
+        extra_env = {
+            "RELAY_STATE_DIR": str(relay_state_dir),
+            "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
+            "CCM_RELAY_SESSION_AWARE": "1",
+        }
+
+        # 1回目: launcher登録ファイルありでidentity解決に成功しキャッシュされる
+        result1 = _run_hook({"session_id": _SESSION_ID}, state_dir, extra_env=extra_env)
+        assert "Monitorツール" in json.loads(result1.stdout)["hookSpecificOutput"]["additionalContext"]
+        assert HookState(_SESSION_ID).get_cached_relay_identity() == identity
+
+        # launcher登録ファイルを削除する（以降resolve_identity_by_ancestryが
+        # 呼ばれれば解決できなくなる状況を作る）
+        os.environ["RELAY_STATE_DIR"] = str(relay_state_dir)
+        try:
+            for f in (relay_state_dir / "sessions").glob("launcher-*.json"):
+                f.unlink()
+            relay_inbox.append(identity, {"body": "hello"})
+        finally:
+            del os.environ["RELAY_STATE_DIR"]
+
+        # 2回目: launcher登録ファイルが無くてもキャッシュ経由でidentityが
+        # 解決されるため、未読1件の消化指示が出る（識別子が解決できていなければ
+        # 何も注入されないはず）
+        result2 = _run_hook({"session_id": _SESSION_ID}, state_dir, extra_env=extra_env)
+        ctx2 = json.loads(result2.stdout)["hookSpecificOutput"]["additionalContext"]
+        assert "relay inbox 未読: 1件" in ctx2
+
+    def test_injection_when_unread_present_and_monitor_started(self, state_dir, tmp_path):
+        """env var ON・Monitor起動済み・未読ありなら消化指示のみを注入する（起動指示は出ない）"""
+        relay_state_dir = tmp_path / "relay-state"
+        from src.services.relay import inbox as relay_inbox
+
+        os.environ["RELAY_STATE_DIR"] = str(relay_state_dir)
+        try:
+            identity = self._register_launcher(relay_state_dir)
+            relay_inbox.append(identity, {"body": "hello"})
+        finally:
+            del os.environ["RELAY_STATE_DIR"]
+
+        HookState(_SESSION_ID).set_monitor_started()
+
+        result = _run_hook(
+            {"session_id": _SESSION_ID},
+            state_dir,
+            extra_env={
+                "RELAY_STATE_DIR": str(relay_state_dir),
+                "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
+                "CCM_RELAY_SESSION_AWARE": "1",
+            },
+        )
+        output = json.loads(result.stdout)
+        ctx = output["hookSpecificOutput"]["additionalContext"]
+        assert "relay inbox 未読: 1件" in ctx
+        assert "relay_receive" in ctx
+        assert "Monitorツール" not in ctx
+
+    def test_no_injection_when_monitor_started_and_no_unread(self, state_dir, tmp_path):
+        """env var ON・Monitor起動済み・未読0件なら何も注入しない"""
+        relay_state_dir = tmp_path / "relay-state"
+
+        os.environ["RELAY_STATE_DIR"] = str(relay_state_dir)
+        try:
+            self._register_launcher(relay_state_dir)
+        finally:
+            del os.environ["RELAY_STATE_DIR"]
+
+        HookState(_SESSION_ID).set_monitor_started()
+
+        result = _run_hook(
+            {"session_id": _SESSION_ID},
+            state_dir,
+            extra_env={
+                "RELAY_STATE_DIR": str(relay_state_dir),
+                "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
+                "CCM_RELAY_SESSION_AWARE": "1",
+            },
+        )
+        assert json.loads(result.stdout) == {}
+
+    def test_no_injection_when_identity_unresolved(self, state_dir, tmp_path):
+        """env var ON・relay構成済みでもidentity解決に失敗するセッションは
+        何も注入しない（fail-open、relay非参加とみなす。launcher登録ファイルを
+        一切置かないため、祖先pidチェーンが誰とも一致しない）"""
+        relay_state_dir = tmp_path / "relay-state"
+
+        result = _run_hook(
+            {"session_id": _SESSION_ID},
+            state_dir,
+            extra_env={
+                "RELAY_STATE_DIR": str(relay_state_dir),
+                "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
+                "CCM_RELAY_SESSION_AWARE": "1",
+            },
+        )
+        assert json.loads(result.stdout) == {}
+
+    def test_existing_record_nudge_takes_priority(self, state_dir, tmp_path):
+        """既存nudge（record等）があればrelay系より優先され、relay系は次ターンに繰り越す"""
+        relay_state_dir = tmp_path / "relay-state"
+
+        os.environ["RELAY_STATE_DIR"] = str(relay_state_dir)
+        try:
+            self._register_launcher(relay_state_dir)
+        finally:
+            del os.environ["RELAY_STATE_DIR"]
+
+        _write_events([{"e": "nudge", "type": "record", "turn": 2}], state_dir)
+
+        extra_env = {
+            "RELAY_STATE_DIR": str(relay_state_dir),
+            "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
+            "CCM_RELAY_SESSION_AWARE": "1",
+        }
+
+        # 1回目: record nudgeが優先される
+        result = _run_hook({"session_id": _SESSION_ID}, state_dir, extra_env=extra_env)
+        ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+        assert "直近の応答で記録ツール" in ctx
+
+        # 2回目: record nudgeは消費済みなのでrelay系が注入される
+        result2 = _run_hook({"session_id": _SESSION_ID}, state_dir, extra_env=extra_env)
+        ctx2 = json.loads(result2.stdout)["hookSpecificOutput"]["additionalContext"]
+        assert "Monitorツール" in ctx2
 
 
 class TestEmptyStdin:
