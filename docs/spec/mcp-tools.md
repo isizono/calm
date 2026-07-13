@@ -266,9 +266,11 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 | description | string | yes | - | 詳細説明 |
 | tags | list[string] | yes | - | 1個以上。`domain:` と `intent:` 必須 |
 | related | list[RelatedRef] | no | null | 関連エンティティ |
+| pins | list[PinRef] | no | null | `[{"type": "tag"\|"activity"\|"topic"\|"decision"\|"log"\|"material", "ref": int\|string}]`。作成されたactivity自身をsourceにpinを張る。refはadd_pinのtarget_refと同じ形式（tagのみnamespace:name文字列可） |
 | check_in | bool | no | true | 作成後にcheck_inを実行するか |
 
 **返り値**: 作成されたアクティビティ情報。check_in=Trueの場合は `check_in_result` を含む。
+**pinsのエラー**: いずれか1件でも解決に失敗すると、activity作成自体（activity_tags・relationsを含む）を巻き戻す。部分成功はしない。
 
 ### 2.12 get_activities
 
