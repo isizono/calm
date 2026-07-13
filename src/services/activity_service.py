@@ -114,14 +114,10 @@ def _check_implement_workflow_guard(
 
 
 def _validate_pins(pins: list[dict]) -> dict | None:
-    """add_activityのpins引数をバリデーションする。不正な場合はエラーdictを返す。"""
-    if not pins:
-        return {
-            "error": {
-                "code": "VALIDATION_ERROR",
-                "message": "pins must not be empty",
-            }
-        }
+    """add_activityのpins引数をバリデーションする。不正な場合はエラーdictを返す。
+
+    呼び出し元は空リスト・Noneをno-opとして扱い、非空の場合のみ本関数を呼ぶ。
+    """
     for pin in pins:
         if "type" not in pin or "ref" not in pin:
             return {
@@ -221,6 +217,10 @@ def add_activity(
         if related:
             _add_relation_with_conn(conn, "activity", activity_id, related)
 
+        publish_entity_event_with_conn(
+            conn, entity_type="activity", entity_id=activity_id, event="created"
+        )
+
         # pinを追加（source は作成した activity 自身）。
         # いずれかが失敗したらトランザクション全体を破棄し、activity作成自体も失敗させる。
         if pins:
@@ -235,10 +235,6 @@ def add_activity(
         # 本文中の {{cite:X#NNN}} を citations テーブルに保存
         upsert_citations_for_owner_with_conn(
             conn, "activity", activity_id, title=title, description=description
-        )
-
-        publish_entity_event_with_conn(
-            conn, entity_type="activity", entity_id=activity_id, event="created"
         )
 
         conn.commit()

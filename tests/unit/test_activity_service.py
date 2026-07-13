@@ -177,6 +177,38 @@ class TestAddActivityPinsFailure:
         assert "error" in result
         assert result["error"]["code"] == "VALIDATION_ERROR"
 
+    def test_pin_failure_rolls_back_related_and_tags(self, topic):
+        """related・pinsを両方指定してpinが失敗した場合、activity_tags・relationsも残らない"""
+        topic_id = topic["topic_id"]
+
+        result = add_activity(
+            title="テストactivity", description="説明", tags=DEFAULT_TAGS,
+            related=[{"type": "topic", "ids": [topic_id]}],
+            pins=[{"type": "material", "ref": 99999}],
+        )
+
+        assert "error" in result
+        assert result["error"]["code"] == "NOT_FOUND"
+
+        conn = get_connection()
+        try:
+            activity_row = conn.execute(
+                "SELECT id FROM activities WHERE title = ?", ("テストactivity",)
+            ).fetchone()
+            assert activity_row is None
+
+            tag_count = conn.execute(
+                "SELECT COUNT(*) FROM activity_tags"
+            ).fetchone()[0]
+            assert tag_count == 0
+
+            relation_count = conn.execute(
+                "SELECT COUNT(*) FROM relations WHERE source_type = 'activity'"
+            ).fetchone()[0]
+            assert relation_count == 0
+        finally:
+            conn.close()
+
 
 class TestAddActivityPinsIdempotent:
     """pins引数: 冪等性"""
