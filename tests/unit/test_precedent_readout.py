@@ -72,6 +72,7 @@ class TestGetDecisionsPrecedent:
             "rejected_alternatives": 1,
             "scope": True,
             "verification_anchors": ["実機確認 / 2026-07-04"],
+            "adjacent_check": [],
         }
 
     def test_decision_without_sections_has_no_precedent_key(self, topic):
@@ -131,6 +132,7 @@ class TestGetByIdsPrecedent:
             "rejected_alternatives": 1,
             "scope": True,
             "verification_anchors": ["実機確認 / 2026-07-04"],
+            "adjacent_check": [],
         }
 
     def test_decision_without_sections_has_no_precedent_key(self, topic):

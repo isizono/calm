@@ -30,6 +30,10 @@ from src.services.title_validation import validate_title
 
 PROPAGATE_TYPES = {"habit", "tag_note"}
 
+# intent:design タグ付き decision で「隣接確認:」節の記入有無を soft validation する判定に使う
+DESIGN_NAMESPACE = "intent"
+DESIGN_NAME = "design"
+
 
 def add_decisions(items: list[dict]) -> dict:
     """
@@ -46,17 +50,20 @@ def add_decisions(items: list[dict]) -> dict:
             - title (str, optional): 決定の要点を表す1行（35字以内）。省略時はNULL（表示はdecision本文にfallback）。
               tagsに layer:direction を含む場合は必須（省略・空文字はエラー）
             - tags (list[str], optional): 追加タグ。省略時はtopicのタグを継承。layer:direction は
-              人間の抽象方向性判断であることを明示するタグ（付けた場合はtitle必須）
+              人間の抽象方向性判断であることを明示するタグ（付けた場合はtitle必須）。intent:design を
+              含む場合はreasonに「隣接確認:」節（実行時／関連既決との整合の2軸）の記入を推奨する
+              （無くてもエラーにはならないsoft validation、warningがcreated要素に付く）
 
     Returns:
         {created: [...], errors: [{index, error}]}
         created各要素には related_decisions（同topic内の類似decision上位3件 [{id, title, distance}]）が付く。
         tagsに layer:direction を含む要素には existing_direction_decisions（同domainの有効な
         方向性decision全件、自身除外・非ランク）と direction_note（supersede/併存の判断を促す文言）も付く。
-        reasonに `docs/precedent-format.md` の定型節（却下案:/適用条件:/適用外:/検証:）があれば
-        precedent（コンパクト形）をechoする。節はすべて任意で、書式ゆれ等のwarningが
+        reasonに `docs/precedent-format.md` の定型節（却下案:/適用条件:/適用外:/検証:/隣接確認:）が
+        あれば precedent（コンパクト形）をechoする。節はすべて任意で、書式ゆれ等のwarningが
         あってもdecision作成自体は拒否しない（soft validation）。warningがあればcreated
-        要素に precedent_warnings（文字列のリスト）を付ける。
+        要素に precedent_warnings（文字列のリスト）を付ける。tagsに intent:design を含む要素で
+        「隣接確認:」節が無い場合も同様にprecedent_warningsへwarningが積まれる（decision作成は拒否しない）。
         propagate_to type='habit' が1件以上成功していれば~/.claude/rules配下への
         投影ファイル書き出しを試み、失敗時のみ "rules_projection" キーが付く（decision
         作成自体の成否には影響しない）。
@@ -116,6 +123,12 @@ def add_decisions(items: list[dict]) -> dict:
                     raise ValueError(
                         f"title is required for {DIRECTION_NAMESPACE}:{DIRECTION_NAME} decisions"
                     )
+
+                # intent:design タグ付きitemは「隣接確認:」節の記入を推奨する
+                # soft validation の対象（tags引数に明示された場合のみ判定、topic継承タグは見ない）
+                is_design_item = bool(
+                    parsed_tags and (DESIGN_NAMESPACE, DESIGN_NAME) in parsed_tags
+                )
 
                 # 親 topic の存在チェック (旧 FK 制約相当の不変条件を維持)
                 if topic_id is not None:
@@ -198,6 +211,19 @@ def add_decisions(items: list[dict]) -> dict:
                     created_item["precedent"] = summarize_precedent(parsed_precedent)
                     if parsed_precedent["warnings"]:
                         created_item["precedent_warnings"] = parsed_precedent["warnings"]
+
+                # soft validation: intent:design タグ付きitemに「隣接確認:」節が無ければ
+                # warningを付ける（decision作成自体は拒否しない）。precedent_warningsが
+                # 既にあれば合流、無ければ新規に作る。
+                if is_design_item and (
+                    parsed_precedent is None or not parsed_precedent.get("adjacent_check")
+                ):
+                    design_warning = (
+                        "intent:design decision missing '隣接確認:' section "
+                        "(axes to consider: 実行時, 関連既決との整合)"
+                    )
+                    created_item.setdefault("precedent_warnings", []).append(design_warning)
+
                 if propagation_result:
                     created_item["propagation"] = propagation_result
                 created.append(created_item)

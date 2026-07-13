@@ -1,7 +1,7 @@
 """precedent_pure の pure 関数群の単体テスト。
 
 parse_precedent_sections / summarize_precedent を対象とする。
-定型節フォーマット（却下案:/適用条件:/適用外:/検証:）の正本は
+定型節フォーマット（却下案:/適用条件:/適用外:/検証:/隣接確認:）の正本は
 docs/precedent-format.md。
 """
 from src.services.precedent_pure import (
@@ -135,7 +135,7 @@ class TestNearMissHeadings:
     def test_all_near_miss_headers_are_defined(self):
         expected = {
             "却下例", "棄却案", "不採用案", "適用範囲", "対象外", "検証済み",
-            "rejected", "scope",
+            "rejected", "scope", "近接確認", "隣接チェック", "周辺確認",
         }
         assert set(NEAR_MISS_HEADERS) == expected
 
@@ -229,11 +229,12 @@ class TestSummarizePrecedent:
         parsed = parse_precedent_sections(reason)
         compact = summarize_precedent(parsed)
         assert set(compact.keys()) == {
-            "rejected_alternatives", "scope", "verification_anchors",
+            "rejected_alternatives", "scope", "verification_anchors", "adjacent_check",
         }
         assert compact["rejected_alternatives"] == 2
         assert compact["scope"] is True
         assert compact["verification_anchors"] == ["実機確認 / 2026-07-04"]
+        assert compact["adjacent_check"] == []
 
     def test_compact_form_no_scope_no_anchor(self):
         reason = "却下案:\n- 案A: 理由A\n"
@@ -242,6 +243,7 @@ class TestSummarizePrecedent:
         assert compact["scope"] is False
         assert compact["verification_anchors"] == []
         assert compact["rejected_alternatives"] == 1
+        assert compact["adjacent_check"] == []
 
 
 class TestFullwidthColonHeadings:
@@ -331,7 +333,7 @@ class TestSummarizeWarningsExposure:
         compact = summarize_precedent(parsed)
         assert "warnings" not in compact
         assert set(compact.keys()) == {
-            "rejected_alternatives", "scope", "verification_anchors",
+            "rejected_alternatives", "scope", "verification_anchors", "adjacent_check",
         }
 
 
@@ -354,5 +356,59 @@ class TestAttachPrecedent:
         assert "precedent" not in item
 
 
+class TestAdjacentCheckSection:
+    """隣接確認: 節の検出と項目分解（却下案と同型の `軸名: 内容` 2分割）"""
+
+    def test_two_axes_detected(self):
+        reason = (
+            "隣接確認:\n"
+            "- 実行時: 誰が起動するか確認した\n"
+            "- 関連既決との整合: 既存decisionと矛盾しないか確認した\n"
+        )
+        parsed = parse_precedent_sections(reason)
+        assert parsed is not None
+        assert parsed["adjacent_check"] == [
+            {"axis": "実行時", "note": "誰が起動するか確認した"},
+            {"axis": "関連既決との整合", "note": "既存decisionと矛盾しないか確認した"},
+        ]
+        assert parsed["warnings"] == []
+
+    def test_fullwidth_colon(self):
+        reason = "隣接確認：\n- 実行時：デプロイ主体を確認\n"
+        parsed = parse_precedent_sections(reason)
+        assert parsed is not None
+        assert parsed["adjacent_check"] == [
+            {"axis": "実行時", "note": "デプロイ主体を確認"}
+        ]
+
+    def test_no_separator_item_warns(self):
+        reason = "隣接確認:\n- 単に軸名だけ\n"
+        parsed = parse_precedent_sections(reason)
+        assert parsed is not None
+        assert parsed["adjacent_check"] == [{"axis": "単に軸名だけ", "note": ""}]
+        assert any("adjacent check" in w for w in parsed["warnings"])
+
+    def test_summarize_produces_raw_text_list(self):
+        reason = (
+            "隣接確認:\n"
+            "- 実行時: 誰が起動するか確認した\n"
+            "- 関連既決との整合: 既存decisionと矛盾しないか確認した\n"
+        )
+        parsed = parse_precedent_sections(reason)
+        compact = summarize_precedent(parsed)
+        assert compact["adjacent_check"] == [
+            "実行時: 誰が起動するか確認した",
+            "関連既決との整合: 既存decisionと矛盾しないか確認した",
+        ]
+
+    def test_near_miss_headings_not_detected_as_section(self):
+        for near_miss in ("近接確認", "隣接チェック", "周辺確認"):
+            reason = f"本文\n{near_miss}:\n- これは節にならない\n"
+            parsed = parse_precedent_sections(reason)
+            assert parsed is not None
+            assert parsed["adjacent_check"] == []
+            assert any(near_miss in w for w in parsed["warnings"])
+
+
 def test_section_headers_constant():
-    assert SECTION_HEADERS == ("却下案", "適用条件", "適用外", "検証")
+    assert SECTION_HEADERS == ("却下案", "適用条件", "適用外", "検証", "隣接確認")

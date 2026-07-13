@@ -48,6 +48,14 @@ EMPTY_SECTION_REASON = (
     "検証: 実機確認 / 2026-07-04\n"
 )
 
+ADJACENT_CHECK_REASON = (
+    "自由記述の理由。\n"
+    "\n"
+    "隣接確認:\n"
+    "- 実行時: 誰が起動するか確認した\n"
+    "- 関連既決との整合: 既存decisionと矛盾しないか確認した\n"
+)
+
 
 @pytest.fixture
 def temp_db():
@@ -81,6 +89,7 @@ class TestPrecedentEcho:
             "rejected_alternatives": 1,
             "scope": True,
             "verification_anchors": ["実機確認 / 2026-07-04"],
+            "adjacent_check": [],
         }
         assert "precedent_warnings" not in created
 
@@ -137,6 +146,75 @@ class TestPrecedentWarnings:
         assert "error" not in result
         assert len(result["created"]) == 3
         assert len(result["errors"]) == 0
+
+
+class TestAdjacentCheckWarning:
+    """intent:design タグ付き decision の「隣接確認:」節 soft validation"""
+
+    def test_design_item_without_section_gets_warning(self, topic):
+        tid = topic["topic_id"]
+        result = add_decisions([
+            {
+                "topic_id": tid,
+                "decision": "採用する",
+                "reason": PLAIN_REASON,
+                "tags": ["intent:design"],
+            },
+        ])
+
+        assert "error" not in result
+        created = result["created"][0]
+        assert "precedent_warnings" in created
+        assert any(
+            "intent:design" in w and "隣接確認" in w for w in created["precedent_warnings"]
+        )
+
+    def test_design_item_with_section_has_no_warning(self, topic):
+        tid = topic["topic_id"]
+        result = add_decisions([
+            {
+                "topic_id": tid,
+                "decision": "採用する",
+                "reason": ADJACENT_CHECK_REASON,
+                "tags": ["intent:design"],
+            },
+        ])
+
+        assert "error" not in result
+        created = result["created"][0]
+        assert "precedent_warnings" not in created
+        assert created["precedent"]["adjacent_check"] == [
+            "実行時: 誰が起動するか確認した",
+            "関連既決との整合: 既存decisionと矛盾しないか確認した",
+        ]
+
+    def test_non_design_item_without_section_has_no_warning(self, topic):
+        tid = topic["topic_id"]
+        result = add_decisions([
+            {"topic_id": tid, "decision": "採用する", "reason": PLAIN_REASON},
+        ])
+
+        assert "error" not in result
+        created = result["created"][0]
+        assert "precedent_warnings" not in created
+
+    def test_warning_merges_with_existing_precedent_warnings(self, topic):
+        tid = topic["topic_id"]
+        result = add_decisions([
+            {
+                "topic_id": tid,
+                "decision": "採用する",
+                "reason": NEAR_MISS_REASON,
+                "tags": ["intent:design"],
+            },
+        ])
+
+        assert "error" not in result
+        created = result["created"][0]
+        assert "precedent_warnings" in created
+        assert len(created["precedent_warnings"]) == 2
+        assert any("却下例" in w for w in created["precedent_warnings"])
+        assert any("intent:design" in w for w in created["precedent_warnings"])
 
 
 class TestExistingResponseKeysUnchanged:
