@@ -358,5 +358,6 @@ class TestDecisionPayloadFields:
             "rejected_alternatives": 1,
             "scope": False,
             "verification_anchors": ["実機確認 / 2026-07-04"],
+            "adjacent_check": [],
         }
         assert "precedent" not in by_id[d_old]
