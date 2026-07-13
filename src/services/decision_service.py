@@ -33,6 +33,30 @@ PROPAGATE_TYPES = {"habit", "tag_note"}
 # intent:design タグ付き decision で「隣接確認:」節の記入有無を soft validation する判定に使う
 DESIGN_NAMESPACE = "intent"
 DESIGN_NAME = "design"
+_DESIGN_TAG = f"{DESIGN_NAMESPACE}:{DESIGN_NAME}"
+_ADJACENT_CHECK_WARNING = (
+    "intent:design decision missing '隣接確認:' section "
+    "(axes to consider: 実行時, 関連既決との整合)"
+)
+
+
+def _apply_adjacent_check_warning(item: dict, tags: list[str]) -> None:
+    """tagsにintent:designが含まれ「隣接確認:」節が無ければ、item['precedent']['warnings']と
+    item['precedent_warnings']の両方にwarningを合流させる（in-place）。
+
+    add_decisions（書き込み時、itemが明示したtagsのみ判定）と_build_decision_item
+    （読み出し時、実効タグで判定）の両方から呼ばれる共通ロジック。item['precedent']が
+    既に付与されている場合はそのwarningsリストにも追記し、precedent.warningsと
+    precedent_warningsが常に同一内容になるようにする。
+    """
+    if _DESIGN_TAG not in tags:
+        return
+    precedent = item.get("precedent")
+    if precedent and precedent.get("adjacent_check"):
+        return
+    if precedent is not None:
+        precedent.setdefault("warnings", []).append(_ADJACENT_CHECK_WARNING)
+    item.setdefault("precedent_warnings", []).append(_ADJACENT_CHECK_WARNING)
 
 
 def add_decisions(items: list[dict]) -> dict:
@@ -124,12 +148,6 @@ def add_decisions(items: list[dict]) -> dict:
                         f"title is required for {DIRECTION_NAMESPACE}:{DIRECTION_NAME} decisions"
                     )
 
-                # intent:design タグ付きitemは「隣接確認:」節の記入を推奨する
-                # soft validation の対象（tags引数に明示された場合のみ判定、topic継承タグは見ない）
-                is_design_item = bool(
-                    parsed_tags and (DESIGN_NAMESPACE, DESIGN_NAME) in parsed_tags
-                )
-
                 # 親 topic の存在チェック (旧 FK 制約相当の不変条件を維持)
                 if topic_id is not None:
                     exists = conn.execute(
@@ -207,30 +225,14 @@ def add_decisions(items: list[dict]) -> dict:
                 # precedentをecho、書式ゆれ等のwarningがあればprecedent_warningsを付ける。
                 # パースに失敗してもdecision作成自体は拒否しない。
                 parsed_precedent = parse_precedent_sections(reason)
-
-                # intent:design タグ付きitemに「隣接確認:」節が無ければwarningを合流する。
-                # parsed_precedentがNoneでなければsummarize_precedent呼び出し前にwarningsへ
-                # 追記し、precedent.warningsとprecedent_warningsが同一ソースになるようにする
-                # （食い違いを防ぐ）。parsed_precedentがNone（節が一つも無い）場合は
-                # precedentキー自体を新設せず（legacy本文との区別を崩さない）、
-                # precedent_warningsのみ単独で付ける。
-                design_warning = None
-                if is_design_item and (
-                    parsed_precedent is None or not parsed_precedent.get("adjacent_check")
-                ):
-                    design_warning = (
-                        "intent:design decision missing '隣接確認:' section "
-                        "(axes to consider: 実行時, 関連既決との整合)"
-                    )
-                    if parsed_precedent is not None:
-                        parsed_precedent["warnings"].append(design_warning)
-
                 if parsed_precedent is not None:
                     created_item["precedent"] = summarize_precedent(parsed_precedent)
                     if parsed_precedent["warnings"]:
                         created_item["precedent_warnings"] = parsed_precedent["warnings"]
-                elif design_warning is not None:
-                    created_item["precedent_warnings"] = [design_warning]
+
+                # intent:design タグ付きitemに「隣接確認:」節が無ければwarningを合流する
+                # （itemが明示したtagsのみ判定、topic継承タグは見ない）。
+                _apply_adjacent_check_warning(created_item, item.get("tags") or [])
 
                 if propagation_result:
                     created_item["propagation"] = propagation_result
@@ -375,6 +377,8 @@ def _build_decision_item(
     if dec.get("retracted_at"):
         item["retracted_at"] = dec["retracted_at"]
     attach_precedent(item, dec.get("reason"))
+    # 読み出し時にも書き込み時と同じnudgeを再現する（tags_mapは実効タグ=topic継承込み）。
+    _apply_adjacent_check_warning(item, item["tags"])
     strip_entity_id_inplace(item)
     return item
 

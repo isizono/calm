@@ -1,9 +1,10 @@
 """add_decisions の soft validation（precedent echo / precedent_warnings）テスト。
 
-reason に定型節（却下案:/適用条件:/適用外:/検証:。書式は docs/precedent-format.md）が
+reason に定型節（却下案:/適用条件:/適用外:/検証:/隣接確認:。書式は docs/precedent-format.md）が
 あれば precedent コンパクト形が created 要素に echo されること、書式ゆれ等の warning が
 あれば precedent_warnings が付くこと、いずれの場合も decision 作成自体は拒否されない
-（soft validation）ことを検証する。
+（soft validation）ことを検証する。tagsに intent:design を含む decision で「隣接確認:」節が
+無い場合の nudge warning（TestAdjacentCheckWarning）も対象に含む。
 """
 import os
 import tempfile

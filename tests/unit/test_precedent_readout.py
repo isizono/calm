@@ -1,9 +1,11 @@
 """get_decisions / get_by_ids / search における precedent 付与のテスト。
 
-定型節（却下案:/適用条件:/適用外:/検証:）を持つ decision の reason から
+定型節（却下案:/適用条件:/適用外:/検証:/隣接確認:）を持つ decision の reason から
 precedent コンパクト形（`src.services.precedent_pure.summarize_precedent`）が
 読み出し面に付与されることを検証する。節が無い decision にはキーが付かないこと、
-search() の discovery 面には付与されないことも合わせて検証する。
+search() の discovery 面には付与されないことも合わせて検証する。tagsに intent:design を
+含む decision で「隣接確認:」節が無い場合、get_decisions/get_by_ids の読み出し時にも
+nudge warning が再現されること（TestAdjacentCheckWarningReadout）も対象に含む。
 """
 import os
 import tempfile
@@ -184,3 +186,54 @@ class TestSearchDoesNotIncludePrecedent:
             assert "precedent" not in r
             if "details" in r:
                 assert "precedent" not in r["details"]
+
+
+class TestAdjacentCheckWarningReadout:
+    """add_decisions時点だけでなく、get_decisions/get_by_idsで読み返した際にも
+    intent:designの隣接確認nudgeが再現されることを検証する（読み出し面での非永続化を防ぐ）。
+    """
+
+    def test_get_decisions_reproduces_warning_for_design_tag_without_section(self, topic):
+        add_decision(
+            "採用する", PLAIN_REASON, topic_id=topic["topic_id"], tags=["intent:design"],
+        )
+        result = get_decisions("topic", topic["topic_id"])
+        item = result["decisions"][0]
+        assert "precedent_warnings" in item
+        assert any(
+            "intent:design" in w and "隣接確認" in w for w in item["precedent_warnings"]
+        )
+
+    def test_get_by_ids_reproduces_warning_for_design_tag_without_section(self, topic):
+        created = add_decision(
+            "採用する", PLAIN_REASON, topic_id=topic["topic_id"], tags=["intent:design"],
+        )
+        result = search_service.get_by_ids(
+            [{"type": "decision", "id": created["decision_id"]}]
+        )
+        data = result["results"][0]["data"]
+        assert "precedent_warnings" in data
+        assert any(
+            "intent:design" in w and "隣接確認" in w for w in data["precedent_warnings"]
+        )
+
+    def test_get_decisions_no_warning_when_section_present(self, topic):
+        reason_with_section = (
+            "自由記述の理由。\n\n隣接確認:\n"
+            "- 実行時: 誰が起動するか確認した\n"
+            "- 関連既決との整合: 既存decisionと矛盾しないか確認した\n"
+        )
+        add_decision(
+            "採用する", reason_with_section, topic_id=topic["topic_id"], tags=["intent:design"],
+        )
+        result = get_decisions("topic", topic["topic_id"])
+        item = result["decisions"][0]
+        assert "precedent_warnings" not in item
+
+    def test_get_decisions_no_warning_for_non_design_tag(self, topic):
+        add_decision(
+            "採用する", PLAIN_REASON, topic_id=topic["topic_id"], tags=DEFAULT_TAGS,
+        )
+        result = get_decisions("topic", topic["topic_id"])
+        item = result["decisions"][0]
+        assert "precedent_warnings" not in item

@@ -55,7 +55,7 @@ _NEAR_MISS_PATTERNS = tuple(
 )
 
 
-def _split_rejected_item(text: str) -> tuple[str, str, bool]:
+def _split_colon_item(text: str) -> tuple[str, str, bool]:
     """箇条書き項目を `見出し: 内容` の 2 分割にする（却下案の `案: 理由`、隣接確認の
     `軸名: 内容` の両方で共用する）。
 
@@ -181,7 +181,7 @@ def parse_precedent_sections(reason: str) -> dict | None:
             if m_item:
                 item_text = m_item.group(1).strip()
                 if current_section in ("却下案", "隣接確認"):
-                    alternative, item_reason, has_sep = _split_rejected_item(item_text)
+                    alternative, item_reason, has_sep = _split_colon_item(item_text)
                     if not has_sep:
                         if current_section == "却下案":
                             warnings.append(
