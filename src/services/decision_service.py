@@ -2,7 +2,10 @@
 import sqlite3
 from typing import Optional
 from src.db import get_connection, row_to_dict
-from src.services.citations_service import upsert_citations_for_owner_with_conn
+from src.services.citations_service import (
+    apply_and_writeback_conversions,
+    upsert_citations_for_owner_with_conn,
+)
 from src.services.readable_id import strip_entity_id_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.tag_service import (
@@ -177,6 +180,18 @@ def add_decisions(items: list[dict]) -> dict:
                 if parsed_tags:
                     tag_ids = ensure_tag_ids(conn, parsed_tags)
                     link_tags(conn, "decision_tags", "decision_id", decision_id, tag_ids)
+
+                # 生 ID リテラルを {{cite:...}} に変換し、書き換わった本文を DB に書き戻す
+                converted = apply_and_writeback_conversions(
+                    conn,
+                    entity_type="decision",
+                    entity_id=decision_id,
+                    fields_payload={"decision": decision, "reason": reason},
+                    tool_name="add_decisions",
+                    table="decisions",
+                )
+                decision = converted["decision"]
+                reason = converted["reason"]
 
                 # 本文中の {{cite:X#NNN}} を citations テーブルに保存
                 upsert_citations_for_owner_with_conn(

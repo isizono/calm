@@ -10,7 +10,10 @@ import yaml
 from src.db import get_connection, row_to_dict
 from src.services.readable_id import strip_entity_id_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
-from src.services.citations_service import upsert_citations_for_owner_with_conn
+from src.services.citations_service import (
+    apply_and_writeback_conversions,
+    upsert_citations_for_owner_with_conn,
+)
 from src.services.relation_service import _add_relation_with_conn, _validate_targets
 from src.services.relay.entity_publish import publish_entity_event_with_conn
 from src.services.title_validation import validate_title
@@ -118,6 +121,18 @@ def add_material(title: str, content: str, tags: list[str], source: str, related
         # リレーションを追加
         if related:
             _add_relation_with_conn(conn, "material", material_id, related)
+
+        # 生 ID リテラルを {{cite:...}} に変換し、書き換わった本文を DB に書き戻す
+        converted = apply_and_writeback_conversions(
+            conn,
+            entity_type="material",
+            entity_id=material_id,
+            fields_payload={"title": title, "content": content},
+            tool_name="add_material",
+            table="materials",
+        )
+        title = converted["title"]
+        content = converted["content"]
 
         # 本文中の {{cite:X#NNN}} を citations テーブルに保存
         upsert_citations_for_owner_with_conn(
@@ -333,9 +348,24 @@ def update_material(
             tag_ids = ensure_tag_ids(conn, parsed_tags)
             link_tags(conn, "material_tags", "material_id", material_id, tag_ids)
 
+        # 生 ID リテラルを {{cite:...}} に変換し、書き換わった本文を DB に書き戻す。
+        # 変換対象は呼び出し引数として明示された field のみ (未指定 field の
+        # 既存値は触らない)。content は mode 結合後の effective_content を対象にする。
+        converted = apply_and_writeback_conversions(
+            conn,
+            entity_type="material",
+            entity_id=material_id,
+            fields_payload={
+                "title": title,
+                "content": effective_content if content is not None else None,
+            },
+            tool_name="update_material",
+            table="materials",
+        )
+
         # citations 全削除→再投入 (本文無変更でも実施)
-        new_title = title if title is not None else row["title"]
-        new_content = effective_content if content is not None else row["content"]
+        new_title = converted["title"] if title is not None else row["title"]
+        new_content = converted["content"] if content is not None else row["content"]
         upsert_citations_for_owner_with_conn(
             conn, "material", material_id, title=new_title, content=new_content
         )

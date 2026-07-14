@@ -5,7 +5,10 @@ import sqlite3
 from typing import Optional
 
 from src.db import get_connection, row_to_dict
-from src.services.citations_service import upsert_citations_for_owner_with_conn
+from src.services.citations_service import (
+    apply_and_writeback_conversions,
+    upsert_citations_for_owner_with_conn,
+)
 from src.services.readable_id import strip_entity_id_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.pin_service import ENTITY_TABLE_MAP as PIN_ENTITY_TABLE_MAP, _add_pin_with_conn
@@ -243,6 +246,18 @@ def add_activity(
             bump_updated_at_and_publish_with_conn(conn, "activity", activity_id)
             for target_type, target_id in seen_targets:
                 bump_updated_at_and_publish_with_conn(conn, target_type, target_id)
+
+        # 生 ID リテラルを {{cite:...}} に変換し、書き換わった本文を DB に書き戻す
+        converted = apply_and_writeback_conversions(
+            conn,
+            entity_type="activity",
+            entity_id=activity_id,
+            fields_payload={"title": title, "description": description},
+            tool_name="add_activity",
+            table="activities",
+        )
+        title = converted["title"]
+        description = converted["description"]
 
         # 本文中の {{cite:X#NNN}} を citations テーブルに保存
         upsert_citations_for_owner_with_conn(
@@ -750,9 +765,21 @@ def update_activity(
             tuple(values),
         )
 
+        # 生 ID リテラルを {{cite:...}} に変換し、書き換わった本文を DB に書き戻す。
+        # 変換対象は呼び出し引数として明示された field のみ (title/description が
+        # None の場合は既存値を触らない)。
+        converted = apply_and_writeback_conversions(
+            conn,
+            entity_type="activity",
+            entity_id=activity_id,
+            fields_payload={"title": title, "description": description},
+            tool_name="update_activity",
+            table="activities",
+        )
+
         # citations 全削除→再投入 (本文無変更でも実施)
-        new_title = title if title is not None else row["title"]
-        new_description = description if description is not None else row["description"]
+        new_title = converted["title"] if title is not None else row["title"]
+        new_description = converted["description"] if description is not None else row["description"]
         upsert_citations_for_owner_with_conn(
             conn, "activity", activity_id,
             title=new_title, description=new_description,

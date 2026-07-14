@@ -3,7 +3,10 @@ import re
 import sqlite3
 from typing import Optional
 from src.db import get_connection, row_to_dict
-from src.services.citations_service import upsert_citations_for_owner_with_conn
+from src.services.citations_service import (
+    apply_and_writeback_conversions,
+    upsert_citations_for_owner_with_conn,
+)
 from src.services.readable_id import strip_entity_id_inplace
 from src.services.budget_service import count_entities_for_topics
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
@@ -113,6 +116,18 @@ def add_logs(items: list[dict]) -> dict:
                 if parsed_tags:
                     tag_ids = ensure_tag_ids(conn, parsed_tags)
                     link_tags(conn, "log_tags", "log_id", log_id, tag_ids)
+
+                # 生 ID リテラルを {{cite:...}} に変換し、書き換わった本文を DB に書き戻す
+                # (title は auto-generated 由来のため対象外、content のみ変換対象)
+                converted = apply_and_writeback_conversions(
+                    conn,
+                    entity_type="log",
+                    entity_id=log_id,
+                    fields_payload={"content": content},
+                    tool_name="add_logs",
+                    table="discussion_logs",
+                )
+                content = converted["content"]
 
                 # 本文中の {{cite:X#NNN}} を citations テーブルに保存
                 upsert_citations_for_owner_with_conn(

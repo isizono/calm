@@ -2,7 +2,10 @@
 import re
 import sqlite3
 from src.db import get_connection, row_to_dict
-from src.services.citations_service import upsert_citations_for_owner_with_conn
+from src.services.citations_service import (
+    apply_and_writeback_conversions,
+    upsert_citations_for_owner_with_conn,
+)
 from src.services.readable_id import strip_entity_id_inplace
 from src.services.embedding_service import (
     build_embedding_text,
@@ -186,6 +189,18 @@ def add_topic(
         # リレーションを追加
         if related:
             _add_relation_with_conn(conn, "topic", topic_id, related)
+
+        # 生 ID リテラルを {{cite:...}} に変換し、書き換わった本文を DB に書き戻す
+        converted = apply_and_writeback_conversions(
+            conn,
+            entity_type="topic",
+            entity_id=topic_id,
+            fields_payload={"title": title, "description": description},
+            tool_name="add_topic",
+            table="discussion_topics",
+        )
+        title = converted["title"]
+        description = converted["description"]
 
         # 本文中の {{cite:X#NNN}} を citations テーブルに保存
         upsert_citations_for_owner_with_conn(

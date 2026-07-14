@@ -19,6 +19,7 @@ from src.db import get_connection, init_database
 from src.services.citations_service import (
     VALID_EVENT_SOURCES,
     VALID_VERIFICATION_RESULTS,
+    apply_and_writeback_conversions,
     apply_raw_to_cite_conversion,
     record_citation_event,
 )
@@ -58,6 +59,18 @@ def _fetch_event(event_id: int) -> dict:
             "verification_result, extra_json "
             "FROM citation_event_log WHERE id = ?",
             (event_id,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def _fetch_material(material_id: int) -> dict:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT id, title, content FROM materials WHERE id = ?",
+            (material_id,),
         ).fetchone()
         return dict(row) if row else None
     finally:
@@ -618,3 +631,100 @@ class TestApplyRawToCiteFieldMapping:
         event = _fetch_event(res["event_ids"][0])
         assert event["verified_at"] is not None
         assert len(event["verified_at"]) >= 19
+
+
+# ============================================================
+# apply_and_writeback_conversions
+# ============================================================
+class TestApplyAndWritebackConversions:
+    def test_none_field_excluded_and_passed_through(self, temp_db):
+        """None値のfieldは変換対象から除外され、DBにも書き戻されず、
+        戻り値の merged dict では None のまま返る"""
+        target_id = _seed_material()
+        material_id = _seed_material(title="orig title", content=f"see M#{target_id}")
+        conn = get_connection()
+        try:
+            with conn:
+                merged = apply_and_writeback_conversions(
+                    conn,
+                    entity_type="material",
+                    entity_id=material_id,
+                    fields_payload={"title": None, "content": f"see M#{target_id}"},
+                    tool_name="update_material",
+                    table="materials",
+                )
+        finally:
+            conn.close()
+        assert merged["title"] is None
+        assert merged["content"] == f"see {{{{cite:M#{target_id}}}}}"
+        row = _fetch_material(material_id)
+        # title は fields_payload で None だったので変換対象外、DB の既存値も不変
+        assert row["title"] == "orig title"
+        assert row["content"] == f"see {{{{cite:M#{target_id}}}}}"
+
+    def test_changed_field_is_written_back_to_db(self, temp_db):
+        """本文が変換で書き換わったfieldはDBへUPDATEで書き戻される"""
+        target_id = _seed_material()
+        material_id = _seed_material(title="t", content=f"see M#{target_id}")
+        conn = get_connection()
+        try:
+            with conn:
+                apply_and_writeback_conversions(
+                    conn,
+                    entity_type="material",
+                    entity_id=material_id,
+                    fields_payload={"title": "t", "content": f"see M#{target_id}"},
+                    tool_name="add_material",
+                    table="materials",
+                )
+        finally:
+            conn.close()
+        row = _fetch_material(material_id)
+        assert row["content"] == f"see {{{{cite:M#{target_id}}}}}"
+
+    def test_unchanged_field_db_value_stays_identical(self, temp_db):
+        """既にcite形式で変換不要なfieldは、書き戻し後もDB値が元のまま"""
+        target_id = _seed_material()
+        original = f"existing {{{{cite:M#{target_id}}}}} only"
+        material_id = _seed_material(title="t", content=original)
+        conn = get_connection()
+        try:
+            with conn:
+                merged = apply_and_writeback_conversions(
+                    conn,
+                    entity_type="material",
+                    entity_id=material_id,
+                    fields_payload={"title": "t", "content": original},
+                    tool_name="add_material",
+                    table="materials",
+                )
+        finally:
+            conn.close()
+        assert merged["content"] == original
+        row = _fetch_material(material_id)
+        assert row["content"] == original
+
+    def test_merged_return_combines_converted_and_untouched_keys(self, temp_db):
+        """戻り値の merged dict は、変換対象keyは変換後の値、対象外keyは元の値をそのまま持つ"""
+        target_id = _seed_material()
+        material_id = _seed_material(title="t", content="body")
+        conn = get_connection()
+        try:
+            with conn:
+                merged = apply_and_writeback_conversions(
+                    conn,
+                    entity_type="material",
+                    entity_id=material_id,
+                    fields_payload={
+                        "title": "t",
+                        "content": f"see M#{target_id}",
+                        "extra_key": "untouched",
+                    },
+                    tool_name="add_material",
+                    table="materials",
+                )
+        finally:
+            conn.close()
+        assert merged["title"] == "t"
+        assert merged["content"] == f"see {{{{cite:M#{target_id}}}}}"
+        assert merged["extra_key"] == "untouched"
