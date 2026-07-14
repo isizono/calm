@@ -320,6 +320,13 @@ paths:
                       used: { type: integer }
                       full: { type: integer }
                       index_only: { type: integer }
+                      response_chars:
+                        type: object
+                        properties:
+                          limit: { type: integer }
+                          measured: { type: integer }
+                          demoted: { type: integer }
+                        description: レスポンス実サイズゲートの結果（full→index降格件数と実測文字数）。guarantee=enumeratedかつ対象decisionが1件以上のときのみ付く
                   truncated: { type: boolean }
                   materials_truncated: { type: boolean }
 

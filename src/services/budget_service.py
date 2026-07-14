@@ -13,6 +13,7 @@ from typing import Optional
 
 from src.config import (
     PRECEDENT_BUDGET_CHARS,
+    PRECEDENT_RESPONSE_CHARS_MAX,
     RECENCY_DECAY_FLOOR,
     RECENCY_DECAY_RATE,
 )
@@ -23,7 +24,26 @@ BUDGET_DEFAULTS: dict = {
     "precedent_budget_chars": PRECEDENT_BUDGET_CHARS,
     "recency_decay_rate": RECENCY_DECAY_RATE,
     "recency_decay_floor": RECENCY_DECAY_FLOOR,
+    "precedent_response_chars_max": PRECEDENT_RESPONSE_CHARS_MAX,
 }
+
+
+def compute_allocation_order(
+    all_ids: list[int],
+    decision_by_id: dict[int, dict],
+    supersede_map: dict[int, dict],
+) -> list[int]:
+    """allocate_decision_budget が本文展開の優先順位付けに使う配分順を返す。
+
+    非superseded→新しい順 → superseded→新しい順。呼び出し側が同じ優先順位で
+    full_ids のサブセットを並べ直したい場合（例: レスポンス実サイズ超過時の
+    降格順）にも再利用する。
+    """
+    order = list(all_ids)
+    order.sort(key=lambda did: did, reverse=True)
+    order.sort(key=lambda did: decision_by_id[did]["created_at"], reverse=True)
+    order.sort(key=lambda did: 1 if supersede_map.get(did, {}).get("is_superseded") else 0)
+    return order
 
 
 def allocate_decision_budget(
@@ -37,14 +57,11 @@ def allocate_decision_budget(
     予算に収まらなくなった時点で以降は index 固定にする（配分順への信頼を優先し、
     後続のより小さい項目を先に昇格させるビンパッキングは行わない）。
 
-    precedent_pull_service._allocate_budget の移設（挙動不変）。
+    precedent_pull_service._allocate_budget の移設(挙動不変)。
 
     Returns: (full_ids, used_chars)
     """
-    order = list(all_ids)
-    order.sort(key=lambda did: did, reverse=True)
-    order.sort(key=lambda did: decision_by_id[did]["created_at"], reverse=True)
-    order.sort(key=lambda did: 1 if supersede_map.get(did, {}).get("is_superseded") else 0)
+    order = compute_allocation_order(all_ids, decision_by_id, supersede_map)
 
     full_ids: set[int] = set()
     used = 0

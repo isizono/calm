@@ -4,7 +4,12 @@ BUDGET_DEFAULTSがsrc.configの値と一致すること、precedent_pull_service
 移設したallocate_decision_budgetの挙動不変性（移設前の_allocate_budgetと
 同じ配分結果になること）を検証する。
 """
-from src.config import PRECEDENT_BUDGET_CHARS, RECENCY_DECAY_FLOOR, RECENCY_DECAY_RATE
+from src.config import (
+    PRECEDENT_BUDGET_CHARS,
+    PRECEDENT_RESPONSE_CHARS_MAX,
+    RECENCY_DECAY_FLOOR,
+    RECENCY_DECAY_RATE,
+)
 from src.services import budget_service
 
 
@@ -14,6 +19,7 @@ class TestBudgetDefaults:
         assert budget_service.BUDGET_DEFAULTS["precedent_budget_chars"] == PRECEDENT_BUDGET_CHARS
         assert budget_service.BUDGET_DEFAULTS["recency_decay_rate"] == RECENCY_DECAY_RATE
         assert budget_service.BUDGET_DEFAULTS["recency_decay_floor"] == RECENCY_DECAY_FLOOR
+        assert budget_service.BUDGET_DEFAULTS["precedent_response_chars_max"] == PRECEDENT_RESPONSE_CHARS_MAX
 
 
 class TestAllocateDecisionBudget:
