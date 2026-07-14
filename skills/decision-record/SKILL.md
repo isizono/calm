@@ -46,7 +46,7 @@ description: 【必須】ユーザーとの合意が成立したとき、また�
 
 ## precedent定型節（任意）
 
-`reason` の末尾には、任意で 却下案: / 適用条件: / 適用外: / 検証: の4種の定型節を書ける。書くと `add_decisions` のレスポンスに `precedent` として構造化されて返る（読み出し面 `get_decisions` / `get_by_ids` にも反映される）。
+`reason` の末尾には、任意で 却下案: / 適用条件: / 適用外: / 検証: / 隣接確認: の5種の定型節を書ける。書くと `add_decisions` のレスポンスに `precedent` として構造化されて返る（読み出し面 `get_decisions` / `get_by_ids` にも反映される）。
 
 書式の正本は `docs/precedent-format.md` である（パーサ実装 `src/services/precedent_pure.py` と一致させる運用）。配布先のCWDでは`docs/`配下のパスが解決しないため、本スキル同梱の `references/precedent-format.md` に同一内容を保持している（内容の正誤に食い違いがあれば整合性テストで検知する）。定型節を書く前に `references/precedent-format.md` の2章（書式）を参照すること。
 
@@ -55,7 +55,16 @@ description: 【必須】ユーザーとの合意が成立したとき、また�
 - 節はすべて任意。**「該当なし」を埋めるための空項目・ダミー項目は書かない**（却下案が無い裁定に却下案節は不要）
 - 実装状態（実装済み/未実装）は本文に書かない。状態は検証行の有無で読み手が判定する
 
-**呼び出し後の確認手順**: 定型節を書いたら、レスポンスの `precedent`（`rejected_alternatives` 件数・`scope` bool・`verification_anchors`）を見て、書いたつもりの節が反映されているか確認する。反映されていない、または `precedent_warnings` が付いている場合は書式ゆれの可能性がある。よくある原因: 行頭に無い、コロンが無い、箇条書きの `- ` が無い、`references/precedent-format.md` 4章の近似見出し（却下例/棄却案/不採用案/適用範囲/対象外/検証済み/rejected/scope）を正規の見出しと誤って使った、等。`precedent_warnings` は soft validation であり、warning があっても decision 自体は作成済みで拒否はされない。warning は次回以降の書式修正の参考にする。
+**呼び出し後の確認手順**: 定型節を書いたら、レスポンスの `precedent`（`rejected_alternatives` 件数・`scope` bool・`verification_anchors`・`adjacent_check`）を見て、書いたつもりの節が反映されているか確認する。反映されていない、または `precedent_warnings` が付いている場合は書式ゆれの可能性がある。よくある原因: 行頭に無い、コロンが無い、箇条書きの `- ` が無い、`references/precedent-format.md` 4章の近似見出し（却下例/棄却案/不採用案/適用範囲/対象外/検証済み/rejected/scope/近接確認/隣接チェック/周辺確認）を正規の見出しと誤って使った、等。`precedent_warnings` は soft validation であり、warning があっても decision 自体は作成済みで拒否はされない。warning は次回以降の書式修正の参考にする。
+
+### 隣接確認:節（`intent:design` タグ推奨）
+
+`tags` に `intent:design` を含む decision では `隣接確認:` 節の記入を推奨する。書式は却下案と同じ「見出し行のみ + `- 軸名: 内容` の箇条書き」で、対象は以下の2軸:
+
+- **実行時**: 誰が起動・デプロイする主体か
+- **関連既決との整合**: 既存の decision と矛盾・前提依存はないか
+
+節が無くても記録は拒否されない（soft validation）が、`precedent_warnings` に `intent:design decision missing '隣接確認:' section` という警告が付く。`intent:design` を含まない decision には適用されない。
 
 ## 矛盾・重複への対処
 

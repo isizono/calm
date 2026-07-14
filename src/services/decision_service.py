@@ -30,6 +30,34 @@ from src.services.title_validation import validate_title
 
 PROPAGATE_TYPES = {"habit", "tag_note"}
 
+# intent:design タグ付き decision で「隣接確認:」節の記入有無を soft validation する判定に使う
+DESIGN_NAMESPACE = "intent"
+DESIGN_NAME = "design"
+_DESIGN_TAG = f"{DESIGN_NAMESPACE}:{DESIGN_NAME}"
+_ADJACENT_CHECK_WARNING = (
+    "intent:design decision missing '隣接確認:' section "
+    "(axes to consider: 実行時, 関連既決との整合)"
+)
+
+
+def _apply_adjacent_check_warning(item: dict, tags: list[str]) -> None:
+    """tagsにintent:designが含まれ「隣接確認:」節が無ければ、item['precedent']['warnings']と
+    item['precedent_warnings']の両方にwarningを合流させる（in-place）。
+
+    add_decisions（書き込み時、itemが明示したtagsのみ判定）と_build_decision_item
+    （読み出し時、実効タグで判定）の両方から呼ばれる共通ロジック。item['precedent']が
+    既に付与されている場合はそのwarningsリストにも追記し、precedent.warningsと
+    precedent_warningsが常に同一内容になるようにする。
+    """
+    if _DESIGN_TAG not in tags:
+        return
+    precedent = item.get("precedent")
+    if precedent and precedent.get("adjacent_check"):
+        return
+    if precedent is not None:
+        precedent.setdefault("warnings", []).append(_ADJACENT_CHECK_WARNING)
+    item.setdefault("precedent_warnings", []).append(_ADJACENT_CHECK_WARNING)
+
 
 def add_decisions(items: list[dict]) -> dict:
     """
@@ -46,17 +74,20 @@ def add_decisions(items: list[dict]) -> dict:
             - title (str, optional): 決定の要点を表す1行（35字以内）。省略時はNULL（表示はdecision本文にfallback）。
               tagsに layer:direction を含む場合は必須（省略・空文字はエラー）
             - tags (list[str], optional): 追加タグ。省略時はtopicのタグを継承。layer:direction は
-              人間の抽象方向性判断であることを明示するタグ（付けた場合はtitle必須）
+              人間の抽象方向性判断であることを明示するタグ（付けた場合はtitle必須）。intent:design を
+              含む場合はreasonに「隣接確認:」節（実行時／関連既決との整合の2軸）の記入を推奨する
+              （無くてもエラーにはならないsoft validation、warningがcreated要素に付く）
 
     Returns:
         {created: [...], errors: [{index, error}]}
         created各要素には related_decisions（同topic内の類似decision上位3件 [{id, title, distance}]）が付く。
         tagsに layer:direction を含む要素には existing_direction_decisions（同domainの有効な
         方向性decision全件、自身除外・非ランク）と direction_note（supersede/併存の判断を促す文言）も付く。
-        reasonに `docs/precedent-format.md` の定型節（却下案:/適用条件:/適用外:/検証:）があれば
-        precedent（コンパクト形）をechoする。節はすべて任意で、書式ゆれ等のwarningが
+        reasonに `docs/precedent-format.md` の定型節（却下案:/適用条件:/適用外:/検証:/隣接確認:）が
+        あれば precedent（コンパクト形）をechoする。節はすべて任意で、書式ゆれ等のwarningが
         あってもdecision作成自体は拒否しない（soft validation）。warningがあればcreated
-        要素に precedent_warnings（文字列のリスト）を付ける。
+        要素に precedent_warnings（文字列のリスト）を付ける。tagsに intent:design を含む要素で
+        「隣接確認:」節が無い場合も同様にprecedent_warningsへwarningが積まれる（decision作成は拒否しない）。
         propagate_to type='habit' が1件以上成功していれば~/.claude/rules配下への
         投影ファイル書き出しを試み、失敗時のみ "rules_projection" キーが付く（decision
         作成自体の成否には影響しない）。
@@ -198,6 +229,11 @@ def add_decisions(items: list[dict]) -> dict:
                     created_item["precedent"] = summarize_precedent(parsed_precedent)
                     if parsed_precedent["warnings"]:
                         created_item["precedent_warnings"] = parsed_precedent["warnings"]
+
+                # intent:design タグ付きitemに「隣接確認:」節が無ければwarningを合流する
+                # （itemが明示したtagsのみ判定、topic継承タグは見ない）。
+                _apply_adjacent_check_warning(created_item, item.get("tags") or [])
+
                 if propagation_result:
                     created_item["propagation"] = propagation_result
                 created.append(created_item)
@@ -319,9 +355,9 @@ def _build_decision_item(
     - is_superseded / supersede_chain は supersede_service.compute_supersede_info_batch の結果
     - retracted_at 生値は従来通り retracted 済みのときのみ含める (retract 時刻が呼出側で必要)
 
-    reason に `docs/precedent-format.md` の定型節（却下案:/適用条件:/適用外:/検証:）が
-    あれば precedent（コンパクト形）を付与する。節が無い decision にはキーを付けない
-    （legacy 本文と規約準拠本文を区別できるようにする）。
+    reason に `docs/precedent-format.md` の定型節（却下案:/適用条件:/適用外:/検証:/
+    隣接確認:）があれば precedent（コンパクト形）を付与する。節が無い decision には
+    キーを付けない（legacy 本文と規約準拠本文を区別できるようにする）。
     """
     display_title = dec.get("title") or (dec["decision"] or "")[:50]
     supersede_info = supersede_map.get(
@@ -341,6 +377,8 @@ def _build_decision_item(
     if dec.get("retracted_at"):
         item["retracted_at"] = dec["retracted_at"]
     attach_precedent(item, dec.get("reason"))
+    # 読み出し時にも書き込み時と同じnudgeを再現する（tags_mapは実効タグ=topic継承込み）。
+    _apply_adjacent_check_warning(item, item["tags"])
     strip_entity_id_inplace(item)
     return item
 
