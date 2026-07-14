@@ -10,7 +10,11 @@ import yaml
 from src.db import get_connection, row_to_dict
 from src.services.readable_id import strip_entity_id_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
-from src.services.citations_service import upsert_citations_for_owner_with_conn
+from src.services.citations_service import (
+    apply_and_writeback_conversions,
+    apply_raw_to_cite_conversion,
+    upsert_citations_for_owner_with_conn,
+)
 from src.services.relation_service import _add_relation_with_conn, _validate_targets
 from src.services.relay.entity_publish import publish_entity_event_with_conn
 from src.services.title_validation import validate_title
@@ -118,6 +122,18 @@ def add_material(title: str, content: str, tags: list[str], source: str, related
         # リレーションを追加
         if related:
             _add_relation_with_conn(conn, "material", material_id, related)
+
+        # 生 ID リテラルを {{cite:...}} に変換し、書き換わった本文を DB に書き戻す
+        converted = apply_and_writeback_conversions(
+            conn,
+            entity_type="material",
+            entity_id=material_id,
+            fields_payload={"title": title, "content": content},
+            tool_name="add_material",
+            table="materials",
+        )
+        title = converted["title"]
+        content = converted["content"]
 
         # 本文中の {{cite:X#NNN}} を citations テーブルに保存
         upsert_citations_for_owner_with_conn(
@@ -300,17 +316,41 @@ def update_material(
             else:  # append
                 effective_content = existing_content + CONTENT_JOIN_SEPARATOR + content
 
+        # 生 ID リテラルを {{cite:...}} に変換する。update系はUPDATE対象の
+        # material_idが呼び出し時点で既に存在する行のため（add系と異なりINSERT
+        # による確定を待つ必要がない）、SET句組み立て前に変換を先に行い、
+        # 変換前後の値のどちらを書くかで2段UPDATEになるのを避け1回のUPDATEに統合する。
+        # 変換対象は呼び出し引数として明示された field のみ (未指定 field の
+        # 既存値は触らない)。content は mode 結合後の effective_content を対象にする。
+        conversion = apply_raw_to_cite_conversion(
+            conn,
+            entity_type="material",
+            entity_id=material_id,
+            fields_payload={
+                k: v
+                for k, v in {
+                    "title": title,
+                    "content": effective_content if content is not None else None,
+                }.items()
+                if v is not None
+            },
+            tool_name="update_material",
+        )
+        converted_fields = conversion["fields"]
+        converted_title = converted_fields.get("title")
+        converted_content = converted_fields.get("content")
+
         # Build dynamic SQL for title/content
         set_parts = []
         values = []
 
         if title is not None:
             set_parts.append("title = ?")
-            values.append(title)
+            values.append(converted_title)
 
         if content is not None:
             set_parts.append("content = ?")
-            values.append(effective_content)
+            values.append(converted_content)
 
         if source is not None:
             set_parts.append("source = ?")
@@ -334,8 +374,8 @@ def update_material(
             link_tags(conn, "material_tags", "material_id", material_id, tag_ids)
 
         # citations 全削除→再投入 (本文無変更でも実施)
-        new_title = title if title is not None else row["title"]
-        new_content = effective_content if content is not None else row["content"]
+        new_title = converted_title if title is not None else row["title"]
+        new_content = converted_content if content is not None else row["content"]
         upsert_citations_for_owner_with_conn(
             conn, "material", material_id, title=new_title, content=new_content
         )

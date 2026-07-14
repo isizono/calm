@@ -39,6 +39,7 @@ __all__ = [
     "get_in_out",
     "record_citation_event",
     "apply_raw_to_cite_conversion",
+    "apply_and_writeback_conversions",
     "VALID_EVENT_SOURCES",
     "VALID_VERIFICATION_RESULTS",
 ]
@@ -506,3 +507,61 @@ def apply_raw_to_cite_conversion(
         )
         event_ids.append(event_id)
     return {"fields": result_fields, "event_ids": event_ids, "stats": stats}
+
+
+def apply_and_writeback_conversions(
+    conn: sqlite3.Connection,
+    entity_type: str,
+    entity_id: int,
+    fields_payload: dict[str, str | None],
+    tool_name: str | None,
+    table: str,
+) -> dict[str, str | None]:
+    """write 経路の raw ID → cite 変換を適用し、本文が書き換わった field を DB に書き戻す。
+
+    apply_raw_to_cite_conversion のラッパーとして、変換 + 書き戻し + 元 payload との
+    合成のみを担う。変換判断ロジックそのものは apply_raw_to_cite_conversion 側に閉じる。
+
+    Args:
+        conn: 呼び出し元が開いた既存コネクション。INSERT/UPDATE と同一トランザクション
+              内で書き戻す前提。
+        entity_type: OWNER_TEXT_FIELDS のキー ('material' / 'decision' / 'log' /
+                     'activity' / 'topic')
+        entity_id: INSERT / UPDATE 直後の row id
+        fields_payload: 対象 field の現在値 ({field_name: text | None})。None 値は
+                        「呼び出し元が更新対象としていない field」を表し、変換対象からも
+                        書き戻し対象からも除外される。
+        tool_name: 呼び出し元 MCP tool 名 (citation_event_log.tool_name に記録)。
+        table: 書き戻し先の実テーブル名 ('materials' / 'decisions' /
+               'discussion_logs' / 'activities' / 'discussion_topics')。主キー列は
+               全 owner テーブルで 'id' に統一されている前提でハードコードする。
+
+    Returns:
+        変換後の fields dict (呼び出し元が続く upsert_citations_for_owner_with_conn の
+        **kwargs に渡す用)。None だった field もそのまま None で含む。
+    """
+    non_none_fields = {k: v for k, v in fields_payload.items() if v is not None}
+    result = apply_raw_to_cite_conversion(
+        conn,
+        entity_type,
+        entity_id,
+        non_none_fields,
+        tool_name=tool_name,
+    )
+    converted_fields = result["fields"]
+
+    changed = {
+        k: v
+        for k, v in converted_fields.items()
+        if k in non_none_fields and v != non_none_fields[k]
+    }
+    if changed:
+        set_clause = ", ".join(f"{k} = ?" for k in changed)
+        conn.execute(
+            f"UPDATE {table} SET {set_clause} WHERE id = ?",
+            (*changed.values(), entity_id),
+        )
+
+    merged: dict[str, str | None] = dict(fields_payload)
+    merged.update(converted_fields)
+    return merged
