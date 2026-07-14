@@ -132,7 +132,7 @@ graph TB
 ### 3.4 埋め込み
 
 - `src/services/embedding_service.py`: アプリ側からembedding取得を呼ぶクライアント
-- `src/infra/embedding_server.py`: モデル保持・encodeを1プロセスに集約するHTTPサーバー（localhost:52836、idle timeout 5分、モデル `cl-nagoya/ruri-v3-70m`）。横断インフラ寄りだが本体はストア層が読むため §3 にも記載
+- `src/infra/embedding_server.py`: モデル保持・encodeを1プロセスに集約するHTTPサーバー（localhost:52836、リクエストTTL 3600秒/drain idle 30秒/drain deadline 1800秒でgraceful shutdown、いずれもenv varで調整可、モデル `cl-nagoya/ruri-v3-70m`）。横断インフラ寄りだが本体はストア層が読むため §3 にも記載
 
 ### 3.5 公開IF
 

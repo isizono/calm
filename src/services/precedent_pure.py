@@ -1,7 +1,7 @@
 """decision / material の reason・content 本文に書く定型節（判例規約）を扱う pure な層。
 
 reason 本文の末尾に、行頭見出しで始まる節を置く運用規約をパースする。
-見出しは 4 種類: `却下案:` / `適用条件:` / `適用外:` / `検証:`。
+見出しは 5 種類: `却下案:` / `適用条件:` / `適用外:` / `検証:` / `隣接確認:`。
 書式の正本は `docs/precedent-format.md`。
 
 本モジュールが定型節・検証アンカーの唯一のパーサ実装である。消費者（decision の
@@ -22,16 +22,17 @@ __all__ = [
 ]
 
 # 正規の節見出し語彙（行頭に置き、`:` で終える）
-SECTION_HEADERS = ("却下案", "適用条件", "適用外", "検証")
+SECTION_HEADERS = ("却下案", "適用条件", "適用外", "検証", "隣接確認")
 
 # 表記ゆれ検出用（節として採らず warning を出す近似見出し）
 NEAR_MISS_HEADERS = (
     "却下例", "棄却案", "不採用案", "適用範囲", "対象外", "検証済み", "rejected", "scope",
+    "近接確認", "隣接チェック", "周辺確認",
 )
 
-# 却下案 / 適用条件 / 適用外: 見出し行のみで完結し、以降の箇条書き行が項目になる。
+# 却下案 / 適用条件 / 適用外 / 隣接確認: 見出し行のみで完結し、以降の箇条書き行が項目になる。
 # コロンは半角・全角どちらも許容する（却下案項目の区切りが全角を許すのと揃える）。
-_LIST_HEADING_RE = re.compile(r"^(却下案|適用条件|適用外)\s*[:：]\s*$")
+_LIST_HEADING_RE = re.compile(r"^(却下案|適用条件|適用外|隣接確認)\s*[:：]\s*$")
 # 検証: 見出しと内容が同一行（複数行許容、行ごとに独立したアンカーとして扱う）
 _VERIFY_HEADING_RE = re.compile(r"^検証\s*[:：]\s*(.*)$")
 # 節本文の箇条書き項目
@@ -45,6 +46,7 @@ _SECTION_KEY = {
     "却下案": "rejected_alternatives",
     "適用条件": "scope_in",
     "適用外": "scope_out",
+    "隣接確認": "adjacent_check",
 }
 
 _NEAR_MISS_PATTERNS = tuple(
@@ -53,11 +55,12 @@ _NEAR_MISS_PATTERNS = tuple(
 )
 
 
-def _split_rejected_item(text: str) -> tuple[str, str, bool]:
-    """却下案の箇条書き項目を `案: 理由` の 2 分割にする。
+def _split_colon_item(text: str) -> tuple[str, str, bool]:
+    """箇条書き項目を `見出し: 内容` の 2 分割にする（却下案の `案: 理由`、隣接確認の
+    `軸名: 内容` の両方で共用する）。
 
-    区切りが無ければ alternative のみとし、reason は空文字にする。
-    Returns: (alternative, reason, has_separator)
+    区切りが無ければ前半部分のみとし、後半は空文字にする。
+    Returns: (前半, 後半, has_separator)
     """
     idx = text.find(": ")
     if idx != -1:
@@ -71,9 +74,9 @@ def _split_rejected_item(text: str) -> tuple[str, str, bool]:
 def parse_precedent_sections(reason: str) -> dict | None:
     """reason（または material の content）本文から定型節をパースする。
 
-    行単位の状態機械で処理する。`^(却下案|適用条件|適用外)\\s*[:：]\\s*$`（見出し行
-    のみ）で節を開き、次の見出しか本文終端で閉じる。`^検証\\s*[:：]` は同一行に内容を
-    取り、行ごとに独立したアンカーとして扱う（複数行許容）。見出しのコロンは半角・
+    行単位の状態機械で処理する。`^(却下案|適用条件|適用外|隣接確認)\\s*[:：]\\s*$`
+    （見出し行のみ）で節を開き、次の見出しか本文終端で閉じる。`^検証\\s*[:：]` は同一行に
+    内容を取り、行ごとに独立したアンカーとして扱う（複数行許容）。見出しのコロンは半角・
     全角どちらも許容する。見出し行より前・節の外にあるテキストは自由記述本文として
     そのまま無視する（本文を書き換えない）。
 
@@ -91,6 +94,7 @@ def parse_precedent_sections(reason: str) -> dict | None:
           "verification_anchors": [
             {"raw": str, "date": str | None, "commit": str | None}, ...
           ],
+          "adjacent_check": [{"axis": str, "note": str}, ...],
           "warnings": [str, ...],   # 表記ゆれ・空節・アンカー日付欠落など
         }
     """
@@ -103,6 +107,7 @@ def parse_precedent_sections(reason: str) -> dict | None:
     scope_in: list[str] = []
     scope_out: list[str] = []
     verification_anchors: list[dict] = []
+    adjacent_check: list[dict] = []
     warnings: list[str] = []
 
     any_marker = False
@@ -121,6 +126,8 @@ def parse_precedent_sections(reason: str) -> dict | None:
                 rejected_alternatives.extend(current_items)
             elif key == "scope_in":
                 scope_in.extend(current_items)
+            elif key == "adjacent_check":
+                adjacent_check.extend(current_items)
             else:
                 scope_out.extend(current_items)
         current_section = None
@@ -173,15 +180,25 @@ def parse_precedent_sections(reason: str) -> dict | None:
             m_item = _ITEM_RE.match(raw_line)
             if m_item:
                 item_text = m_item.group(1).strip()
-                if current_section == "却下案":
-                    alternative, item_reason, has_sep = _split_rejected_item(item_text)
+                if current_section in ("却下案", "隣接確認"):
+                    alternative, item_reason, has_sep = _split_colon_item(item_text)
                     if not has_sep:
-                        warnings.append(
-                            f"rejected alternative without ': ' separator: {item_text!r}"
+                        if current_section == "却下案":
+                            warnings.append(
+                                f"rejected alternative without ': ' separator: {item_text!r}"
+                            )
+                        else:
+                            warnings.append(
+                                f"adjacent check item without ': ' separator: {item_text!r}"
+                            )
+                    if current_section == "却下案":
+                        current_items.append(
+                            {"alternative": alternative, "reason": item_reason}
                         )
-                    current_items.append(
-                        {"alternative": alternative, "reason": item_reason}
-                    )
+                    else:
+                        current_items.append(
+                            {"axis": alternative, "note": item_reason}
+                        )
                 else:
                     current_items.append(item_text)
             # 節本文中の箇条書き以外の行（空行含む）は節を閉じずに無視する
@@ -196,6 +213,7 @@ def parse_precedent_sections(reason: str) -> dict | None:
         "scope_in": scope_in,
         "scope_out": scope_out,
         "verification_anchors": verification_anchors,
+        "adjacent_check": adjacent_check,
         "warnings": warnings,
     }
 
@@ -211,6 +229,7 @@ def summarize_precedent(parsed: dict) -> dict:
           "rejected_alternatives": <件数>,
           "scope": <適用条件/適用外のいずれかが非空か bool>,
           "verification_anchors": [<raw 文字列>, ...],   # 生テキストのまま。空リスト=決定のみ
+          "adjacent_check": [<"軸: 内容" 文字列>, ...],   # 生テキスト表現。空リスト=節なし
           "warnings": [str, ...],   # 書式崩れがある場合のみ付与（無ければキー自体を省く）
         }
     """
@@ -220,10 +239,14 @@ def summarize_precedent(parsed: dict) -> dict:
         "verification_anchors": [
             anchor["raw"] for anchor in (parsed.get("verification_anchors") or [])
         ],
+        "adjacent_check": [
+            f"{entry['axis']}: {entry['note']}" if entry.get("note") else entry["axis"]
+            for entry in (parsed.get("adjacent_check") or [])
+        ],
     }
     # 書式崩れは書き手にフィードバックする経路が無いと気づけないため、warning が
     # あるときだけコンパクト形にも載せて読み出し面（get_decisions / get_by_ids）へ
-    # 露出する。崩れの無い precedent は 3 キーのまま（legacy との差分を最小化）。
+    # 露出する。崩れの無い precedent は 4 キーのまま（legacy との差分を最小化）。
     warnings = parsed.get("warnings") or []
     if warnings:
         compact["warnings"] = list(warnings)

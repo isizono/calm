@@ -2212,6 +2212,10 @@ def _format_row(
         result["is_superseded"] = superseded_by is not None
         result["superseded_by"] = superseded_by
         precedent_pure.attach_precedent(result, data.get("reason"))
+        # decision_serviceとの循環import回避のため関数内import。add_decisions/get_decisionsと
+        # 同じnudgeをget_by_idsの読み出し面にも再現する。
+        from src.services.decision_service import _apply_adjacent_check_warning
+        _apply_adjacent_check_warning(result, tags)
         strip_entity_id_inplace(result)
         return result
     elif type_name == 'activity':
