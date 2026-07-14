@@ -223,6 +223,25 @@ def add_activity(
         if related:
             _add_relation_with_conn(conn, "activity", activity_id, related)
 
+        # 生 ID リテラルを {{cite:...}} に変換し、書き換わった本文を DB に書き戻す。
+        # publish_entity_event_with_conn / bump_updated_at_and_publish_with_conn は
+        # 呼び出し時点でDBから都度titleをSELECTするため、変換は両者より必ず前に行う。
+        converted = apply_and_writeback_conversions(
+            conn,
+            entity_type="activity",
+            entity_id=activity_id,
+            fields_payload={"title": title, "description": description},
+            tool_name="add_activity",
+            table="activities",
+        )
+        title = converted["title"]
+        description = converted["description"]
+
+        # 本文中の {{cite:X#NNN}} を citations テーブルに保存
+        upsert_citations_for_owner_with_conn(
+            conn, "activity", activity_id, title=title, description=description
+        )
+
         publish_entity_event_with_conn(
             conn, entity_type="activity", entity_id=activity_id, event="created"
         )
@@ -246,23 +265,6 @@ def add_activity(
             bump_updated_at_and_publish_with_conn(conn, "activity", activity_id)
             for target_type, target_id in seen_targets:
                 bump_updated_at_and_publish_with_conn(conn, target_type, target_id)
-
-        # 生 ID リテラルを {{cite:...}} に変換し、書き換わった本文を DB に書き戻す
-        converted = apply_and_writeback_conversions(
-            conn,
-            entity_type="activity",
-            entity_id=activity_id,
-            fields_payload={"title": title, "description": description},
-            tool_name="add_activity",
-            table="activities",
-        )
-        title = converted["title"]
-        description = converted["description"]
-
-        # 本文中の {{cite:X#NNN}} を citations テーブルに保存
-        upsert_citations_for_owner_with_conn(
-            conn, "activity", activity_id, title=title, description=description
-        )
 
         conn.commit()
 
