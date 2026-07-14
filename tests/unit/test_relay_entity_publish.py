@@ -438,3 +438,47 @@ class TestPinPublish:
         assert result["removed"] == 0
         after = len(_rows_for("material", material["material_id"]))
         assert after == before
+
+
+class TestAddActivityPinsPublishOrder:
+    """add_activityのpins引数はevent:createdをpin由来のevent:updatedより必ず先にoutboxへ
+    積み、activity自身のbump+publishをpin件数分重複させない（複数targetの一括追加は
+    relation_serviceの_bump_and_publish_endpoints_with_connと同じくsource1回+target重複排除）。"""
+
+    def test_created_precedes_updated_and_activity_bump_is_not_duplicated(self, temp_db, disable_embedding):
+        material = add_material(title="m", content="c", tags=DEFAULT_TAGS, source="test")
+        topic = add_topic(title="t", description="d", tags=DEFAULT_TAGS)
+
+        before_material = len(_rows_for("material", material["material_id"]))
+        before_topic = len(_rows_for("topic", topic["topic_id"]))
+
+        result = add_activity(
+            title="a", description="d", tags=DEFAULT_TAGS, check_in=False,
+            pins=[
+                {"type": "material", "ref": material["material_id"]},
+                {"type": "topic", "ref": topic["topic_id"]},
+            ],
+        )
+        assert "error" not in result
+        activity_id = result["activity_id"]
+
+        activity_rows = _rows_for("activity", activity_id)
+        # event:created 1件 + pinsループ後にまとめてbumpされたevent:updated 1件のみ。
+        # pin 2件を渡してもactivity側の行が2件（1件/pin）に重複増殖しないことを検証する。
+        assert len(activity_rows) == 2
+        assert "event:created" in activity_rows[0]["labels"]
+        assert "event:updated" in activity_rows[1]["labels"]
+
+        material_rows = _rows_for("material", material["material_id"])
+        assert len(material_rows) == before_material + 1
+        assert "event:updated" in material_rows[-1]["labels"]
+
+        topic_rows = _rows_for("topic", topic["topic_id"])
+        assert len(topic_rows) == before_topic + 1
+        assert "event:updated" in topic_rows[-1]["labels"]
+
+        # activityのevent:createdは、pins由来のevent:updated（activity自身のbump分・
+        # material・topic）のいずれよりも先にoutboxへ積まれる（idが小さい）
+        created_id = activity_rows[0]["id"]
+        updated_ids = [activity_rows[1]["id"], material_rows[-1]["id"], topic_rows[-1]["id"]]
+        assert all(created_id < updated_id for updated_id in updated_ids)

@@ -900,6 +900,7 @@ def add_activity(
     description: str,
     tags: list[str],
     related: list[dict] | None = None,
+    pins: list[dict] | None = None,
     check_in: bool = True,
     orch_managed: bool = False,
 ) -> dict:
@@ -907,26 +908,28 @@ def add_activity(
     新しいアクティビティを追加する。デフォルトで作成後にcheck_inも実行する。
 
     典型的な使い方:
-    - 作業アクティビティを作成: add_activity("○○機能を実装", "詳細説明...", ["domain:cc-memory", "intent:implement", "search", "ranking"])
-    - トピック紐付け: add_activity("○○機能を実装", "詳細説明...", ["domain:cc-memory", "intent:implement"], related=[{"type": "topic", "ids": [123]}])
-    - 複数関連: add_activity("...", "...", [...], related=[{"type": "topic", "ids": [1, 2]}, {"type": "activity", "ids": [3]}])
-    - intent:implementは合意済みdecisionをrelateする: add_activity("...", "...", ["domain:cc-memory", "intent:implement"], related=[{"type": "decision", "ids": [10, 11]}])
-    - check_inなしで作成: add_activity("○○機能を実装", "詳細説明...", ["domain:cc-memory", "intent:implement"], check_in=False)
-    - orchが管理するアクティビティとして作成: add_activity("...", "...", [...], orch_managed=True)
+    - 作業アクティビティを作成: add_activity("○○機能を実装", "詳細説明...", ["domain:cc-memory", "intent:implement", "search"])
+    - トピック紐付け: add_activity(..., related=[{"type": "topic", "ids": [123]}])
+    - 複数関連: add_activity(..., related=[{"type": "topic", "ids": [1, 2]}, {"type": "activity", "ids": [3]}])
+    - intent:implementはdecisionをrelateする: add_activity(..., ["domain:cc-memory", "intent:implement"], related=[{"type": "decision", "ids": [10, 11]}])
+    - 作成と同時にpinも張る: add_activity(..., pins=[{"type": "material", "ref": 42}, {"type": "tag", "ref": "domain:cc-memory"}])
+    - check_inなしで作成: add_activity(..., check_in=False)
+    - orch管理として作成: add_activity(..., orch_managed=True)
 
     Args:
         title: アクティビティのタイトル（35字以内）
-        description: アクティビティの詳細説明（必須）。スコアリングに活用されるため、以下の情報があれば記載を推奨: 締め切り、ブロッカー（自分が/外部）、影響度・緊急度
-        tags: タグ配列（必須、1個以上）。domain:タグとintent:タグは必須。素タグも積極的に付けること。namespace: domain:(プロジェクト)/intent:(意図)/素タグ(キーワード)。例: ["domain:cc-memory", "intent:implement", "search", "ranking"]
-        related: 関連エンティティ（optional）。[{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...] 形式。複数エンティティを配列で同時紐付け可能。例: [{"type": "topic", "ids": [1]}, {"type": "decision", "ids": [10, 11]}]。作成と同時にリレーションを張る。intent:implementタグを含む場合、relatedにtype='decision'のエントリを最低1件含めないとIMPLEMENT_WORKFLOW_GUARDエラーで弾かれる（議論・設計フェーズで合意したdecisionか、いきなりimplementする理由を記録したdecisionをrelateする）
-        check_in: 作成後にcheck_inを実行するか（デフォルト: True）。Trueの場合、返り値にcheck_in_resultが含まれる
-        orch_managed: orchが管理するアクティビティか（デフォルト: False）。Trueを指定すると個人フローのSessionStart一覧から除外され、Stop hookのcheck-inブロック・nudgeも抑制される。orchワークフローで作成するアクティビティに付与する
+        description: アクティビティの詳細説明（必須）。スコアリングに活用されるため、締め切り・ブロッカー・影響度/緊急度があれば記載を推奨
+        tags: タグ配列（必須、1個以上）。domain:とintent:は必須、素タグも積極的に付ける。例: ["domain:cc-memory", "intent:implement", "search"]
+        related: 関連エンティティ（optional）。[{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...] 形式、複数同時紐付け可。作成と同時にリレーションを張る。intent:implementタグ時はtype="decision"を1件以上含めないとIMPLEMENT_WORKFLOW_GUARDエラーになる
+        pins: 作成したactivity自身から張るpin（optional）。[{"type": "tag"|"activity"|"topic"|"decision"|"log"|"material", "ref": int|str}, ...] 形式（refはadd_pinのtarget_refと同じ、tagのみnamespace:name文字列可）。いずれか1件でも解決失敗すると、activity作成自体を含め全体がロールバックされる（部分成功なし）
+        check_in: 作成後にcheck_inを実行するか（デフォルト: True）。Trueなら返り値にcheck_in_resultを含む
+        orch_managed: orch管理アクティビティか（デフォルト: False）。TrueならSessionStart一覧・Stop hookのcheck-in催促から除外される
 
     Returns:
         作成されたアクティビティ情報（check_in=Trueの場合はcheck_in_resultにtag_notes等を含む）
     """
     result = activity_service.add_activity(
-        title, description, tags, related=related, check_in=check_in,
+        title, description, tags, related=related, pins=pins, check_in=check_in,
         orch_managed=orch_managed,
     )
     if "error" not in result:
