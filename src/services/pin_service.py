@@ -125,6 +125,7 @@ def _add_pin_with_conn(
     source_ref: Union[int, str],
     target_type: str,
     target_ref: Union[int, str],
+    bump: bool = True,
 ) -> dict:
     """conn共有版: pinを追加する（source → target）。
 
@@ -138,6 +139,9 @@ def _add_pin_with_conn(
         source_ref: 起点エンティティのID（intまたはstr）。tagのみnamespace:name形式を許容
         target_type: 終点エンティティ種別
         target_ref: 終点エンティティのID（intまたはstr）。tagのみnamespace:name形式を許容
+        bump: 実際にpinが新規追加されたとき、source/targetをこの関数内でbump+publishするか。
+            複数pinを1呼び出し元でループ処理する場合（activity_service.add_activity等）は
+            False を渡し、呼び出し元でsourceを1回・targetを重複排除してbumpする。
 
     Returns:
         成功時: {"source_type": str, "source_id": int, "target_type": str, "target_id": int}
@@ -223,7 +227,7 @@ def _add_pin_with_conn(
     )
     # 実際に新規追加された（冪等な再呼び出しでない）ときのみ、pin自体は独立
     # publishせずsource/target両entityをevent:updatedでpublishする
-    if conn.execute("SELECT changes()").fetchone()[0] > 0:
+    if bump and conn.execute("SELECT changes()").fetchone()[0] > 0:
         bump_updated_at_and_publish_with_conn(conn, source_type, source_id)
         bump_updated_at_and_publish_with_conn(conn, target_type, target_id)
 

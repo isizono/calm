@@ -10,7 +10,10 @@ from src.services.readable_id import strip_entity_id_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.pin_service import ENTITY_TABLE_MAP as PIN_ENTITY_TABLE_MAP, _add_pin_with_conn
 from src.services.relation_service import _add_relation_with_conn, _validate_targets
-from src.services.relay.entity_publish import publish_entity_event_with_conn
+from src.services.relay.entity_publish import (
+    bump_updated_at_and_publish_with_conn,
+    publish_entity_event_with_conn,
+)
 from src.services.title_validation import validate_title
 from src.services.tag_service import (
     validate_and_parse_tags,
@@ -223,14 +226,23 @@ def add_activity(
 
         # pinを追加（source は作成した activity 自身）。
         # いずれかが失敗したらトランザクション全体を破棄し、activity作成自体も失敗させる。
+        # bump+publishはpinごとに個別発火させず、relation_serviceの
+        # _bump_and_publish_endpoints_with_connと同様にsourceを1回・targetを
+        # 重複排除してループ後にまとめて行う（outbox行の重複増殖を防ぐ）。
         if pins:
+            seen_targets: set[tuple[str, int]] = set()
             for pin in pins:
                 pin_result = _add_pin_with_conn(
-                    conn, "activity", activity_id, pin["type"], pin["ref"]
+                    conn, "activity", activity_id, pin["type"], pin["ref"], bump=False
                 )
                 if "error" in pin_result:
                     conn.rollback()
                     return pin_result
+                seen_targets.add((pin_result["target_type"], pin_result["target_id"]))
+
+            bump_updated_at_and_publish_with_conn(conn, "activity", activity_id)
+            for target_type, target_id in seen_targets:
+                bump_updated_at_and_publish_with_conn(conn, target_type, target_id)
 
         # 本文中の {{cite:X#NNN}} を citations テーブルに保存
         upsert_citations_for_owner_with_conn(
