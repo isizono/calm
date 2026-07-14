@@ -409,6 +409,13 @@ def collect_precedents_with_conn(
     ゲートで full から index へ降格した件数を表す。demoted > 0 のときは
     budget.full の一部が実際には detail="index" になっている（実際の full 件数は
     budget.full - demoted）。truncated はこの降格も反映して更新される。
+
+    budget.response_chars は all_ids が空（topic_ids が空、または対象 topic に
+    非 retract decision が1件も無い）のときの早期 return では付与されない
+    （_apply_response_size_gate 自体を呼ばないため）。この早期 return は
+    pull_precedents 側で guarantee != "enumerated" のときにも発生するが、その
+    状態自体は guarantee フィールドが既に開示しているため、response_chars の
+    有無を別途チェックする必要はない。
     """
     if not topic_ids:
         return {
@@ -572,6 +579,11 @@ def pull_precedents(
         {"limit", "measured", "demoted"} として結果を記録する。budget.full/index_only
         はこの降格を反映せず一次予算の配分結果のまま（詳細は collect_precedents_with_conn
         docstring参照）。
+
+        budget.response_chars は guarantee == "enumerated" かつ選択された topic に
+        非 retract decision が1件以上あるときのみ付与される。guarantee が
+        "routing_miss" / "routing_unavailable" のときは budget に response_chars
+        キー自体が無い。
     """
     if not context or len(context.strip()) < 2:
         return {

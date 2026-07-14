@@ -516,65 +516,41 @@ def pull_precedents(
     確認したいとき。ランクtop-Nの確率的発見ならsearch、topic直下の一覧（LIMIT30・
     truncationの可視化なし）ならget_decisions。
 
-    設計文脈から近傍 topic を特定し、topic 内の決定事項(decision)を
-    ランク競争なしに網羅列挙して返す。
-
-    search がランク top-N の確率的発見であるのに対し、本ツールは「routing が
-    当たった topic の非 retract decision は全件、最低でも索引粒度で応答に現れる」
-    ことを保証する。予算超過時は本文展開数を絞るが切り捨てはせず、truncated と
-    budget で縮退を明示する。read-only（status 更新等の副作用なし）。
+    設計文脈から近傍 topic を特定し、routing が当たった topic の非 retract decision を
+    ランク競争なしに全件、最低でも索引粒度で応答に含める。予算超過時も切り捨てず
+    truncated/budget で縮退を明示する。read-only（副作用なし）。
 
     Args:
-        context: これから決めようとしている論点の記述（自由記述の長文可、2文字以上）。
+        context: これから決めようとしている論点の記述（自由記述、2文字以上）。
                  routing のクエリになる。topic_ids 指定時も telemetry 用に必須
         topic_ids: 対象 topic を明示指定して routing をスキップする
-                   （アンカー済みの場合）。embedding サーバー停止時でも動作する
+                   （embedding サーバー停止時でも動作する）
         k: routing で採用する topic 数の上限（1..5にclamp）
         budget_chars: 本文展開の文字数予算。省略時は config 既定値
-        include_materials: decision に紐づく material と topic 直下 material の
-                           カタログを同時展開する。related/citation 経由の展開は
-                           30 件で打ち切られ、超過時は materials_truncated=true になる
-        flavor: citation展開モード（raw/internal/readable、既定internal）。3値の意味・出力例は
+        include_materials: decision/topic直下のmaterialカタログを同時展開する
+                           （30件で打ち切り、超過時 materials_truncated=true）
+        flavor: citation展開モード（raw/internal/readable、既定internal）。
                 docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
 
     Returns:
         {guarantee, routing, topics, budget, truncated, materials_truncated}
-        guarantee: "enumerated"（routing成立+全件列挙完了。判例保証あり） /
-        "routing_miss"（近傍topicなし。真の前例なしかrouting失敗の区別はつかないため
-        前例なし扱い=事前確認側に倒すこと） / "routing_unavailable"（embeddingサーバー
-        停止でrouting不能。topic_ids明示指定で回避できる）
-        routing.candidates: 各 {topic_id_raw, title, distance, selected}
-        （topic_ids指定時はdistanceなし。存在しないtopic_idはerror: "not_found"）
-        topics[].decisions の各要素は detail="full"（decision/reason全文 + tags +
-        sections + supersede_chain）または detail="index"（id/title/created_at/
-        is_superseded/superseded_byのみ）。index落ち分の本文はget_by_idsで追補できる。
-        複数topicにbelongs_toするdecisionは最初に選ばれたtopic側にのみ本文を置き、
-        他方ではindex + also_in（本文を持つtopic_idの配列）が付く。
-        reasonに定型節（却下案:/適用条件:/適用外:/検証:。書式はdocs/precedent-format.md）が
-        あるdecisionにはsections（構造化済み）が付く。節が無ければキー自体が無い。
-        material_ids / linked_decision_ids はdecision↔material間のrelated/citation
-        エッジ（depth-1）から双方向に対応する。
-        materials_truncated: material カタログ展開が30件キャップを超え一部materialを
-        載せ切れなかった、またはレスポンス実サイズ超過でmaterialカタログを縮退した
-        とき true（include_materials時のみ）。decision網羅保証は本文の
-        truncated/budgetが担い、materials_truncatedとは独立。
-        detail="full"のdecisionには archived_tags（そのdecisionのタグのうちarchivedな
-        ものの集約、{tag, archived_reason}の配列。該当なしでも空配列で常に付く）が付く。
-        detail="index"のdecisionはtags自体を持たないためarchived_tagsも付かない
-        （必要ならget_by_idsで本文と併せて確認する）。
-        budget_charsはdecision+reason本文のみを計上する一次予算であり、実際の
-        レスポンスにはtags/sections/supersede_chain/materialカタログ等も乗るため
-        一次予算内でも応答全体が実サイズ上限（既定32000字、CCM_PRECEDENT_RESPONSE_CHARS_MAX）
-        を超えることがある。超過時はfull itemを配分順の逆順で追加降格し
-        （それでも超過するときはmaterialカタログを縮退）、budget.response_chars
-        に{limit, measured, demoted}として結果が付く。demoted>0のときは
-        budget.full/index_only はこの追加降格を反映しない一次予算時点の値のまま
-        （実際のfull件数はbudget.full - demoted）。truncatedはこの追加降格も
-        反映して更新される。
-        なおこの実サイズゲートはservice層の返却直前で確定するため、本関数が
-        後段で行うtag_notes注入・archived_tags付与はbudget.response_chars.measured
-        に反映されない。これらの追加分だけ実際のレスポンスサイズがmeasuredを
-        上回りうる。
+        guarantee: "enumerated"（判例保証あり） / "routing_miss"（近傍topicなし。
+        前例なし扱いに倒すこと） / "routing_unavailable"（embeddingサーバー停止。
+        topic_ids指定で回避可）
+        routing.candidates: 各{topic_id_raw, title, distance, selected}
+        （topic_ids指定時はdistanceなし。存在しないtopic_idはerror付き）
+        topics[].decisionsはdetail="full"（decision/reason全文+tags+sections+
+        supersede_chain+archived_tags）またはdetail="index"（id/title等のみ）。
+        index落ち分はget_by_idsで追補可。複数topicにbelongs_toするdecisionは
+        最初のtopicのみ本文を持ち、他方はindex+also_in。
+        material_ids/linked_decision_idsはdecision↔material間のrelated/citation
+        対応。materials_truncatedはmaterialカタログの縮退（30件キャップ超過または
+        レスポンス実サイズ超過）を表す。
+        budgetはbudget_chars（本文文字数のみの一次予算）に基づく配分結果。実際の
+        レスポンスサイズがこれより大きくなり実サイズ上限を超えると、full item
+        がindexへ追加降格され、guarantee=enumerated時のみbudget.response_chars
+        ({limit, measured, demoted})に結果が記録される。詳細はdocs/spec/
+        mcp-tools.md 2.32節およびprecedent_pull_serviceのdocstring参照。
     """
     flavor = _normalize_flavor(flavor)
     result = precedent_pull_service.pull_precedents(

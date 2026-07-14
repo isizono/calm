@@ -15,7 +15,7 @@ from tests.helpers import all_tool_descriptions
 DOCSTRING_CHAR_BUDGET = 1900
 
 # 実測で1,900字を超えている既知のツール(本テスト新設時点の記録)。
-KNOWN_OVER_BUDGET = {"search", "pull_precedents"}
+KNOWN_OVER_BUDGET = {"search"}
 
 
 def test_all_tool_docstrings_within_budget():
