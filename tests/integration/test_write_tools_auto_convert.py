@@ -584,6 +584,84 @@ class TestUpdateActivityAutoConvert:
 
 
 # ============================================================
+# add_activity — relay outboxへ流出するtitleがconversion後の値であること
+# ============================================================
+class TestAddActivityRelayOutboxTitleConversion:
+    """add_activityがrelay outboxへpublishするtitleが、生ID表記ではなく変換後の
+    {{cite:X#NNN}}形式になっていることを検証する。
+
+    publish_entity_event_with_conn は呼び出し時点でDBからtitleを都度SELECTする
+    ため、conversion(apply_and_writeback_conversions)がpublishより前に完了して
+    いなければ、outboxのtitleに生ID表記が漏れる(add_activityで過去に発生していた
+    順序バグの回帰テスト)。"""
+
+    @pytest.fixture(autouse=True)
+    def relay_connected(self, tmp_path, monkeypatch):
+        """relay接続済み(RELAY_BEARER_TOKEN設定済み)環境にする。
+
+        tests/unit/test_relay_entity_publish.py の relay_connected と同型。
+        RELAY_STATE_DIR を隔離し、実マシンのcredential.jsonへフォールバック
+        しないようにする。"""
+        monkeypatch.setenv("RELAY_STATE_DIR", str(tmp_path / "relay-state"))
+        monkeypatch.setenv("RELAY_BEARER_TOKEN", "test-token")
+        monkeypatch.delenv("RELAY_BASE_URL", raising=False)
+
+    def _outbox_rows_for_activity(self, activity_id: int) -> list[dict]:
+        conn = get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM relay_outbox WHERE ref_type = 'activity' AND ref_id = ? "
+                "ORDER BY id",
+                (str(activity_id),),
+            ).fetchall()
+            result = []
+            for row in rows:
+                item = dict(row)
+                item["labels"] = json.loads(item["labels"])
+                result.append(item)
+            return result
+        finally:
+            conn.close()
+
+    def test_created_event_title_is_converted_not_raw(self, temp_db, disable_embedding):
+        """titleに生IDを含めてadd_activityしても、outboxのevent:created行のtitleは
+        変換後の{{cite:X#NNN}}形式になり、生ID表記(X#NNN)は残らない"""
+        target_id = _seed_material()
+        result = add_activity(
+            title=f"M#{target_id} work",
+            description="d",
+            tags=DEFAULT_TAGS,
+            check_in=False,
+        )
+        activity_id = result["activity_id"]
+        rows = self._outbox_rows_for_activity(activity_id)
+        created_rows = [r for r in rows if "event:created" in r["labels"]]
+        assert len(created_rows) == 1
+        expected_title = f"{{{{cite:M#{target_id}}}}} work"
+        assert created_rows[0]["title"] == expected_title
+        assert f"M#{target_id}" not in created_rows[0]["title"].replace(expected_title, "")
+
+    def test_pins_bump_updated_event_title_is_also_converted(self, temp_db, disable_embedding):
+        """pins指定時にpinsループ後まとめてbumpされるactivity自身のevent:updated行の
+        titleも、conversion後の値になっている(pinsブロックがconversionより後に実行
+        されても、DBには既にconversion済みの値が入っている必要がある)"""
+        target_id = _seed_material()
+        pin_target = _seed_material(title="pin target")
+        result = add_activity(
+            title=f"M#{target_id} work",
+            description="d",
+            tags=DEFAULT_TAGS,
+            check_in=False,
+            pins=[{"type": "material", "ref": pin_target}],
+        )
+        activity_id = result["activity_id"]
+        rows = self._outbox_rows_for_activity(activity_id)
+        updated_rows = [r for r in rows if "event:updated" in r["labels"]]
+        assert len(updated_rows) == 1
+        assert updated_rows[0]["title"] == f"{{{{cite:M#{target_id}}}}} work"
+
+
+# ============================================================
 # トランザクション境界
 # ============================================================
 class TestTransactionAtomicity:
