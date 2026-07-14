@@ -7,6 +7,7 @@ from typing import Optional
 from src.db import get_connection, row_to_dict
 from src.services.citations_service import (
     apply_and_writeback_conversions,
+    apply_raw_to_cite_conversion,
     upsert_citations_for_owner_with_conn,
 )
 from src.services.readable_id import strip_entity_id_inplace
@@ -731,6 +732,26 @@ def update_activity(
             or (status is not None and status != old_status)
         )
 
+        # 生 ID リテラルを {{cite:...}} に変換する。update系はUPDATE対象の
+        # activity_idが呼び出し時点で既に存在する行のため（add系と異なりINSERT
+        # による確定を待つ必要がない）、SET句組み立て前に変換を先に行い、
+        # 変換前後の値のどちらを書くかで2段UPDATEになるのを避け1回のUPDATEに統合する。
+        # 変換対象は呼び出し引数として明示された field のみ (title/description が
+        # None の場合は既存値を触らない)。
+        conversion = apply_raw_to_cite_conversion(
+            conn,
+            entity_type="activity",
+            entity_id=activity_id,
+            fields_payload={
+                k: v for k, v in {"title": title, "description": description}.items()
+                if v is not None
+            },
+            tool_name="update_activity",
+        )
+        converted_fields = conversion["fields"]
+        converted_title = converted_fields.get("title")
+        converted_description = converted_fields.get("description")
+
         # 動的SQL構築: 指定されたフィールドのみUPDATEする
         set_parts = []
         values = []
@@ -741,11 +762,11 @@ def update_activity(
 
         if title is not None:
             set_parts.append("title = ?")
-            values.append(title)
+            values.append(converted_title)
 
         if description is not None:
             set_parts.append("description = ?")
-            values.append(description)
+            values.append(converted_description)
 
         if orch_managed is not None:
             set_parts.append("orch_managed = ?")
@@ -767,21 +788,9 @@ def update_activity(
             tuple(values),
         )
 
-        # 生 ID リテラルを {{cite:...}} に変換し、書き換わった本文を DB に書き戻す。
-        # 変換対象は呼び出し引数として明示された field のみ (title/description が
-        # None の場合は既存値を触らない)。
-        converted = apply_and_writeback_conversions(
-            conn,
-            entity_type="activity",
-            entity_id=activity_id,
-            fields_payload={"title": title, "description": description},
-            tool_name="update_activity",
-            table="activities",
-        )
-
         # citations 全削除→再投入 (本文無変更でも実施)
-        new_title = converted["title"] if title is not None else row["title"]
-        new_description = converted["description"] if description is not None else row["description"]
+        new_title = converted_title if title is not None else row["title"]
+        new_description = converted_description if description is not None else row["description"]
         upsert_citations_for_owner_with_conn(
             conn, "activity", activity_id,
             title=new_title, description=new_description,
