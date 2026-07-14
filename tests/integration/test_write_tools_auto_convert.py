@@ -12,6 +12,7 @@ import tempfile
 
 import pytest
 
+import src.services.embedding_service as embedding_service
 from src.db import get_connection, init_database
 from src.services.activity_service import add_activity, update_activity
 from src.services.citations_service import apply_and_writeback_conversions
@@ -19,6 +20,8 @@ from src.services.decision_service import add_decisions
 from src.services.discussion_log_service import add_logs
 from src.services.material_service import add_material, update_material
 from src.services.topic_service import add_topic
+
+EMBEDDING_DIM = 384
 
 DEFAULT_TAGS = ["domain:test"]
 
@@ -46,6 +49,28 @@ def topic_id(temp_db):
         tags=DEFAULT_TAGS,
     )
     return result["topic_id"]
+
+
+@pytest.fixture
+def mock_embedding_http(monkeypatch):
+    """embeddingサーバーへのHTTP呼び出し(_encode_batch)のみをmockする。
+
+    generate_and_store_embedding / encode_document自体は実処理を素通しし、
+    urllib経由のHTTP送信部分(_encode_batch)だけを差し替える
+    (tests/unit/test_embedding_service.py の mock_embedding_server と同型)。
+    _encode_batch に渡された texts を captured["texts"] に記録する。
+    """
+    captured: dict = {}
+
+    def mock_encode_batch(texts, prefix):
+        captured["texts"] = texts
+        captured["prefix"] = prefix
+        return [[0.0] * EMBEDDING_DIM for _ in texts]
+
+    monkeypatch.setattr(embedding_service, "_encode_batch", mock_encode_batch)
+    monkeypatch.setattr(embedding_service, "_server_initialized", True)
+    monkeypatch.setattr(embedding_service, "_backfill_done", True)
+    return captured
 
 
 def _seed_material(title: str = "tgt", content: str = "body") -> int:
@@ -235,18 +260,15 @@ class TestAddMaterialAutoConvert:
         material_id = result["material_id"]
         assert _citations_for("material", material_id) == [("material", target_id)]
 
-    def test_embedding_text_matches_converted_content(self, temp_db, monkeypatch):
-        """embedding生成テキストがDB格納テキスト(変換後)と一致する"""
+    def test_embedding_text_matches_converted_content(
+        self, temp_db, mock_embedding_http
+    ):
+        """embedding生成テキストがDB格納テキスト(変換後)と一致する
+
+        _encode_batch (embeddingサーバーへのHTTP送信直前の境界) のみをmockし、
+        generate_and_store_embedding/encode_documentの実処理(DB書き込み含む)は
+        素通しする。"""
         target_id = _seed_material()
-        captured = {}
-
-        def spy(entity_type, entity_id, text):
-            captured["text"] = text
-            return None
-
-        monkeypatch.setattr(
-            "src.services.material_service.generate_and_store_embedding", spy
-        )
         result = add_material(
             title="t",
             content=f"see M#{target_id}",
@@ -256,9 +278,10 @@ class TestAddMaterialAutoConvert:
         material_id = result["material_id"]
         row = _fetch_material(material_id)
         assert row["content"] == f"see {{{{cite:M#{target_id}}}}}"
-        assert row["content"] in captured["text"]
+        text = mock_embedding_http["texts"][0]
+        assert row["content"] in text
         # 変換前の生ID表記は embedding テキストに残っていない
-        assert f"M#{target_id}" not in captured["text"].replace(row["content"], "")
+        assert f"M#{target_id}" not in text.replace(row["content"], "")
 
     def test_self_reference_treated_as_existing(self, temp_db):
         """INSERT直後の自material IDをcontent内で参照した場合、同一トランザクション内
@@ -340,20 +363,15 @@ class TestUpdateMaterialAutoConvert:
         assert _citations_for("material", material_id) == [("material", target_id)]
 
     def test_embedding_text_matches_converted_content_after_update(
-        self, temp_db, monkeypatch
+        self, temp_db, mock_embedding_http
     ):
-        """update_material後のembedding生成テキストも変換後DB内容と一致する"""
+        """update_material後のembedding生成テキストも変換後DB内容と一致する
+
+        _encode_batch (embeddingサーバーへのHTTP送信直前の境界) のみをmockし、
+        generate_and_store_embedding/encode_documentの実処理(DB書き込み含む)は
+        素通しする。"""
         material_id = _seed_material(title="t", content="old")
         target_id = _seed_material()
-        captured = {}
-
-        def spy(entity_type, entity_id, text):
-            captured["text"] = text
-            return None
-
-        monkeypatch.setattr(
-            "src.services.material_service.generate_and_store_embedding", spy
-        )
         result = update_material(
             material_id=material_id,
             content=f"updated M#{target_id}",
@@ -361,7 +379,7 @@ class TestUpdateMaterialAutoConvert:
         assert "error" not in result
         row = _fetch_material(material_id)
         assert row["content"] == f"updated {{{{cite:M#{target_id}}}}}"
-        assert row["content"] in captured["text"]
+        assert row["content"] in mock_embedding_http["texts"][0]
 
 
 # ============================================================
