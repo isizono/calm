@@ -19,7 +19,7 @@ import time
 
 import pytest
 
-from src.relay_sdk.testing import FakeRelay
+from relay_sdk.testing import FakeRelay
 from src.services.relay import declarations, intake, service
 
 

@@ -11,7 +11,7 @@ import json
 from typing import Optional
 
 from src.db import get_connection
-from src.relay_sdk import config as sdk_config
+from relay_sdk import config as sdk_config
 
 
 def _error(code: str, message: str) -> dict:

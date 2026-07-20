@@ -11,8 +11,8 @@ import logging
 import sqlite3
 from typing import Literal, Optional
 
-from src.relay_sdk.config import MAX_TITLE_CHARS
-from src.relay_sdk.outbox import publish as outbox_publish
+from relay_sdk.config import MAX_TITLE_CHARS
+from relay_sdk.outbox import publish as outbox_publish
 from src.services.relay import config as relay_config
 from src.services.relay.service import PUBLISH_ENTITY_TYPES, validate_labels
 from src.services.tag_service import get_entity_tags

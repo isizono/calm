@@ -616,7 +616,7 @@ cc-memory自身の故障報告・使用感不満・矛盾検出・運用計測�
 
 セッション間通信の publish（labels routing 配布）の送信キュー（transactional outbox）。`relay_publish` ツールが INSERT し、server 内の常駐配達ループが pending 行を relay サーバーへ配達する。at-least-once 保証は本テーブルだけで閉じる（relay サーバー側は永続真実を持たない）。
 
-スキーマの単一の真実源は vendored relay_sdk の DDL（`src/relay_sdk/outbox/schema.py`）であり、migration 0056 はそれと同一形状を migration chain に組み込んだもの。
+スキーマの単一の真実源は relay_sdk パッケージの DDL（`relay_sdk/outbox/schema.py`、relay リポジトリからの依存パッケージ）であり、migration 0056 はそれと同一形状を migration chain に組み込んだもの。
 
 | カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
 |---|---|---|---|---|---|

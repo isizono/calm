@@ -1,4 +1,4 @@
-"""vendored relay_sdk がこのリポジトリのテスト環境で import・動作することの確認。
+"""relay_sdk がこのリポジトリのテスト環境で import・動作することの確認。
 
 SDK 自体の網羅テストは出自リポジトリ（relay）側にあるため持ち込まない。
 ここでは FakeRelay に対する subscribe → publish → receive の往復 1 本だけを固定する。
@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import pytest
 
-from src.relay_sdk.client import Event, subscribe
-from src.relay_sdk.testing import FakeRelay
+from relay_sdk.client import Event, subscribe
+from relay_sdk.testing import FakeRelay
 
 
 @pytest.mark.timeout(10)
@@ -21,7 +21,7 @@ def test_subscribe_publish_receive_round_trip():
     with FakeRelay() as fake:
         with subscribe(
             relay_base_url=fake.base_url,
-            subscriber_identity="vendored-smoke",
+            subscriber_identity="sdk-smoke",
             labels=["entity:decision"],
             agent_card_path=fake.fake_agent_card_path(),
         ) as sub:

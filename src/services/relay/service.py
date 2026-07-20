@@ -16,14 +16,14 @@ from typing import Any, Optional
 import httpx
 
 from src.db import get_connection
-from src.relay_sdk.errors import PermanentError, RelayProtocolError, TransientError
-from src.relay_sdk.http.auth import make_client
-from src.relay_sdk.http.request import (
+from relay_sdk.errors import PermanentError, RelayProtocolError, TransientError
+from relay_sdk.http.auth import make_client
+from relay_sdk.http.request import (
     _request,
     post_subscription,
     raise_for_relay_status,
 )
-from src.relay_sdk.outbox import publish as outbox_publish
+from relay_sdk.outbox import publish as outbox_publish
 from src.services.relay import config, declarations, inbox
 from src.services.relay.config import RelayConfigError
 
