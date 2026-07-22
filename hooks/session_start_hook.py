@@ -34,6 +34,7 @@ from src.services.habit_service import (
 )
 from src.services import habit_projection
 from src.services.backup_service import health_check, should_take_snapshot, take_snapshot
+from src.services.injection_compositor import Section, compose
 from hooks.signal_capture import try_capture_signal
 
 _RECENT_CREATED_HOURS = 24
@@ -501,6 +502,19 @@ def _build_snapshot_section(conn, session_id: str | None = None, source: str | N
     return ""
 
 
+# セクション登録レジストリ。priorityは既存builders順（出力順）をそのまま踏襲する。
+# budget_charsは各セクションの宣言予算（文字数）で、実出力がこれを超えた場合
+# compose()側でハード切り詰めされる（詳細はinjection_compositor.pyのdocstring参照）。
+_SECTIONS: list[Section] = [
+    Section("snapshot", _build_snapshot_section, config.INJECTION_BUDGET_SNAPSHOT_CHARS, priority=0),
+    Section("activities", _build_activities_section, config.INJECTION_BUDGET_ACTIVITIES_CHARS, priority=10),
+    Section("habits", _build_habits_section, config.INJECTION_BUDGET_HABITS_CHARS, priority=20),
+    Section("sync_policy", _build_sync_policy_section, config.INJECTION_BUDGET_SYNC_POLICY_CHARS, priority=30),
+    Section("signals", _build_signals_section, config.INJECTION_BUDGET_SIGNALS_CHARS, priority=40),
+    Section("relay_inbox", _build_relay_inbox_section, config.INJECTION_BUDGET_RELAY_INBOX_CHARS, priority=50),
+]
+
+
 def _build_session_context(session_id: str | None = None, source: str | None = None) -> str:
     """サービス層経由でセッション開始時のコンテキストを組み立てる。
 
@@ -510,32 +524,12 @@ def _build_session_context(session_id: str | None = None, source: str | None = N
     _build_habits_section のみが参照し、compact後にrulesファイル内容が
     コンテキストに保持されるかの実機未検証を安全側に倒すため使う。
 
-    各セクションは独立してtry/exceptで保護し、
-    一部のセクションが失敗しても残りは返す。
+    各セクションの組み立て・予算管理はinjection_compositor.composeへ委譲する
+    （セクション単位try/except・宣言予算超過時の縮退はcompose側の責務）。
     """
     conn = get_connection()
     try:
-        sections = []
-        builders = [
-            _build_snapshot_section,
-            _build_activities_section,
-            _build_habits_section,
-            _build_sync_policy_section,
-            _build_signals_section,
-            _build_relay_inbox_section,
-        ]
-        for builder in builders:
-            try:
-                result = builder(conn, session_id, source)
-                if result:
-                    sections.append(result)
-            except Exception:
-                # セクション単位で失敗を許容し、残りのセクションは返す
-                pass
-
-        context = "\n".join(sections)
-        return context
-
+        return compose(conn, session_id, source, _SECTIONS)
     finally:
         conn.close()
 

@@ -78,6 +78,17 @@ RELAY_SESSION_AWARE_ENABLED: bool = os.environ.get("CCM_RELAY_SESSION_AWARE", "0
 # 全タグがarchivedのアイテムに適用する final_score の降格係数
 ARCHIVED_DEMOTION_FACTOR: float = float(os.environ.get("CCM_ARCHIVED_DEMOTION_FACTOR", "0.3"))
 
+# --- SessionStart injection compositor（各セクションの宣言予算） ---
+INJECTION_BUDGET_SNAPSHOT_CHARS: int = int(os.environ.get("CCM_INJECTION_BUDGET_SNAPSHOT", "1500"))
+INJECTION_BUDGET_ACTIVITIES_CHARS: int = int(os.environ.get("CCM_INJECTION_BUDGET_ACTIVITIES", "4000"))
+INJECTION_BUDGET_HABITS_CHARS: int = int(os.environ.get("CCM_INJECTION_BUDGET_HABITS", "2500"))
+INJECTION_BUDGET_SYNC_POLICY_CHARS: int = int(os.environ.get("CCM_INJECTION_BUDGET_SYNC_POLICY", "1000"))
+INJECTION_BUDGET_SIGNALS_CHARS: int = int(os.environ.get("CCM_INJECTION_BUDGET_SIGNALS", "500"))
+INJECTION_BUDGET_RELAY_INBOX_CHARS: int = int(os.environ.get("CCM_INJECTION_BUDGET_RELAY_INBOX", "500"))
+# Σ上のINJECTION_BUDGET_*と一致させる（CIゼロサムテストで検証）。実装者が
+# セクションを追加・調整する際は必ずこの合計も合わせて見直すこと。
+TOTAL_INJECTION_BUDGET_CHARS: int = int(os.environ.get("CCM_TOTAL_INJECTION_BUDGET_CHARS", "10000"))
+
 # --- Precedent pull ---
 # 本文展開（decision + reason）の予算（文字数）。index行・material snippet・routing
 # メタデータは対象外（別途有界のため予算計算に含めない）
