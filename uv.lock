@@ -256,7 +256,7 @@ requires-dist = [
     { name = "fastmcp", specifier = ">=3.2.0,<4" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "relay", git = "https://github.com/isizono/relay.git?rev=283377c5335e88c96d93ed0b672933ed8a250792" },
+    { name = "relay", git = "https://github.com/isizono/relay.git?rev=64ac914dd0e6a036edb8ecf59a79755bba7dc6fa" },
     { name = "sentence-transformers", specifier = ">=5,<6" },
     { name = "sqlite-vec", specifier = ">=0.1.6,<0.2" },
     { name = "yoyo-migrations", specifier = ">=9,<10" },
@@ -1578,7 +1578,7 @@ wheels = [
 [[package]]
 name = "relay"
 version = "0.1.0"
-source = { git = "https://github.com/isizono/relay.git?rev=283377c5335e88c96d93ed0b672933ed8a250792#283377c5335e88c96d93ed0b672933ed8a250792" }
+source = { git = "https://github.com/isizono/relay.git?rev=64ac914dd0e6a036edb8ecf59a79755bba7dc6fa#64ac914dd0e6a036edb8ecf59a79755bba7dc6fa" }
 dependencies = [
     { name = "authlib" },
     { name = "httpx" },

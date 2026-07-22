@@ -29,4 +29,4 @@ build-backend = "setuptools.build_meta"
 # relay パッケージ全体を依存に含めるため、JWS 認証パス専用の joserfc/rfc8785 も
 # 常時インストール対象になる。cc-memory は Bearer token 認証のみを使い JWS 機能は
 # 呼ばないため、実行時に使われることはない。
-relay = { git = "https://github.com/isizono/relay.git", rev = "283377c5335e88c96d93ed0b672933ed8a250792" }
+relay = { git = "https://github.com/isizono/relay.git", rev = "64ac914dd0e6a036edb8ecf59a79755bba7dc6fa" }
