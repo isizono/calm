@@ -9,9 +9,9 @@
 --   業務 write と同一 transaction で INSERT できるよう memory.db 本体に置く。
 --
 -- スキーマ:
---   relay_sdk パッケージの DDL（relay_sdk/outbox/schema.py、relay リポジトリからの
---   依存パッケージ）を正とし、同一形状を migration chain に組み込む。SDK 側が
---   更新された場合は形状差分を新規 migration で追従する（本ファイルは事後改変しない）。
+--   vendored relay_sdk の DDL（src/relay_sdk/outbox/schema.py）を正とし、同一形状を
+--   migration chain に組み込む。SDK 側を再同期した場合は形状差分を新規 migration で
+--   追従する（本ファイルは事後改変しない）。
 --
 --   id               主キー（idempotency_key の生成元にも流用される）
 --   ref_type         通知が指す対象の種別
