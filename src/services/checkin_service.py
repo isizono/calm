@@ -4,7 +4,7 @@ import sqlite3
 import threading
 
 from src.db import get_connection, row_to_dict
-from src.services import activity_service, hint_service
+from src.services import activity_service, ask_service, hint_service
 from src.services.readable_id import strip_entity_id_inplace
 from src.services.material_service import get_materials_by_relation_with_conn
 from src.services.relation_service import _get_map_with_conn
@@ -413,6 +413,14 @@ def _get_pinned_targets(conn: sqlite3.Connection, activity_id: int) -> dict:
     return result
 
 
+def _get_pending_asks(conn: sqlite3.Connection, activity_id: int) -> dict:
+    """check-in対象activityをblockしているaskを、フェーズ別に返す。
+
+    Returns: {"awaiting_answer": [...], "awaiting_triage": [...]}
+    """
+    return ask_service.get_pending_asks_with_conn(conn, activity_id)
+
+
 def _get_recompose_hints(conn: sqlite3.Connection, activity_id: int) -> list[str]:
     """check-in対象activityのdomain:tagについてrecomposeナッジhintメッセージを返す。
 
@@ -589,6 +597,11 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
         #    マーカーのnotes書き込みを伴うが、commitは本関数末尾でまとめて行う）
         recompose_hints = _get_recompose_hints(conn, activity_id)
 
+        # 9a. このactivityをblockしているaskの配達（answer待ち・triage待ちフェーズ別）。
+        # recompose_hintsと異なりorch-managed activityでもsuppressしない
+        # （askは答え待ちというプロセス情報そのものであり、recompose系の提案とは扱いを分ける）。
+        pending_asks = _get_pending_asks(conn, activity_id)
+
         # 10. summary生成
         summary = _build_summary(activity, tags)
 
@@ -627,8 +640,18 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
         result["logs"] = logs_catalog
         if catalog:
             result["catalog"] = catalog
-        if recompose_hints:
-            result["hints"] = recompose_hints
+
+        if pending_asks["awaiting_answer"] or pending_asks["awaiting_triage"]:
+            result["asks"] = pending_asks
+
+        hints = list(recompose_hints)
+        if pending_asks["awaiting_triage"]:
+            hints.append(
+                "answered状態のaskが未トリアージです。triage_askでpromote/dismissへ振り分けてください。"
+            )
+        if hints:
+            result["hints"] = hints
+
         result["summary"] = summary
         if _consume_first_call_flag(session_id):
             result["flow_guide"] = _FLOW_GUIDE_COMPACT

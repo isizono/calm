@@ -31,6 +31,7 @@ ENTITY_TABLE_MAP: dict[str, str] = {
     "topic": "discussion_topics",
     "tag": "tags",
     "habit": "habits",
+    "ask": "asks",
 }
 assert set(ENTITY_TABLE_MAP) == set(PUBLISH_ENTITY_TYPES)
 
@@ -95,6 +96,12 @@ def _build_title(conn: sqlite3.Connection, entity_type: str, entity_id: int) -> 
         if not row:
             return None
         raw = row["title"] or (row["content"] or "")[:50]
+    elif entity_type == "ask":
+        # asksにはtitleカラムが無いためquestionをそのまま使う（他エンティティのtitle fallbackと同型）。
+        row = conn.execute("SELECT question FROM asks WHERE id = ?", (entity_id,)).fetchone()
+        if not row:
+            return None
+        raw = row["question"] or ""
     else:
         table = ENTITY_TABLE_MAP[entity_type]
         row = conn.execute(f"SELECT title FROM {table} WHERE id = ?", (entity_id,)).fetchone()
