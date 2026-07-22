@@ -537,6 +537,85 @@ class TestTriggerModeSplit:
             conn.close()
 
 
+class TestManifestDecay:
+    """list_intelligently_habit_manifest_with_connのレンダー時decayのテスト"""
+
+    def test_old_habit_without_recall_excluded_from_manifest(self, temp_db):
+        """90日超過+last_recalled_at無しのintelligently habitはマニフェストから除外される"""
+        conn = get_connection()
+        try:
+            habit_id = add_habit("古い振る舞い")["habit_id"]
+            conn.execute(
+                "UPDATE habits SET trigger_mode = 'intelligently', "
+                "created_at = datetime('now', '-91 days') WHERE id = ?",
+                (habit_id,),
+            )
+            conn.commit()
+
+            manifest = list_intelligently_habit_manifest_with_conn(conn)
+
+            assert habit_id not in [m["habit_id"] for m in manifest]
+        finally:
+            conn.close()
+
+    def test_old_habit_with_recent_recall_stays_in_manifest(self, temp_db):
+        """90日超過でもlast_recalled_atが最近なら除外されない"""
+        conn = get_connection()
+        try:
+            habit_id = add_habit("古いが最近参照された振る舞い")["habit_id"]
+            conn.execute(
+                "UPDATE habits SET trigger_mode = 'intelligently', "
+                "created_at = datetime('now', '-91 days'), "
+                "last_recalled_at = datetime('now', '-1 days') WHERE id = ?",
+                (habit_id,),
+            )
+            conn.commit()
+
+            manifest = list_intelligently_habit_manifest_with_conn(conn)
+
+            assert habit_id in [m["habit_id"] for m in manifest]
+        finally:
+            conn.close()
+
+    def test_recently_created_habit_without_recall_stays_in_manifest(self, temp_db):
+        """作成が最近（90日以内）ならlast_recalled_at無しでも除外されない
+        （作成直後にdecayさせないための境界確認）"""
+        conn = get_connection()
+        try:
+            habit_id = add_habit("新規振る舞い")["habit_id"]
+            conn.execute(
+                "UPDATE habits SET trigger_mode = 'intelligently' WHERE id = ?",
+                (habit_id,),
+            )
+            conn.commit()
+
+            manifest = list_intelligently_habit_manifest_with_conn(conn)
+
+            assert habit_id in [m["habit_id"] for m in manifest]
+        finally:
+            conn.close()
+
+    def test_decayed_habit_still_returned_by_get_habits(self, temp_db):
+        """マニフェストからdecay除外されたhabitも、get_habits(active=True)の全件listには出続ける"""
+        conn = get_connection()
+        try:
+            habit_id = add_habit("decay対象だがget_habitsには出る")["habit_id"]
+            conn.execute(
+                "UPDATE habits SET trigger_mode = 'intelligently', "
+                "created_at = datetime('now', '-91 days') WHERE id = ?",
+                (habit_id,),
+            )
+            conn.commit()
+
+            manifest = list_intelligently_habit_manifest_with_conn(conn)
+            assert habit_id not in [m["habit_id"] for m in manifest]
+        finally:
+            conn.close()
+
+        result = get_habits(active=True)
+        assert habit_id in [h["habit_id"] for h in result["habits"]]
+
+
 class TestGetHabitsSingleFetch:
     """get_habitsのhabit_id単一取得と参照スタンプのテスト"""
 

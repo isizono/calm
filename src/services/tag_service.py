@@ -3,7 +3,9 @@ import sqlite3
 import threading
 from typing import Optional, Union
 
+from src.config import TAG_NOTES_DECAY_DAYS
 from src.db import execute_query, get_connection, row_to_dict
+from src.services.decay_utils import is_decay_eligible
 
 VALID_NAMESPACES = {'', 'domain', 'intent', 'glossary', 'layer'}
 
@@ -600,7 +602,9 @@ def search_tags(
     Args:
         query: 検索キーワード（タグ名部分一致 + ベクトル検索）
         namespace: namespaceフィルタ（"domain", "intent", ""、未指定で全タグ）
-        include_notes: Trueのときnotesを返す（デフォルトFalse）
+        include_notes: Trueのときnotesを返す（デフォルトFalse）。notesを持つ結果の
+            last_injected_atも更新する（tag notes decay述語の明示参照による復帰経路。
+            get_habits(habit_id=...)がhabits側で持つ参照スタンプ更新と同じ役割）
         limit: 取得件数上限（デフォルト20）
 
     Returns:
@@ -763,6 +767,24 @@ def search_tags(
                 if include_notes:
                     entry["notes"] = r["notes"]
                 tags.append(entry)
+
+            if include_notes:
+                # notesを実際に返したタグのlast_injected_atを更新する。tag notesには
+                # get_habits(habit_id=...)に相当する明示参照の復帰経路が他に無いため、
+                # これが無いと一度decay判定されたタグは自動注入から永久にpointer化された
+                # ままになる（is_decay_eligibleはlast_injected_atが更新されない限り
+                # 恒久的にTrueを返し続けるため）。
+                referenced_ids = [
+                    tag_id for tag_id, _ in scored
+                    if like_tag_data.get(tag_id, {}).get("notes")
+                ]
+                if referenced_ids:
+                    ph = ",".join("?" * len(referenced_ids))
+                    conn.execute(
+                        f"UPDATE tags SET last_injected_at = CURRENT_TIMESTAMP WHERE id IN ({ph})",
+                        referenced_ids,
+                    )
+                    conn.commit()
 
             return {"tags": tags}
 
@@ -1216,10 +1238,14 @@ def collect_tag_notes_for_injection(
             毎回 notes を返す。_injected_tags には登録しない。
         mark: True（デフォルト）の場合、_injected_tags のチェックと更新を行う。
             False の場合、_injected_tags を参照も更新もしない（読み取り経路用）。
+            last_injected_at の更新（decay述語のトラッキング）も mark と連動する。
 
     Returns:
         notes があるタグの一覧。なければ None
         [{"tag": "domain:cc-memory", "notes": "..."}, ...]
+        タグ作成からTAG_NOTES_DECAY_DAYSを超え、かつ全文配信実績（last_injected_at）も
+        同日数を超えて無いタグは、notesの全文の代わりに1行ポインタ文言へ縮退する
+        （レンダー時decay。search_tags等の返却対象からは除外しない）。
     """
     session_key = session_id or "__default__"
     always_ns = set(always_inject_namespaces) if always_inject_namespaces else set()
@@ -1258,7 +1284,8 @@ def collect_tag_notes_for_injection(
     placeholders = " OR ".join(["(namespace = ? AND name = ?)"] * len(parsed))
     params = [v for pair in parsed for v in pair]
     rows = conn.execute(
-        f"SELECT namespace, name, notes FROM tags WHERE ({placeholders}) AND notes IS NOT NULL AND archived_at IS NULL",
+        f"SELECT id, namespace, name, notes, created_at, last_injected_at FROM tags "
+        f"WHERE ({placeholders}) AND notes IS NOT NULL AND archived_at IS NULL",
         params
     ).fetchall()
 
@@ -1266,11 +1293,36 @@ def collect_tag_notes_for_injection(
         return None
 
     results = []
+    fresh_ids = []
     for row in rows:
         tag_str = f"{row['namespace']}:{row['name']}" if row["namespace"] else row["name"]
+        if is_decay_eligible(row["created_at"], row["last_injected_at"], TAG_NOTES_DECAY_DAYS):
+            results.append({"tag": tag_str, "notes": _decay_pointer_text(tag_str)})
+            continue
         results.append({"tag": tag_str, "notes": row["notes"]})
+        fresh_ids.append(row["id"])
+
+    if mark and fresh_ids:
+        # 中間commit: resolve_tags（同ファイル内、force_new_tags/新規作成分岐）と同じ理由
+        # （呼び出し元の共有connに対する後続処理への影響回避）で、ここで先にcommitする。
+        # mark=Falseの読み取り専用経路ではlast_injected_atも更新しない
+        # （mark引数が副作用全般を制御する既存契約に合わせる）。
+        placeholders_ids = ",".join("?" * len(fresh_ids))
+        conn.execute(
+            f"UPDATE tags SET last_injected_at = CURRENT_TIMESTAMP WHERE id IN ({placeholders_ids})",
+            fresh_ids,
+        )
+        conn.commit()
 
     return results if results else None
+
+
+def _decay_pointer_text(tag_str: str) -> str:
+    """decay対象タグのnotesを全文の代わりに縮退させる1行ポインタ文言を返す。"""
+    return (
+        f"{tag_str} のnotesは長期間参照されていないため全文表示を省略した。"
+        "内容が必要な場合は search_tags(include_notes=True) で確認する。"
+    )
 
 
 def _set_tag_notes_by_id_with_conn(conn: sqlite3.Connection, tag_id: int, notes: str) -> None:
