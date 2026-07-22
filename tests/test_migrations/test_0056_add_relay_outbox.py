@@ -1,7 +1,7 @@
 """migration 0056_add_relay_outbox のテスト
 
 0056 適用後に relay_outbox テーブルと pending 部分インデックスが作成され、
-その形状が vendored relay_sdk の DDL（単一の真実源）と一致することを確認する。
+その形状が relay_sdk パッケージの DDL（単一の真実源）と一致することを確認する。
 """
 import os
 import sqlite3
@@ -10,7 +10,7 @@ import tempfile
 import pytest
 
 from src.db import get_connection, init_database
-from src.relay_sdk.outbox import create_outbox_table, publish
+from relay_sdk.outbox import create_outbox_table, publish
 from src.services.tag_service import _injected_tags
 from test_migrations.conftest import index_names, table_exists
 

@@ -5,7 +5,7 @@
 - SDK 側 file lock が既に取られていた場合の B-3 縮退（DispatcherAlreadyRunning 握り潰し）
 - supervisor が例外後に再起動し、stop で終了すること
 - `_run_dispatcher` の retry 関連 kwargs 解決（env 明示設定時の反映、未設定時の
-  cc-memory 組み込み既定値へのフォールバック）
+  SDK 既定値へのフォールバック）
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import time
 
 import pytest
 
-from src.relay_sdk.outbox.dispatcher import DispatcherAlreadyRunning
+from relay_sdk.outbox.dispatcher import DispatcherAlreadyRunning
 from src.services.relay import runtime as runtime_module
 from src.services.relay.runtime import RelayRuntime
 
@@ -61,10 +61,10 @@ class TestDispatcherFallback:
 
         # モジュール属性を差し替える（runtime._run_dispatcher 内で from import されるため）
         monkeypatch.setattr(
-            "src.relay_sdk.outbox.run_dispatcher", fake_run_dispatcher
+            "relay_sdk.outbox.run_dispatcher", fake_run_dispatcher
         )
         monkeypatch.setattr(
-            "src.relay_sdk.outbox.dispatcher.run_dispatcher", fake_run_dispatcher
+            "relay_sdk.outbox.dispatcher.run_dispatcher", fake_run_dispatcher
         )
 
         runtime = RelayRuntime(
@@ -76,7 +76,7 @@ class TestDispatcherFallback:
 
 
 class TestDispatcherRetryTuning:
-    """`_run_dispatcher` が retry 関連 kwargs をどう解決するかの検証。"""
+    """`_run_dispatcher` が SDK 側の env 解決ヘルパーの結果をそのまま run_dispatcher に渡すことの検証。"""
 
     def _capture_kwargs(self, monkeypatch) -> dict:
         captured: dict = {}
@@ -85,38 +85,21 @@ class TestDispatcherRetryTuning:
             captured.update(kwargs)
 
         monkeypatch.setattr(
-            "src.relay_sdk.outbox.run_dispatcher", fake_run_dispatcher
+            "relay_sdk.outbox.run_dispatcher", fake_run_dispatcher
         )
         monkeypatch.setattr(
-            "src.relay_sdk.outbox.dispatcher.run_dispatcher", fake_run_dispatcher
+            "relay_sdk.outbox.dispatcher.run_dispatcher", fake_run_dispatcher
         )
         return captured
 
-    def test_explicit_env_vars_are_forwarded(self, monkeypatch):
-        """RELAY_OUTBOX_* を明示設定すると、その値がそのまま run_dispatcher に渡る。"""
-        monkeypatch.setenv("RELAY_BEARER_TOKEN", "test-token")
-        monkeypatch.setenv("RELAY_OUTBOX_MAX_RETRY", "7")
-        monkeypatch.setenv("RELAY_OUTBOX_INITIAL_BACKOFF_MS", "500")
-        monkeypatch.setenv("RELAY_OUTBOX_BACKOFF_FACTOR", "3.0")
-        captured = self._capture_kwargs(monkeypatch)
-
-        runtime = RelayRuntime(
-            active_sessions_getter=lambda: set(), outbox_db_path=":memory:"
-        )
-        runtime._run_dispatcher()
-
-        assert captured["max_retry"] == 7
-        assert captured["initial_backoff_seconds"] == 0.5
-        assert captured["backoff_factor"] == 3.0
-
-    def test_unset_env_falls_back_to_embedded_defaults(self, monkeypatch):
-        """RELAY_OUTBOX_* 未設定時は cc-memory 組み込み既定値（10 / 1.0 / 2.0）を使い、
-        vendored SDK 自身の既定値（5 / 0.1 / 2.0）とは異なる値になる。
+    def test_explicit_retry_env_vars_are_forwarded(self, monkeypatch):
+        """SDK 側の RELAY_OUTBOX_RETRY_BACKOFF_* / TRANSIENT_RETRY_DEADLINE_S を
+        明示設定すると、その値がそのまま run_dispatcher に渡る。
         """
         monkeypatch.setenv("RELAY_BEARER_TOKEN", "test-token")
-        monkeypatch.delenv("RELAY_OUTBOX_MAX_RETRY", raising=False)
-        monkeypatch.delenv("RELAY_OUTBOX_INITIAL_BACKOFF_MS", raising=False)
-        monkeypatch.delenv("RELAY_OUTBOX_BACKOFF_FACTOR", raising=False)
+        monkeypatch.setenv("RELAY_OUTBOX_RETRY_BACKOFF_BASE_MS", "500")
+        monkeypatch.setenv("RELAY_OUTBOX_RETRY_BACKOFF_CAP_S", "60")
+        monkeypatch.setenv("RELAY_OUTBOX_TRANSIENT_RETRY_DEADLINE_S", "3600")
         captured = self._capture_kwargs(monkeypatch)
 
         runtime = RelayRuntime(
@@ -124,24 +107,19 @@ class TestDispatcherRetryTuning:
         )
         runtime._run_dispatcher()
 
-        assert captured["max_retry"] == 10
-        assert captured["initial_backoff_seconds"] == 1.0
-        assert captured["backoff_factor"] == 2.0
-        # vendored SDK 自身の既定値（DispatcherConfig 相当）とは異なることを明示確認する。
-        from src.relay_sdk import config as sdk_config
+        assert captured["retry_backoff_base_seconds"] == 0.5
+        assert captured["retry_backoff_cap_seconds"] == 60.0
+        assert captured["transient_retry_deadline_seconds"] == 3600.0
 
-        assert captured["max_retry"] != sdk_config.DEFAULT_MAX_RETRY
-        assert (
-            captured["initial_backoff_seconds"]
-            != sdk_config.DEFAULT_INITIAL_BACKOFF_SECONDS
-        )
-
-    def test_poll_and_timeout_use_sdk_env_defaults(self, monkeypatch):
-        """poll_interval / dlq_gc_interval / http_timeout は SDK 側の env 解決
-        ヘルパーがそのまま使われ、cc-memory 固有の既定値は持たない。
+    def test_poll_and_retry_use_sdk_env_defaults(self, monkeypatch):
+        """poll_interval / retry_backoff_* / dlq_gc_interval / http_timeout は
+        SDK 側の env 解決ヘルパーがそのまま使われ、cc-memory 固有の既定値は持たない。
         """
         monkeypatch.setenv("RELAY_BEARER_TOKEN", "test-token")
         monkeypatch.delenv("RELAY_OUTBOX_POLL_INTERVAL_MS", raising=False)
+        monkeypatch.delenv("RELAY_OUTBOX_RETRY_BACKOFF_BASE_MS", raising=False)
+        monkeypatch.delenv("RELAY_OUTBOX_RETRY_BACKOFF_CAP_S", raising=False)
+        monkeypatch.delenv("RELAY_OUTBOX_TRANSIENT_RETRY_DEADLINE_S", raising=False)
         monkeypatch.delenv("RELAY_OUTBOX_DLQ_GC_INTERVAL_S", raising=False)
         monkeypatch.delenv("RELAY_HTTP_TIMEOUT_S", raising=False)
         captured = self._capture_kwargs(monkeypatch)
@@ -151,9 +129,21 @@ class TestDispatcherRetryTuning:
         )
         runtime._run_dispatcher()
 
-        from src.relay_sdk import config as sdk_config
+        from relay_sdk import config as sdk_config
 
         assert captured["poll_interval_seconds"] == sdk_config.DEFAULT_POLL_INTERVAL_SECONDS
+        assert (
+            captured["retry_backoff_base_seconds"]
+            == sdk_config.DEFAULT_RETRY_BACKOFF_BASE_SECONDS
+        )
+        assert (
+            captured["retry_backoff_cap_seconds"]
+            == sdk_config.DEFAULT_RETRY_BACKOFF_CAP_SECONDS
+        )
+        assert (
+            captured["transient_retry_deadline_seconds"]
+            == sdk_config.DEFAULT_TRANSIENT_RETRY_DEADLINE_SECONDS
+        )
         assert (
             captured["dlq_gc_interval_seconds"]
             == sdk_config.DEFAULT_DLQ_GC_INTERVAL_SECONDS

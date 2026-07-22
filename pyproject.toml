@@ -7,6 +7,7 @@ dependencies = [
     "fastmcp>=3.2.0,<4",
     "httpx>=0.28.1",
     "pyyaml>=6.0",
+    "relay",
     "sentence-transformers>=5,<6",
     "sqlite-vec>=0.1.6,<0.2",
     "yoyo-migrations>=9,<10",
@@ -23,3 +24,9 @@ dev = [
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.uv.sources]
+# relay パッケージ全体を依存に含めるため、JWS 認証パス専用の joserfc/rfc8785 も
+# 常時インストール対象になる。cc-memory は Bearer token 認証のみを使い JWS 機能は
+# 呼ばないため、実行時に使われることはない。
+relay = { git = "https://github.com/isizono/relay.git", rev = "64ac914dd0e6a036edb8ecf59a79755bba7dc6fa" }

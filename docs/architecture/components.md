@@ -214,7 +214,7 @@ PreToolUse は `hooks/hooks.json` に全ツール対象（`*` matcher）の preb
 
 ## 5. 協調層 — セッション間メッセージング
 
-v1通信系（`ow_service` / `src/relay/`のvendoringされたSSE+SQLite中継サーバー / `scripts/ow/`のrecv系スクリプト）は撤去済みである。後継は relay v2 4動詞tool（`relay_post` / `relay_publish` / `relay_subscribe` / `relay_receive`、実体は `src/services/relay/` + `src/relay_sdk/`）だが、本ドキュメントはまだそちらの構成に追従できていない。詳細は該当ディレクトリのコードを参照のこと。
+v1通信系（`ow_service` / `src/relay/`のvendoringされたSSE+SQLite中継サーバー / `scripts/ow/`のrecv系スクリプト）は撤去済みである。後継は relay v2 4動詞tool（`relay_post` / `relay_publish` / `relay_subscribe` / `relay_receive`、実体は `src/services/relay/` + 依存パッケージ `relay_sdk`）だが、本ドキュメントはまだそちらの構成に追従できていない。詳細は該当ディレクトリのコードを参照のこと。
 
 ---
 

@@ -31,9 +31,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
-from src.relay_sdk.errors import PermanentError, RelayProtocolError, TransientError
-from src.relay_sdk.http.auth import make_client
-from src.relay_sdk.http.request import post_subscription, put_lease
+from relay_sdk.errors import PermanentError, RelayProtocolError, TransientError
+from relay_sdk.http.auth import make_client
+from relay_sdk.http.request import post_subscription, put_lease
 from src.services.relay import config, declarations, inbox
 
 logger = logging.getLogger(__name__)

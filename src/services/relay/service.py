@@ -16,14 +16,21 @@ from typing import Any, Optional
 import httpx
 
 from src.db import get_connection
-from src.relay_sdk.errors import PermanentError, RelayProtocolError, TransientError
-from src.relay_sdk.http.auth import make_client
-from src.relay_sdk.http.request import (
-    _request,
-    post_subscription,
-    raise_for_relay_status,
+from relay_sdk.errors import (
+    PermanentError,
+    RelayProtocolError,
+    StreamAlreadyExistsError,
+    StreamNotFoundError,
+    TransientError,
 )
-from src.relay_sdk.outbox import publish as outbox_publish
+from relay_sdk.http.auth import make_client
+from relay_sdk.http.request import (
+    post_stream,
+    post_stream_message,
+    post_subscription,
+    put_stream_member,
+)
+from relay_sdk.outbox import publish as outbox_publish
 from src.services.relay import config, declarations, inbox
 from src.services.relay.config import RelayConfigError
 
@@ -183,21 +190,15 @@ def relay_post(stream_name: str, body: str, ttl: Optional[int] = None) -> dict:
 
     identity = config.get_identity()
     stream_id = f"{identity}:{stream_name}"
-    payload: dict[str, Any] = {"body": body}
-    if ttl is not None:
-        payload["ttl"] = ttl
 
     try:
         with make_client(config.get_base_url(), bearer_token=token) as client:
-            response = _request(client, "POST", f"/streams/{stream_id}/messages", json=payload)
-            if response.status_code == 404:
+            try:
+                result = post_stream_message(client, stream_id=stream_id, body=body, ttl=ttl)
+            except StreamNotFoundError:
                 # v0 は自 identity 名義の stream のみ扱うため、404 は「未作成」を意味する
                 _ensure_stream(client, stream_name, stream_id, identity)
-                response = _request(
-                    client, "POST", f"/streams/{stream_id}/messages", json=payload
-                )
-            raise_for_relay_status(response)
-            result = response.json()
+                result = post_stream_message(client, stream_id=stream_id, body=body, ttl=ttl)
     except (RelayProtocolError, TransientError, PermanentError) as exc:
         return _relay_error(exc)
 
@@ -213,22 +214,16 @@ def _ensure_stream(
 ) -> None:
     """stream を作成し、自 identity を read_write member にする。
 
-    同時作成競合（409）は「既に存在する」として成功扱いにする（呼び出し側が
-    投函を 1 回だけ再試行する）。
+    同時作成競合（StreamAlreadyExistsError）は「既に存在する」として成功扱いに
+    する（呼び出し側が投函を 1 回だけ再試行する）。
     """
-    response = _request(client, "POST", "/streams", json={"name": stream_name})
-    if response.status_code == 409:
+    try:
+        post_stream(client, name=stream_name)
+    except StreamAlreadyExistsError:
         return
-    raise_for_relay_status(response)
     # 作成者の初期 access は write のみで、自分の投函を受信できない。
     # 投函と受信の両方を成立させるため read_write へ引き上げる。
-    member = _request(
-        client,
-        "PUT",
-        f"/streams/{stream_id}/members",
-        json={"identity": identity, "access": "read_write"},
-    )
-    raise_for_relay_status(member)
+    put_stream_member(client, stream_id=stream_id, identity=identity, access="read_write")
 
 
 # ---------------------------------------------------------------------------

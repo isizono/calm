@@ -8,7 +8,7 @@ import sqlite3
 
 import pytest
 
-from src.relay_sdk.outbox import create_outbox_table
+from relay_sdk.outbox import create_outbox_table
 from src.services.relay import declarations, service
 
 

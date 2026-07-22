@@ -24,7 +24,7 @@ import time
 import pytest
 
 import src.main as main_module
-from src.relay_sdk.testing import FakeRelay
+from relay_sdk.testing import FakeRelay
 from src.services.relay import service
 from src.services.relay.runtime import RelayRuntime
 

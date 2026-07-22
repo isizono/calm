@@ -51,15 +51,15 @@ cc-memory server（`python -m src.main --transport http`）は以下の env を�
 
 ### outbox dispatcher の retry 既定値
 
-`relay_publish` の配達は outbox 経由の非同期 retry で行われる。以下の環境変数で retry 挙動を調整できる。
+`relay_publish` の配達は outbox 経由の非同期 retry（Full Jitter backoff）で行われる。以下の環境変数で retry 挙動を調整できる。
 
-| 環境変数 | 説明 | 既定値（cc-memory組み込み） | 既定値（スタンドアロンCLI） |
-| --- | --- | --- | --- |
-| `RELAY_OUTBOX_MAX_RETRY` | outbox 行 1 件あたりの retry 上限回数 | `10` | `5` |
-| `RELAY_OUTBOX_INITIAL_BACKOFF_MS` | retry 初回バックオフ（ミリ秒） | `1000` | `100` |
-| `RELAY_OUTBOX_BACKOFF_FACTOR` | retry 指数バックオフ係数 | `2.0` | `2.0` |
+| 環境変数 | 説明 | 既定値 |
+| --- | --- | --- |
+| `RELAY_OUTBOX_RETRY_BACKOFF_BASE_MS` | retry バックオフの基準値（ミリ秒） | `1000` |
+| `RELAY_OUTBOX_RETRY_BACKOFF_CAP_S` | retry バックオフの上限（秒） | `300` |
+| `RELAY_OUTBOX_TRANSIENT_RETRY_DEADLINE_S` | TransientError を諦めるまでの合計時間（秒） | `86400`（24 時間） |
 
-`RELAY_OUTBOX_*` は cc-memory 組み込みの dispatcher（`RelayRuntime`）にも、スタンドアロン CLI（`python -m src.relay_sdk.outbox`）にも同じ環境変数名で効く。ただし未設定時のフォールバック既定値は異なる。cc-memory 組み込み経路は relay server の手動再起動断絶を生き延びる目的でスタンドアロン CLI より長い既定値（合計約 8.5 分）を持つ。
+これらは relay_sdk パッケージが提供する env 解決ヘルパーであり、cc-memory 組み込みの dispatcher（`RelayRuntime`）にも、スタンドアロン CLI（`python -m relay_sdk.outbox`）にも同じ環境変数名・同じ既定値で効く。cc-memory 組み込み側は独自の既定値を持たない（relay server の手動再起動断絶は既定の 24 時間デッドラインで十分に生き延びられるため）。
 
 ## 招待URL発行・redeem 手順（推奨経路）
 

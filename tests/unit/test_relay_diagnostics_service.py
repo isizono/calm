@@ -4,7 +4,7 @@ relay_outbox 行の pending/delivered/dead 判定と、outbox_id のバリデー
 DLQ 物理削除後の not_found メッセージが実際の設定値と一致することを検証する。
 """
 from src.db import get_connection
-from src.relay_sdk import config as sdk_config
+from relay_sdk import config as sdk_config
 from src.services.relay import diagnostics
 
 

@@ -34,11 +34,11 @@ from typing import Callable, Iterable, Optional
 
 import httpx
 
-from src.relay_sdk import config as sdk_config
-from src.relay_sdk.client.sse import parse_sse_byte_stream
-from src.relay_sdk.errors import PermanentError, RelayProtocolError, TransientError
-from src.relay_sdk.http.auth import make_client
-from src.relay_sdk.http.request import open_sse, post_ack, raise_for_sse_status
+from relay_sdk import config as sdk_config
+from relay_sdk.client.sse import parse_sse_byte_stream
+from relay_sdk.errors import PermanentError, RelayProtocolError, TransientError
+from relay_sdk.http.auth import make_client
+from relay_sdk.http.request import open_sse, post_ack, raise_for_sse_status
 from src.services.relay import config, declarations, inbox
 
 logger = logging.getLogger(__name__)
@@ -195,7 +195,7 @@ def _post_stream_ack(client: httpx.Client, stream_id: str, up_to_publish_id: int
     に整合が取れるため subscription_scoped=True 相当の PermanentError に翻訳し、
     上位（`AckTracker.flush`）で握り潰させる。
     """
-    from src.relay_sdk.http.request import raise_for_relay_status
+    from relay_sdk.http.request import raise_for_relay_status
 
     try:
         response = client.request(
