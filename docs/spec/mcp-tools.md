@@ -356,6 +356,7 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 | activity_id | int | yes | - | アクティビティID |
 
 **返り値**: `{coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary}`。セッション内でcheck_inを初めて呼んだときのみ`flow_guide`（コンテキスト取得の手がかり）も含まれる。
+このactivityを`add_ask`のblocksでblockしているaskが1件以上あるときのみ`asks: {awaiting_answer, awaiting_triage}`が追加される（無ければキー自体が無い）。`awaiting_answer`はstatus='open'のask一覧（各`{id_raw, question, last_seen_at}`）、`awaiting_triage`はstatus='answered'かつ未トリアージのask一覧（各`{id_raw, question, answer_body, last_seen_at}`）。activities.statusがcompleted以外のときのみ配達され、promoted/dismissed/withdrawn済みのaskは配達されない。`awaiting_triage`が1件以上あるときは`hints`にも「answered状態のaskが未トリアージです。triage_askでpromote/dismissへ振り分けてください。」という文言が1件追加される。この`asks`関連のhintsは、recompose系hintと異なりorch-managed activityでもsuppressされない（答え待ちである事実はhintではなく状態情報として扱うため）。
 **副作用**: statusがin_progress以外なら自動的にin_progressに更新。
 **呼び出し基準**: 既存アクティビティに関連する作業を始めるとき。summaryフィールドはそのまま出力することが推奨される。
 

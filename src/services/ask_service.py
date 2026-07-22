@@ -431,9 +431,11 @@ def triage_ask_with_conn(
     conn.execute("SAVEPOINT triage_ask")
     try:
         if action == "promote":
-            if not decision or not decision.strip():
+            decision = (decision or "").strip()
+            reason = (reason or "").strip()
+            if not decision:
                 raise ValueError("decision is required for action='promote'")
-            if not reason or not reason.strip():
+            if not reason:
                 raise ValueError("reason is required for action='promote'")
 
             decision_result = add_decisions(
@@ -462,7 +464,8 @@ def triage_ask_with_conn(
             conn.execute("RELEASE SAVEPOINT triage_ask")
             return {"id": ask_id, "status": "promoted", "promoted_decision_id": promoted_decision_id}
 
-        if not dismiss_reason or not dismiss_reason.strip():
+        dismiss_reason = (dismiss_reason or "").strip()
+        if not dismiss_reason:
             raise ValueError("dismiss_reason is required for action='dismiss'")
 
         cursor = conn.execute(

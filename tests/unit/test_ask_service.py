@@ -234,6 +234,32 @@ class TestGetAsks:
         assert result["stats"]["by_status"]["open"] == 1
         assert result["stats"]["last_30d"] == 2
 
+    def test_limit_over_max_is_clamped_and_actually_restricts_rows(self, temp_db, disable_embedding):
+        act = _make_activity()
+        total_rows = ak._MAX_LIMIT + 5
+        for i in range(total_rows):
+            ak.add_ask(f"question {i}", blocks=[act])
+
+        result = ak.get_asks(status=None, limit=ak._MAX_LIMIT + 1)
+
+        assert result["total_count"] == total_rows
+        assert len(result["asks"]) == ak._MAX_LIMIT
+
+    def test_offset_returns_next_page_in_last_seen_desc_id_desc_order(self, temp_db):
+        act = _make_activity()
+        ids = [ak.add_ask(f"question {i}", blocks=[act])["id"] for i in range(5)]
+        # デフォルトソートは last_seen_at DESC, id DESC のため、投稿順の逆順になる
+        expected_order = list(reversed(ids))
+
+        page1 = ak.get_asks(status=None, limit=2, offset=0)
+        page2 = ak.get_asks(status=None, limit=2, offset=2)
+        page3 = ak.get_asks(status=None, limit=2, offset=4)
+
+        assert [a["id_raw"] for a in page1["asks"]] == expected_order[0:2]
+        assert [a["id_raw"] for a in page2["asks"]] == expected_order[2:4]
+        assert [a["id_raw"] for a in page3["asks"]] == expected_order[4:5]
+        assert page1["total_count"] == page2["total_count"] == page3["total_count"] == 5
+
 
 class TestAnswerAsk:
     def test_success_transitions_to_answered(self, temp_db):
@@ -284,6 +310,36 @@ class TestAnswerAsk:
 
 
 class TestTriageAsk:
+    def test_promote_strips_decision_and_reason_before_saving(self, temp_db):
+        act = _make_activity()
+        r1 = ak.add_ask("q1", blocks=[act])
+        ak.answer_ask(r1["id"], "a1")
+
+        result = ak.triage_ask(
+            r1["id"], action="promote", decision="  do X  ", reason="  because Y  ",
+        )
+
+        conn = get_connection()
+        try:
+            dec_row = conn.execute(
+                "SELECT decision, reason FROM decisions WHERE id = ?",
+                (result["promoted_decision_id"],),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert dec_row["decision"] == "do X"
+        assert dec_row["reason"] == "because Y"
+
+    def test_dismiss_strips_reason_before_saving(self, temp_db):
+        act = _make_activity()
+        r1 = ak.add_ask("q1", blocks=[act])
+        ak.answer_ask(r1["id"], "a1")
+
+        ak.triage_ask(r1["id"], action="dismiss", dismiss_reason="  not needed  ")
+
+        listed = ak.get_asks(status="dismissed")
+        assert listed["asks"][0]["triage_reason"] == "not needed"
+
     def test_promote_creates_decision_and_links_it(self, temp_db):
         act = _make_activity()
         r1 = ak.add_ask("q1", blocks=[act])
