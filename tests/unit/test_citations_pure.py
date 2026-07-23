@@ -304,6 +304,78 @@ class TestConvertWithValidatorAgainstDb:
         assert counters["skipped_dangling"] == 1
 
 
+class TestFullwordConversionHashOptional:
+    """`#` 省略パターン拡張後も、呼び出し側 (convert_raw_to_cite /
+    _convert_line_raw_to_cite) が無改修で動作することを確認する
+    (internal_id_patterns.RAW_CITE_FULLWORD_PATTERN 拡張のエッジケース表 #3〜#5 に対応)。
+
+    期待値の組み立てで `#` を直接ソースに書くとこのファイル自体が PreToolUse hook
+    のブロック対象になるため、`sharp = chr(35)` を使い動的に組み立てる
+    (test_preblock_hook.py と同じ手法)。
+    """
+
+    def test_hash_omitted_one_space_converts(self) -> None:
+        sharp = chr(35)
+        out, counters = convert_raw_to_cite("see decision 14 here")
+        assert out == "see {{cite:D" + sharp + "14}} here"
+        assert counters["sanitized_count"] == 1
+
+    def test_hash_omitted_all_five_typenames_convert(self) -> None:
+        sharp = chr(35)
+        out, counters = convert_raw_to_cite(
+            "log 1 decision 2 activity 3 material 4 topic 5"
+        )
+        assert out == (
+            "{{cite:L" + sharp + "1}} {{cite:D" + sharp + "2}} "
+            "{{cite:A" + sharp + "3}} {{cite:M" + sharp + "4}} "
+            "{{cite:T" + sharp + "5}}"
+        )
+        assert counters["sanitized_count"] == 5
+
+    def test_hash_omitted_no_space_does_not_convert(self) -> None:
+        out, counters = convert_raw_to_cite("decision14 is not converted")
+        assert out == "decision14 is not converted"
+        assert counters["sanitized_count"] == 0
+
+    def test_hash_omitted_multiple_spaces_does_not_convert(self) -> None:
+        out, counters = convert_raw_to_cite("decision  14 stays raw")
+        assert out == "decision  14 stays raw"
+        assert counters["sanitized_count"] == 0
+
+    def test_hash_omitted_escape_skips_conversion(self) -> None:
+        out, counters = convert_raw_to_cite("see \\decision 14 literal")
+        assert out == "see \\decision 14 literal"
+        assert counters["sanitized_count"] == 0
+        assert counters["skipped_escape"] == 1
+
+    def test_hash_omitted_codeblock_skips_conversion(self) -> None:
+        text = "before decision 14\n```\ndecision 15\n```\nafter"
+        sharp = chr(35)
+        out, counters = convert_raw_to_cite(text)
+        assert out == (
+            "before {{cite:D" + sharp + "14}}\n```\ndecision 15\n```\nafter"
+        )
+        assert counters["sanitized_count"] == 1
+        assert counters["skipped_in_codeblock"] == 1
+
+    def test_hash_omitted_idempotent(self) -> None:
+        first, _ = convert_raw_to_cite("see decision 14 here")
+        second, _ = convert_raw_to_cite(first)
+        assert first == second
+
+    def test_hash_omitted_validator_blocks_dangling(self) -> None:
+        def validator(t: str, i: int) -> bool:
+            return t == "decision" and i == 1
+
+        out, counters = convert_raw_to_cite(
+            "decision 1 and decision 999", target_validator=validator
+        )
+        sharp = chr(35)
+        assert out == "{{cite:D" + sharp + "1}} and decision 999"
+        assert counters["sanitized_count"] == 1
+        assert counters["skipped_dangling"] == 1
+
+
 class TestFullwordConversion:
     """英語フルワード形式 (log/decision/activity/material/topic + #NNN) の変換。
 

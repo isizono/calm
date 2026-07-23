@@ -20,11 +20,13 @@ RAW_CITE_CODE_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_/])([MDLAT])#(\d+)(?![A-Za-z0-9_])"
 )
 
-# 英語フルワード形式 (`log #123`, `decision #456`, `activity #789`,
-# `material #321`, `topic #654`)。case-insensitive、type 名と `#` の間の
-# 空白は 0 個または 1 個のみ許容。
+# 英語フルワード形式。対応する type 名は5種 (log, decision, activity, material,
+# topic)、case-insensitive。
+# `#` ありのときは type 名との間の空白を 0 個または 1 個許容し、
+# `#` を省略したときは type 名の直後にスペースをちょうど 1 個要求する
+# (詰め書きの誤検知を防ぎ、空白 2 個以上のケースを除外するため)。
 RAW_CITE_FULLWORD_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9_/])(log|decision|activity|material|topic) ?#(\d+)(?![A-Za-z0-9_])",
+    r"(?<![A-Za-z0-9_/])(log|decision|activity|material|topic)(?: ?#| )(\d+)(?![A-Za-z0-9_])",
     re.IGNORECASE,
 )
 
