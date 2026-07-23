@@ -1246,6 +1246,8 @@ def collect_tag_notes_for_injection(
         タグ作成からTAG_NOTES_DECAY_DAYSを超え、かつ全文配信実績（last_injected_at）も
         同日数を超えて無いタグは、notesの全文の代わりに1行ポインタ文言へ縮退する
         （レンダー時decay。search_tags等の返却対象からは除外しない）。
+        always_inject_namespaces対象のタグは常時全文注入という既存契約が優先されるため、
+        decay判定の対象から除外される（ポインタ文言に縮退しない）。
     """
     session_key = session_id or "__default__"
     always_ns = set(always_inject_namespaces) if always_inject_namespaces else set()
@@ -1296,7 +1298,11 @@ def collect_tag_notes_for_injection(
     fresh_ids = []
     for row in rows:
         tag_str = f"{row['namespace']}:{row['name']}" if row["namespace"] else row["name"]
-        if is_decay_eligible(row["created_at"], row["last_injected_at"], TAG_NOTES_DECAY_DAYS):
+        # always_inject_namespaces対象は常時全文注入契約が優先されるため、decay判定自体を
+        # スキップする。
+        if row["namespace"] not in always_ns and is_decay_eligible(
+            row["created_at"], row["last_injected_at"], TAG_NOTES_DECAY_DAYS
+        ):
             results.append({"tag": tag_str, "notes": _decay_pointer_text(tag_str)})
             continue
         results.append({"tag": tag_str, "notes": row["notes"]})

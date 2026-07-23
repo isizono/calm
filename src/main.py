@@ -777,7 +777,9 @@ def search_tags(
     Args:
         query: 検索キーワード（タグ名部分一致 + ベクトル検索）
         namespace: namespaceフィルタ（"domain", "intent", ""。未指定で全タグ）
-        include_notes: Trueのときnotesを返す（デフォルトFalse）
+        include_notes: Trueのときnotesを返す（デフォルトFalse）。notesを持つ結果は
+            取得と同時にlast_injected_atが更新される（tag notes decay述語の参照実績
+            記録。get_habits(habit_id=...)のlast_recalled_at更新と同じ役割）
         limit: 取得件数上限（デフォルト20）
 
     Returns:

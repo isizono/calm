@@ -1568,3 +1568,89 @@ class TestTagNotesDecay:
             assert revived[0]["notes"] == "復帰する教訓全文"
         finally:
             conn.close()
+
+    def test_always_inject_namespace_ignores_decay_with_old_created_at_and_null_last_injected_at(
+        self, temp_db
+    ):
+        """always_inject_namespaces対象は、created_atが古くlast_injected_atがNULLの
+        既存タグ（マイグレーション直後の未バックフィル状態を再現）でも、decay判定を
+        スキップして毎回notes全文を返す"""
+        add_topic(title="Test", description="Desc", tags=["intent:legacy"])
+        update_tag("intent:legacy", "常時注入される教訓全文")
+
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE tags SET created_at = datetime('now', '-181 days') "
+                "WHERE namespace = 'intent' AND name = 'legacy'"
+            )
+            conn.commit()
+
+            row = conn.execute(
+                "SELECT last_injected_at FROM tags WHERE namespace = 'intent' AND name = 'legacy'"
+            ).fetchone()
+            assert row["last_injected_at"] is None
+
+            result = collect_tag_notes_for_injection(
+                conn, ["intent:legacy"], always_inject_namespaces=["intent"]
+            )
+            assert result is not None
+            assert result[0]["notes"] == "常時注入される教訓全文"
+        finally:
+            conn.close()
+
+    def test_always_inject_namespace_stays_undecayed_across_repeated_calls(self, temp_db):
+        """always_inject_namespaces対象は、古いcreated_atのまま繰り返し呼び出しても
+        恒久ロックに陥らず毎回全文を返し続ける（decay対象外の確認）"""
+        add_topic(title="Test", description="Desc", tags=["intent:repeated"])
+        update_tag("intent:repeated", "繰り返し配信される教訓全文")
+
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE tags SET created_at = datetime('now', '-181 days') "
+                "WHERE namespace = 'intent' AND name = 'repeated'"
+            )
+            conn.commit()
+
+            first = collect_tag_notes_for_injection(
+                conn, ["intent:repeated"],
+                always_inject_namespaces=["intent"], session_id="s1",
+            )
+            second = collect_tag_notes_for_injection(
+                conn, ["intent:repeated"],
+                always_inject_namespaces=["intent"], session_id="s2",
+            )
+            assert first[0]["notes"] == "繰り返し配信される教訓全文"
+            assert second[0]["notes"] == "繰り返し配信される教訓全文"
+        finally:
+            conn.close()
+
+    def test_normal_tag_still_decays_when_mixed_with_always_inject_namespace(self, temp_db):
+        """always_inject_namespaces対象タグと通常タグを混在させた場合、
+        通常タグ側は従来通りdecay判定される（除外がalwaysタグのみに限定されることの確認）"""
+        add_topic(
+            title="Test", description="Desc",
+            tags=["intent:mixed-always", "domain:mixed-normal"],
+        )
+        update_tag("intent:mixed-always", "常時注入の教訓")
+        update_tag("domain:mixed-normal", "decayする教訓")
+
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE tags SET created_at = datetime('now', '-181 days') "
+                "WHERE namespace IN ('intent', 'domain') "
+                "AND name IN ('mixed-always', 'mixed-normal')"
+            )
+            conn.commit()
+
+            result = collect_tag_notes_for_injection(
+                conn, ["intent:mixed-always", "domain:mixed-normal"],
+                always_inject_namespaces=["intent"],
+            )
+            by_tag = {r["tag"]: r["notes"] for r in result}
+            assert by_tag["intent:mixed-always"] == "常時注入の教訓"
+            assert "search_tags(include_notes=True)" in by_tag["domain:mixed-normal"]
+        finally:
+            conn.close()
