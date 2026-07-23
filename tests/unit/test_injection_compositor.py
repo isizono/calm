@@ -4,6 +4,7 @@ DB不要（ダミーのbuilder関数のみで完結する純ロジックテス�
 compose()の予算管理契約（priority順・try/except・degrade・ハード切り詰め）を
 実DB経由のhookテスト(tests/e2e/test_session_start_hook.py)とは独立に検証する。
 """
+from src import config
 from src.services.injection_compositor import Section, compose, total_declared_budget
 
 
@@ -117,6 +118,53 @@ class TestComposeBudgetEnforcement:
 
         assert len(result) <= budget
         assert "切り詰め" in result
+
+
+class TestComposeTotalBudgetEnforcement:
+    """セクション結合時の区切り文字("\n")がΣbudget_charsに含まれていなかった
+    バグの回帰テスト。各セクションがbudget_chars以内でも、結合後の実際の長さは
+    区切り文字の分だけΣbudget_charsを上回りうる。
+    """
+
+    def test_join_separator_overflow_is_truncated_within_total_budget(self, monkeypatch):
+        """5セクションが宣言予算ちょうど（合計500字）を出力し、区切り文字4個分
+        （4字）だけΣbudget_charsを超える最小再現。TOTAL_INJECTION_BUDGET_CHARSを
+        Σbudget_charsと同じ500に固定し、余裕ゼロの状況を作る。
+        """
+        monkeypatch.setattr(config, "TOTAL_INJECTION_BUDGET_CHARS", 500)
+        budget_each = 100
+        sections = [
+            Section(f"s{i}", _const_builder("x" * budget_each), budget_chars=budget_each, priority=i)
+            for i in range(5)
+        ]
+
+        result = compose(None, None, None, sections)
+
+        assert len(result) <= config.TOTAL_INJECTION_BUDGET_CHARS
+        assert "切り詰め" in result
+
+    def test_all_six_sections_at_config_budget_cap_stays_within_total(self):
+        """レビューで実機再現されたシナリオ: config.pyの6セクション予算合計は
+        TOTAL_INJECTION_BUDGET_CHARSとちょうど一致し余裕がない。全セクションが
+        同時に宣言予算ちょうどの出力をすると、5個の"\n"区切り文字分だけ
+        実測がTOTAL_INJECTION_BUDGET_CHARSを超えていた（修正前は10,005字）。
+        """
+        budgets = [
+            config.INJECTION_BUDGET_SNAPSHOT_CHARS,
+            config.INJECTION_BUDGET_ACTIVITIES_CHARS,
+            config.INJECTION_BUDGET_HABITS_CHARS,
+            config.INJECTION_BUDGET_SYNC_POLICY_CHARS,
+            config.INJECTION_BUDGET_SIGNALS_CHARS,
+            config.INJECTION_BUDGET_RELAY_INBOX_CHARS,
+        ]
+        sections = [
+            Section(f"s{i}", _const_builder("x" * budget), budget_chars=budget, priority=i)
+            for i, budget in enumerate(budgets)
+        ]
+
+        result = compose(None, None, None, sections)
+
+        assert len(result) <= config.TOTAL_INJECTION_BUDGET_CHARS
 
 
 class TestTotalDeclaredBudget:

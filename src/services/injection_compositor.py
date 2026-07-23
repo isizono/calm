@@ -3,12 +3,19 @@
 各セクションは budget_chars（宣言予算・文字数）を持つ。builder の実出力が
 budget_chars を超えた場合、degrade（宣言されていれば）→ それでも超えるなら
 固定の縮退マーカー付きハード切り詰め、の順で必ず budget_chars 以内に収める。
-compose() の返り値は「Σ budget_chars ≤ TOTAL_INJECTION_BUDGET_CHARS」という
-呼び出し元の不変条件（CIゼロサムテストで保証）さえ成り立てば、常に
-TOTAL_INJECTION_BUDGET_CHARS 以内になる。
+
+セクション間の結合には区切り文字（"\n"）を挟むため、全セクションが同時に
+budget_chars ちょうどの出力をすると、結合後の実際の長さは
+Σ budget_chars を区切り文字の分だけ上回りうる。そのため compose() は
+結合結果自体の長さも最終防波堤として検査し、TOTAL_INJECTION_BUDGET_CHARS
+を超えていればハード切り詰めする。これにより Σ budget_chars と
+TOTAL_INJECTION_BUDGET_CHARS の関係（CIゼロサムテストで検証）に関わらず、
+compose() の返り値は常に TOTAL_INJECTION_BUDGET_CHARS 以内になる。
 """
 from dataclasses import dataclass
 from typing import Callable, Optional
+
+from src import config
 
 SectionBuilder = Callable[..., str]  # (conn, session_id, source) -> str
 
@@ -32,6 +39,13 @@ def total_declared_budget(sections: list[Section]) -> int:
 
 def _hard_truncate(text: str, budget: int, name: str) -> str:
     marker = f"\n…（{name}セクション、宣言予算{budget}字超過のため切り詰め）\n"
+    if budget <= len(marker):
+        return marker[:budget]
+    return text[: budget - len(marker)] + marker
+
+
+def _hard_truncate_total(text: str, budget: int) -> str:
+    marker = "\n…（総予算超過のため切り詰め）\n"
     if budget <= len(marker):
         return marker[:budget]
     return text[: budget - len(marker)] + marker
@@ -65,4 +79,9 @@ def compose(conn, session_id, source, sections: list[Section]) -> str:
         parts.append(text)
 
     result = "\n".join(parts)
+    total_budget = config.TOTAL_INJECTION_BUDGET_CHARS
+    if len(result) > total_budget:
+        # 各セクションはbudget_chars以内でも、区切り文字("\n")分の結合コストは
+        # セクション単位の切り詰めではカバーされない。ここが最終防波堤。
+        result = _hard_truncate_total(result, total_budget)
     return result
