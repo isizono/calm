@@ -6,15 +6,14 @@ signal_events テーブルへの記録・取得・トリアージ状態遷移を
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
-import re
 import sqlite3
 import sys
 from typing import Optional
 
 from src.db import get_connection, row_to_dict
+from src.services.dedup_helpers import compute_fingerprint16, normalize_text
 from src.services.readable_id import strip_entity_id_inplace
 
 logger = logging.getLogger(__name__)
@@ -52,16 +51,9 @@ _MAX_LIMIT = 100
 _STATS_RECENT_DAYS = 30
 
 
-def _normalize_summary(summary: str) -> str:
-    """fingerprint計算用にsummaryを正規化する（前後空白除去 + 連続空白畳み込み + 小文字化）。"""
-    return re.sub(r"\s+", " ", summary.strip()).lower()
-
-
 def _compute_fingerprint(kind: str, source: str, summary: str) -> str:
     """sha256(kind|source|正規化summary) の先頭16hexをfingerprintとして返す。"""
-    normalized = _normalize_summary(summary)
-    digest = hashlib.sha256(f"{kind}|{source}|{normalized}".encode("utf-8")).hexdigest()
-    return digest[:16]
+    return compute_fingerprint16(kind, source, normalize_text(summary))
 
 
 def _to_json_or_raise(value: Optional[object], field_name: str) -> Optional[str]:
