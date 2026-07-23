@@ -2,8 +2,8 @@
 watch-tags: domain:cc-memory
 watch-direction: true
 watch-migrations: true
-last-synced: 2026-07-10
-last-synced-migration: 0061
+last-synced: 2026-07-24
+last-synced-migration: 0066
 -->
 
 # cc-memory DBスキーマ v0
@@ -116,6 +116,10 @@ erDiagram
 | `citations` | — | 本文中の `{{cite:X#NNN}}` 参照の構造化保存 |
 | `citation_event_log` | — | write時sanitize等のテキスト変換イベントの逐次記録（旧 sanitize_log の後継） |
 | `signal_events` | signal | cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベントの記録先 |
+| `asks` | ask | 人間の判断を待つ問いの記録先（判断委譲の受け皿） |
+| `ask_blocks` | — | ask ↔ activity junction（このaskが答え待ちで止めているactivity） |
+| `ask_requesters` | — | ask ↔ 要求元session_id junction（UNION蓄積） |
+| `ask_vec` | — | asks と rowid 連動する sqlite-vec 仮想テーブル（384次元、cosine距離） |
 
 行数感（規模）はランタイム情報のため本ドキュメントでは未記載とする。
 
@@ -646,6 +650,52 @@ cc-memory自身の故障報告・使用感不満・矛盾検出・運用計測�
 
 関連 migration: 0056_add_relay_outbox
 
+### 3.23 asks
+
+人間の判断を待つ問いの記録先。signal_events と同様「双方の合意」もタグ体系も要らない受け皿だが、状態遷移（open→answered→promoted/dismissed、open→withdrawn）を持つため専用テーブルとして独立している。answer 時点ではトリアージ（promote/dismiss）を行わず、次の check_in で配達されるまで遅延する。
+
+| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
+|---|---|---|---|---|---|
+| id | INTEGER | NO | autoincrement | PRIMARY KEY | ask ID |
+| question | TEXT | NO | — | — | 問い本文 |
+| context | TEXT | YES | — | — | 背景 |
+| fingerprint | TEXT | NO | — | — | `sha256(正規化question)` 先頭16hex。dedup のキー |
+| status | TEXT | NO | `'open'` | CHECK IN ('open','answered','promoted','dismissed','withdrawn') | 状態 |
+| answer_body | TEXT | YES | — | — | 回答本文 |
+| answered_at / answered_session_id | TIMESTAMP / TEXT | YES | — | — | 回答時刻・回答元セッション |
+| triage | TEXT | YES | — | CHECK IN ('promote','dismiss') | トリアージ結果 |
+| triaged_at / triaged_session_id / triage_reason | TIMESTAMP / TEXT / TEXT | YES | — | — | トリアージ時刻・実施セッション・理由（dismiss時） |
+| promoted_decision_id | INTEGER | YES | — | FK→decisions(id) | promote先decision |
+| withdrawn_at / withdrawn_session_id / withdraw_reason | TIMESTAMP / TEXT / TEXT | YES | — | — | 取り下げ時刻・実施セッション・理由 |
+| occurrence_count | INTEGER | NO | `1` | — | 同一fingerprintの再発回数 |
+| first_seen_at / last_seen_at | TIMESTAMP | NO | CURRENT_TIMESTAMP | — | 初回・最終記録時刻 |
+| first_seen_session_id / last_seen_session_id | TEXT | YES | — | — | 初回・最終記録元セッション |
+
+補足:
+- `status='open'` の行に限り `fingerprint` を UNIQUE とする部分インデックスを張る。同一 fingerprint の open 行が既存なら INSERT は競合し、アプリ層は occurrence_count を加算する（signal_events と同じ dedup パターン、helperは `dedup_helpers` として共有）。トリアージ済み（answered/promoted/dismissed）・取り下げ済み（withdrawn）の同型問い再発は新規行になる
+- CHECK制約で「open/withdrawn 以外は answer_body/answered_at 必須」「triage 設定は answered_at 必須」「promoted は promoted_decision_id 必須・それ以外は NULL 必須」「withdrawn は withdrawn_at 必須・それ以外は NULL 必須」を強制する
+- タグ・リレーション（related/belongs_to）には接続しない（v1では非対応）。近傍検索のみ ask_vec を経由する
+- 文字列長上限（question 500字、context/answer_body 8000字）は DB 制約ではなくサービス層（`ask_service`）で強制する
+
+インデックス: `idx_asks_fingerprint_open`（UNIQUE, `fingerprint` WHERE `status='open'`）/ `idx_asks_status_last_seen`（`status, last_seen_at`）/ `idx_asks_triage_pending`（`last_seen_at` WHERE `status='answered' AND triage IS NULL`）
+
+関連 migration: 0062_add_asks
+
+### 3.24 ask_blocks / ask_requesters
+
+- `ask_blocks`: ask ↔ activity の junction（`PRIMARY KEY (ask_id, activity_id)`、両方 `ON DELETE CASCADE`）。このaskが答え待ちで止めているactivityを表す。answer/triage/withdrawのいずれの遷移でも該当askの行は削除される（blockの解除）
+- `ask_requesters`: ask ↔ 要求元 `session_id` の junction（`PRIMARY KEY (ask_id, requester_session_id)`）。同じaskへの複数セッションからの要求をUNIONで蓄積する。withdraw時も削除しない（参照ログとして残す）
+
+インデックス: `idx_ask_blocks_activity`（`activity_id, ask_id`。check_inからの「このactivityをblockしているask」逆引き用）
+
+関連 migration: 0062_add_asks
+
+### 3.25 ask_vec
+
+asks 専用の sqlite-vec 仮想テーブル（384次元、`distance_metric=cosine`）。topic_vec と同型で、rowid に `asks.id` を直接使う（vec_index のように search_index 経由の rowid 共有はしない）。asks は search_index/vec_index に参加しない（v1では検索・タグ・リレーションの対象外）ため、`add_ask` 時に生成した embedding をここにのみ格納する。embeddingサーバー未起動時は格納されない（近傍askサジェストが空配列になるだけで、ask自体の記録は成立する）。
+
+関連 migration: 0062_add_asks
+
 ---
 
 ## 4. 関係メカニズム
@@ -778,6 +828,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0059_add_habit_status | habits に status（'active'/'archived'、既定'active'）を追加 |
 | 0060_add_habit_importance_score_check | trigger_mode='intelligently'かつimportance_score=1.0(未設定)のhabitを3に補正したうえで、importance_scoreにCHECK(IN (1, 2, 3))を追加（テーブル再構築） |
 | 0061_add_tag_archived | tags に archived_at（退役日時）/ archived_reason（退役理由、100文字以内のCHECK制約付き）を追加、archived_at 用の部分インデックス idx_tags_archived_at を新設（スキーマ変更のみ、データ移行なし） |
+| 0062_add_asks | asks / ask_blocks / ask_requesters テーブル新設 + ask専用 vec0 仮想テーブル ask_vec 新設（§3.23-3.25） |
 | 0065_add_habits_always_pool_ratchet_trigger | trigger_mode='always'かつactive=1なhabitのcontent合計文字数が2000字を超えて増加するINSERT/UPDATEをRAISE(ABORT)で拒否するトリガー2本を新設（ラチェット型天井、縮む変更は常に許可） |
 | 0066_add_tags_notes_ratchet_trigger | tags.notesが4000字を超えて増加するINSERT/UPDATEをRAISE(ABORT)で拒否するトリガー2本を新設（1タグあたりのラチェット型天井、縮む変更は常に許可） |
 

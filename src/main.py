@@ -22,6 +22,7 @@ from src.services import (
     precedent_pull_service,
     signal_service,
     budget_service,
+    ask_service,
 )
 from src.services.checkin_service import check_in as _check_in
 from src.services.relay import service as relay_session_service
@@ -1716,6 +1717,168 @@ def update_signal(
     return signal_service.update_signal(
         signal_id, status, promoted_type=promoted_type, promoted_id=promoted_id
     )
+
+
+# ----------------------------
+# asks（判断委譲の受け皿）
+# ----------------------------
+
+
+@mcp.tool()
+def add_ask(
+    question: str,
+    blocks: list[int],
+    context: str | None = None,
+) -> dict:
+    """人間の判断を待つ問いを1件積む（答え待ちの間、blocksで指定したactivityを止める）。
+
+    同じ問い（正規化後questionのfingerprint一致）が答え待ち（open）で既にあれば
+    新規行を作らず出現回数を+1し、blocks/要求元セッションはUNIONで追記、
+    context/最終出現時刻は今回の値で上書きする。answered/promoted/dismissed/withdrawnの
+    同一問いは別のライフとして新規行になる（訂正は新規postで行い、リンクは張らない）。
+
+    Args:
+        question: 問い本文（空不可、500字以内）
+        blocks: この問いが答え待ちで止めているactivityのid一覧（1件以上必須）。
+            全て存在するactivityであること。全てcompleted状態のときはエラー
+            （1件でも進行中/未着手/一時停止のactivityがあれば通す）
+        context: 背景（optional、8000字以内）
+
+    Returns:
+        成功時: {"id": int, "deduped": bool, "occurrence_count": int,
+            "similar_precedents": [...], "similar_asks": [...]}（近傍のdecision/ask
+            それぞれ最大3件、embeddingサーバー未起動時は空配列）
+        失敗時: {"error": {"code": "VALIDATION_ERROR", "message": ...}}
+    """
+    return ask_service.add_ask(
+        question, blocks, context=context, session_id=_current_session_id()
+    )
+
+
+@mcp.tool()
+def get_asks(
+    status: str | None = "open",
+    blocking_activity_id: int | None = None,
+    triage_pending_only: bool = False,
+    limit: int = 20,
+    offset: int = 0,
+    include_stats: bool = False,
+) -> dict:
+    """add_askで記録されたaskを一覧・集計する。
+
+    Args:
+        status: フィルタ対象のstatus（"open"|"answered"|"promoted"|"dismissed"|"withdrawn"）。
+            null指定で全status横断。デフォルトは答え待ちの"open"のみ。
+            triage_pending_only指定時は無視される
+        blocking_activity_id: 指定時はそのactivityをblockしているaskだけに絞る
+        triage_pending_only: Trueでstatus='answered'かつ未トリアージのみに絞る
+        limit: 取得件数上限（最大100件、デフォルト20）
+        offset: 取得開始位置（ページネーション用）
+        include_stats: Trueのときstatus別クロス集計と直近30日サマリを付与
+
+    Returns:
+        成功時: {"asks": [...], "total_count": int, "stats": {...}(include_stats時のみ)}
+        失敗時: {"error": {"code": ..., "message": ...}}
+        各askのidはid_rawとして返る。promoted_decision_idも他エンティティへの内部ID
+        参照のためpromoted_decision_id_rawへ退避される。fingerprintは含まない。
+        各askにblocks（[{"id_raw", "title", "status"}, ...]）とrequesters
+        （要求元session_idの文字列リスト）が合流される。
+    """
+    return ask_service.get_asks(
+        status=status,
+        blocking_activity_id=blocking_activity_id,
+        triage_pending_only=triage_pending_only,
+        limit=limit,
+        offset=offset,
+        include_stats=include_stats,
+    )
+
+
+@mcp.tool()
+def answer_ask(ask_id: int, answer_body: str) -> dict:
+    """答え待ち（open）のaskに回答する。1問1答（answerは1回のみ）。
+
+    トリアージ（promote/dismiss）はここでは行わない。判定はLLMの仕事のため、
+    次のcheck_inで配達されるかget_asks(triage_pending_only=true)で拾われるまで
+    遅延する。answered/promoted/dismissed済みのaskへの再回答は拒否する
+    （訂正はadd_askで新規postする別ライフとして扱う）。
+
+    Args:
+        ask_id: 対象ask ID
+        answer_body: 回答本文（空不可、8000字以内）
+
+    Returns:
+        成功時: {"id": int, "status": "answered", "triage_pending": true,
+            "blocked_activities": [int, ...], "next_step": "..."}
+        失敗時: {"error": {"code": "VALIDATION_ERROR", "message": ...}}
+            （対象がopen状態でない場合を含む）
+    """
+    return ask_service.answer_ask(ask_id, answer_body, session_id=_current_session_id())
+
+
+@mcp.tool()
+def triage_ask(
+    ask_id: int,
+    action: str,
+    decision: str | None = None,
+    reason: str | None = None,
+    title: str | None = None,
+    tags: list[str] | None = None,
+    dismiss_reason: str | None = None,
+) -> dict:
+    """answered状態のaskをpromote（decision化）またはdismissへ振り分ける。
+
+    promoteはdecision/reason/title/tagsをそのままadd_decisionsに渡してdecisionを
+    生成し、promoted_decision_idとして紐付ける。dismissはdismiss_reasonを
+    記録するのみで実体は作らない。いずれもこのaskが止めていたactivityの
+    blockは解除する（ask_blocksを削除）。
+
+    Args:
+        ask_id: 対象ask ID
+        action: "promote" または "dismiss"
+        decision: action="promote"のとき必須。生成するdecisionの内容
+        reason: action="promote"のとき必須。生成するdecisionの理由
+        title: action="promote"時のdecisionの見出し（optional、35字以内）
+        tags: action="promote"時のdecisionに付けるタグ（optional）
+        dismiss_reason: action="dismiss"のとき必須。見送り理由
+
+    Returns:
+        成功時(promote): {"id": int, "status": "promoted", "promoted_decision_id": int}
+        成功時(dismiss): {"id": int, "status": "dismissed"}
+        失敗時: {"error": {"code": "VALIDATION_ERROR", "message": ...}}
+            （対象がanswered かつ未トリアージでない場合、必須引数欠落を含む）
+    """
+    return ask_service.triage_ask(
+        ask_id,
+        action,
+        decision=decision,
+        reason=reason,
+        title=title,
+        tags=tags,
+        dismiss_reason=dismiss_reason,
+        session_id=_current_session_id(),
+    )
+
+
+@mcp.tool()
+def withdraw_ask(ask_id: int, reason: str) -> dict:
+    """答え待ち（open）のaskを自発的に取り下げる。
+
+    誤って積んでしまった問いを、人間の回答を待たずに取り消す導線。取り下げ後は
+    このaskが止めていたactivityのblockを解除する（ask_blocksを削除、
+    要求元セッションの記録は参照ログとして残す）。同一内容の再postは、
+    誤操作保護のため取り下げから5分間は拒否される。
+
+    Args:
+        ask_id: 対象ask ID
+        reason: 取り下げ理由（空不可）
+
+    Returns:
+        成功時: {"id": int, "status": "withdrawn"}
+        失敗時: {"error": {"code": "VALIDATION_ERROR", "message": ...}}
+            （対象がopen状態でない場合を含む）
+    """
+    return ask_service.withdraw_ask(ask_id, reason, session_id=_current_session_id())
 
 
 # ----------------------------

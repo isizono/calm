@@ -103,14 +103,6 @@ class TestMcpToolsSpecSignalSection:
         assert "### 2.30 get_signals" in content
         assert "### 2.31 update_signal" in content
 
-    def test_tool_count_updated(self):
-        content = _read(MCP_TOOLS_SPEC)
-        assert "全40ツール" in content
-        assert "全37ツール" not in content
-        assert "全39ツール" not in content
-        assert "全41ツール" not in content
-        assert "全42ツール" not in content
-
 
 class TestMcpToolsSpecToolCount:
     """spec docのツール総数が src/main.py の実装（@mcp.tool 実カウント）と一致すること。"""
