@@ -1244,7 +1244,7 @@ def collect_tag_notes_for_injection(
         notes があるタグの一覧。なければ None
         [{"tag": "domain:cc-memory", "notes": "..."}, ...]
         タグ作成からTAG_NOTES_DECAY_DAYSを超え、かつ全文配信実績（last_injected_at）も
-        同日数を超えて無いタグは、notesの全文の代わりに1行ポインタ文言へ縮退する
+        同日数以内に更新されていないタグは、notesの全文の代わりに1行ポインタ文言へ縮退する
         （レンダー時decay。search_tags等の返却対象からは除外しない）。
         always_inject_namespaces対象のタグは常時全文注入という既存契約が優先されるため、
         decay判定の対象から除外される（ポインタ文言に縮退しない）。

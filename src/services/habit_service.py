@@ -48,7 +48,7 @@ def list_intelligently_habit_manifest_with_conn(conn) -> list[dict]:
     importance_score昇順（同値はid昇順）で並べ、1(critical)を先頭に出す。
     status='archived'の振る舞いは除外する（activeとは独立した無効化軸）。
     created_atからHABIT_MANIFEST_DECAY_DAYSを超え、かつget_habits(habit_id=...)による
-    on-demand参照実績（last_recalled_at）も同日数を超えて無いものはマニフェストから
+    on-demand参照実績（last_recalled_at）も同日数以内に更新されていないものはマニフェストから
     除外する（レンダー時decay。get_habits・searchの全件取得には引き続き出る）。
 
     Returns:

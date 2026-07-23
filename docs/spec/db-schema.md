@@ -263,7 +263,7 @@ erDiagram
 | description | TEXT | NO | `''` | — | 要旨（intelligently層のマニフェスト表示に使う） |
 | trigger_mode | TEXT | NO | `'always'` | CHECK IN ('always', 'intelligently') | SessionStartでの注入方式。alwaysは全文、intelligentlyはタイトルのみのマニフェストにとどめ詳細はon-demand取得 |
 | importance_score | REAL | NO | `1.0` | CHECK IN (1, 2, 3) | 優先度（1=critical/2=important/3=default）。intelligently層マニフェストのソートに使う |
-| last_recalled_at | TIMESTAMP | YES | — | — | `get_habits(habit_id=...)` でon-demand取得された直近時刻 |
+| last_recalled_at | TIMESTAMP | YES | — | — | `get_habits(habit_id=...)` でon-demand取得された直近時刻。レンダー時decay述語（`is_decay_eligible`）の入力でもあり、trigger_mode='intelligently'のhabitで作成から`HABIT_MANIFEST_DECAY_DAYS`（既定90日）を超え、かつこの値も同日数以内に更新されていない場合はマニフェスト表示から除外される |
 | status | TEXT | NO | `'active'` | CHECK IN ('active', 'archived') | 棚卸し状態。active とは独立した軸で、マニフェスト取得は両方をANDで絞り込む |
 
 補足:

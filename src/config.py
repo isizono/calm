@@ -105,10 +105,10 @@ PRECEDENT_RESPONSE_CHARS_MAX: int = int(os.environ.get("CCM_PRECEDENT_RESPONSE_C
 
 # --- Decay predicates（レンダー時評価。バッチ/cronではない） ---
 # intelligently層habitのマニフェスト表示から、作成後この日数を超え、かつ
-# get_habits(habit_id=...)によるon-demand参照実績も同日数を超えて無いものを除外する。
-# get_habits・searchの返却対象からは除外しない（マニフェスト表示のみ制御）
+# get_habits(habit_id=...)によるon-demand参照実績も同日数以内に更新されていない
+# ものを除外する。get_habits・searchの返却対象からは除外しない（マニフェスト表示のみ制御）
 HABIT_MANIFEST_DECAY_DAYS: int = int(os.environ.get("CCM_HABIT_MANIFEST_DECAY_DAYS", "90"))
 # tag notesの遭遇時自動注入から、作成後この日数を超え、かつ実際に全文配信された
-# 実績（last_injected_at）も同日数を超えて無いものを除外し、1行ポインタへ縮退する。
+# 実績（last_injected_at）も同日数以内に更新されていないものを除外し、1行ポインタへ縮退する。
 # search_tags・update_tag等の返却対象からは除外しない（自動注入のみ制御）
 TAG_NOTES_DECAY_DAYS: int = int(os.environ.get("CCM_TAG_NOTES_DECAY_DAYS", "180"))
