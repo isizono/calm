@@ -40,6 +40,11 @@ SYNC_POLICY: str | None = os.environ.get("CCM_SYNC_POLICY") or None  # 空文字
 # always層（常時注入枠）の定員（文字数）。update_habitでtrigger_mode='always'に
 # 昇格する際、昇格後のプール合計文字数がこの値と昇格前合計の大きい方を超えると
 # 拒否する（プールが定員超過中でも、合計を増やさない変更は許可するラチェット）
+#
+# 注意: DB側にも独立したハード天井（2000字固定、migrations/0065、環境変数では
+# 変更不可）がある。本値を2000以上に設定すると、このアプリ層ゲートは通過するが
+# DBトリガー側で拒否され、生のSQLiteメッセージがDATABASE_ERRORとして露出する。
+# 2000未満に収めること。
 ALWAYS_POOL_CAPACITY: int = int(os.environ.get("CCM_ALWAYS_POOL_CAPACITY", "1500"))
 
 # habits DBから ~/.claude/rules 配下へ投影する自動生成ファイルの書き込み先パス

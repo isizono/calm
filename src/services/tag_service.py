@@ -7,6 +7,11 @@ from src.db import execute_query, get_connection, row_to_dict
 
 VALID_NAMESPACES = {'', 'domain', 'intent', 'glossary', 'layer'}
 
+# tags.notesのDBトリガー天井（migrations/0066_add_tags_notes_ratchet_trigger.sql）と
+# 同値。ここでの事前検証はUX目的（VALIDATION_ERRORでの案内）であり、実際の強制は
+# DBトリガー側が担う。値を変更する場合は両方を揃えること。
+_TAG_NOTES_RATCHET_CEILING = 4000
+
 # resolve_tags 定数
 MERGE_THRESHOLD = 0.15  # コサイン距離。これ未満なら統合
 KNN_K = 10              # KNN検索の取得数（namespace後フィルタ前）。
@@ -943,6 +948,24 @@ def update_tag(
 
         # --- notes 更新 ---
         if notes is not None:
+            existing_notes = row["notes"] or ""
+            # ラチェット則: 縮む更新は天井超過中でも常に許可するため、超過チェックは
+            # 「新しい長さが天井を超え、かつ既存より増加している」場合のみに限る
+            # （DBトリガー0066と同じ条件）
+            if (
+                len(notes) > _TAG_NOTES_RATCHET_CEILING
+                and len(notes) > len(existing_notes)
+            ):
+                return {
+                    "error": {
+                        "code": "VALIDATION_ERROR",
+                        "message": (
+                            f"notes must be at most {_TAG_NOTES_RATCHET_CEILING} characters "
+                            f"when increasing in length (current: {len(existing_notes)}, "
+                            f"attempted: {len(notes)})."
+                        ),
+                    }
+                }
             conn.execute(
                 "UPDATE tags SET notes = ? WHERE id = ?",
                 (notes, tag_id),
