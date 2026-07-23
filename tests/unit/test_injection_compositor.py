@@ -1,9 +1,11 @@
 """src/services/injection_compositor.py のユニットテスト
 
 DB不要（ダミーのbuilder関数のみで完結する純ロジックテスト）。
-compose()の予算管理契約（priority順・try/except・degrade・ハード切り詰め）を
+compose()の予算管理契約（priority順・try/except・ハード切り詰め）を
 実DB経由のhookテスト(tests/e2e/test_session_start_hook.py)とは独立に検証する。
 """
+import pytest
+
 from src import config
 from src.services.injection_compositor import Section, compose, total_declared_budget
 
@@ -55,65 +57,9 @@ class TestComposeBudgetEnforcement:
 
         assert result == "short text"
 
-    def test_overflow_without_degrade_is_hard_truncated_within_budget(self):
+    def test_overflow_is_hard_truncated_within_budget(self):
         budget = 60
         sections = [Section("s", _const_builder("x" * 1000), budget_chars=budget, priority=0)]
-        result = compose(None, None, None, sections)
-
-        assert len(result) <= budget
-        assert "切り詰め" in result
-
-    def test_degrade_return_value_is_used_when_within_budget(self):
-        def _degrade(overflow_text: str) -> str:
-            return "degraded"
-
-        sections = [
-            Section(
-                "s",
-                _const_builder("x" * 1000),
-                budget_chars=50,
-                priority=0,
-                degrade=_degrade,
-            )
-        ]
-        result = compose(None, None, None, sections)
-
-        assert result == "degraded"
-
-    def test_degrade_exception_falls_back_to_hard_truncate(self):
-        def _degrade(overflow_text: str) -> str:
-            raise RuntimeError("degrade blew up")
-
-        budget = 60
-        sections = [
-            Section(
-                "s",
-                _const_builder("x" * 1000),
-                budget_chars=budget,
-                priority=0,
-                degrade=_degrade,
-            )
-        ]
-        result = compose(None, None, None, sections)
-
-        assert len(result) <= budget
-        assert "切り詰め" in result
-
-    def test_degrade_still_over_budget_is_hard_truncated_again(self):
-        """degrade実装バグ（budget_chars以内に収め損ねる）への耐性確認"""
-        def _degrade(overflow_text: str) -> str:
-            return "y" * 1000  # わざと予算を超える戻り値
-
-        budget = 60
-        sections = [
-            Section(
-                "s",
-                _const_builder("x" * 1000),
-                budget_chars=budget,
-                priority=0,
-                degrade=_degrade,
-            )
-        ]
         result = compose(None, None, None, sections)
 
         assert len(result) <= budget
@@ -165,6 +111,34 @@ class TestComposeTotalBudgetEnforcement:
         result = compose(None, None, None, sections)
 
         assert len(result) <= config.TOTAL_INJECTION_BUDGET_CHARS
+
+
+class TestComposeInvariantEnforcement:
+    """budget_charsとTOTAL_INJECTION_BUDGET_CHARSは環境変数で個別に
+    オーバーライド可能なため、Σ budget_chars ≤ TOTAL_INJECTION_BUDGET_CHARSという
+    前提が実行時に破られた場合の挙動を検証する。
+    """
+
+    def test_declared_total_over_total_budget_raises(self, monkeypatch):
+        monkeypatch.setattr(config, "TOTAL_INJECTION_BUDGET_CHARS", 100)
+        sections = [
+            Section("a", _const_builder(""), budget_chars=60, priority=0),
+            Section("b", _const_builder(""), budget_chars=60, priority=1),
+        ]
+
+        with pytest.raises(ValueError, match="総宣言予算"):
+            compose(None, None, None, sections)
+
+    def test_declared_total_equal_to_total_budget_does_not_raise(self, monkeypatch):
+        monkeypatch.setattr(config, "TOTAL_INJECTION_BUDGET_CHARS", 100)
+        sections = [
+            Section("a", _const_builder("hello"), budget_chars=60, priority=0),
+            Section("b", _const_builder("world"), budget_chars=40, priority=1),
+        ]
+
+        result = compose(None, None, None, sections)
+
+        assert result == "hello\nworld"
 
 
 class TestTotalDeclaredBudget:
