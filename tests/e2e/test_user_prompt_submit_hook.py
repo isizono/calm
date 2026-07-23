@@ -220,67 +220,6 @@ class TestEmptySessionId:
         assert json.loads(result.stdout) == {}
 
 
-class TestIdLeakNudge:
-    """id_leak_count > 0 → 英語 system-reminder 注入 + count reset"""
-
-    def _set_id_leak_count(self, count: int) -> None:
-        state = HookState(_SESSION_ID)
-        for _ in range(count):
-            state.increment_id_leak_count()
-
-    def test_id_leak_injection(self, state_dir):
-        self._set_id_leak_count(1)
-
-        result = _run_hook({"session_id": _SESSION_ID}, state_dir)
-        assert result.returncode == 0
-
-        output = json.loads(result.stdout)
-        assert "hookSpecificOutput" in output
-        assert output["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
-
-        ctx = output["hookSpecificOutput"]["additionalContext"]
-        assert "<system-reminder>" in ctx
-        assert "internal IDs" in ctx
-        assert "natural language" in ctx
-
-    def test_id_leak_count_reset_after_injection(self, state_dir):
-        self._set_id_leak_count(3)
-
-        _run_hook({"session_id": _SESSION_ID}, state_dir)
-
-        # count リセット
-        assert HookState(_SESSION_ID).get_id_leak_count() == 0
-
-        # 2 回目は空JSON
-        result = _run_hook({"session_id": _SESSION_ID}, state_dir)
-        assert json.loads(result.stdout) == {}
-
-    def test_zero_count_no_injection(self, state_dir):
-        # count=0 (state file 不在) なら空JSON
-        result = _run_hook({"session_id": _SESSION_ID}, state_dir)
-        assert json.loads(result.stdout) == {}
-
-    def test_existing_nudge_takes_priority(self, state_dir):
-        """既存 nudge (record/follow_up) があれば優先、id_leak は次ターンに繰り越す"""
-        _write_events(
-            [{"e": "nudge", "type": "record", "turn": 2}],
-            state_dir,
-        )
-        self._set_id_leak_count(1)
-
-        # 1 回目: record nudge 注入、id_leak count はリセットされない
-        result = _run_hook({"session_id": _SESSION_ID}, state_dir)
-        ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
-        assert "直近の応答で記録ツール" in ctx
-        assert HookState(_SESSION_ID).get_id_leak_count() == 1
-
-        # 2 回目: id_leak 注入 + count リセット
-        result2 = _run_hook({"session_id": _SESSION_ID}, state_dir)
-        ctx2 = json.loads(result2.stdout)["hookSpecificOutput"]["additionalContext"]
-        assert "internal IDs" in ctx2
-        assert HookState(_SESSION_ID).get_id_leak_count() == 0
-
-
 class TestRelaySessionAwareNudge:
     """relay session-aware毎ターんnudge（CCM_RELAY_SESSION_AWARE=1のときのみ）
 
