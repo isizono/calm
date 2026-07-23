@@ -1,4 +1,4 @@
--- Migration 0062: tags.last_injected_at 追加（tag notes decay述語のトラッキング用）
+-- Migration 0064: tags.last_injected_at 追加（tag notes decay述語のトラッキング用）
 --
 -- depends: 0061_add_tag_archived
 --
