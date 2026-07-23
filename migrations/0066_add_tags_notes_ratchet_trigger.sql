@@ -1,6 +1,6 @@
--- Migration 0063: tags.notesラチェット則
+-- Migration 0066: tags.notesラチェット則
 --
--- depends: 0062_add_habits_always_pool_ratchet_trigger
+-- depends: 0065_add_habits_always_pool_ratchet_trigger
 --
 -- 背景:
 --   tag notes（tags.notes）はSessionStart系の遭遇時注入(collect_tag_notes_for_injection)

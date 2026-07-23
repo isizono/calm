@@ -1,4 +1,4 @@
-"""migration 0062_add_habits_always_pool_ratchet_trigger のテスト
+"""migration 0065_add_habits_always_pool_ratchet_trigger のテスト
 
 アプリ層のalways昇格ゲート（habit_service._check_always_promotion_gate_with_conn、
 定員1500字）はupdate_habit経由の更新にのみ効く。本migrationはそのゲートを経由しない
@@ -20,7 +20,7 @@ from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection, init_datab
 
 @pytest.fixture
 def migrated_db():
-    """全migration（0062含む）を適用済みのテスト用DBを提供する。"""
+    """全migration（0065含む）を適用済みのテスト用DBを提供する。"""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
         os.environ["DISCUSSION_DB_PATH"] = db_path
@@ -31,8 +31,8 @@ def migrated_db():
 
 
 @pytest.fixture
-def db_before_0062():
-    """0061までのmigrationを適用したDBを提供する。0062の挙動を分離検証するために使う。"""
+def db_before_0065():
+    """0061までのmigrationを適用したDBを提供する。0065の挙動を分離検証するために使う。"""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
         os.environ["DISCUSSION_DB_PATH"] = db_path
@@ -41,23 +41,23 @@ def db_before_0062():
         backend = _VecSQLiteBackend(parsed, default_migration_table)
         backend.init_database()
         all_migs = read_migrations(str(MIGRATIONS_DIR))
-        pre_0062 = MigrationList([m for m in all_migs if m.id < "0062"])
+        pre_0065 = MigrationList([m for m in all_migs if m.id < "0065"])
         with backend.lock():
-            backend.apply_migrations(pre_0062)
+            backend.apply_migrations(pre_0065)
 
         yield db_path
         if "DISCUSSION_DB_PATH" in os.environ:
             del os.environ["DISCUSSION_DB_PATH"]
 
 
-def _apply_migration_0062(db_path: str) -> None:
-    """db_pathに対してmigration 0062のみを適用する。"""
+def _apply_migration_0065(db_path: str) -> None:
+    """db_pathに対してmigration 0065のみを適用する。"""
     parsed = parse_uri(f"sqlite:///{db_path}")
     backend = _VecSQLiteBackend(parsed, default_migration_table)
     all_migs = read_migrations(str(MIGRATIONS_DIR))
-    only_0062 = MigrationList([m for m in all_migs if m.id.startswith("0062")])
+    only_0065 = MigrationList([m for m in all_migs if m.id.startswith("0065")])
     with backend.lock():
-        backend.apply_migrations(only_0062)
+        backend.apply_migrations(only_0065)
 
 
 def _neutralize_seed_always_pool(conn) -> None:
@@ -72,7 +72,7 @@ def _neutralize_seed_always_pool(conn) -> None:
 class TestTriggerExistence:
     """トリガー2本の適用前後の有無の確認"""
 
-    def test_triggers_absent_before_migration(self, db_before_0062):
+    def test_triggers_absent_before_migration(self, db_before_0065):
         conn = get_connection()
         try:
             names = {
@@ -104,7 +104,7 @@ class TestTriggerExistence:
 class TestRatchetCeilingOnInsert:
     """INSERTに対するラチェット天井の確認"""
 
-    def test_insert_exceeding_ceiling_is_rejected(self, db_before_0062):
+    def test_insert_exceeding_ceiling_is_rejected(self, db_before_0065):
         """合計が2000字を超えるINSERTは拒否される"""
         conn = get_connection()
         try:
@@ -112,7 +112,7 @@ class TestRatchetCeilingOnInsert:
         finally:
             conn.close()
 
-        _apply_migration_0062(db_before_0062)
+        _apply_migration_0065(db_before_0065)
 
         conn = get_connection()
         try:
@@ -125,7 +125,7 @@ class TestRatchetCeilingOnInsert:
             conn.rollback()
             conn.close()
 
-    def test_insert_within_ceiling_is_accepted(self, db_before_0062):
+    def test_insert_within_ceiling_is_accepted(self, db_before_0065):
         """合計がちょうど2000字のINSERTは許可される（境界値）"""
         conn = get_connection()
         try:
@@ -133,7 +133,7 @@ class TestRatchetCeilingOnInsert:
         finally:
             conn.close()
 
-        _apply_migration_0062(db_before_0062)
+        _apply_migration_0065(db_before_0065)
 
         conn = get_connection()
         try:
@@ -149,7 +149,7 @@ class TestRatchetCeilingOnInsert:
         finally:
             conn.close()
 
-    def test_insert_into_intelligently_ignores_ceiling(self, db_before_0062):
+    def test_insert_into_intelligently_ignores_ceiling(self, db_before_0065):
         """trigger_mode='intelligently'のINSERTはalwaysプール天井の対象外"""
         conn = get_connection()
         try:
@@ -157,7 +157,7 @@ class TestRatchetCeilingOnInsert:
         finally:
             conn.close()
 
-        _apply_migration_0062(db_before_0062)
+        _apply_migration_0065(db_before_0065)
 
         conn = get_connection()
         try:
@@ -177,7 +177,7 @@ class TestRatchetCeilingOnInsert:
 class TestRatchetCeilingOnUpdate:
     """UPDATEに対するラチェット天井（ラチェット則含む）の確認"""
 
-    def test_promotion_exceeding_ceiling_is_rejected(self, db_before_0062):
+    def test_promotion_exceeding_ceiling_is_rejected(self, db_before_0065):
         """既存プールが空でも、単独habitの昇格自体が2000字を超えるなら拒否される"""
         conn = get_connection()
         try:
@@ -190,7 +190,7 @@ class TestRatchetCeilingOnUpdate:
         finally:
             conn.close()
 
-        _apply_migration_0062(db_before_0062)
+        _apply_migration_0065(db_before_0065)
 
         conn = get_connection()
         try:
@@ -202,7 +202,7 @@ class TestRatchetCeilingOnUpdate:
             conn.rollback()
             conn.close()
 
-    def test_content_increase_beyond_ceiling_is_rejected(self, db_before_0062):
+    def test_content_increase_beyond_ceiling_is_rejected(self, db_before_0065):
         """既にalwaysなhabitのcontentを、天井を超える長さへ伸ばすUPDATEは拒否される"""
         conn = get_connection()
         try:
@@ -215,7 +215,7 @@ class TestRatchetCeilingOnUpdate:
         finally:
             conn.close()
 
-        _apply_migration_0062(db_before_0062)
+        _apply_migration_0065(db_before_0065)
 
         conn = get_connection()
         try:
@@ -227,7 +227,7 @@ class TestRatchetCeilingOnUpdate:
             conn.rollback()
             conn.close()
 
-    def test_shrink_while_pool_already_over_ceiling_is_allowed(self, db_before_0062):
+    def test_shrink_while_pool_already_over_ceiling_is_allowed(self, db_before_0065):
         """トリガー導入前から2000字超のプールが存在する状態でも、合計を減らす更新は許可される
         （ラチェットの核: 減少は常に許可、増加のみ拒否）"""
         conn = get_connection()
@@ -241,7 +241,7 @@ class TestRatchetCeilingOnUpdate:
         finally:
             conn.close()
 
-        _apply_migration_0062(db_before_0062)
+        _apply_migration_0065(db_before_0065)
 
         conn = get_connection()
         try:
@@ -257,7 +257,7 @@ class TestRatchetCeilingOnUpdate:
         finally:
             conn.close()
 
-    def test_importance_score_only_update_ignores_ceiling(self, db_before_0062):
+    def test_importance_score_only_update_ignores_ceiling(self, db_before_0065):
         """importance_scoreのみの更新は、プールが2000字超過中でも成功する
         （UPDATE OF content, active, trigger_modeの対象外であることの確認）"""
         conn = get_connection()
@@ -271,7 +271,7 @@ class TestRatchetCeilingOnUpdate:
         finally:
             conn.close()
 
-        _apply_migration_0062(db_before_0062)
+        _apply_migration_0065(db_before_0065)
 
         conn = get_connection()
         try:
@@ -286,7 +286,7 @@ class TestRatchetCeilingOnUpdate:
         finally:
             conn.close()
 
-    def test_deactivation_is_always_allowed(self, db_before_0062):
+    def test_deactivation_is_always_allowed(self, db_before_0065):
         """active=1から0への無効化は、プールが2000字超過中でも常に許可される"""
         conn = get_connection()
         try:
@@ -299,7 +299,7 @@ class TestRatchetCeilingOnUpdate:
         finally:
             conn.close()
 
-        _apply_migration_0062(db_before_0062)
+        _apply_migration_0065(db_before_0065)
 
         conn = get_connection()
         try:
@@ -316,7 +316,7 @@ class TestRatchetCeilingOnUpdate:
 class TestExistingDataUnaffectedByMigration:
     """migration適用自体が既存データを書き換えないことの確認"""
 
-    def test_existing_habit_content_unchanged_after_migration(self, db_before_0062):
+    def test_existing_habit_content_unchanged_after_migration(self, db_before_0065):
         conn = get_connection()
         try:
             _neutralize_seed_always_pool(conn)
@@ -328,7 +328,7 @@ class TestExistingDataUnaffectedByMigration:
         finally:
             conn.close()
 
-        _apply_migration_0062(db_before_0062)
+        _apply_migration_0065(db_before_0065)
 
         conn = get_connection()
         try:

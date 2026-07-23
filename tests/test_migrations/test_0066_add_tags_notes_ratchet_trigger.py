@@ -1,4 +1,4 @@
-"""migration 0063_add_tags_notes_ratchet_trigger のテスト
+"""migration 0066_add_tags_notes_ratchet_trigger のテスト
 
 tag notes（tags.notes）はSessionStart系の遭遇時注入(collect_tag_notes_for_injection)で
 全文表示されるため、1タグあたりのnotesが際限なく伸びるのを防ぐ必要がある。本migration
@@ -19,7 +19,7 @@ from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection, init_datab
 
 @pytest.fixture
 def migrated_db():
-    """全migration（0063含む）を適用済みのテスト用DBを提供する。"""
+    """全migration（0066含む）を適用済みのテスト用DBを提供する。"""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
         os.environ["DISCUSSION_DB_PATH"] = db_path
@@ -30,8 +30,8 @@ def migrated_db():
 
 
 @pytest.fixture
-def db_before_0063():
-    """0062までのmigrationを適用したDBを提供する。0063の挙動を分離検証するために使う。"""
+def db_before_0066():
+    """0065までのmigrationを適用したDBを提供する。0066の挙動を分離検証するために使う。"""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
         os.environ["DISCUSSION_DB_PATH"] = db_path
@@ -40,29 +40,29 @@ def db_before_0063():
         backend = _VecSQLiteBackend(parsed, default_migration_table)
         backend.init_database()
         all_migs = read_migrations(str(MIGRATIONS_DIR))
-        pre_0063 = MigrationList([m for m in all_migs if m.id < "0063"])
+        pre_0066 = MigrationList([m for m in all_migs if m.id < "0066"])
         with backend.lock():
-            backend.apply_migrations(pre_0063)
+            backend.apply_migrations(pre_0066)
 
         yield db_path
         if "DISCUSSION_DB_PATH" in os.environ:
             del os.environ["DISCUSSION_DB_PATH"]
 
 
-def _apply_migration_0063(db_path: str) -> None:
-    """db_pathに対してmigration 0063のみを適用する。"""
+def _apply_migration_0066(db_path: str) -> None:
+    """db_pathに対してmigration 0066のみを適用する。"""
     parsed = parse_uri(f"sqlite:///{db_path}")
     backend = _VecSQLiteBackend(parsed, default_migration_table)
     all_migs = read_migrations(str(MIGRATIONS_DIR))
-    only_0063 = MigrationList([m for m in all_migs if m.id.startswith("0063")])
+    only_0066 = MigrationList([m for m in all_migs if m.id.startswith("0066")])
     with backend.lock():
-        backend.apply_migrations(only_0063)
+        backend.apply_migrations(only_0066)
 
 
 class TestTriggerExistence:
     """トリガー2本の適用前後の有無の確認"""
 
-    def test_triggers_absent_before_migration(self, db_before_0063):
+    def test_triggers_absent_before_migration(self, db_before_0066):
         conn = get_connection()
         try:
             names = {
@@ -94,9 +94,9 @@ class TestTriggerExistence:
 class TestRatchetCeilingOnInsert:
     """INSERTに対するラチェット天井の確認"""
 
-    def test_insert_exceeding_ceiling_is_rejected(self, db_before_0063):
+    def test_insert_exceeding_ceiling_is_rejected(self, db_before_0066):
         """notesが4000字を超えるINSERTは拒否される"""
-        _apply_migration_0063(db_before_0063)
+        _apply_migration_0066(db_before_0066)
 
         conn = get_connection()
         try:
@@ -109,9 +109,9 @@ class TestRatchetCeilingOnInsert:
             conn.rollback()
             conn.close()
 
-    def test_insert_within_ceiling_is_accepted(self, db_before_0063):
+    def test_insert_within_ceiling_is_accepted(self, db_before_0066):
         """notesがちょうど4000字のINSERTは許可される（境界値）"""
-        _apply_migration_0063(db_before_0063)
+        _apply_migration_0066(db_before_0066)
 
         conn = get_connection()
         try:
@@ -127,9 +127,9 @@ class TestRatchetCeilingOnInsert:
         finally:
             conn.close()
 
-    def test_insert_without_notes_ignores_ceiling(self, db_before_0063):
+    def test_insert_without_notes_ignores_ceiling(self, db_before_0066):
         """notesがNULLのINSERTは天井検査の対象外"""
-        _apply_migration_0063(db_before_0063)
+        _apply_migration_0066(db_before_0066)
 
         conn = get_connection()
         try:
@@ -149,7 +149,7 @@ class TestRatchetCeilingOnInsert:
 class TestRatchetCeilingOnUpdate:
     """UPDATEに対するラチェット天井（ラチェット則含む）の確認"""
 
-    def test_short_notes_stretched_beyond_ceiling_is_rejected(self, db_before_0063):
+    def test_short_notes_stretched_beyond_ceiling_is_rejected(self, db_before_0066):
         """4000字以下の既存notesを4000字超へ伸ばすUPDATEは拒否される"""
         conn = get_connection()
         try:
@@ -161,7 +161,7 @@ class TestRatchetCeilingOnUpdate:
         finally:
             conn.close()
 
-        _apply_migration_0063(db_before_0063)
+        _apply_migration_0066(db_before_0066)
 
         conn = get_connection()
         try:
@@ -173,7 +173,7 @@ class TestRatchetCeilingOnUpdate:
             conn.rollback()
             conn.close()
 
-    def test_already_over_ceiling_notes_further_stretched_is_rejected(self, db_before_0063):
+    def test_already_over_ceiling_notes_further_stretched_is_rejected(self, db_before_0066):
         """トリガー導入前から4000字超のnotesを、さらに伸ばすUPDATEは拒否される"""
         conn = get_connection()
         try:
@@ -185,7 +185,7 @@ class TestRatchetCeilingOnUpdate:
         finally:
             conn.close()
 
-        _apply_migration_0063(db_before_0063)
+        _apply_migration_0066(db_before_0066)
 
         conn = get_connection()
         try:
@@ -197,7 +197,7 @@ class TestRatchetCeilingOnUpdate:
             conn.rollback()
             conn.close()
 
-    def test_shrink_while_over_ceiling_is_allowed(self, db_before_0063):
+    def test_shrink_while_over_ceiling_is_allowed(self, db_before_0066):
         """トリガー導入前から4000字超のnotesを、なお4000字超のまま縮める更新は許可される
         （ラチェットの核: 減少は常に許可、増加のみ拒否）"""
         conn = get_connection()
@@ -210,7 +210,7 @@ class TestRatchetCeilingOnUpdate:
         finally:
             conn.close()
 
-        _apply_migration_0063(db_before_0063)
+        _apply_migration_0066(db_before_0066)
 
         conn = get_connection()
         try:
@@ -226,7 +226,7 @@ class TestRatchetCeilingOnUpdate:
         finally:
             conn.close()
 
-    def test_description_only_update_ignores_ceiling(self, db_before_0063):
+    def test_description_only_update_ignores_ceiling(self, db_before_0066):
         """descriptionのみの更新は、notesが4000字超過中でも成功する
         （UPDATE OF notesの対象外であることの確認）"""
         conn = get_connection()
@@ -239,7 +239,7 @@ class TestRatchetCeilingOnUpdate:
         finally:
             conn.close()
 
-        _apply_migration_0063(db_before_0063)
+        _apply_migration_0066(db_before_0066)
 
         conn = get_connection()
         try:
@@ -258,7 +258,7 @@ class TestRatchetCeilingOnUpdate:
 class TestExistingDataUnaffectedByMigration:
     """migration適用自体が既存データを書き換えないことの確認"""
 
-    def test_existing_tag_notes_unchanged_after_migration(self, db_before_0063):
+    def test_existing_tag_notes_unchanged_after_migration(self, db_before_0066):
         conn = get_connection()
         try:
             tag_id = conn.execute(
@@ -269,7 +269,7 @@ class TestExistingDataUnaffectedByMigration:
         finally:
             conn.close()
 
-        _apply_migration_0063(db_before_0063)
+        _apply_migration_0066(db_before_0066)
 
         conn = get_connection()
         try:
