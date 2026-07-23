@@ -981,23 +981,23 @@ def find_similar_topics(
 
 
 def find_similar_decisions(
-    exclude_id: int,
-    topic_id: int,
+    exclude_id: int | None = None,
+    topic_id: int | None = None,
     text: str | None = None,
     embedding: list[float] | None = None,
     limit: int = 3,
 ) -> list[dict]:
-    """同じtopic内でテキスト/embeddingに類似するdecisionをベクトル検索で取得する。
+    """テキスト/embeddingに類似するdecisionをベクトル検索で取得する。
 
     add_decisions のレスポンスに含める「関連decision」サジェスト用。
     既存decisionのembedding（decision+reason+tagsで生成済み・vec_index格納済み）を
-    KNNし、search_index経由でsource_type='decision'に絞り、decisionsテーブルへJOINして
-    同一topic_id・retracted_at IS NULL・自身除外に限定する。
+    KNNし、search_index経由でsource_type='decision'に絞り込む。
     矛盾・重複への気づきを促す導線であり、embeddingサーバー未起動時は空リストを返す。
 
     Args:
-        exclude_id: 除外するdecision ID（新規作成された自身）
-        topic_id: 関連decisionを絞り込む対象topic ID
+        exclude_id: 除外するdecision ID（新規作成された自身）。Noneなら除外しない
+            （呼び出し元がdecision自体ではない場合、例: add_askのsimilar_precedents）
+        topic_id: 関連decisionを絞り込む対象topic ID。Noneなら全topic横断で検索する
         text: 検索テキスト（embedding未指定時のみ使う）
         embedding: 事前生成済みのembeddingベクトル（指定時はencode_queryをスキップ）
         limit: 最大取得件数
@@ -1015,11 +1015,11 @@ def find_similar_decisions(
             return []
 
         blob = serialize_float32(query_embedding)
-        # グローバルKNNで多めに取得してから decision型 + 同一topic + 自身除外 + retract除外 に
-        # post-filterする。find_similar_topicsより絞り込みが厳しい（種別＋topic）ため候補数を
-        # limit*20に増やす。本機能は矛盾・重複への気づき導線であり厳密なrecallは要求しない
-        # （DB規模が非常に大きくなり同一topicのdecisionが上位に来ない場合は取りこぼし得るが、
-        #  サジェストが減るだけで誤動作はしない）。将来はtopic絞り込み後KNNへの作り替え余地あり。
+        # グローバルKNNで多めに取得してから decision型 + (指定時)同一topic + (指定時)自身除外 +
+        # retract除外 に post-filterする。find_similar_topicsより絞り込みが厳しい（種別＋topic）
+        # ため候補数を limit*20 に増やす。本機能は矛盾・重複への気づき導線であり厳密なrecallは
+        # 要求しない（DB規模が非常に大きくなり対象がtop-kから脱落する場合は取りこぼし得るが、
+        # サジェストが減るだけで誤動作はしない）。将来はtopic絞り込み後KNNへの作り替え余地あり。
         vec_rows = execute_query(
             "SELECT rowid, distance FROM vec_index WHERE embedding MATCH ? AND k = ?",
             (blob, limit * 20),
@@ -1035,20 +1035,32 @@ def find_similar_decisions(
         rowids = list(vec_data.keys())
         rowid_placeholders = ",".join("?" * len(rowids))
 
+        joins = "JOIN decisions d ON d.id = si.source_id"
+        conditions = [
+            f"si.id IN ({rowid_placeholders})",
+            "si.source_type = 'decision'",
+            "d.retracted_at IS NULL",
+        ]
+        params: list = list(rowids)
+        if exclude_id is not None:
+            conditions.append("si.source_id != ?")
+            params.append(exclude_id)
+        if topic_id is not None:
+            joins += (
+                " JOIN relations r ON r.source_type='decision' AND r.source_id=d.id"
+                " AND r.target_type='topic' AND r.relation_type='belongs_to'"
+            )
+            conditions.append("r.target_id = ?")
+            params.append(topic_id)
+
         filter_rows = execute_query(
             f"""
             SELECT si.id, si.source_id, COALESCE(d.title, d.decision) AS title
             FROM search_index si
-            JOIN decisions d ON d.id = si.source_id
-            JOIN relations r ON r.source_type='decision' AND r.source_id=d.id
-                            AND r.target_type='topic' AND r.relation_type='belongs_to'
-            WHERE si.id IN ({rowid_placeholders})
-              AND si.source_type = 'decision'
-              AND si.source_id != ?
-              AND r.target_id = ?
-              AND d.retracted_at IS NULL
+            {joins}
+            WHERE {' AND '.join(conditions)}
             """,
-            (*rowids, exclude_id, topic_id),
+            tuple(params),
         )
 
         results = []
@@ -1065,6 +1077,79 @@ def find_similar_decisions(
 
     except (ValueError, RuntimeError, OSError, sqlite3.Error):
         logger.warning("find_similar_decisions failed", exc_info=True)
+        return []
+
+
+def find_similar_asks(
+    text: str | None = None,
+    exclude_id: int | None = None,
+    embedding: list[float] | None = None,
+    limit: int = 3,
+) -> list[dict]:
+    """questionのテキスト/embeddingに類似するaskをベクトル検索で取得する。
+
+    add_askのレスポンスに含める「近傍ask」サジェスト用。ask_vec（migration 0062）は
+    topic_vecと同型のask専用vec0仮想テーブルでask_id自体をrowidに持つため、
+    find_similar_topics/find_similar_decisionsのようなsearch_index経由の型post-filterは
+    不要。embeddingサーバー未起動時は空リストを返す。
+
+    Args:
+        text: 検索テキスト（embedding未指定時のみ使う）
+        exclude_id: 除外するask ID（新規作成・dedupされた自身）
+        embedding: 事前生成済みのembeddingベクトル（指定時はencode_queryをスキップ）
+        limit: 最大取得件数
+
+    Returns:
+        類似askのリスト [{id, question, status, answer_body, distance}, ...]
+        （distance昇順。answer_bodyはanswered/promoted/dismissed済みの過去askを
+        参照する導線のため常に含める）
+    """
+    try:
+        query_embedding = embedding if embedding is not None else (
+            embedding_service.encode_query(text) if text else None
+        )
+        if query_embedding is None:
+            return []
+
+        blob = serialize_float32(query_embedding)
+        vec_rows = execute_query(
+            "SELECT rowid, distance FROM ask_vec WHERE embedding MATCH ? AND k = ?",
+            (blob, limit + 5),
+        )
+        if not vec_rows:
+            return []
+
+        distance_by_id = {}
+        for row in vec_rows:
+            r = row_to_dict(row)
+            distance_by_id[r["rowid"]] = r["distance"]
+
+        ids = [i for i in distance_by_id if i != exclude_id]
+        if not ids:
+            return []
+        placeholders = ",".join("?" * len(ids))
+
+        rows = execute_query(
+            f"SELECT id, question, status, answer_body FROM asks WHERE id IN ({placeholders})",
+            tuple(ids),
+        )
+
+        results = []
+        for row in rows:
+            r = row_to_dict(row)
+            results.append({
+                "id": r["id"],
+                "question": r["question"],
+                "status": r["status"],
+                "answer_body": r["answer_body"],
+                "distance": round(distance_by_id[r["id"]], 4),
+            })
+
+        results.sort(key=lambda x: x["distance"])
+        return results[:limit]
+
+    except (ValueError, RuntimeError, OSError, sqlite3.Error):
+        logger.warning("find_similar_asks failed", exc_info=True)
         return []
 
 
