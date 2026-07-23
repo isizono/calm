@@ -234,7 +234,8 @@ def main() -> None:
             "These IDs are cc-memory internal references and must not leak "
             "outside the cc-memory development context. Use a natural language "
             "reference (e.g. entity title) instead, or escape with a backslash "
-            "prefix to indicate a literal (e.g. '\\M#123', '\\log #456')."
+            "prefix to indicate a literal (e.g. '\\M#123', '\\log #456', "
+            "or '\\log 456' for the '#'-omitted form)."
         )
 
         _log_event(
