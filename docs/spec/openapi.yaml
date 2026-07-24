@@ -1,1252 +1,1966 @@
+# 自動生成ファイル。手動編集しないこと。
+# 生成元: scripts/generate_openapi.py（mcp.list_tools() から生成）
+# 再生成: uv run python scripts/generate_openapi.py
 openapi: 3.0.3
 info:
   title: cc-memory MCP server
-  version: "0"
+  version: '0'
   description: |
-    cc-memory が提供する MCP ツール群の機械可読仕様 (v0)。
+    cc-memory が提供する MCP ツール群の機械可読仕様。
     MCP は本来 JSON-RPC ベースだが、ここでは OpenAPI 3.0 形式で
     1 ツール = 1 path (POST) として整理する。
-    一次情報は src/main.py の @mcp.tool 関数。本ファイルはレビュー・議論用の v0。
+    本ファイルは scripts/generate_openapi.py が mcp.list_tools() から自動生成する。
+    手動編集は次回生成で失われる。requestBody は実際の引数スキーマそのものだが、
+    responses は自動抽出できないため簡略化してある（詳細は docs/spec/mcp-tools.md）。
 servers:
-  - url: mcp://cc-memory
-    description: ローカル/HTTP/StreamableHTTP の任意のトランスポートを抽象化した仮想 base URL
-
+- url: mcp://cc-memory
+  description: ローカル/HTTP/StreamableHTTP の任意のトランスポートを抽象化した仮想 base URL
 tags:
-  - name: topic
-    description: トピックの記録・取得
-  - name: log
-    description: 議論ログの記録・取得
-  - name: decision
-    description: 決定事項の記録・取得
-  - name: activity
-    description: アクティビティの記録・取得・更新
-  - name: material
-    description: 資材の記録・取得・更新
-  - name: search
-    description: 横断検索・タグ検索・ID取得
-  - name: tag
-    description: タグの更新・分析
-  - name: relation
-    description: エンティティ間リレーション
-  - name: pin
-    description: pin の追加・削除
-  - name: habit
-    description: 振る舞いの登録・更新
-  - name: timeline
-    description: 時系列取得
-  - name: checkin
-    description: アクティビティ check-in
-  - name: retract
-    description: 取り消し（論理削除）
-  - name: misc
-    description: 設定取得・ユーティリティ
-
+- name: activity
+  description: アクティビティの記録・取得・更新
+- name: ask
+  description: 人間の判断待ちの問いの記録・回答
+- name: checkin
+  description: アクティビティ check-in
+- name: decision
+  description: 決定事項の記録・取得
+- name: habit
+  description: 振る舞いの登録・更新
+- name: log
+  description: 議論ログの記録・取得
+- name: material
+  description: 資材の記録・取得・更新
+- name: misc
+  description: 設定取得・ユーティリティ
+- name: pin
+  description: pin の追加・削除
+- name: relation
+  description: エンティティ間リレーション
+- name: relay
+  description: セッション間メッセージング
+- name: retract
+  description: 取り消し（論理削除）
+- name: search
+  description: 横断検索・タグ検索・ID取得
+- name: tag
+  description: タグの更新・分析
+- name: timeline
+  description: 時系列取得
+- name: topic
+  description: トピックの記録・取得
 paths:
-  /tools/add_topic:
+  /tools/add_activity:
     post:
-      tags: [topic]
-      summary: 新しい議論トピックを追加する
+      tags:
+      - activity
+      summary: 新しいアクティビティを追加する。
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [title, description, tags]
+              additionalProperties: false
               properties:
-                title: { type: string }
-                description: { type: string }
+                title:
+                  type: string
+                description:
+                  type: string
                 tags:
+                  items:
+                    type: string
                   type: array
-                  items: { type: string }
-                  minItems: 1
                 related:
-                  type: array
-                  items: { $ref: '#/components/schemas/RelatedRef' }
-                  nullable: true
+                  anyOf:
+                  - items:
+                      additionalProperties: true
+                      type: object
+                    type: array
+                  - type: 'null'
+                  default: null
+                pins:
+                  anyOf:
+                  - items:
+                      additionalProperties: true
+                      type: object
+                    type: array
+                  - type: 'null'
+                  default: null
+                check_in:
+                  default: true
+                  type: boolean
+                orch_managed:
+                  default: false
+                  type: boolean
+              required:
+              - title
+              - description
+              - tags
+              type: object
       responses:
         '200':
-          description: 作成された topic と similar_topics
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
           content:
             application/json:
               schema:
                 oneOf:
-                  - $ref: '#/components/schemas/TopicCreatedResponse'
-                  - $ref: '#/components/schemas/ErrorResponse'
-
-  /tools/add_logs:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/add_ask:
     post:
-      tags: [log]
-      summary: 複数のログを一括追加 (最大10件)
+      tags:
+      - ask
+      summary: 人間の判断を待つ問いを1件積む（答え待ちの間、blocksで指定したactivityを止める）。
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [items]
+              additionalProperties: false
               properties:
-                items:
-                  type: array
-                  maxItems: 10
+                question:
+                  type: string
+                blocks:
                   items:
-                    type: object
-                    required: [topic_id, content]
-                    properties:
-                      topic_id: { type: integer }
-                      content: { type: string }
-                      title: { type: string }
-                      tags:
-                        type: array
-                        items: { type: string }
+                    type: integer
+                  type: array
+                context:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+              required:
+              - question
+              - blocks
+              type: object
       responses:
         '200':
-          description: created と errors の混在配列
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/BulkCreateResponse'
-
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
   /tools/add_decisions:
     post:
-      tags: [decision]
-      summary: 複数の決定事項を一括記録 (最大10件)
+      tags:
+      - decision
+      summary: 複数の決定事項を一括記録する（最大10件）。
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [items]
+              additionalProperties: false
               properties:
                 items:
-                  type: array
-                  maxItems: 10
                   items:
+                    additionalProperties: true
                     type: object
-                    required: [topic_id, decision, reason]
-                    properties:
-                      topic_id: { type: integer }
-                      decision: { type: string }
-                      reason: { type: string }
-                      title: { type: string }
-                      tags:
-                        type: array
-                        items: { type: string }
-                      propagate_to:
-                        type: object
-                        properties:
-                          type:
-                            type: string
-                            enum: [habit, tag_note]
-                          content: { type: string }
-                          tag: { type: string }
+                  type: array
+              required:
+              - items
+              type: object
       responses:
         '200':
-          description: 作成結果 (related_decisions と hints 付き)
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
           content:
             application/json:
               schema:
-                allOf:
-                  - $ref: '#/components/schemas/BulkCreateResponse'
-                  - type: object
-                    properties:
-                      hints:
-                        type: array
-                        items: { type: string }
-
-  /tools/get_topics:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/add_habit:
     post:
-      tags: [topic]
-      summary: トピックを新しい順に取得
+      tags:
+      - habit
+      summary: エージェントの振る舞いを登録する。
       requestBody:
         required: true
         content:
           application/json:
             schema:
+              additionalProperties: false
+              properties:
+                content:
+                  type: string
+                importance_score:
+                  default: 3
+                  type: integer
+                status:
+                  default: active
+                  type: string
+              required:
+              - content
               type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/add_logs:
+    post:
+      tags:
+      - log
+      summary: 複数のログを一括追加する（最大10件）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                items:
+                  items:
+                    additionalProperties: true
+                    type: object
+                  type: array
+              required:
+              - items
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/add_material:
+    post:
+      tags:
+      - material
+      summary: 資材を追加する。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                title:
+                  type: string
+                content:
+                  type: string
+                tags:
+                  items:
+                    type: string
+                  type: array
+                source:
+                  type: string
+                related:
+                  anyOf:
+                  - items:
+                      additionalProperties: true
+                      type: object
+                    type: array
+                  - type: 'null'
+                  default: null
+              required:
+              - title
+              - content
+              - tags
+              - source
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/add_pin:
+    post:
+      tags:
+      - pin
+      summary: pinを追加する（source → target）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                source_type:
+                  enum:
+                  - tag
+                  - activity
+                  - topic
+                  - decision
+                  - log
+                  - material
+                  type: string
+                source_ref:
+                  anyOf:
+                  - type: integer
+                  - type: string
+                target_type:
+                  enum:
+                  - tag
+                  - activity
+                  - topic
+                  - decision
+                  - log
+                  - material
+                  type: string
+                target_ref:
+                  anyOf:
+                  - type: integer
+                  - type: string
+              required:
+              - source_type
+              - source_ref
+              - target_type
+              - target_ref
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/add_relation:
+    post:
+      tags:
+      - relation
+      summary: エンティティ間のリレーションを追加する。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                source_type:
+                  enum:
+                  - topic
+                  - activity
+                  - material
+                  - decision
+                  - log
+                  type: string
+                source_id:
+                  type: integer
+                targets:
+                  items:
+                    additionalProperties: true
+                    type: object
+                  type: array
+                relation_type:
+                  default: related
+                  type: string
+              required:
+              - source_type
+              - source_id
+              - targets
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/add_topic:
+    post:
+      tags:
+      - topic
+      summary: 新しい議論トピックを追加する。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                title:
+                  type: string
+                description:
+                  type: string
+                tags:
+                  items:
+                    type: string
+                  type: array
+                related:
+                  anyOf:
+                  - items:
+                      additionalProperties: true
+                      type: object
+                    type: array
+                  - type: 'null'
+                  default: null
+              required:
+              - title
+              - description
+              - tags
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/analyze_tags:
+    post:
+      tags:
+      - tag
+      summary: タグの共起分析を実行する。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                domain:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                include_domain_tags:
+                  default: false
+                  type: boolean
+                focus_tag:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                min_usage:
+                  default: 2
+                  type: integer
+                top_n:
+                  default: 20
+                  type: integer
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/answer_ask:
+    post:
+      tags:
+      - ask
+      summary: 答え待ち（open）のaskに回答する。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                ask_id:
+                  type: integer
+                answer_body:
+                  type: string
+              required:
+              - ask_id
+              - answer_body
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/check_in:
+    post:
+      tags:
+      - checkin
+      summary: 'Choose: アクティビティに着手するときに関連情報を一括取得したいとき（status を in_progress に自動更新）。'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                activity_id:
+                  type: integer
+                flavor:
+                  default: internal
+                  enum:
+                  - raw
+                  - internal
+                  - readable
+                  type: string
+              required:
+              - activity_id
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/export_material:
+    post:
+      tags:
+      - material
+      summary: 'Choose: 資材の全文を cc-memory 外で参照したい（obsidian vault に置く / docs リポに commit する / third-party
+        レビュー用に配布する）とき。'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                material_id:
+                  type: integer
+                dest_path:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+              required:
+              - material_id
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/get_activities:
+    post:
+      tags:
+      - activity
+      summary: アクティビティ一覧を取得する（tags/status/orch_managed でフィルタリング可能）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
               properties:
                 tags:
-                  type: array
-                  items: { type: string }
-                  nullable: true
-                limit: { type: integer, default: 10 }
-                offset: { type: integer, default: 0 }
-                since: { type: string, nullable: true, description: "ISO日付" }
-                until: { type: string, nullable: true }
+                  anyOf:
+                  - items:
+                      type: string
+                    type: array
+                  - type: 'null'
+                  default: null
+                status:
+                  default: active
+                  type: string
+                limit:
+                  default: 5
+                  type: integer
+                since:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                until:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                flavor:
+                  default: internal
+                  enum:
+                  - raw
+                  - internal
+                  - readable
+                  type: string
+                orch_managed:
+                  anyOf:
+                  - type: boolean
+                  - type: 'null'
+                  default: null
+              type: object
       responses:
         '200':
-          description: topics 配列と total_count
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  topics:
-                    type: array
-                    items: { $ref: '#/components/schemas/Topic' }
-                  total_count: { type: integer }
-                  tag_notes:
-                    type: array
-                    items: { $ref: '#/components/schemas/TagNote' }
-
-  /tools/get_logs:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/get_asks:
     post:
-      tags: [log]
-      summary: 指定エンティティの議論ログを取得
+      tags:
+      - ask
+      summary: add_askで記録されたaskを一覧・集計する。
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [entity_type, entity_id]
+              additionalProperties: false
               properties:
-                entity_type:
-                  type: string
-                  enum: [topic, activity]
-                entity_id: { type: integer }
-                start_id: { type: integer, nullable: true }
-                limit: { type: integer, default: 30, maximum: 30 }
-                include_retracted: { type: boolean, default: false }
+                status:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: open
+                blocking_activity_id:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                triage_pending_only:
+                  default: false
+                  type: boolean
+                limit:
+                  default: 20
+                  type: integer
+                offset:
+                  default: 0
+                  type: integer
+                include_stats:
+                  default: false
+                  type: boolean
+              type: object
       responses:
         '200':
-          description: logs 配列
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  logs:
-                    type: array
-                    items: { $ref: '#/components/schemas/DiscussionLog' }
-
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/get_by_ids:
+    post:
+      tags:
+      - search
+      summary: 'Choose: search 結果の type+id ペアを本文付きで一括取得したいとき（複数種別 OK）。'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                items:
+                  items:
+                    additionalProperties: true
+                    type: object
+                  type: array
+                flavor:
+                  default: internal
+                  enum:
+                  - raw
+                  - internal
+                  - readable
+                  type: string
+              required:
+              - items
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/get_config:
+    post:
+      tags:
+      - misc
+      summary: 現在の設定値を返す。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties: {}
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
   /tools/get_decisions:
     post:
-      tags: [decision]
-      summary: 指定エンティティに関連する決定事項を取得
+      tags:
+      - decision
+      summary: 'Choose: topic/activity に紐づく decision 一覧が欲しいとき。'
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [entity_type, entity_id]
+              additionalProperties: false
               properties:
                 entity_type:
+                  enum:
+                  - topic
+                  - activity
                   type: string
-                  enum: [topic, activity]
-                entity_id: { type: integer }
-                start_id: { type: integer, nullable: true }
-                limit: { type: integer, default: 30, maximum: 30 }
-                include_retracted: { type: boolean, default: false }
+                entity_id:
+                  type: integer
+                start_id:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                limit:
+                  default: 30
+                  type: integer
+                include_retracted:
+                  default: false
+                  type: boolean
+                flavor:
+                  default: internal
+                  enum:
+                  - raw
+                  - internal
+                  - readable
+                  type: string
+              required:
+              - entity_type
+              - entity_id
+              type: object
       responses:
         '200':
-          description: decisions 配列
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  decisions:
-                    type: array
-                    items: { $ref: '#/components/schemas/Decision' }
-
-  /tools/pull_precedents:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/get_habits:
     post:
-      tags: [decision]
-      summary: 設計判断前に近傍topicの決定事項を網羅列挙（判例pull）
+      tags:
+      - habit
+      summary: 登録済みの振る舞い一覧を取得する。
       requestBody:
         required: true
         content:
           application/json:
             schema:
+              additionalProperties: false
+              properties:
+                active:
+                  default: true
+                  type: boolean
+                habit_id:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
               type: object
-              required: [context]
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/get_logs:
+    post:
+      tags:
+      - log
+      summary: 'Choose: topic/activity に紐づく log 一覧が欲しいとき。'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                entity_type:
+                  enum:
+                  - topic
+                  - activity
+                  type: string
+                entity_id:
+                  type: integer
+                start_id:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                limit:
+                  default: 30
+                  type: integer
+                include_retracted:
+                  default: false
+                  type: boolean
+                flavor:
+                  default: internal
+                  enum:
+                  - raw
+                  - internal
+                  - readable
+                  type: string
+              required:
+              - entity_type
+              - entity_id
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/get_map:
+    post:
+      tags:
+      - timeline
+      summary: 'Choose: 起点エンティティから relation を辿って到達可能な topic/activity/material のカタログが欲しいとき。'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                entity_type:
+                  enum:
+                  - topic
+                  - activity
+                  - material
+                  - decision
+                  - log
+                  type: string
+                entity_id:
+                  type: integer
+                min_depth:
+                  default: 0
+                  type: integer
+                max_depth:
+                  default: 2
+                  type: integer
+              required:
+              - entity_type
+              - entity_id
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/get_material:
+    post:
+      tags:
+      - material
+      summary: 'Choose: material_id 既知で資材の全文だけ取得したいとき。'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                material_id:
+                  type: integer
+                flavor:
+                  default: internal
+                  enum:
+                  - raw
+                  - internal
+                  - readable
+                  type: string
+                include_retracted:
+                  default: false
+                  type: boolean
+              required:
+              - material_id
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/get_signals:
+    post:
+      tags:
+      - misc
+      summary: report_signal で記録されたシグナルを一覧・集計する。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                status:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: new
+                kind:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                limit:
+                  default: 20
+                  type: integer
+                offset:
+                  default: 0
+                  type: integer
+                include_stats:
+                  default: false
+                  type: boolean
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/get_timeline:
+    post:
+      tags:
+      - timeline
+      summary: 'Choose: topic/activity に紐づく decision/log/material を時系列順に並べたいとき。'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                topic_id:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                activity_id:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                entity_types:
+                  anyOf:
+                  - items:
+                      enum:
+                      - decision
+                      - log
+                      - material
+                      type: string
+                    type: array
+                  - type: 'null'
+                  default: null
+                before:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                limit:
+                  default: 50
+                  type: integer
+                order:
+                  default: desc
+                  type: string
+                flavor:
+                  default: internal
+                  enum:
+                  - raw
+                  - internal
+                  - readable
+                  type: string
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/get_topics:
+    post:
+      tags:
+      - topic
+      summary: トピックを新しい順に取得する（ページネーション付き）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                tags:
+                  anyOf:
+                  - items:
+                      type: string
+                    type: array
+                  - type: 'null'
+                  default: null
+                limit:
+                  default: 10
+                  type: integer
+                offset:
+                  default: 0
+                  type: integer
+                since:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                until:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                flavor:
+                  default: internal
+                  enum:
+                  - raw
+                  - internal
+                  - readable
+                  type: string
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/pull_precedents:
+    post:
+      tags:
+      - misc
+      summary: 'Choose: 設計・裁定の前に、近傍 topic の判例(decision)を確率的発見ではなく網羅的に'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
               properties:
                 context:
                   type: string
-                  description: これから決めようとしている論点の記述（自由記述、2文字以上）。routingのクエリ兼telemetry用（topic_ids指定時も必須）
                 topic_ids:
-                  type: array
-                  items: { type: integer }
-                  nullable: true
-                  description: 対象topicを明示指定してroutingをスキップする（embeddingサーバー停止時でも動作する）
+                  anyOf:
+                  - items:
+                      type: integer
+                    type: array
+                  - type: 'null'
+                  default: null
                 k:
-                  type: integer
                   default: 3
-                  description: routingで採用するtopic数の上限（1〜5にclamp）
-                budget_chars:
                   type: integer
-                  nullable: true
-                  description: 本文展開の文字数予算。省略時はconfig既定値
+                budget_chars:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
                 include_materials:
-                  type: boolean
                   default: true
-                  description: decision/topicに紐づくmaterialカタログを同時展開する（30件で打ち切り、超過時materials_truncated=true）
+                  type: boolean
                 flavor:
-                  type: string
-                  enum: [raw, internal, readable]
                   default: internal
+                  enum:
+                  - raw
+                  - internal
+                  - readable
+                  type: string
+              required:
+              - context
+              type: object
       responses:
         '200':
-          description: routingが当たったtopicの非retract decisionを全件（最低でも索引粒度で）列挙
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  guarantee:
-                    type: string
-                    enum: [enumerated, routing_miss, routing_unavailable]
-                  routing:
-                    type: object
-                    properties:
-                      mode:
-                        type: string
-                        enum: [vector, explicit, unavailable]
-                        description: vector=embedding routingで解決 / explicit=topic_ids指定でrouting skip / unavailable=embeddingサーバー停止でrouting不能
-                      candidates:
-                        type: array
-                        items: { type: object }
-                        description: 各要素は{topic_id_raw, title, distance, selected}（explicit時はdistanceなし）。topic_ids指定時に存在しないtopic_idを指定した場合は{topic_id_raw, error:"not_found"}になる
-                  topics:
-                    type: array
-                    items: { $ref: '#/components/schemas/PrecedentTopic' }
-                  budget:
-                    type: object
-                    properties:
-                      limit: { type: integer, nullable: true }
-                      used: { type: integer }
-                      full: { type: integer }
-                      index_only: { type: integer }
-                      response_chars:
-                        type: object
-                        properties:
-                          limit: { type: integer }
-                          measured: { type: integer }
-                          demoted: { type: integer }
-                        description: レスポンス実サイズゲートの結果（full→index降格件数と実測文字数）。guarantee=enumeratedかつ対象decisionが1件以上のときのみ付く
-                  truncated: { type: boolean }
-                  materials_truncated: { type: boolean }
-
-  /tools/search:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/relay_post:
     post:
-      tags: [search]
-      summary: キーワードで横断検索 (FTS5 trigram + ベクトル ハイブリッド)
+      tags:
+      - relay
+      summary: 場（stream）にメッセージを投函する（セッション間メッセージング）。
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [keyword]
+              additionalProperties: false
               properties:
-                keyword:
-                  oneOf:
-                    - type: string
-                    - type: array
-                      items: { type: string }
-                tags:
-                  type: array
-                  items: { type: string }
-                  nullable: true
-                entity_type:
+                stream_name:
                   type: string
-                  enum: [topic, decision, activity, log, material]
-                  nullable: true
-                limit: { type: integer, default: 10, maximum: 50 }
-                offset: { type: integer, default: 0 }
-                keyword_mode:
+                body:
                   type: string
-                  enum: [and, or]
-                  default: and
-                include_details: { type: boolean, default: false }
-                domain: { type: string, nullable: true }
-                date_after: { type: string, nullable: true }
-                date_before: { type: string, nullable: true }
-                include_retracted: { type: boolean, default: false }
+                ttl:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+              required:
+              - stream_name
+              - body
+              type: object
       responses:
         '200':
-          description: 検索結果一覧
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  results:
-                    type: array
-                    items: { $ref: '#/components/schemas/SearchHit' }
-
-  /tools/get_by_ids:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/relay_publish:
     post:
-      tags: [search]
-      summary: search 結果の詳細を ID 指定で取得 (最大20件)
+      tags:
+      - relay
+      summary: labels routing でメッセージを配布する（labels を購読中の session にマッチング配送、
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [items]
+              additionalProperties: false
               properties:
-                items:
-                  type: array
-                  maxItems: 20
+                labels:
                   items:
-                    type: object
-                    required: [type, id]
-                    properties:
-                      type:
-                        type: string
-                        enum: [topic, decision, activity, log, material]
-                      id: { type: integer }
+                    type: string
+                  type: array
+                body:
+                  type: string
+                title:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+              required:
+              - labels
+              - body
+              type: object
       responses:
         '200':
-          description: 各アイテムの詳細
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  results:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        type: { type: string }
-                        id: { type: integer }
-                        data: { type: object }
-
-  /tools/search_tags:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/relay_receive:
     post:
-      tags: [tag]
-      summary: タグをキーワード検索
+      tags:
+      - relay
+      summary: 自 session 宛に届いたメッセージの未読分を受信する（セッション間メッセージングの受信）。
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [query]
+              additionalProperties: false
               properties:
-                query: { type: string }
-                namespace:
-                  type: string
-                  nullable: true
-                  description: '"domain" | "intent" | "" (空文字=素タグ)'
-                include_notes: { type: boolean, default: false }
-                limit: { type: integer, default: 20 }
+                limit:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                peek:
+                  default: false
+                  type: boolean
+              type: object
       responses:
         '200':
-          description: tags 配列
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  tags:
-                    type: array
-                    items: { $ref: '#/components/schemas/TagHit' }
-
-  /tools/update_tag:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/relay_status:
     post:
-      tags: [tag]
-      summary: タグの notes/canonical/rename/description を更新 (相互排他)
+      tags:
+      - relay
+      summary: relay v2 の配送状況・runtime健全性を確認する診断エンドポイント。
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [tag]
+              additionalProperties: false
               properties:
-                tag: { type: string }
-                notes: { type: string, nullable: true }
-                canonical: { type: string, nullable: true }
-                rename: { type: string, nullable: true }
-                description:
-                  type: string
-                  nullable: true
-                  maxLength: 100
+                outbox_id:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+              type: object
       responses:
         '200':
-          description: 更新結果
-          content:
-            application/json:
-              schema: { type: object }
-
-  /tools/analyze_tags:
-    post:
-      tags: [tag]
-      summary: タグ共起分析 (PMI + クラスタ + 孤児 + 重複候補)
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                domain: { type: string, nullable: true }
-                include_domain_tags: { type: boolean, default: false }
-                focus_tag: { type: string, nullable: true }
-                min_usage: { type: integer, default: 2 }
-                top_n: { type: integer, default: 20 }
-      responses:
-        '200':
-          description: 共起・クラスタ・孤児・重複候補
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  co_occurrences: { type: array }
-                  clusters: { type: array }
-                  orphans: { type: array }
-                  suspected_duplicates: { type: array }
-
-  /tools/add_activity:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/relay_subscribe:
     post:
-      tags: [activity]
-      summary: 新しいアクティビティを追加 (デフォルトで check_in 同時実行)
+      tags:
+      - relay
+      summary: labels の購読を宣言する（セッション間メッセージングの受信登録）。
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [title, description, tags]
+              additionalProperties: false
               properties:
-                title: { type: string }
-                description: { type: string }
-                tags:
+                labels:
+                  items:
+                    type: string
                   type: array
-                  items: { type: string }
-                  minItems: 1
-                related:
-                  type: array
-                  items: { $ref: '#/components/schemas/RelatedRef' }
-                  nullable: true
-                check_in: { type: boolean, default: true }
+              required:
+              - labels
+              type: object
       responses:
         '200':
-          description: 作成された activity と check_in_result
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  activity: { $ref: '#/components/schemas/Activity' }
-                  check_in_result: { $ref: '#/components/schemas/CheckInResult' }
-
-  /tools/get_activities:
-    post:
-      tags: [activity]
-      summary: アクティビティ一覧を status と tags でフィルタ取得
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                tags:
-                  type: array
-                  items: { type: string }
-                  nullable: true
-                status:
-                  type: string
-                  enum: [active, pending, in_progress, completed, snoozed, shelved]
-                  default: active
-                limit: { type: integer, default: 5 }
-                since: { type: string, nullable: true }
-                until: { type: string, nullable: true }
-      responses:
-        '200':
-          description: activities と total_count
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  activities:
-                    type: array
-                    items: { $ref: '#/components/schemas/Activity' }
-                  total_count: { type: integer }
-
-  /tools/update_activity:
-    post:
-      tags: [activity]
-      summary: アクティビティの status/title/description/tags を更新
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [activity_id]
-              properties:
-                activity_id: { type: integer }
-                status:
-                  type: string
-                  enum: [pending, in_progress, completed, snoozed, shelved]
-                  nullable: true
-                title: { type: string, nullable: true }
-                description: { type: string, nullable: true }
-                tags:
-                  type: array
-                  items: { type: string }
-                  nullable: true
-                  minItems: 1
-      responses:
-        '200':
-          description: 更新結果
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Activity' }
-
-  /tools/add_material:
-    post:
-      tags: [material]
-      summary: 資材を追加 (独立エンティティ)
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [title, content, tags, source]
-              properties:
-                title: { type: string }
-                content: { type: string }
-                tags:
-                  type: array
-                  items: { type: string }
-                  minItems: 1
-                source: { type: string }
-                related:
-                  type: array
-                  items: { $ref: '#/components/schemas/RelatedRef' }
-                  nullable: true
-      responses:
-        '200':
-          description: 作成された material
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Material' }
-
-  /tools/update_material:
-    post:
-      tags: [material]
-      summary: 資材の content/title/tags/source を更新 (最低1つ指定)
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [material_id]
-              properties:
-                material_id: { type: integer }
-                content: { type: string, nullable: true }
-                title: { type: string, nullable: true }
-                tags:
-                  type: array
-                  items: { type: string }
-                  nullable: true
-                  minItems: 1
-                source: { type: string, nullable: true }
-      responses:
-        '200':
-          description: 更新結果
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Material' }
-
-  /tools/get_material:
-    post:
-      tags: [material]
-      summary: 資材の全文取得
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [material_id]
-              properties:
-                material_id: { type: integer }
-      responses:
-        '200':
-          description: 資材の全文
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Material' }
-
-  /tools/check_in:
-    post:
-      tags: [checkin]
-      summary: アクティビティ check-in、関連情報を集約
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [activity_id]
-              properties:
-                activity_id: { type: integer }
-      responses:
-        '200':
-          description: check-in 結果
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/CheckInResult' }
-
-  /tools/add_relation:
-    post:
-      tags: [relation]
-      summary: エンティティ間リレーションを追加
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [source_type, source_id, targets]
-              properties:
-                source_type:
-                  type: string
-                  enum: [topic, activity, material, decision, log]
-                source_id: { type: integer }
-                targets:
-                  type: array
-                  items: { $ref: '#/components/schemas/RelatedRef' }
-                relation_type:
-                  type: string
-                  enum: [related, depends_on, supersedes]
-                  default: related
-      responses:
-        '200':
-          description: 追加件数
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  added: { type: integer }
-
-  /tools/remove_relation:
-    post:
-      tags: [relation]
-      summary: エンティティ間リレーションを削除
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [source_type, source_id, targets]
-              properties:
-                source_type:
-                  type: string
-                  enum: [topic, activity, material, decision, log]
-                source_id: { type: integer }
-                targets:
-                  type: array
-                  items: { $ref: '#/components/schemas/RelatedRef' }
-                relation_type:
-                  type: string
-                  enum: [related, depends_on, supersedes]
-                  default: related
-      responses:
-        '200':
-          description: 削除件数
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  removed: { type: integer }
-
-  /tools/get_map:
-    post:
-      tags: [relation]
-      summary: リレーショングラフを走査しカタログを返す
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [entity_type, entity_id]
-              properties:
-                entity_type:
-                  type: string
-                  enum: [topic, activity, material, decision, log]
-                entity_id: { type: integer }
-                min_depth: { type: integer, default: 0 }
-                max_depth: { type: integer, default: 2, maximum: 10 }
-      responses:
-        '200':
-          description: 到達可能エンティティ
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  entities:
-                    type: array
-                    items: { $ref: '#/components/schemas/MapEntity' }
-                  total_count: { type: integer }
-
-  /tools/add_habit:
-    post:
-      tags: [habit]
-      summary: 振る舞いを登録
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [content]
-              properties:
-                content: { type: string }
-      responses:
-        '200':
-          description: 作成結果
-          content:
-            application/json:
-              schema: { type: object }
-
-  /tools/get_habits:
-    post:
-      tags: [habit]
-      summary: 登録済み振る舞い一覧
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { type: object }
-      responses:
-        '200':
-          description: habits 配列
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  habits:
-                    type: array
-                    items: { type: object }
-
-  /tools/update_habit:
-    post:
-      tags: [habit]
-      summary: 振る舞いを更新 (content/active)
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [habit_id]
-              properties:
-                habit_id: { type: integer }
-                content: { type: string, nullable: true }
-                active: { type: boolean, nullable: true }
-      responses:
-        '200':
-          description: 更新結果
-          content:
-            application/json:
-              schema: { type: object }
-
-  /tools/add_pin:
-    post:
-      tags: [pin]
-      summary: pin を追加 (source → target)
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [source_type, source_ref, target_type, target_ref]
-              properties:
-                source_type:
-                  type: string
-                  enum: [tag, activity, topic, decision, log, material]
-                source_ref:
-                  oneOf:
-                    - type: integer
-                    - type: string
-                target_type:
-                  type: string
-                  enum: [tag, activity, topic, decision, log, material]
-                target_ref:
-                  oneOf:
-                    - type: integer
-                    - type: string
-      responses:
-        '200':
-          description: 追加された pin
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Pin' }
-
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
   /tools/remove_pin:
     post:
-      tags: [pin]
-      summary: pin を削除 (source → target)
+      tags:
+      - pin
+      summary: pinを削除する（source → target）。
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [source_type, source_ref, target_type, target_ref]
+              additionalProperties: false
               properties:
                 source_type:
+                  enum:
+                  - tag
+                  - activity
+                  - topic
+                  - decision
+                  - log
+                  - material
                   type: string
-                  enum: [tag, activity, topic, decision, log, material]
                 source_ref:
-                  oneOf: [{ type: integer }, { type: string }]
+                  anyOf:
+                  - type: integer
+                  - type: string
                 target_type:
+                  enum:
+                  - tag
+                  - activity
+                  - topic
+                  - decision
+                  - log
+                  - material
                   type: string
-                  enum: [tag, activity, topic, decision, log, material]
                 target_ref:
-                  oneOf: [{ type: integer }, { type: string }]
+                  anyOf:
+                  - type: integer
+                  - type: string
+              required:
+              - source_type
+              - source_ref
+              - target_type
+              - target_ref
+              type: object
       responses:
         '200':
-          description: 削除件数
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  removed: { type: integer }
-
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/remove_relation:
+    post:
+      tags:
+      - relation
+      summary: エンティティ間のリレーションを削除する。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                source_type:
+                  enum:
+                  - topic
+                  - activity
+                  - material
+                  - decision
+                  - log
+                  type: string
+                source_id:
+                  type: integer
+                targets:
+                  items:
+                    additionalProperties: true
+                    type: object
+                  type: array
+                relation_type:
+                  default: related
+                  type: string
+              required:
+              - source_type
+              - source_id
+              - targets
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/report_signal:
+    post:
+      tags:
+      - misc
+      summary: cc-memory 自身への故障報告・使用感不満・矛盾検出・運用計測イベントの統一入口。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                kind:
+                  type: string
+                summary:
+                  type: string
+                detail:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                refs:
+                  anyOf:
+                  - items:
+                      additionalProperties: true
+                      type: object
+                    type: array
+                  - type: 'null'
+                  default: null
+                context:
+                  anyOf:
+                  - additionalProperties: true
+                    type: object
+                  - type: 'null'
+                  default: null
+              required:
+              - kind
+              - summary
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
   /tools/retract:
     post:
-      tags: [retract]
-      summary: 決定事項やログを取り消す (論理削除)
+      tags:
+      - retract
+      summary: 決定事項・ログ・資材を取り消す（論理削除）。
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [entity_type, ids]
+              additionalProperties: false
               properties:
                 entity_type:
+                  enum:
+                  - decision
+                  - log
+                  - material
                   type: string
-                  enum: [decision, log]
                 ids:
-                  type: array
-                  items: { type: integer }
-                undo: { type: boolean, default: false }
-      responses:
-        '200':
-          description: 取り消し結果
-          content:
-            application/json:
-              schema: { type: object }
-
-  /tools/get_timeline:
-    post:
-      tags: [timeline]
-      summary: トピックまたはアクティビティの時系列を返す
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                topic_id: { type: integer, nullable: true }
-                activity_id: { type: integer, nullable: true }
-                entity_types:
-                  type: array
                   items:
-                    type: string
-                    enum: [decision, log, material]
-                  nullable: true
-                before: { type: string, nullable: true }
-                limit: { type: integer, default: 50, maximum: 100 }
-                order:
-                  type: string
-                  enum: [desc, asc]
-                  default: desc
+                    type: integer
+                  type: array
+                undo:
+                  default: false
+                  type: boolean
+              required:
+              - entity_type
+              - ids
+              type: object
       responses:
         '200':
-          description: 時系列要素配列
-          content:
-            application/json:
-              schema: { type: object }
-
-  /tools/get_config:
-    post:
-      tags: [misc]
-      summary: 現在の設定値を返す
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { type: object }
-      responses:
-        '200':
-          description: 設定値
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  heartbeat_timeout: { type: integer }
-                  in_progress_limit: { type: integer }
-                  pending_limit: { type: integer }
-                  recency_decay_rate: { type: number }
-                  sync_disable_retrospective: { type: boolean }
-                  sync_policy: { type: string }
-                  snapshot_interval_hours: { type: integer }
-                  snapshot_max_count: { type: integer }
-                  snapshot_anomaly_threshold: { type: number }
-
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
   /tools/roll_dice:
     post:
-      tags: [misc]
-      summary: ダイスを振る (デフォルト 1d10)
+      tags:
+      - misc
+      summary: 指定面数のダイスを振る。
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
+              additionalProperties: false
               properties:
-                sides: { type: integer, default: 10 }
+                sides:
+                  default: 10
+                  type: integer
+              type: object
       responses:
         '200':
-          description: ダイス目
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  result: { type: integer }
-
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/search:
+    post:
+      tags:
+      - search
+      summary: キーワードで横断検索する。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                keyword:
+                  anyOf:
+                  - type: string
+                  - items:
+                      type: string
+                    type: array
+                tags:
+                  anyOf:
+                  - items:
+                      type: string
+                    type: array
+                  - type: 'null'
+                  default: null
+                entity_type:
+                  anyOf:
+                  - enum:
+                    - topic
+                    - decision
+                    - activity
+                    - log
+                    - material
+                    type: string
+                  - type: 'null'
+                  default: null
+                limit:
+                  default: 10
+                  type: integer
+                offset:
+                  default: 0
+                  type: integer
+                keyword_mode:
+                  default: and
+                  type: string
+                include_details:
+                  default: false
+                  type: boolean
+                domain:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                date_after:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                date_before:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                flavor:
+                  default: internal
+                  enum:
+                  - raw
+                  - internal
+                  - readable
+                  type: string
+              required:
+              - keyword
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/search_tags:
+    post:
+      tags:
+      - tag
+      summary: タグをキーワード検索する。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                query:
+                  type: string
+                namespace:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                include_notes:
+                  default: false
+                  type: boolean
+                limit:
+                  default: 20
+                  type: integer
+              required:
+              - query
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/triage_ask:
+    post:
+      tags:
+      - ask
+      summary: answered状態のaskをpromote（decision化）またはdismissへ振り分ける。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                ask_id:
+                  type: integer
+                action:
+                  type: string
+                decision:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                reason:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                title:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                tags:
+                  anyOf:
+                  - items:
+                      type: string
+                    type: array
+                  - type: 'null'
+                  default: null
+                dismiss_reason:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+              required:
+              - ask_id
+              - action
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/update_activity:
+    post:
+      tags:
+      - activity
+      summary: アクティビティのステータス・タイトル・説明・タグ・orch_managedを更新する。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                activity_id:
+                  type: integer
+                status:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                title:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                description:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                tags:
+                  anyOf:
+                  - items:
+                      type: string
+                    type: array
+                  - type: 'null'
+                  default: null
+                orch_managed:
+                  anyOf:
+                  - type: boolean
+                  - type: 'null'
+                  default: null
+              required:
+              - activity_id
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/update_habit:
+    post:
+      tags:
+      - habit
+      summary: 振る舞いを更新する。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                habit_id:
+                  type: integer
+                content:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                active:
+                  anyOf:
+                  - type: boolean
+                  - type: 'null'
+                  default: null
+                trigger_mode:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                description:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                importance_score:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                status:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+              required:
+              - habit_id
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/update_material:
+    post:
+      tags:
+      - material
+      summary: 既存の資材を更新する。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                material_id:
+                  type: integer
+                content:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                title:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                tags:
+                  anyOf:
+                  - items:
+                      type: string
+                    type: array
+                  - type: 'null'
+                  default: null
+                source:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                mode:
+                  default: overwrite
+                  enum:
+                  - overwrite
+                  - prepend
+                  - append
+                  type: string
+              required:
+              - material_id
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/update_signal:
+    post:
+      tags:
+      - misc
+      summary: シグナルのトリアージ状態を遷移する（orch/親セッション専用）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                signal_id:
+                  type: integer
+                status:
+                  type: string
+                promoted_type:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                promoted_id:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+              required:
+              - signal_id
+              - status
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/update_tag:
+    post:
+      tags:
+      - tag
+      summary: 既存タグの notes（教訓・運用ルール）、canonical（エイリアス先）、name（リネーム）、
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                tag:
+                  type: string
+                notes:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                canonical:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                rename:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                description:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                archived:
+                  anyOf:
+                  - type: boolean
+                  - type: 'null'
+                  default: null
+                archived_reason:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+              required:
+              - tag
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/withdraw_ask:
+    post:
+      tags:
+      - ask
+      summary: 答え待ち（open）のaskを自発的に取り下げる。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                ask_id:
+                  type: integer
+                reason:
+                  type: string
+              required:
+              - ask_id
+              - reason
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
 components:
   schemas:
     ErrorResponse:
       type: object
+      required:
+      - error
       properties:
         error:
           type: object
+          required:
+          - code
+          - message
           properties:
-            code: { type: string }
-            message: { type: string }
-
-    BulkCreateResponse:
-      type: object
-      properties:
-        created:
-          type: array
-          items: { type: object }
-        errors:
-          type: array
-          items:
-            type: object
-            properties:
-              index: { type: integer }
-              error: { type: object }
-
-    RelatedRef:
-      type: object
-      required: [type, ids]
-      properties:
-        type:
-          type: string
-          enum: [topic, activity, material, decision, log]
-        ids:
-          type: array
-          items: { type: integer }
-
-    Topic:
-      type: object
-      properties:
-        topic_id: { type: integer }
-        title: { type: string }
-        description: { type: string }
-        tags:
-          type: array
-          items: { type: string }
-        created_at: { type: string }
-        updated_at: { type: string }
-
-    TopicCreatedResponse:
-      type: object
-      properties:
-        topic: { $ref: '#/components/schemas/Topic' }
-        similar_topics:
-          type: array
-          items:
-            type: object
-            properties:
-              topic_id: { type: integer }
-              title: { type: string }
-              distance: { type: number }
-
-    DiscussionLog:
-      type: object
-      properties:
-        log_id: { type: integer }
-        topic_id: { type: integer }
-        title: { type: string }
-        content: { type: string }
-        tags:
-          type: array
-          items: { type: string }
-        retracted_at: { type: string, nullable: true }
-        created_at: { type: string }
-
-    Decision:
-      type: object
-      properties:
-        decision_id: { type: integer }
-        topic_id: { type: integer }
-        title: { type: string }
-        decision: { type: string }
-        reason: { type: string }
-        tags:
-          type: array
-          items: { type: string }
-        related_decisions:
-          type: array
-          items:
-            type: object
-            properties:
-              id: { type: integer }
-              title: { type: string }
-              distance: { type: number }
-        retracted_at: { type: string, nullable: true }
-        created_at: { type: string }
-
-    Activity:
-      type: object
-      properties:
-        activity_id: { type: integer }
-        title: { type: string }
-        description: { type: string }
-        status:
-          type: string
-          enum: [pending, in_progress, completed, snoozed, shelved]
-        tags:
-          type: array
-          items: { type: string }
-        created_at: { type: string }
-        updated_at: { type: string }
-
-    Material:
-      type: object
-      properties:
-        material_id: { type: integer }
-        title: { type: string }
-        content: { type: string }
-        source: { type: string }
-        tags:
-          type: array
-          items: { type: string }
-        created_at: { type: string }
-
-    Pin:
-      type: object
-      properties:
-        source_type: { type: string }
-        source_id: { type: integer }
-        target_type: { type: string }
-        target_id: { type: integer }
-
-    TagHit:
-      type: object
-      properties:
-        tag: { type: string }
-        namespace: { type: string }
-        score: { type: number }
-        notes: { type: string, nullable: true }
-
-    TagNote:
-      type: object
-      properties:
-        tag: { type: string }
-        notes: { type: string }
-
-    SearchHit:
-      type: object
-      properties:
-        type:
-          type: string
-          enum: [topic, decision, activity, log, material]
-        id: { type: integer }
-        title: { type: string }
-        score: { type: number }
-        snippet: { type: string }
-        tags:
-          type: array
-          items: { type: string }
-        details:
-          type: object
-          nullable: true
-
-    MapEntity:
-      type: object
-      properties:
-        type: { type: string }
-        id: { type: integer }
-        title: { type: string }
-        tags:
-          type: array
-          items: { type: string }
-        depth: { type: integer }
-
-    CheckInResult:
-      type: object
-      properties:
-        coverage: { type: object }
-        activity: { $ref: '#/components/schemas/Activity' }
-        related_topics:
-          type: array
-          items: { type: object }
-        related_activities:
-          type: array
-          items: { type: object }
-        pinned:
-          type: array
-          items: { type: object }
-        tag_notes:
-          type: array
-          items: { $ref: '#/components/schemas/TagNote' }
-        materials:
-          type: array
-          items: { type: object }
-        recent_decisions:
-          type: array
-          items: { type: object }
-        latest_log: { type: object, nullable: true }
-        logs:
-          type: array
-          items: { $ref: '#/components/schemas/DiscussionLog' }
-        catalog: { type: object }
-        summary: { type: string }
-
-    PrecedentTopic:
-      type: object
-      properties:
-        topic_id_raw: { type: integer }
-        title: { type: string, nullable: true }
-        decisions_total: { type: integer }
-        decisions:
-          type: array
-          items: { type: object }
-        materials:
-          type: array
-          items: { type: object }
+            code:
+              type: string
+            message:
+              type: string
