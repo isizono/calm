@@ -1406,6 +1406,10 @@ def suggest_destabilized_candidates(
     add_relation(relation_type="destabilizes")を呼ぶこと。本ツール単体の呼び出しでは
     decision_supersedes等への書き込みは一切発生しない。
 
+    精度の限界: 上位に来るのは主にsourceとタグ重複が大きいdecision。タグ重複の薄い
+    間接的な影響decisionは拾いにくいため、監査(audit skill)の代替ではなく初手の
+    絞り込みアシストとして使うこと。
+
     Args:
         source_decision_id: 軸変更decisionのID
         k: 返す候補数の上限（既定20）
