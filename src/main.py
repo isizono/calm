@@ -1124,6 +1124,9 @@ def get_material(
     result = material_service.get_material(material_id, include_retracted=include_retracted)
     if "error" not in result:
         _apply_flavor_to_single(result, "material", flavor, id_key="material_id")
+        search_service.record_material_fetch_telemetry(
+            material_id, caller_session_id=_current_session_id()
+        )
     return result
 
 

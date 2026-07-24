@@ -120,6 +120,7 @@ erDiagram
 | `ask_blocks` | — | ask ↔ activity junction（このaskが答え待ちで止めているactivity） |
 | `ask_requesters` | — | ask ↔ 要求元session_id junction（UNION蓄積） |
 | `ask_vec` | — | asks と rowid 連動する sqlite-vec 仮想テーブル（384次元、cosine距離） |
+| `injection_telemetry` | — | 記録=クエリ添付（記録系ツールの関連既存記録top3提示）の追随カウンタ present側台帳 |
 
 行数感（規模）はランタイム情報のため本ドキュメントでは未記載とする。
 
@@ -690,6 +691,33 @@ asks 専用の sqlite-vec 仮想テーブル（384次元、`distance_metric=cosi
 
 関連 migration: 0062_add_asks
 
+### 3.26 injection_telemetry
+
+記録系ツール（add_logs / add_decisions / add_material）が返す関連既存記録top3（記録=クエリ添付）について、「提示された記録が同セッションで実際に読まれたか」を機械記録する追随カウンタの present側（添付を返した瞬間）の台帳。取得側（fetch）は既存 `search_telemetry.results_json` / `fetch_telemetry.items_json` を再利用し、post-hoc の SQL 集計で `caller_session_id` を突合キーとして追随率を算出する（専用の集計ツールは持たない）。
+
+| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
+|---|---|---|---|---|---|
+| id | INTEGER | NO | autoincrement | PRIMARY KEY | レコードID |
+| caller_session_id | TEXT | YES | — | — | 提示を行ったセッションの相関キー（0048/0054と同じephemeral規約） |
+| trigger_tool | TEXT | NO | — | — | `'add_logs'` / `'add_decisions'` / `'add_material'` |
+| source_type | TEXT | NO | — | — | 新規作成された側（添付を提示する記録）の種別 |
+| source_id | INTEGER | NO | — | — | 新規作成された側のID |
+| attached_type | TEXT | NO | — | — | 提示された既存記録の種別 |
+| attached_id | INTEGER | NO | — | — | 提示された既存記録のID |
+| rank | INTEGER | NO | — | — | 提示順位（1〜3。DB制約なし） |
+| similarity | REAL | YES | — | — | 0〜1に正規化した類似度（大きいほど類似） |
+| diagnostics_json | TEXT | YES | — | — | 将来のretriever内訳等の予備列 |
+| timestamp | TIMESTAMP | NO | CURRENT_TIMESTAMP | — | 書込時刻（UTC） |
+
+補足:
+- FK・UNIQUE制約は張らない（既存telemetryテーブル群と同じ、生データ台帳としての性質を優先）。同一セッションで同じ`(attached_type, attached_id)`が複数回提示されるのは正常挙動で、集計側で`GROUP BY MIN(timestamp)`して縮約する
+- 書込は既存telemetryと同じdaemon thread + 失敗握りつぶし規約に従う
+- 本 migration が導入する範囲は、テーブル定義・writable columns allowlist・present書込ヘルパ（`_record_injection_telemetry_async`）・`get_material`のfetch側計装のみ。`add_logs`/`add_decisions`/`add_material`側から実際にpresent行を書く呼出し実装は、添付内容の組み立て方を規定する記録=クエリ添付の詳細設計が別途確定してから追加する
+
+インデックス: `idx_injection_telemetry_session_ts`（`caller_session_id, timestamp`）/ `idx_injection_telemetry_attached`（`attached_type, attached_id`）
+
+関連 migration: 0063_add_injection_telemetry
+
 ---
 
 ## 4. 関係メカニズム
@@ -823,6 +851,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0060_add_habit_importance_score_check | trigger_mode='intelligently'かつimportance_score=1.0(未設定)のhabitを3に補正したうえで、importance_scoreにCHECK(IN (1, 2, 3))を追加（テーブル再構築） |
 | 0061_add_tag_archived | tags に archived_at（退役日時）/ archived_reason（退役理由、100文字以内のCHECK制約付き）を追加、archived_at 用の部分インデックス idx_tags_archived_at を新設（スキーマ変更のみ、データ移行なし） |
 | 0062_add_asks | asks / ask_blocks / ask_requesters テーブル新設 + ask専用 vec0 仮想テーブル ask_vec 新設（§3.23-3.25） |
+| 0063_add_injection_telemetry | injection_telemetry テーブル新設（記録=クエリ添付の追随カウンタ present側台帳、§3.26） |
 
 重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。
 
