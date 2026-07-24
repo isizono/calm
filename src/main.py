@@ -545,9 +545,8 @@ def pull_precedents(
 
     Returns:
         {guarantee, routing, topics, budget, truncated, materials_truncated}
-        guarantee: "enumerated"（判例保証あり） / "routing_miss"（近傍topicなし。
-        前例なし扱いに倒すこと） / "routing_unavailable"（embeddingサーバー停止。
-        topic_ids指定で回避可）
+        guarantee: "enumerated"（判例保証あり） / "routing_miss"（近傍topicなし、
+        前例なし扱い） / "routing_unavailable"（embeddingサーバー停止。topic_ids指定で回避可）
         routing.candidates: 各{topic_id_raw, title, distance, selected}
         （topic_ids指定時はdistanceなし。存在しないtopic_idはerror付き）
         topics[].decisionsはdetail="full"（decision/reason全文+tags+sections[定型節
@@ -555,15 +554,15 @@ def pull_precedents(
         detail="index"（id/title等のみ）。index落ち分はget_by_idsで追補可。
         複数topicにbelongs_toするdecisionは最初のtopicのみ本文を持ち、他方は
         index+also_in。
-        material_ids/linked_decision_idsはdecision↔material間のrelated/citation
-        対応。materials_truncatedはmaterialカタログの縮退（30件キャップ超過または
-        レスポンス実サイズ超過）を表す。
-        budgetはbudget_chars（本文文字数のみの一次予算）に基づく配分結果。実サイズ上限
-        超過時はfull itemがindexへ追加降格され、guarantee=enumerated時のみ
-        budget.response_chars({limit, measured, demoted})に記録される。詳細は
-        docs/spec/mcp-tools.md 2.32節参照。
-        decision itemには、未resolveなdestabilizesエッジがあればdestabilizationが付く
-        （無ければキー自体が無い。詳細は同2.48節）。
+        material_ids/linked_decision_idsはdecision↔material間の関連付け。
+        materials_truncatedはmaterialカタログの縮退（30件超過またはサイズ超過）を表す。
+        budgetはbudget_chars（本文文字数の一次予算）に基づく配分結果。実サイズ上限超過時は
+        full itemがindexへ追加降格され、guarantee=enumerated時のみ
+        budget.response_chars({limit, measured, demoted})に記録される。
+        詳細はdocs/spec/mcp-tools.md 2.32節参照。
+        未resolveなdestabilizesエッジを持つdecision itemにはdestabilization
+        （{destabilized_by, unresolved_count, latest_source, sources}）が付く。
+        無ければキー自体が無い。
     """
     flavor = _normalize_flavor(flavor)
     result = precedent_pull_service.pull_precedents(
