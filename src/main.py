@@ -558,15 +558,12 @@ def pull_precedents(
         material_ids/linked_decision_idsはdecision↔material間のrelated/citation
         対応。materials_truncatedはmaterialカタログの縮退（30件キャップ超過または
         レスポンス実サイズ超過）を表す。
-        budgetはbudget_chars（本文文字数のみの一次予算）に基づく配分結果。実際の
-        レスポンスサイズがこれより大きくなり実サイズ上限を超えると、full item
-        がindexへ追加降格され、guarantee=enumerated時のみbudget.response_chars
-        ({limit, measured, demoted})に結果が記録される。詳細はdocs/spec/
-        mcp-tools.md 2.32節およびprecedent_pull_serviceのdocstring参照。
-        detail="full"/"index"いずれのdecision itemも、未resolveなdestabilizesエッジを
-        持つ場合のみ destabilization（{destabilized_by, unresolved_count, latest_source,
-        sources: [{decision_id, title, created_at, kind_reason}, ...]}）が付く。エッジが
-        無い、または全てresolve_destabilizationで解消済みならキー自体が無い
+        budgetはbudget_chars（本文文字数のみの一次予算）に基づく配分結果。実サイズ上限
+        超過時はfull itemがindexへ追加降格され、guarantee=enumerated時のみ
+        budget.response_chars({limit, measured, demoted})に記録される。詳細は
+        docs/spec/mcp-tools.md 2.32節参照。
+        decision itemには、未resolveなdestabilizesエッジがあればdestabilizationが付く
+        （無ければキー自体が無い。詳細は同2.48節）。
     """
     flavor = _normalize_flavor(flavor)
     result = precedent_pull_service.pull_precedents(
