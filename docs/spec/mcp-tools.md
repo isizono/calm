@@ -76,10 +76,10 @@ last-synced-migration: 0048
 | ツール | 概要 |
 | --- | --- |
 | `add_relation` / `remove_relation` | エンティティ間リレーションの追加・削除 |
+| `resolve_destabilization` | destabilizesエッジ（前提の揺らぎ）を1本解消する |
+| `suggest_destabilized_candidates` | 軸変更decisionからdestabilize候補decisionを提示（read-only） |
 | `add_pin` / `remove_pin` | pin の追加・削除 |
 | `get_map` | リレーショングラフ走査 |
-| `resolve_destabilization` | destabilizesエッジ1本を解消（reaffirmed/revised/retracted） |
-| `suggest_destabilized_candidates` | 軸変更decisionからdestabilize候補decisionを提示（read-only） |
 
 ### 1.6 アクティビティ操作系
 
@@ -369,10 +369,11 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 | source_type | string | yes | - | `topic`/`activity`/`material`/`decision`/`log` |
 | source_id | int | yes | - | 起点ID |
 | targets | list[RelatedRef] | yes | - | ターゲット |
-| relation_type | string | no | "related" | `related`/`depends_on`/`supersedes`/`belongs_to` |
+| relation_type | string | no | "related" | `related`/`depends_on`/`supersedes`/`destabilizes`/`belongs_to` |
 
-**制約**: `depends_on` はactivity同士のみ、`supersedes` はdecision同士のみ有効。
-**親帰属の自動書き込み**: 子（activity/material/decision/log）→topicの関連付けは、`relation_type` が `related`（デフォルト）または明示的な `belongs_to` のときに限り `belongs_to` として書き込まれる。`depends_on`/`supersedes` を指定するとtargetがtopicのためバリデーションエラーになり何も書き込まれない。この帰属はget_decisions/get_timeline/check_inのトピック帰属集計やget_by_idsのtopic_id解決の基盤になっており、`remove_relation` で `related`/`belongs_to` を指定すると帰属関係ごと削除される。
+**制約**: `depends_on` はactivity同士のみ、`supersedes`/`destabilizes` はdecision同士のみ有効。
+**親帰属の自動書き込み**: 子（activity/material/decision/log）→topicの関連付けは、`relation_type` が `related`（デフォルト）または明示的な `belongs_to` のときに限り `belongs_to` として書き込まれる。`depends_on`/`supersedes`/`destabilizes` を指定するとtargetがtopicのためバリデーションエラーになり何も書き込まれない。この帰属はget_decisions/get_timeline/check_inのトピック帰属集計やget_by_idsのtopic_id解決の基盤になっており、`remove_relation` で `related`/`belongs_to` を指定すると帰属関係ごと削除される。
+**`destabilizes`**: sourceがtargetの前提を揺るがし再検証が必要になったとマークする。`supersedes`と違いpin transferは発生させず、targetの結論そのものは維持される。循環禁止は`supersedes`と合算判定する（循環時は`CIRCULAR_DESTABILIZES`）。`remove_relation`では削除できない（`INVALID_RELATION_TYPE`を返す。履歴として残す設計のため、解消は下記`resolve_destabilization`を使う）。
 **返り値**: `{added: int}` または `{removed: int}`。重複は冪等。
 
 ### 2.20 get_map
@@ -628,14 +629,16 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
-| source_decision_id | int | yes | - | 揺らぎの発生元（軸変更）のdecision ID |
-| target_decision_id | int | yes | - | 前提が揺らいだ影響先のdecision ID |
+| source_decision_id | int | yes | - | destabilizesエッジのsource（軸変更decision） |
+| target_decision_id | int | yes | - | destabilizesエッジのtarget（影響を受けたdecision） |
 | resolution | string | yes | - | `reaffirmed`/`revised`/`retracted` |
-| revised_to_decision_id | int | resolution=revisedのとき必須 | null | 新結論となるdecision ID |
-| note | string | no | "" | 自由記述の注記 |
+| revised_to_decision_id | int | resolution=revisedのとき必須 | null | 改訂後の新decision ID |
+| note | string | no | "" | 自由記述 |
 
 **返り値**: `{resolved: bool, already_resolved: bool}`。
-**動作**: `add_relation(relation_type="destabilizes")`で張られたエッジ1本を解消する。`reaffirmed`はresolution行のみINSERT、`revised`は`revised_to_decision_id`を記録（supersedesエッジ張りは別途`add_relation`で行う）、`retracted`はtargetを実際にretractする（`decisions.retracted_at`更新）。エッジ自体（`decision_supersedes`側）は削除せず履歴として残す。同一ペアへの2回目以降の呼び出しは`already_resolved: true`を返し副作用は発生しない（冪等）。
+**動作**: `decision_destabilization_resolutions`にエッジ単位で1行記録し解消する。エッジ自体（`decision_supersedes`のdestabilizes行）は削除しない（履歴保存）。`resolution="retracted"`のときのみtargetを実際にretractする（`decisions.retracted_at`更新）。`reaffirmed`/`revised`ではtargetのretract状態は変化しない。
+**冪等性**: 既に解消済みの同一エッジに対して再度呼んでも、2件目のINSERTや副作用（retract呼び出し等）は発生させず`already_resolved: true`を返す。
+**エラー処理**: `resolution`が3値以外、または`resolution="revised"`で`revised_to_decision_id`が未指定の場合は`VALIDATION_ERROR`。
 
 ### 2.49 suggest_destabilized_candidates
 
