@@ -198,6 +198,113 @@ class TestRawCiteFullwordPattern:
         ]
 
 
+class TestRawCiteFullwordPatternHashOptional:
+    """`#` 省略時のパターン拡張 (エッジケース表 #1〜#5)。
+
+    #1 (`#` + スペース0個)・#2 (`#` + スペース1個) は既存仕様の回帰確認で、
+    test_canonical_fullword_lowercase_no_space / test_canonical_fullword_lowercase_with_space
+    と等価な条件をこのクラスでも独立に検証する。`#` を含むリテラルを直接ソースに
+    書くとこのファイル自体が PreToolUse hook のブロック対象になるため、
+    test_preblock_hook.py の Agent/Task テストと同じく動的に組み立てる。
+    """
+
+    def test_edge_case_1_hash_no_space_matches(self) -> None:
+        sharp = chr(35)
+        text = "decision" + sharp + "14"
+        assert _fullword_matches(text) == [text]
+
+    def test_edge_case_2_hash_with_one_space_matches(self) -> None:
+        sharp = chr(35)
+        text = "decision " + sharp + "14"
+        assert _fullword_matches(text) == [text]
+
+    @pytest.mark.parametrize(
+        "type_name,num",
+        [
+            ("log", "1"),
+            ("decision", "14"),
+            ("activity", "3"),
+            ("material", "4"),
+            ("topic", "5"),
+        ],
+    )
+    def test_edge_case_3_hash_omitted_one_space_matches(
+        self, type_name: str, num: str
+    ) -> None:
+        text = f"{type_name} {num}"
+        assert _fullword_matches(text) == [text]
+
+    @pytest.mark.parametrize(
+        "type_name,num",
+        [
+            ("log", "1"),
+            ("decision", "14"),
+            ("activity", "3"),
+            ("material", "4"),
+            ("topic", "5"),
+        ],
+    )
+    def test_edge_case_4_hash_omitted_no_space_does_not_match(
+        self, type_name: str, num: str
+    ) -> None:
+        assert _fullword_matches(f"{type_name}{num}") == []
+
+    @pytest.mark.parametrize(
+        "type_name,num,sep",
+        [
+            ("log", "1", "  "),
+            ("decision", "14", "   "),
+            ("activity", "3", "\t"),
+        ],
+    )
+    def test_edge_case_5_hash_omitted_multiple_or_non_space_sep_does_not_match(
+        self, type_name: str, num: str, sep: str
+    ) -> None:
+        assert _fullword_matches(f"{type_name}{sep}{num}") == []
+
+    def test_case_insensitive_hash_omitted(self) -> None:
+        assert _fullword_matches("Decision 14") == ["Decision 14"]
+        assert _fullword_matches("LOG 1") == ["LOG 1"]
+
+    def test_multiple_hash_omitted_in_one_string(self) -> None:
+        assert _fullword_matches("see decision 14 and log 42") == [
+            "decision 14",
+            "log 42",
+        ]
+
+    def test_hash_present_and_omitted_mixed_in_one_string(self) -> None:
+        # 同じ文字列内に # ありの表記と # 省略の表記が混在するケース。
+        # findall は独立に走査するため、両方が個別に検出されることを明示的に確認する。
+        sharp = chr(35)
+        text = "see decision" + sharp + "14 and log 42"
+        assert _fullword_matches(text) == [
+            "decision" + sharp + "14",
+            "log 42",
+        ]
+
+    def test_leading_word_char_blocks_match_hash_omitted(self) -> None:
+        assert _fullword_matches("adecision 14") == []
+        assert _fullword_matches("blog 1") == []
+
+    def test_trailing_word_char_blocks_match_hash_omitted(self) -> None:
+        assert _fullword_matches("decision 14abc") == []
+
+    def test_group_references_unchanged_regardless_of_hash(self) -> None:
+        # group(1)=type名 / group(2)=数字は `#` の有無に関わらず変わらないことを
+        # 確認する。citations_pure._convert_line_raw_to_cite 等の呼び出し側が
+        # このパターン拡張後も無改修で動作する前提を裏付ける。
+        m_no_hash = RAW_CITE_FULLWORD_PATTERN.search("decision 14")
+        assert m_no_hash is not None
+        assert m_no_hash.group(1) == "decision"
+        assert m_no_hash.group(2) == "14"
+
+        sharp = chr(35)
+        m_hash = RAW_CITE_FULLWORD_PATTERN.search("decision" + sharp + "14")
+        assert m_hash is not None
+        assert m_hash.group(1) == "decision"
+        assert m_hash.group(2) == "14"
+
+
 class TestFullwordToCode:
     def test_mapping_covers_all_five_types(self) -> None:
         assert set(FULLWORD_TO_CODE.keys()) == {
