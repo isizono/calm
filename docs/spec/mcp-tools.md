@@ -22,7 +22,7 @@ last-synced-migration: 0048
 
 ## 1. ツール一覧
 
-全45ツール。カテゴリ別に一覧する。
+全47ツール。カテゴリ別に一覧する。
 
 ### 1.1 記録系（add系）
 
@@ -78,6 +78,8 @@ last-synced-migration: 0048
 | `add_relation` / `remove_relation` | エンティティ間リレーションの追加・削除 |
 | `add_pin` / `remove_pin` | pin の追加・削除 |
 | `get_map` | リレーショングラフ走査 |
+| `resolve_destabilization` | destabilizesエッジ1本を解消（reaffirmed/revised/retracted） |
+| `suggest_destabilized_candidates` | 軸変更decisionからdestabilize候補decisionを提示（read-only） |
 
 ### 1.6 アクティビティ操作系
 
@@ -621,6 +623,30 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 **返り値**: `{id: int, status: "withdrawn"}`。
 **動作**: 答え待ち（open）のaskを人間の回答を待たずに取り消す。取り下げ後はask_blocksを削除するが、要求元セッションの記録（ask_requesters）は参照ログとして残す。同一fingerprintの再postは、誤操作保護のため取り下げから5分間拒否される（session条件は課さない）。
 **エラー処理**: 対象がopen状態でない場合は`VALIDATION_ERROR`。
+
+### 2.48 resolve_destabilization
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| source_decision_id | int | yes | - | 揺らぎの発生元（軸変更）のdecision ID |
+| target_decision_id | int | yes | - | 前提が揺らいだ影響先のdecision ID |
+| resolution | string | yes | - | `reaffirmed`/`revised`/`retracted` |
+| revised_to_decision_id | int | resolution=revisedのとき必須 | null | 新結論となるdecision ID |
+| note | string | no | "" | 自由記述の注記 |
+
+**返り値**: `{resolved: bool, already_resolved: bool}`。
+**動作**: `add_relation(relation_type="destabilizes")`で張られたエッジ1本を解消する。`reaffirmed`はresolution行のみINSERT、`revised`は`revised_to_decision_id`を記録（supersedesエッジ張りは別途`add_relation`で行う）、`retracted`はtargetを実際にretractする（`decisions.retracted_at`更新）。エッジ自体（`decision_supersedes`側）は削除せず履歴として残す。同一ペアへの2回目以降の呼び出しは`already_resolved: true`を返し副作用は発生しない（冪等）。
+
+### 2.49 suggest_destabilized_candidates
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| source_decision_id | int | yes | - | 軸変更decisionのID |
+| k | int | no | 20 | 返す候補数の上限 |
+| include_already_resolved | bool | no | false | resolve済み候補も含めるか |
+
+**返り値**: `{candidates: [{decision_id, title, score, match_reason, already_destabilized, already_resolved}], mode: "vector" | "unavailable"}`。
+**動作**: read-only。候補は「(a) sourceとtag集合が重なるnon-retract decision」と「(b) sourceが属するtopicのembedding近傍topicに属するnon-retract decision」の和集合で、tag_jaccardとembedding類似度（近傍topic routingのdistanceを正規化）を合成したスコア降順で返す。embeddingサーバー停止時は例外にせず`{candidates: [], mode: "unavailable"}`で縮退する。`decision_supersedes`（kind='destabilizes'）を参照して`already_destabilized`、`decision_destabilization_resolutions`を参照して`already_resolved`を付与し、`include_already_resolved=false`（既定）ではresolve済み候補を除外する。実際にdestabilizesエッジを張るかどうかは呼び出し側の判断で、別途`add_relation(relation_type="destabilizes")`を呼ぶ。
 
 ---
 
