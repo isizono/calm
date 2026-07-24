@@ -1318,13 +1318,9 @@ def add_relation(
         targets: ターゲットリスト [{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...]
         relation_type: リレーションタイプ（"related", "depends_on", "supersedes", or "destabilizes"）。
             depends_onはactivity同士のみ、supersedes/destabilizesはdecision同士のみ有効。
-            子→topicのペアは"related"（デフォルト）または"belongs_to"指定時にbelongs_toとして
-            書き込まれる（"depends_on"/"supersedes"/"destabilizes"はtopic targetでバリデーションエラー）。
-            "destabilizes" はsourceがtargetの前提を揺るがし再検証が必要とマークする。
-            "supersedes" と違いpin transferは行わず、targetの結論そのものは維持される。
-            循環禁止は"supersedes"と合算して判定する（循環時はCIRCULAR_DESTABILIZESエラー）。
-            影響decisionは1回のtargets配列で複数指定できる。揺らぎの解消は
-            resolve_destabilizationツールでエッジ単位に行う。
+            子→topicのペアは"related"（デフォルト）または"belongs_to"指定時のみbelongs_toとして
+            書き込まれる。"destabilizes"はsourceがtargetの前提を揺るがしたとマークする
+            （pin transferなし、循環判定はsupersedesと合算）。解消はresolve_destabilizationで行う。
 
     Returns:
         成功時: {"added": int}（実際に追加された件数。重複はカウントしない）
