@@ -496,6 +496,11 @@ def get_decisions(
         「決定のみ・実測未確認」を意味する）
         archived_tags: 応答に含まれるdecisionのタグのうちarchivedなものの集約
             （{tag, archived_reason}の配列。該当なしでも空配列で常に付く）
+        未resolveなdestabilizesエッジ（add_relation(relation_type='destabilizes')で登録）を
+        持つdecisionには destabilization（{destabilized_by, unresolved_count, latest_source,
+        sources: [{decision_id, title, created_at, kind_reason}, ...]}）が付く。エッジが
+        無い、または全てresolve_destabilizationで解消済みのdecisionにはキー自体が無い。
+        is_superseded/supersede_chain（結論の置き換え）とは独立に併記され、両方成立しうる
     """
     flavor = _normalize_flavor(flavor)
     result = decision_service.get_decisions(entity_type, entity_id, start_id, limit, include_retracted=include_retracted)
@@ -558,6 +563,10 @@ def pull_precedents(
         がindexへ追加降格され、guarantee=enumerated時のみbudget.response_chars
         ({limit, measured, demoted})に結果が記録される。詳細はdocs/spec/
         mcp-tools.md 2.32節およびprecedent_pull_serviceのdocstring参照。
+        detail="full"/"index"いずれのdecision itemも、未resolveなdestabilizesエッジを
+        持つ場合のみ destabilization（{destabilized_by, unresolved_count, latest_source,
+        sources: [{decision_id, title, created_at, kind_reason}, ...]}）が付く。エッジが
+        無い、または全てresolve_destabilizationで解消済みならキー自体が無い
     """
     flavor = _normalize_flavor(flavor)
     result = precedent_pull_service.pull_precedents(
@@ -734,6 +743,10 @@ def get_by_ids(
         無ければnull）が常に付く。reasonに定型節（却下案:/適用条件:/適用外:/検証:/隣接確認:。
         書式は docs/precedent-format.md）があれば precedent（get_decisionsと同形のコンパクト形）
         が付く。節が無いdecisionにはキー自体が無い
+        未resolveなdestabilizesエッジを持つdecisionには destabilization（{destabilized_by,
+        unresolved_count, latest_source, sources: [{decision_id, title, created_at,
+        kind_reason}, ...]}）が付く。エッジが無い、または全てresolve_destabilizationで
+        解消済みならキー自体が無い。is_superseded/superseded_byとは独立に併記される
         archived_tags: 応答に含まれる全アイテムのタグのうちarchivedなものの集約
             （{tag, archived_reason}の配列。該当なしでも空配列で常に付く）
     """
@@ -1198,6 +1211,10 @@ def check_in(
     Returns:
         check-in結果（coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary）。
         セッション内でcheck_inを初めて呼んだときのみflow_guide（コンテキスト取得の手がかり）も含まれる
+        pinned.decisionsの各要素は、未resolveなdestabilizesエッジを持つ場合のみ
+        destabilization（{destabilized_by, unresolved_count, latest_source,
+        sources: [{decision_id, title, created_at, kind_reason}, ...]}）が付く。エッジが
+        無い、または全てresolve_destabilizationで解消済みならキー自体が無い
     """
     flavor = _normalize_flavor(flavor)
     try:

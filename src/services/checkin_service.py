@@ -8,6 +8,7 @@ from src.services import activity_service, ask_service, hint_service
 from src.services.readable_id import strip_entity_id_inplace
 from src.services.material_service import get_materials_by_relation_with_conn
 from src.services.relation_service import _get_map_with_conn
+from src.services.supersede_service import compute_destabilization_info_batch
 from src.services.tag_service import (
     collect_tag_notes_for_injection,
     get_entity_tags,
@@ -242,6 +243,10 @@ def _get_pinned_targets(conn: sqlite3.Connection, activity_id: int) -> dict:
     discussion_topics / activities には存在しないため、
     retracted_at IS NULL フィルタは decision/log/material のクエリにのみ付ける。
 
+    decision には未resolveな destabilizes エッジがあれば destabilization キーを付与する
+    (supersede_service.compute_destabilization_info_batch の結果。対象が無ければキー
+    自体を付けない)。
+
     Returns:
         0件キーを省略したdict。全種0件の場合は空dict。
     """
@@ -308,12 +313,16 @@ def _get_pinned_targets(conn: sqlite3.Connection, activity_id: int) -> dict:
             tuple(ids),
         ).fetchall()
         row_map = {row["id"]: row for row in rows}
+        destabilization_map = compute_destabilization_info_batch(conn, [did for did in ids if did in row_map])
         decisions = []
         for did in ids:
             if did in row_map:
                 row = row_map[did]
                 # title優先・decision本文fallback
                 item = {"id": row["id"], "title": row["title"] or row["decision"], "reason": row["reason"]}
+                destab_info = destabilization_map.get(did)
+                if destab_info is not None:
+                    item["destabilization"] = destab_info
                 strip_entity_id_inplace(item)
                 decisions.append(item)
         if decisions:

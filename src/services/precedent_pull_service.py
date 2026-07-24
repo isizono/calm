@@ -30,7 +30,11 @@ from src.services.material_service import SNIPPET_MAX_LEN
 from src.services.precedent_cluster_service import expand_decision_cluster
 from src.services.precedent_pure import parse_precedent_sections
 from src.services.readable_id import strip_entity_id_inplace
-from src.services.supersede_service import compute_supersede_info_batch, get_superseded_by_batch
+from src.services.supersede_service import (
+    compute_destabilization_info_batch,
+    compute_supersede_info_batch,
+    get_superseded_by_batch,
+)
 from src.services.tag_service import get_effective_tags_batch_by_ids
 
 logger = logging.getLogger(__name__)
@@ -132,6 +136,7 @@ def _build_index_item(
     superseded_by_map: dict[int, Optional[int]],
     material_ids_by_decision: dict[int, set[int]],
     also_in: Optional[list[int]] = None,
+    destabilization_map: Optional[dict[int, dict]] = None,
 ) -> dict:
     did = dec["id"]
     info = supersede_map.get(did, {"is_superseded": False})
@@ -148,6 +153,9 @@ def _build_index_item(
     mids = material_ids_by_decision.get(did)
     if mids:
         item["material_ids"] = sorted(mids)
+    destab_info = (destabilization_map or {}).get(did)
+    if destab_info is not None:
+        item["destabilization"] = destab_info
     strip_entity_id_inplace(item)
     return item
 
@@ -158,6 +166,7 @@ def _build_full_item(
     supersede_map: dict[int, dict],
     superseded_by_map: dict[int, Optional[int]],
     material_ids_by_decision: dict[int, set[int]],
+    destabilization_map: Optional[dict[int, dict]] = None,
 ) -> dict:
     did = dec["id"]
     info = supersede_map.get(did, {"is_superseded": False, "supersede_chain": [did]})
@@ -179,6 +188,9 @@ def _build_full_item(
     mids = material_ids_by_decision.get(did)
     if mids:
         item["material_ids"] = sorted(mids)
+    destab_info = (destabilization_map or {}).get(did)
+    if destab_info is not None:
+        item["destabilization"] = destab_info
     strip_entity_id_inplace(item)
     return item
 
@@ -304,6 +316,7 @@ def _apply_response_size_gate(
     superseded_by_map: dict[int, Optional[int]],
     material_ids_by_decision: dict[int, set[int]],
     response_chars_max: int,
+    destabilization_map: Optional[dict[int, dict]] = None,
 ) -> tuple[bool, bool]:
     """本文文字数予算（PRECEDENT_BUDGET_CHARS）内に収まっていても、tags/sections/
     supersede_chain の重複計上やmaterialカタログの併載で実レスポンスが数倍に
@@ -348,7 +361,8 @@ def _apply_response_size_gate(
             topic_idx, dec_idx = location
             full_item = topics_out[topic_idx]["decisions"][dec_idx]
             index_item = _build_index_item(
-                decision_by_id[did], supersede_map, superseded_by_map, material_ids_by_decision
+                decision_by_id[did], supersede_map, superseded_by_map, material_ids_by_decision,
+                destabilization_map=destabilization_map,
             )
             cost_full = len(json.dumps(full_item, ensure_ascii=False))
             cost_index = len(json.dumps(index_item, ensure_ascii=False))
@@ -477,6 +491,7 @@ def collect_precedents_with_conn(
 
     supersede_map = compute_supersede_info_batch(conn, all_ids)
     superseded_by_map = get_superseded_by_batch(conn, all_ids)
+    destabilization_map = compute_destabilization_info_batch(conn, all_ids)
     tags_map = get_effective_tags_batch_by_ids(conn, "decision", all_ids)
 
     full_ids, used = allocate_decision_budget(all_ids, decision_by_id, supersede_map, budget_chars)
@@ -499,15 +514,20 @@ def collect_precedents_with_conn(
             owner = owner_of[did]
             if owner != topic_id:
                 item = _build_index_item(
-                    dec, supersede_map, superseded_by_map, material_ids_by_decision, also_in=[owner]
+                    dec, supersede_map, superseded_by_map, material_ids_by_decision, also_in=[owner],
+                    destabilization_map=destabilization_map,
                 )
             elif did in full_ids:
                 item = _build_full_item(
-                    dec, tags_map, supersede_map, superseded_by_map, material_ids_by_decision
+                    dec, tags_map, supersede_map, superseded_by_map, material_ids_by_decision,
+                    destabilization_map=destabilization_map,
                 )
                 full_item_locations[did] = (len(topics_out), len(decisions_out))
             else:
-                item = _build_index_item(dec, supersede_map, superseded_by_map, material_ids_by_decision)
+                item = _build_index_item(
+                    dec, supersede_map, superseded_by_map, material_ids_by_decision,
+                    destabilization_map=destabilization_map,
+                )
             decisions_out.append(item)
 
         topic_entry: dict = {
@@ -538,6 +558,7 @@ def collect_precedents_with_conn(
         superseded_by_map,
         material_ids_by_decision,
         PRECEDENT_RESPONSE_CHARS_MAX,
+        destabilization_map=destabilization_map,
     )
     return {
         "topics": topics_out,
