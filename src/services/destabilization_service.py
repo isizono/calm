@@ -336,7 +336,7 @@ def suggest_destabilized_candidates(
             distance = neighbor_distance_by_topic.get(topic_id) if topic_id is not None else None
             sim = (
                 max(0.0, 1.0 - distance / PRECEDENT_ROUTING_MISS_DISTANCE)
-                if distance is not None
+                if distance is not None and PRECEDENT_ROUTING_MISS_DISTANCE > 0
                 else 0.0
             )
             same_topic_bonus = 1.0 if topic_id is not None and topic_id == source_topic_id else 0.0
