@@ -151,6 +151,20 @@ class TestDestabilizationCrossPathConsistency:
         assert item["destabilization"]["unresolved_count"] == 1
         assert item["destabilization"]["destabilized_by"] == [scenario["source_id"]]
 
+    def test_get_decisions_activity_entity_type_shows_destabilization(self, scenario):
+        """get_decisionsのentity_type="activity"分岐（related topics経由でDISTINCT集約する
+        別クエリ経路）でも、entity_type="topic"分岐と同様にdestabilizationが付与される"""
+        add_relation(
+            "activity",
+            scenario["activity_id"],
+            [{"type": "topic", "ids": [scenario["topic_id"]]}],
+        )
+        result = get_decisions("activity", scenario["activity_id"])
+        assert "error" not in result, result
+        item = _find_decision_item(result["decisions"], scenario["target_id"])
+        assert item["destabilization"]["unresolved_count"] == 1
+        assert item["destabilization"]["destabilized_by"] == [scenario["source_id"]]
+
     def test_all_four_paths_agree_on_sources_kind_reason(self, scenario):
         """4経路のdestabilization.sources[0].kind_reasonが同一の値を返す（一貫性）"""
         items = [
