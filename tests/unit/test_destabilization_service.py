@@ -351,7 +351,11 @@ class TestSuggestDestabilizedCandidatesEmbeddingNeighbor:
 
         by_id = {c["decision_id"]: c for c in result["candidates"]}
         assert neighbor_id in by_id
-        assert by_id[neighbor_id]["score"] > 0
+        # distance=0（MISS_DISTANCE=0.19に対しsim=1.0）、タグ重なり無し（jaccard=0）、
+        # 別topic（same_topic_bonus=0）なので、score = 0.3*1.0 + 0.6*0 + 0.1*0 = 0.3。
+        # 重み定数の入れ替わりバグ（embedding/tag_jaccard weightの転置等）を検出できる
+        # よう、単なる > 0 ではなく厳密値でassertする。
+        assert by_id[neighbor_id]["score"] == pytest.approx(0.3)
         assert any(r.startswith("embedding_neighbor:") for r in by_id[neighbor_id]["match_reason"])
         assert not any(r.startswith("tag_overlap:") for r in by_id[neighbor_id]["match_reason"])
 
@@ -376,21 +380,44 @@ class TestSuggestDestabilizedCandidatesEmbeddingNeighbor:
 class TestSuggestDestabilizedCandidatesUnavailable:
     """embeddingサーバー停止時の縮退"""
 
-    def test_embedding_unavailable_returns_empty_candidates_without_exception(
+    def test_embedding_unavailable_still_returns_tag_overlap_candidates(
         self, temp_db, mock_embedding_server, monkeypatch
     ):
-        """route_topicsがmode=unavailableを返す場合、例外にせず空candidatesを返す"""
+        """route_topicsがmode=unavailableを返す場合でも、embeddingに依存しない
+        タグ一致チャネル(a)の候補は例外にせず引き続き返され、mode="tag_only"になる
+        （embedding近傍チャネル(b)のみが無効化される）"""
         monkeypatch.setattr(pps, "encode_query", lambda context: None)
 
         topic_id = _make_topic("軸変更topic", 0)
         source_id = add_decision(
             decision="軸変更", reason="r", topic_id=topic_id, tags=["domain:test"]
         )["decision_id"]
-        add_decision(decision="候補", reason="r", topic_id=topic_id, tags=["domain:test"])
+        tag_match_id = add_decision(
+            decision="候補", reason="r", topic_id=topic_id, tags=["domain:test"]
+        )["decision_id"]
 
         result = suggest_destabilized_candidates(source_id)
 
-        assert result == {"candidates": [], "mode": "unavailable"}
+        assert result["mode"] == "tag_only"
+        by_id = {c["decision_id"]: c for c in result["candidates"]}
+        assert tag_match_id in by_id
+        assert any(r.startswith("tag_overlap:") for r in by_id[tag_match_id]["match_reason"])
+        # embeddingチャネルは無効化されているのでembedding_neighbor理由は付かない
+        assert not any(r.startswith("embedding_neighbor:") for r in by_id[tag_match_id]["match_reason"])
+
+    def test_embedding_unavailable_with_no_tag_overlap_returns_empty_tag_only(
+        self, temp_db, mock_embedding_server, monkeypatch
+    ):
+        """embeddingチャネルが無効化され、タグ一致チャネルにも候補が無い場合は
+        空candidatesだがmode="tag_only"のまま（"unavailable"には戻らない）"""
+        monkeypatch.setattr(pps, "encode_query", lambda context: None)
+
+        topic_id = _make_topic("孤立topic", 0, tags=["domain:cc-memory"])
+        source_id = add_decision(decision="軸変更", reason="r", topic_id=topic_id, tags=None)["decision_id"]
+
+        result = suggest_destabilized_candidates(source_id)
+
+        assert result == {"candidates": [], "mode": "tag_only"}
 
 
 class TestSuggestDestabilizedCandidatesEmptyCandidates:
