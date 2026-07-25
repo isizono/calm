@@ -478,7 +478,7 @@ cc-memory自身の故障報告・使用感不満・矛盾検出・運用計測�
 
 関連 migration: 0062_add_asks
 
-カラム一覧・インデックス: `db-schema-tables.md` の `ask_blocks` 節参照。
+カラム一覧・インデックス: `db-schema-tables.md` の `ask_blocks` 節・`ask_requesters` 節参照。
 
 ### 3.25 ask_vec
 
