@@ -431,6 +431,9 @@ def _add_destabilizes_with_conn(conn: sqlite3.Connection, source_id: int, target
 def _remove_supersedes_with_conn(conn: sqlite3.Connection, source_id: int, target_ids: list[int]) -> int:
     """supersedesリレーションをdecision_supersedesテーブルから削除する。
 
+    kind='replaces'の行のみを対象とする。同一(source_id, target_id)ペアに
+    'destabilizes'行が共存し得るため、kindを指定しないと巻き添えで削除してしまう。
+
     Args:
         conn: DB接続
         source_id: 上書き元のdecision ID
@@ -445,7 +448,7 @@ def _remove_supersedes_with_conn(conn: sqlite3.Connection, source_id: int, targe
         if source_id == target_id:
             continue
         conn.execute(
-            "DELETE FROM decision_supersedes WHERE source_id = ? AND target_id = ?",
+            "DELETE FROM decision_supersedes WHERE source_id = ? AND target_id = ? AND kind = 'replaces'",
             (source_id, target_id),
         )
         removed += conn.execute("SELECT changes()").fetchone()[0]

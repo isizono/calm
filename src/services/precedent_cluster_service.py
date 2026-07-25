@@ -128,7 +128,7 @@ def expand_decision_cluster(
         placeholders = ",".join("?" * len(closure_ids))
         rows = conn.execute(
             f"SELECT source_id, target_id FROM decision_supersedes "
-            f"WHERE source_id IN ({placeholders}) AND target_id IN ({placeholders})",
+            f"WHERE source_id IN ({placeholders}) AND target_id IN ({placeholders}) AND kind = 'replaces'",
             tuple(closure_ids) + tuple(closure_ids),
         ).fetchall()
         for r in rows:
