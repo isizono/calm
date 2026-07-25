@@ -152,7 +152,7 @@ def test_record_injection_telemetry_writes_one_row_per_attachment(
         attachments=attachments,
         caller_session_id="sess-inject-1",
     )
-    assert len(threads) == 2
+    assert len(threads) == 1
 
     _wait_for_telemetry(capture_injection_telemetry_threads)
 

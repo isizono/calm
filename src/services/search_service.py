@@ -2297,6 +2297,13 @@ def _record_injection_telemetry_async(
     attachments が空リストのときは何も書かず空リストを返す（第3層添付が未実装/
     ゼロ件のケースで無駄な書込を発生させない）。
 
+    attachments 各要素の dict アクセス（"type"/"id"/"rank" 等）も、値の変換・SQL バインドと
+    同じ理由で全て daemon thread 側（`_write` 内）で `.get()` により行う。呼出元スレッドで
+    KeyError 等の例外が発生する余地を残さないため（`_record_telemetry_async` と同じ設計方針）。
+    また、N件の attachments を N本の thread / N個の connection に分けず、1本の thread が
+    1つの connection で全件を書いて最後に1回だけ commit する。attachments の並び（= rank順）
+    と書込順・コミット順を一致させ、書込順が OS スケジューリングに左右されないようにするため。
+
     Args:
         trigger_tool: 'add_logs' | 'add_decisions' | 'add_material'
         source_type: 新規作成された側（添付を提示する記録）の種別
@@ -2308,30 +2315,69 @@ def _record_injection_telemetry_async(
             と突合するために記録する。None のとき NULL で記録する。
 
     Returns:
-        起動した daemon Thread のリスト（attachments の各要素につき1本）。
-        attachments が空なら空リスト。
+        起動した daemon Thread を含むリスト（attachments が空でなければ要素数は常に1、
+        全件をまとめて書く1本の thread を指す）。attachments が空、または thread の起動
+        自体に失敗した場合は空リスト。
     """
-    threads: list[threading.Thread] = []
-    for attachment in attachments:
-        thread = _record_telemetry_async(
-            "injection_telemetry",
-            {
-                "caller_session_id": caller_session_id,
-                "trigger_tool": trigger_tool,
-                "source_type": source_type,
-                "source_id": source_id,
-                "attached_type": attachment["type"],
-                "attached_id": attachment["id"],
-                "rank": attachment["rank"],
-                "similarity": attachment.get("similarity"),
-                "diagnostics_json": _JsonCol(attachment.get("diagnostics"))
-                if attachment.get("diagnostics") is not None
-                else None,
-            },
-        )
-        if thread is not None:
-            threads.append(thread)
-    return threads
+    if not attachments:
+        return []
+
+    columns = (
+        "caller_session_id", "trigger_tool", "source_type", "source_id",
+        "attached_type", "attached_id", "rank", "similarity", "diagnostics_json",
+    )
+    allowed = _TELEMETRY_WRITABLE_COLUMNS["injection_telemetry"]
+    unknown_columns = set(columns) - allowed
+    assert not unknown_columns, (
+        f"unknown telemetry columns for 'injection_telemetry': {sorted(unknown_columns)}"
+    )
+
+    def _write() -> None:
+        rows = []
+        for attachment in attachments:
+            diagnostics = attachment.get("diagnostics")
+            try:
+                diagnostics_json = (
+                    json.dumps(diagnostics, ensure_ascii=False)
+                    if diagnostics is not None else None
+                )
+            except (TypeError, ValueError) as e:
+                logger.warning("injection_telemetry serialize failed: %s", e)
+                return
+            rows.append((
+                caller_session_id,
+                trigger_tool,
+                source_type,
+                source_id,
+                attachment.get("type"),
+                attachment.get("id"),
+                attachment.get("rank"),
+                attachment.get("similarity"),
+                diagnostics_json,
+            ))
+
+        column_sql = ", ".join(columns)
+        placeholder_sql = ", ".join("?" * len(columns))
+        try:
+            conn = _telemetry_get_connection()
+            try:
+                conn.executemany(
+                    f"INSERT INTO injection_telemetry ({column_sql}) VALUES ({placeholder_sql})",
+                    rows,
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.warning("injection_telemetry write failed: %s", e)
+
+    try:
+        thread = threading.Thread(target=_write, daemon=True)
+        thread.start()
+    except Exception as e:
+        logger.warning("injection_telemetry thread start failed: %s", e)
+        return []
+    return [thread]
 
 
 def _format_row(
