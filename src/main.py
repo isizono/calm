@@ -1399,8 +1399,10 @@ def suggest_destabilized_candidates(
 
     候補は「(a) sourceとtag集合が重なるnon-retract decision」と「(b) sourceが属するtopicの
     embedding近傍topicに属するnon-retract decision」の和集合。各候補についてtag重なり
-    （Jaccard係数）とembedding類似度（近傍topic routingのdistanceを正規化）を合成した
-    スコア降順で返す。embeddingサーバー停止時は例外にせずmode="unavailable"で縮退する。
+    （Jaccard係数）とembedding類似度（近傍topic routingのdistanceを正規化）、および
+    同一topicボーナス（same_topic_bonus）を合成したスコア降順で返す。embeddingサーバー
+    停止時は例外にせず、embedding近傍チャネル(b)のみを無効化してタグ一致チャネル(a)の
+    候補をmode="tag_only"で返し続ける（縮退してもゼロ件にはしない）。
 
     実際にdestabilizesエッジを張るかどうかは呼び出し側の判断。候補を吟味した上で別途
     add_relation(relation_type="destabilizes")を呼ぶこと。本ツール単体の呼び出しでは
@@ -1419,7 +1421,7 @@ def suggest_destabilized_candidates(
     Returns:
         {"candidates": [{"decision_id", "title", "score", "match_reason",
                           "already_destabilized", "already_resolved"}, ...],
-         "mode": "vector" | "unavailable"}
+         "mode": "vector" | "tag_only"}
     """
     return destabilization_service.suggest_destabilized_candidates(
         source_decision_id, k, include_already_resolved

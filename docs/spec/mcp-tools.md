@@ -648,8 +648,8 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 | k | int | no | 20 | 返す候補数の上限 |
 | include_already_resolved | bool | no | false | resolve済み候補も含めるか |
 
-**返り値**: `{candidates: [{decision_id, title, score, match_reason, already_destabilized, already_resolved}], mode: "vector" | "unavailable"}`。
-**動作**: read-only。候補は「(a) sourceとtag集合が重なるnon-retract decision」と「(b) sourceが属するtopicのembedding近傍topicに属するnon-retract decision」の和集合で、tag_jaccardとembedding類似度（近傍topic routingのdistanceを正規化）を合成したスコア降順で返す。embeddingサーバー停止時は例外にせず`{candidates: [], mode: "unavailable"}`で縮退する。`decision_supersedes`（kind='destabilizes'）を参照して`already_destabilized`、`decision_destabilization_resolutions`を参照して`already_resolved`を付与し、`include_already_resolved=false`（既定）ではresolve済み候補を除外する。実際にdestabilizesエッジを張るかどうかは呼び出し側の判断で、別途`add_relation(relation_type="destabilizes")`を呼ぶ。
+**返り値**: `{candidates: [{decision_id, title, score, match_reason, already_destabilized, already_resolved}], mode: "vector" | "tag_only"}`。
+**動作**: read-only。候補は「(a) sourceとtag集合が重なるnon-retract decision」と「(b) sourceが属するtopicのembedding近傍topicに属するnon-retract decision」の和集合で、tag_jaccard・embedding類似度（近傍topic routingのdistanceを正規化）・同一topicボーナス（same_topic_bonus）を合成したスコア降順で返す。embeddingサーバー停止時は例外にせず、embedding近傍チャネル(b)のみを無効化してタグ一致チャネル(a)の候補を`mode: "tag_only"`で返し続ける（縮退してもゼロ件にはしない）。`decision_supersedes`（kind='destabilizes'）を参照して`already_destabilized`、`decision_destabilization_resolutions`を参照して`already_resolved`を付与し、`include_already_resolved=false`（既定）ではresolve済み候補を除外する。実際にdestabilizesエッジを張るかどうかは呼び出し側の判断で、別途`add_relation(relation_type="destabilizes")`を呼ぶ。
 
 ---
 
