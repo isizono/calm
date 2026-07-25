@@ -242,6 +242,38 @@ def test_injection_telemetry_unaffected_when_write_fails(
     ), f"warning log が出ていない: {[r.message for r in caplog.records]}"
 
 
+def test_injection_telemetry_unaffected_when_attachment_malformed(
+    temp_db, capture_injection_telemetry_threads, caplog
+):
+    """attachments の要素にキー欠落（例: "rank" なし）があっても呼出元へ例外は伝播しない
+
+    dict-literal 組立時（呼出元スレッド）ではなく書込スレッド側で `.get()` により
+    アクセスするため、"rank" 欠落は NOT NULL 制約違反として書込失敗になるだけで
+    KeyError が呼出元スレッドへ伝播しない（既存の書込失敗テストとは別の
+    「payload 組立時」の経路を検証する）。
+    """
+    attachments = [
+        {"type": "decision", "id": 42, "similarity": None, "diagnostics": None},  # "rank" 欠落
+    ]
+
+    with caplog.at_level("WARNING"):
+        threads = search_service._record_injection_telemetry_async(
+            trigger_tool="add_decisions",
+            source_type="decision",
+            source_id=1,
+            attachments=attachments,
+            caller_session_id="sess-inject-malformed",
+        )
+
+    assert len(threads) == 1
+    _wait_for_telemetry(capture_injection_telemetry_threads)
+
+    assert _fetch_all_injection_telemetry() == []
+    assert any(
+        "injection_telemetry write failed" in record.message for record in caplog.records
+    ), f"warning log が出ていない: {[r.message for r in caplog.records]}"
+
+
 def test_record_material_fetch_telemetry_writes_get_material_row(
     temp_db, capture_fetch_telemetry_threads
 ):
