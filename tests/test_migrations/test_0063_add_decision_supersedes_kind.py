@@ -5,7 +5,9 @@ CHECK IN ('replaces', 'destabilizes')）が追加され、既存行が全て kin
 として複製されること、decision_destabilization_resolutions テーブルが新設され
 PRIMARY KEY (source_id, target_id) と CASCADE 削除が機能すること、relations_view
 が decision_supersedes.kind に応じて relation_type を 'supersedes'/'destabilizes'
-に出し分けることを確認する。
+に出し分けることを確認する。加えて idx_decision_supersedes_target（target_id, kind
+の複合インデックスへ変更）と idx_destab_resolutions_target が実際に作成されている
+ことを確認する。
 """
 
 import os
@@ -19,6 +21,7 @@ from yoyo.migrations import MigrationList
 
 from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection, init_database
 from src.services.tag_service import _injected_tags
+from test_migrations.conftest import index_names
 
 
 @pytest.fixture
@@ -303,5 +306,49 @@ class TestRelationsView:
             ).fetchone()
             assert row is not None
             assert row["relation_type"] == "destabilizes"
+        finally:
+            conn.close()
+
+
+class TestIndexes:
+    """0063で新設・再構成されたインデックスが実際に作成されていることの確認"""
+
+    def test_decision_supersedes_target_index_exists(self, migrated_db):
+        """decision_supersedes再構成後、idx_decision_supersedes_targetが(target_id, kind)の複合インデックスとして存在する"""
+        conn = get_connection()
+        try:
+            names = index_names(conn, "idx_decision_supersedes_target")
+            assert "idx_decision_supersedes_target" in names, (
+                "idx_decision_supersedes_target が 0063 適用後に存在しない"
+            )
+            columns = [
+                row["name"]
+                for row in conn.execute(
+                    "PRAGMA index_info(idx_decision_supersedes_target)"
+                ).fetchall()
+            ]
+            assert columns == ["target_id", "kind"], (
+                f"idx_decision_supersedes_target のカラム構成が想定と異なる: {columns}"
+            )
+        finally:
+            conn.close()
+
+    def test_destabilization_resolutions_target_index_exists(self, migrated_db):
+        """decision_destabilization_resolutions新設に伴いidx_destab_resolutions_targetが存在する"""
+        conn = get_connection()
+        try:
+            names = index_names(conn, "idx_destab_resolutions_target")
+            assert "idx_destab_resolutions_target" in names, (
+                "idx_destab_resolutions_target が 0063 適用後に存在しない"
+            )
+            columns = [
+                row["name"]
+                for row in conn.execute(
+                    "PRAGMA index_info(idx_destab_resolutions_target)"
+                ).fetchall()
+            ]
+            assert columns == ["target_id"], (
+                f"idx_destab_resolutions_target のカラム構成が想定と異なる: {columns}"
+            )
         finally:
             conn.close()
