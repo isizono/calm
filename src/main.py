@@ -734,7 +734,8 @@ def detect_reask_candidates(
 
     Returns:
         candidates: [{"kind", "turn", "text", "context_snippet", "options"?, "excluded_reason"?
-            （search対象に残ったものには付かない）, "degraded", "top_hits": [{"type","id","score","title"}]}, ...]
+            （search対象に残ったものには付かない）, "degraded", "top_hits": [{"type","id","score","title"}],
+            "search_error"?（search呼び出しがエラーを返した場合のみ付与。{"code","message"}）}, ...]
             excluded_reason付き候補、search_top_nを超えた候補は含まない
         total_extracted: 抽出段階の全候補数（除外分含む）
         excluded_count: excluded_reason付きで除外した件数

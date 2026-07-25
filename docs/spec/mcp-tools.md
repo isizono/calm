@@ -236,7 +236,7 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 | search_limit | int | no | 10 | 候補1件あたりのsearch呼び出しのlimit |
 | score_threshold | float | no | 0.4 | `candidates[].top_hits` に残す最小final_score |
 
-**返り値**: `{candidates: [{kind, turn, text, context_snippet, options?, degraded, top_hits: [{type, id, score, title}]}, ...], total_extracted, excluded_count, searched_count, truncated_count, degraded, score_threshold}`。excluded_reason付き候補・search_top_nを超えた候補は`candidates`に含まれない。transcript_pathが存在しない場合は`{"error": {"code": "TRANSCRIPT_NOT_FOUND", ...}}`。
+**返り値**: `{candidates: [{kind, turn, text, context_snippet, options?, degraded, top_hits: [{type, id, score, title}], search_error?}, ...], total_extracted, excluded_count, searched_count, truncated_count, degraded, score_threshold}`。`search_error`は候補に対するsearch呼び出しがエラーを返した場合のみ付与される（`{"code", "message"}`）。excluded_reason付き候補・search_top_nを超えた候補は`candidates`に含まれない。transcript_pathが存在しない場合は`{"error": {"code": "TRANSCRIPT_NOT_FOUND", ...}}`。
 **用途**: `skills/sync-memory/SKILL.md` ステップ9（聞き返しの後追い検出）の候補抽出＋照合searchを1回の呼び出しに集約する。既存記録があれば聞き返しが不要だったかの主観判定と`report_signal`呼び出しは呼び出し側が行う。
 
 ### 2.7 get_by_ids

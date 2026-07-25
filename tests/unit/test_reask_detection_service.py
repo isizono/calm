@@ -127,6 +127,32 @@ def test_search_top_n_truncates_candidates(temp_db):
     assert len(result["candidates"]) == 2
 
 
+def test_search_error_with_degraded_true_is_not_forced_to_false(temp_db, monkeypatch):
+    """search()がerrorとdegraded=Trueを同時に返す場合（例: KEYWORD_TOO_SHORT かつ
+    embedding search も不可）、candidateのdegradedはsearch_resultの実値(True)を
+    引き継ぎ、search_errorも付与される。degraded=Falseに握り潰してはならない。
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = _write_transcript(tmpdir, [_ask_entry("これは確認事項です")])
+
+        def stub_search(*args, **kwargs):
+            return {
+                "error": {"code": "KEYWORD_TOO_SHORT", "message": "キーワードが短すぎる"},
+                "degraded": True,
+            }
+
+        monkeypatch.setattr(reask_detection_service.search_service, "search", stub_search)
+
+        result = reask_detection_service.detect_reask_candidates(path)
+
+    assert result["searched_count"] == 1
+    candidate = result["candidates"][0]
+    assert candidate["degraded"] is True
+    assert candidate["search_error"] == {"code": "KEYWORD_TOO_SHORT", "message": "キーワードが短すぎる"}
+    assert candidate["top_hits"] == []
+    assert result["degraded"] is True
+
+
 def test_max_candidates_limits_extraction(temp_db):
     """max_candidatesで抽出段階そのものが打ち切られる。"""
     with tempfile.TemporaryDirectory() as tmpdir:

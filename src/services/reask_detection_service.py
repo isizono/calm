@@ -78,7 +78,9 @@ def detect_reask_candidates(
         entry = dict(candidate)
         if "error" in search_result:
             entry["search_error"] = search_result["error"]
-            entry["degraded"] = False
+            is_degraded = bool(search_result.get("degraded"))
+            degraded_any = degraded_any or is_degraded
+            entry["degraded"] = is_degraded
             entry["top_hits"] = []
             results.append(entry)
             continue
