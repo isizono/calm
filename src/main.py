@@ -560,9 +560,8 @@ def pull_precedents(
         full itemがindexへ追加降格され、guarantee=enumerated時のみ
         budget.response_chars({limit, measured, demoted})に記録される。
         詳細はdocs/spec/mcp-tools.md 2.32節参照。
-        未resolveなdestabilizesエッジを持つdecision itemにはdestabilization
-        （{destabilized_by, unresolved_count, latest_source, sources}）が付く。
-        無ければキー自体が無い。
+        未resolveなdestabilizesエッジを持つdecision itemにはdestabilizationが付く
+        （無ければキー自体が無い。フィールド形状はdocs/spec/mcp-tools.md 3.2節参照）。
     """
     flavor = _normalize_flavor(flavor)
     result = precedent_pull_service.pull_precedents(
