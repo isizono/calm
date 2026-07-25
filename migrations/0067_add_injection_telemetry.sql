@@ -1,4 +1,4 @@
--- Migration 0063: injection_telemetry（記録=クエリ添付の追随カウンタ用台帳）新設
+-- Migration 0067: injection_telemetry（記録=クエリ添付の追随カウンタ用台帳）新設
 --
 -- depends: 0062_add_asks
 --

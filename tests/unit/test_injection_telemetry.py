@@ -1,7 +1,7 @@
 """injection_telemetry（記録=クエリ添付の追随カウンタ）テーブル書込のテスト
 
 検証項目:
-1. migration 0063 後に injection_telemetry テーブルが存在する（必要なカラムを持つ）
+1. migration 0067 後に injection_telemetry テーブルが存在する（必要なカラムを持つ）
 2. injection_telemetry.timestamp / attached の index が張られている
 3. `_record_injection_telemetry_async` が attachments の要素数だけ present 行を書く
 4. attachments=[] のときは何も書かず空リストを返す（第3層添付が未実装/ゼロ件のケース）
@@ -96,7 +96,7 @@ def _fetch_all_fetch_telemetry():
 
 
 def test_injection_telemetry_table_schema(temp_db):
-    """migration 0063 で injection_telemetry テーブルと必要なカラムが作られる"""
+    """migration 0067 で injection_telemetry テーブルと必要なカラムが作られる"""
     conn = get_connection()
     try:
         rows = conn.execute("PRAGMA table_info(injection_telemetry)").fetchall()

@@ -2,8 +2,8 @@
 watch-tags: domain:cc-memory
 watch-direction: true
 watch-migrations: true
-last-synced: 2026-07-22
-last-synced-migration: 0062
+last-synced: 2026-07-25
+last-synced-migration: 0067
 -->
 
 # cc-memory DBスキーマ v0
@@ -716,7 +716,7 @@ asks 専用の sqlite-vec 仮想テーブル（384次元、`distance_metric=cosi
 
 インデックス: `idx_injection_telemetry_session_ts`（`caller_session_id, timestamp`）/ `idx_injection_telemetry_attached`（`attached_type, attached_id`）
 
-関連 migration: 0063_add_injection_telemetry
+関連 migration: 0067_add_injection_telemetry
 
 ---
 
@@ -851,7 +851,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0060_add_habit_importance_score_check | trigger_mode='intelligently'かつimportance_score=1.0(未設定)のhabitを3に補正したうえで、importance_scoreにCHECK(IN (1, 2, 3))を追加（テーブル再構築） |
 | 0061_add_tag_archived | tags に archived_at（退役日時）/ archived_reason（退役理由、100文字以内のCHECK制約付き）を追加、archived_at 用の部分インデックス idx_tags_archived_at を新設（スキーマ変更のみ、データ移行なし） |
 | 0062_add_asks | asks / ask_blocks / ask_requesters テーブル新設 + ask専用 vec0 仮想テーブル ask_vec 新設（§3.23-3.25） |
-| 0063_add_injection_telemetry | injection_telemetry テーブル新設（記録=クエリ添付の追随カウンタ present側台帳、§3.26） |
+| 0067_add_injection_telemetry | injection_telemetry テーブル新設（記録=クエリ添付の追随カウンタ present側台帳、§3.26） |
 
 重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。
 
