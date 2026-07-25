@@ -7,7 +7,7 @@ import asyncio
 
 import yaml
 
-from scripts.generate_openapi import build_openapi_doc, render_yaml
+from scripts.generate_openapi import TOOL_TAGS, build_openapi_doc, render_yaml
 
 
 def _live_tools():
@@ -26,6 +26,19 @@ def test_paths_cover_every_registered_tool():
 
     expected_paths = {f"/tools/{t.name}" for t in tools}
     assert set(doc["paths"].keys()) == expected_paths
+
+
+def test_every_registered_tool_has_an_explicit_tag():
+    """全ての登録済みツールがTOOL_TAGSに明示登録されていること。
+
+    未登録のまま放置すると"misc"タグへ黙って落ちてしまい(generate_openapi.py内
+    のコメント参照)、タグ分類ミスがCIで検出されない。ツール追加時にTOOL_TAGSへの
+    追記漏れを機械的に検出する。
+    """
+    tools = _live_tools()
+    tool_names = {t.name for t in tools}
+    missing = tool_names - TOOL_TAGS.keys()
+    assert not missing, f"TOOL_TAGS に未登録のツールがある: {sorted(missing)}"
 
 
 def test_request_body_schema_matches_tool_parameters():
