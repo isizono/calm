@@ -2,7 +2,7 @@
 import logging
 import sqlite3
 
-from src.config import PRECEDENT_ROUTING_CANDIDATES, PRECEDENT_ROUTING_MISS_DISTANCE
+from src.config import PRECEDENT_ROUTING_K_MAX, PRECEDENT_ROUTING_MISS_DISTANCE
 from src.db import get_connection
 from src.services.precedent_pull_service import route_topics
 from src.services.retract_service import retract
@@ -251,8 +251,11 @@ def suggest_destabilized_candidates(
 
     候補は「(a) sourceとtag集合が重なるnon-retract decision」と「(b) sourceが属するtopicの
     embedding近傍topicに属するnon-retract decision」の和集合。各候補についてtag重なり
-    （Jaccard係数）とembedding類似度（route_topicsが返すdistanceを正規化）を合成した
-    スコア降順で返す。embeddingサーバー停止時は例外にせずmode="unavailable"で縮退する。
+    （Jaccard係数）とembedding類似度（route_topicsが返すdistanceを正規化）、および
+    同一topicボーナス（same_topic_bonus、重み_SCORE_WEIGHT_SAME_TOPIC）を合成した
+    スコア降順で返す。embeddingサーバー停止時は例外にせず、チャネル(b)のみを無効化して
+    チャネル(a)（タグ一致）の候補はmode="tag_only"で返し続ける（縮退してもゼロ件には
+    しない）。
 
     read-only。decision_supersedes等への書き込みは一切行わない。実際にdestabilizesエッジを
     張るかどうかは呼び出し側の判断で、別途add_relation(relation_type="destabilizes")を呼ぶ。
@@ -266,7 +269,10 @@ def suggest_destabilized_candidates(
     Returns:
         {"candidates": [{"decision_id", "title", "score", "match_reason",
                           "already_destabilized", "already_resolved"}, ...],
-         "mode": "vector" | "unavailable"}
+         "mode": "vector" | "tag_only"}
+         "vector"はチャネル(a)(b)双方が有効に動作したことを、"tag_only"はembedding
+         サーバー停止等でチャネル(b)（embedding近傍）が無効化され、チャネル(a)
+         （タグ一致）のみで候補生成したことを示す（候補が0件の場合もこの値になりうる）。
     """
     conn = get_connection()
     try:
@@ -278,17 +284,29 @@ def suggest_destabilized_candidates(
 
         source_topic_id = _get_owner_topic_ids_batch(conn, [source_decision_id])[source_decision_id]
         neighbor_distance_by_topic: dict[int, float] = {}
+        routing_unavailable = False
         if source_topic_id is not None:
             topic_row = conn.execute(
                 "SELECT title FROM discussion_topics WHERE id = ?", (source_topic_id,)
             ).fetchone()
             if topic_row is not None:
-                routing = route_topics(topic_row["title"], PRECEDENT_ROUTING_CANDIDATES, conn)
+                # route_topicsのk引数は「selectedにする近傍topic数の上限」を意味する。
+                # PRECEDENT_ROUTING_CANDIDATES（KNN探索プール件数、既定10。selected上限
+                # より広めに取るための値）を直接渡すのは意味の取り違え。
+                # precedent_pull_service.pyの既存呼び出しと同じPRECEDENT_ROUTING_K_MAX
+                # （既定5）を、同じmax(1, min(...))のclampパターンで使う。
+                routing_k = max(1, min(PRECEDENT_ROUTING_K_MAX, PRECEDENT_ROUTING_K_MAX))
+                routing = route_topics(topic_row["title"], routing_k, conn)
                 if routing["mode"] == "unavailable":
-                    return {"candidates": [], "mode": "unavailable"}
-                neighbor_distance_by_topic = {
-                    c["topic_id"]: c["distance"] for c in routing["candidates"] if c.get("selected")
-                }
+                    # embeddingチャネル(b)のみ無効化する。タグ一致チャネル(a)は
+                    # embeddingに依存しないため、ここで打ち切らず引き続き計算する。
+                    routing_unavailable = True
+                else:
+                    neighbor_distance_by_topic = {
+                        c["topic_id"]: c["distance"] for c in routing["candidates"] if c.get("selected")
+                    }
+
+        mode = "tag_only" if routing_unavailable else "vector"
 
         # 候補生成チャネル(a): sourceとタグを共有するnon-retract decision
         matching_tags = source_tags - _CANDIDATE_MATCH_EXCLUDED_TAGS
@@ -296,13 +314,14 @@ def suggest_destabilized_candidates(
         tag_sharing_ids = _decisions_sharing_tags(conn, matching_tag_ids, exclude_id=source_decision_id)
 
         # 候補生成チャネル(b): 近傍topicに属するnon-retract decision
+        # （routing_unavailable時はneighbor_distance_by_topicが空のため自然に空集合になる）
         neighbor_ids = _decisions_in_topics(
             conn, list(neighbor_distance_by_topic.keys()), exclude_id=source_decision_id
         )
 
         candidate_ids = tag_sharing_ids | neighbor_ids
         if not candidate_ids:
-            return {"candidates": [], "mode": "vector"}
+            return {"candidates": [], "mode": mode}
 
         candidate_id_list = list(candidate_ids)
         owner_topic_by_id = _get_owner_topic_ids_batch(conn, candidate_id_list)
@@ -363,6 +382,6 @@ def suggest_destabilized_candidates(
             })
 
         scored.sort(key=lambda c: (c["score"], c["decision_id"]), reverse=True)
-        return {"candidates": scored[:k], "mode": "vector"}
+        return {"candidates": scored[:k], "mode": mode}
     finally:
         conn.close()
