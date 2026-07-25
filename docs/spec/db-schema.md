@@ -2,8 +2,8 @@
 watch-tags: domain:cc-memory
 watch-direction: true
 watch-migrations: true
-last-synced: 2026-07-22
-last-synced-migration: 0062
+last-synced: 2026-07-25
+last-synced-migration: 0063
 -->
 
 # cc-memory DBスキーマ v0
@@ -42,6 +42,7 @@ erDiagram
 
   activities ||--o{ activity_dependencies : "depends_on"
   decisions ||--o{ decision_supersedes : "supersedes"
+  decisions ||--o{ decision_destabilization_resolutions : "resolves"
 
   discussion_topics ||--o{ relations : "polymorphic"
   activities ||--o{ relations : "polymorphic"
@@ -397,7 +398,7 @@ decision 間の有向関係。`kind`列で意味論を2つに分ける。`replac
 インデックス:
 - `idx_decision_supersedes_target` ON `decision_supersedes(target_id, kind)`
 
-関連 migration: 0033（新設）, 0065（kind列追加、PK再構成）
+関連 migration: 0033（新設）, 0063（kind列追加、PK再構成）
 
 ### 3.11a decision_destabilization_resolutions
 
@@ -415,7 +416,7 @@ decision 間の有向関係。`kind`列で意味論を2つに分ける。`replac
 インデックス:
 - `idx_destab_resolutions_target` ON `decision_destabilization_resolutions(target_id)`
 
-関連 migration: 0065
+関連 migration: 0063
 
 ### 3.12 pins
 
@@ -530,7 +531,7 @@ tags テーブル用の sqlite-vec 仮想テーブル（384次元）。tag embed
 - `depends_on`: `activity_dependencies` をそのまま（非対称）
 - `supersedes` / `destabilizes`: `decision_supersedes` の`kind`列を`CASE`で`relation_type`に出し分け（非対称）
 
-関連 migration: 0020（初版）/ 0023（material 系拡張）/ 0028（depends_on 追加）/ 0033（relations 統合 + supersedes 追加）/ 0046（belongs_to 対応・relation_type を直接返す形に再構築）/ 0065（destabilizes 出し分け追加）
+関連 migration: 0020（初版）/ 0023（material 系拡張）/ 0028（depends_on 追加）/ 0033（relations 統合 + supersedes 追加）/ 0046（belongs_to 対応・relation_type を直接返す形に再構築）/ 0063（destabilizes 出し分け追加）
 
 ### 3.18 search_telemetry
 
@@ -844,7 +845,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0060_add_habit_importance_score_check | trigger_mode='intelligently'かつimportance_score=1.0(未設定)のhabitを3に補正したうえで、importance_scoreにCHECK(IN (1, 2, 3))を追加（テーブル再構築） |
 | 0061_add_tag_archived | tags に archived_at（退役日時）/ archived_reason（退役理由、100文字以内のCHECK制約付き）を追加、archived_at 用の部分インデックス idx_tags_archived_at を新設（スキーマ変更のみ、データ移行なし） |
 | 0062_add_asks | asks / ask_blocks / ask_requesters テーブル新設 + ask専用 vec0 仮想テーブル ask_vec 新設（§3.23-3.25） |
-| 0065_add_decision_supersedes_kind | decision_supersedes に kind 列（'replaces'/'destabilizes'）追加（テーブル再構築、PK に kind を含める形へ変更）、decision_destabilization_resolutions テーブル新設、relations_view の supersedes 由来行を kind で出し分け（§3.11, §3.11a, §3.17） |
+| 0063_add_decision_supersedes_kind | decision_supersedes に kind 列（'replaces'/'destabilizes'）追加（テーブル再構築、PK に kind を含める形へ変更）、decision_destabilization_resolutions テーブル新設、relations_view の supersedes 由来行を kind で出し分け（§3.11, §3.11a, §3.17） |
 
 重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。
 
