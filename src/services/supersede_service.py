@@ -190,7 +190,9 @@ def compute_destabilization_info_batch(
     resolved_pairs = {
         (r["source_id"], r["target_id"])
         for r in conn.execute(
-            "SELECT source_id, target_id FROM decision_destabilization_resolutions"
+            "SELECT source_id, target_id FROM decision_destabilization_resolutions "
+            f"WHERE target_id IN ({placeholders})",
+            tuple(decision_ids),
         ).fetchall()
     }
 
