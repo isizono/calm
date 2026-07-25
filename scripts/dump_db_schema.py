@@ -15,7 +15,9 @@
 内部テーブル（yoyoのmigration台帳 `_yoyo_*`）は出力対象外。
 """
 import argparse
+import atexit
 import os
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -30,6 +32,22 @@ MIGRATIONS_DIR = REPO_ROOT / "migrations"
 
 EXCLUDED_PREFIXES = ("_yoyo_", "sqlite_")
 
+# _build_fresh_connection() が作った一時DBディレクトリの一覧。
+# 返す sqlite3.Connection は呼び出し元（build_markdown() やテストコード）が
+# 使い終わるまで有効である必要があり、関数を抜けた時点では破棄できない。
+# そのため個々の呼び出しごとに即座に削除せず、プロセス終了時にまとめて
+# 削除する（atexit）ことでリークを防ぐ。
+_TMP_SCHEMA_DUMP_DIRS: list[str] = []
+
+
+def _cleanup_tmp_schema_dump_dirs() -> None:
+    for d in _TMP_SCHEMA_DUMP_DIRS:
+        shutil.rmtree(d, ignore_errors=True)
+    _TMP_SCHEMA_DUMP_DIRS.clear()
+
+
+atexit.register(_cleanup_tmp_schema_dump_dirs)
+
 
 def _latest_migration_number() -> str:
     numbers = []
@@ -43,6 +61,12 @@ def _build_fresh_connection() -> sqlite3.Connection:
 
     既存の CCM_DB_PATH / DISCUSSION_DB_PATH は変更しない
     （呼び出し元プロセスの他のDB利用に影響させないため、専用の一時パスへ隔離する）。
+
+    一時ディレクトリは、返した接続を呼び出し元が使い終わるまで生存させる
+    必要がある（テストコードから直接呼ばれ、戻り値をこの関数のスコープ外で
+    使い続けるため）。セットアップ中に例外が起きた場合は即座に削除し、
+    成功時は _TMP_SCHEMA_DUMP_DIRS に登録してプロセス終了時（atexit）に
+    まとめて削除する。
     """
     tmpdir = tempfile.mkdtemp(prefix="ccm-schema-dump-")
     db_path = os.path.join(tmpdir, "schema-dump.db")
@@ -55,13 +79,19 @@ def _build_fresh_connection() -> sqlite3.Connection:
         from src.db import init_database, get_connection
 
         init_database()
-        return get_connection()
+        conn = get_connection()
+    except Exception:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise
     finally:
         for k, v in old_env.items():
             if v is None:
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+
+    _TMP_SCHEMA_DUMP_DIRS.append(tmpdir)
+    return conn
 
 
 def _table_names(conn: sqlite3.Connection) -> list[str]:
