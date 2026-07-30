@@ -768,5 +768,5 @@ cc-memoryが扱うエンティティの内部表現。詳細スキーマは `doc
 
 ## 補足
 
-- 本書の更新は `src/main.py` の docstring を一次情報とし、yamlを再生成する手順を別途整える必要がある（現状は手動同期）。
+- 本書（Markdown、人間向け）の更新は手動のままである。機械可読版の `docs/spec/openapi.yaml` は `scripts/generate_openapi.py` が `mcp.list_tools()` から自動生成し、CIで乖離を検出する（`.github/workflows/test.yml` の `doc-gen-drift` ジョブ）。
 - 個別ツールの呼び出し例（typical-call snippets）は別資料 `docs/architecture/sequences/` に分離する予定。

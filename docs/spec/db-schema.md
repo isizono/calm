@@ -10,15 +10,15 @@ last-synced-migration: 0067
 
 ## 0. 読み方
 
-本ドキュメントは cc-memory 本体（SQLite データベース）の現状スキーマを写し取ったものである。凍結を目的とせず、議論・把握のための作業用ドキュメントとして扱う。
+本ドキュメントは cc-memory 本体（SQLite データベース）のスキーマについて、設計判断の背景・変遷・既知の課題をまとめた手書きの作業用ドキュメントである。凍結を目的としない。
+
+**カラム名・型・NULL可否・デフォルト値・インデックスの現在値は本ドキュメントには書かない。** これらは `docs/spec/db-schema-tables.md`（`scripts/dump_db_schema.py` が `migrations/` 全適用後の実スキーマから自動生成、手動編集禁止）を正とする。本ドキュメントは「今どういう形か」ではなく「なぜこの形なのか」に集中する。§3 各テーブル節は用途・変遷（旧カラムの追加/削除履歴等）・設計判断の背景のみを記述し、正確なカラム一覧は都度 `db-schema-tables.md` の該当節へのリンクで参照する。
 
 - 一次情報は `migrations/` 配下の yoyo マイグレーションファイル全体である
-- 本ドキュメントはマイグレーションを順に適用した結果として現れる**現状のスキーマ**を、テーブル単位で再構成して記述する
 - 表面化していない（コード読み込みでも確認できない）事項は「未確認」と明記する
-- 既知の課題は5次元統合レポートの T1（エンティティモデル & データアーキ）の指摘事実を §8 にまとめる
+- 既知の課題は5次元統合レポートの T1（エンティティモデル & データアーキ）の指摘事実を §8 にまとめる。解消済みの項目は削除せず、取り消し線 + 解消日で残す（詳細は `docs/spec/doc-sync-convention.md` §6）
 
 凡例:
-- カラム NULL 列: `NO` = NOT NULL、`YES` = NULL 許容
 - カラムごとの「関連 migration」は、最後にそのカラム形状を確定したファイル番号を示す
 - 論理的なエンティティ名（topic / activity / decision / log / material / habit）と物理テーブル名（`discussion_topics` / `activities` / `decisions` / `discussion_logs` / `materials` / `habits`）の両方を併記する
 
@@ -130,41 +130,24 @@ erDiagram
 
 ## 3. 各テーブル詳細
 
+カラム名・型・NULL可否・デフォルト値・インデックスの現在値は `docs/spec/db-schema-tables.md`（自動生成）を参照。以下は各テーブルの用途・変遷・設計判断の背景に絞った手書きメモである。
+
 ### 3.1 discussion_topics
 
 議論トピック。1つの関心事・問題・機能を表す。
-
-| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
-|---|---|---|---|---|---|
-| id | INTEGER | NO | autoincrement | PRIMARY KEY | トピックID |
-| title | VARCHAR(255) | NO | — | — | トピック名 |
-| description | TEXT | NO | — | — | 説明 |
-| created_at | TIMESTAMP | NO | CURRENT_TIMESTAMP | — | 作成時刻 |
 
 補足:
 - 0001 で project_id / parent_topic_id を持つ階層構造として作成されたが、0010 で両カラムとも削除された
 - 親子帰属は現状もたず、トピック間関連は `relations` テーブル（`source_type='topic'`）で表現する
 - caller_session_id カラムは 0048 で追加されたが、0057 で削除された（§6）
 
-インデックス: なし（id 以外には現状張られていない）
-
 関連 migration: 0001（新設）/ 0003（project→subject リネーム）/ 0010（subject_id, parent_topic_id 削除）/ 0048（caller_session_id 追加、のち0057で削除）
+
+カラム一覧・インデックス: `db-schema-tables.md` の `discussion_topics` 節参照。
 
 ### 3.2 activities
 
 作業の器。status を持つ。
-
-| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
-|---|---|---|---|---|---|
-| id | INTEGER | NO | autoincrement | PRIMARY KEY | アクティビティID |
-| title | VARCHAR(255) | NO | — | — | タイトル |
-| description | TEXT | NO | — | — | 詳細 |
-| status | VARCHAR(20) | NO | `'pending'` | CHECK IN ('pending', 'in_progress', 'completed', 'snoozed', 'shelved') | 状態 |
-| created_at | TIMESTAMP | NO | CURRENT_TIMESTAMP | — | 作成時刻 |
-| updated_at | TIMESTAMP | NO | CURRENT_TIMESTAMP | — | 更新時刻 |
-| last_heartbeat_at | TEXT | YES | — | — | 最終ハートビート時刻 |
-| last_heartbeat_session_id | TEXT | YES | — | — | 直近heartbeatの書込元セッションID |
-| orch_managed | BOOLEAN | NO | `0` | — | orch管轄activityかどうか（SQLiteはINTEGER affinityで0/1保持） |
 
 補足:
 - 0001 で tasks として作成され、0011 で activities にリネーム
@@ -174,23 +157,13 @@ erDiagram
 - orch_managed は 0045 で追加。従来の素タグ `orch-managed` の存在/不在で表現していた属性を構造的カラムへ昇格したもの（同migrationで既存タグ付きactivityへの一括反映も実施）
 - caller_session_id カラムは 0048 で追加されたが、0057 で削除された（§6）
 
-インデックス:
-- `idx_activities_status` ON `activities(status)`
-
 関連 migration: 0001 / 0007 / 0010 / 0011 / 0016 / 0017 / 0021 / 0026 / 0027 / 0040（last_heartbeat_session_id）/ 0045（orch_managed）/ 0048（caller_session_id追加、のち0057で削除）
+
+カラム一覧・インデックス: `db-schema-tables.md` の `activities` 節参照。
 
 ### 3.3 decisions
 
 双方が合意した決定事項。
-
-| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
-|---|---|---|---|---|---|
-| id | INTEGER | NO | autoincrement | PRIMARY KEY | 決定ID |
-| title | TEXT | YES | — | — | 表示用 title（NULL 時は decision 本文で代用） |
-| decision | TEXT | NO | — | — | 決定事項本文 |
-| reason | TEXT | NO | — | — | 理由 |
-| created_at | TIMESTAMP | NO | CURRENT_TIMESTAMP | — | 作成時刻 |
-| retracted_at | TIMESTAMP | YES | — | — | 取消し時刻（NULL=有効） |
 
 補足:
 - 0001 では topic_id が NULL 許容だったが、0005（重複番号片方）で NOT NULL 化された（`first_topic` への移行付き）。0006 で ON DELETE CASCADE 追加
@@ -199,21 +172,13 @@ erDiagram
 - **`topic_id` カラムは現在存在しない**。0046 で NULLABLE 化 + FK 制約撤去、0047 で物理削除された。親 topic 帰属は `relations`（`source_type='decision', target_type='topic', relation_type='belongs_to'`）で表現する（§3.9 / §4 参照）。旧 `idx_decisions_topic_id` インデックスも 0046 で撤去済み
 - caller_session_id カラムは 0048 で追加されたが、0057 で削除された（§6）
 
-インデックス: id 以外には現状張られていない（旧 `idx_decisions_topic_id` は 0046 で撤去）
-
 関連 migration: 0001 / 0005（topic_id NOT NULL、のち撤去）/ 0006 / 0029 / 0031 / 0035 / 0037 / 0046（topic_id NULLABLE化・belongs_to複製）/ 0047（topic_id 物理削除）/ 0048（caller_session_id追加、のち0057で削除）
+
+カラム一覧・インデックス: `db-schema-tables.md` の `decisions` 節参照。
 
 ### 3.4 discussion_logs
 
 議論や作業の経緯。
-
-| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
-|---|---|---|---|---|---|
-| id | INTEGER | NO | autoincrement | PRIMARY KEY | ログID |
-| title | TEXT | NO | `''` | — | タイトル |
-| content | TEXT | NO | — | — | 本文 |
-| created_at | TIMESTAMP | NO | CURRENT_TIMESTAMP | — | 作成時刻 |
-| retracted_at | TIMESTAMP | YES | — | — | 取消し時刻 |
 
 補足:
 - 0001 では content のみ。0008 で title カラム追加 + 検索インデックス登録
@@ -223,23 +188,13 @@ erDiagram
 - **`topic_id` カラムは現在存在しない**（decisions と同じ経緯。0046 で NULLABLE化、0047 で物理削除）。親 topic 帰属は `relations`（`relation_type='belongs_to'`）で表現する。旧 `idx_logs_topic_id` インデックスも 0046 で撤去済み
 - caller_session_id カラムは 0048 で追加されたが、0057 で削除された（§6）
 
-インデックス: id 以外には現状張られていない（旧 `idx_logs_topic_id` は 0046 で撤去）
-
 関連 migration: 0001 / 0006 / 0008 / 0029 / 0031 / 0035 / 0046（topic_id NULLABLE化・belongs_to複製）/ 0047（topic_id 物理削除）/ 0048（caller_session_id追加、のち0057で削除）
+
+カラム一覧・インデックス: `db-schema-tables.md` の `discussion_logs` 節参照。
 
 ### 3.5 materials
 
 成果物（ドラフト・分析結果・調査レポート等）。
-
-| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
-|---|---|---|---|---|---|
-| id | INTEGER | NO | autoincrement | PRIMARY KEY | 資材ID |
-| title | TEXT | NO | — | — | タイトル |
-| content | TEXT | NO | — | — | 本文 |
-| source | TEXT | NO | `'unknown'` | — | 出自（どこから来た情報か） |
-| created_at | TEXT | NO | `strftime('%Y-%m-%d %H:%M:%S', 'now')` | — | 作成時刻 |
-| updated_at | TIMESTAMP | YES | — | — | 更新時刻（NULL 不可避：ALTER の非定数 DEFAULT 制約のため） |
-| retracted_at | TIMESTAMP | YES | — | — | 取消し時刻（NULL=有効） |
 
 補足:
 - 0013 で activity_id FK 直結エンティティとして新設 → 0023 で activity_id 削除し独立エンティティ化、relations 経由で activity に紐づく構成へ
@@ -248,26 +203,13 @@ erDiagram
 - retracted_at は 0043 で追加された（decision/log の retract 機構（0031）に対称化）。§6 の記載（「decision/log にのみあり material には無い」）は 0043 時点で古くなっている
 - caller_session_id カラムは 0048 で追加されたが、0057 で削除された（§6）
 
-インデックス:
-- `idx_materials_activity_id`（0013で作成）は 0023 で削除済み。現状 id 以外のインデックスはない
-
 関連 migration: 0013 / 0018 / 0023 / 0029 / 0032 / 0034 / 0035 / 0036 / 0043（retracted_at）/ 0048（caller_session_id追加、のち0057で削除）
+
+カラム一覧・インデックス: `db-schema-tables.md` の `materials` 節参照。
 
 ### 3.6 habits
 
 全セッション共通の行動ルール（旧 reminders）。
-
-| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
-|---|---|---|---|---|---|
-| id | INTEGER | NO | autoincrement | PRIMARY KEY | habit ID |
-| content | TEXT | NO | — | — | 内容 |
-| active | INTEGER | NO | `1` | — | 有効フラグ（1=有効） |
-| created_at | TEXT | YES | `datetime('now')` | — | 作成時刻 |
-| description | TEXT | NO | `''` | — | 要旨（intelligently層のマニフェスト表示に使う） |
-| trigger_mode | TEXT | NO | `'always'` | CHECK IN ('always', 'intelligently') | SessionStartでの注入方式。alwaysは全文、intelligentlyはタイトルのみのマニフェストにとどめ詳細はon-demand取得 |
-| importance_score | REAL | NO | `1.0` | CHECK IN (1, 2, 3) | 優先度（1=critical/2=important/3=default）。intelligently層マニフェストのソートに使う |
-| last_recalled_at | TIMESTAMP | YES | — | — | `get_habits(habit_id=...)` でon-demand取得された直近時刻 |
-| status | TEXT | NO | `'active'` | CHECK IN ('active', 'archived') | 棚卸し状態。active とは独立した軸で、マニフェスト取得は両方をANDで絞り込む |
 
 補足:
 - 0019 で reminders として新設、0025 で habits にリネーム
@@ -282,25 +224,13 @@ erDiagram
   （ラチェット型天井、縮む変更は天井超過中でも常に許可）を追加。アプリ層
   （habit_service）が持つ1500字ゲートとは独立した、直接書き込み経路向けの保険
 
-インデックス: なし
-
 関連 migration: 0019 / 0022（初期データ追加）/ 0025 / 0058（description / trigger_mode / importance_score / last_recalled_at 追加）/ 0059（status 追加）/ 0060（importance_score データ補正 + CHECK制約追加）/ 0065（always プール合計ラチェット天井トリガー追加）
+
+カラム一覧・インデックス: `db-schema-tables.md` の `habits` 節参照。
 
 ### 3.7 tags
 
 namespace + name による分類タグ。
-
-| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
-|---|---|---|---|---|---|
-| id | INTEGER | NO | autoincrement | PRIMARY KEY | タグID |
-| namespace | TEXT | NO | `''` | UNIQUE(namespace, name) | namespace（`domain` / `intent` / 空文字＝素タグ / `ow:` / `outcome:` 等） |
-| name | TEXT | NO | — | UNIQUE(namespace, name) | タグ名 |
-| notes | TEXT | YES | — | — | 振る舞いガイド（CLAUDE.md のタグ版） |
-| description | TEXT | YES | — | CHECK(description IS NULL OR LENGTH(description) <= 100) | 短い説明（100文字以内） |
-| canonical_id | INTEGER | YES | — | REFERENCES tags(id) | エイリアス先 tag ID（表記ゆれ統合用） |
-| created_at | TIMESTAMP | NO | CURRENT_TIMESTAMP | — | 作成時刻 |
-| archived_at | TIMESTAMP | YES | NULL | — | 退役日時。NULL は非archived |
-| archived_reason | TEXT | YES | NULL | CHECK(archived_reason IS NULL OR LENGTH(archived_reason) <= 100) | 退役理由（100文字以内） |
 
 補足:
 - 0009 で新設。当初 namespace CHECK は `('', 'domain', 'scope', 'mode')`
@@ -312,43 +242,25 @@ namespace + name による分類タグ。
 - 0066 で、notes が4000字を超えて増加する INSERT/UPDATE を `RAISE(ABORT)` で拒否する
   DBトリガー（1タグあたりのラチェット型天井、縮む変更は天井超過中でも常に許可）を追加
 
-インデックス:
-- 暗黙インデックス `UNIQUE(namespace, name)`
-- `idx_tags_archived_at` ON `tags(archived_at)`（`archived_at IS NOT NULL` の部分インデックス、0061）
-
 関連 migration: 0009 / 0012 / 0014 / 0015_tag_canonical / 0024 / 0039_extend_tag_namespace / 0061_add_tag_archived / 0066_add_tags_notes_ratchet_trigger
+
+カラム一覧・インデックス: `db-schema-tables.md` の `tags` 節参照。
 
 ### 3.8 topic_tags / activity_tags / decision_tags / log_tags / material_tags
 
 各エンティティ ↔ tag の junction table。構造は全て同型。
 
-| カラム名 | 型 | NULL | 制約 | 説明 |
-|---|---|---|---|---|
-| `<entity>_id` | INTEGER | NO | REFERENCES `<entity>`(id) ON DELETE CASCADE, PK | エンティティID |
-| tag_id | INTEGER | NO | REFERENCES tags(id) ON DELETE CASCADE, PK | タグID |
-
 補足:
 - `task_tags` として 0009 で作成 → 0011 で `activity_tags` にリネーム（`task_id` → `activity_id`）
 - `material_tags` は 0023 で追加
 
-インデックス:
-- `idx_material_tags_tag` ON `material_tags(tag_id)`（0023）
-- `idx_topic_tags_tag` / `idx_activity_tags_tag` / `idx_decision_tags_tag` / `idx_log_tags_tag` ON 各 `<junction>(tag_id)`（0049）
-
 関連 migration: 0009 / 0011 / 0023 / 0049
+
+カラム一覧・インデックス: `db-schema-tables.md` の `topic_tags` 節参照。
 
 ### 3.9 relations
 
 5エンティティ（topic / activity / decision / log / material）間の対称な「related」関係を1テーブルに統合したポリモーフィック関係表。
-
-| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
-|---|---|---|---|---|---|
-| source_type | TEXT | NO | — | CHECK IN ('topic','activity','material','decision','log'), PK | 起点エンティティ種別 |
-| source_id | INTEGER | NO | — | PK | 起点エンティティID |
-| target_type | TEXT | NO | — | CHECK IN ('topic','activity','material','decision','log'), PK | 終点エンティティ種別 |
-| target_id | INTEGER | NO | — | PK | 終点エンティティID |
-| relation_type | TEXT | NO | `'related'` | CHECK(relation_type IN ('related', 'belongs_to')) | 関係種別 |
-| created_at | TEXT | YES | `datetime('now')` | — | 作成時刻 |
 
 正規化制約:
 - `CHECK (source_type < target_type OR (source_type = target_type AND source_id < target_id))`
@@ -361,81 +273,45 @@ namespace + name による分類タグ。
 - **0046 で `relation_type` の CHECK を `('related', 'belongs_to')` に緩和**。子→親（decision/log/material/activity → topic）の帰属を表す `belongs_to` を追加し、全5エンティティの親帰属をこの1系統に統一した（旧 `decisions.topic_id` / `discussion_logs.topic_id` FK・旧 material/activity の `related` 流用を置き換え）
 - `belongs_to` クエリの hot path 用に partial index を2本追加（0046）: `idx_relations_belongs_to_tgt`（子→親方向）/ `idx_relations_belongs_to_src`（親→子方向）
 
-インデックス:
-- `idx_relations_target` ON `relations(target_type, target_id)`
-- `idx_relations_belongs_to_tgt` ON `relations(target_type, target_id, source_type, source_id) WHERE relation_type = 'belongs_to'`（0046）
-- `idx_relations_belongs_to_src` ON `relations(source_type, source_id, target_id) WHERE relation_type = 'belongs_to'`（0046）
-
 関連 migration: 0020（旧個別テーブル新設）/ 0023（material 系追加）/ 0033（統合）/ 0046（belongs_to 追加・partial index 2本）
+
+カラム一覧・インデックス: `db-schema-tables.md` の `relations` 節参照。
 
 ### 3.10 activity_dependencies
 
 activity 間の有向 `depends_on` 関係。
 
-| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
-|---|---|---|---|---|---|
-| dependent_id | INTEGER | NO | — | REFERENCES activities(id) ON DELETE CASCADE, PK | 依存元 |
-| dependency_id | INTEGER | NO | — | REFERENCES activities(id) ON DELETE CASCADE, PK | 依存先 |
-| created_at | TEXT | YES | `datetime('now')` | — | 作成時刻 |
-
 制約:
 - `CHECK (dependent_id != dependency_id)`
 - 循環検出は relation_service（DFS）で実装される
 
-インデックス:
-- `idx_activity_dependencies_dependency` ON `activity_dependencies(dependency_id)`
-
 関連 migration: 0028
+
+カラム一覧・インデックス: `db-schema-tables.md` の `activity_dependencies` 節参照。
 
 ### 3.11 decision_supersedes
 
 decision 間の有向関係。`kind`列で意味論を2つに分ける。`replaces`（結論の置き換え、旧`supersedes`と同義）と`destabilizes`（前提が変わったので要再検証、結論が変わるとは限らない）。
 
-| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
-|---|---|---|---|---|---|
-| source_id | INTEGER | NO | — | REFERENCES decisions(id) ON DELETE CASCADE, PK | 新decision（またはdestabilizeする側） |
-| target_id | INTEGER | NO | — | REFERENCES decisions(id) ON DELETE CASCADE, PK | 旧decision（またはdestabilizeされる側） |
-| kind | TEXT | NO | `'replaces'` | CHECK IN ('replaces','destabilizes'), PK | 関係の種類 |
-| created_at | TEXT | YES | `datetime('now')` | — | 作成時刻 |
-
 制約:
 - `CHECK (source_id != target_id)`
 - 同一`(source_id, target_id)`ペアに`replaces`/`destabilizes`両方が共存することはスキーマ上許容される（PKに`kind`を含むため）
 
-インデックス:
-- `idx_decision_supersedes_target` ON `decision_supersedes(target_id, kind)`
+関連 migration: 0033（新設）/ 0063（kind列追加、PK再構成）
 
-関連 migration: 0033（新設）, 0063（kind列追加、PK再構成）
+カラム一覧・インデックス: `db-schema-tables.md` の `decision_supersedes` 節参照。
 
 ### 3.11a decision_destabilization_resolutions
 
 `decision_supersedes`の`kind='destabilizes'`エッジ1本ごとの解消記録。エッジ自体は解消後も`decision_supersedes`から削除しない（履歴保存）。
 
-| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
-|---|---|---|---|---|---|
-| source_id | INTEGER | NO | — | REFERENCES decisions(id) ON DELETE CASCADE, PK | destabilizesエッジのsource |
-| target_id | INTEGER | NO | — | REFERENCES decisions(id) ON DELETE CASCADE, PK | destabilizesエッジのtarget |
-| resolution | TEXT | NO | — | CHECK IN ('reaffirmed','revised','retracted') | 解消方法 |
-| revised_to_decision_id | INTEGER | YES | NULL | REFERENCES decisions(id) ON DELETE SET NULL | resolution=revised時の改訂後decision |
-| note | TEXT | NO | `''` | — | 自由記述 |
-| resolved_at | TEXT | NO | `datetime('now')` | — | 解消時刻 |
-
-インデックス:
-- `idx_destab_resolutions_target` ON `decision_destabilization_resolutions(target_id)`
-
 関連 migration: 0063
+
+カラム一覧・インデックス: `db-schema-tables.md` の `decision_destabilization_resolutions` 節参照。
 
 ### 3.12 pins
 
 任意エンティティから任意エンティティへの有向 pin（注意フラグ）。
-
-| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
-|---|---|---|---|---|---|
-| source_type | TEXT | NO | — | CHECK IN ('tag','activity','topic','decision','log','material'), PK | 起点種別 |
-| source_id | INTEGER | NO | — | PK | 起点ID |
-| target_type | TEXT | NO | — | CHECK IN ('tag','activity','topic','decision','log','material'), PK | 終点種別 |
-| target_id | INTEGER | NO | — | PK | 終点ID |
-| created_at | TEXT | YES | `datetime('now')` | — | 作成時刻 |
 
 補足:
 - 0034 で新設、従来の `discussion_logs.pinned` / `decisions.pinned` / `materials.pinned` カラム機構を置き換える
@@ -443,22 +319,13 @@ decision 間の有向関係。`kind`列で意味論を2つに分ける。`replac
 - ポリモーフィック FK のため CASCADE は trigger（`trg_pins_cascade_delete_*` 6本：topic / activity / material / decision / log / tag）で実現
 - 0035 で旧 pinned カラムをすべて DROP
 
-インデックス:
-- `idx_pins_target` ON `pins(target_type, target_id)`（0038）
-
 関連 migration: 0034 / 0035 / 0038 / 0039_extend_tag_namespace（tag trigger 再作成）
+
+カラム一覧・インデックス: `db-schema-tables.md` の `pins` 節参照。
 
 ### 3.13 search_index
 
 5エンティティ（topic / activity / decision / log / material）の検索メタ情報を統一格納する中間テーブル。本文は持たず、対応する FTS5 / vec_index は rowid（= `search_index.id`）で連動する。
-
-| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
-|---|---|---|---|---|---|
-| id | INTEGER | NO | autoincrement | PRIMARY KEY | search_index ID（= search_index_fts.rowid, vec_index.rowid） |
-| source_type | TEXT | NO | — | UNIQUE(source_type, source_id) | エンティティ種別 |
-| source_id | INTEGER | NO | — | UNIQUE(source_type, source_id) | エンティティID |
-| title | TEXT | NO | `''` | — | 表示用 title（decisions のみ `COALESCE(title, decision)`） |
-| created_at | TEXT | NO | `''` | — | 元エンティティの created_at（ソート・日付フィルタ用） |
 
 補足:
 - 0002 で新設（当初は body を持たず、search_index_fts と分離）
@@ -467,11 +334,9 @@ decision 間の有向関係。`kind`列で意味論を2つに分ける。`replac
 - 各エンティティ側に INSERT/UPDATE/DELETE トリガーがあり、本テーブルと FTS5 仮想テーブルへ同時に書き込まれる
 - vec_index は trigger 連動ではなく、アプリ層（embedding_service）が rowid 整合性を保つ
 
-インデックス:
-- `idx_search_index_source` ON `search_index(source_type, source_id)`
-- `idx_search_index_created_at` ON `search_index(created_at)`（0049）
-
 関連 migration: 0002 / 0003 / 0008 / 0010 / 0018 / 0030 / 0037 / 0049
+
+カラム一覧・インデックス: `db-schema-tables.md` の `search_index` 節参照。
 
 ### 3.14 search_index_fts
 
@@ -492,6 +357,8 @@ contentless FTS5 仮想テーブル。`search_index.id` を rowid に持ち、`t
 
 関連 migration: 0002（新設）/ 0003 / 0004 / 0005 / 0006 / 0007 / 0008 / 0010 / 0011 / 0018 / 0026 / 0027 / 0030 / 0037（全エンティティのトリガー再生成回）
 
+カラム一覧・インデックス: `db-schema-tables.md` の `search_index_fts` 節参照。
+
 ### 3.15 vec_index
 
 sqlite-vec の vec0 仮想テーブル（384次元）。`search_index.id` を rowid に対応させてベクトル検索を行う。
@@ -506,6 +373,8 @@ sqlite-vec の vec0 仮想テーブル（384次元）。`search_index.id` を ro
 
 関連 migration: 0005_add_vec_index
 
+カラム一覧・インデックス: `db-schema-tables.md` の `vec_index` 節参照。
+
 ### 3.16 tag_vec
 
 tags テーブル用の sqlite-vec 仮想テーブル（384次元）。tag embedding によるタグ KNN マージ判定で使われる。
@@ -518,6 +387,8 @@ tags テーブル用の sqlite-vec 仮想テーブル（384次元）。tag embed
 - 仮想テーブルのため FK 制約不可。`tags.id` を rowid として運用するが整合性はアプリ層任せ
 
 関連 migration: 0009
+
+カラム一覧・インデックス: `db-schema-tables.md` の `tag_vec` 節参照。
 
 ### 3.17 relations_view
 
@@ -540,65 +411,31 @@ tags テーブル用の sqlite-vec 仮想テーブル（384次元）。tag embed
 
 関連 migration: 0020（初版）/ 0023（material 系拡張）/ 0028（depends_on 追加）/ 0033（relations 統合 + supersedes 追加）/ 0046（belongs_to 対応・relation_type を直接返す形に再構築）/ 0063（destabilizes 出し分け追加）
 
+カラム一覧・インデックス: `db-schema-tables.md` の `relations_view` 節参照。
+
 ### 3.18 search_telemetry
 
 search() 呼出ごとのquery/parameters/結果件数を記録する運用計測テーブル。書込は別スレッドで非同期に行い、失敗時は`logger.warning`のみでsearch本体には影響させない。
 
-| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
-|---|---|---|---|---|---|
-| id | INTEGER | NO | autoincrement | PRIMARY KEY | レコードID |
-| query | TEXT | NO | — | — | 検索キーワード（str または list[str] を JSON serialize） |
-| parameters | TEXT | NO | — | — | 検索パラメータ一式のJSONスナップショット |
-| result_count | INTEGER | NO | — | — | 返却件数（total_count） |
-| timestamp | TIMESTAMP | NO | CURRENT_TIMESTAMP | — | 書込時刻（UTC） |
-
-インデックス:
-- `idx_search_telemetry_timestamp` ON `search_telemetry(timestamp)`
-
 関連 migration: 0041（新設）
+
+カラム一覧・インデックス: `db-schema-tables.md` の `search_telemetry` 節参照。
 
 ### 3.19 citations
 
 本文中の `{{cite:X#NNN}}`（X = M/D/L/A/T、material/decision/log/activity/topic に対応）テンプレ参照を構造化保存するテーブル。
 
-| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
-|---|---|---|---|---|---|
-| id | INTEGER | NO | autoincrement | PRIMARY KEY | レコードID |
-| owner_type | TEXT | NO | — | CHECK IN ('material','decision','log','activity','topic') | 参照を含む本文のエンティティ種別 |
-| owner_id | INTEGER | NO | — | — | 同上ID |
-| target_type | TEXT | NO | — | CHECK IN ('material','decision','log','activity','topic') | 参照先エンティティ種別 |
-| target_id | INTEGER | NO | — | — | 同上ID |
-| occurrence | INTEGER | NO | — | UNIQUE(owner_type, owner_id, occurrence) | owner本文中の出現順（1始まり連番） |
-| created_at | TEXT | YES | `datetime('now')` | — | 作成時刻 |
-
 補足:
 - owner削除時はtriggerでcascade削除（`trg_citations_cascade_delete_*` 5本）
 - target側のretract/物理削除時はcitations行を残置する（監査トレース要件）。展開時にdangling判定を動的に行う
 
-インデックス:
-- `idx_citations_target` ON `citations(target_type, target_id)`
-- `idx_citations_owner` ON `citations(owner_type, owner_id)`
-
 関連 migration: 0042（新設）
+
+カラム一覧・インデックス: `db-schema-tables.md` の `citations` 節参照。
 
 ### 3.20 citation_event_log
 
 テキスト変換イベント（write時sanitize / bulk migration / transcript hookでのsanitize等）を1イベント1行で逐次記録するテーブル。0044で作られた集計カウンタ型`sanitize_log`（INSERT経路未実装のまま据え置き）を0046で作り直したもの。
-
-| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
-|---|---|---|---|---|---|
-| id | INTEGER | NO | autoincrement | PRIMARY KEY | レコードID |
-| occurred_at | TEXT | NO | `datetime('now')` | — | イベント発生時刻（UTC） |
-| source | TEXT | NO | — | CHECK IN 5値（下記） | イベントの発生経路 |
-| tool_name | TEXT | YES | — | — | write_auto_convert時のMCPツール名等 |
-| target_entity_type | TEXT | YES | — | CHECK IN ('decision','activity','log','material','topic') OR NULL | 対象エンティティ種別 |
-| target_entity_id | INTEGER | YES | — | — | 同上ID |
-| target_field | TEXT | YES | — | — | 対象フィールド名（content/title等） |
-| before_text | TEXT | NO | — | — | 変換前テキスト |
-| after_text | TEXT | NO | — | — | 変換後テキスト |
-| verified_at | TEXT | YES | — | — | target存在チェック時刻 |
-| verification_result | TEXT | YES | — | CHECK IN ('exists','dangling','skip') OR NULL | target存在チェック結果 |
-| extra_json | TEXT | YES | — | — | 追加メタ情報（JSON文字列） |
 
 source ENUM値: `write_auto_convert` / `bulk_migration` / `transcript_post_tool_use` / `transcript_session_start_backfill` / `external_doc_sanitize`
 
@@ -607,43 +444,22 @@ VIEW 3本（同migrationで新設）:
 - `auto_convert_event_log`: write_auto_convert / bulk_migration由来（自動変換系）
 - `citation_event_log_by_entity`: target単位の集約（event_count, last_occurred_at）
 
-インデックス:
-- `idx_citation_event_log_target` ON `citation_event_log(target_entity_type, target_entity_id)`
-- `idx_citation_event_log_source` ON `citation_event_log(source)`
-- `idx_citation_event_log_occurred_at` ON `citation_event_log(occurred_at)`
-
 関連 migration: 0044（sanitize_log として新設、forward-onlyでDROP済み）/ 0046（citation_event_logとして作り直し）
+
+カラム一覧・インデックス: `db-schema-tables.md` の `citation_event_log` 節参照。
 
 ### 3.21 signal_events
 
 cc-memory自身の故障報告・使用感不満・矛盾検出・運用計測イベントの統一記録先。decision / log とは異なり「双方の合意」も文脈タグ体系も要らない生の観測データであり、量が多く状態遷移（トリアージ）を持つ。他コンポーネント（運用計測の集計、境界判定の突合ミラー）もこのテーブルを共有し、独自テーブルは作らない。
-
-| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
-|---|---|---|---|---|---|
-| id | INTEGER | NO | autoincrement | PRIMARY KEY | シグナルID |
-| kind | TEXT | NO | — | — | シグナル種別。妥当性はDB制約でなくPython層（`signal_service.KNOWN_KINDS`）で検証する |
-| source | TEXT | NO | — | — | 発生源。`tool:<name>` / `hook:<name>` / `migration` / `backup` / `agent` / `user` / `gate` 等の自由文字列 |
-| summary | TEXT | NO | — | — | 1行要約 |
-| detail | TEXT | YES | — | — | traceback・引数ダイジェスト・自由記述 |
-| refs | TEXT | YES | — | — | JSON配列 `[{"type","id"}, ...]` |
-| context | TEXT | YES | — | — | JSON。kindごとの構造化ペイロード |
-| fingerprint | TEXT | NO | — | — | `sha256(kind\|source\|正規化summary)` 先頭16hex。dedupキー |
-| occurrence_count | INTEGER | NO | `1` | — | 同一fingerprintの再発回数 |
-| first_seen_at | TIMESTAMP | NO | CURRENT_TIMESTAMP | — | 初回記録時刻 |
-| last_seen_at | TIMESTAMP | NO | CURRENT_TIMESTAMP | — | 最終記録時刻（dedup時に更新） |
-| session_id | TEXT | YES | — | — | 記録元セッションID |
-| status | TEXT | NO | `'new'` | CHECK IN ('new','triaged','promoted','dismissed') | トリアージ状態 |
-| promoted_type | TEXT | YES | — | — | 昇格先エンティティ種別（`topic`/`activity`/`decision`/`log`/`material`） |
-| promoted_id | INTEGER | YES | — | CHECK `(promoted_type IS NULL) = (promoted_id IS NULL)` | 昇格先エンティティID |
 
 補足:
 - 同一 `fingerprint` を持つ `status='new'` 行が既存の場合、部分 UNIQUE インデックス（`fingerprint WHERE status='new'`）が競合を検知し、アプリ層は新規行を作らず `occurrence_count` を加算する。トリアージ済み（status が new 以外）の同型イベント再発は新規行になる
 - タグ・リレーション・検索インデックス（search_index）・embeddingのいずれにも接続しない。habits と同様、事実上「観測ログ」として独立している
 - `status` はライフサイクル列（§6）の `activities.status`（pending/in_progress/completed/snoozed/shelved）とは別の値集合（new/triaged/promoted/dismissed）を持つ
 
-インデックス: `idx_signal_fingerprint_new`（UNIQUE, `fingerprint` WHERE `status='new'`）/ `idx_signal_status`（`status, last_seen_at`）/ `idx_signal_kind`（`kind, last_seen_at`）
-
 関連 migration: 0049_add_signal_events
+
+カラム一覧・インデックス: `db-schema-tables.md` の `signal_events` 節参照。
 
 ### 3.22 relay_outbox
 
@@ -651,48 +467,17 @@ cc-memory自身の故障報告・使用感不満・矛盾検出・運用計測�
 
 スキーマの単一の真実源は relay_sdk パッケージの DDL（`relay_sdk/outbox/schema.py`、relay リポジトリからの依存パッケージ）であり、migration 0056 はそれと同一形状を migration chain に組み込んだもの。
 
-| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
-|---|---|---|---|---|---|
-| id | INTEGER | NO | autoincrement | PRIMARY KEY | outbox 行 ID（idempotency_key の生成元にも流用） |
-| ref_type | TEXT | NO | — | — | 通知が指す対象の種別 |
-| ref_id | TEXT | NO | — | — | 通知が指す対象の識別子 |
-| labels | TEXT | NO | — | — | JSON array（配送マッチング用 labels） |
-| title | TEXT | YES | — | — | 一覧表示用の見出し |
-| idempotency_key | TEXT | NO | — | — | relay 側 dedup 用キー（SDK が id から自動生成） |
-| created_at | TEXT | NO | — | — | ISO8601 UTC |
-| processed_at | TEXT | YES | — | — | NULL = 配達待ち（pending） |
-| retry_count | INTEGER | NO | `0` | — | 配達リトライ回数 |
-| last_error | TEXT | YES | — | — | 直近の配達エラー |
-| dead_at | TEXT | YES | — | — | NOT NULL = 配達断念（DLQ 行き。7日後に物理削除） |
-
 補足:
 - タグ・リレーション・検索インデックス（search_index）・embeddingのいずれにも接続しない。通信レイヤ専用のキューであり、cc-memoryのエンティティモデルからは独立している
 - SDK 側を再同期して DDL の形状が変わった場合は、新規 migration で追従する（0056 は事後改変しない）
 
-インデックス: `idx_relay_outbox_pending`（`id` WHERE `processed_at IS NULL AND dead_at IS NULL`。配達ループの pending 走査用の部分インデックス）
-
 関連 migration: 0056_add_relay_outbox
+
+カラム一覧・インデックス: `db-schema-tables.md` の `relay_outbox` 節参照。
 
 ### 3.23 asks
 
 人間の判断を待つ問いの記録先。signal_events と同様「双方の合意」もタグ体系も要らない受け皿だが、状態遷移（open→answered→promoted/dismissed、open→withdrawn）を持つため専用テーブルとして独立している。answer 時点ではトリアージ（promote/dismiss）を行わず、次の check_in で配達されるまで遅延する。
-
-| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
-|---|---|---|---|---|---|
-| id | INTEGER | NO | autoincrement | PRIMARY KEY | ask ID |
-| question | TEXT | NO | — | — | 問い本文 |
-| context | TEXT | YES | — | — | 背景 |
-| fingerprint | TEXT | NO | — | — | `sha256(正規化question)` 先頭16hex。dedup のキー |
-| status | TEXT | NO | `'open'` | CHECK IN ('open','answered','promoted','dismissed','withdrawn') | 状態 |
-| answer_body | TEXT | YES | — | — | 回答本文 |
-| answered_at / answered_session_id | TIMESTAMP / TEXT | YES | — | — | 回答時刻・回答元セッション |
-| triage | TEXT | YES | — | CHECK IN ('promote','dismiss') | トリアージ結果 |
-| triaged_at / triaged_session_id / triage_reason | TIMESTAMP / TEXT / TEXT | YES | — | — | トリアージ時刻・実施セッション・理由（dismiss時） |
-| promoted_decision_id | INTEGER | YES | — | FK→decisions(id) | promote先decision |
-| withdrawn_at / withdrawn_session_id / withdraw_reason | TIMESTAMP / TEXT / TEXT | YES | — | — | 取り下げ時刻・実施セッション・理由 |
-| occurrence_count | INTEGER | NO | `1` | — | 同一fingerprintの再発回数 |
-| first_seen_at / last_seen_at | TIMESTAMP | NO | CURRENT_TIMESTAMP | — | 初回・最終記録時刻 |
-| first_seen_session_id / last_seen_session_id | TEXT | YES | — | — | 初回・最終記録元セッション |
 
 補足:
 - `status='open'` の行に限り `fingerprint` を UNIQUE とする部分インデックスを張る。同一 fingerprint の open 行が既存なら INSERT は競合し、アプリ層は occurrence_count を加算する（signal_events と同じ dedup パターン、helperは `dedup_helpers` として共有）。トリアージ済み（answered/promoted/dismissed）・取り下げ済み（withdrawn）の同型問い再発は新規行になる
@@ -700,18 +485,18 @@ cc-memory自身の故障報告・使用感不満・矛盾検出・運用計測�
 - タグ・リレーション（related/belongs_to）には接続しない（v1では非対応）。近傍検索のみ ask_vec を経由する
 - 文字列長上限（question 500字、context/answer_body 8000字）は DB 制約ではなくサービス層（`ask_service`）で強制する
 
-インデックス: `idx_asks_fingerprint_open`（UNIQUE, `fingerprint` WHERE `status='open'`）/ `idx_asks_status_last_seen`（`status, last_seen_at`）/ `idx_asks_triage_pending`（`last_seen_at` WHERE `status='answered' AND triage IS NULL`）
-
 関連 migration: 0062_add_asks
+
+カラム一覧・インデックス: `db-schema-tables.md` の `asks` 節参照。
 
 ### 3.24 ask_blocks / ask_requesters
 
 - `ask_blocks`: ask ↔ activity の junction（`PRIMARY KEY (ask_id, activity_id)`、両方 `ON DELETE CASCADE`）。このaskが答え待ちで止めているactivityを表す。answer/triage/withdrawのいずれの遷移でも該当askの行は削除される（blockの解除）
 - `ask_requesters`: ask ↔ 要求元 `session_id` の junction（`PRIMARY KEY (ask_id, requester_session_id)`）。同じaskへの複数セッションからの要求をUNIONで蓄積する。withdraw時も削除しない（参照ログとして残す）
 
-インデックス: `idx_ask_blocks_activity`（`activity_id, ask_id`。check_inからの「このactivityをblockしているask」逆引き用）
-
 関連 migration: 0062_add_asks
+
+カラム一覧・インデックス: `db-schema-tables.md` の `ask_blocks` 節・`ask_requesters` 節参照。
 
 ### 3.25 ask_vec
 
@@ -719,32 +504,20 @@ asks 専用の sqlite-vec 仮想テーブル（384次元、`distance_metric=cosi
 
 関連 migration: 0062_add_asks
 
+カラム一覧・インデックス: `db-schema-tables.md` の `ask_vec` 節参照。
+
 ### 3.26 injection_telemetry
 
 記録系ツール（add_logs / add_decisions / add_material）が返す関連既存記録top3（記録=クエリ添付）について、「提示された記録が同セッションで実際に読まれたか」を機械記録する追随カウンタの present側（添付を返した瞬間）の台帳。取得側（fetch）は既存 `search_telemetry.results_json` / `fetch_telemetry.items_json` を再利用し、post-hoc の SQL 集計で `caller_session_id` を突合キーとして追随率を算出する（専用の集計ツールは持たない）。
-
-| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
-|---|---|---|---|---|---|
-| id | INTEGER | NO | autoincrement | PRIMARY KEY | レコードID |
-| caller_session_id | TEXT | YES | — | — | 提示を行ったセッションの相関キー（0048/0054と同じephemeral規約） |
-| trigger_tool | TEXT | NO | — | — | `'add_logs'` / `'add_decisions'` / `'add_material'` |
-| source_type | TEXT | NO | — | — | 新規作成された側（添付を提示する記録）の種別 |
-| source_id | INTEGER | NO | — | — | 新規作成された側のID |
-| attached_type | TEXT | NO | — | — | 提示された既存記録の種別 |
-| attached_id | INTEGER | NO | — | — | 提示された既存記録のID |
-| rank | INTEGER | NO | — | — | 提示順位（1〜3。DB制約なし） |
-| similarity | REAL | YES | — | — | 0〜1に正規化した類似度（大きいほど類似） |
-| diagnostics_json | TEXT | YES | — | — | 将来のretriever内訳等の予備列 |
-| timestamp | TIMESTAMP | NO | CURRENT_TIMESTAMP | — | 書込時刻（UTC） |
 
 補足:
 - FK・UNIQUE制約は張らない（既存telemetryテーブル群と同じ、生データ台帳としての性質を優先）。同一セッションで同じ`(attached_type, attached_id)`が複数回提示されるのは正常挙動で、集計側で`GROUP BY MIN(timestamp)`して縮約する
 - 書込は既存telemetryと同じdaemon thread + 失敗握りつぶし規約に従う
 - 本 migration が導入する範囲は、テーブル定義・writable columns allowlist・present書込ヘルパ（`_record_injection_telemetry_async`）・`get_material`のfetch側計装のみ。`add_logs`/`add_decisions`/`add_material`側から実際にpresent行を書く呼出し実装は、添付内容の組み立て方を規定する記録=クエリ添付の詳細設計が別途確定してから追加する
 
-インデックス: `idx_injection_telemetry_session_ts`（`caller_session_id, timestamp`）/ `idx_injection_telemetry_attached`（`attached_type, attached_id`）
-
 関連 migration: 0067_add_injection_telemetry
+
+カラム一覧・インデックス: `db-schema-tables.md` の `injection_telemetry` 節参照。
 
 ---
 
