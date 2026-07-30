@@ -1453,6 +1453,46 @@ def resolve_destabilization(
 
 
 @mcp.tool()
+def suggest_destabilized_candidates(
+    source_decision_id: int,
+    k: int = 20,
+    include_already_resolved: bool = False,
+) -> dict:
+    """
+    軸変更decisionからdestabilizeされそうな候補decisionを提示する（候補提示のみ、read-only）。
+
+    候補は「(a) sourceとtag集合が重なるnon-retract decision」と「(b) sourceが属するtopicの
+    embedding近傍topicに属するnon-retract decision」の和集合。各候補についてtag重なり
+    （Jaccard係数）とembedding類似度（近傍topic routingのdistanceを正規化）、および
+    同一topicボーナス（same_topic_bonus）を合成したスコア降順で返す。embeddingサーバー
+    停止時は例外にせず、embedding近傍チャネル(b)のみを無効化してタグ一致チャネル(a)の
+    候補をmode="tag_only"で返し続ける（縮退してもゼロ件にはしない）。
+
+    実際にdestabilizesエッジを張るかどうかは呼び出し側の判断。候補を吟味した上で別途
+    add_relation(relation_type="destabilizes")を呼ぶこと。本ツール単体の呼び出しでは
+    decision_supersedes等への書き込みは一切発生しない。
+
+    精度の限界: 上位に来るのは主にsourceとタグ重複が大きいdecision。タグ重複の薄い
+    間接的な影響decisionは拾いにくいため、監査(audit skill)の代替ではなく初手の
+    絞り込みアシストとして使うこと。
+
+    Args:
+        source_decision_id: 軸変更decisionのID
+        k: 返す候補数の上限（既定20）
+        include_already_resolved: Trueのとき、既にresolve_destabilizationで解消済みの
+            候補も含める（既定False。解消済みは除外し、同じdecisionを何度も提示しない）
+
+    Returns:
+        {"candidates": [{"decision_id", "title", "score", "match_reason",
+                          "already_destabilized", "already_resolved"}, ...],
+         "mode": "vector" | "tag_only"}
+    """
+    return destabilization_service.suggest_destabilized_candidates(
+        source_decision_id, k, include_already_resolved
+    )
+
+
+@mcp.tool()
 def get_map(
     entity_type: Literal["topic", "activity", "material", "decision", "log"],
     entity_id: int,
