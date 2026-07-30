@@ -12,7 +12,7 @@ from src.services.tag_service import (
 logger = logging.getLogger(__name__)
 
 VALID_ENTITY_TYPES = {"topic", "activity", "material", "decision", "log"}
-VALID_RELATION_TYPES = {"related", "depends_on", "supersedes", "belongs_to"}
+VALID_RELATION_TYPES = {"related", "depends_on", "supersedes", "belongs_to", "destabilizes"}
 
 # 親帰属パターン: 子→親 (decision/log/material/activity → topic) を表す relations 行は
 # 自動的に 'belongs_to' で書き込む。正規化制約により親が必ず target 側に来る
@@ -292,10 +292,35 @@ def _validate_supersedes_constraints(source_type: str, targets: list[dict]) -> d
     return None
 
 
-def _has_supersedes_path(conn: sqlite3.Connection, from_id: int, to_id: int) -> bool:
-    """DFSでfrom_idからto_idへのsupersedes経路が存在するか判定する。
+def _validate_destabilizes_constraints(source_type: str, targets: list[dict]) -> dict | None:
+    """destabilizesリレーションの制約をバリデーションする。decision→decisionのみ有効。"""
+    if source_type != "decision":
+        return {
+            "error": {
+                "code": "INVALID_RELATION_TYPE",
+                "message": "destabilizes relation is only valid for decision→decision",
+            }
+        }
+    for target in targets:
+        if target["type"] != "decision":
+            return {
+                "error": {
+                    "code": "INVALID_RELATION_TYPE",
+                    "message": "destabilizes relation is only valid for decision→decision",
+                }
+            }
+    return None
 
-    decision_supersedesテーブルを辿り、from_id → ... → to_id の到達可能性をチェックする。
+
+def _has_supersede_or_destabilize_path(conn: sqlite3.Connection, from_id: int, to_id: int) -> bool:
+    """DFSでfrom_idからto_idへの経路が存在するか判定する。
+
+    decision_supersedesテーブルを辿る。このテーブルは'replaces'（supersedes）と
+    'destabilizes'の両方のエッジをkind列で区別して保持しているが、本関数はkindを
+    問わず全エッジを合算して辿る（循環禁止はkindを無視してエッジ全体で計算する。
+    'A destabilizes B'と'B replaces A'が両立するとchain上循環になり得るため）。
+    from_id → ... → to_id の到達可能性をチェックする。
+
     循環検出に使用: 新たに source→target を追加する前に、
     target→source への既存経路があればサイクルになる。
     """
@@ -346,14 +371,14 @@ def _add_supersedes_with_conn(conn: sqlite3.Connection, source_id: int, target_i
             continue
 
         # 循環チェック: target_id → source_id への経路が既に存在すればサイクル
-        if _has_supersedes_path(conn, target_id, source_id):
+        if _has_supersede_or_destabilize_path(conn, target_id, source_id):
             raise ValueError(
                 f"Circular supersedes detected: adding {source_id}→{target_id} "
                 f"would create a cycle"
             )
 
         conn.execute(
-            "INSERT OR IGNORE INTO decision_supersedes (source_id, target_id) VALUES (?, ?)",
+            "INSERT OR IGNORE INTO decision_supersedes (source_id, target_id, kind) VALUES (?, ?, 'replaces')",
             (source_id, target_id),
         )
         if conn.execute("SELECT changes()").fetchone()[0] > 0:
@@ -363,8 +388,51 @@ def _add_supersedes_with_conn(conn: sqlite3.Connection, source_id: int, target_i
     return added, pins_transferred
 
 
+def _add_destabilizes_with_conn(conn: sqlite3.Connection, source_id: int, target_ids: list[int]) -> int:
+    """destabilizesリレーションをdecision_supersedesテーブル（kind='destabilizes'）に追加する。
+
+    循環を検出した場合はValueErrorを送出する。pin transferは行わない
+    （結論の置き換えではないため。前提が揺らいだ段階でpin先を切り替えると、
+    まだ再検証されていない中間状態に読者を飛ばすことになる）。
+
+    Args:
+        conn: DB接続
+        source_id: 揺らぎの発生元（軸変更）のdecision ID
+        target_ids: 前提が揺らぐ影響先のdecision IDリスト
+
+    Returns:
+        追加件数
+
+    Raises:
+        ValueError: 循環が検出された場合
+    """
+    added = 0
+    for target_id in target_ids:
+        # 自己参照はCHECK制約で弾かれるが、明示的にスキップ
+        if source_id == target_id:
+            continue
+
+        # 循環チェック: target_id → source_id への経路が既に存在すればサイクル（kind問わず合算判定）
+        if _has_supersede_or_destabilize_path(conn, target_id, source_id):
+            raise ValueError(
+                f"Circular destabilizes detected: adding {source_id}→{target_id} "
+                f"would create a cycle"
+            )
+
+        conn.execute(
+            "INSERT OR IGNORE INTO decision_supersedes (source_id, target_id, kind) VALUES (?, ?, 'destabilizes')",
+            (source_id, target_id),
+        )
+        if conn.execute("SELECT changes()").fetchone()[0] > 0:
+            added += 1
+    return added
+
+
 def _remove_supersedes_with_conn(conn: sqlite3.Connection, source_id: int, target_ids: list[int]) -> int:
     """supersedesリレーションをdecision_supersedesテーブルから削除する。
+
+    kind='replaces'の行のみを対象とする。同一(source_id, target_id)ペアに
+    'destabilizes'行が共存し得るため、kindを指定しないと巻き添えで削除してしまう。
 
     Args:
         conn: DB接続
@@ -380,7 +448,7 @@ def _remove_supersedes_with_conn(conn: sqlite3.Connection, source_id: int, targe
         if source_id == target_id:
             continue
         conn.execute(
-            "DELETE FROM decision_supersedes WHERE source_id = ? AND target_id = ?",
+            "DELETE FROM decision_supersedes WHERE source_id = ? AND target_id = ? AND kind = 'replaces'",
             (source_id, target_id),
         )
         removed += conn.execute("SELECT changes()").fetchone()[0]
@@ -415,12 +483,16 @@ def add_relation(source_type: str, source_id: int, targets: list[dict], relation
         source_type: 起点エンティティのタイプ（"topic", "activity", "material", "decision", or "log"）
         source_id: 起点エンティティのID
         targets: ターゲットリスト [{"type": "topic", "ids": [1, 2]}, ...]
-        relation_type: リレーションタイプ（"related", "depends_on", "supersedes", or "belongs_to"）。
+        relation_type: リレーションタイプ（"related", "depends_on", "supersedes", "belongs_to", or "destabilizes"）。
             "depends_on" はactivity同士のみ有効で、循環依存を検出した場合はエラーを返す。
             "supersedes" はdecision同士のみ有効で、循環を検出した場合はエラーを返す。
             "belongs_to" は子 (decision/log/material/activity) → 親 (topic) の親帰属表現にのみ有効。
             なお、"related" を渡しても親帰属パターン (子 → topic) は内部で自動的に "belongs_to"
             に格上げされる。
+            "destabilizes" はdecision同士のみ有効。sourceがtargetの前提を揺るがし
+            再検証が必要とマークする。"supersedes" と違いpin transferは行わず、targetの
+            結論そのものは維持される。循環禁止は"supersedes"と合算して判定する
+            （循環を検出した場合はCIRCULAR_DESTABILIZESエラーを返す）。
 
     Returns:
         成功時: {"added": int}
@@ -456,6 +528,11 @@ def add_relation(source_type: str, source_id: int, targets: list[dict], relation
         if err:
             return err
 
+    if relation_type == "destabilizes":
+        err = _validate_destabilizes_constraints(source_type, targets)
+        if err:
+            return err
+
     conn = get_connection()
     try:
         if relation_type == "depends_on":
@@ -484,6 +561,14 @@ def add_relation(source_type: str, source_id: int, targets: list[dict], relation
                     f"added={added}, pins_transferred={pins_transferred}"
                 )
             return result
+        elif relation_type == "destabilizes":
+            added = 0
+            for target in targets:
+                added += _add_destabilizes_with_conn(conn, source_id, target["ids"])
+            if added > 0:
+                _bump_and_publish_endpoints_with_conn(conn, source_type, source_id, targets)
+            conn.commit()
+            return {"added": added}
         else:
             added = _add_relation_with_conn(conn, source_type, source_id, targets, relation_type)
             if added > 0:
@@ -493,7 +578,12 @@ def add_relation(source_type: str, source_id: int, targets: list[dict], relation
     except ValueError as e:
         conn.rollback()
         logger.warning(f"add_relation rejected: {e}")
-        code = "CIRCULAR_SUPERSEDES" if relation_type == "supersedes" else "CIRCULAR_DEPENDENCY"
+        if relation_type == "supersedes":
+            code = "CIRCULAR_SUPERSEDES"
+        elif relation_type == "destabilizes":
+            code = "CIRCULAR_DESTABILIZES"
+        else:
+            code = "CIRCULAR_DEPENDENCY"
         return {"error": {"code": code, "message": str(e)}}
     except sqlite3.IntegrityError as e:
         conn.rollback()
@@ -517,6 +607,7 @@ def remove_relation(source_type: str, source_id: int, targets: list[dict], relat
         relation_type: リレーションタイプ（"related", "depends_on", "supersedes", or "belongs_to"）。
             "depends_on" はactivity同士のみ有効で、activity_dependenciesテーブルから削除する。
             "supersedes" はdecision同士のみ有効で、decision_supersedesテーブルから削除する。
+            "destabilizes" は削除不可（下記参照）。
             それ以外（"related" / "belongs_to"）は、relation_typeの値に関わらず
             source/targetが一致するrelations行を削除する（belongs_toで書き込まれた
             行もrelated指定で削除される）。
@@ -530,6 +621,14 @@ def remove_relation(source_type: str, source_id: int, targets: list[dict], relat
             "error": {
                 "code": "INVALID_RELATION_TYPE",
                 "message": f"Invalid relation_type: '{relation_type}'. Must be one of {sorted(VALID_RELATION_TYPES)}",
+            }
+        }
+
+    if relation_type == "destabilizes":
+        return {
+            "error": {
+                "code": "INVALID_RELATION_TYPE",
+                "message": "destabilizes edges cannot be removed via remove_relation; use resolve_destabilization instead",
             }
         }
 

@@ -155,7 +155,7 @@ def count_direction_decisions(
         JOIN decision_tags dt ON dt.decision_id = d.id AND dt.tag_id = ?
         WHERE d.retracted_at IS NULL
           AND NOT EXISTS (
-            SELECT 1 FROM decision_supersedes ds WHERE ds.target_id = d.id
+            SELECT 1 FROM decision_supersedes ds WHERE ds.target_id = d.id AND ds.kind = 'replaces'
           )
     """
     params: list = [direction_tag_id]
