@@ -60,6 +60,10 @@ class TestScanTextForLiterals:
     def test_escape_fullword_not_matched(self):
         assert preblock_hook._scan_text_for_literals("\\log #1 is literal") == []
 
+    def test_escape_fullword_hash_omitted_not_matched(self):
+        # `#` 省略形式 (`\log 1`) も `#` ありと同じ経路でエスケープ扱いされる。
+        assert preblock_hook._scan_text_for_literals("\\log 1 is literal") == []
+
     def test_double_backslash_code_not_matched(self):
         # `\\M#1` (`\` 2 個) は converter で i=1 のエスケープが効き全体スキップになるため、
         # hook も block しないでなければ UX が converter と食い違う。
@@ -165,12 +169,19 @@ class TestIsAllowed:
         assert preblock_hook._is_allowed(tool_name) is True
 
     def test_cc_memory_mcp_prefix_allowed(self):
+        # ローカルプラグイン経由prefix (回帰確認)
         assert preblock_hook._is_allowed(
             "mcp__plugin_claude-code-memory_cc-memory__search"
         )
         assert preblock_hook._is_allowed(
             "mcp__plugin_claude-code-memory_cc-memory__add_logs"
         )
+
+    def test_cc_memory_remote_mcp_prefix_allowed(self):
+        # リモート接続経由prefix。リモートMCP経由でもcc-memory自身のツール呼び出しが
+        # 誤ってblock対象にならないことを確認する。
+        assert preblock_hook._is_allowed("mcp__claude_ai_cc-memory__search")
+        assert preblock_hook._is_allowed("mcp__claude_ai_cc-memory__add_logs")
 
     @pytest.mark.parametrize(
         "tool_name",
@@ -423,6 +434,19 @@ class TestMainBlockFlow:
             {
                 "tool_name": "mcp__plugin_claude-code-memory_cc-memory__search",
                 "tool_input": {"keyword": "D#123"},
+                "session_id": "s1",
+            },
+            capsys,
+        )
+        assert out == {}
+
+    def test_allowlist_remote_tool_passes_through(self, capsys, cc_memory_cwd):
+        # cc-memory MCP (リモート接続経由prefix) も scan されない
+        sharp = chr(35)
+        out = _run_main_with_event(
+            {
+                "tool_name": "mcp__claude_ai_cc-memory__search",
+                "tool_input": {"keyword": "D" + sharp + "123"},
                 "session_id": "s1",
             },
             capsys,

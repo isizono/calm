@@ -10,6 +10,7 @@
 コンテキスト取得フローガイドはここでは注入しない（check_in初回呼び出し時に
 checkin_service側が埋め込む）。
 """
+import functools
 import json
 import sys
 from datetime import datetime, timezone
@@ -463,6 +464,21 @@ def _build_relay_inbox_section(conn, session_id: str | None = None, source: str 
     return "\n".join(lines) + "\n"
 
 
+def _build_transcript_path_section(
+    conn, session_id: str | None = None, source: str | None = None, transcript_path: str | None = None
+) -> str:  # conn, session_id, source: buildersループの統一シグネチャ
+    """このセッションのtranscript pathを1行注入する。
+
+    MCPサーバーのサブプロセスにはtranscript_pathが渡らないため（session_id同様、
+    Claude Code側にIPC経路が無い）、SessionStart hookのstdinで受け取った値を
+    ここで会話コンテキストに載せ、Claudeが明示引数として`detect_reask_candidates`等の
+    tool呼び出しに転記する方式を取る。用途はsync-memoryステップ9（聞き返しの後追い検出）。
+    """
+    if not transcript_path:
+        return ""
+    return f"このセッションのtranscript path: {transcript_path}\n"
+
+
 def _build_snapshot_section(conn, session_id: str | None = None, source: str | None = None) -> str:  # conn, session_id, source: buildersループの統一シグネチャ
     """スナップショット取得＋ヘルスチェック。異常検知時のみ警告を返す。
 
@@ -501,7 +517,9 @@ def _build_snapshot_section(conn, session_id: str | None = None, source: str | N
     return ""
 
 
-def _build_session_context(session_id: str | None = None, source: str | None = None) -> str:
+def _build_session_context(
+    session_id: str | None = None, source: str | None = None, transcript_path: str | None = None
+) -> str:
     """サービス層経由でセッション開始時のコンテキストを組み立てる。
 
     session_id は session_start_hook の stdin payload に含まれる Claude Code 提供の
@@ -509,6 +527,8 @@ def _build_session_context(session_id: str | None = None, source: str | None = N
     source は同 payload の "source"（startup|resume|clear|compact）。現状
     _build_habits_section のみが参照し、compact後にrulesファイル内容が
     コンテキストに保持されるかの実機未検証を安全側に倒すため使う。
+    transcript_path は同payloadの"transcript_path"。_build_transcript_path_section
+    のみが参照する。
 
     各セクションは独立してtry/exceptで保護し、
     一部のセクションが失敗しても残りは返す。
@@ -523,6 +543,7 @@ def _build_session_context(session_id: str | None = None, source: str | None = N
             _build_sync_policy_section,
             _build_signals_section,
             _build_relay_inbox_section,
+            functools.partial(_build_transcript_path_section, transcript_path=transcript_path),
         ]
         for builder in builders:
             try:
@@ -545,6 +566,7 @@ def main() -> None:
         raw = sys.stdin.read()
         session_id: str | None = None
         source: str | None = None
+        transcript_path: str | None = None
         if raw:
             try:
                 payload = json.loads(raw)
@@ -555,12 +577,16 @@ def main() -> None:
                     src = payload.get("source")
                     if isinstance(src, str) and src:
                         source = src
+                    tp = payload.get("transcript_path")
+                    if isinstance(tp, str) and tp:
+                        transcript_path = tp
             except json.JSONDecodeError:
-                # session_id/source 取得失敗時は従来挙動（self 照合なし・compact判定
-                # なし）にフォールバック。初期値 None のまま継続するため再代入不要
+                # session_id/source/transcript_path 取得失敗時は従来挙動（self 照合なし・
+                # compact判定なし・transcript path注入なし）にフォールバック。初期値 None
+                # のまま継続するため再代入不要
                 pass
 
-        context = _build_session_context(session_id, source)
+        context = _build_session_context(session_id, source, transcript_path)
 
         output = {
             "hookSpecificOutput": {

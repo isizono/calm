@@ -477,10 +477,14 @@ def lint_document(text: str, mode: str = "shadow", allow_placeholder: bool = Fal
 
 
 def load_pull_json(path: Optional[str]) -> tuple[Union[str, list], Optional[str]]:
-    """pull_precedents 応答JSON(design-pull-core.md 3-3-1 スキーマ)から
+    """pull_precedents 応答JSON(docs/spec/mcp-tools.md 2.32節 pull_precedentsのスキーマ)から
     pull.presented / pull.guarantee を機械転記する。
 
-    未指定時は稼働前扱い(presented="unavailable", guarantee=None)。
+    decisionのIDはreadable_id変換済みの`id_raw`キーで返る(`id`ではない)ため、
+    そちらを読む。未指定時は稼働前扱い(presented="unavailable", guarantee=None)。
+
+    decision要素に`id_raw`が無い場合は転記をスキップするが、沈黙のfailureを避ける
+    ため標準エラー出力に警告を出す(呼び出しは中断しない)。
     """
     if not path:
         return "unavailable", None
@@ -490,8 +494,18 @@ def load_pull_json(path: Optional[str]) -> tuple[Union[str, list], Optional[str]
     seen: set[tuple[str, int]] = set()
     for topic in data.get("topics") or []:
         for decision in topic.get("decisions") or []:
-            did = decision.get("id")
+            did = decision.get("id_raw")
             if did is None:
+                if "id" in decision:
+                    sys.stderr.write(
+                        f"WARNING: pull_precedents応答のdecision要素が旧キー`id`のみを持ち"
+                        f"`id_raw`が無いため転記をスキップした: {decision!r}\n"
+                    )
+                else:
+                    sys.stderr.write(
+                        f"WARNING: pull_precedents応答のdecision要素に`id_raw`が無いため"
+                        f"転記をスキップした: {decision!r}\n"
+                    )
                 continue
             key = ("decision", did)
             if key in seen:

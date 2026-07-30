@@ -24,6 +24,7 @@ from src.services import (
     signal_service,
     budget_service,
     ask_service,
+    reask_detection_service,
 )
 from src.services.checkin_service import check_in as _check_in
 from src.services.relay import service as relay_session_service
@@ -706,6 +707,54 @@ def search(
         all_tags = _collect_result_tags(result.get("results", []))
         _attach_archived_tags_summary(result, all_tags)
     return result
+
+
+@mcp.tool()
+def detect_reask_candidates(
+    transcript_path: str,
+    max_candidates: int = 50,
+    search_top_n: int = 8,
+    search_limit: int = 10,
+    score_threshold: float = 0.4,
+) -> dict:
+    """
+    Choose: sync-memoryの聞き返し後追い検出ステップで使う。transcriptから聞き返し候補
+    （AskUserQuestion呼び出し・ユーザー訂正発話）を抽出し、除外辞書適用後の上位N件について
+    既存記録の類似searchまで一括で行う。transcript_pathはSessionStart時にコンテキストへ
+    注入されたものをそのまま渡す。
+
+    「この既存記録があれば聞き返しは不要だったか」の主観判定とreport_signalの呼び出しは
+    このtoolの範囲外（呼び出し側であるskills/sync-memory/SKILL.mdのステップ9が担う）。
+
+    Args:
+        transcript_path: transcript JSONLのパス
+        max_candidates: 抽出段階の上限件数（デフォルト50）
+        search_top_n: search実行対象とする候補の上限件数（excluded_reason付きを除いた先頭N件、デフォルト8）
+        search_limit: 候補1件あたりのsearch呼び出しのlimit（デフォルト10）
+        score_threshold: candidates[].top_hitsに残す最小final_score（デフォルト0.4）
+
+    Returns:
+        candidates: [{"kind", "turn", "text", "context_snippet", "options"?, "excluded_reason"?
+            （search対象に残ったものには付かない）, "degraded", "top_hits": [{"type","id","score","title"}],
+            "search_error"?（search呼び出しがエラーを返した場合のみ付与。{"code","message"}）}, ...]
+            excluded_reason付き候補、search_top_nを超えた候補は含まない
+        total_extracted: 抽出段階の全候補数（除外分含む）
+        excluded_count: excluded_reason付きで除外した件数
+        searched_count: 実際にsearchした件数
+        truncated_count: search_top_nを超えてsearch対象外になった件数
+        degraded: いずれかのsearch呼び出しでdegraded=Trueだったか（Trueの候補は判定を保守側に倒す）
+        score_threshold: 実際に使われた閾値
+
+        transcript_pathが存在しない場合は {"error": {"code": "TRANSCRIPT_NOT_FOUND", ...}}
+    """
+    return reask_detection_service.detect_reask_candidates(
+        transcript_path,
+        max_candidates=max_candidates,
+        search_top_n=search_top_n,
+        search_limit=search_limit,
+        score_threshold=score_threshold,
+        caller_session_id=_current_session_id(),
+    )
 
 
 @mcp.tool()
