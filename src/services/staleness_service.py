@@ -50,6 +50,7 @@ def get_chain_heads_batch(
         return {}
 
     # source が target を supersede する。newer_adj[target] = [それを supersede する新しい id, ...]
+    # kind='replaces' のみを辿る（kind='destabilizes' はここでの chain 算出対象外）。
     newer_adj: dict[int, list[int]] = {}
     for r in conn.execute(
         "SELECT source_id, target_id FROM decision_supersedes WHERE kind = 'replaces'"

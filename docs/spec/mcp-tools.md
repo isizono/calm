@@ -663,6 +663,11 @@ cc-memoryが扱うエンティティの内部表現。詳細スキーマは `doc
 - `tags: list[string]`
 - `related_decisions: [{id, title, distance}]`（add_decisions返り値のみ）
 - `retracted_at: string | null`
+- `destabilization: {destabilized_by: [source_id, ...], unresolved_count: int, latest_source: source_id | null, sources: [{decision_id, title, created_at, kind_reason}, ...]}`
+  （`get_decisions`/`get_by_ids`/`check_in`のpinned.decisions/`pull_precedents`の読み出し応答のみに付く算出フィールド。
+  未resolveなdestabilizesエッジ（`add_relation(relation_type="destabilizes")`で登録、`resolve_destabilization`で解消）を
+  1本以上持つ場合のみ付与され、無ければキー自体が無い。`destabilized_by`と`sources`は`created_at`昇順、
+  `latest_source`は最新のsource decisionのid。`is_superseded`/`supersede_chain`（結論の置き換え）とは独立に併記され、両方成立しうる）
 
 ### 3.3 DiscussionLog
 - `log_id: int`

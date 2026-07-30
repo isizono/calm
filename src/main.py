@@ -497,6 +497,11 @@ def get_decisions(
         「決定のみ・実測未確認」を意味する）
         archived_tags: 応答に含まれるdecisionのタグのうちarchivedなものの集約
             （{tag, archived_reason}の配列。該当なしでも空配列で常に付く）
+        未resolveなdestabilizesエッジ（add_relation(relation_type='destabilizes')で登録）を
+        持つdecisionには destabilization（{destabilized_by, unresolved_count, latest_source,
+        sources: [{decision_id, title, created_at, kind_reason}, ...]}）が付く。エッジが
+        無い、または全てresolve_destabilizationで解消済みのdecisionにはキー自体が無い。
+        is_superseded/supersede_chain（結論の置き換え）とは独立に併記され、両方成立しうる
     """
     flavor = _normalize_flavor(flavor)
     result = decision_service.get_decisions(entity_type, entity_id, start_id, limit, include_retracted=include_retracted)
@@ -541,9 +546,8 @@ def pull_precedents(
 
     Returns:
         {guarantee, routing, topics, budget, truncated, materials_truncated}
-        guarantee: "enumerated"（判例保証あり） / "routing_miss"（近傍topicなし。
-        前例なし扱いに倒すこと） / "routing_unavailable"（embeddingサーバー停止。
-        topic_ids指定で回避可）
+        guarantee: "enumerated"（判例保証あり） / "routing_miss"（近傍topicなし、
+        前例なし扱い） / "routing_unavailable"（embeddingサーバー停止。topic_ids指定で回避可）
         routing.candidates: 各{topic_id_raw, title, distance, selected}
         （topic_ids指定時はdistanceなし。存在しないtopic_idはerror付き）
         topics[].decisionsはdetail="full"（decision/reason全文+tags+sections[定型節
@@ -551,14 +555,14 @@ def pull_precedents(
         detail="index"（id/title等のみ）。index落ち分はget_by_idsで追補可。
         複数topicにbelongs_toするdecisionは最初のtopicのみ本文を持ち、他方は
         index+also_in。
-        material_ids/linked_decision_idsはdecision↔material間のrelated/citation
-        対応。materials_truncatedはmaterialカタログの縮退（30件キャップ超過または
-        レスポンス実サイズ超過）を表す。
-        budgetはbudget_chars（本文文字数のみの一次予算）に基づく配分結果。実際の
-        レスポンスサイズがこれより大きくなり実サイズ上限を超えると、full item
-        がindexへ追加降格され、guarantee=enumerated時のみbudget.response_chars
-        ({limit, measured, demoted})に結果が記録される。詳細はdocs/spec/
-        mcp-tools.md 2.32節およびprecedent_pull_serviceのdocstring参照。
+        material_ids/linked_decision_idsはdecision↔material間の関連付け。
+        materials_truncatedはmaterialカタログの縮退（30件超過またはサイズ超過）を表す。
+        budgetはbudget_chars（本文文字数の一次予算）に基づく配分結果。実サイズ上限超過時は
+        full itemがindexへ追加降格され、guarantee=enumerated時のみ
+        budget.response_chars({limit, measured, demoted})に記録される。
+        詳細はdocs/spec/mcp-tools.md 2.32節参照。
+        未resolveなdestabilizesエッジを持つdecision itemにはdestabilizationが付く
+        （無ければキー自体が無い。フィールド形状はdocs/spec/mcp-tools.md 3.2節参照）。
     """
     flavor = _normalize_flavor(flavor)
     result = precedent_pull_service.pull_precedents(
@@ -783,6 +787,10 @@ def get_by_ids(
         無ければnull）が常に付く。reasonに定型節（却下案:/適用条件:/適用外:/検証:/隣接確認:。
         書式は docs/precedent-format.md）があれば precedent（get_decisionsと同形のコンパクト形）
         が付く。節が無いdecisionにはキー自体が無い
+        未resolveなdestabilizesエッジを持つdecisionには destabilization（{destabilized_by,
+        unresolved_count, latest_source, sources: [{decision_id, title, created_at,
+        kind_reason}, ...]}）が付く。エッジが無い、または全てresolve_destabilizationで
+        解消済みならキー自体が無い。is_superseded/superseded_byとは独立に併記される
         archived_tags: 応答に含まれる全アイテムのタグのうちarchivedなものの集約
             （{tag, archived_reason}の配列。該当なしでも空配列で常に付く）
     """
@@ -1250,6 +1258,10 @@ def check_in(
     Returns:
         check-in結果（coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary）。
         セッション内でcheck_inを初めて呼んだときのみflow_guide（コンテキスト取得の手がかり）も含まれる
+        pinned.decisionsの各要素は、未resolveなdestabilizesエッジを持つ場合のみ
+        destabilization（{destabilized_by, unresolved_count, latest_source,
+        sources: [{decision_id, title, created_at, kind_reason}, ...]}）が付く。エッジが
+        無い、または全てresolve_destabilizationで解消済みならキー自体が無い
     """
     flavor = _normalize_flavor(flavor)
     try:

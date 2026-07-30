@@ -114,6 +114,7 @@ def compute_supersede_info_batch(
         return {}
 
     # source が target を supersede する。older 方向は source→target、newer 方向は target→source。
+    # kind='replaces' のみを辿る（kind='destabilizes' は別関数 compute_destabilization_info_batch の管轄）。
     older_adj: dict[int, list[int]] = {}
     newer_adj: dict[int, list[int]] = {}
     for r in conn.execute(
@@ -152,6 +153,95 @@ def compute_supersede_info_batch(
         result[did] = {
             "is_superseded": is_superseded_by_decision[did],
             "supersede_chain": chain,
+        }
+    return result
+
+
+def compute_destabilization_info_batch(
+    conn: sqlite3.Connection, decision_ids: list[int]
+) -> dict[int, dict]:
+    """複数 decision に対して未resolveな destabilization 情報を一括算出する。
+
+    decision_supersedes の kind='destabilizes' エッジのうち、
+    decision_destabilization_resolutions に該当行が無い（未resolve）ものだけを target
+    decision 単位で集計する。destabilizes エッジが1本も無い、または全て resolve 済みの
+    decision は返り値dictにキー自体を含めない（呼び出し側は `if did in result` で判定する）。
+
+    Returns:
+        {decision_id: {
+            "destabilized_by": [source_id, ...],       # created_at 昇順
+            "unresolved_count": int,
+            "latest_source": source_id | None,          # created_at が最も新しい source
+            "sources": [{"decision_id", "title", "created_at", "kind_reason"}, ...],
+        }}
+    """
+    if not decision_ids:
+        return {}
+
+    placeholders = ",".join("?" * len(decision_ids))
+    edge_rows = conn.execute(
+        f"SELECT source_id, target_id, created_at FROM decision_supersedes "
+        f"WHERE kind = 'destabilizes' AND target_id IN ({placeholders})",
+        tuple(decision_ids),
+    ).fetchall()
+    if not edge_rows:
+        return {}
+
+    resolved_pairs = {
+        (r["source_id"], r["target_id"])
+        for r in conn.execute(
+            "SELECT source_id, target_id FROM decision_destabilization_resolutions "
+            f"WHERE target_id IN ({placeholders})",
+            tuple(decision_ids),
+        ).fetchall()
+    }
+
+    unresolved_by_target: dict[int, list[tuple[int, str]]] = {}
+    for r in edge_rows:
+        if (r["source_id"], r["target_id"]) in resolved_pairs:
+            continue
+        unresolved_by_target.setdefault(r["target_id"], []).append(
+            (r["source_id"], r["created_at"])
+        )
+
+    if not unresolved_by_target:
+        return {}
+
+    source_ids = {sid for pairs in unresolved_by_target.values() for sid, _ in pairs}
+    title_placeholders = ",".join("?" * len(source_ids))
+    source_rows = {
+        r["id"]: r
+        for r in conn.execute(
+            f"SELECT id, title, decision, reason FROM decisions WHERE id IN ({title_placeholders})",
+            tuple(source_ids),
+        ).fetchall()
+    }
+    titles = {
+        sid: r["title"] or (r["decision"] or "")[:50]
+        for sid, r in source_rows.items()
+    }
+    kind_reasons = {
+        sid: (r["reason"] or "")[:200]
+        for sid, r in source_rows.items()
+    }
+
+    result: dict[int, dict] = {}
+    for did, pairs in unresolved_by_target.items():
+        pairs_sorted = sorted(pairs, key=lambda p: p[1])  # created_at昇順
+        latest = pairs_sorted[-1][0] if pairs_sorted else None
+        result[did] = {
+            "destabilized_by": [sid for sid, _ in pairs_sorted],
+            "unresolved_count": len(pairs_sorted),
+            "latest_source": latest,
+            "sources": [
+                {
+                    "decision_id": sid,
+                    "title": titles.get(sid, ""),
+                    "created_at": ca,
+                    "kind_reason": kind_reasons.get(sid, ""),
+                }
+                for sid, ca in pairs_sorted
+            ],
         }
     return result
 

@@ -5,10 +5,12 @@ import tempfile
 import pytest
 
 from src.db import get_connection, init_database
+from src.services.destabilization_service import resolve_destabilization
 from src.services.relation_service import add_relation
 from src.services.retract_service import retract
 from src.services.supersede_service import (
     _bfs_related,
+    compute_destabilization_info_batch,
     compute_supersede_info,
     compute_supersede_info_batch,
     get_superseded_by_batch,
@@ -46,6 +48,17 @@ def _link_supersede(newer_id: int, older_id: int) -> None:
         newer_id,
         [{"type": "decision", "ids": [older_id]}],
         relation_type="supersedes",
+    )
+    assert "error" not in result, result
+
+
+def _link_destabilizes(source_id: int, target_id: int) -> None:
+    """source が target を destabilize するリレーションを張る。"""
+    result = add_relation(
+        "decision",
+        source_id,
+        [{"type": "decision", "ids": [target_id]}],
+        relation_type="destabilizes",
     )
     assert "error" not in result, result
 
@@ -288,3 +301,187 @@ class TestGetSupersededByBatch:
 
         # d_b の supersede リレーションが後から張られたので、created_at DESC で d_b が最新
         assert result[d_old["decision_id"]] == d_b["decision_id"]
+
+
+class TestComputeDestabilizationInfoBatch:
+    """compute_destabilization_info_batch: 未resolveな destabilizes エッジの集計"""
+
+    def test_empty_input_returns_empty_map(self, temp_db):
+        conn = get_connection()
+        try:
+            assert compute_destabilization_info_batch(conn, []) == {}
+        finally:
+            conn.close()
+
+    def test_no_destabilizes_edge_excludes_key(self, topic_id):
+        """destabilizesエッジが1本も無い decision はキー自体が結果に含まれない"""
+        d = add_decision(decision="独立", reason="r", topic_id=topic_id)
+        conn = get_connection()
+        try:
+            result = compute_destabilization_info_batch(conn, [d["decision_id"]])
+        finally:
+            conn.close()
+        assert d["decision_id"] not in result
+
+    def test_single_unresolved_edge_reports_source_and_kind_reason(self, topic_id):
+        """未resolveなdestabilizesエッジ1本は、unresolved_count=1・destabilized_by・
+        latest_source・sources(kind_reason付き)を返す"""
+        source = add_decision(decision="軸変更", reason="軸変更の理由本文", topic_id=topic_id)
+        target = add_decision(decision="影響先", reason="r", topic_id=topic_id)
+        _link_destabilizes(source["decision_id"], target["decision_id"])
+
+        conn = get_connection()
+        try:
+            result = compute_destabilization_info_batch(conn, [target["decision_id"]])
+        finally:
+            conn.close()
+
+        info = result[target["decision_id"]]
+        assert info["unresolved_count"] == 1
+        assert info["destabilized_by"] == [source["decision_id"]]
+        assert info["latest_source"] == source["decision_id"]
+        assert len(info["sources"]) == 1
+        assert info["sources"][0]["decision_id"] == source["decision_id"]
+        assert info["sources"][0]["title"] == "軸変更"
+        assert info["sources"][0]["kind_reason"] == "軸変更の理由本文"
+
+    def test_kind_reason_truncated_to_200_chars(self, topic_id):
+        """kind_reasonはsource decisionのreason先頭200文字に切り詰められる"""
+        long_reason = "あ" * 250
+        source = add_decision(decision="軸変更", reason=long_reason, topic_id=topic_id)
+        target = add_decision(decision="影響先", reason="r", topic_id=topic_id)
+        _link_destabilizes(source["decision_id"], target["decision_id"])
+
+        conn = get_connection()
+        try:
+            result = compute_destabilization_info_batch(conn, [target["decision_id"]])
+        finally:
+            conn.close()
+
+        kind_reason = result[target["decision_id"]]["sources"][0]["kind_reason"]
+        assert kind_reason == long_reason[:200]
+        assert len(kind_reason) == 200
+
+    def test_multiple_unresolved_edges_ordered_by_created_at(self, topic_id):
+        """複数sourceからのdestabilizesエッジは created_at 昇順で destabilized_by / sources に並び、
+        latest_sourceは最後に張られたエッジのsource"""
+        target = add_decision(decision="影響先", reason="r", topic_id=topic_id)
+        source_a = add_decision(decision="軸変更A", reason="rA", topic_id=topic_id)
+        source_b = add_decision(decision="軸変更B", reason="rB", topic_id=topic_id)
+        _link_destabilizes(source_a["decision_id"], target["decision_id"])
+        _link_destabilizes(source_b["decision_id"], target["decision_id"])
+
+        conn = get_connection()
+        try:
+            result = compute_destabilization_info_batch(conn, [target["decision_id"]])
+        finally:
+            conn.close()
+
+        info = result[target["decision_id"]]
+        assert info["unresolved_count"] == 2
+        assert info["destabilized_by"] == [source_a["decision_id"], source_b["decision_id"]]
+        assert info["latest_source"] == source_b["decision_id"]
+
+    def test_resolved_edge_excluded_from_unresolved_list(self, topic_id):
+        """2本のうち1本をresolveすると、unresolved_countが2から1に減り destabilized_by
+        から解消済みのsource_idが除外される"""
+        target = add_decision(decision="影響先", reason="r", topic_id=topic_id)
+        source_a = add_decision(decision="軸変更A", reason="rA", topic_id=topic_id)
+        source_b = add_decision(decision="軸変更B", reason="rB", topic_id=topic_id)
+        _link_destabilizes(source_a["decision_id"], target["decision_id"])
+        _link_destabilizes(source_b["decision_id"], target["decision_id"])
+
+        resolve_result = resolve_destabilization(
+            source_a["decision_id"], target["decision_id"], "reaffirmed"
+        )
+        assert "error" not in resolve_result
+
+        conn = get_connection()
+        try:
+            result = compute_destabilization_info_batch(conn, [target["decision_id"]])
+        finally:
+            conn.close()
+
+        info = result[target["decision_id"]]
+        assert info["unresolved_count"] == 1
+        assert info["destabilized_by"] == [source_b["decision_id"]]
+
+    def test_all_edges_resolved_removes_key_entirely(self, topic_id):
+        """全destabilizesエッジがresolveされると、以後の取得結果からキー自体が消える"""
+        target = add_decision(decision="影響先", reason="r", topic_id=topic_id)
+        source = add_decision(decision="軸変更", reason="r", topic_id=topic_id)
+        _link_destabilizes(source["decision_id"], target["decision_id"])
+
+        resolve_result = resolve_destabilization(
+            source["decision_id"], target["decision_id"], "reaffirmed"
+        )
+        assert "error" not in resolve_result
+
+        conn = get_connection()
+        try:
+            result = compute_destabilization_info_batch(conn, [target["decision_id"]])
+        finally:
+            conn.close()
+
+        assert target["decision_id"] not in result
+
+
+class TestSupersedeKindFilterIgnoresDestabilizes:
+    """TODO1回帰: destabilizesエッジが is_superseded / supersede_chain / chain_heads に混入しないこと"""
+
+    def test_compute_supersede_info_batch_ignores_destabilizes_edge(self, topic_id):
+        """destabilizesエッジのみが張られたdecisionは is_superseded=False・chainは自身のみ"""
+        source = add_decision(decision="軸変更", reason="r", topic_id=topic_id)
+        target = add_decision(decision="影響先", reason="r", topic_id=topic_id)
+        _link_destabilizes(source["decision_id"], target["decision_id"])
+
+        conn = get_connection()
+        try:
+            result = compute_supersede_info_batch(
+                conn, [source["decision_id"], target["decision_id"]]
+            )
+        finally:
+            conn.close()
+
+        assert result[target["decision_id"]] == {
+            "is_superseded": False,
+            "supersede_chain": [target["decision_id"]],
+        }
+        assert result[source["decision_id"]] == {
+            "is_superseded": False,
+            "supersede_chain": [source["decision_id"]],
+        }
+
+    def test_get_superseded_by_batch_ignores_destabilizes_edge(self, topic_id):
+        """destabilizesエッジのみが張られたdecisionは superseded_by=None のまま"""
+        source = add_decision(decision="軸変更", reason="r", topic_id=topic_id)
+        target = add_decision(decision="影響先", reason="r", topic_id=topic_id)
+        _link_destabilizes(source["decision_id"], target["decision_id"])
+
+        conn = get_connection()
+        try:
+            result = get_superseded_by_batch(conn, [target["decision_id"]])
+        finally:
+            conn.close()
+
+        assert result[target["decision_id"]] is None
+
+    def test_replaces_and_destabilizes_coexist_independently(self, topic_id):
+        """同一decisionに replaces と destabilizes の両エッジが張られても、
+        is_superseded(replaces由来)とdestabilization(destabilizes由来)は独立して両方成立する"""
+        replaces_source = add_decision(decision="改訂後", reason="r", topic_id=topic_id)
+        axis_change = add_decision(decision="軸変更", reason="r", topic_id=topic_id)
+        target = add_decision(decision="影響先", reason="r", topic_id=topic_id)
+        _link_supersede(replaces_source["decision_id"], target["decision_id"])
+        _link_destabilizes(axis_change["decision_id"], target["decision_id"])
+
+        conn = get_connection()
+        try:
+            supersede_result = compute_supersede_info_batch(conn, [target["decision_id"]])
+            destab_result = compute_destabilization_info_batch(conn, [target["decision_id"]])
+        finally:
+            conn.close()
+
+        assert supersede_result[target["decision_id"]]["is_superseded"] is True
+        assert target["decision_id"] in destab_result
+        assert destab_result[target["decision_id"]]["unresolved_count"] == 1
