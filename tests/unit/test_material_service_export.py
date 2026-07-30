@@ -1,4 +1,4 @@
-"""material_service の純粋関数（DB非依存）ユニットテスト"""
+"""material_service の export_material_to_file 補助関数（DB非依存）ユニットテスト"""
 import os
 
 from src.services.material_service import (

@@ -642,6 +642,64 @@ class TestRecomposeCooldownMarker:
         assert MARKER_DIRECTION_OVERFLOW not in _get_tag_notes(DOMAIN_TAG_NAME)
 
 
+class TestCooldownMarkerWriteFailure:
+    """tags.notesラチェット天井(migrations/0066)によりクールダウンマーカーの
+    追記が失敗しても、計算済みのhintが握りつぶされないことの検証"""
+
+    def test_tag_scope_hint_survives_marker_write_failure(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        for i in range(RECOMPOSE_BOOTSTRAP_THRESHOLD):
+            add_decision(decision=f"d{i}", reason="r", topic_id=topic["topic_id"])
+
+        # notesを天井ちょうど(4000字)にしておく。クールダウンマーカー追記は
+        # 必ず4000字を超え、DBトリガーがIntegrityErrorで拒否する状況を作る
+        ceiling_notes = "x" * 4000
+        result = update_tag(DOMAIN_TAG, notes=ceiling_notes)
+        assert "error" not in result, result
+
+        hints = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        assert any(h["type"] == "recompose_bootstrap" for h in hints)
+        # マーカー追記は天井超過で失敗しているため、notesは変化しないまま
+        assert _get_tag_notes(DOMAIN_TAG_NAME) == ceiling_notes
+
+    def test_activity_scope_other_tag_hint_not_lost_when_one_tag_marker_write_fails(
+        self, temp_db
+    ):
+        """activity scopeの集約で、1タグのマーカー書き込み失敗が他タグ分の
+        計算済みhintまで巻き添えで消さないことを確認する"""
+        other_tag_name = "hint-domain-other"
+        other_tag = f"domain:{other_tag_name}"
+
+        topic1 = add_topic(title="t1", description="d", tags=[DOMAIN_TAG])
+        for i in range(RECOMPOSE_BOOTSTRAP_THRESHOLD):
+            add_decision(decision=f"d{i}", reason="r", topic_id=topic1["topic_id"])
+        dec0 = add_decision(decision="anchor1", reason="r", topic_id=topic1["topic_id"])
+
+        topic2 = add_topic(title="t2", description="d", tags=[other_tag])
+        for i in range(RECOMPOSE_BOOTSTRAP_THRESHOLD):
+            add_decision(decision=f"e{i}", reason="r", topic_id=topic2["topic_id"])
+        dec1 = add_decision(decision="anchor2", reason="r", topic_id=topic2["topic_id"])
+
+        # DOMAIN_TAGのnotesだけを天井ちょうどにしておき、そちらのマーカー追記を失敗させる
+        result = update_tag(DOMAIN_TAG, notes="x" * 4000)
+        assert "error" not in result, result
+
+        activity = add_activity(
+            title="[作業] x", description="d",
+            tags=[DOMAIN_TAG, other_tag, "intent:implement"],
+            related=[
+                {"type": "decision", "ids": [dec0["decision_id"], dec1["decision_id"]]},
+            ],
+            check_in=False,
+        )
+
+        hints = get_hints("activity", activity["activity_id"])
+        recompose_hints = [h for h in hints if h["type"] == "recompose_bootstrap"]
+        sources = {h["source"] for h in recompose_hints}
+        assert f"recompose_bootstrap:tag:{_tag_id(DOMAIN_TAG_NAME)}" in sources
+        assert f"recompose_bootstrap:tag:{_tag_id(other_tag_name)}" in sources
+
+
 class TestEdgeCases:
     def test_unknown_scope_returns_empty(self, temp_db):
         conn = get_connection()
