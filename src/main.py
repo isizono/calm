@@ -18,6 +18,7 @@ from src.services import (
     relation_service,
     pin_service,
     retract_service,
+    destabilization_service,
     timeline_service,
     precedent_pull_service,
     signal_service,
@@ -1333,6 +1334,7 @@ def add_relation(
     - 複数タイプを一度に: add_relation("topic", 1, [{"type": "topic", "ids": [2]}, {"type": "activity", "ids": [10, 11]}])
     - 依存関係を追加: add_relation("activity", 1, [{"type": "activity", "ids": [2]}], relation_type="depends_on")
     - 上書き関係を追加: add_relation("decision", 2, [{"type": "decision", "ids": [1]}], relation_type="supersedes")
+    - 前提の揺らぎを追加: add_relation("decision", 2, [{"type": "decision", "ids": [1, 3]}], relation_type="destabilizes")
 
     子（activity/material/decision/log）→topicの関連付けは、relation_typeが
     "related"（デフォルト）または明示的な "belongs_to" のときに限り、親帰属（belongs_to）
@@ -1346,10 +1348,11 @@ def add_relation(
         source_type: 起点エンティティのタイプ（"topic", "activity", "material", "decision", or "log"）
         source_id: 起点エンティティのID
         targets: ターゲットリスト [{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...]
-        relation_type: リレーションタイプ（"related", "depends_on", or "supersedes"）。
-            depends_onはactivity同士のみ、supersedesはdecision同士のみ有効。
-            子→topicのペアは"related"（デフォルト）または"belongs_to"指定時にbelongs_toとして
-            書き込まれる（"depends_on"/"supersedes"はtopic targetでバリデーションエラー）。
+        relation_type: リレーションタイプ（"related", "depends_on", "supersedes", or "destabilizes"）。
+            depends_onはactivity同士のみ、supersedes/destabilizesはdecision同士のみ有効。
+            子→topicのペアは"related"（デフォルト）または"belongs_to"指定時のみbelongs_toとして
+            書き込まれる。"destabilizes"はsourceがtargetの前提を揺るがしたとマークする
+            （pin transferなし、循環判定はsupersedesと合算）。解消はresolve_destabilizationで行う。
 
     Returns:
         成功時: {"added": int}（実際に追加された件数。重複はカウントしない）
@@ -1385,12 +1388,53 @@ def remove_relation(
         relation_type: リレーションタイプ（"related", "depends_on", or "supersedes"）。
             depends_onはactivity同士のみ、supersedesはdecision同士のみ有効。
             related指定時はrelation_type指定に関わらず該当ペアの行を削除する。
+            destabilizesは削除不可（INVALID_RELATION_TYPEエラーになる。解消はresolve_destabilizationを使う）。
 
     Returns:
         成功時: {"removed": int}（実際に削除された件数）
         失敗時: {"error": {"code": ..., "message": ...}}
     """
     return relation_service.remove_relation(source_type, source_id, targets, relation_type)
+
+
+@mcp.tool()
+def resolve_destabilization(
+    source_decision_id: int,
+    target_decision_id: int,
+    resolution: Literal["reaffirmed", "revised", "retracted"],
+    revised_to_decision_id: Optional[int] = None,
+    note: str = "",
+) -> dict:
+    """
+    destabilizesエッジ1本を解消（resolve）する。add_relation(relation_type="destabilizes")で
+    張られたエッジを、再検証の結果に応じて閉じるときに使う。
+
+    resolution:
+    - "reaffirmed": targetの結論を再確認した（揺らぎ解消、結論変更なし）。
+    - "revised": revised_to_decision_id（新結論のdecision ID）を記録する。
+      supersedesエッジ張り（add_relation(relation_type="supersedes")）は別途呼び出し側で行う。
+    - "retracted": targetを実際にretractする（decisions.retracted_atを更新、既存のretract経路と統合）。
+
+    エッジ自体（decision_supersedes側）は削除しない（履歴保存）。resolution行が存在する
+    エッジは、以降staleness.destabilizationから除外される。
+
+    同一(source_decision_id, target_decision_id)への2回目以降の呼び出しは、resolution行を
+    追加せず"already_resolved": trueを返す（冪等）。retractedの副作用も再発生しない。
+
+    Args:
+        source_decision_id: 揺らぎの発生元（軸変更）のdecision ID
+        target_decision_id: 前提が揺らいだ影響先のdecision ID
+        resolution: "reaffirmed" | "revised" | "retracted"
+        revised_to_decision_id: resolution="revised"のとき必須。新結論となるdecision ID
+        note: 自由記述の注記
+
+    Returns:
+        成功時: {"resolved": bool, "already_resolved": bool}
+        失敗時: {"error": {"code": ..., "message": ...}}
+    """
+    return destabilization_service.resolve_destabilization(
+        source_decision_id, target_decision_id, resolution, revised_to_decision_id, note
+    )
 
 
 @mcp.tool()
