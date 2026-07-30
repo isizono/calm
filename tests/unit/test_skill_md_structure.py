@@ -11,6 +11,12 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
+_SKILL_ROOTS = (_REPO_ROOT / "skills", _REPO_ROOT / ".claude" / "skills")
+
+_SKILL_DIRS = sorted(
+    {d for root in _SKILL_ROOTS if root.is_dir() for d in root.iterdir() if d.is_dir()}
+)
+
 _SKILL_MD_PATHS = sorted(
     {
         *(_REPO_ROOT / "skills").glob("*/SKILL.md"),
@@ -21,8 +27,17 @@ _SKILL_MD_PATHS = sorted(
 _FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
 
 
+def _skill_name_from_dir(path: Path) -> str:
+    return path.name
+
+
 def _skill_name_from_path(path: Path) -> str:
     return path.parent.name
+
+
+@pytest.fixture(params=_SKILL_DIRS, ids=_skill_name_from_dir)
+def skill_dir(request) -> Path:
+    return request.param
 
 
 @pytest.fixture(params=_SKILL_MD_PATHS, ids=_skill_name_from_path)
@@ -30,12 +45,12 @@ def skill_md_path(request) -> Path:
     return request.param
 
 
-def test_at_least_one_skill_md_found():
-    assert len(_SKILL_MD_PATHS) > 0, "SKILL.mdが1件も見つからない（探索パス設定を確認）"
+def test_at_least_one_skill_dir_found():
+    assert len(_SKILL_DIRS) > 0, "skillディレクトリが1件も見つからない（探索パス設定を確認）"
 
 
-def test_skill_md_exists(skill_md_path):
-    assert skill_md_path.exists()
+def test_skill_dir_has_skill_md(skill_dir):
+    assert (skill_dir / "SKILL.md").exists(), f"{skill_dir} にSKILL.mdが無い"
 
 
 def test_skill_md_has_frontmatter(skill_md_path):

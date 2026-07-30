@@ -1,4 +1,4 @@
-"""spec docのツール総数が実装と一致することを検証する導出型整合性lint。"""
+"""spec docのツール一覧が実装と一致することを検証する導出型整合性lint。"""
 import re
 from pathlib import Path
 
@@ -13,12 +13,16 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-class TestMcpToolsSpecToolCount:
-    """spec docのツール総数が src/main.py の実装（@mcp.tool 実カウント）と一致すること。"""
+class TestMcpToolsSpecSync:
+    """spec docの記載が src/main.py の実装（@mcp.tool 定義）と一致すること。"""
 
     def _actual_tool_count(self) -> int:
         content = _read(SRC_MAIN)
         return len(re.findall(r"@mcp\.tool\(", content))
+
+    def _actual_tool_names(self) -> list[str]:
+        content = _read(SRC_MAIN)
+        return re.findall(r"@mcp\.tool\([^)]*\)\s*\ndef (\w+)\(", content)
 
     def _declared_tool_count(self) -> int:
         content = _read(MCP_TOOLS_SPEC)
@@ -29,11 +33,23 @@ class TestMcpToolsSpecToolCount:
     def test_declared_count_matches_impl(self):
         assert self._declared_tool_count() == self._actual_tool_count()
 
-    def test_previously_missing_tools_documented(self):
+    def test_all_tools_documented(self):
         content = _read(MCP_TOOLS_SPEC)
-        # カテゴリ一覧と詳細セクションの両方に記載されていること
-        for tool in ("export_material",):
-            assert f"`{tool}`" in content, f"{tool} がカテゴリ一覧に無い"
-            assert re.search(rf"^### 2\.\d+ .*\b{tool}\b", content, re.MULTILINE), (
-                f"{tool} の詳細セクションが無い"
-            )
+        tools = self._actual_tool_names()
+        assert len(tools) == self._actual_tool_count(), (
+            "ツール名抽出の正規表現がカウント用正規表現と一致していない"
+        )
+        missing_from_category_list = [
+            tool for tool in tools if f"`{tool}`" not in content
+        ]
+        missing_detail_section = [
+            tool
+            for tool in tools
+            if not re.search(rf"^### 2\.\d+ .*\b{tool}\b", content, re.MULTILINE)
+        ]
+        assert not missing_from_category_list, (
+            f"カテゴリ一覧に記載が無いツール: {missing_from_category_list}"
+        )
+        assert not missing_detail_section, (
+            f"詳細セクションが無いツール: {missing_detail_section}"
+        )
