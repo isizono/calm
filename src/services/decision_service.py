@@ -28,7 +28,10 @@ from src.services.habit_service import _add_habit_with_conn
 from src.services.precedent_pure import attach_precedent, parse_precedent_sections, summarize_precedent
 from src.services.relation_service import _add_relation_with_conn
 from src.services.relay.entity_publish import publish_entity_event_with_conn
-from src.services.supersede_service import compute_supersede_info_batch
+from src.services.supersede_service import (
+    compute_destabilization_info_batch,
+    compute_supersede_info_batch,
+)
 from src.services.title_validation import validate_title
 
 PROPAGATE_TYPES = {"habit", "tag_note"}
@@ -362,6 +365,7 @@ def _build_decision_item(
     dec: dict,
     tags_map: dict[int, list[str]],
     supersede_map: dict[int, dict],
+    destabilization_map: Optional[dict[int, dict]] = None,
 ) -> dict:
     """SELECT * FROM decisions の 1 行から返却用の decision item を組み立てる。
 
@@ -373,6 +377,10 @@ def _build_decision_item(
     reason に `docs/precedent-format.md` の定型節（却下案:/適用条件:/適用外:/検証:/
     隣接確認:）があれば precedent（コンパクト形）を付与する。節が無い decision には
     キーを付けない（legacy 本文と規約準拠本文を区別できるようにする）。
+
+    destabilization_map に対象 decision の id が含まれる場合のみ destabilization キーを
+    付与する（未resolveな destabilizes エッジが1本も無い decision にはキー自体を付けない）。
+    省略時（precedent_cluster_service 等、destabilization 非対応の呼出元）は付与しない。
     """
     display_title = dec.get("title") or (dec["decision"] or "")[:50]
     supersede_info = supersede_map.get(
@@ -391,6 +399,9 @@ def _build_decision_item(
     }
     if dec.get("retracted_at"):
         item["retracted_at"] = dec["retracted_at"]
+    destab_info = (destabilization_map or {}).get(dec["id"])
+    if destab_info is not None:
+        item["destabilization"] = destab_info
     attach_precedent(item, dec.get("reason"))
     # 読み出し時にも書き込み時と同じnudgeを再現する（tags_mapは実効タグ=topic継承込み）。
     _apply_adjacent_check_warning(item, item["tags"])
@@ -501,11 +512,12 @@ def get_decisions(
             tags_map = get_effective_tags_batch(conn, "decision", topic_id)
             decision_ids = [row_to_dict(row)["id"] for row in rows]
             supersede_map = compute_supersede_info_batch(conn, decision_ids)
+            destabilization_map = compute_destabilization_info_batch(conn, decision_ids)
 
             decisions = []
             for row in rows:
                 dec = row_to_dict(row)
-                item = _build_decision_item(dec, tags_map, supersede_map)
+                item = _build_decision_item(dec, tags_map, supersede_map, destabilization_map)
                 decisions.append(item)
 
             total_count = _count_decisions_for_topics(conn, [topic_id], decision_retract_filter)
@@ -570,11 +582,12 @@ def get_decisions(
             decision_ids = [row_to_dict(row)["id"] for row in rows]
             tags_map = get_effective_tags_batch_by_ids(conn, "decision", decision_ids) if decision_ids else {}
             supersede_map = compute_supersede_info_batch(conn, decision_ids)
+            destabilization_map = compute_destabilization_info_batch(conn, decision_ids)
 
             decisions = []
             for row in rows:
                 dec = row_to_dict(row)
-                item = _build_decision_item(dec, tags_map, supersede_map)
+                item = _build_decision_item(dec, tags_map, supersede_map, destabilization_map)
                 decisions.append(item)
 
             total_count = _count_decisions_for_topics(conn, topic_ids, decision_retract_filter)

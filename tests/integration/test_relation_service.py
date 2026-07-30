@@ -1052,6 +1052,249 @@ class TestSupersedes:
         assert result["removed"] == 0
 
 
+class TestDestabilizes:
+    """destabilizesリレーションのテスト"""
+
+    def test_destabilizes_add_single(self, entities_with_decision_log):
+        """decision→decisionのdestabilizesリレーションが追加できる"""
+        e = entities_with_decision_log
+        result = add_relation(
+            "decision", e["d1"], [{"type": "decision", "ids": [e["d2"]]}],
+            relation_type="destabilizes",
+        )
+        assert "error" not in result
+        assert result["added"] == 1
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT kind FROM decision_supersedes WHERE source_id = ? AND target_id = ?",
+                (e["d1"], e["d2"]),
+            ).fetchone()
+            assert row is not None
+            assert row["kind"] == "destabilizes"
+        finally:
+            conn.close()
+
+    def test_destabilizes_multiple_targets_in_one_call(self, entities_with_decision_log):
+        """targets配列で複数idsを渡すと1回の呼び出しで全てdestabilizesエッジとして登録される"""
+        e = entities_with_decision_log
+        result = add_relation(
+            "decision", e["d1"], [{"type": "decision", "ids": [e["d2"], e["d3"]]}],
+            relation_type="destabilizes",
+        )
+        assert "error" not in result
+        assert result["added"] == 2
+
+        conn = get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT target_id FROM decision_supersedes WHERE source_id = ? AND kind = 'destabilizes'",
+                (e["d1"],),
+            ).fetchall()
+            target_ids = {r["target_id"] for r in rows}
+            assert target_ids == {e["d2"], e["d3"]}
+        finally:
+            conn.close()
+
+    def test_destabilizes_non_decision_source_rejected(self, entities_with_decision_log):
+        """destabilizesのsource_typeがdecision以外の場合INVALID_RELATION_TYPEエラーになる"""
+        e = entities_with_decision_log
+        result = add_relation(
+            "activity", e["a1"], [{"type": "decision", "ids": [e["d1"]]}],
+            relation_type="destabilizes",
+        )
+        assert "error" in result
+        assert result["error"]["code"] == "INVALID_RELATION_TYPE"
+
+    def test_destabilizes_non_decision_target_rejected(self, entities_with_decision_log):
+        """destabilizesのtarget_typeがdecision以外の場合INVALID_RELATION_TYPEエラーになる"""
+        e = entities_with_decision_log
+        result = add_relation(
+            "decision", e["d1"], [{"type": "activity", "ids": [e["a1"]]}],
+            relation_type="destabilizes",
+        )
+        assert "error" in result
+        assert result["error"]["code"] == "INVALID_RELATION_TYPE"
+
+    def test_destabilizes_direct_cycle_rejected(self, entities_with_decision_log):
+        """destabilizes直接循環（A→B, B→A）がCIRCULAR_DESTABILIZESエラーで拒否される"""
+        e = entities_with_decision_log
+        result = add_relation(
+            "decision", e["d1"], [{"type": "decision", "ids": [e["d2"]]}],
+            relation_type="destabilizes",
+        )
+        assert "error" not in result
+
+        result = add_relation(
+            "decision", e["d2"], [{"type": "decision", "ids": [e["d1"]]}],
+            relation_type="destabilizes",
+        )
+        assert "error" in result
+        assert result["error"]["code"] == "CIRCULAR_DESTABILIZES"
+
+    def test_destabilizes_transitive_cycle_rejected(self, entities_with_decision_log):
+        """destabilizes推移的循環（A→B, B→C, C→A）がCIRCULAR_DESTABILIZESエラーで拒否される"""
+        e = entities_with_decision_log
+        result = add_relation(
+            "decision", e["d1"], [{"type": "decision", "ids": [e["d2"]]}],
+            relation_type="destabilizes",
+        )
+        assert "error" not in result
+
+        result = add_relation(
+            "decision", e["d2"], [{"type": "decision", "ids": [e["d3"]]}],
+            relation_type="destabilizes",
+        )
+        assert "error" not in result
+
+        result = add_relation(
+            "decision", e["d3"], [{"type": "decision", "ids": [e["d1"]]}],
+            relation_type="destabilizes",
+        )
+        assert "error" in result
+        assert result["error"]["code"] == "CIRCULAR_DESTABILIZES"
+
+    def test_destabilizes_and_supersedes_mixed_kind_cycle_rejected(self, entities_with_decision_log):
+        """d1 destabilizes d2 の後、d2 supersedes d1 を追加しようとするとkind問わず合算判定でCIRCULAR_SUPERSEDESエラーになる"""
+        e = entities_with_decision_log
+        result = add_relation(
+            "decision", e["d1"], [{"type": "decision", "ids": [e["d2"]]}],
+            relation_type="destabilizes",
+        )
+        assert "error" not in result
+
+        result = add_relation(
+            "decision", e["d2"], [{"type": "decision", "ids": [e["d1"]]}],
+            relation_type="supersedes",
+        )
+        assert "error" in result
+        assert result["error"]["code"] == "CIRCULAR_SUPERSEDES"
+
+    def test_supersedes_and_destabilizes_mixed_kind_cycle_rejected(self, entities_with_decision_log):
+        """d1 supersedes d2 の後、d2 destabilizes d1 を追加しようとするとkind問わず合算判定でCIRCULAR_DESTABILIZESエラーになる"""
+        e = entities_with_decision_log
+        result = add_relation(
+            "decision", e["d1"], [{"type": "decision", "ids": [e["d2"]]}],
+            relation_type="supersedes",
+        )
+        assert "error" not in result
+
+        result = add_relation(
+            "decision", e["d2"], [{"type": "decision", "ids": [e["d1"]]}],
+            relation_type="destabilizes",
+        )
+        assert "error" in result
+        assert result["error"]["code"] == "CIRCULAR_DESTABILIZES"
+
+    def test_destabilizes_no_pin_transfer(self, entities_with_decision_log):
+        """destabilizesエッジ追加ではpin transferが発生しない（_transfer_pins_with_connが呼ばれない）"""
+        e = entities_with_decision_log
+        add_pin("activity", e["a1"], "decision", e["d2"])
+
+        result = add_relation(
+            "decision", e["d1"], [{"type": "decision", "ids": [e["d2"]]}],
+            relation_type="destabilizes",
+        )
+        assert "error" not in result
+        assert result["added"] == 1
+        assert "pins_transferred" not in result
+
+        conn = get_connection()
+        try:
+            old_row = conn.execute(
+                "SELECT * FROM pins WHERE target_type='decision' AND target_id=?",
+                (e["d2"],),
+            ).fetchone()
+            new_row = conn.execute(
+                "SELECT * FROM pins WHERE target_type='decision' AND target_id=?",
+                (e["d1"],),
+            ).fetchone()
+            # 旧targetへのpinは維持されたまま、新sourceへは何も付け替わっていない
+            assert old_row is not None
+            assert new_row is None
+        finally:
+            conn.close()
+
+    def test_destabilizes_idempotent(self, entities_with_decision_log):
+        """同じdestabilizesペアを再追加してもエラーにならずadded=0が返る"""
+        e = entities_with_decision_log
+        result1 = add_relation(
+            "decision", e["d1"], [{"type": "decision", "ids": [e["d2"]]}],
+            relation_type="destabilizes",
+        )
+        assert result1["added"] == 1
+
+        result2 = add_relation(
+            "decision", e["d1"], [{"type": "decision", "ids": [e["d2"]]}],
+            relation_type="destabilizes",
+        )
+        assert "error" not in result2
+        assert result2["added"] == 0
+
+    def test_destabilizes_self_reference_skipped(self, entities_with_decision_log):
+        """destabilizes自己参照はスキップされる（エラーにならない）"""
+        e = entities_with_decision_log
+        result = add_relation(
+            "decision", e["d1"], [{"type": "decision", "ids": [e["d1"]]}],
+            relation_type="destabilizes",
+        )
+        assert "error" not in result
+        assert result["added"] == 0
+
+    def test_destabilizes_replaces_and_destabilizes_can_coexist(self, entities_with_decision_log):
+        """同一ペアにreplacesとdestabilizesの両方のkindを張ることがスキーマ上許容される"""
+        e = entities_with_decision_log
+        result_replaces = add_relation(
+            "decision", e["d1"], [{"type": "decision", "ids": [e["d3"]]}],
+            relation_type="supersedes",
+        )
+        assert "error" not in result_replaces
+
+        result_destabilizes = add_relation(
+            "decision", e["d1"], [{"type": "decision", "ids": [e["d3"]]}],
+            relation_type="destabilizes",
+        )
+        assert "error" not in result_destabilizes
+        assert result_destabilizes["added"] == 1
+
+        conn = get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT kind FROM decision_supersedes WHERE source_id = ? AND target_id = ? ORDER BY kind",
+                (e["d1"], e["d3"]),
+            ).fetchall()
+            kinds = sorted(r["kind"] for r in rows)
+            assert kinds == ["destabilizes", "replaces"]
+        finally:
+            conn.close()
+
+    def test_destabilizes_remove_relation_rejected(self, entities_with_decision_log):
+        """destabilizesエッジはremove_relationでは削除できず、エッジも残る（解消はresolve_destabilization経由）"""
+        e = entities_with_decision_log
+        add_result = add_relation(
+            "decision", e["d1"], [{"type": "decision", "ids": [e["d3"]]}],
+            relation_type="destabilizes",
+        )
+        assert "error" not in add_result
+
+        remove_result = remove_relation(
+            "decision", e["d1"], [{"type": "decision", "ids": [e["d3"]]}],
+            relation_type="destabilizes",
+        )
+        assert remove_result["error"]["code"] == "INVALID_RELATION_TYPE"
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM decision_supersedes WHERE source_id = ? AND target_id = ? AND kind = 'destabilizes'",
+                (e["d1"], e["d3"]),
+            ).fetchone()
+            assert row is not None
+        finally:
+            conn.close()
+
+
 class TestGetMapDecisionLogFilter:
     """get_mapのdecision/logフィルタテスト"""
 

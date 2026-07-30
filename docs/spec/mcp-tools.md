@@ -22,7 +22,7 @@ last-synced-migration: 0048
 
 ## 1. ツール一覧
 
-全46ツール。カテゴリ別に一覧する。
+全48ツール。カテゴリ別に一覧する。
 
 ### 1.1 記録系（add系）
 
@@ -77,6 +77,8 @@ last-synced-migration: 0048
 | ツール | 概要 |
 | --- | --- |
 | `add_relation` / `remove_relation` | エンティティ間リレーションの追加・削除 |
+| `resolve_destabilization` | destabilizesエッジ（前提の揺らぎ）を1本解消する |
+| `suggest_destabilized_candidates` | 軸変更decisionからdestabilize候補decisionを提示（read-only） |
 | `add_pin` / `remove_pin` | pin の追加・削除 |
 | `get_map` | リレーショングラフ走査 |
 
@@ -381,10 +383,11 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 | source_type | string | yes | - | `topic`/`activity`/`material`/`decision`/`log` |
 | source_id | int | yes | - | 起点ID |
 | targets | list[RelatedRef] | yes | - | ターゲット |
-| relation_type | string | no | "related" | `related`/`depends_on`/`supersedes`/`belongs_to` |
+| relation_type | string | no | "related" | `related`/`depends_on`/`supersedes`/`destabilizes`/`belongs_to` |
 
-**制約**: `depends_on` はactivity同士のみ、`supersedes` はdecision同士のみ有効。
-**親帰属の自動書き込み**: 子（activity/material/decision/log）→topicの関連付けは、`relation_type` が `related`（デフォルト）または明示的な `belongs_to` のときに限り `belongs_to` として書き込まれる。`depends_on`/`supersedes` を指定するとtargetがtopicのためバリデーションエラーになり何も書き込まれない。この帰属はget_decisions/get_timeline/check_inのトピック帰属集計やget_by_idsのtopic_id解決の基盤になっており、`remove_relation` で `related`/`belongs_to` を指定すると帰属関係ごと削除される。
+**制約**: `depends_on` はactivity同士のみ、`supersedes`/`destabilizes` はdecision同士のみ有効。
+**親帰属の自動書き込み**: 子（activity/material/decision/log）→topicの関連付けは、`relation_type` が `related`（デフォルト）または明示的な `belongs_to` のときに限り `belongs_to` として書き込まれる。`depends_on`/`supersedes`/`destabilizes` を指定するとtargetがtopicのためバリデーションエラーになり何も書き込まれない。この帰属はget_decisions/get_timeline/check_inのトピック帰属集計やget_by_idsのtopic_id解決の基盤になっており、`remove_relation` で `related`/`belongs_to` を指定すると帰属関係ごと削除される。
+**`destabilizes`**: sourceがtargetの前提を揺るがし再検証が必要になったとマークする。`supersedes`と違いpin transferは発生させず、targetの結論そのものは維持される。循環禁止は`supersedes`と合算判定する（循環時は`CIRCULAR_DESTABILIZES`）。`remove_relation`では削除できない（`INVALID_RELATION_TYPE`を返す。履歴として残す設計のため、解消は下記`resolve_destabilization`を使う）。
 **返り値**: `{added: int}` または `{removed: int}`。重複は冪等。
 
 ### 2.20 get_map
@@ -626,6 +629,32 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 **動作**: 答え待ち（open）のaskを人間の回答を待たずに取り消す。取り下げ後はask_blocksを削除するが、要求元セッションの記録（ask_requesters）は参照ログとして残す。同一fingerprintの再postは、誤操作保護のため取り下げから5分間拒否される（session条件は課さない）。
 **エラー処理**: 対象がopen状態でない場合は`VALIDATION_ERROR`。
 
+### 2.48 resolve_destabilization
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| source_decision_id | int | yes | - | destabilizesエッジのsource（軸変更decision） |
+| target_decision_id | int | yes | - | destabilizesエッジのtarget（影響を受けたdecision） |
+| resolution | string | yes | - | `reaffirmed`/`revised`/`retracted` |
+| revised_to_decision_id | int | resolution=revisedのとき必須 | null | 改訂後の新decision ID |
+| note | string | no | "" | 自由記述 |
+
+**返り値**: `{resolved: bool, already_resolved: bool}`。
+**動作**: `decision_destabilization_resolutions`にエッジ単位で1行記録し解消する。エッジ自体（`decision_supersedes`のdestabilizes行）は削除しない（履歴保存）。`resolution="retracted"`のときのみtargetを実際にretractする（`decisions.retracted_at`更新）。`reaffirmed`/`revised`ではtargetのretract状態は変化しない。
+**冪等性**: 既に解消済みの同一エッジに対して再度呼んでも、2件目のINSERTや副作用（retract呼び出し等）は発生させず`already_resolved: true`を返す。
+**エラー処理**: `resolution`が3値以外、または`resolution="revised"`で`revised_to_decision_id`が未指定の場合は`VALIDATION_ERROR`。
+
+### 2.49 suggest_destabilized_candidates
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| source_decision_id | int | yes | - | 軸変更decisionのID |
+| k | int | no | 20 | 返す候補数の上限 |
+| include_already_resolved | bool | no | false | resolve済み候補も含めるか |
+
+**返り値**: `{candidates: [{decision_id, title, score, match_reason, already_destabilized, already_resolved}], mode: "vector" | "tag_only"}`。
+**動作**: read-only。候補は「(a) sourceとtag集合が重なるnon-retract decision」と「(b) sourceが属するtopicのembedding近傍topicに属するnon-retract decision」の和集合で、tag_jaccard・embedding類似度（近傍topic routingのdistanceを正規化）・同一topicボーナス（same_topic_bonus）を合成したスコア降順で返す。embeddingサーバー停止時は例外にせず、embedding近傍チャネル(b)のみを無効化してタグ一致チャネル(a)の候補を`mode: "tag_only"`で返し続ける（縮退してもゼロ件にはしない）。`decision_supersedes`（kind='destabilizes'）を参照して`already_destabilized`、`decision_destabilization_resolutions`を参照して`already_resolved`を付与し、`include_already_resolved=false`（既定）ではresolve済み候補を除外する。実際にdestabilizesエッジを張るかどうかは呼び出し側の判断で、別途`add_relation(relation_type="destabilizes")`を呼ぶ。
+
 ---
 
 ## 3. 共通エンティティ型
@@ -646,6 +675,11 @@ cc-memoryが扱うエンティティの内部表現。詳細スキーマは `doc
 - `tags: list[string]`
 - `related_decisions: [{id, title, distance}]`（add_decisions返り値のみ）
 - `retracted_at: string | null`
+- `destabilization: {destabilized_by: [source_id, ...], unresolved_count: int, latest_source: source_id | null, sources: [{decision_id, title, created_at, kind_reason}, ...]}`
+  （`get_decisions`/`get_by_ids`/`check_in`のpinned.decisions/`pull_precedents`の読み出し応答のみに付く算出フィールド。
+  未resolveなdestabilizesエッジ（`add_relation(relation_type="destabilizes")`で登録、`resolve_destabilization`で解消）を
+  1本以上持つ場合のみ付与され、無ければキー自体が無い。`destabilized_by`と`sources`は`created_at`昇順、
+  `latest_source`は最新のsource decisionのid。`is_superseded`/`supersede_chain`（結論の置き換え）とは独立に併記され、両方成立しうる）
 
 ### 3.3 DiscussionLog
 - `log_id: int`
