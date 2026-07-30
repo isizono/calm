@@ -45,7 +45,7 @@ class TestMcpToolsSpecSync:
         missing_detail_section = [
             tool
             for tool in tools
-            if not re.search(rf"^### 2\.\d+ .*\b{tool}\b", content, re.MULTILINE)
+            if not re.search(rf"^### 2\.\d+[a-z]* .*\b{tool}\b", content, re.MULTILINE)
         ]
         assert not missing_from_category_list, (
             f"カテゴリ一覧に記載が無いツール: {missing_from_category_list}"
