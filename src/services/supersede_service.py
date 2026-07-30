@@ -22,9 +22,9 @@ def _bfs_related(
         start_id を含まない、到達可能な decision_id の集合。
     """
     if direction == "older":
-        query = "SELECT target_id AS next_id FROM decision_supersedes WHERE source_id = ?"
+        query = "SELECT target_id AS next_id FROM decision_supersedes WHERE source_id = ? AND kind = 'replaces'"
     elif direction == "newer":
-        query = "SELECT source_id AS next_id FROM decision_supersedes WHERE target_id = ?"
+        query = "SELECT source_id AS next_id FROM decision_supersedes WHERE target_id = ? AND kind = 'replaces'"
     else:
         raise ValueError(f"invalid direction: {direction}")
 

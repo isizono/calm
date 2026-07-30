@@ -5,16 +5,14 @@
 2. session_idが空/null → 空JSON出力して終了
 3. events.jsonl全読み
 4. 未消費のnudgeイベント判定 → system-reminder注入
-5. id_leak_count > 0 → 内部 ID 漏出 system-reminder 注入 + count reset
-6. relay session-aware nudge（CCM_RELAY_SESSION_AWARE=1のときのみ） →
+5. relay session-aware nudge（CCM_RELAY_SESSION_AWARE=1のときのみ） →
    system-reminder注入
-7. 何もなし → 空JSON出力
+6. 何もなし → 空JSON出力
 
 Stop hookでnudge判定とevents.jsonl追記を行い、本hookで消費して注入する。
-MessageDisplay hookが内部IDリテラル件数をid_leak_countに蓄積し、本hookで参照する。
 注入タイミングが「ユーザーの次の発言時」になるため、文面もその文脈に合わせている。
-relay session-aware nudge（手順6）はSessionStartの一回きりの起動指示が読み流されて
-機能しない問題への対応で、events.jsonl/id_leakとは独立にHookState.monitor_started
+relay session-aware nudge（手順5）はSessionStartの一回きりの起動指示が読み流されて
+機能しない問題への対応で、events.jsonlとは独立にHookState.monitor_started
 マーカー（hooks/relay_monitor_watch_hook.pyがPostToolUseで書く）とrelay inboxの
 未読件数を毎ターン判定する。identity解決結果はHookState.relay_identityにセッション
 単位でキャッシュし、resolve_identity_by_ancestry（ps最大5回spawn）を毎ターン
@@ -69,14 +67,6 @@ _RECORD_NUDGE_TIER_HIGH = (
     "{turns_since}ターン以上記録ツールが呼ばれていません。このまま進むと"
     "セッションの経緯が失われる可能性が高い状態です。今すぐ振り返って記録するか、"
     "記録すべき内容が本当にないかを明示的に判断してください。"
-)
-
-_ID_LEAK_NUDGE_MESSAGE = (
-    "<system-reminder>"
-    "Your previous response included internal IDs (e.g., `A#xxx`, `M#xxx`, `log #xxx`). "
-    "Before responding to the user, revisit your reference style and switch to descriptive "
-    "natural language; the user cannot resolve raw IDs."
-    "</system-reminder>"
 )
 
 
@@ -252,24 +242,14 @@ def main() -> None:
             print(json.dumps(_make_hook_output(message), ensure_ascii=False))
             return
 
-        # 5. id_leak count チェック（既存 nudge を消費せず loop 抜けた場合のみ）
-        # MessageDisplay hook が観測した内部 ID 漏出件数 > 0 ならリマインダー注入。
-        # 既存 nudge と同 turn に立っていた場合は既存 nudge を優先し id_leak は
-        # 次ターンに繰り越す (count は reset しない)。1 turn に 1 リマインダー
-        # で認知負荷を抑える方針。
-        if state.get_id_leak_count() > 0:
-            state.reset_id_leak_count()
-            print(json.dumps(_make_hook_output(_ID_LEAK_NUDGE_MESSAGE), ensure_ascii=False))
-            return
-
-        # 6. relay session-aware nudge（CCM_RELAY_SESSION_AWARE=1のときのみ、
-        # 既存nudge・id_leakのどちらも非該当だった場合のみ判定）
+        # 5. relay session-aware nudge（CCM_RELAY_SESSION_AWARE=1のときのみ、
+        # 既存nudgeが非該当だった場合のみ判定）
         relay_message = _build_relay_turn_nudge(state)
         if relay_message:
             print(json.dumps(_make_hook_output(relay_message), ensure_ascii=False))
             return
 
-        # 7. 何もなし
+        # 6. 何もなし
         print("{}")
 
     except Exception as e:

@@ -56,25 +56,6 @@ class HookState:
         """ファイル削除（missing_ok=True）"""
         self._delete(self._path("block_count"))
 
-    # --- id_leak_count ---
-
-    def get_id_leak_count(self) -> int:
-        """assistant 発話に出現した cc-memory 内部 ID リテラル件数の累積。
-        未設定 -> 0。MessageDisplay hook が観測時に increment し、
-        UserPromptSubmit hook が次ターンで参照して system-reminder を注入
-        した後に reset する想定。"""
-        return self._read_int(self._path("id_leak_count"), 0)
-
-    def increment_id_leak_count(self, by: int = 1) -> int:
-        """count を by 加算して書き込み、新しい値を返す"""
-        new_val = self.get_id_leak_count() + by
-        self._write(self._path("id_leak_count"), str(new_val))
-        return new_val
-
-    def reset_id_leak_count(self) -> None:
-        """ファイル削除（missing_ok=True）"""
-        self._delete(self._path("id_leak_count"))
-
     # --- transcript_offset ---
 
     def get_transcript_offset(self) -> int:

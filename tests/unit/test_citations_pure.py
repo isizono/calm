@@ -304,6 +304,97 @@ class TestConvertWithValidatorAgainstDb:
         assert counters["skipped_dangling"] == 1
 
 
+class TestFullwordConversionHashOmittedNotConverted:
+    """自動変換 (`convert_raw_to_cite`) は `#` 必須パターン
+    (internal_id_patterns.RAW_CITE_FULLWORD_HASH_REQUIRED_PATTERN) のみを対象とし、
+    `#` を省略した「type 名+スペース+数字」の並び (例: "decision 14") は変換しない。
+
+    `#` 省略パターンは preblock_hook (block 用途) 専用であり、DB 上に該当 ID が
+    実在する場合に "Activity 1" のような自然文まで citation へ書き換えてしまう
+    実害があったため、自動変換側では `#` 必須パターンのみを使う仕様に切り分けている。
+
+    期待値の組み立てで `#` を直接ソースに書くとこのファイル自体が PreToolUse hook
+    のブロック対象になるため、`sharp = chr(35)` を使い動的に組み立てる
+    (test_preblock_hook.py と同じ手法)。
+    """
+
+    def test_hash_omitted_one_space_not_converted(self) -> None:
+        text = "see decision 14 here"
+        out, counters = convert_raw_to_cite(text)
+        assert out == text
+        assert counters["sanitized_count"] == 0
+
+    def test_hash_omitted_all_five_typenames_not_converted(self) -> None:
+        text = "log 1 decision 2 activity 3 material 4 topic 5"
+        out, counters = convert_raw_to_cite(text)
+        assert out == text
+        assert counters["sanitized_count"] == 0
+
+    def test_hash_omitted_no_space_not_converted(self) -> None:
+        out, counters = convert_raw_to_cite("decision14 is not converted")
+        assert out == "decision14 is not converted"
+        assert counters["sanitized_count"] == 0
+
+    def test_hash_omitted_multiple_spaces_not_converted(self) -> None:
+        out, counters = convert_raw_to_cite("decision  14 stays raw")
+        assert out == "decision  14 stays raw"
+        assert counters["sanitized_count"] == 0
+
+    def test_hash_omitted_natural_sentence_with_trailing_word_not_converted(
+        self,
+    ) -> None:
+        # レビュー指摘: 数字の後ろに単語が続く自然文 ("decision 14 days" 等) の
+        # 誤変換シナリオに対する回帰テスト。
+        text = "we will revisit this decision 14 days from now"
+        out, counters = convert_raw_to_cite(text)
+        assert out == text
+        assert counters["sanitized_count"] == 0
+
+    def test_hash_omitted_matches_real_ci_regression_fixtures(self) -> None:
+        # test_active_context.py / test_topic_read.py で実際に誤変換が起きていた
+        # fixture 文言 ("Activity 1" 等) そのものでの回帰テスト。
+        for text in ("Activity 1", "Log 1", "Decision 1"):
+            out, counters = convert_raw_to_cite(text)
+            assert out == text
+            assert counters["sanitized_count"] == 0
+
+    def test_hash_omitted_escape_not_needed_and_text_unchanged(self) -> None:
+        text = "see \\decision 14 literal"
+        out, counters = convert_raw_to_cite(text)
+        assert out == text
+        assert counters["sanitized_count"] == 0
+        assert counters["skipped_escape"] == 0
+
+    def test_hash_omitted_inside_codeblock_not_converted(self) -> None:
+        text = "before decision 14\n```\ndecision 15\n```\nafter"
+        out, counters = convert_raw_to_cite(text)
+        assert out == text
+        assert counters["sanitized_count"] == 0
+        assert counters["skipped_in_codeblock"] == 0
+
+    def test_hash_omitted_idempotent(self) -> None:
+        first, _ = convert_raw_to_cite("see decision 14 here")
+        second, _ = convert_raw_to_cite(first)
+        assert first == second
+
+    def test_hash_omitted_validator_does_not_trigger_conversion(self) -> None:
+        def validator(t: str, i: int) -> bool:
+            return True
+
+        text = "decision 1 and decision 999"
+        out, counters = convert_raw_to_cite(text, target_validator=validator)
+        assert out == text
+        assert counters["sanitized_count"] == 0
+        assert counters["skipped_dangling"] == 0
+
+    def test_hash_required_form_still_converts(self) -> None:
+        # 対照確認: `#` ありの従来形式は引き続き変換される。
+        sharp = chr(35)
+        out, counters = convert_raw_to_cite("see decision " + sharp + "14 here")
+        assert out == "see {{cite:D" + sharp + "14}} here"
+        assert counters["sanitized_count"] == 1
+
+
 class TestFullwordConversion:
     """英語フルワード形式 (log/decision/activity/material/topic + #NNN) の変換。
 

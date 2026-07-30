@@ -40,6 +40,11 @@ SYNC_POLICY: str | None = os.environ.get("CCM_SYNC_POLICY") or None  # 空文字
 # always層（常時注入枠）の定員（文字数）。update_habitでtrigger_mode='always'に
 # 昇格する際、昇格後のプール合計文字数がこの値と昇格前合計の大きい方を超えると
 # 拒否する（プールが定員超過中でも、合計を増やさない変更は許可するラチェット）
+#
+# 注意: DB側にも独立したハード天井（2000字固定、migrations/0065、環境変数では
+# 変更不可）がある。本値を2000以上に設定すると、このアプリ層ゲートは通過するが
+# DBトリガー側で拒否され、生のSQLiteメッセージがDATABASE_ERRORとして露出する。
+# 2000未満に収めること。
 ALWAYS_POOL_CAPACITY: int = int(os.environ.get("CCM_ALWAYS_POOL_CAPACITY", "1500"))
 
 # habits DBから ~/.claude/rules 配下へ投影する自動生成ファイルの書き込み先パス
@@ -77,6 +82,18 @@ RELAY_SESSION_AWARE_ENABLED: bool = os.environ.get("CCM_RELAY_SESSION_AWARE", "0
 # --- Archived tags ---
 # 全タグがarchivedのアイテムに適用する final_score の降格係数
 ARCHIVED_DEMOTION_FACTOR: float = float(os.environ.get("CCM_ARCHIVED_DEMOTION_FACTOR", "0.3"))
+
+# --- SessionStart injection compositor（各セクションの宣言予算） ---
+INJECTION_BUDGET_SNAPSHOT_CHARS: int = int(os.environ.get("CCM_INJECTION_BUDGET_SNAPSHOT", "1500"))
+INJECTION_BUDGET_ACTIVITIES_CHARS: int = int(os.environ.get("CCM_INJECTION_BUDGET_ACTIVITIES", "4000"))
+INJECTION_BUDGET_HABITS_CHARS: int = int(os.environ.get("CCM_INJECTION_BUDGET_HABITS", "2500"))
+INJECTION_BUDGET_SYNC_POLICY_CHARS: int = int(os.environ.get("CCM_INJECTION_BUDGET_SYNC_POLICY", "1000"))
+INJECTION_BUDGET_SIGNALS_CHARS: int = int(os.environ.get("CCM_INJECTION_BUDGET_SIGNALS", "500"))
+INJECTION_BUDGET_RELAY_INBOX_CHARS: int = int(os.environ.get("CCM_INJECTION_BUDGET_RELAY_INBOX", "500"))
+INJECTION_BUDGET_TRANSCRIPT_PATH_CHARS: int = int(os.environ.get("CCM_INJECTION_BUDGET_TRANSCRIPT_PATH", "200"))
+# Σ上のINJECTION_BUDGET_*と一致させる（CIゼロサムテストで検証）。実装者が
+# セクションを追加・調整する際は必ずこの合計も合わせて見直すこと。
+TOTAL_INJECTION_BUDGET_CHARS: int = int(os.environ.get("CCM_TOTAL_INJECTION_BUDGET_CHARS", "10200"))
 
 # --- Precedent pull ---
 # 本文展開（decision + reason）の予算（文字数）。index行・material snippet・routing

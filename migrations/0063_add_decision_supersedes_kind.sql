@@ -1,4 +1,4 @@
--- Migration 0065: decision_supersedesにkind列追加 + destabilizes解消追跡テーブル新設
+-- Migration 0063: decision_supersedesにkind列追加 + destabilizes解消追跡テーブル新設
 --
 -- depends: 0062_add_asks
 --
@@ -14,7 +14,7 @@ PRAGMA defer_foreign_keys = ON;
 -- Step 1: decision_supersedes 再作成（kind列追加）
 -- ============================================
 
-ALTER TABLE decision_supersedes RENAME TO decision_supersedes_old_0065;
+ALTER TABLE decision_supersedes RENAME TO decision_supersedes_old_0063;
 
 CREATE TABLE decision_supersedes (
     source_id INTEGER NOT NULL REFERENCES decisions(id) ON DELETE CASCADE,
@@ -27,9 +27,9 @@ CREATE TABLE decision_supersedes (
 );
 
 INSERT INTO decision_supersedes (source_id, target_id, kind, created_at)
-SELECT source_id, target_id, 'replaces', created_at FROM decision_supersedes_old_0065;
+SELECT source_id, target_id, 'replaces', created_at FROM decision_supersedes_old_0063;
 
-DROP TABLE decision_supersedes_old_0065;
+DROP TABLE decision_supersedes_old_0063;
 
 CREATE INDEX idx_decision_supersedes_target ON decision_supersedes(target_id, kind);
 
