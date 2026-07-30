@@ -42,6 +42,7 @@ erDiagram
 
   activities ||--o{ activity_dependencies : "depends_on"
   decisions ||--o{ decision_supersedes : "supersedes"
+  decisions ||--o{ decision_destabilization_resolutions : "resolves"
 
   discussion_topics ||--o{ relations : "polymorphic"
   activities ||--o{ relations : "polymorphic"
@@ -105,7 +106,8 @@ erDiagram
 | `material_tags` | — | material ↔ tag junction |
 | `relations` | — | 5エンティティ間の related 関係 + topic への belongs_to 帰属（ポリモーフィック） |
 | `activity_dependencies` | — | activity 間の有向 depends_on |
-| `decision_supersedes` | — | decision 間の有向 supersedes |
+| `decision_supersedes` | — | decision 間の有向 supersedes/destabilizes（kind列で区別） |
+| `decision_destabilization_resolutions` | — | destabilizesエッジ単位の解消記録（reaffirmed/revised/retracted） |
 | `pins` | — | 任意エンティティ間の有向 pin（注意フラグ） |
 | `search_index` | — | 全エンティティ統一の検索インデックス中間テーブル |
 | `search_index_fts` | — | search_index と rowid 連動する contentless FTS5 仮想テーブル |
@@ -381,21 +383,41 @@ activity 間の有向 `depends_on` 関係。
 
 ### 3.11 decision_supersedes
 
-decision 間の有向 `supersedes` 関係（新→旧）。
+decision 間の有向関係。`kind`列で意味論を2つに分ける。`replaces`（結論の置き換え、旧`supersedes`と同義）と`destabilizes`（前提が変わったので要再検証、結論が変わるとは限らない）。
 
 | カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
 |---|---|---|---|---|---|
-| source_id | INTEGER | NO | — | REFERENCES decisions(id) ON DELETE CASCADE, PK | 新decision |
-| target_id | INTEGER | NO | — | REFERENCES decisions(id) ON DELETE CASCADE, PK | 旧decision |
+| source_id | INTEGER | NO | — | REFERENCES decisions(id) ON DELETE CASCADE, PK | 新decision（またはdestabilizeする側） |
+| target_id | INTEGER | NO | — | REFERENCES decisions(id) ON DELETE CASCADE, PK | 旧decision（またはdestabilizeされる側） |
+| kind | TEXT | NO | `'replaces'` | CHECK IN ('replaces','destabilizes'), PK | 関係の種類 |
 | created_at | TEXT | YES | `datetime('now')` | — | 作成時刻 |
 
 制約:
 - `CHECK (source_id != target_id)`
+- 同一`(source_id, target_id)`ペアに`replaces`/`destabilizes`両方が共存することはスキーマ上許容される（PKに`kind`を含むため）
 
 インデックス:
-- `idx_decision_supersedes_target` ON `decision_supersedes(target_id)`
+- `idx_decision_supersedes_target` ON `decision_supersedes(target_id, kind)`
 
-関連 migration: 0033
+関連 migration: 0033（新設）, 0063（kind列追加、PK再構成）
+
+### 3.11a decision_destabilization_resolutions
+
+`decision_supersedes`の`kind='destabilizes'`エッジ1本ごとの解消記録。エッジ自体は解消後も`decision_supersedes`から削除しない（履歴保存）。
+
+| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
+|---|---|---|---|---|---|
+| source_id | INTEGER | NO | — | REFERENCES decisions(id) ON DELETE CASCADE, PK | destabilizesエッジのsource |
+| target_id | INTEGER | NO | — | REFERENCES decisions(id) ON DELETE CASCADE, PK | destabilizesエッジのtarget |
+| resolution | TEXT | NO | — | CHECK IN ('reaffirmed','revised','retracted') | 解消方法 |
+| revised_to_decision_id | INTEGER | YES | NULL | REFERENCES decisions(id) ON DELETE SET NULL | resolution=revised時の改訂後decision |
+| note | TEXT | NO | `''` | — | 自由記述 |
+| resolved_at | TEXT | NO | `datetime('now')` | — | 解消時刻 |
+
+インデックス:
+- `idx_destab_resolutions_target` ON `decision_destabilization_resolutions(target_id)`
+
+関連 migration: 0063
 
 ### 3.12 pins
 
@@ -502,15 +524,15 @@ tags テーブル用の sqlite-vec 仮想テーブル（384次元）。tag embed
 | source_id | 起点ID |
 | target_type | 終点種別 |
 | target_id | 終点ID |
-| relation_type | `'related'` / `'belongs_to'` / `'depends_on'` / `'supersedes'` のいずれか |
+| relation_type | `'related'` / `'belongs_to'` / `'depends_on'` / `'supersedes'` / `'destabilizes'` のいずれか |
 | created_at | 作成時刻 |
 
 構成:
 - `related` / `belongs_to`: `relations` テーブルを正方向 + 逆方向の UNION ALL で展開し、`relation_type` カラムをそのまま返す（0046 以前は `'related'` リテラル固定で返していたが、`belongs_to` 追加に伴い直接返す形に再構築された）
 - `depends_on`: `activity_dependencies` をそのまま（非対称）
-- `supersedes`: `decision_supersedes` をそのまま（非対称）
+- `supersedes` / `destabilizes`: `decision_supersedes` の`kind`列を`CASE`で`relation_type`に出し分け（非対称）
 
-関連 migration: 0020（初版）/ 0023（material 系拡張）/ 0028（depends_on 追加）/ 0033（relations 統合 + supersedes 追加）/ 0046（belongs_to 対応・relation_type を直接返す形に再構築）
+関連 migration: 0020（初版）/ 0023（material 系拡張）/ 0028（depends_on 追加）/ 0033（relations 統合 + supersedes 追加）/ 0046（belongs_to 対応・relation_type を直接返す形に再構築）/ 0063（destabilizes 出し分け追加）
 
 ### 3.18 search_telemetry
 
@@ -729,7 +751,7 @@ asks 専用の sqlite-vec 仮想テーブル（384次元、`distance_metric=cosi
 | 1 | related | `relations`（ポリモーフィック、`relation_type='related'`） | 対称（CHECK で正規化） | エンティティ間の弱い関連 | 5エンティティ全組み合わせ可 |
 | 2 | belongs_to（topic 帰属） | `relations`（ポリモーフィック、`relation_type='belongs_to'`） | 親→子（子が source） | 5エンティティ全て → topic | 0046 で decision/log の旧 `topic_id` FK も含めこの1系統に統一。partial index 2本あり（§3.9） |
 | 3 | depends_on | `activity_dependencies` | 非対称（dependent → dependency） | activity 間のみ | 循環検出はアプリ層 |
-| 4 | supersedes | `decision_supersedes` | 非対称（新 → 旧） | decision 間のみ | 循環検出はアプリ層 |
+| 4 | supersedes / destabilizes | `decision_supersedes`（`kind`列で区別） | 非対称（新 → 旧、または destabilize する側 → される側） | decision 間のみ | 循環検出は`kind`問わず合算判定（アプリ層）。destabilizesの解消記録は`decision_destabilization_resolutions`（§3.11a） |
 | 5 | pin | `pins`（ポリモーフィック） | 非対称（source → target） | 任意エンティティ＋tag | 注意喚起・カタログ用 |
 
 補足:
@@ -851,6 +873,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0060_add_habit_importance_score_check | trigger_mode='intelligently'かつimportance_score=1.0(未設定)のhabitを3に補正したうえで、importance_scoreにCHECK(IN (1, 2, 3))を追加（テーブル再構築） |
 | 0061_add_tag_archived | tags に archived_at（退役日時）/ archived_reason（退役理由、100文字以内のCHECK制約付き）を追加、archived_at 用の部分インデックス idx_tags_archived_at を新設（スキーマ変更のみ、データ移行なし） |
 | 0062_add_asks | asks / ask_blocks / ask_requesters テーブル新設 + ask専用 vec0 仮想テーブル ask_vec 新設（§3.23-3.25） |
+| 0063_add_decision_supersedes_kind | decision_supersedes に kind 列（'replaces'/'destabilizes'）追加（テーブル再構築、PK に kind を含める形へ変更）、decision_destabilization_resolutions テーブル新設、relations_view の supersedes 由来行を kind で出し分け（§3.11, §3.11a, §3.17） |
 | 0067_add_injection_telemetry | injection_telemetry テーブル新設（記録=クエリ添付の追随カウンタ present側台帳、§3.26） |
 
 重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。
