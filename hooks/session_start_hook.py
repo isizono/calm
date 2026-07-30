@@ -138,7 +138,7 @@ def _build_fixed_nav(undisplayed_count: int, pinned_undisplayed_count: int) -> s
     return base + remainder
 
 
-def _build_activities_section(conn, session_id: str | None = None, source: str | None = None) -> str:  # source: buildersループの統一シグネチャ（本セクションは未使用）
+def _build_activities_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # source, **_kwargs: 全セクション共通シグネチャ（本セクションは未使用）
     """アクティビティ一覧を組み立てる。
 
     階層 1「作業中（別セッション）」: heartbeat 中で自セッションでないもの。
@@ -342,7 +342,7 @@ def _build_degraded_habits_fallback(
     return "\n".join(lines) + "\n"
 
 
-def _build_habits_section(conn, session_id: str | None = None, source: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
+def _build_habits_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # conn, session_id, **_kwargs: 全セクション共通シグネチャ
     """振る舞いセクションを組み立てる。
 
     正はhabits DBで、通常の配信は~/.claude/rules配下の自動生成ファイル
@@ -385,14 +385,14 @@ def _build_habits_section(conn, session_id: str | None = None, source: str | Non
     )
 
 
-def _build_sync_policy_section(conn, session_id: str | None = None, source: str | None = None) -> str:  # conn, session_id, source: buildersループの統一シグネチャ
+def _build_sync_policy_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # conn, session_id, source, **_kwargs: 全セクション共通シグネチャ
     """sync_policyが設定されていれば注入する。未設定時はコンテキスト消費ゼロ。"""
     if not config.SYNC_POLICY:
         return ""
     return f"# sync_policy\n{config.SYNC_POLICY}\n"
 
 
-def _build_signals_section(conn, session_id: str | None = None, source: str | None = None) -> str:  # conn, session_id, source: buildersループの統一シグネチャ
+def _build_signals_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # conn, session_id, source, **_kwargs: 全セクション共通シグネチャ
     """未トリアージ(status='new')のシグナル件数をkind内訳付きで1行表示する。
 
     0件時はコンテキスト消費ゼロ（空文字を返す）。signal_events テーブルが
@@ -410,7 +410,7 @@ def _build_signals_section(conn, session_id: str | None = None, source: str | No
     return f"未トリアージのシグナル: {total}件 ({breakdown}) → get_signals で確認\n"
 
 
-def _build_relay_inbox_section(conn, session_id: str | None = None, source: str | None = None) -> str:  # conn, session_id, source: buildersループの統一シグネチャ
+def _build_relay_inbox_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # conn, session_id, source, **_kwargs: 全セクション共通シグネチャ
     """identityが解決できる限りMonitor監視指示を常時出す。未読件数の表示のみ0件時は省く。
 
     CCM_RELAY_SESSION_AWARE（デフォルトOFF）のkill switch。OFF時はtokenチェック・
@@ -464,7 +464,22 @@ def _build_relay_inbox_section(conn, session_id: str | None = None, source: str 
     return "\n".join(lines) + "\n"
 
 
-def _build_snapshot_section(conn, session_id: str | None = None, source: str | None = None) -> str:  # conn, session_id, source: buildersループの統一シグネチャ
+def _build_transcript_path_section(
+    conn, session_id: str | None = None, source: str | None = None, transcript_path: str | None = None
+) -> str:  # conn, session_id, source: 全セクション共通シグネチャ（本セクションは未使用）
+    """このセッションのtranscript pathを1行注入する。
+
+    MCPサーバーのサブプロセスにはtranscript_pathが渡らないため（session_id同様、
+    Claude Code側にIPC経路が無い）、SessionStart hookのstdinで受け取った値を
+    ここで会話コンテキストに載せ、Claudeが明示引数として`detect_reask_candidates`等の
+    tool呼び出しに転記する方式を取る。用途はsync-memoryステップ9（聞き返しの後追い検出）。
+    """
+    if not transcript_path:
+        return ""
+    return f"このセッションのtranscript path: {transcript_path}\n"
+
+
+def _build_snapshot_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # conn, session_id, source, **_kwargs: 全セクション共通シグネチャ
     """スナップショット取得＋ヘルスチェック。異常検知時のみ警告を返す。
 
     connは引数として受け取るが、snapshot.pyはdb_pathベースで動作するため
@@ -512,10 +527,13 @@ _SECTIONS: list[Section] = [
     Section("sync_policy", _build_sync_policy_section, config.INJECTION_BUDGET_SYNC_POLICY_CHARS, priority=30),
     Section("signals", _build_signals_section, config.INJECTION_BUDGET_SIGNALS_CHARS, priority=40),
     Section("relay_inbox", _build_relay_inbox_section, config.INJECTION_BUDGET_RELAY_INBOX_CHARS, priority=50),
+    Section("transcript_path", _build_transcript_path_section, config.INJECTION_BUDGET_TRANSCRIPT_PATH_CHARS, priority=60),
 ]
 
 
-def _build_session_context(session_id: str | None = None, source: str | None = None) -> str:
+def _build_session_context(
+    session_id: str | None = None, source: str | None = None, transcript_path: str | None = None
+) -> str:
     """サービス層経由でセッション開始時のコンテキストを組み立てる。
 
     session_id は session_start_hook の stdin payload に含まれる Claude Code 提供の
@@ -523,13 +541,15 @@ def _build_session_context(session_id: str | None = None, source: str | None = N
     source は同 payload の "source"（startup|resume|clear|compact）。現状
     _build_habits_section のみが参照し、compact後にrulesファイル内容が
     コンテキストに保持されるかの実機未検証を安全側に倒すため使う。
+    transcript_path は同payloadの"transcript_path"。_build_transcript_path_section
+    のみが参照する。
 
     各セクションの組み立て・予算管理はinjection_compositor.composeへ委譲する
     （セクション単位try/except・宣言予算超過時の縮退はcompose側の責務）。
     """
     conn = get_connection()
     try:
-        return compose(conn, session_id, source, _SECTIONS)
+        return compose(conn, session_id, source, transcript_path, _SECTIONS)
     finally:
         conn.close()
 
@@ -539,6 +559,7 @@ def main() -> None:
         raw = sys.stdin.read()
         session_id: str | None = None
         source: str | None = None
+        transcript_path: str | None = None
         if raw:
             try:
                 payload = json.loads(raw)
@@ -549,12 +570,16 @@ def main() -> None:
                     src = payload.get("source")
                     if isinstance(src, str) and src:
                         source = src
+                    tp = payload.get("transcript_path")
+                    if isinstance(tp, str) and tp:
+                        transcript_path = tp
             except json.JSONDecodeError:
-                # session_id/source 取得失敗時は従来挙動（self 照合なし・compact判定
-                # なし）にフォールバック。初期値 None のまま継続するため再代入不要
+                # session_id/source/transcript_path 取得失敗時は従来挙動（self 照合なし・
+                # compact判定なし・transcript path注入なし）にフォールバック。初期値 None
+                # のまま継続するため再代入不要
                 pass
 
-        context = _build_session_context(session_id, source)
+        context = _build_session_context(session_id, source, transcript_path)
 
         output = {
             "hookSpecificOutput": {

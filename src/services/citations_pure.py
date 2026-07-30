@@ -17,7 +17,7 @@ from typing import Callable
 from src.services.internal_id_patterns import (
     FULLWORD_TO_CODE,
     RAW_CITE_CODE_PATTERN as _RAW_CITE_PATTERN,
-    RAW_CITE_FULLWORD_PATTERN as _RAW_CITE_FULLWORD_PATTERN,
+    RAW_CITE_FULLWORD_HASH_REQUIRED_PATTERN as _RAW_CITE_FULLWORD_PATTERN,
 )
 
 logger = logging.getLogger(__name__)

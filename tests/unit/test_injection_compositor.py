@@ -11,7 +11,7 @@ from src.services.injection_compositor import Section, compose, total_declared_b
 
 
 def _const_builder(text: str):
-    def _builder(conn, session_id, source):
+    def _builder(conn, session_id=None, source=None, transcript_path=None):
         return text
     return _builder
 
@@ -22,7 +22,7 @@ class TestComposeOrdering:
             Section("b", _const_builder("second"), budget_chars=100, priority=20),
             Section("a", _const_builder("first"), budget_chars=100, priority=10),
         ]
-        result = compose(None, None, None, sections)
+        result = compose(None, None, None, None, sections)
 
         assert result == "first\nsecond"
 
@@ -31,21 +31,21 @@ class TestComposeOrdering:
             Section("empty", _const_builder(""), budget_chars=100, priority=0),
             Section("present", _const_builder("content"), budget_chars=100, priority=10),
         ]
-        result = compose(None, None, None, sections)
+        result = compose(None, None, None, None, sections)
 
         assert result == "content"
 
 
 class TestComposeExceptionIsolation:
     def test_one_section_exception_does_not_break_others(self):
-        def _boom(conn, session_id, source):
+        def _boom(conn, session_id=None, source=None, transcript_path=None):
             raise RuntimeError("boom")
 
         sections = [
             Section("boom", _boom, budget_chars=100, priority=0),
             Section("ok", _const_builder("survivor"), budget_chars=100, priority=10),
         ]
-        result = compose(None, None, None, sections)
+        result = compose(None, None, None, None, sections)
 
         assert result == "survivor"
 
@@ -53,14 +53,14 @@ class TestComposeExceptionIsolation:
 class TestComposeBudgetEnforcement:
     def test_output_within_budget_passes_through_unchanged(self):
         sections = [Section("s", _const_builder("short text"), budget_chars=100, priority=0)]
-        result = compose(None, None, None, sections)
+        result = compose(None, None, None, None, sections)
 
         assert result == "short text"
 
     def test_overflow_is_hard_truncated_within_budget(self):
         budget = 60
         sections = [Section("s", _const_builder("x" * 1000), budget_chars=budget, priority=0)]
-        result = compose(None, None, None, sections)
+        result = compose(None, None, None, None, sections)
 
         assert len(result) <= budget
         assert "切り詰め" in result
@@ -84,16 +84,16 @@ class TestComposeTotalBudgetEnforcement:
             for i in range(5)
         ]
 
-        result = compose(None, None, None, sections)
+        result = compose(None, None, None, None, sections)
 
         assert len(result) <= config.TOTAL_INJECTION_BUDGET_CHARS
         assert "切り詰め" in result
 
-    def test_all_six_sections_at_config_budget_cap_stays_within_total(self):
-        """レビューで実機再現されたシナリオ: config.pyの6セクション予算合計は
+    def test_all_declared_sections_at_config_budget_cap_stays_within_total(self):
+        """レビューで実機再現されたシナリオ: config.pyの全セクション予算合計は
         TOTAL_INJECTION_BUDGET_CHARSとちょうど一致し余裕がない。全セクションが
-        同時に宣言予算ちょうどの出力をすると、5個の"\n"区切り文字分だけ
-        実測がTOTAL_INJECTION_BUDGET_CHARSを超えていた（修正前は10,005字）。
+        同時に宣言予算ちょうどの出力をすると、区切り文字の分だけ実測が
+        TOTAL_INJECTION_BUDGET_CHARSを超えていた（修正前は10,005字）。
         """
         budgets = [
             config.INJECTION_BUDGET_SNAPSHOT_CHARS,
@@ -102,13 +102,14 @@ class TestComposeTotalBudgetEnforcement:
             config.INJECTION_BUDGET_SYNC_POLICY_CHARS,
             config.INJECTION_BUDGET_SIGNALS_CHARS,
             config.INJECTION_BUDGET_RELAY_INBOX_CHARS,
+            config.INJECTION_BUDGET_TRANSCRIPT_PATH_CHARS,
         ]
         sections = [
             Section(f"s{i}", _const_builder("x" * budget), budget_chars=budget, priority=i)
             for i, budget in enumerate(budgets)
         ]
 
-        result = compose(None, None, None, sections)
+        result = compose(None, None, None, None, sections)
 
         assert len(result) <= config.TOTAL_INJECTION_BUDGET_CHARS
 
@@ -127,7 +128,7 @@ class TestComposeInvariantEnforcement:
         ]
 
         with pytest.raises(ValueError, match="総宣言予算"):
-            compose(None, None, None, sections)
+            compose(None, None, None, None, sections)
 
     def test_declared_total_equal_to_total_budget_does_not_raise(self, monkeypatch):
         monkeypatch.setattr(config, "TOTAL_INJECTION_BUDGET_CHARS", 100)
@@ -136,7 +137,7 @@ class TestComposeInvariantEnforcement:
             Section("b", _const_builder("world"), budget_chars=40, priority=1),
         ]
 
-        result = compose(None, None, None, sections)
+        result = compose(None, None, None, None, sections)
 
         assert result == "hello\nworld"
 

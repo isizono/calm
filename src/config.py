@@ -85,9 +85,10 @@ INJECTION_BUDGET_HABITS_CHARS: int = int(os.environ.get("CCM_INJECTION_BUDGET_HA
 INJECTION_BUDGET_SYNC_POLICY_CHARS: int = int(os.environ.get("CCM_INJECTION_BUDGET_SYNC_POLICY", "1000"))
 INJECTION_BUDGET_SIGNALS_CHARS: int = int(os.environ.get("CCM_INJECTION_BUDGET_SIGNALS", "500"))
 INJECTION_BUDGET_RELAY_INBOX_CHARS: int = int(os.environ.get("CCM_INJECTION_BUDGET_RELAY_INBOX", "500"))
+INJECTION_BUDGET_TRANSCRIPT_PATH_CHARS: int = int(os.environ.get("CCM_INJECTION_BUDGET_TRANSCRIPT_PATH", "200"))
 # Σ上のINJECTION_BUDGET_*と一致させる（CIゼロサムテストで検証）。実装者が
 # セクションを追加・調整する際は必ずこの合計も合わせて見直すこと。
-TOTAL_INJECTION_BUDGET_CHARS: int = int(os.environ.get("CCM_TOTAL_INJECTION_BUDGET_CHARS", "10000"))
+TOTAL_INJECTION_BUDGET_CHARS: int = int(os.environ.get("CCM_TOTAL_INJECTION_BUDGET_CHARS", "10200"))
 
 # --- Precedent pull ---
 # 本文展開（decision + reason）の予算（文字数）。index行・material snippet・routing

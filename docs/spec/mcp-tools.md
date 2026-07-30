@@ -22,7 +22,7 @@ last-synced-migration: 0048
 
 ## 1. ツール一覧
 
-全40ツール。カテゴリ別に一覧する。
+全46ツール。カテゴリ別に一覧する。
 
 ### 1.1 記録系（add系）
 
@@ -70,6 +70,7 @@ last-synced-migration: 0048
 | `search` | 横断検索（FTS5 trigram + ベクトル ハイブリッド） |
 | `search_tags` | タグをキーワード検索する |
 | `analyze_tags` | タグ共起分析（PMI/クラスタ/孤児/重複候補） |
+| `detect_reask_candidates` | transcriptから聞き返し候補を抽出し上位N件のsearchまで一括実行する |
 
 ### 1.5 関係系・pin系
 
@@ -127,6 +128,18 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 | ツール | 概要 |
 | --- | --- |
 | `relay_status` | outbox行の配送状況（pending/delivered/dead）とruntime健全性（3スレッド生存・再起動回数）を確認する |
+
+### 1.13 asks系（判断委譲）
+
+AIエージェントが人間の判断を待つ問いを1箇所に積み、人間が回答するだけで作業を再開できるようにする受け皿。`signal_events`と似た設計思想だが、状態遷移（open→answered→promoted/dismissed、open→withdrawn）を持つため専用テーブル（`asks`）に記録される。answer時点ではトリアージ（promote/dismiss）を行わず、次の`check_in`で配達されるまで遅延する。
+
+| ツール | 概要 |
+| --- | --- |
+| `add_ask` | 答え待ちの問いを1件積む（blocksで指定したactivityを止める） |
+| `get_asks` | 記録されたaskを一覧・集計する |
+| `answer_ask` | 答え待ちのaskに回答する（トリアージは行わない） |
+| `triage_ask` | answered状態のaskをpromote（decision化）またはdismissへ振り分ける |
+| `withdraw_ask` | 答え待ちのaskを自発的に取り下げる |
 
 ---
 
@@ -212,6 +225,19 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 
 **返り値**: `{results: [SearchHit], archived_tags: [{tag, archived_reason}]}`。scoreは0〜1正規化（1.0=全ソース1位、片方ヒットは最大0.5）。0.4以上=高関連、0.15〜0.4=中、0.15未満=低の目安。snippetでなく全文が必要な場合は結果のtype+idを`get_by_ids`に渡す。各結果アイテムには`archived`（bool）・`archived_tags`（配列）・`score_breakdown.archived_factor`も付く（全タグがarchivedのアイテムのみ`archived: true`になりfinal_scoreが下位表示側に減衰する。除外はしない）。トップレベルの`archived_tags`は応答内の全アイテムのタグのうちarchivedなものの集約で、該当なしでも常に空配列で付く。
 **実装**: FTS5 trigram + ベクトル検索のRRF統合。
+
+### 2.6b detect_reask_candidates
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| transcript_path | string | yes | - | transcript JSONLのパス |
+| max_candidates | int | no | 50 | 抽出段階の上限件数 |
+| search_top_n | int | no | 8 | search実行対象とする候補の上限件数（excluded_reason付きを除いた先頭N件） |
+| search_limit | int | no | 10 | 候補1件あたりのsearch呼び出しのlimit |
+| score_threshold | float | no | 0.4 | `candidates[].top_hits` に残す最小final_score |
+
+**返り値**: `{candidates: [{kind, turn, text, context_snippet, options?, degraded, top_hits: [{type, id, score, title}], search_error?}, ...], total_extracted, excluded_count, searched_count, truncated_count, degraded, score_threshold}`。`search_error`は候補に対するsearch呼び出しがエラーを返した場合のみ付与される（`{"code", "message"}`）。excluded_reason付き候補・search_top_nを超えた候補は`candidates`に含まれない。transcript_pathが存在しない場合は`{"error": {"code": "TRANSCRIPT_NOT_FOUND", ...}}`。
+**用途**: `skills/sync-memory/SKILL.md` ステップ9（聞き返しの後追い検出）の候補抽出＋照合searchを1回の呼び出しに集約する。既存記録があれば聞き返しが不要だったかの主観判定と`report_signal`呼び出しは呼び出し側が行う。
 
 ### 2.7 get_by_ids
 
@@ -344,6 +370,7 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 | activity_id | int | yes | - | アクティビティID |
 
 **返り値**: `{coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary}`。セッション内でcheck_inを初めて呼んだときのみ`flow_guide`（コンテキスト取得の手がかり）も含まれる。
+このactivityを`add_ask`のblocksでblockしているaskが1件以上あるときのみ`asks: {awaiting_answer, awaiting_triage}`が追加される（無ければキー自体が無い）。`awaiting_answer`はstatus='open'のask一覧（各`{id_raw, question, last_seen_at}`）、`awaiting_triage`はstatus='answered'かつ未トリアージのask一覧（各`{id_raw, question, answer_body, last_seen_at}`）。activities.statusがcompleted以外のときのみ配達され、promoted/dismissed/withdrawn済みのaskは配達されない。`awaiting_triage`が1件以上あるときは`hints`にも「answered状態のaskが未トリアージです。triage_askでpromote/dismissへ振り分けてください。」という文言が1件追加される。この`asks`関連のhintsは、recompose系hintと異なりorch-managed activityでもsuppressされない（答え待ちである事実はhintではなく状態情報として扱うため）。
 **副作用**: statusがin_progress以外なら自動的にin_progressに更新。
 **呼び出し基準**: 既存アクティビティに関連する作業を始めるとき。summaryフィールドはそのまま出力することが推奨される。
 
@@ -537,15 +564,67 @@ Claude Codeセッション間の通信・文脈配信レイヤ。relay v2 サー
 **動作**: outbox行の配送状況はrelay_outboxテーブルのローカルSELECTのみで判定する（`processed_at`セット済み=delivered、`dead_at`セット済み=dead、いずれも無ければpending）。message本文（`ref_id`）は返さない（同一プロセス内の他sessionが発行した行にも越境してアクセスできてしまうため、意図的に除外）。runtimeセクションは常に返る。`running: false`はこのプロセスでrelay v2常駐処理が起動していないことを示す（エラーではない）。relayサーバー本体へのHTTPアクセスは一切発生しない。
 **エラー処理**: outbox_idが正の整数でない場合は`validation`。指定したIDの行が存在しない場合（存在しないID、またはdead化から一定期間経過後にDLQ物理削除済み。保持日数は`relay_sdk`側の設定値）は`not_found`。
 
-### 2.42 relay_status
+### 2.43 add_ask
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
-| outbox_id | int | no | null | relay_publishの返り値のoutbox_id。指定するとその行の配送状況を返す。省略時はoutboxセクションを返り値から省く |
+| question | string | yes | - | 問い本文（空不可、500字以内） |
+| blocks | list[int] | yes | - | この問いが答え待ちで止めているactivityのid一覧（1件以上必須）。全て存在するactivityであること。全てcompleted状態のときはエラー |
+| context | string | no | null | 背景（8000字以内） |
 
-**返り値**: `{outbox: {outbox_id, status, labels, title, created_at, processed_at, dead_at, retry_count, last_error} | null, runtime: {configured, running, threads: {<thread名>: {alive, restart_count, last_restart_at, last_error}}}}`。
-**動作**: outbox行の配送状況はrelay_outboxテーブルのローカルSELECTのみで判定する（`processed_at`セット済み=delivered、`dead_at`セット済み=dead、いずれも無ければpending）。message本文（`ref_id`）は返さない（同一プロセス内の他sessionが発行した行にも越境してアクセスできてしまうため、意図的に除外）。runtimeセクションは常に返る。`running: false`はこのプロセスでrelay v2常駐処理が起動していないことを示す（エラーではない）。relayサーバー本体へのHTTPアクセスは一切発生しない。
-**エラー処理**: outbox_idが正の整数でない場合は`validation`。指定したIDの行が存在しない場合（存在しないID、またはdead化から一定期間経過後にDLQ物理削除済み。保持日数は`relay_sdk`側の設定値）は`not_found`。
+**返り値**: `{id: int, deduped: bool, occurrence_count: int, similar_precedents: [...], similar_asks: [...]}`。`similar_precedents`/`similar_asks`はそれぞれ近傍のdecision/ask最大3件（embeddingサーバー未起動時は空配列）。
+**動作**: 同じ問い（正規化後questionのfingerprint一致）が答え待ち（open）で既にあれば新規行を作らず`occurrence_count`を+1し、blocks/要求元セッションはUNIONで追記、context/最終出現時刻は今回の値で上書きする。answered/promoted/dismissed/withdrawnの同一問いは別のライフとして新規行になる（訂正は新規postで行い、supersedes等のリンクは張らない）。
+**エラー処理**: question空・500字超、context 8000字超、blocks空・存在しないactivity id含む・全てcompleted状態、同一fingerprintの直近withdrawから5分未満の再postはいずれも`VALIDATION_ERROR`。
+
+### 2.44 get_asks
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| status | string \| null | no | "open" | `open`/`answered`/`promoted`/`dismissed`/`withdrawn`。nullで全status横断。triage_pending_only指定時は無視される |
+| blocking_activity_id | int | no | null | 指定時はそのactivityをblockしているaskだけに絞る |
+| triage_pending_only | bool | no | false | trueでstatus='answered'かつ未トリアージのみに絞る |
+| limit | int | no | 20 | 最大100 |
+| offset | int | no | 0 | ページネーション |
+| include_stats | bool | no | false | trueでstatus別クロス集計と直近30日サマリを付与 |
+
+**返り値**: `{asks: [...], total_count: int, stats?: {by_status, last_30d}}`。各askにblocks（`[{id_raw, title, status}]`）とrequesters（要求元session_idの文字列リスト）が合流される。
+
+### 2.45 answer_ask
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| ask_id | int | yes | - | 対象ask ID |
+| answer_body | string | yes | - | 回答本文（空不可、8000字以内） |
+
+**返り値**: `{id: int, status: "answered", triage_pending: true, blocked_activities: [int, ...], next_step: string}`。
+**動作**: トリアージ（promote/dismiss）はここでは行わない。次のcheck_inでの配達か`get_asks(triage_pending_only=true)`で拾われるまで遅延する。対象がopen状態でない場合は`VALIDATION_ERROR`（1問1答、再回答は拒否）。
+
+### 2.46 triage_ask
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| ask_id | int | yes | - | 対象ask ID |
+| action | string | yes | - | `promote` または `dismiss` |
+| decision | string | action=promoteのとき必須 | null | 生成するdecisionの内容 |
+| reason | string | action=promoteのとき必須 | null | 生成するdecisionの理由 |
+| title | string | no | null | decisionの見出し（35字以内） |
+| tags | list[string] | no | null | decisionに付けるタグ |
+| dismiss_reason | string | action=dismissのとき必須 | null | 見送り理由 |
+
+**返り値**: promote時 `{id: int, status: "promoted", promoted_decision_id: int}`、dismiss時 `{id: int, status: "dismissed"}`。
+**動作**: promoteはdecision/reason/title/tagsをそのまま`add_decisions`に渡してdecisionを生成し、promoted_decision_idとして紐付ける。いずれもこのaskが止めていたactivityのblockを解除する（ask_blocksを削除）。
+**エラー処理**: 対象がanswered かつ未トリアージでない場合、action不正、promote時のdecision/reason欠落、dismiss時のdismiss_reason欠落はいずれも`VALIDATION_ERROR`。promote処理中にdecision生成が失敗した場合はask側の状態変更もロールバックされ`answered`のまま残る。
+
+### 2.47 withdraw_ask
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| ask_id | int | yes | - | 対象ask ID |
+| reason | string | yes | - | 取り下げ理由（空不可） |
+
+**返り値**: `{id: int, status: "withdrawn"}`。
+**動作**: 答え待ち（open）のaskを人間の回答を待たずに取り消す。取り下げ後はask_blocksを削除するが、要求元セッションの記録（ask_requesters）は参照ログとして残す。同一fingerprintの再postは、誤操作保護のため取り下げから5分間拒否される（session条件は課さない）。
+**エラー処理**: 対象がopen状態でない場合は`VALIDATION_ERROR`。
 
 ---
 

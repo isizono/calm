@@ -1249,6 +1249,33 @@ class TestSessionStartHookSignals:
         assert "未トリアージのシグナル" not in context
 
 
+class TestSessionStartHookTranscriptPath:
+    """transcript_path 1行注入テスト（聞き返し検出tool一発化のための下地）"""
+
+    def test_transcript_path_present_in_payload_is_injected(self, temp_db):
+        """stdin payloadにtranscript_pathがあれば1行注入される"""
+        result = _run_session_start_hook(
+            temp_db, stdin_payload={"transcript_path": "/tmp/example-transcript.jsonl"}
+        )
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "このセッションのtranscript path: /tmp/example-transcript.jsonl" in context
+
+    def test_transcript_path_absent_from_payload_no_injection(self, temp_db):
+        """stdin payloadにtranscript_pathが無ければセクション自体が出ない"""
+        result = _run_session_start_hook(temp_db, stdin_payload={"session_id": "sid-1"})
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "transcript path" not in context
+
+    def test_transcript_path_non_string_ignored(self, temp_db):
+        """transcript_pathが文字列でない場合は無視され注入されない"""
+        result = _run_session_start_hook(temp_db, stdin_payload={"transcript_path": 12345})
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "transcript path" not in context
+
+
 class TestSessionStartHookRelayInbox:
     """relay inbox未読件数 + Monitor監視指示の表示テスト
 

@@ -237,11 +237,11 @@ description: "「sync-memory改善」トピックで議論中。ステップ4の
 
 **手順:**
 
-1. Claudeが現在のセッションのtranscript pathを解決し、`scripts/detect_reask_candidates.py --transcript <path> --out <tmp.jsonl>` を実行する。出力は候補jsonl（各行に `kind` / `turn` / `text` / `context_snippet` / `excluded_reason?` を持つ）。解決できない場合はこのステップをスキップし、完了報告に一行残す
-2. `excluded_reason` が付いた候補は対象外として除外する
-3. 残候補のうち先頭N件（上限あり。Nを超える候補は判定対象外とし、超過した旨を完了報告に一行残す）について、`text` をクエリに `search(keyword=..., limit=10)` を呼び、既存記録top-3を得る（閾値は本ステップ末尾の実装ノート参照）
-4. `search` レスポンスの `degraded=true` のときは判定を保守側に倒す（該当候補についてはprecedent_miss記録を行わない。skipした事実はStep 11の完了報告に一行残す）
-5. `search` 上位のうち `score` が閾値以上のものを「高類似ヒット」と扱う。高類似ヒットが1件もない候補は判定・記録の対象外とする。高類似ヒットがある候補についてのみ、Claudeが「この既存記録があれば、この聞き返しはそもそも不要だったか」を判定する。この判定はClaudeの主観判断であり、同じ候補・同じ既存記録でも判定がぶれうる
+1. SessionStart時にコンテキストへ注入された「このセッションのtranscript path: ...」の行からtranscript pathを取り出す。無ければこのステップをスキップし、完了報告に一行残す
+2. 取り出したtranscript pathを渡して `detect_reask_candidates(transcript_path=<path>)` を1回呼ぶ。旧来の抽出スクリプト（`scripts/detect_reask_candidates.py`相当）・`excluded_reason` が付いた候補の除外・残候補のうち先頭N件（上限あり。Nを超える候補は判定対象外とし、超過した旨を完了報告に一行残す）への `search` バッチ実行までを内部で行い、各候補に既存記録top-3（`top_hits`。閾値は本ステップ末尾の実装ノート参照）が付いた `candidates` を返す
+3. 個別の `search` 呼び出しは発生しない（手順2に集約済み）
+4. 候補ごとの `candidate.degraded`（内部で行われた `search` バッチ呼び出しの `degraded` を候補単位に反映したもの）で `degraded=true` のときは判定を保守側に倒す（該当候補についてはprecedent_miss記録を行わない。skipした事実はStep 11の完了報告に一行残す）
+5. 候補ごとの `top_hits`（閾値は本ステップ末尾の実装ノート参照。`detect_reask_candidates`が内部で閾値判定済み）を「高類似ヒット」として扱う。高類似ヒットが1件もない候補は判定・記録の対象外とする。高類似ヒットがある候補についてのみ、Claudeが「この既存記録があれば、この聞き返しはそもそも不要だったか」を判定する。この判定はClaudeの主観判断であり、同じ候補・同じ既存記録でも判定がぶれうる
 6. yes判定のみ `report_signal(kind="precedent_miss", summary=..., detail=..., refs=[高類似ヒットの各id], context={"missed_ids": [...]})` を呼ぶ。summaryのフォーマットは下記参照（dedup fingerprintの安定性のため決定論的な文字列に固定する）
 7. 判定ログ（候補text・ヒットid・判定結果）は本ステップ内では保存しない（signal_events側のcontextに集約される）
 
@@ -257,9 +257,9 @@ summaryは決定論的な文字列 `missed: <最上位ヒットの既存記録ty
 
 **実装ノート（初期値、観察後に確定値へ差し替え）:**
 
-- 判定に回す候補上限N: 5〜10件
-- 「高類似ヒット」の閾値: search score 0.4以上
-- 除外辞書: `scripts/detect_reask_candidates.py` の組み込み既定を使う（`--dict` で差し替え可能）
+- 判定に回す候補上限N: 5〜10件（`detect_reask_candidates`の`search_top_n`引数、既定8件）
+- 「高類似ヒット」の閾値: search score 0.4以上（`detect_reask_candidates`の`score_threshold`引数、既定0.4）
+- 除外辞書: `scripts/detect_reask_candidates.py` の組み込み既定を使う（`detect_reask_candidates`ツールは辞書差し替え引数を持たない。差し替えが要る場合は従来通りスクリプトを直接呼ぶ）
 
 ### 10. 棚卸し・remember（自動実行）
 

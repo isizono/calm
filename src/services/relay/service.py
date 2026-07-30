@@ -40,10 +40,10 @@ _ROLE_PREFIX = "role:"
 _HANDLE_PREFIX = "handle:"
 
 # entity 更新 → relay publish（core内部専用、src.services.relay.entity_publish）が
-# ref.type として使う 7 種類（cc-memory 内呼称と完全一致）。
-PUBLISH_ENTITY_TYPES = ("decision", "log", "material", "activity", "topic", "tag", "habit")
+# ref.type として使う 8 種類（cc-memory 内呼称と完全一致）。
+PUBLISH_ENTITY_TYPES = ("decision", "log", "material", "activity", "topic", "tag", "habit", "ask")
 
-# labels の予約 namespace。cc-memory の中核 entity 種別 7 つ（PUBLISH_ENTITY_TYPES）に
+# labels の予約 namespace。cc-memory の中核 entity 種別 8 つ（PUBLISH_ENTITY_TYPES）に
 # 加えて、entity 種別そのものを表す `entity:` と write event 種別を表す `event:` も
 # 予約する。relay label は実在チェックを行わない不透明文字列のため、これらの語彙と
 # 衝突すると存在しない/未検証の entity への関連付けを誤認させる。

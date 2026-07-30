@@ -2,8 +2,8 @@
 watch-tags: domain:cc-memory
 watch-direction: true
 watch-migrations: true
-last-synced: 2026-07-10
-last-synced-migration: 0061
+last-synced: 2026-07-25
+last-synced-migration: 0063
 -->
 
 # cc-memory DBスキーマ v0
@@ -42,6 +42,7 @@ erDiagram
 
   activities ||--o{ activity_dependencies : "depends_on"
   decisions ||--o{ decision_supersedes : "supersedes"
+  decisions ||--o{ decision_destabilization_resolutions : "resolves"
 
   discussion_topics ||--o{ relations : "polymorphic"
   activities ||--o{ relations : "polymorphic"
@@ -105,7 +106,8 @@ erDiagram
 | `material_tags` | — | material ↔ tag junction |
 | `relations` | — | 5エンティティ間の related 関係 + topic への belongs_to 帰属（ポリモーフィック） |
 | `activity_dependencies` | — | activity 間の有向 depends_on |
-| `decision_supersedes` | — | decision 間の有向 supersedes |
+| `decision_supersedes` | — | decision 間の有向 supersedes/destabilizes（kind列で区別） |
+| `decision_destabilization_resolutions` | — | destabilizesエッジ単位の解消記録（reaffirmed/revised/retracted） |
 | `pins` | — | 任意エンティティ間の有向 pin（注意フラグ） |
 | `search_index` | — | 全エンティティ統一の検索インデックス中間テーブル |
 | `search_index_fts` | — | search_index と rowid 連動する contentless FTS5 仮想テーブル |
@@ -116,6 +118,10 @@ erDiagram
 | `citations` | — | 本文中の `{{cite:X#NNN}}` 参照の構造化保存 |
 | `citation_event_log` | — | write時sanitize等のテキスト変換イベントの逐次記録（旧 sanitize_log の後継） |
 | `signal_events` | signal | cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベントの記録先 |
+| `asks` | ask | 人間の判断を待つ問いの記録先（判断委譲の受け皿） |
+| `ask_blocks` | — | ask ↔ activity junction（このaskが答え待ちで止めているactivity） |
+| `ask_requesters` | — | ask ↔ 要求元session_id junction（UNION蓄積） |
+| `ask_vec` | — | asks と rowid 連動する sqlite-vec 仮想テーブル（384次元、cosine距離） |
 
 行数感（規模）はランタイム情報のため本ドキュメントでは未記載とする。
 
@@ -376,21 +382,41 @@ activity 間の有向 `depends_on` 関係。
 
 ### 3.11 decision_supersedes
 
-decision 間の有向 `supersedes` 関係（新→旧）。
+decision 間の有向関係。`kind`列で意味論を2つに分ける。`replaces`（結論の置き換え、旧`supersedes`と同義）と`destabilizes`（前提が変わったので要再検証、結論が変わるとは限らない）。
 
 | カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
 |---|---|---|---|---|---|
-| source_id | INTEGER | NO | — | REFERENCES decisions(id) ON DELETE CASCADE, PK | 新decision |
-| target_id | INTEGER | NO | — | REFERENCES decisions(id) ON DELETE CASCADE, PK | 旧decision |
+| source_id | INTEGER | NO | — | REFERENCES decisions(id) ON DELETE CASCADE, PK | 新decision（またはdestabilizeする側） |
+| target_id | INTEGER | NO | — | REFERENCES decisions(id) ON DELETE CASCADE, PK | 旧decision（またはdestabilizeされる側） |
+| kind | TEXT | NO | `'replaces'` | CHECK IN ('replaces','destabilizes'), PK | 関係の種類 |
 | created_at | TEXT | YES | `datetime('now')` | — | 作成時刻 |
 
 制約:
 - `CHECK (source_id != target_id)`
+- 同一`(source_id, target_id)`ペアに`replaces`/`destabilizes`両方が共存することはスキーマ上許容される（PKに`kind`を含むため）
 
 インデックス:
-- `idx_decision_supersedes_target` ON `decision_supersedes(target_id)`
+- `idx_decision_supersedes_target` ON `decision_supersedes(target_id, kind)`
 
-関連 migration: 0033
+関連 migration: 0033（新設）, 0063（kind列追加、PK再構成）
+
+### 3.11a decision_destabilization_resolutions
+
+`decision_supersedes`の`kind='destabilizes'`エッジ1本ごとの解消記録。エッジ自体は解消後も`decision_supersedes`から削除しない（履歴保存）。
+
+| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
+|---|---|---|---|---|---|
+| source_id | INTEGER | NO | — | REFERENCES decisions(id) ON DELETE CASCADE, PK | destabilizesエッジのsource |
+| target_id | INTEGER | NO | — | REFERENCES decisions(id) ON DELETE CASCADE, PK | destabilizesエッジのtarget |
+| resolution | TEXT | NO | — | CHECK IN ('reaffirmed','revised','retracted') | 解消方法 |
+| revised_to_decision_id | INTEGER | YES | NULL | REFERENCES decisions(id) ON DELETE SET NULL | resolution=revised時の改訂後decision |
+| note | TEXT | NO | `''` | — | 自由記述 |
+| resolved_at | TEXT | NO | `datetime('now')` | — | 解消時刻 |
+
+インデックス:
+- `idx_destab_resolutions_target` ON `decision_destabilization_resolutions(target_id)`
+
+関連 migration: 0063
 
 ### 3.12 pins
 
@@ -497,15 +523,15 @@ tags テーブル用の sqlite-vec 仮想テーブル（384次元）。tag embed
 | source_id | 起点ID |
 | target_type | 終点種別 |
 | target_id | 終点ID |
-| relation_type | `'related'` / `'belongs_to'` / `'depends_on'` / `'supersedes'` のいずれか |
+| relation_type | `'related'` / `'belongs_to'` / `'depends_on'` / `'supersedes'` / `'destabilizes'` のいずれか |
 | created_at | 作成時刻 |
 
 構成:
 - `related` / `belongs_to`: `relations` テーブルを正方向 + 逆方向の UNION ALL で展開し、`relation_type` カラムをそのまま返す（0046 以前は `'related'` リテラル固定で返していたが、`belongs_to` 追加に伴い直接返す形に再構築された）
 - `depends_on`: `activity_dependencies` をそのまま（非対称）
-- `supersedes`: `decision_supersedes` をそのまま（非対称）
+- `supersedes` / `destabilizes`: `decision_supersedes` の`kind`列を`CASE`で`relation_type`に出し分け（非対称）
 
-関連 migration: 0020（初版）/ 0023（material 系拡張）/ 0028（depends_on 追加）/ 0033（relations 統合 + supersedes 追加）/ 0046（belongs_to 対応・relation_type を直接返す形に再構築）
+関連 migration: 0020（初版）/ 0023（material 系拡張）/ 0028（depends_on 追加）/ 0033（relations 統合 + supersedes 追加）/ 0046（belongs_to 対応・relation_type を直接返す形に再構築）/ 0063（destabilizes 出し分け追加）
 
 ### 3.18 search_telemetry
 
@@ -640,6 +666,52 @@ cc-memory自身の故障報告・使用感不満・矛盾検出・運用計測�
 
 関連 migration: 0056_add_relay_outbox
 
+### 3.23 asks
+
+人間の判断を待つ問いの記録先。signal_events と同様「双方の合意」もタグ体系も要らない受け皿だが、状態遷移（open→answered→promoted/dismissed、open→withdrawn）を持つため専用テーブルとして独立している。answer 時点ではトリアージ（promote/dismiss）を行わず、次の check_in で配達されるまで遅延する。
+
+| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
+|---|---|---|---|---|---|
+| id | INTEGER | NO | autoincrement | PRIMARY KEY | ask ID |
+| question | TEXT | NO | — | — | 問い本文 |
+| context | TEXT | YES | — | — | 背景 |
+| fingerprint | TEXT | NO | — | — | `sha256(正規化question)` 先頭16hex。dedup のキー |
+| status | TEXT | NO | `'open'` | CHECK IN ('open','answered','promoted','dismissed','withdrawn') | 状態 |
+| answer_body | TEXT | YES | — | — | 回答本文 |
+| answered_at / answered_session_id | TIMESTAMP / TEXT | YES | — | — | 回答時刻・回答元セッション |
+| triage | TEXT | YES | — | CHECK IN ('promote','dismiss') | トリアージ結果 |
+| triaged_at / triaged_session_id / triage_reason | TIMESTAMP / TEXT / TEXT | YES | — | — | トリアージ時刻・実施セッション・理由（dismiss時） |
+| promoted_decision_id | INTEGER | YES | — | FK→decisions(id) | promote先decision |
+| withdrawn_at / withdrawn_session_id / withdraw_reason | TIMESTAMP / TEXT / TEXT | YES | — | — | 取り下げ時刻・実施セッション・理由 |
+| occurrence_count | INTEGER | NO | `1` | — | 同一fingerprintの再発回数 |
+| first_seen_at / last_seen_at | TIMESTAMP | NO | CURRENT_TIMESTAMP | — | 初回・最終記録時刻 |
+| first_seen_session_id / last_seen_session_id | TEXT | YES | — | — | 初回・最終記録元セッション |
+
+補足:
+- `status='open'` の行に限り `fingerprint` を UNIQUE とする部分インデックスを張る。同一 fingerprint の open 行が既存なら INSERT は競合し、アプリ層は occurrence_count を加算する（signal_events と同じ dedup パターン、helperは `dedup_helpers` として共有）。トリアージ済み（answered/promoted/dismissed）・取り下げ済み（withdrawn）の同型問い再発は新規行になる
+- CHECK制約で「open/withdrawn 以外は answer_body/answered_at 必須」「triage 設定は answered_at 必須」「promoted は promoted_decision_id 必須・それ以外は NULL 必須」「withdrawn は withdrawn_at 必須・それ以外は NULL 必須」を強制する
+- タグ・リレーション（related/belongs_to）には接続しない（v1では非対応）。近傍検索のみ ask_vec を経由する
+- 文字列長上限（question 500字、context/answer_body 8000字）は DB 制約ではなくサービス層（`ask_service`）で強制する
+
+インデックス: `idx_asks_fingerprint_open`（UNIQUE, `fingerprint` WHERE `status='open'`）/ `idx_asks_status_last_seen`（`status, last_seen_at`）/ `idx_asks_triage_pending`（`last_seen_at` WHERE `status='answered' AND triage IS NULL`）
+
+関連 migration: 0062_add_asks
+
+### 3.24 ask_blocks / ask_requesters
+
+- `ask_blocks`: ask ↔ activity の junction（`PRIMARY KEY (ask_id, activity_id)`、両方 `ON DELETE CASCADE`）。このaskが答え待ちで止めているactivityを表す。answer/triage/withdrawのいずれの遷移でも該当askの行は削除される（blockの解除）
+- `ask_requesters`: ask ↔ 要求元 `session_id` の junction（`PRIMARY KEY (ask_id, requester_session_id)`）。同じaskへの複数セッションからの要求をUNIONで蓄積する。withdraw時も削除しない（参照ログとして残す）
+
+インデックス: `idx_ask_blocks_activity`（`activity_id, ask_id`。check_inからの「このactivityをblockしているask」逆引き用）
+
+関連 migration: 0062_add_asks
+
+### 3.25 ask_vec
+
+asks 専用の sqlite-vec 仮想テーブル（384次元、`distance_metric=cosine`）。topic_vec と同型で、rowid に `asks.id` を直接使う（vec_index のように search_index 経由の rowid 共有はしない）。asks は search_index/vec_index に参加しない（v1では検索・タグ・リレーションの対象外）ため、`add_ask` 時に生成した embedding をここにのみ格納する。embeddingサーバー未起動時は格納されない（近傍askサジェストが空配列になるだけで、ask自体の記録は成立する）。
+
+関連 migration: 0062_add_asks
+
 ---
 
 ## 4. 関係メカニズム
@@ -651,7 +723,7 @@ cc-memory自身の故障報告・使用感不満・矛盾検出・運用計測�
 | 1 | related | `relations`（ポリモーフィック、`relation_type='related'`） | 対称（CHECK で正規化） | エンティティ間の弱い関連 | 5エンティティ全組み合わせ可 |
 | 2 | belongs_to（topic 帰属） | `relations`（ポリモーフィック、`relation_type='belongs_to'`） | 親→子（子が source） | 5エンティティ全て → topic | 0046 で decision/log の旧 `topic_id` FK も含めこの1系統に統一。partial index 2本あり（§3.9） |
 | 3 | depends_on | `activity_dependencies` | 非対称（dependent → dependency） | activity 間のみ | 循環検出はアプリ層 |
-| 4 | supersedes | `decision_supersedes` | 非対称（新 → 旧） | decision 間のみ | 循環検出はアプリ層 |
+| 4 | supersedes / destabilizes | `decision_supersedes`（`kind`列で区別） | 非対称（新 → 旧、または destabilize する側 → される側） | decision 間のみ | 循環検出は`kind`問わず合算判定（アプリ層）。destabilizesの解消記録は`decision_destabilization_resolutions`（§3.11a） |
 | 5 | pin | `pins`（ポリモーフィック） | 非対称（source → target） | 任意エンティティ＋tag | 注意喚起・カタログ用 |
 
 補足:
@@ -772,6 +844,8 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0059_add_habit_status | habits に status（'active'/'archived'、既定'active'）を追加 |
 | 0060_add_habit_importance_score_check | trigger_mode='intelligently'かつimportance_score=1.0(未設定)のhabitを3に補正したうえで、importance_scoreにCHECK(IN (1, 2, 3))を追加（テーブル再構築） |
 | 0061_add_tag_archived | tags に archived_at（退役日時）/ archived_reason（退役理由、100文字以内のCHECK制約付き）を追加、archived_at 用の部分インデックス idx_tags_archived_at を新設（スキーマ変更のみ、データ移行なし） |
+| 0062_add_asks | asks / ask_blocks / ask_requesters テーブル新設 + ask専用 vec0 仮想テーブル ask_vec 新設（§3.23-3.25） |
+| 0063_add_decision_supersedes_kind | decision_supersedes に kind 列（'replaces'/'destabilizes'）追加（テーブル再構築、PK に kind を含める形へ変更）、decision_destabilization_resolutions テーブル新設、relations_view の supersedes 由来行を kind で出し分け（§3.11, §3.11a, §3.17） |
 
 重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。
 

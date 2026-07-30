@@ -676,3 +676,32 @@ def backfill_topic_embeddings() -> int:
         return 0
     finally:
         conn.close()
+
+
+# ========================================
+# Ask embedding ヘルパー
+#
+# ask_vec は topic_vec と同じくask専用のvec0仮想テーブル（distance_metric=cosine、
+# migration 0062）。asksはsearch_index/vec_indexに参加しない（v1では検索・タグ・
+# リレーションの対象外）ため、topic側のようなgenerate_and_store_embedding経由
+# ではなく、ここでencode_documentを直接呼んでask_vecにのみ格納する。
+# ========================================
+
+
+def insert_ask_embedding_with_conn(conn, ask_id: int, embedding: list[float]) -> None:
+    """呼び出し側のconnでask_vecに1行UPSERT（DELETE+INSERT）する（コミットは呼び出し側の責任）。"""
+    blob = serialize_float32(embedding)
+    conn.execute("DELETE FROM ask_vec WHERE rowid = ?", (ask_id,))
+    conn.execute(
+        "INSERT INTO ask_vec(rowid, embedding) VALUES (?, ?)",
+        (ask_id, blob),
+    )
+
+
+def delete_ask_embedding_with_conn(conn, ask_id: int) -> None:
+    """ask_vecから1行削除する（コミットは呼び出し側の責任）。
+
+    vec0仮想テーブルは外部キー制約を持てないため、ask物理削除処理を実装する際は
+    同じトランザクション内でこの関数を呼び、孤児レコードを残さないようにする。
+    """
+    conn.execute("DELETE FROM ask_vec WHERE rowid = ?", (ask_id,))

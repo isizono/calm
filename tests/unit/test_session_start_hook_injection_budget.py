@@ -27,6 +27,35 @@ def test_declared_budgets_do_not_exceed_total():
     assert total_declared_budget(session_start_hook._SECTIONS) <= config.TOTAL_INJECTION_BUDGET_CHARS
 
 
+def test_all_sections_are_actually_processed_by_compose(temp_db, monkeypatch):
+    """_SECTIONSに登録された全セクション（transcript_path含む）が、
+    compose()経由で実際にbuilderを呼ばれ出力に反映されることを確認する。
+
+    宣言予算の合計チェック（test_declared_budgets_do_not_exceed_total）だけでは、
+    _SECTIONSに追加したエントリがbuilderの呼び出し引数不一致等で
+    例外送出→セクション単位try/exceptで握りつぶされていても検知できない。
+    """
+    conn = get_connection()
+    try:
+        domain_tag_id = _seed_domain_tag(conn, "wiring-check")
+        _seed_many_heartbeat_activities(conn, 1, domain_tag_id)
+        _seed_many_signal_kinds(conn, 1)
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(config, "SYNC_POLICY", "wiring確認用sync_policy")
+
+    result = session_start_hook._build_session_context(
+        source="startup", transcript_path="/tmp/wiring-check-transcript.jsonl"
+    )
+
+    assert "heartbeat膨張タスク0" in result  # activities section
+    assert "wiring確認用sync_policy" in result  # sync_policy section
+    assert "未トリアージのシグナル" in result  # signals section
+    assert "このセッションのtranscript path: /tmp/wiring-check-transcript.jsonl" in result  # transcript_path section
+
+
 def _seed_domain_tag(conn, name: str) -> int:
     row = conn.execute(
         "SELECT id FROM tags WHERE namespace = 'domain' AND name = ?", (name,)

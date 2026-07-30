@@ -22,7 +22,7 @@ from typing import Callable
 
 from src import config
 
-SectionBuilder = Callable[..., str]  # (conn, session_id, source) -> str
+SectionBuilder = Callable[..., str]  # (conn, session_id=..., source=..., transcript_path=..., **_kwargs) -> str
 
 
 @dataclass(frozen=True)
@@ -58,9 +58,14 @@ def compose(
     conn: sqlite3.Connection,
     session_id: str | None,
     source: str | None,
+    transcript_path: str | None,
     sections: list[Section],
 ) -> str:
     """priority昇順にセクションを評価し、宣言予算内の文字列へ組み立てる。
+
+    各セクションのbuilderにはconn（位置引数）に加え、session_id・source・
+    transcript_pathをキーワード引数で渡す。個々のbuilderは自身が使わない
+    キーワード引数を`**_kwargs`で無視できる（シグネチャは全builder共通）。
 
     セクション単位のtry/exceptで例外を握り、そのセクションを空扱いにして残りは
     続行する（既存hookの挙動を保持）。
@@ -80,7 +85,12 @@ def compose(
     parts: list[str] = []
     for section in sorted(sections, key=lambda s: s.priority):
         try:
-            text = section.builder(conn, session_id, source)
+            text = section.builder(
+                conn,
+                session_id=session_id,
+                source=source,
+                transcript_path=transcript_path,
+            )
         except Exception:
             continue
         if not text:
