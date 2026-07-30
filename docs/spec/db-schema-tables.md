@@ -5,7 +5,7 @@
 <!-- 再生成: uv run python scripts/dump_db_schema.py -->
 
 `migrations/` を通し番号順に全適用した結果として得られる、現在のテーブル/ビュー構造の機械的な写しである。
-カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0062）。
+カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0067）。
 
 「なぜこの形なのか」（設計判断の背景・変遷・既知の課題）は `docs/spec/db-schema.md` を参照。
 本ファイルは現在値のみを扱い、変遷の経緯（旧カラムの削除理由等）は記載しない。
@@ -432,16 +432,48 @@ CREATE TABLE citations (
 
 </details>
 
+### decision_destabilization_resolutions
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| source_id | INTEGER | NO | — | PK |
+| target_id | INTEGER | NO | — | PK |
+| resolution | TEXT | NO | — | — |
+| revised_to_decision_id | INTEGER | YES | — | — |
+| note | TEXT | NO | `''` | — |
+| resolved_at | TEXT | NO | `datetime('now')` | — |
+
+インデックス:
+- `idx_destab_resolutions_target` ON `decision_destabilization_resolutions`(target_id)
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE decision_destabilization_resolutions (
+    source_id INTEGER NOT NULL REFERENCES decisions(id) ON DELETE CASCADE,
+    target_id INTEGER NOT NULL REFERENCES decisions(id) ON DELETE CASCADE,
+    resolution TEXT NOT NULL
+        CHECK (resolution IN ('reaffirmed', 'revised', 'retracted')),
+    revised_to_decision_id INTEGER NULL REFERENCES decisions(id) ON DELETE SET NULL,
+    note TEXT NOT NULL DEFAULT '',
+    resolved_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (source_id, target_id)
+)
+```
+
+</details>
+
 ### decision_supersedes
 
 | カラム名 | 型 | NULL | デフォルト | PK |
 |---|---|---|---|---|
 | source_id | INTEGER | NO | — | PK |
 | target_id | INTEGER | NO | — | PK |
+| kind | TEXT | NO | `'replaces'` | PK |
 | created_at | TEXT | YES | `datetime('now')` | — |
 
 インデックス:
-- `idx_decision_supersedes_target` ON `decision_supersedes`(target_id)
+- `idx_decision_supersedes_target` ON `decision_supersedes`(target_id, kind)
 
 <details><summary>CREATE文（生成元migration）</summary>
 
@@ -449,8 +481,10 @@ CREATE TABLE citations (
 CREATE TABLE decision_supersedes (
     source_id INTEGER NOT NULL REFERENCES decisions(id) ON DELETE CASCADE,
     target_id INTEGER NOT NULL REFERENCES decisions(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL DEFAULT 'replaces'
+        CHECK (kind IN ('replaces', 'destabilizes')),
     created_at TEXT DEFAULT (datetime('now')),
-    PRIMARY KEY (source_id, target_id),
+    PRIMARY KEY (source_id, target_id, kind),
     CHECK (source_id != target_id)
 )
 ```
@@ -615,6 +649,46 @@ CREATE TABLE "habits" (
     importance_score REAL NOT NULL DEFAULT 1.0 CHECK(importance_score IN (1, 2, 3)),
     last_recalled_at TIMESTAMP NULL,
     status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived'))
+)
+```
+
+</details>
+
+### injection_telemetry
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| id | INTEGER | NO | — | PK |
+| caller_session_id | TEXT | YES | — | — |
+| trigger_tool | TEXT | NO | — | — |
+| source_type | TEXT | NO | — | — |
+| source_id | INTEGER | NO | — | — |
+| attached_type | TEXT | NO | — | — |
+| attached_id | INTEGER | NO | — | — |
+| rank | INTEGER | NO | — | — |
+| similarity | REAL | YES | — | — |
+| diagnostics_json | TEXT | YES | — | — |
+| timestamp | TIMESTAMP | NO | `CURRENT_TIMESTAMP` | — |
+
+インデックス:
+- `idx_injection_telemetry_attached` ON `injection_telemetry`(attached_type, attached_id)
+- `idx_injection_telemetry_session_ts` ON `injection_telemetry`(caller_session_id, timestamp)
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE injection_telemetry (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    caller_session_id  TEXT,
+    trigger_tool       TEXT NOT NULL,
+    source_type        TEXT NOT NULL,
+    source_id          INTEGER NOT NULL,
+    attached_type      TEXT NOT NULL,
+    attached_id        INTEGER NOT NULL,
+    rank               INTEGER NOT NULL,
+    similarity         REAL,
+    diagnostics_json   TEXT,
+    timestamp          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 )
 ```
 
@@ -814,24 +888,24 @@ VIEW。定義SQL:
 
 ```sql
 CREATE VIEW relations_view AS
-  -- relations 正方向 (related + belongs_to)
   SELECT source_type, source_id, target_type, target_id, relation_type, created_at
   FROM relations
   UNION ALL
-  -- relations 逆方向 (related + belongs_to の対称展開)
   SELECT target_type, target_id, source_type, source_id, relation_type, created_at
   FROM relations
   UNION ALL
-  -- depends_on (activity_dependencies)
   SELECT 'activity' AS source_type, dependent_id AS source_id,
          'activity' AS target_type, dependency_id AS target_id,
          'depends_on' AS relation_type, created_at
   FROM activity_dependencies
   UNION ALL
-  -- supersedes (decision_supersedes)
   SELECT 'decision' AS source_type, source_id,
          'decision' AS target_type, target_id,
-         'supersedes' AS relation_type, created_at
+         CASE kind
+              WHEN 'replaces' THEN 'supersedes'
+              WHEN 'destabilizes' THEN 'destabilizes'
+         END AS relation_type,
+         created_at
   FROM decision_supersedes
 ```
 

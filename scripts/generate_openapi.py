@@ -68,6 +68,7 @@ TOOL_TAGS: dict[str, str] = {
     "update_signal": "misc",
     "roll_dice": "misc",
     "pull_precedents": "misc",
+    "detect_reask_candidates": "misc",
     "add_ask": "ask",
     "get_asks": "ask",
     "answer_ask": "ask",

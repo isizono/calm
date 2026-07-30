@@ -518,6 +518,44 @@ paths:
                 oneOf:
                 - type: object
                 - $ref: '#/components/schemas/ErrorResponse'
+  /tools/detect_reask_candidates:
+    post:
+      tags:
+      - misc
+      summary: 'Choose: sync-memoryの聞き返し後追い検出ステップで使う。'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                transcript_path:
+                  type: string
+                max_candidates:
+                  default: 50
+                  type: integer
+                search_top_n:
+                  default: 8
+                  type: integer
+                search_limit:
+                  default: 10
+                  type: integer
+                score_threshold:
+                  default: 0.4
+                  type: number
+              required:
+              - transcript_path
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
   /tools/export_material:
     post:
       tags:
