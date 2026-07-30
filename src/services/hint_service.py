@@ -158,10 +158,21 @@ def _apply_cooldown_marker(
     _merge_cooldown_markerがno-opと判定した場合はDB書き込みを行わない。
     呼び出し元（_get_hints_for_tag）は後続の判定で更新後のnotesを参照する必要が
     あるため、返り値を使い回すこと。
+
+    notesがDB側の長さ上限に抵触する等でDB書き込みが失敗した場合はbest-effortとして
+    握りつぶし、引数のnotesをそのまま返す。マーカー永続化の失敗によって、既に計算
+    済みのhint（このtag分・集約元の他tag分を問わず）を呼び出し元で失わせないため。
     """
     new_notes = _merge_cooldown_marker(notes, marker, date.today())
     if new_notes != notes:
-        _set_tag_notes_by_id_with_conn(conn, tag_id, new_notes)
+        try:
+            _set_tag_notes_by_id_with_conn(conn, tag_id, new_notes)
+        except sqlite3.IntegrityError as e:
+            print(
+                f"hint_service: cooldown marker write failed for tag {tag_id}: {e}",
+                file=sys.stderr,
+            )
+            return notes
     return new_notes
 
 

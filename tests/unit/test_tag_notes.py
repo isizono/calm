@@ -94,6 +94,47 @@ class TestUpdateTag:
         result = update_tag("domain:test", "更新後 notes")
         assert result["notes"] == "更新後 notes"
 
+    def test_notes_4000_chars_ok(self, temp_db):
+        """notesがちょうど4000字はVALIDATION_ERRORにならない（境界値）"""
+        add_topic(title="Test", description="Desc", tags=["domain:test"])
+
+        result = update_tag("domain:test", "x" * 4000)
+        assert "error" not in result
+        assert result["notes"] == "x" * 4000
+
+    def test_notes_over_4000_chars_rejected_with_validation_error(self, temp_db):
+        """notesが4000字を超える新規設定はVALIDATION_ERRORで拒否される
+        （DBトリガーのDATABASE_ERRORとして生SQLiteメッセージが露出するのを防ぐ）"""
+        add_topic(title="Test", description="Desc", tags=["domain:test"])
+
+        result = update_tag("domain:test", "x" * 4001)
+        assert "error" in result
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT notes FROM tags WHERE namespace='domain' AND name='test'"
+            ).fetchone()
+            assert row["notes"] is None
+        finally:
+            conn.close()
+
+    def test_notes_shrink_from_at_ceiling_is_allowed(self, temp_db):
+        """天井ちょうどのnotesを短くする更新はエラーにならない（縮小は増加ではない）"""
+        add_topic(title="Test", description="Desc", tags=["domain:test"])
+        first = update_tag("domain:test", "x" * 4000)
+        assert "error" not in first
+
+        result = update_tag("domain:test", "x" * 100)
+        assert "error" not in result
+        assert result["notes"] == "x" * 100
+
+    # 「トリガー導入前から4000字超のnotesを持つタグを縮める／さらに伸ばす」ケースは
+    # migrations/0066のDBトリガー自体がINSERT時点で4000字超を拒否するため、
+    # 通常のAPI経由では前提状態を作れない（0066番のトリガー単体テストでSQLite APIを
+    # 直接叩いて検証済み）。ここでは新規到達可能な境界のみを検証する。
+
 
 # ========================================
 # update_tag archived テスト
