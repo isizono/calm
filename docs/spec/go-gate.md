@@ -263,9 +263,9 @@ uv run python3 scripts/go_package.py new --activity <id> [--base origin/main] [-
     scripts/gate_check.sh(正規呼び出し経路)を実行し、機械判定欄(gate.machine /
     gate.effective / detector_sha256 / verdict_sha256)とブラスト半径・revert容易性の
     2小見出しを実データで充填した雛形を生成する。--pull-json に pull_precedents 応答
-    (JSON、design-pull-core.md 3-3-1 のスキーマ)を渡すと pull.presented / pull.guarantee
-    を機械転記する(手書きしない)。人間記述欄(判例引用・判例が無かった論点・1-b・1-c・
-    shadow)はプレースホルダのまま
+    (JSON、docs/spec/mcp-tools.md 2.32節 pull_precedentsのスキーマ)を渡すと
+    pull.presented / pull.guarantee を機械転記する(手書きしない)。人間記述欄
+    (判例引用・判例が無かった論点・1-b・1-c・shadow)はプレースホルダのまま
 
 uv run python3 scripts/go_package.py lint <file.md> [--mode shadow|live] [--allow-placeholder]
     L1〜L8 を検証する(下記)。--allow-placeholder は L2(セクション非空)・L6(shadowブロック

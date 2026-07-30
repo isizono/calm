@@ -7,7 +7,7 @@ tool 引数段階で機械的に止めることで AI 経由の漏出を防ぐ (
 cc-memory project 内 (pyproject.toml の `[project].name` が `_PROJECT_NAMES` のいずれかに一致) のみで有効。
 `CC_MEMORY_LEAK_GUARD=off` 環境変数で緊急時に opt-out 可能。
 allowlist tool (cc-memory 自身の MCP / Read 系 / harness 内部 tool) は素通し。
-バックスラッシュエスケープ (`\\M#123`, `\\log #123`) は字義扱いで非 block。
+バックスラッシュエスケープ (`\\M#123`, `\\log #123`, `#`省略形の `\\log 123`) は字義扱いで非 block。
 
 検出時は `permissionDecision: "deny"` + 英文 reason を返し、
 発火ログを `~/.cc-memory/logs/preblock_hook.jsonl` に append する (書き込み失敗時は silent)。
@@ -37,6 +37,7 @@ _TYPE_CODES: frozenset[str] = frozenset("MDLAT")
 
 ALLOWLIST_PREFIXES: tuple[str, ...] = (
     "mcp__plugin_claude-code-memory_cc-memory__",
+    "mcp__claude_ai_cc-memory__",
 )
 
 ALLOWLIST_EXACT: frozenset[str] = frozenset(
@@ -83,10 +84,12 @@ def _is_allowed(tool_name: str) -> bool:
 def _scan_text_for_literals(text: str) -> list[str]:
     """1 個の文字列に対し code + fullword 両方を検出し、マッチした raw 文字列を返す。
 
-    バックスラッシュエスケープ (`\\M#123`, `\\log #123`) は字義扱いとして block 対象
-    から外す。エスケープ判定は converter (`_convert_line_raw_to_cite`) と同じ条件:
-    `\\` の直後が「TYPE_CODE 1 文字 + リテラル形式」または「fullword リテラル形式」で
-    あるときだけ、その全体をスキップする。それ以外の `\\` は単なる文字として残し、
+    バックスラッシュエスケープ (`\\M#123`, `\\log #123`, `#`省略形の `\\log 123`)
+    は字義扱いとして block 対象から外す。fullword パターンが `#` 有無どちらにも
+    マッチするため、エスケープ判定も両形式を同じ経路でスキップする。エスケープ判定は
+    converter (`_convert_line_raw_to_cite`) と同じ条件: `\\` の直後が「TYPE_CODE 1 文字
+    + リテラル形式」または「fullword リテラル形式 (`#`有無いずれか)」であるときだけ、
+    その全体をスキップする。それ以外の `\\` は単なる文字として残し、
     後段の `\\X` (X は TYPE_CODE) が独立したリテラルとして検出される機会を保つ。
 
     例:
@@ -231,7 +234,8 @@ def main() -> None:
             "These IDs are cc-memory internal references and must not leak "
             "outside the cc-memory development context. Use a natural language "
             "reference (e.g. entity title) instead, or escape with a backslash "
-            "prefix to indicate a literal (e.g. '\\M#123', '\\log #456')."
+            "prefix to indicate a literal (e.g. '\\M#123', '\\log #456', "
+            "or '\\log 456' for the '#'-omitted form)."
         )
 
         _log_event(

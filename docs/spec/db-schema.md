@@ -2,8 +2,8 @@
 watch-tags: domain:cc-memory
 watch-direction: true
 watch-migrations: true
-last-synced: 2026-07-22
-last-synced-migration: 0062
+last-synced: 2026-07-25
+last-synced-migration: 0067
 -->
 
 # cc-memory DBスキーマ v0
@@ -42,6 +42,7 @@ erDiagram
 
   activities ||--o{ activity_dependencies : "depends_on"
   decisions ||--o{ decision_supersedes : "supersedes"
+  decisions ||--o{ decision_destabilization_resolutions : "resolves"
 
   discussion_topics ||--o{ relations : "polymorphic"
   activities ||--o{ relations : "polymorphic"
@@ -121,6 +122,7 @@ erDiagram
 | `ask_blocks` | — | ask ↔ activity junction（このaskが答え待ちで止めているactivity） |
 | `ask_requesters` | — | ask ↔ 要求元session_id junction（UNION蓄積） |
 | `ask_vec` | — | asks と rowid 連動する sqlite-vec 仮想テーブル（384次元、cosine距離） |
+| `injection_telemetry` | — | 記録=クエリ添付（記録系ツールの関連既存記録top3提示）の追随カウンタ present側台帳 |
 
 行数感（規模）はランタイム情報のため本ドキュメントでは未記載とする。
 
@@ -275,10 +277,14 @@ erDiagram
 - 0060 で、0058時点の既定値1.0が新しい意味づけ（1=critical）と衝突しないよう
   trigger_mode='intelligently'かつimportance_score=1.0（未設定）のhabitを3（default）に
   補正したうえで、importance_scoreにCHECK(IN (1, 2, 3))を追加（テーブル再構築）
+- 0065 で、`trigger_mode='always'` かつ `active=1` な habit の content 合計文字数が
+  2000字を超えて増加する INSERT/UPDATE を `RAISE(ABORT)` で拒否するDBトリガー
+  （ラチェット型天井、縮む変更は天井超過中でも常に許可）を追加。アプリ層
+  （habit_service）が持つ1500字ゲートとは独立した、直接書き込み経路向けの保険
 
 インデックス: なし
 
-関連 migration: 0019 / 0022（初期データ追加）/ 0025 / 0058（description / trigger_mode / importance_score / last_recalled_at 追加）/ 0059（status 追加）/ 0060（importance_score データ補正 + CHECK制約追加）
+関連 migration: 0019 / 0022（初期データ追加）/ 0025 / 0058（description / trigger_mode / importance_score / last_recalled_at 追加）/ 0059（status 追加）/ 0060（importance_score データ補正 + CHECK制約追加）/ 0065（always プール合計ラチェット天井トリガー追加）
 
 ### 3.7 tags
 
@@ -303,12 +309,14 @@ namespace + name による分類タグ。
 - 0039（重複番号片方 `extend_tag_namespace`）で namespace CHECK 制約自体を撤廃し、任意 TEXT を受け付ける形に再構築（妥当性は Python 層で検証）
 - 0061 で archived_at / archived_reason 追加。tag notes の自動注入からは除外しつつ、
   search 等の取得系では削除せずラベル付きで下位表示するための退役フラグ
+- 0066 で、notes が4000字を超えて増加する INSERT/UPDATE を `RAISE(ABORT)` で拒否する
+  DBトリガー（1タグあたりのラチェット型天井、縮む変更は天井超過中でも常に許可）を追加
 
 インデックス:
 - 暗黙インデックス `UNIQUE(namespace, name)`
 - `idx_tags_archived_at` ON `tags(archived_at)`（`archived_at IS NOT NULL` の部分インデックス、0061）
 
-関連 migration: 0009 / 0012 / 0014 / 0015_tag_canonical / 0024 / 0039_extend_tag_namespace / 0061_add_tag_archived
+関連 migration: 0009 / 0012 / 0014 / 0015_tag_canonical / 0024 / 0039_extend_tag_namespace / 0061_add_tag_archived / 0066_add_tags_notes_ratchet_trigger
 
 ### 3.8 topic_tags / activity_tags / decision_tags / log_tags / material_tags
 
@@ -397,7 +405,7 @@ decision 間の有向関係。`kind`列で意味論を2つに分ける。`replac
 インデックス:
 - `idx_decision_supersedes_target` ON `decision_supersedes(target_id, kind)`
 
-関連 migration: 0033（新設）, 0065（kind列追加、PK再構成）
+関連 migration: 0033（新設）, 0063（kind列追加、PK再構成）
 
 ### 3.11a decision_destabilization_resolutions
 
@@ -415,7 +423,7 @@ decision 間の有向関係。`kind`列で意味論を2つに分ける。`replac
 インデックス:
 - `idx_destab_resolutions_target` ON `decision_destabilization_resolutions(target_id)`
 
-関連 migration: 0065
+関連 migration: 0063
 
 ### 3.12 pins
 
@@ -530,7 +538,7 @@ tags テーブル用の sqlite-vec 仮想テーブル（384次元）。tag embed
 - `depends_on`: `activity_dependencies` をそのまま（非対称）
 - `supersedes` / `destabilizes`: `decision_supersedes` の`kind`列を`CASE`で`relation_type`に出し分け（非対称）
 
-関連 migration: 0020（初版）/ 0023（material 系拡張）/ 0028（depends_on 追加）/ 0033（relations 統合 + supersedes 追加）/ 0046（belongs_to 対応・relation_type を直接返す形に再構築）/ 0065（destabilizes 出し分け追加）
+関連 migration: 0020（初版）/ 0023（material 系拡張）/ 0028（depends_on 追加）/ 0033（relations 統合 + supersedes 追加）/ 0046（belongs_to 対応・relation_type を直接返す形に再構築）/ 0063（destabilizes 出し分け追加）
 
 ### 3.18 search_telemetry
 
@@ -711,6 +719,33 @@ asks 専用の sqlite-vec 仮想テーブル（384次元、`distance_metric=cosi
 
 関連 migration: 0062_add_asks
 
+### 3.26 injection_telemetry
+
+記録系ツール（add_logs / add_decisions / add_material）が返す関連既存記録top3（記録=クエリ添付）について、「提示された記録が同セッションで実際に読まれたか」を機械記録する追随カウンタの present側（添付を返した瞬間）の台帳。取得側（fetch）は既存 `search_telemetry.results_json` / `fetch_telemetry.items_json` を再利用し、post-hoc の SQL 集計で `caller_session_id` を突合キーとして追随率を算出する（専用の集計ツールは持たない）。
+
+| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
+|---|---|---|---|---|---|
+| id | INTEGER | NO | autoincrement | PRIMARY KEY | レコードID |
+| caller_session_id | TEXT | YES | — | — | 提示を行ったセッションの相関キー（0048/0054と同じephemeral規約） |
+| trigger_tool | TEXT | NO | — | — | `'add_logs'` / `'add_decisions'` / `'add_material'` |
+| source_type | TEXT | NO | — | — | 新規作成された側（添付を提示する記録）の種別 |
+| source_id | INTEGER | NO | — | — | 新規作成された側のID |
+| attached_type | TEXT | NO | — | — | 提示された既存記録の種別 |
+| attached_id | INTEGER | NO | — | — | 提示された既存記録のID |
+| rank | INTEGER | NO | — | — | 提示順位（1〜3。DB制約なし） |
+| similarity | REAL | YES | — | — | 0〜1に正規化した類似度（大きいほど類似） |
+| diagnostics_json | TEXT | YES | — | — | 将来のretriever内訳等の予備列 |
+| timestamp | TIMESTAMP | NO | CURRENT_TIMESTAMP | — | 書込時刻（UTC） |
+
+補足:
+- FK・UNIQUE制約は張らない（既存telemetryテーブル群と同じ、生データ台帳としての性質を優先）。同一セッションで同じ`(attached_type, attached_id)`が複数回提示されるのは正常挙動で、集計側で`GROUP BY MIN(timestamp)`して縮約する
+- 書込は既存telemetryと同じdaemon thread + 失敗握りつぶし規約に従う
+- 本 migration が導入する範囲は、テーブル定義・writable columns allowlist・present書込ヘルパ（`_record_injection_telemetry_async`）・`get_material`のfetch側計装のみ。`add_logs`/`add_decisions`/`add_material`側から実際にpresent行を書く呼出し実装は、添付内容の組み立て方を規定する記録=クエリ添付の詳細設計が別途確定してから追加する
+
+インデックス: `idx_injection_telemetry_session_ts`（`caller_session_id, timestamp`）/ `idx_injection_telemetry_attached`（`attached_type, attached_id`）
+
+関連 migration: 0067_add_injection_telemetry
+
 ---
 
 ## 4. 関係メカニズム
@@ -844,7 +879,10 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0060_add_habit_importance_score_check | trigger_mode='intelligently'かつimportance_score=1.0(未設定)のhabitを3に補正したうえで、importance_scoreにCHECK(IN (1, 2, 3))を追加（テーブル再構築） |
 | 0061_add_tag_archived | tags に archived_at（退役日時）/ archived_reason（退役理由、100文字以内のCHECK制約付き）を追加、archived_at 用の部分インデックス idx_tags_archived_at を新設（スキーマ変更のみ、データ移行なし） |
 | 0062_add_asks | asks / ask_blocks / ask_requesters テーブル新設 + ask専用 vec0 仮想テーブル ask_vec 新設（§3.23-3.25） |
-| 0065_add_decision_supersedes_kind | decision_supersedes に kind 列（'replaces'/'destabilizes'）追加（テーブル再構築、PK に kind を含める形へ変更）、decision_destabilization_resolutions テーブル新設、relations_view の supersedes 由来行を kind で出し分け（§3.11, §3.11a, §3.17） |
+| 0063_add_decision_supersedes_kind | decision_supersedes に kind 列（'replaces'/'destabilizes'）追加（テーブル再構築、PK に kind を含める形へ変更）、decision_destabilization_resolutions テーブル新設、relations_view の supersedes 由来行を kind で出し分け（§3.11, §3.11a, §3.17） |
+| 0065_add_habits_always_pool_ratchet_trigger | trigger_mode='always'かつactive=1なhabitのcontent合計文字数が2000字を超えて増加するINSERT/UPDATEをRAISE(ABORT)で拒否するトリガー2本を新設（ラチェット型天井、縮む変更は常に許可） |
+| 0066_add_tags_notes_ratchet_trigger | tags.notesが4000字を超えて増加するINSERT/UPDATEをRAISE(ABORT)で拒否するトリガー2本を新設（1タグあたりのラチェット型天井、縮む変更は常に許可） |
+| 0067_add_injection_telemetry | injection_telemetry テーブル新設（記録=クエリ添付の追随カウンタ present側台帳、§3.26） |
 
 重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。
 

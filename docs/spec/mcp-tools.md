@@ -70,6 +70,7 @@ last-synced-migration: 0048
 | `search` | 横断検索（FTS5 trigram + ベクトル ハイブリッド） |
 | `search_tags` | タグをキーワード検索する |
 | `analyze_tags` | タグ共起分析（PMI/クラスタ/孤児/重複候補） |
+| `detect_reask_candidates` | transcriptから聞き返し候補を抽出し上位N件のsearchまで一括実行する |
 
 ### 1.5 関係系・pin系
 
@@ -226,6 +227,19 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 
 **返り値**: `{results: [SearchHit], archived_tags: [{tag, archived_reason}]}`。scoreは0〜1正規化（1.0=全ソース1位、片方ヒットは最大0.5）。0.4以上=高関連、0.15〜0.4=中、0.15未満=低の目安。snippetでなく全文が必要な場合は結果のtype+idを`get_by_ids`に渡す。各結果アイテムには`archived`（bool）・`archived_tags`（配列）・`score_breakdown.archived_factor`も付く（全タグがarchivedのアイテムのみ`archived: true`になりfinal_scoreが下位表示側に減衰する。除外はしない）。トップレベルの`archived_tags`は応答内の全アイテムのタグのうちarchivedなものの集約で、該当なしでも常に空配列で付く。
 **実装**: FTS5 trigram + ベクトル検索のRRF統合。
+
+### 2.6b detect_reask_candidates
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| transcript_path | string | yes | - | transcript JSONLのパス |
+| max_candidates | int | no | 50 | 抽出段階の上限件数 |
+| search_top_n | int | no | 8 | search実行対象とする候補の上限件数（excluded_reason付きを除いた先頭N件） |
+| search_limit | int | no | 10 | 候補1件あたりのsearch呼び出しのlimit |
+| score_threshold | float | no | 0.4 | `candidates[].top_hits` に残す最小final_score |
+
+**返り値**: `{candidates: [{kind, turn, text, context_snippet, options?, degraded, top_hits: [{type, id, score, title}], search_error?}, ...], total_extracted, excluded_count, searched_count, truncated_count, degraded, score_threshold}`。`search_error`は候補に対するsearch呼び出しがエラーを返した場合のみ付与される（`{"code", "message"}`）。excluded_reason付き候補・search_top_nを超えた候補は`candidates`に含まれない。transcript_pathが存在しない場合は`{"error": {"code": "TRANSCRIPT_NOT_FOUND", ...}}`。
+**用途**: `skills/sync-memory/SKILL.md` ステップ9（聞き返しの後追い検出）の候補抽出＋照合searchを1回の呼び出しに集約する。既存記録があれば聞き返しが不要だったかの主観判定と`report_signal`呼び出しは呼び出し側が行う。
 
 ### 2.7 get_by_ids
 
@@ -548,16 +562,6 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
 | outbox_id | int | no | null | relay_publishの返り値のoutbox_id。指定するとその行の配送状況を返す。省略時は`outbox`キーの値がnullになる（キー自体は常に存在する） |
-
-**返り値**: `{outbox: {outbox_id, status, labels, title, created_at, processed_at, dead_at, retry_count, last_error} | null, runtime: {configured, running, threads: {<thread名>: {alive, restart_count, last_restart_at, last_error}}}}`。
-**動作**: outbox行の配送状況はrelay_outboxテーブルのローカルSELECTのみで判定する（`processed_at`セット済み=delivered、`dead_at`セット済み=dead、いずれも無ければpending）。message本文（`ref_id`）は返さない（同一プロセス内の他sessionが発行した行にも越境してアクセスできてしまうため、意図的に除外）。runtimeセクションは常に返る。`running: false`はこのプロセスでrelay v2常駐処理が起動していないことを示す（エラーではない）。relayサーバー本体へのHTTPアクセスは一切発生しない。
-**エラー処理**: outbox_idが正の整数でない場合は`validation`。指定したIDの行が存在しない場合（存在しないID、またはdead化から一定期間経過後にDLQ物理削除済み。保持日数は`relay_sdk`側の設定値）は`not_found`。
-
-### 2.42 relay_status
-
-| 名前 | 型 | 必須 | デフォルト | 説明 |
-| --- | --- | --- | --- | --- |
-| outbox_id | int | no | null | relay_publishの返り値のoutbox_id。指定するとその行の配送状況を返す。省略時はoutboxセクションを返り値から省く |
 
 **返り値**: `{outbox: {outbox_id, status, labels, title, created_at, processed_at, dead_at, retry_count, last_error} | null, runtime: {configured, running, threads: {<thread名>: {alive, restart_count, last_restart_at, last_error}}}}`。
 **動作**: outbox行の配送状況はrelay_outboxテーブルのローカルSELECTのみで判定する（`processed_at`セット済み=delivered、`dead_at`セット済み=dead、いずれも無ければpending）。message本文（`ref_id`）は返さない（同一プロセス内の他sessionが発行した行にも越境してアクセスできてしまうため、意図的に除外）。runtimeセクションは常に返る。`running: false`はこのプロセスでrelay v2常駐処理が起動していないことを示す（エラーではない）。relayサーバー本体へのHTTPアクセスは一切発生しない。

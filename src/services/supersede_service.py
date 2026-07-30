@@ -22,9 +22,9 @@ def _bfs_related(
         start_id を含まない、到達可能な decision_id の集合。
     """
     if direction == "older":
-        query = "SELECT target_id AS next_id FROM decision_supersedes WHERE source_id = ?"
+        query = "SELECT target_id AS next_id FROM decision_supersedes WHERE source_id = ? AND kind = 'replaces'"
     elif direction == "newer":
-        query = "SELECT source_id AS next_id FROM decision_supersedes WHERE target_id = ?"
+        query = "SELECT source_id AS next_id FROM decision_supersedes WHERE target_id = ? AND kind = 'replaces'"
     else:
         raise ValueError(f"invalid direction: {direction}")
 
@@ -116,7 +116,9 @@ def compute_supersede_info_batch(
     # source が target を supersede する。older 方向は source→target、newer 方向は target→source。
     older_adj: dict[int, list[int]] = {}
     newer_adj: dict[int, list[int]] = {}
-    for r in conn.execute("SELECT source_id, target_id FROM decision_supersedes").fetchall():
+    for r in conn.execute(
+        "SELECT source_id, target_id FROM decision_supersedes WHERE kind = 'replaces'"
+    ).fetchall():
         s, t = r["source_id"], r["target_id"]
         older_adj.setdefault(s, []).append(t)
         newer_adj.setdefault(t, []).append(s)
@@ -173,7 +175,7 @@ def get_superseded_by_batch(
     placeholders = ",".join("?" * len(decision_ids))
     rows = conn.execute(
         f"SELECT target_id, source_id FROM decision_supersedes "
-        f"WHERE target_id IN ({placeholders}) "
+        f"WHERE target_id IN ({placeholders}) AND kind = 'replaces' "
         f"ORDER BY target_id, created_at DESC, source_id DESC",
         tuple(decision_ids),
     ).fetchall()
