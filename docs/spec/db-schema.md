@@ -277,10 +277,14 @@ erDiagram
 - 0060 で、0058時点の既定値1.0が新しい意味づけ（1=critical）と衝突しないよう
   trigger_mode='intelligently'かつimportance_score=1.0（未設定）のhabitを3（default）に
   補正したうえで、importance_scoreにCHECK(IN (1, 2, 3))を追加（テーブル再構築）
+- 0065 で、`trigger_mode='always'` かつ `active=1` な habit の content 合計文字数が
+  2000字を超えて増加する INSERT/UPDATE を `RAISE(ABORT)` で拒否するDBトリガー
+  （ラチェット型天井、縮む変更は天井超過中でも常に許可）を追加。アプリ層
+  （habit_service）が持つ1500字ゲートとは独立した、直接書き込み経路向けの保険
 
 インデックス: なし
 
-関連 migration: 0019 / 0022（初期データ追加）/ 0025 / 0058（description / trigger_mode / importance_score / last_recalled_at 追加）/ 0059（status 追加）/ 0060（importance_score データ補正 + CHECK制約追加）
+関連 migration: 0019 / 0022（初期データ追加）/ 0025 / 0058（description / trigger_mode / importance_score / last_recalled_at 追加）/ 0059（status 追加）/ 0060（importance_score データ補正 + CHECK制約追加）/ 0065（always プール合計ラチェット天井トリガー追加）
 
 ### 3.7 tags
 
@@ -305,12 +309,14 @@ namespace + name による分類タグ。
 - 0039（重複番号片方 `extend_tag_namespace`）で namespace CHECK 制約自体を撤廃し、任意 TEXT を受け付ける形に再構築（妥当性は Python 層で検証）
 - 0061 で archived_at / archived_reason 追加。tag notes の自動注入からは除外しつつ、
   search 等の取得系では削除せずラベル付きで下位表示するための退役フラグ
+- 0066 で、notes が4000字を超えて増加する INSERT/UPDATE を `RAISE(ABORT)` で拒否する
+  DBトリガー（1タグあたりのラチェット型天井、縮む変更は天井超過中でも常に許可）を追加
 
 インデックス:
 - 暗黙インデックス `UNIQUE(namespace, name)`
 - `idx_tags_archived_at` ON `tags(archived_at)`（`archived_at IS NOT NULL` の部分インデックス、0061）
 
-関連 migration: 0009 / 0012 / 0014 / 0015_tag_canonical / 0024 / 0039_extend_tag_namespace / 0061_add_tag_archived
+関連 migration: 0009 / 0012 / 0014 / 0015_tag_canonical / 0024 / 0039_extend_tag_namespace / 0061_add_tag_archived / 0066_add_tags_notes_ratchet_trigger
 
 ### 3.8 topic_tags / activity_tags / decision_tags / log_tags / material_tags
 
@@ -874,6 +880,8 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0061_add_tag_archived | tags に archived_at（退役日時）/ archived_reason（退役理由、100文字以内のCHECK制約付き）を追加、archived_at 用の部分インデックス idx_tags_archived_at を新設（スキーマ変更のみ、データ移行なし） |
 | 0062_add_asks | asks / ask_blocks / ask_requesters テーブル新設 + ask専用 vec0 仮想テーブル ask_vec 新設（§3.23-3.25） |
 | 0063_add_decision_supersedes_kind | decision_supersedes に kind 列（'replaces'/'destabilizes'）追加（テーブル再構築、PK に kind を含める形へ変更）、decision_destabilization_resolutions テーブル新設、relations_view の supersedes 由来行を kind で出し分け（§3.11, §3.11a, §3.17） |
+| 0065_add_habits_always_pool_ratchet_trigger | trigger_mode='always'かつactive=1なhabitのcontent合計文字数が2000字を超えて増加するINSERT/UPDATEをRAISE(ABORT)で拒否するトリガー2本を新設（ラチェット型天井、縮む変更は常に許可） |
+| 0066_add_tags_notes_ratchet_trigger | tags.notesが4000字を超えて増加するINSERT/UPDATEをRAISE(ABORT)で拒否するトリガー2本を新設（1タグあたりのラチェット型天井、縮む変更は常に許可） |
 | 0067_add_injection_telemetry | injection_telemetry テーブル新設（記録=クエリ添付の追随カウンタ present側台帳、§3.26） |
 
 重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。

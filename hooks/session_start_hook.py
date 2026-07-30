@@ -10,7 +10,6 @@
 コンテキスト取得フローガイドはここでは注入しない（check_in初回呼び出し時に
 checkin_service側が埋め込む）。
 """
-import functools
 import json
 import sys
 from datetime import datetime, timezone
@@ -35,6 +34,7 @@ from src.services.habit_service import (
 )
 from src.services import habit_projection
 from src.services.backup_service import health_check, should_take_snapshot, take_snapshot
+from src.services.injection_compositor import Section, compose
 from hooks.signal_capture import try_capture_signal
 
 _RECENT_CREATED_HOURS = 24
@@ -138,7 +138,7 @@ def _build_fixed_nav(undisplayed_count: int, pinned_undisplayed_count: int) -> s
     return base + remainder
 
 
-def _build_activities_section(conn, session_id: str | None = None, source: str | None = None) -> str:  # source: buildersループの統一シグネチャ（本セクションは未使用）
+def _build_activities_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # source, **_kwargs: 全セクション共通シグネチャ（本セクションは未使用）
     """アクティビティ一覧を組み立てる。
 
     階層 1「作業中（別セッション）」: heartbeat 中で自セッションでないもの。
@@ -342,7 +342,7 @@ def _build_degraded_habits_fallback(
     return "\n".join(lines) + "\n"
 
 
-def _build_habits_section(conn, session_id: str | None = None, source: str | None = None) -> str:  # conn, session_id: buildersループの統一シグネチャ
+def _build_habits_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # conn, session_id, **_kwargs: 全セクション共通シグネチャ
     """振る舞いセクションを組み立てる。
 
     正はhabits DBで、通常の配信は~/.claude/rules配下の自動生成ファイル
@@ -385,14 +385,14 @@ def _build_habits_section(conn, session_id: str | None = None, source: str | Non
     )
 
 
-def _build_sync_policy_section(conn, session_id: str | None = None, source: str | None = None) -> str:  # conn, session_id, source: buildersループの統一シグネチャ
+def _build_sync_policy_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # conn, session_id, source, **_kwargs: 全セクション共通シグネチャ
     """sync_policyが設定されていれば注入する。未設定時はコンテキスト消費ゼロ。"""
     if not config.SYNC_POLICY:
         return ""
     return f"# sync_policy\n{config.SYNC_POLICY}\n"
 
 
-def _build_signals_section(conn, session_id: str | None = None, source: str | None = None) -> str:  # conn, session_id, source: buildersループの統一シグネチャ
+def _build_signals_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # conn, session_id, source, **_kwargs: 全セクション共通シグネチャ
     """未トリアージ(status='new')のシグナル件数をkind内訳付きで1行表示する。
 
     0件時はコンテキスト消費ゼロ（空文字を返す）。signal_events テーブルが
@@ -410,7 +410,7 @@ def _build_signals_section(conn, session_id: str | None = None, source: str | No
     return f"未トリアージのシグナル: {total}件 ({breakdown}) → get_signals で確認\n"
 
 
-def _build_relay_inbox_section(conn, session_id: str | None = None, source: str | None = None) -> str:  # conn, session_id, source: buildersループの統一シグネチャ
+def _build_relay_inbox_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # conn, session_id, source, **_kwargs: 全セクション共通シグネチャ
     """identityが解決できる限りMonitor監視指示を常時出す。未読件数の表示のみ0件時は省く。
 
     CCM_RELAY_SESSION_AWARE（デフォルトOFF）のkill switch。OFF時はtokenチェック・
@@ -466,7 +466,7 @@ def _build_relay_inbox_section(conn, session_id: str | None = None, source: str 
 
 def _build_transcript_path_section(
     conn, session_id: str | None = None, source: str | None = None, transcript_path: str | None = None
-) -> str:  # conn, session_id, source: buildersループの統一シグネチャ
+) -> str:  # conn, session_id, source: 全セクション共通シグネチャ（本セクションは未使用）
     """このセッションのtranscript pathを1行注入する。
 
     MCPサーバーのサブプロセスにはtranscript_pathが渡らないため（session_id同様、
@@ -479,7 +479,7 @@ def _build_transcript_path_section(
     return f"このセッションのtranscript path: {transcript_path}\n"
 
 
-def _build_snapshot_section(conn, session_id: str | None = None, source: str | None = None) -> str:  # conn, session_id, source: buildersループの統一シグネチャ
+def _build_snapshot_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # conn, session_id, source, **_kwargs: 全セクション共通シグネチャ
     """スナップショット取得＋ヘルスチェック。異常検知時のみ警告を返す。
 
     connは引数として受け取るが、snapshot.pyはdb_pathベースで動作するため
@@ -517,6 +517,20 @@ def _build_snapshot_section(conn, session_id: str | None = None, source: str | N
     return ""
 
 
+# セクション登録レジストリ。priorityは既存builders順（出力順）をそのまま踏襲する。
+# budget_charsは各セクションの宣言予算（文字数）で、実出力がこれを超えた場合
+# compose()側でハード切り詰めされる（詳細はinjection_compositor.pyのdocstring参照）。
+_SECTIONS: list[Section] = [
+    Section("snapshot", _build_snapshot_section, config.INJECTION_BUDGET_SNAPSHOT_CHARS, priority=0),
+    Section("activities", _build_activities_section, config.INJECTION_BUDGET_ACTIVITIES_CHARS, priority=10),
+    Section("habits", _build_habits_section, config.INJECTION_BUDGET_HABITS_CHARS, priority=20),
+    Section("sync_policy", _build_sync_policy_section, config.INJECTION_BUDGET_SYNC_POLICY_CHARS, priority=30),
+    Section("signals", _build_signals_section, config.INJECTION_BUDGET_SIGNALS_CHARS, priority=40),
+    Section("relay_inbox", _build_relay_inbox_section, config.INJECTION_BUDGET_RELAY_INBOX_CHARS, priority=50),
+    Section("transcript_path", _build_transcript_path_section, config.INJECTION_BUDGET_TRANSCRIPT_PATH_CHARS, priority=60),
+]
+
+
 def _build_session_context(
     session_id: str | None = None, source: str | None = None, transcript_path: str | None = None
 ) -> str:
@@ -530,33 +544,12 @@ def _build_session_context(
     transcript_path は同payloadの"transcript_path"。_build_transcript_path_section
     のみが参照する。
 
-    各セクションは独立してtry/exceptで保護し、
-    一部のセクションが失敗しても残りは返す。
+    各セクションの組み立て・予算管理はinjection_compositor.composeへ委譲する
+    （セクション単位try/except・宣言予算超過時の縮退はcompose側の責務）。
     """
     conn = get_connection()
     try:
-        sections = []
-        builders = [
-            _build_snapshot_section,
-            _build_activities_section,
-            _build_habits_section,
-            _build_sync_policy_section,
-            _build_signals_section,
-            _build_relay_inbox_section,
-            functools.partial(_build_transcript_path_section, transcript_path=transcript_path),
-        ]
-        for builder in builders:
-            try:
-                result = builder(conn, session_id, source)
-                if result:
-                    sections.append(result)
-            except Exception:
-                # セクション単位で失敗を許容し、残りのセクションは返す
-                pass
-
-        context = "\n".join(sections)
-        return context
-
+        return compose(conn, session_id, source, transcript_path, _SECTIONS)
     finally:
         conn.close()
 
