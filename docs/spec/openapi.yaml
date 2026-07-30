@@ -1459,6 +1459,50 @@ paths:
                 oneOf:
                 - type: object
                 - $ref: '#/components/schemas/ErrorResponse'
+  /tools/resolve_destabilization:
+    post:
+      tags:
+      - relation
+      summary: destabilizesエッジ1本を解消（resolve）する。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                source_decision_id:
+                  type: integer
+                target_decision_id:
+                  type: integer
+                resolution:
+                  enum:
+                  - reaffirmed
+                  - revised
+                  - retracted
+                  type: string
+                revised_to_decision_id:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                note:
+                  default: ''
+                  type: string
+              required:
+              - source_decision_id
+              - target_decision_id
+              - resolution
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
   /tools/retract:
     post:
       tags:
@@ -1631,6 +1675,38 @@ paths:
                   type: integer
               required:
               - query
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/suggest_destabilized_candidates:
+    post:
+      tags:
+      - relation
+      summary: 軸変更decisionからdestabilizeされそうな候補decisionを提示する（候補提示のみ、read-only）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                source_decision_id:
+                  type: integer
+                k:
+                  default: 20
+                  type: integer
+                include_already_resolved:
+                  default: false
+                  type: boolean
+              required:
+              - source_decision_id
               type: object
       responses:
         '200':

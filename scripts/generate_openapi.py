@@ -53,6 +53,8 @@ TOOL_TAGS: dict[str, str] = {
     "analyze_tags": "tag",
     "add_relation": "relation",
     "remove_relation": "relation",
+    "resolve_destabilization": "relation",
+    "suggest_destabilized_candidates": "relation",
     "add_pin": "pin",
     "remove_pin": "pin",
     "add_habit": "habit",
