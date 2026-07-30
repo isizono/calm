@@ -559,8 +559,9 @@ def test_load_pull_json_dedupes_repeated_decision_ids(tmp_path: Path):
     assert presented == [{"type": "decision", "id": 3101}]
 
 
-def test_load_pull_json_ignores_legacy_id_key(tmp_path: Path):
-    """旧スキーマ(id/topic_id)のdecisionは`id_raw`が無いため無視される(常にNoneになる不具合の再発防止)。"""
+def test_load_pull_json_ignores_legacy_id_key_and_warns(tmp_path: Path, capsys):
+    """旧スキーマ(id/topic_id)のdecisionは`id_raw`が無いため無視される(常にNoneになる不具合の再発防止)が、
+    黙って捨てず標準エラー出力に警告を出す。"""
     payload = {
         "guarantee": "enumerated",
         "topics": [
@@ -572,6 +573,27 @@ def test_load_pull_json_ignores_legacy_id_key(tmp_path: Path):
     presented, guarantee = load_pull_json(str(f))
     assert guarantee == "enumerated"
     assert presented == []
+    err = capsys.readouterr().err
+    assert "WARNING" in err
+    assert "id_raw" in err
+
+
+def test_load_pull_json_warns_when_id_raw_and_id_both_missing(tmp_path: Path, capsys):
+    """id_raw/idどちらも無いdecision要素は転記をスキップしつつ、警告を出す。"""
+    payload = {
+        "guarantee": "enumerated",
+        "topics": [
+            {"topic_id_raw": 1, "decisions": [{}]},
+        ],
+    }
+    f = tmp_path / "pull.json"
+    f.write_text(json.dumps(payload), encoding="utf-8")
+    presented, guarantee = load_pull_json(str(f))
+    assert guarantee == "enumerated"
+    assert presented == []
+    err = capsys.readouterr().err
+    assert "WARNING" in err
+    assert "id_raw" in err
 
 
 # ---------------------------------------------------------------------------
