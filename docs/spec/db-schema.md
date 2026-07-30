@@ -3,7 +3,7 @@ watch-tags: domain:cc-memory
 watch-direction: true
 watch-migrations: true
 last-synced: 2026-07-25
-last-synced-migration: 0066
+last-synced-migration: 0067
 -->
 
 # cc-memory DBスキーマ v0
@@ -122,6 +122,7 @@ erDiagram
 | `ask_blocks` | — | ask ↔ activity junction（このaskが答え待ちで止めているactivity） |
 | `ask_requesters` | — | ask ↔ 要求元session_id junction（UNION蓄積） |
 | `ask_vec` | — | asks と rowid 連動する sqlite-vec 仮想テーブル（384次元、cosine距離） |
+| `injection_telemetry` | — | 記録=クエリ添付（記録系ツールの関連既存記録top3提示）の追随カウンタ present側台帳 |
 
 行数感（規模）はランタイム情報のため本ドキュメントでは未記載とする。
 
@@ -718,6 +719,33 @@ asks 専用の sqlite-vec 仮想テーブル（384次元、`distance_metric=cosi
 
 関連 migration: 0062_add_asks
 
+### 3.26 injection_telemetry
+
+記録系ツール（add_logs / add_decisions / add_material）が返す関連既存記録top3（記録=クエリ添付）について、「提示された記録が同セッションで実際に読まれたか」を機械記録する追随カウンタの present側（添付を返した瞬間）の台帳。取得側（fetch）は既存 `search_telemetry.results_json` / `fetch_telemetry.items_json` を再利用し、post-hoc の SQL 集計で `caller_session_id` を突合キーとして追随率を算出する（専用の集計ツールは持たない）。
+
+| カラム名 | 型 | NULL | デフォルト | 制約 | 説明 |
+|---|---|---|---|---|---|
+| id | INTEGER | NO | autoincrement | PRIMARY KEY | レコードID |
+| caller_session_id | TEXT | YES | — | — | 提示を行ったセッションの相関キー（0048/0054と同じephemeral規約） |
+| trigger_tool | TEXT | NO | — | — | `'add_logs'` / `'add_decisions'` / `'add_material'` |
+| source_type | TEXT | NO | — | — | 新規作成された側（添付を提示する記録）の種別 |
+| source_id | INTEGER | NO | — | — | 新規作成された側のID |
+| attached_type | TEXT | NO | — | — | 提示された既存記録の種別 |
+| attached_id | INTEGER | NO | — | — | 提示された既存記録のID |
+| rank | INTEGER | NO | — | — | 提示順位（1〜3。DB制約なし） |
+| similarity | REAL | YES | — | — | 0〜1に正規化した類似度（大きいほど類似） |
+| diagnostics_json | TEXT | YES | — | — | 将来のretriever内訳等の予備列 |
+| timestamp | TIMESTAMP | NO | CURRENT_TIMESTAMP | — | 書込時刻（UTC） |
+
+補足:
+- FK・UNIQUE制約は張らない（既存telemetryテーブル群と同じ、生データ台帳としての性質を優先）。同一セッションで同じ`(attached_type, attached_id)`が複数回提示されるのは正常挙動で、集計側で`GROUP BY MIN(timestamp)`して縮約する
+- 書込は既存telemetryと同じdaemon thread + 失敗握りつぶし規約に従う
+- 本 migration が導入する範囲は、テーブル定義・writable columns allowlist・present書込ヘルパ（`_record_injection_telemetry_async`）・`get_material`のfetch側計装のみ。`add_logs`/`add_decisions`/`add_material`側から実際にpresent行を書く呼出し実装は、添付内容の組み立て方を規定する記録=クエリ添付の詳細設計が別途確定してから追加する
+
+インデックス: `idx_injection_telemetry_session_ts`（`caller_session_id, timestamp`）/ `idx_injection_telemetry_attached`（`attached_type, attached_id`）
+
+関連 migration: 0067_add_injection_telemetry
+
 ---
 
 ## 4. 関係メカニズム
@@ -854,6 +882,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0063_add_decision_supersedes_kind | decision_supersedes に kind 列（'replaces'/'destabilizes'）追加（テーブル再構築、PK に kind を含める形へ変更）、decision_destabilization_resolutions テーブル新設、relations_view の supersedes 由来行を kind で出し分け（§3.11, §3.11a, §3.17） |
 | 0065_add_habits_always_pool_ratchet_trigger | trigger_mode='always'かつactive=1なhabitのcontent合計文字数が2000字を超えて増加するINSERT/UPDATEをRAISE(ABORT)で拒否するトリガー2本を新設（ラチェット型天井、縮む変更は常に許可） |
 | 0066_add_tags_notes_ratchet_trigger | tags.notesが4000字を超えて増加するINSERT/UPDATEをRAISE(ABORT)で拒否するトリガー2本を新設（1タグあたりのラチェット型天井、縮む変更は常に許可） |
+| 0067_add_injection_telemetry | injection_telemetry テーブル新設（記録=クエリ添付の追随カウンタ present側台帳、§3.26） |
 
 重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。
 
