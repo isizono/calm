@@ -5,8 +5,6 @@ subprocess呼び出し(lsof/ps/kill/Popen)を外部境界としてmonkeypatchし
 """
 import subprocess
 
-import pytest
-
 from src.services import restart_service
 
 
@@ -28,6 +26,16 @@ def test_find_listen_pids_parses_lsof_output(monkeypatch):
 def test_find_listen_pids_empty_when_nothing_listens(monkeypatch):
     def fake_run(cmd, **kwargs):
         return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+    monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
+
+    assert restart_service.find_listen_pids(52837) == []
+
+
+def test_find_listen_pids_empty_on_timeout(monkeypatch):
+    """lsofがハングした場合でも再起動フロー全体を無期限にブロックしない"""
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
 
     monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
 
@@ -67,18 +75,64 @@ def test_process_start_signature_none_for_dead_process(monkeypatch):
     assert restart_service.process_start_signature(1234) is None
 
 
-def test_kill_pids_invokes_kill_for_each_pid(monkeypatch):
-    captured_cmds = []
-
+def test_process_start_signature_none_on_timeout(monkeypatch):
     def fake_run(cmd, **kwargs):
-        captured_cmds.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
 
     monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
 
-    restart_service.kill_pids([1234, 5678])
+    assert restart_service.process_start_signature(1234) is None
 
-    assert captured_cmds == [["kill", "1234"], ["kill", "5678"]]
+
+def test_process_alive_false_when_process_lookup_error(monkeypatch):
+    def fake_kill(pid, sig):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(restart_service.os, "kill", fake_kill)
+
+    assert restart_service._process_alive(1234) is False
+
+
+def test_process_alive_true_when_permission_denied(monkeypatch):
+    """権限エラーは「シグナルは送れないが存在はする」ことを意味するため生存扱いにする"""
+    def fake_kill(pid, sig):
+        raise PermissionError
+
+    monkeypatch.setattr(restart_service.os, "kill", fake_kill)
+
+    assert restart_service._process_alive(1234) is True
+
+
+def test_kill_pids_sends_sigterm_only_when_process_dies_promptly(monkeypatch):
+    """SIGTERMだけで終了する場合はSIGKILLへエスカレーションしない"""
+    signals_sent = []
+
+    def fake_kill(pid, sig):
+        if sig == 0:
+            raise ProcessLookupError  # 生存確認: SIGTERM後すぐ死んだ想定
+        signals_sent.append((pid, sig))
+
+    monkeypatch.setattr(restart_service.os, "kill", fake_kill)
+
+    restart_service.kill_pids([1234])
+
+    assert signals_sent == [(1234, restart_service.signal.SIGTERM)]
+
+
+def test_kill_pids_escalates_to_sigkill_when_process_survives_sigterm(monkeypatch):
+    """SIGTERMを送っても生存し続けるプロセスにはSIGKILLを送る"""
+    signals_sent = []
+
+    def fake_kill(pid, sig):
+        signals_sent.append((pid, sig))  # sig=0(生存確認)も例外を投げず「生存」を返す
+
+    monkeypatch.setattr(restart_service.os, "kill", fake_kill)
+    monkeypatch.setattr(restart_service.time, "sleep", lambda _: None)
+
+    restart_service.kill_pids([1234], escalate_after_sec=0, poll_interval_sec=0)
+
+    assert (1234, restart_service.signal.SIGTERM) in signals_sent
+    assert (1234, restart_service.signal.SIGKILL) in signals_sent
 
 
 def test_is_replaced_true_when_new_pid_unseen_before(monkeypatch):
@@ -102,26 +156,39 @@ def test_is_replaced_false_when_signature_unchanged(monkeypatch):
 
 
 def test_restart_mcp_server_success_flow(monkeypatch, tmp_path):
-    """旧PID記録 → kill → 新プロセス起動 → 起動時刻検証、の一連の流れを検証する"""
-    listen_pids_responses = iter([
-        [1111],  # old_pids取得
-        [],      # kill後の生存確認(1回目でLISTEN消失)
-        [2222],  # Popen後のポーリング(新PID検出)
-    ])
-    monkeypatch.setattr(restart_service, "find_listen_pids", lambda port: next(listen_pids_responses))
+    """旧PID記録 → kill → 新プロセス起動 → 起動時刻検証、の一連の流れを検証する。
+
+    find_listen_pidsの呼び出し回数・順序ではなく、kill完了/新規プロセス起動という
+    「状態」に対して一貫した値を返すfakeにする。これにより、実装が途中で
+    追加のLISTEN確認を挟むように変わっても、observable contract（最終的な
+    RestartResult）が同じである限りテストは壊れない。
+    """
+    state = {"killed": False, "new_server_started": False}
+
+    def fake_find_listen_pids(port):
+        if state["new_server_started"]:
+            return [2222]
+        if state["killed"]:
+            return []
+        return [1111]
+
+    def fake_kill_pids(pids):
+        assert pids == [1111]
+        state["killed"] = True
+
+    popen_calls = []
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        state["new_server_started"] = True
+
+    monkeypatch.setattr(restart_service, "find_listen_pids", fake_find_listen_pids)
     monkeypatch.setattr(
         restart_service, "process_start_signature",
         lambda pid: {1111: "old-sig", 2222: "new-sig"}.get(pid),
     )
-
-    killed = []
-    monkeypatch.setattr(restart_service, "kill_pids", lambda pids: killed.extend(pids))
-
-    popen_calls = []
-    monkeypatch.setattr(
-        restart_service.subprocess, "Popen",
-        lambda cmd, **kwargs: popen_calls.append((cmd, kwargs)),
-    )
+    monkeypatch.setattr(restart_service, "kill_pids", fake_kill_pids)
+    monkeypatch.setattr(restart_service.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(restart_service.time, "sleep", lambda _: None)
 
     result = restart_service.restart_mcp_server(tmp_path, poll_interval_sec=0)
@@ -129,7 +196,7 @@ def test_restart_mcp_server_success_flow(monkeypatch, tmp_path):
     assert result.ok is True
     assert result.old_pids == [1111]
     assert result.new_pids == [2222]
-    assert killed == [1111]
+    assert state["killed"] is True
     assert len(popen_calls) == 1
     cmd, kwargs = popen_calls[0]
     assert cmd == ["uv", "run", "--directory", str(tmp_path), "python", "-m", "src.launcher"]
@@ -139,16 +206,21 @@ def test_restart_mcp_server_success_flow(monkeypatch, tmp_path):
 
 def test_restart_mcp_server_skips_kill_when_nothing_was_listening(monkeypatch, tmp_path):
     """サーバーが元から起動していない場合はkillを呼ばずそのまま起動する"""
-    listen_pids_responses = iter([
-        [],      # old_pids取得(何も無い)
-        [2222],  # Popen後のポーリング(新PID検出)
-    ])
-    monkeypatch.setattr(restart_service, "find_listen_pids", lambda port: next(listen_pids_responses))
+    state = {"new_server_started": False}
+
+    def fake_find_listen_pids(port):
+        return [2222] if state["new_server_started"] else []
+
+    monkeypatch.setattr(restart_service, "find_listen_pids", fake_find_listen_pids)
     monkeypatch.setattr(restart_service, "process_start_signature", lambda pid: "sig")
 
     killed = []
     monkeypatch.setattr(restart_service, "kill_pids", lambda pids: killed.extend(pids))
-    monkeypatch.setattr(restart_service.subprocess, "Popen", lambda cmd, **kwargs: None)
+
+    def fake_popen(cmd, **kwargs):
+        state["new_server_started"] = True
+
+    monkeypatch.setattr(restart_service.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(restart_service.time, "sleep", lambda _: None)
 
     result = restart_service.restart_mcp_server(tmp_path, poll_interval_sec=0)

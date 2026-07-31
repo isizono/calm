@@ -7,32 +7,44 @@ launcher.py の _ensure_server_running() は「生きていれば何もしない
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import NamedTuple
 
-MCP_PORT = 52837
-EMBEDDING_PORT = 52836
+from src.http_config import HTTP_PORT
+from src.services.embedding_service import PORT as EMBEDDING_SERVER_PORT
+
+MCP_PORT = HTTP_PORT
+EMBEDDING_PORT = EMBEDDING_SERVER_PORT
 PLUGIN_CACHE_DIR = Path.home() / ".claude" / "plugins" / "cache" / "claude-code-memory-marketplace"
 
 DEFAULT_START_TIMEOUT_SEC = 30.0
 DEFAULT_POLL_INTERVAL_SEC = 0.5
 DEFAULT_KILL_WAIT_SEC = 10.0
+DEFAULT_KILL_ESCALATE_SEC = 5.0
+SUBPROCESS_TIMEOUT_SEC = 5.0
 
 
 def find_listen_pids(port: int) -> list[int]:
     """指定ポートでLISTEN中のPIDを返す。
 
     -sTCP:LISTEN条件で絞り込むことで、接続中のクライアント(ブリッジ等)を
-    巻き添えにしない。
+    巻き添えにしない。lsofがハングした場合はタイムアウトし、空リストとして扱う
+    (「わからない」を「いない」として安全側に倒す。再起動フロー全体を
+    無期限にブロックしないことを優先する)。
     """
-    result = subprocess.run(
-        ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
-        capture_output=True, text=True, check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
+            capture_output=True, text=True, check=False, timeout=SUBPROCESS_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        return []
     return sorted({int(p) for p in result.stdout.split() if p.strip()})
 
 
@@ -42,17 +54,56 @@ def process_start_signature(pid: int) -> str | None:
     LISTEN確認だけでは、PID再利用や検出タイミングのズレで
     古いプロセスを新規と誤認しうる。起動時刻の比較でこれを防ぐ。
     """
-    result = subprocess.run(
-        ["ps", "-o", "lstart=", "-p", str(pid)],
-        capture_output=True, text=True, check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True, text=True, check=False, timeout=SUBPROCESS_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        return None
     output = result.stdout.strip()
     return output or None
 
 
-def kill_pids(pids: list[int]) -> None:
+def _process_alive(pid: int) -> bool:
+    """シグナル0の送信でプロセスの生死を確認する(実際にはシグナルを送らない)。"""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def kill_pids(
+    pids: list[int],
+    *,
+    escalate_after_sec: float = DEFAULT_KILL_ESCALATE_SEC,
+    poll_interval_sec: float = DEFAULT_POLL_INTERVAL_SEC,
+) -> None:
+    """各PIDにSIGTERMを送り、escalate_after_sec待っても生存していればSIGKILLで強制終了する。
+
+    SIGTERMのみで終了しないプロセスを生かしたまま次の処理に進むと、
+    新規サーバーがポートのbindに失敗して見えない失敗を招く。
+    """
     for pid in pids:
-        subprocess.run(["kill", str(pid)], check=False)
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+
+    deadline = time.monotonic() + escalate_after_sec
+    remaining = {pid for pid in pids if _process_alive(pid)}
+    while remaining and time.monotonic() < deadline:
+        time.sleep(poll_interval_sec)
+        remaining = {pid for pid in remaining if _process_alive(pid)}
+
+    for pid in remaining:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 class RestartResult(NamedTuple):
