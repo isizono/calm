@@ -215,6 +215,12 @@ launchctl kickstart -k gui/$(id -u)/com.isizono.relay-v2
 
 - 旧構成が環境変数 `RELAY_AUTH_TOKENS` の静的表（例: `claude-main` identity）で認証していた場合、新構成（`RELAY_AUTH_TOKENS` 未設定・新 DB は空）へ切り替えると、その identity で接続中の全クライアントが無警告で 401 になる。切り替え前に静的表利用の全 identity を棚卸しし、各々について「招待URLで DB credential として再発行する」「break-glass として plist に温存する」「明示的に破棄する」のいずれかを決めること。
 
+### federation identity/JWE 機能のロールアウト順序
+
+relay が federation 配達 payload に `publisher_identity`（`sub@handle` 形式）を刻印する変更と、cc-memory 側がそれを見て federation 由来メッセージを `is_federation_origin` / `trust_notice` でマークする変更は、別リポジトリの別々のデプロイ操作である。cc-memory 側のマーキングは `publisher_identity` フィールドの有無だけで federation 由来かどうかを判定するため、relay 側の刻印がまだ反映されていない relay に接続した状態で cc-memory 側だけ先に更新すると、該当フィールド自体が届かず federation 由来メッセージが無警告で local 扱いのまま通過する（fail-open）。
+
+デプロイは必ず relay → cc-memory の順で行うこと。逆順にすると、両者が揃うまでの間マーキングが機能しない窓ができる。
+
 ## セッション側 watcher
 
 `scripts/relay/watch_inbox.sh <session_id>` で session 単位の inbox JSONL を `tail -F` する。business logic を含まない tail wrapper なので、Monitor ツール等の外部 watcher と組み合わせて使う。
