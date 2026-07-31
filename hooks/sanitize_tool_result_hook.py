@@ -250,10 +250,11 @@ def main() -> int:
         if not isinstance(content, str):
             return 0
         sanitized_text, counters = _sanitize_content(content, db_path)
+        content_block = [{"type": "text", "text": sanitized_text}]
         if isinstance(tool_response, dict):
-            updated_output = {**tool_response, "content": sanitized_text}
+            updated_output = {**tool_response, "content": content_block}
         else:
-            updated_output = {"content": sanitized_text}
+            updated_output = {"content": content_block}
         output = {
             "hookSpecificOutput": {
                 "hookEventName": "PostToolUse",
