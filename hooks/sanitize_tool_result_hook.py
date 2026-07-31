@@ -20,6 +20,10 @@ import sys
 import tomllib
 from pathlib import Path
 
+_project_root = Path(__file__).resolve().parents[1]
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
+
 from hooks.hook_transcript import _is_cc_memory_tool
 from src.services.citations_pure import (
     TYPE_CODE_TO_NAME,

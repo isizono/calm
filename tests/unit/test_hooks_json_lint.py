@@ -10,6 +10,8 @@ harness が読むランタイム契約そのものであるため、実装 (各�
 import ast
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -94,3 +96,38 @@ def test_declared_event_script_is_registered_in_hooks_json(script_path: Path):
     event = _declared_event(script_path)
     registered = _registered_scripts_by_event()
     assert script_path.name in registered.get(event, [])
+
+
+@pytest.mark.parametrize(
+    "script_path", _DECLARING_SCRIPTS, ids=[p.name for p in _DECLARING_SCRIPTS]
+)
+def test_script_module_imports_succeed_under_declared_cwd(script_path: Path):
+    """hooks.json の実行コマンド (`cd ${CLAUDE_PLUGIN_ROOT} && uv run python
+    hooks/<script>.py`) が想定する cwd = プロジェクトルートで、スクリプトの
+    トップレベル import が解決できることを確認する。
+
+    hooks/*.py は `hooks.xxx` / `src.xxx` の絶対 import を使う規約のため、
+    プロジェクトルートを sys.path に追加する処理 (`sys.path.insert(0, ...)`)
+    を各スクリプト自身が持たないと `ModuleNotFoundError` で起動時に落ちる。
+    この種の欠陥は単体テスト (pytest 実行時は既にプロジェクトルートが
+    sys.path 上にある) では検出できず、実際に別プロセスとして起動する形で
+    しか再現しない。
+    """
+    relative_path = script_path.relative_to(_PROJECT_ROOT)
+    # `python -c` は sys.path[0] が '' (cwd) になり、hooks.json が実際に叩く
+    # `python hooks/<script>.py` (sys.path[0] = スクリプトの親ディレクトリ) と
+    # sys.path の状態が異なる。sys.path[0] を明示的にスクリプトの親ディレクトリへ
+    # 上書きしてから run_path することで、本番と同じ import 解決条件を再現する。
+    setup = f"import sys; sys.path[0] = {str(script_path.parent)!r}"
+    run = f"import runpy; runpy.run_path({str(relative_path)!r}, run_name='_hooks_json_lint_import_check')"
+    result = subprocess.run(
+        [sys.executable, "-c", f"{setup}\n{run}"],
+        cwd=_PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, (
+        f"{relative_path} のトップレベル import が cwd={_PROJECT_ROOT} で失敗した:\n"
+        f"{result.stderr}"
+    )
