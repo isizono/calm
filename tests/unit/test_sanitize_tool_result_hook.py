@@ -113,7 +113,9 @@ def test_case_01_valid_target_converted_to_cite(fixture_db):
     hook_out = out["hookSpecificOutput"]
     assert hook_out["hookEventName"] == "PostToolUse"
     sanitized = hook_out["updatedToolOutput"]["content"]
-    assert sanitized == "ref to {{cite:M#1}} and {{cite:D#1}} here"
+    assert sanitized == [
+        {"type": "text", "text": "ref to {{cite:M#1}} and {{cite:D#1}} here"}
+    ]
 
     logs = _read_sanitize_logs(fixture_db)
     assert len(logs) == 1
@@ -182,8 +184,9 @@ def test_case_04_cwd_in_unrelated_project_not_skipped(fixture_db, tmp_path):
     stdout, code = _run_hook(payload)
     assert code == 0
     out = json.loads(stdout)
-    assert out["hookSpecificOutput"]["updatedToolOutput"]["content"] == \
-        "ref to {{cite:M#1}}"
+    assert out["hookSpecificOutput"]["updatedToolOutput"]["content"] == [
+        {"type": "text", "text": "ref to {{cite:M#1}}"}
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -195,8 +198,9 @@ def test_case_05_no_raw_literals_logs_zero(fixture_db):
     stdout, code = _run_hook(_payload("plain text without any ids"))
     assert code == 0
     out = json.loads(stdout)
-    assert out["hookSpecificOutput"]["updatedToolOutput"]["content"] == \
-        "plain text without any ids"
+    assert out["hookSpecificOutput"]["updatedToolOutput"]["content"] == [
+        {"type": "text", "text": "plain text without any ids"}
+    ]
 
     logs = _read_sanitize_logs(fixture_db)
     assert len(logs) == 1
@@ -216,7 +220,9 @@ def test_case_06_code_block_literals_preserved(fixture_db):
     assert code == 0
     out = json.loads(stdout)
     sanitized = out["hookSpecificOutput"]["updatedToolOutput"]["content"]
-    assert sanitized == "see `M#1 inline` and outside {{cite:D#1}} too"
+    assert sanitized == [
+        {"type": "text", "text": "see `M#1 inline` and outside {{cite:D#1}} too"}
+    ]
 
     logs = _read_sanitize_logs(fixture_db)
     assert len(logs) == 1
@@ -232,9 +238,11 @@ def test_case_06_fenced_code_block_preserved(fixture_db):
     assert code == 0
     out = json.loads(stdout)
     sanitized = out["hookSpecificOutput"]["updatedToolOutput"]["content"]
-    assert "M#1 inside fence" in sanitized
-    assert "{{cite:D#1}}" in sanitized
-    assert sanitized.count("{{cite:") == 1
+    assert isinstance(sanitized, list)
+    sanitized_text = sanitized[0]["text"]
+    assert "M#1 inside fence" in sanitized_text
+    assert "{{cite:D#1}}" in sanitized_text
+    assert sanitized_text.count("{{cite:") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +256,9 @@ def test_case_07_dangling_target_becomes_deleted_marker(fixture_db):
     assert code == 0
     out = json.loads(stdout)
     sanitized = out["hookSpecificOutput"]["updatedToolOutput"]["content"]
-    assert sanitized == "known {{cite:M#1}}, missing [deleted M#9999999] here"
+    assert sanitized == [
+        {"type": "text", "text": "known {{cite:M#1}}, missing [deleted M#9999999] here"}
+    ]
 
     logs = _read_sanitize_logs(fixture_db)
     assert len(logs) == 1
@@ -315,6 +325,7 @@ def test_case_10_official_hook_output_schema(fixture_db):
     assert "updatedToolOutput" in hook_out
     assert isinstance(hook_out["updatedToolOutput"], dict)
     assert "content" in hook_out["updatedToolOutput"]
+    assert isinstance(hook_out["updatedToolOutput"]["content"], list)
 
 
 # ---------------------------------------------------------------------------
@@ -360,7 +371,36 @@ def test_case_12_other_tool_response_fields_preserved(fixture_db):
     updated = out["hookSpecificOutput"]["updatedToolOutput"]
     assert updated["tool_use_id"] == "toolu_01ABC"
     assert updated["is_error"] is False
-    assert updated["content"] == "ref {{cite:M#1}}"
+    assert updated["content"] == [{"type": "text", "text": "ref {{cite:M#1}}"}]
+
+
+# ---------------------------------------------------------------------------
+# Case #14: updatedToolOutput.content は常に list 型であり、str 型には絶対にならない
+# (content が文字列だとクライアント側で content 配列を前提とした処理がクラッシュする)
+# ---------------------------------------------------------------------------
+
+
+def test_case_14_content_is_always_list_never_string(fixture_db):
+    """tool_response が dict でなく生の JSON 文字列そのものの場合でも、
+
+    updatedToolOutput.content は常に content block 配列 ([{"type": "text", "text": ...}])
+    になり、str 型には絶対にならないことを保証する回帰テスト。
+    """
+    raw_tool_response = json.dumps({"activities": [], "total_count": 0, "archived_tags": []})
+    payload = {
+        "tool_name": _TOOL_NAME,
+        "tool_response": raw_tool_response,
+        "cwd": "/tmp/outside-repo",
+        "session_id": "sess-raw-string",
+        "transcript_path": "/tmp/transcripts/test.jsonl",
+    }
+    stdout, code = _run_hook(payload)
+    assert code == 0
+    out = json.loads(stdout)
+    content = out["hookSpecificOutput"]["updatedToolOutput"]["content"]
+    assert isinstance(content, list)
+    assert not isinstance(content, str)
+    assert content == [{"type": "text", "text": raw_tool_response}]
 
 
 # ---------------------------------------------------------------------------
