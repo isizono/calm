@@ -77,7 +77,7 @@ SKILL.md は AI が読んで実行する自然言語プロンプトであり、�
 - `tests/integration/`: 複数サービスの連携・MCPツール層の配線を検証するテスト
 - `tests/e2e/`: subprocess 起動（hooks・CLIスクリプト・実サーバー）を伴うテスト
 - `tests/test_migrations/`: migration の部分適用テスト（§1 の定型）
-- `tests/services/`: 歴史的経緯で残っている。新規テストはここに置かず、上記4分類のいずれかに置く
+- `tests/services/`: 歴史的経緯で残っている。新規テストはここに置かず、上記4分類のいずれかに置く（CIでは`unit`ジョブの一部として実行される）
 - 命名は対象モジュールに対応させる: `src/services/foo.py` → `tests/unit/test_foo.py`。対応が機械的に辿れることが、実装時の「対応テストだけ回す」運用（§6）の前提になる
 - 同名テストファイルを複数ディレクトリに置かない（対応の一意性を壊す）
 
@@ -93,7 +93,15 @@ SKILL.md は AI が読んで実行する自然言語プロンプトであり、�
 
 実装フェーズでのテスト実行は「変更ファイルに対応するテスト + 関連する integration テスト」までに絞る。フルスイートの実行は push 後の CI に委譲し、done 条件は「対応テスト + lint 通過」とする。CI の失敗は別ターンで吸収する。
 
-## 7. 本規約の配達経路
+## 7. CIによる形状チェック（`test-pyramid` job）
+
+`.github/workflows/test.yml` の `test-pyramid` job が、本規約の一部を機械的に強制する。
+
+1. `scripts/check_test_dir_coverage.py`: `tests/` 直下の全サブディレクトリが `.github/workflows/*.yml` のいずれかのjobから参照されていることを検証する。参照の無いディレクトリはCIで一切実行されていない可能性が高い
+2. `scripts/check_unit_subprocess_placement.py`: `tests/unit/` 配下に実プロセスのsubprocess起動を含むファイルが紛れ込んでいないかを検証する（§4のtests/unit/tests/e2e分類を強制）。既存の許容ファイルは `scripts/test_pyramid_allowlist.txt` に列挙する
+3. `scripts/check_test_removal.py`: base commitからhead commitにかけて、気づかれずに消えたテスト関数が無いかを検証する。意図的な削除であれば、PR本文に `[test-removal: <理由>]` 形式のマーカー行を含めることで通過できる（`[no-schema-shape-change]` 等の既存の例外マーカーと同じ運用）
+
+## 8. 本規約の配達経路
 
 - 正本: 本ファイル（`docs/spec/test-convention.md`）
 - 書き手向け: `tests/CLAUDE.md` が最重要原則と正本へのポインタを持つ（tests/ 配下のファイル編集時に自動でコンテキストに載る）
