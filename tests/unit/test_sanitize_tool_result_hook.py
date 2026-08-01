@@ -375,16 +375,19 @@ def test_case_12_other_tool_response_fields_preserved(fixture_db):
 
 
 # ---------------------------------------------------------------------------
-# Case #14: updatedToolOutput.content は常に list 型であり、str 型には絶対にならない
-# (content が文字列だとクライアント側で content 配列を前提とした処理がクラッシュする)
+# Case #14: tool_response が非 dict (生文字列) のとき、updatedToolOutput は
+# content block 配列そのものになる (二重ラップされない)
 # ---------------------------------------------------------------------------
 
 
-def test_case_14_content_is_always_list_never_string(fixture_db):
-    """tool_response が dict でなく生の JSON 文字列そのものの場合でも、
+def test_case_14_non_dict_tool_response_yields_unwrapped_content_block(fixture_db):
+    """tool_response が dict でなく生の JSON 文字列そのものの場合、
 
-    updatedToolOutput.content は常に content block 配列 ([{"type": "text", "text": ...}])
-    になり、str 型には絶対にならないことを保証する回帰テスト。
+    updatedToolOutput は content block 配列 ([{"type": "text", "text": ...}]) そのもの
+    になり、`{"content": [...]}` のように dict でさらに包まれてはならないことを保証する
+    回帰テスト。updatedToolOutput は Claude Code CLI 側でツール結果の content に
+    そのままセットされるため、二重にラップすると content が dict になり
+    クライアント側の処理がクラッシュする。
     """
     raw_tool_response = json.dumps({"activities": [], "total_count": 0, "archived_tags": []})
     payload = {
@@ -397,10 +400,11 @@ def test_case_14_content_is_always_list_never_string(fixture_db):
     stdout, code = _run_hook(payload)
     assert code == 0
     out = json.loads(stdout)
-    content = out["hookSpecificOutput"]["updatedToolOutput"]["content"]
-    assert isinstance(content, list)
-    assert not isinstance(content, str)
-    assert content == [{"type": "text", "text": raw_tool_response}]
+    updated_output = out["hookSpecificOutput"]["updatedToolOutput"]
+    assert isinstance(updated_output, list)
+    assert not isinstance(updated_output, dict)
+    assert not isinstance(updated_output, str)
+    assert updated_output == [{"type": "text", "text": raw_tool_response}]
 
 
 # ---------------------------------------------------------------------------

@@ -254,7 +254,7 @@ def main() -> int:
         if isinstance(tool_response, dict):
             updated_output = {**tool_response, "content": content_block}
         else:
-            updated_output = {"content": content_block}
+            updated_output = content_block
         output = {
             "hookSpecificOutput": {
                 "hookEventName": "PostToolUse",
