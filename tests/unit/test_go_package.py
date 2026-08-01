@@ -531,8 +531,8 @@ def test_load_pull_json_transcribes_decisions_and_guarantee(tmp_path: Path):
     payload = {
         "guarantee": "enumerated",
         "topics": [
-            {"topic_id": 1, "decisions": [{"id": 3101}, {"id": 3102}]},
-            {"topic_id": 2, "decisions": [{"id": 3103}]},
+            {"topic_id_raw": 1, "decisions": [{"id_raw": 3101}, {"id_raw": 3102}]},
+            {"topic_id_raw": 2, "decisions": [{"id_raw": 3103}]},
         ],
     }
     f = tmp_path / "pull.json"
@@ -550,13 +550,50 @@ def test_load_pull_json_dedupes_repeated_decision_ids(tmp_path: Path):
     payload = {
         "guarantee": "enumerated",
         "topics": [
-            {"topic_id": 1, "decisions": [{"id": 3101}, {"id": 3101}]},
+            {"topic_id_raw": 1, "decisions": [{"id_raw": 3101}, {"id_raw": 3101}]},
         ],
     }
     f = tmp_path / "pull.json"
     f.write_text(json.dumps(payload), encoding="utf-8")
     presented, _ = load_pull_json(str(f))
     assert presented == [{"type": "decision", "id": 3101}]
+
+
+def test_load_pull_json_ignores_legacy_id_key_and_warns(tmp_path: Path, capsys):
+    """旧スキーマ(id/topic_id)のdecisionは`id_raw`が無いため無視される(常にNoneになる不具合の再発防止)が、
+    黙って捨てず標準エラー出力に警告を出す。"""
+    payload = {
+        "guarantee": "enumerated",
+        "topics": [
+            {"topic_id": 1, "decisions": [{"id": 3101}]},
+        ],
+    }
+    f = tmp_path / "pull.json"
+    f.write_text(json.dumps(payload), encoding="utf-8")
+    presented, guarantee = load_pull_json(str(f))
+    assert guarantee == "enumerated"
+    assert presented == []
+    err = capsys.readouterr().err
+    assert "WARNING" in err
+    assert "id_raw" in err
+
+
+def test_load_pull_json_warns_when_id_raw_and_id_both_missing(tmp_path: Path, capsys):
+    """id_raw/idどちらも無いdecision要素は転記をスキップしつつ、警告を出す。"""
+    payload = {
+        "guarantee": "enumerated",
+        "topics": [
+            {"topic_id_raw": 1, "decisions": [{}]},
+        ],
+    }
+    f = tmp_path / "pull.json"
+    f.write_text(json.dumps(payload), encoding="utf-8")
+    presented, guarantee = load_pull_json(str(f))
+    assert guarantee == "enumerated"
+    assert presented == []
+    err = capsys.readouterr().err
+    assert "WARNING" in err
+    assert "id_raw" in err
 
 
 # ---------------------------------------------------------------------------
@@ -713,7 +750,7 @@ def test_cmd_new_with_pull_json_transcribes_presented(gate_repos: Path, tmp_path
 
     pull_json_path = tmp_path / "pull.json"
     pull_json_path.write_text(
-        json.dumps({"guarantee": "enumerated", "topics": [{"topic_id": 1, "decisions": [{"id": 3101}]}]}),
+        json.dumps({"guarantee": "enumerated", "topics": [{"topic_id_raw": 1, "decisions": [{"id_raw": 3101}]}]}),
         encoding="utf-8",
     )
     out_path = tmp_path / "pkg.md"

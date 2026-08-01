@@ -16,7 +16,7 @@ from sqlite_vec import serialize_float32
 from src.db import execute_query, get_connection, get_db_path, row_to_dict
 from src.services import embedding_service, precedent_pure
 from src.services.readable_id import strip_entity_id_inplace
-from src.services.supersede_service import get_superseded_by_batch
+from src.services.supersede_service import compute_destabilization_info_batch, get_superseded_by_batch
 from src.services.tag_service import (
     get_archived_tags_for_strings,
     get_entity_tags,
@@ -2111,6 +2111,10 @@ _TELEMETRY_WRITABLE_COLUMNS: dict[str, frozenset[str]] = {
          "diagnostics_json", "caller_session_id"}
     ),
     "fetch_telemetry": frozenset({"tool", "items_json", "caller_session_id"}),
+    "injection_telemetry": frozenset(
+        {"caller_session_id", "trigger_tool", "source_type", "source_id",
+         "attached_type", "attached_id", "rank", "similarity", "diagnostics_json"}
+    ),
 }
 
 
@@ -2252,20 +2256,150 @@ def _record_fetch_telemetry_async(
     )
 
 
+def record_material_fetch_telemetry(
+    material_id: int,
+    caller_session_id: Optional[str] = None,
+) -> threading.Thread | None:
+    """get_material 呼出を fetch_telemetry へ非同期書込する（追随カウンタの fetch 側計装）。
+
+    get_by_ids / search と異なり get_material はこれまで telemetry を記録していなかった
+    ため、記録=クエリ添付の追随判定に載らなかった。`main.py` の `get_material` ツール
+    ラッパーから呼ぶための公開エントリポイント（`_record_fetch_telemetry_async` は
+    module-private のため、他 module からは本関数経由で呼ぶ）。
+
+    Args:
+        material_id: 取得された資材のID。
+        caller_session_id: 呼出セッションの相関キー。None のとき NULL で記録する。
+
+    Returns:
+        起動した daemon Thread。起動に失敗した場合は None。
+    """
+    return _record_fetch_telemetry_async(
+        "get_material",
+        [{"type": "material", "id": material_id}],
+        caller_session_id=caller_session_id,
+    )
+
+
+def _record_injection_telemetry_async(
+    trigger_tool: str,
+    source_type: str,
+    source_id: int,
+    attachments: list[dict],
+    caller_session_id: Optional[str] = None,
+) -> list[threading.Thread]:
+    """記録系ツールの top3 添付（記録=クエリ添付）を injection_telemetry へ非同期書込する。
+
+    「提示された記録が同セッションで実際に読まれたか」を計測する追随カウンタの
+    present側（添付を返した瞬間）の書込ヘルパ。書込方針は既存 telemetry と同じ
+    （daemon thread・失敗握りつぶし・呼出元のレスポンスタイムに影響しない）。
+
+    attachments が空リストのときは何も書かず空リストを返す（第3層添付が未実装/
+    ゼロ件のケースで無駄な書込を発生させない）。
+
+    attachments 各要素の dict アクセス（"type"/"id"/"rank" 等）も、値の変換・SQL バインドと
+    同じ理由で全て daemon thread 側（`_write` 内）で `.get()` により行う。呼出元スレッドで
+    KeyError 等の例外が発生する余地を残さないため（`_record_telemetry_async` と同じ設計方針）。
+    また、N件の attachments を N本の thread / N個の connection に分けず、1本の thread が
+    1つの connection で全件を書いて最後に1回だけ commit する。attachments の並び（= rank順）
+    と書込順・コミット順を一致させ、書込順が OS スケジューリングに左右されないようにするため。
+
+    Args:
+        trigger_tool: 'add_logs' | 'add_decisions' | 'add_material'
+        source_type: 新規作成された側（添付を提示する記録）の種別
+        source_id: 新規作成された側のID
+        attachments: 実際にレスポンスへ返却された添付のみ
+            [{"type": str, "id": int, "rank": int,
+              "similarity": Optional[float], "diagnostics": Optional[dict]}, ...]
+        caller_session_id: 呼出セッションの相関キー。fetch_telemetry / search_telemetry
+            と突合するために記録する。None のとき NULL で記録する。
+
+    Returns:
+        起動した daemon Thread を含むリスト（attachments が空でなければ要素数は常に1、
+        全件をまとめて書く1本の thread を指す）。attachments が空、または thread の起動
+        自体に失敗した場合は空リスト。
+    """
+    if not attachments:
+        return []
+
+    columns = (
+        "caller_session_id", "trigger_tool", "source_type", "source_id",
+        "attached_type", "attached_id", "rank", "similarity", "diagnostics_json",
+    )
+    allowed = _TELEMETRY_WRITABLE_COLUMNS["injection_telemetry"]
+    unknown_columns = set(columns) - allowed
+    assert not unknown_columns, (
+        f"unknown telemetry columns for 'injection_telemetry': {sorted(unknown_columns)}"
+    )
+
+    def _write() -> None:
+        rows = []
+        for attachment in attachments:
+            diagnostics = attachment.get("diagnostics")
+            try:
+                diagnostics_json = (
+                    json.dumps(diagnostics, ensure_ascii=False)
+                    if diagnostics is not None else None
+                )
+            except (TypeError, ValueError) as e:
+                logger.warning("injection_telemetry serialize failed: %s", e)
+                return
+            rows.append((
+                caller_session_id,
+                trigger_tool,
+                source_type,
+                source_id,
+                attachment.get("type"),
+                attachment.get("id"),
+                attachment.get("rank"),
+                attachment.get("similarity"),
+                diagnostics_json,
+            ))
+
+        column_sql = ", ".join(columns)
+        placeholder_sql = ", ".join("?" * len(columns))
+        try:
+            conn = _telemetry_get_connection()
+            try:
+                conn.executemany(
+                    f"INSERT INTO injection_telemetry ({column_sql}) VALUES ({placeholder_sql})",
+                    rows,
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.warning("injection_telemetry write failed: %s", e)
+
+    try:
+        thread = threading.Thread(target=_write, daemon=True)
+        thread.start()
+    except Exception as e:
+        logger.warning("injection_telemetry thread start failed: %s", e)
+        return []
+    return [thread]
+
+
 def _format_row(
     type_name: str,
     data: dict,
     tags: list[str],
     conn: sqlite3.Connection,
     superseded_by_map: Optional[dict[int, Optional[int]]] = None,
+    destabilization_map: Optional[dict[int, dict]] = None,
 ) -> dict:
     """typeに応じたレスポンス整形
 
-    conn: decision 分岐で is_superseded / superseded_by を引くための DB 接続。
+    conn: decision 分岐で is_superseded / superseded_by / destabilization を引くための DB 接続。
     superseded_by_map: 事前に一括算出した {decision_id: 最新superseder id or None}。
         渡された場合は decision 分岐で本マップを引き、conn への追加問い合わせを行わない
         (複数 decision をまとめて整形する呼出元が N+1 を避けるための経路)。None のときは
-        対象 decision 1件だけを conn へ問い合わせる。
+        対象 decision を単独で conn へ問い合わせる。
+    destabilization_map: 事前に一括算出した {decision_id: destabilization情報dict}
+        (compute_destabilization_info_batch の結果)。渡された場合は decision 分岐で
+        本マップを引く。None のときは対象 decision を単独で算出する。未resolveな
+        destabilizes エッジを持たない対象はキー自体が存在しないため、destabilization
+        キーは付与されない。
     """
     if type_name == 'topic':
         result = {
@@ -2296,6 +2430,12 @@ def _format_row(
             superseded_by = get_superseded_by_batch(conn, [data["id"]]).get(data["id"])
         result["is_superseded"] = superseded_by is not None
         result["superseded_by"] = superseded_by
+        if destabilization_map is not None:
+            destab_info = destabilization_map.get(data["id"])
+        else:
+            destab_info = compute_destabilization_info_batch(conn, [data["id"]]).get(data["id"])
+        if destab_info is not None:
+            result["destabilization"] = destab_info
         precedent_pure.attach_precedent(result, data.get("reason"))
         # decision_serviceとの循環import回避のため関数内import。add_decisions/get_decisionsと
         # 同じnudgeをget_by_idsの読み出し面にも再現する。
@@ -2346,7 +2486,7 @@ def _format_row(
     return data
 
 
-def get_by_id(type: str, id: int, conn=None, superseded_by_map=None) -> dict:
+def get_by_id(type: str, id: int, conn=None, superseded_by_map=None, destabilization_map=None) -> dict:
     """
     search結果の詳細情報を取得する。
 
@@ -2359,11 +2499,16 @@ def get_by_id(type: str, id: int, conn=None, superseded_by_map=None) -> dict:
         conn: 既存のDB接続（省略時は内部で新規作成・クローズ）
         superseded_by_map: 事前に一括算出した {decision_id: 最新superseder id or None}。
             複数件をまとめて取得する呼出元が decision ごとの N+1 問い合わせを避けるために渡す。
-            省略時は decision 1件だけを問い合わせる。
+            省略時は decision を単独で問い合わせる。
+        destabilization_map: 事前に一括算出した {decision_id: destabilization情報dict}
+            (supersede_service.compute_destabilization_info_batch の結果)。複数件を
+            まとめて取得する呼出元が decision ごとの N+1 問い合わせを避けるために渡す。
+            省略時は decision を単独で算出する。
 
     Returns:
         指定した種別に応じた詳細情報。type='decision' のとき is_superseded（bool）と
-        superseded_by（最新1hopのsupersede元id、無ければNone）が常に付く。
+        superseded_by（最新1hopのsupersede元id、無ければNone）が常に付く。未resolveな
+        destabilizes エッジを持つときのみ destabilization キーが付く。
     """
     if type not in VALID_TYPES:
         return {
@@ -2416,7 +2561,11 @@ def get_by_id(type: str, id: int, conn=None, superseded_by_map=None) -> dict:
 
         return {
             "type": type,
-            "data": _format_row(type, data, tags, conn, superseded_by_map=superseded_by_map),
+            "data": _format_row(
+                type, data, tags, conn,
+                superseded_by_map=superseded_by_map,
+                destabilization_map=destabilization_map,
+            ),
         }
 
     except Exception as e:
@@ -2465,14 +2614,15 @@ def get_by_ids(items: list[dict], caller_session_id: Optional[str] = None) -> di
 
     conn = get_connection()
     try:
-        # decision の superseded_by は decision id を一括収集して1クエリで解決する
-        # (decision 1件ずつ get_superseded_by_batch を呼ぶと N+1 になるため)
+        # decision の superseded_by / destabilization は decision id を一括収集して1クエリで
+        # 解決する (decision ごとに get_superseded_by_batch 等を呼ぶと N+1 になるため)
         decision_ids = [
             item["id"]
             for item in items
             if item.get("type") == "decision" and item.get("id") is not None
         ]
         superseded_by_map = get_superseded_by_batch(conn, decision_ids)
+        destabilization_map = compute_destabilization_info_batch(conn, decision_ids)
 
         results = []
         for item in items:
@@ -2487,7 +2637,9 @@ def get_by_ids(items: list[dict], caller_session_id: Optional[str] = None) -> di
                 })
                 continue
             result = get_by_id(
-                item_type, item_id, conn=conn, superseded_by_map=superseded_by_map
+                item_type, item_id, conn=conn,
+                superseded_by_map=superseded_by_map,
+                destabilization_map=destabilization_map,
             )
             results.append(result)
 
