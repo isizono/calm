@@ -1,8 +1,9 @@
 """振る舞い管理サービス"""
 import logging
 
-from src.config import ALWAYS_POOL_CAPACITY
+from src.config import ALWAYS_POOL_CAPACITY, HABIT_MANIFEST_DECAY_DAYS
 from src.db import get_connection, row_to_dict
+from src.services.decay_utils import is_decay_eligible
 from src.services.relay.entity_publish import publish_entity_event_with_conn
 
 logger = logging.getLogger(__name__)
@@ -46,17 +47,22 @@ def list_intelligently_habit_manifest_with_conn(conn) -> list[dict]:
     先頭50文字にフォールバックする。
     importance_score昇順（同値はid昇順）で並べ、1(critical)を先頭に出す。
     status='archived'の振る舞いは除外する（activeとは独立した無効化軸）。
+    created_atからHABIT_MANIFEST_DECAY_DAYSを超え、かつget_habits(habit_id=...)による
+    on-demand参照実績（last_recalled_at）も同日数以内に更新されていないものはマニフェストから
+    除外する（レンダー時decay。get_habits・searchの全件取得には引き続き出る）。
 
     Returns:
         [{habit_id, title, trigger_mode, importance_score, importance_label}, ...]
     """
     rows = conn.execute(
-        "SELECT id, content, description, importance_score FROM habits "
-        "WHERE trigger_mode = 'intelligently' AND active = 1 AND status = 'active' "
+        "SELECT id, content, description, importance_score, created_at, last_recalled_at "
+        "FROM habits WHERE trigger_mode = 'intelligently' AND active = 1 AND status = 'active' "
         "ORDER BY importance_score ASC, id ASC"
     ).fetchall()
     manifest = []
     for row in rows:
+        if is_decay_eligible(row["created_at"], row["last_recalled_at"], HABIT_MANIFEST_DECAY_DAYS):
+            continue
         title = row["description"] or row["content"][:50]
         manifest.append({
             "habit_id": row["id"],

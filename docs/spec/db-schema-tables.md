@@ -1267,6 +1267,7 @@ CREATE TABLE "tag_vec_vector_chunks00"(rowid PRIMARY KEY,vectors BLOB NOT NULL)
 | canonical_id | INTEGER | YES | — | — |
 | archived_at | TIMESTAMP | YES | `NULL` | — |
 | archived_reason | TEXT | YES | `NULL` | — |
+| last_injected_at | TIMESTAMP | YES | `NULL` | — |
 
 インデックス:
 - `idx_tags_archived_at` ON `tags`(archived_at)
@@ -1283,7 +1284,7 @@ CREATE TABLE "tags" (
     CHECK(description IS NULL OR LENGTH(description) <= 100),
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   canonical_id INTEGER REFERENCES tags(id), archived_at TIMESTAMP DEFAULT NULL, archived_reason TEXT DEFAULT NULL
-  CHECK(archived_reason IS NULL OR LENGTH(archived_reason) <= 100),
+  CHECK(archived_reason IS NULL OR LENGTH(archived_reason) <= 100), last_injected_at TIMESTAMP DEFAULT NULL,
   UNIQUE(namespace, name)
 )
 ```

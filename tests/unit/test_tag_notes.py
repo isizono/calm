@@ -12,6 +12,7 @@ from src.db import init_database, get_connection
 from src.services.tag_service import (
     update_tag,
     collect_tag_notes_for_injection,
+    search_tags,
     _injected_tags,
 )
 from src.services.topic_service import add_topic
@@ -1412,5 +1413,285 @@ class TestArchivedPushExclusion:
                 conn, ["domain:legacy"], session_id="session-same"
             )
             assert second is None
+        finally:
+            conn.close()
+
+
+# ========================================
+# tag notes decay（180日）テスト
+# ========================================
+
+
+class TestTagNotesDecay:
+    """collect_tag_notes_for_injectionのレンダー時decay（180日）のテスト"""
+
+    def test_old_tag_without_injection_returns_pointer_text(self, temp_db):
+        """180日超過+last_injected_at無しのタグはnotes全文の代わりにポインタ文言が返る"""
+        add_topic(title="Test", description="Desc", tags=["domain:old-tag"])
+        update_tag("domain:old-tag", "古い教訓の全文")
+
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE tags SET created_at = datetime('now', '-181 days') "
+                "WHERE namespace = 'domain' AND name = 'old-tag'"
+            )
+            conn.commit()
+
+            result = collect_tag_notes_for_injection(conn, ["domain:old-tag"])
+            assert result is not None
+            assert len(result) == 1
+            assert result[0]["tag"] == "domain:old-tag"
+            assert "search_tags(include_notes=True)" in result[0]["notes"]
+            assert "古い教訓の全文" not in result[0]["notes"]
+        finally:
+            conn.close()
+
+    def test_fresh_tag_returns_full_notes(self, temp_db):
+        """180日以内のタグはnotes全文がそのまま返る"""
+        add_topic(title="Test", description="Desc", tags=["domain:fresh-tag"])
+        update_tag("domain:fresh-tag", "新しい教訓の全文")
+
+        conn = get_connection()
+        try:
+            result = collect_tag_notes_for_injection(conn, ["domain:fresh-tag"])
+            assert result is not None
+            assert result[0]["notes"] == "新しい教訓の全文"
+        finally:
+            conn.close()
+
+    def test_full_notes_delivery_updates_last_injected_at(self, temp_db):
+        """notes全文が配信されたタグはlast_injected_atが更新される"""
+        add_topic(title="Test", description="Desc", tags=["domain:stamped-tag"])
+        update_tag("domain:stamped-tag", "教訓")
+
+        conn = get_connection()
+        try:
+            row_before = conn.execute(
+                "SELECT last_injected_at FROM tags WHERE namespace = 'domain' AND name = 'stamped-tag'"
+            ).fetchone()
+            assert row_before["last_injected_at"] is None
+
+            collect_tag_notes_for_injection(conn, ["domain:stamped-tag"])
+
+            row_after = conn.execute(
+                "SELECT last_injected_at FROM tags WHERE namespace = 'domain' AND name = 'stamped-tag'"
+            ).fetchone()
+            assert row_after["last_injected_at"] is not None
+        finally:
+            conn.close()
+
+    def test_mark_false_does_not_update_last_injected_at(self, temp_db):
+        """mark=Falseの読み取り経路ではlast_injected_atが更新されない"""
+        add_topic(title="Test", description="Desc", tags=["domain:readonly-tag"])
+        update_tag("domain:readonly-tag", "教訓")
+
+        conn = get_connection()
+        try:
+            result = collect_tag_notes_for_injection(
+                conn, ["domain:readonly-tag"], mark=False
+            )
+            assert result is not None
+            assert result[0]["notes"] == "教訓"
+
+            row = conn.execute(
+                "SELECT last_injected_at FROM tags WHERE namespace = 'domain' AND name = 'readonly-tag'"
+            ).fetchone()
+            assert row["last_injected_at"] is None
+        finally:
+            conn.close()
+
+    def test_decayed_tag_stays_decayed_without_last_injected_at_update(self, temp_db):
+        """pointer化されたタグはlast_injected_atが更新されず、次回呼び出しでも
+        引き続きdecay判定される（恒久ロックの再現確認）"""
+        add_topic(title="Test", description="Desc", tags=["domain:locked-tag"])
+        update_tag("domain:locked-tag", "教訓全文")
+
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE tags SET created_at = datetime('now', '-181 days') "
+                "WHERE namespace = 'domain' AND name = 'locked-tag'"
+            )
+            conn.commit()
+
+            first = collect_tag_notes_for_injection(
+                conn, ["domain:locked-tag"], session_id="s1"
+            )
+            assert "教訓全文" not in first[0]["notes"]
+
+            row = conn.execute(
+                "SELECT last_injected_at FROM tags WHERE namespace = 'domain' AND name = 'locked-tag'"
+            ).fetchone()
+            assert row["last_injected_at"] is None
+
+            second = collect_tag_notes_for_injection(
+                conn, ["domain:locked-tag"], session_id="s2"
+            )
+            assert "教訓全文" not in second[0]["notes"]
+        finally:
+            conn.close()
+
+    def test_search_tags_include_notes_updates_last_injected_at(self, temp_db):
+        """search_tags(include_notes=True)が対象タグのlast_injected_atを更新する
+        （decay恒久ロック回避のエスケープハッチ）"""
+        add_topic(title="Test", description="Desc", tags=["domain:escape-hatch-tag"])
+        update_tag("domain:escape-hatch-tag", "教訓")
+
+        conn = get_connection()
+        try:
+            row_before = conn.execute(
+                "SELECT last_injected_at FROM tags WHERE namespace = 'domain' AND name = 'escape-hatch-tag'"
+            ).fetchone()
+            assert row_before["last_injected_at"] is None
+        finally:
+            conn.close()
+
+        result = search_tags("escape-hatch-tag", include_notes=True)
+        assert "error" not in result
+        assert any(t["name"] == "escape-hatch-tag" for t in result["tags"])
+
+        conn = get_connection()
+        try:
+            row_after = conn.execute(
+                "SELECT last_injected_at FROM tags WHERE namespace = 'domain' AND name = 'escape-hatch-tag'"
+            ).fetchone()
+            assert row_after["last_injected_at"] is not None
+        finally:
+            conn.close()
+
+    def test_search_tags_without_include_notes_does_not_update(self, temp_db):
+        """include_notes=False（デフォルト）ではlast_injected_atは更新されない"""
+        add_topic(title="Test", description="Desc", tags=["domain:no-stamp-tag"])
+        update_tag("domain:no-stamp-tag", "教訓")
+
+        result = search_tags("no-stamp-tag")
+        assert "error" not in result
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT last_injected_at FROM tags WHERE namespace = 'domain' AND name = 'no-stamp-tag'"
+            ).fetchone()
+            assert row["last_injected_at"] is None
+        finally:
+            conn.close()
+
+    def test_search_tags_escape_hatch_revives_decayed_tag(self, temp_db):
+        """search_tags(include_notes=True)後は、collect_tag_notes_for_injectionが
+        再び全文を返すようになる（エスケープハッチが実際にdecayを解消することの確認）"""
+        add_topic(title="Test", description="Desc", tags=["domain:revive-tag"])
+        update_tag("domain:revive-tag", "復帰する教訓全文")
+
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE tags SET created_at = datetime('now', '-181 days') "
+                "WHERE namespace = 'domain' AND name = 'revive-tag'"
+            )
+            conn.commit()
+
+            decayed = collect_tag_notes_for_injection(
+                conn, ["domain:revive-tag"], session_id="before-revive"
+            )
+            assert "復帰する教訓全文" not in decayed[0]["notes"]
+        finally:
+            conn.close()
+
+        search_tags("revive-tag", include_notes=True)
+
+        conn = get_connection()
+        try:
+            revived = collect_tag_notes_for_injection(
+                conn, ["domain:revive-tag"], session_id="after-revive"
+            )
+            assert revived is not None
+            assert revived[0]["notes"] == "復帰する教訓全文"
+        finally:
+            conn.close()
+
+    def test_always_inject_namespace_ignores_decay_with_old_created_at_and_null_last_injected_at(
+        self, temp_db
+    ):
+        """always_inject_namespaces対象は、created_atが古くlast_injected_atがNULLの
+        既存タグ（マイグレーション直後の未バックフィル状態を再現）でも、decay判定を
+        スキップして毎回notes全文を返す"""
+        add_topic(title="Test", description="Desc", tags=["intent:legacy"])
+        update_tag("intent:legacy", "常時注入される教訓全文")
+
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE tags SET created_at = datetime('now', '-181 days') "
+                "WHERE namespace = 'intent' AND name = 'legacy'"
+            )
+            conn.commit()
+
+            row = conn.execute(
+                "SELECT last_injected_at FROM tags WHERE namespace = 'intent' AND name = 'legacy'"
+            ).fetchone()
+            assert row["last_injected_at"] is None
+
+            result = collect_tag_notes_for_injection(
+                conn, ["intent:legacy"], always_inject_namespaces=["intent"]
+            )
+            assert result is not None
+            assert result[0]["notes"] == "常時注入される教訓全文"
+        finally:
+            conn.close()
+
+    def test_always_inject_namespace_stays_undecayed_across_repeated_calls(self, temp_db):
+        """always_inject_namespaces対象は、古いcreated_atのまま繰り返し呼び出しても
+        恒久ロックに陥らず毎回全文を返し続ける（decay対象外の確認）"""
+        add_topic(title="Test", description="Desc", tags=["intent:repeated"])
+        update_tag("intent:repeated", "繰り返し配信される教訓全文")
+
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE tags SET created_at = datetime('now', '-181 days') "
+                "WHERE namespace = 'intent' AND name = 'repeated'"
+            )
+            conn.commit()
+
+            first = collect_tag_notes_for_injection(
+                conn, ["intent:repeated"],
+                always_inject_namespaces=["intent"], session_id="s1",
+            )
+            second = collect_tag_notes_for_injection(
+                conn, ["intent:repeated"],
+                always_inject_namespaces=["intent"], session_id="s2",
+            )
+            assert first[0]["notes"] == "繰り返し配信される教訓全文"
+            assert second[0]["notes"] == "繰り返し配信される教訓全文"
+        finally:
+            conn.close()
+
+    def test_normal_tag_still_decays_when_mixed_with_always_inject_namespace(self, temp_db):
+        """always_inject_namespaces対象タグと通常タグを混在させた場合、
+        通常タグ側は従来通りdecay判定される（除外がalwaysタグのみに限定されることの確認）"""
+        add_topic(
+            title="Test", description="Desc",
+            tags=["intent:mixed-always", "domain:mixed-normal"],
+        )
+        update_tag("intent:mixed-always", "常時注入の教訓")
+        update_tag("domain:mixed-normal", "decayする教訓")
+
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE tags SET created_at = datetime('now', '-181 days') "
+                "WHERE namespace IN ('intent', 'domain') "
+                "AND name IN ('mixed-always', 'mixed-normal')"
+            )
+            conn.commit()
+
+            result = collect_tag_notes_for_injection(
+                conn, ["intent:mixed-always", "domain:mixed-normal"],
+                always_inject_namespaces=["intent"],
+            )
+            by_tag = {r["tag"]: r["notes"] for r in result}
+            assert by_tag["intent:mixed-always"] == "常時注入の教訓"
+            assert "search_tags(include_notes=True)" in by_tag["domain:mixed-normal"]
         finally:
             conn.close()
