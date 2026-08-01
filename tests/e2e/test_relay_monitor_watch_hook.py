@@ -400,7 +400,8 @@ class TestIdentityCacheSharing:
 class TestFailOpen:
     """例外系はすべて空JSON出力（フェイルオープン）"""
 
-    def test_invalid_json_input(self, state_dir):
+    def test_invalid_json_input(self, state_dir, tmp_path):
+        db_path = str(tmp_path / "test.db")
         result = subprocess.run(
             [sys.executable, "hooks/relay_monitor_watch_hook.py"],
             input="not valid json",
@@ -411,6 +412,7 @@ class TestFailOpen:
                 **os.environ,
                 "HOOK_STATE_DIR": str(state_dir),
                 "CCM_RELAY_SESSION_AWARE": "1",
+                "DISCUSSION_DB_PATH": db_path,
             },
         )
         assert result.returncode == 0

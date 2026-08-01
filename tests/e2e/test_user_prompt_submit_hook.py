@@ -487,14 +487,14 @@ class TestEmptyStdin:
 class TestFailOpen:
     """例外→空JSON（フェイルオープン）"""
 
-    def test_invalid_json_input(self, state_dir):
+    def test_invalid_json_input(self, state_dir, temp_db):
         proc = subprocess.run(
             [sys.executable, "hooks/user_prompt_submit_hook.py"],
             input="not valid json",
             capture_output=True,
             text=True,
             cwd=str(_PROJECT_ROOT),
-            env={**os.environ, "HOOK_STATE_DIR": str(state_dir)},
+            env={**os.environ, "HOOK_STATE_DIR": str(state_dir), "DISCUSSION_DB_PATH": temp_db},
         )
         assert proc.returncode == 0
         assert json.loads(proc.stdout) == {}
