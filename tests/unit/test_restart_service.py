@@ -230,6 +230,90 @@ def test_restart_mcp_server_skips_kill_when_nothing_was_listening(monkeypatch, t
     assert killed == []
 
 
+def test_restart_mcp_server_replaces_old_process_that_ignores_sigterm(monkeypatch, tmp_path):
+    """旧プロセスがSIGTERMを無視してもkill_pidsのSIGKILLエスカレーションで
+    kill_wait_sec以内に確実に片付き、新規プロセスへ入れ替わることを検証する。
+
+    kill_pidsはmockせず実装をそのまま呼び出す。エスカレーション自体が
+    無かった旧実装では、このシナリオはold_pidsがkill_wait_sec(既定10秒)
+    経過後も消えずに残り、新規プロセスがポートbindに失敗して
+    start_timeout_secでの汎用タイムアウトに陥っていた。
+    """
+    clock = {"now": 0.0}
+    monkeypatch.setattr(restart_service.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(restart_service.time, "sleep", lambda sec: clock.__setitem__("now", clock["now"] + sec))
+
+    process_alive = {1111: True}
+
+    def fake_os_kill(pid, sig):
+        if sig == 0:
+            if not process_alive.get(pid, False):
+                raise ProcessLookupError
+            return  # 生存確認: SIGTERMを送っても死なない想定
+        if sig == restart_service.signal.SIGKILL:
+            process_alive[pid] = False
+        # SIGTERMは無視され続ける(何もしない)
+
+    monkeypatch.setattr(restart_service.os, "kill", fake_os_kill)
+
+    new_server_started = {"flag": False}
+
+    def fake_find_listen_pids(port):
+        # 旧プロセスが生きている限りポートは旧PIDが握り続ける
+        # (新規プロセスはbindに失敗して観測されない)。escalationが効かず
+        # 旧プロセスが生存し続けた場合、この分岐によりis_replaced判定は
+        # 常にFalseのまま推移し、start_timeout_secでのタイムアウトを再現する。
+        if process_alive[1111]:
+            return [1111]
+        return [2222] if new_server_started["flag"] else []
+
+    monkeypatch.setattr(restart_service, "find_listen_pids", fake_find_listen_pids)
+    monkeypatch.setattr(
+        restart_service, "process_start_signature",
+        lambda pid: {1111: "old-sig", 2222: "new-sig"}.get(pid),
+    )
+
+    def fake_popen(cmd, **kwargs):
+        new_server_started["flag"] = True
+
+    monkeypatch.setattr(restart_service.subprocess, "Popen", fake_popen)
+
+    result = restart_service.restart_mcp_server(tmp_path)
+
+    assert result.ok is True
+    assert result.old_pids == [1111]
+    assert result.new_pids == [2222]
+    assert process_alive[1111] is False
+
+
+def test_restart_mcp_server_proceeds_to_start_new_process_even_if_old_process_never_dies(monkeypatch, tmp_path):
+    """SIGKILLを送っても消えない旧プロセス(D state等で応答しないケース)が
+    kill_wait_sec以内に片付かない場合、現状の実装はエスカレーションや
+    早期失敗を挟まずそのまま新規プロセス起動に進む。この既知の振る舞いを
+    固定する(ソフトウェア側の再試行では解決できないOS側の異常なので、
+    software側にできるのは早期に失敗を返すことだけだが、現状はそれもしない)。
+    """
+    clock = {"now": 0.0}
+    monkeypatch.setattr(restart_service.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(restart_service.time, "sleep", lambda sec: clock.__setitem__("now", clock["now"] + sec))
+
+    monkeypatch.setattr(restart_service.os, "kill", lambda pid, sig: None)  # 常に成功=常に生存
+    monkeypatch.setattr(restart_service, "find_listen_pids", lambda port: [1111])
+    monkeypatch.setattr(restart_service, "process_start_signature", lambda pid: "old-sig")
+
+    popen_calls = []
+    monkeypatch.setattr(restart_service.subprocess, "Popen", lambda cmd, **kwargs: popen_calls.append(cmd))
+
+    result = restart_service.restart_mcp_server(
+        tmp_path, start_timeout_sec=1, poll_interval_sec=0.5, kill_wait_sec=1,
+    )
+
+    assert len(popen_calls) == 1  # kill_wait_sec超過後も新規プロセス起動には進んでしまう
+    assert result.ok is False
+    assert result.old_pids == [1111]
+    assert "did not come up on port 52837" in result.detail
+
+
 def test_restart_mcp_server_times_out_when_server_never_comes_up(monkeypatch, tmp_path):
     monkeypatch.setattr(restart_service, "find_listen_pids", lambda port: [])
     monkeypatch.setattr(restart_service, "kill_pids", lambda pids: None)
