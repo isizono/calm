@@ -2,7 +2,9 @@
 
 stdin から JSON (tool_name / tool_response / cwd / session_id / transcript_path) を読み、
 cc-memory tool の場合に tool_response.content をサニタイズして
-hookSpecificOutput.updatedToolOutput で stdout へ返す。
+hookSpecificOutput.updatedToolOutput で stdout へ返す。updatedToolOutput の型
+(dict か content block 配列そのものか) は tool_response の元の型に合わせて出し分ける
+(理由は main() 内の分岐直上コメントを参照)。
 
 opt-out:
 - 環境変数 `CC_MEMORY_SANITIZE_DISABLE=1` set: 即 exit 0
@@ -251,10 +253,19 @@ def main() -> int:
             return 0
         sanitized_text, counters = _sanitize_content(content, db_path)
         content_block = [{"type": "text", "text": sanitized_text}]
+        # updatedToolOutput は tool_response の元の型構造をそのまま保って返す必要がある。
+        # tool_response が dict の場合、CLI 側は content 以外のフィールドも維持された
+        # dict を前提にしている (test_case_10_official_hook_output_schema)。tool_response
+        # が非 dict (生文字列等) の場合は、updatedToolOutput 自体が content block 配列と
+        # してそのまま扱われる (test_case_14_non_dict_tool_response_yields_unwrapped_content_block)。
+        # ここで型を dict/配列のどちらかに統一すると、統一しなかった側の経路で content が
+        # 二重にラップされ、CLI 側のサイズ計算処理がクラッシュする。tool_response の内部
+        # 構造自体はハーネス依存で公開仕様が無い (hooks/relay_monitor_watch_hook.py:23-24
+        # 参照) ため、この非対称性は暗黙の契約として扱い、統一しないこと。
         if isinstance(tool_response, dict):
             updated_output = {**tool_response, "content": content_block}
         else:
-            updated_output = {"content": content_block}
+            updated_output = content_block
         output = {
             "hookSpecificOutput": {
                 "hookEventName": "PostToolUse",
