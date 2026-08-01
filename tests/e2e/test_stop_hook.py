@@ -178,6 +178,7 @@ class TestExceptionFailOpen:
         state_as_file.write_text("not a directory")
 
         env_override = {
+            **env_setup["env_override"],
             "HOOK_STATE_DIR": str(state_as_file),
         }
 
