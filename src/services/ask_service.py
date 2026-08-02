@@ -74,10 +74,11 @@ def add_ask_with_conn(
     （resolve_tagsは自前でconnを開いてcommitするため、ここでの未commitな書き込み
     トランザクション中に呼ぶと別connからのINSERTが `database is locked` になる）。
 
-    tags/kindはask新規作成（fingerprint一致なし）のときのみ適用される。dedup時
-    （同一fingerprintのopen ask再post）は今回渡されたtags/kindを無視し、初回投入時の
+    kindはask新規作成（fingerprint一致なし）のときのみ適用される。dedup時
+    （同一fingerprintのopen ask再post）は今回渡されたkindを無視し、初回投入時の
     値を保持する（判断が迷いうる点: dedupは同一問いの再出現であり、初回の分類が正で
-    よいという方針を採用した）。
+    よいという方針を採用した）。tagsの扱いは呼び出し元（add_ask）がask_tagsの実在で
+    判定する（本関数の責務外、add_askのdocstring参照）。
 
     Returns:
         成功時: {"id": int, "deduped": bool, "occurrence_count": int}
@@ -182,14 +183,24 @@ def add_ask(
     """MCPツール本体。add_ask_with_connで書き込みcommit後、タグ解決・紐付け、
     embedding生成と近傍検索（similar_precedents/similar_asks）を行う。
 
-    タグ解決（`tag_service.resolve_tags`）は初回投入時（occurrence_count == 1）
-    のみ行う。dedup時は今回渡されたtagsを無視し、初回投入時の紐付けを保持する
-    （add_ask_with_connのdocstring参照）。resolve_tagsは自前のconnでcommitするため、
-    add_ask_with_connの書き込みが確定した後（＝この最初のcommit後）に呼ぶ。
+    タグ解決（`tag_service.resolve_tags`）は、このask（ask_id）にまだ1件も
+    タグが紐付いていない場合にのみ行う（occurrence_countではなくask_tagsの実在で
+    判定する）。既にタグが付いているaskの再post（dedup）では今回渡されたtagsを
+    無視し、既存の紐付けを保持する（add_ask_with_connのdocstring参照）。
+    resolve_tagsは自前のconnでcommitするため、add_ask_with_connの書き込みが
+    確定した後（＝この最初のcommit後）に呼ぶ。
+
+    ask_tagsの実在で判定することで、resolve_tags失敗（DATABASE_ERROR等）により
+    ask行だけが確定してタグが空のまま残ったケースでも、同じ問いを再postすれば
+    （dedupで同一ask_idにヒットしてもタグ0件なので）タグ解決が再試行される
+    （自己修復的リトライ）。resolve_tagsが失敗した場合、ask自体は既に作成済み
+    （commit済み）のため、エラー応答に "id" を含めて呼び出し側が作成済みaskの
+    存在を把握できるようにする。
 
     Returns:
         成功時: {"id", "deduped", "occurrence_count", "similar_precedents", "similar_asks"}
-        失敗時: {"error": {"code": ..., "message": ...}}
+        失敗時: {"error": {"code": ..., "message": ...}}（ask作成後にタグ解決が
+            失敗した場合は "id" も含む。ask自体は作成済みでタグは空のまま残る）
     """
     conn = get_connection()
     try:
@@ -203,9 +214,13 @@ def add_ask(
 
         ask_id = result["id"]
 
-        if result["occurrence_count"] == 1:
+        has_tags = conn.execute(
+            "SELECT 1 FROM ask_tags WHERE ask_id = ? LIMIT 1", (ask_id,)
+        ).fetchone() is not None
+        if not has_tags:
             resolved = resolve_tags(tags)
             if isinstance(resolved, dict):
+                resolved["id"] = ask_id
                 return resolved
             tag_ids, _merged_tags = resolved
             link_tags(conn, "ask_tags", "ask_id", ask_id, tag_ids)
@@ -303,7 +318,8 @@ def get_asks(
         blocking_activity_id: 指定時はそのactivityをblockしているaskだけに絞る
         triage_pending_only: Trueでstatus='answered' AND triage IS NULLのみに絞る
             （statusの指定は無視される）
-        tags: タグ配列（optional。指定時はAND条件でフィルタ、未指定時は全件）
+        tags: タグ配列（optional。指定時はAND条件でフィルタ、未指定時は全件。
+            空配列を明示指定した場合はadd_ask等と同じくTAGS_REQUIREDエラーになる）
         kind: フィルタ対象のkind（"ask"|"meta"）。Noneでフィルタなし
         limit: 取得件数上限（最大100件）
         offset: 取得開始位置
@@ -339,7 +355,10 @@ def get_asks(
         if parsed_tags is not None:
             tag_ids = resolve_tag_ids(conn, parsed_tags)
             if not tag_ids or len(tag_ids) < len(parsed_tags):
-                return {"asks": [], "total_count": 0}
+                empty_result: dict = {"asks": [], "total_count": 0}
+                if include_stats:
+                    empty_result["stats"] = _compute_ask_stats(conn)
+                return empty_result
             tag_placeholders = ",".join("?" * len(tag_ids))
             ask_ids_rows = conn.execute(
                 f"""
@@ -352,7 +371,10 @@ def get_asks(
             ).fetchall()
             matched_ask_ids = [row["ask_id"] for row in ask_ids_rows]
             if not matched_ask_ids:
-                return {"asks": [], "total_count": 0}
+                empty_result = {"asks": [], "total_count": 0}
+                if include_stats:
+                    empty_result["stats"] = _compute_ask_stats(conn)
+                return empty_result
         else:
             matched_ask_ids = None
 

@@ -209,6 +209,39 @@ class TestAddAskDedup:
         listed = ak.get_asks()
         assert listed["asks"][0]["tags"] == ["domain:test"]
 
+    def test_repost_retries_tag_resolution_when_ask_has_no_tags_yet(self, temp_db):
+        """タグ解決失敗によりask行だけ確定してタグが空のまま残った状態を、
+        add_ask_with_connで直接（呼び出し元add_askのタグ解決処理を経由せず）
+        再現し、その状態のaskへ同一questionを再postするとタグ解決が
+        再試行され成功することを確認する（occurrence_countではなくask_tagsの
+        実在で判定するようにした自己修復の契約）。"""
+        act = _make_activity()
+        conn = get_connection()
+        try:
+            created = ak.add_ask_with_conn(
+                conn, "same question", blocks=[act], tags=["domain:test"], kind="ask"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        ask_id = created["id"]
+
+        conn = get_connection()
+        try:
+            tag_count = conn.execute(
+                "SELECT COUNT(*) FROM ask_tags WHERE ask_id = ?", (ask_id,)
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        assert tag_count == 0
+
+        result = ak.add_ask("same question", tags=["domain:test", "retry-tag"], blocks=[act])
+        assert result["id"] == ask_id
+        assert result["deduped"] is True
+
+        listed = ak.get_asks()
+        assert set(listed["asks"][0]["tags"]) == {"domain:test", "retry-tag"}
+
 
 class TestGetAsks:
     def test_default_filters_to_open_status(self, temp_db):
@@ -291,6 +324,36 @@ class TestGetAsks:
         result = ak.get_asks(status=None, tags=["domain:nonexistent"])
 
         assert result == {"asks": [], "total_count": 0}
+
+    def test_tags_filter_nonexistent_tag_with_include_stats_still_returns_stats(self, temp_db):
+        """存在しないタグでの絞り込み（resolve_tag_idsが空を返す経路）でも
+        include_stats=Trueならstatsが付与される（通常の0件応答と一貫させる）。"""
+        act = _make_activity()
+        ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+
+        result = ak.get_asks(status=None, tags=["domain:nonexistent"], include_stats=True)
+
+        assert result["asks"] == []
+        assert result["total_count"] == 0
+        assert result["stats"]["by_status"]["open"] == 1
+
+    def test_tags_filter_and_combination_no_ask_matches_with_include_stats_still_returns_stats(self, temp_db):
+        """個々のタグは存在するが同一askがAND全条件を満たさない経路
+        （matched_ask_idsが空になる経路）でもinclude_stats=Trueならstatsが付与される。"""
+        act = _make_activity()
+        ak.add_ask("q1", tags=["domain:test", "alpha"], blocks=[act])
+        ak.add_ask("q2", tags=["domain:test", "beta"], blocks=[act])
+
+        result = ak.get_asks(status=None, tags=["alpha", "beta"], include_stats=True)
+
+        assert result["asks"] == []
+        assert result["total_count"] == 0
+        assert result["stats"]["by_status"]["open"] == 2
+
+    def test_empty_tags_list_rejected(self, temp_db):
+        """空配列を明示指定した場合はadd_askと同じくTAGS_REQUIREDエラーになる。"""
+        result = ak.get_asks(tags=[])
+        assert result["error"]["code"] == "TAGS_REQUIRED"
 
     def test_response_hides_fingerprint_and_uses_id_raw(self, temp_db):
         act = _make_activity()

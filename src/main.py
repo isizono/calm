@@ -86,7 +86,7 @@ cc-memoryが記録に振る内部の番号・記号は、表記の形式を問�
 
 ## Asks（判断委譲）
 
-askを使うのは離席中・セッション跨ぎの判断が必要なときだけです。同一セッション内でユーザーに直接答えられるならaskを使わずその場で聞いて`add_decisions`で即時decision化してください。一般化ルールの発効は人間のメタask裁定でのみ行い、機械もLLMも勝手に発効しません。
+askは離席中・セッション跨ぎ限定です。その場で答えられるなら聞いてdecision化します。発効は人間のメタask裁定のみです。
 
 ---
 
@@ -1892,8 +1892,10 @@ def add_ask(
     新規行を作らず出現回数を+1し、blocks/要求元セッションはUNIONで追記、
     context/最終出現時刻は今回の値で上書きする。answered/promoted/dismissed/withdrawnの
     同一問いは別のライフとして新規行になる（訂正は新規postで行い、リンクは張らない）。
-    dedup時（同一fingerprintのopen ask再post）は今回渡したtags/kindを無視し、
-    初回投入時の値を保持する。
+    dedup時（同一fingerprintのopen ask再post）は今回渡したkindを無視し、初回投入時の
+    値を保持する。tagsはこのaskにまだ1件も紐付いていない場合のみ解決・付与される
+    （通常は初回投入時のみだが、タグ解決自体が失敗した場合は次回の同一問い再postで
+    再試行される）。
 
     レスポンスのsimilar_asks（裁定内容込み）を読み、同型の問いが繰り返され裁定が
     一貫していると判断した場合は、`ask-distill` skill を使ってメタaskの起票を
@@ -1913,6 +1915,9 @@ def add_ask(
             "similar_precedents": [...], "similar_asks": [...]}（近傍のdecision/ask
             それぞれ最大3件、embeddingサーバー未起動時は空配列）
         失敗時: {"error": {"code": "VALIDATION_ERROR", "message": ...}}
+            （ask行の作成自体は成功しタグ解決のみ失敗した場合は "id" も含まれる。
+            ask自体は作成済み・タグは空のまま残るため、同一questionで再度add_askを
+            呼べばタグ解決が再試行される）
     """
     return ask_service.add_ask(
         question, blocks, tags, kind=kind, context=context, session_id=_current_session_id()
@@ -1938,7 +1943,8 @@ def get_asks(
             triage_pending_only指定時は無視される
         blocking_activity_id: 指定時はそのactivityをblockしているaskだけに絞る
         triage_pending_only: Trueでstatus='answered'かつ未トリアージのみに絞る
-        tags: タグ配列（optional。指定時はAND条件でフィルタ、未指定時は全件）
+        tags: タグ配列（optional。指定時はAND条件でフィルタ、未指定時は全件。
+            空配列を明示指定した場合はVALIDATION_ERRORになる）
         kind: フィルタ対象のkind（"ask"|"meta"）。null指定でフィルタなし
         limit: 取得件数上限（最大100件、デフォルト20）
         offset: 取得開始位置（ページネーション用）
