@@ -2004,6 +2004,10 @@ def triage_ask(
     記録するのみで実体は作らない。いずれもこのaskが止めていたactivityの
     blockは解除する（ask_blocksを削除）。
 
+    一般化ルール（同型の問いを今後AIが自己裁定してよいというルール）の発効は、
+    必ずこのtriage_askによるメタask（kind="meta"のask）への人間のpromote裁定を
+    経て行うこと。機械もLLMも、判例の蓄積だけを根拠に自己判断で発効してはならない。
+
     Args:
         ask_id: 対象ask ID
         action: "promote" または "dismiss"
@@ -2039,6 +2043,11 @@ def withdraw_ask(ask_id: int, reason: str) -> dict:
     このaskが止めていたactivityのblockを解除する（ask_blocksを削除、
     要求元セッションの記録は参照ログとして残す）。同一内容の再postは、
     誤操作保護のため取り下げから5分間は拒否される。
+
+    add_askのレスポンスに含まれるsimilar_asks（裁定内容=answer_body込み）を確認し、
+    同型の問いに既に一貫した裁定が存在してそれに従って自己裁定できると判断した場合は、
+    withdraw_askを呼び、reason引数に根拠となった判例（どのask/decisionに基づいたか）を
+    明記すること。
 
     Args:
         ask_id: 対象ask ID
