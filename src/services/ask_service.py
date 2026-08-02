@@ -20,6 +20,13 @@ from src.services.dedup_helpers import compute_fingerprint16, normalize_text
 from src.services.embedding_service import encode_document, insert_ask_embedding_with_conn
 from src.services.readable_id import strip_entity_id_inplace
 from src.services.relay.entity_publish import publish_entity_event_with_conn
+from src.services.tag_service import (
+    get_entity_tags_batch,
+    link_tags,
+    resolve_tag_ids,
+    resolve_tags,
+    validate_and_parse_tags,
+)
 
 QUESTION_MAX_LEN = 500
 CONTEXT_MAX_LEN = 8000
@@ -29,6 +36,7 @@ ANSWER_BODY_MAX_LEN = 8000
 WITHDRAW_COOLDOWN_MINUTES = 5
 
 VALID_STATUSES = {"open", "answered", "promoted", "dismissed", "withdrawn"}
+VALID_KINDS = {"ask", "meta"}
 
 # get_asks の limit 引数の上限。get_signals と同じ値を採用する
 # （設計文書は上限を明記していないため、他の一覧系ツールより広めの値を実装判断で採用する）。
@@ -51,6 +59,8 @@ def add_ask_with_conn(
     conn: sqlite3.Connection,
     question: str,
     blocks: list[int],
+    tags: list[str],
+    kind: str = "ask",
     context: Optional[str] = None,
     session_id: Optional[str] = None,
 ) -> dict:
@@ -58,7 +68,16 @@ def add_ask_with_conn(
 
     commitは呼び出し側の責任（embedding生成の前段でコミットし、HTTP呼び出しの間
     書き込みトランザクションを開いたままにしないため。topic_service.add_topicと
-    同じ二段コミットパターン）。
+    同じ二段コミットパターン）。tags/kindのフォーマット検証（必須・domain:必須・
+    kind値チェック）はここで行うが、実際のタグ解決（`tag_service.resolve_tags`）と
+    `ask_tags`への紐付けは呼び出し元の`add_ask`が最初のcommit後に行う
+    （resolve_tagsは自前でconnを開いてcommitするため、ここでの未commitな書き込み
+    トランザクション中に呼ぶと別connからのINSERTが `database is locked` になる）。
+
+    tags/kindはask新規作成（fingerprint一致なし）のときのみ適用される。dedup時
+    （同一fingerprintのopen ask再post）は今回渡されたtags/kindを無視し、初回投入時の
+    値を保持する（判断が迷いうる点: dedupは同一問いの再出現であり、初回の分類が正で
+    よいという方針を採用した）。
 
     Returns:
         成功時: {"id": int, "deduped": bool, "occurrence_count": int}
@@ -73,6 +92,14 @@ def add_ask_with_conn(
         return _validation_error(f"context must not exceed {CONTEXT_MAX_LEN} characters")
     if not blocks:
         return _validation_error("blocks must not be empty")
+    if kind not in VALID_KINDS:
+        return _validation_error(f"Invalid kind: {kind!r}. Must be one of {sorted(VALID_KINDS)}")
+
+    parsed_tags = validate_and_parse_tags(tags, required=True)
+    if isinstance(parsed_tags, dict):
+        return parsed_tags
+    if not any(ns == "domain" for ns, _ in parsed_tags):
+        return _validation_error("tags must include at least one 'domain:' tag")
 
     # duplicate activity_idはサービス層でset化して静かにdedupeする（エラーにしない）。
     block_ids = list(dict.fromkeys(blocks))
@@ -109,8 +136,8 @@ def add_ask_with_conn(
 
     cursor = conn.execute(
         """
-        INSERT INTO asks (question, context, fingerprint, first_seen_session_id, last_seen_session_id)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO asks (question, context, fingerprint, kind, first_seen_session_id, last_seen_session_id)
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(fingerprint) WHERE status = 'open'
         DO UPDATE SET
             occurrence_count = asks.occurrence_count + 1,
@@ -119,7 +146,7 @@ def add_ask_with_conn(
             last_seen_session_id = excluded.last_seen_session_id
         RETURNING id, occurrence_count
         """,
-        (question, context, fingerprint, session_id, session_id),
+        (question, context, fingerprint, kind, session_id, session_id),
     )
     ask_id, occurrence_count = cursor.fetchone()
 
@@ -147,11 +174,18 @@ def add_ask_with_conn(
 def add_ask(
     question: str,
     blocks: list[int],
+    tags: list[str],
+    kind: str = "ask",
     context: Optional[str] = None,
     session_id: Optional[str] = None,
 ) -> dict:
-    """MCPツール本体。add_ask_with_connで書き込みcommit後、embedding生成と
-    近傍検索（similar_precedents/similar_asks）を行う。
+    """MCPツール本体。add_ask_with_connで書き込みcommit後、タグ解決・紐付け、
+    embedding生成と近傍検索（similar_precedents/similar_asks）を行う。
+
+    タグ解決（`tag_service.resolve_tags`）は初回投入時（occurrence_count == 1）
+    のみ行う。dedup時は今回渡されたtagsを無視し、初回投入時の紐付けを保持する
+    （add_ask_with_connのdocstring参照）。resolve_tagsは自前のconnでcommitするため、
+    add_ask_with_connの書き込みが確定した後（＝この最初のcommit後）に呼ぶ。
 
     Returns:
         成功時: {"id", "deduped", "occurrence_count", "similar_precedents", "similar_asks"}
@@ -159,13 +193,24 @@ def add_ask(
     """
     conn = get_connection()
     try:
-        result = add_ask_with_conn(conn, question, blocks, context=context, session_id=session_id)
+        result = add_ask_with_conn(
+            conn, question, blocks, tags, kind=kind, context=context, session_id=session_id
+        )
         if "error" in result:
             conn.rollback()
             return result
         conn.commit()
 
         ask_id = result["id"]
+
+        if result["occurrence_count"] == 1:
+            resolved = resolve_tags(tags)
+            if isinstance(resolved, dict):
+                return resolved
+            tag_ids, _merged_tags = resolved
+            link_tags(conn, "ask_tags", "ask_id", ask_id, tag_ids)
+            conn.commit()
+
         similar_precedents: list = []
         similar_asks: list = []
         embedding = encode_document(question.strip())
@@ -190,8 +235,11 @@ def add_ask(
 # ========================================
 
 
-def _build_ask_item(conn: sqlite3.Connection, ask: dict) -> dict:
-    """ask 1件にblocks/requestersを合流し、内部専用フィールドを整形する。"""
+def _build_ask_item(conn: sqlite3.Connection, ask: dict, tags: list[str]) -> dict:
+    """ask 1件にblocks/requesters/tagsを合流し、内部専用フィールドを整形する。
+
+    tags はタグ文字列のリストのみを合流する（タグnotesは返さない。決定済み仕様）。
+    """
     ask.pop("fingerprint", None)
     ask_id = ask["id"]
 
@@ -218,6 +266,8 @@ def _build_ask_item(conn: sqlite3.Connection, ask: dict) -> dict:
     ).fetchall()
     ask["requesters"] = [row["requester_session_id"] for row in requester_rows]
 
+    ask["tags"] = tags
+
     strip_entity_id_inplace(ask, id_key="promoted_decision_id")
     strip_entity_id_inplace(ask)
     return ask
@@ -239,6 +289,8 @@ def get_asks(
     status: Optional[str] = "open",
     blocking_activity_id: Optional[int] = None,
     triage_pending_only: bool = False,
+    tags: Optional[list[str]] = None,
+    kind: Optional[str] = None,
     limit: int = 20,
     offset: int = 0,
     include_stats: bool = False,
@@ -251,6 +303,8 @@ def get_asks(
         blocking_activity_id: 指定時はそのactivityをblockしているaskだけに絞る
         triage_pending_only: Trueでstatus='answered' AND triage IS NULLのみに絞る
             （statusの指定は無視される）
+        tags: タグ配列（optional。指定時はAND条件でフィルタ、未指定時は全件）
+        kind: フィルタ対象のkind（"ask"|"meta"）。Noneでフィルタなし
         limit: 取得件数上限（最大100件）
         offset: 取得開始位置
         include_stats: Trueのときstatus別クロス集計と直近30日サマリを付与
@@ -260,19 +314,48 @@ def get_asks(
         失敗時: {"error": {"code": ..., "message": ...}}
         各askはidをid_rawへ退避しfingerprintを含まない。promoted_decision_idも
         他エンティティへの内部ID参照のためpromoted_decision_id_rawへ退避される。
-        blocks/requestersが合流される（blocksの各要素はid_raw/title/status、
-        requestersはsession_id文字列のリスト）。
+        blocks/requesters/tags（タグ文字列のリスト。notesは含まない）が合流される
+        （blocksの各要素はid_raw/title/status、requestersはsession_id文字列のリスト）。
     """
     if not triage_pending_only and status is not None and status not in VALID_STATUSES:
         return _validation_error(
             f"Invalid status: {status!r}. Must be one of {sorted(VALID_STATUSES)} or null"
         )
+    if kind is not None and kind not in VALID_KINDS:
+        return _validation_error(f"Invalid kind: {kind!r}. Must be one of {sorted(VALID_KINDS)} or null")
+
+    parsed_tags = None
+    if tags is not None:
+        parsed_tags = validate_and_parse_tags(tags, required=True)
+        if isinstance(parsed_tags, dict):
+            return parsed_tags
 
     limit = min(max(limit, 1), _MAX_LIMIT)
     offset = max(offset, 0)
 
     conn = get_connection()
     try:
+        # タグフィルタでask_idsを絞り込む（tags指定時のみ、AND条件）
+        if parsed_tags is not None:
+            tag_ids = resolve_tag_ids(conn, parsed_tags)
+            if not tag_ids or len(tag_ids) < len(parsed_tags):
+                return {"asks": [], "total_count": 0}
+            tag_placeholders = ",".join("?" * len(tag_ids))
+            ask_ids_rows = conn.execute(
+                f"""
+                SELECT ask_id FROM ask_tags
+                WHERE tag_id IN ({tag_placeholders})
+                GROUP BY ask_id
+                HAVING COUNT(DISTINCT tag_id) = ?
+                """,
+                (*tag_ids, len(tag_ids)),
+            ).fetchall()
+            matched_ask_ids = [row["ask_id"] for row in ask_ids_rows]
+            if not matched_ask_ids:
+                return {"asks": [], "total_count": 0}
+        else:
+            matched_ask_ids = None
+
         where_parts = []
         params: list = []
         if triage_pending_only:
@@ -283,6 +366,13 @@ def get_asks(
         if blocking_activity_id is not None:
             where_parts.append("a.id IN (SELECT ask_id FROM ask_blocks WHERE activity_id = ?)")
             params.append(blocking_activity_id)
+        if kind is not None:
+            where_parts.append("a.kind = ?")
+            params.append(kind)
+        if matched_ask_ids is not None:
+            id_placeholders = ",".join("?" * len(matched_ask_ids))
+            where_parts.append(f"a.id IN ({id_placeholders})")
+            params.extend(matched_ask_ids)
         where_clause = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
 
         total_count = conn.execute(
@@ -298,7 +388,12 @@ def get_asks(
             params + [limit, offset],
         ).fetchall()
 
-        asks = [_build_ask_item(conn, row_to_dict(row)) for row in rows]
+        fetched_ids = [row["id"] for row in rows]
+        tags_map = get_entity_tags_batch(conn, "ask_tags", "ask_id", fetched_ids)
+        asks = [
+            _build_ask_item(conn, row_to_dict(row), tags_map.get(row["id"], []))
+            for row in rows
+        ]
 
         result: dict = {"asks": asks, "total_count": total_count}
         if include_stats:
