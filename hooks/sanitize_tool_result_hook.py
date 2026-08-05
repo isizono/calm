@@ -12,8 +12,12 @@ opt-out:
   を上方向探索で検出): 即 exit 0
 
 dangling (target 不在) は `[deleted X#NNN]` 形式へ変換する。
-sanitize_log には 1 行 INSERT (write conn 別張り、WAL モード)。
-例外時は stderr 警告 + sanitize_log に failure_reason 記録 + exit 0 (非ブロック)。
+本文が実際に変化した場合のみ citation_event_log (source='transcript_post_tool_use')
+に 1 行 INSERT する (write conn 別張り、WAL モード)。変化なし (occurrence 0 件) の
+呼び出しは記録しない (write 経路の apply_raw_to_cite_conversion と同じ「変化なし
+イベントは記録しない」規約に合わせる)。
+例外時は stderr 警告 + before_text/after_text 空文字・verification_result NULL の
+failure イベントを citation_event_log に記録 + exit 0 (非ブロック)。
 """
 import json
 import os
@@ -156,23 +160,27 @@ def _resolve_db_path() -> str:
     return os.environ.get("CC_MEMORY_DB_PATH", str(DEFAULT_DB_PATH))
 
 
-def _log_sanitize_event(
+def _log_citation_event(
     db_path: str,
     *,
     session_id: str | None,
     transcript_path: str | None,
-    occurrence_count: int,
-    sanitized_count: int,
-    failed_count: int,
-    failure_reason: str | None,
+    tool_name: str | None,
+    before_text: str,
+    after_text: str,
+    verification_result: str | None,
+    extra: dict,
 ) -> None:
-    """sanitize_log に 1 行 INSERT する。write conn を別張りして close する。
+    """citation_event_log (migration 0046) に 1 行 INSERT する。
 
-    sanitize_log の CHECK 制約 (session_id IS NOT NULL OR transcript_path IS NOT NULL) を
-    満たさない呼び出しはスキップする。INSERT 自体の失敗は stderr に出すのみで例外を伝播しない。
+    write conn を別張りして close する。session_id/transcript_path はこのテーブルに
+    専用カラムを持たないため extra_json に格納する。INSERT 自体の失敗は stderr に
+    出すのみで例外を伝播しない。
     """
-    if not session_id and not transcript_path:
-        return
+    extra_json = json.dumps(
+        {"session_id": session_id, "transcript_path": transcript_path, **extra},
+        ensure_ascii=False,
+    )
     try:
         conn = sqlite3.connect(db_path, timeout=5.0)
         try:
@@ -180,26 +188,19 @@ def _log_sanitize_event(
             conn.execute("PRAGMA busy_timeout=5000")
             conn.execute(
                 """
-                INSERT INTO sanitize_log (
-                    session_id, transcript_path, hook_kind,
-                    occurrence_count, sanitized_count, failed_count, failure_reason
-                ) VALUES (?, ?, 'post_tool_use', ?, ?, ?, ?)
+                INSERT INTO citation_event_log (
+                    source, tool_name, before_text, after_text,
+                    verified_at, verification_result, extra_json
+                ) VALUES ('transcript_post_tool_use', ?, ?, ?, datetime('now'), ?, ?)
                 """,
-                (
-                    session_id,
-                    transcript_path,
-                    occurrence_count,
-                    sanitized_count,
-                    failed_count,
-                    failure_reason,
-                ),
+                (tool_name, before_text, after_text, verification_result, extra_json),
             )
             conn.commit()
         finally:
             conn.close()
     except Exception as exc:
         sys.stderr.write(
-            f"[sanitize_tool_result_hook] sanitize_log write failed: {exc}\n"
+            f"[sanitize_tool_result_hook] citation_event_log write failed: {exc}\n"
         )
 
 
@@ -229,6 +230,7 @@ def main() -> int:
     db_path = _resolve_db_path()
     session_id: str | None = None
     transcript_path: str | None = None
+    tool_name: str | None = None
     try:
         if os.environ.get("CC_MEMORY_SANITIZE_DISABLE") == "1":
             return 0
@@ -273,45 +275,44 @@ def main() -> int:
             }
         }
         print(json.dumps(output))
-        # occurrence_count = 検出した全 X#NNN (sanitized + dangling + 全 skip カテゴリ)。
-        # コードブロック等で意図的に skip した件数も「検出件数」に含める (運用監視の
-        # 完全性のため)。
-        # sanitized_count = 実際に {{cite:}} に変換した件数。
-        # failed_count は例外による失敗のみを表現する (本 try ブロック内は成功パスなので
-        # 常に 0)。dangling は正常変換 ([deleted X#NNN]) として扱い failed には含めない。
-        # dangling 件数は occurrence と sanitized の差から算出可能 (但し skip カテゴリ
-        # との内訳までは schema 上区別できない: 受容したトレードオフ)。
-        occurrence_count = (
-            counters.get("sanitized_count", 0)
-            + counters.get("skipped_dangling", 0)
-            + counters.get("skipped_in_codeblock", 0)
-            + counters.get("skipped_in_existing_cite", 0)
-            + counters.get("skipped_escape", 0)
-        )
-        _log_sanitize_event(
-            db_path,
-            session_id=session_id,
-            transcript_path=transcript_path,
-            occurrence_count=occurrence_count,
-            sanitized_count=counters.get("sanitized_count", 0),
-            failed_count=0,
-            failure_reason=None,
-        )
+        # 本文が実際に変化した (sanitized または dangling→[deleted] 変換が1件以上
+        # 発生した) 場合のみイベントを記録する。変化なしの呼び出しは記録しない
+        # (write 経路の apply_raw_to_cite_conversion と同じ規約)。
+        if sanitized_text != content:
+            deleted_count = counters.get("deleted_count", 0)
+            verification_result = "dangling" if deleted_count else "exists"
+            _log_citation_event(
+                db_path,
+                session_id=session_id,
+                transcript_path=transcript_path,
+                tool_name=tool_name,
+                before_text=content,
+                after_text=sanitized_text,
+                verification_result=verification_result,
+                extra={
+                    "sanitized_count": counters.get("sanitized_count", 0),
+                    "deleted_count": deleted_count,
+                    "skipped_dangling": counters.get("skipped_dangling", 0),
+                    "skipped_in_codeblock": counters.get("skipped_in_codeblock", 0),
+                    "skipped_in_existing_cite": counters.get("skipped_in_existing_cite", 0),
+                    "skipped_escape": counters.get("skipped_escape", 0),
+                },
+            )
         return 0
     except Exception as exc:
         sys.stderr.write(f"[sanitize_tool_result_hook] {exc}\n")
         try:
-            # 例外時は failure_reason に発生内容を記録する。failed_count は CHECK 制約
-            # (sanitized + failed <= occurrence) を満たすため 0 に固定する (count 系は
-            # 例外前に確定していない可能性がある)。
-            _log_sanitize_event(
+            # 例外時は before_text/after_text を空文字・verification_result を NULL
+            # にした failure イベントを記録する (NOT NULL 制約は空文字で満たす)。
+            _log_citation_event(
                 db_path,
                 session_id=session_id,
                 transcript_path=transcript_path,
-                occurrence_count=0,
-                sanitized_count=0,
-                failed_count=0,
-                failure_reason=str(exc),
+                tool_name=tool_name,
+                before_text="",
+                after_text="",
+                verification_result=None,
+                extra={"error": str(exc)},
             )
         except Exception:
             pass

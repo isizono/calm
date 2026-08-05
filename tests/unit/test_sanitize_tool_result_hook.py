@@ -21,26 +21,35 @@ from src.services.citations_pure import TYPE_TO_TABLE
 # ---------------------------------------------------------------------------
 
 
-_SANITIZE_LOG_DDL = """
-CREATE TABLE sanitize_log (
+_CITATION_EVENT_LOG_DDL = """
+CREATE TABLE citation_event_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT,
-    transcript_path TEXT,
-    hook_kind TEXT NOT NULL CHECK(hook_kind IN ('post_tool_use', 'session_start_backfill')),
-    occurrence_count INTEGER NOT NULL DEFAULT 0,
-    sanitized_count INTEGER NOT NULL DEFAULT 0,
-    failed_count INTEGER NOT NULL DEFAULT 0,
-    failure_reason TEXT,
-    recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
-    CHECK(sanitized_count + failed_count <= occurrence_count),
-    CHECK(session_id IS NOT NULL OR transcript_path IS NOT NULL)
+    occurred_at TEXT NOT NULL DEFAULT (datetime('now')),
+    source TEXT NOT NULL CHECK (source IN (
+        'write_auto_convert', 'bulk_migration',
+        'transcript_post_tool_use', 'transcript_session_start_backfill',
+        'external_doc_sanitize'
+    )),
+    tool_name TEXT,
+    target_entity_type TEXT CHECK (target_entity_type IS NULL OR target_entity_type IN (
+        'decision', 'activity', 'log', 'material', 'topic'
+    )),
+    target_entity_id INTEGER,
+    target_field TEXT,
+    before_text TEXT NOT NULL,
+    after_text TEXT NOT NULL,
+    verified_at TEXT,
+    verification_result TEXT CHECK (verification_result IS NULL OR verification_result IN (
+        'exists', 'dangling', 'skip'
+    )),
+    extra_json TEXT
 );
 """
 
 
 @pytest.fixture
 def fixture_db(monkeypatch):
-    """sanitize_log + 最小 entity テーブル + M#1/D#1/L#1/A#1/T#1 を持つ一時 DB。"""
+    """citation_event_log + 最小 entity テーブル + M#1/D#1/L#1/A#1/T#1 を持つ一時 DB。"""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
         conn = sqlite3.connect(db_path)
@@ -50,7 +59,7 @@ def fixture_db(monkeypatch):
                     f"CREATE TABLE {table} (id INTEGER PRIMARY KEY)"
                 )
                 conn.execute(f"INSERT INTO {table} (id) VALUES (1)")
-            conn.executescript(_SANITIZE_LOG_DDL)
+            conn.executescript(_CITATION_EVENT_LOG_DDL)
             conn.commit()
         finally:
             conn.close()
@@ -71,15 +80,21 @@ def _run_hook(stdin_payload: dict) -> tuple[str, int]:
     return fake_stdout.getvalue(), code
 
 
-def _read_sanitize_logs(db_path: str) -> list[dict]:
+def _read_citation_events(db_path: str) -> list[dict]:
+    """citation_event_log の全行を読み、extra_json を dict に展開して返す。"""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(
-            "SELECT session_id, transcript_path, hook_kind, occurrence_count, "
-            "sanitized_count, failed_count, failure_reason FROM sanitize_log ORDER BY id"
+            "SELECT source, tool_name, before_text, after_text, verification_result, "
+            "extra_json FROM citation_event_log ORDER BY id"
         ).fetchall()
-        return [dict(r) for r in rows]
+        results = []
+        for r in rows:
+            d = dict(r)
+            d["extra"] = json.loads(d.pop("extra_json"))
+            results.append(d)
+        return results
     finally:
         conn.close()
 
@@ -117,14 +132,16 @@ def test_case_01_valid_target_converted_to_cite(fixture_db):
         {"type": "text", "text": "ref to {{cite:M#1}} and {{cite:D#1}} here"}
     ]
 
-    logs = _read_sanitize_logs(fixture_db)
-    assert len(logs) == 1
-    assert logs[0]["session_id"] == "sess-abc"
-    assert logs[0]["hook_kind"] == "post_tool_use"
-    assert logs[0]["sanitized_count"] == 2
-    assert logs[0]["failed_count"] == 0
-    assert logs[0]["occurrence_count"] == 2
-    assert logs[0]["failure_reason"] is None
+    events = _read_citation_events(fixture_db)
+    assert len(events) == 1
+    assert events[0]["source"] == "transcript_post_tool_use"
+    assert events[0]["tool_name"] == _TOOL_NAME
+    assert events[0]["before_text"] == "ref to M#1 and D#1 here"
+    assert events[0]["after_text"] == "ref to {{cite:M#1}} and {{cite:D#1}} here"
+    assert events[0]["verification_result"] == "exists"
+    assert events[0]["extra"]["session_id"] == "sess-abc"
+    assert events[0]["extra"]["sanitized_count"] == 2
+    assert events[0]["extra"]["deleted_count"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +154,7 @@ def test_case_02_non_cc_memory_tool_is_noop(fixture_db):
     stdout, code = _run_hook(payload)
     assert code == 0
     assert stdout == ""  # no updatedToolOutput 出力
-    assert _read_sanitize_logs(fixture_db) == []
+    assert _read_citation_events(fixture_db) == []
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +167,7 @@ def test_case_03_env_disable_short_circuits(fixture_db, monkeypatch):
     stdout, code = _run_hook(_payload("ref to M#1"))
     assert code == 0
     assert stdout == ""
-    assert _read_sanitize_logs(fixture_db) == []
+    assert _read_citation_events(fixture_db) == []
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +188,7 @@ def test_case_04_cwd_in_cc_memory_repo_skipped(fixture_db, tmp_path):
     stdout, code = _run_hook(payload)
     assert code == 0
     assert stdout == ""
-    assert _read_sanitize_logs(fixture_db) == []
+    assert _read_citation_events(fixture_db) == []
 
 
 def test_case_04_cwd_in_unrelated_project_not_skipped(fixture_db, tmp_path):
@@ -190,11 +207,11 @@ def test_case_04_cwd_in_unrelated_project_not_skipped(fixture_db, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Case #5: content に X#NNN が無い → 何も変換しない、log は count=0 で INSERT
+# Case #5: content に X#NNN が無い → 何も変換しない、本文が変化しないので event も記録しない
 # ---------------------------------------------------------------------------
 
 
-def test_case_05_no_raw_literals_logs_zero(fixture_db):
+def test_case_05_no_raw_literals_logs_nothing(fixture_db):
     stdout, code = _run_hook(_payload("plain text without any ids"))
     assert code == 0
     out = json.loads(stdout)
@@ -202,11 +219,7 @@ def test_case_05_no_raw_literals_logs_zero(fixture_db):
         {"type": "text", "text": "plain text without any ids"}
     ]
 
-    logs = _read_sanitize_logs(fixture_db)
-    assert len(logs) == 1
-    assert logs[0]["occurrence_count"] == 0
-    assert logs[0]["sanitized_count"] == 0
-    assert logs[0]["failed_count"] == 0
+    assert _read_citation_events(fixture_db) == []
 
 
 # ---------------------------------------------------------------------------
@@ -224,12 +237,13 @@ def test_case_06_code_block_literals_preserved(fixture_db):
         {"type": "text", "text": "see `M#1 inline` and outside {{cite:D#1}} too"}
     ]
 
-    logs = _read_sanitize_logs(fixture_db)
-    assert len(logs) == 1
-    assert logs[0]["sanitized_count"] == 1
-    assert logs[0]["failed_count"] == 0
-    # occurrence は全 X#NNN を含む (コードブロック内も検出件数に含める)
-    assert logs[0]["occurrence_count"] == 2
+    events = _read_citation_events(fixture_db)
+    assert len(events) == 1
+    assert events[0]["verification_result"] == "exists"
+    assert events[0]["extra"]["sanitized_count"] == 1
+    assert events[0]["extra"]["deleted_count"] == 0
+    # skipped_in_codeblock はコードブロック内でスキップした件数 (M#1 inline の1件)
+    assert events[0]["extra"]["skipped_in_codeblock"] == 1
 
 
 def test_case_06_fenced_code_block_preserved(fixture_db):
@@ -260,14 +274,13 @@ def test_case_07_dangling_target_becomes_deleted_marker(fixture_db):
         {"type": "text", "text": "known {{cite:M#1}}, missing [deleted M#9999999] here"}
     ]
 
-    logs = _read_sanitize_logs(fixture_db)
-    assert len(logs) == 1
-    # dangling は正常変換扱い: failed_count には入らず、occurrence と sanitized の差で
-    # 表現される。failed_count は例外失敗のみを表す。
-    assert logs[0]["sanitized_count"] == 1
-    assert logs[0]["failed_count"] == 0
-    assert logs[0]["occurrence_count"] == 2
-    assert logs[0]["failure_reason"] is None
+    events = _read_citation_events(fixture_db)
+    assert len(events) == 1
+    # dangling が1件以上含まれる場合、verification_result は 'dangling' (混在時の代表値)
+    assert events[0]["verification_result"] == "dangling"
+    assert events[0]["after_text"] == "known {{cite:M#1}}, missing [deleted M#9999999] here"
+    assert events[0]["extra"]["sanitized_count"] == 1
+    assert events[0]["extra"]["deleted_count"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -285,17 +298,20 @@ def test_case_08_sqlite_operational_error_logged_as_failure(fixture_db, monkeypa
     assert code == 0
     # 変換失敗時は updatedToolOutput を返さない (transcript を壊さない)
     assert stdout == ""
-    logs = _read_sanitize_logs(fixture_db)
-    assert len(logs) == 1
-    assert logs[0]["failure_reason"] == "database is locked"
+    events = _read_citation_events(fixture_db)
+    assert len(events) == 1
+    assert events[0]["before_text"] == ""
+    assert events[0]["after_text"] == ""
+    assert events[0]["verification_result"] is None
+    assert events[0]["extra"]["error"] == "database is locked"
 
 
 # ---------------------------------------------------------------------------
-# Case #9: Python 例外 (JSON parse 失敗) → warning + failure_reason 記録
+# Case #9: Python 例外 (JSON parse 失敗) → warning + failure イベント記録
 # ---------------------------------------------------------------------------
 
 
-def test_case_09_invalid_json_logs_failure_reason(fixture_db):
+def test_case_09_invalid_json_logs_failure_event(fixture_db):
     fake_stdin = io.StringIO("not-a-json-blob")
     fake_stdout = io.StringIO()
     fake_stderr = io.StringIO()
@@ -305,9 +321,14 @@ def test_case_09_invalid_json_logs_failure_reason(fixture_db):
         code = sanitize_tool_result_hook.main()
     assert code == 0
     assert fake_stdout.getvalue() == ""
-    # session_id / transcript_path が不明なので sanitize_log は記録できない (CHECK 制約)
-    # → log 0 件で OK、stderr に警告だけ出る
     assert "[sanitize_tool_result_hook]" in fake_stderr.getvalue()
+    # citation_event_log には session_id/transcript_path 専用カラムが無いため
+    # (CHECK 制約も無い)、不明なままでも failure イベントが1件記録される
+    events = _read_citation_events(fixture_db)
+    assert len(events) == 1
+    assert events[0]["verification_result"] is None
+    assert events[0]["extra"]["session_id"] is None
+    assert "error" in events[0]["extra"]
 
 
 # ---------------------------------------------------------------------------
