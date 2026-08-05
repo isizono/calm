@@ -103,6 +103,17 @@ def _read_heartbeat_interval_sec() -> float:
 
 HEARTBEAT_INTERVAL_SEC = _read_heartbeat_interval_sec()
 
+# stdin EOF後、server_to_stdoutの自然終了（read_streamのクローズ検知）を待つ
+# 猶予秒数。超過したらtask group全体をキャンセルして強制退場する。
+# stdin EOF = Claude Code終了であり、サーバー側が応答しない限り待ち続ける理由が
+# ない（M#725「MCPブリッジハング調査」の沈黙ゾンビ化仮説への対策）。
+STDIN_EOF_GRACE_SEC = 10.0
+
+# server_to_stdoutがread_streamから例外オブジェクトを連続して受け取った場合の
+# 上限回数。超過したらストリームが実質的に沈黙していると判断しループを打ち切り、
+# ServerDisconnectedとして外側のリトライに接続する（M#725対策）。
+MAX_CONSECUTIVE_STREAM_EXCEPTIONS = 5
+
 
 class ServerDisconnected(Exception):
     """サーバー側の切断を示す例外。stdin EOFとの区別に使用する。"""
@@ -349,12 +360,24 @@ async def _bridge() -> None:
 
                 read_streamが終了したとき、stdin_eofがFalseならサーバー側切断と判断し
                 ServerDisconnectedをraiseしてtask group全体をキャンセルする。
+                読み取り中に例外オブジェクトを MAX_CONSECUTIVE_STREAM_EXCEPTIONS 回
+                連続して受け取った場合は、ストリームが実質的に沈黙していると判断し
+                ループを自発的に打ち切る（finally節が同様に ServerDisconnected へ倒す）。
                 """
+                consecutive_exceptions = 0
                 try:
                     async for session_msg_or_exc in read_stream:
                         if isinstance(session_msg_or_exc, Exception):
+                            consecutive_exceptions += 1
                             logger.warning(f"Received exception from server: {session_msg_or_exc}")
+                            if consecutive_exceptions >= MAX_CONSECUTIVE_STREAM_EXCEPTIONS:
+                                logger.warning(
+                                    f"Giving up after {consecutive_exceptions} "
+                                    "consecutive stream exceptions"
+                                )
+                                break
                             continue
+                        consecutive_exceptions = 0
                         message = session_msg_or_exc.message
                         json_bytes = message.model_dump_json(
                             by_alias=True, exclude_none=True
@@ -394,10 +417,43 @@ async def _bridge() -> None:
                 tg へ伝播させて全タスクをキャンセルさせる）。
                 正常終了時は heartbeat_loop が無限ループのため自発的に終わらず、
                 外側 tg の cancel_scope を明示的にキャンセルして道連れにする。
+
+                stdin EOF後、server_to_stdout が STDIN_EOF_GRACE_SEC 以内に自発終了
+                しない場合（サーバー側がストリームを閉じない「沈黙ゾンビ化」、
+                M#725）、eof_watchdog が io_tg 自体をキャンセルして強制退場する。
+                この経路では stdin_eof が既に True のため、server_to_stdout の
+                finally 節は ServerDisconnected を raise しない（意図的な正常終了）。
                 """
+                stdin_done = anyio.Event()
+                stdout_done = anyio.Event()
+
+                async def stdin_to_server_wrapper() -> None:
+                    try:
+                        await stdin_to_server()
+                    finally:
+                        stdin_done.set()
+
+                async def server_to_stdout_wrapper() -> None:
+                    try:
+                        await server_to_stdout()
+                    finally:
+                        stdout_done.set()
+
+                async def eof_watchdog() -> None:
+                    await stdin_done.wait()
+                    with anyio.move_on_after(STDIN_EOF_GRACE_SEC):
+                        await stdout_done.wait()
+                        return
+                    logger.warning(
+                        f"server_to_stdout did not finish within "
+                        f"{STDIN_EOF_GRACE_SEC}s of stdin EOF; forcing bridge exit"
+                    )
+                    io_tg.cancel_scope.cancel()
+
                 async with anyio.create_task_group() as io_tg:
-                    io_tg.start_soon(stdin_to_server)
-                    io_tg.start_soon(server_to_stdout)
+                    io_tg.start_soon(stdin_to_server_wrapper)
+                    io_tg.start_soon(server_to_stdout_wrapper)
+                    io_tg.start_soon(eof_watchdog)
                 tg.cancel_scope.cancel()
 
             async with anyio.create_task_group() as tg:
