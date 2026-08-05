@@ -30,6 +30,7 @@ _project_root = Path(__file__).resolve().parents[1]
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
+from hooks.citation_event_log import log_event
 from hooks.hook_transcript import _is_cc_memory_tool
 from src.services.citations_pure import (
     TYPE_CODE_TO_NAME,
@@ -160,50 +161,6 @@ def _resolve_db_path() -> str:
     return os.environ.get("CC_MEMORY_DB_PATH", str(DEFAULT_DB_PATH))
 
 
-def _log_citation_event(
-    db_path: str,
-    *,
-    session_id: str | None,
-    transcript_path: str | None,
-    tool_name: str | None,
-    before_text: str,
-    after_text: str,
-    verification_result: str | None,
-    extra: dict,
-) -> None:
-    """citation_event_log (migration 0046) に 1 行 INSERT する。
-
-    write conn を別張りして close する。session_id/transcript_path はこのテーブルに
-    専用カラムを持たないため extra_json に格納する。INSERT 自体の失敗は stderr に
-    出すのみで例外を伝播しない。
-    """
-    extra_json = json.dumps(
-        {"session_id": session_id, "transcript_path": transcript_path, **extra},
-        ensure_ascii=False,
-    )
-    try:
-        conn = sqlite3.connect(db_path, timeout=5.0)
-        try:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=5000")
-            conn.execute(
-                """
-                INSERT INTO citation_event_log (
-                    source, tool_name, before_text, after_text,
-                    verified_at, verification_result, extra_json
-                ) VALUES ('transcript_post_tool_use', ?, ?, ?, datetime('now'), ?, ?)
-                """,
-                (tool_name, before_text, after_text, verification_result, extra_json),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-    except Exception as exc:
-        sys.stderr.write(
-            f"[sanitize_tool_result_hook] citation_event_log write failed: {exc}\n"
-        )
-
-
 def _sanitize_content(content: str, db_path: str) -> tuple[str, dict]:
     """content を read-only conn で sanitize する。
 
@@ -281,8 +238,10 @@ def main() -> int:
         if sanitized_text != content:
             deleted_count = counters.get("deleted_count", 0)
             verification_result = "dangling" if deleted_count else "exists"
-            _log_citation_event(
+            log_event(
                 db_path,
+                source="transcript_post_tool_use",
+                hook_label="sanitize_tool_result_hook",
                 session_id=session_id,
                 transcript_path=transcript_path,
                 tool_name=tool_name,
@@ -304,8 +263,10 @@ def main() -> int:
         try:
             # 例外時は before_text/after_text を空文字・verification_result を NULL
             # にした failure イベントを記録する (NOT NULL 制約は空文字で満たす)。
-            _log_citation_event(
+            log_event(
                 db_path,
+                source="transcript_post_tool_use",
+                hook_label="sanitize_tool_result_hook",
                 session_id=session_id,
                 transcript_path=transcript_path,
                 tool_name=tool_name,

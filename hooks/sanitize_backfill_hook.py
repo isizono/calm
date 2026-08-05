@@ -35,6 +35,7 @@ _project_root = Path(__file__).resolve().parents[1]
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
+from hooks.citation_event_log import log_event, log_events_batch
 from hooks.hook_state import HookState
 from hooks.hook_transcript import _is_cc_memory_tool
 from src.services.citations_pure import (
@@ -415,113 +416,12 @@ def _write_back_transcript(
 
 
 # ---------------------------------------------------------------------------
-# citation_event_log INSERT
+# db path
 # ---------------------------------------------------------------------------
 
 
 def _resolve_db_path() -> str:
     return os.environ.get("CC_MEMORY_DB_PATH", str(DEFAULT_DB_PATH))
-
-
-def _log_citation_event(
-    db_path: str,
-    *,
-    session_id: str | None,
-    transcript_path: str | None,
-    tool_name: str | None,
-    before_text: str,
-    after_text: str,
-    verification_result: str | None,
-    extra: dict,
-) -> None:
-    """citation_event_log (migration 0046) に 1 行 INSERT する。
-
-    write conn を別張りして close する。session_id/transcript_path はこのテーブルに
-    専用カラムを持たないため extra_json に格納する。INSERT 自体の失敗は stderr に
-    出すのみで例外を伝播しない。
-    """
-    extra_json = json.dumps(
-        {"session_id": session_id, "transcript_path": transcript_path, **extra},
-        ensure_ascii=False,
-    )
-    try:
-        conn = sqlite3.connect(db_path, timeout=5.0)
-        try:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=5000")
-            conn.execute(
-                """
-                INSERT INTO citation_event_log (
-                    source, tool_name, before_text, after_text,
-                    verified_at, verification_result, extra_json
-                ) VALUES ('transcript_session_start_backfill', ?, ?, ?, datetime('now'), ?, ?)
-                """,
-                (tool_name, before_text, after_text, verification_result, extra_json),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-    except Exception as exc:
-        sys.stderr.write(
-            f"[sanitize_backfill_hook] citation_event_log write failed: {exc}\n"
-        )
-
-
-def _log_citation_events(
-    db_path: str,
-    *,
-    session_id: str | None,
-    transcript_path: str | None,
-    events: list[dict],
-) -> None:
-    """events (block 単位の変換結果) を citation_event_log へ一括 INSERT する。
-
-    大規模 transcript では変化した block 数が数百〜数千に達しうるため、1 件ごとに
-    connect/commit/close する _log_citation_event は使わず、1 connection・1
-    トランザクションで executemany する (SessionStart の起動コストを抑えるため)。
-    """
-    if not events:
-        return
-    rows = []
-    for event in events:
-        extra_json = json.dumps(
-            {
-                "session_id": session_id,
-                "transcript_path": transcript_path,
-                "block_stats": event["stats"],
-            },
-            ensure_ascii=False,
-        )
-        rows.append(
-            (
-                event["tool_name"],
-                event["before_text"],
-                event["after_text"],
-                event["verification_result"],
-                extra_json,
-            )
-        )
-    try:
-        conn = sqlite3.connect(db_path, timeout=5.0)
-        try:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=5000")
-            conn.executemany(
-                """
-                INSERT INTO citation_event_log (
-                    source, tool_name, before_text, after_text,
-                    verified_at, verification_result, extra_json
-                ) VALUES ('transcript_session_start_backfill', ?, ?, ?, datetime('now'), ?, ?)
-                """,
-                rows,
-            )
-            conn.commit()
-        finally:
-            conn.close()
-    except Exception as exc:
-        sys.stderr.write(
-            f"[sanitize_backfill_hook] citation_event_log batch write failed: {exc}\n"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -593,8 +493,10 @@ def main() -> int:
             # block 単位で citation_event_log にイベントを記録する。変化が無かった
             # 呼び出し (events == []) は何も記録しない。
             if events:
-                _log_citation_events(
+                log_events_batch(
                     db_path,
+                    source="transcript_session_start_backfill",
+                    hook_label="sanitize_backfill_hook",
                     session_id=session_id,
                     transcript_path=transcript_path,
                     events=events,
@@ -606,8 +508,10 @@ def main() -> int:
         else:
             # 書き戻し失敗時は個々の block イベントを記録せず (実際に永続化されて
             # いないため)、failure イベント1件のみを記録する。
-            _log_citation_event(
+            log_event(
                 db_path,
+                source="transcript_session_start_backfill",
+                hook_label="sanitize_backfill_hook",
                 session_id=session_id,
                 transcript_path=transcript_path,
                 tool_name=None,
@@ -624,8 +528,10 @@ def main() -> int:
     except Exception as exc:
         sys.stderr.write(f"[sanitize_backfill_hook] {exc}\n")
         try:
-            _log_citation_event(
+            log_event(
                 db_path,
+                source="transcript_session_start_backfill",
+                hook_label="sanitize_backfill_hook",
                 session_id=session_id,
                 transcript_path=transcript_path,
                 tool_name=None,

@@ -328,7 +328,8 @@ def test_case_09_invalid_json_logs_failure_event(fixture_db):
     assert len(events) == 1
     assert events[0]["verification_result"] is None
     assert events[0]["extra"]["session_id"] is None
-    assert "error" in events[0]["extra"]
+    # json.loads("not-a-json-blob") が送出する JSONDecodeError の実メッセージまで検証する
+    assert events[0]["extra"]["error"] == "Expecting value: line 1 column 1 (char 0)"
 
 
 # ---------------------------------------------------------------------------

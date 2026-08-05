@@ -1104,6 +1104,72 @@ class TestReadMaxRetries:
         assert launcher._read_max_retries() is None
 
 
+class TestReadStdinEofGraceSec:
+    """_read_stdin_eof_grace_sec() のテスト"""
+
+    def test_returns_default_when_env_unset(self, monkeypatch):
+        """env 未設定時は既定値 (10.0秒) を返す"""
+        monkeypatch.delenv("CC_MEMORY_LAUNCHER_STDIN_EOF_GRACE_SEC", raising=False)
+        assert launcher._read_stdin_eof_grace_sec() == launcher.DEFAULT_STDIN_EOF_GRACE_SEC
+
+    def test_returns_float_when_env_valid(self, monkeypatch):
+        """env が有効な数値のときはその値を返す"""
+        monkeypatch.setenv("CC_MEMORY_LAUNCHER_STDIN_EOF_GRACE_SEC", "3.5")
+        assert launcher._read_stdin_eof_grace_sec() == 3.5
+
+    def test_returns_default_on_invalid_string(self, monkeypatch):
+        """env が数値に変換できない文字列のときは既定値にフォールバック"""
+        monkeypatch.setenv("CC_MEMORY_LAUNCHER_STDIN_EOF_GRACE_SEC", "abc")
+        assert launcher._read_stdin_eof_grace_sec() == launcher.DEFAULT_STDIN_EOF_GRACE_SEC
+
+    def test_returns_default_on_zero_or_negative(self, monkeypatch):
+        """env が 0 以下のときは既定値にフォールバック"""
+        monkeypatch.setenv("CC_MEMORY_LAUNCHER_STDIN_EOF_GRACE_SEC", "0")
+        assert launcher._read_stdin_eof_grace_sec() == launcher.DEFAULT_STDIN_EOF_GRACE_SEC
+        monkeypatch.setenv("CC_MEMORY_LAUNCHER_STDIN_EOF_GRACE_SEC", "-1")
+        assert launcher._read_stdin_eof_grace_sec() == launcher.DEFAULT_STDIN_EOF_GRACE_SEC
+
+
+class TestReadMaxConsecutiveStreamExceptions:
+    """_read_max_consecutive_stream_exceptions() のテスト"""
+
+    def test_returns_default_when_env_unset(self, monkeypatch):
+        """env 未設定時は既定値 (5) を返す"""
+        monkeypatch.delenv(
+            "CC_MEMORY_LAUNCHER_MAX_CONSECUTIVE_STREAM_EXCEPTIONS", raising=False
+        )
+        assert (
+            launcher._read_max_consecutive_stream_exceptions()
+            == launcher.DEFAULT_MAX_CONSECUTIVE_STREAM_EXCEPTIONS
+        )
+
+    def test_returns_int_when_env_valid(self, monkeypatch):
+        """env が有効な数値のときはその値を返す"""
+        monkeypatch.setenv("CC_MEMORY_LAUNCHER_MAX_CONSECUTIVE_STREAM_EXCEPTIONS", "8")
+        assert launcher._read_max_consecutive_stream_exceptions() == 8
+
+    def test_returns_default_on_invalid_string(self, monkeypatch):
+        """env が数値に変換できない文字列のときは既定値にフォールバック"""
+        monkeypatch.setenv("CC_MEMORY_LAUNCHER_MAX_CONSECUTIVE_STREAM_EXCEPTIONS", "abc")
+        assert (
+            launcher._read_max_consecutive_stream_exceptions()
+            == launcher.DEFAULT_MAX_CONSECUTIVE_STREAM_EXCEPTIONS
+        )
+
+    def test_returns_default_on_zero_or_negative(self, monkeypatch):
+        """env が 0 以下のときは既定値にフォールバック"""
+        monkeypatch.setenv("CC_MEMORY_LAUNCHER_MAX_CONSECUTIVE_STREAM_EXCEPTIONS", "0")
+        assert (
+            launcher._read_max_consecutive_stream_exceptions()
+            == launcher.DEFAULT_MAX_CONSECUTIVE_STREAM_EXCEPTIONS
+        )
+        monkeypatch.setenv("CC_MEMORY_LAUNCHER_MAX_CONSECUTIVE_STREAM_EXCEPTIONS", "-1")
+        assert (
+            launcher._read_max_consecutive_stream_exceptions()
+            == launcher.DEFAULT_MAX_CONSECUTIVE_STREAM_EXCEPTIONS
+        )
+
+
 class TestBackoffCap:
     def test_backoff_cap_constant(self):
         """BACKOFF_CAP_SEC が 60 秒に設定されている"""

@@ -107,12 +107,74 @@ HEARTBEAT_INTERVAL_SEC = _read_heartbeat_interval_sec()
 # 猶予秒数。超過したらtask group全体をキャンセルして強制退場する。
 # stdin EOF = Claude Code終了であり、サーバー側が応答しない限り待ち続ける理由が
 # ない（M#725「MCPブリッジハング調査」の沈黙ゾンビ化仮説への対策）。
-STDIN_EOF_GRACE_SEC = 10.0
+STDIN_EOF_GRACE_SEC_ENV = "CC_MEMORY_LAUNCHER_STDIN_EOF_GRACE_SEC"
+DEFAULT_STDIN_EOF_GRACE_SEC = 10.0
+
+
+def _read_stdin_eof_grace_sec() -> float:
+    """env `CC_MEMORY_LAUNCHER_STDIN_EOF_GRACE_SEC` から grace 秒数を読む。
+
+    未設定・無効値・0以下の場合は既定値にフォールバックする。
+    """
+    raw = os.environ.get(STDIN_EOF_GRACE_SEC_ENV)
+    if raw is None or raw == "":
+        return DEFAULT_STDIN_EOF_GRACE_SEC
+    try:
+        value = float(raw)
+    except ValueError:
+        print(
+            f"[launcher] WARNING Invalid {STDIN_EOF_GRACE_SEC_ENV}={raw!r}, "
+            f"falling back to default {DEFAULT_STDIN_EOF_GRACE_SEC}s",
+            file=sys.stderr,
+        )
+        return DEFAULT_STDIN_EOF_GRACE_SEC
+    if value <= 0:
+        print(
+            f"[launcher] WARNING {STDIN_EOF_GRACE_SEC_ENV} must be > 0, "
+            f"got {value}, falling back to default {DEFAULT_STDIN_EOF_GRACE_SEC}s",
+            file=sys.stderr,
+        )
+        return DEFAULT_STDIN_EOF_GRACE_SEC
+    return value
+
+
+STDIN_EOF_GRACE_SEC = _read_stdin_eof_grace_sec()
 
 # server_to_stdoutがread_streamから例外オブジェクトを連続して受け取った場合の
 # 上限回数。超過したらストリームが実質的に沈黙していると判断しループを打ち切り、
 # ServerDisconnectedとして外側のリトライに接続する（M#725対策）。
-MAX_CONSECUTIVE_STREAM_EXCEPTIONS = 5
+MAX_CONSECUTIVE_STREAM_EXCEPTIONS_ENV = "CC_MEMORY_LAUNCHER_MAX_CONSECUTIVE_STREAM_EXCEPTIONS"
+DEFAULT_MAX_CONSECUTIVE_STREAM_EXCEPTIONS = 5
+
+
+def _read_max_consecutive_stream_exceptions() -> int:
+    """env `CC_MEMORY_LAUNCHER_MAX_CONSECUTIVE_STREAM_EXCEPTIONS` から上限回数を読む。
+
+    未設定・無効値・0以下の場合は既定値にフォールバックする。
+    """
+    raw = os.environ.get(MAX_CONSECUTIVE_STREAM_EXCEPTIONS_ENV)
+    if raw is None or raw == "":
+        return DEFAULT_MAX_CONSECUTIVE_STREAM_EXCEPTIONS
+    try:
+        value = int(raw)
+    except ValueError:
+        print(
+            f"[launcher] WARNING Invalid {MAX_CONSECUTIVE_STREAM_EXCEPTIONS_ENV}={raw!r}, "
+            f"falling back to default {DEFAULT_MAX_CONSECUTIVE_STREAM_EXCEPTIONS}",
+            file=sys.stderr,
+        )
+        return DEFAULT_MAX_CONSECUTIVE_STREAM_EXCEPTIONS
+    if value <= 0:
+        print(
+            f"[launcher] WARNING {MAX_CONSECUTIVE_STREAM_EXCEPTIONS_ENV} must be > 0, "
+            f"got {value}, falling back to default {DEFAULT_MAX_CONSECUTIVE_STREAM_EXCEPTIONS}",
+            file=sys.stderr,
+        )
+        return DEFAULT_MAX_CONSECUTIVE_STREAM_EXCEPTIONS
+    return value
+
+
+MAX_CONSECUTIVE_STREAM_EXCEPTIONS = _read_max_consecutive_stream_exceptions()
 
 
 class ServerDisconnected(Exception):
