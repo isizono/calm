@@ -19,6 +19,11 @@ from scripts.check_unit_subprocess_placement import (  # noqa: E402
 # check_unit_subprocess_placement.py 自身のスキャン対象にもなってしまうため。
 _SUBPROCESS_RUN_CALL = "subprocess" + ".run(['ls'])"
 _BARE_POPEN_CALL = "Po" + "pen(['ls'])"
+_SUBPROCESS_CALL_CALL = "subprocess" + ".call(['ls'])"
+_SUBPROCESS_CHECK_CALL_CALL = "subprocess" + ".check_call(['ls'])"
+_SUBPROCESS_CHECK_OUTPUT_CALL = "subprocess" + ".check_output(['ls'])"
+_OS_SYSTEM_CALL = "os" + ".system('ls')"
+_OS_POPEN_CALL = "os" + ".popen('ls')"
 
 
 class TestLoadAllowlist:
@@ -45,6 +50,41 @@ class TestFindViolations:
         unit_dir = tmp_path / "unit"
         unit_dir.mkdir()
         (unit_dir / "test_new.py").write_text(f"from subprocess import Popen\n{_BARE_POPEN_CALL}\n")
+
+        assert find_violations(unit_dir, allowlist=set()) == ["test_new.py"]
+
+    def test_detects_subprocess_call_call(self, tmp_path: Path):
+        unit_dir = tmp_path / "unit"
+        unit_dir.mkdir()
+        (unit_dir / "test_new.py").write_text(f"import subprocess\n{_SUBPROCESS_CALL_CALL}\n")
+
+        assert find_violations(unit_dir, allowlist=set()) == ["test_new.py"]
+
+    def test_detects_subprocess_check_call_call(self, tmp_path: Path):
+        unit_dir = tmp_path / "unit"
+        unit_dir.mkdir()
+        (unit_dir / "test_new.py").write_text(f"import subprocess\n{_SUBPROCESS_CHECK_CALL_CALL}\n")
+
+        assert find_violations(unit_dir, allowlist=set()) == ["test_new.py"]
+
+    def test_detects_subprocess_check_output_call(self, tmp_path: Path):
+        unit_dir = tmp_path / "unit"
+        unit_dir.mkdir()
+        (unit_dir / "test_new.py").write_text(f"import subprocess\n{_SUBPROCESS_CHECK_OUTPUT_CALL}\n")
+
+        assert find_violations(unit_dir, allowlist=set()) == ["test_new.py"]
+
+    def test_detects_os_system_call(self, tmp_path: Path):
+        unit_dir = tmp_path / "unit"
+        unit_dir.mkdir()
+        (unit_dir / "test_new.py").write_text(f"import os\n{_OS_SYSTEM_CALL}\n")
+
+        assert find_violations(unit_dir, allowlist=set()) == ["test_new.py"]
+
+    def test_detects_os_popen_call(self, tmp_path: Path):
+        unit_dir = tmp_path / "unit"
+        unit_dir.mkdir()
+        (unit_dir / "test_new.py").write_text(f"import os\n{_OS_POPEN_CALL}\n")
 
         assert find_violations(unit_dir, allowlist=set()) == ["test_new.py"]
 

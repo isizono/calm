@@ -98,20 +98,17 @@ jobs:
           enable-cache: true
           python-version: "3.12"
 
-      - name: Install dependencies
-        run: uv sync --frozen
-
       - name: Check every tests/ subdirectory is referenced by a CI job
-        run: uv run python scripts/check_test_dir_coverage.py
+        run: python3 scripts/check_test_dir_coverage.py
 
       - name: Check tests/unit does not contain real subprocess launches
-        run: uv run python scripts/check_unit_subprocess_placement.py
+        run: python3 scripts/check_unit_subprocess_placement.py
 
       - name: Check no test function silently disappeared
         env:
           CCM_PR_BODY: ${{ github.event.pull_request.body }}
         run: |
-          uv run python scripts/check_test_removal.py \
+          python3 scripts/check_test_removal.py \
             --base ${{ github.event.pull_request.base.sha }} \
             --head ${{ github.event.pull_request.head.sha }}
 

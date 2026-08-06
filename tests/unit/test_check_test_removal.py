@@ -16,6 +16,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from scripts.check_test_removal import (  # noqa: E402
     apply_renames,
+    decide,
     has_removal_marker,
     parse_collect_output,
     to_function_id,
@@ -110,3 +111,32 @@ class TestHasRemovalMarker:
 
     def test_empty_body_returns_false(self):
         assert has_removal_marker("") is False
+
+
+class TestDecide:
+    def test_no_removed_functions_is_allowed_regardless_of_marker(self):
+        base_ids = {"tests/unit/test_a.py::test_one"}
+        head_ids = {"tests/unit/test_a.py::test_one", "tests/unit/test_a.py::test_two"}
+        removed, allowed = decide(base_ids, head_ids, pr_body="")
+        assert removed == []
+        assert allowed is True
+
+    def test_removed_function_without_marker_is_not_allowed(self):
+        base_ids = {"tests/unit/test_a.py::test_one", "tests/unit/test_a.py::test_two"}
+        head_ids = {"tests/unit/test_a.py::test_one"}
+        removed, allowed = decide(base_ids, head_ids, pr_body="normal description\n")
+        assert removed == ["tests/unit/test_a.py::test_two"]
+        assert allowed is False
+
+    def test_removed_function_with_marker_is_allowed(self):
+        base_ids = {"tests/unit/test_a.py::test_one", "tests/unit/test_a.py::test_two"}
+        head_ids = {"tests/unit/test_a.py::test_one"}
+        removed, allowed = decide(base_ids, head_ids, pr_body="[test-removal: 重複テストの整理]\n")
+        assert removed == ["tests/unit/test_a.py::test_two"]
+        assert allowed is True
+
+    def test_removed_list_is_sorted(self):
+        base_ids = {"tests/unit/test_a.py::test_z", "tests/unit/test_a.py::test_a"}
+        head_ids = set()
+        removed, _allowed = decide(base_ids, head_ids, pr_body="")
+        assert removed == ["tests/unit/test_a.py::test_a", "tests/unit/test_a.py::test_z"]

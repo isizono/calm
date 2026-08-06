@@ -137,15 +137,33 @@ def has_removal_marker(pr_body: str) -> bool:
     return any(line.strip().startswith(TEST_REMOVAL_MARKER_PREFIX) for line in pr_body.splitlines())
 
 
+def decide(base_ids: set[str], head_ids: set[str], pr_body: str) -> tuple[list[str], bool]:
+    """base_ids/head_idsから消えた関数一覧と、それを許可してよいかを判定する。
+
+    Returns:
+        (removed, allowed): removedはbaseに存在しheadで消えた関数IDのsorted list。
+        allowedはremovedが空、またはpr_bodyにtest-removalマーカーがあるときTrue。
+    """
+    removed = sorted(base_ids - head_ids)
+    if not removed:
+        return removed, True
+    return removed, has_removal_marker(pr_body)
+
+
 def detect_file_renames(repo_root: Path, base: str, head: str) -> dict[str, str]:
-    """base..headのマージベース基準diffから、tests/配下のファイルrenameを
-    `{旧パス: 新パス}` の辞書として返す。
+    """base..head(2ドット、baseとheadの直接比較)から、tests/配下のファイル
+    renameを`{旧パス: 新パス}` の辞書として返す。
+
+    `collect_test_ids` はbase/headを文字通りのrefとしてworktree checkoutする
+    ため、rename検出もそれに合わせて2ドット(直接比較)にする。3ドット
+    (マージベース基準)にすると、baseブランチがPR分岐後に進んでいる場合に
+    比較範囲がずれ、baseブランチ側で起きたrenameを見落として誤検知しうる。
 
     ファイルrenameだけでnode IDのファイルパス部分が変わり、関数自体は
     無傷でも「消えた」と誤検知されるのを防ぐための正規化に使う。
     """
     result = subprocess.run(
-        ["git", "diff", "--name-status", "-M", f"{base}...{head}", "--", "tests/"],
+        ["git", "diff", "--name-status", "-M", f"{base}..{head}", "--", "tests/"],
         cwd=repo_root,
         capture_output=True,
         text=True,
@@ -194,13 +212,13 @@ def main(argv: list[str] | None = None) -> int:
     renames = detect_file_renames(args.repo_root, args.base, args.head)
     base_ids = apply_renames(base_ids, renames)
 
-    removed = sorted(base_ids - head_ids)
+    removed, allowed = decide(base_ids, head_ids, pr_body)
 
     if not removed:
         print("check_test_removal: OK (消えたテスト関数なし)")
         return 0
 
-    if has_removal_marker(pr_body):
+    if allowed:
         print(
             f"check_test_removal: {len(removed)}件のテスト関数が削除されているが、"
             f"PR本文の '{TEST_REMOVAL_MARKER_PREFIX}...' マーカーを確認したため許可する:"

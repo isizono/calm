@@ -5,9 +5,11 @@
 伴うテストは `tests/e2e/` に置く規約になっている(docs/spec/test-convention.md §4)。
 この規約から外れた新規ファイルの紛れ込みを機械的に検知する。
 
-検出パターンは `subprocess.run(` / `subprocess.Popen(` / `Popen(` の呼び出し
-構文(開き括弧まで)。docstringやコメント中の「subprocess.Popenが呼ばれる」の
-ような散文的な言及は開き括弧を伴わないため誤検知しない。
+検出パターンは `subprocess.run(` / `subprocess.Popen(` / `Popen(` /
+`subprocess.call(` / `subprocess.check_call(` / `subprocess.check_output(` /
+`os.system(` / `os.popen(` の呼び出し構文(開き括弧まで)。docstringやコメント
+中の「subprocess.Popenが呼ばれる」のような散文的な言及は開き括弧を伴わない
+ため誤検知しない。
 
 `scripts/test_pyramid_allowlist.txt` に列挙済みの既存ファイルは除外し、
 リストに無い新規ファイルでパターンが見つかった場合のみエラー終了する。
@@ -24,7 +26,9 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _SCRIPT_DIR.parent
 _DEFAULT_ALLOWLIST = _SCRIPT_DIR / "test_pyramid_allowlist.txt"
 
-_SUBPROCESS_CALL_RE = re.compile(r"subprocess\.run\(|subprocess\.Popen\(|\bPopen\(")
+_SUBPROCESS_CALL_RE = re.compile(
+    r"subprocess\.(run|Popen|call|check_call|check_output)\(|\bPopen\(|os\.system\(|os\.popen\("
+)
 
 
 def load_allowlist(path: Path) -> set[str]:

@@ -90,3 +90,30 @@ def test_rename_outside_tests_dir_is_ignored(git_repo: Path):
     head = _commit_all(git_repo, "rename non-test file")
 
     assert detect_file_renames(git_repo, base, head) == {}
+
+
+def test_rename_made_independently_on_base_after_head_diverged_is_still_detected(git_repo: Path):
+    """headから見て祖先関係にないbase側だけの独立したrenameも検出できることを確認する。
+
+    3ドット(`base...head`)はmerge-base(base, head)からheadへの差分しか見ないため、
+    head分岐後にbase側だけで起きたrenameを取りこぼす。2ドット(`base..head`)は
+    2つのtree自体を直接比較するため、コミット祖先関係に関係なく検出できる。
+    """
+    root = subprocess.run(
+        ["git", "-C", str(git_repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    # head側: test_a.pyには触れず、無関係な変更のみでrootから分岐させる
+    (git_repo / "unrelated.txt").write_text("x\n", encoding="utf-8")
+    head = _commit_all(git_repo, "unrelated head-side change")
+
+    # base側: rootに戻ってから、head側の履歴には無い独立したrenameを行う
+    subprocess.run(["git", "-C", str(git_repo), "checkout", "-q", root], check=True)
+    old_path = git_repo / "tests" / "unit" / "test_a.py"
+    new_path = git_repo / "tests" / "unit" / "test_a_renamed.py"
+    new_path.write_text(old_path.read_text(), encoding="utf-8")
+    old_path.unlink()
+    base = _commit_all(git_repo, "base-side independent rename")
+
+    renames = detect_file_renames(git_repo, base, head)
+    assert renames == {"tests/unit/test_a_renamed.py": "tests/unit/test_a.py"}
