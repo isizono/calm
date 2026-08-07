@@ -1,0 +1,13 @@
+# check_unit_subprocess_placement.py の許可リスト。
+# tests/unit/ 配下だが実プロセスをsubprocessで起動している(規約上はtests/e2e/相当の)
+# 既存ファイルをここに列挙する。1行1ファイル名(拡張子込み、ディレクトリ無し)。
+# `#` で始まる行と空行は無視する。
+#
+# このリストに無い新規ファイルでsubprocess呼び出しパターンが見つかった場合のみ
+# check_unit_subprocess_placement.py はエラー終了する。
+test_go_package.py
+test_gate_check.py
+test_migration_lint.py
+test_pr_size_check.py
+test_hook_state.py
+test_hooks_json_lint.py
