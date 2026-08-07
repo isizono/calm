@@ -10,6 +10,7 @@ AIエージェントが人間の判断を待つ問いを1件積み、人間が�
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 from typing import Optional
 
@@ -20,6 +21,9 @@ from src.services.dedup_helpers import compute_fingerprint16, normalize_text
 from src.services.embedding_service import encode_document, insert_ask_embedding_with_conn
 from src.services.readable_id import strip_entity_id_inplace
 from src.services.relay.entity_publish import publish_entity_event_with_conn
+from src.services.relay.service import relay_subscribe
+
+logger = logging.getLogger(__name__)
 
 QUESTION_MAX_LEN = 500
 CONTEXT_MAX_LEN = 8000
@@ -153,6 +157,9 @@ def add_ask(
     """MCPツール本体。add_ask_with_connで書き込みcommit後、embedding生成と
     近傍検索（similar_precedents/similar_asks）を行う。
 
+    session_id指定時は、そのaskの個体専用label（ask:{id}）をrelay_subscribeする。
+    relay未接続・エラー時は例外を投げず静かに無視し、ask作成自体の成否には影響しない。
+
     Returns:
         成功時: {"id", "deduped", "occurrence_count", "similar_precedents", "similar_asks"}
         失敗時: {"error": {"code": ..., "message": ...}}
@@ -166,6 +173,22 @@ def add_ask(
         conn.commit()
 
         ask_id = result["id"]
+
+        if session_id:
+            try:
+                subscribe_result = relay_subscribe(
+                    labels=[f"ask:{ask_id}"], caller_session_id=session_id
+                )
+                if "error" in subscribe_result:
+                    logger.debug(
+                        "relay_subscribe for ask_id=%s returned error, ignoring: %s",
+                        ask_id, subscribe_result["error"],
+                    )
+            except Exception:
+                logger.debug(
+                    "relay_subscribe raised for ask_id=%s, ignoring", ask_id, exc_info=True
+                )
+
         similar_precedents: list = []
         similar_asks: list = []
         embedding = encode_document(question.strip())

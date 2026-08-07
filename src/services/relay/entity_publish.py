@@ -142,9 +142,13 @@ def publish_entity_event_with_conn(
         junction_table, id_column = junction
         own_tags = get_entity_tags(conn, junction_table, id_column, entity_id)
 
+    # ask のみ、自身を指す self label（ask:{id}）を付与する。他のentity_typeには付与しない。
+    self_labels = [f"ask:{entity_id}"] if entity_type == "ask" else []
+
     labels = list(dict.fromkeys(
         own_tags
         + [f"entity:{entity_type}", f"event:{event}"]
+        + self_labels
         + _one_hop_parent_labels(conn, entity_type, entity_id)
     ))
 

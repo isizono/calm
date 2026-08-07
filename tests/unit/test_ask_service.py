@@ -153,6 +153,67 @@ class TestAddAskDedup:
         assert result["id"] != r1["id"]
 
 
+class TestAddAskRelaySubscribe:
+    """add_ask成功後のrelay_subscribe連携（自個体label ask:{id}の購読宣言）。"""
+
+    def test_relay_subscribe_called_with_own_ask_label(self, temp_db, disable_embedding, monkeypatch):
+        act = _make_activity()
+        calls = []
+
+        def _fake_relay_subscribe(labels, *, caller_session_id):
+            calls.append((labels, caller_session_id))
+            return {"subscription_id": "sub-1", "reused": False}
+
+        monkeypatch.setattr(ak, "relay_subscribe", _fake_relay_subscribe)
+
+        result = ak.add_ask("q1", blocks=[act], session_id="sess-1")
+
+        assert "error" not in result
+        assert len(calls) == 1
+        labels, caller_session_id = calls[0]
+        assert labels == [f"ask:{result['id']}"]
+        assert caller_session_id == "sess-1"
+
+    def test_relay_subscribe_not_called_without_session_id(self, temp_db, disable_embedding, monkeypatch):
+        act = _make_activity()
+        calls = []
+        monkeypatch.setattr(ak, "relay_subscribe", lambda *a, **kw: calls.append((a, kw)))
+
+        result = ak.add_ask("q1", blocks=[act])
+
+        assert "error" not in result
+        assert calls == []
+
+    def test_add_ask_succeeds_when_relay_not_connected(
+        self, temp_db, disable_embedding, monkeypatch, tmp_path
+    ):
+        """RELAY_BEARER_TOKEN未設定（relay未接続）でも、relay_subscribeはconfig_missing
+        エラーを返すだけで例外を投げず、add_ask自体は成功する。credential.jsonへの
+        フォールバックを避けるためRELAY_STATE_DIRも隔離する。"""
+        monkeypatch.setenv("RELAY_STATE_DIR", str(tmp_path / "relay-state"))
+        monkeypatch.delenv("RELAY_BEARER_TOKEN", raising=False)
+        monkeypatch.delenv("RELAY_BASE_URL", raising=False)
+        act = _make_activity()
+
+        result = ak.add_ask("q1", blocks=[act], session_id="sess-1")
+
+        assert "error" not in result
+        assert isinstance(result["id"], int)
+
+    def test_add_ask_succeeds_when_relay_subscribe_raises(self, temp_db, disable_embedding, monkeypatch):
+        act = _make_activity()
+
+        def _boom(labels, *, caller_session_id):
+            raise RuntimeError("relay unreachable")
+
+        monkeypatch.setattr(ak, "relay_subscribe", _boom)
+
+        result = ak.add_ask("q1", blocks=[act], session_id="sess-1")
+
+        assert "error" not in result
+        assert isinstance(result["id"], int)
+
+
 class TestGetAsks:
     def test_default_filters_to_open_status(self, temp_db):
         act = _make_activity()
