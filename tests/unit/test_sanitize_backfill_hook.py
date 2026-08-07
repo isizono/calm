@@ -23,26 +23,35 @@ from src.services.citations_pure import TYPE_TO_TABLE
 # ---------------------------------------------------------------------------
 
 
-_SANITIZE_LOG_DDL = """
-CREATE TABLE sanitize_log (
+_CITATION_EVENT_LOG_DDL = """
+CREATE TABLE citation_event_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT,
-    transcript_path TEXT,
-    hook_kind TEXT NOT NULL CHECK(hook_kind IN ('post_tool_use', 'session_start_backfill')),
-    occurrence_count INTEGER NOT NULL DEFAULT 0,
-    sanitized_count INTEGER NOT NULL DEFAULT 0,
-    failed_count INTEGER NOT NULL DEFAULT 0,
-    failure_reason TEXT,
-    recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
-    CHECK(sanitized_count + failed_count <= occurrence_count),
-    CHECK(session_id IS NOT NULL OR transcript_path IS NOT NULL)
+    occurred_at TEXT NOT NULL DEFAULT (datetime('now')),
+    source TEXT NOT NULL CHECK (source IN (
+        'write_auto_convert', 'bulk_migration',
+        'transcript_post_tool_use', 'transcript_session_start_backfill',
+        'external_doc_sanitize'
+    )),
+    tool_name TEXT,
+    target_entity_type TEXT CHECK (target_entity_type IS NULL OR target_entity_type IN (
+        'decision', 'activity', 'log', 'material', 'topic'
+    )),
+    target_entity_id INTEGER,
+    target_field TEXT,
+    before_text TEXT NOT NULL,
+    after_text TEXT NOT NULL,
+    verified_at TEXT,
+    verification_result TEXT CHECK (verification_result IS NULL OR verification_result IN (
+        'exists', 'dangling', 'skip'
+    )),
+    extra_json TEXT
 );
 """
 
 
 @pytest.fixture
 def fixture_db(monkeypatch):
-    """sanitize_log + 最小 entity テーブル + M#1/D#1/L#1/A#1/T#1 を持つ一時 DB。"""
+    """citation_event_log + 最小 entity テーブル + M#1/D#1/L#1/A#1/T#1 を持つ一時 DB。"""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
         conn = sqlite3.connect(db_path)
@@ -50,7 +59,7 @@ def fixture_db(monkeypatch):
             for table in TYPE_TO_TABLE.values():
                 conn.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY)")
                 conn.execute(f"INSERT INTO {table} (id) VALUES (1)")
-            conn.executescript(_SANITIZE_LOG_DDL)
+            conn.executescript(_CITATION_EVENT_LOG_DDL)
             conn.commit()
         finally:
             conn.close()
@@ -122,15 +131,21 @@ def _run_hook(stdin_payload: dict) -> tuple[str, str, int]:
     return fake_stdout.getvalue(), fake_stderr.getvalue(), code
 
 
-def _read_sanitize_logs(db_path: str) -> list[dict]:
+def _read_citation_events(db_path: str) -> list[dict]:
+    """citation_event_log の全行を読み、extra_json を dict に展開して返す。"""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(
-            "SELECT session_id, transcript_path, hook_kind, occurrence_count, "
-            "sanitized_count, failed_count, failure_reason FROM sanitize_log ORDER BY id"
+            "SELECT source, tool_name, before_text, after_text, verification_result, "
+            "extra_json FROM citation_event_log ORDER BY id"
         ).fetchall()
-        return [dict(r) for r in rows]
+        results = []
+        for r in rows:
+            d = dict(r)
+            d["extra"] = json.loads(d.pop("extra_json"))
+            results.append(d)
+        return results
     finally:
         conn.close()
 
@@ -170,13 +185,18 @@ def test_case_01_initial_backfill_whole_transcript(fixture_db, state_dir, tmp_pa
     state = HookState("sess-1")
     assert state.get_sanitize_offset() == transcript.stat().st_size
 
-    logs = _read_sanitize_logs(fixture_db)
-    assert len(logs) == 1
-    assert logs[0]["hook_kind"] == "session_start_backfill"
-    assert logs[0]["sanitized_count"] == 3
-    assert logs[0]["failed_count"] == 0
-    assert logs[0]["occurrence_count"] == 3
-    assert logs[0]["failure_reason"] is None
+    # 変化した tool_result block 単位で1イベント (block 2件が変化)
+    events = _read_citation_events(fixture_db)
+    assert len(events) == 2
+    assert events[0]["source"] == "transcript_session_start_backfill"
+    assert events[0]["tool_name"] == _TOOL_NAME
+    assert events[0]["before_text"] == "found M#1 and D#1 here"
+    assert events[0]["after_text"] == "found {{cite:M#1}} and {{cite:D#1}} here"
+    assert events[0]["verification_result"] == "exists"
+    assert events[1]["before_text"] == "another ref M#1"
+    assert events[1]["after_text"] == "another ref {{cite:M#1}}"
+    total_sanitized = sum(e["extra"]["block_stats"]["sanitized"] for e in events)
+    assert total_sanitized == 3
 
 
 # ---------------------------------------------------------------------------
@@ -217,9 +237,9 @@ def test_case_02_incremental_backfill_only_past_offset(fixture_db, state_dir, tm
     assert new_entries[3]["message"]["content"][0]["content"] == \
         "new ref {{cite:D#1}}"
 
-    logs = _read_sanitize_logs(fixture_db)
-    assert len(logs) == 1
-    assert logs[0]["sanitized_count"] == 1
+    events = _read_citation_events(fixture_db)
+    assert len(events) == 1
+    assert events[0]["extra"]["block_stats"]["sanitized"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +250,7 @@ def test_case_02_incremental_backfill_only_past_offset(fixture_db, state_dir, tm
 def test_case_03_empty_transcript_path_no_op(fixture_db, state_dir):
     _, _, code = _run_hook({"session_id": "sess-1", "transcript_path": "", "cwd": "/tmp"})
     assert code == 0
-    assert _read_sanitize_logs(fixture_db) == []
+    assert _read_citation_events(fixture_db) == []
     state = HookState("sess-1")
     assert state.get_sanitize_offset() == 0
 
@@ -291,10 +311,8 @@ def test_case_05_non_tool_result_entries_untouched(fixture_db, state_dir, tmp_pa
     # 1 文字も書き換わっていない
     assert transcript.read_bytes() == original
 
-    logs = _read_sanitize_logs(fixture_db)
-    assert len(logs) == 1
-    assert logs[0]["sanitized_count"] == 0
-    assert logs[0]["occurrence_count"] == 0
+    # tool_result block が1つも無いため、変化もイベント記録も発生しない
+    assert _read_citation_events(fixture_db) == []
 
 
 # ---------------------------------------------------------------------------
@@ -323,8 +341,9 @@ def test_case_06_non_cc_memory_tool_result_skipped(fixture_db, state_dir, tmp_pa
     assert new_entries[3]["message"]["content"][0]["content"] == \
         "cc-memory {{cite:M#1}} ref"
 
-    logs = _read_sanitize_logs(fixture_db)
-    assert logs[0]["sanitized_count"] == 1
+    events = _read_citation_events(fixture_db)
+    assert len(events) == 1
+    assert events[0]["extra"]["block_stats"]["sanitized"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -357,11 +376,12 @@ def test_case_07_skip_codeblock_escape_existing_cite(fixture_db, state_dir, tmp_
     assert "{{cite:M#1}}" in out  # 既存 cite 維持
     assert "{{cite:D#1}}" in out  # 通常の D#1 のみ変換
 
-    logs = _read_sanitize_logs(fixture_db)
+    events = _read_citation_events(fixture_db)
+    assert len(events) == 1
     # コードブロック等は occurrence に含まれるが sanitized されない。
     # sanitized=1 (D#1) + dangling=0 + skipped=4 (M#1 inline / fence / escape / existing cite) = 5
-    assert logs[0]["sanitized_count"] == 1
-    assert logs[0]["occurrence_count"] == 5
+    assert events[0]["extra"]["block_stats"]["sanitized"] == 1
+    assert events[0]["extra"]["block_stats"]["occurrence"] == 5
 
 
 # ---------------------------------------------------------------------------
@@ -384,11 +404,12 @@ def test_case_08_dangling_becomes_deleted_marker(fixture_db, state_dir, tmp_path
     out = new_entries[1]["message"]["content"][0]["content"]
     assert out == "known {{cite:M#1}}, missing [deleted M#9999]"
 
-    logs = _read_sanitize_logs(fixture_db)
-    assert logs[0]["sanitized_count"] == 1
-    assert logs[0]["failed_count"] == 0  # dangling は failed_count に入らない
-    assert logs[0]["occurrence_count"] == 2
-    assert logs[0]["failure_reason"] is None
+    events = _read_citation_events(fixture_db)
+    assert len(events) == 1
+    # dangling が1件以上含まれる場合、verification_result は 'dangling' (混在時の代表値)
+    assert events[0]["verification_result"] == "dangling"
+    assert events[0]["extra"]["block_stats"]["sanitized"] == 1
+    assert events[0]["extra"]["block_stats"]["dangling"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -407,22 +428,22 @@ def test_case_09_offset_progresses_idempotently(fixture_db, state_dir, tmp_path)
     # 1 回目
     _, _, code = _run_hook(_payload(str(transcript)))
     assert code == 0
-    first_logs = _read_sanitize_logs(fixture_db)
-    assert first_logs[0]["sanitized_count"] == 1
+    first_events = _read_citation_events(fixture_db)
+    assert len(first_events) == 1
+    assert first_events[0]["extra"]["block_stats"]["sanitized"] == 1
     first_offset = HookState("sess-1").get_sanitize_offset()
 
-    # 2 回目 (差分なし)
+    # 2 回目 (差分なし) → 変化が無いので新規イベントは記録されない
     _, _, code = _run_hook(_payload(str(transcript)))
     assert code == 0
-    second_logs = _read_sanitize_logs(fixture_db)
-    assert len(second_logs) == 2
-    assert second_logs[1]["sanitized_count"] == 0  # 二度目は何もしない
+    second_events = _read_citation_events(fixture_db)
+    assert len(second_events) == 1
     assert HookState("sess-1").get_sanitize_offset() == first_offset
 
 
 # ---------------------------------------------------------------------------
-# Case #10: hook 内例外 → stderr warning + sanitize_log 記録 + exit 0 +
-#           offset 据え置き (次回再試行)
+# Case #10: hook 内例外 → stderr warning + citation_event_log に failure イベント
+#           記録 + exit 0 + offset 据え置き (次回再試行)
 # ---------------------------------------------------------------------------
 
 
@@ -448,9 +469,12 @@ def test_case_10_exception_warns_logs_and_keeps_offset(fixture_db, state_dir, tm
     # スキャン/sanitize フェーズ例外も連続失敗カウンタを進める
     assert HookState("sess-1").get_sanitize_failure_count() == 1
 
-    logs = _read_sanitize_logs(fixture_db)
-    assert len(logs) == 1
-    assert logs[0]["failure_reason"] == "database is locked"
+    events = _read_citation_events(fixture_db)
+    assert len(events) == 1
+    assert events[0]["before_text"] == ""
+    assert events[0]["after_text"] == ""
+    assert events[0]["verification_result"] is None
+    assert events[0]["extra"]["error"] == "database is locked"
 
 
 def test_case_10_repeated_scan_exceptions_trigger_skip(fixture_db, state_dir, tmp_path, monkeypatch):
@@ -471,13 +495,13 @@ def test_case_10_repeated_scan_exceptions_trigger_skip(fixture_db, state_dir, tm
         _, _, code = _run_hook(_payload(str(transcript)))
         assert code == 0
     assert HookState("sess-1").get_sanitize_failure_count() == 3
-    logs_at_3 = _read_sanitize_logs(fixture_db)
-    assert len(logs_at_3) == 3
+    events_at_3 = _read_citation_events(fixture_db)
+    assert len(events_at_3) == 3
 
-    # 4 回目は loop guard で何もしない (log 件数据え置き)
+    # 4 回目は loop guard で何もしない (event 件数据え置き)
     _, _, code = _run_hook(_payload(str(transcript)))
     assert code == 0
-    assert _read_sanitize_logs(fixture_db) == logs_at_3
+    assert _read_citation_events(fixture_db) == events_at_3
 
 
 # ---------------------------------------------------------------------------
@@ -498,7 +522,7 @@ def test_case_11_env_disable_short_circuits(fixture_db, state_dir, tmp_path, mon
     _, _, code = _run_hook(_payload(str(transcript)))
     assert code == 0
     assert transcript.read_bytes() == original
-    assert _read_sanitize_logs(fixture_db) == []
+    assert _read_citation_events(fixture_db) == []
     assert HookState("sess-1").get_sanitize_offset() == 0
 
 
@@ -527,7 +551,7 @@ def test_case_12_cwd_in_cc_memory_repo_skipped(fixture_db, state_dir, tmp_path):
     _, _, code = _run_hook(_payload(str(transcript), cwd=str(nested)))
     assert code == 0
     assert transcript.read_bytes() == original
-    assert _read_sanitize_logs(fixture_db) == []
+    assert _read_citation_events(fixture_db) == []
 
 
 # ---------------------------------------------------------------------------
@@ -552,8 +576,10 @@ def test_case_13_perf_under_threshold(fixture_db, state_dir, tmp_path):
     assert code == 0
     assert elapsed < 10.0, f"hook took too long: {elapsed:.2f}s"
 
-    logs = _read_sanitize_logs(fixture_db)
-    assert logs[0]["sanitized_count"] == 1000
+    events = _read_citation_events(fixture_db)
+    # 1000 block 全てが変化したので block 単位で 1000 イベント
+    assert len(events) == 1000
+    assert sum(e["extra"]["block_stats"]["sanitized"] for e in events) == 1000
 
 
 # ---------------------------------------------------------------------------
@@ -619,10 +645,10 @@ def test_case_15_write_back_success_uses_atomic_rename(tmp_path):
     assert leftover == [], f"leftover files: {leftover}"
 
 
-def test_case_15_harness_race_recorded_in_sanitize_log(
+def test_case_15_harness_race_recorded_as_failure_event(
     fixture_db, state_dir, tmp_path, monkeypatch
 ):
-    """main() 経由で harness_race を検出した場合 sanitize_log に failure 記録 + offset 据え置き。"""
+    """main() 経由で harness_race を検出した場合 citation_event_log に failure 記録 + offset 据え置き。"""
     transcript = tmp_path / "transcript.jsonl"
     entries = [
         _make_assistant_entry("toolu_01"),
@@ -640,9 +666,10 @@ def test_case_15_harness_race_recorded_in_sanitize_log(
     assert code == 0
     assert transcript.read_bytes() == original_bytes
 
-    logs = _read_sanitize_logs(fixture_db)
-    assert len(logs) == 1
-    assert logs[0]["failure_reason"] == "harness_race"
-    assert logs[0]["sanitized_count"] == 0
-    assert logs[0]["failed_count"] == 1
+    events = _read_citation_events(fixture_db)
+    assert len(events) == 1
+    assert events[0]["before_text"] == ""
+    assert events[0]["after_text"] == ""
+    assert events[0]["verification_result"] is None
+    assert events[0]["extra"]["failure_reason"] == "harness_race"
     assert HookState("sess-1").get_sanitize_offset() == 0

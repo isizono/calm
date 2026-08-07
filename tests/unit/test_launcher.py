@@ -588,6 +588,145 @@ class TestBridgeStdinEofWithHeartbeat:
         assert len(register_calls) >= 1
 
 
+def _contains_server_disconnected(exc: BaseException) -> bool:
+    """exc自体、またはBaseExceptionGroupのexceptions配下にServerDisconnectedが
+
+    含まれるかを再帰的に判定する（anyioのtask groupはExceptionGroupへ集約するため）。
+    """
+    if isinstance(exc, launcher.ServerDisconnected):
+        return True
+    if isinstance(exc, BaseExceptionGroup):
+        return any(_contains_server_disconnected(sub) for sub in exc.exceptions)
+    return False
+
+
+class TestBridgeStdinEofGraceTimeout:
+    """_bridge: stdin EOF後、サーバー側がread_streamを閉じない「沈黙ゾンビ化」
+
+    (M#725) 状態でも、STDIN_EOF_GRACE_SEC 経過後に強制的に退場することの検証。
+    fixした対策が無ければ、read_streamが永遠に閉じないため_bridge()はハングし
+    続ける（テストがタイムアウトで失敗する）。
+    """
+
+    def test_bridge_exits_after_grace_period_when_server_stays_silent(
+        self, monkeypatch
+    ):
+        import asyncio
+        import os
+        import time
+        import types
+        from contextlib import asynccontextmanager
+
+        import anyio
+        import mcp.client.streamable_http as streamable_http_module
+
+        # grace期間を短縮し、テストの実時間を抑える
+        monkeypatch.setattr(launcher, "STDIN_EOF_GRACE_SEC", 0.1)
+        monkeypatch.setattr(launcher, "HEARTBEAT_INTERVAL_SEC", 1000.0)
+
+        @asynccontextmanager
+        async def fake_streamable_http_client(**kwargs):
+            # read_stream には何も流さず、write_stream のクローズも監視しない
+            # (=サーバー側が応答しない「沈黙ゾンビ化」を模す)。
+            read_send, read_recv = anyio.create_memory_object_stream(10)
+            write_send, write_recv = anyio.create_memory_object_stream(10)
+
+            async def _get_session_id():
+                return None
+
+            try:
+                yield (read_recv, write_send, _get_session_id)
+            finally:
+                await read_send.aclose()
+                await write_recv.aclose()
+
+        monkeypatch.setattr(
+            streamable_http_module,
+            "streamable_http_client",
+            fake_streamable_http_client,
+        )
+
+        # 実パイプで本物の stdin EOF を即座に発生させる
+        read_fd, write_fd = os.pipe()
+        os.close(write_fd)  # 即EOF
+        read_file = os.fdopen(read_fd, "rb", buffering=0)
+        fake_stdin = types.SimpleNamespace(buffer=read_file)
+        monkeypatch.setattr(launcher.sys, "stdin", fake_stdin)
+
+        start = time.monotonic()
+        try:
+            # 対策が無ければここでハングし、外側のwait_forタイムアウト(2.0s)で
+            # 失敗する。対策が効いていればgrace(0.1s)経過後すぐ正常return する。
+            asyncio.run(asyncio.wait_for(launcher._bridge(), timeout=2.0))
+        finally:
+            read_file.close()
+        elapsed = time.monotonic() - start
+
+        # grace期間(0.1s)経過後まもなく退場していること（2.0sタイムアウトに
+        # 頼らずに済んでいること）を確認する
+        assert elapsed < 1.0, f"grace timeoutが効いていない可能性: {elapsed:.2f}s"
+
+
+class TestServerToStdoutConsecutiveExceptionCap:
+    """server_to_stdout: read_streamから例外オブジェクトを
+
+    MAX_CONSECUTIVE_STREAM_EXCEPTIONS 回連続で受け取った場合、無限にcontinueせず
+    ServerDisconnectedへ倒して外側のリトライに接続することの検証 (M#725)。
+    """
+
+    def test_gives_up_after_max_consecutive_exceptions(self, monkeypatch):
+        import asyncio
+        import os
+        import types
+        from contextlib import asynccontextmanager
+
+        import anyio
+        import mcp.client.streamable_http as streamable_http_module
+
+        monkeypatch.setattr(launcher, "MAX_CONSECUTIVE_STREAM_EXCEPTIONS", 3)
+        monkeypatch.setattr(launcher, "HEARTBEAT_INTERVAL_SEC", 1000.0)
+        monkeypatch.setattr(launcher, "STDIN_EOF_GRACE_SEC", 1000.0)
+
+        @asynccontextmanager
+        async def fake_streamable_http_client(**kwargs):
+            read_send, read_recv = anyio.create_memory_object_stream(10)
+            write_send, write_recv = anyio.create_memory_object_stream(10)
+
+            async def _get_session_id():
+                return None
+
+            for _ in range(5):
+                await read_send.send(RuntimeError("stream hiccup"))
+
+            try:
+                yield (read_recv, write_send, _get_session_id)
+            finally:
+                await read_send.aclose()
+                await write_recv.aclose()
+
+        monkeypatch.setattr(
+            streamable_http_module,
+            "streamable_http_client",
+            fake_streamable_http_client,
+        )
+
+        # stdin は EOF に達しない実パイプ (書き込み端を閉じない)
+        read_fd, write_fd = os.pipe()
+        read_file = os.fdopen(read_fd, "rb", buffering=0)
+        fake_stdin = types.SimpleNamespace(buffer=read_file)
+        monkeypatch.setattr(launcher.sys, "stdin", fake_stdin)
+
+        try:
+            with pytest.raises(BaseException) as excinfo:
+                asyncio.run(asyncio.wait_for(launcher._bridge(), timeout=2.0))
+            assert _contains_server_disconnected(excinfo.value), (
+                f"ServerDisconnectedへ倒れていない: {excinfo.value!r}"
+            )
+        finally:
+            os.close(write_fd)
+            read_file.close()
+
+
 class TestServerDisconnected:
     def test_is_exception(self):
         """ServerDisconnectedがExceptionのサブクラスである"""
@@ -963,6 +1102,72 @@ class TestReadMaxRetries:
         """env が負値のときは None にフォールバック"""
         monkeypatch.setenv("CC_MEMORY_LAUNCHER_MAX_RETRIES", "-1")
         assert launcher._read_max_retries() is None
+
+
+class TestReadStdinEofGraceSec:
+    """_read_stdin_eof_grace_sec() のテスト"""
+
+    def test_returns_default_when_env_unset(self, monkeypatch):
+        """env 未設定時は既定値 (10.0秒) を返す"""
+        monkeypatch.delenv("CC_MEMORY_LAUNCHER_STDIN_EOF_GRACE_SEC", raising=False)
+        assert launcher._read_stdin_eof_grace_sec() == launcher.DEFAULT_STDIN_EOF_GRACE_SEC
+
+    def test_returns_float_when_env_valid(self, monkeypatch):
+        """env が有効な数値のときはその値を返す"""
+        monkeypatch.setenv("CC_MEMORY_LAUNCHER_STDIN_EOF_GRACE_SEC", "3.5")
+        assert launcher._read_stdin_eof_grace_sec() == 3.5
+
+    def test_returns_default_on_invalid_string(self, monkeypatch):
+        """env が数値に変換できない文字列のときは既定値にフォールバック"""
+        monkeypatch.setenv("CC_MEMORY_LAUNCHER_STDIN_EOF_GRACE_SEC", "abc")
+        assert launcher._read_stdin_eof_grace_sec() == launcher.DEFAULT_STDIN_EOF_GRACE_SEC
+
+    def test_returns_default_on_zero_or_negative(self, monkeypatch):
+        """env が 0 以下のときは既定値にフォールバック"""
+        monkeypatch.setenv("CC_MEMORY_LAUNCHER_STDIN_EOF_GRACE_SEC", "0")
+        assert launcher._read_stdin_eof_grace_sec() == launcher.DEFAULT_STDIN_EOF_GRACE_SEC
+        monkeypatch.setenv("CC_MEMORY_LAUNCHER_STDIN_EOF_GRACE_SEC", "-1")
+        assert launcher._read_stdin_eof_grace_sec() == launcher.DEFAULT_STDIN_EOF_GRACE_SEC
+
+
+class TestReadMaxConsecutiveStreamExceptions:
+    """_read_max_consecutive_stream_exceptions() のテスト"""
+
+    def test_returns_default_when_env_unset(self, monkeypatch):
+        """env 未設定時は既定値 (5) を返す"""
+        monkeypatch.delenv(
+            "CC_MEMORY_LAUNCHER_MAX_CONSECUTIVE_STREAM_EXCEPTIONS", raising=False
+        )
+        assert (
+            launcher._read_max_consecutive_stream_exceptions()
+            == launcher.DEFAULT_MAX_CONSECUTIVE_STREAM_EXCEPTIONS
+        )
+
+    def test_returns_int_when_env_valid(self, monkeypatch):
+        """env が有効な数値のときはその値を返す"""
+        monkeypatch.setenv("CC_MEMORY_LAUNCHER_MAX_CONSECUTIVE_STREAM_EXCEPTIONS", "8")
+        assert launcher._read_max_consecutive_stream_exceptions() == 8
+
+    def test_returns_default_on_invalid_string(self, monkeypatch):
+        """env が数値に変換できない文字列のときは既定値にフォールバック"""
+        monkeypatch.setenv("CC_MEMORY_LAUNCHER_MAX_CONSECUTIVE_STREAM_EXCEPTIONS", "abc")
+        assert (
+            launcher._read_max_consecutive_stream_exceptions()
+            == launcher.DEFAULT_MAX_CONSECUTIVE_STREAM_EXCEPTIONS
+        )
+
+    def test_returns_default_on_zero_or_negative(self, monkeypatch):
+        """env が 0 以下のときは既定値にフォールバック"""
+        monkeypatch.setenv("CC_MEMORY_LAUNCHER_MAX_CONSECUTIVE_STREAM_EXCEPTIONS", "0")
+        assert (
+            launcher._read_max_consecutive_stream_exceptions()
+            == launcher.DEFAULT_MAX_CONSECUTIVE_STREAM_EXCEPTIONS
+        )
+        monkeypatch.setenv("CC_MEMORY_LAUNCHER_MAX_CONSECUTIVE_STREAM_EXCEPTIONS", "-1")
+        assert (
+            launcher._read_max_consecutive_stream_exceptions()
+            == launcher.DEFAULT_MAX_CONSECUTIVE_STREAM_EXCEPTIONS
+        )
 
 
 class TestBackoffCap:

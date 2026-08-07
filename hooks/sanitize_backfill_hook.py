@@ -6,15 +6,19 @@ target 不在は [deleted X#NNN] に変換する。
 
 書き戻し方式: atomic rename + backup + mtime 再確認。
 書き込み直前に mtime が変化していれば harness が並行 append 中とみなして書き戻しを中断、
-sanitize_log に failure_reason を記録し sanitize_offset は据え置きで次回再試行する。
+citation_event_log (source='transcript_session_start_backfill') に failure イベントを
+記録し sanitize_offset は据え置きで次回再試行する。
 同一セッションで連続 3 回失敗したら以降の SessionStart はスキップする (ループ防止)。
+書き戻し成功時は、変化した tool_result block 単位で citation_event_log に 1 行ずつ
+INSERT する (write 経路の apply_raw_to_cite_conversion と同じ「field/block 単位で
+1 イベント」規約)。
 
 opt-out:
 - 環境変数 CC_MEMORY_SANITIZE_DISABLE=1: 即 exit 0
 - cwd が cc-memory リポジトリ内 (pyproject.toml [project].name == 'claude-code-memory'
   を上方向探索で検出): 即 exit 0
 
-例外時は stderr 警告 + sanitize_log failure 記録 + exit 0 (Claude Code 起動非ブロック)。
+例外時は stderr 警告 + citation_event_log failure イベント記録 + exit 0 (Claude Code 起動非ブロック)。
 """
 import json
 import os
@@ -31,6 +35,7 @@ _project_root = Path(__file__).resolve().parents[1]
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
+from hooks.citation_event_log import log_event, log_events_batch
 from hooks.hook_state import HookState
 from hooks.hook_transcript import _is_cc_memory_tool
 from src.services.citations_pure import (
@@ -262,15 +267,28 @@ def _build_tool_use_id_map(lines: list[dict]) -> dict[str, str]:
     return mp
 
 
+def _stringify_block_content(content: Any) -> str:
+    """tool_result.content (str or list of blocks) を citation_event_log の
+
+    before_text/after_text (TEXT NOT NULL) に格納できる文字列へ変換する。
+    str はそのまま、list はそのまま JSON シリアライズする。
+    """
+    if isinstance(content, str):
+        return content
+    return json.dumps(content, ensure_ascii=False)
+
+
 def _sanitize_transcript_bytes(
     raw_bytes: bytes,
     offset: int,
     ro_conn: sqlite3.Connection,
-) -> tuple[bytes, dict, bool]:
+) -> tuple[bytes, dict, bool, list[dict]]:
     """transcript bytes を読み offset 以降の cc-memory tool_result を sanitize して再構築。
 
     offset 未満の行は元バイト列のままパススルー (byte-perfect 維持)。
-    Returns: (new_bytes, stats, modified)
+    Returns: (new_bytes, stats, modified, events)
+    events は変化した tool_result block 単位のリスト
+    ({tool_name, before_text, after_text, verification_result, stats})。
     """
     lines = _parse_transcript_lines(raw_bytes)
     tool_name_map = _build_tool_use_id_map(lines)
@@ -278,6 +296,7 @@ def _sanitize_transcript_bytes(
     stats = {"sanitized": 0, "dangling": 0, "occurrence": 0}
     out_chunks: list[bytes] = []
     modified = False
+    events: list[dict] = []
 
     for line_info in lines:
         if line_info["start"] < offset:
@@ -310,6 +329,17 @@ def _sanitize_transcript_bytes(
             if new_content != block_content:
                 new_blocks.append({**block, "content": new_content})
                 line_modified = True
+                events.append(
+                    {
+                        "tool_name": tool_name,
+                        "before_text": _stringify_block_content(block_content),
+                        "after_text": _stringify_block_content(new_content),
+                        "verification_result": (
+                            "dangling" if sub_stats["dangling"] else "exists"
+                        ),
+                        "stats": dict(sub_stats),
+                    }
+                )
             else:
                 new_blocks.append(block)
 
@@ -324,7 +354,7 @@ def _sanitize_transcript_bytes(
             out_chunks.append(line_info["bytes"])
 
     new_bytes = b"\n".join(out_chunks)
-    return new_bytes, stats, modified
+    return new_bytes, stats, modified, events
 
 
 # ---------------------------------------------------------------------------
@@ -386,59 +416,12 @@ def _write_back_transcript(
 
 
 # ---------------------------------------------------------------------------
-# sanitize_log INSERT
+# db path
 # ---------------------------------------------------------------------------
 
 
 def _resolve_db_path() -> str:
     return os.environ.get("CC_MEMORY_DB_PATH", str(DEFAULT_DB_PATH))
-
-
-def _log_sanitize_event(
-    db_path: str,
-    *,
-    session_id: str | None,
-    transcript_path: str | None,
-    occurrence_count: int,
-    sanitized_count: int,
-    failed_count: int,
-    failure_reason: str | None,
-) -> None:
-    """sanitize_log に 1 行 INSERT。write conn を別張りして close する。
-
-    sanitize_log の CHECK 制約 (session_id IS NOT NULL OR transcript_path IS NOT NULL) を
-    満たさない場合はスキップ。INSERT 自体の失敗は stderr に出すのみで例外を伝播しない。
-    """
-    if not session_id and not transcript_path:
-        return
-    try:
-        conn = sqlite3.connect(db_path, timeout=5.0)
-        try:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=5000")
-            conn.execute(
-                """
-                INSERT INTO sanitize_log (
-                    session_id, transcript_path, hook_kind,
-                    occurrence_count, sanitized_count, failed_count, failure_reason
-                ) VALUES (?, ?, 'session_start_backfill', ?, ?, ?, ?)
-                """,
-                (
-                    session_id,
-                    transcript_path,
-                    occurrence_count,
-                    sanitized_count,
-                    failed_count,
-                    failure_reason,
-                ),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-    except Exception as exc:
-        sys.stderr.write(
-            f"[sanitize_backfill_hook] sanitize_log write failed: {exc}\n"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -495,7 +478,7 @@ def main() -> int:
         raw_bytes = path.read_bytes()
 
         with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as ro_conn:
-            new_bytes, stats, modified = _sanitize_transcript_bytes(
+            new_bytes, stats, modified, events = _sanitize_transcript_bytes(
                 raw_bytes, offset, ro_conn
             )
 
@@ -505,33 +488,37 @@ def main() -> int:
                 path, new_bytes, original_mtime, int(time.time())
             )
 
-        sanitized = stats["sanitized"]
-        dangling = stats["dangling"]
-        occurrence = stats["occurrence"]
-
         if failure_reason is None:
-            _log_sanitize_event(
-                db_path,
-                session_id=session_id,
-                transcript_path=transcript_path,
-                occurrence_count=occurrence,
-                sanitized_count=sanitized,
-                failed_count=0,
-                failure_reason=None,
-            )
+            # 書き戻しが成功した (または変化がそもそも無かった) 場合のみ、変化した
+            # block 単位で citation_event_log にイベントを記録する。変化が無かった
+            # 呼び出し (events == []) は何も記録しない。
+            if events:
+                log_events_batch(
+                    db_path,
+                    source="transcript_session_start_backfill",
+                    hook_label="sanitize_backfill_hook",
+                    session_id=session_id,
+                    transcript_path=transcript_path,
+                    events=events,
+                )
             if state:
                 new_offset = len(new_bytes) if modified else file_size
                 state.set_sanitize_offset(new_offset)
                 state.set_sanitize_failure_count(0)
         else:
-            _log_sanitize_event(
+            # 書き戻し失敗時は個々の block イベントを記録せず (実際に永続化されて
+            # いないため)、failure イベント1件のみを記録する。
+            log_event(
                 db_path,
+                source="transcript_session_start_backfill",
+                hook_label="sanitize_backfill_hook",
                 session_id=session_id,
                 transcript_path=transcript_path,
-                occurrence_count=occurrence,
-                sanitized_count=0,
-                failed_count=sanitized + dangling,
-                failure_reason=failure_reason,
+                tool_name=None,
+                before_text="",
+                after_text="",
+                verification_result=None,
+                extra={"failure_reason": failure_reason, "stats": stats, "event_count": len(events)},
             )
             if state:
                 state.set_sanitize_failure_count(failure_count + 1)
@@ -541,14 +528,17 @@ def main() -> int:
     except Exception as exc:
         sys.stderr.write(f"[sanitize_backfill_hook] {exc}\n")
         try:
-            _log_sanitize_event(
+            log_event(
                 db_path,
+                source="transcript_session_start_backfill",
+                hook_label="sanitize_backfill_hook",
                 session_id=session_id,
                 transcript_path=transcript_path,
-                occurrence_count=0,
-                sanitized_count=0,
-                failed_count=0,
-                failure_reason=str(exc),
+                tool_name=None,
+                before_text="",
+                after_text="",
+                verification_result=None,
+                extra={"error": str(exc)},
             )
         except Exception:
             pass
