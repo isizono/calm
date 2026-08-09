@@ -574,11 +574,13 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 | --- | --- | --- | --- | --- |
 | question | string | yes | - | 問い本文（空不可、500字以内） |
 | blocks | list[int] | yes | - | この問いが答え待ちで止めているactivityのid一覧（1件以上必須）。全て存在するactivityであること。全てcompleted状態のときはエラー |
+| tags | list[string] | yes | - | タグ配列（1個以上必須）。`domain:`タグを最低1つ含むこと。素タグは任意。`tag_service.resolve_tags`（完全一致・KNN統合）で解決する |
+| kind | string | no | "ask" | `"ask"`（通常ask）または`"meta"`（メタask） |
 | context | string | no | null | 背景（8000字以内） |
 
 **返り値**: `{id: int, deduped: bool, occurrence_count: int, similar_precedents: [...], similar_asks: [...]}`。`similar_precedents`/`similar_asks`はそれぞれ近傍のdecision/ask最大3件（embeddingサーバー未起動時は空配列）。
-**動作**: 同じ問い（正規化後questionのfingerprint一致）が答え待ち（open）で既にあれば新規行を作らず`occurrence_count`を+1し、blocks/要求元セッションはUNIONで追記、context/最終出現時刻は今回の値で上書きする。answered/promoted/dismissed/withdrawnの同一問いは別のライフとして新規行になる（訂正は新規postで行い、supersedes等のリンクは張らない）。
-**エラー処理**: question空・500字超、context 8000字超、blocks空・存在しないactivity id含む・全てcompleted状態、同一fingerprintの直近withdrawから5分未満の再postはいずれも`VALIDATION_ERROR`。
+**動作**: 同じ問い（正規化後questionのfingerprint一致）が答え待ち（open）で既にあれば新規行を作らず`occurrence_count`を+1し、blocks/要求元セッションはUNIONで追記、context/最終出現時刻は今回の値で上書きする。answered/promoted/dismissed/withdrawnの同一問いは別のライフとして新規行になる（訂正は新規postで行い、supersedes等のリンクは張らない）。dedup時（同一fingerprintのopen ask再post）は今回渡したtags/kindを無視し、初回投入時の値を保持する。レスポンスのsimilar_asks（裁定内容込み）を読み、同型の問いが繰り返され裁定が一貫していると判断した場合は、`ask-distill` skillでメタaskの起票を検討する。
+**エラー処理**: question空・500字超、context 8000字超、blocks空・存在しないactivity id含む・全てcompleted状態、同一fingerprintの直近withdrawから5分未満の再post、kindが"ask"/"meta"以外はいずれも`VALIDATION_ERROR`。tagsが空・namespace不正等は`TAGS_REQUIRED`/`INVALID_TAG_NAMESPACE`/`INVALID_TAG_NAME`、`domain:`タグを含まない場合は`VALIDATION_ERROR`。
 
 ### 2.44 get_asks
 
@@ -587,11 +589,13 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 | status | string \| null | no | "open" | `open`/`answered`/`promoted`/`dismissed`/`withdrawn`。nullで全status横断。triage_pending_only指定時は無視される |
 | blocking_activity_id | int | no | null | 指定時はそのactivityをblockしているaskだけに絞る |
 | triage_pending_only | bool | no | false | trueでstatus='answered'かつ未トリアージのみに絞る |
+| tags | list[string] \| null | no | null | 指定時はAND条件でフィルタ、未指定時は全件 |
+| kind | string \| null | no | null | `"ask"`/`"meta"`。nullでフィルタなし |
 | limit | int | no | 20 | 最大100 |
 | offset | int | no | 0 | ページネーション |
 | include_stats | bool | no | false | trueでstatus別クロス集計と直近30日サマリを付与 |
 
-**返り値**: `{asks: [...], total_count: int, stats?: {by_status, last_30d}}`。各askにblocks（`[{id_raw, title, status}]`）とrequesters（要求元session_idの文字列リスト）が合流される。
+**返り値**: `{asks: [...], total_count: int, stats?: {by_status, last_30d}}`。各askにblocks（`[{id_raw, title, status}]`）、requesters（要求元session_idの文字列リスト）、tags（タグ文字列のリスト）が合流される。タグnotesは返さない。
 
 ### 2.45 answer_ask
 

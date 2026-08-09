@@ -84,6 +84,10 @@ RULES = """# cc-memory 利用ガイド
 
 cc-memoryが記録に振る内部の番号・記号は、表記の形式を問わず、発話・コミット・PR本文・コードコメント等の外部出力に書かないでください。番号は外部の読み手には解決できません。記録に言及するときはタイトルや内容の要約を主体に書きます。cc-memory内に保存するtitle・本文・タグ、ツール引数のID指定は対象外です。
 
+## Asks（判断委譲）
+
+askは離席中・セッション跨ぎ限定です。その場で答えられるなら聞いてdecision化します。発効は人間のメタask裁定のみです。
+
 ---
 
 あなたにはユーザーの壁打ち相手であり、記録係としての役割が期待されています。ユーザーの発言は提案であり決定ではありません。懸念や代替案を積極的に提示し、双方が合意してから記録してください。
@@ -1878,6 +1882,8 @@ def update_signal(
 def add_ask(
     question: str,
     blocks: list[int],
+    tags: list[str],
+    kind: str = "ask",
     context: str | None = None,
 ) -> dict:
     """人間の判断を待つ問いを1件積む（答え待ちの間、blocksで指定したactivityを止める）。
@@ -1886,12 +1892,22 @@ def add_ask(
     新規行を作らず出現回数を+1し、blocks/要求元セッションはUNIONで追記、
     context/最終出現時刻は今回の値で上書きする。answered/promoted/dismissed/withdrawnの
     同一問いは別のライフとして新規行になる（訂正は新規postで行い、リンクは張らない）。
+    dedup時（同一fingerprintのopen ask再post）は今回渡したkindを無視し、初回投入時の
+    値を保持する。tagsはこのaskにまだ1件も紐付いていない場合のみ解決・付与される
+    （通常は初回投入時のみだが、タグ解決自体が失敗した場合は次回の同一問い再postで
+    再試行される）。
+
+    レスポンスのsimilar_asks（裁定内容込み）を読み、同型の問いが繰り返され裁定が
+    一貫していると判断した場合は、`ask-distill` skill を使ってメタaskの起票を
+    検討すること。
 
     Args:
         question: 問い本文（空不可、500字以内）
         blocks: この問いが答え待ちで止めているactivityのid一覧（1件以上必須）。
             全て存在するactivityであること。全てcompleted状態のときはエラー
             （1件でも進行中/未着手/一時停止のactivityがあれば通す）
+        tags: タグ配列（必須、1個以上。`domain:`タグを最低1つ含むこと。素タグは任意）
+        kind: "ask"（通常ask、デフォルト）または"meta"（メタask）
         context: 背景（optional、8000字以内）
 
     Returns:
@@ -1899,9 +1915,12 @@ def add_ask(
             "similar_precedents": [...], "similar_asks": [...]}（近傍のdecision/ask
             それぞれ最大3件、embeddingサーバー未起動時は空配列）
         失敗時: {"error": {"code": "VALIDATION_ERROR", "message": ...}}
+            （ask行の作成自体は成功しタグ解決のみ失敗した場合は "id" も含まれる。
+            ask自体は作成済み・タグは空のまま残るため、同一questionで再度add_askを
+            呼べばタグ解決が再試行される）
     """
     return ask_service.add_ask(
-        question, blocks, context=context, session_id=_current_session_id()
+        question, blocks, tags, kind=kind, context=context, session_id=_current_session_id()
     )
 
 
@@ -1910,6 +1929,8 @@ def get_asks(
     status: str | None = "open",
     blocking_activity_id: int | None = None,
     triage_pending_only: bool = False,
+    tags: list[str] | None = None,
+    kind: str | None = None,
     limit: int = 20,
     offset: int = 0,
     include_stats: bool = False,
@@ -1922,6 +1943,9 @@ def get_asks(
             triage_pending_only指定時は無視される
         blocking_activity_id: 指定時はそのactivityをblockしているaskだけに絞る
         triage_pending_only: Trueでstatus='answered'かつ未トリアージのみに絞る
+        tags: タグ配列（optional。指定時はAND条件でフィルタ、未指定時は全件。
+            空配列を明示指定した場合はVALIDATION_ERRORになる）
+        kind: フィルタ対象のkind（"ask"|"meta"）。null指定でフィルタなし
         limit: 取得件数上限（最大100件、デフォルト20）
         offset: 取得開始位置（ページネーション用）
         include_stats: Trueのときstatus別クロス集計と直近30日サマリを付与
@@ -1931,13 +1955,16 @@ def get_asks(
         失敗時: {"error": {"code": ..., "message": ...}}
         各askのidはid_rawとして返る。promoted_decision_idも他エンティティへの内部ID
         参照のためpromoted_decision_id_rawへ退避される。fingerprintは含まない。
-        各askにblocks（[{"id_raw", "title", "status"}, ...]）とrequesters
-        （要求元session_idの文字列リスト）が合流される。
+        各askにblocks（[{"id_raw", "title", "status"}, ...]）、requesters
+        （要求元session_idの文字列リスト）、tags（タグ文字列のリスト。タグnotesは
+        含まない）が合流される。
     """
     return ask_service.get_asks(
         status=status,
         blocking_activity_id=blocking_activity_id,
         triage_pending_only=triage_pending_only,
+        tags=tags,
+        kind=kind,
         limit=limit,
         offset=offset,
         include_stats=include_stats,
@@ -1983,6 +2010,10 @@ def triage_ask(
     記録するのみで実体は作らない。いずれもこのaskが止めていたactivityの
     blockは解除する（ask_blocksを削除）。
 
+    一般化ルール（同型の問いを今後AIが自己裁定してよいというルール）の発効は、
+    必ずこのtriage_askによるメタask（kind="meta"のask）への人間のpromote裁定を
+    経て行うこと。機械もLLMも、判例の蓄積だけを根拠に自己判断で発効してはならない。
+
     Args:
         ask_id: 対象ask ID
         action: "promote" または "dismiss"
@@ -2018,6 +2049,11 @@ def withdraw_ask(ask_id: int, reason: str) -> dict:
     このaskが止めていたactivityのblockを解除する（ask_blocksを削除、
     要求元セッションの記録は参照ログとして残す）。同一内容の再postは、
     誤操作保護のため取り下げから5分間は拒否される。
+
+    add_askのレスポンスに含まれるsimilar_asks（裁定内容=answer_body込み）を確認し、
+    同型の問いに既に一貫した裁定が存在してそれに従って自己裁定できると判断した場合は、
+    withdraw_askを呼び、reason引数に根拠となった判例（どのask/decisionに基づいたか）を
+    明記すること。
 
     Args:
         ask_id: 対象ask ID

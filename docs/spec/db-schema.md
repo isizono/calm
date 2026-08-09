@@ -2,8 +2,8 @@
 watch-tags: domain:cc-memory
 watch-direction: true
 watch-migrations: true
-last-synced: 2026-07-25
-last-synced-migration: 0067
+last-synced: 2026-08-02
+last-synced-migration: 0068
 -->
 
 # cc-memory DBスキーマ v0
@@ -33,11 +33,13 @@ erDiagram
   decisions ||--o{ decision_tags : ""
   discussion_logs ||--o{ log_tags : ""
   materials ||--o{ material_tags : ""
+  asks ||--o{ ask_tags : ""
   tags ||--o{ topic_tags : ""
   tags ||--o{ activity_tags : ""
   tags ||--o{ decision_tags : ""
   tags ||--o{ log_tags : ""
   tags ||--o{ material_tags : ""
+  tags ||--o{ ask_tags : ""
   tags ||--o| tags : "canonical_id"
 
   activities ||--o{ activity_dependencies : "depends_on"
@@ -121,6 +123,7 @@ erDiagram
 | `asks` | ask | 人間の判断を待つ問いの記録先（判断委譲の受け皿） |
 | `ask_blocks` | — | ask ↔ activity junction（このaskが答え待ちで止めているactivity） |
 | `ask_requesters` | — | ask ↔ 要求元session_id junction（UNION蓄積） |
+| `ask_tags` | — | ask ↔ tag junction |
 | `ask_vec` | — | asks と rowid 連動する sqlite-vec 仮想テーブル（384次元、cosine距離） |
 | `injection_telemetry` | — | 記録=クエリ添付（記録系ツールの関連既存記録top3提示）の追随カウンタ present側台帳 |
 
@@ -484,30 +487,32 @@ cc-memory自身の故障報告・使用感不満・矛盾検出・運用計測�
 
 ### 3.23 asks
 
-人間の判断を待つ問いの記録先。signal_events と同様「双方の合意」もタグ体系も要らない受け皿だが、状態遷移（open→answered→promoted/dismissed、open→withdrawn）を持つため専用テーブルとして独立している。answer 時点ではトリアージ（promote/dismiss）を行わず、次の check_in で配達されるまで遅延する。
+人間の判断を待つ問いの記録先。signal_events と同様「双方の合意」が要らない受け皿だが、状態遷移（open→answered→promoted/dismissed、open→withdrawn）を持つため専用テーブルとして独立している。answer 時点ではトリアージ（promote/dismiss）を行わず、次の check_in で配達されるまで遅延する。
 
 補足:
 - `status='open'` の行に限り `fingerprint` を UNIQUE とする部分インデックスを張る。同一 fingerprint の open 行が既存なら INSERT は競合し、アプリ層は occurrence_count を加算する（signal_events と同じ dedup パターン、helperは `dedup_helpers` として共有）。トリアージ済み（answered/promoted/dismissed）・取り下げ済み（withdrawn）の同型問い再発は新規行になる
 - CHECK制約で「open/withdrawn 以外は answer_body/answered_at 必須」「triage 設定は answered_at 必須」「promoted は promoted_decision_id 必須・それ以外は NULL 必須」「withdrawn は withdrawn_at 必須・それ以外は NULL 必須」を強制する
-- タグ・リレーション（related/belongs_to）には接続しない（v1では非対応）。近傍検索のみ ask_vec を経由する
+- `kind`（0068 追加）は `'ask'`（通常ask、既定）/`'meta'`（メタask）の2値のみ CHECK制約で固定する。メタaskは、同型の問いが繰り返され裁定が一貫していると判断されたときに `ask-distill` skill 経由で起票される「この型の問いを今後判例に従って自己裁定してよいか」を問う一段上のask。一般化ルールの発効は人間のメタask裁定でのみ行われる
+- リレーション（related/belongs_to）には接続しない（v1では非対応）。タグは 0068 で `ask_tags` 経由の接続に対応した（§3.24 参照）が、topic からの継承（`get_effective_tags` 相当のUNION）はない点で decision/log とは異なる。近傍検索は ask_vec を経由する
 - 文字列長上限（question 500字、context/answer_body 8000字）は DB 制約ではなくサービス層（`ask_service`）で強制する
 
-関連 migration: 0062_add_asks
+関連 migration: 0062_add_asks（本体）、0068_add_asks_kind_and_tags（kind列 + ask_tags）
 
 カラム一覧・インデックス: `db-schema-tables.md` の `asks` 節参照。
 
-### 3.24 ask_blocks / ask_requesters
+### 3.24 ask_blocks / ask_requesters / ask_tags
 
 - `ask_blocks`: ask ↔ activity の junction（`PRIMARY KEY (ask_id, activity_id)`、両方 `ON DELETE CASCADE`）。このaskが答え待ちで止めているactivityを表す。answer/triage/withdrawのいずれの遷移でも該当askの行は削除される（blockの解除）
 - `ask_requesters`: ask ↔ 要求元 `session_id` の junction（`PRIMARY KEY (ask_id, requester_session_id)`）。同じaskへの複数セッションからの要求をUNIONで蓄積する。withdraw時も削除しない（参照ログとして残す）
+- `ask_tags`（0068 追加）: ask ↔ tag の junction。`decision_tags`/`material_tags`（§3.8）と全く同型（`PRIMARY KEY (ask_id, tag_id)`、両方 `ON DELETE CASCADE`）。`add_ask` はタグを必須（`domain:` タグを最低1つ含む）とし、`tag_service.resolve_tags` の完全一致・KNN統合を経て解決したタグIDをここに紐付ける。dedup時（同一fingerprintのopen ask再post）は今回渡されたタグを無視し、初回投入時の紐付けを保持する。既存31件（0068適用前のask）への遡及的タグ付与は行っていない
 
-関連 migration: 0062_add_asks
+関連 migration: 0062_add_asks（ask_blocks / ask_requesters）、0068_add_asks_kind_and_tags（ask_tags）
 
-カラム一覧・インデックス: `db-schema-tables.md` の `ask_blocks` 節・`ask_requesters` 節参照。
+カラム一覧・インデックス: `db-schema-tables.md` の `ask_blocks` 節・`ask_requesters` 節・`ask_tags` 節参照。
 
 ### 3.25 ask_vec
 
-asks 専用の sqlite-vec 仮想テーブル（384次元、`distance_metric=cosine`）。topic_vec と同型で、rowid に `asks.id` を直接使う（vec_index のように search_index 経由の rowid 共有はしない）。asks は search_index/vec_index に参加しない（v1では検索・タグ・リレーションの対象外）ため、`add_ask` 時に生成した embedding をここにのみ格納する。embeddingサーバー未起動時は格納されない（近傍askサジェストが空配列になるだけで、ask自体の記録は成立する）。
+asks 専用の sqlite-vec 仮想テーブル（384次元、`distance_metric=cosine`）。topic_vec と同型で、rowid に `asks.id` を直接使う（vec_index のように search_index 経由の rowid 共有はしない）。asks は search_index/vec_index に参加しない（v1では検索対象外）ため、`add_ask` 時に生成した embedding をここにのみ格納する。embeddingサーバー未起動時は格納されない（近傍askサジェストが空配列になるだけで、ask自体の記録は成立する）。
 
 関連 migration: 0062_add_asks
 
@@ -664,6 +669,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0065_add_habits_always_pool_ratchet_trigger | trigger_mode='always'かつactive=1なhabitのcontent合計文字数が2000字を超えて増加するINSERT/UPDATEをRAISE(ABORT)で拒否するトリガー2本を新設（ラチェット型天井、縮む変更は常に許可） |
 | 0066_add_tags_notes_ratchet_trigger | tags.notesが4000字を超えて増加するINSERT/UPDATEをRAISE(ABORT)で拒否するトリガー2本を新設（1タグあたりのラチェット型天井、縮む変更は常に許可） |
 | 0067_add_injection_telemetry | injection_telemetry テーブル新設（記録=クエリ添付の追随カウンタ present側台帳、§3.26） |
+| 0068_add_asks_kind_and_tags | asks に kind 列（'ask'/'meta'、既定'ask'）を追加、ask_tags junction テーブル新設（§3.23, §3.24） |
 
 重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。
 

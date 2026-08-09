@@ -123,6 +123,13 @@ paths:
                   items:
                     type: integer
                   type: array
+                tags:
+                  items:
+                    type: string
+                  type: array
+                kind:
+                  default: ask
+                  type: string
                 context:
                   anyOf:
                   - type: string
@@ -131,6 +138,7 @@ paths:
               required:
               - question
               - blocks
+              - tags
               type: object
       responses:
         '200':
@@ -670,6 +678,18 @@ paths:
                 triage_pending_only:
                   default: false
                   type: boolean
+                tags:
+                  anyOf:
+                  - items:
+                      type: string
+                    type: array
+                  - type: 'null'
+                  default: null
+                kind:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
                 limit:
                   default: 20
                   type: integer

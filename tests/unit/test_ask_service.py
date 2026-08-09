@@ -25,41 +25,41 @@ def _make_activity(title: str = "a1", status: str | None = None) -> int:
 class TestAddAskValidation:
     def test_empty_question_rejected(self, temp_db):
         act = _make_activity()
-        result = ak.add_ask("   ", blocks=[act])
+        result = ak.add_ask("   ", tags=["domain:test"], blocks=[act])
         assert result["error"]["code"] == "VALIDATION_ERROR"
 
     def test_question_over_max_len_rejected(self, temp_db):
         act = _make_activity()
-        result = ak.add_ask("x" * (ak.QUESTION_MAX_LEN + 1), blocks=[act])
+        result = ak.add_ask("x" * (ak.QUESTION_MAX_LEN + 1), tags=["domain:test"], blocks=[act])
         assert result["error"]["code"] == "VALIDATION_ERROR"
 
     def test_context_over_max_len_rejected(self, temp_db):
         act = _make_activity()
-        result = ak.add_ask("q", blocks=[act], context="x" * (ak.CONTEXT_MAX_LEN + 1))
+        result = ak.add_ask("q", tags=["domain:test"], blocks=[act], context="x" * (ak.CONTEXT_MAX_LEN + 1))
         assert result["error"]["code"] == "VALIDATION_ERROR"
 
     def test_empty_blocks_rejected(self, temp_db):
-        result = ak.add_ask("q", blocks=[])
+        result = ak.add_ask("q", tags=["domain:test"], blocks=[])
         assert result["error"]["code"] == "VALIDATION_ERROR"
 
     def test_nonexistent_activity_in_blocks_rejected(self, temp_db):
-        result = ak.add_ask("q", blocks=[999999])
+        result = ak.add_ask("q", tags=["domain:test"], blocks=[999999])
         assert result["error"]["code"] == "VALIDATION_ERROR"
 
     def test_all_blocks_completed_rejected(self, temp_db):
         act = _make_activity(status="completed")
-        result = ak.add_ask("q", blocks=[act])
+        result = ak.add_ask("q", tags=["domain:test"], blocks=[act])
         assert result["error"]["code"] == "VALIDATION_ERROR"
 
     def test_one_non_completed_block_among_completed_is_accepted(self, temp_db):
         completed = _make_activity("done", status="completed")
         open_act = _make_activity("open")
-        result = ak.add_ask("q", blocks=[completed, open_act])
+        result = ak.add_ask("q", tags=["domain:test"], blocks=[completed, open_act])
         assert "error" not in result
 
     def test_duplicate_activity_id_in_blocks_is_silently_deduped(self, temp_db):
         act = _make_activity()
-        result = ak.add_ask("q", blocks=[act, act, act])
+        result = ak.add_ask("q", tags=["domain:test"], blocks=[act, act, act])
         assert "error" not in result
 
         conn = get_connection()
@@ -71,12 +71,50 @@ class TestAddAskValidation:
             conn.close()
         assert count == 1
 
+    def test_empty_tags_rejected(self, temp_db):
+        act = _make_activity()
+        result = ak.add_ask("q", tags=[], blocks=[act])
+        assert result["error"]["code"] == "TAGS_REQUIRED"
+
+    def test_tags_without_domain_rejected(self, temp_db):
+        act = _make_activity()
+        result = ak.add_ask("q", tags=["plain-tag"], blocks=[act])
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_invalid_tag_namespace_rejected(self, temp_db):
+        act = _make_activity()
+        result = ak.add_ask("q", tags=["bogus:tag"], blocks=[act])
+        assert result["error"]["code"] == "INVALID_TAG_NAMESPACE"
+
+    def test_invalid_kind_rejected(self, temp_db):
+        act = _make_activity()
+        result = ak.add_ask("q", tags=["domain:test"], blocks=[act], kind="bogus")
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_default_kind_is_ask(self, temp_db):
+        act = _make_activity()
+        r1 = ak.add_ask("q", tags=["domain:test"], blocks=[act])
+        listed = ak.get_asks()
+        assert listed["asks"][0]["kind"] == "ask"
+
+    def test_kind_meta_accepted(self, temp_db):
+        act = _make_activity()
+        ak.add_ask("q", tags=["domain:test", "meta-ask"], blocks=[act], kind="meta")
+        listed = ak.get_asks(kind="meta")
+        assert listed["asks"][0]["kind"] == "meta"
+
+    def test_tags_persisted_and_returned_by_get_asks(self, temp_db):
+        act = _make_activity()
+        ak.add_ask("q", tags=["domain:test", "plain-tag"], blocks=[act])
+        listed = ak.get_asks()
+        assert set(listed["asks"][0]["tags"]) == {"domain:test", "plain-tag"}
+
 
 class TestAddAskDedup:
     def test_same_question_reuses_open_row(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("Should we do X?", blocks=[act])
-        r2 = ak.add_ask("  should we do x?  ", blocks=[act])
+        r1 = ak.add_ask("Should we do X?", tags=["domain:test"], blocks=[act])
+        r2 = ak.add_ask("  should we do x?  ", tags=["domain:test"], blocks=[act])
 
         assert r2["id"] == r1["id"]
         assert r2["deduped"] is True
@@ -92,8 +130,8 @@ class TestAddAskDedup:
     def test_dedup_unions_blocks_and_requesters(self, temp_db):
         act1 = _make_activity("a1")
         act2 = _make_activity("a2")
-        r1 = ak.add_ask("same question", blocks=[act1], session_id="sess-1")
-        ak.add_ask("same question", blocks=[act2], session_id="sess-2")
+        r1 = ak.add_ask("same question", tags=["domain:test"], blocks=[act1], session_id="sess-1")
+        ak.add_ask("same question", tags=["domain:test"], blocks=[act2], session_id="sess-2")
 
         listed = ak.get_asks()
         ask = listed["asks"][0]
@@ -102,8 +140,8 @@ class TestAddAskDedup:
 
     def test_dedup_overwrites_context_last_write_wins(self, temp_db):
         act = _make_activity()
-        ak.add_ask("same question", blocks=[act], context="first")
-        ak.add_ask("same question", blocks=[act], context="second")
+        ak.add_ask("same question", tags=["domain:test"], blocks=[act], context="first")
+        ak.add_ask("same question", tags=["domain:test"], blocks=[act], context="second")
 
         listed = ak.get_asks()
         assert listed["asks"][0]["context"] == "second"
@@ -111,10 +149,10 @@ class TestAddAskDedup:
     def test_answered_ask_does_not_dedup_new_open_post(self, temp_db):
         """answered/promoted/dismissed/withdrawnの同一questionは別のライフとみなし新規行になる。"""
         act = _make_activity()
-        r1 = ak.add_ask("same question", blocks=[act])
+        r1 = ak.add_ask("same question", tags=["domain:test"], blocks=[act])
         ak.answer_ask(r1["id"], "yes")
 
-        r2 = ak.add_ask("same question", blocks=[act])
+        r2 = ak.add_ask("same question", tags=["domain:test"], blocks=[act])
 
         assert r2["id"] != r1["id"]
         assert r2["deduped"] is False
@@ -127,15 +165,15 @@ class TestAddAskDedup:
 
     def test_recent_withdraw_blocks_repost(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("same question", blocks=[act])
+        r1 = ak.add_ask("same question", tags=["domain:test"], blocks=[act])
         ak.withdraw_ask(r1["id"], "posted by mistake")
 
-        result = ak.add_ask("same question", blocks=[act])
+        result = ak.add_ask("same question", tags=["domain:test"], blocks=[act])
         assert result["error"]["code"] == "VALIDATION_ERROR"
 
     def test_repost_allowed_after_withdraw_cooldown_elapses(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("same question", blocks=[act])
+        r1 = ak.add_ask("same question", tags=["domain:test"], blocks=[act])
         ak.withdraw_ask(r1["id"], "posted by mistake")
 
         conn = get_connection()
@@ -148,17 +186,69 @@ class TestAddAskDedup:
         finally:
             conn.close()
 
-        result = ak.add_ask("same question", blocks=[act])
+        result = ak.add_ask("same question", tags=["domain:test"], blocks=[act])
         assert "error" not in result
         assert result["id"] != r1["id"]
+
+    def test_dedup_keeps_first_kind_and_ignores_repost_kind(self, temp_db):
+        """dedup時（同一fingerprintのopen ask再post）はkindを無視し、初回投入時の
+        値を保持する（判断が迷いうる点として採用した方針）。"""
+        act = _make_activity()
+        ak.add_ask("same question", tags=["domain:test"], blocks=[act], kind="ask")
+        ak.add_ask("same question", tags=["domain:test"], blocks=[act], kind="meta")
+
+        listed = ak.get_asks()
+        assert listed["asks"][0]["kind"] == "ask"
+
+    def test_dedup_keeps_first_tags_and_ignores_repost_tags(self, temp_db):
+        """dedup時は今回渡したtagsを無視し、初回投入時のtagsを保持する。"""
+        act = _make_activity()
+        ak.add_ask("same question", tags=["domain:test"], blocks=[act])
+        ak.add_ask("same question", tags=["domain:other"], blocks=[act])
+
+        listed = ak.get_asks()
+        assert listed["asks"][0]["tags"] == ["domain:test"]
+
+    def test_repost_retries_tag_resolution_when_ask_has_no_tags_yet(self, temp_db):
+        """タグ解決失敗によりask行だけ確定してタグが空のまま残った状態を、
+        add_ask_with_connで直接（呼び出し元add_askのタグ解決処理を経由せず）
+        再現し、その状態のaskへ同一questionを再postするとタグ解決が
+        再試行され成功することを確認する（occurrence_countではなくask_tagsの
+        実在で判定するようにした自己修復の契約）。"""
+        act = _make_activity()
+        conn = get_connection()
+        try:
+            created = ak.add_ask_with_conn(
+                conn, "same question", blocks=[act], tags=["domain:test"], kind="ask"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        ask_id = created["id"]
+
+        conn = get_connection()
+        try:
+            tag_count = conn.execute(
+                "SELECT COUNT(*) FROM ask_tags WHERE ask_id = ?", (ask_id,)
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        assert tag_count == 0
+
+        result = ak.add_ask("same question", tags=["domain:test", "retry-tag"], blocks=[act])
+        assert result["id"] == ask_id
+        assert result["deduped"] is True
+
+        listed = ak.get_asks()
+        assert set(listed["asks"][0]["tags"]) == {"domain:test", "retry-tag"}
 
 
 class TestGetAsks:
     def test_default_filters_to_open_status(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("q1", blocks=[act])
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
         ak.answer_ask(r1["id"], "a1")
-        ak.add_ask("q2", blocks=[act])
+        ak.add_ask("q2", tags=["domain:test"], blocks=[act])
 
         result = ak.get_asks()
 
@@ -167,9 +257,9 @@ class TestGetAsks:
 
     def test_status_none_returns_all(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("q1", blocks=[act])
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
         ak.answer_ask(r1["id"], "a1")
-        ak.add_ask("q2", blocks=[act])
+        ak.add_ask("q2", tags=["domain:test"], blocks=[act])
 
         result = ak.get_asks(status=None)
 
@@ -178,8 +268,8 @@ class TestGetAsks:
     def test_blocking_activity_id_filter(self, temp_db):
         act1 = _make_activity("a1")
         act2 = _make_activity("a2")
-        ak.add_ask("q1", blocks=[act1])
-        ak.add_ask("q2", blocks=[act2])
+        ak.add_ask("q1", tags=["domain:test"], blocks=[act1])
+        ak.add_ask("q2", tags=["domain:test"], blocks=[act2])
 
         result = ak.get_asks(blocking_activity_id=act1)
 
@@ -188,9 +278,9 @@ class TestGetAsks:
 
     def test_triage_pending_only(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("q1", blocks=[act])
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
         ak.answer_ask(r1["id"], "a1")
-        ak.add_ask("q2", blocks=[act])
+        ak.add_ask("q2", tags=["domain:test"], blocks=[act])
 
         result = ak.get_asks(triage_pending_only=True)
 
@@ -201,9 +291,73 @@ class TestGetAsks:
         result = ak.get_asks(status="not_a_status")
         assert result["error"]["code"] == "VALIDATION_ERROR"
 
+    def test_invalid_kind_rejected(self, temp_db):
+        result = ak.get_asks(kind="not_a_kind")
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_kind_filter(self, temp_db):
+        act = _make_activity()
+        ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+        ak.add_ask("q2", tags=["domain:test", "meta-ask"], blocks=[act], kind="meta")
+
+        result = ak.get_asks(status=None, kind="meta")
+
+        assert result["total_count"] == 1
+        assert result["asks"][0]["question"] == "q2"
+
+    def test_tags_filter_and_combination(self, temp_db):
+        """複数タグ指定時はAND結合で絞り込む。"""
+        act = _make_activity()
+        ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+        ak.add_ask("q2", tags=["domain:test", "urgent"], blocks=[act])
+        ak.add_ask("q3", tags=["domain:other", "urgent"], blocks=[act])
+
+        result = ak.get_asks(status=None, tags=["domain:test", "urgent"])
+
+        assert result["total_count"] == 1
+        assert result["asks"][0]["question"] == "q2"
+
+    def test_tags_filter_no_match_returns_empty(self, temp_db):
+        act = _make_activity()
+        ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+
+        result = ak.get_asks(status=None, tags=["domain:nonexistent"])
+
+        assert result == {"asks": [], "total_count": 0}
+
+    def test_tags_filter_nonexistent_tag_with_include_stats_still_returns_stats(self, temp_db):
+        """存在しないタグでの絞り込み（resolve_tag_idsが空を返す経路）でも
+        include_stats=Trueならstatsが付与される（通常の0件応答と一貫させる）。"""
+        act = _make_activity()
+        ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+
+        result = ak.get_asks(status=None, tags=["domain:nonexistent"], include_stats=True)
+
+        assert result["asks"] == []
+        assert result["total_count"] == 0
+        assert result["stats"]["by_status"]["open"] == 1
+
+    def test_tags_filter_and_combination_no_ask_matches_with_include_stats_still_returns_stats(self, temp_db):
+        """個々のタグは存在するが同一askがAND全条件を満たさない経路
+        （matched_ask_idsが空になる経路）でもinclude_stats=Trueならstatsが付与される。"""
+        act = _make_activity()
+        ak.add_ask("q1", tags=["domain:test", "alpha"], blocks=[act])
+        ak.add_ask("q2", tags=["domain:test", "beta"], blocks=[act])
+
+        result = ak.get_asks(status=None, tags=["alpha", "beta"], include_stats=True)
+
+        assert result["asks"] == []
+        assert result["total_count"] == 0
+        assert result["stats"]["by_status"]["open"] == 2
+
+    def test_empty_tags_list_rejected(self, temp_db):
+        """空配列を明示指定した場合はadd_askと同じくTAGS_REQUIREDエラーになる。"""
+        result = ak.get_asks(tags=[])
+        assert result["error"]["code"] == "TAGS_REQUIRED"
+
     def test_response_hides_fingerprint_and_uses_id_raw(self, temp_db):
         act = _make_activity()
-        ak.add_ask("q1", blocks=[act])
+        ak.add_ask("q1", tags=["domain:test"], blocks=[act])
 
         result = ak.get_asks()
         ask = result["asks"][0]
@@ -213,7 +367,7 @@ class TestGetAsks:
 
     def test_promoted_decision_id_uses_id_raw(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("q1", blocks=[act])
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
         ak.answer_ask(r1["id"], "a1")
         promoted = ak.triage_ask(r1["id"], action="promote", decision="d", reason="r")
 
@@ -224,9 +378,9 @@ class TestGetAsks:
 
     def test_include_stats(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("q1", blocks=[act])
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
         ak.answer_ask(r1["id"], "a1")
-        ak.add_ask("q2", blocks=[act])
+        ak.add_ask("q2", tags=["domain:test"], blocks=[act])
 
         result = ak.get_asks(status=None, include_stats=True)
 
@@ -238,7 +392,7 @@ class TestGetAsks:
         act = _make_activity()
         total_rows = ak._MAX_LIMIT + 5
         for i in range(total_rows):
-            ak.add_ask(f"question {i}", blocks=[act])
+            ak.add_ask(f"question {i}", tags=["domain:test"], blocks=[act])
 
         result = ak.get_asks(status=None, limit=ak._MAX_LIMIT + 1)
 
@@ -247,7 +401,7 @@ class TestGetAsks:
 
     def test_offset_returns_next_page_in_last_seen_desc_id_desc_order(self, temp_db):
         act = _make_activity()
-        ids = [ak.add_ask(f"question {i}", blocks=[act])["id"] for i in range(5)]
+        ids = [ak.add_ask(f"question {i}", tags=["domain:test"], blocks=[act])["id"] for i in range(5)]
         # デフォルトソートは last_seen_at DESC, id DESC のため、投稿順の逆順になる
         expected_order = list(reversed(ids))
 
@@ -264,7 +418,7 @@ class TestGetAsks:
 class TestAnswerAsk:
     def test_success_transitions_to_answered(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("q1", blocks=[act])
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
 
         result = ak.answer_ask(r1["id"], "my answer")
 
@@ -274,14 +428,14 @@ class TestAnswerAsk:
 
     def test_empty_answer_body_rejected(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("q1", blocks=[act])
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
 
         result = ak.answer_ask(r1["id"], "   ")
         assert result["error"]["code"] == "VALIDATION_ERROR"
 
     def test_answer_body_over_max_len_rejected(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("q1", blocks=[act])
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
 
         result = ak.answer_ask(r1["id"], "x" * (ak.ANSWER_BODY_MAX_LEN + 1))
         assert result["error"]["code"] == "VALIDATION_ERROR"
@@ -289,7 +443,7 @@ class TestAnswerAsk:
     def test_reanswer_rejected_toctou_safe(self, temp_db):
         """1段クエリUPDATEのrowcountチェックで、既にanswered状態への再answerを拒否する。"""
         act = _make_activity()
-        r1 = ak.add_ask("q1", blocks=[act])
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
         ak.answer_ask(r1["id"], "first answer")
 
         result = ak.answer_ask(r1["id"], "second answer")
@@ -312,7 +466,7 @@ class TestAnswerAsk:
 class TestTriageAsk:
     def test_promote_strips_decision_and_reason_before_saving(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("q1", blocks=[act])
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
         ak.answer_ask(r1["id"], "a1")
 
         result = ak.triage_ask(
@@ -332,7 +486,7 @@ class TestTriageAsk:
 
     def test_dismiss_strips_reason_before_saving(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("q1", blocks=[act])
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
         ak.answer_ask(r1["id"], "a1")
 
         ak.triage_ask(r1["id"], action="dismiss", dismiss_reason="  not needed  ")
@@ -342,7 +496,7 @@ class TestTriageAsk:
 
     def test_promote_creates_decision_and_links_it(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("q1", blocks=[act])
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
         ak.answer_ask(r1["id"], "a1")
 
         result = ak.triage_ask(
@@ -369,7 +523,7 @@ class TestTriageAsk:
 
     def test_dismiss_retains_answer_body(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("q1", blocks=[act])
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
         ak.answer_ask(r1["id"], "a1")
 
         result = ak.triage_ask(r1["id"], action="dismiss", dismiss_reason="not needed")
@@ -381,7 +535,7 @@ class TestTriageAsk:
 
     def test_invalid_action_rejected(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("q1", blocks=[act])
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
         ak.answer_ask(r1["id"], "a1")
 
         result = ak.triage_ask(r1["id"], action="not_an_action")
@@ -389,7 +543,7 @@ class TestTriageAsk:
 
     def test_promote_missing_decision_rejected(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("q1", blocks=[act])
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
         ak.answer_ask(r1["id"], "a1")
 
         result = ak.triage_ask(r1["id"], action="promote", reason="r")
@@ -397,7 +551,7 @@ class TestTriageAsk:
 
     def test_dismiss_missing_reason_rejected(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("q1", blocks=[act])
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
         ak.answer_ask(r1["id"], "a1")
 
         result = ak.triage_ask(r1["id"], action="dismiss")
@@ -405,14 +559,14 @@ class TestTriageAsk:
 
     def test_triage_on_open_ask_rejected(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("q1", blocks=[act])
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
 
         result = ak.triage_ask(r1["id"], action="dismiss", dismiss_reason="x")
         assert result["error"]["code"] == "VALIDATION_ERROR"
 
     def test_double_triage_rejected_toctou_safe(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("q1", blocks=[act])
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
         ak.answer_ask(r1["id"], "a1")
         ak.triage_ask(r1["id"], action="dismiss", dismiss_reason="first")
 
@@ -422,7 +576,7 @@ class TestTriageAsk:
     def test_promote_rolls_back_ask_state_on_decision_failure(self, temp_db, monkeypatch):
         """decision_service例外時、SAVEPOINTロールバックでask側は'answered'に戻る。"""
         act = _make_activity()
-        r1 = ak.add_ask("q1", blocks=[act])
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
         ak.answer_ask(r1["id"], "a1")
 
         def _boom(items):
@@ -449,7 +603,7 @@ class TestTriageAsk:
 
     def test_triage_succeeds_even_if_blocked_activity_already_completed(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("q1", blocks=[act])
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
         ak.answer_ask(r1["id"], "a1")
         update_activity(act, status="completed")
 
@@ -460,7 +614,7 @@ class TestTriageAsk:
 class TestWithdrawAsk:
     def test_success_transitions_to_withdrawn(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("q1", blocks=[act])
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
 
         result = ak.withdraw_ask(r1["id"], "posted by mistake")
 
@@ -468,7 +622,7 @@ class TestWithdrawAsk:
 
     def test_withdraw_removes_ask_blocks_but_keeps_requesters(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("q1", blocks=[act], session_id="sess-1")
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act], session_id="sess-1")
 
         ak.withdraw_ask(r1["id"], "posted by mistake")
 
@@ -487,7 +641,7 @@ class TestWithdrawAsk:
 
     def test_withdraw_non_open_rejected(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("q1", blocks=[act])
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
         ak.answer_ask(r1["id"], "a1")
 
         result = ak.withdraw_ask(r1["id"], "posted by mistake")
@@ -495,7 +649,7 @@ class TestWithdrawAsk:
 
     def test_empty_reason_rejected(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("q1", blocks=[act])
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
 
         result = ak.withdraw_ask(r1["id"], "   ")
         assert result["error"]["code"] == "VALIDATION_ERROR"
@@ -504,7 +658,7 @@ class TestWithdrawAsk:
 class TestGetPendingAsksWithConn:
     def test_open_ask_is_awaiting_answer(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("q1", blocks=[act])
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
 
         conn = get_connection()
         try:
@@ -517,7 +671,7 @@ class TestGetPendingAsksWithConn:
 
     def test_answered_ask_is_awaiting_triage_with_answer_body(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("q1", blocks=[act])
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
         ak.answer_ask(r1["id"], "my answer")
 
         conn = get_connection()
@@ -531,7 +685,7 @@ class TestGetPendingAsksWithConn:
 
     def test_promoted_ask_is_not_delivered(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("q1", blocks=[act])
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
         ak.answer_ask(r1["id"], "a1")
         ak.triage_ask(r1["id"], action="dismiss", dismiss_reason="x")
 
@@ -546,7 +700,7 @@ class TestGetPendingAsksWithConn:
 
     def test_completed_activity_does_not_deliver_pending_asks(self, temp_db):
         act = _make_activity()
-        ak.add_ask("q1", blocks=[act])
+        ak.add_ask("q1", tags=["domain:test"], blocks=[act])
         update_activity(act, status="completed")
 
         conn = get_connection()
@@ -564,7 +718,7 @@ class TestSimilarSuggestions:
 
     def test_empty_when_embedding_server_unavailable(self, temp_db, disable_embedding):
         act = _make_activity()
-        result = ak.add_ask("q1", blocks=[act])
+        result = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
 
         assert result["similar_precedents"] == []
         assert result["similar_asks"] == []
@@ -580,8 +734,8 @@ class TestSimilarSuggestions:
         monkeypatch.setattr(emb, "_backfill_done", True)
 
         act = _make_activity()
-        r1 = ak.add_ask("first question", blocks=[act])
+        r1 = ak.add_ask("first question", tags=["domain:test"], blocks=[act])
         assert r1["similar_asks"] == []
 
-        r2 = ak.add_ask("second question", blocks=[act])
+        r2 = ak.add_ask("second question", tags=["domain:test"], blocks=[act])
         assert any(item["id"] == r1["id"] for item in r2["similar_asks"])
