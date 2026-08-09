@@ -198,7 +198,7 @@ class TestAskSelfLabel:
         activity = add_activity(
             title="a", description="d", tags=DEFAULT_TAGS, check_in=False
         )
-        result = ak.add_ask("質問", blocks=[activity["activity_id"]])
+        result = ak.add_ask("質問", tags=["domain:test"], blocks=[activity["activity_id"]])
         rows = _rows_for("ask", result["id"])
         assert len(rows) == 1
         assert "entity:ask" in rows[0]["labels"]

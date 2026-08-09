@@ -256,7 +256,7 @@ class TestAddAskRelaySubscribe:
 
         monkeypatch.setattr(ak, "relay_subscribe", _fake_relay_subscribe)
 
-        result = ak.add_ask("q1", blocks=[act], session_id="sess-1")
+        result = ak.add_ask("q1", tags=["domain:test"], blocks=[act], session_id="sess-1")
 
         assert "error" not in result
         assert len(calls) == 1
@@ -269,7 +269,7 @@ class TestAddAskRelaySubscribe:
         calls = []
         monkeypatch.setattr(ak, "relay_subscribe", lambda *a, **kw: calls.append((a, kw)))
 
-        result = ak.add_ask("q1", blocks=[act])
+        result = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
 
         assert "error" not in result
         assert calls == []
@@ -285,7 +285,7 @@ class TestAddAskRelaySubscribe:
         monkeypatch.delenv("RELAY_BASE_URL", raising=False)
         act = _make_activity()
 
-        result = ak.add_ask("q1", blocks=[act], session_id="sess-1")
+        result = ak.add_ask("q1", tags=["domain:test"], blocks=[act], session_id="sess-1")
 
         assert "error" not in result
         assert isinstance(result["id"], int)
@@ -298,7 +298,7 @@ class TestAddAskRelaySubscribe:
 
         monkeypatch.setattr(ak, "relay_subscribe", _boom)
 
-        result = ak.add_ask("q1", blocks=[act], session_id="sess-1")
+        result = ak.add_ask("q1", tags=["domain:test"], blocks=[act], session_id="sess-1")
 
         assert "error" not in result
         assert isinstance(result["id"], int)
