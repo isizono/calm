@@ -24,7 +24,7 @@ class TestAnswerPromoteCheckInFlow:
     def test_full_lifecycle_delivers_and_clears_via_checkin(self, temp_db):
         activity_id = _make_activity()
 
-        ask = ak.add_ask("Should we use approach A?", blocks=[activity_id])
+        ask = ak.add_ask("Should we use approach A?", tags=["domain:test"], blocks=[activity_id])
 
         result = check_in(activity_id)
         assert result["asks"]["awaiting_answer"][0]["id_raw"] == ask["id"]
@@ -61,7 +61,7 @@ class TestAnswerDismissCheckInFlow:
     def test_dismiss_clears_delivery_without_creating_decision(self, temp_db):
         activity_id = _make_activity()
 
-        ask = ak.add_ask("Should we use approach B?", blocks=[activity_id])
+        ask = ak.add_ask("Should we use approach B?", tags=["domain:test"], blocks=[activity_id])
         ak.answer_ask(ask["id"], "no, skip it")
 
         dismissed = ak.triage_ask(ask["id"], action="dismiss", dismiss_reason="not worth it")
@@ -79,7 +79,7 @@ class TestWithdrawFlow:
     def test_withdraw_clears_delivery(self, temp_db):
         activity_id = _make_activity()
 
-        ask = ak.add_ask("Should we use approach C?", blocks=[activity_id])
+        ask = ak.add_ask("Should we use approach C?", tags=["domain:test"], blocks=[activity_id])
         result = check_in(activity_id)
         assert "asks" in result
 
@@ -94,8 +94,8 @@ class TestDedupFlow:
     def test_repeated_add_ask_accumulates_then_resolves(self, temp_db):
         activity_id = _make_activity()
 
-        first = ak.add_ask("Should we refactor module X?", blocks=[activity_id])
-        second = ak.add_ask("should we refactor module x?", blocks=[activity_id])
+        first = ak.add_ask("Should we refactor module X?", tags=["domain:test"], blocks=[activity_id])
+        second = ak.add_ask("should we refactor module x?", tags=["domain:test"], blocks=[activity_id])
         assert second["id"] == first["id"]
         assert second["occurrence_count"] == 2
 
@@ -114,7 +114,7 @@ class TestMultipleBlockedActivities:
         activity_a = _make_activity("a")
         activity_b = _make_activity("b")
 
-        ask = ak.add_ask("Shared blocking question?", blocks=[activity_a, activity_b])
+        ask = ak.add_ask("Shared blocking question?", tags=["domain:test"], blocks=[activity_a, activity_b])
 
         result_a = check_in(activity_a)
         result_b = check_in(activity_b)
@@ -134,7 +134,7 @@ class TestOrchManagedActivityStillReceivesAskHints:
         askは答え待ちのプロセス情報そのものとして扱い、suppressしない。"""
         activity_id = _make_activity("orch-managed-activity", orch_managed=True)
 
-        ask = ak.add_ask("Orch-managed blocking question?", blocks=[activity_id])
+        ask = ak.add_ask("Orch-managed blocking question?", tags=["domain:test"], blocks=[activity_id])
         ak.answer_ask(ask["id"], "answered")
 
         result = check_in(activity_id)

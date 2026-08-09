@@ -5,7 +5,7 @@
 <!-- 再生成: uv run python scripts/dump_db_schema.py -->
 
 `migrations/` を通し番号順に全適用した結果として得られる、現在のテーブル/ビュー構造の機械的な写しである。
-カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0067）。
+カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0068）。
 
 「なぜこの形なのか」（設計判断の背景・変遷・既知の課題）は `docs/spec/db-schema.md` を参照。
 本ファイルは現在値のみを扱い、変遷の経緯（旧カラムの削除理由等）は記載しない。
@@ -142,6 +142,30 @@ CREATE TABLE ask_requesters (
 
 </details>
 
+### ask_tags
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| ask_id | INTEGER | NO | — | PK |
+| tag_id | INTEGER | NO | — | PK |
+
+インデックス:
+- `idx_ask_tags_tag` ON `ask_tags`(tag_id)
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE ask_tags (
+    ask_id  INTEGER NOT NULL,
+    tag_id  INTEGER NOT NULL,
+    PRIMARY KEY (ask_id, tag_id),
+    FOREIGN KEY (ask_id) REFERENCES asks(id) ON DELETE CASCADE,
+    FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+)
+```
+
+</details>
+
 ### ask_vec
 
 | カラム名 | 型 | NULL | デフォルト | PK |
@@ -258,6 +282,7 @@ CREATE TABLE "ask_vec_vector_chunks00"(rowid PRIMARY KEY,vectors BLOB NOT NULL)
 | last_seen_at | TIMESTAMP | NO | `CURRENT_TIMESTAMP` | — |
 | first_seen_session_id | TEXT | YES | — | — |
 | last_seen_session_id | TEXT | YES | — | — |
+| kind | TEXT | NO | `'ask'` | — |
 
 インデックス:
 - `idx_asks_triage_pending` ON `asks`(last_seen_at)
@@ -294,7 +319,8 @@ CREATE TABLE asks (
     first_seen_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_seen_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     first_seen_session_id  TEXT,
-    last_seen_session_id   TEXT,
+    last_seen_session_id   TEXT, kind TEXT NOT NULL DEFAULT 'ask'
+    CHECK (kind IN ('ask', 'meta')),
 
     CHECK (
         (status IN ('open','withdrawn'))
