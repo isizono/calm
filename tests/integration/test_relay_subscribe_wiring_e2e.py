@@ -26,6 +26,7 @@ import pytest
 import src.main as main_module
 from relay_sdk.testing import FakeRelay
 from src.services.relay import service
+from src.services.relay import runtime as relay_runtime_module
 from src.services.relay.runtime import RelayRuntime
 
 
@@ -88,7 +89,7 @@ def test_second_subscribe_via_tool_wrapper_notifies_runtime_and_is_received(
             )
 
             # ここから配線本体の検証: tool wrapper 経由で2件目（別labels）を subscribe。
-            monkeypatch.setattr(main_module, "_relay_runtime", runtime)
+            monkeypatch.setattr(relay_runtime_module, "_relay_runtime", runtime)
             monkeypatch.setattr(
                 main_module.relay_identity, "get_relay_identity", lambda: "sess-1"
             )
@@ -163,7 +164,7 @@ def test_reused_subscribe_via_tool_wrapper_does_not_trigger_reconfigure(
             )
             assert not runtime._reconfigure_event.is_set()
 
-            monkeypatch.setattr(main_module, "_relay_runtime", runtime)
+            monkeypatch.setattr(relay_runtime_module, "_relay_runtime", runtime)
             monkeypatch.setattr(
                 main_module.relay_identity, "get_relay_identity", lambda: "sess-1"
             )

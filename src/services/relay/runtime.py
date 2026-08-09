@@ -44,6 +44,36 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+_relay_runtime: Optional["RelayRuntime"] = None
+
+
+def get_relay_runtime() -> Optional["RelayRuntime"]:
+    """現在の RelayRuntime singleton インスタンスを返す。未設定時は None。"""
+    return _relay_runtime
+
+
+def set_relay_runtime(runtime: Optional["RelayRuntime"]) -> None:
+    """RelayRuntime singleton インスタンスを登録する（HTTP server 起動時のみ呼ばれる）。"""
+    global _relay_runtime
+    _relay_runtime = runtime
+
+
+def notify_reconfigure_if_new(subscribe_result: dict) -> None:
+    """relay_subscribe の呼び出し結果を見て、新規購読が発生していれば RelayRuntime に
+    再接続を通知する。
+
+    subscribe_result にエラーが含まれる場合・既存購読を再利用した場合（reused: True）・
+    RelayRuntime 未登録（stdio transport や token 未設定等）の場合は何もしない。
+    """
+    if "error" in subscribe_result:
+        return
+    if subscribe_result.get("reused") is not False:
+        return
+    runtime = get_relay_runtime()
+    if runtime is not None:
+        runtime.notify_reconfigure()
+
+
 class RelayRuntime:
     """B-1 / B-2 / B-3 を束ねる supervisor（プロセス内シングルトン、二重 start ガード付き）。"""
 
@@ -241,4 +271,9 @@ class RelayRuntime:
             )
 
 
-__all__ = ["RelayRuntime"]
+__all__ = [
+    "RelayRuntime",
+    "get_relay_runtime",
+    "set_relay_runtime",
+    "notify_reconfigure_if_new",
+]

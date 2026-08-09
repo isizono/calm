@@ -5,12 +5,14 @@ open→withdrawn）、TOCTOU回避（1段クエリUPDATEのrowcountチェック�
 duplicate blocksの静かなdedupeを検証する。
 """
 import sqlite3
+from unittest.mock import MagicMock
 
 import pytest
 
 from src.db import get_connection
 from src.services import ask_service as ak
 from src.services.activity_service import add_activity, update_activity
+from src.services.relay import runtime as relay_runtime_module
 
 
 def _make_activity(title: str = "a1", status: str | None = None) -> int:
@@ -302,6 +304,23 @@ class TestAddAskRelaySubscribe:
 
         assert "error" not in result
         assert isinstance(result["id"], int)
+
+    def test_new_subscription_notifies_relay_runtime(self, temp_db, disable_embedding, monkeypatch):
+        """新規購読（reused: False）が成立したら、登録済みRelayRuntimeの
+        notify_reconfigure()が実際に呼ばれること。"""
+        act = _make_activity()
+
+        def _fake_relay_subscribe(labels, *, caller_session_id):
+            return {"subscription_id": "sub-1", "reused": False}
+
+        monkeypatch.setattr(ak, "relay_subscribe", _fake_relay_subscribe)
+        runtime = MagicMock()
+        monkeypatch.setattr(relay_runtime_module, "_relay_runtime", runtime)
+
+        result = ak.add_ask("q1", tags=["domain:test"], blocks=[act], session_id="sess-1")
+
+        assert "error" not in result
+        runtime.notify_reconfigure.assert_called_once()
 
 
 class TestGetAsks:

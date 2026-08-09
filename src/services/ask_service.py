@@ -21,6 +21,7 @@ from src.services.dedup_helpers import compute_fingerprint16, normalize_text
 from src.services.embedding_service import encode_document, insert_ask_embedding_with_conn
 from src.services.readable_id import strip_entity_id_inplace
 from src.services.relay.entity_publish import publish_entity_event_with_conn
+from src.services.relay.runtime import notify_reconfigure_if_new
 from src.services.relay.service import relay_subscribe
 from src.services.tag_service import (
     get_entity_tags_batch,
@@ -231,6 +232,8 @@ def add_ask(
                         "relay_subscribe for ask_id=%s returned error, ignoring: %s",
                         ask_id, subscribe_result["error"],
                     )
+                else:
+                    notify_reconfigure_if_new(subscribe_result)
             except Exception:
                 logger.debug(
                     "relay_subscribe raised for ask_id=%s, ignoring", ask_id, exc_info=True
