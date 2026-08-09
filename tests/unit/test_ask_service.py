@@ -322,6 +322,32 @@ class TestAddAskRelaySubscribe:
         assert "error" not in result
         runtime.notify_reconfigure.assert_called_once()
 
+    def test_relay_subscribe_called_for_second_session_on_dedup(
+        self, temp_db, disable_embedding, monkeypatch
+    ):
+        """同一質問を別々のsession_idで2回add_askし、dedupヒットした2回目
+        （occurrence_count > 1）についても、relay_subscribeがask個体label
+        （ask:{id}）かつその後発session_idで呼ばれること。"""
+        act = _make_activity()
+        calls = []
+
+        def _fake_relay_subscribe(labels, *, caller_session_id):
+            calls.append((labels, caller_session_id))
+            return {"subscription_id": f"sub-{len(calls)}", "reused": False}
+
+        monkeypatch.setattr(ak, "relay_subscribe", _fake_relay_subscribe)
+
+        r1 = ak.add_ask("same question", tags=["domain:test"], blocks=[act], session_id="sess-1")
+        r2 = ak.add_ask("same question", tags=["domain:test"], blocks=[act], session_id="sess-2")
+
+        assert r2["id"] == r1["id"]
+        assert r2["deduped"] is True
+        assert r2["occurrence_count"] > 1
+
+        assert len(calls) == 2
+        assert calls[0] == ([f"ask:{r1['id']}"], "sess-1")
+        assert calls[1] == ([f"ask:{r2['id']}"], "sess-2")
+
 
 class TestGetAsks:
     def test_default_filters_to_open_status(self, temp_db):
