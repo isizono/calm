@@ -5,9 +5,9 @@ tests/unit/test_relay_diagnostics_service.py・tests/unit/test_relay_runtime.py 
 本ファイルは main.py 側の配線（get_relay_runtime の None 安全性、outbox エラーの
 早期return、runtime インスタンス有無による切り替え）を検証する。
 """
-import src.main as main_module
 from src.db import get_connection
 from src.main import get_relay_runtime, relay_status
+from src.services.relay import runtime as relay_runtime_module
 from src.services.relay.runtime import RelayRuntime
 
 
@@ -97,9 +97,9 @@ class TestRelayStatusOutboxAndRuntimeTogether:
 
 class TestRelayStatusUsesLiveRuntimeInstance:
     def test_running_runtime_instance_is_reflected_in_response(self, temp_db, monkeypatch):
-        """_relay_runtime が設定されている場合、health_snapshot() の値をそのまま返す。"""
+        """RelayRuntime singleton が設定されている場合、health_snapshot() の値をそのまま返す。"""
         runtime = RelayRuntime(active_sessions_getter=lambda: set())
-        monkeypatch.setattr(main_module, "_relay_runtime", runtime)
+        monkeypatch.setattr(relay_runtime_module, "_relay_runtime", runtime)
         monkeypatch.setenv("RELAY_BEARER_TOKEN", "test-token")
         monkeypatch.setattr(runtime, "_run_intake", lambda: runtime._stop_event.wait())
         monkeypatch.setattr(runtime, "_run_lease_loop", lambda: runtime._stop_event.wait())

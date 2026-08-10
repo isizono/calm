@@ -9,6 +9,7 @@ import json
 import pytest
 
 from src.db import get_connection
+from src.services import ask_service as ak
 from src.services.activity_service import add_activity, update_activity
 from src.services.decision_service import add_decisions
 from src.services.discussion_log_service import add_logs
@@ -188,6 +189,38 @@ class TestCreatedEventOnRepresentativeWritePaths:
         rows = _rows_for("topic", topic["topic_id"])
         assert len(rows) == 1
         assert set(rows[0]["labels"]) == {"entity:topic", "event:created", "domain:test"}
+
+
+class TestAskSelfLabel:
+    """askはentity write時、自身を指すself label（ask:{id}）が付与される。"""
+
+    def test_add_ask_publishes_created_with_self_label(self, temp_db, disable_embedding):
+        activity = add_activity(
+            title="a", description="d", tags=DEFAULT_TAGS, check_in=False
+        )
+        result = ak.add_ask("質問", tags=["domain:test"], blocks=[activity["activity_id"]])
+        rows = _rows_for("ask", result["id"])
+        assert len(rows) == 1
+        assert "entity:ask" in rows[0]["labels"]
+        assert "event:created" in rows[0]["labels"]
+        assert f"ask:{result['id']}" in rows[0]["labels"]
+
+    def test_non_ask_entity_types_do_not_get_ask_self_label(self, temp_db, disable_embedding):
+        topic = add_topic(title="t", description="d", tags=DEFAULT_TAGS)
+        material = add_material(title="m", content="c", tags=DEFAULT_TAGS, source="test")
+        activity = add_activity(
+            title="a", description="d", tags=DEFAULT_TAGS, check_in=False
+        )
+        for ref_type, ref_id in (
+            ("topic", topic["topic_id"]),
+            ("material", material["material_id"]),
+            ("activity", activity["activity_id"]),
+        ):
+            rows = _rows_for(ref_type, ref_id)
+            assert rows
+            assert not any(
+                label.startswith("ask:") for row in rows for label in row["labels"]
+            )
 
 
 class TestUpdatedEventOnRepresentativeWritePaths:

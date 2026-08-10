@@ -6,11 +6,13 @@
 - supervisor が例外後に再起動し、stop で終了すること
 - `_run_dispatcher` の retry 関連 kwargs 解決（env 明示設定時の反映、未設定時の
   SDK 既定値へのフォールバック）
+- singleton getter/setter と notify_reconfigure_if_new の分岐（新規/reused/error/未登録）
 """
 from __future__ import annotations
 
 import threading
 import time
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -273,3 +275,46 @@ class TestHealthSnapshot:
             assert runtime._health["t-test"]["restart_count"] == 1
         runtime.stop()
         thread.join(timeout=3.0)
+
+
+class TestNotifyReconfigureIfNew:
+    """relay_subscribe 呼び出し結果に応じて RelayRuntime.notify_reconfigure() を
+    呼ぶかどうかを分岐する notify_reconfigure_if_new() の単体テスト。"""
+
+    def test_new_subscription_notifies_registered_runtime(self, monkeypatch):
+        runtime = MagicMock()
+        monkeypatch.setattr(runtime_module, "_relay_runtime", runtime)
+
+        runtime_module.notify_reconfigure_if_new(
+            {"subscription_id": "sub-1", "reused": False}
+        )
+
+        runtime.notify_reconfigure.assert_called_once()
+
+    def test_reused_subscription_does_not_notify(self, monkeypatch):
+        runtime = MagicMock()
+        monkeypatch.setattr(runtime_module, "_relay_runtime", runtime)
+
+        runtime_module.notify_reconfigure_if_new(
+            {"subscription_id": "sub-1", "reused": True}
+        )
+
+        runtime.notify_reconfigure.assert_not_called()
+
+    def test_error_result_does_not_notify(self, monkeypatch):
+        runtime = MagicMock()
+        monkeypatch.setattr(runtime_module, "_relay_runtime", runtime)
+
+        runtime_module.notify_reconfigure_if_new(
+            {"error": {"code": "config_missing", "message": "RELAY_BEARER_TOKEN 未設定"}}
+        )
+
+        runtime.notify_reconfigure.assert_not_called()
+
+    def test_no_registered_runtime_does_not_raise(self, monkeypatch):
+        """RelayRuntime 未登録（stdio transport 等）でも例外を出さない。"""
+        monkeypatch.setattr(runtime_module, "_relay_runtime", None)
+
+        runtime_module.notify_reconfigure_if_new(
+            {"subscription_id": "sub-1", "reused": False}
+        )

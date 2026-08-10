@@ -1,15 +1,18 @@
 """relay_subscribe tool wrapper（main.py）の notify_reconfigure 配線の unit test。
 
-service 層の relay_subscribe 呼び出し結果（reused / error の有無）に応じて、
-RelayRuntime.notify_reconfigure() を呼ぶかどうかを分岐する main.py 側の薄い glue を
-検証する。service.py 自体の subscribe ロジック（reused 判定・declaration file 更新）は
-tests/unit/test_relay_service_subscribe.py が担うためここでは扱わない。
+service 層の relay_subscribe 呼び出し結果を notify_reconfigure_if_new に渡すだけの
+main.py 側の薄い glue を検証する。reused / error に応じて実際に
+RelayRuntime.notify_reconfigure() を呼ぶかどうかの分岐ロジック自体は
+tests/unit/test_relay_runtime.py が担う。service.py 自体の subscribe ロジック
+（reused 判定・declaration file 更新）は tests/unit/test_relay_service_subscribe.py が
+担うためここでは扱わない。
 """
 from unittest.mock import MagicMock
 
 import pytest
 
 import src.main as main_module
+from src.services.relay import runtime as relay_runtime_module
 
 
 @pytest.fixture(autouse=True)
@@ -49,7 +52,7 @@ _ERROR_RESULT = {"error": {"code": "config_missing", "message": "RELAY_BEARER_TO
 class TestNotifyReconfigureWiring:
     def test_new_subscription_notifies_runtime(self, monkeypatch):
         runtime = MagicMock()
-        monkeypatch.setattr(main_module, "_relay_runtime", runtime)
+        monkeypatch.setattr(relay_runtime_module, "_relay_runtime", runtime)
         _stub_service_result(monkeypatch, dict(_NEW_SUBSCRIPTION_RESULT))
 
         result = main_module.relay_subscribe(["a"])
@@ -59,7 +62,7 @@ class TestNotifyReconfigureWiring:
 
     def test_reused_subscription_does_not_notify_runtime(self, monkeypatch):
         runtime = MagicMock()
-        monkeypatch.setattr(main_module, "_relay_runtime", runtime)
+        monkeypatch.setattr(relay_runtime_module, "_relay_runtime", runtime)
         _stub_service_result(monkeypatch, dict(_REUSED_SUBSCRIPTION_RESULT))
 
         main_module.relay_subscribe(["a"])
@@ -68,7 +71,7 @@ class TestNotifyReconfigureWiring:
 
     def test_error_result_does_not_notify_runtime(self, monkeypatch):
         runtime = MagicMock()
-        monkeypatch.setattr(main_module, "_relay_runtime", runtime)
+        monkeypatch.setattr(relay_runtime_module, "_relay_runtime", runtime)
         _stub_service_result(monkeypatch, dict(_ERROR_RESULT))
 
         main_module.relay_subscribe(["a"])
@@ -77,7 +80,7 @@ class TestNotifyReconfigureWiring:
 
     def test_runtime_none_does_not_raise_and_returns_result_unchanged(self, monkeypatch):
         """get_relay_runtime() が None（stdio 相当）でも例外を出さず成功応答をそのまま返す。"""
-        monkeypatch.setattr(main_module, "_relay_runtime", None)
+        monkeypatch.setattr(relay_runtime_module, "_relay_runtime", None)
         expected = dict(_NEW_SUBSCRIPTION_RESULT)
         expected["identity"] = "sess-1"
         _stub_service_result(monkeypatch, dict(_NEW_SUBSCRIPTION_RESULT))
@@ -88,13 +91,14 @@ class TestNotifyReconfigureWiring:
 
 
 class TestGetRelayRuntimeGetterContract:
-    """_session_manager / get_session_manager() と対称の契約であることを確認する。"""
+    """main.py が src.services.relay.runtime から re-export した get_relay_runtime が、
+    runtime 側の singleton をそのまま反映する契約であることを確認する。"""
 
     def test_returns_none_before_assignment(self, monkeypatch):
-        monkeypatch.setattr(main_module, "_relay_runtime", None)
+        monkeypatch.setattr(relay_runtime_module, "_relay_runtime", None)
         assert main_module.get_relay_runtime() is None
 
     def test_returns_assigned_instance(self, monkeypatch):
         sentinel = object()
-        monkeypatch.setattr(main_module, "_relay_runtime", sentinel)
+        monkeypatch.setattr(relay_runtime_module, "_relay_runtime", sentinel)
         assert main_module.get_relay_runtime() is sentinel

@@ -10,6 +10,7 @@ AIエージェントが人間の判断を待つ問いを1件積み、人間が�
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 from typing import Optional
 
@@ -20,6 +21,8 @@ from src.services.dedup_helpers import compute_fingerprint16, normalize_text
 from src.services.embedding_service import encode_document, insert_ask_embedding_with_conn
 from src.services.readable_id import strip_entity_id_inplace
 from src.services.relay.entity_publish import publish_entity_event_with_conn
+from src.services.relay.runtime import notify_reconfigure_if_new
+from src.services.relay.service import relay_subscribe
 from src.services.tag_service import (
     get_entity_tags_batch,
     link_tags,
@@ -27,6 +30,8 @@ from src.services.tag_service import (
     resolve_tags,
     validate_and_parse_tags,
 )
+
+logger = logging.getLogger(__name__)
 
 QUESTION_MAX_LEN = 500
 CONTEXT_MAX_LEN = 8000
@@ -197,6 +202,9 @@ def add_ask(
     （commit済み）のため、エラー応答に "id" を含めて呼び出し側が作成済みaskの
     存在を把握できるようにする。
 
+    session_id指定時は、そのaskの個体専用label（ask:{id}）をrelay_subscribeする。
+    relay未接続・エラー時は例外を投げず静かに無視し、ask作成自体の成否には影響しない。
+
     Returns:
         成功時: {"id", "deduped", "occurrence_count", "similar_precedents", "similar_asks"}
         失敗時: {"error": {"code": ..., "message": ...}}（ask作成後にタグ解決が
@@ -213,6 +221,23 @@ def add_ask(
         conn.commit()
 
         ask_id = result["id"]
+
+        if session_id:
+            try:
+                subscribe_result = relay_subscribe(
+                    labels=[f"ask:{ask_id}"], caller_session_id=session_id
+                )
+                if "error" in subscribe_result:
+                    logger.debug(
+                        "relay_subscribe for ask_id=%s returned error, ignoring: %s",
+                        ask_id, subscribe_result["error"],
+                    )
+                else:
+                    notify_reconfigure_if_new(subscribe_result)
+            except Exception:
+                logger.debug(
+                    "relay_subscribe raised for ask_id=%s, ignoring", ask_id, exc_info=True
+                )
 
         has_tags = conn.execute(
             "SELECT 1 FROM ask_tags WHERE ask_id = ? LIMIT 1", (ask_id,)

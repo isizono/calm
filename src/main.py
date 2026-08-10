@@ -30,6 +30,11 @@ from src.services.checkin_service import check_in as _check_in
 from src.services.relay import service as relay_session_service
 from src.services.relay import diagnostics as relay_diagnostics_service
 from src.services.relay import identity as relay_identity
+from src.services.relay.runtime import (
+    get_relay_runtime,
+    notify_reconfigure_if_new,
+    set_relay_runtime,
+)
 from src.services.tag_service import (
     search_tags as _search_tags,
     update_tag as _update_tag,
@@ -268,15 +273,6 @@ _session_manager = None
 def get_session_manager():
     """現在のSessionManagerインスタンスを返す。HTTPモード以外ではNone。"""
     return _session_manager
-
-
-# relay v2 runtime管理（HTTPモードで使用。stdio/remoteプロセスではNoneのまま）
-_relay_runtime = None
-
-
-def get_relay_runtime():
-    """現在のRelayRuntimeインスタンスを返す。HTTPモード以外、または未起動時はNone。"""
-    return _relay_runtime
 
 
 def _current_session_id() -> Optional[str]:
@@ -2179,10 +2175,7 @@ def relay_subscribe(labels: list[str]) -> dict:
     result = relay_session_service.relay_subscribe(
         labels, caller_session_id=caller_session_id
     )
-    if "error" not in result and result.get("reused") is False:
-        runtime = get_relay_runtime()
-        if runtime is not None:
-            runtime.notify_reconfigure()
+    notify_reconfigure_if_new(result)
     if "error" not in result:
         result["identity"] = caller_session_id
     return result
@@ -2469,16 +2462,17 @@ if __name__ == "__main__":
         # 明示エラーで顕在化させる）。
         from src.services.relay.runtime import RelayRuntime
 
-        _relay_runtime = RelayRuntime(
+        relay_runtime = RelayRuntime(
             active_sessions_getter=lambda: _session_manager.session_ids
         )
-        _relay_runtime.start()
+        set_relay_runtime(relay_runtime)
+        relay_runtime.start()
 
         try:
             logger.info(f"Starting HTTP server on {HTTP_HOST}:{HTTP_PORT}")
             mcp.run(transport="http", host=HTTP_HOST, port=HTTP_PORT)
         finally:
-            _relay_runtime.stop()
+            relay_runtime.stop()
             release()
     else:
         mcp.run()

@@ -5,12 +5,14 @@ open→withdrawn）、TOCTOU回避（1段クエリUPDATEのrowcountチェック�
 duplicate blocksの静かなdedupeを検証する。
 """
 import sqlite3
+from unittest.mock import MagicMock
 
 import pytest
 
 from src.db import get_connection
 from src.services import ask_service as ak
 from src.services.activity_service import add_activity, update_activity
+from src.services.relay import runtime as relay_runtime_module
 
 
 def _make_activity(title: str = "a1", status: str | None = None) -> int:
@@ -241,6 +243,110 @@ class TestAddAskDedup:
 
         listed = ak.get_asks()
         assert set(listed["asks"][0]["tags"]) == {"domain:test", "retry-tag"}
+
+
+class TestAddAskRelaySubscribe:
+    """add_ask成功後のrelay_subscribe連携（自個体label ask:{id}の購読宣言）。"""
+
+    def test_relay_subscribe_called_with_own_ask_label(self, temp_db, disable_embedding, monkeypatch):
+        act = _make_activity()
+        calls = []
+
+        def _fake_relay_subscribe(labels, *, caller_session_id):
+            calls.append((labels, caller_session_id))
+            return {"subscription_id": "sub-1", "reused": False}
+
+        monkeypatch.setattr(ak, "relay_subscribe", _fake_relay_subscribe)
+
+        result = ak.add_ask("q1", tags=["domain:test"], blocks=[act], session_id="sess-1")
+
+        assert "error" not in result
+        assert len(calls) == 1
+        labels, caller_session_id = calls[0]
+        assert labels == [f"ask:{result['id']}"]
+        assert caller_session_id == "sess-1"
+
+    def test_relay_subscribe_not_called_without_session_id(self, temp_db, disable_embedding, monkeypatch):
+        act = _make_activity()
+        calls = []
+        monkeypatch.setattr(ak, "relay_subscribe", lambda *a, **kw: calls.append((a, kw)))
+
+        result = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+
+        assert "error" not in result
+        assert calls == []
+
+    def test_add_ask_succeeds_when_relay_not_connected(
+        self, temp_db, disable_embedding, monkeypatch, tmp_path
+    ):
+        """RELAY_BEARER_TOKEN未設定（relay未接続）でも、relay_subscribeはconfig_missing
+        エラーを返すだけで例外を投げず、add_ask自体は成功する。credential.jsonへの
+        フォールバックを避けるためRELAY_STATE_DIRも隔離する。"""
+        monkeypatch.setenv("RELAY_STATE_DIR", str(tmp_path / "relay-state"))
+        monkeypatch.delenv("RELAY_BEARER_TOKEN", raising=False)
+        monkeypatch.delenv("RELAY_BASE_URL", raising=False)
+        act = _make_activity()
+
+        result = ak.add_ask("q1", tags=["domain:test"], blocks=[act], session_id="sess-1")
+
+        assert "error" not in result
+        assert isinstance(result["id"], int)
+
+    def test_add_ask_succeeds_when_relay_subscribe_raises(self, temp_db, disable_embedding, monkeypatch):
+        act = _make_activity()
+
+        def _boom(labels, *, caller_session_id):
+            raise RuntimeError("relay unreachable")
+
+        monkeypatch.setattr(ak, "relay_subscribe", _boom)
+
+        result = ak.add_ask("q1", tags=["domain:test"], blocks=[act], session_id="sess-1")
+
+        assert "error" not in result
+        assert isinstance(result["id"], int)
+
+    def test_new_subscription_notifies_relay_runtime(self, temp_db, disable_embedding, monkeypatch):
+        """新規購読（reused: False）が成立したら、登録済みRelayRuntimeの
+        notify_reconfigure()が実際に呼ばれること。"""
+        act = _make_activity()
+
+        def _fake_relay_subscribe(labels, *, caller_session_id):
+            return {"subscription_id": "sub-1", "reused": False}
+
+        monkeypatch.setattr(ak, "relay_subscribe", _fake_relay_subscribe)
+        runtime = MagicMock()
+        monkeypatch.setattr(relay_runtime_module, "_relay_runtime", runtime)
+
+        result = ak.add_ask("q1", tags=["domain:test"], blocks=[act], session_id="sess-1")
+
+        assert "error" not in result
+        runtime.notify_reconfigure.assert_called_once()
+
+    def test_relay_subscribe_called_for_second_session_on_dedup(
+        self, temp_db, disable_embedding, monkeypatch
+    ):
+        """同一質問を別々のsession_idで2回add_askし、dedupヒットした2回目
+        （occurrence_count > 1）についても、relay_subscribeがask個体label
+        （ask:{id}）かつその後発session_idで呼ばれること。"""
+        act = _make_activity()
+        calls = []
+
+        def _fake_relay_subscribe(labels, *, caller_session_id):
+            calls.append((labels, caller_session_id))
+            return {"subscription_id": f"sub-{len(calls)}", "reused": False}
+
+        monkeypatch.setattr(ak, "relay_subscribe", _fake_relay_subscribe)
+
+        r1 = ak.add_ask("same question", tags=["domain:test"], blocks=[act], session_id="sess-1")
+        r2 = ak.add_ask("same question", tags=["domain:test"], blocks=[act], session_id="sess-2")
+
+        assert r2["id"] == r1["id"]
+        assert r2["deduped"] is True
+        assert r2["occurrence_count"] > 1
+
+        assert len(calls) == 2
+        assert calls[0] == ([f"ask:{r1['id']}"], "sess-1")
+        assert calls[1] == ([f"ask:{r2['id']}"], "sess-2")
 
 
 class TestGetAsks:
