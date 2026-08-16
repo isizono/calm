@@ -1,6 +1,6 @@
 [project]
 name = "calm"
-version = "0.1.0"
+version = "1.0.0"
 description = "Claude Codeの記憶を外部DBに保存し、セッション間で知識・決定事項・アクティビティを永続化する"
 requires-python = ">=3.12"
 dependencies = [
