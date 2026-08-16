@@ -33,8 +33,6 @@ if str(_project_root) not in sys.path:
 from hooks.citation_event_log import log_event
 from hooks.hook_transcript import _is_cc_memory_tool
 from src.services.citations_pure import (
-    TYPE_CODE_TO_NAME,
-    _RAW_CITE_PATTERN,
     check_target_exists,
     convert_raw_to_cite,
 )
@@ -69,94 +67,6 @@ def _is_in_cc_memory_repo(cwd: str | None) -> bool:
     return False
 
 
-def _replace_dangling_in_line(line: str) -> tuple[str, int]:
-    """1 行内の生 `X#NNN` を `[deleted X#NNN]` に置換する。
-
-    インラインバッククォート / 既存 `{{cite:...}}` / エスケープ `\\X#NNN` ・
-    `\\{{cite:...}}` 内はスキップする。convert_raw_to_cite と同じスキップ規則を
-    意図的に複製する: pure 関数 (citations_pure._convert_line_raw_to_cite) は
-    本 PR スコープ外で変更しない方針のため、dangling → `[deleted]` 変換は hook
-    側で post-process パスとして独立に実装する。
-    """
-    out: list[str] = []
-    i = 0
-    n = len(line)
-    deleted = 0
-    while i < n:
-        ch = line[i]
-        if ch == "`":
-            close = line.find("`", i + 1)
-            if close == -1:
-                out.append(line[i:])
-                break
-            out.append(line[i : close + 1])
-            i = close + 1
-            continue
-        if line[i : i + 7] == "{{cite:":
-            end = line.find("}}", i + 7)
-            if end == -1:
-                out.append(ch)
-                i += 1
-                continue
-            out.append(line[i : end + 2])
-            i = end + 2
-            continue
-        if ch == "\\":
-            if line[i + 1 : i + 3] == "{{":
-                end = line.find("}}", i + 1)
-                if end == -1:
-                    out.append(ch)
-                    i += 1
-                    continue
-                out.append(line[i : end + 2])
-                i = end + 2
-                continue
-            tail = line[i + 1 : i + 2]
-            if tail in TYPE_CODE_TO_NAME:
-                m = _RAW_CITE_PATTERN.match(line, i + 1)
-                if m and m.start() == i + 1:
-                    out.append(line[i : m.end()])
-                    i = m.end()
-                    continue
-            out.append(ch)
-            i += 1
-            continue
-        m = _RAW_CITE_PATTERN.match(line, i)
-        if m:
-            code = m.group(1)
-            target_id = m.group(2)
-            out.append(f"[deleted {code}#{target_id}]")
-            deleted += 1
-            i = m.end()
-            continue
-        out.append(ch)
-        i += 1
-    return "".join(out), deleted
-
-
-def convert_dangling_to_deleted(text: str) -> tuple[str, int]:
-    """convert_raw_to_cite 通過後の残存生 `X#NNN` を `[deleted X#NNN]` に変換する。
-
-    フェンスコードブロック内はスキップ (convert_raw_to_cite の skip 規則と同型)。
-    """
-    out_lines: list[str] = []
-    in_fence = False
-    total = 0
-    for raw_line in text.split("\n"):
-        stripped = raw_line.lstrip()
-        if stripped.startswith("```") or stripped.startswith("~~~"):
-            in_fence = not in_fence
-            out_lines.append(raw_line)
-            continue
-        if in_fence:
-            out_lines.append(raw_line)
-            continue
-        new_line, count = _replace_dangling_in_line(raw_line)
-        total += count
-        out_lines.append(new_line)
-    return "\n".join(out_lines), total
-
-
 def _resolve_db_path() -> str:
     return os.environ.get("CC_MEMORY_DB_PATH", str(DEFAULT_DB_PATH))
 
@@ -168,7 +78,9 @@ def _sanitize_content(content: str, db_path: str) -> tuple[str, dict]:
     呼び `close()` は呼ばないため、try/finally で明示的に閉じて fd リークを防ぐ。
 
     Returns (sanitized_text, counters)。counters は convert_raw_to_cite 由来 +
-    `deleted_count` (dangling → [deleted] に変換した件数)。
+    `deleted_count` (dangling → [deleted] に変換した件数)。dangling → [deleted]
+    への確定書き換えは convert_raw_to_cite 内部で完結しているため、後段の
+    追加変換は行わない。
     """
     ro_conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
@@ -178,9 +90,8 @@ def _sanitize_content(content: str, db_path: str) -> tuple[str, dict]:
         converted, counters = convert_raw_to_cite(content, target_validator=validator)
     finally:
         ro_conn.close()
-    deleted_text, deleted_count = convert_dangling_to_deleted(converted)
-    counters["deleted_count"] = deleted_count
-    return deleted_text, counters
+    counters["deleted_count"] = counters["skipped_dangling"]
+    return converted, counters
 
 
 def main() -> int:

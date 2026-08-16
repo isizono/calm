@@ -214,7 +214,7 @@ class TestWordBoundary:
         assert out == text
         assert counters["sanitized_count"] == 0
 
-    def test_id_after_url_slash_not_converted(self):
+    def test_id_after_url_slash_converts(self):
         # URL の path 末尾でも独立したトークンとして変換される (スラッシュ区切り
         # 複数 ID 列挙を認識するための仕様変更)
         out, _ = convert_raw_to_cite("https://x.example/M#1")
