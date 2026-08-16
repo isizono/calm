@@ -10,6 +10,7 @@ AIエージェントが人間の判断を待つ問いを1件積み、人間が�
 """
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from typing import Optional
@@ -36,6 +37,8 @@ logger = logging.getLogger(__name__)
 QUESTION_MAX_LEN = 500
 CONTEXT_MAX_LEN = 8000
 ANSWER_BODY_MAX_LEN = 8000
+CHOICE_MAX_LEN = 100
+CHOICES_MAX_COUNT = 3
 
 # fingerprint単位でのwithdraw直後の再post拒否ウィンドウ（誤操作保護、session条件なし）。
 WITHDRAW_COOLDOWN_MINUTES = 5
@@ -67,6 +70,7 @@ def add_ask_with_conn(
     tags: list[str],
     kind: str = "ask",
     context: Optional[str] = None,
+    choices: Optional[list[str]] = None,
     session_id: Optional[str] = None,
 ) -> dict:
     """検証 + upsert + ask_blocks/ask_requestersのUNION追記をconn上で行う。
@@ -82,8 +86,9 @@ def add_ask_with_conn(
     kindはask新規作成（fingerprint一致なし）のときのみ適用される。dedup時
     （同一fingerprintのopen ask再post）は今回渡されたkindを無視し、初回投入時の
     値を保持する（判断が迷いうる点: dedupは同一問いの再出現であり、初回の分類が正で
-    よいという方針を採用した）。tagsの扱いは呼び出し元（add_ask）がask_tagsの実在で
-    判定する（本関数の責務外、add_askのdocstring参照）。
+    よいという方針を採用した）。choicesもdedup時は今回渡された値を無視し、初回投入時の
+    値を保持する（kindと同じ考え方に揃える）。tagsの扱いは呼び出し元（add_ask）が
+    ask_tagsの実在で判定する（本関数の責務外、add_askのdocstring参照）。
 
     Returns:
         成功時: {"id": int, "deduped": bool, "occurrence_count": int}
@@ -100,6 +105,23 @@ def add_ask_with_conn(
         return _validation_error("blocks must not be empty")
     if kind not in VALID_KINDS:
         return _validation_error(f"Invalid kind: {kind!r}. Must be one of {sorted(VALID_KINDS)}")
+
+    if choices is not None:
+        if not (1 <= len(choices) <= CHOICES_MAX_COUNT):
+            return _validation_error(
+                f"choices must contain between 1 and {CHOICES_MAX_COUNT} items"
+            )
+        stripped_choices = []
+        for choice in choices:
+            choice = (choice or "").strip()
+            if not choice:
+                return _validation_error("choices must not contain empty strings")
+            if len(choice) > CHOICE_MAX_LEN:
+                return _validation_error(
+                    f"each choice must not exceed {CHOICE_MAX_LEN} characters"
+                )
+            stripped_choices.append(choice)
+        choices = stripped_choices
 
     parsed_tags = validate_and_parse_tags(tags, required=True)
     if isinstance(parsed_tags, dict):
@@ -140,10 +162,12 @@ def add_ask_with_conn(
             f"{WITHDRAW_COOLDOWN_MINUTES} minutes; wait before re-posting"
         )
 
+    choices_json = json.dumps(choices, ensure_ascii=False) if choices is not None else None
+
     cursor = conn.execute(
         """
-        INSERT INTO asks (question, context, fingerprint, kind, first_seen_session_id, last_seen_session_id)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO asks (question, context, fingerprint, kind, choices, first_seen_session_id, last_seen_session_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(fingerprint) WHERE status = 'open'
         DO UPDATE SET
             occurrence_count = asks.occurrence_count + 1,
@@ -152,7 +176,7 @@ def add_ask_with_conn(
             last_seen_session_id = excluded.last_seen_session_id
         RETURNING id, occurrence_count
         """,
-        (question, context, fingerprint, kind, session_id, session_id),
+        (question, context, fingerprint, kind, choices_json, session_id, session_id),
     )
     ask_id, occurrence_count = cursor.fetchone()
 
@@ -183,10 +207,15 @@ def add_ask(
     tags: list[str],
     kind: str = "ask",
     context: Optional[str] = None,
+    choices: Optional[list[str]] = None,
     session_id: Optional[str] = None,
 ) -> dict:
     """MCPツール本体。add_ask_with_connで書き込みcommit後、タグ解決・紐付け、
     embedding生成と近傍検索（similar_precedents/similar_asks）を行う。
+
+    choices: 選択肢テンプレート（optional、最大3件、1件100字以内）。指定すると
+        AskUserQuestion風の選択式UIをダッシュボード等で組み立てられる。回答
+        （answer_ask）は引き続き自由文字列のまま。
 
     タグ解決（`tag_service.resolve_tags`）は、このask（ask_id）にまだ1件も
     タグが紐付いていない場合にのみ行う（occurrence_countではなくask_tagsの実在で
@@ -213,7 +242,14 @@ def add_ask(
     conn = get_connection()
     try:
         result = add_ask_with_conn(
-            conn, question, blocks, tags, kind=kind, context=context, session_id=session_id
+            conn,
+            question,
+            blocks,
+            tags,
+            kind=kind,
+            context=context,
+            choices=choices,
+            session_id=session_id,
         )
         if "error" in result:
             conn.rollback()
@@ -282,6 +318,9 @@ def _build_ask_item(conn: sqlite3.Connection, ask: dict, tags: list[str]) -> dic
     """
     ask.pop("fingerprint", None)
     ask_id = ask["id"]
+
+    if ask.get("choices") is not None:
+        ask["choices"] = json.loads(ask["choices"])
 
     block_rows = conn.execute(
         """
@@ -357,6 +396,7 @@ def get_asks(
         他エンティティへの内部ID参照のためpromoted_decision_id_rawへ退避される。
         blocks/requesters/tags（タグ文字列のリスト。notesは含まない）が合流される
         （blocksの各要素はid_raw/title/status、requestersはsession_id文字列のリスト）。
+        choicesはadd_ask時に指定していればstring配列、未指定ならnull。
     """
     if not triage_pending_only and status is not None and status not in VALID_STATUSES:
         return _validation_error(

@@ -135,6 +135,13 @@ paths:
                   - type: string
                   - type: 'null'
                   default: null
+                choices:
+                  anyOf:
+                  - items:
+                      type: string
+                    type: array
+                  - type: 'null'
+                  default: null
               required:
               - question
               - blocks
