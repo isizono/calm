@@ -8,8 +8,8 @@ hookSpecificOutput.updatedToolOutput で stdout へ返す。updatedToolOutput �
 
 opt-out:
 - 環境変数 `CC_MEMORY_SANITIZE_DISABLE=1` set: 即 exit 0
-- cwd が cc-memory リポジトリ内 (pyproject.toml `[project].name == 'claude-code-memory'`
-  を上方向探索で検出): 即 exit 0
+- cwd が cc-memory リポジトリ内 (pyproject.toml `[project].name` が `_REPO_PROJECT_NAMES`
+  のいずれかに一致することを上方向探索で検出): 即 exit 0
 
 dangling (target 不在) は `[deleted X#NNN]` 形式へ変換する。
 本文が実際に変化した場合のみ citation_event_log (source='transcript_post_tool_use')
@@ -38,11 +38,12 @@ from src.services.citations_pure import (
 )
 
 DEFAULT_DB_PATH = Path.home() / ".claude" / ".claude-code-memory" / "discussion.db"
-_REPO_PROJECT_NAME = "claude-code-memory"
+# 実プロジェクトの name は "calm" (旧 "claude-code-memory")。両方を受け入れる。
+_REPO_PROJECT_NAMES = ("claude-code-memory", "calm")
 
 
 def _is_in_cc_memory_repo(cwd: str | None) -> bool:
-    """cwd から上方向に pyproject.toml を探し name=='claude-code-memory' なら True。
+    """cwd から上方向に pyproject.toml を探し name が _REPO_PROJECT_NAMES に含まれれば True。
 
     最初に見つかった pyproject.toml の name が一致しない場合は False (別プロジェクト)。
     pyproject.toml が見つからない / 読めない場合は False。
@@ -63,7 +64,7 @@ def _is_in_cc_memory_repo(cwd: str | None) -> bool:
         except (OSError, tomllib.TOMLDecodeError):
             return False
         name = data.get("project", {}).get("name")
-        return name == _REPO_PROJECT_NAME
+        return name in _REPO_PROJECT_NAMES
     return False
 
 
