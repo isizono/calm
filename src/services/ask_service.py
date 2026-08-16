@@ -396,6 +396,7 @@ def get_asks(
         他エンティティへの内部ID参照のためpromoted_decision_id_rawへ退避される。
         blocks/requesters/tags（タグ文字列のリスト。notesは含まない）が合流される
         （blocksの各要素はid_raw/title/status、requestersはsession_id文字列のリスト）。
+        choicesはadd_ask時に指定していればstring配列、未指定ならnull。
     """
     if not triage_pending_only and status is not None and status not in VALID_STATUSES:
         return _validation_error(
