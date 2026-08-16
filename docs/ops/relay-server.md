@@ -219,7 +219,7 @@ launchctl kickstart -k gui/$(id -u)/com.isizono.relay-v2
 
 relay が federation 配達 payload に `publisher_identity`（`sub@handle` 形式）を刻印する変更と、cc-memory 側がそれを見て federation 由来メッセージを `is_federation_origin` / `trust_notice` でマークする変更は、別リポジトリの別々のデプロイ操作である。cc-memory 側のマーキングは `publisher_identity` フィールドの有無だけで federation 由来かどうかを判定するため、relay 側の刻印がまだ反映されていない relay に接続した状態で cc-memory 側だけ先に更新すると、該当フィールド自体が届かず federation 由来メッセージが無警告で local 扱いのまま通過する（fail-open）。
 
-デプロイは必ず relay → CALM の順で行うこと。逆順にすると、両者が揃うまでの間マーキングが機能しない窓ができる。
+デプロイは必ず relay → cc-memory の順で行うこと。逆順にすると、両者が揃うまでの間マーキングが機能しない窓ができる。
 
 ## セッション側 watcher
 
