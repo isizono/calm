@@ -1883,6 +1883,7 @@ def add_ask(
     tags: list[str],
     kind: str = "ask",
     context: str | None = None,
+    choices: list[str] | None = None,
 ) -> dict:
     """人間の判断を待つ問いを1件積む（答え待ちの間、blocksで指定したactivityを止める）。
 
@@ -1912,6 +1913,9 @@ def add_ask(
         tags: タグ配列（必須、1個以上。`domain:`タグを最低1つ含むこと。素タグは任意）
         kind: "ask"（通常ask、デフォルト）または"meta"（メタask）
         context: 背景（optional、8000字以内）
+        choices: 選択肢テンプレート（optional、最大3件、1件100字以内）。指定すると
+            AskUserQuestion風の選択式UIをダッシュボード等で組み立てられる。
+            回答（answer_ask）は引き続き自由文字列のまま
 
     Returns:
         成功時: {"id": int, "deduped": bool, "occurrence_count": int,
@@ -1923,7 +1927,13 @@ def add_ask(
             呼べばタグ解決が再試行される）
     """
     return ask_service.add_ask(
-        question, blocks, tags, kind=kind, context=context, session_id=_current_session_id()
+        question,
+        blocks,
+        tags,
+        kind=kind,
+        context=context,
+        choices=choices,
+        session_id=_current_session_id(),
     )
 
 
@@ -2068,6 +2078,58 @@ def withdraw_ask(ask_id: int, reason: str) -> dict:
             （対象がopen状態でない場合を含む）
     """
     return ask_service.withdraw_ask(ask_id, reason, session_id=_current_session_id())
+
+
+# asks ダッシュボード向けHTTP API（MCPプロトコル外の薄いラッパー）。
+# 認証・CSRF対策なし（cc-memoryはlocalhostに他者がアクセスできる場合を
+# 脅威モデルに含めていないため）。get_asks/answer_askの2呼び出しに限定し、
+# 他のMCPツール（add_decisions等の破壊的・機微な操作）には一切触れない。
+
+
+def _ask_error_status_code(error: dict) -> int:
+    code = error.get("code")
+    if code == "VALIDATION_ERROR":
+        return 400
+    return 500
+
+
+@mcp.custom_route("/api/asks", methods=["GET"])
+async def http_get_asks(request: Request) -> JSONResponse:
+    """ダッシュボード等の外部アプリ向け、MCPプロトコル外の薄いGET API。認証なし（localhost限定運用前提）。"""
+    status = request.query_params.get("status", "open")
+    result = ask_service.get_asks(status=status)
+    if "error" in result:
+        return JSONResponse(result, status_code=_ask_error_status_code(result["error"]))
+    return JSONResponse(result)
+
+
+@mcp.custom_route("/api/asks/{ask_id}/answer", methods=["POST"])
+async def http_answer_ask(request: Request) -> JSONResponse:
+    """ダッシュボード等の外部アプリ向け、MCPプロトコル外の薄いPOST API。認証なし（localhost限定運用前提）。"""
+    try:
+        ask_id = int(request.path_params["ask_id"])
+    except (KeyError, ValueError):
+        return JSONResponse(
+            {"error": {"code": "VALIDATION_ERROR", "message": "ask_id must be an integer"}},
+            status_code=400,
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"error": {"code": "VALIDATION_ERROR", "message": "invalid JSON body"}},
+            status_code=400,
+        )
+    answer_body = body.get("answer_body")
+    if not isinstance(answer_body, str):
+        return JSONResponse(
+            {"error": {"code": "VALIDATION_ERROR", "message": "answer_body must be a string"}},
+            status_code=400,
+        )
+    result = ask_service.answer_ask(ask_id, answer_body, session_id="dashboard")
+    if "error" in result:
+        return JSONResponse(result, status_code=_ask_error_status_code(result["error"]))
+    return JSONResponse(result)
 
 
 # ----------------------------

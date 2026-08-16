@@ -2,8 +2,8 @@
 watch-tags: domain:cc-memory
 watch-direction: true
 watch-migrations: true
-last-synced: 2026-08-02
-last-synced-migration: 0068
+last-synced: 2026-08-16
+last-synced-migration: 0069
 -->
 
 # cc-memory DBスキーマ v0
@@ -493,10 +493,11 @@ cc-memory自身の故障報告・使用感不満・矛盾検出・運用計測�
 - `status='open'` の行に限り `fingerprint` を UNIQUE とする部分インデックスを張る。同一 fingerprint の open 行が既存なら INSERT は競合し、アプリ層は occurrence_count を加算する（signal_events と同じ dedup パターン、helperは `dedup_helpers` として共有）。トリアージ済み（answered/promoted/dismissed）・取り下げ済み（withdrawn）の同型問い再発は新規行になる
 - CHECK制約で「open/withdrawn 以外は answer_body/answered_at 必須」「triage 設定は answered_at 必須」「promoted は promoted_decision_id 必須・それ以外は NULL 必須」「withdrawn は withdrawn_at 必須・それ以外は NULL 必須」を強制する
 - `kind`（0068 追加）は `'ask'`（通常ask、既定）/`'meta'`（メタask）の2値のみ CHECK制約で固定する。メタaskは、同型の問いが繰り返され裁定が一貫していると判断されたときに `ask-distill` skill 経由で起票される「この型の問いを今後判例に従って自己裁定してよいか」を問う一段上のask。一般化ルールの発効は人間のメタask裁定でのみ行われる
+- `choices`（0069 追加）はJSON配列文字列（例: `'["A案", "B案", "C案"]'`）で保存する選択肢テンプレート。nullable、既存行への遡及適用なし。AskUserQuestion風の「最大3択+フリーテキスト」UIをダッシュボード等で組み立てるための添え物で、回答（`answer_ask`/`answer_body`）のスキーマは変えず引き続き自由文字列のまま。件数上限（最大3件）・文字数上限（1件100字）はDB制約ではなくサービス層で強制する。dedup時（同一fingerprintのopen ask再post）は`kind`と同じく今回渡された値を無視し、初回投入時の値を保持する
 - リレーション（related/belongs_to）には接続しない（v1では非対応）。タグは 0068 で `ask_tags` 経由の接続に対応した（§3.24 参照）が、topic からの継承（`get_effective_tags` 相当のUNION）はない点で decision/log とは異なる。近傍検索は ask_vec を経由する
 - 文字列長上限（question 500字、context/answer_body 8000字）は DB 制約ではなくサービス層（`ask_service`）で強制する
 
-関連 migration: 0062_add_asks（本体）、0068_add_asks_kind_and_tags（kind列 + ask_tags）
+関連 migration: 0062_add_asks（本体）、0068_add_asks_kind_and_tags（kind列 + ask_tags）、0069_add_asks_choices（choices列）
 
 カラム一覧・インデックス: `db-schema-tables.md` の `asks` 節参照。
 
@@ -670,6 +671,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0066_add_tags_notes_ratchet_trigger | tags.notesが4000字を超えて増加するINSERT/UPDATEをRAISE(ABORT)で拒否するトリガー2本を新設（1タグあたりのラチェット型天井、縮む変更は常に許可） |
 | 0067_add_injection_telemetry | injection_telemetry テーブル新設（記録=クエリ添付の追随カウンタ present側台帳、§3.26） |
 | 0068_add_asks_kind_and_tags | asks に kind 列（'ask'/'meta'、既定'ask'）を追加、ask_tags junction テーブル新設（§3.23, §3.24） |
+| 0069_add_asks_choices | asks に choices 列（JSON配列文字列の選択肢テンプレート、nullable）を追加（§3.23） |
 
 重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。
 
