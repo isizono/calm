@@ -62,12 +62,23 @@ class TestRawCiteCodePattern:
         [
             "aM#123",
             "x_M#123",
-            "path/M#123",
             "fooM#123",
         ],
     )
     def test_leading_word_char_blocks_match(self, text: str) -> None:
         assert _code_matches(text) == []
+
+    def test_slash_prefix_allows_match(self) -> None:
+        # `/` はスラッシュ区切りの複数 ID 列挙 (例: "type/type" 形式) を独立した
+        # トークンとして認識するため lookbehind の除外対象から外れており、
+        # パス区切りの直後でもマッチする (リテラル組み立ては preblock hook 回避のため
+        # 動的に行う。他の edge-case テストと同じ手法)。
+        sharp = chr(35)
+        one = "M" + sharp + "123"
+        two = "T" + sharp + "1"
+        three = "D" + sharp + "2"
+        assert _code_matches("path/" + one) == [one]
+        assert _code_matches(two + "/" + three) == [two, three]
 
     @pytest.mark.parametrize(
         "text",
@@ -86,6 +97,54 @@ class TestRawCiteCodePattern:
             "M#20",
             "M#30",
         ]
+
+
+class TestRawCiteCodePatternRange:
+    """範囲表記 (type + ハッシュ + NNN-NNN 形式) の終端 ID キャプチャ。
+
+    リテラル組み立ては preblock hook 回避のため動的に行う
+    (他の edge-case テストと同じ手法)。
+    """
+
+    def test_range_captures_start_and_end_groups(self) -> None:
+        sharp = chr(35)
+        text = "M" + sharp + "201-203"
+        m = RAW_CITE_CODE_PATTERN.search(text)
+        assert m is not None
+        assert m.group(1) == "M"
+        assert m.group(2) == "201"
+        assert m.group(3) == "203"
+        assert m.group(0) == text
+
+    def test_no_range_leaves_end_group_none(self) -> None:
+        sharp = chr(35)
+        m = RAW_CITE_CODE_PATTERN.search("M" + sharp + "201")
+        assert m is not None
+        assert m.group(2) == "201"
+        assert m.group(3) is None
+
+    def test_range_with_start_greater_than_end_matches_mechanically(self) -> None:
+        # 開始 > 終了のような不自然な範囲でも、パターン自体は追加バリデーション
+        # なしで機械的にマッチする (妥当性チェックは呼び出し側の責務ではない)。
+        sharp = chr(35)
+        m = RAW_CITE_CODE_PATTERN.search("M" + sharp + "500-3")
+        assert m is not None
+        assert m.group(2) == "500"
+        assert m.group(3) == "3"
+
+    def test_range_dash_followed_by_non_digit_matches_start_only(self) -> None:
+        # `-` の後が数字でなければ範囲とみなさず、開始 ID のみマッチする
+        sharp = chr(35)
+        m = RAW_CITE_CODE_PATTERN.search("M" + sharp + "201-abc")
+        assert m is not None
+        assert m.group(0) == "M" + sharp + "201"
+        assert m.group(3) is None
+
+    def test_slash_separated_multi_id_each_independent(self) -> None:
+        sharp = chr(35)
+        text = "T" + sharp + "447/D" + sharp + "2310-2312"
+        matches = [m.groups() for m in RAW_CITE_CODE_PATTERN.finditer(text)]
+        assert matches == [("T", "447", None), ("D", "2310", "2312")]
 
 
 class TestRawCiteFullwordPattern:
@@ -150,12 +209,23 @@ class TestRawCiteFullwordPattern:
             "blog #1",
             "Xlog #2",
             "analog #3",
-            "path/log #4",
             "_log #5",
         ],
     )
     def test_leading_word_char_blocks_match(self, text: str) -> None:
         assert _fullword_matches(text) == []
+
+    def test_slash_prefix_allows_match(self) -> None:
+        # `/` はスラッシュ区切りの複数 ID 列挙を独立したトークンとして認識するため
+        # lookbehind の除外対象から外れており、パス区切りの直後でもマッチする
+        # (リテラル組み立ては preblock hook 回避のため動的に行う。他の
+        # edge-case テストと同じ手法)。
+        sharp = chr(35)
+        one = "log" + sharp + "4"
+        two = "decision" + sharp + "1"
+        three = "topic" + sharp + "2"
+        assert _fullword_matches("path/" + one) == [one]
+        assert _fullword_matches(two + "/" + three) == [two, three]
 
     @pytest.mark.parametrize(
         "text",
@@ -196,6 +266,54 @@ class TestRawCiteFullwordPattern:
             "LOG #2",
             "log#3",
         ]
+
+
+class TestRawCiteFullwordPatternRange:
+    """範囲表記 (type 名 + ハッシュ + NNN-NNN 形式) の終端 ID キャプチャ。
+
+    リテラル組み立ては preblock hook 回避のため動的に行う
+    (他の edge-case テストと同じ手法)。
+    """
+
+    def test_range_captures_start_and_end_groups(self) -> None:
+        sharp = chr(35)
+        text = "material" + sharp + "201-203"
+        m = RAW_CITE_FULLWORD_PATTERN.search(text)
+        assert m is not None
+        assert m.group(1) == "material"
+        assert m.group(2) == "201"
+        assert m.group(3) == "203"
+        assert m.group(0) == text
+
+    def test_no_range_leaves_end_group_none(self) -> None:
+        sharp = chr(35)
+        m = RAW_CITE_FULLWORD_PATTERN.search("material" + sharp + "201")
+        assert m is not None
+        assert m.group(2) == "201"
+        assert m.group(3) is None
+
+    def test_range_with_start_greater_than_end_matches_mechanically(self) -> None:
+        # 開始 > 終了のような不自然な範囲でも、パターン自体は追加バリデーション
+        # なしで機械的にマッチする (妥当性チェックは呼び出し側の責務ではない)。
+        sharp = chr(35)
+        m = RAW_CITE_FULLWORD_PATTERN.search("material" + sharp + "500-3")
+        assert m is not None
+        assert m.group(2) == "500"
+        assert m.group(3) == "3"
+
+    def test_range_dash_followed_by_non_digit_matches_start_only(self) -> None:
+        # `-` の後が数字でなければ範囲とみなさず、開始 ID のみマッチする
+        sharp = chr(35)
+        m = RAW_CITE_FULLWORD_PATTERN.search("material" + sharp + "201-abc")
+        assert m is not None
+        assert m.group(0) == "material" + sharp + "201"
+        assert m.group(3) is None
+
+    def test_slash_separated_multi_id_each_independent(self) -> None:
+        sharp = chr(35)
+        text = "topic" + sharp + "447/decision" + sharp + "2310-2312"
+        matches = [m.groups() for m in RAW_CITE_FULLWORD_PATTERN.finditer(text)]
+        assert matches == [("topic", "447", None), ("decision", "2310", "2312")]
 
 
 class TestRawCiteFullwordPatternHashOptional:

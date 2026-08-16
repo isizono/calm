@@ -86,6 +86,46 @@ class TestScanTextForLiterals:
     def test_word_boundary_trailing_alnum_not_match(self):
         assert preblock_hook._scan_text_for_literals("M#1abc is junk") == []
 
+    def test_slash_preceded_code_now_detected(self):
+        # RAW_CITE_CODE_PATTERN の lookbehind から `/` が除外されたため、
+        # スラッシュ直後の ID (path 末尾や URL 末尾等) も検出対象になる。
+        # 旧パターンではこの `/` が識別子の一部とみなされ非マッチだった。
+        assert preblock_hook._scan_text_for_literals("see path/M#123 here") == [
+            "M#123"
+        ]
+        assert preblock_hook._scan_text_for_literals(
+            "https://x.example/M#1"
+        ) == ["M#1"]
+
+    def test_range_notation_captured_as_single_literal(self):
+        # `(?:-(\d+))?` の追加により、範囲表記は終端まで含めた1つの literal として
+        # 検出される (旧パターンでは `M#201` のみが検出され `-203` は残っていた)。
+        assert preblock_hook._scan_text_for_literals("range M#201-203 here") == [
+            "M#201-203"
+        ]
+
+    def test_slash_preceded_fullword_now_detected(self):
+        # RAW_CITE_FULLWORD_PATTERN の lookbehind から `/` が除外されたため、
+        # スラッシュ直後の fullword ID (path 末尾や URL 末尾等) も検出対象になる。
+        # 旧パターンではこの `/` が識別子の一部とみなされ非マッチだった。
+        sharp = chr(35)
+        literal = "log " + sharp + "123"
+        assert preblock_hook._scan_text_for_literals("see path/" + literal + " here") == [
+            literal
+        ]
+        assert preblock_hook._scan_text_for_literals(
+            "https://x.example/" + literal
+        ) == [literal]
+
+    def test_range_notation_fullword_captured_as_single_literal(self):
+        # `(?:-(\d+))?` の追加により、fullword の範囲表記も終端まで含めた1つの
+        # literal として検出される。
+        sharp = chr(35)
+        literal = "material " + sharp + "201-203"
+        assert preblock_hook._scan_text_for_literals("range " + literal + " here") == [
+            literal
+        ]
+
     def test_empty_string(self):
         assert preblock_hook._scan_text_for_literals("") == []
 
@@ -427,6 +467,64 @@ class TestMainBlockFlow:
         )
         assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
         assert "M#1" in out["hookSpecificOutput"]["permissionDecisionReason"]
+
+    def test_slash_preceded_code_blocks(self, capsys, cc_memory_cwd):
+        # 前方 lookbehind から `/` が外れたことで、path/URL 直後の ID も
+        # 新たに block 対象になる (旧実装ではこのケースは非マッチで通過していた)。
+        out = _run_main_with_event(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "echo path/M#123 leak"},
+                "session_id": "s1",
+            },
+            capsys,
+        )
+        assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "M#123" in out["hookSpecificOutput"]["permissionDecisionReason"]
+
+    def test_range_notation_blocks_with_full_range_in_reason(self, capsys, cc_memory_cwd):
+        # 範囲表記の終端まで含めた文字列が matched_literals (deny reason) に載る。
+        out = _run_main_with_event(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "echo M#201-203 leak"},
+                "session_id": "s1",
+            },
+            capsys,
+        )
+        assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "M#201-203" in out["hookSpecificOutput"]["permissionDecisionReason"]
+
+    def test_slash_preceded_fullword_blocks(self, capsys, cc_memory_cwd):
+        # 前方 lookbehind から `/` が外れたことで、path/URL 直後の fullword ID も
+        # 新たに block 対象になる (旧実装ではこのケースは非マッチで通過していた)。
+        sharp = chr(35)
+        literal = "log " + sharp + "123"
+        out = _run_main_with_event(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "echo path/" + literal + " leak"},
+                "session_id": "s1",
+            },
+            capsys,
+        )
+        assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert literal in out["hookSpecificOutput"]["permissionDecisionReason"]
+
+    def test_range_notation_fullword_blocks_with_full_range_in_reason(self, capsys, cc_memory_cwd):
+        # fullword の範囲表記も終端まで含めた文字列が matched_literals (deny reason) に載る。
+        sharp = chr(35)
+        literal = "material " + sharp + "201-203"
+        out = _run_main_with_event(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "echo " + literal + " leak"},
+                "session_id": "s1",
+            },
+            capsys,
+        )
+        assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert literal in out["hookSpecificOutput"]["permissionDecisionReason"]
 
     def test_allowlist_tool_passes_through(self, capsys, cc_memory_cwd):
         # cc-memory MCP は scan されない

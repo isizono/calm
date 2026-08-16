@@ -197,6 +197,26 @@ def _count_raw_in_segment(segment: str) -> int:
     )
 
 
+def _cite_or_deleted(
+    code: str,
+    target_id: int,
+    target_type: str,
+    target_validator: Callable[[str, int], bool] | None,
+    counters: dict,
+) -> str:
+    """1 個の target を `{{cite:X#NNN}}` または `[deleted X#NNN]` に変換する。
+
+    target_validator が None なら存在チェックなしで常に cite 化する。
+    False を返した target (dangling) は `[deleted X#NNN]` に確定書き換えし、
+    skipped_dangling へ加算する。
+    """
+    if target_validator is not None and not target_validator(target_type, target_id):
+        counters["skipped_dangling"] += 1
+        return f"[deleted {code}#{target_id}]"
+    counters["sanitized_count"] += 1
+    return "{{cite:" + code + "#" + str(target_id) + "}}"
+
+
 def _convert_line_raw_to_cite(
     line: str,
     target_validator: Callable[[str, int], bool] | None,
@@ -208,8 +228,15 @@ def _convert_line_raw_to_cite(
     - インラインバッククォート区間 (`...`)
     - エスケープ `\\X#NNN` (バッククスラッシュ直後の生リテラル)
     - 既に `{{cite:X#NNN}}` の中にあるもの (二重変換防止)
+    - 既に `[deleted X#NNN]` の中にあるもの (二重変換防止、後述の dangling 書き換え結果)
     各スキップ区間に含まれる生リテラル数は counters の対応キーへ加算する。
-    target_validator が False を返した target は変換せず skipped_dangling にカウント。
+
+    範囲表記 (`X#NNN-NNN`) は両端をそれぞれ独立に target_validator へかけ、
+    それぞれ個別に cite 化 / dangling 書き換えする。区切りの `-` はそのまま残し、
+    範囲内の中間 ID を展開して生成することはしない。
+
+    target_validator が False を返した target (dangling) は `[deleted X#NNN]` に
+    確定書き換えし、skipped_dangling にカウントする (raw のまま残さない)。
     """
     out_parts: list[str] = []
     i = 0
@@ -243,6 +270,19 @@ def _convert_line_raw_to_cite(
             out_parts.append(segment)
             i = end + 2
             continue
+        # 既存 `[deleted X#NNN]` マーカー (dangling 書き換え結果): 内部の
+        # `X#NNN` は再スキャン対象から外す (二重変換防止、冪等性の担保)
+        if line[i : i + 9] == "[deleted ":
+            end = line.find("]", i + 9)
+            if end == -1:
+                out_parts.append(ch)
+                i += 1
+                continue
+            segment = line[i : end + 1]
+            counters["skipped_in_existing_cite"] += _count_raw_in_segment(segment)
+            out_parts.append(segment)
+            i = end + 1
+            continue
         # エスケープ: `\X#NNN` または `\{{cite:...}}`
         if ch == "\\":
             # `\{{cite:...}}` は既存パーサと同じく全体スキップ (エスケープ扱い)
@@ -266,7 +306,7 @@ def _convert_line_raw_to_cite(
                     counters["skipped_escape"] += 1
                     i = m.end()
                     continue
-            # `\log #123` 等 fullword エスケープ: バックスラッシュ直後が
+            # `\` + type名 + ハッシュ + NNN 形式の fullword エスケープ: バックスラッシュ直後が
             # fullword の type 名なら全体スキップ
             m_fw = _RAW_CITE_FULLWORD_PATTERN.match(line, i + 1)
             if m_fw and m_fw.start() == i + 1:
@@ -277,36 +317,45 @@ def _convert_line_raw_to_cite(
             out_parts.append(ch)
             i += 1
             continue
-        # 生 `X#NNN` (code 形式)
+        # 生 `X#NNN` (code 形式)。範囲表記なら group(3) に終端 ID が入る。
         m = _RAW_CITE_PATTERN.match(line, i)
         if m:
             code = m.group(1)
-            target_id = int(m.group(2))
+            start_id = int(m.group(2))
+            end_id_raw = m.group(3)
             target_type = TYPE_CODE_TO_NAME[code]
-            if target_validator is not None and not target_validator(target_type, target_id):
-                out_parts.append(line[i : m.end()])
-                counters["skipped_dangling"] += 1
-                i = m.end()
-                continue
-            out_parts.append("{{cite:" + code + "#" + str(target_id) + "}}")
-            counters["sanitized_count"] += 1
+            start_out = _cite_or_deleted(
+                code, start_id, target_type, target_validator, counters
+            )
+            if end_id_raw is None:
+                out_parts.append(start_out)
+            else:
+                end_out = _cite_or_deleted(
+                    code, int(end_id_raw), target_type, target_validator, counters
+                )
+                out_parts.append(start_out + "-" + end_out)
             i = m.end()
             continue
-        # 生 fullword (`log #123` 等)。マッチしたら大文字 code に正規化して
-        # `{{cite:L#NNN}}` 形式に統一する。
+        # 生 fullword (type名 + 空白 + ハッシュ + NNN 等)。マッチしたら大文字 code に
+        # 正規化して `{{cite:L#NNN}}` 形式に統一する。範囲表記なら group(3) に
+        # 終端 ID が入る。
         m_fw = _RAW_CITE_FULLWORD_PATTERN.match(line, i)
         if m_fw:
             name = m_fw.group(1).lower()
             code = FULLWORD_TO_CODE[name]
-            target_id = int(m_fw.group(2))
+            start_id = int(m_fw.group(2))
+            end_id_raw = m_fw.group(3)
             target_type = TYPE_CODE_TO_NAME[code]
-            if target_validator is not None and not target_validator(target_type, target_id):
-                out_parts.append(line[i : m_fw.end()])
-                counters["skipped_dangling"] += 1
-                i = m_fw.end()
-                continue
-            out_parts.append("{{cite:" + code + "#" + str(target_id) + "}}")
-            counters["sanitized_count"] += 1
+            start_out = _cite_or_deleted(
+                code, start_id, target_type, target_validator, counters
+            )
+            if end_id_raw is None:
+                out_parts.append(start_out)
+            else:
+                end_out = _cite_or_deleted(
+                    code, int(end_id_raw), target_type, target_validator, counters
+                )
+                out_parts.append(start_out + "-" + end_out)
             i = m_fw.end()
             continue
         out_parts.append(ch)
@@ -329,16 +378,20 @@ def convert_raw_to_cite(
         text: 入力テキスト
         target_validator: `(target_type, target_id) -> bool` を返す関数。
             None なら存在チェックなし (debug モード、全変換)。
-            False を返した target は変換せず skipped_dangling にカウントする。
+            False を返した target は `[deleted X#NNN]` に確定書き換えし、
+            skipped_dangling にカウントする。
 
     Returns:
         (変換後テキスト, counters)
         counters = {
-            "sanitized_count": 変換した生リテラル数,
+            "sanitized_count": 変換した (cite 化した) target 数。範囲表記は両端を
+                個別に数える,
             "skipped_in_codeblock": フェンス + インラインバッククォート内に含まれた生リテラル数,
-            "skipped_in_existing_cite": 既存 `{{cite:...}}` 内に含まれた生リテラル数,
+            "skipped_in_existing_cite": 既存 `{{cite:...}}` / `[deleted X#NNN]` 内に
+                含まれた生リテラル数 (二重変換防止でスキップした分),
             "skipped_escape": `\\X#NNN` エスケープでスキップした生リテラル数,
-            "skipped_dangling": target_validator が False を返してスキップした target 数,
+            "skipped_dangling": target_validator が False を返し `[deleted X#NNN]` に
+                書き換えた target 数。範囲表記は dangling だった側のみ計上,
         }
     """
     counters = _new_convert_counters()
