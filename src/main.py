@@ -2102,6 +2102,21 @@ def _ask_error_status_code(error: dict) -> int:
     return 500
 
 
+def _sanitize_ask_error(result: dict, context: str) -> dict:
+    """DATABASE_ERRORのmessageを一般化し、詳細はログにのみ残す。
+
+    ask_serviceが返すDATABASE_ERRORのmessageは例外の文字列表現（DBパスの
+    断片やSQL文の一部を含みうる）で、HTTP API経由で外部に漏らすと内部
+    構造の手がかりを与えてしまう。VALIDATION_ERRORはユーザー入力起因で
+    内部情報を含まないためそのまま返す。
+    """
+    error = result["error"]
+    if error.get("code") == "DATABASE_ERROR":
+        logger.error("%s: %s", context, error.get("message"))
+        return {"error": {"code": "DATABASE_ERROR", "message": "internal error"}}
+    return result
+
+
 def _build_cors_middleware() -> Middleware:
     """asksダッシュボードAPI（/api/asks系）向けのCORS許可設定を組み立てる。
 
@@ -2144,8 +2159,26 @@ async def http_get_asks(request: Request) -> JSONResponse:
     if origin_error is not None:
         return origin_error
     status = request.query_params.get("status", "open")
-    result = ask_service.get_asks(status=status)
+    kwargs: dict = {"status": status}
+    for param_name in ("limit", "offset"):
+        raw_value = request.query_params.get(param_name)
+        if raw_value is None:
+            continue
+        try:
+            kwargs[param_name] = int(raw_value)
+        except ValueError:
+            return JSONResponse(
+                {
+                    "error": {
+                        "code": "VALIDATION_ERROR",
+                        "message": f"{param_name} must be an integer",
+                    }
+                },
+                status_code=400,
+            )
+    result = ask_service.get_asks(**kwargs)
     if "error" in result:
+        result = _sanitize_ask_error(result, "http_get_asks")
         return JSONResponse(result, status_code=_ask_error_status_code(result["error"]))
     return JSONResponse(result)
 
@@ -2183,6 +2216,7 @@ async def http_answer_ask(request: Request) -> JSONResponse:
         )
     result = ask_service.answer_ask(ask_id, answer_body, session_id="dashboard")
     if "error" in result:
+        result = _sanitize_ask_error(result, "http_answer_ask")
         return JSONResponse(result, status_code=_ask_error_status_code(result["error"]))
     return JSONResponse(result)
 

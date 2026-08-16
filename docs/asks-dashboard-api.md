@@ -26,6 +26,10 @@ open状態のask一覧を取得する。
 | 名前 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- |
 | status | no | `open` | `open`/`answered`/`promoted`/`dismissed`/`withdrawn`のいずれか |
+| limit | no | 20 | 取得件数上限（最大100件）。省略時はサービス層のデフォルト値がそのまま適用される |
+| offset | no | 0 | 取得開始位置（ページネーション用） |
+
+`limit`はデフォルト20件で打ち切られるため、`total_count`が返却件数より多い場合は`offset`を進めて追加取得すること。`limit`/`offset`が整数として解釈できない値のときは400（`VALIDATION_ERROR`）を返す。
 
 **レスポンス（200）**
 
@@ -59,7 +63,7 @@ open状態のask一覧を取得する。
 {"error": {"code": "VALIDATION_ERROR", "message": "..."}}
 ```
 
-`status`が不正な値のときは400（`VALIDATION_ERROR`）、`Origin`ヘッダが許可外のときは403（`FORBIDDEN`、詳細は上記「Originチェック / CORS」参照）、DB起因のエラーは500（`DATABASE_ERROR`）。
+`status`が不正な値のとき・`limit`/`offset`が整数として解釈できない値のときは400（`VALIDATION_ERROR`）、`Origin`ヘッダが許可外のときは403（`FORBIDDEN`、詳細は上記「Originチェック / CORS」参照）、DB起因のエラーは500（`DATABASE_ERROR`）。`DATABASE_ERROR`の`message`は内部情報を含まない一般化された文言（`"internal error"`）を返す。詳細はサーバー側のログにのみ出力される。
 
 ### POST /api/asks/{ask_id}/answer
 
@@ -97,7 +101,7 @@ open状態のaskに1回だけ回答する。
 {"error": {"code": "VALIDATION_ERROR", "message": "..."}}
 ```
 
-`ask_id`が整数でない・リクエストボディが不正なJSON・`answer_body`が文字列でない・対象がopen状態でない、はいずれも400（`VALIDATION_ERROR`）。`Origin`ヘッダが許可外のときは403（`FORBIDDEN`、詳細は上記「Originチェック / CORS」参照）。DB起因のエラーは500（`DATABASE_ERROR`）。
+`ask_id`が整数でない・リクエストボディが不正なJSON・`answer_body`が文字列でない・対象がopen状態でない、はいずれも400（`VALIDATION_ERROR`）。`Origin`ヘッダが許可外のときは403（`FORBIDDEN`、詳細は上記「Originチェック / CORS」参照）。DB起因のエラーは500（`DATABASE_ERROR`、`message`は一般化された文言。詳細はサーバー側のログにのみ出力される）。
 
 ## サンプル
 

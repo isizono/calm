@@ -104,6 +104,77 @@ class TestHttpGetAsks:
         body = json.loads(response.body)
         assert body["asks"][0]["choices"] == ["A案", "B案"]
 
+    def test_limit_and_offset_query_params_are_passed_through(self, temp_db, monkeypatch):
+        captured = {}
+
+        def _fake_get_asks(**kwargs):
+            captured.update(kwargs)
+            return {"asks": [], "total_count": 0}
+
+        monkeypatch.setattr(ak, "get_asks", _fake_get_asks)
+
+        response = asyncio.run(
+            http_get_asks(_make_get_request(query_string=b"status=open&limit=5&offset=10"))
+        )
+        assert response.status_code == 200
+        assert captured == {"status": "open", "limit": 5, "offset": 10}
+
+    def test_limit_and_offset_omitted_when_not_specified(self, temp_db, monkeypatch):
+        captured = {}
+
+        def _fake_get_asks(**kwargs):
+            captured.update(kwargs)
+            return {"asks": [], "total_count": 0}
+
+        monkeypatch.setattr(ak, "get_asks", _fake_get_asks)
+
+        response = asyncio.run(http_get_asks(_make_get_request(query_string=b"status=open")))
+        assert response.status_code == 200
+        assert captured == {"status": "open"}
+        assert "limit" not in captured
+        assert "offset" not in captured
+
+    def test_non_integer_limit_returns_400(self, temp_db):
+        response = asyncio.run(
+            http_get_asks(_make_get_request(query_string=b"limit=abc"))
+        )
+        assert response.status_code == 400
+        body = json.loads(response.body)
+        assert body["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_non_integer_offset_returns_400(self, temp_db):
+        response = asyncio.run(
+            http_get_asks(_make_get_request(query_string=b"offset=xyz"))
+        )
+        assert response.status_code == 400
+        body = json.loads(response.body)
+        assert body["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_limit_beyond_open_count_actually_limits_results(self, temp_db):
+        act = _make_activity()
+        for i in range(3):
+            ak.add_ask(f"question {i}", tags=["domain:test"], blocks=[act])
+
+        response = asyncio.run(
+            http_get_asks(_make_get_request(query_string=b"limit=2"))
+        )
+        body = json.loads(response.body)
+        assert body["total_count"] == 3
+        assert len(body["asks"]) == 2
+
+    def test_database_error_message_is_generalized(self, temp_db, monkeypatch):
+        def _fake_get_asks(**kwargs):
+            return {"error": {"code": "DATABASE_ERROR", "message": "no such table: asks_secret_internal"}}
+
+        monkeypatch.setattr(ak, "get_asks", _fake_get_asks)
+
+        response = asyncio.run(http_get_asks(_make_get_request()))
+        assert response.status_code == 500
+        body = json.loads(response.body)
+        assert body["error"]["code"] == "DATABASE_ERROR"
+        assert body["error"]["message"] == "internal error"
+        assert "asks_secret_internal" not in body["error"]["message"]
+
 
 class TestHttpAnswerAsk:
     def test_valid_answer_transitions_to_answered(self, temp_db):
@@ -161,6 +232,26 @@ class TestHttpAnswerAsk:
         assert response.status_code == 400
         body = json.loads(response.body)
         assert body["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_database_error_message_is_generalized(self, temp_db, monkeypatch):
+        def _fake_answer_ask(ask_id, answer_body, session_id=None):
+            return {
+                "error": {
+                    "code": "DATABASE_ERROR",
+                    "message": "sqlite3.OperationalError: disk I/O error at /secret/path/db.sqlite",
+                }
+            }
+
+        monkeypatch.setattr(ak, "answer_ask", _fake_answer_ask)
+
+        response = asyncio.run(
+            http_answer_ask(_make_post_request(1, json.dumps({"answer_body": "yes"}).encode()))
+        )
+        assert response.status_code == 500
+        body = json.loads(response.body)
+        assert body["error"]["code"] == "DATABASE_ERROR"
+        assert body["error"]["message"] == "internal error"
+        assert "/secret/path/db.sqlite" not in body["error"]["message"]
 
 
 class TestOriginCheck:
