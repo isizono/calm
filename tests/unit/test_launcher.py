@@ -965,7 +965,6 @@ class TestLauncherSessionRegistrationWiring:
         monkeypatch.setattr(launcher, "register_launcher_session", fake_register)
         monkeypatch.setattr(launcher, "unregister_launcher_session", lambda *a, **kw: None)
         monkeypatch.setattr(launcher.time, "sleep", lambda _: None)
-        monkeypatch.setattr(launcher.relay_config, "get_token", lambda: "dummy-token")
 
         def fake_asyncio_run(coro):
             coro.close()
@@ -995,7 +994,6 @@ class TestLauncherSessionRegistrationWiring:
         monkeypatch.setattr(launcher, "register_launcher_session", fake_register)
         monkeypatch.setattr(launcher, "unregister_launcher_session", lambda *a, **kw: None)
         monkeypatch.setattr(launcher.time, "sleep", lambda _: None)
-        monkeypatch.setattr(launcher.relay_config, "get_token", lambda: "dummy-token")
 
         def fake_asyncio_run(coro):
             coro.close()
@@ -1006,9 +1004,9 @@ class TestLauncherSessionRegistrationWiring:
         assert order == ["register_launcher_session", "_ensure_server_running"]
 
 
-class TestLauncherSessionRegistrationTokenGate:
-    """main(): register_launcher_session はrelay token未設定時は呼ばれず、
-    祖先pidチェーン解決（ps最大5回spawn）のコストを払わないことの検証。
+class TestLauncherSessionRegistrationUnconditional:
+    """main(): register_launcher_session はrelay token有無に関わらず常に呼ばれる
+    （セッション別名解決の入力として、relay未構成環境でも登録ファイルが要るため）。
     """
 
     def _setup_common(self, monkeypatch):
@@ -1027,8 +1025,8 @@ class TestLauncherSessionRegistrationTokenGate:
 
         monkeypatch.setattr(launcher.asyncio, "run", fake_asyncio_run)
 
-    def test_skips_registration_when_token_unset(self, monkeypatch):
-        """token未設定時はregister_launcher_session自体が呼ばれない"""
+    def test_registers_when_relay_token_unset(self, monkeypatch):
+        """relay token未設定でもregister_launcher_sessionが呼ばれる"""
         called = {"count": 0}
 
         def fake_register(session_id, pid=None):
@@ -1036,28 +1034,14 @@ class TestLauncherSessionRegistrationTokenGate:
 
         monkeypatch.setattr(launcher, "register_launcher_session", fake_register)
         self._setup_common(monkeypatch)
-        monkeypatch.setattr(launcher.relay_config, "get_token", lambda: None)
+        monkeypatch.setattr(
+            "src.services.relay.config.get_token", lambda: None
+        )
         launcher.main()
-        assert called["count"] == 0
+        assert called["count"] == 1
 
-    def test_ancestor_pid_resolution_not_invoked_when_token_unset(self, monkeypatch):
-        """token未設定時は、本体のregister_launcher_session実装が使う
-        ancestor_pids（ps最大5回spawnの実体）が一切実行されない（ゼロコスト）。
-        """
-        import src.services.relay.identity as relay_identity
-
-        def boom(*a, **kw):
-            raise AssertionError(
-                "ancestor_pids should not run when relay token is unset"
-            )
-
-        monkeypatch.setattr(relay_identity, "ancestor_pids", boom)
-        self._setup_common(monkeypatch)
-        monkeypatch.setattr(launcher.relay_config, "get_token", lambda: None)
-        launcher.main()  # 例外なく完走すれば ancestor_pids は呼ばれていない
-
-    def test_registers_when_token_set(self, monkeypatch):
-        """token設定済みなら従来通りregister_launcher_sessionを呼ぶ"""
+    def test_registers_when_relay_token_set(self, monkeypatch):
+        """relay token設定済みでもregister_launcher_sessionが呼ばれる"""
         called = {"count": 0}
 
         def fake_register(session_id, pid=None):
@@ -1065,7 +1049,9 @@ class TestLauncherSessionRegistrationTokenGate:
 
         monkeypatch.setattr(launcher, "register_launcher_session", fake_register)
         self._setup_common(monkeypatch)
-        monkeypatch.setattr(launcher.relay_config, "get_token", lambda: "dummy-token")
+        monkeypatch.setattr(
+            "src.services.relay.config.get_token", lambda: "dummy-token"
+        )
         launcher.main()
         assert called["count"] == 1
 

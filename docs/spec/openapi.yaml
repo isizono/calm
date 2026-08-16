@@ -42,6 +42,8 @@ tags:
   description: 取り消し（論理削除）
 - name: search
   description: 横断検索・タグ検索・ID取得
+- name: session
+  description: 並行セッションの別名管理
 - name: tag
   description: タグの更新・分析
 - name: timeline
@@ -981,6 +983,28 @@ paths:
                 oneOf:
                 - type: object
                 - $ref: '#/components/schemas/ErrorResponse'
+  /tools/get_sessions:
+    post:
+      tags:
+      - session
+      summary: 'Choose: ListAgents 等で見えた他セッションの自動生成名（例: workspace-a2）が、'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties: {}
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
   /tools/get_signals:
     post:
       tags:
@@ -1702,6 +1726,32 @@ paths:
                   type: integer
               required:
               - query
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/set_session_alias:
+    post:
+      tags:
+      - session
+      summary: 'Choose: 自セッションの別名を明示的に付け替えたいとき（自動生成された別名が'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                alias:
+                  type: string
+              required:
+              - alias
               type: object
       responses:
         '200':
