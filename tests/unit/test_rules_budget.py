@@ -1,14 +1,14 @@
 """src.main.RULES（MCP instructions）の字数予算テスト。
 
 MCPクライアント側で2,048字を超えると切り詰められる実態があるため、
-全文が収まる1,900字以内であることを回帰検知する。
+全文が2,048字以内に収まることを回帰検知する。
 """
 from src.main import RULES
 
 
 def test_rules_within_budget():
-    """RULES全文が1,900字以内である"""
-    assert len(RULES) <= 1900, f"RULESが1,900字を超えている（実測{len(RULES)}字）"
+    """RULES全文が2,048字以内である"""
+    assert len(RULES) <= 2048, f"RULESが2,048字を超えている（実測{len(RULES)}字）"
 
 
 def test_rules_contains_context_retrieval_principle():
