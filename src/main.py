@@ -2,6 +2,7 @@
 import logging
 import os
 import random
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from fastmcp import FastMCP, Context
@@ -46,6 +47,8 @@ from src.services import citation_renderer
 from src.db import get_connection
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -2082,9 +2085,14 @@ def withdraw_ask(ask_id: int, reason: str) -> dict:
 
 
 # asks ダッシュボード向けHTTP API（MCPプロトコル外の薄いラッパー）。
-# 認証・CSRF対策なし（cc-memoryはlocalhostに他者がアクセスできる場合を
-# 脅威モデルに含めていないため）。get_asks/answer_askの2呼び出しに限定し、
-# 他のMCPツール（add_decisions等の破壊的・機微な操作）には一切触れない。
+# 認証なし（cc-memoryはlocalhostに他者がアクセスできる場合を脅威モデルに
+# 含めていないため）。get_asks/answer_askの2呼び出しに限定し、他のMCPツール
+# （add_decisions等の破壊的・機微な操作）には一切触れない。
+# CSRF対策としてOriginヘッダのlocalhost限定チェックのみ行う（_check_origin）。
+
+# ブラウザからのfetch()を許可するOrigin（Originヘッダチェック・CORS両方で使う）。
+# 任意ポートのhttp://localhost・http://127.0.0.1のみ許可し、https/他ホストは拒否する。
+_ALLOWED_ORIGIN_RE = re.compile(r"^http://(localhost|127\.0\.0\.1)(:\d+)?$")
 
 
 def _ask_error_status_code(error: dict) -> int:
@@ -2094,9 +2102,47 @@ def _ask_error_status_code(error: dict) -> int:
     return 500
 
 
+def _build_cors_middleware() -> Middleware:
+    """asksダッシュボードAPI（/api/asks系）向けのCORS許可設定を組み立てる。
+
+    allow_origin_regexを_ALLOWED_ORIGIN_REと同じ範囲（localhost/127.0.0.1の
+    任意ポート）に揃え、ワイルドカード全許可は避ける。
+    """
+    return Middleware(
+        CORSMiddleware,
+        allow_origin_regex=_ALLOWED_ORIGIN_RE.pattern,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type"],
+        allow_credentials=False,
+    )
+
+
+def _check_origin(request: Request) -> JSONResponse | None:
+    """OriginヘッダをCSRF対策として検証する。
+
+    Originヘッダが存在し、かつlocalhost/127.0.0.1（任意ポート）以外を指す場合のみ
+    403で拒否する。Originヘッダが無いリクエスト（curl・Postman・サーバーサイド
+    スクリプト等）は許可する。CSRFはブラウザが自動付与するOriginヘッダを悪用する
+    攻撃であり、ヘッダの無いリクエストはそもそも攻撃の対象外のため。
+
+    Returns:
+        拒否する場合は403のJSONResponse、許可する場合はNone。
+    """
+    origin = request.headers.get("origin")
+    if origin is None or _ALLOWED_ORIGIN_RE.match(origin):
+        return None
+    return JSONResponse(
+        {"error": {"code": "FORBIDDEN", "message": "origin not allowed"}},
+        status_code=403,
+    )
+
+
 @mcp.custom_route("/api/asks", methods=["GET"])
 async def http_get_asks(request: Request) -> JSONResponse:
     """ダッシュボード等の外部アプリ向け、MCPプロトコル外の薄いGET API。認証なし（localhost限定運用前提）。"""
+    origin_error = _check_origin(request)
+    if origin_error is not None:
+        return origin_error
     status = request.query_params.get("status", "open")
     result = ask_service.get_asks(status=status)
     if "error" in result:
@@ -2107,6 +2153,9 @@ async def http_get_asks(request: Request) -> JSONResponse:
 @mcp.custom_route("/api/asks/{ask_id}/answer", methods=["POST"])
 async def http_answer_ask(request: Request) -> JSONResponse:
     """ダッシュボード等の外部アプリ向け、MCPプロトコル外の薄いPOST API。認証なし（localhost限定運用前提）。"""
+    origin_error = _check_origin(request)
+    if origin_error is not None:
+        return origin_error
     try:
         ask_id = int(request.path_params["ask_id"])
     except (KeyError, ValueError):
@@ -2549,7 +2598,12 @@ if __name__ == "__main__":
 
         try:
             logger.info(f"Starting HTTP server on {HTTP_HOST}:{HTTP_PORT}")
-            mcp.run(transport="http", host=HTTP_HOST, port=HTTP_PORT)
+            mcp.run(
+                transport="http",
+                host=HTTP_HOST,
+                port=HTTP_PORT,
+                middleware=[_build_cors_middleware()],
+            )
         finally:
             relay_runtime.stop()
             release()
