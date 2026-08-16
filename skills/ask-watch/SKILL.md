@@ -1,0 +1,132 @@
+---
+name: ask-watch
+description: cc-memoryのask store（人間の判断待ちaskのインボックス）をMonitorツールでイベント駆動監視する。asksテーブルのstatus='open'件数・last_seen_at・id集合を10秒間隔でポーリングし、前回値から変化を検知したときだけ全open askを読み直し、「主題は違うが判断構造が同一」の同型群をLLM自身が判定してメタask（kind="meta"）を起票する。「ask storeを監視して」「ask-watch」「asksを見張って」「open askの滞留をチェックして」「`/ask-watch`」などで発動。1回限りのask確認（get_asksを直接呼ぶだけ）やcc-memory自体の使い方説明には発動しない。
+---
+
+# ask-watch
+
+cc-memoryのask store（`add_ask`/`get_asks`/`answer_ask`/`triage_ask`/`withdraw_ask`が読み書きする、人間の判断待ちaskのインボックス）をMonitorツールでイベント駆動監視するスキル。asksテーブルの`status='open'`件数・`last_seen_at`・id集合をポーリングし、前回値から変化を検知するたびに全open askを読み直す。表面的な主題は違っても判断構造（問いの型）が同一の同型群がないかをLLM自身が判定し、見つけたら、既に同じ型のメタaskが起票済みでない限り、「この型は今後、人間に聞かずに一般化ルールとして自己裁定してよいか」を問うメタask（`kind="meta"`）を起票する。
+
+## 背景
+
+ask storeには「同じ判断構造の問いが繰り返されたら、機械が閾値で自動検知するのではなくLLM自身が気づいてメタaskを起票し、その型を今後は自己裁定してよいか人間に問う」という二段構えの設計が既にある。だが実際には、同型askが8件溜まったまま3週間気づかれない事象が起きた。原因は「LLMが気づく機会」が新規ask投稿時の類似ask提示にしか無く、既存の滞留askをLLMが定期的に読み返す機会が無かったこと。ask-watchはこの「読み返しの機会」を、Monitorツールによるイベント駆動監視という形で補う。
+
+## pr-watchとの構造的な違い
+
+- **トリガー方式**: pr-watchは10分毎の固定間隔cronループで動くが、ask-watchはMonitorツールでasksテーブルを10秒間隔でポーリングし、`status='open'`の件数・最終`last_seen_at`・id集合のいずれかが前回値から変化したときだけイベントを発火する。変化がなければ何も起きない
+- **差分検知ではなく毎回全件精読**: イベント自体は差分（変化の有無）で検知するが、変化を検知した後にStep 3で読む範囲は差分ではなく全open askである。これは今回の実害（新規に増えない古い滞留askの見逃し）を防ぐための設計であり、`processed_ask_ids`のような既読管理は持たない
+- **同型判定は機械的閾値ではなくLLMの目視判断**: pr-watchの「bot指摘」は機械的に判定できるトリガーだが、ask-watchの「同型群かどうか」はembeddingの類似検索では拾えない（主題の近さは拾えても判断構造の近さは拾えないため）。閾値・キーワード一致等の自動検知ロジックは実装しない。各open askの本文をLLMが読み、判断構造が同一かどうかを都度判断する
+- **SAを起動しない**: pr-watchはbot指摘対応という実装作業（コミットを積む）をSAに委任するが、ask-watchは「読む→判断する→MCPツールを呼ぶ」だけで完結する軽量作業であり、実装コミットのような重い処理が発生しない。イベントを検知したセッション自身が判断から起票までを完結させる。SA spawnは行わない
+
+## トリガー条件
+
+以下の状況で使用する:
+- ユーザーが「ask storeを監視して」「asksを見張って」「open askの滞留をチェックして」と依頼
+- `/ask-watch` の明示呼び出し
+- 「同型のaskが溜まってないか定期的に見ておいて」のような継続的処理依頼
+
+以下では使用しない:
+- 1回限りのask確認（`get_asks`を直接呼ぶだけで済む、またはユーザーが今すぐ内容を見たいだけ）
+- cc-memory自体の使い方説明（`cc-memory:guide` skillの担当）
+- 特定1件のaskへの回答・トリアージ作業（`answer_ask`/`triage_ask`を直接呼べば済む）
+
+## ワークフロー
+
+### Step 1: state fileの確認・初期化
+
+- 既存 `/tmp/ask-watch-state.json` があれば読み込み、続きとして扱う
+- 無ければ新規作成する（フォーマットは下記）。state fileは差分検知には使わない（差分検知の主体はStep 2のポーリングスクリプト内のシェル変数`prev`）。ここでの役割は起票したメタaskの履歴等、**人間が読むための参考ログ**に限定される
+
+```json
+{
+  "started_at": "2026-08-16T09:00:00Z",
+  "poll_interval_sec": 10,
+  "trigger_count": 0,
+  "filed_meta_asks": [
+    {"ask_id": 123, "type_summary": "ow解体で前提消滅したactivityの処遇", "filed_at": "2026-08-16T09:00:00Z"}
+  ],
+  "_notes": "free-text notes for human"
+}
+```
+
+- `filed_meta_asks`はローカルの参考ログであり、重複起票防止の判定はこのファイルではなくStep 3の4番目の項目（DB照会）を正とする。state fileとDBがズレても実害が出ない設計にするため
+
+### Step 2: ポーリングの起動（Monitor）
+
+Monitorツールを以下のパラメータで呼ぶ:
+
+- `description`: 監視対象がわかる説明（例: `"ask store open askの変化監視"`）
+- `persistent`: `true`（セッション終了まで動かし続ける。`TaskStop`で明示的に止めるまでタイムアウトしない）
+- `command`:
+
+```bash
+DB="$HOME/.claude/.claude-code-memory/discussion.db"
+prev=$(sqlite3 "$DB" "SELECT COUNT(*), MAX(last_seen_at), GROUP_CONCAT(id) FROM asks WHERE status='open';" 2>/dev/null)
+while true; do
+  sleep 10
+  cur=$(sqlite3 "$DB" "SELECT COUNT(*), MAX(last_seen_at), GROUP_CONCAT(id) FROM asks WHERE status='open';" 2>/dev/null)
+  if [ "$cur" != "$prev" ]; then
+    echo "ask store changed: $cur"
+    prev="$cur"
+  fi
+done
+```
+
+このスクリプトはopen askの「件数・最新`last_seen_at`・id集合」のいずれかが変化した瞬間だけ1行出力する。`GROUP_CONCAT(id)`まで比較に含めているのは、件数が同じでもid構成が入れ替わる変化（1件closeして1件openになった等）を取りこぼさないため。出力される`$cur`の中身はあくまでトリガーの参考情報であり、実際に読むべきask本文はStep 3で`get_asks`から取得する（DBを直接sqliteで読むのはポーリングの軽量化のためで、questionやcontextの中身までDB越しに読み取ることはしない）。
+
+### Step 3: 変化検知時の処理手順
+
+Monitorの通知（`ask store changed: ...`という1行）を受け取るたびに、以下を実行する。cronループと異なり同一セッション内のイベントとして届くため、prompt文字列を読み直す必要はなく、以下の手順をそのまま適用する。
+
+1. **state file読み込み**: 無ければStep 1へ戻る
+2. **全open ask取得**: `get_asks(status="open", include_stats=true, limit=100)`。`total_count`が`limit`を超える場合は`offset`を進めて全件回収する
+3. **同型群の判定**: 取得した全askの`question`・`context`・`tags`を読み、「主題は違うが判断構造（問いの型）が同一」の集まりがないかLLM自身が判断する（機械的閾値なし）
+4. **重複起票防止の確認**: 同型群を見つけたら`get_asks(kind="meta", status=None, limit=100)`で既存の全メタask（open/answered/promoted/dismissed問わず）を確認する
+   - 既にopenなメタaskがあれば起票しない。短報に「既知の型、裁定待ち」として記載
+   - 既にpromoted済み（発効済み＝自己裁定してよいと人間が既に判断した型）であれば起票しない。ただし該当の同型askがまだopenで残っていること自体は「本来もう自己裁定できたはずの型が取りこぼされている」観察なので短報に記載する（ask-watch自身がwithdrawや自己裁定を代行することはしない、スコープ外）
+   - 既にdismissed済みであれば起票しない。短報に記載
+   - 該当なしの場合のみ次の項目へ進む
+5. **メタaskの起票**: 重複がなければ`add_ask`を呼ぶ（詳細な組み立て方はStep 4参照）
+6. **state file更新**: `trigger_count`を+1、起票した場合は`filed_meta_asks`に追記
+7. **ユーザーへ短報**: 検知した同型群の有無・起票したメタaskの有無（既知判定になったケースも含めて簡潔に）
+
+### Step 4: メタaskの組み立て方
+
+`add_ask`呼び出しの各引数の組み立て方:
+
+- **question**: 型の判断構造を具体的に書く。「主題」ではなく「問いの構造」を書くこと。例:「前提が消滅したactivityをclose/再定義/継続のどれにするかという判断は、今後は◯◯の基準で人間に聞かずに自己裁定してよいか」
+- **context**: 同型群に含まれる各open askの`id`・`question`・出現状況（`occurrence_count`があれば）を列挙し、なぜ同型と判断したかの根拠を書く。既に答え済み（answered/promoted）の近い型が過去にあれば、その裁定内容も参考情報として添える
+- **blocks**: 同型群の各askが持つ`blocks`（activity id）の和集合。1件のaskから起票する場合はそのaskのblocksをそのまま使う（既存のask-distill skillと同じ扱い）。複数askにまたがる場合は全askのblocksを合わせる
+- **tags**: 同型群の各askが持つ`domain:`タグを全て含める（主題が異なれば`domain:`タグも複数になりうる、複数個の付与自体は問題ない）。加えて`"meta-ask"`を素タグとして必ず付与する
+
+### Step 5: 監視停止
+
+ユーザーから「監視止めて」「もういい」「ask-watch停止」等の依頼で`TaskStop`を実行し、Monitorタスクを停止する。session終了でも自動的に監視は終了する。
+
+## 出力フォーマット
+
+各検知後の短報フォーマット:
+
+```
+**ask-watch報**: <同型群N件検知/検知なし>、<メタaskM件起票/起票なし>
+- (件があれば箇条書きで詳細: 型の要約、対象askのid、既知/新規の別)
+```
+
+何もなければ1行（`同型群なし、起票なし。`）で十分。
+
+## 注意事項
+
+- **Monitorでイベント駆動監視する**: 固定間隔で毎回ターンが起動するcron方式ではなく、Monitorツールでバックグラウンドのシェルスクリプトを走らせ、asksテーブルに変化があったときだけ通知として受け取る。変化がなければターンは発生しない
+- **全件精読の理由**: 差分検知（新規askのみ確認）では今回の実害（新規に増えない古い滞留の見逃し）を再発させる。そのためStep 3では既読管理を持たず、毎回`status="open"`の全件を読み直す設計にしている
+- **同型判定に閾値を埋め込まない**: 「同型何件で起票するか」を機構側の固定ロジックにはしない。判断は都度LLM自身が行う
+- **SAは起動しない**: 「読む→判断する→MCPツールを呼ぶ」だけで完結する軽量作業であり、実装コミットのような重い処理は発生しない。イベントを検知したセッション自身が判断から起票までを完結させる
+- **withdraw_ask・answer_ask・triage_askはこのループの対象外**: 人間の裁定を待つ設計を崩さないため、これらのツールはask-watchからは呼ばない。トリアージ・回答済みのask個体は`status`が`open`から変わるため、`WHERE status='open'`のポーリングでは元々検知対象に入らない
+- **重複起票防止はDBを正とする**: state fileの`filed_meta_asks`はあくまで人間向けの参考ログで、実際の重複判定は毎回`get_asks(kind="meta")`への問い合わせで行う。state fileが欠損・不整合になってもDB照会だけで正しく動く
+- **withdraw等の代行はしない**: Step 3の重複確認でpromoted済みの型に該当するopen askを見つけても、このスキルはそれを自動withdrawしたり自己裁定したりしない。観察として短報に記載するに留める
+- **メタask自体もactivityを止める**: メタaskはトリガーとなった同型askと同じblocksを引き継ぐため、同じactivityに対して判断待ちが複数件（トリガーask＋メタask）積まれる形になる。これは意図的な設計だが、運用上の観察対象でもある。open ask件数が単調増加するようなら、ask-watch側ではなく運用ルール側の見直しをユーザーに相談する
+- **session終了で監視も終了**: Monitorはセッション内蔵ツールのため、セッションが終了すると監視ループも終了する。長期運用は別途`/schedule`でのクラウド化を検討（今回のスコープ外）
+
+## 関連
+
+- `ask-distill` skill: `add_ask`のレスポンスに含まれる`similar_asks`を見て、新規ask投稿の**その場**で同型の反復に気づいたときにメタaskを起票する。ask-watchは同じメタask起票の仕組みを、**定期的な読み返し**というもう一つの気づきの経路として補う。両者は排他ではなく、どちらの経路で気づいてもメタask起票のロジック（Step 4の組み立て方）は共通
+- `cc-memory:guide` skill: ask storeの使い方そのものの説明
