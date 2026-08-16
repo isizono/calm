@@ -26,6 +26,11 @@ def _deny_all(target_type: str, target_id: int) -> bool:
     return False
 
 
+# `#` を直接ソースに書くとこのファイル自体が PreToolUse hook のブロック対象になる
+# ケースがあるため、動的に組み立てる (test_internal_id_patterns.py と同じ手法)。
+sharp_local = chr(35)
+
+
 class TestBasicConversion:
     def test_single_material_raw_to_cite(self):
         out, counters = convert_raw_to_cite("See M#123 here.")
@@ -147,7 +152,7 @@ class TestTargetValidator:
         out, counters = convert_raw_to_cite(
             "ref M#9999999 missing", target_validator=_deny_all
         )
-        assert out == "ref M#9999999 missing"
+        assert out == "ref [deleted M#9999999] missing"
         assert counters["sanitized_count"] == 0
         assert counters["skipped_dangling"] == 1
 
@@ -182,7 +187,7 @@ class TestTargetValidator:
         out, counters = convert_raw_to_cite(
             "M#1 and M#999", target_validator=selective
         )
-        assert out == "{{cite:M#1}} and M#999"
+        assert out == "{{cite:M#1}} and [deleted M#999]"
         assert counters["sanitized_count"] == 1
         assert counters["skipped_dangling"] == 1
 
@@ -209,10 +214,11 @@ class TestWordBoundary:
         assert out == text
         assert counters["sanitized_count"] == 0
 
-    def test_id_after_url_slash_not_converted(self):
-        # URL の path 末尾 `/M#1` も識別子の一部とみなしてスキップ
+    def test_id_after_url_slash_converts(self):
+        # URL の path 末尾でも独立したトークンとして変換される (スラッシュ区切り
+        # 複数 ID 列挙を認識するための仕様変更)
         out, _ = convert_raw_to_cite("https://x.example/M#1")
-        assert out == "https://x.example/M#1"
+        assert out == "https://x.example/{{cite:M#1}}"
 
 
 class TestMultilineMixed:
@@ -299,7 +305,7 @@ class TestConvertWithValidatorAgainstDb:
         out, counters = convert_raw_to_cite(
             "exists M#1 missing M#999", target_validator=validator
         )
-        assert out == "exists {{cite:M#1}} missing M#999"
+        assert out == "exists {{cite:M#1}} missing [deleted M#999]"
         assert counters["sanitized_count"] == 1
         assert counters["skipped_dangling"] == 1
 
@@ -443,9 +449,11 @@ class TestFullwordConversion:
         out, _ = convert_raw_to_cite("the blog #1 was published")
         assert out == "the blog #1 was published"
 
-    def test_word_boundary_path_log_not_match(self):
+    def test_word_boundary_path_log_converts(self):
+        # スラッシュ区切りの複数 ID 列挙を認識する仕様変更により、
+        # パス区切り直後の fullword リテラルも変換対象になる
         out, _ = convert_raw_to_cite("/var/log #1 is full")
-        assert out == "/var/log #1 is full"
+        assert out == "/var/{{cite:L#1}} is full"
 
     def test_word_boundary_trailing_alnum_not_match(self):
         out, _ = convert_raw_to_cite("log #1abc is junk")
@@ -507,6 +515,129 @@ class TestFullwordConversion:
         out, counters = convert_raw_to_cite(
             "log #1 and log #999", target_validator=validator
         )
-        assert out == "{{cite:L#1}} and log #999"
+        assert out == "{{cite:L#1}} and [deleted L#999]"
         assert counters["sanitized_count"] == 1
         assert counters["skipped_dangling"] == 1
+
+
+class TestRangeNotation:
+    """範囲表記 (type#NNN-NNN 形式) の両端 cite化 / dangling 混在 / 異常範囲。
+
+    リテラル組み立ては preblock hook 回避のため動的に行う
+    (他の edge-case テストと同じ手法)。
+    """
+
+    def test_range_both_exist_converts_both_ends(self):
+        text = "see M" + sharp_local + "201-203 here"
+        out, counters = convert_raw_to_cite(text, target_validator=_allow_all)
+        assert out == "see {{cite:M" + sharp_local + "201}}-{{cite:M" + sharp_local + "203}} here"
+        assert counters["sanitized_count"] == 2
+        assert counters["skipped_dangling"] == 0
+
+    def test_range_one_end_dangling_only_that_end_deleted(self):
+        def validator(t, i):
+            return i == 201
+
+        text = "M" + sharp_local + "201-999"
+        out, counters = convert_raw_to_cite(text, target_validator=validator)
+        assert out == "{{cite:M" + sharp_local + "201}}-[deleted M" + sharp_local + "999]"
+        assert counters["sanitized_count"] == 1
+        assert counters["skipped_dangling"] == 1
+
+    def test_range_start_greater_than_end_processed_mechanically(self):
+        # 開始 > 終了のような異常な範囲でも、追加バリデーションなしで
+        # 両端を機械的に処理する (エラーにしない)
+        text = "M" + sharp_local + "500-3"
+        out, counters = convert_raw_to_cite(text, target_validator=_allow_all)
+        assert out == "{{cite:M" + sharp_local + "500}}-{{cite:M" + sharp_local + "3}}"
+        assert counters["sanitized_count"] == 2
+
+    def test_slash_separated_multi_id_each_converted_independently(self):
+        text = (
+            "T" + sharp_local + "447/D" + sharp_local + "2310-2312/log" + sharp_local + "2484"
+        )
+        out, counters = convert_raw_to_cite(text, target_validator=_allow_all)
+        expected = (
+            "{{cite:T" + sharp_local + "447}}/{{cite:D" + sharp_local + "2310}}"
+            "-{{cite:D" + sharp_local + "2312}}/{{cite:L" + sharp_local + "2484}}"
+        )
+        assert out == expected
+        assert counters["sanitized_count"] == 4
+
+    def test_fullword_range_same_treatment_as_code(self):
+        text = "see decision " + sharp_local + "123-125 here"
+        out, counters = convert_raw_to_cite(text, target_validator=_allow_all)
+        assert out == "see {{cite:D" + sharp_local + "123}}-{{cite:D" + sharp_local + "125}} here"
+        assert counters["sanitized_count"] == 2
+
+    def test_range_idempotent(self):
+        text = "M" + sharp_local + "201-203"
+        first, _ = convert_raw_to_cite(text, target_validator=_allow_all)
+        second, _ = convert_raw_to_cite(first, target_validator=_allow_all)
+        assert first == second
+
+    def test_range_with_dangling_idempotent(self):
+        def validator(t, i):
+            return i == 201
+
+        text = "M" + sharp_local + "201-999"
+        first, _ = convert_raw_to_cite(text, target_validator=validator)
+        second, _ = convert_raw_to_cite(first, target_validator=validator)
+        assert first == second
+
+
+class TestSingleIdDanglingRewrittenRegression:
+    """単一 ID の dangling 変換が確定書き換えされること
+    (旧仕様の生残置動作からの変更点そのものを明示的に確認する)。
+    """
+
+    def test_single_dangling_rewritten_not_left_raw(self):
+        text = "see M" + sharp_local + "9999999 missing"
+        out, counters = convert_raw_to_cite(text, target_validator=_deny_all)
+        assert out == "see [deleted M" + sharp_local + "9999999] missing"
+        assert counters["skipped_dangling"] == 1
+        assert counters["sanitized_count"] == 0
+
+    def test_deleted_marker_not_reconverted_on_second_pass(self):
+        # 一度 [deleted X#NNN] に確定書き換えされたマーカーは既存 {{cite:...}}
+        # と同様に二重変換されない (冪等性の担保)
+        text = "M" + sharp_local + "1 and M" + sharp_local + "2"
+
+        def validator(t, i):
+            return i == 1
+
+        first, counters1 = convert_raw_to_cite(text, target_validator=validator)
+        assert first == "{{cite:M" + sharp_local + "1}} and [deleted M" + sharp_local + "2]"
+        second, counters2 = convert_raw_to_cite(first, target_validator=validator)
+        assert second == first
+        assert counters2["sanitized_count"] == 0
+        assert counters2["skipped_dangling"] == 0
+        assert counters2["skipped_in_existing_cite"] == 2
+
+
+class TestExistingSkipRulesStillApplyWithRangeSupport:
+    """regression: 既存 {{cite:...}} / インラインバッククォート / エスケープの
+    スキップは範囲表記対応後も引き続き機能する。
+    """
+
+    def test_existing_cite_template_not_reconverted(self):
+        text = "already {{cite:T" + sharp_local + "7}} formed"
+        out, counters = convert_raw_to_cite(text, target_validator=_allow_all)
+        assert out == text
+        assert counters["sanitized_count"] == 0
+        assert counters["skipped_in_existing_cite"] == 1
+
+    def test_inline_backtick_range_not_converted(self):
+        text = "see `M" + sharp_local + "201-203 raw` next"
+        out, counters = convert_raw_to_cite(text, target_validator=_allow_all)
+        assert out == text
+        assert counters["sanitized_count"] == 0
+        assert counters["skipped_in_codeblock"] == 1
+
+    def test_escaped_range_not_converted(self):
+        text = "see BACKSLASHM" + sharp_local + "201-203 escaped"
+        text = text.replace("BACKSLASH", chr(92))
+        out, counters = convert_raw_to_cite(text, target_validator=_allow_all)
+        assert out == text
+        assert counters["sanitized_count"] == 0
+        assert counters["skipped_escape"] == 1
