@@ -1,4 +1,4 @@
-# claude-code-memory
+# CALM
 
 Claude Codeのセッション間で、議論の文脈・決定事項・作業状況を永続化するプラグインです。
 
@@ -6,7 +6,7 @@ Claude Codeのセッション間で、議論の文脈・決定事項・作業状
 
 Claude Codeはセッションごとに記憶がリセットされます。短いタスクなら問題ありませんが、長期プロジェクトでは「前に何を決めたか」「なぜその設計にしたか」「どこまで作業が進んでいるか」がセッションをまたぐと失われます。
 
-claude-code-memoryは、こうした文脈をSQLiteデータベースに保存し、新しいセッションでAIが自動的に過去の記録を参照できるようにします。同じ説明を繰り返す必要がなくなり、議論の積み重ねがそのまま次のセッションに引き継がれます。
+CALMは、こうした文脈をSQLiteデータベースに保存し、新しいセッションでAIが自動的に過去の記録を参照できるようにします。同じ説明を繰り返す必要がなくなり、議論の積み重ねがそのまま次のセッションに引き継がれます。
 
 ## 主な機能
 
@@ -34,10 +34,10 @@ claude-code-memoryは、こうした文脈をSQLiteデータベースに保存�
 
 ```bash
 # マーケットプレイスを追加
-claude plugin marketplace add isizono/cc-memory
+claude plugin marketplace add isizono/calm
 
 # プラグインをインストール
-claude plugin install claude-code-memory
+claude plugin install calm
 ```
 
 インストール後、Claude Code内で以下を実行すると使い方の案内が表示されます。
@@ -65,12 +65,12 @@ claude plugin install claude-code-memory
 
 | スキル | 説明 |
 |--------|------|
-| `/guide` | cc-memoryの使い方をAIが説明します |
+| `/guide` | CALMの使い方をAIが説明します |
 | `/sync-memory` | セッション終了前にtranscriptを解析し、トピック・決定事項・アクティビティを一括で記録・更新します |
 | `/check-in` | アクティビティにcheck-inして関連情報を集約取得します |
 | `/tag-notes` | タグのnotesを確認・更新します |
 | `/tag-cleanup` | タグの共起分析を実行し、整理提案をユーザーに提示します |
-| `/scribe` | cc-memoryの記録からドキュメントを生成します |
+| `/scribe` | CALMの記録からドキュメントを生成します |
 | `/postmortem` | completedアクティビティを振り返り、教訓を永続化します |
 
 ## 設定

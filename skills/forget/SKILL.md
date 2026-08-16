@@ -77,7 +77,7 @@ B選択時は何も実行せず終了する。
 
 承認された候補のみ実行する。却下された候補は何もしない。
 
-- cc-memory decision/log/material → `retract`実行
+- CALM decision/log/material → `retract`実行
 - habit → `update_habit(habit_id, active=False)`で無効化（`retract`はhabitを受け付けない）
 - tag-notes → `retract`ツール非対応のため、`update_tag`で対象箇所を除いた全文を書き込む方式で代替する
 - auto-memory / CLAUDE.md / rules ファイル → 物理削除
@@ -91,7 +91,7 @@ B選択時は何も実行せず終了する。
 
 | 保存先 | 撤回方式 | 備考 |
 |---|---|---|
-| cc-memory decision/log/material | `retract` | 論理削除 |
+| CALM decision/log/material | `retract` | 論理削除 |
 | habit | `update_habit(habit_id, active=False)` | `retract`はhabitを受け付けない（`ENTITY_TABLE_MAP`にhabitは存在しない） |
 | tag-notes | `update_tag`で対象箇所を除いた全文を書き込む | tag-notesに`retract`概念はない（全文置換方式） |
 | auto-memory（MEMORY.md / feedback_*.md等） | 物理削除 | ファイル削除 + MEMORY.mdの参照行削除をセットで行う |
