@@ -49,6 +49,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -2088,11 +2089,19 @@ def withdraw_ask(ask_id: int, reason: str) -> dict:
 # 認証なし（cc-memoryはlocalhostに他者がアクセスできる場合を脅威モデルに
 # 含めていないため）。get_asks/answer_askの2呼び出しに限定し、他のMCPツール
 # （add_decisions等の破壊的・機微な操作）には一切触れない。
-# CSRF対策としてOriginヘッダのlocalhost限定チェックのみ行う（_check_origin）。
+# CSRF対策としてOriginヘッダのlocalhost限定チェックを行う（_check_origin）。
+# ブラウザのsame-origin GETはOriginヘッダを付与しないためこのチェックを
+# 素通りしうるが、Hostヘッダのlocalhost限定チェック（TrustedHostMiddleware）を
+# 別途サーバー全体に適用しており、DNS rebinding経路はそちらで塞いでいる。
 
 # ブラウザからのfetch()を許可するOrigin（Originヘッダチェック・CORS両方で使う）。
 # 任意ポートのhttp://localhost・http://127.0.0.1のみ許可し、https/他ホストは拒否する。
 _ALLOWED_ORIGIN_RE = re.compile(r"^http://(localhost|127\.0\.0\.1)(:\d+)?$")
+
+# Hostヘッダ検証（TrustedHostMiddleware）で許可するホスト名。
+# Starletteはポート部分を落として比較するため、ポート付きの値は書かない
+# （書いても常に不一致になり、正規のリクエストまで拒否してしまう）。
+_ALLOWED_HOSTS = ["localhost", "127.0.0.1"]
 
 
 def _ask_error_status_code(error: dict) -> int:
@@ -2132,6 +2141,18 @@ def _build_cors_middleware() -> Middleware:
     )
 
 
+def _build_trusted_host_middleware() -> Middleware:
+    """Hostヘッダをlocalhost/127.0.0.1限定に検証するミドルウェアを組み立てる。
+
+    サーバー全体のASGIアプリに適用する（/api/asks系に限らない）。許可外の
+    Hostは400（プレーンテキスト "Invalid host header"）で拒否する。
+    """
+    return Middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=_ALLOWED_HOSTS,
+    )
+
+
 def _check_origin(request: Request) -> JSONResponse | None:
     """OriginヘッダをCSRF対策として検証する。
 
@@ -2144,7 +2165,7 @@ def _check_origin(request: Request) -> JSONResponse | None:
         拒否する場合は403のJSONResponse、許可する場合はNone。
     """
     origin = request.headers.get("origin")
-    if origin is None or _ALLOWED_ORIGIN_RE.match(origin):
+    if origin is None or _ALLOWED_ORIGIN_RE.fullmatch(origin):
         return None
     return JSONResponse(
         {"error": {"code": "FORBIDDEN", "message": "origin not allowed"}},
@@ -2636,7 +2657,7 @@ if __name__ == "__main__":
                 transport="http",
                 host=HTTP_HOST,
                 port=HTTP_PORT,
-                middleware=[_build_cors_middleware()],
+                middleware=[_build_trusted_host_middleware(), _build_cors_middleware()],
             )
         finally:
             relay_runtime.stop()

@@ -17,7 +17,12 @@ from starlette.responses import PlainTextResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from src.main import _build_cors_middleware, http_answer_ask, http_get_asks
+from src.main import (
+    _build_cors_middleware,
+    _build_trusted_host_middleware,
+    http_answer_ask,
+    http_get_asks,
+)
 from src.services import ask_service as ak
 from src.services.activity_service import add_activity
 
@@ -384,3 +389,94 @@ class TestCorsPreflight:
         # スクリプトから読み取れずブロックする（アプリ層のOrigin拒否は_check_origin側が担う）
         assert response.status_code == 200
         assert "access-control-allow-origin" not in response.headers
+
+
+def _make_host_check_test_client() -> TestClient:
+    """本番と同じHost検証+CORSのミドルウェアスタックを実エンドポイントに適用したテスト
+    クライアント。custom_route関数の直接呼び出しはASGIミドルウェアを経由しないため、
+    Hostヘッダ検証（TrustedHostMiddleware）はこの経路でしか検証できない。
+
+    StarletteのTestClientは既定でHostヘッダに"testserver"を送るため、各テストで
+    許可/拒否したいホスト名をheaders={"Host": ...}で明示的に上書きする。
+    """
+    app = Starlette(
+        routes=[
+            Route("/api/asks", http_get_asks, methods=["GET"]),
+            Route("/api/asks/{ask_id}/answer", http_answer_ask, methods=["POST"]),
+        ],
+        middleware=[_build_trusted_host_middleware(), _build_cors_middleware()],
+    )
+    return TestClient(app)
+
+
+class TestHostCheck:
+    """DNS rebinding対策のHostヘッダ検証（TrustedHostMiddleware）を検証する。"""
+
+    def test_get_allowed_host_localhost_passes(self, temp_db):
+        client = _make_host_check_test_client()
+        response = client.get("/api/asks", headers={"Host": "localhost"})
+        assert response.status_code == 200
+
+    def test_get_allowed_host_localhost_with_port_passes(self, temp_db):
+        client = _make_host_check_test_client()
+        response = client.get("/api/asks", headers={"Host": "localhost:3000"})
+        assert response.status_code == 200
+
+    def test_get_allowed_host_127_0_0_1_with_port_passes(self, temp_db):
+        client = _make_host_check_test_client()
+        response = client.get("/api/asks", headers={"Host": "127.0.0.1:8080"})
+        assert response.status_code == 200
+
+    def test_get_disallowed_host_returns_400(self, temp_db):
+        client = _make_host_check_test_client()
+        response = client.get("/api/asks", headers={"Host": "evil.com"})
+        assert response.status_code == 400
+
+    def test_get_disallowed_host_with_port_returns_400(self, temp_db):
+        client = _make_host_check_test_client()
+        response = client.get("/api/asks", headers={"Host": "evil.com:8080"})
+        assert response.status_code == 400
+
+    def test_post_allowed_host_passes(self, temp_db):
+        client = _make_host_check_test_client()
+        act = _make_activity()
+        add_result = ak.add_ask("should we do X?", tags=["domain:test"], blocks=[act])
+
+        response = client.post(
+            f"/api/asks/{add_result['id']}/answer",
+            json={"answer_body": "yes"},
+            headers={"Host": "localhost"},
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == "answered"
+
+    def test_post_disallowed_host_returns_400_and_does_not_answer(self, temp_db):
+        client = _make_host_check_test_client()
+        act = _make_activity()
+        add_result = ak.add_ask("should we do X?", tags=["domain:test"], blocks=[act])
+
+        response = client.post(
+            f"/api/asks/{add_result['id']}/answer",
+            json={"answer_body": "yes"},
+            headers={"Host": "evil.com"},
+        )
+        assert response.status_code == 400
+
+        # 400で拒否された時点でask_service.answer_askは呼ばれておらず、askはopenのまま
+        listed = ak.get_asks(status="open")
+        assert listed["asks"][0]["id_raw"] == add_result["id"]
+
+    def test_post_disallowed_host_with_port_returns_400_and_does_not_answer(self, temp_db):
+        client = _make_host_check_test_client()
+        act = _make_activity()
+        add_result = ak.add_ask("should we do X?", tags=["domain:test"], blocks=[act])
+
+        response = client.post(
+            f"/api/asks/{add_result['id']}/answer",
+            json={"answer_body": "yes"},
+            headers={"Host": "evil.com:9999"},
+        )
+        assert response.status_code == 400
+
+        listed = ak.get_asks(status="open")
+        assert listed["asks"][0]["id_raw"] == add_result["id"]

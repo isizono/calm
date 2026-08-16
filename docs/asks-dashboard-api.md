@@ -9,11 +9,13 @@ ask store（人間の判断待ちの問いのインボックス）に対して�
 - ベースURL: `http://localhost:52837`
 - 対象操作: askの一覧取得（`get_asks`相当）と回答（`answer_ask`相当）の2つに限定される。decision作成・トリアージ・取り下げ等、破壊的・機微な操作はこのAPIからは行えない
 
-## Originチェック / CORS
+## Hostチェック / Originチェック / CORS
 
-同一マシン上の他者アクセスは上記の脅威モデルの外だが、ブラウザ経由のCSRF（別サイトを閲覧中に本APIへ意図しないリクエストを送らせる攻撃）には低コストで対策できるため、2つのエンドポイントとも共通のOriginヘッダチェックを行う。`Origin`ヘッダが送られてきた場合、その値が`http://localhost`または`http://127.0.0.1`（いずれも任意ポート）で始まらなければ`403`（`{"error": {"code": "FORBIDDEN", "message": "origin not allowed"}}`）で拒否する。`Origin`ヘッダが無いリクエスト（curl・Postman・サーバーサイドスクリプト等）は許可する。CSRFはブラウザが自動付与する`Origin`ヘッダを悪用する攻撃であり、ヘッダの無いリクエストはそもそも攻撃の対象外のため。
+サーバー全体のASGIアプリに、`Host`ヘッダを`localhost`または`127.0.0.1`（いずれもポート番号を含めない完全一致）に限定するチェックを適用している。それ以外の`Host`を送るリクエストは`/api/asks`系を含む全エンドポイントで`400`（プレーンテキストの`Invalid host header`）を返す。これはDNS rebinding（攻撃者が自ドメインをブラウザに一時的に`127.0.0.1`へ解決させ、same-origin扱いのリクエストを送らせる手法）対策で、ブラウザのsame-origin GETは次段の`Origin`チェックを素通りしうるため、`Host`側で別途塞いでいる。
 
-ダッシュボードが本APIと別オリジン（別ポート等）で動く構成を想定し、CORSも許可している。許可オリジンはOriginチェックと同じ`http://localhost:*`・`http://127.0.0.1:*`に限定しており、ワイルドカード（`*`）による全許可はしていない。許可メソッドは`GET`/`POST`/`OPTIONS`、許可ヘッダは`Content-Type`のみ、`Access-Control-Allow-Credentials`は付与しない（Cookie等の資格情報を伴うクロスオリジンリクエストは想定しない）。CORS設定はfastmcpの`mcp.run(..., middleware=[...])`経由でStarletteの`CORSMiddleware`をサーバー全体のASGIアプリに適用する形で組み込まれており、`/api/asks`系以外のエンドポイントにも同じlocalhost限定の許可範囲が及ぶ。
+2つのエンドポイントとも、上記に加えて共通の`Origin`ヘッダチェックを行う。`Origin`ヘッダが送られてきた場合、その値が`http://localhost`または`http://127.0.0.1`（いずれも任意ポート）と完全一致しなければ`403`（`{"error": {"code": "FORBIDDEN", "message": "origin not allowed"}}`）で拒否する。`http://localhost.example.com`のような、許可ホスト名を含むが完全一致しないホストは通らない。`Origin`ヘッダが無いリクエスト（curl・Postman・サーバーサイドスクリプト等）は許可する。CSRFはブラウザが自動付与する`Origin`ヘッダを悪用する攻撃であり、ヘッダの無いリクエストはそもそも攻撃の対象外のため。
+
+ダッシュボードが本APIと別オリジン（別ポート等）で動く構成を想定し、CORSも許可している。許可オリジンはOriginチェックと同じ`http://localhost:*`・`http://127.0.0.1:*`に限定しており、ワイルドカード（`*`）による全許可はしていない。許可メソッドは`GET`/`POST`/`OPTIONS`、許可ヘッダは`Content-Type`のみ、`Access-Control-Allow-Credentials`は付与しない（Cookie等の資格情報を伴うクロスオリジンリクエストは想定しない）。Host検証・CORS設定はいずれもfastmcpの`mcp.run(..., middleware=[...])`経由でStarletteのミドルウェアをサーバー全体のASGIアプリに適用する形で組み込まれており、`/api/asks`系以外のエンドポイントにも同じlocalhost限定の許可範囲が及ぶ。ミドルウェアの適用順はHost検証が外側（先）、CORSが内側（後）で、許可外Hostのリクエストはpreflightを含めCORS層に到達する前に拒否される。
 
 ## エンドポイント一覧
 
@@ -63,7 +65,7 @@ open状態のask一覧を取得する。
 {"error": {"code": "VALIDATION_ERROR", "message": "..."}}
 ```
 
-`status`が不正な値のとき・`limit`/`offset`が整数として解釈できない値のときは400（`VALIDATION_ERROR`）、`Origin`ヘッダが許可外のときは403（`FORBIDDEN`、詳細は上記「Originチェック / CORS」参照）、DB起因のエラーは500（`DATABASE_ERROR`）。`DATABASE_ERROR`の`message`は内部情報を含まない一般化された文言（`"internal error"`）を返す。詳細はサーバー側のログにのみ出力される。
+`status`が不正な値のとき・`limit`/`offset`が整数として解釈できない値のときは400（`VALIDATION_ERROR`）、`Origin`ヘッダが許可外のときは403（`FORBIDDEN`、詳細は上記「Hostチェック / Originチェック / CORS」参照）、DB起因のエラーは500（`DATABASE_ERROR`）。`DATABASE_ERROR`の`message`は内部情報を含まない一般化された文言（`"internal error"`）を返す。詳細はサーバー側のログにのみ出力される。`Host`ヘッダが許可外のときは400（プレーンテキストの`Invalid host header`。JSON形式ではない）を返し、他の400系と区別できる。
 
 ### POST /api/asks/{ask_id}/answer
 
@@ -101,7 +103,7 @@ open状態のaskに1回だけ回答する。
 {"error": {"code": "VALIDATION_ERROR", "message": "..."}}
 ```
 
-`ask_id`が整数でない・リクエストボディが不正なJSON・`answer_body`が文字列でない・対象がopen状態でない、はいずれも400（`VALIDATION_ERROR`）。`Origin`ヘッダが許可外のときは403（`FORBIDDEN`、詳細は上記「Originチェック / CORS」参照）。DB起因のエラーは500（`DATABASE_ERROR`、`message`は一般化された文言。詳細はサーバー側のログにのみ出力される）。
+`ask_id`が整数でない・リクエストボディが不正なJSON・`answer_body`が文字列でない・対象がopen状態でない、はいずれも400（`VALIDATION_ERROR`）。`Origin`ヘッダが許可外のときは403（`FORBIDDEN`、詳細は上記「Hostチェック / Originチェック / CORS」参照）。DB起因のエラーは500（`DATABASE_ERROR`、`message`は一般化された文言。詳細はサーバー側のログにのみ出力される）。`Host`ヘッダが許可外のときは400（プレーンテキストの`Invalid host header`。JSON形式ではない）を返し、この場合askの状態は変化しない。
 
 ## サンプル
 
