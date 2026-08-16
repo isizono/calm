@@ -2,6 +2,7 @@
 import logging
 import os
 import random
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from fastmcp import FastMCP, Context
@@ -46,6 +47,9 @@ from src.services import citation_renderer
 from src.db import get_connection
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -1883,6 +1887,7 @@ def add_ask(
     tags: list[str],
     kind: str = "ask",
     context: str | None = None,
+    choices: list[str] | None = None,
 ) -> dict:
     """人間の判断を待つ問いを1件積む（答え待ちの間、blocksで指定したactivityを止める）。
 
@@ -1890,8 +1895,8 @@ def add_ask(
     新規行を作らず出現回数を+1し、blocks/要求元セッションはUNIONで追記、
     context/最終出現時刻は今回の値で上書きする。answered/promoted/dismissed/withdrawnの
     同一問いは別のライフとして新規行になる（訂正は新規postで行い、リンクは張らない）。
-    dedup時（同一fingerprintのopen ask再post）は今回渡したkindを無視し、初回投入時の
-    値を保持する。tagsはこのaskにまだ1件も紐付いていない場合のみ解決・付与される
+    dedup時（同一fingerprintのopen ask再post）は今回渡したkind/choicesを無視し、
+    初回投入時の値を保持する。tagsはこのaskにまだ1件も紐付いていない場合のみ解決・付与される
     （通常は初回投入時のみだが、タグ解決自体が失敗した場合は次回の同一問い再postで
     再試行される）。
 
@@ -1912,6 +1917,9 @@ def add_ask(
         tags: タグ配列（必須、1個以上。`domain:`タグを最低1つ含むこと。素タグは任意）
         kind: "ask"（通常ask、デフォルト）または"meta"（メタask）
         context: 背景（optional、8000字以内）
+        choices: 選択肢テンプレート（optional、最大3件、1件100字以内）。指定すると
+            AskUserQuestion風の選択式UIをダッシュボード等で組み立てられる。
+            回答（answer_ask）は引き続き自由文字列のまま
 
     Returns:
         成功時: {"id": int, "deduped": bool, "occurrence_count": int,
@@ -1928,6 +1936,7 @@ def add_ask(
         tags,
         kind=kind,
         context=context,
+        choices=choices,
         session_id=relay_identity.get_relay_identity(),
     )
 
@@ -1965,7 +1974,8 @@ def get_asks(
         参照のためpromoted_decision_id_rawへ退避される。fingerprintは含まない。
         各askにblocks（[{"id_raw", "title", "status"}, ...]）、requesters
         （要求元session_idの文字列リスト）、tags（タグ文字列のリスト。タグnotesは
-        含まない）が合流される。
+        含まない）が合流される。choicesはadd_ask時に指定していればstring配列、
+        未指定ならnull。
     """
     return ask_service.get_asks(
         status=status,
@@ -2077,6 +2087,163 @@ def withdraw_ask(ask_id: int, reason: str) -> dict:
     return ask_service.withdraw_ask(
         ask_id, reason, session_id=relay_identity.get_relay_identity()
     )
+
+
+# asks ダッシュボード向けHTTP API（MCPプロトコル外の薄いラッパー）。
+# 認証なし（cc-memoryはlocalhostに他者がアクセスできる場合を脅威モデルに
+# 含めていないため）。get_asks/answer_askの2呼び出しに限定し、他のMCPツール
+# （add_decisions等の破壊的・機微な操作）には一切触れない。
+# CSRF対策としてOriginヘッダのlocalhost限定チェックを行う（_check_origin）。
+# ブラウザのsame-origin GETはOriginヘッダを付与しないためこのチェックを
+# 素通りしうるが、Hostヘッダのlocalhost限定チェック（TrustedHostMiddleware）を
+# 別途サーバー全体に適用しており、DNS rebinding経路はそちらで塞いでいる。
+
+# ブラウザからのfetch()を許可するOrigin（Originヘッダチェック・CORS両方で使う）。
+# 任意ポートのhttp://localhost・http://127.0.0.1のみ許可し、https/他ホストは拒否する。
+_ALLOWED_ORIGIN_RE = re.compile(r"^http://(localhost|127\.0\.0\.1)(:\d+)?$")
+
+# Hostヘッダ検証（TrustedHostMiddleware）で許可するホスト名。
+# Starletteはポート部分を落として比較するため、ポート付きの値は書かない
+# （書いても常に不一致になり、正規のリクエストまで拒否してしまう）。
+_ALLOWED_HOSTS = ["localhost", "127.0.0.1"]
+
+
+def _ask_error_status_code(error: dict) -> int:
+    code = error.get("code")
+    if code == "VALIDATION_ERROR":
+        return 400
+    return 500
+
+
+def _sanitize_ask_error(result: dict, context: str) -> dict:
+    """DATABASE_ERRORのmessageを一般化し、詳細はログにのみ残す。
+
+    ask_serviceが返すDATABASE_ERRORのmessageは例外の文字列表現（DBパスの
+    断片やSQL文の一部を含みうる）で、HTTP API経由で外部に漏らすと内部
+    構造の手がかりを与えてしまう。VALIDATION_ERRORはユーザー入力起因で
+    内部情報を含まないためそのまま返す。
+    """
+    error = result["error"]
+    if error.get("code") == "DATABASE_ERROR":
+        logger.error("%s: %s", context, error.get("message"))
+        return {"error": {"code": "DATABASE_ERROR", "message": "internal error"}}
+    return result
+
+
+def _build_cors_middleware() -> Middleware:
+    """asksダッシュボードAPI（/api/asks系）向けのCORS許可設定を組み立てる。
+
+    allow_origin_regexを_ALLOWED_ORIGIN_REと同じ範囲（localhost/127.0.0.1の
+    任意ポート）に揃え、ワイルドカード全許可は避ける。
+    """
+    return Middleware(
+        CORSMiddleware,
+        allow_origin_regex=_ALLOWED_ORIGIN_RE.pattern,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type"],
+        allow_credentials=False,
+    )
+
+
+def _build_trusted_host_middleware() -> Middleware:
+    """Hostヘッダをlocalhost/127.0.0.1限定に検証するミドルウェアを組み立てる。
+
+    サーバー全体のASGIアプリに適用する（/api/asks系に限らない）。許可外の
+    Hostは400（プレーンテキスト "Invalid host header"）で拒否する。
+    """
+    return Middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=_ALLOWED_HOSTS,
+    )
+
+
+def _check_origin(request: Request) -> JSONResponse | None:
+    """OriginヘッダをCSRF対策として検証する。
+
+    Originヘッダが存在し、かつlocalhost/127.0.0.1（任意ポート）以外を指す場合のみ
+    403で拒否する。Originヘッダが無いリクエスト（curl・Postman・サーバーサイド
+    スクリプト等）は許可する。CSRFはブラウザが自動付与するOriginヘッダを悪用する
+    攻撃であり、ヘッダの無いリクエストはそもそも攻撃の対象外のため。
+
+    Returns:
+        拒否する場合は403のJSONResponse、許可する場合はNone。
+    """
+    origin = request.headers.get("origin")
+    if origin is None or _ALLOWED_ORIGIN_RE.fullmatch(origin):
+        return None
+    return JSONResponse(
+        {"error": {"code": "FORBIDDEN", "message": "origin not allowed"}},
+        status_code=403,
+    )
+
+
+@mcp.custom_route("/api/asks", methods=["GET"])
+async def http_get_asks(request: Request) -> JSONResponse:
+    """ダッシュボード等の外部アプリ向け、MCPプロトコル外の薄いGET API。認証なし（localhost限定運用前提）。"""
+    origin_error = _check_origin(request)
+    if origin_error is not None:
+        return origin_error
+    status = request.query_params.get("status", "open")
+    kwargs: dict = {"status": status}
+    for param_name in ("limit", "offset"):
+        raw_value = request.query_params.get(param_name)
+        if raw_value is None:
+            continue
+        try:
+            kwargs[param_name] = int(raw_value)
+        except ValueError:
+            return JSONResponse(
+                {
+                    "error": {
+                        "code": "VALIDATION_ERROR",
+                        "message": f"{param_name} must be an integer",
+                    }
+                },
+                status_code=400,
+            )
+    result = ask_service.get_asks(**kwargs)
+    if "error" in result:
+        result = _sanitize_ask_error(result, "http_get_asks")
+        return JSONResponse(result, status_code=_ask_error_status_code(result["error"]))
+    return JSONResponse(result)
+
+
+@mcp.custom_route("/api/asks/{ask_id}/answer", methods=["POST"])
+async def http_answer_ask(request: Request) -> JSONResponse:
+    """ダッシュボード等の外部アプリ向け、MCPプロトコル外の薄いPOST API。認証なし（localhost限定運用前提）。"""
+    origin_error = _check_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        ask_id = int(request.path_params["ask_id"])
+    except (KeyError, ValueError):
+        return JSONResponse(
+            {"error": {"code": "VALIDATION_ERROR", "message": "ask_id must be an integer"}},
+            status_code=400,
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"error": {"code": "VALIDATION_ERROR", "message": "invalid JSON body"}},
+            status_code=400,
+        )
+    if not isinstance(body, dict):
+        return JSONResponse(
+            {"error": {"code": "VALIDATION_ERROR", "message": "request body must be a JSON object"}},
+            status_code=400,
+        )
+    answer_body = body.get("answer_body")
+    if not isinstance(answer_body, str):
+        return JSONResponse(
+            {"error": {"code": "VALIDATION_ERROR", "message": "answer_body must be a string"}},
+            status_code=400,
+        )
+    result = ask_service.answer_ask(ask_id, answer_body, session_id="dashboard")
+    if "error" in result:
+        result = _sanitize_ask_error(result, "http_answer_ask")
+        return JSONResponse(result, status_code=_ask_error_status_code(result["error"]))
+    return JSONResponse(result)
 
 
 # ----------------------------
@@ -2490,7 +2657,12 @@ if __name__ == "__main__":
 
         try:
             logger.info(f"Starting HTTP server on {HTTP_HOST}:{HTTP_PORT}")
-            mcp.run(transport="http", host=HTTP_HOST, port=HTTP_PORT)
+            mcp.run(
+                transport="http",
+                host=HTTP_HOST,
+                port=HTTP_PORT,
+                middleware=[_build_trusted_host_middleware(), _build_cors_middleware()],
+            )
         finally:
             relay_runtime.stop()
             release()

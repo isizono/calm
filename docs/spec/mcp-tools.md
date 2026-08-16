@@ -2,7 +2,7 @@
 watch-tags: domain:cc-memory
 watch-direction: true
 watch-migrations: false
-last-synced: 2026-07-10
+last-synced: 2026-08-16
 last-synced-migration: 0048
 -->
 
@@ -577,10 +577,11 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 | tags | list[string] | yes | - | タグ配列（1個以上必須）。`domain:`タグを最低1つ含むこと。素タグは任意。`tag_service.resolve_tags`（完全一致・KNN統合）で解決する |
 | kind | string | no | "ask" | `"ask"`（通常ask）または`"meta"`（メタask） |
 | context | string | no | null | 背景（8000字以内） |
+| choices | list[string] \| null | no | null | 選択肢テンプレート（最大3件、1件100字以内）。AskUserQuestion風の選択式UIをダッシュボード等で組み立てるための添え物。回答（`answer_ask`）は引き続き自由文字列のまま |
 
 **返り値**: `{id: int, deduped: bool, occurrence_count: int, similar_precedents: [...], similar_asks: [...]}`。`similar_precedents`/`similar_asks`はそれぞれ近傍のdecision/ask最大3件（embeddingサーバー未起動時は空配列）。
-**動作**: 同じ問い（正規化後questionのfingerprint一致）が答え待ち（open）で既にあれば新規行を作らず`occurrence_count`を+1し、blocks/要求元セッションはUNIONで追記、context/最終出現時刻は今回の値で上書きする。answered/promoted/dismissed/withdrawnの同一問いは別のライフとして新規行になる（訂正は新規postで行い、supersedes等のリンクは張らない）。dedup時（同一fingerprintのopen ask再post）は今回渡したtags/kindを無視し、初回投入時の値を保持する。レスポンスのsimilar_asks（裁定内容込み）を読み、同型の問いが繰り返され裁定が一貫していると判断した場合は、`ask-distill` skillでメタaskの起票を検討する。
-**エラー処理**: question空・500字超、context 8000字超、blocks空・存在しないactivity id含む・全てcompleted状態、同一fingerprintの直近withdrawから5分未満の再post、kindが"ask"/"meta"以外はいずれも`VALIDATION_ERROR`。tagsが空・namespace不正等は`TAGS_REQUIRED`/`INVALID_TAG_NAMESPACE`/`INVALID_TAG_NAME`、`domain:`タグを含まない場合は`VALIDATION_ERROR`。
+**動作**: 同じ問い（正規化後questionのfingerprint一致）が答え待ち（open）で既にあれば新規行を作らず`occurrence_count`を+1し、blocks/要求元セッションはUNIONで追記、context/最終出現時刻は今回の値で上書きする。answered/promoted/dismissed/withdrawnの同一問いは別のライフとして新規行になる（訂正は新規postで行い、supersedes等のリンクは張らない）。dedup時（同一fingerprintのopen ask再post）は今回渡したtags/kind/choicesを無視し、初回投入時の値を保持する。レスポンスのsimilar_asks（裁定内容込み）を読み、同型の問いが繰り返され裁定が一貫していると判断した場合は、`ask-distill` skillでメタaskの起票を検討する。
+**エラー処理**: question空・500字超、context 8000字超、blocks空・存在しないactivity id含む・全てcompleted状態、同一fingerprintの直近withdrawから5分未満の再post、kindが"ask"/"meta"以外、choicesが0件または4件以上・要素が空文字列・101字以上はいずれも`VALIDATION_ERROR`。tagsが空・namespace不正等は`TAGS_REQUIRED`/`INVALID_TAG_NAMESPACE`/`INVALID_TAG_NAME`、`domain:`タグを含まない場合は`VALIDATION_ERROR`。
 
 ### 2.44 get_asks
 
@@ -595,7 +596,7 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 | offset | int | no | 0 | ページネーション |
 | include_stats | bool | no | false | trueでstatus別クロス集計と直近30日サマリを付与 |
 
-**返り値**: `{asks: [...], total_count: int, stats?: {by_status, last_30d}}`。各askにblocks（`[{id_raw, title, status}]`）、requesters（要求元session_idの文字列リスト）、tags（タグ文字列のリスト）が合流される。タグnotesは返さない。
+**返り値**: `{asks: [...], total_count: int, stats?: {by_status, last_30d}}`。各askにblocks（`[{id_raw, title, status}]`）、requesters（要求元session_idの文字列リスト）、tags（タグ文字列のリスト）が合流される。タグnotesは返さない。`choices`はadd_ask時に指定していればstring配列、未指定ならnull。
 
 ### 2.45 answer_ask
 

@@ -1,0 +1,24 @@
+-- Migration 0069: asks に choices カラムを追加
+--
+-- depends: 0068_add_asks_kind_and_tags
+--
+-- 背景:
+--   ask storeへの外部回答経路として、cc-memoryのローカルMCPサーバーにMCPプロトコル外の
+--   HTTP APIを追加し、ダッシュボード等の外部Webアプリからフリーテキストで回答できる
+--   ようにする。あわせて、Claude CodeのAskUserQuestionツールのような「最大3択+フリー
+--   テキスト」のテンプレート機能をaskのquestion側に追加する（回答側=answer_askは
+--   引き続き自由文字列のまま、スキーマ変更なし）。
+--
+-- 変更内容:
+--   - asks.choices カラム追加。JSON配列文字列（例: '["A案", "B案", "C案"]'）で
+--     選択肢テンプレートを保存する。nullable、選択肢なしのaskも引き続き許可する
+--
+-- バリデーション方針:
+--   件数上限（最大3件）・文字数上限（1件100字以内）はDB制約ではなくサービス層で
+--   行う。question/answer_body等の既存の文字数上限もサービス層バリデーションのため、
+--   同じパターンに揃える。
+--
+-- 既存データへの遡及適用は行わない:
+--   既存のaskはchoices=NULLのままとなる。
+
+ALTER TABLE asks ADD COLUMN choices TEXT;

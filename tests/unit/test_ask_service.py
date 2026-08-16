@@ -112,6 +112,67 @@ class TestAddAskValidation:
         assert set(listed["asks"][0]["tags"]) == {"domain:test", "plain-tag"}
 
 
+class TestAddAskChoices:
+    def test_one_choice_accepted(self, temp_db):
+        act = _make_activity()
+        result = ak.add_ask("q", tags=["domain:test"], blocks=[act], choices=["A案"])
+        assert "error" not in result
+        listed = ak.get_asks()
+        assert listed["asks"][0]["choices"] == ["A案"]
+
+    def test_three_choices_accepted(self, temp_db):
+        act = _make_activity()
+        result = ak.add_ask(
+            "q", tags=["domain:test"], blocks=[act], choices=["A案", "B案", "C案"]
+        )
+        assert "error" not in result
+        listed = ak.get_asks()
+        assert listed["asks"][0]["choices"] == ["A案", "B案", "C案"]
+
+    def test_four_choices_rejected(self, temp_db):
+        act = _make_activity()
+        result = ak.add_ask(
+            "q", tags=["domain:test"], blocks=[act], choices=["A", "B", "C", "D"]
+        )
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_empty_choices_list_rejected(self, temp_db):
+        act = _make_activity()
+        result = ak.add_ask("q", tags=["domain:test"], blocks=[act], choices=[])
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_choice_over_max_len_rejected(self, temp_db):
+        act = _make_activity()
+        result = ak.add_ask(
+            "q", tags=["domain:test"], blocks=[act], choices=["x" * (ak.CHOICE_MAX_LEN + 1)]
+        )
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_empty_string_choice_rejected(self, temp_db):
+        act = _make_activity()
+        result = ak.add_ask("q", tags=["domain:test"], blocks=[act], choices=["A案", "   "])
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_choices_omitted_defaults_to_null(self, temp_db):
+        """choices未指定時の後方互換: 既存動作（選択肢なしask作成）に影響がないこと。"""
+        act = _make_activity()
+        result = ak.add_ask("q", tags=["domain:test"], blocks=[act])
+        assert "error" not in result
+        listed = ak.get_asks()
+        assert listed["asks"][0]["choices"] is None
+
+    def test_dedup_keeps_first_choices(self, temp_db):
+        """dedup時（同一fingerprintのopen ask再post）は初回投入時のchoicesを保持する。"""
+        act = _make_activity()
+        ak.add_ask("same question", tags=["domain:test"], blocks=[act], choices=["A案", "B案"])
+        result2 = ak.add_ask(
+            "same question", tags=["domain:test"], blocks=[act], choices=["X案"]
+        )
+        assert result2["deduped"] is True
+        listed = ak.get_asks()
+        assert listed["asks"][0]["choices"] == ["A案", "B案"]
+
+
 class TestAddAskDedup:
     def test_same_question_reuses_open_row(self, temp_db):
         act = _make_activity()
