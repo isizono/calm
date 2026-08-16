@@ -19,10 +19,13 @@ __all__ = [
 
 # 大文字 type code 形式 (`M#123`, `D#456`, `L#789`, `A#321`, `T#654`)。
 # 前後の word boundary は lookbehind / lookahead で明示する
-# (前が英数字 / `_` / `/` なら識別子の一部とみなして非マッチ、
+# (前が英数字 / `_` なら識別子の一部とみなして非マッチ、
 #  後ろが英数字 / `_` なら同様)。
+# 範囲表記 (type#NNN-NNN 形式) の終端 ID は `(?:-(\d+))?` で任意キャプチャする。
+# `/` はスラッシュ区切りの複数 ID 列挙 (type#NNN/type#NNN 形式) を独立したトークン
+# として認識するため、前方 lookbehind の除外対象から外している。
 RAW_CITE_CODE_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9_/])([MDLAT])#(\d+)(?![A-Za-z0-9_])"
+    r"(?<![A-Za-z0-9_])([MDLAT])#(\d+)(?:-(\d+))?(?![A-Za-z0-9_])"
 )
 
 # 英語フルワード形式。対応する type 名は5種 (log, decision, activity, material,
@@ -42,8 +45,11 @@ RAW_CITE_FULLWORD_PATTERN = re.compile(
 # 自然文 (例: "Activity 1 done") まで citation に書き換えてしまう実害があるため、
 # 自動変換 (citations_pure._convert_line_raw_to_cite 経由の convert_raw_to_cite)
 # はこの `#` 必須パターンのみを使う。
+# RAW_CITE_CODE_PATTERN と同様に、範囲表記の終端 ID を任意キャプチャし、
+# `/` 区切りの複数 ID 列挙を独立したトークンとして認識できるよう lookbehind
+# の除外対象から `/` を外している。
 RAW_CITE_FULLWORD_HASH_REQUIRED_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9_/])(log|decision|activity|material|topic) ?#(\d+)(?![A-Za-z0-9_])",
+    r"(?<![A-Za-z0-9_])(log|decision|activity|material|topic) ?#(\d+)(?:-(\d+))?(?![A-Za-z0-9_])",
     re.IGNORECASE,
 )
 
