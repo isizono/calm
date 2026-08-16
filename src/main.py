@@ -1923,7 +1923,12 @@ def add_ask(
             呼べばタグ解決が再試行される）
     """
     return ask_service.add_ask(
-        question, blocks, tags, kind=kind, context=context, session_id=_current_session_id()
+        question,
+        blocks,
+        tags,
+        kind=kind,
+        context=context,
+        session_id=relay_identity.get_relay_identity(),
     )
 
 
@@ -1993,7 +1998,9 @@ def answer_ask(ask_id: int, answer_body: str) -> dict:
         失敗時: {"error": {"code": "VALIDATION_ERROR", "message": ...}}
             （対象がopen状態でない場合を含む）
     """
-    return ask_service.answer_ask(ask_id, answer_body, session_id=_current_session_id())
+    return ask_service.answer_ask(
+        ask_id, answer_body, session_id=relay_identity.get_relay_identity()
+    )
 
 
 @mcp.tool()
@@ -2040,7 +2047,7 @@ def triage_ask(
         title=title,
         tags=tags,
         dismiss_reason=dismiss_reason,
-        session_id=_current_session_id(),
+        session_id=relay_identity.get_relay_identity(),
     )
 
 
@@ -2067,7 +2074,9 @@ def withdraw_ask(ask_id: int, reason: str) -> dict:
         失敗時: {"error": {"code": "VALIDATION_ERROR", "message": ...}}
             （対象がopen状態でない場合を含む）
     """
-    return ask_service.withdraw_ask(ask_id, reason, session_id=_current_session_id())
+    return ask_service.withdraw_ask(
+        ask_id, reason, session_id=relay_identity.get_relay_identity()
+    )
 
 
 # ----------------------------
