@@ -17,7 +17,7 @@ RULES_HARD_LIMIT = 2048
 RULES_SAFE_BUDGET = 1900
 
 
-def test_rules_within_hard_limit():
+def test_rules_within_budget():
     """RULES全文がハードリミット2,048字以内である"""
     assert len(RULES) <= RULES_HARD_LIMIT, (
         f"RULESが{RULES_HARD_LIMIT}字を超えている（実測{len(RULES)}字）"
