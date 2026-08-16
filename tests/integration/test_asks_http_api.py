@@ -126,6 +126,17 @@ class TestHttpAnswerAsk:
         body = json.loads(response.body)
         assert body["error"]["code"] == "VALIDATION_ERROR"
 
+    def test_non_object_json_body_returns_400(self, temp_db):
+        act = _make_activity()
+        add_result = ak.add_ask("should we do X?", tags=["domain:test"], blocks=[act])
+        ask_id = add_result["id"]
+
+        for payload in [b"null", b"[1,2,3]", b'"just a string"', b"42"]:
+            response = asyncio.run(http_answer_ask(_make_post_request(ask_id, payload)))
+            assert response.status_code == 400, payload
+            body = json.loads(response.body)
+            assert body["error"]["code"] == "VALIDATION_ERROR"
+
     def test_non_string_answer_body_returns_400(self, temp_db):
         act = _make_activity()
         add_result = ak.add_ask("should we do X?", tags=["domain:test"], blocks=[act])

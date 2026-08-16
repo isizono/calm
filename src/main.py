@@ -2120,6 +2120,11 @@ async def http_answer_ask(request: Request) -> JSONResponse:
             {"error": {"code": "VALIDATION_ERROR", "message": "invalid JSON body"}},
             status_code=400,
         )
+    if not isinstance(body, dict):
+        return JSONResponse(
+            {"error": {"code": "VALIDATION_ERROR", "message": "request body must be a JSON object"}},
+            status_code=400,
+        )
     answer_body = body.get("answer_body")
     if not isinstance(answer_body, str):
         return JSONResponse(
