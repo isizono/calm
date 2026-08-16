@@ -35,8 +35,11 @@ RAW_CITE_CODE_PATTERN = re.compile(
 # (詰め書きの誤検知を防ぎ、空白 2 個以上のケースを除外するため)。
 # block 用途 (preblock_hook) 専用。自動変換 (citations_pure) には
 # RAW_CITE_FULLWORD_HASH_REQUIRED_PATTERN を使うこと。
+# RAW_CITE_CODE_PATTERN と同様に、範囲表記の終端 ID を任意キャプチャし、
+# `/` 区切りの複数 ID 列挙を独立したトークンとして認識できるよう lookbehind
+# の除外対象から `/` を外している。
 RAW_CITE_FULLWORD_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9_/])(log|decision|activity|material|topic)(?: ?#| )(\d+)(?![A-Za-z0-9_])",
+    r"(?<![A-Za-z0-9_])(log|decision|activity|material|topic)(?: ?#| )(\d+)(?:-(\d+))?(?![A-Za-z0-9_])",
     re.IGNORECASE,
 )
 
