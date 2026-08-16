@@ -1899,7 +1899,10 @@ def add_ask(
     一貫していると判断した場合は、`ask-distill` skill を使ってメタaskの起票を
     検討すること。
 
-    add_ask成功後、システムがそのask専用labelを自動でrelay_subscribeします。
+    add_ask成功後、システムがそのask専用labelを自動でrelay_subscribeします
+    （relayの一般方針「購読はエージェントの明示的な意図宣言であり、activity所有等
+    から自動導出しない」の例外ではなく、add_askを呼ぶこと自体をエージェントの
+    明示的な意図宣言とみなす扱いです）。
 
     Args:
         question: 問い本文（空不可、500字以内）
