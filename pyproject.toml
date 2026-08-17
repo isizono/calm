@@ -1,6 +1,6 @@
 [project]
-name = "claude-code-memory"
-version = "0.1.0"
+name = "calm"
+version = "1.0.0"
 description = "Claude Codeの記憶を外部DBに保存し、セッション間で知識・決定事項・アクティビティを永続化する"
 requires-python = ">=3.12"
 dependencies = [
@@ -27,6 +27,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.uv.sources]
 # relay パッケージ全体を依存に含めるため、JWS 認証パス専用の joserfc/rfc8785 も
-# 常時インストール対象になる。cc-memory は Bearer token 認証のみを使い JWS 機能は
+# 常時インストール対象になる。CALM は Bearer token 認証のみを使い JWS 機能は
 # 呼ばないため、実行時に使われることはない。
 relay = { git = "https://github.com/isizono/relay.git", rev = "64ac914dd0e6a036edb8ecf59a79755bba7dc6fa" }

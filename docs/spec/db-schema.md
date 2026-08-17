@@ -6,11 +6,11 @@ last-synced: 2026-08-16
 last-synced-migration: 0069
 -->
 
-# cc-memory DBスキーマ v0
+# CALM DBスキーマ v0
 
 ## 0. 読み方
 
-本ドキュメントは cc-memory 本体（SQLite データベース）のスキーマについて、設計判断の背景・変遷・既知の課題をまとめた手書きの作業用ドキュメントである。凍結を目的としない。
+本ドキュメントは CALM 本体（SQLite データベース）のスキーマについて、設計判断の背景・変遷・既知の課題をまとめた手書きの作業用ドキュメントである。凍結を目的としない。
 
 **カラム名・型・NULL可否・デフォルト値・インデックスの現在値は本ドキュメントには書かない。** これらは `docs/spec/db-schema-tables.md`（`scripts/dump_db_schema.py` が `migrations/` 全適用後の実スキーマから自動生成、手動編集禁止）を正とする。本ドキュメントは「今どういう形か」ではなく「なぜこの形なのか」に集中する。§3 各テーブル節は用途・変遷（旧カラムの追加/削除履歴等）・設計判断の背景のみを記述し、正確なカラム一覧は都度 `db-schema-tables.md` の該当節へのリンクで参照する。
 
@@ -119,7 +119,7 @@ erDiagram
 | `search_telemetry` | — | search() 呼出ごとのquery/parameters/結果件数の記録（運用計測用） |
 | `citations` | — | 本文中の `{{cite:X#NNN}}` 参照の構造化保存 |
 | `citation_event_log` | — | write時sanitize等のテキスト変換イベントの逐次記録（旧 sanitize_log の後継） |
-| `signal_events` | signal | cc-memory自身の故障・使用感不満・矛盾検出・運用計測イベントの記録先 |
+| `signal_events` | signal | CALM自身の故障・使用感不満・矛盾検出・運用計測イベントの記録先 |
 | `asks` | ask | 人間の判断を待つ問いの記録先（判断委譲の受け皿） |
 | `ask_blocks` | — | ask ↔ activity junction（このaskが答え待ちで止めているactivity） |
 | `ask_requesters` | — | ask ↔ 要求元session_id junction（UNION蓄積） |
@@ -460,7 +460,7 @@ VIEW 3本（同migrationで新設）:
 
 ### 3.21 signal_events
 
-cc-memory自身の故障報告・使用感不満・矛盾検出・運用計測イベントの統一記録先。decision / log とは異なり「双方の合意」も文脈タグ体系も要らない生の観測データであり、量が多く状態遷移（トリアージ）を持つ。他コンポーネント（運用計測の集計、境界判定の突合ミラー）もこのテーブルを共有し、独自テーブルは作らない。
+CALM自身の故障報告・使用感不満・矛盾検出・運用計測イベントの統一記録先。decision / log とは異なり「双方の合意」も文脈タグ体系も要らない生の観測データであり、量が多く状態遷移（トリアージ）を持つ。他コンポーネント（運用計測の集計、境界判定の突合ミラー）もこのテーブルを共有し、独自テーブルは作らない。
 
 補足:
 - 同一 `fingerprint` を持つ `status='new'` 行が既存の場合、部分 UNIQUE インデックス（`fingerprint WHERE status='new'`）が競合を検知し、アプリ層は新規行を作らず `occurrence_count` を加算する。トリアージ済み（status が new 以外）の同型イベント再発は新規行になる
@@ -478,7 +478,7 @@ cc-memory自身の故障報告・使用感不満・矛盾検出・運用計測�
 スキーマの単一の真実源は relay_sdk パッケージの DDL（`relay_sdk/outbox/schema.py`、relay リポジトリからの依存パッケージ）であり、migration 0056 はそれと同一形状を migration chain に組み込んだもの。
 
 補足:
-- タグ・リレーション・検索インデックス（search_index）・embeddingのいずれにも接続しない。通信レイヤ専用のキューであり、cc-memoryのエンティティモデルからは独立している
+- タグ・リレーション・検索インデックス（search_index）・embeddingのいずれにも接続しない。通信レイヤ専用のキューであり、CALMのエンティティモデルからは独立している
 - SDK 側を再同期して DDL の形状が変わった場合は、新規 migration で追従する（0056 は事後改変しない）
 
 関連 migration: 0056_add_relay_outbox
@@ -554,7 +554,7 @@ asks 専用の sqlite-vec 仮想テーブル（384次元、`distance_metric=cosi
 
 ## 5. 検索インフラ
 
-cc-memory の検索は以下3層の組み合わせで構成される。
+CALM の検索は以下3層の組み合わせで構成される。
 
 ### 5.1 search_index（中間テーブル）
 

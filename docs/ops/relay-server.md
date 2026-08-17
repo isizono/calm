@@ -1,6 +1,6 @@
 # relay v2 サーバー運用手順
 
-relay v2 サーバー（`uvicorn relay.app:app`）は cc-memory から独立したプロセスとして常駐させる。cc-memory server 本体は relay に対して 1 identity として接続する。
+relay v2 サーバー（`uvicorn relay.app:app`）は CALM から独立したプロセスとして常駐させる。cc-memory server 本体は relay に対して 1 identity として接続する。
 
 ## 前提
 

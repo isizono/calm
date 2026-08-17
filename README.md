@@ -1,12 +1,12 @@
-# claude-code-memory
+# CALM
 
-Claude Codeのセッション間で、議論の文脈・決定事項・作業状況を永続化するプラグインです。
+CALM（Concurrent, autonomous, loosely-coupled minds）は、Claude Codeのセッション間で、議論の文脈・決定事項・作業状況を永続化するプラグインです。
 
 ## 何が解決されるのか
 
 Claude Codeはセッションごとに記憶がリセットされます。短いタスクなら問題ありませんが、長期プロジェクトでは「前に何を決めたか」「なぜその設計にしたか」「どこまで作業が進んでいるか」がセッションをまたぐと失われます。
 
-claude-code-memoryは、こうした文脈をSQLiteデータベースに保存し、新しいセッションでAIが自動的に過去の記録を参照できるようにします。同じ説明を繰り返す必要がなくなり、議論の積み重ねがそのまま次のセッションに引き継がれます。
+CALMは、こうした文脈をSQLiteデータベースに保存し、新しいセッションでAIが自動的に過去の記録を参照できるようにします。同じ説明を繰り返す必要がなくなり、議論の積み重ねがそのまま次のセッションに引き継がれます。
 
 ## 主な機能
 
@@ -34,10 +34,10 @@ claude-code-memoryは、こうした文脈をSQLiteデータベースに保存�
 
 ```bash
 # マーケットプレイスを追加
-claude plugin marketplace add isizono/cc-memory
+claude plugin marketplace add isizono/calm
 
 # プラグインをインストール
-claude plugin install claude-code-memory
+claude plugin install calm
 ```
 
 インストール後、Claude Code内で以下を実行すると使い方の案内が表示されます。
@@ -50,28 +50,49 @@ claude plugin install claude-code-memory
 
 | カテゴリ | ツール | 説明 |
 |---------|--------|------|
-| トピック | `add_topic`, `get_topics` | 議論トピックの作成・取得 |
-| 議論ログ | `add_log`, `get_logs` | 議論の経緯や検討過程の記録・取得 |
-| 決定事項 | `add_decision`, `get_decisions` | 合意内容の記録・取得 |
+| トピック | `add_topic`, `get_topics` | 議論トピックの作成・新しい順の取得 |
+| 議論ログ | `add_logs`, `get_logs` | 議論の経緯や検討過程の一括記録・取得 |
+| 決定事項 | `add_decisions`, `get_decisions`, `pull_precedents` | 合意内容の記録・取得、設計判断前の近傍トピック判例の網羅確認 |
 | アクティビティ | `add_activity`, `get_activities`, `update_activity` | 作業タスクの作成・取得・状態更新 |
 | check-in | `check_in` | アクティビティにcheck-inし、tag notes・資材・関連decisionsを集約取得 |
-| 資材 | `add_material`, `get_material` | セッション中の成果物をタグ付き独立エンティティとして保存・取得 |
+| 資材 | `add_material`, `update_material`, `get_material`, `export_material` | セッション中の成果物をタグ付き独立エンティティとして保存・更新・取得・md出力 |
 | リレーション | `add_relation`, `remove_relation`, `get_map` | エンティティ間の関連の追加・削除・グラフ探索 |
-| 振る舞い | `add_habit`, `get_habits`, `update_habit` | check-in時に注入される運用ルールの管理 |
-| タグ | `search_tags`, `update_tag`, `analyze_tags` | タグの検索・タグ情報の更新・タグ共起分析 |
-| 検索 | `search`, `get_by_ids` | キーワード横断検索・詳細情報の取得 |
+| 前提の揺らぎ管理 | `resolve_destabilization`, `suggest_destabilized_candidates` | 軸変更によりdestabilizeされたdecisionの解消・候補提示 |
+| 振る舞い | `add_habit`, `get_habits`, `update_habit` | check-in時に注入される運用ルールの登録・取得・更新 |
+| タグ | `search_tags`, `update_tag`, `analyze_tags` | タグの検索、notes・エイリアス・退役状態等の更新、タグ共起分析 |
+| ピン | `add_pin`, `remove_pin` | エンティティ間のpin（強調的な関連付け）の追加・削除 |
+| 取り消し | `retract` | 決定事項・ログ・資材の論理削除 |
+| 検索・横断参照 | `search`, `get_by_ids`, `get_timeline` | キーワード横断検索、詳細情報の一括取得、時系列表示 |
+| シグナル・計測 | `report_signal`, `get_signals`, `update_signal`, `detect_reask_candidates` | cc-memory自身への故障報告・矛盾検出・聞き返し候補検出等の運用計測 |
+| Ask（人間への判断委譲） | `add_ask`, `get_asks`, `answer_ask`, `triage_ask`, `withdraw_ask` | 離席中・セッション跨ぎの判断待ち問いの起票・取得・回答・振り分け・取り下げ |
+| Relay（セッション間メッセージング） | `relay_post`, `relay_publish`, `relay_subscribe`, `relay_receive`, `relay_status` | セッション間でのメッセージ投函・labels配布・購読・受信・配送状況確認 |
+| その他 | `get_config`, `roll_dice` | 設定値の取得、ダイスロール |
 
 ## スキル
 
 | スキル | 説明 |
 |--------|------|
-| `/guide` | cc-memoryの使い方をAIが説明します |
-| `/sync-memory` | セッション終了前にtranscriptを解析し、トピック・決定事項・アクティビティを一括で記録・更新します |
+| `/guide` | CALMの使い方をAIが説明します |
+| `/activity-start` | 新しいアクティビティを開始します |
+| `/activity-pause` | 進行中のアクティビティを完了にせず中断します |
+| `/activity-finish` | アクティビティを完了にします |
 | `/check-in` | アクティビティにcheck-inして関連情報を集約取得します |
+| `/decision-record` | ユーザーとの合意事項をdecisionとして記録するようガイドします |
+| `/recording` | 議論の経緯や成果物をログ・資材として記録するようガイドします |
+| `/remember` | 「覚えて」等の依頼を受けて、情報の保存先を判定します |
+| `/forget` | 現状と矛盾・陳腐化した過去の記録を撤回します |
 | `/tag-notes` | タグのnotesを確認・更新します |
 | `/tag-cleanup` | タグの共起分析を実行し、整理提案をユーザーに提示します |
-| `/scribe` | cc-memoryの記録からドキュメントを生成します |
+| `/sync-memory` | セッション終了前にtranscriptを解析し、トピック・決定事項・ログ・アクティビティを一括で記録・更新します |
+| `/digest` | 直近の記録を期間横断で俯瞰するダイジェストを生成します |
 | `/postmortem` | completedアクティビティを振り返り、教訓を永続化します |
+| `/audit` | 過去の決定事項の矛盾・陳腐化を検証し、知識を正しい場所に記録し直します |
+| `/recompose-context` | アクティビティ・トピック等の関連情報を統合整理し、anchor対応表を作ります |
+| `/setup-anchor` | 合意事項の検証先（anchor）を対話的に確定・更新します |
+| `/scribe` | CALMの記録からドキュメントを生成します |
+| `/db-recovery` | DBデータの異常減少を検知した際に、スナップショットから復旧します |
+| `/restart` | CALMのローカルMCPサーバー・embeddingサーバーを再起動します |
+| `/ask-distill` | 繰り返し起票されている同型のaskをまとめてメタaskを起票します |
 
 ## 設定
 
