@@ -342,9 +342,10 @@ def _sample_local_tag_usage_with_conn(
     for etype, (junction, col) in _JUNCTION.items():
         table = TYPE_TO_TABLE[etype]
         title_expr = TYPE_TO_TITLE_EXPR[etype]
+        retract_clause = "AND e.retracted_at IS NULL" if etype in TYPES_WITH_RETRACT else ""
         rows = conn.execute(
             f"SELECT {title_expr} AS title FROM {table} e "
-            f"JOIN {junction} j ON j.{col} = e.id WHERE j.tag_id = ?",
+            f"JOIN {junction} j ON j.{col} = e.id WHERE j.tag_id = ? {retract_clause}",
             (tag_id,),
         ).fetchall()
         total += len(rows)
@@ -440,7 +441,7 @@ def _build_tag_report_with_conn(
                     f"{canonical['namespace']}:{canonical['name']}" if canonical["namespace"] else canonical["name"]
                 )
                 canonical_notes = canonical["notes"]
-            local_titles, local_count = _sample_local_tag_usage_with_conn(conn, local["id"])
+            local_titles, local_count = _sample_local_tag_usage_with_conn(conn, local["canonical_id"])
             review_required = ns == _REVIEW_REQUIRED_NAMESPACE or bool(incoming_notes) or bool(canonical_notes)
             alias_hit.append(
                 {

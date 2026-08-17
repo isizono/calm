@@ -22,6 +22,7 @@ from src.services.import_bundle_service import import_bundle
 from src.services.instance_service import set_instance_identity
 from src.services.material_service import add_material
 from src.services.relation_service import add_relation
+from src.services.retract_service import retract
 from src.services.tag_service import _injected_tags, update_tag
 from src.services.topic_service import add_topic
 from tests.helpers import add_decision, add_log
@@ -415,6 +416,26 @@ class TestTagReport:
         assert entry["notes_diff"] == "incoming line two"
         assert "Local User" in entry["local"]["sample_titles"]
 
+    def test_retracted_local_entity_is_excluded_from_tag_usage_sample(self, dbs):
+        db_a, db_b = dbs
+        _switch_db(db_a)
+        _set_instance("team-a")
+        m1 = _material(tags=["shared-retract-tag"])
+        bundle = export_bundle(items=[{"type": "material", "ids": [m1]}])
+
+        _switch_db(db_b)
+        _set_instance("team-b")
+        _material(title="Live Local User", tags=["shared-retract-tag"])
+        retracted_id = _material(title="Retracted Local User", tags=["shared-retract-tag"])
+        retract("material", [retracted_id])
+
+        result = import_bundle(bundle["path"], skip_duplicate_check=True)
+        assert "error" not in result
+        merges = {m["tag"]: m for m in result["tag_report"]["merge"]}
+        entry = merges["shared-retract-tag"]
+        assert entry["local"]["count"] == 1
+        assert entry["local"]["sample_titles"] == ["Live Local User"]
+
     def test_archived_local_tag_is_classified_as_archived_hit(self, dbs):
         db_a, db_b = dbs
         _switch_db(db_a)
@@ -442,15 +463,21 @@ class TestTagReport:
 
         _switch_db(db_b)
         _set_instance("team-b")
-        _material(tags=["old-name"])
-        _material(tags=["new-name"])
+        _material(title="Local Old Name User", tags=["old-name"])
+        _material(title="Local New Name User", tags=["new-name"])
         update_tag("old-name", canonical="new-name")
 
         result = import_bundle(bundle["path"], skip_duplicate_check=True)
         assert "error" not in result
         aliases = {a["tag"]: a for a in result["tag_report"]["alias_hit"]}
         assert "old-name" in aliases
-        assert aliases["old-name"]["resolved_to"] == "new-name"
+        entry = aliases["old-name"]
+        assert entry["resolved_to"] == "new-name"
+        # local usage は解決先canonicalタグ(new-name)に対して集計される。
+        # エイリアス化によりold-name由来のjunction行もnew-name側のtag_idへ
+        # 付け替わっているため、両方のtitleが含まれる。
+        assert entry["local"]["count"] == 2
+        assert set(entry["local"]["sample_titles"]) == {"Local Old Name User", "Local New Name User"}
 
     def test_plain_tag_without_notes_is_not_review_required(self, dbs):
         db_a, db_b = dbs
