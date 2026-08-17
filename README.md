@@ -43,7 +43,7 @@ claude plugin install calm
 インストール後、Claude Code内で以下を実行すると使い方の案内が表示されます。
 
 ```
-/guide
+/man
 ```
 
 ## MCPツール
@@ -72,7 +72,7 @@ claude plugin install calm
 
 | スキル | 説明 |
 |--------|------|
-| `/guide` | CALMの使い方をAIが説明します |
+| `/man` | CALMの使い方をAIが説明します |
 | `/activity-start` | 新しいアクティビティを開始します |
 | `/activity-pause` | 進行中のアクティビティを完了にせず中断します |
 | `/activity-finish` | アクティビティを完了にします |

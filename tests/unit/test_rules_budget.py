@@ -59,5 +59,5 @@ def test_rules_contains_required_tags():
 
 
 def test_rules_ends_with_guide_skill_pointer():
-    """末尾にguide skillへの導線1行がある"""
-    assert "cc-memory:guide" in RULES
+    """末尾にman skillへの導線1行がある"""
+    assert "cc-memory:man" in RULES

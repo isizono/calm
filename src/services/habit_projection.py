@@ -42,7 +42,7 @@ _HEADER = (
     "\n"
     "このファイルは cc-memory が habits DB から自動生成する。手動編集は次回同期で"
     "失われる。変更は MCP ツール add_habit / update_habit で行う。正は cc-memory の"
-    "habits DB にある。使い方は guide skill を参照。"
+    "habits DB にある。使い方は man skill を参照。"
 )
 
 _DISABLED_PLACEHOLDER_BODY = (
