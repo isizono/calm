@@ -673,18 +673,44 @@ def remove_relation(source_type: str, source_id: int, targets: list[dict], relat
         conn.close()
 
 
-def _get_map_with_conn(
+def _traverse_relations_with_conn(
     conn: sqlite3.Connection,
-    entity_type: str,
-    entity_id: int,
+    roots: list[tuple[str, int]],
+    max_depth: int,
+    catalog_types: set[str],
     min_depth: int = 0,
-    max_depth: int = 2,
 ) -> list[dict]:
-    """conn共有版: 再帰CTEでリレーショングラフを走査し、到達可能エンティティを返す。"""
+    """conn共有版: 再帰CTEでrelations_viewを辿り、到達可能な(type, id, depth)を返す。
+
+    複数rootsを起点にでき（同一エンティティが複数経路で到達する場合はMIN(depth)を採用）、
+    catalog_typesで最終的にカタログへ含める型を絞る。decision/logを経由ノードとしてのみ
+    使いたい場合（get_map）はcatalog_typesから除外し、カタログ本体に含めたい場合
+    （collect_export_candidates）は含める。走査自体（再帰CTEの経由）は常に全種別を辿る。
+
+    Args:
+        roots: [(entity_type, entity_id), ...] 起点（重複可、空なら空リストを返す）
+        max_depth: 最大深度
+        catalog_types: 最終的にカタログへ含める entity_type の集合
+        min_depth: 最小深度（デフォルト0）
+
+    Returns:
+        [{"entity_type": str, "entity_id": int, "depth": int}, ...]（(type, id)で重複なし）
+    """
+    if not roots:
+        return []
+
+    values_clause = ",".join(["(?,?,0)"] * len(roots))
+    root_params: list = []
+    for etype, eid in roots:
+        root_params.extend([etype, eid])
+
+    type_list = sorted(catalog_types)
+    type_placeholders = ",".join("?" * len(type_list))
+
     rows = conn.execute(
-        """
+        f"""
         WITH RECURSIVE reachable(entity_type, entity_id, depth) AS (
-            SELECT ?, ?, 0
+            VALUES {values_clause}
             UNION
             SELECT r.target_type, r.target_id, re.depth + 1
             FROM reachable re
@@ -694,11 +720,37 @@ def _get_map_with_conn(
         )
         SELECT DISTINCT entity_type, entity_id, MIN(depth) AS depth
         FROM reachable
-        WHERE depth >= ? AND entity_type IN ('topic', 'activity', 'material')
+        WHERE depth >= ? AND entity_type IN ({type_placeholders})
         GROUP BY entity_type, entity_id
         """,
-        (entity_type, entity_id, max_depth, min_depth),
+        (*root_params, max_depth, min_depth, *type_list),
     ).fetchall()
+
+    return [
+        {"entity_type": row["entity_type"], "entity_id": row["entity_id"], "depth": row["depth"]}
+        for row in rows
+    ]
+
+
+def _get_map_with_conn(
+    conn: sqlite3.Connection,
+    entity_type: str,
+    entity_id: int,
+    min_depth: int = 0,
+    max_depth: int = 2,
+) -> list[dict]:
+    """conn共有版: 再帰CTEでリレーショングラフを走査し、到達可能エンティティを返す。
+
+    decision/logは_traverse_relations_with_connの走査（経由ノード）には使われるが、
+    catalog_typesを{topic, activity, material}に絞っているため返却カタログには含まれない。
+    """
+    rows = _traverse_relations_with_conn(
+        conn,
+        [(entity_type, entity_id)],
+        max_depth,
+        catalog_types={"topic", "activity", "material"},
+        min_depth=min_depth,
+    )
 
     # エンティティのタイプ別にIDを収集
     topic_ids = [row["entity_id"] for row in rows if row["entity_type"] == "topic"]
