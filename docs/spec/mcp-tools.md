@@ -1,5 +1,5 @@
 <!-- ccm-doc-sync
-watch-tags: domain:cc-memory
+watch-tags: domain:calm, domain:cc-memory
 watch-direction: true
 watch-migrations: false
 last-synced: 2026-08-16
@@ -412,7 +412,7 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
 | source_type | string | yes | - | `tag`/`activity`/`topic`/`decision`/`log`/`material` |
-| source_ref | int \| string | yes | - | ID整数、tag種別のみ文字列可（"domain:cc-memory"） |
+| source_ref | int \| string | yes | - | ID整数、tag種別のみ文字列可（"domain:calm"） |
 | target_type | string | yes | - | 同上 |
 | target_ref | int \| string | yes | - | 同上 |
 

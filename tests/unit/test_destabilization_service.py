@@ -412,7 +412,7 @@ class TestSuggestDestabilizedCandidatesUnavailable:
         空candidatesだがmode="tag_only"のまま（"unavailable"には戻らない）"""
         monkeypatch.setattr(pps, "encode_query", lambda context: None)
 
-        topic_id = _make_topic("孤立topic", 0, tags=["domain:cc-memory"])
+        topic_id = _make_topic("孤立topic", 0, tags=["domain:calm"])
         source_id = add_decision(decision="軸変更", reason="r", topic_id=topic_id, tags=None)["decision_id"]
 
         result = suggest_destabilized_candidates(source_id)
@@ -423,14 +423,20 @@ class TestSuggestDestabilizedCandidatesUnavailable:
 class TestSuggestDestabilizedCandidatesEmptyCandidates:
     """候補が見つからない場合の縮退（空タグ相当のケース）"""
 
+    @pytest.mark.parametrize("excluded_domain_tag", ["domain:calm", "domain:cc-memory"])
     def test_no_matching_tags_and_no_other_decisions_returns_empty_without_exception(
-        self, temp_db, mock_embedding_server, monkeypatch
+        self, temp_db, mock_embedding_server, monkeypatch, excluded_domain_tag
     ):
-        """sourceの有効タグが候補生成の除外タグ（domain:cc-memory）しか無く、
-        DB内に他のdecision・近傍topicも存在しない場合、例外にならず空candidatesを返す"""
+        """sourceの有効タグが候補生成の除外タグしか無く、DB内に他のdecision・
+        近傍topicも存在しない場合、例外にならず空candidatesを返す。
+
+        domain:cc-memory → domain:calm のタグrenameはこのコードのマージ後に実施するため、
+        DB上の実タグ名が新旧どちらであっても除外が効く必要がある（片方でも除外が外れると
+        候補集合が実質DB全体に膨らむ）。両方の名前でパラメタライズして担保する。
+        """
         monkeypatch.setattr(pps, "encode_query", lambda context: _basis_vector(0))
 
-        topic_id = _make_topic("孤立topic", 0, tags=["domain:cc-memory"])
+        topic_id = _make_topic("孤立topic", 0, tags=[excluded_domain_tag])
         source_id = add_decision(decision="軸変更", reason="r", topic_id=topic_id, tags=None)["decision_id"]
 
         result = suggest_destabilized_candidates(source_id)

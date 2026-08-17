@@ -50,7 +50,7 @@ open状態のask一覧を取得する。
       "last_seen_at": "2026-08-16 09:00:00",
       "blocks": [{"id_raw": 7, "title": "...", "status": "in_progress"}],
       "requesters": ["session-abc"],
-      "tags": ["domain:cc-memory"]
+      "tags": ["domain:calm"]
     }
   ],
   "total_count": 1

@@ -179,7 +179,7 @@ CALMに関する議論を始めるとき、「これはどの層の話か」を�
 
 #### tag namespaceの使い分け
 
-- `domain:` プロジェクトスコープ（domain:cc-memory）。必須
+- `domain:` プロジェクトスコープ（domain:calm）。必須
 - `intent:` 作業意図（intent:discuss/design/implement）。activityで必須
 - 素タグ: 内容キーワード（pin / recompose-context / sync-memory 等）。積極的に付ける
 - tag-notesは素タグや `domain:` に紐づける。AIに自動注入される

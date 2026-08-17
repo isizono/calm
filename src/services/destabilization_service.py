@@ -25,7 +25,12 @@ _SCORE_WEIGHT_SAME_TOPIC = 0.1
 # 候補集合が実質DB全体になり候補生成として機能しない（simulate試験で確認）。
 # tag_jaccardのスコア計算そのものではこのタグも含めた有効タグ集合全体を使う
 # （候補生成の絞り込みにのみ適用する）。
-_CANDIDATE_MATCH_EXCLUDED_TAGS = {"domain:cc-memory"}
+# cc-memory は CALM に改名され、DB上のタグも domain:cc-memory → domain:calm に
+# rename する（旧名 domain:cc-memory は canonical エイリアスとして残す）。
+# rename はこのコードのマージ後に実施するため、その間はDB上の実タグ名が旧名のままの
+# 期間が存在する。どちらの名前でも除外が効くよう新旧両方を列挙しておく
+# （除外が外れると候補集合が実質DB全体に膨らみ機能が壊れる）。
+_CANDIDATE_MATCH_EXCLUDED_TAGS = {"domain:calm", "domain:cc-memory"}
 
 
 def resolve_destabilization(

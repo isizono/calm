@@ -802,19 +802,19 @@ def test_shadow_report_aggregates_materials_tagged_go_package(temp_db, capsys):
     add_material(
         title="GO: pkg1",
         content=_shadow_pkg_content(1, "post_veto_candidate", "post_veto_candidate", "none", "sha-a"),
-        tags=["go-package", "domain:cc-memory"],
+        tags=["go-package", "domain:calm"],
         source="test",
     )
     add_material(
         title="GO: pkg2",
         content=_shadow_pkg_content(2, "post_veto_candidate", "pre_go", "false_negative", "sha-a"),
-        tags=["go-package", "domain:cc-memory"],
+        tags=["go-package", "domain:calm"],
         source="test",
     )
     add_material(
         title="not a package",
         content="ただのメモです",
-        tags=["domain:cc-memory"],
+        tags=["domain:calm"],
         source="test",
     )
 
@@ -833,7 +833,7 @@ def test_shadow_report_skips_materials_without_valid_machine_block(temp_db, caps
     add_material(
         title="broken go-package",
         content="```go-package\nkey: [unclosed\n```\n本文",
-        tags=["go-package", "domain:cc-memory"],
+        tags=["go-package", "domain:calm"],
         source="test",
     )
     rc = main(["shadow-report", "--db", temp_db])

@@ -304,7 +304,7 @@ def add_topic(
     """新しい議論トピックを追加する。
 
     title: トピックのタイトル（35字以内）
-    tags: タグ配列(必須、1個以上)。domain:タグに加えて内容を表すタグも付けること。namespace: domain:(プロジェクト)/intent:(意図)/素タグ(キーワード)。例: ["domain:cc-memory", "intent:implement", "error-handling", "validation", "stdin"]
+    tags: タグ配列(必須、1個以上)。domain:タグに加えて内容を表すタグも付けること。namespace: domain:(プロジェクト)/intent:(意図)/素タグ(キーワード)。例: ["domain:calm", "intent:implement", "error-handling", "validation", "stdin"]
     related: 関連エンティティ（optional）。[{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...] 形式。複数エンティティを配列で同時紐付け可能。例: [{"type": "topic", "ids": [1, 2]}, {"type": "decision", "ids": [10]}]。作成と同時にリレーションを張る
 
     レスポンスに類似トピック(similar_topics)が含まれる場合がある。重複トピックの防止やリレーション追加の参考にすること。"""
@@ -397,7 +397,7 @@ def get_topics(
 ) -> dict:
     """トピックを新しい順に取得する（ページネーション付き）。
 
-    tags: タグ配列（optional）。指定時はAND条件でフィルタ。未指定時は全件返す。例: ["domain:cc-memory"]
+    tags: タグ配列（optional）。指定時はAND条件でフィルタ。未指定時は全件返す。例: ["domain:calm"]
     since: ISO日付文字列（例: "2026-03-10"）。この日付以降に作成されたトピックのみ返す
     until: ISO日付文字列。この日付以前に作成されたトピックのみ返す
     flavor: citation展開モード（raw/internal/readable、既定internal）。3値の意味・出力例は
@@ -902,7 +902,7 @@ def update_tag(
     ときのみ有効（単独指定はORPHAN_ARCHIVED_REASONエラー）。
 
     Args:
-        tag: 対象タグ（例: "domain:cc-memory", "hooks"）
+        tag: 対象タグ（例: "domain:calm", "hooks"）
         notes: 教訓・運用ルールのテキスト（全文置換）
         canonical: エイリアス先タグ（""で解除）
         rename: 新しいタグ名（例: "domain:hooks"）
@@ -935,7 +935,7 @@ def analyze_tags(
     """タグの共起分析を実行する。PMIで共起の重みを計算し、クラスタ検出・孤児タグ検出・重複候補検出を行う。
 
     Args:
-        domain: domainフィルタ（例: "cc-memory"）。指定時はそのdomainに属するエンティティのみを分析対象にする
+        domain: domainフィルタ（例: "calm"）。指定時はそのdomainに属するエンティティのみを分析対象にする
         include_domain_tags: Trueの場合、domain:タグも分析対象に含める（デフォルトFalse）
         focus_tag: 特定タグにフォーカス。指定時はco_occurrencesをそのタグを含むペアのみに絞る
         min_usage: 孤児判定の閾値。usage_countがこの値未満のタグを孤児とする（デフォルト2）
@@ -965,18 +965,18 @@ def add_activity(
     新しいアクティビティを追加する。デフォルトで作成後にcheck_inも実行する。
 
     典型的な使い方:
-    - 作業アクティビティを作成: add_activity("○○機能を実装", "詳細説明...", ["domain:cc-memory", "intent:implement", "search"])
+    - 作業アクティビティを作成: add_activity("○○機能を実装", "詳細説明...", ["domain:calm", "intent:implement", "search"])
     - トピック紐付け: add_activity(..., related=[{"type": "topic", "ids": [123]}])
     - 複数関連: add_activity(..., related=[{"type": "topic", "ids": [1, 2]}, {"type": "activity", "ids": [3]}])
-    - intent:implementはdecisionをrelateする: add_activity(..., ["domain:cc-memory", "intent:implement"], related=[{"type": "decision", "ids": [10, 11]}])
-    - 作成と同時にpinも張る: add_activity(..., pins=[{"type": "material", "ref": 42}, {"type": "tag", "ref": "domain:cc-memory"}])
+    - intent:implementはdecisionをrelateする: add_activity(..., ["domain:calm", "intent:implement"], related=[{"type": "decision", "ids": [10, 11]}])
+    - 作成と同時にpinも張る: add_activity(..., pins=[{"type": "material", "ref": 42}, {"type": "tag", "ref": "domain:calm"}])
     - check_inなしで作成: add_activity(..., check_in=False)
     - orch管理として作成: add_activity(..., orch_managed=True)
 
     Args:
         title: アクティビティのタイトル（35字以内）
         description: アクティビティの詳細説明（必須）。スコアリングに活用されるため、締め切り・ブロッカー・影響度/緊急度があれば記載を推奨
-        tags: タグ配列（必須、1個以上）。domain:とintent:は必須、素タグも積極的に付ける。例: ["domain:cc-memory", "intent:implement", "search"]
+        tags: タグ配列（必須、1個以上）。domain:とintent:は必須、素タグも積極的に付ける。例: ["domain:calm", "intent:implement", "search"]
         related: 関連エンティティ（optional）。[{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...] 形式、複数同時紐付け可。作成と同時にリレーションを張る。intent:implementタグ時はtype="decision"を1件以上含めないとIMPLEMENT_WORKFLOW_GUARDエラーになる
         pins: 作成したactivity自身から張るpin（optional）。[{"type": "tag"|"activity"|"topic"|"decision"|"log"|"material", "ref": int|str}, ...] 形式（refはadd_pinのtarget_refと同じ、tagのみnamespace:name文字列可）。いずれか1件でも解決失敗すると、activity作成自体を含め全体がロールバックされる（部分成功なし）
         check_in: 作成後にcheck_inを実行するか（デフォルト: True）。Trueなら返り値にcheck_in_resultを含む
@@ -1012,8 +1012,8 @@ def get_activities(
 
     典型的な使い方:
     - 全アクティビティ確認: get_activities()
-    - ドメイン指定: get_activities(["domain:cc-memory"])
-    - 進行中のみ: get_activities(["domain:cc-memory"], status="in_progress")
+    - ドメイン指定: get_activities(["domain:calm"])
+    - 進行中のみ: get_activities(["domain:calm"], status="in_progress")
     - 完了アクティビティの確認: get_activities(status="completed")
     - 最近1週間: get_activities(since="2026-03-09")
     - orch管理のみ: get_activities(orch_managed=True, status="in_progress")
@@ -1021,7 +1021,7 @@ def get_activities(
     ワークフロー位置: アクティビティ状況の確認時
 
     Args:
-        tags: タグ配列（optional）。指定時はAND条件でフィルタ。未指定時は全件返す。例: ["domain:cc-memory"]
+        tags: タグ配列（optional）。指定時はAND条件でフィルタ。未指定時は全件返す。例: ["domain:calm"]
         status: フィルタするステータス（active/pending/in_progress/completed/snoozed/shelved、デフォルト: active）
                 "active"はpending+in_progressの両方を返すエイリアス（snoozed/shelvedは含まない）
         limit: 取得件数上限（デフォルト: 5）
@@ -1071,7 +1071,7 @@ def update_activity(
     - アクティビティを棚上げする: update_activity(activity_id, status="shelved")
     - タイトル変更: update_activity(activity_id, title="新しいタイトル")
     - 説明更新: update_activity(activity_id, description="新しい説明")
-    - タグ変更: update_activity(activity_id, tags=["domain:cc-memory", "intent:implement"])
+    - タグ変更: update_activity(activity_id, tags=["domain:calm", "intent:implement"])
     - orch管理に切り替え: update_activity(activity_id, orch_managed=True)
 
     ワークフロー位置: アクティビティ進行状況の更新時
@@ -1144,7 +1144,7 @@ def update_material(
     - 末尾に追記: update_material(material_id=5, content="## 追記\n...", mode="append")
     - 先頭に追記: update_material(material_id=5, content="## TL;DR\n...", mode="prepend")
     - タイトル変更: update_material(material_id=5, title="新しいタイトル")
-    - タグ変更: update_material(material_id=5, tags=["domain:cc-memory", "design"])
+    - タグ変更: update_material(material_id=5, tags=["domain:calm", "design"])
     - ソース更新: update_material(material_id=5, source="公式ドキュメント")
     - 複数同時: update_material(material_id=5, content="...", title="...", tags=["..."])
 
@@ -1611,7 +1611,7 @@ def add_pin(
     - 一時的な調査メモ（役目を終えた情報）
 
     source/target の種別は tag / activity / topic / decision / log / material のいずれか。
-    tagのrefはID（整数）またはnamespace:name形式の文字列（例: "domain:cc-memory"）で指定できる。
+    tagのrefはID（整数）またはnamespace:name形式の文字列（例: "domain:calm"）で指定できる。
     それ以外の種別のrefはIDを整数で指定する。
 
     重複追加は冪等（エラーにならない）。自己参照（source==target）は拒否される。
@@ -1644,7 +1644,7 @@ def remove_pin(
     add_pinで追加したpinを削除する。対象pinが存在しない場合はremoved=0を返す（エラーにならない）。
     tag refを文字列で渡して該当tagが存在しなかった場合も removed=0 を返す（冪等）。
 
-    tagのrefはID（整数）またはnamespace:name形式の文字列（例: "domain:cc-memory"）で指定できる。
+    tagのrefはID（整数）またはnamespace:name形式の文字列（例: "domain:calm"）で指定できる。
 
     Args:
         source_type: 起点エンティティ種別（"tag" | "activity" | "topic" | "decision" | "log" | "material"）

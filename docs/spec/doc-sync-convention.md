@@ -14,7 +14,7 @@
 
 ```html
 <!-- ccm-doc-sync
-watch-tags: domain:cc-memory
+watch-tags: domain:calm, domain:cc-memory
 watch-direction: true
 watch-migrations: true
 last-synced: 2026-07-04

@@ -103,7 +103,7 @@ search(keyword=主題キーワード, tags=["audit"], entity_type="material", li
 
 audit する**主題** (decision 1 件 / 設計テーマ / 同 tag の方針推移) を 1 つに絞る。複数主題は別 audit に分割。
 
-- スコープ単位の例: `D#XXXX 単体`, `domain:cc-memory × tag:HintService` の方針推移, `topic#464 内の P2 関連 decision 群`
+- スコープ単位の例: `D#XXXX 単体`, `domain:calm × tag:HintService` の方針推移, `topic#464 内の P2 関連 decision 群`
 - スコープ広すぎ防止: 「1 audit = 1 主題」原則。複数論点が絡む場合は親 audit + 子 audit の分割を提案
 
 ### Step 3: 一次リソース取得
@@ -240,7 +240,7 @@ skill 経由で生成されたことを明示。後で audit material を集計�
 | D#Z | 撤回候補 | ... | retract 提案 (ユーザー裁定) |
 
 ## 知識の pin 先選定
-- tag note `domain:cc-memory` に追記: ...
+- tag note `domain:calm` に追記: ...
 - habit 提案: ...
 - anchor 追加: M#A の anchor 対応表に N 行追加
 - 新規 material: 該当なし (or M#B 作成)

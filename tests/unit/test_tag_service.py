@@ -48,7 +48,7 @@ class TestParseTag:
 
     def test_namespace_with_name(self):
         """namespace付きタグをパースできる"""
-        assert parse_tag("domain:cc-memory") == ("domain", "cc-memory")
+        assert parse_tag("domain:calm") == ("domain", "calm")
 
     def test_bare_tag(self):
         """素タグをパースできる"""
@@ -85,10 +85,10 @@ class TestValidateAndParseTags:
 
     def test_valid_tags(self):
         """正常なタグ配列をパースできる"""
-        result = validate_and_parse_tags(["domain:cc-memory", "hooks", "intent:design"])
+        result = validate_and_parse_tags(["domain:calm", "hooks", "intent:design"])
         assert isinstance(result, list)
         assert len(result) == 3
-        assert ("domain", "cc-memory") in result
+        assert ("domain", "calm") in result
         assert ("", "hooks") in result
         assert ("intent", "design") in result
 
@@ -306,12 +306,12 @@ class TestFormatTags:
     def test_namespace_and_bare(self):
         """namespace付きと素タグの混在"""
         rows = [
-            MockRow("domain", "cc-memory"),
+            MockRow("domain", "calm"),
             MockRow("", "hooks"),
             MockRow("intent", "design"),
         ]
         result = format_tags(rows)
-        assert result == ["domain:cc-memory", "hooks", "intent:design"]
+        assert result == ["domain:calm", "hooks", "intent:design"]
 
     def test_sorted(self):
         """アルファベット順ソート"""

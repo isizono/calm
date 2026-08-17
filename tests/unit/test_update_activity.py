@@ -187,7 +187,7 @@ class TestUpdateActivityTags:
 
     def test_update_tags(self, test_activity):
         """タグ全置換（レスポンスはactivity_id+statusのみ）"""
-        result = update_activity(test_activity["activity_id"], tags=["intent:design", "domain:cc-memory"])
+        result = update_activity(test_activity["activity_id"], tags=["intent:design", "domain:calm"])
 
         assert "error" not in result
         assert result["activity_id"] == test_activity["activity_id"]

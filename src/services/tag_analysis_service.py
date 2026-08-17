@@ -435,16 +435,18 @@ def _resolve_domain_tag_id(conn, domain):
 
     Args:
         conn: DB接続
-        domain: ドメイン名（例: "cc-memory"）。"domain:"プレフィックスは不要
+        domain: ドメイン名（例: "calm"）。"domain:"プレフィックスは不要
 
     Returns:
-        tag_id or None
+        tag_id or None。エイリアスタグを指定された場合はcanonical側のtag_id
     """
     row = conn.execute(
-        "SELECT id FROM tags WHERE namespace = 'domain' AND name = ?",
+        "SELECT id, canonical_id FROM tags WHERE namespace = 'domain' AND name = ?",
         (domain,),
     ).fetchone()
-    return row["id"] if row else None
+    if row is None:
+        return None
+    return row["canonical_id"] if row["canonical_id"] is not None else row["id"]
 
 
 def _resolve_focus_tag_id(conn, focus_tag):
@@ -455,7 +457,7 @@ def _resolve_focus_tag_id(conn, focus_tag):
         focus_tag: タグ文字列（例: "hook-system"、"intent:design"）
 
     Returns:
-        tag_id or None
+        tag_id or None。エイリアスタグを指定された場合はcanonical側のtag_id
     """
     if ":" in focus_tag:
         ns, name = focus_tag.split(":", 1)
@@ -463,10 +465,12 @@ def _resolve_focus_tag_id(conn, focus_tag):
         ns, name = "", focus_tag
 
     row = conn.execute(
-        "SELECT id FROM tags WHERE namespace = ? AND name = ?",
+        "SELECT id, canonical_id FROM tags WHERE namespace = ? AND name = ?",
         (ns, name),
     ).fetchone()
-    return row["id"] if row else None
+    if row is None:
+        return None
+    return row["canonical_id"] if row["canonical_id"] is not None else row["id"]
 
 
 def analyze_tags(
@@ -481,7 +485,7 @@ def analyze_tags(
     PMIで共起の重みを計算し、クラスタ検出・孤児タグ検出・重複候補検出を行う。
 
     Args:
-        domain: domainフィルタ（例: "cc-memory"）。指定時はそのdomainに属する
+        domain: domainフィルタ（例: "calm"）。指定時はそのdomainに属する
                 エンティティのみを分析対象にする
         include_domain_tags: Trueの場合、domain:タグも分析対象に含める。
                              デフォルトはFalse（domain:タグは除外）
