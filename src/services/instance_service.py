@@ -29,7 +29,7 @@ def get_instance_id_with_conn(conn: sqlite3.Connection) -> str | None:
 
 def get_instance_id() -> str | None:
     """instance_idを返す(未設定ならNone)。"""
-    conn = get_connection()
+    conn = get_connection(load_vec=False)
     try:
         return get_instance_id_with_conn(conn)
     finally:
@@ -61,7 +61,7 @@ def set_instance_identity(instance_id: str, force: bool = False) -> dict:
             }
         }
 
-    conn = get_connection()
+    conn = get_connection(load_vec=False)
     try:
         existing = conn.execute(
             "SELECT instance_id FROM instance_meta WHERE id = 1"

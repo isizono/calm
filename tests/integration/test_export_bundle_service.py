@@ -39,11 +39,10 @@ def temp_db():
 def _export_dir_under_tmp(monkeypatch, tmp_path):
     """パスガードの許可ルートをtmp_pathに向ける(export_material_to_fileと同じ作法)。
 
-    material_service._is_within_export_dirはmaterial_service自身のグローバルを
-    参照するため、export_bundle_service側のローカルimportとあわせて両方patchする。
+    export_bundle_serviceはmaterial_service.DEFAULT_EXPORT_DIRを属性参照(モジュール経由)
+    するため、material_service側を1箇所patchすれば両方に反映される。
     """
     monkeypatch.setattr("src.services.material_service.DEFAULT_EXPORT_DIR", str(tmp_path))
-    monkeypatch.setattr("src.services.export_bundle_service.DEFAULT_EXPORT_DIR", str(tmp_path))
 
 
 def _topic(title="Topic", tags=None):
@@ -110,6 +109,11 @@ class TestValidation:
 
     def test_invalid_type_rejected(self, temp_db):
         result = export_bundle(items=[{"type": "bogus", "ids": [1]}])
+        assert result["error"]["code"] == "INVALID_ENTITY_TYPE"
+
+    def test_unhashable_type_value_rejected_without_raising(self, temp_db):
+        """typeがlist等の非hashable値でも例外(TypeError)を送出せずエラーレスポンスを返す。"""
+        result = export_bundle(items=[{"type": ["material"], "ids": [1]}])
         assert result["error"]["code"] == "INVALID_ENTITY_TYPE"
 
     def test_non_list_ids_rejected(self, temp_db):
@@ -208,6 +212,18 @@ class TestBasicExport:
         h1 = _load_manifest(r1["path"])["entities"][0]["content_hash"]
         h2 = _load_manifest(r2["path"])["entities"][0]["content_hash"]
         assert h1 == h2
+
+    def test_content_hash_changes_when_content_changes(self, temp_db):
+        from src.services.material_service import update_material
+
+        _set_instance("team-a")
+        m1 = _material(title="Stable", content="original content")
+        r1 = export_bundle(items=[{"type": "material", "ids": [m1]}], bundle_name="before")
+        update_material(material_id=m1, content="edited content")
+        r2 = export_bundle(items=[{"type": "material", "ids": [m1]}], bundle_name="after")
+        h1 = _load_manifest(r1["path"])["entities"][0]["content_hash"]
+        h2 = _load_manifest(r2["path"])["entities"][0]["content_hash"]
+        assert h1 != h2
 
     def test_retracted_material_keeps_retracted_at_when_explicitly_selected(self, temp_db):
         from src.services.retract_service import retract
@@ -445,3 +461,18 @@ class TestBundleNamePathGuard:
         result = export_bundle(items=[{"type": "material", "ids": [m1]}], bundle_name="../../../etc")
         assert "error" not in result
         assert result["path"].startswith(os.path.join(str(tmp_path), "bundles"))
+
+
+class TestBundleNameCollision:
+    def test_second_export_with_same_bundle_name_does_not_overwrite_first(self, temp_db):
+        """同一bundle_nameで2回exportしても、1回目の出力を無警告で上書きしない。"""
+        _set_instance("team-a")
+        m1 = _material(title="First", content="first content")
+        m2 = _material(title="Second", content="second content")
+        r1 = export_bundle(items=[{"type": "material", "ids": [m1]}], bundle_name="same-name")
+        r2 = export_bundle(items=[{"type": "material", "ids": [m2]}], bundle_name="same-name")
+        assert "error" not in r1
+        assert "error" not in r2
+        assert r1["path"] != r2["path"]
+        assert os.path.isfile(os.path.join(r1["path"], f"materials/M-{m1}-First.md"))
+        assert os.path.isfile(os.path.join(r2["path"], f"materials/M-{m2}-Second.md"))

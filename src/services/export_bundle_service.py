@@ -45,7 +45,8 @@ from src.services.internal_id_patterns import (
     RAW_CITE_CODE_PATTERN,
     RAW_CITE_FULLWORD_PATTERN,
 )
-from src.services.material_service import DEFAULT_EXPORT_DIR, _is_within_export_dir, _slugify_title
+from src.services import material_service
+from src.services.material_service import _is_within_export_dir, _slugify_title
 from src.services.relation_service import (
     _fetch_belongs_to_ids_with_conn,
     _fetch_depends_on_with_conn,
@@ -96,7 +97,7 @@ def _validate_items(items) -> dict | None:
                     "message": "Each item must have 'type' and 'ids' fields",
                 }
             }
-        if item["type"] not in ALL_CATALOG_TYPES:
+        if not isinstance(item["type"], str) or item["type"] not in ALL_CATALOG_TYPES:
             return {
                 "error": {
                     "code": "INVALID_ENTITY_TYPE",
@@ -636,15 +637,22 @@ def export_bundle(
         # 出力先ディレクトリの決定(パスガード)
         raw_bundle_name = bundle_name or _default_bundle_name(instance_id, rows_by_key, items)
         safe_name = _slugify_title(raw_bundle_name) or "bundle"
-        bundle_root = os.path.join(os.path.expanduser(DEFAULT_EXPORT_DIR), "bundles", safe_name)
+        bundle_root = os.path.join(os.path.expanduser(material_service.DEFAULT_EXPORT_DIR), "bundles", safe_name)
         if not _is_within_export_dir(bundle_root):
-            allowed = os.path.expanduser(DEFAULT_EXPORT_DIR)
+            allowed = os.path.expanduser(material_service.DEFAULT_EXPORT_DIR)
             return {
                 "error": {
                     "code": "VALIDATION_ERROR",
                     "message": f"bundle_name must resolve to a location within {allowed}. resolved path: {bundle_root}",
                 }
             }
+        if os.path.isdir(bundle_root):
+            # 秒精度のデフォルト名衝突・同名bundle_nameの再実行いずれでも、既存バンドルを
+            # 無警告で上書きしない。末尾に連番を振って新規ディレクトリへ逃がす。
+            suffix = 2
+            while os.path.isdir(f"{bundle_root}-{suffix}"):
+                suffix += 1
+            bundle_root = f"{bundle_root}-{suffix}"
 
         entities_manifest: list[dict] = []
         counts: dict[str, int] = defaultdict(int)
