@@ -96,7 +96,7 @@ def _set_created_at(table: str, entity_id: int, created_at: str) -> None:
 
 def test_parse_marker_extracts_all_fields():
     text = """<!-- ccm-doc-sync
-watch-tags: domain:cc-memory, domain:ow
+watch-tags: domain:calm, domain:ow
 watch-direction: true
 watch-migrations: true
 last-synced: 2026-07-01
@@ -109,7 +109,7 @@ last-synced-migration: 0048
 """
     marker = parse_marker(text, Path("dummy.md"))
     assert marker is not None
-    assert marker.watch_tags == ["domain:cc-memory", "domain:ow"]
+    assert marker.watch_tags == ["domain:calm", "domain:ow"]
     assert marker.watch_direction is True
     assert marker.watch_migrations is True
     assert marker.last_synced == "2026-07-01"
@@ -138,7 +138,7 @@ def test_parse_marker_ignores_example_marker_in_body():
         "マーカーの書式例:\n\n"
         "```html\n"
         "<!-- ccm-doc-sync\n"
-        "watch-tags: domain:cc-memory\n"
+        "watch-tags: domain:calm\n"
         "last-synced: 2026-01-01\n"
         "-->\n"
         "```\n"

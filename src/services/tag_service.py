@@ -33,7 +33,7 @@ def parse_tag(tag_str: str) -> tuple[str, str]:
     Returns: (namespace, name)
 
     例:
-      "domain:cc-memory"  -> ("domain", "cc-memory")
+      "domain:calm"       -> ("domain", "calm")
       "hooks"             -> ("", "hooks")
       "intent:design"     -> ("intent", "design")
     """
@@ -560,7 +560,7 @@ def get_archived_tags_for_strings(conn: sqlite3.Connection, tag_strings: list[st
 
     Args:
         conn: DB接続
-        tag_strings: タグ文字列のリスト（例: ["domain:cc-memory", "domain:orch-legacy"]）
+        tag_strings: タグ文字列のリスト（例: ["domain:calm", "domain:orch-legacy"]）
 
     Returns:
         [{"tag": "domain:orch-legacy", "archived_reason": "..."}, ...]
@@ -827,7 +827,7 @@ def update_tag(
     description（短い説明文）、またはarchived（退役状態）を更新する。
 
     Args:
-        tag: タグ文字列（例: "domain:cc-memory", "hooks"）
+        tag: タグ文字列（例: "domain:calm", "hooks"）
         notes: 教訓・運用ルールのテキスト（全文置換）
         canonical: エイリアス先タグ文字列。設定するとtagがcanonicalのエイリアスになる。
                    ""（空文字）でエイリアス解除。上書き可能だが、旧canonical先に
@@ -1254,7 +1254,7 @@ def collect_tag_notes_for_injection(
 
     Args:
         conn: DB接続
-        tag_strings: タグ文字列リスト（例: ["domain:cc-memory", "intent:design"]）
+        tag_strings: タグ文字列リスト（例: ["domain:calm", "intent:design"]）
         session_id: MCPセッションID。セッション別に注入済みを管理する
         always_inject_namespaces: 常時注入するnamespaceのリスト（例: ["intent"]）。
             このnamespaceに属するタグは _injected_tags チェックをスキップし、
@@ -1265,7 +1265,7 @@ def collect_tag_notes_for_injection(
 
     Returns:
         notes があるタグの一覧。なければ None
-        [{"tag": "domain:cc-memory", "notes": "..."}, ...]
+        [{"tag": "domain:calm", "notes": "..."}, ...]
         タグ作成からTAG_NOTES_DECAY_DAYSを超え、かつ全文配信実績（last_injected_at）も
         同日数以内に更新されていないタグは、notesの全文の代わりに1行ポインタ文言へ縮退する
         （レンダー時decay。search_tags等の返却対象からは除外しない）。

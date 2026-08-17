@@ -156,7 +156,7 @@ class TestSubscribe:
         stub.install(monkeypatch)
         for labels in (
             ["activity:1183", "event:updated"],
-            ["domain:cc-memory", "entity:activity", "event:updated"],
+            ["domain:calm", "entity:activity", "event:updated"],
             ["entity:decision", "event:retracted"],
         ):
             result = service.relay_subscribe(labels, caller_session_id="sess-1")

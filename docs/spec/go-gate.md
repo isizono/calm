@@ -247,7 +247,7 @@ shadow 期の観察対象として記録しておく。`false_negative` とし�
 
 1設計案 = 1パッケージ。markdown文書で、先頭に機械可読ブロック(` ```go-package ` フェンス内
 YAML)、続いて人間が読む3区分本文(1-a 分類判定材料 / 1-b 地図メンテ材料 / 1-c 品質証跡、
-計10小見出し)を置く。保存先は cc-memory material(素タグ `go-package` + `domain:cc-memory`
+計10小見出し)を置く。保存先は cc-memory material(素タグ `go-package` + `domain:calm`
 必須)であり、PR本文には載せない(判例idを含む文書であり、PR本文の記述規則と衝突するため)。
 
 ### サブコマンド

@@ -124,13 +124,13 @@ class TestAddPinTagRef:
         # tagを作成する
         conn = get_connection()
         try:
-            tag_ids = ensure_tag_ids(conn, [("domain", "cc-memory")])
+            tag_ids = ensure_tag_ids(conn, [("domain", "calm")])
             conn.commit()
             tag_id = tag_ids[0]
         finally:
             conn.close()
 
-        result = add_pin("tag", "domain:cc-memory", "activity", activity_id)
+        result = add_pin("tag", "domain:calm", "activity", activity_id)
 
         assert "error" not in result
         assert result["source_type"] == "tag"
@@ -144,7 +144,7 @@ class TestAddPinTagRef:
 
         conn = get_connection()
         try:
-            tag_ids = ensure_tag_ids(conn, [("domain", "cc-memory")])
+            tag_ids = ensure_tag_ids(conn, [("domain", "calm")])
             conn.commit()
             tag_id = tag_ids[0]
         finally:
@@ -320,14 +320,14 @@ class TestRemovePin:
 
         conn = get_connection()
         try:
-            tag_ids = ensure_tag_ids(conn, [("domain", "cc-memory")])
+            tag_ids = ensure_tag_ids(conn, [("domain", "calm")])
             conn.commit()
             tag_id = tag_ids[0]
         finally:
             conn.close()
 
-        add_pin("tag", "domain:cc-memory", "activity", activity_id)
-        result = remove_pin("tag", "domain:cc-memory", "activity", activity_id)
+        add_pin("tag", "domain:calm", "activity", activity_id)
+        result = remove_pin("tag", "domain:calm", "activity", activity_id)
 
         assert "error" not in result
         assert result["removed"] == 1
@@ -729,7 +729,7 @@ class TestPinsCascadeDelete:
         activity_id = activity["activity_id"]
         conn = get_connection()
         try:
-            tag_ids = ensure_tag_ids(conn, [("domain", "cc-memory")])
+            tag_ids = ensure_tag_ids(conn, [("domain", "calm")])
             conn.commit()
             tag_id = tag_ids[0]
         finally:

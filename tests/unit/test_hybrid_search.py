@@ -1322,10 +1322,10 @@ def test_search_tag_like_partial_match(temp_db, disable_embedding):
     add_topic(
         title="タグ部分一致テスト用トピック",
         description="テスト",
-        tags=["domain:cc-memory"],
+        tags=["domain:calm"],
     )
 
-    result = search_service.search(keyword="cc-memory")
+    result = search_service.search(keyword="calm")
 
     assert "error" not in result
     assert len(result["results"]) >= 1

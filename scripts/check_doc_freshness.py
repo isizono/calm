@@ -13,7 +13,7 @@ CI 可能な部分は lint_doc_cochange.py が別途担う。
 
 マーカー形式（doc先頭に HTML コメントで敷設する）:
     <!-- ccm-doc-sync
-    watch-tags: domain:cc-memory
+    watch-tags: domain:calm
     watch-direction: true
     watch-migrations: true
     last-synced: 2026-07-04
