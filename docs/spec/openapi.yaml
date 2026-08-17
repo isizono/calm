@@ -24,6 +24,8 @@ tags:
   description: アクティビティ check-in
 - name: decision
   description: 決定事項の記録・取得
+- name: export
+  description: 他インスタンスへのexport候補洗い出し・実行
 - name: habit
   description: 振る舞いの登録・更新
 - name: log
@@ -525,6 +527,64 @@ paths:
                   type: string
               required:
               - activity_id
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/collect_export_candidates:
+    post:
+      tags:
+      - export
+      summary: 'Choose: 他インスタンスへのexport候補を洗い出したいとき。'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                roots:
+                  anyOf:
+                  - items:
+                      additionalProperties: true
+                      type: object
+                    type: array
+                  - type: 'null'
+                  default: null
+                max_depth:
+                  default: 2
+                  type: integer
+                include_types:
+                  anyOf:
+                  - items:
+                      type: string
+                    type: array
+                  - type: 'null'
+                  default: null
+                tag_roots:
+                  anyOf:
+                  - items:
+                      type: string
+                    type: array
+                  - type: 'null'
+                  default: null
+                include_snippets:
+                  default: true
+                  type: boolean
+                limit:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                offset:
+                  default: 0
+                  type: integer
               type: object
       responses:
         '200':
