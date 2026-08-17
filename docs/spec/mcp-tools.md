@@ -2,7 +2,7 @@
 watch-tags: domain:calm, domain:cc-memory
 watch-direction: true
 watch-migrations: false
-last-synced: 2026-08-16
+last-synced: 2026-08-17
 last-synced-migration: 0048
 -->
 
@@ -22,7 +22,7 @@ last-synced-migration: 0048
 
 ## 1. ツール一覧
 
-全48ツール。カテゴリ別に一覧する。
+全50ツール。カテゴリ別に一覧する。
 
 ### 1.1 記録系（add系）
 
@@ -142,6 +142,15 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 | `answer_ask` | 答え待ちのaskに回答する（トリアージは行わない） |
 | `triage_ask` | answered状態のaskをpromote（decision化）またはdismissへ振り分ける |
 | `withdraw_ask` | 答え待ちのaskを自発的に取り下げる |
+
+### 1.14 セッション別名系（並行セッションの現在地表示）
+
+複数のClaude Codeセッションを並行起動したとき、`ListAgents`のPeer sessions一覧に出る自動生成名（例: `workspace-a2`）だけではどのセッションが何をしているか分からない。この2ツールは「CLI表示名 → 各セッションがcheck_inしたアクティビティから自動生成した別名」の対応表を提供する。relay 4動詞とは独立しており、relayサーバーへのHTTPアクセスは発生しない（ローカルファイル読み書きのみで完結する）。
+
+| ツール | 概要 |
+| --- | --- |
+| `get_sessions` | 稼働中セッションの「CLI表示名 → 別名」対応表を取得する |
+| `set_session_alias` | 自セッションの別名を手動で上書きする |
 
 ---
 
@@ -371,8 +380,9 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 | --- | --- | --- | --- | --- |
 | activity_id | int | yes | - | アクティビティID |
 
-**返り値**: `{coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary}`。セッション内でcheck_inを初めて呼んだときのみ`flow_guide`（コンテキスト取得の手がかり）も含まれる。
+**返り値**: `{coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary, session}`。セッション内でcheck_inを初めて呼んだときのみ`flow_guide`（コンテキスト取得の手がかり）も含まれる。
 このactivityを`add_ask`のblocksでblockしているaskが1件以上あるときのみ`asks: {awaiting_answer, awaiting_triage}`が追加される（無ければキー自体が無い）。`awaiting_answer`はstatus='open'のask一覧（各`{id_raw, question, last_seen_at}`）、`awaiting_triage`はstatus='answered'かつ未トリアージのask一覧（各`{id_raw, question, answer_body, last_seen_at}`）。activities.statusがcompleted以外のときのみ配達され、promoted/dismissed/withdrawn済みのaskは配達されない。`awaiting_triage`が1件以上あるときは`hints`にも「answered状態のaskが未トリアージです。triage_askでpromote/dismissへ振り分けてください。」という文言が1件追加される。この`asks`関連のhintsは、recompose系hintと異なりorch-managed activityでもsuppressされない（答え待ちである事実はhintではなく状態情報として扱うため）。
+`session`は呼び出し元のClaude Code CLIプロセスを解決できた場合`{"name": str, "alias": str, "alias_collision": bool}`、解決できない場合（非CLIクライアント、relay未構成環境の起動直後等）は`{"registered": false, "reason": "cli_unresolved"}`。このセッション別名レジストリ更新はベストエフォートであり、失敗してもcheck_in本体は成功応答を返す。`alias_collision`がtrueのときは`hints`にも衝突を知らせる文言が追加される。詳細は2.42bを参照。
 **副作用**: statusがin_progress以外なら自動的にin_progressに更新。
 **呼び出し基準**: 既存アクティビティに関連する作業を始めるとき。summaryフィールドはそのまま出力することが推奨される。
 
@@ -567,6 +577,25 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 **返り値**: `{outbox: {outbox_id, status, labels, title, created_at, processed_at, dead_at, retry_count, last_error} | null, runtime: {configured, running, threads: {<thread名>: {alive, restart_count, last_restart_at, last_error}}}}`。
 **動作**: outbox行の配送状況はrelay_outboxテーブルのローカルSELECTのみで判定する（`processed_at`セット済み=delivered、`dead_at`セット済み=dead、いずれも無ければpending）。message本文（`ref_id`）は返さない（同一プロセス内の他sessionが発行した行にも越境してアクセスできてしまうため、意図的に除外）。runtimeセクションは常に返る。`running: false`はこのプロセスでrelay v2常駐処理が起動していないことを示す（エラーではない）。relayサーバー本体へのHTTPアクセスは一切発生しない。
 **エラー処理**: outbox_idが正の整数でない場合は`validation`。指定したIDの行が存在しない場合（存在しないID、またはdead化から一定期間経過後にDLQ物理削除済み。保持日数は`relay_sdk`側の設定値）は`not_found`。
+
+### 2.42b get_sessions / set_session_alias
+
+Claude Codeセッション間の「CLI表示名（例: `workspace-a2`）→人間可読な別名」対応表。`ListAgents`のPeer sessions一覧をユーザーに提示する前に、生の自動生成名を別名へ変換するために使う。relay 4動詞（2.38〜2.41）とは独立した読み取り/手動更新のペアであり、relayサーバーへのHTTPアクセスは発生しない（ローカルファイル `~/.cc-memory/session_aliases.json` の読み書きのみで完結する）。
+
+別名は各セッションが`check_in`したアクティビティタイトルから自動生成される（先頭の`[議論]`/`[作業]`等の区分プレフィックスは残し、24文字を超える場合は省略記号「…」で切り詰める）。他セッションの別名と衝突した場合は`-2`, `-3`…のサフィックスが自動で付く。手動で付けた別名（`set_session_alias`）は同じアクティビティへの再check_inでは保持されるが、別のアクティビティへcheck_inし直すと自動生成の別名に戻る。
+
+**get_sessions**: 引数なし。
+**返り値**: `{"sessions": [{"name": str, "alias": str, "alias_source": "derived" | "manual", "activity_id": int | null, "activity_title": str | null, "activity_status": str | null, "cwd": str | null, "is_self": bool, "updated_at": str}, ...], "count": int}`。`updated_at`降順。呼び出し元自身の行は`is_self: true`。CLIプロセスが消滅したセッションの行は自動的に除外される。
+
+**set_session_alias**
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| alias | string | yes | - | 1〜24文字。前後の空白は除去される。改行・制御文字は不可 |
+
+**返り値**: 成功時 `{"name": str, "alias": str, "requested_alias": str, "collided": bool}`。`collided`がtrueのとき`alias`は衝突回避で接尾辞（-2, -3…）が付いた値になっている。失敗時 `{"error": {"code": "VALIDATION_ERROR" | "SESSION_UNRESOLVED" | "NOT_REGISTERED", "message": str}}`。`SESSION_UNRESOLVED`は呼び出し元のClaude Code CLIプロセスを解決できなかったとき、`NOT_REGISTERED`は未check_in（先にcheck_inが必要）のとき。
+
+**関連**: `check_in`のレスポンス`session`フィールド（2.18参照）で、check_in自身のセッションについても同じ別名が確認できる。
 
 ### 2.43 add_ask
 

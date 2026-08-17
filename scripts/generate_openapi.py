@@ -81,6 +81,8 @@ TOOL_TAGS: dict[str, str] = {
     "relay_subscribe": "relay",
     "relay_receive": "relay",
     "relay_status": "relay",
+    "get_sessions": "session",
+    "set_session_alias": "session",
 }
 
 TAG_DESCRIPTIONS: dict[str, str] = {
@@ -99,6 +101,7 @@ TAG_DESCRIPTIONS: dict[str, str] = {
     "retract": "取り消し（論理削除）",
     "ask": "人間の判断待ちの問いの記録・回答",
     "relay": "セッション間メッセージング",
+    "session": "並行セッションの別名管理",
     "misc": "設定取得・ユーティリティ",
 }
 

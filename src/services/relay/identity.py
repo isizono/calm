@@ -33,6 +33,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+from src.infra import cli_session
 from src.infra.lock_file import is_process_alive
 from src.services.relay import config
 from src.services.relay.declarations import now_iso
@@ -251,6 +252,56 @@ def resolve_identity_by_ancestry(
     return candidates[0][1]
 
 
+def find_launcher_registration(session_id: str) -> Optional[dict]:
+    """bridge session id に対応する launcher 登録ファイルの中身を返す。
+
+    生存していない launcher の登録は無視する（GC は register 側
+    （`_gc_stale_launcher_registrations`）が担うが、読み側でも同じ判定を
+    行い stale な登録を掴まないようにする）。壊れた JSON・想定外の型の
+    ファイルは skip する（一致件数を判定できないだけで、探索は打ち切らない）。
+    """
+    sessions_dir = config.sessions_dir()
+    if not sessions_dir.exists():
+        return None
+    for path in sessions_dir.glob(f"{_REGISTRATION_PREFIX}*{_REGISTRATION_SUFFIX}"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        if data.get("session_id") != session_id:
+            continue
+        pid = data.get("pid")
+        if not isinstance(pid, int) or not is_process_alive(pid):
+            continue
+        return data
+    return None
+
+
+def resolve_cli_session(session_id: str) -> Optional[dict]:
+    """bridge session id から、その呼び出し元 Claude Code CLI プロセスの
+    表示情報（name / cli_session_id / cwd / cli_status）を解決する。
+
+    cc-memory の HTTP server は全セッション共有かつ CLI から detach された
+    プロセスであり、自身の祖先 pid には呼び出し元 CLI が現れない。そのため
+    server 自身の ppid は辿らず、launcher が起動時に記録した祖先 pid チェーン
+    （`register_launcher_session` が書く `ancestor_pids`）を経由して解決する。
+
+    解決できない場合は None を返す（例外は投げない）。
+    """
+    entry = find_launcher_registration(session_id)
+    if entry is None:
+        return None
+    launcher_pid = entry.get("pid")
+    if not isinstance(launcher_pid, int):
+        return None
+    ancestors = entry.get("ancestor_pids")
+    ancestors = ancestors if isinstance(ancestors, list) else []
+    candidate_pids = [launcher_pid] + [p for p in ancestors if isinstance(p, int)]
+    return cli_session.find_cli_session(candidate_pids)
+
+
 __all__ = [
     "BRIDGE_SESSION_HEADER",
     "get_relay_identity",
@@ -258,4 +309,6 @@ __all__ = [
     "register_launcher_session",
     "unregister_launcher_session",
     "resolve_identity_by_ancestry",
+    "find_launcher_registration",
+    "resolve_cli_session",
 ]

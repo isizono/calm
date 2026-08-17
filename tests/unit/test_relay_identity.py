@@ -9,6 +9,7 @@ import os
 
 import pytest
 
+from src.infra import cli_session
 from src.services.relay import config as relay_config
 from src.services.relay import identity as relay_identity
 
@@ -297,3 +298,142 @@ class TestResolveIdentityByAncestry:
         sessions_dir.mkdir(parents=True)
         (sessions_dir / "launcher-400.json").write_text("not json", encoding="utf-8")
         assert relay_identity.resolve_identity_by_ancestry(pid=300) is None
+
+
+@pytest.fixture
+def cli_sessions_dir(tmp_path, monkeypatch):
+    """cli_session.sessions_dir()（`~/.claude/sessions`相当）をtmp_pathに差し替える。"""
+    cli_dir = tmp_path / "claude-sessions"
+    cli_dir.mkdir()
+    monkeypatch.setenv(cli_session.CLAUDE_SESSIONS_DIR_ENV, str(cli_dir))
+    return cli_dir
+
+
+def _write_cli_session(dir_path, pid, name="workspace-a2", session_id="cli-uuid-1"):
+    (dir_path / f"{pid}.json").write_text(
+        json.dumps({"pid": pid, "name": name, "sessionId": session_id}),
+        encoding="utf-8",
+    )
+
+
+class TestFindLauncherRegistration:
+    def test_returns_matching_registration(self, sessions_state_dir, monkeypatch):
+        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        sessions_dir = sessions_state_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        (sessions_dir / "launcher-500.json").write_text(
+            json.dumps({"session_id": "bridge-uuid-1", "pid": 500, "ancestor_pids": [600]}),
+            encoding="utf-8",
+        )
+        entry = relay_identity.find_launcher_registration("bridge-uuid-1")
+        assert entry is not None
+        assert entry["pid"] == 500
+        assert entry["ancestor_pids"] == [600]
+
+    def test_returns_none_when_no_match(self, sessions_state_dir, monkeypatch):
+        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        sessions_dir = sessions_state_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        (sessions_dir / "launcher-500.json").write_text(
+            json.dumps({"session_id": "other-bridge", "pid": 500, "ancestor_pids": []}),
+            encoding="utf-8",
+        )
+        assert relay_identity.find_launcher_registration("bridge-uuid-1") is None
+
+    def test_returns_none_when_launcher_pid_dead(self, sessions_state_dir, monkeypatch):
+        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: False)
+        sessions_dir = sessions_state_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        (sessions_dir / "launcher-500.json").write_text(
+            json.dumps({"session_id": "bridge-uuid-1", "pid": 500, "ancestor_pids": []}),
+            encoding="utf-8",
+        )
+        assert relay_identity.find_launcher_registration("bridge-uuid-1") is None
+
+    def test_returns_none_when_sessions_dir_missing(self, sessions_state_dir):
+        assert relay_identity.find_launcher_registration("bridge-uuid-1") is None
+
+    def test_ignores_malformed_registration_file(self, sessions_state_dir, monkeypatch):
+        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        sessions_dir = sessions_state_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        (sessions_dir / "launcher-500.json").write_text("not json", encoding="utf-8")
+        assert relay_identity.find_launcher_registration("bridge-uuid-1") is None
+
+
+class TestResolveCliSession:
+    """bridge session id -> 呼び出し元 Claude Code CLI プロセスの解決。"""
+
+    def test_resolves_via_ancestor_pid_chain(
+        self, sessions_state_dir, cli_sessions_dir, monkeypatch
+    ):
+        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(cli_session, "is_process_alive", lambda pid: True)
+        sessions_dir = sessions_state_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        (sessions_dir / "launcher-500.json").write_text(
+            json.dumps(
+                {"session_id": "bridge-uuid-1", "pid": 500, "ancestor_pids": [600, 700]}
+            ),
+            encoding="utf-8",
+        )
+        _write_cli_session(cli_sessions_dir, 600, name="workspace-a2", session_id="cli-uuid-1")
+        result = relay_identity.resolve_cli_session("bridge-uuid-1")
+        assert result == {
+            "cli_pid": 600,
+            "name": "workspace-a2",
+            "cli_session_id": "cli-uuid-1",
+            "cwd": None,
+            "cli_status": None,
+        }
+
+    def test_returns_none_when_no_registration_matches(
+        self, sessions_state_dir, cli_sessions_dir
+    ):
+        assert relay_identity.resolve_cli_session("bridge-uuid-missing") is None
+
+    def test_returns_none_when_launcher_pid_dead(
+        self, sessions_state_dir, cli_sessions_dir, monkeypatch
+    ):
+        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: False)
+        sessions_dir = sessions_state_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        (sessions_dir / "launcher-500.json").write_text(
+            json.dumps({"session_id": "bridge-uuid-1", "pid": 500, "ancestor_pids": [600]}),
+            encoding="utf-8",
+        )
+        _write_cli_session(cli_sessions_dir, 600)
+        assert relay_identity.resolve_cli_session("bridge-uuid-1") is None
+
+    def test_returns_none_when_claude_sessions_dir_missing(
+        self, sessions_state_dir, tmp_path, monkeypatch
+    ):
+        """~/.claude/sessions ディレクトリ自体が無くても例外にならずNoneを返す"""
+        monkeypatch.setenv(
+            cli_session.CLAUDE_SESSIONS_DIR_ENV, str(tmp_path / "does-not-exist")
+        )
+        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        sessions_dir = sessions_state_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        (sessions_dir / "launcher-500.json").write_text(
+            json.dumps({"session_id": "bridge-uuid-1", "pid": 500, "ancestor_pids": [600]}),
+            encoding="utf-8",
+        )
+        assert relay_identity.resolve_cli_session("bridge-uuid-1") is None
+
+    def test_prefers_launcher_pid_over_ancestors_when_both_resolve(
+        self, sessions_state_dir, cli_sessions_dir, monkeypatch
+    ):
+        """launcher pid自身が先頭候補（ancestor_pidsより優先して解決される）"""
+        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(cli_session, "is_process_alive", lambda pid: True)
+        sessions_dir = sessions_state_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        (sessions_dir / "launcher-500.json").write_text(
+            json.dumps({"session_id": "bridge-uuid-1", "pid": 500, "ancestor_pids": [600]}),
+            encoding="utf-8",
+        )
+        _write_cli_session(cli_sessions_dir, 500, name="launcher-pid-session")
+        _write_cli_session(cli_sessions_dir, 600, name="ancestor-session")
+        result = relay_identity.resolve_cli_session("bridge-uuid-1")
+        assert result["name"] == "launcher-pid-session"

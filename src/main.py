@@ -28,6 +28,7 @@ from src.services import (
     reask_detection_service,
 )
 from src.services.checkin_service import check_in as _check_in
+from src.services import session_registry_service
 from src.services.relay import service as relay_session_service
 from src.services.relay import diagnostics as relay_diagnostics_service
 from src.services.relay import identity as relay_identity
@@ -2471,6 +2472,62 @@ def relay_status(outbox_id: int | None = None) -> dict:
             "threads": {},
         }
     return {"outbox": outbox_result, "runtime": runtime_health}
+
+
+# ----------------------------
+# セッション別名（並行セッションの現在地表示）
+# ----------------------------
+
+
+@mcp.tool()
+def get_sessions() -> dict:
+    """Choose: ListAgents 等で見えた他セッションの自動生成名（例: workspace-a2）が、どのアクティビティを担当しているのか知りたいとき。
+
+    稼働中の Claude Code セッションについて「CLI 表示名 → 人間可読な別名」の対応表を
+    返す。別名は各セッションが check_in したアクティビティから自動生成され、
+    set_session_alias で上書きできる。CLI プロセスが消滅したセッションの行は
+    自動的に除外される。
+
+    ListAgents / Peer sessions の情報をユーザーに提示するときは、本ツールで別名に
+    変換してから見せること。生の自動生成名のままではどのセッションが何をしているか
+    判別できない。対応表に無い名前はそのまま表示し「未 check-in」と添える。
+
+    Returns:
+        {"sessions": [{"name": str, "alias": str,
+                       "alias_source": "derived" | "manual",
+                       "activity_id": int | None, "activity_title": str | None,
+                       "activity_status": str | None, "cwd": str | None,
+                       "is_self": bool, "updated_at": str}, ...],
+         "count": int}
+        updated_at 降順。呼び出し元自身の行は is_self: true（peer として再掲しないこと）
+    """
+    caller_session_id = relay_identity.get_relay_identity()
+    sessions = session_registry_service.list_sessions(self_bridge_session_id=caller_session_id)
+    return {"sessions": sessions, "count": len(sessions)}
+
+
+@mcp.tool()
+def set_session_alias(alias: str) -> dict:
+    """Choose: 自セッションの別名を明示的に付け替えたいとき（自動生成された別名が分かりにくい、他セッションと衝突して接尾辞が付いた、など）。
+
+    別名は現在 check_in しているアクティビティに紐づく。別のアクティビティへ
+    check_in し直すと、自動生成された別名に戻る。
+
+    Args:
+        alias: 1〜24文字。前後の空白は除去される。改行・制御文字は不可
+
+    Returns:
+        成功時: {"name": str, "alias": str, "requested_alias": str, "collided": bool}
+                collided が true のとき alias は衝突回避で接尾辞（-2, -3 …）が
+                付いた値になっている。その旨をユーザーに伝えること
+        失敗時: {"error": {"code": "VALIDATION_ERROR" | "SESSION_UNRESOLVED"
+                           | "NOT_REGISTERED", "message": str}}
+                SESSION_UNRESOLVED は呼び出し元の Claude Code CLI プロセスを
+                解決できなかったとき。NOT_REGISTERED は未 check_in（先に
+                check_in が必要）
+    """
+    caller_session_id = relay_identity.get_relay_identity()
+    return session_registry_service.set_alias(bridge_session_id=caller_session_id, alias=alias)
 
 
 # ヘルスチェックエンドポイント

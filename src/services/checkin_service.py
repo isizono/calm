@@ -498,13 +498,21 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
       フローガイド（flow_guide）をレスポンスに含める。2回目以降のcheck_inでは
       含めない（_greeted_sessions管理、tag_notesの_injected_tagsと同じ方式）。
 
+    セッション別名レジストリ（result["session"]）:
+    - 呼び出し元のClaude Code CLIプロセスを解決できた場合、
+      {"name": str, "alias": str, "alias_collision": bool} を含める。
+      解決できない場合（非CLIクライアント、relay未構成環境の初回起動直後等）は
+      {"registered": False, "reason": "cli_unresolved"} を返す。
+      このレジストリ更新はベストエフォートであり、失敗してもcheck_in本体は
+      成功応答を返す。
+
     Args:
         activity_id: アクティビティID
 
     Returns:
         check-in結果（coverage, activity, related_topics, related_activities, pinned,
-        tag_notes, materials, recent_decisions, logs, catalog, summary。セッション内
-        初回呼び出し時のみflow_guideも含む）
+        tag_notes, materials, recent_decisions, logs, catalog, summary, session。
+        セッション内初回呼び出し時のみflow_guideも含む）
     """
     if session_id is None:
         try:
@@ -658,6 +666,43 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
             hints.append(
                 "answered状態のaskが未トリアージです。triage_askでpromote/dismissへ振り分けてください。"
             )
+
+        # 11. セッション別名レジストリの更新（並行セッションの現在地表示用）。
+        # 呼び出し元がClaude Code CLI経由でないなどCLIが解決できない場合や、
+        # 内部で予期せぬ例外が起きた場合もcheck_in本体を失敗させない。
+        try:
+            from src.services.relay.identity import get_relay_identity
+            from src.services import session_registry_service
+
+            bridge_id = get_relay_identity()
+            reg = (
+                session_registry_service.register_checkin(
+                    bridge_session_id=bridge_id,
+                    activity_id=activity_id,
+                    activity_title=activity["title"],
+                    activity_status=activity["status"],
+                )
+                if bridge_id
+                else None
+            )
+        except Exception:
+            logger.debug("session registry update failed", exc_info=True)
+            reg = None
+
+        if reg is None:
+            result["session"] = {"registered": False, "reason": "cli_unresolved"}
+        else:
+            result["session"] = {
+                "name": reg["name"],
+                "alias": reg["alias"],
+                "alias_collision": reg["collided"],
+            }
+            if reg["collided"]:
+                hints.append(
+                    f"セッション別名が他セッションと衝突したため「{reg['alias']}」になりました。"
+                    "ユーザーに伝え、必要ならset_session_aliasで付け直してください。"
+                )
+
         if hints:
             result["hints"] = hints
 

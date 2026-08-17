@@ -21,6 +21,8 @@ from src.services.hint_service import (
     RECOMPOSE_DELTA_THRESHOLD as _RECOMPOSE_HINT_DELTA_THRESHOLD,
 )
 from src.services.tag_service import _injected_tags
+from src.services import session_registry_service
+from src.services.relay import identity as relay_identity_module
 
 
 DEFAULT_TAGS = ["domain:test"]
@@ -1374,3 +1376,133 @@ class TestRecomposeCooldownTransaction:
         assert "error" not in result_retry
         assert "hints" in result_retry
         assert any("蓄積しています" in h for h in result_retry["hints"])
+
+
+class TestCheckInSessionRegistry:
+    """check_inのセッション別名レジストリ統合（result["session"]、非致命性、衝突hint）。"""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_registry_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(
+            session_registry_service.REGISTRY_PATH_ENV,
+            str(tmp_path / "session_aliases.json"),
+        )
+
+    def _stub_world(self, monkeypatch, sessions: dict[str, dict]):
+        """sessions: {bridge_session_id: {"cli_pid", "cli_session_id", "name"}}"""
+
+        def resolve(bridge_session_id):
+            info = sessions.get(bridge_session_id)
+            return dict(info, cwd=None, cli_status=None) if info else None
+
+        def is_alive(pid):
+            return any(info["cli_pid"] == pid for info in sessions.values())
+
+        def read_cli(pid):
+            for info in sessions.values():
+                if info["cli_pid"] == pid:
+                    return dict(info, cwd=None, cli_status=None)
+            return None
+
+        monkeypatch.setattr(relay_identity_module, "resolve_cli_session", resolve)
+        monkeypatch.setattr(session_registry_service, "is_process_alive", is_alive)
+        monkeypatch.setattr(session_registry_service.cli_session, "read_cli_session", read_cli)
+
+    def test_session_field_populated_when_cli_resolved(self, activity_id, monkeypatch):
+        self._stub_world(
+            monkeypatch,
+            {"bridge-1": {"cli_pid": 100, "cli_session_id": "cli-1", "name": "workspace-a1"}},
+        )
+        monkeypatch.setattr(relay_identity_module, "get_relay_identity", lambda: "bridge-1")
+
+        result = check_in(activity_id)
+
+        assert "error" not in result
+        assert result["session"] == {
+            "name": "workspace-a1",
+            "alias": "[作業] タグnotesカラム追加",
+            "alias_collision": False,
+        }
+
+    def test_session_field_reports_unresolved_when_bridge_id_missing(
+        self, activity_id, monkeypatch
+    ):
+        """呼び出し元のbridge session idが取れない場合、check_in本体は正常応答する"""
+        monkeypatch.setattr(relay_identity_module, "get_relay_identity", lambda: None)
+
+        result = check_in(activity_id)
+
+        assert "error" not in result
+        assert result["session"] == {"registered": False, "reason": "cli_unresolved"}
+        assert "activity" in result
+        assert "summary" in result
+
+    def test_registry_exception_does_not_fail_check_in(self, activity_id, monkeypatch, tmp_path):
+        """レジストリ更新側が例外を投げても、check_in本体は成功応答を返す"""
+        self._stub_world(
+            monkeypatch,
+            {"bridge-1": {"cli_pid": 100, "cli_session_id": "cli-1", "name": "workspace-a1"}},
+        )
+        monkeypatch.setattr(relay_identity_module, "get_relay_identity", lambda: "bridge-1")
+
+        # レジストリファイルの親をファイルで塞ぎ、flock/書き込み時にOSErrorを
+        # 自然発生させる（内部関数の直接mockを避け、外部境界であるファイルI/O
+        # 側から例外を誘発する）
+        blocked_parent = tmp_path / "blocked"
+        blocked_parent.write_text("not a directory")
+        monkeypatch.setenv(
+            session_registry_service.REGISTRY_PATH_ENV,
+            str(blocked_parent / "session_aliases.json"),
+        )
+
+        result = check_in(activity_id)
+
+        assert "error" not in result
+        assert result["session"] == {"registered": False, "reason": "cli_unresolved"}
+        assert "activity" in result
+
+    def test_collision_adds_hint_to_result(self, activity_id, monkeypatch):
+        """別セッションが同じ導出aliasを既に確保している場合、衝突用hintが追加される"""
+        self._stub_world(
+            monkeypatch,
+            {
+                "bridge-other": {"cli_pid": 200, "cli_session_id": "cli-2", "name": "workspace-b1"},
+                "bridge-1": {"cli_pid": 100, "cli_session_id": "cli-1", "name": "workspace-a1"},
+            },
+        )
+        session_registry_service.register_checkin(
+            bridge_session_id="bridge-other",
+            activity_id=999,
+            activity_title="[作業] タグnotesカラム追加",
+            activity_status="in_progress",
+        )
+        monkeypatch.setattr(relay_identity_module, "get_relay_identity", lambda: "bridge-1")
+
+        result = check_in(activity_id)
+
+        assert "error" not in result
+        assert result["session"]["alias_collision"] is True
+        assert result["session"]["alias"] == "[作業] タグnotesカラム追加-2"
+        assert any("衝突" in h for h in result["hints"])
+
+    def test_add_activity_check_in_true_also_registers_session(self, temp_db, monkeypatch):
+        """add_activity(check_in=True)経由でもレジストリ行が作られる
+        （内部でcheckin_service.check_inを呼ぶ経路のカバレッジ）"""
+        self._stub_world(
+            monkeypatch,
+            {"bridge-1": {"cli_pid": 100, "cli_session_id": "cli-1", "name": "workspace-a1"}},
+        )
+        monkeypatch.setattr(relay_identity_module, "get_relay_identity", lambda: "bridge-1")
+
+        result = add_activity(
+            title="[作業] 新規タスク",
+            description="説明",
+            tags=DEFAULT_TAGS,
+            check_in=True,
+        )
+
+        assert "error" not in result
+        registered = session_registry_service.list_sessions(self_bridge_session_id="bridge-1")
+        assert len(registered) == 1
+        assert registered[0]["activity_title"] == "[作業] 新規タスク"
+        assert registered[0]["is_self"] is True
