@@ -10,12 +10,14 @@ import_bundle(mode="dry_run")で読み込み、以下を検証する:
 - ネイティブ重複疑い検知とembedding未起動時のdegraded表示
 """
 import os
+import sqlite3
 import tempfile
 
 import numpy as np
 import pytest
 
 from src.db import get_connection, init_database
+from src.services import import_bundle_service
 from src.services.activity_service import add_activity, update_activity
 from src.services.export_bundle_service import export_bundle
 from src.services.import_bundle_service import import_bundle
@@ -965,6 +967,44 @@ class TestApplyReimport:
         assert row["decision"] == "Original decision"
         assert row["reason"] == "Original reason"
 
+    def test_apply_on_upstream_change_overwrite_bumps_activity_updated_at(self, dbs, mock_embedding_server):
+        db_a, db_b = dbs
+        _switch_db(db_a)
+        _set_instance("team-a")
+        a1 = _activity(title="Origin Activity")
+        bundle = export_bundle(items=[{"type": "activity", "ids": [a1]}])
+
+        _switch_db(db_b)
+        _set_instance("team-b")
+        local_a = _activity(title="Local Activity")
+        stale_updated_at = "2020-01-01 00:00:00"
+        conn = get_connection(load_vec=False)
+        try:
+            conn.execute("UPDATE activities SET updated_at = ? WHERE id = ?", (stale_updated_at, local_a))
+            conn.execute(
+                "INSERT INTO import_provenance "
+                "(entity_type, entity_id, origin_instance, origin_id, content_hash, bundle_id) "
+                "VALUES ('activity', ?, 'team-a', ?, 'stale-hash-does-not-match', 'prior-bundle')",
+                (local_a, a1),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = import_bundle(
+            bundle["path"],
+            mode="apply",
+            resolutions={"on_upstream_change": {"activity": "overwrite"}},
+        )
+        assert "error" not in result
+        assert result["updated"]["activity"] == 1
+
+        row = _fetch_row("activities", local_a)
+        assert row["title"] == "Origin Activity"
+        # 既存のupdate_activityサービスと同じ作法(updated_atを常にCURRENT_TIMESTAMPへ
+        # 更新する)にapply経由の更新も揃える
+        assert row["updated_at"] != stale_updated_at
+
 
 class TestApplyEntityOverrides:
     def test_apply_entity_override_skip_excludes_entity(self, dbs, mock_embedding_server):
@@ -1035,3 +1075,112 @@ class TestApplyRetractedNewEntity:
         finally:
             conn.close()
         assert orphan_fts_rowids == []
+
+
+class TestBodyCitationBacktickParity:
+    """バンドル本文のインラインバッククォート区間にある{{cite:...}}を、dry_runの
+    dangling_refs集計とapplyの書き換え・unresolved_body_refs集計の両方で一致して
+    除外することを保証する(コード例示として書かれた引用構文を実データの参照として
+    誤検知しない)。"""
+
+    def _inject_inline_backtick_cite(self, bundle_path: str, key: str) -> None:
+        """バンドルmdファイルの本文へ、インラインバッククォートで囲んだ複合キー形式citeを
+        直接注入する(他インスタンス由来バンドルが引用構文をコード例示した状態を模す)。"""
+        import yaml
+
+        with open(os.path.join(bundle_path, "manifest.yaml"), encoding="utf-8") as f:
+            manifest = yaml.safe_load(f)
+        entry = next(e for e in manifest["entities"] if e["key"] == key)
+        md_path = os.path.join(bundle_path, entry["path"])
+        with open(md_path, encoding="utf-8") as f:
+            file_content = f.read()
+        file_content = file_content.replace(
+            "placeholder body", "syntax example: `{{cite:team-a:M999}}` end."
+        )
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(file_content)
+
+    def test_inline_backtick_cite_excluded_from_dry_run_and_apply_alike(self, dbs, mock_embedding_server):
+        db_a, db_b = dbs
+        _switch_db(db_a)
+        _set_instance("team-a")
+        m1 = _material(title="Has Code Example", content="placeholder body")
+        bundle = export_bundle(items=[{"type": "material", "ids": [m1]}])
+        self._inject_inline_backtick_cite(bundle["path"], f"team-a:M{m1}")
+
+        _switch_db(db_b)
+        _set_instance("team-b")
+
+        dry = import_bundle(bundle["path"], skip_duplicate_check=True)
+        assert "error" not in dry
+        assert dry["dangling_refs"]["count"] == 0
+
+        applied = import_bundle(bundle["path"], mode="apply")
+        assert "error" not in applied
+        assert applied["unresolved_body_refs"] == 0
+
+        conn = get_connection(load_vec=False)
+        try:
+            row = conn.execute(
+                "SELECT content FROM materials WHERE title = ?", ("Has Code Example",)
+            ).fetchone()
+        finally:
+            conn.close()
+        # コード例示なので書き換えられずそのまま残る
+        assert "`{{cite:team-a:M999}}`" in row["content"]
+
+
+class TestApplyAtomicity:
+    """実装ロードマップの受け入れ基準(applyは全体1トランザクションで実行し、失敗時に
+    部分書き込みを残さない)を保証する。"""
+
+    def test_apply_rolls_back_all_writes_when_exception_occurs_mid_transaction(
+        self, dbs, mock_embedding_server, monkeypatch
+    ):
+        db_a, db_b = dbs
+        _switch_db(db_a)
+        _set_instance("team-a")
+        t1 = _topic("Topic One")
+        t2 = _topic("Topic Two")
+        bundle = export_bundle(items=[{"type": "topic", "ids": [t1, t2]}])
+        assert bundle["counts"].get("topic") == 2
+
+        _switch_db(db_b)
+        _set_instance("team-b")
+
+        before_topics = _count_rows("discussion_topics")
+        before_provenance = _count_rows("import_provenance")
+        before_tags = _count_rows("tags")
+
+        real_create = import_bundle_service._create_entity_row_with_conn
+        state = {"topic_creates": 0}
+
+        def flaky_create(conn, etype, fm, fields, title_raw):
+            # 実処理は必ず素通しし(1件目のtopicは実際にINSERTされる)、2件目のtopic
+            # 作成完了の直後にのみ失敗を注入する(=途中まで書き込みが進んだ状態を作る)。
+            local_id = real_create(conn, etype, fm, fields, title_raw)
+            if etype == "topic":
+                state["topic_creates"] += 1
+                if state["topic_creates"] == 2:
+                    raise sqlite3.OperationalError("simulated mid-apply failure")
+            return local_id
+
+        monkeypatch.setattr(import_bundle_service, "_create_entity_row_with_conn", flaky_create)
+
+        result = import_bundle(bundle["path"], mode="apply")
+        assert result["error"]["code"] == "DATABASE_ERROR"
+
+        # 1件目のtopic作成・タグ解決・provenance登録まで進んでいたはずだが、
+        # 2件目の失敗でトランザクション全体がロールバックされ、何も残らない。
+        assert _count_rows("discussion_topics") == before_topics
+        assert _count_rows("import_provenance") == before_provenance
+        assert _count_rows("tags") == before_tags
+
+        conn = get_connection(load_vec=False)
+        try:
+            leftover = conn.execute(
+                "SELECT id FROM discussion_topics WHERE title IN ('Topic One', 'Topic Two')"
+            ).fetchall()
+        finally:
+            conn.close()
+        assert leftover == []

@@ -185,8 +185,32 @@ def _parse_composite_key(key: str) -> tuple[str, str, int] | None:
     return instance_id, etype, int(num)
 
 
+def _iter_composite_cite_matches(line: str):
+    """1行内で`{{cite:<composite_key>}}`にマッチする箇所を、インラインバッククォート
+    区間(`` `...` ``)を除いて出現順に返す。抽出(_extract_composite_refs)と
+    書き換え(_rewrite_body_line)の両方が同じ走査ロジックに従う必要があるため共通化する。
+    """
+    i = 0
+    n = len(line)
+    while i < n:
+        ch = line[i]
+        if ch == "`":
+            close = line.find("`", i + 1)
+            if close == -1:
+                return
+            i = close + 1
+            continue
+        m = _COMPOSITE_CITE_PATTERN.match(line, i)
+        if m:
+            yield m
+            i = m.end()
+        else:
+            i += 1
+
+
 def _extract_composite_refs(text: str) -> list[str]:
-    """本文から`{{cite:<composite_key>}}`形式の参照キーを出現順に抽出する(コードブロック除外)。"""
+    """本文から`{{cite:<composite_key>}}`形式の参照キーを出現順に抽出する
+    (フェンスコードブロック・インラインバッククォート区間は除外する)。"""
     keys: list[str] = []
     in_fence = False
     for raw_line in text.split("\n"):
@@ -196,7 +220,7 @@ def _extract_composite_refs(text: str) -> list[str]:
             continue
         if in_fence:
             continue
-        for m in _COMPOSITE_CITE_PATTERN.finditer(raw_line):
+        for m in _iter_composite_cite_matches(raw_line):
             keys.append(f"{m.group(1)}:{m.group(2)}{m.group(3)}")
     return keys
 
@@ -678,35 +702,21 @@ def _rewrite_body_line(
     """1行内の`{{cite:<composite_key>}}`をローカルcite形式または解決不能タイトル
     置換へ書き換える(インラインバッククォート区間はスキップ)。"""
     out: list[str] = []
-    i = 0
-    n = len(line)
+    pos = 0
     count = 0
-    while i < n:
-        ch = line[i]
-        if ch == "`":
-            close = line.find("`", i + 1)
-            if close == -1:
-                out.append(line[i:])
-                i = n
-                continue
-            out.append(line[i : close + 1])
-            i = close + 1
-            continue
-        m = _COMPOSITE_CITE_PATTERN.match(line, i)
-        if m:
-            key = f"{m.group(1)}:{m.group(2)}{m.group(3)}"
-            local = resolve(key)
-            if local is not None:
-                etype, local_id = local
-                out.append("{{cite:" + f"{TYPE_NAME_TO_CODE[etype]}{local_id}" + "}}")
-            else:
-                title = title_by_key.get(key, key)
-                out.append(UNRESOLVED_REF_TEMPLATE.format(title=title))
-                count += 1
-            i = m.end()
-            continue
-        out.append(ch)
-        i += 1
+    for m in _iter_composite_cite_matches(line):
+        out.append(line[pos : m.start()])
+        key = f"{m.group(1)}:{m.group(2)}{m.group(3)}"
+        local = resolve(key)
+        if local is not None:
+            etype, local_id = local
+            out.append("{{cite:" + f"{TYPE_NAME_TO_CODE[etype]}{local_id}" + "}}")
+        else:
+            title = title_by_key.get(key, key)
+            out.append(UNRESOLVED_REF_TEMPLATE.format(title=title))
+            count += 1
+        pos = m.end()
+    out.append(line[pos:])
     return "".join(out), count
 
 
@@ -877,7 +887,7 @@ def _update_entity_row_with_conn(
         )
     elif etype == "activity":
         conn.execute(
-            "UPDATE activities SET title = ?, description = ? WHERE id = ?",
+            "UPDATE activities SET title = ?, description = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (title_raw, fields.get("description", ""), local_id),
         )
     elif etype == "material":
