@@ -134,7 +134,7 @@ transcriptを解析し、議論されたテーマを特定する。
 - `tags` で内容を表すタグを付ける（省略時はtopicのタグを継承）
 - **記録したdecisionの中に、今後の作業や継続議論を伴うものがあれば、対応するアクティビティを `add_activity` で作成する**（Step 2で未登録の場合）
 
-cc-memory自身の不具合・使用感の違和感・既存記録との矛盾に気づいた場合は
+CALM自身の不具合・使用感の違和感・既存記録との矛盾に気づいた場合は
 add_logs ではなく report_signal を使う（kind一覧は `report_signal` ツールの
 docstringを正とする）。
 

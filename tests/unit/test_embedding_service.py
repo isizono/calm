@@ -731,14 +731,14 @@ def test_embedding_text_includes_tags(temp_db, monkeypatch):
     add_topic(
         title="タグ含有テストトピック",
         description="テスト説明",
-        tags=["domain:cc-memory", "intent:design"],
+        tags=["domain:calm", "intent:design"],
     )
 
     # embedding生成テキストにタグ文字列が含まれている
     assert len(captured_texts) >= 1
     # 最後のencode_batch呼び出しがtopic用
     topic_text = captured_texts[-1]
-    assert "domain:cc-memory" in topic_text
+    assert "domain:calm" in topic_text
     assert "intent:design" in topic_text
 
 

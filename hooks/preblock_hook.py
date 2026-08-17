@@ -4,7 +4,7 @@
 cc-memory 開発現場以外で内部 ID 形式の文字列を外部に出すケースは想定されないため、
 tool 引数段階で機械的に止めることで AI 経由の漏出を防ぐ (scope A 方針)。
 
-cc-memory project 内 (pyproject.toml の `[project].name` が `_PROJECT_NAMES` のいずれかに一致) のみで有効。
+cc-memory (calm) project 内 (pyproject.toml の `[project].name` が `_PROJECT_NAMES` のいずれかに一致) のみで有効。
 `CC_MEMORY_LEAK_GUARD=off` 環境変数で緊急時に opt-out 可能。
 allowlist tool (cc-memory 自身の MCP / Read 系 / harness 内部 tool) は素通し。
 バックスラッシュエスケープ (`\\M#123`, `\\log #123`, `#`省略形の `\\log 123`) は字義扱いで非 block。
@@ -70,9 +70,9 @@ ALLOWLIST_EXACT: frozenset[str] = frozenset(
 LOG_PATH = pathlib.Path.home() / ".cc-memory" / "logs" / "preblock_hook.jsonl"
 
 # pyproject.toml `[project].name` がこのいずれかに一致したら cc-memory project と判定する。
-# 実プロジェクトの name は "claude-code-memory" だが、過去ドキュメントや一部 fixture が
-# "cc-memory" 表記を持つので両方を受け入れる。
-_PROJECT_NAMES: tuple[str, ...] = ("cc-memory", "claude-code-memory")
+# 実プロジェクトの name は "calm" (旧 "claude-code-memory")。過去ドキュメントや一部 fixture が
+# "cc-memory" 表記を持つので合わせて受け入れる。
+_PROJECT_NAMES: tuple[str, ...] = ("cc-memory", "claude-code-memory", "calm")
 
 
 def _is_allowed(tool_name: str) -> bool:

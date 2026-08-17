@@ -172,7 +172,7 @@ def build_markdown() -> str:
     latest = _latest_migration_number()
     names = _table_names(conn)
 
-    header = f"""# cc-memory DB スキーマ自動ダンプ
+    header = f"""# CALM DB スキーマ自動ダンプ
 
 <!-- 自動生成ファイル。手動編集しないこと。 -->
 <!-- 生成元: scripts/dump_db_schema.py（migrations/ 全適用後の実スキーマから生成） -->

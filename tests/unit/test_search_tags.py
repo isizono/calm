@@ -216,12 +216,12 @@ def test_search_tags_bare_tag(temp_db):
 
 def test_search_tags_partial_match(temp_db):
     """部分一致で検索できる"""
-    add_topic(title="Topic 1", description="Desc", tags=["domain:cc-memory"])
+    add_topic(title="Topic 1", description="Desc", tags=["domain:calm"])
 
-    result = search_tags("memory")
+    result = search_tags("cal")
     assert "error" not in result
     tag_names = [t["name"] for t in result["tags"]]
-    assert "cc-memory" in tag_names
+    assert "calm" in tag_names
 
 
 # ========================================

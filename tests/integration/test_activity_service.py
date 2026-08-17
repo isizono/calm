@@ -70,7 +70,7 @@ class TestAddActivity:
         result = add_activity(
             title="Tagged Activity",
             description="Tagged description",
-            tags=["domain:cc-memory", "hooks"],
+            tags=["domain:calm", "hooks"],
             check_in=False,
         )
 
@@ -91,7 +91,7 @@ class TestAddActivity:
                 (result["activity_id"],),
             ).fetchall()
             tag_names = sorted(f"{r['namespace']}:{r['name']}" if r['namespace'] else r['name'] for r in rows)
-            assert tag_names == ["domain:cc-memory", "hooks"]
+            assert tag_names == ["domain:calm", "hooks"]
         finally:
             conn.close()
 

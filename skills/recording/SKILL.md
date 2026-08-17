@@ -20,7 +20,7 @@ sync-memory による漏れの救済は、ユーザーが `/sync-memory` を明�
 
 `add_decisions` / `add_topic` / `add_habit` は本スキルの案内対象外。
 
-cc-memory 自身の故障・使用感不満・既存記録との矛盾は `add_logs` ではなく `report_signal` を使う（下記「report_signal との切り分け」参照）。
+CALM 自身の故障・使用感不満・既存記録との矛盾は `add_logs` ではなく `report_signal` を使う（下記「report_signal との切り分け」参照）。
 
 ## 発動例: add_logs（経緯記録）
 
@@ -43,14 +43,14 @@ cc-memory 自身の故障・使用感不満・既存記録との矛盾は `add_l
 
 「など」: 上記に当てはまらなくても、後続セッションが文脈を引き継ぐために要る経緯や成果物が出たら同等に扱う。例: 仕様確定議論の脇で出た代替案メモ、調査の途中で得た一次資料の抜粋、設計レビューで指摘された未解決リスト、外部記事の要旨など。
 
-## report_signal との切り分け（cc-memory 自身の故障・矛盾）
+## report_signal との切り分け（CALM 自身の故障・矛盾）
 
-L5（バグ観察）はユーザーが取り組んでいる対象システムのバグが対象。cc-memory 自身の故障・使用感不満・既存記録との矛盾を観測したときは `add_logs` ではなく `report_signal` を呼ぶ（合意不要の生の観測データであり、topic 紐付けや文脈タグは不要）。
+L5（バグ観察）はユーザーが取り組んでいる対象システムのバグが対象。CALM 自身の故障・使用感不満・既存記録との矛盾を観測したときは `add_logs` ではなく `report_signal` を呼ぶ（合意不要の生の観測データであり、topic 紐付けや文脈タグは不要）。
 
 | kind | 発火例 |
 |---|---|
 | `machine_error` | ツールエラー・hook 失敗・サーバー異常を観察した |
-| `friction` | 検索で引けるべき記録が引けなかった等、cc-memory の使い勝手への不満・違和感を感じた |
+| `friction` | 検索で引けるべき記録が引けなかった等、CALM の使い勝手への不満・違和感を感じた |
 | `contradiction` | 設計・実装中に既存 decision と矛盾する結論に達した / `add_decisions` の `related_decisions` で矛盾に気づいた |
 
 上記3種は頻出例であり、`report_signal` の kind は全7種ある（`precedent_miss` /

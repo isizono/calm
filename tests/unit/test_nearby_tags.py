@@ -90,7 +90,7 @@ def test_compute_nearby_tags_basic(temp_db):
 
 def test_compute_nearby_tags_excludes_namespace(temp_db):
     """domain:/intent:タグはnearby_tagsから除外される"""
-    add_topic(title="T1", description="test", tags=["alpha", "domain:cc-memory", "intent:design"])
+    add_topic(title="T1", description="test", tags=["alpha", "domain:calm", "intent:design"])
 
     results = [
         {"type": "topic", "id": 1, "tags": ["alpha"]},
@@ -98,7 +98,7 @@ def test_compute_nearby_tags_excludes_namespace(temp_db):
     nearby = _compute_nearby_tags(results, None, 0)
 
     tag_names = [n["tag"] for n in nearby]
-    assert "domain:cc-memory" not in tag_names
+    assert "domain:calm" not in tag_names
     assert "intent:design" not in tag_names
 
 
@@ -141,10 +141,10 @@ def test_compute_nearby_tags_offset_skip(temp_db):
 
 def test_compute_nearby_tags_all_namespace_tags(temp_db):
     """結果のタグが全てnamespace付きの場合、共起候補もnamespace付きなら空配列"""
-    add_topic(title="T1", description="test", tags=["domain:cc-memory", "intent:design"])
+    add_topic(title="T1", description="test", tags=["domain:calm", "intent:design"])
 
     results = [
-        {"type": "topic", "id": 1, "tags": ["domain:cc-memory"]},
+        {"type": "topic", "id": 1, "tags": ["domain:calm"]},
     ]
     nearby = _compute_nearby_tags(results, None, 0)
 

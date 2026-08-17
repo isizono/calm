@@ -1,11 +1,11 @@
 ---
 name: scribe
-description: cc-memoryの記録からドキュメントを生成する。「ドキュメント化して」「ADR書いて」「この議論を書き出して」「議事録にまとめて」「設計ドキュメントに起こして」などで発動。記録の整理・統合（recompose-context）や教訓抽出（postmortem）には発動しない。
+description: CALMの記録からドキュメントを生成する。「ドキュメント化して」「ADR書いて」「この議論を書き出して」「議事録にまとめて」「設計ドキュメントに起こして」などで発動。記録の整理・統合（recompose-context）や教訓抽出（postmortem）には発動しない。
 ---
 
 # scribe
 
-cc-memoryの記録（decisions, logs, materials）を元に、外部共有可能なドキュメントを生成する。
+CALMの記録（decisions, logs, materials）を元に、外部共有可能なドキュメントを生成する。
 
 ## 1. 対象アクティビティの選択
 
@@ -70,7 +70,7 @@ source_activities: [{activity_id一覧}]
 ```
 
 重要なルール:
-- cc-memoryにアクセスできない読者を前提とする。内部ID（decision #123等）を参照せず、内容を直接記述する
+- CALMにアクセスできない読者を前提とする。内部ID（decision #123等）を参照せず、内容を直接記述する
 - ソースが不足している箇所には `<!-- TODO: 要確認 -->` マーカーを付けて書き進める
 - ドキュメント間参照はファイル名で行う
 

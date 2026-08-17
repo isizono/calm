@@ -15,8 +15,8 @@ INSERT する (write 経路の apply_raw_to_cite_conversion と同じ「field/bl
 
 opt-out:
 - 環境変数 CC_MEMORY_SANITIZE_DISABLE=1: 即 exit 0
-- cwd が cc-memory リポジトリ内 (pyproject.toml [project].name == 'claude-code-memory'
-  を上方向探索で検出): 即 exit 0
+- cwd が cc-memory リポジトリ内 (pyproject.toml [project].name が _REPO_PROJECT_NAMES
+  のいずれかに一致することを上方向探索で検出): 即 exit 0
 
 例外時は stderr 警告 + citation_event_log failure イベント記録 + exit 0 (Claude Code 起動非ブロック)。
 """
@@ -44,7 +44,8 @@ from src.services.citations_pure import (
 )
 
 DEFAULT_DB_PATH = Path.home() / ".claude" / ".claude-code-memory" / "discussion.db"
-_REPO_PROJECT_NAME = "claude-code-memory"
+# 実プロジェクトの name は "calm" (旧 "claude-code-memory")。両方を受け入れる。
+_REPO_PROJECT_NAMES = ("claude-code-memory", "calm")
 _MAX_CONSECUTIVE_FAILURES = 3
 
 
@@ -54,7 +55,7 @@ _MAX_CONSECUTIVE_FAILURES = 3
 
 
 def _is_in_cc_memory_repo(cwd: str | None) -> bool:
-    """cwd から上方向に pyproject.toml を探し name=='claude-code-memory' なら True。
+    """cwd から上方向に pyproject.toml を探し name が _REPO_PROJECT_NAMES に含まれれば True。
 
     最初に見つかった pyproject.toml の name が一致しない場合は False (別プロジェクト)。
     pyproject.toml が見つからない / 読めない場合は False。
@@ -75,7 +76,7 @@ def _is_in_cc_memory_repo(cwd: str | None) -> bool:
         except (OSError, tomllib.TOMLDecodeError):
             return False
         name = data.get("project", {}).get("name")
-        return name == _REPO_PROJECT_NAME
+        return name in _REPO_PROJECT_NAMES
     return False
 
 

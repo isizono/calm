@@ -92,7 +92,7 @@ class TestAddActivityPinsBasic:
         """tagのrefをnamespace:name形式の文字列で指定できる"""
         conn = get_connection()
         try:
-            tag_ids = ensure_tag_ids(conn, [("domain", "cc-memory")])
+            tag_ids = ensure_tag_ids(conn, [("domain", "calm")])
             conn.commit()
             tag_id = tag_ids[0]
         finally:
@@ -100,7 +100,7 @@ class TestAddActivityPinsBasic:
 
         result = add_activity(
             title="テストactivity", description="説明", tags=DEFAULT_TAGS,
-            pins=[{"type": "tag", "ref": "domain:cc-memory"}],
+            pins=[{"type": "tag", "ref": "domain:calm"}],
         )
 
         assert "error" not in result

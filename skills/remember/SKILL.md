@@ -1,6 +1,6 @@
 ---
 name: remember
-description: 【必須】ユーザーが「覚えて」「保存して」「これ残して」「忘れないで」「メモって」「記録して」など、何かを記憶・永続化することを依頼したときに発動。情報の保存先を判定するフローを提供する。このスキルを経由せずにauto-memory・CLAUDE.md・habits・tag-notes・rulesに直接書いてはいけない。TRIGGER: ユーザーが何かを覚えておくこと・保存すること・記憶に残すことを依頼した時、表現のバリエーションは問わない。DO NOT TRIGGER: cc-memoryのadd_decisions/add_logsなど議論記録としての保存指示、過去の記録が現状と矛盾・陳腐化しているという訂正・撤回の依頼（forget skillの担当）。
+description: 【必須】ユーザーが「覚えて」「保存して」「これ残して」「忘れないで」「メモって」「記録して」など、何かを記憶・永続化することを依頼したときに発動。情報の保存先を判定するフローを提供する。このスキルを経由せずにauto-memory・CLAUDE.md・habits・tag-notes・rulesに直接書いてはいけない。TRIGGER: ユーザーが何かを覚えておくこと・保存すること・記憶に残すことを依頼した時、表現のバリエーションは問わない。DO NOT TRIGGER: CALMのadd_decisions/add_logsなど議論記録としての保存指示、過去の記録が現状と矛盾・陳腐化しているという訂正・撤回の依頼（forget skillの担当）。
 ---
 
 # remember
@@ -61,6 +61,6 @@ description: 【必須】ユーザーが「覚えて」「保存して」「こ�
 ## 注意
 
 - 判定に迷ったらユーザーに確認する
-- cc-memoryのdecisionは「覚えて」の対象外（双方合意の事実記録用）
-- auto-memoryとcc-memoryの二重記録はOK（異なる注入経路として機能する）
+- CALMのdecisionは「覚えて」の対象外（双方合意の事実記録用）
+- auto-memoryとCALMの二重記録はOK（異なる注入経路として機能する）
 - 過去の記録の訂正・撤回は対象外。矛盾・陳腐化に気づいたら[forget](../forget/SKILL.md) skillへ

@@ -22,7 +22,7 @@ hookの警告は `_build_snapshot_section`(`hooks/session_start_hook.py`)がSess
 ### 1. 異常確認
 
 - hook警告本文をパースし、どのテーブルが何件減ったか(`discussion_topics` / `decisions` / `discussion_logs` / `activities` / `materials`)を把握する
-- 現在のDB状態を実際にクエリして裏取りする(`get_activities` / `get_decisions` 等のcc-memoryツール、または `uv run python scripts/snapshot.py list` で分かる直近の行数)。警告は前回スナップショット取得時点との差分であり、直近の正当な操作(大量retract・tag-cleanup等)による見かけ上の減少でないか確認する
+- 現在のDB状態を実際にクエリして裏取りする(`get_activities` / `get_decisions` 等のCALMツール、または `uv run python scripts/snapshot.py list` で分かる直近の行数)。警告は前回スナップショット取得時点との差分であり、直近の正当な操作(大量retract・tag-cleanup等)による見かけ上の減少でないか確認する
 - 確度を判定する:
   - **明確な異常**: 直近セッションで該当テーブルへの意図的な大量削除・retract操作の記憶がない
   - **説明可能**: 直近でtag-cleanup・大量retract等の正当な操作があったことが会話履歴やlogから確認できる
@@ -30,7 +30,7 @@ hookの警告は `_build_snapshot_section`(`hooks/session_start_hook.py`)がSess
 
 ### 2. スナップショット所在確認
 
-- `uv run python scripts/snapshot.py list`(cc-memoryのインストールディレクトリで実行。プラグイン導入時はプラグインのインストールパス)で全kind横断の一覧を取得する
+- `uv run python scripts/snapshot.py list`(CALMのインストールディレクトリで実行。プラグイン導入時はプラグインのインストールパス)で全kind横断の一覧を取得する
 - 各エントリの `kind` / `created_at` / `db_size_bytes` / `quick_check` を確認する。`quick_check` が `ok` 以外のものは復元候補から除外する
 - 異常検知直前(=データがまだ健全だった時点)に最も近いスナップショットを候補として特定する
 - 補足: `_build_snapshot_section` は異常検知時(`is_healthy=False`)に新規periodicスナップショットの取得をスキップする実装のため、異常検知セッション中に直前の健全世代が壊れたスナップショットで上書きされることはない
@@ -91,4 +91,4 @@ Cを選んだ場合は、誤検知と判断した理由を `add_logs` に記録�
 - 復元前の自動バックアップ(`prerestore` 退避)は `restore_snapshot` が内部で行うため、このスキルが別途手動バックアップを取る必要はない
 - MCPサーバーの停止・再起動はユーザー影響が大きい操作。実行前に必ず明示的な承認を取る(一般的な「任せるよ」は承認とみなさない)
 - `--force` / `--yes` フラグは安全装置を無効化するものであり、スキル側が自発的に付与しない
-- コマンドはcc-memoryのインストールディレクトリ(プラグイン導入時はプラグインのインストールパス)で実行する
+- コマンドはCALMのインストールディレクトリ(プラグイン導入時はプラグインのインストールパス)で実行する

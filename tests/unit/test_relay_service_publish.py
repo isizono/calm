@@ -55,7 +55,7 @@ class TestPublishSuccess:
 
     def test_tag_namespace_only_labels_are_accepted(self, conn):
         """cc-memory tag namespace（domain:/intent:）は中核 entity ではないため、これのみでも有効な publish になる。"""
-        result = _publish(conn, ["domain:cc-memory", "intent:design"])
+        result = _publish(conn, ["domain:calm", "intent:design"])
         assert "error" not in result
 
     def test_opaque_prefixes_are_accepted(self, conn):
@@ -126,7 +126,7 @@ class TestReservedEntityNamespace:
 
     def test_core_entity_prefix_blocks_call_even_with_other_valid_labels(self, conn):
         """中核 entity prefix が1つでも含まれれば、他の label が有効でも呼び出し全体を拒否する（部分成功しない）。"""
-        result = _publish(conn, ["task:build", "domain:cc-memory", "topic:45"])
+        result = _publish(conn, ["task:build", "domain:calm", "topic:45"])
         assert result["error"]["code"] == "validation"
 
     def test_no_row_inserted_when_entity_prefix_rejected(self, conn):

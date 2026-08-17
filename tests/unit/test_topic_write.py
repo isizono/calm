@@ -41,7 +41,7 @@ def test_add_topic_tags_stored(temp_db):
     result = add_topic(
         title="タグテスト",
         description="タグの永続化テスト",
-        tags=["domain:cc-memory", "hooks", "intent:design"],
+        tags=["domain:calm", "hooks", "intent:design"],
     )
 
     assert "error" not in result
