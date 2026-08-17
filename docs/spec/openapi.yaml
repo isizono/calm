@@ -987,7 +987,7 @@ paths:
     post:
       tags:
       - session
-      summary: 'Choose: ListAgents 等で見えた他セッションの自動生成名（例: workspace-a2）が、'
+      summary: 'Choose: ListAgents 等で見えた他セッションの自動生成名（例: workspace-a2）が、どのアクティビティを担当しているのか知りたいとき。'
       requestBody:
         required: true
         content:
@@ -1740,7 +1740,7 @@ paths:
     post:
       tags:
       - session
-      summary: 'Choose: 自セッションの別名を明示的に付け替えたいとき（自動生成された別名が'
+      summary: 'Choose: 自セッションの別名を明示的に付け替えたいとき（自動生成された別名が分かりにくい、他セッションと衝突して接尾辞が付いた、など）。'
       requestBody:
         required: true
         content:

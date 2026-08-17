@@ -2481,8 +2481,7 @@ def relay_status(outbox_id: int | None = None) -> dict:
 
 @mcp.tool()
 def get_sessions() -> dict:
-    """Choose: ListAgents 等で見えた他セッションの自動生成名（例: workspace-a2）が、
-    どのアクティビティを担当しているのか知りたいとき。
+    """Choose: ListAgents 等で見えた他セッションの自動生成名（例: workspace-a2）が、どのアクティビティを担当しているのか知りたいとき。
 
     稼働中の Claude Code セッションについて「CLI 表示名 → 人間可読な別名」の対応表を
     返す。別名は各セッションが check_in したアクティビティから自動生成され、
@@ -2509,8 +2508,7 @@ def get_sessions() -> dict:
 
 @mcp.tool()
 def set_session_alias(alias: str) -> dict:
-    """Choose: 自セッションの別名を明示的に付け替えたいとき（自動生成された別名が
-    分かりにくい、他セッションと衝突して接尾辞が付いた、など）。
+    """Choose: 自セッションの別名を明示的に付け替えたいとき（自動生成された別名が分かりにくい、他セッションと衝突して接尾辞が付いた、など）。
 
     別名は現在 check_in しているアクティビティに紐づく。別のアクティビティへ
     check_in し直すと、自動生成された別名に戻る。
