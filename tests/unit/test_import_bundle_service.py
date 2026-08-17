@@ -7,6 +7,7 @@ frontmatter分離・本文フィールド抽出・複合キーのパース・本
 from src.services.export_bundle_service import _build_body_text, _build_frontmatter
 from src.services.import_bundle_service import (
     _extract_composite_refs,
+    _load_bundle_entities,
     _parse_body_fields,
     _parse_composite_key,
     _split_frontmatter,
@@ -192,3 +193,63 @@ class TestExportImportRoundTrip:
         fields = _parse_body_fields("decision", body)
         assert fields["decision"] == "We chose X"
         assert fields["reason"] == "Because Y matters"
+
+
+class TestLoadBundleEntitiesPathGuard:
+    """manifest.entities[].pathがbundle_root外を指す場合に読み込みを拒否することを確認する。"""
+
+    def _write_material_file(self, path, key="team-a:M1", title="Sample", content="hello"):
+        frontmatter = _build_frontmatter(
+            etype="material",
+            composite_key=key,
+            title=title,
+            tags=["domain:test"],
+            created_at="2026-01-01 00:00:00",
+            updated_at=None,
+            retracted_at=None,
+            belongs_to_keys=[],
+            related_keys=[],
+            supersedes=None,
+            depends_on_keys=None,
+            source="test",
+            status=None,
+        )
+        body_text = _build_body_text("material", title, {"content": content})
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(frontmatter + "\n" + body_text, encoding="utf-8")
+
+    def test_path_within_bundle_root_is_loaded_normally(self, tmp_path):
+        bundle_root = tmp_path / "bundle"
+        self._write_material_file(bundle_root / "material" / "M1.md")
+
+        parsed, errors = _load_bundle_entities(
+            str(bundle_root), [{"key": "team-a:M1", "path": "material/M1.md"}]
+        )
+
+        assert errors == []
+        assert parsed["team-a:M1"]["fields"]["content"] == "hello"
+
+    def test_relative_parent_traversal_path_is_rejected(self, tmp_path):
+        bundle_root = tmp_path / "bundle"
+        bundle_root.mkdir()
+        self._write_material_file(tmp_path / "secret.md")
+
+        parsed, errors = _load_bundle_entities(
+            str(bundle_root), [{"key": "team-a:M1", "path": "../secret.md"}]
+        )
+
+        assert parsed == {}
+        assert errors == [{"key": "team-a:M1", "error": "path_outside_bundle"}]
+
+    def test_absolute_path_escaping_bundle_root_is_rejected(self, tmp_path):
+        bundle_root = tmp_path / "bundle"
+        bundle_root.mkdir()
+        outside = tmp_path / "secret.md"
+        self._write_material_file(outside)
+
+        parsed, errors = _load_bundle_entities(
+            str(bundle_root), [{"key": "team-a:M1", "path": str(outside)}]
+        )
+
+        assert parsed == {}
+        assert errors == [{"key": "team-a:M1", "error": "path_outside_bundle"}]

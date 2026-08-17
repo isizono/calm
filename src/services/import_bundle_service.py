@@ -169,10 +169,11 @@ def _load_bundle_entities(bundle_root: str, entities_meta: list) -> tuple[dict[s
     Returns:
         (parsed_entities, load_errors)
         parsed_entities: {ccm_key: {"fm": dict, "fields": dict[str, str], "manifest_entry": dict}}
-        load_errors: [{"key": str, "error": str}, ...] (ファイル欠損・frontmatter破損)
+        load_errors: [{"key": str, "error": str}, ...] (ファイル欠損・frontmatter破損・パス逸脱)
     """
     parsed: dict[str, dict] = {}
     errors: list[dict] = []
+    bundle_root_real = os.path.realpath(bundle_root)
     for ent in entities_meta:
         if not isinstance(ent, dict):
             continue
@@ -181,7 +182,10 @@ def _load_bundle_entities(bundle_root: str, entities_meta: list) -> tuple[dict[s
         if not key or not rel_path:
             errors.append({"key": key, "error": "malformed_manifest_entry"})
             continue
-        abs_path = os.path.join(bundle_root, rel_path)
+        abs_path = os.path.realpath(os.path.join(bundle_root, rel_path))
+        if abs_path != bundle_root_real and not abs_path.startswith(bundle_root_real + os.sep):
+            errors.append({"key": key, "error": "path_outside_bundle"})
+            continue
         if not os.path.isfile(abs_path):
             errors.append({"key": key, "error": "file_not_found"})
             continue
@@ -557,14 +561,24 @@ def _check_duplicates_with_conn(
 
     duplicates: list[dict] = []
     degraded = False
+
+    candidates: list[tuple[str, dict]] = []
+    query_texts: list[str] = []
     for key, info in new_entities:
         query_text = _build_query_text(info["type"], info["title"], info["fields"])
         if not query_text:
             continue
-        query_embedding = embedding_service.encode_query(query_text)
-        if query_embedding is None:
-            degraded = True
-            continue
+        candidates.append((key, info))
+        query_texts.append(query_text)
+
+    if not query_texts:
+        return duplicates, degraded
+
+    query_embeddings = embedding_service.encode_queries(query_texts)
+    if query_embeddings is None:
+        return duplicates, True
+
+    for (key, info), query_embedding in zip(candidates, query_embeddings):
         similar = _find_similar_local_entities_with_conn(conn, query_embedding, DUPLICATE_SEARCH_LIMIT)
         if similar:
             duplicates.append({"key": key, "title": info["title"], "similar": similar})

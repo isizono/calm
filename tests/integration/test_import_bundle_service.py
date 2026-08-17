@@ -393,7 +393,7 @@ class TestTagReport:
         entry = creates["domain:brand-new-tag"]
         assert entry["notes"] == "How to use this tag"
         assert entry["review_required"] is True  # domain namespace
-        assert m1 or entry["incoming"]["count"] == 1
+        assert entry["incoming"]["count"] == 1
 
     def test_existing_tag_is_classified_as_merge_with_notes_diff(self, dbs):
         db_a, db_b = dbs
@@ -547,3 +547,36 @@ class TestDuplicatesSuspected:
         assert "error" not in result
         # embeddingが利用不可でも呼び出し自体をスキップするのでdegradedは立たない
         assert result["degraded"] is False
+
+    def test_duplicate_check_sends_single_batched_encode_call(self, dbs, monkeypatch):
+        """新規importエンティティが複数件あっても、クエリembeddingはHTTPリクエスト1回にまとめる。"""
+        db_a, db_b = dbs
+        _switch_db(db_a)
+        _set_instance("team-a")
+        m1 = _material(title="Alpha", content="alpha content")
+        m2 = _material(title="Beta", content="beta content")
+        bundle = export_bundle(items=[{"type": "material", "ids": [m1, m2]}])
+
+        _switch_db(db_b)
+        _set_instance("team-b")
+
+        import src.services.embedding_service as emb
+
+        call_count = {"n": 0}
+
+        def spy_encode_batch(texts, prefix):
+            call_count["n"] += 1
+            embeddings = []
+            for text in texts:
+                np.random.seed(hash(text) % (2**32))
+                embeddings.append(np.random.rand(EMBEDDING_DIM).astype(np.float32).tolist())
+            return embeddings
+
+        monkeypatch.setattr(emb, "_encode_batch", spy_encode_batch)
+        monkeypatch.setattr(emb, "_server_initialized", True)
+        monkeypatch.setattr(emb, "_backfill_done", True)
+
+        result = import_bundle(bundle["path"])
+        assert "error" not in result
+        assert result["degraded"] is False
+        assert call_count["n"] == 1
