@@ -1,6 +1,7 @@
 """エンティティ間リレーション管理サービス"""
 import logging
 import sqlite3
+from collections import defaultdict
 
 from src.db import get_connection
 from src.services.readable_id import strip_entity_id_inplace
@@ -730,6 +731,59 @@ def _traverse_relations_with_conn(
         {"entity_type": row["entity_type"], "entity_id": row["entity_id"], "depth": row["depth"]}
         for row in rows
     ]
+
+
+def _fetch_belongs_to_ids_with_conn(
+    conn: sqlite3.Connection, etype: str, ids: list[int]
+) -> dict[int, list[int]]:
+    """子(decision/log/material/activity)→topicのbelongs_to先topic_idを一括取得する。"""
+    if not ids:
+        return {}
+    placeholders = ",".join("?" * len(ids))
+    rows = conn.execute(
+        "SELECT source_id AS entity_id, target_id AS topic_id FROM relations "
+        "WHERE relation_type = 'belongs_to' AND source_type = ? AND target_type = 'topic' "
+        f"AND source_id IN ({placeholders})",
+        (etype, *ids),
+    ).fetchall()
+    result: dict[int, list[int]] = defaultdict(list)
+    for row in rows:
+        result[row["entity_id"]].append(row["topic_id"])
+    return result
+
+
+def _fetch_related_ids_with_conn(
+    conn: sqlite3.Connection, etype: str, ids: list[int]
+) -> dict[int, list[tuple[str, int]]]:
+    """related(相互リンク)先を型を問わず一括取得する。"""
+    if not ids:
+        return {}
+    placeholders = ",".join("?" * len(ids))
+    rows = conn.execute(
+        "SELECT source_id AS entity_id, target_type, target_id FROM relations_view "
+        f"WHERE relation_type = 'related' AND source_type = ? AND source_id IN ({placeholders})",
+        (etype, *ids),
+    ).fetchall()
+    result: dict[int, list[tuple[str, int]]] = defaultdict(list)
+    for row in rows:
+        result[row["entity_id"]].append((row["target_type"], row["target_id"]))
+    return result
+
+
+def _fetch_depends_on_with_conn(conn: sqlite3.Connection, activity_ids: list[int]) -> dict[int, list[int]]:
+    """activity→activityのdepends_on先activity_idを一括取得する。"""
+    if not activity_ids:
+        return {}
+    placeholders = ",".join("?" * len(activity_ids))
+    rows = conn.execute(
+        "SELECT dependent_id, dependency_id FROM activity_dependencies "
+        f"WHERE dependent_id IN ({placeholders})",
+        activity_ids,
+    ).fetchall()
+    result: dict[int, list[int]] = defaultdict(list)
+    for row in rows:
+        result[row["dependent_id"]].append(row["dependency_id"])
+    return result
 
 
 def _get_map_with_conn(

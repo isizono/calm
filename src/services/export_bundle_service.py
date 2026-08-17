@@ -46,6 +46,11 @@ from src.services.internal_id_patterns import (
     RAW_CITE_FULLWORD_PATTERN,
 )
 from src.services.material_service import DEFAULT_EXPORT_DIR, _is_within_export_dir, _slugify_title
+from src.services.relation_service import (
+    _fetch_belongs_to_ids_with_conn,
+    _fetch_depends_on_with_conn,
+    _fetch_related_ids_with_conn,
+)
 from src.services.tag_service import get_entity_tags_batch
 
 logger = logging.getLogger(__name__)
@@ -316,43 +321,8 @@ def _export_body_pipeline(
 
 
 # --- リレーション取得ヘルパー ---
-
-
-def _fetch_belongs_to_ids_with_conn(
-    conn: sqlite3.Connection, etype: str, ids: list[int]
-) -> dict[int, list[int]]:
-    """子(decision/log/material/activity)→topicのbelongs_to先topic_idを一括取得する。"""
-    if not ids:
-        return {}
-    placeholders = ",".join("?" * len(ids))
-    rows = conn.execute(
-        "SELECT source_id AS entity_id, target_id AS topic_id FROM relations "
-        "WHERE relation_type = 'belongs_to' AND source_type = ? AND target_type = 'topic' "
-        f"AND source_id IN ({placeholders})",
-        (etype, *ids),
-    ).fetchall()
-    result: dict[int, list[int]] = defaultdict(list)
-    for row in rows:
-        result[row["entity_id"]].append(row["topic_id"])
-    return result
-
-
-def _fetch_related_ids_with_conn(
-    conn: sqlite3.Connection, etype: str, ids: list[int]
-) -> dict[int, list[tuple[str, int]]]:
-    """related(相互リンク)先を型を問わず一括取得する。"""
-    if not ids:
-        return {}
-    placeholders = ",".join("?" * len(ids))
-    rows = conn.execute(
-        "SELECT source_id AS entity_id, target_type, target_id FROM relations_view "
-        f"WHERE relation_type = 'related' AND source_type = ? AND source_id IN ({placeholders})",
-        (etype, *ids),
-    ).fetchall()
-    result: dict[int, list[tuple[str, int]]] = defaultdict(list)
-    for row in rows:
-        result[row["entity_id"]].append((row["target_type"], row["target_id"]))
-    return result
+# belongs_to/related/depends_onの一括取得はrelation_service.pyの共通実装を使う
+# (collect_export_candidates側のclosure_warnings検知とロジックを共有するため)。
 
 
 def _fetch_supersedes_with_conn(conn: sqlite3.Connection, decision_ids: list[int]) -> dict[int, list[int]]:
@@ -368,21 +338,6 @@ def _fetch_supersedes_with_conn(conn: sqlite3.Connection, decision_ids: list[int
     result: dict[int, list[int]] = defaultdict(list)
     for row in rows:
         result[row["source_id"]].append(row["target_id"])
-    return result
-
-
-def _fetch_depends_on_with_conn(conn: sqlite3.Connection, activity_ids: list[int]) -> dict[int, list[int]]:
-    if not activity_ids:
-        return {}
-    placeholders = ",".join("?" * len(activity_ids))
-    rows = conn.execute(
-        "SELECT dependent_id, dependency_id FROM activity_dependencies "
-        f"WHERE dependent_id IN ({placeholders})",
-        activity_ids,
-    ).fetchall()
-    result: dict[int, list[int]] = defaultdict(list)
-    for row in rows:
-        result[row["dependent_id"]].append(row["dependency_id"])
     return result
 
 
@@ -723,8 +678,15 @@ def export_bundle(
 
             belongs_to_ids = belongs_to_by_key.get((etype, eid), []) if etype != "topic" else []
             belongs_to_keys = [_composite_key(instance_id, "topic", tid) for tid in belongs_to_ids]
+            for tid in belongs_to_ids:
+                if ("topic", tid) not in selected:
+                    all_refs.append(("topic", tid, (etype, eid)))
+
             related_targets = related_by_key.get((etype, eid), [])
             related_keys = [_composite_key(instance_id, t, i) for (t, i) in related_targets]
+            for target_type, target_id in related_targets:
+                if (target_type, target_id) not in selected:
+                    all_refs.append((target_type, target_id, (etype, eid)))
 
             supersedes_entries = None
             if etype == "decision":
@@ -734,9 +696,11 @@ def export_bundle(
                 ]
             depends_on_keys = None
             if etype == "activity":
-                depends_on_keys = [
-                    _composite_key(instance_id, "activity", did) for did in depends_on_by_key.get(eid, [])
-                ]
+                depends_on_ids = depends_on_by_key.get(eid, [])
+                depends_on_keys = [_composite_key(instance_id, "activity", did) for did in depends_on_ids]
+                for did in depends_on_ids:
+                    if ("activity", did) not in selected:
+                        all_refs.append(("activity", did, (etype, eid)))
 
             tags = tags_by_key.get((etype, eid), [])
             created_at = row_d.get("created_at")
@@ -795,7 +759,8 @@ def export_bundle(
             )
             counts[etype] += 1
 
-        # unresolved_refs: 本文citation由来(選択集合外) + supersede由来(選択集合外)
+        # unresolved_refs: 本文citation由来 + belongs_to/related/depends_on由来 + supersede由来
+        # (いずれも選択集合外を指すもの)
         unresolved_targets: set[tuple[str, int]] = {(t, i) for (t, i, _src) in all_refs}
         for _source_id, target_id in external_supersedes:
             unresolved_targets.add(("decision", target_id))

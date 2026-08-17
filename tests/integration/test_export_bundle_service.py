@@ -250,7 +250,11 @@ class TestParentTopicAutoInclude:
         assert fm["belongs_to"] == [f"team-a:T{t1}"]
 
     def test_activity_export_does_not_auto_include_topic(self, temp_db):
-        """activityは常に明示選択のみが対象。belongs_toがあっても強制同梱しない。"""
+        """activityは常に明示選択のみが対象。belongs_toがあっても強制同梱しない。
+
+        親topicが選択集合外に残るぶん、frontmatterのbelongs_toは選択集合外を指した
+        ままになり、unresolved_refsで検知されなければならない。
+        """
         _set_instance("team-a")
         t1 = _topic("Parent Topic")
         a1 = _activity(related=[{"type": "topic", "ids": [t1]}])
@@ -258,6 +262,12 @@ class TestParentTopicAutoInclude:
         assert "error" not in result
         assert result["counts"] == {"activity": 1}
         assert result["auto_included"] == []
+        assert any(
+            r["key"] == f"team-a:T{t1}" and r["type"] == "topic" for r in result["unresolved_refs"]
+        )
+        md_path = os.path.join(result["path"], f"activities/A-{a1}-Activity.md")
+        fm, _ = _split_frontmatter(_read(md_path))
+        assert fm["belongs_to"] == [f"team-a:T{t1}"]
 
     def test_material_export_does_not_auto_include_topic(self, temp_db):
         _set_instance("team-a")
@@ -266,6 +276,12 @@ class TestParentTopicAutoInclude:
         result = export_bundle(items=[{"type": "material", "ids": [m1]}])
         assert result["counts"] == {"material": 1}
         assert result["auto_included"] == []
+        assert any(
+            r["key"] == f"team-a:T{t1}" and r["type"] == "topic" for r in result["unresolved_refs"]
+        )
+        md_path = os.path.join(result["path"], f"materials/M-{m1}-Material.md")
+        fm, _ = _split_frontmatter(_read(md_path))
+        assert fm["belongs_to"] == [f"team-a:T{t1}"]
 
 
 class TestSupersede:
@@ -317,6 +333,35 @@ class TestRelatedEdges:
         fm, _ = _split_frontmatter(_read(md_path))
         assert fm["related"] == [f"team-a:M{m1}"]
         assert "belongs_to" not in fm or fm["belongs_to"] == []
+
+    def test_related_target_outside_selection_appears_in_unresolved_refs(self, temp_db):
+        """related先が選択集合外でもfrontmatterには書かれるが、unresolved_refsで検知される。"""
+        _set_instance("team-a")
+        m1 = _material(title="First")
+        m2 = _material(title="Second", related=[{"type": "material", "ids": [m1]}])
+
+        result = export_bundle(items=[{"type": "material", "ids": [m2]}])
+        assert "error" not in result
+        assert result["counts"] == {"material": 1}
+        assert any(r["key"] == f"team-a:M{m1}" and r["type"] == "material" for r in result["unresolved_refs"])
+        md_path = os.path.join(result["path"], f"materials/M-{m2}-Second.md")
+        fm, _ = _split_frontmatter(_read(md_path))
+        assert fm["related"] == [f"team-a:M{m1}"]
+
+    def test_depends_on_target_outside_selection_appears_in_unresolved_refs(self, temp_db):
+        """depends_on先が選択集合外でもfrontmatterには書かれるが、unresolved_refsで検知される。"""
+        _set_instance("team-a")
+        a1 = _activity(title="Dependency")
+        a2 = _activity(title="Dependent")
+        add_relation("activity", a2, [{"type": "activity", "ids": [a1]}], relation_type="depends_on")
+
+        result = export_bundle(items=[{"type": "activity", "ids": [a2]}])
+        assert "error" not in result
+        assert result["counts"] == {"activity": 1}
+        assert any(r["key"] == f"team-a:A{a1}" and r["type"] == "activity" for r in result["unresolved_refs"])
+        md_path = os.path.join(result["path"], f"activities/A-{a2}-Dependent.md")
+        fm, _ = _split_frontmatter(_read(md_path))
+        assert fm["depends_on"] == [f"team-a:A{a1}"]
 
 
 class TestCitationPipeline:
