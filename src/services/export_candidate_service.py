@@ -16,7 +16,6 @@ from collections import defaultdict
 
 from src.db import get_connection, row_to_dict
 from src.services.citations_pure import (
-    OWNER_TEXT_FIELDS,
     TYPE_TO_TABLE,
     TYPE_TO_TITLE_EXPR,
     TYPES_WITH_RETRACT,
