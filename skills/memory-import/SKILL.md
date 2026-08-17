@@ -17,7 +17,7 @@ description: 【必須】他のcc-memoryインスタンスが書き出したexpo
    1. `summary`(new/unchanged/updatable等の型別件数)を1行で要約
    2. **タグレビュー**(下記「タグレビュー手順」参照)
    3. `upstream_changed`(上流で変更されたdecision/log): 1件ずつ中身を展開し、`overwrite`/`skip`を個別裁定する(既定skip)
-   4. `duplicates_suspected`(ネイティブ重複疑い): 類似ペアの両方のタイトル+snippetを展開して個別裁定する(「そのままimport」「importしてrelatedを張る」「skip」)。**保存した+要約だけで裁定を求めない**
+   4. `duplicates_suspected`(ネイティブ重複疑い): 各要素は`{key, title, similar: [{type, id_raw, title, score}]}`(snippetは含まれない)。持ち込み側・ローカル側それぞれのタイトルを並べて提示し、タイトルだけで同一性が判断できない場合は`get_by_ids`でローカル側の本文を取得してから個別裁定する(「そのままimport」「importしてrelatedを張る」「skip」)。**保存した+要約だけで裁定を求めない**
    5. `dangling_refs`: 件数と代表例を提示する。「送り手に該当エンティティの追加exportを頼む」選択肢があることも伝える
 6. 裁定結果を`resolutions`(`tag_renames` / `on_upstream_change` / `entity_overrides`)に畳んで`import_bundle(mode="apply")`を1回呼ぶ
 7. **結果報告**: 型別`created`/`updated`/`skipped`件数、`created_edges`/`dropped_edges`。取り込んだtopicと既存のローカルtopicとの関連付け(`add_relation`)を能動的に提案する
@@ -29,10 +29,12 @@ description: 【必須】他のcc-memoryインスタンスが書き出したexpo
 
 ### 1. review_required で振り分ける
 
-各エントリの`review_required`(namespace が`domain`、または incoming/local に notes がある場合に true)を見て:
+`create`/`merge`/`alias_hit`の各エントリは`review_required`(namespace が`domain`、または incoming/local に notes がある場合に true)を持つ。これを見て:
 
 - **`review_required: false`**: 個別裁定を求めずバッチで一括承認する(件数のみ要約提示)
 - **`review_required: true`**: 下記2の一次判定を1件ずつ会話内で行う
+
+**`archived_hit`(archived同名)には`review_required`フィールドが無い**。既存タグがarchivedである時点で過去に何らかの理由で退役している=同名衝突の判断コストが高いため、件数によらず常に1件ずつ個別確認する(バッチ一括承認の対象外)。
 
 ### 2. AI一次判定(review_required=trueのみ)
 

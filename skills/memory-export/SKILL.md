@@ -13,13 +13,13 @@ description: 【必須】cc-memoryの記録(topic/decision/log/material/activity
 2. **起点の種類を確認**: 「特定のトピック/アクティビティから辿る」か「特定のdomainタグ配下をまとめて渡す」かをユーザーの発話から判定する(不明なら1ターン確認)
    - 前者: 起点テーマを`search`で探し、起点entity(topic/activity)をユーザーに確認する
    - 後者: 対象の`domain:`タグを確認する。複数domainにまたがる知識を渡す場合は、**tag_rootsを複数指定した1バンドルへ統合するのが正解**であり、バンドルを分けない(本文中の参照は解決不能だとタイトル置換で非可逆に劣化するため、分割よりバンドル統合の方が受け手側の文脈が保たれる)
-3. `collect_export_candidates`を呼ぶ
+3. `collect_export_candidates`を呼ぶ。**`include_types`を明示指定してlogを除外する**(`["topic", "activity", "material", "decision"]`)。`include_types`未指定だと5型全部(logも含む)が返るため、logを既定outにするにはこの指定が必須
    - 起点方式: `roots`(+`max_depth`、既定2)
    - タグ方式: `tag_roots`(グラフ拡張はしない、深度ゼロ固定でシード集合に合流)
 4. **候補提示**: 総候補件数に応じて提示ポリシーを切り替える(下表)
 5. **確定リストの復唱**: 型別件数と主要タイトルを要約提示し、最終確認を取る
 6. `export_bundle`を呼ぶ。`selection`引数に手順3の入力(`roots`/`tag_roots`/`max_depth`)をそのまま渡す(将来の同一selectionでの再exportの前提になる)
-7. **結果報告**: 書き出しパス・型別件数・`unresolved_refs`(受け手への申し送りになる旨。各要素に`domain_tags`が付くので「次にどのdomainのバンドルを追加で送ってもらうべきか」の判断材料になる旨を説明)・`masked_literals`件数
+7. **結果報告**: 書き出しパス・型別件数・`auto_included`(選択していないのに親topic自動同梱等で機械的に含まれたエンティティ。ユーザーが選んだ覚えのないものが同梱されている、と気づけるように必ず伝える)・`unresolved_refs`(受け手への申し送りになる旨。各要素に`domain_tags`が付くので「次にどのdomainのバンドルを追加で送ってもらうべきか」の判断材料になる旨を説明)・`masked_literals`件数
 8. export実行の経緯を`add_logs`で記録する(recording skillの基準に従う)
 
 ## 候補提示ポリシー
@@ -36,7 +36,7 @@ description: 【必須】cc-memoryの記録(topic/decision/log/material/activity
 | decision | title + retracted/supersededフラグ |
 | topic / activity | title + snippet |
 | material | title + snippet + サイズ(`size_chars`) |
-| log | 既定`include_types`から除外済みのため候補にも出さない(export対象外が既定のルール) |
+| log | 手順3で`include_types`から明示除外しているため候補にも出ない(export対象外が既定のルール) |
 
 - `retracted`/`superseded`のcandidateはフラグ付きで表示し、既定は未選択のまま伝える
 - `closure_warnings`があれば候補提示より先に見せる(「supersede先/引用先が選択範囲外」)
