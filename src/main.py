@@ -935,7 +935,7 @@ def analyze_tags(
     """タグの共起分析を実行する。PMIで共起の重みを計算し、クラスタ検出・孤児タグ検出・重複候補検出を行う。
 
     Args:
-        domain: domainフィルタ（例: "cc-memory"）。指定時はそのdomainに属するエンティティのみを分析対象にする
+        domain: domainフィルタ（例: "calm"）。指定時はそのdomainに属するエンティティのみを分析対象にする
         include_domain_tags: Trueの場合、domain:タグも分析対象に含める（デフォルトFalse）
         focus_tag: 特定タグにフォーカス。指定時はco_occurrencesをそのタグを含むペアのみに絞る
         min_usage: 孤児判定の閾値。usage_countがこの値未満のタグを孤児とする（デフォルト2）

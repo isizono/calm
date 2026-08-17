@@ -21,6 +21,27 @@ import src.services.embedding_service as emb
 DEFAULT_TAGS = ["domain:test"]
 
 
+def _add_alias_tag(namespace, name, canonical_namespace, canonical_name):
+    """canonical_idを張ったエイリアスタグを1件作る。
+
+    update_tagのcanonical設定は対象タグが既存であることを要求するため、
+    エンティティに紐付かない純粋なエイリアス行はSQLで直接作る。
+    """
+    conn = get_connection()
+    try:
+        canonical_id = conn.execute(
+            "SELECT id FROM tags WHERE namespace = ? AND name = ?",
+            (canonical_namespace, canonical_name),
+        ).fetchone()["id"]
+        conn.execute(
+            "INSERT INTO tags (namespace, name, canonical_id) VALUES (?, ?, ?)",
+            (namespace, name, canonical_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 @pytest.fixture(autouse=True)
 def disable_embedding(monkeypatch):
     """embeddingサービスを無効化"""
@@ -260,6 +281,47 @@ class TestFiltering:
         result = analyze_tags(domain="nonexistent")
         assert "error" in result
         assert result["error"]["code"] == "NOT_FOUND"
+
+    def test_domain_filter_resolves_alias_to_canonical(self, temp_db):
+        """エイリアスのdomain名を渡してもcanonical側と同じ結果になる。
+
+        エイリアスタグ自身は紐付けを1件も持たないため、canonicalを解決せず
+        エイリアスのtag_idで絞り込むと、エラーにならないまま対象0件の結果が返る
+        （呼び出し側からは「そのdomainには何も無い」と区別できない）。
+        """
+        add_topic(title="T1", description="D", tags=["domain:test", "arch", "design"])
+        add_topic(title="T2", description="D", tags=["domain:other", "infra"])
+        _add_alias_tag("domain", "test-alias", "domain", "test")
+
+        via_alias = analyze_tags(domain="test-alias")
+        via_canonical = analyze_tags(domain="test")
+
+        assert "error" not in via_alias
+        assert via_alias["co_occurrences"] == via_canonical["co_occurrences"]
+
+        alias_tags = set()
+        for co in via_alias["co_occurrences"]:
+            alias_tags.add(co["tag_a"])
+            alias_tags.add(co["tag_b"])
+        assert "design" in alias_tags
+        assert "infra" not in alias_tags
+
+    def test_focus_tag_resolves_alias_to_canonical(self, temp_db):
+        """エイリアスのfocus_tagを渡してもcanonical側と同じペアに絞られる。
+
+        domainフィルタと同じく、canonicalを解決しないと該当ペア0件の結果が
+        静かに返る。
+        """
+        add_topic(title="T1", description="D", tags=["domain:test", "arch", "design"])
+        add_topic(title="T2", description="D", tags=["domain:test", "arch", "impl"])
+        _add_alias_tag("", "arch-alias", "", "arch")
+
+        via_alias = analyze_tags(focus_tag="arch-alias")
+        via_canonical = analyze_tags(focus_tag="arch")
+
+        assert "error" not in via_alias
+        assert via_alias["co_occurrences"] == via_canonical["co_occurrences"]
+        assert via_alias["co_occurrences"]
 
     def test_focus_tag(self, temp_db):
         """focus_tagでそのタグを含むペアのみに絞る"""
