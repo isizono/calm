@@ -5,7 +5,7 @@
 <!-- 再生成: uv run python scripts/dump_db_schema.py -->
 
 `migrations/` を通し番号順に全適用した結果として得られる、現在のテーブル/ビュー構造の機械的な写しである。
-カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0069）。
+カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0070）。
 
 「なぜこの形なのか」（設計判断の背景・変遷・既知の課題）は `docs/spec/db-schema.md` を参照。
 本ファイルは現在値のみを扱い、変遷の経緯（旧カラムの削除理由等）は記載しない。
@@ -716,6 +716,28 @@ CREATE TABLE injection_telemetry (
     similarity         REAL,
     diagnostics_json   TEXT,
     timestamp          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+```
+
+</details>
+
+### instance_meta
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| id | INTEGER | NO | — | PK |
+| instance_id | TEXT | NO | — | — |
+| created_at | TEXT | NO | `datetime('now')` | — |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE instance_meta (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    instance_id TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 )
 ```
 
