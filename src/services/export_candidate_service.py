@@ -396,6 +396,14 @@ def collect_export_candidates(
     if offset < 0:
         return {"error": {"code": "INVALID_PARAMETER", "message": "offset must be >= 0"}}
 
+    # tag_rootsの形式バリデーションはconn不要の純粋関数なので、他の入力チェックと揃えて
+    # DB接続・グラフ走査の前にfail fastする（roots側の重い走査を無駄に先行させない）。
+    parsed_tag_roots: list[tuple[str, str]] = []
+    if tag_roots:
+        parsed_tag_roots = validate_and_parse_tags(tag_roots)
+        if isinstance(parsed_tag_roots, dict):
+            return parsed_tag_roots
+
     conn = get_connection(load_vec=False)
     try:
         depth_by_key: dict[tuple[str, int], int] = {}
@@ -411,10 +419,7 @@ def collect_export_candidates(
         tag_root_ids: list[int] = []
         seed_keys: set[tuple[str, int]] = set()
         if tag_roots:
-            parsed = validate_and_parse_tags(tag_roots)
-            if isinstance(parsed, dict):
-                return parsed
-            tag_root_ids = resolve_tag_ids(conn, parsed)
+            tag_root_ids = resolve_tag_ids(conn, parsed_tag_roots)
             seed_keys = _collect_tag_seed_keys_with_conn(conn, tag_root_ids)
             for key in seed_keys:
                 depth_by_key[key] = 0

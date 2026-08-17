@@ -187,7 +187,7 @@ class TestClosureWarnings:
         warnings = [w for w in result["closure_warnings"] if w["kind"] == "supersede_target_outside"]
         assert len(warnings) == 1
         assert warnings[0]["target"] == {"type": "decision", "id_raw": old_id}
-        assert warnings[0]["from_title"]
+        assert warnings[0]["from_title"] == "New decision text"
 
     def test_no_supersede_warning_when_target_in_selection(self, temp_db):
         """supersede先が選択集合内ならclosure_warningsは出ない"""
@@ -269,9 +269,9 @@ class TestTagRoots:
     def test_co_tags_aggregates_domain_overlap(self, temp_db):
         """co_tagsはtag_roots指定時にシード集合上のdomainタグ共起を集計する"""
         seed_tag = "domain:seed-tag-three"
-        mat_one = _material("Mat One", tags=[seed_tag, "domain:co-occurring"])
-        mat_two = _material("Mat Two", tags=[seed_tag, "domain:co-occurring"])
-        mat_three = _material("Mat Three", tags=[seed_tag])
+        _material("Mat One", tags=[seed_tag, "domain:co-occurring"])
+        _material("Mat Two", tags=[seed_tag, "domain:co-occurring"])
+        _material("Mat Three", tags=[seed_tag])
 
         result = collect_export_candidates(tag_roots=[seed_tag])
 
@@ -283,8 +283,6 @@ class TestTagRoots:
         assert entry["overlap"] == 2
         assert entry["share"] == round(2 / 3, 4)
         assert seed_tag not in co_tag_names
-
-        assert mat_one and mat_two and mat_three  # 生成物を使用したことの明示（lint対策）
 
     def test_co_tags_absent_when_tag_roots_not_given(self, temp_db):
         """tag_roots未指定時はco_tagsキー自体が付かない"""
@@ -361,3 +359,13 @@ class TestValidation:
 
         bad_offset = collect_export_candidates(roots=[{"type": "topic", "id": t1}], offset=-1)
         assert bad_offset["error"]["code"] == "INVALID_PARAMETER"
+
+    def test_invalid_tag_roots_rejected_before_graph_traversal(self, temp_db):
+        """tag_rootsの形式エラーは、roots側の重いグラフ走査より前にfail fastする"""
+        t1 = _topic("Topic")
+        result = collect_export_candidates(
+            roots=[{"type": "topic", "id": t1}],
+            max_depth=10,
+            tag_roots=["bogus-namespace:value"],
+        )
+        assert result["error"]["code"] == "INVALID_TAG_NAMESPACE"
