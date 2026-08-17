@@ -906,6 +906,11 @@ def _apply_new_entity_retract_state_with_conn(
     """新規作成エンティティについて、バンドルがretracted_atを持つ(=明示選択された
     retracted記録)場合にretracted_atをimport時刻でセットし、search_indexから除去する
     (retract_serviceのretract相当の後始末を、生成直後のINSERTに対して行う)。
+
+    呼び出しはフェーズE(本文citation書き換えのUPDATE)が完了した後に限る。
+    search_index除去より前に本文UPDATEが走ると、UPDATE系FTS同期トリガーが
+    (削除済みsearch_indexへの参照により)rowid=NULLでsearch_index_ftsへ書き込み、
+    対応するsearch_index行を持たない孤立FTS行を残してしまうため。
     """
     if etype not in TYPES_WITH_RETRACT or not fm.get("retracted_at"):
         return
@@ -1008,6 +1013,9 @@ def _apply_bundle_with_conn(
     action_by_key: dict[str, str] = {}
     created_counts: dict[str, int] = defaultdict(int)
     updated_counts: dict[str, int] = defaultdict(int)
+    # 新規作成でretracted_atを持つエンティティは、フェーズEの本文UPDATEが完了した後に
+    # retract状態を適用する(順序の理由は_apply_new_entity_retract_state_with_conn参照)。
+    pending_retract: list[tuple[str, int, dict]] = []
 
     for phase_types in _APPLY_PHASES:
         keys_in_phase = sorted(
@@ -1025,7 +1033,8 @@ def _apply_bundle_with_conn(
 
             if action == "create":
                 local_id = _create_entity_row_with_conn(conn, etype, fm, fields, title_raw)
-                _apply_new_entity_retract_state_with_conn(conn, etype, local_id, fm, now)
+                if etype in TYPES_WITH_RETRACT and fm.get("retracted_at"):
+                    pending_retract.append((etype, local_id, fm))
                 created_counts[etype] += 1
             else:
                 local_id = cls["local_entity_id"]
@@ -1140,6 +1149,11 @@ def _apply_bundle_with_conn(
             conn, entity_type=etype, entity_id=local_id, event="created" if action_by_key[key] == "create" else "updated"
         )
         final_fields_by_key[key] = owner_fields
+
+    # フェーズEの本文UPDATEが全エンティティ分完了した後にretract状態を適用する
+    # (順序の理由は_apply_new_entity_retract_state_with_connのdocstring参照)。
+    for etype, local_id, fm in pending_retract:
+        _apply_new_entity_retract_state_with_conn(conn, etype, local_id, fm, now)
 
     conn.commit()
 

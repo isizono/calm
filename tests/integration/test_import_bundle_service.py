@@ -669,7 +669,8 @@ class TestApplyEntityCreation:
         assert "error" not in result
         assert result["created"]["decision"] == 1
         assert result["created"]["topic"] == 1
-        assert result["created_edges"] >= 1
+        # このシナリオで張られるエッジはdecision→topicのbelongs_to 1本のみ
+        assert result["created_edges"] == 1
 
         conn = get_connection(load_vec=False)
         try:
@@ -756,7 +757,9 @@ class TestApplyReferenceResolution:
         result = import_bundle(bundle["path"], mode="apply")
         assert "error" not in result
         assert result["dropped_edges"] == 0
-        assert result["created_edges"] >= 1
+        # m1↔m2双方のfrontmatterにrelatedが載るため2回addRelationが走るが、
+        # 正規化された同一ペアへのINSERT OR IGNOREで実際に追加されるのは1本のみ
+        assert result["created_edges"] == 1
 
         conn = get_connection(load_vec=False)
         try:
@@ -990,3 +993,45 @@ class TestApplyEntityOverrides:
         finally:
             conn.close()
         assert row is None
+
+
+class TestApplyRetractedNewEntity:
+    def test_apply_creates_retracted_material_without_orphan_fts_row(self, dbs, mock_embedding_server):
+        """新規作成でretracted_atを持つエンティティをapplyしても、search_index_ftsに
+        search_index側の対応行を持たない孤立行が残らないことを確認する
+        (フェーズE本文UPDATE後にretract状態を適用する順序で防いでいる)。"""
+        db_a, db_b = dbs
+        _switch_db(db_a)
+        _set_instance("team-a")
+        m1 = _material(title="Retracted On Origin", content="will be retracted before export")
+        retract("material", [m1])
+        bundle = export_bundle(items=[{"type": "material", "ids": [m1]}])
+        assert bundle["counts"].get("material") == 1
+
+        _switch_db(db_b)
+        _set_instance("team-b")
+        result = import_bundle(bundle["path"], mode="apply")
+        assert "error" not in result
+        assert result["created"]["material"] == 1
+
+        conn = get_connection(load_vec=False)
+        try:
+            local_row = conn.execute(
+                "SELECT id, retracted_at FROM materials WHERE title = ?", ("Retracted On Origin",)
+            ).fetchone()
+            assert local_row["retracted_at"] is not None
+
+            search_index_row = conn.execute(
+                "SELECT id FROM search_index WHERE source_type = 'material' AND source_id = ?",
+                (local_row["id"],),
+            ).fetchone()
+            assert search_index_row is None
+
+            orphan_fts_rowids = conn.execute(
+                "SELECT search_index_fts.rowid FROM search_index_fts "
+                "LEFT JOIN search_index ON search_index.id = search_index_fts.rowid "
+                "WHERE search_index.id IS NULL"
+            ).fetchall()
+        finally:
+            conn.close()
+        assert orphan_fts_rowids == []

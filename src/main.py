@@ -1684,7 +1684,9 @@ def import_bundle(
     解決不能な本文citationは「{title}」(未取り込みの外部記録)に置換、frontmatterの
     エッジは解決不能なら張らず件数のみ計上する。新規エンティティのcreated_atは
     import実行時刻を採用(originの値はimport_provenance.origin_created_atに保持)。
-    activityは明示選択のみが対象でstatusはバンドルの値のまま維持する。
+    activityは明示選択のみが対象。新規作成時はstatusをバンドルの値のまま採用するが、
+    既存を上書き更新するときはローカルのstatus/retracted_atを保持し変更しない。
+    タグ紐付けは追加のみで、送信元で外れたタグの自動削除はしない。
 
     Args:
         bundle_path: `export_bundle`が書き出したバンドルディレクトリのパス
@@ -1694,14 +1696,12 @@ def import_bundle(
             {"tag_renames": {incoming_tag: local_tag, ...},
              "on_upstream_change": {entity_type: "overwrite"|"skip", ...},
              "entity_overrides": {composite_key: "skip"|{"action": "skip"|"import"}, ...}}
-        skip_duplicate_check: Trueのとき重複疑い検知をスキップ(デフォルトFalse、
-            dry_runのみ関係)
+        skip_duplicate_check: Trueのとき重複疑い検知をスキップ(既定False、dry_run限定)
 
     Returns:
         dry_run成功時: {"format_version_ok", "bundle_id", "source_instance",
-            "summary": {type: {"new"/"unchanged"/"updatable"/"upstream_changed_skip"/
-                "self_origin": n}}, "upstream_changed", "tag_report", "duplicates_suspected",
-            "dangling_refs", "degraded", "load_errors"}
+            "summary": {type: {status: n}}, "upstream_changed", "tag_report",
+            "duplicates_suspected", "dangling_refs", "degraded", "load_errors"}
         apply成功時: {"format_version_ok", "bundle_id", "source_instance",
             "created": {type: n}, "updated": {type: n}, "skipped": {type: n},
             "skip_reasons": {status: n}, "created_edges", "dropped_edges",
