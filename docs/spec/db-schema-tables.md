@@ -5,7 +5,7 @@
 <!-- 再生成: uv run python scripts/dump_db_schema.py -->
 
 `migrations/` を通し番号順に全適用した結果として得られる、現在のテーブル/ビュー構造の機械的な写しである。
-カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0070）。
+カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0071）。
 
 「なぜこの形なのか」（設計判断の背景・変遷・既知の課題）は `docs/spec/db-schema.md` を参照。
 本ファイルは現在値のみを扱い、変遷の経緯（旧カラムの削除理由等）は記載しない。
@@ -676,6 +676,40 @@ CREATE TABLE "habits" (
     importance_score REAL NOT NULL DEFAULT 1.0 CHECK(importance_score IN (1, 2, 3)),
     last_recalled_at TIMESTAMP NULL,
     status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived'))
+)
+```
+
+</details>
+
+### import_provenance
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| entity_type | TEXT | NO | — | PK |
+| entity_id | INTEGER | NO | — | PK |
+| origin_instance | TEXT | NO | — | — |
+| origin_id | INTEGER | NO | — | — |
+| content_hash | TEXT | NO | — | — |
+| origin_created_at | TEXT | YES | — | — |
+| bundle_id | TEXT | NO | — | — |
+| imported_at | TEXT | NO | `datetime('now')` | — |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE import_provenance (
+    entity_type         TEXT NOT NULL CHECK (entity_type IN ('topic', 'activity', 'material', 'decision', 'log')),
+    entity_id           INTEGER NOT NULL,
+    origin_instance     TEXT NOT NULL,
+    origin_id           INTEGER NOT NULL,
+    content_hash        TEXT NOT NULL,
+    origin_created_at   TEXT,
+    bundle_id           TEXT NOT NULL,
+    imported_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (entity_type, entity_id),
+    UNIQUE (origin_instance, entity_type, origin_id)
 )
 ```
 
