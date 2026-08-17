@@ -22,7 +22,7 @@ last-synced-migration: 0048
 
 ## 1. ツール一覧
 
-全51ツール。カテゴリ別に一覧する。
+全53ツール。カテゴリ別に一覧する。
 
 ### 1.1 記録系（add系）
 
@@ -100,6 +100,8 @@ last-synced-migration: 0048
 | --- | --- |
 | `export_material` | 資材をmd形式のファイルとしてCALM外に出力する |
 | `collect_export_candidates` | 他インスタンスへのexport候補を洗い出す（read-only） |
+| `set_instance_identity` | 自インスタンスの識別子を設定する（バンドル複合キー発行の基盤） |
+| `export_bundle` | 確定した候補リストからバンドル（manifest.yaml + エンティティ別mdファイル）を書き出す |
 
 ### 1.10 シグナル系（signal_events）
 
@@ -427,6 +429,28 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 **返り値**: 成功時 `{candidates: [{type, id_raw, title, snippet, tags, depth, size_chars, parent_topic_title, retracted?, superseded?, status?}], closure_warnings: [{kind, from_title, target_title, target: {type, id_raw}}], total_count: int, truncated: bool}`。`retracted`はdecision/log/materialのみ、`superseded`はdecisionのみ、`status`はactivityのみ付く。`tag_roots`指定時のみ`co_tags: [{tag, overlap, share}]`が追加される。失敗時 `{error: {code: "VALIDATION_ERROR" | "INVALID_ENTITY_TYPE" | "INVALID_PARAMETER" | "DATABASE_ERROR", message}}`。
 **get_mapとの違い**: get_mapはnavigation用途でdecision/logを経由ノードとしてのみ扱いカタログに含めないが、本ツールはexport判断のため5型全部をカタログ本体に含める。走査自体は共有のrelation走査ロジックを使うが、ツールとしては独立している。
 **動作**: rootsからの走査結果とtag_rootsのシード結果（tag_rootsは深度0固定、グラフ拡張はしない）を合流し、型別の付加情報を付けて返す。`closure_warnings`は選択集合外を指すsupersede関係・本文中citation（`{{cite:X#NNN}}`）を検出する（供に情報提供のみで、自動的な集合拡張は行わない）。read-only（DBへの書き込みは一切行わない）。
+
+### 2.20c set_instance_identity
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| instance_id | string | yes | - | DNSラベル風（`^[a-z][a-z0-9-]{2,31}$`、英小文字始まり・英小文字数字ハイフンのみ・3〜32字） |
+| force | bool | no | false | trueで既存の設定を上書きする |
+
+**返り値**: 成功時 `{instance_id, created_at}`。失敗時 `{error: {code: "VALIDATION_ERROR" | "ALREADY_EXISTS" | "DATABASE_ERROR", message}}`。
+**動作**: バンドルの複合キー（`<instance_id>:<型コード><ローカルID>`、例: `team-a:M12`）発行の基盤となるインスタンス識別子を設定する。一度設定したら`force`無しでは変更不可（複合キーは出生インスタンスの識別子を基準に発行され続けるため、変更は既発行キーの意味を壊す破壊的操作）。完全自由命名で衝突保険のランダムsuffix自動付与はしない。
+
+### 2.20d export_bundle
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| items | list[{type, ids}] | yes | - | 確定選択（`collect_export_candidates`の出力から絞り込んだ最終リスト） |
+| bundle_name | string | no | null | バンドルディレクトリ名。省略時は`<instance_id>-<日時>-<起点slug>` |
+| include_supersede_targets | bool | no | false | trueで選択decisionのsupersede先実体も同梱する |
+| selection | dict | no | null | `collect_export_candidates`への入力をverbatimで記録する任意dict。manifest.yamlにそのまま書き込まれる |
+
+**返り値**: 成功時 `{path, bundle_id, counts: {type: n}, auto_included: [{type, id_raw, reason}], unresolved_refs: [{key, type, title, domain_tags, referenced_by}], masked_literals: int, warnings: [{kind, from_title, target: {type, id_raw}}]}`。失敗時 `{error: {code: "VALIDATION_ERROR" | "INSTANCE_ID_NOT_SET" | "NOT_FOUND" | "IO_ERROR" | "DATABASE_ERROR", message}}`。
+**動作**: `~/cc-memory-export/bundles/<bundle-name>/`配下（パスガードで配下外を拒否）にmanifest.yaml + エンティティ別mdファイルを書き出す。選択されたdecision/logの親topicは機械規則で自動同梱される（activityには適用しない）。本文中の内部参照は3段パイプライン（生リテラル正規化 → 複合キー化 → 残存リテラルの最終スイープ）で変換し、選択集合外を指す参照は`unresolved_refs`に集約される。read-only（DBへの書き込みは一切行わない。ファイル書き込みのみ）。
 
 ### 2.21 add_habit / get_habits / update_habit
 

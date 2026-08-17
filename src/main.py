@@ -27,6 +27,8 @@ from src.services import (
     ask_service,
     reask_detection_service,
     export_candidate_service,
+    export_bundle_service,
+    instance_service,
 )
 from src.services.checkin_service import check_in as _check_in
 from src.services import session_registry_service
@@ -1586,6 +1588,80 @@ def collect_export_candidates(
 
 
 @mcp.tool()
+def set_instance_identity(instance_id: str, force: bool = False) -> dict:
+    """Choose: 他インスタンスへexportバンドルを渡す前に、自インスタンスの識別子を初めて
+    設定する(または変更する)とき。export_bundleはこの識別子が未設定だとエラーを返す。
+
+    インスタンス識別子(instance_id)を設定する。バンドルの複合キー
+    (`<instance_id>:<型コード><ローカルID>`、例: team-a:M12)発行の基盤となる。
+
+    一度設定したら原則変更不可(force無しでは拒否)。複合キーは出生インスタンスの
+    識別子を基準に発行され続けるため、変更は既発行の複合キーの意味を壊す破壊的操作。
+    交換相手は互いを知っている前提のため、完全自由命名(ランダムsuffix自動付与なし)。
+
+    Args:
+        instance_id: 設定する識別子。DNSラベル風(`^[a-z][a-z0-9-]{2,31}$`、
+            英小文字始まり・英小文字数字ハイフンのみ・3〜32字)
+        force: Trueのとき既存の設定を上書きする(デフォルトFalse)
+
+    Returns:
+        成功時: {"instance_id": str, "created_at": str}
+        失敗時: {"error": {"code": "VALIDATION_ERROR" | "ALREADY_EXISTS" | "DATABASE_ERROR", "message": str}}
+    """
+    return instance_service.set_instance_identity(instance_id, force=force)
+
+
+@mcp.tool()
+def export_bundle(
+    items: list[dict],
+    bundle_name: Optional[str] = None,
+    include_supersede_targets: bool = False,
+    selection: Optional[dict] = None,
+) -> dict:
+    """Choose: collect_export_candidatesで確定した候補リストから、他インスタンスへ渡す
+    バンドル(manifest.yaml + エンティティ別mdファイル)を実際に書き出すとき。候補の
+    洗い出し自体はcollect_export_candidates、単発資材の書き出しはexport_materialを使う。
+
+    確定選択(items)からバンドルを書き出す。instance_idが未設定だとエラーを返す
+    (set_instance_identityで先に設定する)。
+
+    親topicの自動同梱: 選択されたdecision/logのbelongs_to先topicは必ずバンドルに
+    含まれる(機械規則、ユーザー裁定を経ない)。activityには適用しない(activityは
+    常に明示選択のみが対象)。
+
+    supersede先の扱い: 選択decisionのsupersede先(kind='replaces')が選択集合外の場合、
+    既定(include_supersede_targets=False)ではエッジ情報(複合キー)のみを運び実体は
+    同梱しない。同梱したい場合はTrueを指定する。
+
+    本文内参照は3段パイプラインで変換する: (1) 生の`X#NNN`参照を`{{cite:X#NNN}}`へ
+    正規化(DB不在なら`[deleted X#NNN]`) (2) 参照先を複合キー形式へ書き換え(選択集合外
+    でも書き換えは行う。DB不在なら`[deleted X#NNN]`) (3) `#`省略形式等の残存生リテラルを
+    マスク。マスク件数はmasked_literalsで返る。
+
+    出力先は`~/cc-memory-export/bundles/<bundle-name>/`配下に限定される(パスガード)。
+
+    Args:
+        items: 確定選択。[{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...]
+        bundle_name: バンドルディレクトリ名(省略時は`<instance_id>-<日時>-<起点slug>`)
+        include_supersede_targets: Trueのとき選択decisionのsupersede先実体も同梱する(デフォルトFalse)
+        selection: collect_export_candidatesへの入力をverbatimで記録する任意dict
+            (manifest.yamlのselectionフィールドにそのまま書き込まれる。再exportの追跡用)
+
+    Returns:
+        成功時: {"path": str, "bundle_id": str, "counts": {type: n}, "auto_included": [...],
+            "unresolved_refs": [...], "masked_literals": int, "warnings": [...]}
+        失敗時: {"error": {"code": "VALIDATION_ERROR" | "INSTANCE_ID_NOT_SET" | "NOT_FOUND" |
+            "IO_ERROR" | "DATABASE_ERROR", "message": str}}
+    """
+    return export_bundle_service.export_bundle(
+        items,
+        bundle_name=bundle_name,
+        include_supersede_targets=include_supersede_targets,
+        selection=selection,
+    )
+
+
+@mcp.tool()
 def add_habit(content: str, importance_score: int = 3, status: str = "active") -> dict:
     """エージェントの振る舞いを登録する。新規habitはtrigger_mode='intelligently'
     （マニフェスト表示のみ、詳細はget_habits(habit_id=...)でon-demand取得）で作成され、
@@ -1783,9 +1859,13 @@ def get_config() -> dict:
     budget_defaultsはbudget_serviceが把握する予算関連の既定値一覧（同じくsrc.configから読む）。
     recency_decay_rate/precedent_budget_chars（トップレベル）はbudget_defaultsと同じ値を指す
     後方互換フィールドで、定義元はbudget_service.BUDGET_DEFAULTS（重複ハードコードを避ける）。
+
+    instance_idはexport/importバンドルの複合キー発行に使うインスタンス識別子。未設定なら
+    null（skillがこれを見てset_instance_identityを促す判断材料にする）。
     """
     from src import config
     return {
+        "instance_id": instance_service.get_instance_id(),
         "heartbeat_timeout": config.HEARTBEAT_TIMEOUT_MINUTES,
         "in_progress_limit": config.IN_PROGRESS_LIMIT,
         "pending_limit": config.PENDING_LIMIT,
