@@ -52,7 +52,7 @@ from src.services.relation_service import (
     _fetch_depends_on_with_conn,
     _fetch_related_ids_with_conn,
 )
-from src.services.tag_service import get_entity_tags_batch
+from src.services.tag_service import get_entity_tags_batch, parse_tag
 
 logger = logging.getLogger(__name__)
 
@@ -339,6 +339,31 @@ def _fetch_supersedes_with_conn(conn: sqlite3.Connection, decision_ids: list[int
     result: dict[int, list[int]] = defaultdict(list)
     for row in rows:
         result[row["source_id"]].append(row["target_id"])
+    return result
+
+
+def _fetch_tag_definitions_with_conn(conn: sqlite3.Connection, tag_strings: set[str]) -> list[dict]:
+    """バンドルに含まれる全エンティティが使用するタグのうち、notesを持つものを
+    `{tag, notes}`の一覧として返す(タグ文字列昇順)。
+
+    frontmatterのtagsフィールドはタグ文字列のみでnotes本文を運べないため、
+    import側のタグレビュー(新規作成タグは全文、既存合流タグは差分を展開する)が
+    参照する情報源としてmanifest.yaml側にこのセクションを設ける。
+    """
+    if not tag_strings:
+        return []
+    parsed = [parse_tag(t) for t in tag_strings]
+    placeholders = " OR ".join("(namespace = ? AND name = ?)" for _ in parsed)
+    params = [v for pair in parsed for v in pair]
+    rows = conn.execute(
+        f"SELECT namespace, name, notes FROM tags WHERE ({placeholders}) AND notes IS NOT NULL",
+        params,
+    ).fetchall()
+    result = [
+        {"tag": f"{row['namespace']}:{row['name']}" if row["namespace"] else row["name"], "notes": row["notes"]}
+        for row in rows
+    ]
+    result.sort(key=lambda x: x["tag"])
     return result
 
 
@@ -803,6 +828,11 @@ def export_bundle(
         except OSError as e:
             return {"error": {"code": "IO_ERROR", "message": str(e)}}
 
+        all_tag_strings: set[str] = set()
+        for tags in tags_by_key.values():
+            all_tag_strings.update(tags)
+        tag_definitions = _fetch_tag_definitions_with_conn(conn, all_tag_strings)
+
         bundle_id = f"{instance_id}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
         exported_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         manifest = {
@@ -813,6 +843,7 @@ def export_bundle(
             "selection": selection if selection is not None else {"items": items},
             "entities": entities_manifest,
             "unresolved_refs": unresolved_refs,
+            "tag_definitions": tag_definitions,
         }
         manifest_path = os.path.join(bundle_root, "manifest.yaml")
         try:

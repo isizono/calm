@@ -476,3 +476,55 @@ class TestBundleNameCollision:
         assert r1["path"] != r2["path"]
         assert os.path.isfile(os.path.join(r1["path"], f"materials/M-{m1}-First.md"))
         assert os.path.isfile(os.path.join(r2["path"], f"materials/M-{m2}-Second.md"))
+
+
+class TestTagDefinitions:
+    """manifest.yamlのtag_definitionsセクション(notesを持つタグのみ収録)を検証する。
+
+    importのタグレビュー(新規作成タグは全文、既存合流タグは差分を展開する)が
+    notes本文を参照できるように、frontmatterのtagsフィールド(文字列のみ)とは別に
+    manifest側へ書き出す経路。
+    """
+
+    def test_tag_with_notes_is_included_with_full_text(self, temp_db):
+        from src.services.tag_service import update_tag
+
+        _set_instance("team-a")
+        m1 = _material(tags=["domain:test-bundle"])
+        update_tag("domain:test-bundle", notes="運用上の注意事項テキスト")
+        result = export_bundle(items=[{"type": "material", "ids": [m1]}])
+        manifest = _load_manifest(result["path"])
+        defs = {d["tag"]: d["notes"] for d in manifest["tag_definitions"]}
+        assert defs["domain:test-bundle"] == "運用上の注意事項テキスト"
+
+    def test_tag_without_notes_is_excluded(self, temp_db):
+        _set_instance("team-a")
+        m1 = _material(tags=["domain:test-bundle"])
+        result = export_bundle(items=[{"type": "material", "ids": [m1]}])
+        manifest = _load_manifest(result["path"])
+        assert manifest["tag_definitions"] == []
+
+    def test_tag_on_unselected_entity_is_excluded(self, temp_db):
+        """選択集合に含まれないエンティティだけが使うタグは、notesがあってもtag_definitionsに出ない。"""
+        from src.services.tag_service import update_tag
+
+        _set_instance("team-a")
+        # domain:test-bundle を使う material は export 対象に含めない
+        _material(tags=["domain:test-bundle"])
+        update_tag("domain:test-bundle", notes="unrelated-notes")
+        m2 = _material(tags=["hooks"])
+        result = export_bundle(items=[{"type": "material", "ids": [m2]}])
+        manifest = _load_manifest(result["path"])
+        assert manifest["tag_definitions"] == []
+
+    def test_shared_tag_appears_once_across_multiple_entities(self, temp_db):
+        from src.services.tag_service import update_tag
+
+        _set_instance("team-a")
+        m1 = _material(title="M1", tags=["domain:test-bundle"])
+        m2 = _material(title="M2", tags=["domain:test-bundle"])
+        update_tag("domain:test-bundle", notes="shared-notes")
+        result = export_bundle(items=[{"type": "material", "ids": [m1, m2]}])
+        manifest = _load_manifest(result["path"])
+        tags = [d["tag"] for d in manifest["tag_definitions"]]
+        assert tags.count("domain:test-bundle") == 1
