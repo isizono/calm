@@ -1437,7 +1437,7 @@ class TestCheckInSessionRegistry:
         assert "activity" in result
         assert "summary" in result
 
-    def test_registry_exception_does_not_fail_check_in(self, activity_id, monkeypatch):
+    def test_registry_exception_does_not_fail_check_in(self, activity_id, monkeypatch, tmp_path):
         """レジストリ更新側が例外を投げても、check_in本体は成功応答を返す"""
         self._stub_world(
             monkeypatch,
@@ -1445,10 +1445,15 @@ class TestCheckInSessionRegistry:
         )
         monkeypatch.setattr(relay_identity_module, "get_relay_identity", lambda: "bridge-1")
 
-        def _boom(**kwargs):
-            raise RuntimeError("boom")
-
-        monkeypatch.setattr(session_registry_service, "register_checkin", _boom)
+        # レジストリファイルの親をファイルで塞ぎ、flock/書き込み時にOSErrorを
+        # 自然発生させる（内部関数の直接mockを避け、外部境界であるファイルI/O
+        # 側から例外を誘発する）
+        blocked_parent = tmp_path / "blocked"
+        blocked_parent.write_text("not a directory")
+        monkeypatch.setenv(
+            session_registry_service.REGISTRY_PATH_ENV,
+            str(blocked_parent / "session_aliases.json"),
+        )
 
         result = check_in(activity_id)
 
