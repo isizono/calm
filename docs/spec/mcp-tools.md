@@ -22,7 +22,7 @@ last-synced-migration: 0048
 
 ## 1. ツール一覧
 
-全53ツール。カテゴリ別に一覧する。
+全54ツール。カテゴリ別に一覧する。
 
 ### 1.1 記録系（add系）
 
@@ -102,6 +102,7 @@ last-synced-migration: 0048
 | `collect_export_candidates` | 他インスタンスへのexport候補を洗い出す（read-only） |
 | `set_instance_identity` | 自インスタンスの識別子を設定する（バンドル複合キー発行の基盤） |
 | `export_bundle` | 確定した候補リストからバンドル（manifest.yaml + エンティティ別mdファイル）を書き出す |
+| `import_bundle` | バンドルを読み衝突検知レポートを返す（mode="dry_run"のみ。DB書き込みなし） |
 
 ### 1.10 シグナル系（signal_events）
 
@@ -451,6 +452,18 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 
 **返り値**: 成功時 `{path, bundle_id, counts: {type: n}, auto_included: [{type, id_raw, reason}], unresolved_refs: [{key, type, title, domain_tags, referenced_by}], masked_literals: int, warnings: [{kind, from_title, target: {type, id_raw}}]}`。失敗時 `{error: {code: "VALIDATION_ERROR" | "INSTANCE_ID_NOT_SET" | "NOT_FOUND" | "IO_ERROR" | "DATABASE_ERROR", message}}`。
 **動作**: `~/cc-memory-export/bundles/<bundle-name>/`配下（パスガードで配下外を拒否）にmanifest.yaml + エンティティ別mdファイルを書き出す。選択されたdecision/logの親topicは機械規則で自動同梱される（activityには適用しない）。本文中の内部参照は3段パイプライン（生リテラル正規化 → 複合キー化 → 残存リテラルの最終スイープ）で変換し、選択集合外を指す参照は`unresolved_refs`に集約される。read-only（DBへの書き込みは一切行わない。ファイル書き込みのみ）。
+
+### 2.20e import_bundle
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| bundle_path | string | yes | - | `export_bundle`が書き出したバンドルディレクトリのパス（`manifest.yaml`を直下に持つ）。パスガードでDEFAULT_EXPORT_DIR配下外を拒否 |
+| mode | string | no | "dry_run" | "dry_run"のみサポート。"apply"は`NOT_IMPLEMENTED`を返す |
+| resolutions | dict | no | null | mode="apply"向けの裁定結果。dry_runでは無視される |
+| skip_duplicate_check | bool | no | false | trueでネイティブ重複疑い検知（embedding類似検索）をスキップする |
+
+**返り値**: 成功時 `{format_version_ok: bool, bundle_id, source_instance, summary: {type: {new, unchanged, updatable, upstream_changed_skip, self_origin}}, upstream_changed: [{key, type, title, local_entity_id}], tag_report: {merge, create, archived_hit, alias_hit}, duplicates_suspected: [{key, title, similar: [{type, id_raw, title, score}]}], dangling_refs: {count, sample}, degraded: bool, load_errors}`。失敗時 `{error: {code: "VALIDATION_ERROR" | "NOT_FOUND" | "INSTANCE_ID_NOT_SET" | "NOT_IMPLEMENTED" | "DATABASE_ERROR", message}}`。
+**動作**: バンドルを読み、DBへの書き込みを一切行わずに衝突検知レポートを返す。再import判定は`import_provenance`逆引き（origin一致+hash一致は`unchanged`、hash不一致はtopic/activity/materialなら`updatable`、decision/logなら既定skipの`upstream_changed_skip`）で行う。参照解決（belongs_to/related/supersedes/depends_on・本文中の拡張cite）はバンドル内→provenance逆引き→自インスタンス出生→解決不能、の優先順で試み、解決不能分は`dangling_refs`に集計する。タグは4区分（merge/create/archived_hit/alias_hit）でレポートし、domainタグまたはnotesを持つエントリは`review_required=true`になる。重複疑い検知はstatus="new"のエンティティのみ対象で、embeddingサーバー未起動時は`degraded=true`になるがクラッシュしない。
 
 ### 2.21 add_habit / get_habits / update_habit
 
