@@ -1,21 +1,31 @@
-"""バンドル取り込み(dry_run)サービス
+"""バンドル取り込み(dry_run / apply)サービス
 
-export_bundleが書き出したバンドル(manifest.yaml + エンティティ別mdファイル)を読み、
-DBを一切変更せず衝突レポートを返す。実際の書き込み(mode="apply")は別途実装する。
+export_bundleが書き出したバンドル(manifest.yaml + エンティティ別mdファイル)を読み込む。
+mode="dry_run"はDBを一切変更せず衝突レポートを返す。mode="apply"はdry_runの結果と
+resolutionsを受けて実際にDBへ書き込む(全体を1トランザクションで実行し、部分成功を
+作らない)。
 
-衝突判定の骨格は3種類:
+衝突判定の骨格は3種類(dry_run/apply共通の分類ロジック):
   (a) 同一データの再import判定: import_provenance逆引き
       (origin_instance, entity_type, origin_id)でUNIQUE制約と同じキーに照合し、
       content_hashの一致/不一致でunchanged/updatable/upstream_changed_skipを分ける
-  (b) ネイティブ重複の疑い: 新規importされるエンティティ(status="new")について
-      embeddingベクトル類似検索を行い、閾値超えの類似ローカルエンティティを
+  (b) ネイティブ重複の疑い(dry_runのみ): 新規importされるエンティティ(status="new")
+      について embeddingベクトル類似検索を行い、閾値超えの類似ローカルエンティティを
       支援情報として返す(機械判定不能・裁定はユーザーに委ねる)
   (c) タグ名前空間の衝突: バンドルが使う全タグをローカルDBの状態
       (存在しない/既存/archived/エイリアス)で4区分する
 
 参照解決(belongs_to/related/supersedes/depends_on・本文中の拡張cite)は
-バンドル内→provenance逆引き→自インスタンス出生→解決不能、の優先順で判定する
-(dry_run段階では実際の書き換えは行わず、解決可否の集計のみ)。
+バンドル内→provenance逆引き→自インスタンス出生→解決不能、の優先順で判定する。
+dry_run段階では解決可否の集計のみ、apply段階では実際にエッジ作成・本文書き換えを行う。
+apply時、解決不能な本文中citationは`UNRESOLVED_REF_TEMPLATE`でタイトル置換し、
+解決不能なbelongs_to/related/supersedes/depends_onエッジは張らずに件数のみ計上する。
+
+apply(mode="apply")の適用順序: topic→activity/material→decision/log→
+relations/supersedes/depends_on→本文citation書き換え。created_atはimport実行時刻を
+採用する(originのcreated_atはimport_provenance.origin_created_atに保持し、DBの
+created_atカラムには明示指定しない=DBのdefaultに任せる)。FTS同期はDBトリガー任せ、
+embedding/vec同期はcommit後にベストエフォートで明示呼び出しする。
 """
 import difflib
 import logging
@@ -23,24 +33,52 @@ import os
 import re
 import sqlite3
 from collections import defaultdict
+from datetime import datetime, timezone
 
 import yaml
 from sqlite_vec import serialize_float32
 
 from src.db import get_connection, row_to_dict
 from src.services import material_service
+from src.services.activity_service import REAL_STATUSES
 from src.services.citations_pure import (
+    OWNER_TEXT_FIELDS,
     TYPE_CODE_TO_NAME,
+    TYPE_NAME_TO_CODE,
     TYPE_TO_TABLE,
     TYPE_TO_TITLE_EXPR,
     TYPES_WITH_RETRACT,
 )
+from src.services.citations_service import upsert_citations_for_owner_with_conn
+from src.services.embedding_service import (
+    build_embedding_text,
+    generate_and_store_embedding,
+    insert_topic_embedding_with_conn,
+)
 from src.services.export_bundle_service import BUNDLE_FORMAT, _MAIN_FIELD
 from src.services.instance_service import get_instance_id_with_conn
 from src.services.material_service import _is_within_export_dir
-from src.services.tag_service import parse_tag
+from src.services.relation_service import (
+    _add_depends_on_with_conn,
+    _add_relation_with_conn,
+    _add_supersedes_with_conn,
+)
+from src.services.relay.entity_publish import publish_entity_event_with_conn
+from src.services.retract_service import _delete_search_index_entry
+from src.services.tag_service import (
+    ensure_tag_ids,
+    get_entity_tags,
+    link_tags,
+    parse_tag,
+    _set_tag_notes_by_id_with_conn,
+)
 
 logger = logging.getLogger(__name__)
+
+# 解決不能な本文中citationの置換テンプレート(apply専用)。{title}はexport時に
+# 採取済みのタイトル(バンドル内に実体があれば同梱frontmatterのtitle、選択集合外の
+# 参照ならmanifest.unresolved_refsのtitle)で埋める。
+UNRESOLVED_REF_TEMPLATE = "「{title}」(未取り込みの外部記録)"
 
 _JUNCTION = {
     "topic": ("topic_tags", "topic_id"),
@@ -585,6 +623,561 @@ def _check_duplicates_with_conn(
     return duplicates, degraded
 
 
+# --- apply: 参照解決 ---
+
+
+def _resolve_local_id(
+    key: str,
+    created_local_id: dict[str, tuple[str, int]],
+    provenance_by_origin: dict[tuple[str, str, int], dict],
+    self_instance_id: str,
+) -> tuple[str, int] | None:
+    """参照キー1件をローカル(type, id)へ解決する(バンドル内→provenance逆引き→
+    自インスタンス出生→解決不能の優先順、_resolve_ref_statusのapply版)。
+
+    `created_local_id`は今回のapply実行でcreate/updateされたキーのみを持つ
+    (skipされたキーは含まれないため、他の経路で解決できなければ解決不能になる)。
+    """
+    if key in created_local_id:
+        return created_local_id[key]
+    parsed = _parse_composite_key(key)
+    if parsed is None:
+        return None
+    origin_instance, etype, origin_id = parsed
+    prov = provenance_by_origin.get((origin_instance, etype, origin_id))
+    if prov is not None:
+        return (etype, prov["entity_id"])
+    if origin_instance == self_instance_id:
+        return (etype, origin_id)
+    return None
+
+
+def _build_title_lookup(parsed_entities: dict[str, dict], manifest: dict) -> dict[str, str]:
+    """解決不能citationのタイトル置換に使う{key: title}辞書を構築する。
+
+    バンドル内エンティティ(選択集合の内外を問わずファイルとしては存在する)は
+    自身のfrontmatter titleを使う。バンドル外の参照はmanifest.unresolved_refs
+    (export時点でタイトルを採取済み)から補う。どちらにも無ければキー自体を
+    フォールバックのタイトルとして使う。
+    """
+    lookup: dict[str, str] = {}
+    for key, parsed in parsed_entities.items():
+        title = parsed["fm"].get("title")
+        lookup[key] = title if title else key
+    for ref in manifest.get("unresolved_refs") or []:
+        if isinstance(ref, dict) and ref.get("key"):
+            lookup.setdefault(ref["key"], ref.get("title") or ref["key"])
+    return lookup
+
+
+def _rewrite_body_line(
+    line: str,
+    resolve,
+    title_by_key: dict[str, str],
+) -> tuple[str, int]:
+    """1行内の`{{cite:<composite_key>}}`をローカルcite形式または解決不能タイトル
+    置換へ書き換える(インラインバッククォート区間はスキップ)。"""
+    out: list[str] = []
+    i = 0
+    n = len(line)
+    count = 0
+    while i < n:
+        ch = line[i]
+        if ch == "`":
+            close = line.find("`", i + 1)
+            if close == -1:
+                out.append(line[i:])
+                i = n
+                continue
+            out.append(line[i : close + 1])
+            i = close + 1
+            continue
+        m = _COMPOSITE_CITE_PATTERN.match(line, i)
+        if m:
+            key = f"{m.group(1)}:{m.group(2)}{m.group(3)}"
+            local = resolve(key)
+            if local is not None:
+                etype, local_id = local
+                out.append("{{cite:" + f"{TYPE_NAME_TO_CODE[etype]}{local_id}" + "}}")
+            else:
+                title = title_by_key.get(key, key)
+                out.append(UNRESOLVED_REF_TEMPLATE.format(title=title))
+                count += 1
+            i = m.end()
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out), count
+
+
+def _rewrite_body_text(text: str, resolve, title_by_key: dict[str, str]) -> tuple[str, int]:
+    """本文(またはtitle)中の拡張cite参照を書き換える(フェンスコードブロックは対象外)。
+
+    Returns:
+        (書き換え後テキスト, 解決不能で置換した件数)
+    """
+    if not text:
+        return text, 0
+    out_lines: list[str] = []
+    in_fence = False
+    total = 0
+    for raw_line in text.split("\n"):
+        stripped = raw_line.lstrip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            out_lines.append(raw_line)
+            continue
+        if in_fence:
+            out_lines.append(raw_line)
+            continue
+        new_line, count = _rewrite_body_line(raw_line, resolve, title_by_key)
+        total += count
+        out_lines.append(new_line)
+    return "\n".join(out_lines), total
+
+
+# --- apply: タグ解決・notesマージ ---
+
+
+def _resolve_and_apply_tags_with_conn(
+    conn: sqlite3.Connection,
+    all_tag_strings: set[str],
+    tag_notes_incoming: dict[str, str],
+    tag_renames: dict[str, str],
+) -> dict[str, int]:
+    """バンドルが使う全タグを解決し、新規作成タグにはincoming notesを設定、
+    プレーンな既存タグ(archived/aliasを除く)には差分行のみ追記する
+    (dry_runのtag_report新規作成/既存合流カテゴリと同じ扱いをapply時に実行する)。
+
+    tag_renamesはresolutions.tag_renamesの{incoming_tag: local_tag}マップ。
+    アーカイブ済み・エイリアス済みタグへはnotesを書き込まない(dry_runのレポートでも
+    notes差分の対象外のため、レビューされていない書き込みをしないようにする)。
+
+    Returns:
+        {raw_tag_string: local_tag_id}(rawはバンドルのfrontmatterが使う変換前の文字列)
+    """
+    result: dict[str, int] = {}
+    for raw in sorted(all_tag_strings):
+        effective = tag_renames.get(raw, raw)
+        ns, name = parse_tag(effective)
+        row = conn.execute(
+            "SELECT id, canonical_id, notes, archived_at FROM tags WHERE namespace = ? AND name = ?",
+            (ns, name),
+        ).fetchone()
+        incoming_notes = tag_notes_incoming.get(raw)
+
+        if row is None:
+            tag_id = ensure_tag_ids(conn, [(ns, name)])[0]
+            if incoming_notes:
+                _set_tag_notes_by_id_with_conn(conn, tag_id, incoming_notes)
+            result[raw] = tag_id
+            continue
+
+        if row["canonical_id"] is None and row["archived_at"] is None and incoming_notes:
+            local_notes = row["notes"] or ""
+            diff = _notes_diff(local_notes, incoming_notes)
+            if diff:
+                merged = f"{local_notes}\n\n{diff}" if local_notes else diff
+                _set_tag_notes_by_id_with_conn(conn, row["id"], merged)
+
+        result[raw] = row["canonical_id"] if row["canonical_id"] is not None else row["id"]
+    return result
+
+
+# --- apply: エンティティ行のcreate/update ---
+
+
+def _determine_action(
+    key: str,
+    cls: dict,
+    on_upstream_change: dict[str, str],
+    entity_overrides: dict,
+) -> str:
+    """分類ステータス+resolutionsから、apply時にこのキーへ行う操作を決める。
+
+    Returns: "create" | "update" | "skip"
+    """
+    override = entity_overrides.get(key)
+    if isinstance(override, str):
+        override_action = override
+    elif isinstance(override, dict):
+        override_action = override.get("action")
+    else:
+        override_action = None
+    if override_action == "skip":
+        return "skip"
+
+    status = cls["status"]
+    if status == "new":
+        return "create"
+    if status == "updatable":
+        return "update"
+    if status == "upstream_changed_skip":
+        etype = cls.get("type")
+        if override_action == "import" or on_upstream_change.get(etype) == "overwrite":
+            return "update"
+        return "skip"
+    # unchanged / self_origin / invalid_key はいずれもローカルへの書き込みが不要
+    return "skip"
+
+
+def _create_entity_row_with_conn(
+    conn: sqlite3.Connection, etype: str, fm: dict, fields: dict[str, str], title_raw: str
+) -> int:
+    """新規エンティティ行をINSERTする。created_at/updated_atはDBのdefaultに任せ、
+    originのタイムスタンプは明示指定しない(import実行時刻を採用する既決に従う)。
+    """
+    if etype == "topic":
+        cur = conn.execute(
+            "INSERT INTO discussion_topics (title, description) VALUES (?, ?)",
+            (title_raw, fields.get("description", "")),
+        )
+    elif etype == "activity":
+        status = fm.get("status")
+        if status not in REAL_STATUSES:
+            status = "pending"
+        cur = conn.execute(
+            "INSERT INTO activities (title, description, status) VALUES (?, ?, ?)",
+            (title_raw, fields.get("description", ""), status),
+        )
+    elif etype == "material":
+        cur = conn.execute(
+            "INSERT INTO materials (title, content, source, updated_at) "
+            "VALUES (?, ?, ?, strftime('%Y-%m-%d %H:%M:%S', 'now'))",
+            (title_raw, fields.get("content", ""), fm.get("source") or "unknown"),
+        )
+    elif etype == "decision":
+        cur = conn.execute(
+            "INSERT INTO decisions (decision, reason, title) VALUES (?, ?, ?)",
+            (fields.get("decision", ""), fields.get("reason", ""), fm.get("title")),
+        )
+    elif etype == "log":
+        cur = conn.execute(
+            "INSERT INTO discussion_logs (content, title) VALUES (?, ?)",
+            (fields.get("content", ""), fm.get("title") or ""),
+        )
+    else:
+        raise ValueError(f"unsupported entity type: {etype}")
+    return cur.lastrowid
+
+
+def _update_entity_row_with_conn(
+    conn: sqlite3.Connection, etype: str, local_id: int, fm: dict, fields: dict[str, str], title_raw: str
+) -> None:
+    """既存エンティティ行を上書き更新する(updatable/upstream_changed_skip明示上書き)。
+
+    retracted_atとactivity.statusはローカルの運用状態として扱い、ここでは触らない。
+    ローカルでretract/un-retractやstatus遷移が別途行われている場合に、再importが
+    それを無警告で巻き戻すのを避けるため。
+    """
+    if etype == "topic":
+        conn.execute(
+            "UPDATE discussion_topics SET title = ?, description = ? WHERE id = ?",
+            (title_raw, fields.get("description", ""), local_id),
+        )
+    elif etype == "activity":
+        conn.execute(
+            "UPDATE activities SET title = ?, description = ? WHERE id = ?",
+            (title_raw, fields.get("description", ""), local_id),
+        )
+    elif etype == "material":
+        conn.execute(
+            "UPDATE materials SET title = ?, content = ?, source = ?, "
+            "updated_at = strftime('%Y-%m-%d %H:%M:%S', 'now') WHERE id = ?",
+            (title_raw, fields.get("content", ""), fm.get("source") or "unknown", local_id),
+        )
+    elif etype == "decision":
+        conn.execute(
+            "UPDATE decisions SET decision = ?, reason = ?, title = ? WHERE id = ?",
+            (fields.get("decision", ""), fields.get("reason", ""), fm.get("title"), local_id),
+        )
+    elif etype == "log":
+        conn.execute(
+            "UPDATE discussion_logs SET content = ?, title = ? WHERE id = ?",
+            (fields.get("content", ""), fm.get("title") or "", local_id),
+        )
+    else:
+        raise ValueError(f"unsupported entity type: {etype}")
+
+
+def _apply_new_entity_retract_state_with_conn(
+    conn: sqlite3.Connection, etype: str, local_id: int, fm: dict, now: str
+) -> None:
+    """新規作成エンティティについて、バンドルがretracted_atを持つ(=明示選択された
+    retracted記録)場合にretracted_atをimport時刻でセットし、search_indexから除去する
+    (retract_serviceのretract相当の後始末を、生成直後のINSERTに対して行う)。
+    """
+    if etype not in TYPES_WITH_RETRACT or not fm.get("retracted_at"):
+        return
+    table = TYPE_TO_TABLE[etype]
+    conn.execute(f"UPDATE {table} SET retracted_at = ? WHERE id = ?", (now, local_id))
+    _delete_search_index_entry(conn, etype, local_id)
+
+
+def _upsert_provenance_with_conn(
+    conn: sqlite3.Connection,
+    etype: str,
+    local_id: int,
+    key: str,
+    parsed: dict,
+    bundle_id: str,
+    now: str,
+    action: str,
+) -> None:
+    """import_provenanceへcreate時はINSERT、update時はUPDATEする。"""
+    key_parsed = _parse_composite_key(key)
+    if key_parsed is None:
+        return
+    origin_instance, _etype, origin_id = key_parsed
+    content_hash = parsed["manifest_entry"].get("content_hash")
+    origin_created_at = parsed["fm"].get("created_at")
+    if action == "create":
+        conn.execute(
+            "INSERT INTO import_provenance "
+            "(entity_type, entity_id, origin_instance, origin_id, content_hash, "
+            "origin_created_at, bundle_id, imported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (etype, local_id, origin_instance, origin_id, content_hash, origin_created_at, bundle_id, now),
+        )
+    else:
+        conn.execute(
+            "UPDATE import_provenance SET content_hash = ?, origin_created_at = ?, "
+            "bundle_id = ?, imported_at = ? WHERE entity_type = ? AND entity_id = ?",
+            (content_hash, origin_created_at, bundle_id, now, etype, local_id),
+        )
+
+
+# --- apply: メイン適用ロジック ---
+
+# create/update処理のフェーズ順(belongs_to解決がtopic→子の順で自然に揃うよう、
+# relations/citation書き換えは全フェーズ完了後にまとめて行う)。
+_APPLY_PHASES: tuple[tuple[str, ...], ...] = (("topic",), ("activity", "material"), ("decision", "log"))
+
+
+def _apply_bundle_with_conn(
+    conn: sqlite3.Connection,
+    manifest: dict,
+    bundle_id: str,
+    source_instance: str,
+    format_version_ok: bool,
+    parsed_entities: dict[str, dict],
+    classifications: dict[str, dict],
+    provenance_by_origin: dict[tuple[str, str, int], dict],
+    self_instance_id: str,
+    resolutions: dict | None,
+    load_errors: list[dict],
+) -> dict:
+    resolutions = resolutions or {}
+    tag_renames: dict[str, str] = resolutions.get("tag_renames") or {}
+    on_upstream_change: dict[str, str] = resolutions.get("on_upstream_change") or {}
+    entity_overrides: dict = resolutions.get("entity_overrides") or {}
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+    # --- タグ解決・作成・notesマージ(create/update本体より先に全タグを解決する) ---
+    all_tag_strings: set[str] = set()
+    for parsed in parsed_entities.values():
+        for t in parsed["fm"].get("tags") or []:
+            all_tag_strings.add(t)
+    tag_notes_incoming = {
+        d["tag"]: d["notes"]
+        for d in (manifest.get("tag_definitions") or [])
+        if isinstance(d, dict) and d.get("tag")
+    }
+    tag_id_by_raw = _resolve_and_apply_tags_with_conn(conn, all_tag_strings, tag_notes_incoming, tag_renames)
+
+    # --- 操作決定 + skip集計 ---
+    actions: dict[str, str] = {
+        key: _determine_action(key, cls, on_upstream_change, entity_overrides)
+        for key, cls in classifications.items()
+    }
+    skipped_counts: dict[str, int] = defaultdict(int)
+    skip_reason_counts: dict[str, int] = defaultdict(int)
+    for key, cls in classifications.items():
+        if actions[key] != "skip":
+            continue
+        skipped_counts[cls.get("type") or "unknown"] += 1
+        override = entity_overrides.get(key)
+        override_action = override if isinstance(override, str) else (
+            override.get("action") if isinstance(override, dict) else None
+        )
+        reason = "explicit_override" if override_action == "skip" else cls["status"]
+        skip_reason_counts[reason] += 1
+
+    # --- フェーズA〜C: topic → activity/material → decision/log の順でcreate/update ---
+    created_local_id: dict[str, tuple[str, int]] = {}
+    action_by_key: dict[str, str] = {}
+    created_counts: dict[str, int] = defaultdict(int)
+    updated_counts: dict[str, int] = defaultdict(int)
+
+    for phase_types in _APPLY_PHASES:
+        keys_in_phase = sorted(
+            key for key, cls in classifications.items()
+            if cls.get("type") in phase_types and actions[key] != "skip"
+        )
+        for key in keys_in_phase:
+            cls = classifications[key]
+            etype = cls["type"]
+            action = actions[key]
+            parsed = parsed_entities[key]
+            fm = parsed["fm"]
+            fields = parsed["fields"]
+            title_raw = fm.get("title") or key
+
+            if action == "create":
+                local_id = _create_entity_row_with_conn(conn, etype, fm, fields, title_raw)
+                _apply_new_entity_retract_state_with_conn(conn, etype, local_id, fm, now)
+                created_counts[etype] += 1
+            else:
+                local_id = cls["local_entity_id"]
+                _update_entity_row_with_conn(conn, etype, local_id, fm, fields, title_raw)
+                updated_counts[etype] += 1
+
+            entity_tag_ids = [tag_id_by_raw[t] for t in (fm.get("tags") or []) if t in tag_id_by_raw]
+            junction, col = _JUNCTION[etype]
+            link_tags(conn, junction, col, local_id, entity_tag_ids)
+
+            _upsert_provenance_with_conn(conn, etype, local_id, key, parsed, bundle_id, now, action)
+
+            created_local_id[key] = (etype, local_id)
+            action_by_key[key] = action
+
+    # --- フェーズD: relations/supersedes/depends_on ---
+    def _resolve(k: str) -> tuple[str, int] | None:
+        return _resolve_local_id(k, created_local_id, provenance_by_origin, self_instance_id)
+
+    created_edges = 0
+    dropped_edges = 0
+    warnings: list[dict] = []
+
+    for key, (etype, local_id) in created_local_id.items():
+        fm = parsed_entities[key]["fm"]
+
+        if etype != "topic":
+            for target_key in fm.get("belongs_to") or []:
+                resolved = _resolve(target_key)
+                if resolved is None or resolved[0] != "topic":
+                    dropped_edges += 1
+                    continue
+                created_edges += _add_relation_with_conn(
+                    conn, etype, local_id, [{"type": "topic", "ids": [resolved[1]]}], relation_type="belongs_to"
+                )
+
+        for target_key in fm.get("related") or []:
+            resolved = _resolve(target_key)
+            if resolved is None:
+                dropped_edges += 1
+                continue
+            target_type, target_id = resolved
+            created_edges += _add_relation_with_conn(
+                conn, etype, local_id, [{"type": target_type, "ids": [target_id]}], relation_type="related"
+            )
+
+        if etype == "decision":
+            for entry in fm.get("supersedes") or []:
+                if not isinstance(entry, dict) or not entry.get("key"):
+                    continue
+                resolved = _resolve(entry["key"])
+                if resolved is None or resolved[0] != "decision":
+                    dropped_edges += 1
+                    continue
+                try:
+                    added, _pins = _add_supersedes_with_conn(conn, local_id, [resolved[1]])
+                    created_edges += added
+                except ValueError as e:
+                    warnings.append(
+                        {"kind": "circular_supersedes", "key": key, "target": entry["key"], "message": str(e)}
+                    )
+
+        if etype == "activity":
+            for target_key in fm.get("depends_on") or []:
+                resolved = _resolve(target_key)
+                if resolved is None or resolved[0] != "activity":
+                    dropped_edges += 1
+                    continue
+                try:
+                    created_edges += _add_depends_on_with_conn(conn, local_id, [resolved[1]])
+                except ValueError as e:
+                    warnings.append(
+                        {"kind": "circular_depends_on", "key": key, "target": target_key, "message": str(e)}
+                    )
+
+    # --- フェーズE: 本文citation書き換え + citations永続化 ---
+    title_by_key = _build_title_lookup(parsed_entities, manifest)
+    unresolved_body_refs = 0
+    final_fields_by_key: dict[str, dict[str, str]] = {}
+
+    for key, (etype, local_id) in created_local_id.items():
+        fm = parsed_entities[key]["fm"]
+        fields = parsed_entities[key]["fields"]
+        owner_fields: dict[str, str] = {}
+        for field_name in OWNER_TEXT_FIELDS[etype]:
+            raw_text = fm.get("title") if field_name == "title" else fields.get(field_name, "")
+            rewritten, count = _rewrite_body_text(raw_text or "", _resolve, title_by_key)
+            unresolved_body_refs += count
+            owner_fields[field_name] = rewritten
+
+        table = TYPE_TO_TABLE[etype]
+        if etype in ("topic", "activity"):
+            conn.execute(
+                f"UPDATE {table} SET title = ?, description = ? WHERE id = ?",
+                (owner_fields["title"], owner_fields["description"], local_id),
+            )
+        elif etype == "material":
+            conn.execute(
+                f"UPDATE {table} SET title = ?, content = ? WHERE id = ?",
+                (owner_fields["title"], owner_fields["content"], local_id),
+            )
+        elif etype == "decision":
+            conn.execute(
+                f"UPDATE {table} SET decision = ?, reason = ? WHERE id = ?",
+                (owner_fields["decision"], owner_fields["reason"], local_id),
+            )
+        elif etype == "log":
+            conn.execute(f"UPDATE {table} SET content = ? WHERE id = ?", (owner_fields["content"], local_id))
+
+        upsert_citations_for_owner_with_conn(conn, etype, local_id, **owner_fields)
+        publish_entity_event_with_conn(
+            conn, entity_type=etype, entity_id=local_id, event="created" if action_by_key[key] == "create" else "updated"
+        )
+        final_fields_by_key[key] = owner_fields
+
+    conn.commit()
+
+    # --- ポストコミット: embedding/vec同期(ベストエフォート、失敗してもapply結果には影響しない) ---
+    for key, (etype, local_id) in created_local_id.items():
+        try:
+            junction, col = _JUNCTION[etype]
+            tag_strings = get_entity_tags(conn, junction, col, local_id)
+            tag_text = " ".join(tag_strings) if tag_strings else ""
+            ff = final_fields_by_key[key]
+            if etype == "decision":
+                text = build_embedding_text(ff.get("decision"), ff.get("reason"), tag_text)
+            else:
+                main_field = "description" if etype in ("topic", "activity") else "content"
+                text = build_embedding_text(ff.get("title"), ff.get(main_field), tag_text)
+            embedding_vec = generate_and_store_embedding(etype, local_id, text)
+            if etype == "topic" and embedding_vec is not None:
+                insert_topic_embedding_with_conn(conn, local_id, embedding_vec)
+                conn.commit()
+        except Exception as e:
+            logger.warning(f"apply: embedding sync failed for {key}: {e}")
+
+    return {
+        "bundle_id": bundle_id,
+        "source_instance": source_instance,
+        "format_version_ok": format_version_ok,
+        "created": dict(created_counts),
+        "updated": dict(updated_counts),
+        "skipped": dict(skipped_counts),
+        "skip_reasons": dict(skip_reason_counts),
+        "created_edges": created_edges,
+        "dropped_edges": dropped_edges,
+        "unresolved_body_refs": unresolved_body_refs,
+        "warnings": warnings,
+        "load_errors": load_errors,
+    }
+
+
 # --- メインエントリ ---
 
 
@@ -594,20 +1187,25 @@ def import_bundle(
     resolutions: dict | None = None,
     skip_duplicate_check: bool = False,
 ) -> dict:
-    """バンドルを読み、衝突検知レポートを返す(mode="dry_run")。DBへの書き込みは行わない。
+    """バンドルを読み込む。mode="dry_run"はDBを一切変更せず衝突検知レポートを返す。
+    mode="apply"はdry_runと同じ分類ロジックを土台に、resolutionsを反映して実際に
+    DBへ書き込む(全体を1トランザクションで実行し、失敗時は部分書き込みを残さない)。
 
     Args:
         bundle_path: `export_bundle`が書き出したバンドルディレクトリのパス
             (`manifest.yaml`を直下に持つディレクトリ)。DEFAULT_EXPORT_DIR配下に
             限定される(exportと対称のパスガード)
-        mode: "dry_run"のみサポート(既定)。"apply"は未実装でNOT_IMPLEMENTEDを返す
-        resolutions: mode="apply"向けの裁定結果。dry_runでは無視する
+        mode: "dry_run"(既定)または"apply"
+        resolutions: mode="apply"向けの裁定結果。dry_runでは無視する。
+            {"tag_renames": {incoming_tag: local_tag, ...},
+             "on_upstream_change": {entity_type: "overwrite"|"skip", ...},
+             "entity_overrides": {composite_key: "skip"|{"action": "skip"|"import"}, ...}}
         skip_duplicate_check: Trueのときネイティブ重複疑い検知(embedding類似検索)を
-            スキップする(デフォルトFalse)。domain規模の初回importで対象エンティティ数が
-            多い場合の速度対策
+            スキップする(デフォルトFalse、dry_runのみ関係)。domain規模の初回importで
+            対象エンティティ数が多い場合の速度対策
 
     Returns:
-        成功時: {"format_version_ok": bool, "bundle_id": str, "source_instance": str,
+        dry_run成功時: {"format_version_ok": bool, "bundle_id": str, "source_instance": str,
             "summary": {type: {"new", "unchanged", "updatable", "upstream_changed_skip",
                 "self_origin"}, ...},
             "upstream_changed": [{"key", "type", "title", "local_entity_id"}, ...],
@@ -616,18 +1214,15 @@ def import_bundle(
             "duplicates_suspected": [{"key", "title", "similar": [...]}, ...],
             "dangling_refs": {"count": int, "sample": [...]},
             "degraded": bool, "load_errors": [...]}
+        apply成功時: {"format_version_ok": bool, "bundle_id": str, "source_instance": str,
+            "created": {type: n, ...}, "updated": {type: n, ...}, "skipped": {type: n, ...},
+            "skip_reasons": {status: n, ...}, "created_edges": int, "dropped_edges": int,
+            "unresolved_body_refs": int, "warnings": [...], "load_errors": [...]}
         失敗時: {"error": {"code": "VALIDATION_ERROR" | "NOT_FOUND" |
-            "INSTANCE_ID_NOT_SET" | "NOT_IMPLEMENTED" | "DATABASE_ERROR", "message": str}}
+            "INSTANCE_ID_NOT_SET" | "DATABASE_ERROR", "message": str}}
     """
     if mode not in ("dry_run", "apply"):
         return {"error": {"code": "VALIDATION_ERROR", "message": "mode must be 'dry_run' or 'apply'"}}
-    if mode == "apply":
-        return {
-            "error": {
-                "code": "NOT_IMPLEMENTED",
-                "message": "mode='apply' is not yet implemented.",
-            }
-        }
 
     if not bundle_path or not isinstance(bundle_path, str):
         return {"error": {"code": "VALIDATION_ERROR", "message": "bundle_path must be a non-empty string"}}
@@ -677,6 +1272,28 @@ def import_bundle(
             parsed_entities, provenance_by_origin, self_instance_id
         )
 
+        if mode == "apply":
+            if not format_version_ok:
+                return {
+                    "error": {
+                        "code": "VALIDATION_ERROR",
+                        "message": f"unsupported bundle format: {manifest.get('format')!r} (expected {BUNDLE_FORMAT!r})",
+                    }
+                }
+            return _apply_bundle_with_conn(
+                conn,
+                manifest,
+                bundle_id,
+                source_instance,
+                format_version_ok,
+                parsed_entities,
+                classifications,
+                provenance_by_origin,
+                self_instance_id,
+                resolutions,
+                load_errors,
+            )
+
         dangling_refs = _collect_dangling_refs(
             parsed_entities, bundle_keys, provenance_by_origin, self_instance_id
         )
@@ -713,7 +1330,8 @@ def import_bundle(
             "load_errors": load_errors,
         }
     except Exception as e:
-        logger.error(f"import_bundle dry_run failed: {e}")
+        conn.rollback()
+        logger.error(f"import_bundle ({mode}) failed: {e}")
         return {"error": {"code": "DATABASE_ERROR", "message": str(e)}}
     finally:
         conn.close()
