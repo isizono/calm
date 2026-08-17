@@ -154,16 +154,24 @@ def _entry_alive(cli_session_id: str, entry: dict, now: datetime) -> bool:
     return True
 
 
-def _gc(sessions: dict) -> None:
-    """生存していない行・TTL超過行を削除し、上限超過分を最古から削除する（in-place）。"""
+def _gc(sessions: dict) -> bool:
+    """生存していない行・TTL超過行を削除し、上限超過分を最古から削除する（in-place）。
+
+    Returns:
+        1件でも削除した場合True。呼び出し側が不要な _save() を避けるために使う。
+    """
     now = datetime.now(timezone.utc)
+    changed = False
     for key in [k for k, e in sessions.items() if not _entry_alive(k, e, now)]:
         del sessions[key]
+        changed = True
     overflow = len(sessions) - _MAX_ENTRIES
     if overflow > 0:
         ordered = sorted(sessions.items(), key=lambda kv: kv[1].get("updated_at") or "")
         for key, _ in ordered[:overflow]:
             del sessions[key]
+            changed = True
+    return changed
 
 
 def register_checkin(
@@ -242,8 +250,8 @@ def list_sessions(*, self_bridge_session_id: Optional[str] = None) -> list[dict]
     with _locked():
         data = _load()
         sessions = data["sessions"]
-        _gc(sessions)
-        _save(data)
+        if _gc(sessions):
+            _save(data)
         items = [
             {
                 "name": entry.get("name"),

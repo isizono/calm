@@ -313,3 +313,33 @@ class TestListSessions:
 
     def test_empty_registry_returns_empty_list(self, registry_path):
         assert srs.list_sessions() == []
+
+    def test_no_write_when_nothing_to_gc(self, world, registry_path):
+        """全セッションが生存中でGC対象が無い場合、list_sessionsはファイルを
+        書き換えない（get_sessionsは読み取り専用ツールであるべきため）"""
+        world.add("bridge-a", pid=100, cli_session_id="cli-1", name="workspace-a1")
+        srs.register_checkin(
+            bridge_session_id="bridge-a", activity_id=1, activity_title="Foo", activity_status="in_progress"
+        )
+        before = registry_path.stat()
+
+        srs.list_sessions()
+
+        after = registry_path.stat()
+        assert after.st_ino == before.st_ino
+        assert after.st_mtime_ns == before.st_mtime_ns
+
+    def test_write_persists_when_list_sessions_gcs_dead_entry(self, world, registry_path):
+        """死亡PIDの行が残っている状態でlist_sessionsを呼ぶと、GC結果がファイルにも
+        反映される（読み取り経由のGCも永続化されること）"""
+        world.add("bridge-a", pid=100, cli_session_id="cli-1", name="workspace-a1")
+        srs.register_checkin(
+            bridge_session_id="bridge-a", activity_id=1, activity_title="Foo", activity_status="in_progress"
+        )
+        world.kill(100)
+
+        sessions = srs.list_sessions()
+        assert sessions == []
+
+        data = json.loads(registry_path.read_text(encoding="utf-8"))
+        assert "cli-1" not in data["sessions"]
