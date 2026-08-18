@@ -35,14 +35,32 @@ from src.services.internal_id_patterns import (  # noqa: E402
 # hook は citations_pure に依存しないので最小集合だけ持つ。
 _TYPE_CODES: frozenset[str] = frozenset("MDLAT")
 
-# 新名 (calm) と旧名 (cc-memory) の両方を受理する。プラグイン識別子・MCPサーバー
-# キーの改名は接続経路ごとに反映タイミングがずれるため、片方だけにすると
-# 未追随の経路の tool が allowlist から外れて誤 block される。
+# ローカルプラグイン経由の tool 名は `mcp__plugin_<プラグイン名>_<サーバーキー>__`、
+# リモート MCP 経由は `mcp__claude_ai_<コネクタ名>__` の形になる。プラグイン名
+# (.claude-plugin/plugin.json)・サーバーキー (.mcp.json)・claude.ai コネクタ名は
+# それぞれ別のタイミングで calm へ切り替わるため、新旧の組み合わせをすべて載せる。
+# 片方だけにすると未追随の経路から呼ばれた CALM 自身の tool が allowlist から
+# 外れ、内部 ID を含む正当な呼び出し (add_decisions の content に D#123 を書く等)
+# が誤 block される。
+#
+# 実際にプラグイン名だけ先に calm へ改名され、サーバーキーが cc-memory のまま
+# という期間があり、その間の tool 名は `mcp__plugin_calm_cc-memory__*` だった。
+# サーバーキー改名後も、プラグインキャッシュ再生成と各セッションの再接続が
+# 済むまでは同じ形が生き続ける。
+#
+# hook_transcript.py はマーカーの部分一致で同じ問題を吸収しているが、こちらは
+# 内部 ID の漏出を止める security hook なので、素通しする対象を既知の識別子の
+# 組み合わせだけに限る前方一致を維持する。
+_PLUGIN_NAMES: tuple[str, ...] = ("calm", "claude-code-memory")
+_SERVER_KEYS: tuple[str, ...] = ("calm", "cc-memory")
+
 ALLOWLIST_PREFIXES: tuple[str, ...] = (
-    "mcp__plugin_calm_calm__",
-    "mcp__claude_ai_calm__",
-    "mcp__plugin_claude-code-memory_cc-memory__",
-    "mcp__claude_ai_cc-memory__",
+    *(
+        f"mcp__plugin_{plugin}_{server}__"
+        for plugin in _PLUGIN_NAMES
+        for server in _SERVER_KEYS
+    ),
+    *(f"mcp__claude_ai_{server}__" for server in _SERVER_KEYS),
 )
 
 ALLOWLIST_EXACT: frozenset[str] = frozenset(

@@ -230,6 +230,43 @@ class TestIsAllowed:
     @pytest.mark.parametrize(
         "tool_name",
         [
+            # プラグイン名だけ改名済み・サーバーキーが旧名のまま。plugin.json が
+            # 先に calm へ改名されてから .mcp.json のキーが追随するまでの期間、
+            # およびキー改名後にプラグインキャッシュ再生成・セッション再接続が
+            # 済むまでの期間、ローカルプラグイン経由の tool 名はこの形になる
+            "mcp__plugin_calm_cc-memory__search",
+            "mcp__plugin_calm_cc-memory__add_decisions",
+            # 逆の組み合わせ (サーバーキーだけ先に追随した場合)
+            "mcp__plugin_claude-code-memory_calm__search",
+            "mcp__plugin_claude-code-memory_calm__add_decisions",
+        ],
+    )
+    def test_transitional_plugin_and_server_key_combination_allowed(self, tool_name):
+        """プラグイン名とサーバーキーの改名タイミングがずれた過渡形も素通しする。
+
+        両者は別ファイル (.claude-plugin/plugin.json と .mcp.json) で定義され、
+        反映タイミングもずれるため、新旧の組み合わせ4通りすべてが実在しうる。
+        allowlist から漏れると、内部 ID を含む CALM 自身の正当な呼び出しが
+        漏出扱いで deny される。
+        """
+        assert preblock_hook._is_allowed(tool_name) is True
+
+    @pytest.mark.parametrize(
+        "tool_name",
+        [
+            # 名前に calm / cc-memory を含むだけの別サーバーは素通ししない。
+            # 前方一致を保つことで、素通し対象を既知の識別子の組み合わせに限る
+            "mcp__other_calm__search",
+            "mcp__plugin_other_calm-fork__search",
+            "mcp__claude_ai_calm-fork__search",
+        ],
+    )
+    def test_lookalike_server_names_not_allowed(self, tool_name):
+        assert preblock_hook._is_allowed(tool_name) is False
+
+    @pytest.mark.parametrize(
+        "tool_name",
+        [
             "Bash",
             "Edit",
             "Write",
