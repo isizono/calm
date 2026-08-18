@@ -5,7 +5,7 @@
 2. session_idが空/null → 空JSON出力して終了
 3. events.jsonl全読み
 4. 未消費のnudgeイベント判定 → system-reminder注入
-5. relay session-aware nudge（CCM_RELAY_SESSION_AWARE=1のときのみ） →
+5. relay session-aware nudge（CALM_RELAY_SESSION_AWARE=1のときのみ） →
    system-reminder注入
 6. 何もなし → 空JSON出力
 
@@ -138,7 +138,7 @@ def _resolve_relay_identity_cached(state: HookState) -> str | None:
 
 
 def _build_relay_turn_nudge(state: HookState) -> str | None:
-    """relay session-aware毎ターンnudge（CCM_RELAY_SESSION_AWARE=1のときのみ動作）。
+    """relay session-aware毎ターンnudge（CALM_RELAY_SESSION_AWARE=1のときのみ動作）。
 
     SessionStart一回きりの起動指示はエージェントに読み流されて機能しないことが
     確認されたため、毎ターン判定してリマインダーを注入する。
@@ -242,7 +242,7 @@ def main() -> None:
             print(json.dumps(_make_hook_output(message), ensure_ascii=False))
             return
 
-        # 5. relay session-aware nudge（CCM_RELAY_SESSION_AWARE=1のときのみ、
+        # 5. relay session-aware nudge（CALM_RELAY_SESSION_AWARE=1のときのみ、
         # 既存nudgeが非該当だった場合のみ判定）
         relay_message = _build_relay_turn_nudge(state)
         if relay_message:

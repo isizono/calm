@@ -63,8 +63,8 @@ def fixture_db(monkeypatch):
             conn.commit()
         finally:
             conn.close()
-        monkeypatch.setenv("CC_MEMORY_DB_PATH", db_path)
-        monkeypatch.delenv("CC_MEMORY_SANITIZE_DISABLE", raising=False)
+        monkeypatch.setenv("CALM_DB_PATH", db_path)
+        monkeypatch.delenv("CALM_SANITIZE_DISABLE", raising=False)
         yield db_path
 
 
@@ -75,7 +75,7 @@ def state_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
-_TOOL_NAME = "mcp__plugin_claude-code-memory_cc-memory__check_in"
+_TOOL_NAME = "mcp__plugin_calm_calm__check_in"
 
 
 def _make_assistant_entry(tool_use_id: str, tool_name: str = _TOOL_NAME) -> dict:
@@ -505,12 +505,12 @@ def test_case_10_repeated_scan_exceptions_trigger_skip(fixture_db, state_dir, tm
 
 
 # ---------------------------------------------------------------------------
-# Case #11: CC_MEMORY_SANITIZE_DISABLE=1 → 即 exit 0、log なし、offset 未更新
+# Case #11: CALM_SANITIZE_DISABLE=1 → 即 exit 0、log なし、offset 未更新
 # ---------------------------------------------------------------------------
 
 
 def test_case_11_env_disable_short_circuits(fixture_db, state_dir, tmp_path, monkeypatch):
-    monkeypatch.setenv("CC_MEMORY_SANITIZE_DISABLE", "1")
+    monkeypatch.setenv("CALM_SANITIZE_DISABLE", "1")
     transcript = tmp_path / "transcript.jsonl"
     entries = [
         _make_assistant_entry("toolu_01"),

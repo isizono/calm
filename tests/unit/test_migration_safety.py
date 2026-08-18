@@ -239,12 +239,12 @@ class TestVerifyMigrationLedger:
 
 class TestHandleHashMismatch:
     def test_default_raises_system_exit(self, monkeypatch):
-        monkeypatch.setattr(config, "CCM_MIGRATION_HASH_ENFORCE", "error")
+        monkeypatch.setattr(config, "CALM_MIGRATION_HASH_ENFORCE", "error")
         with pytest.raises(SystemExit):
             db._handle_hash_mismatch([{"migration_id": "x", "recorded": "a", "current": "b"}])
 
     def test_warn_mode_does_not_raise(self, monkeypatch):
-        monkeypatch.setattr(config, "CCM_MIGRATION_HASH_ENFORCE", "warn")
+        monkeypatch.setattr(config, "CALM_MIGRATION_HASH_ENFORCE", "warn")
         db._handle_hash_mismatch([{"migration_id": "x", "recorded": "a", "current": "b"}])  # raises無しでreturn
 
 

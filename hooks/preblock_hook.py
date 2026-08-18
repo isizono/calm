@@ -5,7 +5,7 @@ cc-memory 開発現場以外で内部 ID 形式の文字列を外部に出すケ
 tool 引数段階で機械的に止めることで AI 経由の漏出を防ぐ (scope A 方針)。
 
 cc-memory (calm) project 内 (pyproject.toml の `[project].name` が `_PROJECT_NAMES` のいずれかに一致) のみで有効。
-`CC_MEMORY_LEAK_GUARD=off` 環境変数で緊急時に opt-out 可能。
+`CALM_LEAK_GUARD=off` 環境変数で緊急時に opt-out 可能。
 allowlist tool (cc-memory 自身の MCP / Read 系 / harness 内部 tool) は素通し。
 バックスラッシュエスケープ (`\\M#123`, `\\log #123`, `#`省略形の `\\log 123`) は字義扱いで非 block。
 
@@ -13,7 +13,6 @@ allowlist tool (cc-memory 自身の MCP / Read 系 / harness 内部 tool) は素
 発火ログを `~/.cc-memory/logs/preblock_hook.jsonl` に append する (書き込み失敗時は silent)。
 """
 import json
-import os
 import pathlib
 import sys
 import tomllib
@@ -25,6 +24,7 @@ _PLUGIN_ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(_PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(_PLUGIN_ROOT))
 
+from src.env_compat import env_get  # noqa: E402
 from src.services.internal_id_patterns import (  # noqa: E402
     RAW_CITE_CODE_PATTERN,
     RAW_CITE_FULLWORD_PATTERN,
@@ -35,7 +35,12 @@ from src.services.internal_id_patterns import (  # noqa: E402
 # hook は citations_pure に依存しないので最小集合だけ持つ。
 _TYPE_CODES: frozenset[str] = frozenset("MDLAT")
 
+# 新名 (calm) と旧名 (cc-memory) の両方を受理する。プラグイン識別子・MCPサーバー
+# キーの改名は接続経路ごとに反映タイミングがずれるため、片方だけにすると
+# 未追随の経路の tool が allowlist から外れて誤 block される。
 ALLOWLIST_PREFIXES: tuple[str, ...] = (
+    "mcp__plugin_calm_calm__",
+    "mcp__claude_ai_calm__",
     "mcp__plugin_claude-code-memory_cc-memory__",
     "mcp__claude_ai_cc-memory__",
 )
@@ -205,7 +210,7 @@ def main() -> None:
         tool_input = event.get("tool_input") or {}
 
         # opt-out: 緊急時の脱出経路
-        if os.environ.get("CC_MEMORY_LEAK_GUARD", "").lower() == "off":
+        if env_get("CALM_LEAK_GUARD", "").lower() == "off":
             print("{}")
             return
 

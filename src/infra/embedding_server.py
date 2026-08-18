@@ -10,20 +10,22 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from logging.handlers import RotatingFileHandler
 from typing import Literal, Optional
 
+from src.env_compat import env_get
+
 HOST = "localhost"
 PORT = 52836
 MAX_REQUEST_BYTES = 10 * 1024 * 1024  # 10MB
 
 # shutdown policy パラメータ（env var で上書き可能）
 # 既存スタイル（src/config.py）に合わせ default は文字列で渡す。不正値はクラッシュさせて早期発見する。
-_TTL_SEC = int(os.environ.get("CC_MEMORY_EMBEDDING_TTL_SEC", "3600"))
-_DRAIN_IDLE_SEC = int(os.environ.get("CC_MEMORY_EMBEDDING_DRAIN_IDLE_SEC", "30"))
-_DRAIN_DEADLINE_SEC = int(os.environ.get("CC_MEMORY_EMBEDDING_DRAIN_DEADLINE_SEC", "1800"))
+_TTL_SEC = int(env_get("CALM_EMBEDDING_TTL_SEC", "3600"))
+_DRAIN_IDLE_SEC = int(env_get("CALM_EMBEDDING_DRAIN_IDLE_SEC", "30"))
+_DRAIN_DEADLINE_SEC = int(env_get("CALM_EMBEDDING_DRAIN_DEADLINE_SEC", "1800"))
 _WATCHDOG_INTERVAL_SEC = 10  # watchdog のチェック粒度
 
 # ログローテーション設定（env var で上書き可能）
-_LOG_MAX_BYTES = int(os.environ.get("CC_MEMORY_EMBEDDING_LOG_MAX_BYTES", str(5 * 1024 * 1024)))
-_LOG_BACKUP_COUNT = int(os.environ.get("CC_MEMORY_EMBEDDING_LOG_BACKUP_COUNT", "3"))
+_LOG_MAX_BYTES = int(env_get("CALM_EMBEDDING_LOG_MAX_BYTES", str(5 * 1024 * 1024)))
+_LOG_BACKUP_COUNT = int(env_get("CALM_EMBEDDING_LOG_BACKUP_COUNT", "3"))
 
 MODEL_NAME = "cl-nagoya/ruri-v3-70m"
 DOC_PREFIX = "検索文書: "

@@ -134,7 +134,7 @@ class TestGraceTimer:
 
 
 class TestReadGracePeriodSec:
-    """env CC_MEMORY_AUTO_SHUTDOWN_SEC を読み取るヘルパーの単体テスト"""
+    """env CALM_AUTO_SHUTDOWN_SEC を読み取るヘルパーの単体テスト"""
 
     def test_env_unset_returns_default(self, monkeypatch):
         """env未設定時はデフォルト値を返す"""
@@ -248,7 +248,7 @@ class TestAutoShutdownDisabled:
 
 
 class TestReadLivenessTimeoutSec:
-    """env CC_MEMORY_SESSION_LIVENESS_TIMEOUT_SEC を読み取るヘルパーの単体テスト"""
+    """env CALM_SESSION_LIVENESS_TIMEOUT_SEC を読み取るヘルパーの単体テスト"""
 
     def test_env_unset_returns_default(self, monkeypatch):
         """env未設定時はデフォルト値を返す"""

@@ -48,7 +48,7 @@ _HEADER = (
 _DISABLED_PLACEHOLDER_BODY = (
     "# 振る舞い（cc-memory habits）\n"
     "\n"
-    "投影は停止中である（CCM_HABITS_RULES_EXPORT=0）。"
+    "投影は停止中である（CALM_HABITS_RULES_EXPORT=0）。"
     "get_habits で現在の habits を取得すること。\n"
 )
 
@@ -271,7 +271,7 @@ def export(*, force: bool = False) -> dict:
 
     自前でDB接続を確保・解放する自己完結API（呼び出し元connに依存せず、hookからも
     直接呼べる）。kill switch（config.HABITS_RULES_EXPORT_ENABLED=False、環境変数
-    CCM_HABITS_RULES_EXPORT=0）が立っているときはDBに触れず、プレースホルダ本文で
+    CALM_HABITS_RULES_EXPORT=0）が立っているときはDBに触れず、プレースホルダ本文で
     ファイルを上書きしてから停止する（stale化したファイルが以後注入され続けるのを防ぐ）。
     例外はすべて捕捉して{"status": "failed", "message": ...}を返す。raiseしない。
     """

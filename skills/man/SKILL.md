@@ -115,7 +115,7 @@ CALMは「着手 → 記録 → 完了 → 同期」のライフサイクルで�
 - **リレーション**: トピック・アクティビティ間の関連。check-inで2親等まで自動取得され、`get_map`でさらに探索できる
 - **資材（material）**: 長い生情報のオフロード先。独立エンティティとしてタグ付きで保存され、リレーションでトピック・アクティビティと関連付けられる
 - **タグノート**: タグに紐づく常備情報。関連作業時にAIへ自動注入される
-- **振る舞い（habits）**: 全セッション共通で従ってほしいルール。alwaysタイプは全文が`~/.claude/rules`配下の自動生成ファイルに投影され、毎セッション開始時にシステムプロンプトへ自動的に読み込まれる。intelligentlyタイプは同じファイルに重要度順のタイトル一覧（マニフェスト、既定30件まで。`CCM_PROJECTION_MANIFEST_MAX_ITEMS`で変更可）だけが載り、超過分は本文を切断せず「他N件 → get_habits で確認」の1行に縮退する。本文が必要になれば`get_habits`をhabit_id指定で呼んで取得する。「materialの書き方」「コミット前の確認事項」など、常に従ってほしいルールを登録できる。AIに「覚えといて」と言えばOK
+- **振る舞い（habits）**: 全セッション共通で従ってほしいルール。alwaysタイプは全文が`~/.claude/rules`配下の自動生成ファイルに投影され、毎セッション開始時にシステムプロンプトへ自動的に読み込まれる。intelligentlyタイプは同じファイルに重要度順のタイトル一覧（マニフェスト、既定30件まで。`CALM_PROJECTION_MANIFEST_MAX_ITEMS`で変更可）だけが載り、超過分は本文を切断せず「他N件 → get_habits で確認」の1行に縮退する。本文が必要になれば`get_habits`をhabit_id指定で呼んで取得する。「materialの書き方」「コミット前の確認事項」など、常に従ってほしいルールを登録できる。AIに「覚えといて」と言えばOK
 
 ## Ask store
 
@@ -224,18 +224,20 @@ uv run python scripts/snapshot.py list
 
 | 環境変数名 | デフォルト | 説明 |
 |-----------|-----------|------|
-| `CCM_DB_PATH` | `~/.claude/.claude-code-memory/discussion.db` | データベースファイルのパス |
-| `CCM_HEARTBEAT_TIMEOUT` | `20` | ホットアクティビティ判定の閾値（分） |
-| `CCM_IN_PROGRESS_LIMIT` | `3` | アクティブコンテキストのin_progress表示件数 |
-| `CCM_PENDING_LIMIT` | `2` | アクティブコンテキストのpending表示件数 |
-| `CCM_TIER2_MAX_AGE_DAYS` | `7` | SessionStart一覧の階層2にin_progressアクティビティを載せるupdated_at上限（日） |
-| `CCM_PIN_SURFACE_DECAY_DAYS` | `60` | pinnedアクティビティが階層2表示を維持できるupdated_at上限（日） |
-| `CCM_RECENCY_DECAY_RATE` | `0.0014` | 検索の時間減衰率 |
-| `CCM_SYNC_DISABLE_RETROSPECTIVE` | `false` | `/sync-memory`のふりかえりセクションを非表示にする |
-| `CCM_SNAPSHOT_INTERVAL` | `12` | スナップショット取得間隔（時間） |
-| `CCM_SNAPSHOT_MAX_COUNT` | `5` | スナップショット最大保持数 |
-| `CCM_SNAPSHOT_ANOMALY_THRESHOLD` | `100` | 行数減少の異常検知閾値（件） |
-| `CCM_PROJECTION_MANIFEST_MAX_ITEMS` | `30` | intelligently habitsマニフェストの掲載件数上限 |
+| `CALM_DB_PATH` | `~/.claude/.claude-code-memory/discussion.db` | データベースファイルのパス |
+| `CALM_HEARTBEAT_TIMEOUT` | `20` | ホットアクティビティ判定の閾値（分） |
+| `CALM_IN_PROGRESS_LIMIT` | `3` | アクティブコンテキストのin_progress表示件数 |
+| `CALM_PENDING_LIMIT` | `2` | アクティブコンテキストのpending表示件数 |
+| `CALM_TIER2_MAX_AGE_DAYS` | `7` | SessionStart一覧の階層2にin_progressアクティビティを載せるupdated_at上限（日） |
+| `CALM_PIN_SURFACE_DECAY_DAYS` | `60` | pinnedアクティビティが階層2表示を維持できるupdated_at上限（日） |
+| `CALM_RECENCY_DECAY_RATE` | `0.0014` | 検索の時間減衰率 |
+| `CALM_SYNC_DISABLE_RETROSPECTIVE` | `false` | `/sync-memory`のふりかえりセクションを非表示にする |
+| `CALM_SNAPSHOT_INTERVAL` | `12` | スナップショット取得間隔（時間） |
+| `CALM_SNAPSHOT_MAX_COUNT` | `5` | スナップショット最大保持数 |
+| `CALM_SNAPSHOT_ANOMALY_THRESHOLD` | `100` | 行数減少の異常検知閾値（件） |
+| `CALM_PROJECTION_MANIFEST_MAX_ITEMS` | `30` | intelligently habitsマニフェストの掲載件数上限 |
+
+環境変数は `CALM_` 接頭辞に統一されている。旧名（`CCM_` / `CC_MEMORY_`）も当面はフォールバックとして読まれるが、新名が設定されていればそちらが優先される。
 
 現在の設定値は`get_config()`ツールで確認できる。
 

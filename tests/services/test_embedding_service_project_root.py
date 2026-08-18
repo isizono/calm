@@ -1,7 +1,7 @@
 """embedding_service._resolve_project_root() のテスト。
 
 A#975 / D#2755 で導入したパス解決ロジック:
-  1. env var CC_MEMORY_PROJECT_ROOT 優先
+  1. env var CALM_PROJECT_ROOT 優先
   2. git rev-parse --git-common-dir 経由（worktree からでも main repo を返す）
   3. 失敗時は RuntimeError
 
@@ -22,8 +22,8 @@ def _run(cmd: list[str], cwd: Path) -> None:
 
 
 def test_env_var_override(monkeypatch, tmp_path):
-    """CC_MEMORY_PROJECT_ROOT がセットされていればそれを返す。"""
-    monkeypatch.setenv("CC_MEMORY_PROJECT_ROOT", str(tmp_path))
+    """CALM_PROJECT_ROOT がセットされていればそれを返す。"""
+    monkeypatch.setenv("CALM_PROJECT_ROOT", str(tmp_path))
     result = embedding_service._resolve_project_root()
     assert result == str(tmp_path.resolve())
 
@@ -32,7 +32,7 @@ def test_env_var_resolves_relative(monkeypatch, tmp_path):
     """env var が相対パスでも resolve される。"""
     target = tmp_path / "sub"
     target.mkdir()
-    monkeypatch.setenv("CC_MEMORY_PROJECT_ROOT", str(target))
+    monkeypatch.setenv("CALM_PROJECT_ROOT", str(target))
     result = embedding_service._resolve_project_root()
     assert Path(result) == target.resolve()
 
@@ -47,7 +47,7 @@ def test_git_common_dir_points_to_main_repo_from_worktree(monkeypatch, tmp_path)
        パスを組み立てて返すこと
     を検証する。
     """
-    monkeypatch.delenv("CC_MEMORY_PROJECT_ROOT", raising=False)
+    monkeypatch.delenv("CALM_PROJECT_ROOT", raising=False)
 
     if not _git_available():
         pytest.skip("git not available")
@@ -105,7 +105,7 @@ def test_git_common_dir_points_to_main_repo_from_worktree(monkeypatch, tmp_path)
 
 def test_raises_runtime_error_when_outside_git(monkeypatch, tmp_path):
     """env var なし & git 取得失敗時は RuntimeError を raise する。"""
-    monkeypatch.delenv("CC_MEMORY_PROJECT_ROOT", raising=False)
+    monkeypatch.delenv("CALM_PROJECT_ROOT", raising=False)
 
     # subprocess.run を CalledProcessError を投げるよう差し替える
     def fake_run(*args, **kwargs):
@@ -116,12 +116,12 @@ def test_raises_runtime_error_when_outside_git(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError) as exc_info:
         embedding_service._resolve_project_root()
 
-    assert "CC_MEMORY_PROJECT_ROOT" in str(exc_info.value)
+    assert "CALM_PROJECT_ROOT" in str(exc_info.value)
 
 
 def test_raises_runtime_error_when_git_not_found(monkeypatch):
     """git バイナリ自体が無い場合も RuntimeError を raise する。"""
-    monkeypatch.delenv("CC_MEMORY_PROJECT_ROOT", raising=False)
+    monkeypatch.delenv("CALM_PROJECT_ROOT", raising=False)
 
     def fake_run(*args, **kwargs):
         raise FileNotFoundError("git not found")
@@ -131,7 +131,7 @@ def test_raises_runtime_error_when_git_not_found(monkeypatch):
     with pytest.raises(RuntimeError) as exc_info:
         embedding_service._resolve_project_root()
 
-    assert "git repo" in str(exc_info.value) or "CC_MEMORY_PROJECT_ROOT" in str(exc_info.value)
+    assert "git repo" in str(exc_info.value) or "CALM_PROJECT_ROOT" in str(exc_info.value)
 
 
 def _git_available() -> bool:

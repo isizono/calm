@@ -237,8 +237,8 @@ inbox path は `RELAY_STATE_DIR`（未設定なら `~/.cc-memory/relay`）配下
 
 | 環境変数 | 説明 | 既定値 |
 |---|---|---|
-| `CC_MEMORY_LAUNCHER_HEARTBEAT_SEC` | launcher.py が `/session/register` を再送する間隔（秒） | `60` |
-| `CC_MEMORY_SESSION_LIVENESS_TIMEOUT_SEC` | SessionManager が heartbeat 途絶から liveness TTL 失効までの猶予（秒）。`0` で無効化 | `300` |
+| `CALM_LAUNCHER_HEARTBEAT_SEC` | launcher.py が `/session/register` を再送する間隔（秒） | `60` |
+| `CALM_SESSION_LIVENESS_TIMEOUT_SEC` | SessionManager が heartbeat 途絶から liveness TTL 失効までの猶予（秒）。`0` で無効化 | `300` |
 
 ## トラブルシューティング
 
@@ -248,4 +248,4 @@ inbox path は `RELAY_STATE_DIR`（未設定なら `~/.cc-memory/relay`）配下
 - **credential.json と runtime の参照先がずれて `config_missing` になる**: redeem CLI の書込先と runtime の読取先はどちらも `RELAY_STATE_DIR`（既定 `~/.cc-memory/relay`）に一致している前提。どちらか一方だけで `RELAY_STATE_DIR` を override すると発症が分かりにくいズレが生じる。既定のまま揃えることを推奨する。
 - **`python -m relay.invite new` で発行した招待を redeem すると常に 404 になる**: invite CLI と稼働中 relay server が別々の DB ファイルを見ている可能性が高い。invite CLI の DB 解決は `--db` → env `RELAY_DB_PATH` → canonical 絶対パス `~/.local/state/relay/relay.db` の順で、cwd 相対パスにはフォールバックしない。稼働中 relay の `RELAY_DB_PATH`（launchd plist または `relay-v2.sh` の設定）と一致していることを確認する。
 - **relay 起動後も cc-memory が SSE 接続に失敗する**: `RELAY_BASE_URL`（または credential.json の `base_url`）の port が relay server と一致しているか確認する。cc-memory 側の既定は 8770。
-- **declaration file が増え続ける**: cc-memory server の B-2 lease loop が「lease_expires_at の最大値が 24 時間以上前」の declaration file を定期的に削除する（起動時 1 回 + 1 時間毎）。それでも増える場合は該当 session が生存していて renew が回っている可能性がある（生存判定は `SessionManager.session_ids`。SIGKILL 等で launcher が異常終了した場合も `CC_MEMORY_SESSION_LIVENESS_TIMEOUT_SEC` 経過後に自動で対象から外れる）。
+- **declaration file が増え続ける**: cc-memory server の B-2 lease loop が「lease_expires_at の最大値が 24 時間以上前」の declaration file を定期的に削除する（起動時 1 回 + 1 時間毎）。それでも増える場合は該当 session が生存していて renew が回っている可能性がある（生存判定は `SessionManager.session_ids`。SIGKILL 等で launcher が異常終了した場合も `CALM_SESSION_LIVENESS_TIMEOUT_SEC` 経過後に自動で対象から外れる）。

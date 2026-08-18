@@ -100,12 +100,14 @@ claude plugin install calm
 
 | 環境変数名 | デフォルト | 説明 |
 |-----------|-----------|------|
-| `CCM_DB_PATH` | `~/.claude/.claude-code-memory/discussion.db` | データベースファイルのパス |
-| `CCM_HEARTBEAT_TIMEOUT` | `20` | ホットアクティビティ判定の閾値（分） |
-| `CCM_IN_PROGRESS_LIMIT` | `3` | アクティブコンテキストのin_progress表示件数 |
-| `CCM_PENDING_LIMIT` | `2` | アクティブコンテキストのpending表示件数 |
-| `CCM_RECENCY_DECAY_RATE` | `0.0014` | 検索の時間減衰率 |
-| `CCM_SYNC_DISABLE_RETROSPECTIVE` | `false` | `/sync-memory`のふりかえりセクションを非表示にする |
+| `CALM_DB_PATH` | `~/.claude/.claude-code-memory/discussion.db` | データベースファイルのパス |
+| `CALM_HEARTBEAT_TIMEOUT` | `20` | ホットアクティビティ判定の閾値（分） |
+| `CALM_IN_PROGRESS_LIMIT` | `3` | アクティブコンテキストのin_progress表示件数 |
+| `CALM_PENDING_LIMIT` | `2` | アクティブコンテキストのpending表示件数 |
+| `CALM_RECENCY_DECAY_RATE` | `0.0014` | 検索の時間減衰率 |
+| `CALM_SYNC_DISABLE_RETROSPECTIVE` | `false` | `/sync-memory`のふりかえりセクションを非表示にする |
+
+環境変数は `CALM_` 接頭辞に統一されている。旧名（`CCM_` / `CC_MEMORY_`）も当面はフォールバックとして読まれるが、新名が設定されていればそちらが優先される。
 
 <details>
 <summary>リモートサーバー（claude.aiから接続）</summary>
@@ -132,12 +134,12 @@ brew install cloudflared
 ```bash
 export GITHUB_CLIENT_ID="your-client-id"
 export GITHUB_CLIENT_SECRET="your-client-secret"
-export CC_MEMORY_BASE_URL="https://cc-memory.example.com"
-export CC_MEMORY_ALLOWED_USERS="your-github-username"  # カンマ区切りで複数指定可
-# export CC_MEMORY_REMOTE_PORT="8001"  # デフォルト: 8001
+export CALM_BASE_URL="https://cc-memory.example.com"
+export CALM_ALLOWED_USERS="your-github-username"  # カンマ区切りで複数指定可
+# export CALM_REMOTE_PORT="8001"  # デフォルト: 8001
 ```
 
-`CC_MEMORY_ALLOWED_USERS`に含まれないGitHubユーザーはOAuth認証後にアクセスが拒否される。
+`CALM_ALLOWED_USERS`に含まれないGitHubユーザーはOAuth認証後にアクセスが拒否される。
 
 ### 4. Cloudflare Tunnelのセットアップ
 

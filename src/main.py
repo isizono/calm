@@ -260,7 +260,7 @@ def _apply_flavor_to_snippets(items: list[dict], flavor: str) -> None:
 
 
 # MCPサーバーを作成
-mcp = FastMCP("cc-memory", instructions=build_instructions())
+mcp = FastMCP("calm", instructions=build_instructions())
 
 # tool呼び出し中の未捕捉例外を signal_events へ自動捕捉する middleware を登録する
 from src.services.signal_middleware import SignalCaptureMiddleware
@@ -1724,7 +1724,7 @@ def get_config() -> dict:
 
     read_tool_limitsはtool呼び出し前にレスポンスサイズを見積もるための既定上限一覧。
     search/get_logs/get_decisions/get_timelineの上限は各serviceにハードコードされており
-    環境変数では変更できない（precedent_budget_charsのみCCM_PRECEDENT_BUDGET_CHARSで変更可）。
+    環境変数では変更できない（precedent_budget_charsのみCALM_PRECEDENT_BUDGET_CHARSで変更可）。
     budget_defaultsはbudget_serviceが把握する予算関連の既定値一覧（同じくsrc.configから読む）。
     recency_decay_rate/precedent_budget_chars（トップレベル）はbudget_defaultsと同じ値を指す
     後方互換フィールドで、定義元はbudget_service.BUDGET_DEFAULTS（重複ハードコードを避ける）。

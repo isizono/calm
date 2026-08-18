@@ -14,7 +14,7 @@ base/head それぞれのcommitを一時worktreeにcheckoutし、`pytest --colle
 使い方:
     uv run python scripts/check_test_removal.py --base <ref> --head <ref>
 
-PR本文をチェック対象に含めるには環境変数 CCM_PR_BODY にPR本文を渡す
+PR本文をチェック対象に含めるには環境変数 CALM_PR_BODY にPR本文を渡す
 (GitHub Actions では `${{ github.event.pull_request.body }}` を渡す想定。
 `scripts/lint_doc_cochange.py` の前例に倣う)。
 """
@@ -22,7 +22,6 @@ PR本文をチェック対象に含めるには環境変数 CCM_PR_BODY にPR本
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import subprocess
 import sys
@@ -31,6 +30,10 @@ from pathlib import Path
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _SCRIPT_DIR.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from src.env_compat import env_get  # noqa: E402
 
 TEST_REMOVAL_MARKER_PREFIX = "[test-removal: "
 
@@ -204,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    pr_body = os.environ.get("CCM_PR_BODY", "")
+    pr_body = env_get("CALM_PR_BODY", "")
 
     base_ids = collect_test_ids(args.repo_root, args.base, uv_sync=not args.no_uv_sync)
     head_ids = collect_test_ids(args.repo_root, args.head, uv_sync=not args.no_uv_sync)

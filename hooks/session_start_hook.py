@@ -4,7 +4,7 @@
 - アクティビティ一覧（作業中・優先のみ個別表示。末尾に固定ナビ+未表示件数句）
 - 振る舞い（正は~/.claude/rules配下の自動生成ファイル。本hookは投影ファイルの
   鮮度検証と、読み込めていないセッションへの縮退フォールバックのみを担う）
-- relay Monitor監視指示（CCM_RELAY_SESSION_AWARE=1のときのみ。identity解決に
+- relay Monitor監視指示（CALM_RELAY_SESSION_AWARE=1のときのみ。identity解決に
   成功した場合は常時、未読N件の報告行のみ未読が実在するときに追加）
 
 コンテキスト取得フローガイドはここでは注入しない（check_in初回呼び出し時に
@@ -315,7 +315,7 @@ def _build_degraded_habits_fallback(
 
     verify_and_healのabsent系（不在・破損・修復失敗を含む）・failed_stale
     （staleを検知したが修復書き込みに失敗し、最新内容が読めていない可能性がある
-    ケース）・kill switch（CCM_HABITS_RULES_EXPORT=0）・SessionStart(source=
+    ケース）・kill switch（CALM_HABITS_RULES_EXPORT=0）・SessionStart(source=
     compact)（rulesファイル内容がcompact後も保持されるかの実機検証が未了のため
     安全側に倒し無条件で呼ばれる）から呼ばれる。always層は全文、intelligently層は
     タイトルを列挙せず件数1行にとどめる（全文9,500字級の注入はpersisted-output
@@ -413,7 +413,7 @@ def _build_signals_section(conn, session_id: str | None = None, source: str | No
 def _build_relay_inbox_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # conn, session_id, source, **_kwargs: 全セクション共通シグネチャ
     """identityが解決できる限りMonitor監視指示を常時出す。未読件数の表示のみ0件時は省く。
 
-    CCM_RELAY_SESSION_AWARE（デフォルトOFF）のkill switch。OFF時はtokenチェック・
+    CALM_RELAY_SESSION_AWARE（デフォルトOFF）のkill switch。OFF時はtokenチェック・
     identity解決を一切試みず空文字を返す。relayを使わないユーザー・セッションに
     関連コンテキストを注入しないための入口ゲート。
 

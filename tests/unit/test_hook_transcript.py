@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 
 from hooks.hook_transcript import (
+    _extract_short_name,
+    _is_calm_tool,
     extract_events,
     get_transcript_info,
     has_context_retrieval_calls,
@@ -47,22 +49,22 @@ class TestHasRecentRecording:
         assert has_recent_recording(entries) is False
 
     def test_unrelated_tool_calls(self):
-        entries = [_make_assistant_entry(tool_calls=["mcp__plugin_claude-code-memory_cc-memory__search"])]
+        entries = [_make_assistant_entry(tool_calls=["mcp__plugin_calm_calm__search"])]
         assert has_recent_recording(entries) is False
 
     def test_add_decision_detected(self):
-        entries = [_make_assistant_entry(tool_calls=["mcp__plugin_claude-code-memory_cc-memory__add_decisions"])]
+        entries = [_make_assistant_entry(tool_calls=["mcp__plugin_calm_calm__add_decisions"])]
         assert has_recent_recording(entries) is True
 
     def test_add_topic_detected(self):
-        entries = [_make_assistant_entry(tool_calls=["mcp__plugin_claude-code-memory_cc-memory__add_topic"])]
+        entries = [_make_assistant_entry(tool_calls=["mcp__plugin_calm_calm__add_topic"])]
         assert has_recent_recording(entries) is True
 
     def test_mixed_entries(self):
         entries = [
             _make_assistant_entry(text="thinking..."),
-            _make_assistant_entry(tool_calls=["mcp__plugin_claude-code-memory_cc-memory__search"]),
-            _make_assistant_entry(tool_calls=["mcp__plugin_claude-code-memory_cc-memory__add_decisions"]),
+            _make_assistant_entry(tool_calls=["mcp__plugin_calm_calm__search"]),
+            _make_assistant_entry(tool_calls=["mcp__plugin_calm_calm__add_decisions"]),
         ]
         assert has_recent_recording(entries) is True
 
@@ -80,24 +82,24 @@ class TestHasContextRetrievalCalls:
         assert has_context_retrieval_calls(entries) is False
 
     def test_get_topics_detected(self):
-        entries = [_make_assistant_entry(tool_calls=["mcp__plugin_claude-code-memory_cc-memory__get_topics"])]
+        entries = [_make_assistant_entry(tool_calls=["mcp__plugin_calm_calm__get_topics"])]
         assert has_context_retrieval_calls(entries) is True
 
     def test_search_detected(self):
-        entries = [_make_assistant_entry(tool_calls=["mcp__plugin_claude-code-memory_cc-memory__search"])]
+        entries = [_make_assistant_entry(tool_calls=["mcp__plugin_calm_calm__search"])]
         assert has_context_retrieval_calls(entries) is True
 
     def test_get_activities_detected(self):
-        entries = [_make_assistant_entry(tool_calls=["mcp__plugin_claude-code-memory_cc-memory__get_activities"])]
+        entries = [_make_assistant_entry(tool_calls=["mcp__plugin_calm_calm__get_activities"])]
         assert has_context_retrieval_calls(entries) is True
 
     def test_get_by_ids_detected(self):
-        entries = [_make_assistant_entry(tool_calls=["mcp__plugin_claude-code-memory_cc-memory__get_by_ids"])]
+        entries = [_make_assistant_entry(tool_calls=["mcp__plugin_calm_calm__get_by_ids"])]
         assert has_context_retrieval_calls(entries) is True
 
     def test_recording_tool_not_detected(self):
         """記録ツールはコンテキスト取得とみなさない"""
-        entries = [_make_assistant_entry(tool_calls=["mcp__plugin_claude-code-memory_cc-memory__add_decisions"])]
+        entries = [_make_assistant_entry(tool_calls=["mcp__plugin_calm_calm__add_decisions"])]
         assert has_context_retrieval_calls(entries) is False
 
 
@@ -305,12 +307,12 @@ class TestExtractEventsIsMeta:
 
 # --- リモートMCPプレフィックス対応テスト ---
 
-_REMOTE_PREFIX = "mcp__claude_ai_cc-memory__"
-_LOCAL_PREFIX = "mcp__plugin_claude-code-memory_cc-memory__"
+_REMOTE_PREFIX = "mcp__claude_ai_calm__"
+_LOCAL_PREFIX = "mcp__plugin_calm_calm__"
 
 
 class TestRemoteMcpPrefix:
-    """リモートMCP経由（mcp__claude_ai_cc-memory__*）でもツール検出できることを検証"""
+    """リモートMCP経由（mcp__claude_ai_calm__*）でもツール検出できることを検証"""
 
     def test_has_recent_recording_remote(self):
         entries = [_make_assistant_entry(tool_calls=[f"{_REMOTE_PREFIX}add_decisions"])]
@@ -350,8 +352,8 @@ class TestRemoteMcpPrefix:
         assert len(tool_events) == 1
         assert tool_events[0]["name"] == "add_logs"
 
-    def test_non_cc_memory_tool_ignored(self):
-        """cc-memoryでないツールはイベントに含まれない"""
+    def test_non_calm_tool_ignored(self):
+        """CALMでないツールはイベントに含まれない"""
         entries = [
             {"type": "user", "message": {"content": "hi"}},
             _make_assistant_entry(tool_calls=["mcp__some_other_tool__search"]),
@@ -359,6 +361,78 @@ class TestRemoteMcpPrefix:
         events, _ = extract_events(entries, 0)
         tool_events = [e for e in events if e["e"] == "tool"]
         assert len(tool_events) == 0
+
+
+_LEGACY_REMOTE_PREFIX = "mcp__claude_ai_cc-memory__"
+_LEGACY_LOCAL_PREFIX = "mcp__plugin_claude-code-memory_cc-memory__"
+
+
+class TestLegacyToolNameMarker:
+    """改名前のツール名（cc-memory__）を含むtranscriptも解析できることを検証。
+
+    hookは過去に記録されたtranscriptも読むため、新名（calm__）だけを受理すると
+    改名前のセッションで記録された呼び出しがすべて検出漏れになる。
+    """
+
+    @pytest.mark.parametrize(
+        "tool_name",
+        [
+            "mcp__plugin_calm_calm__search",
+            "mcp__claude_ai_calm__search",
+            "mcp__plugin_claude-code-memory_cc-memory__search",
+            "mcp__claude_ai_cc-memory__search",
+            # プラグイン名だけ改名済み・サーバーキーが旧名のままの過渡状態
+            "mcp__plugin_calm_cc-memory__search",
+        ],
+    )
+    def test_is_calm_tool_accepts_old_and_new_names(self, tool_name):
+        assert _is_calm_tool(tool_name) is True
+
+    @pytest.mark.parametrize(
+        "tool_name",
+        ["mcp__some_other_tool__search", "Read", "mcp__claude_ai_other__calm"],
+    )
+    def test_is_calm_tool_rejects_others(self, tool_name):
+        assert _is_calm_tool(tool_name) is False
+
+    @pytest.mark.parametrize(
+        "tool_name",
+        [
+            "mcp__plugin_calm_calm__check_in",
+            "mcp__claude_ai_calm__check_in",
+            "mcp__plugin_claude-code-memory_cc-memory__check_in",
+            "mcp__claude_ai_cc-memory__check_in",
+            "mcp__plugin_calm_cc-memory__check_in",
+        ],
+    )
+    def test_extract_short_name_from_old_and_new_names(self, tool_name):
+        assert _extract_short_name(tool_name) == "check_in"
+
+    def test_extract_short_name_rejects_non_calm_tool(self):
+        with pytest.raises(ValueError):
+            _extract_short_name("mcp__some_other_tool__search")
+
+    def test_has_recent_recording_legacy_local(self):
+        entries = [_make_assistant_entry(tool_calls=[f"{_LEGACY_LOCAL_PREFIX}add_decisions"])]
+        assert has_recent_recording(entries) is True
+
+    def test_has_recent_recording_legacy_remote(self):
+        entries = [_make_assistant_entry(tool_calls=[f"{_LEGACY_REMOTE_PREFIX}add_decisions"])]
+        assert has_recent_recording(entries) is True
+
+    def test_extract_events_legacy_check_in(self):
+        entries = [
+            {"type": "user", "message": {"content": "hi"}},
+            _make_assistant_entry(
+                tool_calls=[f"{_LEGACY_LOCAL_PREFIX}check_in"],
+                tool_inputs=[{"activity_id": 609}],
+            ),
+        ]
+        events, _ = extract_events(entries, 0)
+        tool_events = [e for e in events if e["e"] == "tool"]
+        assert len(tool_events) == 1
+        assert tool_events[0]["name"] == "check_in"
+        assert tool_events[0]["activity_id"] == 609
 
 
 class TestExtractAddDecisionsTopicIds:

@@ -208,19 +208,23 @@ class TestIsAllowed:
     def test_exact_match_allowed(self, tool_name):
         assert preblock_hook._is_allowed(tool_name) is True
 
-    def test_cc_memory_mcp_prefix_allowed(self):
-        # ローカルプラグイン経由prefix (回帰確認)
+    def test_calm_mcp_prefix_allowed(self):
+        # ローカルプラグイン経由prefix
+        assert preblock_hook._is_allowed("mcp__plugin_calm_calm__search")
+        assert preblock_hook._is_allowed("mcp__plugin_calm_calm__add_logs")
+
+    def test_calm_remote_mcp_prefix_allowed(self):
+        # リモート接続経由prefix。リモートMCP経由でもCALM自身のツール呼び出しが
+        # 誤ってblock対象にならないことを確認する。
+        assert preblock_hook._is_allowed("mcp__claude_ai_calm__search")
+        assert preblock_hook._is_allowed("mcp__claude_ai_calm__add_logs")
+
+    def test_legacy_cc_memory_mcp_prefix_allowed(self):
+        # 旧名 (cc-memory) prefix も allowlist に残す。プラグイン識別子・MCPサーバー
+        # キーの改名が未反映の接続経路から呼ばれても誤blockしないことを確認する。
         assert preblock_hook._is_allowed(
             "mcp__plugin_claude-code-memory_cc-memory__search"
         )
-        assert preblock_hook._is_allowed(
-            "mcp__plugin_claude-code-memory_cc-memory__add_logs"
-        )
-
-    def test_cc_memory_remote_mcp_prefix_allowed(self):
-        # リモート接続経由prefix。リモートMCP経由でもcc-memory自身のツール呼び出しが
-        # 誤ってblock対象にならないことを確認する。
-        assert preblock_hook._is_allowed("mcp__claude_ai_cc-memory__search")
         assert preblock_hook._is_allowed("mcp__claude_ai_cc-memory__add_logs")
 
     @pytest.mark.parametrize(
@@ -363,7 +367,7 @@ def cc_memory_cwd(tmp_path, monkeypatch):
     )
     monkeypatch.chdir(tmp_path)
     # opt-out 環境変数は明示的に消しておく
-    monkeypatch.delenv("CC_MEMORY_LEAK_GUARD", raising=False)
+    monkeypatch.delenv("CALM_LEAK_GUARD", raising=False)
     # log path を tmp 配下に逃がして home 汚染を防ぐ
     log_path = tmp_path / "log" / "preblock_hook.jsonl"
     monkeypatch.setattr(preblock_hook, "LOG_PATH", log_path)
@@ -527,10 +531,10 @@ class TestMainBlockFlow:
         assert literal in out["hookSpecificOutput"]["permissionDecisionReason"]
 
     def test_allowlist_tool_passes_through(self, capsys, cc_memory_cwd):
-        # cc-memory MCP は scan されない
+        # CALM MCP は scan されない
         out = _run_main_with_event(
             {
-                "tool_name": "mcp__plugin_claude-code-memory_cc-memory__search",
+                "tool_name": "mcp__plugin_calm_calm__search",
                 "tool_input": {"keyword": "D#123"},
                 "session_id": "s1",
             },
@@ -539,11 +543,11 @@ class TestMainBlockFlow:
         assert out == {}
 
     def test_allowlist_remote_tool_passes_through(self, capsys, cc_memory_cwd):
-        # cc-memory MCP (リモート接続経由prefix) も scan されない
+        # CALM MCP (リモート接続経由prefix) も scan されない
         sharp = chr(35)
         out = _run_main_with_event(
             {
-                "tool_name": "mcp__claude_ai_cc-memory__search",
+                "tool_name": "mcp__claude_ai_calm__search",
                 "tool_input": {"keyword": "D" + sharp + "123"},
                 "session_id": "s1",
             },
@@ -655,7 +659,7 @@ class TestMainBlockFlow:
     def test_opt_out_env_var_passes_through(
         self, capsys, cc_memory_cwd, monkeypatch
     ):
-        monkeypatch.setenv("CC_MEMORY_LEAK_GUARD", "off")
+        monkeypatch.setenv("CALM_LEAK_GUARD", "off")
         out = _run_main_with_event(
             {
                 "tool_name": "Bash",
@@ -667,7 +671,7 @@ class TestMainBlockFlow:
         assert out == {}
 
     def test_opt_out_case_insensitive(self, capsys, cc_memory_cwd, monkeypatch):
-        monkeypatch.setenv("CC_MEMORY_LEAK_GUARD", "OFF")
+        monkeypatch.setenv("CALM_LEAK_GUARD", "OFF")
         out = _run_main_with_event(
             {
                 "tool_name": "Bash",
@@ -682,7 +686,7 @@ class TestMainBlockFlow:
         self, capsys, cc_memory_cwd, monkeypatch
     ):
         # "on" / "1" / "true" などは opt-out ではない
-        monkeypatch.setenv("CC_MEMORY_LEAK_GUARD", "on")
+        monkeypatch.setenv("CALM_LEAK_GUARD", "on")
         out = _run_main_with_event(
             {
                 "tool_name": "Bash",
@@ -700,7 +704,7 @@ class TestMainBlockFlow:
             '[project]\nname = "other-project"\n'
         )
         monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("CC_MEMORY_LEAK_GUARD", raising=False)
+        monkeypatch.delenv("CALM_LEAK_GUARD", raising=False)
         out = _run_main_with_event(
             {
                 "tool_name": "Bash",

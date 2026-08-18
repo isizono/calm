@@ -6,7 +6,7 @@ DISCUSSION_DB_PATH 環境変数でテスト用DBを指定する。
 hookはhabits rules投影ファイル（既定 ~/.claude/rules/cc-memory-habits.md）を
 verify_and_heal経由で検証・書き込みしうる。テストプロセスとhookは別プロセス
 なのでconftestのmonkeypatch（_isolate_habits_rules_projection）は伝播しない。
-_run_session_start_hookが呼び出しごとに使い捨てのCCM_HABITS_RULES_PATHを
+_run_session_start_hookが呼び出しごとに使い捨てのCALM_HABITS_RULES_PATHを
 強制注入し、実ファイルへの書き込みを防ぐ。
 """
 import json
@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from src.db import init_database, get_connection
+from src.env_compat import CANONICAL_PREFIX, env_names
 
 # プロジェクトルート
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -54,7 +55,7 @@ def _run_session_start_hook(
     (P1-7 の自セッション照合テスト用)。
 
     habits_rules_path 未指定時は呼び出しごとの使い捨てディレクトリを生成し、
-    CCM_HABITS_RULES_PATH で強制的に隔離する（実ファイルへの書き込み防止）。
+    CALM_HABITS_RULES_PATH で強制的に隔離する（実ファイルへの書き込み防止）。
     ファイル修復の検証等でパスを固定したいテストは明示的に渡すこと。
     """
     env = {**os.environ, "DISCUSSION_DB_PATH": db_path}
@@ -65,13 +66,18 @@ def _run_session_start_hook(
     if habits_rules_path is None:
         cleanup_dir = tempfile.mkdtemp(prefix="ccm-habits-rules-")
         habits_rules_path = str(Path(cleanup_dir) / "cc-memory-habits.md")
-    env["CCM_HABITS_RULES_PATH"] = habits_rules_path
+    env["CALM_HABITS_RULES_PATH"] = habits_rules_path
 
     if extra_env:
         env.update(extra_env)
     if env_remove:
         for key in env_remove:
-            env.pop(key, None)
+            # CALM_ 系は旧名フォールバックが効くため、CALM_ 名だけ消しても
+            # 呼び出し元の環境に残った CCM_ / CC_MEMORY_ 名から値が復活する。
+            # 新旧まとめて落とす。それ以外の環境変数はその名前だけ落とす。
+            names = env_names(key) if key.startswith(CANONICAL_PREFIX) else (key,)
+            for name in names:
+                env.pop(name, None)
 
     try:
         payload_str = "{}" if stdin_payload is None else json.dumps(stdin_payload)
@@ -240,7 +246,7 @@ class TestSessionStartHookBasic:
         finally:
             conn.close()
 
-        result = _run_session_start_hook(temp_db, env_remove=["CCM_SYNC_POLICY"])
+        result = _run_session_start_hook(temp_db, env_remove=["CALM_SYNC_POLICY"])
 
         context = result["hookSpecificOutput"]["additionalContext"]
         assert "check_in（なければ作成 — activity-start）" in context
@@ -481,7 +487,7 @@ class TestSessionStartHookHabitsProjectionCutover:
         assert habits_path.exists()
 
     def test_kill_switch_degrades_without_being_treated_as_fresh(self, temp_db, tmp_path):
-        """kill switch（CCM_HABITS_RULES_EXPORT=0）中はfresh扱いにせず、
+        """kill switch（CALM_HABITS_RULES_EXPORT=0）中はfresh扱いにせず、
         always全文+件数1行の縮退注入にフォールバックする（プレースホルダ運用中の
         ファイルがそのまま読まれ続ける事態を避けるため）"""
         _seed_habit("kill switch下のalways振る舞い")
@@ -490,7 +496,7 @@ class TestSessionStartHookHabitsProjectionCutover:
         result = _run_session_start_hook(
             temp_db,
             habits_rules_path=str(habits_path),
-            extra_env={"CCM_HABITS_RULES_EXPORT": "0"},
+            extra_env={"CALM_HABITS_RULES_EXPORT": "0"},
         )
         context = result["hookSpecificOutput"]["additionalContext"]
 
@@ -590,12 +596,12 @@ class TestSessionStartHookHabitsProjectionCutover:
         habits_path = tmp_path / "cc-memory-habits.md"
         # 1回目: absentからのheal。DB状態を投影ファイルへ反映させる
         _run_session_start_hook(
-            temp_db, habits_rules_path=str(habits_path), env_remove=["CCM_SYNC_POLICY"]
+            temp_db, habits_rules_path=str(habits_path), env_remove=["CALM_SYNC_POLICY"]
         )
 
         # 2回目: freshのはず
         result = _run_session_start_hook(
-            temp_db, habits_rules_path=str(habits_path), env_remove=["CCM_SYNC_POLICY"]
+            temp_db, habits_rules_path=str(habits_path), env_remove=["CALM_SYNC_POLICY"]
         )
         context = result["hookSpecificOutput"]["additionalContext"]
 
@@ -744,26 +750,26 @@ class TestSessionStartHookSyncPolicy:
     """sync_policyの注入テスト"""
 
     def test_sync_policy_shown_when_set(self, temp_db):
-        """CCM_SYNC_POLICY設定時にsync_policyセクションが出力される"""
+        """CALM_SYNC_POLICY設定時にsync_policyセクションが出力される"""
         result = _run_session_start_hook(
-            temp_db, extra_env={"CCM_SYNC_POLICY": "PRマージ済みは自動で閉じて"}
+            temp_db, extra_env={"CALM_SYNC_POLICY": "PRマージ済みは自動で閉じて"}
         )
         context = result["hookSpecificOutput"]["additionalContext"]
         assert "# sync_policy" in context
         assert "PRマージ済みは自動で閉じて" in context
 
     def test_sync_policy_hidden_when_unset(self, temp_db):
-        """CCM_SYNC_POLICY未設定時にsync_policyセクションが出力されない"""
+        """CALM_SYNC_POLICY未設定時にsync_policyセクションが出力されない"""
         result = _run_session_start_hook(
-            temp_db, env_remove=["CCM_SYNC_POLICY"]
+            temp_db, env_remove=["CALM_SYNC_POLICY"]
         )
         context = result["hookSpecificOutput"]["additionalContext"]
         assert "# sync_policy" not in context
 
     def test_sync_policy_hidden_when_empty(self, temp_db):
-        """CCM_SYNC_POLICY空文字時にsync_policyセクションが出力されない"""
+        """CALM_SYNC_POLICY空文字時にsync_policyセクションが出力されない"""
         result = _run_session_start_hook(
-            temp_db, extra_env={"CCM_SYNC_POLICY": ""}
+            temp_db, extra_env={"CALM_SYNC_POLICY": ""}
         )
         context = result["hookSpecificOutput"]["additionalContext"]
         assert "# sync_policy" not in context
@@ -1279,7 +1285,7 @@ class TestSessionStartHookTranscriptPath:
 class TestSessionStartHookRelayInbox:
     """relay inbox未読件数 + Monitor監視指示の表示テスト
 
-    CCM_RELAY_SESSION_AWARE=1（本クラスの既定extra_env）を渡した場合のON時の
+    CALM_RELAY_SESSION_AWARE=1（本クラスの既定extra_env）を渡した場合のON時の
     振る舞いを検証する。OFF時（未設定）の振る舞いはTestSessionStartHookRelay
     SessionAwareGateで検証する。
 
@@ -1307,7 +1313,7 @@ class TestSessionStartHookRelayInbox:
             temp_db,
             extra_env={
                 "RELAY_STATE_DIR": str(state_dir),
-                "CCM_RELAY_SESSION_AWARE": "1",
+                "CALM_RELAY_SESSION_AWARE": "1",
             },
             env_remove=["RELAY_BEARER_TOKEN"],
         )
@@ -1335,7 +1341,7 @@ class TestSessionStartHookRelayInbox:
             extra_env={
                 "RELAY_STATE_DIR": str(state_dir),
                 "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
-                "CCM_RELAY_SESSION_AWARE": "1",
+                "CALM_RELAY_SESSION_AWARE": "1",
             },
         )
         context = result["hookSpecificOutput"]["additionalContext"]
@@ -1387,7 +1393,7 @@ class TestSessionStartHookRelayInbox:
             extra_env={
                 "RELAY_STATE_DIR": str(state_dir),
                 "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
-                "CCM_RELAY_SESSION_AWARE": "1",
+                "CALM_RELAY_SESSION_AWARE": "1",
             },
         )
         context = result["hookSpecificOutput"]["additionalContext"]
@@ -1410,7 +1416,7 @@ class TestSessionStartHookRelayInbox:
 
         result = _run_session_start_hook(
             temp_db,
-            extra_env={"RELAY_STATE_DIR": str(state_dir), "CCM_RELAY_SESSION_AWARE": "1"},
+            extra_env={"RELAY_STATE_DIR": str(state_dir), "CALM_RELAY_SESSION_AWARE": "1"},
             env_remove=["RELAY_BEARER_TOKEN"],
         )
         context = result["hookSpecificOutput"]["additionalContext"]
@@ -1436,7 +1442,7 @@ class TestSessionStartHookRelayInbox:
             extra_env={
                 "RELAY_STATE_DIR": str(state_dir),
                 "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
-                "CCM_RELAY_SESSION_AWARE": "1",
+                "CALM_RELAY_SESSION_AWARE": "1",
             },
         )
         context = result["hookSpecificOutput"]["additionalContext"]
@@ -1469,7 +1475,7 @@ class TestSessionStartHookRelayInbox:
             extra_env={
                 "RELAY_STATE_DIR": str(state_dir),
                 "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
-                "CCM_RELAY_SESSION_AWARE": "1",
+                "CALM_RELAY_SESSION_AWARE": "1",
             },
         )
         context = result["hookSpecificOutput"]["additionalContext"]
@@ -1479,7 +1485,7 @@ class TestSessionStartHookRelayInbox:
 
 
 class TestSessionStartHookRelaySessionAwareGate:
-    """CCM_RELAY_SESSION_AWARE（kill switch）未設定時（デフォルトOFF）の振る舞い。
+    """CALM_RELAY_SESSION_AWARE（kill switch）未設定時（デフォルトOFF）の振る舞い。
 
     token設定済み・launcher登録済みでidentity解決可能・未読ありという
     「本来なら表示される」全条件を満たしていても、env var未設定なら
@@ -1516,7 +1522,7 @@ class TestSessionStartHookRelaySessionAwareGate:
                 "RELAY_STATE_DIR": str(state_dir),
                 "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
             },
-            env_remove=["CCM_RELAY_SESSION_AWARE"],
+            env_remove=["CALM_RELAY_SESSION_AWARE"],
         )
         context = result["hookSpecificOutput"]["additionalContext"]
 
@@ -1545,7 +1551,7 @@ class TestSessionStartHookContextBudget:
         for i in range(2):
             _seed_habit(f"標準的な長さの振る舞い内容その{i}")
 
-        result = _run_session_start_hook(temp_db, env_remove=["CCM_SYNC_POLICY"])
+        result = _run_session_start_hook(temp_db, env_remove=["CALM_SYNC_POLICY"])
         context = result["hookSpecificOutput"]["additionalContext"]
 
         assert len(context) <= 1900, (

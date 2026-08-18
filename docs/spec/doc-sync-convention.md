@@ -60,7 +60,7 @@ git diff だけで判定できる規約を CI（`.github/workflows/test.yml`）�
 
 判定不能（`ast.parse` 失敗等）は警告のみで pass する。doc lint で開発を止めないためで、締め領域の防壁（マージ可否の最終ゲート）は別コンポーネントの管轄であり、この lint は地図メンテの補助輪という位置づけである。
 
-PR 本文をチェック対象に含めるには環境変数 `CCM_PR_BODY` に本文を渡す（`.github/workflows/test.yml` では `${{ github.event.pull_request.body }}` を渡している）。CI fail 後に PR 本文へ例外マーカーを追記したときそれを反映させるため、ワークフローの `pull_request.types` に `edited` を含めている（本文編集で lint が再実行される）。
+PR 本文をチェック対象に含めるには環境変数 `CALM_PR_BODY` に本文を渡す（`.github/workflows/test.yml` では `${{ github.event.pull_request.body }}` を渡している）。CI fail 後に PR 本文へ例外マーカーを追記したときそれを反映させるため、ワークフローの `pull_request.types` に `edited` を含めている（本文編集で lint が再実行される）。
 
 ---
 

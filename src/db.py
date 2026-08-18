@@ -13,6 +13,8 @@ from yoyo import default_migration_table
 from yoyo.backends import SQLiteBackend
 from yoyo.connections import parse_uri
 
+from src.env_compat import env_get
+
 logger = logging.getLogger(__name__)
 
 MIGRATIONS_DIR = Path(__file__).parent.parent / "migrations"
@@ -27,7 +29,7 @@ def get_db_path() -> str:
         return DB_PATH
 
     # 実行時の環境変数もチェック（テスト互換: テスト中に動的設定されるケース）
-    db_path = os.environ.get("CCM_DB_PATH") or os.environ.get("DISCUSSION_DB_PATH")
+    db_path = env_get("CALM_DB_PATH") or os.environ.get("DISCUSSION_DB_PATH")
     if db_path:
         return db_path
 
@@ -173,13 +175,13 @@ def _apply_migrations() -> None:
         if not pending:
             return
 
-        from src.config import CCM_MIGRATION_DRYRUN, CCM_MIGRATION_SNAPSHOT
+        from src.config import CALM_MIGRATION_DRYRUN, CALM_MIGRATION_SNAPSHOT
 
         snapshot_path: str | None = None
-        if CCM_MIGRATION_SNAPSHOT:
+        if CALM_MIGRATION_SNAPSHOT:
             snapshot_path = _take_premigration_snapshot(db_path, pending)
 
-        if CCM_MIGRATION_DRYRUN:
+        if CALM_MIGRATION_DRYRUN:
             _run_dry_run_gate(db_path, pending, snapshot_path)
 
         _apply_pending_and_record(backend, pending, guide_snapshot_path=snapshot_path)
@@ -272,7 +274,7 @@ def verify_migration_ledger(conn: sqlite3.Connection, migrations) -> list[dict]:
 
 
 def _handle_hash_mismatch(mismatches: list[dict]) -> None:
-    from src.config import CCM_MIGRATION_HASH_ENFORCE
+    from src.config import CALM_MIGRATION_HASH_ENFORCE
 
     lines = [
         "migration_ledger 内容ハッシュ不一致を検出しました"
@@ -286,7 +288,7 @@ def _handle_hash_mismatch(mismatches: list[dict]) -> None:
     )
     message = "\n".join(lines)
 
-    if CCM_MIGRATION_HASH_ENFORCE == "warn":
+    if CALM_MIGRATION_HASH_ENFORCE == "warn":
         logger.warning(message)
         return
 
