@@ -34,6 +34,18 @@ def _isolate_habits_rules_projection(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_relay_state_dir(tmp_path, monkeypatch):
+    """relay の状態ディレクトリをテストごとの一時パスへ強制する。
+
+    declaration / inbox / sessions への書込が本番 ~/.cc-memory/relay に
+    到達すると、稼働中の全セッションの relay 受信を巻き込む。ファイル単位の
+    opt-in fixture は書き忘れると本番を汚しうるため、全テストで無条件に
+    分離する。
+    """
+    monkeypatch.setenv("RELAY_STATE_DIR", str(tmp_path / "relay-state"))
+
+
+@pytest.fixture(autouse=True)
 def _clear_ow_env(monkeypatch):
     """ow関連の環境変数をテストごとに除去する。
 
