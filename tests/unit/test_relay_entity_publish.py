@@ -212,6 +212,19 @@ class TestSelfLabel:
         assert "event:created" in rows[0]["labels"]
         assert f"ask:{result['id']}" in rows[0]["labels"]
 
+    def test_add_ask_created_event_has_no_own_tags_yet(self, temp_db, disable_embedding):
+        """askのevent:createdはask_tagsへのタグ紐付け（add_askが最初のcommit後に別connで
+        行う）より前にcommitされるため、own_tagsは常に空。domain単位で「新規ask作成」
+        だけを購読することはできない（docstringに明記済みの既知の制約）。own_tagsが
+        載るのはevent:updated以降（test_ask_own_tags_are_included_on_updated_event）。
+        """
+        activity = add_activity(
+            title="a", description="d", tags=DEFAULT_TAGS, check_in=False
+        )
+        result = ak.add_ask("質問", tags=["domain:test"], blocks=[activity["activity_id"]])
+        rows = _rows_for("ask", result["id"])
+        assert "domain:test" not in rows[0]["labels"]
+
     def test_ask_own_tags_are_included_on_updated_event(self, temp_db, disable_embedding):
         """askのown_tagsは_TAG_JUNCTIONにaskが登録されたことでlabelsに載るようになる。
 

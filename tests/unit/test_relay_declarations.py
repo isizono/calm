@@ -268,6 +268,35 @@ class TestNormalizeAllDeclarations:
         assert first == 1
         assert second == 0
 
+    def test_normalized_entry_is_classified_as_resubscribe_by_lease_loop(self, relay_state):
+        """正規化直後のentryは、lease_loopのcompute_renew_actionsから見ると
+        「期限切れ→resubscribe」に分類される。これがlease_expires_atを現在時刻に
+        更新する目的そのもの（削除ではなく更新にすることで、この判定に確実に乗せて
+        新labelsでの再購読につなげる）。"""
+        from src.services.relay.lease_loop import compute_renew_actions
+
+        self._write(
+            "sess-1",
+            "session-abc",
+            [
+                {
+                    "subscription_id": "sub-1",
+                    "labels": ["room:planning", "handle:session-abc"],
+                    "lease_expires_at": "2099-01-01T00:00:00Z",
+                    "created_at": "2026-07-05T00:00:00Z",
+                }
+            ],
+        )
+        declarations.normalize_all_declarations()
+
+        snapshot = declarations.load_all()
+        actions = compute_renew_actions(snapshot, active_session_ids={"sess-1"})
+
+        assert len(actions) == 1
+        assert actions[0].kind == "resubscribe"
+        assert actions[0].session_id == "sess-1"
+        assert actions[0].labels == ["room:planning"]
+
     def test_normalized_entry_survives_orphan_sweep_threshold(self, relay_state):
         """正規化直後のlease_expires_at（現在時刻）は孤児sweepの24時間閾値に絶対に
         掛からない（lease_expires_atを削除する誤実装だと、期限不明=無限に古い扱いで

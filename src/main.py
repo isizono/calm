@@ -2345,6 +2345,11 @@ def relay_subscribe(labels: list[str]) -> dict:
     （例: ["entity:decision", "event:retracted"] で全 decision の retract を購読）、
     domain 単位の購読は entity:<type> と own tag の組み合わせ
     （例: ["entity:ask", "domain:calm"] で domain:calm タグの ask イベントのみ購読）。
+    ただし ask は例外で、own tag（domain: 等）が publish labels に載るのは
+    event:updated（回答・トリアージ等）以降のみ。event:created の時点ではまだ
+    タグ紐付けが完了していないため、domain 単位で「新規 ask の作成」だけを
+    購読することはできない（全 ask の created を entity:ask で購読し、body 側で
+    絞り込む必要がある）。
 
     新規に購読が作られた場合（reused: false）、server 内の常駐 SSE 接続へ即座に反映指示を
     送る。実際の反映は次に SSE フレーム（実メッセージだけでなく keepalive のコメント

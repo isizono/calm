@@ -142,6 +142,10 @@ def publish_entity_event_with_conn(
     if junction is not None:
         junction_table, id_column = junction
         own_tags = get_entity_tags(conn, junction_table, id_column, entity_id)
+    # 注意: askはevent:createdの時点でown_tagsが常に空になる。ask_serviceが
+    # タグ解決を最初のcommit後（＝この呼び出しの後）に別connで行うため、
+    # created publishの時点ではask_tagsへの紐付けがまだ存在しない。ownタグは
+    # event:updated以降（answer_ask等）のpublishから初めて載る。
 
     # 全 entity_type に、自身を指す self label（<type>:<id>）を付与する。
     # これにより個体単位の購読（例: ["activity:1183"]）が「その entity 自身の
