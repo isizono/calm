@@ -221,6 +221,76 @@ class TestResolveIdentityByAncestry:
     境界ケースで固定する。
     """
 
+    def test_resolves_when_common_ancestor_found(self, sessions_state_dir, monkeypatch):
+        """浅いチェーン（共通祖先が窓内に収まる基本ケース）では、旧実装と
+        同じく解決できること。近傍窓交差は「共通祖先が窓内にあれば解決する」
+        の一般化であり、この基本ケースを壊さない。"""
+        # hook(自分)の祖先: 300 -> 200 -> 1。launcherの祖先: 400 -> 200 -> 1。
+        # 共通祖先200を介して一致する（200は双方とも窓の1ホップ目）。
+        _fake_ppid_chain(monkeypatch, {300: 200, 200: 1})
+        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        sessions_dir = sessions_state_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        (sessions_dir / "launcher-400.json").write_text(
+            json.dumps(
+                {
+                    "session_id": "launcher-uuid-match",
+                    "pid": 400,
+                    "ancestor_pids": [200, 1],
+                    "created_at": "2026-07-08T00:00:00Z",
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert relay_identity.resolve_identity_by_ancestry(pid=300) == "launcher-uuid-match"
+
+    def test_returns_none_when_no_common_ancestor(self, sessions_state_dir, monkeypatch):
+        """共通祖先が全く無ければ（窓内外を問わず）Noneを返すこと"""
+        _fake_ppid_chain(monkeypatch, {300: 999})
+        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        sessions_dir = sessions_state_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        (sessions_dir / "launcher-400.json").write_text(
+            json.dumps(
+                {"session_id": "unrelated", "pid": 400, "ancestor_pids": [200]}
+            ),
+            encoding="utf-8",
+        )
+        assert relay_identity.resolve_identity_by_ancestry(pid=300) is None
+
+    def test_picks_most_recent_when_multiple_candidates_match(
+        self, sessions_state_dir, monkeypatch
+    ):
+        """複数の登録ファイルが窓内で交差する場合、created_atが新しい方を
+        採用すること（旧実装から維持される tiebreak の仕様）"""
+        _fake_ppid_chain(monkeypatch, {300: 200})
+        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        sessions_dir = sessions_state_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        (sessions_dir / "launcher-400.json").write_text(
+            json.dumps(
+                {
+                    "session_id": "older",
+                    "pid": 400,
+                    "ancestor_pids": [200],
+                    "created_at": "2026-07-01T00:00:00Z",
+                }
+            ),
+            encoding="utf-8",
+        )
+        (sessions_dir / "launcher-401.json").write_text(
+            json.dumps(
+                {
+                    "session_id": "newer",
+                    "pid": 401,
+                    "ancestor_pids": [200],
+                    "created_at": "2026-07-08T00:00:00Z",
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert relay_identity.resolve_identity_by_ancestry(pid=300) == "newer"
+
     def test_iterm2_two_tabs_picks_own_tab_rejects_other_tab(
         self, sessions_state_dir, monkeypatch
     ):
