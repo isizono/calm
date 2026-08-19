@@ -297,7 +297,10 @@ def update_material(
         row = conn.execute(
             "SELECT * FROM materials WHERE id = ?", (material_id,)
         ).fetchone()
-        if not row:
+        if not row or row["retracted_at"] is not None:
+            # retract済みmaterialへのUPDATEは、search_index/search_index_ftsを
+            # 物理削除済みの行にUPDATEトリガーを発火させFTS5孤立行を生む原因になるため拒否する
+            # (get_material/export_material_to_fileと同じNOT_FOUND扱いに揃える)。
             return {
                 "error": {
                     "code": "NOT_FOUND",

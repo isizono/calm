@@ -172,6 +172,10 @@ def publish_entity_event_with_conn(
 # habits には updated_at カラムが無い。
 _HAS_UPDATED_AT_COLUMN = frozenset({"activity", "material"})
 
+# _HAS_UPDATED_AT_COLUMN のうち、retracted_at カラムも併せ持つ entity 種別
+# (materialのみ。activitiesにはretracted_atが無くretract対象外)。
+_HAS_RETRACTED_AT_COLUMN = frozenset({"material"})
+
 
 def bump_updated_at_and_publish_with_conn(
     conn: sqlite3.Connection, entity_type: str, entity_id: int
@@ -181,7 +185,17 @@ def bump_updated_at_and_publish_with_conn(
 
     updated_at カラムは activities/materials にしか存在しないため、他の entity
     種別は UPDATE 文をスキップし publish のみ行う。
+
+    retract済みmaterialは丸ごとno-opする（UPDATEもpublishも行わない）。retract済み
+    行へのUPDATEはsearch_index/search_index_ftsを物理削除済みの行にUPDATEトリガーを
+    発火させFTS5孤立行を生む原因になり、かつ実体が取り消し済みの entity に
+    event:updated を publish するのも意味的に不整合なため。
     """
+    if entity_type in _HAS_RETRACTED_AT_COLUMN:
+        table = ENTITY_TABLE_MAP[entity_type]
+        row = conn.execute(f"SELECT retracted_at FROM {table} WHERE id = ?", (entity_id,)).fetchone()
+        if row is not None and row["retracted_at"] is not None:
+            return None
     if entity_type in _HAS_UPDATED_AT_COLUMN:
         table = ENTITY_TABLE_MAP[entity_type]
         conn.execute(

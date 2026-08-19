@@ -61,7 +61,7 @@ last-synced-migration: 0048
 | `update_material` | 資材のcontent/title/tags/sourceを更新する |
 | `update_habit` | 振る舞いを更新する（content/active） |
 | `update_tag` | タグのnotes/canonical/rename/descriptionを更新する |
-| `retract` | 決定事項・ログ・資材を論理削除する（undoで復帰可能だが検索インデックスは再登録されない） |
+| `retract` | 決定事項・ログ・資材を論理削除する（undoで復帰可能、検索インデックスも再登録される） |
 
 ### 1.4 検索系
 
@@ -438,8 +438,7 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 | ids | list[int] | yes | - | 対象IDリスト |
 | undo | bool | no | false | trueで取り消しを戻す（un-retract） |
 
-**動作**: 論理削除。検索・取得でデフォルト除外される（include_retracted=Trueで含められる）。retract時はsearch_index/FTS/vecインデックスからも物理削除される。
-**undoの不可逆性**: undo（un-retract）はretracted_atをNULLに戻すだけで、検索インデックスへの再登録は行わない。un-retract後に再び検索でヒットさせたい場合はadd_decisions/add_logs/add_materialで新規に追加し直す必要がある。
+**動作**: 論理削除。検索・取得でデフォルト除外される（include_retracted=Trueで含められる）。retract時はsearch_index/FTS/vecインデックスからも物理削除される。undo（un-retract）時はretracted_atをNULLに戻すと同時に、search_index/FTSへも再登録し直され、再び検索でヒットするようになる（vecインデックスはcommit後にベストエフォートで再登録）。
 
 ### 2.24 get_timeline
 

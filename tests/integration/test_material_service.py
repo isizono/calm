@@ -5,6 +5,7 @@ import pytest
 from src.db import get_connection, init_database
 from src.services.activity_service import add_activity
 from src.services.material_service import add_material, get_material, update_material
+from src.services.retract_service import retract
 from src.services.search_service import get_by_id, get_by_ids
 
 
@@ -380,6 +381,33 @@ class TestUpdateMaterial:
 
         assert "error" in result
         assert result["error"]["code"] == "NOT_FOUND"
+
+    def test_update_retracted_material_returns_not_found(self, temp_db):
+        """retract済みmaterialへのupdate_materialはNOT_FOUNDで拒否される。
+
+        retract済み行はsearch_index/search_index_ftsを物理削除済みのため、
+        ガード無しでUPDATEを許すとAFTER UPDATEトリガーがFTS5に孤立rowidを
+        自動採番させ、後続で追加される別エンティティのsearch_index.idと
+        衝突しうる（get_material/export_material_to_fileと同じNOT_FOUND扱いに揃える）。
+        """
+        created = self._create_material()
+        material_id = created["material_id"]
+        retract("material", [material_id])
+
+        result = update_material(material_id, content="Updated content")
+
+        assert "error" in result
+        assert result["error"]["code"] == "NOT_FOUND"
+
+        # DB上でcontentが書き換わっていないことも確認する(拒否がUPDATE実行前であること)
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT content FROM materials WHERE id = ?", (material_id,)
+            ).fetchone()
+            assert row["content"] == "Original content"
+        finally:
+            conn.close()
 
     def test_update_empty_title(self, temp_db):
         """Empty title returns VALIDATION_ERROR"""

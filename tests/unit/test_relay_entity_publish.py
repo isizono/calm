@@ -416,6 +416,33 @@ class TestRelationPublish:
         new_rows = _rows_for("decision", new_id)
         assert f"decision:{old_id}" not in new_rows[-1]["labels"]
 
+    def test_add_relation_to_retracted_material_does_not_bump_or_publish(self, temp_db, disable_embedding):
+        """retract済みmaterialをrelation対象にしても、relation自体は張られるが、
+        material側のupdated_at bump/event:updated publishはスキップされる。"""
+        material = add_material(title="m", content="c", tags=DEFAULT_TAGS, source="test")
+        material_id = material["material_id"]
+        activity = add_activity(title="a", description="d", tags=DEFAULT_TAGS, check_in=False)
+        retract("material", [material_id])
+
+        before_material = len(_rows_for("material", material_id))
+
+        result = add_relation(
+            "activity", activity["activity_id"],
+            [{"type": "material", "ids": [material_id]}],
+        )
+        assert result["added"] == 1
+        assert len(_rows_for("material", material_id)) == before_material
+
+        conn = get_connection()
+        try:
+            si_row = conn.execute(
+                "SELECT id FROM search_index WHERE source_type='material' AND source_id=?",
+                (material_id,),
+            ).fetchone()
+            assert si_row is None, "retract済みmaterialへのrelationでsearch_indexが再生成されてはいけない"
+        finally:
+            conn.close()
+
     def test_belongs_to_relation_adds_parent_label(self, temp_db, disable_embedding):
         """親帰属パターン（子→topic）はrelation_type='related'指定でも内部でbelongs_toに
         自動格上げされ、この場合のみparent labelが付く。"""
@@ -471,6 +498,46 @@ class TestPinPublish:
         assert result["removed"] == 0
         after = len(_rows_for("material", material["material_id"]))
         assert after == before
+
+    def test_add_pin_to_retracted_material_does_not_bump_or_publish(self, temp_db, disable_embedding):
+        """retract済みmaterialをpin対象にしても、pin自体は張られるが、material側の
+        updated_at bump/event:updated publishはスキップされる（activity側は通常通り
+        publishされる）。retract済み行へのUPDATEはsearch_index/search_index_ftsを
+        物理削除済みの行にUPDATEトリガーを発火させFTS5孤立行を生む原因になるため。"""
+        material = add_material(title="m", content="c", tags=DEFAULT_TAGS, source="test")
+        material_id = material["material_id"]
+        activity = add_activity(title="a", description="d", tags=DEFAULT_TAGS, check_in=False)
+        retract("material", [material_id])
+
+        before_material = len(_rows_for("material", material_id))
+        before_activity = len(_rows_for("activity", activity["activity_id"]))
+
+        result = add_pin("activity", activity["activity_id"], "material", material_id)
+        assert "error" not in result
+
+        # material側はbump/publishされない(retract済みのためno-op)
+        assert len(_rows_for("material", material_id)) == before_material
+        # activity側は通常通りpublishされる
+        assert len(_rows_for("activity", activity["activity_id"])) == before_activity + 1
+
+        # pin自体は張られている
+        conn = get_connection()
+        try:
+            pin_row = conn.execute(
+                "SELECT * FROM pins WHERE source_type='activity' AND source_id=? "
+                "AND target_type='material' AND target_id=?",
+                (activity["activity_id"], material_id),
+            ).fetchone()
+            assert pin_row is not None
+
+            # search_indexに孤立行が生まれていないことも確認する
+            si_row = conn.execute(
+                "SELECT id FROM search_index WHERE source_type='material' AND source_id=?",
+                (material_id,),
+            ).fetchone()
+            assert si_row is None, "retract済みmaterialへのpinでsearch_indexが再生成されてはいけない"
+        finally:
+            conn.close()
 
 
 class TestAddActivityPinsPublishOrder:

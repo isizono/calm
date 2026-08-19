@@ -1664,10 +1664,9 @@ def remove_pin(
 def retract(entity_type: Literal["decision", "log", "material"], ids: list[int], undo: bool = False) -> dict:
     """決定事項・ログ・資材を取り消す（論理削除）。取り消し済みエンティティは検索・取得でデフォルト除外される。
 
-    retract時はsearch_index/FTS/vecインデックスからも物理削除される。undo（un-retract）は
-    retracted_atをNULLに戻すだけで、検索インデックスへの再登録は行わない（不可逆）。
-    un-retract後に再び検索でヒットさせたい場合は、add_decisions/add_logs/add_materialで
-    新規に追加し直す必要がある。
+    retract時はsearch_index/FTS/vecインデックスからも物理削除される。undo（un-retract）時は
+    retracted_atをNULLに戻すと同時に、search_index/FTSへも再登録され、再び検索でヒットする
+    ようになる（vecインデックスはcommit後にベストエフォートで再登録）。
 
     Args:
         entity_type: "decision" | "log" | "material"

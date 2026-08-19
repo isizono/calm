@@ -33,6 +33,32 @@ _FTS_BODY_QUERY = {
     "material": "SELECT content FROM materials WHERE id = ?",
 }
 
+# un-retract時の再登録で使う、search_index.title（表示用タイトル）取得クエリ。
+# 対応するINSERTトリガーのdisplay_title_exprと一致させる必要あり
+# （migrations/0046_relations_belongs_to_unify.sql参照）。decisionのみ
+# COALESCE(title, decision)で、search_index_fts.title（下記_FTS_TITLE_QUERY）とは
+# 値が異なる非対称構造になっている。
+_SEARCH_INDEX_TITLE_QUERY = {
+    "decision": "SELECT COALESCE(title, decision) FROM decisions WHERE id = ?",
+    "log": "SELECT title FROM discussion_logs WHERE id = ?",
+    "material": "SELECT title FROM materials WHERE id = ?",
+}
+
+# un-retract時の再登録で使う、search_index_fts.title（FTS検索対象）取得クエリ。
+# decisionは表示用titleにCOALESCEせず常にdecision本文（対応するINSERTトリガーの
+# NEW.decisionと一致させる）。
+_FTS_TITLE_QUERY = {
+    "decision": "SELECT decision FROM decisions WHERE id = ?",
+    "log": "SELECT title FROM discussion_logs WHERE id = ?",
+    "material": "SELECT title FROM materials WHERE id = ?",
+}
+
+_CREATED_AT_QUERY = {
+    "decision": "SELECT created_at FROM decisions WHERE id = ?",
+    "log": "SELECT created_at FROM discussion_logs WHERE id = ?",
+    "material": "SELECT created_at FROM materials WHERE id = ?",
+}
+
 
 def _delete_search_index_entry(conn, source_type: str, source_id: int) -> None:
     """search_index / search_index_fts / vec_index から該当エントリを物理削除する。
@@ -70,6 +96,59 @@ def _delete_search_index_entry(conn, source_type: str, source_id: int) -> None:
     conn.execute("DELETE FROM search_index WHERE id = ?", (search_index_id,))
 
 
+def _reregister_search_index_with_conn(conn: sqlite3.Connection, entity_type: str, entity_id: int) -> bool:
+    """un-retract時、search_index / search_index_fts へ明示的に再登録する（冪等）。
+
+    retractはsearch_index/search_index_ftsを物理削除するため（_delete_search_index_entry
+    参照）、un-retractしたエンティティは対応するINSERTトリガー相当の登録をやり直す必要がある。
+
+    この関数を`UPDATE {table} SET retracted_at = NULL`より前に呼ぶこと。理由:
+    trg_search_*_updateトリガー（AFTER UPDATE、全カラム対象で無条件発火）は内部で
+    `(SELECT id FROM search_index WHERE source_type=? AND source_id=OLD.id)`により
+    search_index.idを引き当てる実装になっている。retract済み行（search_index側の
+    対応行が既に物理削除されている）に対してこのUPDATEを先に実行すると、サブクエリが
+    NULLを返し、`INSERT INTO search_index_fts (rowid, ...) VALUES (NULL, ...)`で
+    FTS5がrowidを自動採番してしまう。この自動採番idはsearch_index.idのAUTOINCREMENT
+    シーケンス（sqlite_sequence）とは独立に進むため、後から追加される別エンティティの
+    search_index.idと衝突しうる（衝突すると、取り消し済みエンティティの本文で検索した
+    はずが無関係な別エンティティがヒットする）。
+    本関数を先に呼びsearch_index行を正しいidで復元しておけば、直後のUPDATEトリガーは
+    そのidを正常に引き当てて自分自身を再同期するだけになり、上記の衝突が起きない。
+
+    既にsearch_index行が存在する場合（retract_service導入前にretractされ、物理削除を
+    経ていない古い状態等）は何もしない。
+
+    Returns:
+        True: 新規にsearch_index/search_index_ftsへ登録した（呼び出し側はcommit後に
+            embeddingの再生成が必要）
+        False: 既に存在しており何もしなかった
+    """
+    existing = conn.execute(
+        "SELECT id FROM search_index WHERE source_type = ? AND source_id = ?",
+        (entity_type, entity_id),
+    ).fetchone()
+    if existing:
+        return False
+
+    display_title = conn.execute(
+        _SEARCH_INDEX_TITLE_QUERY[entity_type], (entity_id,)
+    ).fetchone()[0]
+    fts_title = conn.execute(_FTS_TITLE_QUERY[entity_type], (entity_id,)).fetchone()[0]
+    fts_body = conn.execute(_FTS_BODY_QUERY[entity_type], (entity_id,)).fetchone()[0]
+    created_at = conn.execute(_CREATED_AT_QUERY[entity_type], (entity_id,)).fetchone()[0]
+
+    cursor = conn.execute(
+        "INSERT INTO search_index (source_type, source_id, title, created_at) VALUES (?, ?, ?, ?)",
+        (entity_type, entity_id, display_title, created_at),
+    )
+    search_index_id = cursor.lastrowid
+    conn.execute(
+        "INSERT INTO search_index_fts (rowid, title, body) VALUES (?, ?, ?)",
+        (search_index_id, fts_title, fts_body),
+    )
+    return True
+
+
 def retract(entity_type: str, ids: list[int], undo: bool = False) -> dict:
     """エンティティを取り消し（retract）またはun-retractする。
 
@@ -81,9 +160,10 @@ def retract(entity_type: str, ids: list[int], undo: bool = False) -> dict:
     vec_index からも物理削除する（同じSAVEPOINT内）。これによりsearch経路の
     NOT EXISTS二段フィルタが不要になり、KNNの実効recall劣化も解消する。
 
-    undo時はretracted_atをNULLに戻すのみで、search経路への再登録は行わない。
-    物理削除は不可逆として扱う。un-retractしたエンティティを再び検索可能にしたい
-    場合は、別途add_decisions/add_logs/add_materialで新規追加する。
+    undo時はretracted_atをNULLに戻すと同時に、search_index / search_index_fts への
+    再登録も行う（同じSAVEPOINT内、_reregister_search_index_with_conn参照）。
+    vec_indexへの再登録はcommit後にベストエフォートで行う（embedding再生成、
+    add_material等と同じ非同期扱い）。
 
     Args:
         entity_type: エンティティ種別 ("decision" | "log" | "material")
@@ -115,6 +195,9 @@ def retract(entity_type: str, ids: list[int], undo: bool = False) -> dict:
     table = ENTITY_TABLE_MAP[entity_type]
     success = []
     errors = []
+    # undo時に新規でsearch_index再登録した(entity_type, entity_id)。commit後に
+    # embedding/vec_indexをベストエフォートで再生成する対象（_reregister_search_index_with_conn参照）。
+    pending_embedding_regen: list[tuple[str, int]] = []
 
     conn = get_connection()
     try:
@@ -133,10 +216,17 @@ def retract(entity_type: str, ids: list[int], undo: bool = False) -> dict:
                 if undo:
                     # un-retract: retracted_at IS NOT NULLの場合のみ更新
                     if row["retracted_at"] is not None:
+                        # search_index再登録は retracted_at クリアより先に行う
+                        # (理由は_reregister_search_index_with_connのdocstring参照)
+                        reregistered = _reregister_search_index_with_conn(
+                            conn, entity_type, entity_id
+                        )
                         conn.execute(
                             f"UPDATE {table} SET retracted_at = NULL WHERE id = ?",
                             (entity_id,),
                         )
+                        if reregistered:
+                            pending_embedding_regen.append((entity_type, entity_id))
                 else:
                     # retract: retracted_at IS NULLの場合のみ更新 + search index物理削除
                     if row["retracted_at"] is None:
@@ -164,6 +254,12 @@ def retract(entity_type: str, ids: list[int], undo: bool = False) -> dict:
                 })
 
         conn.commit()
+
+        # commit後、search_index再登録したエンティティのembedding/vec_indexを
+        # ベストエフォートで再生成する（add_material等と同じ非同期扱い、失敗してもretract結果には影響しない）。
+        for regen_entity_type, regen_entity_id in pending_embedding_regen:
+            embedding_service.regenerate_embedding(regen_entity_type, regen_entity_id)
+
         return {"success": success, "errors": errors}
 
     except Exception as e:
