@@ -2335,27 +2335,21 @@ def relay_subscribe(labels: list[str]) -> dict:
     （宛先を自分に限定した複合条件を張りたい場合は、labels に自分の handle label を
     明示的に含めること）。同一 labels 集合での再呼び出しは冪等で、lease が有効なら既存の
     購読をそのまま返し、失効していれば新規に購読し直して差し替える。lease 更新・再接続・
-    購読解除は server 側で自動管理される（呼び出し側の操作は不要）。
+    購読解除は server 側で自動管理される。
     role:（廃止済み namespace）は relay_publish と同様に指定するとエラー。cc-memory の
     予約 namespace（entity:/event:/topic:/activity:/decision:/log:/material:/tag:/
     habit:）は relay_publish と異なりここでは許可される（entity 更新の relay publish を
-    購読するために必要）。entity write は全種別で自身を指す self label（`種別名:自分のid`
-    の形）が publish labels に付くため、ある entity の self label を1つ渡すだけで
-    「その entity 自身 ＋ 直接の子」の全イベントが届く。種別単位の購読は entity:<type>
-    （例: ["entity:decision", "event:retracted"] で全 decision の retract を購読）、
-    domain 単位の購読は entity:<type> と own tag の組み合わせ
-    （例: ["entity:ask", "domain:calm"] で domain:calm タグの ask イベントのみ購読）。
-    ただし ask は例外で、own tag（domain: 等）が publish labels に載るのは
-    event:updated（回答・トリアージ等）以降のみ。event:created の時点ではまだ
-    タグ紐付けが完了していないため、domain 単位で「新規 ask の作成」だけを
-    購読することはできない（全 ask の created を entity:ask で購読し、body 側で
-    絞り込む必要がある）。
+    購読するために必要）。entity write は全種別で自身を指す self label（`種別名:自分のid`）
+    が publish labels に付くため、self label を1つ渡すだけで「その entity 自身 ＋ 直接の子」
+    の全イベントが届く。種別単位は entity:<type>、domain 単位は entity:<type> と own tag の
+    組み合わせで購読できる（例: ["entity:ask", "domain:calm"]）。ただし ask は例外で、own tag
+    が publish labels に載るのは event:updated（回答・トリアージ等）以降のみ。event:created
+    時点ではタグ紐付けが未完了のため、domain 単位で「新規 ask 作成」だけを購読することは
+    できない。
 
     新規に購読が作られた場合（reused: false）、server 内の常駐 SSE 接続へ即座に反映指示を
-    送る。実際の反映は次に SSE フレーム（実メッセージだけでなく keepalive のコメント
-    フレーム到達でも判定される）が届いた時点までかかることがあり、既定設定では上限
-    概ね 60 秒（典型的には数十秒以内）に収まる。この間に届いたメッセージは relay 側で
-    保持されており喪失しない（遅延するだけで、反映後に取りこぼしなく届く）。
+    送る。実際の反映は次の SSE フレーム到達時点までかかることがあり、既定設定では上限
+    概ね 60 秒に収まる。この間に届いたメッセージは relay 側で保持されており喪失しない。
 
     Args:
         labels: 購読条件 labels（配列。publish 側の labels をすべて含む発話が届く）
