@@ -119,7 +119,7 @@ class TestMonitorStartedMarker:
             state_dir,
             extra_env={
                 "RELAY_STATE_DIR": str(relay_state_dir),
-                "CCM_RELAY_SESSION_AWARE": "1",
+                "CALM_RELAY_SESSION_AWARE": "1",
             },
         )
         assert result.returncode == 0
@@ -148,7 +148,7 @@ class TestMonitorStartedMarker:
             state_dir,
             extra_env={
                 "RELAY_STATE_DIR": str(relay_state_dir),
-                "CCM_RELAY_SESSION_AWARE": "1",
+                "CALM_RELAY_SESSION_AWARE": "1",
             },
         )
         assert result.returncode == 0
@@ -181,7 +181,7 @@ class TestMonitorStartedMarker:
             state_dir,
             extra_env={
                 "RELAY_STATE_DIR": str(relay_state_dir),
-                "CCM_RELAY_SESSION_AWARE": "1",
+                "CALM_RELAY_SESSION_AWARE": "1",
             },
         )
         assert result.returncode == 0
@@ -204,7 +204,7 @@ class TestMonitorStartedMarker:
             state_dir,
             extra_env={
                 "RELAY_STATE_DIR": str(relay_state_dir),
-                "CCM_RELAY_SESSION_AWARE": "1",
+                "CALM_RELAY_SESSION_AWARE": "1",
             },
         )
         assert result.returncode == 0
@@ -235,7 +235,7 @@ class TestMonitorStartedMarker:
             state_dir,
             extra_env={
                 "RELAY_STATE_DIR": str(relay_state_dir),
-                "CCM_RELAY_SESSION_AWARE": "1",
+                "CALM_RELAY_SESSION_AWARE": "1",
             },
         )
         assert result.returncode == 0
@@ -255,7 +255,7 @@ class TestMonitorStartedMarker:
             state_dir,
             extra_env={
                 "RELAY_STATE_DIR": str(relay_state_dir),
-                "CCM_RELAY_SESSION_AWARE": "1",
+                "CALM_RELAY_SESSION_AWARE": "1",
             },
         )
         assert result.returncode == 0
@@ -292,7 +292,7 @@ class TestPersistentRequired:
             state_dir,
             extra_env={
                 "RELAY_STATE_DIR": str(relay_state_dir),
-                "CCM_RELAY_SESSION_AWARE": "1",
+                "CALM_RELAY_SESSION_AWARE": "1",
             },
         )
         assert result.returncode == 0
@@ -322,7 +322,7 @@ class TestPersistentRequired:
             state_dir,
             extra_env={
                 "RELAY_STATE_DIR": str(relay_state_dir),
-                "CCM_RELAY_SESSION_AWARE": "1",
+                "CALM_RELAY_SESSION_AWARE": "1",
             },
         )
         assert result.returncode == 0
@@ -357,7 +357,7 @@ class TestIdentityCacheSharing:
             state_dir,
             extra_env={
                 "RELAY_STATE_DIR": str(relay_state_dir),
-                "CCM_RELAY_SESSION_AWARE": "1",
+                "CALM_RELAY_SESSION_AWARE": "1",
             },
         )
         assert HookState(_SESSION_ID).get_cached_relay_identity() == identity
@@ -389,7 +389,7 @@ class TestIdentityCacheSharing:
             # 呼ばれれば必ず解決失敗する状況）
             extra_env={
                 "RELAY_STATE_DIR": str(relay_state_dir),
-                "CCM_RELAY_SESSION_AWARE": "1",
+                "CALM_RELAY_SESSION_AWARE": "1",
             },
         )
         assert result.returncode == 0
@@ -411,7 +411,7 @@ class TestFailOpen:
             env={
                 **os.environ,
                 "HOOK_STATE_DIR": str(state_dir),
-                "CCM_RELAY_SESSION_AWARE": "1",
+                "CALM_RELAY_SESSION_AWARE": "1",
                 "DISCUSSION_DB_PATH": db_path,
             },
         )
@@ -435,7 +435,7 @@ class TestFailOpen:
                 env={
                     **os.environ,
                     "HOOK_STATE_DIR": str(state_dir),
-                    "CCM_RELAY_SESSION_AWARE": "1",
+                    "CALM_RELAY_SESSION_AWARE": "1",
                     "DISCUSSION_DB_PATH": db_path,
                 },
             )

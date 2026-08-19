@@ -208,20 +208,61 @@ class TestIsAllowed:
     def test_exact_match_allowed(self, tool_name):
         assert preblock_hook._is_allowed(tool_name) is True
 
-    def test_cc_memory_mcp_prefix_allowed(self):
-        # ローカルプラグイン経由prefix (回帰確認)
+    def test_calm_mcp_prefix_allowed(self):
+        # ローカルプラグイン経由prefix
+        assert preblock_hook._is_allowed("mcp__plugin_calm_calm__search")
+        assert preblock_hook._is_allowed("mcp__plugin_calm_calm__add_logs")
+
+    def test_calm_remote_mcp_prefix_allowed(self):
+        # リモート接続経由prefix。リモートMCP経由でもCALM自身のツール呼び出しが
+        # 誤ってblock対象にならないことを確認する。
+        assert preblock_hook._is_allowed("mcp__claude_ai_calm__search")
+        assert preblock_hook._is_allowed("mcp__claude_ai_calm__add_logs")
+
+    def test_legacy_cc_memory_mcp_prefix_allowed(self):
+        # 旧名 (cc-memory) prefix も allowlist に残す。プラグイン識別子・MCPサーバー
+        # キーの改名が未反映の接続経路から呼ばれても誤blockしないことを確認する。
         assert preblock_hook._is_allowed(
             "mcp__plugin_claude-code-memory_cc-memory__search"
         )
-        assert preblock_hook._is_allowed(
-            "mcp__plugin_claude-code-memory_cc-memory__add_logs"
-        )
-
-    def test_cc_memory_remote_mcp_prefix_allowed(self):
-        # リモート接続経由prefix。リモートMCP経由でもcc-memory自身のツール呼び出しが
-        # 誤ってblock対象にならないことを確認する。
-        assert preblock_hook._is_allowed("mcp__claude_ai_cc-memory__search")
         assert preblock_hook._is_allowed("mcp__claude_ai_cc-memory__add_logs")
+
+    @pytest.mark.parametrize(
+        "tool_name",
+        [
+            # プラグイン名だけ改名済み・サーバーキーが旧名のまま。plugin.json が
+            # 先に calm へ改名されてから .mcp.json のキーが追随するまでの期間、
+            # およびキー改名後にプラグインキャッシュ再生成・セッション再接続が
+            # 済むまでの期間、ローカルプラグイン経由の tool 名はこの形になる
+            "mcp__plugin_calm_cc-memory__search",
+            "mcp__plugin_calm_cc-memory__add_decisions",
+            # 逆の組み合わせ (サーバーキーだけ先に追随した場合)
+            "mcp__plugin_claude-code-memory_calm__search",
+            "mcp__plugin_claude-code-memory_calm__add_decisions",
+        ],
+    )
+    def test_transitional_plugin_and_server_key_combination_allowed(self, tool_name):
+        """プラグイン名とサーバーキーの改名タイミングがずれた過渡形も素通しする。
+
+        両者は別ファイル (.claude-plugin/plugin.json と .mcp.json) で定義され、
+        反映タイミングもずれるため、新旧の組み合わせ4通りすべてが実在しうる。
+        allowlist から漏れると、内部 ID を含む CALM 自身の正当な呼び出しが
+        漏出扱いで deny される。
+        """
+        assert preblock_hook._is_allowed(tool_name) is True
+
+    @pytest.mark.parametrize(
+        "tool_name",
+        [
+            # 名前に calm / cc-memory を含むだけの別サーバーは素通ししない。
+            # 前方一致を保つことで、素通し対象を既知の識別子の組み合わせに限る
+            "mcp__other_calm__search",
+            "mcp__plugin_other_calm-fork__search",
+            "mcp__claude_ai_calm-fork__search",
+        ],
+    )
+    def test_lookalike_server_names_not_allowed(self, tool_name):
+        assert preblock_hook._is_allowed(tool_name) is False
 
     @pytest.mark.parametrize(
         "tool_name",
@@ -363,7 +404,7 @@ def cc_memory_cwd(tmp_path, monkeypatch):
     )
     monkeypatch.chdir(tmp_path)
     # opt-out 環境変数は明示的に消しておく
-    monkeypatch.delenv("CC_MEMORY_LEAK_GUARD", raising=False)
+    monkeypatch.delenv("CALM_LEAK_GUARD", raising=False)
     # log path を tmp 配下に逃がして home 汚染を防ぐ
     log_path = tmp_path / "log" / "preblock_hook.jsonl"
     monkeypatch.setattr(preblock_hook, "LOG_PATH", log_path)
@@ -527,10 +568,10 @@ class TestMainBlockFlow:
         assert literal in out["hookSpecificOutput"]["permissionDecisionReason"]
 
     def test_allowlist_tool_passes_through(self, capsys, cc_memory_cwd):
-        # cc-memory MCP は scan されない
+        # CALM MCP は scan されない
         out = _run_main_with_event(
             {
-                "tool_name": "mcp__plugin_claude-code-memory_cc-memory__search",
+                "tool_name": "mcp__plugin_calm_calm__search",
                 "tool_input": {"keyword": "D#123"},
                 "session_id": "s1",
             },
@@ -539,11 +580,11 @@ class TestMainBlockFlow:
         assert out == {}
 
     def test_allowlist_remote_tool_passes_through(self, capsys, cc_memory_cwd):
-        # cc-memory MCP (リモート接続経由prefix) も scan されない
+        # CALM MCP (リモート接続経由prefix) も scan されない
         sharp = chr(35)
         out = _run_main_with_event(
             {
-                "tool_name": "mcp__claude_ai_cc-memory__search",
+                "tool_name": "mcp__claude_ai_calm__search",
                 "tool_input": {"keyword": "D" + sharp + "123"},
                 "session_id": "s1",
             },
@@ -655,7 +696,7 @@ class TestMainBlockFlow:
     def test_opt_out_env_var_passes_through(
         self, capsys, cc_memory_cwd, monkeypatch
     ):
-        monkeypatch.setenv("CC_MEMORY_LEAK_GUARD", "off")
+        monkeypatch.setenv("CALM_LEAK_GUARD", "off")
         out = _run_main_with_event(
             {
                 "tool_name": "Bash",
@@ -667,7 +708,7 @@ class TestMainBlockFlow:
         assert out == {}
 
     def test_opt_out_case_insensitive(self, capsys, cc_memory_cwd, monkeypatch):
-        monkeypatch.setenv("CC_MEMORY_LEAK_GUARD", "OFF")
+        monkeypatch.setenv("CALM_LEAK_GUARD", "OFF")
         out = _run_main_with_event(
             {
                 "tool_name": "Bash",
@@ -682,7 +723,7 @@ class TestMainBlockFlow:
         self, capsys, cc_memory_cwd, monkeypatch
     ):
         # "on" / "1" / "true" などは opt-out ではない
-        monkeypatch.setenv("CC_MEMORY_LEAK_GUARD", "on")
+        monkeypatch.setenv("CALM_LEAK_GUARD", "on")
         out = _run_main_with_event(
             {
                 "tool_name": "Bash",
@@ -700,7 +741,7 @@ class TestMainBlockFlow:
             '[project]\nname = "other-project"\n'
         )
         monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("CC_MEMORY_LEAK_GUARD", raising=False)
+        monkeypatch.delenv("CALM_LEAK_GUARD", raising=False)
         out = _run_main_with_event(
             {
                 "tool_name": "Bash",

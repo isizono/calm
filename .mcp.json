@@ -1,5 +1,5 @@
 {
-    "cc-memory": {
+    "calm": {
       "command": "uv",
       "args": ["run", "--directory", "${CLAUDE_PLUGIN_ROOT}", "python", "-m", "src.launcher"]
     }

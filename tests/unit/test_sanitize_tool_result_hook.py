@@ -63,8 +63,8 @@ def fixture_db(monkeypatch):
             conn.commit()
         finally:
             conn.close()
-        monkeypatch.setenv("CC_MEMORY_DB_PATH", db_path)
-        monkeypatch.delenv("CC_MEMORY_SANITIZE_DISABLE", raising=False)
+        monkeypatch.setenv("CALM_DB_PATH", db_path)
+        monkeypatch.delenv("CALM_SANITIZE_DISABLE", raising=False)
         yield db_path
 
 
@@ -99,7 +99,7 @@ def _read_citation_events(db_path: str) -> list[dict]:
         conn.close()
 
 
-_TOOL_NAME = "mcp__plugin_claude-code-memory_cc-memory__check_in"
+_TOOL_NAME = "mcp__plugin_calm_calm__check_in"
 
 
 def _payload(content, *, tool_name=_TOOL_NAME, cwd="/tmp/outside-repo",
@@ -158,12 +158,12 @@ def test_case_02_non_cc_memory_tool_is_noop(fixture_db):
 
 
 # ---------------------------------------------------------------------------
-# Case #3: CC_MEMORY_SANITIZE_DISABLE=1 → 即 exit 0、log なし
+# Case #3: CALM_SANITIZE_DISABLE=1 → 即 exit 0、log なし
 # ---------------------------------------------------------------------------
 
 
 def test_case_03_env_disable_short_circuits(fixture_db, monkeypatch):
-    monkeypatch.setenv("CC_MEMORY_SANITIZE_DISABLE", "1")
+    monkeypatch.setenv("CALM_SANITIZE_DISABLE", "1")
     stdout, code = _run_hook(_payload("ref to M#1"))
     assert code == 0
     assert stdout == ""

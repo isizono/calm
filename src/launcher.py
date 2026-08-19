@@ -10,7 +10,6 @@ import atexit
 import itertools
 import json
 import logging
-import os
 import signal
 import subprocess
 import sys
@@ -19,6 +18,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+from src.env_compat import env_get
 from src.services.relay.identity import (
     register_launcher_session,
     unregister_launcher_session,
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 def _read_max_retries() -> int | None:
-    """env `CC_MEMORY_LAUNCHER_MAX_RETRIES` からリトライ上限を読む。
+    """env `CALM_LAUNCHER_MAX_RETRIES` からリトライ上限を読む。
 
     未設定・無効値・負値の場合は None（無限リトライ）を返す。
     D#2485 に基づき、HTTPサーバー復旧待ち継続のためデフォルトは無限。
@@ -36,21 +36,21 @@ def _read_max_retries() -> int | None:
     モジュールロード時にも呼ばれるため、警告は `logging.basicConfig` 未設定でも
     意図通り stderr に出るよう `print` で直接出す。
     """
-    raw = os.environ.get("CC_MEMORY_LAUNCHER_MAX_RETRIES")
+    raw = env_get("CALM_LAUNCHER_MAX_RETRIES")
     if raw is None or raw == "":
         return None
     try:
         value = int(raw)
     except ValueError:
         print(
-            f"[launcher] WARNING Invalid CC_MEMORY_LAUNCHER_MAX_RETRIES={raw!r}, "
+            f"[launcher] WARNING Invalid CALM_LAUNCHER_MAX_RETRIES={raw!r}, "
             "falling back to infinite",
             file=sys.stderr,
         )
         return None
     if value < 0:
         print(
-            f"[launcher] WARNING CC_MEMORY_LAUNCHER_MAX_RETRIES must be >= 0, "
+            f"[launcher] WARNING CALM_LAUNCHER_MAX_RETRIES must be >= 0, "
             f"got {value}, falling back to infinite",
             file=sys.stderr,
         )
@@ -69,16 +69,16 @@ BACKOFF_CAP_SEC = 60
 # またいで安定な呼び出し元識別子として relay 側（identity.py）が読む。
 BRIDGE_SESSION_HEADER = "X-CC-Memory-Bridge-Session-Id"
 
-HEARTBEAT_INTERVAL_ENV = "CC_MEMORY_LAUNCHER_HEARTBEAT_SEC"
+HEARTBEAT_INTERVAL_ENV = "CALM_LAUNCHER_HEARTBEAT_SEC"
 DEFAULT_HEARTBEAT_INTERVAL_SEC = 60.0
 
 
 def _read_heartbeat_interval_sec() -> float:
-    """env `CC_MEMORY_LAUNCHER_HEARTBEAT_SEC` から heartbeat 間隔を読む。
+    """env `CALM_LAUNCHER_HEARTBEAT_SEC` から heartbeat 間隔を読む。
 
     未設定・無効値・0以下の場合は既定値にフォールバックする。
     """
-    raw = os.environ.get(HEARTBEAT_INTERVAL_ENV)
+    raw = env_get(HEARTBEAT_INTERVAL_ENV)
     if raw is None or raw == "":
         return DEFAULT_HEARTBEAT_INTERVAL_SEC
     try:
@@ -106,16 +106,16 @@ HEARTBEAT_INTERVAL_SEC = _read_heartbeat_interval_sec()
 # 猶予秒数。超過したらtask group全体をキャンセルして強制退場する。
 # stdin EOF = Claude Code終了であり、サーバー側が応答しない限り待ち続ける理由が
 # ない（M#725「MCPブリッジハング調査」の沈黙ゾンビ化仮説への対策）。
-STDIN_EOF_GRACE_SEC_ENV = "CC_MEMORY_LAUNCHER_STDIN_EOF_GRACE_SEC"
+STDIN_EOF_GRACE_SEC_ENV = "CALM_LAUNCHER_STDIN_EOF_GRACE_SEC"
 DEFAULT_STDIN_EOF_GRACE_SEC = 10.0
 
 
 def _read_stdin_eof_grace_sec() -> float:
-    """env `CC_MEMORY_LAUNCHER_STDIN_EOF_GRACE_SEC` から grace 秒数を読む。
+    """env `CALM_LAUNCHER_STDIN_EOF_GRACE_SEC` から grace 秒数を読む。
 
     未設定・無効値・0以下の場合は既定値にフォールバックする。
     """
-    raw = os.environ.get(STDIN_EOF_GRACE_SEC_ENV)
+    raw = env_get(STDIN_EOF_GRACE_SEC_ENV)
     if raw is None or raw == "":
         return DEFAULT_STDIN_EOF_GRACE_SEC
     try:
@@ -142,16 +142,16 @@ STDIN_EOF_GRACE_SEC = _read_stdin_eof_grace_sec()
 # server_to_stdoutがread_streamから例外オブジェクトを連続して受け取った場合の
 # 上限回数。超過したらストリームが実質的に沈黙していると判断しループを打ち切り、
 # ServerDisconnectedとして外側のリトライに接続する（M#725対策）。
-MAX_CONSECUTIVE_STREAM_EXCEPTIONS_ENV = "CC_MEMORY_LAUNCHER_MAX_CONSECUTIVE_STREAM_EXCEPTIONS"
+MAX_CONSECUTIVE_STREAM_EXCEPTIONS_ENV = "CALM_LAUNCHER_MAX_CONSECUTIVE_STREAM_EXCEPTIONS"
 DEFAULT_MAX_CONSECUTIVE_STREAM_EXCEPTIONS = 5
 
 
 def _read_max_consecutive_stream_exceptions() -> int:
-    """env `CC_MEMORY_LAUNCHER_MAX_CONSECUTIVE_STREAM_EXCEPTIONS` から上限回数を読む。
+    """env `CALM_LAUNCHER_MAX_CONSECUTIVE_STREAM_EXCEPTIONS` から上限回数を読む。
 
     未設定・無効値・0以下の場合は既定値にフォールバックする。
     """
-    raw = os.environ.get(MAX_CONSECUTIVE_STREAM_EXCEPTIONS_ENV)
+    raw = env_get(MAX_CONSECUTIVE_STREAM_EXCEPTIONS_ENV)
     if raw is None or raw == "":
         return DEFAULT_MAX_CONSECUTIVE_STREAM_EXCEPTIONS
     try:
@@ -182,14 +182,14 @@ class ServerDisconnected(Exception):
 
 
 # サーバー接続設定
-# CC_MEMORY_URL が設定されていればそのURLを使い、未設定ならローカルHTTPサーバーに接続する。
+# CALM_URL が設定されていればそのURLを使い、未設定ならローカルHTTPサーバーに接続する。
 # リモートURL指定時はサーバー自動起動・セッション管理をスキップする。
-_REMOTE_URL = os.environ.get("CC_MEMORY_URL")
+_REMOTE_URL = env_get("CALM_URL")
 
 if _REMOTE_URL:
     if not _REMOTE_URL.startswith(("http://", "https://")):
         raise ValueError(
-            f"CC_MEMORY_URL must start with http:// or https://, got: {_REMOTE_URL!r}"
+            f"CALM_URL must start with http:// or https://, got: {_REMOTE_URL!r}"
         )
     _base = _REMOTE_URL.rstrip("/")
     MCP_ENDPOINT = f"{_base}/mcp"

@@ -326,7 +326,7 @@ class TestExport:
 
 
 class TestKillSwitch:
-    """CCM_HABITS_RULES_EXPORT=0（kill switch）のテスト"""
+    """CALM_HABITS_RULES_EXPORT=0（kill switch）のテスト"""
 
     def test_disabled_writes_placeholder(self, temp_db, projection_path, monkeypatch):
         monkeypatch.setattr(config, "HABITS_RULES_EXPORT_ENABLED", False)

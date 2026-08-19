@@ -1,6 +1,6 @@
 """PostToolUse hook (matcher: Monitor): relay inbox監視の起動判定。
 
-CCM_RELAY_SESSION_AWARE（デフォルトOFF）が有効なとき、Monitorツール呼び出しの
+CALM_RELAY_SESSION_AWARE（デフォルトOFF）が有効なとき、Monitorツール呼び出しの
 tool_inputがそのセッションのrelay inbox pathを`persistent: true`で監視する
 コマンドだったことを検知し、セッションIDキーのマーカーファイル
 （HookState.set_monitor_started）を書く。user_prompt_submit_hookはこの

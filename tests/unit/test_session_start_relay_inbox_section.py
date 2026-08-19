@@ -21,7 +21,7 @@ from hooks.session_start_hook import _build_relay_inbox_section, _build_session_
 
 @pytest.fixture(autouse=True)
 def relay_session_aware_on(monkeypatch):
-    """本ファイルの大半のテストはCCM_RELAY_SESSION_AWARE=1（ON）時の表示ロジックを
+    """本ファイルの大半のテストはCALM_RELAY_SESSION_AWARE=1（ON）時の表示ロジックを
     検証するため、autouseでデフォルトONにする。OFF時（kill switch）の振る舞いは
     TestEnvVarGateで個別にFalseへ上書きして検証する。"""
     monkeypatch.setattr(ccm_config, "RELAY_SESSION_AWARE_ENABLED", True)
@@ -195,7 +195,7 @@ class TestIdentityResolved:
 
 
 class TestEnvVarGate:
-    """CCM_RELAY_SESSION_AWARE（kill switch）の振る舞い。
+    """CALM_RELAY_SESSION_AWARE（kill switch）の振る舞い。
 
     autouse fixtureがデフォルトONにしているため、ここでは個別にFalseへ
     上書きしてOFF時の振る舞いを検証する。

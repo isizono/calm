@@ -7,9 +7,11 @@ internal版（main.py）への変更はゼロ。
 環境変数:
     GITHUB_CLIENT_ID: GitHub OAuth AppのClient ID
     GITHUB_CLIENT_SECRET: GitHub OAuth AppのClient Secret
-    CC_MEMORY_BASE_URL: 公開URL（例: https://cc-memory.example.com）
-    CC_MEMORY_ALLOWED_USERS: 許可するGitHubユーザー名（カンマ区切り、例: "alice,bob"）
-    CC_MEMORY_REMOTE_PORT: リモートサーバーのポート（デフォルト: 8001）
+    CALM_BASE_URL: 公開URL（例: https://cc-memory.example.com）
+    CALM_ALLOWED_USERS: 許可するGitHubユーザー名（カンマ区切り、例: "alice,bob"）
+    CALM_REMOTE_PORT: リモートサーバーのポート（デフォルト: 8001）
+
+    CALM_ 系は旧名（CCM_ / CC_MEMORY_）へのフォールバックが効く（src/env_compat.py）。
 """
 import logging
 import os
@@ -18,17 +20,27 @@ from fastmcp import FastMCP
 from fastmcp.server.auth.providers.github import GitHubProvider
 
 from src.db import init_database, verify_sqlite_vec
+from src.env_compat import env_get, env_names
 from src.main import mcp as internal_mcp
 
 logger = logging.getLogger(__name__)
 
-REMOTE_PORT = int(os.environ.get("CC_MEMORY_REMOTE_PORT", "8001"))
+REMOTE_PORT = int(env_get("CALM_REMOTE_PORT", "8001"))
 
 
 def _require_env(key: str) -> str:
     value = os.environ.get(key)
     if not value:
         raise SystemExit(f"環境変数 {key} が未設定です")
+    return value
+
+
+def _require_calm_env(name: str) -> str:
+    """CALM_ 系の環境変数を旧名フォールバック込みで必須読みする。"""
+    value = env_get(name)
+    if not value:
+        candidates = " / ".join(env_names(name))
+        raise SystemExit(f"環境変数 {candidates} がいずれも未設定です")
     return value
 
 
@@ -56,16 +68,16 @@ class RestrictedGitHubProvider(GitHubProvider):
 
 def create_remote_server() -> FastMCP:
     """認証付きリモートサーバーを作成する"""
-    allowed_users = _parse_allowed_users(_require_env("CC_MEMORY_ALLOWED_USERS"))
+    allowed_users = _parse_allowed_users(_require_calm_env("CALM_ALLOWED_USERS"))
 
     auth = RestrictedGitHubProvider(
         allowed_users=allowed_users,
         client_id=_require_env("GITHUB_CLIENT_ID"),
         client_secret=_require_env("GITHUB_CLIENT_SECRET"),
-        base_url=_require_env("CC_MEMORY_BASE_URL"),
+        base_url=_require_calm_env("CALM_BASE_URL"),
     )
 
-    remote = FastMCP("cc-memory-remote", auth=auth)
+    remote = FastMCP("calm-remote", auth=auth)
     remote.mount(internal_mcp)
     return remote
 

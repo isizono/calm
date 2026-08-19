@@ -1,6 +1,6 @@
 """稼働中 Claude Code セッションの「CLI表示名 → 人間可読な別名」対応表。
 
-配置: ``~/.cc-memory/session_aliases.json``（env ``CCM_SESSION_REGISTRY_PATH``
+配置: ``~/.cc-memory/session_aliases.json``（env ``CALM_SESSION_REGISTRY_PATH``
 で差し替え可）。DBマイグレーションを要さない揮発性データとして意図的に
 ファイル保持する。cc-memory server はローカル/リモードの複数プロセスで
 稼働しうり、hookのような別プロセスからもMCP往復なしに読めることを優先した
@@ -30,11 +30,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator, Optional
 
+from src.env_compat import env_get
 from src.infra import cli_session
 from src.infra.lock_file import is_process_alive
 from src.services.relay import identity as relay_identity
 
-REGISTRY_PATH_ENV = "CCM_SESSION_REGISTRY_PATH"
+REGISTRY_PATH_ENV = "CALM_SESSION_REGISTRY_PATH"
 
 ALIAS_MAX_CHARS = 24
 _MAX_ENTRIES = 64
@@ -45,7 +46,7 @@ _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 def registry_path() -> Path:
     """対応表ファイルのパス（既定 ``~/.cc-memory/session_aliases.json``）。"""
-    raw = os.environ.get(REGISTRY_PATH_ENV)
+    raw = env_get(REGISTRY_PATH_ENV)
     return Path(raw).expanduser() if raw else Path.home() / ".cc-memory" / "session_aliases.json"
 
 

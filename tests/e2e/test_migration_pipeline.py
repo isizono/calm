@@ -1,7 +1,7 @@
 """_apply_migrations() 安全化パイプライン全体のE2Eテスト
 
 fresh DBスキップ・既存DB+pendingでのpremigrationスナップショット連動・
-dry-run失敗時の実DB無傷・ledger内容ハッシュ検証・CCM_MIGRATION_*トグルを検証する。
+dry-run失敗時の実DB無傷・ledger内容ハッシュ検証・CALM_MIGRATION_*トグルを検証する。
 
 実migrations/ディレクトリ自体は変更・改変しない（並行実行中の他テストへの影響を避ける
 ため、追加・改変を試す migration ファイルは常に tmp_path 配下のコピーディレクトリに
@@ -133,13 +133,13 @@ class TestExistingDatabaseWithPending:
             "CREATE TABLE pipeline_probe_toggle_snapshot (id INTEGER PRIMARY KEY);",
         )
         monkeypatch.setattr(db, "MIGRATIONS_DIR", extended_migrations_dir)
-        monkeypatch.setattr(config, "CCM_MIGRATION_SNAPSHOT", False)
+        monkeypatch.setattr(config, "CALM_MIGRATION_SNAPSHOT", False)
 
         db._apply_migrations()
 
         premigration_dir = Path(temp_db).parent / "snapshots" / "premigration"
         json_files = list(premigration_dir.glob("*.json")) if premigration_dir.exists() else []
-        assert json_files == [], "CCM_MIGRATION_SNAPSHOT=0ではpremigrationスナップショットを取得しないはず"
+        assert json_files == [], "CALM_MIGRATION_SNAPSHOT=0ではpremigrationスナップショットを取得しないはず"
 
         conn = sqlite3.connect(temp_db)
         try:
@@ -157,7 +157,7 @@ class TestExistingDatabaseWithPending:
             "CREATE TABLE pipeline_probe_toggle_dryrun (id INTEGER PRIMARY KEY);",
         )
         monkeypatch.setattr(db, "MIGRATIONS_DIR", extended_migrations_dir)
-        monkeypatch.setattr(config, "CCM_MIGRATION_DRYRUN", False)
+        monkeypatch.setattr(config, "CALM_MIGRATION_DRYRUN", False)
 
         dry_run_calls = []
         original_dry_run = db.dry_run_migrations
@@ -170,7 +170,7 @@ class TestExistingDatabaseWithPending:
 
         db._apply_migrations()
 
-        assert dry_run_calls == [], "CCM_MIGRATION_DRYRUN=0ではdry-runゲートを呼ばないはず"
+        assert dry_run_calls == [], "CALM_MIGRATION_DRYRUN=0ではdry-runゲートを呼ばないはず"
 
         conn = sqlite3.connect(temp_db)
         try:
@@ -194,7 +194,7 @@ class TestHashMismatchOnStartup:
 
     def test_warn_mode_continues_without_raising(self, temp_db, extended_migrations_dir, monkeypatch):
         monkeypatch.setattr(db, "MIGRATIONS_DIR", extended_migrations_dir)
-        monkeypatch.setattr(config, "CCM_MIGRATION_HASH_ENFORCE", "warn")
+        monkeypatch.setattr(config, "CALM_MIGRATION_HASH_ENFORCE", "warn")
 
         target_path = extended_migrations_dir / "0001_initial_schema.sql"
         target_path.write_text(target_path.read_text(encoding="utf-8") + "\n-- tampered (test)\n", encoding="utf-8")

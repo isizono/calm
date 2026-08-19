@@ -14,15 +14,20 @@ git diffだけで判定できる規約をCIで強制する（.github/workflows/t
 使い方:
     uv run python scripts/lint_doc_cochange.py --base <ref> --head <ref>
 
-PR本文をチェック対象に含めるには環境変数 CCM_PR_BODY にPR本文を渡す
+PR本文をチェック対象に含めるには環境変数 CALM_PR_BODY にPR本文を渡す
 （GitHub Actions では `${{ github.event.pull_request.body }}` を渡す想定）。
 """
 import argparse
 import ast
-import os
 import subprocess
 import sys
 from pathlib import Path
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from src.env_compat import env_get  # noqa: E402
 
 DB_SCHEMA_DOC = "docs/spec/db-schema.md"
 MCP_TOOLS_DOC = "docs/spec/mcp-tools.md"
@@ -214,7 +219,7 @@ def main(argv: list[str] | None = None) -> int:
 
     changed_files = git_diff_names(args.repo_root, args.base, args.head)
     commit_messages = collect_commit_messages(args.repo_root, args.base, args.head)
-    pr_body = os.environ.get("CCM_PR_BODY", "")
+    pr_body = env_get("CALM_PR_BODY", "")
 
     base_main_py = None
     head_main_py = None

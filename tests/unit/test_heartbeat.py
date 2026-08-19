@@ -90,10 +90,10 @@ def _make_tool_result_entry(tool_use_id: str, result_data: dict):
     }
 
 
-_CHECKIN_TOOL = "mcp__plugin_claude-code-memory_cc-memory__check_in"
-_ADD_ACTIVITY_TOOL = "mcp__plugin_claude-code-memory_cc-memory__add_activity"
-_REMOTE_CHECKIN_TOOL = "mcp__claude_ai_cc-memory__check_in"
-_REMOTE_ADD_ACTIVITY_TOOL = "mcp__claude_ai_cc-memory__add_activity"
+_CHECKIN_TOOL = "mcp__plugin_calm_calm__check_in"
+_ADD_ACTIVITY_TOOL = "mcp__plugin_calm_calm__add_activity"
+_REMOTE_CHECKIN_TOOL = "mcp__claude_ai_calm__check_in"
+_REMOTE_ADD_ACTIVITY_TOOL = "mcp__claude_ai_calm__add_activity"
 
 
 class TestExtractCheckinActivityId:
@@ -161,7 +161,7 @@ class TestExtractCheckinActivityId:
         """check_in以外のツールが混在しても正しく動く"""
         entries = [
             _make_assistant_entry(
-                tool_calls=["mcp__plugin_claude-code-memory_cc-memory__search"],
+                tool_calls=["mcp__plugin_calm_calm__search"],
                 tool_inputs=[{"keyword": "test"}],
             ),
             _make_assistant_entry(
@@ -169,7 +169,7 @@ class TestExtractCheckinActivityId:
                 tool_inputs=[{"activity_id": 55}],
             ),
             _make_assistant_entry(
-                tool_calls=["mcp__plugin_claude-code-memory_cc-memory__add_logs"],
+                tool_calls=["mcp__plugin_calm_calm__add_logs"],
                 tool_inputs=[{"topic_id": 1, "content": "log"}],
             ),
         ]

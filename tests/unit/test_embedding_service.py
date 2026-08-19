@@ -529,7 +529,7 @@ def test_start_server_uses_existing_infra_path(temp_db, monkeypatch):
     # project rootをこのチェックアウト自身に固定する。
     # emb.__file__ = <root>/src/services/embedding_service.py なので parents[2] が <root>。
     root = Path(emb.__file__).resolve().parents[2]
-    monkeypatch.setenv("CC_MEMORY_PROJECT_ROOT", str(root))
+    monkeypatch.setenv("CALM_PROJECT_ROOT", str(root))
     monkeypatch.setattr(emb, "_project_root_cache", None)  # env反映のためキャッシュをクリア
     monkeypatch.setattr(subprocess, "Popen", capturing_popen)
 

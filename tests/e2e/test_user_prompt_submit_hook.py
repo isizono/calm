@@ -221,7 +221,7 @@ class TestEmptySessionId:
 
 
 class TestRelaySessionAwareNudge:
-    """relay session-aware毎ターんnudge（CCM_RELAY_SESSION_AWARE=1のときのみ）
+    """relay session-aware毎ターんnudge（CALM_RELAY_SESSION_AWARE=1のときのみ）
 
     identity解決はresolve_identity_by_ancestry（祖先pidチェーン一致）に依存する。
     _run_hookはsubprocess.runでhookを直接の子プロセスとして起動するため、hook
@@ -281,7 +281,7 @@ class TestRelaySessionAwareNudge:
             extra_env={
                 "RELAY_STATE_DIR": str(relay_state_dir),
                 "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
-                "CCM_RELAY_SESSION_AWARE": "1",
+                "CALM_RELAY_SESSION_AWARE": "1",
             },
         )
         output = json.loads(result.stdout)
@@ -321,7 +321,7 @@ class TestRelaySessionAwareNudge:
         extra_env = {
             "RELAY_STATE_DIR": str(relay_state_dir),
             "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
-            "CCM_RELAY_SESSION_AWARE": "1",
+            "CALM_RELAY_SESSION_AWARE": "1",
         }
 
         # 1回目: launcher登録ファイルありでidentity解決に成功しキャッシュされる
@@ -366,7 +366,7 @@ class TestRelaySessionAwareNudge:
             extra_env={
                 "RELAY_STATE_DIR": str(relay_state_dir),
                 "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
-                "CCM_RELAY_SESSION_AWARE": "1",
+                "CALM_RELAY_SESSION_AWARE": "1",
             },
         )
         output = json.loads(result.stdout)
@@ -393,7 +393,7 @@ class TestRelaySessionAwareNudge:
             extra_env={
                 "RELAY_STATE_DIR": str(relay_state_dir),
                 "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
-                "CCM_RELAY_SESSION_AWARE": "1",
+                "CALM_RELAY_SESSION_AWARE": "1",
             },
         )
         assert json.loads(result.stdout) == {}
@@ -410,7 +410,7 @@ class TestRelaySessionAwareNudge:
             extra_env={
                 "RELAY_STATE_DIR": str(relay_state_dir),
                 "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
-                "CCM_RELAY_SESSION_AWARE": "1",
+                "CALM_RELAY_SESSION_AWARE": "1",
             },
         )
         assert json.loads(result.stdout) == {}
@@ -430,7 +430,7 @@ class TestRelaySessionAwareNudge:
         extra_env = {
             "RELAY_STATE_DIR": str(relay_state_dir),
             "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
-            "CCM_RELAY_SESSION_AWARE": "1",
+            "CALM_RELAY_SESSION_AWARE": "1",
         }
 
         # 1回目: record nudgeが優先される

@@ -79,7 +79,7 @@ def _read_events(state_dir: str, session_id: str) -> list[dict]:
 
 
 CONTEXT_RETRIEVAL_ENTRY = _make_assistant_entry(
-    tool_calls=["mcp__plugin_claude-code-memory_cc-memory__get_topics"],
+    tool_calls=["mcp__plugin_calm_calm__get_topics"],
 )
 
 
@@ -328,7 +328,7 @@ class TestActivityCheckinBlock:
                 _make_user_entry("hi"),
                 CONTEXT_RETRIEVAL_ENTRY,
                 _make_assistant_entry(
-                    tool_calls=["mcp__plugin_claude-code-memory_cc-memory__check_in"],
+                    tool_calls=["mcp__plugin_calm_calm__check_in"],
                     tool_inputs=[{"activity_id": 42}],
                 ),
                 _make_assistant_entry(text="response 1"),
@@ -351,7 +351,7 @@ class TestActivityCheckinBlock:
                 _make_user_entry("hi"),
                 CONTEXT_RETRIEVAL_ENTRY,
                 _make_assistant_entry(
-                    tool_calls=["mcp__plugin_claude-code-memory_cc-memory__add_activity"],
+                    tool_calls=["mcp__plugin_calm_calm__add_activity"],
                 ),
                 _make_assistant_entry(text="response 1"),
                 _make_user_entry("continue"),
@@ -411,7 +411,7 @@ class TestSkillSpan:
                 {"type": "text", "text": "Base directory for this skill: ...\n# check-in\n..."},
             ]}},
             _make_assistant_entry(
-                tool_calls=["mcp__plugin_claude-code-memory_cc-memory__get_activities"],
+                tool_calls=["mcp__plugin_calm_calm__get_activities"],
             ),
             _make_assistant_entry(text="activity list here"),
         ], transcript)
@@ -484,7 +484,7 @@ class TestNudge:
             _make_user_entry("hi"),
             CONTEXT_RETRIEVAL_ENTRY,
             _make_assistant_entry(
-                tool_calls=["mcp__plugin_claude-code-memory_cc-memory__add_decisions"],
+                tool_calls=["mcp__plugin_calm_calm__add_decisions"],
                 text="recorded",
             ),
         ], transcript)
@@ -509,8 +509,8 @@ class TestNudge:
             CONTEXT_RETRIEVAL_ENTRY,
             _make_assistant_entry(
                 tool_calls=[
-                    "mcp__plugin_claude-code-memory_cc-memory__add_decisions",
-                    "mcp__plugin_claude-code-memory_cc-memory__check_in",
+                    "mcp__plugin_calm_calm__add_decisions",
+                    "mcp__plugin_calm_calm__check_in",
                 ],
                 tool_inputs=[{}, {"activity_id": 1}],
             ),
