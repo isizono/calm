@@ -15,7 +15,7 @@ relay session-aware nudge（手順5）はSessionStartの一回きりの起動指
 機能しない問題への対応で、events.jsonlとは独立にHookState.monitor_started
 マーカー（hooks/relay_monitor_watch_hook.pyがPostToolUseで書く）とrelay inboxの
 未読件数を毎ターン判定する。identity解決結果はHookState.relay_identityにセッション
-単位でキャッシュし、resolve_identity_by_ancestry（ps最大5回spawn）を毎ターン
+単位でキャッシュし、resolve_identity_by_ancestry（ps最大2回spawn）を毎ターン
 払わないようにする。起動指示は `persistent: true` の使用を明記する。
 """
 import json
@@ -111,9 +111,9 @@ def _format_nudge_message(event: dict, ntype: str | None) -> str | None:
 def _resolve_relay_identity_cached(state: HookState) -> str | None:
     """relay identityをHookStateのセッション単位キャッシュ経由で解決する。
 
-    resolve_identity_by_ancestryはps最大5回spawn（各2秒timeout）を伴うため、
+    resolve_identity_by_ancestryはps最大2回spawn（各2秒timeout）を伴うため、
     UserPromptSubmitのように毎ターン呼ばれる経路でこれを無条件に払うと、
-    `ps`が詰まった環境ではターンあたり最大10秒近いレイテンシが積み上がる。
+    `ps`が詰まった環境ではターンあたり最大4秒近いレイテンシが積み上がる。
     一度解決できたidentityはlauncherプロセスが生存し続ける限り不変なので、
     キャッシュに乗せて以降のターンはps spawnをスキップする。
 

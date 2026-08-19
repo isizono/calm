@@ -137,7 +137,7 @@ class HookState:
         """セッション単位でキャッシュ済みのrelay identityを取得。
         未設定（ファイルなし） -> None。
 
-        resolve_identity_by_ancestryはps最大5回spawn（各2秒timeout）を伴う
+        resolve_identity_by_ancestryはps最大2回spawn（各2秒timeout）を伴う
         コストのある解決経路のため、一度成功した結果はセッション内で使い回す。
         """
         return self._read_str(self._path("relay_identity"))
