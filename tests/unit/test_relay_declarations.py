@@ -1,5 +1,6 @@
 """subscription declaration file（src/services/relay/declarations.py）の unit test。"""
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -138,6 +139,173 @@ class TestSubscriptionLookup:
             },
         )
         assert len(decl["subscriptions"]) == 2
+
+
+class TestNormalizeAllDeclarations:
+    """旧形式（話題labels + 自handle混入）のdeclarationを正規化する
+    normalize_all_declarations()のunit test。relay_subscribeのhandle自動付与廃止に
+    伴う移行処理本体。"""
+
+    def _write(self, session_id: str, handle: str, subs: list[dict]) -> None:
+        decl = {"session_id": session_id, "handle": handle, "subscriptions": subs}
+        declarations.save(decl)
+
+    def test_strips_own_handle_from_mixed_entry_and_expires_lease(self, relay_state):
+        self._write(
+            "sess-1",
+            "session-abc",
+            [
+                {
+                    "subscription_id": "sub-1",
+                    "labels": ["room:planning", "handle:session-abc"],
+                    "lease_expires_at": "2099-01-01T00:00:00Z",
+                    "created_at": "2026-07-05T00:00:00Z",
+                }
+            ],
+        )
+
+        changed = declarations.normalize_all_declarations()
+
+        assert changed == 1
+        decl = declarations.load("sess-1")
+        entry = decl["subscriptions"][0]
+        assert entry["labels"] == ["room:planning"]
+        # lease_expires_atは削除されず、現在時刻付近（失効直後扱い）に更新される
+        # （孤児sweepの即死条件「lease_expires_at欠落=無限に古い扱い」を踏まないため）。
+        expires = datetime.fromisoformat(entry["lease_expires_at"].replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        assert abs((now - expires).total_seconds()) < 10
+
+    def test_handle_only_entry_is_left_untouched(self, relay_state):
+        """自handle単独のentry（直接メッセージ購読）は正規化対象外。"""
+        self._write(
+            "sess-1",
+            "session-abc",
+            [
+                {
+                    "subscription_id": "sub-1",
+                    "labels": ["handle:session-abc"],
+                    "lease_expires_at": "2099-01-01T00:00:00Z",
+                    "created_at": "2026-07-05T00:00:00Z",
+                }
+            ],
+        )
+
+        changed = declarations.normalize_all_declarations()
+
+        assert changed == 0
+        decl = declarations.load("sess-1")
+        assert decl["subscriptions"][0]["labels"] == ["handle:session-abc"]
+        assert decl["subscriptions"][0]["lease_expires_at"] == "2099-01-01T00:00:00Z"
+
+    def test_other_sessions_handle_in_composite_entry_is_left_untouched(self, relay_state):
+        """自分以外のhandleを含む複合entryは意図的な指定でありうるため触らない。"""
+        self._write(
+            "sess-1",
+            "session-abc",
+            [
+                {
+                    "subscription_id": "sub-1",
+                    "labels": ["room:planning", "handle:session-other"],
+                    "lease_expires_at": "2099-01-01T00:00:00Z",
+                    "created_at": "2026-07-05T00:00:00Z",
+                }
+            ],
+        )
+
+        changed = declarations.normalize_all_declarations()
+
+        assert changed == 0
+        decl = declarations.load("sess-1")
+        assert set(decl["subscriptions"][0]["labels"]) == {
+            "room:planning", "handle:session-other",
+        }
+
+    def test_normalization_dedupes_entries_that_collapse_to_same_labels(self, relay_state):
+        """正規化でhandleを外した結果、別entryと同じlabels集合になった場合は片方を落とす。"""
+        self._write(
+            "sess-1",
+            "session-abc",
+            [
+                {
+                    "subscription_id": "sub-1",
+                    "labels": ["room:planning", "handle:session-abc"],
+                    "lease_expires_at": "2099-01-01T00:00:00Z",
+                    "created_at": "2026-07-05T00:00:00Z",
+                },
+                {
+                    "subscription_id": "sub-2",
+                    "labels": ["room:planning"],
+                    "lease_expires_at": "2099-06-01T00:00:00Z",
+                    "created_at": "2026-07-05T01:00:00Z",
+                },
+            ],
+        )
+
+        changed = declarations.normalize_all_declarations()
+
+        assert changed == 1
+        decl = declarations.load("sess-1")
+        assert len(decl["subscriptions"]) == 1
+
+    def test_idempotent_second_run_is_noop(self, relay_state):
+        self._write(
+            "sess-1",
+            "session-abc",
+            [
+                {
+                    "subscription_id": "sub-1",
+                    "labels": ["room:planning", "handle:session-abc"],
+                    "lease_expires_at": "2099-01-01T00:00:00Z",
+                    "created_at": "2026-07-05T00:00:00Z",
+                }
+            ],
+        )
+
+        first = declarations.normalize_all_declarations()
+        second = declarations.normalize_all_declarations()
+
+        assert first == 1
+        assert second == 0
+
+    def test_normalized_entry_survives_orphan_sweep_threshold(self, relay_state):
+        """正規化直後のlease_expires_at（現在時刻）は孤児sweepの24時間閾値に絶対に
+        掛からない（lease_expires_atを削除する誤実装だと、期限不明=無限に古い扱いで
+        即sweepされてしまう）。"""
+        from src.services.relay.lease_loop import compute_orphan_sessions
+
+        self._write(
+            "sess-1",
+            "session-abc",
+            [
+                {
+                    "subscription_id": "sub-1",
+                    "labels": ["room:planning", "handle:session-abc"],
+                    "lease_expires_at": "2099-01-01T00:00:00Z",
+                    "created_at": "2026-07-05T00:00:00Z",
+                }
+            ],
+        )
+        declarations.normalize_all_declarations()
+
+        snapshot = declarations.load_all()
+        orphans = compute_orphan_sessions(snapshot)
+        assert "sess-1" not in orphans
+
+    def test_no_declarations_returns_zero(self, relay_state):
+        assert declarations.normalize_all_declarations() == 0
+
+    def test_missing_handle_key_does_not_raise(self, relay_state):
+        """handleキー欠落（壊れたdeclaration）でも例外を出さずスキップする。"""
+        self._write("sess-1", "", [
+            {
+                "subscription_id": "sub-1",
+                "labels": ["room:planning"],
+                "lease_expires_at": "2099-01-01T00:00:00Z",
+                "created_at": "2026-07-05T00:00:00Z",
+            }
+        ])
+        assert declarations.normalize_all_declarations() == 0
 
 
 class TestLeaseActive:

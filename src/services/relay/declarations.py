@@ -184,3 +184,52 @@ def lease_active(entry: dict, now: Optional[datetime] = None) -> bool:
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# service.py の _HANDLE_PREFIX と同じ値（循環 import を避けるためここでは定数を
+# 独立して持つ）。
+_HANDLE_PREFIX = "handle:"
+
+
+def normalize_all_declarations() -> int:
+    """旧形式（話題 labels に自 handle が混入した購読）の declaration を正規化する。
+
+    relay_subscribe の handle 自動付与廃止に伴う移行処理。常駐ループ（intake /
+    lease_loop）の起動前に 1 回呼ぶ想定。各 entry について、labels に自 handle
+    （`handle:<declaration の handle>`）が含まれ、かつ他の label もある場合のみ
+    自 handle を除去する。handle 単独 entry（直接メッセージ購読）や他セッションの
+    handle を含む複合 entry（意図的な指定でありうる）は触らない。
+
+    除去の結果 labels 集合が別 entry と重複した場合は片方を落とす。書き換えた
+    entry は `lease_expires_at` を現在時刻に設定し（削除はしない。全 entry の
+    期限が不明だと孤児 sweep が declaration ごと即削除してしまうため）、
+    lease_loop の renew/resubscribe 判定に「期限切れ→resubscribe」として乗せ、
+    新 labels での再購読へつなげる。
+
+    正規化後の entry は「自 handle ＋ 他 label」の形を持たないため、再実行しても
+    no-op（冪等）。戻り値は書き換えた declaration の件数。
+    """
+    changed_count = 0
+    for decl in load_all():
+        handle_label = f"{_HANDLE_PREFIX}{decl.get('handle', '')}"
+        changed = False
+        seen: set[frozenset] = set()
+        kept: list[dict] = []
+        for entry in decl.get("subscriptions", []):
+            labels = set(entry.get("labels", []))
+            if handle_label in labels and len(labels) > 1:
+                labels.discard(handle_label)
+                entry["labels"] = sorted(labels)
+                entry["lease_expires_at"] = now_iso()
+                changed = True
+            key = frozenset(labels)
+            if key in seen:
+                changed = True
+                continue
+            seen.add(key)
+            kept.append(entry)
+        if changed:
+            decl["subscriptions"] = kept
+            save(decl)
+            changed_count += 1
+    return changed_count

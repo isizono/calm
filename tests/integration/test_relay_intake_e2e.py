@@ -63,7 +63,7 @@ def test_publish_reaches_session_inbox_via_intake(monkeypatch):
         subscription_id = result["subscription_id"]
         assert subscription_id.startswith("sub-")
 
-        # relay_subscribe が declaration に「handle:<handle>」を付ける仕様。
+        # 非空labelsはそのまま購読される（自handleは混入しない）。
         decl = declarations.load("sess-1")
         subscribed_labels = decl["subscriptions"][0]["labels"]
 

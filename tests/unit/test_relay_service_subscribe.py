@@ -63,9 +63,25 @@ class TestSubscribe:
         assert len(decl["subscriptions"]) == 1
         entry = decl["subscriptions"][0]
         assert entry["subscription_id"] == "sub-1"
-        assert f"handle:{decl['handle']}" in entry["labels"]
+        assert entry["labels"] == ["task:123"]
         assert entry["lease_expires_at"] == "2099-01-01T00:00:00Z"
         assert entry["created_at"]
+
+    def test_non_empty_labels_do_not_get_handle_attached(self, monkeypatch):
+        """非空labelsの購読には自handleが混入しない（handle自動付与の廃止）。
+
+        subset（AND）判定の下でhandleを混ぜると、publish側にも同じhandleが
+        載っていない限りマッチしなくなる（entity publish等の購読者非依存の
+        publishには絶対に載らないhandleが条件に混ざり、恒久的に不成立になる
+        バグの直接原因だった）。
+        """
+        stub = SubscriptionStub()
+        stub.install(monkeypatch)
+        result = service.relay_subscribe(
+            ["room:planning", "task:build"], caller_session_id="sess-1"
+        )
+        assert result["labels"] == ["room:planning", "task:build"]
+        assert stub.requests[0]["labels"] == ["room:planning", "task:build"]
 
     def test_subscriber_is_server_identity(self, monkeypatch):
         stub = SubscriptionStub()
