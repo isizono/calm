@@ -158,3 +158,8 @@ def test_entity_type_individual_subscription_receives_own_update(
 
         received = service.relay_receive(caller_session_id="sess-1")
         assert received["count"] >= 1, received
+        matching = [
+            m for m in received["messages"]
+            if m["ref"] == {"type": "activity", "id": str(activity_id)}
+        ]
+        assert matching, received

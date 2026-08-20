@@ -11,7 +11,14 @@ file 存在 = 購読 active、削除 = 退場、を意味する。スキーマ:
           "subscription_id": str,
           "labels": [str],
           "lease_expires_at": str,   # ISO8601 UTC
-          "created_at": str          # ISO8601 UTC
+          "created_at": str,         # ISO8601 UTC
+          "handle_auto_attached": bool  # optional。relay_subscribe が新規
+                                         # entry 作成時に必ず False を書き込む
+                                         # （service.py）。旧コード（handle 自動
+                                         # 付与あり）が書いた entry にはこの
+                                         # キー自体が無い。normalize_all_declarations
+                                         # はこのキーが無い entry のみを正規化対象
+                                         # にする（詳細は同関数の docstring 参照）
         },
         ...
       ]
@@ -190,21 +197,59 @@ def now_iso() -> str:
 # 独立して持つ）。
 _HANDLE_PREFIX = "handle:"
 
+# entry がこのキーを持つ（値は常に False）ことは、relay_subscribe の handle
+# 自動付与廃止後のコードが新規作成した entry であることを構造的に保証する
+# （service.py の relay_subscribe が新規 entry 作成時に必ず書き込む。既存
+# entry を返すだけの reuse パスやlease_loopのrenew/resubscribeでは付与し
+# ないが、それらは元々このキーを持っていた entry を書き換えるだけなので
+# 一度付いたキーは保持され続ける）。このキーを持つ entry の labels に自
+# handle が混入していても、それは「宛先を自分に限定した複合条件」という
+# 本 PR が推奨する意図的な指定でしかあり得ない（自動付与コードはもう
+# 存在しないため）。normalize はこのキーが無い entry のみを対象にする。
+_HANDLE_AUTO_ATTACHED_KEY = "handle_auto_attached"
+
+
+def _parse_lease_expires_at(entry: dict) -> Optional[datetime]:
+    raw = entry.get("lease_expires_at")
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
 
 def normalize_all_declarations() -> int:
     """旧形式（話題 labels に自 handle が混入した購読）の declaration を正規化する。
 
     relay_subscribe の handle 自動付与廃止に伴う移行処理。常駐ループ（intake /
-    lease_loop）の起動前に 1 回呼ぶ想定。各 entry について、labels に自 handle
+    lease_loop）の起動前に 1 回呼ぶ想定。各 entry について、`_HANDLE_AUTO_ATTACHED_KEY`
+    を持たない（＝旧コードが作った可能性がある）entry のうち、labels に自 handle
     （`handle:<declaration の handle>`）が含まれ、かつ他の label もある場合のみ
-    自 handle を除去する。handle 単独 entry（直接メッセージ購読）や他セッションの
-    handle を含む複合 entry（意図的な指定でありうる）は触らない。
+    自 handle を除去する。`_HANDLE_AUTO_ATTACHED_KEY` を持つ entry（新コードが
+    作成済み）は、labels の中身に関わらず絶対に触らない。これは本 PR が
+    docstring・仕様書で「宛先を自分に限定した複合条件を張りたい場合は labels に
+    自分の handle label を明示的に含めること」と案内している新しい意図的な
+    使い方を、移行処理が「旧バグの残骸」と誤認して破壊しないようにするため
+    （handle 単独 entry・他セッションの handle を含む複合 entry も従来どおり
+    対象外）。
 
-    除去の結果 labels 集合が別 entry と重複した場合は片方を落とす。書き換えた
-    entry は `lease_expires_at` を現在時刻に設定し（削除はしない。全 entry の
-    期限が不明だと孤児 sweep が declaration ごと即削除してしまうため）、
-    lease_loop の renew/resubscribe 判定に「期限切れ→resubscribe」として乗せ、
-    新 labels での再購読へつなげる。
+    除去の結果 labels 集合が別 entry と衝突した場合、以下の優先順で 1 件だけ
+    残し、他を落とす:
+      1. 今回の呼び出しで strip されなかった（＝既に健全な）entry を優先
+      2. `lease_expires_at` がより未来（＝より最近 renew された）entry を優先
+      3. 出現順（決定的なタイブレーク）
+    「衝突した2entryのうち出現順が早いほうを無条件で残す」と、たまたま健全な
+    entry が後に見つかっただけで消えてしまう（renew され続けてきた生きた
+    subscription が失われる）ため、この優先順で判定する。
+
+    書き換えた entry は `lease_expires_at` を現在時刻に設定し（削除はしない。
+    全 entry の期限が不明だと孤児 sweep が declaration ごと即削除してしまう
+    ため）、lease_loop の renew/resubscribe 判定に「期限切れ→resubscribe」
+    として乗せ、新 labels での再購読へつなげる。
 
     正規化後の entry は「自 handle ＋ 他 label」の形を持たないため、再実行しても
     no-op（冪等）。戻り値は書き換えた declaration の件数。
@@ -213,21 +258,51 @@ def normalize_all_declarations() -> int:
     for decl in load_all():
         handle_label = f"{_HANDLE_PREFIX}{decl.get('handle', '')}"
         changed = False
-        seen: set[frozenset] = set()
-        kept: list[dict] = []
+
+        # labels 集合（strip 後）をキーに entry をグルーピングする。order は
+        # 出現順を保持し、辞書の反復順（Python 3.7+ で挿入順）に依存しない
+        # 明示的な決定性を持たせる。
+        groups: dict[frozenset, list[tuple[dict, bool, set]]] = {}
+        order: list[frozenset] = []
+
         for entry in decl.get("subscriptions", []):
             labels = set(entry.get("labels", []))
-            if handle_label in labels and len(labels) > 1:
-                labels.discard(handle_label)
-                entry["labels"] = sorted(labels)
-                entry["lease_expires_at"] = now_iso()
-                changed = True
+            stripped = False
+            if _HANDLE_AUTO_ATTACHED_KEY not in entry:
+                if handle_label in labels and len(labels) > 1:
+                    labels.discard(handle_label)
+                    stripped = True
             key = frozenset(labels)
-            if key in seen:
+            bucket = groups.setdefault(key, [])
+            if not bucket:
+                order.append(key)
+            bucket.append((entry, stripped, labels))
+
+        kept: list[dict] = []
+        for key in order:
+            bucket = groups[key]
+            if len(bucket) > 1:
                 changed = True
-                continue
-            seen.add(key)
-            kept.append(entry)
+                # stripped=False（健全）を優先し、次点で lease_expires_at が
+                # より未来のものを優先する。datetime 比較不能（None）は
+                # 最も不利に扱う。
+                def _priority(item: tuple[dict, bool, set]) -> tuple[bool, float]:
+                    item_entry, item_stripped, _labels = item
+                    expires = _parse_lease_expires_at(item_entry)
+                    return (
+                        item_stripped,
+                        -(expires.timestamp() if expires is not None else float("-inf")),
+                    )
+
+                bucket = sorted(bucket, key=_priority)
+
+            winner_entry, winner_stripped, winner_labels = bucket[0]
+            if winner_stripped:
+                winner_entry["labels"] = sorted(winner_labels)
+                winner_entry["lease_expires_at"] = now_iso()
+                changed = True
+            kept.append(winner_entry)
+
         if changed:
             decl["subscriptions"] = kept
             save(decl)

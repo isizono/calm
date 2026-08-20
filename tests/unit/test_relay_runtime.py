@@ -122,6 +122,43 @@ class TestDeclarationNormalizationOnStart:
         assert runtime.start() is True
         runtime.stop()
 
+    def test_normalize_failure_does_not_prevent_thread_spawn(self, monkeypatch):
+        """declaration正規化が例外を出しても、start()は伝播させずthread起動を
+        継続する。self._started = True設定後に例外で抜けると、二重startガードに
+        より二度とthreadがspawnされなくなる（かつ呼び出し元main.pyはstart()を
+        try/exceptで囲っていないためHTTP server起動自体を巻き込みかねない）。
+        正規化はべき等な移行処理であり、1回の起動で失敗しても致命的ではない。"""
+        from src.services.relay import runtime as runtime_module
+
+        monkeypatch.setenv("RELAY_BEARER_TOKEN", "test-token")
+
+        def _boom():
+            raise RuntimeError("declaration file corrupted")
+
+        monkeypatch.setattr(
+            runtime_module.declarations, "normalize_all_declarations", _boom
+        )
+
+        runtime = RelayRuntime(active_sessions_getter=lambda: set())
+        spawned: list[str] = []
+        monkeypatch.setattr(runtime, "_run_intake", lambda: spawned.append("intake"))
+        monkeypatch.setattr(
+            runtime, "_run_lease_loop", lambda: spawned.append("lease_loop")
+        )
+        monkeypatch.setattr(
+            runtime, "_run_dispatcher", lambda: spawned.append("dispatcher")
+        )
+
+        assert runtime.start() is True  # 例外を外へ伝播させない
+
+        try:
+            deadline = time.monotonic() + 5.0
+            while len(spawned) < 3 and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert set(spawned) == {"intake", "lease_loop", "dispatcher"}
+        finally:
+            runtime.stop()
+
 
 class TestDispatcherFallback:
     def test_dispatcher_already_running_is_swallowed(self, monkeypatch):

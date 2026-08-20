@@ -378,6 +378,12 @@ def relay_subscribe(
         "labels": sorted(set(labels_final)),
         "lease_expires_at": created.get("lease_expires_at"),
         "created_at": declarations.now_iso(),
+        # このプロセスは handle 自動付与を行わない（上の labels_final 構築を
+        # 参照）ため、labels は呼び出し側が指定したとおり。自 handle が
+        # 含まれていてもそれは呼び出し側の意図的な指定であり、旧バグの
+        # 混入ではあり得ないことを declarations.normalize_all_declarations
+        # に伝えるマーカー（詳細は declarations.py の同定数の docstring）。
+        "handle_auto_attached": False,
     }
     declarations.upsert_subscription(decl, entry)
     declarations.save(decl)
