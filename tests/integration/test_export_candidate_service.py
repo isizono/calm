@@ -216,6 +216,48 @@ class TestClosureWarnings:
         assert warnings[0]["target"] == {"type": "material", "id_raw": cited}
         assert warnings[0]["target_title"] == "Cited Material"
 
+    def test_belongs_to_target_outside_detected(self, temp_db):
+        """activityのbelongs_to先topicが選択範囲外だとclosure_warningsで検知される"""
+        t1 = _topic("Parent Topic")
+        a1 = _activity("Child Activity")
+        add_relation("activity", a1, [{"type": "topic", "ids": [t1]}])
+
+        result = collect_export_candidates(roots=[{"type": "activity", "id": a1}], max_depth=0)
+
+        assert "error" not in result
+        warnings = [w for w in result["closure_warnings"] if w["kind"] == "belongs_to_target_outside"]
+        assert len(warnings) == 1
+        assert warnings[0]["target"] == {"type": "topic", "id_raw": t1}
+        assert warnings[0]["target_title"] == "Parent Topic"
+
+    def test_related_target_outside_detected(self, temp_db):
+        """material→materialのrelated先が選択範囲外だとclosure_warningsで検知される"""
+        m1 = _material("First")
+        m2 = _material("Second")
+        add_relation("material", m2, [{"type": "material", "ids": [m1]}])
+
+        result = collect_export_candidates(roots=[{"type": "material", "id": m2}], max_depth=0)
+
+        assert "error" not in result
+        warnings = [w for w in result["closure_warnings"] if w["kind"] == "related_target_outside"]
+        assert len(warnings) == 1
+        assert warnings[0]["target"] == {"type": "material", "id_raw": m1}
+        assert warnings[0]["target_title"] == "First"
+
+    def test_depends_on_target_outside_detected(self, temp_db):
+        """activity→activityのdepends_on先が選択範囲外だとclosure_warningsで検知される"""
+        a1 = _activity("Dependency")
+        a2 = _activity("Dependent")
+        add_relation("activity", a2, [{"type": "activity", "ids": [a1]}], relation_type="depends_on")
+
+        result = collect_export_candidates(roots=[{"type": "activity", "id": a2}], max_depth=0)
+
+        assert "error" not in result
+        warnings = [w for w in result["closure_warnings"] if w["kind"] == "depends_on_target_outside"]
+        assert len(warnings) == 1
+        assert warnings[0]["target"] == {"type": "activity", "id_raw": a1}
+        assert warnings[0]["target_title"] == "Dependency"
+
     def test_closure_warnings_computed_regardless_of_include_types_filter(self, temp_db):
         """closure_warningsはinclude_types(表示フィルタ)の影響を受けない"""
         t1 = _topic("Topic")

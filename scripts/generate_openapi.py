@@ -63,6 +63,8 @@ TOOL_TAGS: dict[str, str] = {
     "get_timeline": "timeline",
     "get_map": "timeline",
     "collect_export_candidates": "export",
+    "set_instance_identity": "export",
+    "export_bundle": "export",
     "check_in": "checkin",
     "retract": "retract",
     "get_config": "misc",

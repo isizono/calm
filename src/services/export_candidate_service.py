@@ -23,7 +23,13 @@ from src.services.citations_pure import (
     extract_citations,
 )
 from src.services.readable_id import strip_entity_id_inplace
-from src.services.relation_service import VALID_ENTITY_TYPES, _traverse_relations_with_conn
+from src.services.relation_service import (
+    VALID_ENTITY_TYPES,
+    _fetch_belongs_to_ids_with_conn,
+    _fetch_depends_on_with_conn,
+    _fetch_related_ids_with_conn,
+    _traverse_relations_with_conn,
+)
 from src.services.supersede_service import compute_supersede_info_batch
 from src.services.tag_service import (
     get_entity_tags_batch,
@@ -216,8 +222,45 @@ def _build_closure_warnings_with_conn(
     candidate_set: set[tuple[str, int]],
     raw_text_by_key: dict[tuple[str, int], str],
 ) -> list[dict]:
-    """supersede先・引用(cite)先が選択範囲外のケースを検知する。"""
+    """supersede先・引用(cite)先・belongs_to/related/depends_on先が選択範囲外のケースを検知する。"""
     title_by_key = {(c["type"], c["id"]): c["title"] for c in candidates}
+
+    ids_by_type: dict[str, list[int]] = defaultdict(list)
+    for etype, eid in candidate_set:
+        ids_by_type[etype].append(eid)
+
+    # belongs_to(子→topic): decision/logは自動同梱の対象外(closure_warningsは
+    # collect_export_candidates段階の候補集合そのものに対する検知であり、
+    # export_bundle側の親topic強制同梱ルールとは独立)
+    belongs_to_pairs: list[tuple[tuple[str, int], int]] = []
+    for etype in ("activity", "material", "decision", "log"):
+        ids = ids_by_type.get(etype, [])
+        if not ids:
+            continue
+        m = _fetch_belongs_to_ids_with_conn(conn, etype, ids)
+        for eid, topic_ids in m.items():
+            for tid in topic_ids:
+                if ("topic", tid) not in candidate_set:
+                    belongs_to_pairs.append(((etype, eid), tid))
+
+    # related(全型共通)
+    related_pairs: list[tuple[tuple[str, int], tuple[str, int]]] = []
+    for etype, ids in ids_by_type.items():
+        m = _fetch_related_ids_with_conn(conn, etype, ids)
+        for eid, targets in m.items():
+            for target_type, target_id in targets:
+                if (target_type, target_id) not in candidate_set:
+                    related_pairs.append(((etype, eid), (target_type, target_id)))
+
+    # depends_on(activity→activity)
+    depends_on_pairs: list[tuple[tuple[str, int], int]] = []
+    activity_ids = ids_by_type.get("activity", [])
+    if activity_ids:
+        m = _fetch_depends_on_with_conn(conn, activity_ids)
+        for eid, dep_ids in m.items():
+            for did in dep_ids:
+                if ("activity", did) not in candidate_set:
+                    depends_on_pairs.append((("activity", eid), did))
 
     decision_ids = [c["id"] for c in candidates if c["type"] == "decision"]
     supersede_pairs: list[tuple[int, int]] = []
@@ -247,6 +290,12 @@ def _build_closure_warnings_with_conn(
         missing_targets["decision"].add(target_id)
     for _, target_type, target_id in cite_pairs:
         missing_targets[target_type].add(target_id)
+    for _, tid in belongs_to_pairs:
+        missing_targets["topic"].add(tid)
+    for _, (target_type, target_id) in related_pairs:
+        missing_targets[target_type].add(target_id)
+    for _, did in depends_on_pairs:
+        missing_targets["activity"].add(did)
     resolved_titles = _fetch_titles_with_conn(conn, missing_targets)
 
     warnings: list[dict] = []
@@ -266,6 +315,33 @@ def _build_closure_warnings_with_conn(
                 "from_title": title_by_key.get((ftype, fid), f"{ftype}#{fid}"),
                 "target_title": resolved_titles.get((target_type, target_id), f"{target_type}#{target_id}"),
                 "target": {"type": target_type, "id_raw": target_id},
+            }
+        )
+    for (ftype, fid), tid in belongs_to_pairs:
+        warnings.append(
+            {
+                "kind": "belongs_to_target_outside",
+                "from_title": title_by_key.get((ftype, fid), f"{ftype}#{fid}"),
+                "target_title": resolved_titles.get(("topic", tid), f"topic#{tid}"),
+                "target": {"type": "topic", "id_raw": tid},
+            }
+        )
+    for (ftype, fid), (target_type, target_id) in related_pairs:
+        warnings.append(
+            {
+                "kind": "related_target_outside",
+                "from_title": title_by_key.get((ftype, fid), f"{ftype}#{fid}"),
+                "target_title": resolved_titles.get((target_type, target_id), f"{target_type}#{target_id}"),
+                "target": {"type": target_type, "id_raw": target_id},
+            }
+        )
+    for (ftype, fid), did in depends_on_pairs:
+        warnings.append(
+            {
+                "kind": "depends_on_target_outside",
+                "from_title": title_by_key.get((ftype, fid), f"{ftype}#{fid}"),
+                "target_title": resolved_titles.get(("activity", did), f"activity#{did}"),
+                "target": {"type": "activity", "id_raw": did},
             }
         )
     return warnings
