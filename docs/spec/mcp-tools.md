@@ -102,7 +102,7 @@ last-synced-migration: 0048
 | `collect_export_candidates` | 他インスタンスへのexport候補を洗い出す（read-only） |
 | `set_instance_identity` | 自インスタンスの識別子を設定する（バンドル複合キー発行の基盤） |
 | `export_bundle` | 確定した候補リストからバンドル（manifest.yaml + エンティティ別mdファイル）を書き出す |
-| `import_bundle` | バンドルを読み衝突検知レポートを返す（mode="dry_run"のみ。DB書き込みなし） |
+| `import_bundle` | バンドルを取り込む（mode="dry_run"で衝突検知レポート、mode="apply"で実際にDBへ書き込み） |
 
 ### 1.10 シグナル系（signal_events）
 
@@ -458,12 +458,15 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
 | bundle_path | string | yes | - | `export_bundle`が書き出したバンドルディレクトリのパス（`manifest.yaml`を直下に持つ）。パスガードでDEFAULT_EXPORT_DIR配下外を拒否 |
-| mode | string | no | "dry_run" | "dry_run"のみサポート。"apply"は`NOT_IMPLEMENTED`を返す |
-| resolutions | dict | no | null | mode="apply"向けの裁定結果。dry_runでは無視される |
-| skip_duplicate_check | bool | no | false | trueでネイティブ重複疑い検知（embedding類似検索）をスキップする |
+| mode | string | no | "dry_run" | "dry_run"（DB無変更で衝突検知レポート）または"apply"（実際にDBへ書き込む） |
+| resolutions | dict | no | null | mode="apply"向けの裁定結果。`{tag_renames: {incoming_tag: local_tag}, on_upstream_change: {entity_type: "overwrite"\|"skip"}, entity_overrides: {composite_key: "skip"\|{action: "skip"\|"import"}}}`。dry_runでは無視される |
+| skip_duplicate_check | bool | no | false | trueでネイティブ重複疑い検知（embedding類似検索）をスキップする（dry_runのみ関係） |
 
-**返り値**: 成功時 `{format_version_ok: bool, bundle_id, source_instance, summary: {type: {new, unchanged, updatable, upstream_changed_skip, self_origin}}, upstream_changed: [{key, type, title, local_entity_id}], tag_report: {merge, create, archived_hit, alias_hit}, duplicates_suspected: [{key, title, similar: [{type, id_raw, title, score}]}], dangling_refs: {count, sample}, degraded: bool, load_errors}`。失敗時 `{error: {code: "VALIDATION_ERROR" | "NOT_FOUND" | "INSTANCE_ID_NOT_SET" | "NOT_IMPLEMENTED" | "DATABASE_ERROR", message}}`。
-**動作**: バンドルを読み、DBへの書き込みを一切行わずに衝突検知レポートを返す。再import判定は`import_provenance`逆引き（origin一致+hash一致は`unchanged`、hash不一致はtopic/activity/materialなら`updatable`、decision/logなら既定skipの`upstream_changed_skip`）で行う。参照解決（belongs_to/related/supersedes/depends_on・本文中の拡張cite）はバンドル内→provenance逆引き→自インスタンス出生→解決不能、の優先順で試み、解決不能分は`dangling_refs`に集計する。タグは4区分（merge/create/archived_hit/alias_hit）でレポートし、domainタグまたはnotesを持つエントリは`review_required=true`になる。重複疑い検知はstatus="new"のエンティティのみ対象で、embeddingサーバー未起動時は`degraded=true`になるがクラッシュしない。
+**dry_run 返り値**: 成功時 `{format_version_ok: bool, bundle_id, source_instance, summary: {type: {new, unchanged, updatable, upstream_changed_skip, self_origin}}, upstream_changed: [{key, type, title, local_entity_id}], tag_report: {merge, create, archived_hit, alias_hit}, duplicates_suspected: [{key, title, similar: [{type, id_raw, title, score}]}], dangling_refs: {count, sample}, degraded: bool, load_errors}`。
+**dry_run 動作**: バンドルを読み、DBへの書き込みを一切行わずに衝突検知レポートを返す。再import判定は`import_provenance`逆引き（origin一致+hash一致は`unchanged`、hash不一致はtopic/activity/materialなら`updatable`、decision/logなら既定skipの`upstream_changed_skip`）で行う。参照解決（belongs_to/related/supersedes/depends_on・本文中の拡張cite）はバンドル内→provenance逆引き→自インスタンス出生→解決不能、の優先順で試み、解決不能分は`dangling_refs`に集計する。タグは4区分（merge/create/archived_hit/alias_hit）でレポートし、domainタグまたはnotesを持つエントリは`review_required=true`になる。重複疑い検知はstatus="new"のエンティティのみ対象で、embeddingサーバー未起動時は`degraded=true`になるがクラッシュしない。
+
+**apply 返り値**: 成功時 `{format_version_ok: bool, bundle_id, source_instance, created: {type: n}, updated: {type: n}, skipped: {type: n}, skip_reasons: {status: n}, created_edges: int, dropped_edges: int, unresolved_body_refs: int, warnings, load_errors}`。失敗時は共通で `{error: {code: "VALIDATION_ERROR" | "NOT_FOUND" | "INSTANCE_ID_NOT_SET" | "DATABASE_ERROR", message}}`。
+**apply 動作**: dry_runと同じ分類ロジックを土台に、resolutionsを反映して実際にDBへ書き込む（topic→activity/material→decision/log→relations/supersedes/depends_on→本文citation書き換えの順に適用し、全体を1トランザクションで実行、失敗時は部分書き込みを残さない）。参照解決は4段の優先順（バンドル内→provenance逆引き→自インスタンス出生→解決不能）で行い、解決できたエッジ・citationはローカルIDへ張り直す。解決不能な本文中citationは「{title}」(未取り込みの外部記録)に置換し、解決不能なfrontmatterエッジは張らずに`dropped_edges`へ計上する。新規エンティティのcreated_atはimport実行時刻を採用する（originのcreated_atは`import_provenance.origin_created_at`に保持）。タグは新規作成分にincoming notesを設定し、既存の非archived非alias平タグには差分行のみ追記する。activityは明示選択されたもののみが対象。新規作成時はstatusをバンドルの値のまま採用するが（自動でshelvedへ変換しない）、既存を上書き更新する場合はローカルのstatus/retracted_atを保持し変更しない。タグ紐付けは`INSERT OR IGNORE`による追加のみで、送信元でタグが外れても既存の紐付けは自動削除されない。FTS同期はDBトリガー任せ、embedding/vec同期はcommit後にベストエフォートで行う。
 
 ### 2.21 add_habit / get_habits / update_habit
 

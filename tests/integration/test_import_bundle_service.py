@@ -10,19 +10,22 @@ import_bundle(mode="dry_run")で読み込み、以下を検証する:
 - ネイティブ重複疑い検知とembedding未起動時のdegraded表示
 """
 import os
+import sqlite3
 import tempfile
 
 import numpy as np
 import pytest
 
 from src.db import get_connection, init_database
-from src.services.activity_service import add_activity
+from src.services import import_bundle_service
+from src.services.activity_service import add_activity, update_activity
 from src.services.export_bundle_service import export_bundle
 from src.services.import_bundle_service import import_bundle
 from src.services.instance_service import set_instance_identity
 from src.services.material_service import add_material
 from src.services.relation_service import add_relation
 from src.services.retract_service import retract
+from src.services.search_service import search
 from src.services.tag_service import _injected_tags, update_tag
 from src.services.topic_service import add_topic
 from tests.helpers import add_decision, add_log
@@ -145,11 +148,18 @@ class TestValidation:
         result = import_bundle("")
         assert result["error"]["code"] == "VALIDATION_ERROR"
 
-    def test_apply_mode_not_implemented(self, dbs):
+    def test_apply_rejects_unsupported_bundle_format(self, dbs, tmp_path):
         db_a, db_b = dbs
         _switch_db(db_b)
-        result = import_bundle("/tmp/whatever", mode="apply")
-        assert result["error"]["code"] == "NOT_IMPLEMENTED"
+        _set_instance("team-b")
+        bad_bundle = tmp_path / "bad-format-bundle"
+        bad_bundle.mkdir()
+        (bad_bundle / "manifest.yaml").write_text(
+            "format: ccm-bundle/999\nbundle_id: x\nsource_instance: team-a\nentities: []\n",
+            encoding="utf-8",
+        )
+        result = import_bundle(str(bad_bundle), mode="apply")
+        assert result["error"]["code"] == "VALIDATION_ERROR"
 
     def test_path_outside_export_dir_rejected(self, dbs):
         db_a, db_b = dbs
@@ -580,3 +590,597 @@ class TestDuplicatesSuspected:
         assert "error" not in result
         assert result["degraded"] is False
         assert call_count["n"] == 1
+
+
+def _fetch_row(table: str, entity_id: int) -> dict:
+    conn = get_connection(load_vec=False)
+    try:
+        row = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (entity_id,)).fetchone()
+        return dict(row) if row else {}
+    finally:
+        conn.close()
+
+
+def _fetch_provenance(entity_type: str, entity_id: int) -> dict:
+    conn = get_connection(load_vec=False)
+    try:
+        row = conn.execute(
+            "SELECT * FROM import_provenance WHERE entity_type = ? AND entity_id = ?",
+            (entity_type, entity_id),
+        ).fetchone()
+        return dict(row) if row else {}
+    finally:
+        conn.close()
+
+
+class TestApplyEntityCreation:
+    def test_apply_creates_material_with_import_time_created_at_and_provenance(self, dbs, mock_embedding_server):
+        db_a, db_b = dbs
+        _switch_db(db_a)
+        _set_instance("team-a")
+        m1 = _material(title="Origin Material", content="hello from team-a")
+        # created_at差分をwall-clockの秒精度に依存させないため、originのcreated_atを
+        # 明確に過去の固定値へ書き換えてからexportする
+        origin_created_at = "2020-01-01 00:00:00"
+        conn = get_connection(load_vec=False)
+        try:
+            conn.execute("UPDATE materials SET created_at = ? WHERE id = ?", (origin_created_at, m1))
+            conn.commit()
+        finally:
+            conn.close()
+        bundle = export_bundle(items=[{"type": "material", "ids": [m1]}])
+
+        _switch_db(db_b)
+        _set_instance("team-b")
+        result = import_bundle(bundle["path"], mode="apply")
+        assert "error" not in result
+        assert result["created"]["material"] == 1
+        assert result["updated"] == {}
+
+        local_row = None
+        conn = get_connection(load_vec=False)
+        try:
+            local_row = conn.execute(
+                "SELECT id, title, content, created_at FROM materials WHERE title = ?", ("Origin Material",)
+            ).fetchone()
+        finally:
+            conn.close()
+        assert local_row is not None
+        assert local_row["content"] == "hello from team-a"
+        # import時刻を採用するため、origin側のcreated_atとは一致しない
+        assert local_row["created_at"] != origin_created_at
+
+        prov = _fetch_provenance("material", local_row["id"])
+        assert prov["origin_instance"] == "team-a"
+        assert prov["origin_id"] == m1
+        assert prov["origin_created_at"] == origin_created_at
+        assert prov["bundle_id"] == bundle["bundle_id"]
+
+    def test_apply_creates_decision_with_auto_included_parent_topic_belongs_to(self, dbs, mock_embedding_server):
+        db_a, db_b = dbs
+        _switch_db(db_a)
+        _set_instance("team-a")
+        t1 = _topic("Parent Topic")
+        d1 = _decision(t1, decision="We decided X", reason="Because Y")
+        bundle = export_bundle(items=[{"type": "decision", "ids": [d1]}])
+        assert bundle["counts"].get("topic") == 1
+
+        _switch_db(db_b)
+        _set_instance("team-b")
+        result = import_bundle(bundle["path"], mode="apply")
+        assert "error" not in result
+        assert result["created"]["decision"] == 1
+        assert result["created"]["topic"] == 1
+        # このシナリオで張られるエッジはdecision→topicのbelongs_to 1本のみ
+        assert result["created_edges"] == 1
+
+        conn = get_connection(load_vec=False)
+        try:
+            topic_row = conn.execute(
+                "SELECT id FROM discussion_topics WHERE title = ?", ("Parent Topic",)
+            ).fetchone()
+            decision_row = conn.execute(
+                "SELECT id FROM decisions WHERE decision = ?", ("We decided X",)
+            ).fetchone()
+            edge = conn.execute(
+                "SELECT 1 FROM relations WHERE source_type = 'decision' AND source_id = ? "
+                "AND target_type = 'topic' AND target_id = ? AND relation_type = 'belongs_to'",
+                (decision_row["id"], topic_row["id"]),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert edge is not None
+
+    def test_apply_preserves_activity_status_from_bundle_on_create(self, dbs, mock_embedding_server):
+        db_a, db_b = dbs
+        _switch_db(db_a)
+        _set_instance("team-a")
+        a1 = _activity(title="In Flight")
+        upd = update_activity(a1, status="in_progress")
+        assert "error" not in upd
+        bundle = export_bundle(items=[{"type": "activity", "ids": [a1]}])
+
+        _switch_db(db_b)
+        _set_instance("team-b")
+        result = import_bundle(bundle["path"], mode="apply")
+        assert "error" not in result
+        assert result["created"]["activity"] == 1
+
+        conn = get_connection(load_vec=False)
+        try:
+            row = conn.execute(
+                "SELECT status FROM activities WHERE title = ?", ("In Flight",)
+            ).fetchone()
+        finally:
+            conn.close()
+        # fableの推奨(未完了はshelvedに落とす)は不採用、export時点のstatusをそのまま使う
+        assert row["status"] == "in_progress"
+
+
+class TestApplyReferenceResolution:
+    def test_apply_replaces_unresolved_body_citation_with_title(self, dbs, mock_embedding_server):
+        db_a, db_b = dbs
+        _switch_db(db_a)
+        _set_instance("team-a")
+        m2 = _material(title="Outside The Bundle", content="not selected")
+        m1 = _material(
+            title="Has Reference", content="See details in {{cite:M#" + str(m2) + "}} above."
+        )
+        bundle = export_bundle(items=[{"type": "material", "ids": [m1]}])
+
+        _switch_db(db_b)
+        _set_instance("team-b")
+        result = import_bundle(bundle["path"], mode="apply")
+        assert "error" not in result
+        assert result["unresolved_body_refs"] == 1
+
+        conn = get_connection(load_vec=False)
+        try:
+            row = conn.execute(
+                "SELECT content FROM materials WHERE title = ?", ("Has Reference",)
+            ).fetchone()
+        finally:
+            conn.close()
+        assert "「Outside The Bundle」(未取り込みの外部記録)" in row["content"]
+        assert "{{cite:" not in row["content"]
+
+    def test_apply_resolves_related_reference_within_same_bundle(self, dbs, mock_embedding_server):
+        db_a, db_b = dbs
+        _switch_db(db_a)
+        _set_instance("team-a")
+        m1 = _material(title="Has Reference", content="hello")
+        m2 = _material(title="Referenced Together", content="world")
+        rel = add_relation("material", m1, [{"type": "material", "ids": [m2]}], "related")
+        assert "error" not in rel
+        bundle = export_bundle(items=[{"type": "material", "ids": [m1, m2]}])
+
+        _switch_db(db_b)
+        _set_instance("team-b")
+        result = import_bundle(bundle["path"], mode="apply")
+        assert "error" not in result
+        assert result["dropped_edges"] == 0
+        # m1↔m2双方のfrontmatterにrelatedが載るため2回addRelationが走るが、
+        # 正規化された同一ペアへのINSERT OR IGNOREで実際に追加されるのは1本のみ
+        assert result["created_edges"] == 1
+
+        conn = get_connection(load_vec=False)
+        try:
+            row1 = conn.execute("SELECT id FROM materials WHERE title = ?", ("Has Reference",)).fetchone()
+            row2 = conn.execute("SELECT id FROM materials WHERE title = ?", ("Referenced Together",)).fetchone()
+            edge = conn.execute(
+                "SELECT 1 FROM relations_view WHERE source_type = 'material' AND source_id = ? "
+                "AND target_type = 'material' AND target_id = ? AND relation_type = 'related'",
+                (row1["id"], row2["id"]),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert edge is not None
+
+
+class TestApplyTags:
+    def test_apply_creates_new_tag_with_full_notes(self, dbs, mock_embedding_server):
+        db_a, db_b = dbs
+        _switch_db(db_a)
+        _set_instance("team-a")
+        m1 = _material(tags=["domain:brand-new-tag"])
+        update_tag("domain:brand-new-tag", notes="How to use this tag")
+        bundle = export_bundle(items=[{"type": "material", "ids": [m1]}])
+
+        _switch_db(db_b)
+        _set_instance("team-b")
+        result = import_bundle(bundle["path"], mode="apply")
+        assert "error" not in result
+
+        conn = get_connection(load_vec=False)
+        try:
+            row = conn.execute(
+                "SELECT notes FROM tags WHERE namespace = 'domain' AND name = 'brand-new-tag'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert row["notes"] == "How to use this tag"
+
+    def test_apply_merges_notes_diff_into_existing_tag(self, dbs, mock_embedding_server):
+        db_a, db_b = dbs
+        _switch_db(db_a)
+        _set_instance("team-a")
+        m1 = _material(tags=["domain:shared-tag"])
+        update_tag("domain:shared-tag", notes="incoming line one\nincoming line two")
+        bundle = export_bundle(items=[{"type": "material", "ids": [m1]}])
+
+        _switch_db(db_b)
+        _set_instance("team-b")
+        _material(title="Local User", tags=["domain:shared-tag"])
+        update_tag("domain:shared-tag", notes="incoming line one")
+
+        result = import_bundle(bundle["path"], mode="apply")
+        assert "error" not in result
+
+        conn = get_connection(load_vec=False)
+        try:
+            row = conn.execute(
+                "SELECT notes FROM tags WHERE namespace = 'domain' AND name = 'shared-tag'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row["notes"] == "incoming line one\n\nincoming line two"
+
+    def test_apply_tag_renames_resolution_redirects_to_local_tag(self, dbs, mock_embedding_server):
+        db_a, db_b = dbs
+        _switch_db(db_a)
+        _set_instance("team-a")
+        m1 = _material(tags=["domain:api"])
+        bundle = export_bundle(items=[{"type": "material", "ids": [m1]}])
+
+        _switch_db(db_b)
+        _set_instance("team-b")
+        result = import_bundle(
+            bundle["path"],
+            mode="apply",
+            resolutions={"tag_renames": {"domain:api": "domain:teama-api"}},
+        )
+        assert "error" not in result
+
+        conn = get_connection(load_vec=False)
+        try:
+            renamed = conn.execute(
+                "SELECT id FROM tags WHERE namespace = 'domain' AND name = 'teama-api'"
+            ).fetchone()
+            original = conn.execute(
+                "SELECT id FROM tags WHERE namespace = 'domain' AND name = 'api'"
+            ).fetchone()
+            material_row = conn.execute("SELECT id FROM materials WHERE title = 'Material'").fetchone()
+            linked = conn.execute(
+                "SELECT 1 FROM material_tags WHERE material_id = ? AND tag_id = ?",
+                (material_row["id"], renamed["id"] if renamed else -1),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert renamed is not None
+        assert original is None
+        assert linked is not None
+
+
+class TestApplySearchIndexing:
+    def test_apply_created_material_is_findable_via_fts_search(self, dbs, mock_embedding_server):
+        db_a, db_b = dbs
+        _switch_db(db_a)
+        _set_instance("team-a")
+        m1 = _material(title="Zzyzx Searchable Marker", content="unique searchable content")
+        bundle = export_bundle(items=[{"type": "material", "ids": [m1]}])
+
+        _switch_db(db_b)
+        _set_instance("team-b")
+        result = import_bundle(bundle["path"], mode="apply")
+        assert "error" not in result
+
+        search_result = search(keyword="Zzyzx", entity_type="material")
+        assert "error" not in search_result
+        titles = [r["title"] for r in search_result["results"]]
+        assert "Zzyzx Searchable Marker" in titles
+
+    def test_apply_created_material_has_vec_index_row(self, dbs, mock_embedding_server):
+        db_a, db_b = dbs
+        _switch_db(db_a)
+        _set_instance("team-a")
+        m1 = _material(title="Vector Indexed Material", content="content for embedding")
+        bundle = export_bundle(items=[{"type": "material", "ids": [m1]}])
+
+        _switch_db(db_b)
+        _set_instance("team-b")
+        result = import_bundle(bundle["path"], mode="apply")
+        assert "error" not in result
+
+        conn = get_connection()
+        try:
+            local_id = conn.execute(
+                "SELECT id FROM materials WHERE title = ?", ("Vector Indexed Material",)
+            ).fetchone()["id"]
+            search_index_id = conn.execute(
+                "SELECT id FROM search_index WHERE source_type = 'material' AND source_id = ?",
+                (local_id,),
+            ).fetchone()["id"]
+            vec_row = conn.execute(
+                "SELECT 1 FROM vec_index WHERE rowid = ?", (search_index_id,)
+            ).fetchone()
+        finally:
+            conn.close()
+        assert vec_row is not None
+
+
+class TestApplyReimport:
+    def test_apply_second_run_with_unchanged_hash_is_all_skipped(self, dbs, mock_embedding_server):
+        db_a, db_b = dbs
+        _switch_db(db_a)
+        _set_instance("team-a")
+        m1 = _material(title="Stable Content", content="does not change")
+        bundle = export_bundle(items=[{"type": "material", "ids": [m1]}])
+
+        _switch_db(db_b)
+        _set_instance("team-b")
+        first = import_bundle(bundle["path"], mode="apply")
+        assert "error" not in first
+        assert first["created"]["material"] == 1
+
+        materials_after_first = _count_rows("materials")
+        second = import_bundle(bundle["path"], mode="apply")
+        assert "error" not in second
+        assert second["created"] == {}
+        assert second["skipped"]["material"] == 1
+        assert second["skip_reasons"].get("unchanged") == 1
+        assert _count_rows("materials") == materials_after_first
+
+    def test_apply_on_upstream_change_overwrite_updates_decision(self, dbs, mock_embedding_server):
+        db_a, db_b = dbs
+        _switch_db(db_a)
+        _set_instance("team-a")
+        t1 = _topic("Topic")
+        d1 = _decision(t1, decision="Original decision", reason="Original reason")
+        bundle = export_bundle(items=[{"type": "decision", "ids": [d1]}])
+
+        _switch_db(db_b)
+        _set_instance("team-b")
+        t_local = _topic("Local Topic")
+        local_d = _decision(t_local, decision="Local decision", reason="Local reason")
+        conn = get_connection(load_vec=False)
+        try:
+            conn.execute(
+                "INSERT INTO import_provenance "
+                "(entity_type, entity_id, origin_instance, origin_id, content_hash, bundle_id) "
+                "VALUES ('decision', ?, 'team-a', ?, 'stale-hash-does-not-match', 'prior-bundle')",
+                (local_d, d1),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = import_bundle(
+            bundle["path"],
+            mode="apply",
+            resolutions={"on_upstream_change": {"decision": "overwrite"}},
+        )
+        assert "error" not in result
+        assert result["updated"]["decision"] == 1
+
+        row = _fetch_row("decisions", local_d)
+        assert row["decision"] == "Original decision"
+        assert row["reason"] == "Original reason"
+
+    def test_apply_on_upstream_change_overwrite_bumps_activity_updated_at(self, dbs, mock_embedding_server):
+        db_a, db_b = dbs
+        _switch_db(db_a)
+        _set_instance("team-a")
+        a1 = _activity(title="Origin Activity")
+        bundle = export_bundle(items=[{"type": "activity", "ids": [a1]}])
+
+        _switch_db(db_b)
+        _set_instance("team-b")
+        local_a = _activity(title="Local Activity")
+        stale_updated_at = "2020-01-01 00:00:00"
+        conn = get_connection(load_vec=False)
+        try:
+            conn.execute("UPDATE activities SET updated_at = ? WHERE id = ?", (stale_updated_at, local_a))
+            conn.execute(
+                "INSERT INTO import_provenance "
+                "(entity_type, entity_id, origin_instance, origin_id, content_hash, bundle_id) "
+                "VALUES ('activity', ?, 'team-a', ?, 'stale-hash-does-not-match', 'prior-bundle')",
+                (local_a, a1),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = import_bundle(
+            bundle["path"],
+            mode="apply",
+            resolutions={"on_upstream_change": {"activity": "overwrite"}},
+        )
+        assert "error" not in result
+        assert result["updated"]["activity"] == 1
+
+        row = _fetch_row("activities", local_a)
+        assert row["title"] == "Origin Activity"
+        # 既存のupdate_activityサービスと同じ作法(updated_atを常にCURRENT_TIMESTAMPへ
+        # 更新する)にapply経由の更新も揃える
+        assert row["updated_at"] != stale_updated_at
+
+
+class TestApplyEntityOverrides:
+    def test_apply_entity_override_skip_excludes_entity(self, dbs, mock_embedding_server):
+        db_a, db_b = dbs
+        _switch_db(db_a)
+        _set_instance("team-a")
+        m1 = _material(title="Skip Me", content="should not be imported")
+        bundle = export_bundle(items=[{"type": "material", "ids": [m1]}])
+
+        _switch_db(db_b)
+        _set_instance("team-b")
+        key = f"team-a:M{m1}"
+        result = import_bundle(
+            bundle["path"],
+            mode="apply",
+            resolutions={"entity_overrides": {key: "skip"}},
+        )
+        assert "error" not in result
+        assert result["created"] == {}
+        assert result["skipped"]["material"] == 1
+        assert result["skip_reasons"].get("explicit_override") == 1
+
+        conn = get_connection(load_vec=False)
+        try:
+            row = conn.execute("SELECT id FROM materials WHERE title = ?", ("Skip Me",)).fetchone()
+        finally:
+            conn.close()
+        assert row is None
+
+
+class TestApplyRetractedNewEntity:
+    def test_apply_creates_retracted_material_without_orphan_fts_row(self, dbs, mock_embedding_server):
+        """新規作成でretracted_atを持つエンティティをapplyしても、search_index_ftsに
+        search_index側の対応行を持たない孤立行が残らないことを確認する
+        (フェーズE本文UPDATE後にretract状態を適用する順序で防いでいる)。"""
+        db_a, db_b = dbs
+        _switch_db(db_a)
+        _set_instance("team-a")
+        m1 = _material(title="Retracted On Origin", content="will be retracted before export")
+        retract("material", [m1])
+        bundle = export_bundle(items=[{"type": "material", "ids": [m1]}])
+        assert bundle["counts"].get("material") == 1
+
+        _switch_db(db_b)
+        _set_instance("team-b")
+        result = import_bundle(bundle["path"], mode="apply")
+        assert "error" not in result
+        assert result["created"]["material"] == 1
+
+        conn = get_connection(load_vec=False)
+        try:
+            local_row = conn.execute(
+                "SELECT id, retracted_at FROM materials WHERE title = ?", ("Retracted On Origin",)
+            ).fetchone()
+            assert local_row["retracted_at"] is not None
+
+            search_index_row = conn.execute(
+                "SELECT id FROM search_index WHERE source_type = 'material' AND source_id = ?",
+                (local_row["id"],),
+            ).fetchone()
+            assert search_index_row is None
+
+            orphan_fts_rowids = conn.execute(
+                "SELECT search_index_fts.rowid FROM search_index_fts "
+                "LEFT JOIN search_index ON search_index.id = search_index_fts.rowid "
+                "WHERE search_index.id IS NULL"
+            ).fetchall()
+        finally:
+            conn.close()
+        assert orphan_fts_rowids == []
+
+
+class TestBodyCitationBacktickParity:
+    """バンドル本文のインラインバッククォート区間にある{{cite:...}}を、dry_runの
+    dangling_refs集計とapplyの書き換え・unresolved_body_refs集計の両方で一致して
+    除外することを保証する(コード例示として書かれた引用構文を実データの参照として
+    誤検知しない)。"""
+
+    def _inject_inline_backtick_cite(self, bundle_path: str, key: str) -> None:
+        """バンドルmdファイルの本文へ、インラインバッククォートで囲んだ複合キー形式citeを
+        直接注入する(他インスタンス由来バンドルが引用構文をコード例示した状態を模す)。"""
+        import yaml
+
+        with open(os.path.join(bundle_path, "manifest.yaml"), encoding="utf-8") as f:
+            manifest = yaml.safe_load(f)
+        entry = next(e for e in manifest["entities"] if e["key"] == key)
+        md_path = os.path.join(bundle_path, entry["path"])
+        with open(md_path, encoding="utf-8") as f:
+            file_content = f.read()
+        file_content = file_content.replace(
+            "placeholder body", "syntax example: `{{cite:team-a:M999}}` end."
+        )
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(file_content)
+
+    def test_inline_backtick_cite_excluded_from_dry_run_and_apply_alike(self, dbs, mock_embedding_server):
+        db_a, db_b = dbs
+        _switch_db(db_a)
+        _set_instance("team-a")
+        m1 = _material(title="Has Code Example", content="placeholder body")
+        bundle = export_bundle(items=[{"type": "material", "ids": [m1]}])
+        self._inject_inline_backtick_cite(bundle["path"], f"team-a:M{m1}")
+
+        _switch_db(db_b)
+        _set_instance("team-b")
+
+        dry = import_bundle(bundle["path"], skip_duplicate_check=True)
+        assert "error" not in dry
+        assert dry["dangling_refs"]["count"] == 0
+
+        applied = import_bundle(bundle["path"], mode="apply")
+        assert "error" not in applied
+        assert applied["unresolved_body_refs"] == 0
+
+        conn = get_connection(load_vec=False)
+        try:
+            row = conn.execute(
+                "SELECT content FROM materials WHERE title = ?", ("Has Code Example",)
+            ).fetchone()
+        finally:
+            conn.close()
+        # コード例示なので書き換えられずそのまま残る
+        assert "`{{cite:team-a:M999}}`" in row["content"]
+
+
+class TestApplyAtomicity:
+    """実装ロードマップの受け入れ基準(applyは全体1トランザクションで実行し、失敗時に
+    部分書き込みを残さない)を保証する。"""
+
+    def test_apply_rolls_back_all_writes_when_exception_occurs_mid_transaction(
+        self, dbs, mock_embedding_server, monkeypatch
+    ):
+        db_a, db_b = dbs
+        _switch_db(db_a)
+        _set_instance("team-a")
+        t1 = _topic("Topic One")
+        t2 = _topic("Topic Two")
+        bundle = export_bundle(items=[{"type": "topic", "ids": [t1, t2]}])
+        assert bundle["counts"].get("topic") == 2
+
+        _switch_db(db_b)
+        _set_instance("team-b")
+
+        before_topics = _count_rows("discussion_topics")
+        before_provenance = _count_rows("import_provenance")
+        before_tags = _count_rows("tags")
+
+        real_create = import_bundle_service._create_entity_row_with_conn
+        state = {"topic_creates": 0}
+
+        def flaky_create(conn, etype, fm, fields, title_raw):
+            # 実処理は必ず素通しし(1件目のtopicは実際にINSERTされる)、2件目のtopic
+            # 作成完了の直後にのみ失敗を注入する(=途中まで書き込みが進んだ状態を作る)。
+            local_id = real_create(conn, etype, fm, fields, title_raw)
+            if etype == "topic":
+                state["topic_creates"] += 1
+                if state["topic_creates"] == 2:
+                    raise sqlite3.OperationalError("simulated mid-apply failure")
+            return local_id
+
+        monkeypatch.setattr(import_bundle_service, "_create_entity_row_with_conn", flaky_create)
+
+        result = import_bundle(bundle["path"], mode="apply")
+        assert result["error"]["code"] == "DATABASE_ERROR"
+
+        # 1件目のtopic作成・タグ解決・provenance登録まで進んでいたはずだが、
+        # 2件目の失敗でトランザクション全体がロールバックされ、何も残らない。
+        assert _count_rows("discussion_topics") == before_topics
+        assert _count_rows("import_provenance") == before_provenance
+        assert _count_rows("tags") == before_tags
+
+        conn = get_connection(load_vec=False)
+        try:
+            leftover = conn.execute(
+                "SELECT id FROM discussion_topics WHERE title IN ('Topic One', 'Topic Two')"
+            ).fetchall()
+        finally:
+            conn.close()
+        assert leftover == []

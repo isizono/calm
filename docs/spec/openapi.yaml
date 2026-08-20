@@ -1266,7 +1266,7 @@ paths:
     post:
       tags:
       - export
-      summary: 'Choose: 他インスタンスから受け取ったバンドルを取り込む前に、衝突検知レポートを'
+      summary: 'Choose: 他インスタンスのバンドルを取り込みたいとき。'
       requestBody:
         required: true
         content:

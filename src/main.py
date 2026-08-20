@@ -1669,42 +1669,45 @@ def import_bundle(
     resolutions: Optional[dict] = None,
     skip_duplicate_check: bool = False,
 ) -> dict:
-    """Choose: 他インスタンスから受け取ったバンドルを取り込む前に、衝突検知レポートを
-    確認したいとき。DBへの書き込みは行わない読み取り専用の下見。実際の取り込み
-    (mode="apply")は別途実装される。
+    """Choose: 他インスタンスのバンドルを取り込みたいとき。まずmode="dry_run"
+    (既定、DB無変更)でレポートを確認し、裁定をresolutionsに畳んでmode="apply"を
+    呼ぶと1トランザクションでDBへ書き込む(失敗時は部分書き込みを残さない)。
 
-    バンドル(manifest.yaml + エンティティ別mdファイル)を読み、以下を判定してレポートする:
-    (a) 再importの冪等性(provenance逆引き。origin一致+hash一致は変化なし、hash不一致は
-    topic/activity/materialなら上書き候補、decision/logなら既定skip+警告)、
-    (b) ネイティブ重複の疑い(新規importエンティティのみ対象、embedding類似検索。
-    embeddingサーバー未起動時はdegraded=Trueになるが処理は継続する)、
-    (c) タグ名前空間の衝突(4区分: merge/create/archived_hit/alias_hit。domainタグまたは
-    notesを持つエントリはreview_required=Trueになりユーザー裁定を要する)。
-    belongs_to/related/supersedes/depends_on・本文中の拡張cite参照は
-    バンドル内→provenance逆引き→自インスタンス出生→解決不能、の優先順で解決を試み、
-    解決不能な参照はdangling_refsに集計される。
+    dry_runは(a)再importの冪等性(hash一致は変化なし、不一致はtopic/activity/material
+    なら上書き候補・decision/logなら既定skip+警告)、(b)ネイティブ重複の疑い(新規分の
+    embedding類似検索、サーバー未起動時はdegraded=Trueで継続)、(c)タグ衝突
+    (merge/create/archived_hit/alias_hitの4区分、domainタグ・notes持ちはreview_required)
+    を判定する。
+
+    applyは全参照(belongs_to/related/supersedes/depends_on・本文中cite)を
+    バンドル内→provenance逆引き→自インスタンス出生→解決不能の順で解決し、
+    解決不能な本文citationは「{title}」(未取り込みの外部記録)に置換、frontmatterの
+    エッジは解決不能なら張らず件数のみ計上する。新規エンティティのcreated_atは
+    import実行時刻を採用(originの値はimport_provenance.origin_created_atに保持)。
+    activityは明示選択のみが対象。新規作成時はstatusをバンドルの値のまま採用するが、
+    既存を上書き更新するときはローカルのstatus/retracted_atを保持し変更しない。
+    タグ紐付けは追加のみで、送信元で外れたタグの自動削除はしない。
 
     Args:
         bundle_path: `export_bundle`が書き出したバンドルディレクトリのパス
-            (`manifest.yaml`を直下に持つディレクトリ)。DEFAULT_EXPORT_DIR配下に
-            限定される(exportと対称のパスガード)
-        mode: "dry_run"のみサポート(既定)。"apply"はNOT_IMPLEMENTEDを返す
-        resolutions: mode="apply"向けの裁定結果。dry_runでは無視される
-        skip_duplicate_check: Trueのときネイティブ重複疑い検知をスキップする
-            (デフォルトFalse)。domain規模の初回importでの速度対策
+            (`manifest.yaml`を直下に持つディレクトリ)。DEFAULT_EXPORT_DIR配下限定
+        mode: "dry_run"(既定)または"apply"
+        resolutions: mode="apply"向けの裁定結果。dry_runでは無視される。
+            {"tag_renames": {incoming_tag: local_tag, ...},
+             "on_upstream_change": {entity_type: "overwrite"|"skip", ...},
+             "entity_overrides": {composite_key: "skip"|{"action": "skip"|"import"}, ...}}
+        skip_duplicate_check: Trueのとき重複疑い検知をスキップ(既定False、dry_run限定)
 
     Returns:
-        成功時: {"format_version_ok": bool, "bundle_id": str, "source_instance": str,
-            "summary": {type: {"new", "unchanged", "updatable", "upstream_changed_skip",
-                "self_origin"}, ...},
-            "upstream_changed": [{"key", "type", "title", "local_entity_id"}, ...],
-            "tag_report": {"merge": [...], "create": [...], "archived_hit": [...],
-                "alias_hit": [...]},
-            "duplicates_suspected": [{"key", "title", "similar": [{type, id_raw, title, score}]}, ...],
-            "dangling_refs": {"count": int, "sample": [...]},
-            "degraded": bool, "load_errors": [...]}
+        dry_run成功時: {"format_version_ok", "bundle_id", "source_instance",
+            "summary": {type: {status: n}}, "upstream_changed", "tag_report",
+            "duplicates_suspected", "dangling_refs", "degraded", "load_errors"}
+        apply成功時: {"format_version_ok", "bundle_id", "source_instance",
+            "created": {type: n}, "updated": {type: n}, "skipped": {type: n},
+            "skip_reasons": {status: n}, "created_edges", "dropped_edges",
+            "unresolved_body_refs", "warnings", "load_errors"}
         失敗時: {"error": {"code": "VALIDATION_ERROR" | "NOT_FOUND" |
-            "INSTANCE_ID_NOT_SET" | "NOT_IMPLEMENTED" | "DATABASE_ERROR", "message": str}}
+            "INSTANCE_ID_NOT_SET" | "DATABASE_ERROR", "message": str}}
     """
     return import_bundle_service.import_bundle(
         bundle_path,

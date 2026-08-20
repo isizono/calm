@@ -10,6 +10,7 @@ from src.services.import_bundle_service import (
     _load_bundle_entities,
     _parse_body_fields,
     _parse_composite_key,
+    _rewrite_body_line,
     _split_frontmatter,
 )
 
@@ -55,8 +56,38 @@ class TestExtractCompositeRefs:
         text = "```\n{{cite:team-a:M12}}\n```\nreal: {{cite:team-a:M99}}"
         assert _extract_composite_refs(text) == ["team-a:M99"]
 
+    def test_reference_inside_inline_backtick_is_ignored(self):
+        # apply側の_rewrite_body_lineと同じくインラインバッククォート区間を除外する
+        # (dry_runのdangling_refs集計とapplyの書き換え対象を一致させるため)
+        text = "syntax example: `{{cite:team-a:M12}}` real: {{cite:team-a:M99}}"
+        assert _extract_composite_refs(text) == ["team-a:M99"]
+
     def test_no_references_returns_empty_list(self):
         assert _extract_composite_refs("plain text, no refs here") == []
+
+
+class TestRewriteBodyLine:
+    def test_resolvable_reference_is_rewritten_to_local_cite(self):
+        line = "See {{cite:team-a:M12}} for details."
+        rewritten, count = _rewrite_body_line(line, lambda k: ("material", 7), {})
+        assert rewritten == "See {{cite:M7}} for details."
+        assert count == 0
+
+    def test_unresolvable_reference_is_replaced_with_title(self):
+        line = "See {{cite:team-a:M12}} for details."
+        rewritten, count = _rewrite_body_line(
+            line, lambda k: None, {"team-a:M12": "Outside The Bundle"}
+        )
+        assert "{{cite:" not in rewritten
+        assert "Outside The Bundle" in rewritten
+        assert count == 1
+
+    def test_reference_inside_inline_backtick_is_left_untouched(self):
+        # コード例示として書かれた引用構文はレンダリング対象外(書き換えない・不解決カウントもしない)
+        line = "syntax example: `{{cite:team-a:M12}}`"
+        rewritten, count = _rewrite_body_line(line, lambda k: None, {})
+        assert rewritten == line
+        assert count == 0
 
 
 class TestSplitFrontmatter:
