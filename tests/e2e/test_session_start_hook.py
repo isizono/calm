@@ -1484,6 +1484,92 @@ class TestSessionStartHookRelayInbox:
         assert "relay inbox 未読" not in context
 
 
+class TestSessionStartHookRelayInboxViaRealUv:
+    """_CLI_HOP_WINDOW=2の前提を、実際の`uv run`経由でhookを起動して検証する。
+
+    他のidentity解決テストは`_get_ppid`をモックするか`sys.executable`で直接
+    pythonを起動しており、hooks.jsonが実際に使う`cd X && exec uv run python
+    hooks/xxx.py`という起動経路そのものを検証していない。この経路が成立する
+    のは「hook側もlauncher側もwrapper(uv)を1枚挟んでCLI本体から起動される」
+    という構造に立脚しており、もし将来のuvが`uv run`内部でexecによる自己
+    置換に切り替わると、祖先チェーンの段数が1つズレて窓内に端末ホスト
+    （iTermServer・tmuxサーバ等）が入り込み、本PRが修正した誤クロス
+    セッション一致が2ホップ窓の中でそのまま再発しうる（fail-closeにもならず
+    静かに別セッションのidentityを返す、検知しづらい退行）。本テストは
+    実際に`uv run`でhookを起動し、この前提が崩れたらCIで検知できるようにする。
+    """
+
+    def test_resolves_identity_through_real_uv_wrapper(self, temp_db, tmp_path):
+        uv_path = shutil.which("uv")
+        if uv_path is None:
+            pytest.skip("uvがPATH上に無い環境のためスキップ")
+
+        state_dir = tmp_path / "relay-state"
+        sessions_dir = state_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+
+        # このテストプロセス自身をhookの起動元「Claude Code CLI本体」役に
+        # 見立てる。hookをhooks.json同形の`exec uv run python hooks/xxx.py`
+        # で実際に起動したとき、wrapper(uv)がこのプロセスの直接の子として
+        # 生存し続け、hookプロセスはさらにその子になる
+        # （hook -> uv -> このテストプロセス、ちょうど2ホップ）なら解決に
+        # 成功するはず。
+        session_id = "resolved-via-real-uv"
+        registration = {
+            "session_id": session_id,
+            "pid": os.getpid(),
+            "ancestor_pids": [os.getpid()],
+            "created_at": "2026-07-08T00:00:00Z",
+        }
+        (sessions_dir / f"launcher-{os.getpid()}.json").write_text(
+            json.dumps(registration), encoding="utf-8"
+        )
+
+        from src.services.relay import inbox as relay_inbox
+
+        os.environ["RELAY_STATE_DIR"] = str(state_dir)
+        try:
+            relay_inbox.append(session_id, {"body": "hello"})
+        finally:
+            del os.environ["RELAY_STATE_DIR"]
+
+        env = {
+            **os.environ,
+            "DISCUSSION_DB_PATH": temp_db,
+            "RELAY_STATE_DIR": str(state_dir),
+            "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
+            "CALM_RELAY_SESSION_AWARE": "1",
+        }
+        env.pop("OW_ROLE", None)
+        cleanup_dir = tempfile.mkdtemp(prefix="ccm-habits-rules-real-uv-")
+        env["CALM_HABITS_RULES_PATH"] = str(Path(cleanup_dir) / "cc-memory-habits.md")
+
+        try:
+            # hooks.jsonと全く同じ形（`cd X && exec uv run python hooks/xxx.py`
+            # をshに渡す）で起動する。execによりsh自身がuvへ置き換わるため、
+            # hookプロセスの祖先チェーンにsh層が残らない。
+            command = (
+                f"cd {PROJECT_ROOT} && exec {uv_path} run python "
+                "hooks/session_start_hook.py"
+            )
+            result = subprocess.run(
+                ["sh", "-c", command],
+                input="{}",
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            stdout = result.stdout.strip()
+            assert stdout, f"session_start_hook.py produced no output. stderr: {result.stderr}"
+            output = json.loads(stdout)
+        finally:
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
+
+        context = output["hookSpecificOutput"]["additionalContext"]
+        assert "relay inbox 未読: 1件" in context
+        assert "Monitorツール" in context
+
+
 class TestSessionStartHookRelaySessionAwareGate:
     """CALM_RELAY_SESSION_AWARE（kill switch）未設定時（デフォルトOFF）の振る舞い。
 

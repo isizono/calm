@@ -48,8 +48,12 @@ logger = logging.getLogger(__name__)
 BRIDGE_SESSION_HEADER = "x-cc-memory-bridge-session-id"
 
 # launcher 側の登録ファイル生成（register_launcher_session）が祖先 pid チェーンを
-# さかのぼる最大段数。resolve_cli_session の探索窓を兼ねるため、CLI プロセスより
-# 上の端末ホスト階層まで届く深さを維持する。
+# さかのぼる最大段数。resolve_cli_session（`~/.claude/sessions/<pid>.json` を
+# 持つ CLI 自身の pid を候補チェーンから探す）が、spawn 経路の wrapper 段数が
+# 増えても CLI 本体の pid を記録し損なわないための余裕（マージン）。CLI より
+# 上の端末ホストプロセス（iTermServer / tmux サーバ等）は `~/.claude/sessions/`
+# にファイルを書かないため、この深さ自体が端末ホストへ到達する必要はない
+# （届いた場合も診断用の副次的な情報として使えるだけ）。
 _MAX_ANCESTOR_DEPTH = 5
 
 # hook 側の解決（resolve_identity_by_ancestry）が候補と交差を取る窓の幅。

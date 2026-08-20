@@ -99,7 +99,7 @@ class TestGateConditions:
 
     def test_does_not_resolve_identity_when_relay_not_configured(self, monkeypatch, tmp_path):
         """relay未構成（token未設定）ならget_relay_identity/
-        resolve_identity_by_ancestry（祖先pidチェーン解決、ps最大5回spawn）を
+        resolve_identity_by_ancestry（祖先pidチェーン解決、ps最大2回spawn）を
         一切呼ばない（tokenチェックがidentity解決より先に実行されるゼロコスト経路）。
         """
         monkeypatch.setattr(relay_config, "get_state_dir", lambda: tmp_path)
