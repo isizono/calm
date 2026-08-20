@@ -44,10 +44,10 @@ class TestRelationDescriptionMentionsBelongsTo:
         assert "belongs_to" in desc
 
 
-class TestRetractDescriptionMentionsIrreversibility:
-    def test_mentions_irreversible_undo(self):
+class TestRetractDescriptionMentionsUndoReindexing:
+    def test_mentions_reindexing_on_undo(self):
         desc = _all_tool_descriptions()["retract"]
-        assert "不可逆" in desc
+        assert "再登録" in desc
 
 
 class TestSnoozedAutoRevivalDescribed:
