@@ -22,7 +22,7 @@ last-synced-migration: 0048
 
 ## 1. ツール一覧
 
-全50ツール。カテゴリ別に一覧する。
+全51ツール。カテゴリ別に一覧する。
 
 ### 1.1 記録系（add系）
 
@@ -99,6 +99,7 @@ last-synced-migration: 0048
 | ツール | 概要 |
 | --- | --- |
 | `export_material` | 資材をmd形式のファイルとしてCALM外に出力する |
+| `collect_export_candidates` | 他インスタンスへのexport候補を洗い出す（read-only） |
 
 ### 1.10 シグナル系（signal_events）
 
@@ -410,6 +411,22 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 | max_depth | int | no | 2 | 上限10 |
 
 **返り値**: `{entities: [{type, id, title, tags, depth}], total_count: int}`。decision/logノードは経由ノードとして使うが、返却カタログにはtopic/activity/materialのみ含まれる。
+
+### 2.20b collect_export_candidates
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| roots | list[{type, id}] | no | [] | 起点（複数可）。tag_rootsのみでシードする場合は省略可 |
+| max_depth | int | no | 2 | rootsからの走査深度上限（上限10）。tag_rootsのシードには適用されない |
+| include_types | list[string] | no | 5型全部 | 返却する型の表示フィルタ。走査・closure_warnings判定には影響しない |
+| tag_roots | list[string] | no | null | 指定タグ文字列を持つ全エンティティを深度0固定でシード集合に合流させる |
+| include_snippets | bool | no | true | falseで各candidateからsnippetキーを省く |
+| limit | int | no | null | 返却candidates件数の上限 |
+| offset | int | no | 0 | 返却開始位置 |
+
+**返り値**: 成功時 `{candidates: [{type, id_raw, title, snippet, tags, depth, size_chars, parent_topic_title, retracted?, superseded?, status?}], closure_warnings: [{kind, from_title, target_title, target: {type, id_raw}}], total_count: int, truncated: bool}`。`retracted`はdecision/log/materialのみ、`superseded`はdecisionのみ、`status`はactivityのみ付く。`tag_roots`指定時のみ`co_tags: [{tag, overlap, share}]`が追加される。失敗時 `{error: {code: "VALIDATION_ERROR" | "INVALID_ENTITY_TYPE" | "INVALID_PARAMETER" | "DATABASE_ERROR", message}}`。
+**get_mapとの違い**: get_mapはnavigation用途でdecision/logを経由ノードとしてのみ扱いカタログに含めないが、本ツールはexport判断のため5型全部をカタログ本体に含める。走査自体は共有のrelation走査ロジックを使うが、ツールとしては独立している。
+**動作**: rootsからの走査結果とtag_rootsのシード結果（tag_rootsは深度0固定、グラフ拡張はしない）を合流し、型別の付加情報を付けて返す。`closure_warnings`は選択集合外を指すsupersede関係・本文中citation（`{{cite:X#NNN}}`）を検出する（供に情報提供のみで、自動的な集合拡張は行わない）。read-only（DBへの書き込みは一切行わない）。
 
 ### 2.21 add_habit / get_habits / update_habit
 

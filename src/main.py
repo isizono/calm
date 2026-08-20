@@ -26,6 +26,7 @@ from src.services import (
     budget_service,
     ask_service,
     reask_detection_service,
+    export_candidate_service,
 )
 from src.services.checkin_service import check_in as _check_in
 from src.services import session_registry_service
@@ -1528,6 +1529,60 @@ def get_map(
         失敗時: {"error": {"code": ..., "message": ...}}
     """
     return relation_service.get_map(entity_type, entity_id, min_depth, max_depth)
+
+
+@mcp.tool()
+def collect_export_candidates(
+    roots: Optional[list[dict]] = None,
+    max_depth: int = 2,
+    include_types: Optional[list[str]] = None,
+    tag_roots: Optional[list[str]] = None,
+    include_snippets: bool = True,
+    limit: Optional[int] = None,
+    offset: int = 0,
+) -> dict:
+    """Choose: 他インスタンスへのexport候補を洗い出したいとき。get_mapと違いdecision/logも
+    カタログ本体に含み、retracted/superseded/status/本文サイズ/親topicタイトル等の
+    export判断に必要な付加情報を返す。決定論的なexport実行そのもの（バンドル書き出し）は
+    別ツールが担い、このツールは読み取り専用の候補一覧化のみを行う。
+
+    起点(roots)からrelationを辿って到達可能な5型(topic/activity/material/decision/log)の
+    エンティティを収集する。tag_rootsを指定すると、指定タグを持つ全エンティティを深度0
+    固定でシード集合に合流させる（グラフ拡張はしない）。roots/tag_rootsの少なくとも
+    一方の指定が必須。
+
+    Args:
+        roots: 起点。[{"type": "topic"|"activity"|"material"|"decision"|"log", "id": int}, ...]
+            （複数起点可）。tag_rootsのみでシードする場合は省略可
+        max_depth: rootsからの走査深度上限（デフォルト2、上限10）。tag_rootsのシードには
+            適用されない
+        include_types: 返却する型のフィルタ（デフォルト5型全部）。走査・closure_warnings
+            判定には影響しない表示フィルタ
+        tag_roots: 指定タグ文字列（例: ["domain:cc-memory"]）を持つ全エンティティを
+            シード集合に合流させる
+        include_snippets: Falseにすると各candidateからsnippetキーを省く
+            （ドメイン規模での応答サイズ対策）
+        limit: 返却candidates件数の上限（デフォルト無制限）
+        offset: 返却開始位置（デフォルト0）
+
+    Returns:
+        成功時: {candidates: [{type, id_raw, title, snippet, tags, depth, size_chars,
+            parent_topic_title, retracted?, superseded?, status?}, ...],
+            closure_warnings: [{kind: "supersede_target_outside"|"cite_target_outside",
+            from_title, target_title, target: {type, id_raw}}, ...],
+            total_count: int, truncated: bool}
+        tag_roots指定時のみco_tags: [{tag, overlap, share}, ...]が追加される。
+        失敗時: {"error": {"code": ..., "message": ...}}
+    """
+    return export_candidate_service.collect_export_candidates(
+        roots=roots,
+        max_depth=max_depth,
+        include_types=include_types,
+        tag_roots=tag_roots,
+        include_snippets=include_snippets,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @mcp.tool()
