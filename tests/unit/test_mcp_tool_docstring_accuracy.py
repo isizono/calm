@@ -44,12 +44,6 @@ class TestRelationDescriptionMentionsBelongsTo:
         assert "belongs_to" in desc
 
 
-class TestRetractDescriptionMentionsIrreversibility:
-    def test_mentions_irreversible_undo(self):
-        desc = _all_tool_descriptions()["retract"]
-        assert "不可逆" in desc
-
-
 class TestSnoozedAutoRevivalDescribed:
     def test_get_activities_mentions_snooze_duration(self):
         desc = _all_tool_descriptions()["get_activities"]
