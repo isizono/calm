@@ -16,12 +16,17 @@ X-CC-Memory-Bridge-Session-Id ヘッダとして全 MCP リクエストに同梱
 SessionStart hook（hooks/session_start_hook.py）は Claude Code CLI が直接
 起動する独立プロセスであり、MCP リクエストコンテキスト自体を持たないため
 上記ヘッダ方式では identity を解決できない。一方で launcher プロセスと hook
-プロセスは、実行時の起動元をたどると同じ Claude Code CLI プロセスの子孫に
-なる（uv ラッパー・シェル等の中間プロセスを挟むことはあるが、数段さかのぼれば
-同一の CLI プロセスに合流する）。本モジュールはこの性質を使い、launcher が
-自身の祖先 pid チェーンを登録しておいたファイルと、hook 側で計算した自分の
-祖先 pid チェーンとの共通部分の有無で「同じセッションの launcher」を探す
-（`resolve_identity_by_ancestry`）。
+プロセスは、どちらも hooks.json / .mcp.json の起動経路（uv ラッパー1枚を
+挟んで spawn される）を通るため、直近2ホップ以内に同じ Claude Code CLI
+本体プロセスが現れる。端末ホストプロセス（iTermServer・tmux サーバ等）は
+CLI プロセスより上の階層にしか現れないため、この2ホップの窓に含まれない。
+
+本モジュールはこの構造を使い、launcher が自身の祖先 pid チェーンを登録して
+おいたファイルと、hook 側で計算した自分の祖先 pid チェーンの、双方の直近
+2ホップ同士の交差で「同じ Claude Code CLI 配下の launcher」を探す
+（`resolve_identity_by_ancestry`）。窓の外にしか共通祖先を持たない候補は
+別セッションとみなし、窓内に交差する候補が1件も無ければ None を返す
+（fail-close。曖昧な状況で「最も近い候補」を推定で返すことはしない）。
 """
 from __future__ import annotations
 
@@ -42,9 +47,22 @@ logger = logging.getLogger(__name__)
 
 BRIDGE_SESSION_HEADER = "x-cc-memory-bridge-session-id"
 
-# 祖先 pid チェーンをさかのぼる最大段数。launcher 側の登録ファイル生成・hook
-# 側の解決の両方で共通して使う。
+# launcher 側の登録ファイル生成（register_launcher_session）が祖先 pid チェーンを
+# さかのぼる最大段数。resolve_cli_session（`~/.claude/sessions/<pid>.json` を
+# 持つ CLI 自身の pid を候補チェーンから探す）が、spawn 経路の wrapper 段数が
+# 増えても CLI 本体の pid を記録し損なわないための余裕（マージン）。CLI より
+# 上の端末ホストプロセス（iTermServer / tmux サーバ等）は `~/.claude/sessions/`
+# にファイルを書かないため、この深さ自体が端末ホストへ到達する必要はない
+# （届いた場合も診断用の副次的な情報として使えるだけ）。
 _MAX_ANCESTOR_DEPTH = 5
+
+# hook 側の解決（resolve_identity_by_ancestry）が候補と交差を取る窓の幅。
+# hook / launcher とも「wrapper(uv) 1枚 + Claude Code CLI 本体」で2ホップ以内に
+# CLI 本体が入る、という hooks.json / .mcp.json の起動経路に由来する値であり、
+# 上記の記録深度とは独立の定数にする。端末ホスト（iTermServer / tmux サーバ等）
+# は CLI より上にしか現れないため、この窓の交差は「同じ CLI の子孫」の場合に
+# 限られる。spawn 経路に wrapper を足す変更をしたら要見直し。
+_CLI_HOP_WINDOW = 2
 
 _REGISTRATION_PREFIX = "launcher-"
 _REGISTRATION_SUFFIX = ".json"
@@ -201,9 +219,31 @@ def unregister_launcher_session(pid: Optional[int] = None) -> None:
         logger.warning(f"Failed to remove launcher session registration: {e}")
 
 
-def resolve_identity_by_ancestry(
-    pid: Optional[int] = None, max_depth: int = _MAX_ANCESTOR_DEPTH
-) -> Optional[str]:
+def _load_registration(path: Path) -> Optional[dict]:
+    """登録ファイルを読み込み、型・生存確認を通ったデータのみ返す。
+
+    壊れた JSON・想定外の型・pid が死んでいる登録は None（呼び出し側は
+    候補から除外するだけで探索は打ち切らない）。
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    session_id = data.get("session_id")
+    launcher_pid = data.get("pid")
+    ancestors = data.get("ancestor_pids")
+    if not isinstance(session_id, str) or not session_id:
+        return None
+    if not isinstance(ancestors, list):
+        return None
+    if not isinstance(launcher_pid, int) or not is_process_alive(launcher_pid):
+        return None
+    return data
+
+
+def resolve_identity_by_ancestry(pid: Optional[int] = None) -> Optional[str]:
     """自プロセスの祖先 pid チェーンから、同じ Claude Code CLI プロセスを
     親に持つ launcher の identity（session_id）を解決する。
 
@@ -213,43 +253,42 @@ def resolve_identity_by_ancestry(
     launcher とは別プロセス（cc-memory HTTP server）で動くため祖先チェーンに
     意味がなく、本関数を使ってはならない。
 
-    解決できない場合（登録ファイル不在・共通祖先なし・生存 launcher なし等）
-    は None を返す（安全側フォールバック、例外は投げない）。
-    複数の登録ファイルが共通祖先を持つ場合は created_at が新しい方を採用する。
+    判定は「共通祖先の有無」ではなく「双方の直近 _CLI_HOP_WINDOW ホップ
+    同士の交差」で行う。端末ホストプロセス（iTermServer・tmux サーバ等）は
+    普遍的な祖先になりうるが、CLI プロセスより上の階層にしか現れないため
+    窓の外になり、交差判定に影響しない。
+
+    窓内に交差する候補が1件も無い場合（登録ファイル不在・別セッションしか
+    無い・生存 launcher なし等）は None を返す（fail-close。安全側の候補を
+    推定で返すことはしない。呼び出し元は None を安全に扱い、次のターンで
+    再解決を試みる）。
+    複数の登録ファイルが窓内で交差する場合（同じ CLI 配下での launcher
+    世代交代）は created_at が新しい方を採用する。
     """
     pid = pid if pid is not None else os.getpid()
-    own_ancestors = set(ancestor_pids(pid, max_depth))
-    if not own_ancestors:
+    own_near = ancestor_pids(pid, max_depth=_CLI_HOP_WINDOW)
+    if not own_near:
         return None
+    own_near_set = set(own_near)
 
     sessions_dir = config.sessions_dir()
     if not sessions_dir.exists():
         return None
 
-    candidates: list[tuple[str, str]] = []
+    eligible: list[tuple[str, str]] = []
     for path in sessions_dir.glob(f"{_REGISTRATION_PREFIX}*{_REGISTRATION_SUFFIX}"):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        data = _load_registration(path)
+        if data is None:
             continue
-        if not isinstance(data, dict):
+        chain = data["ancestor_pids"]
+        if not (own_near_set & set(chain[:_CLI_HOP_WINDOW])):
             continue
-        session_id = data.get("session_id")
-        launcher_pid = data.get("pid")
-        launcher_ancestors = data.get("ancestor_pids")
-        if not isinstance(session_id, str) or not session_id:
-            continue
-        if not isinstance(launcher_ancestors, list):
-            continue
-        if not isinstance(launcher_pid, int) or not is_process_alive(launcher_pid):
-            continue
-        if own_ancestors & set(launcher_ancestors):
-            candidates.append((str(data.get("created_at", "")), session_id))
+        eligible.append((str(data.get("created_at", "")), data["session_id"]))
 
-    if not candidates:
-        return None
-    candidates.sort(key=lambda c: c[0], reverse=True)
-    return candidates[0][1]
+    if not eligible:
+        return None  # fail-close。「最も近い候補を推定で返す」はしない
+    eligible.sort(key=lambda c: c[0], reverse=True)
+    return eligible[0][1]
 
 
 def find_launcher_registration(session_id: str) -> Optional[dict]:

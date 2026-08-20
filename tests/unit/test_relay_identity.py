@@ -197,28 +197,32 @@ class TestUnregisterLauncherSession:
         relay_identity.unregister_launcher_session(pid=99999999)
 
 
+def _write_registration(
+    sessions_dir, pid, session_id, ancestor_pids, created_at="2026-07-08T00:00:00Z"
+):
+    """launcher登録ファイルを直接書く（テスト用、register_launcher_sessionは経由しない）。"""
+    (sessions_dir / f"launcher-{pid}.json").write_text(
+        json.dumps(
+            {
+                "session_id": session_id,
+                "pid": pid,
+                "ancestor_pids": ancestor_pids,
+                "created_at": created_at,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 class TestResolveIdentityByAncestry:
-    def test_resolves_when_common_ancestor_found(self, sessions_state_dir, monkeypatch):
-        # hook(自分)の祖先: 300 -> 200 -> 1。launcherの祖先: 400 -> 200 -> 1。
-        # 共通祖先200を介して一致する。
-        _fake_ppid_chain(monkeypatch, {300: 200, 200: 1})
-        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
-        sessions_dir = sessions_state_dir / "sessions"
-        sessions_dir.mkdir(parents=True)
-        (sessions_dir / "launcher-400.json").write_text(
-            json.dumps(
-                {
-                    "session_id": "launcher-uuid-match",
-                    "pid": 400,
-                    "ancestor_pids": [200, 1],
-                    "created_at": "2026-07-08T00:00:00Z",
-                }
-            ),
-            encoding="utf-8",
-        )
-        assert relay_identity.resolve_identity_by_ancestry(pid=300) == "launcher-uuid-match"
+    """近傍窓交差（双方の直近_CLI_HOP_WINDOWホップ同士の交差）による解決の
+    テーブル駆動テスト。共通祖先の「個数」ではなく「窓内の位置」で判定する
+    ことを、実測トポロジ（iTerm2・tmux）の再現と、個数閾値/argmin案が落ちる
+    境界ケースで固定する。
+    """
 
     def test_returns_none_when_no_common_ancestor(self, sessions_state_dir, monkeypatch):
+        """共通祖先が全く無ければ（窓内外を問わず）Noneを返すこと"""
         _fake_ppid_chain(monkeypatch, {300: 999})
         monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
         sessions_dir = sessions_state_dir / "sessions"
@@ -231,38 +235,11 @@ class TestResolveIdentityByAncestry:
         )
         assert relay_identity.resolve_identity_by_ancestry(pid=300) is None
 
-    def test_returns_none_when_sessions_dir_missing(self, sessions_state_dir, monkeypatch):
-        _fake_ppid_chain(monkeypatch, {300: 200})
-        assert relay_identity.resolve_identity_by_ancestry(pid=300) is None
-
-    def test_returns_none_when_own_ancestors_empty(self, sessions_state_dir, monkeypatch):
-        _fake_ppid_chain(monkeypatch, {})
-        sessions_dir = sessions_state_dir / "sessions"
-        sessions_dir.mkdir(parents=True)
-        (sessions_dir / "launcher-400.json").write_text(
-            json.dumps({"session_id": "x", "pid": 400, "ancestor_pids": [1]}),
-            encoding="utf-8",
-        )
-        assert relay_identity.resolve_identity_by_ancestry(pid=999999) is None
-
-    def test_skips_registration_whose_pid_is_dead(self, sessions_state_dir, monkeypatch):
-        """共通祖先があっても登録元launcherのpidが死んでいれば候補から除外する"""
-        _fake_ppid_chain(monkeypatch, {300: 200})
-        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: False)
-        sessions_dir = sessions_state_dir / "sessions"
-        sessions_dir.mkdir(parents=True)
-        (sessions_dir / "launcher-400.json").write_text(
-            json.dumps(
-                {"session_id": "dead-launcher", "pid": 400, "ancestor_pids": [200]}
-            ),
-            encoding="utf-8",
-        )
-        assert relay_identity.resolve_identity_by_ancestry(pid=300) is None
-
     def test_picks_most_recent_when_multiple_candidates_match(
         self, sessions_state_dir, monkeypatch
     ):
-        """複数の登録ファイルが共通祖先を持つ場合、created_atが新しい方を採用する"""
+        """複数の登録ファイルが窓内で交差する場合、created_atが新しい方を
+        採用すること（旧実装から維持される tiebreak の仕様）"""
         _fake_ppid_chain(monkeypatch, {300: 200})
         monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
         sessions_dir = sessions_state_dir / "sessions"
@@ -291,12 +268,196 @@ class TestResolveIdentityByAncestry:
         )
         assert relay_identity.resolve_identity_by_ancestry(pid=300) == "newer"
 
+    def test_iterm2_two_tabs_picks_own_tab_rejects_other_tab(
+        self, sessions_state_dir, monkeypatch
+    ):
+        """iTerm2 2タブ（実測形状の再現）: 自launcher採用、他タブlauncher棄却"""
+        # 自hookプロセスの祖先: uv(250) -> claude(210) -> zsh(180) -> login(160)
+        # -> iTermServer(100) -> 1
+        _fake_ppid_chain(
+            monkeypatch, {300: 250, 250: 210, 210: 180, 180: 160, 160: 100}
+        )
+        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        sessions_dir = sessions_state_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        # 自タブのlauncher: 別のuvラッパー(245)を持つが同じclaude(210)の子
+        _write_registration(sessions_dir, 400, "tabA-launcher", [245, 210, 180, 160, 100])
+        # 他タブのlauncher: 別のclaude(211)配下だが同じiTermServer(100)を共有
+        _write_registration(sessions_dir, 401, "tabB-launcher", [246, 211, 181, 161, 100])
+        assert relay_identity.resolve_identity_by_ancestry(pid=300) == "tabA-launcher"
+
+    def test_production_regression_shape(self, sessions_state_dir, monkeypatch):
+        """本番再現リグレッション: 生存launcher6件のうち5件は普遍的祖先
+        （iTermServer相当）を1個共有するだけ、1件が近傍を共有する実測バグ形状。
+        正解が選ばれ、正解の登録を消すとNoneになること（従来コードなら
+        誤って最新の偽物を返していた状況）を確認する。
+        """
+        _fake_ppid_chain(
+            monkeypatch, {950: 900, 900: 910, 910: 920, 920: 930, 930: 963}
+        )
+        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        sessions_dir = sessions_state_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        _write_registration(
+            sessions_dir, 1000, "prod-correct", [901, 910, 920, 930, 963]
+        )
+        for i in range(5):
+            uv_pid = 1101 + i
+            claude_pid = 1111 + i
+            _write_registration(
+                sessions_dir,
+                1200 + i,
+                f"prod-decoy-{i}",
+                [uv_pid, claude_pid, 921 + i, 931 + i, 963],
+                # 偽物ほど新しく登録された、という最悪ケースにしておく
+                created_at=f"2026-08-2{i}T00:00:00Z",
+            )
+        assert relay_identity.resolve_identity_by_ancestry(pid=950) == "prod-correct"
+
+        (sessions_dir / "launcher-1000.json").unlink()
+        assert relay_identity.resolve_identity_by_ancestry(pid=950) is None
+
+    def test_tmux_three_panes_picks_own_pane_rejects_adjacent_pane(
+        self, sessions_state_dir, monkeypatch
+    ):
+        """tmux 3ペイン（実測形状の再現、3要素チェーン）: 自launcher採用、
+        隣ペイン棄却"""
+        # 自hookプロセスの祖先: uv(480) -> claude(490) -> tmuxサーバ(34565)
+        _fake_ppid_chain(monkeypatch, {500: 480, 480: 490, 490: 34565})
+        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        sessions_dir = sessions_state_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        _write_registration(sessions_dir, 600, "paneA-launcher", [481, 490, 34565])
+        _write_registration(sessions_dir, 601, "paneB-launcher", [482, 491, 34565])
+        assert relay_identity.resolve_identity_by_ancestry(pid=500) == "paneA-launcher"
+
+    def test_returns_none_when_no_launcher_registered_yet(
+        self, sessions_state_dir, monkeypatch
+    ):
+        """launcher未登録（SessionStart先行）: None"""
+        _fake_ppid_chain(monkeypatch, {700: 650, 650: 660})
+        sessions_dir = sessions_state_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        assert relay_identity.resolve_identity_by_ancestry(pid=700) is None
+
+    def test_returns_none_when_only_other_session_exists(
+        self, sessions_state_dir, monkeypatch
+    ):
+        """他セッションが1件だけ存在し自launcher不在: None
+        （argmin/相対比較案との差分を固定する最重要ケース。窓外にしか
+        交差しない唯一の候補を「最も近い」という理由で選んではならない）
+        """
+        _fake_ppid_chain(monkeypatch, {800: 750, 750: 760})
+        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        sessions_dir = sessions_state_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        _write_registration(sessions_dir, 900, "other-session", [751, 761])
+        assert relay_identity.resolve_identity_by_ancestry(pid=800) is None
+
+    def test_rejects_same_tab_stale_launcher_sharing_only_upper_chain(
+        self, sessions_state_dir, monkeypatch
+    ):
+        """同一タブ残存launcher（zsh以上のみ共有）: 棄却
+        （現行コードではここが偽陽性になっていた）"""
+        _fake_ppid_chain(
+            monkeypatch, {1000: 950, 950: 960, 960: 970, 970: 980, 980: 990}
+        )
+        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        sessions_dir = sessions_state_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        # 前セッションの残存launcher: uv・claudeは別物だがzsh/login/host以上を共有
+        _write_registration(sessions_dir, 1100, "stale-same-tab", [951, 961, 970, 980, 990])
+        assert relay_identity.resolve_identity_by_ancestry(pid=1000) is None
+
+    def test_accepts_pid1_direct_claude_two_element_chain(
+        self, sessions_state_dir, monkeypatch
+    ):
+        """pid 1直下のclaude（2要素チェーン、cron/launchd起動のheadless
+        `claude -p`等）: 採用（個数閾値案との差分を固定。共有pidはclaude本体
+        1個のみだが、窓内の位置としては正しく一致する）"""
+        _fake_ppid_chain(monkeypatch, {1200: 1150, 1150: 1160})
+        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        sessions_dir = sessions_state_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        _write_registration(sessions_dir, 1300, "headless-launcher", [1151, 1160])
+        assert relay_identity.resolve_identity_by_ancestry(pid=1200) == "headless-launcher"
+
+    def test_nested_claude_both_directions_reject_the_other_session(
+        self, sessions_state_dir, monkeypatch
+    ):
+        """入れ子claude: 外hook×内launcher・内hook×外launcherの両方向とも
+        棄却される（それぞれ自分自身のlauncherだけを解決する）"""
+        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        sessions_dir = sessions_state_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        _write_registration(sessions_dir, 2200, "outer-launcher", [1951, 1960])
+        _write_registration(sessions_dir, 2300, "inner-launcher", [2051, 2060, 2070, 1960])
+
+        # 外側hook: uv(1950) -> claude_outer(1960)
+        _fake_ppid_chain(monkeypatch, {2000: 1950, 1950: 1960})
+        assert relay_identity.resolve_identity_by_ancestry(pid=2000) == "outer-launcher"
+
+        # 内側hook: uv(2050) -> claude_inner(2060)（claude_innerの親は
+        # さらに外側claude(1960)へ合流するが、窓2の内側には現れない）
+        _fake_ppid_chain(monkeypatch, {2100: 2050, 2050: 2060})
+        assert relay_identity.resolve_identity_by_ancestry(pid=2100) == "inner-launcher"
+
+    def test_picks_most_recent_on_same_claude_generation_handover(
+        self, sessions_state_dir, monkeypatch
+    ):
+        """同一claude配下のlauncher世代交代（MCP再接続等でuvラッパーだけが
+        変わる）: created_at最新が返ること（正当なtiebreakの仕様固定）"""
+        _fake_ppid_chain(monkeypatch, {2500: 2450, 2450: 2460})
+        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        sessions_dir = sessions_state_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        _write_registration(
+            sessions_dir, 2600, "older-gen", [2451, 2460], created_at="2026-07-01T00:00:00Z"
+        )
+        _write_registration(
+            sessions_dir, 2601, "newer-gen", [2452, 2460], created_at="2026-07-08T00:00:00Z"
+        )
+        assert relay_identity.resolve_identity_by_ancestry(pid=2500) == "newer-gen"
+
+    def test_returns_none_when_sessions_dir_missing(self, sessions_state_dir, monkeypatch):
+        _fake_ppid_chain(monkeypatch, {300: 200})
+        assert relay_identity.resolve_identity_by_ancestry(pid=300) is None
+
+    def test_returns_none_when_own_ancestors_empty(self, sessions_state_dir, monkeypatch):
+        _fake_ppid_chain(monkeypatch, {})
+        sessions_dir = sessions_state_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        _write_registration(sessions_dir, 400, "x", [1])
+        assert relay_identity.resolve_identity_by_ancestry(pid=999999) is None
+
+    def test_skips_registration_whose_pid_is_dead(self, sessions_state_dir, monkeypatch):
+        """窓内で交差しても登録元launcherのpidが死んでいれば候補から除外する"""
+        _fake_ppid_chain(monkeypatch, {300: 200})
+        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: False)
+        sessions_dir = sessions_state_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        _write_registration(sessions_dir, 400, "dead-launcher", [200])
+        assert relay_identity.resolve_identity_by_ancestry(pid=300) is None
+
     def test_ignores_malformed_registration_file(self, sessions_state_dir, monkeypatch):
         _fake_ppid_chain(monkeypatch, {300: 200})
         monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
         sessions_dir = sessions_state_dir / "sessions"
         sessions_dir.mkdir(parents=True)
         (sessions_dir / "launcher-400.json").write_text("not json", encoding="utf-8")
+        assert relay_identity.resolve_identity_by_ancestry(pid=300) is None
+
+    def test_rejects_candidate_with_empty_ancestor_chain(
+        self, sessions_state_dir, monkeypatch
+    ):
+        """登録ファイルのancestor_pidsが空リスト（launcherの親がpid 1直下、
+        またはps失敗で記録時点から祖先を辿れなかった場合）でも、窓内の交差が
+        取れないため素直に棄却されること（fail-close側に倒れることの固定）"""
+        _fake_ppid_chain(monkeypatch, {300: 200})
+        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        sessions_dir = sessions_state_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        _write_registration(sessions_dir, 400, "empty-chain-launcher", [])
         assert relay_identity.resolve_identity_by_ancestry(pid=300) is None
 
 
