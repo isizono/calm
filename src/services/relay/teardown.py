@@ -7,11 +7,20 @@ relay 側から DELETE し、declaration file / inbox / cursor を削除する�
 relay 側の DELETE は失敗しても構わない（lease 失効 + 孤児 sweep で最終的に
 自然消滅する）。file 撤去だけは必ず行う。撤去漏れ（server 自身がスレッド完走前に
 死ぬ等）は孤児 sweep が backstop として拾う。
+
+liveness TTL 失効は heartbeat 途絶を「死んだ」とみなすヒューリスティックであり
+誤検知しうる（ネットワーク瞬断等）。除去判定から実際の撤去実行までの間に
+session が復帰して再登録・再購読すると、その新しい宣言を撤去が破壊しうる。
+これを防ぐため、除去判定時点（`schedule()` 呼び出し時点）の declaration を
+スナップショットしておき、撤去実行直前に現在の declaration と比較する。
+subscription_id 集合が一致しない場合は「除去判定後に再購読があった」とみなし
+撤去を中止する（file・relay いずれも削除しない）。
 """
 from __future__ import annotations
 
 import logging
 import threading
+from typing import Optional
 
 from relay_sdk.errors import PermanentError, RelayProtocolError, TransientError
 from relay_sdk.http.auth import make_client
@@ -24,18 +33,42 @@ logger = logging.getLogger(__name__)
 def schedule(session_id: str) -> None:
     """SessionManager の session 除去イベントから呼ぶ。撤去は別スレッドで行う。
 
-    呼び出し元（SessionManager）のロックを撤去処理の I/O で塞がないよう、
-    同期的には何もせずスレッドを起こすだけで返る。
+    除去判定時点の declaration を同期的にスナップショットしてからスレッドを
+    起こす（`_teardown` がこのスナップショットと実行時点の declaration を比較し、
+    再購読レースを検知する）。declaration が無ければ撤去対象が無いため、
+    スレッドすら起こさない。
     """
-    threading.Thread(target=_teardown, args=(session_id,), daemon=True, name="relay-teardown").start()
-
-
-def _teardown(session_id: str) -> None:
-    decl = declarations.load(session_id)
-    if decl is None:
+    snapshot = declarations.load(session_id)
+    if snapshot is None:
         return
-    _delete_relay_subscriptions(decl)
+    threading.Thread(
+        target=_teardown, args=(session_id, snapshot), daemon=True, name="relay-teardown"
+    ).start()
+
+
+def _teardown(session_id: str, snapshot: Optional[dict]) -> None:
+    if snapshot is None:
+        return
+    current = declarations.load(session_id)
+    if current is None:
+        return
+    if _subscription_ids(current) != _subscription_ids(snapshot):
+        logger.info(
+            "除去判定後にsessionの宣言が変化したため撤去を中止（再登録の可能性）: "
+            "session=%s",
+            session_id,
+        )
+        return
+    _delete_relay_subscriptions(current)
     lease_loop.delete_orphan_state(session_id)
+
+
+def _subscription_ids(decl: dict) -> set[str]:
+    return {
+        entry.get("subscription_id")
+        for entry in decl.get("subscriptions", [])
+        if isinstance(entry.get("subscription_id"), str)
+    }
 
 
 def _delete_relay_subscriptions(decl: dict) -> None:

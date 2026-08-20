@@ -107,6 +107,7 @@ def test_stale_declaration_does_not_block_live_session_receive(monkeypatch):
             ["room:planning"], caller_session_id="sess-1"
         )
         assert "error" not in result, result
+        subscription_id = result["subscription_id"]
 
         decl = declarations.load("sess-1")
         subscribed_labels = decl["subscriptions"][0]["labels"]
@@ -136,6 +137,9 @@ def test_stale_declaration_does_not_block_live_session_receive(monkeypatch):
 
         received = service.relay_receive(caller_session_id="sess-1")
         assert received["count"] >= 1, received
+        payload = received["messages"][0]
+        assert payload["delivery_target"] == f"sub:{subscription_id}"
+        assert payload["ref"] == {"type": "message", "id": "hello"}
 
 
 def test_relay_missing_env_does_not_break_server_startup(monkeypatch):
