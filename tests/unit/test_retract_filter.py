@@ -432,7 +432,7 @@ class TestSearchFilter:
             conn.close()
 
         # search経由でもヒットする
-        search_result = search("アンリトラクトテストJKL")
+        search_result = search("アンリトラクトテスト用JKL")
         ids = [(r["type"], r["id_raw"]) for r in search_result.get("results", [])]
         assert ("decision", decision_id) in ids
 
