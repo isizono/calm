@@ -224,8 +224,8 @@ class TestNormalizeAllDeclarations:
     def test_entry_with_handle_auto_attached_marker_is_never_touched(self, relay_state):
         """`handle_auto_attached`キーを持つentry（handle自動付与廃止後のコードが
         作成した = relay_subscribeが常に付与する）は、自handle混入に見える形で
-        あっても絶対に正規化しない。本PRが推奨する「宛先を自分に限定した複合条件を
-        labelsに自分のhandle labelを明示的に含める」という意図的な使い方を、
+        あっても絶対に正規化しない。「宛先を自分に限定した複合条件をlabelsに
+        自分のhandle labelを明示的に含める」という推奨される意図的な使い方を、
         移行処理が旧バグの残骸と誤認して破壊しないための保護。"""
         self._write(
             "sess-1",

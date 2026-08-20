@@ -204,8 +204,8 @@ _HANDLE_PREFIX = "handle:"
 # ないが、それらは元々このキーを持っていた entry を書き換えるだけなので
 # 一度付いたキーは保持され続ける）。このキーを持つ entry の labels に自
 # handle が混入していても、それは「宛先を自分に限定した複合条件」という
-# 本 PR が推奨する意図的な指定でしかあり得ない（自動付与コードはもう
-# 存在しないため）。normalize はこのキーが無い entry のみを対象にする。
+# 推奨される意図的な指定でしかあり得ない（自動付与コードはもう存在しない
+# ため）。normalize はこのキーが無い entry のみを対象にする。
 _HANDLE_AUTO_ATTACHED_KEY = "handle_auto_attached"
 
 
@@ -230,11 +230,11 @@ def normalize_all_declarations() -> int:
     を持たない（＝旧コードが作った可能性がある）entry のうち、labels に自 handle
     （`handle:<declaration の handle>`）が含まれ、かつ他の label もある場合のみ
     自 handle を除去する。`_HANDLE_AUTO_ATTACHED_KEY` を持つ entry（新コードが
-    作成済み）は、labels の中身に関わらず絶対に触らない。これは本 PR が
-    docstring・仕様書で「宛先を自分に限定した複合条件を張りたい場合は labels に
-    自分の handle label を明示的に含めること」と案内している新しい意図的な
-    使い方を、移行処理が「旧バグの残骸」と誤認して破壊しないようにするため
-    （handle 単独 entry・他セッションの handle を含む複合 entry も従来どおり
+    作成済み）は、labels の中身に関わらず絶対に触らない。relay_subscribe の
+    docstring・仕様書は「宛先を自分に限定した複合条件を張りたい場合は labels に
+    自分の handle label を明示的に含めること」を意図的な指定方法として案内して
+    おり、この使い方を移行処理が「旧バグの残骸」と誤認して破壊しないようにする
+    ため（handle 単独 entry・他セッションの handle を含む複合 entry も従来どおり
     対象外）。
 
     除去の結果 labels 集合が別 entry と衝突した場合、以下の優先順で 1 件だけ
