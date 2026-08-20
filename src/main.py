@@ -28,6 +28,7 @@ from src.services import (
     reask_detection_service,
     export_candidate_service,
     export_bundle_service,
+    import_bundle_service,
     instance_service,
 )
 from src.services.checkin_service import check_in as _check_in
@@ -1658,6 +1659,58 @@ def export_bundle(
         bundle_name=bundle_name,
         include_supersede_targets=include_supersede_targets,
         selection=selection,
+    )
+
+
+@mcp.tool()
+def import_bundle(
+    bundle_path: str,
+    mode: str = "dry_run",
+    resolutions: Optional[dict] = None,
+    skip_duplicate_check: bool = False,
+) -> dict:
+    """Choose: 他インスタンスから受け取ったバンドルを取り込む前に、衝突検知レポートを
+    確認したいとき。DBへの書き込みは行わない読み取り専用の下見。実際の取り込み
+    (mode="apply")は別途実装される。
+
+    バンドル(manifest.yaml + エンティティ別mdファイル)を読み、以下を判定してレポートする:
+    (a) 再importの冪等性(provenance逆引き。origin一致+hash一致は変化なし、hash不一致は
+    topic/activity/materialなら上書き候補、decision/logなら既定skip+警告)、
+    (b) ネイティブ重複の疑い(新規importエンティティのみ対象、embedding類似検索。
+    embeddingサーバー未起動時はdegraded=Trueになるが処理は継続する)、
+    (c) タグ名前空間の衝突(4区分: merge/create/archived_hit/alias_hit。domainタグまたは
+    notesを持つエントリはreview_required=Trueになりユーザー裁定を要する)。
+    belongs_to/related/supersedes/depends_on・本文中の拡張cite参照は
+    バンドル内→provenance逆引き→自インスタンス出生→解決不能、の優先順で解決を試み、
+    解決不能な参照はdangling_refsに集計される。
+
+    Args:
+        bundle_path: `export_bundle`が書き出したバンドルディレクトリのパス
+            (`manifest.yaml`を直下に持つディレクトリ)。DEFAULT_EXPORT_DIR配下に
+            限定される(exportと対称のパスガード)
+        mode: "dry_run"のみサポート(既定)。"apply"はNOT_IMPLEMENTEDを返す
+        resolutions: mode="apply"向けの裁定結果。dry_runでは無視される
+        skip_duplicate_check: Trueのときネイティブ重複疑い検知をスキップする
+            (デフォルトFalse)。domain規模の初回importでの速度対策
+
+    Returns:
+        成功時: {"format_version_ok": bool, "bundle_id": str, "source_instance": str,
+            "summary": {type: {"new", "unchanged", "updatable", "upstream_changed_skip",
+                "self_origin"}, ...},
+            "upstream_changed": [{"key", "type", "title", "local_entity_id"}, ...],
+            "tag_report": {"merge": [...], "create": [...], "archived_hit": [...],
+                "alias_hit": [...]},
+            "duplicates_suspected": [{"key", "title", "similar": [{type, id_raw, title, score}]}, ...],
+            "dangling_refs": {"count": int, "sample": [...]},
+            "degraded": bool, "load_errors": [...]}
+        失敗時: {"error": {"code": "VALIDATION_ERROR" | "NOT_FOUND" |
+            "INSTANCE_ID_NOT_SET" | "NOT_IMPLEMENTED" | "DATABASE_ERROR", "message": str}}
+    """
+    return import_bundle_service.import_bundle(
+        bundle_path,
+        mode=mode,
+        resolutions=resolutions,
+        skip_duplicate_check=skip_duplicate_check,
     )
 
 

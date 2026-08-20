@@ -65,6 +65,7 @@ TOOL_TAGS: dict[str, str] = {
     "collect_export_candidates": "export",
     "set_instance_identity": "export",
     "export_bundle": "export",
+    "import_bundle": "export",
     "check_in": "checkin",
     "retract": "retract",
     "get_config": "misc",
