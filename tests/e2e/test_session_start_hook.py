@@ -1493,7 +1493,7 @@ class TestSessionStartHookRelayInboxViaRealUv:
     のは「hook側もlauncher側もwrapper(uv)を1枚挟んでCLI本体から起動される」
     という構造に立脚しており、もし将来のuvが`uv run`内部でexecによる自己
     置換に切り替わると、祖先チェーンの段数が1つズレて窓内に端末ホスト
-    （iTermServer・tmuxサーバ等）が入り込み、本PRが修正した誤クロス
+    （iTermServer・tmuxサーバ等）が入り込み、この判定が防いでいる誤クロス
     セッション一致が2ホップ窓の中でそのまま再発しうる（fail-closeにもならず
     静かに別セッションのidentityを返す、検知しづらい退行）。本テストは
     実際に`uv run`でhookを起動し、この前提が崩れたらCIで検知できるようにする。
