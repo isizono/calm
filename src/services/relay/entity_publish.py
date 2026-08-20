@@ -35,7 +35,7 @@ ENTITY_TABLE_MAP: dict[str, str] = {
 }
 assert set(ENTITY_TABLE_MAP) == set(PUBLISH_ENTITY_TYPES)
 
-# entity 自身の tags 取得に使う junction table（topic/activity/decision/log/material のみ。
+# entity 自身の tags 取得に使う junction table（topic/activity/decision/log/material/ask。
 # tag/habit 自身は tag 付けされない entity のため対象外）。
 _TAG_JUNCTION: dict[str, tuple[str, str]] = {
     "topic": ("topic_tags", "topic_id"),
@@ -43,6 +43,7 @@ _TAG_JUNCTION: dict[str, tuple[str, str]] = {
     "decision": ("decision_tags", "decision_id"),
     "log": ("log_tags", "log_id"),
     "material": ("material_tags", "material_id"),
+    "ask": ("ask_tags", "ask_id"),
 }
 
 # 1 hop 親方向の ID 参照を relations 経由で引く対象。
@@ -141,9 +142,16 @@ def publish_entity_event_with_conn(
     if junction is not None:
         junction_table, id_column = junction
         own_tags = get_entity_tags(conn, junction_table, id_column, entity_id)
+    # 注意: askはevent:createdの時点でown_tagsが常に空になる。ask_serviceが
+    # タグ解決を最初のcommit後（＝この呼び出しの後）に別connで行うため、
+    # created publishの時点ではask_tagsへの紐付けがまだ存在しない。ownタグは
+    # event:updated以降（answer_ask等）のpublishから初めて載る。
 
-    # ask のみ、自身を指す self label（ask:{id}）を付与する。他のentity_typeには付与しない。
-    self_labels = [f"ask:{entity_id}"] if entity_type == "ask" else []
+    # 全 entity_type に、自身を指す self label（<type>:<id>）を付与する。
+    # これにより個体単位の購読（例: ["activity:1183"]）が「その entity 自身の
+    # イベント」にもマッチするようになる（1hop 親 label だけでは子の書き込みにしか
+    # マッチしなかった非対称を解消する）。
+    self_labels = [f"{entity_type}:{entity_id}"]
 
     labels = list(dict.fromkeys(
         own_tags

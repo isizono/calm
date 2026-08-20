@@ -1,5 +1,6 @@
 """subscription declaration file（src/services/relay/declarations.py）の unit test。"""
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -138,6 +139,303 @@ class TestSubscriptionLookup:
             },
         )
         assert len(decl["subscriptions"]) == 2
+
+
+class TestNormalizeAllDeclarations:
+    """旧形式（話題labels + 自handle混入）のdeclarationを正規化する
+    normalize_all_declarations()のunit test。relay_subscribeのhandle自動付与廃止に
+    伴う移行処理本体。"""
+
+    def _write(self, session_id: str, handle: str, subs: list[dict]) -> None:
+        decl = {"session_id": session_id, "handle": handle, "subscriptions": subs}
+        declarations.save(decl)
+
+    def test_strips_own_handle_from_mixed_entry_and_expires_lease(self, relay_state):
+        self._write(
+            "sess-1",
+            "session-abc",
+            [
+                {
+                    "subscription_id": "sub-1",
+                    "labels": ["room:planning", "handle:session-abc"],
+                    "lease_expires_at": "2099-01-01T00:00:00Z",
+                    "created_at": "2026-07-05T00:00:00Z",
+                }
+            ],
+        )
+
+        changed = declarations.normalize_all_declarations()
+
+        assert changed == 1
+        decl = declarations.load("sess-1")
+        entry = decl["subscriptions"][0]
+        assert entry["labels"] == ["room:planning"]
+        # lease_expires_atは削除されず、現在時刻付近（失効直後扱い）に更新される
+        # （孤児sweepの即死条件「lease_expires_at欠落=無限に古い扱い」を踏まないため）。
+        expires = datetime.fromisoformat(entry["lease_expires_at"].replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        assert abs((now - expires).total_seconds()) < 10
+
+    def test_handle_only_entry_is_left_untouched(self, relay_state):
+        """自handle単独のentry（直接メッセージ購読）は正規化対象外。"""
+        self._write(
+            "sess-1",
+            "session-abc",
+            [
+                {
+                    "subscription_id": "sub-1",
+                    "labels": ["handle:session-abc"],
+                    "lease_expires_at": "2099-01-01T00:00:00Z",
+                    "created_at": "2026-07-05T00:00:00Z",
+                }
+            ],
+        )
+
+        changed = declarations.normalize_all_declarations()
+
+        assert changed == 0
+        decl = declarations.load("sess-1")
+        assert decl["subscriptions"][0]["labels"] == ["handle:session-abc"]
+        assert decl["subscriptions"][0]["lease_expires_at"] == "2099-01-01T00:00:00Z"
+
+    def test_other_sessions_handle_in_composite_entry_is_left_untouched(self, relay_state):
+        """自分以外のhandleを含む複合entryは意図的な指定でありうるため触らない。"""
+        self._write(
+            "sess-1",
+            "session-abc",
+            [
+                {
+                    "subscription_id": "sub-1",
+                    "labels": ["room:planning", "handle:session-other"],
+                    "lease_expires_at": "2099-01-01T00:00:00Z",
+                    "created_at": "2026-07-05T00:00:00Z",
+                }
+            ],
+        )
+
+        changed = declarations.normalize_all_declarations()
+
+        assert changed == 0
+        decl = declarations.load("sess-1")
+        assert set(decl["subscriptions"][0]["labels"]) == {
+            "room:planning", "handle:session-other",
+        }
+
+    def test_entry_with_handle_auto_attached_marker_is_never_touched(self, relay_state):
+        """`handle_auto_attached`キーを持つentry（handle自動付与廃止後のコードが
+        作成した = relay_subscribeが常に付与する）は、自handle混入に見える形で
+        あっても絶対に正規化しない。「宛先を自分に限定した複合条件をlabelsに
+        自分のhandle labelを明示的に含める」という推奨される意図的な使い方を、
+        移行処理が旧バグの残骸と誤認して破壊しないための保護。"""
+        self._write(
+            "sess-1",
+            "session-abc",
+            [
+                {
+                    "subscription_id": "sub-1",
+                    "labels": ["room:planning", "handle:session-abc"],
+                    "lease_expires_at": "2099-01-01T00:00:00Z",
+                    "created_at": "2026-07-05T00:00:00Z",
+                    "handle_auto_attached": False,
+                }
+            ],
+        )
+
+        changed = declarations.normalize_all_declarations()
+
+        assert changed == 0
+        decl = declarations.load("sess-1")
+        assert set(decl["subscriptions"][0]["labels"]) == {
+            "room:planning", "handle:session-abc",
+        }
+        assert decl["subscriptions"][0]["lease_expires_at"] == "2099-01-01T00:00:00Z"
+
+    def test_marked_entry_and_legacy_entry_can_coexist_without_collision(self, relay_state):
+        """マーカー付きentryとマーカー無しentryのlabels集合が異なれば、
+        正規化はマーカー無し側だけを独立にstripする（衝突しない）。"""
+        self._write(
+            "sess-1",
+            "session-abc",
+            [
+                {
+                    "subscription_id": "sub-marked",
+                    "labels": ["room:planning", "handle:session-abc"],
+                    "lease_expires_at": "2099-01-01T00:00:00Z",
+                    "created_at": "2026-07-05T00:00:00Z",
+                    "handle_auto_attached": False,
+                },
+                {
+                    "subscription_id": "sub-legacy",
+                    "labels": ["task:build", "handle:session-abc"],
+                    "lease_expires_at": "2099-01-01T00:00:00Z",
+                    "created_at": "2026-07-05T00:00:00Z",
+                },
+            ],
+        )
+
+        changed = declarations.normalize_all_declarations()
+
+        assert changed == 1
+        decl = declarations.load("sess-1")
+        assert len(decl["subscriptions"]) == 2
+        by_id = {e["subscription_id"]: e for e in decl["subscriptions"]}
+        assert set(by_id["sub-marked"]["labels"]) == {"room:planning", "handle:session-abc"}
+        assert by_id["sub-legacy"]["labels"] == ["task:build"]
+
+    def test_normalization_dedupes_entries_that_collapse_to_same_labels(self, relay_state):
+        """正規化でhandleを外した結果、別entryと同じlabels集合になった場合は片方を落とす。
+
+        衝突した2entryのうち、今回strip対象になった側（sub-1、旧形式の残骸）ではなく、
+        元から健全だった側（sub-2、活きたleaseを持つ既存subscription）が生き残ること
+        を検証する。出現順（sub-1が先）に引きずられて健全な方を誤って落とすと、
+        renewされ続けてきた生きたsubscriptionを失う。
+        """
+        self._write(
+            "sess-1",
+            "session-abc",
+            [
+                {
+                    "subscription_id": "sub-1",
+                    "labels": ["room:planning", "handle:session-abc"],
+                    "lease_expires_at": "2099-01-01T00:00:00Z",
+                    "created_at": "2026-07-05T00:00:00Z",
+                },
+                {
+                    "subscription_id": "sub-2",
+                    "labels": ["room:planning"],
+                    "lease_expires_at": "2099-06-01T00:00:00Z",
+                    "created_at": "2026-07-05T01:00:00Z",
+                },
+            ],
+        )
+
+        changed = declarations.normalize_all_declarations()
+
+        assert changed == 1
+        decl = declarations.load("sess-1")
+        assert len(decl["subscriptions"]) == 1
+        survivor = decl["subscriptions"][0]
+        assert survivor["subscription_id"] == "sub-2"
+        assert survivor["lease_expires_at"] == "2099-06-01T00:00:00Z"
+
+    def test_normalization_dedup_prefers_later_lease_when_both_stripped(self, relay_state):
+        """衝突した2entryが両方ともstrip対象（両方とも旧形式）の場合は、
+        lease_expires_atがより未来（＝より最近renewされた）側を残す。"""
+        self._write(
+            "sess-1",
+            "session-abc",
+            [
+                {
+                    "subscription_id": "sub-old",
+                    "labels": ["room:planning", "handle:session-abc"],
+                    "lease_expires_at": "2099-01-01T00:00:00Z",
+                    "created_at": "2026-07-05T00:00:00Z",
+                },
+                {
+                    "subscription_id": "sub-newer",
+                    "labels": ["room:planning", "handle:session-abc"],
+                    "lease_expires_at": "2099-06-01T00:00:00Z",
+                    "created_at": "2026-07-05T01:00:00Z",
+                },
+            ],
+        )
+
+        changed = declarations.normalize_all_declarations()
+
+        assert changed == 1
+        decl = declarations.load("sess-1")
+        assert len(decl["subscriptions"]) == 1
+        survivor = decl["subscriptions"][0]
+        assert survivor["subscription_id"] == "sub-newer"
+        assert survivor["labels"] == ["room:planning"]
+
+    def test_idempotent_second_run_is_noop(self, relay_state):
+        self._write(
+            "sess-1",
+            "session-abc",
+            [
+                {
+                    "subscription_id": "sub-1",
+                    "labels": ["room:planning", "handle:session-abc"],
+                    "lease_expires_at": "2099-01-01T00:00:00Z",
+                    "created_at": "2026-07-05T00:00:00Z",
+                }
+            ],
+        )
+
+        first = declarations.normalize_all_declarations()
+        second = declarations.normalize_all_declarations()
+
+        assert first == 1
+        assert second == 0
+
+    def test_normalized_entry_is_classified_as_resubscribe_by_lease_loop(self, relay_state):
+        """正規化直後のentryは、lease_loopのcompute_renew_actionsから見ると
+        「期限切れ→resubscribe」に分類される。これがlease_expires_atを現在時刻に
+        更新する目的そのもの（削除ではなく更新にすることで、この判定に確実に乗せて
+        新labelsでの再購読につなげる）。"""
+        from src.services.relay.lease_loop import compute_renew_actions
+
+        self._write(
+            "sess-1",
+            "session-abc",
+            [
+                {
+                    "subscription_id": "sub-1",
+                    "labels": ["room:planning", "handle:session-abc"],
+                    "lease_expires_at": "2099-01-01T00:00:00Z",
+                    "created_at": "2026-07-05T00:00:00Z",
+                }
+            ],
+        )
+        declarations.normalize_all_declarations()
+
+        snapshot = declarations.load_all()
+        actions = compute_renew_actions(snapshot, active_session_ids={"sess-1"})
+
+        assert len(actions) == 1
+        assert actions[0].kind == "resubscribe"
+        assert actions[0].session_id == "sess-1"
+        assert actions[0].labels == ["room:planning"]
+
+    def test_normalized_entry_survives_orphan_sweep_threshold(self, relay_state):
+        """正規化直後のlease_expires_at（現在時刻）は孤児sweepの24時間閾値に絶対に
+        掛からない（lease_expires_atを削除する誤実装だと、期限不明=無限に古い扱いで
+        即sweepされてしまう）。"""
+        from src.services.relay.lease_loop import compute_orphan_sessions
+
+        self._write(
+            "sess-1",
+            "session-abc",
+            [
+                {
+                    "subscription_id": "sub-1",
+                    "labels": ["room:planning", "handle:session-abc"],
+                    "lease_expires_at": "2099-01-01T00:00:00Z",
+                    "created_at": "2026-07-05T00:00:00Z",
+                }
+            ],
+        )
+        declarations.normalize_all_declarations()
+
+        snapshot = declarations.load_all()
+        orphans = compute_orphan_sessions(snapshot)
+        assert "sess-1" not in orphans
+
+    def test_no_declarations_returns_zero(self, relay_state):
+        assert declarations.normalize_all_declarations() == 0
+
+    def test_missing_handle_key_does_not_raise(self, relay_state):
+        """handleキー欠落（壊れたdeclaration）でも例外を出さずスキップする。"""
+        self._write("sess-1", "", [
+            {
+                "subscription_id": "sub-1",
+                "labels": ["room:planning"],
+                "lease_expires_at": "2099-01-01T00:00:00Z",
+                "created_at": "2026-07-05T00:00:00Z",
+            }
+        ])
+        assert declarations.normalize_all_declarations() == 0
 
 
 class TestLeaseActive:

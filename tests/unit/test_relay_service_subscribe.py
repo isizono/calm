@@ -63,9 +63,37 @@ class TestSubscribe:
         assert len(decl["subscriptions"]) == 1
         entry = decl["subscriptions"][0]
         assert entry["subscription_id"] == "sub-1"
-        assert f"handle:{decl['handle']}" in entry["labels"]
+        assert entry["labels"] == ["task:123"]
         assert entry["lease_expires_at"] == "2099-01-01T00:00:00Z"
         assert entry["created_at"]
+
+    def test_new_entry_is_marked_handle_auto_attached_false(self, monkeypatch):
+        """新規作成されたdeclaration entryには`handle_auto_attached: False`が
+        必ず付与される。これはdeclarations.normalize_all_declarationsが
+        「このentryは廃止後のコードが作ったものであり、labelsに自handleが
+        含まれていても意図的な指定である」と信頼するための構造的な目印になる
+        （関連: declarations.pyの`_HANDLE_AUTO_ATTACHED_KEY`docstring）。"""
+        stub = SubscriptionStub()
+        stub.install(monkeypatch)
+        service.relay_subscribe(["task:123"], caller_session_id="sess-1")
+        decl = declarations.load("sess-1")
+        assert decl["subscriptions"][0]["handle_auto_attached"] is False
+
+    def test_non_empty_labels_do_not_get_handle_attached(self, monkeypatch):
+        """非空labelsの購読には自handleが混入しない（handle自動付与の廃止）。
+
+        subset（AND）判定の下でhandleを混ぜると、publish側にも同じhandleが
+        載っていない限りマッチしなくなる（entity publish等の購読者非依存の
+        publishには絶対に載らないhandleが条件に混ざり、恒久的に不成立になる
+        バグの直接原因だった）。
+        """
+        stub = SubscriptionStub()
+        stub.install(monkeypatch)
+        result = service.relay_subscribe(
+            ["room:planning", "task:build"], caller_session_id="sess-1"
+        )
+        assert result["labels"] == ["room:planning", "task:build"]
+        assert stub.requests[0]["labels"] == ["room:planning", "task:build"]
 
     def test_subscriber_is_server_identity(self, monkeypatch):
         stub = SubscriptionStub()

@@ -180,7 +180,7 @@ class TestCreatedEventOnRepresentativeWritePaths:
 
     def test_topic_has_no_one_hop_parent_labels(self, temp_db, disable_embedding):
         """topicは階層の最上位で親を持たないため、自身に属する子の数に関わらずlabelsは
-        自身のtags + entity:/event:のみ（子をparent-labelとして巻き込まない）。"""
+        自身のtags + entity:/event:/self labelのみ（子をparent-labelとして巻き込まない）。"""
         topic = add_topic(title="t", description="d", tags=DEFAULT_TAGS)
         add_decisions([
             {"topic_id": topic["topic_id"], "decision": f"d{i}", "reason": "r"}
@@ -188,11 +188,18 @@ class TestCreatedEventOnRepresentativeWritePaths:
         ])
         rows = _rows_for("topic", topic["topic_id"])
         assert len(rows) == 1
-        assert set(rows[0]["labels"]) == {"entity:topic", "event:created", "domain:test"}
+        assert set(rows[0]["labels"]) == {
+            "entity:topic", "event:created", "domain:test", f"topic:{topic['topic_id']}",
+        }
 
 
-class TestAskSelfLabel:
-    """askはentity write時、自身を指すself label（ask:{id}）が付与される。"""
+class TestSelfLabel:
+    """entity writeは全種別で自身を指すself label（<type>:<id>）が付与される。
+
+    self labelが無いと、個体label購読が「その entity 自身の遷移」にマッチせず
+    （1hop親label経由での「子の書き込み」にしかマッチしない非対称があった）、
+    docstringが約束する個体単位購読が成立しなかった。
+    """
 
     def test_add_ask_publishes_created_with_self_label(self, temp_db, disable_embedding):
         activity = add_activity(
@@ -205,7 +212,40 @@ class TestAskSelfLabel:
         assert "event:created" in rows[0]["labels"]
         assert f"ask:{result['id']}" in rows[0]["labels"]
 
-    def test_non_ask_entity_types_do_not_get_ask_self_label(self, temp_db, disable_embedding):
+    def test_add_ask_created_event_has_no_own_tags_yet(self, temp_db, disable_embedding):
+        """askのevent:createdはask_tagsへのタグ紐付け（add_askが最初のcommit後に別connで
+        行う）より前にcommitされるため、own_tagsは常に空。domain単位で「新規ask作成」
+        だけを購読することはできない（docstringに明記済みの既知の制約）。own_tagsが
+        載るのはevent:updated以降（test_ask_own_tags_are_included_on_updated_event）。
+        """
+        activity = add_activity(
+            title="a", description="d", tags=DEFAULT_TAGS, check_in=False
+        )
+        result = ak.add_ask("質問", tags=["domain:test"], blocks=[activity["activity_id"]])
+        rows = _rows_for("ask", result["id"])
+        assert "domain:test" not in rows[0]["labels"]
+
+    def test_ask_own_tags_are_included_on_updated_event(self, temp_db, disable_embedding):
+        """askのown_tagsは_TAG_JUNCTIONにaskが登録されたことでlabelsに載るようになる。
+
+        createdイベントのpublishはask_tagsへのタグ紐付け（add_askがタグ解決commit後
+        に行う）より前にcommitされるため、created時点ではown_tagsはまだ空。タグ紐付け
+        後に発生するevent:updated（例: answer_ask）からown_tagsが載る。
+        """
+        activity = add_activity(
+            title="a", description="d", tags=DEFAULT_TAGS, check_in=False
+        )
+        ask = ak.add_ask("質問", tags=["domain:test"], blocks=[activity["activity_id"]])
+        ak.answer_ask(ask["id"], "回答")
+        rows = _rows_for("ask", ask["id"])
+        updated_rows = [r for r in rows if "event:updated" in r["labels"]]
+        assert updated_rows
+        assert "domain:test" in updated_rows[-1]["labels"]
+        assert f"ask:{ask['id']}" in updated_rows[-1]["labels"]
+
+    def test_non_ask_entity_types_get_their_own_self_label_not_ask(
+        self, temp_db, disable_embedding
+    ):
         topic = add_topic(title="t", description="d", tags=DEFAULT_TAGS)
         material = add_material(title="m", content="c", tags=DEFAULT_TAGS, source="test")
         activity = add_activity(
@@ -218,9 +258,27 @@ class TestAskSelfLabel:
         ):
             rows = _rows_for(ref_type, ref_id)
             assert rows
+            assert f"{ref_type}:{ref_id}" in rows[0]["labels"]
             assert not any(
                 label.startswith("ask:") for row in rows for label in row["labels"]
             )
+
+    def test_habit_self_label(self, temp_db):
+        """habitはtag junctionを持たない（own_tags無し）が、self labelは他種別と同様に付く。"""
+        result = add_habit("振る舞い")
+        rows = _rows_for("habit", result["habit_id"])
+        assert f"habit:{result['habit_id']}" in rows[0]["labels"]
+
+    def test_tag_self_label(self, temp_db, disable_embedding):
+        """tagのcreatedイベント自体にも、自身を指すself label（tag:{id}）が付く。"""
+        add_topic(title="t", description="d", tags=["glossary:brand-new-tag-abc"])
+        rows = [
+            r for r in _outbox_rows()
+            if r["ref_type"] == "tag" and "event:created" in r["labels"]
+        ]
+        assert rows
+        tag_row = rows[0]
+        assert f"tag:{tag_row['ref_id']}" in tag_row["labels"]
 
 
 class TestUpdatedEventOnRepresentativeWritePaths:

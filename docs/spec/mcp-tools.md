@@ -597,7 +597,7 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 | title | string | no | null | 一覧表示用の見出し（200字以内） |
 
 **返り値**: `{outbox_id: int, labels: list[string], handle: string, identity: string}`。
-**動作**: 送信者の`handle:` labelを自動付与し、`relay_outbox`テーブルへINSERTして完結する（transactional outbox）。relayへの配達はserver内の常駐配達ループが非同期に行い、保証はat-least-once。labelsが空のpublishは宛先が決まらないため拒否する。`identity`は呼び出し元セッションの識別子（cc-memory server再起動をまたいで安定）。
+**動作**: 送信者の`handle:` labelを自動付与し（発信元の刻印。宛先の絞り込みには使わない）、`relay_outbox`テーブルへINSERTして完結する（transactional outbox）。relayのマッチングはsubset（AND）判定のため、labelsは聴衆を広げる方向にのみ働く（handleを足しても他の購読者への配送は絞られない）。宛先を特定セッションに限定したい発話はlabelsをhandleのみにして本文に用件を書くこと。relayへの配達はserver内の常駐配達ループが非同期に行い、保証はat-least-once。labelsが空のpublishは宛先が決まらないため拒否する。`identity`は呼び出し元セッションの識別子（cc-memory server再起動をまたいで安定）。
 **エラー処理**: `RELAY_BEARER_TOKEN`未設定・session_id未解決・labels/body不正はいずれも明示エラー。
 **関連**: 配布した内容はCALM本体（search/get_timeline/pull_precedents等）には自動反映されない。後から参照できる形で残したい場合は受信後にadd_logs/add_material等で明示的に保存すること。
 
@@ -605,10 +605,10 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
-| labels | list[string] | yes | - | 購読条件labels（publish側labelsをすべて含む発話が届く）。空配列なら自handle宛のみの購読。`role:`はエラー。CALMの予約namespace（`entity:`/`event:`/`topic:`/`activity:`/`decision:`/`log:`/`material:`/`tag:`/`habit:`）はrelay_publishと異なりここでは許可（entity更新のrelay publishを購読するために必要。例: `["activity:1183", "event:updated"]`） |
+| labels | list[string] | yes | - | 購読条件labels（publish側labelsをすべて含む発話が届く）。空配列なら自handle宛のみの購読に変換される（非空labelsは指定どおりそのまま購読され、自handleは混入しない。宛先を自分に限定した複合条件を張りたい場合はlabelsに自分のhandle labelを明示的に含める）。`role:`はエラー。CALMの予約namespace（`entity:`/`event:`/`topic:`/`activity:`/`decision:`/`log:`/`material:`/`tag:`/`habit:`）はrelay_publishと異なりここでは許可（entity更新のrelay publishを購読するために必要。entity writeは全種別で自身を指すself label（`<type>:<id>`）がpublish labelsに付くため、self label 1つの購読で「そのentity自身＋直接の子」の全イベントが届く。種別単位は`["entity:decision", "event:retracted"]`、domain単位は`["entity:ask", "domain:calm"]`のように組み合わせる。ただしaskはown tag（`domain:`等）が`event:updated`以降のpublishにしか載らない例外があり、`event:created`時点ではまだタグ紐付けが完了していないため、domain単位で「新規ask作成」だけを購読することはできない） |
 
 **返り値**: `{subscription_id: string, labels: list[string], lease_expires_at: string, handle: string, reused: bool, identity: string}`。
-**動作**: 自sessionの`handle:` labelを自動付与し、subscription declaration file（`~/.cc-memory/relay/subscriptions/session-<session_id>.json`）とrelayの購読登録を同期する。同一labels集合の再呼び出しは冪等で、leaseが有効なら既存購読を返し（`reused: true`）、失効・不明なら新規購読してdeclaration fileのidを差し替える。lease更新・再購読・購読解除はserver側常駐処理が自動管理する。新規購読（`reused: false`）が成立すると、server内の常駐SSE受信スレッドへ即座に反映指示を送る。反映は次にSSEフレーム（実メッセージだけでなくkeepaliveのコメントフレーム到達でも判定される）が届いた時点で完了し、既定設定では上限概ね60秒に収まる。この間に届いたメッセージはrelay側のsubscription outboxに保持されるため取りこぼされない。`identity`は呼び出し元セッションの識別子（cc-memory server再起動をまたいで安定。`scripts/relay/watch_inbox.sh`等に渡す値として使える）。
+**動作**: labelsが空配列のときのみ自sessionの`handle:` label単独購読（直接メッセージのみ購読）に変換する。非空labelsは指定どおりそのまま購読し、自handleは付与しない。subscription declaration file（`~/.cc-memory/relay/subscriptions/session-<session_id>.json`）とrelayの購読登録を同期する。同一labels集合の再呼び出しは冪等で、leaseが有効なら既存購読を返し（`reused: true`）、失効・不明なら新規購読してdeclaration fileのidを差し替える。lease更新・再購読・購読解除はserver側常駐処理が自動管理する。新規購読（`reused: false`）が成立すると、server内の常駐SSE受信スレッドへ即座に反映指示を送る。反映は次にSSEフレーム（実メッセージだけでなくkeepaliveのコメントフレーム到達でも判定される）が届いた時点で完了し、既定設定では上限概ね60秒に収まる。この間に届いたメッセージはrelay側のsubscription outboxに保持されるため取りこぼされない。`identity`は呼び出し元セッションの識別子（cc-memory server再起動をまたいで安定。`scripts/relay/watch_inbox.sh`等に渡す値として使える）。
 **エラー処理**: `RELAY_BEARER_TOKEN`未設定・session_id未解決は明示エラー。relayエラー時はdeclaration fileを更新しない。rate limit（429）は専用コード`rate_limited`で返し、`retry_after`（秒、`Retry-After`ヘッダ未提供時は`null`）を構造化フィールドで付与する。呼び出し側はこの秒数だけ待ってからリトライすること。
 **関連**: 購読宣言（`relay_subscribe`）と受信（`relay_receive`）は分離しており、実際のメッセージ受信は`relay_receive`側が担う。
 
