@@ -1,11 +1,11 @@
 ---
 name: ask-watch
-description: cc-memoryのask store（人間の判断待ちaskのインボックス）をMonitorツールでイベント駆動監視する。asksテーブルのstatus='open'件数・last_seen_at・id集合を10秒間隔でポーリングし、前回値から変化を検知したときだけ全open askを読み直し、「主題は違うが判断構造が同一」の同型群をLLM自身が判定してメタask（kind="meta"）を起票する。「ask storeを監視して」「ask-watch」「asksを見張って」「open askの滞留をチェックして」「`/ask-watch`」などで発動。1回限りのask確認（get_asksを直接呼ぶだけ）やcc-memory自体の使い方説明には発動しない。
+description: calmのask store（人間の判断待ちaskのインボックス）をMonitorツールでイベント駆動監視する。asksテーブルのstatus='open'件数・last_seen_at・id集合を10秒間隔でポーリングし、前回値から変化を検知したときだけ全open askを読み直し、「主題は違うが判断構造が同一」の同型群をLLM自身が判定してメタask（kind="meta"）を起票する。「ask storeを監視して」「ask-watch」「asksを見張って」「open askの滞留をチェックして」「`/ask-watch`」などで発動。1回限りのask確認（get_asksを直接呼ぶだけ）やcalm自体の使い方説明には発動しない。
 ---
 
 # ask-watch
 
-cc-memoryのask store（`add_ask`/`get_asks`/`answer_ask`/`triage_ask`/`withdraw_ask`が読み書きする、人間の判断待ちaskのインボックス）をMonitorツールでイベント駆動監視するスキル。asksテーブルの`status='open'`件数・`last_seen_at`・id集合をポーリングし、前回値から変化を検知するたびに全open askを読み直す。表面的な主題は違っても判断構造（問いの型）が同一の同型群がないかをLLM自身が判定し、見つけたら、既に同じ型のメタaskが起票済みでない限り、「この型は今後、人間に聞かずに一般化ルールとして自己裁定してよいか」を問うメタask（`kind="meta"`）を起票する。
+calmのask store（`add_ask`/`get_asks`/`answer_ask`/`triage_ask`/`withdraw_ask`が読み書きする、人間の判断待ちaskのインボックス）をMonitorツールでイベント駆動監視するスキル。asksテーブルの`status='open'`件数・`last_seen_at`・id集合をポーリングし、前回値から変化を検知するたびに全open askを読み直す。表面的な主題は違っても判断構造（問いの型）が同一の同型群がないかをLLM自身が判定し、見つけたら、既に同じ型のメタaskが起票済みでない限り、「この型は今後、人間に聞かずに一般化ルールとして自己裁定してよいか」を問うメタask（`kind="meta"`）を起票する。
 
 ## 背景
 
@@ -27,7 +27,7 @@ ask storeには「同じ判断構造の問いが繰り返されたら、機械�
 
 以下では使用しない:
 - 1回限りのask確認（`get_asks`を直接呼ぶだけで済む、またはユーザーが今すぐ内容を見たいだけ）
-- cc-memory自体の使い方説明（`cc-memory:guide` skillの担当）
+- calm自体の使い方説明（`calm:man` skillの担当）
 - 特定1件のaskへの回答・トリアージ作業（`answer_ask`/`triage_ask`を直接呼べば済む）
 
 ## ワークフロー
@@ -57,22 +57,9 @@ Monitorツールを以下のパラメータで呼ぶ:
 
 - `description`: 監視対象がわかる説明（例: `"ask store open askの変化監視"`）
 - `persistent`: `true`（セッション終了まで動かし続ける。`TaskStop`で明示的に止めるまでタイムアウトしない）
-- `command`:
+- `command`: `bash "${CLAUDE_SKILL_DIR}/scripts/poll.sh"`
 
-```bash
-DB="$HOME/.claude/.claude-code-memory/discussion.db"
-prev=$(sqlite3 "$DB" "SELECT COUNT(*), MAX(last_seen_at), GROUP_CONCAT(id) FROM asks WHERE status='open';" 2>/dev/null)
-while true; do
-  sleep 10
-  cur=$(sqlite3 "$DB" "SELECT COUNT(*), MAX(last_seen_at), GROUP_CONCAT(id) FROM asks WHERE status='open';" 2>/dev/null)
-  if [ "$cur" != "$prev" ]; then
-    echo "ask store changed: $cur"
-    prev="$cur"
-  fi
-done
-```
-
-このスクリプトはopen askの「件数・最新`last_seen_at`・id集合」のいずれかが変化した瞬間だけ1行出力する。`GROUP_CONCAT(id)`まで比較に含めているのは、件数が同じでもid構成が入れ替わる変化（1件closeして1件openになった等）を取りこぼさないため。出力される`$cur`の中身はあくまでトリガーの参考情報であり、実際に読むべきask本文はStep 3で`get_asks`から取得する（DBを直接sqliteで読むのはポーリングの軽量化のためで、questionやcontextの中身までDB越しに読み取ることはしない）。
+`scripts/poll.sh`はopen askの「件数・最新`last_seen_at`・id集合」のいずれかが変化した瞬間だけ1行出力する。`GROUP_CONCAT(id)`まで比較に含めているのは、件数が同じでもid構成が入れ替わる変化（1件closeして1件openになった等）を取りこぼさないため。出力される値はあくまでトリガーの参考情報であり、実際に読むべきask本文はStep 3で`get_asks`から取得する（DBを直接sqliteで読むのはポーリングの軽量化のためで、questionやcontextの中身までDB越しに読み取ることはしない）。
 
 ### Step 3: 変化検知時の処理手順
 
@@ -129,4 +116,4 @@ Monitorの通知（`ask store changed: ...`という1行）を受け取るたび
 ## 関連
 
 - `ask-distill` skill: `add_ask`のレスポンスに含まれる`similar_asks`を見て、新規ask投稿の**その場**で同型の反復に気づいたときにメタaskを起票する。ask-watchは同じメタask起票の仕組みを、**定期的な読み返し**というもう一つの気づきの経路として補う。両者は排他ではなく、どちらの経路で気づいてもメタask起票のロジック（Step 4の組み立て方）は共通
-- `cc-memory:guide` skill: ask storeの使い方そのものの説明
+- `calm:man` skill: ask storeの使い方そのものの説明
