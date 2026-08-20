@@ -93,6 +93,8 @@ claude plugin install calm
 | `/db-recovery` | DBデータの異常減少を検知した際に、スナップショットから復旧します |
 | `/restart` | CALMのローカルMCPサーバー・embeddingサーバーを再起動します |
 | `/ask-distill` | 繰り返し起票されている同型のaskをまとめてメタaskを起票します |
+| `/memory-export` | 記録を他インスタンスへ渡すexportバンドルを作成します |
+| `/memory-import` | 他インスタンスのexportバンドルを衝突裁定を経て取り込みます |
 
 ## 設定
 

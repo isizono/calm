@@ -187,6 +187,8 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 - `skills/forget`: 陳腐化・矛盾した記録の撤回
 - `skills/db-recovery`: DBデータ異常減少の検知〜復旧
 - `skills/audit`: 過去decisionの正当性検証・矛盾解消
+- `skills/memory-export`: 他インスタンスへ渡すexportバンドルの作成ガイド
+- `skills/memory-import`: 他インスタンスのexportバンドルの衝突裁定・取り込みガイド
 
 
 ### 4.3 フロー層 service
