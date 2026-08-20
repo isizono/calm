@@ -125,7 +125,7 @@ def _reregister_search_index_with_conn(conn: sqlite3.Connection, entity_type: st
     """
     existing = conn.execute(
         "SELECT id FROM search_index WHERE source_type = ? AND source_id = ?",
-        (entity_type, entity_id),
+        (_SEARCH_INDEX_SOURCE_TYPE[entity_type], entity_id),
     ).fetchone()
     if existing:
         return False
@@ -139,7 +139,7 @@ def _reregister_search_index_with_conn(conn: sqlite3.Connection, entity_type: st
 
     cursor = conn.execute(
         "INSERT INTO search_index (source_type, source_id, title, created_at) VALUES (?, ?, ?, ?)",
-        (entity_type, entity_id, display_title, created_at),
+        (_SEARCH_INDEX_SOURCE_TYPE[entity_type], entity_id, display_title, created_at),
     )
     search_index_id = cursor.lastrowid
     conn.execute(
