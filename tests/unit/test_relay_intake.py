@@ -5,6 +5,8 @@ frame parse・所有 session 逆引き・inbox 振り分け・ack tracker の各
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import httpx
 import pytest
 
@@ -14,6 +16,7 @@ from src.services.relay.intake import (
     DispatchResult,
     StreamFrame,
     SubFrame,
+    _snapshot_subscription_ids,
     dispatch_frame,
     parse_frame,
     resolve_stream_targets,
@@ -285,3 +288,92 @@ class TestAckTrackerFlush:
             tracker.flush(client)
         # 送信失敗時は pending を残す。
         assert tracker.sub_pending == {"s-1": 3}
+
+
+# ---------------------------------------------------------------------------
+# _snapshot_subscription_ids（lease 失効 entry の事前フィルタ）
+# ---------------------------------------------------------------------------
+
+
+def _iso(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+class TestSnapshotSubscriptionIds:
+    def test_expired_lease_excluded_active_lease_included(self):
+        now = datetime.now(timezone.utc)
+        snapshot = [
+            {
+                "session_id": "sess-a",
+                "subscriptions": [
+                    {
+                        "subscription_id": "sub-live",
+                        "labels": ["entity:ask"],
+                        "lease_expires_at": _iso(now + timedelta(seconds=300)),
+                    },
+                    {
+                        "subscription_id": "sub-dead",
+                        "labels": ["entity:ask"],
+                        "lease_expires_at": _iso(now - timedelta(seconds=60)),
+                    },
+                ],
+            }
+        ]
+        assert _snapshot_subscription_ids(snapshot) == ["sub-live"]
+
+    def test_all_expired_yields_empty_list(self):
+        now = datetime.now(timezone.utc)
+        snapshot = [
+            {
+                "session_id": "sess-a",
+                "subscriptions": [
+                    {
+                        "subscription_id": "sub-dead-1",
+                        "labels": ["entity:ask"],
+                        "lease_expires_at": _iso(now - timedelta(seconds=60)),
+                    }
+                ],
+            },
+            {
+                "session_id": "sess-b",
+                "subscriptions": [
+                    {
+                        "subscription_id": "sub-dead-2",
+                        "labels": ["entity:ask"],
+                        "lease_expires_at": _iso(now - timedelta(hours=25)),
+                    }
+                ],
+            },
+        ]
+        assert _snapshot_subscription_ids(snapshot) == []
+
+    def test_missing_lease_expires_at_excluded(self):
+        """lease_active() の「不明 = False」挙動を intake フィルタでも固定する。"""
+        snapshot = [
+            {
+                "session_id": "sess-a",
+                "subscriptions": [
+                    {"subscription_id": "sub-no-lease", "labels": ["entity:ask"]}
+                ],
+            }
+        ]
+        assert _snapshot_subscription_ids(snapshot) == []
+
+    def test_duplicate_ids_deduplicated(self):
+        now = datetime.now(timezone.utc)
+        lease = _iso(now + timedelta(seconds=300))
+        snapshot = [
+            {
+                "session_id": "sess-a",
+                "subscriptions": [
+                    {"subscription_id": "sub-shared", "labels": ["entity:ask"], "lease_expires_at": lease}
+                ],
+            },
+            {
+                "session_id": "sess-b",
+                "subscriptions": [
+                    {"subscription_id": "sub-shared", "labels": ["entity:ask"], "lease_expires_at": lease}
+                ],
+            },
+        ]
+        assert _snapshot_subscription_ids(snapshot) == ["sub-shared"]

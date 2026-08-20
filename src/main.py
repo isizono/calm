@@ -2690,7 +2690,13 @@ if __name__ == "__main__":
             raise SystemExit(1)
 
         # セッションマネージャー初期化
-        _session_manager = SessionManager()
+        # on_session_removed: session除去（正常終了・liveness TTL失効の両方）を
+        # フックに、そのsessionが宣言していたrelay subscriptionを撤去する。
+        # SessionManager自体はrelayを知らない（infra→services依存を作らない）ため、
+        # 配線はここで行う。
+        from src.services.relay import teardown as relay_teardown
+
+        _session_manager = SessionManager(on_session_removed=relay_teardown.schedule)
 
         def _shutdown_server():
             """ウォッチドッグから呼ばれるシャットダウンハンドラ"""
