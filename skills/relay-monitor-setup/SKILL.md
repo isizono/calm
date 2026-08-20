@@ -123,7 +123,7 @@ print(resolve_identity_by_ancestry())
 "
 ```
 
-`resolve_identity_by_ancestry()`は今このBashコマンドを実行しているプロセス自身の祖先pidチェームで判定する。hookとは別プロセス経由だが、どちらも同じClaude Code CLIプロセスの子孫であれば同じ結果に収束する（実機検証済み）。`None`以外（UUID文字列）が返れば解決成功。
+`resolve_identity_by_ancestry()`は今このBashコマンドを実行しているプロセス自身の祖先pidチェーンで判定する。hookとは別プロセス経由だが、どちらも同じClaude Code CLIプロセスの子孫であれば同じ結果に収束する（実機検証済み）。`None`以外（UUID文字列）が返れば解決成功。
 
 `None`が返った場合、登録済みlauncherの生存状況を追加で確認する。
 
