@@ -102,7 +102,7 @@ cc-memoryが記録に振る内部の番号・記号は、表記の形式を問�
 
 ## Asks（判断委譲）
 
-askは離席中・セッション跨ぎ限定です。その場で答えられるなら聞いてdecision化します。発効は人間のメタask裁定のみです。
+askは離席中・セッション跨ぎ限定。答えられるなら聞いてdecision化。発効は人間のメタask裁定のみ。構成は`ask-compose`参照。
 
 ---
 
@@ -2094,6 +2094,8 @@ def add_ask(
     レスポンスのsimilar_asks（裁定内容込み）を読み、同型の問いが繰り返され裁定が
     一貫していると判断した場合は、`ask-distill` skill を使ってメタaskの起票を
     検討すること。
+
+    question/contextの構成は`ask-compose` skillを必ず経由すること。
 
     add_ask成功後、システムがそのask専用labelを自動でrelay_subscribeします
     （relayの一般方針「購読はエージェントの明示的な意図宣言であり、activity所有等
