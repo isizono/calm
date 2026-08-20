@@ -22,7 +22,7 @@ last-synced-migration: 0048
 
 ## 1. ツール一覧
 
-全50ツール。カテゴリ別に一覧する。
+全54ツール。カテゴリ別に一覧する。
 
 ### 1.1 記録系（add系）
 
@@ -99,6 +99,10 @@ last-synced-migration: 0048
 | ツール | 概要 |
 | --- | --- |
 | `export_material` | 資材をmd形式のファイルとしてCALM外に出力する |
+| `collect_export_candidates` | 他インスタンスへのexport候補を洗い出す（read-only） |
+| `set_instance_identity` | 自インスタンスの識別子を設定する（バンドル複合キー発行の基盤） |
+| `export_bundle` | 確定した候補リストからバンドル（manifest.yaml + エンティティ別mdファイル）を書き出す |
+| `import_bundle` | バンドルを取り込む（mode="dry_run"で衝突検知レポート、mode="apply"で実際にDBへ書き込み） |
 
 ### 1.10 シグナル系（signal_events）
 
@@ -411,6 +415,59 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 
 **返り値**: `{entities: [{type, id, title, tags, depth}], total_count: int}`。decision/logノードは経由ノードとして使うが、返却カタログにはtopic/activity/materialのみ含まれる。
 
+### 2.20b collect_export_candidates
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| roots | list[{type, id}] | no | [] | 起点（複数可）。tag_rootsのみでシードする場合は省略可 |
+| max_depth | int | no | 2 | rootsからの走査深度上限（上限10）。tag_rootsのシードには適用されない |
+| include_types | list[string] | no | 5型全部 | 返却する型の表示フィルタ。走査・closure_warnings判定には影響しない |
+| tag_roots | list[string] | no | null | 指定タグ文字列を持つ全エンティティを深度0固定でシード集合に合流させる |
+| include_snippets | bool | no | true | falseで各candidateからsnippetキーを省く |
+| limit | int | no | null | 返却candidates件数の上限 |
+| offset | int | no | 0 | 返却開始位置 |
+
+**返り値**: 成功時 `{candidates: [{type, id_raw, title, snippet, tags, depth, size_chars, parent_topic_title, retracted?, superseded?, status?}], closure_warnings: [{kind, from_title, target_title, target: {type, id_raw}}], total_count: int, truncated: bool}`。`retracted`はdecision/log/materialのみ、`superseded`はdecisionのみ、`status`はactivityのみ付く。`tag_roots`指定時のみ`co_tags: [{tag, overlap, share}]`が追加される。失敗時 `{error: {code: "VALIDATION_ERROR" | "INVALID_ENTITY_TYPE" | "INVALID_PARAMETER" | "DATABASE_ERROR", message}}`。
+**get_mapとの違い**: get_mapはnavigation用途でdecision/logを経由ノードとしてのみ扱いカタログに含めないが、本ツールはexport判断のため5型全部をカタログ本体に含める。走査自体は共有のrelation走査ロジックを使うが、ツールとしては独立している。
+**動作**: rootsからの走査結果とtag_rootsのシード結果（tag_rootsは深度0固定、グラフ拡張はしない）を合流し、型別の付加情報を付けて返す。`closure_warnings`は選択集合外を指すsupersede関係・本文中citation（`{{cite:X#NNN}}`）を検出する（供に情報提供のみで、自動的な集合拡張は行わない）。read-only（DBへの書き込みは一切行わない）。
+
+### 2.20c set_instance_identity
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| instance_id | string | yes | - | DNSラベル風（`^[a-z][a-z0-9-]{2,31}$`、英小文字始まり・英小文字数字ハイフンのみ・3〜32字） |
+| force | bool | no | false | trueで既存の設定を上書きする |
+
+**返り値**: 成功時 `{instance_id, created_at}`。失敗時 `{error: {code: "VALIDATION_ERROR" | "ALREADY_EXISTS" | "DATABASE_ERROR", message}}`。
+**動作**: バンドルの複合キー（`<instance_id>:<型コード><ローカルID>`、例: `team-a:M12`）発行の基盤となるインスタンス識別子を設定する。一度設定したら`force`無しでは変更不可（複合キーは出生インスタンスの識別子を基準に発行され続けるため、変更は既発行キーの意味を壊す破壊的操作）。完全自由命名で衝突保険のランダムsuffix自動付与はしない。
+
+### 2.20d export_bundle
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| items | list[{type, ids}] | yes | - | 確定選択（`collect_export_candidates`の出力から絞り込んだ最終リスト） |
+| bundle_name | string | no | null | バンドルディレクトリ名。省略時は`<instance_id>-<日時>-<起点slug>` |
+| include_supersede_targets | bool | no | false | trueで選択decisionのsupersede先実体も同梱する |
+| selection | dict | no | null | `collect_export_candidates`への入力をverbatimで記録する任意dict。manifest.yamlにそのまま書き込まれる |
+
+**返り値**: 成功時 `{path, bundle_id, counts: {type: n}, auto_included: [{type, id_raw, reason}], unresolved_refs: [{key, type, title, domain_tags, referenced_by}], masked_literals: int, warnings: [{kind, from_title, target: {type, id_raw}}]}`。失敗時 `{error: {code: "VALIDATION_ERROR" | "INSTANCE_ID_NOT_SET" | "NOT_FOUND" | "IO_ERROR" | "DATABASE_ERROR", message}}`。
+**動作**: `~/cc-memory-export/bundles/<bundle-name>/`配下（パスガードで配下外を拒否）にmanifest.yaml + エンティティ別mdファイルを書き出す。選択されたdecision/logの親topicは機械規則で自動同梱される（activityには適用しない）。本文中の内部参照は3段パイプライン（生リテラル正規化 → 複合キー化 → 残存リテラルの最終スイープ）で変換し、選択集合外を指す参照は`unresolved_refs`に集約される。read-only（DBへの書き込みは一切行わない。ファイル書き込みのみ）。
+
+### 2.20e import_bundle
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| bundle_path | string | yes | - | `export_bundle`が書き出したバンドルディレクトリのパス（`manifest.yaml`を直下に持つ）。パスガードでDEFAULT_EXPORT_DIR配下外を拒否 |
+| mode | string | no | "dry_run" | "dry_run"（DB無変更で衝突検知レポート）または"apply"（実際にDBへ書き込む） |
+| resolutions | dict | no | null | mode="apply"向けの裁定結果。`{tag_renames: {incoming_tag: local_tag}, on_upstream_change: {entity_type: "overwrite"\|"skip"}, entity_overrides: {composite_key: "skip"\|{action: "skip"\|"import"}}}`。dry_runでは無視される |
+| skip_duplicate_check | bool | no | false | trueでネイティブ重複疑い検知（embedding類似検索）をスキップする（dry_runのみ関係） |
+
+**dry_run 返り値**: 成功時 `{format_version_ok: bool, bundle_id, source_instance, summary: {type: {new, unchanged, updatable, upstream_changed_skip, self_origin}}, upstream_changed: [{key, type, title, local_entity_id}], tag_report: {merge, create, archived_hit, alias_hit}, duplicates_suspected: [{key, title, similar: [{type, id_raw, title, score}]}], dangling_refs: {count, sample}, degraded: bool, load_errors}`。
+**dry_run 動作**: バンドルを読み、DBへの書き込みを一切行わずに衝突検知レポートを返す。再import判定は`import_provenance`逆引き（origin一致+hash一致は`unchanged`、hash不一致はtopic/activity/materialなら`updatable`、decision/logなら既定skipの`upstream_changed_skip`）で行う。参照解決（belongs_to/related/supersedes/depends_on・本文中の拡張cite）はバンドル内→provenance逆引き→自インスタンス出生→解決不能、の優先順で試み、解決不能分は`dangling_refs`に集計する。タグは4区分（merge/create/archived_hit/alias_hit）でレポートし、domainタグまたはnotesを持つエントリは`review_required=true`になる。重複疑い検知はstatus="new"のエンティティのみ対象で、embeddingサーバー未起動時は`degraded=true`になるがクラッシュしない。
+
+**apply 返り値**: 成功時 `{format_version_ok: bool, bundle_id, source_instance, created: {type: n}, updated: {type: n}, skipped: {type: n}, skip_reasons: {status: n}, created_edges: int, dropped_edges: int, unresolved_body_refs: int, warnings, load_errors}`。失敗時は共通で `{error: {code: "VALIDATION_ERROR" | "NOT_FOUND" | "INSTANCE_ID_NOT_SET" | "DATABASE_ERROR", message}}`。
+**apply 動作**: dry_runと同じ分類ロジックを土台に、resolutionsを反映して実際にDBへ書き込む（topic→activity/material→decision/log→relations/supersedes/depends_on→本文citation書き換えの順に適用し、全体を1トランザクションで実行、失敗時は部分書き込みを残さない）。参照解決は4段の優先順（バンドル内→provenance逆引き→自インスタンス出生→解決不能）で行い、解決できたエッジ・citationはローカルIDへ張り直す。解決不能な本文中citationは「{title}」(未取り込みの外部記録)に置換し、解決不能なfrontmatterエッジは張らずに`dropped_edges`へ計上する。新規エンティティのcreated_atはimport実行時刻を採用する（originのcreated_atは`import_provenance.origin_created_at`に保持）。タグは新規作成分にincoming notesを設定し、既存の非archived非alias平タグには差分行のみ追記する。activityは明示選択されたもののみが対象。新規作成時はstatusをバンドルの値のまま採用するが（自動でshelvedへ変換しない）、既存を上書き更新する場合はローカルのstatus/retracted_atを保持し変更しない。タグ紐付けは`INSERT OR IGNORE`による追加のみで、送信元でタグが外れても既存の紐付けは自動削除されない。FTS同期はDBトリガー任せ、embedding/vec同期はcommit後にベストエフォートで行う。
+
 ### 2.21 add_habit / get_habits / update_habit
 
 - `add_habit(content: string, importance_score: int = 3, status: string = "active") -> dict`: habitを登録。新規habitは`trigger_mode='intelligently'`（マニフェスト表示のみ）で作成され、`~/.claude/rules`配下の自動生成ファイル経由で常時配信されるのは`'always'`のみ（セッション途中の登録は次セッション起動から反映）。常時配信層への昇格は`update_habit(trigger_mode='always')`で行い、後述のゲートを通過する必要がある。importance_scoreは1(critical)/2(important)/3(default)のいずれかで、intelligently層マニフェストのソートに使う。statusは`'active'`/`'archived'`のいずれか。
@@ -539,7 +596,7 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 | title | string | no | null | 一覧表示用の見出し（200字以内） |
 
 **返り値**: `{outbox_id: int, labels: list[string], handle: string, identity: string}`。
-**動作**: 送信者の`handle:` labelを自動付与し、`relay_outbox`テーブルへINSERTして完結する（transactional outbox）。relayへの配達はserver内の常駐配達ループが非同期に行い、保証はat-least-once。labelsが空のpublishは宛先が決まらないため拒否する。`identity`は呼び出し元セッションの識別子（cc-memory server再起動をまたいで安定）。
+**動作**: 送信者の`handle:` labelを自動付与し（発信元の刻印。宛先の絞り込みには使わない）、`relay_outbox`テーブルへINSERTして完結する（transactional outbox）。relayのマッチングはsubset（AND）判定のため、labelsは聴衆を広げる方向にのみ働く（handleを足しても他の購読者への配送は絞られない）。宛先を特定セッションに限定したい発話はlabelsをhandleのみにして本文に用件を書くこと。relayへの配達はserver内の常駐配達ループが非同期に行い、保証はat-least-once。labelsが空のpublishは宛先が決まらないため拒否する。`identity`は呼び出し元セッションの識別子（cc-memory server再起動をまたいで安定）。
 **エラー処理**: `RELAY_BEARER_TOKEN`未設定・session_id未解決・labels/body不正はいずれも明示エラー。
 **関連**: 配布した内容はCALM本体（search/get_timeline/pull_precedents等）には自動反映されない。後から参照できる形で残したい場合は受信後にadd_logs/add_material等で明示的に保存すること。
 
@@ -547,10 +604,10 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
-| labels | list[string] | yes | - | 購読条件labels（publish側labelsをすべて含む発話が届く）。空配列なら自handle宛のみの購読。`role:`はエラー。CALMの予約namespace（`entity:`/`event:`/`topic:`/`activity:`/`decision:`/`log:`/`material:`/`tag:`/`habit:`）はrelay_publishと異なりここでは許可（entity更新のrelay publishを購読するために必要。例: `["activity:1183", "event:updated"]`） |
+| labels | list[string] | yes | - | 購読条件labels（publish側labelsをすべて含む発話が届く）。空配列なら自handle宛のみの購読に変換される（非空labelsは指定どおりそのまま購読され、自handleは混入しない。宛先を自分に限定した複合条件を張りたい場合はlabelsに自分のhandle labelを明示的に含める）。`role:`はエラー。CALMの予約namespace（`entity:`/`event:`/`topic:`/`activity:`/`decision:`/`log:`/`material:`/`tag:`/`habit:`）はrelay_publishと異なりここでは許可（entity更新のrelay publishを購読するために必要。entity writeは全種別で自身を指すself label（`<type>:<id>`）がpublish labelsに付くため、self label 1つの購読で「そのentity自身＋直接の子」の全イベントが届く。種別単位は`["entity:decision", "event:retracted"]`、domain単位は`["entity:ask", "domain:calm"]`のように組み合わせる。ただしaskはown tag（`domain:`等）が`event:updated`以降のpublishにしか載らない例外があり、`event:created`時点ではまだタグ紐付けが完了していないため、domain単位で「新規ask作成」だけを購読することはできない） |
 
 **返り値**: `{subscription_id: string, labels: list[string], lease_expires_at: string, handle: string, reused: bool, identity: string}`。
-**動作**: 自sessionの`handle:` labelを自動付与し、subscription declaration file（`~/.cc-memory/relay/subscriptions/session-<session_id>.json`）とrelayの購読登録を同期する。同一labels集合の再呼び出しは冪等で、leaseが有効なら既存購読を返し（`reused: true`）、失効・不明なら新規購読してdeclaration fileのidを差し替える。lease更新・再購読・購読解除はserver側常駐処理が自動管理する。新規購読（`reused: false`）が成立すると、server内の常駐SSE受信スレッドへ即座に反映指示を送る。反映は次にSSEフレーム（実メッセージだけでなくkeepaliveのコメントフレーム到達でも判定される）が届いた時点で完了し、既定設定では上限概ね60秒に収まる。この間に届いたメッセージはrelay側のsubscription outboxに保持されるため取りこぼされない。`identity`は呼び出し元セッションの識別子（cc-memory server再起動をまたいで安定。`scripts/relay/watch_inbox.sh`等に渡す値として使える）。
+**動作**: labelsが空配列のときのみ自sessionの`handle:` label単独購読（直接メッセージのみ購読）に変換する。非空labelsは指定どおりそのまま購読し、自handleは付与しない。subscription declaration file（`~/.cc-memory/relay/subscriptions/session-<session_id>.json`）とrelayの購読登録を同期する。同一labels集合の再呼び出しは冪等で、leaseが有効なら既存購読を返し（`reused: true`）、失効・不明なら新規購読してdeclaration fileのidを差し替える。lease更新・再購読・購読解除はserver側常駐処理が自動管理する。新規購読（`reused: false`）が成立すると、server内の常駐SSE受信スレッドへ即座に反映指示を送る。反映は次にSSEフレーム（実メッセージだけでなくkeepaliveのコメントフレーム到達でも判定される）が届いた時点で完了し、既定設定では上限概ね60秒に収まる。この間に届いたメッセージはrelay側のsubscription outboxに保持されるため取りこぼされない。`identity`は呼び出し元セッションの識別子（cc-memory server再起動をまたいで安定。`scripts/relay/watch_inbox.sh`等に渡す値として使える）。
 **エラー処理**: `RELAY_BEARER_TOKEN`未設定・session_id未解決は明示エラー。relayエラー時はdeclaration fileを更新しない。rate limit（429）は専用コード`rate_limited`で返し、`retry_after`（秒、`Retry-After`ヘッダ未提供時は`null`）を構造化フィールドで付与する。呼び出し側はこの秒数だけ待ってからリトライすること。
 **関連**: 購読宣言（`relay_subscribe`）と受信（`relay_receive`）は分離しており、実際のメッセージ受信は`relay_receive`側が担う。
 

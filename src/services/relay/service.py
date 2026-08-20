@@ -323,6 +323,13 @@ def relay_subscribe(
     lease が有効な既存宣言はそのまま返し、失効・不明なら新規に subscribe して
     declaration file の subscription_id を差し替える。
 
+    labels が空配列のときだけ自 handle（`handle:<自分>`）単独購読に変換する
+    （直接メッセージのみ購読）。非空 labels は指定どおりそのまま購読し、自 handle
+    は混入させない。relay のマッチングは subset（AND）判定のため、handle を
+    混ぜると「publish 側にも同じ handle が載っていない限りマッチしない」条件が
+    購読全体に付いてしまう。宛先を自分に限定した複合条件を張りたい場合は、
+    呼び出し側が明示的に labels へ自分の handle label を含めればよい。
+
     cc-memory の予約 namespace（entity:/event:/topic:/activity:/decision:/log:/
     material:/tag:/habit:）は relay_publish（メッセージ配布）とは異なり許可する。
     entity 更新 → relay publish の labels（例: ["activity:1183", "event:updated"]）を
@@ -341,7 +348,11 @@ def relay_subscribe(
 
     decl = declarations.ensure(caller_session_id)
     handle = decl["handle"]
-    labels_final = _attach_handle(labels, handle)
+    # subset（AND）判定の下で label 追加は購読範囲を狭める操作であり、自 handle の
+    # 混入は「publish 側にも同じ handle が載っていない限りマッチしない」条件を
+    # 全購読に持ち込んでしまう。空 labels（＝直接メッセージのみ購読）のときだけ
+    # handle 単独購読に変換し、非空 labels は指定どおり購読する。
+    labels_final = [f"{_HANDLE_PREFIX}{handle}"] if not labels else list(dict.fromkeys(labels))
 
     existing = declarations.find_subscription(decl, labels_final)
     if existing and declarations.lease_active(existing):
@@ -367,6 +378,12 @@ def relay_subscribe(
         "labels": sorted(set(labels_final)),
         "lease_expires_at": created.get("lease_expires_at"),
         "created_at": declarations.now_iso(),
+        # このプロセスは handle 自動付与を行わない（上の labels_final 構築を
+        # 参照）ため、labels は呼び出し側が指定したとおり。自 handle が
+        # 含まれていてもそれは呼び出し側の意図的な指定であり、旧バグの
+        # 混入ではあり得ないことを declarations.normalize_all_declarations
+        # に伝えるマーカー（詳細は declarations.py の同定数の docstring）。
+        "handle_auto_attached": False,
     }
     declarations.upsert_subscription(decl, entry)
     declarations.save(decl)

@@ -295,14 +295,24 @@ def dispatch_frame(
 
 
 def _snapshot_subscription_ids(snapshot: list[dict]) -> list[str]:
+    """declaration snapshot から、lease が有効な subscription_id だけを集める。
+
+    relay 側の subscription 検証（`GET /events`）は all-or-nothing で、1 件でも
+    無効な id が混ざると接続全体が拒否される。lease が失効した entry は relay
+    側で 410/404 になるだけなので、ここで事前に除外して他の生きた subscription
+    を道連れにしない。
+    """
     ids: list[str] = []
     seen: set[str] = set()
     for decl in snapshot:
         for entry in decl.get("subscriptions", []):
             sub_id = entry.get("subscription_id")
-            if isinstance(sub_id, str) and sub_id and sub_id not in seen:
-                seen.add(sub_id)
-                ids.append(sub_id)
+            if not (isinstance(sub_id, str) and sub_id) or sub_id in seen:
+                continue
+            if not declarations.lease_active(entry):
+                continue
+            seen.add(sub_id)
+            ids.append(sub_id)
     return ids
 
 

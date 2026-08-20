@@ -256,6 +256,15 @@ def encode_query(text: str) -> Optional[list[float]]:
     return result[0]
 
 
+def encode_queries(texts: list[str]) -> Optional[list[list[float]]]:
+    """クエリ用embeddingをバッチ生成する。複数テキストを1回のHTTPリクエストにまとめる。"""
+    if not texts:
+        return []
+    if not _ensure_initialized():
+        return None
+    return _encode_batch(texts, "query")
+
+
 def generate_and_store_embedding(source_type: str, source_id: int, text: str) -> Optional[list[float]]:
     """search_indexからIDを取得してembeddingを生成・保存する。失敗してもraiseしない。
 

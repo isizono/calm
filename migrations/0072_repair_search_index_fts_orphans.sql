@@ -1,6 +1,6 @@
--- Migration 0070: search_index_ftsの孤立行・rowid衝突を全量リビルドで修復する
+-- Migration 0072: search_index_ftsの孤立行・rowid衝突を全量リビルドで修復する
 --
--- depends: 0069_add_asks_choices
+-- depends: 0071_add_import_provenance
 --
 -- 背景:
 --   trg_search_decisions_update / trg_search_logs_update / trg_search_materials_update

@@ -427,7 +427,7 @@ def _build_relay_inbox_section(conn, session_id: str | None = None, source: str 
     Claude Code CLIが起動する独立プロセスでMCPリクエストコンテキストを
     持たないため、この経路は常にNoneを返す。その場合はresolve_identity_by_
     ancestry()（祖先pidチェーンの一致でlauncherプロセスを特定する経路、
-    ps最大5回spawn）にフォールバックする。
+    ps最大2回spawn）にフォールバックする。
 
     Monitor監視指示はセッション作業中に届く新着を取りこぼさないための
     ものなので、既存の未読・inbox file有無に関わらずidentity解決できた

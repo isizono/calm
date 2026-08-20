@@ -1,7 +1,7 @@
-"""migration 0070_repair_search_index_fts_orphans のテスト
+"""migration 0072_repair_search_index_fts_orphans のテスト
 
-0070適用前に存在する search_index_fts の孤立rowid・rowid衝突による内容混在が、
-0070適用後に解消され、search_indexの現在の内容のみを正しく反映することを確認する。
+0072適用前に存在する search_index_fts の孤立rowid・rowid衝突による内容混在が、
+0072適用後に解消され、search_indexの現在の内容のみを正しく反映することを確認する。
 """
 import os
 import tempfile
@@ -16,8 +16,8 @@ from src.services.tag_service import _injected_tags
 
 
 @pytest.fixture
-def db_before_0070():
-    """0069までのmigrationを適用したDBを提供する。0070の挙動を分離検証するために使う。"""
+def db_before_0072():
+    """0071までのmigrationを適用したDBを提供する。0072の挙動を分離検証するために使う。"""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
         os.environ["DISCUSSION_DB_PATH"] = db_path
@@ -26,9 +26,9 @@ def db_before_0070():
         backend = _VecSQLiteBackend(parsed, default_migration_table)
         backend.init_database()
         all_migs = read_migrations(str(MIGRATIONS_DIR))
-        pre_0070 = MigrationList([m for m in all_migs if m.id < "0070"])
+        pre_0072 = MigrationList([m for m in all_migs if m.id < "0072"])
         with backend.lock():
-            backend.apply_migrations(pre_0070)
+            backend.apply_migrations(pre_0072)
 
         _injected_tags.clear()
         yield db_path
@@ -36,14 +36,14 @@ def db_before_0070():
             del os.environ["DISCUSSION_DB_PATH"]
 
 
-def _apply_migration_0070(db_path: str) -> None:
-    """db_path に対して migration 0070 のみを適用する。"""
+def _apply_migration_0072(db_path: str) -> None:
+    """db_path に対して migration 0072 のみを適用する。"""
     parsed = parse_uri(f"sqlite:///{db_path}")
     backend = _VecSQLiteBackend(parsed, default_migration_table)
     all_migs = read_migrations(str(MIGRATIONS_DIR))
-    only_0070 = MigrationList([m for m in all_migs if m.id.startswith("0070")])
+    only_0072 = MigrationList([m for m in all_migs if m.id.startswith("0072")])
     with backend.lock():
-        backend.apply_migrations(only_0070)
+        backend.apply_migrations(only_0072)
 
 
 def _orphan_fts_rowids(conn) -> set[int]:
@@ -56,10 +56,10 @@ def _orphan_fts_rowids(conn) -> set[int]:
 
 
 class TestOrphanRowsRemoved:
-    """search_indexに対応行の無いsearch_index_fts行が0070適用で消えることの確認"""
+    """search_indexに対応行の無いsearch_index_fts行が0072適用で消えることの確認"""
 
-    def test_orphan_fts_row_removed_after_0070(self, db_before_0070):
-        """0069時点のバグ(retract undoの再登録なし)を模擬して作った孤立FTS行が消える"""
+    def test_orphan_fts_row_removed_after_0072(self, db_before_0072):
+        """0071時点のバグ(retract undoの再登録なし)を模擬して作った孤立FTS行が消える"""
         conn = get_connection()
         try:
             cur = conn.execute(
@@ -85,7 +85,7 @@ class TestOrphanRowsRemoved:
         finally:
             conn.close()
 
-        _apply_migration_0070(db_before_0070)
+        _apply_migration_0072(db_before_0072)
 
         conn = get_connection()
         try:
@@ -101,14 +101,14 @@ class TestOrphanRowsRemoved:
 
 
 class TestRowidCollisionContentRepaired:
-    """rowid衝突で別エンティティの内容が混在していた行が0070適用で正しい内容のみになることの確認"""
+    """rowid衝突で別エンティティの内容が混在していた行が0072適用で正しい内容のみになることの確認"""
 
-    def test_stale_content_at_colliding_rowid_is_overwritten(self, db_before_0070):
+    def test_stale_content_at_colliding_rowid_is_overwritten(self, db_before_0072):
         """同一rowidに旧エンティティ(取り消し済み)の孤立トークンと新エンティティの
         正規トークンが両方積まれてしまった状態(バグのcollisionシナリオ。contentless
         FTS5は同一rowidへの複数回INSERTでトークンを追加accumulateするだけで
         上書きしないため、削除漏れの孤立行の上に正規insertが乗ると内容が混在する)を
-        直接構築し、0070適用後はそのrowidの内容が現在のsearch_index行(新エンティティ)
+        直接構築し、0072適用後はそのrowidの内容が現在のsearch_index行(新エンティティ)
         のものだけになることを確認する。"""
         conn = get_connection()
         try:
@@ -140,7 +140,7 @@ class TestRowidCollisionContentRepaired:
         finally:
             conn.close()
 
-        _apply_migration_0070(db_before_0070)
+        _apply_migration_0072(db_before_0072)
 
         conn = get_connection()
         try:
@@ -162,9 +162,9 @@ class TestRowidCollisionContentRepaired:
 
 
 class TestNonOrphanRowsPreserved:
-    """search_indexに対応行を持つsearch_index_fts行が0070適用で1件も消えないことの確認"""
+    """search_indexに対応行を持つsearch_index_fts行が0072適用で1件も消えないことの確認"""
 
-    def test_all_valid_entities_still_searchable_after_0070(self, db_before_0070):
+    def test_all_valid_entities_still_searchable_after_0072(self, db_before_0072):
         conn = get_connection()
         try:
             markers = []
@@ -179,7 +179,7 @@ class TestNonOrphanRowsPreserved:
         finally:
             conn.close()
 
-        _apply_migration_0070(db_before_0070)
+        _apply_migration_0072(db_before_0072)
 
         conn = get_connection()
         try:
@@ -188,6 +188,6 @@ class TestNonOrphanRowsPreserved:
                     "SELECT rowid FROM search_index_fts WHERE search_index_fts MATCH ?",
                     (marker,),
                 ).fetchall()
-                assert len(hit) == 1, f"{marker} は0070適用後もちょうど1件ヒットするはず"
+                assert len(hit) == 1, f"{marker} は0072適用後もちょうど1件ヒットするはず"
         finally:
             conn.close()
