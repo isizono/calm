@@ -32,16 +32,7 @@ if str(_project_root) not in sys.path:
 from hooks.hook_state import HookState
 from hooks.signal_capture import try_capture_signal
 from src import config
-
-
-def _make_hook_output(message: str) -> dict:
-    """UserPromptSubmit hookのsystem-reminder注入用JSON構造を返す"""
-    return {
-        "hookSpecificOutput": {
-            "hookEventName": "UserPromptSubmit",
-            "additionalContext": message,
-        }
-    }
+from src.harness import ClaudeCodeHarness
 
 
 _FOLLOW_UP_NUDGE_MESSAGE = (
@@ -199,22 +190,19 @@ def _build_relay_turn_nudge(state: HookState) -> str | None:
 
 
 def main() -> None:
+    harness = ClaudeCodeHarness(hook_event_name="UserPromptSubmit")
     try:
         # 環境変数によるテスト用オーバーライド
         if os.environ.get("HOOK_STATE_DIR"):
             HookState.BASE_DIR = Path(os.environ["HOOK_STATE_DIR"])
 
-        # 1. stdin読み込み
-        raw = sys.stdin.read()
-        if not raw.strip():
-            print("{}")
-            return
-        data = json.loads(raw)
+        # 1. hook入力読み込み
+        data = harness.read_hook_input()
         session_id = data.get("session_id", "")
 
-        # 2. session_idが空/null → 空JSON出力
+        # 2. session_idが空/null → 空応答
         if not session_id:
-            print("{}")
+            harness.emit_empty()
             return
 
         # 3. events.jsonl全読み
@@ -239,24 +227,24 @@ def main() -> None:
 
             e["consumed"] = True
             _rewrite_events(state, events)
-            print(json.dumps(_make_hook_output(message), ensure_ascii=False))
+            harness.emit_additional_context(message)
             return
 
         # 5. relay session-aware nudge（CALM_RELAY_SESSION_AWARE=1のときのみ、
         # 既存nudgeが非該当だった場合のみ判定）
         relay_message = _build_relay_turn_nudge(state)
         if relay_message:
-            print(json.dumps(_make_hook_output(relay_message), ensure_ascii=False))
+            harness.emit_additional_context(relay_message)
             return
 
         # 6. 何もなし
-        print("{}")
+        harness.emit_empty()
 
     except Exception as e:
-        # フェイルオープン: 例外時は空JSON + stderrログ
+        # フェイルオープン: 例外時は空応答 + stderrログ
         print(f"user_prompt_submit_hook.py error: {e}", file=sys.stderr)
         try_capture_signal(kind="machine_error", source="hook:user_prompt_submit", summary=str(e)[:200])
-        print("{}")
+        harness.emit_empty()
 
 
 def _rewrite_events(state: HookState, events: list[dict]) -> None:
