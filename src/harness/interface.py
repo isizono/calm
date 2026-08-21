@@ -1,11 +1,11 @@
-"""Harness抽象化インターフェース（issue #605）。
+"""Harness抽象化インターフェース。
 
 cc-memoryの各hookは、これまでClaude Code固有のhookプロトコル
 （stdinからのJSON入力、`hookSpecificOutput`各種フィールドへの出力）・
 transcriptファイル形式（フラットな`type`/`message.content`のJSONL）・
-プロセス識別方式（祖先pid探索）に直接依存していた。Codex CLI対応
-（#606以降）に先立ち、ハーネス依存箇所を本インターフェース越しの
-呼び出しに置き換えられるよう、対象操作を3系統に整理して定義する。
+プロセス識別方式（祖先pid探索）に直接依存していた。Codex CLI対応に
+先立ち、ハーネス依存箇所を本インターフェース越しの呼び出しに
+置き換えられるよう、対象操作を3系統に整理して定義する。
 
 1. **hook入出力**: `read_hook_input` と `emit_*` 系。ハーネスのhook
    プロトコル（入力の受け取り方・判定結果の返し方）を吸収する
@@ -19,9 +19,9 @@ transcriptファイル形式（フラットな`type`/`message.content`のJSONL�
    想定し、戻り値の型だけを揃える
 
 Codex側に対応する仕組みが無い操作（`updatedToolOutput`相当の直接
-書き換え = #615、`displayContent`相当の発話後処理 = #617）は、例外を
-投げるのではなく戻り値 `False` で「未サポート」を表現する。呼び出し側は
-戻り値を見て代替方針（何もしない・別経路で通知する等）に分岐できる。
+書き換え、`displayContent`相当の発話後処理）は、例外を投げるのではなく
+戻り値 `False` で「未サポート」を表現する。呼び出し側は戻り値を見て
+代替方針（何もしない・別経路で通知する等）に分岐できる。
 
 ## 既存hook・identity.pyと本インターフェースの対応表
 
@@ -41,17 +41,17 @@ Codex側に対応する仕組みが無い操作（`updatedToolOutput`相当の�
 | sanitize_backfill_hook.py | stdin JSON (session_id/transcript_path/cwd) | read_hook_input |
 | | transcript全読み＋atomic書き戻し | read_transcript_entries / rewrite_transcript_entry |
 | sanitize_tool_result_hook.py | stdin JSON (tool_name/tool_response/cwd) | read_hook_input |
-| | hookSpecificOutput.updatedToolOutput | emit_updated_tool_output（未サポート系統: #615） |
+| | hookSpecificOutput.updatedToolOutput | emit_updated_tool_output（未サポート系統） |
 | relay_monitor_watch_hook.py | stdin JSON (session_id/tool_name/tool_input/tool_response) | read_hook_input |
 | | 空JSON `{}` 出力 | emit_empty |
 | message_display_id_titles.py | stdin JSON (delta/assistant_message) | read_hook_input |
-| | hookSpecificOutput.displayContent | emit_display_content（未サポート系統: #617） |
+| | hookSpecificOutput.displayContent | emit_display_content（未サポート系統） |
 | hook_transcript.py | フラット`type`/`message.content`のJSONL解析 | read_transcript_entries(_from_offset) + TranscriptEntry |
 | src/services/relay/identity.py | HTTPヘッダ / 祖先pid探索によるidentity解決 | resolve_session_identity |
 
-この時点（#605）ではインターフェース定義とClaude Code実装
+現時点ではインターフェース定義とClaude Code実装
 （claude_code.ClaudeCodeHarness）の追加のみを行い、既存hookの実装本体は
-変更しない。置き換えは後続issue（#606）で行う。
+変更していない。置き換えは後続で行う。
 """
 from __future__ import annotations
 
@@ -160,7 +160,7 @@ class Harness(ABC):
 
         Returns:
             出力した場合True。ハーネスに対応機構が無い場合は何も出力
-            せずFalse（未サポート。Codex側の代替方針は#615で扱う）。
+            せずFalse（未サポート。Codex側の代替方針は呼び出し側が決める）。
         """
 
     @abstractmethod
@@ -173,7 +173,7 @@ class Harness(ABC):
 
         Returns:
             出力した場合True。ハーネスに対応機構が無い場合は何も出力
-            せずFalse（未サポート。Codex側の代替方針は#617で扱う）。
+            せずFalse（未サポート。Codex側の代替方針は呼び出し側が決める）。
         """
 
     # ------------------------------------------------------------------

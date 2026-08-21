@@ -1,11 +1,9 @@
-"""HarnessインターフェースのClaude Code実装（issue #605）。
+"""HarnessインターフェースのClaude Code実装。
 
 Claude Codeのhookプロトコル（stdin JSON入力・stdoutへの
 `hookSpecificOutput` JSON出力）、transcriptファイル形式（フラットな
 `type`/`message.content` のJSONL）、identity解決（HTTPヘッダ / 祖先pid
 探索。src/services/relay/identity.py）をHarnessインターフェースに載せる。
-
-この時点では既存hookからはまだ使われない（置き換えは#606）。
 """
 from __future__ import annotations
 
