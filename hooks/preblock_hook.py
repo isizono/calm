@@ -25,6 +25,7 @@ if str(_PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(_PLUGIN_ROOT))
 
 from src.env_compat import env_get  # noqa: E402
+from src.harness import ClaudeCodeHarness  # noqa: E402
 from src.services.internal_id_patterns import (  # noqa: E402
     RAW_CITE_CODE_PATTERN,
     RAW_CITE_FULLWORD_PATTERN,
@@ -217,36 +218,36 @@ def _log_event(record: dict) -> None:
 
 
 def main() -> None:
+    harness = ClaudeCodeHarness(hook_event_name="PreToolUse")
     try:
-        raw = sys.stdin.read()
-        if not raw.strip():
-            print("{}")
+        event = harness.read_hook_input()
+        if not event:
+            harness.emit_empty()
             return
 
-        event = json.loads(raw)
         tool_name = event.get("tool_name") or ""
         tool_input = event.get("tool_input") or {}
 
         # opt-out: 緊急時の脱出経路
         if env_get("CALM_LEAK_GUARD", "").lower() == "off":
-            print("{}")
+            harness.emit_empty()
             return
 
         # allowlist: scan 不要 tool は素通し
         # cwd 判定より先に行うことで、Read/Grep/Glob 等の頻出 tool で
         # 毎回 pyproject.toml を読み直す I/O を回避する。
         if _is_allowed(tool_name):
-            print("{}")
+            harness.emit_empty()
             return
 
         # cwd 判定: cc-memory project 内のみ有効
         if not _is_in_cc_memory_project():
-            print("{}")
+            harness.emit_empty()
             return
 
         matches = _scan_tool_input(tool_input)
         if not matches:
-            print("{}")
+            harness.emit_empty()
             return
 
         matched_literals = [m["match"] for m in matches]
@@ -273,19 +274,12 @@ def main() -> None:
             }
         )
 
-        output = {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": reason,
-            }
-        }
-        print(json.dumps(output, ensure_ascii=False))
+        harness.emit_permission_decision("deny", reason)
 
     except Exception as e:
         # hook 自体の不具合で全 tool を止めないため、例外時は素通し + stderr 通知
         print(f"preblock_hook.py error: {e}", file=sys.stderr)
-        print("{}")
+        harness.emit_empty()
 
 
 if __name__ == "__main__":

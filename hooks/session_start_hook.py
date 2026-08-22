@@ -22,6 +22,7 @@ if str(_project_root) not in sys.path:
 
 from src import config
 from src.db import get_connection, get_db_path
+from src.harness import ClaudeCodeHarness
 from src.services.activity_service import (
     get_active_domains_with_conn,
     get_active_activities_by_tag_with_conn,
@@ -555,43 +556,34 @@ def _build_session_context(
 
 
 def main() -> None:
+    harness = ClaudeCodeHarness(hook_event_name="SessionStart")
     try:
-        raw = sys.stdin.read()
         session_id: str | None = None
         source: str | None = None
         transcript_path: str | None = None
-        if raw:
-            try:
-                payload = json.loads(raw)
-                if isinstance(payload, dict):
-                    sid = payload.get("session_id")
-                    if isinstance(sid, str) and sid:
-                        session_id = sid
-                    src = payload.get("source")
-                    if isinstance(src, str) and src:
-                        source = src
-                    tp = payload.get("transcript_path")
-                    if isinstance(tp, str) and tp:
-                        transcript_path = tp
-            except json.JSONDecodeError:
-                # session_id/source/transcript_path 取得失敗時は従来挙動（self 照合なし・
-                # compact判定なし・transcript path注入なし）にフォールバック。初期値 None
-                # のまま継続するため再代入不要
-                pass
+        try:
+            payload = harness.read_hook_input()
+        except json.JSONDecodeError:
+            # session_id/source/transcript_path 取得失敗時は従来挙動（self 照合なし・
+            # compact判定なし・transcript path注入なし）にフォールバック。初期値 None
+            # のまま継続するため再代入不要
+            payload = {}
+        sid = payload.get("session_id")
+        if isinstance(sid, str) and sid:
+            session_id = sid
+        src = payload.get("source")
+        if isinstance(src, str) and src:
+            source = src
+        tp = payload.get("transcript_path")
+        if isinstance(tp, str) and tp:
+            transcript_path = tp
 
         context = _build_session_context(session_id, source, transcript_path)
-
-        output = {
-            "hookSpecificOutput": {
-                "hookEventName": "SessionStart",
-                "additionalContext": context,
-            }
-        }
-        print(json.dumps(output, ensure_ascii=False))
+        harness.emit_additional_context(context)
     except Exception as e:
         print(f"session_start_hook.py error: {e}", file=sys.stderr)
         try_capture_signal(kind="machine_error", source="hook:session_start", summary=str(e)[:200])
-        print("{}")
+        harness.emit_empty()
 
 
 if __name__ == "__main__":

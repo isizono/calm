@@ -9,7 +9,6 @@
 6. check-in判定（e:toolでcheck_in/add_activityが1件でもあるか、猶予あり）
 7. nudge判定 + 状態更新 → approve
 """
-import json
 import os
 import sys
 import traceback
@@ -30,6 +29,7 @@ from hooks.hook_transcript import (
     read_transcript_from_offset,
 )
 from hooks.signal_capture import try_capture_signal
+from src.harness import ClaudeCodeHarness
 
 _BLOCK_LIMIT = 1
 # ユーザー発言がちょうどこのturn数に達した瞬間にcheck-in強制blockを1回発火する
@@ -68,27 +68,20 @@ def _is_orch_managed_activity(activity_id) -> bool:
         return False
 
 
-def _output(decision: str, reason: str = "") -> None:
-    result = {"decision": decision}
-    if reason:
-        result["reason"] = reason
-    print(json.dumps(result, ensure_ascii=False))
-
-
 def main() -> None:
+    harness = ClaudeCodeHarness()
     try:
         # 環境変数によるテスト用オーバーライド
         if os.environ.get("HOOK_STATE_DIR"):
             HookState.BASE_DIR = Path(os.environ["HOOK_STATE_DIR"])
 
-        # 1. stdin読み込み
-        raw = sys.stdin.read()
-        data = json.loads(raw)
+        # 1. hook入力読み込み
+        data = harness.read_hook_input()
         transcript_path = data.get("transcript_path", "")
         session_id = data.get("session_id", "")
 
         if not session_id:
-            _output("approve", "session_id is empty")
+            harness.emit_approve("session_id is empty")
             return
 
         state = HookState(session_id)
@@ -96,7 +89,7 @@ def main() -> None:
         # 2. ブロック上限チェック
         if state.get_block_count() >= _BLOCK_LIMIT:
             state.reset_block_count()
-            _output("approve", f"ブロック上限（{_BLOCK_LIMIT}回）に達しました。強制的に通します。")
+            harness.emit_approve(f"ブロック上限（{_BLOCK_LIMIT}回）に達しました。強制的に通します。")
             return
 
         # 3. transcript差分読み → イベント抽出 → events.jsonl追記
@@ -124,7 +117,7 @@ def main() -> None:
         in_skill_span = _is_in_skill_span(all_events, current_turn)
         if in_skill_span:
             state.reset_block_count()
-            _output("approve", "Skill Span中のためチェックをスキップします。")
+            harness.emit_approve("Skill Span中のためチェックをスキップします。")
             _safe_post_approve(state, all_events, transcript_path, session_id=session_id)
             return
 
@@ -147,16 +140,15 @@ def main() -> None:
             if current_turn == _CHECKIN_DEFER_TURNS:
                 # one-shot block: 正確にdefer turnで1回だけblock
                 state.increment_block_count()
-                _output(
-                    "block",
+                harness.emit_block(
                     "アクティビティにcheck-inしてください。"
-                    "該当するものがなければadd_activityで作成してください。",
+                    "該当するものがなければadd_activityで作成してください。"
                 )
                 return
 
         # 7. nudge判定 + 状態更新 + approve
         state.reset_block_count()
-        _output("approve")
+        harness.emit_approve()
         _safe_post_approve(
             state, all_events, transcript_path, current_turn,
             run_nudges=not suppress_personal_flow,
@@ -167,7 +159,7 @@ def main() -> None:
         # フェイルオープン: 例外時はapprove
         print(f"stop_hook.py error: {e}", file=sys.stderr)
         try_capture_signal(kind="machine_error", source="hook:stop", summary=str(e)[:200])
-        _output("approve", f"stop_hook.py internal error: {e}")
+        harness.emit_approve(f"stop_hook.py internal error: {e}")
 
 
 def _is_in_skill_span(events: list[dict], current_turn: int) -> bool:
