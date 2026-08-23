@@ -91,6 +91,44 @@ class TestRollingBugRegression:
             wd.stop()
 
 
+class TestShutdownIsOneShot:
+    def test_shutdown_callback_fires_only_once_and_loop_stops(self, tmp_path):
+        """陳腐化確定後はループが自ら停止し、shutdown callbackが複数回呼ばれない
+
+        stop()を明示的に呼ばずに放置した場合、次のcheck_interval経過後も
+        コードが元に戻っていなければ同じベースライン比較で再び確定に達し、
+        shutdown_callback（実プロダクションではSIGINT送信）を繰り返し
+        呼んでしまう回帰を防ぐ。短いcheck_interval運用で最初のgraceful
+        shutdownが完了しきる前に2回目のシャットダウン試行が割り込む
+        リスクへの回帰ガード。
+        """
+        target = tmp_path / "a.py"
+        target.write_text("original")
+
+        call_count = {"n": 0}
+        first_call = threading.Event()
+
+        def on_shutdown():
+            call_count["n"] += 1
+            first_call.set()
+
+        wd = StalenessWatchdog(
+            tmp_path, check_interval_sec=0.05, debounce_sec=0.05,
+            shutdown_callback=on_shutdown,
+        )
+        wd.start()
+        try:
+            target.write_text("changed")
+            assert first_call.wait(timeout=3) is True
+            # stop()を呼ばずに複数チェックサイクル分待つ。ループが自律停止
+            # していなければ、この間に再度shutdown_callbackが呼ばれるはず。
+            time.sleep(1)
+            assert call_count["n"] == 1
+            assert wd._stop_event.is_set() is True
+        finally:
+            wd.stop()
+
+
 class TestDebounceRevertNoShutdown:
     def test_reverted_before_recheck_does_not_trigger_shutdown(self, tmp_path):
         """debounce recheckの前に元の内容へ戻す(=偽陽性) → shutdown callbackが呼ばれない"""
@@ -213,6 +251,30 @@ class TestCheckIntervalZeroDisablesThread:
         wd = StalenessWatchdog(tmp_path, check_interval_sec=0)
         wd.start()
         assert wd._thread is None
+
+    def test_check_interval_zero_skips_baseline_hash_computation(self, tmp_path):
+        """check_interval_sec=0の場合、無効化判定が_compute_hash()より先に行われ、
+
+        プロジェクトルート全体を読み切る重い処理を無効化ケースでも
+        同期実行してしまうことがない（結果が使われないbaseline計算の無駄打ち
+        の回帰ガード）。
+        """
+        (tmp_path / "a.py").write_text("x")
+
+        wd = StalenessWatchdog(tmp_path, check_interval_sec=0)
+
+        call_count = {"n": 0}
+        original_compute = wd._compute_hash
+
+        def counting_compute():
+            call_count["n"] += 1
+            return original_compute()
+
+        wd._compute_hash = counting_compute
+        wd.start()
+
+        assert call_count["n"] == 0
+        assert wd._baseline_hash is None
 
 
 class TestReadCheckIntervalSec:

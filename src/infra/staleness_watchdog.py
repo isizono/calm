@@ -159,15 +159,17 @@ class StalenessWatchdog:
         """ベースラインハッシュを計算し、チェックループスレッドを起動する。
 
         ``check_interval_sec<=0``（env もしくは明示引数のいずれか経由）の
-        場合は無効化する（スレッドを起動しない）。
+        場合は無効化する（スレッドを起動しない）。この判定は ``_compute_hash()``
+        より前に行う — プロジェクトルート全体を読み切る重い処理を、結果を
+        一切使わない無効化ケースでも同期実行してしまうことを避けるため。
         """
-        self._baseline_hash = self._compute_hash()
         if self._check_interval <= 0:
             logger.info(
                 "Staleness watchdog disabled (check_interval_sec<=0), "
                 "skipping thread start"
             )
             return
+        self._baseline_hash = self._compute_hash()
         self._thread = threading.Thread(
             target=self._check_loop,
             daemon=True,
@@ -223,6 +225,11 @@ class StalenessWatchdog:
             return
 
         logger.info("staleness confirmed, triggering shutdown")
+        # shutdown確定はワンショット。ここで止めないと、次のcheck_interval経過後も
+        # コードが元に戻っていない限り同じベースライン比較で再び確定に達し、
+        # shutdown_callback（SIGINT送信）を繰り返し呼んでしまう
+        # （SessionManager._grace_timer_workerと同じワンショット設計に揃える）。
+        self._stop_event.set()
         if self._shutdown_callback:
             self._shutdown_callback()
 
