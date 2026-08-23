@@ -2082,6 +2082,8 @@ def add_ask(
 ) -> dict:
     """人間の判断を待つ問いを1件積む（答え待ちの間、blocksで指定したactivityを止める）。
 
+    question/contextの構成は`ask-compose` skillを必ず経由すること。
+
     同じ問い（正規化後questionのfingerprint一致）が答え待ち（open）で既にあれば
     新規行を作らず出現回数を+1し、blocks/要求元セッションはUNIONで追記、
     context/最終出現時刻は今回の値で上書きする。answered/promoted/dismissed/withdrawnの
