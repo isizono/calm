@@ -2905,6 +2905,27 @@ if __name__ == "__main__":
         _session_manager.set_shutdown_callback(_shutdown_server)
         _session_manager.start_watchdog()
 
+        # ファイルシステム陳腐化検知ウォッチドッグ。複数セッションが常時接続し
+        # 続ける運用では上記のセッション数ベースのウォッチドッグ（アクティブ0件
+        # → 猶予期間 → shutdown）が実質発火せず、プラグインアップデート後も
+        # 起動時に読み込んだ古いコードで動き続けてしまう。session_managerとは
+        # 独立したスレッド・独立した判定として動かす（状態機械は統合しない）。
+        # ユーザーが CALM_AUTO_SHUTDOWN_SEC=0 で auto-shutdown を明示的に
+        # 全無効化した場合は、この自死機構も起動しない。
+        from src.infra.staleness_watchdog import StalenessWatchdog
+
+        if _session_manager.is_auto_shutdown_disabled:
+            logger.info(
+                "Auto-shutdown disabled (CALM_AUTO_SHUTDOWN_SEC=0), "
+                "skipping staleness watchdog start"
+            )
+        else:
+            _staleness_watchdog = StalenessWatchdog(
+                project_root=_fixed_root,
+                shutdown_callback=_shutdown_server,
+            )
+            _staleness_watchdog.start()
+
         # relay v2 常駐 3 系統 thread（B-1 intake / B-2 lease loop / B-3 outbox dispatcher）。
         # RELAY_BEARER_TOKEN 未設定なら起動をスキップして log を 1 行残す（v1 が並走している
         # 移行期間の環境で server 起動を壊さないための静かな縮退。tool 側は未設定を
