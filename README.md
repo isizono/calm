@@ -92,6 +92,7 @@ claude plugin install calm
 | `/scribe` | CALMの記録からドキュメントを生成します |
 | `/db-recovery` | DBデータの異常減少を検知した際に、スナップショットから復旧します |
 | `/restart` | CALMのローカルMCPサーバー・embeddingサーバーを再起動します |
+| `/ask-compose` | `add_ask`のquestion/contextをテンプレートに沿って構成するようガイドします |
 | `/ask-distill` | 繰り返し起票されている同型のaskをまとめてメタaskを起票します |
 | `/memory-export` | 記録を他インスタンスへ渡すexportバンドルを作成します |
 | `/memory-import` | 他インスタンスのexportバンドルを衝突裁定を経て取り込みます |
