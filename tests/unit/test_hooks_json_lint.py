@@ -19,6 +19,11 @@ import pytest
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _HOOKS_DIR = _PROJECT_ROOT / "hooks"
 _HOOKS_JSON_PATH = _HOOKS_DIR / "hooks.json"
+_CODEX_HOOKS_JSON_PATH = _PROJECT_ROOT / ".codex" / "hooks.json"
+
+# Codex CLIのhookイベント一覧（codex-rs/hooks/src/lib.rs HOOK_EVENT_NAMES）に
+# 存在しないイベント。Codex側登録（.codex/hooks.json）の期待値導出から除外する。
+_CODEX_UNSUPPORTED_EVENTS = {"MessageDisplay"}
 
 # hooks/ 配下のスクリプトが自身の担当イベントを宣言する規約:
 # モジュール docstring 冒頭が `"<Event> hook: ..."` の形。
@@ -30,9 +35,9 @@ def _load_hooks_json() -> dict:
     return json.loads(_HOOKS_JSON_PATH.read_text(encoding="utf-8"))
 
 
-def _registered_scripts_by_event() -> dict[str, list[str]]:
+def _registered_scripts_by_event(hooks_json_path: Path = _HOOKS_JSON_PATH) -> dict[str, list[str]]:
     """hooks.json の各イベントに登録されているスクリプトのファイル名一覧を返す。"""
-    data = _load_hooks_json()
+    data = json.loads(hooks_json_path.read_text(encoding="utf-8"))
     result: dict[str, list[str]] = {}
     for event_name, matcher_blocks in data.get("hooks", {}).items():
         scripts: list[str] = []
@@ -96,6 +101,41 @@ def test_declared_event_script_is_registered_in_hooks_json(script_path: Path):
     event = _declared_event(script_path)
     registered = _registered_scripts_by_event()
     assert script_path.name in registered.get(event, [])
+
+
+class TestCodexHooksJsonConsistency:
+    """.codex/hooks.json (Codex CLI向けのプロジェクト層hook登録) の整合性lint。
+
+    Codex側の登録はClaude Code側 (hooks/hooks.json) と同じ配線契約であり、
+    「スクリプトは正しいが未登録で発火しない」という同種の配線バグを持ちうる。
+    期待値はClaude Code側の登録内容からCodexに存在しないイベントを除外して
+    機械的に導出し、両ファイルの登録が乖離したら検知する。
+    """
+
+    def test_all_referenced_scripts_exist_on_disk(self):
+        registered = _registered_scripts_by_event(_CODEX_HOOKS_JSON_PATH)
+        missing = [
+            script
+            for scripts in registered.values()
+            for script in scripts
+            if not (_HOOKS_DIR / script).exists()
+        ]
+        assert missing == []
+
+    def test_registration_matches_claude_code_minus_unsupported_events(self):
+        """イベントごとの登録スクリプト列 (順序含む) がClaude Code側と一致する。
+
+        順序も比較対象に含む: SessionStartはhook_state.py clearが先頭で
+        走らないと、前セッションのstateを引き継いだまま各hookが動く。
+        """
+        claude = _registered_scripts_by_event()
+        codex = _registered_scripts_by_event(_CODEX_HOOKS_JSON_PATH)
+        expected = {
+            event: scripts
+            for event, scripts in claude.items()
+            if event not in _CODEX_UNSUPPORTED_EVENTS
+        }
+        assert codex == expected
 
 
 @pytest.mark.parametrize(
