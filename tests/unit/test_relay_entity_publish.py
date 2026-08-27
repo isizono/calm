@@ -180,7 +180,7 @@ class TestCreatedEventOnRepresentativeWritePaths:
 
     def test_topic_has_no_one_hop_parent_labels(self, temp_db, disable_embedding):
         """topicは階層の最上位で親を持たないため、自身に属する子の数に関わらずlabelsは
-        自身のtags + entity:/event:のみ（子をparent-labelとして巻き込まない）。"""
+        自身のtags + entity:/event:/self labelのみ（子をparent-labelとして巻き込まない）。"""
         topic = add_topic(title="t", description="d", tags=DEFAULT_TAGS)
         add_decisions([
             {"topic_id": topic["topic_id"], "decision": f"d{i}", "reason": "r"}
@@ -188,11 +188,18 @@ class TestCreatedEventOnRepresentativeWritePaths:
         ])
         rows = _rows_for("topic", topic["topic_id"])
         assert len(rows) == 1
-        assert set(rows[0]["labels"]) == {"entity:topic", "event:created", "domain:test"}
+        assert set(rows[0]["labels"]) == {
+            "entity:topic", "event:created", "domain:test", f"topic:{topic['topic_id']}",
+        }
 
 
-class TestAskSelfLabel:
-    """askはentity write時、自身を指すself label（ask:{id}）が付与される。"""
+class TestSelfLabel:
+    """entity writeは全種別で自身を指すself label（<type>:<id>）が付与される。
+
+    self labelが無いと、個体label購読が「その entity 自身の遷移」にマッチせず
+    （1hop親label経由での「子の書き込み」にしかマッチしない非対称があった）、
+    docstringが約束する個体単位購読が成立しなかった。
+    """
 
     def test_add_ask_publishes_created_with_self_label(self, temp_db, disable_embedding):
         activity = add_activity(
@@ -205,7 +212,40 @@ class TestAskSelfLabel:
         assert "event:created" in rows[0]["labels"]
         assert f"ask:{result['id']}" in rows[0]["labels"]
 
-    def test_non_ask_entity_types_do_not_get_ask_self_label(self, temp_db, disable_embedding):
+    def test_add_ask_created_event_has_no_own_tags_yet(self, temp_db, disable_embedding):
+        """askのevent:createdはask_tagsへのタグ紐付け（add_askが最初のcommit後に別connで
+        行う）より前にcommitされるため、own_tagsは常に空。domain単位で「新規ask作成」
+        だけを購読することはできない（docstringに明記済みの既知の制約）。own_tagsが
+        載るのはevent:updated以降（test_ask_own_tags_are_included_on_updated_event）。
+        """
+        activity = add_activity(
+            title="a", description="d", tags=DEFAULT_TAGS, check_in=False
+        )
+        result = ak.add_ask("質問", tags=["domain:test"], blocks=[activity["activity_id"]])
+        rows = _rows_for("ask", result["id"])
+        assert "domain:test" not in rows[0]["labels"]
+
+    def test_ask_own_tags_are_included_on_updated_event(self, temp_db, disable_embedding):
+        """askのown_tagsは_TAG_JUNCTIONにaskが登録されたことでlabelsに載るようになる。
+
+        createdイベントのpublishはask_tagsへのタグ紐付け（add_askがタグ解決commit後
+        に行う）より前にcommitされるため、created時点ではown_tagsはまだ空。タグ紐付け
+        後に発生するevent:updated（例: answer_ask）からown_tagsが載る。
+        """
+        activity = add_activity(
+            title="a", description="d", tags=DEFAULT_TAGS, check_in=False
+        )
+        ask = ak.add_ask("質問", tags=["domain:test"], blocks=[activity["activity_id"]])
+        ak.answer_ask(ask["id"], "回答")
+        rows = _rows_for("ask", ask["id"])
+        updated_rows = [r for r in rows if "event:updated" in r["labels"]]
+        assert updated_rows
+        assert "domain:test" in updated_rows[-1]["labels"]
+        assert f"ask:{ask['id']}" in updated_rows[-1]["labels"]
+
+    def test_non_ask_entity_types_get_their_own_self_label_not_ask(
+        self, temp_db, disable_embedding
+    ):
         topic = add_topic(title="t", description="d", tags=DEFAULT_TAGS)
         material = add_material(title="m", content="c", tags=DEFAULT_TAGS, source="test")
         activity = add_activity(
@@ -218,9 +258,27 @@ class TestAskSelfLabel:
         ):
             rows = _rows_for(ref_type, ref_id)
             assert rows
+            assert f"{ref_type}:{ref_id}" in rows[0]["labels"]
             assert not any(
                 label.startswith("ask:") for row in rows for label in row["labels"]
             )
+
+    def test_habit_self_label(self, temp_db):
+        """habitはtag junctionを持たない（own_tags無し）が、self labelは他種別と同様に付く。"""
+        result = add_habit("振る舞い")
+        rows = _rows_for("habit", result["habit_id"])
+        assert f"habit:{result['habit_id']}" in rows[0]["labels"]
+
+    def test_tag_self_label(self, temp_db, disable_embedding):
+        """tagのcreatedイベント自体にも、自身を指すself label（tag:{id}）が付く。"""
+        add_topic(title="t", description="d", tags=["glossary:brand-new-tag-abc"])
+        rows = [
+            r for r in _outbox_rows()
+            if r["ref_type"] == "tag" and "event:created" in r["labels"]
+        ]
+        assert rows
+        tag_row = rows[0]
+        assert f"tag:{tag_row['ref_id']}" in tag_row["labels"]
 
 
 class TestUpdatedEventOnRepresentativeWritePaths:
@@ -416,6 +474,33 @@ class TestRelationPublish:
         new_rows = _rows_for("decision", new_id)
         assert f"decision:{old_id}" not in new_rows[-1]["labels"]
 
+    def test_add_relation_to_retracted_material_does_not_bump_or_publish(self, temp_db, disable_embedding):
+        """retract済みmaterialをrelation対象にしても、relation自体は張られるが、
+        material側のupdated_at bump/event:updated publishはスキップされる。"""
+        material = add_material(title="m", content="c", tags=DEFAULT_TAGS, source="test")
+        material_id = material["material_id"]
+        activity = add_activity(title="a", description="d", tags=DEFAULT_TAGS, check_in=False)
+        retract("material", [material_id])
+
+        before_material = len(_rows_for("material", material_id))
+
+        result = add_relation(
+            "activity", activity["activity_id"],
+            [{"type": "material", "ids": [material_id]}],
+        )
+        assert result["added"] == 1
+        assert len(_rows_for("material", material_id)) == before_material
+
+        conn = get_connection()
+        try:
+            si_row = conn.execute(
+                "SELECT id FROM search_index WHERE source_type='material' AND source_id=?",
+                (material_id,),
+            ).fetchone()
+            assert si_row is None, "retract済みmaterialへのrelationでsearch_indexが再生成されてはいけない"
+        finally:
+            conn.close()
+
     def test_belongs_to_relation_adds_parent_label(self, temp_db, disable_embedding):
         """親帰属パターン（子→topic）はrelation_type='related'指定でも内部でbelongs_toに
         自動格上げされ、この場合のみparent labelが付く。"""
@@ -471,6 +556,46 @@ class TestPinPublish:
         assert result["removed"] == 0
         after = len(_rows_for("material", material["material_id"]))
         assert after == before
+
+    def test_add_pin_to_retracted_material_does_not_bump_or_publish(self, temp_db, disable_embedding):
+        """retract済みmaterialをpin対象にしても、pin自体は張られるが、material側の
+        updated_at bump/event:updated publishはスキップされる（activity側は通常通り
+        publishされる）。retract済み行へのUPDATEはsearch_index/search_index_ftsを
+        物理削除済みの行にUPDATEトリガーを発火させFTS5孤立行を生む原因になるため。"""
+        material = add_material(title="m", content="c", tags=DEFAULT_TAGS, source="test")
+        material_id = material["material_id"]
+        activity = add_activity(title="a", description="d", tags=DEFAULT_TAGS, check_in=False)
+        retract("material", [material_id])
+
+        before_material = len(_rows_for("material", material_id))
+        before_activity = len(_rows_for("activity", activity["activity_id"]))
+
+        result = add_pin("activity", activity["activity_id"], "material", material_id)
+        assert "error" not in result
+
+        # material側はbump/publishされない(retract済みのためno-op)
+        assert len(_rows_for("material", material_id)) == before_material
+        # activity側は通常通りpublishされる
+        assert len(_rows_for("activity", activity["activity_id"])) == before_activity + 1
+
+        # pin自体は張られている
+        conn = get_connection()
+        try:
+            pin_row = conn.execute(
+                "SELECT * FROM pins WHERE source_type='activity' AND source_id=? "
+                "AND target_type='material' AND target_id=?",
+                (activity["activity_id"], material_id),
+            ).fetchone()
+            assert pin_row is not None
+
+            # search_indexに孤立行が生まれていないことも確認する
+            si_row = conn.execute(
+                "SELECT id FROM search_index WHERE source_type='material' AND source_id=?",
+                (material_id,),
+            ).fetchone()
+            assert si_row is None, "retract済みmaterialへのpinでsearch_indexが再生成されてはいけない"
+        finally:
+            conn.close()
 
 
 class TestAddActivityPinsPublishOrder:

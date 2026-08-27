@@ -62,7 +62,7 @@ def fake_db(tmp_path, monkeypatch):
     )
     conn.commit()
     conn.close()
-    monkeypatch.setenv("CC_MEMORY_DB_PATH", str(db_path))
+    monkeypatch.setenv("CALM_DB_PATH", str(db_path))
     return db_path
 
 
@@ -258,7 +258,7 @@ class TestMain:
         assert result == ""
 
     def test_missing_db_no_output(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("CC_MEMORY_DB_PATH", str(tmp_path / "nonexistent.db"))
+        monkeypatch.setenv("CALM_DB_PATH", str(tmp_path / "nonexistent.db"))
         result = self._run(
             monkeypatch,
             {"hook_event_name": "MessageDisplay", "delta": f"{_MN('M', 1)} ref"},

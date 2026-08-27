@@ -133,7 +133,7 @@ class TestRemotePort:
     def test_default_port(self):
         """デフォルトポートは8001"""
         # importした時点の値をテスト（環境変数未設定時）
-        assert REMOTE_PORT == int(os.environ.get("CC_MEMORY_REMOTE_PORT", "8001"))
+        assert REMOTE_PORT == int(os.environ.get("CALM_REMOTE_PORT", "8001"))
 
 
 # --- ヘルパー ---

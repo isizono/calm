@@ -4,7 +4,7 @@
 - アクティビティ一覧（作業中・優先のみ個別表示。末尾に固定ナビ+未表示件数句）
 - 振る舞い（正は~/.claude/rules配下の自動生成ファイル。本hookは投影ファイルの
   鮮度検証と、読み込めていないセッションへの縮退フォールバックのみを担う）
-- relay Monitor監視指示（CCM_RELAY_SESSION_AWARE=1のときのみ。identity解決に
+- relay Monitor監視指示（CALM_RELAY_SESSION_AWARE=1のときのみ。identity解決に
   成功した場合は常時、未読N件の報告行のみ未読が実在するときに追加）
 
 コンテキスト取得フローガイドはここでは注入しない（check_in初回呼び出し時に
@@ -22,6 +22,7 @@ if str(_project_root) not in sys.path:
 
 from src import config
 from src.db import get_connection, get_db_path
+from src.harness import ClaudeCodeHarness
 from src.services.activity_service import (
     get_active_domains_with_conn,
     get_active_activities_by_tag_with_conn,
@@ -315,7 +316,7 @@ def _build_degraded_habits_fallback(
 
     verify_and_healのabsent系（不在・破損・修復失敗を含む）・failed_stale
     （staleを検知したが修復書き込みに失敗し、最新内容が読めていない可能性がある
-    ケース）・kill switch（CCM_HABITS_RULES_EXPORT=0）・SessionStart(source=
+    ケース）・kill switch（CALM_HABITS_RULES_EXPORT=0）・SessionStart(source=
     compact)（rulesファイル内容がcompact後も保持されるかの実機検証が未了のため
     安全側に倒し無条件で呼ばれる）から呼ばれる。always層は全文、intelligently層は
     タイトルを列挙せず件数1行にとどめる（全文9,500字級の注入はpersisted-output
@@ -413,7 +414,7 @@ def _build_signals_section(conn, session_id: str | None = None, source: str | No
 def _build_relay_inbox_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # conn, session_id, source, **_kwargs: 全セクション共通シグネチャ
     """identityが解決できる限りMonitor監視指示を常時出す。未読件数の表示のみ0件時は省く。
 
-    CCM_RELAY_SESSION_AWARE（デフォルトOFF）のkill switch。OFF時はtokenチェック・
+    CALM_RELAY_SESSION_AWARE（デフォルトOFF）のkill switch。OFF時はtokenチェック・
     identity解決を一切試みず空文字を返す。relayを使わないユーザー・セッションに
     関連コンテキストを注入しないための入口ゲート。
 
@@ -427,7 +428,7 @@ def _build_relay_inbox_section(conn, session_id: str | None = None, source: str 
     Claude Code CLIが起動する独立プロセスでMCPリクエストコンテキストを
     持たないため、この経路は常にNoneを返す。その場合はresolve_identity_by_
     ancestry()（祖先pidチェーンの一致でlauncherプロセスを特定する経路、
-    ps最大5回spawn）にフォールバックする。
+    ps最大2回spawn）にフォールバックする。
 
     Monitor監視指示はセッション作業中に届く新着を取りこぼさないための
     ものなので、既存の未読・inbox file有無に関わらずidentity解決できた
@@ -555,43 +556,34 @@ def _build_session_context(
 
 
 def main() -> None:
+    harness = ClaudeCodeHarness(hook_event_name="SessionStart")
     try:
-        raw = sys.stdin.read()
         session_id: str | None = None
         source: str | None = None
         transcript_path: str | None = None
-        if raw:
-            try:
-                payload = json.loads(raw)
-                if isinstance(payload, dict):
-                    sid = payload.get("session_id")
-                    if isinstance(sid, str) and sid:
-                        session_id = sid
-                    src = payload.get("source")
-                    if isinstance(src, str) and src:
-                        source = src
-                    tp = payload.get("transcript_path")
-                    if isinstance(tp, str) and tp:
-                        transcript_path = tp
-            except json.JSONDecodeError:
-                # session_id/source/transcript_path 取得失敗時は従来挙動（self 照合なし・
-                # compact判定なし・transcript path注入なし）にフォールバック。初期値 None
-                # のまま継続するため再代入不要
-                pass
+        try:
+            payload = harness.read_hook_input()
+        except json.JSONDecodeError:
+            # session_id/source/transcript_path 取得失敗時は従来挙動（self 照合なし・
+            # compact判定なし・transcript path注入なし）にフォールバック。初期値 None
+            # のまま継続するため再代入不要
+            payload = {}
+        sid = payload.get("session_id")
+        if isinstance(sid, str) and sid:
+            session_id = sid
+        src = payload.get("source")
+        if isinstance(src, str) and src:
+            source = src
+        tp = payload.get("transcript_path")
+        if isinstance(tp, str) and tp:
+            transcript_path = tp
 
         context = _build_session_context(session_id, source, transcript_path)
-
-        output = {
-            "hookSpecificOutput": {
-                "hookEventName": "SessionStart",
-                "additionalContext": context,
-            }
-        }
-        print(json.dumps(output, ensure_ascii=False))
+        harness.emit_additional_context(context)
     except Exception as e:
         print(f"session_start_hook.py error: {e}", file=sys.stderr)
         try_capture_signal(kind="machine_error", source="hook:session_start", summary=str(e)[:200])
-        print("{}")
+        harness.emit_empty()
 
 
 if __name__ == "__main__":

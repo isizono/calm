@@ -13,6 +13,7 @@ from typing import Optional
 from sqlite_vec import serialize_float32
 
 from src.db import execute_query, get_connection
+from src.env_compat import env_get
 from src.infra.lock_file import is_port_listening
 
 logger = logging.getLogger(__name__)
@@ -26,12 +27,12 @@ def _resolve_project_root() -> str:
     """embedding_server を起動する cwd を決定する。
 
     優先順位:
-      1. 環境変数 ``CC_MEMORY_PROJECT_ROOT``
+      1. 環境変数 ``CALM_PROJECT_ROOT``
       2. ``git rev-parse --git-common-dir`` の親ディレクトリ（worktree 内からでも main repo を返す）
       3. 上記いずれも失敗した場合は ``RuntimeError`` を raise（黙って ``__file__`` fallback はしない）
     """
     # 1. env var override
-    env = os.environ.get("CC_MEMORY_PROJECT_ROOT")
+    env = env_get("CALM_PROJECT_ROOT")
     if env:
         return str(Path(env).resolve())
 
@@ -52,7 +53,7 @@ def _resolve_project_root() -> str:
         return str(common_dir.parent.resolve())
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
         raise RuntimeError(
-            "Failed to resolve project root: set CC_MEMORY_PROJECT_ROOT "
+            "Failed to resolve project root: set CALM_PROJECT_ROOT "
             f"or run from within a git repo. cause: {e}"
         )
 
@@ -253,6 +254,15 @@ def encode_query(text: str) -> Optional[list[float]]:
     if result is None:
         return None
     return result[0]
+
+
+def encode_queries(texts: list[str]) -> Optional[list[list[float]]]:
+    """クエリ用embeddingをバッチ生成する。複数テキストを1回のHTTPリクエストにまとめる。"""
+    if not texts:
+        return []
+    if not _ensure_initialized():
+        return None
+    return _encode_batch(texts, "query")
 
 
 def generate_and_store_embedding(source_type: str, source_id: int, text: str) -> Optional[list[float]]:

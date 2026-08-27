@@ -1061,32 +1061,32 @@ class TestReadMaxRetries:
 
     def test_returns_none_when_env_unset(self, monkeypatch):
         """env 未設定時は None（無限）を返す"""
-        monkeypatch.delenv("CC_MEMORY_LAUNCHER_MAX_RETRIES", raising=False)
+        monkeypatch.delenv("CALM_LAUNCHER_MAX_RETRIES", raising=False)
         assert launcher._read_max_retries() is None
 
     def test_returns_none_when_env_empty(self, monkeypatch):
         """env が空文字列のときは None を返す"""
-        monkeypatch.setenv("CC_MEMORY_LAUNCHER_MAX_RETRIES", "")
+        monkeypatch.setenv("CALM_LAUNCHER_MAX_RETRIES", "")
         assert launcher._read_max_retries() is None
 
     def test_returns_int_when_env_valid(self, monkeypatch):
         """env が有効な数値のときはその値を返す"""
-        monkeypatch.setenv("CC_MEMORY_LAUNCHER_MAX_RETRIES", "5")
+        monkeypatch.setenv("CALM_LAUNCHER_MAX_RETRIES", "5")
         assert launcher._read_max_retries() == 5
 
     def test_returns_zero_when_env_zero(self, monkeypatch):
         """env が 0 のときは 0 を返す（リトライしないという有効値）"""
-        monkeypatch.setenv("CC_MEMORY_LAUNCHER_MAX_RETRIES", "0")
+        monkeypatch.setenv("CALM_LAUNCHER_MAX_RETRIES", "0")
         assert launcher._read_max_retries() == 0
 
     def test_returns_none_on_invalid_string(self, monkeypatch):
         """env が数値に変換できない文字列のときは None にフォールバック"""
-        monkeypatch.setenv("CC_MEMORY_LAUNCHER_MAX_RETRIES", "abc")
+        monkeypatch.setenv("CALM_LAUNCHER_MAX_RETRIES", "abc")
         assert launcher._read_max_retries() is None
 
     def test_returns_none_on_negative(self, monkeypatch):
         """env が負値のときは None にフォールバック"""
-        monkeypatch.setenv("CC_MEMORY_LAUNCHER_MAX_RETRIES", "-1")
+        monkeypatch.setenv("CALM_LAUNCHER_MAX_RETRIES", "-1")
         assert launcher._read_max_retries() is None
 
 
@@ -1095,24 +1095,24 @@ class TestReadStdinEofGraceSec:
 
     def test_returns_default_when_env_unset(self, monkeypatch):
         """env 未設定時は既定値 (10.0秒) を返す"""
-        monkeypatch.delenv("CC_MEMORY_LAUNCHER_STDIN_EOF_GRACE_SEC", raising=False)
+        monkeypatch.delenv("CALM_LAUNCHER_STDIN_EOF_GRACE_SEC", raising=False)
         assert launcher._read_stdin_eof_grace_sec() == launcher.DEFAULT_STDIN_EOF_GRACE_SEC
 
     def test_returns_float_when_env_valid(self, monkeypatch):
         """env が有効な数値のときはその値を返す"""
-        monkeypatch.setenv("CC_MEMORY_LAUNCHER_STDIN_EOF_GRACE_SEC", "3.5")
+        monkeypatch.setenv("CALM_LAUNCHER_STDIN_EOF_GRACE_SEC", "3.5")
         assert launcher._read_stdin_eof_grace_sec() == 3.5
 
     def test_returns_default_on_invalid_string(self, monkeypatch):
         """env が数値に変換できない文字列のときは既定値にフォールバック"""
-        monkeypatch.setenv("CC_MEMORY_LAUNCHER_STDIN_EOF_GRACE_SEC", "abc")
+        monkeypatch.setenv("CALM_LAUNCHER_STDIN_EOF_GRACE_SEC", "abc")
         assert launcher._read_stdin_eof_grace_sec() == launcher.DEFAULT_STDIN_EOF_GRACE_SEC
 
     def test_returns_default_on_zero_or_negative(self, monkeypatch):
         """env が 0 以下のときは既定値にフォールバック"""
-        monkeypatch.setenv("CC_MEMORY_LAUNCHER_STDIN_EOF_GRACE_SEC", "0")
+        monkeypatch.setenv("CALM_LAUNCHER_STDIN_EOF_GRACE_SEC", "0")
         assert launcher._read_stdin_eof_grace_sec() == launcher.DEFAULT_STDIN_EOF_GRACE_SEC
-        monkeypatch.setenv("CC_MEMORY_LAUNCHER_STDIN_EOF_GRACE_SEC", "-1")
+        monkeypatch.setenv("CALM_LAUNCHER_STDIN_EOF_GRACE_SEC", "-1")
         assert launcher._read_stdin_eof_grace_sec() == launcher.DEFAULT_STDIN_EOF_GRACE_SEC
 
 
@@ -1122,7 +1122,7 @@ class TestReadMaxConsecutiveStreamExceptions:
     def test_returns_default_when_env_unset(self, monkeypatch):
         """env 未設定時は既定値 (5) を返す"""
         monkeypatch.delenv(
-            "CC_MEMORY_LAUNCHER_MAX_CONSECUTIVE_STREAM_EXCEPTIONS", raising=False
+            "CALM_LAUNCHER_MAX_CONSECUTIVE_STREAM_EXCEPTIONS", raising=False
         )
         assert (
             launcher._read_max_consecutive_stream_exceptions()
@@ -1131,12 +1131,12 @@ class TestReadMaxConsecutiveStreamExceptions:
 
     def test_returns_int_when_env_valid(self, monkeypatch):
         """env が有効な数値のときはその値を返す"""
-        monkeypatch.setenv("CC_MEMORY_LAUNCHER_MAX_CONSECUTIVE_STREAM_EXCEPTIONS", "8")
+        monkeypatch.setenv("CALM_LAUNCHER_MAX_CONSECUTIVE_STREAM_EXCEPTIONS", "8")
         assert launcher._read_max_consecutive_stream_exceptions() == 8
 
     def test_returns_default_on_invalid_string(self, monkeypatch):
         """env が数値に変換できない文字列のときは既定値にフォールバック"""
-        monkeypatch.setenv("CC_MEMORY_LAUNCHER_MAX_CONSECUTIVE_STREAM_EXCEPTIONS", "abc")
+        monkeypatch.setenv("CALM_LAUNCHER_MAX_CONSECUTIVE_STREAM_EXCEPTIONS", "abc")
         assert (
             launcher._read_max_consecutive_stream_exceptions()
             == launcher.DEFAULT_MAX_CONSECUTIVE_STREAM_EXCEPTIONS
@@ -1144,12 +1144,12 @@ class TestReadMaxConsecutiveStreamExceptions:
 
     def test_returns_default_on_zero_or_negative(self, monkeypatch):
         """env が 0 以下のときは既定値にフォールバック"""
-        monkeypatch.setenv("CC_MEMORY_LAUNCHER_MAX_CONSECUTIVE_STREAM_EXCEPTIONS", "0")
+        monkeypatch.setenv("CALM_LAUNCHER_MAX_CONSECUTIVE_STREAM_EXCEPTIONS", "0")
         assert (
             launcher._read_max_consecutive_stream_exceptions()
             == launcher.DEFAULT_MAX_CONSECUTIVE_STREAM_EXCEPTIONS
         )
-        monkeypatch.setenv("CC_MEMORY_LAUNCHER_MAX_CONSECUTIVE_STREAM_EXCEPTIONS", "-1")
+        monkeypatch.setenv("CALM_LAUNCHER_MAX_CONSECUTIVE_STREAM_EXCEPTIONS", "-1")
         assert (
             launcher._read_max_consecutive_stream_exceptions()
             == launcher.DEFAULT_MAX_CONSECUTIVE_STREAM_EXCEPTIONS
@@ -1174,7 +1174,7 @@ class TestMaxRetriesDefault:
         """env 未設定でモジュールを再読み込みすると MAX_RETRIES は None"""
         import importlib
 
-        monkeypatch.delenv("CC_MEMORY_LAUNCHER_MAX_RETRIES", raising=False)
+        monkeypatch.delenv("CALM_LAUNCHER_MAX_RETRIES", raising=False)
         importlib.reload(launcher)
         try:
             assert launcher.MAX_RETRIES is None
@@ -1185,7 +1185,7 @@ class TestMaxRetriesDefault:
         """env で数値指定するとモジュール再読み込みで MAX_RETRIES がその値になる"""
         import importlib
 
-        monkeypatch.setenv("CC_MEMORY_LAUNCHER_MAX_RETRIES", "7")
+        monkeypatch.setenv("CALM_LAUNCHER_MAX_RETRIES", "7")
         importlib.reload(launcher)
         try:
             assert launcher.MAX_RETRIES == 7

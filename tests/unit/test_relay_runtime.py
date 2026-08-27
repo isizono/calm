@@ -50,6 +50,116 @@ class TestConfiguration:
         runtime.stop()
 
 
+class TestDeclarationNormalizationOnStart:
+    """start()はintake/lease_loop起動前に旧形式declarationを正規化する
+    （relay_subscribeのhandle自動付与廃止に伴う移行処理）。"""
+
+    def test_start_normalizes_declarations_before_spawning_threads(self, monkeypatch):
+        from src.services.relay import declarations
+
+        monkeypatch.setenv("RELAY_BEARER_TOKEN", "test-token")
+        declarations.save({
+            "session_id": "sess-1",
+            "handle": "session-abc",
+            "subscriptions": [
+                {
+                    "subscription_id": "sub-1",
+                    "labels": ["room:planning", "handle:session-abc"],
+                    "lease_expires_at": "2099-01-01T00:00:00Z",
+                    "created_at": "2026-07-05T00:00:00Z",
+                }
+            ],
+        })
+
+        call_order: list[str] = []
+        original_normalize = declarations.normalize_all_declarations
+
+        def _tracked_normalize():
+            call_order.append("normalize")
+            return original_normalize()
+
+        monkeypatch.setattr(
+            "src.services.relay.runtime.declarations.normalize_all_declarations",
+            _tracked_normalize,
+        )
+
+        def _run_intake_tracked():
+            call_order.append("intake")
+
+        def _run_lease_loop_tracked():
+            call_order.append("lease_loop")
+
+        runtime = RelayRuntime(active_sessions_getter=lambda: set())
+        monkeypatch.setattr(runtime, "_run_intake", _run_intake_tracked)
+        monkeypatch.setattr(runtime, "_run_lease_loop", _run_lease_loop_tracked)
+        monkeypatch.setattr(runtime, "_run_dispatcher", lambda: None)
+
+        assert runtime.start() is True
+        try:
+            # _run_intake/_run_lease_loopは別threadで動くため、記録が揃うまで待つ
+            # （normalize自体はstart()内でthread起動前に同期実行済み）。
+            deadline = time.monotonic() + 5.0
+            while (
+                "intake" not in call_order or "lease_loop" not in call_order
+            ) and time.monotonic() < deadline:
+                time.sleep(0.02)
+        finally:
+            runtime.stop()
+
+        decl = declarations.load("sess-1")
+        assert decl["subscriptions"][0]["labels"] == ["room:planning"]
+        assert "normalize" in call_order
+        assert call_order.index("normalize") < call_order.index("intake")
+        assert call_order.index("normalize") < call_order.index("lease_loop")
+
+    def test_start_with_no_declarations_does_not_raise(self, monkeypatch):
+        monkeypatch.setenv("RELAY_BEARER_TOKEN", "test-token")
+        runtime = RelayRuntime(active_sessions_getter=lambda: set())
+        monkeypatch.setattr(runtime, "_run_intake", lambda: None)
+        monkeypatch.setattr(runtime, "_run_lease_loop", lambda: None)
+        monkeypatch.setattr(runtime, "_run_dispatcher", lambda: None)
+
+        assert runtime.start() is True
+        runtime.stop()
+
+    def test_normalize_failure_does_not_prevent_thread_spawn(self, monkeypatch):
+        """declaration正規化が例外を出しても、start()は伝播させずthread起動を
+        継続する。self._started = True設定後に例外で抜けると、二重startガードに
+        より二度とthreadがspawnされなくなる（かつ呼び出し元main.pyはstart()を
+        try/exceptで囲っていないためHTTP server起動自体を巻き込みかねない）。
+        正規化はべき等な移行処理であり、1回の起動で失敗しても致命的ではない。"""
+        from src.services.relay import runtime as runtime_module
+
+        monkeypatch.setenv("RELAY_BEARER_TOKEN", "test-token")
+
+        def _boom():
+            raise RuntimeError("declaration file corrupted")
+
+        monkeypatch.setattr(
+            runtime_module.declarations, "normalize_all_declarations", _boom
+        )
+
+        runtime = RelayRuntime(active_sessions_getter=lambda: set())
+        spawned: list[str] = []
+        monkeypatch.setattr(runtime, "_run_intake", lambda: spawned.append("intake"))
+        monkeypatch.setattr(
+            runtime, "_run_lease_loop", lambda: spawned.append("lease_loop")
+        )
+        monkeypatch.setattr(
+            runtime, "_run_dispatcher", lambda: spawned.append("dispatcher")
+        )
+
+        assert runtime.start() is True  # 例外を外へ伝播させない
+
+        try:
+            deadline = time.monotonic() + 5.0
+            while len(spawned) < 3 and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert set(spawned) == {"intake", "lease_loop", "dispatcher"}
+        finally:
+            runtime.stop()
+
+
 class TestDispatcherFallback:
     def test_dispatcher_already_running_is_swallowed(self, monkeypatch):
         """B-3 は他プロセスが lock を持っていたら log のみで無効化する。"""

@@ -5,7 +5,7 @@
 2. session_idが空/null → 空JSON出力して終了
 3. events.jsonl全読み
 4. 未消費のnudgeイベント判定 → system-reminder注入
-5. relay session-aware nudge（CCM_RELAY_SESSION_AWARE=1のときのみ） →
+5. relay session-aware nudge（CALM_RELAY_SESSION_AWARE=1のときのみ） →
    system-reminder注入
 6. 何もなし → 空JSON出力
 
@@ -15,7 +15,7 @@ relay session-aware nudge（手順5）はSessionStartの一回きりの起動指
 機能しない問題への対応で、events.jsonlとは独立にHookState.monitor_started
 マーカー（hooks/relay_monitor_watch_hook.pyがPostToolUseで書く）とrelay inboxの
 未読件数を毎ターン判定する。identity解決結果はHookState.relay_identityにセッション
-単位でキャッシュし、resolve_identity_by_ancestry（ps最大5回spawn）を毎ターン
+単位でキャッシュし、resolve_identity_by_ancestry（ps最大2回spawn）を毎ターン
 払わないようにする。起動指示は `persistent: true` の使用を明記する。
 """
 import json
@@ -32,16 +32,7 @@ if str(_project_root) not in sys.path:
 from hooks.hook_state import HookState
 from hooks.signal_capture import try_capture_signal
 from src import config
-
-
-def _make_hook_output(message: str) -> dict:
-    """UserPromptSubmit hookのsystem-reminder注入用JSON構造を返す"""
-    return {
-        "hookSpecificOutput": {
-            "hookEventName": "UserPromptSubmit",
-            "additionalContext": message,
-        }
-    }
+from src.harness import ClaudeCodeHarness
 
 
 _FOLLOW_UP_NUDGE_MESSAGE = (
@@ -111,9 +102,9 @@ def _format_nudge_message(event: dict, ntype: str | None) -> str | None:
 def _resolve_relay_identity_cached(state: HookState) -> str | None:
     """relay identityをHookStateのセッション単位キャッシュ経由で解決する。
 
-    resolve_identity_by_ancestryはps最大5回spawn（各2秒timeout）を伴うため、
+    resolve_identity_by_ancestryはps最大2回spawn（各2秒timeout）を伴うため、
     UserPromptSubmitのように毎ターン呼ばれる経路でこれを無条件に払うと、
-    `ps`が詰まった環境ではターンあたり最大10秒近いレイテンシが積み上がる。
+    `ps`が詰まった環境ではターンあたり最大4秒近いレイテンシが積み上がる。
     一度解決できたidentityはlauncherプロセスが生存し続ける限り不変なので、
     キャッシュに乗せて以降のターンはps spawnをスキップする。
 
@@ -138,7 +129,7 @@ def _resolve_relay_identity_cached(state: HookState) -> str | None:
 
 
 def _build_relay_turn_nudge(state: HookState) -> str | None:
-    """relay session-aware毎ターンnudge（CCM_RELAY_SESSION_AWARE=1のときのみ動作）。
+    """relay session-aware毎ターンnudge（CALM_RELAY_SESSION_AWARE=1のときのみ動作）。
 
     SessionStart一回きりの起動指示はエージェントに読み流されて機能しないことが
     確認されたため、毎ターン判定してリマインダーを注入する。
@@ -199,22 +190,19 @@ def _build_relay_turn_nudge(state: HookState) -> str | None:
 
 
 def main() -> None:
+    harness = ClaudeCodeHarness(hook_event_name="UserPromptSubmit")
     try:
         # 環境変数によるテスト用オーバーライド
         if os.environ.get("HOOK_STATE_DIR"):
             HookState.BASE_DIR = Path(os.environ["HOOK_STATE_DIR"])
 
-        # 1. stdin読み込み
-        raw = sys.stdin.read()
-        if not raw.strip():
-            print("{}")
-            return
-        data = json.loads(raw)
+        # 1. hook入力読み込み
+        data = harness.read_hook_input()
         session_id = data.get("session_id", "")
 
-        # 2. session_idが空/null → 空JSON出力
+        # 2. session_idが空/null → 空応答
         if not session_id:
-            print("{}")
+            harness.emit_empty()
             return
 
         # 3. events.jsonl全読み
@@ -239,24 +227,24 @@ def main() -> None:
 
             e["consumed"] = True
             _rewrite_events(state, events)
-            print(json.dumps(_make_hook_output(message), ensure_ascii=False))
+            harness.emit_additional_context(message)
             return
 
-        # 5. relay session-aware nudge（CCM_RELAY_SESSION_AWARE=1のときのみ、
+        # 5. relay session-aware nudge（CALM_RELAY_SESSION_AWARE=1のときのみ、
         # 既存nudgeが非該当だった場合のみ判定）
         relay_message = _build_relay_turn_nudge(state)
         if relay_message:
-            print(json.dumps(_make_hook_output(relay_message), ensure_ascii=False))
+            harness.emit_additional_context(relay_message)
             return
 
         # 6. 何もなし
-        print("{}")
+        harness.emit_empty()
 
     except Exception as e:
-        # フェイルオープン: 例外時は空JSON + stderrログ
+        # フェイルオープン: 例外時は空応答 + stderrログ
         print(f"user_prompt_submit_hook.py error: {e}", file=sys.stderr)
         try_capture_signal(kind="machine_error", source="hook:user_prompt_submit", summary=str(e)[:200])
-        print("{}")
+        harness.emit_empty()
 
 
 def _rewrite_events(state: HookState, events: list[dict]) -> None:

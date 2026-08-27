@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -63,7 +64,7 @@ def test_publish_reaches_session_inbox_via_intake(monkeypatch):
         subscription_id = result["subscription_id"]
         assert subscription_id.startswith("sub-")
 
-        # relay_subscribe が declaration に「handle:<handle>」を付ける仕様。
+        # 非空labelsはそのまま購読される（自handleは混入しない）。
         decl = declarations.load("sess-1")
         subscribed_labels = decl["subscriptions"][0]["labels"]
 
@@ -88,6 +89,57 @@ def test_publish_reaches_session_inbox_via_intake(monkeypatch):
         # FakeRelay 側 outbox は ack で掃かれている。
         # （ack が届いていれば outbox_size == 0）
         assert fake.outbox_size(subscription_id) == 0
+
+
+def test_stale_declaration_does_not_block_live_session_receive(monkeypatch):
+    """失効した残骸宣言（他 session 由来）が、生存 session の受信を道連れにしない。
+
+    lease 事前フィルタが無いと、relay に存在しない subscription_id が接続集合に
+    1件でも混ざると `GET /events` が全体で拒否され、無関係な生存 session の
+    受信まで止まる。ここでは relay 側に一度も登録されていない id を持つ、
+    lease 期限切れの残骸宣言を別 session 名義で直接書き込み、生存 session
+    （sess-1）の publish が届くことを確認する。
+    """
+    with FakeRelay() as fake:
+        monkeypatch.setenv("RELAY_BASE_URL", fake.base_url)
+
+        result = service.relay_subscribe(
+            ["room:planning"], caller_session_id="sess-1"
+        )
+        assert "error" not in result, result
+        subscription_id = result["subscription_id"]
+
+        decl = declarations.load("sess-1")
+        subscribed_labels = decl["subscriptions"][0]["labels"]
+
+        # 残骸宣言: relay 側に存在しない subscription_id、lease は既に失効。
+        stale_decl = declarations.ensure("sess-2")
+        stale_decl["subscriptions"] = [
+            {
+                "subscription_id": "sub-orphan-not-registered",
+                "labels": ["room:planning"],
+                "lease_expires_at": (
+                    datetime.now(timezone.utc) - timedelta(seconds=60)
+                ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "created_at": declarations.now_iso(),
+            }
+        ]
+        declarations.save(stale_decl)
+
+        fake.publish(
+            ref_type="message",
+            ref_id="hello",
+            labels=subscribed_labels,
+        )
+
+        stop = threading.Event()
+        _run_intake_briefly(stop, seconds=2.5)
+
+        received = service.relay_receive(caller_session_id="sess-1")
+        assert received["count"] >= 1, received
+        payload = received["messages"][0]
+        assert payload["delivery_target"] == f"sub:{subscription_id}"
+        assert payload["ref"] == {"type": "message", "id": "hello"}
 
 
 def test_relay_missing_env_does_not_break_server_startup(monkeypatch):

@@ -1,6 +1,6 @@
 """PostToolUse hook (matcher: Monitor): relay inbox監視の起動判定。
 
-CCM_RELAY_SESSION_AWARE（デフォルトOFF）が有効なとき、Monitorツール呼び出しの
+CALM_RELAY_SESSION_AWARE（デフォルトOFF）が有効なとき、Monitorツール呼び出しの
 tool_inputがそのセッションのrelay inbox pathを`persistent: true`で監視する
 コマンドだったことを検知し、セッションIDキーのマーカーファイル
 （HookState.set_monitor_started）を書く。user_prompt_submit_hookはこの
@@ -16,7 +16,7 @@ watch実体が5分後にサイレントに切れると、本hookが解決しよ�
 本hookはPostToolUse（ツール呼び出し完了後）で発火する独立プロセスであり、
 SessionStart hook同様Claude Code CLIが起動する独立プロセスでMCPリクエスト
 コンテキストを持たないため、identity解決はresolve_identity_by_ancestry()
-（祖先pidチェーン一致、ps最大5回spawn）に依存する。HookState.relay_identity
+（祖先pidチェーン一致、ps最大2回spawn）に依存する。HookState.relay_identity
 キャッシュを読み書きし、user_prompt_submit_hookと双方向で共有する
 （どちらか一方が先に解決すれば、もう片方はps spawnを避けられる）。
 

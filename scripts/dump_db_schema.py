@@ -27,6 +27,8 @@ REPO_ROOT = Path(__file__).parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from src.env_compat import env_pop, env_restore, env_snapshot  # noqa: E402
+
 OUTPUT_PATH = REPO_ROOT / "docs" / "spec" / "db-schema-tables.md"
 MIGRATIONS_DIR = REPO_ROOT / "migrations"
 
@@ -59,7 +61,7 @@ def _latest_migration_number() -> str:
 def _build_fresh_connection() -> sqlite3.Connection:
     """migrations/ を全適用した一時DBへの接続を返す。
 
-    既存の CCM_DB_PATH / DISCUSSION_DB_PATH は変更しない
+    既存の CALM_DB_PATH（旧名を含む）/ DISCUSSION_DB_PATH は変更しない
     （呼び出し元プロセスの他のDB利用に影響させないため、専用の一時パスへ隔離する）。
 
     一時ディレクトリは、返した接続を呼び出し元が使い終わるまで生存させる
@@ -70,11 +72,12 @@ def _build_fresh_connection() -> sqlite3.Connection:
     """
     tmpdir = tempfile.mkdtemp(prefix="ccm-schema-dump-")
     db_path = os.path.join(tmpdir, "schema-dump.db")
-    old_env = {
-        k: os.environ.get(k) for k in ("DISCUSSION_DB_PATH", "CCM_DB_PATH")
-    }
+    # CALM_DB_PATH は旧名（CCM_ / CC_MEMORY_）からもフォールバックで読まれるため、
+    # 新名だけ pop しても旧名の値が復活する。env_pop で新旧まとめて消す。
+    old_env = {"DISCUSSION_DB_PATH": os.environ.get("DISCUSSION_DB_PATH")}
+    old_env.update(env_snapshot("CALM_DB_PATH"))
     os.environ["DISCUSSION_DB_PATH"] = db_path
-    os.environ.pop("CCM_DB_PATH", None)
+    env_pop("CALM_DB_PATH")
     try:
         from src.db import init_database, get_connection
 
@@ -84,11 +87,7 @@ def _build_fresh_connection() -> sqlite3.Connection:
         shutil.rmtree(tmpdir, ignore_errors=True)
         raise
     finally:
-        for k, v in old_env.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
+        env_restore(old_env)
 
     _TMP_SCHEMA_DUMP_DIRS.append(tmpdir)
     return conn

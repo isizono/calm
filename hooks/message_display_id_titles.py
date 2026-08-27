@@ -17,7 +17,6 @@ cc-memory project 内かどうかは判定せず、全 session で有効。
 from __future__ import annotations
 
 import json
-import os
 import pathlib
 import re
 import sqlite3
@@ -27,6 +26,7 @@ _PLUGIN_ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(_PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(_PLUGIN_ROOT))
 
+from src.env_compat import env_get  # noqa: E402
 from src.services.internal_id_patterns import FULLWORD_TO_CODE  # noqa: E402
 
 # code 形式と fullword 形式を 1 つの regex にまとめる。2 段階 sub にすると
@@ -57,7 +57,7 @@ CODE_TO_TABLE: dict[str, tuple[str, bool]] = {
 
 
 def _db_path() -> str:
-    return os.environ.get("CC_MEMORY_DB_PATH", str(DEFAULT_DB_PATH))
+    return env_get("CALM_DB_PATH", str(DEFAULT_DB_PATH))
 
 
 def _strip_prefix(title: str) -> str:

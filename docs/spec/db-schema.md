@@ -126,6 +126,8 @@ erDiagram
 | `ask_tags` | — | ask ↔ tag junction |
 | `ask_vec` | — | asks と rowid 連動する sqlite-vec 仮想テーブル（384次元、cosine距離） |
 | `injection_telemetry` | — | 記録=クエリ添付（記録系ツールの関連既存記録top3提示）の追随カウンタ present側台帳 |
+| `instance_meta` | — | 自インスタンスを識別する識別子（export/importバンドルの複合キー発行の基盤）を保持する単一行テーブル |
+| `import_provenance` | — | importしたエンティティの出自（出生インスタンス・出生ID・content_hash）を保持する台帳 |
 
 行数感（規模）はランタイム情報のため本ドキュメントでは未記載とする。
 
@@ -532,6 +534,34 @@ asks 専用の sqlite-vec 仮想テーブル（384次元、`distance_metric=cosi
 
 カラム一覧・インデックス: `db-schema-tables.md` の `injection_telemetry` 節参照。
 
+### 3.27 instance_meta
+
+複数のCALMインスタンス間でtopic/decision/log/material/activityを交換するexport/import機能において、自インスタンス自身を識別する識別子（instance_id）を保持する単一行テーブル。エンティティの複合キー（`<instance_id>:<型コード><ローカルID>`、例: `team-a:M12`）発行の基盤になる。
+
+補足:
+- `id INTEGER PRIMARY KEY CHECK (id = 1)` により物理的に1行しか持てない（2行目のINSERTはPRIMARY KEY重複でIntegrityErrorになる）
+- 環境変数ではなくDBに置く設計判断: 識別子はエンティティ同一性の根であり、DBファイルと運命を共にすべきという考え方による（envはDBを別マシンへ移した瞬間に剥がれる）
+- 一度設定したinstance_idは、サービス層（`instance_service.set_instance_identity`）が`force`引数なしでは上書きを拒否する（DB制約ではなくアプリ層のガード）。複合キーは出生インスタンスの識別子を基準に発行され続けるため、変更は既発行キーの意味を壊す破壊的操作にあたる
+- instance_id自体の形式バリデーション（DNSラベル風 `^[a-z][a-z0-9-]{2,31}$`）もDB制約ではなくサービス層で強制する（他テーブルの文字数上限等と同じ方針）
+
+関連 migration: 0070_add_instance_meta
+
+カラム一覧・インデックス: `db-schema-tables.md` の `instance_meta` 節参照。
+
+### 3.28 import_provenance
+
+他インスタンスから取り込んだ（`import_bundle`でimportした）エンティティの出自を記録する台帳。1テーブルで再importの冪等性判定・上流変更検知・増分importでの参照自己解決・チェーンexportでの正準キー維持を兼ねる。
+
+補足:
+- `PRIMARY KEY (entity_type, entity_id)`: ローカルエンティティ1件につき出自情報は1つに定まる
+- `UNIQUE (origin_instance, entity_type, origin_id)`: 同一出自エンティティの重複importを防ぐ制約。`import_bundle(mode="dry_run")`はこの複合キーで既存行を逆引きし、再importかどうかを判定する
+- `content_hash`はimport時点のプロトコル対象フィールド（本文・タグ・関係エッジ等、`export_bundle`側のcontent_hash計算と同じ対象）のハッシュ。次回import時にバンドル側のcontent_hashと比較し、origin側で内容が変わっていないかを判定する
+- `entity_type`はCHECK制約で5型（topic/activity/material/decision/log）に限定される
+
+関連 migration: 0071_add_import_provenance
+
+カラム一覧・インデックス: `db-schema-tables.md` の `import_provenance` 節参照。
+
 ---
 
 ## 4. 関係メカニズム
@@ -672,6 +702,8 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0067_add_injection_telemetry | injection_telemetry テーブル新設（記録=クエリ添付の追随カウンタ present側台帳、§3.26） |
 | 0068_add_asks_kind_and_tags | asks に kind 列（'ask'/'meta'、既定'ask'）を追加、ask_tags junction テーブル新設（§3.23, §3.24） |
 | 0069_add_asks_choices | asks に choices 列（JSON配列文字列の選択肢テンプレート、nullable）を追加（§3.23） |
+| 0070_add_instance_meta | instance_meta テーブル新設（自インスタンス識別子の保持、export/importバンドルの複合キー発行の基盤、§3.27） |
+| 0071_add_import_provenance | import_provenance テーブル新設（importしたエンティティの出自台帳。再import冪等性・上流変更検知・参照自己解決の基盤、§3.28） |
 
 重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。
 

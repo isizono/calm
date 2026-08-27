@@ -134,7 +134,7 @@ class TestGraceTimer:
 
 
 class TestReadGracePeriodSec:
-    """env CC_MEMORY_AUTO_SHUTDOWN_SEC を読み取るヘルパーの単体テスト"""
+    """env CALM_AUTO_SHUTDOWN_SEC を読み取るヘルパーの単体テスト"""
 
     def test_env_unset_returns_default(self, monkeypatch):
         """env未設定時はデフォルト値を返す"""
@@ -248,7 +248,7 @@ class TestAutoShutdownDisabled:
 
 
 class TestReadLivenessTimeoutSec:
-    """env CC_MEMORY_SESSION_LIVENESS_TIMEOUT_SEC を読み取るヘルパーの単体テスト"""
+    """env CALM_SESSION_LIVENESS_TIMEOUT_SEC を読み取るヘルパーの単体テスト"""
 
     def test_env_unset_returns_default(self, monkeypatch):
         """env未設定時はデフォルト値を返す"""
@@ -374,3 +374,71 @@ class TestLivenessReaper:
         """既に unregister 済みの session_id を渡してもエラーにならない"""
         mgr = SessionManager(grace_period_sec=0, liveness_timeout_sec=0.2)
         mgr._evict_if_still_stale("not-registered")  # raiseしないことの確認
+
+
+class TestOnSessionRemovedHook:
+    """on_session_removed コールバックが除去経路ごとに正しく発火するかの検証"""
+
+    def test_unregister_fires_hook(self):
+        """unregister() 経由の除去でコールバックが呼ばれる"""
+        removed: list[str] = []
+        mgr = SessionManager(
+            grace_period_sec=0, liveness_timeout_sec=0, on_session_removed=removed.append
+        )
+        mgr.register("s1")
+        mgr.unregister("s1")
+        assert removed == ["s1"]
+
+    def test_unregister_of_unknown_session_does_not_fire_hook(self):
+        """未登録 session の unregister() 失敗時はコールバックを呼ばない"""
+        removed: list[str] = []
+        mgr = SessionManager(
+            grace_period_sec=0, liveness_timeout_sec=0, on_session_removed=removed.append
+        )
+        assert mgr.unregister("not-registered") is False
+        assert removed == []
+
+    def test_liveness_ttl_eviction_fires_hook(self):
+        """liveness TTL 失効（_evict_if_still_stale 経由）でもコールバックが呼ばれる
+
+        kill -9 等の異常終了は unregister() を経由しないため、この経路が
+        フックされていないと撤去が一切走らない。
+        """
+        removed: list[str] = []
+        mgr = SessionManager(
+            grace_period_sec=0, liveness_timeout_sec=0.2, on_session_removed=removed.append
+        )
+        mgr.register("s1")
+        with mgr._lock:
+            mgr._last_seen["s1"] = time.monotonic() - 10
+        mgr._evict_if_still_stale("s1")
+        assert removed == ["s1"]
+
+    def test_evict_toctou_race_does_not_fire_hook(self):
+        """TOCTOU 再チェックで生存判定に戻った場合はコールバックを呼ばない"""
+        removed: list[str] = []
+        mgr = SessionManager(
+            grace_period_sec=0, liveness_timeout_sec=0.2, on_session_removed=removed.append
+        )
+        mgr.register("s1")
+        with mgr._lock:
+            mgr._last_seen["s1"] = time.monotonic() - 10
+        mgr.register("s1")  # heartbeat が割り込み、再チェック時点では生存
+        mgr._evict_if_still_stale("s1")
+        assert removed == []
+
+    def test_hook_exception_does_not_propagate(self):
+        """コールバックが例外を投げても unregister() 自体は正常に完了する"""
+        def boom(session_id: str) -> None:
+            raise RuntimeError("boom")
+
+        mgr = SessionManager(grace_period_sec=0, liveness_timeout_sec=0, on_session_removed=boom)
+        mgr.register("s1")
+        assert mgr.unregister("s1") is True
+        assert mgr.active_count == 0
+
+    def test_no_hook_configured_is_noop(self):
+        """on_session_removed 未指定でも unregister() は従来通り動く"""
+        mgr = SessionManager(grace_period_sec=0, liveness_timeout_sec=0)
+        mgr.register("s1")
+        assert mgr.unregister("s1") is True

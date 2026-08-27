@@ -7,22 +7,41 @@ import json
 import re
 from pathlib import Path
 
-# --- cc-memory MCPツール判定用マーカー ---
-# ローカルプラグイン: mcp__plugin_claude-code-memory_cc-memory__*
-# リモートMCP:       mcp__claude_ai_cc-memory__*
-# 接続経路に依存せず "cc-memory__" の有無で判定する
+# --- CALM MCPツール判定用マーカー ---
+# ローカルプラグイン: mcp__plugin_calm_calm__*
+# リモートMCP:       mcp__claude_ai_calm__*
+# 接続経路に依存せず "calm__" の有無で判定する。
+#
+# 旧名 "cc-memory__" も受理する。hookは過去に記録されたtranscriptも解析対象に
+# するため、改名前のツール名しか含まないtranscriptで検出が全滅しないようにする。
+# 判定は先頭のマーカーから順に行い、最初に一致したものでshort_nameを切り出す。
 
-_CC_MEMORY_MARKER = "cc-memory__"
+_TOOL_NAME_MARKERS: tuple[str, ...] = ("calm__", "cc-memory__")
 
 
-def _is_cc_memory_tool(name: str) -> bool:
-    """ツール名がcc-memoryのツールかどうかを判定する。"""
-    return _CC_MEMORY_MARKER in name
+def _find_tool_name_marker(name: str) -> str | None:
+    """ツール名に含まれるマーカーを返す。含まれなければNone。"""
+    for marker in _TOOL_NAME_MARKERS:
+        if marker in name:
+            return marker
+    return None
+
+
+def _is_calm_tool(name: str) -> bool:
+    """ツール名がCALMのツールかどうかを判定する。"""
+    return _find_tool_name_marker(name) is not None
 
 
 def _extract_short_name(name: str) -> str:
-    """ツール名からshort_name（check_in, add_logs等）を取り出す。"""
-    return name.split(_CC_MEMORY_MARKER, 1)[1]
+    """ツール名からshort_name（check_in, add_logs等）を取り出す。
+
+    CALMのツール名でない場合はValueErrorを送出する。呼び出し側は
+    `_is_calm_tool` で判定してから使うこと。
+    """
+    marker = _find_tool_name_marker(name)
+    if marker is None:
+        raise ValueError(f"CALMのツール名ではありません: {name!r}")
+    return name.split(marker, 1)[1]
 
 # --- 記録ツール ---
 
@@ -154,7 +173,7 @@ def extract_events(entries: list[dict], current_turn: int) -> tuple[list[dict], 
 
                 if block_type == "tool_use":
                     name = block.get("name", "")
-                    if _is_cc_memory_tool(name):
+                    if _is_calm_tool(name):
                         short_name = _extract_short_name(name)
                         event: dict = {
                             "e": "tool",
@@ -234,7 +253,7 @@ def _has_tool_calls(entries: list[dict], short_names: set[str]) -> bool:
             if block.get("type") != "tool_use":
                 continue
             name = block.get("name", "")
-            if _is_cc_memory_tool(name) and _extract_short_name(name) in short_names:
+            if _is_calm_tool(name) and _extract_short_name(name) in short_names:
                 return True
 
     return False
@@ -265,7 +284,7 @@ def extract_checkin_activity_id(entries: list[dict]) -> int | None:
             if block.get("type") != "tool_use":
                 continue
             name = block.get("name", "")
-            if _is_cc_memory_tool(name) and _extract_short_name(name) == "check_in":
+            if _is_calm_tool(name) and _extract_short_name(name) == "check_in":
                 tool_input = block.get("input", {})
                 aid = tool_input.get("activity_id")
                 if aid is not None:
@@ -311,7 +330,7 @@ def extract_last_activity_id(transcript_path: str) -> int | None:
 
                     if block_type == "tool_use":
                         name = block.get("name", "")
-                        if not _is_cc_memory_tool(name):
+                        if not _is_calm_tool(name):
                             continue
                         short = _extract_short_name(name)
                         if short == "check_in":

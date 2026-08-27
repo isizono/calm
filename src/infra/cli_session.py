@@ -8,18 +8,18 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Iterable, Optional
 
+from src.env_compat import env_get
 from src.infra.lock_file import is_process_alive
 
-CLAUDE_SESSIONS_DIR_ENV = "CCM_CLAUDE_SESSIONS_DIR"
+CLAUDE_SESSIONS_DIR_ENV = "CALM_CLAUDE_SESSIONS_DIR"
 
 
 def sessions_dir() -> Path:
     """Claude Code CLI の session file 置き場（既定 ``~/.claude/sessions``）。"""
-    raw = os.environ.get(CLAUDE_SESSIONS_DIR_ENV)
+    raw = env_get(CLAUDE_SESSIONS_DIR_ENV)
     return Path(raw).expanduser() if raw else Path.home() / ".claude" / "sessions"
 
 

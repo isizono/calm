@@ -29,7 +29,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Callable, Optional, TypedDict
 
-from src.services.relay import config, intake, lease_loop
+from src.services.relay import config, declarations, intake, lease_loop
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +117,24 @@ class RelayRuntime:
                 )
                 return False
             self._started = True
+
+        # 常駐ループ（intake / lease_loop）の起動前に、旧形式（handle 混入）の
+        # declaration を正規化する（relay_subscribe の handle 自動付与廃止に伴う
+        # 移行処理。冪等なので毎起動で呼んでよい）。
+        # ここで例外が出ても thread 起動（下記 _spawn 群）は必ず継続する。既に
+        # self._started = True 済みのため、ここで抜けると二度と thread が
+        # spawn されず relay 機能が永久に止まる上、呼び出し元（main.py）は
+        # start() を try/except で囲っていないため HTTP server 起動自体を
+        # 巻き込みかねない。正規化はべき等な移行処理であり、1回の起動で
+        # 失敗しても致命的ではない（次回起動時に再試行される）。
+        try:
+            changed = declarations.normalize_all_declarations()
+            if changed:
+                logger.info("旧形式 declaration を正規化しました: %d 件", changed)
+        except Exception:
+            logger.exception(
+                "declaration 正規化に失敗しました（thread 起動は継続します）"
+            )
 
         self._spawn("relay-intake", self._run_intake)
         self._spawn("relay-lease-loop", self._run_lease_loop)

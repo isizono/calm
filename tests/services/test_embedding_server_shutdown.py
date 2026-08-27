@@ -201,9 +201,9 @@ def test_module_level_defaults_match_spec():
     """
     import os as _os
     if any(k in _os.environ for k in (
-        "CC_MEMORY_EMBEDDING_TTL_SEC",
-        "CC_MEMORY_EMBEDDING_DRAIN_IDLE_SEC",
-        "CC_MEMORY_EMBEDDING_DRAIN_DEADLINE_SEC",
+        "CALM_EMBEDDING_TTL_SEC",
+        "CALM_EMBEDDING_DRAIN_IDLE_SEC",
+        "CALM_EMBEDDING_DRAIN_DEADLINE_SEC",
     )):
         pytest.skip("env var override active; module-level defaults not observable here")
 
@@ -220,9 +220,9 @@ def test_env_var_overrides_apply_on_reimport(monkeypatch):
     """
     import importlib
 
-    monkeypatch.setenv("CC_MEMORY_EMBEDDING_TTL_SEC", "111")
-    monkeypatch.setenv("CC_MEMORY_EMBEDDING_DRAIN_IDLE_SEC", "22")
-    monkeypatch.setenv("CC_MEMORY_EMBEDDING_DRAIN_DEADLINE_SEC", "333")
+    monkeypatch.setenv("CALM_EMBEDDING_TTL_SEC", "111")
+    monkeypatch.setenv("CALM_EMBEDDING_DRAIN_IDLE_SEC", "22")
+    monkeypatch.setenv("CALM_EMBEDDING_DRAIN_DEADLINE_SEC", "333")
 
     try:
         importlib.reload(embedding_server)
@@ -231,7 +231,7 @@ def test_env_var_overrides_apply_on_reimport(monkeypatch):
         assert embedding_server._DRAIN_DEADLINE_SEC == 333
     finally:
         # 後続テストへ影響しないよう env を剥がしてもう一度 reload
-        monkeypatch.delenv("CC_MEMORY_EMBEDDING_TTL_SEC", raising=False)
-        monkeypatch.delenv("CC_MEMORY_EMBEDDING_DRAIN_IDLE_SEC", raising=False)
-        monkeypatch.delenv("CC_MEMORY_EMBEDDING_DRAIN_DEADLINE_SEC", raising=False)
+        monkeypatch.delenv("CALM_EMBEDDING_TTL_SEC", raising=False)
+        monkeypatch.delenv("CALM_EMBEDDING_DRAIN_IDLE_SEC", raising=False)
+        monkeypatch.delenv("CALM_EMBEDDING_DRAIN_DEADLINE_SEC", raising=False)
         importlib.reload(embedding_server)

@@ -399,8 +399,8 @@ class TestSearchFilter:
         ids = [(r["type"], r["id_raw"]) for r in search_result.get("results", [])]
         assert ("material", retracted_id) not in ids
 
-    def test_undo_does_not_reindex(self, topic):
-        """un-retractはretracted_atをNULLに戻すのみで、search経路への再登録は行わない"""
+    def test_undo_reindexes(self, topic):
+        """un-retract後、retracted_atがNULLに戻ると同時にsearch_indexへ再登録される"""
         from src.services.search_service import search
 
         tid = topic["topic_id"]
@@ -422,19 +422,19 @@ class TestSearchFilter:
             ).fetchone()
             assert row["retracted_at"] is None
 
-            # しかしsearch_indexエントリは復活していない（物理削除は不可逆）
+            # search_indexエントリも再登録される
             si_row = conn.execute(
                 "SELECT id FROM search_index WHERE source_type = 'decision' AND source_id = ?",
                 (decision_id,),
             ).fetchone()
-            assert si_row is None
+            assert si_row is not None
         finally:
             conn.close()
 
-        # search経由でもヒットしない
-        search_result = search("アンリトラクトテストJKL")
+        # search経由でもヒットする
+        search_result = search("アンリトラクトテスト用JKL")
         ids = [(r["type"], r["id_raw"]) for r in search_result.get("results", [])]
-        assert ("decision", decision_id) not in ids
+        assert ("decision", decision_id) in ids
 
 
 class TestPinnedMaterialFilter:

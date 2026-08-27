@@ -21,7 +21,7 @@ from hooks.session_start_hook import _build_relay_inbox_section, _build_session_
 
 @pytest.fixture(autouse=True)
 def relay_session_aware_on(monkeypatch):
-    """本ファイルの大半のテストはCCM_RELAY_SESSION_AWARE=1（ON）時の表示ロジックを
+    """本ファイルの大半のテストはCALM_RELAY_SESSION_AWARE=1（ON）時の表示ロジックを
     検証するため、autouseでデフォルトONにする。OFF時（kill switch）の振る舞いは
     TestEnvVarGateで個別にFalseへ上書きして検証する。"""
     monkeypatch.setattr(ccm_config, "RELAY_SESSION_AWARE_ENABLED", True)
@@ -99,7 +99,7 @@ class TestGateConditions:
 
     def test_does_not_resolve_identity_when_relay_not_configured(self, monkeypatch, tmp_path):
         """relay未構成（token未設定）ならget_relay_identity/
-        resolve_identity_by_ancestry（祖先pidチェーン解決、ps最大5回spawn）を
+        resolve_identity_by_ancestry（祖先pidチェーン解決、ps最大2回spawn）を
         一切呼ばない（tokenチェックがidentity解決より先に実行されるゼロコスト経路）。
         """
         monkeypatch.setattr(relay_config, "get_state_dir", lambda: tmp_path)
@@ -195,7 +195,7 @@ class TestIdentityResolved:
 
 
 class TestEnvVarGate:
-    """CCM_RELAY_SESSION_AWARE（kill switch）の振る舞い。
+    """CALM_RELAY_SESSION_AWARE（kill switch）の振る舞い。
 
     autouse fixtureがデフォルトONにしているため、ここでは個別にFalseへ
     上書きしてOFF時の振る舞いを検証する。

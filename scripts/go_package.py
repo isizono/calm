@@ -23,7 +23,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import re
 import subprocess
 import sys
@@ -37,6 +36,8 @@ import yaml
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
+
+from src.env_compat import env_restore, env_set, env_snapshot  # noqa: E402
 
 SCHEMA_VERSION = 1
 FENCE_LANG = "go-package"
@@ -698,11 +699,13 @@ def cmd_extract(args: argparse.Namespace) -> int:
 
 
 def cmd_shadow_report(args: argparse.Namespace) -> int:
-    # CCM_DB_PATH は呼び出し前の値へ必ず復元する(プロセス内の以後の src.db 呼び出し
+    # DBパスの環境変数は呼び出し前の値へ必ず復元する(プロセス内の以後の src.db 呼び出し
     # -- 同一プロセス内の他テスト・他サブコマンド呼び出しを含む -- への env leak を防ぐ)。
-    previous_db_path = os.environ.get("CCM_DB_PATH")
+    # 新名は旧名(CCM_ / CC_MEMORY_)からフォールバックで読まれるため、控えも復元も
+    # 新旧すべての名前をまとめて扱う。
+    previous_db_env = env_snapshot("CALM_DB_PATH")
     if args.db:
-        os.environ["CCM_DB_PATH"] = args.db
+        env_set("CALM_DB_PATH", args.db)
     try:
         from src.db import get_connection  # 遅延import: このサブコマンドのみ src.db に依存する
 
@@ -720,10 +723,7 @@ def cmd_shadow_report(args: argparse.Namespace) -> int:
             conn.close()
     finally:
         if args.db:
-            if previous_db_path is None:
-                os.environ.pop("CCM_DB_PATH", None)
-            else:
-                os.environ["CCM_DB_PATH"] = previous_db_path
+            env_restore(previous_db_env)
 
     packages: list[dict] = []
     skipped = 0

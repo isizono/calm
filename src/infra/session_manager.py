@@ -4,19 +4,20 @@ HTTPサーバーモードで使用するセッションカウント管理と自�
 セッション数が0になると猶予期間後にサーバーをシャットダウンする。
 """
 import logging
-import os
 import sys
 import threading
 import time
 from typing import Callable, Optional
 
+from src.env_compat import env_get
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_GRACE_PERIOD_SEC = 30
-GRACE_PERIOD_ENV = "CC_MEMORY_AUTO_SHUTDOWN_SEC"
+GRACE_PERIOD_ENV = "CALM_AUTO_SHUTDOWN_SEC"
 
 # liveness TTL: heartbeat（register()の再呼び出し）が途絶したsessionを失効させる
-LIVENESS_TIMEOUT_ENV = "CC_MEMORY_SESSION_LIVENESS_TIMEOUT_SEC"
+LIVENESS_TIMEOUT_ENV = "CALM_SESSION_LIVENESS_TIMEOUT_SEC"
 DEFAULT_LIVENESS_TIMEOUT_SEC = 300.0
 LIVENESS_SWEEP_INTERVAL_SEC = 30.0
 
@@ -30,7 +31,7 @@ def _read_grace_period_sec() -> int:
     モジュール外から ``SessionManager()`` 呼び出し時に評価される想定で、
     ``logging.basicConfig`` 未設定でも警告が確実に出るよう ``print`` で stderr に出す。
     """
-    raw = os.environ.get(GRACE_PERIOD_ENV)
+    raw = env_get(GRACE_PERIOD_ENV)
     if raw is None or raw == "":
         return DEFAULT_GRACE_PERIOD_SEC
     try:
@@ -53,12 +54,12 @@ def _read_grace_period_sec() -> int:
 
 
 def _read_liveness_timeout_sec() -> float:
-    """env `CC_MEMORY_SESSION_LIVENESS_TIMEOUT_SEC` から liveness TTL を読む。
+    """env `CALM_SESSION_LIVENESS_TIMEOUT_SEC` から liveness TTL を読む。
 
     未設定・無効値の場合は既定値にフォールバックする。0 を指定すると
     TTL失効を完全に無効化する（reaperスレッドを起動しない）。
     """
-    raw = os.environ.get(LIVENESS_TIMEOUT_ENV)
+    raw = env_get(LIVENESS_TIMEOUT_ENV)
     if raw is None or raw == "":
         return DEFAULT_LIVENESS_TIMEOUT_SEC
     try:
@@ -88,12 +89,12 @@ class SessionManager:
     register()の再呼び出し（heartbeat）はlast_seenを更新し、一定TTLを超えてheartbeatが
     途絶したsessionはliveness reaperがunregister()と同じ経路で自動的に失効させる。
 
-    ``grace_period_sec`` が ``None`` の場合は env ``CC_MEMORY_AUTO_SHUTDOWN_SEC`` から
+    ``grace_period_sec`` が ``None`` の場合は env ``CALM_AUTO_SHUTDOWN_SEC`` から
     値を読む。env で 0 を指定すると auto-shutdown を完全に無効化し、ウォッチドッグ
     スレッドの起動とシャットダウン発火を一切行わない。
 
     ``liveness_timeout_sec`` が ``None`` の場合は env
-    ``CC_MEMORY_SESSION_LIVENESS_TIMEOUT_SEC`` から値を読む。0 を指定すると
+    ``CALM_SESSION_LIVENESS_TIMEOUT_SEC`` から値を読む。0 を指定すると
     liveness reaperスレッド自体を起動しない。
     """
 
@@ -101,6 +102,7 @@ class SessionManager:
         self,
         grace_period_sec: Optional[int] = None,
         liveness_timeout_sec: Optional[float] = None,
+        on_session_removed: Optional[Callable[[str], None]] = None,
     ):
         self._active_sessions: set[str] = set()
         self._last_seen: dict[str, float] = {}
@@ -113,6 +115,7 @@ class SessionManager:
             liveness_timeout_sec if liveness_timeout_sec is not None
             else _read_liveness_timeout_sec()
         )
+        self._on_session_removed = on_session_removed
         self._shutdown_callback: Optional[Callable[[], None]] = None
         self._shutdown_event = threading.Event()
         self._cancel_event = threading.Event()
@@ -177,10 +180,26 @@ class SessionManager:
             return False
 
         logger.info(f"Session unregistered: {session_id} (active: {count})")
+        self._notify_removed(session_id)
 
         if count == 0:
             self._start_grace_timer()
         return True
+
+    def _notify_removed(self, session_id: str) -> None:
+        """session除去後（ロック解放後）に on_session_removed コールバックを呼ぶ。
+
+        unregister() と liveness reaper 経由の失効（_evict_if_still_stale）の
+        両方の除去経路から呼ばれる共通の通知点。ロック保持中に呼ぶと
+        コールバック側の I/O が register() の heartbeat をブロックしうるため、
+        必ずロック解放後に呼び出すこと。
+        """
+        if self._on_session_removed is None:
+            return
+        try:
+            self._on_session_removed(session_id)
+        except Exception:
+            logger.exception("session removal hook failed: session=%s", session_id)
 
     def _remove_session_locked(self, session_id: str) -> Optional[int]:
         """``self._lock`` 保持中に呼び出すこと。
@@ -261,6 +280,7 @@ class SessionManager:
         if count is None:
             return
         logger.warning(f"Session liveness timeout, evicting: {session_id} (active: {count})")
+        self._notify_removed(session_id)
         if count == 0:
             self._start_grace_timer()
 

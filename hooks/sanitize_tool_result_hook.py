@@ -7,7 +7,7 @@ hookSpecificOutput.updatedToolOutput で stdout へ返す。updatedToolOutput �
 (理由は main() 内の分岐直上コメントを参照)。
 
 opt-out:
-- 環境変数 `CC_MEMORY_SANITIZE_DISABLE=1` set: 即 exit 0
+- 環境変数 `CALM_SANITIZE_DISABLE=1` set: 即 exit 0
 - cwd が cc-memory リポジトリ内 (pyproject.toml `[project].name` が `_REPO_PROJECT_NAMES`
   のいずれかに一致することを上方向探索で検出): 即 exit 0
 
@@ -20,7 +20,6 @@ dangling (target 不在) は `[deleted X#NNN]` 形式へ変換する。
 failure イベントを citation_event_log に記録 + exit 0 (非ブロック)。
 """
 import json
-import os
 import sqlite3
 import sys
 import tomllib
@@ -31,7 +30,8 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 from hooks.citation_event_log import log_event
-from hooks.hook_transcript import _is_cc_memory_tool
+from hooks.hook_transcript import _is_calm_tool
+from src.env_compat import env_get
 from src.services.citations_pure import (
     check_target_exists,
     convert_raw_to_cite,
@@ -69,7 +69,7 @@ def _is_in_cc_memory_repo(cwd: str | None) -> bool:
 
 
 def _resolve_db_path() -> str:
-    return os.environ.get("CC_MEMORY_DB_PATH", str(DEFAULT_DB_PATH))
+    return env_get("CALM_DB_PATH", str(DEFAULT_DB_PATH))
 
 
 def _sanitize_content(content: str, db_path: str) -> tuple[str, dict]:
@@ -101,7 +101,7 @@ def main() -> int:
     transcript_path: str | None = None
     tool_name: str | None = None
     try:
-        if os.environ.get("CC_MEMORY_SANITIZE_DISABLE") == "1":
+        if env_get("CALM_SANITIZE_DISABLE") == "1":
             return 0
         raw = sys.stdin.read()
         if not raw.strip():
@@ -110,7 +110,7 @@ def main() -> int:
         session_id = data.get("session_id")
         transcript_path = data.get("transcript_path")
         tool_name = data.get("tool_name", "")
-        if not _is_cc_memory_tool(tool_name):
+        if not _is_calm_tool(tool_name):
             return 0
         cwd = data.get("cwd", "")
         if _is_in_cc_memory_repo(cwd):

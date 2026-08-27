@@ -584,7 +584,7 @@ def restore_snapshot(
 ) -> RestoreResult:
     """スナップショットからDBを復元する。
 
-    db_pathが未指定の場合はCCM_DB_PATHまたはデフォルトパスから解決する。
+    db_pathが未指定の場合はCALM_DB_PATHまたはデフォルトパスから解決する。
 
     防護フロー:
       1. サーバー稼働チェック（lock file + /health）。稼働中はforce=Trueでのみ続行
@@ -783,7 +783,7 @@ def _cmd_restore(args: argparse.Namespace) -> int:
 def main() -> None:
     """CLI: list / take / verify / restore サブコマンド"""
     parser = argparse.ArgumentParser(description="cc-memory DBスナップショット管理CLI")
-    parser.add_argument("--db-path", dest="db_path", default=None, help="対象DBのパス（省略時はCCM_DB_PATH等から解決）")
+    parser.add_argument("--db-path", dest="db_path", default=None, help="対象DBのパス（省略時はCALM_DB_PATH等から解決）")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("list", help="全kind横断のスナップショット一覧を表示する")
