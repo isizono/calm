@@ -25,7 +25,7 @@ if str(_PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(_PLUGIN_ROOT))
 
 from src.env_compat import env_get  # noqa: E402
-from src.harness import ClaudeCodeHarness  # noqa: E402
+from src.harness import select_harness  # noqa: E402
 from src.services.internal_id_patterns import (  # noqa: E402
     RAW_CITE_CODE_PATTERN,
     RAW_CITE_FULLWORD_PATTERN,
@@ -218,7 +218,7 @@ def _log_event(record: dict) -> None:
 
 
 def main() -> None:
-    harness = ClaudeCodeHarness(hook_event_name="PreToolUse")
+    harness = select_harness(hook_event_name="PreToolUse")
     try:
         event = harness.read_hook_input()
         if not event:

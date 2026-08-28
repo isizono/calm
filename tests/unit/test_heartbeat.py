@@ -11,6 +11,12 @@ import pytest
 
 from hooks.hook_state import HookState
 from hooks.hook_transcript import extract_checkin_activity_id, extract_last_activity_id
+from src.harness import ClaudeCodeHarness
+
+
+def _read_entries(path: str):
+    """extract_last_activity_id用に実運用と同じ経路でtranscriptを読む。"""
+    return ClaudeCodeHarness().read_transcript_entries(path)
 from src.db import init_database, get_connection
 
 
@@ -211,7 +217,7 @@ class TestExtractLastActivityId:
             ),
         ]
         path = _write_transcript(tmp_path, entries)
-        assert extract_last_activity_id(path) == 42
+        assert extract_last_activity_id(_read_entries(path)) == 42
 
     def test_add_activity_tool(self, tmp_path):
         """add_activityのtool_resultからactivity_idを取得"""
@@ -224,7 +230,7 @@ class TestExtractLastActivityId:
             _make_tool_result_entry("toolu_add_1", {"activity_id": 99, "title": "new"}),
         ]
         path = _write_transcript(tmp_path, entries)
-        assert extract_last_activity_id(path) == 99
+        assert extract_last_activity_id(_read_entries(path)) == 99
 
     def test_add_activity_without_matching_result(self, tmp_path):
         """add_activityのtool_resultがない場合はNone"""
@@ -236,7 +242,7 @@ class TestExtractLastActivityId:
             ),
         ]
         path = _write_transcript(tmp_path, entries)
-        assert extract_last_activity_id(path) is None
+        assert extract_last_activity_id(_read_entries(path)) is None
 
     def test_check_in_overrides_add_activity(self, tmp_path):
         """add_activityの後にcheck_inがあれば、check_inのactivity_idが優先"""
@@ -254,16 +260,16 @@ class TestExtractLastActivityId:
             ),
         ]
         path = _write_transcript(tmp_path, entries)
-        assert extract_last_activity_id(path) == 20
+        assert extract_last_activity_id(_read_entries(path)) == 20
 
     def test_no_transcript_file(self, tmp_path):
         """transcriptファイルが存在しない場合はNone"""
-        assert extract_last_activity_id(str(tmp_path / "nonexistent.jsonl")) is None
+        assert extract_last_activity_id(_read_entries(str(tmp_path / "nonexistent.jsonl"))) is None
 
     def test_empty_transcript(self, tmp_path):
         """空のtranscriptファイルの場合はNone"""
         path = _write_transcript(tmp_path, [])
-        assert extract_last_activity_id(path) is None
+        assert extract_last_activity_id(_read_entries(path)) is None
 
     def test_result_content_as_string(self, tmp_path):
         """tool_resultのcontentが文字列（JSON）の場合もパースできる"""
@@ -287,7 +293,7 @@ class TestExtractLastActivityId:
             },
         ]
         path = _write_transcript(tmp_path, entries)
-        assert extract_last_activity_id(path) == 77
+        assert extract_last_activity_id(_read_entries(path)) == 77
 
     def test_remote_prefix_check_in(self, tmp_path):
         """リモートMCPプレフィックスのcheck_inも検出できる"""
@@ -299,7 +305,7 @@ class TestExtractLastActivityId:
             ),
         ]
         path = _write_transcript(tmp_path, entries)
-        assert extract_last_activity_id(path) == 609
+        assert extract_last_activity_id(_read_entries(path)) == 609
 
     def test_remote_prefix_add_activity(self, tmp_path):
         """リモートMCPプレフィックスのadd_activityも検出できる"""
@@ -312,7 +318,7 @@ class TestExtractLastActivityId:
             _make_tool_result_entry("toolu_remote_2", {"activity_id": 123}),
         ]
         path = _write_transcript(tmp_path, entries)
-        assert extract_last_activity_id(path) == 123
+        assert extract_last_activity_id(_read_entries(path)) == 123
 
 
 # ========================================

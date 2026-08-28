@@ -117,7 +117,7 @@ class ClaudeCodeHarness(Harness):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _to_entry(raw: dict) -> TranscriptEntry:
+    def to_entry(raw: dict) -> TranscriptEntry:
         """Claude Codeのフラット形式エントリを中間表現へ正規化する。"""
         kind = _KIND_BY_TYPE.get(raw.get("type", ""), "other")
         content = raw.get("message", {}).get("content", [])
@@ -166,7 +166,7 @@ class ClaudeCodeHarness(Harness):
                 continue
             if not isinstance(raw, dict):
                 continue
-            entries.append(self._to_entry(raw))
+            entries.append(self.to_entry(raw))
 
         return entries, new_offset, offset_reset
 

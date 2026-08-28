@@ -22,7 +22,7 @@ if str(_project_root) not in sys.path:
 
 from src import config
 from src.db import get_connection, get_db_path
-from src.harness import ClaudeCodeHarness
+from src.harness import select_harness
 from src.services.activity_service import (
     get_active_domains_with_conn,
     get_active_activities_by_tag_with_conn,
@@ -556,7 +556,7 @@ def _build_session_context(
 
 
 def main() -> None:
-    harness = ClaudeCodeHarness(hook_event_name="SessionStart")
+    harness = select_harness(hook_event_name="SessionStart")
     try:
         session_id: str | None = None
         source: str | None = None

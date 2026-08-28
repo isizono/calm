@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from src.harness import ClaudeCodeHarness
 from hooks.hook_transcript import (
     _extract_short_name,
     _is_calm_tool,
@@ -16,6 +17,16 @@ from hooks.hook_transcript import (
 
 
 # --- ヘルパー ---
+
+
+def _entry(raw: dict):
+    """フラット形式dictをClaudeCodeHarnessの正規化で中間表現へ変換する。
+
+    is_user_message / extract_events はTranscriptEntryを入力に取るため、
+    テストのフラット形式フィクスチャは実運用と同じ正規化を通して渡す。
+    """
+    return ClaudeCodeHarness.to_entry(raw)
+
 
 
 def _write_transcript(lines: list[dict], path: Path) -> None:
@@ -239,23 +250,23 @@ class TestGetTranscriptInfo:
 class TestIsUserMessage:
     def test_string_content_is_user_message(self):
         entry = {"type": "user", "message": {"content": "hello"}}
-        assert is_user_message(entry) is True
+        assert is_user_message(_entry(entry)) is True
 
     def test_list_content_without_tool_result_is_user_message(self):
         entry = {"type": "user", "message": {"content": [
             {"type": "text", "text": "hello"},
         ]}}
-        assert is_user_message(entry) is True
+        assert is_user_message(_entry(entry)) is True
 
     def test_tool_result_is_not_user_message(self):
         entry = {"type": "user", "message": {"content": [
             {"type": "tool_result", "tool_use_id": "toolu_123", "content": "result"},
         ]}}
-        assert is_user_message(entry) is False
+        assert is_user_message(_entry(entry)) is False
 
     def test_assistant_is_not_user_message(self):
         entry = {"type": "assistant", "message": {"content": "hello"}}
-        assert is_user_message(entry) is False
+        assert is_user_message(_entry(entry)) is False
 
     def test_is_meta_entry_is_not_user_message(self):
         """isMeta=trueのエントリ（スキル内容注入等）はUser Messageではない"""
@@ -266,7 +277,7 @@ class TestIsUserMessage:
                 {"type": "text", "text": "Base directory for this skill: ..."},
             ]},
         }
-        assert is_user_message(entry) is False
+        assert is_user_message(_entry(entry)) is False
 
     def test_is_meta_false_is_user_message(self):
         """isMeta=falseは通常のUser Message"""
@@ -275,7 +286,7 @@ class TestIsUserMessage:
             "isMeta": False,
             "message": {"content": "hello"},
         }
-        assert is_user_message(entry) is True
+        assert is_user_message(_entry(entry)) is True
 
 
 # --- extract_events: isMeta handling ---
@@ -297,7 +308,7 @@ class TestExtractEventsIsMeta:
                 {"type": "text", "text": "response"},
             ]}},
         ]
-        events, current_turn = extract_events(entries, 0)
+        events, current_turn = extract_events([_entry(e) for e in entries], 0)
         # turn 1のみ（isMeta=trueでturn 2にならない）
         assert current_turn == 1
         skill_events = [e for e in events if e["e"] == "skill"]
@@ -335,7 +346,7 @@ class TestRemoteMcpPrefix:
                 tool_inputs=[{"activity_id": 609}],
             ),
         ]
-        events, _ = extract_events(entries, 0)
+        events, _ = extract_events([_entry(e) for e in entries], 0)
         tool_events = [e for e in events if e["e"] == "tool"]
         assert len(tool_events) == 1
         assert tool_events[0]["name"] == "check_in"
@@ -347,7 +358,7 @@ class TestRemoteMcpPrefix:
             {"type": "user", "message": {"content": "hi"}},
             _make_assistant_entry(tool_calls=[f"{_REMOTE_PREFIX}add_logs"]),
         ]
-        events, _ = extract_events(entries, 0)
+        events, _ = extract_events([_entry(e) for e in entries], 0)
         tool_events = [e for e in events if e["e"] == "tool"]
         assert len(tool_events) == 1
         assert tool_events[0]["name"] == "add_logs"
@@ -358,7 +369,7 @@ class TestRemoteMcpPrefix:
             {"type": "user", "message": {"content": "hi"}},
             _make_assistant_entry(tool_calls=["mcp__some_other_tool__search"]),
         ]
-        events, _ = extract_events(entries, 0)
+        events, _ = extract_events([_entry(e) for e in entries], 0)
         tool_events = [e for e in events if e["e"] == "tool"]
         assert len(tool_events) == 0
 
@@ -428,7 +439,7 @@ class TestLegacyToolNameMarker:
                 tool_inputs=[{"activity_id": 609}],
             ),
         ]
-        events, _ = extract_events(entries, 0)
+        events, _ = extract_events([_entry(e) for e in entries], 0)
         tool_events = [e for e in events if e["e"] == "tool"]
         assert len(tool_events) == 1
         assert tool_events[0]["name"] == "check_in"
@@ -446,7 +457,7 @@ class TestExtractAddDecisionsTopicIds:
                 tool_inputs=[{"items": [{"topic_id": 42, "decision": "x", "reason": "y"}]}],
             ),
         ]
-        events, _ = extract_events(entries, 0)
+        events, _ = extract_events([_entry(e) for e in entries], 0)
         tool_events = [e for e in events if e["e"] == "tool" and e["name"] == "add_decisions"]
         assert len(tool_events) == 1
         assert tool_events[0]["topic_ids"] == [42]
@@ -465,7 +476,7 @@ class TestExtractAddDecisionsTopicIds:
                 }],
             ),
         ]
-        events, _ = extract_events(entries, 0)
+        events, _ = extract_events([_entry(e) for e in entries], 0)
         tool_events = [e for e in events if e["e"] == "tool" and e["name"] == "add_decisions"]
         assert tool_events[0]["topic_ids"] == [1, 2, 1]
 
@@ -477,7 +488,7 @@ class TestExtractAddDecisionsTopicIds:
                 tool_inputs=[{"items": []}],
             ),
         ]
-        events, _ = extract_events(entries, 0)
+        events, _ = extract_events([_entry(e) for e in entries], 0)
         tool_events = [e for e in events if e["e"] == "tool" and e["name"] == "add_decisions"]
         assert "topic_ids" not in tool_events[0]
 
@@ -494,6 +505,6 @@ class TestExtractAddDecisionsTopicIds:
                 }],
             ),
         ]
-        events, _ = extract_events(entries, 0)
+        events, _ = extract_events([_entry(e) for e in entries], 0)
         tool_events = [e for e in events if e["e"] == "tool" and e["name"] == "add_decisions"]
         assert tool_events[0]["topic_ids"] == [7]
