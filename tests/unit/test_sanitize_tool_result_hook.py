@@ -443,3 +443,35 @@ def test_case_13_hook_completes_under_perf_budget(fixture_db):
     _run_hook(payload)
     elapsed = time.perf_counter() - t0
     assert elapsed < 3.0, f"hook 実行が {elapsed:.3f}s かかった (許容 < 3.0s)"
+
+
+# ---------------------------------------------------------------------------
+# Codexハーネス: updatedToolOutput未サポート → 応答も記録も行わない
+# ---------------------------------------------------------------------------
+
+
+def test_codex_harness_emits_nothing_and_logs_nothing(fixture_db, monkeypatch):
+    """CALM_HARNESS=codexではtool結果を書き換えられない（emit_updated_tool_output
+    がFalse）ため、応答を出力せず、citation_event_logにも記録しない。
+
+    実際には書き換わっていない内容をsanitize済みイベントとして記録すると、
+    ログとtranscript実態が乖離するのを防ぐ契約。
+    """
+    monkeypatch.setenv("CALM_HARNESS", "codex")
+    stdout, code = _run_hook(_payload("ref to M#1 and D#1 here"))
+    assert code == 0
+    assert stdout == ""
+    assert _read_citation_events(fixture_db) == []
+
+
+def test_claude_code_harness_output_is_unchanged(fixture_db, monkeypatch):
+    """CALM_HARNESS未設定（Claude Code）では従来通りupdatedToolOutputを出力する。"""
+    monkeypatch.delenv("CALM_HARNESS", raising=False)
+    stdout, code = _run_hook(_payload("ref to M#1"))
+    assert code == 0
+    out = json.loads(stdout)
+    assert out["hookSpecificOutput"]["hookEventName"] == "PostToolUse"
+    assert out["hookSpecificOutput"]["updatedToolOutput"]["content"] == [
+        {"type": "text", "text": "ref to {{cite:M#1}}"}
+    ]
+    assert len(_read_citation_events(fixture_db)) == 1
