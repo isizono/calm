@@ -4,6 +4,7 @@ subprocess呼び出し(lsof/ps/kill/Popen)を外部境界としてmonkeypatchし
 プロセス入れ替え判定ロジック・キャッシュ削除の契約を検証する。
 """
 import subprocess
+from types import SimpleNamespace
 
 from src.services import restart_service
 
@@ -181,6 +182,7 @@ def test_restart_mcp_server_success_flow(monkeypatch, tmp_path):
     def fake_popen(cmd, **kwargs):
         popen_calls.append((cmd, kwargs))
         state["new_server_started"] = True
+        return SimpleNamespace(pid=2222)
 
     monkeypatch.setattr(restart_service, "find_listen_pids", fake_find_listen_pids)
     monkeypatch.setattr(
@@ -190,6 +192,7 @@ def test_restart_mcp_server_success_flow(monkeypatch, tmp_path):
     monkeypatch.setattr(restart_service, "kill_pids", fake_kill_pids)
     monkeypatch.setattr(restart_service.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(restart_service.time, "sleep", lambda _: None)
+    monkeypatch.setattr(restart_service, "LAUNCHER_LOG_PATH", tmp_path / "logs" / "restart_launcher.log")
 
     result = restart_service.restart_mcp_server(tmp_path, poll_interval_sec=0)
 
@@ -219,9 +222,11 @@ def test_restart_mcp_server_skips_kill_when_nothing_was_listening(monkeypatch, t
 
     def fake_popen(cmd, **kwargs):
         state["new_server_started"] = True
+        return SimpleNamespace(pid=2222)
 
     monkeypatch.setattr(restart_service.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(restart_service.time, "sleep", lambda _: None)
+    monkeypatch.setattr(restart_service, "LAUNCHER_LOG_PATH", tmp_path / "logs" / "restart_launcher.log")
 
     result = restart_service.restart_mcp_server(tmp_path, poll_interval_sec=0)
 
@@ -275,8 +280,10 @@ def test_restart_mcp_server_replaces_old_process_that_ignores_sigterm(monkeypatc
 
     def fake_popen(cmd, **kwargs):
         new_server_started["flag"] = True
+        return SimpleNamespace(pid=2222)
 
     monkeypatch.setattr(restart_service.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(restart_service, "LAUNCHER_LOG_PATH", tmp_path / "logs" / "restart_launcher.log")
 
     result = restart_service.restart_mcp_server(tmp_path)
 
@@ -300,9 +307,19 @@ def test_restart_mcp_server_proceeds_to_start_new_process_even_if_old_process_ne
     monkeypatch.setattr(restart_service.os, "kill", lambda pid, sig: None)  # 常に成功=常に生存
     monkeypatch.setattr(restart_service, "find_listen_pids", lambda port: [1111])
     monkeypatch.setattr(restart_service, "process_start_signature", lambda pid: "old-sig")
+    monkeypatch.setattr(restart_service, "LAUNCHER_LOG_PATH", tmp_path / "logs" / "restart_launcher.log")
 
     popen_calls = []
-    monkeypatch.setattr(restart_service.subprocess, "Popen", lambda cmd, **kwargs: popen_calls.append(cmd))
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append(cmd)
+        return SimpleNamespace(pid=9999)
+
+    monkeypatch.setattr(restart_service.subprocess, "Popen", fake_popen)
+
+    killpg_calls = []
+    monkeypatch.setattr(restart_service.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(restart_service.os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
 
     result = restart_service.restart_mcp_server(
         tmp_path, start_timeout_sec=1, poll_interval_sec=0.5, kill_wait_sec=1,
@@ -312,13 +329,19 @@ def test_restart_mcp_server_proceeds_to_start_new_process_even_if_old_process_ne
     assert result.ok is False
     assert result.old_pids == [1111]
     assert "did not come up on port 52837" in result.detail
+    assert killpg_calls == [(9999, restart_service.signal.SIGKILL)]  # タイムアウト後は子プロセスグループを後始末する
 
 
 def test_restart_mcp_server_times_out_when_server_never_comes_up(monkeypatch, tmp_path):
     monkeypatch.setattr(restart_service, "find_listen_pids", lambda port: [])
     monkeypatch.setattr(restart_service, "kill_pids", lambda pids: None)
-    monkeypatch.setattr(restart_service.subprocess, "Popen", lambda cmd, **kwargs: None)
+    monkeypatch.setattr(restart_service, "LAUNCHER_LOG_PATH", tmp_path / "logs" / "restart_launcher.log")
+    monkeypatch.setattr(restart_service.subprocess, "Popen", lambda cmd, **kwargs: SimpleNamespace(pid=4321))
     monkeypatch.setattr(restart_service.time, "sleep", lambda _: None)
+
+    killpg_calls = []
+    monkeypatch.setattr(restart_service.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(restart_service.os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
 
     result = restart_service.restart_mcp_server(
         tmp_path, start_timeout_sec=0, poll_interval_sec=0, kill_wait_sec=0,
@@ -327,6 +350,59 @@ def test_restart_mcp_server_times_out_when_server_never_comes_up(monkeypatch, tm
     assert result.ok is False
     assert result.new_pids == []
     assert "did not come up on port 52837" in result.detail
+    assert killpg_calls == [(4321, restart_service.signal.SIGKILL)]
+
+
+def test_restart_mcp_server_ignores_process_lookup_error_when_killing_process_group(monkeypatch, tmp_path):
+    """killpgが対象プロセスの消滅を示すProcessLookupErrorを送出しても後始末全体は失敗にしない"""
+    monkeypatch.setattr(restart_service, "find_listen_pids", lambda port: [])
+    monkeypatch.setattr(restart_service, "kill_pids", lambda pids: None)
+    monkeypatch.setattr(restart_service, "LAUNCHER_LOG_PATH", tmp_path / "logs" / "restart_launcher.log")
+    monkeypatch.setattr(restart_service.subprocess, "Popen", lambda cmd, **kwargs: SimpleNamespace(pid=4321))
+    monkeypatch.setattr(restart_service.time, "sleep", lambda _: None)
+
+    def fake_killpg(pgid, sig):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(restart_service.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(restart_service.os, "killpg", fake_killpg)
+
+    result = restart_service.restart_mcp_server(
+        tmp_path, start_timeout_sec=0, poll_interval_sec=0, kill_wait_sec=0,
+    )
+
+    assert result.ok is False
+    assert "did not come up on port 52837" in result.detail
+
+
+def test_restart_mcp_server_writes_launcher_output_to_log_file(monkeypatch, tmp_path):
+    """launcherのstdout/stderrをDEVNULLではなくログファイルへまとめる"""
+    log_path = tmp_path / "logs" / "restart_launcher.log"
+    monkeypatch.setattr(restart_service, "LAUNCHER_LOG_PATH", log_path)
+
+    state = {"new_server_started": False}
+
+    def fake_find_listen_pids(port):
+        return [2222] if state["new_server_started"] else []
+
+    monkeypatch.setattr(restart_service, "find_listen_pids", fake_find_listen_pids)
+    monkeypatch.setattr(restart_service, "process_start_signature", lambda pid: "sig")
+
+    popen_kwargs = {}
+
+    def fake_popen(cmd, **kwargs):
+        popen_kwargs.update(kwargs)
+        state["new_server_started"] = True
+        return SimpleNamespace(pid=1)
+
+    monkeypatch.setattr(restart_service.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(restart_service.time, "sleep", lambda _: None)
+
+    restart_service.restart_mcp_server(tmp_path, poll_interval_sec=0)
+
+    assert log_path.parent.is_dir()
+    assert popen_kwargs["stdout"].name == str(log_path)
+    assert popen_kwargs["stderr"] is popen_kwargs["stdout"]
 
 
 def test_stop_embedding_server_kills_found_pids(monkeypatch):
@@ -354,12 +430,12 @@ def test_stop_embedding_server_noop_when_not_running(monkeypatch):
     assert killed == []
 
 
-def test_clean_caches_removes_plugin_cache_and_pycache(monkeypatch, tmp_path):
-    plugin_cache = tmp_path / "plugin_cache"
-    plugin_cache.mkdir()
-    (plugin_cache / "dummy.txt").write_text("x")
-    monkeypatch.setattr(restart_service, "PLUGIN_CACHE_DIR", plugin_cache)
+def test_clean_caches_removes_plugin_cache_and_pycache(tmp_path):
+    """__pycache__ディレクトリを再帰的に削除する。
 
+    プラグインキャッシュ削除ロジックは、restart_serviceが自身の実行基盤
+    (プラグインのコード・venv)を削除しうる危険な機能だったため撤去済み。
+    """
     project_root = tmp_path / "project"
     pycache = project_root / "src" / "__pycache__"
     pycache.mkdir(parents=True)
@@ -367,20 +443,144 @@ def test_clean_caches_removes_plugin_cache_and_pycache(monkeypatch, tmp_path):
 
     result = restart_service.clean_caches(project_root)
 
-    assert result["removed_plugin_cache"] is True
-    assert not plugin_cache.exists()
-    assert result["removed_pycache_dirs"] == [str(pycache)]
+    assert result == {"removed_pycache_dirs": [str(pycache)]}
     assert not pycache.exists()
 
 
-def test_clean_caches_handles_missing_plugin_cache_dir(monkeypatch, tmp_path):
-    plugin_cache = tmp_path / "nonexistent"
-    monkeypatch.setattr(restart_service, "PLUGIN_CACHE_DIR", plugin_cache)
-
+def test_clean_caches_handles_missing_plugin_cache_dir(tmp_path):
+    """__pycache__が1つも無いプロジェクトルートでもエラーにならない。"""
     project_root = tmp_path / "project"
     project_root.mkdir()
 
     result = restart_service.clean_caches(project_root)
 
-    assert result["removed_plugin_cache"] is False
-    assert result["removed_pycache_dirs"] == []
+    assert result == {"removed_pycache_dirs": []}
+
+
+def test_clean_caches_skips_venv_pycache(tmp_path):
+    """.venv配下の__pycache__は削除対象から除外する。
+
+    直後に起動する新規サーバーが依存パッケージを全て再コンパイルする
+    事態を避けるため。
+    """
+    project_root = tmp_path / "project"
+    venv_pycache = project_root / ".venv" / "lib" / "site-packages" / "foo" / "__pycache__"
+    venv_pycache.mkdir(parents=True)
+    (venv_pycache / "foo.pyc").write_text("x")
+
+    src_pycache = project_root / "src" / "__pycache__"
+    src_pycache.mkdir(parents=True)
+    (src_pycache / "bar.pyc").write_text("x")
+
+    result = restart_service.clean_caches(project_root)
+
+    assert result == {"removed_pycache_dirs": [str(src_pycache)]}
+    assert venv_pycache.exists()
+    assert not src_pycache.exists()
+
+
+def test_plugin_cache_dir_removed_from_module():
+    """再起動スクリプトが自身の実行基盤を削除しうる機能は撤去済み。"""
+    assert not hasattr(restart_service, "PLUGIN_CACHE_DIR")
+
+
+def test_sync_dependencies_success(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(cmd, 0, stdout="Resolved 42 packages\n", stderr="")
+
+    monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
+
+    result = restart_service.sync_dependencies(tmp_path)
+
+    assert result.ok is True
+    assert captured["cmd"] == ["uv", "sync", "--directory", str(tmp_path)]
+    assert captured["kwargs"]["timeout"] == restart_service.DEFAULT_SYNC_TIMEOUT_SEC
+
+
+def test_sync_dependencies_failure_returncode(monkeypatch, tmp_path):
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="error: lock file mismatch")
+
+    monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
+
+    result = restart_service.sync_dependencies(tmp_path)
+
+    assert result.ok is False
+    assert "lock file mismatch" in result.detail
+
+
+def test_sync_dependencies_timeout(monkeypatch, tmp_path):
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+    monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
+
+    result = restart_service.sync_dependencies(tmp_path, timeout_sec=1.0)
+
+    assert result.ok is False
+    assert "timed out" in result.detail
+
+
+def test_restart_all_calls_in_expected_order(monkeypatch, tmp_path):
+    """uv sync → キャッシュ掃除 → MCP再起動 → embedding停止、の順で呼ばれることを検証する。
+
+    uv syncとキャッシュ掃除を旧サーバー稼働中に済ませ、
+    kill〜起動〜監視のダウンタイムを最小化する狙いのため、この順序が重要。
+    """
+    call_order = []
+
+    def fake_sync_dependencies(project_root):
+        call_order.append("sync")
+        return restart_service.SyncResult(True, 1.5, "synced")
+
+    def fake_clean_caches(project_root):
+        call_order.append("clean_caches")
+        return {"removed_pycache_dirs": []}
+
+    def fake_restart_mcp_server(project_root):
+        call_order.append("restart_mcp_server")
+        return restart_service.RestartResult(True, [1111], [2222], "restarted")
+
+    def fake_stop_embedding_server():
+        call_order.append("stop_embedding_server")
+        return []
+
+    monkeypatch.setattr(restart_service, "sync_dependencies", fake_sync_dependencies)
+    monkeypatch.setattr(restart_service, "clean_caches", fake_clean_caches)
+    monkeypatch.setattr(restart_service, "restart_mcp_server", fake_restart_mcp_server)
+    monkeypatch.setattr(restart_service, "stop_embedding_server", fake_stop_embedding_server)
+
+    result = restart_service.restart_all(tmp_path)
+
+    assert call_order == ["sync", "clean_caches", "restart_mcp_server", "stop_embedding_server"]
+    assert result["uv_sync"] == {"ok": True, "duration_sec": 1.5, "detail": "synced"}
+    assert result["mcp_server"]["ok"] is True
+    assert result["embedding_server"] == {"stopped_pids": []}
+    assert result["caches"] == {"removed_pycache_dirs": []}
+
+
+def test_restart_all_continues_to_mcp_restart_when_uv_sync_fails(monkeypatch, tmp_path):
+    """uv syncが失敗しても後続のMCP再起動は試行し、成否は結果に含めて返す"""
+    def fake_sync_dependencies(project_root):
+        return restart_service.SyncResult(False, 0.1, "uv sync failed")
+
+    mcp_restart_called = []
+
+    def fake_restart_mcp_server(project_root):
+        mcp_restart_called.append(project_root)
+        return restart_service.RestartResult(True, [], [2222], "restarted")
+
+    monkeypatch.setattr(restart_service, "sync_dependencies", fake_sync_dependencies)
+    monkeypatch.setattr(restart_service, "clean_caches", lambda project_root: {"removed_pycache_dirs": []})
+    monkeypatch.setattr(restart_service, "restart_mcp_server", fake_restart_mcp_server)
+    monkeypatch.setattr(restart_service, "stop_embedding_server", lambda: [])
+
+    result = restart_service.restart_all(tmp_path)
+
+    assert mcp_restart_called == [tmp_path]
+    assert result["uv_sync"]["ok"] is False
+    assert result["mcp_server"]["ok"] is True

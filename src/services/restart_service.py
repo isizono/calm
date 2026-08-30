@@ -21,12 +21,13 @@ from src.services.embedding_service import PORT as EMBEDDING_SERVER_PORT
 
 MCP_PORT = HTTP_PORT
 EMBEDDING_PORT = EMBEDDING_SERVER_PORT
-PLUGIN_CACHE_DIR = Path.home() / ".claude" / "plugins" / "cache" / "claude-code-memory-marketplace"
+LAUNCHER_LOG_PATH = Path.home() / ".cc-memory" / "logs" / "restart_launcher.log"
 
 DEFAULT_START_TIMEOUT_SEC = 30.0
 DEFAULT_POLL_INTERVAL_SEC = 0.5
 DEFAULT_KILL_WAIT_SEC = 10.0
 DEFAULT_KILL_ESCALATE_SEC = 5.0
+DEFAULT_SYNC_TIMEOUT_SEC = 600.0
 SUBPROCESS_TIMEOUT_SEC = 5.0
 
 
@@ -113,6 +114,44 @@ class RestartResult(NamedTuple):
     detail: str
 
 
+class SyncResult(NamedTuple):
+    ok: bool
+    duration_sec: float
+    detail: str
+
+
+def sync_dependencies(
+    project_root: Path,
+    *,
+    timeout_sec: float = DEFAULT_SYNC_TIMEOUT_SEC,
+) -> SyncResult:
+    """`uv sync` でvenvを再構築する。
+
+    旧サーバーがまだポートを握っている間に実行することで、後続の
+    kill→起動→30秒監視のダウンタイムからvenv構築時間を切り離す。
+    失敗しても呼び出し側は後続の再起動処理を続行してよい。
+    """
+    # 実行中のインタープリタ自体がproject_root配下の.venvから起動している
+    # ケース(uv run --directory経由の起動)があるため、この呼び出しの後に
+    # 新規の外部パッケージimportを追加しない。sync前に読み込み済みのモジュールは
+    # sys.modulesにキャッシュされ影響を受けないが、未import分をここより後で
+    # 遅延importすると、venv差し替え中の欠損ファイルを踏む可能性がある。
+    start = time.monotonic()
+    try:
+        result = subprocess.run(
+            ["uv", "sync", "--directory", str(project_root)],
+            capture_output=True, text=True, check=False, timeout=timeout_sec,
+        )
+    except subprocess.TimeoutExpired:
+        return SyncResult(False, time.monotonic() - start, f"uv sync timed out after {timeout_sec}s")
+
+    duration = time.monotonic() - start
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "uv sync failed"
+        return SyncResult(False, duration, detail)
+    return SyncResult(True, duration, "synced")
+
+
 def _is_replaced(old_signatures: dict[int, str | None], new_pids: list[int]) -> bool:
     """new_pidsの中に、旧プロセスの記録と一致しないもの(=新規)が1つでもあればTrue"""
     for pid in new_pids:
@@ -145,13 +184,15 @@ def restart_mcp_server(
         while time.monotonic() < deadline and find_listen_pids(MCP_PORT):
             time.sleep(poll_interval_sec)
 
-    subprocess.Popen(
-        ["uv", "run", "--directory", str(project_root), "python", "-m", "src.launcher"],
-        start_new_session=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        cwd=str(project_root),
-    )
+    LAUNCHER_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(LAUNCHER_LOG_PATH, "w") as log_file:
+        proc = subprocess.Popen(
+            ["uv", "run", "--directory", str(project_root), "python", "-m", "src.launcher"],
+            start_new_session=True,
+            stdout=log_file,
+            stderr=log_file,
+            cwd=str(project_root),
+        )
 
     deadline = time.monotonic() + start_timeout_sec
     while time.monotonic() < deadline:
@@ -160,10 +201,23 @@ def restart_mcp_server(
             return RestartResult(True, old_pids, new_pids, "restarted")
         time.sleep(poll_interval_sec)
 
+    _kill_process_group(proc)
     return RestartResult(
         False, old_pids, find_listen_pids(MCP_PORT),
         f"server did not come up on port {MCP_PORT} within {start_timeout_sec}s",
     )
+
+
+def _kill_process_group(proc: subprocess.Popen) -> None:
+    """start_new_sessionで分離したプロセスグループごと終了させる。
+
+    proc.kill()単体では`uv run ... python -m src.launcher`という
+    ラッパー経由で起動した孫プロセス(実体のlauncher)が生き残ることがある。
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 
 
 def stop_embedding_server() -> list[int]:
@@ -174,29 +228,41 @@ def stop_embedding_server() -> list[int]:
 
 
 def clean_caches(project_root: Path) -> dict:
-    """プラグインキャッシュと__pycache__を削除する。"""
-    removed_plugin_cache = False
-    if PLUGIN_CACHE_DIR.exists():
-        shutil.rmtree(PLUGIN_CACHE_DIR)
-        removed_plugin_cache = True
+    """__pycache__を削除する。
 
+    .venv配下は対象外にする。依存パッケージのバイトコードキャッシュまで
+    削除すると、直後に起動する新規サーバーが全依存を再コンパイルする
+    羽目になり、起動監視のタイムアウトを縮めるどころか悪化させる。
+    """
     removed_pycache_dirs = []
     for pycache in project_root.rglob("__pycache__"):
+        if ".venv" in pycache.parts:
+            continue
         if pycache.is_dir():
             shutil.rmtree(pycache)
             removed_pycache_dirs.append(str(pycache))
 
-    return {
-        "removed_plugin_cache": removed_plugin_cache,
-        "removed_pycache_dirs": removed_pycache_dirs,
-    }
+    return {"removed_pycache_dirs": removed_pycache_dirs}
 
 
 def restart_all(project_root: Path) -> dict:
+    """依存関係の同期・キャッシュ掃除・MCP再起動・embedding停止を順に行う。
+
+    uv syncとキャッシュ掃除は、旧MCPサーバーがまだ稼働している間に
+    済ませておく。これによりkill〜新規プロセス起動〜起動監視という
+    ダウンタイムの区間からvenv構築時間を切り離す。uv syncが失敗しても
+    後続のMCP再起動は試行する(結果には成否を含めて返す)。
+    """
+    sync_result = sync_dependencies(project_root)
+    cache_result = clean_caches(project_root)
     mcp_result = restart_mcp_server(project_root)
     embedding_stopped = stop_embedding_server()
-    cache_result = clean_caches(project_root)
     return {
+        "uv_sync": {
+            "ok": sync_result.ok,
+            "duration_sec": round(sync_result.duration_sec, 3),
+            "detail": sync_result.detail,
+        },
         "mcp_server": {
             "ok": mcp_result.ok,
             "old_pids": mcp_result.old_pids,
