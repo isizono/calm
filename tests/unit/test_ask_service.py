@@ -777,6 +777,37 @@ class TestTriageAsk:
         result = ak.triage_ask(r1["id"], action="dismiss", dismiss_reason="x")
         assert result["status"] == "dismissed"
 
+    def test_meta_ask_promote_includes_next_step(self, temp_db):
+        act = _make_activity()
+        r1 = ak.add_ask("q1", tags=["domain:test", "meta-ask"], blocks=[act], kind="meta")
+        ak.answer_ask(r1["id"], "a1")
+
+        result = ak.triage_ask(r1["id"], action="promote", decision="d", reason="r")
+
+        assert result["status"] == "promoted"
+        assert "next_step" in result
+        assert "rule-placement" in result["next_step"]
+
+    def test_ask_promote_has_no_next_step(self, temp_db):
+        act = _make_activity()
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+        ak.answer_ask(r1["id"], "a1")
+
+        result = ak.triage_ask(r1["id"], action="promote", decision="d", reason="r")
+
+        assert result["status"] == "promoted"
+        assert "next_step" not in result
+
+    def test_meta_ask_dismiss_has_no_next_step(self, temp_db):
+        act = _make_activity()
+        r1 = ak.add_ask("q1", tags=["domain:test", "meta-ask"], blocks=[act], kind="meta")
+        ak.answer_ask(r1["id"], "a1")
+
+        result = ak.triage_ask(r1["id"], action="dismiss", dismiss_reason="not needed")
+
+        assert result["status"] == "dismissed"
+        assert "next_step" not in result
+
 
 class TestWithdrawAsk:
     def test_success_transitions_to_withdrawn(self, temp_db):

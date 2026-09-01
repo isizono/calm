@@ -597,13 +597,16 @@ def triage_ask_with_conn(
 
     Returns:
         成功時(promote): {"id", "status": "promoted", "promoted_decision_id"}
+            （kind="meta"のaskのみ、配置フローへ誘導する"next_step"を追加で含む）
         成功時(dismiss): {"id", "status": "dismissed"}
         失敗時: {"error": {"code": ..., "message": ...}}
     """
     if action not in ("promote", "dismiss"):
         return _validation_error(f"Invalid action: {action!r}. Must be 'promote' or 'dismiss'")
 
-    pre_row = conn.execute("SELECT status, triage FROM asks WHERE id = ?", (ask_id,)).fetchone()
+    pre_row = conn.execute(
+        "SELECT status, triage, kind FROM asks WHERE id = ?", (ask_id,)
+    ).fetchone()
     if pre_row is None or pre_row["status"] != "answered" or pre_row["triage"] is not None:
         return _validation_error(
             f"ask id={ask_id} is not awaiting triage "
@@ -644,7 +647,13 @@ def triage_ask_with_conn(
             conn.execute("DELETE FROM ask_blocks WHERE ask_id = ?", (ask_id,))
             publish_entity_event_with_conn(conn, entity_type="ask", entity_id=ask_id, event="updated")
             conn.execute("RELEASE SAVEPOINT triage_ask")
-            return {"id": ask_id, "status": "promoted", "promoted_decision_id": promoted_decision_id}
+            result = {"id": ask_id, "status": "promoted", "promoted_decision_id": promoted_decision_id}
+            if pre_row["kind"] == "meta":
+                result["next_step"] = (
+                    "rule-placement skillの配置計画が実行済みか確認してください。"
+                    "未実行なら配置を完了させること。"
+                )
+            return result
 
         dismiss_reason = (dismiss_reason or "").strip()
         if not dismiss_reason:
