@@ -705,8 +705,8 @@ Claude Codeセッション間の「CLI表示名（例: `workspace-a2`）→人�
 | tags | list[string] | no | null | decisionに付けるタグ |
 | dismiss_reason | string | action=dismissのとき必須 | null | 見送り理由 |
 
-**返り値**: promote時 `{id: int, status: "promoted", promoted_decision_id: int}`、dismiss時 `{id: int, status: "dismissed"}`。
-**動作**: promoteはdecision/reason/title/tagsをそのまま`add_decisions`に渡してdecisionを生成し、promoted_decision_idとして紐付ける。いずれもこのaskが止めていたactivityのblockを解除する（ask_blocksを削除）。
+**返り値**: promote時 `{id: int, status: "promoted", promoted_decision_id: int}`、dismiss時 `{id: int, status: "dismissed"}`。promote時、対象askが`kind="meta"`のときのみ`next_step: str`が追加で含まれる。
+**動作**: promoteはdecision/reason/title/tagsをそのまま`add_decisions`に渡してdecisionを生成し、promoted_decision_idとして紐付ける。いずれもこのaskが止めていたactivityのblockを解除する（ask_blocksを削除）。`kind="meta"`のpromoteは、`rule-placement` skillに従いhabits/tag-notes/pin/判例decision/rules等への配置を先に済ませてから呼ぶ。
 **エラー処理**: 対象がanswered かつ未トリアージでない場合、action不正、promote時のdecision/reason欠落、dismiss時のdismiss_reason欠落はいずれも`VALIDATION_ERROR`。promote処理中にdecision生成が失敗した場合はask側の状態変更もロールバックされ`answered`のまま残る。
 
 ### 2.47 withdraw_ask

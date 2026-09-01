@@ -2225,6 +2225,11 @@ def triage_ask(
     必ずこのtriage_askによるメタask（kind="meta"のask）への人間のpromote裁定を
     経て行うこと。機械もLLMも、判例の蓄積だけを根拠に自己判断で発効してはならない。
 
+    kind="meta"のpromoteはrule-placement skillに従い、配置（habits/tag-notes/
+    pin/判例decision/rules等どの経路へ置くか）を先に実行してから呼ぶこと。
+    生成するdecisionは発効の裁定記録1件とし、reasonにはどのルールをどこへ
+    置いたかの配置台帳を残す（DB外への配置は経路のパスを必須で書く）。
+
     Args:
         ask_id: 対象ask ID
         action: "promote" または "dismiss"
@@ -2236,6 +2241,7 @@ def triage_ask(
 
     Returns:
         成功時(promote): {"id": int, "status": "promoted", "promoted_decision_id": int}
+            （kind="meta"のaskのみ、配置フローへ誘導する"next_step": strを追加で含む）
         成功時(dismiss): {"id": int, "status": "dismissed"}
         失敗時: {"error": {"code": "VALIDATION_ERROR", "message": ...}}
             （対象がanswered かつ未トリアージでない場合、必須引数欠落を含む）
