@@ -4,7 +4,7 @@ MCPクライアント側で2,048字を超えると切り詰められる実態が
 全文がハードリミット2,048字以内に収まることを回帰検知する。
 
 tests/unit/test_tool_docstring_budget.pyと同じ設計思想で、安全マージン
-1,900字も別テストで追跡する。RULESは本テスト更新時点で実測2,037字あり、
+1,900字も別テストで追跡する。RULESは本テスト更新時点で実測2,015字あり、
 安全マージンを既に超えている（既知の超過としてxfail(strict=True)で
 追跡。マージン内に削減されたらxfailがxpassに転じ、strict=Trueにより
 失敗として検出される）。
@@ -60,4 +60,4 @@ def test_rules_contains_required_tags():
 
 def test_rules_ends_with_guide_skill_pointer():
     """末尾にman skillへの導線1行がある"""
-    assert "cc-memory:man" in RULES
+    assert "calm:man" in RULES

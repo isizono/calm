@@ -255,8 +255,8 @@ def main() -> None:
 
         reason = (
             f"Internal ID literal detected in tool_input: {matched_literals}. "
-            "These IDs are cc-memory internal references and must not leak "
-            "outside the cc-memory development context. Use a natural language "
+            "These IDs are CALM internal references and must not leak "
+            "outside the CALM development context. Use a natural language "
             "reference (e.g. entity title) instead, or escape with a backslash "
             "prefix to indicate a literal (e.g. '\\M#123', '\\log #456', "
             "or '\\log 456' for the '#'-omitted form)."
