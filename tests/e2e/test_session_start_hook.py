@@ -6,14 +6,14 @@ DISCUSSION_DB_PATH 環境変数でテスト用DBを指定する。
 hookはhabits rules投影ファイル（既定 ~/.claude/rules/cc-memory-habits.md）を
 verify_and_heal経由で検証・書き込みしうる。テストプロセスとhookは別プロセス
 なのでconftestのmonkeypatch（_isolate_habits_rules_projection）は伝播しない。
-_run_session_start_hookが呼び出しごとに使い捨てのCALM_HABITS_RULES_PATHを
-強制注入し、実ファイルへの書き込みを防ぐ。
+_run_session_start_hook（tests.helpers.run_session_start_hookの別名importで、
+呼び出し箇所を書き換えずに済ませている）が呼び出しごとに使い捨ての
+CALM_HABITS_RULES_PATHを強制注入し、実ファイルへの書き込みを防ぐ。
 """
 import json
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -21,7 +21,11 @@ from pathlib import Path
 import pytest
 
 from src.db import init_database, get_connection
-from src.env_compat import CANONICAL_PREFIX, env_names
+from tests.helpers import (
+    run_session_start_hook as _run_session_start_hook,
+    run_session_start_hook_process as _run_session_start_hook_process,
+    session_start_hook_env,
+)
 
 # プロジェクトルート
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -40,62 +44,6 @@ def temp_db():
         if "DISCUSSION_DB_PATH" in os.environ:
             del os.environ["DISCUSSION_DB_PATH"]
         src.config.DB_PATH = None
-
-
-def _run_session_start_hook(
-    db_path: str,
-    extra_env: dict | None = None,
-    env_remove: list[str] | None = None,
-    stdin_payload: dict | None = None,
-    habits_rules_path: str | None = None,
-) -> dict:
-    """session_start_hook.pyを実行してJSON出力を返す。
-
-    stdin_payload を指定すると {session_id: ...} などを stdin に流し込める
-    (P1-7 の自セッション照合テスト用)。
-
-    habits_rules_path 未指定時は呼び出しごとの使い捨てディレクトリを生成し、
-    CALM_HABITS_RULES_PATH で強制的に隔離する（実ファイルへの書き込み防止）。
-    ファイル修復の検証等でパスを固定したいテストは明示的に渡すこと。
-    """
-    env = {**os.environ, "DISCUSSION_DB_PATH": db_path}
-    # runnerのOW_ROLEを継承しない（テストの決定性確保。残存env検証テストはextra_envで明示設定する）
-    env.pop("OW_ROLE", None)
-
-    cleanup_dir: str | None = None
-    if habits_rules_path is None:
-        cleanup_dir = tempfile.mkdtemp(prefix="ccm-habits-rules-")
-        habits_rules_path = str(Path(cleanup_dir) / "cc-memory-habits.md")
-    env["CALM_HABITS_RULES_PATH"] = habits_rules_path
-
-    if extra_env:
-        env.update(extra_env)
-    if env_remove:
-        for key in env_remove:
-            # CALM_ 系は旧名フォールバックが効くため、CALM_ 名だけ消しても
-            # 呼び出し元の環境に残った CCM_ / CC_MEMORY_ 名から値が復活する。
-            # 新旧まとめて落とす。それ以外の環境変数はその名前だけ落とす。
-            names = env_names(key) if key.startswith(CANONICAL_PREFIX) else (key,)
-            for name in names:
-                env.pop(name, None)
-
-    try:
-        payload_str = "{}" if stdin_payload is None else json.dumps(stdin_payload)
-        result = subprocess.run(
-            [sys.executable, "hooks/session_start_hook.py"],
-            input=payload_str,
-            capture_output=True,
-            text=True,
-            cwd=str(PROJECT_ROOT),
-            env=env,
-        )
-
-        stdout = result.stdout.strip()
-        assert stdout, f"session_start_hook.py produced no output. stderr: {result.stderr}"
-        return json.loads(stdout)
-    finally:
-        if cleanup_dir is not None:
-            shutil.rmtree(cleanup_dir, ignore_errors=True)
 
 
 def _seed_activity(title: str, status: str = "pending", domain: str = "test") -> int:
@@ -706,16 +654,7 @@ class TestSessionStartHookErrorHandling:
 
     def test_invalid_db_returns_empty_json(self):
         """不正なDBパスでも空JSONを出力してクラッシュしない"""
-        env = {**os.environ, "DISCUSSION_DB_PATH": "/nonexistent/path/db.sqlite"}
-
-        result = subprocess.run(
-            [sys.executable, "hooks/session_start_hook.py"],
-            input="{}",
-            capture_output=True,
-            text=True,
-            cwd=str(PROJECT_ROOT),
-            env=env,
-        )
+        result = _run_session_start_hook_process("/nonexistent/path/db.sqlite")
 
         stdout = result.stdout.strip()
         assert stdout, "should produce some output"
@@ -730,16 +669,7 @@ class TestSessionStartHookErrorHandling:
         stderrにログを残した上でhookは空JSONを返し続ける（多層防御の内側の層が
         先に捕まえる想定通りの経路）。
         """
-        env = {**os.environ, "DISCUSSION_DB_PATH": "/nonexistent/path/db.sqlite"}
-
-        result = subprocess.run(
-            [sys.executable, "hooks/session_start_hook.py"],
-            input="{}",
-            capture_output=True,
-            text=True,
-            cwd=str(PROJECT_ROOT),
-            env=env,
-        )
+        result = _run_session_start_hook_process("/nonexistent/path/db.sqlite")
 
         stdout = result.stdout.strip()
         assert json.loads(stdout) == {}
@@ -1533,18 +1463,18 @@ class TestSessionStartHookRelayInboxViaRealUv:
         finally:
             del os.environ["RELAY_STATE_DIR"]
 
-        env = {
-            **os.environ,
-            "DISCUSSION_DB_PATH": temp_db,
-            "RELAY_STATE_DIR": str(state_dir),
-            "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
-            "CALM_RELAY_SESSION_AWARE": "1",
-        }
-        env.pop("OW_ROLE", None)
-        cleanup_dir = tempfile.mkdtemp(prefix="ccm-habits-rules-real-uv-")
-        env["CALM_HABITS_RULES_PATH"] = str(Path(cleanup_dir) / "cc-memory-habits.md")
-
-        try:
+        # habits投影ファイルのisolation（CALM_HABITS_RULES_PATH注入）は
+        # session_start_hook_env に集約している。ここは`sh -c`経由の起動
+        # コマンドが特殊なため run_session_start_hook は使わず、env組み立て
+        # だけをcontext managerで共有する。
+        with session_start_hook_env(
+            temp_db,
+            extra_env={
+                "RELAY_STATE_DIR": str(state_dir),
+                "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
+                "CALM_RELAY_SESSION_AWARE": "1",
+            },
+        ) as env:
             # hooks.jsonと全く同じ形（`cd X && exec uv run python hooks/xxx.py`
             # をshに渡す）で起動する。execによりsh自身がuvへ置き換わるため、
             # hookプロセスの祖先チェーンにsh層が残らない。
@@ -1559,11 +1489,9 @@ class TestSessionStartHookRelayInboxViaRealUv:
                 text=True,
                 env=env,
             )
-            stdout = result.stdout.strip()
-            assert stdout, f"session_start_hook.py produced no output. stderr: {result.stderr}"
-            output = json.loads(stdout)
-        finally:
-            shutil.rmtree(cleanup_dir, ignore_errors=True)
+        stdout = result.stdout.strip()
+        assert stdout, f"session_start_hook.py produced no output. stderr: {result.stderr}"
+        output = json.loads(stdout)
 
         context = output["hookSpecificOutput"]["additionalContext"]
         assert "relay inbox 未読: 1件" in context
