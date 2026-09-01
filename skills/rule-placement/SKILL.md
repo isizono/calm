@@ -34,6 +34,7 @@ description: 一般化ルール（エージェントの今後の振る舞いを�
 | 定型手順の実行 | 「ある決まった作業を始めた瞬間」と言い切れ、対応するskillが実在するか |
 | ツール呼び出し | 「あるツールを呼ぼうとした瞬間」と言い切れるか |
 | 作業単位 | 特定のactivity/topicに取り組む間だけ要り、終われば不要か |
+| ファイル文脈 | 「特定のファイル/パスパターンに触れる時」と言い切れるか |
 | タグ文脈 | 要る場面に共通して付くタグ（domain:等）を1つ挙げられるか |
 | 無契機 | 上のどれも名指しできない |
 
@@ -60,11 +61,14 @@ description: 一般化ルール（エージェントの今後の振る舞いを�
 | 軸1＼軸2 | 無条件規範 | 条件付き判断基準 | 手順 | 事実・参照 |
 |---|---|---|---|---|
 | 無契機 | habits always（100字未満なら）/ rules | 矛盾のサイン（エッジ表E1へ） | rules（順序制約だけ切り出す） | habits intelligently / ユーザーCLAUDE.md |
-| タグ文脈 | tag-notes | tag-notes＋判例decision（適用条件節を持てる判例側が正） | tag-notes | tag-notes |
+| タグ文脈 | tag-notes | tag-notes（要旨+参照）＋判例decision（定型節を持てる判例側が正） | tag-notes | tag-notes |
+| ファイル文脈 | rules（パス付き） | rules（パス付き、要旨+参照）＋判例decision（定型節を持てる判例側が正） | rules（パス付き） | rules（パス付き） |
 | 作業単位 | pin | pin（判例decisionをpinで指す） | pin（手順materialをpinで指す） | pin |
-| ツール呼び出し | docstring | docstring＋判例decision | docstring | docstring |
-| 定型手順の実行 | skill | skill＋判例decision | skill | skill |
+| ツール呼び出し | docstring | docstring（要旨+参照）＋判例decision | docstring | docstring |
+| 定型手順の実行 | skill | skill（要旨+参照）＋判例decision | skill | skill |
 | 自覚的な迷い | 型の再検査（迷いが発生するなら無条件ではない） | 判例decision | 判例decision＋material | 判例decision |
+
+条件付き判断基準の複合配置（「X＋判例decision」のセル）はすべて同じ規則の適用である: 全文の正は定型節を持てる判例decision側に置き、契機側の経路には要旨と判例への参照を書く。ファイル文脈のrules配置は、注入自体はセッション起動時の常時pushであり、パスは適用判断のスコープ注記である（発火条件ではない）。
 
 ## Step 4: 軸3で強度を補正する
 
@@ -88,7 +92,7 @@ description: 一般化ルール（エージェントの今後の振る舞いを�
 
 | 経路 | 発火点 | 確実性 | 改訂コスト | 向く型 |
 |---|---|---|---|---|
-| rules | セッション起動時に全文注入 | 最高（push常時） | ファイル編集で即時。ただしDB外で監査対象から漏れやすい | 全型 |
+| rules | セッション起動時に全文注入 | 最高（push常時） | ファイル編集で即時。ただしDB外で監査対象から漏れやすい。パス付き見出しでファイルスコープを表現する慣行がある（適用判断は本文の対象パス記述で行う） | 全型 |
 | habits always層 | 同上（投影ファイル経由） | 最高（push常時） | ツールで即時 | 無条件規範のみ（1件100字未満） |
 | habits intelligently層 | タイトルのみ投影、全文はon-demand | 低（pull。引かれない実測あり） | ツールで即時 | 弱い行儀 |
 | tag-notes | タグに触れるツール呼び出し時（セッション内初回のみ） | 高（push契機付き） | 全文置換で即時 | 全型 |
