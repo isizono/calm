@@ -34,6 +34,15 @@ cc-memoryはローカルディレクトリをmarketplaceとして登録してお
 4. ローカルブランチを削除: `git branch -D <branch>`
 5. プラグインキャッシュを削除: `rm -rf ~/.claude/plugins/cache/claude-code-memory-marketplace/`
 6. `__pycache__` を削除: `find . -type d -name __pycache__ -exec rm -rf {} +`
-7. 既存のhttpサーバーを停止・再起動: `lsof -ti tcp:52837 -sTCP:LISTEN | xargs kill; uv run python -m src.launcher &`（`-sTCP:LISTEN` を付けないと :52837 に接続中のブリッジプロセスまで巻き添えで kill され、生存セッションの再接続競争を誘発する。多数のセッションが同時接続している状態でkillすると、再接続待ちのブリッジ全部が同時に起動リトライを行い、起動が失敗することがある）
+7. 既存のhttpサーバーを停止・再起動:
+
+   ```sh
+   lsof -ti tcp:52837 -sTCP:LISTEN | xargs kill
+   nohup .venv/bin/python -m src.main --transport http > /tmp/calm_http_server.log 2>&1 &
+   ```
+
+   - `-sTCP:LISTEN` を付けないと :52837 に接続中のブリッジプロセスまで巻き添えで kill され、生存セッションの再接続競争を誘発する。多数のセッションが同時接続している状態でkillすると、再接続待ちのブリッジ全部が同時に起動リトライを行い、起動が失敗することがある
+   - 起動するのはブリッジ（`src.launcher`）ではなくサーバー本体（`src.main --transport http`）。launcherはstdio MCPブリッジで、stdinが`/dev/null`になる非対話シェル（エージェントのツール実行・スクリプト等）から起動すると即EOFでサイレント終了し、HTTPサーバーが再起動されないままになる。各セッションのブリッジは既存の再接続機構で新サーバーへ自動的に繋ぎ直すため、launcher自体の再起動は不要
+   - 起動後、`lsof -i tcp:52837 -sTCP:LISTEN` でLISTENしていることを確認する（LISTENが無ければ `/tmp/calm_http_server.log` を確認する）
 8. embeddingサーバーを停止: `lsof -ti tcp:52836 -sTCP:LISTEN | xargs kill`（再起動は不要。次回encode時に`embedding_service`がlazy spawnする。`-sTCP:LISTEN`を付けないと接続中クライアントを巻き添えにする）
 9. 生存している全Claude Codeセッションで `/mcp` からreconnectを実行する（個別でOK、全セッション同時に落とす必要なし）。reconnectで復旧しない場合はそのセッションを再起動する
