@@ -26,10 +26,9 @@ from hooks.hook_transcript import (
     _RECORDING_TOOLS,
     extract_events,
     extract_last_activity_id,
-    read_transcript_from_offset,
 )
 from hooks.signal_capture import try_capture_signal
-from src.harness import ClaudeCodeHarness
+from src.harness import Harness, select_harness
 
 _BLOCK_LIMIT = 1
 # ユーザー発言がちょうどこのturn数に達した瞬間にcheck-in強制blockを1回発火する
@@ -69,7 +68,7 @@ def _is_orch_managed_activity(activity_id) -> bool:
 
 
 def main() -> None:
-    harness = ClaudeCodeHarness()
+    harness = select_harness()
     try:
         # 環境変数によるテスト用オーバーライド
         if os.environ.get("HOOK_STATE_DIR"):
@@ -95,7 +94,7 @@ def main() -> None:
         # 3. transcript差分読み → イベント抽出 → events.jsonl追記
         offset = state.get_transcript_offset()
         current_turn = state.get_current_turn()
-        new_entries, new_offset, offset_was_reset = read_transcript_from_offset(transcript_path, offset)
+        new_entries, new_offset, offset_was_reset = harness.read_transcript_entries_from_offset(transcript_path, offset)
 
         # オフセットリセット時はcurrent_turnとevents.jsonlもリセット
         if offset_was_reset:
@@ -128,7 +127,7 @@ def main() -> None:
         )
         if has_checkin:
             # activity_idを抽出して保存
-            _update_checked_in_activity(state, all_events, transcript_path)
+            _update_checked_in_activity(state, all_events, transcript_path, harness)
 
         # orch_managed=1 のアクティビティにcheck-in済みのセッションでは
         # 個人フロー用のcheck-inブロック・nudgeを抑制する。
@@ -195,7 +194,7 @@ def _turns_since_last_recording(events: list[dict], current_turn: int) -> int:
 
 
 def _update_checked_in_activity(
-    state: HookState, events: list[dict], transcript_path: str
+    state: HookState, events: list[dict], transcript_path: str, harness: Harness
 ) -> None:
     """check_inイベントからactivity_idを抽出し、checked_in_activityを更新する。"""
     # check_inイベントからactivity_idを取得
@@ -205,7 +204,7 @@ def _update_checked_in_activity(
             return
 
     # フォールバック: transcript全走査（add_activityのtool_result対応）
-    aid = extract_last_activity_id(transcript_path)
+    aid = extract_last_activity_id(harness.read_transcript_entries(transcript_path))
     if aid is not None:
         state.set_checked_in_activity(aid)
 

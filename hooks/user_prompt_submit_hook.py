@@ -32,7 +32,7 @@ if str(_project_root) not in sys.path:
 from hooks.hook_state import HookState
 from hooks.signal_capture import try_capture_signal
 from src import config
-from src.harness import ClaudeCodeHarness
+from src.harness import select_harness
 
 
 _FOLLOW_UP_NUDGE_MESSAGE = (
@@ -190,7 +190,7 @@ def _build_relay_turn_nudge(state: HookState) -> str | None:
 
 
 def main() -> None:
-    harness = ClaudeCodeHarness(hook_event_name="UserPromptSubmit")
+    harness = select_harness(hook_event_name="UserPromptSubmit")
     try:
         # 環境変数によるテスト用オーバーライド
         if os.environ.get("HOOK_STATE_DIR"):

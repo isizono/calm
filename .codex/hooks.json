@@ -6,15 +6,15 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"$(git rev-parse --show-toplevel)\" && exec uv run python hooks/hook_state.py clear"
+            "command": "cd \"$(git rev-parse --show-toplevel)\" && CALM_HARNESS=codex exec uv run python hooks/hook_state.py clear"
           },
           {
             "type": "command",
-            "command": "cd \"$(git rev-parse --show-toplevel)\" && exec uv run python hooks/session_start_hook.py"
+            "command": "cd \"$(git rev-parse --show-toplevel)\" && CALM_HARNESS=codex exec uv run python hooks/session_start_hook.py"
           },
           {
             "type": "command",
-            "command": "cd \"$(git rev-parse --show-toplevel)\" && exec uv run python hooks/sanitize_backfill_hook.py"
+            "command": "cd \"$(git rev-parse --show-toplevel)\" && CALM_HARNESS=codex exec uv run python hooks/sanitize_backfill_hook.py"
           }
         ]
       }
@@ -24,7 +24,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"$(git rev-parse --show-toplevel)\" && exec uv run python hooks/stop_hook.py"
+            "command": "cd \"$(git rev-parse --show-toplevel)\" && CALM_HARNESS=codex exec uv run python hooks/stop_hook.py"
           }
         ]
       }
@@ -34,7 +34,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"$(git rev-parse --show-toplevel)\" && exec uv run python hooks/user_prompt_submit_hook.py"
+            "command": "cd \"$(git rev-parse --show-toplevel)\" && CALM_HARNESS=codex exec uv run python hooks/user_prompt_submit_hook.py"
           }
         ]
       }
@@ -44,7 +44,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"$(git rev-parse --show-toplevel)\" && exec uv run python hooks/preblock_hook.py"
+            "command": "cd \"$(git rev-parse --show-toplevel)\" && CALM_HARNESS=codex exec uv run python hooks/preblock_hook.py"
           }
         ]
       }
@@ -55,7 +55,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"$(git rev-parse --show-toplevel)\" && exec uv run python hooks/relay_monitor_watch_hook.py"
+            "command": "cd \"$(git rev-parse --show-toplevel)\" && CALM_HARNESS=codex exec uv run python hooks/relay_monitor_watch_hook.py"
           }
         ]
       },
@@ -63,7 +63,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"$(git rev-parse --show-toplevel)\" && exec uv run python hooks/sanitize_tool_result_hook.py"
+            "command": "cd \"$(git rev-parse --show-toplevel)\" && CALM_HARNESS=codex exec uv run python hooks/sanitize_tool_result_hook.py"
           }
         ]
       }

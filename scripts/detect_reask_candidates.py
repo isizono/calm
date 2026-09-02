@@ -28,6 +28,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from hooks.hook_transcript import is_user_message  # noqa: E402
+from src.harness import ClaudeCodeHarness  # noqa: E402
 
 DEFAULT_MAX_CANDIDATES = 50
 CONTEXT_SNIPPET_MAX_CHARS = 200
@@ -230,7 +231,7 @@ def extract_candidates(
             if entry_type == "assistant":
                 for candidate in _extract_ask_candidates(entry, turn, exclusion_rules):
                     _try_add(candidate)
-            elif is_user_message(entry):
+            elif is_user_message(ClaudeCodeHarness.to_entry(entry)):
                 candidate = _extract_correction_candidate(entry, turn, correction_patterns)
                 if candidate is not None:
                     _try_add(candidate)

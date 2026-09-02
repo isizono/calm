@@ -978,3 +978,126 @@ class TestOrchFlowSuppression:
         events = _read_events(state_dir, "test-session")
         record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record_missing"]
         assert len(record_nudges) >= 1
+
+
+# --- Codexハーネス（CALM_HARNESS=codex + rollout形式transcript） ---
+
+
+def _rollout_user(text: str, ordinal: int) -> dict:
+    return {
+        "timestamp": "t",
+        "ordinal": ordinal,
+        "type": "event_msg",
+        "payload": {
+            "type": "item_completed",
+            "item": {
+                "type": "UserMessage",
+                "id": f"item_u{ordinal}",
+                "content": [{"type": "text", "text": text}],
+            },
+        },
+    }
+
+
+def _rollout_mcp_check_in(activity_id: int, ordinal: int) -> dict:
+    return {
+        "timestamp": "t",
+        "ordinal": ordinal,
+        "type": "event_msg",
+        "payload": {
+            "type": "item_completed",
+            "item": {
+                "type": "McpToolCall",
+                "id": f"exec-{ordinal}",
+                "server": "calm",
+                "tool": "check_in",
+                "arguments": {"activity_id": activity_id},
+                "status": "completed",
+                "result": {"content": [{"type": "text", "text": "{}"}]},
+            },
+        },
+    }
+
+
+def _rollout_injected_user(ordinal: int) -> dict:
+    """Codexが注入するrole=userのresponse_item（実発話ではない）。"""
+    return {
+        "timestamp": "t",
+        "ordinal": ordinal,
+        "type": "response_item",
+        "payload": {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "<environment_context/>"}],
+        },
+    }
+
+
+class TestCodexHarness:
+    """CALM_HARNESS=codexでrollout形式transcriptを処理する経路のE2E。"""
+
+    def _codex_env(self, env_setup) -> dict:
+        return {**env_setup["env_override"], "CALM_HARNESS": "codex"}
+
+    def test_checkin無しでdefer_turn到達時はblockされる(self, env_setup):
+        transcript = env_setup["tmp_path"] / "rollout.jsonl"
+        _write_transcript(
+            [
+                _rollout_injected_user(0),
+                _rollout_user("1", 1),
+                _rollout_user("2", 2),
+                _rollout_user("3", 3),
+            ],
+            transcript,
+        )
+
+        result = _run_stop_hook(
+            str(transcript), "codex-session-block", self._codex_env(env_setup)
+        )
+
+        assert result["decision"] == "block"
+        assert "check-in" in result["reason"]
+
+    def test_checkin済みならapproveは空応答になる(self, env_setup):
+        """Codexのapproveは空JSON（decision:"approve"はCodexが受理しない）。"""
+        transcript = env_setup["tmp_path"] / "rollout.jsonl"
+        _write_transcript(
+            [
+                _rollout_user("1", 1),
+                _rollout_mcp_check_in(activity_id=42, ordinal=2),
+                _rollout_user("2", 3),
+                _rollout_user("3", 4),
+            ],
+            transcript,
+        )
+
+        result = _run_stop_hook(
+            str(transcript), "codex-session-checkin", self._codex_env(env_setup)
+        )
+
+        assert result == {}
+
+        # check_inのactivity_idがstateへ保存されている
+        state_file = Path(env_setup["state_dir"]) / "checked_in_activity_codex-session-checkin"
+        assert state_file.read_text().strip() == "42"
+
+    def test_注入userはturnを進めない(self, env_setup):
+        """機械注入のresponse_itemだけではdefer turnに到達しない。"""
+        transcript = env_setup["tmp_path"] / "rollout.jsonl"
+        _write_transcript(
+            [
+                _rollout_injected_user(0),
+                _rollout_injected_user(1),
+                _rollout_user("1", 2),
+                _rollout_injected_user(3),
+                _rollout_user("2", 4),
+            ],
+            transcript,
+        )
+
+        result = _run_stop_hook(
+            str(transcript), "codex-session-meta", self._codex_env(env_setup)
+        )
+
+        # 実発話2ターンのみ → defer turn(3)未到達でapprove（空応答）
+        assert result == {}

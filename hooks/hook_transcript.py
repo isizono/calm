@@ -1,11 +1,19 @@
 """hook共通: transcript解析ユーティリティ
 
-イベント駆動アーキテクチャ用の差分読み・イベント抽出と、
-レガシー関数（Phase 3で廃止予定）を含む。
+イベント駆動アーキテクチャ用のイベント抽出と、レガシー関数
+（Phase 3で廃止予定）を含む。
+
+イベント抽出（is_user_message / extract_events / extract_last_activity_id）は
+ハーネス非依存の中間表現 TranscriptEntry を入力に取る。transcriptファイルの
+読み出し・形式差の正規化はHarness実装
+（ClaudeCodeHarness / CodexHarness の read_transcript_entries 系）が担い、
+本モジュールは正規化済みエントリからのイベント判定だけを担当する。
 """
 import json
 import re
 from pathlib import Path
+
+from src.harness.interface import TranscriptEntry
 
 # --- CALM MCPツール判定用マーカー ---
 # ローカルプラグイン: mcp__plugin_calm_calm__*
@@ -60,72 +68,28 @@ _CHECKIN_TOOLS = {
 
 
 # ===================================================================
-# イベント駆動アーキテクチャ: 差分読み + イベント抽出
+# イベント駆動アーキテクチャ: イベント抽出
 # ===================================================================
 
 
-def read_transcript_from_offset(transcript_path: str, offset: int) -> tuple[list[dict], int, bool]:
-    """transcriptをバイトオフセットから読み、(新規エントリ一覧, 新オフセット, リセット発生)を返す。
-
-    transcriptはappend-onlyのJSONL形式。offsetがファイルサイズを超えた場合は
-    0にリセットして全読みする（defensive coding）。
-    リセット発生時は呼び出し側でcurrent_turnやevents.jsonlもリセットすべき。
-    """
-    path = Path(transcript_path).expanduser()
-    if not path.exists():
-        return [], 0, False
-
-    try:
-        file_size = path.stat().st_size
-        offset_reset = offset > file_size
-        if offset_reset:
-            offset = 0
-
-        entries = []
-        with open(path, "rb") as f:
-            f.seek(offset)
-            data = f.read()
-            new_offset = offset + len(data)
-
-        for line in data.decode("utf-8", errors="replace").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entries.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-
-        return entries, new_offset, offset_reset
-
-    except Exception:
-        return [], offset, False
-
-
-def is_user_message(entry: dict) -> bool:
+def is_user_message(entry: TranscriptEntry) -> bool:
     """エントリがUser Message（ターン境界）かどうかを判定する。
 
     User Message = ユーザーが実際に送信したuserエントリ。
-    tool_resultやsystem-reminderを含むuser/humanエントリは除外する。
-    isMeta=trueのエントリ（スキル内容注入等）も除外する。
+    tool_resultを含むuserエントリ・機械注入エントリ（is_meta）は除外する。
+    content空（元エントリにcontentが無い等）はUser Message扱いしない。
     string形式のsystem-reminderの誤判定は許容（発生率0.02%）。
     """
-    if entry.get("type") not in ("user", "human"):
+    if entry.kind != "user" or entry.is_meta:
         return False
-    if entry.get("isMeta"):
+    if not entry.content:
         return False
-    content = entry.get("message", {}).get("content")
-    if isinstance(content, str):
-        return True
-    if isinstance(content, list):
-        return not any(
-            isinstance(block, dict) and block.get("type") == "tool_result"
-            for block in content
-        )
-    return False
+    return not any(block.get("type") == "tool_result" for block in entry.content)
 
 
-def extract_events(entries: list[dict], current_turn: int) -> tuple[list[dict], int]:
+def extract_events(
+    entries: list[TranscriptEntry], current_turn: int
+) -> tuple[list[dict], int]:
     """transcriptエントリ群からイベントを抽出する。
 
     2型イベントを抽出:
@@ -133,7 +97,7 @@ def extract_events(entries: list[dict], current_turn: int) -> tuple[list[dict], 
     - skill: スキル開始検出（User Messageの<command-name>タグ）
 
     Args:
-        entries: transcriptの新規エントリ一覧
+        entries: 正規化済みエントリ（Harness.read_transcript_entries系の戻り値）
         current_turn: 現在のturn番号
 
     Returns:
@@ -142,8 +106,6 @@ def extract_events(entries: list[dict], current_turn: int) -> tuple[list[dict], 
     events: list[dict] = []
 
     for entry in entries:
-        entry_type = entry.get("type", "")
-
         # Turn境界検出: User Message到着で新turnが始まる
         if is_user_message(entry):
             current_turn += 1
@@ -159,16 +121,8 @@ def extract_events(entries: list[dict], current_turn: int) -> tuple[list[dict], 
             continue
 
         # assistantエントリからtoolイベントを抽出
-        if entry_type == "assistant":
-            message = entry.get("message", {})
-            content = message.get("content", [])
-
-            if isinstance(content, str):
-                continue
-
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
+        if entry.kind == "assistant":
+            for block in entry.content:
                 block_type = block.get("type")
 
                 if block_type == "tool_use":
@@ -213,17 +167,9 @@ def extract_events(entries: list[dict], current_turn: int) -> tuple[list[dict], 
 # ===================================================================
 
 
-def _extract_user_content_text(entry: dict) -> str:
-    """userエントリからcontent文字列を取得する。"""
-    content = entry.get("message", {}).get("content", "")
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return " ".join(
-            b.get("text", "") if isinstance(b, dict) else str(b)
-            for b in content
-        )
-    return ""
+def _extract_user_content_text(entry: TranscriptEntry) -> str:
+    """userエントリのtext blockを連結した文字列を返す。"""
+    return " ".join(b.get("text", "") for b in entry.content)
 
 
 # ===================================================================
@@ -293,69 +239,45 @@ def extract_checkin_activity_id(entries: list[dict]) -> int | None:
     return None
 
 
-def extract_last_activity_id(transcript_path: str) -> int | None:
-    """transcriptからcheck_in/add_activityのactivity_idを取得する。
+def extract_last_activity_id(entries: list[TranscriptEntry]) -> int | None:
+    """正規化済みエントリ群からcheck_in/add_activityのactivity_idを取得する。
 
     check_in: tool_useのinput.activity_idから取得
     add_activity: tool_use_idを記録し、対応するtool_resultのactivity_idから取得
     順序通りに走査し、最後に見つかったactivity_idを返す。
     """
-    path = Path(transcript_path).expanduser()
-    if not path.exists():
-        return None
-
     last_activity_id = None
     add_activity_use_ids: set[str] = set()
 
-    try:
-        with open(path) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
+    for entry in entries:
+        for block in entry.content:
+            block_type = block.get("type")
+
+            if block_type == "tool_use":
+                name = block.get("name", "")
+                if not _is_calm_tool(name):
                     continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
+                short = _extract_short_name(name)
+                if short == "check_in":
+                    aid = block.get("input", {}).get("activity_id")
+                    if aid is not None:
+                        try:
+                            last_activity_id = int(aid)
+                        except (ValueError, TypeError):
+                            pass
+                elif short == "add_activity":
+                    use_id = block.get("id")
+                    if use_id:
+                        add_activity_use_ids.add(use_id)
+
+            elif block_type == "tool_result":
+                use_id = block.get("tool_use_id")
+                if use_id not in add_activity_use_ids:
                     continue
-
-                message = entry.get("message", {})
-                content = message.get("content", [])
-                if isinstance(content, str):
-                    continue
-
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-                    block_type = block.get("type")
-
-                    if block_type == "tool_use":
-                        name = block.get("name", "")
-                        if not _is_calm_tool(name):
-                            continue
-                        short = _extract_short_name(name)
-                        if short == "check_in":
-                            aid = block.get("input", {}).get("activity_id")
-                            if aid is not None:
-                                try:
-                                    last_activity_id = int(aid)
-                                except (ValueError, TypeError):
-                                    pass
-                        elif short == "add_activity":
-                            use_id = block.get("id")
-                            if use_id:
-                                add_activity_use_ids.add(use_id)
-
-                    elif block_type == "tool_result":
-                        use_id = block.get("tool_use_id")
-                        if use_id not in add_activity_use_ids:
-                            continue
-                        result_content = block.get("content", "")
-                        aid = _parse_activity_id_from_result(result_content)
-                        if aid is not None:
-                            last_activity_id = aid
-
-    except Exception:
-        pass
+                result_content = block.get("content", "")
+                aid = _parse_activity_id_from_result(result_content)
+                if aid is not None:
+                    last_activity_id = aid
 
     return last_activity_id
 
@@ -426,7 +348,15 @@ def get_transcript_info(transcript_path: str) -> tuple[list[dict], bool]:
                         content = entry.get("message", {}).get("content", "")
                         if isinstance(content, list) and content and isinstance(content[0], dict) and content[0].get("type") == "tool_result":
                             continue
-                        text = _extract_user_content_text(entry)
+                        if isinstance(content, str):
+                            text = content
+                        elif isinstance(content, list):
+                            text = " ".join(
+                                b.get("text", "") if isinstance(b, dict) else str(b)
+                                for b in content
+                            )
+                        else:
+                            text = ""
                         last_user_has_command = "<command-name>" in text
                 except json.JSONDecodeError:
                     continue
