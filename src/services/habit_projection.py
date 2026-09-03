@@ -38,15 +38,15 @@ HABITS_RULES_FORMAT = 1
 _NO_HABITS_LINE = "（現在有効な habits はない）"
 
 _HEADER = (
-    "# 振る舞い（cc-memory habits）\n"
+    "# 振る舞い（CALM habits）\n"
     "\n"
-    "このファイルは cc-memory が habits DB から自動生成する。手動編集は次回同期で"
-    "失われる。変更は MCP ツール add_habit / update_habit で行う。正は cc-memory の"
+    "このファイルは CALM が habits DB から自動生成する。手動編集は次回同期で"
+    "失われる。変更は MCP ツール add_habit / update_habit で行う。正は CALM の"
     "habits DB にある。使い方は man skill を参照。"
 )
 
 _DISABLED_PLACEHOLDER_BODY = (
-    "# 振る舞い（cc-memory habits）\n"
+    "# 振る舞い（CALM habits）\n"
     "\n"
     "投影は停止中である（CALM_HABITS_RULES_EXPORT=0）。"
     "get_habits で現在の habits を取得すること。\n"

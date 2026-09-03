@@ -107,7 +107,7 @@ def _is_recent_created(created_at_str: str, hours: int = _RECENT_CREATED_HOURS) 
 
 
 _DETERMINISTIC_RENDER_NOTICE = (
-    "この一覧は cc-memory hook が決定論的に組み立てた表示用 markdown です。"
+    "この一覧は CALM hook が決定論的に組み立てた表示用 markdown です。"
     "再フォーマットや優先順の再評価をせず、必要時はそのまま提示してください。"
 )
 
@@ -504,7 +504,7 @@ def _build_snapshot_section(conn, session_id: str | None = None, source: str | N
             "\u26a1 データ消失インシデントの可能性があります。",
             "\u26a1 スナップショットからの復元が可能です。",
             "\u26a1 ユーザーに即座に状況を報告し、復元するか確認してください。",
-            "\u26a1 db-recovery スキルを発動して自律復旧を進めてください(手動手順は cc-memory:man を参照)。",
+            "\u26a1 db-recovery スキルを発動して自律復旧を進めてください(手動手順は calm:man を参照)。",
         ])
         return "\n".join(lines) + "\n"
 
