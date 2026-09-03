@@ -2,7 +2,9 @@
 
 stdin から JSON (tool_name / tool_response / cwd / session_id / transcript_path) を読み、
 cc-memory tool の場合に tool_response.content をサニタイズして
-hookSpecificOutput.updatedToolOutput で stdout へ返す。updatedToolOutput の型
+hookSpecificOutput.updatedToolOutput で stdout へ返す。応答の出力はHarness経由で、
+書き換え機構が無いハーネス (Codex。emit_updated_tool_output が False) では
+応答もイベント記録も行わず終了する。updatedToolOutput の型
 (dict か content block 配列そのものか) は tool_response の元の型に合わせて出し分ける
 (理由は main() 内の分岐直上コメントを参照)。
 
@@ -32,6 +34,7 @@ if str(_project_root) not in sys.path:
 from hooks.citation_event_log import log_event
 from hooks.hook_transcript import _is_calm_tool
 from src.env_compat import env_get
+from src.harness import select_harness
 from src.services.citations_pure import (
     check_target_exists,
     convert_raw_to_cite,
@@ -137,13 +140,12 @@ def main() -> int:
             updated_output = {**tool_response, "content": content_block}
         else:
             updated_output = content_block
-        output = {
-            "hookSpecificOutput": {
-                "hookEventName": "PostToolUse",
-                "updatedToolOutput": updated_output,
-            }
-        }
-        print(json.dumps(output))
+        harness = select_harness(hook_event_name="PostToolUse")
+        if not harness.emit_updated_tool_output(updated_output):
+            # 未サポートハーネス（Codex）: tool結果の書き換え機構が無く、実際には
+            # 何も書き換わらない。書き換わっていないものをsanitize済みとして
+            # citation_event_logへ記録すると事実と乖離するため、記録もせず終了する。
+            return 0
         # 本文が実際に変化した (sanitized または dangling→[deleted] 変換が1件以上
         # 発生した) 場合のみイベントを記録する。変化なしの呼び出しは記録しない
         # (write 経路の apply_raw_to_cite_conversion と同じ規約)。
