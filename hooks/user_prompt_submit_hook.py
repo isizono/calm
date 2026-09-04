@@ -128,7 +128,7 @@ def _resolve_relay_identity_cached(state: HookState) -> str | None:
     return identity
 
 
-def _build_relay_turn_nudge(state: HookState) -> str | None:
+def _build_relay_turn_nudge(state: HookState, harness) -> str | None:
     """relay session-aware毎ターンnudge（CALM_RELAY_SESSION_AWARE=1のときのみ動作）。
 
     SessionStart一回きりの起動指示はエージェントに読み流されて機能しないことが
@@ -140,7 +140,9 @@ def _build_relay_turn_nudge(state: HookState) -> str | None:
 
     Monitor監視が未起動（HookState.get_monitor_startedがFalse）なら起動指示、
     未読が1件以上あれば消化指示を、該当する行だけ束ねて返す。どちらも
-    非該当（起動済みかつ未読0件）ならNoneを返す。
+    非該当（起動済みかつ未読0件）ならNoneを返す。Monitorツールが無い
+    ハーネス（harness.supports_monitor_watchがFalse。Codex）では起動指示は
+    実行不能なノイズになるため注入せず、消化指示のみ返す。
 
     起動指示は `persistent: true` の使用を明記する。既定の `persistent: false`
     だとMonitorはtimeout_ms既定値（5分）で自動終了するが、monitor_startedは
@@ -165,12 +167,13 @@ def _build_relay_turn_nudge(state: HookState) -> str | None:
 
     monitor_started = state.get_monitor_started()
     unread = count_unread(identity)
+    needs_startup = not monitor_started and harness.supports_monitor_watch
 
-    if monitor_started and unread <= 0:
+    if not needs_startup and unread <= 0:
         return None
 
     lines = []
-    if not monitor_started:
+    if needs_startup:
         # ensure_inbox_file: SessionStart hook側の_build_relay_inbox_sectionが
         # 何らかの理由（per-builder try/exceptで握られる例外）で先行touchに
         # 失敗していた場合のフォールバック。ここでも呼んでおくことで、
@@ -232,7 +235,7 @@ def main() -> None:
 
         # 5. relay session-aware nudge（CALM_RELAY_SESSION_AWARE=1のときのみ、
         # 既存nudgeが非該当だった場合のみ判定）
-        relay_message = _build_relay_turn_nudge(state)
+        relay_message = _build_relay_turn_nudge(state, harness)
         if relay_message:
             harness.emit_additional_context(relay_message)
             return

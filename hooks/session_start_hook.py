@@ -461,7 +461,11 @@ def _build_relay_inbox_section(conn, session_id: str | None = None, source: str 
     lines = []
     if count > 0:
         lines.append(f"relay inbox 未読: {count}件 → relay_receiveで消化")
-    lines.append(f"新着の待ち受けはMonitorツールで {path} を監視してください。")
+    if select_harness().supports_monitor_watch:
+        lines.append(f"新着の待ち受けはMonitorツールで {path} を監視してください。")
+    if not lines:
+        # Monitor非対応ハーネスで未読0件: 注入すべき内容が無い
+        return ""
     return "\n".join(lines) + "\n"
 
 

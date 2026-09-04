@@ -244,3 +244,38 @@ class TestSessionContextProtection:
         # 「# コンテキスト取得フロー」ではなく、デフォルトseed済みhabitsを持つ
         # 「# 振る舞い」セクションで他セクションの生存を確認する
         assert "# 振る舞い" in context
+
+
+class TestMonitorUnsupportedHarness:
+    """Monitorツールが無いハーネス（CALM_HARNESS=codex）ではMonitor監視指示を
+    注入しない（#616）。未読の報告行のみ機能する。"""
+
+    def test_returns_empty_when_no_unread(self, monkeypatch, relay_configured):
+        """未読0件なら注入すべき内容が無く空文字を返す"""
+        monkeypatch.setenv("CALM_HARNESS", "codex")
+        monkeypatch.setattr(relay_identity, "get_relay_identity", lambda: "codex-id-1")
+        _make_inbox_file(relay_configured, "codex-id-1")
+        monkeypatch.setattr(relay_inbox, "count_unread", lambda session_id: 0)
+        assert _build_relay_inbox_section(None) == ""
+
+    def test_shows_unread_count_without_monitor_instruction(
+        self, monkeypatch, relay_configured
+    ):
+        """未読>0のときは未読報告行のみ。Monitor監視指示は含まない"""
+        monkeypatch.setenv("CALM_HARNESS", "codex")
+        monkeypatch.setattr(relay_identity, "get_relay_identity", lambda: "codex-id-1")
+        _make_inbox_file(relay_configured, "codex-id-1")
+        monkeypatch.setattr(relay_inbox, "count_unread", lambda session_id: 3)
+        result = _build_relay_inbox_section(None)
+        assert "relay inbox 未読: 3件" in result
+        assert "relay_receive" in result
+        assert "Monitorツール" not in result
+
+    def test_still_precreates_inbox_file(self, monkeypatch, relay_configured):
+        """Monitor非対応でもinbox fileの先行生成は行う（relay_receive側の
+        取りこぼし防止はハーネス非依存）"""
+        monkeypatch.setenv("CALM_HARNESS", "codex")
+        monkeypatch.setattr(relay_identity, "get_relay_identity", lambda: "codex-id-2")
+        assert not relay_inbox.inbox_path("codex-id-2").exists()
+        _build_relay_inbox_section(None)
+        assert relay_inbox.inbox_path("codex-id-2").exists()

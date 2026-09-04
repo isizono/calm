@@ -110,6 +110,10 @@ class TestEmitDiffs:
         assert harness.emit_display_content("M#1") is False
         assert stdout.getvalue() == ""
 
+    def test_monitor_watchをサポートしない(self):
+        harness, _ = _make()
+        assert harness.supports_monitor_watch is False
+
     def test_additional_contextは継承したhookSpecificOutput形式(self):
         harness, stdout = _make(hook_event_name="SessionStart")
         harness.emit_additional_context("文脈")

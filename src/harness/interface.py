@@ -21,7 +21,9 @@ transcriptファイル形式（フラットな`type`/`message.content`のJSONL�
 Codex側に対応する仕組みが無い操作（`updatedToolOutput`相当の直接
 書き換え、`displayContent`相当の発話後処理）は、例外を投げるのではなく
 戻り値 `False` で「未サポート」を表現する。呼び出し側は戻り値を見て
-代替方針（何もしない・別経路で通知する等）に分岐できる。
+代替方針（何もしない・別経路で通知する等）に分岐できる。hookの応答
+出力ではなくハーネス側ツールの有無に依存する機能（Monitorツールによる
+relay監視）は、能力フラグ `supports_monitor_watch` で問い合わせる。
 
 ## 既存hook・identity.pyと本インターフェースの対応表
 
@@ -174,6 +176,19 @@ class Harness(ABC):
         Returns:
             出力した場合True。ハーネスに対応機構が無い場合は何も出力
             せずFalse（未サポート。Codex側の代替方針は呼び出し側が決める）。
+        """
+
+    @property
+    @abstractmethod
+    def supports_monitor_watch(self) -> bool:
+        """Monitorツール（persistent監視でイベント駆動wakeする機構）の有無。
+
+        relay監視の起動指示（session_start_hook / user_prompt_submit_hookの
+        relay session-aware注入）は、Falseのハーネスでは注入しない。存在
+        しないツールの起動指示は実行不能なノイズとして毎ターン注入され
+        続けるため。Codexにはバックグラウンド実行のポーリング確認
+        （`/ps`相当）はあるが、完了・新着時にモデルを起こすイベント駆動の
+        永続監視は無い（相当機構なしの調査結果は #616 を参照）。
         """
 
     # ------------------------------------------------------------------

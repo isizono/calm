@@ -25,6 +25,12 @@ _CODEX_HOOKS_JSON_PATH = _PROJECT_ROOT / ".codex" / "hooks.json"
 # 存在しないイベント。Codex側登録（.codex/hooks.json）の期待値導出から除外する。
 _CODEX_UNSUPPORTED_EVENTS = {"MessageDisplay"}
 
+# イベント自体はCodexに存在するが、スクリプトが依存するハーネス機構が
+# Codexに無いため、Codex側登録の期待値導出から除外するスクリプト。
+# relay_monitor_watch_hook.py: matcher ^Monitor$ が対象とするMonitorツール
+# （イベント駆動の永続監視）がCodexに存在せず、登録しても発火し得ない（#616）。
+_CODEX_UNSUPPORTED_SCRIPTS = {"relay_monitor_watch_hook.py"}
+
 # hooks/ 配下のスクリプトが自身の担当イベントを宣言する規約:
 # モジュール docstring 冒頭が `"<Event> hook: ..."` の形。
 _DECLARED_EVENT_PATTERN = re.compile(r"^(\w+) hook:")
@@ -131,7 +137,7 @@ class TestCodexHooksJsonConsistency:
         claude = _registered_scripts_by_event()
         codex = _registered_scripts_by_event(_CODEX_HOOKS_JSON_PATH)
         expected = {
-            event: scripts
+            event: [s for s in scripts if s not in _CODEX_UNSUPPORTED_SCRIPTS]
             for event, scripts in claude.items()
             if event not in _CODEX_UNSUPPORTED_EVENTS
         }

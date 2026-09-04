@@ -128,6 +128,10 @@ class TestEmit:
             }
         }
 
+    def test_monitor_watchをサポートする(self):
+        harness, _ = _make()
+        assert harness.supports_monitor_watch is True
+
 
 # ---------------------------------------------------------------------------
 # 2. transcript読み書き
