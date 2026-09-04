@@ -200,6 +200,8 @@ class TestEnrich:
 
 class TestMain:
     def _run(self, monkeypatch, payload):
+        # CALM_HARNESS未設定 = Claude Code経路に固定する
+        monkeypatch.delenv("CALM_HARNESS", raising=False)
         monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
         out = io.StringIO()
         monkeypatch.setattr("sys.stdout", out)
@@ -267,6 +269,23 @@ class TestMain:
 
     def test_invalid_json_no_output(self, monkeypatch, fake_db):
         monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
+        out = io.StringIO()
+        monkeypatch.setattr("sys.stdout", out)
+        try:
+            mdid.main()
+        except SystemExit:
+            pass
+        assert out.getvalue() == ""
+
+    def test_codex_harness_no_output(self, monkeypatch, fake_db):
+        """CALM_HARNESS=codexでは表示書き換え機構が無い（emit_display_content
+        がFalse）ため、enrich対象のIDがあっても何も出力しない。"""
+        monkeypatch.setenv("CALM_HARNESS", "codex")
+        payload = {
+            "hook_event_name": "MessageDisplay",
+            "delta": f"ref {_MN('M', 1)} now",
+        }
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
         out = io.StringIO()
         monkeypatch.setattr("sys.stdout", out)
         try:

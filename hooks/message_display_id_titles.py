@@ -4,7 +4,10 @@
 
 `hookSpecificOutput.displayContent` で表示のみ書き換える。transcript と
 Claude context には元のテキストが残るため、AI 側の token 消費は変わらない。
-ユーザー画面でだけ可読性が上がる。
+ユーザー画面でだけ可読性が上がる。応答の出力はHarness経由で、表示書き換え
+機構が無いハーネス (Codex。MessageDisplay相当イベントが存在せず
+emit_display_content が False) では何も出力せず終了する。表示整形のみの
+機能のため、Codex側の代替実装は行わない (方針の経緯は #617 を参照)。
 
 MessageDisplay は実機では `delta` + `index` + `final` + `message_id` の
 streaming protocol で発火する。本 hook は chunk 単位 (`delta`) で補完を行い、
@@ -16,7 +19,6 @@ cc-memory project 内かどうかは判定せず、全 session で有効。
 """
 from __future__ import annotations
 
-import json
 import pathlib
 import re
 import sqlite3
@@ -27,6 +29,7 @@ if str(_PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(_PLUGIN_ROOT))
 
 from src.env_compat import env_get  # noqa: E402
+from src.harness import select_harness  # noqa: E402
 from src.services.internal_id_patterns import FULLWORD_TO_CODE  # noqa: E402
 
 # code 形式と fullword 形式を 1 つの regex にまとめる。2 段階 sub にすると
@@ -142,8 +145,9 @@ def _enrich(text: str, conn: sqlite3.Connection) -> str:
 
 
 def main() -> None:
+    harness = select_harness(hook_event_name="MessageDisplay")
     try:
-        payload = json.load(sys.stdin)
+        payload = harness.read_hook_input()
     except Exception:
         sys.exit(0)
 
@@ -173,13 +177,7 @@ def main() -> None:
     if enriched == message:
         sys.exit(0)
 
-    output = {
-        "hookSpecificOutput": {
-            "hookEventName": "MessageDisplay",
-            "displayContent": enriched,
-        }
-    }
-    json.dump(output, sys.stdout, ensure_ascii=False)
+    harness.emit_display_content(enriched)
 
 
 if __name__ == "__main__":
