@@ -5,6 +5,10 @@ session_start_hook.py との統合、CLIエントリポイントの疎通テス�
 
 restore_snapshot() の安全装置（サーバー稼働中チェック・互換性警告等）を
 含む詳細な検証は tests/unit/test_backup_service.py で行う。
+
+session_start_hook.pyの起動は tests.helpers.run_session_start_hook を使う
+（habits rules投影ファイルのCALM_HABITS_RULES_PATH隔離を内包している。
+詳細は tests/e2e/test_session_start_hook.py のモジュールdocstring参照）。
 """
 import json
 import os
@@ -23,6 +27,7 @@ from src.services.backup_service import (
     SNAPSHOT_PREFIX,
     SNAPSHOT_JSON_SUFFIX,
 )
+from tests.helpers import run_session_start_hook as _run_session_start_hook
 
 # プロジェクトルート
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -262,24 +267,6 @@ class TestSnapshotCLI:
         assert verify_result.returncode == 0
         payload = json.loads(verify_result.stdout)
         assert payload["ok"] is True
-
-
-def _run_session_start_hook(db_path: str) -> dict:
-    """session_start_hook.pyを実行してJSON出力を返す"""
-    env = {**os.environ, "DISCUSSION_DB_PATH": db_path}
-
-    result = subprocess.run(
-        [sys.executable, "hooks/session_start_hook.py"],
-        input="{}",
-        capture_output=True,
-        text=True,
-        cwd=str(PROJECT_ROOT),
-        env=env,
-    )
-
-    stdout = result.stdout.strip()
-    assert stdout, f"session_start_hook.py produced no output. stderr: {result.stderr}"
-    return json.loads(stdout)
 
 
 class TestSessionStartHookSnapshot:
