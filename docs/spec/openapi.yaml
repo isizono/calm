@@ -595,6 +595,60 @@ paths:
                 oneOf:
                 - type: object
                 - $ref: '#/components/schemas/ErrorResponse'
+  /tools/demote_tag_notes:
+    post:
+      tags:
+      - tag
+      summary: tag notesの指定セクションを資材へ逐語退避し、notesを縮小する。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                tag:
+                  type: string
+                sections:
+                  items:
+                    type: string
+                  type: array
+                mode:
+                  default: pointer
+                  enum:
+                  - pointer
+                  - drop
+                  type: string
+                archive_material_id:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                archive_tags:
+                  anyOf:
+                  - items:
+                      type: string
+                    type: array
+                  - type: 'null'
+                  default: null
+                reason:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+              required:
+              - tag
+              - sections
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
   /tools/detect_reask_candidates:
     post:
       tags:

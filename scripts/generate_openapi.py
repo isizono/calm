@@ -50,6 +50,7 @@ TOOL_TAGS: dict[str, str] = {
     "get_by_ids": "search",
     "search_tags": "tag",
     "update_tag": "tag",
+    "demote_tag_notes": "tag",
     "analyze_tags": "tag",
     "add_relation": "relation",
     "remove_relation": "relation",

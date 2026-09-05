@@ -14,7 +14,13 @@ from src.services.tag_service import (
     format_tags,
     get_entity_tags,
     get_effective_tags_batch,
+    update_tag,
+    demote_tag_notes,
+    collect_tag_notes_for_injection,
+    _TAG_NOTES_RATCHET_CEILING,
 )
+from src.services.topic_service import add_topic
+from src.services.material_service import get_material
 import src.services.embedding_service as emb
 
 
@@ -771,3 +777,332 @@ class TestTagEmbeddingHelpers:
             assert count == 0
         finally:
             conn.close()
+
+
+# ========================================
+# demote_tag_notes テスト
+# ========================================
+
+
+def _get_tag_notes(tag_str: str) -> str:
+    """テスト用: 指定タグの現在のnotesを取得する（NULLなら""）。"""
+    namespace, name = parse_tag(tag_str)
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT notes FROM tags WHERE namespace = ? AND name = ?",
+            (namespace, name),
+        ).fetchone()
+    finally:
+        conn.close()
+    return (row["notes"] or "") if row else ""
+
+
+def _count_materials() -> int:
+    conn = get_connection()
+    try:
+        return conn.execute("SELECT COUNT(*) AS c FROM materials").fetchone()["c"]
+    finally:
+        conn.close()
+
+
+class TestDemoteTagNotesDocstringSync:
+    """main.pyのツールdocstringとtag_service側の実処理docstringが同一であること
+    (二層のうち片方だけ更新される事故が過去に起きているための導出型整合性lint)"""
+
+    def test_tool_and_service_docstrings_are_identical(self):
+        import inspect
+        from src.main import demote_tag_notes as tool_fn
+
+        assert inspect.getdoc(tool_fn) == inspect.getdoc(demote_tag_notes)
+
+
+class TestDemoteTagNotes:
+    """demote_tag_notesのテスト"""
+
+    @pytest.fixture(autouse=True)
+    def _disable_embedding_for_this_class(self, disable_embedding):
+        """このクラスの全テストでembedding呼び出しを無効化する"""
+
+    def test_tag_not_found(self, temp_db):
+        result = demote_tag_notes("domain:nonexistent", sections=["X"])
+        assert result["error"]["code"] == "NOT_FOUND"
+
+    def test_empty_sections_is_validation_error(self, temp_db):
+        add_topic(title="T", description="D", tags=["domain:test"])
+        result = demote_tag_notes("domain:test", sections=[])
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_invalid_mode_is_validation_error(self, temp_db):
+        add_topic(title="T", description="D", tags=["domain:test"])
+        update_tag("domain:test", notes="## A\n本文\n")
+        result = demote_tag_notes("domain:test", sections=["A"], mode="delete")
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_no_heading_at_all_returns_section_not_found(self, temp_db):
+        """前文型タグ('## '見出しが1つも無い)でdemoteを試みるとSECTION_NOT_FOUND"""
+        add_topic(title="T", description="D", tags=["domain:test"])
+        update_tag("domain:test", notes="前文だけのnotes")
+        result = demote_tag_notes("domain:test", sections=["前文だけのnotes"])
+        assert result["error"]["code"] == "SECTION_NOT_FOUND"
+
+    def test_preamble_cannot_be_demoted(self, temp_db):
+        """最初の '## ' より前の前文は退避対象にできない(見出しとして指定してもSECTION_NOT_FOUND)"""
+        add_topic(title="T", description="D", tags=["domain:test"])
+        update_tag("domain:test", notes="前文だよ\n\n## セクションA\n本文A\n")
+        result = demote_tag_notes("domain:test", sections=["前文だよ"])
+        assert result["error"]["code"] == "SECTION_NOT_FOUND"
+
+    def test_ambiguous_section_when_heading_duplicated(self, temp_db):
+        """同一見出しが複数あるタグではAMBIGUOUS_SECTIONで拒否し、notesは変更しない"""
+        add_topic(title="T", description="D", tags=["domain:test"])
+        original = "## X\n本文1\n\n## X\n本文2\n"
+        update_tag("domain:test", notes=original)
+        result = demote_tag_notes("domain:test", sections=["X"])
+        assert result["error"]["code"] == "AMBIGUOUS_SECTION"
+        assert _get_tag_notes("domain:test") == original
+
+    def test_re_demoting_same_section_returns_section_not_found(self, temp_db):
+        add_topic(title="T", description="D", tags=["domain:test"])
+        update_tag("domain:test", notes="## A\n本文A\n\n## B\n本文B\n")
+        first = demote_tag_notes("domain:test", sections=["A"], mode="drop")
+        assert "error" not in first
+        second = demote_tag_notes("domain:test", sections=["A"], mode="drop")
+        assert second["error"]["code"] == "SECTION_NOT_FOUND"
+
+    def test_trailer_marker_is_preserved_after_demote(self, temp_db):
+        """末尾の素マーカー(#audited-...)は退避後もnotesに残る"""
+        add_topic(title="T", description="D", tags=["domain:test"])
+        update_tag("domain:test", notes="## A\n本文A\n\n#audited-2026-09-04\n")
+        result = demote_tag_notes("domain:test", sections=["A"], mode="drop")
+        assert "error" not in result
+        assert _get_tag_notes("domain:test").endswith("#audited-2026-09-04\n")
+
+    def test_trailer_dated_hint_cooldown_marker_is_preserved_after_demote(self, temp_db):
+        """hint_serviceが実際に書き込むコロン付き日次クールダウンマーカー
+        (例: #recompose-delta-skipped-until:YYYY-MM-DD)も末尾trailerとして
+        退避後に残る。マーカーの実際の書式はhint_service側から導出し、
+        本テストではハードコードしない(audit重複防止とhintクールダウンが
+        同時に壊れる最重要ケースの一つ)。"""
+        from datetime import date
+        from src.services.hint_service import MARKER_RECOMPOSE_DELTA, _merge_cooldown_marker
+
+        marker_line = _merge_cooldown_marker("", MARKER_RECOMPOSE_DELTA, date(2026, 9, 4))
+
+        add_topic(title="T", description="D", tags=["domain:test"])
+        update_tag("domain:test", notes=f"## A\n本文A\n\n{marker_line}\n")
+
+        result = demote_tag_notes("domain:test", sections=["A"], mode="drop")
+        assert "error" not in result
+        assert _get_tag_notes("domain:test").endswith(f"{marker_line}\n")
+
+    def test_remaining_sections_concatenation_is_byte_identical_to_original(self, temp_db):
+        """dropモードで退避後、残ったセクションの連結が退避前の対応部分とバイト単位で同一"""
+        add_topic(title="T", description="D", tags=["domain:test"])
+        preamble = "前文だよ\n\n"
+        block_a = "## セクションA\n本文A\n\n"
+        block_b = "## セクションB\n本文B\n\n"
+        block_c = "## セクションC\n本文C\n"
+        original_notes = preamble + block_a + block_b + block_c
+        update_tag("domain:test", notes=original_notes)
+
+        result = demote_tag_notes("domain:test", sections=["セクションB"], mode="drop")
+        assert "error" not in result
+
+        expected_remaining = preamble + block_a + block_c
+        assert _get_tag_notes("domain:test") == expected_remaining
+
+    def test_all_sections_demoted_results_in_empty_notes_and_excluded_from_injection(self, temp_db):
+        """全セクションをdropモードで退避し尽くすとnotesは空文字列になり、
+        collect_tag_notes_for_injectionの対象からも外れる(NULL判定だけでは拾えないケース)"""
+        add_topic(title="T", description="D", tags=["domain:test"])
+        update_tag("domain:test", notes="## A\n本文A\n")
+        result = demote_tag_notes("domain:test", sections=["A"], mode="drop")
+        assert "error" not in result
+        assert _get_tag_notes("domain:test") == ""
+
+        conn = get_connection()
+        try:
+            notes = collect_tag_notes_for_injection(conn, ["domain:test"], mark=False)
+        finally:
+            conn.close()
+        assert notes is None
+
+    def test_archive_material_id_with_retracted_material_is_validation_error(self, temp_db):
+        from src.services.material_service import add_material
+        from src.services.retract_service import retract
+
+        add_topic(title="T", description="D", tags=["domain:test"])
+        update_tag("domain:test", notes="## A\n本文A\n")
+        m = add_material(title="退避先候補", content="本文", tags=["domain:test"], source="s")
+        retract("material", [m["material_id"]])
+
+        result = demote_tag_notes(
+            "domain:test", sections=["A"], archive_material_id=m["material_id"]
+        )
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_archive_material_id_nonexistent_is_validation_error(self, temp_db):
+        add_topic(title="T", description="D", tags=["domain:test"])
+        update_tag("domain:test", notes="## A\n本文A\n")
+        result = demote_tag_notes("domain:test", sections=["A"], archive_material_id=999999)
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_new_material_created_with_pointer_and_notes_shrunk(self, temp_db):
+        add_topic(title="T", description="D", tags=["domain:test"])
+        # 索引セクション追加分のオーバーヘッド(見出し+ポインタ行、約50字)より
+        # 十分大きい本文を退避し、notes全体としては縮小することを確認する
+        long_body = "退避される本文。" * 30
+        update_tag(
+            "domain:test",
+            notes=f"前文\n\n## セクションA\n{long_body}\n\n## セクションB\n残る本文\n",
+        )
+
+        result = demote_tag_notes("domain:test", sections=["セクションA"], reason="整理のため")
+        assert "error" not in result
+        assert result["material_created"] is True
+        assert result["demoted_sections"] == ["セクションA"]
+        assert result["pointers_added"] == 1
+        assert result["citations_converted"] == 0
+        assert result["notes_length"]["before"] > result["notes_length"]["after"]
+        assert result["notes_length"]["over_budget"] is False
+
+        material = get_material(result["material_id"])
+        assert "退避される本文" in material["content"]
+        assert "整理のため" in material["content"]
+        assert set(material["tags"]) >= {"domain:test", "tag-notes-archive"}
+        assert material["title"].startswith("tag notes退避: ")
+
+        new_notes = _get_tag_notes("domain:test")
+        assert "退避される本文" not in new_notes
+        assert "残る本文" in new_notes
+        assert "セクションA → get_material(material_id=" in new_notes
+
+    def test_pointer_lines_accumulate_across_multiple_demote_calls(self, temp_db):
+        """複数回のdemoteのポインタが1つの索引セクションに集約され、重複しない"""
+        add_topic(title="T", description="D", tags=["domain:test"])
+        update_tag("domain:test", notes="## A\n本文A\n\n## B\n本文B\n\n## C\n本文C\n")
+
+        r1 = demote_tag_notes("domain:test", sections=["A"])
+        assert "error" not in r1
+        r2 = demote_tag_notes("domain:test", sections=["B"])
+        assert "error" not in r2
+        assert r2["pointers_added"] == 1
+
+        notes = _get_tag_notes("domain:test")
+        assert notes.count("## 退避済み") == 1
+        assert "A → get_material(material_id=" in notes
+        assert "B → get_material(material_id=" in notes
+        assert "本文C" in notes
+
+    def test_append_mode_appends_to_existing_archive_material(self, temp_db):
+        from src.services.material_service import add_material
+
+        add_topic(title="T", description="D", tags=["domain:test"])
+        update_tag("domain:test", notes="## A\n本文A\n\n## B\n本文B\n")
+        archive = add_material(
+            title="既存の退避先", content="既存の退避内容", tags=["domain:test"], source="s",
+        )
+        archive_id = archive["material_id"]
+
+        result = demote_tag_notes("domain:test", sections=["A"], archive_material_id=archive_id)
+        assert "error" not in result
+        assert result["material_created"] is False
+        assert result["material_id"] == archive_id
+
+        material = get_material(archive_id)
+        assert "既存の退避内容" in material["content"]
+        assert "本文A" in material["content"]
+
+    def test_archive_title_is_truncated_to_title_max_len(self, temp_db):
+        from src.services.title_validation import TITLE_MAX_LEN
+
+        long_tag_name = "x" * 60
+        add_topic(title="T", description="D", tags=[f"domain:{long_tag_name}"])
+        update_tag(f"domain:{long_tag_name}", notes="## A\n本文A\n")
+
+        result = demote_tag_notes(f"domain:{long_tag_name}", sections=["A"])
+        assert "error" not in result
+        assert len(result["material_title"]) <= TITLE_MAX_LEN
+
+    def test_ratchet_ceiling_rejection_rolls_back_entire_transaction(self, temp_db):
+        """索引セクション追加分だけ長さが増えて4000字を超える場合、notesの書き込みが
+        DBトリガーで拒否され、退避先資材の作成を含む変更全体がロールバックされる
+        (資材は作られずに残らない)。エラーはupdate_tagの事前チェックと同じ理由
+        (生SQLiteメッセージを露出させない)でVALIDATION_ERRORに正規化され、
+        整理ループが使えるようbefore/afterの実測文字数もメッセージに含む。"""
+        add_topic(title="T", description="D", tags=["domain:test"])
+
+        tiny_section = "## S\ny\n"
+        target_existing_len = 3995
+        huge_prefix = "## Big\n"
+        huge_suffix = "\n"
+        pad_len = target_existing_len - len(tiny_section) - len(huge_prefix) - len(huge_suffix)
+        huge_section = huge_prefix + ("x" * pad_len) + huge_suffix
+        existing_notes = huge_section + tiny_section
+        assert len(existing_notes) == target_existing_len
+
+        set_result = update_tag("domain:test", notes=existing_notes)
+        assert "error" not in set_result
+
+        materials_before = _count_materials()
+
+        result = demote_tag_notes("domain:test", sections=["S"], mode="pointer")
+
+        assert "error" in result
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+        assert str(target_existing_len) in result["error"]["message"]
+        # notesはロールバックされ変更前のまま
+        assert _get_tag_notes("domain:test") == existing_notes
+        # 退避先資材は作られずに残る
+        assert _count_materials() == materials_before
+
+    def test_shrinking_update_succeeds_and_reports_over_budget_when_still_over_ceiling(self, temp_db):
+        """4000字超過状態のタグ(migration 0066適用前から存在した既存データを想定)に
+        対しては、縮む更新である限りdemoteが成功する(ラチェット則は増加のみを拒否し、
+        縮小は天井超過中でも常に許可する)。縮小後もなお天井を超えていれば
+        notes_length.over_budgetがTrueで返ることを確認する。
+
+        migration 0066のUPDATEトリガーは増加更新のみを拒否するため、超過済みの
+        notesを直接UPDATEで仕込むにはトリガーを一旦外す必要がある(このテストの
+        前提データ作成のみに使う一時的な操作で、demote_tag_notes自体の呼び出しは
+        トリガーが有効な状態で行う)。
+        """
+        add_topic(title="T", description="D", tags=["domain:test"])
+        namespace, name = parse_tag("domain:test")
+
+        big_body = "本文。" * 1500
+        over_budget_notes = f"## Big\n{big_body}\n\n## Small\nちいさい\n"
+        assert len(over_budget_notes) > _TAG_NOTES_RATCHET_CEILING
+
+        conn = get_connection()
+        try:
+            conn.execute("DROP TRIGGER trg_tags_notes_ratchet_ceiling_upd")
+            conn.execute(
+                "UPDATE tags SET notes = ? WHERE namespace = ? AND name = ?",
+                (over_budget_notes, namespace, name),
+            )
+            conn.commit()
+            conn.execute(
+                """
+                CREATE TRIGGER trg_tags_notes_ratchet_ceiling_upd
+                BEFORE UPDATE OF notes ON tags
+                FOR EACH ROW
+                WHEN NEW.notes IS NOT NULL
+                     AND LENGTH(NEW.notes) > 4000
+                     AND (OLD.notes IS NULL OR LENGTH(NEW.notes) > LENGTH(OLD.notes))
+                BEGIN
+                    SELECT RAISE(ABORT, 'tag notes ratchet ceiling (4000 chars) exceeded and increasing');
+                END;
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = demote_tag_notes("domain:test", sections=["Small"], mode="drop")
+
+        assert "error" not in result
+        assert result["notes_length"]["after"] > _TAG_NOTES_RATCHET_CEILING
+        assert result["notes_length"]["over_budget"] is True
+        assert "ちいさい" not in _get_tag_notes("domain:test")
