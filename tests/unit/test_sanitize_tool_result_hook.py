@@ -173,6 +173,15 @@ def test_case_03_env_disable_short_circuits(fixture_db, monkeypatch):
     assert _read_citation_events(fixture_db) == []
 
 
+def test_case_03_env_disable_short_circuits_even_for_subagent(fixture_db, monkeypatch):
+    """CALM_SANITIZE_DISABLE=1はagent_id付き(サブエージェント発)呼び出しにも優先して適用される。"""
+    monkeypatch.setenv("CALM_SANITIZE_DISABLE", "1")
+    stdout, code = _run_hook(_payload("ref to M#1", agent_id="agent-xyz"))
+    assert code == 0
+    assert stdout == ""
+    assert _read_citation_events(fixture_db) == []
+
+
 # ---------------------------------------------------------------------------
 # Case #4: cwd が cc-memory リポジトリ内 → skip (pyproject.toml で判定)
 # ---------------------------------------------------------------------------
