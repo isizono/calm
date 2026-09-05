@@ -326,6 +326,94 @@ class TestPropagateToErrors:
             conn.close()
 
 
+class TestPropagationFailedTopLevel:
+    """propagate_to失敗時、応答トップレベルのpropagation_failedで可視化されることのテスト"""
+
+    def test_tag_note_ceiling_exceeded_surfaces_top_level_and_decision_still_created(self, topic):
+        """タグのnotesが文字数上限に達している状態でtag_note伝搬 →
+        トップレベルpropagation_failedに載り、かつdecision自体は正常に作成される"""
+        tid = topic["topic_id"]
+
+        # notesを上限4000字ちょうどまで埋めたタグを用意する（追記で必ず超過する状態）
+        conn = get_connection()
+        try:
+            conn.execute(
+                "INSERT INTO tags (namespace, name, notes) VALUES (?, ?, ?)",
+                ("domain", "atceiling", "x" * 4000),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = add_decisions([
+            {
+                "topic_id": tid,
+                "decision": "上限到達タグへの伝搬テスト",
+                "reason": "propagation_failed可視化のテスト",
+                "propagate_to": {
+                    "type": "tag_note",
+                    "tag": "domain:atceiling",
+                    "content": "この追記は上限超過で拒否されるはず",
+                },
+            },
+        ])
+
+        assert "error" not in result
+        assert len(result["created"]) == 1
+        assert len(result["errors"]) == 0
+
+        created = result["created"][0]
+        assert created["propagation"]["status"] == "error"
+
+        # トップレベルに失敗が明示される
+        assert "propagation_failed" in result
+        assert len(result["propagation_failed"]) == 1
+        failure = result["propagation_failed"][0]
+        assert failure["index"] == 0
+        assert failure["decision_id"] == created["decision_id"]
+        assert failure["type"] == "tag_note"
+        assert failure["tag"] == "domain:atceiling"
+        assert "ratchet ceiling" in failure["message"].lower()
+
+        # decision自体は正常に作成されている
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT * FROM decisions WHERE id = ?",
+                (created["decision_id"],),
+            ).fetchone()
+            assert row is not None
+            assert row["decision"] == "上限到達タグへの伝搬テスト"
+
+            # notesは上限超過の追記が拒否されロールバックされ、元のままである
+            notes_row = conn.execute(
+                "SELECT notes FROM tags WHERE namespace = ? AND name = ?",
+                ("domain", "atceiling"),
+            ).fetchone()
+            assert notes_row["notes"] == "x" * 4000
+        finally:
+            conn.close()
+
+    def test_successful_propagation_has_no_top_level_failure_field(self, topic):
+        """伝搬が全件成功 → propagation_failedキー自体が付かない"""
+        tid = topic["topic_id"]
+        result = add_decisions([
+            {
+                "topic_id": tid,
+                "decision": "成功する伝搬テスト",
+                "reason": "propagation_failed非付与の確認",
+                "propagate_to": {
+                    "type": "habit",
+                    "content": "正常に伝搬される内容",
+                },
+            },
+        ])
+
+        assert "error" not in result
+        assert result["created"][0]["propagation"]["status"] == "ok"
+        assert "propagation_failed" not in result
+
+
 class TestPropagateToAbsent:
     """propagate_to未指定時のテスト"""
 

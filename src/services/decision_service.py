@@ -97,6 +97,10 @@ def add_decisions(items: list[dict]) -> dict:
         propagate_to type='habit' が1件以上成功していれば~/.claude/rules配下への
         投影ファイル書き出しを試み、失敗時のみ "rules_projection" キーが付く（decision
         作成自体の成否には影響しない）。
+        propagate_toの伝搬が1件以上失敗した場合、応答トップレベルに
+        propagation_failed（[{index, decision_id, type, tag?, message}, ...]）が付く
+        （decision作成自体は成功として扱われる。各itemのcreated要素にも同じ内容が
+        propagationキーで個別に付くが、失敗の見落としを防ぐため集約もトップレベルに出す）。
     """
     # バリデーション: 1 <= len(items) <= 10
     if not items:
@@ -117,6 +121,7 @@ def add_decisions(items: list[dict]) -> dict:
     created = []
     errors = []
     habit_propagated = False
+    propagation_failures = []
 
     conn = get_connection()
     try:
@@ -230,6 +235,15 @@ def add_decisions(items: list[dict]) -> dict:
                         conn.execute(f"ROLLBACK TO SAVEPOINT propagate_{i}")
                         conn.execute(f"RELEASE SAVEPOINT propagate_{i}")
                         propagation_result = {"status": "error", "type": propagate_to.get("type", "unknown"), "message": str(e)}
+                        failure_entry = {
+                            "index": i,
+                            "decision_id": decision_id,
+                            "type": propagation_result["type"],
+                            "message": propagation_result["message"],
+                        }
+                        if propagate_to.get("tag"):
+                            failure_entry["tag"] = propagate_to.get("tag")
+                        propagation_failures.append(failure_entry)
 
                 conn.execute(f"RELEASE SAVEPOINT item_{i}")
                 created_item = {
@@ -342,6 +356,9 @@ def add_decisions(items: list[dict]) -> dict:
                 c.pop("created_at", None)
 
         response = {"created": created, "errors": errors}
+
+        if propagation_failures:
+            response["propagation_failed"] = propagation_failures
 
         if habit_propagated:
             from src.services import habit_projection

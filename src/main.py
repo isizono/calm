@@ -378,6 +378,7 @@ def add_decisions(items: list[dict], ctx: Context) -> dict:
         書式ゆれ・空節・アンカー日付欠落等、またはtagsに intent:design を含む要素で
         「隣接確認:」節が無い場合、precedent_warnings（文字列のリスト）が付く。
         いずれもsoft validationであり、decision作成自体は拒否しない。
+        propagate_to伝搬失敗時は応答トップレベルにpropagation_failedが付く（decision作成済）。
     """
     result = decision_service.add_decisions(items)
     if "error" not in result:

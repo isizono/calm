@@ -191,8 +191,9 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 | --- | --- | --- | --- | --- |
 | items | list[object] | yes | - | 最大10件。各要素は `{topic_id, decision, reason, title?, tags?, propagate_to?}` |
 
-**返り値**: `{created: [...], errors: [...], hints?: [string]}`。created の各要素には `related_decisions`（同topic内の類似decision上位3件）が付く。hintsはharness_serviceからの推奨行動。
+**返り値**: `{created: [...], errors: [...], propagation_failed?: [...], hints?: [string]}`。created の各要素には `related_decisions`（同topic内の類似decision上位3件）が付く。hintsはharness_serviceからの推奨行動。
 **propagate_to**: `{type: "habit" | "tag_note", content: string, tag?: string}`。tagはtype="tag_note"のとき必須。
+**propagation_failed**: propagate_toの伝搬が1件以上失敗した場合のみ付く配列。各要素は `{index, decision_id, type, tag?, message}`。decision自体の作成成否には影響しない（decisionは常に成功として作成される）ため、この配列を見ないと伝搬失敗（例: tag_note伝搬先タグの文字数上限超過）に気づけない。
 **関連**: `add_habit` / `update_tag(notes=...)` と連動。
 
 ### 2.4 get_topics
