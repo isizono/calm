@@ -10,6 +10,7 @@ import atexit
 import itertools
 import json
 import logging
+import os
 import signal
 import subprocess
 import sys
@@ -18,13 +19,40 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from src.env_compat import env_get
+from src.env_compat import env_get, env_set
 from src.services.relay.identity import (
     register_launcher_session,
     unregister_launcher_session,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _propagate_plugin_root_env() -> None:
+    """プラグイン実行時、embedding_service向けの `CALM_PROJECT_ROOT` を自動設定する。
+
+    `embedding_service._resolve_project_root()` は env var 未設定時
+    `git rev-parse --git-common-dir` で project root を解決するが、プラグインは
+    `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/` のようなgit管理外の
+    ディレクトリに展開されて実行されるため、そこでは解決に失敗しRuntimeErrorになる
+    （worktree誤解決によるメモリ膨張事故の再発防止のため、失敗時に`__file__`へ
+    黙ってフォールバックしない設計自体は変更しない）。
+
+    Claude Codeはプラグイン実行時、実行中のプラグインの展開先ディレクトリを
+    `CLAUDE_PLUGIN_ROOT` として本プロセスに渡す。launcherはこのプロセスの
+    子として `src.main` を、`src.main` はさらにその子として embedding_server を
+    Popen（env指定なし=環境を継承）で起動するため、ここで設定しておけば
+    プロセスツリー全体に伝播する。
+
+    `CALM_PROJECT_ROOT` が（新旧名いずれかで）既に明示設定されている場合は
+    尊重し、上書きしない。`CLAUDE_PLUGIN_ROOT` が無い場合（gitチェックアウトでの
+    通常の開発フロー等）は何もしない。
+    """
+    if env_get("CALM_PROJECT_ROOT"):
+        return
+    plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT")
+    if plugin_root:
+        env_set("CALM_PROJECT_ROOT", plugin_root)
 
 
 def _read_max_retries() -> int | None:
@@ -534,6 +562,11 @@ def main() -> None:
         format="%(asctime)s [launcher] %(levelname)s %(message)s",
         stream=sys.stderr,
     )
+
+    # プラグイン実行時、embedding_serviceのproject root解決に使うenv varを
+    # 子プロセス（src.main、さらにその子のembedding_server）へ伝播させるため
+    # 最初に設定する。
+    _propagate_plugin_root_env()
 
     # セッション解除(atexit/SIGTERM)はローカル/リモード問わず常時登録する。
     # _unregister_session()は失敗を握りつぶすため、登録エンドポイントを持たない
