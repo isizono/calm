@@ -1,7 +1,8 @@
 """タグ管理ユーティリティ"""
+import re
 import sqlite3
 import threading
-from typing import Optional, Union
+from typing import Literal, Optional, Union
 
 from src.config import TAG_NOTES_DECAY_DAYS
 from src.db import execute_query, get_connection, row_to_dict
@@ -1266,6 +1267,8 @@ def collect_tag_notes_for_injection(
     Returns:
         notes があるタグの一覧。なければ None
         [{"tag": "domain:calm", "notes": "..."}, ...]
+        notes が空文字列（全セクションを退避し尽くした後の tags.notes 等）のタグは
+        対象外にする（NULL 判定だけでは拾えないため）。
         タグ作成からTAG_NOTES_DECAY_DAYSを超え、かつ全文配信実績（last_injected_at）も
         同日数以内に更新されていないタグは、notesの全文の代わりに1行ポインタ文言へ縮退する
         （レンダー時decay。search_tags等の返却対象からは除外しない）。
@@ -1310,7 +1313,7 @@ def collect_tag_notes_for_injection(
     params = [v for pair in parsed for v in pair]
     rows = conn.execute(
         f"SELECT id, namespace, name, notes, created_at, last_injected_at FROM tags "
-        f"WHERE ({placeholders}) AND notes IS NOT NULL AND archived_at IS NULL",
+        f"WHERE ({placeholders}) AND notes IS NOT NULL AND LENGTH(notes) > 0 AND archived_at IS NULL",
         params
     ).fetchall()
 
@@ -1378,3 +1381,374 @@ def _append_tag_notes_with_conn(conn, tag_str: str, content: str) -> int:
     new_notes = f"{existing}\n\n{content}" if existing else content
     conn.execute("UPDATE tags SET notes = ? WHERE id = ?", (new_notes, tag_id))
     return tag_id
+
+
+# ========================================
+# demote_tag_notes
+# ========================================
+
+# 末尾trailerの1行判定: 空行、または「#」で始まり空白を含まない行
+# (例: #audited-2026-09-04, #recompose-delta-skipped-until:2026-09-10)。
+_TRAILER_LINE_RE = re.compile(r'^#\S+$')
+
+_SECTION_HEADING_PREFIX = "## "
+
+# 退避索引を集約する予約セクションの見出し。notes末尾（trailerの直前）に1つだけ置く。
+_DEMOTE_INDEX_HEADING = "## 退避済み（全文は資材へ）"
+
+DEMOTE_ARCHIVE_TAG = "tag-notes-archive"
+
+_ARCHIVE_TITLE_PREFIX = "tag notes退避: "
+
+
+def _normalize_section_key(text: str) -> str:
+    """見出しテキストの照合キーを作る。前後空白と先頭 "## " の有無を無視して比較する。"""
+    text = text.strip()
+    if text.startswith(_SECTION_HEADING_PREFIX):
+        text = text[len(_SECTION_HEADING_PREFIX):]
+    return text.strip()
+
+
+def _split_tag_notes_layers(notes: str) -> dict:
+    """tag notesを preamble / sections / trailer の3層に分解する（純粋関数）。
+
+    - trailer: 末尾から連続する「空行」または「ハッシュタグのみの行
+      (例: #audited-2026-09-04, #recompose-delta-skipped-until:2026-09-10)」。
+      該当しない行に当たった時点で走査を止める（本文途中の同種の行は対象にしない）。
+    - preamble: 最初の "## " 見出し行より前の本文（見出しが1つも無ければ全体）。
+    - sections: "## " 見出し行を境界に分割したブロック列。各要素は見出し行を含む
+      逐語テキスト（次のブロック直前まで、改行込み）。
+
+    Returns:
+        {"preamble": str, "sections": [{"heading": str, "block": str}, ...], "trailer": str}
+        preamble + 各sectionのblockを元の順序で連結 + trailer は、notesと1バイトも
+        違わない文字列に戻る（区切り文字は各blockの中に含まれており、この関数は
+        文字列の分割のみを行い、内容の変更・正規化は一切しない）。
+    """
+    lines = notes.splitlines(keepends=True)
+
+    trailer_start = len(lines)
+    for i in range(len(lines) - 1, -1, -1):
+        stripped = lines[i].rstrip("\n")
+        if stripped.strip() == "" or _TRAILER_LINE_RE.match(stripped.strip()):
+            trailer_start = i
+        else:
+            break
+    trailer = "".join(lines[trailer_start:])
+    body_lines = lines[:trailer_start]
+
+    heading_indices = [i for i, l in enumerate(body_lines) if l.startswith(_SECTION_HEADING_PREFIX)]
+    if not heading_indices:
+        preamble = "".join(body_lines)
+        sections: list[dict] = []
+    else:
+        preamble = "".join(body_lines[:heading_indices[0]])
+        sections = []
+        for idx, start in enumerate(heading_indices):
+            end = heading_indices[idx + 1] if idx + 1 < len(heading_indices) else len(body_lines)
+            block = "".join(body_lines[start:end])
+            heading_text = body_lines[start].rstrip("\n")
+            sections.append({"heading": heading_text, "block": block})
+
+    return {"preamble": preamble, "sections": sections, "trailer": trailer}
+
+
+def _build_pointer_line(heading: str, material_id: int) -> str:
+    """索引セクションの1行分のポインタ文言を作る。"""
+    return f"- {_normalize_section_key(heading)} → get_material(material_id={material_id})"
+
+
+def _build_archive_title(tag_str: str, max_len: int) -> str:
+    """退避先資材のtitleを組み立てる。max_len超過時はタグ名部分を切り詰める。"""
+    prefix = _ARCHIVE_TITLE_PREFIX
+    available = max_len - len(prefix)
+    if available <= 0:
+        return prefix[:max_len]
+    if len(tag_str) <= available:
+        return f"{prefix}{tag_str}"
+    return f"{prefix}{tag_str[:available]}"
+
+
+def demote_tag_notes(
+    tag: str,
+    sections: list[str],
+    mode: Literal["pointer", "drop"] = "pointer",
+    archive_material_id: Optional[int] = None,
+    archive_tags: Optional[list[str]] = None,
+    reason: Optional[str] = None,
+) -> dict:
+    """tag notesの指定セクションを資材へ逐語退避し、notesを縮小する。
+
+    ## tag notes 記述規約(正典)
+
+    tag notesに全文で置いてよいのは「そのタグに触れる者が最初に知るべき、行動を
+    変える取扱注意」だけである。種別ごとの扱いは以下の通り。
+
+    | 種別 | notesに置く量 | 置き場所(正典) |
+    |---|---|---|
+    | 教訓・落とし穴(そのタグ固有・現役) | 全文 | notes自身 |
+    | 仕様スナップショット | 1行ポインタ | コード / docs / decision |
+    | 状態・進行ジャーナル(「YYYY-MM-DD時点で〜中」等) | 0行。書くこと自体を禁止 | activity / topic / log |
+    | 運用手順 | 1行ポインタ | docs配下、または資材 |
+    | 歴史記録 | 1行ポインタ、または0行 | 資材 |
+    | 環境知識 | 全文(rules / auto-memoryと重複させない) | notes自身 |
+
+    既に書かれてしまった分は本ツールで資材へ逐語退避してから縮める。縮小と退避は
+    必ず同時に行うこと(引き先が無い状態で縮めるとその場で情報が消える)。本ツールは
+    退避書き込みとnotes縮小を1トランザクションにまとめており、notesの書き込みが
+    文字数上限(4000字)で拒否された場合は退避書き込み側も含めて全体がロールバック
+    され、退避先資材は作られずに残る。
+
+    この規約は tag notes に触れる全てのツール呼び出しへ配る正典であり、update_tag
+    等の他ツールのdocstringには要約と本docstringへの参照のみを置く。
+
+    ## 引数(詳細は docs/spec/mcp-tools.md 参照)
+
+    tag: 対象タグ。
+    sections: 退避する見出しテキストの配列("## "の有無は問わず正規化して照合)。
+        存在しない見出しはSECTION_NOT_FOUND、重複見出しはAMBIGUOUS_SECTIONで拒否。
+        前文(最初の"## "行より前)は退避対象にできない。
+    mode: "pointer"(既定)=退避後にnotes末尾へ1行ポインタを残す(索引は1セクションに
+        集約・重複排除)。"drop"=ポインタも残さない。
+    archive_material_id: 既存の退避先資材へ追記(省略時は新規作成)。retract済み・
+        存在しないIDはVALIDATION_ERROR。
+    archive_tags: 退避先資材のタグ(省略時 [tag, "tag-notes-archive"])。
+    reason: 退避理由の1行(退避先資材の冒頭に入る)。
+
+    ## 返り値
+
+    成功時: {tag, material_id, material_title, material_created, demoted_sections,
+    pointers_added, notes_length: {before, after, ceiling, over_budget},
+    citations_converted}。
+
+    notes_length.over_budget が True の間は、縮む更新以外のあらゆる追記が拒否され
+    続ける(ラチェット則)。整理の終了条件はdemote回数でなくover_budgetがFalseに
+    なったかで判定すること。
+
+    citations_converted は退避先資材の本文中で生ID参照が {{cite:...}} へ変換された
+    件数。notesに残した側はバイト同一を保証するが、退避先はこの変換分だけ表記が
+    変わりうる。
+
+    失敗時: {"error": {"code": str, "message": str}}
+    (NOT_FOUND / SECTION_NOT_FOUND / AMBIGUOUS_SECTION / VALIDATION_ERROR /
+     CONSTRAINT_VIOLATION / DATABASE_ERROR)
+    """
+    # NOTE: 上記docstringは main.py の demote_tag_notes ツールdocstringと
+    # 同一に保つこと(二層とも同じ内容が必要)。
+    # entity_publishがtag_serviceをimportするため、循環import回避のためlocal import
+    from src.services.material_service import (
+        _add_material_with_conn,
+        _append_material_content_with_conn,
+    )
+    from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
+    from src.services.relay.entity_publish import publish_entity_event_with_conn
+    from src.services.title_validation import TITLE_MAX_LEN
+
+    if not sections:
+        return {"error": {"code": "VALIDATION_ERROR", "message": "sections must not be empty"}}
+
+    if mode not in ("pointer", "drop"):
+        return {
+            "error": {
+                "code": "VALIDATION_ERROR",
+                "message": f"mode must be 'pointer' or 'drop', got {mode!r}",
+            }
+        }
+
+    parsed = validate_and_parse_tags([tag])
+    if isinstance(parsed, dict):
+        return parsed
+    namespace, name = parsed[0]
+    tag_str = f"{namespace}:{name}" if namespace else name
+
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT id, notes FROM tags WHERE namespace = ? AND name = ?",
+            (namespace, name),
+        ).fetchone()
+        if not row:
+            return {"error": {"code": "NOT_FOUND", "message": f"Tag '{tag_str}' not found"}}
+        tag_id = row["id"]
+        existing_notes = row["notes"] or ""
+
+        layers = _split_tag_notes_layers(existing_notes)
+        preamble = layers["preamble"]
+        note_sections = layers["sections"]
+        trailer = layers["trailer"]
+
+        # sections引数の見出し照合(存在確認・曖昧判定)
+        heading_key_map: dict[str, list[int]] = {}
+        for idx, sec in enumerate(note_sections):
+            key = _normalize_section_key(sec["heading"])
+            heading_key_map.setdefault(key, []).append(idx)
+
+        matched_indices: list[int] = []
+        for raw in sections:
+            key = _normalize_section_key(raw)
+            occurrences = heading_key_map.get(key, [])
+            if not occurrences:
+                available = [s["heading"] for s in note_sections]
+                return {
+                    "error": {
+                        "code": "SECTION_NOT_FOUND",
+                        "message": (
+                            f"Section '{raw}' not found in tag '{tag_str}'. "
+                            f"Available sections: {available}"
+                        ),
+                    }
+                }
+            if len(occurrences) > 1:
+                return {
+                    "error": {
+                        "code": "AMBIGUOUS_SECTION",
+                        "message": (
+                            f"Section heading '{raw}' matches {len(occurrences)} sections "
+                            f"in tag '{tag_str}'. Cannot determine which to demote."
+                        ),
+                    }
+                }
+            matched_indices.append(occurrences[0])
+
+        # 重複指定(同じ見出しを複数回指定)は1回にまとめ、元のnotes順で処理する
+        matched_set = set(matched_indices)
+        unique_matched_indices = sorted(matched_set)
+
+        if archive_material_id is not None:
+            m_row = conn.execute(
+                "SELECT retracted_at FROM materials WHERE id = ?", (archive_material_id,)
+            ).fetchone()
+            if not m_row or m_row["retracted_at"] is not None:
+                return {
+                    "error": {
+                        "code": "VALIDATION_ERROR",
+                        "message": f"archive_material_id {archive_material_id} not found or retracted",
+                    }
+                }
+
+        demoted_headings = [note_sections[i]["heading"] for i in unique_matched_indices]
+        demoted_blocks = [note_sections[i]["block"] for i in unique_matched_indices]
+        remaining_sections = [s for i, s in enumerate(note_sections) if i not in matched_set]
+
+        is_new = archive_material_id is None
+        effective_archive_tags = archive_tags if archive_tags else [tag_str, DEMOTE_ARCHIVE_TAG]
+        payload = "".join(demoted_blocks)
+
+        if is_new:
+            summary = f"{tag_str} のtag notesから退避した記録。"
+            if reason:
+                stripped_reason = reason.strip()
+                summary += stripped_reason
+                if stripped_reason and not stripped_reason.endswith(("。", ".", "!", "?", "！", "？")):
+                    summary += "。"
+            archive_content = f"{summary}\n\n{payload}"
+            archive_title = _build_archive_title(tag_str, TITLE_MAX_LEN)
+            write_result = _add_material_with_conn(
+                conn,
+                title=archive_title,
+                content=archive_content,
+                tags=effective_archive_tags,
+                source="demote_tag_notesによるtag notes退避",
+            )
+        else:
+            archive_content = f"{reason.strip()}\n\n{payload}" if reason else payload
+            write_result = _append_material_content_with_conn(conn, archive_material_id, archive_content)
+
+        if "error" in write_result:
+            conn.rollback()
+            return write_result
+
+        material_id = write_result["material_id"]
+
+        # 索引セクションの統合(mode="pointer"のときのみ)。既存の索引セクションが
+        # remaining_sections内にあれば取り出して統合し、末尾(trailerの直前)へ集約する。
+        pointers_added = 0
+        index_block = ""
+        if mode == "pointer":
+            pointer_lines_new = [_build_pointer_line(h, material_id) for h in demoted_headings]
+            kept_sections = []
+            existing_index_lines: list[str] = []
+            for sec in remaining_sections:
+                if _normalize_section_key(sec["heading"]) == _normalize_section_key(_DEMOTE_INDEX_HEADING):
+                    body_lines = sec["block"].splitlines()
+                    existing_index_lines = [l for l in body_lines[1:] if l.strip()]
+                else:
+                    kept_sections.append(sec)
+            all_lines = list(existing_index_lines)
+            for line in pointer_lines_new:
+                if line not in all_lines:
+                    all_lines.append(line)
+                    pointers_added += 1
+            remaining_sections = kept_sections
+            index_block = _DEMOTE_INDEX_HEADING + "\n" + "\n".join(all_lines) + "\n"
+
+        body_so_far = preamble + "".join(s["block"] for s in remaining_sections)
+        if index_block:
+            if not body_so_far or body_so_far.endswith("\n\n"):
+                separator = ""
+            elif body_so_far.endswith("\n"):
+                separator = "\n"
+            else:
+                separator = "\n\n"
+            new_notes = body_so_far + separator + index_block + trailer
+        else:
+            new_notes = body_so_far + trailer
+
+        if new_notes.strip() == "":
+            new_notes = ""
+
+        # 増加中の書き込みが天井(4000字)を超える場合、DBトリガーがsqlite3.IntegrityErrorを
+        # 送出する(縮む更新は天井超過中でも常に通るため、ここに来るのは索引セクション追加分の
+        # オーバーヘッドが除去分を上回り正味で増加したケースに限られる)。update_tagの
+        # 事前チェックと同じ理由で、生SQLiteメッセージを露出させずVALIDATION_ERRORへ変換する。
+        # before/afterの実測値を返すのは、整理ループを回すエージェントが次に何セクションを
+        # 追加で退避すべきか機械的に判断できるようにするため。
+        try:
+            _set_tag_notes_by_id_with_conn(conn, tag_id, new_notes)
+        except sqlite3.IntegrityError:
+            conn.rollback()
+            return {
+                "error": {
+                    "code": "VALIDATION_ERROR",
+                    "message": (
+                        f"demote後のnotesが{_TAG_NOTES_RATCHET_CEILING}字を超えたまま "
+                        f"増加するため書き込みを拒否した (before: {len(existing_notes)}字, "
+                        f"after: {len(new_notes)}字)。退避するセクションを追加するか、"
+                        f"mode=\"drop\"で索引ポインタを省略することを検討すること。"
+                    ),
+                }
+            }
+
+        publish_entity_event_with_conn(conn, entity_type="tag", entity_id=tag_id, event="updated")
+
+        conn.commit()
+    except sqlite3.IntegrityError as e:
+        conn.rollback()
+        return {"error": {"code": "CONSTRAINT_VIOLATION", "message": str(e)}}
+    except Exception as e:
+        conn.rollback()
+        return {"error": {"code": "DATABASE_ERROR", "message": str(e)}}
+    finally:
+        conn.close()
+
+    tag_text = " ".join(write_result["tag_strings"]) if write_result["tag_strings"] else ""
+    generate_and_store_embedding(
+        "material", material_id,
+        build_embedding_text(write_result["title"], write_result["content"], tag_text),
+    )
+
+    return {
+        "tag": tag_str,
+        "material_id": material_id,
+        "material_title": write_result["title"],
+        "material_created": is_new,
+        "demoted_sections": [_normalize_section_key(h) for h in demoted_headings],
+        "pointers_added": pointers_added,
+        "notes_length": {
+            "before": len(existing_notes),
+            "after": len(new_notes),
+            "ceiling": _TAG_NOTES_RATCHET_CEILING,
+            "over_budget": len(new_notes) > _TAG_NOTES_RATCHET_CEILING,
+        },
+        "citations_converted": write_result.get("citations_converted", 0),
+    }

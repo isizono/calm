@@ -44,6 +44,7 @@ from src.services.relay.runtime import (
 from src.services.tag_service import (
     search_tags as _search_tags,
     update_tag as _update_tag,
+    demote_tag_notes as _demote_tag_notes,
     collect_tag_notes_for_injection,
     get_archived_tags_for_strings,
 )
@@ -926,6 +927,84 @@ def update_tag(
         description=description,
         archived=archived,
         archived_reason=archived_reason,
+    )
+
+
+@mcp.tool()
+def demote_tag_notes(
+    tag: str,
+    sections: list[str],
+    ctx: Context,
+    mode: Literal["pointer", "drop"] = "pointer",
+    archive_material_id: Optional[int] = None,
+    archive_tags: Optional[list[str]] = None,
+    reason: Optional[str] = None,
+) -> dict:
+    """tag notesの指定セクションを資材へ逐語退避し、notesを縮小する。
+
+    ## tag notes 記述規約(正典)
+
+    tag notesに全文で置いてよいのは「そのタグに触れる者が最初に知るべき、行動を
+    変える取扱注意」だけである。種別ごとの扱いは以下の通り。
+
+    | 種別 | notesに置く量 | 置き場所(正典) |
+    |---|---|---|
+    | 教訓・落とし穴(そのタグ固有・現役) | 全文 | notes自身 |
+    | 仕様スナップショット | 1行ポインタ | コード / docs / decision |
+    | 状態・進行ジャーナル(「YYYY-MM-DD時点で〜中」等) | 0行。書くこと自体を禁止 | activity / topic / log |
+    | 運用手順 | 1行ポインタ | docs配下、または資材 |
+    | 歴史記録 | 1行ポインタ、または0行 | 資材 |
+    | 環境知識 | 全文(rules / auto-memoryと重複させない) | notes自身 |
+
+    既に書かれてしまった分は本ツールで資材へ逐語退避してから縮める。縮小と退避は
+    必ず同時に行うこと(引き先が無い状態で縮めるとその場で情報が消える)。本ツールは
+    退避書き込みとnotes縮小を1トランザクションにまとめており、notesの書き込みが
+    文字数上限(4000字)で拒否された場合は退避書き込み側も含めて全体がロールバック
+    され、退避先資材は作られずに残る。
+
+    この規約は tag notes に触れる全てのツール呼び出しへ配る正典であり、update_tag
+    等の他ツールのdocstringには要約と本docstringへの参照のみを置く。
+
+    ## 引数(詳細は docs/spec/mcp-tools.md 参照)
+
+    tag: 対象タグ。
+    sections: 退避する見出しテキストの配列("## "の有無は問わず正規化して照合)。
+        存在しない見出しはSECTION_NOT_FOUND、重複見出しはAMBIGUOUS_SECTIONで拒否。
+        前文(最初の"## "行より前)は退避対象にできない。
+    mode: "pointer"(既定)=退避後にnotes末尾へ1行ポインタを残す(索引は1セクションに
+        集約・重複排除)。"drop"=ポインタも残さない。
+    archive_material_id: 既存の退避先資材へ追記(省略時は新規作成)。retract済み・
+        存在しないIDはVALIDATION_ERROR。
+    archive_tags: 退避先資材のタグ(省略時 [tag, "tag-notes-archive"])。
+    reason: 退避理由の1行(退避先資材の冒頭に入る)。
+
+    ## 返り値
+
+    成功時: {tag, material_id, material_title, material_created, demoted_sections,
+    pointers_added, notes_length: {before, after, ceiling, over_budget},
+    citations_converted}。
+
+    notes_length.over_budget が True の間は、縮む更新以外のあらゆる追記が拒否され
+    続ける(ラチェット則)。整理の終了条件はdemote回数でなくover_budgetがFalseに
+    なったかで判定すること。
+
+    citations_converted は退避先資材の本文中で生ID参照が {{cite:...}} へ変換された
+    件数。notesに残した側はバイト同一を保証するが、退避先はこの変換分だけ表記が
+    変わりうる。
+
+    失敗時: {"error": {"code": str, "message": str}}
+    (NOT_FOUND / SECTION_NOT_FOUND / AMBIGUOUS_SECTION / VALIDATION_ERROR /
+     CONSTRAINT_VIOLATION / DATABASE_ERROR)
+    """
+    # NOTE: 上記docstringは tag_service.demote_tag_notes のdocstringと
+    # 同一に保つこと(二層とも同じ内容が必要)。
+    return _demote_tag_notes(
+        tag,
+        sections,
+        mode=mode,
+        archive_material_id=archive_material_id,
+        archive_tags=archive_tags,
+        reason=reason,
     )
 
 
