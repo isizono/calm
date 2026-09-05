@@ -1,6 +1,8 @@
 """lock_fileモジュールのユニットテスト"""
 import json
 import os
+import subprocess
+import time
 
 import pytest
 
@@ -130,6 +132,44 @@ class TestIsProcessAlive:
     def test_nonexistent_process(self):
         """存在しないPIDはFalse"""
         assert lock_file.is_process_alive(99999999) is False
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="os.fork()はPOSIX専用")
+class TestIsProcessAliveZombie:
+    def test_zombie_process_is_treated_as_dead(self):
+        """os.fork()で作った本物のゾンビプロセスをis_process_aliveがFalse判定すること
+
+        ゾンビ（defunct）はos.kill(pid, 0)が成功してしまうため、statがZで
+        始まることを見て初めて死亡と判定できる。対策が無ければこのテストは
+        is_process_alive(pid) is True のまま失敗する。
+        """
+        pid = os.fork()
+        if pid == 0:
+            os._exit(0)  # 子プロセスは即終了する
+
+        try:
+            # 子がexitしwaitpidされるまでゾンビ(defunct)状態が続く。
+            # ps出力のSTATがZで始まるまで待つ（最大5秒）。
+            deadline = time.monotonic() + 5.0
+            became_zombie = False
+            while time.monotonic() < deadline:
+                result = subprocess.run(
+                    ["ps", "-o", "stat=", "-p", str(pid)],
+                    capture_output=True, text=True,
+                )
+                if result.stdout.strip().startswith("Z"):
+                    became_zombie = True
+                    break
+                time.sleep(0.05)
+
+            assert became_zombie, "子プロセスがゾンビ化しなかった（テスト前提が崩れている）"
+            assert lock_file.is_process_alive(pid) is False
+        finally:
+            os.waitpid(pid, 0)  # ゾンビを回収して片付ける
+
+    def test_is_zombie_false_for_normal_alive_process(self):
+        """通常の生存プロセス（自プロセス）は_is_zombieがFalseを返す"""
+        assert lock_file._is_zombie(os.getpid()) is False
 
 
 class TestIsPortListening:
