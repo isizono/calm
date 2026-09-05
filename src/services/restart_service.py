@@ -6,6 +6,7 @@ launcher.py の _ensure_server_running() は「生きていれば何もしない
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shutil
@@ -245,18 +246,23 @@ def clean_caches(project_root: Path) -> dict:
     return {"removed_pycache_dirs": removed_pycache_dirs}
 
 
-def restart_all(project_root: Path) -> dict:
-    """依存関係の同期・キャッシュ掃除・MCP再起動・embedding停止を順に行う。
+def restart_all(project_root: Path, *, restart_embedding: bool = False) -> dict:
+    """依存関係の同期・キャッシュ掃除・MCP再起動を順に行う。
 
     uv syncとキャッシュ掃除は、旧MCPサーバーがまだ稼働している間に
     済ませておく。これによりkill〜新規プロセス起動〜起動監視という
     ダウンタイムの区間からvenv構築時間を切り離す。uv syncが失敗しても
     後続のMCP再起動は試行する(結果には成否を含めて返す)。
+
+    embeddingサーバーはコードの変更頻度が低いため、既定では停止しない
+    (次にencodeが必要になったとき自動でlazy spawnされるだけで、都度停止すると
+    モデル再ロード分の起動遅延を毎回背負うだけでメリットが薄い)。
+    明示的にコード変更を反映させたい場合のみ `restart_embedding=True` を指定する。
     """
     sync_result = sync_dependencies(project_root)
     cache_result = clean_caches(project_root)
     mcp_result = restart_mcp_server(project_root)
-    embedding_stopped = stop_embedding_server()
+    embedding_stopped = stop_embedding_server() if restart_embedding else []
     return {
         "uv_sync": {
             "ok": sync_result.ok,
@@ -275,8 +281,19 @@ def restart_all(project_root: Path) -> dict:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="cc-memory server restart")
+    parser.add_argument(
+        "--restart-embedding",
+        action="store_true",
+        help=(
+            "embeddingサーバーも停止する(既定では停止しない。次回のencode呼び出し時に"
+            "自動でlazy spawnされる)"
+        ),
+    )
+    args = parser.parse_args()
+
     project_root = Path(__file__).resolve().parent.parent.parent
-    result = restart_all(project_root)
+    result = restart_all(project_root, restart_embedding=args.restart_embedding)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if not result["mcp_server"]["ok"]:
         sys.exit(1)

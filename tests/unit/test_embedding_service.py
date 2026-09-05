@@ -1,4 +1,5 @@
 """embeddingサービスのテスト（HTTPクライアント方式）"""
+import json
 import os
 import tempfile
 import urllib.request
@@ -159,6 +160,80 @@ def test_ensure_initialized_only_once(temp_db, monkeypatch):
     emb._ensure_initialized()
 
     assert call_count == 1
+
+
+def test_ensure_initialized_starts_backfill_thread_only_once_under_concurrency(temp_db, monkeypatch):
+    """_ensure_initialized: 並行呼び出しでもバックフィルスレッドの起動は1回に直列化される
+
+    _init_lock が無ければ、サーバー復帰直後の並行呼び出しが _server_initialized 更新前に
+    互いをすり抜け、バックフィルを多重起動しうる。
+    """
+    import threading
+
+    monkeypatch.setattr(emb, '_server_initialized', False)
+    monkeypatch.setattr(emb, '_backfill_done', False)
+    monkeypatch.setattr(emb, '_backfill_started', False)
+    monkeypatch.setattr(emb, '_backfill_thread', None)
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking_ensure_server_running():
+        entered.set()
+        release.wait(timeout=5)
+        return True
+
+    backfill_calls = {"n": 0}
+
+    def fake_backfill_embeddings():
+        backfill_calls["n"] += 1
+        return 0
+
+    monkeypatch.setattr(emb, '_ensure_server_running', blocking_ensure_server_running)
+    monkeypatch.setattr(emb, 'backfill_embeddings', fake_backfill_embeddings)
+    monkeypatch.setattr(emb, 'backfill_topic_embeddings', lambda: 0)
+
+    results = []
+    t1 = threading.Thread(target=lambda: results.append(emb._ensure_initialized()))
+    t1.start()
+    assert entered.wait(timeout=5)  # t1が_init_lock内でブロック中
+
+    t2 = threading.Thread(target=lambda: results.append(emb._ensure_initialized()))
+    t2.start()
+
+    release.set()
+    t1.join(timeout=5)
+    t2.join(timeout=5)
+
+    if emb._backfill_thread is not None:
+        emb._backfill_thread.join(timeout=5)
+
+    assert results == [True, True]
+    assert backfill_calls["n"] == 1  # t2はロック取得後、_server_initialized済みで復帰しbackfillを開始しない
+
+
+class TestReadPositiveIntEnv:
+    """_read_positive_int_env: backfillチャンクサイズ等のenv上書き読み取り"""
+
+    ENV_NAME = "CALM_EMBEDDING_BACKFILL_CHAR_BUDGET"
+
+    def test_returns_default_when_unset(self, monkeypatch):
+        monkeypatch.delenv(self.ENV_NAME, raising=False)
+        assert emb._read_positive_int_env(self.ENV_NAME, 48_000) == 48_000
+
+    def test_returns_env_value_when_valid(self, monkeypatch):
+        monkeypatch.setenv(self.ENV_NAME, "100")
+        assert emb._read_positive_int_env(self.ENV_NAME, 48_000) == 100
+
+    def test_falls_back_to_default_on_invalid_string(self, monkeypatch):
+        monkeypatch.setenv(self.ENV_NAME, "abc")
+        assert emb._read_positive_int_env(self.ENV_NAME, 48_000) == 48_000
+
+    def test_falls_back_to_default_on_zero_or_negative(self, monkeypatch):
+        monkeypatch.setenv(self.ENV_NAME, "0")
+        assert emb._read_positive_int_env(self.ENV_NAME, 48_000) == 48_000
+        monkeypatch.setenv(self.ENV_NAME, "-5")
+        assert emb._read_positive_int_env(self.ENV_NAME, 48_000) == 48_000
 
 
 # ========================================
@@ -365,6 +440,195 @@ def test_backfill_noop_when_all_filled(temp_db, mock_embedding_server, monkeypat
 
 
 # ========================================
+# backfill チャンク分割のテスト
+# ========================================
+
+
+def test_backfill_splits_into_multiple_chunks_and_commits_each(temp_db, monkeypatch):
+    """backfill: BACKFILL_MAX_ITEMSを超える件数は複数チャンクのencode_batch呼出に分かれ、
+    各チャンクごとにcommitされる（1リクエストに全件まとめて送らない）。
+    """
+    # サーバーなしでtopicを複数作成（embeddingは生成されない）
+    monkeypatch.setattr(emb, '_server_initialized', False)
+    monkeypatch.setattr(emb, '_backfill_done', True)
+    monkeypatch.setattr(emb, '_ensure_server_running', lambda: False)
+
+    for i in range(3):
+        add_topic(
+            title=f"チャンク分割テストトピック{i}",
+            description="バックフィルのチャンク分割を検証する",
+            tags=DEFAULT_TAGS,
+        )
+
+    monkeypatch.setattr(emb, "BACKFILL_MAX_ITEMS", 1)
+    monkeypatch.setattr(emb, "BACKFILL_CHAR_BUDGET", 10_000)
+    monkeypatch.setattr(emb, "_is_server_running", lambda: True)
+
+    calls = []
+
+    def counting_encode_batch(texts, prefix):
+        calls.append(list(texts))
+        return [np.random.rand(EMBEDDING_DIM).astype(np.float32).tolist() for _ in texts]
+
+    monkeypatch.setattr(emb, "_encode_batch", counting_encode_batch)
+
+    filled = emb.backfill_embeddings()
+
+    # BACKFILL_MAX_ITEMS=1のため、全チャンクが1件ずつに分かれる
+    assert len(calls) == filled
+    assert all(len(c) == 1 for c in calls)
+    assert filled >= 3  # 作成した3件のtopicが少なくとも含まれる
+
+
+def test_backfill_partial_chunk_failure_keeps_already_committed_progress(temp_db, monkeypatch):
+    """backfill: あるチャンクのencode失敗後、その種別の残りチャンクは諦めるが、
+    それより前にcommit済みの成果は失われない。
+    """
+    monkeypatch.setattr(emb, '_server_initialized', False)
+    monkeypatch.setattr(emb, '_backfill_done', True)
+    monkeypatch.setattr(emb, '_ensure_server_running', lambda: False)
+    monkeypatch.setattr(emb, '_is_server_running', lambda: True)
+
+    # init_database由来の未バックフィルレコード(first_topic等)を先に消化しておく。
+    # 残したままだと後段のcall_countベースの失敗注入が意図しない対象に当たる。
+    monkeypatch.setattr(
+        emb, '_encode_batch',
+        lambda texts, prefix: [np.random.rand(EMBEDDING_DIM).astype(np.float32).tolist() for _ in texts],
+    )
+    emb.backfill_embeddings()
+
+    topics = [
+        add_topic(
+            title=f"部分失敗テストトピック{i}",
+            description="1チャンク目成功・2チャンク目以降失敗のケース",
+            tags=DEFAULT_TAGS,
+        )
+        for i in range(3)
+    ]
+
+    monkeypatch.setattr(emb, "BACKFILL_MAX_ITEMS", 1)
+    monkeypatch.setattr(emb, "BACKFILL_CHAR_BUDGET", 10_000)
+
+    call_count = {"n": 0}
+
+    def failing_after_first_encode_batch(texts, prefix):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return [np.random.rand(EMBEDDING_DIM).astype(np.float32).tolist() for _ in texts]
+        return None  # 2回目以降は失敗（サーバーダウン等を模す）
+
+    monkeypatch.setattr(emb, "_encode_batch", failing_after_first_encode_batch)
+
+    filled = emb.backfill_embeddings()
+
+    assert filled == 1  # 1チャンク目(1件)だけ成功
+
+    # 1チャンク目で処理された1件は既にvec_indexにcommit済みであること
+    conn = get_connection()
+    try:
+        committed = 0
+        for topic in topics:
+            rows = execute_query(
+                "SELECT id FROM search_index WHERE source_type = 'topic' AND source_id = ?",
+                (topic["topic_id"],),
+            )
+            search_index_id = rows[0]["id"]
+            count = conn.execute(
+                "SELECT count(*) FROM vec_index WHERE rowid = ?", (search_index_id,)
+            ).fetchone()[0]
+            committed += count
+        assert committed == 1
+    finally:
+        conn.close()
+
+
+class TestChunkBackfillItems:
+    """_chunk_backfill_items: 文字数予算・件数上限どちらか先に達した方でチャンクを区切る"""
+
+    def test_splits_by_max_items(self, monkeypatch):
+        monkeypatch.setattr(emb, "BACKFILL_MAX_ITEMS", 2)
+        monkeypatch.setattr(emb, "BACKFILL_CHAR_BUDGET", 10_000)
+        items = [(1, "a"), (2, "b"), (3, "c"), (4, "d"), (5, "e")]
+
+        chunks = emb._chunk_backfill_items(items)
+
+        assert [len(c) for c in chunks] == [2, 2, 1]
+
+    def test_splits_by_char_budget(self, monkeypatch):
+        monkeypatch.setattr(emb, "BACKFILL_MAX_ITEMS", 100)
+        monkeypatch.setattr(emb, "BACKFILL_CHAR_BUDGET", 5)
+        items = [(1, "abc"), (2, "de"), (3, "fgh")]
+
+        chunks = emb._chunk_backfill_items(items)
+
+        assert chunks == [[(1, "abc"), (2, "de")], [(3, "fgh")]]
+
+    def test_oversized_single_item_still_gets_its_own_chunk(self, monkeypatch):
+        """1件のtextが単独でBACKFILL_CHAR_BUDGETを超えても進行が止まらない"""
+        monkeypatch.setattr(emb, "BACKFILL_MAX_ITEMS", 100)
+        monkeypatch.setattr(emb, "BACKFILL_CHAR_BUDGET", 3)
+        items = [(1, "abcdefghij"), (2, "x")]
+
+        chunks = emb._chunk_backfill_items(items)
+
+        assert chunks == [[(1, "abcdefghij")], [(2, "x")]]
+
+    def test_empty_items_returns_no_chunks(self):
+        assert emb._chunk_backfill_items([]) == []
+
+
+# ========================================
+# _encode_batch: 切り詰め・ensure_ascii のテスト
+# ========================================
+
+
+class TestEncodeBatchRequestPayload:
+    """_encode_batch: HTTPリクエスト直前の境界（urlopen）だけをmockし、
+    実際に送信されるpayloadの中身を検証する。
+    """
+
+    def _capture_request(self, monkeypatch):
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def read(self):
+                return json.dumps({"embeddings": [[0.0] * EMBEDDING_DIM]}).encode("utf-8")
+
+        def fake_urlopen(req, timeout=None):
+            captured["body"] = req.data
+            return FakeResponse()
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        return captured
+
+    def test_truncates_text_to_max_chars(self, monkeypatch):
+        """TEXT_MAX_CHARSを超えるテキストは切り詰めて送信する"""
+        monkeypatch.setattr(emb, "TEXT_MAX_CHARS", 10)
+        captured = self._capture_request(monkeypatch)
+
+        emb._encode_batch(["あ" * 20], "document")
+
+        payload = json.loads(captured["body"])
+        assert payload["texts"] == ["あ" * 10]
+
+    def test_sends_japanese_text_without_unicode_escaping(self, monkeypatch):
+        """ensure_ascii=Falseで送信し、\\uXXXX展開によるリクエスト肥大化を避ける"""
+        monkeypatch.setattr(emb, "TEXT_MAX_CHARS", 1000)
+        captured = self._capture_request(monkeypatch)
+
+        emb._encode_batch(["日本語のテスト文書です"], "document")
+
+        assert "日本語のテスト文書です".encode("utf-8") in captured["body"]
+        assert b"\\u65e5" not in captured["body"]  # "日"のunicodeエスケープが含まれない
+
+
+# ========================================
 # embedding失敗時のgraceful degradation テスト
 # ========================================
 
@@ -515,8 +779,13 @@ def test_start_server_failure_returns_none(temp_db, monkeypatch):
     assert result is None
 
 
-def test_start_server_uses_existing_infra_path(temp_db, monkeypatch):
-    """_start_server: Popenに渡すserver_pathが実在する src/infra/embedding_server.py を指す"""
+def test_start_server_uses_module_execution_form(temp_db, monkeypatch):
+    """_start_server: `-m src.infra.embedding_server` のモジュール実行形式でPopenを呼ぶ
+
+    ファイルパスを直接実行する形式（`[sys.executable, server_path]`）だと
+    sys.path[0]がembedding_server.py自身のディレクトリになり、内部の
+    `from src.xxx import ...` がModuleNotFoundErrorでクラッシュする。
+    """
     import subprocess
 
     captured = {}
@@ -524,6 +793,7 @@ def test_start_server_uses_existing_infra_path(temp_db, monkeypatch):
 
     def capturing_popen(args, **kwargs):
         captured["args"] = args
+        captured["kwargs"] = kwargs
         return sentinel  # _start_serverは子プロセスハンドルをそのまま返す
 
     # project rootをこのチェックアウト自身に固定する。
@@ -535,9 +805,12 @@ def test_start_server_uses_existing_infra_path(temp_db, monkeypatch):
 
     assert emb._start_server() is sentinel
 
-    server_path = captured["args"][1]
-    assert server_path == os.path.join(str(root), "src", "infra", "embedding_server.py")
-    assert os.path.isfile(server_path)
+    assert captured["args"][1:] == ["-m", "src.infra.embedding_server"]
+    # cwdがproject root(モジュール解決の基点)に固定されていること
+    assert captured["kwargs"]["cwd"] == str(root)
+    # モジュール自体は実在すること（パス自体は渡さないが、参照先が存在しないと
+    # -m実行が即失敗するため）
+    assert os.path.isfile(os.path.join(str(root), "src", "infra", "embedding_server.py"))
 
 
 def test_ensure_server_running_handles_start_failure(temp_db, monkeypatch):
