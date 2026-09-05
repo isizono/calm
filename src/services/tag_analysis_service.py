@@ -4,6 +4,7 @@ import math
 from collections import defaultdict
 
 from src.db import get_connection
+from src.services.tag_service import _TAG_NOTES_RATCHET_CEILING
 
 logger = logging.getLogger(__name__)
 
@@ -430,6 +431,47 @@ def _find_suspected_duplicates(tag_ids, tag_names, tag_info):
     return duplicates
 
 
+def _find_notes_over_budget(conn, ceiling=_TAG_NOTES_RATCHET_CEILING):
+    """notesの文字数が推奨上限を超えているタグを全件検出する。
+
+    domain/include_domain_tags/min_usage等の分析スコープに関わらず、
+    notesを持つ全タグを対象に走査する（このラチェット天井はDBトリガーが
+    namespaceを問わず全タグへ適用しているため）。
+
+    Args:
+        conn: DB接続
+        ceiling: 上限文字数。既定はtag_serviceのラチェット天井と同じ値
+
+    Returns:
+        [{"tag": str, "length": int, "ceiling": int, "archived": bool,
+          "archived_reason": str | None}, ...]（length降順）
+    """
+    rows = conn.execute(
+        "SELECT namespace, name, notes, archived_at, archived_reason "
+        "FROM tags WHERE notes IS NOT NULL"
+    ).fetchall()
+
+    results = []
+    for row in rows:
+        notes = row["notes"] or ""
+        length = len(notes)
+        if length <= ceiling:
+            continue
+        ns = row["namespace"]
+        name = row["name"]
+        tag_str = f"{ns}:{name}" if ns else name
+        results.append({
+            "tag": tag_str,
+            "length": length,
+            "ceiling": ceiling,
+            "archived": row["archived_at"] is not None,
+            "archived_reason": row["archived_reason"],
+        })
+
+    results.sort(key=lambda x: x["length"], reverse=True)
+    return results
+
+
 def _resolve_domain_tag_id(conn, domain):
     """domain文字列からtag_idを解決する。
 
@@ -499,8 +541,11 @@ def analyze_tags(
             "co_occurrences": [...],
             "clusters": [...],
             "orphans": [...],
-            "suspected_duplicates": [...]
+            "suspected_duplicates": [...],
+            "notes_over_budget": [...]
         }
+        notes_over_budgetはdomain/include_domain_tags/min_usage等の分析スコープに
+        関わらず、notesの文字数が推奨上限を超えている全タグを対象に走査する
     """
     conn = None
     try:
@@ -571,11 +616,15 @@ def analyze_tags(
             analysis_tag_ids, tag_names, tag_info,
         )
 
+        # 8. notes予算超過検出（分析スコープに関わらず全タグを対象）
+        notes_over_budget = _find_notes_over_budget(conn)
+
         return {
             "co_occurrences": co_occurrences,
             "clusters": clusters,
             "orphans": orphans,
             "suspected_duplicates": suspected_duplicates,
+            "notes_over_budget": notes_over_budget,
         }
 
     except Exception as e:

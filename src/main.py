@@ -952,6 +952,10 @@ def analyze_tags(
         orphans: 使用頻度が低い孤児タグ。各要素にarchived（bool）とarchived_reason
             （str|None）が付く
         suspected_duplicates: embedding類似度ベースの重複候補
+        notes_over_budget: notesの文字数が推奨上限を超えているタグ（length降順）。
+            各要素は{tag, length, ceiling, archived, archived_reason}。
+            domain/include_domain_tags/min_usage等の分析スコープに関わらず、
+            notesを持つ全タグを対象に走査する
     """
     return _analyze_tags(domain, include_domain_tags, focus_tag, min_usage, top_n)
 

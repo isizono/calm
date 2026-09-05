@@ -11,18 +11,20 @@ hintの種別と発火条件は仕様確定decisionに従う。
 - record_missing (deferred): 一定turn記録系ツール未呼出
 - direction_overflow (immediate): tag scope, domain: namespaceのみ,
   layer:direction decisionのactive件数 ≥ DIRECTION_OVERFLOW_THRESHOLD
+- notes_over_budget (immediate): tag scope, domain: namespaceのみ,
+  tag notesの文字数がtag_serviceのラチェット天井（_TAG_NOTES_RATCHET_CEILING）を超過
 
 抑制:
 - tag_notesに以下のハッシュタグマーカーがあれば該当hintをスキップ:
   #recompose-skipped, #recompose-bootstrap-skipped, #recompose-delta-skipped,
-  #logs-sparse-ack, #direction-overflow-ack
+  #logs-sparse-ack, #direction-overflow-ack, #notes-over-budget-ack
 - 各マーカーは素の形（恒久抑制）に加えて `<marker>-until:YYYY-MM-DD` の形式
   （指定日当日まで有効な期限付き抑制）も受け付ける。不正な日付形式は無視される
   （フェイルオープン、抑制しない側に倒す）。判定は_is_marker_activeに集約する
-- recompose_bootstrap / recompose_deltaはhintが実際に生成される都度、対象tagの
-  notesへ `<marker>-until:{today}` を自動追記する日次クールダウンを持つ（同日内の
-  再発火を防ぐ）。既存の日付付きマーカーが未来日の場合は上書きしない（手動設定の
-  長期抑制を優先する）。書き込みは_apply_cooldown_markerに集約する
+- recompose_bootstrap / recompose_delta / notes_over_budgetはhintが実際に生成される
+  都度、対象tagのnotesへ `<marker>-until:{today}` を自動追記する日次クールダウンを
+  持つ（同日内の再発火を防ぐ）。既存の日付付きマーカーが未来日の場合は上書きしない
+  （手動設定の長期抑制を優先する）。書き込みは_apply_cooldown_markerに集約する
 - direction_overflowはこの日次クールダウンの対象外（手動マーカーのみで抑制する）
 - orch-managed activityでの全suppressは呼出側責務 (本moduleは判定しない)
 
@@ -45,7 +47,10 @@ from typing import Any, Literal, TypedDict
 from src.config import DIRECTION_OVERFLOW_THRESHOLD
 from src.db import get_connection
 from src.services.direction_service import count_direction_decisions
-from src.services.tag_service import _set_tag_notes_by_id_with_conn
+from src.services.tag_service import (
+    _TAG_NOTES_RATCHET_CEILING,
+    _set_tag_notes_by_id_with_conn,
+)
 
 # --- 型定義 ---
 
@@ -56,6 +61,7 @@ HintType = Literal[
     "follow_up_after_decision",
     "record_missing",
     "direction_overflow",
+    "notes_over_budget",
 ]
 Severity = Literal["info", "warn"]
 DeliveryHint = Literal["immediate", "deferred"]
@@ -92,6 +98,7 @@ MARKER_RECOMPOSE_BOOTSTRAP = "#recompose-bootstrap-skipped"
 MARKER_RECOMPOSE_DELTA = "#recompose-delta-skipped"
 MARKER_LOGS_SPARSE = "#logs-sparse-ack"
 MARKER_DIRECTION_OVERFLOW = "#direction-overflow-ack"
+MARKER_NOTES_OVER_BUDGET = "#notes-over-budget-ack"
 
 # マーカーは素の形（恒久抑制）に加えて `<marker>-until:YYYY-MM-DD`（期限付き抑制、
 # 指定日当日まで有効）も受け付ける。判定は_is_marker_activeに集約する。
@@ -219,6 +226,17 @@ def _recompose_delta_message(tag_name: str, delta_count: int) -> str:
         f"「{MARKER_RECOMPOSE_DELTA}-until:YYYY-MM-DD」（任意の未来日）を"
         f"追記すると、その日まで一時的に黙らせられます。恒久的に不要なら日付なしの"
         f"「{MARKER_RECOMPOSE_DELTA}」を追記してください。"
+    )
+
+
+def _notes_over_budget_message(tag_name: str, length: int) -> str:
+    return (
+        f"tag「{tag_name}」のnotesが{length}字あり、推奨の目安"
+        f"（{_TAG_NOTES_RATCHET_CEILING}字）を超えています。整理を検討してください。"
+        f"今は都合が悪い場合、tag notesに"
+        f"「{MARKER_NOTES_OVER_BUDGET}-until:YYYY-MM-DD」（任意の未来日）を"
+        f"追記すると、その日まで一時的に黙らせられます。恒久的に不要なら日付なしの"
+        f"「{MARKER_NOTES_OVER_BUDGET}」を追記してください。"
     )
 
 
@@ -364,6 +382,22 @@ def _get_hints_for_tag(conn: sqlite3.Connection, tag_id: int) -> list[Hint]:
                 "source": f"direction_overflow:tag:{tag_id}",
                 "delivery_hint": "immediate",
             })
+
+    if not _is_marker_active(notes, MARKER_NOTES_OVER_BUDGET):
+        if len(notes) > _TAG_NOTES_RATCHET_CEILING:
+            hints.append({
+                "type": "notes_over_budget",
+                "severity": "info",
+                "message": _notes_over_budget_message(tag_name, len(notes)),
+                "suggested_action": {
+                    "natural_language": (
+                        f"tag「{tag_name}」のnotesの整理をユーザーに提案する"
+                    ),
+                },
+                "source": f"notes_over_budget:tag:{tag_id}",
+                "delivery_hint": "immediate",
+            })
+            notes = _apply_cooldown_marker(conn, tag_id, notes, MARKER_NOTES_OVER_BUDGET)
 
     return hints
 
