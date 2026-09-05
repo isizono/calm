@@ -817,6 +817,30 @@ class TestDemoteTagNotesDocstringSync:
         assert inspect.getdoc(tool_fn) == inspect.getdoc(demote_tag_notes)
 
 
+class TestUpdateTagNotesConventionDocstringSync:
+    """update_tagのnotes記述規約の要約が、main.py側とtag_service側の両方の
+    docstringに存在すること(二層のうち片方だけ更新される事故の再発防止)。
+
+    demote_tag_notesと異なりupdate_tagの2層はArgs記法自体が違うため全文一致は
+    取れない。ここでは規約への言及そのものが両層に生き残っているかだけを見る。"""
+
+    def test_service_layer_mentions_convention_and_demote_tool(self):
+        import inspect
+        from src.services.tag_service import update_tag as service_fn
+
+        doc = inspect.getdoc(service_fn)
+        assert "行動を変える取扱注意" in doc
+        assert "demote_tag_notes" in doc
+
+    def test_tool_layer_mentions_convention_and_demote_tool(self):
+        import inspect
+        from src.main import update_tag as tool_fn
+
+        doc = inspect.getdoc(tool_fn)
+        assert "行動を変える取扱注意" in doc
+        assert "demote_tag_notes" in doc
+
+
 class TestDemoteTagNotes:
     """demote_tag_notesのテスト"""
 

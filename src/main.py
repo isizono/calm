@@ -81,7 +81,7 @@ RULES = """# CALM 利用ガイド
 
 ## タグ
 
-記録には必ずタグを付けてください。`domain:`（関心領域）は必須、アクティビティには`intent:`（作業意図）も必須です。素タグも積極的に付けてください。タグにはnotes（教訓・運用ルール）を紐づけられ、そのタグに遭遇した際にAIへ自動注入されます。
+記録には必ずタグを付けてください。`domain:`（関心領域）は必須、アクティビティには`intent:`（作業意図）も必須です。素タグも積極的に付けてください。タグにはnotes（教訓・運用ルール）を紐づけられ、そのタグに遭遇した際にAIへ自動注入されます。notesは取扱注意のみ。仕様・経過・手順は正典へポインタを残す。
 
 ## トピックとリレーション
 
@@ -368,6 +368,7 @@ def add_decisions(items: list[dict], ctx: Context) -> dict:
             - type: "habit" | "tag_note"
             - content: 伝搬先に書き込む文（decisionテキストとは別にエージェントが書き分ける）
             - tag: タグ文字列（type="tag_note"の場合のみ必須）
+            type="tag_note"は教訓・注意点のみに使う。仕様・手順の全文転記には使わない。
 
     Returns: {created: [...], errors: [{index, error}]}
         created各要素には related_decisions（同topic内の類似decision上位3件 [{id, title, distance}]）が付く。
@@ -878,6 +879,12 @@ def update_tag(
 
     notes: タグに紐づく教訓や運用ルールを記録する。CLAUDE.mdのタグ版として機能し、
     そのタグの文脈で作業するときに自動的にAIに注入される。上書き方式（全文置換）。
+
+    notes記述規約: notesに全文で置いてよいのは行動を変える取扱注意のみ。仕様・状態・
+    手順・歴史記録は正典（コード/docs/decision/activity等）に置き、notesには1行の
+    ポインタだけを残す（種別と正典の対応表は demote_tag_notes のdocstring参照）。
+    文字数上限を超えている場合は、notesを直接書き換える前に demote_tag_notes で
+    該当セクションを資材へ退避してから縮めること。
 
     canonical: エイリアス先タグを指定する。設定すると、tagがcanonicalのエイリアスになり、
     以降tagで記録・検索するとcanonical側のタグIDで解決される。

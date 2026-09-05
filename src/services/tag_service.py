@@ -827,6 +827,12 @@ def update_tag(
     """既存タグの notes（教訓・運用ルール）、canonical（エイリアス先）、name（リネーム）、
     description（短い説明文）、またはarchived（退役状態）を更新する。
 
+    notes記述規約: notesに全文で置いてよいのは行動を変える取扱注意のみ。仕様・状態・
+    手順・歴史記録は正典（コード/docs/decision/activity等）に置き、notesには1行の
+    ポインタだけを残す（種別と正典の対応表は demote_tag_notes のdocstring参照）。
+    文字数上限を超えている場合は、notesを直接書き換える前に demote_tag_notes で
+    該当セクションを資材へ退避してから縮めること。
+
     Args:
         tag: タグ文字列（例: "domain:calm", "hooks"）
         notes: 教訓・運用ルールのテキスト（全文置換）
