@@ -11,10 +11,12 @@ hookSpecificOutput.updatedToolOutput で stdout へ返す。応答の出力はHa
 opt-out:
 - 環境変数 `CALM_SANITIZE_DISABLE=1` set: 即 exit 0 (サブエージェント呼び出しでも適用)
 - cwd が cc-memory リポジトリ内 (pyproject.toml `[project].name` が `_REPO_PROJECT_NAMES`
-  のいずれかに一致することを上方向探索で検出) かつ stdin に `agent_id` (Claude Codeが
+  のいずれかに一致することを上方向探索で検出) かつ stdin に `agent_type` (Claude Codeが
   サブエージェント発の呼び出しにのみ付与するフィールド) が含まれない場合: 即 exit 0。
-  `agent_id` があるときはcwdに関わらずサニタイズする(cc-memoryのworktreeはメイン
-  セッションのcwdにも高頻度でなるため、cwdだけでは区別できない)。
+  `agent_type` があるときはcwdに関わらずサニタイズする(cc-memoryのworktreeはメイン
+  セッションのcwdにも高頻度でなるため、cwdだけでは区別できない)。判定はキーの有無
+  (truthy)のみで行い値の中身は見ない。`agent_id`は常にnullで届くため判定に使えない
+  (メインセッション由来・サブエージェント由来を問わず存在するがnull)。
 
 dangling (target 不在) は `[deleted X#NNN]` 形式へ変換する。
 本文が実際に変化した場合のみ citation_event_log (source='transcript_post_tool_use')
@@ -119,7 +121,7 @@ def main() -> int:
         if not _is_calm_tool(tool_name):
             return 0
         cwd = data.get("cwd", "")
-        is_subagent_call = data.get("agent_id") is not None
+        is_subagent_call = bool(data.get("agent_type"))
         if not is_subagent_call and _is_in_cc_memory_repo(cwd):
             return 0
         tool_response = data.get("tool_response", {})

@@ -103,7 +103,7 @@ _TOOL_NAME = "mcp__plugin_calm_calm__check_in"
 
 
 def _payload(content, *, tool_name=_TOOL_NAME, cwd="/tmp/outside-repo",
-             session_id="sess-abc", extra_response=None, agent_id=None):
+             session_id="sess-abc", extra_response=None, agent_type=None):
     response = {"content": content}
     if extra_response:
         response.update(extra_response)
@@ -114,8 +114,8 @@ def _payload(content, *, tool_name=_TOOL_NAME, cwd="/tmp/outside-repo",
         "session_id": session_id,
         "transcript_path": "/tmp/transcripts/test.jsonl",
     }
-    if agent_id is not None:
-        payload["agent_id"] = agent_id
+    if agent_type is not None:
+        payload["agent_type"] = agent_type
     return payload
 
 
@@ -174,9 +174,9 @@ def test_case_03_env_disable_short_circuits(fixture_db, monkeypatch):
 
 
 def test_case_03_env_disable_short_circuits_even_for_subagent(fixture_db, monkeypatch):
-    """CALM_SANITIZE_DISABLE=1はagent_id付き(サブエージェント発)呼び出しにも優先して適用される。"""
+    """CALM_SANITIZE_DISABLE=1はagent_type付き(サブエージェント発)呼び出しにも優先して適用される。"""
     monkeypatch.setenv("CALM_SANITIZE_DISABLE", "1")
-    stdout, code = _run_hook(_payload("ref to M#1", agent_id="agent-xyz"))
+    stdout, code = _run_hook(_payload("ref to M#1", agent_type="scout"))
     assert code == 0
     assert stdout == ""
     assert _read_citation_events(fixture_db) == []
@@ -218,8 +218,8 @@ def test_case_04_cwd_in_unrelated_project_not_skipped(fixture_db, tmp_path):
     ]
 
 
-def test_case_04_agent_id_bypasses_cwd_repo_skip(fixture_db, tmp_path):
-    """agent_id付き(サブエージェント発)呼び出しは、cwdがcc-memoryリポジトリ内でもスキップしない。"""
+def test_case_04_agent_type_bypasses_cwd_repo_skip(fixture_db, tmp_path):
+    """agent_type付き(サブエージェント発)呼び出しは、cwdがcc-memoryリポジトリ内でもスキップしない。"""
     repo_root = tmp_path / "cc-memory-repo"
     repo_root.mkdir()
     (repo_root / "pyproject.toml").write_text(
@@ -228,7 +228,7 @@ def test_case_04_agent_id_bypasses_cwd_repo_skip(fixture_db, tmp_path):
     subdir = repo_root / ".trees" / "some-worktree"
     subdir.mkdir(parents=True)
 
-    payload = _payload("ref to M#1", cwd=str(subdir), agent_id="agent-xyz")
+    payload = _payload("ref to M#1", cwd=str(subdir), agent_type="scout")
     stdout, code = _run_hook(payload)
     assert code == 0
     out = json.loads(stdout)
