@@ -16,6 +16,7 @@ from src.services.hint_service import (
     LOGS_SPARSE_LOG_THRESHOLD,
     MARKER_DIRECTION_OVERFLOW,
     MARKER_LOGS_SPARSE,
+    MARKER_NOTES_OVER_BUDGET,
     MARKER_RECOMPOSE_BOOTSTRAP,
     MARKER_RECOMPOSE_DELTA,
     MARKER_RECOMPOSE_GENERIC,
@@ -31,8 +32,8 @@ from src.services.hint_service import (
 from src.services.material_service import add_material
 from src.services.pin_service import add_pin
 from src.services.topic_service import add_topic
-from src.services.tag_service import _injected_tags, update_tag
-from tests.helpers import add_decision
+from src.services.tag_service import _TAG_NOTES_RATCHET_CEILING, _injected_tags, update_tag
+from tests.helpers import add_decision, force_notes_over_ceiling
 
 DOMAIN_TAG_NAME = "hint-domain"
 DOMAIN_TAG = f"domain:{DOMAIN_TAG_NAME}"
@@ -324,6 +325,66 @@ class TestDirectionOverflow:
         types = {h["type"] for h in hints}
         assert "recompose_bootstrap" in types
         assert "direction_overflow" in types
+
+
+class TestNotesOverBudget:
+    def test_fires_when_over_ceiling(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        tag_id = _tag_id(DOMAIN_TAG_NAME)
+        force_notes_over_ceiling(tag_id, _TAG_NOTES_RATCHET_CEILING + 1)
+
+        hints = get_hints("tag", tag_id)
+        budget_hints = [h for h in hints if h["type"] == "notes_over_budget"]
+        assert len(budget_hints) == 1
+        assert budget_hints[0]["delivery_hint"] == "immediate"
+        assert budget_hints[0]["severity"] == "info"
+        assert str(_TAG_NOTES_RATCHET_CEILING + 1) in budget_hints[0]["message"]
+
+    def test_silent_within_ceiling(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        tag_id = _tag_id(DOMAIN_TAG_NAME)
+        update_tag(DOMAIN_TAG, notes="x" * _TAG_NOTES_RATCHET_CEILING)
+
+        hints = get_hints("tag", tag_id)
+        assert [h for h in hints if h["type"] == "notes_over_budget"] == []
+
+    def test_suppressed_by_marker(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        tag_id = _tag_id(DOMAIN_TAG_NAME)
+        over_budget_with_marker = (
+            "x" * (_TAG_NOTES_RATCHET_CEILING + 1) + f"\n\n{MARKER_NOTES_OVER_BUDGET}"
+        )
+        force_notes_over_ceiling(tag_id, over_budget_with_marker)
+
+        hints = get_hints("tag", tag_id)
+        assert [h for h in hints if h["type"] == "notes_over_budget"] == []
+
+    def test_cooldown_marker_write_fails_silently_when_already_over_ceiling(self, temp_db):
+        """notes_over_budgetは「notesが天井超過」のときにしか発火しないため、その
+        クールダウンマーカーの追記（=さらなる増加）は天井トリガーに必ず拒否される。
+        既存のTestCooldownMarkerWriteFailureと同じ扱いで、書き込み失敗はhintを
+        失わせず握りつぶされ、notesは変化しない。"""
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        tag_id = _tag_id(DOMAIN_TAG_NAME)
+        over_budget_notes = "x" * (_TAG_NOTES_RATCHET_CEILING + 1)
+        force_notes_over_ceiling(tag_id, over_budget_notes)
+
+        hints = get_hints("tag", tag_id)
+        assert any(h["type"] == "notes_over_budget" for h in hints)
+        assert _get_tag_notes(DOMAIN_TAG_NAME) == over_budget_notes
+
+    def test_refires_every_call_when_cooldown_marker_cannot_persist(self, temp_db):
+        """マーカー追記が天井超過中は常に失敗するため、抑制状態に入れず毎回発火し
+        続ける（クールダウンが機能しない既知の挙動。手動マーカーでの抑制は別途可能）。"""
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        tag_id = _tag_id(DOMAIN_TAG_NAME)
+        force_notes_over_ceiling(tag_id, _TAG_NOTES_RATCHET_CEILING + 1)
+
+        hints_first = get_hints("tag", tag_id)
+        assert any(h["type"] == "notes_over_budget" for h in hints_first)
+
+        hints_second = get_hints("tag", tag_id)
+        assert any(h["type"] == "notes_over_budget" for h in hints_second)
 
 
 class TestLogsSparse:

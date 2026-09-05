@@ -297,7 +297,7 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 | min_usage | int | no | 2 | 孤児判定閾値 |
 | top_n | int | no | 20 | co_occurrences の返却件数 |
 
-**返り値**: `{co_occurrences, clusters, orphans, suspected_duplicates}`。`orphans`の各要素には`archived`（bool）と`archived_reason`（archived時のみ非null）が付く。
+**返り値**: `{co_occurrences, clusters, orphans, suspected_duplicates, notes_over_budget}`。`orphans`の各要素には`archived`（bool）と`archived_reason`（archived時のみ非null）が付く。`notes_over_budget`はnotesの文字数が推奨上限（tag notesのラチェット天井と同じ値）を超えているタグの一覧で、各要素は`{tag, length, ceiling, archived, archived_reason}`（length降順）。`domain`/`include_domain_tags`/`min_usage`等の分析スコープに関わらず、notesを持つ全タグを対象に走査する（他3セクションとは独立の全件監査）。
 
 ### 2.11 add_activity
 
@@ -385,7 +385,7 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 | activity_id | int | yes | - | アクティビティID |
 
 **返り値**: `{coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary, session}`。セッション内でcheck_inを初めて呼んだときのみ`flow_guide`（コンテキスト取得の手がかり）も含まれる。
-このactivityを`add_ask`のblocksでblockしているaskが1件以上あるときのみ`asks: {awaiting_answer, awaiting_triage}`が追加される（無ければキー自体が無い）。`awaiting_answer`はstatus='open'のask一覧（各`{id_raw, question, last_seen_at}`）、`awaiting_triage`はstatus='answered'かつ未トリアージのask一覧（各`{id_raw, question, answer_body, last_seen_at}`）。activities.statusがcompleted以外のときのみ配達され、promoted/dismissed/withdrawn済みのaskは配達されない。`awaiting_triage`が1件以上あるときは`hints`にも「answered状態のaskが未トリアージです。triage_askでpromote/dismissへ振り分けてください。」という文言が1件追加される。この`asks`関連のhintsは、recompose系hintと異なりorch-managed activityでもsuppressされない（答え待ちである事実はhintではなく状態情報として扱うため）。
+このactivityを`add_ask`のblocksでblockしているaskが1件以上あるときのみ`asks: {awaiting_answer, awaiting_triage}`が追加される（無ければキー自体が無い）。`awaiting_answer`はstatus='open'のask一覧（各`{id_raw, question, last_seen_at}`）、`awaiting_triage`はstatus='answered'かつ未トリアージのask一覧（各`{id_raw, question, answer_body, last_seen_at}`）。activities.statusがcompleted以外のときのみ配達され、promoted/dismissed/withdrawn済みのaskは配達されない。`awaiting_triage`が1件以上あるときは`hints`にも「answered状態のaskが未トリアージです。triage_askでpromote/dismissへ振り分けてください。」という文言が1件追加される。この`asks`関連のhintsは、recompose系hintと異なりorch-managed activityでもsuppressされない（答え待ちである事実はhintではなく状態情報として扱うため）。activityが紐づくdomain:タグのnotesが推奨文字数の上限を超えている場合、`hints`に整理を促す文言（`notes_over_budget`）も1件追加される。recompose系hintと同様、対象タグのnotesに抑制マーカーを追記すれば黙らせられる。
 `session`は呼び出し元のClaude Code CLIプロセスを解決できた場合`{"name": str, "alias": str, "alias_collision": bool}`、解決できない場合（非CLIクライアント、relay未構成環境の起動直後等）は`{"registered": false, "reason": "cli_unresolved"}`。このセッション別名レジストリ更新はベストエフォートであり、失敗してもcheck_in本体は成功応答を返す。`alias_collision`がtrueのときは`hints`にも衝突を知らせる文言が追加される。詳細は2.42bを参照。
 **副作用**: statusがin_progress以外なら自動的にin_progressに更新。
 **呼び出し基準**: 既存アクティビティに関連する作業を始めるとき。summaryフィールドはそのまま出力することが推奨される。
