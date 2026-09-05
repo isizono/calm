@@ -103,17 +103,20 @@ _TOOL_NAME = "mcp__plugin_calm_calm__check_in"
 
 
 def _payload(content, *, tool_name=_TOOL_NAME, cwd="/tmp/outside-repo",
-             session_id="sess-abc", extra_response=None):
+             session_id="sess-abc", extra_response=None, agent_id=None):
     response = {"content": content}
     if extra_response:
         response.update(extra_response)
-    return {
+    payload = {
         "tool_name": tool_name,
         "tool_response": response,
         "cwd": cwd,
         "session_id": session_id,
         "transcript_path": "/tmp/transcripts/test.jsonl",
     }
+    if agent_id is not None:
+        payload["agent_id"] = agent_id
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +207,31 @@ def test_case_04_cwd_in_unrelated_project_not_skipped(fixture_db, tmp_path):
     assert out["hookSpecificOutput"]["updatedToolOutput"]["content"] == [
         {"type": "text", "text": "ref to {{cite:M#1}}"}
     ]
+
+
+def test_case_04_agent_id_bypasses_cwd_repo_skip(fixture_db, tmp_path):
+    """agent_id付き(サブエージェント発)呼び出しは、cwdがcc-memoryリポジトリ内でもスキップしない。"""
+    repo_root = tmp_path / "cc-memory-repo"
+    repo_root.mkdir()
+    (repo_root / "pyproject.toml").write_text(
+        '[project]\nname = "claude-code-memory"\nversion = "0.1.0"\n'
+    )
+    subdir = repo_root / ".trees" / "some-worktree"
+    subdir.mkdir(parents=True)
+
+    payload = _payload("ref to M#1", cwd=str(subdir), agent_id="agent-xyz")
+    stdout, code = _run_hook(payload)
+    assert code == 0
+    out = json.loads(stdout)
+    assert out["hookSpecificOutput"]["updatedToolOutput"]["content"] == [
+        {"type": "text", "text": "ref to {{cite:M#1}}"}
+    ]
+
+    events = _read_citation_events(fixture_db)
+    assert len(events) == 1
+    assert events[0]["source"] == "transcript_post_tool_use"
+    assert events[0]["before_text"] == "ref to M#1"
+    assert events[0]["after_text"] == "ref to {{cite:M#1}}"
 
 
 # ---------------------------------------------------------------------------
