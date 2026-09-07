@@ -7,6 +7,9 @@ import os
 import subprocess
 from types import SimpleNamespace
 
+import pytest
+
+from src.env_compat import env_restore, env_snapshot
 from src.services import restart_service
 
 
@@ -411,7 +414,19 @@ class TestRestartMcpServerPropagatesCalmProjectRoot:
 
     Popenはenv未指定でos.environを継承するため、restart_mcp_server自身が
     プロセス環境変数を書き換えているかをos.environで直接検証する。
+
+    restart_mcp_server内のenv_set()はos.environを直接書き換え、
+    monkeypatch.delenv(raising=False)はキーが元々未設定の場合undo記録を
+    残さない(pytest monkeypatchの仕様)。放置すると本クラスが設定した
+    CALM_PROJECT_ROOTが後続テストへ漏れるため、env_snapshot/env_restoreで
+    明示的にテスト前後の状態を復元する。
     """
+
+    @pytest.fixture(autouse=True)
+    def _isolate_calm_project_root_env(self):
+        snapshot = env_snapshot("CALM_PROJECT_ROOT")
+        yield
+        env_restore(snapshot)
 
     def _run_restart(self, monkeypatch, tmp_path):
         state = {"new_server_started": False}
