@@ -3,6 +3,7 @@
 subprocess呼び出し(lsof/ps/kill/Popen)を外部境界としてmonkeypatchし、
 プロセス入れ替え判定ロジック・キャッシュ削除の契約を検証する。
 """
+import os
 import subprocess
 from types import SimpleNamespace
 
@@ -403,6 +404,56 @@ def test_restart_mcp_server_writes_launcher_output_to_log_file(monkeypatch, tmp_
     assert log_path.parent.is_dir()
     assert popen_kwargs["stdout"].name == str(log_path)
     assert popen_kwargs["stderr"] is popen_kwargs["stdout"]
+
+
+class TestRestartMcpServerPropagatesCalmProjectRoot:
+    """restart_mcp_server: 新規launcherプロセスへのCALM_PROJECT_ROOT伝播
+
+    Popenはenv未指定でos.environを継承するため、restart_mcp_server自身が
+    プロセス環境変数を書き換えているかをos.environで直接検証する。
+    """
+
+    def _run_restart(self, monkeypatch, tmp_path):
+        state = {"new_server_started": False}
+
+        def fake_find_listen_pids(port):
+            return [2222] if state["new_server_started"] else []
+
+        def fake_popen(cmd, **kwargs):
+            state["new_server_started"] = True
+            return SimpleNamespace(pid=2222)
+
+        monkeypatch.setattr(restart_service, "find_listen_pids", fake_find_listen_pids)
+        monkeypatch.setattr(restart_service, "process_start_signature", lambda pid: "sig")
+        monkeypatch.setattr(restart_service.subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(restart_service.time, "sleep", lambda _: None)
+        monkeypatch.setattr(
+            restart_service, "LAUNCHER_LOG_PATH", tmp_path / "logs" / "restart_launcher.log"
+        )
+        return restart_service.restart_mcp_server(tmp_path, poll_interval_sec=0)
+
+    def test_sets_calm_project_root_when_unset(self, monkeypatch, tmp_path):
+        """CALM_PROJECT_ROOT(新旧名とも)が未設定なら、project_rootの値で設定する
+
+        プラグインキャッシュ配置ではlauncher起動時のCLAUDE_PLUGIN_ROOT頼みの
+        自動設定が新規プロセスに伝播している保証がないため、この再起動経路では
+        明示的に設定して子プロセスチェーン全体に伝播させる。
+        """
+        monkeypatch.delenv("CALM_PROJECT_ROOT", raising=False)
+        monkeypatch.delenv("CCM_PROJECT_ROOT", raising=False)
+        monkeypatch.delenv("CC_MEMORY_PROJECT_ROOT", raising=False)
+
+        self._run_restart(monkeypatch, tmp_path)
+
+        assert os.environ["CALM_PROJECT_ROOT"] == str(tmp_path)
+
+    def test_does_not_override_existing_calm_project_root(self, monkeypatch, tmp_path):
+        """CALM_PROJECT_ROOTが既に設定済みなら、project_rootの値で上書きしない"""
+        monkeypatch.setenv("CALM_PROJECT_ROOT", "/explicit/root")
+
+        self._run_restart(monkeypatch, tmp_path)
+
+        assert os.environ["CALM_PROJECT_ROOT"] == "/explicit/root"
 
 
 def test_stop_embedding_server_kills_found_pids(monkeypatch):

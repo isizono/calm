@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 from typing import NamedTuple
 
+from src.env_compat import env_get, env_set
 from src.http_config import HTTP_PORT
 from src.services.embedding_service import PORT as EMBEDDING_SERVER_PORT
 
@@ -184,6 +185,15 @@ def restart_mcp_server(
         deadline = time.monotonic() + kill_wait_sec
         while time.monotonic() < deadline and find_listen_pids(MCP_PORT):
             time.sleep(poll_interval_sec)
+
+    # 新規launcherプロセスはos.environを継承する(Popenにenv未指定)。プラグイン
+    # キャッシュ配置(gitリポジトリ外)ではlauncher起動時の_propagate_plugin_root_env()
+    # がCLAUDE_PLUGIN_ROOT頼みで、この再起動フロー経由の子プロセスにその値が
+    # 伝播している保証がないため、embedding_service._resolve_project_root()の
+    # git rev-parseフォールバックが失敗してembeddingサーバーが起動できなくなる。
+    # ここで明示的に設定し、子プロセスチェーン全体に伝播させる。
+    if not env_get("CALM_PROJECT_ROOT"):
+        env_set("CALM_PROJECT_ROOT", str(project_root))
 
     LAUNCHER_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(LAUNCHER_LOG_PATH, "w") as log_file:
