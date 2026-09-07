@@ -440,12 +440,12 @@ class TestRestartMcpServerPropagatesCalmProjectRoot:
     差し替える。本クラスの関心は「未設定時にenv_setで書き込むか/既存値を尊重するか」
     という配線であり、_resolve_main_repo_root自身のgit解決ロジックは
     TestResolveMainRepoRootで個別に検証する。恒等関数に差し替えないと、
-    tmp_pathはgitリポジトリでないため実装は正しく動作するものの、実際に
-    subprocess.run(git rev-parse)を呼び出すことになり、他のテストがこのクラスと
-    同様にPopenをfakeへ差し替えている場合にsubprocess.run内部のPopen呼び出しまで
-    fakeを踏んでしまい壊れる(subprocess.PopenはSimpleNamespaceを返すfakeのため、
-    subprocess.run内部の`with Popen(...) as process`がcontext manager protocol
-    エラーになる)。
+    tmp_pathはgitリポジトリでないため実装は正しく動作するものの、実際には
+    「git rev-parse」の実行を試みる形で標準ライブラリのsubprocess run関数を
+    呼び出すことになり、このクラスと同様にPopenをfakeへ差し替えているテストでは
+    その内部実装がPopen呼び出しへ委譲する構造ゆえfakeを踏んでしまい壊れる
+    (Popenのfakeが返すSimpleNamespaceはcontext managerではないため、標準
+    ライブラリ内部がwith文でそれを開こうとしてエラーになる)。
     """
 
     def _run_restart(self, monkeypatch, tmp_path, *, resolve_main_repo_root=None):
