@@ -4,7 +4,7 @@ MCPクライアント側で2,048字を超えると切り詰められる実態が
 全文がハードリミット2,048字以内に収まることを回帰検知する。
 
 tests/unit/test_tool_docstring_budget.pyと同じ設計思想で、安全マージン
-1,900字も別テストで追跡する。RULESは本テスト更新時点で実測2,015字あり、
+1,900字も別テストで追跡する。RULESは本テスト更新時点で実測2,047字あり、
 安全マージンを既に超えている（既知の超過としてxfail(strict=True)で
 追跡。マージン内に削減されたらxfailがxpassに転じ、strict=Trueにより
 失敗として検出される）。
@@ -61,3 +61,18 @@ def test_rules_contains_required_tags():
 def test_rules_ends_with_guide_skill_pointer():
     """末尾にman skillへの導線1行がある"""
     assert "calm:man" in RULES
+
+
+def test_rules_head_512_is_self_contained():
+    """先頭512字だけが利用されるハーネスでも最重要原則が伝わる（#619）。
+
+    CodexはMCP instructionsについて「先頭512文字を自己完結させる」ことを
+    推奨しており、そこで切られても①応答前の検索②アクティビティ+check_in
+    ③記録3種のツール名、が全て先頭512字に収まっていることを検証する。
+    """
+    head = RULES[:512]
+    assert "最初の応答を組み立てる前に" in head
+    assert "アクティビティを作成" in head
+    assert "check_in" in head
+    for tool in ("add_decisions", "add_logs", "add_material"):
+        assert tool in head
