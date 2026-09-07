@@ -106,8 +106,15 @@ claude plugin install calm
 | `CALM_HEARTBEAT_TIMEOUT` | `20` | ホットアクティビティ判定の閾値（分） |
 | `CALM_IN_PROGRESS_LIMIT` | `3` | アクティブコンテキストのin_progress表示件数 |
 | `CALM_PENDING_LIMIT` | `2` | アクティブコンテキストのpending表示件数 |
+| `CALM_TIER2_MAX_AGE_DAYS` | `7` | SessionStart一覧の階層2にin_progressアクティビティを載せるupdated_at上限（日） |
+| `CALM_PIN_SURFACE_DECAY_DAYS` | `60` | pinnedアクティビティが階層2表示を維持できるupdated_at上限（日） |
 | `CALM_RECENCY_DECAY_RATE` | `0.0014` | 検索の時間減衰率 |
 | `CALM_SYNC_DISABLE_RETROSPECTIVE` | `false` | `/sync-memory`のふりかえりセクションを非表示にする |
+| `CALM_SNAPSHOT_INTERVAL` | `12` | スナップショット取得間隔（時間） |
+| `CALM_SNAPSHOT_MAX_COUNT` | `5` | スナップショット最大保持数 |
+| `CALM_SNAPSHOT_ANOMALY_THRESHOLD` | `100` | 行数減少の異常検知閾値（件） |
+| `CALM_PROJECTION_MANIFEST_MAX_ITEMS` | `30` | intelligently habitsマニフェストの掲載件数上限 |
+| `CALM_PROJECT_ROOT` | 自動解決（`CLAUDE_PLUGIN_ROOT` → `git rev-parse --git-common-dir`） | `embedding_server`を起動するプロジェクトルート。優先順位は 明示設定 → プラグイン実行時は`CLAUDE_PLUGIN_ROOT`の値から自動設定 → `git rev-parse --git-common-dir` → いずれも失敗した場合はRuntimeError。通常は自動解決されるため設定不要だが、両方の自動解決に失敗する環境（gitリポジトリ外かつ`CLAUDE_PLUGIN_ROOT`も未設定）では明示設定が必要 |
 
 環境変数は `CALM_` 接頭辞に統一されている。旧名（`CCM_` / `CC_MEMORY_`）も当面はフォールバックとして読まれるが、新名が設定されていればそちらが優先される。
 
