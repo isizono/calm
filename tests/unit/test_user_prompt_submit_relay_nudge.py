@@ -14,6 +14,7 @@ import src.services.relay.identity as relay_identity
 import src.services.relay.inbox as relay_inbox
 from hooks.hook_state import HookState
 from hooks.user_prompt_submit_hook import _build_relay_turn_nudge
+from src.harness import ClaudeCodeHarness, CodexHarness
 
 
 @pytest.fixture(autouse=True)
@@ -39,7 +40,7 @@ class TestEnvVarGate:
     def test_returns_none_when_disabled(self, monkeypatch, relay_configured, hook_state):
         monkeypatch.setattr(ccm_config, "RELAY_SESSION_AWARE_ENABLED", False)
         monkeypatch.setattr(relay_identity, "get_relay_identity", lambda: "stable-id-1")
-        assert _build_relay_turn_nudge(hook_state) is None
+        assert _build_relay_turn_nudge(hook_state, ClaudeCodeHarness()) is None
 
 
 class TestPersistentGuidance:
@@ -55,7 +56,7 @@ class TestPersistentGuidance:
         self, monkeypatch, relay_configured, hook_state
     ):
         monkeypatch.setattr(relay_identity, "get_relay_identity", lambda: "stable-id-1")
-        result = _build_relay_turn_nudge(hook_state)
+        result = _build_relay_turn_nudge(hook_state, ClaudeCodeHarness())
         assert result is not None
         assert "persistent: true" in result
 
@@ -63,7 +64,7 @@ class TestPersistentGuidance:
         self, monkeypatch, relay_configured, hook_state
     ):
         monkeypatch.setattr(relay_identity, "get_relay_identity", lambda: "stable-id-1")
-        result = _build_relay_turn_nudge(hook_state)
+        result = _build_relay_turn_nudge(hook_state, ClaudeCodeHarness())
         assert "persistent: false" in result
         assert "5分" in result
 
@@ -93,11 +94,11 @@ class TestIdentityCaching:
         )
         monkeypatch.setattr(relay_inbox, "count_unread", lambda session_id: 0)
 
-        _build_relay_turn_nudge(hook_state)
+        _build_relay_turn_nudge(hook_state, ClaudeCodeHarness())
         assert call_count == {"get": 1, "ancestry": 1}
 
         hook_state.set_monitor_started()  # 2回目は起動済み扱いにして早期returnを防ぐ
-        _build_relay_turn_nudge(hook_state)
+        _build_relay_turn_nudge(hook_state, ClaudeCodeHarness())
         # 2回目はHookStateキャッシュがヒットし、どちらの解決関数も呼ばれない
         assert call_count == {"get": 1, "ancestry": 1}
 
@@ -108,7 +109,7 @@ class TestIdentityCaching:
         monkeypatch.setattr(
             relay_identity, "resolve_identity_by_ancestry", lambda: "ancestry-id-1"
         )
-        _build_relay_turn_nudge(hook_state)
+        _build_relay_turn_nudge(hook_state, ClaudeCodeHarness())
         assert hook_state.get_cached_relay_identity() == "ancestry-id-1"
 
     def test_failed_resolution_is_not_cached(self, monkeypatch, relay_configured, hook_state):
@@ -117,7 +118,7 @@ class TestIdentityCaching:
         monkeypatch.setattr(relay_identity, "get_relay_identity", lambda: None)
         monkeypatch.setattr(relay_identity, "resolve_identity_by_ancestry", lambda: None)
 
-        assert _build_relay_turn_nudge(hook_state) is None
+        assert _build_relay_turn_nudge(hook_state, ClaudeCodeHarness()) is None
         assert hook_state.get_cached_relay_identity() is None
 
     def test_uses_cached_identity_even_if_resolvers_would_now_fail(
@@ -141,7 +142,7 @@ class TestIdentityCaching:
         )
         monkeypatch.setattr(relay_inbox, "count_unread", lambda session_id: 2)
 
-        result = _build_relay_turn_nudge(hook_state)
+        result = _build_relay_turn_nudge(hook_state, ClaudeCodeHarness())
         assert result is not None
         assert "relay inbox 未読: 2件" in result
 
@@ -154,7 +155,7 @@ class TestEnsureInboxFileCalled:
         self, monkeypatch, relay_configured, hook_state
     ):
         monkeypatch.setattr(relay_identity, "get_relay_identity", lambda: "stable-id-1")
-        result = _build_relay_turn_nudge(hook_state)
+        result = _build_relay_turn_nudge(hook_state, ClaudeCodeHarness())
         assert result is not None
         assert relay_inbox.inbox_path("stable-id-1").exists()
 
@@ -167,7 +168,33 @@ class TestEnsureInboxFileCalled:
         monkeypatch.setattr(relay_inbox, "count_unread", lambda session_id: 1)
         hook_state.set_monitor_started()
 
-        result = _build_relay_turn_nudge(hook_state)
+        result = _build_relay_turn_nudge(hook_state, ClaudeCodeHarness())
         assert result is not None
         assert "relay inbox 未読: 1件" in result
         assert not relay_inbox.inbox_path("stable-id-2").exists()
+
+
+class TestMonitorUnsupportedHarness:
+    """Monitorツールが無いハーネス（Codex）では起動指示を注入しない（#616）。
+
+    存在しないツールの起動指示は実行不能なノイズとして毎ターン注入され
+    続けるため、supports_monitor_watch=Falseのハーネスでは消化指示のみ返す。
+    """
+
+    def test_returns_none_when_no_unread(self, monkeypatch, relay_configured, hook_state):
+        """Monitor未起動でも、起動指示を出せない以上未読0件なら注入なし"""
+        monkeypatch.setattr(relay_identity, "get_relay_identity", lambda: "codex-id-1")
+        monkeypatch.setattr(relay_inbox, "count_unread", lambda session_id: 0)
+        assert _build_relay_turn_nudge(hook_state, CodexHarness()) is None
+
+    def test_unread_nudge_without_startup_instruction(
+        self, monkeypatch, relay_configured, hook_state
+    ):
+        """未読>0のときは消化指示のみ。Monitor起動指示は含まない"""
+        monkeypatch.setattr(relay_identity, "get_relay_identity", lambda: "codex-id-1")
+        monkeypatch.setattr(relay_inbox, "count_unread", lambda session_id: 2)
+        result = _build_relay_turn_nudge(hook_state, CodexHarness())
+        assert result is not None
+        assert "relay inbox 未読: 2件" in result
+        assert "relay_receive" in result
+        assert "Monitor" not in result

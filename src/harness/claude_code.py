@@ -112,6 +112,10 @@ class ClaudeCodeHarness(Harness):
         self._emit_hook_specific({"displayContent": text})
         return True
 
+    @property
+    def supports_monitor_watch(self) -> bool:
+        return True
+
     # ------------------------------------------------------------------
     # 2. transcript読み書き
     # ------------------------------------------------------------------
