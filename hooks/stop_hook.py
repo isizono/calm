@@ -24,6 +24,7 @@ from hooks.hook_state import HookState
 from hooks.hook_transcript import (
     _CHECKIN_TOOLS,
     _RECORDING_TOOLS,
+    extract_ask_registrations,
     extract_events,
     extract_last_activity_id,
 )
@@ -104,6 +105,17 @@ def main() -> None:
                 state.events_path.unlink()
 
         new_events, current_turn = extract_events(new_entries, current_turn)
+
+        # add_ask/unsubscribe_askの追跡state反映。add_tracked_ask_ids/
+        # remove_tracked_ask_idsは冪等な集合操作のため、offset_was_reset時に
+        # new_entriesが再拡大しても二重登録・二重削除にはならない。
+        # identity解決（resolve_identity_by_ancestry等）には一切触れない
+        # （session_idはこのStop hook呼び出し自体が受け取った実session_id）。
+        registered_ask_ids, unsubscribed_ask_ids = extract_ask_registrations(new_entries)
+        if registered_ask_ids:
+            state.add_tracked_ask_ids(registered_ask_ids)
+        if unsubscribed_ask_ids:
+            state.remove_tracked_ask_ids(unsubscribed_ask_ids)
 
         state.append_events(new_events)
         state.set_transcript_offset(new_offset)

@@ -81,6 +81,7 @@ TOOL_TAGS: dict[str, str] = {
     "answer_ask": "ask",
     "withdraw_ask": "ask",
     "triage_ask": "ask",
+    "unsubscribe_ask": "ask",
     "relay_post": "relay",
     "relay_publish": "relay",
     "relay_subscribe": "relay",

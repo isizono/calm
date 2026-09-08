@@ -64,6 +64,51 @@ class TestRelayIdentityCache:
         assert hook_state.get_cached_relay_identity() is None
 
 
+class TestTrackedAskIds:
+    def test_get_returns_empty_list_when_no_file(self, hook_state):
+        assert hook_state.get_tracked_ask_ids() == []
+
+    def test_add_then_get(self, hook_state):
+        hook_state.add_tracked_ask_ids([1, 2, 3])
+        assert hook_state.get_tracked_ask_ids() == [1, 2, 3]
+
+    def test_add_is_idempotent_on_duplicates(self, hook_state):
+        hook_state.add_tracked_ask_ids([1, 2])
+        hook_state.add_tracked_ask_ids([2, 3])
+        assert hook_state.get_tracked_ask_ids() == [1, 2, 3]
+
+    def test_add_empty_list_is_noop(self, hook_state):
+        hook_state.add_tracked_ask_ids([1])
+        hook_state.add_tracked_ask_ids([])
+        assert hook_state.get_tracked_ask_ids() == [1]
+
+    def test_remove_drops_specified_ids_only(self, hook_state):
+        hook_state.add_tracked_ask_ids([1, 2, 3])
+        hook_state.remove_tracked_ask_ids([2])
+        assert hook_state.get_tracked_ask_ids() == [1, 3]
+
+    def test_remove_all_deletes_file(self, hook_state):
+        hook_state.add_tracked_ask_ids([1, 2])
+        hook_state.remove_tracked_ask_ids([1, 2])
+        assert hook_state.get_tracked_ask_ids() == []
+        assert not hook_state._path("tracked_ask_ids").exists()
+
+    def test_remove_nonexistent_id_is_noop(self, hook_state):
+        hook_state.add_tracked_ask_ids([1])
+        hook_state.remove_tracked_ask_ids([999])
+        assert hook_state.get_tracked_ask_ids() == [1]
+
+    def test_corrupted_line_is_skipped(self, hook_state):
+        path = hook_state._path("tracked_ask_ids")
+        path.write_text("1\nnot-an-int\n3\n")
+        assert hook_state.get_tracked_ask_ids() == [1, 3]
+
+    def test_cleared_by_clear_session(self, hook_state):
+        hook_state.add_tracked_ask_ids([1, 2])
+        HookState.clear_session("test-session-123")
+        assert hook_state.get_tracked_ask_ids() == []
+
+
 class TestTranscriptOffset:
     def test_get_returns_zero_when_no_file(self, hook_state):
         assert hook_state.get_transcript_offset() == 0
@@ -295,15 +340,16 @@ class TestMainCli:
         self, tmp_path, monkeypatch
     ):
         """source=compactのclear呼び出しでは、生存中のMonitor watchを表す
-        monitor_startedマーカーと解決済みidentityキャッシュがクリアされない
-        （compactはセッションを継続したまま発火するイベントであり、watch自体も
-        launcherプロセスもcompactで終了しないため）。他の状態は通常通りクリア
-        される"""
+        monitor_startedマーカーと解決済みidentityキャッシュ、追跡中ask_id一覧
+        （tracked_ask_ids）がクリアされない（compactはセッションを継続したまま
+        発火するイベントであり、watch自体もlauncherプロセスもcompactで終了しない
+        ため）。他の状態は通常通りクリアされる"""
         monkeypatch.setattr(HookState, "BASE_DIR", tmp_path)
         state = HookState("cli-compact-sess")
         state.set_monitor_started()
         state.set_cached_relay_identity("cached-id-1")
         state.set_current_turn(3)
+        state.add_tracked_ask_ids([1, 2])
 
         project_root = Path(__file__).resolve().parents[2]
         input_json = json.dumps({"session_id": "cli-compact-sess", "source": "compact"})
@@ -320,13 +366,17 @@ class TestMainCli:
         assert state.get_monitor_started() is True
         assert state.get_cached_relay_identity() == "cached-id-1"
         assert state.get_current_turn() == 0
+        assert state.get_tracked_ask_ids() == [1, 2]
 
     def test_non_compact_source_clears_monitor_marker(self, tmp_path, monkeypatch):
-        """source=startup等の通常clearでは従来通りmonitor_startedもクリアされる"""
+        """source=startup等の通常clearでは従来通りmonitor_started・
+        tracked_ask_idsもクリアされる（質問者セッションが実質終わった扱いとなり、
+        以降の回収はpullに委ねる設計）"""
         monkeypatch.setattr(HookState, "BASE_DIR", tmp_path)
         state = HookState("cli-startup-sess")
         state.set_monitor_started()
         state.set_cached_relay_identity("cached-id-1")
+        state.add_tracked_ask_ids([1, 2])
 
         project_root = Path(__file__).resolve().parents[2]
         input_json = json.dumps({"session_id": "cli-startup-sess", "source": "startup"})
@@ -341,3 +391,4 @@ class TestMainCli:
         assert result.returncode == 0
         assert state.get_monitor_started() is False
         assert state.get_cached_relay_identity() is None
+        assert state.get_tracked_ask_ids() == []

@@ -4,6 +4,8 @@
 1. stdin読み込み → JSON parse（session_id取得）
 2. session_idが空/null → 空JSON出力して終了
 3. events.jsonl全読み
+3.5. add_ask通知の二重網（追跡中askがopen以外になっていれば表示・消費、
+     他のnudgeより優先） → system-reminder注入
 4. 未消費のnudgeイベント判定 → system-reminder注入
 5. relay session-aware nudge（CALM_RELAY_SESSION_AWARE=1のときのみ） →
    system-reminder注入
@@ -17,6 +19,12 @@ relay session-aware nudge（手順5）はSessionStartの一回きりの起動指
 未読件数を毎ターン判定する。identity解決結果はHookState.relay_identityにセッション
 単位でキャッシュし、resolve_identity_by_ancestry（ps最大2回spawn）を毎ターン
 払わないようにする。起動指示は `persistent: true` の使用を明記する。
+
+add_ask通知（手順3.5）はrelay session-aware nudgeとは独立の仕組みで、
+identity解決には一切触れない。追跡対象ask_id一覧はStop hook
+（hooks/hook_transcript.py extract_ask_registrations）がこのセッション自身の
+add_ask/unsubscribe_ask呼び出しから直接HookStateへ書き足したものを使う
+（詳細はhooks/ask_notify_section.py）。
 """
 import json
 import os
@@ -211,6 +219,16 @@ def main() -> None:
         # 3. events.jsonl全読み
         state = HookState(session_id)
         events = state.read_events()
+
+        # 3.5 add_ask通知の二重網（Monitorが起動されなかった・落ちた場合の
+        # フォールバック）。identity解決には一切触れない。他のnudgeより優先する
+        # （人間の回答が届いた事実は、記録忘れ等の促しより時宜性が高いため）。
+        from hooks.ask_notify_section import build_ask_notify_lines
+
+        ask_notify_lines = build_ask_notify_lines(session_id)
+        if ask_notify_lines:
+            harness.emit_additional_context(_wrap_system_reminder("\n".join(ask_notify_lines)))
+            return
 
         # 4. 未消費のnudgeイベント判定（events空なら for loop は即抜ける）
         # 最新のnudgeイベントを探す（consumed=Trueでないもの）

@@ -307,6 +307,85 @@ def _try_parse_activity_id(text: str) -> int | None:
     return None
 
 
+def extract_ask_registrations(
+    entries: list[TranscriptEntry],
+) -> tuple[list[int], list[int]]:
+    """add_ask/unsubscribe_askの呼び出しをtranscriptエントリ群から抽出する。
+
+    add_askはtool_use入力にask_idを含まない（レスポンスの"id"が正）ため、
+    add_activityと同じ二段パターン（tool_use_idでtool_use/tool_resultを
+    対応付ける、extract_last_activity_id参照）でask_idを取り出す。
+    unsubscribe_askはask_idがtool_use入力に直接含まれるため単純に読み取る。
+
+    このask_id一覧は、そのセッション自身がadd_ask/unsubscribe_askを呼んだ
+    という事実だけから導かれる（呼び出し元のHookStateへの反映もsession_id起点で
+    行われる）。他セッションとの同一性推定（identity解決）は一切行わない。
+
+    Returns:
+        (registered_ask_ids, unsubscribed_ask_ids)。出現順、重複を含みうる
+        （呼び出し側の追跡state反映は冪等な集合操作を想定する）
+    """
+    registered: list[int] = []
+    unsubscribed: list[int] = []
+    add_ask_use_ids: set[str] = set()
+
+    for entry in entries:
+        for block in entry.content:
+            block_type = block.get("type")
+
+            if block_type == "tool_use":
+                name = block.get("name", "")
+                if not _is_calm_tool(name):
+                    continue
+                short = _extract_short_name(name)
+                if short == "add_ask":
+                    use_id = block.get("id")
+                    if use_id:
+                        add_ask_use_ids.add(use_id)
+                elif short == "unsubscribe_ask":
+                    aid = block.get("input", {}).get("ask_id")
+                    if aid is not None:
+                        try:
+                            unsubscribed.append(int(aid))
+                        except (ValueError, TypeError):
+                            pass
+
+            elif block_type == "tool_result":
+                use_id = block.get("tool_use_id")
+                if use_id not in add_ask_use_ids:
+                    continue
+                aid = _parse_ask_id_from_result(block.get("content", ""))
+                if aid is not None:
+                    registered.append(aid)
+
+    return registered, unsubscribed
+
+
+def _parse_ask_id_from_result(result_content) -> int | None:
+    """add_askのtool_resultのcontentからask_id（"id"）をパースする。"""
+    if isinstance(result_content, str):
+        return _try_parse_ask_id(result_content)
+    if isinstance(result_content, list):
+        for item in result_content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                aid = _try_parse_ask_id(item.get("text", ""))
+                if aid is not None:
+                    return aid
+    return None
+
+
+def _try_parse_ask_id(text: str) -> int | None:
+    """JSON文字列からadd_askレスポンスの"id"を抽出する"""
+    try:
+        data = json.loads(text)
+        aid = data.get("id")
+        if aid is not None:
+            return int(aid)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        pass
+    return None
+
+
 def has_context_retrieval_calls(entries: list[dict]) -> bool:
     """entriesにget系APIの呼び出しがあるかチェック。"""
     return _has_tool_calls(entries, _CONTEXT_RETRIEVAL_SHORT_NAMES)

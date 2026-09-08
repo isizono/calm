@@ -601,6 +601,78 @@ class TestStateUpdatedOnApprove:
         assert offset_val == transcript.stat().st_size
 
 
+def _make_tool_result_entry(tool_use_id: str, content) -> dict:
+    return {
+        "type": "user",
+        "message": {"content": [{"type": "tool_result", "tool_use_id": tool_use_id, "content": content}]},
+    }
+
+
+class TestAskRegistrationTracking:
+    """add_ask/unsubscribe_askの呼び出しがtracked_ask_ids stateへ反映されることを
+    確認する（identity解決には一切触れない、Stop hookのtranscriptスキャン経路）。"""
+
+    def test_add_ask_result_is_added_to_tracked_ask_ids(self, env_setup):
+        state_dir = Path(env_setup["state_dir"])
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("hi"),
+                _make_assistant_entry(
+                    tool_calls=["mcp__plugin_calm_calm__add_ask"],
+                    tool_inputs=[{"question": "q?", "blocks": [1], "tags": ["domain:test"]}],
+                ),
+                _make_tool_result_entry("tu_0", json.dumps({"id": 42, "deduped": False})),
+            ],
+            transcript,
+        )
+
+        _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+
+        tracked_file = state_dir / "tracked_ask_ids_test-session"
+        assert tracked_file.exists()
+        assert tracked_file.read_text().strip() == "42"
+
+    def test_unsubscribe_ask_removes_from_tracked_ask_ids(self, env_setup):
+        state_dir = Path(env_setup["state_dir"])
+        tracked_file = state_dir / "tracked_ask_ids_test-session"
+        tracked_file.write_text("42\n7\n")
+
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("hi"),
+                _make_assistant_entry(
+                    tool_calls=["mcp__plugin_calm_calm__unsubscribe_ask"],
+                    tool_inputs=[{"ask_id": 42}],
+                ),
+            ],
+            transcript,
+        )
+
+        _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+
+        assert tracked_file.read_text().strip() == "7"
+
+    def test_unrelated_tool_calls_do_not_touch_tracked_ask_ids(self, env_setup):
+        """add_ask/unsubscribe_ask以外のツール呼び出しではtracked_ask_ids fileが
+        作られない（無関係なStop hook呼び出しのたびにファイルが増殖しない）。"""
+        state_dir = Path(env_setup["state_dir"])
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("hi"),
+                CONTEXT_RETRIEVAL_ENTRY,
+                _make_assistant_entry(text="response"),
+            ],
+            transcript,
+        )
+
+        _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+
+        assert not (state_dir / "tracked_ask_ids_test-session").exists()
+
+
 class TestRecordNudgeMultiplication:
     """record nudge増殖: 記録なしターンが続くとrepeatが増える（blockはしない）"""
 

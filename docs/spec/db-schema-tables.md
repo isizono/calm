@@ -5,7 +5,7 @@
 <!-- 再生成: uv run python scripts/dump_db_schema.py -->
 
 `migrations/` を通し番号順に全適用した結果として得られる、現在のテーブル/ビュー構造の機械的な写しである。
-カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0072）。
+カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0073）。
 
 「なぜこの形なのか」（設計判断の背景・変遷・既知の課題）は `docs/spec/db-schema.md` を参照。
 本ファイルは現在値のみを扱い、変遷の経緯（旧カラムの削除理由等）は記載しない。
@@ -284,6 +284,7 @@ CREATE TABLE "ask_vec_vector_chunks00"(rowid PRIMARY KEY,vectors BLOB NOT NULL)
 | last_seen_session_id | TEXT | YES | — | — |
 | kind | TEXT | NO | `'ask'` | — |
 | choices | TEXT | YES | — | — |
+| notify_wanted | INTEGER | NO | `1` | — |
 
 インデックス:
 - `idx_asks_triage_pending` ON `asks`(last_seen_at)
@@ -321,7 +322,8 @@ CREATE TABLE asks (
     last_seen_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     first_seen_session_id  TEXT,
     last_seen_session_id   TEXT, kind TEXT NOT NULL DEFAULT 'ask'
-    CHECK (kind IN ('ask', 'meta')), choices TEXT,
+    CHECK (kind IN ('ask', 'meta')), choices TEXT, notify_wanted INTEGER NOT NULL DEFAULT 1
+  CHECK (notify_wanted IN (0, 1)),
 
     CHECK (
         (status IN ('open','withdrawn'))

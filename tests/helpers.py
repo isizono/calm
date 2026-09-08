@@ -172,11 +172,21 @@ def session_start_hook_env(
     # runnerのOW_ROLEを継承しない（テストの決定性確保。残存env検証テストはextra_envで明示設定する）
     env.pop("OW_ROLE", None)
 
-    cleanup_dir: Optional[str] = None
+    cleanup_dirs: list[str] = []
     if habits_rules_path is None:
         cleanup_dir = tempfile.mkdtemp(prefix="ccm-habits-rules-")
+        cleanup_dirs.append(cleanup_dir)
         habits_rules_path = str(Path(cleanup_dir) / "cc-memory-habits.md")
     env["CALM_HABITS_RULES_PATH"] = habits_rules_path
+
+    # session_start_hook.pyはaskの通知セクション（HookState経由）を持つため、
+    # 他hook（stop_hook.py等）と同じくHOOK_STATE_DIRの隔離が必要。呼び出し側が
+    # extra_envで明示していない限り、使い捨てdirを既定で注入し、本番既定パス
+    # （~/.claude/.claude-code-memory/state）への書き込みをテストから防ぐ。
+    if not (extra_env and "HOOK_STATE_DIR" in extra_env):
+        hook_state_dir = tempfile.mkdtemp(prefix="ccm-hook-state-")
+        cleanup_dirs.append(hook_state_dir)
+        env["HOOK_STATE_DIR"] = hook_state_dir
 
     if extra_env:
         env.update(extra_env)
@@ -192,7 +202,7 @@ def session_start_hook_env(
     try:
         yield env
     finally:
-        if cleanup_dir is not None:
+        for cleanup_dir in cleanup_dirs:
             shutil.rmtree(cleanup_dir, ignore_errors=True)
 
 

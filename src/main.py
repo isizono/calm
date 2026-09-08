@@ -2166,6 +2166,7 @@ def add_ask(
     kind: str = "ask",
     context: str | None = None,
     choices: list[str] | None = None,
+    notify: bool = True,
 ) -> dict:
     """人間の判断を待つ問いを1件積む（答え待ちの間、blocksで指定したactivityを止める）。
 
@@ -2185,7 +2186,16 @@ def add_ask(
     add_ask成功後、システムがそのask専用labelを自動でrelay_subscribeします
     （relayの一般方針「購読はエージェントの明示的な意図宣言であり、activity所有等
     から自動導出しない」の例外ではなく、add_askを呼ぶこと自体をエージェントの
-    明示的な意図宣言とみなす扱いです）。
+    明示的な意図宣言とみなす扱いです）。これはセッション跨ぎの配達経路（relay）で、
+    下記のnotify_path（同一セッション内で低遅延に回答を受け取るための経路）とは
+    独立している。
+
+    その場で回答を待ちたい場合は、レスポンスのnotify_pathをMonitorツールで
+    `persistent: true`監視すること（tail -Fと同様、ファイル出現前から監視を
+    始めてよい）。answer_ask/triage_ask(dismiss)が完了すると1行追記される
+    （中身は信用せず、気づいたらget_asksで実際の状態を取り直すこと）。
+    セッションが終了していても、次回のcheck_in/get_asksで通常通り拾える
+    （pushは低遅延化のヒントに過ぎず、正はpull）。
 
     Args:
         question: 問い本文（空不可、500字以内）
@@ -2198,11 +2208,15 @@ def add_ask(
         choices: 選択肢テンプレート（optional、最大3件、1件100字以内）。指定すると
             AskUserQuestion風の選択式UIをダッシュボード等で組み立てられる。
             回答（answer_ask）は引き続き自由文字列のまま
+        notify: 既定True。Falseにするとnotify_pathへの通知書き込みを最初から
+            行わない（後からunsubscribe_askで外すことも可能）。Falseにしても
+            pull（check_in/get_asks）での確認は通常通りできる
 
     Returns:
         成功時: {"id": int, "deduped": bool, "occurrence_count": int,
-            "similar_precedents": [...], "similar_asks": [...]}（近傍のdecision/ask
-            それぞれ最大3件、embeddingサーバー未起動時は空配列）
+            "notify_path": str, "similar_precedents": [...], "similar_asks": [...]}
+            （notify_pathはこの時点では存在しない場合がある。近傍のdecision/ask
+            はそれぞれ最大3件、embeddingサーバー未起動時は空配列）
         失敗時: {"error": {"code": "VALIDATION_ERROR", "message": ...}}
             （ask行の作成自体は成功しタグ解決のみ失敗した場合は "id" も含まれる。
             ask自体は作成済み・タグは空のまま残るため、同一questionで再度add_askを
@@ -2216,6 +2230,7 @@ def add_ask(
         context=context,
         choices=choices,
         session_id=relay_identity.get_relay_identity(),
+        notify=notify,
     )
 
 
@@ -2226,6 +2241,7 @@ def get_asks(
     triage_pending_only: bool = False,
     tags: list[str] | None = None,
     kind: str | None = None,
+    ids: list[int] | None = None,
     limit: int = 20,
     offset: int = 0,
     include_stats: bool = False,
@@ -2241,6 +2257,10 @@ def get_asks(
         tags: タグ配列（optional。指定時はAND条件でフィルタ、未指定時は全件。
             空配列を明示指定した場合はVALIDATION_ERRORになる）
         kind: フィルタ対象のkind（"ask"|"meta"）。null指定でフィルタなし
+        ids: 指定時はこのask idの集合だけに絞る（他のフィルタとAND条件）。
+            自分がadd_askした特定のask_id一覧の状態を直接引き当てたい場合に使う
+            （statusは既定"open"のままだと絞り込まれてしまうため、状態を問わず
+            確認したい場合はstatus=nullも併せて指定すること）
         limit: 取得件数上限（最大100件、デフォルト20）
         offset: 取得開始位置（ページネーション用）
         include_stats: Trueのときstatus別クロス集計と直近30日サマリを付与
@@ -2261,6 +2281,7 @@ def get_asks(
         triage_pending_only=triage_pending_only,
         tags=tags,
         kind=kind,
+        ids=ids,
         limit=limit,
         offset=offset,
         include_stats=include_stats,
@@ -2371,6 +2392,27 @@ def withdraw_ask(ask_id: int, reason: str) -> dict:
     return ask_service.withdraw_ask(
         ask_id, reason, session_id=relay_identity.get_relay_identity()
     )
+
+
+@mcp.tool()
+def unsubscribe_ask(ask_id: int) -> dict:
+    """このaskの通知希望（notify_wanted）を明示的に外す。
+
+    以後answer_ask/triage_ask(dismiss)が実行されても、add_askが返した
+    notify_pathへの書き込みが行われなくなる（Monitor監視やhookの自動通知が
+    来なくなる）。「サブスクを外した＝完全に見えなくなる」わけではなく、
+    pull（check_in/get_asks）では引き続き通常通り見える。statusは問わず
+    いつでも呼べる（既に回答済み・却下済みのaskに対しても呼べる）。
+
+    Args:
+        ask_id: 対象ask ID
+
+    Returns:
+        成功時: {"id": int, "notify_wanted": false}
+        失敗時: {"error": {"code": "VALIDATION_ERROR", "message": ...}}
+            （対象askが存在しない場合）
+    """
+    return ask_service.unsubscribe_ask(ask_id)
 
 
 # asks ダッシュボード向けHTTP API（MCPプロトコル外の薄いラッパー）。
