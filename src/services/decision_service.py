@@ -129,6 +129,8 @@ def add_decisions(items: list[dict]) -> dict:
             conn.execute(f"SAVEPOINT item_{i}")
             try:
                 topic_id = item.get("topic_id")
+                if topic_id is None:
+                    raise ValueError("topic_id is required")
                 decision = item.get("decision", "")
                 reason = item.get("reason", "")
                 # 空文字・空白のみのtitleはNULLへ正規化する。表示fallbackは

@@ -583,6 +583,7 @@ def triage_ask_with_conn(
     reason: Optional[str] = None,
     title: Optional[str] = None,
     tags: Optional[list[str]] = None,
+    topic_id: Optional[int] = None,
     dismiss_reason: Optional[str] = None,
     session_id: Optional[str] = None,
 ) -> dict:
@@ -624,7 +625,10 @@ def triage_ask_with_conn(
                 raise ValueError("reason is required for action='promote'")
 
             decision_result = add_decisions(
-                items=[{"decision": decision, "reason": reason, "title": title, "tags": tags}]
+                items=[{
+                    "topic_id": topic_id, "decision": decision, "reason": reason,
+                    "title": title, "tags": tags,
+                }]
             )
             if decision_result.get("errors"):
                 raise ValueError(
@@ -693,6 +697,7 @@ def triage_ask(
     reason: Optional[str] = None,
     title: Optional[str] = None,
     tags: Optional[list[str]] = None,
+    topic_id: Optional[int] = None,
     dismiss_reason: Optional[str] = None,
     session_id: Optional[str] = None,
 ) -> dict:
@@ -706,6 +711,7 @@ def triage_ask(
             reason=reason,
             title=title,
             tags=tags,
+            topic_id=topic_id,
             dismiss_reason=dismiss_reason,
             session_id=session_id,
         )

@@ -2299,12 +2299,13 @@ def triage_ask(
     reason: str | None = None,
     title: str | None = None,
     tags: list[str] | None = None,
+    topic_id: int | None = None,
     dismiss_reason: str | None = None,
 ) -> dict:
     """answered状態のaskをpromote（decision化）またはdismissへ振り分ける。
 
-    promoteはdecision/reason/title/tagsをそのままadd_decisionsに渡してdecisionを
-    生成し、promoted_decision_idとして紐付ける。dismissはdismiss_reasonを
+    promoteはdecision/reason/title/tags/topic_idをそのままadd_decisionsに渡して
+    decisionを生成し、promoted_decision_idとして紐付ける。dismissはdismiss_reasonを
     記録するのみで実体は作らない。いずれもこのaskが止めていたactivityの
     blockは解除する（ask_blocksを削除）。
 
@@ -2324,6 +2325,9 @@ def triage_ask(
         reason: action="promote"のとき必須。生成するdecisionの理由
         title: action="promote"時のdecisionの見出し（optional、35字以内）
         tags: action="promote"時のdecisionに付けるタグ（optional）
+        topic_id: action="promote"時、生成するdecisionを紐付けるトピックID。
+          add_decisions側でtopic_id必須のバリデーションを行うため、省略するとpromoteは
+          VALIDATION_ERRORで失敗する（action="dismiss"では不要）
         dismiss_reason: action="dismiss"のとき必須。見送り理由
 
     Returns:
@@ -2340,6 +2344,7 @@ def triage_ask(
         reason=reason,
         title=title,
         tags=tags,
+        topic_id=topic_id,
         dismiss_reason=dismiss_reason,
         session_id=relay_identity.get_relay_identity(),
     )

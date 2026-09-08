@@ -8,6 +8,7 @@ from src.db import get_connection
 from src.services import ask_service as ak
 from src.services.activity_service import add_activity
 from src.services.checkin_service import check_in
+from src.services.topic_service import add_topic
 
 
 def _make_activity(title: str = "a1", orch_managed: bool = False) -> int:
@@ -18,6 +19,10 @@ def _make_activity(title: str = "a1", orch_managed: bool = False) -> int:
         check_in=False,
         orch_managed=orch_managed,
     )["activity_id"]
+
+
+def _make_topic(title: str = "t1") -> int:
+    return add_topic(title=title, description="d", tags=["domain:test"])["topic_id"]
 
 
 class TestAnswerPromoteCheckInFlow:
@@ -39,7 +44,8 @@ class TestAnswerPromoteCheckInFlow:
         assert any("triage" in h for h in result["hints"])
 
         promoted = ak.triage_ask(
-            ask["id"], action="promote", decision="use approach A", reason="because Y"
+            ask["id"], action="promote", decision="use approach A", reason="because Y",
+            topic_id=_make_topic(),
         )
         assert promoted["status"] == "promoted"
 
