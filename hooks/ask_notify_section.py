@@ -61,7 +61,7 @@ def _format_ask_line(ask: dict) -> str:
     elif status == "dismissed":
         detail = f"却下: {ask.get('triage_reason') or ''}"
     elif status == "promoted":
-        detail = f"promote済み（decision化、id_raw={ask.get('promoted_decision_id_raw')}）"
+        detail = f"promote済み（#{ask.get('promoted_decision_id_raw')}）"
     elif status == "withdrawn":
         detail = f"取り下げ済み: {ask.get('withdraw_reason') or ''}"
     else:

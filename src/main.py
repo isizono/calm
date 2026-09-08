@@ -2269,6 +2269,13 @@ def get_asks(
         （要求元session_idの文字列リスト）、tags（タグ文字列のリスト。タグnotesは
         含まない）が合流される。choicesはadd_ask時に指定していればstring配列、
         未指定ならnull。
+
+    既知の制約: 通知の「消費済み」マーク（hooks/ask_notify_section.pyの
+    tracked_ask_idsからの除去）は、hook経由の照会でのみ発生する。この
+    MCPツールをLLMが自分で直接呼んだ場合はローカルのtracked_ask_idsを
+    更新しないため（呼び出し元セッションのstateファイルにMCPサーバーから
+    直接書き込めない）、次のSessionStart/UserPromptSubmitで同じ回答が
+    hook経由でもう一度表示されることがある。
     """
     return ask_service.get_asks(
         status=status,
