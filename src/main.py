@@ -2186,16 +2186,12 @@ def add_ask(
     add_ask成功後、システムがそのask専用labelを自動でrelay_subscribeします
     （relayの一般方針「購読はエージェントの明示的な意図宣言であり、activity所有等
     から自動導出しない」の例外ではなく、add_askを呼ぶこと自体をエージェントの
-    明示的な意図宣言とみなす扱いです）。これはセッション跨ぎの配達経路（relay）で、
-    下記のnotify_path（同一セッション内で低遅延に回答を受け取るための経路）とは
-    独立している。
+    明示的な意図宣言とみなす扱いです）。
 
-    その場で回答を待ちたい場合は、レスポンスのnotify_pathをMonitorツールで
-    `persistent: true`監視すること（tail -Fと同様、ファイル出現前から監視を
-    始めてよい）。answer_ask/triage_ask(dismiss)が完了すると1行追記される
-    （中身は信用せず、気づいたらget_asksで実際の状態を取り直すこと）。
-    セッションが終了していても、次回のcheck_in/get_asksで通常通り拾える
-    （pushは低遅延化のヒントに過ぎず、正はpull）。
+    その場で回答を待ちたい場合は、notify_pathをMonitorツールで`persistent: true`
+    監視すること（ファイル出現前から監視してよい）。answer_ask/triage_ask(dismiss)
+    完了時に1行追記される（中身は信用せずget_asksで実際の状態を取り直すこと）。
+    push未着でも次回のcheck_in/get_asksで拾える（正はpull）。
 
     Args:
         question: 問い本文（空不可、500字以内）
@@ -2208,15 +2204,14 @@ def add_ask(
         choices: 選択肢テンプレート（optional、最大3件、1件100字以内）。指定すると
             AskUserQuestion風の選択式UIをダッシュボード等で組み立てられる。
             回答（answer_ask）は引き続き自由文字列のまま
-        notify: 既定True。Falseにするとnotify_pathへの通知書き込みを最初から
-            行わない（後からunsubscribe_askで外すことも可能）。Falseにしても
-            pull（check_in/get_asks）での確認は通常通りできる
+        notify: 既定True。Falseで通知書き込みをしない（後からunsubscribe_askでも
+            外せる）。pull（check_in/get_asks）には影響しない
 
     Returns:
         成功時: {"id": int, "deduped": bool, "occurrence_count": int,
             "notify_path": str, "similar_precedents": [...], "similar_asks": [...]}
-            （notify_pathはこの時点では存在しない場合がある。近傍のdecision/ask
-            はそれぞれ最大3件、embeddingサーバー未起動時は空配列）
+            （notify_pathは未生成のことがある。similar_*は各最大3件、
+            embeddingサーバー未起動時は空配列）
         失敗時: {"error": {"code": "VALIDATION_ERROR", "message": ...}}
             （ask行の作成自体は成功しタグ解決のみ失敗した場合は "id" も含まれる。
             ask自体は作成済み・タグは空のまま残るため、同一questionで再度add_askを
