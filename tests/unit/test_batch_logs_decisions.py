@@ -185,6 +185,49 @@ class TestV3PartialSuccessInvalidTopic:
 
 
 # ========================================
+# V3b: add_decisionsはtopic_id欠落を拒否する（トピック未紐付けの孤児decision防止）
+# ========================================
+
+
+class TestV3bAddDecisionsRequiresTopicId:
+    """V3b: add_decisionsはtopic_id欠落をITEM_ERRORで拒否する（add_logsは対象外）"""
+
+    def test_missing_topic_id_key_rejected(self, temp_db):
+        """topic_idキー自体が無いitemはITEM_ERRORになる"""
+        result = add_decisions([
+            {"decision": "決定", "reason": "理由"},
+        ])
+
+        assert "error" not in result
+        assert result["created"] == []
+        assert len(result["errors"]) == 1
+        assert result["errors"][0]["error"]["code"] == "ITEM_ERROR"
+
+    def test_none_topic_id_rejected(self, temp_db):
+        """topic_id=Noneを明示したitemも同様にITEM_ERRORになる"""
+        result = add_decisions([
+            {"topic_id": None, "decision": "決定", "reason": "理由"},
+        ])
+
+        assert result["created"] == []
+        assert len(result["errors"]) == 1
+        assert result["errors"][0]["error"]["code"] == "ITEM_ERROR"
+
+    def test_partial_success_missing_topic_id_mixed_with_valid(self, topic):
+        """topic_id欠落itemは他の有効なitemの成功に影響しない（SAVEPOINT単位の独立性）"""
+        tid = topic["topic_id"]
+        result = add_decisions([
+            {"topic_id": tid, "decision": "成功する決定", "reason": "理由"},
+            {"decision": "topic_id無しで失敗する決定", "reason": "理由"},
+        ])
+
+        assert len(result["created"]) == 1
+        assert len(result["errors"]) == 1
+        assert result["errors"][0]["index"] == 1
+        assert result["errors"][0]["error"]["code"] == "ITEM_ERROR"
+
+
+# ========================================
 # V4: 不正tags混在で部分成功する
 # ========================================
 
