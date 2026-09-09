@@ -578,9 +578,12 @@ class TestExtractAskRegistrations:
         registered, _ = extract_ask_registrations([_entry(e) for e in entries])
         assert registered == [10, 11]
 
-    def test_unsubscribe_ask_reads_ask_id_from_input_directly(self):
+    def test_unsubscribe_ask_reads_ask_id_from_input_when_result_confirms_success(self):
+        """ask_id自体はtool_use入力から読むが、採否はtool_resultの成功
+        （notify_wanted: false、"error"キーなし）で確定する。"""
         entries = [
             _tool_use_entry(f"{_LOCAL_PREFIX}unsubscribe_ask", "use-1", {"ask_id": 7}),
+            _tool_result_entry("use-1", json.dumps({"id": 7, "notify_wanted": False})),
         ]
         registered, unsubscribed = extract_ask_registrations([_entry(e) for e in entries])
         assert registered == []
@@ -589,6 +592,39 @@ class TestExtractAskRegistrations:
     def test_unsubscribe_ask_invalid_ask_id_silently_dropped(self):
         entries = [
             _tool_use_entry(f"{_LOCAL_PREFIX}unsubscribe_ask", "use-1", {"ask_id": "not-int"}),
+            _tool_result_entry("use-1", json.dumps({"id": "not-int", "notify_wanted": False})),
+        ]
+        _, unsubscribed = extract_ask_registrations([_entry(e) for e in entries])
+        assert unsubscribed == []
+
+    def test_unsubscribe_ask_rejected_by_multi_requester_validation_error_is_not_registered(self):
+        """呼び出し自体は成立しているが、対象askの要求元セッションが2件以上で
+        unsubscribe_ask_with_connがVALIDATION_ERRORを返すケース（notify_wantedは
+        変更されない）。この場合tracked_ask_idsから除去してはならない。"""
+        entries = [
+            _tool_use_entry(f"{_LOCAL_PREFIX}unsubscribe_ask", "use-1", {"ask_id": 7}),
+            _tool_result_entry(
+                "use-1",
+                json.dumps({
+                    "error": {
+                        "code": "VALIDATION_ERROR",
+                        "message": (
+                            "ask id=7 is shared by 2 requester sessions; "
+                            "unsubscribe_ask does not support multi-requester asks in this version"
+                        ),
+                    }
+                }),
+            ),
+        ]
+        registered, unsubscribed = extract_ask_registrations([_entry(e) for e in entries])
+        assert registered == []
+        assert unsubscribed == []
+
+    def test_unsubscribe_ask_without_tool_result_is_not_registered(self):
+        """tool_resultがまだ届いていない（transcript途中で切れた等）場合は
+        成功が確認できないため追加しない。"""
+        entries = [
+            _tool_use_entry(f"{_LOCAL_PREFIX}unsubscribe_ask", "use-1", {"ask_id": 7}),
         ]
         _, unsubscribed = extract_ask_registrations([_entry(e) for e in entries])
         assert unsubscribed == []

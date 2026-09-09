@@ -646,6 +646,7 @@ class TestAskRegistrationTracking:
                     tool_calls=["mcp__plugin_calm_calm__unsubscribe_ask"],
                     tool_inputs=[{"ask_id": 42}],
                 ),
+                _make_tool_result_entry("tu_0", json.dumps({"id": 42, "notify_wanted": False})),
             ],
             transcript,
         )
@@ -653,6 +654,43 @@ class TestAskRegistrationTracking:
         _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
 
         assert tracked_file.read_text().strip() == "7"
+
+    def test_unsubscribe_ask_rejected_by_server_does_not_remove_from_tracked_ask_ids(self, env_setup):
+        """unsubscribe_askの呼び出し自体は成立していても、対象askの要求元セッション
+        が2件以上でサーバー側がVALIDATION_ERRORを返した場合はnotify_wantedが
+        実際には変更されていないため、tracked_ask_idsからも除去してはならない
+        （Monitor不調時の保険としてのローカル追跡を誤って失わないため）。"""
+        state_dir = Path(env_setup["state_dir"])
+        tracked_file = state_dir / "tracked_ask_ids_test-session"
+        tracked_file.write_text("42\n7\n")
+
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("hi"),
+                _make_assistant_entry(
+                    tool_calls=["mcp__plugin_calm_calm__unsubscribe_ask"],
+                    tool_inputs=[{"ask_id": 42}],
+                ),
+                _make_tool_result_entry(
+                    "tu_0",
+                    json.dumps({
+                        "error": {
+                            "code": "VALIDATION_ERROR",
+                            "message": (
+                                "ask id=42 is shared by 2 requester sessions; "
+                                "unsubscribe_ask does not support multi-requester asks in this version"
+                            ),
+                        }
+                    }),
+                ),
+            ],
+            transcript,
+        )
+
+        _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+
+        assert tracked_file.read_text().strip() == "42\n7"
 
     def test_unrelated_tool_calls_do_not_touch_tracked_ask_ids(self, env_setup):
         """add_ask/unsubscribe_ask以外のツール呼び出しではtracked_ask_ids fileが
