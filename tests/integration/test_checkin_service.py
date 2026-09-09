@@ -16,6 +16,9 @@ from src.services.checkin_service import (
     _greeted_sessions,
 )
 from src.services.hint_service import (
+    ACTIVITY_CLEANUP_AUTOTRIGGER_GUARD,
+    ACTIVITY_CLEANUP_COUNT_THRESHOLD,
+    MARKER_ACTIVITY_CLEANUP,
     MARKER_RECOMPOSE_BOOTSTRAP,
     RECOMPOSE_BOOTSTRAP_THRESHOLD as _RECOMPOSE_HINT_BOOTSTRAP_THRESHOLD,
     RECOMPOSE_DELTA_THRESHOLD as _RECOMPOSE_HINT_DELTA_THRESHOLD,
@@ -1351,7 +1354,7 @@ class TestRecomposeCooldownTransaction:
     def test_cooldown_marker_not_committed_when_check_in_fails_after_hint(
         self, temp_db, monkeypatch
     ):
-        """_get_recompose_hints呼び出し後、check_in本体が例外で失敗した場合、
+        """_get_immediate_hints呼び出し後、check_in本体が例外で失敗した場合、
         hintは応答されずDATABASE_ERRORになる一方、クールダウンマーカーの書き込みも
         ロールバックされ、notesには残らないこと（hint未達のまま消費されない）"""
         activity_id = _make_activity_with_domain_tag()
@@ -1376,6 +1379,80 @@ class TestRecomposeCooldownTransaction:
         assert "error" not in result_retry
         assert "hints" in result_retry
         assert any("蓄積しています" in h for h in result_retry["hints"])
+
+
+# activity_cleanup hintの本番到達経路(check_in経由)テスト用。
+ACTIVITY_MANAGEMENT_TAG_NAME = "activity-management"
+
+
+def _ensure_activity_management_tag() -> None:
+    """activity-managementタグ(namespace無しの素タグ)をtags行として存在させる。"""
+    add_topic(title="am-anchor-checkin", description="d", tags=[ACTIVITY_MANAGEMENT_TAG_NAME])
+
+
+def _make_stale_activity_for_checkin() -> int:
+    """activity_cleanupの母集団に入る放置activityを作る(status=pending・
+    updated_atを2000年に固定)。"""
+    result = add_activity(
+        title="[作業] 放置対象", description="d",
+        tags=["domain:activity-cleanup-target"],
+        check_in=False,
+    )
+    activity_id = result["activity_id"]
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE activities SET status = 'pending', updated_at = '2000-01-01 00:00:00' "
+            "WHERE id = ?",
+            (activity_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return activity_id
+
+
+class TestActivityCleanupHintViaCheckIn:
+    """activity_cleanup hintが本番の到達経路(checkin_service.check_in経由、
+    マーカー永続化はcheck_in末尾のcommitに依存)で正しく動作することの統合テスト。
+
+    tests/unit/test_hint_service.pyの同種テストはget_hints(自前connでcommitする
+    公開API)経由で書かれており、check_in→get_hints_with_conn(commitしない)→
+    check_in末尾commit、という本番の経路を通していない。"""
+
+    def test_same_day_refire_suppressed_via_check_in_commit_path(self, temp_db):
+        """check_in経由の1回目でactivity_cleanup hintが発火し、そのクールダウン
+        マーカー書き込みがcheck_in末尾のcommitで実際に永続化されることで、
+        2回目のcheck_inでは同日中は抑制されることを確認する。
+
+        check_in対象自身はstatus自動更新でupdated_atが現在時刻に更新されるため、
+        放置母集団に含めると自分自身の判定への寄与を消費してしまう。そのため
+        check_in対象(actor_id)は放置母集団とは別に用意する"""
+        _ensure_activity_management_tag()
+        for _ in range(ACTIVITY_CLEANUP_COUNT_THRESHOLD):
+            _make_stale_activity_for_checkin()
+        actor_id = add_activity(
+            title="[作業] check_in主体", description="d",
+            tags=["domain:checkin-actor"],
+            check_in=False,
+        )["activity_id"]
+
+        result_first = check_in(actor_id)
+        assert "error" not in result_first
+        assert any(
+            ACTIVITY_CLEANUP_AUTOTRIGGER_GUARD in h
+            for h in result_first.get("hints", [])
+        )
+        assert MARKER_ACTIVITY_CLEANUP in _get_tag_notes(
+            ACTIVITY_MANAGEMENT_TAG_NAME, namespace=""
+        )
+
+        result_second = check_in(actor_id)
+        assert "error" not in result_second
+        assert not any(
+            ACTIVITY_CLEANUP_AUTOTRIGGER_GUARD in h
+            for h in result_second.get("hints", [])
+        )
 
 
 class TestCheckInSessionRegistry:

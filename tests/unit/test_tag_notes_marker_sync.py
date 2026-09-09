@@ -42,7 +42,7 @@ def skill_md_content() -> str:
 class TestTagNotesMarkerSyncWithHintService:
     def test_hint_service_has_expected_marker_count(self):
         # 0件だとテスト自体が意味を持たなくなるため、実装側の前提を明示的に固定する
-        assert len(_hint_service_markers()) == 5
+        assert len(_hint_service_markers()) == 6
 
     def test_all_hint_service_markers_documented_in_skill_md(self, skill_md_content):
         missing = _hint_service_markers() - _skill_md_markers(skill_md_content)

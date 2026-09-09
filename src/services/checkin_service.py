@@ -430,10 +430,12 @@ def _get_pending_asks(conn: sqlite3.Connection, activity_id: int) -> dict:
     return ask_service.get_pending_asks_with_conn(conn, activity_id)
 
 
-def _get_recompose_hints(conn: sqlite3.Connection, activity_id: int) -> list[str]:
-    """check-in対象activityのdomain:tagについてrecomposeナッジhintメッセージを返す。
+def _get_immediate_hints(conn: sqlite3.Connection, activity_id: int) -> list[str]:
+    """check-in対象activityにHintServiceが返す即時配達hintのメッセージ一覧を返す。
 
-    HintService経由でdelivery_hint=immediateのhintのみtool responseに乗せる。
+    domain:tagのrecomposeナッジに加え、activity_cleanupのようなグローバル判定の
+    hintもHintService側で束ねられて返ってくるため、本関数はそれらを区別せず
+    delivery_hint=immediateのものだけをtool responseに乗せる。
     orch-managed activityでは全hint suppressする。
     """
     if hint_service.is_orch_managed_activity(conn, activity_id):
@@ -610,12 +612,13 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
             else:
                 activity["status"] = "in_progress"
 
-        # 9. recomposeナッジhint生成（既存connを共有。hint発火時は日次クールダウン
-        #    マーカーのnotes書き込みを伴うが、commitは本関数末尾でまとめて行う）
-        recompose_hints = _get_recompose_hints(conn, activity_id)
+        # 9. 即時配達hint生成（domain:tagのrecomposeナッジ・activity_cleanup等。
+        #    既存connを共有。hint発火時は日次クールダウンマーカーのnotes書き込みを
+        #    伴うが、commitは本関数末尾でまとめて行う）
+        immediate_hints = _get_immediate_hints(conn, activity_id)
 
         # 9a. このactivityをblockしているaskの配達（answer待ち・triage待ちフェーズ別）。
-        # recompose_hintsと異なりorch-managed activityでもsuppressしない
+        # immediate_hintsと異なりorch-managed activityでもsuppressしない
         # （askは答え待ちというプロセス情報そのものであり、recompose系の提案とは扱いを分ける）。
         pending_asks = _get_pending_asks(conn, activity_id)
 
@@ -661,7 +664,7 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
         if pending_asks["awaiting_answer"] or pending_asks["awaiting_triage"]:
             result["asks"] = pending_asks
 
-        hints = list(recompose_hints)
+        hints = list(immediate_hints)
         if pending_asks["awaiting_triage"]:
             hints.append(
                 "answered状態のaskが未トリアージです。triage_askでpromote/dismissへ振り分けてください。"
