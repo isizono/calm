@@ -121,6 +121,7 @@ graph TB
 | `relation_service` | relations（双方向関連の汎化） |
 | `habit_service` | habits（正はDB、`~/.claude/rules`配下の自動生成ファイルへ投影配信） |
 | `tag_service` | tags / tag_canonicals / tag_notes |
+| `overview_service` | 4節の窓を集計する読み取り専用サービス（activities / asks横断） |
 
 ### 3.3 横断クエリ・読み出し
 
@@ -181,6 +182,7 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 - `skills/postmortem`: 完了アクティビティの振り返り
 - `skills/scribe`: CALM記録からドキュメント生成
 - `skills/man`: pull型の使い方説明
+- `skills/overview`: 進行状況4節（working/recently_done/awaiting_human/backlog）の窓を呼び出す
 - `skills/decision-record`: 合意・未決論点の`add_decisions`記録ガイド
 - `skills/recording`: 経緯（log）・成果物（material）の記録判断基準
 - `skills/digest`: 期間横断の記録ダイジェスト生成
