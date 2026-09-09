@@ -10,6 +10,7 @@ import pytest
 
 from hooks.ask_notify_section import build_ask_notify_lines
 from hooks.hook_state import HookState
+from src.db import get_connection
 from src.services import ask_service as ak
 from src.services.activity_service import add_activity
 
@@ -102,3 +103,32 @@ class TestBuildAskNotifyLines:
 
         assert first != []
         assert second == []
+
+    def test_conn_argument_reuses_caller_conn_instead_of_opening_a_new_one(
+        self, temp_db, hook_state_dir, monkeypatch
+    ):
+        """conn引数を渡した場合はget_asks_with_conn経由でそれを使い回し、
+        自前でget_connection()を呼ばない（session_start_hookの他セクション
+        ビルダーと同じconn共有規約に合わせる契約）。"""
+        act = _make_activity()
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+        ak.answer_ask(r1["id"], "the answer")
+        state = HookState(SESSION_ID)
+        state.add_tracked_ask_ids([r1["id"]])
+
+        def _fail_get_connection(*args, **kwargs):
+            raise AssertionError(
+                "build_ask_notify_lines(conn=...) must not open its own connection"
+            )
+
+        monkeypatch.setattr(ak, "get_connection", _fail_get_connection)
+
+        conn = get_connection()
+        try:
+            lines = build_ask_notify_lines(SESSION_ID, conn=conn)
+        finally:
+            conn.close()
+
+        assert len(lines) == 2  # ヘッダ行 + 1件（conn共有でも通常通り解決済みが拾える）
+        assert "the answer" in lines[1]
+        assert state.get_tracked_ask_ids() == []

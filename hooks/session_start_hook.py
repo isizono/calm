@@ -414,7 +414,7 @@ def _build_signals_section(conn, session_id: str | None = None, source: str | No
     return f"未トリアージのシグナル: {total}件 ({breakdown}) → get_signals で確認\n"
 
 
-def _build_ask_notify_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # conn, source, **_kwargs: 全セクション共通シグネチャ
+def _build_ask_notify_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # source, **_kwargs: 全セクション共通シグネチャ
     """add_askし通知待ちで追跡中のask（HookState.tracked_ask_ids）を
     get_asksで直接照会し、解決済み（open以外）になっていれば表示して
     追跡対象から外す（hooks/ask_notify_section.build_ask_notify_lines）。
@@ -422,10 +422,13 @@ def _build_ask_notify_section(conn, session_id: str | None = None, source: str |
     Monitor（notify_pathのtail -F監視）が起動されなかった・落ちた場合の
     二重網。identity解決（resolve_identity_by_ancestry等）には一切触れない。
     追跡登録自体はStop hook（hook_transcript.extract_ask_registrations）が担う。
+
+    他のセクションビルダーと同様、本hookで共有されるconnをそのまま渡す
+    （自前で別コネクションを開かない）。
     """
     from hooks.ask_notify_section import build_ask_notify_lines
 
-    lines = build_ask_notify_lines(session_id)
+    lines = build_ask_notify_lines(session_id, conn=conn)
     if not lines:
         return ""
     return "\n".join(lines) + "\n"

@@ -1,7 +1,10 @@
 """ask_notify.py の単体テスト。
 
-notify_pathの生成規則、write_notificationの追記内容、TTLスイープ、書き込み
-失敗時に例外を上げないことを検証する。
+notify_pathの生成規則、write_notificationの追記内容、TTLスイープを検証する。
+書き込み失敗（ディスク障害等）が呼び出し元のDB更新をブロックしないことの
+検証は、内部関数のmockではなく実ファイルシステム障害の再現で行う必要が
+あるため、tests/unit/test_ask_service.py::TestNotifySubscription::
+test_answer_ask_notify_write_failure_does_not_block_db_update に置く。
 """
 import json
 import os
@@ -57,15 +60,6 @@ class TestWriteNotification:
         assert len(lines) == 2
         assert json.loads(lines[0])["status"] == "answered"
         assert json.loads(lines[1])["status"] == "dismissed"
-
-    def test_write_failure_is_swallowed_not_raised(self, notify_dir, monkeypatch):
-        """ディスク容量等の書き込み失敗は例外を上げず、呼び出し元をブロックしない。"""
-        def _boom(ask_id):
-            raise OSError("disk full")
-
-        monkeypatch.setattr(ask_notify, "notify_path", _boom)
-        # 例外を上げないことだけを確認する（戻り値なし。上げていればテスト自体が落ちる）
-        ask_notify.write_notification(7, "answered")
 
 
 class TestTtlSweep:

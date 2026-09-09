@@ -385,7 +385,8 @@ def _compute_ask_stats(conn: sqlite3.Connection) -> dict:
     return {"by_status": by_status, f"last_{_STATS_RECENT_DAYS}d": last_period_row[0]}
 
 
-def get_asks(
+def get_asks_with_conn(
+    conn: sqlite3.Connection,
     status: Optional[str] = "open",
     blocking_activity_id: Optional[int] = None,
     triage_pending_only: bool = False,
@@ -396,7 +397,10 @@ def get_asks(
     offset: int = 0,
     include_stats: bool = False,
 ) -> dict:
-    """askを一覧・集計する。
+    """askを一覧・集計する（conn共有版）。呼び出し元のconnをそのまま使い、
+    自前でget_connection()を呼ばない・commit/closeもしない（read-onlyのため
+    そもそもcommit不要。closeは呼び出し元の責務）。hook等、既に開いている
+    connを使い回したい呼び出し元から使う（例: hooks/ask_notify_section.py）。
 
     Args:
         status: フィルタ対象のstatus（"open"|"answered"|"promoted"|"dismissed"|"withdrawn"）。
@@ -425,6 +429,8 @@ def get_asks(
         blocks/requesters/tags（タグ文字列のリスト。notesは含まない）が合流される
         （blocksの各要素はid_raw/title/status、requestersはsession_id文字列のリスト）。
         choicesはadd_ask時に指定していればstring配列、未指定ならnull。
+        notify_wanted（0または1）は通知希望の有無（add_askのnotify引数、
+        またはunsubscribe_askでの解除状態）を示す。
     """
     if not triage_pending_only and status is not None and status not in VALID_STATUSES:
         return _validation_error(
@@ -442,7 +448,6 @@ def get_asks(
     limit = min(max(limit, 1), _MAX_LIMIT)
     offset = max(offset, 0)
 
-    conn = get_connection()
     try:
         # タグフィルタでask_idsを絞り込む（tags指定時のみ、AND条件）
         if parsed_tags is not None:
@@ -520,6 +525,35 @@ def get_asks(
         return result
     except Exception as e:
         return {"error": {"code": "DATABASE_ERROR", "message": str(e)}}
+
+
+def get_asks(
+    status: Optional[str] = "open",
+    blocking_activity_id: Optional[int] = None,
+    triage_pending_only: bool = False,
+    tags: Optional[list[str]] = None,
+    kind: Optional[str] = None,
+    ids: Optional[list[int]] = None,
+    limit: int = 20,
+    offset: int = 0,
+    include_stats: bool = False,
+) -> dict:
+    """askを一覧・集計する（get_asks_with_connのdocstring参照）。自前でconnを
+    開いて閉じるだけの薄いラッパー。"""
+    conn = get_connection()
+    try:
+        return get_asks_with_conn(
+            conn,
+            status=status,
+            blocking_activity_id=blocking_activity_id,
+            triage_pending_only=triage_pending_only,
+            tags=tags,
+            kind=kind,
+            ids=ids,
+            limit=limit,
+            offset=offset,
+            include_stats=include_stats,
+        )
     finally:
         conn.close()
 
@@ -540,12 +574,20 @@ def answer_ask_with_conn(
     トリアージ（promote/dismiss）はここでは実行しない。次のcheck_inで配達
     されるまで遅延する（判定はLLMの仕事のため）。
 
-    対象askがnotify_wanted=trueなら、状態更新に加えてnotify_pathへ完了通知を
-    追記する（ask_notify.write_notification、書き込み失敗は例外を上げずログのみ。
-    DB更新の成否とは独立させる）。
+    notify_pathへの通知書き込みはここでは行わない。呼び出し元（answer_ask）が
+    commit成功後に行う責務を持つ。本関数自体はcommit境界を所有しない（自前で
+    conn.commit()を呼ばない）ため、呼び出し元が外側で既に大きなトランザクション
+    を開いた状態でこの関数を呼ぶと、ここでのSAVEPOINTはネストしたsavepointになり
+    RELEASE SAVEPOINTはcommitを意味しなくなる。そのような呼び出しコンテキストで
+    ここに直接ファイル書き込みを置くと、未コミットの状態を外部プロセスへ通知
+    しうる。そのため対象askのnotify_wanted値だけをここで読み取り、
+    "_notify_wanted"として戻り値に含める（呼び出し元がcommit後にこれを見て
+    書き込みを行い、公開レスポンスからは取り除く）。
 
     Returns:
-        成功時: {"id", "status": "answered", "triage_pending": True, "blocked_activities", "next_step"}
+        成功時: {"id", "status": "answered", "triage_pending": True, "blocked_activities",
+            "next_step", "_notify_wanted"}（"_notify_wanted"は呼び出し元専用の内部
+            フィールドで、公開レスポンスには含めない）
         失敗時: {"error": {"code": "VALIDATION_ERROR", "message": ...}}
     """
     answer_body = (answer_body or "").strip()
@@ -584,15 +626,13 @@ def answer_ask_with_conn(
         conn.execute("RELEASE SAVEPOINT answer_ask")
         raise
 
-    if notify_wanted:
-        ask_notify.write_notification(ask_id, "answered")
-
     return {
         "id": ask_id,
         "status": "answered",
         "triage_pending": True,
         "blocked_activities": blocked_activities,
         "next_step": "triage_askでpromote/dismissへ振り分けてください。",
+        "_notify_wanted": notify_wanted,
     }
 
 
@@ -602,8 +642,13 @@ def answer_ask(ask_id: int, answer_body: str, session_id: Optional[str] = None) 
         result = answer_ask_with_conn(conn, ask_id, answer_body, session_id=session_id)
         if "error" in result:
             conn.rollback()
-        else:
-            conn.commit()
+            return result
+        conn.commit()
+        # notify_pathへの書き込みはconn.commit()より後で行う（answer_ask_with_conn
+        # のdocstring参照）。この関数がcommit境界を所有するため、書き込みの
+        # 前提となる状態が常に確定済みであることをここで保証する。
+        if result.pop("_notify_wanted", False):
+            ask_notify.write_notification(ask_id, "answered")
         return result
     except Exception as e:
         conn.rollback()
@@ -638,15 +683,20 @@ def triage_ask_with_conn(
     （decision_serviceがconn共有版を提供していないための制約。極めて稀な
     競合時のみ発生し、孤立decision自体は無効なデータではない）。
 
-    dismissかつ対象askがnotify_wanted=trueなら、状態更新に加えてnotify_pathへ
-    完了通知を追記する（answer_ask_with_connと同じask_notify.write_notification、
-    書き込み失敗は例外を上げずログのみ）。promoteでは通知しない
-    （answer_ask時点で既に一度通知済みのため）。
+    notify_pathへの通知書き込みはここでは行わない。呼び出し元（triage_ask）が
+    commit成功後に行う責務を持つ（answer_ask_with_connと同じ理由。docstring
+    参照）。dismissかつ対象askがnotify_wanted=trueのときのみ、戻り値に
+    "_notify_wanted": Trueを含める（呼び出し元がcommit後にこれを見て
+    ask_notify.write_notificationを呼び、公開レスポンスからは取り除く）。
+    promoteでは通知しない（answer_ask時点で既に一度通知済みのため、
+    "_notify_wanted"自体を含めない）。
 
     Returns:
         成功時(promote): {"id", "status": "promoted", "promoted_decision_id"}
             （kind="meta"のaskのみ、配置フローへ誘導する"next_step"を追加で含む）
-        成功時(dismiss): {"id", "status": "dismissed"}
+        成功時(dismiss): {"id", "status": "dismissed"}（notify_wanted=trueのときのみ
+            "_notify_wanted": Trueを追加で含む。呼び出し元専用の内部フィールドで、
+            公開レスポンスには含めない）
         失敗時: {"error": {"code": ..., "message": ...}}
     """
     if action not in ("promote", "dismiss"):
@@ -725,9 +775,10 @@ def triage_ask_with_conn(
         conn.execute("DELETE FROM ask_blocks WHERE ask_id = ?", (ask_id,))
         publish_entity_event_with_conn(conn, entity_type="ask", entity_id=ask_id, event="updated")
         conn.execute("RELEASE SAVEPOINT triage_ask")
+        result = {"id": ask_id, "status": "dismissed"}
         if pre_row["notify_wanted"]:
-            ask_notify.write_notification(ask_id, "dismissed")
-        return {"id": ask_id, "status": "dismissed"}
+            result["_notify_wanted"] = True
+        return result
 
     except ValueError as e:
         conn.execute("ROLLBACK TO SAVEPOINT triage_ask")
@@ -766,8 +817,12 @@ def triage_ask(
         )
         if "error" in result:
             conn.rollback()
-        else:
-            conn.commit()
+            return result
+        conn.commit()
+        # notify_pathへの書き込みはcommit成功後にのみ行う（answer_askと同じ理由。
+        # triage_ask_with_connのdocstring参照）。
+        if result.pop("_notify_wanted", False):
+            ask_notify.write_notification(ask_id, "dismissed")
         return result
     except Exception as e:
         conn.rollback()
@@ -857,14 +912,43 @@ def unsubscribe_ask_with_conn(conn: sqlite3.Connection, ask_id: int) -> dict:
     責務外。hook層（Stop hookのtranscriptスキャン）がunsubscribe_ask呼び出し
     自体を検出し、HookStateの追跡対象から外す（add_ask登録と対になる経路）。
 
+    同一fingerprintのopen askは複数セッションからのadd_ask再postでdedupされ、
+    ask_requestersにUNION蓄積される。notify_wantedはasks側の単一列（ask単位）
+    でありrequester単位ではないため、要求元セッションが2件以上のaskに対しては
+    unsubscribeを拒否し、状態を一切変更しない（まだ通知を必要としている他の
+    requesterを巻き添えで止めないための安全側の対応。requester単位への設計変更
+    は本関数のスコープ外）。要求元が1件以下（未指定でadd_askされたaskを含む）
+    なら従来通り動作する。
+
+    existence確認とrequester数条件は1段のUPDATEに畳む（TOCTOU回避、他の
+    _with_conn関数と同じ方針）。rowcountが0のときのみ追加のSELECTで
+    「存在しない」か「複数requesterで拒否」かを判別してエラーメッセージを
+    出し分ける。
+
     Returns:
         成功時: {"id": ask_id, "notify_wanted": False}
         失敗時: {"error": {"code": "VALIDATION_ERROR", "message": ...}}
-            （対象askが存在しない場合）
+            （対象askが存在しない場合、または要求元セッションが2件以上の場合）
     """
-    cursor = conn.execute("UPDATE asks SET notify_wanted = 0 WHERE id = ?", (ask_id,))
+    cursor = conn.execute(
+        """
+        UPDATE asks SET notify_wanted = 0
+        WHERE id = ?
+          AND (SELECT COUNT(*) FROM ask_requesters WHERE ask_id = ?) < 2
+        """,
+        (ask_id, ask_id),
+    )
     if cursor.rowcount == 0:
-        return _validation_error(f"ask id={ask_id} does not exist")
+        exists = conn.execute("SELECT 1 FROM asks WHERE id = ?", (ask_id,)).fetchone()
+        if exists is None:
+            return _validation_error(f"ask id={ask_id} does not exist")
+        requester_count = conn.execute(
+            "SELECT COUNT(*) FROM ask_requesters WHERE ask_id = ?", (ask_id,)
+        ).fetchone()[0]
+        return _validation_error(
+            f"ask id={ask_id} is shared by {requester_count} requester sessions; "
+            "unsubscribe_ask does not support multi-requester asks in this version"
+        )
     return {"id": ask_id, "notify_wanted": False}
 
 

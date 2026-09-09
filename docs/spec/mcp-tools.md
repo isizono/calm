@@ -707,7 +707,7 @@ Claude Codeセッション間の「CLI表示名（例: `workspace-a2`）→人�
 | offset | int | no | 0 | ページネーション |
 | include_stats | bool | no | false | trueでstatus別クロス集計と直近30日サマリを付与 |
 
-**返り値**: `{asks: [...], total_count: int, stats?: {by_status, last_30d}}`。各askにblocks（`[{id_raw, title, status}]`）、requesters（要求元session_idの文字列リスト）、tags（タグ文字列のリスト）が合流される。タグnotesは返さない。`choices`はadd_ask時に指定していればstring配列、未指定ならnull。
+**返り値**: `{asks: [...], total_count: int, stats?: {by_status, last_30d}}`。各askにblocks（`[{id_raw, title, status}]`）、requesters（要求元session_idの文字列リスト）、tags（タグ文字列のリスト）が合流される。タグnotesは返さない。`choices`はadd_ask時に指定していればstring配列、未指定ならnull。`notify_wanted`（0または1）は通知希望の有無（`add_ask`の`notify`引数、または`unsubscribe_ask`での解除状態）を示す。
 
 ### 2.45 answer_ask
 
@@ -755,7 +755,8 @@ Claude Codeセッション間の「CLI表示名（例: `workspace-a2`）→人�
 
 **返り値**: `{id: int, notify_wanted: false}`。
 **動作**: 対象askの`notify_wanted`をfalseにする。statusは問わずいつでも呼べる（既に回答済み・却下済みのaskに対しても呼べる）。「サブスクを外した＝完全に見えなくなる」ではなく、以後`answer_ask`/`triage_ask`(dismiss)が実行されても`notify_path`への書き込みが行われなくなるだけで、pull（`check_in`/`get_asks`）では引き続き通常通り見える。
-**エラー処理**: 対象askが存在しない場合は`VALIDATION_ERROR`。
+**既知の制約**: 同一の問いが複数セッションから`add_ask`された（要求元セッションが2件以上、`ask_requesters`が複数行）askには対応していない。`notify_wanted`は`asks`テーブルの単一列（ask単位）であり要求元セッション単位ではないため、あるセッションが外すと、まだ通知を必要としている他のセッションの通知希望も巻き添えで止めてしまう。この版では安全側に倒し、要求元セッションが2件以上のaskに対する呼び出しは状態を一切変更せず`VALIDATION_ERROR`で拒否する。要求元が1件以下（`session_id`未指定でadd_askされたaskを含む）のときは通常通り動作する。
+**エラー処理**: 対象askが存在しない場合、または要求元セッションが2件以上の場合は`VALIDATION_ERROR`。
 
 ### 2.48 resolve_destabilization
 

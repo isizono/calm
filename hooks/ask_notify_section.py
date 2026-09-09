@@ -10,10 +10,12 @@ get_asksで直接照会するだけで、identity解決（resolve_identity_by_an
 """
 from __future__ import annotations
 
+import sqlite3
+
 from hooks.hook_state import HookState
 
 
-def build_ask_notify_lines(session_id: str | None) -> list[str]:
+def build_ask_notify_lines(session_id: str | None, conn: sqlite3.Connection | None = None) -> list[str]:
     """追跡中askのうちopen以外（answered/dismissed/promoted/withdrawn等、
     何らかの形で解決済み）になっているものの表示行リストを返す。
 
@@ -22,6 +24,11 @@ def build_ask_notify_lines(session_id: str | None) -> list[str]:
     SessionStart/UserPromptSubmitのどちらの二重網も同じaskを再表示しない）。
     still-open（未回答）のask_idは追跡対象に残す（次回以降の呼び出しで
     再確認する）。
+
+    conn: 呼び出し元が既に開いているconnを渡すと、それを使い回して
+        get_asks_with_connを呼ぶ（自前でget_connection()を呼ばない）。
+        省略時（None、既定）はget_asksが自前でconnを開いて閉じる
+        （呼び出し元に共有すべきconnが無い場合。例: UserPromptSubmit hook）。
 
     session_idが空/None、追跡対象が空、get_asksが失敗、該当が0件のいずれかも
     空リストを返す（呼び出し元は「注入すべき内容なし」として扱えばよい）。
@@ -36,7 +43,12 @@ def build_ask_notify_lines(session_id: str | None) -> list[str]:
 
     from src.services import ask_service
 
-    result = ask_service.get_asks(ids=tracked_ids, status=None, limit=len(tracked_ids))
+    if conn is not None:
+        result = ask_service.get_asks_with_conn(
+            conn, ids=tracked_ids, status=None, limit=len(tracked_ids)
+        )
+    else:
+        result = ask_service.get_asks(ids=tracked_ids, status=None, limit=len(tracked_ids))
     if "error" in result:
         return []
 

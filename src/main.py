@@ -2268,7 +2268,8 @@ def get_asks(
         各askにblocks（[{"id_raw", "title", "status"}, ...]）、requesters
         （要求元session_idの文字列リスト）、tags（タグ文字列のリスト。タグnotesは
         含まない）が合流される。choicesはadd_ask時に指定していればstring配列、
-        未指定ならnull。
+        未指定ならnull。notify_wanted（0または1）は通知希望の有無
+        （add_askのnotify引数、またはunsubscribe_askでの解除状態）を示す。
 
     既知の制約: 通知の「消費済み」マーク（hooks/ask_notify_section.pyの
     tracked_ask_idsからの除去）は、hook経由の照会でのみ発生する。この
@@ -2411,13 +2412,17 @@ def unsubscribe_ask(ask_id: int) -> dict:
     pull（check_in/get_asks）では引き続き通常通り見える。statusは問わず
     いつでも呼べる（既に回答済み・却下済みのaskに対しても呼べる）。
 
+    同一の問いが複数セッションからadd_askされた（要求元セッションが2件以上）
+    askには対応していない。notify_wantedはask単位の単一フラグで要求元単位では
+    ないため、外すと他のセッションの通知希望も巻き添えで止まってしまう。
+
     Args:
         ask_id: 対象ask ID
 
     Returns:
         成功時: {"id": int, "notify_wanted": false}
         失敗時: {"error": {"code": "VALIDATION_ERROR", "message": ...}}
-            （対象askが存在しない場合）
+            （対象askが存在しない場合、または要求元セッションが2件以上の場合）
     """
     return ask_service.unsubscribe_ask(ask_id)
 

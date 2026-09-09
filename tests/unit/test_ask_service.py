@@ -568,6 +568,22 @@ class TestGetAsks:
         assert "id" not in ask
         assert isinstance(ask["id_raw"], int)
 
+    def test_notify_wanted_field_reflects_notify_and_unsubscribe(self, temp_db):
+        """各askのnotify_wanted（0/1）がadd_askのnotify引数・unsubscribe_askの
+        解除状態を反映してget_asksの応答に含まれる。"""
+        act = _make_activity()
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])  # notify既定True
+        r2 = ak.add_ask("q2", tags=["domain:test"], blocks=[act], notify=False)
+        r3 = ak.add_ask("q3", tags=["domain:test"], blocks=[act])
+        ak.unsubscribe_ask(r3["id"])
+
+        result = ak.get_asks(status=None, ids=[r1["id"], r2["id"], r3["id"]])
+
+        by_id = {a["id_raw"]: a["notify_wanted"] for a in result["asks"]}
+        assert by_id[r1["id"]] == 1
+        assert by_id[r2["id"]] == 0
+        assert by_id[r3["id"]] == 0
+
     def test_promoted_decision_id_uses_id_raw(self, temp_db):
         act = _make_activity()
         topic_id = _make_topic()
@@ -617,6 +633,43 @@ class TestGetAsks:
         assert [a["id_raw"] for a in page2["asks"]] == expected_order[2:4]
         assert [a["id_raw"] for a in page3["asks"]] == expected_order[4:5]
         assert page1["total_count"] == page2["total_count"] == page3["total_count"] == 5
+
+
+class TestGetAsksWithConn:
+    """get_asks_with_conn（conn共有版）の契約テスト。業務ロジック自体は
+    get_asks経由でTestGetAsksが既にカバーしているため、ここでは
+    「呼び出し元のconnを共有し、自前でget_connection()を呼ばない」という
+    リソース契約と、get_asks経由と同じ結果を返すことのみを検証する。"""
+
+    def test_does_not_open_its_own_connection(self, temp_db, monkeypatch):
+        act = _make_activity()
+        ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+
+        def _fail_get_connection(*args, **kwargs):
+            raise AssertionError("get_asks_with_conn must not open its own connection")
+
+        monkeypatch.setattr(ak, "get_connection", _fail_get_connection)
+
+        conn = get_connection()
+        try:
+            result = ak.get_asks_with_conn(conn, status=None)
+        finally:
+            conn.close()
+
+        assert result["total_count"] == 1
+
+    def test_returns_same_result_shape_as_get_asks(self, temp_db):
+        act = _make_activity()
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+
+        via_wrapper = ak.get_asks(status=None, ids=[r1["id"]])
+        conn = get_connection()
+        try:
+            via_conn = ak.get_asks_with_conn(conn, status=None, ids=[r1["id"]])
+        finally:
+            conn.close()
+
+        assert via_conn == via_wrapper
 
 
 class TestAnswerAsk:
@@ -1137,6 +1190,35 @@ class TestNotifySubscription:
         finally:
             conn.close()
         assert row["notify_wanted"] == 0
+
+    def test_unsubscribe_ask_with_single_requester_still_allowed(self, temp_db):
+        """要求元セッションが1件のみのaskは、これまで通りunsubscribe_askが動作する。"""
+        act = _make_activity()
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act], session_id="sess-1")
+
+        result = ak.unsubscribe_ask(r1["id"])
+
+        assert result == {"id": r1["id"], "notify_wanted": False}
+
+    def test_unsubscribe_ask_with_multiple_requesters_rejected_and_state_unchanged(self, temp_db):
+        """同一fingerprintのaskが複数セッションからadd_askされ要求元が2件以上に
+        なっている場合、unsubscribe_askはVALIDATION_ERRORで拒否し、notify_wantedを
+        変更しない（他のrequesterセッションの通知希望を巻き添えにしないため）。"""
+        act = _make_activity()
+        r1 = ak.add_ask("same question", tags=["domain:test"], blocks=[act], session_id="sess-1")
+        ak.add_ask("same question", tags=["domain:test"], blocks=[act], session_id="sess-2")
+
+        result = ak.unsubscribe_ask(r1["id"])
+
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT notify_wanted FROM asks WHERE id = ?", (r1["id"],)
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row["notify_wanted"] == 1
 
     def test_unsubscribe_then_answer_skips_notification(self, temp_db, ask_notify_dir):
         act = _make_activity()
