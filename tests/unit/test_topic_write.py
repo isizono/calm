@@ -390,26 +390,14 @@ def test_add_decision_without_tags(temp_db):
 
 
 def test_add_decision_without_topic(temp_db):
-    """topic_id=Noneでもdecisionは作成できる（relations.belongs_toが登録されない）"""
+    """topic_id省略はadd_decisionsの必須バリデーションによりエラーになる（孤児decision化の防止）"""
     result = add_decision(
         decision="グローバルな決定事項",
         reason="サブジェクト全体に関わる",
         topic_id=None,
     )
 
-    assert "error" not in result
-    assert "decision_id" in result
-    # relations.belongs_to が登録されていないことを確認
-    conn = get_connection()
-    try:
-        row = conn.execute(
-            "SELECT COUNT(*) FROM relations WHERE source_type='decision' AND source_id=? "
-            "AND target_type='topic' AND relation_type='belongs_to'",
-            (result["decision_id"],),
-        ).fetchone()
-        assert row[0] == 0
-    finally:
-        conn.close()
+    assert result["error"]["code"] == "ITEM_ERROR"
 
 
 def test_add_decision_multiple(temp_db):

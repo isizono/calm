@@ -2066,6 +2066,11 @@ paths:
                     type: array
                   - type: 'null'
                   default: null
+                topic_id:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
                 dismiss_reason:
                   anyOf:
                   - type: string
