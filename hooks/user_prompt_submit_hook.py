@@ -223,6 +223,9 @@ def main() -> None:
         # 3.5 add_ask通知の二重網（Monitorが起動されなかった・落ちた場合の
         # フォールバック）。identity解決には一切触れない。他のnudgeより優先する
         # （人間の回答が届いた事実は、記録忘れ等の促しより時宜性が高いため）。
+        # 本経路はcompose()を経由せずharness.emit_additional_contextへ直接
+        # 渡すため文字数予算による切り詰めが発生しない。budget_charsを渡さず
+        # resolved全件をそのまま消費する。
         from hooks.ask_notify_section import build_ask_notify_lines
 
         ask_notify_lines = build_ask_notify_lines(session_id)

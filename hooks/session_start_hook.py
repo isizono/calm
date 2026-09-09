@@ -425,10 +425,18 @@ def _build_ask_notify_section(conn, session_id: str | None = None, source: str |
 
     他のセクションビルダーと同様、本hookで共有されるconnをそのまま渡す
     （自前で別コネクションを開かない）。
+
+    本セクションはcompose()経由でconfig.INJECTION_BUDGET_ASK_NOTIFY_CHARS
+    以内にハード切り詰めされうる（injection_compositor._hard_truncate）。
+    build_ask_notify_linesにbudget_charsを渡し、切り詰めで表示が欠落する
+    行のask_idを消費済みにしてしまわないようにする（欠落したaskは
+    UserPromptSubmit hook側の二重網が予算制約なしで拾う）。
     """
     from hooks.ask_notify_section import build_ask_notify_lines
 
-    lines = build_ask_notify_lines(session_id, conn=conn)
+    lines = build_ask_notify_lines(
+        session_id, conn=conn, budget_chars=config.INJECTION_BUDGET_ASK_NOTIFY_CHARS
+    )
     if not lines:
         return ""
     return "\n".join(lines) + "\n"
