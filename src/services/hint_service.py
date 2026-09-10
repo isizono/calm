@@ -14,21 +14,28 @@ hintの種別と発火条件は仕様確定decisionに従う。
 - activity_cleanup (immediate): activity scope, activity固有のtagとは無関係な
   システム全体判定。pending/in_progress/shelved/snoozedのうち
   ACTIVITY_CLEANUP_STALE_DAYS日以上放置された件数 ≥ ACTIVITY_CLEANUP_COUNT_THRESHOLD
+- notes_over_budget (immediate): tag scope, domain: namespaceのみ,
+  tag notesの文字数がtag_serviceのラチェット天井（_TAG_NOTES_RATCHET_CEILING）を超過
 
 抑制:
 - tag_notesに以下のハッシュタグマーカーがあれば該当hintをスキップ:
   #recompose-skipped, #recompose-bootstrap-skipped, #recompose-delta-skipped,
-  #logs-sparse-ack, #direction-overflow-ack, #activity-cleanup-skipped
+  #logs-sparse-ack, #direction-overflow-ack, #activity-cleanup-skipped,
+  #notes-over-budget-ack
   (activity_cleanupの抑制マーカーはactivity-managementタグ(namespace無しの素タグ)
   のnotesに置く)
 - 各マーカーは素の形（恒久抑制）に加えて `<marker>-until:YYYY-MM-DD` の形式
   （指定日当日まで有効な期限付き抑制）も受け付ける。不正な日付形式は無視される
   （フェイルオープン、抑制しない側に倒す）。判定は_is_marker_activeに集約する
+- notes_over_budgetのみ例外で、素の形（恒久抑制）を認めない
+  （`_is_marker_active(..., allow_permanent=False)`）。notesが長すぎる状態を
+  恒久的に黙らせられるのは望ましくないため、超過が解消するまで発火し続ける
 - recompose_bootstrap / recompose_delta / activity_cleanupはhintが実際に生成される
   都度、対象tagのnotesへ `<marker>-until:{today}` を自動追記する日次クールダウンを
   持つ（同日内の再発火を防ぐ）。既存の日付付きマーカーが未来日の場合は上書きしない
   （手動設定の長期抑制を優先する）。書き込みは_apply_cooldown_markerに集約する
-- direction_overflowはこの日次クールダウンの対象外（手動マーカーのみで抑制する）
+- direction_overflow / notes_over_budgetはこの日次クールダウンの対象外
+  （手動マーカーのみで抑制する）
 - orch-managed activityでの全suppressは呼出側責務 (本moduleは判定しない)
 
 severity値域: info | warn のみ (block不採用)
@@ -50,7 +57,10 @@ from typing import Any, Literal, TypedDict
 from src.config import DIRECTION_OVERFLOW_THRESHOLD
 from src.db import get_connection
 from src.services.direction_service import count_direction_decisions
-from src.services.tag_service import _set_tag_notes_by_id_with_conn
+from src.services.tag_service import (
+    _TAG_NOTES_RATCHET_CEILING,
+    _set_tag_notes_by_id_with_conn,
+)
 
 # --- 型定義 ---
 
@@ -62,6 +72,7 @@ HintType = Literal[
     "record_missing",
     "direction_overflow",
     "activity_cleanup",
+    "notes_over_budget",
 ]
 Severity = Literal["info", "warn"]
 DeliveryHint = Literal["immediate", "deferred"]
@@ -101,6 +112,7 @@ MARKER_RECOMPOSE_DELTA = "#recompose-delta-skipped"
 MARKER_LOGS_SPARSE = "#logs-sparse-ack"
 MARKER_DIRECTION_OVERFLOW = "#direction-overflow-ack"
 MARKER_ACTIVITY_CLEANUP = "#activity-cleanup-skipped"
+MARKER_NOTES_OVER_BUDGET = "#notes-over-budget-ack"
 
 # マーカーは素の形（恒久抑制）に加えて `<marker>-until:YYYY-MM-DD`（期限付き抑制、
 # 指定日当日まで有効）も受け付ける。判定は_is_marker_activeに集約する。
@@ -111,7 +123,7 @@ def _dated_marker_pattern(marker: str) -> re.Pattern[str]:
     return re.compile(re.escape(marker) + re.escape(_DATED_MARKER_SUFFIX) + r"(\d{4}-\d{2}-\d{2})")
 
 
-def _is_marker_active(notes: str, marker: str) -> bool:
+def _is_marker_active(notes: str, marker: str, allow_permanent: bool = True) -> bool:
     """notes内でmarkerが有効な抑制指示として存在するかを判定する。
 
     2形態をサポートする:
@@ -122,6 +134,10 @@ def _is_marker_active(notes: str, marker: str) -> bool:
     日付付きの出現は素のmarkerを部分文字列として含む（prefix関係）ため、日付付き
     パターンを先に検出して本文から除去してから素のmarker判定を行う。これを怠ると
     期限切れの日付付きマーカーが恒久マーカーとして誤って残り続けてしまう。
+
+    allow_permanent=Falseを渡すと素のmarkerによる恒久抑制を認めず、日付付きの
+    期限付き抑制のみを判定する（notes_over_budgetのように、恒久的な抑制を許すべき
+    でないhint向け）。
     """
     pattern = _dated_marker_pattern(marker)
     for date_str in pattern.findall(notes):
@@ -131,6 +147,8 @@ def _is_marker_active(notes: str, marker: str) -> bool:
             continue
         if date.today() <= until:
             return True
+    if not allow_permanent:
+        return False
     remainder = pattern.sub("", notes)
     return marker in remainder
 
@@ -240,6 +258,16 @@ def _recompose_delta_message(tag_name: str, delta_count: int) -> str:
         f"「{MARKER_RECOMPOSE_DELTA}-until:YYYY-MM-DD」（任意の未来日）を"
         f"追記すると、その日まで一時的に黙らせられます。恒久的に不要なら日付なしの"
         f"「{MARKER_RECOMPOSE_DELTA}」を追記してください。"
+    )
+
+
+def _notes_over_budget_message(tag_name: str, length: int) -> str:
+    return (
+        f"tag「{tag_name}」のnotesが{length}字あり、推奨の目安"
+        f"（{_TAG_NOTES_RATCHET_CEILING}字）を超えています。notesが長すぎる状態は"
+        f"望ましくないため、超過が解消するまで恒久的に黙らせることはできません。"
+        f"demote_tag_notesで該当セクションを資材へ退避し、notesを縮めることを"
+        f"ユーザーに提案してください。"
     )
 
 
@@ -395,6 +423,24 @@ def _get_hints_for_tag(conn: sqlite3.Connection, tag_id: int) -> list[Hint]:
                     ),
                 },
                 "source": f"direction_overflow:tag:{tag_id}",
+                "delivery_hint": "immediate",
+            })
+
+    if not _is_marker_active(notes, MARKER_NOTES_OVER_BUDGET, allow_permanent=False):
+        if len(notes) > _TAG_NOTES_RATCHET_CEILING:
+            hints.append({
+                "type": "notes_over_budget",
+                "severity": "info",
+                "message": _notes_over_budget_message(tag_name, len(notes)),
+                "suggested_action": {
+                    "tool": "demote_tag_notes",
+                    "args_hint": {"tag": tag_name},
+                    "natural_language": (
+                        f"tag「{tag_name}」のnotesをdemote_tag_notesで資材へ退避し、"
+                        "縮めることをユーザーに提案する"
+                    ),
+                },
+                "source": f"notes_over_budget:tag:{tag_id}",
                 "delivery_hint": "immediate",
             })
 

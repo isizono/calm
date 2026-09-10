@@ -2,7 +2,7 @@
 watch-tags: domain:calm, domain:cc-memory
 watch-direction: true
 watch-migrations: false
-last-synced: 2026-08-17
+last-synced: 2026-09-10
 last-synced-migration: 0048
 -->
 
@@ -22,7 +22,7 @@ last-synced-migration: 0048
 
 ## 1. ツール一覧
 
-全55ツール。カテゴリ別に一覧する。
+全56ツール。カテゴリ別に一覧する。
 
 ### 1.1 記録系（add系）
 
@@ -45,6 +45,7 @@ last-synced-migration: 0048
 | `get_logs` | 指定エンティティの議論ログを取得する |
 | `get_decisions` | 指定エンティティの決定事項を取得する |
 | `get_activities` | アクティビティ一覧をフィルタ付きで取得する |
+| `get_overview` | 進行状況4節（working/recently_done/awaiting_human/backlog）を1回で集計して返す（読み取り専用） |
 | `get_material` | 資材の全文を取得する |
 | `get_habits` | 登録済み振る舞い一覧を取得する |
 | `get_by_ids` | search結果の詳細を type+id 指定で取得する |
@@ -330,7 +331,7 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 | min_usage | int | no | 2 | 孤児判定閾値 |
 | top_n | int | no | 20 | co_occurrences の返却件数 |
 
-**返り値**: `{co_occurrences, clusters, orphans, suspected_duplicates}`。`orphans`の各要素には`archived`（bool）と`archived_reason`（archived時のみ非null）が付く。
+**返り値**: `{co_occurrences, clusters, orphans, suspected_duplicates, notes_over_budget}`。`orphans`の各要素には`archived`（bool）と`archived_reason`（archived時のみ非null）が付く。`notes_over_budget`はnotesの文字数が推奨上限（tag notesのラチェット天井と同じ値）を超えているタグの一覧で、各要素は`{tag, length, ceiling, archived, archived_reason}`（length降順）。`domain`/`include_domain_tags`/`min_usage`等の分析スコープに関わらず、notesを持つ全タグを対象に走査する（他3セクションとは独立の全件監査）。
 
 ### 2.11 add_activity
 
@@ -358,6 +359,28 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 
 **返り値**: `{activities: [Activity], total_count: int, archived_tags: [{tag, archived_reason}]}`。statusの`active`は pending+in_progress のエイリアス（snoozed/shelvedは含まない）。`archived_tags`は応答に含まれるアクティビティのタグのうちarchivedなものの集約で、該当なしでも常に空配列で付く。
 **副作用**: 呼び出し時、updated_atがSNOOZE_DURATION_DAYS（デフォルト3日）を超過したsnoozedアクティビティをpendingへ一括自動復活させる。
+
+### 2.12b get_overview
+
+「今何が進んでいて、次に何をすべきか」を4節（working / recently_done / awaiting_human / backlog）に集計して1回で返す。読み取り専用で、DBへの書き込みを一切行わない（`get_activities`が持つsnoozed自動復活も起こさない）。
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| days | int | no | 7 | working節の鮮度窓・recently_done節の遡り窓（日数、1以上） |
+| limit | int | no | 20 | 各節が返す要素数の上限（節ごとに独立に適用、1以上。100超は100に丸める） |
+
+**返り値**: `{generated_at, params, working, recently_done, awaiting_human, backlog}`
+
+- `generated_at`: 集計時刻（UTC、`YYYY-MM-DD HH:MM:SS`）
+- `params`: 実際に集計へ使われた実効値。`limit`は100に丸めた後の値、`heartbeat_timeout_minutes`は`HEARTBEAT_TIMEOUT_MINUTES`の実効値（引数化しない）
+- `working`: 今動いているもの。`{items: [{id_raw, title, status, domains, last_touch_at, is_live, days_since_touch, open_ask_count}], count, total_count}`。`is_live`はheartbeatがタイムアウト以内かの真偽値
+- `recently_done`: 最近終わったもの。`{items: [{id_raw, title, status, domains, updated_at, days_ago}], count, total_count}`
+- `awaiting_human`: 人間の裁定待ち（statusが`open`のask）。`{items: [{id_raw, question, kind, choices, occurrence_count, first_seen_at, days_open, domains, blocks}], count, total_count, triage_pending_count}`。`triage_pending_count`は回答済み未トリアージ（`status='answered' AND triage IS NULL`）の件数で、`items`には含まれない
+- `backlog`: それ以外の残り。`{total_count, stale_in_progress_count, by_status, by_domain, no_domain_count}`。個別アクティビティは返さない
+
+**副作用**: なし。
+
+**caveat**: `activities`に完了時刻カラムは存在しないため、`recently_done`の完了日時は`updated_at`で近似する。完了済みアクティビティのタグ等を後から編集すると`updated_at`がbumpされ再浮上するため、この節の件数を「直近の完了数」として扱わないこと。`days`日より古い`completed`は`recently_done`にも`backlog`にも現れない（`backlog`の対象statusはpending/in_progress/snoozed/shelvedのみで完了系を含まないため）。
 
 ### 2.13 update_activity
 
@@ -418,7 +441,7 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 | activity_id | int | yes | - | アクティビティID |
 
 **返り値**: `{coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary, session}`。セッション内でcheck_inを初めて呼んだときのみ`flow_guide`（コンテキスト取得の手がかり）も含まれる。
-このactivityを`add_ask`のblocksでblockしているaskが1件以上あるときのみ`asks: {awaiting_answer, awaiting_triage}`が追加される（無ければキー自体が無い）。`awaiting_answer`はstatus='open'のask一覧（各`{id_raw, question, last_seen_at}`）、`awaiting_triage`はstatus='answered'かつ未トリアージのask一覧（各`{id_raw, question, answer_body, last_seen_at}`）。activities.statusがcompleted以外のときのみ配達され、promoted/dismissed/withdrawn済みのaskは配達されない。`awaiting_triage`が1件以上あるときは`hints`にも「answered状態のaskが未トリアージです。triage_askでpromote/dismissへ振り分けてください。」という文言が1件追加される。この`asks`関連のhintsは、recompose系hintと異なりorch-managed activityでもsuppressされない（答え待ちである事実はhintではなく状態情報として扱うため）。
+このactivityを`add_ask`のblocksでblockしているaskが1件以上あるときのみ`asks: {awaiting_answer, awaiting_triage}`が追加される（無ければキー自体が無い）。`awaiting_answer`はstatus='open'のask一覧（各`{id_raw, question, last_seen_at}`）、`awaiting_triage`はstatus='answered'かつ未トリアージのask一覧（各`{id_raw, question, answer_body, last_seen_at}`）。activities.statusがcompleted以外のときのみ配達され、promoted/dismissed/withdrawn済みのaskは配達されない。`awaiting_triage`が1件以上あるときは`hints`にも「answered状態のaskが未トリアージです。triage_askでpromote/dismissへ振り分けてください。」という文言が1件追加される。この`asks`関連のhintsは、recompose系hintと異なりorch-managed activityでもsuppressされない（答え待ちである事実はhintではなく状態情報として扱うため）。activityが紐づくdomain:タグのnotesが推奨文字数の上限を超えている場合、`hints`に整理を促す文言（`notes_over_budget`）も1件追加される。他のimmediate hintと異なり恒久抑制マーカーは効かず、超過が解消するまで発火し続ける（`demote_tag_notes`でnotesを資材へ退避して縮めることを想定した設計）。
 `session`は呼び出し元のClaude Code CLIプロセスを解決できた場合`{"name": str, "alias": str, "alias_collision": bool}`、解決できない場合（非CLIクライアント、relay未構成環境の起動直後等）は`{"registered": false, "reason": "cli_unresolved"}`。このセッション別名レジストリ更新はベストエフォートであり、失敗してもcheck_in本体は成功応答を返す。`alias_collision`がtrueのときは`hints`にも衝突を知らせる文言が追加される。詳細は2.42bを参照。
 **副作用**: statusがin_progress以外なら自動的にin_progressに更新。
 **呼び出し基準**: 既存アクティビティに関連する作業を始めるとき。summaryフィールドはそのまま出力することが推奨される。
@@ -698,7 +721,7 @@ Claude Codeセッション間の「CLI表示名（例: `workspace-a2`）→人�
 | choices | list[string] \| null | no | null | 選択肢テンプレート（最大3件、1件100字以内）。AskUserQuestion風の選択式UIをダッシュボード等で組み立てるための添え物。回答（`answer_ask`）は引き続き自由文字列のまま |
 
 **返り値**: `{id: int, deduped: bool, occurrence_count: int, similar_precedents: [...], similar_asks: [...]}`。`similar_precedents`/`similar_asks`はそれぞれ近傍のdecision/ask最大3件（embeddingサーバー未起動時は空配列）。
-**動作**: 同じ問い（正規化後questionのfingerprint一致）が答え待ち（open）で既にあれば新規行を作らず`occurrence_count`を+1し、blocks/要求元セッションはUNIONで追記、context/最終出現時刻は今回の値で上書きする。answered/promoted/dismissed/withdrawnの同一問いは別のライフとして新規行になる（訂正は新規postで行い、supersedes等のリンクは張らない）。dedup時（同一fingerprintのopen ask再post）は今回渡したtags/kind/choicesを無視し、初回投入時の値を保持する。レスポンスのsimilar_asks（裁定内容込み）を読み、同型の問いが繰り返され裁定が一貫していると判断した場合は、`ask-distill` skillでメタaskの起票を検討する。
+**動作**: question/contextの構成は`ask-compose` skillを必ず経由すること。同じ問い（正規化後questionのfingerprint一致）が答え待ち（open）で既にあれば新規行を作らず`occurrence_count`を+1し、blocks/要求元セッションはUNIONで追記、context/最終出現時刻は今回の値で上書きする。answered/promoted/dismissed/withdrawnの同一問いは別のライフとして新規行になる（訂正は新規postで行い、supersedes等のリンクは張らない）。dedup時（同一fingerprintのopen ask再post）は今回渡したtags/kind/choicesを無視し、初回投入時の値を保持する。レスポンスのsimilar_asks（裁定内容込み）を読み、同型の問いが繰り返され裁定が一貫していると判断した場合は、`ask-distill` skillでメタaskの起票を検討する。
 **エラー処理**: question空・500字超、context 8000字超、blocks空・存在しないactivity id含む・全てcompleted状態、同一fingerprintの直近withdrawから5分未満の再post、kindが"ask"/"meta"以外、choicesが0件または4件以上・要素が空文字列・101字以上はいずれも`VALIDATION_ERROR`。tagsが空・namespace不正等は`TAGS_REQUIRED`/`INVALID_TAG_NAMESPACE`/`INVALID_TAG_NAME`、`domain:`タグを含まない場合は`VALIDATION_ERROR`。
 
 ### 2.44 get_asks
