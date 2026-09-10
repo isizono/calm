@@ -64,7 +64,7 @@ claude plugin install calm
 | 取り消し | `retract` | 決定事項・ログ・資材の論理削除 |
 | 検索・横断参照 | `search`, `get_by_ids`, `get_timeline` | キーワード横断検索、詳細情報の一括取得、時系列表示 |
 | シグナル・計測 | `report_signal`, `get_signals`, `update_signal`, `detect_reask_candidates` | cc-memory自身への故障報告・矛盾検出・聞き返し候補検出等の運用計測 |
-| Ask（人間への判断委譲） | `add_ask`, `get_asks`, `answer_ask`, `triage_ask`, `withdraw_ask` | 離席中・セッション跨ぎの判断待ち問いの起票・取得・回答・振り分け・取り下げ |
+| Ask（人間への判断委譲） | `add_ask`, `get_asks`, `answer_ask`, `triage_ask`, `withdraw_ask`, `unsubscribe_ask` | 離席中・セッション跨ぎの判断待ち問いの起票・取得・回答・振り分け・取り下げ・通知解除 |
 | Relay（セッション間メッセージング） | `relay_post`, `relay_publish`, `relay_subscribe`, `relay_receive`, `relay_status` | セッション間でのメッセージ投函・labels配布・購読・受信・配送状況確認 |
 | その他 | `get_config`, `roll_dice` | 設定値の取得、ダイスロール |
 

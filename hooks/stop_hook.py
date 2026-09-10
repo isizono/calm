@@ -24,6 +24,7 @@ from hooks.hook_state import HookState
 from hooks.hook_transcript import (
     _CHECKIN_TOOLS,
     _RECORDING_TOOLS,
+    extract_ask_registrations,
     extract_events,
     extract_last_activity_id,
 )
@@ -104,6 +105,22 @@ def main() -> None:
                 state.events_path.unlink()
 
         new_events, current_turn = extract_events(new_entries, current_turn)
+
+        # add_ask/unsubscribe_askの追跡state反映。add_tracked_ask_ids/
+        # remove_tracked_ask_idsは冪等な集合操作のため、登録済みask_id自体が
+        # 重複して増えることはない。ただし、tracked_ask_idsはcompact時にも
+        # 温存される（_COMPACT_PRESERVE）ため、offset_was_resetでtranscript
+        # 冒頭から再読込されると、既に消費済み（表示・追跡除外済み）の
+        # ask_idがnew_entries経由で一度だけ再追跡され、次のSessionStart/
+        # UserPromptSubmitで再表示されることがある（自己修復し無限ループには
+        # ならない）。
+        # identity解決（resolve_identity_by_ancestry等）には一切触れない
+        # （session_idはこのStop hook呼び出し自体が受け取った実session_id）。
+        registered_ask_ids, unsubscribed_ask_ids = extract_ask_registrations(new_entries)
+        if registered_ask_ids:
+            state.add_tracked_ask_ids(registered_ask_ids)
+        if unsubscribed_ask_ids:
+            state.remove_tracked_ask_ids(unsubscribed_ask_ids)
 
         state.append_events(new_events)
         state.set_transcript_offset(new_offset)

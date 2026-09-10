@@ -1185,6 +1185,120 @@ class TestSessionStartHookSignals:
         assert "未トリアージのシグナル" not in context
 
 
+class TestSessionStartHookAskNotify:
+    """add_ask通知セクション（HookState.tracked_ask_idsのhook側二重網）のE2Eテスト。
+
+    tracked_ask_ids fileはHOOK_STATE_DIR配下に直接書き込む（Stop hookが
+    通常書く経路の代わりに、本テストではSessionStart hook単体の消費側だけを
+    検証するため）。identity解決には一切触れない。
+    """
+
+    def _seed_tracked_ask_ids(self, state_dir: Path, session_id: str, ask_ids: list[int]) -> None:
+        os.makedirs(state_dir, exist_ok=True)
+        path = Path(state_dir) / f"tracked_ask_ids_{session_id}"
+        path.write_text("\n".join(str(a) for a in ask_ids))
+
+    def test_no_tracked_asks_section_absent(self, temp_db, tmp_path):
+        state_dir = tmp_path / "hook-state"
+        result = _run_session_start_hook(
+            temp_db,
+            extra_env={"HOOK_STATE_DIR": str(state_dir)},
+            stdin_payload={"session_id": "sess-no-track"},
+        )
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "askの回答が届いています" not in context
+
+    def test_answered_tracked_ask_is_injected_and_consumed(self, temp_db, tmp_path):
+        from src.services import ask_service as ak
+
+        act = _seed_activity("a1")
+        r1 = ak.add_ask("何色にする?", tags=["domain:test"], blocks=[act])
+        ak.answer_ask(r1["id"], "青にしよう")
+
+        state_dir = tmp_path / "hook-state"
+        self._seed_tracked_ask_ids(state_dir, "sess-track-1", [r1["id"]])
+
+        result = _run_session_start_hook(
+            temp_db,
+            extra_env={"HOOK_STATE_DIR": str(state_dir)},
+            stdin_payload={"session_id": "sess-track-1"},
+        )
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "askの回答が届いています" in context
+        assert "何色にする?" in context
+        assert "青にしよう" in context
+
+        # 消費済み: tracked_ask_ids fileが空になっている
+        tracked_file = state_dir / "tracked_ask_ids_sess-track-1"
+        assert not tracked_file.exists() or tracked_file.read_text().strip() == ""
+
+    def test_still_open_tracked_ask_not_injected(self, temp_db, tmp_path):
+        from src.services import ask_service as ak
+
+        act = _seed_activity("a1")
+        r1 = ak.add_ask("まだ答えてない質問", tags=["domain:test"], blocks=[act])
+
+        state_dir = tmp_path / "hook-state"
+        self._seed_tracked_ask_ids(state_dir, "sess-track-2", [r1["id"]])
+
+        result = _run_session_start_hook(
+            temp_db,
+            extra_env={"HOOK_STATE_DIR": str(state_dir)},
+            stdin_payload={"session_id": "sess-track-2"},
+        )
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "askの回答が届いています" not in context
+        # openのままなので追跡対象からは外れていない
+        tracked_file = state_dir / "tracked_ask_ids_sess-track-2"
+        assert tracked_file.read_text().strip() == str(r1["id"])
+
+    def test_answer_exceeding_budget_stays_tracked_across_repeated_calls(
+        self, temp_db, tmp_path
+    ):
+        """回答がconfig.INJECTION_BUDGET_ASK_NOTIFY_CHARS（既定600字）を超える
+        長さの場合、compose()側のハード切り詰めで表示が欠落しうるため
+        本セクションには出さず、ask_idも追跡対象に残す。
+
+        SessionStart hookを2回呼んでもロストせず追跡され続けることを確認する
+        （予算制約の無いUserPromptSubmit hook側での全文表示・消費の確認は
+        tests/e2e/test_user_prompt_submit_hook.py::TestAskNotifyが担当する）。
+        """
+        from src.services import ask_service as ak
+
+        act = _seed_activity("a1")
+        r1 = ak.add_ask("長い回答が来る質問", tags=["domain:test"], blocks=[act])
+        long_answer = "回答本文" * 500  # 2000字。600字の予算を余裕を持って超える長さ
+        ak.answer_ask(r1["id"], long_answer)
+
+        state_dir = tmp_path / "hook-state"
+        session_id = "sess-track-budget-overflow"
+        self._seed_tracked_ask_ids(state_dir, session_id, [r1["id"]])
+
+        result1 = _run_session_start_hook(
+            temp_db,
+            extra_env={"HOOK_STATE_DIR": str(state_dir)},
+            stdin_payload={"session_id": session_id},
+        )
+        context1 = result1["hookSpecificOutput"]["additionalContext"]
+        assert "askの回答が届いています" not in context1
+
+        tracked_file = state_dir / f"tracked_ask_ids_{session_id}"
+        assert tracked_file.read_text().strip() == str(r1["id"])
+
+        # 2回目のSessionStart呼び出しでも同様（ロストしていない）
+        result2 = _run_session_start_hook(
+            temp_db,
+            extra_env={"HOOK_STATE_DIR": str(state_dir)},
+            stdin_payload={"session_id": session_id},
+        )
+        context2 = result2["hookSpecificOutput"]["additionalContext"]
+        assert "askの回答が届いています" not in context2
+        assert tracked_file.read_text().strip() == str(r1["id"])
+
+
 class TestSessionStartHookTranscriptPath:
     """transcript_path 1行注入テスト（聞き返し検出tool一発化のための下地）"""
 

@@ -146,6 +146,61 @@ class HookState:
         """relay identityをセッション単位でキャッシュする（ps spawn回避）。"""
         self._write(self._path("relay_identity"), identity)
 
+    # --- tracked_ask_ids（このセッションがadd_askし通知待ちで追跡中のask_id一覧） ---
+    #
+    # add_ask/unsubscribe_askの呼び出し検出（hooks/hook_transcript.py
+    # extract_ask_registrations）はStop hookが行い、その結果をここに反映する。
+    # SessionStart/UserPromptSubmit hookはここに記録されたask_id一覧を使って
+    # get_asksへ直接問い合わせるだけで、identity解決（resolve_identity_by_
+    # ancestry等）には一切触れない。
+
+    def get_tracked_ask_ids(self) -> list[int]:
+        """追跡中のask_id一覧を取得する。未設定（ファイルなし）-> 空リスト。
+
+        壊れた行（int変換不可）は無視する（1行の破損で全体を失わない）。
+        """
+        path = self._path("tracked_ask_ids")
+        try:
+            content = path.read_text()
+        except FileNotFoundError:
+            return []
+        ids: list[int] = []
+        for line in content.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ids.append(int(line))
+            except ValueError:
+                continue
+        return ids
+
+    def add_tracked_ask_ids(self, ask_ids: list[int]) -> None:
+        """追跡対象にask_idを追記する（重複は無視、出現順を維持）。"""
+        if not ask_ids:
+            return
+        existing = self.get_tracked_ask_ids()
+        seen = set(existing)
+        merged = list(existing)
+        for aid in ask_ids:
+            if aid not in seen:
+                merged.append(aid)
+                seen.add(aid)
+        self._write(self._path("tracked_ask_ids"), "\n".join(str(a) for a in merged))
+
+    def remove_tracked_ask_ids(self, ask_ids: list[int]) -> None:
+        """指定ask_idを追跡対象から外す（get_asksで消費済みになったもの、
+        またはunsubscribe_askされたもの）。空になったらファイルごと削除する。
+        """
+        if not ask_ids:
+            return
+        remove_set = set(ask_ids)
+        remaining = [a for a in self.get_tracked_ask_ids() if a not in remove_set]
+        if remaining:
+            self._write(self._path("tracked_ask_ids"), "\n".join(str(a) for a in remaining))
+        else:
+            self._delete(self._path("tracked_ask_ids"))
+
     # --- events.jsonl ---
 
     @property
@@ -218,8 +273,12 @@ if __name__ == "__main__":
 
     # compact時にクリア対象から除外するprefix。生存中のMonitor watch（
     # monitor_started）と解決済みidentity（relay_identity）はcompactで
-    # 消える情報ではないため保持する。
-    _COMPACT_PRESERVE = {"monitor_started", "relay_identity"}
+    # 消える情報ではないため保持する。tracked_ask_ids（このセッションが
+    # add_askし通知待ちで追跡中のask_id一覧）も同様にcompactをまたいで
+    # 生存すべき情報のため保持する（resume/clear/startupではクリアされる。
+    # 質問者セッションが実質終わった扱いとみなし、以降の回収はpull
+    # （check_in/get_asks）に委ねる設計）。
+    _COMPACT_PRESERVE = {"monitor_started", "relay_identity", "tracked_ask_ids"}
 
     if len(sys.argv) >= 2 and sys.argv[1] == "clear":
         data = json.loads(sys.stdin.read())

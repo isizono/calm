@@ -4,13 +4,14 @@ dedup（fingerprint一致・別ライフ判定）、状態遷移（open→answer
 open→withdrawn）、TOCTOU回避（1段クエリUPDATEのrowcountチェック）、長さ上限、
 duplicate blocksの静かなdedupeを検証する。
 """
+import json
 import sqlite3
 from unittest.mock import MagicMock
 
 import pytest
 
 from src.db import get_connection
-from src.services import ask_service as ak
+from src.services import ask_notify, ask_service as ak
 from src.services.activity_service import add_activity, update_activity
 from src.services.relay import runtime as relay_runtime_module
 from src.services.topic_service import add_topic
@@ -448,6 +449,36 @@ class TestGetAsks:
         assert result["total_count"] == 1
         assert result["asks"][0]["question"] == "q1"
 
+    def test_ids_filter_restricts_to_given_set(self, temp_db):
+        act = _make_activity()
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+        ak.add_ask("q2", tags=["domain:test"], blocks=[act])
+        ak.add_ask("q3", tags=["domain:test"], blocks=[act])
+
+        result = ak.get_asks(status=None, ids=[r1["id"]])
+
+        assert result["total_count"] == 1
+        assert result["asks"][0]["question"] == "q1"
+
+    def test_ids_filter_combines_with_status_default_open(self, temp_db):
+        """statusは既定"open"のままなので、ids指定していてもanswered済みは
+        除外される（呼び出し側がstatus=Noneを併せて指定する必要がある）。"""
+        act = _make_activity()
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+        ak.answer_ask(r1["id"], "a1")
+
+        result = ak.get_asks(ids=[r1["id"]])
+
+        assert result["total_count"] == 0
+
+    def test_empty_ids_list_is_treated_as_no_filter(self, temp_db):
+        act = _make_activity()
+        ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+
+        result = ak.get_asks(ids=[])
+
+        assert result["total_count"] == 1
+
     def test_triage_pending_only(self, temp_db):
         act = _make_activity()
         r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
@@ -537,6 +568,22 @@ class TestGetAsks:
         assert "id" not in ask
         assert isinstance(ask["id_raw"], int)
 
+    def test_notify_wanted_field_reflects_notify_and_unsubscribe(self, temp_db):
+        """各askのnotify_wanted（0/1）がadd_askのnotify引数・unsubscribe_askの
+        解除状態を反映してget_asksの応答に含まれる。"""
+        act = _make_activity()
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])  # notify既定True
+        r2 = ak.add_ask("q2", tags=["domain:test"], blocks=[act], notify=False)
+        r3 = ak.add_ask("q3", tags=["domain:test"], blocks=[act])
+        ak.unsubscribe_ask(r3["id"])
+
+        result = ak.get_asks(status=None, ids=[r1["id"], r2["id"], r3["id"]])
+
+        by_id = {a["id_raw"]: a["notify_wanted"] for a in result["asks"]}
+        assert by_id[r1["id"]] == 1
+        assert by_id[r2["id"]] == 0
+        assert by_id[r3["id"]] == 0
+
     def test_promoted_decision_id_uses_id_raw(self, temp_db):
         act = _make_activity()
         topic_id = _make_topic()
@@ -586,6 +633,43 @@ class TestGetAsks:
         assert [a["id_raw"] for a in page2["asks"]] == expected_order[2:4]
         assert [a["id_raw"] for a in page3["asks"]] == expected_order[4:5]
         assert page1["total_count"] == page2["total_count"] == page3["total_count"] == 5
+
+
+class TestGetAsksWithConn:
+    """get_asks_with_conn（conn共有版）の契約テスト。業務ロジック自体は
+    get_asks経由でTestGetAsksが既にカバーしているため、ここでは
+    「呼び出し元のconnを共有し、自前でget_connection()を呼ばない」という
+    リソース契約と、get_asks経由と同じ結果を返すことのみを検証する。"""
+
+    def test_does_not_open_its_own_connection(self, temp_db, monkeypatch):
+        act = _make_activity()
+        ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+
+        def _fail_get_connection(*args, **kwargs):
+            raise AssertionError("get_asks_with_conn must not open its own connection")
+
+        monkeypatch.setattr(ak, "get_connection", _fail_get_connection)
+
+        conn = get_connection()
+        try:
+            result = ak.get_asks_with_conn(conn, status=None)
+        finally:
+            conn.close()
+
+        assert result["total_count"] == 1
+
+    def test_returns_same_result_shape_as_get_asks(self, temp_db):
+        act = _make_activity()
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+
+        via_wrapper = ak.get_asks(status=None, ids=[r1["id"]])
+        conn = get_connection()
+        try:
+            via_conn = ak.get_asks_with_conn(conn, status=None, ids=[r1["id"]])
+        finally:
+            conn.close()
+
+        assert via_conn == via_wrapper
 
 
 class TestAnswerAsk:
@@ -974,3 +1058,215 @@ class TestSimilarSuggestions:
 
         r2 = ak.add_ask("second question", tags=["domain:test"], blocks=[act])
         assert any(item["id"] == r1["id"] for item in r2["similar_asks"])
+
+
+@pytest.fixture
+def ask_notify_dir(tmp_path, monkeypatch):
+    """CALM_ASK_NOTIFY_DIRをtmp_path配下に切り替える（notify_path書き込みの
+    実ファイルシステム検証用）。"""
+    d = tmp_path / "ask-notify"
+    monkeypatch.setenv("CALM_ASK_NOTIFY_DIR", str(d))
+    return d
+
+
+def _notify_lines(ask_notify_dir, ask_id: int) -> list[dict]:
+    path = ask_notify_dir / f"{ask_id}.notify"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+class TestNotifySubscription:
+    """notify_wanted / notify_path / unsubscribe_ask の一連の振る舞いを検証する。"""
+
+    def test_add_ask_defaults_to_notify_wanted_true(self, temp_db):
+        act = _make_activity()
+        result = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT notify_wanted FROM asks WHERE id = ?", (result["id"],)
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row["notify_wanted"] == 1
+
+    def test_add_ask_notify_false_stores_notify_wanted_0(self, temp_db):
+        act = _make_activity()
+        result = ak.add_ask("q1", tags=["domain:test"], blocks=[act], notify=False)
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT notify_wanted FROM asks WHERE id = ?", (result["id"],)
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row["notify_wanted"] == 0
+
+    def test_add_ask_returns_notify_path_matching_ask_id(self, temp_db):
+        act = _make_activity()
+        result = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+
+        assert result["notify_path"] == str(ask_notify.notify_path(result["id"]))
+
+    def test_dedup_repost_does_not_restore_notify_wanted(self, temp_db):
+        """初回notify=Falseで作ったopen askを、notify=Trueで再postしても
+        notify_wantedは初回の値（False）のまま変わらない（choices/kindと
+        同じdedup方針）。"""
+        act = _make_activity()
+        r1 = ak.add_ask("same question", tags=["domain:test"], blocks=[act], notify=False)
+        r2 = ak.add_ask("same question", tags=["domain:test"], blocks=[act], notify=True)
+        assert r2["id"] == r1["id"]
+        assert r2["deduped"] is True
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT notify_wanted FROM asks WHERE id = ?", (r1["id"],)
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row["notify_wanted"] == 0
+
+    def test_answer_ask_writes_notification_when_notify_wanted(self, temp_db, ask_notify_dir):
+        act = _make_activity()
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+
+        ak.answer_ask(r1["id"], "the answer")
+
+        lines = _notify_lines(ask_notify_dir, r1["id"])
+        assert len(lines) == 1
+        assert lines[0]["ask_id"] == r1["id"]
+        assert lines[0]["status"] == "answered"
+
+    def test_answer_ask_skips_notification_when_notify_false(self, temp_db, ask_notify_dir):
+        act = _make_activity()
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act], notify=False)
+
+        ak.answer_ask(r1["id"], "the answer")
+
+        assert _notify_lines(ask_notify_dir, r1["id"]) == []
+
+    def test_triage_dismiss_writes_notification_when_notify_wanted(self, temp_db, ask_notify_dir):
+        act = _make_activity()
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+        ak.answer_ask(r1["id"], "the answer")
+        assert len(_notify_lines(ask_notify_dir, r1["id"])) == 1  # answer_ask分
+
+        ak.triage_ask(r1["id"], "dismiss", dismiss_reason="not needed")
+
+        lines = _notify_lines(ask_notify_dir, r1["id"])
+        assert len(lines) == 2
+        assert lines[-1]["status"] == "dismissed"
+
+    def test_triage_promote_does_not_write_a_second_notification(self, temp_db, ask_notify_dir):
+        """promoteはanswer_ask時点で既に一度通知済みのため、追加の通知は書かない。"""
+        act = _make_activity()
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+        ak.answer_ask(r1["id"], "the answer")
+        assert len(_notify_lines(ask_notify_dir, r1["id"])) == 1
+
+        ak.triage_ask(
+            r1["id"], "promote", decision="do X", reason="because", title="t1"
+        )
+
+        # answer_ask時点の1件のみ。promoteによる追加行は無い
+        assert len(_notify_lines(ask_notify_dir, r1["id"])) == 1
+
+    def test_unsubscribe_ask_sets_notify_wanted_false(self, temp_db):
+        act = _make_activity()
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+
+        result = ak.unsubscribe_ask(r1["id"])
+
+        assert result == {"id": r1["id"], "notify_wanted": False}
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT notify_wanted FROM asks WHERE id = ?", (r1["id"],)
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row["notify_wanted"] == 0
+
+    def test_unsubscribe_ask_with_single_requester_still_allowed(self, temp_db):
+        """要求元セッションが1件のみのaskは、これまで通りunsubscribe_askが動作する。"""
+        act = _make_activity()
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act], session_id="sess-1")
+
+        result = ak.unsubscribe_ask(r1["id"])
+
+        assert result == {"id": r1["id"], "notify_wanted": False}
+
+    def test_unsubscribe_ask_with_multiple_requesters_rejected_and_state_unchanged(self, temp_db):
+        """同一fingerprintのaskが複数セッションからadd_askされ要求元が2件以上に
+        なっている場合、unsubscribe_askはVALIDATION_ERRORで拒否し、notify_wantedを
+        変更しない（他のrequesterセッションの通知希望を巻き添えにしないため）。"""
+        act = _make_activity()
+        r1 = ak.add_ask("same question", tags=["domain:test"], blocks=[act], session_id="sess-1")
+        ak.add_ask("same question", tags=["domain:test"], blocks=[act], session_id="sess-2")
+
+        result = ak.unsubscribe_ask(r1["id"])
+
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT notify_wanted FROM asks WHERE id = ?", (r1["id"],)
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row["notify_wanted"] == 1
+
+    def test_unsubscribe_then_answer_skips_notification(self, temp_db, ask_notify_dir):
+        act = _make_activity()
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+        ak.unsubscribe_ask(r1["id"])
+
+        ak.answer_ask(r1["id"], "the answer")
+
+        assert _notify_lines(ask_notify_dir, r1["id"]) == []
+
+    def test_unsubscribe_then_answer_still_visible_via_pull(self, temp_db):
+        """サブスクを外しても、pull（get_asks）では通常通り見える。"""
+        act = _make_activity()
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+        ak.unsubscribe_ask(r1["id"])
+        ak.answer_ask(r1["id"], "the answer")
+
+        result = ak.get_asks(status=None, ids=[r1["id"]])
+
+        assert result["asks"][0]["answer_body"] == "the answer"
+
+    def test_unsubscribe_nonexistent_ask_rejected(self, temp_db):
+        result = ak.unsubscribe_ask(999999)
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_answer_ask_notify_write_failure_does_not_block_db_update(self, temp_db, tmp_path, monkeypatch):
+        """notify_path書き込み失敗（ディスク側の実障害を模した状況）が、
+        answer_ask本体のDB更新の成功をブロックしないことを確認する。
+
+        CALM_ASK_NOTIFY_DIRが指すパスに、あらかじめ同名の通常ファイルを
+        置いておくことで、write_notification内のdir_path.mkdir(...)を
+        実際に失敗させる（mockではなく実ファイルシステムでの障害再現）。
+        """
+        blocked_path = tmp_path / "not-a-dir"
+        blocked_path.write_text("this is a file, not a directory")
+        monkeypatch.setenv("CALM_ASK_NOTIFY_DIR", str(blocked_path))
+
+        act = _make_activity()
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+
+        result = ak.answer_ask(r1["id"], "the answer")
+
+        assert result["status"] == "answered"
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT status FROM asks WHERE id = ?", (r1["id"],)
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row["status"] == "answered"

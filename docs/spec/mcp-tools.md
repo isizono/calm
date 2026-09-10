@@ -22,7 +22,7 @@ last-synced-migration: 0048
 
 ## 1. ツール一覧
 
-全56ツール。カテゴリ別に一覧する。
+全57ツール。カテゴリ別に一覧する。
 
 ### 1.1 記録系（add系）
 
@@ -148,6 +148,7 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 | `answer_ask` | 答え待ちのaskに回答する（トリアージは行わない） |
 | `triage_ask` | answered状態のaskをpromote（decision化）またはdismissへ振り分ける |
 | `withdraw_ask` | 答え待ちのaskを自発的に取り下げる |
+| `unsubscribe_ask` | askの通知希望（notify_wanted）を明示的に外す |
 
 ### 1.14 セッション別名系（並行セッションの現在地表示）
 
@@ -719,9 +720,10 @@ Claude Codeセッション間の「CLI表示名（例: `workspace-a2`）→人�
 | kind | string | no | "ask" | `"ask"`（通常ask）または`"meta"`（メタask） |
 | context | string | no | null | 背景（8000字以内） |
 | choices | list[string] \| null | no | null | 選択肢テンプレート（最大3件、1件100字以内）。AskUserQuestion風の選択式UIをダッシュボード等で組み立てるための添え物。回答（`answer_ask`）は引き続き自由文字列のまま |
+| notify | bool | no | true | 通知希望（`notify_wanted`）。trueなら`answer_ask`/`triage_ask`(dismiss)完了時に返り値の`notify_path`へ完了通知が追記される。falseにするか後から`unsubscribe_ask`で外すと通知が来なくなる（pullでの確認には影響しない） |
 
-**返り値**: `{id: int, deduped: bool, occurrence_count: int, similar_precedents: [...], similar_asks: [...]}`。`similar_precedents`/`similar_asks`はそれぞれ近傍のdecision/ask最大3件（embeddingサーバー未起動時は空配列）。
-**動作**: question/contextの構成は`ask-compose` skillを必ず経由すること。同じ問い（正規化後questionのfingerprint一致）が答え待ち（open）で既にあれば新規行を作らず`occurrence_count`を+1し、blocks/要求元セッションはUNIONで追記、context/最終出現時刻は今回の値で上書きする。answered/promoted/dismissed/withdrawnの同一問いは別のライフとして新規行になる（訂正は新規postで行い、supersedes等のリンクは張らない）。dedup時（同一fingerprintのopen ask再post）は今回渡したtags/kind/choicesを無視し、初回投入時の値を保持する。レスポンスのsimilar_asks（裁定内容込み）を読み、同型の問いが繰り返され裁定が一貫していると判断した場合は、`ask-distill` skillでメタaskの起票を検討する。
+**返り値**: `{id: int, deduped: bool, occurrence_count: int, notify_path: string, similar_precedents: [...], similar_asks: [...]}`。`similar_precedents`/`similar_asks`はそれぞれ近傍のdecision/ask最大3件（embeddingサーバー未起動時は空配列）。`notify_path`はこの時点では存在しない場合がある（`answer_ask`/`triage_ask`側が初めて書き込む瞬間に生成されるため）。
+**動作**: question/contextの構成は`ask-compose` skillを必ず経由すること。同じ問い（正規化後questionのfingerprint一致）が答え待ち（open）で既にあれば新規行を作らず`occurrence_count`を+1し、blocks/要求元セッションはUNIONで追記、context/最終出現時刻は今回の値で上書きする。answered/promoted/dismissed/withdrawnの同一問いは別のライフとして新規行になる（訂正は新規postで行い、supersedes等のリンクは張らない）。dedup時（同一fingerprintのopen ask再post）は今回渡したtags/kind/choices/notifyを無視し、初回投入時の値を保持する。レスポンスのsimilar_asks（裁定内容込み）を読み、同型の問いが繰り返され裁定が一貫していると判断した場合は、`ask-distill` skillでメタaskの起票を検討する。
 **エラー処理**: question空・500字超、context 8000字超、blocks空・存在しないactivity id含む・全てcompleted状態、同一fingerprintの直近withdrawから5分未満の再post、kindが"ask"/"meta"以外、choicesが0件または4件以上・要素が空文字列・101字以上はいずれも`VALIDATION_ERROR`。tagsが空・namespace不正等は`TAGS_REQUIRED`/`INVALID_TAG_NAMESPACE`/`INVALID_TAG_NAME`、`domain:`タグを含まない場合は`VALIDATION_ERROR`。
 
 ### 2.44 get_asks
@@ -733,11 +735,12 @@ Claude Codeセッション間の「CLI表示名（例: `workspace-a2`）→人�
 | triage_pending_only | bool | no | false | trueでstatus='answered'かつ未トリアージのみに絞る |
 | tags | list[string] \| null | no | null | 指定時はAND条件でフィルタ、未指定時は全件 |
 | kind | string \| null | no | null | `"ask"`/`"meta"`。nullでフィルタなし |
+| ids | list[int] \| null | no | null | 指定時はこのask idの集合だけに絞る（他のフィルタとAND条件）。空配列はids条件なし扱い。statusは既定"open"のままなので、状態を問わず引き当てたい場合はstatus=nullも併せて指定する |
 | limit | int | no | 20 | 最大100 |
 | offset | int | no | 0 | ページネーション |
 | include_stats | bool | no | false | trueでstatus別クロス集計と直近30日サマリを付与 |
 
-**返り値**: `{asks: [...], total_count: int, stats?: {by_status, last_30d}}`。各askにblocks（`[{id_raw, title, status}]`）、requesters（要求元session_idの文字列リスト）、tags（タグ文字列のリスト）が合流される。タグnotesは返さない。`choices`はadd_ask時に指定していればstring配列、未指定ならnull。
+**返り値**: `{asks: [...], total_count: int, stats?: {by_status, last_30d}}`。各askにblocks（`[{id_raw, title, status}]`）、requesters（要求元session_idの文字列リスト）、tags（タグ文字列のリスト）が合流される。タグnotesは返さない。`choices`はadd_ask時に指定していればstring配列、未指定ならnull。`notify_wanted`（0または1）は通知希望の有無（`add_ask`の`notify`引数、または`unsubscribe_ask`での解除状態）を示す。
 
 ### 2.45 answer_ask
 
@@ -747,7 +750,7 @@ Claude Codeセッション間の「CLI表示名（例: `workspace-a2`）→人�
 | answer_body | string | yes | - | 回答本文（空不可、8000字以内） |
 
 **返り値**: `{id: int, status: "answered", triage_pending: true, blocked_activities: [int, ...], next_step: string}`。
-**動作**: トリアージ（promote/dismiss）はここでは行わない。次のcheck_inでの配達か`get_asks(triage_pending_only=true)`で拾われるまで遅延する。対象がopen状態でない場合は`VALIDATION_ERROR`（1問1答、再回答は拒否）。
+**動作**: トリアージ（promote/dismiss）はここでは行わない。次のcheck_inでの配達か`get_asks(triage_pending_only=true)`で拾われるまで遅延する。対象がopen状態でない場合は`VALIDATION_ERROR`（1問1答、再回答は拒否）。対象askの`notify_wanted`がtrueなら、状態更新に加えて`notify_path`（`add_ask`の返り値参照）へ完了通知を1行追記する。書き込み失敗はログのみで、状態更新の成否には影響しない。
 
 ### 2.46 triage_ask
 
@@ -763,7 +766,7 @@ Claude Codeセッション間の「CLI表示名（例: `workspace-a2`）→人�
 | dismiss_reason | string | action=dismissのとき必須 | null | 見送り理由 |
 
 **返り値**: promote時 `{id: int, status: "promoted", promoted_decision_id: int}`、dismiss時 `{id: int, status: "dismissed"}`。promote時、対象askが`kind="meta"`のときのみ`next_step: str`が追加で含まれる。
-**動作**: promoteはdecision/reason/title/tags/topic_idをそのまま`add_decisions`に渡してdecisionを生成し、promoted_decision_idとして紐付ける。いずれもこのaskが止めていたactivityのblockを解除する（ask_blocksを削除）。`kind="meta"`のpromoteは、`rule-placement` skillに従いhabits/tag-notes/pin/判例decision/rules等への配置を先に済ませてから呼ぶ。
+**動作**: promoteはdecision/reason/title/tags/topic_idをそのまま`add_decisions`に渡してdecisionを生成し、promoted_decision_idとして紐付ける。いずれもこのaskが止めていたactivityのblockを解除する（ask_blocksを削除）。`kind="meta"`のpromoteは、`rule-placement` skillに従いhabits/tag-notes/pin/判例decision/rules等への配置を先に済ませてから呼ぶ。dismissかつ対象askの`notify_wanted`がtrueなら、`answer_ask`と同じ`notify_path`へ完了通知を1行追記する（promoteでは書かない。`answer_ask`時点で既に一度通知済みのため）。
 **エラー処理**: 対象がanswered かつ未トリアージでない場合、action不正、promote時のdecision/reason/topic_id欠落、dismiss時のdismiss_reason欠落はいずれも`VALIDATION_ERROR`（topic_id欠落は`add_decisions`側の必須バリデーションに起因する）。promote処理中にdecision生成が失敗した場合はask側の状態変更もロールバックされ`answered`のまま残る。
 
 ### 2.47 withdraw_ask
@@ -776,6 +779,17 @@ Claude Codeセッション間の「CLI表示名（例: `workspace-a2`）→人�
 **返り値**: `{id: int, status: "withdrawn"}`。
 **動作**: 答え待ち（open）のaskを人間の回答を待たずに取り消す。取り下げ後はask_blocksを削除するが、要求元セッションの記録（ask_requesters）は参照ログとして残す。同一fingerprintの再postは、誤操作保護のため取り下げから5分間拒否される（session条件は課さない）。
 **エラー処理**: 対象がopen状態でない場合は`VALIDATION_ERROR`。
+
+### 2.47b unsubscribe_ask
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| ask_id | int | yes | - | 対象ask ID |
+
+**返り値**: `{id: int, notify_wanted: false}`。
+**動作**: 対象askの`notify_wanted`をfalseにする。statusは問わずいつでも呼べる（既に回答済み・却下済みのaskに対しても呼べる）。「サブスクを外した＝完全に見えなくなる」ではなく、以後`answer_ask`/`triage_ask`(dismiss)が実行されても`notify_path`への書き込みが行われなくなるだけで、pull（`check_in`/`get_asks`）では引き続き通常通り見える。
+**既知の制約**: 同一の問いが複数セッションから`add_ask`された（要求元セッションが2件以上、`ask_requesters`が複数行）askには対応していない。`notify_wanted`は`asks`テーブルの単一列（ask単位）であり要求元セッション単位ではないため、あるセッションが外すと、まだ通知を必要としている他のセッションの通知希望も巻き添えで止めてしまう。この版では安全側に倒し、要求元セッションが2件以上のaskに対する呼び出しは状態を一切変更せず`VALIDATION_ERROR`で拒否する。要求元が1件以下（`session_id`未指定でadd_askされたaskを含む）のときは通常通り動作する。
+**エラー処理**: 対象askが存在しない場合、または要求元セッションが2件以上の場合は`VALIDATION_ERROR`。
 
 ### 2.48 resolve_destabilization
 

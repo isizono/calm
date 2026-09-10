@@ -8,6 +8,7 @@ from src.harness import ClaudeCodeHarness
 from hooks.hook_transcript import (
     _extract_short_name,
     _is_calm_tool,
+    extract_ask_registrations,
     extract_events,
     get_transcript_info,
     has_context_retrieval_calls,
@@ -508,3 +509,134 @@ class TestExtractAddDecisionsTopicIds:
         events, _ = extract_events([_entry(e) for e in entries], 0)
         tool_events = [e for e in events if e["e"] == "tool" and e["name"] == "add_decisions"]
         assert tool_events[0]["topic_ids"] == [7]
+
+
+# --- extract_ask_registrations ---
+
+
+def _tool_use_entry(name: str, tool_id: str, input_: dict | None = None) -> dict:
+    return {
+        "type": "assistant",
+        "message": {
+            "content": [
+                {"type": "tool_use", "id": tool_id, "name": name, "input": input_ or {}}
+            ]
+        },
+    }
+
+
+def _tool_result_entry(tool_use_id: str, content) -> dict:
+    return {
+        "type": "user",
+        "message": {
+            "content": [
+                {"type": "tool_result", "tool_use_id": tool_use_id, "content": content}
+            ]
+        },
+    }
+
+
+class TestExtractAskRegistrations:
+    """add_ask/unsubscribe_askの呼び出し検出（extract_ask_registrations）"""
+
+    def test_add_ask_result_registers_ask_id(self):
+        entries = [
+            _tool_use_entry(f"{_LOCAL_PREFIX}add_ask", "use-1"),
+            _tool_result_entry("use-1", json.dumps({"id": 42, "deduped": False})),
+        ]
+        registered, unsubscribed = extract_ask_registrations([_entry(e) for e in entries])
+        assert registered == [42]
+        assert unsubscribed == []
+
+    def test_add_ask_error_response_without_id_is_not_registered(self):
+        entries = [
+            _tool_use_entry(f"{_LOCAL_PREFIX}add_ask", "use-1"),
+            _tool_result_entry(
+                "use-1", json.dumps({"error": {"code": "VALIDATION_ERROR", "message": "x"}})
+            ),
+        ]
+        registered, unsubscribed = extract_ask_registrations([_entry(e) for e in entries])
+        assert registered == []
+
+    def test_unrelated_tool_result_is_ignored(self):
+        """tool_use_idが一致しないtool_resultは無視される（他ツールの結果を
+        add_askのask_idと誤認しない）。"""
+        entries = [
+            _tool_use_entry(f"{_LOCAL_PREFIX}add_ask", "use-1"),
+            _tool_result_entry("use-OTHER", json.dumps({"id": 999})),
+        ]
+        registered, _ = extract_ask_registrations([_entry(e) for e in entries])
+        assert registered == []
+
+    def test_multiple_add_ask_calls_all_registered_in_order(self):
+        entries = [
+            _tool_use_entry(f"{_LOCAL_PREFIX}add_ask", "use-1"),
+            _tool_result_entry("use-1", json.dumps({"id": 10})),
+            _tool_use_entry(f"{_LOCAL_PREFIX}add_ask", "use-2"),
+            _tool_result_entry("use-2", json.dumps({"id": 11})),
+        ]
+        registered, _ = extract_ask_registrations([_entry(e) for e in entries])
+        assert registered == [10, 11]
+
+    def test_unsubscribe_ask_reads_ask_id_from_input_when_result_confirms_success(self):
+        """ask_id自体はtool_use入力から読むが、採否はtool_resultの成功
+        （notify_wanted: false、"error"キーなし）で確定する。"""
+        entries = [
+            _tool_use_entry(f"{_LOCAL_PREFIX}unsubscribe_ask", "use-1", {"ask_id": 7}),
+            _tool_result_entry("use-1", json.dumps({"id": 7, "notify_wanted": False})),
+        ]
+        registered, unsubscribed = extract_ask_registrations([_entry(e) for e in entries])
+        assert registered == []
+        assert unsubscribed == [7]
+
+    def test_unsubscribe_ask_invalid_ask_id_silently_dropped(self):
+        entries = [
+            _tool_use_entry(f"{_LOCAL_PREFIX}unsubscribe_ask", "use-1", {"ask_id": "not-int"}),
+            _tool_result_entry("use-1", json.dumps({"id": "not-int", "notify_wanted": False})),
+        ]
+        _, unsubscribed = extract_ask_registrations([_entry(e) for e in entries])
+        assert unsubscribed == []
+
+    def test_unsubscribe_ask_rejected_by_multi_requester_validation_error_is_not_registered(self):
+        """呼び出し自体は成立しているが、対象askの要求元セッションが2件以上で
+        unsubscribe_ask_with_connがVALIDATION_ERRORを返すケース（notify_wantedは
+        変更されない）。この場合tracked_ask_idsから除去してはならない。"""
+        entries = [
+            _tool_use_entry(f"{_LOCAL_PREFIX}unsubscribe_ask", "use-1", {"ask_id": 7}),
+            _tool_result_entry(
+                "use-1",
+                json.dumps({
+                    "error": {
+                        "code": "VALIDATION_ERROR",
+                        "message": (
+                            "ask id=7 is shared by 2 requester sessions; "
+                            "unsubscribe_ask does not support multi-requester asks in this version"
+                        ),
+                    }
+                }),
+            ),
+        ]
+        registered, unsubscribed = extract_ask_registrations([_entry(e) for e in entries])
+        assert registered == []
+        assert unsubscribed == []
+
+    def test_unsubscribe_ask_without_tool_result_is_not_registered(self):
+        """tool_resultがまだ届いていない（transcript途中で切れた等）場合は
+        成功が確認できないため追加しない。"""
+        entries = [
+            _tool_use_entry(f"{_LOCAL_PREFIX}unsubscribe_ask", "use-1", {"ask_id": 7}),
+        ]
+        _, unsubscribed = extract_ask_registrations([_entry(e) for e in entries])
+        assert unsubscribed == []
+
+    def test_unrelated_tool_use_is_ignored(self):
+        entries = [_tool_use_entry(f"{_LOCAL_PREFIX}search", "use-1", {"query": "x"})]
+        registered, unsubscribed = extract_ask_registrations([_entry(e) for e in entries])
+        assert registered == []
+        assert unsubscribed == []
+
+    def test_non_calm_tool_use_is_ignored(self):
+        entries = [_tool_use_entry("some_other_tool", "use-1")]
+        registered, unsubscribed = extract_ask_registrations([_entry(e) for e in entries])
+        assert registered == []
+        assert unsubscribed == []

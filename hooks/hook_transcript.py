@@ -307,6 +307,120 @@ def _try_parse_activity_id(text: str) -> int | None:
     return None
 
 
+def extract_ask_registrations(
+    entries: list[TranscriptEntry],
+) -> tuple[list[int], list[int]]:
+    """add_ask/unsubscribe_askの呼び出しをtranscriptエントリ群から抽出する。
+
+    add_askはtool_use入力にask_idを含まない（レスポンスの"id"が正）ため、
+    add_activityと同じ二段パターン（tool_use_idでtool_use/tool_resultを
+    対応付ける、extract_last_activity_id参照）でask_idを取り出す。
+    unsubscribe_askはask_idがtool_use入力に直接含まれるが、呼び出しが成立
+    したことと、対応するtool_resultが成功を返したことは別なので、add_ask側と
+    対称に、tool_use_idでtool_resultと突き合わせてから採否を決める
+    （成功時のみ{"notify_wanted": false}を含む。"error"キーを含む場合や
+    notify_wantedがfalseで返らない場合は追加しない）。
+
+    このask_id一覧は、そのセッション自身がadd_ask/unsubscribe_askを呼んだ
+    という事実だけから導かれる（呼び出し元のHookStateへの反映もsession_id起点で
+    行われる）。他セッションとの同一性推定（identity解決）は一切行わない。
+
+    Returns:
+        (registered_ask_ids, unsubscribed_ask_ids)。出現順、重複を含みうる
+        （呼び出し側の追跡state反映は冪等な集合操作を想定する）
+    """
+    registered: list[int] = []
+    unsubscribed: list[int] = []
+    add_ask_use_ids: set[str] = set()
+    unsubscribe_pending: dict[str, int] = {}
+
+    for entry in entries:
+        for block in entry.content:
+            block_type = block.get("type")
+
+            if block_type == "tool_use":
+                name = block.get("name", "")
+                if not _is_calm_tool(name):
+                    continue
+                short = _extract_short_name(name)
+                if short == "add_ask":
+                    use_id = block.get("id")
+                    if use_id:
+                        add_ask_use_ids.add(use_id)
+                elif short == "unsubscribe_ask":
+                    use_id = block.get("id")
+                    aid = block.get("input", {}).get("ask_id")
+                    if use_id and aid is not None:
+                        try:
+                            unsubscribe_pending[use_id] = int(aid)
+                        except (ValueError, TypeError):
+                            pass
+
+            elif block_type == "tool_result":
+                use_id = block.get("tool_use_id")
+                if use_id in add_ask_use_ids:
+                    aid = _parse_ask_id_from_result(block.get("content", ""))
+                    if aid is not None:
+                        registered.append(aid)
+                elif use_id in unsubscribe_pending:
+                    if _is_unsubscribe_success(block.get("content", "")):
+                        unsubscribed.append(unsubscribe_pending[use_id])
+
+    return registered, unsubscribed
+
+
+def _parse_ask_id_from_result(result_content) -> int | None:
+    """add_askのtool_resultのcontentからask_id（"id"）をパースする。"""
+    if isinstance(result_content, str):
+        return _try_parse_ask_id(result_content)
+    if isinstance(result_content, list):
+        for item in result_content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                aid = _try_parse_ask_id(item.get("text", ""))
+                if aid is not None:
+                    return aid
+    return None
+
+
+def _try_parse_ask_id(text: str) -> int | None:
+    """JSON文字列からadd_askレスポンスの"id"を抽出する"""
+    try:
+        data = json.loads(text)
+        aid = data.get("id")
+        if aid is not None:
+            return int(aid)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        pass
+    return None
+
+
+def _is_unsubscribe_success(result_content) -> bool:
+    """unsubscribe_askのtool_resultが成功応答かどうかを判定する。
+
+    成功応答は{"id": ..., "notify_wanted": false}、失敗応答は"error"キーを
+    含む（unsubscribe_ask_with_conn参照）。"error"を含まず、かつ
+    notify_wantedがfalseで返っている場合のみ成功とみなす。
+    """
+    if isinstance(result_content, str):
+        return _try_parse_unsubscribe_success(result_content)
+    if isinstance(result_content, list):
+        for item in result_content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                if _try_parse_unsubscribe_success(item.get("text", "")):
+                    return True
+    return False
+
+
+def _try_parse_unsubscribe_success(text: str) -> bool:
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return False
+    if not isinstance(data, dict) or "error" in data:
+        return False
+    return data.get("notify_wanted") is False
+
+
 def has_context_retrieval_calls(entries: list[dict]) -> bool:
     """entriesにget系APIの呼び出しがあるかチェック。"""
     return _has_tool_calls(entries, _CONTEXT_RETRIEVAL_SHORT_NAMES)

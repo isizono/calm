@@ -444,6 +444,131 @@ class TestRelaySessionAwareNudge:
         assert "Monitorツール" in ctx2
 
 
+class TestAskNotify:
+    """add_ask通知の二重網（3.5節）のE2Eテスト。
+
+    tracked_ask_idsはHookState経由で直接書き込む（Stop hookが通常書く経路の
+    代わりに、本テストではUserPromptSubmit hook単体の消費側だけを検証する
+    ため）。identity解決には一切触れない。
+    """
+
+    def _seed_activity(self) -> int:
+        from src.db import get_connection
+
+        conn = get_connection()
+        try:
+            cursor = conn.execute(
+                "INSERT INTO activities (title, description, status) VALUES (?, ?, ?)",
+                ("a1", "desc", "pending"),
+            )
+            activity_id = cursor.lastrowid
+            tag_row = conn.execute(
+                "SELECT id FROM tags WHERE namespace = 'domain' AND name = ?", ("test",)
+            ).fetchone()
+            if tag_row:
+                tag_id = tag_row["id"]
+            else:
+                cursor = conn.execute(
+                    "INSERT INTO tags (namespace, name) VALUES ('domain', ?)", ("test",)
+                )
+                tag_id = cursor.lastrowid
+            conn.execute(
+                "INSERT INTO activity_tags (activity_id, tag_id) VALUES (?, ?)",
+                (activity_id, tag_id),
+            )
+            conn.commit()
+            return activity_id
+        finally:
+            conn.close()
+
+    def test_resolved_tracked_ask_is_injected_and_consumed(self, state_dir, temp_db):
+        from src.services import ask_service as ak
+
+        act = self._seed_activity()
+        r1 = ak.add_ask("何色にする?", tags=["domain:test"], blocks=[act])
+        ak.answer_ask(r1["id"], "青にしよう")
+
+        state = HookState(_SESSION_ID)
+        state.add_tracked_ask_ids([r1["id"]])
+
+        result = _run_hook(
+            {"session_id": _SESSION_ID}, state_dir, extra_env={"DISCUSSION_DB_PATH": temp_db}
+        )
+        output = json.loads(result.stdout)
+        ctx = output["hookSpecificOutput"]["additionalContext"]
+
+        assert "<system-reminder>" in ctx
+        assert "askの回答が届いています" in ctx
+        assert "何色にする?" in ctx
+        assert "青にしよう" in ctx
+        # 消費済み: 追跡対象から外れている
+        assert state.get_tracked_ask_ids() == []
+
+    def test_ask_notify_takes_priority_over_record_nudge(self, state_dir, temp_db):
+        """record nudgeイベントと解決済みaskが同時に存在する場合、3.5節の
+        returnで以降のnudge判定（手順4）がスキップされ、ask通知が優先される。
+        record nudgeイベント自体はconsumedマークされずに温存される。"""
+        from src.services import ask_service as ak
+
+        act = self._seed_activity()
+        r1 = ak.add_ask("優先されるはずの質問", tags=["domain:test"], blocks=[act])
+        ak.answer_ask(r1["id"], "優先されるはずの回答")
+
+        state = HookState(_SESSION_ID)
+        state.add_tracked_ask_ids([r1["id"]])
+        _write_events([{"e": "nudge", "type": "record", "turn": 2}], state_dir)
+
+        result = _run_hook(
+            {"session_id": _SESSION_ID}, state_dir, extra_env={"DISCUSSION_DB_PATH": temp_db}
+        )
+        ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+        assert "askの回答が届いています" in ctx
+        assert "直近の応答で記録ツール" not in ctx
+
+        # askは既に消費済みなので、2回目の呼び出しでは温存されていたrecord nudgeが出る
+        result2 = _run_hook(
+            {"session_id": _SESSION_ID}, state_dir, extra_env={"DISCUSSION_DB_PATH": temp_db}
+        )
+        ctx2 = json.loads(result2.stdout)["hookSpecificOutput"]["additionalContext"]
+        assert "直近の応答で記録ツール" in ctx2
+
+    def test_no_tracked_asks_falls_through_to_nudge_check(self, state_dir, temp_db):
+        """追跡中askが無ければ3.5節は素通りし、従来通り手順4のnudge判定が動作する。"""
+        _write_events([{"e": "nudge", "type": "record", "turn": 2}], state_dir)
+
+        result = _run_hook(
+            {"session_id": _SESSION_ID}, state_dir, extra_env={"DISCUSSION_DB_PATH": temp_db}
+        )
+        ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+        assert "askの回答が届いています" not in ctx
+        assert "直近の応答で記録ツール" in ctx
+
+    def test_long_answer_exceeding_session_start_budget_is_shown_in_full_and_consumed(
+        self, state_dir, temp_db
+    ):
+        """本経路はcompose()を経由せず文字数予算を持たないため、
+        SessionStart hook側のcompose()（既定600字）なら切り詰められる長さの
+        回答でも、全文がそのまま表示され消費される。"""
+        from src.services import ask_service as ak
+
+        act = self._seed_activity()
+        r1 = ak.add_ask("長い回答が来る質問", tags=["domain:test"], blocks=[act])
+        long_answer = "回答本文" * 500  # 2000字。SessionStart側の予算(600字)を大きく超える
+        ak.answer_ask(r1["id"], long_answer)
+
+        state = HookState(_SESSION_ID)
+        state.add_tracked_ask_ids([r1["id"]])
+
+        result = _run_hook(
+            {"session_id": _SESSION_ID}, state_dir, extra_env={"DISCUSSION_DB_PATH": temp_db}
+        )
+        ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+
+        assert "askの回答が届いています" in ctx
+        assert long_answer in ctx
+        assert state.get_tracked_ask_ids() == []
+
+
 class TestEmptyStdin:
     """stdin空/空白のみ → 空JSON、machine_errorシグナルは記録しない"""
 

@@ -146,6 +146,9 @@ paths:
                     type: array
                   - type: 'null'
                   default: null
+                notify:
+                  default: true
+                  type: boolean
               required:
               - question
               - blocks
@@ -854,6 +857,13 @@ paths:
                 kind:
                   anyOf:
                   - type: string
+                  - type: 'null'
+                  default: null
+                ids:
+                  anyOf:
+                  - items:
+                      type: integer
+                    type: array
                   - type: 'null'
                   default: null
                 limit:
@@ -2097,6 +2107,32 @@ paths:
               required:
               - ask_id
               - action
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/unsubscribe_ask:
+    post:
+      tags:
+      - ask
+      summary: このaskの通知希望（notify_wanted）を明示的に外す。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                ask_id:
+                  type: integer
+              required:
+              - ask_id
               type: object
       responses:
         '200':

@@ -11,6 +11,7 @@
 checkin_service側が埋め込む）。
 """
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,7 +29,9 @@ from src.services.activity_service import (
     get_active_activities_by_tag_with_conn,
     get_pinned_active_activities_with_conn,
 )
+from hooks.hook_state import HookState
 from hooks.readable_id_format import format_readable_id
+from src.services import ask_service
 from src.services.habit_service import (
     get_active_habit_contents_with_conn,
     list_intelligently_habit_manifest_with_conn,
@@ -411,6 +414,34 @@ def _build_signals_section(conn, session_id: str | None = None, source: str | No
     return f"未トリアージのシグナル: {total}件 ({breakdown}) → get_signals で確認\n"
 
 
+def _build_ask_notify_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # source, **_kwargs: 全セクション共通シグネチャ
+    """add_askし通知待ちで追跡中のask（HookState.tracked_ask_ids）を
+    get_asksで直接照会し、解決済み（open以外）になっていれば表示して
+    追跡対象から外す（hooks/ask_notify_section.build_ask_notify_lines）。
+
+    Monitor（notify_pathのtail -F監視）が起動されなかった・落ちた場合の
+    二重網。identity解決（resolve_identity_by_ancestry等）には一切触れない。
+    追跡登録自体はStop hook（hook_transcript.extract_ask_registrations）が担う。
+
+    他のセクションビルダーと同様、本hookで共有されるconnをそのまま渡す
+    （自前で別コネクションを開かない）。
+
+    本セクションはcompose()経由でconfig.INJECTION_BUDGET_ASK_NOTIFY_CHARS
+    以内にハード切り詰めされうる（injection_compositor._hard_truncate）。
+    build_ask_notify_linesにbudget_charsを渡し、切り詰めで表示が欠落する
+    行のask_idを消費済みにしてしまわないようにする（欠落したaskは
+    UserPromptSubmit hook側の二重網が予算制約なしで拾う）。
+    """
+    from hooks.ask_notify_section import build_ask_notify_lines
+
+    lines = build_ask_notify_lines(
+        session_id, conn=conn, budget_chars=config.INJECTION_BUDGET_ASK_NOTIFY_CHARS
+    )
+    if not lines:
+        return ""
+    return "\n".join(lines) + "\n"
+
+
 def _build_relay_inbox_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # conn, session_id, source, **_kwargs: 全セクション共通シグネチャ
     """identityが解決できる限りMonitor監視指示を常時出す。未読件数の表示のみ0件時は省く。
 
@@ -531,6 +562,7 @@ _SECTIONS: list[Section] = [
     Section("habits", _build_habits_section, config.INJECTION_BUDGET_HABITS_CHARS, priority=20),
     Section("sync_policy", _build_sync_policy_section, config.INJECTION_BUDGET_SYNC_POLICY_CHARS, priority=30),
     Section("signals", _build_signals_section, config.INJECTION_BUDGET_SIGNALS_CHARS, priority=40),
+    Section("ask_notify", _build_ask_notify_section, config.INJECTION_BUDGET_ASK_NOTIFY_CHARS, priority=45),
     Section("relay_inbox", _build_relay_inbox_section, config.INJECTION_BUDGET_RELAY_INBOX_CHARS, priority=50),
     Section("transcript_path", _build_transcript_path_section, config.INJECTION_BUDGET_TRANSCRIPT_PATH_CHARS, priority=60),
 ]
@@ -562,6 +594,12 @@ def _build_session_context(
 def main() -> None:
     harness = select_harness(hook_event_name="SessionStart")
     try:
+        # 環境変数によるテスト用オーバーライド（stop_hook.py/user_prompt_submit_hook.py
+        # と同じ規約。_build_ask_notify_sectionがHookStateを使うため、他hookと同様に
+        # 本番既定パスへの書き込みをテストから隔離できるようにする）
+        if os.environ.get("HOOK_STATE_DIR"):
+            HookState.BASE_DIR = Path(os.environ["HOOK_STATE_DIR"])
+
         session_id: str | None = None
         source: str | None = None
         transcript_path: str | None = None
