@@ -8,7 +8,8 @@ import pytest
 from src.db import init_database, get_connection
 from src.services.topic_service import add_topic
 from src.services.activity_service import add_activity
-from tests.helpers import add_log, add_decision
+from src.services.tag_service import _TAG_NOTES_RATCHET_CEILING, update_tag
+from tests.helpers import add_log, add_decision, force_notes_over_ceiling
 from src.services.tag_analysis_service import (
     analyze_tags,
     calc_pmi,
@@ -398,6 +399,62 @@ class TestFiltering:
 # ========================================
 
 
+def _tag_id(name, namespace="domain"):
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT id FROM tags WHERE namespace = ? AND name = ?",
+            (namespace, name),
+        ).fetchone()
+        return row["id"]
+    finally:
+        conn.close()
+
+
+class TestNotesOverBudget:
+    """analyze_tagsのnotes_over_budgetセクションのテスト"""
+
+    def test_over_budget_tag_is_listed(self, temp_db):
+        add_topic(title="T1", description="D", tags=["domain:over"])
+        tag_id = _tag_id("over")
+        force_notes_over_ceiling(tag_id, _TAG_NOTES_RATCHET_CEILING + 1)
+
+        result = analyze_tags()
+        assert "error" not in result
+        entries = {e["tag"]: e for e in result["notes_over_budget"]}
+        assert "domain:over" in entries
+        assert entries["domain:over"]["length"] == _TAG_NOTES_RATCHET_CEILING + 1
+        assert entries["domain:over"]["ceiling"] == _TAG_NOTES_RATCHET_CEILING
+        assert entries["domain:over"]["archived"] is False
+
+    def test_within_budget_tag_is_not_listed(self, temp_db):
+        add_topic(title="T1", description="D", tags=["domain:within"])
+        update_tag("domain:within", notes="x" * _TAG_NOTES_RATCHET_CEILING)
+
+        result = analyze_tags()
+        tags_listed = {e["tag"] for e in result["notes_over_budget"]}
+        assert "domain:within" not in tags_listed
+
+    def test_notes_over_budget_independent_of_domain_filter(self, temp_db):
+        """domain/include_domain_tags等の分析スコープに関わらず全タグを走査する"""
+        add_topic(title="T1", description="D", tags=["domain:test", "domain:other"])
+        tag_id = _tag_id("other")
+        force_notes_over_ceiling(tag_id, _TAG_NOTES_RATCHET_CEILING + 1)
+
+        result = analyze_tags(domain="test", include_domain_tags=False)
+        tags_listed = {e["tag"] for e in result["notes_over_budget"]}
+        assert "domain:other" in tags_listed
+
+    def test_sorted_by_length_descending(self, temp_db):
+        add_topic(title="T1", description="D", tags=["domain:big", "domain:small"])
+        force_notes_over_ceiling(_tag_id("big"), _TAG_NOTES_RATCHET_CEILING + 500)
+        force_notes_over_ceiling(_tag_id("small"), _TAG_NOTES_RATCHET_CEILING + 1)
+
+        result = analyze_tags()
+        over_budget_names = [e["tag"] for e in result["notes_over_budget"]]
+        assert over_budget_names.index("domain:big") < over_budget_names.index("domain:small")
+
+
 class TestIntegration:
     """統合テスト"""
 
@@ -412,6 +469,7 @@ class TestIntegration:
         assert "clusters" in result
         assert "orphans" in result
         assert "suspected_duplicates" in result
+        assert "notes_over_budget" in result
 
     def test_co_occurrences_detected(self, temp_db):
         """共起ペアが正しく検出される"""

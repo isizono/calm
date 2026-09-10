@@ -42,6 +42,7 @@ TOOL_TAGS: dict[str, str] = {
     "add_activity": "activity",
     "get_activities": "activity",
     "update_activity": "activity",
+    "get_overview": "activity",
     "add_material": "material",
     "get_material": "material",
     "update_material": "material",
