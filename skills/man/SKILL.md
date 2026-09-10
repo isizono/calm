@@ -80,6 +80,7 @@ CALMは「着手 → 記録 → 完了 → 同期」のライフサイクルで�
 - **`/rule-placement`** — メタask裁定で発効した一般化ルールを、rules/habits/tag-notes/pin/判例decision/skill/ツールdocstring/server instructionsのどこへ配信するかを評価軸に基づいて判定する。`/remember`の判定木で迷ったときや、1つの裁定に性質の異なる複数ルールが混ざっているときにも使う
 - **`/audit`** — 過去の決定事項との矛盾や方針のブレを疑ったときに、経緯を掘り下げて正しい記録場所に整理し直す
 - **`/recompose-context`** — アクティビティやトピックに散らばった関連情報を整理・統合し、次回のcheck-inを軽くする。「情報整理して」「まとめて」でも発動
+- **`/activity-cleanup`** — アクティビティ(active/shelved/snoozed)を棚卸しし、実態確認のうえでcompleted化・shelved化・description訂正・重複統合・裁定待ちのいずれかに処遇する。「アクティビティ棚卸しして」で発動
 - **`/setup-anchor`** — 合意事項の検証先（anchor）をユーザーと対話しながら設定・更新する
 - **`/db-recovery`** — SessionStart hookがDBデータ異常減少を検知したときに、スナップショット所在確認から復元実行・再検証までを自律的に進める。DB件数の異常な少なさに自分で気づいたときも対象
 - **`/decision-record`** — ユーザーとの合意が成立したとき、または論点が未決のまま話題が移ったときに、決定事項の記録をガイドする
