@@ -30,6 +30,7 @@ from src.services import (
     export_bundle_service,
     import_bundle_service,
     instance_service,
+    overview_service,
 )
 from src.services.checkin_service import check_in as _check_in
 from src.services import session_registry_service
@@ -1186,6 +1187,40 @@ def update_activity(
     return activity_service.update_activity(
         activity_id, status, title, description, tags, orch_managed=orch_managed,
     )
+
+
+@mcp.tool()
+def get_overview(days: int = 7, limit: int = 20) -> dict:
+    """Choose: 「今何が進んでいて、次に何をすべきか」をユーザーに一望で見せたいとき。
+
+    DB の現状（アクティビティの status / heartbeat、ask の status）から4節を1回で集計して
+    返す。読み取り専用で、DB を一切書き換えない（get_activities のような snoozed 自動復活も
+    起こさない）。
+
+    4節:
+    - working: 今動いているもの。heartbeat が生きているか、in_progress かつ
+      max(更新日時, heartbeat) が days 日以内。status='in_progress' は宣言であって
+      実態ではないため、鮮度を掛けたものだけを載せる
+    - recently_done: 最近終わったもの。completed かつ更新日時が days 日以内。
+      完了時刻カラムは存在せず更新日時での近似なので、完了後にタグ等を編集すると
+      再浮上する。件数を「今週の完了数」として語らないこと
+    - awaiting_human: 人間の裁定待ち。open の ask。回答済みで未トリアージのものは
+      items に含めず triage_pending_count として件数だけ返す
+    - backlog: それ以外の残り。件数と status 別・domain 別の内訳のみ。
+      stale_in_progress_count は「in_progress と宣言されているが days 日動いていない」件数
+
+    各節の count と total_count が異なる場合、limit で切り詰められている。
+
+    Args:
+        days: 鮮度窓・遡り窓の日数（既定 7）
+        limit: 各節が返す要素数の上限（既定 20、100 超は 100 に丸める）。
+               実効値は params.limit に返る
+
+    Returns:
+        {"generated_at", "params", "working", "recently_done", "awaiting_human", "backlog"}
+        失敗時: {"error": {"code": "INVALID_PARAMETER" | "DATABASE_ERROR", "message": str}}
+    """
+    return overview_service.get_overview(days=days, limit=limit)
 
 
 @mcp.tool()
