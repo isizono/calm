@@ -8,10 +8,24 @@ import os
 import subprocess
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 import pytest
 
 from src import launcher
+
+
+def _run(cmd: list[str], cwd: Path) -> None:
+    """git コマンドを実行する。"""
+    subprocess.run(cmd, cwd=cwd, check=True, capture_output=True)
+
+
+def _git_available() -> bool:
+    try:
+        subprocess.run(["git", "--version"], capture_output=True, check=True)
+        return True
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return False
 
 
 class TestIsServerRunning:
@@ -369,16 +383,55 @@ class TestPropagatePluginRootEnv:
         assert "CALM_PROJECT_ROOT" not in os.environ
         assert os.environ["CC_MEMORY_PROJECT_ROOT"] == "/legacy/root"
 
-    def test_noop_when_claude_plugin_root_unset(self, monkeypatch):
-        """CLAUDE_PLUGIN_ROOTが未設定（通常のgitチェックアウト実行）なら何もしない"""
+    def test_falls_back_to_cwd_when_not_a_git_repository(self, monkeypatch, tmp_path):
+        """CLAUDE_PLUGIN_ROOT・CALM_PROJECT_ROOTともに未設定で、cwdがgitリポジトリでない
+        場合、cwd自身をCALM_PROJECT_ROOTに設定する(CLAUDE_PLUGIN_ROOTがClaude Code本体側の
+        間欠バグで渡らないケースのfallback)。
+        """
+        monkeypatch.delenv("CALM_PROJECT_ROOT", raising=False)
+        monkeypatch.delenv("CCM_PROJECT_ROOT", raising=False)
+        monkeypatch.delenv("CC_MEMORY_PROJECT_ROOT", raising=False)
+        monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        # 前提確認: pytestのtmp_pathはこのリポジトリの外(システム一時領域)にあり、
+        # それ自体がgitリポジトリでもない。
+        assert subprocess.run(
+            ["git", "rev-parse", "--git-dir"], cwd=tmp_path, capture_output=True,
+        ).returncode != 0
+
+        launcher._propagate_plugin_root_env()
+
+        assert os.environ["CALM_PROJECT_ROOT"] == str(tmp_path.resolve())
+
+    def test_falls_back_to_main_repo_root_when_cwd_is_a_git_worktree(self, monkeypatch, tmp_path):
+        """cwdがgit worktree配下の場合、main repoルートに正規化して設定する
+        (worktreeルートをそのまま設定しない)。gitリポジトリ配下ではgit解決が先に
+        成功するため、この経路ではos.getcwd()の値がそのまま使われることはない。
+        """
+        if not _git_available():
+            pytest.skip("git not available")
+
         monkeypatch.delenv("CALM_PROJECT_ROOT", raising=False)
         monkeypatch.delenv("CCM_PROJECT_ROOT", raising=False)
         monkeypatch.delenv("CC_MEMORY_PROJECT_ROOT", raising=False)
         monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
 
+        main_repo = tmp_path / "main-repo"
+        main_repo.mkdir()
+        _run(["git", "init", "-b", "main"], cwd=main_repo)
+        _run(["git", "config", "user.email", "test@example.com"], cwd=main_repo)
+        _run(["git", "config", "user.name", "test"], cwd=main_repo)
+        _run(["git", "commit", "--allow-empty", "-m", "init"], cwd=main_repo)
+
+        worktree = tmp_path / "worktree"
+        _run(["git", "worktree", "add", "-b", "feature/test", str(worktree)], cwd=main_repo)
+
+        monkeypatch.chdir(worktree)
+
         launcher._propagate_plugin_root_env()
 
-        assert "CALM_PROJECT_ROOT" not in os.environ
+        assert os.environ["CALM_PROJECT_ROOT"] == str(main_repo.resolve())
 
 
 class TestBridgeSessionTermination:
