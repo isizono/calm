@@ -16,6 +16,7 @@ from src.services.hint_service import (
     LOGS_SPARSE_LOG_THRESHOLD,
     MARKER_DIRECTION_OVERFLOW,
     MARKER_LOGS_SPARSE,
+    MARKER_NOTES_OVER_BUDGET,
     MARKER_RECOMPOSE_BOOTSTRAP,
     MARKER_RECOMPOSE_DELTA,
     MARKER_RECOMPOSE_GENERIC,
@@ -31,8 +32,8 @@ from src.services.hint_service import (
 from src.services.material_service import add_material
 from src.services.pin_service import add_pin
 from src.services.topic_service import add_topic
-from src.services.tag_service import _injected_tags, update_tag
-from tests.helpers import add_decision
+from src.services.tag_service import _TAG_NOTES_RATCHET_CEILING, _injected_tags, update_tag
+from tests.helpers import add_decision, force_notes_over_ceiling
 
 DOMAIN_TAG_NAME = "hint-domain"
 DOMAIN_TAG = f"domain:{DOMAIN_TAG_NAME}"
@@ -326,6 +327,67 @@ class TestDirectionOverflow:
         assert "direction_overflow" in types
 
 
+class TestNotesOverBudget:
+    def test_fires_when_over_ceiling(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        tag_id = _tag_id(DOMAIN_TAG_NAME)
+        force_notes_over_ceiling(tag_id, _TAG_NOTES_RATCHET_CEILING + 1)
+
+        hints = get_hints("tag", tag_id)
+        budget_hints = [h for h in hints if h["type"] == "notes_over_budget"]
+        assert len(budget_hints) == 1
+        assert budget_hints[0]["delivery_hint"] == "immediate"
+        assert budget_hints[0]["severity"] == "info"
+        assert str(_TAG_NOTES_RATCHET_CEILING + 1) in budget_hints[0]["message"]
+        assert budget_hints[0]["suggested_action"]["tool"] == "demote_tag_notes"
+
+    def test_silent_within_ceiling(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        tag_id = _tag_id(DOMAIN_TAG_NAME)
+        update_tag(DOMAIN_TAG, notes="x" * _TAG_NOTES_RATCHET_CEILING)
+
+        hints = get_hints("tag", tag_id)
+        assert [h for h in hints if h["type"] == "notes_over_budget"] == []
+
+    def test_bare_marker_does_not_suppress(self, temp_db):
+        """notes_over_budgetは恒久抑制（日付なしマーカー）を認めない。notesが
+        長すぎる状態を恒久的に黙らせられるべきではないため、超過が解消するまで
+        発火し続ける。"""
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        tag_id = _tag_id(DOMAIN_TAG_NAME)
+        over_budget_with_marker = (
+            "x" * (_TAG_NOTES_RATCHET_CEILING + 1) + f"\n\n{MARKER_NOTES_OVER_BUDGET}"
+        )
+        force_notes_over_ceiling(tag_id, over_budget_with_marker)
+
+        hints = get_hints("tag", tag_id)
+        assert any(h["type"] == "notes_over_budget" for h in hints)
+
+    def test_suppressed_by_dated_marker_not_yet_expired(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        tag_id = _tag_id(DOMAIN_TAG_NAME)
+        over_budget_with_marker = (
+            "x" * (_TAG_NOTES_RATCHET_CEILING + 1)
+            + f"\n\n{MARKER_NOTES_OVER_BUDGET}-until:2099-01-01"
+        )
+        force_notes_over_ceiling(tag_id, over_budget_with_marker)
+
+        hints = get_hints("tag", tag_id)
+        assert [h for h in hints if h["type"] == "notes_over_budget"] == []
+
+    def test_fires_again_after_dated_marker_expires(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        tag_id = _tag_id(DOMAIN_TAG_NAME)
+        over_budget_with_expired_marker = (
+            "x" * (_TAG_NOTES_RATCHET_CEILING + 1)
+            + f"\n\n{MARKER_NOTES_OVER_BUDGET}-until:2000-01-01"
+        )
+        force_notes_over_ceiling(tag_id, over_budget_with_expired_marker)
+
+        hints = get_hints("tag", tag_id)
+        assert any(h["type"] == "notes_over_budget" for h in hints)
+
+
 class TestLogsSparse:
     def test_fires_when_logs_below_threshold(self, temp_db):
         topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
@@ -465,6 +527,18 @@ class TestIsMarkerActiveHelper:
     def test_permanent_marker_wins_when_expired_dated_also_present(self):
         notes = f"{MARKER_LOGS_SPARSE} {MARKER_LOGS_SPARSE}-until:2000-01-01"
         assert _is_marker_active(notes, MARKER_LOGS_SPARSE) is True
+
+    def test_allow_permanent_false_ignores_plain_marker(self):
+        notes = f"foo {MARKER_NOTES_OVER_BUDGET} bar"
+        assert _is_marker_active(notes, MARKER_NOTES_OVER_BUDGET, allow_permanent=False) is False
+
+    def test_allow_permanent_false_still_honors_future_dated_marker(self):
+        notes = f"{MARKER_NOTES_OVER_BUDGET}-until:2099-01-01"
+        assert _is_marker_active(notes, MARKER_NOTES_OVER_BUDGET, allow_permanent=False) is True
+
+    def test_allow_permanent_false_still_ignores_past_dated_marker(self):
+        notes = f"{MARKER_NOTES_OVER_BUDGET}-until:2000-01-01"
+        assert _is_marker_active(notes, MARKER_NOTES_OVER_BUDGET, allow_permanent=False) is False
 
 
 class TestDatedMarkerSnooze:
