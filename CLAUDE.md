@@ -32,7 +32,7 @@ cc-memoryはローカルディレクトリをmarketplaceとして登録してお
 2. `git pull origin main`
 3. マージ済みworktreeを削除: `git worktree remove .trees/<name>`（対象 worktree に未コミット変更が残っているとコマンドが失敗するため、先に stash / commit してから実行する）
 4. ローカルブランチを削除: `git branch -D <branch>`
-5. プラグインキャッシュを削除: `rm -rf ~/.claude/plugins/cache/claude-code-memory-marketplace/`
+5. プラグインキャッシュを削除: `rm -rf ~/.claude/plugins/cache/calm-marketplace/`
 6. `__pycache__` を削除: `find . -type d -name __pycache__ -exec rm -rf {} +`
 7. 既存のhttpサーバーを停止・再起動:
 
