@@ -55,7 +55,8 @@ from src.services.embedding_service import (
     generate_and_store_embedding,
     insert_topic_embedding_with_conn,
 )
-from src.services.export_bundle_service import BUNDLE_FORMAT, _JUNCTION, _MAIN_FIELD
+from src.services.export_bundle_service import BUNDLE_FORMAT, _MAIN_FIELD
+from src.services.export_candidate_service import _JUNCTION
 from src.services.instance_service import get_instance_id_with_conn
 from src.services.material_service import _is_within_export_dir
 from src.services.relation_service import (
