@@ -1,6 +1,6 @@
 ---
 name: rule-placement
-description: 一般化ルール（エージェントの今後の振る舞いを変える規範・判断基準・手順）をどの文脈配信経路に置くかをfull評価で判定する。TRIGGER: メタask（kind="meta"）の裁定をtriage_askでpromoteする直前（必須）、remember skillの判定木の末端で迷った場合、1つの裁定・依頼に性質の異なる複数ルールが混ざっている場合、forget/audit中に既存配置の再配置を検討する場合。DO NOT TRIGGER: remember skillのfast pathで判定できる日常の単純な「覚えて」、議論の合意事実の記録（decision-record skillの担当）。
+description: 一般化ルール（エージェントの今後の振る舞いを変える規範・判断基準・手順）をどの文脈配信経路に置くかをfull評価で判定する。TRIGGER: メタask（kind="meta"）の裁定をtriage_askでpromoteする直前（必須）、remember skillの判定木の末端で迷った場合、1つの裁定・依頼に性質の異なる複数ルールが混ざっている場合、forget/audit中に既存配置の再配置を検討する場合、remember skillが「既存記録はあるのに実際に機能していなかった」ケースを検知した場合。DO NOT TRIGGER: remember skillのfast pathで判定できる日常の単純な「覚えて」、議論の合意事実の記録（decision-record skillの担当）。
 ---
 
 # rule-placement
