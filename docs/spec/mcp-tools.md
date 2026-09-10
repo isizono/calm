@@ -193,8 +193,18 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 | --- | --- | --- | --- | --- |
 | items | list[object] | yes | - | 最大10件。各要素は `{topic_id, decision, reason, title?, tags?, propagate_to?}` |
 
-**返り値**: `{created: [...], errors: [...], propagation_failed?: [...], hints?: [string]}`。created の各要素には `related_decisions`（同topic内の類似decision上位3件）が付く。hintsはharness_serviceからの推奨行動。
-**propagate_to**: `{type: "habit" | "tag_note", content: string, tag?: string}`。tagはtype="tag_note"のとき必須。
+**items詳細**:
+- `reason`: 決定の理由。任意で本文末尾に定型節（却下案:/適用条件:/適用外:/検証:/隣接確認:）を書ける。書式・各節の意味はdocs/precedent-format.mdが正本。節はすべて任意で、「該当なし」を埋める空項目・ダミー項目は書かないこと。
+- `title`: 決定の要点を表す1行（35字以内）。check-in・timeline・search等の見出しに使われるため付与を推奨。省略時はdecision本文にfallback。タグに`layer:direction`を含む場合は必須（省略・空文字は当該itemが`errors`に`ITEM_ERROR`として格納され、decision自体は作成されない）。
+- `tags`: 省略時はtopicのタグを継承。内容を表すタグを積極的に追加することが望ましい。namespace規約はdocs/architecture/invariants.mdの「タグnamespace」節を参照。
+- `propagate_to`: `{type: "habit" | "tag_note", content: string, tag?: string}`。tagはtype="tag_note"のとき必須。type="tag_note"は教訓・注意点のみに使い、仕様・手順の全文転記には使わない。
+
+**返り値**: `{created: [...], errors: [...], propagation_failed?: [...], hints?: [string]}`。
+- `created`の各要素には`related_decisions`（同topic内の類似decision上位3件、各`{id, title, distance}`。embeddingサーバー未起動時は空配列）が付く。既存decisionとの矛盾・重複に気づくための導線。
+- タグに`layer:direction`を含む要素には`existing_direction_decisions`（同domainの有効な方向性decision全件、自身除外・非ランク）と`direction_note`（supersede/併存の判断を促す文言）も付く。
+- `reason`に定型節があれば`precedent`（`{rejected_alternatives: 件数, scope: bool, verification_anchors: [文字列, ...], adjacent_check: [文字列, ...], warnings?: [文字列, ...]}`）をecho。書式ゆれ・空節・アンカー日付欠落等、または`intent:design`タグ付き要素で「隣接確認:」節が無い場合は`precedent_warnings`（文字列のリスト）も付く。いずれもsoft validationであり、decision作成自体は拒否しない。
+- `hints`はharness_serviceからの推奨行動。
+
 **propagation_failed**: propagate_toの伝搬が1件以上失敗した場合のみ付く配列。各要素は `{index, decision_id, type, tag?, message}`。decision自体の作成成否には影響しない（decisionは常に成功として作成される）ため、この配列を見ないと伝搬失敗（例: tag_note伝搬先タグの文字数上限超過）に気づけない。
 **関連**: `add_habit` / `update_tag(notes=...)` と連動。
 
