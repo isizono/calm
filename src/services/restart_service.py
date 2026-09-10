@@ -32,6 +32,8 @@ DEFAULT_KILL_WAIT_SEC = 10.0
 DEFAULT_KILL_ESCALATE_SEC = 5.0
 DEFAULT_SYNC_TIMEOUT_SEC = 600.0
 SUBPROCESS_TIMEOUT_SEC = 5.0
+ORPHAN_MARKER_NAME = ".orphaned_at"
+PRUNE_LSOF_TIMEOUT_SEC = 15.0
 
 
 def find_listen_pids(port: int) -> list[int]:
@@ -269,6 +271,69 @@ def clean_caches(project_root: Path) -> dict:
     return {"removed_pycache_dirs": removed_pycache_dirs}
 
 
+def _has_open_file_handles(path: Path) -> bool:
+    """path配下のファイルを現在開いているプロセスが1つでもあるか。
+
+    `find_listen_pids()`とは判定不能時の安全側の向きが逆であることに注意。
+    あちらは「わからない=いない」(誤ってkillしない方が安全)だが、
+    ここでは「わからない=いる」(誤って削除しない方が安全)にする。
+    """
+    try:
+        result = subprocess.run(
+            ["lsof", "+D", str(path)],
+            capture_output=True, text=True, check=False, timeout=PRUNE_LSOF_TIMEOUT_SEC,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return True
+    return bool(result.stdout.strip())
+
+
+def prune_orphaned_plugin_versions(project_root: Path) -> dict:
+    """`project_root`の兄弟ディレクトリのうち、使われなくなった旧バージョンを削除する。
+
+    プラグインキャッシュ配置では`project_root`自体が
+    `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`であり、
+    兄弟ディレクトリは同じプラグインの別バージョンにあたる。Claude Code本体が
+    現在の使用対象でなくなったバージョンに`.orphaned_at`マーカーを書くため、
+    それを削除条件の必須シグナルとして使う(自前で「どれが最新か」を
+    再判定しない。マーカーが将来書かれなくなった場合は削除が単に止まるだけで
+    誤削除方向には振れない、という非対称性がこの設計の安全性の根拠)。
+
+    `project_root`自身がgitリポジトリ(worktree含む)の場合は何もしない。
+    その場合の兄弟ディレクトリは開発用チェックアウトの並びであり、
+    プラグインバージョンの並びではないため。
+
+    マーカーがあっても、同じディレクトリを指す`uv run --directory`経由の
+    launcherプロセス(他セッションがまだ旧バージョンから接続中)が生きている
+    可能性があるため、削除直前に`lsof`でオープン中のファイルハンドルが
+    無いことも確認する。
+    """
+    removed = []
+    skipped = []
+
+    if (project_root / ".git").exists():
+        return {"removed": removed, "skipped": skipped}
+
+    versions_root = project_root.parent
+    if not versions_root.is_dir():
+        return {"removed": removed, "skipped": skipped}
+
+    current = project_root.resolve()
+    for entry in sorted(versions_root.iterdir()):
+        if not entry.is_dir() or entry.resolve() == current:
+            continue
+        if not (entry / ORPHAN_MARKER_NAME).exists():
+            skipped.append({"path": str(entry), "reason": "not marked orphaned"})
+            continue
+        if _has_open_file_handles(entry):
+            skipped.append({"path": str(entry), "reason": "open file handles"})
+            continue
+        shutil.rmtree(entry)
+        removed.append(str(entry))
+
+    return {"removed": removed, "skipped": skipped}
+
+
 def restart_all(project_root: Path, *, restart_embedding: bool = False) -> dict:
     """依存関係の同期・キャッシュ掃除・MCP再起動を順に行う。
 
@@ -281,11 +346,18 @@ def restart_all(project_root: Path, *, restart_embedding: bool = False) -> dict:
     (次にencodeが必要になったとき自動でlazy spawnされるだけで、都度停止すると
     モデル再ロード分の起動遅延を毎回背負うだけでメリットが薄い)。
     明示的にコード変更を反映させたい場合のみ `restart_embedding=True` を指定する。
+
+    プラグインキャッシュの旧バージョン掃除(prune_orphaned_plugin_versions)は
+    MCP再起動が成功した場合のみ行う。再起動自体が失敗している状況で
+    キャッシュディレクトリまで変化させると、原因調査中の変数を増やすだけになる。
     """
     sync_result = sync_dependencies(project_root)
     cache_result = clean_caches(project_root)
     mcp_result = restart_mcp_server(project_root)
     embedding_stopped = stop_embedding_server() if restart_embedding else []
+    prune_result = prune_orphaned_plugin_versions(project_root) if mcp_result.ok else {
+        "removed": [], "skipped": [],
+    }
     return {
         "uv_sync": {
             "ok": sync_result.ok,
@@ -300,6 +372,7 @@ def restart_all(project_root: Path, *, restart_embedding: bool = False) -> dict:
         },
         "embedding_server": {"stopped_pids": embedding_stopped},
         "caches": cache_result,
+        "plugin_cache_prune": prune_result,
     }
 
 
