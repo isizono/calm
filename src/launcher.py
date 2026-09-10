@@ -20,6 +20,7 @@ import uuid
 from pathlib import Path
 
 from src.env_compat import env_get, env_set
+from src.infra.git_repo import resolve_main_repo_root
 from src.services.relay.identity import (
     register_launcher_session,
     unregister_launcher_session,
@@ -44,15 +45,25 @@ def _propagate_plugin_root_env() -> None:
     Popen（env指定なし=環境を継承）で起動するため、ここで設定しておけば
     プロセスツリー全体に伝播する。
 
-    `CALM_PROJECT_ROOT` が（新旧名いずれかで）既に明示設定されている場合は
-    尊重し、上書きしない。`CLAUDE_PLUGIN_ROOT` が無い場合（gitチェックアウトでの
-    通常の開発フロー等）は何もしない。
+    優先順位:
+      1. `CALM_PROJECT_ROOT` が（新旧名いずれかで）既に明示設定されている場合は
+         尊重し、上書きしない。
+      2. `CLAUDE_PLUGIN_ROOT` が設定されていればその値を使う。
+      3. どちらも無い場合、`os.getcwd()` を `resolve_main_repo_root()` に通した
+         結果を設定する。`CLAUDE_PLUGIN_ROOT` はClaude Code本体側の間欠的な
+         バグにより渡らないことがあるが、このプロセスは常に
+         `uv run --directory <root> ...` 形式で起動されるため cwd は正しい
+         ルートを指している。gitリポジトリ配下（worktree含む）では
+         `resolve_main_repo_root()` のgit解決が先に成功するため、このフォール
+         バックは実質的にgitではない配置（プラグインキャッシュ）でのみ意味を持つ。
     """
     if env_get("CALM_PROJECT_ROOT"):
         return
     plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT")
     if plugin_root:
         env_set("CALM_PROJECT_ROOT", plugin_root)
+        return
+    env_set("CALM_PROJECT_ROOT", str(resolve_main_repo_root(Path(os.getcwd()))))
 
 
 def _read_max_retries() -> int | None:

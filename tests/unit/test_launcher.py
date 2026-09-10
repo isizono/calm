@@ -12,6 +12,7 @@ import urllib.request
 import pytest
 
 from src import launcher
+from src.infra import git_repo
 
 
 class TestIsServerRunning:
@@ -369,16 +370,57 @@ class TestPropagatePluginRootEnv:
         assert "CALM_PROJECT_ROOT" not in os.environ
         assert os.environ["CC_MEMORY_PROJECT_ROOT"] == "/legacy/root"
 
-    def test_noop_when_claude_plugin_root_unset(self, monkeypatch):
-        """CLAUDE_PLUGIN_ROOTが未設定（通常のgitチェックアウト実行）なら何もしない"""
+    def test_falls_back_to_cwd_when_not_a_git_repository(self, monkeypatch, tmp_path):
+        """CLAUDE_PLUGIN_ROOT・CALM_PROJECT_ROOTともに未設定で、cwdがgitリポジトリでない
+        場合、cwd自身をCALM_PROJECT_ROOTに設定する(CLAUDE_PLUGIN_ROOTがClaude Code本体側の
+        間欠バグで渡らないケースのfallback)。
+
+        git-common-dir解決自体のアルゴリズムはtests/unit/test_git_repo.pyで検証済みのため、
+        ここではgit_repo.subprocessのrun関数（外部境界）のみモックし、os.getcwd()が
+        resolve_main_repo_root()へ正しく渡り、戻り値がそのままCALM_PROJECT_ROOTに
+        反映される配線を検証する。
+        """
+        monkeypatch.delenv("CALM_PROJECT_ROOT", raising=False)
+        monkeypatch.delenv("CCM_PROJECT_ROOT", raising=False)
+        monkeypatch.delenv("CC_MEMORY_PROJECT_ROOT", raising=False)
+        monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        def fake_run(cmd, **kwargs):
+            raise subprocess.CalledProcessError(128, cmd, stderr="fatal: not a git repository")
+
+        monkeypatch.setattr(git_repo.subprocess, "run", fake_run)
+
+        launcher._propagate_plugin_root_env()
+
+        assert os.environ["CALM_PROJECT_ROOT"] == str(tmp_path.resolve())
+
+    def test_falls_back_to_main_repo_root_when_cwd_is_a_git_worktree(self, monkeypatch, tmp_path):
+        """cwdがgit worktree配下の場合、main repoルートに正規化して設定する
+        (worktreeルートをそのまま設定しない)。gitリポジトリ配下ではgit解決が先に
+        成功するため、この経路ではos.getcwd()の値がそのまま使われることはない。
+        """
         monkeypatch.delenv("CALM_PROJECT_ROOT", raising=False)
         monkeypatch.delenv("CCM_PROJECT_ROOT", raising=False)
         monkeypatch.delenv("CC_MEMORY_PROJECT_ROOT", raising=False)
         monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
 
+        worktree_root = tmp_path / "worktree"
+        worktree_root.mkdir()
+        main_repo_root = tmp_path / "main-repo"
+        git_common_dir = main_repo_root / ".git"
+
+        def fake_run(cmd, **kwargs):
+            assert cmd == ["git", "rev-parse", "--git-common-dir"]
+            assert kwargs["cwd"] == worktree_root
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{git_common_dir}\n", stderr="")
+
+        monkeypatch.setattr(git_repo.subprocess, "run", fake_run)
+        monkeypatch.chdir(worktree_root)
+
         launcher._propagate_plugin_root_env()
 
-        assert "CALM_PROJECT_ROOT" not in os.environ
+        assert os.environ["CALM_PROJECT_ROOT"] == str(main_repo_root.resolve())
 
 
 class TestBridgeSessionTermination:

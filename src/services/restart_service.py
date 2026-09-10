@@ -19,6 +19,7 @@ from typing import NamedTuple
 
 from src.env_compat import env_get, env_set
 from src.http_config import HTTP_PORT
+from src.infra.git_repo import resolve_main_repo_root
 from src.services.embedding_service import PORT as EMBEDDING_SERVER_PORT
 
 MCP_PORT = HTTP_PORT
@@ -164,33 +165,15 @@ def _is_replaced(old_signatures: dict[int, str | None], new_pids: list[int]) -> 
     return False
 
 
-def _resolve_main_repo_root(project_root: Path) -> Path:
-    """project_rootをgit-common-dir経由で検証し、main repoルートを返す。
-
-    project_root(`Path(__file__).resolve().parent.parent.parent`)は、このモジュール
-    自身がworktree配下のチェックアウトから実行された場合、main repoルートではなく
-    そのworktreeのルートを指す。embedding_service._resolve_project_root()が
-    worktree誤解決によるメモリ膨張事故の再発防止のため`__file__`ベースの解決を
-    意図的に避けている（launcher.pyの_propagate_plugin_root_env()のdocstring参照）
-    のと同じ理由で、CALM_PROJECT_ROOTにはproject_rootをそのまま書き込まず、
-    ここでgit-common-dir解決を経由してmain repoルートに正規化する。
-
-    gitリポジトリでない場合(プラグインキャッシュ配置)はgit解決自体が失敗するため、
-    project_rootをそのまま返す(この配置こそCALM_PROJECT_ROOT明示設定が
-    元々必要だったケースであり、worktree誤解決の懸念は生じない)。
-    """
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--git-common-dir"],
-            capture_output=True, text=True, check=True,
-            cwd=project_root, timeout=SUBPROCESS_TIMEOUT_SEC,
-        )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-        return project_root
-    common_dir = Path(result.stdout.strip())
-    if not common_dir.is_absolute():
-        common_dir = (project_root / common_dir).resolve()
-    return common_dir.parent.resolve()
+# project_root(`Path(__file__).resolve().parent.parent.parent`)は、このモジュール
+# 自身がworktree配下のチェックアウトから実行された場合、main repoルートではなく
+# そのworktreeのルートを指す。embedding_service._resolve_project_root()が
+# worktree誤解決によるメモリ膨張事故の再発防止のため`__file__`ベースの解決を
+# 意図的に避けている（launcher.pyの_propagate_plugin_root_env()のdocstring参照）
+# のと同じ理由で、CALM_PROJECT_ROOTにはproject_rootをそのまま書き込まず、
+# git_repo.resolve_main_repo_root()を経由してmain repoルートに正規化する
+# (launcher.py側も同じ解決ロジックを必要とするため実装を共有モジュールに置く)。
+_resolve_main_repo_root = resolve_main_repo_root
 
 
 def restart_mcp_server(
