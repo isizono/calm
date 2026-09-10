@@ -5,10 +5,13 @@ activity_service.get_activities が持つ「期限切れ snoozed の自動復活
 本サービスに持ち込まない（窓を覗いた副作用で status が動くと、窓が
 映しているものと DB の実態がずれる）。
 
-get_overview 1回の呼び出しで開く sqlite 接続は計3本になる
-（activities側の接続1本 + ask_service.get_asksを2回呼ぶことによる2本）。
+get_overview 1回の呼び出しで開く sqlite 接続は計5本になる
+（activities側の接続1本 + ask_service.get_asksを4回呼ぶことによる4本）。
+awaiting_human節はopen側・回答済み未捌き(pending)側それぞれで「非メタ取得+
+kind="meta"専用取得」の2回呼びを行うため、この節だけで4本になる（メタaskは
+表示上限（limit）を超えて他のaskが多数存在していても必ず表示するため）。
 with_conn版の分離はconn共有のためではなくテストでの単体呼び出しやすさが
-目的で、この3本を1本に集約する最適化は行っていない。
+目的で、この5本を1本に集約する最適化は行っていない。
 """
 from __future__ import annotations
 
@@ -259,45 +262,91 @@ def _collect_backlog_with_conn(conn: sqlite3.Connection, *, days: int, hb_min: i
     }
 
 
+def _fetch_asks_with_guaranteed_meta(*, non_meta_limit: int, **base_kwargs) -> dict:
+    """base_kwargsに合致するaskを取得し、kind="meta"のものは非メタの表示上限
+    （non_meta_limit）に関わらず必ず含める（メタask常時表示）。
+
+    base_kwargsはask_service.get_asksへそのまま渡すフィルタ（status="open"や
+    triage_pending_only=True等）。kindは指定しない（既存の全kind混在取得を
+    そのまま使う）。メタask専用に_MAX_LIMIT件までの取得を別途行い、idで
+    dedupしてから先頭に配置する。
+
+    total_countは非メタ側の呼び出しが返すtotal_count（kindで絞っていない
+    SELECT COUNT(*)であり、既にメタも含む母集団全体の件数）のみを使う。
+    メタ専用取得側の件数をここへ加算しない。加算すると、非メタ側のページ
+    （non_meta_limit件）にメタが偶然含まれるかどうかでtotal_countが
+    non_meta_limitの値ごとに変動してしまい、「件数はlimitに依らない」という
+    既存の設計思想（triage_pending_countの元々の実装意図）を壊す。
+    """
+    non_meta = ask_service.get_asks(limit=non_meta_limit, **base_kwargs)
+    if "error" in non_meta:
+        return non_meta
+    meta = ask_service.get_asks(kind="meta", limit=_MAX_LIMIT, **base_kwargs)
+    if "error" in meta:
+        return meta
+
+    meta_ids = {ask["id_raw"] for ask in meta["asks"]}
+    deduped_non_meta = [ask for ask in non_meta["asks"] if ask["id_raw"] not in meta_ids]
+    asks = meta["asks"] + deduped_non_meta  # メタを先頭に
+
+    return {"asks": asks, "total_count": non_meta["total_count"]}
+
+
+def _format_ask_item(ask: dict, now: datetime) -> dict:
+    """ask_service.get_asksが返す1件から、awaiting_human表示用のitemを組み立てる。
+
+    items・triage_pending_items共通の整形ロジック（両方とも同じask形状を
+    受け取るため）。
+    """
+    first_seen_at = ask["first_seen_at"]
+    return {
+        "id_raw": ask["id_raw"],
+        "question": ask["question"],
+        "kind": ask["kind"],
+        "choices": ask.get("choices"),
+        "occurrence_count": ask["occurrence_count"],
+        "first_seen_at": first_seen_at,
+        "days_open": _days_since(first_seen_at, now),
+        "domains": _extract_domains(ask.get("tags", [])),
+        "blocks": ask.get("blocks", []),
+    }
+
+
 def _collect_awaiting_human(*, limit: int, now: datetime) -> dict:
     """awaiting_human節（人間の裁定待ちで止まっているもの）を集計する。
 
-    ask_service.get_asksをそのまま呼ぶ（副作用ゼロの純粋SELECT）。抽出条件は
-    status='open'。status='answered' AND triage IS NULL（トリアージ未了）は
-    itemsに含めず、triage_pending_countとして件数だけ返す（人間は既に答えて
-    おり、残っているのはpromote/dismissという処理側の仕事のため）。
+    抽出条件はstatus='open'。status='answered' AND triage IS NULL
+    （トリアージ未了）はtriage_pending_countとして件数を返すのに加え、
+    triage_pending_itemsとしてタイトル（question）付きの一覧も返す
+    （件数だけでは何を捌くべきか分からず、人間が既に答えた内容を思い出す
+    手段がないため）。残っているのはpromote/dismissという処理側の仕事だが、
+    その判断材料としてquestion等を見せる。
+
+    kind="meta"のaskは、items・triage_pending_itemsいずれにおいても表示上限
+    （limit）を超えて他のaskが多数存在していても必ず含め、両配列内で非メタ
+    askより先頭に配置する（_fetch_asks_with_guaranteed_meta参照）。
 
     kindフィールドは"ask"/"meta"の固定enumとして型付けしない（将来"decision"
     が増える設計変更を型定義の変更なしに受け入れるため）。
     """
-    raw = ask_service.get_asks(status="open", limit=limit)
+    raw = _fetch_asks_with_guaranteed_meta(non_meta_limit=limit, status="open")
     if "error" in raw:
         return raw
-    # total_countだけ使う。limitは1で十分（件数はlimitに依らずtotal_countに出る）。
-    pending = ask_service.get_asks(triage_pending_only=True, limit=1)
+    pending = _fetch_asks_with_guaranteed_meta(
+        non_meta_limit=limit, status=None, triage_pending_only=True
+    )
     if "error" in pending:
         return pending
 
-    items = []
-    for ask in raw["asks"]:
-        first_seen_at = ask["first_seen_at"]
-        items.append({
-            "id_raw": ask["id_raw"],
-            "question": ask["question"],
-            "kind": ask["kind"],
-            "choices": ask.get("choices"),
-            "occurrence_count": ask["occurrence_count"],
-            "first_seen_at": first_seen_at,
-            "days_open": _days_since(first_seen_at, now),
-            "domains": _extract_domains(ask.get("tags", [])),
-            "blocks": ask.get("blocks", []),
-        })
+    items = [_format_ask_item(ask, now) for ask in raw["asks"]]
+    triage_pending_items = [_format_ask_item(ask, now) for ask in pending["asks"]]
 
     return {
         "items": items,
         "count": len(items),
         "total_count": raw["total_count"],
         "triage_pending_count": pending["total_count"],
+        "triage_pending_items": triage_pending_items,
     }
 
 
