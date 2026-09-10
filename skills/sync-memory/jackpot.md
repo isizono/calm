@@ -11,24 +11,20 @@
 | 4 | パロディ一言 | セッション中の任意の単語を2つpickし、1つ目を話題、2つ目から連想される人物やモノを主体にして一言喋らせる。主体のキャラを活かした口調で。形式: 〇〇「……」 |
 | 5 | 考えさせられる問い | セッション中の任意の単語をpickし、そこから派生した答えのない問いを投げる。説教っぽくならないこと |
 | 6 | 文学的一章 | セッション中の任意の単語をpickし、その単語をテーマにオリジナル短編小説の「第一章」を書く。20行程度。実在作品の引用はしない。ジャックポットにふさわしいボリュームで読み手を驚かせる |
-| 7 | マルコフ連鎖 | セッション中の単語を3〜5語pickし、単語ごとに2〜3文（計8〜12文程度）の短文をその場で即興生成してコーパスにする。下記スクリプトのコーパス部分に埋め込んで実行し、出力された文をそのまま提示する。詳細は下記「7. マルコフ連鎖の実行スクリプト」参照 |
+| 7 | マルコフ連鎖 | セッション中の単語を3〜5語pickし、単語ごとに2〜3文（計8〜12文程度）の短文をその場で即興生成してコーパスにする。下記「7. マルコフ連鎖の実行スクリプト」の手順でコーパスをファイル化してスクリプトを実行し、出力された文をそのまま提示する |
 
 ## 7. マルコフ連鎖の実行スクリプト
 
 ネタ7専用の補足。文字3-gramのマルコフ連鎖で文章を生成する。標準ライブラリの`random`のみを使い、外部ライブラリには依存しない。
 
-手順1・2でセッション中の単語から即興生成した短文を、以下のスクリプトの `CORPUS_PLACEHOLDER` 部分に差し替えてから実行する。
+手順1・2でセッション中の単語から即興生成した短文は、Writeツールで `/tmp/markov_corpus.txt` に書き出してから、以下のスクリプトを実行する。コーパスの文字列をPythonのソースコードやシェルのheredocに直接埋め込まず、いったんファイルに書き出してから読み込む構成にしているのは、コーパスの中身に `"""` のような文字列リテラルの終端やheredocの区切り文字と偶然一致する文字列が含まれていても、シェルやPythonのソースコードとして解釈されない（＝意図しないコード実行につながらない）ようにするため。
 
 ```bash
 python3 <<'EOF'
 import random
 
-# ここに手順2で生成した短文を埋め込む（複数文を連結してOK、改行を含んでもよい）
-corpus = """
-CORPUS_PLACEHOLDER
-"""
-
-corpus = corpus.replace("\n", "")
+with open("/tmp/markov_corpus.txt", encoding="utf-8") as f:
+    corpus = f.read().replace("\n", "")
 
 N = 3  # 文字n-gram
 
@@ -42,7 +38,9 @@ def build_chain(text, n):
     return chain
 
 
-def generate(chain, n, length):
+def generate(text, chain, n, length):
+    if not chain:
+        return text
     key = random.choice(list(chain.keys()))
     result = key
     for _ in range(length):
@@ -58,8 +56,10 @@ def generate(chain, n, length):
 
 chain = build_chain(corpus, N)
 random.seed()
-print(generate(chain, N, length=random.randint(100, 150)))
+print(generate(corpus, chain, N, length=random.randint(100, 150)))
 EOF
+
+rm -f /tmp/markov_corpus.txt
 ```
 
 生成された文字列はそのままユーザーに提示する。文法は繋がるが意味は破綻しているのがこのネタの面白さなので、出力に手を加えて意味を通そうとしない。
