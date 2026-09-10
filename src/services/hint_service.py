@@ -11,23 +11,29 @@ hintの種別と発火条件は仕様確定decisionに従う。
 - record_missing (deferred): 一定turn記録系ツール未呼出
 - direction_overflow (immediate): tag scope, domain: namespaceのみ,
   layer:direction decisionのactive件数 ≥ DIRECTION_OVERFLOW_THRESHOLD
+- activity_cleanup (immediate): activity scope, activity固有のtagとは無関係な
+  システム全体判定。pending/in_progress/shelved/snoozedのうち
+  ACTIVITY_CLEANUP_STALE_DAYS日以上放置された件数 ≥ ACTIVITY_CLEANUP_COUNT_THRESHOLD
 - notes_over_budget (immediate): tag scope, domain: namespaceのみ,
   tag notesの文字数がtag_serviceのラチェット天井（_TAG_NOTES_RATCHET_CEILING）を超過
 
 抑制:
 - tag_notesに以下のハッシュタグマーカーがあれば該当hintをスキップ:
   #recompose-skipped, #recompose-bootstrap-skipped, #recompose-delta-skipped,
-  #logs-sparse-ack, #direction-overflow-ack, #notes-over-budget-ack
+  #logs-sparse-ack, #direction-overflow-ack, #activity-cleanup-skipped,
+  #notes-over-budget-ack
+  (activity_cleanupの抑制マーカーはactivity-managementタグ(namespace無しの素タグ)
+  のnotesに置く)
 - 各マーカーは素の形（恒久抑制）に加えて `<marker>-until:YYYY-MM-DD` の形式
   （指定日当日まで有効な期限付き抑制）も受け付ける。不正な日付形式は無視される
   （フェイルオープン、抑制しない側に倒す）。判定は_is_marker_activeに集約する
 - notes_over_budgetのみ例外で、素の形（恒久抑制）を認めない
   （`_is_marker_active(..., allow_permanent=False)`）。notesが長すぎる状態を
   恒久的に黙らせられるのは望ましくないため、超過が解消するまで発火し続ける
-- recompose_bootstrap / recompose_deltaはhintが実際に生成される都度、対象tagの
-  notesへ `<marker>-until:{today}` を自動追記する日次クールダウンを持つ（同日内の
-  再発火を防ぐ）。既存の日付付きマーカーが未来日の場合は上書きしない（手動設定の
-  長期抑制を優先する）。書き込みは_apply_cooldown_markerに集約する
+- recompose_bootstrap / recompose_delta / activity_cleanupはhintが実際に生成される
+  都度、対象tagのnotesへ `<marker>-until:{today}` を自動追記する日次クールダウンを
+  持つ（同日内の再発火を防ぐ）。既存の日付付きマーカーが未来日の場合は上書きしない
+  （手動設定の長期抑制を優先する）。書き込みは_apply_cooldown_markerに集約する
 - direction_overflow / notes_over_budgetはこの日次クールダウンの対象外
   （手動マーカーのみで抑制する）
 - orch-managed activityでの全suppressは呼出側責務 (本moduleは判定しない)
@@ -65,6 +71,7 @@ HintType = Literal[
     "follow_up_after_decision",
     "record_missing",
     "direction_overflow",
+    "activity_cleanup",
     "notes_over_budget",
 ]
 Severity = Literal["info", "warn"]
@@ -93,6 +100,8 @@ class Hint(TypedDict):
 RECOMPOSE_BOOTSTRAP_THRESHOLD = 30
 RECOMPOSE_DELTA_THRESHOLD = 100
 LOGS_SPARSE_LOG_THRESHOLD = 5
+ACTIVITY_CLEANUP_STALE_DAYS = 7
+ACTIVITY_CLEANUP_COUNT_THRESHOLD = 20
 
 
 # --- 抑制マーカー ---
@@ -102,6 +111,7 @@ MARKER_RECOMPOSE_BOOTSTRAP = "#recompose-bootstrap-skipped"
 MARKER_RECOMPOSE_DELTA = "#recompose-delta-skipped"
 MARKER_LOGS_SPARSE = "#logs-sparse-ack"
 MARKER_DIRECTION_OVERFLOW = "#direction-overflow-ack"
+MARKER_ACTIVITY_CLEANUP = "#activity-cleanup-skipped"
 MARKER_NOTES_OVER_BUDGET = "#notes-over-budget-ack"
 
 # マーカーは素の形（恒久抑制）に加えて `<marker>-until:YYYY-MM-DD`（期限付き抑制、
@@ -206,11 +216,23 @@ HINT_LOGS_SPARSE_MESSAGE = (
 )
 
 
-RECOMPOSE_AUTOTRIGGER_GUARD = (
-    "別セッションで実施しても構わない旨をユーザーに伝えてください。"
-    "ユーザーがこのセッションでの実施を明示的に求めない限り、"
-    "このセッションでrecompose-context skillを自発的に実行してはいけません。"
-)
+def _autotrigger_guard(skill_name: str) -> str:
+    """指定skillの自発実行を抑止する定型文を生成する。
+
+    hintを受け取ったセッション自身がユーザーの明示的な要求なしにskillを実行
+    しないよう指示しつつ、別セッションでの実施は妨げない。recompose-context /
+    activity-cleanupなど、自発実行を抑止したいskillごとにこの関数から定数を
+    導出することで、文面の重複と drift を防ぐ。
+    """
+    return (
+        "別セッションで実施することをおすすめする旨をユーザーに伝えてください。"
+        "ユーザーがこのセッションでの実施を明示的に求めない限り、"
+        f"このセッションで{skill_name} skillを自発的に実行してはいけません。"
+    )
+
+
+RECOMPOSE_AUTOTRIGGER_GUARD = _autotrigger_guard("recompose-context")
+ACTIVITY_CLEANUP_AUTOTRIGGER_GUARD = _autotrigger_guard("activity-cleanup")
 
 
 def _recompose_bootstrap_message(tag_name: str, total_count: int) -> str:
@@ -257,6 +279,18 @@ def _direction_overflow_message(tag_name: str, count: int) -> str:
         f"「{MARKER_DIRECTION_OVERFLOW}-until:YYYY-MM-DD」（任意の未来日）を"
         f"追記すると、その日まで一時的に黙らせられます。恒久的に不要なら日付なしの"
         f"「{MARKER_DIRECTION_OVERFLOW}」を追記してください。"
+    )
+
+
+def _activity_cleanup_message(count: int) -> str:
+    return (
+        f"放置されているアクティビティが{count}件あります。"
+        f"activity-cleanup skillでの棚卸しをユーザーに提案してください。"
+        f"{ACTIVITY_CLEANUP_AUTOTRIGGER_GUARD}"
+        f"今は都合が悪い場合、activity-managementタグのnotesに"
+        f"「{MARKER_ACTIVITY_CLEANUP}-until:YYYY-MM-DD」（任意の未来日）を"
+        f"追記すると、その日まで一時的に黙らせられます。恒久的に不要なら日付なしの"
+        f"「{MARKER_ACTIVITY_CLEANUP}」を追記してください。"
     )
 
 
@@ -541,15 +575,93 @@ def _get_topic_domain_tag_notes(
     return [r["notes"] for r in rows]
 
 
+# --- activity_cleanup (システム全体の放置件数判定) ---
+
+
+def _count_stale_activities(conn: sqlite3.Connection) -> int:
+    """active(pending/in_progress)+shelved+snoozedのうち、
+    MAX(updated_at, COALESCE(last_heartbeat_at, '')) が
+    ACTIVITY_CLEANUP_STALE_DAYS日を超えて更新されていない件数を返す。
+
+    completedのactivityは母集団から除外する。orch_managedカラムは旧ow運用
+    体系の名残であり、本判定の母集団フィルタには使わない(orch_managed=1の
+    activityも他と同様に母集団に含める)。
+    last_heartbeat_atがNULLの行はCOALESCEで''に正規化する。これを外すと
+    MAX()の結果がNULLになり、当該行が誤ってカウントから漏れる。
+    """
+    cursor = conn.execute(
+        """
+        SELECT COUNT(*) FROM activities a
+        WHERE a.status IN ('pending', 'in_progress', 'shelved', 'snoozed')
+          AND MAX(a.updated_at, COALESCE(a.last_heartbeat_at, ''))
+              < datetime('now', '-' || ? || ' days')
+        """,
+        (ACTIVITY_CLEANUP_STALE_DAYS,),
+    )
+    return cursor.fetchone()[0]
+
+
+def _get_tag_id_and_notes(conn: sqlite3.Connection, tag_name: str) -> tuple[int | None, str]:
+    """素タグ(namespace='')のtag_nameからtag_idとnotesを引く。
+
+    tagsはUNIQUE(namespace, name)であり、nameだけでは一意でない。
+    activity-managementはnamespace無しの素タグとして運用する決定に基づき、
+    namespace=''に絞って検索する。これにより、将来同名の`domain:activity-management`
+    のような別namespaceのタグが作られても、本ヘルパーの解決結果には影響しない。
+    既存に同等のヘルパーが無いため新設する。見つからなければ(None, "")を返す
+    (タグ未作成の場合はhint判定自体を静かにスキップする)。
+    """
+    row = conn.execute(
+        "SELECT id, notes FROM tags WHERE name = ? AND namespace = ''",
+        (tag_name,),
+    ).fetchone()
+    if row is None:
+        return None, ""
+    return row["id"], row["notes"] or ""
+
+
+def _get_activity_cleanup_hint(conn: sqlite3.Connection) -> Hint | None:
+    """放置activityの件数がACTIVITY_CLEANUP_COUNT_THRESHOLD以上のとき、
+    activity-cleanup skillでの棚卸しを促すhintを返す。
+
+    抑制マーカーはactivity-managementタグのnotesに置く。判定順序は
+    recompose_bootstrap/deltaと同じ(マーカーチェック→件数計算→hint組み立て
+    →クールダウン書き込み)。activity-managementタグが未作成の場合は
+    判定不能としてNoneを返す(恒久沈黙ではない)。
+    """
+    tag_id, notes = _get_tag_id_and_notes(conn, "activity-management")
+    if tag_id is None:
+        return None
+    if _is_marker_active(notes, MARKER_ACTIVITY_CLEANUP):
+        return None
+    count = _count_stale_activities(conn)
+    if count < ACTIVITY_CLEANUP_COUNT_THRESHOLD:
+        return None
+    _apply_cooldown_marker(conn, tag_id, notes, MARKER_ACTIVITY_CLEANUP)
+    return {
+        "type": "activity_cleanup",
+        "severity": "info",
+        "message": _activity_cleanup_message(count),
+        "suggested_action": {
+            "skill": "activity-cleanup",
+            "natural_language": "activity-cleanup skillでの棚卸しをユーザーに提案する",
+        },
+        "source": f"activity_cleanup:tag:{tag_id}",
+        "delivery_hint": "immediate",
+    }
+
+
 # --- scope=activity ---
 
 
 def _get_hints_for_activity(
     conn: sqlite3.Connection, activity_id: int
 ) -> list[Hint]:
-    """activityに紐づくdomain:tagを展開してrecompose系hintを集約する。
+    """activityに紐づくdomain:tagを展開してrecompose系hintを集約し、
+    activity固有のtagとは独立したactivity_cleanup(システム全体の放置件数判定)
+    も追加する。
 
-    activityの所属tagのうちdomain:namespaceのみ対象 (D#2780)。
+    activityの所属tagのうちdomain:namespaceのみ対象。
     """
     rows = conn.execute(
         """
@@ -566,4 +678,11 @@ def _get_hints_for_activity(
             if hint["source"] not in seen_sources:
                 seen_sources.add(hint["source"])
                 hints.append(hint)
+
+    # activity_cleanupはこのactivity固有のtagとは無関係なグローバル判定のため、
+    # domain:tag展開ループとは独立して1回だけ呼び出す。
+    cleanup_hint = _get_activity_cleanup_hint(conn)
+    if cleanup_hint is not None:
+        hints.append(cleanup_hint)
+
     return hints
