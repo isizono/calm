@@ -3,10 +3,27 @@
 subprocess呼び出し(lsof/ps/kill/Popen)を外部境界としてmonkeypatchし、
 プロセス入れ替え判定ロジック・キャッシュ削除の契約を検証する。
 """
+import os
 import subprocess
 from types import SimpleNamespace
 
+import pytest
+
+from src.env_compat import env_restore, env_snapshot
 from src.services import restart_service
+
+
+@pytest.fixture(autouse=True)
+def _isolate_calm_project_root_env():
+    """restart_mcp_server()のenv_set("CALM_PROJECT_ROOT", ...)はos.environを直接
+    書き換えるため、monkeypatch.delenv(raising=False)では捕捉されない(対象キーが
+    元々未設定だとundo記録が残らない: pytest monkeypatchの仕様)。放置すると
+    restart_mcp_server()を呼ぶどのテストからもCALM_PROJECT_ROOTがプロセス全体に
+    残留しうるため、本ファイル全体に適用してテスト順依存の非決定性を防ぐ。
+    """
+    snapshot = env_snapshot("CALM_PROJECT_ROOT")
+    yield
+    env_restore(snapshot)
 
 
 def test_find_listen_pids_parses_lsof_output(monkeypatch):
@@ -190,6 +207,7 @@ def test_restart_mcp_server_success_flow(monkeypatch, tmp_path):
         lambda pid: {1111: "old-sig", 2222: "new-sig"}.get(pid),
     )
     monkeypatch.setattr(restart_service, "kill_pids", fake_kill_pids)
+    monkeypatch.setattr(restart_service, "_resolve_main_repo_root", lambda project_root: project_root)
     monkeypatch.setattr(restart_service.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(restart_service.time, "sleep", lambda _: None)
     monkeypatch.setattr(restart_service, "LAUNCHER_LOG_PATH", tmp_path / "logs" / "restart_launcher.log")
@@ -224,6 +242,7 @@ def test_restart_mcp_server_skips_kill_when_nothing_was_listening(monkeypatch, t
         state["new_server_started"] = True
         return SimpleNamespace(pid=2222)
 
+    monkeypatch.setattr(restart_service, "_resolve_main_repo_root", lambda project_root: project_root)
     monkeypatch.setattr(restart_service.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(restart_service.time, "sleep", lambda _: None)
     monkeypatch.setattr(restart_service, "LAUNCHER_LOG_PATH", tmp_path / "logs" / "restart_launcher.log")
@@ -282,6 +301,7 @@ def test_restart_mcp_server_replaces_old_process_that_ignores_sigterm(monkeypatc
         new_server_started["flag"] = True
         return SimpleNamespace(pid=2222)
 
+    monkeypatch.setattr(restart_service, "_resolve_main_repo_root", lambda project_root: project_root)
     monkeypatch.setattr(restart_service.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(restart_service, "LAUNCHER_LOG_PATH", tmp_path / "logs" / "restart_launcher.log")
 
@@ -307,6 +327,7 @@ def test_restart_mcp_server_proceeds_to_start_new_process_even_if_old_process_ne
     monkeypatch.setattr(restart_service.os, "kill", lambda pid, sig: None)  # 常に成功=常に生存
     monkeypatch.setattr(restart_service, "find_listen_pids", lambda port: [1111])
     monkeypatch.setattr(restart_service, "process_start_signature", lambda pid: "old-sig")
+    monkeypatch.setattr(restart_service, "_resolve_main_repo_root", lambda project_root: project_root)
     monkeypatch.setattr(restart_service, "LAUNCHER_LOG_PATH", tmp_path / "logs" / "restart_launcher.log")
 
     popen_calls = []
@@ -335,6 +356,7 @@ def test_restart_mcp_server_proceeds_to_start_new_process_even_if_old_process_ne
 def test_restart_mcp_server_times_out_when_server_never_comes_up(monkeypatch, tmp_path):
     monkeypatch.setattr(restart_service, "find_listen_pids", lambda port: [])
     monkeypatch.setattr(restart_service, "kill_pids", lambda pids: None)
+    monkeypatch.setattr(restart_service, "_resolve_main_repo_root", lambda project_root: project_root)
     monkeypatch.setattr(restart_service, "LAUNCHER_LOG_PATH", tmp_path / "logs" / "restart_launcher.log")
     monkeypatch.setattr(restart_service.subprocess, "Popen", lambda cmd, **kwargs: SimpleNamespace(pid=4321))
     monkeypatch.setattr(restart_service.time, "sleep", lambda _: None)
@@ -357,6 +379,7 @@ def test_restart_mcp_server_ignores_process_lookup_error_when_killing_process_gr
     """killpgが対象プロセスの消滅を示すProcessLookupErrorを送出しても後始末全体は失敗にしない"""
     monkeypatch.setattr(restart_service, "find_listen_pids", lambda port: [])
     monkeypatch.setattr(restart_service, "kill_pids", lambda pids: None)
+    monkeypatch.setattr(restart_service, "_resolve_main_repo_root", lambda project_root: project_root)
     monkeypatch.setattr(restart_service, "LAUNCHER_LOG_PATH", tmp_path / "logs" / "restart_launcher.log")
     monkeypatch.setattr(restart_service.subprocess, "Popen", lambda cmd, **kwargs: SimpleNamespace(pid=4321))
     monkeypatch.setattr(restart_service.time, "sleep", lambda _: None)
@@ -387,6 +410,7 @@ def test_restart_mcp_server_writes_launcher_output_to_log_file(monkeypatch, tmp_
 
     monkeypatch.setattr(restart_service, "find_listen_pids", fake_find_listen_pids)
     monkeypatch.setattr(restart_service, "process_start_signature", lambda pid: "sig")
+    monkeypatch.setattr(restart_service, "_resolve_main_repo_root", lambda project_root: project_root)
 
     popen_kwargs = {}
 
@@ -403,6 +427,173 @@ def test_restart_mcp_server_writes_launcher_output_to_log_file(monkeypatch, tmp_
     assert log_path.parent.is_dir()
     assert popen_kwargs["stdout"].name == str(log_path)
     assert popen_kwargs["stderr"] is popen_kwargs["stdout"]
+
+
+class TestRestartMcpServerPropagatesCalmProjectRoot:
+    """restart_mcp_server: 新規launcherプロセスへのCALM_PROJECT_ROOT伝播
+
+    Popenはenv未指定でos.environを継承するため、restart_mcp_server自身が
+    プロセス環境変数を書き換えているかをos.environで直接検証する
+    (残留防止は_isolate_calm_project_root_env、モジュールレベルのautouse fixture)。
+
+    _resolve_main_repo_root()はデフォルトでproject_rootをそのまま返す恒等関数に
+    差し替える。本クラスの関心は「未設定時にenv_setで書き込むか/既存値を尊重するか」
+    という配線であり、_resolve_main_repo_root自身のgit解決ロジックは
+    TestResolveMainRepoRootで個別に検証する。恒等関数に差し替えないと、
+    tmp_pathはgitリポジトリでないため実装は正しく動作するものの、実際には
+    「git rev-parse」の実行を試みる形で標準ライブラリのsubprocess run関数を
+    呼び出すことになり、このクラスと同様にPopenをfakeへ差し替えているテストでは
+    その内部実装がPopen呼び出しへ委譲する構造ゆえfakeを踏んでしまい壊れる
+    (Popenのfakeが返すSimpleNamespaceはcontext managerではないため、標準
+    ライブラリ内部がwith文でそれを開こうとしてエラーになる)。
+    """
+
+    def _run_restart(self, monkeypatch, tmp_path, *, resolve_main_repo_root=None):
+        state = {"new_server_started": False}
+
+        def fake_find_listen_pids(port):
+            return [2222] if state["new_server_started"] else []
+
+        def fake_popen(cmd, **kwargs):
+            state["new_server_started"] = True
+            return SimpleNamespace(pid=2222)
+
+        monkeypatch.setattr(restart_service, "find_listen_pids", fake_find_listen_pids)
+        monkeypatch.setattr(restart_service, "process_start_signature", lambda pid: "sig")
+        monkeypatch.setattr(
+            restart_service, "_resolve_main_repo_root",
+            resolve_main_repo_root or (lambda project_root: project_root),
+        )
+        monkeypatch.setattr(restart_service.subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(restart_service.time, "sleep", lambda _: None)
+        monkeypatch.setattr(
+            restart_service, "LAUNCHER_LOG_PATH", tmp_path / "logs" / "restart_launcher.log"
+        )
+        return restart_service.restart_mcp_server(tmp_path, poll_interval_sec=0)
+
+    def test_sets_calm_project_root_when_unset(self, monkeypatch, tmp_path):
+        """CALM_PROJECT_ROOT(新旧名とも)が未設定なら、_resolve_main_repo_root()の
+        戻り値で設定する
+
+        プラグインキャッシュ配置ではlauncher起動時のCLAUDE_PLUGIN_ROOT頼みの
+        自動設定が新規プロセスに伝播している保証がないため、この再起動経路では
+        明示的に設定して子プロセスチェーン全体に伝播させる。
+        """
+        monkeypatch.delenv("CALM_PROJECT_ROOT", raising=False)
+        monkeypatch.delenv("CCM_PROJECT_ROOT", raising=False)
+        monkeypatch.delenv("CC_MEMORY_PROJECT_ROOT", raising=False)
+
+        self._run_restart(monkeypatch, tmp_path)
+
+        assert os.environ["CALM_PROJECT_ROOT"] == str(tmp_path)
+
+    def test_does_not_override_existing_calm_project_root(self, monkeypatch, tmp_path):
+        """CALM_PROJECT_ROOTが既に設定済みなら、project_rootの値で上書きしない"""
+        monkeypatch.setenv("CALM_PROJECT_ROOT", "/explicit/root")
+
+        self._run_restart(monkeypatch, tmp_path)
+
+        assert os.environ["CALM_PROJECT_ROOT"] == "/explicit/root"
+
+    def test_does_not_override_when_only_legacy_name_set(self, monkeypatch, tmp_path):
+        """旧名(CC_MEMORY_PROJECT_ROOT)のみが設定済みの場合も、新名へ書き込まない
+
+        env_get/env_setの新旧名解決ロジック自体は別途テスト済みだが、
+        「新旧名含む」というこの修正自体の主張に対応するassertを本クラスにも置く。
+        """
+        monkeypatch.delenv("CALM_PROJECT_ROOT", raising=False)
+        monkeypatch.delenv("CCM_PROJECT_ROOT", raising=False)
+        monkeypatch.setenv("CC_MEMORY_PROJECT_ROOT", "/legacy/root")
+
+        self._run_restart(monkeypatch, tmp_path)
+
+        assert "CALM_PROJECT_ROOT" not in os.environ
+        assert os.environ["CC_MEMORY_PROJECT_ROOT"] == "/legacy/root"
+
+    def test_sets_calm_project_root_to_resolved_main_repo_root_not_worktree_path(
+        self, monkeypatch, tmp_path,
+    ):
+        """project_rootがworktreeのようにmain repoルートと異なる場合、
+        _resolve_main_repo_root()が解決した値を設定する(project_rootそのものではない)
+
+        restart_mcp_server()自身が誤ったパスを検証なしに設定しないことの結線を
+        確認する(git-common-dir解決ロジック自体はTestResolveMainRepoRootの担当)。
+        """
+        monkeypatch.delenv("CALM_PROJECT_ROOT", raising=False)
+        monkeypatch.delenv("CCM_PROJECT_ROOT", raising=False)
+        monkeypatch.delenv("CC_MEMORY_PROJECT_ROOT", raising=False)
+
+        worktree_root = tmp_path / "worktree"
+        worktree_root.mkdir()
+        main_repo_root = tmp_path / "main-repo"
+
+        self._run_restart(
+            monkeypatch, worktree_root,
+            resolve_main_repo_root=lambda project_root: main_repo_root,
+        )
+
+        assert os.environ["CALM_PROJECT_ROOT"] == str(main_repo_root)
+
+
+class TestResolveMainRepoRoot:
+    """_resolve_main_repo_root(): git-common-dir経由のmain repoルート解決
+
+    subprocess.runを外部境界としてmonkeypatchし、git rev-parseの成否に応じた
+    解決結果を検証する。restart_mcp_server()側は_resolve_main_repo_rootを
+    恒等関数へ差し替えて呼び出すため、ここでの検証と独立している。
+    """
+
+    def test_returns_git_common_dir_parent_when_project_root_is_a_worktree(
+        self, monkeypatch, tmp_path,
+    ):
+        """project_rootがworktreeの場合、git-common-dirから解決したmain repoルートを
+        返す(project_root=worktreeルートをそのまま返さない)
+        """
+        worktree_root = tmp_path / "worktree"
+        main_repo_root = tmp_path / "main-repo"
+        git_common_dir = main_repo_root / ".git"
+
+        def fake_run(cmd, **kwargs):
+            assert cmd == ["git", "rev-parse", "--git-common-dir"]
+            assert kwargs["cwd"] == worktree_root
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{git_common_dir}\n", stderr="")
+
+        monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
+
+        result = restart_service._resolve_main_repo_root(worktree_root)
+
+        assert result == main_repo_root.resolve()
+
+    def test_falls_back_to_project_root_when_not_a_git_repository(self, monkeypatch, tmp_path):
+        """gitリポジトリでない(プラグインキャッシュ配置)場合はproject_rootをそのまま返す
+
+        このケースこそCALM_PROJECT_ROOT明示設定が元々必要だった配置であり、
+        git解決の失敗は「安全にフォールバックすべき」正常系である。
+        """
+        def fake_run(cmd, **kwargs):
+            raise subprocess.CalledProcessError(128, cmd, stderr="fatal: not a git repository")
+
+        monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
+
+        assert restart_service._resolve_main_repo_root(tmp_path) == tmp_path
+
+    def test_falls_back_to_project_root_when_git_binary_missing(self, monkeypatch, tmp_path):
+        """gitコマンド自体が存在しない環境でもproject_rootをそのまま返す"""
+        def fake_run(cmd, **kwargs):
+            raise FileNotFoundError("git not found")
+
+        monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
+
+        assert restart_service._resolve_main_repo_root(tmp_path) == tmp_path
+
+    def test_falls_back_to_project_root_on_timeout(self, monkeypatch, tmp_path):
+        """git rev-parseがハングした場合も再起動フロー全体をブロックせずproject_rootを返す"""
+        def fake_run(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+        monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
+
+        assert restart_service._resolve_main_repo_root(tmp_path) == tmp_path
 
 
 def test_stop_embedding_server_kills_found_pids(monkeypatch):
@@ -525,11 +716,14 @@ def test_sync_dependencies_timeout(monkeypatch, tmp_path):
     assert "timed out" in result.detail
 
 
-def test_restart_all_calls_in_expected_order(monkeypatch, tmp_path):
-    """uv sync → キャッシュ掃除 → MCP再起動 → embedding停止、の順で呼ばれることを検証する。
+def test_restart_all_calls_in_expected_order_without_stopping_embedding(monkeypatch, tmp_path):
+    """uv sync → キャッシュ掃除 → MCP再起動、の順で呼ばれ、既定ではembeddingサーバーを
+    停止しないことを検証する。
 
     uv syncとキャッシュ掃除を旧サーバー稼働中に済ませ、
     kill〜起動〜監視のダウンタイムを最小化する狙いのため、この順序が重要。
+    embeddingサーバーはコード変更頻度が低いため、MCP再起動のたびに巻き添えで
+    停止させない(次に必要になったときlazy spawnされるだけで都度停止するメリットが薄い)。
     """
     call_order = []
 
@@ -547,7 +741,7 @@ def test_restart_all_calls_in_expected_order(monkeypatch, tmp_path):
 
     def fake_stop_embedding_server():
         call_order.append("stop_embedding_server")
-        return []
+        return [9999]
 
     monkeypatch.setattr(restart_service, "sync_dependencies", fake_sync_dependencies)
     monkeypatch.setattr(restart_service, "clean_caches", fake_clean_caches)
@@ -556,11 +750,41 @@ def test_restart_all_calls_in_expected_order(monkeypatch, tmp_path):
 
     result = restart_service.restart_all(tmp_path)
 
-    assert call_order == ["sync", "clean_caches", "restart_mcp_server", "stop_embedding_server"]
+    assert call_order == ["sync", "clean_caches", "restart_mcp_server"]
     assert result["uv_sync"] == {"ok": True, "duration_sec": 1.5, "detail": "synced"}
     assert result["mcp_server"]["ok"] is True
     assert result["embedding_server"] == {"stopped_pids": []}
     assert result["caches"] == {"removed_pycache_dirs": []}
+
+
+def test_restart_all_stops_embedding_when_requested(monkeypatch, tmp_path):
+    """restart_embedding=True を指定したときだけ stop_embedding_server が呼ばれる"""
+    call_order = []
+
+    monkeypatch.setattr(
+        restart_service, "sync_dependencies",
+        lambda project_root: restart_service.SyncResult(True, 0.1, "synced"),
+    )
+    monkeypatch.setattr(
+        restart_service, "clean_caches",
+        lambda project_root: {"removed_pycache_dirs": []},
+    )
+
+    def fake_restart_mcp_server(project_root):
+        call_order.append("restart_mcp_server")
+        return restart_service.RestartResult(True, [1111], [2222], "restarted")
+
+    def fake_stop_embedding_server():
+        call_order.append("stop_embedding_server")
+        return [9999]
+
+    monkeypatch.setattr(restart_service, "restart_mcp_server", fake_restart_mcp_server)
+    monkeypatch.setattr(restart_service, "stop_embedding_server", fake_stop_embedding_server)
+
+    result = restart_service.restart_all(tmp_path, restart_embedding=True)
+
+    assert call_order == ["restart_mcp_server", "stop_embedding_server"]
+    assert result["embedding_server"] == {"stopped_pids": [9999]}
 
 
 def test_restart_all_continues_to_mcp_restart_when_uv_sync_fails(monkeypatch, tmp_path):
@@ -584,3 +808,53 @@ def test_restart_all_continues_to_mcp_restart_when_uv_sync_fails(monkeypatch, tm
     assert mcp_restart_called == [tmp_path]
     assert result["uv_sync"]["ok"] is False
     assert result["mcp_server"]["ok"] is True
+
+
+class TestMainCli:
+    """main(): --restart-embedding フラグのargparse配線を検証する"""
+
+    def _run_main(self, monkeypatch, argv):
+        captured = {}
+
+        def fake_restart_all(project_root, *, restart_embedding=False):
+            captured["restart_embedding"] = restart_embedding
+            return {
+                "uv_sync": {"ok": True, "duration_sec": 0.0, "detail": "synced"},
+                "mcp_server": {"ok": True, "old_pids": [], "new_pids": [1], "detail": "restarted"},
+                "embedding_server": {"stopped_pids": []},
+                "caches": {"removed_pycache_dirs": []},
+            }
+
+        monkeypatch.setattr(restart_service, "restart_all", fake_restart_all)
+        monkeypatch.setattr(restart_service.sys, "argv", ["restart_service.py"] + argv)
+        restart_service.main()
+        return captured
+
+    def test_flag_absent_defaults_to_false(self, monkeypatch):
+        """--restart-embedding を付けない場合、restart_all は restart_embedding=False で呼ばれる"""
+        captured = self._run_main(monkeypatch, [])
+        assert captured["restart_embedding"] is False
+
+    def test_flag_present_passes_true(self, monkeypatch):
+        """--restart-embedding を付けると restart_all は restart_embedding=True で呼ばれる"""
+        captured = self._run_main(monkeypatch, ["--restart-embedding"])
+        assert captured["restart_embedding"] is True
+
+    def test_exits_nonzero_when_mcp_restart_fails(self, monkeypatch, capsys):
+        """mcp_server.ok が False のとき sys.exit(1) する"""
+        def fake_restart_all(project_root, *, restart_embedding=False):
+            return {
+                "uv_sync": {"ok": True, "duration_sec": 0.0, "detail": "synced"},
+                "mcp_server": {"ok": False, "old_pids": [], "new_pids": [], "detail": "timed out"},
+                "embedding_server": {"stopped_pids": []},
+                "caches": {"removed_pycache_dirs": []},
+            }
+
+        monkeypatch.setattr(restart_service, "restart_all", fake_restart_all)
+        monkeypatch.setattr(restart_service.sys, "argv", ["restart_service.py"])
+
+        try:
+            restart_service.main()
+            assert False, "SystemExitが発生しなかった"
+        except SystemExit as e:
+            assert e.code == 1

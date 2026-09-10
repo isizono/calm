@@ -1,5 +1,9 @@
 """PostToolUse hook (matcher: Monitor): relay inbox監視の起動判定。
 
+Claude Code専用。Monitorツール（イベント駆動の永続監視）が存在しないCodexでは
+matcherが発火し得ないため、.codex/hooks.jsonには登録しない。Codex側では
+Monitor起動指示の注入自体もHarness.supports_monitor_watchでスキップされる（#616）。
+
 CALM_RELAY_SESSION_AWARE（デフォルトOFF）が有効なとき、Monitorツール呼び出しの
 tool_inputがそのセッションのrelay inbox pathを`persistent: true`で監視する
 コマンドだったことを検知し、セッションIDキーのマーカーファイル

@@ -1,5 +1,5 @@
 {
-  "description": "cc-memory (calm) hooks for Codex CLI. Claude Code版はhooks/hooks.json。MessageDisplayはCodexに対応イベントが無いため未登録（表示専用機能の代替は別issueで検討）。",
+  "description": "cc-memory (calm) hooks for Codex CLI. Claude Code版はhooks/hooks.json。MessageDisplayはCodexに対応イベントが無いため未登録（表示専用機能のため代替なし）。relay_monitor_watch_hook（PostToolUse matcher: Monitor）はCodexにMonitorツール自体が無く発火し得ないため未登録＝relay監視のイベント駆動wakeはCodex非対応（未読の消化指示のみUserPromptSubmit経由で機能する。#616）。",
   "hooks": {
     "SessionStart": [
       {
@@ -50,15 +50,6 @@
       }
     ],
     "PostToolUse": [
-      {
-        "matcher": "^Monitor$",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "cd \"$(git rev-parse --show-toplevel)\" && CALM_HARNESS=codex exec uv run python hooks/relay_monitor_watch_hook.py"
-          }
-        ]
-      },
       {
         "hooks": [
           {

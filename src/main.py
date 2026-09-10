@@ -44,6 +44,7 @@ from src.services.relay.runtime import (
 from src.services.tag_service import (
     search_tags as _search_tags,
     update_tag as _update_tag,
+    demote_tag_notes as _demote_tag_notes,
     collect_tag_notes_for_injection,
     get_archived_tags_for_strings,
 )
@@ -62,43 +63,43 @@ logger = logging.getLogger(__name__)
 # Instructions injected into the MCP server
 RULES = """# CALM 利用ガイド
 
-このツール群は過去の会話コンテキスト（トピック・決定事項・ログ・アクティビティ・資材）の取得と記録を行います。取得と記録の両輪を回すことで、ユーザーの繰り返し説明を防ぎ、次のAIセッションへ文脈を引き継ぎます。記録は自分のためだけでなく、次に来るエージェントのためのものです。
+このツール群は過去の会話コンテキスト（トピック・決定事項・ログ・アクティビティ・資材）の取得と記録を行います。取得と記録の両輪で、ユーザーの繰り返し説明を防ぎ次のAIセッションへ文脈を引き継ぎます。合意は`add_decisions`、経緯は`add_logs`、成果物は`add_material`で記録します。記録は自分のためだけでなく次のエージェントのためです。
 
 ## コンテキスト取得
 
-最初の応答を組み立てる前に、関連する記録を取得してください。これがこのツール群が存在する最も重要な理由です。ユーザーからの入力が単純でも省略しないでください。ユーザーに意図を直接聞く前に検索、です。
+最初の応答を組み立てる前に、関連する記録を取得してください。これがこのツール群が存在する最も重要な理由です。入力が単純でも省略せず、ユーザーに意図を直接聞く前に検索してください。
 
 ## アクティビティ
 
-セッションで何らかの作業を行う場合は、規模に関係なくアクティビティを作成し`check_in`してください。「SV（主語＋動詞）で何をするか表せるならアクティビティ」が判断基準です。`check_in`は関連情報（タグnotes・決定事項・ログ・資材等）を一括取得し、statusをin_progressに更新します。作業アクティビティには詳しい背景情報を書いてください。別のセッションが引き継ぐ可能性があります。
+セッションで作業を行う場合は規模に関係なくアクティビティを作成し`check_in`してください（判断基準は「SV（主語＋動詞）で言えるか」）。`check_in`は関連情報（タグnotes・決定事項・ログ・資材等）を一括取得しstatusをin_progressに更新します。作業アクティビティの背景情報は、別セッションが引き継げるよう詳しく書いてください。
 
 ## 記録の使い分け
 
-- 決定事項: あなたとユーザーが何かに合意したら`add_decisions`で記録してください。将来のAIセッションが最も頼りにする記録で、なければ同じ議論を繰り返すことになります。
-- ログ: 決定に至る経緯は決定事項だけでは残りません。詳細な議論の経緯は`add_logs`で保存してください。
-- 資材: ドラフト・分析結果・調査レポート等セッション中に生成された情報は`add_material`で保存してください。双方の合意は不要で、成果物が出た時点で保存します。要約はせず生データのまま残してください。要約の過程で失われる詳細こそ将来価値を持ちます。
+- 決定事項: ユーザーと合意したら`add_decisions`で記録してください。将来のAIセッションが最も頼る記録で、なければ同じ議論を繰り返すことになります。
+- ログ: 決定に至る経緯は決定事項だけでは残らないため、詳細な議論の経緯を`add_logs`で保存してください。
+- 資材: ドラフト・分析結果・調査レポート等の成果物を`add_material`で保存してください。双方の合意は不要、生成された時点で生データのまま保存します（要約で失われる詳細こそ将来価値を持つため要約しない）。
 
 ## タグ
 
-記録には必ずタグを付けてください。`domain:`（関心領域）は必須、アクティビティには`intent:`（作業意図）も必須です。素タグも積極的に付けてください。タグにはnotes（教訓・運用ルール）を紐づけられ、そのタグに遭遇した際にAIへ自動注入されます。
+記録には必ずタグを付けてください。`domain:`（関心領域）は必須、アクティビティは`intent:`（作業意図）も必須です。素タグも積極的に付けてください。タグにnotes（教訓・運用ルール）を紐づけると、そのタグに遭遇した際にAIへ自動注入されます。notesは取扱注意のみとし、仕様・経過・手順は正典へのポインタに留めます。
 
 ## トピックとリレーション
 
-トピックは1つの関心事・問題・機能を表します。会話が具体化・分岐したら新しいトピックを切ってください。関連するエンティティは`related`引数や`add_relation`で積極的に紐づけてください。まとめて取得されるべき情報の紐づけ漏れは文脈の喪失に等しいです。
+トピックは1つの関心事・問題・機能を表します。会話が具体化・分岐したら新しいトピックを切ってください。関連エンティティは`related`引数や`add_relation`で積極的に紐づけてください。まとめて取得されるべき情報の紐づけ漏れは文脈喪失に等しいです。
 
 ## 振る舞い（habits）
 
-全セッション共通の行動ルールはhabitsとして記録できます。正はhabits DBで、内容は~/.claude/rules配下の自動生成ファイル経由でセッション起動時に配信されます。タグやファイルに依存しない横断的なルールはhabitsに記録してください。詳細はget_habitsで確認できます。
+全セッション共通の行動ルールはhabitsとして記録できます。正はhabits DBで、内容は~/.claude/rules配下の自動生成ファイル経由でセッション起動時に配信されます。タグ・ファイルに依存しない横断ルールはhabitsに記録してください（詳細はget_habits）。
 
 ## セッション間でメッセージを送るには
 
-他セッションへ連絡するにはrelayの4関数を使います。`relay_post`は場（stream）宛の一方向投函、`relay_publish`/`relay_subscribe`はlabelsによる配信・購読のペア、`relay_receive`はどちらで届いたメッセージも自sessionのinboxから受け取る共通口です。送信=到達ではなく、受信側が`relay_receive`をpollして初めて内容が分かるpull型です。
+他セッションへ連絡するにはrelayの4関数を使います。`relay_post`は場（stream）宛の一方向投函、`relay_publish`/`relay_subscribe`はlabelsによる配信・購読のペア、`relay_receive`はどちらで届いたメッセージも自sessionのinboxから受け取る共通口です。送信=到達ではなくpull型で、受信側が`relay_receive`をpollして初めて内容が分かります。
 
-relayは「今、他の稼働中セッションに伝えたいことがある」ときに使います。後から誰かが読めればいいだけの情報は、relayを経由せず記録（add_logs等）に直接残してください。購読はエージェントの明示的な意図宣言であり、activity所有等から自動導出しません。
+relayは今稼働中の他セッションに伝えたいときに使い、後から読めればいい情報はrelayを経由せず`add_logs`等に直接残してください。購読はエージェントの明示的な意図宣言で、activity所有等から自動導出しません。
 
 ## 内部識別子は本文に出さない
 
-CALMが記録に振る内部の番号・記号は、表記の形式を問わず、発話・コミット・PR本文・コードコメント等の外部出力に書かないでください。番号は外部の読み手には解決できません。記録に言及するときはタイトルや内容の要約を主体に書きます。CALM内に保存するtitle・本文・タグ、ツール引数のID指定は対象外です。
+CALMが記録に振る内部の番号・記号は表記形式を問わず、発話・コミット・PR本文・コードコメント等の外部出力に書かないでください（外部の読み手には解決できないため）。記録に言及する際はタイトルや内容の要約で書きます。CALM内に保存するtitle・本文・タグ、ツール引数のID指定は対象外です。
 
 ## Asks（判断委譲）
 
@@ -106,9 +107,9 @@ askは離席中・セッション跨ぎ限定です。その場で答えられ�
 
 ---
 
-あなたにはユーザーの壁打ち相手であり、記録係としての役割が期待されています。ユーザーの発言は提案であり決定ではありません。懸念や代替案を積極的に提示し、双方が合意してから記録してください。
+あなたは壁打ち相手であり記録係です。ユーザーの発言は提案であり決定ではありません。懸念や代替案を積極的に提示し、双方が合意してから記録してください。
 
-使い方の詳細はcalm:man skillを参照してください。
+詳細はcalm:man skillを参照してください。
 """
 
 
@@ -367,6 +368,7 @@ def add_decisions(items: list[dict], ctx: Context) -> dict:
             - type: "habit" | "tag_note"
             - content: 伝搬先に書き込む文（decisionテキストとは別にエージェントが書き分ける）
             - tag: タグ文字列（type="tag_note"の場合のみ必須）
+            type="tag_note"は教訓・注意点のみに使う。仕様・手順の全文転記には使わない。
 
     Returns: {created: [...], errors: [{index, error}]}
         created各要素には related_decisions（同topic内の類似decision上位3件 [{id, title, distance}]）が付く。
@@ -378,6 +380,7 @@ def add_decisions(items: list[dict], ctx: Context) -> dict:
         書式ゆれ・空節・アンカー日付欠落等、またはtagsに intent:design を含む要素で
         「隣接確認:」節が無い場合、precedent_warnings（文字列のリスト）が付く。
         いずれもsoft validationであり、decision作成自体は拒否しない。
+        propagate_to伝搬失敗時は応答トップレベルにpropagation_failedが付く（decision作成済）。
     """
     result = decision_service.add_decisions(items)
     if "error" not in result:
@@ -878,6 +881,12 @@ def update_tag(
     notes: タグに紐づく教訓や運用ルールを記録する。CLAUDE.mdのタグ版として機能し、
     そのタグの文脈で作業するときに自動的にAIに注入される。上書き方式（全文置換）。
 
+    notes記述規約: notesに全文で置いてよいのは行動を変える取扱注意のみ。仕様・状態・
+    手順・歴史記録は正典（コード/docs/decision/activity等）に置き、notesには1行の
+    ポインタだけを残す（種別と正典の対応表は demote_tag_notes のdocstring参照）。
+    文字数上限を超えている場合は、notesを直接書き換える前に demote_tag_notes で
+    該当セクションを資材へ退避してから縮めること。
+
     canonical: エイリアス先タグを指定する。設定すると、tagがcanonicalのエイリアスになり、
     以降tagで記録・検索するとcanonical側のタグIDで解決される。
     設定時に既存の紐付け（topic_tags等4テーブル）をcanonical側に付け替える。
@@ -926,6 +935,84 @@ def update_tag(
         description=description,
         archived=archived,
         archived_reason=archived_reason,
+    )
+
+
+@mcp.tool()
+def demote_tag_notes(
+    tag: str,
+    sections: list[str],
+    ctx: Context,
+    mode: Literal["pointer", "drop"] = "pointer",
+    archive_material_id: Optional[int] = None,
+    archive_tags: Optional[list[str]] = None,
+    reason: Optional[str] = None,
+) -> dict:
+    """tag notesの指定セクションを資材へ逐語退避し、notesを縮小する。
+
+    ## tag notes 記述規約(正典)
+
+    tag notesに全文で置いてよいのは「そのタグに触れる者が最初に知るべき、行動を
+    変える取扱注意」だけである。種別ごとの扱いは以下の通り。
+
+    | 種別 | notesに置く量 | 置き場所(正典) |
+    |---|---|---|
+    | 教訓・落とし穴(そのタグ固有・現役) | 全文 | notes自身 |
+    | 仕様スナップショット | 1行ポインタ | コード / docs / decision |
+    | 状態・進行ジャーナル(「YYYY-MM-DD時点で〜中」等) | 0行。書くこと自体を禁止 | activity / topic / log |
+    | 運用手順 | 1行ポインタ | docs配下、または資材 |
+    | 歴史記録 | 1行ポインタ、または0行 | 資材 |
+    | 環境知識 | 全文(rules / auto-memoryと重複させない) | notes自身 |
+
+    既に書かれてしまった分は本ツールで資材へ逐語退避してから縮める。縮小と退避は
+    必ず同時に行うこと(引き先が無い状態で縮めるとその場で情報が消える)。本ツールは
+    退避書き込みとnotes縮小を1トランザクションにまとめており、notesの書き込みが
+    文字数上限(4000字)で拒否された場合は退避書き込み側も含めて全体がロールバック
+    され、退避先資材は作られずに残る。
+
+    この規約は tag notes に触れる全てのツール呼び出しへ配る正典であり、update_tag
+    等の他ツールのdocstringには要約と本docstringへの参照のみを置く。
+
+    ## 引数(詳細は docs/spec/mcp-tools.md 参照)
+
+    tag: 対象タグ。
+    sections: 退避する見出しテキストの配列("## "の有無は問わず正規化して照合)。
+        存在しない見出しはSECTION_NOT_FOUND、重複見出しはAMBIGUOUS_SECTIONで拒否。
+        前文(最初の"## "行より前)は退避対象にできない。
+    mode: "pointer"(既定)=退避後にnotes末尾へ1行ポインタを残す(索引は1セクションに
+        集約・重複排除)。"drop"=ポインタも残さない。
+    archive_material_id: 既存の退避先資材へ追記(省略時は新規作成)。retract済み・
+        存在しないIDはVALIDATION_ERROR。
+    archive_tags: 退避先資材のタグ(省略時 [tag, "tag-notes-archive"])。
+    reason: 退避理由の1行(退避先資材の冒頭に入る)。
+
+    ## 返り値
+
+    成功時: {tag, material_id, material_title, material_created, demoted_sections,
+    pointers_added, notes_length: {before, after, ceiling, over_budget},
+    citations_converted}。
+
+    notes_length.over_budget が True の間は、縮む更新以外のあらゆる追記が拒否され
+    続ける(ラチェット則)。整理の終了条件はdemote回数でなくover_budgetがFalseに
+    なったかで判定すること。
+
+    citations_converted は退避先資材の本文中で生ID参照が {{cite:...}} へ変換された
+    件数。notesに残した側はバイト同一を保証するが、退避先はこの変換分だけ表記が
+    変わりうる。
+
+    失敗時: {"error": {"code": str, "message": str}}
+    (NOT_FOUND / SECTION_NOT_FOUND / AMBIGUOUS_SECTION / VALIDATION_ERROR /
+     CONSTRAINT_VIOLATION / DATABASE_ERROR)
+    """
+    # NOTE: 上記docstringは tag_service.demote_tag_notes のdocstringと
+    # 同一に保つこと(二層とも同じ内容が必要)。
+    return _demote_tag_notes(
+        tag,
+        sections,
+        mode=mode,
+        archive_material_id=archive_material_id,
+        archive_tags=archive_tags,
+        reason=reason,
     )
 
 
@@ -2216,12 +2303,13 @@ def triage_ask(
     reason: str | None = None,
     title: str | None = None,
     tags: list[str] | None = None,
+    topic_id: int | None = None,
     dismiss_reason: str | None = None,
 ) -> dict:
     """answered状態のaskをpromote（decision化）またはdismissへ振り分ける。
 
-    promoteはdecision/reason/title/tagsをそのままadd_decisionsに渡してdecisionを
-    生成し、promoted_decision_idとして紐付ける。dismissはdismiss_reasonを
+    promoteはdecision/reason/title/tags/topic_idをそのままadd_decisionsに渡して
+    decisionを生成し、promoted_decision_idとして紐付ける。dismissはdismiss_reasonを
     記録するのみで実体は作らない。いずれもこのaskが止めていたactivityの
     blockは解除する（ask_blocksを削除）。
 
@@ -2241,6 +2329,9 @@ def triage_ask(
         reason: action="promote"のとき必須。生成するdecisionの理由
         title: action="promote"時のdecisionの見出し（optional、35字以内）
         tags: action="promote"時のdecisionに付けるタグ（optional）
+        topic_id: action="promote"時、生成するdecisionを紐付けるトピックID。
+          add_decisions側でtopic_id必須のバリデーションを行うため、省略するとpromoteは
+          VALIDATION_ERRORで失敗する（action="dismiss"では不要）
         dismiss_reason: action="dismiss"のとき必須。見送り理由
 
     Returns:
@@ -2257,6 +2348,7 @@ def triage_ask(
         reason=reason,
         title=title,
         tags=tags,
+        topic_id=topic_id,
         dismiss_reason=dismiss_reason,
         session_id=relay_identity.get_relay_identity(),
     )

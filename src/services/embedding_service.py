@@ -1,7 +1,6 @@
 """Embeddingサービス: embedding_serverへのHTTPクライアント + vec_index操作"""
 import json
 import logging
-import os
 import subprocess
 import sys
 import threading
@@ -60,13 +59,26 @@ def _resolve_project_root() -> str:
 
 # グローバル状態
 #
-# Thread safety: `_server_initialized` / `_backfill_done` / `_project_root_cache` は
-# 複数スレッドから読み書きされうるが、GIL によりアトミックな代入であり、
-# 二重初期化しても idempotent（_ensure_server_running は健在チェック→起動、
-# _resolve_project_root は冪等な解決）なので意図的にロックを取っていない。
+# Thread safety: `_project_root_cache` は複数スレッドから読み書きされうるが、
+# GIL によりアトミックな代入であり、_resolve_project_root が冪等な解決のため
+# 意図的にロックを取っていない。
+# `_server_initialized` / `_backfill_done` / `_backfill_started` / `_backfill_thread`
+# は `_init_lock`（後述）で保護する。バックフィルの多重起動を防ぐため。
 _server_initialized = False
 _backfill_done = False
 _project_root_cache: Optional[str] = None
+
+# _ensure_initialized 全体を保護するロック。ロック無しだと、サーバー復帰直後の
+# 並行呼び出しが _server_initialized をまだ見ていない状態で複数スレッド同時に
+# バックフィルを開始しうる（重複実行によるDB書込競合・embedding_server への
+# 二重リクエスト）。
+_init_lock = threading.Lock()
+
+# バックフィルは一度だけdaemon threadで起動する。_backfill_started はスレッド
+# 起動済みかどうかのフラグ（_init_lock保持中のみ読み書き）、_backfill_thread は
+# テストからjoinできるよう起動したthreadを保持する（実行時は参照しなくてよい）。
+_backfill_started = False
+_backfill_thread: Optional[threading.Thread] = None
 
 # spawn 直列化ロック。FastMCP は sync ツールを threadpool で並行実行するため、
 # ロックなしだとサーバー停止中の並行呼び出しが全スレッド分の embedding_server を
@@ -79,6 +91,34 @@ _spawn_lock = threading.Lock()
 # ため、失敗直後の再 spawn は許可しない。_spawn_lock 保持中のみ読み書きする。
 _SPAWN_RETRY_COOLDOWN_SEC = 30.0
 _last_spawn_failed_at: Optional[float] = None
+
+
+def _read_positive_int_env(name: str, default: int) -> int:
+    """envから正の整数を読む。未設定・無効値・0以下はdefaultにフォールバックする。"""
+    raw = env_get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(f"Invalid {name}={raw!r}, falling back to default {default}")
+        return default
+    if value <= 0:
+        logger.warning(f"{name} must be > 0, got {value}, falling back to default {default}")
+        return default
+    return value
+
+
+# backfill_embeddings のチャンク分割サイズ。数百〜千件超の未embeddingレコードを
+# 1リクエストにまとめて送ると、_encode_batch の60秒固定timeoutをCPU推論が超え、
+# 結果が破棄される一方でサーバー側スレッドは計算を続け「見捨てられたスレッド」が
+# 積み上がる。文字数・件数どちらか先に達した方でチャンクを区切る。
+BACKFILL_CHAR_BUDGET = _read_positive_int_env("CALM_EMBEDDING_BACKFILL_CHAR_BUDGET", 48_000)
+BACKFILL_MAX_ITEMS = _read_positive_int_env("CALM_EMBEDDING_BACKFILL_MAX_ITEMS", 64)
+
+# _encode_batch に渡す1テキストあたりの最大文字数。埋め込みモデル自体のtoken上限
+# 対策に加え、巨大な1件がbackfillの文字数予算を単独で食い潰すのを防ぐ。
+TEXT_MAX_CHARS = _read_positive_int_env("CALM_EMBEDDING_TEXT_MAX_CHARS", 8_000)
 
 
 def _get_project_root() -> str:
@@ -104,7 +144,14 @@ def _is_server_running() -> bool:
 
 
 def _start_server() -> Optional[subprocess.Popen]:
-    """embedding_server.pyをdetachedプロセスとして起動する。成功でPopen、失敗でNone。"""
+    """embedding_serverをdetachedプロセスとして起動する。成功でPopen、失敗でNone。
+
+    `-m src.infra.embedding_server` のモジュール実行形式で起動する（launcher.py の
+    `_start_http_server()` と同じ形式）。ファイルパスを直接実行する形式
+    （`[sys.executable, server_path]`）だと sys.path[0] が embedding_server.py
+    自身のディレクトリになり、内部の `from src.xxx import ...` が
+    `ModuleNotFoundError` でクラッシュする。
+    """
     try:
         cwd = _get_project_root()
     except (RuntimeError, OSError) as e:
@@ -112,10 +159,9 @@ def _start_server() -> Optional[subprocess.Popen]:
         # （呼び出し側 `_ensure_initialized` は False を graceful degradation として扱う）。
         logger.warning(f"Failed to resolve project root for embedding server: {e}")
         return None
-    server_path = os.path.join(cwd, "src", "infra", "embedding_server.py")
     try:
         proc = subprocess.Popen(
-            [sys.executable, server_path],
+            [sys.executable, "-m", "src.infra.embedding_server"],
             start_new_session=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -192,6 +238,10 @@ def _ensure_server_running() -> bool:
 def _encode_batch(texts: list[str], prefix: str) -> Optional[list[list[float]]]:
     """POST /encode にバッチリクエストを送信する。
 
+    各テキストは `TEXT_MAX_CHARS` 文字に切り詰めてから送る。日本語テキストは
+    `ensure_ascii=False` で送信する（デフォルトのTrueだと `\\uXXXX` 展開で
+    リクエストサイズが肥大化し、embedding_server側のサイズ上限に当たりうるため）。
+
     Args:
         texts: エンコードするテキストのリスト（prefix付与はサーバー側で行う）
         prefix: "document" or "query"
@@ -200,7 +250,10 @@ def _encode_batch(texts: list[str], prefix: str) -> Optional[list[list[float]]]:
         embeddingのリスト、失敗時はNone
     """
     try:
-        data = json.dumps({"texts": texts, "prefix": prefix}).encode("utf-8")
+        truncated = [t[:TEXT_MAX_CHARS] for t in texts]
+        data = json.dumps(
+            {"texts": truncated, "prefix": prefix}, ensure_ascii=False
+        ).encode("utf-8")
         req = urllib.request.Request(
             f"{SERVER_URL}/encode",
             data=data,
@@ -216,19 +269,42 @@ def _encode_batch(texts: list[str], prefix: str) -> Optional[list[list[float]]]:
         return None
 
 
+def _run_backfill() -> None:
+    """バックグラウンドthreadで一度だけ実行されるバックフィル本体。
+
+    _ensure_initialized から daemon thread に切り出して呼ばれる。呼び出し元の
+    encode_document/encode_query 等のリクエスト経路をバックフィル完了までブロック
+    させないため。backfill_embeddings/backfill_topic_embeddings は内部で例外を
+    握りつぶし整数を返す契約のためここでは再送出しないが、想定外の例外で
+    `_backfill_done` の更新が漏れないよう finally で確実に立てる。
+    """
+    global _backfill_done
+    try:
+        backfill_embeddings()
+        backfill_topic_embeddings()
+    finally:
+        _backfill_done = True
+
+
 def _ensure_initialized() -> bool:
-    """サーバー起動確認とバックフィルを一度だけ実行する。"""
-    global _server_initialized, _backfill_done
-    if _server_initialized:
-        return True
-    running = _ensure_server_running()
-    if running:
-        _server_initialized = True
-        if not _backfill_done:
-            backfill_embeddings()
-            backfill_topic_embeddings()
-            _backfill_done = True
-    return running
+    """サーバー起動確認を行い、バックフィルを一度だけdaemon threadで起動する。
+
+    `_init_lock` で全体を保護する。ロック無しだと、サーバー復帰直後の並行呼び出しが
+    `_server_initialized` 更新前に互いをすり抜け、バックフィルを多重起動しうる。
+    バックフィル自体は起動するだけでこの関数の戻りを待たせない（同期実行しない）。
+    """
+    global _server_initialized, _backfill_started, _backfill_thread
+    with _init_lock:
+        if _server_initialized:
+            return True
+        running = _ensure_server_running()
+        if running:
+            _server_initialized = True
+            if not _backfill_done and not _backfill_started:
+                _backfill_started = True
+                _backfill_thread = threading.Thread(target=_run_backfill, daemon=True)
+                _backfill_thread.start()
+        return running
 
 
 def build_embedding_text(*fields: Optional[str]) -> str:
@@ -408,8 +484,41 @@ def _get_entity_tag_text(conn, source_type: str, source_id: int) -> str:
     return " ".join(tags) if tags else ""
 
 
+def _chunk_backfill_items(
+    items: list[tuple[int, str]],
+) -> list[list[tuple[int, str]]]:
+    """(search_index_id, text) のリストを文字数予算・件数どちらか先に達した方で分割する。
+
+    どちらの上限も超えていない先頭1件は必ずチャンクへ入れる（1件のtextが単独で
+    BACKFILL_CHAR_BUDGETを超える場合でも進行が止まらないようにするため）。
+    """
+    chunks: list[list[tuple[int, str]]] = []
+    idx = 0
+    while idx < len(items):
+        chunk: list[tuple[int, str]] = []
+        char_count = 0
+        while idx < len(items) and len(chunk) < BACKFILL_MAX_ITEMS:
+            search_index_id, text = items[idx]
+            if chunk and char_count + len(text) > BACKFILL_CHAR_BUDGET:
+                break
+            chunk.append((search_index_id, text))
+            char_count += len(text)
+            idx += 1
+        chunks.append(chunk)
+    return chunks
+
+
 def backfill_embeddings() -> int:
-    """search_indexにあってvec_indexにないレコードのembeddingを一括生成する。
+    """search_indexにあってvec_indexにないレコードのembeddingを小分けに生成する。
+
+    種別(topic/decision/activity/log/material)ごとに、文字数予算
+    (BACKFILL_CHAR_BUDGET)・件数(BACKFILL_MAX_ITEMS)どちらか先に達した方でチャンクを
+    区切り、チャンクごとに encode → insert → commit する。数百〜千件超を1リクエストに
+    まとめて送ると _encode_batch の60秒固定timeoutをCPU推論が超え結果が破棄される上、
+    embedding_server側のスレッドは切断を知らず計算を続け「見捨てられたスレッド」が
+    積み上がるため、これを避ける。途中のチャンクが失敗した種別は、サーバーダウンの
+    可能性が高く同一種別内の再試行は無駄なため、残りのチャンクを諦めて次の種別へ進む。
+    それまでにcommit済みの成果は失われない。
 
     Returns: 生成したembedding数
     """
@@ -463,35 +572,40 @@ def backfill_embeddings() -> int:
             if not rows:
                 continue
 
-            ids = []
-            texts = []
+            items: list[tuple[int, str]] = []
             for row in rows:
                 tag_text = _get_entity_tag_text(conn, source_type, row[1])
                 text = build_embedding_text(row[2], row[3], tag_text)
                 if text:
-                    ids.append(row[0])
-                    texts.append(text)  # prefix付与はサーバー側で行う
+                    items.append((row[0], text))  # prefix付与はサーバー側で行う
 
-            if not texts:
+            if not items:
                 continue
 
-            try:
-                embeddings = _encode_batch(texts, "document")
+            for chunk in _chunk_backfill_items(items):
+                chunk_ids = [search_index_id for search_index_id, _ in chunk]
+                chunk_texts = [text for _, text in chunk]
+                try:
+                    embeddings = _encode_batch(chunk_texts, "document")
+                except Exception as e:
+                    logger.warning(f"Failed to backfill {source_type} embeddings: {e}")
+                    embeddings = None
                 if embeddings is None:
-                    continue
-                for search_index_id, embedding in zip(ids, embeddings):
+                    logger.warning(
+                        f"Backfill chunk failed for {source_type} "
+                        f"({len(chunk_ids)} items); giving up on remaining chunks for this type"
+                    )
+                    break
+                for search_index_id, embedding in zip(chunk_ids, embeddings):
                     _insert_embedding_row(conn, search_index_id, embedding)
                     total += 1
-            except Exception as e:
-                logger.warning(f"Failed to backfill {source_type} embeddings: {e}")
-                continue
+                conn.commit()
 
-        conn.commit()
         logger.info(f"Backfilled {total} embeddings")
         return total
     except Exception as e:
         logger.warning(f"Embedding backfill failed: {e}")
-        return 0
+        return total
     finally:
         conn.close()
 

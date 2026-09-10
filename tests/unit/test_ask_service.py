@@ -13,6 +13,7 @@ from src.db import get_connection
 from src.services import ask_service as ak
 from src.services.activity_service import add_activity, update_activity
 from src.services.relay import runtime as relay_runtime_module
+from src.services.topic_service import add_topic
 
 
 def _make_activity(title: str = "a1", status: str | None = None) -> int:
@@ -22,6 +23,10 @@ def _make_activity(title: str = "a1", status: str | None = None) -> int:
     if status is not None:
         update_activity(activity_id, status=status)
     return activity_id
+
+
+def _make_topic(title: str = "t1") -> int:
+    return add_topic(title=title, description="d", tags=["domain:test"])["topic_id"]
 
 
 class TestAddAskValidation:
@@ -534,9 +539,10 @@ class TestGetAsks:
 
     def test_promoted_decision_id_uses_id_raw(self, temp_db):
         act = _make_activity()
+        topic_id = _make_topic()
         r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
         ak.answer_ask(r1["id"], "a1")
-        promoted = ak.triage_ask(r1["id"], action="promote", decision="d", reason="r")
+        promoted = ak.triage_ask(r1["id"], action="promote", decision="d", reason="r", topic_id=topic_id)
 
         result = ak.get_asks(status="promoted")
         ask = result["asks"][0]
@@ -633,11 +639,13 @@ class TestAnswerAsk:
 class TestTriageAsk:
     def test_promote_strips_decision_and_reason_before_saving(self, temp_db):
         act = _make_activity()
+        topic_id = _make_topic()
         r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
         ak.answer_ask(r1["id"], "a1")
 
         result = ak.triage_ask(
             r1["id"], action="promote", decision="  do X  ", reason="  because Y  ",
+            topic_id=topic_id,
         )
 
         conn = get_connection()
@@ -663,12 +671,13 @@ class TestTriageAsk:
 
     def test_promote_creates_decision_and_links_it(self, temp_db):
         act = _make_activity()
+        topic_id = _make_topic()
         r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
         ak.answer_ask(r1["id"], "a1")
 
         result = ak.triage_ask(
             r1["id"], action="promote", decision="do X", reason="because Y",
-            title="t", tags=["domain:test"],
+            title="t", tags=["domain:test"], topic_id=topic_id,
         )
 
         assert result["status"] == "promoted"
@@ -683,10 +692,36 @@ class TestTriageAsk:
             blocks_count = conn.execute(
                 "SELECT COUNT(*) FROM ask_blocks WHERE ask_id = ?", (r1["id"],)
             ).fetchone()[0]
+            belongs_to_count = conn.execute(
+                "SELECT COUNT(*) FROM relations WHERE source_type='decision' AND source_id=? "
+                "AND target_type='topic' AND target_id=? AND relation_type='belongs_to'",
+                (result["promoted_decision_id"], topic_id),
+            ).fetchone()[0]
         finally:
             conn.close()
         assert dec_row["decision"] == "do X"
         assert blocks_count == 0
+        assert belongs_to_count == 1
+
+    def test_promote_without_topic_id_rejected(self, temp_db):
+        """topic_id省略時はadd_decisions側の必須バリデーションによりVALIDATION_ERRORになる
+        （孤児decision化を防ぐ回帰テスト）。"""
+        act = _make_activity()
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+        ak.answer_ask(r1["id"], "a1")
+
+        result = ak.triage_ask(r1["id"], action="promote", decision="do X", reason="because Y")
+
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT status, triage FROM asks WHERE id = ?", (r1["id"],)
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row["status"] == "answered"
+        assert row["triage"] is None
 
     def test_dismiss_retains_answer_body(self, temp_db):
         act = _make_activity()
@@ -779,10 +814,11 @@ class TestTriageAsk:
 
     def test_meta_ask_promote_includes_next_step(self, temp_db):
         act = _make_activity()
+        topic_id = _make_topic()
         r1 = ak.add_ask("q1", tags=["domain:test", "meta-ask"], blocks=[act], kind="meta")
         ak.answer_ask(r1["id"], "a1")
 
-        result = ak.triage_ask(r1["id"], action="promote", decision="d", reason="r")
+        result = ak.triage_ask(r1["id"], action="promote", decision="d", reason="r", topic_id=topic_id)
 
         assert result["status"] == "promoted"
         assert "next_step" in result
@@ -790,10 +826,11 @@ class TestTriageAsk:
 
     def test_ask_promote_has_no_next_step(self, temp_db):
         act = _make_activity()
+        topic_id = _make_topic()
         r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
         ak.answer_ask(r1["id"], "a1")
 
-        result = ak.triage_ask(r1["id"], action="promote", decision="d", reason="r")
+        result = ak.triage_ask(r1["id"], action="promote", decision="d", reason="r", topic_id=topic_id)
 
         assert result["status"] == "promoted"
         assert "next_step" not in result

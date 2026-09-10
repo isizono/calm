@@ -6,6 +6,7 @@ launcher.py の _ensure_server_running() は「生きていれば何もしない
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shutil
@@ -16,6 +17,7 @@ import time
 from pathlib import Path
 from typing import NamedTuple
 
+from src.env_compat import env_get, env_set
 from src.http_config import HTTP_PORT
 from src.services.embedding_service import PORT as EMBEDDING_SERVER_PORT
 
@@ -162,6 +164,35 @@ def _is_replaced(old_signatures: dict[int, str | None], new_pids: list[int]) -> 
     return False
 
 
+def _resolve_main_repo_root(project_root: Path) -> Path:
+    """project_rootをgit-common-dir経由で検証し、main repoルートを返す。
+
+    project_root(`Path(__file__).resolve().parent.parent.parent`)は、このモジュール
+    自身がworktree配下のチェックアウトから実行された場合、main repoルートではなく
+    そのworktreeのルートを指す。embedding_service._resolve_project_root()が
+    worktree誤解決によるメモリ膨張事故の再発防止のため`__file__`ベースの解決を
+    意図的に避けている（launcher.pyの_propagate_plugin_root_env()のdocstring参照）
+    のと同じ理由で、CALM_PROJECT_ROOTにはproject_rootをそのまま書き込まず、
+    ここでgit-common-dir解決を経由してmain repoルートに正規化する。
+
+    gitリポジトリでない場合(プラグインキャッシュ配置)はgit解決自体が失敗するため、
+    project_rootをそのまま返す(この配置こそCALM_PROJECT_ROOT明示設定が
+    元々必要だったケースであり、worktree誤解決の懸念は生じない)。
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            capture_output=True, text=True, check=True,
+            cwd=project_root, timeout=SUBPROCESS_TIMEOUT_SEC,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return project_root
+    common_dir = Path(result.stdout.strip())
+    if not common_dir.is_absolute():
+        common_dir = (project_root / common_dir).resolve()
+    return common_dir.parent.resolve()
+
+
 def restart_mcp_server(
     project_root: Path,
     *,
@@ -183,6 +214,16 @@ def restart_mcp_server(
         deadline = time.monotonic() + kill_wait_sec
         while time.monotonic() < deadline and find_listen_pids(MCP_PORT):
             time.sleep(poll_interval_sec)
+
+    # 新規launcherプロセスはos.environを継承する(Popenにenv未指定)。プラグイン
+    # キャッシュ配置(gitリポジトリ外)ではlauncher起動時の_propagate_plugin_root_env()
+    # がCLAUDE_PLUGIN_ROOT頼みで、この再起動フロー経由の子プロセスにその値が
+    # 伝播している保証がないため、embedding_service._resolve_project_root()の
+    # git rev-parseフォールバックが失敗してembeddingサーバーが起動できなくなる。
+    # ここで明示的に設定し、子プロセスチェーン全体に伝播させる
+    # (_resolve_main_repo_root()でworktree誤解決を避ける)。
+    if not env_get("CALM_PROJECT_ROOT"):
+        env_set("CALM_PROJECT_ROOT", str(_resolve_main_repo_root(project_root)))
 
     LAUNCHER_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(LAUNCHER_LOG_PATH, "w") as log_file:
@@ -245,18 +286,23 @@ def clean_caches(project_root: Path) -> dict:
     return {"removed_pycache_dirs": removed_pycache_dirs}
 
 
-def restart_all(project_root: Path) -> dict:
-    """依存関係の同期・キャッシュ掃除・MCP再起動・embedding停止を順に行う。
+def restart_all(project_root: Path, *, restart_embedding: bool = False) -> dict:
+    """依存関係の同期・キャッシュ掃除・MCP再起動を順に行う。
 
     uv syncとキャッシュ掃除は、旧MCPサーバーがまだ稼働している間に
     済ませておく。これによりkill〜新規プロセス起動〜起動監視という
     ダウンタイムの区間からvenv構築時間を切り離す。uv syncが失敗しても
     後続のMCP再起動は試行する(結果には成否を含めて返す)。
+
+    embeddingサーバーはコードの変更頻度が低いため、既定では停止しない
+    (次にencodeが必要になったとき自動でlazy spawnされるだけで、都度停止すると
+    モデル再ロード分の起動遅延を毎回背負うだけでメリットが薄い)。
+    明示的にコード変更を反映させたい場合のみ `restart_embedding=True` を指定する。
     """
     sync_result = sync_dependencies(project_root)
     cache_result = clean_caches(project_root)
     mcp_result = restart_mcp_server(project_root)
-    embedding_stopped = stop_embedding_server()
+    embedding_stopped = stop_embedding_server() if restart_embedding else []
     return {
         "uv_sync": {
             "ok": sync_result.ok,
@@ -275,8 +321,19 @@ def restart_all(project_root: Path) -> dict:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="cc-memory server restart")
+    parser.add_argument(
+        "--restart-embedding",
+        action="store_true",
+        help=(
+            "embeddingサーバーも停止する(既定では停止しない。次回のencode呼び出し時に"
+            "自動でlazy spawnされる)"
+        ),
+    )
+    args = parser.parse_args()
+
     project_root = Path(__file__).resolve().parent.parent.parent
-    result = restart_all(project_root)
+    result = restart_all(project_root, restart_embedding=args.restart_embedding)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if not result["mcp_server"]["ok"]:
         sys.exit(1)

@@ -11,7 +11,6 @@ from src.db import get_connection, row_to_dict
 from src.services.readable_id import strip_entity_id_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.citations_service import (
-    apply_and_writeback_conversions,
     apply_raw_to_cite_conversion,
     upsert_citations_for_owner_with_conn,
 )
@@ -46,6 +45,104 @@ def _material_to_response(material: dict, tags: list[str]) -> dict:
         result["retracted_at"] = material["retracted_at"]
     strip_entity_id_inplace(result, id_key="material_id")
     return result
+
+
+def _add_material_with_conn(
+    conn: sqlite3.Connection,
+    title: str,
+    content: str,
+    tags: list[str],
+    source: str,
+    related: list[dict] | None = None,
+) -> dict:
+    """資材の作成に伴う副作用を、呼び出し元のconn・トランザクションを共有して実行する。
+
+    行うのは INSERT 本体に加えて (a) タグリンク (b) related のリレーション追加
+    (c) 生ID→citation の変換と本文書き戻し (d) citations テーブルへの upsert と
+    publish_entity_event_with_conn(created) の4点。commit と embedding 生成は
+    呼び出し元の責務（呼び出し元が commit 後に generate_and_store_embedding を呼ぶこと）。
+
+    呼び出し元が title/content/source/tags/related を事前に validate 済みである前提で
+    副作用のみを行う（本関数自身は title の空チェック等はしない）。ただし tags/related の
+    形式チェックはここでも行う（add_material 単体呼び出し時と同じ検証を、
+    demote_tag_notes 等の別呼び出し元でも独立に保証するため）。
+
+    Returns:
+        {"material_id": int, "title": str, "content": str, "tag_strings": list[str],
+         "citations_converted": int}
+        title/content は citation 変換後の値。citations_converted は content 中で
+        生ID参照が {{cite:...}} へ変換された件数。
+        失敗時: {"error": {"code": str, "message": str}}
+    """
+    parsed_tags = validate_and_parse_tags(tags, required=True)
+    if isinstance(parsed_tags, dict):
+        return parsed_tags
+
+    if related:
+        err = _validate_targets("material", related)
+        if err:
+            return err
+
+    # updated_at は created_at と同値で初期化する（recomposeナッジ判定の基準時刻T用）。
+    # created_at の DEFAULT 式に揃え、INSERT内で同一の strftime 値をセットする。
+    cursor = conn.execute(
+        "INSERT INTO materials (title, content, source, updated_at) "
+        "VALUES (?, ?, ?, strftime('%Y-%m-%d %H:%M:%S', 'now'))",
+        (title, content, source),
+    )
+    material_id = cursor.lastrowid
+
+    # タグをリンク
+    tag_ids = ensure_tag_ids(conn, parsed_tags)
+    link_tags(conn, "material_tags", "material_id", material_id, tag_ids)
+
+    # リレーションを追加
+    if related:
+        _add_relation_with_conn(conn, "material", material_id, related)
+
+    # 生 ID リテラルを {{cite:...}} に変換し、書き換わった本文を DB に書き戻す
+    # (apply_raw_to_cite_conversion を直接呼ぶのは、sanitized_count を
+    # citations_converted として呼び出し元に返すため。書き戻し自体は
+    # apply_and_writeback_conversions と同じロジック)
+    conversion = apply_raw_to_cite_conversion(
+        conn,
+        entity_type="material",
+        entity_id=material_id,
+        fields_payload={"title": title, "content": content},
+        tool_name="add_material",
+    )
+    converted_fields = conversion["fields"]
+    original_fields = {"title": title, "content": content}
+    changed = {k: v for k, v in converted_fields.items() if v != original_fields[k]}
+    if changed:
+        set_clause = ", ".join(f"{k} = ?" for k in changed)
+        conn.execute(
+            f"UPDATE materials SET {set_clause} WHERE id = ?",
+            (*changed.values(), material_id),
+        )
+    title = converted_fields["title"]
+    content = converted_fields["content"]
+    citations_converted = conversion["stats"].get("content", {}).get("sanitized_count", 0)
+
+    # 本文中の {{cite:X#NNN}} を citations テーブルに保存
+    upsert_citations_for_owner_with_conn(
+        conn, "material", material_id, title=title, content=content
+    )
+
+    # タグを取得（commit前）
+    tag_strings = get_entity_tags(conn, "material_tags", "material_id", material_id)
+
+    publish_entity_event_with_conn(
+        conn, entity_type="material", entity_id=material_id, event="created"
+    )
+
+    return {
+        "material_id": material_id,
+        "title": title,
+        "content": content,
+        "tag_strings": tag_strings,
+        "citations_converted": citations_converted,
+    }
 
 
 def add_material(title: str, content: str, tags: list[str], source: str, related: list[dict] | None = None) -> dict:
@@ -106,52 +203,20 @@ def add_material(title: str, content: str, tags: list[str], source: str, related
 
     conn = get_connection()
     try:
-        # updated_at は created_at と同値で初期化する（recomposeナッジ判定の基準時刻T用）。
-        # created_at の DEFAULT 式に揃え、INSERT内で同一の strftime 値をセットする。
-        cursor = conn.execute(
-            "INSERT INTO materials (title, content, source, updated_at) "
-            "VALUES (?, ?, ?, strftime('%Y-%m-%d %H:%M:%S', 'now'))",
-            (title, content, source),
-        )
-        material_id = cursor.lastrowid
+        result = _add_material_with_conn(conn, title, content, tags, source, related=related)
+        if "error" in result:
+            conn.rollback()
+            return result
 
-        # タグをリンク
-        tag_ids = ensure_tag_ids(conn, parsed_tags)
-        link_tags(conn, "material_tags", "material_id", material_id, tag_ids)
-
-        # リレーションを追加
-        if related:
-            _add_relation_with_conn(conn, "material", material_id, related)
-
-        # 生 ID リテラルを {{cite:...}} に変換し、書き換わった本文を DB に書き戻す
-        converted = apply_and_writeback_conversions(
-            conn,
-            entity_type="material",
-            entity_id=material_id,
-            fields_payload={"title": title, "content": content},
-            tool_name="add_material",
-            table="materials",
-        )
-        title = converted["title"]
-        content = converted["content"]
-
-        # 本文中の {{cite:X#NNN}} を citations テーブルに保存
-        upsert_citations_for_owner_with_conn(
-            conn, "material", material_id, title=title, content=content
-        )
-
-        # タグを取得（commit前）
-        tag_strings = get_entity_tags(conn, "material_tags", "material_id", material_id)
-
-        publish_entity_event_with_conn(
-            conn, entity_type="material", entity_id=material_id, event="created"
-        )
-
+        material_id = result["material_id"]
         conn.commit()
 
         # embedding生成（失敗してもmaterial作成には影響しない）
-        tag_text = " ".join(tag_strings) if tag_strings else ""
-        generate_and_store_embedding("material", material_id, build_embedding_text(title, content, tag_text))
+        tag_text = " ".join(result["tag_strings"]) if result["tag_strings"] else ""
+        generate_and_store_embedding(
+            "material", material_id,
+            build_embedding_text(result["title"], result["content"], tag_text),
+        )
 
         return {"material_id": material_id}
 
@@ -427,6 +492,64 @@ def update_material(
         }
     finally:
         conn.close()
+
+
+def _append_material_content_with_conn(conn: sqlite3.Connection, material_id: int, content: str) -> dict:
+    """既存資材のcontentへcontentを追記する（conn共有・commitは呼び出し元の責務）。
+
+    区切りは CONTENT_JOIN_SEPARATOR（update_material の mode="append" と同じ規約）。
+    生ID→citation の変換と本文書き戻し、citations 再投入、
+    publish_entity_event_with_conn(updated) を呼び出し元の conn・トランザクション内で行う。
+    embedding 再生成は呼び出し元の責務。
+
+    呼び出し元が material_id の存在・非retract確認を済ませている前提（本関数自身は
+    存在チェックをしない）。
+
+    Returns:
+        {"material_id": int, "title": str, "content": str, "tag_strings": list[str],
+         "citations_converted": int}
+        title/content は追記・citation変換後の値。
+    """
+    row = conn.execute(
+        "SELECT title, content FROM materials WHERE id = ?", (material_id,)
+    ).fetchone()
+    existing_content = row["content"] or ""
+    effective_content = (
+        content if existing_content == "" else existing_content + CONTENT_JOIN_SEPARATOR + content
+    )
+
+    conversion = apply_raw_to_cite_conversion(
+        conn,
+        entity_type="material",
+        entity_id=material_id,
+        fields_payload={"content": effective_content},
+        tool_name="update_material",
+    )
+    new_content = conversion["fields"]["content"]
+    citations_converted = conversion["stats"].get("content", {}).get("sanitized_count", 0)
+
+    conn.execute(
+        "UPDATE materials SET content = ?, updated_at = strftime('%Y-%m-%d %H:%M:%S', 'now') WHERE id = ?",
+        (new_content, material_id),
+    )
+
+    upsert_citations_for_owner_with_conn(
+        conn, "material", material_id, title=row["title"], content=new_content
+    )
+
+    tag_strings = get_entity_tags(conn, "material_tags", "material_id", material_id)
+
+    publish_entity_event_with_conn(
+        conn, entity_type="material", entity_id=material_id, event="updated"
+    )
+
+    return {
+        "material_id": material_id,
+        "title": row["title"],
+        "content": new_content,
+        "tag_strings": tag_strings,
+        "citations_converted": citations_converted,
+    }
 
 
 def get_material(material_id: int, include_retracted: bool = False) -> dict:

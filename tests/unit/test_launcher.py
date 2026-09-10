@@ -4,6 +4,7 @@
 stdio <-> HTTP ブリッジは統合テストで検証する。
 """
 import json
+import os
 import subprocess
 import urllib.error
 import urllib.request
@@ -331,6 +332,53 @@ class TestProjectRoot:
         import os
         assert os.path.isdir(launcher._PROJECT_ROOT)
         assert os.path.isfile(os.path.join(launcher._PROJECT_ROOT, "pyproject.toml"))
+
+
+class TestPropagatePluginRootEnv:
+    """_propagate_plugin_root_env: プラグイン実行時のCALM_PROJECT_ROOT自動設定"""
+
+    def test_sets_calm_project_root_from_claude_plugin_root(self, monkeypatch):
+        """CLAUDE_PLUGIN_ROOTが設定されCALM_PROJECT_ROOTが未設定なら、その値を設定する"""
+        monkeypatch.delenv("CALM_PROJECT_ROOT", raising=False)
+        monkeypatch.delenv("CCM_PROJECT_ROOT", raising=False)
+        monkeypatch.delenv("CC_MEMORY_PROJECT_ROOT", raising=False)
+        monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/plugin/cache/calm/1.0.0")
+
+        launcher._propagate_plugin_root_env()
+
+        assert os.environ["CALM_PROJECT_ROOT"] == "/plugin/cache/calm/1.0.0"
+
+    def test_does_not_override_existing_calm_project_root(self, monkeypatch):
+        """CALM_PROJECT_ROOTが既に設定済みなら上書きしない"""
+        monkeypatch.setenv("CALM_PROJECT_ROOT", "/explicit/root")
+        monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/plugin/cache/calm/1.0.0")
+
+        launcher._propagate_plugin_root_env()
+
+        assert os.environ["CALM_PROJECT_ROOT"] == "/explicit/root"
+
+    def test_respects_legacy_env_name_as_already_set(self, monkeypatch):
+        """旧名(CC_MEMORY_PROJECT_ROOT)が設定済みの場合も「既に設定済み」として扱い上書きしない"""
+        monkeypatch.delenv("CALM_PROJECT_ROOT", raising=False)
+        monkeypatch.delenv("CCM_PROJECT_ROOT", raising=False)
+        monkeypatch.setenv("CC_MEMORY_PROJECT_ROOT", "/legacy/root")
+        monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/plugin/cache/calm/1.0.0")
+
+        launcher._propagate_plugin_root_env()
+
+        assert "CALM_PROJECT_ROOT" not in os.environ
+        assert os.environ["CC_MEMORY_PROJECT_ROOT"] == "/legacy/root"
+
+    def test_noop_when_claude_plugin_root_unset(self, monkeypatch):
+        """CLAUDE_PLUGIN_ROOTが未設定（通常のgitチェックアウト実行）なら何もしない"""
+        monkeypatch.delenv("CALM_PROJECT_ROOT", raising=False)
+        monkeypatch.delenv("CCM_PROJECT_ROOT", raising=False)
+        monkeypatch.delenv("CC_MEMORY_PROJECT_ROOT", raising=False)
+        monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+
+        launcher._propagate_plugin_root_env()
+
+        assert "CALM_PROJECT_ROOT" not in os.environ
 
 
 class TestBridgeSessionTermination:

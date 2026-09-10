@@ -69,3 +69,21 @@ class TestCheckInChooseMentionsGetDecisions:
     def test_choose_section_lists_get_decisions(self):
         desc = _all_tool_descriptions()["check_in"]
         assert "get_decisions" in desc
+
+
+class TestAddDecisionsPropagateToTagNoteScopeNote:
+    """propagate_to(type="tag_note")の使途を教訓・注意点に限定する注記が
+    docstringに存在すること。実処理側(decision_service.add_decisions)の
+    docstringにはpropagate_to自体の説明箇所が無いため、main.py側のみ検証する
+    (存在しない箇所に注記を捏造しない)。"""
+
+    def test_tag_note_scope_is_documented(self):
+        desc = _all_tool_descriptions()["add_decisions"]
+        assert "教訓・注意点のみに使う" in desc
+
+
+class TestRulesTagNotesConvention:
+    def test_rules_mentions_notes_are_for_caution_only(self):
+        from src.main import RULES
+
+        assert "notesは取扱注意のみ" in RULES

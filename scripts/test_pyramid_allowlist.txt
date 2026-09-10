@@ -11,3 +11,4 @@ test_migration_lint.py
 test_pr_size_check.py
 test_hook_state.py
 test_hooks_json_lint.py
+test_lock_file.py

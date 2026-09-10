@@ -117,7 +117,7 @@ class TestExistingDirectionDecisionsResponse:
         assert "1件" in created["direction_note"]
 
     def test_domainless_direction_note_is_cross_domain(self, temp_db):
-        """domainタグを解決できない方向性item（topic無し・domainタグ無し）では、
+        """domainタグを解決できない方向性item（domainタグ無しのtopicに属する）では、
         domain絞り込みが効かず全domainの方向性を件数に含めるため、direction_noteは
         「同domain」ではなく全domain横断である旨を示す"""
         other = add_topic(
@@ -128,9 +128,12 @@ class TestExistingDirectionDecisionsResponse:
              "title": "別domain", "tags": [DIRECTION_TAG]},
         ])
 
+        no_domain_topic = add_topic(
+            title="domainタグ無しトピック", description="d", tags=["direction-add-no-domain"],
+        )
         result = add_decisions([
-            {"decision": "domain無しの方向性", "reason": "r", "title": "無domain",
-             "tags": [DIRECTION_TAG]},
+            {"topic_id": no_domain_topic["topic_id"], "decision": "domain無しの方向性", "reason": "r",
+             "title": "無domain", "tags": [DIRECTION_TAG]},
         ])
         created = result["created"][0]
         # domain絞り込みが効かないため、他domainの方向性も existing に入る

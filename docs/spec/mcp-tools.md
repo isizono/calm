@@ -22,7 +22,7 @@ last-synced-migration: 0048
 
 ## 1. ツール一覧
 
-全54ツール。カテゴリ別に一覧する。
+全55ツール。カテゴリ別に一覧する。
 
 ### 1.1 記録系（add系）
 
@@ -61,6 +61,7 @@ last-synced-migration: 0048
 | `update_material` | 資材のcontent/title/tags/sourceを更新する |
 | `update_habit` | 振る舞いを更新する（content/active） |
 | `update_tag` | タグのnotes/canonical/rename/descriptionを更新する |
+| `demote_tag_notes` | tag notesの指定セクションを資材へ逐語退避し、notesを縮小する |
 | `retract` | 決定事項・ログ・資材を論理削除する（undoで復帰可能、検索インデックスも再登録される） |
 
 ### 1.4 検索系
@@ -191,8 +192,9 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 | --- | --- | --- | --- | --- |
 | items | list[object] | yes | - | 最大10件。各要素は `{topic_id, decision, reason, title?, tags?, propagate_to?}` |
 
-**返り値**: `{created: [...], errors: [...], hints?: [string]}`。created の各要素には `related_decisions`（同topic内の類似decision上位3件）が付く。hintsはharness_serviceからの推奨行動。
+**返り値**: `{created: [...], errors: [...], propagation_failed?: [...], hints?: [string]}`。created の各要素には `related_decisions`（同topic内の類似decision上位3件）が付く。hintsはharness_serviceからの推奨行動。
 **propagate_to**: `{type: "habit" | "tag_note", content: string, tag?: string}`。tagはtype="tag_note"のとき必須。
+**propagation_failed**: propagate_toの伝搬が1件以上失敗した場合のみ付く配列。各要素は `{index, decision_id, type, tag?, message}`。decision自体の作成成否には影響しない（decisionは常に成功として作成される）ため、この配列を見ないと伝搬失敗（例: tag_note伝搬先タグの文字数上限超過）に気づけない。
 **関連**: `add_habit` / `update_tag(notes=...)` と連動。
 
 ### 2.4 get_topics
@@ -286,6 +288,27 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 | archived_reason | string | no | null | 退役理由（最大100文字）。archived=trueと同時指定のときのみ有効 |
 
 **制約**: notes/canonical/rename/description/archived は相互排他。少なくとも1つ指定。canonical連鎖（エイリアスのエイリアス）は禁止。notes付きタグはエイリアス化不可。archivedなタグをcanonical先に指定する・archivedなタグ自身をcanonical化することはできない。他タグのcanonical先になっているタグはarchived化できない。archived_reasonの単独指定（archived未指定またはfalseとの同時指定）はエラー。既にarchivedなタグへarchived=trueを再適用しても冪等（archived_atもarchived_reasonも更新されない）。archived=falseに戻すとarchived_reasonも自動的にnullへ戻る。
+
+### 2.9b demote_tag_notes
+
+tag notesの指定セクションを資材へ逐語退避し、notesを縮小するツールである。notesは全文置換APIしか持たないため、退避する見出し単位で本文を切り出し、退避先資材への書き込みとnotesの縮小を1トランザクションで行う。
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| tag | string | yes | - | 対象タグ |
+| sections | list[string] | yes | - | 退避する見出しテキストの配列。`## ` の有無は問わない（前後空白と先頭 `## ` を正規化して照合） |
+| mode | string | no | "pointer" | `pointer`は退避後にnotes末尾へ1行ポインタを残す。`drop`はポインタも残さない |
+| archive_material_id | int | no | null | 既存の退避先資材へ追記する。省略時は新規作成 |
+| archive_tags | list[string] | no | null | 退避先資材のタグ。省略時は `[tag, "tag-notes-archive"]` |
+| reason | string | no | null | 退避理由の1行。退避先資材の冒頭に入る |
+
+**notesの3層分解**: notesは preamble（最初の `## ` 見出し行より前の本文、退避対象にできない）/ sections（`## ` 見出し単位のブロック列）/ trailer（末尾から連続する空行または `#audited-...` 等のハッシュタグのみの行、常にnotesに残る）の3層として扱う。
+
+**制約**: `sections` に存在しない見出しを指定するとSECTION_NOT_FOUND、同一見出しが複数あるタグではAMBIGUOUS_SECTIONで拒否する。`archive_material_id` にretract済みまたは存在しないIDを指定するとVALIDATION_ERROR。退避後のnotesの書き込みが文字数上限（4000字）を超えて拒否された場合、退避先資材の作成・追記を含む変更全体がロールバックされる。全セクションを退避してnotesが空白のみになる場合、notesは空文字列になる。
+
+**返り値**: `{tag, material_id, material_title, material_created, demoted_sections, pointers_added, notes_length: {before, after, ceiling, over_budget}, citations_converted}`。`notes_length.over_budget` は縮小後もなお天井を超えているかを示す（ラチェット則により、超えている間は縮む更新以外のあらゆる追記が拒否され続ける）。`citations_converted` は退避先資材の本文中で生ID参照が `{{cite:...}}` へ自動変換された件数。
+
+**tag notes 記述規約**: notesに全文で置いてよいのは行動を変える取扱注意（教訓・落とし穴、環境知識）のみで、仕様スナップショット・運用手順・歴史記録は1行ポインタ、状態・進行ジャーナルは0行（書くこと自体を禁止）とする。規約全文はツールdocstring（`demote_tag_notes`）が正典。
 
 ### 2.10 analyze_tags
 
@@ -703,11 +726,12 @@ Claude Codeセッション間の「CLI表示名（例: `workspace-a2`）→人�
 | reason | string | action=promoteのとき必須 | null | 生成するdecisionの理由 |
 | title | string | no | null | decisionの見出し（35字以内） |
 | tags | list[string] | no | null | decisionに付けるタグ |
+| topic_id | int | action=promoteのとき必須 | null | 生成するdecisionを紐付けるトピックID |
 | dismiss_reason | string | action=dismissのとき必須 | null | 見送り理由 |
 
 **返り値**: promote時 `{id: int, status: "promoted", promoted_decision_id: int}`、dismiss時 `{id: int, status: "dismissed"}`。promote時、対象askが`kind="meta"`のときのみ`next_step: str`が追加で含まれる。
-**動作**: promoteはdecision/reason/title/tagsをそのまま`add_decisions`に渡してdecisionを生成し、promoted_decision_idとして紐付ける。いずれもこのaskが止めていたactivityのblockを解除する（ask_blocksを削除）。`kind="meta"`のpromoteは、`rule-placement` skillに従いhabits/tag-notes/pin/判例decision/rules等への配置を先に済ませてから呼ぶ。
-**エラー処理**: 対象がanswered かつ未トリアージでない場合、action不正、promote時のdecision/reason欠落、dismiss時のdismiss_reason欠落はいずれも`VALIDATION_ERROR`。promote処理中にdecision生成が失敗した場合はask側の状態変更もロールバックされ`answered`のまま残る。
+**動作**: promoteはdecision/reason/title/tags/topic_idをそのまま`add_decisions`に渡してdecisionを生成し、promoted_decision_idとして紐付ける。いずれもこのaskが止めていたactivityのblockを解除する（ask_blocksを削除）。`kind="meta"`のpromoteは、`rule-placement` skillに従いhabits/tag-notes/pin/判例decision/rules等への配置を先に済ませてから呼ぶ。
+**エラー処理**: 対象がanswered かつ未トリアージでない場合、action不正、promote時のdecision/reason/topic_id欠落、dismiss時のdismiss_reason欠落はいずれも`VALIDATION_ERROR`（topic_id欠落は`add_decisions`側の必須バリデーションに起因する）。promote処理中にdecision生成が失敗した場合はask側の状態変更もロールバックされ`answered`のまま残る。
 
 ### 2.47 withdraw_ask
 
