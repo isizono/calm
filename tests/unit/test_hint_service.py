@@ -339,6 +339,7 @@ class TestNotesOverBudget:
         assert budget_hints[0]["delivery_hint"] == "immediate"
         assert budget_hints[0]["severity"] == "info"
         assert str(_TAG_NOTES_RATCHET_CEILING + 1) in budget_hints[0]["message"]
+        assert budget_hints[0]["suggested_action"]["tool"] == "demote_tag_notes"
 
     def test_silent_within_ceiling(self, temp_db):
         topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
@@ -348,7 +349,10 @@ class TestNotesOverBudget:
         hints = get_hints("tag", tag_id)
         assert [h for h in hints if h["type"] == "notes_over_budget"] == []
 
-    def test_suppressed_by_marker(self, temp_db):
+    def test_bare_marker_does_not_suppress(self, temp_db):
+        """notes_over_budgetは恒久抑制（日付なしマーカー）を認めない。notesが
+        長すぎる状態を恒久的に黙らせられるべきではないため、超過が解消するまで
+        発火し続ける。"""
         topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
         tag_id = _tag_id(DOMAIN_TAG_NAME)
         over_budget_with_marker = (
@@ -357,34 +361,31 @@ class TestNotesOverBudget:
         force_notes_over_ceiling(tag_id, over_budget_with_marker)
 
         hints = get_hints("tag", tag_id)
-        assert [h for h in hints if h["type"] == "notes_over_budget"] == []
+        assert any(h["type"] == "notes_over_budget" for h in hints)
 
-    def test_cooldown_marker_write_fails_silently_when_already_over_ceiling(self, temp_db):
-        """notes_over_budgetは「notesが天井超過」のときにしか発火しないため、その
-        クールダウンマーカーの追記（=さらなる増加）は天井トリガーに必ず拒否される。
-        既存のTestCooldownMarkerWriteFailureと同じ扱いで、書き込み失敗はhintを
-        失わせず握りつぶされ、notesは変化しない。"""
+    def test_suppressed_by_dated_marker_not_yet_expired(self, temp_db):
         topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
         tag_id = _tag_id(DOMAIN_TAG_NAME)
-        over_budget_notes = "x" * (_TAG_NOTES_RATCHET_CEILING + 1)
-        force_notes_over_ceiling(tag_id, over_budget_notes)
+        over_budget_with_marker = (
+            "x" * (_TAG_NOTES_RATCHET_CEILING + 1)
+            + f"\n\n{MARKER_NOTES_OVER_BUDGET}-until:2099-01-01"
+        )
+        force_notes_over_ceiling(tag_id, over_budget_with_marker)
+
+        hints = get_hints("tag", tag_id)
+        assert [h for h in hints if h["type"] == "notes_over_budget"] == []
+
+    def test_fires_again_after_dated_marker_expires(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        tag_id = _tag_id(DOMAIN_TAG_NAME)
+        over_budget_with_expired_marker = (
+            "x" * (_TAG_NOTES_RATCHET_CEILING + 1)
+            + f"\n\n{MARKER_NOTES_OVER_BUDGET}-until:2000-01-01"
+        )
+        force_notes_over_ceiling(tag_id, over_budget_with_expired_marker)
 
         hints = get_hints("tag", tag_id)
         assert any(h["type"] == "notes_over_budget" for h in hints)
-        assert _get_tag_notes(DOMAIN_TAG_NAME) == over_budget_notes
-
-    def test_refires_every_call_when_cooldown_marker_cannot_persist(self, temp_db):
-        """マーカー追記が天井超過中は常に失敗するため、抑制状態に入れず毎回発火し
-        続ける（クールダウンが機能しない既知の挙動。手動マーカーでの抑制は別途可能）。"""
-        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
-        tag_id = _tag_id(DOMAIN_TAG_NAME)
-        force_notes_over_ceiling(tag_id, _TAG_NOTES_RATCHET_CEILING + 1)
-
-        hints_first = get_hints("tag", tag_id)
-        assert any(h["type"] == "notes_over_budget" for h in hints_first)
-
-        hints_second = get_hints("tag", tag_id)
-        assert any(h["type"] == "notes_over_budget" for h in hints_second)
 
 
 class TestLogsSparse:
@@ -526,6 +527,18 @@ class TestIsMarkerActiveHelper:
     def test_permanent_marker_wins_when_expired_dated_also_present(self):
         notes = f"{MARKER_LOGS_SPARSE} {MARKER_LOGS_SPARSE}-until:2000-01-01"
         assert _is_marker_active(notes, MARKER_LOGS_SPARSE) is True
+
+    def test_allow_permanent_false_ignores_plain_marker(self):
+        notes = f"foo {MARKER_NOTES_OVER_BUDGET} bar"
+        assert _is_marker_active(notes, MARKER_NOTES_OVER_BUDGET, allow_permanent=False) is False
+
+    def test_allow_permanent_false_still_honors_future_dated_marker(self):
+        notes = f"{MARKER_NOTES_OVER_BUDGET}-until:2099-01-01"
+        assert _is_marker_active(notes, MARKER_NOTES_OVER_BUDGET, allow_permanent=False) is True
+
+    def test_allow_permanent_false_still_ignores_past_dated_marker(self):
+        notes = f"{MARKER_NOTES_OVER_BUDGET}-until:2000-01-01"
+        assert _is_marker_active(notes, MARKER_NOTES_OVER_BUDGET, allow_permanent=False) is False
 
 
 class TestDatedMarkerSnooze:

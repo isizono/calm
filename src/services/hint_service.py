@@ -21,11 +21,15 @@ hintの種別と発火条件は仕様確定decisionに従う。
 - 各マーカーは素の形（恒久抑制）に加えて `<marker>-until:YYYY-MM-DD` の形式
   （指定日当日まで有効な期限付き抑制）も受け付ける。不正な日付形式は無視される
   （フェイルオープン、抑制しない側に倒す）。判定は_is_marker_activeに集約する
-- recompose_bootstrap / recompose_delta / notes_over_budgetはhintが実際に生成される
-  都度、対象tagのnotesへ `<marker>-until:{today}` を自動追記する日次クールダウンを
-  持つ（同日内の再発火を防ぐ）。既存の日付付きマーカーが未来日の場合は上書きしない
-  （手動設定の長期抑制を優先する）。書き込みは_apply_cooldown_markerに集約する
-- direction_overflowはこの日次クールダウンの対象外（手動マーカーのみで抑制する）
+- notes_over_budgetのみ例外で、素の形（恒久抑制）を認めない
+  （`_is_marker_active(..., allow_permanent=False)`）。notesが長すぎる状態を
+  恒久的に黙らせられるのは望ましくないため、超過が解消するまで発火し続ける
+- recompose_bootstrap / recompose_deltaはhintが実際に生成される都度、対象tagの
+  notesへ `<marker>-until:{today}` を自動追記する日次クールダウンを持つ（同日内の
+  再発火を防ぐ）。既存の日付付きマーカーが未来日の場合は上書きしない（手動設定の
+  長期抑制を優先する）。書き込みは_apply_cooldown_markerに集約する
+- direction_overflow / notes_over_budgetはこの日次クールダウンの対象外
+  （手動マーカーのみで抑制する）
 - orch-managed activityでの全suppressは呼出側責務 (本moduleは判定しない)
 
 severity値域: info | warn のみ (block不採用)
@@ -109,7 +113,7 @@ def _dated_marker_pattern(marker: str) -> re.Pattern[str]:
     return re.compile(re.escape(marker) + re.escape(_DATED_MARKER_SUFFIX) + r"(\d{4}-\d{2}-\d{2})")
 
 
-def _is_marker_active(notes: str, marker: str) -> bool:
+def _is_marker_active(notes: str, marker: str, allow_permanent: bool = True) -> bool:
     """notes内でmarkerが有効な抑制指示として存在するかを判定する。
 
     2形態をサポートする:
@@ -120,6 +124,10 @@ def _is_marker_active(notes: str, marker: str) -> bool:
     日付付きの出現は素のmarkerを部分文字列として含む（prefix関係）ため、日付付き
     パターンを先に検出して本文から除去してから素のmarker判定を行う。これを怠ると
     期限切れの日付付きマーカーが恒久マーカーとして誤って残り続けてしまう。
+
+    allow_permanent=Falseを渡すと素のmarkerによる恒久抑制を認めず、日付付きの
+    期限付き抑制のみを判定する（notes_over_budgetのように、恒久的な抑制を許すべき
+    でないhint向け）。
     """
     pattern = _dated_marker_pattern(marker)
     for date_str in pattern.findall(notes):
@@ -129,6 +137,8 @@ def _is_marker_active(notes: str, marker: str) -> bool:
             continue
         if date.today() <= until:
             return True
+    if not allow_permanent:
+        return False
     remainder = pattern.sub("", notes)
     return marker in remainder
 
@@ -232,11 +242,10 @@ def _recompose_delta_message(tag_name: str, delta_count: int) -> str:
 def _notes_over_budget_message(tag_name: str, length: int) -> str:
     return (
         f"tag「{tag_name}」のnotesが{length}字あり、推奨の目安"
-        f"（{_TAG_NOTES_RATCHET_CEILING}字）を超えています。整理を検討してください。"
-        f"今は都合が悪い場合、tag notesに"
-        f"「{MARKER_NOTES_OVER_BUDGET}-until:YYYY-MM-DD」（任意の未来日）を"
-        f"追記すると、その日まで一時的に黙らせられます。恒久的に不要なら日付なしの"
-        f"「{MARKER_NOTES_OVER_BUDGET}」を追記してください。"
+        f"（{_TAG_NOTES_RATCHET_CEILING}字）を超えています。notesが長すぎる状態は"
+        f"望ましくないため、超過が解消するまで恒久的に黙らせることはできません。"
+        f"demote_tag_notesで該当セクションを資材へ退避し、notesを縮めることを"
+        f"ユーザーに提案してください。"
     )
 
 
@@ -383,21 +392,23 @@ def _get_hints_for_tag(conn: sqlite3.Connection, tag_id: int) -> list[Hint]:
                 "delivery_hint": "immediate",
             })
 
-    if not _is_marker_active(notes, MARKER_NOTES_OVER_BUDGET):
+    if not _is_marker_active(notes, MARKER_NOTES_OVER_BUDGET, allow_permanent=False):
         if len(notes) > _TAG_NOTES_RATCHET_CEILING:
             hints.append({
                 "type": "notes_over_budget",
                 "severity": "info",
                 "message": _notes_over_budget_message(tag_name, len(notes)),
                 "suggested_action": {
+                    "tool": "demote_tag_notes",
+                    "args_hint": {"tag": tag_name},
                     "natural_language": (
-                        f"tag「{tag_name}」のnotesの整理をユーザーに提案する"
+                        f"tag「{tag_name}」のnotesをdemote_tag_notesで資材へ退避し、"
+                        "縮めることをユーザーに提案する"
                     ),
                 },
                 "source": f"notes_over_budget:tag:{tag_id}",
                 "delivery_hint": "immediate",
             })
-            notes = _apply_cooldown_marker(conn, tag_id, notes, MARKER_NOTES_OVER_BUDGET)
 
     return hints
 
