@@ -8,24 +8,11 @@ import os
 import subprocess
 import urllib.error
 import urllib.request
-from pathlib import Path
 
 import pytest
 
 from src import launcher
-
-
-def _run(cmd: list[str], cwd: Path) -> None:
-    """git コマンドを実行する。"""
-    subprocess.run(cmd, cwd=cwd, check=True, capture_output=True)
-
-
-def _git_available() -> bool:
-    try:
-        subprocess.run(["git", "--version"], capture_output=True, check=True)
-        return True
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        return False
+from src.infra import git_repo
 
 
 class TestIsServerRunning:
@@ -387,6 +374,11 @@ class TestPropagatePluginRootEnv:
         """CLAUDE_PLUGIN_ROOT・CALM_PROJECT_ROOTともに未設定で、cwdがgitリポジトリでない
         場合、cwd自身をCALM_PROJECT_ROOTに設定する(CLAUDE_PLUGIN_ROOTがClaude Code本体側の
         間欠バグで渡らないケースのfallback)。
+
+        git-common-dir解決自体のアルゴリズムはtests/unit/test_git_repo.pyで検証済みのため、
+        ここではgit_repo.subprocessのrun関数（外部境界）のみモックし、os.getcwd()が
+        resolve_main_repo_root()へ正しく渡り、戻り値がそのままCALM_PROJECT_ROOTに
+        反映される配線を検証する。
         """
         monkeypatch.delenv("CALM_PROJECT_ROOT", raising=False)
         monkeypatch.delenv("CCM_PROJECT_ROOT", raising=False)
@@ -394,11 +386,10 @@ class TestPropagatePluginRootEnv:
         monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
         monkeypatch.chdir(tmp_path)
 
-        # 前提確認: pytestのtmp_pathはこのリポジトリの外(システム一時領域)にあり、
-        # それ自体がgitリポジトリでもない。
-        assert subprocess.run(
-            ["git", "rev-parse", "--git-dir"], cwd=tmp_path, capture_output=True,
-        ).returncode != 0
+        def fake_run(cmd, **kwargs):
+            raise subprocess.CalledProcessError(128, cmd, stderr="fatal: not a git repository")
+
+        monkeypatch.setattr(git_repo.subprocess, "run", fake_run)
 
         launcher._propagate_plugin_root_env()
 
@@ -409,29 +400,27 @@ class TestPropagatePluginRootEnv:
         (worktreeルートをそのまま設定しない)。gitリポジトリ配下ではgit解決が先に
         成功するため、この経路ではos.getcwd()の値がそのまま使われることはない。
         """
-        if not _git_available():
-            pytest.skip("git not available")
-
         monkeypatch.delenv("CALM_PROJECT_ROOT", raising=False)
         monkeypatch.delenv("CCM_PROJECT_ROOT", raising=False)
         monkeypatch.delenv("CC_MEMORY_PROJECT_ROOT", raising=False)
         monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
 
-        main_repo = tmp_path / "main-repo"
-        main_repo.mkdir()
-        _run(["git", "init", "-b", "main"], cwd=main_repo)
-        _run(["git", "config", "user.email", "test@example.com"], cwd=main_repo)
-        _run(["git", "config", "user.name", "test"], cwd=main_repo)
-        _run(["git", "commit", "--allow-empty", "-m", "init"], cwd=main_repo)
+        worktree_root = tmp_path / "worktree"
+        worktree_root.mkdir()
+        main_repo_root = tmp_path / "main-repo"
+        git_common_dir = main_repo_root / ".git"
 
-        worktree = tmp_path / "worktree"
-        _run(["git", "worktree", "add", "-b", "feature/test", str(worktree)], cwd=main_repo)
+        def fake_run(cmd, **kwargs):
+            assert cmd == ["git", "rev-parse", "--git-common-dir"]
+            assert kwargs["cwd"] == worktree_root
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{git_common_dir}\n", stderr="")
 
-        monkeypatch.chdir(worktree)
+        monkeypatch.setattr(git_repo.subprocess, "run", fake_run)
+        monkeypatch.chdir(worktree_root)
 
         launcher._propagate_plugin_root_env()
 
-        assert os.environ["CALM_PROJECT_ROOT"] == str(main_repo.resolve())
+        assert os.environ["CALM_PROJECT_ROOT"] == str(main_repo_root.resolve())
 
 
 class TestBridgeSessionTermination:
