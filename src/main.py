@@ -1,8 +1,10 @@
 """MCPサーバーのメインエントリーポイント"""
+import contextlib
 import logging
 import os
 import random
 import re
+import typing
 from datetime import datetime, timezone
 from pathlib import Path
 from fastmcp import FastMCP, Context
@@ -134,11 +136,8 @@ def _maybe_inject_tag_notes(result: dict, tag_strings: list[str], mark: bool = T
         session_id = ctx.session_id
     except RuntimeError:
         session_id = None
-    conn = get_connection()
-    try:
+    with contextlib.closing(get_connection()) as conn:
         notes = collect_tag_notes_for_injection(conn, tag_strings, session_id=session_id, mark=mark)
-    finally:
-        conn.close()
     if notes:
         result["tag_notes"] = notes
     return result
@@ -162,11 +161,8 @@ def _attach_archived_tags_summary(result: dict, all_tags: list[str]) -> None:
     if not all_tags:
         result["archived_tags"] = []
         return
-    conn = get_connection()
-    try:
+    with contextlib.closing(get_connection()) as conn:
         result["archived_tags"] = get_archived_tags_for_strings(conn, all_tags)
-    finally:
-        conn.close()
 
 
 def _attach_archived_tags_per_item(items: list[dict], all_tags: list[str], tags_key: str = "tags") -> None:
@@ -179,11 +175,8 @@ def _attach_archived_tags_per_item(items: list[dict], all_tags: list[str], tags_
         for item in items:
             item["archived_tags"] = []
         return
-    conn = get_connection()
-    try:
+    with contextlib.closing(get_connection()) as conn:
         archived_rows = get_archived_tags_for_strings(conn, all_tags)
-    finally:
-        conn.close()
     archived_map = {row["tag"]: row["archived_reason"] for row in archived_rows}
     for item in items:
         item_tags = item.get(tags_key) or []
@@ -194,7 +187,7 @@ def _attach_archived_tags_per_item(items: list[dict], all_tags: list[str], tags_
 
 
 _FlavorArg = Literal["raw", "internal", "readable"]
-_VALID_FLAVORS = ("raw", "internal", "readable")
+_VALID_FLAVORS = typing.get_args(_FlavorArg)
 
 
 def _normalize_flavor(flavor: str | None) -> str:
@@ -218,15 +211,12 @@ def _apply_flavor_to_items(
     """同種エンティティのリストに対し flavor 展開 + citations_in/out 付与 (in-place)。"""
     if not items:
         return
-    conn = get_connection()
-    try:
+    with contextlib.closing(get_connection()) as conn:
         for item in items:
             citation_renderer.apply_flavor_to_entity_dict(
                 item, entity_type, flavor, conn,
                 id_key=id_key, attach_citations=attach_citations,
             )
-    finally:
-        conn.close()
 
 
 def _apply_flavor_to_single(
@@ -239,30 +229,24 @@ def _apply_flavor_to_single(
     """単一エンティティ dict に flavor 展開 + citations_in/out 付与 (in-place)。"""
     if not item:
         return
-    conn = get_connection()
-    try:
+    with contextlib.closing(get_connection()) as conn:
         citation_renderer.apply_flavor_to_entity_dict(
             item, entity_type, flavor, conn,
             id_key=id_key, attach_citations=attach_citations,
         )
-    finally:
-        conn.close()
 
 
 def _apply_flavor_to_snippets(items: list[dict], flavor: str) -> None:
     """検索結果 snippet 群に raw 境界調整 → flavor 展開を適用 (in-place)。"""
     if not items or flavor == "raw":
         return
-    conn = get_connection()
-    try:
+    with contextlib.closing(get_connection()) as conn:
         for item in items:
             snippet = item.get("snippet")
             if isinstance(snippet, str) and snippet:
                 item["snippet"] = citation_renderer.apply_flavor_to_snippet(
                     snippet, flavor, conn
                 )
-    finally:
-        conn.close()
 
 
 # MCPサーバーを作成
@@ -607,8 +591,7 @@ def _apply_flavor_to_pull_precedents_result(result: dict, flavor: str) -> None:
     index decision / material / topic 候補は title・snippet の展開のみ（citations 非付与、
     check_in の related_topics 等と同方針）。
     """
-    conn = get_connection()
-    try:
+    with contextlib.closing(get_connection()) as conn:
         for candidate in result.get("routing", {}).get("candidates", []) or []:
             citation_renderer.apply_flavor_to_entity_dict(
                 candidate, "topic", flavor, conn, id_key="topic_id", attach_citations=False,
@@ -626,8 +609,6 @@ def _apply_flavor_to_pull_precedents_result(result: dict, flavor: str) -> None:
                     _flavor_snippet(dec, flavor, conn)
             for mat in topic.get("materials", []) or []:
                 _flavor_snippet(mat, flavor, conn)
-    finally:
-        conn.close()
 
 
 @mcp.tool()
@@ -809,8 +790,7 @@ def get_by_ids(
     flavor = _normalize_flavor(flavor)
     result = search_service.get_by_ids(items, caller_session_id=_current_session_id())
     if "error" not in result:
-        conn = get_connection()
-        try:
+        with contextlib.closing(get_connection()) as conn:
             for entry in result.get("results", []):
                 data = entry.get("data")
                 if not isinstance(data, dict):
@@ -820,8 +800,6 @@ def get_by_ids(
                     citation_renderer.apply_flavor_to_entity_dict(
                         data, etype, flavor, conn,
                     )
-        finally:
-            conn.close()
         all_tags = []
         for item in result.get("results", []):
             if "data" in item:
@@ -1418,8 +1396,7 @@ def _apply_flavor_to_check_in_result(result: dict, flavor: str) -> None:
     recent_decisions / latest_log / logs / catalog の各セクションを持つ。
     各 snippet には raw 境界調整 → flavor 展開、entity 詳細は dict 単位で展開。
     """
-    conn = get_connection()
-    try:
+    with contextlib.closing(get_connection()) as conn:
         activity = result.get("activity")
         if isinstance(activity, dict):
             citation_renderer.apply_flavor_to_entity_dict(
@@ -1450,8 +1427,6 @@ def _apply_flavor_to_check_in_result(result: dict, flavor: str) -> None:
                 )
         for item in result.get("recent_decisions", []) or []:
             _flavor_snippet(item, flavor, conn)
-    finally:
-        conn.close()
 
 
 def _flavor_snippet(item: dict, flavor: str, conn) -> None:
@@ -2018,12 +1993,9 @@ def get_timeline(
         limit=limit, order=order,
     )
     if "error" not in result and flavor != "raw":
-        conn = get_connection()
-        try:
+        with contextlib.closing(get_connection()) as conn:
             for item in result.get("items", []) or []:
                 _flavor_snippet(item, flavor, conn)
-        finally:
-            conn.close()
     return result
 
 

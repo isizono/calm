@@ -8,6 +8,7 @@ check_inでスナップショットしたtopicスコープに対し、以降の�
 """
 from __future__ import annotations
 
+import contextlib
 import sys
 import threading
 from typing import Any
@@ -96,6 +97,16 @@ def _session_key(context: MiddlewareContext) -> str:
     return session_id or "__default__"
 
 
+@contextlib.contextmanager
+def _relational_conn():
+    """純relationalクエリ専用の接続を提供する（sqlite-vec拡張ロードをスキップ）。"""
+    conn = get_connection(load_vec=False)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
 def _handle_check_in(session_key: str, result: Any, nested_key: str | None = None) -> None:
     """check_in結果からscope（topic_ids/activity_id）を読み取り、baselineで初期化する。
 
@@ -128,11 +139,8 @@ def _handle_check_in(session_key: str, result: Any, nested_key: str | None = Non
 
     # delta_service.get_baselineは純relationalクエリでベクトル検索を使わないため、
     # sqlite-vecネイティブ拡張のロードをスキップしてオープンコストを削減する。
-    conn = get_connection(load_vec=False)
-    try:
+    with _relational_conn() as conn:
         baseline = delta_service.get_baseline(conn, topic_ids, activity_id)
-    finally:
-        conn.close()
 
     with _watermarks_lock:
         if session_key not in _watermarks:
@@ -174,11 +182,8 @@ def _handle_write(session_key: str, tool_name: str, result: Any) -> None:
         return
 
     # _scoped_idsも純relationalクエリのみ（vec不要）。理由は_handle_check_in参照。
-    conn = get_connection(load_vec=False)
-    try:
+    with _relational_conn() as conn:
         scoped_ids = _scoped_ids(conn, entity_type, created_ids, wm["topic_ids"], wm["activity_id"])
-    finally:
-        conn.close()
     if not scoped_ids:
         return
 
@@ -201,11 +206,8 @@ def _handle_other(session_key: str, result: Any) -> None:
     # 発生するmiddleware専用接続のコストのうち、拡張ロード分だけでも削減する
     # （接続オープン自体・クエリ3本のコストは残る。deltaの有無を事前に知る手段が
     # ないため、これ以上の早期リターンは設計を変えないと難しいと判断し見送った）。
-    conn = get_connection(load_vec=False)
-    try:
+    with _relational_conn() as conn:
         delta = delta_service.compute_delta(conn, wm["topic_ids"], wm["activity_id"], wm)
-    finally:
-        conn.close()
 
     if not (delta["new_decisions"] or delta["new_logs"] or delta["new_materials"]):
         return

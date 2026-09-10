@@ -36,14 +36,6 @@ def temp_db():
             del os.environ["DISCUSSION_DB_PATH"]
 
 
-class MockRow:
-    """sqlite3.Rowのモック（key-based access対応）"""
-    def __init__(self, ns, name):
-        self._data = {"namespace": ns, "name": name}
-    def __getitem__(self, key):
-        return self._data[key]
-
-
 # ========================================
 # parse_tag テスト
 # ========================================
@@ -312,9 +304,9 @@ class TestFormatTags:
     def test_namespace_and_bare(self):
         """namespace付きと素タグの混在"""
         rows = [
-            MockRow("domain", "calm"),
-            MockRow("", "hooks"),
-            MockRow("intent", "design"),
+            {"namespace": "domain", "name": "calm"},
+            {"namespace": "", "name": "hooks"},
+            {"namespace": "intent", "name": "design"},
         ]
         result = format_tags(rows)
         assert result == ["domain:calm", "hooks", "intent:design"]
@@ -322,9 +314,9 @@ class TestFormatTags:
     def test_sorted(self):
         """アルファベット順ソート"""
         rows = [
-            MockRow("", "zebra"),
-            MockRow("domain", "alpha"),
-            MockRow("", "beta"),
+            {"namespace": "", "name": "zebra"},
+            {"namespace": "domain", "name": "alpha"},
+            {"namespace": "", "name": "beta"},
         ]
         result = format_tags(rows)
         assert result == ["beta", "domain:alpha", "zebra"]

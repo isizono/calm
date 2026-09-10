@@ -18,6 +18,7 @@ from yoyo.migrations import MigrationList
 
 from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection, init_database
 from src.services.tag_service import _injected_tags
+from test_migrations.conftest import db_before_migration
 
 
 @pytest.fixture
@@ -36,22 +37,9 @@ def migrated_db():
 @pytest.fixture
 def db_before_0061():
     """0058までのmigrationを適用したDBを提供する。0061の挙動を分離検証するために使う。"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-
-        parsed = parse_uri(f"sqlite:///{db_path}")
-        backend = _VecSQLiteBackend(parsed, default_migration_table)
-        backend.init_database()
-        all_migs = read_migrations(str(MIGRATIONS_DIR))
-        pre_0061 = MigrationList([m for m in all_migs if m.id < "0061"])
-        with backend.lock():
-            backend.apply_migrations(pre_0061)
-
+    with db_before_migration("0061") as db_path:
         _injected_tags.clear()
         yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 def _apply_migration_0061(db_path: str) -> None:

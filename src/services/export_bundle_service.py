@@ -39,7 +39,11 @@ from src.services.citations_pure import (
     check_target_exists,
     convert_raw_to_cite,
 )
-from src.services.export_candidate_service import ALL_CATALOG_TYPES, _fetch_rows_for_type_with_conn
+from src.services.export_candidate_service import (
+    ALL_CATALOG_TYPES,
+    _JUNCTION,
+    _fetch_rows_for_type_with_conn,
+)
 from src.services.instance_service import get_instance_id_with_conn
 from src.services.internal_id_patterns import (
     RAW_CITE_CODE_PATTERN,
@@ -61,14 +65,6 @@ UNRESOLVED_MASK = "(解決不能な内部参照)"
 
 # manifestのentities順・ディレクトリ作成順に使う固定順序
 TYPE_ORDER = ["topic", "decision", "log", "activity", "material"]
-
-_JUNCTION = {
-    "topic": ("topic_tags", "topic_id"),
-    "activity": ("activity_tags", "activity_id"),
-    "material": ("material_tags", "material_id"),
-    "decision": ("decision_tags", "decision_id"),
-    "log": ("log_tags", "log_id"),
-}
 
 _DIR_NAME = {
     "topic": "topics",
