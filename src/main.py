@@ -357,14 +357,14 @@ def add_decisions(items: list[dict], ctx: Context) -> dict:
         - topic_id (int, 必須): 関連するトピックのID
         - decision (str, 必須): 決定内容
         - reason (str, 必須): 決定の理由。任意で本文末尾に定型節（却下案:/適用条件:/適用外:/検証:/
-          隣接確認:。書式は docs/precedent-format.md）を書ける。却下案・適用条件・適用外は将来の
-          再提案・誤類推を防ぐための情報。検証行が無いdecisionは「決定のみ・実測未確認」を意味する
-          （実装状態を本文に書かず、検証行の有無で表す）。隣接確認は「実行時」「関連既決との整合」を
-          確認したか記録する節で、tagsに intent:design を含むdecisionでは記入を推奨する（無くても
-          soft validationでwarningのみ）。節はすべて任意で、「該当なし」を埋めるための空項目・
-          ダミー項目は書かないこと。
-        - title (str, optional): 決定の要点を表す1行（35字以内）。**付けることを強く推奨**。check-in・timeline・search等の一覧表示でdecision本文の代わりに見出しとして使われ、可読性が大きく上がる。省略時はdecision本文にfallbackする。tagsに layer:direction を含む場合は必須（省略・空文字はエラー）
-        - tags (list[str], optional): 追加タグ。省略時はtopicのタグを継承。内容を表すタグを積極的に追加すること。namespace: domain:(プロジェクト)/intent:(意図)/layer:direction(判例が効かない前例なし領域での人間の抽象方向性判断であることを明示するタグ。少数・明示の原則により付けた場合はtitle必須)/素タグ(キーワード)。例: ["intent:design", "naming-convention", "backward-compat"]
+          隣接確認:）を書ける。書式・各節の意味は docs/precedent-format.md を参照。節はすべて
+          任意で、「該当なし」を埋めるための空項目・ダミー項目は書かないこと。
+        - title (str, optional): 決定の要点を表す1行（35字以内）。**付けることを強く推奨**
+          （check-in・timeline・search等の見出しに使われ可読性が大きく上がる）。省略時はdecision
+          本文にfallback。tagsに layer:direction を含む場合は必須（省略・空文字はエラー）
+        - tags (list[str], optional): 追加タグ。省略時はtopicのタグを継承。内容を表すタグを
+          積極的に追加すること。namespace規約は docs/architecture/invariants.md の
+          「タグnamespace」節を参照。例: ["intent:design", "naming-convention", "backward-compat"]
         - propagate_to (dict, optional): 決定事項を注入先に伝搬する。
             - type: "habit" | "tag_note"
             - content: 伝搬先に書き込む文（decisionテキストとは別にエージェントが書き分ける）
@@ -372,16 +372,13 @@ def add_decisions(items: list[dict], ctx: Context) -> dict:
             type="tag_note"は教訓・注意点のみに使う。仕様・手順の全文転記には使わない。
 
     Returns: {created: [...], errors: [{index, error}]}
-        created各要素には related_decisions（同topic内の類似decision上位3件 [{id, title, distance}]）が付く。
-        既存decisionとの矛盾・重複に気づくための導線。embeddingサーバー未起動時は空配列。
-        tagsに layer:direction を含む要素には existing_direction_decisions（同domainの有効な方向性decision全件、
-        自身除外・非ランク）と direction_note（supersede/併存の判断を促す文言）も付く。
-        reasonに定型節があれば precedent（{rejected_alternatives: 件数, scope: bool,
-        verification_anchors: [文字列, ...], adjacent_check: [文字列, ...]}）をecho。
-        書式ゆれ・空節・アンカー日付欠落等、またはtagsに intent:design を含む要素で
-        「隣接確認:」節が無い場合、precedent_warnings（文字列のリスト）が付く。
-        いずれもsoft validationであり、decision作成自体は拒否しない。
-        propagate_to伝搬失敗時は応答トップレベルにpropagation_failedが付く（decision作成済）。
+        created各要素には related_decisions（同topic内の類似decision上位3件）が付く。既存decision
+        との矛盾・重複に気づくための導線。tagsに layer:direction を含む要素には
+        existing_direction_decisions と direction_note も付く。reasonの定型節は precedent
+        としてecho、書式ゆれ等があれば precedent_warnings が付く（いずれもsoft validationであり、
+        decision作成自体は拒否しない）。propagate_to伝搬失敗時は応答トップレベルに
+        propagation_failedが付く（decision作成済）。フィールド形状の詳細は
+        docs/spec/mcp-tools.md 2.3節を参照。
     """
     result = decision_service.add_decisions(items)
     if "error" not in result:
