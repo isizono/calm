@@ -56,6 +56,7 @@ from src.services.embedding_service import (
     insert_topic_embedding_with_conn,
 )
 from src.services.export_bundle_service import BUNDLE_FORMAT, _MAIN_FIELD
+from src.services.export_candidate_service import _JUNCTION
 from src.services.instance_service import get_instance_id_with_conn
 from src.services.material_service import _is_within_export_dir
 from src.services.relation_service import (
@@ -79,14 +80,6 @@ logger = logging.getLogger(__name__)
 # 採取済みのタイトル(バンドル内に実体があれば同梱frontmatterのtitle、選択集合外の
 # 参照ならmanifest.unresolved_refsのtitle)で埋める。
 UNRESOLVED_REF_TEMPLATE = "「{title}」(未取り込みの外部記録)"
-
-_JUNCTION = {
-    "topic": ("topic_tags", "topic_id"),
-    "activity": ("activity_tags", "activity_id"),
-    "material": ("material_tags", "material_id"),
-    "decision": ("decision_tags", "decision_id"),
-    "log": ("log_tags", "log_id"),
-}
 
 # manifest/frontmatterのccm_key・拡張cite形式(`{{cite:<instance_id>:<code><NNN>}}`)を
 # パースする正規表現。instance_idの文字集合はinstance_service.INSTANCE_ID_PATTERNと揃える。

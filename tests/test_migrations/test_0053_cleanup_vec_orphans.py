@@ -3,9 +3,6 @@
 0053 適用後に、対応する search_index 行を持たない vec_index の孤児行が削除され、
 対応行を持つ vec_index 行は 1 行も消えないことを確認する。
 """
-import os
-import tempfile
-
 import pytest
 from sqlite_vec import serialize_float32
 from yoyo import default_migration_table, read_migrations
@@ -14,6 +11,7 @@ from yoyo.migrations import MigrationList
 
 from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection
 from src.services.tag_service import _injected_tags
+from test_migrations.conftest import db_before_migration
 
 EMBEDDING_DIM = 384
 
@@ -21,22 +19,9 @@ EMBEDDING_DIM = 384
 @pytest.fixture
 def db_before_0053():
     """0052 までの migration を適用した DB を提供する。0053 の挙動を分離検証するために使う。"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-
-        parsed = parse_uri(f"sqlite:///{db_path}")
-        backend = _VecSQLiteBackend(parsed, default_migration_table)
-        backend.init_database()
-        all_migs = read_migrations(str(MIGRATIONS_DIR))
-        pre_0053 = MigrationList([m for m in all_migs if m.id < "0053"])
-        with backend.lock():
-            backend.apply_migrations(pre_0053)
-
+    with db_before_migration("0053") as db_path:
         _injected_tags.clear()
         yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 def _apply_migration_0053(db_path: str) -> None:
