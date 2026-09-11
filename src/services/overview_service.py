@@ -262,34 +262,34 @@ def _collect_backlog_with_conn(conn: sqlite3.Connection, *, days: int, hb_min: i
     }
 
 
-def _fetch_asks_with_guaranteed_meta(*, non_meta_limit: int, **base_kwargs) -> dict:
-    """base_kwargsに合致するaskを取得し、kind="meta"のものは非メタの表示上限
-    （non_meta_limit）に関わらず必ず含める（メタask常時表示）。
+def _fetch_asks_with_guaranteed_meta(*, page_limit: int, **base_kwargs) -> dict:
+    """base_kwargsに合致するaskを取得し、kind="meta"のものはページの表示上限
+    （page_limit）に関わらず必ず含める（メタask常時表示）。
 
     base_kwargsはask_service.get_asksへそのまま渡すフィルタ（status="open"や
     triage_pending_only=True等）。kindは指定しない（既存の全kind混在取得を
     そのまま使う）。メタask専用に_MAX_LIMIT件までの取得を別途行い、idで
     dedupしてから先頭に配置する。
 
-    total_countは非メタ側の呼び出しが返すtotal_count（kindで絞っていない
+    total_countはページ側の呼び出しが返すtotal_count（kindで絞っていない
     SELECT COUNT(*)であり、既にメタも含む母集団全体の件数）のみを使う。
-    メタ専用取得側の件数をここへ加算しない。加算すると、非メタ側のページ
-    （non_meta_limit件）にメタが偶然含まれるかどうかでtotal_countが
-    non_meta_limitの値ごとに変動してしまい、「件数はlimitに依らない」という
+    メタ専用取得側の件数をここへ加算しない。加算すると、ページ
+    （page_limit件、kind混在）にメタが偶然含まれるかどうかでtotal_countが
+    page_limitの値ごとに変動してしまい、「件数はlimitに依らない」という
     既存の設計思想（triage_pending_countの元々の実装意図）を壊す。
     """
-    non_meta = ask_service.get_asks(limit=non_meta_limit, **base_kwargs)
-    if "error" in non_meta:
-        return non_meta
+    page = ask_service.get_asks(limit=page_limit, **base_kwargs)
+    if "error" in page:
+        return page
     meta = ask_service.get_asks(kind="meta", limit=_MAX_LIMIT, **base_kwargs)
     if "error" in meta:
         return meta
 
     meta_ids = {ask["id_raw"] for ask in meta["asks"]}
-    deduped_non_meta = [ask for ask in non_meta["asks"] if ask["id_raw"] not in meta_ids]
-    asks = meta["asks"] + deduped_non_meta  # メタを先頭に
+    deduped_page = [ask for ask in page["asks"] if ask["id_raw"] not in meta_ids]
+    asks = meta["asks"] + deduped_page  # メタを先頭に
 
-    return {"asks": asks, "total_count": non_meta["total_count"]}
+    return {"asks": asks, "total_count": page["total_count"]}
 
 
 def _format_ask_item(ask: dict, now: datetime) -> dict:
@@ -329,11 +329,11 @@ def _collect_awaiting_human(*, limit: int, now: datetime) -> dict:
     kindフィールドは"ask"/"meta"の固定enumとして型付けしない（将来"decision"
     が増える設計変更を型定義の変更なしに受け入れるため）。
     """
-    raw = _fetch_asks_with_guaranteed_meta(non_meta_limit=limit, status="open")
+    raw = _fetch_asks_with_guaranteed_meta(page_limit=limit, status="open")
     if "error" in raw:
         return raw
     pending = _fetch_asks_with_guaranteed_meta(
-        non_meta_limit=limit, status=None, triage_pending_only=True
+        page_limit=limit, status=None, triage_pending_only=True
     )
     if "error" in pending:
         return pending

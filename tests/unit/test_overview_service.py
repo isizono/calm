@@ -254,14 +254,11 @@ class TestAwaitingHumanSection:
 
 
 class TestAwaitingHumanMetaVisibility:
-    """kind="meta"のask常時表示・回答済み未捌きのtriage_pending_itemsを検証する。
-
-    根拠: plan-d.md エッジケース表 #1・#2・#4・#5・#6・#7。
-    """
+    """kind="meta"のask常時表示・回答済み未捌きのtriage_pending_itemsを検証する。"""
 
     def test_meta_ask_always_included_beyond_limit_and_placed_first(self, temp_db):
-        """エッジケース#1(open側): 表示上限を超える件数の非メタaskが存在しても、
-        メタaskはitemsに必ず含まれ、先頭に配置される。
+        """表示上限を超える件数の非メタaskが存在しても、メタaskはitemsに
+        必ず含まれ、先頭に配置される（open側）。
         """
         act = _make_activity(status="in_progress")
         meta_id = ask_service.add_ask(
@@ -282,8 +279,8 @@ class TestAwaitingHumanMetaVisibility:
         assert result["awaiting_human"]["total_count"] == ground_truth_total
 
     def test_meta_ask_always_included_in_triage_pending_items(self, temp_db):
-        """エッジケース#1(pending側): open側と同じ保証がtriage_pending_items
-        にも適用される。"""
+        """open側と同じ、表示上限を超えても必ず含み先頭配置する保証が
+        triage_pending_itemsにも適用される（pending側）。"""
         act = _make_activity(status="in_progress")
         meta_id = ask_service.add_ask(
             "meta q", tags=["domain:test"], blocks=[act], kind="meta"
@@ -301,8 +298,8 @@ class TestAwaitingHumanMetaVisibility:
         assert pending_items[0]["id_raw"] == meta_id
 
     def test_meta_ask_within_limit_window_is_not_duplicated(self, temp_db):
-        """エッジケース#2: メタaskが非メタ取得のページ(limit以内)にも
-        含まれる場合でも、結果に重複して出現しない。"""
+        """メタaskがページ取得(limit以内)にも含まれる場合でも、結果に
+        重複して出現しない。"""
         act = _make_activity(status="in_progress")
         ask_service.add_ask("q0", tags=["domain:test"], blocks=[act])
         meta_id = ask_service.add_ask(
@@ -317,9 +314,9 @@ class TestAwaitingHumanMetaVisibility:
         assert len(items) == 2
 
     def test_triage_pending_items_includes_question_and_existing_keys_unchanged(self, temp_db):
-        """エッジケース#4: 回答済み未捌きのaskはtriage_pending_itemsにquestion
-        を含む形で列挙される。件数のみだった従来のtriage_pending_countはその
-        まま残り、items(open側)には現れない。"""
+        """回答済み未捌きのaskはtriage_pending_itemsにquestionを含む形で
+        列挙される。件数のみだった従来のtriage_pending_countはそのまま残り、
+        items(open側)には現れない。"""
         act = _make_activity(status="in_progress")
         ask_id = ask_service.add_ask("need review", tags=["domain:test"], blocks=[act])["id"]
         ask_service.answer_ask(ask_id, "answer body")
@@ -336,8 +333,8 @@ class TestAwaitingHumanMetaVisibility:
         assert item["kind"] == "ask"
 
     def test_no_meta_asks_leaves_items_and_order_unchanged(self, temp_db):
-        """エッジケース#5: メタaskが1件も無いとき、itemsの内容・順序は
-        dedup前(従来実装)と変わらない。"""
+        """メタaskが1件も無いとき、itemsの内容・順序はdedup前(従来実装)と
+        変わらない。"""
         act = _make_activity(status="in_progress")
         ids = [
             ask_service.add_ask(f"q{i}", tags=["domain:test"], blocks=[act])["id"]
@@ -351,10 +348,10 @@ class TestAwaitingHumanMetaVisibility:
         assert result["awaiting_human"]["total_count"] == 3
 
     def test_triage_pending_count_stable_across_limits_with_meta_present(self, temp_db):
-        """エッジケース#6: triage_pending_countはメタaskが混在していても
-        non_metaの表示上限(limit)に依らず一定である。メタ取得側の件数を
-        total_countへ加算する実装だと、メタが非メタ側のページ内に入るか
-        どうかでこの値がlimitごとにブレる(回帰の検出点)。"""
+        """triage_pending_countはメタaskが混在していてもページの表示上限
+        (limit)に依らず一定である。メタ取得側の件数をtotal_countへ加算する
+        実装だと、メタがページ内に偶然入るかどうかでこの値がlimitごとに
+        ブレる(回帰の検出点)。"""
         act = _make_activity(status="in_progress")
         meta_id = ask_service.add_ask(
             "meta q", tags=["domain:test"], blocks=[act], kind="meta"
@@ -374,9 +371,9 @@ class TestAwaitingHumanMetaVisibility:
         assert large == ground_truth
 
     def test_meta_count_exceeding_max_limit_is_capped_not_crashed(self, temp_db, monkeypatch):
-        """エッジケース#7: メタaskの絶対件数が_MAX_LIMITを超える場合、items内
-        のメタaskはその件数までで打ち切られる(仕様上の残余制約であり、
-        クラッシュしないことを保証する)。"""
+        """メタaskの絶対件数が_MAX_LIMITを超える場合、items内のメタaskは
+        その件数までで打ち切られる(仕様上の残余制約であり、クラッシュしない
+        ことを保証する)。"""
         monkeypatch.setattr(ov, "_MAX_LIMIT", 3)
         act = _make_activity(status="in_progress")
         for i in range(5):

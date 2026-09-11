@@ -1214,8 +1214,9 @@ def get_overview(days: int = 7, limit: int = 20) -> dict:
 
     working/recently_done/backlog の各節は count と total_count が異なる場合、
     limit で切り詰められている。awaiting_human は meta ask が limit を無視して
-    追加されるため、count が limit を超えることがある（total_count は非メタの
-    母集団件数で、count とは一致しない場合がある）。
+    追加されるため、count が limit を超えることがある（total_count は kind で
+    絞っていない open ask 全体の件数で meta も含むため、count とは一致しない
+    場合がある）。
 
     Args:
         days: 鮮度窓・遡り窓の日数（既定 7）
