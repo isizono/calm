@@ -571,6 +571,8 @@ def answer_ask_with_conn(
 ) -> dict:
     """状態確認とUPDATEを1段クエリに畳んでopen→answeredに遷移する（TOCTOU回避）。
 
+    open askを一覧して1件ずつ回答する定型作業は`ask-answer` skillを経由すること。
+
     トリアージ（promote/dismiss）はここでは実行しない。次のcheck_inで配達
     されるまで遅延する（判定はLLMの仕事のため）。
 
