@@ -95,6 +95,7 @@ claude plugin install calm
 | `/restart` | CALMのローカルMCPサーバー・embeddingサーバーを再起動します |
 | `/ask-compose` | `add_ask`のquestion/contextをテンプレートに沿って構成するようガイドします |
 | `/ask-distill` | 繰り返し起票されている同型のaskをまとめてメタaskを起票します |
+| `/ask-answer` | open askを一覧して1件ずつ提示し、回答をanswer_askで記録します |
 | `/memory-export` | 記録を他インスタンスへ渡すexportバンドルを作成します |
 | `/memory-import` | 他インスタンスのexportバンドルを衝突裁定を経て取り込みます |
 

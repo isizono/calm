@@ -2333,6 +2333,8 @@ def get_asks(
 def answer_ask(ask_id: int, answer_body: str) -> dict:
     """答え待ち（open）のaskに回答する。1問1答（answerは1回のみ）。
 
+    open askを一覧して1件ずつ回答する定型作業は`ask-answer` skillを経由すること。
+
     トリアージ（promote/dismiss）はここでは行わない。判定はLLMの仕事のため、
     次のcheck_inで配達されるかget_asks(triage_pending_only=true)で拾われるまで
     遅延する。answered/promoted/dismissed済みのaskへの再回答は拒否する
