@@ -33,9 +33,10 @@ def db_before_migration(migration_id: str):
         with backend.lock():
             backend.apply_migrations(pre)
 
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
+        try:
+            yield db_path
+        finally:
+            os.environ.pop("DISCUSSION_DB_PATH", None)
 
 
 def get_column_names(conn: sqlite3.Connection, table: str) -> set[str]:

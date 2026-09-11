@@ -4,12 +4,11 @@ import logging
 import os
 import random
 import re
-import typing
 from datetime import datetime, timezone
 from pathlib import Path
 from fastmcp import FastMCP, Context
 from fastmcp.server.dependencies import get_context
-from typing import Literal, Optional, Union
+from typing import Literal, Optional, Union, get_args
 from src.services import (
     topic_service,
     discussion_log_service,
@@ -187,7 +186,7 @@ def _attach_archived_tags_per_item(items: list[dict], all_tags: list[str], tags_
 
 
 _FlavorArg = Literal["raw", "internal", "readable"]
-_VALID_FLAVORS = typing.get_args(_FlavorArg)
+_VALID_FLAVORS = get_args(_FlavorArg)
 
 
 def _normalize_flavor(flavor: str | None) -> str:
