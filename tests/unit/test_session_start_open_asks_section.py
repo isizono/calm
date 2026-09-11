@@ -13,6 +13,7 @@ from src.services import ask_service
 from src.services.topic_service import add_topic
 
 from hooks.session_start_hook import (
+    _ASK_SERVICE_MAX_LIMIT,
     _OPEN_ASKS_GLOBAL_CTA,
     _OPEN_ASKS_NON_META_DISPLAY_LIMIT,
     _build_open_asks_section,
@@ -194,6 +195,23 @@ class TestMetaAlwaysVisible:
         finally:
             conn.close()
         assert "meta: blocks先が完了済みでも表示されるか" in out
+
+    def test_meta_asks_over_page_size_all_shown(self, temp_db):
+        """同一バケットにkind='meta'のaskが_ASK_SERVICE_MAX_LIMIT(100)件を
+        超えて存在しても、1回のget_asks_with_conn呼び出しのlimitクランプに
+        取得を打ち切られず全件が表示される
+        （_fetch_asks_with_guaranteed_metaのページング処理の回帰テスト）。"""
+        conn = get_connection()
+        try:
+            total_meta = _ASK_SERVICE_MAX_LIMIT + 1
+            for i in range(total_meta):
+                _seed_ask(conn, f"meta_over_limit_{i}", kind="meta")
+            result = _build_open_asks_section(conn)
+        finally:
+            conn.close()
+        for i in range(total_meta):
+            assert f"meta_over_limit_{i}" in result
+        assert result.count("[meta] ") == total_meta
 
 
 class TestNonMetaOverflow:

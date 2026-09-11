@@ -421,9 +421,11 @@ def _build_signals_section(conn, session_id: str | None = None, source: str | No
 # 収める必要から実装時に決めた固定値で、decisionでは具体的な件数は定められていない。
 _OPEN_ASKS_NON_META_DISPLAY_LIMIT = 5
 
-# ask_service.get_asks_with_connのlimit上限(_MAX_LIMIT)と揃える
-# （overview_service.pyの_MAX_LIMITと同じ理由・同じ値）。metaaskは表示上限を持たず
-# 常時全件表示するため、実質無制限に近い値としてこれを使う。
+# ask_service.get_asks_with_connのlimit上限(_MAX_LIMIT)と揃えたページサイズ。
+# metaaskは表示上限を持たず常時全件表示するため、_fetch_asks_with_guaranteed_meta
+# はこの単位でoffsetをずらしながら全件になるまでページングする
+# （1回のget_asks_with_conn呼び出しではlimitがこの値にクランプされ、
+# 同一バケットのmetaaskがこの値を超えると取得漏れが起きるため）。
 _ASK_SERVICE_MAX_LIMIT = 100
 
 
@@ -437,6 +439,12 @@ def _fetch_asks_with_guaranteed_meta(conn, *, base_kwargs: dict, non_meta_limit:
     _render_open_asks_sectionはそこから表示済みnon_meta件数だけを引いて
     残り件数を算出する。
 
+    meta側はget_asks_with_connのlimitが_ASK_SERVICE_MAX_LIMIT
+    （=ask_service._MAX_LIMIT）にクランプされるため、1回の呼び出しでは
+    同一バケットに101件以上あると取得漏れが起きる。offsetを
+    _ASK_SERVICE_MAX_LIMIT刻みでずらし、total_countに達するまでページングして
+    全件を組み立てることでこれを避ける。
+
     Returns:
         {"meta": [...], "non_meta": [...], "non_meta_total_count": int}
         取得失敗時: ask_service.get_asks_with_connの{"error": {...}}をそのまま返す
@@ -446,13 +454,22 @@ def _fetch_asks_with_guaranteed_meta(conn, *, base_kwargs: dict, non_meta_limit:
     )
     if "error" in non_meta_result:
         return non_meta_result
-    meta_result = ask_service.get_asks_with_conn(
-        conn, kind="meta", limit=_ASK_SERVICE_MAX_LIMIT, **base_kwargs
-    )
-    if "error" in meta_result:
-        return meta_result
+
+    meta_asks: list[dict] = []
+    offset = 0
+    while True:
+        meta_page = ask_service.get_asks_with_conn(
+            conn, kind="meta", limit=_ASK_SERVICE_MAX_LIMIT, offset=offset, **base_kwargs
+        )
+        if "error" in meta_page:
+            return meta_page
+        meta_asks.extend(meta_page["asks"])
+        offset += _ASK_SERVICE_MAX_LIMIT
+        if offset >= meta_page["total_count"]:
+            break
+
     return {
-        "meta": meta_result["asks"],
+        "meta": meta_asks,
         "non_meta": non_meta_result["asks"],
         "non_meta_total_count": non_meta_result["total_count"],
     }
