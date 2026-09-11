@@ -376,7 +376,7 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 - `params`: 実際に集計へ使われた実効値。`limit`は100に丸めた後の値、`heartbeat_timeout_minutes`は`HEARTBEAT_TIMEOUT_MINUTES`の実効値（引数化しない）
 - `working`: 今動いているもの。`{items: [{id_raw, title, status, domains, last_touch_at, is_live, days_since_touch, open_ask_count}], count, total_count}`。`is_live`はheartbeatがタイムアウト以内かの真偽値
 - `recently_done`: 最近終わったもの。`{items: [{id_raw, title, status, domains, updated_at, days_ago}], count, total_count}`
-- `awaiting_human`: 人間の裁定待ち（statusが`open`のask）。`{items: [{id_raw, question, kind, choices, occurrence_count, first_seen_at, days_open, domains, blocks}], count, total_count, triage_pending_count}`。`triage_pending_count`は回答済み未トリアージ（`status='answered' AND triage IS NULL`）の件数で、`items`には含まれない
+- `awaiting_human`: 人間の裁定待ち（statusが`open`のask）。`{items: [{id_raw, question, kind, choices, occurrence_count, first_seen_at, days_open, domains, blocks}], count, total_count, triage_pending_count, triage_pending_items}`。`kind="meta"`のaskは`items`・`triage_pending_items`いずれも`limit`を超えて他のaskが多数存在していても必ず含み、両配列内で非メタaskより先頭に並ぶ。`triage_pending_count`は回答済み未トリアージ（`status='answered' AND triage IS NULL`）の件数、`triage_pending_items`はそのaskを`items`と同じ形状（`{id_raw, question, kind, choices, occurrence_count, first_seen_at, days_open, domains, blocks}`）で列挙したもの（件数のみだった従来の`triage_pending_count`はそのまま残す）
 - `backlog`: それ以外の残り。`{total_count, stale_in_progress_count, by_status, by_domain, no_domain_count}`。個別アクティビティは返さない
 
 **副作用**: なし。

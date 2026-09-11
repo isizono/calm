@@ -1204,12 +1204,19 @@ def get_overview(days: int = 7, limit: int = 20) -> dict:
     - recently_done: 最近終わったもの。completed かつ更新日時が days 日以内。
       完了時刻カラムは存在せず更新日時での近似なので、完了後にタグ等を編集すると
       再浮上する。件数を「今週の完了数」として語らないこと
-    - awaiting_human: 人間の裁定待ち。open の ask。回答済みで未トリアージのものは
-      items に含めず triage_pending_count として件数だけ返す
+    - awaiting_human: 人間の裁定待ち。open の ask を items に返す。kind="meta" の ask は
+      limit に関わらず必ず items に含まれる（非メタのみ limit で切り詰められる）。
+      回答済みで未トリアージのものは triage_pending_count として件数を返すのに加え、
+      triage_pending_items にタイトル(question)付きで列挙する（meta も同様に limit
+      無視で必ず含まれる）
     - backlog: それ以外の残り。件数と status 別・domain 別の内訳のみ。
       stale_in_progress_count は「in_progress と宣言されているが days 日動いていない」件数
 
-    各節の count と total_count が異なる場合、limit で切り詰められている。
+    working/recently_done/backlog の各節は count と total_count が異なる場合、
+    limit で切り詰められている。awaiting_human は meta ask が limit を無視して
+    追加されるため、count が limit を超えることがある（total_count は kind で
+    絞っていない open ask 全体の件数で meta も含むため、count とは一致しない
+    場合がある）。
 
     Args:
         days: 鮮度窓・遡り窓の日数（既定 7）

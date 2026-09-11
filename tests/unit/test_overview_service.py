@@ -253,6 +253,142 @@ class TestAwaitingHumanSection:
         assert result["items"][0]["days_open"] == 5
 
 
+class TestAwaitingHumanMetaVisibility:
+    """kind="meta"のask常時表示・回答済み未捌きのtriage_pending_itemsを検証する。"""
+
+    def test_meta_ask_always_included_beyond_limit_and_placed_first(self, temp_db):
+        """表示上限を超える件数の非メタaskが存在しても、メタaskはitemsに
+        必ず含まれ、先頭に配置される（open側）。
+        """
+        act = _make_activity(status="in_progress")
+        meta_id = ask_service.add_ask(
+            "meta q", tags=["domain:test"], blocks=[act], kind="meta"
+        )["id"]
+        for i in range(5):
+            ask_service.add_ask(f"q{i}", tags=["domain:test"], blocks=[act])
+
+        ground_truth_total = ask_service.get_asks(status="open", limit=1)["total_count"]
+        assert ground_truth_total == 6
+
+        result = ov.get_overview(limit=2)
+        items = result["awaiting_human"]["items"]
+
+        ids = [item["id_raw"] for item in items]
+        assert ids.count(meta_id) == 1
+        assert items[0]["id_raw"] == meta_id
+        assert result["awaiting_human"]["total_count"] == ground_truth_total
+
+    def test_meta_ask_always_included_in_triage_pending_items(self, temp_db):
+        """open側と同じ、表示上限を超えても必ず含み先頭配置する保証が
+        triage_pending_itemsにも適用される（pending側）。"""
+        act = _make_activity(status="in_progress")
+        meta_id = ask_service.add_ask(
+            "meta q", tags=["domain:test"], blocks=[act], kind="meta"
+        )["id"]
+        ask_service.answer_ask(meta_id, "answer")
+        for i in range(5):
+            ask_id = ask_service.add_ask(f"q{i}", tags=["domain:test"], blocks=[act])["id"]
+            ask_service.answer_ask(ask_id, "answer")
+
+        result = ov.get_overview(limit=2)
+        pending_items = result["awaiting_human"]["triage_pending_items"]
+
+        pending_ids = [item["id_raw"] for item in pending_items]
+        assert pending_ids.count(meta_id) == 1
+        assert pending_items[0]["id_raw"] == meta_id
+
+    def test_meta_ask_within_limit_window_is_not_duplicated(self, temp_db):
+        """メタaskがページ取得(limit以内)にも含まれる場合でも、結果に
+        重複して出現しない。"""
+        act = _make_activity(status="in_progress")
+        ask_service.add_ask("q0", tags=["domain:test"], blocks=[act])
+        meta_id = ask_service.add_ask(
+            "meta q", tags=["domain:test"], blocks=[act], kind="meta"
+        )["id"]
+
+        result = ov.get_overview(limit=20)
+        items = result["awaiting_human"]["items"]
+
+        ids = [item["id_raw"] for item in items]
+        assert ids.count(meta_id) == 1
+        assert len(items) == 2
+
+    def test_triage_pending_items_includes_question_and_existing_keys_unchanged(self, temp_db):
+        """回答済み未捌きのaskはtriage_pending_itemsにquestionを含む形で
+        列挙される。件数のみだった従来のtriage_pending_countはそのまま残り、
+        items(open側)には現れない。"""
+        act = _make_activity(status="in_progress")
+        ask_id = ask_service.add_ask("need review", tags=["domain:test"], blocks=[act])["id"]
+        ask_service.answer_ask(ask_id, "answer body")
+
+        result = ov.get_overview()
+        awaiting = result["awaiting_human"]
+
+        assert awaiting["items"] == []
+        assert awaiting["triage_pending_count"] == 1
+        assert len(awaiting["triage_pending_items"]) == 1
+        item = awaiting["triage_pending_items"][0]
+        assert item["id_raw"] == ask_id
+        assert item["question"] == "need review"
+        assert item["kind"] == "ask"
+
+    def test_no_meta_asks_leaves_items_and_order_unchanged(self, temp_db):
+        """メタaskが1件も無いとき、itemsの内容・順序はdedup前(従来実装)と
+        変わらない。"""
+        act = _make_activity(status="in_progress")
+        ids = [
+            ask_service.add_ask(f"q{i}", tags=["domain:test"], blocks=[act])["id"]
+            for i in range(3)
+        ]
+
+        result = ov.get_overview(limit=20)
+        items = result["awaiting_human"]["items"]
+
+        assert [item["id_raw"] for item in items] == list(reversed(ids))
+        assert result["awaiting_human"]["total_count"] == 3
+
+    def test_triage_pending_count_stable_across_limits_with_meta_present(self, temp_db):
+        """triage_pending_countはメタaskが混在していてもページの表示上限
+        (limit)に依らず一定である。メタ取得側の件数をtotal_countへ加算する
+        実装だと、メタがページ内に偶然入るかどうかでこの値がlimitごとに
+        ブレる(回帰の検出点)。"""
+        act = _make_activity(status="in_progress")
+        meta_id = ask_service.add_ask(
+            "meta q", tags=["domain:test"], blocks=[act], kind="meta"
+        )["id"]
+        ask_service.answer_ask(meta_id, "answer")
+        for i in range(4):
+            ask_id = ask_service.add_ask(f"q{i}", tags=["domain:test"], blocks=[act])["id"]
+            ask_service.answer_ask(ask_id, "answer")
+
+        ground_truth = ask_service.get_asks(triage_pending_only=True, limit=1)["total_count"]
+        assert ground_truth == 5
+
+        small = ov.get_overview(limit=1)["awaiting_human"]["triage_pending_count"]
+        large = ov.get_overview(limit=20)["awaiting_human"]["triage_pending_count"]
+
+        assert small == ground_truth
+        assert large == ground_truth
+
+    def test_meta_count_exceeding_max_limit_is_capped_not_crashed(self, temp_db, monkeypatch):
+        """メタaskの絶対件数が_MAX_LIMITを超える場合、items内のメタaskは
+        その件数までで打ち切られる(仕様上の残余制約であり、クラッシュしない
+        ことを保証する)。"""
+        monkeypatch.setattr(ov, "_MAX_LIMIT", 3)
+        act = _make_activity(status="in_progress")
+        for i in range(5):
+            ask_service.add_ask(
+                f"meta q{i}", tags=["domain:test"], blocks=[act], kind="meta"
+            )
+        ask_service.add_ask("normal q", tags=["domain:test"], blocks=[act])
+
+        result = ov.get_overview(limit=3)
+
+        items = result["awaiting_human"]["items"]
+        meta_items = [item for item in items if item["kind"] == "meta"]
+        assert len(meta_items) == 3
+
+
 class TestBacklogSection:
     def test_multi_domain_activity_counted_in_each_domain(self, temp_db):
         _make_activity(status="pending", tags=["domain:calm", "domain:infra"])
