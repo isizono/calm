@@ -14,6 +14,7 @@ from yoyo.migrations import MigrationList
 
 from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection, init_database
 from src.services.tag_service import _injected_tags
+from test_migrations.conftest import get_column_names
 
 
 @pytest.fixture
@@ -86,12 +87,6 @@ def _apply_migration_0035(db_path: str) -> None:
         backend.apply_migrations(only_0035)
 
 
-def _get_column_names(conn: sqlite3.Connection, table: str) -> set[str]:
-    """指定テーブルのカラム名セットを返す。"""
-    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-    return {row["name"] for row in rows}
-
-
 class TestSQLiteVersion:
     """DROP COLUMN サポートの前提確認"""
 
@@ -116,7 +111,7 @@ class TestPinnedColumnsDropped:
         """migration 0035適用後、discussion_logsテーブルにpinned列が存在しない"""
         conn = get_connection()
         try:
-            column_names = _get_column_names(conn, "discussion_logs")
+            column_names = get_column_names(conn, "discussion_logs")
             assert "pinned" not in column_names, (
                 "discussion_logs.pinned が0035適用後も残っている"
             )
@@ -127,7 +122,7 @@ class TestPinnedColumnsDropped:
         """migration 0035適用後、decisionsテーブルにpinned列が存在しない"""
         conn = get_connection()
         try:
-            column_names = _get_column_names(conn, "decisions")
+            column_names = get_column_names(conn, "decisions")
             assert "pinned" not in column_names, (
                 "decisions.pinned が0035適用後も残っている"
             )
@@ -138,7 +133,7 @@ class TestPinnedColumnsDropped:
         """migration 0035適用後、materialsテーブルにpinned列が存在しない"""
         conn = get_connection()
         try:
-            column_names = _get_column_names(conn, "materials")
+            column_names = get_column_names(conn, "materials")
             assert "pinned" not in column_names, (
                 "materials.pinned が0035適用後も残っている"
             )
@@ -149,13 +144,13 @@ class TestPinnedColumnsDropped:
         """0034適用時点では discussion_logs / decisions / materials に pinned列が存在する（前提確認）"""
         conn = get_connection()
         try:
-            assert "pinned" in _get_column_names(conn, "discussion_logs"), (
+            assert "pinned" in get_column_names(conn, "discussion_logs"), (
                 "0035適用前のdiscussion_logsにpinned列がない"
             )
-            assert "pinned" in _get_column_names(conn, "decisions"), (
+            assert "pinned" in get_column_names(conn, "decisions"), (
                 "0035適用前のdecisionsにpinned列がない"
             )
-            assert "pinned" in _get_column_names(conn, "materials"), (
+            assert "pinned" in get_column_names(conn, "materials"), (
                 "0035適用前のmaterialsにpinned列がない"
             )
         finally:
@@ -167,13 +162,13 @@ class TestPinnedColumnsDropped:
 
         conn = get_connection()
         try:
-            assert "pinned" not in _get_column_names(conn, "discussion_logs"), (
+            assert "pinned" not in get_column_names(conn, "discussion_logs"), (
                 "0035適用後もdiscussion_logs.pinned が残っている"
             )
-            assert "pinned" not in _get_column_names(conn, "decisions"), (
+            assert "pinned" not in get_column_names(conn, "decisions"), (
                 "0035適用後もdecisions.pinned が残っている"
             )
-            assert "pinned" not in _get_column_names(conn, "materials"), (
+            assert "pinned" not in get_column_names(conn, "materials"), (
                 "0035適用後もmaterials.pinned が残っている"
             )
         finally:
@@ -187,7 +182,7 @@ class TestOtherColumnsUnaffected:
         """0035適用後、discussion_logsのid/title/content/topic_id/retracted_atカラムが保持される"""
         conn = get_connection()
         try:
-            column_names = _get_column_names(conn, "discussion_logs")
+            column_names = get_column_names(conn, "discussion_logs")
             for col in ["id", "title", "content", "topic_id", "retracted_at"]:
                 assert col in column_names, (
                     f"discussion_logs.{col} が0035適用後に消えている"
@@ -199,7 +194,7 @@ class TestOtherColumnsUnaffected:
         """0035適用後、decisionsのid/decision/reason/topic_id/retracted_atカラムが保持される"""
         conn = get_connection()
         try:
-            column_names = _get_column_names(conn, "decisions")
+            column_names = get_column_names(conn, "decisions")
             for col in ["id", "decision", "reason", "topic_id", "retracted_at"]:
                 assert col in column_names, (
                     f"decisions.{col} が0035適用後に消えている"
@@ -211,7 +206,7 @@ class TestOtherColumnsUnaffected:
         """0035適用後、materialsのid/title/content/sourceカラムが保持される"""
         conn = get_connection()
         try:
-            column_names = _get_column_names(conn, "materials")
+            column_names = get_column_names(conn, "materials")
             for col in ["id", "title", "content", "source"]:
                 assert col in column_names, (
                     f"materials.{col} が0035適用後に消えている"

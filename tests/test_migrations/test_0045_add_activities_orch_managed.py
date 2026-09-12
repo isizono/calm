@@ -14,6 +14,7 @@ from yoyo.migrations import MigrationList
 
 from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection, init_database
 from src.services.tag_service import _injected_tags
+from test_migrations.conftest import get_column_names
 
 
 @pytest.fixture
@@ -62,12 +63,6 @@ def _apply_migration_0045(db_path: str) -> None:
         backend.apply_migrations(only_0045)
 
 
-def _get_column_names(conn: sqlite3.Connection, table: str) -> set[str]:
-    """指定テーブルのカラム名セットを返す。"""
-    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-    return {row["name"] for row in rows}
-
-
 def _insert_activity(conn: sqlite3.Connection, title: str) -> int:
     """activitiesに1行INSERTしてidを返す。"""
     cur = conn.execute(
@@ -100,7 +95,7 @@ class TestOrchManagedColumnAdded:
         """migration 0045 適用後、activities テーブルに orch_managed 列が存在する"""
         conn = get_connection()
         try:
-            column_names = _get_column_names(conn, "activities")
+            column_names = get_column_names(conn, "activities")
             assert "orch_managed" in column_names, (
                 "activities.orch_managed が 0045 適用後に存在しない"
             )
@@ -111,7 +106,7 @@ class TestOrchManagedColumnAdded:
         """0044 適用時点では activities に orch_managed 列が存在しない（前提確認）"""
         conn = get_connection()
         try:
-            assert "orch_managed" not in _get_column_names(conn, "activities"), (
+            assert "orch_managed" not in get_column_names(conn, "activities"), (
                 "0045 適用前の activities に orch_managed 列が既に存在している"
             )
         finally:

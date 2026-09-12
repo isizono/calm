@@ -14,6 +14,7 @@ from yoyo.migrations import MigrationList
 
 from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection, init_database
 from src.services.tag_service import _injected_tags
+from test_migrations.conftest import get_column_names
 
 
 @pytest.fixture
@@ -60,12 +61,6 @@ def _apply_migration_0064(db_path: str) -> None:
         backend.apply_migrations(only_0064)
 
 
-def _get_column_names(conn: sqlite3.Connection, table: str) -> set[str]:
-    """指定テーブルのカラム名セットを返す。"""
-    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-    return {row["name"] for row in rows}
-
-
 def _insert_tag(conn: sqlite3.Connection, namespace: str, name: str) -> int:
     """tagsに1行INSERTしてidを返す（last_injected_atは既定値のまま）。"""
     cur = conn.execute(
@@ -81,7 +76,7 @@ class TestColumnAdded:
         """migration 0064 適用後、tags テーブルに last_injected_at が存在する"""
         conn = get_connection()
         try:
-            column_names = _get_column_names(conn, "tags")
+            column_names = get_column_names(conn, "tags")
             assert "last_injected_at" in column_names, (
                 "tags.last_injected_at が 0064 適用後に存在しない"
             )
@@ -92,7 +87,7 @@ class TestColumnAdded:
         """0061 適用時点では last_injected_at が存在しない（前提確認）"""
         conn = get_connection()
         try:
-            column_names = _get_column_names(conn, "tags")
+            column_names = get_column_names(conn, "tags")
             assert "last_injected_at" not in column_names, (
                 "0064 適用前の tags に last_injected_at 列が既に存在している"
             )

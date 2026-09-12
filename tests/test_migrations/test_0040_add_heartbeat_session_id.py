@@ -14,6 +14,7 @@ from yoyo.migrations import MigrationList
 
 from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection, init_database
 from src.services.tag_service import _injected_tags
+from test_migrations.conftest import get_column_names
 
 
 @pytest.fixture
@@ -60,12 +61,6 @@ def _apply_migration_0040(db_path: str) -> None:
         backend.apply_migrations(only_0040)
 
 
-def _get_column_names(conn: sqlite3.Connection, table: str) -> set[str]:
-    """指定テーブルのカラム名セットを返す。"""
-    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-    return {row["name"] for row in rows}
-
-
 class TestSessionIdColumnAdded:
     """0040適用後に last_heartbeat_session_id 列が追加されていることの確認"""
 
@@ -73,7 +68,7 @@ class TestSessionIdColumnAdded:
         """migration 0040適用後、activities に last_heartbeat_session_id 列が存在する"""
         conn = get_connection()
         try:
-            column_names = _get_column_names(conn, "activities")
+            column_names = get_column_names(conn, "activities")
             assert "last_heartbeat_session_id" in column_names, (
                 "activities.last_heartbeat_session_id が0040適用後に存在しない"
             )
@@ -84,7 +79,7 @@ class TestSessionIdColumnAdded:
         """0040適用前は activities に last_heartbeat_session_id 列が存在しない（前提確認）"""
         conn = get_connection()
         try:
-            assert "last_heartbeat_session_id" not in _get_column_names(
+            assert "last_heartbeat_session_id" not in get_column_names(
                 conn, "activities"
             ), "0040適用前に既に last_heartbeat_session_id 列が存在している"
         finally:
@@ -94,7 +89,7 @@ class TestSessionIdColumnAdded:
         """0040適用後、activities の主要カラム（id/title/description/status/last_heartbeat_at）が保持される"""
         conn = get_connection()
         try:
-            column_names = _get_column_names(conn, "activities")
+            column_names = get_column_names(conn, "activities")
             for col in [
                 "id",
                 "title",
