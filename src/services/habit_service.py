@@ -4,7 +4,6 @@ import logging
 from src.config import ALWAYS_POOL_CAPACITY, HABIT_MANIFEST_DECAY_DAYS
 from src.db import get_connection, row_to_dict
 from src.services.decay_utils import is_decay_eligible
-from src.services.relay.entity_publish import publish_entity_event_with_conn
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +101,6 @@ def _add_habit_with_conn(
         (content, "intelligently", importance_score, status),
     )
     habit_id = cursor.lastrowid
-    publish_entity_event_with_conn(conn, entity_type="habit", entity_id=habit_id, event="created")
     return habit_id
 
 
@@ -477,7 +475,6 @@ def update_habit(
             f"UPDATE habits SET {set_clause} WHERE id = ?",
             tuple(values),
         )
-        publish_entity_event_with_conn(conn, entity_type="habit", entity_id=habit_id, event="updated")
         conn.commit()
 
         # 更新後の振る舞いを取得

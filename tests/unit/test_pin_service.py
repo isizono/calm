@@ -14,6 +14,7 @@ from src.services.decision_service import add_decisions
 from src.services.material_service import add_material
 from src.services.activity_service import add_activity
 from src.services.pin_service import add_pin, remove_pin
+from src.services.retract_service import retract
 from src.services.tag_service import _injected_tags, ensure_tag_ids
 
 
@@ -112,6 +113,39 @@ class TestAddPinBasic:
         assert "error" not in pin_result
         assert pin_result["target_type"] == "log"
         assert pin_result["target_id"] == log_id
+
+
+class TestAddPinRetractedTarget:
+    """retract済みentityをpin対象にしたときのupdated_at bump抑止"""
+
+    def test_add_pin_to_retracted_material_does_not_bump(self, activity, material):
+        """retract済みmaterialをpin対象にしても、pin自体は張られるが、material側の
+        updated_at bumpはスキップされ、search_index_ftsに孤立行も生まれない。"""
+        activity_id = activity["activity_id"]
+        material_id = material["material_id"]
+
+        retract_result = retract("material", [material_id])
+        assert retract_result["errors"] == []
+
+        result = add_pin("activity", activity_id, "material", material_id)
+        assert "error" not in result
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT * FROM pins WHERE source_type=? AND source_id=? AND target_type=? AND target_id=?",
+                ("activity", activity_id, "material", material_id),
+            ).fetchone()
+            assert row is not None
+
+            orphan_rows = conn.execute(
+                "SELECT search_index_fts.rowid FROM search_index_fts "
+                "LEFT JOIN search_index ON search_index.id = search_index_fts.rowid "
+                "WHERE search_index.id IS NULL"
+            ).fetchall()
+            assert orphan_rows == []
+        finally:
+            conn.close()
 
 
 class TestAddPinTagRef:

@@ -64,7 +64,6 @@ from src.services.relation_service import (
     _add_relation_with_conn,
     _add_supersedes_with_conn,
 )
-from src.services.relay.entity_publish import publish_entity_event_with_conn
 from src.services.retract_service import _delete_search_index_entry
 from src.services.tag_service import (
     ensure_tag_ids,
@@ -1013,7 +1012,6 @@ def _apply_bundle_with_conn(
 
     # --- フェーズA〜C: topic → activity/material → decision/log の順でcreate/update ---
     created_local_id: dict[str, tuple[str, int]] = {}
-    action_by_key: dict[str, str] = {}
     created_counts: dict[str, int] = defaultdict(int)
     updated_counts: dict[str, int] = defaultdict(int)
     # 新規作成でretracted_atを持つエンティティは、フェーズEの本文UPDATEが完了した後に
@@ -1051,7 +1049,6 @@ def _apply_bundle_with_conn(
             _upsert_provenance_with_conn(conn, etype, local_id, key, parsed, bundle_id, now, action)
 
             created_local_id[key] = (etype, local_id)
-            action_by_key[key] = action
 
     # --- フェーズD: relations/supersedes/depends_on ---
     def _resolve(k: str) -> tuple[str, int] | None:
@@ -1148,9 +1145,6 @@ def _apply_bundle_with_conn(
             conn.execute(f"UPDATE {table} SET content = ? WHERE id = ?", (owner_fields["content"], local_id))
 
         upsert_citations_for_owner_with_conn(conn, etype, local_id, **owner_fields)
-        publish_entity_event_with_conn(
-            conn, entity_type=etype, entity_id=local_id, event="created" if action_by_key[key] == "create" else "updated"
-        )
         final_fields_by_key[key] = owner_fields
 
     # フェーズEの本文UPDATEが全エンティティ分完了した後にretract状態を適用する

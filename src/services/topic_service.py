@@ -13,7 +13,6 @@ from src.services.embedding_service import (
     insert_topic_embedding_with_conn,
 )
 from src.services.relation_service import _add_relation_with_conn, _validate_targets
-from src.services.relay.entity_publish import publish_entity_event_with_conn
 from src.services.search_service import find_similar_topics
 from src.services.title_validation import validate_title
 from src.services.tag_service import (
@@ -205,10 +204,6 @@ def add_topic(
         # 本文中の {{cite:X#NNN}} を citations テーブルに保存
         upsert_citations_for_owner_with_conn(
             conn, "topic", topic_id, title=title, description=description
-        )
-
-        publish_entity_event_with_conn(
-            conn, entity_type="topic", entity_id=topic_id, event="created"
         )
 
         conn.commit()
