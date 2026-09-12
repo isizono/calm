@@ -4,7 +4,6 @@
 既存行の updated_at が created_at でバックフィルされることを確認する。
 """
 import os
-import sqlite3
 import tempfile
 
 import pytest

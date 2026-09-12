@@ -4,7 +4,6 @@
 SQLite 3.35+ で ALTER TABLE ... DROP COLUMN が使用可能なことを前提とする。
 """
 import os
-import sqlite3
 import tempfile
 
 import pytest

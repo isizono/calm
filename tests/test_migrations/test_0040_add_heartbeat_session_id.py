@@ -4,7 +4,6 @@
 既存行のデータ・他カラムが保持されることを確認する。
 """
 import os
-import sqlite3
 import tempfile
 
 import pytest
