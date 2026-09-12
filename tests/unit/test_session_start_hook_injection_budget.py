@@ -40,6 +40,7 @@ def test_all_sections_are_actually_processed_by_compose(temp_db, monkeypatch):
         domain_tag_id = _seed_domain_tag(conn, "wiring-check")
         _seed_many_heartbeat_activities(conn, 1, domain_tag_id)
         _seed_many_signal_kinds(conn, 1)
+        _seed_open_ask(conn, "wiring確認用ask")
         conn.commit()
     finally:
         conn.close()
@@ -53,7 +54,29 @@ def test_all_sections_are_actually_processed_by_compose(temp_db, monkeypatch):
     assert "heartbeat膨張タスク0" in result  # activities section
     assert "wiring確認用sync_policy" in result  # sync_policy section
     assert "未トリアージのシグナル" in result  # signals section
+    assert "wiring確認用ask" in result  # open_asks section
     assert "このセッションのtranscript path: /tmp/wiring-check-transcript.jsonl" in result  # transcript_path section
+
+
+def _seed_open_ask(conn, question: str) -> int:
+    """open askを1件作成する（blocks先の未完了activityを1件用意して紐付ける）。
+
+    ask_service.add_askではなくadd_ask_with_connを直接使うことで、embedding
+    生成（外部のembeddingサーバー起動を伴う）を避け、connを共有したまま
+    同一トランザクションでcommitする。
+    """
+    from src.services import ask_service
+
+    cursor = conn.execute(
+        "INSERT INTO activities (title, description, status) VALUES (?, ?, 'pending')",
+        (f"[作業] {question}のblocks先", "desc"),
+    )
+    activity_id = cursor.lastrowid
+    result = ask_service.add_ask_with_conn(
+        conn, question, [activity_id], ["domain:wiring-check"]
+    )
+    assert "error" not in result, result
+    return result["id"]
 
 
 def _seed_domain_tag(conn, name: str) -> int:

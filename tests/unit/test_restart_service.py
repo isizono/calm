@@ -614,6 +614,169 @@ def test_plugin_cache_dir_removed_from_module():
     assert not hasattr(restart_service, "PLUGIN_CACHE_DIR")
 
 
+def test_has_open_file_handles_true_when_lsof_reports_a_match(monkeypatch, tmp_path):
+    captured_cmd = []
+
+    def fake_run(cmd, **kwargs):
+        captured_cmd.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="Python 123 user cwd DIR ...\n", stderr="")
+
+    monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
+
+    assert restart_service._has_open_file_handles(tmp_path) is True
+    assert captured_cmd == [["lsof", "+D", str(tmp_path)]]
+
+
+def test_has_open_file_handles_false_when_lsof_reports_nothing(monkeypatch, tmp_path):
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+    monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
+
+    assert restart_service._has_open_file_handles(tmp_path) is False
+
+
+def test_has_open_file_handles_true_on_timeout(monkeypatch, tmp_path):
+    """find_listen_pids()と逆向きの安全側判定: 判定不能時は「使用中」として扱い、削除させない"""
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+    monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
+
+    assert restart_service._has_open_file_handles(tmp_path) is True
+
+
+def test_has_open_file_handles_true_when_lsof_missing(monkeypatch, tmp_path):
+    def fake_run(cmd, **kwargs):
+        raise FileNotFoundError("lsof not found")
+
+    monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
+
+    assert restart_service._has_open_file_handles(tmp_path) is True
+
+
+def _no_open_handles(monkeypatch):
+    monkeypatch.setattr(
+        restart_service, "_has_open_file_handles", lambda path: False,
+    )
+
+
+class TestPruneOrphanedPluginVersions:
+    """プラグインキャッシュの旧バージョンディレクトリを兄弟から掃除する契約を検証する。"""
+
+    def test_removes_orphaned_sibling_without_open_handles(self, monkeypatch, tmp_path):
+        versions_root = tmp_path / "calm"
+        current = versions_root / "be3a99a"
+        current.mkdir(parents=True)
+        orphaned = versions_root / "1.0.0"
+        orphaned.mkdir()
+        (orphaned / ".orphaned_at").write_text("1789054301708")
+        _no_open_handles(monkeypatch)
+
+        result = restart_service.prune_orphaned_plugin_versions(current)
+
+        assert result == {"removed": [str(orphaned)], "skipped": []}
+        assert not orphaned.exists()
+        assert current.exists()
+
+    def test_never_removes_current_version_dir_even_if_marked(self, monkeypatch, tmp_path):
+        """現在使用中のディレクトリは、たとえマーカーが付いていても兄弟走査の対象にせず、
+        識別子の一致だけで無条件に除外する。"""
+        versions_root = tmp_path / "calm"
+        current = versions_root / "be3a99a"
+        current.mkdir(parents=True)
+        (current / ".orphaned_at").write_text("1789054301708")
+        _no_open_handles(monkeypatch)
+
+        result = restart_service.prune_orphaned_plugin_versions(current)
+
+        assert result == {"removed": [], "skipped": []}
+        assert current.exists()
+
+    def test_skips_sibling_without_orphaned_marker(self, monkeypatch, tmp_path):
+        """Claude Code自身がまだ現行と判断しているディレクトリ(マーカー無し)は削除しない"""
+        versions_root = tmp_path / "calm"
+        current = versions_root / "be3a99a"
+        current.mkdir(parents=True)
+        other = versions_root / "a3c8d3a"
+        other.mkdir()
+        _no_open_handles(monkeypatch)
+
+        result = restart_service.prune_orphaned_plugin_versions(current)
+
+        assert result == {
+            "removed": [],
+            "skipped": [{"path": str(other), "reason": "not marked orphaned"}],
+        }
+        assert other.exists()
+
+    def test_skips_orphaned_sibling_with_open_file_handles(self, monkeypatch, tmp_path):
+        """マーカーがあっても、旧バージョンからまだ接続中のプロセス(他セッションのlauncher等)
+        が疑われる場合は削除しない"""
+        versions_root = tmp_path / "calm"
+        current = versions_root / "be3a99a"
+        current.mkdir(parents=True)
+        orphaned = versions_root / "1.0.0"
+        orphaned.mkdir()
+        (orphaned / ".orphaned_at").write_text("1789054301708")
+        monkeypatch.setattr(restart_service, "_has_open_file_handles", lambda path: True)
+
+        result = restart_service.prune_orphaned_plugin_versions(current)
+
+        assert result == {
+            "removed": [],
+            "skipped": [{"path": str(orphaned), "reason": "open file handles"}],
+        }
+        assert orphaned.exists()
+
+    def test_does_nothing_when_project_root_is_a_git_checkout(self, monkeypatch, tmp_path):
+        """project_rootがgitリポジトリ(dev worktree)の場合、兄弟ディレクトリは無関係な
+        作業ディレクトリの並びでありうるため一切走査しない。"""
+        workspace = tmp_path / "workspace"
+        current = workspace / "calm"
+        (current / ".git").mkdir(parents=True)
+        sibling = workspace / "some-other-project"
+        sibling.mkdir()
+        (sibling / ".orphaned_at").write_text("1789054301708")
+        called = []
+        monkeypatch.setattr(
+            restart_service, "_has_open_file_handles",
+            lambda path: called.append(path) or False,
+        )
+
+        result = restart_service.prune_orphaned_plugin_versions(current)
+
+        assert result == {"removed": [], "skipped": []}
+        assert sibling.exists()
+        assert called == []  # 走査自体が起きていないこと(lsofすら呼ばれない)
+
+    def test_treats_git_worktree_dot_git_file_as_git_checkout(self, monkeypatch, tmp_path):
+        """worktreeの`.git`はファイル(gitdirへのポインタ)であり、ディレクトリとは限らない。
+        `.exists()`で判定し`.is_dir()`を使わないことで、この形も検出できる。"""
+        workspace = tmp_path / "workspace"
+        current = workspace / "calm-worktree"
+        current.mkdir(parents=True)
+        (current / ".git").write_text("gitdir: /somewhere/.git/worktrees/calm-worktree\n")
+        sibling = workspace / "some-other-project"
+        sibling.mkdir()
+        (sibling / ".orphaned_at").write_text("1789054301708")
+        _no_open_handles(monkeypatch)
+
+        result = restart_service.prune_orphaned_plugin_versions(current)
+
+        assert result == {"removed": [], "skipped": []}
+        assert sibling.exists()
+
+    def test_handles_missing_versions_root_gracefully(self, tmp_path):
+        lonely = tmp_path  # tmp_path自身をcurrentとして渡すと親はpytest管理外の実在パス
+        # 親ディレクトリ自体が存在しないケースを模すため、存在しないパスの子を渡す
+        current = tmp_path / "nonexistent_parent" / "calm-version"
+
+        result = restart_service.prune_orphaned_plugin_versions(current)
+
+        assert result == {"removed": [], "skipped": []}
+
+
 def test_sync_dependencies_success(monkeypatch, tmp_path):
     captured = {}
 
@@ -682,18 +845,24 @@ def test_restart_all_calls_in_expected_order_without_stopping_embedding(monkeypa
         call_order.append("stop_embedding_server")
         return [9999]
 
+    def fake_prune(project_root):
+        call_order.append("prune_orphaned_plugin_versions")
+        return {"removed": [], "skipped": []}
+
     monkeypatch.setattr(restart_service, "sync_dependencies", fake_sync_dependencies)
     monkeypatch.setattr(restart_service, "clean_caches", fake_clean_caches)
     monkeypatch.setattr(restart_service, "restart_mcp_server", fake_restart_mcp_server)
     monkeypatch.setattr(restart_service, "stop_embedding_server", fake_stop_embedding_server)
+    monkeypatch.setattr(restart_service, "prune_orphaned_plugin_versions", fake_prune)
 
     result = restart_service.restart_all(tmp_path)
 
-    assert call_order == ["sync", "clean_caches", "restart_mcp_server"]
+    assert call_order == ["sync", "clean_caches", "restart_mcp_server", "prune_orphaned_plugin_versions"]
     assert result["uv_sync"] == {"ok": True, "duration_sec": 1.5, "detail": "synced"}
     assert result["mcp_server"]["ok"] is True
     assert result["embedding_server"] == {"stopped_pids": []}
     assert result["caches"] == {"removed_pycache_dirs": []}
+    assert result["plugin_cache_prune"] == {"removed": [], "skipped": []}
 
 
 def test_restart_all_stops_embedding_when_requested(monkeypatch, tmp_path):
@@ -719,6 +888,10 @@ def test_restart_all_stops_embedding_when_requested(monkeypatch, tmp_path):
 
     monkeypatch.setattr(restart_service, "restart_mcp_server", fake_restart_mcp_server)
     monkeypatch.setattr(restart_service, "stop_embedding_server", fake_stop_embedding_server)
+    monkeypatch.setattr(
+        restart_service, "prune_orphaned_plugin_versions",
+        lambda project_root: {"removed": [], "skipped": []},
+    )
 
     result = restart_service.restart_all(tmp_path, restart_embedding=True)
 
@@ -741,12 +914,43 @@ def test_restart_all_continues_to_mcp_restart_when_uv_sync_fails(monkeypatch, tm
     monkeypatch.setattr(restart_service, "clean_caches", lambda project_root: {"removed_pycache_dirs": []})
     monkeypatch.setattr(restart_service, "restart_mcp_server", fake_restart_mcp_server)
     monkeypatch.setattr(restart_service, "stop_embedding_server", lambda: [])
+    monkeypatch.setattr(
+        restart_service, "prune_orphaned_plugin_versions",
+        lambda project_root: {"removed": [], "skipped": []},
+    )
 
     result = restart_service.restart_all(tmp_path)
 
     assert mcp_restart_called == [tmp_path]
     assert result["uv_sync"]["ok"] is False
     assert result["mcp_server"]["ok"] is True
+
+
+def test_restart_all_skips_plugin_cache_prune_when_mcp_restart_fails(monkeypatch, tmp_path):
+    """MCP再起動が失敗した場合、プラグインキャッシュの掃除は行わない
+    (原因調査中にキャッシュディレクトリの状態まで変化させないため)"""
+    prune_called = []
+
+    monkeypatch.setattr(
+        restart_service, "sync_dependencies",
+        lambda project_root: restart_service.SyncResult(True, 0.1, "synced"),
+    )
+    monkeypatch.setattr(restart_service, "clean_caches", lambda project_root: {"removed_pycache_dirs": []})
+    monkeypatch.setattr(
+        restart_service, "restart_mcp_server",
+        lambda project_root: restart_service.RestartResult(False, [1111], [], "did not come up"),
+    )
+    monkeypatch.setattr(restart_service, "stop_embedding_server", lambda: [])
+    monkeypatch.setattr(
+        restart_service, "prune_orphaned_plugin_versions",
+        lambda project_root: prune_called.append(project_root) or {"removed": [], "skipped": []},
+    )
+
+    result = restart_service.restart_all(tmp_path)
+
+    assert prune_called == []
+    assert result["mcp_server"]["ok"] is False
+    assert result["plugin_cache_prune"] == {"removed": [], "skipped": []}
 
 
 class TestMainCli:

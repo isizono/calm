@@ -1,4 +1,5 @@
 """MCPサーバーのメインエントリーポイント"""
+import contextlib
 import logging
 import os
 import random
@@ -7,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from fastmcp import FastMCP, Context
 from fastmcp.server.dependencies import get_context
-from typing import Literal, Optional, Union
+from typing import Literal, Optional, Union, get_args
 from src.services import (
     topic_service,
     discussion_log_service,
@@ -134,11 +135,8 @@ def _maybe_inject_tag_notes(result: dict, tag_strings: list[str], mark: bool = T
         session_id = ctx.session_id
     except RuntimeError:
         session_id = None
-    conn = get_connection()
-    try:
+    with contextlib.closing(get_connection()) as conn:
         notes = collect_tag_notes_for_injection(conn, tag_strings, session_id=session_id, mark=mark)
-    finally:
-        conn.close()
     if notes:
         result["tag_notes"] = notes
     return result
@@ -162,11 +160,8 @@ def _attach_archived_tags_summary(result: dict, all_tags: list[str]) -> None:
     if not all_tags:
         result["archived_tags"] = []
         return
-    conn = get_connection()
-    try:
+    with contextlib.closing(get_connection()) as conn:
         result["archived_tags"] = get_archived_tags_for_strings(conn, all_tags)
-    finally:
-        conn.close()
 
 
 def _attach_archived_tags_per_item(items: list[dict], all_tags: list[str], tags_key: str = "tags") -> None:
@@ -179,11 +174,8 @@ def _attach_archived_tags_per_item(items: list[dict], all_tags: list[str], tags_
         for item in items:
             item["archived_tags"] = []
         return
-    conn = get_connection()
-    try:
+    with contextlib.closing(get_connection()) as conn:
         archived_rows = get_archived_tags_for_strings(conn, all_tags)
-    finally:
-        conn.close()
     archived_map = {row["tag"]: row["archived_reason"] for row in archived_rows}
     for item in items:
         item_tags = item.get(tags_key) or []
@@ -194,7 +186,7 @@ def _attach_archived_tags_per_item(items: list[dict], all_tags: list[str], tags_
 
 
 _FlavorArg = Literal["raw", "internal", "readable"]
-_VALID_FLAVORS = ("raw", "internal", "readable")
+_VALID_FLAVORS = get_args(_FlavorArg)
 
 
 def _normalize_flavor(flavor: str | None) -> str:
@@ -218,15 +210,12 @@ def _apply_flavor_to_items(
     """同種エンティティのリストに対し flavor 展開 + citations_in/out 付与 (in-place)。"""
     if not items:
         return
-    conn = get_connection()
-    try:
+    with contextlib.closing(get_connection()) as conn:
         for item in items:
             citation_renderer.apply_flavor_to_entity_dict(
                 item, entity_type, flavor, conn,
                 id_key=id_key, attach_citations=attach_citations,
             )
-    finally:
-        conn.close()
 
 
 def _apply_flavor_to_single(
@@ -239,30 +228,24 @@ def _apply_flavor_to_single(
     """単一エンティティ dict に flavor 展開 + citations_in/out 付与 (in-place)。"""
     if not item:
         return
-    conn = get_connection()
-    try:
+    with contextlib.closing(get_connection()) as conn:
         citation_renderer.apply_flavor_to_entity_dict(
             item, entity_type, flavor, conn,
             id_key=id_key, attach_citations=attach_citations,
         )
-    finally:
-        conn.close()
 
 
 def _apply_flavor_to_snippets(items: list[dict], flavor: str) -> None:
     """検索結果 snippet 群に raw 境界調整 → flavor 展開を適用 (in-place)。"""
     if not items or flavor == "raw":
         return
-    conn = get_connection()
-    try:
+    with contextlib.closing(get_connection()) as conn:
         for item in items:
             snippet = item.get("snippet")
             if isinstance(snippet, str) and snippet:
                 item["snippet"] = citation_renderer.apply_flavor_to_snippet(
                     snippet, flavor, conn
                 )
-    finally:
-        conn.close()
 
 
 # MCPサーバーを作成
@@ -607,8 +590,7 @@ def _apply_flavor_to_pull_precedents_result(result: dict, flavor: str) -> None:
     index decision / material / topic 候補は title・snippet の展開のみ（citations 非付与、
     check_in の related_topics 等と同方針）。
     """
-    conn = get_connection()
-    try:
+    with contextlib.closing(get_connection()) as conn:
         for candidate in result.get("routing", {}).get("candidates", []) or []:
             citation_renderer.apply_flavor_to_entity_dict(
                 candidate, "topic", flavor, conn, id_key="topic_id", attach_citations=False,
@@ -626,8 +608,6 @@ def _apply_flavor_to_pull_precedents_result(result: dict, flavor: str) -> None:
                     _flavor_snippet(dec, flavor, conn)
             for mat in topic.get("materials", []) or []:
                 _flavor_snippet(mat, flavor, conn)
-    finally:
-        conn.close()
 
 
 @mcp.tool()
@@ -809,8 +789,7 @@ def get_by_ids(
     flavor = _normalize_flavor(flavor)
     result = search_service.get_by_ids(items, caller_session_id=_current_session_id())
     if "error" not in result:
-        conn = get_connection()
-        try:
+        with contextlib.closing(get_connection()) as conn:
             for entry in result.get("results", []):
                 data = entry.get("data")
                 if not isinstance(data, dict):
@@ -820,8 +799,6 @@ def get_by_ids(
                     citation_renderer.apply_flavor_to_entity_dict(
                         data, etype, flavor, conn,
                     )
-        finally:
-            conn.close()
         all_tags = []
         for item in result.get("results", []):
             if "data" in item:
@@ -1204,12 +1181,19 @@ def get_overview(days: int = 7, limit: int = 20) -> dict:
     - recently_done: 最近終わったもの。completed かつ更新日時が days 日以内。
       完了時刻カラムは存在せず更新日時での近似なので、完了後にタグ等を編集すると
       再浮上する。件数を「今週の完了数」として語らないこと
-    - awaiting_human: 人間の裁定待ち。open の ask。回答済みで未トリアージのものは
-      items に含めず triage_pending_count として件数だけ返す
+    - awaiting_human: 人間の裁定待ち。open の ask を items に返す。kind="meta" の ask は
+      limit に関わらず必ず items に含まれる（非メタのみ limit で切り詰められる）。
+      回答済みで未トリアージのものは triage_pending_count として件数を返すのに加え、
+      triage_pending_items にタイトル(question)付きで列挙する（meta も同様に limit
+      無視で必ず含まれる）
     - backlog: それ以外の残り。件数と status 別・domain 別の内訳のみ。
       stale_in_progress_count は「in_progress と宣言されているが days 日動いていない」件数
 
-    各節の count と total_count が異なる場合、limit で切り詰められている。
+    working/recently_done/backlog の各節は count と total_count が異なる場合、
+    limit で切り詰められている。awaiting_human は meta ask が limit を無視して
+    追加されるため、count が limit を超えることがある（total_count は kind で
+    絞っていない open ask 全体の件数で meta も含むため、count とは一致しない
+    場合がある）。
 
     Args:
         days: 鮮度窓・遡り窓の日数（既定 7）
@@ -1418,8 +1402,7 @@ def _apply_flavor_to_check_in_result(result: dict, flavor: str) -> None:
     recent_decisions / latest_log / logs / catalog の各セクションを持つ。
     各 snippet には raw 境界調整 → flavor 展開、entity 詳細は dict 単位で展開。
     """
-    conn = get_connection()
-    try:
+    with contextlib.closing(get_connection()) as conn:
         activity = result.get("activity")
         if isinstance(activity, dict):
             citation_renderer.apply_flavor_to_entity_dict(
@@ -1450,8 +1433,6 @@ def _apply_flavor_to_check_in_result(result: dict, flavor: str) -> None:
                 )
         for item in result.get("recent_decisions", []) or []:
             _flavor_snippet(item, flavor, conn)
-    finally:
-        conn.close()
 
 
 def _flavor_snippet(item: dict, flavor: str, conn) -> None:
@@ -2018,12 +1999,9 @@ def get_timeline(
         limit=limit, order=order,
     )
     if "error" not in result and flavor != "raw":
-        conn = get_connection()
-        try:
+        with contextlib.closing(get_connection()) as conn:
             for item in result.get("items", []) or []:
                 _flavor_snippet(item, flavor, conn)
-        finally:
-            conn.close()
     return result
 
 
@@ -2332,6 +2310,8 @@ def get_asks(
 @mcp.tool()
 def answer_ask(ask_id: int, answer_body: str) -> dict:
     """答え待ち（open）のaskに回答する。1問1答（answerは1回のみ）。
+
+    open askを一覧して1件ずつ回答する定型作業は`ask-answer` skillを経由すること。
 
     トリアージ（promote/dismiss）はここでは行わない。判定はLLMの仕事のため、
     次のcheck_inで配達されるかget_asks(triage_pending_only=true)で拾われるまで

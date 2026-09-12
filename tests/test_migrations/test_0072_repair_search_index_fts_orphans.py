@@ -3,9 +3,6 @@
 0072適用前に存在する search_index_fts の孤立rowid・rowid衝突による内容混在が、
 0072適用後に解消され、search_indexの現在の内容のみを正しく反映することを確認する。
 """
-import os
-import tempfile
-
 import pytest
 from yoyo import default_migration_table, read_migrations
 from yoyo.connections import parse_uri
@@ -13,27 +10,15 @@ from yoyo.migrations import MigrationList
 
 from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection
 from src.services.tag_service import _injected_tags
+from test_migrations.conftest import db_before_migration
 
 
 @pytest.fixture
 def db_before_0072():
     """0071までのmigrationを適用したDBを提供する。0072の挙動を分離検証するために使う。"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-
-        parsed = parse_uri(f"sqlite:///{db_path}")
-        backend = _VecSQLiteBackend(parsed, default_migration_table)
-        backend.init_database()
-        all_migs = read_migrations(str(MIGRATIONS_DIR))
-        pre_0072 = MigrationList([m for m in all_migs if m.id < "0072"])
-        with backend.lock():
-            backend.apply_migrations(pre_0072)
-
+    with db_before_migration("0072") as db_path:
         _injected_tags.clear()
         yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 def _apply_migration_0072(db_path: str) -> None:

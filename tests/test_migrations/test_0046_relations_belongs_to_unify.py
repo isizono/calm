@@ -22,24 +22,14 @@ from yoyo.connections import parse_uri
 from yoyo.migrations import MigrationList
 
 from src.db import MIGRATIONS_DIR, _VecSQLiteBackend
+from test_migrations.conftest import db_before_migration
 
 
 @pytest.fixture
 def db_before_0046():
     """0045 まで適用した DB を提供する (relations CHECK は 'related' 固定の状態)。"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        parsed = parse_uri(f"sqlite:///{db_path}")
-        backend = _VecSQLiteBackend(parsed, default_migration_table)
-        backend.init_database()
-        all_migs = read_migrations(str(MIGRATIONS_DIR))
-        pre_0046 = MigrationList([m for m in all_migs if m.id < "0046"])
-        with backend.lock():
-            backend.apply_migrations(pre_0046)
+    with db_before_migration("0046") as db_path:
         yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 @pytest.fixture

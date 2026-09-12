@@ -4,6 +4,9 @@
 - アクティビティ一覧（作業中・優先のみ個別表示。末尾に固定ナビ+未表示件数句）
 - 振る舞い（正は~/.claude/rules配下の自動生成ファイル。本hookは投影ファイルの
   鮮度検証と、読み込めていないセッションへの縮退フォールバックのみを担う）
+- open ask・回答済み未捌きaskの件数とタイトル一覧（メタaskは表示上限に関わらず
+  常時全件表示、非メタは上限件数超過時のみ残り件数へ縮退。両バケットとも
+  0件時は非表示）
 - relay Monitor監視指示（CALM_RELAY_SESSION_AWARE=1のときのみ。identity解決に
   成功した場合は常時、未読N件の報告行のみ未読が実在するときに追加）
 
@@ -414,6 +417,226 @@ def _build_signals_section(conn, session_id: str | None = None, source: str | No
     return f"未トリアージのシグナル: {total}件 ({breakdown}) → get_signals で確認\n"
 
 
+# 非メタaskの表示上限（件数）。budget_chars（config.INJECTION_BUDGET_OPEN_ASKS_CHARS）内に
+# 収める必要から実装時に決めた固定値で、decisionでは具体的な件数は定められていない。
+_OPEN_ASKS_NON_META_DISPLAY_LIMIT = 5
+
+# ask_service.get_asks_with_connのlimit上限(_MAX_LIMIT)と揃えたページサイズ。
+# metaaskは表示上限を持たず常時全件表示するため、_fetch_asks_with_guaranteed_meta
+# はこの単位でoffsetをずらしながら全件になるまでページングする
+# （1回のget_asks_with_conn呼び出しではlimitがこの値にクランプされ、
+# 同一バケットのmetaaskがこの値を超えると取得漏れが起きるため）。
+_ASK_SERVICE_MAX_LIMIT = 100
+
+
+def _fetch_asks_with_guaranteed_meta(conn, *, base_kwargs: dict, non_meta_limit: int) -> dict:
+    """base_kwargs（statusまたはtriage_pending_only等）に合致するaskを取得し、
+    kind="meta"のものは非メタの表示上限に関わらず必ず含める。
+
+    非メタ側の取得はkind="ask"で明示的に絞るため、上位non_meta_limit件の中に
+    metaaskが混ざることはない（VALID_KINDS = {"ask", "meta"}でkindは排他的な
+    ため）。non_meta_total_countもkind="ask"で絞った後の母集団件数であり、
+    _render_open_asks_sectionはそこから表示済みnon_meta件数だけを引いて
+    残り件数を算出する。
+
+    meta側はget_asks_with_connのlimitが_ASK_SERVICE_MAX_LIMIT
+    （=ask_service._MAX_LIMIT）にクランプされるため、1回の呼び出しでは
+    同一バケットに101件以上あると取得漏れが起きる。offsetを
+    _ASK_SERVICE_MAX_LIMIT刻みでずらし、total_countに達するまでページングして
+    全件を組み立てることでこれを避ける。
+
+    Returns:
+        {"meta": [...], "non_meta": [...], "non_meta_total_count": int}
+        取得失敗時: ask_service.get_asks_with_connの{"error": {...}}をそのまま返す
+    """
+    non_meta_result = ask_service.get_asks_with_conn(
+        conn, kind="ask", limit=non_meta_limit, **base_kwargs
+    )
+    if "error" in non_meta_result:
+        return non_meta_result
+
+    meta_asks: list[dict] = []
+    offset = 0
+    while True:
+        meta_page = ask_service.get_asks_with_conn(
+            conn, kind="meta", limit=_ASK_SERVICE_MAX_LIMIT, offset=offset, **base_kwargs
+        )
+        if "error" in meta_page:
+            return meta_page
+        meta_asks.extend(meta_page["asks"])
+        offset += _ASK_SERVICE_MAX_LIMIT
+        if offset >= meta_page["total_count"]:
+            break
+
+    return {
+        "meta": meta_asks,
+        "non_meta": non_meta_result["asks"],
+        "non_meta_total_count": non_meta_result["total_count"],
+    }
+
+
+_OPEN_ASKS_META_CTA = "→ メタaskはrule-placement skillでの配置検討が必要"
+_OPEN_ASKS_GLOBAL_CTA = "→ ask-answer skillまたはget_asksで確認"
+
+
+def _section_text_len(lines: list[str]) -> int:
+    """linesを"\n".join(lines) + "\n"で連結した場合の文字数。
+
+    連結後の文字数はsum(len(line) for line in lines) + len(lines)と等しく、
+    lines内の順序に依存しない（結合で増える改行の本数は行数分だけであり、
+    どの位置に挿入されるかは総文字数を変えないため）。これにより、最終的な
+    行の並び順を確定させる前に「この行集合を採用した場合の総文字数」を
+    計算できる。
+    """
+    return sum(len(line) for line in lines) + len(lines)
+
+
+def _render_open_asks_section(open_result: dict, pending_result: dict, budget_chars: int) -> str:
+    """open_result/pending_resultから、セクション全体のテキストを組み立てる。
+
+    見出し（内容が1件以上あるバケットのみ）・meta行（バケットごとに全件、
+    kind='meta'は常時表示するという不変条件を非メタの表示より優先する）・
+    meta向けCTA（meta1件以上のバケットのみ）・末尾の全体CTAを「必須要素」
+    とし、これらは budget_chars検査を一切行わずに必ず含める。必須要素
+    全体の文字数を先に確定し、budget_charsとの差分を非メタ用の「残り予算」
+    とする。
+
+    非メタの行と残り件数行（「他N件」）は「調整可能要素」であり、この残り
+    予算に収まる範囲でのみ1行ずつ追加する（budget_charsが小さい・meta件数が
+    多い場合は非メタが0件になってもよい）。候補行の長さは可変であり、1行が
+    残り予算に収まらなくても後続の候補（より短い残り件数行等）が収まる余地は
+    残るため、収まらなかった候補があっても走査を打ち切らない（一方向ラッチは
+    使わない）。残り件数行は、そのバケットの非メタ行を追加し終えて実際の
+    表示件数が確定した後に組み立てて予算検査する。この際、残り件数行の
+    最悪長（非メタが1件も入らなかった場合の「他{全件数}件」の長さ）を
+    「全バケット分まとめて」非メタ走査の前に一括予約しておき、各バケットの
+    非メタ走査が終わった時点でそのバケット自身の予約分だけを解放して実際の
+    残り件数行の長さで判定し直す。予約をバケット単位（そのバケットに入って
+    から予約する）にすると、先行バケットの非メタ走査は「自分より後のバケット
+    が残り件数行を出すのに必要な予算」を知らずに残り予算を使い切れてしまい、
+    後続バケットの入口でavailableが自分の予約コストにすら届かず、予約自体が
+    成立しないまま見出しだけが残ることがある。全バケット分を先頭で確保して
+    おけば、どのバケットの非メタ走査も他バケットの残り件数行の予算を侵食
+    できない。
+
+    必須要素だけでbudget_charsを超える場合（meta askの絶対量が非常に多い場合）
+    は、非メタ・残り件数行は自然に0件となるが、それでも返り値がbudget_charsを
+    超えることがある。この場合は呼び出し元（injection_compositor._hard_truncate
+    経由のcompose()）のハード切り詰めに委ねる。必須要素はバケット順（見出し→
+    meta行→meta向けCTA、これをバケット数分繰り返す）で連結し全体CTAを最後に
+    置くため、末尾から切り詰められるのはまず全体CTA、次に最後のバケット
+    （回答済み未捌き）の必須要素である。バケットが2つ以上あり後方のバケットに
+    metaが含まれる場合、そのmeta本文は末尾に近い位置になり切り詰め対象になり
+    うる（先頭バケット側のmetaより先に失われる）。全バケットのmetaを同時に
+    守ることはbudget_chars自体を超える入力では原理的に不可能なため、これは
+    受容する残余リスクであり、meta常時表示の不変条件を壊さない範囲での最善
+    である。
+    """
+    buckets = [
+        (label, bucket)
+        for label, bucket in (("open ask", open_result), ("回答済み未捌き", pending_result))
+        if bucket["meta"] or bucket["non_meta"]
+    ]
+    if not buckets:
+        return ""
+
+    # 必須要素（見出し・meta行・meta向けCTA）をバケットごとに確定する。
+    required_by_bucket: list[list[str]] = []
+    for label, bucket in buckets:
+        bucket_lines = [f"## {label}"]
+        for a in bucket["meta"]:
+            bucket_lines.append(f"- [meta] (#{a['id_raw']}) {a['question']}")
+        if bucket["meta"]:
+            bucket_lines.append(_OPEN_ASKS_META_CTA)
+        required_by_bucket.append(bucket_lines)
+
+    all_required_lines = [line for bucket_lines in required_by_bucket for line in bucket_lines]
+    all_required_lines.append(_OPEN_ASKS_GLOBAL_CTA)
+    available = budget_chars - _section_text_len(all_required_lines)
+
+    # 残り件数行の最悪長（バケットごとの「他{total_count}件」の長さ）を
+    # 全バケット分まとめて先頭で一括予約する。バケット単位の予約だと、
+    # 先行バケットの非メタ走査がこの予約を知らずにavailableを使い切り、
+    # 後続バケットの入口でその自分の予約すら成立しなくなる（後述の
+    # ループ内で個別に解放する予約と役割が異なる）。
+    reserved_by_bucket = [
+        (len(f"他{bucket['non_meta_total_count']}件") + 1)
+        if bucket["non_meta_total_count"] > 0
+        else 0
+        for _, bucket in buckets
+    ]
+    available -= sum(reserved_by_bucket)
+
+    # 非メタ行・残り件数行（調整可能要素）を、残り予算(available)の範囲内で
+    # バケット順に1行ずつ追加する。
+    optional_by_bucket: list[list[str]] = []
+    for (label, bucket), reserved in zip(buckets, reserved_by_bucket):
+        bucket_optional: list[str] = []
+        non_meta = bucket["non_meta"]
+        total_count = bucket["non_meta_total_count"]
+
+        shown = 0
+        for a in non_meta:
+            candidate = f"- (#{a['id_raw']}) {a['question']}"
+            cost = len(candidate) + 1
+            if cost <= available:
+                bucket_optional.append(candidate)
+                available -= cost
+                shown += 1
+            # 収まらなくても走査は継続する（後続の非メタ行が短ければ収まりうる）
+
+        available += reserved  # このバケット自身の予約だけを解放し、実際の残り件数行で判定し直す
+        remainder = total_count - shown
+        if remainder > 0:
+            candidate = f"他{remainder}件"
+            cost = len(candidate) + 1
+            if cost <= available:
+                bucket_optional.append(candidate)
+                available -= cost
+
+        optional_by_bucket.append(bucket_optional)
+
+    lines: list[str] = []
+    for bucket_required, bucket_optional in zip(required_by_bucket, optional_by_bucket):
+        lines.extend(bucket_required)
+        lines.extend(bucket_optional)
+    lines.append(_OPEN_ASKS_GLOBAL_CTA)
+
+    return "\n".join(lines) + "\n"
+
+
+def _build_open_asks_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # session_id, source, **_kwargs: 全セクション共通シグネチャ（本セクションは未使用）
+    """open askと回答済み未捌き（status='answered' AND triage未了）askを
+    kind別（メタ/非メタ）にタイトル表示する。
+
+    メタaskはblocks先activityの状態や非メタの表示上限に関わらず常時全件表示する
+    （ask_service.get_asks_with_connがblocksでフィルタしないため、blocks状態
+    独立性は追加実装なしで自動的に満たされる）。非メタは
+    _OPEN_ASKS_NON_META_DISPLAY_LIMIT件を上限としつつ、実際の表示件数は
+    config.INJECTION_BUDGET_OPEN_ASKS_CHARSの範囲内に収まる件数まで縮退する
+    （_render_open_asks_section参照。meta・見出し・CTAはこの予算検査より
+    優先して確保される）。open・回答済み未捌きの両バケットとも0件時は
+    コンテキスト消費ゼロ（空文字を返す）。取得失敗時（ask_service側が
+    {"error": ...}を返す場合）も非表示にフォールバックする。
+    """
+    open_result = _fetch_asks_with_guaranteed_meta(
+        conn, base_kwargs={"status": "open"}, non_meta_limit=_OPEN_ASKS_NON_META_DISPLAY_LIMIT
+    )
+    if "error" in open_result:
+        return ""
+
+    pending_result = _fetch_asks_with_guaranteed_meta(
+        conn, base_kwargs={"triage_pending_only": True}, non_meta_limit=_OPEN_ASKS_NON_META_DISPLAY_LIMIT
+    )
+    if "error" in pending_result:
+        return ""
+
+    if not (open_result["meta"] or open_result["non_meta"] or pending_result["meta"] or pending_result["non_meta"]):
+        return ""
+
+    return _render_open_asks_section(open_result, pending_result, config.INJECTION_BUDGET_OPEN_ASKS_CHARS)
+
+
 def _build_ask_notify_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # source, **_kwargs: 全セクション共通シグネチャ
     """add_askし通知待ちで追跡中のask（HookState.tracked_ask_ids）を
     get_asksで直接照会し、解決済み（open以外）になっていれば表示して
@@ -562,6 +785,7 @@ _SECTIONS: list[Section] = [
     Section("habits", _build_habits_section, config.INJECTION_BUDGET_HABITS_CHARS, priority=20),
     Section("sync_policy", _build_sync_policy_section, config.INJECTION_BUDGET_SYNC_POLICY_CHARS, priority=30),
     Section("signals", _build_signals_section, config.INJECTION_BUDGET_SIGNALS_CHARS, priority=40),
+    Section("open_asks", _build_open_asks_section, config.INJECTION_BUDGET_OPEN_ASKS_CHARS, priority=41),
     Section("ask_notify", _build_ask_notify_section, config.INJECTION_BUDGET_ASK_NOTIFY_CHARS, priority=45),
     Section("relay_inbox", _build_relay_inbox_section, config.INJECTION_BUDGET_RELAY_INBOX_CHARS, priority=50),
     Section("transcript_path", _build_transcript_path_section, config.INJECTION_BUDGET_TRANSCRIPT_PATH_CHARS, priority=60),

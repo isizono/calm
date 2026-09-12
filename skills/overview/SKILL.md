@@ -11,7 +11,7 @@ description: 進行状況の窓。get_overviewを1回呼び、今動いている
 
 1. `get_overview()` を1回だけ呼ぶ。ユーザーが期間や件数を指定していれば`days`/`limit`に渡す。他のツール（`get_activities`/`get_asks`等）は呼ばない。
 2. 返ってきた4節を **`working` → `recently_done` → `awaiting_human` → `backlog` の固定順**で見出しにして出す。順序を入れ替えたり節を統合したりしない。
-3. `working`/`recently_done`/`awaiting_human`は`items`を1行1件で列挙する。`working`は`is_live`が trueのものに印を付け、`days_since_touch`と`open_ask_count > 0`を添える。`awaiting_human`は`days_open`と`blocks`のタイトルを添える。`items`が空の節は見出しごと省略する。
+3. `working`/`recently_done`/`awaiting_human`は`items`を1行1件で列挙する。`working`は`is_live`が trueのものに印を付け、`days_since_touch`と`open_ask_count > 0`を添える。`awaiting_human`は`days_open`と`blocks`のタイトルを添える。`awaiting_human.triage_pending_items`（回答済み未捌き）が1件以上あれば、`items`とは別枠でquestionを列挙する（`triage_pending_count`の件数表示だけで済ませない）。`items`が空の節は見出しごと省略する。
 4. `backlog`は`total_count`/`stale_in_progress_count`/`by_status`/`by_domain`/`no_domain_count`をそのまま提示する。個別のアクティビティは列挙しない。
 5. いずれかの節で`count < total_count`なら「上位N件のみ表示（全M件）」と明記する。記録系ツール（`add_*`/`update_*`/`retract`等）は一切呼ばない。
 
