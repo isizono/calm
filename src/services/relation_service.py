@@ -4,8 +4,8 @@ import sqlite3
 from collections import defaultdict
 
 from src.db import get_connection
+from src.services.pin_service import bump_updated_at_with_conn
 from src.services.readable_id import strip_entity_id_inplace
-from src.services.relay.entity_publish import bump_updated_at_and_publish_with_conn
 from src.services.tag_service import (
     get_entity_tags_batch,
 )
@@ -456,16 +456,16 @@ def _remove_supersedes_with_conn(conn: sqlite3.Connection, source_id: int, targe
     return removed
 
 
-def _bump_and_publish_endpoints_with_conn(
+def _bump_endpoints_with_conn(
     conn: sqlite3.Connection, source_type: str, source_id: int, targets: list[dict]
 ) -> None:
-    """add_relation/remove_relationのsource + target各entityをbump+publishする。
+    """add_relation/remove_relationのsource + target各entityのupdated_atを進める。
 
-    relation自体は独立publishせず、source/target両方のentityのupdated_atを進めて
-    event:updatedとしてpublishすることで代替する。呼び出し元が実際に変化があった
+    relation自体にはupdated_atが無いため、代わりにsource/target両方のentityの
+    updated_atを更新する。呼び出し元が実際に変化があった
     （added/removed > 0）ときのみ呼ぶこと。
     """
-    bump_updated_at_and_publish_with_conn(conn, source_type, source_id)
+    bump_updated_at_with_conn(conn, source_type, source_id)
     seen = set()
     for target in targets:
         target_type = target["type"]
@@ -474,7 +474,7 @@ def _bump_and_publish_endpoints_with_conn(
             if key in seen:
                 continue
             seen.add(key)
-            bump_updated_at_and_publish_with_conn(conn, target_type, target_id)
+            bump_updated_at_with_conn(conn, target_type, target_id)
 
 
 def add_relation(source_type: str, source_id: int, targets: list[dict], relation_type: str = "related") -> dict:
@@ -541,7 +541,7 @@ def add_relation(source_type: str, source_id: int, targets: list[dict], relation
             for target in targets:
                 added += _add_depends_on_with_conn(conn, source_id, target["ids"])
             if added > 0:
-                _bump_and_publish_endpoints_with_conn(conn, source_type, source_id, targets)
+                _bump_endpoints_with_conn(conn, source_type, source_id, targets)
             conn.commit()
             return {"added": added}
         elif relation_type == "supersedes":
@@ -552,7 +552,7 @@ def add_relation(source_type: str, source_id: int, targets: list[dict], relation
                 added += a
                 pins_transferred += p
             if added > 0:
-                _bump_and_publish_endpoints_with_conn(conn, source_type, source_id, targets)
+                _bump_endpoints_with_conn(conn, source_type, source_id, targets)
             conn.commit()
             result: dict = {"added": added}
             if pins_transferred > 0:
@@ -567,13 +567,13 @@ def add_relation(source_type: str, source_id: int, targets: list[dict], relation
             for target in targets:
                 added += _add_destabilizes_with_conn(conn, source_id, target["ids"])
             if added > 0:
-                _bump_and_publish_endpoints_with_conn(conn, source_type, source_id, targets)
+                _bump_endpoints_with_conn(conn, source_type, source_id, targets)
             conn.commit()
             return {"added": added}
         else:
             added = _add_relation_with_conn(conn, source_type, source_id, targets, relation_type)
             if added > 0:
-                _bump_and_publish_endpoints_with_conn(conn, source_type, source_id, targets)
+                _bump_endpoints_with_conn(conn, source_type, source_id, targets)
         conn.commit()
         return {"added": added}
     except ValueError as e:
@@ -663,7 +663,7 @@ def remove_relation(source_type: str, source_id: int, targets: list[dict], relat
         else:
             removed = _remove_relation_with_conn(conn, source_type, source_id, targets)
         if removed > 0:
-            _bump_and_publish_endpoints_with_conn(conn, source_type, source_id, targets)
+            _bump_endpoints_with_conn(conn, source_type, source_id, targets)
         conn.commit()
         return {"removed": removed}
     except Exception as e:

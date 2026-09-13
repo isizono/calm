@@ -2199,11 +2199,6 @@ def add_ask(
     一貫していると判断した場合は、`ask-distill` skill を使ってメタaskの起票を
     検討すること。
 
-    add_ask成功後、システムがそのask専用labelを自動でrelay_subscribeします
-    （relayの一般方針「購読はエージェントの明示的な意図宣言であり、activity所有等
-    から自動導出しない」の例外ではなく、add_askを呼ぶこと自体をエージェントの
-    明示的な意図宣言とみなす扱いです）。
-
     その場で回答を待ちたい場合は、notify_pathをMonitorツールで`persistent: true`
     監視すること（ファイル出現前から監視してよい）。answer_ask/triage_ask(dismiss)
     完了時に1行追記される（中身は信用せずget_asksで実際の状態を取り直すこと）。

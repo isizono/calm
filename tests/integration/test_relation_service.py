@@ -7,6 +7,7 @@ import pytest
 from src.db import get_connection, init_database
 from src.services.pin_service import add_pin
 from src.services.relation_service import add_relation, get_map, remove_relation
+from src.services.retract_service import retract
 from src.services.tag_service import _injected_tags
 from tests.helpers import add_decision, retract_decision
 
@@ -210,6 +211,39 @@ class TestAddRelation:
                 (min(e["t1"], e["t2"]), max(e["t1"], e["t2"])),
             ).fetchone()
             assert row is not None
+        finally:
+            conn.close()
+
+
+class TestAddRelationRetractedTarget:
+    """retract済みentityをrelation対象にしたときのupdated_at bump抑止"""
+
+    def test_add_relation_to_retracted_material_does_not_bump(self, temp_db):
+        """retract済みmaterialをrelation対象にしても、relation自体は張られるが、
+        material側のupdated_at bumpはスキップされ、search_index_ftsに孤立行も生まれない。"""
+        conn = get_connection()
+        try:
+            topic_id = _create_topic(conn)
+            material_id = _create_material(conn)
+            conn.commit()
+        finally:
+            conn.close()
+
+        retract_result = retract("material", [material_id])
+        assert retract_result["errors"] == []
+
+        result = add_relation("topic", topic_id, [{"type": "material", "ids": [material_id]}])
+        assert "error" not in result
+        assert result["added"] == 1
+
+        conn = get_connection()
+        try:
+            orphan_rows = conn.execute(
+                "SELECT search_index_fts.rowid FROM search_index_fts "
+                "LEFT JOIN search_index ON search_index.id = search_index_fts.rowid "
+                "WHERE search_index.id IS NULL"
+            ).fetchall()
+            assert orphan_rows == []
         finally:
             conn.close()
 

@@ -4,7 +4,6 @@ import sqlite3
 from typing import Optional, Union
 
 from src.db import get_connection
-from src.services.relay.entity_publish import bump_updated_at_and_publish_with_conn
 from src.services.supersede_service import get_superseded_by_batch
 from src.services.tag_service import parse_tag, resolve_tag_ids
 
@@ -18,6 +17,28 @@ ENTITY_TABLE_MAP = {
     "activity": "activities",
     "tag": "tags",
 }
+
+# updated_atカラムを持つentity種別(activities/materialsのみ)。
+_HAS_UPDATED_AT_COLUMN = frozenset({"activity", "material"})
+# 上記のうちretracted_atカラムも併せ持つ種別。
+_HAS_RETRACTED_AT_COLUMN = frozenset({"material"})
+
+
+def bump_updated_at_with_conn(conn: sqlite3.Connection, entity_type: str, entity_id: int) -> None:
+    """relation/pinのadd/remove・activity添付pin処理でsource/targetのupdated_atを進める。
+
+    updated_atカラムを持つのはactivities/materialsのみ。retract済みmaterialは
+    丸ごとno-opする(retract済み行へのUPDATEはsearch_index/search_index_fts
+    トリガーを発火させFTS5孤立行を生むため)。
+    """
+    if entity_type in _HAS_RETRACTED_AT_COLUMN:
+        table = ENTITY_TABLE_MAP[entity_type]
+        row = conn.execute(f"SELECT retracted_at FROM {table} WHERE id = ?", (entity_id,)).fetchone()
+        if row is not None and row["retracted_at"] is not None:
+            return
+    if entity_type in _HAS_UPDATED_AT_COLUMN:
+        table = ENTITY_TABLE_MAP[entity_type]
+        conn.execute(f"UPDATE {table} SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (entity_id,))
 
 
 def _is_decision_superseded(conn: sqlite3.Connection, decision_id: int) -> Optional[int]:
@@ -139,7 +160,7 @@ def _add_pin_with_conn(
         source_ref: 起点エンティティのID（intまたはstr）。tagのみnamespace:name形式を許容
         target_type: 終点エンティティ種別
         target_ref: 終点エンティティのID（intまたはstr）。tagのみnamespace:name形式を許容
-        bump: 実際にpinが新規追加されたとき、source/targetをこの関数内でbump+publishするか。
+        bump: 実際にpinが新規追加されたとき、source/targetのupdated_atをこの関数内で進めるか。
             複数pinを1呼び出し元でループ処理する場合（activity_service.add_activity等）は
             False を渡し、呼び出し元でsourceを1回・targetを重複排除してbumpする。
 
@@ -225,11 +246,11 @@ def _add_pin_with_conn(
         "INSERT OR IGNORE INTO pins (source_type, source_id, target_type, target_id) VALUES (?, ?, ?, ?)",
         (source_type, source_id, target_type, target_id),
     )
-    # 実際に新規追加された（冪等な再呼び出しでない）ときのみ、pin自体は独立
-    # publishせずsource/target両entityをevent:updatedでpublishする
+    # 実際に新規追加された（冪等な再呼び出しでない）ときのみ、source/target両entityの
+    # updated_atを進める（pin自体にはupdated_atが無いため進めない）
     if bump and conn.execute("SELECT changes()").fetchone()[0] > 0:
-        bump_updated_at_and_publish_with_conn(conn, source_type, source_id)
-        bump_updated_at_and_publish_with_conn(conn, target_type, target_id)
+        bump_updated_at_with_conn(conn, source_type, source_id)
+        bump_updated_at_with_conn(conn, target_type, target_id)
 
     result = {
         "source_type": source_type,
@@ -356,8 +377,8 @@ def remove_pin(
             (source_type, source_id, target_type, target_id),
         )
         if cursor.rowcount > 0:
-            bump_updated_at_and_publish_with_conn(conn, source_type, source_id)
-            bump_updated_at_and_publish_with_conn(conn, target_type, target_id)
+            bump_updated_at_with_conn(conn, source_type, source_id)
+            bump_updated_at_with_conn(conn, target_type, target_id)
         conn.commit()
 
         return {"removed": cursor.rowcount}

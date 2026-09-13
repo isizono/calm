@@ -12,12 +12,8 @@ from src.services.citations_service import (
 )
 from src.services.readable_id import strip_entity_id_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
-from src.services.pin_service import ENTITY_TABLE_MAP as PIN_ENTITY_TABLE_MAP, _add_pin_with_conn
+from src.services.pin_service import ENTITY_TABLE_MAP as PIN_ENTITY_TABLE_MAP, _add_pin_with_conn, bump_updated_at_with_conn
 from src.services.relation_service import _add_relation_with_conn, _validate_targets
-from src.services.relay.entity_publish import (
-    bump_updated_at_and_publish_with_conn,
-    publish_entity_event_with_conn,
-)
 from src.services.title_validation import validate_title
 from src.services.tag_service import (
     validate_and_parse_tags,
@@ -225,8 +221,8 @@ def add_activity(
             _add_relation_with_conn(conn, "activity", activity_id, related)
 
         # 生 ID リテラルを {{cite:...}} に変換し、書き換わった本文を DB に書き戻す。
-        # publish_entity_event_with_conn / bump_updated_at_and_publish_with_conn は
-        # 呼び出し時点でDBから都度titleをSELECTするため、変換は両者より必ず前に行う。
+        # 直後の citations upsert が変換後の title/description を要求するため、
+        # 変換はそれより必ず前に行う。
         converted = apply_and_writeback_conversions(
             conn,
             entity_type="activity",
@@ -243,15 +239,11 @@ def add_activity(
             conn, "activity", activity_id, title=title, description=description
         )
 
-        publish_entity_event_with_conn(
-            conn, entity_type="activity", entity_id=activity_id, event="created"
-        )
-
         # pinを追加（source は作成した activity 自身）。
         # いずれかが失敗したらトランザクション全体を破棄し、activity作成自体も失敗させる。
-        # bump+publishはpinごとに個別発火させず、relation_serviceの
-        # _bump_and_publish_endpoints_with_connと同様にsourceを1回・targetを
-        # 重複排除してループ後にまとめて行う（outbox行の重複増殖を防ぐ）。
+        # updated_atのbumpはpinごとに個別発火させず、relation_serviceの
+        # _bump_endpoints_with_connと同様にsourceを1回・targetを
+        # 重複排除してループ後にまとめて行う（同一targetへの重複UPDATEを避ける）。
         if pins:
             seen_targets: set[tuple[str, int]] = set()
             for pin in pins:
@@ -263,9 +255,9 @@ def add_activity(
                     return pin_result
                 seen_targets.add((pin_result["target_type"], pin_result["target_id"]))
 
-            bump_updated_at_and_publish_with_conn(conn, "activity", activity_id)
+            bump_updated_at_with_conn(conn, "activity", activity_id)
             for target_type, target_id in seen_targets:
-                bump_updated_at_and_publish_with_conn(conn, target_type, target_id)
+                bump_updated_at_with_conn(conn, target_type, target_id)
 
         conn.commit()
 
@@ -721,17 +713,6 @@ def update_activity(
         if status is None and old_status == "snoozed":
             status = "pending"
 
-        # publish判定: statusはold_status != new_statusの遷移時のみ、
-        # 他フィールド（title/description/tags/orch_managed）はno-op含めて無条件でpublish対象。
-        # statusはsnoozed自動復活後の値（上のブロック）で判定するため、自動復活も遷移として拾う。
-        should_publish = (
-            title is not None
-            or description is not None
-            or parsed_tags is not None
-            or orch_managed is not None
-            or (status is not None and status != old_status)
-        )
-
         # 生 ID リテラルを {{cite:...}} に変換する。update系はUPDATE対象の
         # activity_idが呼び出し時点で既に存在する行のため（add系と異なりINSERT
         # による確定を待つ必要がない）、SET句組み立て前に変換を先に行い、
@@ -795,11 +776,6 @@ def update_activity(
             conn, "activity", activity_id,
             title=new_title, description=new_description,
         )
-
-        if should_publish:
-            publish_entity_event_with_conn(
-                conn, entity_type="activity", entity_id=activity_id, event="updated"
-            )
 
         conn.commit()
 

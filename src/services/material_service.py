@@ -15,7 +15,6 @@ from src.services.citations_service import (
     upsert_citations_for_owner_with_conn,
 )
 from src.services.relation_service import _add_relation_with_conn, _validate_targets
-from src.services.relay.entity_publish import publish_entity_event_with_conn
 from src.services.title_validation import validate_title
 from src.services.tag_service import (
     validate_and_parse_tags,
@@ -58,9 +57,9 @@ def _add_material_with_conn(
     """資材の作成に伴う副作用を、呼び出し元のconn・トランザクションを共有して実行する。
 
     行うのは INSERT 本体に加えて (a) タグリンク (b) related のリレーション追加
-    (c) 生ID→citation の変換と本文書き戻し (d) citations テーブルへの upsert と
-    publish_entity_event_with_conn(created) の4点。commit と embedding 生成は
-    呼び出し元の責務（呼び出し元が commit 後に generate_and_store_embedding を呼ぶこと）。
+    (c) 生ID→citation の変換と本文書き戻し (d) citations テーブルへの upsert の3点。
+    commit と embedding 生成は呼び出し元の責務（呼び出し元が commit 後に
+    generate_and_store_embedding を呼ぶこと）。
 
     呼び出し元が title/content/source/tags/related を事前に validate 済みである前提で
     副作用のみを行う（本関数自身は title の空チェック等はしない）。ただし tags/related の
@@ -131,10 +130,6 @@ def _add_material_with_conn(
 
     # タグを取得（commit前）
     tag_strings = get_entity_tags(conn, "material_tags", "material_id", material_id)
-
-    publish_entity_event_with_conn(
-        conn, entity_type="material", entity_id=material_id, event="created"
-    )
 
     return {
         "material_id": material_id,
@@ -448,10 +443,6 @@ def update_material(
             conn, "material", material_id, title=new_title, content=new_content
         )
 
-        publish_entity_event_with_conn(
-            conn, entity_type="material", entity_id=material_id, event="updated"
-        )
-
         conn.commit()
 
         # Retrieve updated material
@@ -498,8 +489,7 @@ def _append_material_content_with_conn(conn: sqlite3.Connection, material_id: in
     """既存資材のcontentへcontentを追記する（conn共有・commitは呼び出し元の責務）。
 
     区切りは CONTENT_JOIN_SEPARATOR（update_material の mode="append" と同じ規約）。
-    生ID→citation の変換と本文書き戻し、citations 再投入、
-    publish_entity_event_with_conn(updated) を呼び出し元の conn・トランザクション内で行う。
+    生ID→citation の変換と本文書き戻し、citations 再投入を呼び出し元の conn・トランザクション内で行う。
     embedding 再生成は呼び出し元の責務。
 
     呼び出し元が material_id の存在・非retract確認を済ませている前提（本関数自身は
@@ -538,10 +528,6 @@ def _append_material_content_with_conn(conn: sqlite3.Connection, material_id: in
     )
 
     tag_strings = get_entity_tags(conn, "material_tags", "material_id", material_id)
-
-    publish_entity_event_with_conn(
-        conn, entity_type="material", entity_id=material_id, event="updated"
-    )
 
     return {
         "material_id": material_id,
