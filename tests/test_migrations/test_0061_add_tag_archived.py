@@ -18,7 +18,7 @@ from yoyo.migrations import MigrationList
 
 from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection, init_database
 from src.services.tag_service import _injected_tags
-from test_migrations.conftest import db_before_migration
+from test_migrations.conftest import db_before_migration, get_column_names
 
 
 @pytest.fixture
@@ -52,12 +52,6 @@ def _apply_migration_0061(db_path: str) -> None:
         backend.apply_migrations(only_0061)
 
 
-def _get_column_names(conn: sqlite3.Connection, table: str) -> set[str]:
-    """指定テーブルのカラム名セットを返す。"""
-    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-    return {row["name"] for row in rows}
-
-
 def _get_index_names(conn: sqlite3.Connection, table: str) -> set[str]:
     """指定テーブルのインデックス名セットを返す。"""
     rows = conn.execute(f"PRAGMA index_list({table})").fetchall()
@@ -79,7 +73,7 @@ class TestColumnsAndIndexAdded:
         """migration 0061 適用後、tags テーブルに archived_at / archived_reason が存在する"""
         conn = get_connection()
         try:
-            column_names = _get_column_names(conn, "tags")
+            column_names = get_column_names(conn, "tags")
             for col in ("archived_at", "archived_reason"):
                 assert col in column_names, f"tags.{col} が 0061 適用後に存在しない"
         finally:
@@ -89,7 +83,7 @@ class TestColumnsAndIndexAdded:
         """0058 適用時点では archived_at / archived_reason が存在しない（前提確認）"""
         conn = get_connection()
         try:
-            column_names = _get_column_names(conn, "tags")
+            column_names = get_column_names(conn, "tags")
             for col in ("archived_at", "archived_reason"):
                 assert col not in column_names, (
                     f"0061 適用前の tags に {col} 列が既に存在している"

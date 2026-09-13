@@ -21,7 +21,7 @@ from yoyo.migrations import MigrationList
 
 from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection, init_database
 from src.services.tag_service import _injected_tags
-from test_migrations.conftest import db_before_migration, index_names
+from test_migrations.conftest import db_before_migration, get_column_names, index_names
 
 
 @pytest.fixture
@@ -55,12 +55,6 @@ def _apply_migration_0063(db_path: str) -> None:
         backend.apply_migrations(only_0063)
 
 
-def _get_column_names(conn: sqlite3.Connection, table: str) -> set[str]:
-    """指定テーブルのカラム名セットを返す。"""
-    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-    return {row["name"] for row in rows}
-
-
 def _insert_decision(conn: sqlite3.Connection, decision: str, reason: str = "理由") -> int:
     """decisionsに1行INSERTしてidを返す。"""
     cur = conn.execute(
@@ -77,7 +71,7 @@ class TestKindColumnAdded:
         """migration 0063適用後、decision_supersedesにkind列が存在し、既定値がreplacesになる"""
         conn = get_connection()
         try:
-            column_names = _get_column_names(conn, "decision_supersedes")
+            column_names = get_column_names(conn, "decision_supersedes")
             assert "kind" in column_names, "decision_supersedes.kind が 0063 適用後に存在しない"
 
             source_id = _insert_decision(conn, "決定A")
@@ -99,7 +93,7 @@ class TestKindColumnAdded:
         """0062適用時点ではkind列が存在しない（前提確認）"""
         conn = get_connection()
         try:
-            column_names = _get_column_names(conn, "decision_supersedes")
+            column_names = get_column_names(conn, "decision_supersedes")
             assert "kind" not in column_names, (
                 "0063 適用前の decision_supersedes に kind 列が既に存在している"
             )

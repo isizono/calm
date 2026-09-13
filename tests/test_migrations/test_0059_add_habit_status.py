@@ -10,6 +10,7 @@ import tempfile
 import pytest
 
 from src.db import get_connection, init_database
+from test_migrations.conftest import get_column_names
 
 
 @pytest.fixture
@@ -24,12 +25,6 @@ def migrated_db():
             del os.environ["DISCUSSION_DB_PATH"]
 
 
-def _get_column_names(conn: sqlite3.Connection, table: str) -> set[str]:
-    """指定テーブルのカラム名セットを返す。"""
-    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-    return {row["name"] for row in rows}
-
-
 class TestStatusColumnAdded:
     """0059適用後にstatus列が追加されていることの確認"""
 
@@ -37,7 +32,7 @@ class TestStatusColumnAdded:
         """migration 0059 適用後、habits テーブルに status 列が存在する"""
         conn = get_connection()
         try:
-            column_names = _get_column_names(conn, "habits")
+            column_names = get_column_names(conn, "habits")
             assert "status" in column_names
         finally:
             conn.close()

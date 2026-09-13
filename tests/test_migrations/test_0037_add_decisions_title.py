@@ -16,7 +16,7 @@ from yoyo.migrations import MigrationList
 
 from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection, init_database
 from src.services.tag_service import _injected_tags
-from test_migrations.conftest import db_before_migration
+from test_migrations.conftest import db_before_migration, get_column_names
 
 
 @pytest.fixture
@@ -76,12 +76,6 @@ def _apply_migration_0037(db_path: str) -> None:
         backend.apply_migrations(only_0037)
 
 
-def _get_column_names(conn: sqlite3.Connection, table: str) -> set[str]:
-    """指定テーブルのカラム名セットを返す。"""
-    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-    return {row["name"] for row in rows}
-
-
 def _insert_topic(conn: sqlite3.Connection) -> int:
     """テスト用トピックを1件INSERTしてIDを返す。"""
     cur = conn.execute(
@@ -98,7 +92,7 @@ class TestTitleColumnAdded:
         """migration 0037適用後、decisionsテーブルにtitle列が存在する"""
         conn = get_connection()
         try:
-            assert "title" in _get_column_names(conn, "decisions"), (
+            assert "title" in get_column_names(conn, "decisions"), (
                 "decisions.title が0037適用後に存在しない"
             )
         finally:
@@ -108,7 +102,7 @@ class TestTitleColumnAdded:
         """0036適用時点では decisions に title列が存在しない（前提確認）"""
         conn = get_connection()
         try:
-            assert "title" not in _get_column_names(conn, "decisions"), (
+            assert "title" not in get_column_names(conn, "decisions"), (
                 "0037適用前のdecisionsにtitle列が既に存在している"
             )
         finally:
@@ -118,7 +112,7 @@ class TestTitleColumnAdded:
         """0037適用後、decisionsのid/topic_id/decision/reason/created_at/retracted_atが保持される"""
         conn = get_connection()
         try:
-            column_names = _get_column_names(conn, "decisions")
+            column_names = get_column_names(conn, "decisions")
             for col in ["id", "topic_id", "decision", "reason", "created_at", "retracted_at"]:
                 assert col in column_names, (
                     f"decisions.{col} が0037適用後に消えている"

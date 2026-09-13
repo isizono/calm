@@ -20,7 +20,7 @@ from yoyo.migrations import MigrationList
 
 from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection, init_database
 from src.services.tag_service import _injected_tags
-from test_migrations.conftest import db_before_migration
+from test_migrations.conftest import db_before_migration, get_column_names
 
 
 @pytest.fixture
@@ -54,12 +54,6 @@ def _apply_migration_0058(db_path: str) -> None:
         backend.apply_migrations(only_0058)
 
 
-def _get_column_names(conn: sqlite3.Connection, table: str) -> set[str]:
-    """指定テーブルのカラム名セットを返す。"""
-    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-    return {row["name"] for row in rows}
-
-
 def _insert_habit(conn: sqlite3.Connection, content: str) -> int:
     """habitsに1行INSERTしてidを返す（0057時点のスキーマ、trigger_mode等は未存在）。"""
     cur = conn.execute("INSERT INTO habits (content) VALUES (?)", (content,))
@@ -73,7 +67,7 @@ class TestColumnsAdded:
         """migration 0058 適用後、habits テーブルに4列すべてが存在する"""
         conn = get_connection()
         try:
-            column_names = _get_column_names(conn, "habits")
+            column_names = get_column_names(conn, "habits")
             for col in ("description", "trigger_mode", "importance_score", "last_recalled_at"):
                 assert col in column_names, f"habits.{col} が 0058 適用後に存在しない"
         finally:
@@ -83,7 +77,7 @@ class TestColumnsAdded:
         """0057 適用時点では新規4列が存在しない（前提確認）"""
         conn = get_connection()
         try:
-            column_names = _get_column_names(conn, "habits")
+            column_names = get_column_names(conn, "habits")
             for col in ("description", "trigger_mode", "importance_score", "last_recalled_at"):
                 assert col not in column_names, (
                     f"0058 適用前の habits に {col} 列が既に存在している"

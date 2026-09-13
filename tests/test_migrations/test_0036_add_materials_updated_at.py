@@ -4,7 +4,6 @@
 既存行の updated_at が created_at でバックフィルされることを確認する。
 """
 import os
-import sqlite3
 import tempfile
 
 import pytest
@@ -14,7 +13,7 @@ from yoyo.migrations import MigrationList
 
 from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection, init_database
 from src.services.tag_service import _injected_tags
-from test_migrations.conftest import db_before_migration
+from test_migrations.conftest import db_before_migration, get_column_names
 
 
 @pytest.fixture
@@ -48,12 +47,6 @@ def _apply_migration_0036(db_path: str) -> None:
         backend.apply_migrations(only_0036)
 
 
-def _get_column_names(conn: sqlite3.Connection, table: str) -> set[str]:
-    """指定テーブルのカラム名セットを返す。"""
-    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-    return {row["name"] for row in rows}
-
-
 class TestUpdatedAtColumnAdded:
     """0036適用後にupdated_at列が追加されていることの確認"""
 
@@ -61,7 +54,7 @@ class TestUpdatedAtColumnAdded:
         """migration 0036適用後、materialsテーブルにupdated_at列が存在する"""
         conn = get_connection()
         try:
-            column_names = _get_column_names(conn, "materials")
+            column_names = get_column_names(conn, "materials")
             assert "updated_at" in column_names, (
                 "materials.updated_at が0036適用後に存在しない"
             )
@@ -72,7 +65,7 @@ class TestUpdatedAtColumnAdded:
         """0035適用時点では materials に updated_at列が存在しない（前提確認）"""
         conn = get_connection()
         try:
-            assert "updated_at" not in _get_column_names(conn, "materials"), (
+            assert "updated_at" not in get_column_names(conn, "materials"), (
                 "0036適用前のmaterialsにupdated_at列が既に存在している"
             )
         finally:
@@ -82,7 +75,7 @@ class TestUpdatedAtColumnAdded:
         """0036適用後、materialsのid/title/content/source/created_atカラムが保持される"""
         conn = get_connection()
         try:
-            column_names = _get_column_names(conn, "materials")
+            column_names = get_column_names(conn, "materials")
             for col in ["id", "title", "content", "source", "created_at"]:
                 assert col in column_names, (
                     f"materials.{col} が0036適用後に消えている"

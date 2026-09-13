@@ -15,7 +15,7 @@ from yoyo.migrations import MigrationList
 
 from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection, init_database
 from src.services.tag_service import _injected_tags
-from test_migrations.conftest import db_before_migration
+from test_migrations.conftest import db_before_migration, get_column_names
 
 TABLES = [
     "decisions",
@@ -55,12 +55,6 @@ def _apply_migration_0057(db_path: str) -> None:
     only_0057 = MigrationList([m for m in all_migs if m.id.startswith("0057")])
     with backend.lock():
         backend.apply_migrations(only_0057)
-
-
-def _get_column_names(conn: sqlite3.Connection, table: str) -> set[str]:
-    """指定テーブルのカラム名セットを返す。"""
-    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-    return {row["name"] for row in rows}
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
@@ -114,7 +108,7 @@ class TestCallerSessionIdColumnsDropped:
         """migration 0057適用後、対象テーブルにcaller_session_id列が存在しない"""
         conn = get_connection()
         try:
-            column_names = _get_column_names(conn, table)
+            column_names = get_column_names(conn, table)
             assert "caller_session_id" not in column_names, (
                 f"{table}.caller_session_id が0057適用後も残っている"
             )
@@ -126,7 +120,7 @@ class TestCallerSessionIdColumnsDropped:
         """0056適用時点では対象テーブルにcaller_session_id列が存在する（前提確認）"""
         conn = get_connection()
         try:
-            assert "caller_session_id" in _get_column_names(conn, table), (
+            assert "caller_session_id" in get_column_names(conn, table), (
                 f"0057適用前の{table}にcaller_session_id列がない"
             )
         finally:
@@ -139,7 +133,7 @@ class TestCallerSessionIdColumnsDropped:
         conn = get_connection()
         try:
             for table in TABLES:
-                assert "caller_session_id" not in _get_column_names(conn, table), (
+                assert "caller_session_id" not in get_column_names(conn, table), (
                     f"0057適用後も{table}.caller_session_id が残っている"
                 )
         finally:
@@ -152,7 +146,7 @@ class TestOtherColumnsUnaffected:
     def test_decisions_other_columns_intact(self, migrated_db):
         conn = get_connection()
         try:
-            column_names = _get_column_names(conn, "decisions")
+            column_names = get_column_names(conn, "decisions")
             for col in ["id", "decision", "reason", "title", "created_at", "retracted_at"]:
                 assert col in column_names, f"decisions.{col} が0057適用後に消えている"
         finally:
@@ -161,7 +155,7 @@ class TestOtherColumnsUnaffected:
     def test_discussion_logs_other_columns_intact(self, migrated_db):
         conn = get_connection()
         try:
-            column_names = _get_column_names(conn, "discussion_logs")
+            column_names = get_column_names(conn, "discussion_logs")
             for col in ["id", "title", "content", "created_at", "retracted_at"]:
                 assert col in column_names, f"discussion_logs.{col} が0057適用後に消えている"
         finally:
@@ -170,7 +164,7 @@ class TestOtherColumnsUnaffected:
     def test_discussion_topics_other_columns_intact(self, migrated_db):
         conn = get_connection()
         try:
-            column_names = _get_column_names(conn, "discussion_topics")
+            column_names = get_column_names(conn, "discussion_topics")
             for col in ["id", "title", "description", "created_at"]:
                 assert col in column_names, f"discussion_topics.{col} が0057適用後に消えている"
         finally:
@@ -179,7 +173,7 @@ class TestOtherColumnsUnaffected:
     def test_activities_other_columns_intact(self, migrated_db):
         conn = get_connection()
         try:
-            column_names = _get_column_names(conn, "activities")
+            column_names = get_column_names(conn, "activities")
             for col in ["id", "title", "description", "status", "orch_managed"]:
                 assert col in column_names, f"activities.{col} が0057適用後に消えている"
         finally:
@@ -188,7 +182,7 @@ class TestOtherColumnsUnaffected:
     def test_materials_other_columns_intact(self, migrated_db):
         conn = get_connection()
         try:
-            column_names = _get_column_names(conn, "materials")
+            column_names = get_column_names(conn, "materials")
             for col in ["id", "title", "content", "source", "updated_at", "retracted_at"]:
                 assert col in column_names, f"materials.{col} が0057適用後に消えている"
         finally:
