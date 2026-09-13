@@ -117,6 +117,22 @@ context:
 一言で答える場合は `A`/`B` だけでもOK
 ```
 
+## add_ask呼び出し後: その場で回答を待つ場合
+
+`add_ask`のレスポンスには`notify_path`が含まれる。このセッションがその場で回答を待ちたい場合（ユーザーから明示的に「ここで待って」と言われた、または後続作業がこの答えに直接依存していてすぐ再開したい等）は、`add_ask`を呼んだ直後にMonitorツールを呼ぶ。
+
+- command: `tail -F <notify_path>`
+- persistent: `true`
+- description: 対象askの内容が分かる短い説明
+
+notify_pathはこの時点で未生成のことがある（answer_ask/triage_ask完了時に初めて作られる）が、`tail -F`はファイル出現前からでもretryするため、事前のファイル存在確認は不要。
+
+複数のaskを同時に作った場合は、待ちたいask一つひとつに個別にMonitorを呼ぶ（1コマンドでまとめて監視する仕組みは無い）。
+
+その場で待つ必要が無い場合（後で気づけば十分な優先度のask）はMonitorを張らなくてよい。SessionStart/UserPromptSubmit hookが、このセッションが登録したaskの解決状況を毎ターン自動確認する仕組みが別途動いている。
+
+notify fileの中身は「当たれば儲けもの」の位置づけであり、正ではない。Monitorのイベントで通知に気づいたら、`get_asks`で実際の状態を必ず取り直すこと。
+
 ## ask-distillとの境界
 
 - `ask-compose`（本スキル）: `add_ask`を呼ぶ**前**に、question/contextの構成を担当する
