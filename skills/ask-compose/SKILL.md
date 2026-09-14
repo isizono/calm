@@ -125,6 +125,8 @@ context:
 - persistent: `true`
 - description: 対象askの内容が分かる短い説明
 
+`persistent: true`は明示的に止めない限りセッション終了まで張り続けるため、通知イベントを受け取り`get_asks`で状態を確認し終えたら、Monitorを`TaskStop`で止めること。
+
 notify_pathはこの時点で未生成のことがある（answer_ask/triage_ask完了時に初めて作られる）が、`tail -F`はファイル出現前からでもretryするため、事前のファイル存在確認は不要。
 
 複数のaskを同時に待ちたい場合は、`tail -F <notify_path1> <notify_path2> ...`のように複数のnotify_pathを1回のMonitor呼び出しにまとめて渡せる（`tail -F`は複数ファイルを同時に追跡でき、ファイル出現前からのretryも各ファイル独立に効く。どのaskの通知かは`==> <path> <==`の見出しで区別できる）。もちろんask一つひとつに個別にMonitorを呼んでもよい。
