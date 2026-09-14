@@ -190,11 +190,9 @@ class CodexHarness(ClaudeCodeHarness):
     # ------------------------------------------------------------------
     # 3. プロセス識別
     # ------------------------------------------------------------------
-
-    def resolve_session_identity(self) -> str | None:
-        """CodexセッションのIdentity解決は未実装のためNone（fail-close）。
-
-        祖先pid探索の対象になるlauncher登録がCodexセッションでどう成立
-        するかの検証を含め、identity相当のCodex対応で扱う。
-        """
-        return None
+    # resolve_session_identityは継承したClaude Code実装をそのまま使う。
+    # CodexもMCPサーバー（launcher）とhookプロセスを同じCLIプロセスから
+    # 直接spawnするため、launcher登録（token有無に関わらず常に書かれる）と
+    # hookプロセス双方の祖先pidチェーンがCLIプロセスで交差し、
+    # resolve_identity_by_ancestry()の交差判定が無改修で成立する
+    # （実機確認の詳細は #614 を参照）。

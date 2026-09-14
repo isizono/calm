@@ -215,8 +215,16 @@ class TestRolloutNormalization:
         assert harness.rewrite_transcript_entry(str(transcript), entry) is False
         assert transcript.read_text(encoding="utf-8") == before
 
-    def test_resolve_session_identityはNone(self):
-        assert CodexHarness().resolve_session_identity() is None
+    def test_resolve_session_identityはClaude_Code実装を継承する(self):
+        """CodexもMCPサーバー・hookを同じCLIプロセスから直接spawnするため、
+        祖先pid交差によるidentity解決がそのまま成立する（#614実機確認済み）。
+        独自overrideが無い（=継承している）ことの配線lint。解決ロジック自体の
+        検証はrelay identity側のテストに委ねる（test_harness.pyと同方針）。
+        """
+        assert (
+            CodexHarness.resolve_session_identity
+            is ClaudeCodeHarness.resolve_session_identity
+        )
 
 
 # ---------------------------------------------------------------------------
