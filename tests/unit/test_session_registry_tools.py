@@ -11,11 +11,9 @@ import datetime as dt
 import pytest
 
 import src.main as main_module
+from src.infra import session_identity
 from src.services import session_registry_service as srs
 from tests.helpers import all_tool_descriptions
-
-
-RELAY_IDENTITY = main_module.relay_identity
 
 
 @pytest.fixture
@@ -41,13 +39,13 @@ def _stub_world(monkeypatch, sessions: dict[str, dict]):
                 return dict(info, cwd=None, cli_status=None)
         return None
 
-    monkeypatch.setattr(RELAY_IDENTITY, "resolve_cli_session", resolve)
+    monkeypatch.setattr(session_identity, "resolve_cli_session", resolve)
     monkeypatch.setattr(srs, "is_process_alive", is_alive)
     monkeypatch.setattr(srs.cli_session, "read_cli_session", read_cli)
 
 
 def _set_caller(monkeypatch, bridge_session_id):
-    monkeypatch.setattr(RELAY_IDENTITY, "get_relay_identity", lambda: bridge_session_id)
+    monkeypatch.setattr(main_module, "get_caller_session_id", lambda: bridge_session_id)
 
 
 def _sequential_timestamps(monkeypatch, count=10):

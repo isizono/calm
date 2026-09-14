@@ -7,8 +7,6 @@
 - open ask・回答済み未捌きaskの件数とタイトル一覧（メタaskは表示上限に関わらず
   常時全件表示、非メタは上限件数超過時のみ残り件数へ縮退。両バケットとも
   0件時は非表示）
-- relay Monitor監視指示（CALM_RELAY_SESSION_AWARE=1のときのみ。identity解決に
-  成功した場合は常時、未読N件の報告行のみ未読が実在するときに追加）
 
 コンテキスト取得フローガイドはここでは注入しない（check_in初回呼び出し時に
 checkin_service側が埋め込む）。
@@ -665,64 +663,6 @@ def _build_ask_notify_section(conn, session_id: str | None = None, source: str |
     return "\n".join(lines) + "\n"
 
 
-def _build_relay_inbox_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # conn, session_id, source, **_kwargs: 全セクション共通シグネチャ
-    """identityが解決できる限りMonitor監視指示を常時出す。未読件数の表示のみ0件時は省く。
-
-    CALM_RELAY_SESSION_AWARE（デフォルトOFF）のkill switch。OFF時はtokenチェック・
-    identity解決を一切試みず空文字を返す。relayを使わないユーザー・セッションに
-    関連コンテキストを注入しないための入口ゲート。
-
-    ON時、relay未構成（token未設定）ならidentity解決を試みる前に打ち切る。
-    本hookはSessionStart（Claude Code起動をブロックする経路）で毎回実行される
-    ため、identity解決の前にコストの小さいtokenチェックを行い、無駄な
-    プロセスspawnを避ける。
-
-    relay構成済みの場合、identity解決はまずsrc.services.relay.identity.
-    get_relay_identity()（MCPリクエストのHTTPヘッダ経由）を試す。本hookは
-    Claude Code CLIが起動する独立プロセスでMCPリクエストコンテキストを
-    持たないため、この経路は常にNoneを返す。その場合はresolve_identity_by_
-    ancestry()（祖先pidチェーンの一致でlauncherプロセスを特定する経路、
-    ps最大2回spawn）にフォールバックする。
-
-    Monitor監視指示はセッション作業中に届く新着を取りこぼさないための
-    ものなので、既存の未読・inbox file有無に関わらずidentity解決できた
-    時点で常に出す（inbox_path/count_unreadはファイル不在でも安全に動作する）。
-    未読N件の報告行のみ、未読が実在するときに追加する。
-
-    inbox fileはメッセージが1件もappendされるまで実体が無く、指示通りに
-    `tail -f`する等のツールはfile不在だと即座に失敗する。表示前に
-    ensure_inbox_file()でfileを先行生成し、この失敗を防ぐ。
-    """
-    if not config.RELAY_SESSION_AWARE_ENABLED:
-        return ""
-
-    from src.services.relay import config as relay_config
-
-    if not relay_config.get_token():
-        return ""
-
-    from src.services.relay.identity import get_relay_identity, resolve_identity_by_ancestry
-
-    identity = get_relay_identity() or resolve_identity_by_ancestry()
-    if not identity:
-        return ""
-
-    from src.services.relay.inbox import count_unread, ensure_inbox_file
-
-    path = ensure_inbox_file(identity)
-    count = count_unread(identity)
-
-    lines = []
-    if count > 0:
-        lines.append(f"relay inbox 未読: {count}件 → relay_receiveで消化")
-    if select_harness().supports_monitor_watch:
-        lines.append(f"新着の待ち受けはMonitorツールで {path} を監視してください。")
-    if not lines:
-        # Monitor非対応ハーネスで未読0件: 注入すべき内容が無い
-        return ""
-    return "\n".join(lines) + "\n"
-
-
 def _build_transcript_path_section(
     conn, session_id: str | None = None, source: str | None = None, transcript_path: str | None = None
 ) -> str:  # conn, session_id, source: 全セクション共通シグネチャ（本セクションは未使用）
@@ -787,7 +727,6 @@ _SECTIONS: list[Section] = [
     Section("signals", _build_signals_section, config.INJECTION_BUDGET_SIGNALS_CHARS, priority=40),
     Section("open_asks", _build_open_asks_section, config.INJECTION_BUDGET_OPEN_ASKS_CHARS, priority=41),
     Section("ask_notify", _build_ask_notify_section, config.INJECTION_BUDGET_ASK_NOTIFY_CHARS, priority=45),
-    Section("relay_inbox", _build_relay_inbox_section, config.INJECTION_BUDGET_RELAY_INBOX_CHARS, priority=50),
     Section("transcript_path", _build_transcript_path_section, config.INJECTION_BUDGET_TRANSCRIPT_PATH_CHARS, priority=60),
 ]
 

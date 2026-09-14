@@ -5,7 +5,7 @@
 <!-- 再生成: uv run python scripts/dump_db_schema.py -->
 
 `migrations/` を通し番号順に全適用した結果として得られる、現在のテーブル/ビュー構造の機械的な写しである。
-カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0073）。
+カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0074）。
 
 「なぜこの形なのか」（設計判断の背景・変遷・既知の課題）は `docs/spec/db-schema.md` を参照。
 本ファイルは現在値のみを扱い、変遷の経緯（旧カラムの削除理由等）は記載しない。
@@ -993,45 +993,6 @@ CREATE VIEW relations_view AS
          created_at
   FROM decision_supersedes
 ```
-
-### relay_outbox
-
-| カラム名 | 型 | NULL | デフォルト | PK |
-|---|---|---|---|---|
-| id | INTEGER | NO | — | PK |
-| ref_type | TEXT | NO | — | — |
-| ref_id | TEXT | NO | — | — |
-| labels | TEXT | NO | — | — |
-| title | TEXT | YES | — | — |
-| idempotency_key | TEXT | NO | — | — |
-| created_at | TEXT | NO | — | — |
-| processed_at | TEXT | YES | — | — |
-| retry_count | INTEGER | NO | `0` | — |
-| last_error | TEXT | YES | — | — |
-| dead_at | TEXT | YES | — | — |
-
-インデックス:
-- `idx_relay_outbox_pending` ON `relay_outbox`(id)
-
-<details><summary>CREATE文（生成元migration）</summary>
-
-```sql
-CREATE TABLE relay_outbox (
-  id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  ref_type        TEXT    NOT NULL,
-  ref_id          TEXT    NOT NULL,
-  labels          TEXT    NOT NULL,             -- JSON array
-  title           TEXT,
-  idempotency_key TEXT    NOT NULL,             -- SDK が auto-generate（id を流用）
-  created_at      TEXT    NOT NULL,             -- ISO8601 UTC
-  processed_at    TEXT,                         -- NULL = pending
-  retry_count     INTEGER NOT NULL DEFAULT 0,
-  last_error      TEXT,
-  dead_at         TEXT                          -- NOT NULL = DLQ 行き
-)
-```
-
-</details>
 
 ### sanitize_event_log
 

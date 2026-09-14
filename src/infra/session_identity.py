@@ -1,17 +1,16 @@
-"""relay 呼び出し元の安定 identity 解決。
+"""呼び出し元セッションの安定 identity 解決。
 
 cc-memory の caller_session_id は本来 MCP 接続単位の ephemeral な値
 （fastmcp の `ctx.session_id`）であり、cc-memory server の再起動のたびに
-新しい値へ切り替わる。
-
-relay の declaration/inbox/subscription は「後から同じ相手に配達を続ける」
-ことを前提にした永続状態であり、この ephemeral な値をキーにすると server
-再起動のたびに宛先を見失う。
+新しい値へ切り替わる。add_ask/answer_ask/triage_ask/withdraw_ask（要求元の
+記録）、get_sessions/set_session_alias（並行セッション表示）、check_in
+（セッション別名レジストリ更新）はいずれも server 再起動をまたいで安定した
+識別子を必要とする。
 
 launcher.py（src/launcher.py）は Claude Code セッション（正確には launcher
 プロセス）ごとに 1 度だけ発行する UUID を既に保持しており、この値を
 X-CC-Memory-Bridge-Session-Id ヘッダとして全 MCP リクエストに同梱する。
-本モジュールはこのヘッダを優先的に読み、relay 呼び出し元の識別子を解決する。
+本モジュールはこのヘッダを優先的に読み、呼び出し元の識別子を解決する。
 
 SessionStart hook（hooks/session_start_hook.py）は Claude Code CLI が直接
 起動する独立プロセスであり、MCP リクエストコンテキスト自体を持たないため
@@ -35,13 +34,12 @@ import logging
 import os
 import subprocess
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from src.infra import cli_session
 from src.infra.lock_file import is_process_alive
-from src.services.relay import config
-from src.services.relay.declarations import now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +65,21 @@ _CLI_HOP_WINDOW = 2
 _REGISTRATION_PREFIX = "launcher-"
 _REGISTRATION_SUFFIX = ".json"
 
+# 登録ファイルの置き場を決める環境変数・既定パス。稼働中の launcher プロセスが
+# 旧コードのままこの値でファイルを読み書きするため、名前・既定値ともに変更禁止。
+_STATE_DIR_ENV = "RELAY_STATE_DIR"
+
+
+def _sessions_dir() -> Path:
+    """launcher プロセス登録ファイル（launcher-<pid>.json）の置き場。"""
+    raw = os.environ.get(_STATE_DIR_ENV)
+    state_dir = Path(raw).expanduser() if raw else Path.home() / ".cc-memory" / "relay"
+    return state_dir / "sessions"
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
 
 def _ephemeral_session_id() -> Optional[str]:
     """MCP context から呼び出しセッションの session_id を取得する（ephemeral）。
@@ -81,8 +94,8 @@ def _ephemeral_session_id() -> Optional[str]:
         return None
 
 
-def get_relay_identity() -> Optional[str]:
-    """relay 呼び出し元の識別子を解決する。
+def get_caller_session_id() -> Optional[str]:
+    """呼び出し元の識別子を解決する。
 
     launcher.py 経由（X-CC-Memory-Bridge-Session-Id ヘッダ）の呼び出しは、
     cc-memory server の再起動をまたいで不変な識別子を返す。ヘッダが無い
@@ -149,7 +162,7 @@ def ancestor_pids(pid: int, max_depth: int = _MAX_ANCESTOR_DEPTH) -> list[int]:
 
 
 def _registration_path(pid: int) -> Path:
-    return config.sessions_dir() / f"{_REGISTRATION_PREFIX}{pid}{_REGISTRATION_SUFFIX}"
+    return _sessions_dir() / f"{_REGISTRATION_PREFIX}{pid}{_REGISTRATION_SUFFIX}"
 
 
 def _gc_stale_launcher_registrations() -> None:
@@ -158,7 +171,7 @@ def _gc_stale_launcher_registrations() -> None:
     起動のたびに launcher が呼ぶ想定。壊れた JSON・想定外の型のファイルも
     ここで一掃する（読み側 resolve_identity_by_ancestry を単純に保つため）。
     """
-    sessions_dir = config.sessions_dir()
+    sessions_dir = _sessions_dir()
     if not sessions_dir.exists():
         return
     for path in sessions_dir.glob(f"{_REGISTRATION_PREFIX}*{_REGISTRATION_SUFFIX}"):
@@ -182,13 +195,13 @@ def register_launcher_session(session_id: str, pid: Optional[int] = None) -> Opt
     pid = pid if pid is not None else os.getpid()
     try:
         _gc_stale_launcher_registrations()
-        sessions_dir = config.sessions_dir()
+        sessions_dir = _sessions_dir()
         sessions_dir.mkdir(parents=True, exist_ok=True)
         payload = {
             "session_id": session_id,
             "pid": pid,
             "ancestor_pids": ancestor_pids(pid),
-            "created_at": now_iso(),
+            "created_at": _now_iso(),
         }
         # mkstemp は既定で 0600 を作るため、同一 dir 上の atomic rename で
         # その権限のまま最終パスへ収める。
@@ -248,7 +261,7 @@ def resolve_identity_by_ancestry(pid: Optional[int] = None) -> Optional[str]:
     親に持つ launcher の identity（session_id）を解決する。
 
     MCP リクエストコンテキストを持たない呼び出し元（SessionStart hook 等）
-    専用のフォールバック経路。get_relay_identity() のヘッダ/ctx.session_id
+    専用のフォールバック経路。get_caller_session_id() のヘッダ/ctx.session_id
     経路が使えるコンテキスト（実際の MCP ツール呼び出し）では、そちらが
     launcher とは別プロセス（cc-memory HTTP server）で動くため祖先チェーンに
     意味がなく、本関数を使ってはならない。
@@ -271,7 +284,7 @@ def resolve_identity_by_ancestry(pid: Optional[int] = None) -> Optional[str]:
         return None
     own_near_set = set(own_near)
 
-    sessions_dir = config.sessions_dir()
+    sessions_dir = _sessions_dir()
     if not sessions_dir.exists():
         return None
 
@@ -299,7 +312,7 @@ def find_launcher_registration(session_id: str) -> Optional[dict]:
     行い stale な登録を掴まないようにする）。壊れた JSON・想定外の型の
     ファイルは skip する（一致件数を判定できないだけで、探索は打ち切らない）。
     """
-    sessions_dir = config.sessions_dir()
+    sessions_dir = _sessions_dir()
     if not sessions_dir.exists():
         return None
     for path in sessions_dir.glob(f"{_REGISTRATION_PREFIX}*{_REGISTRATION_SUFFIX}"):
@@ -343,7 +356,7 @@ def resolve_cli_session(session_id: str) -> Optional[dict]:
 
 __all__ = [
     "BRIDGE_SESSION_HEADER",
-    "get_relay_identity",
+    "get_caller_session_id",
     "ancestor_pids",
     "register_launcher_session",
     "unregister_launcher_session",

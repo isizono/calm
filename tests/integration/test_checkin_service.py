@@ -25,7 +25,7 @@ from src.services.hint_service import (
 )
 from src.services.tag_service import _injected_tags
 from src.services import session_registry_service
-from src.services.relay import identity as relay_identity_module
+from src.infra import session_identity
 
 
 DEFAULT_TAGS = ["domain:test"]
@@ -1481,7 +1481,7 @@ class TestCheckInSessionRegistry:
                     return dict(info, cwd=None, cli_status=None)
             return None
 
-        monkeypatch.setattr(relay_identity_module, "resolve_cli_session", resolve)
+        monkeypatch.setattr(session_identity, "resolve_cli_session", resolve)
         monkeypatch.setattr(session_registry_service, "is_process_alive", is_alive)
         monkeypatch.setattr(session_registry_service.cli_session, "read_cli_session", read_cli)
 
@@ -1490,7 +1490,7 @@ class TestCheckInSessionRegistry:
             monkeypatch,
             {"bridge-1": {"cli_pid": 100, "cli_session_id": "cli-1", "name": "workspace-a1"}},
         )
-        monkeypatch.setattr(relay_identity_module, "get_relay_identity", lambda: "bridge-1")
+        monkeypatch.setattr(session_identity, "get_caller_session_id", lambda: "bridge-1")
 
         result = check_in(activity_id)
 
@@ -1505,7 +1505,7 @@ class TestCheckInSessionRegistry:
         self, activity_id, monkeypatch
     ):
         """呼び出し元のbridge session idが取れない場合、check_in本体は正常応答する"""
-        monkeypatch.setattr(relay_identity_module, "get_relay_identity", lambda: None)
+        monkeypatch.setattr(session_identity, "get_caller_session_id", lambda: None)
 
         result = check_in(activity_id)
 
@@ -1520,7 +1520,7 @@ class TestCheckInSessionRegistry:
             monkeypatch,
             {"bridge-1": {"cli_pid": 100, "cli_session_id": "cli-1", "name": "workspace-a1"}},
         )
-        monkeypatch.setattr(relay_identity_module, "get_relay_identity", lambda: "bridge-1")
+        monkeypatch.setattr(session_identity, "get_caller_session_id", lambda: "bridge-1")
 
         # レジストリファイルの親をファイルで塞ぎ、flock/書き込み時にOSErrorを
         # 自然発生させる（内部関数の直接mockを避け、外部境界であるファイルI/O
@@ -1553,7 +1553,7 @@ class TestCheckInSessionRegistry:
             activity_title="[作業] タグnotesカラム追加",
             activity_status="in_progress",
         )
-        monkeypatch.setattr(relay_identity_module, "get_relay_identity", lambda: "bridge-1")
+        monkeypatch.setattr(session_identity, "get_caller_session_id", lambda: "bridge-1")
 
         result = check_in(activity_id)
 
@@ -1569,7 +1569,7 @@ class TestCheckInSessionRegistry:
             monkeypatch,
             {"bridge-1": {"cli_pid": 100, "cli_session_id": "cli-1", "name": "workspace-a1"}},
         )
-        monkeypatch.setattr(relay_identity_module, "get_relay_identity", lambda: "bridge-1")
+        monkeypatch.setattr(session_identity, "get_caller_session_id", lambda: "bridge-1")
 
         result = add_activity(
             title="[作業] 新規タスク",

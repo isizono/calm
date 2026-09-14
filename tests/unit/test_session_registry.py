@@ -1,6 +1,6 @@
 """session_aliases.json（src.services.session_registry_service）のユニットテスト。
 
-CLI session の解決（relay_identity.resolve_cli_session / cli_session の
+CLI session の解決（session_identity.resolve_cli_session / cli_session の
 is_process_alive・read_cli_session）は外部境界としてFakeCliWorld経由でmockし、
 ファイルI/O・ロック・alias生成・衝突解決・GCは実ファイルで検証する。
 """
@@ -57,7 +57,7 @@ class FakeCliWorld:
 @pytest.fixture
 def world(monkeypatch):
     w = FakeCliWorld()
-    monkeypatch.setattr(srs.relay_identity, "resolve_cli_session", w.resolve_cli_session)
+    monkeypatch.setattr(srs.session_identity, "resolve_cli_session", w.resolve_cli_session)
     monkeypatch.setattr(srs, "is_process_alive", w.is_process_alive)
     monkeypatch.setattr(srs.cli_session, "read_cli_session", w.read_cli_session)
     return w
@@ -240,7 +240,7 @@ class TestRegisterCheckinGc:
 
 class TestRegisterCheckinUnresolved:
     def test_returns_none_and_creates_no_file_when_cli_unresolved(self, registry_path, monkeypatch):
-        monkeypatch.setattr(srs.relay_identity, "resolve_cli_session", lambda bridge_session_id: None)
+        monkeypatch.setattr(srs.session_identity, "resolve_cli_session", lambda bridge_session_id: None)
         result = srs.register_checkin(
             bridge_session_id="bridge-x", activity_id=1, activity_title="Foo", activity_status="in_progress"
         )

@@ -7,23 +7,14 @@
 3.5. add_ask通知の二重網（追跡中askがopen以外になっていれば表示・消費、
      他のnudgeより優先） → system-reminder注入
 4. 未消費のnudgeイベント判定 → system-reminder注入
-5. relay session-aware nudge（CALM_RELAY_SESSION_AWARE=1のときのみ） →
-   system-reminder注入
-6. 何もなし → 空JSON出力
+5. 何もなし → 空JSON出力
 
 Stop hookでnudge判定とevents.jsonl追記を行い、本hookで消費して注入する。
 注入タイミングが「ユーザーの次の発言時」になるため、文面もその文脈に合わせている。
-relay session-aware nudge（手順5）はSessionStartの一回きりの起動指示が読み流されて
-機能しない問題への対応で、events.jsonlとは独立にHookState.monitor_started
-マーカー（hooks/relay_monitor_watch_hook.pyがPostToolUseで書く）とrelay inboxの
-未読件数を毎ターン判定する。identity解決結果はHookState.relay_identityにセッション
-単位でキャッシュし、resolve_identity_by_ancestry（ps最大2回spawn）を毎ターン
-払わないようにする。起動指示は `persistent: true` の使用を明記する。
 
-add_ask通知（手順3.5）はrelay session-aware nudgeとは独立の仕組みで、
-identity解決には一切触れない。追跡対象ask_id一覧はStop hook
-（hooks/hook_transcript.py extract_ask_registrations）がこのセッション自身の
-add_ask/unsubscribe_ask呼び出しから直接HookStateへ書き足したものを使う
+add_ask通知（手順3.5）はidentity解決には一切触れない。追跡対象ask_id一覧は
+Stop hook（hooks/hook_transcript.py extract_ask_registrations）がこのセッション
+自身のadd_ask/unsubscribe_ask呼び出しから直接HookStateへ書き足したものを使う
 （詳細はhooks/ask_notify_section.py）。
 """
 import json
@@ -39,7 +30,6 @@ if str(_project_root) not in sys.path:
 
 from hooks.hook_state import HookState
 from hooks.signal_capture import try_capture_signal
-from src import config
 from src.harness import select_harness
 
 
@@ -107,99 +97,6 @@ def _format_nudge_message(event: dict, ntype: str | None) -> str | None:
     return None
 
 
-def _resolve_relay_identity_cached(state: HookState) -> str | None:
-    """relay identityをHookStateのセッション単位キャッシュ経由で解決する。
-
-    resolve_identity_by_ancestryはps最大2回spawn（各2秒timeout）を伴うため、
-    UserPromptSubmitのように毎ターン呼ばれる経路でこれを無条件に払うと、
-    `ps`が詰まった環境ではターンあたり最大4秒近いレイテンシが積み上がる。
-    一度解決できたidentityはlauncherプロセスが生存し続ける限り不変なので、
-    キャッシュに乗せて以降のターンはps spawnをスキップする。
-
-    解決に失敗した（None）場合はキャッシュしない。launcher登録が後から
-    間に合うタイミング差を想定し、次ターン以降も解決を再試行できるように
-    しておく（恒久的にNoneを確定させない）。
-
-    このキャッシュはhooks/relay_monitor_watch_hook.py（PostToolUse、matcher:
-    Monitor）とも共有される（同じHookState.relay_identityを読み書きする）。
-    どちらか一方が先に解決すれば、もう片方はps spawnを避けられる。
-    """
-    cached = state.get_cached_relay_identity()
-    if cached:
-        return cached
-
-    from src.services.relay.identity import get_relay_identity, resolve_identity_by_ancestry
-
-    identity = get_relay_identity() or resolve_identity_by_ancestry()
-    if identity:
-        state.set_cached_relay_identity(identity)
-    return identity
-
-
-def _build_relay_turn_nudge(state: HookState, harness) -> str | None:
-    """relay session-aware毎ターンnudge（CALM_RELAY_SESSION_AWARE=1のときのみ動作）。
-
-    SessionStart一回きりの起動指示はエージェントに読み流されて機能しないことが
-    確認されたため、毎ターン判定してリマインダーを注入する。
-
-    relay未構成（token未設定）・identity解決失敗（祖先pidチェーンで同一launcher
-    プロセスを特定できない）のセッションはrelay非参加とみなし、Noneを返す
-    （fail-open。エラーにしない）。
-
-    Monitor監視が未起動（HookState.get_monitor_startedがFalse）なら起動指示、
-    未読が1件以上あれば消化指示を、該当する行だけ束ねて返す。どちらも
-    非該当（起動済みかつ未読0件）ならNoneを返す。Monitorツールが無い
-    ハーネス（harness.supports_monitor_watchがFalse。Codex）では起動指示は
-    実行不能なノイズになるため注入せず、消化指示のみ返す。
-
-    起動指示は `persistent: true` の使用を明記する。既定の `persistent: false`
-    だとMonitorはtimeout_ms既定値（5分）で自動終了するが、monitor_startedは
-    一度立つと消えない（消えるのはcompact以外のクリア経路のみ）ため、
-    `persistent: false` のまま5分経過すると監視が切れたことに誰も気づけなく
-    なる（本PRが解決しようとしている「起動指示が読み流される」問題を、
-    「監視がサイレントに止まる」という形で再発させてしまう）。
-    """
-    if not config.RELAY_SESSION_AWARE_ENABLED:
-        return None
-
-    from src.services.relay import config as relay_config
-
-    if not relay_config.get_token():
-        return None
-
-    identity = _resolve_relay_identity_cached(state)
-    if not identity:
-        return None
-
-    from src.services.relay.inbox import count_unread, ensure_inbox_file
-
-    monitor_started = state.get_monitor_started()
-    unread = count_unread(identity)
-    needs_startup = not monitor_started and harness.supports_monitor_watch
-
-    if not needs_startup and unread <= 0:
-        return None
-
-    lines = []
-    if needs_startup:
-        # ensure_inbox_file: SessionStart hook側の_build_relay_inbox_sectionが
-        # 何らかの理由（per-builder try/exceptで握られる例外）で先行touchに
-        # 失敗していた場合のフォールバック。ここでも呼んでおくことで、
-        # 未読0件セッションでinbox fileが未生成のままMonitorの`tail -f`が
-        # 即座に失敗する既知バグを、この経路でも防ぐ。
-        path = ensure_inbox_file(identity)
-        lines.append(
-            f"relay inboxの監視がまだ起動されていません。"
-            f"Monitorツールで {path} を `persistent: true` で監視してください"
-            f"（`persistent: false` だと既定5分でwatchが自動終了し、"
-            f"以降の新着に気づけなくなります）。"
-        )
-    if unread > 0:
-        lines.append(f"relay inbox 未読: {unread}件 → relay_receiveで消化してください。")
-
-    return _wrap_system_reminder("\n".join(lines))
-
-
 def main() -> None:
     harness = select_harness(hook_event_name="UserPromptSubmit")
     try:
@@ -254,14 +151,7 @@ def main() -> None:
             harness.emit_additional_context(message)
             return
 
-        # 5. relay session-aware nudge（CALM_RELAY_SESSION_AWARE=1のときのみ、
-        # 既存nudgeが非該当だった場合のみ判定）
-        relay_message = _build_relay_turn_nudge(state, harness)
-        if relay_message:
-            harness.emit_additional_context(relay_message)
-            return
-
-        # 6. 何もなし
+        # 5. 何もなし
         harness.emit_empty()
 
     except Exception as e:

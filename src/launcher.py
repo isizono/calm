@@ -21,7 +21,7 @@ from pathlib import Path
 
 from src.env_compat import env_get, env_set
 from src.infra.git_repo import resolve_main_repo_root
-from src.services.relay.identity import (
+from src.infra.session_identity import (
     register_launcher_session,
     unregister_launcher_session,
 )
@@ -105,7 +105,7 @@ MAX_RETRIES: int | None = _read_max_retries()
 BACKOFF_CAP_SEC = 60
 
 # bridge identity ヘッダ名。全MCPリクエストに付与し、cc-memory server 再起動を
-# またいで安定な呼び出し元識別子として relay 側（identity.py）が読む。
+# またいで安定な呼び出し元識別子として src/infra/session_identity.py が読む。
 BRIDGE_SESSION_HEADER = "X-CC-Memory-Bridge-Session-Id"
 
 HEARTBEAT_INTERVAL_ENV = "CALM_LAUNCHER_HEARTBEAT_SEC"
@@ -402,7 +402,7 @@ async def _bridge() -> None:
 
     # 全MCPリクエストに bridge identity ヘッダを同梱する。cc-memory server が
     # 再起動しても launcher プロセス（＝ _session_id）が生きている限り不変な値で、
-    # relay の declaration/inbox/subscription キー解決（identity.py）が読む。
+    # 呼び出し元セッション識別子の解決（src/infra/session_identity.py）が読む。
     http_client = create_mcp_http_client(headers={BRIDGE_SESSION_HEADER: _session_id})
     async with http_client:
         # terminate_on_close=True: 切断時に DELETE でMCPセッションを終了させる。
@@ -586,11 +586,10 @@ def main() -> None:
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))  # atexitが発火する
 
     # SessionStart hook（Claude Code CLI プロセスの別の子孫）や、cc-memory
-    # server 側のセッション別名解決（src/services/relay/identity.py の
+    # server 側のセッション別名解決（src/infra/session_identity.py の
     # resolve_cli_session）が祖先 pid チェーン経由で自分を見つけられるよう、
     # HTTPサーバー起動待機（最大30秒）より前に登録ファイルを書く。
-    # 書込失敗は非致命（ベストエフォート）。relay未構成環境でも別名解決の
-    # 入力として使われるため、token有無に関わらず常に登録する。
+    # 書込失敗は非致命（ベストエフォート）。
     register_launcher_session(_session_id)
 
     if not _IS_LOCAL:
