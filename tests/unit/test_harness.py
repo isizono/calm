@@ -132,6 +132,10 @@ class TestEmit:
         harness, _ = _make()
         assert harness.supports_monitor_watch is True
 
+    def test_transcript_rewriteをサポートする(self):
+        harness, _ = _make()
+        assert harness.supports_transcript_rewrite is True
+
 
 # ---------------------------------------------------------------------------
 # 2. transcript読み書き

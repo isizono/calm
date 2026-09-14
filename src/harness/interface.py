@@ -191,6 +191,19 @@ class Harness(ABC):
         永続監視は無い（相当機構なしの調査結果は #616 を参照）。
         """
 
+    @property
+    @abstractmethod
+    def supports_transcript_rewrite(self) -> bool:
+        """実行中セッションのtranscriptをファイル書き換えできるか。
+
+        sanitize backfill（rename+backup方式のatomic書き戻し）は、Falseの
+        ハーネスでは実行しない。Codexのrollout recorderは書き込みハンドルを
+        保持しており、セッション中にrename方式で差し替えると以降の全append
+        が孤児化した旧inodeへ書かれてサイレントに喪失する（実機確認の
+        詳細は #613 を参照）。rewrite_transcript_entryの戻り値Falseと対に
+        なる能力フラグで、hookが処理を始める前の早期スキップに使う。
+        """
+
     # ------------------------------------------------------------------
     # 2. transcript読み書き
     # ------------------------------------------------------------------

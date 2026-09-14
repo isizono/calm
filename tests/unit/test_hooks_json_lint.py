@@ -29,7 +29,13 @@ _CODEX_UNSUPPORTED_EVENTS = {"MessageDisplay"}
 # Codexに無いため、Codex側登録の期待値導出から除外するスクリプト。
 # relay_monitor_watch_hook.py: matcher ^Monitor$ が対象とするMonitorツール
 # （イベント駆動の永続監視）がCodexに存在せず、登録しても発火し得ない（#616）。
-_CODEX_UNSUPPORTED_SCRIPTS = {"relay_monitor_watch_hook.py"}
+# sanitize_backfill_hook.py: Codexのrollout recorderは書き込みハンドルを
+# 保持しており、セッション中のrename方式書き換えはappend喪失を起こすことを
+# 実機確認済み。登録してもsupports_transcript_rewrite=Falseで即exitする（#613）。
+_CODEX_UNSUPPORTED_SCRIPTS = {
+    "relay_monitor_watch_hook.py",
+    "sanitize_backfill_hook.py",
+}
 
 # hooks/ 配下のスクリプトが自身の担当イベントを宣言する規約:
 # モジュール docstring 冒頭が `"<Event> hook: ..."` の形。
