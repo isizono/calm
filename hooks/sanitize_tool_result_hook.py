@@ -140,8 +140,8 @@ def main() -> int:
         # してそのまま扱われる (test_case_14_non_dict_tool_response_yields_unwrapped_content_block)。
         # ここで型を dict/配列のどちらかに統一すると、統一しなかった側の経路で content が
         # 二重にラップされ、CLI 側のサイズ計算処理がクラッシュする。tool_response の内部
-        # 構造自体はハーネス依存で公開仕様が無い (hooks/relay_monitor_watch_hook.py:23-24
-        # 参照) ため、この非対称性は暗黙の契約として扱い、統一しないこと。
+        # 構造自体はハーネス依存で公開仕様が無いため、この非対称性は暗黙の契約として扱い、
+        # 統一しないこと。
         if isinstance(tool_response, dict):
             updated_output = {**tool_response, "content": content_block}
         else:

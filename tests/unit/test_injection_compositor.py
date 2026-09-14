@@ -90,9 +90,9 @@ class TestComposeTotalBudgetEnforcement:
         assert "切り詰め" in result
 
     def test_all_declared_sections_at_config_budget_cap_stays_within_total(self):
-        """レビューで実機再現されたシナリオ: config.pyの全セクション予算合計は
-        TOTAL_INJECTION_BUDGET_CHARSとちょうど一致し余裕がない。全セクションが
-        同時に宣言予算ちょうどの出力をすると、区切り文字の分だけ実測が
+        """レビューで実機再現されたシナリオ: config.pyの全セクション予算合計が
+        TOTAL_INJECTION_BUDGET_CHARSに近く余裕が薄い。全セクションが同時に
+        宣言予算ちょうどの出力をすると、区切り文字の分だけ実測が
         TOTAL_INJECTION_BUDGET_CHARSを超えていた（修正前は10,005字）。
         """
         budgets = [
@@ -101,7 +101,6 @@ class TestComposeTotalBudgetEnforcement:
             config.INJECTION_BUDGET_HABITS_CHARS,
             config.INJECTION_BUDGET_SYNC_POLICY_CHARS,
             config.INJECTION_BUDGET_SIGNALS_CHARS,
-            config.INJECTION_BUDGET_RELAY_INBOX_CHARS,
             config.INJECTION_BUDGET_TRANSCRIPT_PATH_CHARS,
         ]
         sections = [

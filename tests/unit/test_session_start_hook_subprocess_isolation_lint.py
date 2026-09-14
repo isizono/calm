@@ -15,9 +15,8 @@ CALM_HABITS_RULES_PATHの注入が漏れており、hookが実ファイル
 （run/Popen/call/check_call/check_output のいずれか）が両方含まれる
 ファイルを抽出し、そのファイルが`tests.helpers`からimportしているかを
 確認する。文字列一致ベースの粗い
-検出だが、hookの起動をf-string等で組み立てるケース（実例:
-TestSessionStartHookRelayInboxViaRealUv、`uv run`経由の起動コマンドは変数
-展開で組み立てる）もAST走査より確実に拾える。
+検出だが、hookの起動をf-string等で組み立てるケース（`uv run`経由の起動
+コマンドを変数展開で組み立てる等）もAST走査より確実に拾える。
 """
 import re
 from pathlib import Path
@@ -64,8 +63,8 @@ def test_session_start_hook_subprocess_launchers_import_shared_helper():
 
 def test_lint_target_scan_actually_finds_the_known_launchers():
     """回帰保護: 走査ロジックが、実際にhookをsubprocess起動している既知の
-    2ファイル（test_snapshot.py・test_session_start_hook.py）を正しく候補として
-    拾えていること（検出条件の書き間違いで0件のままvacuous passし続ける事故を防ぐ）。
+    ファイル（test_snapshot.py）を正しく候補として拾えていること
+    （検出条件の書き間違いで0件のままvacuous passし続ける事故を防ぐ）。
     """
     matched = {
         str(p.relative_to(_REPO_ROOT))
@@ -74,4 +73,3 @@ def test_lint_target_scan_actually_finds_the_known_launchers():
         and _SUBPROCESS_CALL_RE.search(p.read_text(encoding="utf-8"))
     }
     assert "tests/e2e/test_snapshot.py" in matched
-    assert "tests/e2e/test_session_start_hook.py" in matched

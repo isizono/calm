@@ -100,7 +100,6 @@ CALMは「着手 → 記録 → 完了 → 同期」のライフサイクルで�
 - **`/ask-distill`** — `add_ask`のsimilar_asksを見て、同型の問いが繰り返され裁定が一貫していると気づいたときに、判例をまとめてメタask（kind="meta"）を起票する
 - **`/memory-export`** / **`/memory-import`** — CALMの記録（トピック・決定事項・ログ・資材・アクティビティ）を他のCALMインスタンスとやり取りする。exportは書き出し、importは受け取ったバンドルの取り込み。知識を別環境・別の相手と共有したいときに
 - **`/restart`** — cc-memoryのローカルMCPサーバー・embeddingサーバーを強制再起動する。プラグインアップデート後にコード変更を反映させたいときに
-- **`/relay-monitor-setup`** — relayのsession-aware監視機構が動いていない・初めて使うときのセットアップウィザード。環境変数の有効化からtoken取得・動作確認まで対話的に進める
 - **`/ask-watch`** — Ask storeをMonitorツールでイベント駆動監視し、同型の問いが繰り返されていないか確認する。「ask storeを監視して」「asksを見張って」等で発動
 
 ## よくあるパターン
@@ -156,7 +155,6 @@ Ask storeの読み書き（`add_ask`・`answer_ask`・`triage_ask`・`withdraw_a
 ### 別の手段でも答えられる
 
 cc-memoryのMCPツールを介さなくても、relayが提供するHTTP APIを直接叩けば、スマホやWebhookなど別の手段から回答を投げ込める。
-relayの初期セットアップがまだなら`/relay-monitor-setup`が案内する。
 
 ## 熟練度別アドバイス
 

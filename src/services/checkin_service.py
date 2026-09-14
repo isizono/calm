@@ -503,7 +503,7 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
     セッション別名レジストリ（result["session"]）:
     - 呼び出し元のClaude Code CLIプロセスを解決できた場合、
       {"name": str, "alias": str, "alias_collision": bool} を含める。
-      解決できない場合（非CLIクライアント、relay未構成環境の初回起動直後等）は
+      解決できない場合（非CLIクライアント、launcher登録が間に合っていない初回起動直後等）は
       {"registered": False, "reason": "cli_unresolved"} を返す。
       このレジストリ更新はベストエフォートであり、失敗してもcheck_in本体は
       成功応答を返す。
@@ -674,10 +674,10 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
         # 呼び出し元がClaude Code CLI経由でないなどCLIが解決できない場合や、
         # 内部で予期せぬ例外が起きた場合もcheck_in本体を失敗させない。
         try:
-            from src.services.relay.identity import get_relay_identity
+            from src.infra.session_identity import get_caller_session_id
             from src.services import session_registry_service
 
-            bridge_id = get_relay_identity()
+            bridge_id = get_caller_session_id()
             reg = (
                 session_registry_service.register_checkin(
                     bridge_session_id=bridge_id,

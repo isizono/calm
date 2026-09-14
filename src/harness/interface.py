@@ -22,8 +22,8 @@ Codex側に対応する仕組みが無い操作（`updatedToolOutput`相当の�
 書き換え、`displayContent`相当の発話後処理）は、例外を投げるのではなく
 戻り値 `False` で「未サポート」を表現する。呼び出し側は戻り値を見て
 代替方針（何もしない・別経路で通知する等）に分岐できる。hookの応答
-出力ではなくハーネス側ツールの有無に依存する機能（Monitorツールによる
-relay監視）は、能力フラグ `supports_monitor_watch` で問い合わせる。
+出力ではなくハーネス側ツールの有無に依存する機能は、能力フラグ
+`supports_monitor_watch` で問い合わせる。
 
 ## 既存hook・identity.pyと本インターフェースの対応表
 
@@ -44,12 +44,10 @@ relay監視）は、能力フラグ `supports_monitor_watch` で問い合わせ�
 | | transcript全読み＋atomic書き戻し | read_transcript_entries / rewrite_transcript_entry |
 | sanitize_tool_result_hook.py | stdin JSON (tool_name/tool_response/cwd) | read_hook_input |
 | | hookSpecificOutput.updatedToolOutput | emit_updated_tool_output（未サポート系統） |
-| relay_monitor_watch_hook.py | stdin JSON (session_id/tool_name/tool_input/tool_response) | read_hook_input |
-| | 空JSON `{}` 出力 | emit_empty |
 | message_display_id_titles.py | stdin JSON (delta/assistant_message) | read_hook_input |
 | | hookSpecificOutput.displayContent | emit_display_content（未サポート系統） |
 | hook_transcript.py | フラット`type`/`message.content`のJSONL解析 | read_transcript_entries(_from_offset) + TranscriptEntry |
-| src/services/relay/identity.py | HTTPヘッダ / 祖先pid探索によるidentity解決 | resolve_session_identity |
+| src/infra/session_identity.py | HTTPヘッダ / 祖先pid探索によるidentity解決 | resolve_session_identity |
 
 現時点ではインターフェース定義とClaude Code実装
 （claude_code.ClaudeCodeHarness）の追加のみを行い、既存hookの実装本体は
@@ -183,8 +181,7 @@ class Harness(ABC):
     def supports_monitor_watch(self) -> bool:
         """Monitorツール（persistent監視でイベント駆動wakeする機構）の有無。
 
-        relay監視の起動指示（session_start_hook / user_prompt_submit_hookの
-        relay session-aware注入）は、Falseのハーネスでは注入しない。存在
+        Monitorツールの起動指示は、Falseのハーネスでは注入しない。存在
         しないツールの起動指示は実行不能なノイズとして毎ターン注入され
         続けるため。Codexにはバックグラウンド実行のポーリング確認
         （`/ps`相当）はあるが、完了・新着時にモデルを起こすイベント駆動の

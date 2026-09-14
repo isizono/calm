@@ -83,11 +83,6 @@ TOOL_TAGS: dict[str, str] = {
     "withdraw_ask": "ask",
     "triage_ask": "ask",
     "unsubscribe_ask": "ask",
-    "relay_post": "relay",
-    "relay_publish": "relay",
-    "relay_subscribe": "relay",
-    "relay_receive": "relay",
-    "relay_status": "relay",
     "get_sessions": "session",
     "set_session_alias": "session",
 }
@@ -108,7 +103,6 @@ TAG_DESCRIPTIONS: dict[str, str] = {
     "checkin": "アクティビティ check-in",
     "retract": "取り消し（論理削除）",
     "ask": "人間の判断待ちの問いの記録・回答",
-    "relay": "セッション間メッセージング",
     "session": "並行セッションの別名管理",
     "misc": "設定取得・ユーティリティ",
 }

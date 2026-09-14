@@ -36,34 +36,6 @@ class TestBlockCount:
         assert hook_state.get_block_count() == 0
 
 
-class TestMonitorStarted:
-    def test_get_returns_false_when_no_file(self, hook_state):
-        assert hook_state.get_monitor_started() is False
-
-    def test_set_then_get(self, hook_state):
-        hook_state.set_monitor_started()
-        assert hook_state.get_monitor_started() is True
-
-    def test_cleared_by_clear_session(self, hook_state):
-        hook_state.set_monitor_started()
-        HookState.clear_session("test-session-123")
-        assert hook_state.get_monitor_started() is False
-
-
-class TestRelayIdentityCache:
-    def test_get_returns_none_when_no_file(self, hook_state):
-        assert hook_state.get_cached_relay_identity() is None
-
-    def test_set_then_get(self, hook_state):
-        hook_state.set_cached_relay_identity("resolved-id-1")
-        assert hook_state.get_cached_relay_identity() == "resolved-id-1"
-
-    def test_cleared_by_clear_session(self, hook_state):
-        hook_state.set_cached_relay_identity("resolved-id-1")
-        HookState.clear_session("test-session-123")
-        assert hook_state.get_cached_relay_identity() is None
-
-
 class TestTrackedAskIds:
     def test_get_returns_empty_list_when_no_file(self, hook_state):
         assert hook_state.get_tracked_ask_ids() == []
@@ -257,19 +229,19 @@ class TestClearSession:
 class TestClearSessionPreserve:
     """clear_session(preserve=...): 指定prefixのファイルをクリア対象から除外する。
 
-    compact（セッションを継続したまま発火するイベント）で、生存中のMonitor
-    watchを表すmonitor_startedや解決済みidentityをクリアしないための機構。
+    compact（セッションを継続したまま発火するイベント）で、pullに委ねるべき
+    tracked_ask_idsのような情報をクリアしないための機構。
     """
 
     def test_preserve_excludes_specified_prefix(self, tmp_path, monkeypatch):
         monkeypatch.setattr(HookState, "BASE_DIR", tmp_path)
         state = HookState("sess-preserve")
-        state.set_monitor_started()
+        state.add_tracked_ask_ids([1, 2])
         state.set_current_turn(5)
 
-        HookState.clear_session("sess-preserve", preserve={"monitor_started"})
+        HookState.clear_session("sess-preserve", preserve={"tracked_ask_ids"})
 
-        assert state.get_monitor_started() is True
+        assert state.get_tracked_ask_ids() == [1, 2]
         assert state.get_current_turn() == 0
 
     def test_preserve_events_keeps_events_file(self, tmp_path, monkeypatch):
@@ -285,11 +257,11 @@ class TestClearSessionPreserve:
         """デフォルト（preserve未指定）は従来通り全削除する（後方互換）"""
         monkeypatch.setattr(HookState, "BASE_DIR", tmp_path)
         state = HookState("sess-no-preserve")
-        state.set_monitor_started()
+        state.add_tracked_ask_ids([1, 2])
 
         HookState.clear_session("sess-no-preserve")
 
-        assert state.get_monitor_started() is False
+        assert state.get_tracked_ask_ids() == []
 
 
 class TestSessionIdSlash:
@@ -336,18 +308,12 @@ class TestMainCli:
         assert state.get_current_turn() == 0
         assert state.get_block_count() == 0
 
-    def test_compact_source_preserves_monitor_marker_and_identity_cache(
-        self, tmp_path, monkeypatch
-    ):
-        """source=compactのclear呼び出しでは、生存中のMonitor watchを表す
-        monitor_startedマーカーと解決済みidentityキャッシュ、追跡中ask_id一覧
-        （tracked_ask_ids）がクリアされない（compactはセッションを継続したまま
-        発火するイベントであり、watch自体もlauncherプロセスもcompactで終了しない
-        ため）。他の状態は通常通りクリアされる"""
+    def test_compact_source_preserves_tracked_ask_ids(self, tmp_path, monkeypatch):
+        """source=compactのclear呼び出しでは、追跡中ask_id一覧（tracked_ask_ids）
+        がクリアされない（compactはセッションを継続したまま発火するイベントで
+        あるため）。他の状態は通常通りクリアされる"""
         monkeypatch.setattr(HookState, "BASE_DIR", tmp_path)
         state = HookState("cli-compact-sess")
-        state.set_monitor_started()
-        state.set_cached_relay_identity("cached-id-1")
         state.set_current_turn(3)
         state.add_tracked_ask_ids([1, 2])
 
@@ -363,19 +329,14 @@ class TestMainCli:
         )
         assert result.returncode == 0
 
-        assert state.get_monitor_started() is True
-        assert state.get_cached_relay_identity() == "cached-id-1"
         assert state.get_current_turn() == 0
         assert state.get_tracked_ask_ids() == [1, 2]
 
-    def test_non_compact_source_clears_monitor_marker(self, tmp_path, monkeypatch):
-        """source=startup等の通常clearでは従来通りmonitor_started・
-        tracked_ask_idsもクリアされる（質問者セッションが実質終わった扱いとなり、
-        以降の回収はpullに委ねる設計）"""
+    def test_non_compact_source_clears_tracked_ask_ids(self, tmp_path, monkeypatch):
+        """source=startup等の通常clearでは従来通りtracked_ask_idsもクリアされる
+        （質問者セッションが実質終わった扱いとなり、以降の回収はpullに委ねる設計）"""
         monkeypatch.setattr(HookState, "BASE_DIR", tmp_path)
         state = HookState("cli-startup-sess")
-        state.set_monitor_started()
-        state.set_cached_relay_identity("cached-id-1")
         state.add_tracked_ask_ids([1, 2])
 
         project_root = Path(__file__).resolve().parents[2]
@@ -389,6 +350,4 @@ class TestMainCli:
             env={**os.environ, "HOOK_STATE_DIR": str(tmp_path)},
         )
         assert result.returncode == 0
-        assert state.get_monitor_started() is False
-        assert state.get_cached_relay_identity() is None
         assert state.get_tracked_ask_ids() == []

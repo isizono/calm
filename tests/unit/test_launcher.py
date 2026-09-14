@@ -1095,8 +1095,8 @@ class TestLauncherSessionRegistrationWiring:
 
 
 class TestLauncherSessionRegistrationUnconditional:
-    """main(): register_launcher_session はrelay token有無に関わらず常に呼ばれる
-    （セッション別名解決の入力として、relay未構成環境でも登録ファイルが要るため）。
+    """main(): register_launcher_session は常に（無条件で）呼ばれる
+    （セッション別名解決の入力として登録ファイルが要るため）。
     """
 
     def _setup_common(self, monkeypatch):
@@ -1115,8 +1115,8 @@ class TestLauncherSessionRegistrationUnconditional:
 
         monkeypatch.setattr(launcher.asyncio, "run", fake_asyncio_run)
 
-    def test_registers_when_relay_token_unset(self, monkeypatch):
-        """relay token未設定でもregister_launcher_sessionが呼ばれる"""
+    def test_registers_unconditionally(self, monkeypatch):
+        """main()の実行経路上でregister_launcher_sessionが呼ばれる"""
         called = {"count": 0}
 
         def fake_register(session_id, pid=None):
@@ -1124,24 +1124,6 @@ class TestLauncherSessionRegistrationUnconditional:
 
         monkeypatch.setattr(launcher, "register_launcher_session", fake_register)
         self._setup_common(monkeypatch)
-        monkeypatch.setattr(
-            "src.services.relay.config.get_token", lambda: None
-        )
-        launcher.main()
-        assert called["count"] == 1
-
-    def test_registers_when_relay_token_set(self, monkeypatch):
-        """relay token設定済みでもregister_launcher_sessionが呼ばれる"""
-        called = {"count": 0}
-
-        def fake_register(session_id, pid=None):
-            called["count"] += 1
-
-        monkeypatch.setattr(launcher, "register_launcher_session", fake_register)
-        self._setup_common(monkeypatch)
-        monkeypatch.setattr(
-            "src.services.relay.config.get_token", lambda: "dummy-token"
-        )
         launcher.main()
         assert called["count"] == 1
 

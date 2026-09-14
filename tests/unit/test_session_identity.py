@@ -1,4 +1,4 @@
-"""relay 呼び出し元の安定 identity 解決（src.services.relay.identity）のユニットテスト。
+"""呼び出し元の安定 identity 解決（src.infra.session_identity）のユニットテスト。
 
 bridge identity ヘッダ優先 + ctx.session_id フォールバックの契約に加え、
 SessionStart hook 用の祖先 pid チェーンによる identity 解決
@@ -10,16 +10,15 @@ import os
 import pytest
 
 from src.infra import cli_session
-from src.services.relay import config as relay_config
-from src.services.relay import identity as relay_identity
+from src.infra import session_identity
 
 
-class TestGetRelayIdentity:
+class TestGetCallerSessionId:
     def test_returns_header_value_when_present(self, monkeypatch):
         """ヘッダが存在する場合はその値を返し、ctx.session_idにはフォールバックしない"""
         monkeypatch.setattr(
             "fastmcp.server.dependencies.get_http_headers",
-            lambda: {relay_identity.BRIDGE_SESSION_HEADER: "bridge-uuid-1"},
+            lambda: {session_identity.BRIDGE_SESSION_HEADER: "bridge-uuid-1"},
         )
         called = {"fallback": False}
 
@@ -27,8 +26,8 @@ class TestGetRelayIdentity:
             called["fallback"] = True
             return "ephemeral-session-id"
 
-        monkeypatch.setattr(relay_identity, "_ephemeral_session_id", fake_fallback)
-        assert relay_identity.get_relay_identity() == "bridge-uuid-1"
+        monkeypatch.setattr(session_identity, "_ephemeral_session_id", fake_fallback)
+        assert session_identity.get_caller_session_id() == "bridge-uuid-1"
         assert called["fallback"] is False
 
     def test_falls_back_when_header_absent(self, monkeypatch):
@@ -37,20 +36,20 @@ class TestGetRelayIdentity:
             "fastmcp.server.dependencies.get_http_headers", lambda: {}
         )
         monkeypatch.setattr(
-            relay_identity, "_ephemeral_session_id", lambda: "ephemeral-session-id"
+            session_identity, "_ephemeral_session_id", lambda: "ephemeral-session-id"
         )
-        assert relay_identity.get_relay_identity() == "ephemeral-session-id"
+        assert session_identity.get_caller_session_id() == "ephemeral-session-id"
 
     def test_falls_back_when_header_is_blank(self, monkeypatch):
         """ヘッダが空文字列・空白のみの場合もフォールバックする（安全側）"""
         monkeypatch.setattr(
             "fastmcp.server.dependencies.get_http_headers",
-            lambda: {relay_identity.BRIDGE_SESSION_HEADER: "   "},
+            lambda: {session_identity.BRIDGE_SESSION_HEADER: "   "},
         )
         monkeypatch.setattr(
-            relay_identity, "_ephemeral_session_id", lambda: "ephemeral-session-id"
+            session_identity, "_ephemeral_session_id", lambda: "ephemeral-session-id"
         )
-        assert relay_identity.get_relay_identity() == "ephemeral-session-id"
+        assert session_identity.get_caller_session_id() == "ephemeral-session-id"
 
     def test_falls_back_when_get_http_headers_import_fails(self, monkeypatch):
         """get_http_headers自体のimportが失敗しても例外を投げずフォールバックする"""
@@ -65,9 +64,9 @@ class TestGetRelayIdentity:
 
         monkeypatch.setattr(builtins, "__import__", fake_import)
         monkeypatch.setattr(
-            relay_identity, "_ephemeral_session_id", lambda: "ephemeral-session-id"
+            session_identity, "_ephemeral_session_id", lambda: "ephemeral-session-id"
         )
-        assert relay_identity.get_relay_identity() == "ephemeral-session-id"
+        assert session_identity.get_caller_session_id() == "ephemeral-session-id"
 
     def test_falls_back_when_get_http_headers_call_raises(self, monkeypatch):
         """import自体は成功しても、HTTPリクエストコンテキスト外呼び出し等で
@@ -81,28 +80,28 @@ class TestGetRelayIdentity:
             raising_get_http_headers,
         )
         monkeypatch.setattr(
-            relay_identity, "_ephemeral_session_id", lambda: "ephemeral-session-id"
+            session_identity, "_ephemeral_session_id", lambda: "ephemeral-session-id"
         )
-        assert relay_identity.get_relay_identity() == "ephemeral-session-id"
+        assert session_identity.get_caller_session_id() == "ephemeral-session-id"
 
     def test_strips_whitespace_from_header_value(self, monkeypatch):
         """ヘッダ値の前後空白は取り除いて返す"""
         monkeypatch.setattr(
             "fastmcp.server.dependencies.get_http_headers",
-            lambda: {relay_identity.BRIDGE_SESSION_HEADER: "  bridge-uuid-2  "},
+            lambda: {session_identity.BRIDGE_SESSION_HEADER: "  bridge-uuid-2  "},
         )
-        assert relay_identity.get_relay_identity() == "bridge-uuid-2"
+        assert session_identity.get_caller_session_id() == "bridge-uuid-2"
 
 
 def _fake_ppid_chain(monkeypatch, graph: dict[int, int | None]):
     """{pid: ppid} の固定マップで _get_ppid をモックする（実プロセスに依存しない）。"""
-    monkeypatch.setattr(relay_identity, "_get_ppid", lambda pid: graph.get(pid))
+    monkeypatch.setattr(session_identity, "_get_ppid", lambda pid: graph.get(pid))
 
 
 @pytest.fixture
 def sessions_state_dir(tmp_path, monkeypatch):
-    """get_state_dir() をtmp_pathに差し替え、sessions_dir()を隔離する。"""
-    monkeypatch.setattr(relay_config, "get_state_dir", lambda: tmp_path)
+    """RELAY_STATE_DIR をtmp_pathに差し替え、_sessions_dir()を隔離する。"""
+    monkeypatch.setenv("RELAY_STATE_DIR", str(tmp_path))
     return tmp_path
 
 
@@ -110,21 +109,21 @@ class TestAncestorPids:
     def test_walks_chain_until_pid_1(self, monkeypatch):
         # 100 -> 50 -> 10 -> 1（1到達で打ち切り、1自体はリストに含めない）
         _fake_ppid_chain(monkeypatch, {100: 50, 50: 10, 10: 1})
-        assert relay_identity.ancestor_pids(100) == [50, 10]
+        assert session_identity.ancestor_pids(100) == [50, 10]
 
     def test_respects_max_depth(self, monkeypatch):
         # 5段より深い連鎖でも max_depth=2 なら2段で打ち切る
         _fake_ppid_chain(monkeypatch, {100: 50, 50: 10, 10: 5, 5: 2, 2: 1})
-        assert relay_identity.ancestor_pids(100, max_depth=2) == [50, 10]
+        assert session_identity.ancestor_pids(100, max_depth=2) == [50, 10]
 
     def test_stops_when_ppid_lookup_fails(self, monkeypatch):
         # 50のppidが取得不能（プロセス消滅等）ならそこで打ち切る
         _fake_ppid_chain(monkeypatch, {100: 50})
-        assert relay_identity.ancestor_pids(100) == [50]
+        assert session_identity.ancestor_pids(100) == [50]
 
     def test_empty_when_immediate_lookup_fails(self, monkeypatch):
         _fake_ppid_chain(monkeypatch, {})
-        assert relay_identity.ancestor_pids(999) == []
+        assert session_identity.ancestor_pids(999) == []
 
 
 class TestRegisterLauncherSession:
@@ -132,7 +131,7 @@ class TestRegisterLauncherSession:
         self, sessions_state_dir, monkeypatch
     ):
         _fake_ppid_chain(monkeypatch, {4321: 999, 999: 1})
-        path = relay_identity.register_launcher_session("launcher-uuid-1", pid=4321)
+        path = session_identity.register_launcher_session("launcher-uuid-1", pid=4321)
         assert path == sessions_state_dir / "sessions" / "launcher-4321.json"
         data = json.loads(path.read_text(encoding="utf-8"))
         assert data["session_id"] == "launcher-uuid-1"
@@ -144,7 +143,7 @@ class TestRegisterLauncherSession:
         self, sessions_state_dir, monkeypatch
     ):
         _fake_ppid_chain(monkeypatch, {})
-        path = relay_identity.register_launcher_session("launcher-uuid-1", pid=4321)
+        path = session_identity.register_launcher_session("launcher-uuid-1", pid=4321)
         mode = os.stat(path).st_mode & 0o777
         assert mode == 0o600
 
@@ -157,9 +156,9 @@ class TestRegisterLauncherSession:
             json.dumps({"session_id": "dead", "pid": 1111, "ancestor_pids": []}),
             encoding="utf-8",
         )
-        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: pid != 1111)
+        monkeypatch.setattr(session_identity, "is_process_alive", lambda pid: pid != 1111)
         _fake_ppid_chain(monkeypatch, {})
-        relay_identity.register_launcher_session("launcher-uuid-2", pid=2222)
+        session_identity.register_launcher_session("launcher-uuid-2", pid=2222)
         assert not stale.exists()
         assert (sessions_dir / "launcher-2222.json").exists()
 
@@ -169,7 +168,7 @@ class TestRegisterLauncherSession:
         broken = sessions_dir / "launcher-9999.json"
         broken.write_text("not json", encoding="utf-8")
         _fake_ppid_chain(monkeypatch, {})
-        relay_identity.register_launcher_session("launcher-uuid-3", pid=3333)
+        session_identity.register_launcher_session("launcher-uuid-3", pid=3333)
         assert not broken.exists()
 
     def test_returns_none_on_write_failure(self, sessions_state_dir, monkeypatch):
@@ -179,22 +178,22 @@ class TestRegisterLauncherSession:
         def raise_mkstemp(*args, **kwargs):
             raise OSError("disk full")
 
-        monkeypatch.setattr(relay_identity.tempfile, "mkstemp", raise_mkstemp)
-        assert relay_identity.register_launcher_session("launcher-uuid-4", pid=4444) is None
+        monkeypatch.setattr(session_identity.tempfile, "mkstemp", raise_mkstemp)
+        assert session_identity.register_launcher_session("launcher-uuid-4", pid=4444) is None
 
 
 class TestUnregisterLauncherSession:
     def test_removes_registration_file(self, sessions_state_dir, monkeypatch):
         _fake_ppid_chain(monkeypatch, {})
-        relay_identity.register_launcher_session("launcher-uuid-5", pid=5555)
+        session_identity.register_launcher_session("launcher-uuid-5", pid=5555)
         path = sessions_state_dir / "sessions" / "launcher-5555.json"
         assert path.exists()
-        relay_identity.unregister_launcher_session(pid=5555)
+        session_identity.unregister_launcher_session(pid=5555)
         assert not path.exists()
 
     def test_no_error_when_file_absent(self, sessions_state_dir):
         # 存在しないpidを解除しても例外にならない
-        relay_identity.unregister_launcher_session(pid=99999999)
+        session_identity.unregister_launcher_session(pid=99999999)
 
 
 def _write_registration(
@@ -224,7 +223,7 @@ class TestResolveIdentityByAncestry:
     def test_returns_none_when_no_common_ancestor(self, sessions_state_dir, monkeypatch):
         """共通祖先が全く無ければ（窓内外を問わず）Noneを返すこと"""
         _fake_ppid_chain(monkeypatch, {300: 999})
-        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(session_identity, "is_process_alive", lambda pid: True)
         sessions_dir = sessions_state_dir / "sessions"
         sessions_dir.mkdir(parents=True)
         (sessions_dir / "launcher-400.json").write_text(
@@ -233,7 +232,7 @@ class TestResolveIdentityByAncestry:
             ),
             encoding="utf-8",
         )
-        assert relay_identity.resolve_identity_by_ancestry(pid=300) is None
+        assert session_identity.resolve_identity_by_ancestry(pid=300) is None
 
     def test_picks_most_recent_when_multiple_candidates_match(
         self, sessions_state_dir, monkeypatch
@@ -241,7 +240,7 @@ class TestResolveIdentityByAncestry:
         """複数の登録ファイルが窓内で交差する場合、created_atが新しい方を
         採用すること（旧実装から維持される tiebreak の仕様）"""
         _fake_ppid_chain(monkeypatch, {300: 200})
-        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(session_identity, "is_process_alive", lambda pid: True)
         sessions_dir = sessions_state_dir / "sessions"
         sessions_dir.mkdir(parents=True)
         (sessions_dir / "launcher-400.json").write_text(
@@ -266,7 +265,7 @@ class TestResolveIdentityByAncestry:
             ),
             encoding="utf-8",
         )
-        assert relay_identity.resolve_identity_by_ancestry(pid=300) == "newer"
+        assert session_identity.resolve_identity_by_ancestry(pid=300) == "newer"
 
     def test_iterm2_two_tabs_picks_own_tab_rejects_other_tab(
         self, sessions_state_dir, monkeypatch
@@ -277,14 +276,14 @@ class TestResolveIdentityByAncestry:
         _fake_ppid_chain(
             monkeypatch, {300: 250, 250: 210, 210: 180, 180: 160, 160: 100}
         )
-        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(session_identity, "is_process_alive", lambda pid: True)
         sessions_dir = sessions_state_dir / "sessions"
         sessions_dir.mkdir(parents=True)
         # 自タブのlauncher: 別のuvラッパー(245)を持つが同じclaude(210)の子
         _write_registration(sessions_dir, 400, "tabA-launcher", [245, 210, 180, 160, 100])
         # 他タブのlauncher: 別のclaude(211)配下だが同じiTermServer(100)を共有
         _write_registration(sessions_dir, 401, "tabB-launcher", [246, 211, 181, 161, 100])
-        assert relay_identity.resolve_identity_by_ancestry(pid=300) == "tabA-launcher"
+        assert session_identity.resolve_identity_by_ancestry(pid=300) == "tabA-launcher"
 
     def test_production_regression_shape(self, sessions_state_dir, monkeypatch):
         """本番再現リグレッション: 生存launcher6件のうち5件は普遍的祖先
@@ -295,7 +294,7 @@ class TestResolveIdentityByAncestry:
         _fake_ppid_chain(
             monkeypatch, {950: 900, 900: 910, 910: 920, 920: 930, 930: 963}
         )
-        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(session_identity, "is_process_alive", lambda pid: True)
         sessions_dir = sessions_state_dir / "sessions"
         sessions_dir.mkdir(parents=True)
         _write_registration(
@@ -312,10 +311,10 @@ class TestResolveIdentityByAncestry:
                 # 偽物ほど新しく登録された、という最悪ケースにしておく
                 created_at=f"2026-08-2{i}T00:00:00Z",
             )
-        assert relay_identity.resolve_identity_by_ancestry(pid=950) == "prod-correct"
+        assert session_identity.resolve_identity_by_ancestry(pid=950) == "prod-correct"
 
         (sessions_dir / "launcher-1000.json").unlink()
-        assert relay_identity.resolve_identity_by_ancestry(pid=950) is None
+        assert session_identity.resolve_identity_by_ancestry(pid=950) is None
 
     def test_tmux_three_panes_picks_own_pane_rejects_adjacent_pane(
         self, sessions_state_dir, monkeypatch
@@ -324,12 +323,12 @@ class TestResolveIdentityByAncestry:
         隣ペイン棄却"""
         # 自hookプロセスの祖先: uv(480) -> claude(490) -> tmuxサーバ(34565)
         _fake_ppid_chain(monkeypatch, {500: 480, 480: 490, 490: 34565})
-        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(session_identity, "is_process_alive", lambda pid: True)
         sessions_dir = sessions_state_dir / "sessions"
         sessions_dir.mkdir(parents=True)
         _write_registration(sessions_dir, 600, "paneA-launcher", [481, 490, 34565])
         _write_registration(sessions_dir, 601, "paneB-launcher", [482, 491, 34565])
-        assert relay_identity.resolve_identity_by_ancestry(pid=500) == "paneA-launcher"
+        assert session_identity.resolve_identity_by_ancestry(pid=500) == "paneA-launcher"
 
     def test_returns_none_when_no_launcher_registered_yet(
         self, sessions_state_dir, monkeypatch
@@ -338,7 +337,7 @@ class TestResolveIdentityByAncestry:
         _fake_ppid_chain(monkeypatch, {700: 650, 650: 660})
         sessions_dir = sessions_state_dir / "sessions"
         sessions_dir.mkdir(parents=True)
-        assert relay_identity.resolve_identity_by_ancestry(pid=700) is None
+        assert session_identity.resolve_identity_by_ancestry(pid=700) is None
 
     def test_returns_none_when_only_other_session_exists(
         self, sessions_state_dir, monkeypatch
@@ -348,11 +347,11 @@ class TestResolveIdentityByAncestry:
         交差しない唯一の候補を「最も近い」という理由で選んではならない）
         """
         _fake_ppid_chain(monkeypatch, {800: 750, 750: 760})
-        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(session_identity, "is_process_alive", lambda pid: True)
         sessions_dir = sessions_state_dir / "sessions"
         sessions_dir.mkdir(parents=True)
         _write_registration(sessions_dir, 900, "other-session", [751, 761])
-        assert relay_identity.resolve_identity_by_ancestry(pid=800) is None
+        assert session_identity.resolve_identity_by_ancestry(pid=800) is None
 
     def test_rejects_same_tab_stale_launcher_sharing_only_upper_chain(
         self, sessions_state_dir, monkeypatch
@@ -362,12 +361,12 @@ class TestResolveIdentityByAncestry:
         _fake_ppid_chain(
             monkeypatch, {1000: 950, 950: 960, 960: 970, 970: 980, 980: 990}
         )
-        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(session_identity, "is_process_alive", lambda pid: True)
         sessions_dir = sessions_state_dir / "sessions"
         sessions_dir.mkdir(parents=True)
         # 前セッションの残存launcher: uv・claudeは別物だがzsh/login/host以上を共有
         _write_registration(sessions_dir, 1100, "stale-same-tab", [951, 961, 970, 980, 990])
-        assert relay_identity.resolve_identity_by_ancestry(pid=1000) is None
+        assert session_identity.resolve_identity_by_ancestry(pid=1000) is None
 
     def test_accepts_pid1_direct_claude_two_element_chain(
         self, sessions_state_dir, monkeypatch
@@ -376,18 +375,18 @@ class TestResolveIdentityByAncestry:
         `claude -p`等）: 採用（個数閾値案との差分を固定。共有pidはclaude本体
         1個のみだが、窓内の位置としては正しく一致する）"""
         _fake_ppid_chain(monkeypatch, {1200: 1150, 1150: 1160})
-        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(session_identity, "is_process_alive", lambda pid: True)
         sessions_dir = sessions_state_dir / "sessions"
         sessions_dir.mkdir(parents=True)
         _write_registration(sessions_dir, 1300, "headless-launcher", [1151, 1160])
-        assert relay_identity.resolve_identity_by_ancestry(pid=1200) == "headless-launcher"
+        assert session_identity.resolve_identity_by_ancestry(pid=1200) == "headless-launcher"
 
     def test_nested_claude_both_directions_reject_the_other_session(
         self, sessions_state_dir, monkeypatch
     ):
         """入れ子claude: 外hook×内launcher・内hook×外launcherの両方向とも
         棄却される（それぞれ自分自身のlauncherだけを解決する）"""
-        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(session_identity, "is_process_alive", lambda pid: True)
         sessions_dir = sessions_state_dir / "sessions"
         sessions_dir.mkdir(parents=True)
         _write_registration(sessions_dir, 2200, "outer-launcher", [1951, 1960])
@@ -395,12 +394,12 @@ class TestResolveIdentityByAncestry:
 
         # 外側hook: uv(1950) -> claude_outer(1960)
         _fake_ppid_chain(monkeypatch, {2000: 1950, 1950: 1960})
-        assert relay_identity.resolve_identity_by_ancestry(pid=2000) == "outer-launcher"
+        assert session_identity.resolve_identity_by_ancestry(pid=2000) == "outer-launcher"
 
         # 内側hook: uv(2050) -> claude_inner(2060)（claude_innerの親は
         # さらに外側claude(1960)へ合流するが、窓2の内側には現れない）
         _fake_ppid_chain(monkeypatch, {2100: 2050, 2050: 2060})
-        assert relay_identity.resolve_identity_by_ancestry(pid=2100) == "inner-launcher"
+        assert session_identity.resolve_identity_by_ancestry(pid=2100) == "inner-launcher"
 
     def test_picks_most_recent_on_same_claude_generation_handover(
         self, sessions_state_dir, monkeypatch
@@ -408,7 +407,7 @@ class TestResolveIdentityByAncestry:
         """同一claude配下のlauncher世代交代（MCP再接続等でuvラッパーだけが
         変わる）: created_at最新が返ること（正当なtiebreakの仕様固定）"""
         _fake_ppid_chain(monkeypatch, {2500: 2450, 2450: 2460})
-        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(session_identity, "is_process_alive", lambda pid: True)
         sessions_dir = sessions_state_dir / "sessions"
         sessions_dir.mkdir(parents=True)
         _write_registration(
@@ -417,35 +416,35 @@ class TestResolveIdentityByAncestry:
         _write_registration(
             sessions_dir, 2601, "newer-gen", [2452, 2460], created_at="2026-07-08T00:00:00Z"
         )
-        assert relay_identity.resolve_identity_by_ancestry(pid=2500) == "newer-gen"
+        assert session_identity.resolve_identity_by_ancestry(pid=2500) == "newer-gen"
 
     def test_returns_none_when_sessions_dir_missing(self, sessions_state_dir, monkeypatch):
         _fake_ppid_chain(monkeypatch, {300: 200})
-        assert relay_identity.resolve_identity_by_ancestry(pid=300) is None
+        assert session_identity.resolve_identity_by_ancestry(pid=300) is None
 
     def test_returns_none_when_own_ancestors_empty(self, sessions_state_dir, monkeypatch):
         _fake_ppid_chain(monkeypatch, {})
         sessions_dir = sessions_state_dir / "sessions"
         sessions_dir.mkdir(parents=True)
         _write_registration(sessions_dir, 400, "x", [1])
-        assert relay_identity.resolve_identity_by_ancestry(pid=999999) is None
+        assert session_identity.resolve_identity_by_ancestry(pid=999999) is None
 
     def test_skips_registration_whose_pid_is_dead(self, sessions_state_dir, monkeypatch):
         """窓内で交差しても登録元launcherのpidが死んでいれば候補から除外する"""
         _fake_ppid_chain(monkeypatch, {300: 200})
-        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: False)
+        monkeypatch.setattr(session_identity, "is_process_alive", lambda pid: False)
         sessions_dir = sessions_state_dir / "sessions"
         sessions_dir.mkdir(parents=True)
         _write_registration(sessions_dir, 400, "dead-launcher", [200])
-        assert relay_identity.resolve_identity_by_ancestry(pid=300) is None
+        assert session_identity.resolve_identity_by_ancestry(pid=300) is None
 
     def test_ignores_malformed_registration_file(self, sessions_state_dir, monkeypatch):
         _fake_ppid_chain(monkeypatch, {300: 200})
-        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(session_identity, "is_process_alive", lambda pid: True)
         sessions_dir = sessions_state_dir / "sessions"
         sessions_dir.mkdir(parents=True)
         (sessions_dir / "launcher-400.json").write_text("not json", encoding="utf-8")
-        assert relay_identity.resolve_identity_by_ancestry(pid=300) is None
+        assert session_identity.resolve_identity_by_ancestry(pid=300) is None
 
     def test_rejects_candidate_with_empty_ancestor_chain(
         self, sessions_state_dir, monkeypatch
@@ -454,11 +453,11 @@ class TestResolveIdentityByAncestry:
         またはps失敗で記録時点から祖先を辿れなかった場合）でも、窓内の交差が
         取れないため素直に棄却されること（fail-close側に倒れることの固定）"""
         _fake_ppid_chain(monkeypatch, {300: 200})
-        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(session_identity, "is_process_alive", lambda pid: True)
         sessions_dir = sessions_state_dir / "sessions"
         sessions_dir.mkdir(parents=True)
         _write_registration(sessions_dir, 400, "empty-chain-launcher", [])
-        assert relay_identity.resolve_identity_by_ancestry(pid=300) is None
+        assert session_identity.resolve_identity_by_ancestry(pid=300) is None
 
 
 @pytest.fixture
@@ -479,47 +478,47 @@ def _write_cli_session(dir_path, pid, name="workspace-a2", session_id="cli-uuid-
 
 class TestFindLauncherRegistration:
     def test_returns_matching_registration(self, sessions_state_dir, monkeypatch):
-        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(session_identity, "is_process_alive", lambda pid: True)
         sessions_dir = sessions_state_dir / "sessions"
         sessions_dir.mkdir(parents=True)
         (sessions_dir / "launcher-500.json").write_text(
             json.dumps({"session_id": "bridge-uuid-1", "pid": 500, "ancestor_pids": [600]}),
             encoding="utf-8",
         )
-        entry = relay_identity.find_launcher_registration("bridge-uuid-1")
+        entry = session_identity.find_launcher_registration("bridge-uuid-1")
         assert entry is not None
         assert entry["pid"] == 500
         assert entry["ancestor_pids"] == [600]
 
     def test_returns_none_when_no_match(self, sessions_state_dir, monkeypatch):
-        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(session_identity, "is_process_alive", lambda pid: True)
         sessions_dir = sessions_state_dir / "sessions"
         sessions_dir.mkdir(parents=True)
         (sessions_dir / "launcher-500.json").write_text(
             json.dumps({"session_id": "other-bridge", "pid": 500, "ancestor_pids": []}),
             encoding="utf-8",
         )
-        assert relay_identity.find_launcher_registration("bridge-uuid-1") is None
+        assert session_identity.find_launcher_registration("bridge-uuid-1") is None
 
     def test_returns_none_when_launcher_pid_dead(self, sessions_state_dir, monkeypatch):
-        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: False)
+        monkeypatch.setattr(session_identity, "is_process_alive", lambda pid: False)
         sessions_dir = sessions_state_dir / "sessions"
         sessions_dir.mkdir(parents=True)
         (sessions_dir / "launcher-500.json").write_text(
             json.dumps({"session_id": "bridge-uuid-1", "pid": 500, "ancestor_pids": []}),
             encoding="utf-8",
         )
-        assert relay_identity.find_launcher_registration("bridge-uuid-1") is None
+        assert session_identity.find_launcher_registration("bridge-uuid-1") is None
 
     def test_returns_none_when_sessions_dir_missing(self, sessions_state_dir):
-        assert relay_identity.find_launcher_registration("bridge-uuid-1") is None
+        assert session_identity.find_launcher_registration("bridge-uuid-1") is None
 
     def test_ignores_malformed_registration_file(self, sessions_state_dir, monkeypatch):
-        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(session_identity, "is_process_alive", lambda pid: True)
         sessions_dir = sessions_state_dir / "sessions"
         sessions_dir.mkdir(parents=True)
         (sessions_dir / "launcher-500.json").write_text("not json", encoding="utf-8")
-        assert relay_identity.find_launcher_registration("bridge-uuid-1") is None
+        assert session_identity.find_launcher_registration("bridge-uuid-1") is None
 
 
 class TestResolveCliSession:
@@ -528,7 +527,7 @@ class TestResolveCliSession:
     def test_resolves_via_ancestor_pid_chain(
         self, sessions_state_dir, cli_sessions_dir, monkeypatch
     ):
-        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(session_identity, "is_process_alive", lambda pid: True)
         monkeypatch.setattr(cli_session, "is_process_alive", lambda pid: True)
         sessions_dir = sessions_state_dir / "sessions"
         sessions_dir.mkdir(parents=True)
@@ -539,7 +538,7 @@ class TestResolveCliSession:
             encoding="utf-8",
         )
         _write_cli_session(cli_sessions_dir, 600, name="workspace-a2", session_id="cli-uuid-1")
-        result = relay_identity.resolve_cli_session("bridge-uuid-1")
+        result = session_identity.resolve_cli_session("bridge-uuid-1")
         assert result == {
             "cli_pid": 600,
             "name": "workspace-a2",
@@ -551,12 +550,12 @@ class TestResolveCliSession:
     def test_returns_none_when_no_registration_matches(
         self, sessions_state_dir, cli_sessions_dir
     ):
-        assert relay_identity.resolve_cli_session("bridge-uuid-missing") is None
+        assert session_identity.resolve_cli_session("bridge-uuid-missing") is None
 
     def test_returns_none_when_launcher_pid_dead(
         self, sessions_state_dir, cli_sessions_dir, monkeypatch
     ):
-        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: False)
+        monkeypatch.setattr(session_identity, "is_process_alive", lambda pid: False)
         sessions_dir = sessions_state_dir / "sessions"
         sessions_dir.mkdir(parents=True)
         (sessions_dir / "launcher-500.json").write_text(
@@ -564,7 +563,7 @@ class TestResolveCliSession:
             encoding="utf-8",
         )
         _write_cli_session(cli_sessions_dir, 600)
-        assert relay_identity.resolve_cli_session("bridge-uuid-1") is None
+        assert session_identity.resolve_cli_session("bridge-uuid-1") is None
 
     def test_returns_none_when_claude_sessions_dir_missing(
         self, sessions_state_dir, tmp_path, monkeypatch
@@ -573,20 +572,20 @@ class TestResolveCliSession:
         monkeypatch.setenv(
             cli_session.CLAUDE_SESSIONS_DIR_ENV, str(tmp_path / "does-not-exist")
         )
-        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(session_identity, "is_process_alive", lambda pid: True)
         sessions_dir = sessions_state_dir / "sessions"
         sessions_dir.mkdir(parents=True)
         (sessions_dir / "launcher-500.json").write_text(
             json.dumps({"session_id": "bridge-uuid-1", "pid": 500, "ancestor_pids": [600]}),
             encoding="utf-8",
         )
-        assert relay_identity.resolve_cli_session("bridge-uuid-1") is None
+        assert session_identity.resolve_cli_session("bridge-uuid-1") is None
 
     def test_prefers_launcher_pid_over_ancestors_when_both_resolve(
         self, sessions_state_dir, cli_sessions_dir, monkeypatch
     ):
         """launcher pid自身が先頭候補（ancestor_pidsより優先して解決される）"""
-        monkeypatch.setattr(relay_identity, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(session_identity, "is_process_alive", lambda pid: True)
         monkeypatch.setattr(cli_session, "is_process_alive", lambda pid: True)
         sessions_dir = sessions_state_dir / "sessions"
         sessions_dir.mkdir(parents=True)
@@ -596,5 +595,5 @@ class TestResolveCliSession:
         )
         _write_cli_session(cli_sessions_dir, 500, name="launcher-pid-session")
         _write_cli_session(cli_sessions_dir, 600, name="ancestor-session")
-        result = relay_identity.resolve_cli_session("bridge-uuid-1")
+        result = session_identity.resolve_cli_session("bridge-uuid-1")
         assert result["name"] == "launcher-pid-session"
