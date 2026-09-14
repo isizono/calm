@@ -127,7 +127,7 @@ context:
 
 notify_pathはこの時点で未生成のことがある（answer_ask/triage_ask完了時に初めて作られる）が、`tail -F`はファイル出現前からでもretryするため、事前のファイル存在確認は不要。
 
-複数のaskを同時に作った場合は、待ちたいask一つひとつに個別にMonitorを呼ぶ（1コマンドでまとめて監視する仕組みは無い）。
+複数のaskを同時に待ちたい場合は、`tail -F <notify_path1> <notify_path2> ...`のように複数のnotify_pathを1回のMonitor呼び出しにまとめて渡せる（`tail -F`は複数ファイルを同時に追跡でき、ファイル出現前からのretryも各ファイル独立に効く。どのaskの通知かは`==> <path> <==`の見出しで区別できる）。もちろんask一つひとつに個別にMonitorを呼んでもよい。
 
 その場で待つ必要が無い場合（後で気づけば十分な優先度のask）はMonitorを張らなくてよい。SessionStart/UserPromptSubmit hookが、このセッションが登録したaskの解決状況を毎ターン自動確認する仕組みが別途動いている。
 
