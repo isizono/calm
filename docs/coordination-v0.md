@@ -124,13 +124,16 @@ CREATE TABLE goal_decisions (            -- 前提 / 提案 / 成果
   decision_id INTEGER NOT NULL REFERENCES decisions(id) ON DELETE CASCADE,
   role TEXT NOT NULL CHECK (role IN ('basis','proposal','outcome')),
   added_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (goal_id, decision_id, role));
-CREATE TABLE goal_participants (         -- 役割 = goal に対する関係（原則G）
+CREATE TABLE goal_participants (         -- 役割 = goal に対する関係（原則G）。履歴行を残す追記型
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   goal_id INTEGER NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
   session_id TEXT NOT NULL,              -- sessions.session_id（FK 無し: ended / remote を許容）
   role TEXT NOT NULL CHECK (role IN ('owner','assignee','reviewer','observer')),
   joined_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, left_at TIMESTAMP,
-  end_reason TEXT CHECK (end_reason IS NULL OR end_reason IN ('released','session_ended','handed_off','goal_closed')),
-  PRIMARY KEY (goal_id, session_id, role, joined_at));
+  end_reason TEXT CHECK (end_reason IS NULL OR end_reason IN ('released','session_ended','handed_off','goal_closed')));
+-- 生きている参加は (goal, session, role) につき1行。再 join は ON CONFLICT DO NOTHING で冪等（原則C）。
+-- 離脱後の再 join は新しい行になり履歴が残る。timestamp を主キーに含めない（秒精度の衝突で INSERT が失敗しうるため）。
+CREATE UNIQUE INDEX idx_goal_participants_live ON goal_participants(goal_id, session_id, role) WHERE left_at IS NULL;
 CREATE UNIQUE INDEX idx_goal_owner_live ON goal_participants(goal_id) WHERE role='owner' AND left_at IS NULL;
 CREATE TABLE goal_verdicts (             -- 追記専用。判定の全履歴（F7）
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -414,7 +417,7 @@ R0〜R3 は §5.3 の通知経路の確実性段階を指す。
 | M7 人間への判断委譲 | asks（既存・人間専用・不変） | notify_path + hook 二重網 | get_asks（R0） | fingerprint |
 | M8 生存・所在 | sessions | 無し | get_sessions（R0）、participants（R0） | UUID 上書き |
 
-**asks を人間専用に保つ裁定**: 設計案の審査でも asks の audience 一般化は採らないという結論で揃った。理由: RULES「ask は離席中・セッション跨ぎ限定」「発効は人間のメタ ask 裁定のみ」、ask-answer skill「AI は作文しない」、ask-watch の poll.sh（生 sqlite で open を数え audience を見ない）が全て人間宛前提であり、awaiting_human に AI 同士の話が混ざるのが人間の体験として最も有害だからである。AI↔AI の「返答が要る」ものは提案（M2）と判定報告（M4）の2型に限定し、supersede 系譜と goal_verdicts が受け皿になる。それ以外の問いは activity related の log（素タグ `msg:question`）と SendMessage ポインタで表し、返答も log で書く。未回答が続く出口は人間 ask への昇格（proposer の責務。proposer が先に終了したときは goal-check が人間に列挙する）。
+**asks を人間専用に保つ裁定**: 設計案の審査でも asks の audience 一般化は採らないという結論で揃った。理由: RULES「ask は離席中・セッション跨ぎ限定」「発効は人間のメタ ask 裁定のみ」、ask-answer skill「AI は作文しない」、ask-watch の poll.sh（生 sqlite で open を数え audience を見ない）が全て人間宛前提であり、awaiting_human に AI 同士の話が混ざるのが人間の体験として最も有害だからである。AI↔AI の「返答が要る」ものは提案（M2）と判定報告（M4）の2型に限定し、supersede 系譜と goal_verdicts が受け皿になる。それ以外の問いは activity related の log（素タグ `goal-question`。`msg:` のような新 namespace は作らない。tag_service の namespace 許可リストは domain / intent / glossary / layer / 素タグのみで、追加は別裁定）と SendMessage ポインタで表し、返答も log で書く。未回答が続く出口は人間 ask への昇格（proposer の責務。proposer が先に終了したときは goal-check が人間に列挙する）。
 
 ### 5.2 spec: ポインタ規約と PreToolUse
 
