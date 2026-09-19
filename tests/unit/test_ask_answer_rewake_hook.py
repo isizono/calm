@@ -10,6 +10,7 @@ import io
 import json
 import os
 import sqlite3
+import time
 from unittest.mock import patch
 
 import pytest
@@ -478,6 +479,54 @@ class TestToolNameFiltering:
         code, _ = _run_hook(payload, sleep=sleep, now=now)
         assert code == 0
         assert sleep.calls == []
+
+
+class TestStaleLockCleanup:
+    def test_stale_lock_removed_fresh_and_own_locks_kept(self, db, tmp_path):
+        lock_dir = tmp_path / "state" / "ask_rewake"
+        lock_dir.mkdir(parents=True)
+
+        stale_path = lock_dir / "sess-old_999.lock"
+        stale_path.write_text("")
+        stale_mtime = time.time() - hook.STALE_LOCK_AGE_SECONDS - 3600
+        os.utime(stale_path, (stale_mtime, stale_mtime))
+
+        fresh_path = lock_dir / "sess-fresh_1.lock"
+        fresh_path.write_text("")
+
+        result = _make_ask(session_id="sess-1")
+        ask_id = result["id"]
+        payload = _stdin_payload(session_id="sess-1", tool_response=json.dumps(result))
+        sleep, now = _stub_sleep_and_clock(lambda: ask_service.answer_ask(ask_id, "answer body"))
+        code, stderr = _run_hook(payload, sleep=sleep, now=now)
+
+        assert code == 2
+        assert f"#{ask_id}" in stderr
+        assert not stale_path.exists()
+        assert fresh_path.exists()
+        assert (lock_dir / f"sess-1_{ask_id}.lock").exists()
+
+    def test_reacquiring_existing_lock_refreshes_mtime(self, db, tmp_path):
+        """openだけではmtimeが動かないため、取得時に明示的に更新している
+        ことを確かめる。更新していないと、同じ(session_id, ask_id)の
+        ロックファイルを長時間保持し続けた場合に「古い」と誤判定され、
+        まだ生きているのに掃除で消される恐れがある。"""
+        result = _make_ask(session_id="sess-1")
+        ask_id = result["id"]
+        lock_dir = tmp_path / "state" / "ask_rewake"
+        lock_dir.mkdir(parents=True)
+        own_lock_path = lock_dir / f"sess-1_{ask_id}.lock"
+        own_lock_path.write_text("")
+        # STALE_LOCK_AGE_SECONDS未満（sweepでは消えない年齢）だが十分古い
+        old_mtime = time.time() - hook.STALE_LOCK_AGE_SECONDS + 3600
+        os.utime(own_lock_path, (old_mtime, old_mtime))
+
+        payload = _stdin_payload(session_id="sess-1", tool_response=json.dumps(result))
+        sleep, now = _stub_sleep_and_clock(lambda: ask_service.answer_ask(ask_id, "answer body"))
+        code, stderr = _run_hook(payload, sleep=sleep, now=now)
+
+        assert code == 2
+        assert own_lock_path.stat().st_mtime > old_mtime + 3000
 
 
 class TestCallerFiltering:

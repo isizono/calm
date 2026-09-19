@@ -49,6 +49,13 @@ POLL_INTERVAL_SECONDS = 15
 # スリープを含む場合にmonotonicで測ると先にkillされうるため。
 WAIT_LIMIT_SECONDS = 86400 - 300
 
+# ロックファイルは消さない設計（モジュールdocstring参照）だが、掃除しないと
+# 待機のたびに1ファイルずつ増え続ける。ロック取得のたびにmtimeを更新する
+# （_acquire_lock参照。openだけでは既存ファイルのmtimeは動かないため）ので、
+# 待機プロセスがWAIT_LIMIT_SECONDS（約24時間）を超えて生きない以上、それより
+# 確実に長いこの年齢のロックファイルを握っているプロセスは存在しない。
+STALE_LOCK_AGE_SECONDS = 48 * 60 * 60
+
 _RESOLVED_STATUSES = ("answered", "promoted", "dismissed")
 
 _ANSWERED_TEMPLATE = (
@@ -75,6 +82,23 @@ def _extract_ask_id(tool_response) -> int | None:
     return _parse_ask_id_from_result(content)
 
 
+def _cleanup_stale_locks(lock_dir: Path) -> None:
+    """STALE_LOCK_AGE_SECONDSより古いロックファイルを削除する。
+
+    掃除の失敗（unlink競合等）は握りつぶし、待機の開始を妨げない。
+    """
+    try:
+        cutoff = time.time() - STALE_LOCK_AGE_SECONDS
+        for f in lock_dir.glob("*.lock"):
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 def _acquire_lock(session_id: str, ask_id: int):
     """(session_id, ask_id)専用のロックファイルをexclusive lockして返す。
 
@@ -83,6 +107,7 @@ def _acquire_lock(session_id: str, ask_id: int):
     """
     lock_dir = HookState.BASE_DIR / "ask_rewake"
     lock_dir.mkdir(parents=True, exist_ok=True)
+    _cleanup_stale_locks(lock_dir)
     safe_session_id = session_id.replace("/", "_")
     lock_path = lock_dir / f"{safe_session_id}_{ask_id}.lock"
     fh = open(lock_path, "a+")
@@ -91,6 +116,13 @@ def _acquire_lock(session_id: str, ask_id: int):
     except OSError:
         fh.close()
         return None
+    # openだけでは既存ファイルのmtimeは動かない。STALE_LOCK_AGE_SECONDSの
+    # 前提（この年齢のファイルに生きた保持者はいない）を成立させるため、
+    # 取得できたタイミングでmtimeを更新する。
+    try:
+        os.utime(fh.fileno())
+    except OSError:
+        pass
     return fh
 
 
