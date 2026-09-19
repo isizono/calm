@@ -67,7 +67,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/ask_answer_rewake_hook.py",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run -q python hooks/ask_answer_rewake_hook.py",
             "asyncRewake": true,
             "timeout": 86400
           }

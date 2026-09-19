@@ -8,7 +8,9 @@ idleセッションを起こす。想定外の例外はすべて握って exit 0
 
 matcherに加えてtool_nameを二重に確認する（_is_calm_tool + add_ask判定）。
 notify=Falseで積まれたaskや、dedupでnotify_wantedが変わらなかったaskは
-待たない。サブエージェント発（agent_typeキーの有無で判定）・無人実行
+待たない。サブエージェント発（agent_typeキーの有無で判定。同名の
+sanitize_tool_result_hook.py:124と同じ判定で、agent_idは実機検証の結果
+常にnullで届き使えないことが確認済み）・無人実行
 （CLAUDE_CODE_SESSION_ATTENDED=="0"）のadd_askも待たない。
 
 同じ(session_id, ask_id)の二重待機はロックファイル（flock、LOCK_EX|LOCK_NB）
