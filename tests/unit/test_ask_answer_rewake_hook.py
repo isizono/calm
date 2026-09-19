@@ -15,6 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from hooks import ask_answer_rewake_hook as hook
+from hooks.hook_state import HookState
 from src.services import ask_service
 from src.services.activity_service import add_activity
 from src.services.topic_service import add_topic
@@ -25,11 +26,20 @@ ADD_ASK_TOOL_NAME = "mcp__plugin_calm_calm__add_ask"
 
 @pytest.fixture(autouse=True)
 def _isolate_env(tmp_path, monkeypatch, disable_embedding):
-    """CALM_DB_PATH/HOOK_STATE_DIR/CALM_ASK_NOTIFY_DIRを一時パスへ向ける。"""
+    """CALM_DB_PATH/HOOK_STATE_DIR/CALM_ASK_NOTIFY_DIRを一時パスへ向ける。
+
+    hook.main()はHOOK_STATE_DIRが設定されているとHookState.BASE_DIRを
+    クラス属性として直接書き換える（monkeypatch経由ではない）ので、ここで
+    元の値を退避・復元しておかないとテスト後もBASE_DIRがtmp_pathを指した
+    まま他のテストファイルへ漏れる。
+    """
     monkeypatch.setenv("HOOK_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("CALM_ASK_NOTIFY_DIR", str(tmp_path / "notify"))
     monkeypatch.delenv("CLAUDE_PID", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ATTENDED", raising=False)
+    original_base_dir = HookState.BASE_DIR
+    yield
+    HookState.BASE_DIR = original_base_dir
 
 
 @pytest.fixture
@@ -76,11 +86,17 @@ def _stdin_payload(
     return payload
 
 
-def _sleep_stub(*side_effects):
-    """呼び出し順にside_effects（引数無し callable）を1つずつ実行するsleep差し替え。
+def _stub_sleep_and_clock(*side_effects, start: float = 1000.0):
+    """main()のsleep/now引数をペアで差し替える。
 
-    side_effectsを使い切った後の呼び出しは何もしない。
+    呼び出し順にside_effects（引数無しcallable）を1つずつ実行する。
+    side_effectsを使い切った後もsleepが呼ばれ続けたら（想定外の待機＝回帰に
+    よるhang）、nowを上限超過へ進めてループを強制終了させる（固定時計 +
+    無時間sleepの組み合わせのまま回帰が起きるとpytestが実際にhangし、CI側に
+    timeout設定も無いため）。戻り値のsleep関数はcalls属性で呼び出し回数を
+    確認できる。
     """
+    clock = [start]
     calls: list[float] = []
 
     def _sleep(seconds):
@@ -88,9 +104,14 @@ def _sleep_stub(*side_effects):
         idx = len(calls) - 1
         if idx < len(side_effects):
             side_effects[idx]()
+        else:
+            clock[0] = start + hook.WAIT_LIMIT_SECONDS + 1.0
+
+    def _now():
+        return clock[0]
 
     _sleep.calls = calls
-    return _sleep
+    return _sleep, _now
 
 
 def _run_hook(payload: dict, *, sleep=None, now=None) -> tuple[int, str]:
@@ -105,10 +126,6 @@ def _run_hook(payload: dict, *, sleep=None, now=None) -> tuple[int, str]:
          patch.object(hook.sys, "stderr", fake_stderr):
         code = hook.main(**kwargs)
     return code, fake_stderr.getvalue()
-
-
-def _fixed_clock(value: float = 1000.0):
-    return lambda: value
 
 
 def _row(db_path: str, ask_id: int) -> tuple:
@@ -134,8 +151,8 @@ class TestWakesOnResolution:
             session_id="sess-1",
             tool_response=json.dumps(result),
         )
-        sleep = _sleep_stub(_answer)
-        code, stderr = _run_hook(payload, sleep=sleep, now=_fixed_clock())
+        sleep, now = _stub_sleep_and_clock(_answer)
+        code, stderr = _run_hook(payload, sleep=sleep, now=now)
 
         assert code == 2
         assert f"#{ask_id}" in stderr
@@ -143,6 +160,9 @@ class TestWakesOnResolution:
         assert "status=null" in stderr
         assert marker not in stderr
         assert "q?" not in stderr
+        # 1回目のsleep内の回答で即座に検知できたこと（想定より多く回って
+        # いないこと）を確認する。
+        assert len(sleep.calls) == 1
 
     def test_dismissed_wakes(self, db):
         result = _make_ask(session_id="sess-1")
@@ -153,11 +173,12 @@ class TestWakesOnResolution:
             ask_service.triage_ask(ask_id, "dismiss", dismiss_reason="not relevant anymore")
 
         payload = _stdin_payload(session_id="sess-1", tool_response=json.dumps(result))
-        sleep = _sleep_stub(_resolve)
-        code, stderr = _run_hook(payload, sleep=sleep, now=_fixed_clock())
+        sleep, now = _stub_sleep_and_clock(_resolve)
+        code, stderr = _run_hook(payload, sleep=sleep, now=now)
 
         assert code == 2
         assert "status: dismissed" in stderr
+        assert len(sleep.calls) == 1
 
     def test_promoted_wakes(self, db):
         """promoteはtriage_ask_with_connが_notify_wantedを立てない経路(promote
@@ -175,11 +196,12 @@ class TestWakesOnResolution:
             )
 
         payload = _stdin_payload(session_id="sess-1", tool_response=json.dumps(result))
-        sleep = _sleep_stub(_resolve)
-        code, stderr = _run_hook(payload, sleep=sleep, now=_fixed_clock())
+        sleep, now = _stub_sleep_and_clock(_resolve)
+        code, stderr = _run_hook(payload, sleep=sleep, now=now)
 
         assert code == 2
         assert "status: promoted" in stderr
+        assert len(sleep.calls) == 1
 
 
 class TestDoesNotWake:
@@ -191,11 +213,15 @@ class TestDoesNotWake:
             ask_service.withdraw_ask(ask_id, "no longer needed")
 
         payload = _stdin_payload(session_id="sess-1", tool_response=json.dumps(result))
-        sleep = _sleep_stub(_withdraw)
-        code, stderr = _run_hook(payload, sleep=sleep, now=_fixed_clock())
+        sleep, now = _stub_sleep_and_clock(_withdraw)
+        code, stderr = _run_hook(payload, sleep=sleep, now=now)
 
         assert code == 0
         assert stderr == ""
+        # withdrawnを検知して1回のsleepで抜けたことを確認する。ここが2回以上
+        # になっているなら、withdrawnをopen扱いする回帰などで上限到達待ちに
+        # 落ちている（結果だけ見るとcode/stderrは同じになるため区別できない）。
+        assert len(sleep.calls) == 1
 
     def test_unsubscribe_stops_waiting(self, db):
         result = _make_ask(session_id="sess-1")
@@ -205,19 +231,20 @@ class TestDoesNotWake:
             ask_service.unsubscribe_ask(ask_id)
 
         payload = _stdin_payload(session_id="sess-1", tool_response=json.dumps(result))
-        sleep = _sleep_stub(_unsubscribe)
-        code, stderr = _run_hook(payload, sleep=sleep, now=_fixed_clock())
+        sleep, now = _stub_sleep_and_clock(_unsubscribe)
+        code, stderr = _run_hook(payload, sleep=sleep, now=now)
 
         assert code == 0
         assert stderr == ""
+        assert len(sleep.calls) == 1
 
     def test_notify_false_does_not_wait(self, db):
         result = _make_ask(session_id="sess-1", notify=False)
         payload = _stdin_payload(
             session_id="sess-1", notify=False, tool_response=json.dumps(result)
         )
-        sleep = _sleep_stub()
-        code, stderr = _run_hook(payload, sleep=sleep, now=_fixed_clock())
+        sleep, now = _stub_sleep_and_clock()
+        code, stderr = _run_hook(payload, sleep=sleep, now=now)
 
         assert code == 0
         assert stderr == ""
@@ -239,8 +266,8 @@ class TestDoesNotWake:
         payload = _stdin_payload(
             session_id="sess-1", notify=False, tool_response=json.dumps(second)
         )
-        sleep = _sleep_stub()
-        code, stderr = _run_hook(payload, sleep=sleep, now=_fixed_clock())
+        sleep, now = _stub_sleep_and_clock()
+        code, stderr = _run_hook(payload, sleep=sleep, now=now)
 
         assert code == 0
         assert sleep.calls == []
@@ -251,13 +278,14 @@ class TestToolResponseShapes:
         result = _make_ask(session_id="sess-1")
         ask_id = result["id"]
         payload = _stdin_payload(session_id="sess-1", tool_response=json.dumps(result))
-        sleep = _sleep_stub(lambda: ask_service.answer_ask(ask_id, "answer body"))
-        code, stderr = _run_hook(payload, sleep=sleep, now=_fixed_clock())
+        sleep, now = _stub_sleep_and_clock(lambda: ask_service.answer_ask(ask_id, "answer body"))
+        code, stderr = _run_hook(payload, sleep=sleep, now=now)
         # code==2かつask_idが一致することで、この形からidを正しく取り出せた
         # ことを確認する(単にexit 0でないことだけでは、別のidを誤って拾った
         # 場合も見逃してしまう)。
         assert code == 2
         assert f"#{ask_id}" in stderr
+        assert len(sleep.calls) == 1
 
     def test_id_from_dict_content(self, db):
         result = _make_ask(session_id="sess-1")
@@ -265,17 +293,18 @@ class TestToolResponseShapes:
         payload = _stdin_payload(
             session_id="sess-1", tool_response={"content": json.dumps(result)}
         )
-        sleep = _sleep_stub(lambda: ask_service.answer_ask(ask_id, "answer body"))
-        code, stderr = _run_hook(payload, sleep=sleep, now=_fixed_clock())
+        sleep, now = _stub_sleep_and_clock(lambda: ask_service.answer_ask(ask_id, "answer body"))
+        code, stderr = _run_hook(payload, sleep=sleep, now=now)
         assert code == 2
         assert f"#{ask_id}" in stderr
+        assert len(sleep.calls) == 1
 
     def test_error_only_does_not_wait(self, db):
         payload = _stdin_payload(
             session_id="sess-1", tool_response=json.dumps({"error": {"code": "VALIDATION_ERROR"}})
         )
-        sleep = _sleep_stub()
-        code, stderr = _run_hook(payload, sleep=sleep, now=_fixed_clock())
+        sleep, now = _stub_sleep_and_clock()
+        code, stderr = _run_hook(payload, sleep=sleep, now=now)
         assert code == 0
         assert sleep.calls == []
 
@@ -290,10 +319,11 @@ class TestToolResponseShapes:
         def _answer():
             ask_service.answer_ask(ask_id, "answer body")
 
-        sleep = _sleep_stub(_answer)
-        code, stderr = _run_hook(payload, sleep=sleep, now=_fixed_clock())
+        sleep, now = _stub_sleep_and_clock(_answer)
+        code, stderr = _run_hook(payload, sleep=sleep, now=now)
         assert code == 2
         assert f"#{ask_id}" in stderr
+        assert len(sleep.calls) == 1
 
 
 class TestDoubleWaitPrevention:
@@ -309,39 +339,101 @@ class TestDoubleWaitPrevention:
         fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
             payload = _stdin_payload(session_id="sess-1", tool_response=json.dumps(result))
-            sleep = _sleep_stub()
-            code, stderr = _run_hook(payload, sleep=sleep, now=_fixed_clock())
+            sleep, now = _stub_sleep_and_clock()
+            code, stderr = _run_hook(payload, sleep=sleep, now=now)
             assert code == 0
             assert sleep.calls == []
         finally:
             lock_fh.close()
 
+    def test_lock_held_throughout_wait(self, db, tmp_path):
+        """待機ループの間ずっと同じロックを保持し続けることを確かめる。
+
+        _acquire_lockが取得直後にflockを解放する実装（例えばwithブロックで
+        すぐ閉じる書き方）に差し替えても、既存テストは「先に取られていたら
+        待たない」方向しか見ていないため19件すべてpassしてしまう。ここでは
+        待機中（sleepの副作用の中）に同じロックファイルへ別プロセスのふりを
+        してflockを試み、取得できない（＝hookがまだ保持している）ことを
+        外側のリストへ記録し、テスト本体でassertする。main()の中で例外を
+        投げさせて確かめる形は、main()のexcept Exceptionに握りつぶされて
+        しまうため使えない。
+        """
+        result = _make_ask(session_id="sess-1")
+        ask_id = result["id"]
+        lock_path = tmp_path / "state" / "ask_rewake" / f"sess-1_{ask_id}.lock"
+
+        could_acquire: list[bool] = []
+
+        def _probe_lock_then_answer():
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            probe_fh = open(lock_path, "a+")
+            try:
+                fcntl.flock(probe_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                could_acquire.append(False)
+            else:
+                could_acquire.append(True)
+                fcntl.flock(probe_fh.fileno(), fcntl.LOCK_UN)
+            finally:
+                probe_fh.close()
+            ask_service.answer_ask(ask_id, "answer body")
+
+        payload = _stdin_payload(session_id="sess-1", tool_response=json.dumps(result))
+        sleep, now = _stub_sleep_and_clock(_probe_lock_then_answer)
+        code, stderr = _run_hook(payload, sleep=sleep, now=now)
+
+        assert code == 2
+        # 外部プロセスからの二重取得を試みて失敗した(=hook自身がまだ保持して
+        # いた)ことを確認する。
+        assert could_acquire == [False]
+
+
+def _clock_start_then_expired(start: float = 0.0):
+    """1回目はstartを、2回目以降は常にWAIT_LIMIT_SECONDSを超える値を返す。
+
+    `iter([0.0, LIMIT+1])`のように値を2つだけ用意する形だと、回帰で3回目の
+    now()呼び出しが発生した場合にStopIterationが送出される。それはmain()の
+    `except Exception: return 0`にそのまま握りつぶされ、テストは
+    code==0/stderr==""の期待通りの結果を誤った理由（例外の握り潰し）で
+    得てしまい、pass/failで区別が付かない。2回目以降を上限超過に固定して
+    おけば、この経路は起こらない。
+    """
+    calls = {"n": 0}
+
+    def _now():
+        calls["n"] += 1
+        return start if calls["n"] == 1 else start + hook.WAIT_LIMIT_SECONDS + 1.0
+
+    return _now
+
 
 class TestWaitLimitAndFailures:
     def test_wait_limit_exceeded_gives_up_while_open(self, db):
         result = _make_ask(session_id="sess-1")
-        clock_values = iter([0.0, hook.WAIT_LIMIT_SECONDS + 1.0])
+        sleep, _ = _stub_sleep_and_clock()
         code, stderr = _run_hook(
             _stdin_payload(session_id="sess-1", tool_response=json.dumps(result)),
-            sleep=_sleep_stub(),
-            now=lambda: next(clock_values),
+            sleep=sleep,
+            now=_clock_start_then_expired(),
         )
         assert code == 0
         assert stderr == ""
+        assert sleep.calls == []
         row = _row(db, result["id"])
         assert row[0] == "open"
 
     def test_db_failure_does_not_wake(self, db, monkeypatch):
         result = _make_ask(session_id="sess-1")
         monkeypatch.setenv("CALM_DB_PATH", "/nonexistent/path/does-not-exist.db")
-        clock_values = iter([0.0, hook.WAIT_LIMIT_SECONDS + 1.0])
+        sleep, _ = _stub_sleep_and_clock()
         code, stderr = _run_hook(
             _stdin_payload(session_id="sess-1", tool_response=json.dumps(result)),
-            sleep=_sleep_stub(),
-            now=lambda: next(clock_values),
+            sleep=sleep,
+            now=_clock_start_then_expired(),
         )
         assert code == 0
         assert stderr == ""
+        assert sleep.calls == []
 
     def test_claude_code_exit_stops_waiting(self, db, monkeypatch):
         result = _make_ask(session_id="sess-1")
@@ -351,13 +443,19 @@ class TestWaitLimitAndFailures:
             raise ProcessLookupError()
 
         monkeypatch.setattr(hook.os, "kill", _raise_lookup)
+        sleep, now = _stub_sleep_and_clock()
         code, stderr = _run_hook(
             _stdin_payload(session_id="sess-1", tool_response=json.dumps(result)),
-            sleep=_sleep_stub(),
-            now=_fixed_clock(),
+            sleep=sleep,
+            now=now,
         )
         assert code == 0
         assert stderr == ""
+        # claude_pidの死亡はループ先頭・sleep前に判定されるので、sleepは
+        # 一度も呼ばれない。ここで0回でないなら、その判定が抜けて通常の
+        # DBポーリング経路に落ちている（結果のcode/stderrだけでは区別
+        # できない）。
+        assert sleep.calls == []
 
 
 class TestToolNameFiltering:
@@ -367,8 +465,8 @@ class TestToolNameFiltering:
             tool_name="mcp__plugin_calm_calm__get_asks",
             tool_response=json.dumps({"id": 1}),
         )
-        sleep = _sleep_stub()
-        code, _ = _run_hook(payload, sleep=sleep, now=_fixed_clock())
+        sleep, now = _stub_sleep_and_clock()
+        code, _ = _run_hook(payload, sleep=sleep, now=now)
         assert code == 0
         assert sleep.calls == []
 
@@ -376,20 +474,22 @@ class TestToolNameFiltering:
         payload = _stdin_payload(
             session_id="sess-1", tool_name="Bash", tool_response=json.dumps({"id": 1})
         )
-        sleep = _sleep_stub()
-        code, _ = _run_hook(payload, sleep=sleep, now=_fixed_clock())
+        sleep, now = _stub_sleep_and_clock()
+        code, _ = _run_hook(payload, sleep=sleep, now=now)
         assert code == 0
         assert sleep.calls == []
 
 
 class TestCallerFiltering:
     def test_subagent_call_does_not_wait(self, db):
+        """agent_type（サブエージェント発の呼び出しに実機で確認済みの値。
+        ask_answer_rewake_hook.pyのモジュールdocstring参照）で判定する。"""
         result = _make_ask(session_id="sess-1")
         payload = _stdin_payload(
-            session_id="sess-1", tool_response=json.dumps(result), agent_type="general-purpose"
+            session_id="sess-1", tool_response=json.dumps(result), agent_type="scout"
         )
-        sleep = _sleep_stub()
-        code, _ = _run_hook(payload, sleep=sleep, now=_fixed_clock())
+        sleep, now = _stub_sleep_and_clock()
+        code, _ = _run_hook(payload, sleep=sleep, now=now)
         assert code == 0
         assert sleep.calls == []
 
@@ -397,7 +497,7 @@ class TestCallerFiltering:
         result = _make_ask(session_id="sess-1")
         monkeypatch.setenv("CLAUDE_CODE_SESSION_ATTENDED", "0")
         payload = _stdin_payload(session_id="sess-1", tool_response=json.dumps(result))
-        sleep = _sleep_stub()
-        code, _ = _run_hook(payload, sleep=sleep, now=_fixed_clock())
+        sleep, now = _stub_sleep_and_clock()
+        code, _ = _run_hook(payload, sleep=sleep, now=now)
         assert code == 0
         assert sleep.calls == []
