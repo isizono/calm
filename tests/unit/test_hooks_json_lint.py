@@ -27,7 +27,11 @@ _CODEX_UNSUPPORTED_EVENTS = {"MessageDisplay"}
 
 # イベント自体はCodexに存在するが、スクリプトが依存するハーネス機構が
 # Codexに無いため、Codex側登録の期待値導出から除外するスクリプト。
-_CODEX_UNSUPPORTED_SCRIPTS: set[str] = set()
+# ask_answer_rewake_hook.py: 待機中のhookがidleのセッションを起こす機構
+# (asyncRewake)がCodexに無く、登録しても回答を知らせられない。
+_CODEX_UNSUPPORTED_SCRIPTS: set[str] = {
+    "ask_answer_rewake_hook.py",
+}
 
 # hooks/ 配下のスクリプトが自身の担当イベントを宣言する規約:
 # モジュール docstring 冒頭が `"<Event> hook: ..."` の形。
