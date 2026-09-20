@@ -5,7 +5,7 @@
 <!-- 再生成: uv run python scripts/dump_db_schema.py -->
 
 `migrations/` を通し番号順に全適用した結果として得られる、現在のテーブル/ビュー構造の機械的な写しである。
-カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0075）。
+カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0076）。
 
 「なぜこの形なのか」（設計判断の背景・変遷・既知の課題）は `docs/spec/db-schema.md` を参照。
 本ファイルは現在値のみを扱い、変遷の経緯（旧カラムの削除理由等）は記載しない。
@@ -795,6 +795,155 @@ CREATE TABLE instance_meta (
 
 </details>
 
+### lesson_bad_step
+
+VIEW。定義SQL:
+
+```sql
+CREATE VIEW lesson_bad_step AS
+SELECT v.lesson_id, v.session_id, v.evidence_id AS pos,
+       (SELECT MAX(s.id) FROM obs_events s
+        WHERE s.kind = 'stepped' AND s.lesson_id = v.lesson_id
+          AND s.session_id = v.session_id AND s.id < v.evidence_id) AS step_id
+FROM lesson_violated_ok v
+UNION ALL
+SELECT s.lesson_id, s.session_id, s.id AS pos, s.id AS step_id
+FROM obs_events s
+JOIN lesson_current lc ON lc.lesson_id = s.lesson_id
+WHERE s.kind = 'stepped' AND lc.step_event = 'tool_fail'
+```
+
+### lesson_bad_step_prior
+
+VIEW。定義SQL:
+
+```sql
+CREATE VIEW lesson_bad_step_prior AS
+SELECT bs.lesson_id, bs.session_id, bs.pos, bs.step_id,
+  CASE WHEN bs.step_id IS NOT NULL THEN (
+        SELECT COUNT(*) FROM obs_events d JOIN obs_events s ON s.id = bs.step_id
+        WHERE d.kind = 'delivered' AND d.lesson_id = bs.lesson_id
+          AND d.session_id = bs.session_id AND d.id < bs.step_id
+          AND (d.tool_use_id IS NULL OR s.tool_use_id IS NULL
+               OR d.tool_use_id <> s.tool_use_id))
+       ELSE (
+        SELECT COUNT(*) FROM obs_events d
+        WHERE d.kind = 'delivered' AND d.lesson_id = bs.lesson_id
+          AND d.session_id = bs.session_id AND d.id < bs.pos)
+  END AS prior_cnt,
+  (SELECT COUNT(*) FROM obs_events q
+   WHERE q.kind = 'suppressed' AND q.lesson_id = bs.lesson_id
+     AND q.session_id = bs.session_id AND q.id < bs.pos) AS supp_cnt,
+  CASE WHEN bs.step_id IS NULL THEN 0 ELSE (
+        SELECT COUNT(*) FROM obs_events d JOIN obs_events s ON s.id = bs.step_id
+        WHERE d.kind = 'delivered' AND d.lesson_id = bs.lesson_id
+          AND d.session_id = bs.session_id
+          AND d.tool_use_id IS NOT NULL AND s.tool_use_id IS NOT NULL
+          AND d.tool_use_id = s.tool_use_id)
+  END AS same_call_cnt
+FROM lesson_bad_step bs
+```
+
+### lesson_basis
+
+VIEW。定義SQL:
+
+```sql
+CREATE VIEW lesson_basis AS
+SELECT b.lesson_id   AS lesson_id,
+       b.entry_id    AS entry_id,
+       b.session_id  AS session_id,
+       u.id          AS evidence_id,
+       0             AS void
+FROM obs_events b
+JOIN utterance_human u
+  ON u.id = b.ref_id AND u.session_id = b.session_id
+WHERE b.kind = 'bind'
+  AND b.agent_id IS NULL
+  AND b.prompt_id IS NOT NULL
+  AND u.id < b.id
+  -- 書き込みのターン自身が人間のターンであること: 同じ session_id・prompt_id の
+  -- 発話が1件以上あり、そのすべてが utterance_human に入る。これを満たさない
+  -- 限り、割り込み発話の扱いをどう変えてもここだけを直せばよいように、
+  -- 独立した副問い合わせのまま保つ（緩める場合もこの2本のEXISTSの置き換えで済む）。
+  AND EXISTS (
+        SELECT 1 FROM obs_events t
+        WHERE t.kind = 'utterance' AND t.agent_id IS NULL
+          AND t.session_id = b.session_id AND t.prompt_id = b.prompt_id)
+  AND NOT EXISTS (
+        SELECT 1 FROM obs_events t
+        WHERE t.kind = 'utterance' AND t.agent_id IS NULL
+          AND t.session_id = b.session_id AND t.prompt_id = b.prompt_id
+          AND t.id NOT IN (SELECT id FROM utterance_human))
+  -- U と B の間に、B と違うターンの発話で「人間」または「まだ speaker が無い」
+  -- ものが無いこと（U は今のターンか、直前の人間のターンの発話でなければならない）。
+  -- v.prompt_id IS NULL OR v.prompt_id <> b.prompt_id は明示的に書く。素の <> は
+  -- NULL側でNULLを返し、prompt_idの無い発話を黙って落としてしまう。
+  AND NOT EXISTS (
+        SELECT 1 FROM obs_events v
+        WHERE v.kind = 'utterance' AND v.agent_id IS NULL
+          AND v.session_id = b.session_id
+          AND v.id > u.id AND v.id < b.id
+          AND (v.prompt_id IS NULL OR v.prompt_id <> b.prompt_id)
+          AND ( v.id IN (SELECT id FROM utterance_human)
+                OR NOT EXISTS (SELECT 1 FROM obs_events s2
+                               WHERE s2.kind = 'speaker' AND s2.ref_id = v.id) ))
+```
+
+### lesson_contradicted_ok
+
+VIEW。定義SQL:
+
+```sql
+CREATE VIEW lesson_contradicted_ok AS
+SELECT e.lesson_id, e.id AS entry_id, lb.session_id, lb.evidence_id
+FROM lesson_entries e
+JOIN lesson_basis lb
+  ON lb.entry_id = e.id AND lb.lesson_id = e.lesson_id AND lb.void = 0
+WHERE e.kind = 'contradicted'
+  AND EXISTS (SELECT 1 FROM obs_events d
+              WHERE d.kind = 'delivered' AND d.lesson_id = e.lesson_id
+                AND d.session_id = lb.session_id AND d.id < lb.evidence_id)
+```
+
+### lesson_current
+
+VIEW。定義SQL:
+
+```sql
+CREATE VIEW lesson_current AS
+SELECT
+  l.id     AS lesson_id,
+  l.handle AS handle,
+  l.kind   AS kind,
+  CASE WHEN be.id IS NOT NULL THEN be.body          ELSE l.body          END AS body,
+  CASE WHEN ce.id IS NOT NULL THEN ce.deliver_event ELSE l.deliver_event END AS deliver_event,
+  CASE WHEN ce.id IS NOT NULL THEN ce.deliver_spec  ELSE l.deliver_spec  END AS deliver_spec,
+  CASE WHEN ce.id IS NOT NULL THEN ce.step_event    ELSE l.step_event    END AS step_event,
+  CASE WHEN ce.id IS NOT NULL THEN ce.step_spec     ELSE l.step_spec     END AS step_spec,
+  l.quote  AS quote,
+  ne.note  AS note,
+  CASE WHEN we.id IS NOT NULL OR hw.id IS NOT NULL THEN 1 ELSE 0 END AS retracted
+FROM lessons l
+LEFT JOIN lesson_protected p ON p.lesson_id = l.id
+LEFT JOIN lesson_entries be ON be.id = (
+    SELECT MAX(x.id) FROM lesson_entries x
+    WHERE x.lesson_id = l.id AND x.kind = 'body'     AND p.lesson_id IS NULL)
+LEFT JOIN lesson_entries ce ON ce.id = (
+    SELECT MAX(x.id) FROM lesson_entries x
+    WHERE x.lesson_id = l.id AND x.kind = 'conditions' AND p.lesson_id IS NULL)
+LEFT JOIN lesson_entries ne ON ne.id = (
+    SELECT MAX(x.id) FROM lesson_entries x
+    WHERE x.lesson_id = l.id AND x.kind = 'note')
+LEFT JOIN lesson_entries we ON we.id = (
+    SELECT MAX(x.id) FROM lesson_entries x
+    WHERE x.lesson_id = l.id AND x.kind = 'withdraw' AND p.lesson_id IS NULL)
+LEFT JOIN obs_events hw ON hw.id = (
+    SELECT MAX(w.id) FROM obs_events w
+    WHERE w.kind = 'human_withdraw' AND w.lesson_id = l.id
+      AND w.ref_id IN (SELECT id FROM utterance_human))
+```
+
 ### lesson_entries
 
 | カラム名 | 型 | NULL | デフォルト | PK |
@@ -850,6 +999,88 @@ CREATE TABLE lesson_kinds (kind TEXT PRIMARY KEY,
 ```
 
 </details>
+
+### lesson_origin
+
+VIEW。定義SQL:
+
+```sql
+CREATE VIEW lesson_origin AS
+SELECT l.id AS lesson_id,
+       CASE WHEN EXISTS (SELECT 1 FROM lesson_basis lb
+                         WHERE lb.lesson_id = l.id AND lb.entry_id IS NULL AND lb.void = 0)
+            THEN 'human' ELSE 'ai' END AS origin
+FROM lessons l
+```
+
+### lesson_protected
+
+VIEW。定義SQL:
+
+```sql
+CREATE VIEW lesson_protected AS
+SELECT l.id AS lesson_id
+FROM lessons l
+WHERE EXISTS (SELECT 1 FROM lesson_origin o
+              WHERE o.lesson_id = l.id AND o.origin = 'human')
+   OR EXISTS (SELECT 1 FROM lesson_violated_ok v WHERE v.lesson_id = l.id)
+```
+
+### lesson_score
+
+VIEW。定義SQL:
+
+```sql
+CREATE VIEW lesson_score AS
+SELECT
+  l.id AS lesson_id,
+  (SELECT COUNT(DISTINCT s.session_id) FROM obs_events s
+   WHERE s.kind = 'stepped' AND s.lesson_id = l.id)                              AS x,
+  (SELECT COUNT(DISTINCT b.session_id) FROM lesson_bad_step_prior b
+   WHERE b.lesson_id = l.id)                                                     AS b,
+  (SELECT COUNT(DISTINCT b.session_id) FROM lesson_bad_step_prior b
+   WHERE b.lesson_id = l.id AND b.prior_cnt > 0)                                 AS m,
+  (SELECT COUNT(DISTINCT b.session_id) FROM lesson_bad_step_prior b
+   WHERE b.lesson_id = l.id AND b.prior_cnt = 0)                                 AS u,
+  (SELECT COUNT(DISTINCT b.session_id) FROM lesson_bad_step_prior b
+   WHERE b.lesson_id = l.id AND b.prior_cnt = 0 AND b.supp_cnt > 0)              AS u_budget,
+  (SELECT COUNT(DISTINCT b.session_id) FROM lesson_bad_step_prior b
+   WHERE b.lesson_id = l.id AND b.prior_cnt = 0 AND b.same_call_cnt > 0)         AS u_same,
+  CASE WHEN k.delivers = 1 THEN
+    (SELECT COUNT(DISTINCT v.session_id) FROM lesson_violated_ok v WHERE v.lesson_id = l.id)
+  ELSE 0 END                                                                     AS s,
+  (SELECT COUNT(DISTINCT c.session_id) FROM lesson_contradicted_ok c
+   WHERE c.lesson_id = l.id)                                                     AS c,
+  (SELECT COUNT(DISTINCT c.session_id) FROM lesson_contradicted_ok c
+   WHERE c.lesson_id = l.id)                                                     AS w,
+  CASE WHEN k.delivers = 0 THEN
+    (SELECT COUNT(DISTINCT v.session_id) FROM lesson_violated_ok v WHERE v.lesson_id = l.id)
+  ELSE 0 END                                                                     AS t,
+  CASE WHEN o.origin = 'ai' AND k.delivers = 1
+        AND (SELECT COUNT(DISTINCT c.session_id) FROM lesson_contradicted_ok c
+             WHERE c.lesson_id = l.id) >= 2
+        AND (SELECT COUNT(DISTINCT c.session_id) FROM lesson_contradicted_ok c
+             WHERE c.lesson_id = l.id)
+          > (SELECT COUNT(DISTINCT v.session_id) FROM lesson_violated_ok v
+             WHERE v.lesson_id = l.id)
+       THEN 1 ELSE 0 END                                                         AS retired
+FROM lessons l
+JOIN lesson_kinds k  ON k.kind = l.kind
+JOIN lesson_origin o ON o.lesson_id = l.id
+```
+
+### lesson_violated_ok
+
+VIEW。定義SQL:
+
+```sql
+CREATE VIEW lesson_violated_ok AS
+SELECT e.lesson_id, e.id AS entry_id, lb.session_id, lb.evidence_id
+FROM lesson_entries e
+JOIN lesson_basis lb
+  ON lb.entry_id = e.id AND lb.lesson_id = e.lesson_id AND lb.void = 0
+WHERE e.kind = 'violated'
+```
 
 ### lessons
 
@@ -1149,6 +1380,61 @@ CREATE TABLE obs_kinds (kind TEXT PRIMARY KEY)
 ```
 
 </details>
+
+### open_requests
+
+VIEW。定義SQL:
+
+```sql
+CREATE VIEW open_requests AS
+SELECT u.session_id       AS session_id,
+       u.prompt_id        AS prompt_id,
+       'correction'       AS kind,
+       u.id               AS ref_id
+FROM utterance_human u
+WHERE u.prompt_id IS NOT NULL
+  -- 強い語、または「直前の人間のターンで配達があった」弱い語
+  AND ( u.flag = 'strong'
+        OR ( u.flag = 'weak'
+             AND EXISTS (
+                 SELECT 1 FROM obs_events d
+                 WHERE d.kind = 'delivered' AND d.agent_id IS NULL
+                   AND d.session_id = u.session_id
+                   AND d.prompt_id IS NOT NULL
+                   AND d.prompt_id = (
+                       SELECT p.prompt_id FROM utterance_human p
+                       WHERE p.session_id = u.session_id
+                         AND p.id < u.id
+                         AND p.prompt_id IS NOT NULL
+                         AND p.prompt_id <> u.prompt_id
+                       ORDER BY p.id DESC LIMIT 1) ) ) )
+  -- 同じターンに「人間の裏づけになり、note以外の」bindが無いこと。
+  -- (lesson_id, entry_id)の組ごとにbindが高々1行しか作られない前提に依る
+  -- （作成のbindは1回に1行・entry_idはNULL、追記のbindは1回に1行・entry_id
+  -- は一意）。この前提を壊す変更を足すときは、条件がここで壊れないか確かめる。
+  AND NOT EXISTS (
+        SELECT 1 FROM obs_events b
+        LEFT JOIN lesson_entries e ON e.id = b.entry_id
+        WHERE b.kind = 'bind'
+          AND b.session_id = u.session_id AND b.prompt_id = u.prompt_id
+          AND (b.entry_id IS NULL OR e.kind <> 'note')
+          AND EXISTS (
+              SELECT 1 FROM lesson_basis lb
+              WHERE lb.void = 0
+                AND lb.session_id = b.session_id
+                AND lb.lesson_id  = b.lesson_id
+                AND ( (b.entry_id IS NULL AND lb.entry_id IS NULL)
+                      OR lb.entry_id = b.entry_id ) ) )
+  -- 同じターンのreplyに行頭「知見にしない:」の行が無いこと
+  AND NOT EXISTS (
+        SELECT 1 FROM obs_events r
+        WHERE r.kind = 'reply'
+          AND r.session_id = u.session_id AND r.prompt_id = u.prompt_id
+          AND ( r.text LIKE '知見にしない:%'
+             OR r.text LIKE '知見にしない：%'
+             OR r.text LIKE '%' || char(10) || '知見にしない:%'
+             OR r.text LIKE '%' || char(10) || '知見にしない：%' ) )
+```
 
 ### pins
 
@@ -1727,6 +2013,22 @@ CREATE TABLE "topic_vec_vector_chunks00"(rowid PRIMARY KEY,vectors BLOB NOT NULL
 ```
 
 </details>
+
+### utterance_human
+
+VIEW。定義SQL:
+
+```sql
+CREATE VIEW utterance_human AS
+SELECT u.id, u.session_id, u.prompt_id, u.kind, u.flag, u.text
+FROM obs_events u
+JOIN obs_events sp
+  ON sp.kind = 'speaker' AND sp.ref_id = u.id
+WHERE u.kind = 'utterance'
+  AND u.agent_id IS NULL
+  AND json_extract(sp.text, '$.turnOrigin') = 'human'
+  AND json_extract(sp.text, '$.promptSource') IN ('typed', 'queued', 'sdk')
+```
 
 ### vec_index
 
