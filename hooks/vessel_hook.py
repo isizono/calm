@@ -1,11 +1,15 @@
-"""器のhook: 観測台帳への書き込み専用。
+"""器のhook: 観測台帳への書き込みと、書き込みの結び付け・撤回の宣言。
 
 hooks/hooks.json の器の5エントリ（SessionStart・UserPromptSubmit・PostToolUse・
 PostToolUseFailure・Stop）を、標準入力の hook_event_name で分けて処理する1本の
-スクリプト。この分割で書くのは観測（utterance・speaker・reply・tool・
-tool_overflow・tool_fail・boundary）だけで、配達・踏み跡・書き込みの結び付け・
-撤回の宣言・訂正の合図は書かない。どのイベントも標準出力には何も書かない
-（Claude Codeへの応答を返さない）。
+スクリプト。書くのは観測（utterance・speaker・reply・tool・tool_overflow・
+tool_fail・boundary）、器の書き込みツールの成功結果からの結び付け(bind)、
+get_lessonsが配達した知見の観測(delivered)、人間の1行の撤回宣言
+(human_withdraw)。配達・踏み跡・訂正の合図はまだ書かない。
+
+停止スイッチが観測だけの状態(observe)のときは、これらの書き込みを行いつつ
+標準出力には何も書かない。動かす状態(on)のときだけ、書き込みの判定結果と
+撤回の結果を`hookSpecificOutput.additionalContext`で返す。
 
 DBへの書き込みは hooks/citation_event_log.py の形に揃え、src.db を経由せず
 sqlite3 を直接使う（起動コストを抑えるため）。例外はすべてfail-open
@@ -17,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -28,11 +33,17 @@ if str(_project_root) not in sys.path:
 
 from src.env_compat import env_get
 from src.services.vessel_rules import (
+    APPEND_LESSON_TOOL,
+    GET_LESSONS_TOOL,
+    RECORD_LESSON_TOOL,
     TOOL_CALLS_PER_TURN_MAX,
     TOOL_FAIL_MAX_CHARS,
     TOOL_SUMMARY_MAX_CHARS,
+    VESSEL_WRITE_TOOLS,
     bodies_match,
     compute_flag,
+    find_quote_ref,
+    plain_text,
     transcript_body,
 )
 
@@ -226,7 +237,7 @@ def _speaker_json(row: dict, data: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _handle_session_start(conn: sqlite3.Connection, data: dict) -> None:
+def _handle_session_start(conn: sqlite3.Connection, data: dict, mode: str) -> None:
     session_id = data.get("session_id")
     if not session_id:
         return
@@ -236,11 +247,49 @@ def _handle_session_start(conn: sqlite3.Connection, data: dict) -> None:
     )
 
 
-def _handle_user_prompt_submit(conn: sqlite3.Connection, data: dict) -> None:
+# 地の文の1行が前後の空白を除いてこれと完全一致するときだけ撤回の宣言になる
+# （否定文・疑問文・行の途中では行全体が一致しないので効かない）。
+_WITHDRAW_LINE_RE = re.compile(r"^知見撤回 ([a-z0-9-]{3,40})$")
+
+
+def _write_human_withdraw_declarations(
+    conn: sqlite3.Connection, session_id: str, prompt: str, utterance_id: int
+) -> list[str]:
+    """地の文の行単独の`知見撤回 <handle>`を観測行にする（行ごとに1つ）。
+
+    書く時点では発話が人間かを見ない（`lesson_current`が都度判定する）。handle
+    が無い・既に撤回済みのときは観測行を書かず、結果の文言だけ返す。
+    """
+    outcomes: list[str] = []
+    for line in plain_text(prompt).split("\n"):
+        match = _WITHDRAW_LINE_RE.match(line.strip())
+        if not match:
+            continue
+        handle = match.group(1)
+        row = conn.execute(
+            "SELECT lesson_id, retracted FROM lesson_current WHERE handle = ?", (handle,)
+        ).fetchone()
+        if row is None:
+            outcomes.append(f"{handle}: handleが無い")
+            continue
+        lesson_id, retracted = row
+        if retracted:
+            outcomes.append(f"{handle}: 既に撤回済み")
+            continue
+        conn.execute(
+            "INSERT INTO obs_events (session_id, kind, lesson_id, ref_id) "
+            "VALUES (?, 'human_withdraw', ?, ?)",
+            (session_id, lesson_id, utterance_id),
+        )
+        outcomes.append(f"{handle}: 撤回になった")
+    return outcomes
+
+
+def _handle_user_prompt_submit(conn: sqlite3.Connection, data: dict, mode: str) -> str | None:
     session_id = data.get("session_id")
     prompt = data.get("prompt")
     if not session_id or prompt is None:
-        return
+        return None
     prompt_id = data.get("prompt_id")
     agent_id = data.get("agent_id")
 
@@ -252,17 +301,21 @@ def _handle_user_prompt_submit(conn: sqlite3.Connection, data: dict) -> None:
     )
     utterance_id = cur.lastrowid
 
-    if not prompt_id:
-        return
-    rows = _read_transcript_lines(data.get("transcript_path"))
-    matched = _select_single_user_match(rows, prompt_id, prompt)
-    if matched is None:
-        return
-    conn.execute(
-        "INSERT OR IGNORE INTO obs_events (session_id, kind, text, ref_id) "
-        "VALUES (?, 'speaker', ?, ?)",
-        (session_id, _speaker_json(matched, data), utterance_id),
-    )
+    withdraw_outcomes = _write_human_withdraw_declarations(conn, session_id, prompt, utterance_id)
+
+    if prompt_id:
+        rows = _read_transcript_lines(data.get("transcript_path"))
+        matched = _select_single_user_match(rows, prompt_id, prompt)
+        if matched is not None:
+            conn.execute(
+                "INSERT OR IGNORE INTO obs_events (session_id, kind, text, ref_id) "
+                "VALUES (?, 'speaker', ?, ?)",
+                (session_id, _speaker_json(matched, data), utterance_id),
+            )
+
+    if mode == "on" and withdraw_outcomes:
+        return "; ".join(withdraw_outcomes)[:100]
+    return None
 
 
 def _summarize_tool_input(tool_input: object) -> str:
@@ -273,11 +326,161 @@ def _summarize_tool_input(tool_input: object) -> str:
     return summary[:TOOL_SUMMARY_MAX_CHARS]
 
 
-def _handle_post_tool_use(conn: sqlite3.Connection, data: dict) -> None:
+def _parse_tool_response(tool_response: object) -> dict | None:
+    """MCPツールの結果からJSON辞書を取り出す。形が読めなければNone。
+
+    tool_responseは辞書の`content`（文字列、またはtype='text'のブロック配列）に
+    JSON文字列が入る形と、tool_response自体がJSON文字列である形の両方が実機で
+    観測されている（`hooks/ask_answer_rewake_hook.py`の前例と同じ揺れ）。
+    """
+    content = tool_response.get("content") if isinstance(tool_response, dict) else tool_response
+    if isinstance(content, list):
+        content = next(
+            (b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"),
+            None,
+        )
+    if not isinstance(content, str):
+        return None
+    try:
+        obj = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _has_speaker(conn: sqlite3.Connection, utterance_id: int) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM obs_events WHERE kind = 'speaker' AND ref_id = ?", (utterance_id,)
+    ).fetchone() is not None
+
+
+def _turn_missing_speaker(conn: sqlite3.Connection, session_id: str, prompt_id: str | None) -> bool:
+    """このターンの発話(サブエージェントでない)に、まだspeaker行の無いものがあるか。
+
+    prompt_idが無ければターンを特定できないので、安全側に「未確定」として扱う。
+    """
+    if not prompt_id:
+        return True
+    rows = conn.execute(
+        "SELECT id FROM obs_events WHERE kind = 'utterance' AND agent_id IS NULL "
+        "AND session_id = ? AND prompt_id = ?",
+        (session_id, prompt_id),
+    ).fetchall()
+    return any(not _has_speaker(conn, row[0]) for row in rows)
+
+
+_PROTECTED_ENTRY_KINDS = ("body", "conditions", "withdraw")
+
+
+def _bind_feedback(
+    conn: sqlite3.Connection,
+    session_id: str,
+    prompt_id: str | None,
+    lesson_id: int,
+    entry_id: int | None,
+    ref_id: int | None,
+    handle: str,
+    entry_kind: str | None,
+) -> str:
+    """判定結果の1行を組み立てる。出自が確定できないターン末待ちの場合はそう返す。"""
+    pending = (ref_id is not None and not _has_speaker(conn, ref_id)) or _turn_missing_speaker(
+        conn, session_id, prompt_id
+    )
+    if pending:
+        origin_text = "出自はターン末に決まる"
+    else:
+        is_human = conn.execute(
+            "SELECT 1 FROM lesson_basis WHERE lesson_id = ? AND entry_id IS ? "
+            "AND session_id = ? AND void = 0",
+            (lesson_id, entry_id, session_id),
+        ).fetchone() is not None
+        origin_text = "出自=人間" if is_human else "出自=AI"
+
+    text = f"[calm:知見 handle={handle} {origin_text}]"
+    if entry_id is not None and entry_kind in _PROTECTED_ENTRY_KINDS:
+        is_protected = conn.execute(
+            "SELECT 1 FROM lesson_protected WHERE lesson_id = ?", (lesson_id,)
+        ).fetchone() is not None
+        if is_protected:
+            text += f" {entry_kind}は守られた知見のため効かない"
+    return text
+
+
+def _handle_bind(conn: sqlite3.Connection, data: dict, mode: str) -> str | None:
+    """器の書き込みツール(record_lesson/append_lesson)の成功結果をbindにする。
+
+    引用があれば同じセッションのサブエージェントでない発話から部分文字列で探し、
+    見つかった行をref_idにする。人間の発話かどうかはここでは見ない（ビューが
+    判定する）。
+    """
+    result = _parse_tool_response(data.get("tool_response"))
+    if not isinstance(result, dict) or not result.get("ok"):
+        return None
+    session_id = data.get("session_id")
+    lesson_id = result.get("lesson_id")
+    handle = result.get("handle")
+    if not session_id or lesson_id is None or not handle:
+        return None
+    entry_id = result.get("entry_id")
+    entry_kind = result.get("entry_kind")
+    prompt_id = data.get("prompt_id")
+    agent_id = data.get("agent_id")
+    quote = (data.get("tool_input") or {}).get("quote")
+
+    ref_id = find_quote_ref(conn, session_id, quote, prompt_id) if quote else None
+
+    conn.execute(
+        "INSERT INTO obs_events (session_id, prompt_id, agent_id, kind, lesson_id, entry_id, ref_id) "
+        "VALUES (?, ?, ?, 'bind', ?, ?, ?)",
+        (session_id, prompt_id, agent_id, lesson_id, entry_id, ref_id),
+    )
+
+    if mode != "on":
+        return None
+    return _bind_feedback(conn, session_id, prompt_id, lesson_id, entry_id, ref_id, handle, entry_kind)
+
+
+def _handle_pull(conn: sqlite3.Connection, data: dict) -> None:
+    """get_lessonsの成功結果のうち、配達する知見（delivered_handles）を`delivered`にする。"""
+    result = _parse_tool_response(data.get("tool_response"))
+    if not isinstance(result, dict) or not result.get("ok"):
+        return
+    session_id = data.get("session_id")
+    if not session_id:
+        return
+    prompt_id = data.get("prompt_id")
+    agent_id = data.get("agent_id")
+    for item in result.get("delivered_handles") or []:
+        handle = item.get("handle") if isinstance(item, dict) else None
+        if not handle:
+            continue
+        row = conn.execute("SELECT id FROM lessons WHERE handle = ?", (handle,)).fetchone()
+        if row is None:
+            continue
+        conn.execute(
+            "INSERT INTO obs_events (session_id, prompt_id, agent_id, kind, lesson_id, channel) "
+            "VALUES (?, ?, ?, 'delivered', ?, 'pull')",
+            (session_id, prompt_id, agent_id, row[0]),
+        )
+
+
+# 器の3ツールの完全な名前の末尾（短い名前）。名前が完全一致しなかった呼び出しを
+# 見分けるためだけに使う（プラグイン名・サーバー名が変わって完全一致が崩れても、
+# 末尾は残ることが多いため）。
+_VESSEL_TOOL_SHORT_NAMES = frozenset(
+    name.rsplit("__", 1)[-1] for name in (RECORD_LESSON_TOOL, APPEND_LESSON_TOOL, GET_LESSONS_TOOL)
+)
+
+
+def _looks_like_vessel_tool(tool_name: str) -> bool:
+    return tool_name.startswith("mcp__") and tool_name.rsplit("__", 1)[-1] in _VESSEL_TOOL_SHORT_NAMES
+
+
+def _handle_post_tool_use(conn: sqlite3.Connection, data: dict, mode: str) -> str | None:
     session_id = data.get("session_id")
     tool_name = data.get("tool_name")
     if not session_id or not tool_name:
-        return
+        return None
     prompt_id = data.get("prompt_id")
     agent_id = data.get("agent_id")
 
@@ -293,21 +496,29 @@ def _handle_post_tool_use(conn: sqlite3.Connection, data: dict) -> None:
             "VALUES (?, ?, ?, 'tool', ?, ?, ?)",
             (session_id, prompt_id, agent_id, tool_name, data.get("tool_use_id"), summary),
         )
-        return
+    else:
+        overflow_exists = conn.execute(
+            "SELECT 1 FROM obs_events WHERE session_id = ? AND prompt_id IS ? AND kind = 'tool_overflow' LIMIT 1",
+            (session_id, prompt_id),
+        ).fetchone()
+        if overflow_exists is None:
+            conn.execute(
+                "INSERT INTO obs_events (session_id, prompt_id, agent_id, kind, tool_name, tool_use_id) "
+                "VALUES (?, ?, ?, 'tool_overflow', ?, ?)",
+                (session_id, prompt_id, agent_id, tool_name, data.get("tool_use_id")),
+            )
 
-    overflow_exists = conn.execute(
-        "SELECT 1 FROM obs_events WHERE session_id = ? AND prompt_id IS ? AND kind = 'tool_overflow' LIMIT 1",
-        (session_id, prompt_id),
-    ).fetchone()
-    if overflow_exists is None:
-        conn.execute(
-            "INSERT INTO obs_events (session_id, prompt_id, agent_id, kind, tool_name, tool_use_id) "
-            "VALUES (?, ?, ?, 'tool_overflow', ?, ?)",
-            (session_id, prompt_id, agent_id, tool_name, data.get("tool_use_id")),
-        )
+    if tool_name in VESSEL_WRITE_TOOLS:
+        return _handle_bind(conn, data, mode)
+    if tool_name == GET_LESSONS_TOOL:
+        _handle_pull(conn, data)
+        return None
+    if _looks_like_vessel_tool(tool_name):
+        _log({"at": "bind", "why": "tool_name_mismatch", "tool_name": tool_name})
+    return None
 
 
-def _handle_post_tool_use_failure(conn: sqlite3.Connection, data: dict) -> None:
+def _handle_post_tool_use_failure(conn: sqlite3.Connection, data: dict, mode: str) -> None:
     session_id = data.get("session_id")
     tool_name = data.get("tool_name")
     if not session_id or not tool_name:
@@ -328,7 +539,7 @@ def _handle_post_tool_use_failure(conn: sqlite3.Connection, data: dict) -> None:
     )
 
 
-def _handle_stop(conn: sqlite3.Connection, data: dict) -> None:
+def _handle_stop(conn: sqlite3.Connection, data: dict, mode: str) -> None:
     session_id = data.get("session_id")
     if not session_id:
         return
@@ -434,16 +645,25 @@ def main() -> None:
     except Exception as e:
         _log({"at": "connect", "event": event, "err": repr(e)})
         return
+    context = None
     try:
         try:
-            handler(conn, data)
+            context = handler(conn, data, mode)
             conn.commit()
         except Exception as e:
             conn.rollback()
+            context = None
             _log({"at": "handle", "event": event, "err": repr(e)})
     finally:
         conn.close()
-    # 標準出力には何も書かない（Claude Codeへの応答を返さない）
+
+    # 停止スイッチが動かす状態(on)のときだけ結果を返す。観測だけの状態
+    # (observe)では、書き込みは行いつつ標準出力には何も書かない。
+    if mode == "on" and context:
+        print(json.dumps(
+            {"hookSpecificOutput": {"hookEventName": event, "additionalContext": context}},
+            ensure_ascii=False,
+        ))
 
 
 if __name__ == "__main__":

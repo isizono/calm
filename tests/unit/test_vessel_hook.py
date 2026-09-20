@@ -15,7 +15,13 @@ import tempfile
 import pytest
 
 from hooks import vessel_hook
-from src.services.vessel_rules import is_human_speaker
+from src.services import vessel_service
+from src.services.vessel_rules import (
+    APPEND_LESSON_TOOL,
+    GET_LESSONS_TOOL,
+    RECORD_LESSON_TOOL,
+    is_human_speaker,
+)
 
 # hook_contextが読む環境変数。実行機の値でテストが揺れないよう毎回除去する。
 _HOOK_CONTEXT_ENV_VARS = (
@@ -50,11 +56,17 @@ def vessel_db(temp_db, monkeypatch):
     return temp_db
 
 
-def _run_hook(monkeypatch, capsys, payload: dict):
+def _run_hook(monkeypatch, capsys, payload: dict, *, allow_output: bool = False):
+    """hookを実行する。allow_output=Falseの既定では標準出力が空であることも検証する
+
+    (停止スイッチが観測だけの状態、またはoffのときの契約)。mode='on'での判定結果
+    出力を検証するテストだけallow_output=Trueを渡す。
+    """
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
     vessel_hook.main()
     captured = capsys.readouterr()
-    assert captured.out == "", "hookは標準出力に何も書かない"
+    if not allow_output:
+        assert captured.out == "", "hookは標準出力に何も書かない(mode='on'の判定結果を除く)"
     return captured
 
 
@@ -75,6 +87,54 @@ def _write_transcript(tmp_path, lines: list[dict]) -> str:
         for line in lines:
             f.write(json.dumps(line, ensure_ascii=False) + "\n")
     return str(path)
+
+
+def _set_mode(vessel_db, mode: str) -> None:
+    conn = sqlite3.connect(vessel_db)
+    try:
+        conn.execute("UPDATE vessel_meta SET mode = ? WHERE id = 1", (mode,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _tool_response(result: dict) -> dict:
+    """MCPツールの結果をtool_response(dict + contentブロック)の形に包む。"""
+    return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}]}
+
+
+def _human_turn(monkeypatch, capsys, tmp_path, vessel_db, session_id: str, prompt_id: str, text: str) -> int:
+    """UserPromptSubmitを実際に発火させ、人間として確定した発話行のidを返す。
+
+    実測(preflight_origins.md)のtyped|human組と同じ形の値を使う。
+    """
+    transcript_path = _write_transcript(
+        tmp_path,
+        [
+            {
+                "type": "user",
+                "promptId": prompt_id,
+                "message": {"content": text},
+                "promptSource": "typed",
+                "turnOrigin": "human",
+                "entrypoint": "cli",
+                "userType": "external",
+                "isSidechain": False,
+                "origin": {"kind": "x"},
+            }
+        ],
+    )
+    _run_hook(
+        monkeypatch, capsys,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": session_id,
+            "prompt_id": prompt_id,
+            "prompt": text,
+            "transcript_path": transcript_path,
+        },
+    )
+    return [r for r in _rows(vessel_db, "utterance") if r["prompt_id"] == prompt_id][-1]["id"]
 
 
 class TestSessionStart:
@@ -637,3 +697,528 @@ class TestFailOpen:
         finally:
             conn.close()
         assert cursor_row is None  # カーソル更新も同じトランザクションに含まれ差し戻る
+
+
+class TestBind:
+    """PostToolUseの書き込みの結び付け(bind)。"""
+
+    def test_writes_bind_only_from_write_tool_success(self, vessel_db, monkeypatch, capsys):
+        create = vessel_service.record_lesson(kind="tally", handle="h-bind-ok", body="握り方を統一する")
+        assert create["ok"] is True
+
+        _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "PostToolUse",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "tool_name": RECORD_LESSON_TOOL,
+                "tool_input": {},
+                "tool_response": _tool_response(create),
+                "tool_use_id": "t1",
+            },
+        )
+        bind_rows = _rows(vessel_db, "bind")
+        assert len(bind_rows) == 1
+        assert bind_rows[0]["lesson_id"] == create["lesson_id"]
+        assert bind_rows[0]["entry_id"] is None
+
+    def test_other_tools_write_no_bind(self, vessel_db, monkeypatch, capsys):
+        create = vessel_service.record_lesson(kind="tally", handle="h-not-vessel", body="関係ない知見")
+        _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "PostToolUse",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "tool_name": "Bash",
+                "tool_input": {"command": "ls"},
+                "tool_response": _tool_response(create),
+                "tool_use_id": "t1",
+            },
+        )
+        assert _rows(vessel_db, "bind") == []
+
+    def test_rejected_write_tool_call_writes_no_bind(self, vessel_db, monkeypatch, capsys):
+        vessel_service.record_lesson(kind="tally", handle="h-dup", body="先に作った知見")
+        rejected = vessel_service.record_lesson(kind="tally", handle="h-dup", body="重複するhandle")
+        assert rejected["ok"] is False
+
+        _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "PostToolUse",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "tool_name": RECORD_LESSON_TOOL,
+                "tool_input": {},
+                "tool_response": _tool_response(rejected),
+                "tool_use_id": "t1",
+            },
+        )
+        assert _rows(vessel_db, "bind") == []
+
+    def test_tool_name_mismatch_is_logged(self, vessel_db, monkeypatch, capsys, tmp_path):
+        log_path = tmp_path / "vessel_hook.jsonl"
+        monkeypatch.setenv("CALM_VESSEL_LOG_PATH", str(log_path))
+        create = vessel_service.record_lesson(kind="tally", handle="h-renamed", body="別名で配信された想定")
+
+        _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "PostToolUse",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                # プラグイン名・サーバー名を変えて入れ直した場合の想定(末尾は一致するが完全一致しない)
+                "tool_name": "mcp__claude_ai_calm__record_lesson",
+                "tool_input": {},
+                "tool_response": _tool_response(create),
+                "tool_use_id": "t1",
+            },
+        )
+        assert _rows(vessel_db, "bind") == []
+        lines = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+        mismatch_lines = [line for line in lines if line.get("why") == "tool_name_mismatch"]
+        assert len(mismatch_lines) == 1
+        assert mismatch_lines[0]["tool_name"] == "mcp__claude_ai_calm__record_lesson"
+
+
+class TestQuoteSearch:
+    """PostToolUseのbindが行う引用探索。"""
+
+    def test_hits_prior_turn_when_current_turn_has_no_match(
+        self, vessel_db, monkeypatch, capsys, tmp_path
+    ):
+        older_id = _human_turn(monkeypatch, capsys, tmp_path, vessel_db, "s1", "p0", "むかしの話")
+        prior_id = _human_turn(
+            monkeypatch, capsys, tmp_path, vessel_db, "s1", "p1", "pkillは危ないから使わないで"
+        )
+        _human_turn(monkeypatch, capsys, tmp_path, vessel_db, "s1", "p2", "さっきの件、直しておいて")
+
+        create = vessel_service.record_lesson(
+            kind="tally", handle="h-quote-prior", body="pkillの使用を戒める", quote="pkillは危ない"
+        )
+        _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "PostToolUse",
+                "session_id": "s1",
+                "prompt_id": "p2",
+                "tool_name": RECORD_LESSON_TOOL,
+                "tool_input": {"quote": "pkillは危ない"},
+                "tool_response": _tool_response(create),
+                "tool_use_id": "t1",
+            },
+        )
+        bind_rows = _rows(vessel_db, "bind")
+        assert bind_rows[0]["ref_id"] == prior_id
+        assert bind_rows[0]["ref_id"] != older_id
+
+    def test_prefers_current_turn_over_prior_turn_on_ambiguous_match(
+        self, vessel_db, monkeypatch, capsys, tmp_path
+    ):
+        _human_turn(monkeypatch, capsys, tmp_path, vessel_db, "s1", "p1", "これは間違いです")
+        current_id = _human_turn(
+            monkeypatch, capsys, tmp_path, vessel_db, "s1", "p2", "これは間違いです、直しておいて"
+        )
+
+        create = vessel_service.record_lesson(
+            kind="tally", handle="h-quote-current", body="間違いの言い回し", quote="これは間違いです"
+        )
+        _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "PostToolUse",
+                "session_id": "s1",
+                "prompt_id": "p2",
+                "tool_name": RECORD_LESSON_TOOL,
+                "tool_input": {"quote": "これは間違いです"},
+                "tool_response": _tool_response(create),
+                "tool_use_id": "t1",
+            },
+        )
+        bind_rows = _rows(vessel_db, "bind")
+        assert bind_rows[0]["ref_id"] == current_id
+
+    def test_ignores_subagent_utterance(self, vessel_db, monkeypatch, capsys):
+        # サブエージェント発のutterance行は実運用では生じないが(UserPromptSubmitは
+        # 対話下・印字モードいずれのサブエージェントでも発火しない)、
+        # find_quote_refのagent_id IS NULLフィルタ自体はDBレベルで直接検証する。
+        conn = sqlite3.connect(vessel_db)
+        try:
+            conn.execute(
+                "INSERT INTO obs_events (session_id, prompt_id, agent_id, kind, text) "
+                "VALUES ('s1', 'p1', 'sub-1', 'utterance', 'pkillは危ないから使わないで')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        create = vessel_service.record_lesson(
+            kind="tally", handle="h-quote-subagent", body="pkillの使用を戒める", quote="pkillは危ない"
+        )
+        _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "PostToolUse",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "tool_name": RECORD_LESSON_TOOL,
+                "tool_input": {"quote": "pkillは危ない"},
+                "tool_response": _tool_response(create),
+                "tool_use_id": "t1",
+            },
+        )
+        assert _rows(vessel_db, "bind")[0]["ref_id"] is None
+
+    def test_quote_not_found_leaves_ref_empty_and_view_falls_to_ai(
+        self, vessel_db, monkeypatch, capsys, tmp_path
+    ):
+        _human_turn(monkeypatch, capsys, tmp_path, vessel_db, "s1", "p1", "こんにちは")
+        create = vessel_service.record_lesson(
+            kind="tally", handle="h-quote-missing", body="どこにも無い引用",
+            quote="どこにも存在しない文字列です",
+        )
+        _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "PostToolUse",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "tool_name": RECORD_LESSON_TOOL,
+                "tool_input": {"quote": "どこにも存在しない文字列です"},
+                "tool_response": _tool_response(create),
+                "tool_use_id": "t1",
+            },
+        )
+        bind_rows = _rows(vessel_db, "bind")
+        assert bind_rows[0]["ref_id"] is None
+
+        conn = sqlite3.connect(vessel_db)
+        try:
+            origin = conn.execute(
+                "SELECT origin FROM lesson_origin WHERE lesson_id = ?", (create["lesson_id"],)
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        assert origin == "ai"
+
+
+class TestBindProtectedFeedback:
+    """並列書き込みで守られた知見になった後のbindの『効かない』理由。"""
+
+    def test_body_entry_bound_after_lesson_becomes_protected_reports_ineffective(
+        self, vessel_db, monkeypatch, capsys, tmp_path
+    ):
+        _set_mode(vessel_db, "on")
+        _human_turn(
+            monkeypatch, capsys, tmp_path, vessel_db, "s1", "p1", "以前と同じ間違いです、直しておいて"
+        )
+
+        create = vessel_service.record_lesson(
+            kind="tally", handle="h-protected", body="いずれ守られる知見", quote="以前と同じ間違いです",
+        )
+        # 並列呼び出しの想定: 作成のbindがまだ無い時点でbody追記が先に成立する
+        body_append = vessel_service.append_lesson(handle="h-protected", kind="body", body="直した本文")
+        assert body_append["ok"] is True
+
+        # 作成のbindを先に処理する(人間由来になり守られた知見になる)
+        _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "PostToolUse",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "tool_name": RECORD_LESSON_TOOL,
+                "tool_input": {"quote": "以前と同じ間違いです"},
+                "tool_response": _tool_response(create),
+                "tool_use_id": "t-create",
+            },
+            allow_output=True,
+        )
+
+        captured = _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "PostToolUse",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "tool_name": APPEND_LESSON_TOOL,
+                "tool_input": {},
+                "tool_response": _tool_response(body_append),
+                "tool_use_id": "t-body",
+            },
+            allow_output=True,
+        )
+        assert "h-protected" in captured.out
+        assert "効かない" in captured.out
+
+
+class TestBindOriginFeedback:
+    """mode='on'のときのbind判定結果の出し分け。"""
+
+    def test_human_origin_via_matched_quote_in_same_turn(
+        self, vessel_db, monkeypatch, capsys, tmp_path
+    ):
+        _set_mode(vessel_db, "on")
+        _human_turn(monkeypatch, capsys, tmp_path, vessel_db, "s1", "p1", "同じ間違いを繰り返さないで")
+
+        create = vessel_service.record_lesson(
+            kind="tally", handle="h-human-origin", body="繰り返しを戒める知見", quote="同じ間違いを繰り返さないで",
+        )
+        captured = _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "PostToolUse",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "tool_name": RECORD_LESSON_TOOL,
+                "tool_input": {"quote": "同じ間違いを繰り返さないで"},
+                "tool_response": _tool_response(create),
+                "tool_use_id": "t1",
+            },
+            allow_output=True,
+        )
+        assert "出自=人間" in captured.out
+        assert "h-human-origin" in captured.out
+
+    def test_ai_origin_when_no_utterance_in_turn(self, vessel_db, monkeypatch, capsys):
+        _set_mode(vessel_db, "on")
+        create = vessel_service.record_lesson(kind="tally", handle="h-ai-origin", body="発話の無いターンの知見")
+        captured = _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "PostToolUse",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "tool_name": RECORD_LESSON_TOOL,
+                "tool_input": {},
+                "tool_response": _tool_response(create),
+                "tool_use_id": "t1",
+            },
+            allow_output=True,
+        )
+        assert "出自=AI" in captured.out
+
+    def test_pending_when_turn_utterance_has_no_speaker_yet(self, vessel_db, monkeypatch, capsys):
+        _set_mode(vessel_db, "on")
+        _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "prompt": "まだtranscriptに現れていない発話",
+                "transcript_path": "/nonexistent.jsonl",
+            },
+        )
+        create = vessel_service.record_lesson(kind="tally", handle="h-pending", body="判定待ちの知見")
+        captured = _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "PostToolUse",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "tool_name": RECORD_LESSON_TOOL,
+                "tool_input": {},
+                "tool_response": _tool_response(create),
+                "tool_use_id": "t1",
+            },
+            allow_output=True,
+        )
+        assert "出自はターン末に決まる" in captured.out
+
+    def test_observe_mode_writes_bind_but_returns_no_feedback(self, vessel_db, monkeypatch, capsys):
+        # temp_dbの既定(observe)のまま: 書き込みは起きるが標準出力は空
+        create = vessel_service.record_lesson(kind="tally", handle="h-observe", body="観測だけの状態の知見")
+        _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "PostToolUse",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "tool_name": RECORD_LESSON_TOOL,
+                "tool_input": {},
+                "tool_response": _tool_response(create),
+                "tool_use_id": "t1",
+            },
+        )
+        assert len(_rows(vessel_db, "bind")) == 1
+
+
+class TestPull:
+    """get_lessonsの成功結果からの`delivered`(pull)。"""
+
+    def test_writes_delivered_for_each_delivered_handle(self, vessel_db, monkeypatch, capsys):
+        vessel_service.record_lesson(
+            kind="prevent", handle="h-pull-1", body="pullで届く知見1",
+            deliver_event="prompt", deliver_spec={"all": [{"field": "prompt", "op": "len_gt", "value": 0}]},
+            step_event="tool_call", step_spec={"tool": "Bash", "all": [{"field": "command", "op": "len_gt", "value": 0}]},
+        )
+        result = vessel_service.get_lessons(handle="h-pull-1")
+        assert result["delivered_handles"], "配達する種類なので delivered_handles に載るはず"
+
+        _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "PostToolUse",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "tool_name": GET_LESSONS_TOOL,
+                "tool_input": {"handle": "h-pull-1"},
+                "tool_response": _tool_response(result),
+                "tool_use_id": "t1",
+            },
+        )
+        pull_rows = [r for r in _rows(vessel_db, "delivered") if r["channel"] == "pull"]
+        assert len(pull_rows) == 1
+
+    def test_no_delivered_handles_writes_nothing(self, vessel_db, monkeypatch, capsys):
+        result = {"ok": True, "items": [], "delivered_handles": []}
+        _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "PostToolUse",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "tool_name": GET_LESSONS_TOOL,
+                "tool_input": {},
+                "tool_response": _tool_response(result),
+                "tool_use_id": "t1",
+            },
+        )
+        assert _rows(vessel_db, "delivered") == []
+
+
+class TestHumanWithdrawDeclaration:
+    """UserPromptSubmitの人間の1行の撤回宣言。"""
+
+    def test_standalone_line_writes_human_withdraw(self, vessel_db, monkeypatch, capsys):
+        vessel_service.record_lesson(kind="tally", handle="withdraw-me", body="撤回対象の知見")
+        _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "prompt": "知見撤回 withdraw-me",
+                "transcript_path": "/nonexistent.jsonl",
+            },
+        )
+        rows = _rows(vessel_db, "human_withdraw")
+        assert len(rows) == 1
+
+    def test_multiple_lines_write_one_row_each(self, vessel_db, monkeypatch, capsys):
+        # tally種は条件を持てず(kind_mismatch)、record_lessonの重複検査は現在の
+        # 条件の完全一致で見るため、同じDBに条件無しのtallyを2件は作れない。
+        # 2件目はprevent種で別条件にする。
+        vessel_service.record_lesson(kind="tally", handle="withdraw-a", body="pgrepの多用を戒める")
+        vessel_service.record_lesson(
+            kind="prevent", handle="withdraw-b", body="worktreeを使わない直接checkoutを戒める",
+            deliver_event="tool_call",
+            deliver_spec={"tool": "Bash", "all": [{"field": "command", "op": "regex", "value": "withdraw-b"}]},
+            step_event="tool_call",
+            step_spec={"tool": "Bash", "all": [{"field": "command", "op": "regex", "value": "withdraw-b"}]},
+        )
+        _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "prompt": "知見撤回 withdraw-a\n知見撤回 withdraw-b",
+                "transcript_path": "/nonexistent.jsonl",
+            },
+        )
+        assert len(_rows(vessel_db, "human_withdraw")) == 2
+
+    @pytest.mark.parametrize(
+        "prompt",
+        [
+            "知見撤回 withdraw-me はしないで",       # 否定文（行の途中まで一致しても全体は一致しない)
+            "知見撤回 withdraw-me？",                # 疑問文
+            "これは知見撤回 withdraw-me です",       # 行の途中
+            "> 知見撤回 withdraw-me",                # 引用行
+            "```\n知見撤回 withdraw-me\n```",        # コードブロックの中
+        ],
+    )
+    def test_non_standalone_forms_do_not_write(self, vessel_db, monkeypatch, capsys, prompt):
+        vessel_service.record_lesson(kind="tally", handle="withdraw-me", body="撤回対象の知見")
+        _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "prompt": prompt,
+                "transcript_path": "/nonexistent.jsonl",
+            },
+        )
+        assert _rows(vessel_db, "human_withdraw") == []
+
+    def test_unknown_handle_writes_nothing(self, vessel_db, monkeypatch, capsys):
+        _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "prompt": "知見撤回 no-such-handle",
+                "transcript_path": "/nonexistent.jsonl",
+            },
+        )
+        assert _rows(vessel_db, "human_withdraw") == []
+
+    def test_already_withdrawn_handle_writes_nothing_more(self, vessel_db, monkeypatch, capsys):
+        vessel_service.record_lesson(kind="tally", handle="withdraw-twice", body="既に撤回済みの知見")
+        withdrawn = vessel_service.append_lesson(handle="withdraw-twice", kind="withdraw")
+        assert withdrawn["ok"] is True
+
+        _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "prompt": "知見撤回 withdraw-twice",
+                "transcript_path": "/nonexistent.jsonl",
+            },
+        )
+        assert _rows(vessel_db, "human_withdraw") == []
+
+
+class TestHumanWithdrawFeedback:
+    """mode='on'のときの撤回結果の1行。"""
+
+    def test_on_mode_returns_withdraw_result_line(self, vessel_db, monkeypatch, capsys):
+        _set_mode(vessel_db, "on")
+        vessel_service.record_lesson(kind="tally", handle="withdraw-feedback", body="撤回対象の知見")
+        captured = _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "prompt": "知見撤回 withdraw-feedback",
+                "transcript_path": "/nonexistent.jsonl",
+            },
+            allow_output=True,
+        )
+        assert "撤回になった" in captured.out
+        assert "withdraw-feedback" in captured.out
+
+    def test_observe_mode_writes_row_but_returns_nothing(self, vessel_db, monkeypatch, capsys):
+        # temp_dbの既定(observe)のまま
+        vessel_service.record_lesson(kind="tally", handle="withdraw-observe", body="撤回対象の知見")
+        captured = _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "prompt": "知見撤回 withdraw-observe",
+                "transcript_path": "/nonexistent.jsonl",
+            },
+        )
+        assert captured.out == ""
+        assert len(_rows(vessel_db, "human_withdraw")) == 1

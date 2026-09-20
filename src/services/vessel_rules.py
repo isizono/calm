@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 import unicodedata
 
 from src.services.dedup_helpers import normalize_text
@@ -160,3 +161,58 @@ def similarity(a: str, b: str) -> float:
     if not A or not B:
         return 0.0
     return 2 * len(A & B) / (len(A) + len(B))
+
+
+# ---------------------------------------------------------------------------
+# 器の書き込み/読み取りツールの完全な名前（接続点。プラグイン名・サーバー名を
+# 変えて入れ直すと変わる）
+# ---------------------------------------------------------------------------
+
+RECORD_LESSON_TOOL = "mcp__plugin_calm_calm__record_lesson"
+APPEND_LESSON_TOOL = "mcp__plugin_calm_calm__append_lesson"
+GET_LESSONS_TOOL = "mcp__plugin_calm_calm__get_lessons"
+VESSEL_WRITE_TOOLS = frozenset({RECORD_LESSON_TOOL, APPEND_LESSON_TOOL})
+
+# PostToolUseが引用を探す観測の種類の一覧（接続点「入口」）。核ではutteranceだけ。
+QUOTE_SOURCE_KINDS = ("utterance",)
+
+
+# ---------------------------------------------------------------------------
+# 引用探索（PostToolUseの書き込みの結びつけが使う）
+# ---------------------------------------------------------------------------
+
+
+def find_quote_ref(
+    conn: sqlite3.Connection,
+    session_id: str,
+    quote: str | None,
+    this_prompt_id: str | None,
+) -> int | None:
+    """引用が見つかった発話のobs_events.idを返す。見つからなければNone。
+
+    正規化なしの素の部分文字列一致（`\\r\\n`→`\\n`の畳み込みだけ）。候補は同じ
+    セッション・サブエージェントでない(agent_id無し)・QUOTE_SOURCE_KINDSの行を
+    今のターンを先頭に新しい順で5件までとり、最初に見つかった1件を採る
+    （全部見て一番長い一致を選ぶ、のようなことはしない）。
+    """
+    if not quote:
+        return None
+    needle = quote.replace("\r\n", "\n")
+    kinds_placeholder = ",".join("?" for _ in QUOTE_SOURCE_KINDS)
+    rows = conn.execute(
+        f"""
+        SELECT id, text,
+               CASE WHEN prompt_id IS NOT NULL AND prompt_id = ? THEN 0 ELSE 1 END AS turn_rank
+        FROM obs_events
+        WHERE kind IN ({kinds_placeholder})
+          AND session_id = ?
+          AND agent_id IS NULL
+        ORDER BY turn_rank ASC, id DESC
+        LIMIT 5
+        """,
+        (this_prompt_id, *QUOTE_SOURCE_KINDS, session_id),
+    ).fetchall()
+    for row_id, text, _turn_rank in rows:
+        if needle in plain_text((text or "").replace("\r\n", "\n")):
+            return row_id
+    return None
