@@ -70,6 +70,10 @@ TOOL_TAGS: dict[str, str] = {
     "import_bundle": "export",
     "check_in": "checkin",
     "retract": "retract",
+    "set_goal": "goal",
+    "update_goal": "goal",
+    "judge_goal": "goal",
+    "get_goal": "goal",
     "get_config": "misc",
     "get_signals": "misc",
     "report_signal": "misc",
@@ -104,6 +108,7 @@ TAG_DESCRIPTIONS: dict[str, str] = {
     "retract": "取り消し（論理削除）",
     "ask": "人間の判断待ちの問いの記録・回答",
     "session": "並行セッションの別名管理",
+    "goal": "activityの終了条件（goal）の作成・更新・判定・取得",
     "misc": "設定取得・ユーティリティ",
 }
 

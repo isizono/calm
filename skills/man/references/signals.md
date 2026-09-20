@@ -8,7 +8,7 @@
 
 cc-memory 自身への故障報告・使用感不満・矛盾検出・運用計測イベントの統一入口。
 
-### 1.1 kind（7種類、いずれか必須）
+### 1.1 kind（8種類、いずれか必須）
 
 - `machine_error`: ツールエラー・hook 失敗・サーバー異常を観察した
 - `friction`: cc-memory の使い勝手への不満・違和感（ユーザー発話由来を含む）
@@ -19,12 +19,13 @@ cc-memory 自身への故障報告・使用感不満・矛盾検出・運用計�
   - `context.resolution` に `existing_correct` / `new_correct` / `unresolved` を書く
 - `precedent_miss` / `precedent_misapplied`: 判例参照の見落とし・誤類推の事後発覚。`context` に `missed_ids` / `cited_id` 等の規約キーを書く
 - `boundary_case` / `rollback`: 運用上の案件記録。`summary` に PR 番号等の案件識別子を含める（dedup の集約単位を案件ごとに分けるため）
+- `goal_rollback`: `update_goal` の `reopen_reason`（goal 判定の差し戻し）が書く専用の kind。手で `report_signal` を呼んで報告するものではない
 
 ### 1.2 引数
 
 | 引数 | 必須 | 内容 |
 |---|---|---|
-| `kind` | 必須 | 上記7種のいずれか |
+| `kind` | 必須 | 上記8種のいずれか |
 | `summary` | 必須 | 1行要約（空文字不可） |
 | `detail` | 任意 | traceback・引数ダイジェスト・自由記述 |
 | `refs` | 任意 | `[{"type": "decision", "id": 123}, ...]` 形式の参照リスト |

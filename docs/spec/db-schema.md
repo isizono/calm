@@ -2,8 +2,8 @@
 watch-tags: domain:calm, domain:cc-memory
 watch-direction: true
 watch-migrations: true
-last-synced: 2026-09-15
-last-synced-migration: 0074
+last-synced: 2026-09-21
+last-synced-migration: 0077
 -->
 
 # CALM DBスキーマ v0
@@ -161,8 +161,9 @@ erDiagram
 - last_heartbeat_session_id は 0040 で追加。自セッションのheartbeatを「別セッション扱い」と誤表示していた問題の解消用
 - orch_managed は 0045 で追加。従来の素タグ `orch-managed` の存在/不在で表現していた属性を構造的カラムへ昇格したもの（同migrationで既存タグ付きactivityへの一括反映も実施）
 - caller_session_id カラムは 0048 で追加されたが、0057 で削除された（§6）
+- closed_at・closed_by・closed_reason は 0077 で追加。goal機構（§3.28-3.30）の judge_goal・update_goal（差し戻し）・update_activity が、activityが最後にどう閉じたか（誰の意思で・なぜ）を記録するための列。3列とも NULL 許容の ADD COLUMN で、既存行は NULL のまま始まる。closed_by の CHECK が closed_at を参照するため、closed_at を先に追加する
 
-関連 migration: 0001 / 0007 / 0010 / 0011 / 0016 / 0017 / 0021 / 0026 / 0027 / 0040（last_heartbeat_session_id）/ 0045（orch_managed）/ 0048（caller_session_id追加、のち0057で削除）
+関連 migration: 0001 / 0007 / 0010 / 0011 / 0016 / 0017 / 0021 / 0026 / 0027 / 0040（last_heartbeat_session_id）/ 0045（orch_managed）/ 0048（caller_session_id追加、のち0057で削除）/ 0077（closed_at・closed_by・closed_reason追加）
 
 カラム一覧・インデックス: `db-schema-tables.md` の `activities` 節参照。
 
@@ -549,6 +550,46 @@ asks 専用の sqlite-vec 仮想テーブル（384次元、`distance_metric=cosi
 
 カラム一覧・インデックス: `db-schema-tables.md` の `import_provenance` 節参照。
 
+### 3.28 goals
+
+goal機構（activityが目指す終わりを、真偽の付く条件の集合として表現する仕組み）の本体。handleとstatementのみを持ち、判定記録（verdict/judged_by/judged_at/judge_note）は最後の1回分を、差し戻し（closed=0への書き戻し）でも消さずに残す。
+
+補足:
+- `handle`は英小文字・数字・ハイフンのみでUNIQUE。40字以内の検査はDB制約ではなくアプリ層で行う（40字は調整しうる値であり、変えるのにテーブル再作成が要るCHECKには置かない）
+- `closed`はboolean相当のINTEGER。判定（verdict/judged_by/judged_at）の有無と`closed`の整合、failed判定でのjudge_note必須はCHECK制約で強制する
+- 条件表（goal_conditions）・紐づけ表（goal_activities）は別テーブルで、goalsは本体のみを持つ。5型（topic/activity/material/decision/log）のいずれにも属さない独立したテーブル群であり、relations/pins/citationsのCHECK・検索索引（search_index等）には接続しない
+
+関連 migration: 0077_add_goals
+
+カラム一覧・インデックス: `db-schema-tables.md` の `goals` 節参照。
+
+### 3.29 goal_conditions
+
+goalの終わりを判定する材料の1行。真偽が付く文、担い手（claude/human/external）、状態（open/satisfied/waived）、束縛（activity/decision/askのいずれか1件への多相参照）を持つ。
+
+補足:
+- `statement`は作成後に変えない。書き換えは「waivedにして新規追加」で表す（旧行を消さない）
+- `bound_type`/`bound_id`はactivity/decision/askへの多相参照で、FKは張らない（束縛先の実在はアプリ層で確認する。削除経路が無いため、束縛先の消失はretract・置き換え・ask取り下げの書き込み経路でのみ起こる）
+- `state='satisfied'`は`last_satisfied_at`必須、`state='waived'`は`note`必須をCHECK制約で強制する
+- `goal_id`はON DELETE CASCADE（goalsが消えれば条件も消える。ただしgoalsを削除する経路は今のコードに無い）
+
+関連 migration: 0077_add_goals
+
+カラム一覧・インデックス: `db-schema-tables.md` の `goal_conditions` 節参照。
+
+### 3.30 goal_activities
+
+activityとgoalの紐づけ、または不要印（このactivityには終了条件を置かないという印と理由）を表す。activityごとに高々1行。
+
+補足:
+- `activity_id`を単独主キーにしたWITHOUT ROWIDの表。rowidの別名にすると、activity_idを省いたINSERTが自動採番で通ってしまうため、意図的にWITHOUT ROWIDを選んだ（calmのmigrationsで初めてのWITHOUT ROWID）
+- `goal_id`と`waiver_reason`は排他（CHECK `(goal_id IS NULL) <> (waiver_reason IS NULL)`）。行が無い＝未定義、goal_idあり＝紐づけ、waiver_reasonあり＝不要印の3状態を1行の有無と2列で表す
+- `activity_id`はON DELETE CASCADE、`goal_id`もON DELETE CASCADE
+
+関連 migration: 0077_add_goals
+
+カラム一覧・インデックス: `db-schema-tables.md` の `goal_activities` 節参照。
+
 ---
 
 ## 4. 関係メカニズム
@@ -610,6 +651,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | `retracted_at` | decisions / discussion_logs / materials | activities / discussion_topics / habits | 論理削除（取消し）時刻、NULL=有効 |
 | `last_heartbeat_at` | activities | 他全テーブル | 最終ハートビート時刻 |
 | `status` | activities | 他全テーブル | pending / in_progress / completed / snoozed / shelved |
+| `closed_at`/`closed_by`/`closed_reason` | activities | 他全テーブル | activityが最後にどう閉じたか（誰の意思で・なぜ）。closed_byはgoal_judge/user/claude/external、不明ならNULL。completedでないactivityをcompletedにする書き込みでだけ更新し、既にcompletedのactivityでは書き換えない（0077、goal機構§3.28-3.30） |
 | `active` | habits | 他全テーブル | 有効/無効フラグ（数値） |
 | `caller_session_id`（廃止） | — | 全テーブル | 0048 で decisions/discussion_logs/discussion_topics/activities/materials に追加 → 0057 でcapability gating機構撤去に伴い削除済み |
 | `pinned`（廃止） | — | 全テーブル | 0029 で decisions/logs/materials に追加 → 0035 で pins テーブル化により撤去済み |
@@ -693,6 +735,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0071_add_import_provenance | import_provenance テーブル新設（importしたエンティティの出自台帳。再import冪等性・上流変更検知・参照自己解決の基盤、§3.27） |
 | 0073_add_asks_notify_wanted | asks に notify_wanted 列（通知希望フラグ、既定1）を追加（§3.22） |
 | 0074_drop_relay_outbox | relay_outbox テーブル削除（relay統合機能の撤去に伴う。0056で新設、代替スキーマへの移行なし） |
+| 0077_add_goals | goals / goal_conditions / goal_activities テーブル新設（goal機構、§3.28-3.30）+ activities に closed_at・closed_by・closed_reason（NULL許容）を追加 |
 
 重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。
 

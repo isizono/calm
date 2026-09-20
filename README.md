@@ -106,6 +106,7 @@ claude plugin install calm
 |-----------|-----------|------|
 | `CALM_DB_PATH` | `~/.claude/.claude-code-memory/discussion.db` | データベースファイルのパス |
 | `CALM_HEARTBEAT_TIMEOUT` | `20` | ホットアクティビティ判定の閾値（分） |
+| `CALM_GOAL_RECHECK_HOURS` | `6` | goalの担い手human/external条件で要確認フラグを立てるまでの経過時間（時間） |
 | `CALM_IN_PROGRESS_LIMIT` | `3` | アクティブコンテキストのin_progress表示件数 |
 | `CALM_PENDING_LIMIT` | `2` | アクティブコンテキストのpending表示件数 |
 | `CALM_TIER2_MAX_AGE_DAYS` | `7` | SessionStart一覧の階層2にin_progressアクティビティを載せるupdated_at上限（日） |

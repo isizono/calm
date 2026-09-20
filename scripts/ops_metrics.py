@@ -23,8 +23,10 @@ _project_root = Path(__file__).resolve().parents[1]
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
-# 運用計測が読む signal_events の kind。7 種のうち machine_error / friction は
+# 運用計測が読む signal_events の kind。8 種のうち machine_error / friction は
 # 汎用の故障・不満報告であり率指標の対象外（品質投資コンポーネントの管轄）。
+# goal_rollback（goal判定の差し戻し）も対象外。_rollback_metrics は kind='rollback'
+# を固定文字列で問い合わせるため、goal_rollback の追加で分子が変わることはない。
 _CONTRADICTION_RESOLUTIONS = ("existing_correct", "new_correct", "unresolved")
 
 # boundary_case / rollback の context スキーマ（mode / machine_verdict / divergence の

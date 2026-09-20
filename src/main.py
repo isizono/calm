@@ -32,6 +32,7 @@ from src.services import (
     import_bundle_service,
     instance_service,
     overview_service,
+    goal_service,
 )
 from src.services.checkin_service import check_in as _check_in
 from src.services import session_registry_service
@@ -1153,6 +1154,140 @@ def update_activity(
     )
 
 
+# ----------------------------
+# goal機構
+# ----------------------------
+
+
+@mcp.tool()
+def set_goal(activity_id: int, goal: Optional[dict], replace: bool = False) -> dict:
+    """Choose: activityの終了条件(goal)上の立場を決めたいとき。goal自体はactivityから
+    作る。既存のgoal(goal_id)に紐づける・不要印(waiver)を付ける・未定義に戻す(None)も
+    この1本で扱う。充足の記録・条件の追加はupdate_goal、終了の明示判定はjudge_goal。
+
+    Args:
+        activity_id: 対象activity
+        goal: 次の4形式のいずれか(Noneも明示で渡す)
+            - {"new": {"handle": str, "statement": str, "conditions": [条件, ...]}}
+              新規作成して紐づける。条件は {"statement": str,
+              "actor": "claude"|"human"|"external",
+              "bound": {"type": "activity"|"decision"|"ask", "id": int} | None,
+              "state": "open"|"satisfied"|"waived"(既定open), "note": str | None}。
+              waivedはnote必須
+            - {"goal_id": int} 既存の未判定goalに紐づける(複数activityにまたがるgoal)
+            - {"waiver": str} 終了条件は不要と記録する(理由)
+            - None 紐づけ・不要印を外して未定義に戻す
+        replace: 既に別内容の紐づけ・不要印がある活動に上書きするときtrue(既定false)
+
+    Returns:
+        成功時: {"goal": <goalブロック>}
+        情報応答: {"info": "ACTIVITY_GOAL_EXISTS", "current": {...}}
+            | {"info": "GOAL_CLOSED", "goal": {...}}
+        失敗時: {"error": {"code": "VALIDATION_ERROR"|"NOT_FOUND"|"HANDLE_TAKEN"
+            |"GOAL_WOULD_ORPHAN"|"DATABASE_ERROR", "message": ...}}
+    """
+    return goal_service.set_goal(activity_id, goal, replace)
+
+
+@mcp.tool()
+def update_goal(
+    goal_id: int,
+    changes: Optional[list[dict]] = None,
+    statement: Optional[str] = None,
+    reopen_reason: Optional[str] = None,
+) -> dict:
+    """Choose: goalの条件を追加・状態変更(充足/保留)・担い手や束縛の変更をしたいとき。
+    goalの一文(statement)の修正、判定済みgoalの差し戻し(reopen_reason)もこの1本で行う。
+    新しいgoalを作って紐づけるのはset_goal、終了の明示判定はjudge_goal。
+
+    changesは前から順に適用する1トランザクション(1件でもエラーなら何も書かない)。
+    要素は次の3種:
+      - {"op": "add", ...条件の形(set_goalのconditionsと同じ)...} 条件を追加する
+        (stateを指定すれば事後の記録として終端で作れる)
+      - {"op": "set", "id": int, "state": "open"|"satisfied"|"waived", "note": str|None}
+        状態を書く。satisfiedにしたときだけlast_satisfied_atを更新する。waivedはnote必須
+      - {"op": "edit", "id": int, "actor": str|None, "bound": {...}|None}
+        担い手・束縛を変える(文は変えない)
+    同じ条件にset+editは1回ずつ並べられる。同じ条件に同じopを2回はVALIDATION_ERROR。
+
+    reopen_reasonを渡すと、判定済みgoalをclosed=0に戻し、goal_judgeで閉じたactivityを
+    pendingに戻し、signal_events(kind=goal_rollback)に1行積んでから、changes/statement
+    を適用する。changes・statementの無い差し戻し(判定のやり直しだけ)も許す。
+
+    Args:
+        goal_id: 対象goal
+        changes: 上記opの列(既定なし)
+        statement: goalの一文の修正(未判定のgoalにだけ許す)
+        reopen_reason: 判定済みgoalを差し戻す理由
+
+    Returns:
+        成功時: {"goal": {...}, "applied": int, "reopened": {...}(差し戻し時のみ)}
+        情報応答: {"info": "GOAL_CLOSED"|"GOAL_ALREADY_OPEN", "goal": {...}}
+        失敗時: {"error": {"code": "VALIDATION_ERROR"|"NOT_FOUND"|"DATABASE_ERROR",
+            "message": ...}}
+    """
+    return goal_service.update_goal(
+        goal_id, changes, statement, reopen_reason, session_id=_current_session_id()
+    )
+
+
+@mcp.tool()
+def judge_goal(
+    goal_id: int,
+    verdict: str,
+    note: Optional[str] = None,
+    judged_by: str = "session",
+) -> dict:
+    """Choose: goalの終了を明示的に判定して閉じたいとき。紐づく未完了のactivityも
+    同時にcompletedにする(closed_by="goal_judge")。判定はachieved(達成)か
+    failed(達成せず終了。不可能・不要化・取り下げを含む)。achievedはopenの条件が
+    残っている・satisfiedが0件・崩れた条件があるといずれも拒否するので、先に
+    update_goalで手当てしてから呼ぶ。failedはopenの条件が残っていても閉じられる。
+
+    Args:
+        goal_id: 対象goal
+        verdict: "achieved" | "failed"
+        note: 判定理由。failedでは必須、achievedでは何をもって達成としたかを1文で
+            書いてよい
+        judged_by: "session"(既定。セッション自身の判断) | "human"(ユーザーが同席して
+            完了を明言・同意した)
+
+    Returns:
+        成功時: {"goal": {...}, "closed_activities": [{id_raw, title}, ...]}
+        情報応答: {"info": "GOAL_ALREADY_CLOSED", "goal": {...}}
+        失敗時: {"error": {"code": "VALIDATION_ERROR"|"NOT_FOUND"|"GOAL_NOT_READY"
+            |"GOAL_NOTHING_SATISFIED"|"GOAL_BINDING_BROKEN"|"DATABASE_ERROR", ...}}
+    """
+    return goal_service.judge_goal(goal_id, verdict, note, judged_by)
+
+
+@mcp.tool()
+def get_goal(
+    goal_id: Optional[int] = None,
+    activity_id: Optional[int] = None,
+    handle: Optional[str] = None,
+) -> dict:
+    """Choose: 1つのgoalの全条件(充足済みを含む)とid、紐づくactivity一覧を読みたい
+    とき。check_inの応答のgoalブロックは充足済み条件や4件目以降のopen条件を畳むので、
+    全件が要るとき(差し戻しでopenに戻す条件を選ぶとき等)や、handleからgoalを引きたい
+    ときに使う。読み取り専用(check_inと違いactivityのstatusを変えない)。
+
+    Args:
+        goal_id: goalを直接指す(3つのうちちょうど1つを指定する)
+        activity_id: activity経由で紐づくgoalを指す。goalが無い場合はエラーにせず
+            label="undefined"(未定義)かlabel="not_needed"(不要印)を返す
+        handle: goalの短い名前で指す
+
+    Returns:
+        {"goal_id_raw", "handle", "statement", "label", "progress", "claude", "next",
+         "last_verdict", "conditions": [...全件...], "activities": [...]}
+         | {"label": "undefined"|"not_needed", "next"?, "reason"?}
+        失敗時: {"error": {"code": "VALIDATION_ERROR"|"NOT_FOUND"|"DATABASE_ERROR",
+            ...}}
+    """
+    return goal_service.get_goal(goal_id=goal_id, activity_id=activity_id, handle=handle)
+
+
 @mcp.tool()
 def get_overview(days: int = 7, limit: int = 20) -> dict:
     """Choose: 「今何が進んでいて、次に何をすべきか」をユーザーに一望で見せたいとき。
@@ -2053,7 +2188,7 @@ def report_signal(
 ) -> dict:
     """cc-memory 自身への故障報告・使用感不満・矛盾検出・運用計測イベントの統一入口。
 
-    kind（7種類、いずれか必須）:
+    kind（8種類、いずれか必須）:
       - "machine_error": ツールエラー・hook 失敗・サーバー異常を観察した
       - "friction": cc-memory の使い勝手への不満・違和感（ユーザー発話由来を含む）
       - "contradiction": 既存記録(decision/material/log)と矛盾する結論を出した/検出した。
@@ -2065,11 +2200,13 @@ def report_signal(
         context に missed_ids / cited_id 等の規約キーを書く
       - "boundary_case" / "rollback": 運用上の案件記録。summary に PR 番号等の
         案件識別子を含める（dedup の集約単位を案件ごとに分けるため）
+      - "goal_rollback": update_goal の reopen_reason（goal 判定の差し戻し）が
+        書く専用の kind。手で report_signal を呼んで報告するものではない
 
     同一内容の再報告は自動で集約される(occurrence_count)。
 
     Args:
-        kind: 上記7種のいずれか
+        kind: 上記8種のいずれか
         summary: 1行要約（空文字不可）
         detail: traceback・引数ダイジェスト・自由記述（optional）
         refs: [{"type": "decision", "id": 123}, ...] 形式の参照リスト（optional）
