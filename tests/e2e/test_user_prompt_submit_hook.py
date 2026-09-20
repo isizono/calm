@@ -276,7 +276,8 @@ class TestAskNotify:
         assert "<system-reminder>" in ctx
         assert "askの回答が届いています" in ctx
         assert "何色にする?" in ctx
-        assert "青にしよう" in ctx
+        assert "get_asks" in ctx
+        assert "青にしよう" not in ctx  # 回答本文はhook経由で注入しない
         # 消費済み: 追跡対象から外れている
         assert state.get_tracked_ask_ids() == []
 
@@ -319,21 +320,29 @@ class TestAskNotify:
         assert "askの回答が届いています" not in ctx
         assert "直近の応答で記録ツール" in ctx
 
-    def test_long_answer_exceeding_session_start_budget_is_shown_in_full_and_consumed(
+    def test_questions_exceeding_session_start_budget_are_shown_in_full_and_consumed(
         self, state_dir, temp_db
     ):
-        """本経路はcompose()を経由せず文字数予算を持たないため、
-        SessionStart hook側のcompose()（既定600字）なら切り詰められる長さの
-        回答でも、全文がそのまま表示され消費される。"""
+        """本経路はcompose()を経由せず文字数予算を持たない。回答本文は
+        hook経由で注入しないため行の長さはquestionだけで決まるが、
+        2件を同時に追跡し合計がSessionStart側の予算（既定600字）を超える
+        組み合わせでも、本経路は予算を意識せず両方とも全文表示・消費される
+        （対照: 同じ2件をSessionStart hook経由で処理すると1件しか表示され
+        ないことをtests/e2e/test_session_start_hook.py::
+        test_questions_exceeding_budget_are_deferred_not_lost_across_calls
+        で確認している）。"""
         from src.services import ask_service as ak
 
         act = self._seed_activity()
-        r1 = ak.add_ask("長い回答が来る質問", tags=["domain:test"], blocks=[act])
-        long_answer = "回答本文" * 500  # 2000字。SessionStart側の予算(600字)を大きく超える
-        ak.answer_ask(r1["id"], long_answer)
+        long_q_a = "A" * 500  # 質問はサービス層で500字上限
+        long_q_b = "B" * 500
+        r_a = ak.add_ask(long_q_a, tags=["domain:test"], blocks=[act])
+        r_b = ak.add_ask(long_q_b, tags=["domain:test"], blocks=[act])
+        ak.answer_ask(r_a["id"], "answer a")
+        ak.answer_ask(r_b["id"], "answer b")
 
         state = HookState(_SESSION_ID)
-        state.add_tracked_ask_ids([r1["id"]])
+        state.add_tracked_ask_ids([r_a["id"], r_b["id"]])
 
         result = _run_hook(
             {"session_id": _SESSION_ID}, state_dir, extra_env={"DISCUSSION_DB_PATH": temp_db}
@@ -341,7 +350,8 @@ class TestAskNotify:
         ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
 
         assert "askの回答が届いています" in ctx
-        assert long_answer in ctx
+        assert long_q_a in ctx
+        assert long_q_b in ctx
         assert state.get_tracked_ask_ids() == []
 
 

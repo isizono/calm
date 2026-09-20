@@ -110,7 +110,7 @@ def _format_ask_line(ask: dict) -> str:
     question = ask.get("question", "")
     status = ask.get("status")
     if status == "answered":
-        detail = ask.get("answer_body") or ""
+        detail = "回答あり（get_asksで本文を確認）"
     elif status == "dismissed":
         detail = f"却下: {ask.get('triage_reason') or ''}"
     elif status == "promoted":

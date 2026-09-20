@@ -1225,7 +1225,8 @@ class TestSessionStartHookAskNotify:
 
         assert "askの回答が届いています" in context
         assert "何色にする?" in context
-        assert "青にしよう" in context
+        assert "get_asks" in context
+        assert "青にしよう" not in context  # 回答本文はhook経由で注入しない
 
         # 消費済み: tracked_ask_ids fileが空になっている
         tracked_file = state_dir / "tracked_ask_ids_sess-track-1"
@@ -1252,27 +1253,43 @@ class TestSessionStartHookAskNotify:
         tracked_file = state_dir / "tracked_ask_ids_sess-track-2"
         assert tracked_file.read_text().strip() == str(r1["id"])
 
-    def test_answer_exceeding_budget_stays_tracked_across_repeated_calls(
+    def test_questions_exceeding_budget_are_deferred_not_lost_across_calls(
         self, temp_db, tmp_path
     ):
-        """回答がconfig.INJECTION_BUDGET_ASK_NOTIFY_CHARS（既定600字）を超える
-        長さの場合、compose()側のハード切り詰めで表示が欠落しうるため
-        本セクションには出さず、ask_idも追跡対象に残す。
+        """回答本文はhook経由で注入しない（_format_ask_line）ため、行の長さは
+        question（サービス層で500字上限）だけで決まり、1件だけでは
+        config.INJECTION_BUDGET_ASK_NOTIFY_CHARS（既定600字）を超えない。
+        2件が同時に追跡中で合計が予算を超える場合に、収まる分だけ表示・消費し
+        残りは追跡対象に残す（compose()側のハード切り詰めで表示が欠落しうる
+        ため）ことを確認する。
 
-        SessionStart hookを2回呼んでもロストせず追跡され続けることを確認する
-        （予算制約の無いUserPromptSubmit hook側での全文表示・消費の確認は
-        tests/e2e/test_user_prompt_submit_hook.py::TestAskNotifyが担当する）。
+        SessionStart hookを2回呼び、1回目で表示しきれなかった分が
+        ロストせず、2回目（残り1件だけになり予算に収まる）で表示・消費される
+        ことも合わせて確認する（予算制約の無いUserPromptSubmit hook側の
+        全文表示・消費の確認はtests/e2e/test_user_prompt_submit_hook.py::
+        TestAskNotifyが担当する）。
         """
         from src.services import ask_service as ak
 
         act = _seed_activity("a1")
-        r1 = ak.add_ask("長い回答が来る質問", tags=["domain:test"], blocks=[act])
-        long_answer = "回答本文" * 500  # 2000字。600字の予算を余裕を持って超える長さ
-        ak.answer_ask(r1["id"], long_answer)
+        long_q_a = "A" * 500  # 質問はサービス層で500字上限
+        long_q_b = "B" * 500
+        r_a = ak.add_ask(long_q_a, tags=["domain:test"], blocks=[act])
+        r_b = ak.add_ask(long_q_b, tags=["domain:test"], blocks=[act])
+        ak.answer_ask(r_a["id"], "answer a")
+        ak.answer_ask(r_b["id"], "answer b")
 
         state_dir = tmp_path / "hook-state"
         session_id = "sess-track-budget-overflow"
-        self._seed_tracked_ask_ids(state_dir, session_id, [r1["id"]])
+        # get_asksはlast_seen_at DESC, id DESC順で返すため、後に作ったr_bが先頭に来る
+        self._seed_tracked_ask_ids(state_dir, session_id, [r_a["id"], r_b["id"]])
+
+        # ask_notify表示行の正確な文言（open_asksセクションが別途answered-未
+        # triageのasksをquestionのみで表示するため、questionの部分文字列だけでは
+        # ask_notifyセクションでの表示/非表示を判定できない。行全体で判定する）
+        detail = "回答あり（get_asksで本文を確認）"
+        line_a = f"- (#{r_a['id']}) {long_q_a} → {detail}"
+        line_b = f"- (#{r_b['id']}) {long_q_b} → {detail}"
 
         result1 = _run_session_start_hook(
             temp_db,
@@ -1280,20 +1297,22 @@ class TestSessionStartHookAskNotify:
             stdin_payload={"session_id": session_id},
         )
         context1 = result1["hookSpecificOutput"]["additionalContext"]
-        assert "askの回答が届いています" not in context1
+        assert "askの回答が届いています" in context1
+        assert line_b in context1  # 先頭（r_b）は1件なら予算に収まり表示される
+        assert line_a not in context1  # r_aは2件目で予算を超えるため見送られる
 
         tracked_file = state_dir / f"tracked_ask_ids_{session_id}"
-        assert tracked_file.read_text().strip() == str(r1["id"])
+        assert tracked_file.read_text().strip() == str(r_a["id"])  # ロストせず追跡対象に残る
 
-        # 2回目のSessionStart呼び出しでも同様（ロストしていない）
+        # 2回目のSessionStart呼び出しでは残り1件だけになり予算に収まるため表示・消費される
         result2 = _run_session_start_hook(
             temp_db,
             extra_env={"HOOK_STATE_DIR": str(state_dir)},
             stdin_payload={"session_id": session_id},
         )
         context2 = result2["hookSpecificOutput"]["additionalContext"]
-        assert "askの回答が届いています" not in context2
-        assert tracked_file.read_text().strip() == str(r1["id"])
+        assert line_a in context2
+        assert not tracked_file.exists() or tracked_file.read_text().strip() == ""
 
 
 class TestSessionStartHookTranscriptPath:
