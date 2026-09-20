@@ -1,4 +1,4 @@
-"""運用計測の突合集計: 巻き戻し率・shadow乖離率・矛盾/miss/誤類推件数
+"""運用計測の突合集計: 巻き戻し率・shadow乖離率・矛盾/miss/誤類推件数・goal観測
 
 signal_events テーブル（記録先は品質投資コンポーネントの signal_service が正）と、
 GO判定パッケージの機械可読ブロック（go_package.py extract / shadow-report が出力する
@@ -25,8 +25,9 @@ if str(_project_root) not in sys.path:
 
 # 運用計測が読む signal_events の kind。8 種のうち machine_error / friction は
 # 汎用の故障・不満報告であり率指標の対象外（品質投資コンポーネントの管轄）。
-# goal_rollback（goal判定の差し戻し）も対象外。_rollback_metrics は kind='rollback'
-# を固定文字列で問い合わせるため、goal_rollback の追加で分子が変わることはない。
+# goal_rollback（goal判定の差し戻し）は _goal_metrics が読む。_rollback_metrics は
+# kind='rollback' を固定文字列で問い合わせるため、goal_rollback の追加で
+# 巻き戻し率の分子が変わることはない。
 _CONTRADICTION_RESOLUTIONS = ("existing_correct", "new_correct", "unresolved")
 
 # boundary_case / rollback の context スキーマ（mode / machine_verdict / divergence の
@@ -199,6 +200,58 @@ def _misapplied_metrics(conn: sqlite3.Connection, window_days: Optional[int], pa
     return result
 
 
+def _goal_tables_exist(conn: sqlite3.Connection) -> bool:
+    """goal機構の3表（goals/goal_conditions/goal_activities）がこのDBにあるか。
+
+    migration 0077 未適用のDBでも運用計測全体が落ちないよう、goal観測だけを
+    飛ばせるようにするための判定。
+    """
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS c FROM sqlite_master
+        WHERE type = 'table' AND name IN ('goals', 'goal_conditions', 'goal_activities')
+        """
+    ).fetchone()
+    return row["c"] == 3
+
+
+def _goal_metrics(conn: sqlite3.Connection, window_days: Optional[int]) -> Optional[dict]:
+    """goal機構の観測: 差し戻し回数・判定件数・誤判定率・放置件数。
+
+    goal は活動と異なり時系列のイベントログではなく現在の状態そのもの
+    （goals.closed）なので、差し戻し回数（signal_events由来）だけをwindowで
+    絞り、判定件数・放置件数は「いま」の状態をそのまま数える。goal機構の3表が
+    無いDB（migration未適用）ではNoneを返す。
+    """
+    if not _goal_tables_exist(conn):
+        return None
+
+    rollback_count = len(_fetch_signals(conn, "goal_rollback", window_days))
+    closed_count = conn.execute("SELECT COUNT(*) AS c FROM goals WHERE closed = 1").fetchone()["c"]
+    judged_count = closed_count + rollback_count
+
+    # 放置 = 未判定(closed=0)のまま、紐づくactivityが全部completed。
+    neglected_count = conn.execute(
+        """
+        SELECT COUNT(*) AS c
+        FROM goals g
+        WHERE g.closed = 0
+          AND NOT EXISTS (
+              SELECT 1 FROM goal_activities ga
+              JOIN activities a ON a.id = ga.activity_id
+              WHERE ga.goal_id = g.id AND a.status <> 'completed'
+          )
+        """
+    ).fetchone()["c"]
+
+    return {
+        "rollback_count": rollback_count,
+        "judged_count": judged_count,
+        "misjudgment_rate": _rate(rollback_count, judged_count),
+        "neglected_count": neglected_count,
+    }
+
+
 def compute_metrics(
     db_path: str,
     window_days: Optional[int] = 30,
@@ -214,7 +267,8 @@ def compute_metrics(
             件数のみ返し、率は計算しない
 
     Returns:
-        矛盾イベント数・巻き戻し率・shadow乖離率・pull miss・誤類推の集計結果
+        矛盾イベント数・巻き戻し率・shadow乖離率・pull miss・誤類推・goal観測の
+        集計結果。goal観測はgoal機構の3表が無いDBではNone
     """
     conn = _connect(db_path)
     try:
@@ -228,6 +282,7 @@ def compute_metrics(
             "shadow_divergence": _shadow_divergence_metrics(boundary_rows),
             "pull": _pull_metrics(conn, window_days, packages),
             "precedent_misapplied": _misapplied_metrics(conn, window_days, packages),
+            "goal": _goal_metrics(conn, window_days),
         }
     finally:
         conn.close()
@@ -299,6 +354,14 @@ def format_text(metrics: dict) -> str:
         )
     else:
         lines.append(f"誤類推件数: {m['misapplied_count']} 件（--packages-file 未供給のため率は算出不可）")
+
+    g = metrics["goal"]
+    if g is not None:
+        lines.append(
+            f"goal差し戻し回数: {g['rollback_count']} 件 / goal判定件数: {g['judged_count']} 件"
+            f" / goal誤判定率: {_format_rate(g['misjudgment_rate'])}"
+            f" / goal放置件数: {g['neglected_count']} 件"
+        )
 
     return "\n".join(lines)
 

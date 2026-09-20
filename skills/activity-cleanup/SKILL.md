@@ -120,7 +120,7 @@ snoozedの実態確認も同様に`check_in`を避けるが、`get_activities`�
 
 ### 6. 運用計測の確認
 
-棚卸しの最後に`uv run python scripts/ops_metrics.py`を実行する。出力にgoalの観測(判定待ちのまま紐づくactivityが全部completedになっているgoalの件数)が含まれる場合は、0件でなければその件数をユーザーに一言報告する。この観測がまだ出力に実装されていない場合は、この手順は無視してよい。
+棚卸しの最後に`uv run python scripts/ops_metrics.py`を実行する。出力の`goal放置件数`(判定待ちのまま紐づくactivityが全部completedになっているgoalの件数)が0件でなければ、その件数をユーザーに一言報告する。goal機構の3表(goals/goal_conditions/goal_activities)が無いDBでは出力にgoalの行自体が現れないので、その場合はこの手順を無視してよい。
 
 ## 自律度ルール
 

@@ -1,8 +1,8 @@
 """scripts/ops_metrics.py の単体テスト
 
 signal_events テーブルに record_signal で fixture 行を積み、定義式どおりの
-巻き戻し率・shadow乖離率・矛盾/miss/誤類推件数が計算されること、分母0での
-N/A 表示、--packages-file 供給/未供給でのフォールバックを検証する。
+巻き戻し率・shadow乖離率・矛盾/miss/誤類推件数・goal観測が計算されること、
+分母0での N/A 表示、--packages-file 供給/未供給でのフォールバックを検証する。
 """
 import json
 import sqlite3
@@ -15,7 +15,10 @@ from scripts.ops_metrics import (
     load_packages,
     main,
 )
+from src.services import goal_service as gs
 from src.services import signal_service as ss
+from src.services.activity_service import add_activity, update_activity
+from test_migrations.conftest import db_before_migration
 
 
 def _backdate(db_path: str, signal_id: int, days_ago: int) -> None:
@@ -187,6 +190,98 @@ class TestWindowDaysFiltering:
 
         metrics_all = compute_metrics(temp_db, window_days=None)
         assert metrics_all["rollback"]["rollback_count"] == 2
+
+
+class TestGoalMetrics:
+    def _closed_goal(self, handle: str) -> tuple[int, int]:
+        """条件1件が既に満たされた状態のgoalを新規作成し、即座にachievedで閉じる。"""
+        act = add_activity(title=f"act-{handle}", description="d", tags=["domain:test"], check_in=False)[
+            "activity_id"
+        ]
+        goal_id = gs.set_goal(
+            act,
+            {
+                "new": {
+                    "handle": handle,
+                    "statement": "終わりの一文",
+                    "conditions": [{"statement": "c1", "actor": "claude", "state": "satisfied", "note": "済"}],
+                }
+            },
+        )["goal_id_raw"]
+        gs.judge_goal(goal_id, "achieved", note="達成した")
+        return goal_id, act
+
+    def test_rollback_count_excludes_kind_rollback_and_vice_versa(self, temp_db):
+        # 既存の巻き戻し(kind='rollback')を1件積んでおく。goalの差し戻しと混ざらないこと。
+        ss.record_signal("rollback", "revert PR#9", source="gate")
+        goal_id, _ = self._closed_goal("goal-x")
+        gs.update_goal(goal_id, reopen_reason="判定が誤りだった")
+
+        metrics = compute_metrics(temp_db, window_days=None)
+
+        assert metrics["goal"]["rollback_count"] == 1
+        assert metrics["rollback"]["rollback_count"] == 1
+
+    def test_judged_count_is_closed_goals_plus_rollback_rows(self, temp_db):
+        self._closed_goal("goal-a")
+        goal_b, _ = self._closed_goal("goal-b")
+        self._closed_goal("goal-c")
+        gs.update_goal(goal_b, reopen_reason="判定が誤りだった")
+
+        metrics = compute_metrics(temp_db, window_days=None)
+
+        g = metrics["goal"]
+        assert g["rollback_count"] == 1
+        assert g["judged_count"] == 3  # 閉じているgoal(a, c)=2 + 差し戻し行数=1
+        assert g["misjudgment_rate"] == pytest.approx(1 / 3)
+
+    def test_misjudgment_rate_is_none_when_nothing_judged_yet(self, temp_db):
+        metrics = compute_metrics(temp_db, window_days=None)
+
+        g = metrics["goal"]
+        assert g["judged_count"] == 0
+        assert g["misjudgment_rate"] is None
+
+    def test_neglected_counts_goal_completed_outside_judge_goal(self, temp_db):
+        act = add_activity(title="act-neglect", description="d", tags=["domain:test"], check_in=False)[
+            "activity_id"
+        ]
+        gs.set_goal(
+            act,
+            {"new": {"handle": "goal-neglect", "statement": "終わりの一文", "conditions": [{"statement": "c1", "actor": "claude"}]}},
+        )
+        # judge_goalを経ずに直接completedにする(update_activityは未判定goalを拒否しない設計)
+        update_activity(act, status="completed", closed_by="claude")
+
+        metrics = compute_metrics(temp_db, window_days=None)
+
+        assert metrics["goal"]["neglected_count"] == 1
+
+    def test_neglected_excludes_goal_with_an_incomplete_linked_activity(self, temp_db):
+        act1 = add_activity(title="act-a", description="d", tags=["domain:test"], check_in=False)["activity_id"]
+        act2 = add_activity(title="act-b", description="d", tags=["domain:test"], check_in=False)["activity_id"]
+        goal_id = gs.set_goal(
+            act1,
+            {"new": {"handle": "goal-mixed", "statement": "終わりの一文", "conditions": [{"statement": "c1", "actor": "claude"}]}},
+        )["goal_id_raw"]
+        gs.set_goal(act2, {"goal_id": goal_id})
+        update_activity(act1, status="completed", closed_by="claude")
+        # act2は未完了のまま残す
+
+        metrics = compute_metrics(temp_db, window_days=None)
+
+        assert metrics["goal"]["neglected_count"] == 0
+
+    def test_no_crash_when_goal_tables_absent(self):
+        with db_before_migration("0077_add_goals") as db_path:
+            ss.record_signal("contradiction", "a vs b", source="agent", context={"resolution": "unresolved"})
+
+            metrics = compute_metrics(db_path, window_days=None)
+
+            assert metrics["goal"] is None
+            assert metrics["contradiction"]["count"] == 1  # 他の指標は普段どおり動く
+            text = format_text(metrics)
+            assert "goal" not in text
 
 
 class TestLoadPackages:
