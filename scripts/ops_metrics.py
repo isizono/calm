@@ -368,7 +368,7 @@ def format_text(metrics: dict) -> str:
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="signal_events + go-package抽出データの突合集計（巻き戻し率・shadow乖離率・矛盾/miss/誤類推件数）"
+        description="signal_events + go-package抽出データの突合集計（巻き戻し率・shadow乖離率・矛盾/miss/誤類推件数・goal観測）"
     )
     parser.add_argument(
         "--window-days", type=int, default=30,
