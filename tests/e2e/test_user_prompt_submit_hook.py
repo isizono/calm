@@ -1,19 +1,17 @@
 """hooks/user_prompt_submit_hook.py のE2Eテスト（イベント駆動アーキテクチャ版）
 
-subprocess.runでuser_prompt_submit_hook.pyを呼び出し、stdin→stdoutの入出力をテスト。
+user_prompt_submit_hook.pyを呼び出し、stdin→stdoutの入出力をテスト。
 nudge判定はevents.jsonl内のnudgeイベントに基づく。
 """
 import json
-import os
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 from hooks.hook_state import HookState
+from tests.helpers import run_hook_subprocess
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _SESSION_ID = "e2e-test-session-001"
 
 
@@ -28,16 +26,11 @@ def _run_hook(
     input_data: dict, state_dir: Path, extra_env: dict | None = None
 ) -> subprocess.CompletedProcess:
     """user_prompt_submit_hook.pyをサブプロセスで実行する"""
-    env = {**os.environ, "HOOK_STATE_DIR": str(state_dir)}
+    env = {"HOOK_STATE_DIR": str(state_dir)}
     if extra_env:
         env.update(extra_env)
-    return subprocess.run(
-        [sys.executable, "hooks/user_prompt_submit_hook.py"],
-        input=json.dumps(input_data),
-        capture_output=True,
-        text=True,
-        cwd=str(_PROJECT_ROOT),
-        env=env,
+    return run_hook_subprocess(
+        "hooks/user_prompt_submit_hook.py", json.dumps(input_data), extra_env=env
     )
 
 
@@ -359,13 +352,10 @@ class TestEmptyStdin:
     """stdin空/空白のみ → 空JSON、machine_errorシグナルは記録しない"""
 
     def test_whitespace_only_stdin_returns_empty_json(self, state_dir):
-        proc = subprocess.run(
-            [sys.executable, "hooks/user_prompt_submit_hook.py"],
-            input="   \n\t",
-            capture_output=True,
-            text=True,
-            cwd=str(_PROJECT_ROOT),
-            env={**os.environ, "HOOK_STATE_DIR": str(state_dir)},
+        proc = run_hook_subprocess(
+            "hooks/user_prompt_submit_hook.py",
+            "   \n\t",
+            extra_env={"HOOK_STATE_DIR": str(state_dir)},
         )
         assert proc.returncode == 0
         assert json.loads(proc.stdout) == {}
@@ -374,13 +364,10 @@ class TestEmptyStdin:
         """空stdinはjson.loadsの例外経路に入らず、signal_eventsへ記録されない"""
         from src.db import get_connection
 
-        proc = subprocess.run(
-            [sys.executable, "hooks/user_prompt_submit_hook.py"],
-            input="",
-            capture_output=True,
-            text=True,
-            cwd=str(_PROJECT_ROOT),
-            env={**os.environ, "HOOK_STATE_DIR": str(state_dir), "DISCUSSION_DB_PATH": temp_db},
+        proc = run_hook_subprocess(
+            "hooks/user_prompt_submit_hook.py",
+            "",
+            extra_env={"HOOK_STATE_DIR": str(state_dir), "DISCUSSION_DB_PATH": temp_db},
         )
         assert proc.returncode == 0
         assert json.loads(proc.stdout) == {}
@@ -399,13 +386,10 @@ class TestFailOpen:
     """例外→空JSON（フェイルオープン）"""
 
     def test_invalid_json_input(self, state_dir, temp_db):
-        proc = subprocess.run(
-            [sys.executable, "hooks/user_prompt_submit_hook.py"],
-            input="not valid json",
-            capture_output=True,
-            text=True,
-            cwd=str(_PROJECT_ROOT),
-            env={**os.environ, "HOOK_STATE_DIR": str(state_dir), "DISCUSSION_DB_PATH": temp_db},
+        proc = run_hook_subprocess(
+            "hooks/user_prompt_submit_hook.py",
+            "not valid json",
+            extra_env={"HOOK_STATE_DIR": str(state_dir), "DISCUSSION_DB_PATH": temp_db},
         )
         assert proc.returncode == 0
         assert json.loads(proc.stdout) == {}
@@ -415,13 +399,10 @@ class TestFailOpen:
         """top-level except到達時にsignal_eventsへmachine_errorが記録される"""
         from src.db import get_connection
 
-        proc = subprocess.run(
-            [sys.executable, "hooks/user_prompt_submit_hook.py"],
-            input="not valid json",
-            capture_output=True,
-            text=True,
-            cwd=str(_PROJECT_ROOT),
-            env={**os.environ, "HOOK_STATE_DIR": str(state_dir), "DISCUSSION_DB_PATH": temp_db},
+        proc = run_hook_subprocess(
+            "hooks/user_prompt_submit_hook.py",
+            "not valid json",
+            extra_env={"HOOK_STATE_DIR": str(state_dir), "DISCUSSION_DB_PATH": temp_db},
         )
         assert proc.returncode == 0
         assert json.loads(proc.stdout) == {}
