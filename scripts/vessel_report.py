@@ -4,12 +4,15 @@
 使い方:
     uv run python scripts/vessel_report.py
 
-出力する4指標:
+出力する5指標:
     (a) speakerの値の組（promptSource・turnOrigin・entrypoint・userType・
         isMeta・isSidechain）ごとの件数と、その組が最初に現れた行
     (b) 台帳の行数とバイト数（種類別、utteranceは人間の発話／人間でない発話の別）
     (c) 1セッションあたりの発話・応答・ツール呼び出し件数の分布
     (d) 人間の打鍵の許可リスト3組（typed/human・queued/human・sdk/human）の件数
+    (e) hookが自分で取れた環境の値（cwd・agent_type・端末の手がかり等）の組
+        ごとの件数。(a)とは別の表にする。判定には使われない値なので、組が
+        増えても(a)の可読性に影響しない
 
 (a)の「実測の26通りと比べられる形にする」は、この出力を実測レポートの表と
 同じ列順で突き合わせられる形にすることで満たす（既知集合をこのスクリプトに
@@ -30,6 +33,25 @@ from src.services.vessel_rules import ALLOWED_HUMAN_PROMPT_SOURCES  # noqa: E402
 
 _SPEAKER_FIELDS = ("promptSource", "turnOrigin", "entrypoint", "userType", "isMeta", "isSidechain")
 
+# speakerのtextに足された、transcriptの7キーの外にある観測用の生値（hooks/vessel_hook.py
+# の_hook_context()のキーと一致させる）。判定には使われないので、(a)の7キーの組とは
+# 別の表で数える。
+_HOOK_CONTEXT_FIELDS = (
+    "cwd",
+    "transcript_path",
+    "agent_type",
+    "term",
+    "term_program",
+    "tmux",
+    "sty",
+    "ssh_tty",
+    "stdin_isatty",
+    "stdout_isatty",
+    "claudecode",
+    "claude_code_entrypoint",
+    "claude_code_child_session",
+)
+
 
 def report_speaker_combos(conn) -> list[dict]:
     """(a) speakerの値の組ごとの件数と最初に現れた行。id昇順で最初の出現が分かる形。"""
@@ -38,6 +60,24 @@ def report_speaker_combos(conn) -> list[dict]:
     rows = conn.execute(
         f"""
         SELECT {extract_cols}, COUNT(*) AS cnt, MIN(id) AS first_id, MIN(created_at) AS first_seen_at
+        FROM obs_events
+        WHERE kind = 'speaker'
+        GROUP BY {group_cols}
+        ORDER BY first_id ASC
+        """
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def report_hook_context_combos(conn) -> list[dict]:
+    """(e) 足した値（hookが自分で取れる環境の値）の組ごとの件数。(a)とは別の表。"""
+    extract_cols = ", ".join(
+        f"json_extract(text, '$.hook_context.{f}') AS {f}" for f in _HOOK_CONTEXT_FIELDS
+    )
+    group_cols = ", ".join(_HOOK_CONTEXT_FIELDS)
+    rows = conn.execute(
+        f"""
+        SELECT {extract_cols}, COUNT(*) AS cnt, MIN(id) AS first_id
         FROM obs_events
         WHERE kind = 'speaker'
         GROUP BY {group_cols}
@@ -159,6 +199,10 @@ def main() -> int:
         for combo, cnt in report_allowlist_counts(conn).items():
             flag = " <- 0件（値の変化を疑う）" if cnt == 0 else ""
             print(f"{combo}: {cnt}{flag}")
+
+        _print_section("(e) 足した値（環境）の組ごとの件数")
+        for row in report_hook_context_combos(conn):
+            print(row)
     finally:
         conn.close()
     return 0

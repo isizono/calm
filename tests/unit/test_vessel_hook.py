@@ -15,12 +15,32 @@ import tempfile
 import pytest
 
 from hooks import vessel_hook
+from src.services.vessel_rules import is_human_speaker
+
+# hook_contextが読む環境変数。実行機の値でテストが揺れないよう毎回除去する。
+_HOOK_CONTEXT_ENV_VARS = (
+    "TERM",
+    "TERM_PROGRAM",
+    "TMUX",
+    "STY",
+    "SSH_TTY",
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_CHILD_SESSION",
+)
 
 
 @pytest.fixture(autouse=True)
 def _vessel_log_path(tmp_path, monkeypatch):
     """hookのログ出力先を毎回tmp_pathへ向け、開発機の実ログファイルを汚染しない。"""
     monkeypatch.setenv("CALM_VESSEL_LOG_PATH", str(tmp_path / "vessel_hook.jsonl"))
+
+
+@pytest.fixture(autouse=True)
+def _clean_hook_context_env(monkeypatch):
+    """hook_contextが読む環境変数を毎回除去し、テストを実行機の環境から独立させる。"""
+    for name in _HOOK_CONTEXT_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture
@@ -133,6 +153,7 @@ class TestUserPromptSubmit:
                 "prompt_id": "p1",
                 "prompt": "hello there",
                 "transcript_path": transcript_path,
+                "cwd": "/work/dir",
             },
         )
         utterance_rows = _rows(vessel_db, "utterance")
@@ -148,6 +169,21 @@ class TestUserPromptSubmit:
             "isMeta": None,
             "isSidechain": False,
             "origin": {"kind": "x"},
+            "hook_context": {
+                "cwd": "/work/dir",
+                "transcript_path": transcript_path,
+                "agent_type": None,
+                "term": None,
+                "term_program": None,
+                "tmux": False,
+                "sty": False,
+                "ssh_tty": False,
+                "stdin_isatty": False,
+                "stdout_isatty": False,
+                "claudecode": None,
+                "claude_code_entrypoint": None,
+                "claude_code_child_session": None,
+            },
         }
 
     def test_no_speaker_when_two_rows_match(self, vessel_db, monkeypatch, capsys, tmp_path):
@@ -188,6 +224,115 @@ class TestUserPromptSubmit:
             },
         )
         assert _rows(vessel_db, "speaker") == []
+
+
+class TestHookContext:
+    """話者の行に足した、transcriptの7キーの外の生値（判定には使わない）。"""
+
+    def _human_transcript(self, tmp_path, prompt_id="p1", text="hello there"):
+        return _write_transcript(
+            tmp_path,
+            [
+                {
+                    "type": "user",
+                    "promptId": prompt_id,
+                    "message": {"content": text},
+                    "promptSource": "typed",
+                    "turnOrigin": "human",
+                }
+            ],
+        )
+
+    def test_records_hook_input_and_env_values_when_present(
+        self, vessel_db, monkeypatch, capsys, tmp_path
+    ):
+        """agent_type（サブエージェントの判別材料）と端末の手がかりが実際に来たら記録する。"""
+        transcript_path = self._human_transcript(tmp_path)
+        monkeypatch.setenv("TERM", "xterm-256color")
+        monkeypatch.setenv("TMUX", "/tmp/tmux-501/default,123,0")
+        monkeypatch.setenv("CLAUDECODE", "1")
+        _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "prompt": "hello there",
+                "transcript_path": transcript_path,
+                "agent_type": "scout",
+            },
+        )
+        hook_context = json.loads(_rows(vessel_db, "speaker")[0]["text"])["hook_context"]
+        assert hook_context["agent_type"] == "scout"
+        assert hook_context["term"] == "xterm-256color"
+        assert hook_context["tmux"] is True
+        assert hook_context["sty"] is False
+        assert hook_context["claudecode"] == "1"
+
+    def test_varying_hook_context_does_not_change_human_classification(
+        self, vessel_db, monkeypatch, capsys, tmp_path
+    ):
+        """足した値を変えても、人間かどうかの判定(turnOrigin/promptSourceだけ)は変わらない。"""
+        transcript_a = self._human_transcript(tmp_path, prompt_id="p1", text="first")
+        _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "prompt": "first",
+                "transcript_path": transcript_a,
+                "cwd": "/work/dir/a",
+                "agent_type": "scout",
+            },
+        )
+        monkeypatch.setenv("TMUX", "/tmp/tmux-501/default,123,0")
+        transcript_b = self._human_transcript(tmp_path, prompt_id="p2", text="second")
+        _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "s2",
+                "prompt_id": "p2",
+                "prompt": "second",
+                "transcript_path": transcript_b,
+                "cwd": "/other/dir/b",
+                "agent_type": None,
+            },
+        )
+        speaker_a, speaker_b = (json.loads(r["text"]) for r in _rows(vessel_db, "speaker"))
+
+        # 足した値(hook_context)は実際に異なる
+        assert speaker_a["hook_context"]["cwd"] != speaker_b["hook_context"]["cwd"]
+        assert speaker_a["hook_context"]["tmux"] != speaker_b["hook_context"]["tmux"]
+
+        # 判定に使う2キーは両方とも同じで、判定結果も変わらない
+        assert speaker_a["turnOrigin"] == speaker_b["turnOrigin"] == "human"
+        assert speaker_a["promptSource"] == speaker_b["promptSource"] == "typed"
+        assert (
+            is_human_speaker(speaker_a["turnOrigin"], speaker_a["promptSource"])
+            == is_human_speaker(speaker_b["turnOrigin"], speaker_b["promptSource"])
+            is True
+        )
+
+    def test_missing_values_stay_null_not_dropped(self, vessel_db, monkeypatch, capsys, tmp_path):
+        """hook入力にも環境にも無い値は、キーごと落とさずnullのまま残す。"""
+        transcript_path = self._human_transcript(tmp_path)
+        _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "prompt": "hello there",
+                "transcript_path": transcript_path,
+            },
+        )
+        hook_context = json.loads(_rows(vessel_db, "speaker")[0]["text"])["hook_context"]
+        for key in ("cwd", "agent_type", "term", "term_program", "claudecode",
+                    "claude_code_entrypoint", "claude_code_child_session"):
+            assert key in hook_context
+            assert hook_context[key] is None
 
 
 class TestPostToolUse:

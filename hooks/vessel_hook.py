@@ -16,6 +16,7 @@ sqlite3 を直接使う（起動コストを抑えるため）。例外はすべ
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 import time
@@ -175,7 +176,36 @@ def _select_single_user_match(rows: list[dict], prompt_id: str, prompt: str) -> 
     return matches[0]
 
 
-def _speaker_json(row: dict) -> str:
+# 起動の系列が分かる CLAUDE_CODE_* 環境変数。トークン・鍵らしき名前のもの
+# （*_TOKEN・*_SOCKET等）は除く。
+_CLAUDE_LINEAGE_ENV_VARS = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_CHILD_SESSION")
+
+
+def _hook_context(data: dict) -> dict:
+    """観測用の生値。transcriptの7キーの外にある材料で、判定には一切使わない。
+
+    取れなかった値はキーを落とさずnullのまま残す。stdin/stdoutはhookが標準入力
+    でJSONを受け取る構造上、常にisatty()=Falseになりうる（パイプ経由のため）。
+    それでも値そのものは観測のため残す。
+    """
+    context = {
+        "cwd": data.get("cwd"),
+        "transcript_path": data.get("transcript_path"),
+        "agent_type": data.get("agent_type"),
+        "term": os.environ.get("TERM"),
+        "term_program": os.environ.get("TERM_PROGRAM"),
+        "tmux": "TMUX" in os.environ,
+        "sty": "STY" in os.environ,
+        "ssh_tty": "SSH_TTY" in os.environ,
+        "stdin_isatty": sys.stdin.isatty(),
+        "stdout_isatty": sys.stdout.isatty(),
+    }
+    for name in _CLAUDE_LINEAGE_ENV_VARS:
+        context[name.lower()] = os.environ.get(name)
+    return context
+
+
+def _speaker_json(row: dict, data: dict) -> str:
     return json.dumps(
         {
             "promptSource": row.get("promptSource"),
@@ -185,6 +215,7 @@ def _speaker_json(row: dict) -> str:
             "isMeta": row.get("isMeta"),
             "isSidechain": row.get("isSidechain"),
             "origin": row.get("origin"),
+            "hook_context": _hook_context(data),
         },
         ensure_ascii=False,
     )
@@ -230,7 +261,7 @@ def _handle_user_prompt_submit(conn: sqlite3.Connection, data: dict) -> None:
     conn.execute(
         "INSERT OR IGNORE INTO obs_events (session_id, kind, text, ref_id) "
         "VALUES (?, 'speaker', ?, ?)",
-        (session_id, _speaker_json(matched), utterance_id),
+        (session_id, _speaker_json(matched, data), utterance_id),
     )
 
 
@@ -356,7 +387,7 @@ def _handle_stop(conn: sqlite3.Connection, data: dict) -> None:
             conn.execute(
                 "INSERT OR IGNORE INTO obs_events (session_id, kind, text, ref_id) "
                 "VALUES (?, 'speaker', ?, ?)",
-                (session_id, _speaker_json(matched), utterance_id),
+                (session_id, _speaker_json(matched, data), utterance_id),
             )
 
     conn.execute(
