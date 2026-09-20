@@ -36,7 +36,7 @@ from src.services.vessel_rules import (
 )
 
 DEFAULT_DB_PATH = Path.home() / ".claude" / ".claude-code-memory" / "discussion.db"
-LOG_PATH = Path.home() / ".cc-memory" / "logs" / "vessel_hook.jsonl"
+DEFAULT_LOG_PATH = Path.home() / ".cc-memory" / "logs" / "vessel_hook.jsonl"
 
 CONNECT_TIMEOUT = 2.0
 BUSY_TIMEOUT_MS = 2000
@@ -44,9 +44,8 @@ BUSY_TIMEOUT_MS = 2000
 # transcriptのユーザー行として扱うtype値（"human"は旧形式transcriptの別名）。
 _USER_ROW_TYPES = ("user", "human")
 
-# 観測期間だけの仕掛け: イベントごとに標準入力のキー名の一覧（値は書かない）を
-# ログへ残す。基準線の実データが集まったことを確認したら False にしてこの
-# 仕掛けを止める。恒久機構ではない。
+# 観測用の仕掛け: イベントごとに標準入力のキー名の一覧（値は書かない）をログへ
+# 残す。恒久機構ではない。
 STDIN_KEY_PROBE_ENABLED = True
 
 
@@ -54,11 +53,16 @@ def _resolve_db_path() -> str:
     return env_get("CALM_DB_PATH", str(DEFAULT_DB_PATH))
 
 
+def _resolve_log_path() -> Path:
+    return Path(env_get("CALM_VESSEL_LOG_PATH", str(DEFAULT_LOG_PATH)))
+
+
 def _log(payload: dict) -> None:
     try:
-        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        log_path = _resolve_log_path()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
         record = {"ts": time.time(), **payload}
-        with LOG_PATH.open("a", encoding="utf-8") as f:
+        with log_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception:
         pass  # ログ自体の失敗もfail-open
@@ -68,6 +72,7 @@ def _connect(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, timeout=CONNECT_TIMEOUT)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
