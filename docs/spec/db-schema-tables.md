@@ -5,7 +5,7 @@
 <!-- 再生成: uv run python scripts/dump_db_schema.py -->
 
 `migrations/` を通し番号順に全適用した結果として得られる、現在のテーブル/ビュー構造の機械的な写しである。
-カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0074）。
+カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0075）。
 
 「なぜこの形なのか」（設計判断の背景・変遷・既知の課題）は `docs/spec/db-schema.md` を参照。
 本ファイルは現在値のみを扱い、変遷の経緯（旧カラムの削除理由等）は記載しない。
@@ -572,6 +572,22 @@ CREATE TABLE decisions (
 
 </details>
 
+### delivery_channels
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| channel | TEXT | NO | — | PK |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE delivery_channels (channel TEXT PRIMARY KEY)
+```
+
+</details>
+
 ### discussion_logs
 
 | カラム名 | 型 | NULL | デフォルト | PK |
@@ -779,6 +795,202 @@ CREATE TABLE instance_meta (
 
 </details>
 
+### lesson_entries
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| id | INTEGER | NO | — | PK |
+| lesson_id | INTEGER | NO | — | — |
+| kind | TEXT | NO | — | — |
+| body | TEXT | YES | — | — |
+| note | TEXT | YES | — | — |
+| deliver_event | TEXT | YES | — | — |
+| deliver_spec | TEXT | YES | — | — |
+| step_event | TEXT | YES | — | — |
+| step_spec | TEXT | YES | — | — |
+| quote | TEXT | YES | — | — |
+| created_at | TEXT | NO | `datetime('now')` | — |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE lesson_entries (      -- 知見スレッドの追記。追記専用
+  id INTEGER PRIMARY KEY, lesson_id INTEGER NOT NULL REFERENCES lessons(id),
+  kind TEXT NOT NULL CHECK (kind IN ('body','conditions','note','violated','contradicted','withdraw')),
+  body TEXT CHECK (body IS NULL OR length(body) <= 300),
+  note TEXT CHECK (note IS NULL OR length(note) <= 150),
+  deliver_event TEXT, deliver_spec TEXT, step_event TEXT, step_spec TEXT,  -- lessons と同じ値のCHECK
+  quote TEXT CHECK (quote IS NULL OR length(quote) BETWEEN 8 AND 300),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  CHECK ((kind = 'body') = (body IS NOT NULL)), CHECK ((kind = 'note') = (note IS NOT NULL)),
+  CHECK (kind = 'conditions' OR coalesce(deliver_event, deliver_spec, step_event, step_spec) IS NULL),
+  CHECK (kind NOT IN ('violated','contradicted') OR quote IS NOT NULL))
+```
+
+</details>
+
+### lesson_kinds
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| kind | TEXT | NO | — | PK |
+| delivers | INTEGER | NO | — | — |
+| steps | INTEGER | NO | — | — |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE lesson_kinds (kind TEXT PRIMARY KEY,
+  delivers INTEGER NOT NULL CHECK (delivers IN (0,1)),
+  steps    INTEGER NOT NULL CHECK (steps IN (0,1) AND steps <= delivers))
+```
+
+</details>
+
+### lessons
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| id | INTEGER | NO | — | PK |
+| kind | TEXT | NO | — | — |
+| handle | TEXT | NO | — | — |
+| body | TEXT | NO | — | — |
+| deliver_event | TEXT | YES | — | — |
+| deliver_spec | TEXT | YES | — | — |
+| step_event | TEXT | YES | — | — |
+| step_spec | TEXT | YES | — | — |
+| quote | TEXT | YES | — | — |
+| created_at | TEXT | NO | `datetime('now')` | — |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE lessons (             -- 知見の見出し。作成後は不変
+  id INTEGER PRIMARY KEY, kind TEXT NOT NULL REFERENCES lesson_kinds(kind),
+  handle TEXT NOT NULL UNIQUE CHECK (handle NOT GLOB '*[^a-z0-9-]*' AND length(handle) BETWEEN 3 AND 40),
+  body TEXT NOT NULL CHECK (length(body) <= 300),
+  deliver_event TEXT CHECK (deliver_event IN ('session','prompt','tool_call','tool_fail')),
+  deliver_spec TEXT,               -- 条件JSON。書き込みツールがキー順と空白を正規化して入れる
+  step_event TEXT CHECK (step_event IN ('tool_call','tool_fail','reply')), step_spec TEXT,
+  quote TEXT CHECK (quote IS NULL OR length(quote) BETWEEN 8 AND 300),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  CHECK ((deliver_event IS NULL) = (deliver_spec IS NULL)), CHECK ((step_event IS NULL) = (step_spec IS NULL)))
+```
+
+</details>
+
+### lessons_fts
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| handle | — | YES | — | — |
+| body | — | YES | — | — |
+| quote | — | YES | — | — |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE VIRTUAL TABLE lessons_fts USING fts5(handle, body, quote, tokenize = 'trigram')
+```
+
+</details>
+
+### lessons_fts_config
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| k | — | NO | — | PK |
+| v | — | YES | — | — |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE 'lessons_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID
+```
+
+</details>
+
+### lessons_fts_content
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| id | INTEGER | NO | — | PK |
+| c0 | — | YES | — | — |
+| c1 | — | YES | — | — |
+| c2 | — | YES | — | — |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE 'lessons_fts_content'(id INTEGER PRIMARY KEY, c0, c1, c2)
+```
+
+</details>
+
+### lessons_fts_data
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| id | INTEGER | NO | — | PK |
+| block | BLOB | YES | — | — |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE 'lessons_fts_data'(id INTEGER PRIMARY KEY, block BLOB)
+```
+
+</details>
+
+### lessons_fts_docsize
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| id | INTEGER | NO | — | PK |
+| sz | BLOB | YES | — | — |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE 'lessons_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB)
+```
+
+</details>
+
+### lessons_fts_idx
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| segid | — | NO | — | PK |
+| term | — | NO | — | PK |
+| pgno | — | YES | — | — |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE 'lessons_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID
+```
+
+</details>
+
 ### log_tags
 
 | カラム名 | 型 | NULL | デフォルト | PK |
@@ -868,6 +1080,72 @@ CREATE TABLE migration_ledger (
     content_sha256 TEXT NOT NULL,
     applied_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 )
+```
+
+</details>
+
+### obs_events
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| id | INTEGER | NO | — | PK |
+| session_id | TEXT | NO | — | — |
+| prompt_id | TEXT | YES | — | — |
+| agent_id | TEXT | YES | — | — |
+| kind | TEXT | NO | — | — |
+| flag | TEXT | YES | — | — |
+| text | TEXT | YES | — | — |
+| tool_name | TEXT | YES | — | — |
+| tool_use_id | TEXT | YES | — | — |
+| lesson_id | INTEGER | YES | — | — |
+| entry_id | INTEGER | YES | — | — |
+| ref_id | INTEGER | YES | — | — |
+| channel | TEXT | YES | — | — |
+| src_uuid | TEXT | YES | — | — |
+| created_at | TEXT | NO | `datetime('now')` | — |
+
+インデックス:
+- `idx_obs_lesson` ON `obs_events`(lesson_id, kind, session_id)
+- `idx_obs_session` ON `obs_events`(session_id, kind, prompt_id)
+- `uq_obs_speaker` UNIQUE ON `obs_events`(ref_id)
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE obs_events (          -- 観測台帳。器のhookだけが書く。追記専用。前後の判定は id で行う
+  id INTEGER PRIMARY KEY, session_id TEXT NOT NULL,
+  prompt_id TEXT, agent_id TEXT,   -- prompt_id は最初の入力より前は無い。agent_id は印字モード(headless)
+                                    -- 起動のサブエージェント内でだけ入る。対話セッション下のサブエージェント
+                                    -- では入らない
+  kind TEXT NOT NULL REFERENCES obs_kinds(kind),
+  flag TEXT CHECK (flag IN ('strong','weak')),   -- 発話の地の文が語彙に当たったか
+  text TEXT, tool_name TEXT, tool_use_id TEXT,
+  lesson_id INTEGER REFERENCES lessons(id), entry_id INTEGER REFERENCES lesson_entries(id),
+  ref_id INTEGER REFERENCES obs_events(id),      -- speaker・bind・human_withdraw が指す行
+  channel TEXT REFERENCES delivery_channels(channel),
+  src_uuid TEXT,                                 -- reply の元の transcript のメッセージ識別子
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),   -- 記録用。判定には使わない
+  CHECK (kind NOT IN ('delivered','suppressed','stepped','bind','human_withdraw') OR lesson_id IS NOT NULL),
+  CHECK (kind <> 'human_withdraw' OR ref_id IS NOT NULL),
+  CHECK (kind NOT IN ('delivered','suppressed') OR channel IS NOT NULL), CHECK (kind = 'utterance' OR flag IS NULL),
+  CHECK (kind NOT IN ('utterance','reply','speaker') OR text IS NOT NULL), CHECK (kind <> 'speaker' OR ref_id IS NOT NULL),
+  CHECK (kind NOT IN ('tool','tool_fail') OR tool_name IS NOT NULL), UNIQUE (session_id, src_uuid))
+```
+
+</details>
+
+### obs_kinds
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| kind | TEXT | NO | — | PK |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE obs_kinds (kind TEXT PRIMARY KEY)
 ```
 
 </details>
@@ -1537,6 +1815,41 @@ CREATE TABLE "vec_index_rowids"(rowid INTEGER PRIMARY KEY AUTOINCREMENT,id,chunk
 
 ```sql
 CREATE TABLE "vec_index_vector_chunks00"(rowid PRIMARY KEY,vectors BLOB NOT NULL)
+```
+
+</details>
+
+### vessel_cursor
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| session_id | TEXT | NO | — | PK |
+| byte_offset | INTEGER | NO | — | — |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE vessel_cursor (session_id TEXT PRIMARY KEY, byte_offset INTEGER NOT NULL)
+```
+
+</details>
+
+### vessel_meta
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| id | INTEGER | NO | — | PK |
+| mode | TEXT | NO | `'observe'` | — |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE vessel_meta (id INTEGER PRIMARY KEY CHECK (id = 1),
+  mode TEXT NOT NULL DEFAULT 'observe' CHECK (mode IN ('off','observe','on')))
 ```
 
 </details>
