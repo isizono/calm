@@ -5,7 +5,6 @@
 到達済みの組み合わせだけを使う。
 """
 from src.services.vessel_rules import (
-    ALLOWED_HUMAN_PROMPT_SOURCES,
     compute_flag,
     is_human_speaker,
     plain_text,
@@ -63,9 +62,6 @@ class TestHumanDiscriminationAllowlist:
     def test_allowed_combos_are_human(self):
         for source in ("typed", "queued", "sdk"):
             assert is_human_speaker("human", source) is True
-
-    def test_allowed_prompt_sources_constant_matches_spec(self):
-        assert ALLOWED_HUMAN_PROMPT_SOURCES == frozenset({"typed", "queued", "sdk"})
 
     def test_slash_command_turn_is_not_human(self):
         # turnOriginはhumanだがpromptSourceキー自体が欠落する（スラッシュコマンド展開）

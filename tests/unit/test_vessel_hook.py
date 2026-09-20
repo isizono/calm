@@ -17,6 +17,12 @@ import pytest
 from hooks import vessel_hook
 
 
+@pytest.fixture(autouse=True)
+def _vessel_log_path(tmp_path, monkeypatch):
+    """hookのログ出力先を毎回tmp_pathへ向け、開発機の実ログファイルを汚染しない。"""
+    monkeypatch.setenv("CALM_VESSEL_LOG_PATH", str(tmp_path / "vessel_hook.jsonl"))
+
+
 @pytest.fixture
 def vessel_db(temp_db, monkeypatch):
     """全migration適用済みの一時DB（temp_db）をvessel_hookのDB解決先にも向ける。"""
@@ -99,6 +105,10 @@ class TestUserPromptSubmit:
         assert rows[0]["flag"] is None
 
     def test_writes_speaker_when_single_match_found(self, vessel_db, monkeypatch, capsys, tmp_path):
+        # isMetaキー欠落・isSidechain=false・origin={"kind": ...} は
+        # preflight_origins.md実測のtyped|human組(104件)の実際の形。isMetaを
+        # 省略するのは、isMeta/isSidechainを取り違えても両方Falseで区別が付かない
+        # 事態を避けるため（.get()の既定値はNoneでFalseと異なる）。
         transcript_path = _write_transcript(
             tmp_path,
             [
@@ -110,7 +120,6 @@ class TestUserPromptSubmit:
                     "turnOrigin": "human",
                     "entrypoint": "cli",
                     "userType": "external",
-                    "isMeta": False,
                     "isSidechain": False,
                     "origin": {"kind": "x"},
                 }
@@ -136,7 +145,7 @@ class TestUserPromptSubmit:
             "turnOrigin": "human",
             "entrypoint": "cli",
             "userType": "external",
-            "isMeta": False,
+            "isMeta": None,
             "isSidechain": False,
             "origin": {"kind": "x"},
         }
@@ -223,6 +232,21 @@ class TestPostToolUse:
             self._post_tool_use(monkeypatch, capsys, prompt_id=None, tool_use_id=f"t{i}")
         assert len(_rows(vessel_db, "tool")) == 40
         assert len(_rows(vessel_db, "tool_overflow")) == 1
+
+    def test_tool_input_summary_truncated_to_300_chars(self, vessel_db, monkeypatch, capsys):
+        _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "PostToolUse",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "tool_name": "Bash",
+                "tool_input": {"command": "x" * 500},
+                "tool_use_id": "t1",
+            },
+        )
+        rows = _rows(vessel_db, "tool")
+        assert len(rows[0]["text"]) == 300
 
 
 class TestPostToolUseFailure:
@@ -432,3 +456,39 @@ class TestFailOpen:
         # どのkindも書かれない
         for kind in ("boundary", "utterance", "reply", "tool", "tool_fail"):
             assert _rows(vessel_db, kind) == []
+
+    def test_handler_exception_rolls_back_earlier_writes_in_same_transaction(
+        self, vessel_db, monkeypatch, capsys, tmp_path
+    ):
+        """1回の起動の書き込みは1トランザクション: 途中で例外が起きたら直前までの書き込みも差し戻す。"""
+        transcript_path = _write_transcript(
+            tmp_path,
+            [
+                {
+                    "type": "assistant",
+                    "promptId": "p1",
+                    "uuid": "a-1",
+                    "message": {"content": [{"type": "text", "text": "first reply"}]},
+                },
+                {
+                    "type": "assistant",
+                    "promptId": ["not-a-string"],  # sqlite3がbindできず例外になる
+                    "uuid": "a-2",
+                    "message": {"content": [{"type": "text", "text": "second reply"}]},
+                },
+            ],
+        )
+        _run_hook(
+            monkeypatch, capsys,
+            {"hook_event_name": "Stop", "session_id": "s1", "transcript_path": transcript_path},
+        )
+        assert _rows(vessel_db, "reply") == []
+
+        conn = sqlite3.connect(vessel_db)
+        try:
+            cursor_row = conn.execute(
+                "SELECT byte_offset FROM vessel_cursor WHERE session_id = 's1'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert cursor_row is None  # カーソル更新も同じトランザクションに含まれ差し戻る
