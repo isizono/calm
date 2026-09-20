@@ -1253,7 +1253,7 @@ class TestSessionStartHookAskNotify:
         tracked_file = state_dir / "tracked_ask_ids_sess-track-2"
         assert tracked_file.read_text().strip() == str(r1["id"])
 
-    def test_questions_exceeding_budget_are_deferred_not_lost_across_calls(
+    def test_answer_exceeding_budget_stays_tracked_across_repeated_calls(
         self, temp_db, tmp_path
     ):
         """回答本文はhook経由で注入しない（_format_ask_line）ため、行の長さは
