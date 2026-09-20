@@ -1,6 +1,6 @@
 """add_ask通知（notify_wanted）のhook側二重網。
 
-Monitor（notify_pathのtail -F）が起動されなかった・落ちた場合でも、毎ターン
+add_ask後の回答待ちhookが無いハーネス（Codex）や、待機が途切れた場合でも、毎ターン
 確実に発火するhook（SessionStart/UserPromptSubmit）が拾えるようにするための
 共有ロジック。追跡対象ask_id一覧（HookState.tracked_ask_ids）は、そのセッション
 自身がadd_ask/unsubscribe_askを呼んだ事実からStop hook（hooks/hook_transcript.py

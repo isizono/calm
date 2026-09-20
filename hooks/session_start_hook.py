@@ -640,7 +640,7 @@ def _build_ask_notify_section(conn, session_id: str | None = None, source: str |
     get_asksで直接照会し、解決済み（open以外）になっていれば表示して
     追跡対象から外す（hooks/ask_notify_section.build_ask_notify_lines）。
 
-    Monitor（notify_pathのtail -F監視）が起動されなかった・落ちた場合の
+    add_ask後の回答待ちhookが無いハーネス（Codex）や、待機が途切れた場合の
     二重網。identity解決（resolve_identity_by_ancestry等）には一切触れない。
     追跡登録自体はStop hook（hook_transcript.extract_ask_registrations）が担う。
 
