@@ -313,7 +313,7 @@ class TestAskNotify:
         assert "askの回答が届いています" not in ctx
         assert "直近の応答で記録ツール" in ctx
 
-    def test_long_answer_exceeding_session_start_budget_is_shown_in_full_and_consumed(
+    def test_questions_exceeding_session_start_budget_are_shown_in_full_and_consumed(
         self, state_dir, temp_db
     ):
         """本経路はcompose()を経由せず文字数予算を持たない。回答本文は
@@ -322,7 +322,7 @@ class TestAskNotify:
         組み合わせでも、本経路は予算を意識せず両方とも全文表示・消費される
         （対照: 同じ2件をSessionStart hook経由で処理すると1件しか表示され
         ないことをtests/e2e/test_session_start_hook.py::
-        test_answer_exceeding_budget_stays_tracked_across_repeated_calls
+        test_questions_exceeding_budget_are_deferred_not_lost_across_calls
         で確認している）。"""
         from src.services import ask_service as ak
 
