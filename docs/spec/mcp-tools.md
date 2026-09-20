@@ -22,7 +22,7 @@ last-synced-migration: 0048
 
 ## 1. ツール一覧
 
-全52ツール。カテゴリ別に一覧する。
+全55ツール。カテゴリ別に一覧する。
 
 ### 1.1 記録系（add系）
 
@@ -137,6 +137,16 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 | --- | --- |
 | `get_sessions` | 稼働中セッションの「CLI表示名 → 別名」対応表を取得する |
 | `set_session_alias` | 自セッションの別名を手動で上書きする |
+
+### 1.13 自己改善ループの器（知見）
+
+人間の訂正・指示から機械可読な「知見」を溜め、繰り返しの訂正を減らすための観測台帳・知見スレッドを持つ。観測（`obs_events`）自体はhook側で行い、ここに載る3ツールはClaudeが呼ぶ書き込み・読み取り面のみ。
+
+| ツール | 概要 |
+| --- | --- |
+| `record_lesson` | 知見を1件作る |
+| `append_lesson` | 知見に1件追記する（本文・条件の更新、補足、有効/無効の訂正、撤回） |
+| `get_lessons` | 知見を引く（handle指定・全文検索） |
 
 ---
 
@@ -733,6 +743,54 @@ Claude Codeセッション間の「CLI表示名（例: `workspace-a2`）→人�
 
 **返り値**: `{candidates: [{decision_id, title, score, match_reason, already_destabilized, already_resolved}], mode: "vector" | "tag_only"}`。
 **動作**: read-only。候補は「(a) sourceとtag集合が重なるnon-retract decision」と「(b) sourceが属するtopicのembedding近傍topicに属するnon-retract decision」の和集合で、tag_jaccard・embedding類似度（近傍topic routingのdistanceを正規化）・同一topicボーナス（same_topic_bonus）を合成したスコア降順で返す。embeddingサーバー停止時は例外にせず、embedding近傍チャネル(b)のみを無効化してタグ一致チャネル(a)の候補を`mode: "tag_only"`で返し続ける（縮退してもゼロ件にはしない）。`decision_supersedes`（kind='destabilizes'）を参照して`already_destabilized`、`decision_destabilization_resolutions`を参照して`already_resolved`を付与し、`include_already_resolved=false`（既定）ではresolve済み候補を除外する。実際にdestabilizesエッジを張るかどうかは呼び出し側の判断で、別途`add_relation(relation_type="destabilizes")`を呼ぶ。
+
+### 2.50 record_lesson
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| kind | string | yes | - | `prevent`（配達条件・踏み跡条件を両方持つ）または `tally`（条件を持たず配達しない）。`guide`（初期値専用）はここからは作れない |
+| handle | string | yes | - | 英小文字・数字・ハイフンの3〜40字。撤回済みも含め既存のhandleと重複不可 |
+| body | string | yes | - | 300字まで |
+| deliver_event | string | kindがprevent時必須 | null | `session`/`prompt`/`tool_call`/`tool_fail` |
+| deliver_spec | object | deliver_event指定時必須 | null | 条件JSON（下記書式） |
+| step_event | string | kindがprevent時必須 | null | `tool_call`/`tool_fail`/`reply` |
+| step_spec | object | step_event指定時必須 | null | 条件JSON（下記書式） |
+| quote | string | no | null | 人間の発話から逐語で8〜300字 |
+| not_same_as | list[string] | no | null | 類似検査で別物と判断した既存知見のhandle。検査にのみ使い保存しない |
+
+**条件JSONの書式**: `{"tool": "Bash", "all": [{"field": "command", "op": "regex", "value": "\\bpkill\\s+-f\\b"}]}`。`tool`はtool_call/tool_fail時のみ、hook入力のtool_nameと完全一致で照合する。`all`はAND結合で最大3要素、演算子は`regex`（200字まで）と`len_gt`（数値）のみ。`field`の意味はイベント種別に依存する（prompt/replyは発話・応答全文、tool_callはtool_inputのドットパス、tool_failはerrorかtool_inputのドットパス）。保存前にキー辞書順ソート・空白strip・順序保持の正規形に変換される（大文字小文字・連続空白は変換しない。正規表現の字面を壊さないため）。
+
+**返り値**: `{ok: true, handle, lesson_id, warnings: [string, ...]}`。
+**拒否**: `{ok: false, error: {code, message, fix}}`。例外は投げない。`code`は`vessel_off`（停止スイッチがoff）・`invalid_spec`（条件の構文誤り）・`kind_mismatch`（種類と条件の組み合わせ誤り）・`seed_only`（手順型の作成）・`duplicate`（handle重複、または既存の現在の条件と完全一致）・`similar_exists`（文字trigramのDice係数0.55以上の既存知見があり`not_same_as`に無い。0.40〜0.55未満は拒否せず`warnings`に載る）・`session_pool_full`（人間由来かつ`session`配達の知見の本文合計が1,500字を超える）・`db_rejected`（上記以外）のいずれか。
+
+### 2.51 append_lesson
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| handle | string | yes | - | 対象の知見 |
+| kind | string | yes | - | `body`/`conditions`/`note`/`violated`/`contradicted`/`withdraw` |
+| body | string | kind=body時必須 | null | 300字まで |
+| note | string | kind=note時必須 | null | 150字まで |
+| deliver_event/deliver_spec/step_event/step_spec | - | kind=conditions時 | null | record_lessonと同じ書式。対象知見の種類に合う組み合わせで指定 |
+| quote | string | kind=violated/contradicted時必須 | null | 人間の発話から逐語で8〜300字 |
+
+`violated`=この知見が警告していたことをしてしまい人間に訂正された、`contradicted`=この知見の内容そのものが間違い・古いと人間に訂正された。**守られた知見**（人間由来、またはAI由来でも有効な`violated`が1件以上付いた知見）への`body`/`conditions`/`withdraw`は拒否される（`note`・`violated`・`contradicted`は出自・守りを問わず常に効く）。
+
+**返り値**: `{ok: true, handle, lesson_id, entry_id, entry_kind, warnings: []}`。
+**拒否**: `record_lesson`と同じ形。`code`は`vessel_off`・`invalid_spec`・`kind_mismatch`・`no_session_channel`（手順型の知見へのconditions追記でdeliver_event=session）・`session_pool_full`・`protected`（守られた知見への拒否対象追記）・`unknown_lesson`（handleが無い、または撤回済み）・`db_rejected`のいずれか。
+
+### 2.52 get_lessons
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| handle | string | no | null | 1件を指定して引く |
+| query | string | no | null | 全文検索（lessons_fts）。handleと同時指定時はhandleを優先 |
+| include_retired | bool | no | false | AI由来で人間の訂正に何度も裏切られ「引っ込んだ」知見を含めるか。撤回済みの知見は常に含めない |
+| limit | int | no | 5 | 最大10 |
+
+**動作**: `vessel_meta.mode`（停止スイッチ）を問わず動く。
+
+**返り値**: `{ok: true, items: [{handle, kind, origin("human"|"ai"), protected(bool), body, deliver_event, deliver_spec, step_event, step_spec, quote(150字まで), note, score: {x,b,m,u,u_budget,u_same,s,c,t}, retired(bool), withdraw_line(protected時のみ。"知見撤回 <handle>")}, ...], delivered_handles: [{handle, body}, ...]}`。`delivered_handles`は配達する種類（prevent/guide）かつ撤回済み・引っ込み済みでないものだけを含む。
 
 ---
 

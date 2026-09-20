@@ -32,6 +32,7 @@ from src.services import (
     import_bundle_service,
     instance_service,
     overview_service,
+    vessel_service,
 )
 from src.services.checkin_service import check_in as _check_in
 from src.services import session_registry_service
@@ -2398,6 +2399,135 @@ def withdraw_ask(ask_id: int, reason: str) -> dict:
     """
     return ask_service.withdraw_ask(
         ask_id, reason, session_id=get_caller_session_id()
+    )
+
+
+@mcp.tool()
+def record_lesson(
+    kind: str,
+    handle: str,
+    body: str,
+    deliver_event: Optional[str] = None,
+    deliver_spec: Optional[dict] = None,
+    step_event: Optional[str] = None,
+    step_spec: Optional[dict] = None,
+    quote: Optional[str] = None,
+    not_same_as: Optional[list[str]] = None,
+) -> dict:
+    """知見を1件作る（自己改善ループの器）。
+
+    Args:
+        kind: "prevent"（配達条件・踏み跡条件を両方持つ）または "tally"（条件を
+            持たず、訂正の帰属を数えるだけ・配達しない）。"guide"は初期値専用で
+            ここからは作れない（seed_only拒否）。
+        handle: 英小文字・数字・ハイフンの3〜40字。他の知見（撤回済みも含む）と
+            重複不可。
+        body: 300字まで。
+        deliver_event: "prevent"のみ必須。"session"（常時。deliver_specは{}固定、
+            合計1500字の枠あり）・"prompt"・"tool_call"・"tool_fail"のいずれか。
+        deliver_spec: 条件JSON。例: {"tool":"Bash","all":[{"field":"command",
+            "op":"regex","value":"\\\\bpkill\\\\s+-f\\\\b"}]}。"tool"はtool_call/
+            tool_fail時のみ、hook入力のtool_nameと完全一致で照合。"all"はAND、
+            最大3要素。field: prompt/replyイベントでは対応する名前、tool_callは
+            tool_inputのドットパス、tool_failはerrorかtool_inputのドットパス。
+            op: "regex"（200字まで。valueは正規表現）または"len_gt"（valueは数値）。
+        step_event: "prevent"のみ必須。"tool_call"/"tool_fail"/"reply"。
+        step_spec: step_eventに対する条件JSON（deliver_specと同じ書式）。
+        quote: 人間の訂正・指示由来のとき、その発話から逐語で8〜300字。
+        not_same_as: 類似検査で別物と判断した既存知見のhandleの配列（保存しない）。
+
+    Returns:
+        成功: {"ok": true, "handle", "lesson_id", "warnings": [str,...]}
+        拒否: {"ok": false, "error": {"code", "message", "fix"}}。code は
+            vessel_off/invalid_spec/kind_mismatch/seed_only/duplicate/
+            similar_exists/session_pool_full/db_rejected のいずれか。例外は
+            投げない（拒否は常に通常の戻り値）。
+    """
+    return vessel_service.record_lesson(
+        kind=kind, handle=handle, body=body,
+        deliver_event=deliver_event, deliver_spec=deliver_spec,
+        step_event=step_event, step_spec=step_spec,
+        quote=quote, not_same_as=not_same_as,
+    )
+
+
+@mcp.tool()
+def append_lesson(
+    handle: str,
+    kind: str,
+    body: Optional[str] = None,
+    note: Optional[str] = None,
+    deliver_event: Optional[str] = None,
+    deliver_spec: Optional[dict] = None,
+    step_event: Optional[str] = None,
+    step_spec: Optional[dict] = None,
+    quote: Optional[str] = None,
+) -> dict:
+    """知見に1件追記する（自己改善ループの器）。
+
+    Args:
+        handle: 対象の知見。
+        kind: "body"（本文を差し替え）・"conditions"（deliver/step条件一式を
+            差し替え。書式はrecord_lessonのdeliver_specと同じ）・"note"（補足。
+            150字まで）・"violated"（この知見が警告していたことをしてしまい、
+            人間に訂正された）・"contradicted"（この知見の内容そのものが
+            間違い・古いと人間に訂正された）・"withdraw"（自己撤回）。
+        body: kind="body"のとき必須（300字まで）。
+        note: kind="note"のとき必須（150字まで）。
+        deliver_event/deliver_spec/step_event/step_spec: kind="conditions"の
+            とき、対象の知見の種類（prevent/tally）に合う組み合わせで指定する。
+        quote: kind="violated"/"contradicted"では必須。人間の発話から逐語で
+            8〜300字。
+
+    「守られた知見」（人間由来、またはAI由来でも有効なviolatedが付いた知見）
+    への body/conditions/withdraw は protected で拒否される（note・violated・
+    contradicted は出自・守りを問わず常に効く）。
+
+    Returns:
+        成功: {"ok": true, "handle", "lesson_id", "entry_id", "entry_kind",
+            "warnings": []}
+        拒否: {"ok": false, "error": {"code", "message", "fix"}}。code は
+            vessel_off/invalid_spec/kind_mismatch/no_session_channel/
+            session_pool_full/protected/unknown_lesson/db_rejected の
+            いずれか。例外は投げない。
+    """
+    return vessel_service.append_lesson(
+        handle=handle, kind=kind, body=body, note=note,
+        deliver_event=deliver_event, deliver_spec=deliver_spec,
+        step_event=step_event, step_spec=step_spec, quote=quote,
+    )
+
+
+@mcp.tool()
+def get_lessons(
+    handle: Optional[str] = None,
+    query: Optional[str] = None,
+    include_retired: bool = False,
+    limit: int = 5,
+) -> dict:
+    """知見を引く（自己改善ループの器。vessel_meta.modeを問わず動く）。
+
+    Args:
+        handle: 1件を指定して引く。
+        query: 全文検索（lessons_fts）。handleと同時指定時はhandleを優先。
+        include_retired: 既定false。AI由来で人間の訂正に何度も裏切られ
+            「引っ込んだ」（retired）知見を含めるか。撤回済み（retracted）の
+            知見は常に含めない。
+        limit: 既定5、最大10。
+
+    Returns:
+        {"ok": true,
+         "items": [{"handle","kind","origin"("human"/"ai"),"protected"(bool),
+            "body","deliver_event","deliver_spec","step_event","step_spec",
+            "quote"(150字まで),"note","score":{"x","b","m","u","u_budget",
+            "u_same","s","c","t"},"retired"(bool),
+            "withdraw_line"(protected時のみ。"知見撤回 <handle>")}, ...],
+         "delivered_handles": [{"handle","body"}, ...]}
+        delivered_handles は配達する種類（prevent/guide）かつ撤回済み・
+        引っ込み済みでないものだけを含む。
+    """
+    return vessel_service.get_lessons(
+        handle=handle, query=query, include_retired=include_retired, limit=limit,
     )
 
 

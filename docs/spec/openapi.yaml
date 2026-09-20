@@ -50,6 +50,8 @@ tags:
   description: 時系列取得
 - name: topic
   description: トピックの記録・取得
+- name: vessel
+  description: 自己改善ループの器（知見の記録・追記・取得）
 paths:
   /tools/add_activity:
     post:
@@ -495,6 +497,72 @@ paths:
               required:
               - ask_id
               - answer_body
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/append_lesson:
+    post:
+      tags:
+      - vessel
+      summary: 知見に1件追記する（自己改善ループの器）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                handle:
+                  type: string
+                kind:
+                  type: string
+                body:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                note:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                deliver_event:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                deliver_spec:
+                  anyOf:
+                  - additionalProperties: true
+                    type: object
+                  - type: 'null'
+                  default: null
+                step_event:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                step_spec:
+                  anyOf:
+                  - additionalProperties: true
+                    type: object
+                  - type: 'null'
+                  default: null
+                quote:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+              required:
+              - handle
+              - kind
               type: object
       responses:
         '200':
@@ -1021,6 +1089,44 @@ paths:
                 oneOf:
                 - type: object
                 - $ref: '#/components/schemas/ErrorResponse'
+  /tools/get_lessons:
+    post:
+      tags:
+      - vessel
+      summary: 知見を引く（自己改善ループの器。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                handle:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                query:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                include_retired:
+                  default: false
+                  type: boolean
+                limit:
+                  default: 5
+                  type: integer
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
   /tools/get_logs:
     post:
       tags:
@@ -1431,6 +1537,72 @@ paths:
                   type: string
               required:
               - context
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/record_lesson:
+    post:
+      tags:
+      - vessel
+      summary: 知見を1件作る（自己改善ループの器）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                kind:
+                  type: string
+                handle:
+                  type: string
+                body:
+                  type: string
+                deliver_event:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                deliver_spec:
+                  anyOf:
+                  - additionalProperties: true
+                    type: object
+                  - type: 'null'
+                  default: null
+                step_event:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                step_spec:
+                  anyOf:
+                  - additionalProperties: true
+                    type: object
+                  - type: 'null'
+                  default: null
+                quote:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                not_same_as:
+                  anyOf:
+                  - items:
+                      type: string
+                    type: array
+                  - type: 'null'
+                  default: null
+              required:
+              - kind
+              - handle
+              - body
               type: object
       responses:
         '200':

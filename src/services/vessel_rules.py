@@ -7,7 +7,9 @@
 """
 from __future__ import annotations
 
+import json
 import re
+import unicodedata
 
 from src.services.dedup_helpers import normalize_text
 
@@ -107,3 +109,54 @@ def bodies_match(hook_prompt: str, transcript_content: object) -> bool:
 TOOL_SUMMARY_MAX_CHARS = 300
 TOOL_CALLS_PER_TURN_MAX = 40
 TOOL_FAIL_MAX_CHARS = 1000
+
+
+# ---------------------------------------------------------------------------
+# 条件JSONの正規化（duplicate判定・保存形の両方がこれを通す）
+# ---------------------------------------------------------------------------
+
+
+def canonical_spec(spec: dict) -> str:
+    """条件JSONを正規形の文字列にする。duplicate 判定はこの文字列の完全一致で行う。
+
+    キーを辞書順にソートした最小形JSONにする。空白は`strip()`だけ行い、連続空白の
+    畳み込み・小文字化・Unicode正規化はしない（`value`は正規表現でありこれらの変換は
+    字面を壊すため。8.1節の本文一致比較=normalize_textとは別物で共有しない）。
+    形の壊れたspec（キー欠落等）に対しては`KeyError`/`TypeError`を投げるので、
+    呼び出し側は形の検査を済ませてから呼ぶこと。
+    """
+    out: dict = {}
+    if "tool" in spec:
+        out["tool"] = spec["tool"].strip()
+    clauses = []
+    for c in spec.get("all", []):
+        clauses.append({
+            "field": c["field"].strip(),
+            "op": c["op"].strip(),
+            "value": c["value"].strip() if isinstance(c["value"], str) else c["value"],
+        })
+    if clauses:
+        out["all"] = clauses
+    return json.dumps(out, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+# ---------------------------------------------------------------------------
+# 類似度（文字trigramのDice係数）
+# ---------------------------------------------------------------------------
+
+
+def _trigrams(s: str) -> set[str]:
+    s = unicodedata.normalize("NFKC", s or "")
+    s = re.sub(r"\s+", "", s).lower()
+    if len(s) < 3:
+        return {s} if s else set()
+    return {s[i:i + 3] for i in range(len(s) - 2)}
+
+
+def similarity(a: str, b: str) -> float:
+    """0.0〜1.0。文字trigram集合のDice係数。類似度専用の正規化であり、
+    canonical_spec・8.1節の本文一致比較とは別物。"""
+    A, B = _trigrams(a), _trigrams(b)
+    if not A or not B:
+        return 0.0
+    return 2 * len(A & B) / (len(A) + len(B))

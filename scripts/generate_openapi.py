@@ -85,6 +85,9 @@ TOOL_TAGS: dict[str, str] = {
     "unsubscribe_ask": "ask",
     "get_sessions": "session",
     "set_session_alias": "session",
+    "record_lesson": "vessel",
+    "append_lesson": "vessel",
+    "get_lessons": "vessel",
 }
 
 TAG_DESCRIPTIONS: dict[str, str] = {
@@ -104,6 +107,7 @@ TAG_DESCRIPTIONS: dict[str, str] = {
     "retract": "取り消し（論理削除）",
     "ask": "人間の判断待ちの問いの記録・回答",
     "session": "並行セッションの別名管理",
+    "vessel": "自己改善ループの器（知見の記録・追記・取得）",
     "misc": "設定取得・ユーティリティ",
 }
 
