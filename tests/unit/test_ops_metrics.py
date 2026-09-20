@@ -212,15 +212,17 @@ class TestGoalMetrics:
         return goal_id, act
 
     def test_rollback_count_excludes_kind_rollback_and_vice_versa(self, temp_db):
-        # 既存の巻き戻し(kind='rollback')を1件積んでおく。goalの差し戻しと混ざらないこと。
+        # 既存の巻き戻し(kind='rollback')を2件積んでおく。件数を非対称にして、
+        # goalの差し戻し(1件)と取り違えていないかを区別できるようにする。
         ss.record_signal("rollback", "revert PR#9", source="gate")
+        ss.record_signal("rollback", "revert PR#10", source="gate")
         goal_id, _ = self._closed_goal("goal-x")
         gs.update_goal(goal_id, reopen_reason="判定が誤りだった")
 
         metrics = compute_metrics(temp_db, window_days=None)
 
         assert metrics["goal"]["rollback_count"] == 1
-        assert metrics["rollback"]["rollback_count"] == 1
+        assert metrics["rollback"]["rollback_count"] == 2
 
     def test_judged_count_is_closed_goals_plus_rollback_rows(self, temp_db):
         self._closed_goal("goal-a")
