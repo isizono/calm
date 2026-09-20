@@ -17,6 +17,16 @@
             "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/sanitize_backfill_hook.py"
           }
         ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/vessel_hook.py",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "Stop": [
@@ -28,6 +38,16 @@
             "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/stop_hook.py"
           }
         ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/vessel_hook.py",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
@@ -37,6 +57,16 @@
           {
             "type": "command",
             "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/user_prompt_submit_hook.py"
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/vessel_hook.py",
+            "timeout": 5
           }
         ]
       }
@@ -59,6 +89,28 @@
           {
             "type": "command",
             "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/sanitize_tool_result_hook.py"
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/vessel_hook.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/vessel_hook.py",
+            "timeout": 5
           }
         ]
       }

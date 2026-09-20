@@ -27,7 +27,9 @@ _CODEX_UNSUPPORTED_EVENTS = {"MessageDisplay"}
 
 # イベント自体はCodexに存在するが、スクリプトが依存するハーネス機構が
 # Codexに無いため、Codex側登録の期待値導出から除外するスクリプト。
-_CODEX_UNSUPPORTED_SCRIPTS: set[str] = set()
+# vessel_hook.py: 標準入力のキー名がClaude Code固有の形（hook_event_name等）を
+# 前提にしており、Codex向けの入力形での動作確認をしていないため対象外とする。
+_CODEX_UNSUPPORTED_SCRIPTS: set[str] = {"vessel_hook.py"}
 
 # hooks/ 配下のスクリプトが自身の担当イベントを宣言する規約:
 # モジュール docstring 冒頭が `"<Event> hook: ..."` の形。
@@ -134,11 +136,16 @@ class TestCodexHooksJsonConsistency:
         """
         claude = _registered_scripts_by_event()
         codex = _registered_scripts_by_event(_CODEX_HOOKS_JSON_PATH)
-        expected = {
-            event: [s for s in scripts if s not in _CODEX_UNSUPPORTED_SCRIPTS]
-            for event, scripts in claude.items()
-            if event not in _CODEX_UNSUPPORTED_EVENTS
-        }
+        expected: dict[str, list[str]] = {}
+        for event, scripts in claude.items():
+            if event in _CODEX_UNSUPPORTED_EVENTS:
+                continue
+            filtered = [s for s in scripts if s not in _CODEX_UNSUPPORTED_SCRIPTS]
+            # スクリプト単位の除外で登録が全滅したイベントは、Codex側に
+            # そのイベント自体を登録しないことになる（空リストのキーを
+            # 期待するのは誤り）。
+            if filtered:
+                expected[event] = filtered
         assert codex == expected
 
 
