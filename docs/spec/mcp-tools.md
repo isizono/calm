@@ -382,8 +382,15 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 | title | string | no | null | 新しいタイトル |
 | description | string | no | null | 新しい説明 |
 | tags | list[string] | no | null | 全置換。1個以上 |
+| orch_managed | bool | no | null | orchが管理するアクティビティかを切り替える。nullなら変更しない |
+| closed_by | string | no | null | activityを閉じた意思の主体（`"user"`\|`"claude"`\|`"external"`）。status="completed"と同時のときだけ受け付ける |
+| closed_reason | string | no | null | 閉じた理由（自由文）。status="completed"と同時のときだけ受け付ける |
 
 **副作用**: snoozed状態のアクティビティにstatusを指定せず他フィールドのみ更新すると、自動的にstatus="pending"へ復活する。
+
+**closed_by/closed_reason**: completedでないactivityをcompletedにする呼び出しでだけ`closed_at`・`closed_by`・`closed_reason`を書く（既にcompletedのactivityにstatus="completed"を渡しても書き換えない）。`closed_by`引数を省略し、紐づくgoalが判定済みなら`"goal_judge"`がサーバー側で書かれ、`closed_reason`も省略時は`goals.judge_note`が使われる。それ以外で省略時は`closed_by`はNULL（不明）になる。`"goal_judge"`自体は引数としては受け付けない（VALIDATION_ERROR）。
+
+**goal_hint**: status="completed"の呼び出しでは、紐づくgoalが未判定（closed=0）なら応答に`goal_hint`（`{goal_id_raw, handle, label, next, open_activities_left, open_questions?, warning?}`）を添える。判定は拒否しない。紐づく未完了のactivityが残っていない（`open_activities_left`=0）ときは`warning`が載る。組み立てで例外が出ても完了自体は失われず、`goal_hint`に`{"error": {"code": "DATABASE_ERROR", ...}}`が入る。
 
 ### 2.14 add_material
 
@@ -431,7 +438,9 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 | --- | --- | --- | --- | --- |
 | activity_id | int | yes | - | アクティビティID |
 
-**返り値**: `{coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary, session}`。セッション内でcheck_inを初めて呼んだときのみ`flow_guide`（コンテキスト取得の手がかり）も含まれる。
+**返り値**: `{coverage, activity, goal, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary, session}`。セッション内でcheck_inを初めて呼んだときのみ`flow_guide`（コンテキスト取得の手がかり）も含まれる。
+
+`goal`は`activity`の直後にあり、そのactivityのgoal機構上の現在状態と次の一手を1件返す（goal機構自体は2.50〜2.53参照）。未定義（`label="undefined"`）・不要印（`label="not_needed"`）・goal付き（`label="active"|"judge_ready"|"closed"`）のいずれかで、goal付きなら`next`（今やるべきこと1件）を含む。組み立てで例外が出ても他のキーは失われず、`goal`キーに`{"error": {"code": "DATABASE_ERROR", ...}}`が入る。flavor指定時はremaining/terminal内の束縛先表示とopen_questionsのtitleだけが展開され、goalの文（statement・条件文・note等）は展開されない。
 このactivityを`add_ask`のblocksでblockしているaskが1件以上あるときのみ`asks: {awaiting_answer, awaiting_triage}`が追加される（無ければキー自体が無い）。`awaiting_answer`はstatus='open'のask一覧（各`{id_raw, question, last_seen_at}`）、`awaiting_triage`はstatus='answered'かつ未トリアージのask一覧（各`{id_raw, question, answer_body, last_seen_at}`）。activities.statusがcompleted以外のときのみ配達され、promoted/dismissed/withdrawn済みのaskは配達されない。`awaiting_triage`が1件以上あるときは`hints`にも「answered状態のaskが未トリアージです。triage_askでpromote/dismissへ振り分けてください。」という文言が1件追加される。この`asks`関連のhintsは、recompose系hintと異なりorch-managed activityでもsuppressされない（答え待ちである事実はhintではなく状態情報として扱うため）。activityが紐づくdomain:タグのnotesが推奨文字数の上限を超えている場合、`hints`に整理を促す文言（`notes_over_budget`）も1件追加される。他のimmediate hintと異なり恒久抑制マーカーは効かず、超過が解消するまで発火し続ける（`demote_tag_notes`でnotesを資材へ退避して縮めることを想定した設計）。
 `session`は呼び出し元のClaude Code CLIプロセスを解決できた場合`{"name": str, "alias": str, "alias_collision": bool}`、解決できない場合（非CLIクライアント、launcher登録が間に合っていない起動直後等）は`{"registered": false, "reason": "cli_unresolved"}`。このセッション別名レジストリ更新はベストエフォートであり、失敗してもcheck_in本体は成功応答を返す。`alias_collision`がtrueのときは`hints`にも衝突を知らせる文言が追加される。詳細は2.42bを参照。
 **副作用**: statusがin_progress以外なら自動的にin_progressに更新。

@@ -5,6 +5,7 @@ import sqlite3
 from typing import Optional
 
 from src.db import get_connection, row_to_dict
+from src.services import goal_service
 from src.services.citations_service import (
     apply_and_writeback_conversions,
     apply_raw_to_cite_conversion,
@@ -14,6 +15,7 @@ from src.services.readable_id import strip_entity_id_inplace
 from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.pin_service import ENTITY_TABLE_MAP as PIN_ENTITY_TABLE_MAP, _add_pin_with_conn, bump_updated_at_with_conn
 from src.services.relation_service import _add_relation_with_conn, _validate_targets
+from src.services.signal_service import capture_signal_safe
 from src.services.title_validation import validate_title
 from src.services.tag_service import (
     validate_and_parse_tags,
@@ -36,6 +38,8 @@ REAL_STATUSES = {"pending", "in_progress", "completed", "snoozed", "shelved"}
 ACTIVE_STATUSES = ("in_progress", "pending")
 # get_activities用（エイリアス含む）
 VALID_STATUSES = REAL_STATUSES | {"active"}
+# update_activityのclosed_by引数が受け付ける値（'goal_judge'はサーバー専用で引数としては受けない）
+VALID_CLOSED_BY = {"user", "claude", "external"}
 
 
 IMPLEMENT_WORKFLOW_GUARD_MESSAGE = (
@@ -620,6 +624,8 @@ def update_activity(
     description: Optional[str] = None,
     tags: Optional[list[str]] = None,
     orch_managed: Optional[bool] = None,
+    closed_by: Optional[str] = None,
+    closed_reason: Optional[str] = None,
 ) -> dict:
     """
     アクティビティを更新する（ステータス、タイトル、説明、タグ、orch_managed を変更可能）
@@ -635,9 +641,16 @@ def update_activity(
         tags: 新しいタグ配列（optional、指定時は全置換。1個以上必須）
         orch_managed: orch が管理する activity かどうかを切り替える（optional）。
             True/False のみ受け付ける。None なら変更しない。
+        closed_by: activityを閉じた意思の主体（"user"|"claude"|"external"）。
+            status="completed"と同時のときだけ受け付ける。省略時、紐づくgoalが
+            判定済みなら"goal_judge"がサーバー側で書かれる（'goal_judge'自体は
+            引数として渡せない）
+        closed_reason: 閉じた理由（自由文）。status="completed"と同時のときだけ
+            受け付ける
 
     Returns:
-        更新されたアクティビティ情報
+        更新されたアクティビティ情報。status="completed"の呼び出しでは、紐づく
+        goalが未判定ならgoal_hintも返す（拒否はしない）
     """
     # 最低1つのオプショナルパラメータが必要
     if (
@@ -654,6 +667,22 @@ def update_activity(
                     "At least one of status, title, description, tags, or "
                     "orch_managed must be provided"
                 ),
+            }
+        }
+
+    # closed_by/closed_reasonはstatus='completed'と同時のときだけ受け付ける
+    if (closed_by is not None or closed_reason is not None) and status != "completed":
+        return {
+            "error": {
+                "code": "VALIDATION_ERROR",
+                "message": "closed_by and closed_reason are only accepted together with status='completed'",
+            }
+        }
+    if closed_by is not None and closed_by not in VALID_CLOSED_BY:
+        return {
+            "error": {
+                "code": "VALIDATION_ERROR",
+                "message": f"closed_by must be one of {sorted(VALID_CLOSED_BY)}",
             }
         }
 
@@ -713,6 +742,32 @@ def update_activity(
         if status is None and old_status == "snoozed":
             status = "pending"
 
+        # completedへの遷移時だけclosed_at/closed_by/closed_reasonを書く。
+        # 既にcompletedのactivityにstatus='completed'を渡しても書き換えない
+        # （closed_*は「最後に閉じたときの記録」であり、その遷移では閉じ直して
+        # いないため）。
+        is_completing = status == "completed" and old_status != "completed"
+        resolved_closed_by = None
+        resolved_closed_reason = None
+        if is_completing:
+            resolved_closed_by = closed_by
+            resolved_closed_reason = closed_reason
+            if resolved_closed_by is None:
+                goal_link_row = conn.execute(
+                    """
+                    SELECT g.closed AS goal_closed, g.judge_note AS judge_note
+                    FROM goal_activities ga
+                    JOIN goals g ON g.id = ga.goal_id
+                    WHERE ga.activity_id = ? AND ga.goal_id IS NOT NULL
+                    """,
+                    (activity_id,),
+                ).fetchone()
+                if goal_link_row is not None and goal_link_row["goal_closed"] == 1:
+                    resolved_closed_by = "goal_judge"
+                    resolved_closed_reason = (
+                        closed_reason if closed_reason is not None else goal_link_row["judge_note"]
+                    )
+
         # 生 ID リテラルを {{cite:...}} に変換する。update系はUPDATE対象の
         # activity_idが呼び出し時点で既に存在する行のため（add系と異なりINSERT
         # による確定を待つ必要がない）、SET句組み立て前に変換を先に行い、
@@ -752,6 +807,13 @@ def update_activity(
         if orch_managed is not None:
             set_parts.append("orch_managed = ?")
             values.append(1 if orch_managed else 0)
+
+        if is_completing:
+            set_parts.append("closed_at = CURRENT_TIMESTAMP")
+            set_parts.append("closed_by = ?")
+            values.append(resolved_closed_by)
+            set_parts.append("closed_reason = ?")
+            values.append(resolved_closed_reason)
 
         # タグの全置換（tags指定時のみ）
         if parsed_tags is not None:
@@ -798,7 +860,31 @@ def update_activity(
                 build_embedding_text(updated["title"], updated["description"], tag_text),
             )
 
-        return {"activity_id": activity_id, "status": updated["status"]}
+        result = {"activity_id": activity_id, "status": updated["status"]}
+
+        # completedにする呼び出しでは、紐づくgoalが未判定ならgoal_hintを添える
+        # （拒否はしない）。完了のコミットの後に組み立て、例外が出ても完了は
+        # 失わずgoal_hintにエラーの形を置くだけにする。
+        if status == "completed":
+            try:
+                goal_hint = goal_service.build_goal_hint(conn, activity_id)
+                if goal_hint is not None:
+                    result["goal_hint"] = goal_hint
+            except Exception as e:
+                result["goal_hint"] = {
+                    "error": {
+                        "code": "DATABASE_ERROR",
+                        "message": "goal_hint を組み立てられなかった",
+                    }
+                }
+                capture_signal_safe(
+                    "machine_error",
+                    f"update_activityでgoal_hint組み立てに失敗: activity {activity_id}",
+                    source="tool:update_activity",
+                    detail=str(e),
+                )
+
+        return result
 
     except sqlite3.IntegrityError as e:
         conn.rollback()
