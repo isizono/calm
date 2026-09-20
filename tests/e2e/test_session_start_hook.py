@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from hooks.ask_notify_section import _format_ask_line
 from src.db import init_database, get_connection
 from tests.helpers import (
     run_session_start_hook as _run_session_start_hook,
@@ -1284,12 +1285,15 @@ class TestSessionStartHookAskNotify:
         # get_asksはlast_seen_at DESC, id DESC順で返すため、後に作ったr_bが先頭に来る
         self._seed_tracked_ask_ids(state_dir, session_id, [r_a["id"], r_b["id"]])
 
-        # ask_notify表示行の正確な文言（open_asksセクションが別途answered-未
-        # triageのasksをquestionのみで表示するため、questionの部分文字列だけでは
-        # ask_notifyセクションでの表示/非表示を判定できない。行全体で判定する）
-        detail = "回答あり（get_asksで本文を確認）"
-        line_a = f"- (#{r_a['id']}) {long_q_a} → {detail}"
-        line_b = f"- (#{r_b['id']}) {long_q_b} → {detail}"
+        # open_asksセクションが別途answered-未triageのasksを"(#id) question"の
+        # 形式（矢印なし）でも表示するため、ID+questionの部分文字列だけでは
+        # ask_notifyセクションでの表示/非表示を判定できない（実測: 両方とも
+        # 常にopen_asks側に出るため、この部分文字列だけの判定はr_aが除外
+        # されていても常にTrueになる）。ask_notify固有の"→ 回答あり..."を
+        # 含む行全体で判定する必要があるため、フォーマットを手書きせず実装の
+        # _format_ask_lineから導出する（フォーマット変更に追従させるため）。
+        line_a = f"- {_format_ask_line({'id_raw': r_a['id'], 'question': long_q_a, 'status': 'answered'})}"
+        line_b = f"- {_format_ask_line({'id_raw': r_b['id'], 'question': long_q_b, 'status': 'answered'})}"
 
         result1 = _run_session_start_hook(
             temp_db,
