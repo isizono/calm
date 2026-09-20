@@ -1229,9 +1229,9 @@ class TestSessionStartHookAskNotify:
         assert "get_asks" in context
         assert "青にしよう" not in context  # 回答本文はhook経由で注入しない
 
-        # 消費済み: tracked_ask_ids fileが空になっている
+        # 消費済み: remove_tracked_ask_idsは残りが空ならfileごと削除する（空文字列を書くパスは無い）
         tracked_file = state_dir / "tracked_ask_ids_sess-track-1"
-        assert not tracked_file.exists() or tracked_file.read_text().strip() == ""
+        assert not tracked_file.exists()
 
     def test_still_open_tracked_ask_not_injected(self, temp_db, tmp_path):
         from src.services import ask_service as ak
@@ -1316,7 +1316,7 @@ class TestSessionStartHookAskNotify:
         )
         context2 = result2["hookSpecificOutput"]["additionalContext"]
         assert line_a in context2
-        assert not tracked_file.exists() or tracked_file.read_text().strip() == ""
+        assert not tracked_file.exists()
 
 
 class TestSessionStartHookTranscriptPath:
