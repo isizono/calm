@@ -840,6 +840,33 @@ class TestQuoteSearch:
         bind_rows = _rows(vessel_db, "bind")
         assert bind_rows[0]["ref_id"] == current_id
 
+    def test_prefers_current_turn_even_when_a_later_turn_has_a_higher_id(
+        self, vessel_db, monkeypatch, capsys, tmp_path
+    ):
+        """PostToolUseの処理が次のターン開始後にずれ込んでも、今のターンの発話を優先する。"""
+        current_id = _human_turn(monkeypatch, capsys, tmp_path, vessel_db, "s1", "p1", "これは間違いです")
+        # p1のPostToolUseがまだ処理されないうちに次のターンp2が始まり、同じ文言の
+        # 発話が記録された(idはp1より大きい)状態を模す。
+        _human_turn(monkeypatch, capsys, tmp_path, vessel_db, "s1", "p2", "これは間違いです")
+
+        create = vessel_service.record_lesson(
+            kind="tally", handle="h-quote-turn-race", body="間違いの言い回し", quote="これは間違いです"
+        )
+        _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "PostToolUse",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "tool_name": RECORD_LESSON_TOOL,
+                "tool_input": {"quote": "これは間違いです"},
+                "tool_response": _tool_response(create),
+                "tool_use_id": "t1",
+            },
+        )
+        bind_rows = _rows(vessel_db, "bind")
+        assert bind_rows[0]["ref_id"] == current_id
+
     def test_ignores_subagent_utterance(self, vessel_db, monkeypatch, capsys):
         # サブエージェント発のutterance行は実運用では生じないが(UserPromptSubmitは
         # 対話下・印字モードいずれのサブエージェントでも発火しない)、
@@ -998,7 +1025,80 @@ class TestBindOriginFeedback:
             },
             allow_output=True,
         )
-        assert "出自=AI" in captured.out
+        assert "出自=AI（quote指定なし）" in captured.out
+
+    def test_ai_origin_reports_quote_not_found(self, vessel_db, monkeypatch, capsys, tmp_path):
+        _set_mode(vessel_db, "on")
+        _human_turn(monkeypatch, capsys, tmp_path, vessel_db, "s1", "p1", "こんにちは")
+        create = vessel_service.record_lesson(
+            kind="tally", handle="h-ai-quote-missing", body="見つからない引用の知見",
+            quote="どこにも存在しない文字列です",
+        )
+        captured = _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "PostToolUse",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "tool_name": RECORD_LESSON_TOOL,
+                "tool_input": {"quote": "どこにも存在しない文字列です"},
+                "tool_response": _tool_response(create),
+                "tool_use_id": "t1",
+            },
+            allow_output=True,
+        )
+        assert "出自=AI（引用が見つからない）" in captured.out
+
+    def test_ai_origin_reports_quote_from_non_human_utterance(
+        self, vessel_db, monkeypatch, capsys, tmp_path
+    ):
+        """promptSource='system'・turnOrigin='task_notification'は実測で観測された非人間の組。"""
+        _set_mode(vessel_db, "on")
+        transcript_path = _write_transcript(
+            tmp_path,
+            [
+                {
+                    "type": "user",
+                    "promptId": "p1",
+                    "message": {"content": "定期実行の通知メッセージ"},
+                    "promptSource": "system",
+                    "turnOrigin": "task_notification",
+                    "entrypoint": "cli",
+                    "userType": "external",
+                    "isSidechain": False,
+                    "origin": {"kind": "x"},
+                }
+            ],
+        )
+        _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "prompt": "定期実行の通知メッセージ",
+                "transcript_path": transcript_path,
+            },
+        )
+
+        create = vessel_service.record_lesson(
+            kind="tally", handle="h-ai-nonhuman-quote", body="人間でない発話からの引用の知見",
+            quote="定期実行の通知メッセージ",
+        )
+        captured = _run_hook(
+            monkeypatch, capsys,
+            {
+                "hook_event_name": "PostToolUse",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "tool_name": RECORD_LESSON_TOOL,
+                "tool_input": {"quote": "定期実行の通知メッセージ"},
+                "tool_response": _tool_response(create),
+                "tool_use_id": "t1",
+            },
+            allow_output=True,
+        )
+        assert "出自=AI（引用の発話が人間でない）" in captured.out
 
     def test_pending_when_turn_utterance_has_no_speaker_yet(self, vessel_db, monkeypatch, capsys):
         _set_mode(vessel_db, "on")

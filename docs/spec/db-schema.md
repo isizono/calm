@@ -571,6 +571,29 @@ Claudeへの人間からの訂正を機械可読な形で溜め、繰り返し�
 
 カラム一覧・インデックス: `db-schema-tables.md` の `obs_events`・`lessons`・`lesson_entries` 等の節参照。
 
+### 3.28a 知見の人間裏づけ・出自・採点を計算するビュー11本
+
+`obs_events`・`lessons`・`lesson_entries` の追記だけから、「人間の裏づけがあるか」「出自（人間由来／AI由来）」「守られた知見か」「現在の本文・条件」「採点」「未処理の依頼」を毎回計算し直すビュー群。状態としては持たない（`bind`や`speaker`が後から書かれれば遡って結果が変わる）。
+
+依存順（後続が参照するビューを先に作る）: `utterance_human` → `lesson_basis` → `lesson_violated_ok`/`lesson_contradicted_ok` → `lesson_origin` → `lesson_protected` → `lesson_current` → `lesson_bad_step` → `lesson_bad_step_prior` → `lesson_score` → `open_requests`。
+
+- `utterance_human`: 「人間の打鍵か」を判定する唯一の場所。`speaker`行の`turnOrigin='human'`かつ`promptSource`が`typed`/`queued`/`sdk`のいずれかである行だけを通す許可リスト方式。他のビューはこのビューだけを経由して人間の発話を参照する
+- `lesson_basis`: 知見・追記ごとの人間の裏づけ。書き込み(`bind`)の引用元の発話と、書き込みのターン自身の発話がどちらも`utterance_human`に入ることを要求する
+- `lesson_origin`: `lesson_basis`の有無から出自（人間由来／AI由来）を計算する。出自を保持する列は無い
+- `lesson_protected`: 人間由来の知見、またはAI由来でも有効な訂正が付いた知見。追記（本文更新・条件・撤回）が効くかどうかにだけ配線し、出自の表示や採点の引っ込みには使わない
+- `lesson_current`: 現在の本文・条件・撤回の有無。守られた知見への該当追記は残るだけで効かない
+- `lesson_score`: 採点。時刻の比較を使わず、件数はすべて`COUNT(DISTINCT session_id)`で数える
+- `open_requests`: `Stop`フックが差し戻す未処理の依頼
+
+不変条件:
+- 「人間の打鍵か」の判定は`utterance_human`1本にだけ書く。他のビューが`turnOrigin`/`promptSource`の照合を書き足すことはしない
+- `lesson_score`は時刻の比較（`created_at`・`datetime()`等）を使わない
+- 種類の名前（`prevent`/`tally`）はビューの条件式には現れない。`lesson_kinds`の属性値でだけ場合分けする
+
+関連 migration: 0076_add_vessel_views
+
+CREATE VIEW文の全文: `db-schema-tables.md` の該当各ビューの節参照。
+
 ---
 
 ## 4. 関係メカニズム
@@ -716,6 +739,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0073_add_asks_notify_wanted | asks に notify_wanted 列（通知希望フラグ、既定1）を追加（§3.22） |
 | 0074_drop_relay_outbox | relay_outbox テーブル削除（relay統合機能の撤去に伴う。0056で新設、代替スキーマへの移行なし） |
 | 0075_add_vessel_tables | 観測台帳 obs_events・知見 lessons/lesson_entries・参照表3つ（obs_kinds/lesson_kinds/delivery_channels）・全文検索用 lessons_fts・vessel_cursor/vessel_meta を新設（§3.28） |
+| 0076_add_vessel_views | 知見の人間裏づけ・出自・守られた知見・現在の本文と条件・採点・未処理の依頼を計算するビュー11本を新設（§3.28a） |
 
 重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。
 

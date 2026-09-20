@@ -667,6 +667,17 @@ class TestOpenRequests:
         rows = db.execute("SELECT 1 FROM open_requests WHERE ref_id = ?", (uid,)).fetchall()
         assert len(rows) == 1
 
+    def test_weak_word_not_opened_by_delivery_before_immediate_prior_turn(self, db):
+        """直前ターン(p1)に配達が無ければ、より前(p0)の配達があってもopen_requestsに入らない。"""
+        lid = lesson(db)
+        human_utterance(db, session_id="s1", prompt_id="p0")
+        delivered(db, session_id="s1", lesson_id=lid, channel="prompt", prompt_id="p0")
+        human_utterance(db, session_id="s1", prompt_id="p1")
+        uid = human_utterance(db, text="それは古い", session_id="s1", prompt_id="p2", flag="weak")
+        db.commit()
+        rows = db.execute("SELECT 1 FROM open_requests WHERE ref_id = ?", (uid,)).fetchall()
+        assert rows == []
+
     def test_weak_word_not_opened_by_session_channel_delivery(self, db):
         """session口の配達はprompt_idを持たないので、直前ターンの配達として数えない。"""
         lid = lesson(db)

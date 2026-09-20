@@ -372,6 +372,18 @@ def _turn_missing_speaker(conn: sqlite3.Connection, session_id: str, prompt_id: 
 _PROTECTED_ENTRY_KINDS = ("body", "conditions", "withdraw")
 
 
+def _ai_origin_reason(conn: sqlite3.Connection, ref_id: int | None, quote: str | None) -> str:
+    """出自=AIになった理由を1句で返す（lesson_basisの3条件を大まかに区別する）。"""
+    if ref_id is None:
+        return "引用が見つからない" if quote else "quote指定なし"
+    is_ref_human = conn.execute(
+        "SELECT 1 FROM utterance_human WHERE id = ?", (ref_id,)
+    ).fetchone() is not None
+    if not is_ref_human:
+        return "引用の発話が人間でない"
+    return "このターンが人間のターンでない"
+
+
 def _bind_feedback(
     conn: sqlite3.Connection,
     session_id: str,
@@ -381,6 +393,7 @@ def _bind_feedback(
     ref_id: int | None,
     handle: str,
     entry_kind: str | None,
+    quote: str | None,
 ) -> str:
     """判定結果の1行を組み立てる。出自が確定できないターン末待ちの場合はそう返す。"""
     pending = (ref_id is not None and not _has_speaker(conn, ref_id)) or _turn_missing_speaker(
@@ -394,7 +407,10 @@ def _bind_feedback(
             "AND session_id = ? AND void = 0",
             (lesson_id, entry_id, session_id),
         ).fetchone() is not None
-        origin_text = "出自=人間" if is_human else "出自=AI"
+        if is_human:
+            origin_text = "出自=人間"
+        else:
+            origin_text = f"出自=AI（{_ai_origin_reason(conn, ref_id, quote)}）"
 
     text = f"[calm:知見 handle={handle} {origin_text}]"
     if entry_id is not None and entry_kind in _PROTECTED_ENTRY_KINDS:
@@ -437,7 +453,9 @@ def _handle_bind(conn: sqlite3.Connection, data: dict, mode: str) -> str | None:
 
     if mode != "on":
         return None
-    return _bind_feedback(conn, session_id, prompt_id, lesson_id, entry_id, ref_id, handle, entry_kind)
+    return _bind_feedback(
+        conn, session_id, prompt_id, lesson_id, entry_id, ref_id, handle, entry_kind, quote
+    )
 
 
 def _handle_pull(conn: sqlite3.Connection, data: dict) -> None:
