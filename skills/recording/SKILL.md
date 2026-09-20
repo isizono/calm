@@ -64,6 +64,14 @@ docstringを正とする。同一内容の再報告は `report_signal` 側で自
 `references/taxonomy.md`（1章・2章・4章）に整理してある。本ページの表と
 食い違う場合は `references/taxonomy.md` を正とする。
 
+## 記録の直後にgoalの条件を満たす場合
+
+`add_logs` / `add_material` を呼んだ内容が、手元のgoalブロック（check_in等で読んで持っている場合）の未終端の条件を満たすなら、続けて `update_goal` を呼ぶ。`changes` に `{"op": "set", "id": <条件id>, "state": "satisfied", "note": "..."}` を積み、根拠になった decision や子 activity があれば同じ `changes` に `{"op": "edit", "id": <条件id>, "bound": {"type": "decision"|"activity", "id": <id>}}` を並べて束縛する（1回の呼び出しでまとめてよい）。
+
+外部の事実（PRのマージ状況など）を根拠にする場合は、書く前にgh等で実際に確かめる。確かめたことが分かるように、その事実自体を `add_material` か `add_logs` として別途残す。推測のまま `satisfied` にしない。
+
+`update_goal` の応答の `goal.label` が `judge_ready`（全条件が終端し判定待ち）になったら、そのまま持ち越さずその場で判定する。`goal.open_questions` に未決があれば畳むか1ターン聞き、そのうえで `goal.terminal` の充足が1件以上あれば `judge_goal(goal_id, verdict="achieved")`、0件なら `judge_goal(goal_id, verdict="failed", note=理由)` を呼ぶ。人間の判断は待たない。
+
 ## 優先方針
 
 **「多めに残す > 少なく残す」**。

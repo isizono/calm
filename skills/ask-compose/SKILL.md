@@ -117,6 +117,15 @@ context:
 一言で答える場合は `A`/`B` だけでもOK
 ```
 
+## goalの条件をこのaskに束縛する
+
+このaskが、goalの条件（担い手human）の待ちを形にするために起票するものなら、次も行う。
+
+- `blocks` には、その条件を持つactivityに加え、同じgoalに紐づく兄弟activityのうち、そのactivityへのcheck_inでも回答待ち・振り分け待ちを出したいものを含める
+- `add_ask` の呼び出し後、`update_goal` で対象の条件を `{"op": "edit", "id": <条件id>, "actor": "human", "bound": {"type": "ask", "id": <このaskのid>}}` に束縛する
+
+ask を起票するのは、その場で聞けずユーザーが離席中・セッションをまたぐときに限る（発動契機のとおり）。その場で聞けるなら ask を起票せず、聞いて `decision-record` で決定として記録する。
+
 ## add_ask呼び出し後: 回答の受け取り方
 
 Claude Codeでは、`add_ask`を呼んだ直後からCALMのhookが裏で回答を待つ。回答（またはpromote/dismiss）されると、hookがこのセッションを起こし、askの番号と状態だけを知らせる。Monitorを張る必要はない。
