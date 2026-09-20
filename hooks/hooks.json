@@ -93,6 +93,17 @@
         ]
       },
       {
+        "matcher": "mcp__.*calm__add_ask",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run -q python hooks/ask_answer_rewake_hook.py",
+            "asyncRewake": true,
+            "timeout": 86400
+          }
+        ]
+      },
+      {
         "matcher": "*",
         "hooks": [
           {

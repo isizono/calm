@@ -237,7 +237,8 @@ def add_ask(
         成功時: {"id", "deduped", "occurrence_count", "notify_path",
             "similar_precedents", "similar_asks"}（notify_pathは、answer_ask/
             triage_ask(dismiss)完了時に追記されうるファイルの絶対パス文字列。
-            Monitorツールで`persistent: true`監視すれば追記をその場で拾える。
+            Claude Codeでは通常CALMのhookが検知して呼び出し元セッションを
+            起こすため、直接tailする必要はない。
             ファイルはこの時点では存在しない場合がある）
         失敗時: {"error": {"code": ..., "message": ...}}（ask作成後にタグ解決が
             失敗した場合は "id" も含む。ask自体は作成済みでタグは空のまま残る）

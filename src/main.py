@@ -2186,9 +2186,8 @@ def add_ask(
     一貫していると判断した場合は、`ask-distill` skill を使ってメタaskの起票を
     検討すること。
 
-    その場で回答を待ちたい場合は、notify_pathをMonitorツールで`persistent: true`
-    監視すること（ファイル出現前から監視してよい）。answer_ask/triage_ask(dismiss)
-    完了時に1行追記される（中身は信用せずget_asksで実際の状態を取り直すこと）。
+    Claude Codeでは、notify希望のaskが回答・処理済みになるとCALMのhookが
+    このセッションを起こす（Monitorは不要）。待たないならnotify=False。
     push未着でも次回のcheck_in/get_asksで拾える（正はpull）。
 
     Args:
@@ -2202,8 +2201,8 @@ def add_ask(
         choices: 選択肢テンプレート（optional、最大3件、1件100字以内）。指定すると
             AskUserQuestion風の選択式UIをダッシュボード等で組み立てられる。
             回答（answer_ask）は引き続き自由文字列のまま
-        notify: 既定True。Falseで通知書き込みをしない（後からunsubscribe_askでも
-            外せる）。pull（check_in/get_asks）には影響しない
+        notify: 既定True。Falseで通知書き込み・hookによる待機・起床をしない
+            （後からunsubscribe_askでも外せる）。pull（check_in/get_asks）には影響しない
 
     Returns:
         成功時: {"id": int, "deduped": bool, "occurrence_count": int,

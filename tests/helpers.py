@@ -7,7 +7,8 @@ add_logs / add_decisions のバッチAPIを単件呼び出し形式でラップ�
 ここに集約する。
 
 hooks/session_start_hook.py をsubprocessで起動するテスト共通のヘルパーも
-ここに集約する（run_session_start_hook 以下）。
+ここに集約する（run_session_start_hook 以下）。他のhookスクリプトを起動する
+場合は run_hook_subprocess を使う。
 """
 import asyncio
 import contextlib
@@ -281,6 +282,31 @@ def run_session_start_hook(
     stdout = result.stdout.strip()
     assert stdout, f"session_start_hook.py produced no output. stderr: {result.stderr}"
     return json.loads(stdout)
+
+
+def run_hook_subprocess(
+    hook_relpath: str,
+    stdin_text: str,
+    *,
+    extra_env: Optional[dict] = None,
+) -> subprocess.CompletedProcess:
+    """任意のhookスクリプトを`[sys.executable, <hook_relpath>]`でsubprocess起動する。
+
+    session_start_hook_env/run_session_start_hook系はhooks/session_start_hook.py
+    に固定でCALM_HABITS_RULES_PATH等の既定isolationを注入するが、本関数は
+    起動対象を汎用化する代わりに既定値を一切注入しない（呼び出し側が渡した
+    extra_envだけをos.environにマージする）。呼び出し側が既にHOOK_STATE_DIR等
+    を明示している場合にそれを上書きしないための挙動である。
+    """
+    env = {**os.environ, **(extra_env or {})}
+    return subprocess.run(
+        [sys.executable, hook_relpath],
+        input=stdin_text,
+        capture_output=True,
+        text=True,
+        cwd=str(_PROJECT_ROOT),
+        env=env,
+    )
 
 
 def run_session_start_hook_process(
