@@ -107,12 +107,3 @@ def bodies_match(hook_prompt: str, transcript_content: object) -> bool:
 TOOL_SUMMARY_MAX_CHARS = 300
 TOOL_CALLS_PER_TURN_MAX = 40
 TOOL_FAIL_MAX_CHARS = 1000
-
-# ---------------------------------------------------------------------------
-# 器の3つの書き込みツールの完全な名前（プラグイン名・サーバー名はいずれも calm）
-# ---------------------------------------------------------------------------
-
-RECORD_LESSON_TOOL = "mcp__plugin_calm_calm__record_lesson"
-APPEND_LESSON_TOOL = "mcp__plugin_calm_calm__append_lesson"
-GET_LESSONS_TOOL = "mcp__plugin_calm_calm__get_lessons"
-VESSEL_WRITE_TOOLS = frozenset({RECORD_LESSON_TOOL, APPEND_LESSON_TOOL, GET_LESSONS_TOOL})
