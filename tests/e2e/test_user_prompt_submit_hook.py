@@ -1,19 +1,17 @@
 """hooks/user_prompt_submit_hook.py のE2Eテスト（イベント駆動アーキテクチャ版）
 
-subprocess.runでuser_prompt_submit_hook.pyを呼び出し、stdin→stdoutの入出力をテスト。
+user_prompt_submit_hook.pyを呼び出し、stdin→stdoutの入出力をテスト。
 nudge判定はevents.jsonl内のnudgeイベントに基づく。
 """
 import json
-import os
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 from hooks.hook_state import HookState
+from tests.helpers import run_hook_subprocess
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _SESSION_ID = "e2e-test-session-001"
 
 
@@ -28,16 +26,11 @@ def _run_hook(
     input_data: dict, state_dir: Path, extra_env: dict | None = None
 ) -> subprocess.CompletedProcess:
     """user_prompt_submit_hook.pyをサブプロセスで実行する"""
-    env = {**os.environ, "HOOK_STATE_DIR": str(state_dir)}
+    env = {"HOOK_STATE_DIR": str(state_dir)}
     if extra_env:
         env.update(extra_env)
-    return subprocess.run(
-        [sys.executable, "hooks/user_prompt_submit_hook.py"],
-        input=json.dumps(input_data),
-        capture_output=True,
-        text=True,
-        cwd=str(_PROJECT_ROOT),
-        env=env,
+    return run_hook_subprocess(
+        "hooks/user_prompt_submit_hook.py", json.dumps(input_data), extra_env=env
     )
 
 
@@ -276,7 +269,8 @@ class TestAskNotify:
         assert "<system-reminder>" in ctx
         assert "askの回答が届いています" in ctx
         assert "何色にする?" in ctx
-        assert "青にしよう" in ctx
+        assert "get_asks" in ctx
+        assert "青にしよう" not in ctx  # 回答本文はhook経由で注入しない
         # 消費済み: 追跡対象から外れている
         assert state.get_tracked_ask_ids() == []
 
@@ -319,21 +313,29 @@ class TestAskNotify:
         assert "askの回答が届いています" not in ctx
         assert "直近の応答で記録ツール" in ctx
 
-    def test_long_answer_exceeding_session_start_budget_is_shown_in_full_and_consumed(
+    def test_questions_exceeding_session_start_budget_are_shown_in_full_and_consumed(
         self, state_dir, temp_db
     ):
-        """本経路はcompose()を経由せず文字数予算を持たないため、
-        SessionStart hook側のcompose()（既定600字）なら切り詰められる長さの
-        回答でも、全文がそのまま表示され消費される。"""
+        """本経路はcompose()を経由せず文字数予算を持たない。回答本文は
+        hook経由で注入しないため行の長さはquestionだけで決まるが、
+        2件を同時に追跡し合計がSessionStart側の予算（既定600字）を超える
+        組み合わせでも、本経路は予算を意識せず両方とも全文表示・消費される
+        （対照: 同じ2件をSessionStart hook経由で処理すると1件しか表示され
+        ないことをtests/e2e/test_session_start_hook.py::
+        test_questions_exceeding_budget_are_deferred_not_lost_across_calls
+        で確認している）。"""
         from src.services import ask_service as ak
 
         act = self._seed_activity()
-        r1 = ak.add_ask("長い回答が来る質問", tags=["domain:test"], blocks=[act])
-        long_answer = "回答本文" * 500  # 2000字。SessionStart側の予算(600字)を大きく超える
-        ak.answer_ask(r1["id"], long_answer)
+        long_q_a = "A" * 500  # 質問はサービス層で500字上限
+        long_q_b = "B" * 500
+        r_a = ak.add_ask(long_q_a, tags=["domain:test"], blocks=[act])
+        r_b = ak.add_ask(long_q_b, tags=["domain:test"], blocks=[act])
+        ak.answer_ask(r_a["id"], "answer a")
+        ak.answer_ask(r_b["id"], "answer b")
 
         state = HookState(_SESSION_ID)
-        state.add_tracked_ask_ids([r1["id"]])
+        state.add_tracked_ask_ids([r_a["id"], r_b["id"]])
 
         result = _run_hook(
             {"session_id": _SESSION_ID}, state_dir, extra_env={"DISCUSSION_DB_PATH": temp_db}
@@ -341,7 +343,8 @@ class TestAskNotify:
         ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
 
         assert "askの回答が届いています" in ctx
-        assert long_answer in ctx
+        assert long_q_a in ctx
+        assert long_q_b in ctx
         assert state.get_tracked_ask_ids() == []
 
 
@@ -349,13 +352,10 @@ class TestEmptyStdin:
     """stdin空/空白のみ → 空JSON、machine_errorシグナルは記録しない"""
 
     def test_whitespace_only_stdin_returns_empty_json(self, state_dir):
-        proc = subprocess.run(
-            [sys.executable, "hooks/user_prompt_submit_hook.py"],
-            input="   \n\t",
-            capture_output=True,
-            text=True,
-            cwd=str(_PROJECT_ROOT),
-            env={**os.environ, "HOOK_STATE_DIR": str(state_dir)},
+        proc = run_hook_subprocess(
+            "hooks/user_prompt_submit_hook.py",
+            "   \n\t",
+            extra_env={"HOOK_STATE_DIR": str(state_dir)},
         )
         assert proc.returncode == 0
         assert json.loads(proc.stdout) == {}
@@ -364,13 +364,10 @@ class TestEmptyStdin:
         """空stdinはjson.loadsの例外経路に入らず、signal_eventsへ記録されない"""
         from src.db import get_connection
 
-        proc = subprocess.run(
-            [sys.executable, "hooks/user_prompt_submit_hook.py"],
-            input="",
-            capture_output=True,
-            text=True,
-            cwd=str(_PROJECT_ROOT),
-            env={**os.environ, "HOOK_STATE_DIR": str(state_dir), "DISCUSSION_DB_PATH": temp_db},
+        proc = run_hook_subprocess(
+            "hooks/user_prompt_submit_hook.py",
+            "",
+            extra_env={"HOOK_STATE_DIR": str(state_dir), "DISCUSSION_DB_PATH": temp_db},
         )
         assert proc.returncode == 0
         assert json.loads(proc.stdout) == {}
@@ -389,13 +386,10 @@ class TestFailOpen:
     """例外→空JSON（フェイルオープン）"""
 
     def test_invalid_json_input(self, state_dir, temp_db):
-        proc = subprocess.run(
-            [sys.executable, "hooks/user_prompt_submit_hook.py"],
-            input="not valid json",
-            capture_output=True,
-            text=True,
-            cwd=str(_PROJECT_ROOT),
-            env={**os.environ, "HOOK_STATE_DIR": str(state_dir), "DISCUSSION_DB_PATH": temp_db},
+        proc = run_hook_subprocess(
+            "hooks/user_prompt_submit_hook.py",
+            "not valid json",
+            extra_env={"HOOK_STATE_DIR": str(state_dir), "DISCUSSION_DB_PATH": temp_db},
         )
         assert proc.returncode == 0
         assert json.loads(proc.stdout) == {}
@@ -405,13 +399,10 @@ class TestFailOpen:
         """top-level except到達時にsignal_eventsへmachine_errorが記録される"""
         from src.db import get_connection
 
-        proc = subprocess.run(
-            [sys.executable, "hooks/user_prompt_submit_hook.py"],
-            input="not valid json",
-            capture_output=True,
-            text=True,
-            cwd=str(_PROJECT_ROOT),
-            env={**os.environ, "HOOK_STATE_DIR": str(state_dir), "DISCUSSION_DB_PATH": temp_db},
+        proc = run_hook_subprocess(
+            "hooks/user_prompt_submit_hook.py",
+            "not valid json",
+            extra_env={"HOOK_STATE_DIR": str(state_dir), "DISCUSSION_DB_PATH": temp_db},
         )
         assert proc.returncode == 0
         assert json.loads(proc.stdout) == {}

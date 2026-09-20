@@ -60,7 +60,8 @@ class TestBuildAskNotifyLines:
 
         assert len(lines) == 2  # ヘッダ行 + 1件
         assert "q1" in lines[1]
-        assert "the answer" in lines[1]
+        assert "get_asks" in lines[1]
+        assert "the answer" not in lines[1]  # 回答本文はhook経由で注入しない
         assert state.get_tracked_ask_ids() == []
 
     def test_dismissed_ask_is_reported_and_consumed(self, temp_db, hook_state_dir):
@@ -130,13 +131,19 @@ class TestBuildAskNotifyLines:
             conn.close()
 
         assert len(lines) == 2  # ヘッダ行 + 1件（conn共有でも通常通り解決済みが拾える）
-        assert "the answer" in lines[1]
+        assert "get_asks" in lines[1]
+        assert "the answer" not in lines[1]
         assert state.get_tracked_ask_ids() == []
 
 
 class TestBuildAskNotifyLinesBudgetAware:
     """budget_chars指定時、呼び出し元(compose())のハード切り詰めで表示が
-    欠落する行のask_idを消費済みにしてしまわないことを検証する。"""
+    欠落する行のask_idを消費済みにしてしまわないことを検証する。
+
+    回答本文はhook経由で注入しない（_format_ask_line参照）ため、行の長さを
+    左右するのはquestion（サービス層で500字上限）のみ。予算超過を再現する
+    フィクスチャは以降、answer_bodyではなくquestionの長さで作る。
+    """
 
     def test_all_lines_within_budget_consumes_all(self, temp_db, hook_state_dir):
         act = _make_activity()
@@ -148,20 +155,21 @@ class TestBuildAskNotifyLinesBudgetAware:
         lines = build_ask_notify_lines(SESSION_ID, budget_chars=600)
 
         assert len(lines) == 2
-        assert "short answer" in lines[1]
+        assert "q1" in lines[1]
+        assert "short answer" not in lines[1]
         assert state.get_tracked_ask_ids() == []
 
     def test_line_exceeding_budget_is_excluded_and_stays_tracked(self, temp_db, hook_state_dir):
-        """1件だけ追跡中で、その回答が予算を大きく超える長さの場合、
+        """1件だけ追跡中で、その質問が予算を大きく超える長さの場合、
         (compose()側のハード切り詰めで表示が欠けてしまうため) 何も返さず、
         ask_idも消費しない（次回以降に持ち越す）。"""
         act = _make_activity()
-        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
-        ak.answer_ask(r1["id"], "x" * 8000)
+        r1 = ak.add_ask("q" * 500, tags=["domain:test"], blocks=[act])
+        ak.answer_ask(r1["id"], "the answer")
         state = HookState(SESSION_ID)
         state.add_tracked_ask_ids([r1["id"]])
 
-        lines = build_ask_notify_lines(SESSION_ID, budget_chars=600)
+        lines = build_ask_notify_lines(SESSION_ID, budget_chars=60)
 
         assert lines == []
         assert state.get_tracked_ask_ids() == [r1["id"]]
@@ -173,22 +181,22 @@ class TestBuildAskNotifyLinesBudgetAware:
         先頭から収まる分（r_short）だけを消費し、収まらないr_longは
         追跡対象に残す（prefix方式）。"""
         act = _make_activity()
-        r_long = ak.add_ask("long one", tags=["domain:test"], blocks=[act])
+        r_long = ak.add_ask("q" * 300, tags=["domain:test"], blocks=[act])
         r_short = ak.add_ask("short one", tags=["domain:test"], blocks=[act])
-        ak.answer_ask(r_long["id"], "y" * 8000)
+        ak.answer_ask(r_long["id"], "long question answer")
         ak.answer_ask(r_short["id"], "fits fine")
         state = HookState(SESSION_ID)
         state.add_tracked_ask_ids([r_long["id"], r_short["id"]])
 
-        lines = build_ask_notify_lines(SESSION_ID, budget_chars=600)
+        lines = build_ask_notify_lines(SESSION_ID, budget_chars=100)
 
         assert len(lines) == 2  # ヘッダ行 + r_shortの1件のみ
         # ヘッダーの件数表記は実際に含めた件数（1件）に差し替わる（resolved全体の
         # 件数である2件のままだと、1行しか出ないのに「2件」と主張する矛盾になる）
         assert "1件" in lines[0]
         assert "2件" not in lines[0]
-        assert "fits fine" in lines[1]
-        assert "y" * 8000 not in "\n".join(lines)
+        assert "short one" in lines[1]
+        assert ("q" * 300) not in "\n".join(lines)
         assert state.get_tracked_ask_ids() == [r_long["id"]]
 
     def test_budget_too_small_for_header_consumes_nothing(self, temp_db, hook_state_dir):
@@ -205,15 +213,17 @@ class TestBuildAskNotifyLinesBudgetAware:
 
     def test_none_budget_consumes_all_even_when_line_is_very_long(self, temp_db, hook_state_dir):
         """budget_chars省略時（UserPromptSubmit hook経路）は予算を意識せず
-        全件を消費する。"""
+        全件を消費する（questionがサービス層の上限いっぱいの長さでも同様）。"""
         act = _make_activity()
-        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
-        ak.answer_ask(r1["id"], "z" * 8000)
+        long_question = "q" * 500
+        r1 = ak.add_ask(long_question, tags=["domain:test"], blocks=[act])
+        ak.answer_ask(r1["id"], "the answer")
         state = HookState(SESSION_ID)
         state.add_tracked_ask_ids([r1["id"]])
 
         lines = build_ask_notify_lines(SESSION_ID)
 
         assert len(lines) == 2
-        assert "z" * 8000 in lines[1]
+        assert long_question in lines[1]
+        assert "the answer" not in lines[1]
         assert state.get_tracked_ask_ids() == []
