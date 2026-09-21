@@ -685,6 +685,25 @@ class TestJudgeGoal:
         result = gs.judge_goal(goal_id, "achieved")
         assert "error" not in result
 
+    def test_goal_binding_not_broken_when_open_question_decision_replaced(self, temp_db):
+        act = _activity()
+        question_id = _decision("[議論中] キャッシュ方針は？")
+        _replace_decision(question_id, _decision("キャッシュはLRUで持つ"))
+        goal_id = _new_goal(
+            act,
+            conditions=[
+                {
+                    "statement": "方針が決まる",
+                    "actor": "claude",
+                    "state": "satisfied",
+                    "note": "済",
+                    "bound": {"type": "decision", "id": question_id},
+                }
+            ],
+        )["goal_id_raw"]
+        result = gs.judge_goal(goal_id, "achieved")
+        assert "error" not in result
+
     def test_failed_closes_even_with_open_conditions(self, temp_db):
         act = _activity()
         goal_id = _new_goal(act)["goal_id_raw"]

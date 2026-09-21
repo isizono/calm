@@ -714,10 +714,15 @@ def judge_goal_with_conn(
                     "message": "goal has no satisfied conditions",
                 }
             }
+        decision_specs = [
+            ("decision", c["bound_id"]) for c in satisfied_conditions if c["bound_type"] == "decision"
+        ]
+        decision_states = _fetch_bound_states(conn, decision_specs) if decision_specs else {}
         broken = [
             c
             for c in satisfied_conditions
-            if c["bound_type"] == "decision" and not _decision_is_done(conn, c["bound_id"])
+            if c["bound_type"] == "decision"
+            and decision_states[("decision", c["bound_id"])]["state"] != "done"
         ]
         if broken:
             return {
