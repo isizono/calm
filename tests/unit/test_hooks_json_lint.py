@@ -27,12 +27,12 @@ _CODEX_UNSUPPORTED_EVENTS = {"MessageDisplay"}
 
 # イベント自体はCodexに存在するが、スクリプトが依存するハーネス機構が
 # Codexに無いため、Codex側登録の期待値導出から除外するスクリプト。
-# vessel_hook.py: 標準入力のキー名がClaude Code固有の形（hook_event_name等）を
+# feedback_hook.py: 標準入力のキー名がClaude Code固有の形（hook_event_name等）を
 # 前提にしており、Codex向けの入力形での動作確認をしていないため対象外とする。
 # ask_answer_rewake_hook.py: 待機中のhookがidleのセッションを起こす機構
 # (asyncRewake)がCodexに無く、登録しても回答を知らせられない。
 _CODEX_UNSUPPORTED_SCRIPTS: set[str] = {
-    "vessel_hook.py",
+    "feedback_hook.py",
     "ask_answer_rewake_hook.py",
 }
 

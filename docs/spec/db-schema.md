@@ -132,8 +132,8 @@ erDiagram
 | `obs_events` | — | Claudeへの人間の訂正を検出するための観測台帳（追記専用） |
 | `lessons` / `lesson_entries` | lesson | 観測から蒸留した知見の見出しと、その追記スレッド（いずれも追記専用） |
 | `lessons_fts` | — | lessons/lesson_entries と rowid 連動する FTS5（trigram）全文検索仮想テーブル |
-| `vessel_cursor` | — | セッションごとのtranscript読み位置（バイトオフセット） |
-| `vessel_meta` | — | 観測・知見機構全体の停止スイッチ（mode）を持つ単一行テーブル |
+| `feedback_cursor` | — | セッションごとのtranscript読み位置（バイトオフセット） |
+| `feedback_meta` | — | 観測・知見機構全体の停止スイッチ（mode）を持つ単一行テーブル |
 
 行数感（規模）はランタイム情報のため本ドキュメントでは未記載とする。
 
@@ -557,7 +557,7 @@ asks 専用の sqlite-vec 仮想テーブル（384次元、`distance_metric=cosi
 
 ### 3.28 obs_events / lessons / lesson_entries と周辺の参照表・仮想テーブル
 
-Claudeへの人間からの訂正を機械可読な形で溜め、繰り返しの訂正を減らすための土台。`hooks/vessel_hook.py`（`SessionStart`・`UserPromptSubmit`・`PostToolUse`・`PostToolUseFailure`・`Stop` の5フック）だけが書き込む。
+Claudeへの人間からの訂正を機械可読な形で溜め、繰り返しの訂正を減らすための土台。`hooks/feedback_hook.py`（`SessionStart`・`UserPromptSubmit`・`PostToolUse`・`PostToolUseFailure`・`Stop` の5フック）だけが書き込む。
 
 補足:
 - `obs_events` は追記専用（`UPDATE`/`DELETE`はトリガーで拒否）。`kind`列は `obs_kinds` 参照表の値（`utterance`・`speaker`・`reply`・`tool`・`tool_overflow`・`tool_fail`・`delivered`・`suppressed`・`stepped`・`bind`・`boundary`・`human_withdraw`）に限られ、CHECK制約で「kindごとに必須のカラム」（例: `speaker`は`ref_id`必須、`tool`/`tool_fail`は`tool_name`必須）を強制する
@@ -565,9 +565,9 @@ Claudeへの人間からの訂正を機械可読な形で溜め、繰り返し�
 - `lessons`/`lesson_entries` も追記専用。`lessons`は作成後不変の見出し（`handle`・`body`）を持ち、`lesson_entries`がその後の追記（本文更新・条件・注記・撤回等）を`kind`列で区別して積む
 - `lesson_kinds` は知見の種類ごとに「配達条件を持てるか」「踏み跡条件を持てるか」を表し、トリガー（`lessons_kind_shape`・`lesson_entries_conditions_shape`）が挿入時にこの組み合わせを検査する
 - `lessons_fts` は `lessons`/`lesson_entries` への INSERT に連動するトリガーで同期する FTS5（trigram tokenizer）仮想テーブル
-- `vessel_cursor` は `Stop` フックがtranscriptを差分読みするためのセッションごとのバイトオフセット。`vessel_meta.mode`（`off`/`observe`/`on`、既定`observe`）はこの機構全体の停止スイッチで、hookは呼び出しのたびにこれを読む
+- `feedback_cursor` は `Stop` フックがtranscriptを差分読みするためのセッションごとのバイトオフセット。`feedback_meta.mode`（`off`/`observe`/`on`、既定`observe`）はこの機構全体の停止スイッチで、hookは呼び出しのたびにこれを読む
 
-関連 migration: 0075_add_vessel_tables
+関連 migration: 0075_add_feedback_tables
 
 カラム一覧・インデックス: `db-schema-tables.md` の `obs_events`・`lessons`・`lesson_entries` 等の節参照。
 
@@ -715,7 +715,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0071_add_import_provenance | import_provenance テーブル新設（importしたエンティティの出自台帳。再import冪等性・上流変更検知・参照自己解決の基盤、§3.27） |
 | 0073_add_asks_notify_wanted | asks に notify_wanted 列（通知希望フラグ、既定1）を追加（§3.22） |
 | 0074_drop_relay_outbox | relay_outbox テーブル削除（relay統合機能の撤去に伴う。0056で新設、代替スキーマへの移行なし） |
-| 0075_add_vessel_tables | 観測台帳 obs_events・知見 lessons/lesson_entries・参照表3つ（obs_kinds/lesson_kinds/delivery_channels）・全文検索用 lessons_fts・vessel_cursor/vessel_meta を新設（§3.28） |
+| 0075_add_feedback_tables | 観測台帳 obs_events・知見 lessons/lesson_entries・参照表3つ（obs_kinds/lesson_kinds/delivery_channels）・全文検索用 lessons_fts・feedback_cursor/feedback_meta を新設（§3.28） |
 
 重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。
 

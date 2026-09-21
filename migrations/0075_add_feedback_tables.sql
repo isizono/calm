@@ -5,7 +5,7 @@
 -- 背景:
 --   Claudeの振る舞いへの人間の訂正を機械可読な形で溜め、繰り返しの訂正を減らす
 --   ための土台（観測台帳）を追加する。本migrationは記録のためのテーブル・参照表・
---   トリガーのみを持つ。停止スイッチ（vessel_meta.mode）は既定で観測のみを行う値
+--   トリガーのみを持つ。停止スイッチ（feedback_meta.mode）は既定で観測のみを行う値
 --   （'observe'）で始まり、振る舞いに影響しない。
 --
 -- 変更内容:
@@ -13,7 +13,7 @@
 --   - 観測台帳 obs_events（追記専用）
 --   - 知見の見出し lessons・知見スレッドの追記 lesson_entries（いずれも追記専用）
 --   - 全文検索用の仮想テーブル lessons_fts（FTS5、trigram）
---   - Stopの読み位置 vessel_cursor・停止スイッチ vessel_meta（いずれも更新可）
+--   - Stopの読み位置 feedback_cursor・停止スイッチ feedback_meta（いずれも更新可）
 --   - 種類と条件の組み合わせを検査するトリガー、常時配達を禁じるトリガー、
 --     追記専用を強制するトリガー、lessons_fts を追記に連動させるトリガー
 
@@ -79,17 +79,17 @@ CREATE TABLE lesson_entries (      -- 知見スレッドの追記。追記専用
 
 CREATE VIRTUAL TABLE lessons_fts USING fts5(handle, body, quote, tokenize = 'trigram');
 
-CREATE TABLE vessel_cursor (session_id TEXT PRIMARY KEY, byte_offset INTEGER NOT NULL);  -- 更新を許す
-CREATE TABLE vessel_meta (id INTEGER PRIMARY KEY CHECK (id = 1),
+CREATE TABLE feedback_cursor (session_id TEXT PRIMARY KEY, byte_offset INTEGER NOT NULL);  -- 更新を許す
+CREATE TABLE feedback_meta (id INTEGER PRIMARY KEY CHECK (id = 1),
   mode TEXT NOT NULL DEFAULT 'observe' CHECK (mode IN ('off','observe','on')));      -- 更新を許す
-INSERT INTO vessel_meta (id) VALUES (1);
+INSERT INTO feedback_meta (id) VALUES (1);
 
 -- lessons: 種類表に条件の有無を合わせ、踏み跡を持たない種類への常時配達を拒否する
 CREATE TRIGGER lessons_kind_shape BEFORE INSERT ON lessons BEGIN
-  SELECT RAISE(ABORT, 'vessel:kind_mismatch') WHERE NOT EXISTS (SELECT 1 FROM lesson_kinds k
+  SELECT RAISE(ABORT, 'feedback:kind_mismatch') WHERE NOT EXISTS (SELECT 1 FROM lesson_kinds k
     WHERE k.kind = NEW.kind AND k.delivers = (NEW.deliver_event IS NOT NULL)
       AND k.steps = (NEW.step_event IS NOT NULL));
-  SELECT RAISE(ABORT, 'vessel:no_session_channel')
+  SELECT RAISE(ABORT, 'feedback:no_session_channel')
     WHERE NEW.deliver_event = 'session' AND EXISTS (SELECT 1 FROM lesson_kinds k
       WHERE k.kind = NEW.kind AND k.delivers = 1 AND k.steps = 0);
 END;
@@ -99,12 +99,12 @@ END;
 CREATE TRIGGER lesson_entries_conditions_shape BEFORE INSERT ON lesson_entries
 WHEN NEW.kind = 'conditions'
 BEGIN
-  SELECT RAISE(ABORT, 'vessel:kind_mismatch') WHERE NOT EXISTS (
+  SELECT RAISE(ABORT, 'feedback:kind_mismatch') WHERE NOT EXISTS (
     SELECT 1 FROM lessons l JOIN lesson_kinds k ON k.kind = l.kind
     WHERE l.id = NEW.lesson_id AND k.delivers = 1
       AND k.delivers = (NEW.deliver_event IS NOT NULL)
       AND k.steps = (NEW.step_event IS NOT NULL));
-  SELECT RAISE(ABORT, 'vessel:no_session_channel') WHERE NEW.deliver_event = 'session' AND EXISTS (
+  SELECT RAISE(ABORT, 'feedback:no_session_channel') WHERE NEW.deliver_event = 'session' AND EXISTS (
     SELECT 1 FROM lessons l JOIN lesson_kinds k ON k.kind = l.kind
     WHERE l.id = NEW.lesson_id AND k.delivers = 1 AND k.steps = 0);
 END;
@@ -113,24 +113,24 @@ END;
 -- INSERTのみを許し、UPDATE・DELETEを拒否する（種類表は候補が行を足すだけで、
 -- 既存の行の意味を変えない）
 CREATE TRIGGER trg_obs_events_append_only_upd BEFORE UPDATE ON obs_events
-BEGIN SELECT RAISE(ABORT, 'vessel:append_only'); END;
+BEGIN SELECT RAISE(ABORT, 'feedback:append_only'); END;
 CREATE TRIGGER trg_obs_events_append_only_del BEFORE DELETE ON obs_events
-BEGIN SELECT RAISE(ABORT, 'vessel:append_only'); END;
+BEGIN SELECT RAISE(ABORT, 'feedback:append_only'); END;
 
 CREATE TRIGGER trg_lessons_append_only_upd BEFORE UPDATE ON lessons
-BEGIN SELECT RAISE(ABORT, 'vessel:append_only'); END;
+BEGIN SELECT RAISE(ABORT, 'feedback:append_only'); END;
 CREATE TRIGGER trg_lessons_append_only_del BEFORE DELETE ON lessons
-BEGIN SELECT RAISE(ABORT, 'vessel:append_only'); END;
+BEGIN SELECT RAISE(ABORT, 'feedback:append_only'); END;
 
 CREATE TRIGGER trg_lesson_entries_append_only_upd BEFORE UPDATE ON lesson_entries
-BEGIN SELECT RAISE(ABORT, 'vessel:append_only'); END;
+BEGIN SELECT RAISE(ABORT, 'feedback:append_only'); END;
 CREATE TRIGGER trg_lesson_entries_append_only_del BEFORE DELETE ON lesson_entries
-BEGIN SELECT RAISE(ABORT, 'vessel:append_only'); END;
+BEGIN SELECT RAISE(ABORT, 'feedback:append_only'); END;
 
 CREATE TRIGGER trg_lesson_kinds_append_only_upd BEFORE UPDATE ON lesson_kinds
-BEGIN SELECT RAISE(ABORT, 'vessel:append_only'); END;
+BEGIN SELECT RAISE(ABORT, 'feedback:append_only'); END;
 CREATE TRIGGER trg_lesson_kinds_append_only_del BEFORE DELETE ON lesson_kinds
-BEGIN SELECT RAISE(ABORT, 'vessel:append_only'); END;
+BEGIN SELECT RAISE(ABORT, 'feedback:append_only'); END;
 
 -- lessons_fts の追記連動: lessons のINSERTでFTS行を作り、body追記で本文列だけ更新する
 CREATE TRIGGER trg_lessons_fts_insert AFTER INSERT ON lessons BEGIN

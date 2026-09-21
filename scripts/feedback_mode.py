@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""器の停止スイッチ（vessel_meta.mode）の読み取り・切り替えCLI。
+"""器の停止スイッチ（feedback_meta.mode）の読み取り・切り替えCLI。
 
 使い方:
-    uv run python scripts/vessel_mode.py get
-    uv run python scripts/vessel_mode.py set <off|observe|on>
+    uv run python scripts/feedback_mode.py get
+    uv run python scripts/feedback_mode.py set <off|observe|on>
 
 hookは毎回 mode を読むため、切り替えは動いている全セッションの次のhook
 呼び出しから効く。off にすると観測・配達・差し戻しのすべてが止まる。
@@ -27,11 +27,11 @@ _VALID_MODES = ("off", "observe", "on")
 def cmd_get(_args: argparse.Namespace) -> int:
     conn = get_connection()
     try:
-        row = conn.execute("SELECT mode FROM vessel_meta WHERE id = 1").fetchone()
+        row = conn.execute("SELECT mode FROM feedback_meta WHERE id = 1").fetchone()
     finally:
         conn.close()
     if row is None:
-        print("vessel_meta に行が無い（migration未適用の可能性がある）", file=sys.stderr)
+        print("feedback_meta に行が無い（migration未適用の可能性がある）", file=sys.stderr)
         return 1
     print(row["mode"])
     return 0
@@ -40,10 +40,10 @@ def cmd_get(_args: argparse.Namespace) -> int:
 def cmd_set(args: argparse.Namespace) -> int:
     conn = get_connection()
     try:
-        cur = conn.execute("UPDATE vessel_meta SET mode = ? WHERE id = 1", (args.mode,))
+        cur = conn.execute("UPDATE feedback_meta SET mode = ? WHERE id = 1", (args.mode,))
         conn.commit()
         if cur.rowcount == 0:
-            print("vessel_meta に行が無い（migration未適用の可能性がある）", file=sys.stderr)
+            print("feedback_meta に行が無い（migration未適用の可能性がある）", file=sys.stderr)
             return 1
     finally:
         conn.close()

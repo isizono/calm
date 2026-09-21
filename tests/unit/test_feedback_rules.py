@@ -1,10 +1,10 @@
-"""src/services/vessel_rules.py のテスト。
+"""src/services/feedback_rules.py のテスト。
 
 地の文の計算、語彙の照合、人間の打鍵の判別（許可リスト）、本文の一致比較を
 検証する。人間でない組の実データは preflight_origins.md の実測（26通り）から
 到達済みの組み合わせだけを使う。
 """
-from src.services.vessel_rules import (
+from src.services.feedback_rules import (
     compute_flag,
     is_human_speaker,
     plain_text,

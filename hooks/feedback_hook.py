@@ -9,7 +9,7 @@ tool_overflow・tool_fail・boundary）だけで、配達・踏み跡・書き�
 
 DBへの書き込みは hooks/citation_event_log.py の形に揃え、src.db を経由せず
 sqlite3 を直接使う（起動コストを抑えるため）。例外はすべてfail-open
-（止めない・差し戻さない）とし、失敗は ~/.cc-memory/logs/vessel_hook.jsonl に
+（止めない・差し戻さない）とし、失敗は ~/.cc-memory/logs/feedback_hook.jsonl に
 1行残す。器のテーブルが無ければ何もしない。停止スイッチが読めないときは
 止める側（'off'）と同じにふるまう。
 """
@@ -27,7 +27,7 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 from src.env_compat import env_get
-from src.services.vessel_rules import (
+from src.services.feedback_rules import (
     TOOL_CALLS_PER_TURN_MAX,
     TOOL_FAIL_MAX_CHARS,
     TOOL_SUMMARY_MAX_CHARS,
@@ -37,7 +37,7 @@ from src.services.vessel_rules import (
 )
 
 DEFAULT_DB_PATH = Path.home() / ".claude" / ".claude-code-memory" / "discussion.db"
-DEFAULT_LOG_PATH = Path.home() / ".cc-memory" / "logs" / "vessel_hook.jsonl"
+DEFAULT_LOG_PATH = Path.home() / ".cc-memory" / "logs" / "feedback_hook.jsonl"
 
 CONNECT_TIMEOUT = 2.0
 BUSY_TIMEOUT_MS = 2000
@@ -55,7 +55,7 @@ def _resolve_db_path() -> str:
 
 
 def _resolve_log_path() -> Path:
-    return Path(env_get("CALM_VESSEL_LOG_PATH", str(DEFAULT_LOG_PATH)))
+    return Path(env_get("CALM_FEEDBACK_LOG_PATH", str(DEFAULT_LOG_PATH)))
 
 
 def _log(payload: dict) -> None:
@@ -87,7 +87,7 @@ def read_mode(db_path: str) -> str:
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
-        row = conn.execute("SELECT mode FROM vessel_meta WHERE id = 1").fetchone()
+        row = conn.execute("SELECT mode FROM feedback_meta WHERE id = 1").fetchone()
     except sqlite3.OperationalError as e:
         if "no such table" in str(e):
             # マイグレーション未適用。器が入る前の正常な状態なので記録しない。
@@ -335,7 +335,7 @@ def _handle_stop(conn: sqlite3.Connection, data: dict) -> None:
     transcript_path = data.get("transcript_path")
 
     cursor_row = conn.execute(
-        "SELECT byte_offset FROM vessel_cursor WHERE session_id = ?", (session_id,)
+        "SELECT byte_offset FROM feedback_cursor WHERE session_id = ?", (session_id,)
     ).fetchone()
     offset = cursor_row[0] if cursor_row else 0
     new_rows, new_offset = _read_transcript_from_offset(transcript_path, offset)
@@ -391,7 +391,7 @@ def _handle_stop(conn: sqlite3.Connection, data: dict) -> None:
             )
 
     conn.execute(
-        "INSERT INTO vessel_cursor (session_id, byte_offset) VALUES (?, ?) "
+        "INSERT INTO feedback_cursor (session_id, byte_offset) VALUES (?, ?) "
         "ON CONFLICT(session_id) DO UPDATE SET byte_offset = excluded.byte_offset",
         (session_id, new_offset),
     )

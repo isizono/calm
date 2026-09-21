@@ -1819,7 +1819,7 @@ CREATE TABLE "vec_index_vector_chunks00"(rowid PRIMARY KEY,vectors BLOB NOT NULL
 
 </details>
 
-### vessel_cursor
+### feedback_cursor
 
 | カラム名 | 型 | NULL | デフォルト | PK |
 |---|---|---|---|---|
@@ -1831,12 +1831,12 @@ CREATE TABLE "vec_index_vector_chunks00"(rowid PRIMARY KEY,vectors BLOB NOT NULL
 <details><summary>CREATE文（生成元migration）</summary>
 
 ```sql
-CREATE TABLE vessel_cursor (session_id TEXT PRIMARY KEY, byte_offset INTEGER NOT NULL)
+CREATE TABLE feedback_cursor (session_id TEXT PRIMARY KEY, byte_offset INTEGER NOT NULL)
 ```
 
 </details>
 
-### vessel_meta
+### feedback_meta
 
 | カラム名 | 型 | NULL | デフォルト | PK |
 |---|---|---|---|---|
@@ -1848,7 +1848,7 @@ CREATE TABLE vessel_cursor (session_id TEXT PRIMARY KEY, byte_offset INTEGER NOT
 <details><summary>CREATE文（生成元migration）</summary>
 
 ```sql
-CREATE TABLE vessel_meta (id INTEGER PRIMARY KEY CHECK (id = 1),
+CREATE TABLE feedback_meta (id INTEGER PRIMARY KEY CHECK (id = 1),
   mode TEXT NOT NULL DEFAULT 'observe' CHECK (mode IN ('off','observe','on')))
 ```
 

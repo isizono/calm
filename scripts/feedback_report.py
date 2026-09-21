@@ -2,7 +2,7 @@
 """器の観測台帳の運用指標を表示する読み取り専用CLI（DBへは書き込まない）。
 
 使い方:
-    uv run python scripts/vessel_report.py
+    uv run python scripts/feedback_report.py
 
 出力する5指標:
     (a) speakerの値の組（promptSource・turnOrigin・entrypoint・userType・
@@ -29,11 +29,11 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from src.db import get_connection  # noqa: E402
-from src.services.vessel_rules import ALLOWED_HUMAN_PROMPT_SOURCES  # noqa: E402
+from src.services.feedback_rules import ALLOWED_HUMAN_PROMPT_SOURCES  # noqa: E402
 
 _SPEAKER_FIELDS = ("promptSource", "turnOrigin", "entrypoint", "userType", "isMeta", "isSidechain")
 
-# speakerのtextに足された、transcriptの7キーの外にある観測用の生値（hooks/vessel_hook.py
+# speakerのtextに足された、transcriptの7キーの外にある観測用の生値（hooks/feedback_hook.py
 # の_hook_context()のキーと一致させる）。判定には使われないので、(a)の7キーの組とは
 # 別の表で数える。
 _HOOK_CONTEXT_FIELDS = (

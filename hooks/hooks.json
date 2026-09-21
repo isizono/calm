@@ -23,7 +23,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/vessel_hook.py",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/feedback_hook.py",
             "timeout": 10
           }
         ]
@@ -44,7 +44,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/vessel_hook.py",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/feedback_hook.py",
             "timeout": 10
           }
         ]
@@ -65,7 +65,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/vessel_hook.py",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/feedback_hook.py",
             "timeout": 5
           }
         ]
@@ -108,7 +108,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/vessel_hook.py",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/feedback_hook.py",
             "timeout": 5
           }
         ]
@@ -120,7 +120,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/vessel_hook.py",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/feedback_hook.py",
             "timeout": 5
           }
         ]

@@ -1,4 +1,4 @@
-"""migration 0075_add_vessel_tables のテスト
+"""migration 0075_add_feedback_tables のテスト
 
 観測台帳（obs_events・lessons・lesson_entries）と3つの参照表、追記専用の
 強制・種類と条件の組み合わせの検査・常時配達の禁止・lessons_fts連動を検証する。
@@ -73,7 +73,7 @@ class TestTableExistence:
         conn = get_connection()
         try:
             for table in ("obs_events", "lessons", "lesson_entries", "obs_kinds",
-                          "lesson_kinds", "delivery_channels", "vessel_cursor", "vessel_meta"):
+                          "lesson_kinds", "delivery_channels", "feedback_cursor", "feedback_meta"):
                 assert not table_exists(conn, table), table
         finally:
             conn.close()
@@ -82,7 +82,7 @@ class TestTableExistence:
         conn = get_connection()
         try:
             for table in ("obs_events", "lessons", "lesson_entries", "obs_kinds",
-                          "lesson_kinds", "delivery_channels", "vessel_cursor", "vessel_meta",
+                          "lesson_kinds", "delivery_channels", "feedback_cursor", "feedback_meta",
                           "lessons_fts"):
                 assert table_exists(conn, table), table
         finally:
@@ -120,11 +120,11 @@ class TestReferenceTables:
             conn.close()
         assert channels == {"session", "prompt", "post_tool", "tool_fail", "pull"}
 
-    def test_vessel_meta_default_mode_is_observe(self, migrated_db):
+    def test_feedback_meta_default_mode_is_observe(self, migrated_db):
         """停止スイッチの既定値が観測だけの状態であることを必ず守る。"""
         conn = get_connection()
         try:
-            row = conn.execute("SELECT mode FROM vessel_meta WHERE id = 1").fetchone()
+            row = conn.execute("SELECT mode FROM feedback_meta WHERE id = 1").fetchone()
         finally:
             conn.close()
         assert row is not None
@@ -230,23 +230,23 @@ class TestAppendOnlyEnforcement:
             conn.rollback()
             conn.close()
 
-    def test_vessel_cursor_and_vessel_meta_updates_are_allowed(self, migrated_db):
-        """vessel_cursor・vessel_metaは更新を許す（追記専用の対象外）。"""
+    def test_feedback_cursor_and_feedback_meta_updates_are_allowed(self, migrated_db):
+        """feedback_cursor・feedback_metaは更新を許す（追記専用の対象外）。"""
         conn = get_connection()
         try:
             conn.execute(
-                "INSERT INTO vessel_cursor (session_id, byte_offset) VALUES ('s1', 0)"
+                "INSERT INTO feedback_cursor (session_id, byte_offset) VALUES ('s1', 0)"
             )
             conn.execute(
-                "UPDATE vessel_cursor SET byte_offset = 100 WHERE session_id = 's1'"
+                "UPDATE feedback_cursor SET byte_offset = 100 WHERE session_id = 's1'"
             )
-            conn.execute("UPDATE vessel_meta SET mode = 'on' WHERE id = 1")
+            conn.execute("UPDATE feedback_meta SET mode = 'on' WHERE id = 1")
             conn.commit()
             row = conn.execute(
-                "SELECT byte_offset FROM vessel_cursor WHERE session_id = 's1'"
+                "SELECT byte_offset FROM feedback_cursor WHERE session_id = 's1'"
             ).fetchone()
             assert row["byte_offset"] == 100
-            mode_row = conn.execute("SELECT mode FROM vessel_meta WHERE id = 1").fetchone()
+            mode_row = conn.execute("SELECT mode FROM feedback_meta WHERE id = 1").fetchone()
             assert mode_row["mode"] == "on"
         finally:
             conn.close()
@@ -257,7 +257,7 @@ class TestLessonsKindShapeTrigger:
         """tallyは条件を持てない: deliver_eventを与えるとkind_mismatchで拒否される。"""
         conn = get_connection()
         try:
-            with pytest.raises(sqlite3.IntegrityError, match="vessel:kind_mismatch"):
+            with pytest.raises(sqlite3.IntegrityError, match="feedback:kind_mismatch"):
                 conn.execute(
                     "INSERT INTO lessons (kind, handle, body, deliver_event, deliver_spec) "
                     "VALUES ('tally', 'bad-tally', 'body', 'tool_call', '{}')"
@@ -288,7 +288,7 @@ class TestLessonsKindShapeTrigger:
         """踏み跡を持たない種類（guide）に常時配達を与えるとno_session_channelで拒否される。"""
         conn = get_connection()
         try:
-            with pytest.raises(sqlite3.IntegrityError, match="vessel:no_session_channel"):
+            with pytest.raises(sqlite3.IntegrityError, match="feedback:no_session_channel"):
                 conn.execute(
                     "INSERT INTO lessons (kind, handle, body, deliver_event, deliver_spec) "
                     "VALUES ('guide', 'bad-guide-session', 'body', 'session', '{}')"
@@ -314,7 +314,7 @@ class TestLessonEntriesConditionsTrigger:
         try:
             lesson_id = _insert_tally_lesson(conn)
             conn.commit()
-            with pytest.raises(sqlite3.IntegrityError, match="vessel:kind_mismatch"):
+            with pytest.raises(sqlite3.IntegrityError, match="feedback:kind_mismatch"):
                 conn.execute(
                     "INSERT INTO lesson_entries (lesson_id, kind, deliver_event, deliver_spec) "
                     "VALUES (?, 'conditions', 'tool_call', '{}')",
@@ -330,7 +330,7 @@ class TestLessonEntriesConditionsTrigger:
         try:
             lesson_id = _insert_prevent_lesson(conn)
             conn.commit()
-            with pytest.raises(sqlite3.IntegrityError, match="vessel:kind_mismatch"):
+            with pytest.raises(sqlite3.IntegrityError, match="feedback:kind_mismatch"):
                 conn.execute(
                     "INSERT INTO lesson_entries (lesson_id, kind, deliver_event, deliver_spec) "
                     "VALUES (?, 'conditions', 'tool_call', '{}')",
@@ -365,7 +365,7 @@ class TestLessonEntriesConditionsTrigger:
         try:
             lesson_id = _insert_guide_lesson(conn)
             conn.commit()
-            with pytest.raises(sqlite3.IntegrityError, match="vessel:no_session_channel"):
+            with pytest.raises(sqlite3.IntegrityError, match="feedback:no_session_channel"):
                 conn.execute(
                     "INSERT INTO lesson_entries (lesson_id, kind, deliver_event, deliver_spec) "
                     "VALUES (?, 'conditions', 'session', '{}')",
@@ -504,7 +504,7 @@ class TestExistingDataUnaffected:
         conn = get_connection()
         try:
             tag_id = conn.execute(
-                "INSERT INTO tags (namespace, name) VALUES ('domain', 'vessel-migration-check')"
+                "INSERT INTO tags (namespace, name) VALUES ('domain', 'feedback-migration-check')"
             ).lastrowid
             conn.commit()
         finally:
@@ -515,6 +515,6 @@ class TestExistingDataUnaffected:
         conn = get_connection()
         try:
             row = conn.execute("SELECT name FROM tags WHERE id = ?", (tag_id,)).fetchone()
-            assert row["name"] == "vessel-migration-check"
+            assert row["name"] == "feedback-migration-check"
         finally:
             conn.close()
