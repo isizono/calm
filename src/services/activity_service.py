@@ -659,6 +659,8 @@ def update_activity(
         and description is None
         and tags is None
         and orch_managed is None
+        and closed_by is None
+        and closed_reason is None
     ):
         return {
             "error": {
@@ -667,6 +669,17 @@ def update_activity(
                     "At least one of status, title, description, tags, or "
                     "orch_managed must be provided"
                 ),
+            }
+        }
+
+    # ステータスバリデーション（closed_by/closed_reasonのチェックより先に行う。
+    # 後段はstatusの値が有効である前提で"completed"と比較するため、無効な
+    # statusを先に弾かないと無関係なclosed_by/closed_reasonのエラーが返る）
+    if status is not None and status not in REAL_STATUSES:
+        return {
+            "error": {
+                "code": "INVALID_STATUS",
+                "message": f"Invalid status: {status}. Must be one of {sorted(REAL_STATUSES)}",
             }
         }
 
@@ -692,15 +705,6 @@ def update_activity(
         parsed_tags = validate_and_parse_tags(tags, required=True)
         if isinstance(parsed_tags, dict):
             return parsed_tags
-
-    # ステータスバリデーション
-    if status is not None and status not in REAL_STATUSES:
-        return {
-            "error": {
-                "code": "INVALID_STATUS",
-                "message": f"Invalid status: {status}. Must be one of {sorted(REAL_STATUSES)}",
-            }
-        }
 
     # titleのバリデーション
     title_err = validate_title(title)

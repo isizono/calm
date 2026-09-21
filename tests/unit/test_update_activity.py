@@ -241,11 +241,22 @@ class TestUpdateActivityClosedByValidation:
         assert result["error"]["code"] == "VALIDATION_ERROR"
 
     def test_closed_by_without_any_status_rejected(self, test_activity):
-        """statusを渡さずclosed_byだけ渡してもVALIDATION_ERRORになる"""
+        """statusを渡さずclosed_byだけ渡してもVALIDATION_ERRORになる。
+        closed_byは渡されているため「何も渡していない」旨のメッセージにはならない"""
         result = update_activity(test_activity["activity_id"], closed_by="user")
 
         assert "error" in result
         assert result["error"]["code"] == "VALIDATION_ERROR"
+        assert "completed" in result["error"]["message"]
+        assert "At least one of" not in result["error"]["message"]
+
+    def test_invalid_status_with_closed_by_reports_invalid_status(self, test_activity):
+        """無効なstatusとclosed_byを同時に渡した場合、statusの妥当性チェックが
+        先に行われINVALID_STATUSになる（closed_by由来の無関係な理由にはならない）"""
+        result = update_activity(test_activity["activity_id"], status="bogus", closed_by="user")
+
+        assert "error" in result
+        assert result["error"]["code"] == "INVALID_STATUS"
 
     def test_closed_reason_without_completed_status_rejected(self, test_activity):
         result = update_activity(test_activity["activity_id"], title="x", closed_reason="理由")
