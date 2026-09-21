@@ -56,14 +56,16 @@ ask storeには「同じ判断構造の問いが繰り返されたら、機械�
 Monitorツールを以下のパラメータで呼ぶ:
 
 - `description`: 監視対象がわかる説明（例: `"ask store open askの変化監視"`）
-- `persistent`: `true`（セッション終了まで動かし続ける。`TaskStop`で明示的に止めるまでタイムアウトしない）
+- `timeout_ms`: `1800000`（Monitorの上限値。これより大きい値を渡しても30分に切り詰められるため、常に上限を明示する）
 - `command`: `bash "${CLAUDE_SKILL_DIR}/scripts/poll.sh"`
+
+Monitorは`timeout_ms`の上限である30分で必ず失効し、そのタイミングで失効通知が届く。監視を続ける場合はこのStep 2をそのまま繰り返してMonitorを張り直す（re-arm）。失効通知は「open askに変化があった」ことを意味しないため、Step 3の処理には進まず張り直すだけでよい。
 
 `scripts/poll.sh`はopen askの「件数・最新`last_seen_at`・id集合」のいずれかが変化した瞬間だけ1行出力する。`GROUP_CONCAT(id)`まで比較に含めているのは、件数が同じでもid構成が入れ替わる変化（1件closeして1件openになった等）を取りこぼさないため。出力される値はあくまでトリガーの参考情報であり、実際に読むべきask本文はStep 3で`get_asks`から取得する（DBを直接sqliteで読むのはポーリングの軽量化のためで、questionやcontextの中身までDB越しに読み取ることはしない）。
 
 ### Step 3: 変化検知時の処理手順
 
-Monitorの通知（`ask store changed: ...`という1行）を受け取るたびに、以下を実行する。cronループと異なり同一セッション内のイベントとして届くため、prompt文字列を読み直す必要はなく、以下の手順をそのまま適用する。
+Monitorの通知には2種類ある。`ask store changed: ...`という1行を伴う**変化検知の通知**を受け取ったときは、以下を実行する。cronループと異なり同一セッション内のイベントとして届くため、prompt文字列を読み直す必要はなく、以下の手順をそのまま適用する。Monitorが30分で自動失効したときの**失効通知**は変化検知ではないため、以下の手順には進まず、Step 2の要領でMonitorを張り直すだけでよい。
 
 1. **state file読み込み**: 無ければStep 1へ戻る
 2. **全open ask取得**: `get_asks(status="open", include_stats=true, limit=100)`。`total_count`が`limit`を超える場合は`offset`を進めて全件回収する
@@ -88,7 +90,7 @@ Monitorの通知（`ask store changed: ...`という1行）を受け取るたび
 
 ### Step 5: 監視停止
 
-ユーザーから「監視止めて」「もういい」「ask-watch停止」等の依頼で`TaskStop`を実行し、Monitorタスクを停止する。session終了でも自動的に監視は終了する。
+ユーザーから「監視止めて」「もういい」「ask-watch停止」等の依頼があれば`TaskStop`を実行し、Monitorタスクを停止する。Monitorはどのみち30分で自動失効するため、停止依頼が来る前に失効している場合は張り直さずそのまま終了してよい。session終了でも監視は終了する。
 
 ## 出力フォーマット
 
@@ -111,7 +113,7 @@ Monitorの通知（`ask store changed: ...`という1行）を受け取るたび
 - **重複起票防止はDBを正とする**: state fileの`filed_meta_asks`はあくまで人間向けの参考ログで、実際の重複判定は毎回`get_asks(kind="meta")`への問い合わせで行う。state fileが欠損・不整合になってもDB照会だけで正しく動く
 - **withdraw等の代行はしない**: Step 3の重複確認でpromoted済みの型に該当するopen askを見つけても、このスキルはそれを自動withdrawしたり自己裁定したりしない。観察として短報に記載するに留める
 - **メタask自体もactivityを止める**: メタaskはトリガーとなった同型askと同じblocksを引き継ぐため、同じactivityに対して判断待ちが複数件（トリガーask＋メタask）積まれる形になる。これは意図的な設計だが、運用上の観察対象でもある。open ask件数が単調増加するようなら、ask-watch側ではなく運用ルール側の見直しをユーザーに相談する
-- **session終了で監視も終了**: Monitorはセッション内蔵ツールのため、セッションが終了すると監視ループも終了する。長期運用は別途`/schedule`でのクラウド化を検討（今回のスコープ外）
+- **Monitorは30分で自動失効する**: `timeout_ms`の上限は1800000ms（30分）で、これより大きい値を渡しても30分に切り詰められる。継続監視には失効の都度Step 2の要領での張り直し（re-arm）が要る。加えてMonitorはセッション内蔵ツールのため、セッションが終了すると監視も終了する。長期運用は別途`/schedule`でのクラウド化を検討（今回のスコープ外）
 
 ## 関連
 
