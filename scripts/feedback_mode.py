@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""器の停止スイッチ（feedback_meta.mode）の読み取り・切り替えCLI。
+"""フィードバック機構の停止スイッチ（feedback_meta.mode）の読み取り・切り替えCLI。
 
 使い方:
     uv run python scripts/feedback_mode.py get

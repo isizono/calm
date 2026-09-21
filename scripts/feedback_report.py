@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""器の観測台帳の運用指標を表示する読み取り専用CLI（DBへは書き込まない）。
+"""フィードバック機構の観測台帳の運用指標を表示する読み取り専用CLI（DBへは書き込まない）。
 
 使い方:
     uv run python scripts/feedback_report.py

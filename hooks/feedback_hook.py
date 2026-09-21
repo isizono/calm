@@ -1,6 +1,6 @@
-"""器のhook: 観測台帳への書き込み専用。
+"""フィードバック機構のhook: 観測台帳への書き込み専用。
 
-hooks/hooks.json の器の5エントリ（SessionStart・UserPromptSubmit・PostToolUse・
+hooks/hooks.json のフィードバック機構の5エントリ（SessionStart・UserPromptSubmit・PostToolUse・
 PostToolUseFailure・Stop）を、標準入力の hook_event_name で分けて処理する1本の
 スクリプト。この分割で書くのは観測（utterance・speaker・reply・tool・
 tool_overflow・tool_fail・boundary）だけで、配達・踏み跡・書き込みの結び付け・
@@ -10,7 +10,7 @@ tool_overflow・tool_fail・boundary）だけで、配達・踏み跡・書き�
 DBへの書き込みは hooks/citation_event_log.py の形に揃え、src.db を経由せず
 sqlite3 を直接使う（起動コストを抑えるため）。例外はすべてfail-open
 （止めない・差し戻さない）とし、失敗は ~/.cc-memory/logs/feedback_hook.jsonl に
-1行残す。器のテーブルが無ければ何もしない。停止スイッチが読めないときは
+1行残す。フィードバック機構のテーブルが無ければ何もしない。停止スイッチが読めないときは
 止める側（'off'）と同じにふるまう。
 """
 from __future__ import annotations
@@ -78,7 +78,7 @@ def _connect(db_path: str) -> sqlite3.Connection:
 
 
 def read_mode(db_path: str) -> str:
-    """器の mode を返す。読めない理由が何であれ 'off' を返す。"""
+    """フィードバック機構の mode を返す。読めない理由が何であれ 'off' を返す。"""
     try:
         conn = sqlite3.connect(db_path, timeout=CONNECT_TIMEOUT)
     except Exception as e:
@@ -90,7 +90,7 @@ def read_mode(db_path: str) -> str:
         row = conn.execute("SELECT mode FROM feedback_meta WHERE id = 1").fetchone()
     except sqlite3.OperationalError as e:
         if "no such table" in str(e):
-            # マイグレーション未適用。器が入る前の正常な状態なので記録しない。
+            # マイグレーション未適用。フィードバック機構が入る前の正常な状態なので記録しない。
             return "off"
         _log({"at": "read_mode", "why": "query_failed", "err": repr(e)})
         return "off"

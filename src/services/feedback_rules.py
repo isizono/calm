@@ -1,4 +1,4 @@
-"""自己改善ループの器: hookとMCPサーバーの両方が使う共有の規則。
+"""フィードバック機構: hookとMCPサーバーの両方が使う共有の規則。
 
 標準ライブラリだけで書く。src.db や src.services 配下の他モジュールを import
 しない（それらは numpy・yoyo・sqlite_vec を引き込み、hookの起動コストを

@@ -638,6 +638,41 @@ CREATE TABLE discussion_topics (
 
 </details>
 
+### feedback_cursor
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| session_id | TEXT | NO | — | PK |
+| byte_offset | INTEGER | NO | — | — |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE feedback_cursor (session_id TEXT PRIMARY KEY, byte_offset INTEGER NOT NULL)
+```
+
+</details>
+
+### feedback_meta
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| id | INTEGER | NO | — | PK |
+| mode | TEXT | NO | `'observe'` | — |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE feedback_meta (id INTEGER PRIMARY KEY CHECK (id = 1),
+  mode TEXT NOT NULL DEFAULT 'observe' CHECK (mode IN ('off','observe','on')))
+```
+
+</details>
+
 ### fetch_telemetry
 
 | カラム名 | 型 | NULL | デフォルト | PK |
@@ -1112,7 +1147,7 @@ CREATE TABLE migration_ledger (
 <details><summary>CREATE文（生成元migration）</summary>
 
 ```sql
-CREATE TABLE obs_events (          -- 観測台帳。器のhookだけが書く。追記専用。前後の判定は id で行う
+CREATE TABLE obs_events (          -- 観測台帳。フィードバック機構のhookだけが書く。追記専用。前後の判定は id で行う
   id INTEGER PRIMARY KEY, session_id TEXT NOT NULL,
   prompt_id TEXT, agent_id TEXT,   -- prompt_id は最初の入力より前は無い。agent_id は印字モード(headless)
                                     -- 起動のサブエージェント内でだけ入る。対話セッション下のサブエージェント
@@ -1815,41 +1850,6 @@ CREATE TABLE "vec_index_rowids"(rowid INTEGER PRIMARY KEY AUTOINCREMENT,id,chunk
 
 ```sql
 CREATE TABLE "vec_index_vector_chunks00"(rowid PRIMARY KEY,vectors BLOB NOT NULL)
-```
-
-</details>
-
-### feedback_cursor
-
-| カラム名 | 型 | NULL | デフォルト | PK |
-|---|---|---|---|---|
-| session_id | TEXT | NO | — | PK |
-| byte_offset | INTEGER | NO | — | — |
-
-インデックス: なし（自動生成される主キー索引を除く）
-
-<details><summary>CREATE文（生成元migration）</summary>
-
-```sql
-CREATE TABLE feedback_cursor (session_id TEXT PRIMARY KEY, byte_offset INTEGER NOT NULL)
-```
-
-</details>
-
-### feedback_meta
-
-| カラム名 | 型 | NULL | デフォルト | PK |
-|---|---|---|---|---|
-| id | INTEGER | NO | — | PK |
-| mode | TEXT | NO | `'observe'` | — |
-
-インデックス: なし（自動生成される主キー索引を除く）
-
-<details><summary>CREATE文（生成元migration）</summary>
-
-```sql
-CREATE TABLE feedback_meta (id INTEGER PRIMARY KEY CHECK (id = 1),
-  mode TEXT NOT NULL DEFAULT 'observe' CHECK (mode IN ('off','observe','on')))
 ```
 
 </details>

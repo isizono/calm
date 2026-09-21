@@ -1,4 +1,4 @@
--- Migration 0075: 自己改善ループの器 — 観測台帳
+-- Migration 0075: フィードバック機構 — 観測台帳
 --
 -- depends: 0074_drop_relay_outbox
 --
@@ -32,7 +32,7 @@ INSERT INTO lesson_kinds VALUES ('prevent',1,1),('tally',0,0),('guide',1,0);
 CREATE TABLE delivery_channels (channel TEXT PRIMARY KEY);
 INSERT INTO delivery_channels VALUES ('session'),('prompt'),('post_tool'),('tool_fail'),('pull');
 
-CREATE TABLE obs_events (          -- 観測台帳。器のhookだけが書く。追記専用。前後の判定は id で行う
+CREATE TABLE obs_events (          -- 観測台帳。フィードバック機構のhookだけが書く。追記専用。前後の判定は id で行う
   id INTEGER PRIMARY KEY, session_id TEXT NOT NULL,
   prompt_id TEXT, agent_id TEXT,   -- prompt_id は最初の入力より前は無い。agent_id は印字モード(headless)
                                     -- 起動のサブエージェント内でだけ入る。対話セッション下のサブエージェント

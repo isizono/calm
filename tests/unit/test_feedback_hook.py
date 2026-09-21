@@ -567,7 +567,7 @@ class TestModeSwitch:
 
 class TestFailOpen:
     def test_missing_table_does_not_raise(self, monkeypatch, capsys, tmp_path):
-        """器のテーブルが無ければ何もしない（マイグレーション未適用のDB）。"""
+        """フィードバック機構のテーブルが無ければ何もしない（マイグレーション未適用のDB）。"""
         empty_db = tmp_path / "empty.db"
         sqlite3.connect(str(empty_db)).close()
         monkeypatch.setenv("CALM_DB_PATH", str(empty_db))
