@@ -219,15 +219,28 @@ def _goal_metrics(conn: sqlite3.Connection, window_days: Optional[int]) -> Optio
     """goal機構の観測: 差し戻し回数・判定件数・誤判定率・放置件数。
 
     goal は活動と異なり時系列のイベントログではなく現在の状態そのもの
-    （goals.closed）なので、差し戻し回数（signal_events由来）だけをwindowで
-    絞り、判定件数・放置件数は「いま」の状態をそのまま数える。goal機構の3表が
-    無いDB（migration未適用）ではNoneを返す。
+    （goals.closed）だが、誤判定率の分子（差し戻し件数）と分母（判定件数）を
+    同じ期間で揃えるため、判定件数もgoals.judged_atでwindowを絞る。放置件数は
+    「いま」の状態をそのまま数える。goal機構の3表が無いDB（migration未適用）
+    ではNoneを返す。
+
+    既知の制約: 分子と分母はgoal IDでリンクしておらず、それぞれwindow内で
+    独立に絞り込むだけである。window開始前に判定されたgoalがwindow内で
+    巻き戻された場合、差し戻しは分子に入るが判定はwindow外で分母に入らない
+    ため、誤判定率が1を超えることがある。
     """
     if not _goal_tables_exist(conn):
         return None
 
     rollback_count = len(_fetch_signals(conn, "goal_rollback", window_days))
-    closed_count = conn.execute("SELECT COUNT(*) AS c FROM goals WHERE closed = 1").fetchone()["c"]
+
+    closed_query = "SELECT COUNT(*) AS c FROM goals WHERE closed = 1"
+    closed_params: list[object] = []
+    if window_days is not None:
+        closed_query += " AND judged_at >= datetime('now', ?)"
+        closed_params.append(f"-{window_days} days")
+    closed_count = conn.execute(closed_query, closed_params).fetchone()["c"]
+
     judged_count = closed_count + rollback_count
 
     # 放置 = 未判定(closed=0)のまま、紐づくactivityが全部completed。

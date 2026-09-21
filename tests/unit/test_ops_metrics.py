@@ -38,6 +38,19 @@ def _backdate(db_path: str, signal_id: int, days_ago: int) -> None:
         conn.close()
 
 
+def _backdate_goal_judged_at(db_path: str, goal_id: int, days_ago: int) -> None:
+    """指定goalのjudged_atをdays_ago日前に書き換える。"""
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "UPDATE goals SET judged_at = datetime('now', ?) WHERE id = ?",
+            (f"-{days_ago} days", goal_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 class TestContradictionMetrics:
     def test_counts_by_resolution(self, temp_db):
         ss.record_signal("contradiction", "a vs b", source="agent",
@@ -236,6 +249,20 @@ class TestGoalMetrics:
         assert g["rollback_count"] == 1
         assert g["judged_count"] == 3  # 閉じているgoal(a, c)=2 + 差し戻し行数=1
         assert g["misjudgment_rate"] == pytest.approx(1 / 3)
+
+    def test_judged_count_denominator_scoped_to_same_window_as_rollback(self, temp_db):
+        """呼び出し元が使うデフォルト相当の期間(30日)で、分母(judged_count)も
+        分子(rollback_count)と同じ期間に絞られることを確認する。window外の
+        判定済みgoalが分母に混入すると誤判定率が実態より低く出る"""
+        self._closed_goal("goal-recent")
+        old_goal_id, _ = self._closed_goal("goal-old")
+        _backdate_goal_judged_at(temp_db, old_goal_id, days_ago=90)
+
+        metrics = compute_metrics(temp_db, window_days=30)
+        assert metrics["goal"]["judged_count"] == 1
+
+        metrics_all = compute_metrics(temp_db, window_days=None)
+        assert metrics_all["goal"]["judged_count"] == 2
 
     def test_misjudgment_rate_is_none_when_nothing_judged_yet(self, temp_db):
         metrics = compute_metrics(temp_db, window_days=None)
