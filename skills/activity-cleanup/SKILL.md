@@ -72,7 +72,7 @@ snoozedの実態確認も同様に`check_in`を避けるが、`get_activities`�
 
 一方、descriptionの更新(再開条件の訂正・誤字修正など)は`update_activity`で行ってよい。shelved中にstatus以外のフィールド(title/description/tags)を更新しても自動復活は起きない(自動復活が起きるのはsnoozedにstatusを指定せず更新した場合のみで、shelvedには適用されない既存仕様)。
 
-**goal付きactivityの確認:** 各activityについて`get_goal(activity_id=...)`を呼び、`label`を確認する(`get_goal`は`check_in`と違いactivityのstatusを変えない読み取り専用なので、active/shelved/snoozedいずれでも使ってよい)。`label`が`judge_ready`(判定待ち)なら[手順3](#3-処遇判定)でjudge_goalによる判定に回す。`active`(openの条件が残る)なら、他の実態確認の結果に関わらず処遇を「askで裁定待ち」に回す(goal付きactivityをcompleted・重複統合の閉じる側にする判断は、judge_goalを経ずには下さない)。`undefined`・`not_needed`ならgoalに関する追加の考慮は要らない。
+**goal付きactivityの確認:** 各activityについて`get_goal(activity_id=...)`を呼び、`label`を確認する(`get_goal`は`check_in`と違いactivityのstatusを変えない読み取り専用なので、active/shelved/snoozedいずれでも使ってよい)。`label`が`judge_ready`(判定待ち)なら[手順3](#3-処遇判定)でjudge_goalによる判定に回す。`active`(openの条件が残る)なら、他の実態確認の結果に関わらず[手順3](#3-処遇判定)の`active`向け分岐(その場で確認、または一括提示までバッファ)に回し、`completed`・`relation+completedで統合`はこの場では選ばない(goal付きactivityをcompleted・重複統合の閉じる側にする判断は、judge_goalを経ずには下さない)。`undefined`・`not_needed`ならgoalに関する追加の考慮は要らない。
 
 ### 3. 処遇判定
 

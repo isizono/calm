@@ -72,6 +72,8 @@ description: 【必須】ユーザーとの合意が成立したとき、また�
 
 `update_goal` の応答の `goal.label` が `judge_ready`（全条件が終端し判定待ち）になったら、そのまま持ち越さずその場で判定する。`goal.open_questions` に未決があれば畳むか1ターン聞き、そのうえで `goal.terminal` の充足が1件以上あれば `judge_goal(goal_id, verdict="achieved")`、0件なら `judge_goal(goal_id, verdict="failed", note=理由)` を呼ぶ。人間の判断は待たない。
 
+この判定の分岐（`open_questions`の扱いから`judge_goal`の呼び分けまで）は[check-in](../check-in/SKILL.md)の「goalフィールドの扱い」節を正本とする。判定条件が変わる場合はそちらを確認する。
+
 `[議論中]` の論点を結論の decision で決着させる場合は書き方が違う。決着する論点自体が条件の束縛先なら、結論の decision から問いの decision へ `add_relation(relation_type="supersedes")` で置き換えの関係を張る（既存の運用）だけでよく、`update_goal` は呼ばない（したがって上記の判定待ちの確認も発生しない）。この置き換えが張られた時点で、束縛した条件は次の読み出しから済と読まれる。決着前に条件を `satisfied` に書き換えると、束縛先がまだ済でないため崩れとして扱われる。
 
 ## 矛盾・重複への対処

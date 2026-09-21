@@ -72,6 +72,8 @@ docstringを正とする。同一内容の再報告は `report_signal` 側で自
 
 `update_goal` の応答の `goal.label` が `judge_ready`（全条件が終端し判定待ち）になったら、そのまま持ち越さずその場で判定する。`goal.open_questions` に未決があれば畳むか1ターン聞き、そのうえで `goal.terminal` の充足が1件以上あれば `judge_goal(goal_id, verdict="achieved")`、0件なら `judge_goal(goal_id, verdict="failed", note=理由)` を呼ぶ。人間の判断は待たない。
 
+この判定の分岐（`open_questions`の扱いから`judge_goal`の呼び分けまで）は[check-in](../check-in/SKILL.md)の「goalフィールドの扱い」節を正本とする。判定条件が変わる場合はそちらを確認する。
+
 ## 優先方針
 
 **「多めに残す > 少なく残す」**。

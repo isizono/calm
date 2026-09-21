@@ -46,6 +46,8 @@ check-in結果に `goal` フィールドがある場合、対象アクティビ�
 - `label: closed`（判定済み）: `last_verdict`をユーザーに伝え、残作業が無ければ`update_activity(status="completed")`で閉じ直す（`closed_by`は渡さない）
 - 上記以外（`next.actor`が`claude`など）: `next.what`が示す作業にそのまま取りかかる
 
+`label: judge_ready`時の判定分岐（`open_questions`の扱いから`judge_goal`の呼び分けまで）は、[recording](../recording/SKILL.md)の「記録の直後にgoalの条件を満たす場合」節・[decision-record](../decision-record/SKILL.md)の「決定記録の直後にgoalの条件を満たす場合」節からも同じロジックとして参照される正本である。判定条件を変更する場合はこの節を更新の起点とし、他の2箇所の記述も同じ内容に揃える。
+
 ## 出力フォーマット
 
 ```
