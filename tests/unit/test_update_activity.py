@@ -295,6 +295,20 @@ class TestUpdateActivityClosedByWrite:
         assert row["closed_by"] is None
         assert row["closed_reason"] == "理由だけ"
 
+    def test_no_closed_by_with_unjudged_linked_goal_writes_null(self, test_activity):
+        """closed_by省略・紐づくgoalはあるが未判定ならclosed_byはNULL（不明）になる。
+        goal_closedの判定を経ずに「紐づくgoalがあるから」で'goal_judge'を書いてしまう
+        リグレッションを検知する"""
+        activity_id = test_activity["activity_id"]
+        _new_goal(activity_id, "update-activity-unjudged")
+
+        result = update_activity(activity_id, status="completed", closed_reason="未判定のまま閉じる")
+
+        assert "error" not in result
+        row = _activity_row(activity_id)
+        assert row["closed_by"] is None
+        assert row["closed_reason"] == "未判定のまま閉じる"
+
     def test_no_closed_by_with_judged_goal_writes_goal_judge(self, test_activity):
         """closed_by省略・紐づくgoalが判定済みなら'goal_judge'が書かれ、
         closed_reason省略時はgoals.judge_noteが使われる"""
