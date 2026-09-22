@@ -5,7 +5,7 @@
 <!-- 再生成: uv run python scripts/dump_db_schema.py -->
 
 `migrations/` を通し番号順に全適用した結果として得られる、現在のテーブル/ビュー構造の機械的な写しである。
-カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0074）。
+カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0077）。
 
 「なぜこの形なのか」（設計判断の背景・変遷・既知の課題）は `docs/spec/db-schema.md` を参照。
 本ファイルは現在値のみを扱い、変遷の経緯（旧カラムの削除理由等）は記載しない。
@@ -25,6 +25,9 @@
 | last_heartbeat_at | TEXT | YES | — | — |
 | last_heartbeat_session_id | TEXT | YES | — | — |
 | orch_managed | BOOLEAN | NO | `0` | — |
+| closed_at | TIMESTAMP | YES | `NULL` | — |
+| closed_by | TEXT | YES | `NULL` | — |
+| closed_reason | TEXT | YES | `NULL` | — |
 
 インデックス:
 - `idx_activities_status` ON `activities`(status)
@@ -40,7 +43,9 @@ CREATE TABLE "activities" (
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   last_heartbeat_at TEXT
-, last_heartbeat_session_id TEXT, orch_managed BOOLEAN NOT NULL DEFAULT 0)
+, last_heartbeat_session_id TEXT, orch_managed BOOLEAN NOT NULL DEFAULT 0, closed_at TIMESTAMP DEFAULT NULL, closed_by TEXT DEFAULT NULL
+    CHECK (closed_by IS NULL
+           OR (closed_by IN ('goal_judge', 'user', 'claude', 'external') AND closed_at IS NOT NULL)), closed_reason TEXT DEFAULT NULL)
 ```
 
 </details>
@@ -644,6 +649,113 @@ CREATE TABLE fetch_telemetry (
     items_json TEXT NOT NULL,
     caller_session_id TEXT,
     timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+```
+
+</details>
+
+### goal_activities
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| activity_id | INTEGER | NO | — | PK |
+| goal_id | INTEGER | YES | — | — |
+| waiver_reason | TEXT | YES | — | — |
+| added_at | TIMESTAMP | NO | `CURRENT_TIMESTAMP` | — |
+
+インデックス:
+- `idx_goal_activities_goal` ON `goal_activities`(goal_id)
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE goal_activities (
+    activity_id    INTEGER NOT NULL PRIMARY KEY REFERENCES activities(id) ON DELETE CASCADE,
+    goal_id        INTEGER REFERENCES goals(id) ON DELETE CASCADE,
+    waiver_reason  TEXT,
+    added_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK ((goal_id IS NULL) <> (waiver_reason IS NULL)),
+    CHECK (waiver_reason IS NULL OR LENGTH(TRIM(waiver_reason)) > 0)
+) WITHOUT ROWID
+```
+
+</details>
+
+### goal_conditions
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| id | INTEGER | NO | — | PK |
+| goal_id | INTEGER | NO | — | — |
+| statement | TEXT | NO | — | — |
+| actor | TEXT | NO | — | — |
+| state | TEXT | NO | `'open'` | — |
+| note | TEXT | YES | — | — |
+| last_satisfied_at | TIMESTAMP | YES | — | — |
+| bound_type | TEXT | YES | — | — |
+| bound_id | INTEGER | YES | — | — |
+| created_at | TIMESTAMP | NO | `CURRENT_TIMESTAMP` | — |
+| updated_at | TIMESTAMP | NO | `CURRENT_TIMESTAMP` | — |
+
+インデックス:
+- `idx_goal_conditions_goal` ON `goal_conditions`(goal_id)
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE goal_conditions (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    goal_id           INTEGER NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
+    statement         TEXT NOT NULL CHECK (LENGTH(TRIM(statement)) > 0),
+    actor             TEXT NOT NULL CHECK (actor IN ('claude', 'human', 'external')),
+    state             TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open', 'satisfied', 'waived')),
+    note              TEXT,
+    last_satisfied_at TIMESTAMP,
+    bound_type        TEXT CHECK (bound_type IS NULL OR bound_type IN ('activity', 'decision', 'ask')),
+    bound_id          INTEGER,
+    created_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (state <> 'satisfied' OR last_satisfied_at IS NOT NULL),
+    CHECK (state <> 'waived' OR LENGTH(TRIM(COALESCE(note, ''))) > 0),
+    CHECK ((bound_type IS NULL) = (bound_id IS NULL))
+)
+```
+
+</details>
+
+### goals
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| id | INTEGER | NO | — | PK |
+| handle | TEXT | NO | — | — |
+| statement | TEXT | NO | — | — |
+| closed | INTEGER | NO | `0` | — |
+| verdict | TEXT | YES | — | — |
+| judged_by | TEXT | YES | — | — |
+| judged_at | TIMESTAMP | YES | — | — |
+| judge_note | TEXT | YES | — | — |
+| created_at | TIMESTAMP | NO | `CURRENT_TIMESTAMP` | — |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE goals (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    handle      TEXT NOT NULL UNIQUE
+                CHECK (LENGTH(handle) > 0 AND handle NOT GLOB '*[^a-z0-9-]*'),
+    statement   TEXT NOT NULL CHECK (LENGTH(TRIM(statement)) > 0),
+    closed      INTEGER NOT NULL DEFAULT 0 CHECK (closed IN (0, 1)),
+    verdict     TEXT CHECK (verdict IS NULL OR verdict IN ('achieved', 'failed')),
+    judged_by   TEXT CHECK (judged_by IS NULL OR judged_by IN ('session', 'human')),
+    judged_at   TIMESTAMP,
+    judge_note  TEXT,
+    created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK ((verdict IS NULL) = (judged_at IS NULL) AND (verdict IS NULL) = (judged_by IS NULL)),
+    CHECK (verdict IS NULL OR verdict <> 'failed' OR LENGTH(TRIM(COALESCE(judge_note, ''))) > 0),
+    CHECK (closed = 0 OR verdict IS NOT NULL)
 )
 ```
 

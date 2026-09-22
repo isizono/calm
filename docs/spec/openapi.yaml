@@ -26,6 +26,8 @@ tags:
   description: 決定事項の記録・取得
 - name: export
   description: 他インスタンスへのexport候補洗い出し・実行
+- name: goal
+  description: activityの終了条件（goal）の作成・更新・判定・取得
 - name: habit
   description: 振る舞いの登録・更新
 - name: log
@@ -991,6 +993,43 @@ paths:
                 oneOf:
                 - type: object
                 - $ref: '#/components/schemas/ErrorResponse'
+  /tools/get_goal:
+    post:
+      tags:
+      - goal
+      summary: 'Choose: 1つのgoalの全条件(充足済みを含む)とid、紐づくactivity一覧を読みたい'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                goal_id:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                activity_id:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                handle:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
   /tools/get_habits:
     post:
       tags:
@@ -1380,6 +1419,43 @@ paths:
                   type: boolean
               required:
               - bundle_path
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/judge_goal:
+    post:
+      tags:
+      - goal
+      summary: 'Choose: goalの終了を明示的に判定して閉じたいとき。'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                goal_id:
+                  type: integer
+                verdict:
+                  type: string
+                note:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                judged_by:
+                  default: session
+                  type: string
+              required:
+              - goal_id
+              - verdict
               type: object
       responses:
         '200':
@@ -1812,6 +1888,41 @@ paths:
                 oneOf:
                 - type: object
                 - $ref: '#/components/schemas/ErrorResponse'
+  /tools/set_goal:
+    post:
+      tags:
+      - goal
+      summary: 'Choose: activityの終了条件(goal)上の立場を決めたいとき。'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                activity_id:
+                  type: integer
+                goal:
+                  anyOf:
+                  - additionalProperties: true
+                    type: object
+                  - type: 'null'
+                replace:
+                  default: false
+                  type: boolean
+              required:
+              - activity_id
+              - goal
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
   /tools/set_instance_identity:
     post:
       tags:
@@ -2029,6 +2140,50 @@ paths:
                   default: null
               required:
               - activity_id
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/update_goal:
+    post:
+      tags:
+      - goal
+      summary: 'Choose: goalの条件を追加・状態変更(充足/保留)・担い手や束縛の変更をしたいとき。'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                goal_id:
+                  type: integer
+                changes:
+                  anyOf:
+                  - items:
+                      additionalProperties: true
+                      type: object
+                    type: array
+                  - type: 'null'
+                  default: null
+                statement:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                reopen_reason:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+              required:
+              - goal_id
               type: object
       responses:
         '200':

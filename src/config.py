@@ -13,6 +13,10 @@ DB_PATH: str | None = env_get("CALM_DB_PATH") or os.environ.get("DISCUSSION_DB_P
 HEARTBEAT_TIMEOUT_MINUTES: int = int(env_get("CALM_HEARTBEAT_TIMEOUT", "20"))
 SNOOZE_DURATION_DAYS: int = int(env_get("CALM_SNOOZE_DURATION_DAYS", "3"))
 
+# --- Goal ---
+# 担い手human/externalのopen条件で、この時間その行への書き込みが無ければrecheckフラグを立てる
+GOAL_RECHECK_HOURS: int = int(env_get("CALM_GOAL_RECHECK_HOURS", "6"))
+
 # --- Active Context 表示 ---
 IN_PROGRESS_LIMIT: int = int(env_get("CALM_IN_PROGRESS_LIMIT", "3"))
 PENDING_LIMIT: int = int(env_get("CALM_PENDING_LIMIT", "2"))

@@ -22,7 +22,7 @@ last-synced-migration: 0048
 
 ## 1. ツール一覧
 
-全52ツール。カテゴリ別に一覧する。
+全56ツール。カテゴリ別に一覧する。
 
 ### 1.1 記録系（add系）
 
@@ -137,6 +137,17 @@ AIエージェントが人間の判断を待つ問いを1箇所に積み、人�
 | --- | --- |
 | `get_sessions` | 稼働中セッションの「CLI表示名 → 別名」対応表を取得する |
 | `set_session_alias` | 自セッションの別名を手動で上書きする |
+
+### 1.13 goal系（activityの終了条件）
+
+activityが目指す終わりを、真偽の付く条件の集合として表現する機構。全条件の終端（satisfied/waived）はサーバーが機械的に検出するが、goalを閉じるのは明示判定（`judge_goal`）だけである。goalはactivityから作る（`set_goal`が新規作成と紐づけを1操作で行う）。goalの3表（goals/goal_conditions/goal_activities）は5型（topic/activity/material/decision/log）の外側の独立したテーブルとして持つ。
+
+| ツール | 概要 |
+| --- | --- |
+| `set_goal` | activityのgoal上の立場を決める（新規作成/既存goalへの紐づけ/不要印/未定義への解除） |
+| `update_goal` | 条件の追加・状態変更・担い手と束縛の変更、goalの一文の修正、判定済みgoalの差し戻しを行う |
+| `judge_goal` | goalの終了を明示的に判定して閉じる。紐づく未完了のactivityも同時に閉じる |
+| `get_goal` | 1つのgoalの全条件（充足済み含む）とid、紐づくactivityを読む（読み取り専用） |
 
 ---
 
@@ -560,7 +571,7 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
-| kind | string | yes | - | `machine_error` / `friction` / `contradiction` / `precedent_miss` / `precedent_misapplied` / `boundary_case` / `rollback` の7種のいずれか |
+| kind | string | yes | - | `machine_error` / `friction` / `contradiction` / `precedent_miss` / `precedent_misapplied` / `boundary_case` / `rollback` / `goal_rollback` の8種のいずれか。`goal_rollback`は`update_goal`の`reopen_reason`（goal判定の差し戻し）が書く専用のkindで、手で報告するものではない |
 | summary | string | yes | - | 1行要約（空文字不可） |
 | detail | string | no | null | traceback・引数ダイジェスト・自由記述 |
 | refs | list[{"type", "id"}] | no | null | 参照リスト。`contradiction` では矛盾の両側のidを必須とする |
@@ -733,6 +744,59 @@ Claude Codeセッション間の「CLI表示名（例: `workspace-a2`）→人�
 
 **返り値**: `{candidates: [{decision_id, title, score, match_reason, already_destabilized, already_resolved}], mode: "vector" | "tag_only"}`。
 **動作**: read-only。候補は「(a) sourceとtag集合が重なるnon-retract decision」と「(b) sourceが属するtopicのembedding近傍topicに属するnon-retract decision」の和集合で、tag_jaccard・embedding類似度（近傍topic routingのdistanceを正規化）・同一topicボーナス（same_topic_bonus）を合成したスコア降順で返す。embeddingサーバー停止時は例外にせず、embedding近傍チャネル(b)のみを無効化してタグ一致チャネル(a)の候補を`mode: "tag_only"`で返し続ける（縮退してもゼロ件にはしない）。`decision_supersedes`（kind='destabilizes'）を参照して`already_destabilized`、`decision_destabilization_resolutions`を参照して`already_resolved`を付与し、`include_already_resolved=false`（既定）ではresolve済み候補を除外する。実際にdestabilizesエッジを張るかどうかは呼び出し側の判断で、別途`add_relation(relation_type="destabilizes")`を呼ぶ。
+
+### 2.50 set_goal
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| activity_id | int | yes | - | 対象activity |
+| goal | dict \| null | yes | - | 4形式のいずれか。`{"new": {handle, statement, conditions}}`（新規作成して紐づけ）／`{"goal_id": int}`（既存の未判定goalに紐づけ）／`{"waiver": str}`（不要印）／`null`（未定義に戻す）。conditionsの各要素は`{statement, actor: "claude"\|"human"\|"external", bound: {type: "activity"\|"decision"\|"ask", id}\|null, state: "open"\|"satisfied"\|"waived"(既定open), note}`。waivedはnote必須 |
+| replace | bool | no | false | 既に別内容の紐づけ・不要印がある活動に上書きするときtrue |
+
+**返り値**: 成功時 `{goal: <goalブロック>}`。
+**情報応答**: `{info: "ACTIVITY_GOAL_EXISTS", current: {...}}`（既に別内容の行があり`replace=false`）、`{info: "GOAL_CLOSED", goal: {...}}`（判定済みgoalへの紐づけ・判定済みgoalからの解除）。
+**エラー**: `VALIDATION_ERROR`（形の違反）、`NOT_FOUND`（activity・紐づけ先・束縛先が無い）、`HANDLE_TAKEN`（handleの重複）、`GOAL_WOULD_ORPHAN`（未判定goalの最後のactivityを外す）、`DATABASE_ERROR`。
+**動作**: 同じ内容への再送は何もせずに成功する（set_goal(new)の再送を含む）。goals/goal_conditions/goal_activitiesのINSERT/UPDATE/DELETEのみを行い、activityのstatusには触れない。書き込みはBEGIN IMMEDIATEの1トランザクション。
+
+### 2.51 update_goal
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| goal_id | int | yes | - | 対象goal |
+| changes | list[dict] | no | null | 前から順に適用するop列。`{"op": "add", ...条件の形...}`（追加）／`{"op": "set", "id", "state", "note"}`（状態を書く。waivedはnote必須）／`{"op": "edit", "id", "actor"?, "bound"?}`（担い手・束縛を変える） |
+| statement | string | no | null | goalの一文の修正（未判定のgoalにだけ許す） |
+| reopen_reason | string | no | null | 判定済みgoalを差し戻す理由 |
+
+**返り値**: 成功時 `{goal: {...}, applied: int, reopened?: {verdict, judged_by, judged_at, judge_note}}`（`reopened`は差し戻し時のみ）。
+**情報応答**: `{info: "GOAL_CLOSED", goal: {...}}`（判定済みgoalにreopen_reasonなしで書き込もうとした）、`{info: "GOAL_ALREADY_OPEN", goal: {...}}`（未判定goalにreopen_reasonを渡した）。
+**エラー**: `VALIDATION_ERROR`（他goalの条件id、同じ条件に同じopを2回、waivedにnote無し等）、`NOT_FOUND`、`DATABASE_ERROR`。全体を1トランザクションにし、1件でもエラーなら何も書かない。
+**動作**: `reopen_reason`を渡すと、changes/statementより先に`goals.closed=0`への書き戻し、closed_by='goal_judge'のactivityのpendingへの復帰、`signal_events`への1行（kind='goal_rollback'）の記録を同じトランザクションで行う。
+
+### 2.52 judge_goal
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| goal_id | int | yes | - | 対象goal |
+| verdict | string | yes | - | `achieved`（達成） \| `failed`（達成せず終了。不可能・不要化・取り下げを含む） |
+| note | string | no | null | 判定理由。failedでは必須 |
+| judged_by | string | no | "session" | `session`（セッション自身の判断） \| `human`（ユーザーが同席して完了を明言・同意した） |
+
+**返り値**: 成功時 `{goal: <goalブロック(label=closed)>, closed_activities: [{id_raw, title}, ...]}`。
+**情報応答**: `{info: "GOAL_ALREADY_CLOSED", goal: {...}}`。
+**エラー**: `VALIDATION_ERROR`（failedでnote空）、`NOT_FOUND`、`GOAL_NOT_READY`（openの条件が残っている）、`GOAL_NOTHING_SATISFIED`（satisfiedが0件）、`GOAL_BINDING_BROKEN`（崩れた条件がある）、`DATABASE_ERROR`。achievedの判定はこの3種の前提検査を順に行う。
+**動作**: `goals`の判定記録と、紐づく未完了activity全件のcompleted化（closed_by='goal_judge'）を同じトランザクションで行う。既にcompletedのactivityのclosed_*は書き換えない。
+
+### 2.53 get_goal
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| goal_id | int | no | null | goalを直接指す（3引数のうちちょうど1つを指定する） |
+| activity_id | int | no | null | activity経由で紐づくgoalを指す |
+| handle | string | no | null | goalの短い名前で指す |
+
+**返り値**: `{goal_id_raw, handle, statement, label, progress, claude, next, last_verdict, conditions: [...全件...], activities: [...]}` | `{label: "undefined"|"not_needed", next?, reason?}`（activity_idを指定してgoalが無い場合）。
+**エラー**: `VALIDATION_ERROR`（3引数のちょうど1つを指定していない）、`NOT_FOUND`（指したものが無い）、`DATABASE_ERROR`。
+**動作**: 読み取り専用（check_inと違いactivityのstatusを変えない）。`conditions`は充足済みを含む全件を返す点がcheck_inのgoalブロックと異なる。
 
 ---
 
