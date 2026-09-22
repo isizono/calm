@@ -1378,3 +1378,37 @@ class TestSessionStartHookContextBudget:
         assert len(context) <= 1900, (
             f"additionalContextが1,900字を超えている（実測{len(context)}字）"
         )
+
+
+class TestSessionStartHookNoGoalInjection:
+    """SessionStart hookはgoal機構を一切参照しない。goal付きのactivityが
+    存在していても、その終了条件・次の一手はSessionStartのadditionalContextに
+    出てはならない（goalブロックの配達経路はcheck_inだけである）。
+    """
+
+    def test_goal_block_not_injected_at_session_start(self, temp_db):
+        """goal付きactivityがあってもSessionStartのcontextにgoalの本体・次の一手が出ない"""
+        from src.services import goal_service
+
+        activity_id = _seed_activity("[作業] goal付きタスク", status="in_progress")
+        set_result = goal_service.set_goal(
+            activity_id,
+            {
+                "new": {
+                    "handle": "session-start-no-inject",
+                    "statement": "この一文はSessionStartには出てはならない",
+                    "conditions": [
+                        {"statement": "Claudeが自力で進められる条件", "actor": "claude"}
+                    ],
+                }
+            },
+        )
+        assert "error" not in set_result
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "session-start-no-inject" not in context
+        assert "この一文はSessionStartには出てはならない" not in context
+        assert "Claudeが自力で進められる条件" not in context
+        assert "goal_id_raw" not in context

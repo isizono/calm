@@ -35,6 +35,19 @@ pinned情報は進捗把握の最初に確認し、概要・進捗の説明に�
 
 check-in結果に `hints` フィールド（文字列リスト）がある場合、それはタグに蓄積したdecisionの整理（recompose-context skill）をおすすめしたい状況を示すナッジである。出力の最後に、各hintの内容を「〜をおすすめします」程度の一言として添えるに留めること。check-inの目的（現在のアクティビティの進捗把握）を差し置いてrecomposeに着手してはならない。
 
+## goalフィールドの扱い
+
+check-in結果に `goal` フィールドがある場合、対象アクティビティの終了条件と次にやるべきこと1件（`next`）がまとまっている。`goal.error`が入っていれば組み立てに失敗しただけなので無視してよい。`label`に応じて次のとおり動く。
+
+- `label: judge_ready`（判定待ち）: `open_questions`に未決があれば畳むかユーザーに1ターン確認する。そのうえで、`terminal`の充足が1件以上あれば`judge_goal(goal_id, verdict="achieved", note=...)`、0件なら`judge_goal(goal_id, verdict="failed", note=...)`をその場で呼ぶ。人間の判断は待たない
+- `label: undefined`（未定義）: `next`の文面どおり、真偽の付く終了条件が会話にあれば`set_goal`で書く。Claudeが推した条件はチャットで1行示して追認を得てから書く（印は付けない）。追認が得られなければ何も書かない
+- `next.rule`が`13`（外部待ちの再確認。確かめる主体はClaudeなので`next.actor`は常に`claude`になる）: `next.what`が示す条件を、ghなど実際の手段で確かめる。確認できたら該当条件を`update_goal`で`satisfied`にし、確かめた事実は`add_material`か`add_logs`に残す。確認できなければ確認済みである旨だけを`note`に残してopenのまま待つ
+- `next.rule`が`14`（待ち。まだ再確認の時期に達していない）: `next.actor`が`human`ならその場で聞けるなら聞いて決定事項にする（回答が得られればdecision-recordの通常の流れで記録される）。聞けない、または`next.actor`が`external`なら、無理に確かめようとせず`next.what`をユーザーに一言伝えて待つ
+- `label: closed`（判定済み）: `last_verdict`をユーザーに伝え、残作業が無ければ`update_activity(status="completed")`で閉じ直す（`closed_by`は渡さない）
+- 上記以外（`next.actor`が`claude`など）: `next.what`が示す作業にそのまま取りかかる
+
+`label: judge_ready`時の判定分岐（`open_questions`の扱いから`judge_goal`の呼び分けまで）は、[recording](../recording/SKILL.md)の「記録の直後にgoalの条件を満たす場合」節・[decision-record](../decision-record/SKILL.md)の「決定記録の直後にgoalの条件を満たす場合」節からも同じロジックとして参照される正本である。判定条件を変更する場合はこの節を更新の起点とし、他の2箇所の記述も同じ内容に揃える。
+
 ## 出力フォーマット
 
 ```

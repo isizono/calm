@@ -1119,13 +1119,15 @@ def update_activity(
     description: Optional[str] = None,
     tags: Optional[list[str]] = None,
     orch_managed: Optional[bool] = None,
+    closed_by: Optional[str] = None,
+    closed_reason: Optional[str] = None,
 ) -> dict:
     """
     アクティビティのステータス・タイトル・説明・タグ・orch_managedを更新する。
 
     典型的な使い方:
     - アクティビティ開始: update_activity(activity_id, status="in_progress")
-    - アクティビティ完了: update_activity(activity_id, status="completed")
+    - アクティビティ完了: update_activity(activity_id, status="completed", closed_by="user", closed_reason="ユーザーが完了を宣言")
     - アクティビティを寝かせる: update_activity(activity_id, status="snoozed")
     - アクティビティを棚上げする: update_activity(activity_id, status="shelved")
     - タイトル変更: update_activity(activity_id, title="新しいタイトル")
@@ -1138,6 +1140,9 @@ def update_activity(
     snoozed状態のアクティビティに対しstatusを指定せずtitle/description等のみ更新すると、
     自動的にstatus="pending"へ復活する（明示的にsnoozedを維持したい更新はできない）。
 
+    紐づくgoalが判定済みのactivityを閉じ直すとき（読むために開いた後、残作業が無い場合）は
+    closed_byを渡さない。判定済みgoalが根拠なら自動的にclosed_by="goal_judge"が書かれる。
+
     Args:
         activity_id: アクティビティID
         status: 新しいステータス（pending/in_progress/completed/snoozed/shelved）
@@ -1145,12 +1150,18 @@ def update_activity(
         description: 新しい説明
         tags: 新しいタグ配列（指定時は全置換。1個以上必須）
         orch_managed: orchが管理するアクティビティかを切り替える（True/False/None）。Noneなら変更しない
+        closed_by: activityを閉じた意思の主体（"user"|"claude"|"external"）。
+            status="completed"と同時のときだけ受け付ける
+        closed_reason: 閉じた理由（自由文）。status="completed"と同時のときだけ受け付ける
 
     Returns:
-        更新されたアクティビティ情報
+        更新されたアクティビティ情報。status="completed"の呼び出しでは、紐づくgoalが
+        未判定ならgoal_hint（{goal_id_raw, handle, label, next, open_activities_left,
+        open_questions?, warning?}）も返す（拒否はしない）
     """
     return activity_service.update_activity(
         activity_id, status, title, description, tags, orch_managed=orch_managed,
+        closed_by=closed_by, closed_reason=closed_reason,
     )
 
 
@@ -1498,12 +1509,16 @@ def check_in(
             docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
 
     Returns:
-        check-in結果（coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary）。
+        check-in結果（coverage, activity, goal, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary）。
         セッション内でcheck_inを初めて呼んだときのみflow_guide（コンテキスト取得の手がかり）も含まれる
         pinned.decisionsの各要素は、未resolveなdestabilizesエッジを持つ場合のみ
         destabilization（{destabilized_by, unresolved_count, latest_source,
         sources: [{decision_id, title, created_at, kind_reason}, ...]}）が付く。エッジが
         無い、または全てresolve_destabilizationで解消済みならキー自体が無い
+        goalはactivityの直後にあり、そのactivityの終了条件（goal）の現在状態と
+        次の一手を1件返す。未定義（label="undefined"）・不要印（label="not_needed"）・
+        goal付き（label="active"|"judge_ready"|"closed"）のいずれか。goal付きなら
+        next（今やるべきこと1件）に従う
     """
     flavor = _normalize_flavor(flavor)
     try:
@@ -1555,6 +1570,30 @@ def _apply_flavor_to_check_in_result(result: dict, flavor: str) -> None:
                 )
         for item in result.get("recent_decisions", []) or []:
             _flavor_snippet(item, flavor, conn)
+
+        _apply_flavor_to_goal_block(result.get("goal"), flavor, conn)
+
+
+def _apply_flavor_to_goal_block(goal_block: object, flavor: str, conn) -> None:
+    """goalブロックの束縛先タイトル(remaining/terminal内のbound文字列)と
+    open_questionsのtitleにflavorを適用する(in-place)。
+
+    goalの文（statement・条件文・note・judge_note・waiver_reason）は書き込み時に
+    引用テンプレへ変換しないため、ここでは触らない。
+    """
+    if not isinstance(goal_block, dict) or "error" in goal_block:
+        return
+    for key in ("remaining", "terminal"):
+        entries = goal_block.get(key)
+        if isinstance(entries, list):
+            for entry in entries:
+                if isinstance(entry, dict) and isinstance(entry.get("bound"), str):
+                    entry["bound"] = citation_renderer.expand(entry["bound"], flavor, conn)
+    open_questions = goal_block.get("open_questions")
+    if isinstance(open_questions, list):
+        for item in open_questions:
+            if isinstance(item, dict) and isinstance(item.get("title"), str):
+                item["title"] = citation_renderer.expand(item["title"], flavor, conn)
 
 
 def _flavor_snippet(item: dict, flavor: str, conn) -> None:
