@@ -1372,8 +1372,11 @@ class TestArchivedPushExclusion:
         )
         update_tag("domain:checkin-keys-legacy", archived=True, archived_reason="解体済み")
 
-        result_plain = check_in(act_plain["activity_id"])
-        result_archived = check_in(act_archived["activity_id"])
+        # flow_guideはセッション内最初のcheck_in呼び出しにのみ付与される（TestFlowGuide参照）。
+        # 同一セッションで2回呼ぶと2回目はそれだけでキー集合が変わってしまうため、
+        # archivedの有無以外の要因を排除できるよう別セッションIDで呼び分ける。
+        result_plain = check_in(act_plain["activity_id"], session_id="checkin-keys-plain")
+        result_archived = check_in(act_archived["activity_id"], session_id="checkin-keys-archived")
         assert "error" not in result_plain
         assert "error" not in result_archived
         assert set(result_plain.keys()) == set(result_archived.keys())
