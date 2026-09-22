@@ -1,12 +1,10 @@
 """hint_service: 統一hint APIのユニットテスト"""
-import os
-import tempfile
 from datetime import date
 
 import pytest
 
 import src.services.hint_service as hint_service
-from src.db import get_connection, init_database
+from src.db import get_connection
 from src.services.activity_service import add_activity
 from src.services.decision_service import add_decisions
 from src.services.direction_service import DIRECTION_NAME, DIRECTION_NAMESPACE
@@ -36,7 +34,7 @@ from src.services.hint_service import (
 from src.services.material_service import add_material
 from src.services.pin_service import add_pin
 from src.services.topic_service import add_topic
-from src.services.tag_service import _TAG_NOTES_RATCHET_CEILING, _injected_tags, update_tag
+from src.services.tag_service import _TAG_NOTES_RATCHET_CEILING, update_tag
 from tests.helpers import add_decision, force_notes_over_ceiling
 
 DOMAIN_TAG_NAME = "hint-domain"
@@ -59,17 +57,6 @@ def _add_direction_decision(topic_id: int, i: int) -> dict:
     assert "error" not in result, result
     return result["created"][0]
 
-
-@pytest.fixture
-def temp_db():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        _injected_tags.clear()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 def _tag_id(name: str, namespace: str = "domain") -> int:

@@ -17,12 +17,10 @@
    methods_used への vector / tag_like 混入）が期待通り diagnostics に反映される
 """
 import json
-import os
-import tempfile
 
 import pytest
 
-from src.db import get_connection, init_database
+from src.db import get_connection
 from src.services import search_service
 from src.services.topic_service import add_topic
 from src.services.decision_service import add_decisions
@@ -39,16 +37,6 @@ def disable_embedding(monkeypatch):
     monkeypatch.setattr(emb, "_backfill_done", True)
     monkeypatch.setattr(emb, "_ensure_server_running", lambda: False)
 
-
-@pytest.fixture
-def temp_db():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 @pytest.fixture

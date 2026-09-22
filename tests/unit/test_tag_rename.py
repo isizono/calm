@@ -4,10 +4,8 @@
 - リネーム後の紐付け維持確認
 - バリデーション: 他パラメータとの排他
 """
-import os
-import tempfile
 import pytest
-from src.db import init_database, get_connection
+from src.db import get_connection
 from src.services.tag_service import update_tag
 from src.services.topic_service import add_topic
 import src.services.embedding_service as emb
@@ -20,17 +18,6 @@ def disable_embedding(monkeypatch):
     monkeypatch.setattr(emb, '_backfill_done', True)
     monkeypatch.setattr(emb, '_ensure_server_running', lambda: False)
 
-
-@pytest.fixture
-def temp_db():
-    """テスト用の一時的なデータベースを作成する"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 class TestRenameBasic:

@@ -2,34 +2,18 @@
 
 LIMIT 30 による黙示的な切り捨てを応答フィールドで可視化する拡張の検証。
 """
-import os
-import tempfile
 import pytest
 
-from src.db import init_database
 from src.services.activity_service import add_activity
 from src.services.topic_service import add_topic
 from src.services.relation_service import add_relation
 from src.services.decision_service import get_decisions
 from src.services.retract_service import retract
 from tests.helpers import add_decision
-from src.services.tag_service import _injected_tags
 
 
 DEFAULT_TAGS = ["domain:test"]
 
-
-@pytest.fixture
-def temp_db():
-    """テスト用の一時的なデータベースを作成する"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        _injected_tags.clear()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 @pytest.fixture

@@ -1,11 +1,9 @@
 """staleness_service（アンカー抽出・chain head 算出・staleness 付与）の単体テスト"""
-import os
-import tempfile
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from src.db import get_connection, init_database
+from src.db import get_connection
 from src.services.relation_service import add_relation
 from src.services.staleness_service import (
     _extract_anchors,
@@ -13,24 +11,12 @@ from src.services.staleness_service import (
     get_chain_heads_batch,
 )
 from src.services.supersede_service import get_superseded_by_batch
-from src.services.tag_service import _injected_tags
 from src.services.topic_service import add_topic
 from tests.helpers import add_decision
 
 
 DEFAULT_TAGS = ["domain:test"]
 
-
-@pytest.fixture
-def temp_db():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        _injected_tags.clear()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 @pytest.fixture

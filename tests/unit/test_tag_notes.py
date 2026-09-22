@@ -5,10 +5,8 @@
 - get_by_ids での遭遇時注入
 - 4ツール（get_topics/get_activities/get_logs/get_decisions）の結果ベース注入
 """
-import os
-import tempfile
 import pytest
-from src.db import init_database, get_connection
+from src.db import get_connection
 from src.services.tag_service import (
     update_tag,
     collect_tag_notes_for_injection,
@@ -31,17 +29,6 @@ def disable_embedding(monkeypatch):
     monkeypatch.setattr(emb, '_backfill_done', True)
     monkeypatch.setattr(emb, '_ensure_server_running', lambda: False)
 
-
-@pytest.fixture
-def temp_db():
-    """テスト用の一時的なデータベースを作成する"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 @pytest.fixture(autouse=True)
@@ -1385,8 +1372,11 @@ class TestArchivedPushExclusion:
         )
         update_tag("domain:checkin-keys-legacy", archived=True, archived_reason="解体済み")
 
-        result_plain = check_in(act_plain["activity_id"])
-        result_archived = check_in(act_archived["activity_id"])
+        # flow_guideはセッション内最初のcheck_in呼び出しにのみ付与される（TestFlowGuide参照）。
+        # 同一セッションで2回呼ぶと2回目はそれだけでキー集合が変わってしまうため、
+        # archivedの有無以外の要因を排除できるよう別セッションIDで呼び分ける。
+        result_plain = check_in(act_plain["activity_id"], session_id="checkin-keys-plain")
+        result_archived = check_in(act_archived["activity_id"], session_id="checkin-keys-archived")
         assert "error" not in result_plain
         assert "error" not in result_archived
         assert set(result_plain.keys()) == set(result_archived.keys())

@@ -6,13 +6,10 @@ Phase A スコープ:
 - search() が SearchContext 経由で既存挙動を保つ等価性
 """
 import dataclasses
-import os
-import tempfile
 
 import pytest
 
 import src.services.embedding_service as emb
-from src.db import init_database
 from src.services import search_service
 from src.services.activity_service import add_activity
 from src.services.search_service import SearchContext, build_common_where
@@ -30,16 +27,6 @@ def disable_embedding(monkeypatch):
     monkeypatch.setattr(emb, "_backfill_done", True)
     monkeypatch.setattr(emb, "_ensure_server_running", lambda: False)
 
-
-@pytest.fixture
-def temp_db():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 def _make_ctx(**overrides) -> SearchContext:

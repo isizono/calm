@@ -5,34 +5,21 @@ instance_idゲート・複合キー生成・親topic自動同梱(decision/logの
 複合キー化→残存リテラルの最終スイープ)・manifest/frontmatterの整合性を検証する。
 """
 import os
-import tempfile
 
 import pytest
 import yaml
 
-from src.db import get_connection, init_database
+from src.db import get_connection
 from src.services.activity_service import add_activity
 from src.services.export_bundle_service import export_bundle
 from src.services.instance_service import set_instance_identity
 from src.services.material_service import add_material
 from src.services.relation_service import add_relation
-from src.services.tag_service import _injected_tags
 from src.services.topic_service import add_topic
 from tests.helpers import add_decision, add_log
 
 DEFAULT_TAGS = ["domain:test-bundle"]
 
-
-@pytest.fixture
-def temp_db():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        _injected_tags.clear()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 @pytest.fixture(autouse=True)

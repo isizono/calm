@@ -5,7 +5,6 @@ import tempfile
 import pytest
 import yaml
 
-from src.db import init_database
 from src.services.activity_service import add_activity
 from src.services.material_service import add_material, export_material_to_file
 from src.services.retract_service import retract
@@ -13,17 +12,6 @@ from src.services.retract_service import retract
 
 DEFAULT_TAGS = ["domain:test"]
 
-
-@pytest.fixture
-def temp_db():
-    """テスト用の一時DB。"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 @pytest.fixture

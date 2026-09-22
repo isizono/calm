@@ -2,19 +2,16 @@
 
 get_activities の is_heartbeat_active, _build_activities_section の別セッション表示
 """
-import os
-import tempfile
 
 import pytest
 
-from src.db import init_database, get_connection
+from src.db import get_connection
 from src.services.activity_service import (
     add_activity,
     get_activities,
     update_activity,
     get_active_activities_by_tag,
 )
-from src.services.tag_service import _injected_tags
 from src.services.pin_service import add_pin
 from hooks.session_start_hook import _build_activities_section
 from src.services.topic_service import add_topic
@@ -40,18 +37,6 @@ def disable_embedding(monkeypatch):
     monkeypatch.setattr(emb, '_backfill_done', True)
     monkeypatch.setattr(emb, '_ensure_server_running', lambda: False)
 
-
-@pytest.fixture
-def temp_db():
-    """テスト用の一時的なデータベースを作成する"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        _injected_tags.clear()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 def _get_tag_id(namespace: str, name: str) -> int:

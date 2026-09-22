@@ -4,14 +4,10 @@ read-only（書き込みクエリを発行しない）であることと、節�
 アンカー付き件数のレポート内容を検証する。
 """
 import json
-import os
 import sqlite3
-import tempfile
 
 import pytest
 
-from src.db import init_database
-from src.services.tag_service import _injected_tags
 from src.services.topic_service import add_topic
 from tests.helpers import add_decision, retract_decision
 
@@ -40,17 +36,6 @@ NEAR_MISS_REASON = "却下例:\n- 案A: 理由A\n"
 
 NO_ANCHOR_SECTIONED_REASON = "適用条件:\n- 対象領域\n"
 
-
-@pytest.fixture
-def temp_db():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        _injected_tags.clear()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 @pytest.fixture

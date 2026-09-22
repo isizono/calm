@@ -6,6 +6,8 @@ hookやサービス層がworkerフロー扱いになり、通常セッション�
 どの環境で実行してもテストが決定論的に振る舞うようにする。
 """
 import os
+import shutil
+import sqlite3
 import tempfile
 
 import pytest
@@ -133,20 +135,56 @@ def disable_embedding(monkeypatch):
     monkeypatch.setattr(emb, "_ensure_server_running", lambda: False)
 
 
-@pytest.fixture
-def temp_db():
-    """テスト用の一時SQLite DBを作成する共通フィクスチャ。
+@pytest.fixture(scope="session")
+def _temp_db_template(tmp_path_factory):
+    """migration適用済みDBをテストセッション内で1回だけ構築するテンプレート。
 
-    DISCUSSION_DB_PATH 環境変数を一時パスに切り替え、init_database で
-    スキーマを構築する。テスト終了時にtmpdirごと破棄される。
+    xdist使用時はワーカープロセスごとに1回構築される。init_database()は
+    WALモードで接続するため、構築後に明示チェックポイントでWALをメイン
+    ファイルへマージしてから返す(コピー先で-wal/-shmを気にしなくてよくする)。
     """
     from src.db import init_database
+
+    template_dir = tmp_path_factory.mktemp("temp_db_template")
+    db_path = str(template_dir / "template.db")
+    prev_path = os.environ.get("DISCUSSION_DB_PATH")
+    os.environ["DISCUSSION_DB_PATH"] = db_path
+    try:
+        init_database()
+    finally:
+        if prev_path is None:
+            os.environ.pop("DISCUSSION_DB_PATH", None)
+        else:
+            os.environ["DISCUSSION_DB_PATH"] = prev_path
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        conn.close()
+    return db_path
+
+
+@pytest.fixture
+def temp_db(_temp_db_template):
+    """テスト用の一時SQLite DBを作成する共通フィクスチャ。
+
+    migration適用済みのテンプレートDB(session scope、_temp_db_template)を
+    コピーして構築コストを避ける。DISCUSSION_DB_PATH 環境変数を一時パスに
+    切り替える。テスト終了時にtmpdirごと破棄される。
+    """
+    from src.services.checkin_service import _greeted_sessions
     from src.services.tag_service import _injected_tags
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
+        shutil.copyfile(_temp_db_template, db_path)
+        for suffix in ("-wal", "-shm"):
+            aux_src = _temp_db_template + suffix
+            if os.path.exists(aux_src):
+                shutil.copyfile(aux_src, db_path + suffix)
         os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
         _injected_tags.clear()
+        _greeted_sessions.clear()
         yield db_path
         if "DISCUSSION_DB_PATH" in os.environ:
             del os.environ["DISCUSSION_DB_PATH"]

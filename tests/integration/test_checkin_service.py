@@ -1,21 +1,15 @@
 """check-inサービスの統合テスト"""
 import json
-import os
-import tempfile
 import pytest
 import src.services.checkin_service as checkin_service
-from src.db import init_database, get_connection
+from src.db import get_connection
 from src.services.activity_service import add_activity, update_activity
 from tests.helpers import add_decision, add_log, retract_decision
 from src.services.material_service import add_material, update_material
 from src.services.pin_service import add_pin
 from src.services.relation_service import add_relation
 from src.services.topic_service import add_topic
-from src.services.checkin_service import (
-    check_in,
-    DECISIONS_FULL_LIMIT,
-    _greeted_sessions,
-)
+from src.services.checkin_service import check_in, DECISIONS_FULL_LIMIT
 from src.services.hint_service import (
     ACTIVITY_CLEANUP_AUTOTRIGGER_GUARD,
     ACTIVITY_CLEANUP_COUNT_THRESHOLD,
@@ -24,7 +18,6 @@ from src.services.hint_service import (
     RECOMPOSE_BOOTSTRAP_THRESHOLD as _RECOMPOSE_HINT_BOOTSTRAP_THRESHOLD,
     RECOMPOSE_DELTA_THRESHOLD as _RECOMPOSE_HINT_DELTA_THRESHOLD,
 )
-from src.services.tag_service import _injected_tags
 from src.services import goal_service as gs
 from src.services import session_registry_service
 from src.infra import session_identity
@@ -32,21 +25,6 @@ from src.infra import session_identity
 
 DEFAULT_TAGS = ["domain:test"]
 
-
-@pytest.fixture
-def temp_db():
-    """テスト用の一時的なデータベースを作成する"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        # tag_notes注入済みセットをリセット（テスト間の干渉防止）
-        _injected_tags.clear()
-        # flow_guide初回判定セットをリセット（テスト間の干渉防止）
-        _greeted_sessions.clear()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 @pytest.fixture

@@ -3,8 +3,6 @@
 hooks/heartbeat.py, hook_state.py (checked_in_activity), hook_transcript.py (extract_checkin_activity_id)
 """
 import json
-import os
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -17,7 +15,7 @@ from src.harness import ClaudeCodeHarness
 def _read_entries(path: str):
     """extract_last_activity_id用に実運用と同じ経路でtranscriptを読む。"""
     return ClaudeCodeHarness().read_transcript_entries(path)
-from src.db import init_database, get_connection
+from src.db import get_connection
 
 
 # ========================================
@@ -325,17 +323,6 @@ class TestExtractLastActivityId:
 # hooks/heartbeat: update_heartbeat (DB統合)
 # ========================================
 
-
-@pytest.fixture
-def temp_db():
-    """テスト用の一時的なデータベースを作成する"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 class TestUpdateHeartbeat:

@@ -1,12 +1,10 @@
 """scripts/check_doc_freshness.py のユニットテスト。"""
 import os
-import tempfile
 from pathlib import Path
 
 import pytest
 
-from src.db import get_connection, init_database
-from src.services.tag_service import _injected_tags
+from src.db import get_connection
 from src.services.topic_service import add_topic
 from tests.helpers import add_decision
 
@@ -21,17 +19,6 @@ from scripts.check_doc_freshness import (
     run,
 )
 
-
-@pytest.fixture
-def temp_db():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        _injected_tags.clear()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 def _tag_decision(decision_id: int, namespace: str, name: str) -> None:

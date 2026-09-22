@@ -1,29 +1,15 @@
 """activity_dependenciesテーブルとrelations_viewのrelation_type列のテスト"""
 
-import os
 import sqlite3
-import tempfile
 
 import pytest
 
-from src.db import get_connection, init_database
-from src.services.tag_service import _injected_tags, ensure_tag_ids, link_tags
+from src.db import get_connection
+from src.services.tag_service import ensure_tag_ids, link_tags
 
 
 DEFAULT_TAGS = [("domain", "test")]
 
-
-@pytest.fixture
-def temp_db():
-    """テスト用の一時的なデータベースを作成する"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        _injected_tags.clear()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 def _create_activity(conn, title="Test Activity"):
