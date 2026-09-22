@@ -1,31 +1,16 @@
 """リレーションサービスの統合テスト"""
-import os
-import tempfile
 
 import pytest
 
-from src.db import get_connection, init_database
+from src.db import get_connection
 from src.services.pin_service import add_pin
 from src.services.relation_service import add_relation, get_map, remove_relation
 from src.services.retract_service import retract
-from src.services.tag_service import _injected_tags
 from tests.helpers import add_decision, retract_decision
 
 
 DEFAULT_TAGS = [("domain", "test")]
 
-
-@pytest.fixture
-def temp_db():
-    """テスト用の一時的なデータベースを作成する"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        _injected_tags.clear()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 def _create_topic(conn, title="Test Topic"):

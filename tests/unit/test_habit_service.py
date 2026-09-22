@@ -1,9 +1,7 @@
 """habit_serviceのユニットテスト"""
-import os
-import tempfile
 import pytest
 from src.config import ALWAYS_POOL_CAPACITY
-from src.db import get_connection, init_database
+from src.db import get_connection
 from src.services.habit_service import (
     _add_habit_with_conn,
     add_habit,
@@ -13,17 +11,6 @@ from src.services.habit_service import (
     update_habit,
 )
 
-
-@pytest.fixture
-def temp_db():
-    """テスト用の一時的なデータベースを作成する"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 class TestAddHabit:

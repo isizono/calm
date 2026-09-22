@@ -6,23 +6,10 @@ budget_service が把握する予算関連の既定値一覧が get_config か�
 
 get_configはinstance_id参照のためDBアクセスを行うため、temp_db fixtureが必要。
 """
-import os
-import tempfile
 
 import pytest
 
-from src.db import init_database
 
-
-@pytest.fixture
-def temp_db():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 def _call_get_config():

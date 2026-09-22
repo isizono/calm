@@ -1,26 +1,11 @@
 """MCPツールのテスト（subjects廃止後）"""
-import os
-import tempfile
 import pytest
-from src.db import init_database
 from src.services.topic_service import add_topic
 from src.services.activity_service import add_activity
 from src.services.discussion_log_service import add_logs
 from src.services.decision_service import add_decisions
 from src.services.timeline_service import get_timeline
 
-
-@pytest.fixture
-def temp_db():
-    """テスト用の一時的なデータベースを作成する"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        # クリーンアップ
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 def test_add_topic_with_tags(temp_db):

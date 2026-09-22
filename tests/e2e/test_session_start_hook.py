@@ -12,6 +12,7 @@ CALM_HABITS_RULES_PATHを強制注入し、実ファイルへの書き込みを�
 """
 import json
 import os
+import shutil
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -19,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from hooks.ask_notify_section import _format_ask_line
-from src.db import init_database, get_connection
+from src.db import get_connection
 from tests.helpers import (
     run_session_start_hook as _run_session_start_hook,
     run_session_start_hook_process as _run_session_start_hook_process,
@@ -30,14 +31,18 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture
-def temp_db():
+def temp_db(_temp_db_template):
     """テスト用の一時的なデータベースを作成する"""
     import src.config
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
+        shutil.copyfile(_temp_db_template, db_path)
+        for suffix in ("-wal", "-shm"):
+            aux_src = _temp_db_template + suffix
+            if os.path.exists(aux_src):
+                shutil.copyfile(aux_src, db_path + suffix)
         os.environ["DISCUSSION_DB_PATH"] = db_path
         src.config.DB_PATH = db_path
-        init_database()
         yield db_path
         if "DISCUSSION_DB_PATH" in os.environ:
             del os.environ["DISCUSSION_DB_PATH"]

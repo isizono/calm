@@ -4,36 +4,21 @@ resolve_destabilizationの3分岐（reaffirmed/revised/retracted）、
 revised_to_decision_id必須バリデーション、冪等性、および
 suggest_destabilized_candidatesの候補生成・スコアリング・縮退をカバーする。
 """
-import os
-import tempfile
 import pytest
 from sqlite_vec import serialize_float32
 
-from src.db import init_database, get_connection
+from src.db import get_connection
 from src.services import precedent_pull_service as pps
 from src.services.topic_service import add_topic
 from src.services.decision_service import add_decisions
 from src.services.destabilization_service import resolve_destabilization, suggest_destabilized_candidates
 from src.services.relation_service import add_relation
-from src.services.tag_service import _injected_tags
 from tests.helpers import add_decision
 
 
 DEFAULT_TAGS = ["domain:test"]
 EMBEDDING_DIM = 384
 
-
-@pytest.fixture
-def temp_db():
-    """テスト用の一時的なデータベースを作成する"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        _injected_tags.clear()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 @pytest.fixture

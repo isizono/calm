@@ -1,8 +1,6 @@
 """資材サービスの統合テスト"""
-import os
-import tempfile
 import pytest
-from src.db import get_connection, init_database
+from src.db import get_connection
 from src.services.activity_service import add_activity
 from src.services.material_service import add_material, get_material, update_material
 from src.services.retract_service import retract
@@ -11,17 +9,6 @@ from src.services.search_service import get_by_id, get_by_ids
 
 DEFAULT_TAGS = ["domain:test"]
 
-
-@pytest.fixture
-def temp_db():
-    """テスト用の一時的なデータベースを作成する"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 @pytest.fixture

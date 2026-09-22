@@ -4,13 +4,11 @@ _rrf_merge単体テスト + _apply_recency_boost単体テスト + タグ対応�
 """
 import hashlib
 import math
-import os
-import tempfile
 from datetime import datetime, timedelta, timezone
 import pytest
 import numpy as np
 
-from src.db import init_database, get_connection
+from src.db import get_connection
 from src.services.search_service import (
     _rrf_merge, _apply_recency_boost, _attach_details, _compute_adaptive_weights,
     find_similar_topics, _expand_query_with_tags,
@@ -30,17 +28,6 @@ import src.services.embedding_service as emb
 EMBEDDING_DIM = 384
 DEFAULT_TAGS = ["domain:test"]
 
-
-@pytest.fixture
-def temp_db():
-    """テスト用の一時的なデータベースを作成する"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 @pytest.fixture

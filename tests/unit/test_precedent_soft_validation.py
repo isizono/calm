@@ -6,14 +6,10 @@ reason に定型節（却下案:/適用条件:/適用外:/検証:/隣接確認:�
 （soft validation）ことを検証する。tagsに intent:design を含む decision で「隣接確認:」節が
 無い場合の nudge warning（TestAdjacentCheckWarning）も対象に含む。
 """
-import os
-import tempfile
 
 import pytest
 
-from src.db import init_database
 from src.services.decision_service import add_decisions
-from src.services.tag_service import _injected_tags
 from src.services.topic_service import add_topic
 
 DEFAULT_TAGS = ["domain:test"]
@@ -57,18 +53,6 @@ ADJACENT_CHECK_REASON = (
     "- 関連既決との整合: 既存decisionと矛盾しないか確認した\n"
 )
 
-
-@pytest.fixture
-def temp_db():
-    """テスト用の一時的なデータベースを作成する"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        _injected_tags.clear()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 @pytest.fixture

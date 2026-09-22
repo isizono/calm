@@ -7,13 +7,11 @@ apply_and_writeback_conversions を経由し、保存時に本文中の生 `X#NN
 source="write_auto_convert" のイベントを記録することを検証する。
 """
 import json
-import os
-import tempfile
 
 import pytest
 
 import src.services.embedding_service as embedding_service
-from src.db import get_connection, init_database
+from src.db import get_connection
 from src.services.activity_service import add_activity, update_activity
 from src.services.citations_service import apply_and_writeback_conversions
 from src.services.decision_service import add_decisions
@@ -29,16 +27,6 @@ DEFAULT_TAGS = ["domain:test"]
 # よう十分大きい値を使う。
 DANGLING_ID = 9999
 
-
-@pytest.fixture
-def temp_db():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 @pytest.fixture

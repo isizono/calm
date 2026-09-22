@@ -1,24 +1,11 @@
 """sqlite-vec拡張のロードとvec_indexテーブルの動作テスト"""
-import os
-import tempfile
 import pytest
 from sqlite_vec import serialize_float32
-from src.db import init_database, get_connection
+from src.db import get_connection
 
 
 EMBEDDING_DIM = 384
 
-
-@pytest.fixture
-def temp_db():
-    """テスト用の一時的なデータベースを作成する"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 # ========================================

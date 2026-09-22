@@ -4,12 +4,11 @@
 表示整形関数はhooks/session_start_hook.pyに配置されている。
 """
 import os
-import tempfile
 from datetime import datetime, timezone, timedelta
 from unittest.mock import patch
 
 import pytest
-from src.db import init_database, get_connection
+from src.db import get_connection
 from src.services.topic_service import add_topic
 from src.services.activity_service import (
     add_activity,
@@ -39,17 +38,6 @@ def disable_embedding(monkeypatch):
     monkeypatch.setattr(emb, '_backfill_done', True)
     monkeypatch.setattr(emb, '_ensure_server_running', lambda: False)
 
-
-@pytest.fixture
-def temp_db():
-    """テスト用の一時的なデータベースを作成する"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 def _get_tag_id(namespace: str, name: str) -> int:

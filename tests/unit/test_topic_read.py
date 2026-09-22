@@ -3,10 +3,8 @@
 get_topicsはtags引数でフィルタリングする。
 get_logs/get_decisionsは各アイテムにtagsフィールドを含む。
 """
-import os
-import tempfile
 import pytest
-from src.db import init_database, get_connection
+from src.db import get_connection
 from src.services.topic_service import (
     add_topic,
     get_topics,
@@ -19,18 +17,6 @@ from src.services.decision_service import get_decisions
 
 DEFAULT_TAGS = ["domain:test"]
 
-
-@pytest.fixture
-def temp_db():
-    """テスト用の一時的なデータベースを作成する"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        # クリーンアップ
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 # ========================================

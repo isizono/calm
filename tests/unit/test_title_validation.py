@@ -3,12 +3,9 @@
 helper の境界値テストと、6 つの add/update 系サービスが 40 字超で
 VALIDATION_ERROR を返すことを確認する。
 """
-import os
-import tempfile
 
 import pytest
 
-from src.db import init_database
 from src.services.activity_service import add_activity, update_activity
 from src.services.decision_service import add_decisions
 from src.services.material_service import add_material, update_material
@@ -18,16 +15,6 @@ from src.services.topic_service import add_topic
 
 DEFAULT_TAGS = ["domain:test"]
 
-
-@pytest.fixture
-def temp_db():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 class TestValidateTitleHelper:

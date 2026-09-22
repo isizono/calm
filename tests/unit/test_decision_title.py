@@ -5,36 +5,21 @@
 - find_similar_decisions が同一topic・自身除外・retract除外で類似decisionを返す
 - 表示箇所（check-in の recent_decisions / get_by_id）が title優先・decision本文fallback になる
 """
-import os
-import tempfile
 
 import numpy as np
 import pytest
 
-from src.db import init_database, get_connection
+from src.db import get_connection
 from src.services.topic_service import add_topic
 from src.services.decision_service import add_decisions
 from src.services.search_service import find_similar_decisions, get_by_id
 from src.services.checkin_service import _get_decisions_from_topics
-from src.services.tag_service import _injected_tags
 import src.services.embedding_service as emb
 
 
 EMBEDDING_DIM = 384
 DEFAULT_TAGS = ["domain:test"]
 
-
-@pytest.fixture
-def temp_db():
-    """テスト用の一時的なデータベースを作成する"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        _injected_tags.clear()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 @pytest.fixture

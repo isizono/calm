@@ -5,14 +5,12 @@ embedding サーバー失敗時の None 返却と、共有 conn の使用を確�
 ここでは retriever のシグネチャ・null フォールバック・例外ハンドリングに焦点を当てる。
 """
 import hashlib
-import os
-import tempfile
 
 import numpy as np
 import pytest
 
 import src.services.embedding_service as emb
-from src.db import get_connection, init_database
+from src.db import get_connection
 from src.services import search_service
 from src.services.search_service import vector_retrieve
 from src.services.topic_service import add_topic
@@ -21,16 +19,6 @@ from tests.helpers import make_search_context as _make_ctx
 EMBEDDING_DIM = 384
 DEFAULT_TAGS = ["domain:test"]
 
-
-@pytest.fixture
-def temp_db():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 @pytest.fixture
