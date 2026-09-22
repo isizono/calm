@@ -2138,6 +2138,16 @@ paths:
                   - type: boolean
                   - type: 'null'
                   default: null
+                closed_by:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                closed_reason:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
               required:
               - activity_id
               type: object
