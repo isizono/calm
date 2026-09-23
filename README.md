@@ -75,7 +75,7 @@ SessionStart(3スクリプト)・Stop・UserPromptSubmit・MessageDisplayに加�
 
 ### 初回起動が重い理由
 
-前提条件は[前述](#前提条件)のuv・Claude Codeバージョン・Python 3.12の3点ですが、embeddingサーバーはプロジェクトルート解決に`git rev-parse --git-common-dir`を使うため、**gitリポジトリ内での利用が前提**です（gitリポジトリ外で使う場合は`CALM_PROJECT_ROOT`を明示設定してください）。
+前提条件は[前述](#前提条件)のuv・Claude Codeバージョン・Python 3.12の3点です。embeddingサーバーの起動先（`CALM_PROJECT_ROOT`）はMCPサーバー起動時にClaude Codeが渡す`CLAUDE_PLUGIN_ROOT`から自動設定されるため、gitリポジトリでの利用は前提になりません（詳細は[設定](#設定)の`CALM_PROJECT_ROOT`項を参照）。
 
 初回起動が重いのは主に2つの理由によります。
 
@@ -99,7 +99,6 @@ SessionStart(3スクリプト)・Stop・UserPromptSubmit・MessageDisplayに加�
 | 決定事項・アクティビティ等の記録が急に減った・消えたように見える | `/db-recovery`でスナップショットからの復旧を検討する |
 | 検索が過去の記録を拾わない／精度が低い | embeddingサーバーが未起動か古い可能性がある。`/restart`に`--restart-embedding`を付けて明示的に再起動する（`search`応答の`degraded: true`はベクトル検索が利用不可だったことを示す） |
 | MCPツールが使えない・CALMサーバーに接続できない | `/mcp`から再接続する。直らなければ`/restart` |
-| gitリポジトリ外でembeddingサーバーが起動しない | `CALM_PROJECT_ROOT`環境変数でプロジェクトルートを明示設定する |
 
 ## MCPツール
 
