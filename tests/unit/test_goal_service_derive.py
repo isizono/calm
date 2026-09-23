@@ -790,6 +790,39 @@ class TestGetGoal:
         assert "update_activity" not in by_handle["next"]["what"]
         assert "update_activity" in by_activity["next"]["what"]
 
+    def test_judge_ready_includes_open_questions(self, temp_db):
+        act = _activity()
+        goal_id = _new_goal(
+            act, conditions=[{"statement": "c1", "actor": "claude", "state": "satisfied", "note": "済"}]
+        )["goal_id_raw"]
+        _ask(act, "残ってる問い")
+
+        by_goal = gs.get_goal(goal_id=goal_id)
+        assert by_goal["label"] == "judge_ready"
+        assert {q["title"] for q in by_goal["open_questions"]} == {"残ってる問い"}
+
+        by_activity = gs.get_goal(activity_id=act)
+        assert {q["title"] for q in by_activity["open_questions"]} == {"残ってる問い"}
+
+    def test_active_label_has_no_open_questions_key(self, temp_db):
+        act = _activity()
+        goal_id = _new_goal(act, conditions=[{"statement": "c1", "actor": "claude"}])["goal_id_raw"]
+        _ask(act, "問い")
+        result = gs.get_goal(goal_id=goal_id)
+        assert result["label"] == "active"
+        assert "open_questions" not in result
+
+    def test_open_questions_overflow_shows_count(self, temp_db):
+        act = _activity()
+        goal_id = _new_goal(
+            act, conditions=[{"statement": "c1", "actor": "claude", "state": "satisfied", "note": "済"}]
+        )["goal_id_raw"]
+        for i in range(4):
+            _ask(act, f"問い{i}")
+        result = gs.get_goal(goal_id=goal_id)
+        assert len(result["open_questions"]) == 3
+        assert result["open_questions_more"] == 1
+
 
 class TestGoalBlockOnWriteTools:
     def test_set_goal_success_attaches_goal_block(self, temp_db):

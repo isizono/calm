@@ -1405,8 +1405,8 @@ def _assemble_goal_block(
 
 
 def build_goal_block_for_activity(conn: sqlite3.Connection, activity_id: int) -> dict:
-    """activity_idを指定した読み出し（check_in・set_goalの応答・get_goal(activity_id)・
-    update_activityのgoal_hint）向けのgoalブロックを組み立てる。規則1〜4を含めて評価する。
+    """activity_idを指定した読み出し（check_in・set_goalの応答・update_activityの
+    goal_hint）向けのgoalブロックを組み立てる。規則1〜4を含めて評価する。
     """
     pending_asks = ask_service.get_pending_asks_with_conn(conn, activity_id)
     scope_next = _activity_scope_next(pending_asks)
@@ -1605,9 +1605,18 @@ def get_goal(
             goal_row, enriched, activity_scoped=(activity_scope_id is not None)
         )
 
-        block, _label = _goal_core_fields(goal_row, enriched, next_info)
+        block, label = _goal_core_fields(goal_row, enriched, next_info)
         block["conditions"] = [_full_condition_entry(c) for c in enriched]
         block["activities"] = _linked_activities_payload(conn, resolved_goal_id)
+        if label == "judge_ready":
+            closing_ids = [a["id_raw"] for a in block["activities"] if a["status"] != "completed"]
+            open_qs = _open_questions_for_activities(conn, closing_ids)
+            if open_qs:
+                shown_oq = open_qs[:_OPEN_QUESTIONS_MAX]
+                block["open_questions"] = shown_oq
+                more = len(open_qs) - len(shown_oq)
+                if more > 0:
+                    block["open_questions_more"] = more
         return block
     except sqlite3.Error as e:
         return _database_error(str(e))
