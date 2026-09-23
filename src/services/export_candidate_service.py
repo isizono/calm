@@ -264,32 +264,23 @@ def _build_closure_warnings_with_conn(
 
     decision_ids = [c["id"] for c in candidates if c["type"] == "decision"]
     supersede_pairs: list[tuple[int, int]] = []
-    if decision_ids:
-        placeholders = ",".join("?" * len(decision_ids))
-        rows = conn.execute(
-            f"""
-            SELECT source_id, target_id FROM decision_supersedes
-            WHERE kind = 'replaces' AND source_id IN ({placeholders})
-            """,
-            decision_ids,
-        ).fetchall()
-        for row in rows:
-            if ("decision", row["target_id"]) not in candidate_set:
-                supersede_pairs.append((row["source_id"], row["target_id"]))
-
     destabilize_pairs: list[tuple[int, int]] = []
     if decision_ids:
         placeholders = ",".join("?" * len(decision_ids))
         rows = conn.execute(
             f"""
-            SELECT source_id, target_id FROM decision_supersedes
-            WHERE kind = 'destabilizes' AND source_id IN ({placeholders})
+            SELECT source_id, target_id, kind FROM decision_supersedes
+            WHERE kind IN ('replaces', 'destabilizes') AND source_id IN ({placeholders})
             """,
             decision_ids,
         ).fetchall()
         for row in rows:
             if ("decision", row["target_id"]) not in candidate_set:
-                destabilize_pairs.append((row["source_id"], row["target_id"]))
+                pair = (row["source_id"], row["target_id"])
+                if row["kind"] == "replaces":
+                    supersede_pairs.append(pair)
+                else:
+                    destabilize_pairs.append(pair)
 
     cite_pairs: list[tuple[tuple[str, int], str, int]] = []
     for key, text in raw_text_by_key.items():
