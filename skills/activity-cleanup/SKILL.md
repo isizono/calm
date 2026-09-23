@@ -1,6 +1,6 @@
 ---
 name: activity-cleanup
-description: アクティビティ(active/shelved/snoozed)を棚卸しし、実態確認のうえでcompleted化・shelved化・description訂正・重複統合・裁定待ちのいずれかに処遇する。「/activity-cleanup」「アクティビティ棚卸しして」「activity棚卸し」「アクティビティの整理して」などユーザーが明示的に呼び出したときに発動する。DO NOT TRIGGER: sync-memory Step 10aの自動棚卸し(セッション終了時の軽い自己完結処理)、decision/topic等を含む全関連情報の統合・anchor整備(recompose-context)、単一アクティビティを完了にせず中断する操作(activity-pause)、タグの共起分析・整理(tag-cleanup)には発動しない。
+description: アクティビティ(active/shelved/snoozed)を棚卸しし、実態確認のうえでcompleted化・shelved化・description訂正・重複統合・裁定待ちのいずれかに処遇する。「/activity-cleanup」「アクティビティ棚卸しして」「activity棚卸し」「アクティビティの整理して」などユーザーが明示的に呼び出したときに発動する。DO NOT TRIGGER: sync-memory Step 4a(標準形のみで実行される、セッション終了時の軽い自己完結処理)の自動棚卸し、decision/topic等を含む全関連情報の統合・anchor整備(recompose-context)、単一アクティビティを完了にせず中断する操作(activity-pause)、タグの共起分析・整理(tag-cleanup)には発動しない。
 ---
 
 # activity-cleanup
@@ -101,7 +101,7 @@ snoozedの実態確認も同様に`check_in`を避けるが、`get_activities`�
 
 ### 5. 完了時クールダウン
 
-棚卸しが完了したら、`activity-management`タグのnotesに期限付きマーカーを書き、7日間は催促を止める。手順は以下の順で行う(sync-memory Step 10bのtag notes手順と同じ形)。
+棚卸しが完了したら、`activity-management`タグのnotesに期限付きマーカーを書き、7日間は催促を止める。手順は以下の順で行う(sync-memory Step 4b・remember内のtag notes手順と同じ形)。
 
 1. **既存notesの読み出し**: `activity-management`はnamespaceが空文字の素タグである。`search_tags(query="activity-management", namespace="", include_notes=True)`で候補を取得し、返却された`name`が`"activity-management"`と完全一致するタグのnotes全文を取得する。search_tagsはタグ名のLIKE一致とベクトル検索のハイブリッドで意味的に近いだけの別タグも返るため、上位ヒットの有無ではなく`name`の完全一致で対象タグを特定する。**完全一致するタグが0件だった場合は、本手順(完了時クールダウン)をここで中止し、ユーザーにその旨を報告する。** `update_tag`は既存notesとの差し替えを無条件の全文置換で行うため、既存notesを読み出せないまま本節の4(書き込み)に進むとマーカー1行だけがnotes全文として書き込まれ、既存notesを消してしまう。0件時に空文字や仮のnotesで進めてはならない
 2. **既存マーカーの確認**: 取得したnotes内に`#activity-cleanup-skipped-until:YYYY-MM-DD`が既に存在し、かつその日付が今回書こうとしている日付より未来の場合は、ユーザーが意図的に設定した長期抑制とみなして**上書き・短縮しない**(何もせず本手順を終える)。既存マーカーが無い、または今回書く日付以前(過去・当日)であれば3へ進む
@@ -143,7 +143,7 @@ recompose-context skillの自律度ルールをそのまま流用し、対象語
 
 ## 注意
 
-- **sync-memory Step 10aとの関係**: sync-memory Step 10aは、セッション終了時に自己完結で動く軽い自動棚卸し(重複・7日放置・フェーズ移行済みの検出とcompleted/snoozed化)であり、本skillとは独立に今後も動作し続けてよい。両者の判定基準が食い違った場合はactivity-cleanup(本skill)を正本とする。ただしsync-memory Step 10aは`get_activities(status="active")`で取得したactivityのみを対象にするため、判定を突き合わせられる範囲もactiveのものに限られる(shelved・snoozedはStep 10aの対象外)
+- **sync-memory Step 4aとの関係**: sync-memory Step 4a(標準形のみで実行され、bg向けの最小形では実行されない)は、セッション終了時に自己完結で動く軽い自動棚卸し(重複・放置・フェーズ移行済みの検出とcompleted/snoozed化)であり、本skillとは独立に今後も動作し続けてよい。両者の判定基準が食い違った場合はactivity-cleanup(本skill)を正本とする。ただしsync-memory Step 4aは`get_activities(status="active")`で取得したactivityのみを対象にするため、判定を突き合わせられる範囲もactiveのものに限られる(shelved・snoozedはStep 4aの対象外)
 - **PR状態の鵜呑み防止**: description本文の「マージ済み」「マージ待ち」等の文言は鮮度が保証されない。completed判定には必ず`gh pr view --json state,mergeStateStatus`等の機械確認を伴わせる
 - **内部IDを報告に出さない**: ユーザーへの報告や記録では、activityのタイトル・内容の要約で言及し、内部ID単体では言及しない
 - 判断に迷い🔴に該当するものは、消さない・completedにしない側に倒したうえでバッファに溜め、最後に一括確認する
