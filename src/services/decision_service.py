@@ -150,8 +150,8 @@ def add_decisions(items: list[dict]) -> dict:
                     if isinstance(parsed_tags, dict):
                         raise ValueError(parsed_tags["error"]["message"])
 
-                # layer:direction タグ付きitemはtitle必須（一覧で一目で識別できる
-                # 必要があるため、通常decisionより入力の摩擦を高くしている）
+                # layer:direction タグ付きitemはtitle必須（少数に保つ運用のため
+                # 一覧で一目で識別できる必要があり、通常decisionより入力の摩擦を高くしている）
                 is_direction_item = bool(
                     parsed_tags and (DIRECTION_NAMESPACE, DIRECTION_NAME) in parsed_tags
                 )

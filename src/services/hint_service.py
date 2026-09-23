@@ -274,7 +274,7 @@ def _notes_over_budget_message(tag_name: str, length: int) -> str:
 def _direction_overflow_message(tag_name: str, count: int) -> str:
     return (
         f"tag「{tag_name}」の有効な方向性decision（layer:direction）が{count}件"
-        f"あります。少数原則の維持のため、統合・supersede整理をユーザーに提案してください。"
+        f"あります。方向性decisionは少数に保つ運用のため、統合・supersede整理をユーザーに提案してください。"
         f"今は都合が悪い場合、tag notesに"
         f"「{MARKER_DIRECTION_OVERFLOW}-until:YYYY-MM-DD」（任意の未来日）を"
         f"追記すると、その日まで一時的に黙らせられます。恒久的に不要なら日付なしの"
