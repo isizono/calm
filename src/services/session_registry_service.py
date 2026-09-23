@@ -155,6 +155,24 @@ def _entry_alive(cli_session_id: str, entry: dict, now: datetime) -> bool:
     return True
 
 
+def is_session_alive(cli_session_id: Optional[str]) -> bool:
+    """cli_session_id に対応する行が生存・非staleと判定できるか（読み取り専用）。
+
+    行が無い・pid死亡・pid再利用・TTL超過・読み取り中の例外はすべて False
+    （fail-close。判定できない場合を「生存」側に倒さない）。GC・書き込みは
+    行わず、例外を送出しない。
+    """
+    if not cli_session_id:
+        return False
+    try:
+        with _locked():
+            data = _load()
+            entry = data["sessions"].get(cli_session_id)
+            return _entry_alive(cli_session_id, entry, datetime.now(timezone.utc))
+    except Exception:
+        return False
+
+
 def _gc(sessions: dict) -> bool:
     """生存していない行・TTL超過行を削除し、上限超過分を最古から削除する（in-place）。
 
@@ -343,4 +361,5 @@ __all__ = [
     "register_checkin",
     "list_sessions",
     "set_alias",
+    "is_session_alive",
 ]

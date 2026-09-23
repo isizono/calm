@@ -40,6 +40,7 @@ from src.services.habit_service import (
 from src.services import habit_projection
 from src.services.backup_service import health_check, should_take_snapshot, take_snapshot
 from src.services.injection_compositor import Section, compose
+from src.services import session_registry_service
 from hooks.signal_capture import try_capture_signal
 
 _RECENT_CREATED_HOURS = 24
@@ -146,7 +147,10 @@ def _build_fixed_nav(undisplayed_count: int, pinned_undisplayed_count: int) -> s
 def _build_activities_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # source, **_kwargs: 全セクション共通シグネチャ（本セクションは未使用）
     """アクティビティ一覧を組み立てる。
 
-    階層 1「作業中（別セッション）」: heartbeat 中で自セッションでないもの。
+    階層 1「作業中（別セッション）」: heartbeat 中で自セッションでなく、
+        打刻主セッションの生存が確認できるもの（session_registry_service.
+        is_session_alive）。生存確認できない場合（別名ファイルにエントリが
+        無い、プロセスが死んでいる等）は死亡側に倒し、階層 1 には出さない。
     階層 2「優先」: 階層 1 に入らなかった activity のうち、
         (in_progress かつ updated_at が config.TIER2_MAX_AGE_DAYS 日以内) または
         (pinned かつ updated_at が config.PIN_SURFACE_DECAY_DAYS 日以内) を集約し、
@@ -195,14 +199,33 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
 
     seen_ids: set[int] = set()
 
-    tier1: list[dict] = []
-    for a in all_active:
-        is_own_session = (
+    # is_session_aliveはプロセス確認でpsサブプロセスを起動しうるため、同じ
+    # last_heartbeat_session_idを持つ候補が複数あっても呼び出しは1回に抑える
+    # （自セッション・鮮度切れの行は判定不要なので候補集合にも入れない）。
+    tier1_candidates = [
+        a
+        for a in all_active
+        if a.get("is_heartbeat_active")
+        and not (
             session_id is not None
             and a.get("last_heartbeat_session_id") == session_id
         )
-        if a.get("is_heartbeat_active") and not is_own_session:
-            tier1.append(a)
+    ]
+    candidate_session_ids = {
+        sid
+        for a in tier1_candidates
+        if (sid := a.get("last_heartbeat_session_id"))
+    }
+    alive_by_session_id = {
+        sid: session_registry_service.is_session_alive(sid)
+        for sid in candidate_session_ids
+    }
+
+    tier1: list[dict] = [
+        a
+        for a in tier1_candidates
+        if alive_by_session_id.get(a.get("last_heartbeat_session_id"), False)
+    ]
     for a in tier1:
         seen_ids.add(a["id"])
 
