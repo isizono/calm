@@ -17,20 +17,6 @@ from src.env_compat import (
 )
 
 
-@pytest.fixture(autouse=True)
-def _restore_db_path_env():
-    """CALM_DB_PATH系（現行名・旧名）をテスト前後で退避・復元する。
-
-    env_set/env_popはmonkeypatchを経由せず直接os.environを書き換えるため、
-    monkeypatchのteardownでは戻らない。このファイルの各テストがどちらを
-    呼んでも、テスト境界を越えて値が漏れて他ファイルのテスト（DB接続に
-    CALM_DB_PATHを使う）を壊さないようにする。
-    """
-    snapshot = env_snapshot("CALM_DB_PATH")
-    yield
-    env_restore(snapshot)
-
-
 class TestEnvNames:
     def test_returns_canonical_then_legacy_names_in_order(self):
         assert env_names("CALM_DB_PATH") == (
