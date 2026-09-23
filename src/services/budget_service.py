@@ -32,6 +32,7 @@ def compute_allocation_order(
     all_ids: list[int],
     decision_by_id: dict[int, dict],
     supersede_map: dict[int, dict],
+    *,
     topic_rank: Optional[dict[int, int]] = None,
     owner_of: Optional[dict[int, int]] = None,
 ) -> list[int]:
@@ -60,6 +61,7 @@ def allocate_decision_budget(
     decision_by_id: dict[int, dict],
     supersede_map: dict[int, dict],
     budget_chars: int,
+    *,
     topic_rank: Optional[dict[int, int]] = None,
     owner_of: Optional[dict[int, int]] = None,
 ) -> tuple[set[int], int]:
@@ -74,7 +76,9 @@ def allocate_decision_budget(
 
     Returns: (full_ids, used_chars)
     """
-    order = compute_allocation_order(all_ids, decision_by_id, supersede_map, topic_rank, owner_of)
+    order = compute_allocation_order(
+        all_ids, decision_by_id, supersede_map, topic_rank=topic_rank, owner_of=owner_of
+    )
 
     full_ids: set[int] = set()
     used = 0

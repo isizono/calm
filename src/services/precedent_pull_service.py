@@ -316,6 +316,7 @@ def _apply_response_size_gate(
     superseded_by_map: dict[int, Optional[int]],
     material_ids_by_decision: dict[int, set[int]],
     response_chars_max: int,
+    *,
     topic_rank: dict[int, int],
     owner_of: dict[int, int],
     destabilization_map: Optional[dict[int, dict]] = None,
@@ -354,7 +355,7 @@ def _apply_response_size_gate(
 
     if measured > response_chars_max:
         order = compute_allocation_order(
-            list(full_ids), decision_by_id, supersede_map, topic_rank, owner_of
+            list(full_ids), decision_by_id, supersede_map, topic_rank=topic_rank, owner_of=owner_of
         )
         excess = measured - response_chars_max
         accumulated = 0
@@ -504,7 +505,7 @@ def collect_precedents_with_conn(
     tags_map = get_effective_tags_batch_by_ids(conn, "decision", all_ids)
 
     full_ids, used = allocate_decision_budget(
-        all_ids, decision_by_id, supersede_map, budget_chars, topic_rank, owner_of
+        all_ids, decision_by_id, supersede_map, budget_chars, topic_rank=topic_rank, owner_of=owner_of
     )
 
     materials_by_id: dict[int, dict] = {}
@@ -569,8 +570,8 @@ def collect_precedents_with_conn(
         superseded_by_map,
         material_ids_by_decision,
         PRECEDENT_RESPONSE_CHARS_MAX,
-        topic_rank,
-        owner_of,
+        topic_rank=topic_rank,
+        owner_of=owner_of,
         destabilization_map=destabilization_map,
     )
     return {

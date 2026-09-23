@@ -669,6 +669,30 @@ class TestResponseSizeGate:
         assert full_ids1 == full_ids2
         assert result1["budget"]["response_chars"]["demoted"] == result2["budget"]["response_chars"]["demoted"]
 
+    def test_demotion_prefers_farther_topic_over_nearer_topic(self, temp_db, mock_embedding_server):
+        """降格順(配分順の逆順)もtopicの関連度を優先する: 近いtopicの決定は、
+        遠いtopic側の降格だけで実サイズが収まるうちは降格されない"""
+        near_topic = _make_topic("near", 0)
+        far_topic = _make_topic("far", 1)
+        near_id = _decision(near_topic, "near-d", _reason_with_sections(300))
+        for i in range(15):
+            _decision(far_topic, f"far-d{i}", _reason_with_sections(300))
+
+        # topic_idsの並び順（near_topicが先）がdistance近い順を表す
+        result = pps.pull_precedents(
+            "文脈", topic_ids=[near_topic, far_topic], budget_chars=1_000_000
+        )
+
+        response_chars = result["budget"]["response_chars"]
+        assert response_chars["demoted"] > 0
+
+        near_item = _decision_by_id(_topic_by_id(result, near_topic), near_id)
+        far_entry = _topic_by_id(result, far_topic)
+        far_demoted_count = sum(1 for d in far_entry["decisions"] if d["detail"] == "index")
+
+        assert near_item["detail"] == "full"
+        assert far_demoted_count == response_chars["demoted"]
+
     def test_materials_catalog_degraded_when_demotion_alone_is_insufficient(
         self, temp_db, mock_embedding_server
     ):
