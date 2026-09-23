@@ -118,11 +118,7 @@ def _maybe_inject_tag_notes(result: dict, tag_strings: list[str], mark: bool = T
     Args:
         mark: False の場合、_injected_tags を参照も更新もしない（読み取り経路用）。
     """
-    try:
-        ctx = get_context()
-        session_id = ctx.session_id
-    except RuntimeError:
-        session_id = None
+    session_id = get_caller_session_id()
     with contextlib.closing(get_connection()) as conn:
         notes = collect_tag_notes_for_injection(conn, tag_strings, session_id=session_id, mark=mark)
     if notes:
@@ -1521,11 +1517,7 @@ def check_in(
         next（今やるべきこと1件）に従う
     """
     flavor = _normalize_flavor(flavor)
-    try:
-        ctx = get_context()
-        session_id = ctx.session_id
-    except RuntimeError:
-        session_id = None
+    session_id = get_caller_session_id()
     result = _check_in(activity_id, session_id=session_id)
     if "error" not in result and flavor != "raw":
         _apply_flavor_to_check_in_result(result, flavor)
