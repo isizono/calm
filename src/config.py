@@ -123,6 +123,19 @@ PRECEDENT_ROUTING_MISS_DISTANCE: float = float(env_get("CALM_PRECEDENT_ROUTING_M
 # から逆算した値
 PRECEDENT_RESPONSE_CHARS_MAX: int = int(env_get("CALM_PRECEDENT_RESPONSE_CHARS_MAX", "32000"))
 
+# --- check_in 応答の全体予算 ---
+# 応答全体（JSON文字列化後）の予算。制御信号（goal/asks/dependencies）とtag_notesは
+# 数えない（別枠、下記2定数）。
+CHECKIN_BUDGET_CHARS: int = int(env_get("CALM_CHECKIN_BUDGET_CHARS", "10000"))
+# pinned専用の枠（CHECKIN_BUDGET_CHARSの内側で確保される）。
+CHECKIN_PINNED_SLOT_CHARS: int = int(env_get("CALM_CHECKIN_PINNED_SLOT_CHARS", "3000"))
+# 制御信号（goal/asks/dependencies合算）の天井。CHECKIN_BUDGET_CHARSには数えない。
+CHECKIN_CONTROL_CAP_CHARS: int = int(env_get("CALM_CHECKIN_CONTROL_CAP_CHARS", "3000"))
+# tag_notesの天井。CHECKIN_BUDGET_CHARSには数えない。
+CHECKIN_TAG_NOTES_CAP_CHARS: int = int(env_get("CALM_CHECKIN_TAG_NOTES_CAP_CHARS", "6000"))
+# 応答全体の実用上限（超過時のみactivity.descriptionを切る最後の手段）。
+CHECKIN_HARD_MAX_CHARS: int = int(env_get("CALM_CHECKIN_HARD_MAX_CHARS", "32000"))
+
 # --- Decay predicates（レンダー時評価。バッチ/cronではない） ---
 # intelligently層habitのマニフェスト表示から、作成後この日数を超え、かつ
 # get_habits(habit_id=...)によるon-demand参照実績も同日数以内に更新されていない

@@ -25,14 +25,21 @@
 
 ## 2. check_in応答
 
+下表の保証種別は、各フィールドをその場で組み立てる時点でのものである。組み立て後、
+`response_budget`（応答dictと方針だけを入力に取る独立モジュール）が応答全体10,000字の
+予算を適用する。制御信号（goal/asks/dependencies）とtag_notesはこの10,000字には
+数えないが、それぞれ3,000字・6,000字の天井を別に持つ。超過分は「削る」ではなく
+「件数と続きへのポインタに畳む」形で縮退するため、下表の complete/selected+remainder は
+「予算内に収まっている限りの」保証と読む。
+
 | フィールド | 保証種別 | 備考 |
 |---|---|---|
-| recent_decisions | selected+remainder | 関連topic横断で新しい順に上位15件（`DECISIONS_FULL_LIMIT`）。`coverage.decisions` に "選抜件数/総件数" を明示 |
-| materials | selected+remainder | リレーション経由のカタログ形式。`coverage.materials` に総件数を明示 |
-| logs | selected+remainder | 最新1件はcontent付き、残りはid+titleのカタログ。`coverage.logs` に総件数を明示 |
-| pinned | complete | activity自身とそのタグにpinされた対象を全件content付きで返す |
-| tag_notes | complete | セッション内初回遭遇時のタグのみ（`intent:`は毎回）。対象タグのnotesは全文 |
-| catalog | complete | `get_map` によるリレーショングラフ（depth 1-2）を全件返す |
+| recent_decisions | selected+remainder | 関連topic横断で新しい順に上位15件（`DECISIONS_FULL_LIMIT`）。`coverage.decisions` に "選抜件数/総件数" を明示。全体予算超過時はさらに末尾から削られ、分子も削った後の件数へ書き換わる |
+| materials | selected+remainder | リレーション経由のカタログ形式。`coverage.materials` に総件数を明示。全体予算超過時はさらに末尾から削られ、分子も削った後の件数へ書き換わる |
+| logs | selected+remainder | 最新1件はcontent付き、残りはid+titleのカタログ。`coverage.logs` に総件数を明示。全体予算超過時はまずカタログ側が末尾から削られ、それでも収まらなければ最新1件がスタブ化される（このときのみ分子が0になる） |
+| pinned | selected+remainder | activity自身とそのタグにpinされた対象を全件content付きで返す。ただしpinned専用の枠（3,000字）を超えると、種別をまたいだ小さい順に丸ごと残し、枠をまたぐ1件は先頭を残して切りポインタを付け、残りはid+titleのスタブになる |
+| tag_notes | complete（6,000字の天井付き） | セッション内初回遭遇時のタグのみ（`intent:`は毎回）。対象タグのnotesは全文。合計が天井を超えると大きいnotesから順にdecayと同じ1行ポインタへ縮退する（全体予算10,000字には数えない） |
+| catalog | selected+remainder | `get_map` によるリレーショングラフ（depth 1-2）。全体予算超過時に最初に削られる対象で、末尾から間引かれる |
 
 ## 3. RULES（MCP instructions）
 

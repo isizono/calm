@@ -34,8 +34,8 @@ from src.services import (
     overview_service,
     goal_service,
 )
-from src.services.checkin_service import check_in as _check_in
-from src.services import session_registry_service
+from src.services.checkin_service import check_in as _check_in, FLAT_FORM_BUDGET_POLICY
+from src.services import response_budget, session_registry_service
 from src.infra.session_identity import get_caller_session_id
 from src.services.tag_service import (
     search_tags as _search_tags,
@@ -1042,7 +1042,8 @@ def add_activity(
         orch_managed: orch管理アクティビティか（デフォルト: False）。TrueならSessionStart一覧・Stop hookのcheck-in催促から除外される
 
     Returns:
-        作成されたアクティビティ情報（check_in=Trueの場合はcheck_in_resultにtag_notes等を含む）
+        作成されたアクティビティ情報（check_in=Trueの場合はcheck_in_resultにtag_notes等を含む）。
+        check_in_resultはcheck_inツールと同じ最終化（flavor=internal適用+全体予算）を通す
     """
     result = activity_service.add_activity(
         title, description, tags, related=related, pins=pins, check_in=check_in,
@@ -1053,6 +1054,11 @@ def add_activity(
         # _maybe_inject_tag_notesは不要（二重注入防止）
         if not check_in:
             _maybe_inject_tag_notes(result, tags)
+        elif "check_in_result" in result:
+            # check_inツールと同じ最終化（flavor適用+全体予算）を通す。旧実装は
+            # ここが未適用のままで、pin合計の大きいタグでactivityを作ると
+            # 予算超過の応答がそのまま返っていた。
+            result["check_in_result"] = _finalize_checkin_result(result["check_in_result"], "internal")
     return result
 
 
@@ -1519,6 +1525,12 @@ def check_in(
         次の一手を1件返す。未定義（label="undefined"）・不要印（label="not_needed"）・
         goal付き（label="active"|"judge_ready"|"closed"）のいずれか。goal付きなら
         next（今やるべきこと1件）に従う
+        応答全体が10,000字を超えるときはtruncatedキーが付く（{budget, before, after,
+        over_budget, cuts: [{section, kept, cut, next?}, ...]}）。catalog/logs/materials/
+        related_activities/recent_decisions/latest_log/pinnedの順に切り詰められ、各cutの
+        nextには続きを取り直すツール呼び出し（{tool, args}）が付く。goal/asks/
+        dependencies（制御信号）とtag_notesはこの10,000字には数えず、それぞれ3,000字・
+        6,000字の天井を別に持つ（超過時はtruncated.control_over/tag_notes_overが立つ）
     """
     flavor = _normalize_flavor(flavor)
     try:
@@ -1527,8 +1539,20 @@ def check_in(
     except RuntimeError:
         session_id = None
     result = _check_in(activity_id, session_id=session_id)
-    if "error" not in result and flavor != "raw":
-        _apply_flavor_to_check_in_result(result, flavor)
+    return _finalize_checkin_result(result, flavor)
+
+
+def _finalize_checkin_result(result: dict, flavor: str) -> dict:
+    """check_in結果の最終化: flavor適用の直後に全体予算を適用する（共通の最終処理）。
+
+    check_inツールとadd_activity(check_in=True)の両方から呼ぶ。flavor適用は
+    字数を変えるため、必ずその後で予算を測る。raw指定時はflavorを適用しないが
+    予算は必ず適用する。
+    """
+    if "error" not in result:
+        if flavor != "raw":
+            _apply_flavor_to_check_in_result(result, flavor)
+        result = response_budget.apply_budget(result, FLAT_FORM_BUDGET_POLICY)
     return result
 
 
@@ -1571,7 +1595,40 @@ def _apply_flavor_to_check_in_result(result: dict, flavor: str) -> None:
         for item in result.get("recent_decisions", []) or []:
             _flavor_snippet(item, flavor, conn)
 
+        _apply_flavor_to_pinned(result.get("pinned"), flavor, conn)
         _apply_flavor_to_goal_block(result.get("goal"), flavor, conn)
+
+
+def _apply_flavor_to_pinned(pinned: object, flavor: str, conn) -> None:
+    """pinnedセクション（decisions/logs/materials/topics/activities）にflavorを適用する
+    (in-place)。旧実装ではpinnedにflavorが未適用のまま返っていた欠落を埋める。
+    """
+    if not isinstance(pinned, dict):
+        return
+    for dec in pinned.get("decisions", []) or []:
+        if isinstance(dec, dict):
+            if isinstance(dec.get("title"), str):
+                dec["title"] = citation_renderer.expand(dec["title"], flavor, conn)
+            if isinstance(dec.get("reason"), str):
+                dec["reason"] = citation_renderer.expand(dec["reason"], flavor, conn)
+    for log in pinned.get("logs", []) or []:
+        if isinstance(log, dict):
+            if isinstance(log.get("title"), str):
+                log["title"] = citation_renderer.expand(log["title"], flavor, conn)
+            if isinstance(log.get("content"), str):
+                log["content"] = citation_renderer.expand(log["content"], flavor, conn)
+    for mat in pinned.get("materials", []) or []:
+        if isinstance(mat, dict):
+            if isinstance(mat.get("title"), str):
+                mat["title"] = citation_renderer.expand(mat["title"], flavor, conn)
+            if isinstance(mat.get("content"), str):
+                mat["content"] = citation_renderer.expand(mat["content"], flavor, conn)
+    for topic in pinned.get("topics", []) or []:
+        if isinstance(topic, dict) and isinstance(topic.get("title"), str):
+            topic["title"] = citation_renderer.expand(topic["title"], flavor, conn)
+    for act in pinned.get("activities", []) or []:
+        if isinstance(act, dict) and isinstance(act.get("title"), str):
+            act["title"] = citation_renderer.expand(act["title"], flavor, conn)
 
 
 def _apply_flavor_to_goal_block(goal_block: object, flavor: str, conn) -> None:
