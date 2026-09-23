@@ -32,10 +32,14 @@ from src.services.rules_promotion_pure import (  # noqa: E402
     find_similar_pairs,
 )
 
-# 既存のタグ重複検出（tag_analysis_service）のコサイン距離閾値0.15
-# （=類似度換算で概ね0.85）を出発点として流用する。設計案どおり閾値の較正は
-# 本スキャンの実行結果を見てから行う前提であり、この値は初期値にすぎない。
-_DEFAULT_SIMILARITY_THRESHOLD = 0.85
+# 初回棚卸し（本番DB、2026-09-23、314ユニット）の実測に基づく値。0.85（既存の
+# タグ重複検出tag_analysis_service.DUPLICATE_DISTANCE_THRESHOLD=0.15の類似度換算値）
+# を出発点に試したところ、cluster_candidatesの連結成分は閾値が低いとタグ間の
+# 推移的な連鎖（AとB、BとCが似ていればAとCも同じクラスタに入る）でほぼ全タグが
+# 1つの巨大クラスタへ縮退し、実質ノイズだった。0.90でも18ユニット連結の塊が残り、
+# 0.95まで上げて初めて2クラスタに絞れ、いずれも内容の明確な重複だった。
+# 既定値を下げるときはこの推移的連鎖による巨大化に注意すること。
+_DEFAULT_SIMILARITY_THRESHOLD = 0.95
 
 
 def _tag_str(namespace: str, name: str) -> str:
