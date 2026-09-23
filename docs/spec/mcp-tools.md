@@ -858,8 +858,8 @@ CALMが扱うエンティティの内部表現。詳細スキーマは `docs/spe
 
 ### 3.7 Relation
 - `source_type, source_id, target_type, target_id, relation_type`
-- relation_type: `related | depends_on | supersedes`
-- `depends_on` はactivity同士、`supersedes` はdecision同士に限定
+- relation_type: `related | depends_on | supersedes | destabilizes | belongs_to`
+- `depends_on` はactivity同士、`supersedes` / `destabilizes` はdecision同士に限定
 
 ### 3.8 Tag
 - 文字列としては `namespace:name` または素タグ

@@ -131,18 +131,20 @@ graph TB
 - `src/services/timeline_service.py`: 時系列ビュー（`get_timeline`）
 - `src/services/retract_service.py`: 論理削除と検索からの除外（NOT EXISTSによるretract遅延除外）
 - `src/services/tag_analysis_service.py`: タグ共起分析（`analyze_tags`）。tag-cleanupスキルから利用
-- `src/services/destabilization_service.py` / `src/services/supersede_service.py`: decision間の関係メカニズム（destabilizesエッジの解消・候補提示／supersedeチェーン）
-- `src/services/precedent_pull_service.py` / `src/services/precedent_cluster_service.py`: `pull_precedents`のtopic routingと本文展開
-- `src/services/budget_service.py`: precedent展開・tag notesの文字数予算の既定値集約
+- `src/services/destabilization_service.py`: destabilizesエッジの解消（`resolve_destabilization`）・候補提示（`suggest_destabilized_candidates`）
+- `src/services/supersede_service.py`: `decision_supersedes`を辿ったsupersedeチェーン算出のヘルパー。precedent系・direction_service・decision_service・checkin_service・search_service等decisionを扱う多数のserviceから共有される
+- `src/services/precedent_pull_service.py`: `pull_precedents`のtopic routing + browse保証（近傍topicの非retract decisionをLIMIT無しで網羅列挙）
+- `src/services/precedent_cluster_service.py`: `precedent_pull_service`から呼ばれ、seed decision集合をsupersede系譜／depth-1のrelatedエッジ／depth-1のcitationエッジで連結クラスタ展開する
+- `src/services/budget_service.py`: `pull_precedents`の予算配分ロジックと、decision/logページネーション用件数カウントの共通プリミティブ
 - `src/services/signal_service.py`: signal_events（CALM自身の故障・使用感不満等の生観測データ）のCRUD
 - `src/services/session_registry_service.py`: セッション別名（CLI表示名↔人間可読別名）対応表の読み書き
-- `src/services/delta_service.py`: セッション横断の差分通知（既読位置管理）
-- `src/services/staleness_service.py`: ドキュメント・プラグインキャッシュの陳腐化検知（`session_start_hook`から利用）
+- `src/services/delta_service.py`: check_in時にスナップショットしたtopicスコープ以降に追加されたdecision/log/materialを取得する純粋クエリ関数群。watermark（既読位置）自体はin-memoryで`src/middleware/delta_middleware.py`が管理する（サーバー再起動でwipeされ次のcheck_inで再ベースライン）
+- `src/services/staleness_service.py`: supersede chainの推移的なhead算出と鮮度メタデータ付与。`direction_service`から呼ばれ方向性decisionの陳腐化把握に使われる
 - `src/services/citation_renderer.py`（+ `citations_service.py` / `citations_pure.py`）: flavor引数（raw/internal/readable）に応じたcitationテンプレート・削除済み参照の展開
-- `src/services/direction_service.py`: `layer:direction`decisionの検出（`doc-sync-convention.md`のwatch-direction判定の実体）
+- `src/services/direction_service.py`: `layer:direction`decisionの非ランク網羅列挙。`hint_service`のdirection_overflow判定と`add_decisions`のexisting_direction_decisions/direction_noteの土台
 - `src/services/reask_detection_service.py`: `detect_reask_candidates`のtranscript抽出ロジック
-- `src/services/restart_service.py`: MCPサーバーの強制再起動（`calm:restart` skillから利用）
-- `src/services/backup_service.py`: DBスナップショットの作成・世代管理
+- `src/services/restart_service.py`: cc-memory MCPサーバー・embeddingサーバーの強制再起動（`calm:restart` skillから利用）
+- `src/services/backup_service.py`: DBスナップショットの取得・ヘルスチェック・ローテーション・復元
 
 ### 3.3b エクスポート・インポート基盤
 
@@ -185,7 +187,7 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 | `hooks/user_prompt_submit_hook.py` | UserPromptSubmit（`*`） | 未消費nudge・ask通知の system-reminder 注入 |
 | `hooks/stop_hook.py` | Stop（`*`） | transcript差分抽出→events.jsonl追記、check-in判定、nudge発火判定、heartbeat更新 |
 | `hooks/preblock_hook.py` | PreToolUse（`*`） | tool_inputに含まれる内部ID表記のリテラルをblock（`deny`） |
-| `hooks/sanitize_tool_result_hook.py` | PostToolUse（`*`） | tool_resultの生ID参照を`{{cite:...}}`へ変換して返す |
+| `hooks/sanitize_tool_result_hook.py` | PostToolUse（`*`。cc-memoryツール以外は素通し） | cc-memory tool_resultの生ID参照を`{{cite:...}}`へ変換して返す |
 | `hooks/ask_answer_rewake_hook.py` | PostToolUse（`mcp__.*calm__add_ask`、`asyncRewake`） | `add_ask`直後にaskのstatus変化をポーリングし、回答されたらidleセッションを起こす |
 | `hooks/message_display_id_titles.py` | MessageDisplay（`*`） | assistant発話中の内部ID表記の直後にエンティティタイトルを差し込んで表示（表示のみ、transcript/contextは無加工） |
 
@@ -240,7 +242,7 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 SessionStart        → hook_state clear / session_start_hook / sanitize_backfill_hook
                        → 状態クリア / アクティビティダッシュボード・鮮度警告注入 / transcript差分backfill
 PreToolUse           → preblock_hook → 内部ID表記のtool_inputを検出しblock
-PostToolUse          → sanitize_tool_result_hook（全ツール）→ tool_resultの生ID参照をcitationテンプレへ変換
+PostToolUse          → sanitize_tool_result_hook（cc-memoryツールのみ）→ tool_resultの生ID参照をcitationテンプレへ変換
                        → ask_answer_rewake_hook（add_ask限定、asyncRewake）→ 回答待ちポーリング→idle起床
 Stop                 → stop_hook → record_missing / follow_up_after_decision / logs_sparse nudge を events.jsonl に追記
 UserPromptSubmit     → user_prompt_submit_hook → 未消費 nudge・ask通知の system-reminder 注入
@@ -343,7 +345,7 @@ graph LR
 3. **circular import懸念**: `src/main.py` から services を読み、 services 同士の相互参照や、tag_serviceとtag_analysis_serviceの分担境界など整理余地がある（具体特定は未実施）
 4. **プロトコル層が薄い**: 独立した型/スキーマ定義モジュールがなく、エンティティ型はDBスキーマと各serviceの返却dictで表現される。型レベル規律が弱い
 5. **retract連鎖の未完**: `retract_service` が論理削除を立てるが、search_index物理クリーンアップなし、material/topic/activityにretracted_at列なし、関連pin/relationの扱いが未統一（`docs/spec-v0.md` §2.2）
-6. **HintService単一窓口の不在**: nudge発火源（hooks/各種、`hint_service`、checkin_serviceのrecompose hints、tag_service経由のtag-notes）が並走しており、しきい値・状態管理がバラバラ。**[部分解消: 2026-09-23]** recompose系・logs_sparse系・direction_overflow系・activity_cleanup系・notes_over_budget系のhintは`hint_service`（`get_hints`/`get_hints_with_conn`）に統一済み。ただしfollow_up_after_decision/record_missingはevents.jsonl状態が必要なため引き続きStop hookが個別生成しており、nudge発火源の完全な一元化には至っていない
+6. **HintService単一窓口の不在**: nudge発火源（hooks/各種、harness_service、checkin_serviceのrecompose hints、tag_service経由のtag-notes）が並走しており、しきい値・状態管理がバラバラ。recompose系・logs_sparse系・direction_overflow系・activity_cleanup系・notes_over_budget系のhintは`hint_service`（`get_hints`/`get_hints_with_conn`）に統一済み（#422、2026-06-21）。ただしfollow_up_after_decision/record_missingはevents.jsonl状態が必要なため引き続きStop hookが個別生成しており、nudge発火源の完全な一元化には至っていない
 7. **効果測定基盤の不在**: 検索のスコアリング・nudgeの効果・タグ付与の精度を測定する仕組みがない（`docs/spec-v0.md` §6 T-D）。search_telemetry導入が処方箋候補
 
 各課題の詳細・処方箋候補は5次元統合レポート本文（cc-memory material、要参照）と `docs/spec-v0.md` §6 横断テーマを参照のこと。
