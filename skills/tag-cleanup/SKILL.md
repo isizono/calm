@@ -10,8 +10,8 @@ description: タグの共起分析を実行し、整理提案をユーザーに�
 ## 手順
 
 1. 引数で `domain` が指定されていればそのまま使う。指定されていなければ、どのドメインで分析するか（または全体か）をユーザーに確認してから `analyze_tags()` を呼ぶ
-2. 結果を以下の4セクション構成でユーザーに提示する
-3. ユーザーが承認したアクションを `update_tag` で実行する
+2. 結果を以下の5セクション構成でユーザーに提示する
+3. ユーザーが承認したアクションを `update_tag` / `demote_tag_notes` で実行する
 4. 実行結果を `add_material` で保存する
 
 ## 提示フォーマット
@@ -74,6 +74,22 @@ usage が低く、吸収先がありそうなタグ。canonical 化を提案す�
 | `stop-hook` | `hook-system` | 3.2 | 30 |
 ```
 
+### 5. 予算超過タグ（notes_over_budget）
+
+notesが天井（4,000字）を超えているタグ。`analyze_tags`はdomain等の分析スコープに関わらずnotesを持つ全タグを対象に走査するため、domain指定時も漏れなく提示する。
+
+```
+## 予算超過タグ
+| タグ | 現在の字数 | 天井 |
+|------|-----------|------|
+| `domain:calm` | 5,120 | 4,000 |
+```
+
+提案の方針:
+- 原則 `demote_tag_notes(tag=..., sections=["見出しテキスト", ...])` でセクション単位に資材へ退避することを提案する（`sections`はnotes中の`## `見出しで指定、状態・進行ジャーナル型のセクションは`mode="drop"`、それ以外は既定の`mode="pointer"`）
+- タグ自体を今後使わない場合のみ archived 化を提案する（archived 化は超過の解消手段ではなく、タグそのものを退役させる別処置）
+- 終了条件はdemoteの実行回数ではなく、返り値の`notes_length.over_budget`が`false`になったことで判定する
+
 ## アクション実行
 
 ユーザーが承認したアクションのみ実行する。自動実行はしない。
@@ -81,6 +97,7 @@ usage が低く、吸収先がありそうなタグ。canonical 化を提案す�
 - **canonical 化**: `update_tag(tag="旧タグ", canonical="正規タグ")`
 - **rename**: `update_tag(tag="旧タグ", rename="新タグ")`
 - **archived 化（退役）**: `update_tag(tag="対象タグ", archived=True, archived_reason="理由")`。他タグの canonical 先になっているタグは archived 化できない（先にエイリアス解除が必要）
+- **notes縮小**: `demote_tag_notes(tag="対象タグ", sections=["見出しテキスト", ...])` で該当セクションを資材へ退避（承認された見出しのみ対象にする）
 - 実行後、変更内容を一覧で報告する
 
 ## 結果の保存
