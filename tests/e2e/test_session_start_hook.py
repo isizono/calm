@@ -161,7 +161,7 @@ class TestSessionStartHookBasic:
         finally:
             conn.close()
 
-        result = _run_session_start_hook(temp_db, env_remove=["CALM_SYNC_POLICY"])
+        result = _run_session_start_hook(temp_db)
 
         context = result["hookSpecificOutput"]["additionalContext"]
         assert "check_in（なければ作成 — activity-start）" in context
@@ -510,14 +510,10 @@ class TestSessionStartHookHabitsProjectionCutover:
 
         habits_path = tmp_path / "cc-memory-habits.md"
         # 1回目: absentからのheal。DB状態を投影ファイルへ反映させる
-        _run_session_start_hook(
-            temp_db, habits_rules_path=str(habits_path), env_remove=["CALM_SYNC_POLICY"]
-        )
+        _run_session_start_hook(temp_db, habits_rules_path=str(habits_path))
 
         # 2回目: freshのはず
-        result = _run_session_start_hook(
-            temp_db, habits_rules_path=str(habits_path), env_remove=["CALM_SYNC_POLICY"]
-        )
+        result = _run_session_start_hook(temp_db, habits_rules_path=str(habits_path))
         context = result["hookSpecificOutput"]["additionalContext"]
 
         assert "振る舞い" not in context
@@ -582,35 +578,6 @@ class TestSessionStartHookErrorHandling:
         stdout = result.stdout.strip()
         assert json.loads(stdout) == {}
         assert "capture_signal_safe failed" in result.stderr
-
-
-class TestSessionStartHookSyncPolicy:
-    """sync_policyの注入テスト"""
-
-    def test_sync_policy_shown_when_set(self, temp_db):
-        """CALM_SYNC_POLICY設定時にsync_policyセクションが出力される"""
-        result = _run_session_start_hook(
-            temp_db, extra_env={"CALM_SYNC_POLICY": "PRマージ済みは自動で閉じて"}
-        )
-        context = result["hookSpecificOutput"]["additionalContext"]
-        assert "# sync_policy" in context
-        assert "PRマージ済みは自動で閉じて" in context
-
-    def test_sync_policy_hidden_when_unset(self, temp_db):
-        """CALM_SYNC_POLICY未設定時にsync_policyセクションが出力されない"""
-        result = _run_session_start_hook(
-            temp_db, env_remove=["CALM_SYNC_POLICY"]
-        )
-        context = result["hookSpecificOutput"]["additionalContext"]
-        assert "# sync_policy" not in context
-
-    def test_sync_policy_hidden_when_empty(self, temp_db):
-        """CALM_SYNC_POLICY空文字時にsync_policyセクションが出力されない"""
-        result = _run_session_start_hook(
-            temp_db, extra_env={"CALM_SYNC_POLICY": ""}
-        )
-        context = result["hookSpecificOutput"]["additionalContext"]
-        assert "# sync_policy" not in context
 
 
 class TestSessionStartHookTier2AndFixedNav:
@@ -1304,7 +1271,7 @@ class TestSessionStartHookContextBudget:
         for i in range(2):
             _seed_habit(f"標準的な長さの振る舞い内容その{i}")
 
-        result = _run_session_start_hook(temp_db, env_remove=["CALM_SYNC_POLICY"])
+        result = _run_session_start_hook(temp_db)
         context = result["hookSpecificOutput"]["additionalContext"]
 
         assert len(context) <= 1900, (

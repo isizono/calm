@@ -4,8 +4,8 @@
    （超えると個々のセクションがbudget_chars以内に収まっていてもcompose()全体の
    予算保証が成立しなくなる）
 2. 膨張fixtureテスト: 既存の各セクション実装内部に存在する無制限箇所
-   （heartbeat中の他セッションactivity全件列挙・signalsのkind内訳無制限・
-   SYNC_POLICYの自由長環境変数）を実際にデータで膨張させ、compose()経由の
+   （heartbeat中の他セッションactivity全件列挙・signalsのkind内訳無制限）
+   を実際にデータで膨張させ、compose()経由の
    additionalContext合計がTOTAL_INJECTION_BUDGET_CHARS以内に収まることを検証する。
    個々のセクション内部実装がこの膨張を自前で防いでいなくても、compose()の
    ハード切り詰めにより全体予算は常に守られるという契約の確認が目的。
@@ -27,7 +27,7 @@ def test_declared_budgets_do_not_exceed_total():
     assert total_declared_budget(session_start_hook._SECTIONS) <= config.TOTAL_INJECTION_BUDGET_CHARS
 
 
-def test_all_sections_are_actually_processed_by_compose(temp_db, monkeypatch):
+def test_all_sections_are_actually_processed_by_compose(temp_db):
     """_SECTIONSに登録された全セクション（transcript_path含む）が、
     compose()経由で実際にbuilderを呼ばれ出力に反映されることを確認する。
 
@@ -45,14 +45,11 @@ def test_all_sections_are_actually_processed_by_compose(temp_db, monkeypatch):
     finally:
         conn.close()
 
-    monkeypatch.setattr(config, "SYNC_POLICY", "wiring確認用sync_policy")
-
     result = session_start_hook._build_session_context(
         source="startup", transcript_path="/tmp/wiring-check-transcript.jsonl"
     )
 
     assert "heartbeat膨張タスク0" in result  # activities section
-    assert "wiring確認用sync_policy" in result  # sync_policy section
     assert "未トリアージのシグナル" in result  # signals section
     assert "wiring確認用ask" in result  # open_asks section
     assert "このセッションのtranscript path: /tmp/wiring-check-transcript.jsonl" in result  # transcript_path section
@@ -148,13 +145,4 @@ class TestInflationFixturesStayWithinBudget:
 
         assert len(result) <= config.TOTAL_INJECTION_BUDGET_CHARS, (
             f"1000種のsignal kindでadditionalContextが予算超過（実測{len(result)}字）"
-        )
-
-    def test_huge_sync_policy_stays_within_budget(self, temp_db, monkeypatch):
-        monkeypatch.setattr(config, "SYNC_POLICY", "x" * 50000)
-
-        result = session_start_hook._build_session_context()
-
-        assert len(result) <= config.TOTAL_INJECTION_BUDGET_CHARS, (
-            f"50,000字のSYNC_POLICYでadditionalContextが予算超過（実測{len(result)}字）"
         )

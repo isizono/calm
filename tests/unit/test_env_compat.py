@@ -87,7 +87,7 @@ class TestEnvGet:
         """空文字も「設定済み」として扱い、旧名へは落ちない。
 
         os.environ.get と同じ「存在するなら値をそのまま返す」意味論に揃える。
-        空文字を未設定として扱う正規化は、必要な呼び出し側（CALM_SYNC_POLICY 等）が
+        空文字を未設定として扱う正規化は、必要な呼び出し側（`value or None` 等）が
         自分で行う。
         """
         monkeypatch.setenv("CALM_DB_PATH", "")
