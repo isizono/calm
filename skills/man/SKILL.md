@@ -152,7 +152,7 @@ goal機構は、アクティビティの終了条件を構造化し、いつ・�
 - **記録の直後**（recording・decision-record）: 条件を満たしたら、その場でupdate_goalに書く。根拠のdecisionなどがあれば、同じ呼び出しで束縛も張る。それで判定待ちになったら、そのまま判定に続く
 - **待ち**（ask-compose・activity-pause）: 会話や記録から満たされたと分かるなら確認せずsatisfiedに書く。分からない人間の判断待ちだけ、その場で聞けるなら聞いてdecisionにする。離席中・セッション跨ぎならaskにして、条件をそのaskに束縛する
 - **判定**（recording・decision-record・check-in・activity-finish・activity-cleanup）: 全条件が終端になった判定待ちの状態を見たら、そのセッションがその場でjudge_goalを呼ぶ。判定したことの報告はしない。未決（openなask・[議論中]のdecision）があれば、判定の前に畳むか1ターン聞く
-- **事後の記録**（sync-memory）: そのセッション自身に根拠がある充足だけを書く。推定でしかない外部の完了は条件にも判定にも使わず、judge_goalも呼ばない
+- **事後の記録**（sync-memory）: transcriptから推せる終了条件は確認なしで書く。候補が複数で定まらない、または推せないときは書かない（事後の一括処理でユーザーに聞けないため未定義のまま残す）。外部の完了はghなど実際の手段で確かめられればsatisfiedに書き、確かめた結果で終端すればjudge_goalも呼ぶ。確かめられない推測はsatisfiedにも判定にも使わない
 
 ### 終了条件を書かない選択
 
