@@ -1307,6 +1307,9 @@ def _apply_recency_boost(results: list[dict], now: datetime | None = None) -> No
     - score_breakdown.recency_factor: 適用された減衰係数（created_at取得不可時は1.0）
     - final_score: rrf_normalized * recency_factor
     - score: final_score と同値（旧 API 互換のため残置）
+    - superseded_by（decisionのみ）: floor判定のために引いたsupersede情報。
+      後段の`_attach_superseded_by`が同じdecision集合に対して再クエリしないよう、
+      ここで確定した値をそのまま結果へ持ち回す
 
     確定後、final_score 降順で再ソートする。
     """
@@ -1327,15 +1330,19 @@ def _apply_recency_boost(results: list[dict], now: datetime | None = None) -> No
         bd.setdefault("rrf_normalized", item.get("score", 0.0))
         bd.setdefault("recency_factor", 1.0)
 
-    # decisionはsupersede状態でfloorを分けるため、対象idのsuperseded_byを先に引く
+    # decisionはsupersede状態でfloorを分けるため、対象idのsuperseded_byを先に引く。
+    # ベクトル検索は使わないためload_vec=Falseでsqlite-vec拡張ロードを省く
     decision_ids = [item["id"] for item in results if item["type"] == "decision"]
     superseded_by_map: dict[int, Optional[int]] = {}
     if decision_ids:
-        conn = get_connection()
+        conn = get_connection(load_vec=False)
         try:
             superseded_by_map = get_superseded_by_batch(conn, decision_ids)
         finally:
             conn.close()
+        for item in results:
+            if item["type"] == "decision":
+                item["superseded_by"] = superseded_by_map.get(item["id"])
 
     # typeごとにcreated_atをバッチ取得
     by_type: dict[str, list[dict]] = {}
@@ -1902,17 +1909,24 @@ def _attach_superseded_by(results: list[dict]) -> None:
     supersede されている decision の最新 superseder id を「早期警告」として乗せる軽量
     マーカー。詳細な chain は get_decisions 側で取り直す前提のため、supersede されて
     いなければ None、複数 superseder があれば最新1件のみ返す。
+
+    `_apply_recency_boost`がrerank段で既に同じ値を付与済みの場合（`superseded_by`
+    キーが既に存在する）はそのdecisionを再クエリしない。search()経路ではrerankが
+    decorateより先に走るため、これで同一リクエスト内の重複クエリを避けられる。
     """
-    decision_ids = [item["id"] for item in results if item["type"] == "decision"]
+    decision_ids = [
+        item["id"] for item in results
+        if item["type"] == "decision" and "superseded_by" not in item
+    ]
     if not decision_ids:
         return
-    conn = get_connection()
+    conn = get_connection(load_vec=False)
     try:
         superseded_by_map = get_superseded_by_batch(conn, decision_ids)
     finally:
         conn.close()
     for item in results:
-        if item["type"] == "decision":
+        if item["type"] == "decision" and "superseded_by" not in item:
             item["superseded_by"] = superseded_by_map.get(item["id"])
 
 

@@ -640,6 +640,56 @@ def test_recency_boost_superseded_decision_keeps_default_floor(temp_db):
     assert results[0]["score_breakdown"]["recency_factor"] == pytest.approx(RECENCY_DECAY_FLOOR)
 
 
+def test_recency_boost_carries_forward_superseded_by(temp_db):
+    """recency boost: floor判定のために引いたsuperseded_byを結果にそのまま付与する（後段の再クエリを避けるための持ち回し）"""
+    topic = add_topic(title="持ち回りテスト用トピック", description="テスト", tags=DEFAULT_TAGS)
+    d_old = add_decision(topic_id=topic["topic_id"], decision="持ち回りテスト旧決定", reason="テスト用")
+    d_new = add_decision(topic_id=topic["topic_id"], decision="持ち回りテスト新決定", reason="テスト用")
+    add_relation(
+        "decision", d_new["decision_id"],
+        [{"type": "decision", "ids": [d_old["decision_id"]]}],
+        relation_type="supersedes",
+    )
+
+    results = [
+        {"type": "decision", "id": d_old["decision_id"], "title": "持ち回りテスト旧決定", "score": 1.0},
+        {"type": "decision", "id": d_new["decision_id"], "title": "持ち回りテスト新決定", "score": 1.0},
+    ]
+    _apply_recency_boost(results)
+
+    old_item = next(r for r in results if r["id"] == d_old["decision_id"])
+    new_item = next(r for r in results if r["id"] == d_new["decision_id"])
+    assert old_item["superseded_by"] == d_new["decision_id"]
+    assert new_item["superseded_by"] is None
+
+
+def test_search_decision_results_issue_single_supersede_query(temp_db, mock_embedding_model, monkeypatch):
+    """search()経由でdecisionが複数件返るとき、get_superseded_by_batchはrerank+decorateを通じて1回だけ呼ばれる（重複クエリ回避）"""
+    topic = add_topic(title="重複クエリ検証用トピック", description="テスト", tags=DEFAULT_TAGS)
+    d_old = add_decision(topic_id=topic["topic_id"], decision="重複クエリ検証旧決定", reason="テスト用")
+    d_new = add_decision(topic_id=topic["topic_id"], decision="重複クエリ検証新決定", reason="テスト用")
+    add_relation(
+        "decision", d_new["decision_id"],
+        [{"type": "decision", "ids": [d_old["decision_id"]]}],
+        relation_type="supersedes",
+    )
+
+    real = search_service.get_superseded_by_batch
+    calls: list[list[int]] = []
+
+    def _spy(conn, decision_ids):
+        calls.append(list(decision_ids))
+        return real(conn, decision_ids)
+
+    monkeypatch.setattr(search_service, "get_superseded_by_batch", _spy)
+
+    result = search_service.search(keyword="重複クエリ検証", entity_type="decision")
+
+    assert "error" not in result
+    assert len(result["results"]) >= 2
+    assert len(calls) == 1
+
+
 # ========================================
 # score_breakdown / final_score テスト
 # ========================================
