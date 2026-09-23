@@ -402,19 +402,38 @@ class TestTagNotesInjection:
             conn.close()
 
     def test_second_encounter_no_injection(self, temp_db):
-        """2回目の遭遇では注入されない"""
+        """2回目の遭遇では注入されない（同一session_idでの重複排除）"""
         add_topic(title="Test", description="Desc", tags=["domain:test"])
         update_tag("domain:test", "重要な教訓")
 
         conn = get_connection()
         try:
             # 1回目
-            result1 = collect_tag_notes_for_injection(conn, ["domain:test"])
+            result1 = collect_tag_notes_for_injection(conn, ["domain:test"], session_id="sess-1")
             assert result1 is not None
 
-            # 2回目
-            result2 = collect_tag_notes_for_injection(conn, ["domain:test"])
+            # 2回目（同じsession_id）
+            result2 = collect_tag_notes_for_injection(conn, ["domain:test"], session_id="sess-1")
             assert result2 is None
+        finally:
+            conn.close()
+
+    def test_no_session_id_never_dedups(self, temp_db):
+        """session_id=None（識別子未解決）では毎回notesを全文返し、
+        _injected_tagsへの記録も行わない（旧「__default__」共有キーは廃止）。"""
+        add_topic(title="Test", description="Desc", tags=["domain:test"])
+        update_tag("domain:test", "重要な教訓")
+
+        conn = get_connection()
+        try:
+            result1 = collect_tag_notes_for_injection(conn, ["domain:test"], session_id=None)
+            result2 = collect_tag_notes_for_injection(conn, ["domain:test"], session_id=None)
+            assert result1 == [{"tag": "domain:test", "notes": "重要な教訓"}]
+            assert result2 == [{"tag": "domain:test", "notes": "重要な教訓"}]
+
+            from src.services.tag_service import _injected_tags
+            assert "__default__" not in _injected_tags
+            assert not any("domain:test" in s for s in _injected_tags.values())
         finally:
             conn.close()
 
@@ -531,7 +550,7 @@ class TestTagNotesInjection:
             conn.close()
 
     def test_partial_new_tags(self, temp_db):
-        """一部が既に遭遇済み、一部が新規の場合"""
+        """一部が既に遭遇済み、一部が新規の場合（同一session_id内）"""
         add_topic(title="Test", description="Desc", tags=["domain:test", "intent:design"])
         update_tag("domain:test", "テスト教訓")
         update_tag("intent:design", "設計の教訓")
@@ -539,10 +558,12 @@ class TestTagNotesInjection:
         conn = get_connection()
         try:
             # domain:test だけ先に遭遇
-            collect_tag_notes_for_injection(conn, ["domain:test"])
+            collect_tag_notes_for_injection(conn, ["domain:test"], session_id="sess-1")
 
             # 両方渡すが、domain:test は既に遭遇済み
-            result = collect_tag_notes_for_injection(conn, ["domain:test", "intent:design"])
+            result = collect_tag_notes_for_injection(
+                conn, ["domain:test", "intent:design"], session_id="sess-1"
+            )
             assert result is not None
             assert len(result) == 1
             assert result[0]["tag"] == "intent:design"
@@ -600,14 +621,15 @@ class TestAlwaysInjectNamespaces:
         conn = get_connection()
         try:
             collect_tag_notes_for_injection(
-                conn, ["intent:design"], always_inject_namespaces=["intent"]
+                conn, ["intent:design"], session_id="sess-1",
+                always_inject_namespaces=["intent"],
             )
-            assert "intent:design" not in _injected_tags.get("__default__", set())
+            assert "intent:design" not in _injected_tags.get("sess-1", set())
         finally:
             conn.close()
 
     def test_normal_tags_still_deduplicated(self, temp_db):
-        """always_inject_namespaces を使っても通常タグは従来通り重複防止される"""
+        """always_inject_namespaces を使っても通常タグは従来通り重複防止される（同一session_id内）"""
         add_topic(title="Test", description="Desc", tags=["domain:test", "intent:design"])
         update_tag("domain:test", "テスト教訓")
         update_tag("intent:design", "設計の教訓")
@@ -616,7 +638,7 @@ class TestAlwaysInjectNamespaces:
         try:
             # 1回目: 両方返る
             result1 = collect_tag_notes_for_injection(
-                conn, ["domain:test", "intent:design"],
+                conn, ["domain:test", "intent:design"], session_id="sess-1",
                 always_inject_namespaces=["intent"],
             )
             assert result1 is not None
@@ -624,7 +646,7 @@ class TestAlwaysInjectNamespaces:
 
             # 2回目: domain:test は既に注入済みなので intent:design だけ
             result2 = collect_tag_notes_for_injection(
-                conn, ["domain:test", "intent:design"],
+                conn, ["domain:test", "intent:design"], session_id="sess-1",
                 always_inject_namespaces=["intent"],
             )
             assert result2 is not None
@@ -648,18 +670,18 @@ class TestAlwaysInjectNamespaces:
             conn.close()
 
     def test_always_inject_with_no_parameter(self, temp_db):
-        """always_inject_namespaces 未指定の場合、従来通りの動作"""
+        """always_inject_namespaces 未指定の場合、従来通りの動作（同一session_id内）"""
         add_topic(title="Test", description="Desc", tags=["intent:design"])
         update_tag("intent:design", "設計の教訓")
 
         conn = get_connection()
         try:
             # 1回目
-            result1 = collect_tag_notes_for_injection(conn, ["intent:design"])
+            result1 = collect_tag_notes_for_injection(conn, ["intent:design"], session_id="sess-1")
             assert result1 is not None
 
             # 2回目: 従来通り None
-            result2 = collect_tag_notes_for_injection(conn, ["intent:design"])
+            result2 = collect_tag_notes_for_injection(conn, ["intent:design"], session_id="sess-1")
             assert result2 is None
         finally:
             conn.close()
@@ -969,23 +991,25 @@ class TestResultBasedInjectionDoesNotMark:
     """結果ベース注入（mark=False）は _injected_tags を汚染しない"""
 
     def test_result_based_injection_does_not_mark_injected_tags(self, temp_db):
-        """結果ベース注入は_injected_tagsを汚染しない"""
+        """結果ベース注入は_injected_tagsを汚染しない（同一session_id内）"""
         add_topic(title="Test", description="Desc", tags=["domain:test"])
         update_tag("domain:test", "テスト教訓")
 
         conn = get_connection()
         try:
             # mark=False で注入（読み取り経路）
-            result = collect_tag_notes_for_injection(conn, ["domain:test"], mark=False)
+            result = collect_tag_notes_for_injection(
+                conn, ["domain:test"], session_id="sess-1", mark=False
+            )
             assert result is not None
             assert len(result) == 1
             assert result[0]["tag"] == "domain:test"
 
             # _injected_tags に登録されていないことを確認
-            assert "domain:test" not in _injected_tags.get("__default__", set())
+            assert "domain:test" not in _injected_tags.get("sess-1", set())
 
             # mark=True（書き込み経路）でも notes が注入されることを確認
-            result2 = collect_tag_notes_for_injection(conn, ["domain:test"])
+            result2 = collect_tag_notes_for_injection(conn, ["domain:test"], session_id="sess-1")
             assert result2 is not None
             assert len(result2) == 1
             assert result2[0]["tag"] == "domain:test"
@@ -993,7 +1017,7 @@ class TestResultBasedInjectionDoesNotMark:
             conn.close()
 
     def test_mark_false_queries_all_tags_including_already_marked(self, temp_db):
-        """mark=False は既にマーク済みのタグも含めて全タグをクエリする"""
+        """mark=False は既にマーク済みのタグも含めて全タグをクエリする（同一session_id内）"""
         add_topic(title="Test", description="Desc", tags=["domain:test", "domain:other"])
         update_tag("domain:test", "テスト教訓")
         update_tag("domain:other", "その他の教訓")
@@ -1001,12 +1025,12 @@ class TestResultBasedInjectionDoesNotMark:
         conn = get_connection()
         try:
             # まず mark=True で domain:test をマーク
-            collect_tag_notes_for_injection(conn, ["domain:test"])
-            assert "domain:test" in _injected_tags.get("__default__", set())
+            collect_tag_notes_for_injection(conn, ["domain:test"], session_id="sess-1")
+            assert "domain:test" in _injected_tags.get("sess-1", set())
 
             # mark=False では domain:test もクエリ対象になる
             result = collect_tag_notes_for_injection(
-                conn, ["domain:test", "domain:other"], mark=False
+                conn, ["domain:test", "domain:other"], session_id="sess-1", mark=False
             )
             assert result is not None
             assert len(result) == 2
@@ -1244,17 +1268,131 @@ class TestMultiSessionIsolation:
         finally:
             conn.close()
 
-    def test_no_session_id_uses_default_key(self, temp_db):
-        """session_id=Noneの場合は__default__キーが使われる"""
+    def test_no_session_id_is_not_recorded_anywhere(self, temp_db):
+        """session_id=None（識別子未解決）は共有キー「__default__」を使わず、
+        どのキーにも記録しない（mark=False相当）。"""
         add_topic(title="Test", description="Desc", tags=["domain:test"])
         update_tag("domain:test", "テスト教訓")
 
         conn = get_connection()
         try:
-            collect_tag_notes_for_injection(conn, ["domain:test"])
-            assert "domain:test" in _injected_tags["__default__"]
+            collect_tag_notes_for_injection(conn, ["domain:test"], session_id=None)
+            assert "__default__" not in _injected_tags
+            assert not any("domain:test" in s for s in _injected_tags.values())
         finally:
             conn.close()
+
+
+class TestSessionKeyConsistencyAcrossEntryPoints:
+    """既出管理のキーが、main.check_in・main._maybe_inject_tag_notes経由の呼び出し・
+    checkin_serviceの内部フォールバックの3箇所で揃っていることを確認する。
+
+    3箇所が同じ識別子解決（get_caller_session_id）を共有していないと、同じタグの
+    notesが同一セッション内で2回届く（キーがずれて別セッション扱いになる）。
+    """
+
+    def test_check_in_and_add_topic_share_the_same_dedup_key(self, temp_db, monkeypatch):
+        import src.main as main_module
+        from src.infra import session_identity
+
+        monkeypatch.setattr(main_module, "get_caller_session_id", lambda: "bridge-shared")
+        monkeypatch.setattr(session_identity, "get_caller_session_id", lambda: "bridge-shared")
+
+        activity = add_activity(
+            title="Shared Key Activity", description="d",
+            tags=["domain:shared-key"], check_in=False,
+        )
+        aid = activity["activity_id"]
+        update_tag("domain:shared-key", "共有キー確認用の教訓")
+
+        # check_in経由（main.check_in → checkin_service.check_in）で先に注入
+        checkin_result = main_module.check_in(aid)
+        assert any(n["tag"] == "domain:shared-key" for n in checkin_result["tag_notes"])
+
+        # 同じ識別子で add_topic を呼ぶ（main._maybe_inject_tag_notes 経由）。
+        # キーが揃っていれば、同じタグは既に注入済みとして扱われ再配達されない
+        topic_result = main_module.add_topic(
+            title="Shared Key Topic", description="d", tags=["domain:shared-key"],
+        )
+        assert "tag_notes" not in topic_result or not any(
+            n["tag"] == "domain:shared-key" for n in topic_result.get("tag_notes", [])
+        )
+
+    def test_check_in_and_add_activity_checkin_fallback_share_the_same_dedup_key(
+        self, temp_db, monkeypatch
+    ):
+        """main.check_inと、add_activity(check_in=True)経由でcheckin_serviceが
+        session_id=Noneから内部フォールバックする経路が、同じ識別子解決を共有する。
+        """
+        import src.main as main_module
+        from src.infra import session_identity
+
+        monkeypatch.setattr(main_module, "get_caller_session_id", lambda: "bridge-shared-2")
+        monkeypatch.setattr(session_identity, "get_caller_session_id", lambda: "bridge-shared-2")
+
+        activity = add_activity(
+            title="Shared Key Fallback Activity", description="d",
+            tags=["domain:shared-key-fallback"], check_in=False,
+        )
+        aid = activity["activity_id"]
+        update_tag("domain:shared-key-fallback", "共有キーfallback確認用の教訓")
+
+        # main.check_in経由で先に注入
+        checkin_result = main_module.check_in(aid)
+        assert any(n["tag"] == "domain:shared-key-fallback" for n in checkin_result["tag_notes"])
+
+        # add_activity(check_in=True)経由（checkin_serviceのsession_id=Noneフォールバック）。
+        # キーが揃っていれば、同じタグは既に注入済みとして扱われ再配達されない
+        add_activity_result = main_module.add_activity(
+            title="Shared Key Fallback Second Activity", description="d",
+            tags=["domain:shared-key-fallback"],
+        )
+        check_in_result = add_activity_result["check_in_result"]
+        assert not any(
+            n["tag"] == "domain:shared-key-fallback" for n in check_in_result.get("tag_notes", [])
+        )
+
+    def test_falsification_mismatched_keys_would_double_deliver(self, temp_db, monkeypatch):
+        """裏取り: main.check_inの識別子解決と、add_activity経由でcheckin_serviceが
+        内部フォールバックする識別子解決がずれていれば（旧仕様相当）、
+        同じタグのnotesが両方の経路で届いてしまうことを示す対照テスト。
+
+        main.check_in()はmain_module.get_caller_session_id()（main自身の束縛）を
+        使う一方、add_activity(check_in=True)はactivity_service経由で
+        checkin_service.check_inをsession_id=Noneで直接呼び、checkin_service内部が
+        session_identity.get_caller_session_id()で解決する（main.pyを経由しない）。
+        本PRはこの2つの解決先を揃えたので、通常は同じ値を返す。ここでは意図的に
+        別々の値を返すよう差し替え、揃っていなければ何が起きるかを確認する。
+        """
+        import src.main as main_module
+        from src.infra import session_identity
+
+        monkeypatch.setattr(main_module, "get_caller_session_id", lambda: "bridge-A")
+        monkeypatch.setattr(session_identity, "get_caller_session_id", lambda: "bridge-B")
+
+        activity = add_activity(
+            title="Mismatched Key Activity", description="d",
+            tags=["domain:mismatched-key"], check_in=False,
+        )
+        aid = activity["activity_id"]
+        update_tag("domain:mismatched-key", "キーずれ確認用の教訓")
+
+        # main.check_in経由: main_module.get_caller_session_id()（"bridge-A"）で注入
+        checkin_result = main_module.check_in(aid)
+        assert any(n["tag"] == "domain:mismatched-key" for n in checkin_result["tag_notes"])
+
+        # add_activity(check_in=True)経由: activity_serviceがcheckin_service.check_inを
+        # session_id=Noneで呼ぶため、checkin_service内部がsession_identity側
+        # （"bridge-B"）で解決する。キーがずれていれば別セッション扱いになり、
+        # 同じタグのnotesが再度届く
+        add_activity_result = main_module.add_activity(
+            title="Mismatched Key Second Activity", description="d",
+            tags=["domain:mismatched-key"],
+        )
+        check_in_result = add_activity_result["check_in_result"]
+        assert any(
+            n["tag"] == "domain:mismatched-key" for n in check_in_result.get("tag_notes", [])
+        )
 
 
 # ========================================
@@ -1451,7 +1589,7 @@ class TestTagNotesDecay:
             conn.close()
 
     def test_full_notes_delivery_updates_last_injected_at(self, temp_db):
-        """notes全文が配信されたタグはlast_injected_atが更新される"""
+        """notes全文が配信されたタグはlast_injected_atが更新される（session_id解決済み）"""
         add_topic(title="Test", description="Desc", tags=["domain:stamped-tag"])
         update_tag("domain:stamped-tag", "教訓")
 
@@ -1462,12 +1600,29 @@ class TestTagNotesDecay:
             ).fetchone()
             assert row_before["last_injected_at"] is None
 
-            collect_tag_notes_for_injection(conn, ["domain:stamped-tag"])
+            collect_tag_notes_for_injection(conn, ["domain:stamped-tag"], session_id="sess-1")
 
             row_after = conn.execute(
                 "SELECT last_injected_at FROM tags WHERE namespace = 'domain' AND name = 'stamped-tag'"
             ).fetchone()
             assert row_after["last_injected_at"] is not None
+        finally:
+            conn.close()
+
+    def test_no_session_id_does_not_update_last_injected_at(self, temp_db):
+        """session_id=None（識別子未解決）ではlast_injected_atも更新されない
+        （mark=False相当。記録しない）。"""
+        add_topic(title="Test", description="Desc", tags=["domain:unresolved-tag"])
+        update_tag("domain:unresolved-tag", "教訓")
+
+        conn = get_connection()
+        try:
+            collect_tag_notes_for_injection(conn, ["domain:unresolved-tag"], session_id=None)
+
+            row_after = conn.execute(
+                "SELECT last_injected_at FROM tags WHERE namespace = 'domain' AND name = 'unresolved-tag'"
+            ).fetchone()
+            assert row_after["last_injected_at"] is None
         finally:
             conn.close()
 
