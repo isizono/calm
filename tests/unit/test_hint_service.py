@@ -898,6 +898,7 @@ class TestCountStaleActivitiesHelper:
         finally:
             conn.close()
 
+
 class TestActivityCleanupHint:
     """scope=activityで発火するactivity_cleanup hintの統合テスト。
 
