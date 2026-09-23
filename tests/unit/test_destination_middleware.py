@@ -16,7 +16,7 @@ import pytest
 from fastmcp.tools.tool import ToolResult
 
 from src.db import get_connection
-from src.services.activity_service import add_activity
+from src.services.activity_service import add_activity, update_activity
 from src.services.goal_service import set_goal
 from src.services.topic_service import add_topic
 import src.middleware.destination_middleware as destination_middleware
@@ -175,19 +175,28 @@ class TestTriggerGating:
 
 class TestFetchCandidates:
     def test_excludes_session_not_checked_in_to_this_goals_activity(self, temp_db):
-        """判定待ちgoalに紐づくactivityへcheck-inしていないセッションは候補に含めない。"""
+        """判定待ちgoalに紐づくactivityへcheck-inしていないセッションは候補に含めない。
+
+        除外対象の行も生存・名前解決を素通りできる状態で用意し、goal_idの不一致
+        だけで落ちることを検証する（cli_pid=None等の別条件で無条件に落ちる行では
+        goal_idの絞り込み自体が壊れていても検出できないため）。
+        """
         goal_activity_id = _make_activity("goal activity")
         goal_id = _make_judge_ready_goal(goal_activity_id)
         other_activity_id = _make_activity("unrelated activity")
+        other_goal_id = _make_judge_ready_goal(other_activity_id)
 
+        pid = register_alive_heartbeat_session("cli-other")
         _seed_session_row(
-            session_id="other-session", cli_session_id="cli-other", cli_pid=None,
+            session_id="other-session", cli_session_id="cli-other", cli_pid=pid,
             activity_id=other_activity_id,
         )
-        register_alive_heartbeat_session("cli-other")
 
-        candidates = destination_middleware._fetch_candidates(goal_id, "self-session")
-        assert candidates == []
+        assert destination_middleware._fetch_candidates(goal_id, "self-session") == []
+        # 対照: 正しいgoal_idで問い合わせれば同じ行が候補として返る
+        assert destination_middleware._fetch_candidates(other_goal_id, "self-session") == [
+            {"name": "test-cli", "activity_id_raw": other_activity_id, "activity_title": "unrelated activity"}
+        ]
 
     def test_excludes_caller_session_itself(self, temp_db):
         activity_id = _make_activity()
@@ -389,4 +398,40 @@ class TestIntegration:
 
         assert result.structured_content["destination_candidates"] == [
             {"name": "test-cli", "activity_id_raw": target_activity_id, "activity_title": "Target Activity"}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_update_activity_goal_hint_gains_destination_candidates_from_real_flow(
+        self, temp_db, monkeypatch
+    ):
+        """update_activityのgoal_hint（goalとは別のトップレベルキー）経由でも同様に注入される。
+
+        判定待ちgoalに紐づく別activity(other_activity_id)へcheck-inしたセッションを
+        候補として拾えることも合わせて確認する（goal単位の絞り込みであり、
+        completedにするactivity自身への紐づけを要求しない）。
+        """
+        activity_id = _make_activity("Closing Activity")
+        other_activity_id = _make_activity("Other Linked Activity")
+        goal_id = _make_judge_ready_goal(activity_id)
+        link_result = set_goal(other_activity_id, goal={"goal_id": goal_id})
+        assert "error" not in link_result, link_result
+
+        pid = register_alive_heartbeat_session("cli-hint")
+        _seed_session_row(
+            session_id="other-session", cli_session_id="cli-hint", cli_pid=pid,
+            activity_id=other_activity_id,
+        )
+        monkeypatch.setattr(destination_middleware, "get_caller_session_id", lambda: "self-session")
+
+        update_result = update_activity(activity_id, status="completed")
+        assert update_result["goal_hint"]["label"] == "judge_ready"
+
+        middleware = DestinationCandidateMiddleware()
+        tool_result = ToolResult(structured_content=update_result)
+        result = await middleware.on_call_tool(
+            _make_context("update_activity"), _call_next_returning(tool_result)
+        )
+
+        assert result.structured_content["destination_candidates"] == [
+            {"name": "test-cli", "activity_id_raw": other_activity_id, "activity_title": "Other Linked Activity"}
         ]
