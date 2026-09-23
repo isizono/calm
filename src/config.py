@@ -31,6 +31,9 @@ PIN_SURFACE_DECAY_DAYS: int = int(env_get("CALM_PIN_SURFACE_DECAY_DAYS", "60"))
 RECENCY_DECAY_RATE: float = float(env_get("CALM_RECENCY_DECAY_RATE", "0.0119"))
 # Recency boost の下限。約160日以降はこの値で一定になる
 RECENCY_DECAY_FLOOR: float = float(env_get("CALM_RECENCY_DECAY_FLOOR", "0.15"))
+# supersedeされていないdecision（現役の判例）専用のrecency boost下限。
+# 既定floorより高く設定し、古い基盤決定が一律減衰で検索順位から埋没するのを緩和する
+RECENCY_DECAY_FLOOR_DECISION_LIVE: float = float(env_get("CALM_RECENCY_DECAY_FLOOR_DECISION_LIVE", "0.7"))
 
 # --- Snapshot ---
 SNAPSHOT_INTERVAL_HOURS: int = int(env_get("CALM_SNAPSHOT_INTERVAL", "12"))

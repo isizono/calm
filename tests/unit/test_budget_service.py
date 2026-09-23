@@ -8,6 +8,7 @@ from src.config import (
     PRECEDENT_BUDGET_CHARS,
     PRECEDENT_RESPONSE_CHARS_MAX,
     RECENCY_DECAY_FLOOR,
+    RECENCY_DECAY_FLOOR_DECISION_LIVE,
     RECENCY_DECAY_RATE,
 )
 from src.services import budget_service
@@ -19,6 +20,10 @@ class TestBudgetDefaults:
         assert budget_service.BUDGET_DEFAULTS["precedent_budget_chars"] == PRECEDENT_BUDGET_CHARS
         assert budget_service.BUDGET_DEFAULTS["recency_decay_rate"] == RECENCY_DECAY_RATE
         assert budget_service.BUDGET_DEFAULTS["recency_decay_floor"] == RECENCY_DECAY_FLOOR
+        assert (
+            budget_service.BUDGET_DEFAULTS["recency_decay_floor_decision_live"]
+            == RECENCY_DECAY_FLOOR_DECISION_LIVE
+        )
         assert budget_service.BUDGET_DEFAULTS["precedent_response_chars_max"] == PRECEDENT_RESPONSE_CHARS_MAX
 
 
