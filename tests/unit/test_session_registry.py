@@ -343,3 +343,55 @@ class TestListSessions:
 
         data = json.loads(registry_path.read_text(encoding="utf-8"))
         assert "cli-1" not in data["sessions"]
+
+
+class TestIsSessionAlive:
+    """session_start_hookの打刻主生存確認（階層1表示判定）が使う関数の直接テスト。"""
+
+    def test_alive_entry_returns_true(self, world, registry_path):
+        world.add("bridge-a", pid=100, cli_session_id="cli-1")
+        srs.register_checkin(
+            bridge_session_id="bridge-a", activity_id=1, activity_title="Foo", activity_status="in_progress"
+        )
+        assert srs.is_session_alive("cli-1") is True
+
+    def test_missing_entry_returns_false(self, registry_path):
+        """別名ファイルにエントリが無い（判定不能）場合はFalse"""
+        assert srs.is_session_alive("cli-nope") is False
+
+    def test_none_session_id_returns_false(self, registry_path):
+        assert srs.is_session_alive(None) is False
+
+    def test_dead_pid_entry_returns_false(self, world, registry_path):
+        world.add("bridge-a", pid=100, cli_session_id="cli-1")
+        srs.register_checkin(
+            bridge_session_id="bridge-a", activity_id=1, activity_title="Foo", activity_status="in_progress"
+        )
+        world.kill(100)
+        assert srs.is_session_alive("cli-1") is False
+
+    def test_ttl_expired_entry_returns_false(self, world, registry_path):
+        world.add("bridge-a", pid=100, cli_session_id="cli-1")
+        srs.register_checkin(
+            bridge_session_id="bridge-a", activity_id=1, activity_title="Foo", activity_status="in_progress"
+        )
+        data = json.loads(registry_path.read_text(encoding="utf-8"))
+        data["sessions"]["cli-1"]["updated_at"] = "2000-01-01T00:00:00Z"
+        registry_path.write_text(json.dumps(data), encoding="utf-8")
+
+        assert srs.is_session_alive("cli-1") is False
+
+    def test_does_not_mutate_or_gc_file(self, world, registry_path):
+        """表示判定専用の読み取りヘルパーのため、生存確認自体はファイルを書き換えない"""
+        world.add("bridge-a", pid=100, cli_session_id="cli-1")
+        srs.register_checkin(
+            bridge_session_id="bridge-a", activity_id=1, activity_title="Foo", activity_status="in_progress"
+        )
+        world.kill(100)  # 死亡行が残っていてもGCしないことを確認する
+        before = registry_path.stat()
+
+        srs.is_session_alive("cli-1")
+
+        after = registry_path.stat()
+        assert after.st_ino == before.st_ino
+        assert after.st_mtime_ns == before.st_mtime_ns

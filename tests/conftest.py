@@ -48,6 +48,21 @@ def _isolate_relay_state_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_session_registry_files(tmp_path, monkeypatch):
+    """セッション別名レジストリ・CLIセッションファイルの参照先をテストごとに隔離する。
+
+    session_start_hookの打刻生存確認（session_registry_service.is_session_alive）が
+    無隔離だと実行環境の~/.cc-memory/session_aliases.jsonや~/.claude/sessionsを
+    読みにいき、テストがホストマシンの実セッション状態に依存し非決定的になる。
+    """
+    from src.services.session_registry_service import REGISTRY_PATH_ENV
+    from src.infra.cli_session import CLAUDE_SESSIONS_DIR_ENV
+
+    monkeypatch.setenv(REGISTRY_PATH_ENV, str(tmp_path / "session_aliases.json"))
+    monkeypatch.setenv(CLAUDE_SESSIONS_DIR_ENV, str(tmp_path / "claude-sessions"))
+
+
+@pytest.fixture(autouse=True)
 def _clear_ow_env(monkeypatch):
     """ow関連の環境変数をテストごとに除去する。
 

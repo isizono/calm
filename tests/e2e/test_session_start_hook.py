@@ -22,6 +22,8 @@ import pytest
 from hooks.ask_notify_section import _format_ask_line
 from src.db import get_connection
 from tests.helpers import (
+    register_alive_heartbeat_session,
+    register_dead_heartbeat_session,
     run_session_start_hook as _run_session_start_hook,
     run_session_start_hook_process as _run_session_start_hook_process,
 )
@@ -755,16 +757,8 @@ class TestSessionStartHookTier2AndFixedNav:
     def test_heartbeat_section_unaffected_by_tier3_4_removal(self, temp_db):
         """heartbeat (別セッション) セクションは階層3・4廃止の影響を受けない"""
         activity_id = _seed_activity("[作業] heartbeat作業", status="in_progress")
-        conn = get_connection()
-        try:
-            now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-            conn.execute(
-                "UPDATE activities SET last_heartbeat_at = ? WHERE id = ?",
-                (now_iso, activity_id),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        _set_heartbeat(activity_id, session_id="sess-hb-unaffected")
+        register_alive_heartbeat_session("sess-hb-unaffected")
 
         result = _run_session_start_hook(temp_db)
         context = result["hookSpecificOutput"]["additionalContext"]
@@ -839,6 +833,7 @@ class TestSessionStartHookSelfSessionHeartbeat:
         """stdin session_id と一致する heartbeat は「## 作業中（別セッション）」に出ない"""
         activity_id = _seed_activity("[作業] 自セッション中", status="in_progress")
         _set_heartbeat(activity_id, session_id="sess-self")
+        register_alive_heartbeat_session("sess-self")  # 自セッション判定単体で弾かれることを見る
 
         result = _run_session_start_hook(
             temp_db, stdin_payload={"session_id": "sess-self"}
@@ -857,9 +852,10 @@ class TestSessionStartHookSelfSessionHeartbeat:
             )
 
     def test_other_session_heartbeat_in_other_session_block(self, temp_db):
-        """別 session_id の heartbeat は引き続き「## 作業中（別セッション）」に出る"""
+        """別 session_id かつ打刻主が生存中の heartbeat は「## 作業中（別セッション）」に出る"""
         activity_id = _seed_activity("[作業] 別セッション中", status="in_progress")
         _set_heartbeat(activity_id, session_id="sess-other")
+        register_alive_heartbeat_session("sess-other")
 
         result = _run_session_start_hook(
             temp_db, stdin_payload={"session_id": "sess-self"}
@@ -872,8 +868,10 @@ class TestSessionStartHookSelfSessionHeartbeat:
             "他セッション heartbeat が「作業中（別セッション）」に出ていない"
         )
 
-    def test_null_session_id_falls_back_to_other_session(self, temp_db):
-        """last_heartbeat_session_id=NULL（カラム導入前データ）は従来通り別セッション扱い"""
+    def test_null_session_id_is_undeterminable_and_hidden(self, temp_db):
+        """last_heartbeat_session_id=NULL（カラム導入前データ）は生存確認不能として
+        別セッション扱いにしない（判定不能は死亡側に倒す）。activity自体は
+        in_progressなので階層2『優先』には残る"""
         activity_id = _seed_activity("[作業] 旧データ", status="in_progress")
         _set_heartbeat(activity_id, session_id=None)
 
@@ -882,14 +880,15 @@ class TestSessionStartHookSelfSessionHeartbeat:
         )
         context = result["hookSpecificOutput"]["additionalContext"]
 
-        assert "## 作業中（別セッション）" in context
-        heartbeat_idx = context.index("## 作業中（別セッション）")
-        assert f"(#{activity_id})" in context[heartbeat_idx:]
+        assert "## 作業中（別セッション）" not in context
+        assert f"(#{activity_id})" in context
 
     def test_no_stdin_session_id_keeps_other_session_block(self, temp_db):
-        """stdin に session_id が無い場合は照合不能 → 従来通り別セッション扱い"""
+        """stdin に session_id が無い場合は自セッション照合不能 → 生存中なら
+        従来通り別セッション扱い"""
         activity_id = _seed_activity("[作業] sid不明", status="in_progress")
         _set_heartbeat(activity_id, session_id="sess-anything")
+        register_alive_heartbeat_session("sess-anything")
 
         # 引数省略で stdin_payload=None → {}
         result = _run_session_start_hook(temp_db)
@@ -898,6 +897,34 @@ class TestSessionStartHookSelfSessionHeartbeat:
         assert "## 作業中（別セッション）" in context
         heartbeat_idx = context.index("## 作業中（別セッション）")
         assert f"(#{activity_id})" in context[heartbeat_idx:]
+
+    def test_dead_other_session_heartbeat_hidden(self, temp_db):
+        """別 session_id でも打刻主プロセスが死亡していれば別セッション扱いにしない"""
+        activity_id = _seed_activity("[作業] 死んだ別セッション", status="in_progress")
+        _set_heartbeat(activity_id, session_id="sess-dead")
+        register_dead_heartbeat_session("sess-dead")
+
+        result = _run_session_start_hook(
+            temp_db, stdin_payload={"session_id": "sess-self"}
+        )
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "## 作業中（別セッション）" not in context
+        assert f"(#{activity_id})" in context
+
+    def test_unregistered_other_session_heartbeat_hidden(self, temp_db):
+        """別名ファイルにエントリが無い session_id（判定不能）は別セッション扱いにしない"""
+        activity_id = _seed_activity("[作業] 未登録の別セッション", status="in_progress")
+        _set_heartbeat(activity_id, session_id="sess-unregistered")
+        # register_alive/dead のいずれも呼ばない = session_aliases.json にエントリが無い
+
+        result = _run_session_start_hook(
+            temp_db, stdin_payload={"session_id": "sess-self"}
+        )
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "## 作業中（別セッション）" not in context
+        assert f"(#{activity_id})" in context
 
 
 def _set_updated_at(activity_id: int, updated_at_iso: str) -> None:
@@ -976,6 +1003,7 @@ class TestSessionStartHookTier1And2:
         """階層 1（別セッション）→ 階層 2（優先）→ 末尾固定文・固定ナビの順で出る"""
         heartbeat_id = _seed_activity("[作業] heartbeat別", status="in_progress")
         _set_heartbeat(heartbeat_id, session_id="sess-other")
+        register_alive_heartbeat_session("sess-other")
 
         priority_id = _seed_activity("[作業] 優先タスク", status="in_progress")
 
@@ -1119,6 +1147,7 @@ class TestSessionStartHookTier1And2:
         """pinned かつ別セッション heartbeat の activity は階層 1 で 📌 付きで出る"""
         heartbeat_id = _seed_activity("[作業] pinned heartbeat", status="in_progress")
         _set_heartbeat(heartbeat_id, session_id="sess-other")
+        register_alive_heartbeat_session("sess-other")
         source_topic_id = _seed_topic("pin source topic")
         _add_pin_activity("topic", source_topic_id, heartbeat_id)
 
