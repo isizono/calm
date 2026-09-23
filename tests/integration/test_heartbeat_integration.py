@@ -15,6 +15,7 @@ from src.services.activity_service import (
 from src.services.pin_service import add_pin
 from hooks.session_start_hook import _build_activities_section
 from src.services.topic_service import add_topic
+from src.services import session_registry_service
 from tests.helpers import register_alive_heartbeat_session, register_dead_heartbeat_session
 import src.services.embedding_service as emb
 
@@ -327,3 +328,45 @@ class TestBuildActiveContextHeartbeat:
 
         assert "## 作業中（別セッション）" not in result
         assert "[作業] 未登録の別セッション" in result
+
+    def test_alive_check_called_once_per_shared_session_id(self, temp_db, monkeypatch):
+        """同じlast_heartbeat_session_idを持つ候補が複数あっても、生存確認は
+        session_idごとに1回しか呼ばれない（プロセス確認がサブプロセス起動を
+        伴いうるため、候補数に比例させない）"""
+        add_topic(title="Topic", description="Desc", tags=["domain:hb-shared"])
+        a1 = add_activity(
+            title="[作業] 共有セッション1", description="Desc", tags=["domain:hb-shared"], check_in=False,
+        )
+        a2 = add_activity(
+            title="[作業] 共有セッション2", description="Desc", tags=["domain:hb-shared"], check_in=False,
+        )
+        aid1 = a1["activity_id"]
+        aid2 = a2["activity_id"]
+        update_activity(aid1, status="in_progress")
+        update_activity(aid2, status="in_progress")
+
+        conn = get_connection()
+        conn.execute(
+            "UPDATE activities SET last_heartbeat_at = datetime('now'), "
+            "last_heartbeat_session_id = ? WHERE id IN (?, ?)",
+            ("sess-shared", aid1, aid2),
+        )
+        conn.commit()
+        conn.close()
+        register_alive_heartbeat_session("sess-shared")
+
+        calls: list[str | None] = []
+        original = session_registry_service.is_session_alive
+
+        def spy(cli_session_id):
+            calls.append(cli_session_id)
+            return original(cli_session_id)
+
+        monkeypatch.setattr(session_registry_service, "is_session_alive", spy)
+
+        result = _build_activities_section_wrapper()
+
+        assert calls == ["sess-shared"], "同一session_idの生存確認が複数回呼ばれている"
+        assert "## 作業中（別セッション）" in result
+        assert "[作業] 共有セッション1" in result
+        assert "[作業] 共有セッション2" in result

@@ -199,20 +199,33 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
 
     seen_ids: set[int] = set()
 
-    tier1: list[dict] = []
-    for a in all_active:
-        is_own_session = (
+    # is_session_aliveはプロセス確認でpsサブプロセスを起動しうるため、同じ
+    # last_heartbeat_session_idを持つ候補が複数あっても呼び出しは1回に抑える
+    # （自セッション・鮮度切れの行は判定不要なので候補集合にも入れない）。
+    tier1_candidates = [
+        a
+        for a in all_active
+        if a.get("is_heartbeat_active")
+        and not (
             session_id is not None
             and a.get("last_heartbeat_session_id") == session_id
         )
-        # 判定不能（別名ファイルにエントリが無い等）は生存確認関数側で
-        # 既に死亡側に倒しているため、ここでは単純にandで繋ぐだけでよい。
-        if (
-            a.get("is_heartbeat_active")
-            and not is_own_session
-            and session_registry_service.is_session_alive(a.get("last_heartbeat_session_id"))
-        ):
-            tier1.append(a)
+    ]
+    candidate_session_ids = {
+        sid
+        for a in tier1_candidates
+        if (sid := a.get("last_heartbeat_session_id"))
+    }
+    alive_by_session_id = {
+        sid: session_registry_service.is_session_alive(sid)
+        for sid in candidate_session_ids
+    }
+
+    tier1: list[dict] = [
+        a
+        for a in tier1_candidates
+        if alive_by_session_id.get(a.get("last_heartbeat_session_id"), False)
+    ]
     for a in tier1:
         seen_ids.add(a["id"])
 
