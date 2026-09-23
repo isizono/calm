@@ -112,7 +112,7 @@ class TestRegister:
         assert row["cli_session_id"] is None
         assert row["cli_pid"] is None
         assert row["cwd"] is None
-        assert row["cli_resolve_status"] == "file_not_found"
+        assert row["cli_resolve_status"] == "not_found"
 
     def test_heartbeat_resend_updates_same_row_without_duplicate(self, temp_db, monkeypatch):
         """同一session_idの再登録(heartbeat)は新規行を作らずUPDATEする。"""
@@ -160,6 +160,27 @@ class TestRegister:
         assert old["ended_reason"] == "superseded"
         assert new["ended_at"] is None
         assert new["cli_session_id"] == "cli-1"
+
+    def test_different_harness_with_same_cli_session_id_does_not_supersede(self, temp_db, monkeypatch):
+        """harnessが異なれば同じcli_session_idでも世代交代とみなさず、両方生存する。
+
+        会話識別子の番号体系はharnessごとに異なるため、別harnessの行が偶然
+        同じcli_session_id値を持っても、同一会話の新世代とはみなさない。
+        """
+        monkeypatch.setattr(
+            session_ledger_service, "resolve_cli_session",
+            lambda sid: {"cli_session_id": "cli-1", "cli_pid": 111, "cwd": "/tmp"},
+        )
+        session_ledger_service.register(
+            "s1", id_kind="bridge", harness="claude_code", host="host-a", mode="interactive",
+        )
+        session_ledger_service.register(
+            "s2", id_kind="bridge", harness="codex", host="host-a", mode="interactive",
+        )
+        row1 = _fetch_row("s1")
+        row2 = _fetch_row("s2")
+        assert row1["ended_at"] is None
+        assert row2["ended_at"] is None
 
     def test_ended_row_is_not_revived_by_late_heartbeat(self, temp_db, monkeypatch):
         """supersededで閉じた旧行に遅延heartbeatが届いても復活させない。"""

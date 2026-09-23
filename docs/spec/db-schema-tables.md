@@ -1291,7 +1291,7 @@ CREATE TABLE search_telemetry (
 | ended_reason | TEXT | YES | — | — |
 
 インデックス:
-- `idx_sessions_cli_live` UNIQUE ON `sessions`(cli_session_id)
+- `idx_sessions_cli_live` UNIQUE ON `sessions`(harness, cli_session_id)
 - `idx_sessions_live` ON `sessions`(last_heartbeat_at)
 
 <details><summary>CREATE文（生成元migration）</summary>
@@ -1303,7 +1303,7 @@ CREATE TABLE sessions (
   harness TEXT, host TEXT, cwd TEXT,       -- 起動器の申告。hostは到達判定、cwdは診断
   cli_session_id TEXT, cli_pid INTEGER,    -- 会話識別子。解決関数が充填する
   cli_resolve_status TEXT CHECK (cli_resolve_status IS NULL
-    OR cli_resolve_status IN ('resolved','header_missing','file_not_found','stale')),
+    OR cli_resolve_status IN ('resolved','header_missing','not_found','stale')),
   mode TEXT NOT NULL DEFAULT 'interactive' CHECK (mode IN ('interactive','headless')),
   last_heartbeat_at TIMESTAMP,             -- 起動器の心拍(60秒)
   last_tool_call_at TIMESTAMP,             -- 全ツール呼び出しの touch(60秒スロットル)

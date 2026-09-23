@@ -22,10 +22,13 @@ def register(
 ) -> None:
     """起動器プロセスをセッション台帳へ登録する(heartbeat再送も同じ経路を通る)。
 
-    同一 cli_session_id を持つ終了していない別行があれば、新しい行を立てる前に
-    ended_reason='superseded' で閉じる(世代交代)。閉じる処理とupsertは同一
-    トランザクションで行う。順序を誤ると部分一意索引(idx_sessions_cli_live)
-    違反になる。
+    同一harness・同一cli_session_idを持つ終了していない別行があれば、新しい
+    行を立てる前にended_reason='superseded'で閉じる(世代交代)。閉じる処理と
+    upsertは同一トランザクションで行う。順序を誤ると部分一意索引
+    (idx_sessions_cli_live、(harness, cli_session_id)の複合)違反になる。
+    一意性をharnessでも区切るのは、会話識別子の番号体系がharnessごとに
+    異なり、異なるharness間で同じcli_session_id値が偶然一致しても別の会話
+    として扱う必要があるため。
 
     既にended済みの行はupsertで復活させない(`ON CONFLICT DO UPDATE ... WHERE
     ended_at IS NULL` によりno-op)。復活を許すと、supersededで閉じた旧世代の
@@ -85,18 +88,21 @@ def register(
             cli_session_id = None
             cli_pid = None
             cwd = None
-            cli_resolve_status = "file_not_found"
+            cli_resolve_status = "not_found"
 
         if cli_session_id is not None and not already_ended:
-            # 世代交代: 新しい行を立てる前に、同じ会話識別子を持つ終了していない
-            # 別行を閉じる。この順序を逆にすると部分一意索引違反になる。
+            # 世代交代: 新しい行を立てる前に、同じharness・同じ会話識別子を
+            # 持つ終了していない別行を閉じる。この順序を逆にすると部分一意
+            # 索引違反になる。harnessも条件に含めるのは、索引が
+            # (harness, cli_session_id)の複合になったため(harness IS ?は
+            # NULL同士を一致させるSQLの標準的な比較方法)。
             conn.execute(
                 """
                 UPDATE sessions
                 SET ended_at = CURRENT_TIMESTAMP, ended_reason = 'superseded'
-                WHERE cli_session_id = ? AND session_id != ? AND ended_at IS NULL
+                WHERE cli_session_id = ? AND harness IS ? AND session_id != ? AND ended_at IS NULL
                 """,
-                (cli_session_id, session_id),
+                (cli_session_id, harness, session_id),
             )
 
         conn.execute(

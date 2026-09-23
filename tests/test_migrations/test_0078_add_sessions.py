@@ -159,17 +159,56 @@ class TestSessionsTable:
             conn.close()
         assert count == 2
 
-    def test_two_live_rows_with_same_cli_session_id_rejected(self, migrated_db):
-        """終了していない行同士でcli_session_idが重複するとpartial unique indexで拒否される。"""
+    def test_two_live_rows_with_same_harness_and_cli_session_id_rejected(self, migrated_db):
+        """終了していない行同士で同じharness・cli_session_idが重複するとpartial unique indexで拒否される。"""
         conn = get_connection()
         try:
-            _insert_minimal(conn, "s1", cli_session_id="cli-1")
+            _insert_minimal(conn, "s1", harness="claude_code", cli_session_id="cli-1")
             conn.commit()
             with pytest.raises(sqlite3.IntegrityError):
-                _insert_minimal(conn, "s2", cli_session_id="cli-1")
+                _insert_minimal(conn, "s2", harness="claude_code", cli_session_id="cli-1")
         finally:
             conn.rollback()
             conn.close()
+
+    def test_two_live_rows_with_different_harness_and_same_cli_session_id_coexist(self, migrated_db):
+        """harnessが異なれば、cli_session_idが同じ値でも一意制約に抵触しない。
+
+        会話識別子の番号体系はharnessごとに異なるため、異なるharness間で同じ
+        cli_session_id値が偶然一致しても別の会話として扱う。索引が
+        (harness, cli_session_id)の複合になっている理由そのものの検証。
+        """
+        conn = get_connection()
+        try:
+            _insert_minimal(conn, "s1", harness="claude_code", cli_session_id="cli-1")
+            _insert_minimal(conn, "s2", harness="codex", cli_session_id="cli-1")
+            conn.commit()
+            count = conn.execute(
+                "SELECT COUNT(*) FROM sessions WHERE cli_session_id = 'cli-1' AND ended_at IS NULL"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        assert count == 2
+
+    def test_two_live_rows_with_null_harness_and_same_cli_session_id_coexist(self, migrated_db):
+        """harnessがNULLの行同士は、cli_session_idが同じでも一意制約に抵触しない。
+
+        SQLiteのUNIQUE制約はNULL同士を区別する(等しいとみなさない)ため、既存の
+        「会話識別子NULLの行は複数存在してよい」という挙動と同じ理屈で、
+        harnessがNULLの行同士も複数存在できる(harness列を複合索引に加える前の
+        挙動を維持する)。
+        """
+        conn = get_connection()
+        try:
+            _insert_minimal(conn, "s1", cli_session_id="cli-1")
+            _insert_minimal(conn, "s2", cli_session_id="cli-1")
+            conn.commit()
+            count = conn.execute(
+                "SELECT COUNT(*) FROM sessions WHERE cli_session_id = 'cli-1' AND ended_at IS NULL"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        assert count == 2
 
     def test_generational_handover_requires_closing_old_row_first(self, migrated_db):
         """世代交代: 古い行をended化してから新しい行を挿入する順序を守れば成功する。
@@ -180,12 +219,12 @@ class TestSessionsTable:
         """
         conn = get_connection()
         try:
-            _insert_minimal(conn, "s1", cli_session_id="cli-1")
+            _insert_minimal(conn, "s1", harness="claude_code", cli_session_id="cli-1")
             conn.commit()
 
             # 誤った順序(先にINSERT)は一意索引違反になる
             with pytest.raises(sqlite3.IntegrityError):
-                _insert_minimal(conn, "s2", cli_session_id="cli-1")
+                _insert_minimal(conn, "s2", harness="claude_code", cli_session_id="cli-1")
             conn.rollback()
 
             # 正しい順序: 先に旧行をended化してから新行を挿入する
@@ -193,7 +232,7 @@ class TestSessionsTable:
                 "UPDATE sessions SET ended_at = '2026-01-01T00:00:00Z', "
                 "ended_reason = 'superseded' WHERE session_id = 's1'"
             )
-            _insert_minimal(conn, "s2", cli_session_id="cli-1")
+            _insert_minimal(conn, "s2", harness="claude_code", cli_session_id="cli-1")
             conn.commit()
 
             live = conn.execute(
@@ -212,10 +251,10 @@ class TestSessionsTable:
         conn = get_connection()
         try:
             _insert_minimal(
-                conn, "s1", cli_session_id="cli-1",
+                conn, "s1", harness="claude_code", cli_session_id="cli-1",
                 ended_at="2026-01-01T00:00:00Z", ended_reason="superseded",
             )
-            _insert_minimal(conn, "s2", cli_session_id="cli-1")
+            _insert_minimal(conn, "s2", harness="claude_code", cli_session_id="cli-1")
             conn.commit()
             count = conn.execute(
                 "SELECT COUNT(*) FROM sessions WHERE cli_session_id = 'cli-1'"

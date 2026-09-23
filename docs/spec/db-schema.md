@@ -596,8 +596,8 @@ activityとgoalの紐づけ、または不要印（このactivityには終了条
 
 補足:
 - 行は削除しない。unregister・TTL失効(心拍300秒途絶)・世代交代(起動器プロセス再起動)のいずれも`ended_at`/`ended_reason`を立てるだけで残す。`CHECK ((ended_at IS NULL) = (ended_reason IS NULL))`により片方だけの状態は作れない
-- `cli_session_id`の一意性は「NULLでなく、かつ終了していない」行に限定した部分一意索引(`idx_sessions_cli_live`)で担保する。会話識別子が解決できない行は複数存在してよい
-- 世代交代(同じ`cli_session_id`を持つ新しい`session_id`の登録)は、新しい行を立てる前に旧行を`ended_reason='superseded'`で閉じ、閉じる処理と新行の挿入を同一トランザクションで行うことで部分一意索引違反を避ける。この順序はDB制約ではなくサービス層(`session_ledger_service.register`)が保証する
+- `(harness, cli_session_id)`の一意性は「`cli_session_id`がNULLでなく、かつ終了していない」行に限定した部分一意索引(`idx_sessions_cli_live`)で担保する。会話識別子が解決できない行、およびharnessが異なる行同士は複数存在してよい。一意性をharnessでも区切るのは、会話識別子の番号体系がharnessごとに異なり、異なるharness間で同じ`cli_session_id`値が偶然一致しても別の会話として扱う必要があるため
+- 世代交代(同じharness・同じ`cli_session_id`を持つ新しい`session_id`の登録)は、新しい行を立てる前に旧行を`ended_reason='superseded'`で閉じ、閉じる処理と新行の挿入を同一トランザクションで行うことで部分一意索引違反を避ける。この順序はDB制約ではなくサービス層(`session_ledger_service.register`)が保証する
 - 既にended済みの行はheartbeat再送等で復活させない(`ON CONFLICT DO UPDATE ... WHERE ended_at IS NULL`によりno-opにする)。復活を許すと、supersededで閉じた旧世代の行に遅延したheartbeatが届いた際、新世代の生存行と`cli_session_id`が重複して部分一意索引違反になるため
 - `id_kind`は起動器の識別子が取れたか(`bridge`)/取れず揮発識別子で代替したか(`ephemeral`)の2値。現在の書き込み経路(`/session/register`)は起動器が自身のUUIDを送る前提のため常に`bridge`になる
 - `mode`列は無人実行かどうかを表す想定だが、判定条件を持つ既存コードが無いため現状は常に`interactive`を書き込む
