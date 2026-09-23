@@ -70,7 +70,7 @@ description: 【必須】ユーザーとの合意が成立したとき、また�
 
 `add_decisions` で記録した内容が、手元のgoalブロックの未終端の条件を満たすなら、続けて `update_goal` を呼ぶ。`changes` に `{"op": "set", "id": <条件id>, "state": "satisfied", "note": "..."}` を積み、同じ `changes` に `{"op": "edit", "id": <条件id>, "bound": {"type": "decision", "id": <この決定のid>}}` を並べて束縛する。
 
-`update_goal` の応答の `goal.label` が `judge_ready`（全条件が終端し判定待ち）になったら、そのまま持ち越さずその場で判定する。`goal.open_questions` に未決があれば畳むか1ターン聞き、そのうえで `goal.terminal` の充足が1件以上あれば `judge_goal(goal_id, verdict="achieved", note=...)`、0件なら `judge_goal(goal_id, verdict="failed", note=理由)` を呼ぶ。人間の判断は待たない。
+`update_goal` の応答の `goal.label` が `judge_ready`（全条件が終端し判定待ち）になったら、そのまま持ち越さずその場で判定する。`goal.open_questions` に未決があれば畳むか1ターン聞き、そのうえで `goal.terminal` の充足が1件以上あれば `judge_goal(goal_id, verdict="achieved", note=...)`、0件なら `judge_goal(goal_id, verdict="failed", note=理由)` を呼ぶ。人間の判断は待たず、判定したことの報告もしない。
 
 この判定の分岐（`open_questions`の扱いから`judge_goal`の呼び分けまで）は[check-in](../check-in/SKILL.md)の「goalフィールドの扱い」節を正本とする。判定条件が変わる場合はそちらを確認する。
 
