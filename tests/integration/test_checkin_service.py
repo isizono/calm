@@ -222,12 +222,16 @@ class TestCheckInFlowGuide:
         assert "error" not in result
         assert "flow_guide" in result
 
-    def test_flow_guide_present_on_first_call_without_session_id(self, activity_id):
-        """session_id未指定（既定キー扱い）でも初回はflow_guideが含まれる"""
-        result = check_in(activity_id)
+    def test_flow_guide_present_every_call_without_session_id(self, activity_id):
+        """session_id未解決（None）では記録を読み書きしないため、
+        何度呼んでも毎回flow_guideが含まれる（旧「__default__」共有キーは廃止）。"""
+        result1 = check_in(activity_id)
+        result2 = check_in(activity_id)
 
-        assert "error" not in result
-        assert "flow_guide" in result
+        assert "error" not in result1
+        assert "flow_guide" in result1
+        assert "error" not in result2
+        assert "flow_guide" in result2
 
 
 class TestCheckInTagNotes:
@@ -299,7 +303,7 @@ class TestCheckInTagNotes:
         assert len(intent_notes2) == 1
 
     def test_non_intent_tag_notes_injected_once(self, temp_db):
-        """intent:以外のタグのnotesはセッション初回のみ注入される"""
+        """intent:以外のタグのnotesは同一session_idでの初回のみ注入される"""
         conn = get_connection()
         try:
             conn.execute(
@@ -319,16 +323,42 @@ class TestCheckInTagNotes:
         aid = activity["activity_id"]
 
         # 1回目: 注入される
-        result1 = check_in(aid)
+        result1 = check_in(aid, session_id="sess-1")
         assert "error" not in result1
         domain_notes1 = [n for n in result1["tag_notes"] if n["tag"] == "domain:once"]
         assert len(domain_notes1) == 1
 
-        # 2回目: domain: は通常タグなので注入されない
-        result2 = check_in(aid)
+        # 2回目（同じsession_id）: domain: は通常タグなので注入されない
+        result2 = check_in(aid, session_id="sess-1")
         assert "error" not in result2
         domain_notes2 = [n for n in result2["tag_notes"] if n["tag"] == "domain:once"]
         assert len(domain_notes2) == 0
+
+    def test_no_session_id_never_dedups_tag_notes(self, temp_db):
+        """session_id未解決（None）ではcheck_inのたび毎回notesが注入される
+        （旧「__default__」共有キーは廃止。識別子が無いときは記録しない）。"""
+        conn = get_connection()
+        try:
+            conn.execute(
+                "INSERT INTO tags (namespace, name, notes) VALUES (?, ?, ?)",
+                ("domain", "unresolved", "識別子不明時の教訓"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        activity = add_activity(
+            title="Unresolved session task",
+            description="Desc",
+            tags=["domain:unresolved"],
+            check_in=False,
+        )
+        aid = activity["activity_id"]
+
+        result1 = check_in(aid, session_id=None)
+        result2 = check_in(aid, session_id=None)
+        assert [n for n in result1["tag_notes"] if n["tag"] == "domain:unresolved"]
+        assert [n for n in result2["tag_notes"] if n["tag"] == "domain:unresolved"]
 
 
 
