@@ -46,7 +46,7 @@ graph TB
     end
 
     subgraph Coord["協調層 / 指揮系統"]
-        RelayV2["(v1撤去済み、後継はrelay v2 4動詞tool。<br/>詳細はsrc/services/relay/参照)"]
+        RelayV2["(v1・relay v2 4動詞toolともCALM本体から撤去済み。<br/>現在CALM内に協調層コンポーネントは無い)"]
     end
 
     subgraph Infra["横断インフラ"]
@@ -219,7 +219,7 @@ PreToolUse は `hooks/hooks.json` に全ツール対象（`*` matcher）の preb
 
 ## 5. 協調層 — セッション間メッセージング
 
-v1通信系（`ow_service` / `src/relay/`のvendoringされたSSE+SQLite中継サーバー / `scripts/ow/`のrecv系スクリプト）は撤去済みである。後継は relay v2 4動詞tool（`relay_post` / `relay_publish` / `relay_subscribe` / `relay_receive`、実体は `src/services/relay/` + 依存パッケージ `relay_sdk`）だが、本ドキュメントはまだそちらの構成に追従できていない。詳細は該当ディレクトリのコードを参照のこと。
+v1通信系（`ow_service` / `src/relay/`のvendoringされたSSE+SQLite中継サーバー / `scripts/ow/`のrecv系スクリプト）は撤去済みである。後継のrelay v2 4動詞tool（`relay_post` / `relay_publish` / `relay_subscribe` / `relay_receive`）もCALM本体から撤去済みで、`src/services/relay/`ディレクトリごと削除されている。relayサーバー自体は別リポジトリ（isizono/relay）で存続するが、CALM本体としては現在この層に相当するコンポーネントを持たない。呼び出し元セッションの識別子解決（旧relay identity）のみ`src/infra/session_identity.py`へ移設し、ask/セッション別名機能から汎用インフラとして継続利用している。
 
 ---
 

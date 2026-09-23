@@ -13,6 +13,10 @@ DB_PATH: str | None = env_get("CALM_DB_PATH") or os.environ.get("DISCUSSION_DB_P
 HEARTBEAT_TIMEOUT_MINUTES: int = int(env_get("CALM_HEARTBEAT_TIMEOUT", "20"))
 SNOOZE_DURATION_DAYS: int = int(env_get("CALM_SNOOZE_DURATION_DAYS", "3"))
 
+# --- Goal ---
+# 担い手human/externalのopen条件で、この時間その行への書き込みが無ければrecheckフラグを立てる
+GOAL_RECHECK_HOURS: int = int(env_get("CALM_GOAL_RECHECK_HOURS", "6"))
+
 # --- Active Context 表示 ---
 IN_PROGRESS_LIMIT: int = int(env_get("CALM_IN_PROGRESS_LIMIT", "3"))
 PENDING_LIMIT: int = int(env_get("CALM_PENDING_LIMIT", "2"))
@@ -77,12 +81,6 @@ CALM_MIGRATION_DRYRUN: bool = env_get("CALM_MIGRATION_DRYRUN", "1") != "0"
 # migration_ledger内容ハッシュ不一致時の既定動作。"error"（既定、起動中断）| "warn"（警告のみで続行）
 CALM_MIGRATION_HASH_ENFORCE: str = env_get("CALM_MIGRATION_HASH_ENFORCE", "error").lower()
 
-# --- Relay session awareness ---
-# relay Monitor監視指示のopt-in kill switch。デフォルトOFF（"1"でON）。
-# OFF時はSessionStartからrelay関連の文言を一切出さず、relayを使わない
-# ユーザー・セッションにコンテキストを注入しない。
-RELAY_SESSION_AWARE_ENABLED: bool = env_get("CALM_RELAY_SESSION_AWARE", "0") == "1"
-
 # --- Archived tags ---
 # 全タグがarchivedのアイテムに適用する final_score の降格係数
 ARCHIVED_DEMOTION_FACTOR: float = float(env_get("CALM_ARCHIVED_DEMOTION_FACTOR", "0.3"))
@@ -95,10 +93,9 @@ INJECTION_BUDGET_SYNC_POLICY_CHARS: int = int(env_get("CALM_INJECTION_BUDGET_SYN
 INJECTION_BUDGET_SIGNALS_CHARS: int = int(env_get("CALM_INJECTION_BUDGET_SIGNALS", "500"))
 INJECTION_BUDGET_OPEN_ASKS_CHARS: int = int(env_get("CALM_INJECTION_BUDGET_OPEN_ASKS", "1200"))
 INJECTION_BUDGET_ASK_NOTIFY_CHARS: int = int(env_get("CALM_INJECTION_BUDGET_ASK_NOTIFY", "600"))
-INJECTION_BUDGET_RELAY_INBOX_CHARS: int = int(env_get("CALM_INJECTION_BUDGET_RELAY_INBOX", "500"))
 INJECTION_BUDGET_TRANSCRIPT_PATH_CHARS: int = int(env_get("CALM_INJECTION_BUDGET_TRANSCRIPT_PATH", "200"))
-# Σ上のINJECTION_BUDGET_*と一致させる（CIゼロサムテストで検証）。実装者が
-# セクションを追加・調整する際は必ずこの合計も合わせて見直すこと。
+# Σ上のINJECTION_BUDGET_*を超えない値にする（CIゼロサムテストで検証）。実装者が
+# セクションを追加・調整する際は必ずこの上限も合わせて見直すこと。
 TOTAL_INJECTION_BUDGET_CHARS: int = int(env_get("CALM_TOTAL_INJECTION_BUDGET_CHARS", "12000"))
 
 # --- Precedent pull ---

@@ -12,7 +12,7 @@ description: タグのnotesを確認・更新する。「/tag-notes」「タグ�
 1. 引数でタグ名と内容が指定されていればそのまま使う
 2. 指定されていなければユーザーに対象のタグと内容を確認する
 3. `search_tags` で対象タグを検索し、現在の notes を取得する（対象タグ名をqueryに、include_notes=Trueで呼ぶ）
-4. 既存の notes がある場合はその内容を保持しつつ、新しい内容をマージしたドラフトを作成する
+4. 追加する内容の種別を判定する。tag notesに全文で書けるのは行動を変える教訓・落とし穴と、そのタグ固有の環境知識のみ。仕様スナップショット・運用手順・歴史記録は1行ポインタ（正典はコード/docs/decision/資材）に留め、状態・進行ジャーナル（「YYYY-MM-DD時点で〜中」等）は書かない（詳細な種別基準は`demote_tag_notes`のdocstring参照）。既存の notes がある場合はその内容を保持しつつ、判定を経た新しい内容をマージしたドラフトを作成する。ドラフトが天井(4,000字)を超える場合は、書き込み前に `demote_tag_notes` で既存セクションを資材へ退避してから追記する（既存が天井未満でも、増加更新で天井を超える書き込みは拒否されるため）
 
    recompose/direction/activity-cleanup/notes容量系のhint抑制マーカー（`#recompose-skipped`,
    `#recompose-bootstrap-skipped`, `#recompose-delta-skipped`, `#logs-sparse-ack`,
@@ -28,7 +28,10 @@ description: タグのnotesを確認・更新する。「/tag-notes」「タグ�
      超過中は長さが増加する書き込みそのものが拒否される（ラチェット則）ため、この
      手順4〜6のような単純な追記では書き込めない（追記するには既存内容を削り、
      全体として長さが減る書き込みと同時に行う必要がある）。根本対応として
-     `demote_tag_notes`で該当セクションを資材へ退避しnotesを縮めることを優先する
+     `demote_tag_notes(tag=..., sections=["見出しテキスト", ...])`で該当セクション
+     （notes中の`## `見出しで指定、前文は退避不可）を資材へ退避しnotesを縮めることを
+     優先する。終了条件は返り値の`notes_length.over_budget`が`false`になったことで
+     判定する（demoteの実行回数では判定しない）
 5. ドラフトをユーザーに提示し、確認を得る
 6. `update_tag(tag=..., notes=...)` で書き込む（上書き方式のため全文を指定する）
 

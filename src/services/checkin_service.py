@@ -4,10 +4,11 @@ import sqlite3
 import threading
 
 from src.db import get_connection, row_to_dict
-from src.services import activity_service, ask_service, hint_service
+from src.services import activity_service, ask_service, goal_service, hint_service
 from src.services.readable_id import strip_entity_id_inplace
 from src.services.material_service import get_materials_by_relation_with_conn
 from src.services.relation_service import _get_map_with_conn
+from src.services.signal_service import record_signal
 from src.services.supersede_service import compute_destabilization_info_batch
 from src.services.tag_service import (
     collect_tag_notes_for_injection,
@@ -503,7 +504,7 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
     セッション別名レジストリ（result["session"]）:
     - 呼び出し元のClaude Code CLIプロセスを解決できた場合、
       {"name": str, "alias": str, "alias_collision": bool} を含める。
-      解決できない場合（非CLIクライアント、relay未構成環境の初回起動直後等）は
+      解決できない場合（非CLIクライアント、launcher登録が間に合っていない初回起動直後等）は
       {"registered": False, "reason": "cli_unresolved"} を返す。
       このレジストリ更新はベストエフォートであり、失敗してもcheck_in本体は
       成功応答を返す。
@@ -512,9 +513,12 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
         activity_id: アクティビティID
 
     Returns:
-        check-in結果（coverage, activity, related_topics, related_activities, pinned,
-        tag_notes, materials, recent_decisions, logs, catalog, summary, session。
-        セッション内初回呼び出し時のみflow_guideも含む）
+        check-in結果（coverage, activity, goal, related_topics, related_activities,
+        pinned, tag_notes, materials, recent_decisions, logs, catalog, summary,
+        session。セッション内初回呼び出し時のみflow_guideも含む）。goalはactivityの
+        直後に置かれ、goal_serviceが導出するgoalブロック（未定義/不要印/goal付きの
+        いずれか。goal付きならlabel・次の一手を含む）。組み立てで例外が出た場合は
+        {"error": {"code": "DATABASE_ERROR", ...}}になり、check_inの他のキーは失われない
     """
     if session_id is None:
         try:
@@ -639,6 +643,31 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
             "activity": activity_block,
         }
 
+        # goalブロックの組み立ては本体と別のtryで囲む。例外が出てもcheck_inの
+        # 他のキーは失わず、goalキーにエラーの形を置くだけにする（check_inの
+        # 接続がコミット保留中のことがあるため、別接続を開くcapture_signal_safeは
+        # 使わずrecord_signalにこの接続を渡す）。
+        try:
+            result["goal"] = goal_service.build_goal_block_for_activity(conn, activity_id)
+        except Exception as e:
+            result["goal"] = {
+                "error": {
+                    "code": "DATABASE_ERROR",
+                    "message": "goal ブロックを組み立てられなかった",
+                }
+            }
+            try:
+                record_signal(
+                    "machine_error",
+                    f"check_inでgoalブロック組み立てに失敗: activity {activity_id}",
+                    source="tool:check_in",
+                    detail=str(e),
+                    session_id=session_id,
+                    conn=conn,
+                )
+            except Exception:
+                logger.debug("failed to record machine_error signal for goal block", exc_info=True)
+
         if related_topics:
             if len(related_topics) == 1:
                 result["topic"] = related_topics[0]
@@ -674,10 +703,10 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
         # 呼び出し元がClaude Code CLI経由でないなどCLIが解決できない場合や、
         # 内部で予期せぬ例外が起きた場合もcheck_in本体を失敗させない。
         try:
-            from src.services.relay.identity import get_relay_identity
+            from src.infra.session_identity import get_caller_session_id
             from src.services import session_registry_service
 
-            bridge_id = get_relay_identity()
+            bridge_id = get_caller_session_id()
             reg = (
                 session_registry_service.register_checkin(
                     bridge_session_id=bridge_id,

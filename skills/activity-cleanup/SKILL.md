@@ -72,20 +72,28 @@ snoozedの実態確認も同様に`check_in`を避けるが、`get_activities`�
 
 一方、descriptionの更新(再開条件の訂正・誤字修正など)は`update_activity`で行ってよい。shelved中にstatus以外のフィールド(title/description/tags)を更新しても自動復活は起きない(自動復活が起きるのはsnoozedにstatusを指定せず更新した場合のみで、shelvedには適用されない既存仕様)。
 
+**goal付きactivityの確認:** 各activityについて`get_goal(activity_id=...)`を呼び、`label`を確認する(`get_goal`は`check_in`と違いactivityのstatusを変えない読み取り専用なので、active/shelved/snoozedいずれでも使ってよい)。`label`が`judge_ready`(判定待ち)なら[手順3](#3-処遇判定)でjudge_goalによる判定に回す。`active`(openの条件が残る)なら、他の実態確認の結果に関わらず[手順3](#3-処遇判定)の`active`向け分岐(その場で確認、または一括提示までバッファ)に回し、`completed`・`relation+completedで統合`はこの場では選ばない(goal付きactivityをcompleted・重複統合の閉じる側にする判断は、judge_goalを経ずには下さない)。`undefined`・`not_needed`ならgoalに関する追加の考慮は要らない。
+
 ### 3. 処遇判定
 
 実態確認の結果を踏まえ、以下6つの語彙のいずれかに処遇を決める。新しい状態カラムや新しい処遇語彙を追加しない。
 
 | 語彙 | 内容 |
 |---|---|
-| completed | 実態が完了していることを機械確認できたもの。`update_activity(status="completed")` |
+| completed | 実態が完了していることを機械確認できたもの。`update_activity(status="completed", closed_by="user")` |
 | shelved + 再開条件 | 上流待ちなど、いま進める意味がなく再開条件が明確に書けるもの。`update_activity(status="shelved", description=<再開条件を明記>)` |
 | description訂正 | 状態は現状のままで正しいが、description・タイトルが実態と食い違っている(誤字含む)もの。`update_activity(description=...)` などで訂正のみ行う |
-| relation+completedで統合 | 同じ目的の重複activityが複数あるもの。情報量が多い方を残し、`add_relation(relation_type="related")`で残す側と紐づけたうえで、重複側を`update_activity(status="completed")` |
+| relation+completedで統合 | 同じ目的の重複activityが複数あるもの。情報量が多い方を残し、`add_relation(relation_type="related")`で残す側と紐づけたうえで、重複側を`update_activity(status="completed", closed_by="user")` |
 | askで裁定待ち | 実態確認・ユーザーへのその場確認を経てもなお、その場では処遇を決め切れないもの(第三者の判断待ち・将来の外部イベント待ちなど)。`add_ask`で正式に裁定待ちとして記録する |
 | 進行・着手待ちは現状維持 | in_progress/pendingのまま、実態上も特に処遇変更が要らないもの。何もしない |
 
 「askで裁定待ち」は[自律度ルール](#自律度ルール)の🔴とは別物である。🔴はエージェント自身が処遇を分類しきれない場合に使う確認の仕組みであり、その場でユーザーに確認して解消する。確認した結果、ユーザー本人もいまその場では判断できないと分かった場合にのみ、この処遇語彙としての「askで裁定待ち」を使う。
+
+**goal付きactivityの処遇:** 以下の`goal_id`はgoal_id_raw（`get_goal`の応答が持つ）を指す。[手順2](#2-実態確認)で`label`が`judge_ready`だったactivityは、completed化を`update_activity`ではなくgoal機構で行う。`get_goal`の応答には`open_questions`が載らないため、未決の確認には`update_goal(goal_id, changes=[])`を呼び直す(条件を1件も書き換えない読み出し専用の呼び出しで、activityのstatusも変えない)。その応答の`goal.open_questions`に未決があれば畳むか1ターン聞いたうえで、`goal.terminal`の充足が1件以上あれば`judge_goal(goal_id, verdict="achieved")`、0件なら`judge_goal(goal_id, verdict="failed", note=理由)`で閉じる。`judged_by`は、ユーザーがその場でgoalの完了を明言したときだけ`"human"`、それ以外は`"session"`。
+
+`label`が`active`のactivity(openの条件が残る)は、上の6語彙のうち`completed`・`relation+completedで統合`をこの場では選ばず、まず🔴と同じ「その場で確認、または一括提示までバッファ」に回す。提示する選択肢は[activity-finish](../activity-finish/SKILL.md)のopen分岐と同じ3つ(残りの条件を理由付きでwaivedにしてから`judge_goal(goal_id, verdict="achieved", judged_by="human")`／`judge_goal(goal_id, verdict="failed", note=理由, judged_by="human")`で閉じる／未完了の兄弟activityが残るならこのactivityだけ`update_activity(status="completed", closed_by="user")`)。確認してもユーザーがその場では決め切れないと分かった場合にだけ、正式に`askで裁定待ち`に回す。
+
+重複統合(`relation+completedで統合`)では、閉じる側にgoalの紐づけがあり残す側に無ければ、残す側を`set_goal(activity_id=<残す側のid>, goal={"goal_id": <閉じる側のgoal_id_raw>})`で同じgoalに紐づけてから閉じる側を閉じる。両方が別のgoalに紐づく場合は統合せず`askで裁定待ち`に回す。
 
 ### 4. 反映
 
@@ -110,13 +118,17 @@ snoozedの実態確認も同様に`check_in`を避けるが、`get_activities`�
 
 マーカー文字列自体はCALM側の実装(hint_service相当)の定数と一致させる必要があり、値はコード側の定義が正となる。
 
+### 6. 運用計測の確認
+
+棚卸しの最後に`uv run python scripts/ops_metrics.py`を実行する。出力の`goal放置件数`(判定待ちのまま紐づくactivityが全部completedになっているgoalの件数)が0件でなければ、その件数をユーザーに一言報告する。goal機構の3表(goals/goal_conditions/goal_activities)が無いDBでは出力にgoalの行自体が現れないので、その場合はこの手順を無視してよい。
+
 ## 自律度ルール
 
 recompose-context skillの自律度ルールをそのまま流用し、対象語彙をactivity-cleanupの処遇語彙に翻訳したもの。
 
 | ゾーン | activity-cleanupでの処遇 |
 |---|---|
-| 🟢 自律 | description訂正(誤字・状態食い違いの修正) / PRマージ機械確認が取れたcompleted化 / 進行・着手待ちのまま現状維持 |
+| 🟢 自律 | description訂正(誤字・状態食い違いの修正) / PRマージ機械確認が取れたcompleted化 / 進行・着手待ちのまま現状維持 / `label`が`judge_ready`のgoal付きactivityのjudge_goalによる判定 |
 | 🟡 確証あれば自律 | shelved化(再開条件が明確に書ける場合) / relation+completedでの統合(重複が明白な場合) |
 | 🔴 その場で確認 | 上記のいずれにも確証を持って分類できないもの |
 

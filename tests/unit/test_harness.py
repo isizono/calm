@@ -4,7 +4,7 @@ Harnessインターフェースは既存hookのClaude Code依存箇所を置き�
 であり、ここでは「hookプロトコルの入出力形式」
 「transcript中間表現への正規化」「エントリ書き戻し」を契約として検証する。
 identity解決（resolve_session_identity）はps spawn・launcher登録ファイル
-という外部境界に依存するため、配線はrelay identity側のテストに委ねる。
+という外部境界に依存するため、配線はsession identity側のテストに委ねる。
 """
 import io
 import json

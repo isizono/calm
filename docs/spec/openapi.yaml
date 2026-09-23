@@ -26,6 +26,8 @@ tags:
   description: 決定事項の記録・取得
 - name: export
   description: 他インスタンスへのexport候補洗い出し・実行
+- name: goal
+  description: activityの終了条件（goal）の作成・更新・判定・取得
 - name: habit
   description: 振る舞いの登録・更新
 - name: log
@@ -38,8 +40,6 @@ tags:
   description: pin の追加・削除
 - name: relation
   description: エンティティ間リレーション
-- name: relay
-  description: セッション間メッセージング
 - name: retract
   description: 取り消し（論理削除）
 - name: search
@@ -993,6 +993,43 @@ paths:
                 oneOf:
                 - type: object
                 - $ref: '#/components/schemas/ErrorResponse'
+  /tools/get_goal:
+    post:
+      tags:
+      - goal
+      summary: 'Choose: 1つのgoalの全条件(充足済みを含む)とid、紐づくactivity一覧を読みたい'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                goal_id:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                activity_id:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                handle:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
   /tools/get_habits:
     post:
       tags:
@@ -1392,6 +1429,43 @@ paths:
                 oneOf:
                 - type: object
                 - $ref: '#/components/schemas/ErrorResponse'
+  /tools/judge_goal:
+    post:
+      tags:
+      - goal
+      summary: 'Choose: goalの終了を明示的に判定して閉じたいとき。'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                goal_id:
+                  type: integer
+                verdict:
+                  type: string
+                note:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                judged_by:
+                  default: session
+                  type: string
+              required:
+              - goal_id
+              - verdict
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
   /tools/pull_precedents:
     post:
       tags:
@@ -1433,161 +1507,6 @@ paths:
                   type: string
               required:
               - context
-              type: object
-      responses:
-        '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
-          content:
-            application/json:
-              schema:
-                oneOf:
-                - type: object
-                - $ref: '#/components/schemas/ErrorResponse'
-  /tools/relay_post:
-    post:
-      tags:
-      - relay
-      summary: 場（stream）にメッセージを投函する（セッション間メッセージング）。
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              additionalProperties: false
-              properties:
-                stream_name:
-                  type: string
-                body:
-                  type: string
-                ttl:
-                  anyOf:
-                  - type: integer
-                  - type: 'null'
-                  default: null
-              required:
-              - stream_name
-              - body
-              type: object
-      responses:
-        '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
-          content:
-            application/json:
-              schema:
-                oneOf:
-                - type: object
-                - $ref: '#/components/schemas/ErrorResponse'
-  /tools/relay_publish:
-    post:
-      tags:
-      - relay
-      summary: labels routing でメッセージを配布する（labels を購読中の session にマッチング配送、
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              additionalProperties: false
-              properties:
-                labels:
-                  items:
-                    type: string
-                  type: array
-                body:
-                  type: string
-                title:
-                  anyOf:
-                  - type: string
-                  - type: 'null'
-                  default: null
-              required:
-              - labels
-              - body
-              type: object
-      responses:
-        '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
-          content:
-            application/json:
-              schema:
-                oneOf:
-                - type: object
-                - $ref: '#/components/schemas/ErrorResponse'
-  /tools/relay_receive:
-    post:
-      tags:
-      - relay
-      summary: 自 session 宛に届いたメッセージの未読分を受信する（セッション間メッセージングの受信）。
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              additionalProperties: false
-              properties:
-                limit:
-                  anyOf:
-                  - type: integer
-                  - type: 'null'
-                  default: null
-                peek:
-                  default: false
-                  type: boolean
-              type: object
-      responses:
-        '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
-          content:
-            application/json:
-              schema:
-                oneOf:
-                - type: object
-                - $ref: '#/components/schemas/ErrorResponse'
-  /tools/relay_status:
-    post:
-      tags:
-      - relay
-      summary: relay v2 の配送状況・runtime健全性を確認する診断エンドポイント。
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              additionalProperties: false
-              properties:
-                outbox_id:
-                  anyOf:
-                  - type: integer
-                  - type: 'null'
-                  default: null
-              type: object
-      responses:
-        '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
-          content:
-            application/json:
-              schema:
-                oneOf:
-                - type: object
-                - $ref: '#/components/schemas/ErrorResponse'
-  /tools/relay_subscribe:
-    post:
-      tags:
-      - relay
-      summary: labels の購読を宣言する（セッション間メッセージングの受信登録）。
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              additionalProperties: false
-              properties:
-                labels:
-                  items:
-                    type: string
-                  type: array
-              required:
-              - labels
               type: object
       responses:
         '200':
@@ -1969,6 +1888,41 @@ paths:
                 oneOf:
                 - type: object
                 - $ref: '#/components/schemas/ErrorResponse'
+  /tools/set_goal:
+    post:
+      tags:
+      - goal
+      summary: 'Choose: activityの終了条件(goal)上の立場を決めたいとき。'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                activity_id:
+                  type: integer
+                goal:
+                  anyOf:
+                  - additionalProperties: true
+                    type: object
+                  - type: 'null'
+                replace:
+                  default: false
+                  type: boolean
+              required:
+              - activity_id
+              - goal
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
   /tools/set_instance_identity:
     post:
       tags:
@@ -2184,8 +2138,62 @@ paths:
                   - type: boolean
                   - type: 'null'
                   default: null
+                closed_by:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                closed_reason:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
               required:
               - activity_id
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/update_goal:
+    post:
+      tags:
+      - goal
+      summary: 'Choose: goalの条件を追加・状態変更(充足/保留)・担い手や束縛の変更をしたいとき。'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                goal_id:
+                  type: integer
+                changes:
+                  anyOf:
+                  - items:
+                      additionalProperties: true
+                      type: object
+                    type: array
+                  - type: 'null'
+                  default: null
+                statement:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                reopen_reason:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+              required:
+              - goal_id
               type: object
       responses:
         '200':

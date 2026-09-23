@@ -7,12 +7,9 @@ decision_supersedes に kind='destabilizes' で張られたエッジが、未res
 supersede_chain が destabilizes エッジの有無に影響されないこと（TODO1の非破壊確認）も
 検証する。
 """
-import os
-import tempfile
 
 import pytest
 
-from src.db import init_database
 from src.services.activity_service import add_activity
 from src.services.checkin_service import check_in
 from src.services.decision_service import get_decisions
@@ -21,24 +18,12 @@ from src.services.pin_service import add_pin
 from src.services.precedent_pull_service import pull_precedents
 from src.services.relation_service import add_relation
 from src.services.search_service import get_by_ids
-from src.services.tag_service import _injected_tags
 from src.services.topic_service import add_topic
 from tests.helpers import add_decision
 
 
 DEFAULT_TAGS = ["domain:test"]
 
-
-@pytest.fixture
-def temp_db():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        _injected_tags.clear()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 @pytest.fixture

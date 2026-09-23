@@ -63,7 +63,7 @@ transcriptを解析し、議論されたテーマを特定する。
 
 既存アクティビティの完了状態を以下の確信度で判定する:
 
-- **高（自動クローズ）**: エージェントが `update_activity(status="completed")` を実行する。ユーザー確認不要
+- **高（自動クローズ）**: エージェントが `update_activity(status="completed", closed_by="claude")` を実行する。ユーザー確認不要
   - PRマージ済み（transcript内でマージ確認済み）
   - フェーズ遷移済み（後続のdesign/implementアクティビティがin_progress以降）
   - セッション内でゴール達成が明確
@@ -79,7 +79,8 @@ transcriptを解析し、議論されたテーマを特定する。
 - 未登録のアクティビティがあれば `add_activity` で登録
 - `tags` に `domain:` タグ（必須）＋内容を表すタグを付ける
 - 関連する仕様書があれば description に参照を含める
-- 確信度「高」のアクティビティは `update_activity` で `completed` にする（自動クローズしたものはStep 10で事後報告する）
+- 起票するアクティビティについて、transcript中でこの作業の終了条件が明言されている、または推せるなら、起票と同じタイミングで確認なしに `set_goal(activity_id, goal={"new": {...}})` をopenの条件として書く。候補が複数で定まらない、またはそもそも推せないときは書かない（事後の一括処理でユーザーに聞く相手がいないため、未定義のまま残す）
+- 確信度「高」のアクティビティは `update_activity` で `completed` にする（自動クローズしたものはStep 10で事後報告する）。ただし対象が goal に紐づいている場合は `update_activity` では completed にせず goal 機構側で扱う（`get_goal(activity_id=...)` で確認する）。外部の完了（PRのマージ状況など）を根拠にする条件は、`gh` など実際の手段で確かめられれば該当条件を `update_goal` で `satisfied` に書き、確かめた事実を `add_material` か `add_logs` に残す。確かめられないものは推測のまま `satisfied` にしない。確かめた結果で全条件が終端すれば `judge_goal` も呼んでよい（`open_questions` の扱いは[check-in](../check-in/SKILL.md)の「goalフィールドの扱い」節に従う）
 - 自動クローズしたアクティビティに次フェーズがあれば、アクティビティを作成する（例: `[議論]` 完了 → `[設計]` を作成）。既に存在すればスキップ。確信が持てなければ作成せず現状のまま残す
 
 ### 3. 資材の保存 (add_material)
@@ -220,6 +221,7 @@ description: "「sync-memory改善」トピックで議論中。ステップ4の
 **注意:**
 - ステップ6の `[未完]` decision とは別に、アクティビティとしても登録する（役割が異なる：decisionは「何が未決定か」、アクティビティは「次に何をすべきか」）
 - 未完の話がなければこのステップはスキップする
+- transcript中でこの作業の終了条件が明言されている、または推せるなら、起票時にStep 2の手順で確認なしに `set_goal(new)` を書く。候補が複数で定まらない、またはそもそも推せないときは書かない
 
 ### 8. 抜け漏れチェック
 
@@ -269,6 +271,8 @@ summaryは決定論的な文字列 `missed: <最上位ヒットの既存記録ty
 
 （本節の判定基準がactivity-cleanup skillの棚卸し基準と食い違う場合は、activity-cleanup skill側を正本とする）
 
+**goal付きアクティビティの除外:** 以下の判定でcompletedにする（または重複統合で閉じる側にする）前に、対象が goal に紐づいていないか `get_goal(activity_id=...)` で確認する。goal に紐づいている場合は、このステップでcompletedにしない。judge_goal も呼ばない（このセッションに根拠のある充足だけが判定材料になり得るが、推定に基づくこのステップの判定はその根拠にならない）。重複判定（下記1）でも、goal付きのアクティビティは閉じる側にしない（残す側にする。両方がgoal付きなら、このステップでは統合せず現状のまま残す）。
+
 **まずスキップ判定:** ステップ0で取得したアクティビティを以下のカテゴリに照合し、**該当が1件もなければ即座にスキップする。** ユーザーにアクティビティ一覧を見せたり、「該当なし」と報告する必要はない。
 
 **判断基準 — いずれかに該当するアクティビティがある場合のみ処理対象とする:**
@@ -278,16 +282,16 @@ summaryは決定論的な文字列 `missed: <最上位ヒットの既存記録ty
 **確信度「中」（完了の可能性が高いがエージェント判断では確定できないもの）:**
 - 前回セッションであと一歩だったもの（残タスクが軽微）
 - 外部で完了した可能性が高いもの（transcript外の状況変化を示唆する情報がある）
-→ `update_activity(status="completed")` で自動的にcompletedにする（Step 2の確信度「高」と同様の扱い）
+→ `update_activity(status="completed", closed_by="external")` で自動的にcompletedにする（Step 2の確信度「高」と同様の扱い）
 
 **確信度「低」（整理・棚卸し対象）:**
-1. **重複**: 同じ目的・内容のアクティビティが複数存在する場合の片方 → `update_activity(status="completed")` にする。判定優先順位: まず情報量（description・タグ・関連リレーションの充実度）が少ない方を選ぶ。情報量が同程度の場合のみ `updated_at` が古い方を選ぶ
-2. **7日以上放置**: `updated_at` から7日以上経過しているpendingアクティビティ → 前提が変わらずまだ必要と判断すれば `update_activity(activity_id, status="snoozed")` で寝かせる（snooze期間経過後に自動でpendingに復活する）、状況を見て不要と判断すれば `completed` にする
-3. **状況変化で不要**: 前提条件が変わり、もうやる意味がないアクティビティ → `update_activity(status="completed")` にする。description先頭に理由を追記する（例: 「YYYY-MM-DD sync-memoryで前提変更によりcompleted」）
+1. **重複**: 同じ目的・内容のアクティビティが複数存在する場合の片方 → `update_activity(status="completed", closed_by="claude")` にする。判定優先順位: まず情報量（description・タグ・関連リレーションの充実度）が少ない方を選ぶ。情報量が同程度の場合のみ `updated_at` が古い方を選ぶ
+2. **7日以上放置**: `updated_at` から7日以上経過しているpendingアクティビティ → 前提が変わらずまだ必要と判断すれば `update_activity(activity_id, status="snoozed")` で寝かせる（snooze期間経過後に自動でpendingに復活する）、状況を見て不要と判断すれば `update_activity(status="completed", closed_by="claude")` にする
+3. **状況変化で不要**: 前提条件が変わり、もうやる意味がないアクティビティ → `update_activity(status="completed", closed_by="claude")` にする。description先頭に理由を追記する（例: 「YYYY-MM-DD sync-memoryで前提変更によりcompleted」）
 4. **フェーズ移行済み**: in_progressの議論アクティビティ（intent:discuss）で、後続フェーズが既に動いているもの。以下のいずれかで検出する:
    - depends_onで下流アクティビティ（intent:design/implement）がin_progress以降
    - 同トピック内でintent:discussがin_progressかつ、intent:design/implementのアクティビティが存在する
-   → `update_activity(status="completed")` にする
+   → `update_activity(status="completed", closed_by="claude")` にする
 
 いずれも判断に迷う場合は、より安全な側（消さない・completedにしない、現状のまま残す）に倒す。
 

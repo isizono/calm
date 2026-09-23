@@ -32,17 +32,11 @@ from src.services import (
     import_bundle_service,
     instance_service,
     overview_service,
+    goal_service,
 )
 from src.services.checkin_service import check_in as _check_in
 from src.services import session_registry_service
-from src.services.relay import service as relay_session_service
-from src.services.relay import diagnostics as relay_diagnostics_service
-from src.services.relay import identity as relay_identity
-from src.services.relay.runtime import (
-    get_relay_runtime,
-    notify_reconfigure_if_new,
-    set_relay_runtime,
-)
+from src.infra.session_identity import get_caller_session_id
 from src.services.tag_service import (
     search_tags as _search_tags,
     update_tag as _update_tag,
@@ -92,12 +86,6 @@ RULES = """# CALM 利用ガイド
 ## 振る舞い（habits）
 
 全セッション共通の行動ルールはhabitsとして記録できます。正はhabits DBで、内容は~/.claude/rules配下の自動生成ファイル経由でセッション起動時に配信されます。タグ・ファイルに依存しない横断ルールはhabitsに記録してください（詳細はget_habits）。
-
-## セッション間でメッセージを送るには
-
-他セッションへ連絡するにはrelayの4関数を使います。`relay_post`は場（stream）宛の一方向投函、`relay_publish`/`relay_subscribe`はlabelsによる配信・購読のペア、`relay_receive`はどちらで届いたメッセージも自sessionのinboxから受け取る共通口です。送信=到達ではなくpull型で、受信側が`relay_receive`をpollして初めて内容が分かります。
-
-relayは今稼働中の他セッションに伝えたいときに使い、後から読めればいい情報はrelayを経由せず`add_logs`等に直接残してください。購読はエージェントの明示的な意図宣言で、activity所有等から自動導出しません。
 
 ## 内部識別子は本文に出さない
 
@@ -1131,13 +1119,15 @@ def update_activity(
     description: Optional[str] = None,
     tags: Optional[list[str]] = None,
     orch_managed: Optional[bool] = None,
+    closed_by: Optional[str] = None,
+    closed_reason: Optional[str] = None,
 ) -> dict:
     """
     アクティビティのステータス・タイトル・説明・タグ・orch_managedを更新する。
 
     典型的な使い方:
     - アクティビティ開始: update_activity(activity_id, status="in_progress")
-    - アクティビティ完了: update_activity(activity_id, status="completed")
+    - アクティビティ完了: update_activity(activity_id, status="completed", closed_by="user", closed_reason="ユーザーが完了を宣言")
     - アクティビティを寝かせる: update_activity(activity_id, status="snoozed")
     - アクティビティを棚上げする: update_activity(activity_id, status="shelved")
     - タイトル変更: update_activity(activity_id, title="新しいタイトル")
@@ -1150,6 +1140,9 @@ def update_activity(
     snoozed状態のアクティビティに対しstatusを指定せずtitle/description等のみ更新すると、
     自動的にstatus="pending"へ復活する（明示的にsnoozedを維持したい更新はできない）。
 
+    紐づくgoalが判定済みのactivityを閉じ直すとき（読むために開いた後、残作業が無い場合）は
+    closed_byを渡さない。判定済みgoalが根拠なら自動的にclosed_by="goal_judge"が書かれる。
+
     Args:
         activity_id: アクティビティID
         status: 新しいステータス（pending/in_progress/completed/snoozed/shelved）
@@ -1157,13 +1150,153 @@ def update_activity(
         description: 新しい説明
         tags: 新しいタグ配列（指定時は全置換。1個以上必須）
         orch_managed: orchが管理するアクティビティかを切り替える（True/False/None）。Noneなら変更しない
+        closed_by: activityを閉じた意思の主体（"user"|"claude"|"external"）。
+            status="completed"と同時のときだけ受け付ける
+        closed_reason: 閉じた理由（自由文）。status="completed"と同時のときだけ受け付ける
 
     Returns:
-        更新されたアクティビティ情報
+        更新されたアクティビティ情報。status="completed"の呼び出しでは、紐づくgoalが
+        未判定ならgoal_hint（{goal_id_raw, handle, label, next, open_activities_left,
+        open_questions?, warning?}）も返す（拒否はしない）
     """
     return activity_service.update_activity(
         activity_id, status, title, description, tags, orch_managed=orch_managed,
+        closed_by=closed_by, closed_reason=closed_reason,
     )
+
+
+# ----------------------------
+# goal機構
+# ----------------------------
+
+
+@mcp.tool()
+def set_goal(activity_id: int, goal: Optional[dict], replace: bool = False) -> dict:
+    """Choose: activityの終了条件(goal)上の立場を決めたいとき。goal自体はactivityから
+    作る。既存のgoal(goal_id)に紐づける・不要印(waiver)を付ける・未定義に戻す(None)も
+    この1本で扱う。充足の記録・条件の追加はupdate_goal、終了の明示判定はjudge_goal。
+
+    Args:
+        activity_id: 対象activity
+        goal: 次の4形式のいずれか(Noneも明示で渡す)
+            - {"new": {"handle": str, "statement": str, "conditions": [条件, ...]}}
+              新規作成して紐づける。条件は {"statement": str,
+              "actor": "claude"|"human"|"external",
+              "bound": {"type": "activity"|"decision"|"ask", "id": int} | None,
+              "state": "open"|"satisfied"|"waived"(既定open), "note": str | None}。
+              waivedはnote必須
+            - {"goal_id": int} 既存の未判定goalに紐づける(複数activityにまたがるgoal)
+            - {"waiver": str} 終了条件は不要と記録する(理由)
+            - None 紐づけ・不要印を外して未定義に戻す
+        replace: 既に別内容の紐づけ・不要印がある活動に上書きするときtrue(既定false)
+
+    Returns:
+        成功時: {"goal": <goalブロック>}
+        情報応答: {"info": "ACTIVITY_GOAL_EXISTS", "current": {...}}
+            | {"info": "GOAL_CLOSED", "goal": {...}}
+        失敗時: {"error": {"code": "VALIDATION_ERROR"|"NOT_FOUND"|"HANDLE_TAKEN"
+            |"GOAL_WOULD_ORPHAN"|"DATABASE_ERROR", "message": ...}}
+    """
+    return goal_service.set_goal(activity_id, goal, replace)
+
+
+@mcp.tool()
+def update_goal(
+    goal_id: int,
+    changes: Optional[list[dict]] = None,
+    statement: Optional[str] = None,
+    reopen_reason: Optional[str] = None,
+) -> dict:
+    """Choose: goalの条件を追加・状態変更(充足/保留)・担い手や束縛の変更をしたいとき。
+    goalの一文(statement)の修正、判定済みgoalの差し戻し(reopen_reason)もこの1本で行う。
+    新しいgoalを作って紐づけるのはset_goal、終了の明示判定はjudge_goal。
+
+    changesは前から順に適用する1トランザクション(1件でもエラーなら何も書かない)。
+    要素は次の3種:
+      - {"op": "add", ...条件の形(set_goalのconditionsと同じ)...} 条件を追加する
+        (stateを指定すれば事後の記録として終端で作れる)
+      - {"op": "set", "id": int, "state": "open"|"satisfied"|"waived", "note": str|None}
+        状態を書く。satisfiedにしたときだけlast_satisfied_atを更新する。waivedはnote必須
+      - {"op": "edit", "id": int, "actor": str|None, "bound": {...}|None}
+        担い手・束縛を変える(文は変えない)
+    同じ条件にset+editは1回ずつ並べられる。同じ条件に同じopを2回はVALIDATION_ERROR。
+
+    reopen_reasonを渡すと、判定済みgoalをclosed=0に戻し、goal_judgeで閉じたactivityを
+    pendingに戻し、signal_events(kind=goal_rollback)に1行積んでから、changes/statement
+    を適用する。changes・statementの無い差し戻し(判定のやり直しだけ)も許す。
+
+    Args:
+        goal_id: 対象goal
+        changes: 上記opの列(既定なし)
+        statement: goalの一文の修正(未判定のgoalにだけ許す)
+        reopen_reason: 判定済みgoalを差し戻す理由
+
+    Returns:
+        成功時: {"goal": {...}, "applied": int, "reopened": {...}(差し戻し時のみ)}
+        情報応答: {"info": "GOAL_CLOSED"|"GOAL_ALREADY_OPEN", "goal": {...}}
+        失敗時: {"error": {"code": "VALIDATION_ERROR"|"NOT_FOUND"|"DATABASE_ERROR",
+            "message": ...}}
+    """
+    return goal_service.update_goal(
+        goal_id, changes, statement, reopen_reason, session_id=_current_session_id()
+    )
+
+
+@mcp.tool()
+def judge_goal(
+    goal_id: int,
+    verdict: str,
+    note: Optional[str] = None,
+    judged_by: str = "session",
+) -> dict:
+    """Choose: goalの終了を明示的に判定して閉じたいとき。紐づく未完了のactivityも
+    同時にcompletedにする(closed_by="goal_judge")。判定はachieved(達成)か
+    failed(達成せず終了。不可能・不要化・取り下げを含む)。achievedはopenの条件が
+    残っている・satisfiedが0件・崩れた条件があるといずれも拒否するので、先に
+    update_goalで手当てしてから呼ぶ。failedはopenの条件が残っていても閉じられる。
+
+    Args:
+        goal_id: 対象goal
+        verdict: "achieved" | "failed"
+        note: 判定理由。failedでは必須、achievedでは何をもって達成としたかを1文で
+            書いてよい
+        judged_by: "session"(既定。セッション自身の判断) | "human"(ユーザーが同席して
+            完了を明言・同意した)
+
+    Returns:
+        成功時: {"goal": {...}, "closed_activities": [{id_raw, title}, ...]}
+        情報応答: {"info": "GOAL_ALREADY_CLOSED", "goal": {...}}
+        失敗時: {"error": {"code": "VALIDATION_ERROR"|"NOT_FOUND"|"GOAL_NOT_READY"
+            |"GOAL_NOTHING_SATISFIED"|"GOAL_BINDING_BROKEN"|"DATABASE_ERROR", ...}}
+    """
+    return goal_service.judge_goal(goal_id, verdict, note, judged_by)
+
+
+@mcp.tool()
+def get_goal(
+    goal_id: Optional[int] = None,
+    activity_id: Optional[int] = None,
+    handle: Optional[str] = None,
+) -> dict:
+    """Choose: 1つのgoalの全条件(充足済みを含む)とid、紐づくactivity一覧を読みたい
+    とき。check_inの応答のgoalブロックは充足済み条件や4件目以降のopen条件を畳むので、
+    全件が要るとき(差し戻しでopenに戻す条件を選ぶとき等)や、handleからgoalを引きたい
+    ときに使う。読み取り専用(check_inと違いactivityのstatusを変えない)。
+
+    Args:
+        goal_id: goalを直接指す(3つのうちちょうど1つを指定する)
+        activity_id: activity経由で紐づくgoalを指す。goalが無い場合はエラーにせず
+            label="undefined"(未定義)かlabel="not_needed"(不要印)を返す
+        handle: goalの短い名前で指す
+
+    Returns:
+        {"goal_id_raw", "handle", "statement", "label", "progress", "claude", "next",
+         "last_verdict", "conditions": [...全件...], "activities": [...]}
+         | {"label": "undefined"|"not_needed", "next"?, "reason"?}
+        失敗時: {"error": {"code": "VALIDATION_ERROR"|"NOT_FOUND"|"DATABASE_ERROR",
+            ...}}
+    """
+    return goal_service.get_goal(goal_id=goal_id, activity_id=activity_id, handle=handle)
 
 
 @mcp.tool()
@@ -1376,12 +1509,16 @@ def check_in(
             docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
 
     Returns:
-        check-in結果（coverage, activity, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary）。
+        check-in結果（coverage, activity, goal, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary）。
         セッション内でcheck_inを初めて呼んだときのみflow_guide（コンテキスト取得の手がかり）も含まれる
         pinned.decisionsの各要素は、未resolveなdestabilizesエッジを持つ場合のみ
         destabilization（{destabilized_by, unresolved_count, latest_source,
         sources: [{decision_id, title, created_at, kind_reason}, ...]}）が付く。エッジが
         無い、または全てresolve_destabilizationで解消済みならキー自体が無い
+        goalはactivityの直後にあり、そのactivityの終了条件（goal）の現在状態と
+        次の一手を1件返す。未定義（label="undefined"）・不要印（label="not_needed"）・
+        goal付き（label="active"|"judge_ready"|"closed"）のいずれか。goal付きなら
+        next（今やるべきこと1件）に従う
     """
     flavor = _normalize_flavor(flavor)
     try:
@@ -1433,6 +1570,30 @@ def _apply_flavor_to_check_in_result(result: dict, flavor: str) -> None:
                 )
         for item in result.get("recent_decisions", []) or []:
             _flavor_snippet(item, flavor, conn)
+
+        _apply_flavor_to_goal_block(result.get("goal"), flavor, conn)
+
+
+def _apply_flavor_to_goal_block(goal_block: object, flavor: str, conn) -> None:
+    """goalブロックの束縛先タイトル(remaining/terminal内のbound文字列)と
+    open_questionsのtitleにflavorを適用する(in-place)。
+
+    goalの文（statement・条件文・note・judge_note・waiver_reason）は書き込み時に
+    引用テンプレへ変換しないため、ここでは触らない。
+    """
+    if not isinstance(goal_block, dict) or "error" in goal_block:
+        return
+    for key in ("remaining", "terminal"):
+        entries = goal_block.get(key)
+        if isinstance(entries, list):
+            for entry in entries:
+                if isinstance(entry, dict) and isinstance(entry.get("bound"), str):
+                    entry["bound"] = citation_renderer.expand(entry["bound"], flavor, conn)
+    open_questions = goal_block.get("open_questions")
+    if isinstance(open_questions, list):
+        for item in open_questions:
+            if isinstance(item, dict) and isinstance(item.get("title"), str):
+                item["title"] = citation_renderer.expand(item["title"], flavor, conn)
 
 
 def _flavor_snippet(item: dict, flavor: str, conn) -> None:
@@ -2066,7 +2227,7 @@ def report_signal(
 ) -> dict:
     """cc-memory 自身への故障報告・使用感不満・矛盾検出・運用計測イベントの統一入口。
 
-    kind（7種類、いずれか必須）:
+    kind（8種類、いずれか必須）:
       - "machine_error": ツールエラー・hook 失敗・サーバー異常を観察した
       - "friction": cc-memory の使い勝手への不満・違和感（ユーザー発話由来を含む）
       - "contradiction": 既存記録(decision/material/log)と矛盾する結論を出した/検出した。
@@ -2078,11 +2239,13 @@ def report_signal(
         context に missed_ids / cited_id 等の規約キーを書く
       - "boundary_case" / "rollback": 運用上の案件記録。summary に PR 番号等の
         案件識別子を含める（dedup の集約単位を案件ごとに分けるため）
+      - "goal_rollback": update_goal の reopen_reason（goal 判定の差し戻し）が
+        書く専用の kind。手で report_signal を呼んで報告するものではない
 
     同一内容の再報告は自動で集約される(occurrence_count)。
 
     Args:
-        kind: 上記7種のいずれか
+        kind: 上記8種のいずれか
         summary: 1行要約（空文字不可）
         detail: traceback・引数ダイジェスト・自由記述（optional）
         refs: [{"type": "decision", "id": 123}, ...] 形式の参照リスト（optional）
@@ -2199,9 +2362,8 @@ def add_ask(
     一貫していると判断した場合は、`ask-distill` skill を使ってメタaskの起票を
     検討すること。
 
-    その場で回答を待ちたい場合は、notify_pathをMonitorツールで`persistent: true`
-    監視すること（ファイル出現前から監視してよい）。answer_ask/triage_ask(dismiss)
-    完了時に1行追記される（中身は信用せずget_asksで実際の状態を取り直すこと）。
+    Claude Codeでは、notify希望のaskが回答・処理済みになるとCALMのhookが
+    このセッションを起こす（Monitorは不要）。待たないならnotify=False。
     push未着でも次回のcheck_in/get_asksで拾える（正はpull）。
 
     Args:
@@ -2215,8 +2377,8 @@ def add_ask(
         choices: 選択肢テンプレート（optional、最大3件、1件100字以内）。指定すると
             AskUserQuestion風の選択式UIをダッシュボード等で組み立てられる。
             回答（answer_ask）は引き続き自由文字列のまま
-        notify: 既定True。Falseで通知書き込みをしない（後からunsubscribe_askでも
-            外せる）。pull（check_in/get_asks）には影響しない
+        notify: 既定True。Falseで通知書き込み・hookによる待機・起床をしない
+            （後からunsubscribe_askでも外せる）。pull（check_in/get_asks）には影響しない
 
     Returns:
         成功時: {"id": int, "deduped": bool, "occurrence_count": int,
@@ -2235,7 +2397,7 @@ def add_ask(
         kind=kind,
         context=context,
         choices=choices,
-        session_id=relay_identity.get_relay_identity(),
+        session_id=get_caller_session_id(),
         notify=notify,
     )
 
@@ -2324,7 +2486,7 @@ def answer_ask(ask_id: int, answer_body: str) -> dict:
             （対象がopen状態でない場合を含む）
     """
     return ask_service.answer_ask(
-        ask_id, answer_body, session_id=relay_identity.get_relay_identity()
+        ask_id, answer_body, session_id=get_caller_session_id()
     )
 
 
@@ -2383,7 +2545,7 @@ def triage_ask(
         tags=tags,
         topic_id=topic_id,
         dismiss_reason=dismiss_reason,
-        session_id=relay_identity.get_relay_identity(),
+        session_id=get_caller_session_id(),
     )
 
 
@@ -2411,7 +2573,7 @@ def withdraw_ask(ask_id: int, reason: str) -> dict:
             （対象がopen状態でない場合を含む）
     """
     return ask_service.withdraw_ask(
-        ask_id, reason, session_id=relay_identity.get_relay_identity()
+        ask_id, reason, session_id=get_caller_session_id()
     )
 
 
@@ -2598,242 +2760,6 @@ async def http_answer_ask(request: Request) -> JSONResponse:
 
 
 # ----------------------------
-# relayセッション面ツール群（4動詞）
-# ----------------------------
-
-
-@mcp.tool()
-def relay_post(stream_name: str, body: str, ttl: int | None = None) -> dict:
-    """場（stream）にメッセージを投函する（セッション間メッセージング）。
-
-    投函先 stream が未存在なら自動作成して投函する（事前の stream 作成操作は不要）。
-    自 server 名義の stream のみ扱う（他名義の stream には投函できない）。
-    relay への呼び出し自体は同期だが、成功応答の matched_members は投函時点の購読者数を
-    示すのみで、各購読者への実配達は relay 側の非同期配信を経由する（配達完了そのものは
-    保証しない）。
-
-    投函した内容は cc-memory 本体（search/get_timeline/pull_precedents 等）には自動で
-    反映されない。受信側が後から参照できる形で残したい場合は、受信後に add_logs/
-    add_material 等で明示的に保存すること。
-
-    Args:
-        stream_name: stream 名（":" と "/" は使用不可）。実体の stream_id は server 名義で修飾される
-        body: メッセージ本文（必須・非空文字列）
-        ttl: メッセージ保持秒数（optional、60〜86400。省略時は stream の既定値）
-
-    Returns:
-        成功時: {"stream_id": str, "publish_id": int, "matched_members": int}
-        失敗時: {"error": {"code": str, "message": str, "retry_after"?: float | None}}
-                （code == "rate_limited"（429）のときのみ retry_after が付与される。
-                 Retry-After ヘッダ未提供時は null。この秒数だけ待ってからリトライすること）
-    """
-    return relay_session_service.relay_post(stream_name, body, ttl=ttl)
-
-
-@mcp.tool()
-def relay_publish(labels: list[str], body: str, title: str | None = None) -> dict:
-    """labels routing でメッセージを配布する（labels を購読中の session にマッチング配送、
-    セッション間メッセージング）。
-
-    relay_outbox への受理のみで即座に成功応答を返す非同期方式で、実際の配達は server 内の
-    常駐配達ループが at-least-once で行う（成功応答は配達完了を意味しない）。
-
-    送信者の handle: label が自動付与される（発信元の刻印。宛先の絞り込みには使われない）。
-    relay のマッチングは subset（AND）判定のため、labels は聴衆を広げる方向にのみ働く
-    （handle を足しても他の購読者への配送が絞られることはない）。宛先を特定セッションに
-    限定した発話をしたい場合は、labels を handle のみにして本文で用件を書くこと。labels
-    には routing 系（handle:/room:/task:）と cc-memory の tag namespace（domain:/intent:
-    等）を併用でき、これらのみでも有効。未知 prefix も不透明 label として受理する。
-    role:（廃止済み namespace）と cc-memory の予約
-    namespace（entity:/event:/topic:/activity:/decision:/log:/material:/tag:/habit:。
-    entity 更新の relay publish が使う namespace で、実在チェックなしの不透明文字列に
-    しかならないため予約済み）は指定するとエラー。
-
-    配布した内容は cc-memory 本体（search/get_timeline/pull_precedents 等）には自動で
-    反映されない。受信側が後から参照できる形で残したい場合は、受信後に add_logs/
-    add_material 等で明示的に保存すること。
-
-    Args:
-        labels: 配送先マッチング用 labels（必須・1 個以上）
-        body: メッセージ本文（必須・非空文字列）
-        title: 一覧表示用の見出し（optional、200字以内）
-
-    Returns:
-        成功時: {"outbox_id": int, "labels": [str], "handle": str, "identity": str}
-        失敗時: {"error": {"code": str, "message": str}}
-
-    identity は呼び出し元セッションの識別子（cc-memory server 再起動をまたいで
-    安定。scripts/relay/watch_inbox.sh 等に渡す値として使える）。
-    """
-    caller_session_id = relay_identity.get_relay_identity()
-    result = relay_session_service.relay_publish(
-        labels, body, title=title, caller_session_id=caller_session_id
-    )
-    if "error" not in result:
-        result["identity"] = caller_session_id
-    return result
-
-
-@mcp.tool()
-def relay_subscribe(labels: list[str]) -> dict:
-    """labels の購読を宣言する（セッション間メッセージングの受信登録）。宣言後は
-    relay_receive で受信できる。購読宣言（relay_subscribe）と受信（relay_receive）は
-    分離しており、実際のメッセージ受信は relay_receive 側が担う。
-
-    labels が空配列の場合のみ自分の handle: label 単独購読（直接メッセージのみ購読）に
-    変換される。非空 labels は指定どおりそのまま購読され、自 handle は混入しない
-    （宛先を自分に限定した複合条件を張りたい場合は、labels に自分の handle label を
-    明示的に含めること）。同一 labels 集合での再呼び出しは冪等で、lease が有効なら既存の
-    購読をそのまま返し、失効していれば新規に購読し直して差し替える。lease 更新・再接続・
-    購読解除は server 側で自動管理される。
-    role:（廃止済み namespace）は relay_publish と同様に指定するとエラー。cc-memory の
-    予約 namespace（entity:/event:/topic:/activity:/decision:/log:/material:/tag:/
-    habit:）は relay_publish と異なりここでは許可される（entity 更新の relay publish を
-    購読するために必要）。entity write は全種別で自身を指す self label（`種別名:自分のid`）
-    が publish labels に付くため、self label を1つ渡すだけで「その entity 自身 ＋ 直接の子」
-    の全イベントが届く。種別単位は entity:<type>、domain 単位は entity:<type> と own tag の
-    組み合わせで購読できる（例: ["entity:ask", "domain:calm"]）。ただし ask は例外で、own tag
-    が publish labels に載るのは event:updated（回答・トリアージ等）以降のみ。event:created
-    時点ではタグ紐付けが未完了のため、domain 単位で「新規 ask 作成」だけを購読することは
-    できない。
-
-    新規に購読が作られた場合（reused: false）、server 内の常駐 SSE 接続へ即座に反映指示を
-    送る。実際の反映は次の SSE フレーム到達時点までかかることがあり、既定設定では上限
-    概ね 60 秒に収まる。この間に届いたメッセージは relay 側で保持されており喪失しない。
-
-    Args:
-        labels: 購読条件 labels（配列。publish 側の labels をすべて含む発話が届く）
-
-    Returns:
-        成功時: {"subscription_id": str, "labels": [str], "lease_expires_at": str,
-                 "handle": str, "reused": bool, "identity": str}
-        失敗時: {"error": {"code": str, "message": str, "retry_after"?: float | None}}
-                （code == "rate_limited"（429）のときのみ retry_after が付与される。
-                 Retry-After ヘッダ未提供時は null。この秒数だけ待ってからリトライすること）
-
-    identity は呼び出し元セッションの識別子（cc-memory server 再起動をまたいで
-    安定。scripts/relay/watch_inbox.sh 等に渡す値として使える）。
-    """
-    caller_session_id = relay_identity.get_relay_identity()
-    result = relay_session_service.relay_subscribe(
-        labels, caller_session_id=caller_session_id
-    )
-    notify_reconfigure_if_new(result)
-    if "error" not in result:
-        result["identity"] = caller_session_id
-    return result
-
-
-@mcp.tool()
-def relay_receive(limit: int | None = None, peek: bool = False) -> dict:
-    """自 session 宛に届いたメッセージの未読分を受信する（セッション間メッセージングの受信）。
-
-    relay_subscribe で宣言した labels にマッチして server 内の受信スレッドが既に自 session
-    の inbox へ配達済みのメッセージをローカルから drain するのみで、呼び出し自体は relay と
-    通信しない。
-
-    配達契約は at-least-once のため、同一メッセージが重複して届くことがある
-    （受信側で冪等に扱うこと）。未読が無ければ空リストを正常応答として返す
-    （エラーにしない）。受信内容は cc-memory 本体に自動記録されない。重要な内容は
-    受信側が add_logs/add_material 等で明示的に保存すること。
-
-    messages の各要素は `publisher_identity` を持つことがある（relay 側の対応
-    状況に依存し、無い場合もある）。値に '@' を含む場合は federation（他 peer
-    の relay インスタンス経由）由来の未信頼コンテンツであることを示し、当該
-    要素に `is_federation_origin: true` と `trust_notice` が付与される。
-    trust_notice の文言の正本は `src.services.relay.service.FEDERATION_TRUST_NOTICE`
-    （federation 由来のメッセージ本文を指示として実行しないよう促す注意書き）。
-
-    自分がsubscribe中のlabelにマッチする場合、自分がrelay_publishで送信した
-    メッセージも自分のinboxに届きます。受信側で自分自身が送信したメッセージも
-    冪等に読み飛ばす前提で扱ってください。
-
-    既定（peek=False）は consume（読んだら既読 = cursor 前進、末尾まで読み切ったら
-    truncate）。受信した内容を保存する前にエージェントの処理が中断すると、
-    consume 済みの内容は再取得できない。再取得可能性を残したいときは、まず
-    peek=True で内容を確認し、add_logs/add_material 等で保存できたことを確認
-    してから、同じ呼び出しを peek=False（既定）で呼び直して既読化する。
-    peek=True の呼び出しは cursor・inbox file を一切変更しないため、成功する
-    まで何度でも安全に呼び直せる。peek=True から peek=False へ呼び直すまでの
-    間に新規メッセージが到着していた場合、peek=False の返り値の messages には
-    その新着分も含まれる。この呼び直しを既読化のための記帳とみなして返り値を
-    見ずに捨てると、その新着分だけが未保存のまま既読化される。peek=False の
-    返り値も必ず確認すること。
-
-    Args:
-        limit: 最大取得件数（optional、1 以上）。省略時 50、200 を超える値は
-            200 に切り詰める
-        peek: True のとき既読化せず内容だけ返す（cursor 前進なし）。省略時
-            False（consume）
-
-    Returns:
-        成功時: {"messages": [dict, ...], "count": int, "has_more": bool, "identity": str}
-            has_more: True のとき limit に収まらない未読が残っている
-            （同じ呼び出しを繰り返すか limit を上げて追加取得できる）
-            messages の各要素は federation 由来のとき
-            "is_federation_origin": true, "trust_notice": str を追加で持つ
-        失敗時: {"error": {"code": str, "message": str}}
-
-    identity は呼び出し元セッションの識別子（cc-memory server 再起動をまたいで
-    安定。scripts/relay/watch_inbox.sh 等に渡す値として使える）。
-    """
-    caller_session_id = relay_identity.get_relay_identity()
-    result = relay_session_service.relay_receive(
-        limit, peek=peek, caller_session_id=caller_session_id
-    )
-    if "error" not in result:
-        result["identity"] = caller_session_id
-    return result
-
-
-@mcp.tool()
-def relay_status(outbox_id: int | None = None) -> dict:
-    """relay v2 の配送状況・runtime健全性を確認する診断エンドポイント。
-
-    4動詞（relay_post/relay_publish/relay_subscribe/relay_receive）のいずれの
-    代替でもない、読み取り専用の観測面。relayサーバーへのHTTPアクセスは行わない
-    （ローカルDB読み取りとruntimeのin-memory状態読み取りのみで完結する）。
-
-    Args:
-        outbox_id: relay_publishの返り値のoutbox_id（optional）。指定するとその行の
-            配送状況（pending/delivered/dead）を返す。省略時は`outbox`キーの値が
-            nullになる（キー自体は常に存在する）
-
-    Returns:
-        成功時: {
-          "outbox": {"outbox_id": int, "status": "pending"|"delivered"|"dead",
-                     "labels": [str], "title": str|None, "created_at": str,
-                     "processed_at": str|None, "dead_at": str|None,
-                     "retry_count": int, "last_error": str|None} | null,
-          "runtime": {"configured": bool, "running": bool,
-                      "threads": {"<thread名>": {"alive": bool, "restart_count": int,
-                                  "last_restart_at": str|None, "last_error": str|None}}}
-        }
-        失敗時: {"error": {"code": "validation"|"not_found", "message": str}}
-
-        runtime.running が false の場合、このプロセスでは relay v2 の常駐処理
-        （intake/lease_loop/dispatcher）が起動していない（stdio transport、
-        remoteプロセス、またはRELAY_BEARER_TOKEN未設定のいずれか）。
-    """
-    outbox_result = relay_diagnostics_service.outbox_status(outbox_id)
-    if isinstance(outbox_result, dict) and "error" in outbox_result:
-        return outbox_result
-
-    from src.services.relay.runtime import RelayRuntime
-
-    runtime = get_relay_runtime()
-    if runtime is not None:
-        runtime_health = runtime.health_snapshot()
-    else:
-        runtime_health = {
-            "configured": RelayRuntime.is_configured(),
-            "running": False,
-            "threads": {},
-        }
-    return {"outbox": outbox_result, "runtime": runtime_health}
-
-
-# ----------------------------
 # セッション別名（並行セッションの現在地表示）
 # ----------------------------
 
@@ -2860,7 +2786,7 @@ def get_sessions() -> dict:
          "count": int}
         updated_at 降順。呼び出し元自身の行は is_self: true（peer として再掲しないこと）
     """
-    caller_session_id = relay_identity.get_relay_identity()
+    caller_session_id = get_caller_session_id()
     sessions = session_registry_service.list_sessions(self_bridge_session_id=caller_session_id)
     return {"sessions": sessions, "count": len(sessions)}
 
@@ -2885,7 +2811,7 @@ def set_session_alias(alias: str) -> dict:
                 解決できなかったとき。NOT_REGISTERED は未 check_in（先に
                 check_in が必要）
     """
-    caller_session_id = relay_identity.get_relay_identity()
+    caller_session_id = get_caller_session_id()
     return session_registry_service.set_alias(bridge_session_id=caller_session_id, alias=alias)
 
 
@@ -3049,13 +2975,7 @@ if __name__ == "__main__":
             raise SystemExit(1)
 
         # セッションマネージャー初期化
-        # on_session_removed: session除去（正常終了・liveness TTL失効の両方）を
-        # フックに、そのsessionが宣言していたrelay subscriptionを撤去する。
-        # SessionManager自体はrelayを知らない（infra→services依存を作らない）ため、
-        # 配線はここで行う。
-        from src.services.relay import teardown as relay_teardown
-
-        _session_manager = SessionManager(on_session_removed=relay_teardown.schedule)
+        _session_manager = SessionManager()
 
         def _shutdown_server():
             """ウォッチドッグから呼ばれるシャットダウンハンドラ"""
@@ -3086,18 +3006,6 @@ if __name__ == "__main__":
             )
             _staleness_watchdog.start()
 
-        # relay v2 常駐 3 系統 thread（B-1 intake / B-2 lease loop / B-3 outbox dispatcher）。
-        # RELAY_BEARER_TOKEN 未設定なら起動をスキップして log を 1 行残す（v1 が並走している
-        # 移行期間の環境で server 起動を壊さないための静かな縮退。tool 側は未設定を
-        # 明示エラーで顕在化させる）。
-        from src.services.relay.runtime import RelayRuntime
-
-        relay_runtime = RelayRuntime(
-            active_sessions_getter=lambda: _session_manager.session_ids
-        )
-        set_relay_runtime(relay_runtime)
-        relay_runtime.start()
-
         try:
             logger.info(f"Starting HTTP server on {HTTP_HOST}:{HTTP_PORT}")
             mcp.run(
@@ -3107,7 +3015,6 @@ if __name__ == "__main__":
                 middleware=[_build_trusted_host_middleware(), _build_cors_middleware()],
             )
         finally:
-            relay_runtime.stop()
             release()
     else:
         mcp.run()

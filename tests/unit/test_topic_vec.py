@@ -3,31 +3,18 @@
 topic routing 専用のベクトル索引 topic_vec に対する add_topic 経由の書込、
 バックフィル（vec_index からの再利用・二重エンコード無し）、削除経路を検証する。
 """
-import os
-import tempfile
 
 import numpy as np
 import pytest
 from sqlite_vec import serialize_float32
 
-from src.db import get_connection, init_database
+from src.db import get_connection
 from src.services.topic_service import add_topic
 import src.services.embedding_service as emb
 
 EMBEDDING_DIM = 384
 DEFAULT_TAGS = ["domain:test"]
 
-
-@pytest.fixture
-def temp_db():
-    """テスト用の一時的なデータベースを作成する"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 @pytest.fixture

@@ -221,18 +221,6 @@ relay が federation 配達 payload に `publisher_identity`（`sub@handle` 形�
 
 デプロイは必ず relay → cc-memory の順で行うこと。逆順にすると、両者が揃うまでの間マーキングが機能しない窓ができる。
 
-## セッション側 watcher
-
-`scripts/relay/watch_inbox.sh <session_id>` で session 単位の inbox JSONL を `tail -F` する。business logic を含まない tail wrapper なので、Monitor ツール等の外部 watcher と組み合わせて使う。
-
-```bash
-scripts/relay/watch_inbox.sh sess-abc123
-```
-
-inbox path は `RELAY_STATE_DIR`（未設定なら `~/.cc-memory/relay`）配下の `inbox/session-<safe_session_id>.jsonl`。cc-memory server 本体と env を合わせて使うこと。
-
-`<session_id>` に渡す値は `relay_publish` / `relay_subscribe` / `relay_receive` の返り値の `identity` フィールドから取得できる。この値は launcher.py（Claude Code CLI と cc-memory server を繋ぐ stdio ブリッジ）が発行する bridge identity であり、cc-memory server の再起動をまたいで不変（Claude Code セッション自体を再起動しない限り変わらない）。
-
 ### launcher の bridge identity・生存管理 env
 
 | 環境変数 | 説明 | 既定値 |

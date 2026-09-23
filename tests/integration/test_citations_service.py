@@ -2,11 +2,9 @@
 
 write hook (add_*/update_*) と read tool (get_*) を通した実 DB シナリオ。
 """
-import os
-import tempfile
 import pytest
 
-from src.db import get_connection, init_database
+from src.db import get_connection
 from src.services.activity_service import add_activity, update_activity
 from src.services.material_service import add_material, get_material, update_material
 from src.services.decision_service import add_decisions
@@ -17,16 +15,6 @@ from src.services import citation_renderer
 
 DEFAULT_TAGS = ["domain:test"]
 
-
-@pytest.fixture
-def temp_db():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 @pytest.fixture

@@ -4,33 +4,18 @@ test_get_by_id_supersede.py の supersede 版に対応する destabilizes 版。
 compute_destabilization_info_batch がバッチ経路・単独経路（destabilization_map未指定）
 の両方で正しく機能し、N+1 を起こさないことを検証する。
 """
-import os
-import tempfile
 
 import pytest
 
-from src.db import init_database
 from src.services.destabilization_service import resolve_destabilization
 from src.services.relation_service import add_relation
 from src.services.search_service import get_by_id, get_by_ids
-from src.services.tag_service import _injected_tags
 from src.services.topic_service import add_topic
 from tests.helpers import add_decision
 
 
 DEFAULT_TAGS = ["domain:test"]
 
-
-@pytest.fixture
-def temp_db():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        _injected_tags.clear()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 @pytest.fixture

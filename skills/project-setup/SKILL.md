@@ -1,6 +1,6 @@
 ---
 name: project-setup
-description: 【必須】新しいプロジェクト・取り組み（新しいdomain）の知識フレームをCALMにセットアップする。「このプロジェクトをセットアップして」「このプロジェクトをCALMに登録して」「project-setup」「新しく〇〇を始めるから準備して」などで発動。最初にユーザーのペルソナをプロファイリングし、相手と目的に合った充填経路でフレームを充填する。このスキルを経由せずに新規domainのフレーム一括作成を直接行ってはいけない。DO NOT TRIGGER: 既にフレームが立っているdomainでの通常作業、保存先が未確定の「覚えて」系依頼（remember skillの担当。本skillは新規domainのフレーム新設に限る）、exportバンドルの取り込み（memory-import）、ツール動作環境のセットアップ（relay-monitor-setup）。
+description: 【必須】新しいプロジェクト・取り組み（新しいdomain）の知識フレームをCALMにセットアップする。「このプロジェクトをセットアップして」「このプロジェクトをCALMに登録して」「project-setup」「新しく〇〇を始めるから準備して」などで発動。最初にユーザーのペルソナをプロファイリングし、相手と目的に合った充填経路でフレームを充填する。このスキルを経由せずに新規domainのフレーム一括作成を直接行ってはいけない。DO NOT TRIGGER: 既にフレームが立っているdomainでの通常作業、保存先が未確定の「覚えて」系依頼（remember skillの担当。本skillは新規domainのフレーム新設に限る）、exportバンドルの取り込み（memory-import）。
 ---
 
 # project-setup

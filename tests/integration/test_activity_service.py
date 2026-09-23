@@ -1,28 +1,12 @@
 """アクティビティサービスの統合テスト"""
-import os
-import tempfile
 import pytest
-from src.db import init_database, get_connection
+from src.db import get_connection
 from src.services.activity_service import add_activity, get_activities, update_activity
-from src.services.tag_service import _injected_tags
 from src.services.activity_service import add_activity, get_activities, update_activity, ACTIVITY_DESC_MAX_LEN
 
 
 DEFAULT_TAGS = ["domain:test"]
 
-
-@pytest.fixture
-def temp_db():
-    """テスト用の一時的なデータベースを作成する"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        # tag_notes注入済みセットをリセット（テスト間の干渉防止）
-        _injected_tags.clear()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 @pytest.fixture
@@ -111,6 +95,11 @@ class TestAddActivity:
         assert check_in_result["activity"]["status"] == "in_progress"
         assert "tag_notes" in check_in_result
         assert "summary" in check_in_result
+        # goalブロックはcheck_in=Trueのadd_activity応答でもcheck_in_resultの中に
+        # 載る（06_ツールIFとcheck_in注入.md: check_in_resultの中にcheck_inの
+        # 戻り値がそのまま入る）。起票直後はgoalの紐づけが無いのでundefined。
+        assert "goal" in check_in_result
+        assert check_in_result["goal"]["label"] == "undefined"
 
     def test_add_activity_with_check_in_false(self, temp_db):
         """check_in=Falseで従来動作（ステータスpending、check_in_resultなし）"""

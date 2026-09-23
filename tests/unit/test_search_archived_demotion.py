@@ -4,13 +4,10 @@
 - search() 経由の統合テスト（全タグarchived時の降格、部分archivedの非降格、
   降格がoffset/limit切り出し前に効くことの確認）
 """
-import os
-import tempfile
 
 import pytest
 
 from src.config import ARCHIVED_DEMOTION_FACTOR
-from src.db import init_database
 from src.services import search_service
 from src.services.search_service import _apply_archived_demotion
 from src.services.tag_service import update_tag
@@ -30,16 +27,6 @@ def disable_embedding(monkeypatch):
     monkeypatch.setattr(emb, "_backfill_done", True)
     monkeypatch.setattr(emb, "_ensure_server_running", lambda: False)
 
-
-@pytest.fixture
-def temp_db():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 def _archive(tag: str, reason: str = "退役済み") -> None:

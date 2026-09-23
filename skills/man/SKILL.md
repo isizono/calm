@@ -1,6 +1,6 @@
 ---
 name: man
-description: CALMの使い方をユーザーに説明する。「使い方を教えて」「どう使えばいい？」などの質問時に発動。加えて、Claude自身が次のような瞬間に直面したとき、ユーザー発話を待たず自身の判断で参照してよい: (a) CALMの記録モデル（トピック/decision/log/activity/material/tag-notes/habits）の使い分け、環境変数の既定値、スナップショット復元手順など、本ファイルにしかない情報を確認せず記憶だけで断定しようとしている (b) ユーザーがCALMの機能・挙動を前提に話しているのに、自分がその機能を把握できていないと気づいた。DO NOT TRIGGER: どのskillを呼ぶべきか判断がつかないだけの場合（各skillのfrontmatter descriptionは既にシステムプロンプトに全件注入されており、manを経由する必要はない）、同一セッション内で既に参照済みの内容を再確認するためだけの再発動、単一ツールの引数仕様などそのツール自身のdocstringで足りる疑問。manは索引・説明用のskillであり、該当する【必須】skillが担う判定・手順（保存先の判定はremember、決定事項の記録はdecision-record等）を代替しない。
+description: CALMの使い方をユーザーに説明する。「使い方を教えて」「どう使えばいい？」などの質問時に発動。加えて、Claude自身が次のような瞬間に直面したとき、ユーザー発話を待たず自身の判断で参照してよい: (a) CALMの記録モデル（トピック/decision/log/activity/material/tag-notes/habits/goal）の使い分け、環境変数の既定値、スナップショット復元手順など、本ファイルにしかない情報を確認せず記憶だけで断定しようとしている (b) ユーザーがCALMの機能・挙動を前提に話しているのに、自分がその機能を把握できていないと気づいた。DO NOT TRIGGER: どのskillを呼ぶべきか判断がつかないだけの場合（各skillのfrontmatter descriptionは既にシステムプロンプトに全件注入されており、manを経由する必要はない）、同一セッション内で既に参照済みの内容を再確認するためだけの再発動、単一ツールの引数仕様などそのツール自身のdocstringで足りる疑問。manは索引・説明用のskillであり、該当する【必須】skillが担う判定・手順（保存先の判定はremember、決定事項の記録はdecision-record等）を代替しない。
 ---
 
 # man
@@ -9,7 +9,7 @@ description: CALMの使い方をユーザーに説明する。「使い方を教
 全部を一度に説明する必要はありません。ユーザーが知りたいことに焦点を当ててください。
 ユーザーが漠然と「使い方教えて」と言った場合は、基本サイクルから始めてください。
 
-なお、Claude自身が状況判断のためにこのファイルを参照する場合は、基本サイクル・主要スキル・その他のスキル・記録の構造、および「長く使っていくあなたに」内の環境変数表とスナップショット復元手順を情報源として使ってください。「熟練度別アドバイス」はユーザーへの語りかけ文体で書かれた説明用の文章であり、自分の行動判断の根拠にはせず、ユーザーに説明する際の材料としてのみ参照してください。
+なお、Claude自身が状況判断のためにこのファイルを参照する場合は、基本サイクル・主要スキル・その他のスキル・記録の構造・goal機構、および「長く使っていくあなたに」内の環境変数表とスナップショット復元手順を情報源として使ってください。「熟練度別アドバイス」はユーザーへの語りかけ文体で書かれた説明用の文章であり、自分の行動判断の根拠にはせず、ユーザーに説明する際の材料としてのみ参照してください。
 
 ---
 
@@ -100,7 +100,6 @@ CALMは「着手 → 記録 → 完了 → 同期」のライフサイクルで�
 - **`/ask-distill`** — `add_ask`のsimilar_asksを見て、同型の問いが繰り返され裁定が一貫していると気づいたときに、判例をまとめてメタask（kind="meta"）を起票する
 - **`/memory-export`** / **`/memory-import`** — CALMの記録（トピック・決定事項・ログ・資材・アクティビティ）を他のCALMインスタンスとやり取りする。exportは書き出し、importは受け取ったバンドルの取り込み。知識を別環境・別の相手と共有したいときに
 - **`/restart`** — cc-memoryのローカルMCPサーバー・embeddingサーバーを強制再起動する。プラグインアップデート後にコード変更を反映させたいときに
-- **`/relay-monitor-setup`** — relayのsession-aware監視機構が動いていない・初めて使うときのセットアップウィザード。環境変数の有効化からtoken取得・動作確認まで対話的に進める
 - **`/ask-watch`** — Ask storeをMonitorツールでイベント駆動監視し、同型の問いが繰り返されていないか確認する。「ask storeを監視して」「asksを見張って」等で発動
 
 ## よくあるパターン
@@ -131,6 +130,39 @@ CALMは「着手 → 記録 → 完了 → 同期」のライフサイクルで�
 - **タグノート**: タグに紐づく常備情報。関連作業時にAIへ自動注入される
 - **振る舞い（habits）**: 全セッション共通で従ってほしいルール。alwaysタイプは全文が`~/.claude/rules`配下の自動生成ファイルに投影され、毎セッション開始時にシステムプロンプトへ自動的に読み込まれる。intelligentlyタイプは同じファイルに重要度順のタイトル一覧（マニフェスト、既定30件まで。`CALM_PROJECTION_MANIFEST_MAX_ITEMS`で変更可）だけが載り、超過分は本文を切断せず「他N件 → get_habits で確認」の1行に縮退する。本文が必要になれば`get_habits`をhabit_id指定で呼んで取得する。「materialの書き方」「コミット前の確認事項」など、常に従ってほしいルールを登録できる。AIに「覚えといて」と言えばOK
 
+## goal機構
+
+goal機構は、アクティビティの終了条件を構造化し、いつ・誰が終わりを判定するかを明示するための仕組み。
+
+### 何を保存し何を導出するか
+
+- 保存するのは、goal本体（handle・statementと判定記録）、条件（真偽の付く1文・担い手・状態・束縛）、activityとの紐づけ（不要印を含む）の3種類だけ
+- check_inやgoalツールの応答に載るgoalブロック（label・進捗・次の一手など）は保存しない。読み出しのたびに条件の状態から都度計算して返す導出値
+
+### 4つのツール
+
+- **`set_goal`**: activityにgoalを新規作成して紐づける、既存の未判定goalに紐づける、不要印を付ける、紐づけ・不要印を外す、のいずれか
+- **`update_goal`**: 条件の追加・状態変更（open/satisfied/waived）・担い手や束縛の変更・statementの修正。判定済みgoalを未判定に戻す差し戻し（`reopen_reason`）もこのツール
+- **`judge_goal`**: goalを閉じる唯一の手段。achieved（達成）かfailed（未達のまま終了）を記録し、紐づく未完了activityを同じ書き込みでcompletedにする
+- **`get_goal`**: 読み取り専用。充足済みを含む全条件を返す（check_inのgoalブロックは要約と直近3件までしか返さない）
+
+### 運用の勘所がどの瞬間に効くか
+
+- **起票**（activity-start）: 終了条件を書く／不要印を付ける／何も書かない、の3択にする。雛形で埋めない。条件は真偽の付く1文で書き、Claudeが推した条件も追認を待たずそのまま書く。候補が複数で定まらない、または終わりがあるはずだが何なのか推せないときだけユーザーに聞き、定まれば書く
+- **記録の直後**（recording・decision-record）: 条件を満たしたら、その場でupdate_goalに書く。根拠のdecisionなどがあれば、同じ呼び出しで束縛も張る。それで判定待ちになったら、そのまま判定に続く
+- **待ち**（ask-compose・activity-pause）: 会話や記録から満たされたと分かるなら確認せずsatisfiedに書く。分からない人間の判断待ちだけ、その場で聞けるなら聞いてdecisionにする。離席中・セッション跨ぎならaskにして、条件をそのaskに束縛する
+- **判定**（recording・decision-record・check-in・activity-finish・activity-cleanup）: 全条件が終端になった判定待ちの状態を見たら、そのセッションがその場でjudge_goalを呼ぶ。判定したことの報告はしない。未決（openなask・[議論中]のdecision）があれば、判定の前に畳むか1ターン聞く
+- **事後の記録**（sync-memory）: transcriptから推せる終了条件は確認なしで書く。候補が複数で定まらない、または推せないときは書かない（事後の一括処理でユーザーに聞けないため未定義のまま残す）。外部の完了はghなど実際の手段で確かめられればsatisfiedに書き、確かめた結果で終端すればjudge_goalも呼ぶ。確かめられない推測はsatisfiedにも判定にも使わない
+
+### 終了条件を書かない選択
+
+不要印（`set_goal`の不要印）と未定義（何も書かない）は、どちらも正当な状態。常駐の活動や同じセッションで閉じる小作業には不要印、終わり方を考える判断材料がまだ無い作業や、聞いても定まらなかった作業は未定義のまま進めてよい。書くことは強制されず、check_inの次の一手が促すだけにとどまる。
+
+### 差し戻しと環境変数
+
+- 判定済みgoalを差し戻すと、signal_eventsに`goal_rollback`の行が自動で残る（手で`report_signal`を呼ぶものではない。kindの詳細は`references/signals.md`）
+- `CALM_GOAL_RECHECK_HOURS`（既定6時間）: 担い手がhuman/externalのopen条件を「要確認」とみなすまでの時間
+
 ## Ask store
 
 ### Ask storeとは
@@ -156,7 +188,6 @@ Ask storeの読み書き（`add_ask`・`answer_ask`・`triage_ask`・`withdraw_a
 ### 別の手段でも答えられる
 
 cc-memoryのMCPツールを介さなくても、relayが提供するHTTP APIを直接叩けば、スマホやWebhookなど別の手段から回答を投げ込める。
-relayの初期セットアップがまだなら`/relay-monitor-setup`が案内する。
 
 ## 熟練度別アドバイス
 
@@ -254,6 +285,7 @@ uv run python scripts/snapshot.py list
 | `CALM_SNAPSHOT_MAX_COUNT` | `5` | スナップショット最大保持数 |
 | `CALM_SNAPSHOT_ANOMALY_THRESHOLD` | `100` | 行数減少の異常検知閾値（件） |
 | `CALM_PROJECTION_MANIFEST_MAX_ITEMS` | `30` | intelligently habitsマニフェストの掲載件数上限 |
+| `CALM_GOAL_RECHECK_HOURS` | `6` | goalの条件のうち担い手がhuman/externalのopen条件を「要確認」とみなすまでの時間（時間） |
 | `CALM_PROJECT_ROOT` | 自動解決（`CLAUDE_PLUGIN_ROOT` → `git rev-parse --git-common-dir`） | `embedding_server`を起動するプロジェクトルート。優先順位は 明示設定 → プラグイン実行時は`CLAUDE_PLUGIN_ROOT`の値から自動設定 → `embedding_server`自身の`git rev-parse --git-common-dir`解決 → いずれも失敗した場合はRuntimeError。加えて`/calm:restart`（強制再起動）実行時は、上記のいずれでも未設定であれば`restart_service`自身も同じgit-common-dir解決（gitリポジトリでなければ実行時のプロジェクトルート）で先回りして設定する。通常は自動解決されるため設定不要だが、いずれの自動解決にも失敗する環境（gitリポジトリ外かつ`CLAUDE_PLUGIN_ROOT`も未設定）では明示設定が必要 |
 
 環境変数は `CALM_` 接頭辞に統一されている。旧名（`CCM_` / `CC_MEMORY_`）も当面はフォールバックとして読まれるが、新名が設定されていればそちらが優先される。

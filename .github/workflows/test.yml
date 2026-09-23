@@ -34,7 +34,7 @@ jobs:
         run: uv sync --frozen
 
       - name: Run tests with pytest
-        run: uv run pytest -v --tb=short -n auto ${{ matrix.path }}
+        run: uv run pytest -v --tb=short -n auto --durations=25 ${{ matrix.path }}
 
   lint-docs:
     runs-on: ubuntu-latest

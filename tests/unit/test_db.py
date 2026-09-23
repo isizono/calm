@@ -1,22 +1,9 @@
 """データベース機能のテスト"""
 import os
-import tempfile
 from pathlib import Path
 import pytest
-from src.db import get_db_path, get_connection, init_database, execute_query, execute_insert
+from src.db import get_db_path, get_connection, execute_query, execute_insert
 
-
-@pytest.fixture
-def temp_db():
-    """テスト用の一時的なデータベースを作成する"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        # クリーンアップ
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 def test_get_db_path_with_env():

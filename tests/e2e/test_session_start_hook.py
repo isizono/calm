@@ -13,18 +13,19 @@ CALM_HABITS_RULES_PATHを強制注入し、実ファイルへの書き込みを�
 import json
 import os
 import shutil
-import subprocess
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
-from src.db import init_database, get_connection
+from hooks.ask_notify_section import _format_ask_line
+from src.db import get_connection
 from tests.helpers import (
+    register_alive_heartbeat_session,
+    register_dead_heartbeat_session,
     run_session_start_hook as _run_session_start_hook,
     run_session_start_hook_process as _run_session_start_hook_process,
-    session_start_hook_env,
 )
 
 # プロジェクトルート
@@ -32,14 +33,18 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture
-def temp_db():
+def temp_db(_temp_db_template):
     """テスト用の一時的なデータベースを作成する"""
     import src.config
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
+        shutil.copyfile(_temp_db_template, db_path)
+        for suffix in ("-wal", "-shm"):
+            aux_src = _temp_db_template + suffix
+            if os.path.exists(aux_src):
+                shutil.copyfile(aux_src, db_path + suffix)
         os.environ["DISCUSSION_DB_PATH"] = db_path
         src.config.DB_PATH = db_path
-        init_database()
         yield db_path
         if "DISCUSSION_DB_PATH" in os.environ:
             del os.environ["DISCUSSION_DB_PATH"]
@@ -752,16 +757,8 @@ class TestSessionStartHookTier2AndFixedNav:
     def test_heartbeat_section_unaffected_by_tier3_4_removal(self, temp_db):
         """heartbeat (別セッション) セクションは階層3・4廃止の影響を受けない"""
         activity_id = _seed_activity("[作業] heartbeat作業", status="in_progress")
-        conn = get_connection()
-        try:
-            now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-            conn.execute(
-                "UPDATE activities SET last_heartbeat_at = ? WHERE id = ?",
-                (now_iso, activity_id),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        _set_heartbeat(activity_id, session_id="sess-hb-unaffected")
+        register_alive_heartbeat_session("sess-hb-unaffected")
 
         result = _run_session_start_hook(temp_db)
         context = result["hookSpecificOutput"]["additionalContext"]
@@ -836,6 +833,7 @@ class TestSessionStartHookSelfSessionHeartbeat:
         """stdin session_id と一致する heartbeat は「## 作業中（別セッション）」に出ない"""
         activity_id = _seed_activity("[作業] 自セッション中", status="in_progress")
         _set_heartbeat(activity_id, session_id="sess-self")
+        register_alive_heartbeat_session("sess-self")  # 自セッション判定単体で弾かれることを見る
 
         result = _run_session_start_hook(
             temp_db, stdin_payload={"session_id": "sess-self"}
@@ -854,9 +852,10 @@ class TestSessionStartHookSelfSessionHeartbeat:
             )
 
     def test_other_session_heartbeat_in_other_session_block(self, temp_db):
-        """別 session_id の heartbeat は引き続き「## 作業中（別セッション）」に出る"""
+        """別 session_id かつ打刻主が生存中の heartbeat は「## 作業中（別セッション）」に出る"""
         activity_id = _seed_activity("[作業] 別セッション中", status="in_progress")
         _set_heartbeat(activity_id, session_id="sess-other")
+        register_alive_heartbeat_session("sess-other")
 
         result = _run_session_start_hook(
             temp_db, stdin_payload={"session_id": "sess-self"}
@@ -869,8 +868,10 @@ class TestSessionStartHookSelfSessionHeartbeat:
             "他セッション heartbeat が「作業中（別セッション）」に出ていない"
         )
 
-    def test_null_session_id_falls_back_to_other_session(self, temp_db):
-        """last_heartbeat_session_id=NULL（カラム導入前データ）は従来通り別セッション扱い"""
+    def test_null_session_id_is_undeterminable_and_hidden(self, temp_db):
+        """last_heartbeat_session_id=NULL（カラム導入前データ）は生存確認不能として
+        別セッション扱いにしない（判定不能は死亡側に倒す）。activity自体は
+        in_progressなので階層2『優先』には残る"""
         activity_id = _seed_activity("[作業] 旧データ", status="in_progress")
         _set_heartbeat(activity_id, session_id=None)
 
@@ -879,14 +880,15 @@ class TestSessionStartHookSelfSessionHeartbeat:
         )
         context = result["hookSpecificOutput"]["additionalContext"]
 
-        assert "## 作業中（別セッション）" in context
-        heartbeat_idx = context.index("## 作業中（別セッション）")
-        assert f"(#{activity_id})" in context[heartbeat_idx:]
+        assert "## 作業中（別セッション）" not in context
+        assert f"(#{activity_id})" in context
 
     def test_no_stdin_session_id_keeps_other_session_block(self, temp_db):
-        """stdin に session_id が無い場合は照合不能 → 従来通り別セッション扱い"""
+        """stdin に session_id が無い場合は自セッション照合不能 → 生存中なら
+        従来通り別セッション扱い"""
         activity_id = _seed_activity("[作業] sid不明", status="in_progress")
         _set_heartbeat(activity_id, session_id="sess-anything")
+        register_alive_heartbeat_session("sess-anything")
 
         # 引数省略で stdin_payload=None → {}
         result = _run_session_start_hook(temp_db)
@@ -895,6 +897,34 @@ class TestSessionStartHookSelfSessionHeartbeat:
         assert "## 作業中（別セッション）" in context
         heartbeat_idx = context.index("## 作業中（別セッション）")
         assert f"(#{activity_id})" in context[heartbeat_idx:]
+
+    def test_dead_other_session_heartbeat_hidden(self, temp_db):
+        """別 session_id でも打刻主プロセスが死亡していれば別セッション扱いにしない"""
+        activity_id = _seed_activity("[作業] 死んだ別セッション", status="in_progress")
+        _set_heartbeat(activity_id, session_id="sess-dead")
+        register_dead_heartbeat_session("sess-dead")
+
+        result = _run_session_start_hook(
+            temp_db, stdin_payload={"session_id": "sess-self"}
+        )
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "## 作業中（別セッション）" not in context
+        assert f"(#{activity_id})" in context
+
+    def test_unregistered_other_session_heartbeat_hidden(self, temp_db):
+        """別名ファイルにエントリが無い session_id（判定不能）は別セッション扱いにしない"""
+        activity_id = _seed_activity("[作業] 未登録の別セッション", status="in_progress")
+        _set_heartbeat(activity_id, session_id="sess-unregistered")
+        # register_alive/dead のいずれも呼ばない = session_aliases.json にエントリが無い
+
+        result = _run_session_start_hook(
+            temp_db, stdin_payload={"session_id": "sess-self"}
+        )
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "## 作業中（別セッション）" not in context
+        assert f"(#{activity_id})" in context
 
 
 def _set_updated_at(activity_id: int, updated_at_iso: str) -> None:
@@ -973,6 +1003,7 @@ class TestSessionStartHookTier1And2:
         """階層 1（別セッション）→ 階層 2（優先）→ 末尾固定文・固定ナビの順で出る"""
         heartbeat_id = _seed_activity("[作業] heartbeat別", status="in_progress")
         _set_heartbeat(heartbeat_id, session_id="sess-other")
+        register_alive_heartbeat_session("sess-other")
 
         priority_id = _seed_activity("[作業] 優先タスク", status="in_progress")
 
@@ -1116,6 +1147,7 @@ class TestSessionStartHookTier1And2:
         """pinned かつ別セッション heartbeat の activity は階層 1 で 📌 付きで出る"""
         heartbeat_id = _seed_activity("[作業] pinned heartbeat", status="in_progress")
         _set_heartbeat(heartbeat_id, session_id="sess-other")
+        register_alive_heartbeat_session("sess-other")
         source_topic_id = _seed_topic("pin source topic")
         _add_pin_activity("topic", source_topic_id, heartbeat_id)
 
@@ -1228,11 +1260,12 @@ class TestSessionStartHookAskNotify:
 
         assert "askの回答が届いています" in context
         assert "何色にする?" in context
-        assert "青にしよう" in context
+        assert "get_asks" in context
+        assert "青にしよう" not in context  # 回答本文はhook経由で注入しない
 
-        # 消費済み: tracked_ask_ids fileが空になっている
+        # 消費済み: remove_tracked_ask_idsは残りが空ならfileごと削除する（空文字列を書くパスは無い）
         tracked_file = state_dir / "tracked_ask_ids_sess-track-1"
-        assert not tracked_file.exists() or tracked_file.read_text().strip() == ""
+        assert not tracked_file.exists()
 
     def test_still_open_tracked_ask_not_injected(self, temp_db, tmp_path):
         from src.services import ask_service as ak
@@ -1255,27 +1288,46 @@ class TestSessionStartHookAskNotify:
         tracked_file = state_dir / "tracked_ask_ids_sess-track-2"
         assert tracked_file.read_text().strip() == str(r1["id"])
 
-    def test_answer_exceeding_budget_stays_tracked_across_repeated_calls(
+    def test_questions_exceeding_budget_are_deferred_not_lost_across_calls(
         self, temp_db, tmp_path
     ):
-        """回答がconfig.INJECTION_BUDGET_ASK_NOTIFY_CHARS（既定600字）を超える
-        長さの場合、compose()側のハード切り詰めで表示が欠落しうるため
-        本セクションには出さず、ask_idも追跡対象に残す。
+        """回答本文はhook経由で注入しない（_format_ask_line）ため、行の長さは
+        question（サービス層で500字上限）だけで決まり、1件だけでは
+        config.INJECTION_BUDGET_ASK_NOTIFY_CHARS（既定600字）を超えない。
+        2件が同時に追跡中で合計が予算を超える場合に、収まる分だけ表示・消費し
+        残りは追跡対象に残す（compose()側のハード切り詰めで表示が欠落しうる
+        ため）ことを確認する。
 
-        SessionStart hookを2回呼んでもロストせず追跡され続けることを確認する
-        （予算制約の無いUserPromptSubmit hook側での全文表示・消費の確認は
-        tests/e2e/test_user_prompt_submit_hook.py::TestAskNotifyが担当する）。
+        SessionStart hookを2回呼び、1回目で表示しきれなかった分が
+        ロストせず、2回目（残り1件だけになり予算に収まる）で表示・消費される
+        ことも合わせて確認する（予算制約の無いUserPromptSubmit hook側の
+        全文表示・消費の確認はtests/e2e/test_user_prompt_submit_hook.py::
+        TestAskNotifyが担当する）。
         """
         from src.services import ask_service as ak
 
         act = _seed_activity("a1")
-        r1 = ak.add_ask("長い回答が来る質問", tags=["domain:test"], blocks=[act])
-        long_answer = "回答本文" * 500  # 2000字。600字の予算を余裕を持って超える長さ
-        ak.answer_ask(r1["id"], long_answer)
+        long_q_a = "A" * 500  # 質問はサービス層で500字上限
+        long_q_b = "B" * 500
+        r_a = ak.add_ask(long_q_a, tags=["domain:test"], blocks=[act])
+        r_b = ak.add_ask(long_q_b, tags=["domain:test"], blocks=[act])
+        ak.answer_ask(r_a["id"], "answer a")
+        ak.answer_ask(r_b["id"], "answer b")
 
         state_dir = tmp_path / "hook-state"
         session_id = "sess-track-budget-overflow"
-        self._seed_tracked_ask_ids(state_dir, session_id, [r1["id"]])
+        # get_asksはlast_seen_at DESC, id DESC順で返すため、後に作ったr_bが先頭に来る
+        self._seed_tracked_ask_ids(state_dir, session_id, [r_a["id"], r_b["id"]])
+
+        # open_asksセクションが別途answered-未triageのasksを"(#id) question"の
+        # 形式（矢印なし）でも表示するため、ID+questionの部分文字列だけでは
+        # ask_notifyセクションでの表示/非表示を判定できない（実測: 両方とも
+        # 常にopen_asks側に出るため、この部分文字列だけの判定はr_aが除外
+        # されていても常にTrueになる）。ask_notify固有の"→ 回答あり..."を
+        # 含む行全体で判定する必要があるため、フォーマットを手書きせず実装の
+        # _format_ask_lineから導出する（フォーマット変更に追従させるため）。
+        line_a = f"- {_format_ask_line({'id_raw': r_a['id'], 'question': long_q_a, 'status': 'answered'})}"
+        line_b = f"- {_format_ask_line({'id_raw': r_b['id'], 'question': long_q_b, 'status': 'answered'})}"
 
         result1 = _run_session_start_hook(
             temp_db,
@@ -1283,20 +1335,22 @@ class TestSessionStartHookAskNotify:
             stdin_payload={"session_id": session_id},
         )
         context1 = result1["hookSpecificOutput"]["additionalContext"]
-        assert "askの回答が届いています" not in context1
+        assert "askの回答が届いています" in context1
+        assert line_b in context1  # 先頭（r_b）は1件なら予算に収まり表示される
+        assert line_a not in context1  # r_aは2件目で予算を超えるため見送られる
 
         tracked_file = state_dir / f"tracked_ask_ids_{session_id}"
-        assert tracked_file.read_text().strip() == str(r1["id"])
+        assert tracked_file.read_text().strip() == str(r_a["id"])  # ロストせず追跡対象に残る
 
-        # 2回目のSessionStart呼び出しでも同様（ロストしていない）
+        # 2回目のSessionStart呼び出しでは残り1件だけになり予算に収まるため表示・消費される
         result2 = _run_session_start_hook(
             temp_db,
             extra_env={"HOOK_STATE_DIR": str(state_dir)},
             stdin_payload={"session_id": session_id},
         )
         context2 = result2["hookSpecificOutput"]["additionalContext"]
-        assert "askの回答が届いています" not in context2
-        assert tracked_file.read_text().strip() == str(r1["id"])
+        assert line_a in context2
+        assert not tracked_file.exists()
 
 
 class TestSessionStartHookTranscriptPath:
@@ -1326,338 +1380,6 @@ class TestSessionStartHookTranscriptPath:
         assert "transcript path" not in context
 
 
-class TestSessionStartHookRelayInbox:
-    """relay inbox未読件数 + Monitor監視指示の表示テスト
-
-    CALM_RELAY_SESSION_AWARE=1（本クラスの既定extra_env）を渡した場合のON時の
-    振る舞いを検証する。OFF時（未設定）の振る舞いはTestSessionStartHookRelay
-    SessionAwareGateで検証する。
-
-    hookは実プロセスとしてsubprocess経由で起動され、MCPリクエストコンテキストを
-    一切持たない。そのためget_relay_identity()（ヘッダ/ctx.session_id経路）は
-    常にNoneへ解決する。祖先pidチェーンによるフォールバック
-    （resolve_identity_by_ancestry）は、hook subprocessの祖先チェーンと共通の
-    祖先pidを持つ launcher 登録ファイルが実在する場合にのみ解決できる。
-    以下のテストのうち登録ファイルを置かないケースは、この経路も解決できず
-    従来通りゼロコストになることの確認であり、登録ファイルを置くケースは
-    このテストプロセス自身のpidを共通祖先に見立てて実際に解決できることの
-    確認である。
-    """
-
-    def test_no_relay_section_when_no_unread(self, temp_db, tmp_path):
-        """relay状態が何もない通常時はセクション自体が出ない
-
-        RELAY_STATE_DIR を空のtmp_pathへ隔離する（実行マシン上に本物の
-        launcher登録ファイル・credential.jsonが存在すると、祖先pidチェーンが
-        たまたま実launcherと共通祖先を持つケースでテストが非決定的になり得る
-        ため）。
-        """
-        state_dir = tmp_path / "relay-state"
-        result = _run_session_start_hook(
-            temp_db,
-            extra_env={
-                "RELAY_STATE_DIR": str(state_dir),
-                "CALM_RELAY_SESSION_AWARE": "1",
-            },
-            env_remove=["RELAY_BEARER_TOKEN"],
-        )
-        context = result["hookSpecificOutput"]["additionalContext"]
-
-        assert "relay inbox 未読" not in context
-
-    def test_relay_section_absent_without_matching_launcher_registration(
-        self, temp_db, tmp_path
-    ):
-        """実在のinboxに未読が積まれていても、共通祖先を持つ launcher 登録
-        ファイルが無ければidentityを解決できずセクションは表示されない。
-        """
-        state_dir = tmp_path / "relay-state"
-        from src.services.relay import inbox as relay_inbox
-
-        os.environ["RELAY_STATE_DIR"] = str(state_dir)
-        try:
-            relay_inbox.append("some-identity", {"body": "hello"})
-        finally:
-            del os.environ["RELAY_STATE_DIR"]
-
-        result = _run_session_start_hook(
-            temp_db,
-            extra_env={
-                "RELAY_STATE_DIR": str(state_dir),
-                "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
-                "CALM_RELAY_SESSION_AWARE": "1",
-            },
-        )
-        context = result["hookSpecificOutput"]["additionalContext"]
-
-        assert "relay inbox 未読" not in context
-
-    def _register_launcher_matching_this_test_process(self, state_dir) -> str:
-        """このテストプロセス自身のpidを共通祖先に見立てた launcher 登録
-        ファイルを作る。
-
-        `_run_session_start_hook` は `subprocess.run` でhookを直接の子プロセス
-        として起動するため、hook subprocess の ppid は必ずこのテストプロセスの
-        pid（`os.getpid()`）になる。ここをancestor_pidsに含めておけば、hook側の
-        resolve_identity_by_ancestry が実際に共通祖先を発見して解決できる。
-        """
-        session_id = "resolved-by-ancestry"
-        sessions_dir = state_dir / "sessions"
-        sessions_dir.mkdir(parents=True, exist_ok=True)
-        registration = {
-            "session_id": session_id,
-            "pid": os.getpid(),
-            "ancestor_pids": [os.getpid()],
-            "created_at": "2026-07-08T00:00:00Z",
-        }
-        (sessions_dir / f"launcher-{os.getpid()}.json").write_text(
-            json.dumps(registration), encoding="utf-8"
-        )
-        return session_id
-
-    def test_relay_section_shown_via_ancestry_fallback_when_registered(
-        self, temp_db, tmp_path
-    ):
-        """共通祖先を持つ launcher 登録ファイルが実在する場合、hookは
-        resolve_identity_by_ancestryでidentityを解決し、未読件数 + Monitor
-        監視の指示を表示する。
-        """
-        state_dir = tmp_path / "relay-state"
-        from src.services.relay import inbox as relay_inbox
-
-        os.environ["RELAY_STATE_DIR"] = str(state_dir)
-        try:
-            session_id = self._register_launcher_matching_this_test_process(state_dir)
-            relay_inbox.append(session_id, {"body": "hello"})
-        finally:
-            del os.environ["RELAY_STATE_DIR"]
-
-        result = _run_session_start_hook(
-            temp_db,
-            extra_env={
-                "RELAY_STATE_DIR": str(state_dir),
-                "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
-                "CALM_RELAY_SESSION_AWARE": "1",
-            },
-        )
-        context = result["hookSpecificOutput"]["additionalContext"]
-
-        assert "relay inbox 未読: 1件" in context
-        assert "Monitorツール" in context
-        assert "relay_receive" in context
-
-    def test_relay_section_absent_when_token_not_configured(self, temp_db, tmp_path):
-        """identityは解決できてもrelay未構成（token未設定）ならセクションは出ない"""
-        state_dir = tmp_path / "relay-state"
-        from src.services.relay import inbox as relay_inbox
-
-        os.environ["RELAY_STATE_DIR"] = str(state_dir)
-        try:
-            session_id = self._register_launcher_matching_this_test_process(state_dir)
-            relay_inbox.append(session_id, {"body": "hello"})
-        finally:
-            del os.environ["RELAY_STATE_DIR"]
-
-        result = _run_session_start_hook(
-            temp_db,
-            extra_env={"RELAY_STATE_DIR": str(state_dir), "CALM_RELAY_SESSION_AWARE": "1"},
-            env_remove=["RELAY_BEARER_TOKEN"],
-        )
-        context = result["hookSpecificOutput"]["additionalContext"]
-
-        assert "relay inbox 未読" not in context
-
-    def test_monitor_instruction_shown_when_inbox_never_created(self, temp_db, tmp_path):
-        """identity解決・relay構成済みなら、このidentity宛のinbox fileが
-        一度も作られていなくてもMonitor監視指示は出る（未読N件の報告行のみ省く。
-        セッション作業中に届く新着を取りこぼさないための常時発火）。
-        呼び出し後、inbox fileがtail -fの即時失敗を防ぐため先行生成されている"""
-        state_dir = tmp_path / "relay-state"
-        from src.services.relay import inbox as relay_inbox
-
-        os.environ["RELAY_STATE_DIR"] = str(state_dir)
-        try:
-            session_id = self._register_launcher_matching_this_test_process(state_dir)
-        finally:
-            del os.environ["RELAY_STATE_DIR"]
-
-        result = _run_session_start_hook(
-            temp_db,
-            extra_env={
-                "RELAY_STATE_DIR": str(state_dir),
-                "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
-                "CALM_RELAY_SESSION_AWARE": "1",
-            },
-        )
-        context = result["hookSpecificOutput"]["additionalContext"]
-
-        assert "Monitorツール" in context
-        assert "relay inbox 未読" not in context
-        os.environ["RELAY_STATE_DIR"] = str(state_dir)
-        try:
-            assert relay_inbox.inbox_path(session_id).exists()
-        finally:
-            del os.environ["RELAY_STATE_DIR"]
-
-    def test_monitor_instruction_shown_when_unread_is_zero(self, temp_db, tmp_path):
-        """identity解決・relay構成済みでinbox fileが存在し、既読化済みで
-        未読が0件でもMonitor監視指示は出る（未読N件の報告行のみ省く）"""
-        state_dir = tmp_path / "relay-state"
-        from src.services.relay import inbox as relay_inbox
-
-        os.environ["RELAY_STATE_DIR"] = str(state_dir)
-        try:
-            session_id = self._register_launcher_matching_this_test_process(state_dir)
-            relay_inbox.append(session_id, {"body": "hello"})
-            # peek=False（既定）で drain して既読化する
-            relay_inbox.drain(session_id)
-        finally:
-            del os.environ["RELAY_STATE_DIR"]
-
-        result = _run_session_start_hook(
-            temp_db,
-            extra_env={
-                "RELAY_STATE_DIR": str(state_dir),
-                "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
-                "CALM_RELAY_SESSION_AWARE": "1",
-            },
-        )
-        context = result["hookSpecificOutput"]["additionalContext"]
-
-        assert "Monitorツール" in context
-        assert "relay inbox 未読" not in context
-
-
-class TestSessionStartHookRelayInboxViaRealUv:
-    """_CLI_HOP_WINDOW=2の前提を、実際の`uv run`経由でhookを起動して検証する。
-
-    他のidentity解決テストは`_get_ppid`をモックするか`sys.executable`で直接
-    pythonを起動しており、hooks.jsonが実際に使う`cd X && exec uv run python
-    hooks/xxx.py`という起動経路そのものを検証していない。この経路が成立する
-    のは「hook側もlauncher側もwrapper(uv)を1枚挟んでCLI本体から起動される」
-    という構造に立脚しており、もし将来のuvが`uv run`内部でexecによる自己
-    置換に切り替わると、祖先チェーンの段数が1つズレて窓内に端末ホスト
-    （iTermServer・tmuxサーバ等）が入り込み、この判定が防いでいる誤クロス
-    セッション一致が2ホップ窓の中でそのまま再発しうる（fail-closeにもならず
-    静かに別セッションのidentityを返す、検知しづらい退行）。本テストは
-    実際に`uv run`でhookを起動し、この前提が崩れたらCIで検知できるようにする。
-    """
-
-    def test_resolves_identity_through_real_uv_wrapper(self, temp_db, tmp_path):
-        uv_path = shutil.which("uv")
-        if uv_path is None:
-            pytest.skip("uvがPATH上に無い環境のためスキップ")
-
-        state_dir = tmp_path / "relay-state"
-        sessions_dir = state_dir / "sessions"
-        sessions_dir.mkdir(parents=True)
-
-        # このテストプロセス自身をhookの起動元「Claude Code CLI本体」役に
-        # 見立てる。hookをhooks.json同形の`exec uv run python hooks/xxx.py`
-        # で実際に起動したとき、wrapper(uv)がこのプロセスの直接の子として
-        # 生存し続け、hookプロセスはさらにその子になる
-        # （hook -> uv -> このテストプロセス、ちょうど2ホップ）なら解決に
-        # 成功するはず。
-        session_id = "resolved-via-real-uv"
-        registration = {
-            "session_id": session_id,
-            "pid": os.getpid(),
-            "ancestor_pids": [os.getpid()],
-            "created_at": "2026-07-08T00:00:00Z",
-        }
-        (sessions_dir / f"launcher-{os.getpid()}.json").write_text(
-            json.dumps(registration), encoding="utf-8"
-        )
-
-        from src.services.relay import inbox as relay_inbox
-
-        os.environ["RELAY_STATE_DIR"] = str(state_dir)
-        try:
-            relay_inbox.append(session_id, {"body": "hello"})
-        finally:
-            del os.environ["RELAY_STATE_DIR"]
-
-        # habits投影ファイルのisolation（CALM_HABITS_RULES_PATH注入）は
-        # session_start_hook_env に集約している。ここは`sh -c`経由の起動
-        # コマンドが特殊なため run_session_start_hook は使わず、env組み立て
-        # だけをcontext managerで共有する。
-        with session_start_hook_env(
-            temp_db,
-            extra_env={
-                "RELAY_STATE_DIR": str(state_dir),
-                "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
-                "CALM_RELAY_SESSION_AWARE": "1",
-            },
-        ) as env:
-            # hooks.jsonと全く同じ形（`cd X && exec uv run python hooks/xxx.py`
-            # をshに渡す）で起動する。execによりsh自身がuvへ置き換わるため、
-            # hookプロセスの祖先チェーンにsh層が残らない。
-            command = (
-                f"cd {PROJECT_ROOT} && exec {uv_path} run python "
-                "hooks/session_start_hook.py"
-            )
-            result = subprocess.run(
-                ["sh", "-c", command],
-                input="{}",
-                capture_output=True,
-                text=True,
-                env=env,
-            )
-        stdout = result.stdout.strip()
-        assert stdout, f"session_start_hook.py produced no output. stderr: {result.stderr}"
-        output = json.loads(stdout)
-
-        context = output["hookSpecificOutput"]["additionalContext"]
-        assert "relay inbox 未読: 1件" in context
-        assert "Monitorツール" in context
-
-
-class TestSessionStartHookRelaySessionAwareGate:
-    """CALM_RELAY_SESSION_AWARE（kill switch）未設定時（デフォルトOFF）の振る舞い。
-
-    token設定済み・launcher登録済みでidentity解決可能・未読ありという
-    「本来なら表示される」全条件を満たしていても、env var未設定なら
-    relay関連の文言が一切出ないことを検証する。
-    """
-
-    def test_no_relay_text_when_env_var_unset_even_if_fully_configured(
-        self, temp_db, tmp_path
-    ):
-        state_dir = tmp_path / "relay-state"
-        from src.services.relay import inbox as relay_inbox
-
-        os.environ["RELAY_STATE_DIR"] = str(state_dir)
-        try:
-            sessions_dir = state_dir / "sessions"
-            sessions_dir.mkdir(parents=True, exist_ok=True)
-            session_id = "resolved-by-ancestry-gate-test"
-            registration = {
-                "session_id": session_id,
-                "pid": os.getpid(),
-                "ancestor_pids": [os.getpid()],
-                "created_at": "2026-07-08T00:00:00Z",
-            }
-            (sessions_dir / f"launcher-{os.getpid()}.json").write_text(
-                json.dumps(registration), encoding="utf-8"
-            )
-            relay_inbox.append(session_id, {"body": "hello"})
-        finally:
-            del os.environ["RELAY_STATE_DIR"]
-
-        result = _run_session_start_hook(
-            temp_db,
-            extra_env={
-                "RELAY_STATE_DIR": str(state_dir),
-                "RELAY_BEARER_TOKEN": "dummy-token-for-e2e",
-            },
-            env_remove=["CALM_RELAY_SESSION_AWARE"],
-        )
-        context = result["hookSpecificOutput"]["additionalContext"]
-
-        assert "relay inbox" not in context
-        assert "Monitorツール" not in context
-
-
 class TestSessionStartHookContextBudget:
     """SessionStart additionalContext出力全体の字数回帰テスト
 
@@ -1685,3 +1407,37 @@ class TestSessionStartHookContextBudget:
         assert len(context) <= 1900, (
             f"additionalContextが1,900字を超えている（実測{len(context)}字）"
         )
+
+
+class TestSessionStartHookNoGoalInjection:
+    """SessionStart hookはgoal機構を一切参照しない。goal付きのactivityが
+    存在していても、その終了条件・次の一手はSessionStartのadditionalContextに
+    出てはならない（goalブロックの配達経路はcheck_inだけである）。
+    """
+
+    def test_goal_block_not_injected_at_session_start(self, temp_db):
+        """goal付きactivityがあってもSessionStartのcontextにgoalの本体・次の一手が出ない"""
+        from src.services import goal_service
+
+        activity_id = _seed_activity("[作業] goal付きタスク", status="in_progress")
+        set_result = goal_service.set_goal(
+            activity_id,
+            {
+                "new": {
+                    "handle": "session-start-no-inject",
+                    "statement": "この一文はSessionStartには出てはならない",
+                    "conditions": [
+                        {"statement": "Claudeが自力で進められる条件", "actor": "claude"}
+                    ],
+                }
+            },
+        )
+        assert "error" not in set_result
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "session-start-no-inject" not in context
+        assert "この一文はSessionStartには出てはならない" not in context
+        assert "Claudeが自力で進められる条件" not in context
+        assert "goal_id_raw" not in context

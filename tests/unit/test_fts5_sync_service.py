@@ -7,15 +7,12 @@
 - spec の識別子バリデーション
 """
 
-import os
 import re
 import sqlite3
-import tempfile
 
 import pytest
 
 import src.services.embedding_service as emb
-from src.db import init_database
 from src.services.fts5_sync_service import (
     FTS5_SPECS,
     Fts5SyncSpec,
@@ -35,16 +32,6 @@ def disable_embedding(monkeypatch):
     monkeypatch.setattr(emb, "_backfill_done", True)
     monkeypatch.setattr(emb, "_ensure_server_running", lambda: False)
 
-
-@pytest.fixture
-def temp_db():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 def _normalize_sql(sql: str) -> str:

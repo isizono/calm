@@ -70,6 +70,10 @@ TOOL_TAGS: dict[str, str] = {
     "import_bundle": "export",
     "check_in": "checkin",
     "retract": "retract",
+    "set_goal": "goal",
+    "update_goal": "goal",
+    "judge_goal": "goal",
+    "get_goal": "goal",
     "get_config": "misc",
     "get_signals": "misc",
     "report_signal": "misc",
@@ -83,11 +87,6 @@ TOOL_TAGS: dict[str, str] = {
     "withdraw_ask": "ask",
     "triage_ask": "ask",
     "unsubscribe_ask": "ask",
-    "relay_post": "relay",
-    "relay_publish": "relay",
-    "relay_subscribe": "relay",
-    "relay_receive": "relay",
-    "relay_status": "relay",
     "get_sessions": "session",
     "set_session_alias": "session",
 }
@@ -108,8 +107,8 @@ TAG_DESCRIPTIONS: dict[str, str] = {
     "checkin": "アクティビティ check-in",
     "retract": "取り消し（論理削除）",
     "ask": "人間の判断待ちの問いの記録・回答",
-    "relay": "セッション間メッセージング",
     "session": "並行セッションの別名管理",
+    "goal": "activityの終了条件（goal）の作成・更新・判定・取得",
     "misc": "設定取得・ユーティリティ",
 }
 

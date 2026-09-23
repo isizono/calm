@@ -2,22 +2,21 @@
 
 get_activities の is_heartbeat_active, _build_activities_section の別セッション表示
 """
-import os
-import tempfile
 
 import pytest
 
-from src.db import init_database, get_connection
+from src.db import get_connection
 from src.services.activity_service import (
     add_activity,
     get_activities,
     update_activity,
     get_active_activities_by_tag,
 )
-from src.services.tag_service import _injected_tags
 from src.services.pin_service import add_pin
 from hooks.session_start_hook import _build_activities_section
 from src.services.topic_service import add_topic
+from src.services import session_registry_service
+from tests.helpers import register_alive_heartbeat_session, register_dead_heartbeat_session
 import src.services.embedding_service as emb
 
 
@@ -40,18 +39,6 @@ def disable_embedding(monkeypatch):
     monkeypatch.setattr(emb, '_backfill_done', True)
     monkeypatch.setattr(emb, '_ensure_server_running', lambda: False)
 
-
-@pytest.fixture
-def temp_db():
-    """テスト用の一時的なデータベースを作成する"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        _injected_tags.clear()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 def _get_tag_id(namespace: str, name: str) -> int:
@@ -191,14 +178,16 @@ class TestBuildActiveContextHeartbeat:
         aid = activity["activity_id"]
         update_activity(aid, status="in_progress")
 
-        # heartbeatを活性化
+        # heartbeatを活性化（打刻主は生存中とみなす）
         conn = get_connection()
         conn.execute(
-            "UPDATE activities SET last_heartbeat_at = datetime('now') WHERE id = ?",
-            (aid,),
+            "UPDATE activities SET last_heartbeat_at = datetime('now'), "
+            "last_heartbeat_session_id = ? WHERE id = ?",
+            ("sess-hb-active", aid),
         )
         conn.commit()
         conn.close()
+        register_alive_heartbeat_session("sess-hb-active")
 
         result = _build_activities_section_wrapper()
 
@@ -242,14 +231,16 @@ class TestBuildActiveContextHeartbeat:
         )
         add_pin("tag", "domain:hb-mix", "activity", normal_activity["activity_id"])
 
-        # HB活性化
+        # HB活性化（打刻主は生存中とみなす）
         conn = get_connection()
         conn.execute(
-            "UPDATE activities SET last_heartbeat_at = datetime('now') WHERE id = ?",
-            (hb_aid,),
+            "UPDATE activities SET last_heartbeat_at = datetime('now'), "
+            "last_heartbeat_session_id = ? WHERE id = ?",
+            ("sess-hb-mix", hb_aid),
         )
         conn.commit()
         conn.close()
+        register_alive_heartbeat_session("sess-hb-mix")
 
         result = _build_activities_section_wrapper()
 
@@ -271,17 +262,111 @@ class TestBuildActiveContextHeartbeat:
         aid = activity["activity_id"]
         add_pin("tag", "domain:hb-exp", "activity", aid)
 
-        # 30分前にheartbeat更新
+        # 30分前にheartbeat更新（打刻主は生存中だが鮮度切れで単体に弾かれることを見る）
         conn = get_connection()
         conn.execute(
-            "UPDATE activities SET last_heartbeat_at = datetime('now', '-30 minutes') WHERE id = ?",
-            (aid,),
+            "UPDATE activities SET last_heartbeat_at = datetime('now', '-30 minutes'), "
+            "last_heartbeat_session_id = ? WHERE id = ?",
+            ("sess-hb-expired", aid),
         )
         conn.commit()
         conn.close()
+        register_alive_heartbeat_session("sess-hb-expired")
 
         result = _build_activities_section_wrapper()
 
         assert "○" in result
         assert "## 作業中（別セッション）" not in result
         assert "[作業] 期限切れHB" in result
+
+    def test_dead_heartbeat_session_not_in_other_section(self, temp_db):
+        """heartbeatは活性でも打刻主プロセスが死亡していれば別セッション扱いにしない
+        （in_progressなので通常の階層表示には残る）"""
+        add_topic(title="Topic", description="Desc", tags=["domain:hb-dead"])
+        activity = add_activity(
+            title="[作業] 死んだ別セッション", description="Desc", tags=["domain:hb-dead"], check_in=False,
+        )
+        aid = activity["activity_id"]
+        update_activity(aid, status="in_progress")
+
+        conn = get_connection()
+        conn.execute(
+            "UPDATE activities SET last_heartbeat_at = datetime('now'), "
+            "last_heartbeat_session_id = ? WHERE id = ?",
+            ("sess-hb-dead", aid),
+        )
+        conn.commit()
+        conn.close()
+        register_dead_heartbeat_session("sess-hb-dead")
+
+        result = _build_activities_section_wrapper()
+
+        assert "## 作業中（別セッション）" not in result
+        assert "[作業] 死んだ別セッション" in result
+
+    def test_unregistered_heartbeat_session_not_in_other_section(self, temp_db):
+        """heartbeatは活性でも別名ファイルにエントリが無い（判定不能）場合は
+        別セッション扱いにしない"""
+        add_topic(title="Topic", description="Desc", tags=["domain:hb-unreg"])
+        activity = add_activity(
+            title="[作業] 未登録の別セッション", description="Desc", tags=["domain:hb-unreg"], check_in=False,
+        )
+        aid = activity["activity_id"]
+        update_activity(aid, status="in_progress")
+
+        conn = get_connection()
+        conn.execute(
+            "UPDATE activities SET last_heartbeat_at = datetime('now'), "
+            "last_heartbeat_session_id = ? WHERE id = ?",
+            ("sess-hb-unregistered", aid),
+        )
+        conn.commit()
+        conn.close()
+        # register_alive/dead のいずれも呼ばない = session_aliases.json にエントリが無い
+
+        result = _build_activities_section_wrapper()
+
+        assert "## 作業中（別セッション）" not in result
+        assert "[作業] 未登録の別セッション" in result
+
+    def test_alive_check_called_once_per_shared_session_id(self, temp_db, monkeypatch):
+        """同じlast_heartbeat_session_idを持つ候補が複数あっても、生存確認は
+        session_idごとに1回しか呼ばれない（プロセス確認がサブプロセス起動を
+        伴いうるため、候補数に比例させない）"""
+        add_topic(title="Topic", description="Desc", tags=["domain:hb-shared"])
+        a1 = add_activity(
+            title="[作業] 共有セッション1", description="Desc", tags=["domain:hb-shared"], check_in=False,
+        )
+        a2 = add_activity(
+            title="[作業] 共有セッション2", description="Desc", tags=["domain:hb-shared"], check_in=False,
+        )
+        aid1 = a1["activity_id"]
+        aid2 = a2["activity_id"]
+        update_activity(aid1, status="in_progress")
+        update_activity(aid2, status="in_progress")
+
+        conn = get_connection()
+        conn.execute(
+            "UPDATE activities SET last_heartbeat_at = datetime('now'), "
+            "last_heartbeat_session_id = ? WHERE id IN (?, ?)",
+            ("sess-shared", aid1, aid2),
+        )
+        conn.commit()
+        conn.close()
+        register_alive_heartbeat_session("sess-shared")
+
+        calls: list[str | None] = []
+        original = session_registry_service.is_session_alive
+
+        def spy(cli_session_id):
+            calls.append(cli_session_id)
+            return original(cli_session_id)
+
+        monkeypatch.setattr(session_registry_service, "is_session_alive", spy)
+
+        result = _build_activities_section_wrapper()
+
+        assert calls == ["sess-shared"], "同一session_idの生存確認が複数回呼ばれている"
+        assert "## 作業中（別セッション）" in result
+        assert "[作業] 共有セッション1" in result
+        assert "[作業] 共有セッション2" in result

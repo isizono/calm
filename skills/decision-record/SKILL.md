@@ -66,6 +66,16 @@ description: 【必須】ユーザーとの合意が成立したとき、また�
 
 節が無くても記録は拒否されない（soft validation）が、`precedent_warnings` に `intent:design decision missing '隣接確認:' section` という警告が付く。`intent:design` を含まない decision には適用されない。
 
+## 決定記録の直後にgoalの条件を満たす場合
+
+`add_decisions` で記録した内容が、手元のgoalブロックの未終端の条件を満たすなら、続けて `update_goal` を呼ぶ。`changes` に `{"op": "set", "id": <条件id>, "state": "satisfied", "note": "..."}` を積み、同じ `changes` に `{"op": "edit", "id": <条件id>, "bound": {"type": "decision", "id": <この決定のid>}}` を並べて束縛する。
+
+`update_goal` の応答の `goal.label` が `judge_ready`（全条件が終端し判定待ち）になったら、そのまま持ち越さずその場で判定する。`goal.open_questions` に未決があれば畳むか1ターン聞き、そのうえで `goal.terminal` の充足が1件以上あれば `judge_goal(goal_id, verdict="achieved", note=...)`、0件なら `judge_goal(goal_id, verdict="failed", note=理由)` を呼ぶ。人間の判断は待たず、判定したことの報告もしない。
+
+この判定の分岐（`open_questions`の扱いから`judge_goal`の呼び分けまで）は[check-in](../check-in/SKILL.md)の「goalフィールドの扱い」節を正本とする。判定条件が変わる場合はそちらを確認する。
+
+`[議論中]` の論点を結論の decision で決着させる場合は書き方が違う。決着する論点自体が条件の束縛先なら、結論の decision から問いの decision へ `add_relation(relation_type="supersedes")` で置き換えの関係を張る（既存の運用）だけでよく、`update_goal` は呼ばない（したがって上記の判定待ちの確認も発生しない）。この置き換えが張られた時点で、束縛した条件は次の読み出しから済と読まれる。決着前に条件を `satisfied` に書き換えると、束縛先がまだ済でないため崩れとして扱われる。
+
 ## 矛盾・重複への対処
 
 `add_decisions` のレスポンスには `related_decisions`（同 topic 内の類似 decision 上位3件）が付く。既存 decision と矛盾する、または同一内容の重複だと気づいたら、その場で `report_signal(kind="contradiction")` を呼んで報告する。retract や supersede の判断そのものは本スキルの対象外。

@@ -4,13 +4,8 @@ MCPクライアント側で2,048字を超えると切り詰められる実態が
 全文がハードリミット2,048字以内に収まることを回帰検知する。
 
 tests/unit/test_tool_docstring_budget.pyと同じ設計思想で、安全マージン
-1,900字も別テストで追跡する。RULESは本テスト更新時点で実測1,967字あり、
-安全マージンを既に超えている（既知の超過としてxfail(strict=True)で
-追跡。マージン内に削減されたらxfailがxpassに転じ、strict=Trueにより
-失敗として検出される）。
+1,900字も別テストで追跡する。
 """
-import pytest
-
 from src.main import RULES
 
 RULES_HARD_LIMIT = 2048
@@ -24,13 +19,8 @@ def test_rules_within_budget():
     )
 
 
-@pytest.mark.xfail(strict=True, reason="既知の超過。安全マージンへの削減は別対応")
 def test_rules_within_safe_budget():
-    """RULES全文が安全マージン1,900字以内である
-
-    解消されればこのテストがxfail→passに転じ、strict=Trueにより失敗として
-    検出される(その時点でxfailマーカーを外すこと)。
-    """
+    """RULES全文が安全マージン1,900字以内である"""
     assert len(RULES) <= RULES_SAFE_BUDGET
 
 

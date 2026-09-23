@@ -1,24 +1,10 @@
 """トピック管理API（書き込み系）のテスト"""
-import os
-import tempfile
 import pytest
-from src.db import init_database, get_connection
+from src.db import get_connection
 from src.services.topic_service import add_topic
 from src.services.activity_service import add_activity
 from tests.helpers import add_log, add_decision
 
-
-@pytest.fixture
-def temp_db():
-    """テスト用の一時的なデータベースを作成する"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        # クリーンアップ
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 DEFAULT_TAGS = ["domain:test"]

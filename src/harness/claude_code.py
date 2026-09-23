@@ -3,7 +3,7 @@
 Claude Codeのhookプロトコル（stdin JSON入力・stdoutへの
 `hookSpecificOutput` JSON出力）、transcriptファイル形式（フラットな
 `type`/`message.content` のJSONL）、identity解決（HTTPヘッダ / 祖先pid
-探索。src/services/relay/identity.py）をHarnessインターフェースに載せる。
+探索。src/infra/session_identity.py）をHarnessインターフェースに載せる。
 """
 from __future__ import annotations
 
@@ -227,11 +227,11 @@ class ClaudeCodeHarness(Harness):
 
     def resolve_session_identity(self) -> str | None:
         # hookプロセスはMCPリクエストコンテキストを持たないため、
-        # get_relay_identity()は通常Noneを返し、祖先pid探索へ
+        # get_caller_session_id()は通常Noneを返し、祖先pid探索へ
         # フォールバックする（既存hookと同じ解決順）。
-        from src.services.relay.identity import (
-            get_relay_identity,
+        from src.infra.session_identity import (
+            get_caller_session_id,
             resolve_identity_by_ancestry,
         )
 
-        return get_relay_identity() or resolve_identity_by_ancestry()
+        return get_caller_session_id() or resolve_identity_by_ancestry()

@@ -27,13 +27,13 @@ _CODEX_UNSUPPORTED_EVENTS = {"MessageDisplay"}
 
 # イベント自体はCodexに存在するが、スクリプトが依存するハーネス機構が
 # Codexに無いため、Codex側登録の期待値導出から除外するスクリプト。
-# relay_monitor_watch_hook.py: matcher ^Monitor$ が対象とするMonitorツール
-# （イベント駆動の永続監視）がCodexに存在せず、登録しても発火し得ない（#616）。
+# ask_answer_rewake_hook.py: 待機中のhookがidleのセッションを起こす機構
+# (asyncRewake)がCodexに無く、登録しても回答を知らせられない。
 # sanitize_backfill_hook.py: Codexのrollout recorderは書き込みハンドルを
 # 保持しており、セッション中のrename方式書き換えはappend喪失を起こすことを
 # 実機確認済み。登録してもsupports_transcript_rewrite=Falseで即exitする（#613）。
-_CODEX_UNSUPPORTED_SCRIPTS = {
-    "relay_monitor_watch_hook.py",
+_CODEX_UNSUPPORTED_SCRIPTS: set[str] = {
+    "ask_answer_rewake_hook.py",
     "sanitize_backfill_hook.py",
 }
 

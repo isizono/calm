@@ -2,8 +2,8 @@
 watch-tags: domain:calm, domain:cc-memory
 watch-direction: true
 watch-migrations: true
-last-synced: 2026-09-08
-last-synced-migration: 0073
+last-synced: 2026-09-21
+last-synced-migration: 0077
 -->
 
 # CALM DBスキーマ v0
@@ -161,8 +161,9 @@ erDiagram
 - last_heartbeat_session_id は 0040 で追加。自セッションのheartbeatを「別セッション扱い」と誤表示していた問題の解消用
 - orch_managed は 0045 で追加。従来の素タグ `orch-managed` の存在/不在で表現していた属性を構造的カラムへ昇格したもの（同migrationで既存タグ付きactivityへの一括反映も実施）
 - caller_session_id カラムは 0048 で追加されたが、0057 で削除された（§6）
+- closed_at・closed_by・closed_reason は 0077 で追加。goal機構（§3.28-3.30）の judge_goal・update_goal（差し戻し）・update_activity が、activityが最後にどう閉じたか（誰の意思で・なぜ）を記録するための列。3列とも NULL 許容の ADD COLUMN で、既存行は NULL のまま始まる。closed_by の CHECK が closed_at を参照するため、closed_at を先に追加する
 
-関連 migration: 0001 / 0007 / 0010 / 0011 / 0016 / 0017 / 0021 / 0026 / 0027 / 0040（last_heartbeat_session_id）/ 0045（orch_managed）/ 0048（caller_session_id追加、のち0057で削除）
+関連 migration: 0001 / 0007 / 0010 / 0011 / 0016 / 0017 / 0021 / 0026 / 0027 / 0040（last_heartbeat_session_id）/ 0045（orch_managed）/ 0048（caller_session_id追加、のち0057で削除）/ 0077（closed_at・closed_by・closed_reason追加）
 
 カラム一覧・インデックス: `db-schema-tables.md` の `activities` 節参照。
 
@@ -473,21 +474,7 @@ CALM自身の故障報告・使用感不満・矛盾検出・運用計測イベ�
 
 カラム一覧・インデックス: `db-schema-tables.md` の `signal_events` 節参照。
 
-### 3.22 relay_outbox
-
-セッション間通信の publish（labels routing 配布）の送信キュー（transactional outbox）。`relay_publish` ツールが INSERT し、server 内の常駐配達ループが pending 行を relay サーバーへ配達する。at-least-once 保証は本テーブルだけで閉じる（relay サーバー側は永続真実を持たない）。
-
-スキーマの単一の真実源は relay_sdk パッケージの DDL（`relay_sdk/outbox/schema.py`、relay リポジトリからの依存パッケージ）であり、migration 0056 はそれと同一形状を migration chain に組み込んだもの。
-
-補足:
-- タグ・リレーション・検索インデックス（search_index）・embeddingのいずれにも接続しない。通信レイヤ専用のキューであり、CALMのエンティティモデルからは独立している
-- SDK 側を再同期して DDL の形状が変わった場合は、新規 migration で追従する（0056 は事後改変しない）
-
-関連 migration: 0056_add_relay_outbox
-
-カラム一覧・インデックス: `db-schema-tables.md` の `relay_outbox` 節参照。
-
-### 3.23 asks
+### 3.22 asks
 
 人間の判断を待つ問いの記録先。signal_events と同様「双方の合意」が要らない受け皿だが、状態遷移（open→answered→promoted/dismissed、open→withdrawn）を持つため専用テーブルとして独立している。answer 時点ではトリアージ（promote/dismiss）を行わず、次の check_in で配達されるまで遅延する。
 
@@ -496,7 +483,7 @@ CALM自身の故障報告・使用感不満・矛盾検出・運用計測イベ�
 - CHECK制約で「open/withdrawn 以外は answer_body/answered_at 必須」「triage 設定は answered_at 必須」「promoted は promoted_decision_id 必須・それ以外は NULL 必須」「withdrawn は withdrawn_at 必須・それ以外は NULL 必須」を強制する
 - `kind`（0068 追加）は `'ask'`（通常ask、既定）/`'meta'`（メタask）の2値のみ CHECK制約で固定する。メタaskは、同型の問いが繰り返され裁定が一貫していると判断されたときに `ask-distill` skill 経由で起票される「この型の問いを今後判例に従って自己裁定してよいか」を問う一段上のask。一般化ルールの発効は人間のメタask裁定でのみ行われる
 - `choices`（0069 追加）はJSON配列文字列（例: `'["A案", "B案", "C案"]'`）で保存する選択肢テンプレート。nullable、既存行への遡及適用なし。AskUserQuestion風の「最大3択+フリーテキスト」UIをダッシュボード等で組み立てるための添え物で、回答（`answer_ask`/`answer_body`）のスキーマは変えず引き続き自由文字列のまま。件数上限（最大3件）・文字数上限（1件100字）はDB制約ではなくサービス層で強制する。dedup時（同一fingerprintのopen ask再post）は`kind`と同じく今回渡された値を無視し、初回投入時の値を保持する
-- リレーション（related/belongs_to）には接続しない（v1では非対応）。タグは 0068 で `ask_tags` 経由の接続に対応した（§3.24 参照）が、topic からの継承（`get_effective_tags` 相当のUNION）はない点で decision/log とは異なる。近傍検索は ask_vec を経由する
+- リレーション（related/belongs_to）には接続しない（v1では非対応）。タグは 0068 で `ask_tags` 経由の接続に対応した（§3.23 参照）が、topic からの継承（`get_effective_tags` 相当のUNION）はない点で decision/log とは異なる。近傍検索は ask_vec を経由する
 - 文字列長上限（question 500字、context/answer_body 8000字）は DB 制約ではなくサービス層（`ask_service`）で強制する
 - `notify_wanted`（0073 追加、既定1）は、同一セッションが生きている間に人間の回答を低遅延で受け取りたいユースケース向けのフラグ。`answer_ask`/`triage_ask`（dismiss経路のみ、promoteは対象外）実行時、trueのaskだけがファイルベースの通知（`<CALM_ASK_NOTIFY_DIR>/<ask_id>.notify`、既定 `~/.cc-memory/asks/`）を受け取る。pull（`check_in`/`get_asks`）は notify_wanted の値に関わらず常に機能する（push は低遅延化のためのヒントに過ぎず、正は pull）。`unsubscribe_ask` で明示的にfalseへ倒せる。dedup時（同一fingerprintのopen ask再post）は `kind`/`choices` と同じく初回投入時の値を保持し、今回渡された値では上書きしない
 
@@ -504,7 +491,7 @@ CALM自身の故障報告・使用感不満・矛盾検出・運用計測イベ�
 
 カラム一覧・インデックス: `db-schema-tables.md` の `asks` 節参照。
 
-### 3.24 ask_blocks / ask_requesters / ask_tags
+### 3.23 ask_blocks / ask_requesters / ask_tags
 
 - `ask_blocks`: ask ↔ activity の junction（`PRIMARY KEY (ask_id, activity_id)`、両方 `ON DELETE CASCADE`）。このaskが答え待ちで止めているactivityを表す。answer/triage/withdrawのいずれの遷移でも該当askの行は削除される（blockの解除）
 - `ask_requesters`: ask ↔ 要求元 `session_id` の junction（`PRIMARY KEY (ask_id, requester_session_id)`）。同じaskへの複数セッションからの要求をUNIONで蓄積する。withdraw時も削除しない（参照ログとして残す）
@@ -514,7 +501,7 @@ CALM自身の故障報告・使用感不満・矛盾検出・運用計測イベ�
 
 カラム一覧・インデックス: `db-schema-tables.md` の `ask_blocks` 節・`ask_requesters` 節・`ask_tags` 節参照。
 
-### 3.25 ask_vec
+### 3.24 ask_vec
 
 asks 専用の sqlite-vec 仮想テーブル（384次元、`distance_metric=cosine`）。topic_vec と同型で、rowid に `asks.id` を直接使う（vec_index のように search_index 経由の rowid 共有はしない）。asks は search_index/vec_index に参加しない（v1では検索対象外）ため、`add_ask` 時に生成した embedding をここにのみ格納する。embeddingサーバー未起動時は格納されない（近傍askサジェストが空配列になるだけで、ask自体の記録は成立する）。
 
@@ -522,7 +509,7 @@ asks 専用の sqlite-vec 仮想テーブル（384次元、`distance_metric=cosi
 
 カラム一覧・インデックス: `db-schema-tables.md` の `ask_vec` 節参照。
 
-### 3.26 injection_telemetry
+### 3.25 injection_telemetry
 
 記録系ツール（add_logs / add_decisions / add_material）が返す関連既存記録top3（記録=クエリ添付）について、「提示された記録が同セッションで実際に読まれたか」を機械記録する追随カウンタの present側（添付を返した瞬間）の台帳。取得側（fetch）は既存 `search_telemetry.results_json` / `fetch_telemetry.items_json` を再利用し、post-hoc の SQL 集計で `caller_session_id` を突合キーとして追随率を算出する（専用の集計ツールは持たない）。
 
@@ -535,7 +522,7 @@ asks 専用の sqlite-vec 仮想テーブル（384次元、`distance_metric=cosi
 
 カラム一覧・インデックス: `db-schema-tables.md` の `injection_telemetry` 節参照。
 
-### 3.27 instance_meta
+### 3.26 instance_meta
 
 複数のCALMインスタンス間でtopic/decision/log/material/activityを交換するexport/import機能において、自インスタンス自身を識別する識別子（instance_id）を保持する単一行テーブル。エンティティの複合キー（`<instance_id>:<型コード><ローカルID>`、例: `team-a:M12`）発行の基盤になる。
 
@@ -549,7 +536,7 @@ asks 専用の sqlite-vec 仮想テーブル（384次元、`distance_metric=cosi
 
 カラム一覧・インデックス: `db-schema-tables.md` の `instance_meta` 節参照。
 
-### 3.28 import_provenance
+### 3.27 import_provenance
 
 他インスタンスから取り込んだ（`import_bundle`でimportした）エンティティの出自を記録する台帳。1テーブルで再importの冪等性判定・上流変更検知・増分importでの参照自己解決・チェーンexportでの正準キー維持を兼ねる。
 
@@ -562,6 +549,46 @@ asks 専用の sqlite-vec 仮想テーブル（384次元、`distance_metric=cosi
 関連 migration: 0071_add_import_provenance
 
 カラム一覧・インデックス: `db-schema-tables.md` の `import_provenance` 節参照。
+
+### 3.28 goals
+
+goal機構（activityが目指す終わりを、真偽の付く条件の集合として表現する仕組み）の本体。handleとstatementのみを持ち、判定記録（verdict/judged_by/judged_at/judge_note）は最後の1回分を、差し戻し（closed=0への書き戻し）でも消さずに残す。
+
+補足:
+- `handle`は英小文字・数字・ハイフンのみでUNIQUE。40字以内の検査はDB制約ではなくアプリ層で行う（40字は調整しうる値であり、変えるのにテーブル再作成が要るCHECKには置かない）
+- `closed`はboolean相当のINTEGER。判定（verdict/judged_by/judged_at）の有無と`closed`の整合、failed判定でのjudge_note必須はCHECK制約で強制する
+- 条件表（goal_conditions）・紐づけ表（goal_activities）は別テーブルで、goalsは本体のみを持つ。5型（topic/activity/material/decision/log）のいずれにも属さない独立したテーブル群であり、relations/pins/citationsのCHECK・検索索引（search_index等）には接続しない
+
+関連 migration: 0077_add_goals
+
+カラム一覧・インデックス: `db-schema-tables.md` の `goals` 節参照。
+
+### 3.29 goal_conditions
+
+goalの終わりを判定する材料の1行。真偽が付く文、担い手（claude/human/external）、状態（open/satisfied/waived）、束縛（activity/decision/askのいずれか1件への多相参照）を持つ。
+
+補足:
+- `statement`は作成後に変えない。書き換えは「waivedにして新規追加」で表す（旧行を消さない）
+- `bound_type`/`bound_id`はactivity/decision/askへの多相参照で、FKは張らない（束縛先の実在はアプリ層で確認する。削除経路が無いため、束縛先の消失はretract・置き換え・ask取り下げの書き込み経路でのみ起こる）
+- `state='satisfied'`は`last_satisfied_at`必須、`state='waived'`は`note`必須をCHECK制約で強制する
+- `goal_id`はON DELETE CASCADE（goalsが消えれば条件も消える。ただしgoalsを削除する経路は今のコードに無い）
+
+関連 migration: 0077_add_goals
+
+カラム一覧・インデックス: `db-schema-tables.md` の `goal_conditions` 節参照。
+
+### 3.30 goal_activities
+
+activityとgoalの紐づけ、または不要印（このactivityには終了条件を置かないという印と理由）を表す。activityごとに高々1行。
+
+補足:
+- `activity_id`を単独主キーにしたWITHOUT ROWIDの表。rowidの別名にすると、activity_idを省いたINSERTが自動採番で通ってしまうため、意図的にWITHOUT ROWIDを選んだ（calmのmigrationsで初めてのWITHOUT ROWID）
+- `goal_id`と`waiver_reason`は排他（CHECK `(goal_id IS NULL) <> (waiver_reason IS NULL)`）。行が無い＝未定義、goal_idあり＝紐づけ、waiver_reasonあり＝不要印の3状態を1行の有無と2列で表す
+- `activity_id`はON DELETE CASCADE、`goal_id`もON DELETE CASCADE
+
+関連 migration: 0077_add_goals
+
+カラム一覧・インデックス: `db-schema-tables.md` の `goal_activities` 節参照。
 
 ---
 
@@ -624,6 +651,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | `retracted_at` | decisions / discussion_logs / materials | activities / discussion_topics / habits | 論理削除（取消し）時刻、NULL=有効 |
 | `last_heartbeat_at` | activities | 他全テーブル | 最終ハートビート時刻 |
 | `status` | activities | 他全テーブル | pending / in_progress / completed / snoozed / shelved |
+| `closed_at`/`closed_by`/`closed_reason` | activities | 他全テーブル | activityが最後にどう閉じたか（誰の意思で・なぜ）。closed_byはgoal_judge/user/claude/external、不明ならNULL。completedでないactivityをcompletedにする書き込みでだけ更新し、既にcompletedのactivityでは書き換えない（0077、goal機構§3.28-3.30） |
 | `active` | habits | 他全テーブル | 有効/無効フラグ（数値） |
 | `caller_session_id`（廃止） | — | 全テーブル | 0048 で decisions/discussion_logs/discussion_topics/activities/materials に追加 → 0057 でcapability gating機構撤去に伴い削除済み |
 | `pinned`（廃止） | — | 全テーブル | 0029 で decisions/logs/materials に追加 → 0035 で pins テーブル化により撤去済み |
@@ -695,17 +723,19 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0059_add_habit_status | habits に status（'active'/'archived'、既定'active'）を追加 |
 | 0060_add_habit_importance_score_check | trigger_mode='intelligently'かつimportance_score=1.0(未設定)のhabitを3に補正したうえで、importance_scoreにCHECK(IN (1, 2, 3))を追加（テーブル再構築） |
 | 0061_add_tag_archived | tags に archived_at（退役日時）/ archived_reason（退役理由、100文字以内のCHECK制約付き）を追加、archived_at 用の部分インデックス idx_tags_archived_at を新設（スキーマ変更のみ、データ移行なし） |
-| 0062_add_asks | asks / ask_blocks / ask_requesters テーブル新設 + ask専用 vec0 仮想テーブル ask_vec 新設（§3.23-3.25） |
+| 0062_add_asks | asks / ask_blocks / ask_requesters テーブル新設 + ask専用 vec0 仮想テーブル ask_vec 新設（§3.22-3.24） |
 | 0063_add_decision_supersedes_kind | decision_supersedes に kind 列（'replaces'/'destabilizes'）追加（テーブル再構築、PK に kind を含める形へ変更）、decision_destabilization_resolutions テーブル新設、relations_view の supersedes 由来行を kind で出し分け（§3.11, §3.11a, §3.17） |
 | 0064_add_tags_last_injected_at | tags に last_injected_at（tag notes 全文配信の最終実績日時、既定NULL）を追加。レンダー時decay述語（`is_decay_eligible`）の入力として使う（スキーマ変更のみ、データ移行なし） |
 | 0065_add_habits_always_pool_ratchet_trigger | trigger_mode='always'かつactive=1なhabitのcontent合計文字数が2000字を超えて増加するINSERT/UPDATEをRAISE(ABORT)で拒否するトリガー2本を新設（ラチェット型天井、縮む変更は常に許可） |
 | 0066_add_tags_notes_ratchet_trigger | tags.notesが4000字を超えて増加するINSERT/UPDATEをRAISE(ABORT)で拒否するトリガー2本を新設（1タグあたりのラチェット型天井、縮む変更は常に許可） |
-| 0067_add_injection_telemetry | injection_telemetry テーブル新設（記録=クエリ添付の追随カウンタ present側台帳、§3.26） |
-| 0068_add_asks_kind_and_tags | asks に kind 列（'ask'/'meta'、既定'ask'）を追加、ask_tags junction テーブル新設（§3.23, §3.24） |
-| 0069_add_asks_choices | asks に choices 列（JSON配列文字列の選択肢テンプレート、nullable）を追加（§3.23） |
-| 0070_add_instance_meta | instance_meta テーブル新設（自インスタンス識別子の保持、export/importバンドルの複合キー発行の基盤、§3.27） |
-| 0071_add_import_provenance | import_provenance テーブル新設（importしたエンティティの出自台帳。再import冪等性・上流変更検知・参照自己解決の基盤、§3.28） |
-| 0073_add_asks_notify_wanted | asks に notify_wanted 列（通知希望フラグ、既定1）を追加（§3.23） |
+| 0067_add_injection_telemetry | injection_telemetry テーブル新設（記録=クエリ添付の追随カウンタ present側台帳、§3.25） |
+| 0068_add_asks_kind_and_tags | asks に kind 列（'ask'/'meta'、既定'ask'）を追加、ask_tags junction テーブル新設（§3.22, §3.23） |
+| 0069_add_asks_choices | asks に choices 列（JSON配列文字列の選択肢テンプレート、nullable）を追加（§3.22） |
+| 0070_add_instance_meta | instance_meta テーブル新設（自インスタンス識別子の保持、export/importバンドルの複合キー発行の基盤、§3.26） |
+| 0071_add_import_provenance | import_provenance テーブル新設（importしたエンティティの出自台帳。再import冪等性・上流変更検知・参照自己解決の基盤、§3.27） |
+| 0073_add_asks_notify_wanted | asks に notify_wanted 列（通知希望フラグ、既定1）を追加（§3.22） |
+| 0074_drop_relay_outbox | relay_outbox テーブル削除（relay統合機能の撤去に伴う。0056で新設、代替スキーマへの移行なし） |
+| 0077_add_goals | goals / goal_conditions / goal_activities テーブル新設（goal機構、§3.28-3.30）+ activities に closed_at・closed_by・closed_reason（NULL許容）を追加 |
 
 重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。
 

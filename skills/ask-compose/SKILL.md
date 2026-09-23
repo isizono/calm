@@ -117,23 +117,28 @@ context:
 一言で答える場合は `A`/`B` だけでもOK
 ```
 
-## add_ask呼び出し後: その場で回答を待つ場合
+## goalの条件をこのaskに束縛する
 
-`add_ask`のレスポンスには`notify_path`が含まれる。このセッションがその場で回答を待ちたい場合（ユーザーから明示的に「ここで待って」と言われた、または後続作業がこの答えに直接依存していてすぐ再開したい等）は、`add_ask`を呼んだ直後にMonitorツールを呼ぶ。
+このaskが、goalの条件（担い手human）の待ちを形にするために起票するものなら、次も行う。
 
-- command: `tail -F <notify_path>`
-- persistent: `true`
-- description: 対象askの内容が分かる短い説明
+- `blocks` には、その条件を持つactivityに加え、同じgoalに紐づく兄弟activityのうち、そのactivityへのcheck_inでも回答待ち・振り分け待ちを出したいものを含める
+- `add_ask` の呼び出し後、`update_goal` で対象の条件を `{"op": "edit", "id": <条件id>, "actor": "human", "bound": {"type": "ask", "id": <このaskのid>}}` に束縛する
 
-`persistent: true`は明示的に止めない限りセッション終了まで張り続けるため、通知イベントを受け取り`get_asks`で状態を確認し終えたら、Monitorを`TaskStop`で止めること。
+ask を起票するのは、その場で聞けずユーザーが離席中・セッションをまたぐときに限る（発動契機のとおり）。その場で聞けるなら ask を起票せず、聞いて `decision-record` で決定として記録する。
 
-notify_pathはこの時点で未生成のことがある（answer_ask/triage_ask完了時に初めて作られる）が、`tail -F`はファイル出現前からでもretryするため、事前のファイル存在確認は不要。
+## add_ask呼び出し後: 回答の受け取り方
 
-複数のaskを同時に待ちたい場合は、`tail -F <notify_path1> <notify_path2> ...`のように複数のnotify_pathを1回のMonitor呼び出しにまとめて渡せる（`tail -F`は複数ファイルを同時に追跡でき、ファイル出現前からのretryも各ファイル独立に効く。どのaskの通知かは`==> <path> <==`の見出しで区別できる）。もちろんask一つひとつに個別にMonitorを呼んでもよい。
+Claude Codeでは、`add_ask`を呼んだ直後からCALMのhookが裏で回答を待つ。回答（またはpromote/dismiss）されると、hookがこのセッションを起こし、askの番号と状態だけを知らせる。Monitorを張る必要はない。
 
-その場で待つ必要が無い場合（後で気づけば十分な優先度のask）はMonitorを張らなくてよい。SessionStart/UserPromptSubmit hookが、このセッションが登録したaskの解決状況を毎ターン自動確認する仕組みが別途動いている。
+起こされたら次の順で進める。
 
-notify fileの中身は「当たれば儲けもの」の位置づけであり、正ではない。Monitorのイベントで通知に気づいたら、`get_asks`で実際の状態を必ず取り直すこと。
+1. `get_asks(ids=[<番号>], status=null)`で回答を読む（statusを省略すると既定の"open"で絞り込まれ、回答済みのaskが返らない）
+2. 回答に沿って作業を続ける
+3. statusが`answered`なら、読んだら早めに`triage_ask`で処理済みにする（決定として残す内容なら`promote`、そうでなければ`dismiss`）。回答済み・未トリアージのまま残すと、check_inでの再配達や外部の作業再開の仕組みが同じaskで二重に動くことがある
+
+その場で待つ必要が無いask（後で気づけば十分な優先度のもの）は`notify=False`で積む。hookは待たず、起こしもしない。積んだ後で待つのをやめたい場合は`unsubscribe_ask`を呼ぶ（待機中のhookも止まる。ただし複数セッションから積まれた同じ問いのaskには使えない）。
+
+hookが待つのは最長で約24時間。それを過ぎた場合や、hookの無いハーネス（Codex等）では、SessionStart/UserPromptSubmit hookがこのセッションの登録したaskの解決状況を毎ターン確認して知らせる。
 
 ## ask-distillとの境界
 

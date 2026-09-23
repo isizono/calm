@@ -7,7 +7,14 @@ add_logs / add_decisions のバッチAPIを単件呼び出し形式でラップ�
 ここに集約する。
 
 hooks/session_start_hook.py をsubprocessで起動するテスト共通のヘルパーも
-ここに集約する（run_session_start_hook 以下）。
+ここに集約する（run_session_start_hook 以下）。他のhookスクリプトを起動する
+場合は run_hook_subprocess を使う。
+
+打刻主セッションの生存確認（session_registry_service.is_session_alive）を
+実ファイル経由で成立・不成立させるヘルパーもここに集約する
+（register_alive_heartbeat_session / register_dead_heartbeat_session）。
+session_start_hookをsubprocessで起動するe2eテストからも、in-processの
+統合テストからも同じ実ファイルを読ませたいため。
 """
 import asyncio
 import contextlib
@@ -18,6 +25,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -283,6 +291,31 @@ def run_session_start_hook(
     return json.loads(stdout)
 
 
+def run_hook_subprocess(
+    hook_relpath: str,
+    stdin_text: str,
+    *,
+    extra_env: Optional[dict] = None,
+) -> subprocess.CompletedProcess:
+    """任意のhookスクリプトを`[sys.executable, <hook_relpath>]`でsubprocess起動する。
+
+    session_start_hook_env/run_session_start_hook系はhooks/session_start_hook.py
+    に固定でCALM_HABITS_RULES_PATH等の既定isolationを注入するが、本関数は
+    起動対象を汎用化する代わりに既定値を一切注入しない（呼び出し側が渡した
+    extra_envだけをos.environにマージする）。呼び出し側が既にHOOK_STATE_DIR等
+    を明示している場合にそれを上書きしないための挙動である。
+    """
+    env = {**os.environ, **(extra_env or {})}
+    return subprocess.run(
+        [sys.executable, hook_relpath],
+        input=stdin_text,
+        capture_output=True,
+        text=True,
+        cwd=str(_PROJECT_ROOT),
+        env=env,
+    )
+
+
 def run_session_start_hook_process(
     db_path: str,
     *,
@@ -311,3 +344,65 @@ def run_session_start_hook_process(
             cwd=str(_PROJECT_ROOT),
             env=env,
         )
+
+
+def _write_registry_entry(session_id: str, pid: int) -> None:
+    """session_aliases.json（隔離済みパス）に {cli_pid, updated_at} 行を1つ書く。
+
+    is_session_alive が検査するフィールドのみの最小形（register_checkinが
+    実際に書くフィールドの部分集合）。既存の他行は温存する。
+    """
+    from src.services.session_registry_service import registry_path
+
+    path = registry_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {"version": 1, "sessions": {}}
+    if path.exists():
+        data = json.loads(path.read_text(encoding="utf-8"))
+    data["sessions"][session_id] = {
+        "cli_pid": pid,
+        "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+
+def register_alive_heartbeat_session(session_id: str, pid: Optional[int] = None) -> int:
+    """session_id を「生存中の打刻主」として扱わせる実ファイルを書く。
+
+    is_session_alive はCLIセッションファイル（~/.claude/sessions/<pid>.json
+    相当、隔離済み）とsession_aliases.json（隔離済み）の両方を実際に読むため、
+    別プロセス（subprocess起動するsession_start_hook）からも到達できるよう
+    実ファイルとして書く。pid省略時は呼び出し元プロセス自身のpidを使う
+    （このテストプロセスが生きている間は確実に生存しているため）。
+
+    Returns:
+        使用したpid
+    """
+    from src.infra.cli_session import sessions_dir
+
+    pid = pid if pid is not None else os.getpid()
+    sdir = sessions_dir()
+    sdir.mkdir(parents=True, exist_ok=True)
+    (sdir / f"{pid}.json").write_text(
+        json.dumps({"pid": pid, "name": "test-cli", "sessionId": session_id}),
+        encoding="utf-8",
+    )
+    _write_registry_entry(session_id, pid)
+    return pid
+
+
+def register_dead_heartbeat_session(session_id: str) -> int:
+    """session_id の打刻主プロセスが死亡している状態にする。
+
+    registryエントリのcli_pidが既に終了したpidを指す状態だけを作る
+    （is_session_aliveはis_process_alive不成立で短絡するため、CLIセッション
+    ファイルは書く必要がない）。子プロセスをwaitで刈り取ることで、
+    テスト実行中に他プロセスに再利用される可能性が極小のdead pidを得る。
+
+    Returns:
+        使用した（既に死亡している）pid
+    """
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    _write_registry_entry(session_id, proc.pid)
+    return proc.pid

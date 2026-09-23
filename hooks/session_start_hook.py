@@ -7,8 +7,6 @@
 - open ask・回答済み未捌きaskの件数とタイトル一覧（メタaskは表示上限に関わらず
   常時全件表示、非メタは上限件数超過時のみ残り件数へ縮退。両バケットとも
   0件時は非表示）
-- relay Monitor監視指示（CALM_RELAY_SESSION_AWARE=1のときのみ。identity解決に
-  成功した場合は常時、未読N件の報告行のみ未読が実在するときに追加）
 
 コンテキスト取得フローガイドはここでは注入しない（check_in初回呼び出し時に
 checkin_service側が埋め込む）。
@@ -42,6 +40,7 @@ from src.services.habit_service import (
 from src.services import habit_projection
 from src.services.backup_service import health_check, should_take_snapshot, take_snapshot
 from src.services.injection_compositor import Section, compose
+from src.services import session_registry_service
 from hooks.signal_capture import try_capture_signal
 
 _RECENT_CREATED_HOURS = 24
@@ -148,7 +147,10 @@ def _build_fixed_nav(undisplayed_count: int, pinned_undisplayed_count: int) -> s
 def _build_activities_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # source, **_kwargs: 全セクション共通シグネチャ（本セクションは未使用）
     """アクティビティ一覧を組み立てる。
 
-    階層 1「作業中（別セッション）」: heartbeat 中で自セッションでないもの。
+    階層 1「作業中（別セッション）」: heartbeat 中で自セッションでなく、
+        打刻主セッションの生存が確認できるもの（session_registry_service.
+        is_session_alive）。生存確認できない場合（別名ファイルにエントリが
+        無い、プロセスが死んでいる等）は死亡側に倒し、階層 1 には出さない。
     階層 2「優先」: 階層 1 に入らなかった activity のうち、
         (in_progress かつ updated_at が config.TIER2_MAX_AGE_DAYS 日以内) または
         (pinned かつ updated_at が config.PIN_SURFACE_DECAY_DAYS 日以内) を集約し、
@@ -197,14 +199,33 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
 
     seen_ids: set[int] = set()
 
-    tier1: list[dict] = []
-    for a in all_active:
-        is_own_session = (
+    # is_session_aliveはプロセス確認でpsサブプロセスを起動しうるため、同じ
+    # last_heartbeat_session_idを持つ候補が複数あっても呼び出しは1回に抑える
+    # （自セッション・鮮度切れの行は判定不要なので候補集合にも入れない）。
+    tier1_candidates = [
+        a
+        for a in all_active
+        if a.get("is_heartbeat_active")
+        and not (
             session_id is not None
             and a.get("last_heartbeat_session_id") == session_id
         )
-        if a.get("is_heartbeat_active") and not is_own_session:
-            tier1.append(a)
+    ]
+    candidate_session_ids = {
+        sid
+        for a in tier1_candidates
+        if (sid := a.get("last_heartbeat_session_id"))
+    }
+    alive_by_session_id = {
+        sid: session_registry_service.is_session_alive(sid)
+        for sid in candidate_session_ids
+    }
+
+    tier1: list[dict] = [
+        a
+        for a in tier1_candidates
+        if alive_by_session_id.get(a.get("last_heartbeat_session_id"), False)
+    ]
     for a in tier1:
         seen_ids.add(a["id"])
 
@@ -642,7 +663,7 @@ def _build_ask_notify_section(conn, session_id: str | None = None, source: str |
     get_asksで直接照会し、解決済み（open以外）になっていれば表示して
     追跡対象から外す（hooks/ask_notify_section.build_ask_notify_lines）。
 
-    Monitor（notify_pathのtail -F監視）が起動されなかった・落ちた場合の
+    add_ask後の回答待ちhookが無いハーネス（Codex）や、待機が途切れた場合の
     二重網。identity解決（resolve_identity_by_ancestry等）には一切触れない。
     追跡登録自体はStop hook（hook_transcript.extract_ask_registrations）が担う。
 
@@ -661,64 +682,6 @@ def _build_ask_notify_section(conn, session_id: str | None = None, source: str |
         session_id, conn=conn, budget_chars=config.INJECTION_BUDGET_ASK_NOTIFY_CHARS
     )
     if not lines:
-        return ""
-    return "\n".join(lines) + "\n"
-
-
-def _build_relay_inbox_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # conn, session_id, source, **_kwargs: 全セクション共通シグネチャ
-    """identityが解決できる限りMonitor監視指示を常時出す。未読件数の表示のみ0件時は省く。
-
-    CALM_RELAY_SESSION_AWARE（デフォルトOFF）のkill switch。OFF時はtokenチェック・
-    identity解決を一切試みず空文字を返す。relayを使わないユーザー・セッションに
-    関連コンテキストを注入しないための入口ゲート。
-
-    ON時、relay未構成（token未設定）ならidentity解決を試みる前に打ち切る。
-    本hookはSessionStart（Claude Code起動をブロックする経路）で毎回実行される
-    ため、identity解決の前にコストの小さいtokenチェックを行い、無駄な
-    プロセスspawnを避ける。
-
-    relay構成済みの場合、identity解決はまずsrc.services.relay.identity.
-    get_relay_identity()（MCPリクエストのHTTPヘッダ経由）を試す。本hookは
-    Claude Code CLIが起動する独立プロセスでMCPリクエストコンテキストを
-    持たないため、この経路は常にNoneを返す。その場合はresolve_identity_by_
-    ancestry()（祖先pidチェーンの一致でlauncherプロセスを特定する経路、
-    ps最大2回spawn）にフォールバックする。
-
-    Monitor監視指示はセッション作業中に届く新着を取りこぼさないための
-    ものなので、既存の未読・inbox file有無に関わらずidentity解決できた
-    時点で常に出す（inbox_path/count_unreadはファイル不在でも安全に動作する）。
-    未読N件の報告行のみ、未読が実在するときに追加する。
-
-    inbox fileはメッセージが1件もappendされるまで実体が無く、指示通りに
-    `tail -f`する等のツールはfile不在だと即座に失敗する。表示前に
-    ensure_inbox_file()でfileを先行生成し、この失敗を防ぐ。
-    """
-    if not config.RELAY_SESSION_AWARE_ENABLED:
-        return ""
-
-    from src.services.relay import config as relay_config
-
-    if not relay_config.get_token():
-        return ""
-
-    from src.services.relay.identity import get_relay_identity, resolve_identity_by_ancestry
-
-    identity = get_relay_identity() or resolve_identity_by_ancestry()
-    if not identity:
-        return ""
-
-    from src.services.relay.inbox import count_unread, ensure_inbox_file
-
-    path = ensure_inbox_file(identity)
-    count = count_unread(identity)
-
-    lines = []
-    if count > 0:
-        lines.append(f"relay inbox 未読: {count}件 → relay_receiveで消化")
-    if select_harness().supports_monitor_watch:
-        lines.append(f"新着の待ち受けはMonitorツールで {path} を監視してください。")
-    if not lines:
-        # Monitor非対応ハーネスで未読0件: 注入すべき内容が無い
         return ""
     return "\n".join(lines) + "\n"
 
@@ -787,7 +750,6 @@ _SECTIONS: list[Section] = [
     Section("signals", _build_signals_section, config.INJECTION_BUDGET_SIGNALS_CHARS, priority=40),
     Section("open_asks", _build_open_asks_section, config.INJECTION_BUDGET_OPEN_ASKS_CHARS, priority=41),
     Section("ask_notify", _build_ask_notify_section, config.INJECTION_BUDGET_ASK_NOTIFY_CHARS, priority=45),
-    Section("relay_inbox", _build_relay_inbox_section, config.INJECTION_BUDGET_RELAY_INBOX_CHARS, priority=50),
     Section("transcript_path", _build_transcript_path_section, config.INJECTION_BUDGET_TRANSCRIPT_PATH_CHARS, priority=60),
 ]
 

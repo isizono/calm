@@ -3,13 +3,11 @@
 SearchContext と共有 conn を直接渡したときに FTS5 ベースのランキング結果が
 正しく返ることを確認する。
 """
-import os
-import tempfile
 
 import pytest
 
 import src.services.embedding_service as emb
-from src.db import get_connection, init_database
+from src.db import get_connection
 from src.services import search_service
 from src.services.activity_service import add_activity
 from src.services.search_service import fts_retrieve
@@ -25,16 +23,6 @@ def disable_embedding(monkeypatch):
     monkeypatch.setattr(emb, "_backfill_done", True)
     monkeypatch.setattr(emb, "_ensure_server_running", lambda: False)
 
-
-@pytest.fixture
-def temp_db():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 def test_fts_retrieve_uses_shared_conn(temp_db, monkeypatch):

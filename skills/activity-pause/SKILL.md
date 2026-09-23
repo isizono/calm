@@ -31,17 +31,23 @@ description: 【必須】進行中のアクティビティを完了にせず中�
    - 内容は会話から自明な範囲で埋める。不明な項目があれば**1ターンだけ**聞いてよい
    - 中断→再開→再中断を繰り返すと中断メモが積み重なりdescriptionが肥大化し続ける（`update_activity`はdescription変更のたびにembeddingを再生成するため、埋め込み対象テキストも単調増加する）。過去の中断メモが複数溜まってきたら、直近以外を要約・削減することを検討する
 
-3. **statusの変更**
+3. **ブロッカーが人間の判断の場合の紐づけ**
+   - 手順2で書いたブロッカーが人間の判断待ちなら、`get_goal(activity_id=...)`で対象アクティビティの終了条件を確認する（goalが未定義・不要印なら何もしない）
+   - 対応する条件があれば、[ask-compose](../ask-compose/SKILL.md) skillでaskを起票し、`update_goal(goal_id, changes=[{"op": "edit", "id": <条件id>, "actor": "human", "bound": {"type": "ask", "id": <ask_id>}}])`で束縛する。対応する条件がまだ無ければ`{"op": "add", "statement": ..., "actor": "human", "bound": {"type": "ask", "id": <ask_id>}}`で新規に足す
+   - openの条件がそのまま再開条件になるため、これ以外に再開条件を別立てで書く必要はない
+
+4. **statusの変更**
    - 近く（同じ日〜数日以内）に再開する見込み: `status="pending"`に戻す
    - 明確な再開時期が読めずしばらく寝かせる: `status="snoozed"`にする。snoozedは既定3日（環境変数で変更可）経過後、次に`get_activities`が呼ばれたタイミングで`pending`へ復活する（バックグラウンドタイマーによる自動遷移ではなく、呼び出し時にまとめて反映されるlazy evaluationのため、`get_activities`が呼ばれるまでは3日経過後も`snoozed`のままになりうる）
    - 期限を決めず長期棚上げする: `status="shelved"`にする。shelvedは自動復活せず、明示的にstatusを変更するまで`active`一覧に出てこない
    - 判断に迷う場合はユーザーに選んでもらう
    - 手順2の`description`更新とこのstatus変更は、`update_activity`の同一呼び出しにまとめて渡す（snoozed状態のアクティビティはstatusを指定せず他フィールドのみ更新すると自動的に`pending`へ復活する仕様があり、呼び出しを分けると意図しないstatus遷移が起きうる）
 
-4. **一言報告**
+5. **一言報告**
    - 中断したことと、再開は`check-in`から行える旨を伝える
 
 ## 注意
 
 - 軽量原則: 記録の棚卸しはしない（それは`sync-memory`の領分）。ログは残さない
 - `activity-finish`との境界: 作業が完了したら`activity-finish`、戻ってくる前提の中断が`activity-pause`
+- goalには触れない。openの条件がそのまま再開条件になる（ブロッカーが人間の判断のときだけ、手順3でaskに束縛する）

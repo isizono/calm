@@ -3,13 +3,11 @@
 _compute_nearby_tags単体テスト + search統合テスト。
 """
 import hashlib
-import os
-import tempfile
 
 import numpy as np
 import pytest
 
-from src.db import init_database, get_connection
+from src.db import get_connection
 from src.services.search_service import (
     _compute_nearby_tags,
     NEARBY_TAGS_LIMIT,
@@ -24,17 +22,6 @@ import src.services.embedding_service as emb
 
 EMBEDDING_DIM = 384
 
-
-@pytest.fixture
-def temp_db():
-    """テスト用の一時的なデータベースを作成する"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 @pytest.fixture

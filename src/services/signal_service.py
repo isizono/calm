@@ -26,6 +26,7 @@ KNOWN_KINDS = {
     "precedent_misapplied",
     "boundary_case",
     "rollback",
+    "goal_rollback",
 }
 
 VALID_STATUSES = {"new", "triaged", "promoted", "dismissed"}

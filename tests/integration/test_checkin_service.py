@@ -1,20 +1,15 @@
 """check-inサービスの統合テスト"""
-import os
-import tempfile
+import json
 import pytest
 import src.services.checkin_service as checkin_service
-from src.db import init_database, get_connection
+from src.db import get_connection
 from src.services.activity_service import add_activity, update_activity
 from tests.helpers import add_decision, add_log, retract_decision
 from src.services.material_service import add_material, update_material
 from src.services.pin_service import add_pin
 from src.services.relation_service import add_relation
 from src.services.topic_service import add_topic
-from src.services.checkin_service import (
-    check_in,
-    DECISIONS_FULL_LIMIT,
-    _greeted_sessions,
-)
+from src.services.checkin_service import check_in, DECISIONS_FULL_LIMIT
 from src.services.hint_service import (
     ACTIVITY_CLEANUP_AUTOTRIGGER_GUARD,
     ACTIVITY_CLEANUP_COUNT_THRESHOLD,
@@ -23,28 +18,13 @@ from src.services.hint_service import (
     RECOMPOSE_BOOTSTRAP_THRESHOLD as _RECOMPOSE_HINT_BOOTSTRAP_THRESHOLD,
     RECOMPOSE_DELTA_THRESHOLD as _RECOMPOSE_HINT_DELTA_THRESHOLD,
 )
-from src.services.tag_service import _injected_tags
+from src.services import goal_service as gs
 from src.services import session_registry_service
-from src.services.relay import identity as relay_identity_module
+from src.infra import session_identity
 
 
 DEFAULT_TAGS = ["domain:test"]
 
-
-@pytest.fixture
-def temp_db():
-    """テスト用の一時的なデータベースを作成する"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        # tag_notes注入済みセットをリセット（テスト間の干渉防止）
-        _injected_tags.clear()
-        # flow_guide初回判定セットをリセット（テスト間の干渉防止）
-        _greeted_sessions.clear()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 @pytest.fixture
@@ -1481,7 +1461,7 @@ class TestCheckInSessionRegistry:
                     return dict(info, cwd=None, cli_status=None)
             return None
 
-        monkeypatch.setattr(relay_identity_module, "resolve_cli_session", resolve)
+        monkeypatch.setattr(session_identity, "resolve_cli_session", resolve)
         monkeypatch.setattr(session_registry_service, "is_process_alive", is_alive)
         monkeypatch.setattr(session_registry_service.cli_session, "read_cli_session", read_cli)
 
@@ -1490,7 +1470,7 @@ class TestCheckInSessionRegistry:
             monkeypatch,
             {"bridge-1": {"cli_pid": 100, "cli_session_id": "cli-1", "name": "workspace-a1"}},
         )
-        monkeypatch.setattr(relay_identity_module, "get_relay_identity", lambda: "bridge-1")
+        monkeypatch.setattr(session_identity, "get_caller_session_id", lambda: "bridge-1")
 
         result = check_in(activity_id)
 
@@ -1505,7 +1485,7 @@ class TestCheckInSessionRegistry:
         self, activity_id, monkeypatch
     ):
         """呼び出し元のbridge session idが取れない場合、check_in本体は正常応答する"""
-        monkeypatch.setattr(relay_identity_module, "get_relay_identity", lambda: None)
+        monkeypatch.setattr(session_identity, "get_caller_session_id", lambda: None)
 
         result = check_in(activity_id)
 
@@ -1520,7 +1500,7 @@ class TestCheckInSessionRegistry:
             monkeypatch,
             {"bridge-1": {"cli_pid": 100, "cli_session_id": "cli-1", "name": "workspace-a1"}},
         )
-        monkeypatch.setattr(relay_identity_module, "get_relay_identity", lambda: "bridge-1")
+        monkeypatch.setattr(session_identity, "get_caller_session_id", lambda: "bridge-1")
 
         # レジストリファイルの親をファイルで塞ぎ、flock/書き込み時にOSErrorを
         # 自然発生させる（内部関数の直接mockを避け、外部境界であるファイルI/O
@@ -1553,7 +1533,7 @@ class TestCheckInSessionRegistry:
             activity_title="[作業] タグnotesカラム追加",
             activity_status="in_progress",
         )
-        monkeypatch.setattr(relay_identity_module, "get_relay_identity", lambda: "bridge-1")
+        monkeypatch.setattr(session_identity, "get_caller_session_id", lambda: "bridge-1")
 
         result = check_in(activity_id)
 
@@ -1569,7 +1549,7 @@ class TestCheckInSessionRegistry:
             monkeypatch,
             {"bridge-1": {"cli_pid": 100, "cli_session_id": "cli-1", "name": "workspace-a1"}},
         )
-        monkeypatch.setattr(relay_identity_module, "get_relay_identity", lambda: "bridge-1")
+        monkeypatch.setattr(session_identity, "get_caller_session_id", lambda: "bridge-1")
 
         result = add_activity(
             title="[作業] 新規タスク",
@@ -1583,3 +1563,222 @@ class TestCheckInSessionRegistry:
         assert len(registered) == 1
         assert registered[0]["activity_title"] == "[作業] 新規タスク"
         assert registered[0]["is_self"] is True
+
+
+class TestCheckInGoalBlock:
+    """check_inのgoalブロック配線の統合テスト。
+
+    ラベル・次の一手の導出ロジック自体はtest_goal_service_derive.pyが担保するため、
+    ここではcheckin_serviceがgoal_serviceを正しく呼び出し、活配置・例外処理・
+    再オープンとの整合を保っているかだけを検証する。
+    """
+
+    def test_goal_key_placed_right_after_activity(self, activity_id):
+        """goalキーはactivityキーの直後に置かれる（06_ツールIFとcheck_in注入.mdの取り決め）"""
+        result = check_in(activity_id)
+
+        keys = list(result.keys())
+        assert keys.index("goal") == keys.index("activity") + 1
+
+    def test_undefined_when_no_goal_linked(self, activity_id):
+        """紐づけ行が無いactivityはlabel=undefinedを返す"""
+        result = check_in(activity_id)
+
+        assert result["goal"]["label"] == "undefined"
+        assert result["goal"]["next"]["rule"] == 4
+        assert result["goal"]["next"]["actor"] == "claude"
+
+    def test_not_needed_when_waived(self, activity_id):
+        """不要印を付けたactivityはlabel=not_needed・reasonを返す"""
+        gs.set_goal(activity_id, {"waiver": "常駐タスクのため終了条件なし"})
+
+        result = check_in(activity_id)
+
+        assert result["goal"]["label"] == "not_needed"
+        assert result["goal"]["reason"] == "常駐タスクのため終了条件なし"
+
+    def test_goal_linked_active_label_and_next(self, activity_id):
+        """goal付きのactivityはlabel=activeとgoalの本体（handle/statement/next）を返す"""
+        gs.set_goal(
+            activity_id,
+            {
+                "new": {
+                    "handle": "checkin-wiring-g1",
+                    "statement": "終わりの一文",
+                    "conditions": [{"statement": "条件1", "actor": "claude"}],
+                }
+            },
+        )
+
+        result = check_in(activity_id)
+
+        goal = result["goal"]
+        assert goal["label"] == "active"
+        assert goal["handle"] == "checkin-wiring-g1"
+        assert goal["statement"] == "終わりの一文"
+        assert goal["next"]["rule"] == 11
+
+    def test_judged_goal_check_in_reopens_activity_and_reports_rule5(self, activity_id):
+        """判定済みgoalのactivityにcheck_inすると、statusはin_progressに戻り、
+        closed_*は残ったまま、goalブロックは規則5（判定済み）を返す"""
+        set_result = gs.set_goal(
+            activity_id,
+            {
+                "new": {
+                    "handle": "checkin-wiring-g2",
+                    "statement": "終わりの一文2",
+                    "conditions": [
+                        {"statement": "条件1", "actor": "claude", "state": "satisfied", "note": "済"}
+                    ],
+                }
+            },
+        )
+        goal_id = set_result["goal_id_raw"]
+        judge_result = gs.judge_goal(goal_id, "achieved", note="達成した")
+        assert "error" not in judge_result
+
+        conn = get_connection()
+        try:
+            row_before = conn.execute(
+                "SELECT status, closed_by, closed_reason FROM activities WHERE id = ?",
+                (activity_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row_before["status"] == "completed"
+        assert row_before["closed_by"] == "goal_judge"
+
+        result = check_in(activity_id)
+
+        assert result["activity"]["status"] == "in_progress"
+        assert result["goal"]["label"] == "closed"
+        assert result["goal"]["next"]["rule"] == 5
+
+        conn = get_connection()
+        try:
+            row_after = conn.execute(
+                "SELECT closed_by, closed_reason FROM activities WHERE id = ?",
+                (activity_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row_after["closed_by"] == "goal_judge"
+        assert row_after["closed_reason"] == "達成した"
+
+    def test_exception_in_goal_block_does_not_break_check_in(self, activity_id, monkeypatch):
+        """goalブロックの組み立てで例外が出ても、check_inの他のキーは失われず、
+        goalキーにエラーの形が載る"""
+        monkeypatch.setattr(
+            gs,
+            "build_goal_block_for_activity",
+            lambda conn, aid: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        result = check_in(activity_id)
+
+        assert "error" not in result
+        assert result["goal"] == {
+            "error": {
+                "code": "DATABASE_ERROR",
+                "message": "goal ブロックを組み立てられなかった",
+            }
+        }
+        assert "activity" in result
+        assert result["activity"]["status"] == "in_progress"
+        assert "summary" in result
+
+    def test_exception_in_goal_block_records_machine_error_signal(self, activity_id, monkeypatch):
+        """goalブロック組み立ての例外は、check_inの接続を渡したrecord_signalで
+        machine_errorとして記録され、check_inのコミット後にDBへ残る（06 §4）。"""
+        monkeypatch.setattr(
+            gs,
+            "build_goal_block_for_activity",
+            lambda conn, aid: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        check_in(activity_id)
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT kind, source, detail FROM signal_events "
+                "WHERE kind = 'machine_error' AND source = 'tool:check_in'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert "boom" in row["detail"]
+
+    def test_exception_in_goal_block_reuses_check_in_connection_for_signal(
+        self, activity_id, monkeypatch
+    ):
+        """goalブロック組み立て失敗時のrecord_signalは、check_inが開いた接続を
+        そのまま渡す。別接続を新たに開くcapture_signal_safeは使わない
+        （06 §4: check_inの接続が書き込みを保留していてもbusy_timeoutまで
+        待たないための取り決め）。同一接続の逐次実行は自分自身の保留中の
+        書き込みでは絶対にブロックしないため、この配線自体が待ちなしを保証する。
+        """
+        monkeypatch.setattr(
+            gs,
+            "build_goal_block_for_activity",
+            lambda conn, aid: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        connections_created = []
+        original_get_connection = checkin_service.get_connection
+
+        def spy_get_connection(*args, **kwargs):
+            conn = original_get_connection(*args, **kwargs)
+            connections_created.append(conn)
+            return conn
+
+        signal_conns = []
+        original_record_signal = checkin_service.record_signal
+
+        def spy_record_signal(*args, **kwargs):
+            signal_conns.append(kwargs.get("conn"))
+            return original_record_signal(*args, **kwargs)
+
+        monkeypatch.setattr(checkin_service, "get_connection", spy_get_connection)
+        monkeypatch.setattr(checkin_service, "record_signal", spy_record_signal)
+
+        check_in(activity_id)
+
+        assert len(signal_conns) == 1
+        # check_in自身が開いた接続はこの1本だけであり、record_signalに渡された
+        # connはその同じオブジェクトである（capture_signal_safeのような
+        # 追加のget_connection()呼び出しは発生していない）
+        assert connections_created == [signal_conns[0]]
+
+    def test_goal_block_folds_to_budget_without_truncating_statement_or_conditions(self, activity_id):
+        """goalブロックが目安の800字を超えるとき、remainingが件数表示に畳まれる。
+        goalのstatementと畳まれていない条件文は切り詰められない
+        （06_ツールIFとcheck_in注入.md「分量」）。"""
+        long_statement = "終わりの一文を長くする" * 40  # 480字程度
+        long_condition_texts = [f"条件{i}を長くするための繰り返し文言" * 6 for i in range(5)]
+        set_result = gs.set_goal(
+            activity_id,
+            {
+                "new": {
+                    "handle": "checkin-wiring-budget",
+                    "statement": long_statement,
+                    "conditions": [
+                        {"statement": text, "actor": "claude"} for text in long_condition_texts
+                    ],
+                }
+            },
+        )
+        assert "error" not in set_result
+
+        result = check_in(activity_id)
+        goal = result["goal"]
+
+        # 折り畳み前提のデータ量になっていること自体を確かめる（前提の自己検証）
+        assert len(json.dumps(goal, ensure_ascii=False)) <= 800 or isinstance(goal.get("remaining"), str)
+        assert goal["statement"] == long_statement
+        assert isinstance(goal["remaining"], str)
+        assert goal["remaining"].endswith("件")
+        assert "others" not in goal
+        # 畳まれる前に選ばれていたはずのnext（規則11、id順先頭）の文は
+        # 切り詰められずそのまま残る
+        assert goal["next"]["what"] == long_condition_texts[0]
