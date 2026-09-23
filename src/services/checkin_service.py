@@ -5,7 +5,7 @@ import threading
 
 from src.db import get_connection, row_to_dict
 from src.infra import session_identity
-from src.services import activity_service, ask_service, goal_service, hint_service
+from src.services import activity_service, ask_service, goal_service, hint_service, session_ledger_service
 from src.services.readable_id import strip_entity_id_inplace
 from src.services.material_service import get_materials_by_relation_with_conn
 from src.services.relation_service import _get_map_with_conn
@@ -699,6 +699,7 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
         # 11. セッション別名レジストリの更新（並行セッションの現在地表示用）。
         # 呼び出し元がClaude Code CLI経由でないなどCLIが解決できない場合や、
         # 内部で予期せぬ例外が起きた場合もcheck_in本体を失敗させない。
+        bridge_id = None
         try:
             from src.services import session_registry_service
 
@@ -739,6 +740,15 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
             result["flow_guide"] = _FLOW_GUIDE_COMPACT
 
         conn.commit()
+
+        # セッション台帳(sessionsテーブル)へのcheck-in記録。connがまだ保持している
+        # かもしれない書き込みトランザクション中に別コネクションで書き込むと
+        # SQLiteのwriterロックで待たされうるため、conn.commit()の後に行う。
+        try:
+            session_ledger_service.record_checkin(bridge_id, activity_id)
+        except Exception:
+            logger.debug("session ledger check-in record failed", exc_info=True)
+
         return result
 
     except Exception as e:

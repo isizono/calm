@@ -1269,6 +1269,51 @@ CREATE TABLE search_telemetry (
 
 </details>
 
+### sessions
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| session_id | TEXT | NO | — | PK |
+| id_kind | TEXT | NO | — | — |
+| harness | TEXT | YES | — | — |
+| host | TEXT | YES | — | — |
+| cwd | TEXT | YES | — | — |
+| cli_session_id | TEXT | YES | — | — |
+| cli_pid | INTEGER | YES | — | — |
+| cli_resolve_status | TEXT | YES | — | — |
+| mode | TEXT | NO | `'interactive'` | — |
+| last_heartbeat_at | TIMESTAMP | YES | — | — |
+| last_tool_call_at | TIMESTAMP | YES | — | — |
+| last_checkin_activity_id | INTEGER | YES | — | — |
+| last_checkin_at | TIMESTAMP | YES | — | — |
+| ended_at | TIMESTAMP | YES | — | — |
+| ended_reason | TEXT | YES | — | — |
+
+インデックス:
+- `idx_sessions_cli_live` UNIQUE ON `sessions`(harness, cli_session_id)
+- `idx_sessions_live` ON `sessions`(last_heartbeat_at)
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE sessions (
+  session_id TEXT PRIMARY KEY,             -- 起動器の識別子。取れなければ 'eph:'||接続単位の揮発識別子
+  id_kind TEXT NOT NULL CHECK (id_kind IN ('bridge','ephemeral')),
+  harness TEXT, host TEXT, cwd TEXT,       -- 起動器の申告。hostは到達判定、cwdは診断
+  cli_session_id TEXT, cli_pid INTEGER,    -- 会話識別子。解決関数が充填する
+  cli_resolve_status TEXT CHECK (cli_resolve_status IS NULL
+    OR cli_resolve_status IN ('resolved','header_missing','not_found','stale')),
+  mode TEXT NOT NULL DEFAULT 'interactive' CHECK (mode IN ('interactive','headless')),
+  last_heartbeat_at TIMESTAMP,             -- 起動器の心拍(60秒)
+  last_tool_call_at TIMESTAMP,             -- 全ツール呼び出しの touch(60秒スロットル)
+  last_checkin_activity_id INTEGER, last_checkin_at TIMESTAMP,
+  ended_at TIMESTAMP, ended_reason TEXT CHECK (ended_reason IS NULL OR ended_reason IN ('unregister','ttl','superseded')),
+  CHECK ((ended_at IS NULL) = (ended_reason IS NULL))
+)
+```
+
+</details>
+
 ### signal_events
 
 | カラム名 | 型 | NULL | デフォルト | PK |

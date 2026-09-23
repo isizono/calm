@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -330,10 +331,30 @@ def _ensure_server_running() -> bool:
 # =============================================
 
 
+def _current_harness_name() -> str:
+    """launcherプロセス自身のCALM_HARNESS envから起動器種別名を判定する。
+
+    src.harness.select_harnessと同じ判定基準(未設定・未知値はclaude_code)。
+    cc-memory server は launcher から見て別プロセス(ローカルは launcher が
+    subprocess.Popen で起動する子、リモードは既存の常駐プロセス)で、複数の
+    launcher(異なるharness由来を含む)を1つのserverプロセスが共有しうるため、
+    server側の自プロセスenvではなくlauncher側のenvで判定してPOSTボディに乗せる。
+    """
+    return "codex" if env_get("CALM_HARNESS", "").lower() == "codex" else "claude_code"
+
+
 def _register_session() -> bool:
-    """セッション登録（POST /session/register）"""
+    """セッション登録（POST /session/register）
+
+    harness/hostはセッション台帳(sessionsテーブル)向けの申告値。launcher自身の
+    envと実行ホストでしか判定できない値のため、ここでPOSTボディに含める。
+    """
     try:
-        data = json.dumps({"session_id": _session_id}).encode("utf-8")
+        data = json.dumps({
+            "session_id": _session_id,
+            "harness": _current_harness_name(),
+            "host": socket.gethostname(),
+        }).encode("utf-8")
         req = urllib.request.Request(
             SESSION_REGISTER_URL,
             data=data,
