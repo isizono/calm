@@ -316,6 +316,8 @@ def _apply_response_size_gate(
     superseded_by_map: dict[int, Optional[int]],
     material_ids_by_decision: dict[int, set[int]],
     response_chars_max: int,
+    topic_rank: dict[int, int],
+    owner_of: dict[int, int],
     destabilization_map: Optional[dict[int, dict]] = None,
 ) -> tuple[bool, bool]:
     """本文文字数予算（PRECEDENT_BUDGET_CHARS）内に収まっていても、tags/sections/
@@ -351,7 +353,9 @@ def _apply_response_size_gate(
     demoted = 0
 
     if measured > response_chars_max:
-        order = compute_allocation_order(list(full_ids), decision_by_id, supersede_map)
+        order = compute_allocation_order(
+            list(full_ids), decision_by_id, supersede_map, topic_rank, owner_of
+        )
         excess = measured - response_chars_max
         accumulated = 0
         for did in reversed(order):
@@ -467,6 +471,11 @@ def collect_precedents_with_conn(
             decision_by_id.setdefault(dec["id"], dec)
             owner_of.setdefault(dec["id"], topic_id)
 
+    # topic_ids は呼出元（pull_precedents）でdistance昇順（routing）または
+    # 明示指定順（explicit topic_ids）に並んでいる。予算配分の第1キーとして
+    # この順位をそのまま使う
+    topic_rank: dict[int, int] = {tid: idx for idx, tid in enumerate(topic_ids)}
+
     all_ids = list(decision_by_id.keys())
 
     if not all_ids:
@@ -494,7 +503,9 @@ def collect_precedents_with_conn(
     destabilization_map = compute_destabilization_info_batch(conn, all_ids)
     tags_map = get_effective_tags_batch_by_ids(conn, "decision", all_ids)
 
-    full_ids, used = allocate_decision_budget(all_ids, decision_by_id, supersede_map, budget_chars)
+    full_ids, used = allocate_decision_budget(
+        all_ids, decision_by_id, supersede_map, budget_chars, topic_rank, owner_of
+    )
 
     materials_by_id: dict[int, dict] = {}
     material_ids_by_decision: dict[int, set[int]] = {}
@@ -558,6 +569,8 @@ def collect_precedents_with_conn(
         superseded_by_map,
         material_ids_by_decision,
         PRECEDENT_RESPONSE_CHARS_MAX,
+        topic_rank,
+        owner_of,
         destabilization_map=destabilization_map,
     )
     return {

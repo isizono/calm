@@ -537,6 +537,31 @@ class TestBudget:
         assert new_item["detail"] == "full"
         assert old_item["detail"] == "index"
 
+    def test_nearer_topic_decision_promoted_before_newer_decision_in_farther_topic(
+        self, temp_db, mock_embedding_server
+    ):
+        """配分順: topicの関連度(distance近い順)を第1キーにする。近いtopicの古い
+        決定が、遠いtopicの新しい決定より先に予算を得る（同一topic内での新しい順は
+        この優先度を上書きしない）"""
+        near_topic = _make_topic("near", 0)
+        far_topic = _make_topic("far", 1)
+        near_old_id = _decision(near_topic, "near-old", "x" * 500)
+        far_new_id = _decision(far_topic, "far-new", "x" * 500)
+
+        conn = get_connection()
+        conn.execute("UPDATE decisions SET created_at = '2024-01-01 00:00:00' WHERE id = ?", (near_old_id,))
+        conn.execute("UPDATE decisions SET created_at = '2026-01-01 00:00:00' WHERE id = ?", (far_new_id,))
+        conn.commit()
+        conn.close()
+
+        # topic_idsの並び順（near_topicが先）がdistance近い順を表す。予算は1件分ぎりぎりにする
+        result = pps.pull_precedents("文脈", topic_ids=[near_topic, far_topic], budget_chars=520)
+
+        near_item = _decision_by_id(_topic_by_id(result, near_topic), near_old_id)
+        far_item = _decision_by_id(_topic_by_id(result, far_topic), far_new_id)
+        assert near_item["detail"] == "full"
+        assert far_item["detail"] == "index"
+
     def test_index_item_has_minimum_fields(self, temp_db, mock_embedding_server):
         """index行のみでもid/title/状態フラグ/created_atが読める"""
         topic_id = _make_topic("t", 0)
