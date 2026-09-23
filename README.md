@@ -106,6 +106,29 @@ claude plugin install calm
 | `/memory-export` | 記録を他インスタンスへ渡すexportバンドルを作成します |
 | `/memory-import` | 他インスタンスのexportバンドルを衝突裁定を経て取り込みます |
 
+## 気づきにくい劣化への対処
+
+CALMには、壊れてもエラーにならず機能が静かに縮退する故障がいくつかある。データ消失（DBスナップショットの異常検知）とは別に、以下の2つは気づかないまま使い続けやすい。
+
+**embeddingサーバー起動失敗・検索の`degraded`**
+
+検索・check-in等でベクトル検索を使う際、embeddingサーバー（52836番ポート）は初回encode時に遅延起動する。起動に失敗しても例外は投げず、warningログのみを出して検索がキーワード一致（FTS5）のみに縮退したまま動き続ける。`search`ツールの応答に含まれる`degraded: true`は、その呼び出し時点でベクトル検索が利用不可だったことを示す。
+
+- 気づき方: `curl http://localhost:52836/health`が`{"status": "ok"}`を返さない。または`search`応答の`degraded`が`true`のまま続く
+- 直し方: `/restart`に`--restart-embedding`を付けて明示的に再起動する
+
+**hookが黙って失敗する**
+
+CALMのhookはfail-open設計であり、1つのhookが例外を投げてもClaude Codeの他の操作（tool呼び出し・セッション開始等）を止めない。この設計自体は意図的だが、失敗は既定では標準エラー出力にしか残らず、記録ナッジやSessionStart注入の一部が黙って消えても「何も起きていない」ように見える。
+
+以下のhookは、hook本体のコードが実行された後に起きた例外を`signal_events`テーブルへ`kind: machine_error`として記録する。`get_signals`ツールで確認できるほか、1件でもあればSessionStart注入の「未トリアージのシグナル」行にも件数が現れる。
+
+- SessionStart注入の各セクション（アクティビティ一覧・habits・signals等）が個別に失敗した場合
+- Stop hookの記録ナッジ（`logs_sparse`判定）が失敗した場合
+- PreToolUseの内部IDリークブロックhookが失敗した場合
+
+venvの破損や依存パッケージの欠落でhookがimport時点で落ちた場合は、この記録自体が動かず標準エラー出力のみに残る（記録機構自体がDB層のimportに依存するため）。表示専用hook・transcript sanitize系hookも現状この記録の対象外。頻発する場合は`get_signals`で`source`（`hook:section:<セクション名>`等）を確認し、原因を調査する。
+
 ## 設定
 
 `.mcp.json`の`env`フィールドで以下の環境変数を設定すると、デフォルト値をオーバーライドできます。未設定の項目はデフォルト値で動作するため、ゼロコンフィグで使用可能です。ここに載せているのは利用者が調整する機会が多いものの抜粋です。挙動の内部調整用に他にも環境変数がありますが、必要になったら`/man`でAIに聞いてください。

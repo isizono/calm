@@ -7,6 +7,7 @@ compose()の予算管理契約（priority順・try/except・ハード切り詰�
 import pytest
 
 from src import config
+from src.db import get_connection
 from src.services.injection_compositor import Section, compose, total_declared_budget
 
 
@@ -37,7 +38,7 @@ class TestComposeOrdering:
 
 
 class TestComposeExceptionIsolation:
-    def test_one_section_exception_does_not_break_others(self):
+    def test_one_section_exception_does_not_break_others(self, temp_db):
         def _boom(conn, session_id=None, source=None, transcript_path=None):
             raise RuntimeError("boom")
 
@@ -48,6 +49,25 @@ class TestComposeExceptionIsolation:
         result = compose(None, None, None, None, sections)
 
         assert result == "survivor"
+
+    def test_section_exception_is_recorded_as_machine_error_signal(self, temp_db):
+        """握られた例外がsignal_eventsにmachine_errorとして残る（沈黙防止）。"""
+        def _boom(conn, session_id=None, source=None, transcript_path=None):
+            raise RuntimeError("boom")
+
+        sections = [Section("habits", _boom, budget_chars=100, priority=0)]
+        compose(None, None, None, None, sections)
+
+        conn = get_connection()
+        try:
+            row = conn.execute("SELECT * FROM signal_events").fetchone()
+        finally:
+            conn.close()
+
+        assert row is not None
+        assert row["kind"] == "machine_error"
+        assert row["source"] == "hook:section:habits"
+        assert "boom" in row["summary"]
 
 
 class TestComposeBudgetEnforcement:
