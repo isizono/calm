@@ -19,7 +19,7 @@ from src.services.hint_service import (
     RECOMPOSE_DELTA_THRESHOLD as _RECOMPOSE_HINT_DELTA_THRESHOLD,
 )
 from src.services import goal_service as gs
-from src.services import session_registry_service
+from src.services import session_ledger_service, session_registry_service
 from src.infra import session_identity
 
 
@@ -1593,6 +1593,52 @@ class TestCheckInSessionRegistry:
         assert len(registered) == 1
         assert registered[0]["activity_title"] == "[作業] 新規タスク"
         assert registered[0]["is_self"] is True
+
+
+class TestCheckInSessionLedger:
+    """check_inからsession_ledger_service.record_checkinへの配線の統合テスト。"""
+
+    def _fetch_session(self, session_id: str):
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT * FROM sessions WHERE session_id = ?", (session_id,)
+            ).fetchone()
+            return dict(row) if row is not None else None
+        finally:
+            conn.close()
+
+    def test_records_last_checkin_on_existing_ledger_row(self, activity_id, monkeypatch):
+        session_ledger_service.register(
+            "bridge-1", id_kind="bridge", harness=None, host="h", mode="interactive",
+        )
+        monkeypatch.setattr(session_identity, "get_caller_session_id", lambda: "bridge-1")
+
+        result = check_in(activity_id)
+
+        assert "error" not in result
+        row = self._fetch_session("bridge-1")
+        assert row["last_checkin_activity_id"] == activity_id
+        assert row["last_checkin_at"] is not None
+
+    def test_no_bridge_id_does_not_fail_check_in(self, activity_id, monkeypatch):
+        monkeypatch.setattr(session_identity, "get_caller_session_id", lambda: None)
+
+        result = check_in(activity_id)
+
+        assert "error" not in result
+
+    def test_ledger_write_exception_does_not_fail_check_in(self, activity_id, monkeypatch):
+        def boom(session_id, activity_id):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(session_identity, "get_caller_session_id", lambda: "bridge-1")
+        monkeypatch.setattr(session_ledger_service, "record_checkin", boom)
+
+        result = check_in(activity_id)
+
+        assert "error" not in result
+        assert "summary" in result
 
 
 class TestCheckInGoalBlock:

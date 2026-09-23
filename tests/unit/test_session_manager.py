@@ -380,45 +380,49 @@ class TestOnSessionRemovedHook:
     """on_session_removed コールバックが除去経路ごとに正しく発火するかの検証"""
 
     def test_unregister_fires_hook(self):
-        """unregister() 経由の除去でコールバックが呼ばれる"""
-        removed: list[str] = []
+        """unregister() 経由の除去でコールバックが呼ばれ、reason='unregister'になる"""
+        removed: list[tuple[str, str]] = []
         mgr = SessionManager(
-            grace_period_sec=0, liveness_timeout_sec=0, on_session_removed=removed.append
+            grace_period_sec=0, liveness_timeout_sec=0,
+            on_session_removed=lambda sid, reason: removed.append((sid, reason)),
         )
         mgr.register("s1")
         mgr.unregister("s1")
-        assert removed == ["s1"]
+        assert removed == [("s1", "unregister")]
 
     def test_unregister_of_unknown_session_does_not_fire_hook(self):
         """未登録 session の unregister() 失敗時はコールバックを呼ばない"""
-        removed: list[str] = []
+        removed: list[tuple[str, str]] = []
         mgr = SessionManager(
-            grace_period_sec=0, liveness_timeout_sec=0, on_session_removed=removed.append
+            grace_period_sec=0, liveness_timeout_sec=0,
+            on_session_removed=lambda sid, reason: removed.append((sid, reason)),
         )
         assert mgr.unregister("not-registered") is False
         assert removed == []
 
     def test_liveness_ttl_eviction_fires_hook(self):
-        """liveness TTL 失効（_evict_if_still_stale 経由）でもコールバックが呼ばれる
+        """liveness TTL 失効（_evict_if_still_stale 経由）でもコールバックが呼ばれ、reason='ttl'になる
 
         kill -9 等の異常終了は unregister() を経由しないため、この経路が
         フックされていないと撤去が一切走らない。
         """
-        removed: list[str] = []
+        removed: list[tuple[str, str]] = []
         mgr = SessionManager(
-            grace_period_sec=0, liveness_timeout_sec=0.2, on_session_removed=removed.append
+            grace_period_sec=0, liveness_timeout_sec=0.2,
+            on_session_removed=lambda sid, reason: removed.append((sid, reason)),
         )
         mgr.register("s1")
         with mgr._lock:
             mgr._last_seen["s1"] = time.monotonic() - 10
         mgr._evict_if_still_stale("s1")
-        assert removed == ["s1"]
+        assert removed == [("s1", "ttl")]
 
     def test_evict_toctou_race_does_not_fire_hook(self):
         """TOCTOU 再チェックで生存判定に戻った場合はコールバックを呼ばない"""
-        removed: list[str] = []
+        removed: list[tuple[str, str]] = []
         mgr = SessionManager(
-            grace_period_sec=0, liveness_timeout_sec=0.2, on_session_removed=removed.append
+            grace_period_sec=0, liveness_timeout_sec=0.2,
+            on_session_removed=lambda sid, reason: removed.append((sid, reason)),
         )
         mgr.register("s1")
         with mgr._lock:
@@ -429,7 +433,7 @@ class TestOnSessionRemovedHook:
 
     def test_hook_exception_does_not_propagate(self):
         """コールバックが例外を投げても unregister() 自体は正常に完了する"""
-        def boom(session_id: str) -> None:
+        def boom(session_id: str, reason: str) -> None:
             raise RuntimeError("boom")
 
         mgr = SessionManager(grace_period_sec=0, liveness_timeout_sec=0, on_session_removed=boom)

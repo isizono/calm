@@ -626,6 +626,172 @@ CREATE TABLE discussion_topics (
 
 </details>
 
+### feedback_bootstrap_seen
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| session_id | TEXT | NO | — | PK |
+| created_at | TIMESTAMP | NO | `CURRENT_TIMESTAMP` | — |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE feedback_bootstrap_seen (
+    session_id  TEXT PRIMARY KEY,
+    created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+```
+
+</details>
+
+### feedback_entries
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| id | INTEGER | NO | — | PK |
+| name | TEXT | NO | — | — |
+| body | TEXT | NO | — | — |
+| ref | TEXT | YES | — | — |
+| strength | TEXT | NO | — | — |
+| timing | TEXT | NO | — | — |
+| condition_json | TEXT | NO | — | — |
+| delivered_count | INTEGER | NO | `0` | — |
+| overridden_count | INTEGER | NO | `0` | — |
+| deleted_at | TIMESTAMP | YES | — | — |
+| created_at | TIMESTAMP | NO | `CURRENT_TIMESTAMP` | — |
+| updated_at | TIMESTAMP | NO | `CURRENT_TIMESTAMP` | — |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE feedback_entries (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    name              TEXT NOT NULL UNIQUE
+                      CHECK (LENGTH(name) > 0 AND name NOT GLOB '*[^a-z0-9-]*'),
+    body              TEXT NOT NULL CHECK (LENGTH(body) <= 100 AND LENGTH(TRIM(body)) > 0),
+    ref               TEXT CHECK (ref IS NULL OR LENGTH(ref) <= 500),
+    strength          TEXT NOT NULL CHECK (strength IN ('notify', 'block')),
+    timing            TEXT NOT NULL CHECK (timing IN ('utterance', 'tool_fail', 'pre_tool')),
+    -- {"tool": str|null, "all": [{"field","op","value"}, ...]}（all は0〜3要素）。
+    -- 実行時の評価規則は src/services/feedback_rules.py 参照
+    condition_json    TEXT NOT NULL,
+    delivered_count   INTEGER NOT NULL DEFAULT 0,
+    overridden_count  INTEGER NOT NULL DEFAULT 0,
+    deleted_at        TIMESTAMP,
+    created_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    -- strength='block' は実行直前ブロック以外に配達経路を持たないため、
+    -- timing='pre_tool' と常に対応させる（片方だけを許すと、知らせる強さなのに
+    -- 実行直前タイミングを持つ・止める強さなのに配達経路が無い、という組み合わせが作れてしまう）
+    CHECK ((strength = 'block') = (timing = 'pre_tool'))
+)
+```
+
+</details>
+
+### feedback_holds
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| session_id | TEXT | NO | — | PK |
+| entry_id | INTEGER | NO | — | PK |
+| fingerprint | TEXT | NO | — | — |
+| created_at | TIMESTAMP | NO | `CURRENT_TIMESTAMP` | — |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE feedback_holds (
+    session_id   TEXT NOT NULL,
+    entry_id     INTEGER NOT NULL REFERENCES feedback_entries(id),
+    fingerprint  TEXT NOT NULL,  -- sha256(キー順ソートJSON化したtool_input)
+    created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (session_id, entry_id)
+)
+```
+
+</details>
+
+### feedback_notes
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| id | INTEGER | NO | — | PK |
+| entry_id | INTEGER | NO | — | — |
+| kind | TEXT | NO | — | — |
+| body | TEXT | NO | — | — |
+| created_at | TIMESTAMP | NO | `CURRENT_TIMESTAMP` | — |
+
+インデックス:
+- `idx_feedback_notes_entry` ON `feedback_notes`(entry_id)
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE feedback_notes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry_id    INTEGER NOT NULL REFERENCES feedback_entries(id),
+    kind        TEXT NOT NULL CHECK (kind IN ('stumble', 'note')),
+    body        TEXT NOT NULL CHECK (LENGTH(body) <= 500 AND LENGTH(TRIM(body)) > 0),
+    created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+```
+
+</details>
+
+### feedback_switch
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| id | INTEGER | NO | — | PK |
+| mode | TEXT | NO | `'on'` | — |
+| updated_at | TIMESTAMP | NO | `CURRENT_TIMESTAMP` | — |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE feedback_switch (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    mode        TEXT NOT NULL DEFAULT 'on' CHECK (mode IN ('off', 'on')),
+    updated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+```
+
+</details>
+
+### feedback_turn_marks
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| session_id | TEXT | NO | — | PK |
+| prompt_id | TEXT | NO | `''` | PK |
+| entry_id | INTEGER | NO | — | PK |
+| created_at | TIMESTAMP | NO | `CURRENT_TIMESTAMP` | — |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE feedback_turn_marks (
+    session_id  TEXT NOT NULL,
+    prompt_id   TEXT NOT NULL DEFAULT '',
+    entry_id    INTEGER NOT NULL REFERENCES feedback_entries(id),
+    created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (session_id, prompt_id, entry_id)
+)
+```
+
+</details>
+
 ### fetch_telemetry
 
 | カラム名 | 型 | NULL | デフォルト | PK |
@@ -1265,6 +1431,51 @@ CREATE TABLE search_telemetry (
     result_count INTEGER NOT NULL,
     timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 , results_json TEXT, diagnostics_json TEXT, caller_session_id TEXT)
+```
+
+</details>
+
+### sessions
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| session_id | TEXT | NO | — | PK |
+| id_kind | TEXT | NO | — | — |
+| harness | TEXT | YES | — | — |
+| host | TEXT | YES | — | — |
+| cwd | TEXT | YES | — | — |
+| cli_session_id | TEXT | YES | — | — |
+| cli_pid | INTEGER | YES | — | — |
+| cli_resolve_status | TEXT | YES | — | — |
+| mode | TEXT | NO | `'interactive'` | — |
+| last_heartbeat_at | TIMESTAMP | YES | — | — |
+| last_tool_call_at | TIMESTAMP | YES | — | — |
+| last_checkin_activity_id | INTEGER | YES | — | — |
+| last_checkin_at | TIMESTAMP | YES | — | — |
+| ended_at | TIMESTAMP | YES | — | — |
+| ended_reason | TEXT | YES | — | — |
+
+インデックス:
+- `idx_sessions_cli_live` UNIQUE ON `sessions`(harness, cli_session_id)
+- `idx_sessions_live` ON `sessions`(last_heartbeat_at)
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE sessions (
+  session_id TEXT PRIMARY KEY,             -- 起動器の識別子。取れなければ 'eph:'||接続単位の揮発識別子
+  id_kind TEXT NOT NULL CHECK (id_kind IN ('bridge','ephemeral')),
+  harness TEXT, host TEXT, cwd TEXT,       -- 起動器の申告。hostは到達判定、cwdは診断
+  cli_session_id TEXT, cli_pid INTEGER,    -- 会話識別子。解決関数が充填する
+  cli_resolve_status TEXT CHECK (cli_resolve_status IS NULL
+    OR cli_resolve_status IN ('resolved','header_missing','not_found','stale')),
+  mode TEXT NOT NULL DEFAULT 'interactive' CHECK (mode IN ('interactive','headless')),
+  last_heartbeat_at TIMESTAMP,             -- 起動器の心拍(60秒)
+  last_tool_call_at TIMESTAMP,             -- 全ツール呼び出しの touch(60秒スロットル)
+  last_checkin_activity_id INTEGER, last_checkin_at TIMESTAMP,
+  ended_at TIMESTAMP, ended_reason TEXT CHECK (ended_reason IS NULL OR ended_reason IN ('unregister','ttl','superseded')),
+  CHECK ((ended_at IS NULL) = (ended_reason IS NULL))
+)
 ```
 
 </details>
