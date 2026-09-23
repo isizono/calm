@@ -6,10 +6,15 @@
 
 呼び出し元識別子はget_caller_session_id()（起動器の恒久識別子優先、
 無ければMCP接続単位のephemeral IDにフォールバック、どちらも無ければNone）の
-解決結果をキーに使う。テストでは`src.middleware.delta_middleware`に注入された
-get_caller_session_idをmonkeypatchし、呼び出し元識別子を明示的に切り替える
-（実際のHTTPヘッダ/MCP接続コンテキストはunit testの境界外のため、この関数の
-戻り値を外部境界として差し替える）。
+解決結果をキーに使う。大半のテストは`src.middleware.delta_middleware`に注入
+されたget_caller_session_id自体をmonkeypatchして識別子を切り替える（キーが
+何であれ同じ振る舞いを検証すればよいテスト用の簡便な差し替え）。優先順位・
+フォールバック契約そのものを検証する3テスト（起動器識別子優先/ephemeral分離/
+無識別子）は、get_caller_session_id()が実際に読みにいく外部境界
+（fastmcp.server.dependencies.get_http_headers/get_context）を差し替える。
+check_in()も内部で同じget_caller_session_id()を呼ぶため、境界を差し替える
+とcheck_in側の解決結果も一致して連動する（delta_middleware側だけを差し替える
+方式ではこの一致が保証できない）。
 
 temp_db / disable_embedding フィクスチャは tests/conftest.py で共有。
 """
@@ -18,6 +23,8 @@ from unittest.mock import MagicMock
 import pytest
 from fastmcp.tools.tool import ToolResult
 
+from src.infra import session_identity
+from src.services import session_registry_service
 from src.services.activity_service import add_activity
 from src.services.checkin_service import check_in
 from src.services.decision_service import add_decisions
@@ -42,9 +49,41 @@ def _clear_watermarks():
     _watermarks.clear()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_session_registry(tmp_path, monkeypatch):
+    """check_in内部のセッション別名レジストリ更新が本番の
+    ~/.cc-memory/session_aliases.jsonに触れないよう、置き場を一時パスへ強制する。
+    """
+    monkeypatch.setenv(
+        session_registry_service.REGISTRY_PATH_ENV,
+        str(tmp_path / "session_aliases.json"),
+    )
+
+
 def _set_caller(monkeypatch, value):
     """次のon_call_tool呼び出しでget_caller_session_id()が返す値を固定する。"""
     monkeypatch.setattr(delta_middleware, "get_caller_session_id", lambda: value)
+
+
+def _set_bridge_header(monkeypatch, bridge_id: str | None):
+    """get_caller_session_id()が読みにいく起動器ヘッダを外部境界として差し替える。"""
+    headers = {session_identity.BRIDGE_SESSION_HEADER: bridge_id} if bridge_id else {}
+    monkeypatch.setattr("fastmcp.server.dependencies.get_http_headers", lambda: headers)
+
+
+def _set_ephemeral_connection(monkeypatch, connection_id: str | None):
+    """get_caller_session_id()が起動器ヘッダ不在時に読みにいくMCP接続コンテキスト
+    （ctx.session_id）を外部境界として差し替える。Noneはコンテキスト自体が
+    存在しない状態（get_context()がRuntimeErrorを投げる状況）を表す。
+    """
+    if connection_id is None:
+        def _raise():
+            raise RuntimeError("no active context")
+        monkeypatch.setattr("fastmcp.server.dependencies.get_context", _raise)
+    else:
+        ctx = MagicMock()
+        ctx.session_id = connection_id
+        monkeypatch.setattr("fastmcp.server.dependencies.get_context", lambda: ctx)
 
 
 def _make_context(tool_name: str):
@@ -379,14 +418,17 @@ async def test_out_of_scope_write_does_not_suppress_future_in_scope_deltas(temp_
 
 @pytest.mark.asyncio
 async def test_same_launcher_identity_shares_watermark_across_reconnect(scope, monkeypatch):
-    """get_caller_session_id()が同じ値を返す限り（起動器の恒久識別子が同一で
-    MCP接続が張り直された場合を含む）、watermarkは1つのエントリを共有する。
+    """起動器ヘッダが同じ値を返す限り、MCP接続（ephemeral ID）が変わっても
+    watermarkは1つのエントリを共有する。get_caller_session_id()が実際に読みに
+    いく境界（get_http_headers/get_context）を差し替え、優先順位の契約自体を
+    検証する。
     """
     tid, aid = scope
     middleware = DeltaNotificationMiddleware()
 
-    # 1本目の接続でcheck_in
-    _set_caller(monkeypatch, "launcher-X")
+    # 1本目の接続（ephemeral id "conn-1"）。起動器ヘッダは"launcher-X"
+    _set_bridge_header(monkeypatch, "launcher-X")
+    _set_ephemeral_connection(monkeypatch, "conn-1")
     checkin_result = check_in(aid)
     await middleware.on_call_tool(
         _make_context("check_in"),
@@ -394,9 +436,10 @@ async def test_same_launcher_identity_shares_watermark_across_reconnect(scope, m
     )
     assert list(_watermarks.keys()) == ["launcher-X"]
 
-    # 接続が張り直されても起動器識別子が同じなら同じキーに解決される想定
     b_decision = add_decision("再接続後に増えた決定", "reason", topic_id=tid)
-    _set_caller(monkeypatch, "launcher-X")
+
+    # 接続が張り直された（ephemeral idが"conn-2"に変わった）が、起動器ヘッダは同じ
+    _set_ephemeral_connection(monkeypatch, "conn-2")
     result = await middleware.on_call_tool(
         _make_context("get_topics"),
         _call_next_returning(_noop_tool_result()),
@@ -412,13 +455,14 @@ async def test_same_launcher_identity_shares_watermark_across_reconnect(scope, m
 
 @pytest.mark.asyncio
 async def test_different_ephemeral_identities_do_not_share_watermark(scope, monkeypatch):
-    """起動器識別子が無くephemeral接続識別子だけの場合、値が異なれば別キーとなり、
+    """起動器ヘッダが無くephemeral接続識別子だけの場合、値が異なれば別キーとなり、
     互いのbaseline/deltaに影響しない。
     """
     tid, aid = scope
     middleware = DeltaNotificationMiddleware()
 
-    _set_caller(monkeypatch, "conn-1")
+    _set_bridge_header(monkeypatch, None)
+    _set_ephemeral_connection(monkeypatch, "conn-1")
     checkin_result = check_in(aid)
     await middleware.on_call_tool(
         _make_context("check_in"),
@@ -428,7 +472,7 @@ async def test_different_ephemeral_identities_do_not_share_watermark(scope, monk
     add_decision("conn-1のcheck_in後に増えた決定", "reason", topic_id=tid)
 
     # 別接続（別ephemeral ID）はbaselineを持たないため、同じ差分があっても通知されない
-    _set_caller(monkeypatch, "conn-2")
+    _set_ephemeral_connection(monkeypatch, "conn-2")
     result = await middleware.on_call_tool(
         _make_context("get_topics"),
         _call_next_returning(_noop_tool_result()),
@@ -443,7 +487,7 @@ async def test_different_ephemeral_identities_do_not_share_watermark(scope, monk
 
 @pytest.mark.asyncio
 async def test_no_identity_resolved_skips_notification_and_does_not_touch_watermarks(scope, monkeypatch):
-    """起動器識別子・ephemeral接続識別子のどちらもget_caller_session_id()が
+    """起動器ヘッダ・ephemeral接続識別子のどちらもget_caller_session_id()が
     解決できない(None)場合、共有フォールバックキーへの相乗りはせず、通知も
     watermarkの読み書きも一切行わない（他セッションのwatermarkも汚さない）。
     """
@@ -451,7 +495,7 @@ async def test_no_identity_resolved_skips_notification_and_does_not_touch_waterm
     middleware = DeltaNotificationMiddleware()
 
     # 他セッションが先にcheck_inしている状態を作る
-    _set_caller(monkeypatch, "caller-A")
+    _set_bridge_header(monkeypatch, "caller-A")
     checkin_result = check_in(aid)
     await middleware.on_call_tool(
         _make_context("check_in"),
@@ -459,10 +503,12 @@ async def test_no_identity_resolved_skips_notification_and_does_not_touch_waterm
     )
     snapshot_before = dict(_watermarks["caller-A"])
 
-    # 識別子が一切解決できない呼び出し（check_inでもbaselineを記録しない）。
-    # 中身の検証は次のget_topics呼び出し側で行う（call_nextの結果がそのまま
-    # 返ることを見れば十分で、ここではwatermarkが増えないことだけ確認する）。
-    _set_caller(monkeypatch, None)
+    # 識別子が一切解決できない呼び出し: ヘッダ無し + MCP接続コンテキストも無し
+    # （check_inでもbaselineを記録しない。中身の検証は次のget_topics呼び出し
+    # 側で行う。call_nextの結果がそのまま返ることを見れば十分で、ここでは
+    # watermarkが増えないことだけ確認する）。
+    _set_bridge_header(monkeypatch, None)
+    _set_ephemeral_connection(monkeypatch, None)
     checkin_result_unresolved = check_in(aid)
     await middleware.on_call_tool(
         _make_context("check_in"),
