@@ -648,7 +648,7 @@ strength='block'のエントリに一度当たったあとの1回止め保留。
 
 カラム一覧・インデックス: `db-schema-tables.md` の `feedback_bootstrap_seen` 節参照。
 
-### 3.36 feedback_meta
+### 3.36 feedback_switch
 
 フィードバック機構全体の配達停止スイッチ。id=1固定の単一行。
 
@@ -658,7 +658,7 @@ strength='block'のエントリに一度当たったあとの1回止め保留。
 
 関連 migration: 0079_add_feedback_entries
 
-カラム一覧・インデックス: `db-schema-tables.md` の `feedback_meta` 節参照。
+カラム一覧・インデックス: `db-schema-tables.md` の `feedback_switch` 節参照。
 
 ---
 
@@ -806,7 +806,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0073_add_asks_notify_wanted | asks に notify_wanted 列（通知希望フラグ、既定1）を追加（§3.22） |
 | 0074_drop_relay_outbox | relay_outbox テーブル削除（relay統合機能の撤去に伴う。0056で新設、代替スキーマへの移行なし） |
 | 0077_add_goals | goals / goal_conditions / goal_activities テーブル新設（goal機構、§3.28-3.30）+ activities に closed_at・closed_by・closed_reason（NULL許容）を追加 |
-| 0079_add_feedback_entries | feedback_entries / feedback_notes / feedback_holds / feedback_turn_marks / feedback_bootstrap_seen / feedback_meta テーブル新設（フィードバック機構、§3.31-3.36） |
+| 0079_add_feedback_entries | feedback_entries / feedback_notes / feedback_holds / feedback_turn_marks / feedback_bootstrap_seen / feedback_switch テーブル新設（フィードバック機構、§3.31-3.36） |
 
 重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。
 

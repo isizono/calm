@@ -148,7 +148,7 @@ class TestModeOn:
     def test_row_missing_is_off(self, db):
         conn = get_connection()
         try:
-            conn.execute("DELETE FROM feedback_meta")
+            conn.execute("DELETE FROM feedback_switch")
             conn.commit()
         finally:
             conn.close()
@@ -161,7 +161,7 @@ class TestModeOn:
     def test_mode_off_is_off(self, db):
         conn = get_connection()
         try:
-            conn.execute("UPDATE feedback_meta SET mode = 'off'")
+            conn.execute("UPDATE feedback_switch SET mode = 'off'")
             conn.commit()
         finally:
             conn.close()
@@ -235,7 +235,7 @@ class TestUserPromptSubmit:
         )
         conn = get_connection()
         try:
-            conn.execute("UPDATE feedback_meta SET mode = 'off'")
+            conn.execute("UPDATE feedback_switch SET mode = 'off'")
             conn.commit()
         finally:
             conn.close()

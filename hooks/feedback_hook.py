@@ -1,7 +1,7 @@
 """フィードバック機構のhook本体（1ファイルでUserPromptSubmit・PostToolUseFailure・
 PreToolUseの3イベントを処理する）。
 
-標準入力JSONの`hook_event_name`で処理を振り分ける。DB接続失敗・feedback_meta未作成・
+標準入力JSONの`hook_event_name`で処理を振り分ける。DB接続失敗・feedback_switch未作成・
 mode値が不正のいずれも mode='off' 相当としてfail-open（何も出さず終了、blockも
 効かない）。他のDB書き込みhook（citation_event_log.py等）と同じ方針で、起動コストを
 抑えるため src.db を経由せずsqlite3を直接使う。
@@ -59,7 +59,7 @@ def _connect() -> Optional[sqlite3.Connection]:
 
 def _mode_on(conn: sqlite3.Connection) -> bool:
     try:
-        row = conn.execute("SELECT mode FROM feedback_meta WHERE id = 1").fetchone()
+        row = conn.execute("SELECT mode FROM feedback_switch WHERE id = 1").fetchone()
     except sqlite3.Error:
         return False
     return row is not None and row["mode"] == "on"

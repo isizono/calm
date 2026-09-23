@@ -21,13 +21,13 @@
 --                            重複配達防止マーカー
 --   feedback_bootstrap_seen  「ツール失敗で当たるエントリが無かった」ときのセッション
 --                            1回リマインド済みmarker
---   feedback_meta             配達の停止スイッチ（id=1固定の単一行）
+--   feedback_switch          配達の停止スイッチ（id=1固定の単一行）
 --
 -- 変更内容:
 --   1. feedback_entries / feedback_notes / feedback_holds / feedback_turn_marks /
---      feedback_bootstrap_seen / feedback_meta を新設
+--      feedback_bootstrap_seen / feedback_switch を新設
 --   2. feedback_notesへのUPDATE/DELETEを拒否する追記専用トリガーを追加
---   3. feedback_metaへの初期行（mode='on'）を投入
+--   3. feedback_switchへの初期行（mode='on'）を投入
 
 CREATE TABLE feedback_entries (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -98,9 +98,9 @@ CREATE TABLE feedback_bootstrap_seen (
     created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE feedback_meta (
+CREATE TABLE feedback_switch (
     id          INTEGER PRIMARY KEY CHECK (id = 1),
     mode        TEXT NOT NULL DEFAULT 'on' CHECK (mode IN ('off', 'on')),
     updated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-INSERT INTO feedback_meta (id, mode) VALUES (1, 'on');
+INSERT INTO feedback_switch (id, mode) VALUES (1, 'on');

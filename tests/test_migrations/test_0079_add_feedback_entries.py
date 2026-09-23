@@ -1,8 +1,8 @@
 """migration 0079_add_feedback_entries のテスト
 
 0079適用後にfeedback_entries / feedback_notes / feedback_holds / feedback_turn_marks /
-feedback_bootstrap_seen / feedback_metaが期待通り存在し、CHECK制約・FK制約・
-追記専用トリガー・feedback_metaの初期行が機能することを、feedback_serviceを
+feedback_bootstrap_seen / feedback_switchが期待通り存在し、CHECK制約・FK制約・
+追記専用トリガー・feedback_switchの初期行が機能することを、feedback_serviceを
 経由せず生SQLで検証する。
 """
 import os
@@ -21,7 +21,7 @@ _TABLES = (
     "feedback_holds",
     "feedback_turn_marks",
     "feedback_bootstrap_seen",
-    "feedback_meta",
+    "feedback_switch",
 )
 
 
@@ -101,7 +101,7 @@ class TestTablesCreated:
             holds_cols = get_column_names(conn, "feedback_holds")
             turn_marks_cols = get_column_names(conn, "feedback_turn_marks")
             bootstrap_cols = get_column_names(conn, "feedback_bootstrap_seen")
-            meta_cols = get_column_names(conn, "feedback_meta")
+            meta_cols = get_column_names(conn, "feedback_switch")
         finally:
             conn.close()
         assert {
@@ -122,10 +122,10 @@ class TestTablesCreated:
             conn.close()
         assert "idx_feedback_notes_entry" in names
 
-    def test_feedback_meta_initial_row(self, migrated_db):
+    def test_feedback_switch_initial_row(self, migrated_db):
         conn = get_connection()
         try:
-            row = conn.execute("SELECT id, mode FROM feedback_meta").fetchall()
+            row = conn.execute("SELECT id, mode FROM feedback_switch").fetchall()
         finally:
             conn.close()
         assert len(row) == 1
@@ -456,12 +456,12 @@ class TestFeedbackHoldsAndTurnMarksAndBootstrapSeen:
             conn.close()
 
 
-class TestFeedbackMetaCheckConstraints:
+class TestFeedbackSwitchCheckConstraints:
     def test_id_other_than_1_rejected(self, migrated_db):
         conn = get_connection()
         try:
             with pytest.raises(sqlite3.IntegrityError):
-                conn.execute("INSERT INTO feedback_meta (id, mode) VALUES (2, 'on')")
+                conn.execute("INSERT INTO feedback_switch (id, mode) VALUES (2, 'on')")
         finally:
             conn.rollback()
             conn.close()
@@ -471,7 +471,7 @@ class TestFeedbackMetaCheckConstraints:
         try:
             with pytest.raises(sqlite3.IntegrityError):
                 conn.execute(
-                    "UPDATE feedback_meta SET mode = 'observe' WHERE id = 1"
+                    "UPDATE feedback_switch SET mode = 'observe' WHERE id = 1"
                 )
         finally:
             conn.rollback()
@@ -480,9 +480,9 @@ class TestFeedbackMetaCheckConstraints:
     def test_mode_can_be_toggled_off(self, migrated_db):
         conn = get_connection()
         try:
-            conn.execute("UPDATE feedback_meta SET mode = 'off' WHERE id = 1")
+            conn.execute("UPDATE feedback_switch SET mode = 'off' WHERE id = 1")
             conn.commit()
-            row = conn.execute("SELECT mode FROM feedback_meta WHERE id = 1").fetchone()
+            row = conn.execute("SELECT mode FROM feedback_switch WHERE id = 1").fetchone()
         finally:
             conn.close()
         assert row["mode"] == "off"

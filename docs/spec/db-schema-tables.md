@@ -719,28 +719,6 @@ CREATE TABLE feedback_holds (
 
 </details>
 
-### feedback_meta
-
-| カラム名 | 型 | NULL | デフォルト | PK |
-|---|---|---|---|---|
-| id | INTEGER | NO | — | PK |
-| mode | TEXT | NO | `'on'` | — |
-| updated_at | TIMESTAMP | NO | `CURRENT_TIMESTAMP` | — |
-
-インデックス: なし（自動生成される主キー索引を除く）
-
-<details><summary>CREATE文（生成元migration）</summary>
-
-```sql
-CREATE TABLE feedback_meta (
-    id          INTEGER PRIMARY KEY CHECK (id = 1),
-    mode        TEXT NOT NULL DEFAULT 'on' CHECK (mode IN ('off', 'on')),
-    updated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-)
-```
-
-</details>
-
 ### feedback_notes
 
 | カラム名 | 型 | NULL | デフォルト | PK |
@@ -763,6 +741,28 @@ CREATE TABLE feedback_notes (
     kind        TEXT NOT NULL CHECK (kind IN ('stumble', 'note')),
     body        TEXT NOT NULL CHECK (LENGTH(body) <= 500 AND LENGTH(TRIM(body)) > 0),
     created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+```
+
+</details>
+
+### feedback_switch
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| id | INTEGER | NO | — | PK |
+| mode | TEXT | NO | `'on'` | — |
+| updated_at | TIMESTAMP | NO | `CURRENT_TIMESTAMP` | — |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE feedback_switch (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    mode        TEXT NOT NULL DEFAULT 'on' CHECK (mode IN ('off', 'on')),
+    updated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 )
 ```
 
