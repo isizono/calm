@@ -1,4 +1,4 @@
-"""Stop hook: イベント駆動アーキテクチャ Phase 1
+"""Stop hook: イベント駆動アーキテクチャ
 
 処理フロー:
 1. stdin読み込み → JSON parse
