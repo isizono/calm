@@ -132,6 +132,15 @@ class TestTablesCreated:
         assert row[0]["id"] == 1
         assert row[0]["mode"] == "on"
 
+    def test_feedback_entries_has_no_seed_rows(self, migrated_db):
+        """本マイグレーションは対象エントリの初期データを含まない（マージ後に別途登録する運用）。"""
+        conn = get_connection()
+        try:
+            count = conn.execute("SELECT COUNT(*) AS n FROM feedback_entries").fetchone()["n"]
+        finally:
+            conn.close()
+        assert count == 0
+
 
 class TestFeedbackEntriesCheckConstraints:
     def test_name_uppercase_rejected(self, migrated_db):

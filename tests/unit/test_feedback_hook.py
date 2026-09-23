@@ -7,6 +7,7 @@ main()にstdin JSONを流し込みstdoutのJSONを検証する（test_preblock_h
 """
 import io
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -129,6 +130,53 @@ class TestFingerprint:
 
     def test_different_value_changes_fingerprint(self):
         assert hook._fingerprint({"a": 1}) != hook._fingerprint({"a": 2})
+
+
+class TestModeOn:
+    """_mode_on: DB接続失敗以外の『不正値』系(テーブル未作成・行欠落・mode='off')を
+
+    生sqlite3接続で直接再現する（CHECK制約により'observe'等の不正値は書き込み
+    自体ができないため、値の不正の代表としてoffと行欠落を検証する）。
+    """
+
+    def test_table_missing_is_off(self, tmp_path):
+        conn = sqlite3.connect(str(tmp_path / "no-table.db"))
+        conn.row_factory = sqlite3.Row
+        assert hook._mode_on(conn) is False
+        conn.close()
+
+    def test_row_missing_is_off(self, db):
+        conn = get_connection()
+        try:
+            conn.execute("DELETE FROM feedback_meta")
+            conn.commit()
+        finally:
+            conn.close()
+        conn = get_connection()
+        try:
+            assert hook._mode_on(conn) is False
+        finally:
+            conn.close()
+
+    def test_mode_off_is_off(self, db):
+        conn = get_connection()
+        try:
+            conn.execute("UPDATE feedback_meta SET mode = 'off'")
+            conn.commit()
+        finally:
+            conn.close()
+        conn = get_connection()
+        try:
+            assert hook._mode_on(conn) is False
+        finally:
+            conn.close()
+
+    def test_mode_on_is_on(self, db):
+        conn = get_connection()
+        try:
+            assert hook._mode_on(conn) is True
+        finally:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +314,61 @@ class TestUserPromptSubmit:
         )
         body = out["hookSpecificOutput"]["additionalContext"]
         assert len(_shown_lines(body)) == 3
+
+    def test_entries_dropped_by_cap_are_not_counted_as_delivered(self, db, capsys):
+        """#8: 件数上限で落ちた分はdelivered_countを増やさない。"""
+        for i in range(5):
+            _create_entry(
+                f"stump-{i}",
+                condition={"tool": None, "all": [{"field": "prompt", "op": "regex", "value": "help"}]},
+            )
+        _run_main_with_event(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt": "help"}, capsys
+        )
+        counts = [_row(f"stump-{i}")["delivered_count"] for i in range(5)]
+        assert sorted(counts) == [0, 0, 1, 1, 1]
+
+    def test_deleted_entry_is_not_matched(self, db, capsys):
+        """#4: deleted_atの付いたエントリは配達にも照合にも使われない。"""
+        _create_entry(
+            "stump-a",
+            condition={"tool": None, "all": [{"field": "prompt", "op": "regex", "value": "help"}]},
+        )
+        del_result = fs.write_feedback_entry(name="stump-a", action="delete", read_mark=0)
+        assert del_result["ok"], del_result
+        out = _run_main_with_event(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt": "please help"}, capsys
+        )
+        assert out == {}
+
+    def test_broken_regex_entry_is_skipped_others_still_evaluated(self, db, capsys):
+        """#7: 保存済みエントリの正規表現評価で例外が出たら、そのエントリだけ
+        スキップし、他のエントリの評価は継続する。write時の検証をすり抜けた
+        想定として、正規表現の妥当性チェックを経由しない生SQLで壊れた値を仕込む。"""
+        _create_entry(
+            "broken",
+            condition={"tool": None, "all": [{"field": "prompt", "op": "regex", "value": "help"}]},
+        )
+        _create_entry(
+            "healthy",
+            body="正常な知見",
+            condition={"tool": None, "all": [{"field": "prompt", "op": "regex", "value": "help"}]},
+        )
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE feedback_entries SET condition_json = ? WHERE name = 'broken'",
+                (json.dumps({"tool": None, "all": [{"field": "prompt", "op": "regex", "value": "("}]}),),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        out = _run_main_with_event(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt": "please help"}, capsys
+        )
+        assert "正常な知見" in out["hookSpecificOutput"]["additionalContext"]
+        assert _row("broken")["delivered_count"] == 0
+        assert _row("healthy")["delivered_count"] == 1
 
 
 class TestPostToolUseFailure:
@@ -497,3 +600,59 @@ class TestPreToolUse:
         out = _run_main_with_event(event, capsys)  # 同一session_idでの再実行
         assert out == {}
         assert _row("danger")["overridden_count"] == 1
+
+    def test_deleted_block_entry_does_not_block(self, db, capsys):
+        """#4: deleted_atの付いたエントリは配達にも照合にも使われない。"""
+        _create_entry(
+            "danger", strength="block", timing="pre_tool", condition={"tool": "Bash", "all": []}
+        )
+        del_result = fs.write_feedback_entry(name="danger", action="delete", read_mark=0)
+        assert del_result["ok"], del_result
+        out = _run_main_with_event(
+            {
+                "hook_event_name": "PreToolUse",
+                "session_id": "s1",
+                "tool_name": "Bash",
+                "tool_input": {"command": "rm -rf /"},
+            },
+            capsys,
+        )
+        assert out == {}
+
+    def test_over_3_blocking_entries_all_denied_but_reason_capped_at_3(self, db, capsys):
+        """#16: 判定(deny)は当たった全件を反映し、理由文への表示は3件までに絞る。
+        表示から落ちたブロック対象もholdへの登録・denyの判定自体には反映される。"""
+        for i in range(4):
+            _create_entry(
+                f"danger-{i}",
+                strength="block",
+                timing="pre_tool",
+                body=f"危険{i}",
+                condition={"tool": "Bash", "all": []},
+            )
+        event = {
+            "hook_event_name": "PreToolUse",
+            "session_id": "s1",
+            "tool_name": "Bash",
+            "tool_input": {"command": "rm -rf /"},
+        }
+        out = _run_main_with_event(event, capsys)
+        spec = out["hookSpecificOutput"]
+        assert spec["permissionDecision"] == "deny"
+        reason = spec["permissionDecisionReason"]
+        assert len(_shown_lines(reason)) == 3
+        # 4件目は理由文には出ないが、holdは登録されdelivered_countは増えない
+        assert _row("danger-3")["delivered_count"] == 0
+        conn = get_connection()
+        try:
+            hold = conn.execute(
+                "SELECT 1 FROM feedback_holds WHERE session_id = ? AND entry_id = ?",
+                ("s1", _row("danger-3")["id"]),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert hold is not None
+        # 4件目も、同じ引数で再実行すれば(holdが効いて)押し切られる
+        out2 = _run_main_with_event(event, capsys)
+        assert out2 == {}
+        assert _row("danger-3")["overridden_count"] == 1
