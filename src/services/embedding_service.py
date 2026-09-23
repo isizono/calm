@@ -274,14 +274,15 @@ def _run_backfill() -> None:
 
     _ensure_initialized から daemon thread に切り出して呼ばれる。呼び出し元の
     encode_document/encode_query 等のリクエスト経路をバックフィル完了までブロック
-    させないため。backfill_embeddings/backfill_topic_embeddings は内部で例外を
-    握りつぶし整数を返す契約のためここでは再送出しないが、想定外の例外で
+    させないため。backfill_embeddings/backfill_topic_embeddings/backfill_tag_embeddings
+    は内部で例外を握りつぶし整数を返す契約のためここでは再送出しないが、想定外の例外で
     `_backfill_done` の更新が漏れないよう finally で確実に立てる。
     """
     global _backfill_done
     try:
         backfill_embeddings()
         backfill_topic_embeddings()
+        backfill_tag_embeddings()
     finally:
         _backfill_done = True
 
@@ -520,6 +521,9 @@ def backfill_embeddings() -> int:
     可能性が高く同一種別内の再試行は無駄なため、残りのチャンクを諦めて次の種別へ進む。
     それまでにcommit済みの成果は失われない。
 
+    冒頭でsearch_indexに対応行を持たないvec_indexの孤児行を削除する
+    (エンティティ削除経路がvec_indexの掃除を保証しないための再発防止)。
+
     Returns: 生成したembedding数
     """
     if not _is_server_running():
@@ -566,6 +570,9 @@ def backfill_embeddings() -> int:
 
     conn = get_connection()
     try:
+        conn.execute("DELETE FROM vec_index WHERE rowid NOT IN (SELECT id FROM search_index)")
+        conn.commit()
+
         total = 0
         for source_type, query in type_queries.items():
             rows = conn.execute(query).fetchall()
@@ -723,10 +730,9 @@ def backfill_tag_embeddings() -> int:
 # ========================================
 # Topic embedding ヘルパー
 #
-# topic_vec は distance_metric=cosine で作成される（migration 0049）。同じく非正規化
-# embedding を格納する vec_index（0005）と tag_vec（0009）は vec0 既定の L2 のままで、
-# topic_vec の distance とはスケールが異なり直接比較できない。topic_vec の近傍距離に
-# 閾値を掛ける際は L2 前提の既存しきい値（QE_DISTANCE_THRESHOLD 等）を流用しないこと。
+# topic_vec は distance_metric=cosine で作成される（migration 0050）。vec_index
+# （0005）と tag_vec（0009）も同じ非正規化embeddingを格納しており、migration 0081で
+# 同じくdistance_metric=cosineへ再構築済みのため、3テーブルのdistanceスケールは揃っている。
 # ========================================
 
 

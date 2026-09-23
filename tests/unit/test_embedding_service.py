@@ -180,6 +180,7 @@ def test_ensure_initialized_starts_backfill_thread_only_once_under_concurrency(t
     monkeypatch.setattr(emb, '_ensure_server_running', blocking_ensure_server_running)
     monkeypatch.setattr(emb, 'backfill_embeddings', fake_backfill_embeddings)
     monkeypatch.setattr(emb, 'backfill_topic_embeddings', lambda: 0)
+    monkeypatch.setattr(emb, 'backfill_tag_embeddings', lambda: 0)
 
     results = []
     t1 = threading.Thread(target=lambda: results.append(emb._ensure_initialized()))
@@ -402,6 +403,51 @@ def test_backfill_fills_missing_embeddings(temp_db, monkeypatch):
     try:
         cursor = conn.execute("SELECT count(*) FROM vec_index WHERE rowid = ?", (search_index_id,))
         count = cursor.fetchone()[0]
+        assert count == 1
+    finally:
+        conn.close()
+
+
+def test_backfill_tag_embeddings_fills_missing_embeddings(temp_db, monkeypatch):
+    """backfill_tag_embeddings: tagsにあってtag_vecにないタグが埋められる"""
+
+    def mock_encode_batch(texts, prefix):
+        return [np.random.rand(EMBEDDING_DIM).astype(np.float32).tolist() for _ in texts]
+
+    # サーバーなしでタグ付きtopicを作成（タグ作成時のembedding生成が失敗する）
+    monkeypatch.setattr(emb, '_server_initialized', False)
+    monkeypatch.setattr(emb, '_backfill_done', True)
+    monkeypatch.setattr(emb, '_ensure_server_running', lambda: False)
+
+    add_topic(
+        title="tag backfillテストトピック",
+        description="tag_vecバックフィルの動作を検証する",
+        tags=["domain:tag-backfill-test"],
+    )
+
+    tag_rows = execute_query(
+        "SELECT id FROM tags WHERE namespace = 'domain' AND name = 'tag-backfill-test'"
+    )
+    assert len(tag_rows) == 1
+    tag_id = tag_rows[0]["id"]
+
+    conn = get_connection()
+    try:
+        count = conn.execute("SELECT count(*) FROM tag_vec WHERE rowid = ?", (tag_id,)).fetchone()[0]
+        assert count == 0
+    finally:
+        conn.close()
+
+    # サーバー稼働状態にしてバックフィル実行
+    monkeypatch.setattr(emb, '_is_server_running', lambda: True)
+    monkeypatch.setattr(emb, '_encode_batch', mock_encode_batch)
+
+    filled = emb.backfill_tag_embeddings()
+    assert filled >= 1
+
+    conn = get_connection()
+    try:
+        count = conn.execute("SELECT count(*) FROM tag_vec WHERE rowid = ?", (tag_id,)).fetchone()[0]
         assert count == 1
     finally:
         conn.close()

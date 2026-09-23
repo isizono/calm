@@ -171,6 +171,14 @@ def _set_vec_embedding(conn, search_index_id: int, vector: list[float]) -> None:
     )
 
 
+def _cosine_distance(a: list[float], b: list[float]) -> float:
+    """vec_index(distance_metric=cosine)が返すdistanceと同じ定義(1 - cosine類似度)で計算する。"""
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    return 1 - dot / (norm_a * norm_b)
+
+
 def test_vector_retrieve_filter_first_survives_recall_collapse(temp_db, mock_embedding_model, monkeypatch):
     """タグフィルタ付きベクトル検索は、対象がグローバルKNNのtop-fetch_limit圏外でも
     フィルタ集合内であれば取りこぼさない（recall collapse対策、フィルタ集合内の正確なtop-k）。
@@ -230,8 +238,8 @@ def test_vector_retrieve_filter_first_survives_recall_collapse(temp_db, mock_emb
     assert filtered_result[0]["type"] == "topic"
     assert filtered_result[0]["id"] == target_id
     assert filtered_result[0]["title"] == "recall collapse target"
-    # query_vec=[1,0,...,0] と target_vec=[0,...,0,1] のL2距離はsqrt(2)
-    assert filtered_result[0]["distance"] == pytest.approx(2 ** 0.5, abs=1e-3)
+    # query_vec=[1,0,...,0] と target_vec=[0,...,0,1] は直交、cosine距離は1.0
+    assert filtered_result[0]["distance"] == pytest.approx(1.0, abs=1e-3)
 
 
 def test_vector_retrieve_or_mode_filter_first_merges_min_distance_across_keywords(
@@ -298,8 +306,8 @@ def test_vector_retrieve_or_mode_filter_first_merges_min_distance_across_keyword
     finally:
         conn.close()
 
-    distance_to_a = math.dist(query_vec_a, target_vec)
-    distance_to_b = math.dist(query_vec_b, target_vec)
+    distance_to_a = _cosine_distance(query_vec_a, target_vec)
+    distance_to_b = _cosine_distance(query_vec_b, target_vec)
     assert distance_to_b < distance_to_a, "テストのベクトル設計が前提(bの方が近い)を満たしていない"
 
     assert filtered_result == [{

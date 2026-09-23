@@ -5,7 +5,7 @@
 <!-- 再生成: uv run python scripts/dump_db_schema.py -->
 
 `migrations/` を通し番号順に全適用した結果として得られる、現在のテーブル/ビュー構造の機械的な写しである。
-カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0080）。
+カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0081）。
 
 「なぜこの形なのか」（設計判断の背景・変遷・既知の課題）は `docs/spec/db-schema.md` を参照。
 本ファイルは現在値のみを扱い、変遷の経緯（旧カラムの削除理由等）は記載しない。
@@ -1333,7 +1333,7 @@ CREATE TABLE signal_events (
 
 ```sql
 CREATE VIRTUAL TABLE tag_vec USING vec0(
-  embedding float[384]
+  embedding float[384] distance_metric=cosine
 )
 ```
 
@@ -1574,7 +1574,7 @@ CREATE TABLE "topic_vec_vector_chunks00"(rowid PRIMARY KEY,vectors BLOB NOT NULL
 
 ```sql
 CREATE VIRTUAL TABLE vec_index USING vec0(
-  embedding float[384]
+  embedding float[384] distance_metric=cosine
 )
 ```
 
