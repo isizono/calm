@@ -1142,8 +1142,12 @@ def update_activity(
         closed_reason: 閉じた理由（自由文）。status="completed"と同時のときだけ受け付ける
 
     Returns:
-        更新されたアクティビティ情報。status="completed"の呼び出しでは、紐づくgoalが
-        未判定ならgoal_hint（{goal_id_raw, handle, label, next, open_activities_left,
+        更新されたアクティビティ情報。既にcompletedのactivityへstatus="completed"を
+        再度指定し、かつclosed_by/closed_reasonも渡した場合、その値は1回目の記録を
+        保持したまま書き換わらない。この場合closed_fields_unchanged=trueを応答に足す
+        （closed_by/closed_reasonを渡さなければ、このキーは付かない）。
+        status="completed"の呼び出しでは、紐づくgoalが未判定ならgoal_hint
+        （{goal_id_raw, handle, label, next, open_activities_left,
         open_questions?, warning?}）も返す（拒否はしない）
     """
     return activity_service.update_activity(
