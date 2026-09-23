@@ -407,13 +407,6 @@ def _build_habits_section(conn, session_id: str | None = None, source: str | Non
     )
 
 
-def _build_sync_policy_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # conn, session_id, source, **_kwargs: 全セクション共通シグネチャ
-    """sync_policyが設定されていれば注入する。未設定時はコンテキスト消費ゼロ。"""
-    if not config.SYNC_POLICY:
-        return ""
-    return f"# sync_policy\n{config.SYNC_POLICY}\n"
-
-
 def _build_signals_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # conn, session_id, source, **_kwargs: 全セクション共通シグネチャ
     """未トリアージ(status='new')のシグナル件数をkind内訳付きで1行表示する。
 
@@ -740,7 +733,6 @@ _SECTIONS: list[Section] = [
     Section("snapshot", _build_snapshot_section, config.INJECTION_BUDGET_SNAPSHOT_CHARS, priority=0),
     Section("activities", _build_activities_section, config.INJECTION_BUDGET_ACTIVITIES_CHARS, priority=10),
     Section("habits", _build_habits_section, config.INJECTION_BUDGET_HABITS_CHARS, priority=20),
-    Section("sync_policy", _build_sync_policy_section, config.INJECTION_BUDGET_SYNC_POLICY_CHARS, priority=30),
     Section("signals", _build_signals_section, config.INJECTION_BUDGET_SIGNALS_CHARS, priority=40),
     Section("open_asks", _build_open_asks_section, config.INJECTION_BUDGET_OPEN_ASKS_CHARS, priority=41),
     Section("ask_notify", _build_ask_notify_section, config.INJECTION_BUDGET_ASK_NOTIFY_CHARS, priority=45),
