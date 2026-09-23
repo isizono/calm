@@ -167,6 +167,40 @@ class TestTriggerGating:
 
         assert "destination_candidates" not in result.structured_content
 
+    @pytest.mark.asyncio
+    async def test_non_whitelisted_tool_never_queries_candidates_even_if_judge_ready(self, monkeypatch):
+        """get_goal等の読み取りツールは、goalブロックがjudge_readyでも対象外にする。
+
+        「宛先候補は書き込みの応答に同梱する」設計は書き込みと同一トランザクションで
+        台帳を読む前提に基づき、読み取りツールには適用されない。
+        """
+        def _boom(*_a, **_k):
+            raise AssertionError("ホワイトリスト対象外のツールなのに候補算出処理が走った")
+        monkeypatch.setattr(destination_middleware, "_fetch_candidates", _boom)
+
+        middleware = DestinationCandidateMiddleware()
+        tool_result = ToolResult(structured_content={"goal": {"label": "judge_ready", "goal_id_raw": 1}})
+        result = await middleware.on_call_tool(
+            _make_context("get_goal"), _call_next_returning(tool_result)
+        )
+
+        assert "destination_candidates" not in result.structured_content
+
+    @pytest.mark.asyncio
+    async def test_all_target_tool_names_are_allowed_through(self, monkeypatch):
+        """ホワイトリストに列挙した書き込み系ツールはすべて候補算出処理まで到達する。"""
+        monkeypatch.setattr(destination_middleware, "get_caller_session_id", lambda: "self-session")
+        for tool_name in destination_middleware._TARGET_TOOL_NAMES:
+            called = []
+            monkeypatch.setattr(
+                destination_middleware, "_fetch_candidates",
+                lambda *_a, **_k: (called.append(True) or []),
+            )
+            middleware = DestinationCandidateMiddleware()
+            tool_result = ToolResult(structured_content={"goal": {"label": "judge_ready", "goal_id_raw": 1}})
+            await middleware.on_call_tool(_make_context(tool_name), _call_next_returning(tool_result))
+            assert called, f"{tool_name} で候補算出処理が呼ばれなかった"
+
 
 # ========================================
 # 候補算出SQLの絞り込み（_fetch_candidates）

@@ -2,7 +2,9 @@
 
 判定待ち(goalブロックのlabelがjudge_ready)の応答にだけ反応し、同じgoalに
 紐づくアクティビティへ最後にcheck-inした他セッションを宛先候補として
-レスポンスに同梱する。goalが返らない・judge_ready以外の大多数の呼び出しでは
+レスポンスに同梱する。対象はgoal/goal_hintブロックを実際に返す書き込み系
+ツールに限る（読み取りツールの応答には同梱しない）。ホワイトリスト対象外の
+ツール・goalが返らない・judge_ready以外の大多数の呼び出しではtool_name比較と
 dictのキー参照だけで早期returnし、DBクエリ・生存確認・ファイル読み取りを
 一切走らせない。
 """
@@ -22,6 +24,10 @@ from src.infra.cli_session import read_cli_session
 from src.infra.session_identity import get_caller_session_id
 from src.infra.session_manager import DEFAULT_LIVENESS_TIMEOUT_SEC
 from src.services.session_registry_service import is_session_alive
+
+# goal/goal_hintブロックを実際に返す書き込み系ツールのみを対象にする。
+# 読み取りツール(get_goal等)がjudge_readyなgoalブロックを返しても対象外。
+_TARGET_TOOL_NAMES = frozenset({"check_in", "set_goal", "update_goal", "judge_goal", "update_activity"})
 
 # last_heartbeat_atによる事前絞り込みはあくまで安価なフィルタで、最終的な
 # 生存確認は各候補ごとにis_session_alive()で行う。しきい値はsession_manager
@@ -55,7 +61,8 @@ class DestinationCandidateMiddleware(Middleware):
         # 既に成功している。ここでの例外が全ツール呼び出しを道連れにしない
         # よう、ベストエフォートで握りつぶす（delta_middlewareと同じ方針）。
         try:
-            _maybe_inject(result)
+            if context.message.name in _TARGET_TOOL_NAMES:
+                _maybe_inject(result)
         except Exception as e:
             print(f"destination_middleware.on_call_tool error: {e}", file=sys.stderr)
 
