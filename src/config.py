@@ -70,7 +70,7 @@ PROJECTION_MANIFEST_MAX_ITEMS: int = int(
 
 # --- Direction Layer ---
 # domainごとのactiveな方向性decision(layer:direction)件数がこの値以上になったら
-# direction_overflow hintを発火する（少数原則の維持を促す）
+# direction_overflow hintを発火する（統合・supersede整理をユーザーに促すため）
 DIRECTION_OVERFLOW_THRESHOLD: int = int(env_get("CALM_DIRECTION_OVERFLOW_THRESHOLD", "8"))
 
 # --- Migration Safety ---
