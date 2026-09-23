@@ -59,12 +59,15 @@ claude plugin install calm
 | リレーション | `add_relation`, `remove_relation`, `get_map` | エンティティ間の関連の追加・削除・グラフ探索 |
 | 前提の揺らぎ管理 | `resolve_destabilization`, `suggest_destabilized_candidates` | 軸変更によりdestabilizeされたdecisionの解消・候補提示 |
 | 振る舞い | `add_habit`, `get_habits`, `update_habit` | check-in時に注入される運用ルールの登録・取得・更新 |
-| タグ | `search_tags`, `update_tag`, `analyze_tags` | タグの検索、notes・エイリアス・退役状態等の更新、タグ共起分析 |
+| 終了条件（goal） | `set_goal`, `update_goal`, `judge_goal`, `get_goal` | アクティビティの終了条件の設定・条件の追加や状態変更・達成/失敗の判定・全条件と紐づくアクティビティの取得 |
+| タグ | `search_tags`, `update_tag`, `analyze_tags`, `demote_tag_notes` | タグの検索、notes・エイリアス・退役状態等の更新、タグ共起分析、notesの指定セクションの資材への退避 |
 | ピン | `add_pin`, `remove_pin` | エンティティ間のpin（強調的な関連付け）の追加・削除 |
 | 取り消し | `retract` | 決定事項・ログ・資材の論理削除 |
-| 検索・横断参照 | `search`, `get_by_ids`, `get_timeline` | キーワード横断検索、詳細情報の一括取得、時系列表示 |
+| 検索・横断参照 | `search`, `get_by_ids`, `get_timeline`, `get_overview` | キーワード横断検索、詳細情報の一括取得、時系列表示、進行中/直近完了/裁定待ち/残件の内訳を一望取得 |
+| セッション | `get_sessions`, `set_session_alias` | 稼働中セッションの表示名→別名の対応表取得、自セッションの別名の付け替え |
 | シグナル・計測 | `report_signal`, `get_signals`, `update_signal`, `detect_reask_candidates` | cc-memory自身への故障報告・矛盾検出・聞き返し候補検出等の運用計測 |
 | Ask（人間への判断委譲） | `add_ask`, `get_asks`, `answer_ask`, `triage_ask`, `withdraw_ask`, `unsubscribe_ask` | 離席中・セッション跨ぎの判断待ち問いの起票・取得・回答・振り分け・取り下げ・通知解除 |
+| インスタンス間連携 | `set_instance_identity`, `collect_export_candidates`, `export_bundle`, `import_bundle` | 自インスタンス識別子の設定、export候補の洗い出し、バンドルの書き出し、他インスタンスのバンドルの取り込み |
 | その他 | `get_config`, `roll_dice` | 設定値の取得、ダイスロール |
 
 ## スキル
@@ -72,6 +75,9 @@ claude plugin install calm
 | スキル | 説明 |
 |--------|------|
 | `/man` | CALMの使い方をAIが説明します |
+| `/overview` | 進行中・直近完了・裁定待ち・残件の内訳を一望表示します |
+| `/project-setup` | 新しいプロジェクト・取り組みの知識フレームをCALMにセットアップします |
+| `/coding-project-setup` | コードプロジェクト向けの知識フレームをセットアップします（project-setupから委譲） |
 | `/activity-start` | 新しいアクティビティを開始します |
 | `/activity-pause` | 進行中のアクティビティを完了にせず中断します |
 | `/activity-finish` | アクティビティを完了にします |
@@ -80,6 +86,7 @@ claude plugin install calm
 | `/recording` | 議論の経緯や成果物をログ・資材として記録するようガイドします |
 | `/remember` | 「覚えて」等の依頼を受けて、情報の保存先を判定します |
 | `/forget` | 現状と矛盾・陳腐化した過去の記録を撤回します |
+| `/rule-placement` | 一般化ルールの配置先（habit・tag notes・CLAUDE.md等）をfull評価で判定します |
 | `/tag-notes` | タグのnotesを確認・更新します |
 | `/tag-cleanup` | タグの共起分析を実行し、整理提案をユーザーに提示します |
 | `/sync-memory` | セッション終了前にtranscriptを解析し、トピック・決定事項・ログ・アクティビティを一括で記録・更新します |
@@ -95,6 +102,7 @@ claude plugin install calm
 | `/ask-compose` | `add_ask`のquestion/contextをテンプレートに沿って構成するようガイドします |
 | `/ask-distill` | 繰り返し起票されている同型のaskをまとめてメタaskを起票します |
 | `/ask-answer` | open askを一覧して1件ずつ提示し、回答をanswer_askで記録します |
+| `/ask-watch` | askストアを継続的に監視し、同型のaskが溜まっていたらメタaskとして起票します |
 | `/memory-export` | 記録を他インスタンスへ渡すexportバンドルを作成します |
 | `/memory-import` | 他インスタンスのexportバンドルを衝突裁定を経て取り込みます |
 
@@ -111,7 +119,9 @@ claude plugin install calm
 | `CALM_PENDING_LIMIT` | `2` | アクティブコンテキストのpending表示件数 |
 | `CALM_TIER2_MAX_AGE_DAYS` | `7` | SessionStart一覧の階層2にin_progressアクティビティを載せるupdated_at上限（日） |
 | `CALM_PIN_SURFACE_DECAY_DAYS` | `60` | pinnedアクティビティが階層2表示を維持できるupdated_at上限（日） |
-| `CALM_RECENCY_DECAY_RATE` | `0.0014` | 検索の時間減衰率 |
+| `CALM_RECENCY_DECAY_RATE` | `0.0119` | 検索の時間減衰率 |
+| `CALM_PRECEDENT_BUDGET_CHARS` | `24000` | `pull_precedents`が本文展開（decision＋reason）に使う文字数予算 |
+| `CALM_SYNC_POLICY` | 未設定（注入なし） | セッション開始時にアクティブコンテキストへ注入する自律判断ポリシー文。設定すると`/sync-memory`等が確認を省略できる場面をポリシーの記述に従って判断する |
 | `CALM_SYNC_DISABLE_RETROSPECTIVE` | `false` | `/sync-memory`のふりかえりセクションを非表示にする |
 | `CALM_SNAPSHOT_INTERVAL` | `12` | スナップショット取得間隔（時間） |
 | `CALM_SNAPSHOT_MAX_COUNT` | `5` | スナップショット最大保持数 |

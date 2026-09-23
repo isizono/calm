@@ -5,8 +5,12 @@ git subprocess は挟まず、判定ロジック本体（純粋関数）を直�
 from scripts.lint_doc_cochange import (
     DB_SCHEMA_DOC,
     MCP_TOOLS_DOC,
+    check_readme_tables,
     diff_tool_signatures,
     evaluate,
+    extract_readme_skill_names,
+    extract_readme_tool_names,
+    extract_skill_dir_names,
     extract_tool_signatures,
     has_exception_marker,
 )
@@ -280,3 +284,95 @@ def test_evaluate_reports_both_failures_independently():
         head_main_py=HEAD_MAIN_PY_ADDED_TOOL,
     )
     assert len(failures) == 2
+
+
+# --- README表パース ---
+
+README_TEXT = """# CALM
+
+## MCPツール
+
+| カテゴリ | ツール | 説明 |
+|---------|--------|------|
+| トピック | `add_topic`, `get_topics` | 議論トピックの作成・取得 |
+| check-in | `check_in` | check-in |
+
+## スキル
+
+| スキル | 説明 |
+|--------|------|
+| `/man` | 説明します |
+| `/ask-compose` | `add_ask`のquestion/contextを構成します |
+
+## 設定
+"""
+
+
+def test_extract_readme_tool_names_reads_only_tool_column():
+    names = extract_readme_tool_names(README_TEXT)
+    assert names == {"add_topic", "get_topics", "check_in"}
+
+
+def test_extract_readme_skill_names_ignores_description_backticks():
+    # /ask-compose の説明列にある `add_ask` を誤ってスキル名として拾わないこと
+    names = extract_readme_skill_names(README_TEXT)
+    assert names == {"man", "ask-compose"}
+
+
+def test_extract_readme_tool_names_returns_none_when_section_missing():
+    assert extract_readme_tool_names("# CALM\n\n## スキル\n\n| `/man` | x |\n") is None
+
+
+def test_extract_skill_dir_names_requires_skill_md():
+    paths = [
+        "skills/man/SKILL.md",
+        "skills/man/references/foo.md",
+        "skills/ask-compose/SKILL.md",
+        "skills/_shared/helper.py",
+    ]
+    assert extract_skill_dir_names(paths) == {"man", "ask-compose"}
+
+
+def test_check_readme_tables_passes_when_sets_match():
+    failures, warnings = check_readme_tables(
+        README_TEXT,
+        tool_names={"add_topic", "get_topics", "check_in"},
+        skill_names={"man", "ask-compose"},
+    )
+    assert failures == []
+    assert warnings == []
+
+
+def test_check_readme_tables_fails_on_missing_tool():
+    failures, _ = check_readme_tables(
+        README_TEXT,
+        tool_names={"add_topic", "get_topics", "check_in", "get_goal"},
+        skill_names={"man", "ask-compose"},
+    )
+    assert len(failures) == 1
+    assert "get_goal" in failures[0]
+
+
+def test_check_readme_tables_fails_on_extra_skill_in_readme():
+    failures, _ = check_readme_tables(
+        README_TEXT,
+        tool_names={"add_topic", "get_topics", "check_in"},
+        skill_names={"man"},  # ask-compose はもう存在しない想定
+    )
+    assert len(failures) == 1
+    assert "ask-compose" in failures[0]
+
+
+def test_check_readme_tables_warns_only_when_readme_missing():
+    failures, warnings = check_readme_tables(None, tool_names=set(), skill_names=set())
+    assert failures == []
+    assert len(warnings) == 1
+
+
+def test_check_readme_tables_warns_only_when_section_missing():
+    text_without_tools_section = "# CALM\n\n## スキル\n\n| `/man` | x |\n"
+    failures, warnings = check_readme_tables(
+        text_without_tools_section, tool_names={"add_topic"}, skill_names={"man"}
+    )
+    assert failures == []
+    assert len(warnings) == 1
