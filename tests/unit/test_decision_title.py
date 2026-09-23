@@ -8,6 +8,7 @@
 
 import numpy as np
 import pytest
+from sqlite_vec import serialize_float32
 
 from src.db import get_connection
 from src.services.topic_service import add_topic
@@ -253,6 +254,67 @@ class TestFindSimilarDecisions:
             text="何か",
         )
         assert results == []
+
+    def test_topic_scoped_target_survives_global_recall_collapse(self, topic, topic2, mock_embedding_server):
+        """同topicのdecisionがグローバルKNNのtop-limit圏外でも、topic_idスコープの
+        filter-first KNNで取りこぼさない(recall collapse対策、フィルタ集合内の正確なtop-k)。
+
+        グローバルKNN→post-filterの実装に戻すと、別topicのデコイdecisionがクエリベクトルへ
+        極めて近い位置を大量に占めグローバルtop-limitを独占するため、同topicの対象decisionは
+        1件もそこに現れず0件になって落ちる。
+        """
+        limit = 3
+        n_decoys = 65  # どんな固定件数のグローバル事前取得を課しても飽和させるのに十分な数
+
+        target = add_decisions([
+            {"topic_id": topic["topic_id"], "decision": "同topicの対象決定", "reason": "理由"},
+        ])
+        target_id = target["created"][0]["decision_id"]
+
+        decoy_ids = []
+        for i in range(n_decoys):
+            d = add_decisions([
+                {"topic_id": topic2["topic_id"], "decision": f"別topicデコイ決定{i}", "reason": "理由"},
+            ])
+            decoy_ids.append(d["created"][0]["decision_id"])
+
+        query_vec = [1.0] + [0.0] * (EMBEDDING_DIM - 1)
+        decoy_vec = [1.0 - 1e-4] + [1e-5] * (EMBEDDING_DIM - 1)
+        target_vec = [0.0] * (EMBEDDING_DIM - 1) + [1.0]
+
+        conn = get_connection()
+        try:
+            def _set_vec(decision_id: int, vector: list[float]) -> None:
+                row = conn.execute(
+                    "SELECT id FROM search_index WHERE source_type = 'decision' AND source_id = ?",
+                    (decision_id,),
+                ).fetchone()
+                conn.execute("DELETE FROM vec_index WHERE rowid = ?", (row["id"],))
+                conn.execute(
+                    "INSERT INTO vec_index(rowid, embedding) VALUES (?, ?)",
+                    (row["id"], serialize_float32(vector)),
+                )
+
+            for decoy_id in decoy_ids:
+                _set_vec(decoy_id, decoy_vec)
+            _set_vec(target_id, target_vec)
+            conn.commit()
+        finally:
+            conn.close()
+
+        # sanity: topic絞り無しのグローバルKNNではデコイのみがtop-limitを占め、targetは現れない
+        # (recall collapse repro の前提が成立していることの確認)
+        unscoped = find_similar_decisions(exclude_id=999999, embedding=query_vec, limit=limit)
+        unscoped_ids = [r["id"] for r in unscoped]
+        assert len(unscoped_ids) == limit
+        assert target_id not in unscoped_ids
+        assert all(did in decoy_ids for did in unscoped_ids)
+
+        # 本題: topic_idで絞ると、グローバルには居ないtargetが返る
+        scoped = find_similar_decisions(
+            exclude_id=999999, topic_id=topic["topic_id"], embedding=query_vec, limit=limit,
+        )
+        assert [r["id"] for r in scoped] == [target_id]
 
 
 class TestDisplayFallback:

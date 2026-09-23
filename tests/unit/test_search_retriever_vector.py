@@ -1,18 +1,21 @@
 """vector_retrieve retriever 単体テスト。
 
 embedding サーバー失敗時の None 返却と、共有 conn の使用を確認する。
-実際のベクトル検索結果は test_hybrid_search 側の統合テストで担保しているため、
-ここでは retriever のシグネチャ・null フォールバック・例外ハンドリングに焦点を当てる。
+ハイブリッド検索(FTS+ベクトル+RRF)としての振る舞いは test_hybrid_search 側の
+統合テストで担保しているため、ここでは retriever のシグネチャ・null フォールバック・
+例外ハンドリングに加え、filter-first KNN の候補集合選定というretriever固有の内部契約
+(recall collapse対策)に焦点を当てる。
 """
 import hashlib
 
 import numpy as np
 import pytest
+from sqlite_vec import serialize_float32
 
 import src.services.embedding_service as emb
 from src.db import get_connection
 from src.services import search_service
-from src.services.search_service import vector_retrieve
+from src.services.search_service import _resolve_tag_ids_readonly, vector_retrieve
 from src.services.topic_service import add_topic
 from tests.helpers import make_search_context as _make_ctx
 
@@ -157,3 +160,74 @@ def test_vector_retrieve_or_mode_all_embeddings_fail_returns_none(temp_db, disab
         conn.close()
 
     assert result is None
+
+
+def _set_vec_embedding(conn, search_index_id: int, vector: list[float]) -> None:
+    conn.execute("DELETE FROM vec_index WHERE rowid = ?", (search_index_id,))
+    conn.execute(
+        "INSERT INTO vec_index(rowid, embedding) VALUES (?, ?)",
+        (search_index_id, serialize_float32(vector)),
+    )
+
+
+def test_vector_retrieve_filter_first_survives_recall_collapse(temp_db, mock_embedding_model, monkeypatch):
+    """タグフィルタ付きベクトル検索は、対象がグローバルKNNのtop-fetch_limit圏外でも
+    フィルタ集合内であれば取りこぼさない（recall collapse対策、フィルタ集合内の正確なtop-k）。
+
+    グローバルKNN→post-filterの実装に戻すと、fetch_limit件を超えるデコイが全てクエリ
+    ベクトルへ極めて近い位置に並んでグローバルtop-fetch_limitを独占するため、対象タグの
+    エンティティは1件もそこに現れずフィルタ後0件になって落ちる。
+    """
+    fetch_limit = 5
+    n_decoys = fetch_limit + 3
+
+    for i in range(n_decoys):
+        add_topic(title=f"recall collapse decoy {i}", description="filler", tags=["domain:decoy"])
+    target = add_topic(title="recall collapse target", description="the real one", tags=["domain:target"])
+    target_id = target["topic_id"]
+
+    query_vec = [1.0] + [0.0] * (EMBEDDING_DIM - 1)
+    decoy_vec = [1.0 - 1e-4] + [1e-5] * (EMBEDDING_DIM - 1)
+    target_vec = [0.0] * (EMBEDDING_DIM - 1) + [1.0]
+
+    conn = get_connection()
+    try:
+        decoy_rows = conn.execute(
+            "SELECT id FROM search_index WHERE source_type = 'topic' AND title LIKE 'recall collapse decoy%'"
+        ).fetchall()
+        assert len(decoy_rows) == n_decoys
+        for row in decoy_rows:
+            _set_vec_embedding(conn, row["id"], decoy_vec)
+
+        target_si_id = conn.execute(
+            "SELECT id FROM search_index WHERE source_type = 'topic' AND source_id = ?",
+            (target_id,),
+        ).fetchone()["id"]
+        _set_vec_embedding(conn, target_si_id, target_vec)
+        conn.commit()
+
+        monkeypatch.setattr(emb, "encode_query", lambda text: query_vec)
+
+        # sanity: グローバルKNN(タグフィルタ無し)ではデコイのみがtop-fetch_limitを占め、
+        # targetは現れない（recall collapse repro の前提が成立していることの確認）
+        ctx_unfiltered = _make_ctx(keywords=("q",), fts_keywords=("q",), tag_ids=None, fetch_limit=fetch_limit)
+        unfiltered_result = vector_retrieve(ctx_unfiltered, conn)
+        assert unfiltered_result is not None
+        assert len(unfiltered_result) == fetch_limit
+        assert all(r["title"].startswith("recall collapse decoy") for r in unfiltered_result)
+
+        # 本題: targetのタグでフィルタすると、グローバルには居ないtargetが返る
+        target_tag_id = _resolve_tag_ids_readonly(conn, ["domain:target"])[0]
+        ctx_filtered = _make_ctx(
+            keywords=("q",), fts_keywords=("q",), tag_ids=(target_tag_id,), fetch_limit=fetch_limit,
+        )
+        filtered_result = vector_retrieve(ctx_filtered, conn)
+    finally:
+        conn.close()
+
+    assert len(filtered_result) == 1
+    assert filtered_result[0]["type"] == "topic"
+    assert filtered_result[0]["id"] == target_id
+    assert filtered_result[0]["title"] == "recall collapse target"
+    # query_vec=[1,0,...,0] と target_vec=[0,...,0,1] のL2距離はsqrt(2)
+    assert filtered_result[0]["distance"] == pytest.approx(2 ** 0.5, abs=1e-3)
