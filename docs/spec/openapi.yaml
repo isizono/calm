@@ -26,6 +26,8 @@ tags:
   description: 決定事項の記録・取得
 - name: export
   description: 他インスタンスへのexport候補洗い出し・実行
+- name: feedback
+  description: フィードバックエントリの記録・取得・ノート追加
 - name: goal
   description: activityの終了条件（goal）の作成・更新・判定・取得
 - name: habit
@@ -182,6 +184,41 @@ paths:
                   type: array
               required:
               - items
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/add_feedback_note:
+    post:
+      tags:
+      - feedback
+      summary: 'Choose: フィードバックエントリに観測・経緯を書き足したいとき。'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                name:
+                  type: string
+                kind:
+                  enum:
+                  - stumble
+                  - note
+                  type: string
+                body:
+                  type: string
+              required:
+              - name
+              - kind
+              - body
               type: object
       responses:
         '200':
@@ -983,6 +1020,41 @@ paths:
               required:
               - entity_type
               - entity_id
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/get_feedback_entries:
+    post:
+      tags:
+      - feedback
+      summary: 'Choose: 躓きを踏まえて自分に配達しているフィードバックエントリを読みたいとき。'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                name:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                query:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                include_deleted:
+                  default: false
+                  type: boolean
               type: object
       responses:
         '200':
@@ -2429,6 +2501,78 @@ paths:
               required:
               - ask_id
               - reason
+              type: object
+      responses:
+        '200':
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                - $ref: '#/components/schemas/ErrorResponse'
+  /tools/write_feedback_entry:
+    post:
+      tags:
+      - feedback
+      summary: 'Choose: フィードバックエントリを作る・直す・消すとき。'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                name:
+                  type: string
+                action:
+                  enum:
+                  - create
+                  - update
+                  - delete
+                  type: string
+                body:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                ref:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: null
+                strength:
+                  anyOf:
+                  - enum:
+                    - notify
+                    - block
+                    type: string
+                  - type: 'null'
+                  default: null
+                timing:
+                  anyOf:
+                  - enum:
+                    - utterance
+                    - tool_fail
+                    - pre_tool
+                    type: string
+                  - type: 'null'
+                  default: null
+                condition:
+                  anyOf:
+                  - additionalProperties: true
+                    type: object
+                  - type: string
+                  - type: 'null'
+                  default: null
+                read_mark:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+              required:
+              - name
+              - action
               type: object
       responses:
         '200':
