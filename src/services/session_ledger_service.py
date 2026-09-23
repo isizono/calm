@@ -15,10 +15,10 @@ from src.infra.session_identity import resolve_cli_session
 def register(
     session_id: str,
     *,
-    id_kind: str,
+    id_kind: Literal["bridge", "ephemeral"],
     harness: Optional[str],
     host: Optional[str],
-    mode: str,
+    mode: Literal["interactive", "headless"],
 ) -> None:
     """起動器プロセスをセッション台帳へ登録する(heartbeat再送も同じ経路を通る)。
 
@@ -62,11 +62,20 @@ def register(
         ).fetchone()
         already_ended = existing is not None and existing["ended_at"] is not None
 
-        if entry is not None:
+        if entry is not None and entry.get("cli_session_id") is not None:
             cli_session_id = entry.get("cli_session_id")
             cli_pid = entry.get("cli_pid")
             cwd = entry.get("cwd")
             cli_resolve_status = "resolved"
+        elif entry is not None:
+            # resolve_cli_session()はCLIセッションファイルが見つかっても、
+            # 中身にsessionIdフィールドが無ければcli_session_id=Noneのまま
+            # 辞書を返すことがある(read_cli_session参照)。この場合
+            # 会話識別子としては使えないため、'resolved'を名乗らない。
+            cli_session_id = None
+            cli_pid = entry.get("cli_pid")
+            cwd = entry.get("cwd")
+            cli_resolve_status = "stale"
         elif existing is not None and existing["cli_session_id"] is not None:
             cli_session_id = existing["cli_session_id"]
             cli_pid = existing["cli_pid"]

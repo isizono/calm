@@ -83,6 +83,25 @@ class TestRegister:
         assert row["ended_at"] is None
         assert row["ended_reason"] is None
 
+    def test_cli_session_found_without_session_id_is_marked_stale_not_resolved(self, temp_db, monkeypatch):
+        """resolve_cli_sessionがcli_session_id=Noneの辞書を返す場合、'resolved'を名乗らない。
+
+        read_cli_session()はCLIセッションファイルにnameさえあればsessionIdフィールドが
+        無くても辞書を返しうる(src/infra/cli_session.py)。このとき会話識別子として使える
+        値が無いのにcli_resolve_status='resolved'にすると、宛先候補側が「識別子が使える」
+        と誤解する。
+        """
+        monkeypatch.setattr(
+            session_ledger_service, "resolve_cli_session",
+            lambda sid: {"cli_session_id": None, "cli_pid": 111, "cwd": "/tmp/work"},
+        )
+        session_ledger_service.register(
+            "s1", id_kind="bridge", harness=None, host="myhost", mode="interactive",
+        )
+        row = _fetch_row("s1")
+        assert row["cli_session_id"] is None
+        assert row["cli_resolve_status"] == "stale"
+
     def test_unresolvable_cli_identity_leaves_columns_null(self, temp_db, monkeypatch):
         """会話識別子が解決できない場合、行の作成自体は失敗させずNULL埋めで進める。"""
         monkeypatch.setattr(session_ledger_service, "resolve_cli_session", lambda sid: None)
