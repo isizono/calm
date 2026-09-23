@@ -296,7 +296,7 @@ workerはdecisionを直接 add_decisions しない。仮合意した内容を re
 
 **接点2: orch-managed の扱い**
 
-orch運用下で生成される activity/decision/material 等には `orch-managed` タグを付与する。個人セッションの SessionStart 一覧、scoring、nudge から除外する。タグ運用ベース（コード強制はまだ）。
+orch運用下で生成される activity/decision/material 等には `orch-managed` タグを付与する。個人セッションの SessionStart 一覧、scoring、nudge から除外する。タグ運用ベース（コード強制はまだ）。その後カラムへ昇格したが、orch運用体系の解体に伴い、タグ・カラムいずれの除外判定もコードから撤去済み。
 
 **接点3: サブセッション間の文脈分断**
 
@@ -318,7 +318,7 @@ orch運用下で生成される activity/decision/material 等には `orch-manag
 
 **やらないとどうなる:** workerがコンテキストを勝手に汚染する。orchが知らないdecisionが既成事実化する。
 
-#### orch-managedの扱い
+#### orch-managedの扱い（撤去済み: orch運用体系の解体に伴い抑制ロジック自体がコードから削除されている）
 
 - orch生成 activity は `orch-managed` タグ付与必須
 - 個人セッションのSessionStartは `orch-managed` を含まないクエリで一覧を返す
@@ -359,7 +359,7 @@ decision/log・関係メカニズム5系統・検索SQL3関数など同型コー
 
 ### T-E マルチセッション境界
 
-session_id を捨てる heartbeat、events.jsonl と relay の二系統真実源、orch-managedをタグで抑止、pending_spawn無期限残留など。本仕様書では5章全体がこのテーマと接続する。session_id heartbeat同梱、orch-managed構造的分離が処方箋候補。
+session_id を捨てる heartbeat、events.jsonl と relay の二系統真実源、orch-managedをタグで抑止（撤去済み）、pending_spawn無期限残留など。本仕様書では5章全体がこのテーマと接続する。session_id heartbeat同梱が処方箋候補。
 
 ---
 
@@ -405,7 +405,7 @@ session_id を捨てる heartbeat、events.jsonl と relay の二系統真実源
 
 **worker**: orch/workerフレームワークの実作業役。実装・テスト・PR等を担当する。
 
-**orch-managed**: orch運用下で生成されたエンティティに付与するタグ。個人フローから除外するシグナル。
+**orch-managed**: orch運用下で生成されたエンティティに付与するタグ。個人フローから除外するシグナルだったが、orch運用体系の解体に伴い撤去済み。
 
 **sync-memory**: セッション終了前に transcript を解析し、CALM への一括記録を行うスキル。
 

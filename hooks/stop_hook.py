@@ -41,33 +41,6 @@ _MAX_SKILL_SPAN_TURNS = 20
 _NUDGE_INTERVAL = 2
 
 
-def _is_orch_managed_activity(activity_id) -> bool:
-    """指定アクティビティが orch 管理かを activities.orch_managed カラムで判定する。
-
-    orchが管理するアクティビティにcheck-in済みのセッションは個人フローでなく
-    orchフローなので、check-inブロック・nudgeの対象外とする。
-    DB参照に失敗した場合はフェイルオープン（False=通常フロー扱い）。
-    """
-    if not activity_id:
-        return False
-    try:
-        from src.db import get_connection
-
-        conn = get_connection()
-        try:
-            row = conn.execute(
-                "SELECT orch_managed FROM activities WHERE id = ?",
-                (int(activity_id),),
-            ).fetchone()
-        finally:
-            conn.close()
-        if row is None:
-            return False
-        return bool(row["orch_managed"])
-    except Exception:
-        return False
-
-
 def main() -> None:
     harness = select_harness()
     try:
@@ -146,13 +119,7 @@ def main() -> None:
             # activity_idを抽出して保存
             _update_checked_in_activity(state, all_events, transcript_path, harness)
 
-        # orch_managed=1 のアクティビティにcheck-in済みのセッションでは
-        # 個人フロー用のcheck-inブロック・nudgeを抑制する。
-        suppress_personal_flow = _is_orch_managed_activity(
-            state.get_checked_in_activity()
-        )
-
-        if not has_checkin and not suppress_personal_flow:
+        if not has_checkin:
             if current_turn == _CHECKIN_DEFER_TURNS:
                 # one-shot block: 正確にdefer turnで1回だけblock
                 state.increment_block_count()
@@ -167,7 +134,7 @@ def main() -> None:
         harness.emit_approve()
         _safe_post_approve(
             state, all_events, transcript_path, current_turn,
-            run_nudges=not suppress_personal_flow,
+            run_nudges=True,
             session_id=session_id,
         )
 

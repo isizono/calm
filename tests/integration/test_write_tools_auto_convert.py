@@ -570,9 +570,9 @@ class TestUpdateActivityAutoConvert:
         titleは書き換わらない(update_materialと同型のpartial field素通し)"""
         conn = get_connection()
         cur = conn.execute(
-            "INSERT INTO activities (title, description, status, orch_managed) "
-            "VALUES (?, ?, ?, ?)",
-            (f"legacy M#{DANGLING_ID} title", "old description", "pending", 0),
+            "INSERT INTO activities (title, description, status) "
+            "VALUES (?, ?, ?)",
+            (f"legacy M#{DANGLING_ID} title", "old description", "pending"),
         )
         activity_id = cur.lastrowid
         conn.commit()

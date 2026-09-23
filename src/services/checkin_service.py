@@ -443,10 +443,7 @@ def _get_immediate_hints(conn: sqlite3.Connection, activity_id: int) -> list[str
     domain:tagのrecomposeナッジに加え、activity_cleanupのようなグローバル判定の
     hintもHintService側で束ねられて返ってくるため、本関数はそれらを区別せず
     delivery_hint=immediateのものだけをtool responseに乗せる。
-    orch-managed activityでは全hint suppressする。
     """
-    if hint_service.is_orch_managed_activity(conn, activity_id):
-        return []
     hints = hint_service.get_hints_with_conn(conn, "activity", activity_id)
     return [h["message"] for h in hints if h["delivery_hint"] == "immediate"]
 
@@ -623,8 +620,7 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
         immediate_hints = _get_immediate_hints(conn, activity_id)
 
         # 9a. このactivityをblockしているaskの配達（answer待ち・triage待ちフェーズ別）。
-        # immediate_hintsと異なりorch-managed activityでもsuppressしない
-        # （askは答え待ちというプロセス情報そのものであり、recompose系の提案とは扱いを分ける）。
+        # askは答え待ちというプロセス情報そのものであり、recompose系の提案とは扱いを分ける。
         pending_asks = _get_pending_asks(conn, activity_id)
 
         # 10. summary生成

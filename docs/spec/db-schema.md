@@ -159,11 +159,11 @@ erDiagram
 - 0007 で `blocked` status 削除、0026 で `snoozed` 追加、0027 で `shelved` 追加
 - topic_id は 0001 で存在 → 0010 で削除 → 0016 で復活 → 0021 で relations 化に伴い再削除、という往復履歴を持つ。現状は relations テーブル経由でトピックに紐づける
 - last_heartbeat_session_id は 0040 で追加。自セッションのheartbeatを「別セッション扱い」と誤表示していた問題の解消用
-- orch_managed は 0045 で追加。従来の素タグ `orch-managed` の存在/不在で表現していた属性を構造的カラムへ昇格したもの（同migrationで既存タグ付きactivityへの一括反映も実施）
+- orch_managed カラムは 0045 で追加されたが、0080 で削除された。従来の素タグ `orch-managed` の存在/不在で表現していた属性を構造的カラムへ昇格したものだった（同migrationで既存タグ付きactivityへの一括反映も実施）。カラム化のもとになった複数 Claude Code セッション運用体系自体が解体され、新規に orch_managed=1 で作成される activity が出なくなった一方、hint抑制等の判定箇所には参照が残り続け「死んだカラム」と誤読されていたため撤去した
 - caller_session_id カラムは 0048 で追加されたが、0057 で削除された（§6）
 - closed_at・closed_by・closed_reason は 0077 で追加。goal機構（§3.28-3.30）の judge_goal・update_goal（差し戻し）・update_activity が、activityが最後にどう閉じたか（誰の意思で・なぜ）を記録するための列。3列とも NULL 許容の ADD COLUMN で、既存行は NULL のまま始まる。closed_by の CHECK が closed_at を参照するため、closed_at を先に追加する
 
-関連 migration: 0001 / 0007 / 0010 / 0011 / 0016 / 0017 / 0021 / 0026 / 0027 / 0040（last_heartbeat_session_id）/ 0045（orch_managed）/ 0048（caller_session_id追加、のち0057で削除）/ 0077（closed_at・closed_by・closed_reason追加）
+関連 migration: 0001 / 0007 / 0010 / 0011 / 0016 / 0017 / 0021 / 0026 / 0027 / 0040（last_heartbeat_session_id）/ 0045（orch_managed追加、のち0080で削除）/ 0048（caller_session_id追加、のち0057で削除）/ 0077（closed_at・closed_by・closed_reason追加）
 
 カラム一覧・インデックス: `db-schema-tables.md` の `activities` 節参照。
 
@@ -736,6 +736,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0073_add_asks_notify_wanted | asks に notify_wanted 列（通知希望フラグ、既定1）を追加（§3.22） |
 | 0074_drop_relay_outbox | relay_outbox テーブル削除（relay統合機能の撤去に伴う。0056で新設、代替スキーマへの移行なし） |
 | 0077_add_goals | goals / goal_conditions / goal_activities テーブル新設（goal機構、§3.28-3.30）+ activities に closed_at・closed_by・closed_reason（NULL許容）を追加 |
+| 0080_drop_activities_orch_managed | activities.orch_managed カラムを削除（0045で追加した構造的属性の撤去。運用体系解体後も複数箇所で参照が残り誤読を誘発していたため） |
 
 重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。
 
