@@ -99,6 +99,7 @@ SessionStart(3スクリプト)・Stop・UserPromptSubmit・MessageDisplayに加�
 | 決定事項・アクティビティ等の記録が急に減った・消えたように見える | `/db-recovery`でスナップショットからの復旧を検討する |
 | 検索が過去の記録を拾わない／精度が低い | embeddingサーバーが未起動か古い可能性がある。`/restart`に`--restart-embedding`を付けて明示的に再起動する（`search`応答の`degraded: true`はベクトル検索が利用不可だったことを示す） |
 | MCPツールが使えない・CALMサーバーに接続できない | `/mcp`から再接続する。直らなければ`/restart` |
+| 記録ナッジやSessionStartの一部セクションが理由もなく出なくなった | hookがfail-openで例外を握っている可能性がある。[hookが黙って失敗したときに気づく](#hookが黙って失敗したときに気づく)を参照 |
 
 ## MCPツール
 
@@ -160,18 +161,9 @@ SessionStart(3スクリプト)・Stop・UserPromptSubmit・MessageDisplayに加�
 | `/memory-export` | 記録を他インスタンスへ渡すexportバンドルを作成します |
 | `/memory-import` | 他インスタンスのexportバンドルを衝突裁定を経て取り込みます |
 
-## 気づきにくい劣化への対処
+## hookが黙って失敗したときに気づく
 
-CALMには、壊れてもエラーにならず機能が静かに縮退する故障がいくつかある。データ消失（DBスナップショットの異常検知）とは別に、以下の2つは気づかないまま使い続けやすい。
-
-**embeddingサーバー起動失敗・検索の`degraded`**
-
-検索・check-in等でベクトル検索を使う際、embeddingサーバー（52836番ポート）は初回encode時に遅延起動する。起動に失敗しても例外は投げず、warningログのみを出して検索がキーワード一致（FTS5）のみに縮退したまま動き続ける。`search`ツールの応答に含まれる`degraded: true`は、その呼び出し時点でベクトル検索が利用不可だったことを示す。
-
-- 気づき方: `curl http://localhost:52836/health`が`{"status": "ok"}`を返さない。または`search`応答の`degraded`が`true`のまま続く
-- 直し方: `/restart`に`--restart-embedding`を付けて明示的に再起動する
-
-**hookが黙って失敗する**
+embeddingサーバー起動失敗・検索の`degraded`については[よくある詰まり](#よくある詰まり)を参照してください。ここではその表に無い、hookのfail-open沈黙について書きます。
 
 CALMのhookはfail-open設計であり、1つのhookが例外を投げてもClaude Codeの他の操作（tool呼び出し・セッション開始等）を止めない。この設計自体は意図的だが、失敗は既定では標準エラー出力にしか残らず、記録ナッジやSessionStart注入の一部が黙って消えても「何も起きていない」ように見える。
 
