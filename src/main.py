@@ -1819,8 +1819,9 @@ def collect_export_candidates(
     Returns:
         成功時: {candidates: [{type, id_raw, title, snippet, tags, depth, size_chars,
             parent_topic_title, retracted?, superseded?, status?}, ...],
-            closure_warnings: [{kind: "supersede_target_outside"|"cite_target_outside",
-            from_title, target_title, target: {type, id_raw}}, ...],
+            closure_warnings: [{kind: "supersede_target_outside"|"destabilize_target_outside"|
+            "cite_target_outside"|"belongs_to_target_outside"|"related_target_outside"|
+            "depends_on_target_outside", from_title, target_title, target: {type, id_raw}}, ...],
             total_count: int, truncated: bool}
         tag_roots指定時のみco_tags: [{tag, overlap, share}, ...]が追加される。
         失敗時: {"error": {"code": ..., "message": ...}}
