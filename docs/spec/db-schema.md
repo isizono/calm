@@ -374,7 +374,7 @@ contentless FTS5 仮想テーブル。`search_index.id` を rowid に持ち、`t
 
 ### 3.15 vec_index
 
-sqlite-vec の vec0 仮想テーブル（384次元）。`search_index.id` を rowid に対応させてベクトル検索を行う。
+sqlite-vec の vec0 仮想テーブル（384次元、`distance_metric=cosine`）。`search_index.id` を rowid に対応させてベクトル検索を行う。
 
 | カラム | 説明 |
 |---|---|
@@ -383,14 +383,15 @@ sqlite-vec の vec0 仮想テーブル（384次元）。`search_index.id` を ro
 補足:
 - 仮想テーブルのため FK 制約不可。孤児削除はアプリ層（embedding_service）の責務
 - 384次元はモデル依存（未確認: 利用モデル名はコード側に固定値）
+- 0081でL2からcosineへ再構築した。embeddingモデルの想定距離はコサインだが格納embeddingは非正規化（ノルムが一定でない）のため、vec0既定のL2のままだとノルムの大小が距離に混入していた
 
-関連 migration: 0005_add_vec_index
+関連 migration: 0005_add_vec_index, 0081_vec_cosine_rebuild
 
 カラム一覧・インデックス: `db-schema-tables.md` の `vec_index` 節参照。
 
 ### 3.16 tag_vec
 
-tags テーブル用の sqlite-vec 仮想テーブル（384次元）。tag embedding によるタグ KNN マージ判定で使われる。
+tags テーブル用の sqlite-vec 仮想テーブル（384次元、`distance_metric=cosine`）。tag embedding によるタグ KNN マージ判定で使われる。
 
 | カラム | 説明 |
 |---|---|
@@ -398,8 +399,9 @@ tags テーブル用の sqlite-vec 仮想テーブル（384次元）。tag embed
 
 補足:
 - 仮想テーブルのため FK 制約不可。`tags.id` を rowid として運用するが整合性はアプリ層任せ
+- 0081でL2からcosineへ再構築した（vec_indexと同じ理由）。同migrationで`backfill_tag_embeddings`を起動時バックフィル経路に接続し、実DBで長らく空だったこのテーブルへの埋め直しが初めて配線された
 
-関連 migration: 0009
+関連 migration: 0009, 0081_vec_cosine_rebuild
 
 カラム一覧・インデックス: `db-schema-tables.md` の `tag_vec` 節参照。
 
@@ -624,7 +626,7 @@ contentless FTS5 仮想テーブル、trigram トークナイザ。`title` と `
 
 ### 5.3 vec_index（ベクトル検索）
 
-sqlite-vec の vec0 仮想テーブル、384次元の埋め込みを保持する。`search_index.id` と同じ rowid を共有する。
+sqlite-vec の vec0 仮想テーブル、384次元の埋め込みを保持する。`search_index.id` と同じ rowid を共有する。0081で`distance_metric=cosine`へ再構築済み（§3.15）。
 
 ### 5.4 同期トリガー
 
@@ -638,7 +640,7 @@ vec_index は仮想テーブルのため FK 制約・トリガー連動が不可
 
 ### 5.6 tag_vec（タグ専用 KNN）
 
-tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の表記ゆれ判定（KNN + 閾値）に使われる。
+tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の表記ゆれ判定（KNN + 閾値）に使われる。0081で`distance_metric=cosine`へ再構築し、同migrationで`backfill_tag_embeddings`の起動時配線も追加した（§3.16）。
 
 ---
 
@@ -737,6 +739,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0074_drop_relay_outbox | relay_outbox テーブル削除（relay統合機能の撤去に伴う。0056で新設、代替スキーマへの移行なし） |
 | 0077_add_goals | goals / goal_conditions / goal_activities テーブル新設（goal機構、§3.28-3.30）+ activities に closed_at・closed_by・closed_reason（NULL許容）を追加 |
 | 0080_drop_activities_orch_managed | activities.orch_managed カラムを削除（0045で追加した構造的属性の撤去。運用体系解体後も複数箇所で参照が残り誤読を誘発していたため） |
+| 0081_vec_cosine_rebuild | vec_index / tag_vec を一時テーブル退避方式（ALTER TABLE RENAME TOは不使用）で distance_metric=cosine へ再構築（両テーブルとも vec0 既定の L2 のまま運用されていたための是正、§3.15, §3.16） |
 
 重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。
 
