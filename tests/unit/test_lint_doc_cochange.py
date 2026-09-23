@@ -1,7 +1,9 @@
 """scripts/lint_doc_cochange.py のユニットテスト。
 
-git subprocess は挟まず、判定ロジック本体（純粋関数）を直接テストする。
+判定ロジック本体（純粋関数）は git subprocess を挟まず直接テストする。
+main() の配線テストのみ、git_* 関数を monkeypatch して外部境界（subprocess）を切り離す。
 """
+import scripts.lint_doc_cochange as lint_doc_cochange
 from scripts.lint_doc_cochange import (
     DB_SCHEMA_DOC,
     MCP_TOOLS_DOC,
@@ -376,3 +378,42 @@ def test_check_readme_tables_warns_only_when_section_missing():
     )
     assert failures == []
     assert len(warnings) == 1
+
+
+def test_check_readme_tables_reports_both_table_failures_independently():
+    failures, _ = check_readme_tables(
+        README_TEXT,
+        tool_names={"add_topic", "get_topics", "check_in", "get_goal"},  # get_goalがREADMEに無い
+        skill_names={"man"},  # ask-composeはもう存在しない想定
+    )
+    assert len(failures) == 2
+
+
+# --- main(): head_main_py_for_readme のフォールバック配線 ---
+
+
+def test_main_fetches_head_main_py_for_readme_when_main_py_not_in_diff(monkeypatch, capsys):
+    """src/main.py が diff に含まれない（=1・2のツールIFチェックは走らない）PRでも、
+    3のREADME表チェックはheadのsrc/main.pyを別途取得して実行されることを確認する。"""
+
+    def fake_git_show(repo_root, ref, path):
+        if path == "src/main.py":
+            return HEAD_MAIN_PY_ADDED_TOOL
+        if path == lint_doc_cochange.README_PATH:
+            return README_TEXT
+        raise AssertionError(f"unexpected path: {path}")
+
+    monkeypatch.setattr(lint_doc_cochange, "git_diff_names", lambda repo_root, base, head: ["README.md"])
+    monkeypatch.setattr(lint_doc_cochange, "collect_commit_messages", lambda repo_root, base, head: "")
+    monkeypatch.setattr(lint_doc_cochange, "git_show", fake_git_show)
+    monkeypatch.setattr(
+        lint_doc_cochange,
+        "git_ls_tree_paths",
+        lambda repo_root, ref, dir_path: ["skills/man/SKILL.md", "skills/ask-compose/SKILL.md"],
+    )
+
+    exit_code = lint_doc_cochange.main(["--base", "base-ref", "--head", "head-ref"])
+
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "export_material" in err  # HEAD_MAIN_PY_ADDED_TOOLのツールがREADME_TEXTに無い
