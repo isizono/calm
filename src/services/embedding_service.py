@@ -569,11 +569,11 @@ def backfill_embeddings() -> int:
     }
 
     conn = get_connection()
+    total = 0
     try:
         conn.execute("DELETE FROM vec_index WHERE rowid NOT IN (SELECT id FROM search_index)")
         conn.commit()
 
-        total = 0
         for source_type, query in type_queries.items():
             rows = conn.execute(query).fetchall()
             if not rows:
@@ -683,12 +683,17 @@ def search_similar_tags(query_text: str, k: int = 10) -> list[tuple[int, float]]
 def backfill_tag_embeddings() -> int:
     """tag_vecが空のタグにembeddingを一括生成する。
 
+    backfill_embeddingsと同じ理由(数百〜千件超を1リクエストにまとめて送ると
+    _encode_batchの60秒固定timeoutをCPU推論が超え結果が破棄される)でチャンク分割する。
+    途中のチャンクが失敗した場合、それまでにcommit済みの成果は失われない。
+
     Returns: 生成したembedding数
     """
     if not _is_server_running():
         return 0
 
     conn = get_connection()
+    total = 0
     try:
         rows = conn.execute(
             """
@@ -702,27 +707,33 @@ def backfill_tag_embeddings() -> int:
         if not rows:
             return 0
 
-        ids = [row["id"] for row in rows]
-        texts = [row["name"] for row in rows]
+        items: list[tuple[int, str]] = [(row["id"], row["name"]) for row in rows if row["name"]]
 
-        try:
-            embeddings = _encode_batch(texts, "document")
+        for chunk in _chunk_backfill_items(items):
+            chunk_ids = [tag_id for tag_id, _ in chunk]
+            chunk_texts = [text for _, text in chunk]
+            try:
+                embeddings = _encode_batch(chunk_texts, "document")
+            except Exception as e:
+                logger.warning(f"Failed to backfill tag embeddings: {e}")
+                embeddings = None
             if embeddings is None:
-                return 0
-            total = 0
-            for tag_id, embedding in zip(ids, embeddings):
+                logger.warning(
+                    f"Backfill chunk failed for tags ({len(chunk_ids)} items); "
+                    "giving up on remaining chunks"
+                )
+                break
+            for tag_id, embedding in zip(chunk_ids, embeddings):
                 _insert_tag_embedding_row(conn, tag_id, embedding)
                 total += 1
             conn.commit()
-            logger.info(f"Backfilled {total} tag embeddings")
-            return total
-        except Exception as e:
-            logger.warning(f"Failed to backfill tag embeddings: {e}")
-            return 0
+
+        logger.info(f"Backfilled {total} tag embeddings")
+        return total
 
     except Exception as e:
         logger.warning(f"Tag embedding backfill failed: {e}")
-        return 0
+        return total
     finally:
         conn.close()
 

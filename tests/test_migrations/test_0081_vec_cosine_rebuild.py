@@ -7,6 +7,8 @@ vec_index / tag_vec を distance_metric=cosine で再構築するmigrationにつ
 (3) 再構築後のKNN序列がノルム非依存になる(cosineへの移行が実際に効いていること)
 を確認する。
 """
+import sqlite3
+
 import pytest
 from sqlite_vec import serialize_float32
 from yoyo import default_migration_table, read_migrations
@@ -158,7 +160,8 @@ class TestCosineOrderingAfterRebuild:
 
     def test_vec_index_ranks_direction_over_norm(self, db_before_0081):
         """クエリと方向が一致する大ノルムのベクトルが、方向がずれた小ノルムの
-        ベクトルより上位に来る(L2のままなら逆順になる配置)。
+        ベクトルより上位に来る(移行前のL2では逆順になることを先に確認したうえで、
+        移行後にcosineへ反転することを確認する)。
 
         query=[1,0,...] に対し、aligned=[100,0,...](方向一致・大ノルム)と
         off_axis=[0.1,0.1,0,...](方向ズレ・小ノルム)を比較する。
@@ -169,31 +172,40 @@ class TestCosineOrderingAfterRebuild:
         aligned_large_norm = _vec(100.0)
         off_axis_small_norm = _vec(0.1, 0.1)
 
+        def _query_order() -> list[sqlite3.Row]:
+            conn = get_connection()
+            try:
+                conn.execute("DELETE FROM vec_index")
+                conn.execute(
+                    "INSERT INTO vec_index(rowid, embedding) VALUES (?, ?)", (1, aligned_large_norm)
+                )
+                conn.execute(
+                    "INSERT INTO vec_index(rowid, embedding) VALUES (?, ?)", (2, off_axis_small_norm)
+                )
+                conn.commit()
+                return conn.execute(
+                    "SELECT rowid, distance FROM vec_index WHERE embedding MATCH ? AND k = ?",
+                    (query, 2),
+                ).fetchall()
+            finally:
+                conn.close()
+
+        # 適用前(L2): 方向がずれていてもノルムが小さいoff_axis(rowid=2)が近いと判定される逆順
+        before_rows = _query_order()
+        before_by_rowid = {row["rowid"]: row["distance"] for row in before_rows}
+        assert before_by_rowid[2] < before_by_rowid[1], (
+            "前提が崩れている: L2のままなら方向ズレでもノルムの小さいoff_axisが近くなるはず"
+        )
+
         _apply_migration_0081(db_before_0081)
 
-        conn = get_connection()
-        try:
-            conn.execute(
-                "INSERT INTO vec_index(rowid, embedding) VALUES (?, ?)", (1, aligned_large_norm)
-            )
-            conn.execute(
-                "INSERT INTO vec_index(rowid, embedding) VALUES (?, ?)", (2, off_axis_small_norm)
-            )
-            conn.commit()
-
-            rows = conn.execute(
-                "SELECT rowid, distance FROM vec_index WHERE embedding MATCH ? AND k = ?",
-                (query, 2),
-            ).fetchall()
-        finally:
-            conn.close()
-
-        assert len(rows) == 2
-        by_rowid = {row["rowid"]: row["distance"] for row in rows}
-        assert by_rowid[1] < by_rowid[2], (
+        # 適用後(cosine): 方向一致・大ノルムのaligned(rowid=1)が近い正順に反転する
+        after_rows = _query_order()
+        after_by_rowid = {row["rowid"]: row["distance"] for row in after_rows}
+        assert after_by_rowid[1] < after_by_rowid[2], (
             "cosine化後は方向一致・大ノルムのrowid=1がoff_axisより近い(小さいdistance)はず"
         )
         # cosine距離は方向完全一致なら0
-        assert by_rowid[1] == pytest.approx(0.0, abs=1e-4)
+        assert after_by_rowid[1] == pytest.approx(0.0, abs=1e-4)
         # ORDER BY distance相当で上位(rowid=1)から返る
-        assert rows[0]["rowid"] == 1
+        assert after_rows[0]["rowid"] == 1
