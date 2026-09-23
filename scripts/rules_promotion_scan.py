@@ -87,14 +87,33 @@ def collect_cooccurrence(conn) -> tuple[dict, dict, int]:
 
 
 def _embed_texts(texts: list[str]) -> list[list[float]] | None:
-    """embeddingサーバーが使えればテキスト列をまとめてembeddingする。使えなければNone。"""
-    from src.services.embedding_service import _encode_batch, _ensure_initialized
+    """embeddingサーバーが使えればテキスト列をembeddingする。使えなければNone。
+
+    全件を1回の `_encode_batch` にまとめると、タグ・セクション数が多い環境で
+    `_encode_batch` の60秒固定timeoutをCPU推論が超えて結果が丸ごと破棄されうる
+    （backfill_embeddingsが同じ理由でチャンク分割している）。それと同じ
+    `_chunk_backfill_items` を使い、文字数予算・件数上限どちらか先に達した方で
+    分割してから順にembeddingする。途中のチャンクが失敗したら全体をNoneとして返す
+    （初回棚卸しは一部の候補だけ欠けた不完全な結果より、degradedとして
+    区別できる方を優先する）。
+    """
+    from src.services.embedding_service import _chunk_backfill_items, _encode_batch, _ensure_initialized
 
     if not texts:
         return []
     if not _ensure_initialized():
         return None
-    return _encode_batch(texts, "document")
+
+    embeddings: list[list[float] | None] = [None] * len(texts)
+    for chunk in _chunk_backfill_items(list(enumerate(texts))):
+        chunk_indices = [idx for idx, _ in chunk]
+        chunk_texts = [text for _, text in chunk]
+        chunk_embeddings = _encode_batch(chunk_texts, "document")
+        if chunk_embeddings is None:
+            return None
+        for idx, embedding in zip(chunk_indices, chunk_embeddings):
+            embeddings[idx] = embedding
+    return embeddings
 
 
 def scan_candidates(
