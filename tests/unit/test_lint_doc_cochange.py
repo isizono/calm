@@ -387,6 +387,8 @@ def test_check_readme_tables_reports_both_table_failures_independently():
         skill_names={"man"},  # ask-composeはもう存在しない想定
     )
     assert len(failures) == 2
+    assert any("get_goal" in f for f in failures)
+    assert any("ask-compose" in f for f in failures)
 
 
 # --- main(): head_main_py_for_readme のフォールバック配線 ---
