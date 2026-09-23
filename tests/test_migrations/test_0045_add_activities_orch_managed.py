@@ -3,9 +3,9 @@
 0045適用後に activities テーブルへ orch_managed 列が追加され、
 既存の素タグ "orch-managed" を持つ activity の orch_managed が 1 でバックフィルされることを確認する。
 
-orch_managed 列は後続の migration（0078）で削除されるため、本テストは
+orch_managed 列は後続の migration（0080）で削除されるため、本テストは
 「0045 まで適用した時点」の DB で検証する（最新までの全 migration を
-適用した DB では 0078 によりこの列は既に存在しない）。
+適用した DB では 0080 によりこの列は既に存在しない）。
 """
 import os
 import sqlite3
@@ -25,7 +25,7 @@ from test_migrations.conftest import db_before_migration, get_column_names
 def migrated_db():
     """0045まで（0045含む）を適用したテスト用DBを提供する。
 
-    orch_managed 列は 0078 で削除されるため、最新までの全 migration を
+    orch_managed 列は 0080 で削除されるため、最新までの全 migration を
     適用した DB では検証できない。
     """
     with tempfile.TemporaryDirectory() as tmpdir:

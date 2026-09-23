@@ -1,4 +1,4 @@
--- Migration 0078: activitiesテーブルから orch_managed カラムを削除
+-- Migration 0080: activitiesテーブルから orch_managed カラムを削除
 --
 -- depends: 0077_add_goals
 --
