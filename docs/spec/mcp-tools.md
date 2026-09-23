@@ -421,7 +421,7 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 | material_id | int | yes | - | 資材のID |
 | include_retracted | bool | no | false | trueで取り消し済みの資材も取得できる |
 
-**返り値**: 資材の全文（material_id, title, content, source, tags, created_at）。flavor共通引数（後述）に対応する。
+**返り値**: 資材の全文（material_id, title, content, source, tags, created_at, retracted_at?）。`retracted_at`は`include_retracted=true`で取り消し済みの資材を取得した場合のみ付く。flavor共通引数（後述）に対応する。
 
 ### 2.17 export_material
 
