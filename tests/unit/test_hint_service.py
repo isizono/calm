@@ -35,7 +35,7 @@ from src.services.material_service import add_material
 from src.services.pin_service import add_pin
 from src.services.topic_service import add_topic
 from src.services.tag_service import _TAG_NOTES_RATCHET_CEILING, update_tag
-from tests.helpers import add_decision, force_notes_over_ceiling
+from tests.helpers import add_decision, assert_no_write_errors, force_notes_over_ceiling
 
 DOMAIN_TAG_NAME = "hint-domain"
 DOMAIN_TAG = f"domain:{DOMAIN_TAG_NAME}"
@@ -54,7 +54,7 @@ def _add_direction_decision(topic_id: int, i: int) -> dict:
         "topic_id": topic_id, "decision": f"方向性{i}", "reason": "r", "title": f"方向性{i}の要点",
         "tags": [DIRECTION_TAG],
     }])
-    assert "error" not in result, result
+    assert_no_write_errors(result)
     return result["created"][0]
 
 

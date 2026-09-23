@@ -186,6 +186,20 @@ def add_decision(
     return result["created"][0]
 
 
+def assert_no_write_errors(result: dict) -> None:
+    """一括書き込みAPI(add_logs/add_decisions等)の戻り値にエラーが無いことを検証する。
+
+    トップレベルの単数形 "error" キー(バリデーションエラー等、バッチ全体の失敗)と、
+    アイテム単位の複数形 "errors" キー(ロック競合等でアイテムごとに積まれる)の
+    両方を見る。片方だけを見て result["created"] を触ると、実際のエラー内容が
+    握りつぶされ、以降のアサーションが本来の原因と無関係な失敗
+    (例: assert 0 == 3, KeyError)になる。add_log/add_decision(単数形ラッパー)が
+    正規化して返す {"error": ...} 形式にも .get("errors") で同じ1本で効く。
+    """
+    assert "error" not in result, result["error"]
+    assert not result.get("errors"), result["errors"]
+
+
 def retract_decision(decision_id: int) -> dict:
     """単件のdecision取り消し（retract_serviceのラッパー）。"""
     return retract("decision", [decision_id])

@@ -15,6 +15,7 @@ from src.services.decision_service import add_decisions
 from src.services.search_service import find_similar_decisions, get_by_id
 from src.services.checkin_service import _get_decisions_from_topics
 import src.services.embedding_service as emb
+from tests.helpers import assert_no_write_errors
 
 
 EMBEDDING_DIM = 384
@@ -81,7 +82,7 @@ class TestTitleStored:
         result = add_decisions([
             {"topic_id": topic["topic_id"], "decision": "本文", "reason": "理由", "title": "要点1行"},
         ])
-        assert "error" not in result
+        assert_no_write_errors(result)
         did = result["created"][0]["decision_id"]
         assert _decision_title_in_db(did) == "要点1行"
 
@@ -90,7 +91,7 @@ class TestTitleStored:
         result = add_decisions([
             {"topic_id": topic["topic_id"], "decision": "本文", "reason": "理由"},
         ])
-        assert "error" not in result
+        assert_no_write_errors(result)
         did = result["created"][0]["decision_id"]
         assert _decision_title_in_db(did) is None
 
@@ -100,7 +101,7 @@ class TestTitleStored:
             {"topic_id": topic["topic_id"], "decision": "本文1", "reason": "理由", "title": ""},
             {"topic_id": topic["topic_id"], "decision": "本文2", "reason": "理由", "title": "   "},
         ])
-        assert "error" not in result
+        assert_no_write_errors(result)
         for c in result["created"]:
             assert _decision_title_in_db(c["decision_id"]) is None
 
@@ -113,7 +114,7 @@ class TestRelatedDecisionsResponse:
         result = add_decisions([
             {"topic_id": topic["topic_id"], "decision": "決定A", "reason": "理由A"},
         ])
-        assert "error" not in result
+        assert_no_write_errors(result)
         assert "related_decisions" in result["created"][0]
         assert isinstance(result["created"][0]["related_decisions"], list)
 

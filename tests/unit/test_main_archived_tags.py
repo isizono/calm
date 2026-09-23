@@ -13,7 +13,7 @@ from src.services.topic_service import add_topic
 from src.services.discussion_log_service import add_logs
 from src.services.decision_service import add_decisions
 from src.services.activity_service import add_activity
-from tests.helpers import add_decision
+from tests.helpers import add_decision, assert_no_write_errors
 
 
 DEFAULT_TAGS = ["domain:test"]
@@ -77,7 +77,7 @@ class TestGetLogsArchivedTags:
         add_result = add_logs([
             {"topic_id": topic_id, "content": "content", "tags": ["domain:main-legacy-log"]}
         ])
-        assert "error" not in add_result
+        assert_no_write_errors(add_result)
         _archive("domain:main-legacy-log")
 
         result = get_logs("topic", topic_id)
@@ -106,7 +106,7 @@ class TestGetDecisionsArchivedTags:
         add_result = add_decisions([
             {"topic_id": topic_id, "decision": "d", "reason": "r", "tags": ["domain:main-legacy-dec"]}
         ])
-        assert "error" not in add_result
+        assert_no_write_errors(add_result)
         _archive("domain:main-legacy-dec")
 
         result = get_decisions("topic", topic_id)

@@ -11,6 +11,7 @@ from src.services.topic_service import add_topic
 from src.services.discussion_log_service import add_logs
 from src.services.decision_service import add_decisions
 import src.services.embedding_service as emb
+from tests.helpers import assert_no_write_errors
 
 
 EMBEDDING_DIM = 384
@@ -64,7 +65,7 @@ class TestV1BatchSuccess:
             {"topic_id": tid, "content": "ログ3の内容", "title": "タイトル3"},
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         assert len(result["created"]) == 3
         assert len(result["errors"]) == 0
 
@@ -85,7 +86,7 @@ class TestV1BatchSuccess:
             {"topic_id": tid, "decision": "決定3", "reason": "理由3"},
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         assert len(result["created"]) == 3
         assert len(result["errors"]) == 0
 
@@ -113,7 +114,7 @@ class TestV2SingleItem:
             {"topic_id": topic["topic_id"], "content": "単件ログ", "title": "単件タイトル"},
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         assert len(result["created"]) == 1
         assert len(result["errors"]) == 0
         assert result["created"][0]["title"] == "単件タイトル"
@@ -124,7 +125,7 @@ class TestV2SingleItem:
             {"topic_id": topic["topic_id"], "decision": "単件決定", "reason": "単件理由"},
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         assert len(result["created"]) == 1
         assert len(result["errors"]) == 0
         assert result["created"][0]["decision_id"] > 0
@@ -347,7 +348,7 @@ class TestV7ExceedLimit:
         ]
         result = add_logs(items)
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         assert len(result["created"]) == 10
         assert len(result["errors"]) == 0
 
@@ -367,7 +368,7 @@ class TestV8TitleAutoGenerate:
             {"topic_id": tid, "content": "先頭行がタイトルになる\n2行目は含まない"},
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         assert len(result["created"]) == 1
         assert result["created"][0]["title"] == "先頭行がタイトルになる"
 
@@ -378,7 +379,7 @@ class TestV8TitleAutoGenerate:
             {"topic_id": tid, "content": "リテラル分割テスト\\nこの部分は含まない"},
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         assert len(result["created"]) == 1
         assert result["created"][0]["title"] == "リテラル分割テスト"
 
@@ -390,7 +391,7 @@ class TestV8TitleAutoGenerate:
             {"topic_id": tid, "content": long_content},
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         assert len(result["created"]) == 1
         assert len(result["created"][0]["title"]) == 50
 
@@ -414,7 +415,7 @@ class TestV8TitleAutoGenerate:
             {"topic_id": tid, "content": "別の内容", "title": "明示的タイトル"},
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         assert result["created"][0]["title"] == "明示的タイトル"
 
 
@@ -520,7 +521,7 @@ class TestV10TagNotesUnion:
             {"topic_id": tid, "content": "ログ2", "title": "タイトル2"},
         ]
         result = add_logs(items)
-        assert "error" not in result
+        assert_no_write_errors(result)
 
         # main.pyのハンドラが行うのと同じロジック: 全アイテムのタグUNION
         all_tags = set()
@@ -559,7 +560,7 @@ class TestV10TagNotesUnion:
             {"topic_id": tid, "decision": "決定2", "reason": "理由2"},
         ]
         result = add_decisions(items)
-        assert "error" not in result
+        assert_no_write_errors(result)
 
         all_tags = set()
         for item in items:
@@ -618,7 +619,7 @@ class TestTagInheritance:
             {"topic_id": tid, "content": "タグ省略ログ", "title": "タグなし"},
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         assert len(result["created"]) == 1
         # topicのタグ（domain:test）が継承される
         assert "domain:test" in result["created"][0]["tags"]
@@ -630,7 +631,7 @@ class TestTagInheritance:
             {"topic_id": tid, "content": "タグ個別ログ", "title": "タグあり", "tags": ["intent:discuss"]},
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         assert len(result["created"]) == 1
         tags = result["created"][0]["tags"]
         assert "domain:test" in tags
@@ -643,7 +644,7 @@ class TestTagInheritance:
             {"topic_id": tid, "decision": "タグ省略決定", "reason": "理由"},
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         assert len(result["created"]) == 1
         assert result["created"][0]["decision_id"] > 0
         # レスポンス軽量化: tagsは含まれない
@@ -656,7 +657,7 @@ class TestTagInheritance:
             {"topic_id": topic2["topic_id"], "content": "トピック2ログ", "title": "T2"},
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         assert len(result["created"]) == 2
         assert result["created"][0]["topic_id"] == topic["topic_id"]
         assert result["created"][1]["topic_id"] == topic2["topic_id"]
