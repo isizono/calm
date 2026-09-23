@@ -7,6 +7,7 @@ embedding サーバー失敗時の None 返却と、共有 conn の使用を確�
 (recall collapse対策)に焦点を当てる。
 """
 import hashlib
+import math
 
 import numpy as np
 import pytest
@@ -231,3 +232,79 @@ def test_vector_retrieve_filter_first_survives_recall_collapse(temp_db, mock_emb
     assert filtered_result[0]["title"] == "recall collapse target"
     # query_vec=[1,0,...,0] と target_vec=[0,...,0,1] のL2距離はsqrt(2)
     assert filtered_result[0]["distance"] == pytest.approx(2 ** 0.5, abs=1e-3)
+
+
+def test_vector_retrieve_or_mode_filter_first_merges_min_distance_across_keywords(
+    temp_db, mock_embedding_model, monkeypatch
+):
+    """ORモード+タグフィルタでも、対象が両キーワードのグローバルKNN圏外なら
+    取りこぼさない(recall collapse対策)。かつ、キーワードごとに異なる距離で
+    ヒットした場合はrowid単位で最小distanceが採用される
+    (merged_distanceによるrowid単位マージの契約)。
+    """
+    fetch_limit = 5
+    n_decoys = fetch_limit + 3
+
+    for i in range(n_decoys):
+        add_topic(title=f"or recall decoy {i}", description="filler", tags=["domain:or-decoy"])
+    target = add_topic(title="or recall target", description="the real one", tags=["domain:or-target"])
+    target_id = target["topic_id"]
+
+    query_vec_a = [1.0, 0.0] + [0.0] * (EMBEDDING_DIM - 2)
+    query_vec_b = [0.0, 1.0] + [0.0] * (EMBEDDING_DIM - 2)
+    # 両キーワードのベクトルに近く、デコイがグローバルtop-fetch_limitを独占する
+    decoy_vec = [0.7, 0.7] + [0.0] * (EMBEDDING_DIM - 2)
+    # a/bのどちらからも遠い(デコイより遠くグローバルtop-fetch_limit圏外)が、
+    # bへの距離がaへの距離よりわずかに小さくなるよう調整する
+    target_vec = [0.0, 0.1, 0.99] + [0.0] * (EMBEDDING_DIM - 3)
+
+    conn = get_connection()
+    try:
+        decoy_rows = conn.execute(
+            "SELECT id FROM search_index WHERE source_type = 'topic' AND title LIKE 'or recall decoy%'"
+        ).fetchall()
+        assert len(decoy_rows) == n_decoys
+        for row in decoy_rows:
+            _set_vec_embedding(conn, row["id"], decoy_vec)
+
+        target_si_id = conn.execute(
+            "SELECT id FROM search_index WHERE source_type = 'topic' AND source_id = ?",
+            (target_id,),
+        ).fetchone()["id"]
+        _set_vec_embedding(conn, target_si_id, target_vec)
+        conn.commit()
+
+        query_vecs = {"kw_a": query_vec_a, "kw_b": query_vec_b}
+        monkeypatch.setattr(emb, "encode_query", lambda text: query_vecs[text])
+
+        # sanity: グローバルKNN(タグフィルタ無し)では両キーワードともデコイのみが
+        # top-fetch_limitを占め、targetは現れない
+        ctx_unfiltered = _make_ctx(
+            keywords=("kw_a", "kw_b"), fts_keywords=("kw_a", "kw_b"),
+            keyword_mode="or", tag_ids=None, fetch_limit=fetch_limit,
+        )
+        unfiltered_result = vector_retrieve(ctx_unfiltered, conn)
+        assert unfiltered_result is not None
+        assert all(r["title"].startswith("or recall decoy") for r in unfiltered_result)
+
+        # 本題: targetのタグでフィルタすると、グローバルには居ないtargetが
+        # 両キーワードから取れ、min-distanceマージでbへの距離が採用される
+        target_tag_id = _resolve_tag_ids_readonly(conn, ["domain:or-target"])[0]
+        ctx_filtered = _make_ctx(
+            keywords=("kw_a", "kw_b"), fts_keywords=("kw_a", "kw_b"),
+            keyword_mode="or", tag_ids=(target_tag_id,), fetch_limit=fetch_limit,
+        )
+        filtered_result = vector_retrieve(ctx_filtered, conn)
+    finally:
+        conn.close()
+
+    distance_to_a = math.dist(query_vec_a, target_vec)
+    distance_to_b = math.dist(query_vec_b, target_vec)
+    assert distance_to_b < distance_to_a, "テストのベクトル設計が前提(bの方が近い)を満たしていない"
+
+    assert filtered_result == [{
+        "type": "topic",
+        "id": target_id,
+        "title": "or recall target",
+        "distance": pytest.approx(distance_to_b, abs=1e-6),
+    }]

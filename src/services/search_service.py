@@ -571,17 +571,20 @@ def _resolve_tag_ids_readonly(conn, tag_strings: list[str]) -> list[int]:
     return tag_ids
 
 
-def _build_tag_filter_cte(tag_ids: list[int]) -> tuple[str, list]:
-    """タグフィルタ用のCTE SQLとパラメータを構築する。
+def _build_tag_filter_body(tag_ids: list[int]) -> tuple[str, list]:
+    """タグ一致エンティティの集合を表す "tag_filtered AS (...)" CTE本体を組み立てる。
+
+    WITHキーワードは含まない(単体では未完成のSQL断片)。単独CTEとして使う
+    _build_tag_filter_cte と、他のCTEと1つのWITH句に連結する
+    _build_vector_candidates_cte の両方が、文字列操作に頼らずこの本体を共有する。
 
     Returns:
-        (cte_sql, params) のタプル。cte_sqlは "WITH tag_filtered AS (...)" の形式。
+        (cte_body, params) のタプル。cte_body は "tag_filtered AS (...)" の形式。
     """
     n_tags = len(tag_ids)
     placeholders = ",".join("?" * n_tags)
 
-    cte_sql = f"""
-    WITH tag_filtered AS (
+    cte_body = f"""tag_filtered AS (
         -- topic (直接タグ)
         SELECT 'topic' AS source_type, topic_id AS source_id FROM (
             SELECT tt.topic_id, tt.tag_id
@@ -632,8 +635,7 @@ def _build_tag_filter_cte(tag_ids: list[int]) -> tuple[str, list]:
             FROM material_tags mt
             WHERE mt.tag_id IN ({placeholders})
         ) GROUP BY material_id HAVING COUNT(DISTINCT tag_id) = ?
-    )
-    """
+    )"""
 
     # パラメータ: 各セクションに tag_ids + n_tags を渡す
     params: list = []
@@ -655,7 +657,17 @@ def _build_tag_filter_cte(tag_ids: list[int]) -> tuple[str, list]:
     params.extend(tag_ids)
     params.append(n_tags)
 
-    return cte_sql, params
+    return cte_body, params
+
+
+def _build_tag_filter_cte(tag_ids: list[int]) -> tuple[str, list]:
+    """タグフィルタ用のCTE SQLとパラメータを構築する。
+
+    Returns:
+        (cte_sql, params) のタプル。cte_sqlは "WITH tag_filtered AS (...)" の形式。
+    """
+    cte_body, params = _build_tag_filter_body(tag_ids)
+    return f"\n    WITH {cte_body}\n    ", params
 
 
 def _build_vector_candidates_cte(
@@ -669,6 +681,8 @@ def _build_vector_candidates_cte(
     search_index 行を持たない)がKNN候補スロットを消費しない副次効果を得る。
 
     Args:
+        tag_ids: タグフィルタ対象のtag_id群。Noneまたは空なら候補集合をsearch_index
+            全体から選ぶ(タグによる絞り込みをしない)。
         common_where: build_common_where() の戻り値("AND ..." フラグメント)。
         common_params: 同上の params。
 
@@ -680,8 +694,7 @@ def _build_vector_candidates_cte(
     """
     common_where_indented = textwrap.indent(common_where, " " * 10).lstrip()
     if tag_ids:
-        tag_cte_sql, tag_params = _build_tag_filter_cte(tag_ids)
-        tag_cte_body = tag_cte_sql.strip().removeprefix("WITH ")
+        tag_cte_body, tag_params = _build_tag_filter_body(tag_ids)
         cte_sql = f"""
         WITH {tag_cte_body},
         candidates AS (

@@ -255,11 +255,11 @@ class TestFindSimilarDecisions:
         )
         assert results == []
 
-    def test_topic_scoped_target_survives_global_recall_collapse(self, topic, topic2, mock_embedding_server):
+    def test_topic_scoped_target_survives_global_recall_collapse(self, topic, mock_embedding_server):
         """同topicのdecisionがグローバルKNNのtop-limit圏外でも、topic_idスコープの
         filter-first KNNで取りこぼさない(recall collapse対策、フィルタ集合内の正確なtop-k)。
 
-        グローバルKNN→post-filterの実装に戻すと、別topicのデコイdecisionがクエリベクトルへ
+        グローバルKNN→post-filterの実装に戻すと、デコイdecisionがクエリベクトルへ
         極めて近い位置を大量に占めグローバルtop-limitを独占するため、同topicの対象decisionは
         1件もそこに現れず0件になって落ちる。
         """
@@ -271,33 +271,43 @@ class TestFindSimilarDecisions:
         ])
         target_id = target["created"][0]["decision_id"]
 
-        decoy_ids = []
-        for i in range(n_decoys):
-            d = add_decisions([
-                {"topic_id": topic2["topic_id"], "decision": f"別topicデコイ決定{i}", "reason": "理由"},
-            ])
-            decoy_ids.append(d["created"][0]["decision_id"])
-
         query_vec = [1.0] + [0.0] * (EMBEDDING_DIM - 1)
         decoy_vec = [1.0 - 1e-4] + [1e-5] * (EMBEDDING_DIM - 1)
         target_vec = [0.0] * (EMBEDDING_DIM - 1) + [1.0]
 
         conn = get_connection()
         try:
-            def _set_vec(decision_id: int, vector: list[float]) -> None:
-                row = conn.execute(
-                    "SELECT id FROM search_index WHERE source_type = 'decision' AND source_id = ?",
-                    (decision_id,),
-                ).fetchone()
-                conn.execute("DELETE FROM vec_index WHERE rowid = ?", (row["id"],))
+            # decoyはembeddingを直接vec_indexへ書き込むため、add_decisions経由の
+            # embedding生成 + find_similar_decisions呼び出し(1件ごとに発生し65回累積すると
+            # 重い)は不要。search_index/search_index_ftsへの同期はdecisionsテーブルへの
+            # INSERTトリガー(migration 0046)が行うため、decisionsテーブルへの直接INSERTのみで足りる
+            conn.executemany(
+                "INSERT INTO decisions (decision, reason) VALUES (?, ?)",
+                [(f"デコイ決定{i}", "理由") for i in range(n_decoys)],
+            )
+            conn.commit()
+
+            decoy_rows = conn.execute(
+                "SELECT id, source_id FROM search_index"
+                " WHERE source_type = 'decision' AND title LIKE 'デコイ決定%'"
+            ).fetchall()
+            assert len(decoy_rows) == n_decoys
+            decoy_ids = [row["source_id"] for row in decoy_rows]
+
+            def _set_vec(search_index_id: int, vector: list[float]) -> None:
+                conn.execute("DELETE FROM vec_index WHERE rowid = ?", (search_index_id,))
                 conn.execute(
                     "INSERT INTO vec_index(rowid, embedding) VALUES (?, ?)",
-                    (row["id"], serialize_float32(vector)),
+                    (search_index_id, serialize_float32(vector)),
                 )
 
-            for decoy_id in decoy_ids:
-                _set_vec(decoy_id, decoy_vec)
-            _set_vec(target_id, target_vec)
+            for row in decoy_rows:
+                _set_vec(row["id"], decoy_vec)
+            target_si_id = conn.execute(
+                "SELECT id FROM search_index WHERE source_type = 'decision' AND source_id = ?",
+                (target_id,),
+            ).fetchone()["id"]
+            _set_vec(target_si_id, target_vec)
             conn.commit()
         finally:
             conn.close()
