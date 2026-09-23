@@ -34,17 +34,27 @@ def compute_allocation_order(
     all_ids: list[int],
     decision_by_id: dict[int, dict],
     supersede_map: dict[int, dict],
+    *,
+    topic_rank: Optional[dict[int, int]] = None,
+    owner_of: Optional[dict[int, int]] = None,
 ) -> list[int]:
     """allocate_decision_budget が本文展開の優先順位付けに使う配分順を返す。
 
-    非superseded→新しい順 → superseded→新しい順。呼び出し側が同じ優先順位で
-    full_ids のサブセットを並べ直したい場合（例: レスポンス実サイズ超過時の
-    降格順）にも再利用する。
+    topic_rank/owner_of を渡すと、選ばれたtopicの関連度順（topic_rankの昇順。
+    routing距離の近い順、または呼出側が渡したtopic_ids順）を第1キーにする。
+    同じtopic内は今まで通り非superseded→新しい順 → superseded→新しい順。
+    topic_rank/owner_ofを渡さない場合（省略時）はtopic順を考慮しない従来の
+    優先順位のみになる。
+
+    呼び出し側が同じ優先順位で full_ids のサブセットを並べ直したい場合
+    （例: レスポンス実サイズ超過時の降格順）にも再利用する。
     """
     order = list(all_ids)
     order.sort(key=lambda did: did, reverse=True)
     order.sort(key=lambda did: decision_by_id[did]["created_at"], reverse=True)
     order.sort(key=lambda did: 1 if supersede_map.get(did, {}).get("is_superseded") else 0)
+    if topic_rank is not None and owner_of is not None:
+        order.sort(key=lambda did: topic_rank.get(owner_of.get(did), len(topic_rank)))
     return order
 
 
@@ -53,8 +63,13 @@ def allocate_decision_budget(
     decision_by_id: dict[int, dict],
     supersede_map: dict[int, dict],
     budget_chars: int,
+    *,
+    topic_rank: Optional[dict[int, int]] = None,
+    owner_of: Optional[dict[int, int]] = None,
 ) -> tuple[set[int], int]:
-    """配分順（非superseded→新しい順 → superseded→新しい順）に予算内へ detail=full を割り当てる。
+    """配分順（topicの関連度順 → 同topic内は非superseded→新しい順 → superseded→
+    新しい順。topic_rank/owner_of省略時はtopic順を考慮しない）に予算内へ
+    detail=full を割り当てる。
 
     予算に収まらなくなった時点で以降は index 固定にする（配分順への信頼を優先し、
     後続のより小さい項目を先に昇格させるビンパッキングは行わない）。
@@ -63,7 +78,9 @@ def allocate_decision_budget(
 
     Returns: (full_ids, used_chars)
     """
-    order = compute_allocation_order(all_ids, decision_by_id, supersede_map)
+    order = compute_allocation_order(
+        all_ids, decision_by_id, supersede_map, topic_rank=topic_rank, owner_of=owner_of
+    )
 
     full_ids: set[int] = set()
     used = 0
