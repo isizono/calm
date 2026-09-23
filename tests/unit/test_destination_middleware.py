@@ -341,12 +341,13 @@ class TestFetchCandidates:
 
 class TestInjection:
     @pytest.mark.asyncio
-    async def test_zero_candidates_omits_key_and_leaves_content_untouched(self, monkeypatch):
-        monkeypatch.setattr(destination_middleware, "_fetch_candidates", lambda *_a, **_k: [])
+    async def test_zero_candidates_omits_key_and_leaves_content_untouched(self, temp_db, monkeypatch):
+        """候補が実際に0件（DBに該当行が無い）の場合、注入自体を行わない。"""
         monkeypatch.setattr(destination_middleware, "get_caller_session_id", lambda: "self-session")
+        goal_id = _make_judge_ready_goal(_make_activity())
 
         middleware = DestinationCandidateMiddleware()
-        tool_result = ToolResult(structured_content={"goal": {"label": "judge_ready", "goal_id_raw": 1}})
+        tool_result = ToolResult(structured_content={"goal": {"label": "judge_ready", "goal_id_raw": goal_id}})
         original_content_len = len(tool_result.content)
 
         result = await middleware.on_call_tool(_make_context(), _call_next_returning(tool_result))
@@ -369,30 +370,41 @@ class TestInjection:
         assert "destination_candidates" not in result.structured_content
 
     @pytest.mark.asyncio
-    async def test_candidates_found_adds_structured_content_and_text_hint(self, monkeypatch):
-        fake_candidates = [
-            {"name": "alice", "activity_id_raw": 42, "activity_title": "Some Activity"},
-        ]
-        monkeypatch.setattr(destination_middleware, "_fetch_candidates", lambda *_a, **_k: fake_candidates)
+    async def test_candidates_found_adds_structured_content_and_text_hint(self, temp_db, monkeypatch):
+        """候補が実際にDBから見つかった場合、structured_contentとテキストヒントの両方に載る。"""
         monkeypatch.setattr(destination_middleware, "get_caller_session_id", lambda: "self-session")
+        activity_id = _make_activity("Some Activity")
+        goal_id = _make_judge_ready_goal(activity_id)
+        pid = register_alive_heartbeat_session("cli-alice")
+        _seed_session_row(
+            session_id="alice-session", cli_session_id="cli-alice", cli_pid=pid,
+            activity_id=activity_id,
+        )
 
         middleware = DestinationCandidateMiddleware()
-        tool_result = ToolResult(structured_content={"goal": {"label": "judge_ready", "goal_id_raw": 1}})
+        tool_result = ToolResult(structured_content={"goal": {"label": "judge_ready", "goal_id_raw": goal_id}})
         result = await middleware.on_call_tool(_make_context(), _call_next_returning(tool_result))
 
-        assert result.structured_content["destination_candidates"] == fake_candidates
-        assert any("alice" in block.text for block in result.content if hasattr(block, "text"))
+        assert result.structured_content["destination_candidates"] == [
+            {"name": "test-cli", "activity_id_raw": activity_id, "activity_title": "Some Activity"}
+        ]
+        assert any("test-cli" in block.text for block in result.content if hasattr(block, "text"))
 
     @pytest.mark.asyncio
-    async def test_exception_in_injection_is_swallowed(self, monkeypatch):
-        """候補算出中の例外は本来のツール応答を道連れにせずベストエフォートで握りつぶす。"""
+    async def test_exception_in_injection_is_swallowed(self, temp_db, monkeypatch):
+        """候補算出中の例外は本来のツール応答を道連れにせずベストエフォートで握りつぶす。
+
+        DB接続の取得（get_connection、外部境界）が失敗する状況を模して、
+        _fetch_candidates自体は実処理のまま例外を発生させる。
+        """
         def _boom(*_a, **_k):
             raise RuntimeError("boom")
-        monkeypatch.setattr(destination_middleware, "_fetch_candidates", _boom)
+        monkeypatch.setattr(destination_middleware, "get_connection", _boom)
         monkeypatch.setattr(destination_middleware, "get_caller_session_id", lambda: "self-session")
+        goal_id = _make_judge_ready_goal(_make_activity())
 
         middleware = DestinationCandidateMiddleware()
-        tool_result = ToolResult(structured_content={"goal": {"label": "judge_ready", "goal_id_raw": 1}})
+        tool_result = ToolResult(structured_content={"goal": {"label": "judge_ready", "goal_id_raw": goal_id}})
         result = await middleware.on_call_tool(_make_context(), _call_next_returning(tool_result))
 
         assert "destination_candidates" not in result.structured_content

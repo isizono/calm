@@ -91,6 +91,13 @@ def _fetch_candidates(goal_id: int, caller_session_id: str) -> list[dict]:
     で人間可読な宛先名を解決できたものだけを残す。sessionsテーブルは起動器
     プロセス単位の行のみを持つため、親セッションに束ねられるサブエージェントは
     ここに独立した候補としては現れない。
+
+    caller_session_idによる自己除外は、呼び出し元がlauncher経由（起動器ヘッダ
+    あり）である前提に依存する。get_caller_session_id()がヘッダ欠落等でephemeral
+    なctx.session_idにフォールバックした場合、その値はsessionsテーブルの
+    session_id（常に起動器のUUID、id_kind='bridge'）とは値空間が異なり一致しない
+    ため、自己除外が機能しない可能性がある。delta_middlewareの自己通知抑制も
+    同じ前提に依存しており、本ミドルウェア固有の制約ではない。
     """
     with contextlib.closing(get_connection(load_vec=False)) as conn:
         rows = conn.execute(
