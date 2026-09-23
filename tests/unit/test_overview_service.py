@@ -1,7 +1,7 @@
 """overview_service の単体テスト。
 
 4節（working / recently_done / awaiting_human / backlog）の分類境界、
-COALESCE/MAX()の落とし穴回帰検出、orch_managedを除外しないこと、副作用ゼロ、
+COALESCE/MAX()の落とし穴回帰検出、副作用ゼロ、
 引数バリデーション、limitの丸めと切り詰めを検証する。
 """
 from datetime import datetime, timedelta, timezone
@@ -29,11 +29,10 @@ def _make_activity(
     title: str = "a",
     status: str = "pending",
     tags: list[str] | None = None,
-    orch_managed: bool = False,
 ) -> int:
     activity_id = add_activity(
         title=title, description="d", tags=tags or ["domain:test"],
-        check_in=False, orch_managed=orch_managed,
+        check_in=False,
     )["activity_id"]
     if status != "pending":
         update_activity(activity_id, status=status)
@@ -422,44 +421,6 @@ class TestBacklogSection:
         by_domain = {row["domain"]: row["count"] for row in result["backlog"]["by_domain"]}
         assert by_domain == {"calm": 2}
         assert result["backlog"]["total_count"] == 2
-
-
-class TestOrchManagedNotFiltered:
-    """orch_managedは旧ow運用体系の名残の死んだカラムであり、get_overviewは
-    orch_managedによる除外フィルタを持たない(ユーザー裁定済み)。orch_managed=Trueの
-    activityも他と全く同じ基準でworking/recently_done/backlogへ分類される。
-    """
-
-    def test_orch_managed_activities_are_classified_like_any_other(self, temp_db):
-        orch_in_progress = _make_activity(status="in_progress", orch_managed=True)
-        orch_completed = _make_activity(status="completed", orch_managed=True)
-        _make_activity(status="pending", orch_managed=True)
-
-        result = ov.get_overview()
-
-        working_ids = {i["id_raw"] for i in result["working"]["items"]}
-        done_ids = {i["id_raw"] for i in result["recently_done"]["items"]}
-
-        assert orch_in_progress in working_ids
-        assert orch_completed in done_ids
-        assert result["working"]["total_count"] == 1
-        assert result["recently_done"]["total_count"] == 1
-        assert result["backlog"]["total_count"] == 1
-        assert result["backlog"]["by_status"].get("pending") == 1
-
-    def test_orch_managed_ask_and_blocked_activity_appear_in_awaiting_human(self, temp_db):
-        """awaiting_humanもask_service.get_asksへそのまま委譲し、orch_managedで
-        blocksを絞り込んだりask自体を落としたりしない。
-        """
-        act = _make_activity(title="orch blocked", status="in_progress", orch_managed=True)
-        ask_id = ask_service.add_ask("need decision", tags=["domain:test"], blocks=[act])["id"]
-
-        result = ov.get_overview()
-
-        items = result["awaiting_human"]["items"]
-        assert len(items) == 1
-        assert items[0]["id_raw"] == ask_id
-        assert items[0]["blocks"] == [{"id_raw": act, "title": "orch blocked", "status": "in_progress"}]
 
 
 class TestWorkingBacklogStatusSymmetry:

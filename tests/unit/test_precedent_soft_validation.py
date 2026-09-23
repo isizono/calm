@@ -11,6 +11,7 @@ import pytest
 
 from src.services.decision_service import add_decisions
 from src.services.topic_service import add_topic
+from tests.helpers import assert_no_write_errors
 
 DEFAULT_TAGS = ["domain:test"]
 
@@ -67,7 +68,7 @@ class TestPrecedentEcho:
             {"topic_id": tid, "decision": "採用する", "reason": PRECEDENT_REASON},
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         assert len(result["created"]) == 1
         created = result["created"][0]
         assert created["precedent"] == {
@@ -84,7 +85,7 @@ class TestPrecedentEcho:
             {"topic_id": tid, "decision": "採用する", "reason": PLAIN_REASON},
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         created = result["created"][0]
         assert "precedent" not in created
         assert "precedent_warnings" not in created
@@ -97,7 +98,7 @@ class TestPrecedentWarnings:
             {"topic_id": tid, "decision": "採用する", "reason": NEAR_MISS_REASON},
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         assert len(result["created"]) == 1
         assert len(result["errors"]) == 0
         created = result["created"][0]
@@ -111,7 +112,7 @@ class TestPrecedentWarnings:
             {"topic_id": tid, "decision": "採用する", "reason": EMPTY_SECTION_REASON},
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         assert len(result["created"]) == 1
         created = result["created"][0]
         # 空節は rejected_alternatives には積まれず、warning にのみ現れる
@@ -128,7 +129,7 @@ class TestPrecedentWarnings:
             {"topic_id": tid, "decision": "採用する3", "reason": PLAIN_REASON},
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         assert len(result["created"]) == 3
         assert len(result["errors"]) == 0
 
@@ -147,7 +148,7 @@ class TestAdjacentCheckWarning:
             },
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         created = result["created"][0]
         assert "precedent_warnings" in created
         assert any(
@@ -165,7 +166,7 @@ class TestAdjacentCheckWarning:
             },
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         created = result["created"][0]
         assert "precedent_warnings" not in created
         assert created["precedent"]["adjacent_check"] == [
@@ -179,7 +180,7 @@ class TestAdjacentCheckWarning:
             {"topic_id": tid, "decision": "採用する", "reason": PLAIN_REASON},
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         created = result["created"][0]
         assert "precedent_warnings" not in created
 
@@ -194,7 +195,7 @@ class TestAdjacentCheckWarning:
             },
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         created = result["created"][0]
         assert "precedent_warnings" in created
         assert len(created["precedent_warnings"]) == 2
@@ -216,7 +217,7 @@ class TestAdjacentCheckWarning:
             },
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         created = result["created"][0]
         # PLAIN_REASONは節が一つも無いのでprecedentキー自体は新設されない
         # （legacy本文との区別を崩さない）。precedent_warningsのみ単独で付く。
@@ -239,7 +240,7 @@ class TestExistingResponseKeysUnchanged:
             },
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         created = result["created"][0]
         assert "related_decisions" in created
         assert created["propagation"]["status"] == "ok"

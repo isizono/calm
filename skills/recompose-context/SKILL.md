@@ -133,7 +133,7 @@ SA（run_in_background）で並行実行。結果はマトリクス化して、�
 
 - decision/log → `retract`
   - 頻繁に参照される decision を無効化する場合は、単純な `retract` より定型節
-    （`docs/precedent-format.md`、正本）付きの新 decision で `supersede` し直すことを検討する。
+    （書式は本スキル同梱の `references/precedent-format.md`）付きの新 decision で `supersede` し直すことを検討する。
     retract は却下理由・射程の情報を残さないため、頻出参照の decision ほど supersede の価値が高い
 - material → `update_material` で上書き
 - topic/activity → retract非対応のため「直す」: status調整・合流・relation張り・新規作成

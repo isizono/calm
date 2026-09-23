@@ -731,19 +731,19 @@ def test_recovery_after_encode_batch_failure(temp_db, monkeypatch):
     monkeypatch.setattr(emb, '_ensure_server_running', counting_ensure_server)
     monkeypatch.setattr(emb, '_encode_batch', mock_encode_batch)
 
-    # Phase 1: 初回起動 → _ensure_server_running が呼ばれる
+    # 初回起動 → _ensure_server_running が呼ばれる
     emb.encode_document("テスト1")
     assert ensure_call_count == 1
     assert emb._server_initialized is True
 
-    # Phase 2: サーバー障害シミュレート（本物の_encode_batch + urlopen失敗）
+    # サーバー障害シミュレート（本物の_encode_batch + urlopen失敗）
     monkeypatch.setattr(emb, '_encode_batch', real_encode_batch)
     monkeypatch.setattr(urllib.request, 'urlopen', lambda *a, **kw: (_ for _ in ()).throw(ConnectionError("crash")))
 
     emb.encode_document("テスト2")
     assert emb._server_initialized is False  # フラグがリセットされた
 
-    # Phase 3: 復旧 → _ensure_server_running が再度呼ばれる
+    # 復旧 → _ensure_server_running が再度呼ばれる
     monkeypatch.setattr(emb, '_encode_batch', mock_encode_batch)
     emb.encode_document("テスト3")
     assert ensure_call_count == 2

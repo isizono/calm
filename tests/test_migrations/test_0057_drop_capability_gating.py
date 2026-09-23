@@ -174,7 +174,7 @@ class TestOtherColumnsUnaffected:
         conn = get_connection()
         try:
             column_names = get_column_names(conn, "activities")
-            for col in ["id", "title", "description", "status", "orch_managed"]:
+            for col in ["id", "title", "description", "status"]:
                 assert col in column_names, f"activities.{col} が0057適用後に消えている"
         finally:
             conn.close()

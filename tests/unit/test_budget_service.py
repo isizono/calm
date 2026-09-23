@@ -8,6 +8,7 @@ from src.config import (
     PRECEDENT_BUDGET_CHARS,
     PRECEDENT_RESPONSE_CHARS_MAX,
     RECENCY_DECAY_FLOOR,
+    RECENCY_DECAY_FLOOR_DECISION_LIVE,
     RECENCY_DECAY_RATE,
 )
 from src.services import budget_service
@@ -19,13 +20,18 @@ class TestBudgetDefaults:
         assert budget_service.BUDGET_DEFAULTS["precedent_budget_chars"] == PRECEDENT_BUDGET_CHARS
         assert budget_service.BUDGET_DEFAULTS["recency_decay_rate"] == RECENCY_DECAY_RATE
         assert budget_service.BUDGET_DEFAULTS["recency_decay_floor"] == RECENCY_DECAY_FLOOR
+        assert (
+            budget_service.BUDGET_DEFAULTS["recency_decay_floor_decision_live"]
+            == RECENCY_DECAY_FLOOR_DECISION_LIVE
+        )
         assert budget_service.BUDGET_DEFAULTS["precedent_response_chars_max"] == PRECEDENT_RESPONSE_CHARS_MAX
 
 
 class TestAllocateDecisionBudget:
     """precedent_pull_service._allocate_budget の移設前後で挙動が変わっていないことを検証する。
 
-    決定的な配分順（非superseded→新しい順 → superseded→新しい順）とcost計算
+    決定的な配分順（topic_rank/owner_of省略時: 非superseded→新しい順 →
+    superseded→新しい順。指定時はtopicの関連度順が第1キーになる）とcost計算
     （decision + reason の文字数合計）をここで直接固定する。
     """
 
@@ -86,3 +92,34 @@ class TestAllocateDecisionBudget:
         result1, _ = budget_service.allocate_decision_budget(ids, decision_by_id, {}, 2500)
         result2, _ = budget_service.allocate_decision_budget(ids, decision_by_id, {}, 2500)
         assert result1 == result2
+
+    def test_topic_rank_takes_priority_over_recency_when_provided(self):
+        """topic_rank/owner_ofを渡すと、所属先の関連度順(rank昇順)が新しさより優先される"""
+        decision_by_id = {
+            1: self._dec(1, "near-old", "x" * 500, "2024-01-01"),
+            2: self._dec(2, "far-new", "x" * 500, "2026-01-01"),
+        }
+        near_owner, far_owner = 100, 200
+        owner_of = {1: near_owner, 2: far_owner}
+        rank = {near_owner: 0, far_owner: 1}  # near_ownerのほうが関連度が高い(rank昇順)
+
+        full_ids, _ = budget_service.allocate_decision_budget(
+            [1, 2], decision_by_id, supersede_map={}, budget_chars=520,
+            topic_rank=rank, owner_of=owner_of,
+        )
+
+        # 新しさだけならid=2(2026-01-01)が勝つはずだが、rankを渡すとid=1(関連度が高い所属先)が勝つ
+        assert full_ids == {1}
+
+    def test_topic_rank_omitted_preserves_recency_only_order(self):
+        """topic_rank/owner_ofを省略すると、所属先を考慮しない従来の配分順（新しい順優先）になる"""
+        decision_by_id = {
+            1: self._dec(1, "near-old", "x" * 500, "2024-01-01"),
+            2: self._dec(2, "far-new", "x" * 500, "2026-01-01"),
+        }
+
+        full_ids, _ = budget_service.allocate_decision_budget(
+            [1, 2], decision_by_id, supersede_map={}, budget_chars=520
+        )
+
+        assert full_ids == {2}

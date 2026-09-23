@@ -5,7 +5,7 @@
 <!-- 再生成: uv run python scripts/dump_db_schema.py -->
 
 `migrations/` を通し番号順に全適用した結果として得られる、現在のテーブル/ビュー構造の機械的な写しである。
-カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0077）。
+カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0080）。
 
 「なぜこの形なのか」（設計判断の背景・変遷・既知の課題）は `docs/spec/db-schema.md` を参照。
 本ファイルは現在値のみを扱い、変遷の経緯（旧カラムの削除理由等）は記載しない。
@@ -24,7 +24,6 @@
 | updated_at | TIMESTAMP | NO | `CURRENT_TIMESTAMP` | — |
 | last_heartbeat_at | TEXT | YES | — | — |
 | last_heartbeat_session_id | TEXT | YES | — | — |
-| orch_managed | BOOLEAN | NO | `0` | — |
 | closed_at | TIMESTAMP | YES | `NULL` | — |
 | closed_by | TEXT | YES | `NULL` | — |
 | closed_reason | TEXT | YES | `NULL` | — |
@@ -43,7 +42,7 @@ CREATE TABLE "activities" (
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   last_heartbeat_at TEXT
-, last_heartbeat_session_id TEXT, orch_managed BOOLEAN NOT NULL DEFAULT 0, closed_at TIMESTAMP DEFAULT NULL, closed_by TEXT DEFAULT NULL
+, last_heartbeat_session_id TEXT, closed_at TIMESTAMP DEFAULT NULL, closed_by TEXT DEFAULT NULL
     CHECK (closed_by IS NULL
            OR (closed_by IN ('goal_judge', 'user', 'claude', 'external') AND closed_at IS NOT NULL)), closed_reason TEXT DEFAULT NULL)
 ```
