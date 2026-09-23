@@ -169,11 +169,7 @@ class TestTriggerGating:
 
     @pytest.mark.asyncio
     async def test_non_whitelisted_tool_never_queries_candidates_even_if_judge_ready(self, monkeypatch):
-        """get_goal等の読み取りツールは、goalブロックがjudge_readyでも対象外にする。
-
-        「宛先候補は書き込みの応答に同梱する」設計は書き込みと同一トランザクションで
-        台帳を読む前提に基づき、読み取りツールには適用されない。
-        """
+        """get_goal等の読み取りツールは、goalブロックがjudge_readyでも対象外にする。"""
         def _boom(*_a, **_k):
             raise AssertionError("ホワイトリスト対象外のツールなのに候補算出処理が走った")
         monkeypatch.setattr(destination_middleware, "_fetch_candidates", _boom)
@@ -188,9 +184,14 @@ class TestTriggerGating:
 
     @pytest.mark.asyncio
     async def test_all_target_tool_names_are_allowed_through(self, monkeypatch):
-        """ホワイトリストに列挙した書き込み系ツールはすべて候補算出処理まで到達する。"""
+        """plan-b.mdが列挙する書き込み系ツール名は、すべて候補算出処理まで到達する。
+
+        実装の_TARGET_TOOL_NAMES自体をループ対象にすると、そこから名前が
+        1つ抜け落ちてもテストが検出できない。仕様上の名前をここに書き写す。
+        """
         monkeypatch.setattr(destination_middleware, "get_caller_session_id", lambda: "self-session")
-        for tool_name in destination_middleware._TARGET_TOOL_NAMES:
+        target_tool_names = ("check_in", "set_goal", "update_goal", "judge_goal", "update_activity")
+        for tool_name in target_tool_names:
             called = []
             monkeypatch.setattr(
                 destination_middleware, "_fetch_candidates",
