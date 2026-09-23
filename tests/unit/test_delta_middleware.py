@@ -1,8 +1,15 @@
 """DeltaNotificationMiddleware のintegrationテスト
 
-複数session_idを模擬し、check_in→baseline記録、別セッションの書き込みに
+複数呼び出し元識別子を模擬し、check_in→baseline記録、別セッションの書き込みに
 よるベル注入、announce-once（同じ差分は一度しか通知しない）、
 自己通知抑制、再check_inでのscopeリセットを検証する。
+
+呼び出し元識別子はget_caller_session_id()（起動器の恒久識別子優先、
+無ければMCP接続単位のephemeral IDにフォールバック、どちらも無ければNone）の
+解決結果をキーに使う。テストでは`src.middleware.delta_middleware`に注入された
+get_caller_session_idをmonkeypatchし、呼び出し元識別子を明示的に切り替える
+（実際のHTTPヘッダ/MCP接続コンテキストはunit testの境界外のため、この関数の
+戻り値を外部境界として差し替える）。
 
 temp_db / disable_embedding フィクスチャは tests/conftest.py で共有。
 """
@@ -17,6 +24,7 @@ from src.services.decision_service import add_decisions
 from src.services.discussion_log_service import add_logs
 from src.services.material_service import add_material
 from src.services.topic_service import add_topic
+import src.middleware.delta_middleware as delta_middleware
 from src.middleware.delta_middleware import DeltaNotificationMiddleware, _watermarks
 from tests.helpers import add_decision
 
@@ -34,14 +42,16 @@ def _clear_watermarks():
     _watermarks.clear()
 
 
-def _make_context(tool_name: str, session_id):
+def _set_caller(monkeypatch, value):
+    """次のon_call_tool呼び出しでget_caller_session_id()が返す値を固定する。"""
+    monkeypatch.setattr(delta_middleware, "get_caller_session_id", lambda: value)
+
+
+def _make_context(tool_name: str):
     message = MagicMock()
     message.name = tool_name
-    fastmcp_ctx = MagicMock()
-    fastmcp_ctx.session_id = session_id
     context = MagicMock()
     context.message = message
-    context.fastmcp_context = fastmcp_ctx
     return context
 
 
@@ -69,15 +79,18 @@ def scope(temp_db):
 
 
 @pytest.mark.asyncio
-async def test_check_in_records_baseline_and_scope(scope):
+async def test_check_in_records_baseline_and_scope(scope, monkeypatch):
     tid, aid = scope
     middleware = DeltaNotificationMiddleware()
 
     checkin_result = check_in(aid)
-    ctx = _make_context("check_in", "session-A")
-    await middleware.on_call_tool(ctx, _call_next_returning(ToolResult(structured_content=checkin_result)))
+    _set_caller(monkeypatch, "caller-A")
+    await middleware.on_call_tool(
+        _make_context("check_in"),
+        _call_next_returning(ToolResult(structured_content=checkin_result)),
+    )
 
-    wm = _watermarks["session-A"]
+    wm = _watermarks["caller-A"]
     assert wm["activity_id"] == aid
     assert wm["topic_ids"] == [tid]
     assert wm["decision_id"] == 0
@@ -86,7 +99,7 @@ async def test_check_in_records_baseline_and_scope(scope):
 
 
 @pytest.mark.asyncio
-async def test_add_activity_default_checkin_records_baseline(temp_db):
+async def test_add_activity_default_checkin_records_baseline(temp_db, monkeypatch):
     """add_activity(check_in=True、デフォルト)経由でもbaselineが記録されること。
 
     check_in結果はresult["check_in_result"]にネストして返るため、ツール名
@@ -104,18 +117,19 @@ async def test_add_activity_default_checkin_records_baseline(temp_db):
     )
     aid = add_activity_result["activity_id"]
 
+    _set_caller(monkeypatch, "caller-A")
     await middleware.on_call_tool(
-        _make_context("add_activity", "session-A"),
+        _make_context("add_activity"),
         _call_next_returning(ToolResult(structured_content=add_activity_result)),
     )
 
-    wm = _watermarks["session-A"]
+    wm = _watermarks["caller-A"]
     assert wm["activity_id"] == aid
     assert wm["topic_ids"] == [tid]
 
 
 @pytest.mark.asyncio
-async def test_add_activity_explicit_no_checkin_does_not_record_baseline(temp_db):
+async def test_add_activity_explicit_no_checkin_does_not_record_baseline(temp_db, monkeypatch):
     """add_activity(check_in=False)はcheck_in_resultを含まないため、baselineは記録されない。"""
     topic = add_topic(title="Scope Topic no checkin", description="d", tags=["domain:test"])
     tid = topic["topic_id"]
@@ -126,23 +140,25 @@ async def test_add_activity_explicit_no_checkin_does_not_record_baseline(temp_db
         related=[{"type": "topic", "ids": [tid]}], check_in=False,
     )
 
+    _set_caller(monkeypatch, "caller-B")
     await middleware.on_call_tool(
-        _make_context("add_activity", "session-B"),
+        _make_context("add_activity"),
         _call_next_returning(ToolResult(structured_content=add_activity_result)),
     )
 
-    assert "session-B" not in _watermarks
+    assert "caller-B" not in _watermarks
 
 
 @pytest.mark.asyncio
-async def test_cross_session_delta_injected_then_announce_once(scope):
+async def test_cross_session_delta_injected_then_announce_once(scope, monkeypatch):
     tid, aid = scope
     middleware = DeltaNotificationMiddleware()
 
     # (a) Aがcheck_in
     checkin_result = check_in(aid)
+    _set_caller(monkeypatch, "caller-A")
     await middleware.on_call_tool(
-        _make_context("check_in", "session-A"),
+        _make_context("check_in"),
         _call_next_returning(ToolResult(structured_content=checkin_result)),
     )
 
@@ -152,7 +168,7 @@ async def test_cross_session_delta_injected_then_announce_once(scope):
 
     # (c) Aの次のツール呼び出しでdeltaがcontentに出る
     result1 = await middleware.on_call_tool(
-        _make_context("get_topics", "session-A"),
+        _make_context("get_topics"),
         _call_next_returning(_noop_tool_result()),
     )
     injected_text = result1.content[-1].text
@@ -164,7 +180,7 @@ async def test_cross_session_delta_injected_then_announce_once(scope):
 
     # (d) 同じ呼び出しを再度実行 → announce-onceで出ない
     result2 = await middleware.on_call_tool(
-        _make_context("get_topics", "session-A"),
+        _make_context("get_topics"),
         _call_next_returning(_noop_tool_result()),
     )
     assert len(result2.content) == 1
@@ -172,13 +188,14 @@ async def test_cross_session_delta_injected_then_announce_once(scope):
 
 
 @pytest.mark.asyncio
-async def test_self_write_not_notified(scope):
+async def test_self_write_not_notified(scope, monkeypatch):
     tid, aid = scope
     middleware = DeltaNotificationMiddleware()
 
+    _set_caller(monkeypatch, "caller-A")
     checkin_result = check_in(aid)
     await middleware.on_call_tool(
-        _make_context("check_in", "session-A"),
+        _make_context("check_in"),
         _call_next_returning(ToolResult(structured_content=checkin_result)),
     )
 
@@ -186,12 +203,12 @@ async def test_self_write_not_notified(scope):
     # middleware経由で処理させ、自己通知抑制のwatermark前進を確認する
     own_write_result = add_decisions([{"topic_id": tid, "decision": "自分の決定", "reason": "r"}])
     await middleware.on_call_tool(
-        _make_context("add_decisions", "session-A"),
+        _make_context("add_decisions"),
         _call_next_returning(ToolResult(structured_content=own_write_result)),
     )
 
     result = await middleware.on_call_tool(
-        _make_context("get_topics", "session-A"),
+        _make_context("get_topics"),
         _call_next_returning(_noop_tool_result()),
     )
     assert len(result.content) == 1
@@ -199,25 +216,26 @@ async def test_self_write_not_notified(scope):
 
 
 @pytest.mark.asyncio
-async def test_self_write_not_notified_for_logs(scope):
+async def test_self_write_not_notified_for_logs(scope, monkeypatch):
     """add_decisionsだけでなくadd_logs経由の自己通知抑制も別コードパスとして確認する。"""
     tid, aid = scope
     middleware = DeltaNotificationMiddleware()
 
+    _set_caller(monkeypatch, "caller-A")
     checkin_result = check_in(aid)
     await middleware.on_call_tool(
-        _make_context("check_in", "session-A"),
+        _make_context("check_in"),
         _call_next_returning(ToolResult(structured_content=checkin_result)),
     )
 
     own_write_result = add_logs([{"topic_id": tid, "content": "自分のログ"}])
     await middleware.on_call_tool(
-        _make_context("add_logs", "session-A"),
+        _make_context("add_logs"),
         _call_next_returning(ToolResult(structured_content=own_write_result)),
     )
 
     result = await middleware.on_call_tool(
-        _make_context("get_topics", "session-A"),
+        _make_context("get_topics"),
         _call_next_returning(_noop_tool_result()),
     )
     assert len(result.content) == 1
@@ -225,16 +243,17 @@ async def test_self_write_not_notified_for_logs(scope):
 
 
 @pytest.mark.asyncio
-async def test_self_write_not_notified_for_materials(scope):
+async def test_self_write_not_notified_for_materials(scope, monkeypatch):
     """add_materialはcreated配列を持たずtop-levelにmaterial_idを返す特殊系のため、
     add_decisions/add_logsとは別コードパス（_handle_writeのmaterial分岐）を確認する。
     """
     tid, aid = scope
     middleware = DeltaNotificationMiddleware()
 
+    _set_caller(monkeypatch, "caller-A")
     checkin_result = check_in(aid)
     await middleware.on_call_tool(
-        _make_context("check_in", "session-A"),
+        _make_context("check_in"),
         _call_next_returning(ToolResult(structured_content=checkin_result)),
     )
 
@@ -243,12 +262,12 @@ async def test_self_write_not_notified_for_materials(scope):
         related=[{"type": "topic", "ids": [tid]}],
     )
     await middleware.on_call_tool(
-        _make_context("add_material", "session-A"),
+        _make_context("add_material"),
         _call_next_returning(ToolResult(structured_content=own_write_result)),
     )
 
     result = await middleware.on_call_tool(
-        _make_context("get_topics", "session-A"),
+        _make_context("get_topics"),
         _call_next_returning(_noop_tool_result()),
     )
     assert len(result.content) == 1
@@ -256,7 +275,7 @@ async def test_self_write_not_notified_for_materials(scope):
 
 
 @pytest.mark.asyncio
-async def test_recheckin_resets_scope(temp_db):
+async def test_recheckin_resets_scope(temp_db, monkeypatch):
     topic1 = add_topic(title="Topic1", description="d", tags=["domain:test"])
     tid1 = topic1["topic_id"]
     activity1 = add_activity(
@@ -274,56 +293,45 @@ async def test_recheckin_resets_scope(temp_db):
     aid2 = activity2["activity_id"]
 
     middleware = DeltaNotificationMiddleware()
+    _set_caller(monkeypatch, "caller-A")
 
     checkin1 = check_in(aid1)
     await middleware.on_call_tool(
-        _make_context("check_in", "session-A"),
+        _make_context("check_in"),
         _call_next_returning(ToolResult(structured_content=checkin1)),
     )
-    assert _watermarks["session-A"]["topic_ids"] == [tid1]
-    assert _watermarks["session-A"]["activity_id"] == aid1
+    assert _watermarks["caller-A"]["topic_ids"] == [tid1]
+    assert _watermarks["caller-A"]["activity_id"] == aid1
 
     # (f) 再check_in（別activity）でscopeが上書きされる
     checkin2 = check_in(aid2)
     await middleware.on_call_tool(
-        _make_context("check_in", "session-A"),
+        _make_context("check_in"),
         _call_next_returning(ToolResult(structured_content=checkin2)),
     )
-    assert _watermarks["session-A"]["topic_ids"] == [tid2]
-    assert _watermarks["session-A"]["activity_id"] == aid2
+    assert _watermarks["caller-A"]["topic_ids"] == [tid2]
+    assert _watermarks["caller-A"]["activity_id"] == aid2
 
 
 @pytest.mark.asyncio
-async def test_session_without_checkin_gets_no_notification(scope):
+async def test_session_without_checkin_gets_no_notification(scope, monkeypatch):
     tid, _aid = scope
     middleware = DeltaNotificationMiddleware()
 
     add_decision("誰かの決定", "reason", topic_id=tid)
 
+    _set_caller(monkeypatch, "caller-without-checkin")
     result = await middleware.on_call_tool(
-        _make_context("get_topics", "session-without-checkin"),
+        _make_context("get_topics"),
         _call_next_returning(_noop_tool_result()),
     )
     assert len(result.content) == 1
     assert "delta" not in (result.structured_content or {})
-    assert "session-without-checkin" not in _watermarks
+    assert "caller-without-checkin" not in _watermarks
 
 
 @pytest.mark.asyncio
-async def test_session_id_none_falls_back_to_default(scope):
-    _tid, aid = scope
-    middleware = DeltaNotificationMiddleware()
-
-    checkin_result = check_in(aid)
-    await middleware.on_call_tool(
-        _make_context("check_in", None),
-        _call_next_returning(ToolResult(structured_content=checkin_result)),
-    )
-    assert "__default__" in _watermarks
-
-
-@pytest.mark.asyncio
-async def test_out_of_scope_write_does_not_suppress_future_in_scope_deltas(temp_db):
+async def test_out_of_scope_write_does_not_suppress_future_in_scope_deltas(temp_db, monkeypatch):
     """scope外topicへの自己書き込みはwatermarkを進めず、後続の別セッションの
     scope内書き込みも正しく検出され続けることを確認する。
     """
@@ -338,31 +346,139 @@ async def test_out_of_scope_write_does_not_suppress_future_in_scope_deltas(temp_
     aid = activity["activity_id"]
 
     middleware = DeltaNotificationMiddleware()
+    _set_caller(monkeypatch, "caller-A")
     checkin_result = check_in(aid)
     await middleware.on_call_tool(
-        _make_context("check_in", "session-A"),
+        _make_context("check_in"),
         _call_next_returning(ToolResult(structured_content=checkin_result)),
     )
-    assert _watermarks["session-A"]["decision_id"] == 0
+    assert _watermarks["caller-A"]["decision_id"] == 0
 
     # Aがscope外topicにdecisionを書く
     out_of_scope_write = add_decisions([
         {"topic_id": other_tid, "decision": "scope外の決定", "reason": "r"}
     ])
     await middleware.on_call_tool(
-        _make_context("add_decisions", "session-A"),
+        _make_context("add_decisions"),
         _call_next_returning(ToolResult(structured_content=out_of_scope_write)),
     )
     # scope外への書き込みはwatermarkを進めない
-    assert _watermarks["session-A"]["decision_id"] == 0
+    assert _watermarks["caller-A"]["decision_id"] == 0
 
     # 別セッションBがscope内topicにdecisionを追加
     b_decision = add_decision("scope内の決定", "reason", topic_id=tid)
 
     result = await middleware.on_call_tool(
-        _make_context("get_topics", "session-A"),
+        _make_context("get_topics"),
         _call_next_returning(_noop_tool_result()),
     )
     assert result.structured_content["delta"]["new_decisions"] == [
         {"id": b_decision["decision_id"], "title": "scope内の決定"}
     ]
+
+
+@pytest.mark.asyncio
+async def test_same_launcher_identity_shares_watermark_across_reconnect(scope, monkeypatch):
+    """get_caller_session_id()が同じ値を返す限り（起動器の恒久識別子が同一で
+    MCP接続が張り直された場合を含む）、watermarkは1つのエントリを共有する。
+    """
+    tid, aid = scope
+    middleware = DeltaNotificationMiddleware()
+
+    # 1本目の接続でcheck_in
+    _set_caller(monkeypatch, "launcher-X")
+    checkin_result = check_in(aid)
+    await middleware.on_call_tool(
+        _make_context("check_in"),
+        _call_next_returning(ToolResult(structured_content=checkin_result)),
+    )
+    assert list(_watermarks.keys()) == ["launcher-X"]
+
+    # 接続が張り直されても起動器識別子が同じなら同じキーに解決される想定
+    b_decision = add_decision("再接続後に増えた決定", "reason", topic_id=tid)
+    _set_caller(monkeypatch, "launcher-X")
+    result = await middleware.on_call_tool(
+        _make_context("get_topics"),
+        _call_next_returning(_noop_tool_result()),
+    )
+
+    # 別キーが増えていない（分裂していない）ことと、1本目のbaselineに基づいて
+    # deltaが検出されたことの両方を確認する
+    assert list(_watermarks.keys()) == ["launcher-X"]
+    assert result.structured_content["delta"]["new_decisions"] == [
+        {"id": b_decision["decision_id"], "title": "再接続後に増えた決定"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_different_ephemeral_identities_do_not_share_watermark(scope, monkeypatch):
+    """起動器識別子が無くephemeral接続識別子だけの場合、値が異なれば別キーとなり、
+    互いのbaseline/deltaに影響しない。
+    """
+    tid, aid = scope
+    middleware = DeltaNotificationMiddleware()
+
+    _set_caller(monkeypatch, "conn-1")
+    checkin_result = check_in(aid)
+    await middleware.on_call_tool(
+        _make_context("check_in"),
+        _call_next_returning(ToolResult(structured_content=checkin_result)),
+    )
+
+    add_decision("conn-1のcheck_in後に増えた決定", "reason", topic_id=tid)
+
+    # 別接続（別ephemeral ID）はbaselineを持たないため、同じ差分があっても通知されない
+    _set_caller(monkeypatch, "conn-2")
+    result = await middleware.on_call_tool(
+        _make_context("get_topics"),
+        _call_next_returning(_noop_tool_result()),
+    )
+    assert len(result.content) == 1
+    assert "delta" not in (result.structured_content or {})
+    assert "conn-2" not in _watermarks
+
+    # conn-1のwatermarkはconn-2の呼び出しで汚染されていない
+    assert _watermarks["conn-1"]["decision_id"] == 0
+
+
+@pytest.mark.asyncio
+async def test_no_identity_resolved_skips_notification_and_does_not_touch_watermarks(scope, monkeypatch):
+    """起動器識別子・ephemeral接続識別子のどちらもget_caller_session_id()が
+    解決できない(None)場合、共有フォールバックキーへの相乗りはせず、通知も
+    watermarkの読み書きも一切行わない（他セッションのwatermarkも汚さない）。
+    """
+    tid, aid = scope
+    middleware = DeltaNotificationMiddleware()
+
+    # 他セッションが先にcheck_inしている状態を作る
+    _set_caller(monkeypatch, "caller-A")
+    checkin_result = check_in(aid)
+    await middleware.on_call_tool(
+        _make_context("check_in"),
+        _call_next_returning(ToolResult(structured_content=checkin_result)),
+    )
+    snapshot_before = dict(_watermarks["caller-A"])
+
+    # 識別子が一切解決できない呼び出し（check_inでもbaselineを記録しない）。
+    # 中身の検証は次のget_topics呼び出し側で行う（call_nextの結果がそのまま
+    # 返ることを見れば十分で、ここではwatermarkが増えないことだけ確認する）。
+    _set_caller(monkeypatch, None)
+    checkin_result_unresolved = check_in(aid)
+    await middleware.on_call_tool(
+        _make_context("check_in"),
+        _call_next_returning(ToolResult(structured_content=checkin_result_unresolved)),
+    )
+    assert set(_watermarks.keys()) == {"caller-A"}
+
+    # scope内にdecisionを追加してから、識別子不明のまま別ツールを呼んでも通知されない
+    add_decision("識別子不明呼び出し後の決定", "reason", topic_id=tid)
+    result2 = await middleware.on_call_tool(
+        _make_context("get_topics"),
+        _call_next_returning(_noop_tool_result()),
+    )
+    assert len(result2.content) == 1  # 通知が注入されず、call_nextの結果のまま
+    assert "delta" not in (result2.structured_content or {})
+
+    # 他セッション（caller-A）のwatermarkは変化していない
+    assert set(_watermarks.keys()) == {"caller-A"}
+    assert _watermarks["caller-A"] == snapshot_before
