@@ -97,7 +97,7 @@ description: 一般化ルール（エージェントの今後の振る舞いを�
 | habits intelligently層 | タイトルのみ投影、全文はon-demand | 低（pull。引かれない実測あり） | ツールで即時 | 弱い行儀 |
 | tag-notes | タグに触れるツール呼び出し時（セッション内初回のみ） | 高（push契機付き） | 全文置換で即時 | 全型 |
 | pin | pin元へのcheck_inのたび毎回、指す先の本文ごと | 高（push契機付き） | ツールで即時 | 全型（既存エンティティを指す） |
-| 判例decision | search / pull_precedents / add_ask時の類似判例同梱 | 中（pull。add_ask同梱は強制発火点） | supersedeで置換 | 条件付き判断基準（定型節の書式は docs/precedent-format.md） |
+| 判例decision | search / pull_precedents / add_ask時の類似判例同梱 | 中（pull。add_ask同梱は強制発火点） | supersedeで置換 | 条件付き判断基準（定型節の書式は本スキル同梱の `references/precedent-format.md`） |
 | skill | そのskillの発動場面 | 中（発動条件の記述精度に従属） | PR+デプロイ | 手順 |
 | ツールdocstring | ツール呼び出しの瞬間 | 高（push。契機が最も鋭い） | PR+デプロイ | 短文の規範・判断基準 |
 | server instructions | MCP接続中の全セッションに常時 | 最高（push常時） | PR+デプロイ | 無条件規範の要約 |
