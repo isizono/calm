@@ -90,7 +90,8 @@ class TestGetLogsArchivedTags:
 
         topic = add_topic(title="LogsActiveTopic", description="Desc", tags=["domain:main-active-log"])
         topic_id = topic["topic_id"]
-        add_logs([{"topic_id": topic_id, "content": "content", "tags": ["domain:main-active-log"]}])
+        add_result = add_logs([{"topic_id": topic_id, "content": "content", "tags": ["domain:main-active-log"]}])
+        assert_no_write_errors(add_result)
 
         result = get_logs("topic", topic_id)
         assert "error" not in result
@@ -179,10 +180,11 @@ class TestPullPrecedentsArchivedTags:
 
         topic = add_topic(title="PrecedentArchivedTopic", description="desc", tags=["domain:main-legacy-prec"])
         topic_id = topic["topic_id"]
-        add_decision(
+        add_result = add_decision(
             decision="precedent decision", reason="reason",
             topic_id=topic_id, tags=["domain:main-legacy-prec"],
         )
+        assert_no_write_errors(add_result)
         _archive("domain:main-legacy-prec")
         monkeypatch.setattr(pps, "encode_query", lambda context: None)
 
@@ -201,10 +203,11 @@ class TestPullPrecedentsArchivedTags:
 
         topic = add_topic(title="PrecedentActiveTopic", description="desc", tags=["domain:main-active-prec"])
         topic_id = topic["topic_id"]
-        add_decision(
+        add_result = add_decision(
             decision="active decision", reason="reason",
             topic_id=topic_id, tags=["domain:main-active-prec"],
         )
+        assert_no_write_errors(add_result)
         monkeypatch.setattr(pps, "encode_query", lambda context: None)
 
         result = pull_precedents("何らかの論点についての文脈", topic_ids=[topic_id])
@@ -314,12 +317,13 @@ class TestSearchArchivedTagsSummary:
             title="SearchSummaryArchivedTopic", description="desc",
             tags=["domain:main-search-summary-legacy"],
         )
-        add_decision(
+        add_result = add_decision(
             decision="SearchSummaryUniqueKeyword",
             reason="検索トップレベル集約テスト用",
             topic_id=topic["topic_id"],
             tags=["domain:main-search-summary-legacy"],
         )
+        assert_no_write_errors(add_result)
         _archive("domain:main-search-summary-legacy")
 
         result = search(keyword="SearchSummaryUniqueKeyword")
@@ -339,12 +343,13 @@ class TestSearchArchivedTagsSummary:
             title="SearchSummaryActiveTopic", description="desc",
             tags=["domain:main-search-summary-active"],
         )
-        add_decision(
+        add_result = add_decision(
             decision="SearchSummaryActiveUniqueKeyword",
             reason="検索トップレベル集約テスト用（非archived）",
             topic_id=topic["topic_id"],
             tags=["domain:main-search-summary-active"],
         )
+        assert_no_write_errors(add_result)
 
         result = search(keyword="SearchSummaryActiveUniqueKeyword")
         assert "error" not in result
