@@ -77,7 +77,12 @@ assert all(
     for i in range(len(ADAPTIVE_RRF_THRESHOLDS) - 1)
 ), "ADAPTIVE_RRF_THRESHOLDS must be sorted in ascending order of threshold"
 
-from src.config import ARCHIVED_DEMOTION_FACTOR, RECENCY_DECAY_FLOOR, RECENCY_DECAY_RATE
+from src.config import (
+    ARCHIVED_DEMOTION_FACTOR,
+    RECENCY_DECAY_FLOOR,
+    RECENCY_DECAY_FLOOR_DECISION_LIVE,
+    RECENCY_DECAY_RATE,
+)
 
 # Query Expansion パラメータ
 QE_DISTANCE_THRESHOLD = 0.3   # コサイン距離。これ未満のタグを拡張候補とする
@@ -1293,8 +1298,11 @@ def tag_like_retrieve(ctx: SearchContext, conn: sqlite3.Connection) -> list[dict
 def _apply_recency_boost(results: list[dict], now: datetime | None = None) -> None:
     """RRFスコアにrecency boost（指数減衰）を適用する（in-place）。
 
-    recency_factor = max(exp(-age_days * RECENCY_DECAY_RATE), RECENCY_DECAY_FLOOR)
+    recency_factor = max(exp(-age_days * RECENCY_DECAY_RATE), floor)
     を score_breakdown.rrf_normalized に乗算して final_score を確定する。
+    floorは既定でRECENCY_DECAY_FLOORだが、supersedeされていないdecision（現役の
+    判例）だけはRECENCY_DECAY_FLOOR_DECISION_LIVEを使う。supersede済みdecisionと
+    他の型は既定floorのまま。
     各結果に以下を付与する:
     - score_breakdown.recency_factor: 適用された減衰係数（created_at取得不可時は1.0）
     - final_score: rrf_normalized * recency_factor
@@ -1319,6 +1327,16 @@ def _apply_recency_boost(results: list[dict], now: datetime | None = None) -> No
         bd.setdefault("rrf_normalized", item.get("score", 0.0))
         bd.setdefault("recency_factor", 1.0)
 
+    # decisionはsupersede状態でfloorを分けるため、対象idのsuperseded_byを先に引く
+    decision_ids = [item["id"] for item in results if item["type"] == "decision"]
+    superseded_by_map: dict[int, Optional[int]] = {}
+    if decision_ids:
+        conn = get_connection()
+        try:
+            superseded_by_map = get_superseded_by_batch(conn, decision_ids)
+        finally:
+            conn.close()
+
     # typeごとにcreated_atをバッチ取得
     by_type: dict[str, list[dict]] = {}
     for item in results:
@@ -1340,7 +1358,11 @@ def _apply_recency_boost(results: list[dict], now: datetime | None = None) -> No
             if created_str:
                 created = datetime.fromisoformat(created_str).replace(tzinfo=timezone.utc)
                 age_days = max(0, (now - created).days)
-                recency_factor = max(math.exp(-age_days * RECENCY_DECAY_RATE), RECENCY_DECAY_FLOOR)
+                if type_name == "decision" and superseded_by_map.get(item["id"]) is None:
+                    floor = RECENCY_DECAY_FLOOR_DECISION_LIVE
+                else:
+                    floor = RECENCY_DECAY_FLOOR
+                recency_factor = max(math.exp(-age_days * RECENCY_DECAY_RATE), floor)
                 item["score_breakdown"]["recency_factor"] = recency_factor
 
     # final_score = rrf_normalized * recency_factor を確定
@@ -1828,8 +1850,9 @@ def _rerank(ctx: SearchContext, merged: list[dict]) -> list[dict]:
     """recency boost ステージ。score_breakdown.recency_factor / final_score を確定し、final_score 降順に再ソートする。
 
     ``ctx`` は他ステージとシグネチャを揃えるために受け取るが、現状の recency 減衰は
-    created_at と RECENCY_DECAY_RATE / RECENCY_DECAY_FLOOR のみで決まるため、本関数内では
-    ``ctx`` を参照しない。ctx 依存のブースト (domain 別重み付け等) を後段で追加する余地を
+    created_at と type/supersede 状態（RECENCY_DECAY_RATE / RECENCY_DECAY_FLOOR /
+    RECENCY_DECAY_FLOOR_DECISION_LIVE）のみで決まるため、本関数内では ``ctx`` を
+    参照しない。ctx 依存のブースト (domain 別重み付け等) を後段で追加する余地を
     残しておく。
     """
     _apply_recency_boost(merged)
