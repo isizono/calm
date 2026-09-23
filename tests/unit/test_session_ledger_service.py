@@ -84,7 +84,7 @@ class TestRegister:
         assert row["ended_reason"] is None
 
     def test_unresolvable_cli_identity_leaves_columns_null(self, temp_db, monkeypatch):
-        """会話識別子が解決できない場合、行の作成自体は失敗させずNULL埋めで進める(Edge case 1)。"""
+        """会話識別子が解決できない場合、行の作成自体は失敗させずNULL埋めで進める。"""
         monkeypatch.setattr(session_ledger_service, "resolve_cli_session", lambda sid: None)
         session_ledger_service.register(
             "s1", id_kind="bridge", harness=None, host="myhost", mode="interactive",
@@ -104,13 +104,23 @@ class TestRegister:
         session_ledger_service.register(
             "s1", id_kind="bridge", harness="claude_code", host="host-a", mode="interactive",
         )
-        first = _fetch_row("s1")
+        # last_heartbeat_at(CURRENT_TIMESTAMPは秒精度)が実際に更新されたことを
+        # 検証するため、いったん過去日時へ書き換えてから2回目のregisterを呼ぶ。
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE sessions SET last_heartbeat_at = '2000-01-01T00:00:00Z' WHERE session_id = 's1'"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
         session_ledger_service.register(
             "s1", id_kind="bridge", harness="claude_code", host="host-a", mode="interactive",
         )
         second = _fetch_row("s1")
         assert _row_count() == 1
-        assert first["last_heartbeat_at"] is not None
+        assert second["last_heartbeat_at"] != "2000-01-01T00:00:00Z"
         assert second["last_heartbeat_at"] is not None
 
     def test_generational_handover_closes_old_row_and_creates_new_one(self, temp_db, monkeypatch):
@@ -133,7 +143,7 @@ class TestRegister:
         assert new["cli_session_id"] == "cli-1"
 
     def test_ended_row_is_not_revived_by_late_heartbeat(self, temp_db, monkeypatch):
-        """supersededで閉じた旧行に遅延heartbeatが届いても復活させない(Edge case 5)。"""
+        """supersededで閉じた旧行に遅延heartbeatが届いても復活させない。"""
         monkeypatch.setattr(
             session_ledger_service, "resolve_cli_session",
             lambda sid: {"cli_session_id": "cli-1", "cli_pid": 111, "cwd": "/tmp"},
@@ -185,7 +195,7 @@ class TestRegister:
     def test_concurrent_registrations_with_same_cli_session_id_do_not_violate_unique_index(
         self, temp_db, monkeypatch
     ):
-        """トランザクション境界により、同時登録でも一意制約違反で書き込みが落ちない(Edge case 4)。"""
+        """トランザクション境界により、同時登録でも一意制約違反で書き込みが落ちない。"""
         monkeypatch.setattr(
             session_ledger_service, "resolve_cli_session",
             lambda sid: {"cli_session_id": "cli-1", "cli_pid": 111, "cwd": "/tmp"},

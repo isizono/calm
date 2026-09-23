@@ -41,11 +41,20 @@ def register(
     遅延heartbeat等)は、他行を閉じる処理そのものを行わない。行うと、既に
     死んでいるはずの旧世代からの遅延heartbeatが、同じcli_session_idを持つ
     現行世代の生存行を誤ってsupersededで閉じてしまう。
+
+    この判定に使うSELECTは書き込みと同一トランザクションでBEGIN IMMEDIATEに
+    より書き込みロックを先取りする。デフォルトのDEFERREDトランザクション
+    (sqlite3モジュールはSELECT単体ではBEGINを発行しない)のままだと、
+    SELECTと後続UPDATE/INSERTの間に別接続の書き込みが割り込みうる。割り込むと
+    「session_id自身が既にended済みか」の判定が古いスナップショットのまま
+    書き込みが実行され、他接続が新たに確立した現行世代の生存行を誤って
+    supersededで閉じてしまう(TOCTOU)。
     """
     entry = resolve_cli_session(session_id)
 
     conn = get_connection(load_vec=False)
     try:
+        conn.execute("BEGIN IMMEDIATE")
         existing = conn.execute(
             "SELECT cli_session_id, cli_pid, cwd, cli_resolve_status, ended_at "
             "FROM sessions WHERE session_id = ?",
