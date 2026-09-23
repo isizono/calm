@@ -22,7 +22,7 @@ last-synced-migration: 0077
 
 ## 1. ツール一覧
 
-全56ツール。カテゴリ別に一覧する。
+全59ツール。カテゴリ別に一覧する。
 
 ### 1.1 記録系（add系）
 
@@ -148,6 +148,16 @@ activityが目指す終わりを、真偽の付く条件の集合として表現
 | `update_goal` | 条件の追加・状態変更・担い手と束縛の変更、goalの一文の修正、判定済みgoalの差し戻しを行う |
 | `judge_goal` | goalの終了を明示的に判定して閉じる。紐づく未完了のactivityも同時に閉じる |
 | `get_goal` | 1つのgoalの全条件（充足済み含む）とid、紐づくactivityを読む（読み取り専用） |
+
+### 1.14 feedback系（躓きの知見を自分に配達する機構）
+
+Claudeが同じところで躓き続けるのを防ぐため、Claude自身が知見（フィードバックエントリ）を書き残し、発話・ツール失敗・ツール実行直前の3タイミングでhookが自分に配達する機構。CALMのDB内のエントリであり、ユーザーが設定するsettings/rules/habitsとは別の層（Claudeが自由に付け消し変更してよい）。
+
+| ツール | 概要 |
+| --- | --- |
+| `get_feedback_entries` | フィードバックエントリを引く。各エントリにnotes全件とread_mark（変更前に要求される印）を添える |
+| `write_feedback_entry` | フィードバックエントリを作る・直す・消す（create/update/delete）。update・delete・削除済み名前への復活はread_mark必須 |
+| `add_feedback_note` | フィードバックエントリに観測・経緯のノートを足す。read_mark不要、削除済みエントリにも足せる |
 
 ---
 
@@ -806,6 +816,46 @@ Claude Codeセッション間の「CLI表示名（例: `workspace-a2`）→人�
 **返り値**: `{goal_id_raw, handle, statement, label, progress, claude, next, last_verdict, conditions: [...全件...], activities: [...]}` | `{label: "undefined"|"not_needed", next?, reason?}`（activity_idを指定してgoalが無い場合）。
 **エラー**: `VALIDATION_ERROR`（3引数のちょうど1つを指定していない）、`NOT_FOUND`（指したものが無い）、`DATABASE_ERROR`。
 **動作**: 読み取り専用（check_inと違いactivityのstatusを変えない）。`conditions`は充足済みを含む全件を返す点がcheck_inのgoalブロックと異なる。
+
+### 2.54 get_feedback_entries
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| name | string | no | null | 完全一致で1件に絞る |
+| query | string | no | null | body/refへの部分一致検索 |
+| include_deleted | bool | no | false | trueで削除済み（`deleted_at IS NOT NULL`）も含める |
+
+**返り値**: `{ok: true, entries: [{id, name, body, ref, strength, timing, condition, delivered_count, overridden_count, deleted_at, created_at, updated_at, notes: [{kind, body, created_at}, ...], read_mark: int}, ...]}`。
+**動作**: 読み取り専用。`read_mark`は`MAX(feedback_notes.id)`（ノートが無ければ0）。write_feedback_entryのupdate/delete、削除済み名前へのcreate（復活）はここで取得したread_markを要求する。
+
+### 2.55 write_feedback_entry
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| name | string | yes | - | 英小文字・数字・ハイフンのみ |
+| action | string | yes | - | `create` \| `update` \| `delete` |
+| body | string | create/updateで実質必須 | null | エントリ本文（100字以内） |
+| ref | string | no | null | 参照（500字以内） |
+| strength | string | create/updateで実質必須 | null | `notify`（知らせる） \| `block`（止める。timing='pre_tool'必須） |
+| timing | string | create/updateで実質必須 | null | `utterance`（発話時） \| `tool_fail`（ツール失敗時） \| `pre_tool`（実行直前） |
+| condition | dict \| string | no | null | `{"tool": str\|null, "all": [{"field","op":"regex"\|"len_gt","value"}, ...]}`（all は0〜3要素。dictまたはJSON文字列） |
+| read_mark | int | update/delete/復活で必須 | null | get_feedback_entriesで取得した最新値 |
+
+**返り値**: 成功時 `{ok: true, entry: {...}}`（get_feedback_entriesの1件と同形）。
+**エラー**: `{ok: false, error: {code, message, fix}}`。codeは`VALIDATION_ERROR`（形式違反、strength/timingの不整合、条件JSON不正、block+tool=null+all=[]等）、`NOT_FOUND`（update/deleteの対象が未作成または削除済み）、`CONFLICT`（read_markが古い）、`DUPLICATE`（createで既に使われている名前）、`DATABASE_ERROR`。
+**動作**: create/updateはbody/strength/timing/conditionを全て渡す全置き換え（部分更新ではない）。削除済み名前へのcreateは復活として扱い、read_markを要求する（骨格「変更前に必ずノートが読まれる」を仕組みで保証するため）。復活時はdeleted_atをクリアして新しい内容で上書きし、notes・delivered_count・overridden_countは引き継ぐ。deleteは`deleted_at`をセットするのみ（物理削除しない、notesは残す）。書き込みはBEGIN IMMEDIATEの1トランザクション。
+
+### 2.56 add_feedback_note
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| name | string | yes | - | 対象エントリの名前 |
+| kind | string | yes | - | `stumble`（踏んだ・躓いた事実） \| `note`（それ以外の経緯） |
+| body | string | yes | - | ノート本文（500字以内） |
+
+**返り値**: 成功時 `{ok: true, note: {kind, body, created_at}, read_mark: int}`。
+**エラー**: `{ok: false, error: {code, message, fix}}`。codeは`VALIDATION_ERROR`（kind不正・body空/超過）、`NOT_FOUND`（nameのエントリが存在しない）、`DATABASE_ERROR`。
+**動作**: read_mark引数は取らない（いつでも書ける）。削除済みエントリにも足せる（観測記録は削除後も続けられる）。`feedback_notes`は追記専用（UPDATE/DELETEはDBトリガーで拒否）。
 
 ---
 

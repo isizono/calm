@@ -89,6 +89,9 @@ TOOL_TAGS: dict[str, str] = {
     "unsubscribe_ask": "ask",
     "get_sessions": "session",
     "set_session_alias": "session",
+    "get_feedback_entries": "feedback",
+    "write_feedback_entry": "feedback",
+    "add_feedback_note": "feedback",
 }
 
 TAG_DESCRIPTIONS: dict[str, str] = {
@@ -109,6 +112,7 @@ TAG_DESCRIPTIONS: dict[str, str] = {
     "ask": "人間の判断待ちの問いの記録・回答",
     "session": "並行セッションの別名管理",
     "goal": "activityの終了条件（goal）の作成・更新・判定・取得",
+    "feedback": "フィードバックエントリの記録・取得・ノート追加",
     "misc": "設定取得・ユーティリティ",
 }
 

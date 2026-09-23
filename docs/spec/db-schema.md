@@ -2,8 +2,8 @@
 watch-tags: domain:calm, domain:cc-memory
 watch-direction: true
 watch-migrations: true
-last-synced: 2026-09-21
-last-synced-migration: 0077
+last-synced: 2026-09-23
+last-synced-migration: 0079
 -->
 
 # CALM DBスキーマ v0
@@ -606,6 +606,76 @@ activityとgoalの紐づけ、または不要印（このactivityには終了条
 
 カラム一覧・インデックス: `db-schema-tables.md` の `sessions` 節参照。
 
+### 3.32 feedback_entries
+
+フィードバック機構（Claudeが躓きを踏まえて自分に知見を配達する仕組み）のエントリ本体。名前（`name`、英小文字・数字・ハイフンのみでUNIQUE）で引く。
+
+補足:
+- `strength`（notify/block）と`timing`（utterance/tool_fail/pre_tool）はCHECKで双方向対応させる（`strength='block'`は必ず`timing='pre_tool'`）。block強度は実行直前ブロック以外に配達経路を持たないため
+- `condition_json`は`{"tool": str|null, "all": [{"field","op","value"}, ...]}`形状のJSON文字列。評価規則（フィールドの予約名・ドットパス解決・正規表現/長さ比較）はDB制約では持たず`src/services/feedback_rules.py`で検証・評価する
+- `deleted_at`は論理削除。物理削除しないため`feedback_notes`・カウンタ（delivered_count/overridden_count）は削除後も保持される
+- `read_mark`（変更前に必ず最新ノートを読ませる仕組み）はDBカラムではなく、`get_feedback_entries`が返す`MAX(feedback_notes.id)`をアプリ層で都度計算する形で実現している
+
+関連 migration: 0079_add_feedback_entries
+
+カラム一覧・インデックス: `db-schema-tables.md` の `feedback_entries` 節参照。
+
+### 3.33 feedback_notes
+
+エントリごとの追記専用ノート（躓きの観測・経緯）。UPDATE/DELETEはトリガー（`trg_feedback_notes_no_update`/`trg_feedback_notes_no_delete`）で拒否する。
+
+補足:
+- `entry_id`はFKのみでON DELETE CASCADEは無い（エントリは論理削除のため、ノートは残す）
+- `kind`はstumble（躓いた事実）/note（それ以外の経緯）の2値
+
+関連 migration: 0079_add_feedback_entries
+
+カラム一覧・インデックス: `db-schema-tables.md` の `feedback_notes` 節参照。
+
+### 3.34 feedback_holds
+
+strength='block'のエントリに一度当たったあとの1回止め保留。session_id×entry_idにつき最新1件のみを持つ（PRIMARY KEYそのもの）。
+
+補足:
+- `fingerprint`はtool_inputをキー順ソートJSON化したもののsha256。次回同じ指紋の呼び出しが来たらブロックせず押し切りを許す
+- 別の指紋で再度当たった場合はアプリ層でUPSERTし、古い指紋を新しい指紋で置き換える（複数指紋の同時保持はしない）
+- セッション終了時の掃除は行わない。session_idでスコープされるため、古い保留行は将来のどのセッションの呼び出しとも一致せず実害が無い
+
+関連 migration: 0079_add_feedback_entries
+
+カラム一覧・インデックス: `db-schema-tables.md` の `feedback_holds` 節参照。
+
+### 3.35 feedback_turn_marks
+
+「同じエントリは区切り（prompt_id）ごとに1回だけ配達する」ための重複配達防止マーカー。
+
+補足:
+- `prompt_id`はhook入力に含まれない場合を想定し`NOT NULL DEFAULT ''`。含まれない場合、同一session_id・entry_idの組は常に`prompt_id=''`で一致するため、そのエントリは実質セッションを通じて1回しか配達されなくなる（区切りごとに1回、より強い抑制に縮退する）
+
+関連 migration: 0079_add_feedback_entries
+
+カラム一覧・インデックス: `db-schema-tables.md` の `feedback_turn_marks` 節参照。
+
+### 3.36 feedback_bootstrap_seen
+
+「ツール失敗で当たるエントリが1件も無かった」ときの、セッション1回だけのリマインドmarker。
+
+関連 migration: 0079_add_feedback_entries
+
+カラム一覧・インデックス: `db-schema-tables.md` の `feedback_bootstrap_seen` 節参照。
+
+### 3.37 feedback_switch
+
+フィードバック機構全体の配達停止スイッチ。id=1固定の単一行。
+
+補足:
+- `mode`はoff/onの2値（器が持っていたobserve状態は採用していない。最小形には採点や様子見期間の概念が無いため）
+- DB接続失敗・本テーブル未作成・mode値が不正のいずれも、呼び出し側はoff相当としてfail-openする
+
+関連 migration: 0079_add_feedback_entries
+
+カラム一覧・インデックス: `db-schema-tables.md` の `feedback_switch` 節参照。
+
 ---
 
 ## 4. 関係メカニズム
@@ -753,6 +823,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0074_drop_relay_outbox | relay_outbox テーブル削除（relay統合機能の撤去に伴う。0056で新設、代替スキーマへの移行なし） |
 | 0077_add_goals | goals / goal_conditions / goal_activities テーブル新設（goal機構、§3.28-3.30）+ activities に closed_at・closed_by・closed_reason（NULL許容）を追加 |
 | 0078_add_sessions | sessions テーブル新設（セッション台帳、§3.31） |
+| 0079_add_feedback_entries | feedback_entries / feedback_notes / feedback_holds / feedback_turn_marks / feedback_bootstrap_seen / feedback_switch テーブル新設（フィードバック機構、§3.32-3.37） |
 | 0080_drop_activities_orch_managed | activities.orch_managed カラムを削除（0045で追加した構造的属性の撤去。運用体系解体後も複数箇所で参照が残り誤読を誘発していたため） |
 
 重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。

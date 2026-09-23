@@ -39,6 +39,15 @@
             "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/user_prompt_submit_hook.py"
           }
         ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/feedback_hook.py"
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -48,6 +57,26 @@
           {
             "type": "command",
             "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/preblock_hook.py"
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/feedback_hook.py"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/feedback_hook.py"
           }
         ]
       }
