@@ -2,8 +2,8 @@
 watch-tags: domain:calm, domain:cc-memory
 watch-direction: true
 watch-migrations: false
-last-synced: 2026-09-10
-last-synced-migration: 0048
+last-synced: 2026-09-23
+last-synced-migration: 0077
 -->
 
 # CALM MCPツール仕様書 v0
@@ -190,11 +190,10 @@ activityが目指す終わりを、真偽の付く条件の集合として表現
 - `tags`: 省略時はtopicのタグを継承。内容を表すタグを積極的に追加することが望ましい。namespace規約はdocs/architecture/invariants.mdの「タグnamespace」節を参照。
 - `propagate_to`: `{type: "habit" | "tag_note", content: string, tag?: string}`。tagはtype="tag_note"のとき必須。type="tag_note"は教訓・注意点のみに使い、仕様・手順の全文転記には使わない。
 
-**返り値**: `{created: [...], errors: [...], propagation_failed?: [...], hints?: [string]}`。
+**返り値**: `{created: [...], errors: [...], propagation_failed?: [...]}`。
 - `created`の各要素には`related_decisions`（同topic内の類似decision上位3件、各`{id, title, distance}`。embeddingサーバー未起動時は空配列）が付く。既存decisionとの矛盾・重複に気づくための導線。
 - タグに`layer:direction`を含む要素には`existing_direction_decisions`（同domainの有効な方向性decision全件、自身除外・非ランク）と`direction_note`（supersede/併存の判断を促す文言）も付く。
 - `reason`に定型節があれば`precedent`（`{rejected_alternatives: 件数, scope: bool, verification_anchors: [文字列, ...], adjacent_check: [文字列, ...], warnings?: [文字列, ...]}`）をecho。書式ゆれ・空節・アンカー日付欠落等、または`intent:design`タグ付き要素で「隣接確認:」節が無い場合は`precedent_warnings`（文字列のリスト）も付く。いずれもsoft validationであり、decision作成自体は拒否しない。
-- `hints`はharness_serviceからの推奨行動。
 
 **propagation_failed**: propagate_toの伝搬が1件以上失敗した場合のみ付く配列。各要素は `{index, decision_id, type, tag?, message}`。decision自体の作成成否には影響しない（decisionは常に成功として作成される）ため、この配列を見ないと伝搬失敗（例: tag_note伝搬先タグの文字数上限超過）に気づけない。
 **関連**: `add_habit` / `update_tag(notes=...)` と連動。
@@ -407,20 +406,22 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
 | material_id | int | yes | - | 対象ID |
-| content | string | no | null | 全体置換 |
+| content | string | no | null | mode次第で全体置換/先頭追記/末尾追記 |
 | title | string | no | null | 新しいタイトル |
 | tags | list[string] | no | null | 全置換 |
 | source | string | no | null | 新しい出自 |
+| mode | string | no | "overwrite" | `overwrite`/`prepend`/`append`。contentの結合動作。`overwrite`=上書き（既定）、`prepend`=新content+区切り+既存content、`append`=既存content+区切り+新content。区切りは`\n\n`。既存contentが空文字列ならoverwrite相当。contentを指定しない場合（None）はmodeは無視される |
 
-**制約**: 最低1つは指定する。contentは部分更新やappendではなく全体置換。
+**制約**: content/title/tags/sourceの少なくとも1つは指定する。
 
 ### 2.16 get_material
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
 | material_id | int | yes | - | 資材のID |
+| include_retracted | bool | no | false | trueで取り消し済みの資材も取得できる |
 
-**返り値**: 資材の全文。
+**返り値**: 資材の全文（material_id, title, content, source, tags, created_at）。flavor共通引数（後述）に対応する。
 
 ### 2.17 export_material
 
@@ -871,7 +872,7 @@ CALMが扱うエンティティの内部表現。詳細スキーマは `docs/spe
 ## 4. ガード・前提
 
 ### 4.1 check-in 先行が前提のツール
-- `add_decisions` の hints はharness_service経由で「整合性確認」「pin見直し」などを示唆する。直前にcheck-inしていない場合、文脈不足のためhintsを過信しない方がよい。
+- `check_in` の hints は `hint_service` 経由で生成される（recompose_bootstrap/recompose_delta/logs_sparse/direction_overflow/activity_cleanup/notes_over_budget等、詳細は`docs/architecture/components.md`の該当節を参照）。`check_in` を経由せず `update_activity` 等を直接呼ぶ運用では、これらのhintsによる示唆（整理・確認の推奨）を受け取れない。
 - `check_in` を経由しないアクティビティへの操作（`update_activity` 等）は可能だが、その場合 tag_notes の自動注入は行われない。habitsのうち`trigger_mode='always'`のものは`~/.claude/rules`配下の自動生成ファイル経由でセッション起動時に配信されるため、check_inの有無に関係なく反映される（`'intelligently'`はタイトルのみのマニフェスト表示にとどまる）。
 
 ### 4.2 取り消し済みエンティティの扱い

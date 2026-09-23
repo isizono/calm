@@ -2,8 +2,8 @@
 watch-tags: domain:calm, domain:cc-memory
 watch-direction: true
 watch-migrations: false
-last-synced: 2026-07-07
-last-synced-migration: 0048
+last-synced: 2026-09-23
+last-synced-migration: 0077
 -->
 
 # CALM コンポーネント構成図 v0
@@ -38,10 +38,10 @@ graph TB
     end
 
     subgraph Flow["フロー層 / 働き方"]
-        Hooks["hooks/<br/>SessionStart/Stop/<br/>UserPromptSubmit/PreToolUse"]
+        Hooks["hooks/<br/>SessionStart/Stop/UserPromptSubmit/<br/>PreToolUse/PostToolUse/MessageDisplay"]
         Skills["skills/<br/>check-in/sync-memory/<br/>recompose 他"]
         CheckinService["checkin_service"]
-        HarnessService["harness_service<br/>hint/recommendation"]
+        HintService["hint_service<br/>hint/recommendation"]
         HookState["hooks/hook_state.py<br/>state files + events.jsonl"]
     end
 
@@ -121,6 +121,8 @@ graph TB
 | `relation_service` | relations（双方向関連の汎化） |
 | `habit_service` | habits（正はDB、`~/.claude/rules`配下の自動生成ファイルへ投影配信） |
 | `tag_service` | tags / tag_canonicals / tag_notes |
+| `ask_service` | asks（判断委譲。open→answered→promoted/dismissed、open→withdrawnの状態遷移） |
+| `goal_service` | goals / goal_conditions / goal_activities（activityの終了条件） |
 | `overview_service` | 4節の窓を集計する読み取り専用サービス（activities / asks横断） |
 
 ### 3.3 横断クエリ・読み出し
@@ -129,6 +131,27 @@ graph TB
 - `src/services/timeline_service.py`: 時系列ビュー（`get_timeline`）
 - `src/services/retract_service.py`: 論理削除と検索からの除外（NOT EXISTSによるretract遅延除外）
 - `src/services/tag_analysis_service.py`: タグ共起分析（`analyze_tags`）。tag-cleanupスキルから利用
+- `src/services/destabilization_service.py` / `src/services/supersede_service.py`: decision間の関係メカニズム（destabilizesエッジの解消・候補提示／supersedeチェーン）
+- `src/services/precedent_pull_service.py` / `src/services/precedent_cluster_service.py`: `pull_precedents`のtopic routingと本文展開
+- `src/services/budget_service.py`: precedent展開・tag notesの文字数予算の既定値集約
+- `src/services/signal_service.py`: signal_events（CALM自身の故障・使用感不満等の生観測データ）のCRUD
+- `src/services/session_registry_service.py`: セッション別名（CLI表示名↔人間可読別名）対応表の読み書き
+- `src/services/delta_service.py`: セッション横断の差分通知（既読位置管理）
+- `src/services/staleness_service.py`: ドキュメント・プラグインキャッシュの陳腐化検知（`session_start_hook`から利用）
+- `src/services/citation_renderer.py`（+ `citations_service.py` / `citations_pure.py`）: flavor引数（raw/internal/readable）に応じたcitationテンプレート・削除済み参照の展開
+- `src/services/direction_service.py`: `layer:direction`decisionの検出（`doc-sync-convention.md`のwatch-direction判定の実体）
+- `src/services/reask_detection_service.py`: `detect_reask_candidates`のtranscript抽出ロジック
+- `src/services/restart_service.py`: MCPサーバーの強制再起動（`calm:restart` skillから利用）
+- `src/services/backup_service.py`: DBスナップショットの作成・世代管理
+
+### 3.3b エクスポート・インポート基盤
+
+他インスタンスへの記録の受け渡し（`docs/spec/mcp-tools.md` §1.9）を担う。
+
+- `src/services/instance_service.py`: 自インスタンス識別子（`set_instance_identity`）の設定・複合キー発行の基盤
+- `src/services/export_candidate_service.py`: export候補の走査・提示（`collect_export_candidates`、read-only）
+- `src/services/export_bundle_service.py`: 確定候補からのバンドル書き出し（`export_bundle`、manifest.yaml + エンティティ別mdファイル）
+- `src/services/import_bundle_service.py`: バンドルの取り込み（`import_bundle`、dry_run衝突検知 / apply実書き込み）
 
 ### 3.4 埋め込み
 
@@ -152,19 +175,26 @@ graph TB
 
 ### 4.1 hooks/
 
-Claude Code harnessのhookシグナルを受けてプロセスとして起動する一連のスクリプト。settings.jsonからの登録は `hooks/hooks.json` 経由で管理される。
+Claude Code harnessのhookシグナルを受けてプロセスとして起動する一連のスクリプト。登録は `hooks/hooks.json` 経由で管理される。
 
-| hookファイル | 発火タイミング | 主な仕事 |
+| hookファイル | 発火タイミング（matcher） | 主な仕事 |
 |---|---|---|
-| `hooks/session_start_hook.py` | SessionStart | habits投影ファイルの鮮度検証+縮退フォールバック、アクティビティダッシュボード注入、鮮度警告 |
-| `hooks/user_prompt_submit_hook.py` | UserPromptSubmit | ターンカウンタ・record nudge発火判定 |
-| `hooks/stop_hook.py` | Stop | 終端でのフォローアップ提案 |
-| `hooks/heartbeat.py` | 定期 | プレゼンス維持・ハートビート送信 |
+| `hooks/hook_state.py`（`clear`サブコマンド） | SessionStart（`*`） | 前セッションの状態ファイルをクリア |
+| `hooks/session_start_hook.py` | SessionStart（`*`） | habits投影ファイルの鮮度検証+縮退フォールバック、アクティビティダッシュボード注入、鮮度警告 |
+| `hooks/sanitize_backfill_hook.py` | SessionStart（`*`） | 直近transcriptの差分backfill（生ID参照を`{{cite:...}}`へ変換） |
+| `hooks/user_prompt_submit_hook.py` | UserPromptSubmit（`*`） | 未消費nudge・ask通知の system-reminder 注入 |
+| `hooks/stop_hook.py` | Stop（`*`） | transcript差分抽出→events.jsonl追記、check-in判定、nudge発火判定、heartbeat更新 |
+| `hooks/preblock_hook.py` | PreToolUse（`*`） | tool_inputに含まれる内部ID表記のリテラルをblock（`deny`） |
+| `hooks/sanitize_tool_result_hook.py` | PostToolUse（`*`） | tool_resultの生ID参照を`{{cite:...}}`へ変換して返す |
+| `hooks/ask_answer_rewake_hook.py` | PostToolUse（`mcp__.*calm__add_ask`、`asyncRewake`） | `add_ask`直後にaskのstatus変化をポーリングし、回答されたらidleセッションを起こす |
+| `hooks/message_display_id_titles.py` | MessageDisplay（`*`） | assistant発話中の内部ID表記の直後にエンティティタイトルを差し込んで表示（表示のみ、transcript/contextは無加工） |
 
 共通基盤:
 
 - `hooks/hook_state.py`: 状態ファイル群（`block_count` / `transcript_offset` / `current_turn` / `checked_in_activity`）と events.jsonl の読み書きを一元化（`HookState` クラス）。永続化先は `~/.claude/.claude-code-memory/state/`
 - `hooks/hook_transcript.py`: transcriptの差分抽出
+- `hooks/heartbeat.py`: `stop_hook`から呼ばれるheartbeat更新の隔離モジュール（独立したhookイベントではない）
+- `hooks/readable_id_format.py` / `hooks/signal_capture.py` / `hooks/citation_event_log.py` / `hooks/ask_notify_section.py`: 上記hookエントリポイントから共通利用されるヘルパーモジュール
 
 ### 4.2 skills/
 
@@ -192,23 +222,30 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 - `skills/audit`: 過去decisionの正当性検証・矛盾解消
 - `skills/memory-export`: 他インスタンスへ渡すexportバンドルの作成ガイド
 - `skills/memory-import`: 他インスタンスのexportバンドルの衝突裁定・取り込みガイド
+- `skills/ask-compose` / `skills/ask-answer` / `skills/ask-distill` / `skills/ask-watch`: 判断委譲（asks）の起票構成・回答・同型メタask起票・滞留監視
+- `skills/project-setup` / `skills/coding-project-setup`: 新規domainの知識フレームセットアップ
+- `skills/restart`: MCPサーバーの強制再起動
+- `skills/rule-placement`: 一般化ルールの配信経路（habits/tag-notes/rules等）判定
 
 
 ### 4.3 フロー層 service
 
 - `src/services/checkin_service.py`: check-inの本体実装。アクティビティに紐づく tag-notes・資材カタログ・pinned・関連decisions・recent logs を一括取得し、coverage と recompose hints を計算する (recompose hint は HintService 経由)
-- `src/services/hint_service.py`: hint一元化（`get_hints(scope, target_id) -> list[Hint]`）。recompose_bootstrap / recompose_delta / logs_sparse / follow_up_after_decision / record_missing を統一フォーマットで返す。delivery_hint で immediate (check_in 同期注入) と deferred (Stop hook → events.jsonl → UserPromptSubmit 注入) を分岐する
+- `src/services/hint_service.py`: hint一元化（`get_hints(scope, target_id) -> list[Hint]`）。recompose_bootstrap / recompose_delta / logs_sparse / direction_overflow / activity_cleanup / notes_over_budget を統一フォーマット（`Hint`型）で返す。follow_up_after_decision / record_missingはevents.jsonl状態が必要なため本module自体では判定せず、Stop hookが生成しつつtype名だけ本moduleに合わせて統一する。delivery_hint で immediate (check_in 同期注入) と deferred (Stop hook → events.jsonl → UserPromptSubmit 注入) を分岐する
 - `src/services/habit_service.py`: habitのCRUD。書き込み後は`habit_projection`経由で`~/.claude/rules`配下の自動生成ファイルへ投影する。`trigger_mode='always'`は全文、`'intelligently'`はタイトルのみのマニフェストとして投影される
 
 ### 4.4 hookシグナルの流れ
 
 ```
-SessionStart        → session_start_hook → habits投影ファイルの鮮度検証 / アクティビティダッシュボード / 鮮度警告
-UserPromptSubmit    → user_prompt_submit_hook → 未消費 nudge の system-reminder 注入
-Stop                → stop_hook → record_missing / follow_up_after_decision / logs_sparse nudge を events.jsonl に追記
+SessionStart        → hook_state clear / session_start_hook / sanitize_backfill_hook
+                       → 状態クリア / アクティビティダッシュボード・鮮度警告注入 / transcript差分backfill
+PreToolUse           → preblock_hook → 内部ID表記のtool_inputを検出しblock
+PostToolUse          → sanitize_tool_result_hook（全ツール）→ tool_resultの生ID参照をcitationテンプレへ変換
+                       → ask_answer_rewake_hook（add_ask限定、asyncRewake）→ 回答待ちポーリング→idle起床
+Stop                 → stop_hook → record_missing / follow_up_after_decision / logs_sparse nudge を events.jsonl に追記
+UserPromptSubmit     → user_prompt_submit_hook → 未消費 nudge・ask通知の system-reminder 注入
+MessageDisplay       → message_display_id_titles → 内部ID表記の直後にエンティティタイトルを表示注入
 ```
-
-PreToolUse は `hooks/hooks.json` に全ツール対象（`*` matcher）の preblock hook が登録済み。PostToolUse は廃止された (旧 remind_activity_on_decision.sh は HintService の follow_up_after_decision で代替)。
 
 ### 4.5 既知の課題
 
@@ -233,7 +270,11 @@ v1通信系（`ow_service` / `src/relay/`のvendoringされたSSE+SQLite中継�
 - `src/main.py`: FastMCPサーバーエントリ（HTTPモード起動の本体）
 - `src/http_config.py`: HTTPサーバー設定
 - `src/infra/session_manager.py`: HTTPセッションカウントと自動停止ウォッチドッグ。セッション数0で猶予期間後にshutdown
+- `src/infra/staleness_watchdog.py`: セッション数と無関係に、起動時ロードコードとディスク上の内容の乖離（プラグインアップデート）を検知して自死する経路
 - `src/infra/lock_file.py`: プロセス間ロック
+- `src/infra/cli_session.py`: Claude Code CLIプロセスが公開するsession fileの読み取り専用アクセサ（セッション別名解決の基盤）
+- `src/infra/git_repo.py`: git worktree配下からmain repoルートを解決する共有ユーティリティ（`launcher.py` / `restart_service.py`が利用）
+- `src/env_compat.py`: 環境変数の新旧名（`CALM_*` / 旧`CCM_*`・`CC_MEMORY_*`）フォールバック解決
 
 ### 6.2 リモート公開
 
@@ -302,7 +343,7 @@ graph LR
 3. **circular import懸念**: `src/main.py` から services を読み、 services 同士の相互参照や、tag_serviceとtag_analysis_serviceの分担境界など整理余地がある（具体特定は未実施）
 4. **プロトコル層が薄い**: 独立した型/スキーマ定義モジュールがなく、エンティティ型はDBスキーマと各serviceの返却dictで表現される。型レベル規律が弱い
 5. **retract連鎖の未完**: `retract_service` が論理削除を立てるが、search_index物理クリーンアップなし、material/topic/activityにretracted_at列なし、関連pin/relationの扱いが未統一（`docs/spec-v0.md` §2.2）
-6. **HintService単一窓口の不在**: nudge発火源（hooks/各種、harness_service、checkin_serviceのrecompose hints、tag_service経由のtag-notes）が並走しており、しきい値・状態管理がバラバラ
+6. **HintService単一窓口の不在**: nudge発火源（hooks/各種、`hint_service`、checkin_serviceのrecompose hints、tag_service経由のtag-notes）が並走しており、しきい値・状態管理がバラバラ。**[部分解消: 2026-09-23]** recompose系・logs_sparse系・direction_overflow系・activity_cleanup系・notes_over_budget系のhintは`hint_service`（`get_hints`/`get_hints_with_conn`）に統一済み。ただしfollow_up_after_decision/record_missingはevents.jsonl状態が必要なため引き続きStop hookが個別生成しており、nudge発火源の完全な一元化には至っていない
 7. **効果測定基盤の不在**: 検索のスコアリング・nudgeの効果・タグ付与の精度を測定する仕組みがない（`docs/spec-v0.md` §6 T-D）。search_telemetry導入が処方箋候補
 
 各課題の詳細・処方箋候補は5次元統合レポート本文（cc-memory material、要参照）と `docs/spec-v0.md` §6 横断テーマを参照のこと。
