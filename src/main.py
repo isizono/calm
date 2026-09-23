@@ -34,6 +34,7 @@ from src.services import (
     instance_service,
     overview_service,
     goal_service,
+    feedback_service,
 )
 from src.services.checkin_service import check_in as _check_in
 from src.services import session_ledger_service, session_registry_service
@@ -95,6 +96,10 @@ CALMが記録に振る内部の番号・記号は表記形式を問わず、発�
 ## Asks（判断委譲）
 
 askは離席中・セッション跨ぎ限定です。その場で答えられるなら聞いてdecision化します。発効は人間のメタask裁定のみです。
+
+## 躓いたら知見を残す
+
+同じところで躓いたら、write_feedback_entryで知見を書くか、既存エントリにadd_feedback_noteでノートを足してください。発話・ツール失敗・実行直前のタイミングで、後のセッションの自分に配達されます。
 
 ---
 
@@ -2796,6 +2801,98 @@ def set_session_alias(alias: str) -> dict:
     """
     caller_session_id = get_caller_session_id()
     return session_registry_service.set_alias(bridge_session_id=caller_session_id, alias=alias)
+
+
+@mcp.tool()
+def get_feedback_entries(
+    name: Optional[str] = None,
+    query: Optional[str] = None,
+    include_deleted: bool = False,
+) -> dict:
+    """Choose: 躓きを踏まえて自分に配達しているフィードバックエントリを読みたいとき。
+
+    write_feedback_entryでupdate/deleteする前には必ずこれを呼び、返ってきた
+    read_markを渡すこと(印が古いと拒否される)。
+
+    Args:
+        name: 完全一致で1件に絞る
+        query: body/refへの部分一致検索
+        include_deleted: Trueで削除済み(deleted_at IS NOT NULL)も含める
+
+    Returns:
+        {"ok": true, "entries": [{"id", "name", "body", "ref", "strength", "timing",
+         "condition", "delivered_count", "overridden_count", "deleted_at",
+         "created_at", "updated_at", "notes": [{"kind","body","created_at"}, ...],
+         "read_mark": int}, ...]}
+    """
+    return feedback_service.get_feedback_entries(name=name, query=query, include_deleted=include_deleted)
+
+
+@mcp.tool()
+def write_feedback_entry(
+    name: str,
+    action: Literal["create", "update", "delete"],
+    body: Optional[str] = None,
+    ref: Optional[str] = None,
+    strength: Optional[Literal["notify", "block"]] = None,
+    timing: Optional[Literal["utterance", "tool_fail", "pre_tool"]] = None,
+    condition: Optional[Union[dict, str]] = None,
+    read_mark: Optional[int] = None,
+) -> dict:
+    """Choose: フィードバックエントリを作る・直す・消すとき。
+
+    create/updateはbody/strength/timing/conditionを全て渡す(部分更新ではなく
+    全置き換え)。update・deleteと、削除済み名前へのcreate(復活)はread_mark
+    必須(get_feedback_entriesで取得した値をそのまま渡す)。名前が未使用の
+    通常のcreateだけread_mark不要。
+
+    Args:
+        name: 英小文字・数字・ハイフンのみ
+        action: "create" | "update" | "delete"
+        body: エントリ本文(100字以内)
+        ref: 参照(任意、500字以内)
+        strength: "notify"(知らせる) | "block"(止める、timing='pre_tool'必須)
+        timing: "utterance"(発話時) | "tool_fail"(ツール失敗時) | "pre_tool"(実行直前)
+        condition: {"tool": str|None, "all": [{"field","op":"regex"|"len_gt","value"}, ...]}
+            (all は0〜3要素、dictまたはJSON文字列)。timingごとのfield予約名は
+            get_feedback_entriesで既存エントリを見て確認すること
+        read_mark: update/delete/復活のときは対象エントリの最新read_mark必須
+
+    Returns:
+        成功時: {"ok": true, "entry": {...}}(get_feedback_entriesの1件と同形)
+        失敗時: {"ok": false, "error": {"code": "VALIDATION_ERROR"|"NOT_FOUND"
+            |"CONFLICT"|"DUPLICATE"|"DATABASE_ERROR", "message", "fix"}}
+    """
+    return feedback_service.write_feedback_entry(
+        name=name,
+        action=action,
+        body=body,
+        ref=ref,
+        strength=strength,
+        timing=timing,
+        condition=condition,
+        read_mark=read_mark,
+    )
+
+
+@mcp.tool()
+def add_feedback_note(name: str, kind: Literal["stumble", "note"], body: str) -> dict:
+    """Choose: フィードバックエントリに観測・経緯を書き足したいとき。
+
+    read_mark不要でいつでも書ける。削除済みエントリにも足せる(観測記録は
+    削除後も続けられる)。
+
+    Args:
+        name: 対象エントリの名前
+        kind: "stumble"(踏んだ・躓いた事実) | "note"(それ以外の経緯)
+        body: ノート本文(500字以内)
+
+    Returns:
+        成功時: {"ok": true, "note": {"kind","body","created_at"}, "read_mark": int}
+        失敗時: {"ok": false, "error": {"code": "VALIDATION_ERROR"|"NOT_FOUND"
+            |"DATABASE_ERROR", "message", "fix"}}
+    """
+    return feedback_service.add_feedback_note(name=name, kind=kind, body=body)
 
 
 # ヘルスチェックエンドポイント

@@ -122,6 +122,7 @@ SessionStart(3スクリプト)・Stop・UserPromptSubmit・MessageDisplayに加�
 | シグナル・計測 | `report_signal`, `get_signals`, `update_signal`, `detect_reask_candidates` | cc-memory自身への故障報告・矛盾検出・聞き返し候補検出等の運用計測 |
 | Ask（人間への判断委譲） | `add_ask`, `get_asks`, `answer_ask`, `triage_ask`, `withdraw_ask`, `unsubscribe_ask` | 離席中・セッション跨ぎの判断待ち問いの起票・取得・回答・振り分け・取り下げ・通知解除 |
 | インスタンス間連携 | `set_instance_identity`, `collect_export_candidates`, `export_bundle`, `import_bundle` | 自インスタンス識別子の設定、export候補の洗い出し、バンドルの書き出し、他インスタンスのバンドルの取り込み |
+| フィードバック | `get_feedback_entries`, `write_feedback_entry`, `add_feedback_note` | 発話・ツール失敗・実行直前に配達するフィードバックエントリの取得・作成/変更/削除・ノート追加 |
 | その他 | `get_config`, `roll_dice` | 設定値の取得、ダイスロール |
 
 ## スキル
