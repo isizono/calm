@@ -4,6 +4,7 @@ import logging
 import os
 import random
 import re
+import socket
 from datetime import datetime, timezone
 from pathlib import Path
 from fastmcp import FastMCP, Context
@@ -35,7 +36,7 @@ from src.services import (
     goal_service,
 )
 from src.services.checkin_service import check_in as _check_in
-from src.services import session_registry_service
+from src.services import session_ledger_service, session_registry_service
 from src.infra.session_identity import get_caller_session_id
 from src.services.tag_service import (
     search_tags as _search_tags,
@@ -2846,6 +2847,24 @@ async def session_register(request: Request) -> JSONResponse:
                 status_code=400,
             )
         is_new = mgr.register(session_id)
+        # セッション台帳への書き込みはベストエフォート。ここで例外を上げると
+        # mgr.register()自体は成功しているのに本エンドポイントが500になり、
+        # launcher側(ローカルモード)はこれを致命エラーとしてプロセス終了する。
+        # id_kindは常に'bridge'固定: このエンドポイントはlauncherが自分の
+        # session_id(UUID)を送る経路のみで呼ばれ、識別子が取れない
+        # ('ephemeral')状況は発生しない。
+        try:
+            body_harness = body.get("harness")
+            body_host = body.get("host")
+            session_ledger_service.register(
+                session_id,
+                id_kind="bridge",
+                harness=body_harness if isinstance(body_harness, str) else None,
+                host=body_host if isinstance(body_host, str) else socket.gethostname(),
+                mode="interactive",
+            )
+        except Exception:
+            logger.exception("session_ledger_service.register failed")
         return JSONResponse({
             "registered": is_new,
             "active_sessions": mgr.active_count,
@@ -2873,6 +2892,15 @@ async def session_unregister(request: Request) -> JSONResponse:
                 status_code=400,
             )
         removed = mgr.unregister(session_id)
+        # mgr.unregister()がTrueを返す経路はSessionManagerのon_session_removed
+        # コールバック(下のSessionManager()構築箇所)経由でmark_endedが既に走るが、
+        # サーバー再起動直後などmgr側にin-memory登録が無く(removed=False)
+        # コールバックが発火しないケースでも台帳は確実に閉じる。mark_endedは
+        # 冪等なので二重発火しても無害。
+        try:
+            session_ledger_service.mark_ended(session_id, "unregister")
+        except Exception:
+            logger.exception("session_ledger_service.mark_ended failed")
         return JSONResponse({
             "unregistered": removed,
             "active_sessions": mgr.active_count,
@@ -2949,7 +2977,6 @@ if __name__ == "__main__":
     init_database()
 
     if args.transport == "http":
-        import socket
         from src.infra.lock_file import acquire, release
         from src.infra.session_manager import SessionManager
 
@@ -2975,7 +3002,9 @@ if __name__ == "__main__":
             raise SystemExit(1)
 
         # セッションマネージャー初期化
-        _session_manager = SessionManager()
+        _session_manager = SessionManager(
+            on_session_removed=lambda sid, reason: session_ledger_service.mark_ended(sid, reason),
+        )
 
         def _shutdown_server():
             """ウォッチドッグから呼ばれるシャットダウンハンドラ"""
