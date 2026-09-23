@@ -2,6 +2,10 @@
 --
 -- depends: 0077_add_goals
 --
+-- destructive: 役目を終えた orch_managed カラム(0045追加)の撤去。呼び出し元は
+--   全てorch_managed引数・判定を撤去済みで、データ移行先は無い(カラム自体が
+--   不要になったための削除で、代替スキーマへの移行ではない)。
+--
 -- 背景:
 --   orch_managed は複数 Claude Code セッション (orch/worker/standalone) が並行稼働する
 --   構成向けに、activity が orch 管理下かどうかを表す属性として追加された (0045)。
