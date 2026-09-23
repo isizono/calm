@@ -46,6 +46,60 @@ claude plugin install calm
 /man
 ```
 
+## インストールすると何が起きるか
+
+CALMは`$HOME`配下にいくつかのファイルを生成し、hookを全イベントに登録します。
+
+**書き込み先**
+
+| 種別 | パス | 内容 |
+|------|------|------|
+| データベース | `~/.claude/.claude-code-memory/discussion.db` | トピック・決定事項・ログ・アクティビティ等 |
+| スナップショット | `~/.claude/.claude-code-memory/snapshots/` | 既定12時間毎・最大5世代の定期バックアップ |
+| 振る舞い（habits）投影 | `~/.claude/rules/cc-memory-habits.md` | habits DBから自動生成。**手編集は次回同期で上書きされて失われます** |
+| hook発火ログ・状態ファイル | `~/.cc-memory/`, `~/.cache/cc-memory/` | 内部IDブロック時のログ、embeddingサーバーのログ、セッション別名対応表、ask通知ファイル等 |
+
+**hooksの登録内容とコスト**
+
+SessionStart(3スクリプト)・Stop・UserPromptSubmit・MessageDisplayに加え、PreToolUse・PostToolUseは`matcher: "*"`で登録されており、**ツール呼び出し1回ごとに`uv run python`で新規プロセスが起動します**。初回の`uv run`は依存関係の解決・インストールが走るため重く、2回目以降はvenvがキャッシュされるため起動コストは小さくなります。PreToolUseの内部IDリーク防止hookは、cwd上方の`pyproject.toml`の`[project].name`がCALM自身のプロジェクト名と一致する場合のみ実際にブロック判定を行うため、通常のユーザープロジェクトでは判定自体は常にno-opで通過します（プロセス起動自体は発生します）。
+
+**無効化スイッチ**
+
+振る舞い投影は環境変数`CALM_HABITS_RULES_EXPORT=0`で止められます（既存の投影済みファイルはプレースホルダで上書きされたまま更新されなくなります）。他の環境変数は[設定](#設定)を参照してください。
+
+**アンインストール後の残置物**
+
+`claude plugin uninstall`はプラグイン本体を削除しますが、上記の`$HOME`配下への書き込み（DB・スナップショット・rules投影ファイル・ログ）と、埋め込みモデルのダウンロードキャッシュ（`~/.cache/huggingface`、後述）は自動削除されません。不要になった場合は手動で削除してください。
+
+## 動作確認
+
+### 初回起動が重い理由
+
+前提条件は[前述](#前提条件)のuv・Claude Codeバージョン・Python 3.12の3点です。embeddingサーバーの起動先（`CALM_PROJECT_ROOT`）はMCPサーバー起動時にClaude Codeが渡す`CLAUDE_PLUGIN_ROOT`から自動設定されるため、gitリポジトリでの利用は前提になりません（詳細は[設定](#設定)の`CALM_PROJECT_ROOT`項を参照）。
+
+初回起動が重いのは主に2つの理由によります。
+
+1. 初回の`uv run`で依存関係（sentence-transformers等）を解決・インストールする
+2. 初回のembedding呼び出し時に、埋め込みモデル`cl-nagoya/ruri-v3-70m`（本体約270MB、トークナイザー等を含め合計約290MB）をHugging Face Hubから取得し`~/.cache/huggingface`にキャッシュする
+
+いずれもネットワーク接続が必要で、2回目以降はキャッシュ済みのため高速です。embeddingサーバーはMCPサーバー起動と同時には立ち上がらず、検索やcheck-in等で最初にembeddingが必要になったタイミングで遅延起動します。
+
+### 正常に動いているかの確認
+
+1. Claude Codeで`/mcp`を実行し、calmサーバーがconnected状態であることを確認する
+2. `/man`を実行し、使い方の案内が返ってくることを確認する（MCPツール呼び出しの疎通確認を兼ねる）
+3. `~/.claude/rules/cc-memory-habits.md`が生成されていることを確認する（SessionStart hookの動作確認）
+4. embeddingサーバーの疎通: 検索やcheck-in等を一度実行した後、`curl http://localhost:52836/health`が`{"status": "ok"}`を返すか確認する（一度もembeddingを呼んでいない場合は未起動なので接続不可が正常）
+
+## よくある詰まり
+
+| 症状 | 対処 |
+|------|------|
+| プラグイン更新後もコードの変更や新しいツールが反映されない | `/restart`でMCPサーバーを強制再起動する |
+| 決定事項・アクティビティ等の記録が急に減った・消えたように見える | `/db-recovery`でスナップショットからの復旧を検討する |
+| 検索が過去の記録を拾わない／精度が低い | embeddingサーバーが未起動か古い可能性がある。`/restart`に`--restart-embedding`を付けて明示的に再起動する（`search`応答の`degraded: true`はベクトル検索が利用不可だったことを示す） |
+| MCPツールが使えない・CALMサーバーに接続できない | `/mcp`から再接続する。直らなければ`/restart` |
+
 ## MCPツール
 
 | カテゴリ | ツール | 説明 |
