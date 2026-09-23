@@ -102,7 +102,7 @@ sequenceDiagram
 ## 3. ステップ詳細
 
 1. ユーザーがcheck-inを依頼する。スキルがアクティビティ選択を仲介する場合もある。
-2-3. スキルが `check_in(activity_id)` MCPツールを呼び、ツールは `checkin_service.check_in` に委譲する。session_idはMCPコンテキストから取得する。
+2-3. スキルが `check_in(activity_id)` MCPツールを呼び、ツールは `checkin_service.check_in` に委譲する。session_idは `get_caller_session_id()`（起動器が発行する恒久識別子を優先し、無ければMCPコンテキストの `ctx.session_id` にフォールバック）で解決する。
 4-5. activityをSELECTする。存在しなければ `NOT_FOUND` を返して終了する。
 6-8. アクティビティのタグを取得する（`activity_tags` JOIN `tags`）。
 9-12. tagsをもとに `collect_tag_notes_for_injection` を呼びtag_notesを集める。セッション内初回タグのみ注入されるが、`intent:` namespaceは毎回注入される。
@@ -128,7 +128,7 @@ sequenceDiagram
 | 名前 | 型 | 必須 | 説明 |
 |---|---|---|---|
 | activity_id | int | 必須 | check-in対象アクティビティのID |
-| session_id | str | 暗黙 | MCPコンテキストから自動取得。tag_notesの「初回注入」判定に使う |
+| session_id | str | 暗黙 | `get_caller_session_id()`で自動解決（起動器の恒久識別子を優先）。tag_notes・flow_guideの「初回注入」判定に使う |
 
 ### 出力（成功時）
 
@@ -158,7 +158,7 @@ sequenceDiagram
 
 - activity_idが存在しない: `NOT_FOUND` を即返す。副作用なし。
 - 関連topicが0件: `related_topics` / `recent_decisions` / `latest_log` は省略または空。coverageの分母も0になる。
-- session_id取得失敗: tag_notes注入のセッション管理は無効化されるが、ツール自体は動作する。
+- session_id取得失敗（get_caller_session_id()がNoneを返す）: 既出管理の記録を読み書きしない。tag_notesは毎回全文を返し、flow_guideも毎回付く（共有キーへの相乗りはしない）。ツール自体は動作する。
 - pinsが0件: `pinned` キーごと省略する。
 - pinned対象がretracted済み: decision/logのみ `retracted_at IS NULL` でフィルタするため落ちる（material/topic/activityにはretracted_atカラムが無く落ちない）。
 - statusがcompletedのアクティビティ: 自動的にin_progressに「再オープン」される。追加作業発生に対応するための意図的仕様。

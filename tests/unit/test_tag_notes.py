@@ -1087,7 +1087,7 @@ class TestHandlerGetTopicsInjection:
         update_tag("domain:handler", "ハンドラ経由テスト")
 
         get_topics()
-        assert "domain:handler" not in _injected_tags.get("__default__", set())
+        assert not any("domain:handler" in s for s in _injected_tags.values())
 
 
 class TestHandlerGetActivitiesInjection:
@@ -1119,7 +1119,7 @@ class TestHandlerGetActivitiesInjection:
         update_tag("domain:handler", "ハンドラ経由テスト")
 
         get_activities()
-        assert "domain:handler" not in _injected_tags.get("__default__", set())
+        assert not any("domain:handler" in s for s in _injected_tags.values())
 
 
 class TestHandlerGetLogsInjection:
@@ -1157,7 +1157,7 @@ class TestHandlerGetLogsInjection:
         update_tag("domain:handler", "ハンドラ経由テスト")
 
         get_logs("topic", topic_id)
-        assert "domain:handler" not in _injected_tags.get("__default__", set())
+        assert not any("domain:handler" in s for s in _injected_tags.values())
 
 
 class TestHandlerGetDecisionsInjection:
@@ -1195,7 +1195,7 @@ class TestHandlerGetDecisionsInjection:
         update_tag("domain:handler", "ハンドラ経由テスト")
 
         get_decisions("topic", topic_id)
-        assert "domain:handler" not in _injected_tags.get("__default__", set())
+        assert not any("domain:handler" in s for s in _injected_tags.values())
 
 
 # ========================================
