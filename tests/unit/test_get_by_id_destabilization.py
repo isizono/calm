@@ -11,7 +11,7 @@ from src.services.destabilization_service import resolve_destabilization
 from src.services.relation_service import add_relation
 from src.services.search_service import get_by_id, get_by_ids
 from src.services.topic_service import add_topic
-from tests.helpers import add_decision
+from tests.helpers import add_decision, assert_no_write_errors
 
 
 DEFAULT_TAGS = ["domain:test"]
@@ -40,6 +40,7 @@ class TestGetByIdDestabilizationInfo:
     def test_no_destabilizes_edge_omits_key(self, topic_id):
         """destabilizesエッジが無いdecisionはdestabilizationキーが付かない"""
         d = add_decision(decision="独立した決定", reason="理由", topic_id=topic_id)
+        assert_no_write_errors(d)
 
         res = get_by_id("decision", d["decision_id"])
 
@@ -50,6 +51,8 @@ class TestGetByIdDestabilizationInfo:
         """未resolveなdestabilizesエッジがあればdestabilizationキーが付く"""
         source = add_decision(decision="軸変更", reason="軸変更理由", topic_id=topic_id)
         target = add_decision(decision="影響先", reason="理由", topic_id=topic_id)
+        assert_no_write_errors(source)
+        assert_no_write_errors(target)
         _link_destabilizes(source["decision_id"], target["decision_id"])
 
         res = get_by_id("decision", target["decision_id"])
@@ -64,6 +67,8 @@ class TestGetByIdDestabilizationInfo:
         """resolve済みのdestabilizesエッジはdestabilizationキーを付けない"""
         source = add_decision(decision="軸変更", reason="理由", topic_id=topic_id)
         target = add_decision(decision="影響先", reason="理由", topic_id=topic_id)
+        assert_no_write_errors(source)
+        assert_no_write_errors(target)
         _link_destabilizes(source["decision_id"], target["decision_id"])
         resolve_destabilization(source["decision_id"], target["decision_id"], "reaffirmed")
 
@@ -88,6 +93,9 @@ class TestGetByIdsDestabilizationInfo:
         source = add_decision(decision="軸変更B", reason="理由B", topic_id=topic_id)
         target = add_decision(decision="影響先B", reason="理由", topic_id=topic_id)
         untouched = add_decision(decision="無関係B", reason="理由", topic_id=topic_id)
+        assert_no_write_errors(source)
+        assert_no_write_errors(target)
+        assert_no_write_errors(untouched)
         _link_destabilizes(source["decision_id"], target["decision_id"])
 
         res = get_by_ids(
@@ -109,6 +117,9 @@ class TestGetByIdsDestabilizationInfo:
         source = add_decision(decision="軸変更C", reason="理由C", topic_id=topic_id)
         target = add_decision(decision="影響先C", reason="理由", topic_id=topic_id)
         indep = add_decision(decision="独立C", reason="理由", topic_id=topic_id)
+        assert_no_write_errors(source)
+        assert_no_write_errors(target)
+        assert_no_write_errors(indep)
         _link_destabilizes(source["decision_id"], target["decision_id"])
 
         real = search_service.compute_destabilization_info_batch

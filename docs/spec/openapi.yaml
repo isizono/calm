@@ -94,9 +94,6 @@ paths:
                 check_in:
                   default: true
                   type: boolean
-                orch_managed:
-                  default: false
-                  type: boolean
               required:
               - title
               - description
@@ -806,7 +803,7 @@ paths:
     post:
       tags:
       - activity
-      summary: アクティビティ一覧を取得する（tags/status/orch_managed でフィルタリング可能）。
+      summary: アクティビティ一覧を取得する（tags/statusでフィルタリング可能）。
       requestBody:
         required: true
         content:
@@ -844,11 +841,6 @@ paths:
                   - internal
                   - readable
                   type: string
-                orch_managed:
-                  anyOf:
-                  - type: boolean
-                  - type: 'null'
-                  default: null
               type: object
       responses:
         '200':
@@ -2173,7 +2165,7 @@ paths:
     post:
       tags:
       - activity
-      summary: アクティビティのステータス・タイトル・説明・タグ・orch_managedを更新する。
+      summary: アクティビティのステータス・タイトル・説明・タグを更新する。
       requestBody:
         required: true
         content:
@@ -2203,11 +2195,6 @@ paths:
                   - items:
                       type: string
                     type: array
-                  - type: 'null'
-                  default: null
-                orch_managed:
-                  anyOf:
-                  - type: boolean
                   - type: 'null'
                   default: null
                 closed_by:

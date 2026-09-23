@@ -4,6 +4,7 @@ import sqlite3
 import threading
 
 from src.db import get_connection, row_to_dict
+from src.infra import session_identity
 from src.services import activity_service, ask_service, goal_service, hint_service
 from src.services.readable_id import strip_entity_id_inplace
 from src.services.material_service import get_materials_by_relation_with_conn
@@ -41,14 +42,19 @@ _FLOW_GUIDE_COMPACT = (
 
 
 def _consume_first_call_flag(session_id: str | None) -> bool:
-    """このセッションでのcheck_in初回呼び出しならTrueを返し、以後はFalseにする。"""
-    session_key = session_id or "__default__"
+    """このセッションでのcheck_in初回呼び出しならTrueを返し、以後はFalseにする。
+
+    session_idが解決できない（None）場合は記録を読み書きせず、毎回Trueを返す
+    （flow_guideを毎回付ける扱い。共有キーへの相乗りはしない）。
+    """
+    if session_id is None:
+        return True
     with _greeted_sessions_lock:
-        if session_key in _greeted_sessions:
+        if session_id in _greeted_sessions:
             return False
         while len(_greeted_sessions) >= _GREETED_SESSIONS_MAX:
             del _greeted_sessions[next(iter(_greeted_sessions))]
-        _greeted_sessions[session_key] = True
+        _greeted_sessions[session_id] = True
         return True
 
 
@@ -437,10 +443,7 @@ def _get_immediate_hints(conn: sqlite3.Connection, activity_id: int) -> list[str
     domain:tagのrecomposeナッジに加え、activity_cleanupのようなグローバル判定の
     hintもHintService側で束ねられて返ってくるため、本関数はそれらを区別せず
     delivery_hint=immediateのものだけをtool responseに乗せる。
-    orch-managed activityでは全hint suppressする。
     """
-    if hint_service.is_orch_managed_activity(conn, activity_id):
-        return []
     hints = hint_service.get_hints_with_conn(conn, "activity", activity_id)
     return [h["message"] for h in hints if h["delivery_hint"] == "immediate"]
 
@@ -521,12 +524,7 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
         {"error": {"code": "DATABASE_ERROR", ...}}になり、check_inの他のキーは失われない
     """
     if session_id is None:
-        try:
-            from fastmcp.server.dependencies import get_context
-            ctx = get_context()
-            session_id = ctx.session_id
-        except (RuntimeError, ImportError):
-            pass
+        session_id = session_identity.get_caller_session_id()
     conn = get_connection()
     try:
         # 1. activity取得
@@ -622,8 +620,7 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
         immediate_hints = _get_immediate_hints(conn, activity_id)
 
         # 9a. このactivityをblockしているaskの配達（answer待ち・triage待ちフェーズ別）。
-        # immediate_hintsと異なりorch-managed activityでもsuppressしない
-        # （askは答え待ちというプロセス情報そのものであり、recompose系の提案とは扱いを分ける）。
+        # askは答え待ちというプロセス情報そのものであり、recompose系の提案とは扱いを分ける。
         pending_asks = _get_pending_asks(conn, activity_id)
 
         # 10. summary生成
@@ -703,10 +700,9 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
         # 呼び出し元がClaude Code CLI経由でないなどCLIが解決できない場合や、
         # 内部で予期せぬ例外が起きた場合もcheck_in本体を失敗させない。
         try:
-            from src.infra.session_identity import get_caller_session_id
             from src.services import session_registry_service
 
-            bridge_id = get_caller_session_id()
+            bridge_id = session_identity.get_caller_session_id()
             reg = (
                 session_registry_service.register_checkin(
                     bridge_session_id=bridge_id,

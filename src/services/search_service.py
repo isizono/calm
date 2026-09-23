@@ -77,7 +77,12 @@ assert all(
     for i in range(len(ADAPTIVE_RRF_THRESHOLDS) - 1)
 ), "ADAPTIVE_RRF_THRESHOLDS must be sorted in ascending order of threshold"
 
-from src.config import ARCHIVED_DEMOTION_FACTOR, RECENCY_DECAY_FLOOR, RECENCY_DECAY_RATE
+from src.config import (
+    ARCHIVED_DEMOTION_FACTOR,
+    RECENCY_DECAY_FLOOR,
+    RECENCY_DECAY_FLOOR_DECISION_LIVE,
+    RECENCY_DECAY_RATE,
+)
 
 # Query Expansion パラメータ
 QE_DISTANCE_THRESHOLD = 0.3   # コサイン距離。これ未満のタグを拡張候補とする
@@ -571,17 +576,20 @@ def _resolve_tag_ids_readonly(conn, tag_strings: list[str]) -> list[int]:
     return tag_ids
 
 
-def _build_tag_filter_cte(tag_ids: list[int]) -> tuple[str, list]:
-    """タグフィルタ用のCTE SQLとパラメータを構築する。
+def _build_tag_filter_body(tag_ids: list[int]) -> tuple[str, list]:
+    """タグ一致エンティティの集合を表す "tag_filtered AS (...)" CTE本体を組み立てる。
+
+    WITHキーワードは含まない(単体では未完成のSQL断片)。単独CTEとして使う
+    _build_tag_filter_cte と、他のCTEと1つのWITH句に連結する
+    _build_vector_candidates_cte の両方が、文字列操作に頼らずこの本体を共有する。
 
     Returns:
-        (cte_sql, params) のタプル。cte_sqlは "WITH tag_filtered AS (...)" の形式。
+        (cte_body, params) のタプル。cte_body は "tag_filtered AS (...)" の形式。
     """
     n_tags = len(tag_ids)
     placeholders = ",".join("?" * n_tags)
 
-    cte_sql = f"""
-    WITH tag_filtered AS (
+    cte_body = f"""tag_filtered AS (
         -- topic (直接タグ)
         SELECT 'topic' AS source_type, topic_id AS source_id FROM (
             SELECT tt.topic_id, tt.tag_id
@@ -632,8 +640,7 @@ def _build_tag_filter_cte(tag_ids: list[int]) -> tuple[str, list]:
             FROM material_tags mt
             WHERE mt.tag_id IN ({placeholders})
         ) GROUP BY material_id HAVING COUNT(DISTINCT tag_id) = ?
-    )
-    """
+    )"""
 
     # パラメータ: 各セクションに tag_ids + n_tags を渡す
     params: list = []
@@ -655,7 +662,82 @@ def _build_tag_filter_cte(tag_ids: list[int]) -> tuple[str, list]:
     params.extend(tag_ids)
     params.append(n_tags)
 
-    return cte_sql, params
+    return cte_body, params
+
+
+def _build_tag_filter_cte(tag_ids: list[int]) -> tuple[str, list]:
+    """タグフィルタ用のCTE SQLとパラメータを構築する。
+
+    Returns:
+        (cte_sql, params) のタプル。cte_sqlは "WITH tag_filtered AS (...)" の形式。
+    """
+    cte_body, params = _build_tag_filter_body(tag_ids)
+    return f"\n    WITH {cte_body}\n    ", params
+
+
+def _build_vector_candidates_cte(
+    tag_ids: Optional[list[int]], common_where: str, common_params: list,
+) -> tuple[str, list]:
+    """filter-first KNN の候補集合(candidates CTE)を組み立てる。
+
+    タグ/型/日付フィルタをKNN実行前に確定させ、グローバルKNN→post-filterで
+    フィルタ集合外にターゲットが落ちる recall collapse を避ける。tag_ids 未指定時も
+    候補集合を search_index 全体に絞ることで、孤児 vec_index 行(対応する
+    search_index 行を持たない)がKNN候補スロットを消費しない副次効果を得る。
+
+    Args:
+        tag_ids: タグフィルタ対象のtag_id群。Noneまたは空なら候補集合をsearch_index
+            全体から選ぶ(タグによる絞り込みをしない)。
+        common_where: build_common_where() の戻り値("AND ..." フラグメント)。
+        common_params: 同上の params。
+
+    Returns:
+        (cte_sql, params)。cte_sql は "WITH ... candidates AS (...)" 形式で終端に
+        SELECTを含まない。呼び出し側は続けて "SELECT rowid, distance FROM vec_index
+        WHERE embedding MATCH ? AND rowid IN (SELECT id FROM candidates) AND k = ?"
+        を連結する。
+    """
+    common_where_indented = textwrap.indent(common_where, " " * 10).lstrip()
+    if tag_ids:
+        tag_cte_body, tag_params = _build_tag_filter_body(tag_ids)
+        cte_sql = f"""
+        WITH {tag_cte_body},
+        candidates AS (
+            SELECT si.id
+            FROM search_index si
+            JOIN tag_filtered tf ON tf.source_type = si.source_type AND tf.source_id = si.source_id
+            WHERE 1=1
+              {common_where_indented}
+        )
+        """
+        return cte_sql, [*tag_params, *common_params]
+
+    cte_sql = f"""
+    WITH candidates AS (
+        SELECT si.id
+        FROM search_index si
+        WHERE 1=1
+          {common_where_indented}
+    )
+    """
+    return cte_sql, list(common_params)
+
+
+def _resolve_vec_rowids(conn: sqlite3.Connection, rowids: list[int]) -> dict[int, dict]:
+    """candidates CTE を通過済みの vec_index rowid 群を search_index の行へ解決する。
+
+    filter-first KNN で既にフィルタ確定済みの rowid のみを渡す前提のため、ここでの
+    追加フィルタは不要。戻り値は search_index.id をキーにした dict。
+    """
+    if not rowids:
+        return {}
+    placeholders = ",".join("?" * len(rowids))
+    rows = _exec_select(
+        conn,
+        f"SELECT id, source_type, source_id, title FROM search_index WHERE id IN ({placeholders})",
+        tuple(rowids),
+    )
+    return {row_to_dict(row)["id"]: row_to_dict(row) for row in rows}
 
 
 def fts_retrieve(ctx: SearchContext, conn: sqlite3.Connection) -> list[dict]:
@@ -748,8 +830,12 @@ def vector_retrieve(ctx: SearchContext, conn: sqlite3.Connection) -> Optional[li
     ヒット0件でも `[]` を返す（None は全キーワードで embedding 取得自体に
     失敗した場合のみ）。「使えたが該当なし」と「使えなかった」を区別する契約。
 
-    retract 時に vec_index から物理削除されるため、取り消し済みエンティティは
-    KNN の候補スロットを食わない（KNN 実効 recall 改善）。
+    タグ / 型 / 日付フィルタは candidates CTE (`_build_vector_candidates_cte`) で
+    KNN 実行前に確定させる（filter-first KNN）。フィルタ付き検索の返却は
+    「フィルタ集合内の正確な top-k」になり、recall がフィルタ集合サイズと無関係な
+    グローバル top-fetch_limit に落ちる構造（recall collapse）を持たない。
+    retract 時に vec_index から物理削除されるため、取り消し済みエンティティも
+    候補集合に現れない。
 
     Args:
         ctx: SearchContext。ベクトル検索は元の ctx.keywords を使用し、
@@ -761,13 +847,21 @@ def vector_retrieve(ctx: SearchContext, conn: sqlite3.Connection) -> Optional[li
     tag_ids = list(ctx.tag_ids) if ctx.tag_ids else None
 
     try:
-        common_where, common_params = build_common_where(ctx, si_alias="")
-        common_where_or = textwrap.indent(common_where, " " * 22).lstrip()
-        common_where_and = textwrap.indent(common_where, " " * 18).lstrip()
+        common_where, common_params = build_common_where(ctx, si_alias="si")
+        candidates_cte, candidates_params = _build_vector_candidates_cte(tag_ids, common_where, common_params)
+        knn_query = f"""
+        {candidates_cte}
+        SELECT rowid, distance FROM vec_index
+        WHERE embedding MATCH ?
+          AND rowid IN (SELECT id FROM candidates)
+          AND k = ?
+        ORDER BY distance
+        """
 
         if ctx.keyword_mode == "or" and len(keywords) > 1:
-            # OR時: 各キーワードで個別にベクトル検索し、結果をマージ
-            merged: dict[tuple, dict] = {}  # key: (type, id)
+            # OR時: 各キーワードで個別にベクトル検索し、rowid単位で最小distanceにマージ。
+            # candidates部分のSQL/paramsはキーワードに依存しないため使い回す。
+            merged_distance: dict[int, float] = {}
             # embedding取得に1つでも成功したかを別管理する。
             # 「全キーワードでembedding取得自体に失敗」(=ベクトル検索利用不可、None)と
             # 「embeddingは取れたが該当キーワードでヒット0件」(=有効だが0件、[])を区別するため。
@@ -779,62 +873,30 @@ def vector_retrieve(ctx: SearchContext, conn: sqlite3.Connection) -> Optional[li
                 any_embedding_succeeded = True
 
                 blob = serialize_float32(query_embedding)
-                vec_rows = _exec_select(
-                    conn,
-                    "SELECT rowid, distance FROM vec_index WHERE embedding MATCH ? AND k = ?",
-                    (blob, fetch_limit),
-                )
-                if not vec_rows:
-                    continue
-
-                vec_data = {}
+                vec_rows = _exec_select(conn, knn_query, (*candidates_params, blob, fetch_limit))
                 for row in vec_rows:
                     r = row_to_dict(row)
-                    vec_data[r["rowid"]] = r["distance"]
-
-                rowids = list(vec_data.keys())
-                rowid_placeholders = ",".join("?" * len(rowids))
-
-                if tag_ids:
-                    cte_sql, cte_params = _build_tag_filter_cte(tag_ids)
-                    query = f"""
-                    {cte_sql}
-                    SELECT id, source_type, source_id, title
-                    FROM search_index
-                    WHERE id IN ({rowid_placeholders})
-                      AND EXISTS (
-                        SELECT 1 FROM tag_filtered tf
-                        WHERE tf.source_type = search_index.source_type
-                          AND tf.source_id = search_index.source_id
-                      )
-                      {common_where_or}
-                    """
-                    params = (*cte_params, *rowids, *common_params)
-                else:
-                    query = f"""
-                    SELECT id, source_type, source_id, title
-                    FROM search_index
-                    WHERE id IN ({rowid_placeholders})
-                      {common_where_or}
-                    """
-                    params = (*rowids, *common_params)
-
-                filter_rows = _exec_select(conn, query, params)
-                for row in filter_rows:
-                    r = row_to_dict(row)
-                    key = (r["source_type"], r["source_id"])
-                    distance = vec_data[r["id"]]
-                    if key not in merged or distance < merged[key]["distance"]:
-                        merged[key] = {
-                            "type": r["source_type"],
-                            "id": r["source_id"],
-                            "title": r["title"],
-                            "distance": distance,
-                        }
+                    rowid, distance = r["rowid"], r["distance"]
+                    if rowid not in merged_distance or distance < merged_distance[rowid]:
+                        merged_distance[rowid] = distance
 
             if not any_embedding_succeeded:
                 return None
-            results = list(merged.values())
+            if not merged_distance:
+                return []
+
+            resolved = _resolve_vec_rowids(conn, list(merged_distance.keys()))
+            results = []
+            for rowid, distance in merged_distance.items():
+                r = resolved.get(rowid)
+                if r is None:
+                    continue
+                results.append({
+                    "type": r["source_type"],
+                    "id": r["source_id"],
+                    "title": r["title"],
+                    "distance": distance,
+                })
             results.sort(key=lambda x: x["distance"])
             return results
         else:
@@ -845,15 +907,7 @@ def vector_retrieve(ctx: SearchContext, conn: sqlite3.Connection) -> Optional[li
                 return None
 
             blob = serialize_float32(query_embedding)
-
-            # vec_indexからKNN取得（タグフィルタ不可なので多めに取得）
-            # fetch_limitはsearch()側で (offset+limit)*FETCH_LIMIT_MULTIPLIER に拡大済み
-            vec_rows = _exec_select(
-                conn,
-                "SELECT rowid, distance FROM vec_index WHERE embedding MATCH ? AND k = ?",
-                (blob, fetch_limit),
-            )
-
+            vec_rows = _exec_select(conn, knn_query, (*candidates_params, blob, fetch_limit))
             if not vec_rows:
                 return []
 
@@ -862,48 +916,22 @@ def vector_retrieve(ctx: SearchContext, conn: sqlite3.Connection) -> Optional[li
                 r = row_to_dict(row)
                 vec_data[r["rowid"]] = r["distance"]
 
-            rowids = list(vec_data.keys())
-            rowid_placeholders = ",".join("?" * len(rowids))
-
-            if tag_ids:
-                cte_sql, cte_params = _build_tag_filter_cte(tag_ids)
-                query = f"""
-                {cte_sql}
-                SELECT id, source_type, source_id, title
-                FROM search_index
-                WHERE id IN ({rowid_placeholders})
-                  AND EXISTS (
-                    SELECT 1 FROM tag_filtered tf
-                    WHERE tf.source_type = search_index.source_type
-                      AND tf.source_id = search_index.source_id
-                  )
-                  {common_where_and}
-                """
-                params = (*cte_params, *rowids, *common_params)
-            else:
-                query = f"""
-                SELECT id, source_type, source_id, title
-                FROM search_index
-                WHERE id IN ({rowid_placeholders})
-                  {common_where_and}
-                """
-                params = (*rowids, *common_params)
-
-            filter_rows = _exec_select(conn, query, params)
-
+            resolved = _resolve_vec_rowids(conn, list(vec_data.keys()))
             results = []
-            for row in filter_rows:
-                r = row_to_dict(row)
+            for rowid, distance in vec_data.items():
+                r = resolved.get(rowid)
+                if r is None:
+                    continue
                 results.append({
                     "type": r["source_type"],
                     "id": r["source_id"],
                     "title": r["title"],
-                    "distance": vec_data[r["id"]],
+                    "distance": distance,
                 })
 
             # distance順でソート（小さいほど類似度が高い）
             results.sort(key=lambda x: x["distance"])
-            return results[:fetch_limit]
+            return results
 
     except (ValueError, RuntimeError, OSError):
         logger.warning("Vector search failed, falling back to FTS-only", exc_info=True)
@@ -936,11 +964,20 @@ def find_similar_topics(
             return []
 
         blob = serialize_float32(query_embedding)
-        # 自身除外 + type フィルタ分を考慮して多めに取得
-        vec_rows = execute_query(
-            "SELECT rowid, distance FROM vec_index WHERE embedding MATCH ? AND k = ?",
-            (blob, limit * 5),
+        # filter-first KNN: candidates を「topic かつ自身以外」に絞ってからKNNするため、
+        # グローバル top-k 圏外のトピックも取りこぼさない。over-fetch は不要。
+        query = """
+        WITH candidates AS (
+            SELECT id FROM search_index
+            WHERE source_type = 'topic' AND source_id != ?
         )
+        SELECT rowid, distance FROM vec_index
+        WHERE embedding MATCH ?
+          AND rowid IN (SELECT id FROM candidates)
+          AND k = ?
+        ORDER BY distance
+        """
+        vec_rows = execute_query(query, (exclude_id, blob, limit))
         if not vec_rows:
             return []
 
@@ -952,19 +989,13 @@ def find_similar_topics(
         rowids = list(vec_data.keys())
         rowid_placeholders = ",".join("?" * len(rowids))
 
-        filter_rows = execute_query(
-            f"""
-            SELECT id, source_type, source_id, title
-            FROM search_index
-            WHERE id IN ({rowid_placeholders})
-              AND source_type = 'topic'
-              AND source_id != ?
-            """,
-            (*rowids, exclude_id),
+        resolved_rows = execute_query(
+            f"SELECT id, source_id, title FROM search_index WHERE id IN ({rowid_placeholders})",
+            tuple(rowids),
         )
 
         results = []
-        for row in filter_rows:
+        for row in resolved_rows:
             r = row_to_dict(row)
             results.append({
                 "id": r["source_id"],
@@ -973,7 +1004,7 @@ def find_similar_topics(
             })
 
         results.sort(key=lambda x: x["distance"])
-        return results[:limit]
+        return results
 
     except (ValueError, RuntimeError, OSError, sqlite3.Error):
         logger.warning("find_similar_topics failed", exc_info=True)
@@ -1015,15 +1046,41 @@ def find_similar_decisions(
             return []
 
         blob = serialize_float32(query_embedding)
-        # グローバルKNNで多めに取得してから decision型 + (指定時)同一topic + (指定時)自身除外 +
-        # retract除外 に post-filterする。find_similar_topicsより絞り込みが厳しい（種別＋topic）
-        # ため候補数を limit*20 に増やす。本機能は矛盾・重複への気づき導線であり厳密なrecallは
-        # 要求しない（DB規模が非常に大きくなり対象がtop-kから脱落する場合は取りこぼし得るが、
-        # サジェストが減るだけで誤動作はしない）。将来はtopic絞り込み後KNNへの作り替え余地あり。
-        vec_rows = execute_query(
-            "SELECT rowid, distance FROM vec_index WHERE embedding MATCH ? AND k = ?",
-            (blob, limit * 20),
+
+        # filter-first KNN: decision型 + (指定時)同一topic + (指定時)自身除外 + retract除外を
+        # candidates として先に確定してからKNNする。同一topicのdecisionがグローバル上位に
+        # 居ない配置でも取りこぼさない。
+        joins = "JOIN decisions d ON d.id = si.source_id"
+        conditions = [
+            "si.source_type = 'decision'",
+            "d.retracted_at IS NULL",
+        ]
+        candidate_params: list = []
+        if exclude_id is not None:
+            conditions.append("si.source_id != ?")
+            candidate_params.append(exclude_id)
+        if topic_id is not None:
+            joins += (
+                " JOIN relations r ON r.source_type='decision' AND r.source_id=d.id"
+                " AND r.target_type='topic' AND r.relation_type='belongs_to'"
+            )
+            conditions.append("r.target_id = ?")
+            candidate_params.append(topic_id)
+
+        query = f"""
+        WITH candidates AS (
+            SELECT si.id
+            FROM search_index si
+            {joins}
+            WHERE {' AND '.join(conditions)}
         )
+        SELECT rowid, distance FROM vec_index
+        WHERE embedding MATCH ?
+          AND rowid IN (SELECT id FROM candidates)
+          AND k = ?
+        ORDER BY distance
+        """
+        vec_rows = execute_query(query, (*candidate_params, blob, limit))
         if not vec_rows:
             return []
 
@@ -1035,36 +1092,18 @@ def find_similar_decisions(
         rowids = list(vec_data.keys())
         rowid_placeholders = ",".join("?" * len(rowids))
 
-        joins = "JOIN decisions d ON d.id = si.source_id"
-        conditions = [
-            f"si.id IN ({rowid_placeholders})",
-            "si.source_type = 'decision'",
-            "d.retracted_at IS NULL",
-        ]
-        params: list = list(rowids)
-        if exclude_id is not None:
-            conditions.append("si.source_id != ?")
-            params.append(exclude_id)
-        if topic_id is not None:
-            joins += (
-                " JOIN relations r ON r.source_type='decision' AND r.source_id=d.id"
-                " AND r.target_type='topic' AND r.relation_type='belongs_to'"
-            )
-            conditions.append("r.target_id = ?")
-            params.append(topic_id)
-
-        filter_rows = execute_query(
+        resolved_rows = execute_query(
             f"""
             SELECT si.id, si.source_id, COALESCE(d.title, d.decision) AS title
             FROM search_index si
-            {joins}
-            WHERE {' AND '.join(conditions)}
+            JOIN decisions d ON d.id = si.source_id
+            WHERE si.id IN ({rowid_placeholders})
             """,
-            tuple(params),
+            tuple(rowids),
         )
 
         results = []
-        for row in filter_rows:
+        for row in resolved_rows:
             r = row_to_dict(row)
             results.append({
                 "id": r["source_id"],
@@ -1073,7 +1112,7 @@ def find_similar_decisions(
             })
 
         results.sort(key=lambda x: x["distance"])
-        return results[:limit]
+        return results
 
     except (ValueError, RuntimeError, OSError, sqlite3.Error):
         logger.warning("find_similar_decisions failed", exc_info=True)
@@ -1293,12 +1332,18 @@ def tag_like_retrieve(ctx: SearchContext, conn: sqlite3.Connection) -> list[dict
 def _apply_recency_boost(results: list[dict], now: datetime | None = None) -> None:
     """RRFスコアにrecency boost（指数減衰）を適用する（in-place）。
 
-    recency_factor = max(exp(-age_days * RECENCY_DECAY_RATE), RECENCY_DECAY_FLOOR)
+    recency_factor = max(exp(-age_days * RECENCY_DECAY_RATE), floor)
     を score_breakdown.rrf_normalized に乗算して final_score を確定する。
+    floorは既定でRECENCY_DECAY_FLOORだが、supersedeされていないdecision（現役の
+    判例）だけはRECENCY_DECAY_FLOOR_DECISION_LIVEを使う。supersede済みdecisionと
+    他の型は既定floorのまま。
     各結果に以下を付与する:
     - score_breakdown.recency_factor: 適用された減衰係数（created_at取得不可時は1.0）
     - final_score: rrf_normalized * recency_factor
     - score: final_score と同値（旧 API 互換のため残置）
+    - superseded_by（decisionのみ）: floor判定のために引いたsupersede情報。
+      後段の`_attach_superseded_by`が同じdecision集合に対して再クエリしないよう、
+      ここで確定した値をそのまま結果へ持ち回す
 
     確定後、final_score 降順で再ソートする。
     """
@@ -1318,6 +1363,20 @@ def _apply_recency_boost(results: list[dict], now: datetime | None = None) -> No
         bd.setdefault("tag", 0.0)
         bd.setdefault("rrf_normalized", item.get("score", 0.0))
         bd.setdefault("recency_factor", 1.0)
+
+    # decisionはsupersede状態でfloorを分けるため、対象idのsuperseded_byを先に引く。
+    # ベクトル検索は使わないためload_vec=Falseでsqlite-vec拡張ロードを省く
+    decision_ids = [item["id"] for item in results if item["type"] == "decision"]
+    superseded_by_map: dict[int, Optional[int]] = {}
+    if decision_ids:
+        conn = get_connection(load_vec=False)
+        try:
+            superseded_by_map = get_superseded_by_batch(conn, decision_ids)
+        finally:
+            conn.close()
+        for item in results:
+            if item["type"] == "decision":
+                item["superseded_by"] = superseded_by_map.get(item["id"])
 
     # typeごとにcreated_atをバッチ取得
     by_type: dict[str, list[dict]] = {}
@@ -1340,7 +1399,11 @@ def _apply_recency_boost(results: list[dict], now: datetime | None = None) -> No
             if created_str:
                 created = datetime.fromisoformat(created_str).replace(tzinfo=timezone.utc)
                 age_days = max(0, (now - created).days)
-                recency_factor = max(math.exp(-age_days * RECENCY_DECAY_RATE), RECENCY_DECAY_FLOOR)
+                if type_name == "decision" and superseded_by_map.get(item["id"]) is None:
+                    floor = RECENCY_DECAY_FLOOR_DECISION_LIVE
+                else:
+                    floor = RECENCY_DECAY_FLOOR
+                recency_factor = max(math.exp(-age_days * RECENCY_DECAY_RATE), floor)
                 item["score_breakdown"]["recency_factor"] = recency_factor
 
     # final_score = rrf_normalized * recency_factor を確定
@@ -1786,8 +1849,8 @@ def _build_diagnostics(
         有効だがヒット 0 件のとき 0 になる（`retrieval["vec"] is None` で区別する）。
         degraded は vec_hits is None と等価な bool 表現で、search() の戻り値にも
         同じキー・同じ意味で転記される。
-        candidate_set_size は post-filter 方式の vector_retrieve では算出できないため
-        常に None。qe_expansions は Query Expansion で追加されたキーワードのみ（元キーワードは含まない）。
+        candidate_set_size は未計装のため常に None。
+        qe_expansions は Query Expansion で追加されたキーワードのみ（元キーワードは含まない）。
     """
     vec_results = retrieval["vec"]
     qe_expansions: list[str] = []
@@ -1828,8 +1891,9 @@ def _rerank(ctx: SearchContext, merged: list[dict]) -> list[dict]:
     """recency boost ステージ。score_breakdown.recency_factor / final_score を確定し、final_score 降順に再ソートする。
 
     ``ctx`` は他ステージとシグネチャを揃えるために受け取るが、現状の recency 減衰は
-    created_at と RECENCY_DECAY_RATE / RECENCY_DECAY_FLOOR のみで決まるため、本関数内では
-    ``ctx`` を参照しない。ctx 依存のブースト (domain 別重み付け等) を後段で追加する余地を
+    created_at と type/supersede 状態（RECENCY_DECAY_RATE / RECENCY_DECAY_FLOOR /
+    RECENCY_DECAY_FLOOR_DECISION_LIVE）のみで決まるため、本関数内では ``ctx`` を
+    参照しない。ctx 依存のブースト (domain 別重み付け等) を後段で追加する余地を
     残しておく。
     """
     _apply_recency_boost(merged)
@@ -1879,17 +1943,24 @@ def _attach_superseded_by(results: list[dict]) -> None:
     supersede されている decision の最新 superseder id を「早期警告」として乗せる軽量
     マーカー。詳細な chain は get_decisions 側で取り直す前提のため、supersede されて
     いなければ None、複数 superseder があれば最新1件のみ返す。
+
+    `_apply_recency_boost`がrerank段で既に同じ値を付与済みの場合（`superseded_by`
+    キーが既に存在する）はそのdecisionを再クエリしない。search()経路ではrerankが
+    decorateより先に走るため、これで同一リクエスト内の重複クエリを避けられる。
     """
-    decision_ids = [item["id"] for item in results if item["type"] == "decision"]
+    decision_ids = [
+        item["id"] for item in results
+        if item["type"] == "decision" and "superseded_by" not in item
+    ]
     if not decision_ids:
         return
-    conn = get_connection()
+    conn = get_connection(load_vec=False)
     try:
         superseded_by_map = get_superseded_by_batch(conn, decision_ids)
     finally:
         conn.close()
     for item in results:
-        if item["type"] == "decision":
+        if item["type"] == "decision" and "superseded_by" not in item:
             item["superseded_by"] = superseded_by_map.get(item["id"])
 
 
