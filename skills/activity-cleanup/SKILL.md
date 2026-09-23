@@ -15,8 +15,6 @@ description: アクティビティ(active/shelved/snoozed)を棚卸しし、実�
 - shelved
 - snoozed
 
-`orch_managed`カラムによる絞り込みは行わない。orch_managed=1のactivityも棚卸しの対象に含める。orch_managedカラム自体を別作業で削除する方向であり、新規実装では参照しない。
-
 **`get_activities`呼び出し時の注意:**
 
 - `limit`引数は明示指定が必須。デフォルトは5件のため、明示しないまま呼ぶと全件取得に失敗する(件数が少ないことに気づかないまま棚卸しが不完全に終わる)
@@ -145,7 +143,7 @@ recompose-context skillの自律度ルールをそのまま流用し、対象語
 
 ## 注意
 
-- **sync-memory Step 10aとの関係**: sync-memory Step 10aは、セッション終了時に自己完結で動く軽い自動棚卸し(重複・7日放置・フェーズ移行済みの検出とcompleted/snoozed化)であり、本skillとは独立に今後も動作し続けてよい。両者の判定基準が食い違った場合はactivity-cleanup(本skill)を正本とする。ただしsync-memory Step 10aは`get_activities(status="active", orch_managed=False)`で取得したactivityのみを対象にするため、判定を突き合わせられる範囲もactiveかつorch_managed=0のものに限られる(shelved・snoozed、orch_managed=1のactivityはStep 10aの対象外)
+- **sync-memory Step 10aとの関係**: sync-memory Step 10aは、セッション終了時に自己完結で動く軽い自動棚卸し(重複・7日放置・フェーズ移行済みの検出とcompleted/snoozed化)であり、本skillとは独立に今後も動作し続けてよい。両者の判定基準が食い違った場合はactivity-cleanup(本skill)を正本とする。ただしsync-memory Step 10aは`get_activities(status="active")`で取得したactivityのみを対象にするため、判定を突き合わせられる範囲もactiveのものに限られる(shelved・snoozedはStep 10aの対象外)
 - **PR状態の鵜呑み防止**: description本文の「マージ済み」「マージ待ち」等の文言は鮮度が保証されない。completed判定には必ず`gh pr view --json state,mergeStateStatus`等の機械確認を伴わせる
 - **内部IDを報告に出さない**: ユーザーへの報告や記録では、activityのタイトル・内容の要約で言及し、内部ID単体では言及しない
 - 判断に迷い🔴に該当するものは、消さない・completedにしない側に倒したうえでバッファに溜め、最後に一括確認する

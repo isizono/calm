@@ -119,11 +119,7 @@ def _maybe_inject_tag_notes(result: dict, tag_strings: list[str], mark: bool = T
     Args:
         mark: False の場合、_injected_tags を参照も更新もしない（読み取り経路用）。
     """
-    try:
-        ctx = get_context()
-        session_id = ctx.session_id
-    except RuntimeError:
-        session_id = None
+    session_id = get_caller_session_id()
     with contextlib.closing(get_connection()) as conn:
         notes = collect_tag_notes_for_injection(conn, tag_strings, session_id=session_id, mark=mark)
     if notes:
@@ -1019,7 +1015,6 @@ def add_activity(
     related: list[dict] | None = None,
     pins: list[dict] | None = None,
     check_in: bool = True,
-    orch_managed: bool = False,
 ) -> dict:
     """
     新しいアクティビティを追加する。デフォルトで作成後にcheck_inも実行する。
@@ -1031,7 +1026,6 @@ def add_activity(
     - intent:implementはdecisionをrelateする: add_activity(..., ["domain:calm", "intent:implement"], related=[{"type": "decision", "ids": [10, 11]}])
     - 作成と同時にpinも張る: add_activity(..., pins=[{"type": "material", "ref": 42}, {"type": "tag", "ref": "domain:calm"}])
     - check_inなしで作成: add_activity(..., check_in=False)
-    - orch管理として作成: add_activity(..., orch_managed=True)
 
     Args:
         title: アクティビティのタイトル（35字以内）
@@ -1040,14 +1034,12 @@ def add_activity(
         related: 関連エンティティ（optional）。[{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...] 形式、複数同時紐付け可。作成と同時にリレーションを張る。intent:implementタグ時はtype="decision"を1件以上含めないとIMPLEMENT_WORKFLOW_GUARDエラーになる
         pins: 作成したactivity自身から張るpin（optional）。[{"type": "tag"|"activity"|"topic"|"decision"|"log"|"material", "ref": int|str}, ...] 形式（refはadd_pinのtarget_refと同じ、tagのみnamespace:name文字列可）。いずれか1件でも解決失敗すると、activity作成自体を含め全体がロールバックされる（部分成功なし）
         check_in: 作成後にcheck_inを実行するか（デフォルト: True）。Trueなら返り値にcheck_in_resultを含む
-        orch_managed: orch管理アクティビティか（デフォルト: False）。TrueならSessionStart一覧・Stop hookのcheck-in催促から除外される
 
     Returns:
         作成されたアクティビティ情報（check_in=Trueの場合はcheck_in_resultにtag_notes等を含む）
     """
     result = activity_service.add_activity(
         title, description, tags, related=related, pins=pins, check_in=check_in,
-        orch_managed=orch_managed,
     )
     if "error" not in result:
         # check_in=Trueの場合、check_in_resultにtag_notesが含まれるため
@@ -1065,10 +1057,9 @@ def get_activities(
     since: str | None = None,
     until: str | None = None,
     flavor: _FlavorArg = "internal",
-    orch_managed: bool | None = None,
 ) -> dict:
     """
-    アクティビティ一覧を取得する（tags/status/orch_managed でフィルタリング可能）。
+    アクティビティ一覧を取得する（tags/statusでフィルタリング可能）。
 
     典型的な使い方:
     - 全アクティビティ確認: get_activities()
@@ -1076,7 +1067,6 @@ def get_activities(
     - 進行中のみ: get_activities(["domain:calm"], status="in_progress")
     - 完了アクティビティの確認: get_activities(status="completed")
     - 最近1週間: get_activities(since="2026-03-09")
-    - orch管理のみ: get_activities(orch_managed=True, status="in_progress")
 
     ワークフロー位置: アクティビティ状況の確認時
 
@@ -1089,7 +1079,6 @@ def get_activities(
         until: ISO日付文字列。この日付以前に更新されたアクティビティのみ返す
         flavor: citation展開モード（raw/internal/readable、既定internal）。3値の意味・出力例は
                 docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
-        orch_managed: True/False を指定すると activities.orch_managed カラムでフィルタする。None（デフォルト）はフィルタなし
 
     呼び出し時、更新日時がSNOOZE_DURATION_DAYS（デフォルト3日）を超過したsnoozedアクティビティは
     pendingへ自動的に一括復活する（このツールの呼び出し自体が復活のトリガーになる）。
@@ -1101,7 +1090,7 @@ def get_activities(
     """
     flavor = _normalize_flavor(flavor)
     result = activity_service.get_activities(
-        tags, status, limit, since, until, orch_managed=orch_managed,
+        tags, status, limit, since, until,
     )
     if "error" not in result:
         _apply_flavor_to_items(result.get("activities", []), "activity", flavor)
@@ -1119,12 +1108,11 @@ def update_activity(
     title: Optional[str] = None,
     description: Optional[str] = None,
     tags: Optional[list[str]] = None,
-    orch_managed: Optional[bool] = None,
     closed_by: Optional[str] = None,
     closed_reason: Optional[str] = None,
 ) -> dict:
     """
-    アクティビティのステータス・タイトル・説明・タグ・orch_managedを更新する。
+    アクティビティのステータス・タイトル・説明・タグを更新する。
 
     典型的な使い方:
     - アクティビティ開始: update_activity(activity_id, status="in_progress")
@@ -1134,7 +1122,6 @@ def update_activity(
     - タイトル変更: update_activity(activity_id, title="新しいタイトル")
     - 説明更新: update_activity(activity_id, description="新しい説明")
     - タグ変更: update_activity(activity_id, tags=["domain:calm", "intent:implement"])
-    - orch管理に切り替え: update_activity(activity_id, orch_managed=True)
 
     ワークフロー位置: アクティビティ進行状況の更新時
 
@@ -1150,7 +1137,6 @@ def update_activity(
         title: 新しいタイトル（35字以内）
         description: 新しい説明
         tags: 新しいタグ配列（指定時は全置換。1個以上必須）
-        orch_managed: orchが管理するアクティビティかを切り替える（True/False/None）。Noneなら変更しない
         closed_by: activityを閉じた意思の主体（"user"|"claude"|"external"）。
             status="completed"と同時のときだけ受け付ける
         closed_reason: 閉じた理由（自由文）。status="completed"と同時のときだけ受け付ける
@@ -1161,7 +1147,7 @@ def update_activity(
         open_questions?, warning?}）も返す（拒否はしない）
     """
     return activity_service.update_activity(
-        activity_id, status, title, description, tags, orch_managed=orch_managed,
+        activity_id, status, title, description, tags,
         closed_by=closed_by, closed_reason=closed_reason,
     )
 
@@ -1522,11 +1508,7 @@ def check_in(
         next（今やるべきこと1件）に従う
     """
     flavor = _normalize_flavor(flavor)
-    try:
-        ctx = get_context()
-        session_id = ctx.session_id
-    except RuntimeError:
-        session_id = None
+    session_id = get_caller_session_id()
     result = _check_in(activity_id, session_id=session_id)
     if "error" not in result and flavor != "raw":
         _apply_flavor_to_check_in_result(result, flavor)

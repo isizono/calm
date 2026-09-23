@@ -12,7 +12,7 @@ description: 【必須】アクティビティを完了にする。「/af」「/
 1. **対象の特定**: 「現在のアクティビティ」を以下の優先順位で特定する
    - このセッション内でcheck-in・作成したactivityを対象にする
    - 候補が複数ある場合は**1ターンだけ**どれを完了にするか確認する
-   - セッション内に該当がなければ `get_activities(orch_managed=False, limit=15)` で一覧を提示し選んでもらう（`orch_managed` を省略するとフィルタなしになりorch管理アクティビティも混ざるため明示する。`limit` を省略するとデフォルト5件になり対象が一覧から漏れうるため明示する。タイトルベースで提示し、内部ID・数値は表示しない）
+   - セッション内に該当がなければ `get_activities(limit=15)` で一覧を提示し選んでもらう（`limit` を省略するとデフォルト5件になり対象が一覧から漏れうるため明示する。タイトルベースで提示し、内部ID・数値は表示しない）
 2. **終了条件（goal）の確認**: 手元に今のgoalブロックが無ければ `get_goal(activity_id=...)` で読み直し、`label` を見る（`get_goal`は`check_in`と違いactivityのstatusを変えない読み取り専用なので、statusを書き換えずに確認できる）。以下の `goal_id` は`get_goal`応答の `goal_id_raw` を指す
 3. `label` に応じて完了させる
    - `undefined`（goal無し）: `update_activity(status="completed", closed_by="user", closed_reason=...)`。事後にgoalを促すことはしない。ただし、ユーザーがその場で「何をもって終わったか」を条件として言ったときだけ、`set_goal(activity_id, goal={"new": {...条件はstate="satisfied"か理由付きwaivedで作成...}})` で全条件を終端にして作り、続けて `judge_goal` で判定する（`update_activity` は呼ばない。activityの完了はjudge_goal側で行われる）

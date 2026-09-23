@@ -5,7 +5,7 @@
 <!-- 再生成: uv run python scripts/dump_db_schema.py -->
 
 `migrations/` を通し番号順に全適用した結果として得られる、現在のテーブル/ビュー構造の機械的な写しである。
-カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0078）。
+カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0080）。
 
 「なぜこの形なのか」（設計判断の背景・変遷・既知の課題）は `docs/spec/db-schema.md` を参照。
 本ファイルは現在値のみを扱い、変遷の経緯（旧カラムの削除理由等）は記載しない。
@@ -24,7 +24,6 @@
 | updated_at | TIMESTAMP | NO | `CURRENT_TIMESTAMP` | — |
 | last_heartbeat_at | TEXT | YES | — | — |
 | last_heartbeat_session_id | TEXT | YES | — | — |
-| orch_managed | BOOLEAN | NO | `0` | — |
 | closed_at | TIMESTAMP | YES | `NULL` | — |
 | closed_by | TEXT | YES | `NULL` | — |
 | closed_reason | TEXT | YES | `NULL` | — |
@@ -43,7 +42,7 @@ CREATE TABLE "activities" (
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   last_heartbeat_at TEXT
-, last_heartbeat_session_id TEXT, orch_managed BOOLEAN NOT NULL DEFAULT 0, closed_at TIMESTAMP DEFAULT NULL, closed_by TEXT DEFAULT NULL
+, last_heartbeat_session_id TEXT, closed_at TIMESTAMP DEFAULT NULL, closed_by TEXT DEFAULT NULL
     CHECK (closed_by IS NULL
            OR (closed_by IN ('goal_judge', 'user', 'claude', 'external') AND closed_at IS NOT NULL)), closed_reason TEXT DEFAULT NULL)
 ```
@@ -1266,51 +1265,6 @@ CREATE TABLE search_telemetry (
     result_count INTEGER NOT NULL,
     timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 , results_json TEXT, diagnostics_json TEXT, caller_session_id TEXT)
-```
-
-</details>
-
-### sessions
-
-| カラム名 | 型 | NULL | デフォルト | PK |
-|---|---|---|---|---|
-| session_id | TEXT | NO | — | PK |
-| id_kind | TEXT | NO | — | — |
-| harness | TEXT | YES | — | — |
-| host | TEXT | YES | — | — |
-| cwd | TEXT | YES | — | — |
-| cli_session_id | TEXT | YES | — | — |
-| cli_pid | INTEGER | YES | — | — |
-| cli_resolve_status | TEXT | YES | — | — |
-| mode | TEXT | NO | `'interactive'` | — |
-| last_heartbeat_at | TIMESTAMP | YES | — | — |
-| last_tool_call_at | TIMESTAMP | YES | — | — |
-| last_checkin_activity_id | INTEGER | YES | — | — |
-| last_checkin_at | TIMESTAMP | YES | — | — |
-| ended_at | TIMESTAMP | YES | — | — |
-| ended_reason | TEXT | YES | — | — |
-
-インデックス:
-- `idx_sessions_cli_live` UNIQUE ON `sessions`(harness, cli_session_id)
-- `idx_sessions_live` ON `sessions`(last_heartbeat_at)
-
-<details><summary>CREATE文（生成元migration）</summary>
-
-```sql
-CREATE TABLE sessions (
-  session_id TEXT PRIMARY KEY,             -- 起動器の識別子。取れなければ 'eph:'||接続単位の揮発識別子
-  id_kind TEXT NOT NULL CHECK (id_kind IN ('bridge','ephemeral')),
-  harness TEXT, host TEXT, cwd TEXT,       -- 起動器の申告。hostは到達判定、cwdは診断
-  cli_session_id TEXT, cli_pid INTEGER,    -- 会話識別子。解決関数が充填する
-  cli_resolve_status TEXT CHECK (cli_resolve_status IS NULL
-    OR cli_resolve_status IN ('resolved','header_missing','not_found','stale')),
-  mode TEXT NOT NULL DEFAULT 'interactive' CHECK (mode IN ('interactive','headless')),
-  last_heartbeat_at TIMESTAMP,             -- 起動器の心拍(60秒)
-  last_tool_call_at TIMESTAMP,             -- 全ツール呼び出しの touch(60秒スロットル)
-  last_checkin_activity_id INTEGER, last_checkin_at TIMESTAMP,
-  ended_at TIMESTAMP, ended_reason TEXT CHECK (ended_reason IS NULL OR ended_reason IN ('unregister','ttl','superseded')),
-  CHECK ((ended_at IS NULL) = (ended_reason IS NULL))
-)
 ```
 
 </details>

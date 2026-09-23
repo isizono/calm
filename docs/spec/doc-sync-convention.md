@@ -57,8 +57,10 @@ git diff だけで判定できる規約を CI（`.github/workflows/test.yml`）�
 
 1. `migrations/*.sql` に差分がある PR は `docs/spec/db-schema.md` にも差分があること。例外はコミットメッセージまたは PR 本文に `[no-schema-shape-change]` を含める（index 追加のみ等、スキーマ形状が変わらない変更）
 2. `src/main.py` の `@mcp.tool()` デコレータ付き関数のシグネチャ・増減に差分がある PR は `docs/spec/mcp-tools.md` にも差分があること。例外マーカーは `[no-tool-surface-change]`
+3. `README.md` の「MCPツール」表に載っているツール名の集合は、`src/main.py` の `@mcp.tool()` 登録関数の集合と常に一致すること（head ref のスナップショット比較。co-change 判定ではないので例外マーカーは無い）
+4. `README.md` の「スキル」表に載っているスキル名の集合は、`skills/*/SKILL.md` が存在するディレクトリ名の集合と常に一致すること（同上、例外マーカーは無い）
 
-判定不能（`ast.parse` 失敗等）は警告のみで pass する。doc lint で開発を止めないためで、締め領域の防壁（マージ可否の最終ゲート）は別コンポーネントの管轄であり、この lint は地図メンテの補助輪という位置づけである。
+判定不能（`ast.parse` 失敗、対象セクションが見つからない等）は警告のみで pass する。doc lint で開発を止めないためで、締め領域の防壁（マージ可否の最終ゲート）は別コンポーネントの管轄であり、この lint は地図メンテの補助輪という位置づけである。
 
 PR 本文をチェック対象に含めるには環境変数 `CALM_PR_BODY` に本文を渡す（`.github/workflows/test.yml` では `${{ github.event.pull_request.body }}` を渡している）。CI fail 後に PR 本文へ例外マーカーを追記したときそれを反映させるため、ワークフローの `pull_request.types` に `edited` を含めている（本文編集で lint が再実行される）。
 
