@@ -169,8 +169,6 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
     空殻を出さず固定ナビだけを返す。
 
     重複排除: 上位階層に採用された activity は下位階層（および統計対象）から除外する。
-
-    orch_managed=1 のアクティビティは全階層で除外する。
     """
     domains = get_active_domains_with_conn(conn)
 
@@ -179,8 +177,6 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
     for domain in domains:
         for a in get_active_activities_by_tag_with_conn(conn, domain["tag_id"]):
             if a["id"] in seen_collect:
-                continue
-            if a.get("orch_managed"):
                 continue
             seen_collect.add(a["id"])
             all_active.append(a)
@@ -191,8 +187,6 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
     pinned_ids = {a["id"] for a in pinned_all}
     for a in pinned_all:
         if a["id"] in seen_collect:
-            continue
-        if a.get("orch_managed"):
             continue
         seen_collect.add(a["id"])
         all_active.append(a)

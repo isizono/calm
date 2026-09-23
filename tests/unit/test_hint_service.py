@@ -29,7 +29,6 @@ from src.services.hint_service import (
     _merge_cooldown_marker,
     get_hints,
     get_hints_with_conn,
-    is_orch_managed_activity,
 )
 from src.services.material_service import add_material
 from src.services.pin_service import add_pin
@@ -129,7 +128,6 @@ def _ensure_activity_management_tag() -> None:
 
 def _make_activity_for_cleanup(
     status: str = "pending",
-    orch_managed: bool = False,
     updated_at: str | None = STALE_TS,
     heartbeat_at: str | None = None,
     tag: str = STALE_TARGET_TAG,
@@ -144,7 +142,6 @@ def _make_activity_for_cleanup(
         title="[作業] x", description="d",
         tags=[tag],
         check_in=False,
-        orch_managed=orch_managed,
     )
     activity_id = activity["activity_id"]
     conn = get_connection()
@@ -484,66 +481,6 @@ class TestActivityScope:
 
         hints = get_hints("activity", activity["activity_id"])
         assert any(h["type"] == "recompose_bootstrap" for h in hints)
-
-
-class TestIsOrchManagedActivity:
-    def test_true_when_orch_managed_column_set(self, temp_db):
-        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
-        dec = add_decision(decision="d", reason="r", topic_id=topic["topic_id"])
-        a = add_activity(
-            title="[orch] x", description="d",
-            tags=[DOMAIN_TAG, "intent:implement"],
-            related=[{"type": "decision", "ids": [dec["decision_id"]]}],
-            check_in=False,
-            orch_managed=True,
-        )
-        conn = get_connection()
-        try:
-            assert is_orch_managed_activity(conn, a["activity_id"]) is True
-        finally:
-            conn.close()
-
-    def test_false_when_orch_managed_column_not_set(self, temp_db):
-        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
-        dec = add_decision(decision="d", reason="r", topic_id=topic["topic_id"])
-        a = add_activity(
-            title="[作業] x", description="d",
-            tags=[DOMAIN_TAG, "intent:implement"],
-            related=[{"type": "decision", "ids": [dec["decision_id"]]}],
-            check_in=False,
-        )
-        conn = get_connection()
-        try:
-            assert is_orch_managed_activity(conn, a["activity_id"]) is False
-        finally:
-            conn.close()
-
-    def test_false_when_only_tag_present_without_column(self, temp_db):
-        """orch-managed タグだけ付与しても orch_managed カラムが 0 なら False (カラム判定優先)。
-
-        移行期にタグだけ残った状態でも、判定はカラム値のみに依存する。
-        """
-        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
-        dec = add_decision(decision="d", reason="r", topic_id=topic["topic_id"])
-        a = add_activity(
-            title="[orch] x", description="d",
-            tags=[DOMAIN_TAG, "orch-managed", "intent:implement"],
-            related=[{"type": "decision", "ids": [dec["decision_id"]]}],
-            check_in=False,
-        )
-        conn = get_connection()
-        try:
-            assert is_orch_managed_activity(conn, a["activity_id"]) is False
-        finally:
-            conn.close()
-
-    def test_false_for_unknown_activity_id(self, temp_db):
-        """存在しない activity_id は False (フェイルオープン)。"""
-        conn = get_connection()
-        try:
-            assert is_orch_managed_activity(conn, 999_999) is False
-        finally:
-            conn.close()
 
 
 class TestIsMarkerActiveHelper:
@@ -960,19 +897,6 @@ class TestCountStaleActivitiesHelper:
             assert _count_stale_activities(conn) == 0
         finally:
             conn.close()
-
-    def test_includes_orch_managed_activity(self, temp_db):
-        """orch_managedは旧ow運用体系の名残の死んだカラムであり、本判定の
-        母集団フィルタには使わない。orch_managed=Trueのactivityも他と同様に
-        カウント対象に含まれる(母集団はstatusのみで判定するユーザー裁定)"""
-        _make_activity_for_cleanup(status="pending", orch_managed=True)
-
-        conn = get_connection()
-        try:
-            assert _count_stale_activities(conn) == 1
-        finally:
-            conn.close()
-
 
 class TestActivityCleanupHint:
     """scope=activityで発火するactivity_cleanup hintの統合テスト。

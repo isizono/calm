@@ -2,6 +2,10 @@
 
 0045適用後に activities テーブルへ orch_managed 列が追加され、
 既存の素タグ "orch-managed" を持つ activity の orch_managed が 1 でバックフィルされることを確認する。
+
+orch_managed 列は後続の migration（0078）で削除されるため、本テストは
+「0045 まで適用した時点」の DB で検証する（最新までの全 migration を
+適用した DB では 0078 によりこの列は既に存在しない）。
 """
 import os
 import sqlite3
@@ -12,18 +16,30 @@ from yoyo import default_migration_table, read_migrations
 from yoyo.connections import parse_uri
 from yoyo.migrations import MigrationList
 
-from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection, init_database
+from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection
 from src.services.tag_service import _injected_tags
 from test_migrations.conftest import db_before_migration, get_column_names
 
 
 @pytest.fixture
 def migrated_db():
-    """全migration（0045含む）を適用済みのテスト用DBを提供する。"""
+    """0045まで（0045含む）を適用したテスト用DBを提供する。
+
+    orch_managed 列は 0078 で削除されるため、最新までの全 migration を
+    適用した DB では検証できない。
+    """
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
         os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
+
+        parsed = parse_uri(f"sqlite:///{db_path}")
+        backend = _VecSQLiteBackend(parsed, default_migration_table)
+        backend.init_database()
+        all_migs = read_migrations(str(MIGRATIONS_DIR))
+        upto_0045 = MigrationList([m for m in all_migs if m.id < "0046"])
+        with backend.lock():
+            backend.apply_migrations(upto_0045)
+
         _injected_tags.clear()
         yield db_path
         if "DISCUSSION_DB_PATH" in os.environ:
