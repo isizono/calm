@@ -76,6 +76,12 @@ class PinnedPolicy:
 
 @dataclass(frozen=True)
 class BudgetPolicy:
+    """protected_pathsは「予算に数えるが削らない」パスの宣言であり、cut_steps・
+    pinnedの対象パスと重ならないことを__post_init__で検証する（保護の実体は
+    「cut_stepsの対象に含めない」ことそのものであり、宣言と実装がずれて
+    protected_pathsに載っているパスが将来のcut_steps追加でうっかり削られる、
+    という事故をこの検証で防ぐ）。
+    """
     budget_chars: int
     hard_max_chars: int
     protected_paths: frozenset[str]
@@ -83,6 +89,14 @@ class BudgetPolicy:
     pinned: PinnedPolicy | None
     cut_steps: tuple[CutStep, ...]
     hard_max_pointer: Callable[[dict], list[dict]] | None = None
+
+    def __post_init__(self) -> None:
+        cut_paths = {step.path for step in self.cut_steps}
+        overlap = cut_paths & self.protected_paths
+        if overlap:
+            raise ValueError(f"protected_pathsとcut_stepsが重複している: {sorted(overlap)}")
+        if self.pinned is not None and self.pinned.path in self.protected_paths:
+            raise ValueError(f"protected_pathsにpinned.path（{self.pinned.path}）が含まれている")
 
 
 def _uncounted_paths(policy: BudgetPolicy) -> set[str]:
@@ -112,40 +126,52 @@ def _item_id(item: dict) -> int | None:
     return item.get("id_raw") if "id_raw" in item else item.get("id")
 
 
-def _apply_cut_step(response: dict, step: CutStep, budget_chars: int, uncounted: set[str]) -> dict | None:
+def _apply_cut_step(
+    response: dict, step: CutStep, budget_chars: int, uncounted: set[str], total: int
+) -> tuple[dict | None, int]:
+    """1つのCutStepを適用する。呼び出し側が保持する実測総字数(total)を受け取り、
+    更新後の総字数と併せて返す（tail_listモードでpopのたびに応答全体を
+    再シリアライズするコストを避けるため、除去した要素自身の字数だけを引く
+    近似で追跡し、ステップの終わりに一度だけ正確な値へ再同期する）。
+    """
     value = response.get(step.path)
 
     if step.mode == "tail_list":
         if not isinstance(value, list) or not value:
-            return None
+            return None, total
         original_len = len(value)
-        while value and _total_chars(response, uncounted) > budget_chars:
-            value.pop()
+        while value and total > budget_chars:
+            removed = value.pop()
+            # 除去要素のJSON長＋区切りカンマ分を近似で差し引く。正確な値は
+            # ループ終了後にresyncする（4.2節: 数%のずれは近似として許容する）。
+            total -= measure_chars(removed) + 1
         cut = original_len - len(value)
         if cut == 0:
-            return None
+            return None, total
+        total = _total_chars(response, uncounted)
         if step.coverage_key is not None:
             _rewrite_coverage_numerator(response, step.coverage_key, len(value))
         cut_info = {"section": step.path, "kept": len(value), "cut": cut}
         if step.pointer is not None:
             cut_info["next"] = step.pointer(response)
-        return cut_info
+        return cut_info, total
 
     if step.mode == "stub_dict":
         if not isinstance(value, dict) or not value:
-            return None
-        if _total_chars(response, uncounted) <= budget_chars:
-            return None
+            return None, total
+        if total <= budget_chars:
+            return None, total
         original_chars = measure_chars(value)
         stub = {"id_raw": _item_id(value), "title": value.get("title"), "chars": original_chars}
         if step.pointer is not None:
             stub["next"] = step.pointer(response)
         response[step.path] = stub
+        total = _total_chars(response, uncounted)
         if step.coverage_key is not None:
             _rewrite_coverage_numerator(response, step.coverage_key, 0)
-        return {"section": step.path, "kept": 0, "cut": 1}
+        return {"section": step.path, "kept": 0, "cut": 1}, total
 
-    return None
+    return None, total
 
 
 def _shrink_pinned(response: dict, pinned_policy: PinnedPolicy, slot_chars: int) -> dict | None:
@@ -260,30 +286,38 @@ def apply_budget(response: dict, policy: BudgetPolicy) -> dict:
         return response
 
     cuts: list[dict] = []
+    total = before
 
     if policy.pinned is not None:
         cut = _shrink_pinned(response, policy.pinned, policy.pinned.slot_chars)
         if cut:
             cuts.append(cut)
+            total = _total_chars(response, uncounted)
 
     for step in policy.cut_steps:
-        if _total_chars(response, uncounted) <= policy.budget_chars:
+        if total <= policy.budget_chars:
             break
-        cut = _apply_cut_step(response, step, policy.budget_chars, uncounted)
+        cut, total = _apply_cut_step(response, step, policy.budget_chars, uncounted, total)
         if cut:
             cuts.append(cut)
 
-    if policy.pinned is not None and _total_chars(response, uncounted) > policy.budget_chars:
+    if policy.pinned is not None and total > policy.budget_chars:
         cut = _shrink_pinned(response, policy.pinned, 0)
         if cut:
             cuts.append(cut)
+            total = _total_chars(response, uncounted)
 
-    after = _total_chars(response, uncounted)
+    after = total
     over_budget = after > policy.budget_chars
 
     hard_over = False
     if measure_chars(response) > policy.hard_max_chars:
         hard_over = _apply_hard_max(response, policy)
+        if hard_over:
+            # activity.descriptionはprotected（総字数に数える）なので、切った分だけ
+            # after/over_budgetも実際の最終サイズへ合わせ直す
+            after = _total_chars(response, uncounted)
+            over_budget = after > policy.budget_chars
 
     truncated = {
         "budget": policy.budget_chars,

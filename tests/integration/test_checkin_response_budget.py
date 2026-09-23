@@ -115,7 +115,11 @@ class TestBudgetAppliedToRealCheckIn:
         result = tool_check_in(activity_id)
 
         assert "truncated" in result
-        assert result["truncated"]["over_budget"] is False or result["truncated"]["before"] > result["truncated"]["budget"]
+        # pinnedを枠(3,000字)まで縮めるだけで全体は十分予算内に収まる
+        # （before=切り詰め前は予算超過、after=切り詰め後は予算内に収まる）
+        assert result["truncated"]["before"] > result["truncated"]["budget"]
+        assert result["truncated"]["after"] <= result["truncated"]["budget"]
+        assert result["truncated"]["over_budget"] is False
 
         pinned_materials = {m["id_raw"]: m for m in result["pinned"]["materials"]}
         index_item = pinned_materials[index_mat]

@@ -257,3 +257,54 @@ class TestHardMax:
         out = rb.apply_budget(response, policy)
         assert out["activity"]["description"] == "d" * 200
         assert "hard_max" not in out.get("truncated", {})
+
+    def test_after_reflects_actual_size_once_hard_max_cuts_description(self):
+        """truncated.afterはhard_max発動後の実サイズと一致する（hard_max発動前の
+        古い値のままにならない）。"""
+        response = {"activity": {"description": "d" * 40000}, "list_a": []}
+        policy = _policy(budget_chars=100, hard_max_chars=1000)
+        out = rb.apply_budget(response, policy)
+        assert out["truncated"]["hard_max"] is True
+        # truncated自体を除いた実サイズ（apply_budget内でtotalを数える対象と同じ範囲）
+        actual_size_without_truncated_key = rb.measure_chars(
+            {k: v for k, v in out.items() if k != "truncated"}
+        )
+        assert out["truncated"]["after"] == actual_size_without_truncated_key
+        assert out["truncated"]["after"] < 40000
+
+    def test_falsification_after_stale_without_resync(self):
+        """afterがhard_max前の値のまま（今回の修正が無効化された場合）だと、
+        実サイズと食い違ってこのテストが落ちる、という裏取り。"""
+        response = {"activity": {"description": "d" * 40000}, "list_a": []}
+        policy = _policy(budget_chars=100, hard_max_chars=1000)
+        stale_after = rb.measure_chars(response)  # hard_max適用前の（古い）total相当
+        out = rb.apply_budget(response, policy)
+        assert out["truncated"]["after"] != stale_after
+
+
+class TestBudgetPolicyValidation:
+    """protected_pathsは宣言だけでなく、cut_steps/pinnedとの重複が無いことを
+    構築時に検証する（宣言と実装のずれを事故る前に検出する）。"""
+
+    def test_rejects_cut_step_targeting_a_protected_path(self):
+        with pytest.raises(ValueError):
+            rb.BudgetPolicy(
+                budget_chars=100, hard_max_chars=1000,
+                protected_paths=frozenset({"activity"}),
+                capped_sections=(), pinned=None,
+                cut_steps=(rb.CutStep(path="activity", mode="tail_list"),),
+            )
+
+    def test_rejects_pinned_path_that_is_also_protected(self):
+        with pytest.raises(ValueError):
+            rb.BudgetPolicy(
+                budget_chars=100, hard_max_chars=1000,
+                protected_paths=frozenset({"pinned"}),
+                capped_sections=(),
+                pinned=rb.PinnedPolicy(path="pinned", slot_chars=10, content_field={}),
+                cut_steps=(),
+            )
+
+    def test_falsification_non_overlapping_policy_still_constructs(self):
+        policy = _policy()  # protected_paths={"activity","kept"}, cut_steps targets list_a/list_b
+        assert policy.protected_paths == frozenset({"activity", "kept"})
