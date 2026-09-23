@@ -181,6 +181,24 @@ class TestWriteFeedbackEntryRevival:
         assert result["ok"] is False
         assert result["error"]["code"] == "CONFLICT"
 
+    def test_revival_with_wrong_read_mark_and_invalid_body_rejected_as_conflict(self, temp_db):
+        """read_markとbodyの両方が不正な入力では、内容検証より先にread_mark検証が
+        走りCONFLICTを返す(_apply_updateと同じ優先順位。claude-reviewが指摘した
+        変更経路間の非対称性の解消を確認する)。"""
+        _create("revive-me")
+        fs.write_feedback_entry(name="revive-me", action="delete", read_mark=0)
+        result = fs.write_feedback_entry(
+            name="revive-me",
+            action="create",
+            body="",  # 不正(非空文字列でない)
+            strength="notify",
+            timing="utterance",
+            condition={"tool": None, "all": []},
+            read_mark=999,  # 不正(古い)
+        )
+        assert result["ok"] is False
+        assert result["error"]["code"] == "CONFLICT"
+
     def test_revival_with_correct_read_mark_clears_deleted_at_and_keeps_notes(self, temp_db):
         _create("revive-me")
         note_result = fs.add_feedback_note(name="revive-me", kind="stumble", body="躓いた")
@@ -252,6 +270,22 @@ class TestWriteFeedbackEntryUpdate:
             timing="utterance",
             condition={"tool": None, "all": []},
             read_mark=999,
+        )
+        assert result["ok"] is False
+        assert result["error"]["code"] == "CONFLICT"
+
+    def test_update_with_wrong_read_mark_and_invalid_body_rejected_as_conflict(self, temp_db):
+        """read_markとbodyの両方が不正な入力でもCONFLICTが優先される
+        (revival側と同じ優先順位であることの確認)。"""
+        _create("upd")
+        result = fs.write_feedback_entry(
+            name="upd",
+            action="update",
+            body="",  # 不正(非空文字列でない)
+            strength="notify",
+            timing="utterance",
+            condition={"tool": None, "all": []},
+            read_mark=999,  # 不正(古い)
         )
         assert result["ok"] is False
         assert result["error"]["code"] == "CONFLICT"

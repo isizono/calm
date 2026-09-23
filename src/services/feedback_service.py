@@ -48,12 +48,19 @@ class _Rejected(Exception):
 # ---------------------------------------------------------------------------
 
 
-def _fetch_notes(conn: sqlite3.Connection, entry_id: int) -> list[dict]:
+def _fetch_notes_with_read_mark(conn: sqlite3.Connection, entry_id: int) -> tuple[list[dict], int]:
+    """ノート一覧とread_mark(末尾行のid、無ければ0)を1クエリで取得する。
+
+    ノートはidの昇順で並ぶので、末尾行のidが常にMAX(id)と一致する
+    (feedback_notesは追記専用でidは単調増加のため)。
+    """
     rows = conn.execute(
-        "SELECT kind, body, created_at FROM feedback_notes WHERE entry_id = ? ORDER BY id",
+        "SELECT id, kind, body, created_at FROM feedback_notes WHERE entry_id = ? ORDER BY id",
         (entry_id,),
     ).fetchall()
-    return [{"kind": r["kind"], "body": r["body"], "created_at": r["created_at"]} for r in rows]
+    notes = [{"kind": r["kind"], "body": r["body"], "created_at": r["created_at"]} for r in rows]
+    read_mark = rows[-1]["id"] if rows else 0
+    return notes, read_mark
 
 
 def _read_mark(conn: sqlite3.Connection, entry_id: int) -> int:
@@ -64,6 +71,7 @@ def _read_mark(conn: sqlite3.Connection, entry_id: int) -> int:
 
 
 def _row_to_entry(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
+    notes, read_mark = _fetch_notes_with_read_mark(conn, row["id"])
     return {
         "id": row["id"],
         "name": row["name"],
@@ -77,8 +85,8 @@ def _row_to_entry(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
         "deleted_at": row["deleted_at"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
-        "notes": _fetch_notes(conn, row["id"]),
-        "read_mark": _read_mark(conn, row["id"]),
+        "notes": notes,
+        "read_mark": read_mark,
     }
 
 
@@ -190,15 +198,20 @@ def _apply_create(conn: sqlite3.Connection, name, existing, body, ref, strength,
     if existing is not None and existing["deleted_at"] is None:
         raise _Rejected(_reject("DUPLICATE", f"name '{name}' は既に使われている"))
 
+    if existing is not None:
+        # 削除済みエントリの名前を再利用する復活。既存エントリへの変更そのものなので
+        # read_markを要求する(骨格「変更前に必ずノートが読まれる」を仕組みで保証する)。
+        # read_mark検証を内容検証より先に行う(_apply_updateと同じ順序に揃える。
+        # read_markが古くbodyも不正、という入力でCONFLICT/VALIDATION_ERRORの
+        # どちらが返るかが変更経路によって食い違わないようにするため)。
+        _check_read_mark(conn, existing["id"], read_mark)
+
     body = _require_body(body)
     ref = _check_ref(ref)
     normalized = _validate_content(strength, timing, condition)
     condition_json = json.dumps(normalized, ensure_ascii=False)
 
     if existing is not None:
-        # 削除済みエントリの名前を再利用する復活。既存エントリへの変更そのものなので
-        # read_markを要求する(骨格「変更前に必ずノートが読まれる」を仕組みで保証する)。
-        _check_read_mark(conn, existing["id"], read_mark)
         conn.execute(
             """UPDATE feedback_entries
                SET body = ?, ref = ?, strength = ?, timing = ?, condition_json = ?,

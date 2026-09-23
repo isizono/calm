@@ -144,6 +144,11 @@ def _evaluate_clause(
         return False
     text = text[:MAX_EVAL_TEXT_LEN]
     if clause["op"] == "regex":
+        # ponytail: タイムアウト・破局的バックトラック対策なし。strength='block'
+        # (timing='pre_tool'固定)はPreToolUseの同期パスでこの評価結果を待つため、
+        # 悪い正規表現を書けば該当セッションのツール実行が止まりうる。エントリを
+        # 書けるのはClaude自身のみで外部入力ではないため最小形では許容する。
+        # 悪化したら書き込み時の複雑度検査 or signal / re2 等への切り替えを検討する。
         return re.search(clause["value"], text) is not None
     return len(text) > clause["value"]  # len_gt
 
