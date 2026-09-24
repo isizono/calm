@@ -670,16 +670,19 @@ class TestBridgeStdinEofWithHeartbeat:
 
         # 実パイプを使い、本物の stdin EOF を発生させる。
         # heartbeat_loop が並行動作している証拠を残すため、書き込み端は
-        # 即座にではなく別スレッドで少し待ってから閉じる
-        # （heartbeat_interval_sec=0.02sより十分長い待ちを挟み、EOF前に
-        # 複数回 register が呼ばれることを保証する）。
+        # 即座にではなく別スレッドで閉じる。固定sleepで待つとCI負荷で
+        # イベントループのスケジューリングが遅れたときheartbeatが一度も
+        # 走らないままEOFに達し不安定になるため、register_calls が
+        # 実際に1件以上になるまで条件待ちする（タイムアウトは安全弁）。
         import threading
 
         read_fd, write_fd = os.pipe()
 
         def _close_write_end_later() -> None:
             import time as _time
-            _time.sleep(0.1)
+            deadline = _time.monotonic() + 5.0
+            while not register_calls and _time.monotonic() < deadline:
+                _time.sleep(0.005)
             os.close(write_fd)
 
         threading.Thread(target=_close_write_end_later, daemon=True).start()
