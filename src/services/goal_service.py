@@ -1520,6 +1520,41 @@ def _full_condition_entry(c: dict) -> dict:
     return entry
 
 
+def _topic_ids_for_activities(conn: sqlite3.Connection, activity_ids: list[int]) -> list[int]:
+    """複数activityが直接属するtopicのidを重複除去して返す(親帰属のbelongs_toのみ、逆引きは含まない)。"""
+    if not activity_ids:
+        return []
+    placeholders = ",".join("?" * len(activity_ids))
+    rows = conn.execute(
+        f"""
+        SELECT DISTINCT target_id FROM relations
+        WHERE source_type = 'activity' AND source_id IN ({placeholders})
+          AND target_type = 'topic' AND relation_type = 'belongs_to'
+        """,
+        tuple(activity_ids),
+    ).fetchall()
+    return [r["target_id"] for r in rows]
+
+
+def _log_count_since(conn: sqlite3.Connection, topic_ids: list[int], since: str) -> int:
+    """指定topic群へ、指定時刻以降に付いた(取り消されていない)ログの件数を返す。"""
+    if not topic_ids:
+        return 0
+    placeholders = ",".join("?" * len(topic_ids))
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS c
+        FROM discussion_logs d
+        JOIN relations r ON r.source_type = 'log' AND r.source_id = d.id
+                         AND r.target_type = 'topic' AND r.relation_type = 'belongs_to'
+                         AND r.target_id IN ({placeholders})
+        WHERE d.retracted_at IS NULL AND d.created_at >= ?
+        """,
+        (*topic_ids, since),
+    ).fetchone()
+    return row["c"]
+
+
 def _linked_activities_payload(conn: sqlite3.Connection, goal_id: int) -> list[dict]:
     rows = conn.execute(
         """
@@ -1549,6 +1584,11 @@ def get_goal(
     goal_id・activity_id・handleのちょうど1つを指定する。activity_idを指定して
     goalが無い場合は、未定義ならlabel=undefinedとnext、不要ならlabel=not_needed
     とreason（規則1・2が一致したときはnextも）を返す。
+
+    goalが見つかった場合、logs_since_created（{count, since}）を常に添える。
+    countは、このgoalに紐づく全activityが直接属するtopicへ、goalのcreated_at
+    以降に付いた（取り消されていない）ログの件数。委譲先が記録したかどうかを、
+    受け取る側が自己申告に頼らず確かめるための事実。
     """
     specified = [v for v in (goal_id, activity_id, handle) if v is not None]
     if len(specified) != 1:
@@ -1608,6 +1648,13 @@ def get_goal(
         block, label = _goal_core_fields(goal_row, enriched, next_info)
         block["conditions"] = [_full_condition_entry(c) for c in enriched]
         block["activities"] = _linked_activities_payload(conn, resolved_goal_id)
+
+        topic_ids = _topic_ids_for_activities(conn, [a["id_raw"] for a in block["activities"]])
+        block["logs_since_created"] = {
+            "count": _log_count_since(conn, topic_ids, goal_row["created_at"]),
+            "since": goal_row["created_at"],
+        }
+
         if label == "judge_ready":
             closing_ids = [a["id_raw"] for a in block["activities"] if a["status"] != "completed"]
             open_qs = _open_questions_for_activities(conn, closing_ids)

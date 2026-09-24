@@ -95,6 +95,19 @@ class HookState:
         """SessionStart backfill hook の連続失敗回数を保存"""
         self._write(self._path("sanitize_failure_count"), str(count))
 
+    # --- recording_obligation_fired ---
+    #
+    # 記録義務block(完了の合図があるのにcheck_in以降add_logsが無いときのblock)
+    # の発火済みフラグ。block_count(2回連続blockしないための短期カウンタ、
+    # approveのたびにリセットされる)とは独立させ、1セッションにつき1回きりの
+    # 意味論をここで保証する。
+
+    def get_recording_obligation_fired(self) -> bool:
+        return self._path("recording_obligation_fired").exists()
+
+    def set_recording_obligation_fired(self) -> None:
+        self._write(self._path("recording_obligation_fired"), "1")
+
     # --- current_turn ---
 
     def get_current_turn(self) -> int:

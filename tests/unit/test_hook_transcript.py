@@ -511,6 +511,73 @@ class TestExtractAddDecisionsTopicIds:
         assert tool_events[0]["topic_ids"] == [7]
 
 
+# --- 完了の合図(SendMessage / update_goal satisfied) ---
+
+
+class TestCompletionSignalEvents:
+    """SendMessage・update_goalのsatisfiedがtoolイベントとして拾われる"""
+
+    def test_send_message_is_captured_as_tool_event(self):
+        entries = [
+            {"type": "user", "message": {"content": "hi"}},
+            _make_assistant_entry(tool_calls=["SendMessage"], tool_inputs=[{"to": "main", "message": "done"}]),
+        ]
+        events, _ = extract_events([_entry(e) for e in entries], 0)
+        tool_events = [e for e in events if e["e"] == "tool" and e["name"] == "SendMessage"]
+        assert len(tool_events) == 1
+
+    def test_non_calm_non_signal_tool_is_ignored(self):
+        entries = [
+            {"type": "user", "message": {"content": "hi"}},
+            _make_assistant_entry(tool_calls=["Bash"], tool_inputs=[{"command": "ls"}]),
+        ]
+        events, _ = extract_events([_entry(e) for e in entries], 0)
+        assert events == []
+
+    def test_update_goal_with_satisfied_change_flagged(self):
+        entries = [
+            {"type": "user", "message": {"content": "hi"}},
+            _make_assistant_entry(
+                tool_calls=[f"{_LOCAL_PREFIX}update_goal"],
+                tool_inputs=[{"goal_id": 1, "changes": [{"op": "set", "id": 5, "state": "satisfied"}]}],
+            ),
+        ]
+        events, _ = extract_events([_entry(e) for e in entries], 0)
+        tool_events = [e for e in events if e["e"] == "tool" and e["name"] == "update_goal"]
+        assert len(tool_events) == 1
+        assert tool_events[0]["satisfied"] is True
+
+    def test_update_goal_without_satisfied_change_not_flagged(self):
+        entries = [
+            {"type": "user", "message": {"content": "hi"}},
+            _make_assistant_entry(
+                tool_calls=[f"{_LOCAL_PREFIX}update_goal"],
+                tool_inputs=[{"goal_id": 1, "changes": [{"op": "set", "id": 5, "state": "open"}]}],
+            ),
+        ]
+        events, _ = extract_events([_entry(e) for e in entries], 0)
+        tool_events = [e for e in events if e["e"] == "tool" and e["name"] == "update_goal"]
+        assert len(tool_events) == 1
+        assert "satisfied" not in tool_events[0]
+
+    def test_update_goal_with_add_op_not_flagged(self):
+        """opがsetでない(add)場合、stateがsatisfiedでもフラグを立てない
+        (addは新規条件の登録であり、完了の合図として扱わない)"""
+        entries = [
+            {"type": "user", "message": {"content": "hi"}},
+            _make_assistant_entry(
+                tool_calls=[f"{_LOCAL_PREFIX}update_goal"],
+                tool_inputs=[{
+                    "goal_id": 1,
+                    "changes": [{"op": "add", "statement": "x", "actor": "claude", "state": "satisfied"}],
+                }],
+            ),
+        ]
+        events, _ = extract_events([_entry(e) for e in entries], 0)
+        tool_events = [e for e in events if e["e"] == "tool" and e["name"] == "update_goal"]
+        assert "satisfied" not in tool_events[0]
+
+
 # --- extract_ask_registrations ---
 
 

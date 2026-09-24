@@ -140,6 +140,26 @@ def main() -> None:
                     "該当するものがなければadd_activityで作成してください。"
                 )
                 return
+        elif (
+            not state.get_recording_obligation_fired()
+            and not (session_id and is_recorder_attached(session_id))
+            and _has_completion_signal(all_events)
+            and not _has_add_logs_since_first_checkin(all_events)
+        ):
+            # 記録義務block: 完了の合図(update_goalのsatisfiedかSendMessage)が
+            # あるのに、check_in以降にadd_logsが無いときだけ発火する。
+            # 1セッションにつき1回だけ: block_count(2回連続blockしないための
+            # 短期カウンタ、approveのたびにリセットされる)には乗せず、
+            # 専用の永続フラグ(recording_obligation_fired)で一度きりに保証する。
+            # 記録役が付いているセッションは、記録の責務が記録役に移っている
+            # ため対象外にする(nudge判定の抑制と同じ扱い)。
+            state.set_recording_obligation_fired()
+            state.increment_block_count()
+            harness.emit_block(
+                "完了の合図（update_goalのsatisfiedまたはSendMessage）がありますが、"
+                "check-in以降にadd_logsが見当たりません。経緯をadd_logsで記録してから終了してください。"
+            )
+            return
 
         # 7. nudge判定 + 状態更新 + approve
         state.reset_block_count()
@@ -177,6 +197,36 @@ def _is_in_skill_span(events: list[dict], current_turn: int) -> bool:
 
     # 直近turnにskillイベントがあるか（= skillイベントがないturnが来たらSpan終了）
     return last_skill_turn >= current_turn
+
+
+def _has_completion_signal(events: list[dict]) -> bool:
+    """完了の合図(update_goalのsatisfiedかSendMessage)があるかを判定する。"""
+    return any(
+        e["e"] == "tool" and (e.get("name") == "SendMessage" or (e.get("name") == "update_goal" and e.get("satisfied")))
+        for e in events
+    )
+
+
+def _has_add_logs_since_first_checkin(events: list[dict]) -> bool:
+    """最初のcheck_in/add_activity以降にadd_logsの呼び出しがあるかを判定する。
+
+    最後のcheck_inではなく最初のcheck_inを基準にする。goal.nextを読み直す
+    ためだけに同じactivityへcheck_inし直す行動は普通にあり、最後のcheck_in
+    基準だとその都度add_logsの窓がリセットされ、経緯を書いていても
+    誤ってblockされてしまうため。
+    check_in自体が無い場合はこの条件の対象外（check-in強制blockが別途扱う）。
+    """
+    first_checkin_turn = None
+    for e in events:
+        if e["e"] == "tool" and e.get("name") in _CHECKIN_TOOLS:
+            first_checkin_turn = e.get("turn", 0)
+            break
+    if first_checkin_turn is None:
+        return False
+    return any(
+        e["e"] == "tool" and e.get("name") == "add_logs" and e.get("turn", 0) >= first_checkin_turn
+        for e in events
+    )
 
 
 def _turns_since_last_recording(events: list[dict], current_turn: int) -> int:
