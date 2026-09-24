@@ -717,7 +717,9 @@ def judge_goal_with_conn(
         decision_specs = [
             ("decision", c["bound_id"]) for c in satisfied_conditions if c["bound_type"] == "decision"
         ]
-        decision_states = _fetch_bound_states(conn, decision_specs) if decision_specs else {}
+        decision_states = (
+            _fetch_bound_states(conn, decision_specs, exclude_goal_id=None) if decision_specs else {}
+        )
         broken = [
             c
             for c in satisfied_conditions
@@ -817,7 +819,8 @@ def judge_goal(
 def _fetch_bound_states(
     conn: sqlite3.Connection,
     bound_specs: list[tuple[str, int]],
-    exclude_goal_id: Optional[int] = None,
+    *,
+    exclude_goal_id: Optional[int],
 ) -> dict:
     """複数の束縛先の現在状態を、束縛の型（最大3種）ごとに1本の問い合わせで読む。
 
@@ -825,7 +828,10 @@ def _fetch_bound_states(
     decisionは、生きた置き換え（retractされていないdecisionからkind='replaces'の辺で
     直接指されていること）も同じ1本の問い合わせでまとめて読む。
 
-    exclude_goal_idは、今まさに読んでいるgoal自身のid。activity束縛の束縛先が
+    exclude_goal_idはキーワード専用の必須引数（呼び出し元に自己参照循環を意識
+    させるため既定値を持たせない。渡さなければ呼び出し時点でTypeErrorになる）。
+    今まさに読んでいるgoal自身のid、または自己参照の懸念が無い呼び出し
+    （decision束縛しか読まない等）ならNoneを明示的に渡す。activity束縛の束縛先が
     このgoalに紐づいている（＝自分自身のgoalを束縛先にする循環）場合、goal無し
     （不要印・未定義と同じ扱い）としてstatusで読む。自分のgoalは自分が閉じる
     まで判定されないため、goal経由の判定に頼ると開いている間ずっとpendingの
@@ -1058,7 +1064,7 @@ def _enrich_conditions(condition_rows, bound_states: dict) -> list[dict]:
 
 
 def _bound_states_for_conditions(
-    conn: sqlite3.Connection, condition_rows, exclude_goal_id: Optional[int] = None
+    conn: sqlite3.Connection, condition_rows, *, exclude_goal_id: Optional[int]
 ) -> dict:
     bound_specs = [(c["bound_type"], c["bound_id"]) for c in condition_rows if c["bound_type"] is not None]
     if not bound_specs:
@@ -1292,12 +1298,12 @@ def _rule11_claude_turn(ctx: dict) -> dict:
     """規則11（claudeの手番）。束縛先activityが閉じているのにそのgoalが未判定の
     条件（bound_child_closed_unjudged）は、担い手の実際のactorに関わらずここで
     拾う。確かめるのがClaudeの仕事であることに変わりはないため、返すactorは
-    常に'claude'で固定する（下のreturn文と同じ）。
+    常に'claude'で固定する（下のreturn文と同じ）。この状態は放置するほど
+    「判定せずに閉じた子」が積み上がるため、idの大小に関わらず、単なる
+    claude担当の未束縛条件（claude_open）より優先して選ぶ。
     """
-    pool = {c["id"]: c for c in ctx["claude_open"]}
-    for c in ctx["bound_child_closed_unjudged"]:
-        pool.setdefault(c["id"], c)
-    chosen = sorted(pool.values(), key=lambda c: c["id"])[0]
+    chosen_pool = ctx["bound_child_closed_unjudged"] or ctx["claude_open"]
+    chosen = sorted(chosen_pool, key=lambda c: c["id"])[0]
     what = chosen["statement"]
     bound_state = chosen["bound_state"]
     if chosen["bound_type"] == "activity" and bound_state and bound_state.get("title"):
