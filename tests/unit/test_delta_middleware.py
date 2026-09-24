@@ -437,6 +437,53 @@ async def test_self_write_does_not_drop_pending_delta_from_other_session(scope, 
 
 
 @pytest.mark.asyncio
+async def test_self_write_does_not_drop_pending_delta_from_other_session_for_materials(scope, monkeypatch):
+    """test_self_write_does_not_drop_pending_delta_from_other_sessionのmaterial版。
+
+    add_materialはcreated配列を持たずtop-levelにmaterial_idを直接返す特殊な応答形状
+    のため、_handle_writeのid抽出分岐（171-174行目）が decision/log とは別コードパス
+    になる。取りこぼし修正がこの分岐でも効くことを確認する。
+    """
+    tid, aid = scope
+    middleware = DeltaNotificationMiddleware()
+
+    _set_caller(monkeypatch, "caller-A")
+    checkin_result = check_in(aid)
+    await middleware.on_call_tool(
+        _make_context("check_in"),
+        _call_next_returning(ToolResult(structured_content=checkin_result)),
+    )
+
+    # (b) 別セッションBがscope内にmaterialを書く。Aはまだこれを読みにいっていない
+    b_material = add_material(
+        title="Bのmaterial（未配信）", content="x", tags=["domain:test"], source="test",
+        related=[{"type": "topic", "ids": [tid]}],
+    )
+
+    # (c) Aが自分のmaterialを書く。b_materialより大きいidが振られる
+    own_write_result = add_material(
+        title="自分のmaterial", content="x", tags=["domain:test"], source="test",
+        related=[{"type": "topic", "ids": [tid]}],
+    )
+    assert own_write_result["material_id"] > b_material["material_id"]
+    write_result = await middleware.on_call_tool(
+        _make_context("add_material"),
+        _call_next_returning(ToolResult(structured_content=own_write_result)),
+    )
+    assert write_result.structured_content["delta"]["new_materials"] == [
+        {"id": b_material["material_id"], "title": "Bのmaterial（未配信）"}
+    ]
+
+    # (d) 直後の呼び出しでは何も再配信されない
+    result = await middleware.on_call_tool(
+        _make_context("get_topics"),
+        _call_next_returning(_noop_tool_result()),
+    )
+    assert len(result.content) == 1
+    assert "delta" not in (result.structured_content or {})
+
+
+@pytest.mark.asyncio
 async def test_out_of_scope_write_does_not_suppress_future_in_scope_deltas(temp_db, monkeypatch):
     """scope外topicへの自己書き込みはwatermarkを進めず、後続の別セッションの
     scope内書き込みも正しく検出され続けることを確認する。
