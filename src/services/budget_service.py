@@ -12,6 +12,11 @@ import sqlite3
 from typing import Optional
 
 from src.config import (
+    CHECKIN_BUDGET_CHARS,
+    CHECKIN_CONTROL_CAP_CHARS,
+    CHECKIN_HARD_MAX_CHARS,
+    CHECKIN_PINNED_SLOT_CHARS,
+    CHECKIN_TAG_NOTES_CAP_CHARS,
     PRECEDENT_BUDGET_CHARS,
     PRECEDENT_RESPONSE_CHARS_MAX,
     RECENCY_DECAY_FLOOR,
@@ -27,6 +32,11 @@ BUDGET_DEFAULTS: dict = {
     "recency_decay_floor": RECENCY_DECAY_FLOOR,
     "recency_decay_floor_decision_live": RECENCY_DECAY_FLOOR_DECISION_LIVE,
     "precedent_response_chars_max": PRECEDENT_RESPONSE_CHARS_MAX,
+    "checkin_budget_chars": CHECKIN_BUDGET_CHARS,
+    "checkin_pinned_slot_chars": CHECKIN_PINNED_SLOT_CHARS,
+    "checkin_control_cap_chars": CHECKIN_CONTROL_CAP_CHARS,
+    "checkin_tag_notes_cap_chars": CHECKIN_TAG_NOTES_CAP_CHARS,
+    "checkin_hard_max_chars": CHECKIN_HARD_MAX_CHARS,
 }
 
 

@@ -5,6 +5,7 @@ import urllib.request
 from pathlib import Path
 import pytest
 import numpy as np
+from sqlite_vec import serialize_float32
 
 from src.db import get_connection, execute_query
 from src.services.topic_service import add_topic
@@ -180,6 +181,7 @@ def test_ensure_initialized_starts_backfill_thread_only_once_under_concurrency(t
     monkeypatch.setattr(emb, '_ensure_server_running', blocking_ensure_server_running)
     monkeypatch.setattr(emb, 'backfill_embeddings', fake_backfill_embeddings)
     monkeypatch.setattr(emb, 'backfill_topic_embeddings', lambda: 0)
+    monkeypatch.setattr(emb, 'backfill_tag_embeddings', lambda: 0)
 
     results = []
     t1 = threading.Thread(target=lambda: results.append(emb._ensure_initialized()))
@@ -405,6 +407,137 @@ def test_backfill_fills_missing_embeddings(temp_db, monkeypatch):
         assert count == 1
     finally:
         conn.close()
+
+
+def test_backfill_deletes_vec_index_orphans_but_keeps_valid_rows(temp_db, monkeypatch):
+    """backfill: search_indexに対応行の無いvec_indexの孤児行を冒頭で削除するが、
+    対応行を持つvec_index行は削除しない。
+    """
+    monkeypatch.setattr(emb, '_server_initialized', False)
+    monkeypatch.setattr(emb, '_backfill_done', True)
+    monkeypatch.setattr(emb, '_ensure_server_running', lambda: False)
+
+    topic = add_topic(
+        title="孤児削除テストトピック",
+        description="backfillの孤児削除を検証する",
+        tags=DEFAULT_TAGS,
+    )
+    valid_search_index_id = execute_query(
+        "SELECT id FROM search_index WHERE source_type = ? AND source_id = ?",
+        ("topic", topic["topic_id"]),
+    )[0]["id"]
+
+    orphan_rowid = valid_search_index_id + 100000
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO vec_index(rowid, embedding) VALUES (?, ?)",
+            (valid_search_index_id, serialize_float32(np.random.rand(EMBEDDING_DIM).astype(np.float32).tolist())),
+        )
+        conn.execute(
+            "INSERT INTO vec_index(rowid, embedding) VALUES (?, ?)",
+            (orphan_rowid, serialize_float32(np.random.rand(EMBEDDING_DIM).astype(np.float32).tolist())),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(emb, '_is_server_running', lambda: True)
+    monkeypatch.setattr(
+        emb, '_encode_batch',
+        lambda texts, prefix: [np.random.rand(EMBEDDING_DIM).astype(np.float32).tolist() for _ in texts],
+    )
+
+    emb.backfill_embeddings()
+
+    conn = get_connection()
+    try:
+        remaining = {row["rowid"] for row in conn.execute("SELECT rowid FROM vec_index").fetchall()}
+    finally:
+        conn.close()
+
+    assert orphan_rowid not in remaining, "search_indexに対応行の無い孤児vec_index行が削除されていない"
+    assert valid_search_index_id in remaining, "search_indexに対応行のあるvec_index行が誤って削除された"
+
+
+def test_backfill_tag_embeddings_fills_missing_embeddings(temp_db, monkeypatch):
+    """backfill_tag_embeddings: tagsにあってtag_vecにないタグが埋められる"""
+
+    def mock_encode_batch(texts, prefix):
+        return [np.random.rand(EMBEDDING_DIM).astype(np.float32).tolist() for _ in texts]
+
+    # サーバーなしでタグ付きtopicを作成（タグ作成時のembedding生成が失敗する）
+    monkeypatch.setattr(emb, '_server_initialized', False)
+    monkeypatch.setattr(emb, '_backfill_done', True)
+    monkeypatch.setattr(emb, '_ensure_server_running', lambda: False)
+
+    add_topic(
+        title="tag backfillテストトピック",
+        description="tag_vecバックフィルの動作を検証する",
+        tags=["domain:tag-backfill-test"],
+    )
+
+    tag_rows = execute_query(
+        "SELECT id FROM tags WHERE namespace = 'domain' AND name = 'tag-backfill-test'"
+    )
+    assert len(tag_rows) == 1
+    tag_id = tag_rows[0]["id"]
+
+    conn = get_connection()
+    try:
+        count = conn.execute("SELECT count(*) FROM tag_vec WHERE rowid = ?", (tag_id,)).fetchone()[0]
+        assert count == 0
+    finally:
+        conn.close()
+
+    # サーバー稼働状態にしてバックフィル実行
+    monkeypatch.setattr(emb, '_is_server_running', lambda: True)
+    monkeypatch.setattr(emb, '_encode_batch', mock_encode_batch)
+
+    filled = emb.backfill_tag_embeddings()
+    assert filled >= 1
+
+    conn = get_connection()
+    try:
+        count = conn.execute("SELECT count(*) FROM tag_vec WHERE rowid = ?", (tag_id,)).fetchone()[0]
+        assert count == 1
+    finally:
+        conn.close()
+
+
+def test_backfill_tag_embeddings_splits_into_multiple_chunks(temp_db, monkeypatch):
+    """backfill_tag_embeddings: BACKFILL_MAX_ITEMSを超える件数は複数チャンクの
+    encode_batch呼出に分かれる（1リクエストに全タグをまとめて送らない）。
+    """
+    monkeypatch.setattr(emb, '_server_initialized', False)
+    monkeypatch.setattr(emb, '_backfill_done', True)
+    monkeypatch.setattr(emb, '_ensure_server_running', lambda: False)
+
+    for i in range(3):
+        add_topic(
+            title=f"タグチャンク分割テストトピック{i}",
+            description="tag_vecバックフィルのチャンク分割を検証する",
+            tags=[f"domain:tag-chunk-test-{i}"],
+        )
+
+    monkeypatch.setattr(emb, "BACKFILL_MAX_ITEMS", 1)
+    monkeypatch.setattr(emb, "BACKFILL_CHAR_BUDGET", 10_000)
+    monkeypatch.setattr(emb, "_is_server_running", lambda: True)
+
+    calls = []
+
+    def counting_encode_batch(texts, prefix):
+        calls.append(list(texts))
+        return [np.random.rand(EMBEDDING_DIM).astype(np.float32).tolist() for _ in texts]
+
+    monkeypatch.setattr(emb, "_encode_batch", counting_encode_batch)
+
+    filled = emb.backfill_tag_embeddings()
+
+    # BACKFILL_MAX_ITEMS=1のため、全チャンクが1件ずつに分かれる
+    assert len(calls) == filled
+    assert all(len(c) == 1 for c in calls)
+    assert filled >= 3  # 作成した3件のタグが少なくとも含まれる
 
 
 def test_backfill_noop_when_all_filled(temp_db, mock_embedding_server, monkeypatch):

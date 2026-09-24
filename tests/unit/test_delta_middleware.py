@@ -30,7 +30,10 @@ from src.services.checkin_service import check_in
 from src.services.decision_service import add_decisions
 from src.services.discussion_log_service import add_logs
 from src.services.material_service import add_material
+from src.services.pin_service import add_pin
 from src.services.topic_service import add_topic
+from src.main import check_in as tool_check_in
+from src.main import add_activity as tool_add_activity
 import src.middleware.delta_middleware as delta_middleware
 from src.middleware.delta_middleware import DeltaNotificationMiddleware, _watermarks
 from tests.helpers import add_decision
@@ -528,3 +531,117 @@ async def test_no_identity_resolved_skips_notification_and_does_not_touch_waterm
     # 他セッション（caller-A）のwatermarkは変化していない
     assert set(_watermarks.keys()) == {"caller-A"}
     assert _watermarks["caller-A"] == snapshot_before
+
+
+# ---------------------------------------------------------------------------
+# 応答の形契約テスト: checkin_service.check_in（サービス層の生の戻り値）ではなく
+# main.check_in / main.add_activity という「本物のツール」の戻り値を middleware に
+# 通す。main側でflavor適用と全体予算（response_budget.apply_budget）が追加で
+# かかるため、上のテスト群（checkin_serviceを直接呼んで偽装したToolResult）だけでは
+# 形の変化を検出できない。checkin_scopeがこの2つの実ツール経路の応答からも
+# 正しくscopeを読めることを保証する。
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_real_check_in_tool_response_sets_baseline(scope, monkeypatch):
+    """main.check_in()（flavor適用+全体予算を経た本物の応答）でもbaselineが立つ。"""
+    tid, aid = scope
+    middleware = DeltaNotificationMiddleware()
+
+    real_result = tool_check_in(aid)  # flavor既定=internal、予算適用済み
+    _set_caller(monkeypatch, "caller-A")
+    await middleware.on_call_tool(
+        _make_context("check_in"),
+        _call_next_returning(ToolResult(structured_content=real_result)),
+    )
+
+    wm = _watermarks["caller-A"]
+    assert wm["activity_id"] == aid
+    assert wm["topic_ids"] == [tid]
+
+
+@pytest.mark.asyncio
+async def test_real_add_activity_tool_response_sets_baseline(temp_db, monkeypatch):
+    """main.add_activity()（check_in_resultにflavor+予算適用済み）でもbaselineが立つ。"""
+    topic = add_topic(title="Real Tool Scope Topic", description="d", tags=["domain:test"])
+    tid = topic["topic_id"]
+    middleware = DeltaNotificationMiddleware()
+
+    real_result = tool_add_activity(
+        title="Real Tool Activity", description="d", tags=["domain:test"],
+        related=[{"type": "topic", "ids": [tid]}],
+    )
+    aid = real_result["activity_id"]
+
+    _set_caller(monkeypatch, "caller-A")
+    await middleware.on_call_tool(
+        _make_context("add_activity"),
+        _call_next_returning(ToolResult(structured_content=real_result)),
+    )
+
+    wm = _watermarks["caller-A"]
+    assert wm["activity_id"] == aid
+    assert wm["topic_ids"] == [tid]
+
+
+@pytest.mark.asyncio
+async def test_real_check_in_tool_response_still_scopes_and_delivers_delta_when_over_budget(
+    scope, monkeypatch
+):
+    """pin合計が全体予算を大きく超えるactivity（43,000字のpinを合成）でも、
+    truncatedが付いた本物の応答からbaselineが立ち、以降のdeltaが届く
+    （予算切り詰めがcheckin_scopeの読むキー(activity.id_raw/related_topics)を
+    壊していないことの実地確認）。
+    """
+    tid, aid = scope
+    huge = add_material(
+        title="huge pinned material", content="z" * 43_000,
+        tags=["domain:test"], source="t",
+    )
+    add_pin("activity", aid, "material", huge["material_id"])
+    middleware = DeltaNotificationMiddleware()
+
+    real_result = tool_check_in(aid)
+    assert "truncated" in real_result  # 前提: 実際に予算切り詰めが発動している
+
+    _set_caller(monkeypatch, "caller-A")
+    await middleware.on_call_tool(
+        _make_context("check_in"),
+        _call_next_returning(ToolResult(structured_content=real_result)),
+    )
+    wm = _watermarks["caller-A"]
+    assert wm["activity_id"] == aid
+    assert wm["topic_ids"] == [tid]
+
+    # baseline成立後、別セッションの書き込みがdeltaとして届く
+    b_decision = add_decision("予算超過後のBの決定", "reason", topic_id=tid)
+    result = await middleware.on_call_tool(
+        _make_context("get_topics"),
+        _call_next_returning(_noop_tool_result()),
+    )
+    assert result.structured_content["delta"]["new_decisions"] == [
+        {"id": b_decision["decision_id"], "title": "予算超過後のBの決定"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_falsification_broken_checkin_scope_breaks_real_tool_contract(scope, monkeypatch):
+    """checkin_scopeが読むキー名が変わると、本物のツール応答を通したこの契約テストが
+    落ちることを確認する（形を変えるPRとスコープの読み方を変えるPRが必ず同じになる、
+    という6節の設計意図の裏取り）。
+    """
+    tid, aid = scope
+    middleware = DeltaNotificationMiddleware()
+    real_result = tool_check_in(aid)
+
+    # delta_middlewareはfrom-importでcheckin_scopeを束縛しているため、
+    # モジュール属性としてここを差し替える（「形が壊れた」ことのシミュレーション）
+    monkeypatch.setattr(delta_middleware, "checkin_scope", lambda result: None)
+
+    _set_caller(monkeypatch, "caller-A")
+    await middleware.on_call_tool(
+        _make_context("check_in"),
+        _call_next_returning(ToolResult(structured_content=real_result)),
+    )
+    assert "caller-A" not in _watermarks  # scopeが読めないためbaselineが立たない
