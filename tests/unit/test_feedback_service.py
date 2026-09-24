@@ -436,3 +436,44 @@ class TestAddFeedbackNote:
         r1 = fs.add_feedback_note(name="note-target", kind="stumble", body="1回目")
         r2 = fs.add_feedback_note(name="note-target", kind="stumble", body="2回目")
         assert r2["read_mark"] > r1["read_mark"]
+
+    def test_no_hint_key_when_pending_stumbles_below_threshold(self, temp_db):
+        """hintが無いときのadd_feedback_noteの戻り値は、従来と同じ形(keyが3つのみ)。"""
+        _create("note-target")
+        r1 = fs.add_feedback_note(name="note-target", kind="stumble", body="1回目")
+        assert set(r1) == {"ok", "note", "read_mark"}
+        r2 = fs.add_feedback_note(name="note-target", kind="stumble", body="2回目")
+        assert set(r2) == {"ok", "note", "read_mark"}
+
+    def test_hint_key_appears_on_3rd_pending_stumble(self, temp_db):
+        _create("note-target")
+        fs.add_feedback_note(name="note-target", kind="stumble", body="1回目")
+        fs.add_feedback_note(name="note-target", kind="stumble", body="2回目")
+        r3 = fs.add_feedback_note(name="note-target", kind="stumble", body="3回目")
+        assert "hint" in r3
+        assert "未処理の躓き3件" in r3["hint"]
+
+    def test_pending_stumbles_do_not_mix_across_entries(self, temp_db):
+        """複数エントリがDBに同居するとき、hintの件数計算は対象エントリ自身の
+        pending_stumblesだけを見る(他エントリの分が混ざらない)。
+        PENDING_STUMBLES_SQLの相関条件(n.entry_id = e.id)が正しく効いていることの
+        回帰検知。"""
+        _create("entry-a")
+        _create("entry-b")
+        for i in range(3):
+            note = fs.add_feedback_note(name="entry-b", kind="stumble", body=f"B{i}")
+            assert note["ok"], note
+        # entry-aは1件だけ。相関がずれてentry-bの3件と合算されると閾値(3)を
+        # 超えてhintが付いてしまう。
+        r = fs.add_feedback_note(name="entry-a", kind="stumble", body="A1")
+        assert r["ok"], r
+        assert "hint" not in r
+
+    def test_hint_key_absent_when_note_added(self, temp_db):
+        """noteを足す呼び出し自体ではhintは付かない(pending stumblesの計算はnote挿入後を基準にする)。"""
+        _create("note-target")
+        fs.add_feedback_note(name="note-target", kind="stumble", body="1回目")
+        fs.add_feedback_note(name="note-target", kind="stumble", body="2回目")
+        fs.add_feedback_note(name="note-target", kind="stumble", body="3回目")
+        r_note = fs.add_feedback_note(name="note-target", kind="note", body="対応した")
+        assert "hint" not in r_note

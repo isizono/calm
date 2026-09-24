@@ -656,3 +656,186 @@ class TestPreToolUse:
         out2 = _run_main_with_event(event, capsys)
         assert out2 == {}
         assert _row("danger-3")["overridden_count"] == 1
+
+
+class TestMaintenanceHintReviewLine:
+    def test_review_line_appears_only_on_10th_delivery(self, db, capsys):
+        _create_entry("stump-a", body="躓きメモ", condition={"tool": None, "all": []})
+        for i in range(1, 10):
+            out = _run_main_with_event(
+                {
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": "s1",
+                    "prompt_id": f"p{i}",
+                    "prompt": "hello",
+                },
+                capsys,
+            )
+            body = out["hookSpecificOutput"]["additionalContext"]
+            assert "見直し時期" not in body, f"{i}回目で出てはいけない"
+        out = _run_main_with_event(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "s1",
+                "prompt_id": "p10",
+                "prompt": "hello",
+            },
+            capsys,
+        )
+        body = out["hookSpecificOutput"]["additionalContext"]
+        assert "見直し時期" in body
+
+    def test_delivered_count_marker_appears_only_on_entry_line(self, db, capsys):
+        _create_entry("stump-a", body="躓きメモ", condition={"tool": None, "all": []})
+        for i in range(1, 11):
+            out = _run_main_with_event(
+                {
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": "s1",
+                    "prompt_id": f"p{i}",
+                    "prompt": "hello",
+                },
+                capsys,
+            )
+        body = out["hookSpecificOutput"]["additionalContext"]
+        lines = body.splitlines()
+        entry_lines = [line for line in lines if line.startswith("- ")]
+        other_lines = [line for line in lines if not line.startswith("- ")]
+        assert "(10回目)" in entry_lines[0]
+        for line in other_lines:
+            assert "回目" not in line
+
+
+class TestMaintenanceHintPromoteLine:
+    def test_promote_line_appears_after_3_stumbles_and_clears_after_note(self, db, capsys):
+        _create_entry("stump-a", body="躓きメモ", condition={"tool": None, "all": []})
+        for _ in range(3):
+            note = fs.add_feedback_note(name="stump-a", kind="stumble", body="踏んだ")
+            assert note["ok"], note
+        out = _run_main_with_event(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt_id": "p1", "prompt": "hello"},
+            capsys,
+        )
+        assert "未処理の躓き3件" in out["hookSpecificOutput"]["additionalContext"]
+
+        note = fs.add_feedback_note(name="stump-a", kind="note", body="対応した")
+        assert note["ok"], note
+        out = _run_main_with_event(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt_id": "p2", "prompt": "hello"},
+            capsys,
+        )
+        assert "未処理の躓き" not in out["hookSpecificOutput"]["additionalContext"]
+
+    def test_promote_line_does_not_reappear_with_only_1_stumble_after_note(self, db, capsys):
+        _create_entry("stump-a", body="躓きメモ", condition={"tool": None, "all": []})
+        for _ in range(3):
+            fs.add_feedback_note(name="stump-a", kind="stumble", body="踏んだ")
+        fs.add_feedback_note(name="stump-a", kind="note", body="対応した")
+        fs.add_feedback_note(name="stump-a", kind="stumble", body="また踏んだ")
+        out = _run_main_with_event(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt_id": "p1", "prompt": "hello"},
+            capsys,
+        )
+        assert "未処理の躓き" not in out["hookSpecificOutput"]["additionalContext"]
+
+    def test_pending_stumbles_do_not_mix_across_entries(self, db, capsys):
+        """複数エントリがDBに同居し、それぞれstumble件数が異なるとき、格上げ行の
+        件数は各エントリ自身のpending_stumblesだけを反映する(他エントリの分が
+        混ざらない)。PENDING_STUMBLES_SQLの相関条件(n.entry_id = e.id)が正しく
+        効いていることの回帰検知。"""
+        _create_entry("entry-a", body="Aの躓き", condition={"tool": None, "all": []})
+        _create_entry("entry-b", body="Bの躓き", condition={"tool": None, "all": []})
+        for _ in range(3):
+            note = fs.add_feedback_note(name="entry-a", kind="stumble", body="踏んだ")
+            assert note["ok"], note
+        note = fs.add_feedback_note(name="entry-b", kind="stumble", body="踏んだ")
+        assert note["ok"], note
+
+        out = _run_main_with_event(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt_id": "p1", "prompt": "hello"},
+            capsys,
+        )
+        body = out["hookSpecificOutput"]["additionalContext"]
+        # entry-a(3件)にだけ格上げ行が出て、entry-b(1件、閾値未満)には出ない。
+        # 相関がずれて両者のstumbleが合算されると"4件"や2箇所出現になる。
+        assert body.count("未処理の躓き") == 1
+        assert "未処理の躓き3件" in body
+
+    def test_deny_reason_includes_promote_line(self, db, capsys):
+        _create_entry(
+            "danger", strength="block", timing="pre_tool", body="危険",
+            condition={"tool": "Bash", "all": []},
+        )
+        for _ in range(3):
+            note = fs.add_feedback_note(name="danger", kind="stumble", body="踏んだ")
+            assert note["ok"], note
+        out = _run_main_with_event(
+            {
+                "hook_event_name": "PreToolUse",
+                "session_id": "s1",
+                "tool_name": "Bash",
+                "tool_input": {"command": "rm -rf /"},
+            },
+            capsys,
+        )
+        reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "未処理の躓き3件" in reason
+
+
+class TestAgentTypeSuppressesUtteranceOnly:
+    """サブエージェント発のUserPromptSubmit(agent_typeがtruthy)は発話タイミングの
+    配達を止めるが、ツール失敗・実行直前の配達は続ける。"""
+
+    def test_agent_type_suppresses_utterance_delivery(self, db, capsys):
+        _create_entry(
+            "stump-a",
+            condition={"tool": None, "all": [{"field": "prompt", "op": "regex", "value": "help"}]},
+        )
+        out = _run_main_with_event(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "prompt": "please help",
+                "agent_type": "general-purpose",
+            },
+            capsys,
+        )
+        assert out == {}
+        assert _row("stump-a")["delivered_count"] == 0
+
+    def test_agent_type_does_not_suppress_tool_fail_delivery(self, db, capsys):
+        _create_entry(
+            "fail-a",
+            body="タイムアウトの躓き",
+            timing="tool_fail",
+            condition={"tool": None, "all": [{"field": "error", "op": "regex", "value": "timeout"}]},
+        )
+        out = _run_main_with_event(
+            {
+                "hook_event_name": "PostToolUseFailure",
+                "session_id": "s1",
+                "tool_name": "Bash",
+                "tool_input": {},
+                "error": "connection timeout",
+                "agent_type": "general-purpose",
+            },
+            capsys,
+        )
+        assert "タイムアウトの躓き" in out["hookSpecificOutput"]["additionalContext"]
+
+    def test_agent_type_does_not_suppress_pre_tool_block(self, db, capsys):
+        _create_entry(
+            "danger", strength="block", timing="pre_tool", condition={"tool": "Bash", "all": []}
+        )
+        out = _run_main_with_event(
+            {
+                "hook_event_name": "PreToolUse",
+                "session_id": "s1",
+                "tool_name": "Bash",
+                "tool_input": {"command": "rm -rf /"},
+                "agent_type": "general-purpose",
+            },
+            capsys,
+        )
+        assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
