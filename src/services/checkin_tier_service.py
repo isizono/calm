@@ -64,8 +64,7 @@ DEPENDENCIES_MAX = 10
 # env.hintsの上限（即時配達hintのみ。7月仕様の値を踏襲）。
 HINTS_MAX = 5
 
-# セッション別のcheck_in初回呼び出し追跡（session_idキー）。checkin_serviceの
-# 同種の記録とは独立に持つ（256セッションのLRUで追い出す）。
+# セッション別のcheck_in初回呼び出し追跡（session_idキー、256セッションのLRUで追い出す）。
 _greeted_sessions: dict[str, bool] = {}
 _greeted_sessions_lock = threading.Lock()
 _GREETED_SESSIONS_MAX = 256

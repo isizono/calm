@@ -4,7 +4,7 @@
 
 本書はcc-memoryのcheck-inユースケースの動きを写し取ったシーケンス仕様である。実装の凍結を目的とするものではなく、コードが一次情報であり、本書はその時点の実装を読みやすく整理したスナップショットである。差異を見つけたらコードを正とする。
 
-check_inの本体実装は`checkin_tier_service.py`（応答をanchor/control/context/catalog/envの5枠に分ける）であり、以下の図の`CheckinSvc`はこのモジュールを指す。旧`checkin_service.py`は書き直し前の実装で、旧形の比較用テストからのみ呼ばれる。
+check_inの本体実装は`checkin_tier_service.py`（応答をanchor/control/context/catalog/envの5枠に分ける）であり、以下の図の`CheckinSvc`はこのモジュールを指す。`checkin_service.py`は`checkin_tier_service`と差分通知middlewareが共有するクエリヘルパー（pinned/decisions/logs等の収集関数）と`checkin_scope`のみを持つ。
 
 ## 1. 概要
 
@@ -23,7 +23,7 @@ sequenceDiagram
     actor User
     participant Skill as check-in skill
     participant Tool as MCP tool (check_in)
-    participant CheckinSvc as checkin_service
+    participant CheckinSvc as checkin_tier_service
     participant TagSvc as tag_service
     participant ActSvc as activity_service
     participant MatSvc as material_service

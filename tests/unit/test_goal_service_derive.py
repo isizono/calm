@@ -12,7 +12,7 @@ from src.services import ask_service as ak
 from src.services import goal_service as gs
 from src.services import relation_service
 from src.services.activity_service import add_activity, update_activity
-from src.services.checkin_service import check_in
+from src.services.checkin_tier_service import collect_and_assemble
 from src.services.decision_service import add_decisions
 from src.services.topic_service import add_topic
 
@@ -316,7 +316,7 @@ class TestConditionFlagsBrokenScope:
             ],
         )["goal_id_raw"]
 
-        check_in(child)  # completed→in_progressへ戻す（既存の挙動）
+        collect_and_assemble(child)  # completed→in_progressへ戻す（既存の挙動）
 
         conn = get_connection()
         try:
