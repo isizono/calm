@@ -14,7 +14,7 @@ DECISIONS_FULL_LIMIT件まで、tag_notesは1タグあたり_TAG_NOTES_RATCHET_C
 from src.services import checkin_tier_service as cts
 from src.services import response_budget as rb
 from src.services.checkin_service import DECISIONS_FULL_LIMIT
-from src.services.tag_service import _TAG_NOTES_RATCHET_CEILING
+from src.services.tag_service import _decay_pointer_text, _TAG_NOTES_RATCHET_CEILING
 from src.config import (
     CHECKIN_BUDGET_CHARS,
     CHECKIN_CONTROL_CAP_CHARS,
@@ -92,7 +92,7 @@ class TestTagNotesExcludedFromMainBudget:
         notes = out["env"]["tag_notes"]
         assert rb.measure_chars(notes) <= CHECKIN_TAG_NOTES_CAP_CHARS
         # 少なくとも1件はdecayと同じ1行ポインタへ縮退している
-        assert any("全文表示を省略した" in n["notes"] for n in notes)
+        assert any(n["notes"] == _decay_pointer_text(n["tag"]) for n in notes)
 
     def test_falsification_small_tag_notes_are_not_folded(self):
         response = _base_response()
