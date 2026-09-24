@@ -60,6 +60,36 @@ def test_derive_scope_includes_direct_and_board_tagged_related_topics(temp_db, s
     assert set(scope) == {scope_topic, board_tid}
 
 
+def test_derive_scope_does_not_extend_through_chained_board_topics(temp_db, scope_topic):
+    """boardタグ付きtopicがさらに別のboardタグ付きtopicと関連していても、
+    3段目のtopicはスコープに含まれないことを確認する（2段構成の境界）。
+    """
+    activity_result = add_activity(
+        title="Scope Activity", description="d", tags=["domain:test"],
+        related=[{"type": "topic", "ids": [scope_topic]}], check_in=False,
+    )
+    activity_id = activity_result["activity_id"]
+
+    board_topic = add_topic(title="Board Topic", description="d", tags=["domain:test", "board"])
+    board_tid = board_topic["topic_id"]
+    add_relation("topic", scope_topic, [{"type": "topic", "ids": [board_tid]}])
+
+    chained_board_topic = add_topic(
+        title="Chained Board Topic", description="d", tags=["domain:test", "board"],
+    )
+    chained_board_tid = chained_board_topic["topic_id"]
+    add_relation("topic", board_tid, [{"type": "topic", "ids": [chained_board_tid]}])
+
+    conn = get_connection()
+    try:
+        scope = derive_scope(conn, activity_id)
+    finally:
+        conn.close()
+
+    assert set(scope) == {scope_topic, board_tid}
+    assert chained_board_tid not in scope
+
+
 def test_derive_scope_returns_empty_for_activity_without_related_topics(temp_db):
     activity_result = add_activity(
         title="Lonely Activity", description="d", tags=["domain:test"], check_in=False,
