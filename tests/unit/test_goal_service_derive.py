@@ -1,9 +1,12 @@
 """goal_service（読み出し側）の単体テスト。
 
-束縛先の状態の3値判定（activity/decision/ask、decisionの生きた置き換え）、
-条件フラグ（reopened/broken/bound_done/recheck）、次の一手の選択規則14本、
-判定待ちの未決（open_questions）、goalブロックの組み立て、get_goal、
-書き込み系3ツールの応答へのgoalブロック添付を検証する。
+束縛先の状態の判定（activity/decision/ask。activityはgoalが紐づけば
+その判定（achieved/failed/未判定）で読み、無ければstatusで読む。
+decisionの生きた置き換えを含む）、条件フラグ
+（reopened/broken/bound_done/bound_failed/recheck）、次の一手の選択規則
+14本と規則15（失敗した子の手当て）、判定待ちの未決（open_questions）、
+goalブロックの組み立て、get_goal、書き込み系3ツールの応答への
+goalブロック添付を検証する。
 """
 import time
 
@@ -67,6 +70,20 @@ def _new_goal(activity_id: int, handle: str = "g1", conditions=None, statement: 
     )
 
 
+def _child_with_goal_verdict(
+    verdict: str, note: str | None = None, title: str = "子", handle: str | None = None
+) -> tuple[int, int]:
+    """goalを判定して閉じた子activityを作る。(activity_id, goal_id)を返す。"""
+    child = _activity(title)
+    goal_id = _new_goal(
+        child,
+        handle=handle or f"child-{verdict}-{child}",
+        conditions=[{"statement": "終わる", "actor": "claude", "state": "satisfied", "note": "済"}],
+    )["goal_id_raw"]
+    gs.judge_goal(goal_id, verdict, note=note)
+    return child, goal_id
+
+
 def _condition_ids(goal_id: int) -> list[int]:
     conn = get_connection()
     try:
@@ -118,7 +135,9 @@ class TestBoundStatesActivity:
         conn = get_connection()
         try:
             states = gs._fetch_bound_states(
-                conn, [("activity", done_act), ("activity", pending_act), ("activity", 999999)]
+                conn,
+                [("activity", done_act), ("activity", pending_act), ("activity", 999999)],
+                exclude_goal_id=None,
             )
         finally:
             conn.close()
@@ -138,11 +157,106 @@ class TestBoundStatesActivity:
             acts[status] = act
         conn = get_connection()
         try:
-            states = gs._fetch_bound_states(conn, [("activity", a) for a in acts.values()])
+            states = gs._fetch_bound_states(conn, [("activity", a) for a in acts.values()], exclude_goal_id=None)
         finally:
             conn.close()
         for status, act in acts.items():
             assert states[("activity", act)]["state"] == "pending", status
+
+    def test_done_via_goal_achieved_is_marked_via_goal(self, temp_db):
+        """束縛先activityがgoalを持ち、achievedで判定済みなら、statusを見ずにdoneと読む。"""
+        child, _ = _child_with_goal_verdict("achieved")
+        conn = get_connection()
+        try:
+            states = gs._fetch_bound_states(conn, [("activity", child)], exclude_goal_id=None)
+        finally:
+            conn.close()
+        state = states[("activity", child)]
+        assert state["state"] == "done"
+        assert state["via"] == "goal"
+
+    def test_failed_via_goal_carries_judge_note(self, temp_db):
+        """束縛先activityのgoalがfailedで判定済みなら、新しい状態failedとして読み、
+        判定理由をjudge_noteに持つ。"""
+        child, _ = _child_with_goal_verdict("failed", note="環境が用意できず断念")
+        conn = get_connection()
+        try:
+            states = gs._fetch_bound_states(conn, [("activity", child)], exclude_goal_id=None)
+        finally:
+            conn.close()
+        state = states[("activity", child)]
+        assert state["state"] == "failed"
+        assert state["judge_note"] == "環境が用意できず断念"
+
+    def test_pending_when_goal_linked_but_unjudged_even_if_activity_completed(self, temp_db):
+        """goalが紐づく束縛先は、activityがcompletedでも未判定ならpendingのまま読む
+        （判定せずに閉じた子を済と誤読しない）。"""
+        child = _activity("child")
+        _new_goal(child, handle="child-unjudged")
+        update_activity(child, status="completed")
+        conn = get_connection()
+        try:
+            states = gs._fetch_bound_states(conn, [("activity", child)], exclude_goal_id=None)
+        finally:
+            conn.close()
+        assert states[("activity", child)]["state"] == "pending"
+
+    def test_pending_after_reopen_despite_stale_verdict(self, temp_db):
+        """差し戻し（reopen_reason）でclosed=0に戻ったgoalは、last_verdictが
+        残っていてもpendingと読む。"""
+        child, goal_id = _child_with_goal_verdict("achieved")
+        gs.update_goal(goal_id, reopen_reason="判定が早すぎた")
+        conn = get_connection()
+        try:
+            states = gs._fetch_bound_states(conn, [("activity", child)], exclude_goal_id=None)
+        finally:
+            conn.close()
+        assert states[("activity", child)]["state"] == "pending"
+
+    def test_done_via_goal_ignores_activity_status_reverted_afterward(self, temp_db):
+        """goalがachievedで閉じていれば、束縛先activityのstatusが(read-for-checkin
+        等で)in_progressに戻っても、束縛はdoneのまま読む（statusを優先しない）。"""
+        child, _ = _child_with_goal_verdict("achieved")
+        check_in(child)  # completed→in_progressへ戻す（既存の挙動）
+        conn = get_connection()
+        try:
+            states = gs._fetch_bound_states(conn, [("activity", child)], exclude_goal_id=None)
+        finally:
+            conn.close()
+        assert states[("activity", child)]["state"] == "done"
+
+    def test_waived_child_completed_is_done_via_status(self, temp_db):
+        """不要印(waiver)を付けた束縛先activityはgoalが無い扱いなので、
+        従来通りstatusで読む。"""
+        child = _activity("子作業")
+        gs.set_goal(child, {"waiver": "常駐タスク"})
+        update_activity(child, status="completed")
+        conn = get_connection()
+        try:
+            states = gs._fetch_bound_states(conn, [("activity", child)], exclude_goal_id=None)
+        finally:
+            conn.close()
+        state = states[("activity", child)]
+        assert state["state"] == "done"
+        assert state["via"] is None
+
+    def test_excludes_self_referencing_goal(self, temp_db):
+        """束縛先activityが自分自身と同じgoalに紐づく（循環）場合、goal無し扱いに
+        落としてstatusで読む。exclude_goal_idを渡さなければ従来通りgoal経由で
+        読み、開いている間ずっとpendingになることも合わせて確認する。"""
+        parent = _activity("parent")
+        goal_id = _new_goal(parent)["goal_id_raw"]
+        sibling = _activity("sibling")
+        gs.set_goal(sibling, {"goal_id": goal_id})
+        update_activity(sibling, status="completed")
+        conn = get_connection()
+        try:
+            without_exclude = gs._fetch_bound_states(conn, [("activity", sibling)], exclude_goal_id=None)
+            with_exclude = gs._fetch_bound_states(conn, [("activity", sibling)], exclude_goal_id=goal_id)
+        finally:
+            conn.close()
+        assert without_exclude[("activity", sibling)]["state"] == "pending"
+        assert with_exclude[("activity", sibling)]["state"] == "done"
 
 
 class TestBoundStatesAsk:
@@ -171,6 +285,7 @@ class TestBoundStatesAsk:
                     ("ask", dismissed_ask),
                     ("ask", withdrawn_ask),
                 ],
+                exclude_goal_id=None,
             )
         finally:
             conn.close()
@@ -200,6 +315,7 @@ class TestBoundStatesDecision:
                     ("decision", normal_retracted),
                     ("decision", normal_replaced_old),
                 ],
+                exclude_goal_id=None,
             )
         finally:
             conn.close()
@@ -217,7 +333,7 @@ class TestBoundStatesDecision:
         conclusion = _decision("キャッシュはLRUで持つ")
         conn = get_connection()
         try:
-            pending_state = gs._fetch_bound_states(conn, [("decision", question)])
+            pending_state = gs._fetch_bound_states(conn, [("decision", question)], exclude_goal_id=None)
         finally:
             conn.close()
         assert pending_state[("decision", question)]["state"] == "pending"
@@ -225,7 +341,7 @@ class TestBoundStatesDecision:
         _replace_decision(question, conclusion)
         conn = get_connection()
         try:
-            done_state = gs._fetch_bound_states(conn, [("decision", question)])
+            done_state = gs._fetch_bound_states(conn, [("decision", question)], exclude_goal_id=None)
         finally:
             conn.close()
         assert done_state[("decision", question)]["state"] == "done"
@@ -234,7 +350,7 @@ class TestBoundStatesDecision:
         _retract_decision(conclusion)
         conn = get_connection()
         try:
-            reverted_state = gs._fetch_bound_states(conn, [("decision", question)])
+            reverted_state = gs._fetch_bound_states(conn, [("decision", question)], exclude_goal_id=None)
         finally:
             conn.close()
         assert reverted_state[("decision", question)]["state"] == "pending"
@@ -244,7 +360,7 @@ class TestBoundStatesDecision:
         _retract_decision(question)
         conn = get_connection()
         try:
-            state = gs._fetch_bound_states(conn, [("decision", question)])
+            state = gs._fetch_bound_states(conn, [("decision", question)], exclude_goal_id=None)
         finally:
             conn.close()
         assert state[("decision", question)]["state"] == "gone"
@@ -258,7 +374,7 @@ class TestBoundStatesDecision:
         _retract_decision(would_be_conclusion)
         conn = get_connection()
         try:
-            state = gs._fetch_bound_states(conn, [("decision", question)])
+            state = gs._fetch_bound_states(conn, [("decision", question)], exclude_goal_id=None)
         finally:
             conn.close()
         assert state[("decision", question)]["state"] == "pending"
@@ -266,7 +382,7 @@ class TestBoundStatesDecision:
     def test_missing_decision_is_gone(self, temp_db):
         conn = get_connection()
         try:
-            state = gs._fetch_bound_states(conn, [("decision", 999999)])
+            state = gs._fetch_bound_states(conn, [("decision", 999999)], exclude_goal_id=None)
         finally:
             conn.close()
         assert state[("decision", 999999)]["state"] == "gone"
@@ -280,7 +396,7 @@ class TestBoundStatesBatching:
         conn = get_connection()
         try:
             counting = _CountingConn(conn)
-            gs._fetch_bound_states(counting, [("decision", d1)])
+            gs._fetch_bound_states(counting, [("decision", d1)], exclude_goal_id=None)
             count_for_one = counting.count
         finally:
             conn.close()
@@ -289,7 +405,7 @@ class TestBoundStatesBatching:
         conn = get_connection()
         try:
             counting = _CountingConn(conn)
-            gs._fetch_bound_states(counting, [("decision", d1), ("decision", d2), ("decision", d3), ("decision", d4)])
+            gs._fetch_bound_states(counting, [("decision", d1), ("decision", d2), ("decision", d3), ("decision", d4)], exclude_goal_id=None)
             count_for_many = counting.count
         finally:
             conn.close()
@@ -373,6 +489,162 @@ class TestConditionFlagsBrokenScope:
         remaining = {c["statement"]: c for c in block["remaining"]}
         assert "broken" in remaining["根拠が決まる"]["flags"]
         assert block["next"]["rule"] == 6
+
+
+class TestConditionFlagsBoundFailed:
+    def test_bound_failed_flag_and_display_when_child_goal_failed(self, temp_db):
+        child, _ = _child_with_goal_verdict("failed", note="ライブラリの制約で断念", title="子作業")
+        parent = _activity("parent")
+        goal_id = _new_goal(
+            parent,
+            conditions=[
+                {"statement": "子作業が終わる", "actor": "claude", "bound": {"type": "activity", "id": child}}
+            ],
+        )["goal_id_raw"]
+        conn = get_connection()
+        try:
+            block = gs.build_goal_block_by_goal_id(conn, goal_id)
+        finally:
+            conn.close()
+        entry = next(c for c in block["remaining"] if c["statement"] == "子作業が終わる")
+        assert "bound_failed" in entry["flags"]
+        assert "broken" not in entry["flags"]
+        assert entry["bound"] == "activity『子作業』: 失敗（判定: ライブラリの制約で断念）"
+
+    def test_bound_failed_does_not_widen_judge_ready(self, temp_db):
+        """失敗した子の条件はopenのまま残るので、judge_ready（全条件終端）にはならない。"""
+        child, _ = _child_with_goal_verdict("failed", note="断念", title="子作業")
+        parent = _activity("parent")
+        goal_id = _new_goal(
+            parent,
+            conditions=[
+                {"statement": "子作業が終わる", "actor": "claude", "bound": {"type": "activity", "id": child}}
+            ],
+        )["goal_id_raw"]
+        conn = get_connection()
+        try:
+            block = gs.build_goal_block_by_goal_id(conn, goal_id)
+        finally:
+            conn.close()
+        assert block["label"] == "active"
+
+
+class TestRule15BoundFailed:
+    def test_selected_when_bound_child_goal_failed(self, temp_db):
+        child, _ = _child_with_goal_verdict("failed", note="環境未整備", title="子作業")
+        parent = _activity("parent")
+        goal_id = _new_goal(
+            parent,
+            conditions=[
+                {"statement": "子作業が終わる", "actor": "claude", "bound": {"type": "activity", "id": child}}
+            ],
+        )["goal_id_raw"]
+        conn = get_connection()
+        try:
+            block = gs.build_goal_block_by_goal_id(conn, goal_id)
+        finally:
+            conn.close()
+        assert block["next"]["rule"] == 15
+        assert block["next"]["actor"] == "claude"
+        assert block["next"]["condition_id_raw"] == _condition_ids(goal_id)[0]
+        assert block["next"]["what"] == (
+            "子『子作業』のgoalが失敗で閉じた（環境未整備）。"
+            "やり直しの子を起票してeditで束縛を張り替えるか、理由を書いてwaivedにする"
+        )
+
+    def test_rule6_broken_wins_over_rule15(self, temp_db):
+        """評価の順番は規則6（崩れ）が規則15（失敗した子）より先である。"""
+        child, _ = _child_with_goal_verdict("failed", note="断念", title="子作業")
+        decision_id = _decision("根拠")
+        parent = _activity("parent")
+        goal_id = _new_goal(
+            parent,
+            conditions=[
+                {
+                    "statement": "根拠が決まる",
+                    "actor": "claude",
+                    "state": "satisfied",
+                    "note": "済",
+                    "bound": {"type": "decision", "id": decision_id},
+                },
+                {"statement": "子作業が終わる", "actor": "claude", "bound": {"type": "activity", "id": child}},
+            ],
+        )["goal_id_raw"]
+        _retract_decision(decision_id)
+        conn = get_connection()
+        try:
+            block = gs.build_goal_block_by_goal_id(conn, goal_id)
+        finally:
+            conn.close()
+        assert block["next"]["rule"] == 6
+
+    def test_rule15_wins_over_rule7_reopened(self, temp_db):
+        """評価の順番は規則15（失敗した子）が規則7（差し戻し）より先である。"""
+        child, _ = _child_with_goal_verdict("failed", note="断念", title="子作業")
+        parent = _activity("parent")
+        goal_id = _new_goal(
+            parent,
+            conditions=[
+                {"statement": "c1", "actor": "claude", "state": "satisfied", "note": "済"},
+                {"statement": "子作業が終わる", "actor": "claude", "bound": {"type": "activity", "id": child}},
+            ],
+        )["goal_id_raw"]
+        cond_ids = _condition_ids(goal_id)
+        gs.update_goal(goal_id, changes=[{"op": "set", "id": cond_ids[0], "state": "open", "note": "やり直し"}])
+        conn = get_connection()
+        try:
+            block = gs.build_goal_block_by_goal_id(conn, goal_id)
+        finally:
+            conn.close()
+        assert block["next"]["rule"] == 15
+
+    def test_returns_claude_actor_even_for_human_condition(self, temp_db):
+        """条件の担い手がhumanでも、規則15は確かめる主体としてactor=claudeを返す。"""
+        child, _ = _child_with_goal_verdict("failed", note="断念", title="子作業")
+        parent = _activity("parent")
+        goal_id = _new_goal(
+            parent,
+            conditions=[
+                {"statement": "子作業が終わる", "actor": "human", "bound": {"type": "activity", "id": child}}
+            ],
+        )["goal_id_raw"]
+        conn = get_connection()
+        try:
+            block = gs.build_goal_block_by_goal_id(conn, goal_id)
+        finally:
+            conn.close()
+        assert block["next"]["rule"] == 15
+        assert block["next"]["actor"] == "claude"
+
+
+class TestTruncateNote:
+    def test_text_within_limit_is_unchanged(self, temp_db):
+        assert gs._truncate_note("短い理由") == "短い理由"
+
+    def test_text_over_limit_is_truncated_with_ellipsis(self, temp_db):
+        long_text = "あ" * 35
+        assert gs._truncate_note(long_text) == "あ" * 30 + "…"
+
+    def test_judge_note_over_limit_is_truncated_in_rule15_wording(self, temp_db):
+        """30字を超えるjudge_noteは、規則15の文言でも省略される。"""
+        long_note = "環境が古く依存パッケージのビルドが通らず断念したため代替手段を検討する"
+        assert len(long_note) > 30
+        child, _ = _child_with_goal_verdict("failed", note=long_note, title="子作業")
+        parent = _activity("parent")
+        goal_id = _new_goal(
+            parent,
+            conditions=[
+                {"statement": "子作業が終わる", "actor": "claude", "bound": {"type": "activity", "id": child}}
+            ],
+        )["goal_id_raw"]
+        conn = get_connection()
+        try:
+            block = gs.build_goal_block_by_goal_id(conn, goal_id)
+        finally:
+            conn.close()
+        truncated = long_note[:30] + "…"
+        assert truncated in block["next"]["what"]
+        assert long_note not in block["next"]["what"]
 
 
 class TestNextRulesActivityScope:
@@ -530,6 +802,23 @@ class TestRule10BoundDone:
         finally:
             conn.close()
         assert block["next"]["rule"] == 10
+        # goalを経由しない（statusだけで読む）束縛先は、従来通りの文言のままである
+        assert block["next"]["what"] == "「otherが終わる」の束縛先は済んでいる。確かめてsatisfiedに書く"
+
+    def test_wording_mentions_goal_achieved_when_bound_via_goal(self, temp_db):
+        child, _ = _child_with_goal_verdict("achieved", title="子作業")
+        act = _activity()
+        goal_id = _new_goal(
+            act,
+            conditions=[{"statement": "子作業が終わる", "actor": "human", "bound": {"type": "activity", "id": child}}],
+        )["goal_id_raw"]
+        conn = get_connection()
+        try:
+            block = gs.build_goal_block_by_goal_id(conn, goal_id)
+        finally:
+            conn.close()
+        assert block["next"]["rule"] == 10
+        assert block["next"]["what"] == "「子作業が終わる」の束縛先は子のgoalが達成で閉じた。確かめてsatisfiedに書く"
 
 
 class TestRule11ClaudeTurn:
@@ -558,6 +847,96 @@ class TestRule11ClaudeTurn:
             conn.close()
         assert block["next"]["rule"] == 11
         assert block["next"]["what"] == "activity『子作業』を進める"
+
+    def test_activity_bound_child_goal_unjudged_while_child_closed_points_to_judge_goal(self, temp_db):
+        """束縛先activityが閉じているのにgoalが未判定のときは、「進める」ではなく
+        子のgoalを判定する（get_goalで子を読んでjudge_goal）ことを指す文面にする。"""
+        act = _activity()
+        child = _activity("子作業")
+        _new_goal(child, handle="child-unjudged-closed")
+        update_activity(child, status="completed")
+        goal_id = _new_goal(
+            act,
+            conditions=[{"statement": "子作業を終える", "actor": "claude", "bound": {"type": "activity", "id": child}}],
+        )["goal_id_raw"]
+        conn = get_connection()
+        try:
+            block = gs.build_goal_block_by_goal_id(conn, goal_id)
+        finally:
+            conn.close()
+        assert block["next"]["rule"] == 11
+        assert block["next"]["what"] == "子『子作業』のgoalを判定する（get_goalで子を読んでjudge_goal）"
+        assert "進める" not in block["next"]["what"]
+
+    def test_fires_for_human_actor_condition_when_child_closed_unjudged(self, temp_db):
+        """担い手がhumanの条件でも、束縛先activityが閉じているのにgoalが未判定なら
+        規則11（actor=claude）の『子のgoalを判定する』が次の一手になる。規則13の
+        『手でsatisfiedに』や規則14の『待ち』(actor=human)へ流れて誰も動かない
+        状態にしない（mainからの退行の回帰テスト）。"""
+        act = _activity()
+        child = _activity("子作業")
+        _new_goal(child, handle="child-unjudged-human")
+        update_activity(child, status="completed")
+        goal_id = _new_goal(
+            act,
+            conditions=[{"statement": "子作業を終える", "actor": "human", "bound": {"type": "activity", "id": child}}],
+        )["goal_id_raw"]
+        conn = get_connection()
+        try:
+            block = gs.build_goal_block_by_goal_id(conn, goal_id)
+        finally:
+            conn.close()
+        assert block["next"]["rule"] == 11
+        assert block["next"]["actor"] == "claude"
+        assert block["next"]["what"] == "子『子作業』のgoalを判定する（get_goalで子を読んでjudge_goal）"
+
+    def test_condition_bound_to_activity_sharing_own_goal_is_read_by_status(self, temp_db):
+        """条件が『同じgoalに紐づくactivity』を束縛していると自己参照になるため、
+        goal無し扱い（statusで読む）にする。goal経由で読むと、自分のgoalが開いて
+        いる間ずっとpendingになり、次の一手が自分自身のgoalを指し続けてしまう。"""
+        main = _activity("main")
+        sibling = _activity("sibling")
+        goal_id = _new_goal(
+            main,
+            conditions=[
+                {"statement": "siblingが終わる", "actor": "claude", "bound": {"type": "activity", "id": sibling}}
+            ],
+        )["goal_id_raw"]
+        gs.set_goal(sibling, {"goal_id": goal_id})
+        update_activity(sibling, status="completed")
+        conn = get_connection()
+        try:
+            block = gs.build_goal_block_by_goal_id(conn, goal_id)
+        finally:
+            conn.close()
+        assert block["next"]["rule"] == 10
+        assert block["next"]["what"] == "「siblingが終わる」の束縛先は済んでいる。確かめてsatisfiedに書く"
+
+    def test_bound_child_closed_unjudged_is_chosen_over_smaller_id_plain_claude_condition(self, temp_db):
+        """idが小さい普通のclaude条件と、idが大きい『子が閉じて判定待ち』の条件が
+        両方openなら、idの大小に関わらず後者を優先して選ぶ（判定待ちの子を
+        後回しにしない）。"""
+        act = _activity()
+        child = _activity("子作業")
+        _new_goal(child, handle="child-unjudged-priority")
+        update_activity(child, status="completed")
+        goal_id = _new_goal(
+            act,
+            conditions=[
+                {"statement": "PRを出す", "actor": "claude"},
+                {"statement": "子作業を終える", "actor": "claude", "bound": {"type": "activity", "id": child}},
+            ],
+        )["goal_id_raw"]
+        cond_ids = _condition_ids(goal_id)
+        assert cond_ids[0] < cond_ids[1]  # 「PRを出す」の方がidが小さい
+        conn = get_connection()
+        try:
+            block = gs.build_goal_block_by_goal_id(conn, goal_id)
+        finally:
+            conn.close()
+        assert block["next"]["rule"] == 11
+        assert block["next"]["condition_id_raw"] == cond_ids[1]
+        assert block["next"]["what"] == "子『子作業』のgoalを判定する（get_goalで子を読んでjudge_goal）"
 
 
 class TestRule12NoStopLine:
@@ -776,6 +1155,19 @@ class TestGetGoal:
         activities_by_title = {a["title"]: a for a in result["activities"]}
         assert activities_by_title["サブ"]["closed_by"] == "user"
         assert activities_by_title["メイン"]["status"] != "completed"
+
+    def test_activity_bound_condition_shows_failed_state(self, temp_db):
+        child, _ = _child_with_goal_verdict("failed", note="断念", title="子作業")
+        act = _activity()
+        goal_id = _new_goal(
+            act,
+            conditions=[{"statement": "子作業が終わる", "actor": "claude", "bound": {"type": "activity", "id": child}}],
+        )["goal_id_raw"]
+        result = gs.get_goal(goal_id=goal_id)
+        bound_cond = next(c for c in result["conditions"] if c["statement"] == "子作業が終わる")
+        assert bound_cond["bound"]["type"] == "activity"
+        assert bound_cond["bound"]["state"] == "failed"
+        assert "bound_failed" in bound_cond["flags"]
 
     def test_rule5_wording_excludes_close_instruction_for_goal_scope(self, temp_db):
         act = _activity()
