@@ -401,9 +401,7 @@ def _load_cursor(path: Path) -> dict:
 def _write_json_atomic(path: Path, data: dict, *, indent: int | None = None) -> None:
     """dataをJSONとしてpathへアトミックに書く（同ディレクトリのtempfile→os.replace）。
 
-    cursor.json・settings.json・mcp.json・run.jsonの書き込みをこれ一本に
-    集約する。並行読み取り（見張り自身のポーリング、statusコマンド等）が
-    書きかけの中身を掴まないようにするため。
+    並行読み取りが書きかけの中身を掴むことはない。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
@@ -521,8 +519,7 @@ def _spawn_detached_restart(
     すぐ戻る。切り離しプロセスには`$CLAUDE_CODE_SESSION_ID`等のセッション
     環境変数が伝わらないため、main_sid・main_pid・main_transcriptを引数で
     明示的に渡す。stdout/stderrは`run_dir/restart.log`に追記し、立て直しが
-    失敗したときに手がかりを残す（stdinはDEVNULLのまま。標準入力からの
-    確認プロンプト等に誤って答えてしまわないようにするため）。
+    失敗したときに手がかりを残す。
     """
     venv_python = calm_root / ".venv" / "bin" / "python"
     recorder_script = calm_root / "scripts" / "recorder.py"
