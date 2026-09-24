@@ -232,7 +232,7 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 
 ### 4.3 フロー層 service
 
-- `src/services/checkin_service.py`: check-inの本体実装。アクティビティに紐づく tag-notes・資材カタログ・pinned・関連decisions・recent logs を一括取得し、coverage と recompose hints を計算する (recompose hint は HintService 経由)
+- `src/services/checkin_tier_service.py`: check-inの本体実装。アクティビティに紐づく tag-notes・資材カタログ・pinned・関連decisions・recent logs を anchor/control/context/catalog/env の5枠に分けて一括取得し、coverage と recompose hints を計算する (recompose hint は HintService 経由)。`src/services/checkin_service.py` は書き直し前の実装で、旧形の比較用テストからのみ呼ばれる
 - `src/services/hint_service.py`: hint一元化（`get_hints(scope, target_id) -> list[Hint]`）。recompose_bootstrap / recompose_delta / logs_sparse / direction_overflow / activity_cleanup / notes_over_budget を統一フォーマット（`Hint`型）で返す。follow_up_after_decision / record_missingはevents.jsonl状態が必要なため本module自体では判定せず、Stop hookが生成しつつtype名だけ本moduleに合わせて統一する。delivery_hint で immediate (check_in 同期注入) と deferred (Stop hook → events.jsonl → UserPromptSubmit 注入) を分岐する
 - `src/services/habit_service.py`: habitのCRUD。書き込み後は`habit_projection`経由で`~/.claude/rules`配下の自動生成ファイルへ投影する。`trigger_mode='always'`は全文、`'intelligently'`はタイトルのみのマニフェストとして投影される
 

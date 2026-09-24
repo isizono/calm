@@ -36,7 +36,10 @@ from src.services import (
     goal_service,
     feedback_service,
 )
-from src.services.checkin_service import check_in as _check_in, FLAT_FORM_BUDGET_POLICY
+from src.services.checkin_tier_service import (
+    collect_and_assemble as _check_in,
+    TIER_FORM_BUDGET_POLICY,
+)
 from src.services import response_budget, session_ledger_service, session_registry_service
 from src.infra.session_identity import get_caller_session_id
 from src.services.tag_service import (
@@ -1503,12 +1506,12 @@ def check_in(
     """
     Choose: アクティビティに着手するときに関連情報を一括取得したいとき（status を in_progress に自動更新）。関連グラフだけ俯瞰したいなら get_map、log/decision/material の時系列なら get_timeline、log だけなら get_logs、decision だけなら get_decisions、設計判断前に近傍 topic の判例を網羅確認したいなら pull_precedents。
 
-    アクティビティにcheck-inする。関連情報を集約取得しsummaryを返す。
+    アクティビティにcheck-inする。関連情報を5つの枠（anchor/control/context/catalog/env）に
+    分けて集約取得する。
 
     既存アクティビティに関連する作業を始めるときに呼ぶ。
     tag_notes・資材カタログ・関連decisionsを一括取得し、
     statusがin_progress以外なら自動的にin_progressに更新する。
-    summaryフィールドをそのまま出力すること。
     coverageが低い項目（目安: 50%未満）がある場合、特にlogsは議論の経緯を含むため優先的に取得を検討してください。
 
     Args:
@@ -1517,22 +1520,19 @@ def check_in(
             docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
 
     Returns:
-        check-in結果（coverage, activity, goal, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary）。
-        セッション内でcheck_inを初めて呼んだときのみflow_guide（コンテキスト取得の手がかり）も含まれる
-        pinned.decisionsの各要素は、未resolveなdestabilizesエッジを持つ場合のみ
-        destabilization（{destabilized_by, unresolved_count, latest_source,
-        sources: [{decision_id, title, created_at, kind_reason}, ...]}）が付く。エッジが
-        無い、または全てresolve_destabilizationで解消済みならキー自体が無い
-        goalはactivityの直後にあり、そのactivityの終了条件（goal）の現在状態と
-        次の一手を1件返す。未定義（label="undefined"）・不要印（label="not_needed"）・
-        goal付き（label="active"|"judge_ready"|"closed"）のいずれか。goal付きなら
-        next（今やるべきこと1件）に従う
-        応答全体が10,000字を超えるときはtruncatedキーが付く（{budget, before, after,
-        over_budget, cuts: [{section, kept, cut, next?}, ...]}）。catalog/logs/materials/
-        related_activities/recent_decisions/latest_log/pinnedの順に切り詰められ、各cutの
-        nextには続きを取り直すツール呼び出し（{tool, args}）が付く。goal/asks/
-        dependencies（制御信号）とtag_notesはこの10,000字には数えず、それぞれ3,000字・
-        6,000字の天井を別に持つ（超過時はtruncated.control_over/tag_notes_overが立つ）
+        5つの枠（anchor: {activity, pinned} / control: {goal, asks,
+        dependencies} / context: {topics, activities, decisions, latest_log,
+        materials} / catalog: {logs, map} / env: {tag_notes, hints, coverage,
+        session, flow_guide}）に分けて返す。中身が空の枠・キーは省く
+        （anchor.activity・control.goal・env.coverage・env.sessionは常に置く）。
+        フィールドの詳細はdocs/spec/mcp-tools.md 2.18節を参照。
+        control.goalは終了条件の現在状態と次の一手（next）を1件返す（未定義=
+        undefined・不要印=not_needed・goal付き=active|judge_ready|closed）。
+        control.asks.awaiting_triageが1件以上あればtriage_askで振り分けること。
+        env.session.alias_collisionがtrueならユーザーに伝えること。
+        応答全体が10,000字を超えるとtruncatedキーが付く（cuts[].sectionは
+        "anchor.pinned"のようなドット区切りパス）。control・env.tag_notesは
+        この10,000字に数えず、それぞれ独立の天井を持つ
     """
     flavor = _normalize_flavor(flavor)
     session_id = get_caller_session_id()
@@ -1550,51 +1550,57 @@ def _finalize_checkin_result(result: dict, flavor: str) -> dict:
     if "error" not in result:
         if flavor != "raw":
             _apply_flavor_to_check_in_result(result, flavor)
-        result = response_budget.apply_budget(result, FLAT_FORM_BUDGET_POLICY)
+        result = response_budget.apply_budget(result, TIER_FORM_BUDGET_POLICY)
     return result
 
 
 def _apply_flavor_to_check_in_result(result: dict, flavor: str) -> None:
-    """check_in レスポンスの各セクションに flavor 展開を適用する (in-place)。
+    """check_in レスポンス（tier形: anchor/control/context/catalog/env）の
+    各セクションに flavor 展開を適用する (in-place)。
 
-    check_in は activity / related_topics / related_activities / materials /
-    recent_decisions / latest_log / logs / catalog の各セクションを持つ。
+    anchor.activity・anchor.pinned・context.topics/activities/materials/
+    decisions/latest_log・catalog.logs/map・control.goalの各セクションを持つ。
     各 snippet には raw 境界調整 → flavor 展開、entity 詳細は dict 単位で展開。
     """
     with contextlib.closing(get_connection()) as conn:
-        activity = result.get("activity")
+        anchor = result.get("anchor") or {}
+        activity = anchor.get("activity")
         if isinstance(activity, dict):
             citation_renderer.apply_flavor_to_entity_dict(
                 activity, "activity", flavor, conn, attach_citations=True
             )
+        _apply_flavor_to_pinned(anchor.get("pinned"), flavor, conn)
+
+        context = result.get("context") or {}
         for key, etype in (
-            ("related_topics", "topic"),
-            ("related_activities", "activity"),
+            ("topics", "topic"),
+            ("activities", "activity"),
         ):
-            for item in result.get(key, []) or []:
+            for item in context.get(key, []) or []:
                 if isinstance(item, dict):
                     citation_renderer.apply_flavor_to_entity_dict(
                         item, etype, flavor, conn, attach_citations=False
                     )
-        # snippet 系: materials / latest_log / logs / catalog
-        for item in result.get("materials", []) or []:
+        # snippet 系: materials / decisions / latest_log
+        for item in context.get("materials", []) or []:
             _flavor_snippet(item, flavor, conn)
-        for item in result.get("logs", []) or []:
+        for item in context.get("decisions", []) or []:
             _flavor_snippet(item, flavor, conn)
-        for item in result.get("catalog", []) or []:
-            _flavor_snippet(item, flavor, conn)
-        latest = result.get("latest_log")
+        latest = context.get("latest_log")
         if isinstance(latest, dict):
             _flavor_snippet(latest, flavor, conn)
             if isinstance(latest.get("content"), str):
                 latest["content"] = citation_renderer.expand(
                     latest["content"], flavor, conn
                 )
-        for item in result.get("recent_decisions", []) or []:
-            _flavor_snippet(item, flavor, conn)
 
-        _apply_flavor_to_pinned(result.get("pinned"), flavor, conn)
-        _apply_flavor_to_goal_block(result.get("goal"), flavor, conn)
+        catalog = result.get("catalog") or {}
+        for key in ("logs", "map"):
+            for item in catalog.get(key, []) or []:
+                _flavor_snippet(item, flavor, conn)
+
+        control = result.get("control") or {}
+        _apply_flavor_to_goal_block(control.get("goal"), flavor, conn)
 
 
 def _apply_flavor_to_pinned(pinned: object, flavor: str, conn) -> None:
