@@ -268,6 +268,36 @@ class TestRawCiteFullwordPattern:
         ]
 
 
+class TestRawCiteFullwordPatternRedirectionBoundary:
+    """シェルのファイル拡張子境界・fd 番号リダイレクトによる誤マッチを防ぐ境界条件。
+
+    リテラル組み立ては preblock hook 回避のため動的に行う
+    (他の edge-case テストと同じ手法)。
+    """
+
+    def test_extension_boundary_with_fd_redirect_does_not_match(self) -> None:
+        word = "log"
+        text = "output." + word + " 2>&1"
+        assert _fullword_matches(text) == []
+
+    def test_filename_equals_typename_with_fd_redirect_does_not_match(self) -> None:
+        word = "log"
+        text = "/tmp/build/" + word + " 2>&1"
+        assert _fullword_matches(text) == []
+
+    def test_generic_redirect_target_with_fd_does_not_match(self) -> None:
+        word = "log"
+        text = "> " + word + " 2>&1"
+        assert _fullword_matches(text) == []
+
+    def test_same_word_space_digit_without_redirect_still_matches(self) -> None:
+        # 上記 3 件と対比: `>` を伴わない通常の「type 名+スペース+数字」は
+        # 引き続きマッチする。
+        word = "log"
+        text = word + " 2"
+        assert _fullword_matches(text) == [text]
+
+
 class TestRawCiteFullwordPatternRange:
     """範囲表記 (type 名 + ハッシュ + NNN-NNN 形式) の終端 ID キャプチャ。
 
