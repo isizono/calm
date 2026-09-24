@@ -17,18 +17,6 @@ from src.infra.session_manager import SessionManager
 from src.services import session_ledger_service
 
 
-@pytest.fixture(autouse=True)
-def _force_runtime_db_path(monkeypatch):
-    """get_db_path()がtemp_dbのDISCUSSION_DB_PATHを確実に見るようにする。
-
-    src.config.DB_PATHはモジュール初回import時に一度だけ解決され固定される
-    (src/db.pyのget_db_path()参照)。詳細はtests/unit/test_session_ledger_service.pyの
-    同名フィクスチャのdocstring参照。
-    """
-    import src.config as config
-    monkeypatch.setattr(config, "DB_PATH", None)
-
-
 def _post_request(path: str, body: dict) -> Request:
     data = json.dumps(body).encode()
     scope = {

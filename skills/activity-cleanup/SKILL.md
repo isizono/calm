@@ -87,7 +87,7 @@ snoozedの実態確認も同様に`check_in`を避けるが、`get_activities`�
 
 「askで裁定待ち」は[自律度ルール](#自律度ルール)の🔴とは別物である。🔴はエージェント自身が処遇を分類しきれない場合に使う確認の仕組みであり、その場でユーザーに確認して解消する。確認した結果、ユーザー本人もいまその場では判断できないと分かった場合にのみ、この処遇語彙としての「askで裁定待ち」を使う。
 
-**goal付きactivityの処遇:** 以下の`goal_id`はgoal_id_raw（`get_goal`の応答が持つ）を指す。[手順2](#2-実態確認)で`label`が`judge_ready`だったactivityは、completed化を`update_activity`ではなくgoal機構で行う。`get_goal`の応答には`open_questions`が載らないため、未決の確認には`update_goal(goal_id, changes=[])`を呼び直す(条件を1件も書き換えない読み出し専用の呼び出しで、activityのstatusも変えない)。その応答の`goal.open_questions`に未決があれば畳むか1ターン聞いたうえで、`goal.terminal`の充足が1件以上あれば`judge_goal(goal_id, verdict="achieved")`、0件なら`judge_goal(goal_id, verdict="failed", note=理由)`で閉じる。`judged_by`は、ユーザーがその場でgoalの完了を明言したときだけ`"human"`、それ以外は`"session"`。
+**goal付きactivityの処遇:** 以下の`goal_id`はgoal_id_raw（`get_goal`の応答が持つ）を指す。[手順2](#2-実態確認)で`label`が`judge_ready`だったactivityは、completed化を`update_activity`ではなくgoal機構で行う。`get_goal`の応答の`open_questions`に未決があれば畳むか1ターン聞いたうえで、`conditions`のうち`state`が`satisfied`のものが1件以上あれば`judge_goal(goal_id, verdict="achieved")`、0件なら`judge_goal(goal_id, verdict="failed", note=理由)`で閉じる。`judged_by`は、ユーザーがその場でgoalの完了を明言したときだけ`"human"`、それ以外は`"session"`。
 
 `label`が`active`のactivity(openの条件が残る)は、上の6語彙のうち`completed`・`relation+completedで統合`をこの場では選ばず、まず🔴と同じ「その場で確認、または一括提示までバッファ」に回す。提示する選択肢は[activity-finish](../activity-finish/SKILL.md)のopen分岐と同じ3つ(残りの条件を理由付きでwaivedにしてから`judge_goal(goal_id, verdict="achieved", judged_by="human")`／`judge_goal(goal_id, verdict="failed", note=理由, judged_by="human")`で閉じる／未完了の兄弟activityが残るならこのactivityだけ`update_activity(status="completed", closed_by="user")`)。確認してもユーザーがその場では決め切れないと分かった場合にだけ、正式に`askで裁定待ち`に回す。
 

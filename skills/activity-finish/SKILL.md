@@ -21,7 +21,7 @@ description: 【必須】アクティビティを完了にする。「/af」「/
      - 残りの条件を理由付きでwaivedにしてから達成扱いにする: `update_goal(goal_id, changes=[{"op":"set","id":<条件id>,"state":"waived","note":理由}, ...])` → `judge_goal(goal_id, verdict="achieved", judged_by="human")`（waivedにするとsatisfiedが0件になる場合はこの選択肢を示さない。全条件のidが要るときは `get_goal(activity_id=...)` で確認する）
      - `judge_goal(goal_id, verdict="failed", note=理由, judged_by="human")` で閉じる
      - 同じgoalに未完了の兄弟activityが残るなら、このactivityだけ `update_activity(status="completed", closed_by="user")`（goalは未判定のまま残る）
-   - `judge_ready`（判定待ち）: `get_goal`の応答には`open_questions`が載らないため、`update_goal(goal_id, changes=[])`を呼び直す（条件を1件も書き換えない読み出し専用の呼び出しで、activityのstatusも変えない）。その応答の`goal.open_questions`に未決があれば畳むか1ターン聞く。そのうえで条件のうちsatisfiedが1件以上あれば `judge_goal(goal_id, verdict="achieved")`、0件なら `judge_goal(goal_id, verdict="failed", note=理由)` か条件を足す。`judged_by` は、goalに紐づく未完了activityがこの1件だけなら `"human"`（/afの起動自体をgoal全体の完了明言とみなす）、他にも未完了activityがあれば `"session"`
+   - `judge_ready`（判定待ち）: 手元のgoalブロック（またはget_goalの応答）の`open_questions`に未決があれば畳むか1ターン聞く。そのうえで条件のうちsatisfiedが1件以上あれば `judge_goal(goal_id, verdict="achieved")`、0件なら `judge_goal(goal_id, verdict="failed", note=理由)` か条件を足す。`judged_by` は、goalに紐づく未完了activityがこの1件だけなら `"human"`（/afの起動自体をgoal全体の完了明言とみなす）、他にも未完了activityがあれば `"session"`
    - `closed`（判定済み）: `update_activity(status="completed")` だけを呼ぶ。`closed_by` は渡さない（サーバーが `closed_by="goal_judge"` を自動で書く）
 4. **完了記録の追記**: `description` の末尾に完了記録を追記する。日付に加えて、会話から自明な範囲で「何がどうなって終わったか」を一行添える（例: `\n\n## 完了\nYYYY-MM-DD ○○を実装しPRを作成して完了`）。自明でない場合はユーザーへの質問はせず日付のみ記載する
    - `update_activity(status="completed", ...)` で閉じた場合は、そのまま同じ呼び出しに `description` を含めてよい

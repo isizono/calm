@@ -22,13 +22,9 @@ MIGRATIONS_DIR = Path(__file__).parent.parent / "migrations"
 
 def get_db_path() -> str:
     """データベースファイルのパスを取得する"""
-    from src.config import DB_PATH
-
-    # config.pyのDB_PATH（モジュールインポート時に解決済み）を優先
-    if DB_PATH:
-        return DB_PATH
-
-    # 実行時の環境変数もチェック（テスト互換: テスト中に動的設定されるケース）
+    # 呼び出しのたびに環境変数を読む。src.config.DB_PATHはモジュール初回import時に
+    # 一度だけ解決される定数のため、ここでの参照はプロセス生存中の環境変数変更
+    # （テストのDB差し替え等）を取りこぼす
     db_path = env_get("CALM_DB_PATH") or os.environ.get("DISCUSSION_DB_PATH")
     if db_path:
         return db_path
