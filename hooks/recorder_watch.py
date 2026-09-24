@@ -96,6 +96,15 @@ def run_dir_for(main_sid: str) -> Path:
     return HookState.BASE_DIR / "recorder_runs" / safe
 
 
+def tmux_session_name(main_sid: str) -> str:
+    """main_sidに対応するtmuxセッション名を返す。
+
+    起動側（セッションの立ち上げ）と終了処理（kill-session）の両方が
+    同じ規則を使う必要があるため、ここに一本化する。
+    """
+    return f"calm-rec-{main_sid[:8]}"
+
+
 # ===================================================================
 # transcriptのバイト単位差分読み
 # ===================================================================
@@ -475,7 +484,7 @@ def _ensure_activity_id_at_cursor(cursor: dict, main_transcript: Path, cursor_pa
 
 def _terminate(run_dir: Path, main_sid: str) -> None:
     remove_marker(main_sid)
-    tmux_name = f"calm-rec-{main_sid[:8]}"
+    tmux_name = tmux_session_name(main_sid)
     try:
         subprocess.run(["tmux", "kill-session", "-t", tmux_name], capture_output=True, timeout=10)
     except Exception:

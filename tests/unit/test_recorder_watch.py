@@ -338,7 +338,7 @@ class TestMainDeath:
         code2, _ = _run_hook(cwd=run_dir, last_assistant_message="DONE 0001", sleep=sleep2, now=now2)
         assert code2 == 0
         assert not marker_path(main_sid).exists()
-        assert _mock_subprocess == [["tmux", "kill-session", "-t", f"calm-rec-{main_sid[:8]}"]]
+        assert _mock_subprocess == [["tmux", "kill-session", "-t", hook.tmux_session_name(main_sid)]]
 
 
 class TestMainDeathDebounce:
@@ -374,7 +374,7 @@ class TestMainDeathDebounce:
 
         assert code == 0
         assert not marker_path(main_sid).exists()
-        assert _mock_subprocess == [["tmux", "kill-session", "-t", f"calm-rec-{main_sid[:8]}"]]
+        assert _mock_subprocess == [["tmux", "kill-session", "-t", hook.tmux_session_name(main_sid)]]
         # 3回目のポーリングで確定するので、3回目のsleepは呼ばれない
         assert len(sleep.calls) == hook.MAIN_DEAD_CONFIRM_POLLS - 1
 
