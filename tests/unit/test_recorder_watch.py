@@ -347,6 +347,26 @@ class TestClearSessionIsolation:
         assert (run_dir / "cursor.json").read_text(encoding="utf-8") == before
 
 
+class TestOffsetValidity:
+    def test_rejects_offset_that_does_not_land_right_after_a_newline(self, tmp_path):
+        """`_offset_looks_valid`単体で、改行の直前判定そのものを確かめる。
+
+        1バイトずれただけでは、ずれた先の断片がたまたまJSONとして読めて
+        しまう可能性がある（この2行の内容ではそうならないが、JSON自体の
+        parseability に頼ると見逃しうる）。改行の直前バイトを直接見る
+        判定を、JSONの読めなさとは独立に確かめる。
+        """
+        transcript = tmp_path / "t.jsonl"
+        e1 = _entry("assistant", "u1", text="ab")
+        e2 = _entry("assistant", "u2", text="cd")
+        _write_jsonl(transcript, [e1, e2])
+        line1_len = len(json.dumps(e1, ensure_ascii=False).encode("utf-8"))
+        valid_offset = line1_len + 1  # e1の改行の直後(e2の先頭)
+
+        assert hook._offset_looks_valid(transcript, valid_offset) is True
+        assert hook._offset_looks_valid(transcript, valid_offset - 1) is False
+
+
 class TestBackfillRecovery:
     def test_recovers_position_after_earlier_line_lengthens(self, tmp_path, monkeypatch):
         monkeypatch.setattr(hook, "CHAR_THRESHOLD", 3)
@@ -425,8 +445,10 @@ class TestNoOpNearDeadline:
         assert code == 2
         assert "DONE -" in stderr
         assert len(sleep.calls) == 1
-        cursor = _cursor(run_dir)
-        assert cursor["pending"] is None
+        # 何も新規コンテンツが無いno-opでは、cursor.jsonへの書き込みは
+        # そもそも発生しない(状態が変わっていないため)。次回起動時は
+        # 既定値から始まり、pendingは無い状態のままになる。
+        assert not (run_dir / "cursor.json").exists()
 
 
 class TestTopicCandidates:
