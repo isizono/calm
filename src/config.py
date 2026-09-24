@@ -73,6 +73,12 @@ PROJECTION_MANIFEST_MAX_ITEMS: int = int(
     env_get("CALM_PROJECTION_MANIFEST_MAX_ITEMS", "30")
 )
 
+# --- Peer coordination ---
+# 既定OFF。ONにすると、boardタグ付きトピックへのadd_logsの応答に、
+# 関連する他セッションへの声かけを勧める文言を添える
+# （判定待ちgoalに反応する既存の宛先候補injectionはこのフラグの対象外、常時有効）
+PEER_NUDGE_ENABLED: bool = env_get("CALM_PEER_NUDGE_ENABLED", "0") == "1"
+
 # --- Direction Layer ---
 # domainごとのactiveな方向性decision(layer:direction)件数がこの値以上になったら
 # direction_overflow hintを発火する（統合・supersede整理をユーザーに促すため）

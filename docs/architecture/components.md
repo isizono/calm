@@ -228,6 +228,7 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 - `skills/project-setup` / `skills/coding-project-setup`: 新規domainの知識フレームセットアップ
 - `skills/restart`: MCPサーバーの強制再起動
 - `skills/rule-placement`: 一般化ルールの配信経路（habits/tag-notes/rules等）判定
+- `skills/peer-nudge`: セッション台帳の宛先候補へSendMessageで直接話しかけるときの作法（担当確認手順・配慮・返事待ちの扱い）
 
 
 ### 4.3 フロー層 service
