@@ -27,7 +27,7 @@ CALMの記録（decisions, logs, materials）を元に、外部共有可能な�
 ソースアクティビティごとに以下を収集する:
 
 - `check_in(activity_id=...)` でアクティビティ情報を取得
-- check-in結果の `related_topics` から `topic_id` を取得する
+- check-in結果の `context.topics` から `topic_id` を取得する
 - `get_decisions(topic_id=...)` で決定事項を取得
 - `get_logs(topic_id=...)` で議論経緯を取得
 - `search(entity_type="material")` / `get_material` で資材を取得

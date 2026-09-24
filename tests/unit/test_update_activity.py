@@ -348,16 +348,39 @@ class TestUpdateActivityClosedByWrite:
         assert row["closed_reason"] == "別の理由で閉じ直す"
 
     def test_already_completed_activity_does_not_rewrite_closed_fields(self, test_activity):
-        """既にcompletedのactivityにstatus='completed'を渡してもclosed_*は書き換えない"""
+        """既にcompletedのactivityにstatus='completed'を渡してもclosed_*は書き換えない。
+        応答にはclosed_fields_unchanged=trueが付き、書き換わらなかったことを示す"""
         activity_id = test_activity["activity_id"]
         update_activity(activity_id, status="completed", closed_by="user", closed_reason="1回目")
 
         result = update_activity(activity_id, status="completed", closed_by="external", closed_reason="2回目")
 
         assert "error" not in result
+        assert result["closed_fields_unchanged"] is True
         row = _activity_row(activity_id)
         assert row["closed_by"] == "user"
         assert row["closed_reason"] == "1回目"
+
+    def test_reclose_without_closed_args_omits_unchanged_flag(self, test_activity):
+        """再度completedを指定してもclosed_by/closed_reasonをどちらも渡さなければ
+        closed_fields_unchangedは応答に付かない"""
+        activity_id = test_activity["activity_id"]
+        update_activity(activity_id, status="completed", closed_by="user", closed_reason="1回目")
+
+        result = update_activity(activity_id, status="completed")
+
+        assert "error" not in result
+        assert "closed_fields_unchanged" not in result
+
+    def test_first_completion_omits_unchanged_flag(self, test_activity):
+        """未completedからcompletedへ初めて遷移する呼び出しでは、closed_by/closed_reasonを
+        渡してもclosed_fields_unchangedは付かない（実際に書き込まれているため）"""
+        activity_id = test_activity["activity_id"]
+
+        result = update_activity(activity_id, status="completed", closed_by="user", closed_reason="初回")
+
+        assert "error" not in result
+        assert "closed_fields_unchanged" not in result
 
 
 class TestUpdateActivityGoalHint:

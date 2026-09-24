@@ -84,6 +84,39 @@ class TestGetCallerSessionId:
         )
         assert session_identity.get_caller_session_id() == "ephemeral-session-id"
 
+    def test_accepts_legacy_header_when_new_header_absent(self, monkeypatch):
+        """改名前の launcher が送る旧ヘッダだけでも識別子を返す（移行期間の互換）"""
+        monkeypatch.setattr(
+            "fastmcp.server.dependencies.get_http_headers",
+            lambda: {session_identity.LEGACY_BRIDGE_SESSION_HEADER: "legacy-uuid"},
+        )
+        monkeypatch.setattr(
+            session_identity, "_ephemeral_session_id", lambda: "ephemeral-session-id"
+        )
+        assert session_identity.get_caller_session_id() == "legacy-uuid"
+
+    def test_new_header_wins_over_legacy_header(self, monkeypatch):
+        """新旧両方のヘッダがある場合は新ヘッダの値を返す"""
+        monkeypatch.setattr(
+            "fastmcp.server.dependencies.get_http_headers",
+            lambda: {
+                session_identity.BRIDGE_SESSION_HEADER: "new-uuid",
+                session_identity.LEGACY_BRIDGE_SESSION_HEADER: "legacy-uuid",
+            },
+        )
+        assert session_identity.get_caller_session_id() == "new-uuid"
+
+    def test_blank_new_header_falls_back_to_legacy_header(self, monkeypatch):
+        """新ヘッダが空白のみなら旧ヘッダを使う"""
+        monkeypatch.setattr(
+            "fastmcp.server.dependencies.get_http_headers",
+            lambda: {
+                session_identity.BRIDGE_SESSION_HEADER: "   ",
+                session_identity.LEGACY_BRIDGE_SESSION_HEADER: "legacy-uuid",
+            },
+        )
+        assert session_identity.get_caller_session_id() == "legacy-uuid"
+
     def test_strips_whitespace_from_header_value(self, monkeypatch):
         """ヘッダ値の前後空白は取り除いて返す"""
         monkeypatch.setattr(

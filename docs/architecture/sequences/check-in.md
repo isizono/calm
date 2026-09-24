@@ -4,6 +4,8 @@
 
 本書はcc-memoryのcheck-inユースケースの動きを写し取ったシーケンス仕様である。実装の凍結を目的とするものではなく、コードが一次情報であり、本書はその時点の実装を読みやすく整理したスナップショットである。差異を見つけたらコードを正とする。
 
+check_inの本体実装は`checkin_tier_service.py`（応答をanchor/control/context/catalog/envの5枠に分ける）であり、以下の図の`CheckinSvc`はこのモジュールを指す。旧`checkin_service.py`は書き直し前の実装で、旧形の比較用テストからのみ呼ばれる。
+
 ## 1. 概要
 
 check-inは、特定のアクティビティに紐づいた文脈（関連トピック、決定事項、ログ、資材、pin、タグ、tag_notes、recomposeナッジ）を一括取得し、エージェントが「すぐ作業・議論を開始できる状態」になるためのユースケースである。
@@ -93,8 +95,7 @@ sequenceDiagram
     DB-->>CheckinSvc: hint判定用カウント
     Note over CheckinSvc: 増分>=30 or 総数>=15 で発火
 
-    CheckinSvc->>CheckinSvc: _build_summary(activity, tags)
-    CheckinSvc-->>Tool: result(coverage, activity, related, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, hints, summary)
+    CheckinSvc-->>Tool: result(anchor: {activity, pinned}, control: {goal, asks, dependencies}, context: {topics, activities, decisions, latest_log, materials}, catalog: {logs, map}, env: {tag_notes, hints, coverage, session, flow_guide})
     Tool-->>Skill: result
     Skill-->>User: 概要 + 進捗 を整形表示
 ```
@@ -102,7 +103,7 @@ sequenceDiagram
 ## 3. ステップ詳細
 
 1. ユーザーがcheck-inを依頼する。スキルがアクティビティ選択を仲介する場合もある。
-2-3. スキルが `check_in(activity_id)` MCPツールを呼び、ツールは `checkin_service.check_in` に委譲する。session_idは `get_caller_session_id()`（起動器が発行する恒久識別子を優先し、無ければMCPコンテキストの `ctx.session_id` にフォールバック）で解決する。
+2-3. スキルが `check_in(activity_id)` MCPツールを呼び、ツールは `checkin_tier_service.collect_and_assemble` に委譲する。session_idは `get_caller_session_id()`（起動器が発行する恒久識別子を優先し、無ければMCPコンテキストの `ctx.session_id` にフォールバック）で解決する。
 4-5. activityをSELECTする。存在しなければ `NOT_FOUND` を返して終了する。
 6-8. アクティビティのタグを取得する（`activity_tags` JOIN `tags`）。
 9-12. tagsをもとに `collect_tag_notes_for_injection` を呼びtag_notesを集める。セッション内初回タグのみ注入されるが、`intent:` namespaceは毎回注入される。
@@ -117,8 +118,8 @@ sequenceDiagram
 31-32. coverage算出用に「topic横断の全decision件数」と「activity直接関連のmaterial件数」をCOUNTする。logsは取得済み件数から組み立てる。coverageは `"N/M"` 文字列でレスポンス先頭キーとして返る。
 33-35. `relation_service._get_map_with_conn` が depth=1〜2 の再帰CTEで隣接カタログを取得する。返却フィルタは topic/activity/material（decision/log は経由のみ）。
 36-40. activityのstatusがin_progress以外ならupdate_activityで自動更新する。`update_activity` は別connで独立コミットされ、失敗してもwarningだけ出してチェックインは継続する（fail-soft）。
-41-42. activityに紐づく素タグ（namespace='' のみ）を対象に、`_get_recompose_hints` がpinされたmaterialの最終更新時刻Tを基準に「Tより後に追加されたdecisionが閾値以上か（メンテナッジ）」または「materialが無くてもdecision総数が閾値以上か（ブートストラップナッジ）」を判定し、`hints` として返す。
-43. `_build_summary` がタイトル + intent タグから2行のsummary文字列を生成する。
+41-42. activityに紐づく素タグ（namespace='' のみ）を対象に、`_get_recompose_hints` がpinされたmaterialの最終更新時刻Tを基準に「Tより後に追加されたdecisionが閾値以上か（メンテナッジ）」または「materialが無くてもdecision総数が閾値以上か（ブートストラップナッジ）」を判定し、`env.hints` として返す。
+43. 収集した情報をanchor/control/context/catalog/envの5枠に組み立てる（summary文字列は生成しない。スキル側が`anchor.activity.title`とintentタグから同じ内容を自前で組む）。
 44-46. 結果がツール経由でスキルに返り、スキルは概要セクションと進捗セクションに整形してユーザーに伝える。
 
 ## 4. 入力・出力
@@ -132,23 +133,29 @@ sequenceDiagram
 
 ### 出力（成功時）
 
+5つの枠（anchor/control/context/catalog/env）に分けて返す。中身が空の枠・キーは省く（`anchor.activity`・`control.goal`・`env.coverage`・`env.session`は常に置く）。
+
 | キー | 型 | 説明 |
 |---|---|---|
-| coverage | object | `decisions / materials / logs` を `"取得済/全体"` 形式で返す（先頭キー） |
-| activity | object | id, title, description, status, tags |
-| topic | object | 関連topicがちょうど1件のとき。詳細は `related_topics[0]` と同じ |
-| related_topics | array | 関連topic情報（id, title, decisions_count, materials_count） |
-| related_activities | array | 関連activity概要（id, title, status） |
-| dependencies | array | depends_on先のactivity一覧 |
-| pinned | object | pin経由で注入されたdecisions/logs/materials/topics/activities（0件キーは省略） |
-| tag_notes | array | セッション内初回タグまたはintent:タグの教訓 |
-| materials | array | activity直接関連のmaterialカタログ |
-| recent_decisions | array | 関連topic横断の決定事項上位15件（新しい順、retracted除外） |
-| latest_log | object \| null | 関連topic横断の最新ログ1件（content付き） |
-| logs | array | latest_log以外のログカタログ |
-| catalog | object | 2次カタログ（隣接エンティティ） |
-| hints | array | recomposeナッジ。発火条件を満たすtagがあるときのみ |
-| summary | str | 2行サマリー。スキルがそのまま提示する |
+| anchor.activity | object | id, title, description, status, tags |
+| anchor.pinned | object | pin経由で注入されたdecisions/logs/materials/topics/activities（0件キーは省略） |
+| control.goal | object | そのactivityの終了条件の現在状態と次の一手 |
+| control.asks | object | このactivityをblockしているaskをawaiting_answer/awaiting_triageに分けて最大5件 |
+| control.dependencies | array | depends_on先のactivity一覧 |
+| context.topics | array | 関連topic情報（id, title, decisions_count, materials_count） |
+| context.activities | array | 関連activity概要（id, title, status） |
+| context.decisions | array | 関連topic横断の決定事項上位15件（新しい順、retracted除外） |
+| context.latest_log | object \| null | 関連topic横断の最新ログ1件（content付き） |
+| context.materials | array | activity直接関連のmaterialカタログ |
+| catalog.logs | array | latest_log以外のログカタログ |
+| catalog.map | object | 2次カタログ（隣接エンティティ） |
+| env.tag_notes | array | セッション内初回タグまたはintent:タグの教訓 |
+| env.hints | array | recomposeナッジ。発火条件を満たすtagがあるときのみ |
+| env.coverage | object | `decisions / materials / logs` を `"取得済/全体"` 形式で返す |
+| env.session | object | セッション別名レジストリの登録結果 |
+| env.flow_guide | str | セッション内で最初のcheck_inのときのみ |
+
+応答全体が10,000字を超えるときはtruncatedキーが付く（切り詰めの詳細はresponse_budgetモジュール、mcp-tools.md 2.18参照）。旧フラット形にあった`topic`（related_topicsが1件のときの重複キー）と`summary`（2行サマリー）は削除された。
 
 ### 出力（エラー時）
 
@@ -157,21 +164,22 @@ sequenceDiagram
 ## 5. エッジケース・例外
 
 - activity_idが存在しない: `NOT_FOUND` を即返す。副作用なし。
-- 関連topicが0件: `related_topics` / `recent_decisions` / `latest_log` は省略または空。coverageの分母も0になる。
+- 関連topicが0件: `context.topics` / `context.decisions` / `context.latest_log` は省略される（tier形は中身が空のキーを省く）。coverageの分母も0になる。
 - session_id取得失敗（get_caller_session_id()がNoneを返す）: 既出管理の記録を読み書きしない。tag_notesは毎回全文を返し、flow_guideも毎回付く（共有キーへの相乗りはしない）。ツール自体は動作する。
-- pinsが0件: `pinned` キーごと省略する。
+- pinsが0件: `anchor.pinned` キーごと省略する。
 - pinned対象がretracted済み: decision/logのみ `retracted_at IS NULL` でフィルタするため落ちる（material/topic/activityにはretracted_atカラムが無く落ちない）。
-- statusがcompletedのアクティビティ: 自動的にin_progressに「再オープン」される。追加作業発生に対応するための意図的仕様。
+- statusがcompletedのアクティビティ: 自動的にin_progressに「再オープン」される。追加作業発生に対応するための意図的仕様。このactivityをblockしているaskがある場合、再オープンをaskの配達より必ず先に行う。
 - update_activityが失敗: warningログに出すのみで、check-inの戻り値には影響しない（fail-soft）。
-- intent:タグが無い: summaryの `intent:` 行は `(未設定)` と表示される。
-- recompose hintsの閾値未達: hintsキーごと省略される。
+- intent:タグが無い: スキルが組む出力の `intent:` 行は `(未設定)` と表示される（summaryフィールド自体は無い）。
+- recompose hintsの閾値未達: `env.hints` キーごと省略される。
 - pinsテーブルの `source_type='tag'` は注入対象を5種に限定（decision/log/material/topic/activity）。`target_type='tag'` は処理しない。
+- goalブロックの組み立てで例外が起きる: `control.goal` にerror形が入るだけで他のキーは失われない。machine_errorのsignalが同じ接続で記録される。
 
 ## 6. 関連
 
 - 関連スキル: `check-in`, `activity-start`, `activity-finish`, `recompose-context`
 - 関連tool: `get_activities`, `get_logs`, `get_decisions`, `search`, `update_activity`
-- 主要service: `checkin_service`, `tag_service`, `activity_service`, `material_service`, `relation_service`, `harness_service`
+- 主要service: `checkin_tier_service`, `response_budget`, `goal_service`, `ask_service`, `tag_service`, `activity_service`, `material_service`, `relation_service`, `hint_service`
 - DB: `activities`, `activity_tags`, `activity_dependencies`, `relations`, `relations_view`, `pins`, `discussion_topics`, `decisions`, `discussion_logs`, `materials`, `tags`
 
 ## 7. 既知の課題

@@ -7,7 +7,7 @@ permissionDecision JSON 出力 or 空 dict 出力) と、各補助関数の挙�
 - _scan_text_for_literals: 1 文字列内の code / fullword 検出、エスケープ無視
 - _scan_tool_input: dict / list 再帰スキャン、field path 保持
 - _is_allowed: allowlist 判定 (prefix / exact match)
-- _is_in_cc_memory_project: pyproject.toml 上方向探索
+- _is_in_calm_project: pyproject.toml 上方向探索
 - main: stdin event → block / pass 判定の総合フロー
 """
 from __future__ import annotations
@@ -289,26 +289,33 @@ class TestIsAllowed:
 
 
 # ---------------------------------------------------------------------------
-# _is_in_cc_memory_project
+# _is_in_calm_project
 # ---------------------------------------------------------------------------
 
 
-class TestIsInCcMemoryProject:
+class TestIsInCalmProject:
+    def test_pyproject_with_calm_name(self, tmp_path, monkeypatch):
+        # 実プロジェクトの現行 name
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "calm"\n'
+        )
+        monkeypatch.chdir(tmp_path)
+        assert preblock_hook._is_in_calm_project() is True
+
     def test_pyproject_with_cc_memory_name(self, tmp_path, monkeypatch):
         (tmp_path / "pyproject.toml").write_text(
             '[project]\nname = "cc-memory"\n'
         )
         monkeypatch.chdir(tmp_path)
-        assert preblock_hook._is_in_cc_memory_project() is True
+        assert preblock_hook._is_in_calm_project() is True
 
     def test_pyproject_with_claude_code_memory_name(self, tmp_path, monkeypatch):
-        # 実プロジェクトの pyproject.toml は name = "claude-code-memory" なので
-        # こちらも cc-memory project として受理されること
+        # 旧 name "claude-code-memory" も calm project として受理されること
         (tmp_path / "pyproject.toml").write_text(
             '[project]\nname = "claude-code-memory"\n'
         )
         monkeypatch.chdir(tmp_path)
-        assert preblock_hook._is_in_cc_memory_project() is True
+        assert preblock_hook._is_in_calm_project() is True
 
     def test_pyproject_with_literal_string(self, tmp_path, monkeypatch):
         # TOML literal string (single quotes) も同様に受理される
@@ -316,7 +323,7 @@ class TestIsInCcMemoryProject:
             "[project]\nname = 'cc-memory'\n"
         )
         monkeypatch.chdir(tmp_path)
-        assert preblock_hook._is_in_cc_memory_project() is True
+        assert preblock_hook._is_in_calm_project() is True
 
     def test_pyproject_with_claude_code_memory_literal_string(self, tmp_path, monkeypatch):
         # claude-code-memory も literal string (single quotes) で受理される
@@ -324,14 +331,14 @@ class TestIsInCcMemoryProject:
             "[project]\nname = 'claude-code-memory'\n"
         )
         monkeypatch.chdir(tmp_path)
-        assert preblock_hook._is_in_cc_memory_project() is True
+        assert preblock_hook._is_in_calm_project() is True
 
     def test_pyproject_with_other_name(self, tmp_path, monkeypatch):
         (tmp_path / "pyproject.toml").write_text(
             '[project]\nname = "other-project"\n'
         )
         monkeypatch.chdir(tmp_path)
-        assert preblock_hook._is_in_cc_memory_project() is False
+        assert preblock_hook._is_in_calm_project() is False
 
     def test_pyproject_with_name_only_in_comment(self, tmp_path, monkeypatch):
         # コメント行に `name = "cc-memory"` があっても [project].name は別ならば False
@@ -339,7 +346,7 @@ class TestIsInCcMemoryProject:
             '[project]\n# name = "cc-memory"\nname = "other-project"\n'
         )
         monkeypatch.chdir(tmp_path)
-        assert preblock_hook._is_in_cc_memory_project() is False
+        assert preblock_hook._is_in_calm_project() is False
 
     def test_pyproject_with_name_in_other_table(self, tmp_path, monkeypatch):
         # 別 table の name が "cc-memory" でも [project].name でなければ False
@@ -348,7 +355,7 @@ class TestIsInCcMemoryProject:
             '[tool.foo]\nname = "cc-memory"\n'
         )
         monkeypatch.chdir(tmp_path)
-        assert preblock_hook._is_in_cc_memory_project() is False
+        assert preblock_hook._is_in_calm_project() is False
 
     def test_pyproject_without_project_table(self, tmp_path, monkeypatch):
         # [project] table が無ければ False (defensive)
@@ -356,13 +363,13 @@ class TestIsInCcMemoryProject:
             '[tool.foo]\nname = "cc-memory"\n'
         )
         monkeypatch.chdir(tmp_path)
-        assert preblock_hook._is_in_cc_memory_project() is False
+        assert preblock_hook._is_in_calm_project() is False
 
     def test_pyproject_invalid_toml(self, tmp_path, monkeypatch):
         # 壊れた TOML はパース失敗 → False
         (tmp_path / "pyproject.toml").write_text("this is = = not toml [[[\n")
         monkeypatch.chdir(tmp_path)
-        assert preblock_hook._is_in_cc_memory_project() is False
+        assert preblock_hook._is_in_calm_project() is False
 
     def test_no_pyproject_in_tree(self, tmp_path, monkeypatch):
         # tmp_path 配下に pyproject.toml がない
@@ -372,7 +379,7 @@ class TestIsInCcMemoryProject:
         # tmp_path 上にも pyproject.toml がないことを保証するため、
         # macOS / Linux の / までさかのぼると別の pyproject に当たる可能性があるが、
         # その場合は cc-memory ではないという結果になる (False) のでテスト目的的は OK
-        result = preblock_hook._is_in_cc_memory_project()
+        result = preblock_hook._is_in_calm_project()
         assert result is False
 
     def test_pyproject_found_in_parent(self, tmp_path, monkeypatch):
@@ -382,7 +389,7 @@ class TestIsInCcMemoryProject:
         subdir = tmp_path / "src" / "deep" / "path"
         subdir.mkdir(parents=True)
         monkeypatch.chdir(subdir)
-        assert preblock_hook._is_in_cc_memory_project() is True
+        assert preblock_hook._is_in_calm_project() is True
 
 
 # ---------------------------------------------------------------------------
@@ -405,10 +412,10 @@ def _run_main_with_event(event: dict, capsys) -> dict:
 
 
 @pytest.fixture
-def cc_memory_cwd(tmp_path, monkeypatch):
-    """cc-memory project 内っぽい cwd を用意する fixture。"""
+def calm_cwd(tmp_path, monkeypatch):
+    """calm project 内っぽい cwd を用意する fixture。"""
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "cc-memory"\n'
+        '[project]\nname = "calm"\n'
     )
     monkeypatch.chdir(tmp_path)
     # opt-out 環境変数は明示的に消しておく
@@ -420,7 +427,7 @@ def cc_memory_cwd(tmp_path, monkeypatch):
 
 
 class TestMainBlockFlow:
-    def test_empty_stdin_passes_through(self, capsys, cc_memory_cwd):
+    def test_empty_stdin_passes_through(self, capsys, calm_cwd):
         sys.stdin = io.StringIO("")
         try:
             preblock_hook.main()
@@ -428,7 +435,7 @@ class TestMainBlockFlow:
             sys.stdin = sys.__stdin__
         assert capsys.readouterr().out.strip() == "{}"
 
-    def test_clean_input_passes_through(self, capsys, cc_memory_cwd):
+    def test_clean_input_passes_through(self, capsys, calm_cwd):
         out = _run_main_with_event(
             {
                 "tool_name": "Bash",
@@ -439,7 +446,7 @@ class TestMainBlockFlow:
         )
         assert out == {}
 
-    def test_code_literal_in_bash_blocks(self, capsys, cc_memory_cwd):
+    def test_code_literal_in_bash_blocks(self, capsys, calm_cwd):
         out = _run_main_with_event(
             {
                 "tool_name": "Bash",
@@ -453,7 +460,7 @@ class TestMainBlockFlow:
         assert spec["permissionDecision"] == "deny"
         assert "M#123" in spec["permissionDecisionReason"]
 
-    def test_fullword_literal_in_write_blocks(self, capsys, cc_memory_cwd):
+    def test_fullword_literal_in_write_blocks(self, capsys, calm_cwd):
         out = _run_main_with_event(
             {
                 "tool_name": "Write",
@@ -469,7 +476,7 @@ class TestMainBlockFlow:
         assert spec["permissionDecision"] == "deny"
         assert "log #45" in spec["permissionDecisionReason"]
 
-    def test_escape_not_blocked(self, capsys, cc_memory_cwd):
+    def test_escape_not_blocked(self, capsys, calm_cwd):
         out = _run_main_with_event(
             {
                 "tool_name": "Bash",
@@ -480,7 +487,7 @@ class TestMainBlockFlow:
         )
         assert out == {}
 
-    def test_double_backslash_code_not_blocked(self, capsys, cc_memory_cwd):
+    def test_double_backslash_code_not_blocked(self, capsys, calm_cwd):
         # `\\M#1` (`\` 2 個) は converter ではエスケープ扱いで sanitize されるため、
         # hook 側も block してはいけない (UX 整合)。
         out = _run_main_with_event(
@@ -493,7 +500,7 @@ class TestMainBlockFlow:
         )
         assert out == {}
 
-    def test_double_backslash_fullword_not_blocked(self, capsys, cc_memory_cwd):
+    def test_double_backslash_fullword_not_blocked(self, capsys, calm_cwd):
         out = _run_main_with_event(
             {
                 "tool_name": "Bash",
@@ -504,7 +511,7 @@ class TestMainBlockFlow:
         )
         assert out == {}
 
-    def test_plain_literal_still_blocks_regression(self, capsys, cc_memory_cwd):
+    def test_plain_literal_still_blocks_regression(self, capsys, calm_cwd):
         # backslash なしの素の `M#1` は引き続き block する (regression 防止)。
         out = _run_main_with_event(
             {
@@ -517,7 +524,7 @@ class TestMainBlockFlow:
         assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
         assert "M#1" in out["hookSpecificOutput"]["permissionDecisionReason"]
 
-    def test_slash_preceded_code_blocks(self, capsys, cc_memory_cwd):
+    def test_slash_preceded_code_blocks(self, capsys, calm_cwd):
         # 前方 lookbehind から `/` が外れたことで、path/URL 直後の ID も
         # 新たに block 対象になる (旧実装ではこのケースは非マッチで通過していた)。
         out = _run_main_with_event(
@@ -531,7 +538,7 @@ class TestMainBlockFlow:
         assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
         assert "M#123" in out["hookSpecificOutput"]["permissionDecisionReason"]
 
-    def test_range_notation_blocks_with_full_range_in_reason(self, capsys, cc_memory_cwd):
+    def test_range_notation_blocks_with_full_range_in_reason(self, capsys, calm_cwd):
         # 範囲表記の終端まで含めた文字列が matched_literals (deny reason) に載る。
         out = _run_main_with_event(
             {
@@ -544,7 +551,7 @@ class TestMainBlockFlow:
         assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
         assert "M#201-203" in out["hookSpecificOutput"]["permissionDecisionReason"]
 
-    def test_slash_preceded_fullword_blocks(self, capsys, cc_memory_cwd):
+    def test_slash_preceded_fullword_blocks(self, capsys, calm_cwd):
         # 前方 lookbehind から `/` が外れたことで、path/URL 直後の fullword ID も
         # 新たに block 対象になる (旧実装ではこのケースは非マッチで通過していた)。
         sharp = chr(35)
@@ -560,7 +567,7 @@ class TestMainBlockFlow:
         assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
         assert literal in out["hookSpecificOutput"]["permissionDecisionReason"]
 
-    def test_range_notation_fullword_blocks_with_full_range_in_reason(self, capsys, cc_memory_cwd):
+    def test_range_notation_fullword_blocks_with_full_range_in_reason(self, capsys, calm_cwd):
         # fullword の範囲表記も終端まで含めた文字列が matched_literals (deny reason) に載る。
         sharp = chr(35)
         literal = "material " + sharp + "201-203"
@@ -575,7 +582,7 @@ class TestMainBlockFlow:
         assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
         assert literal in out["hookSpecificOutput"]["permissionDecisionReason"]
 
-    def test_allowlist_tool_passes_through(self, capsys, cc_memory_cwd):
+    def test_allowlist_tool_passes_through(self, capsys, calm_cwd):
         # CALM MCP は scan されない
         out = _run_main_with_event(
             {
@@ -587,7 +594,7 @@ class TestMainBlockFlow:
         )
         assert out == {}
 
-    def test_allowlist_remote_tool_passes_through(self, capsys, cc_memory_cwd):
+    def test_allowlist_remote_tool_passes_through(self, capsys, calm_cwd):
         # CALM MCP (リモート接続経由prefix) も scan されない
         sharp = chr(35)
         out = _run_main_with_event(
@@ -600,7 +607,7 @@ class TestMainBlockFlow:
         )
         assert out == {}
 
-    def test_allowlist_read_passes_through(self, capsys, cc_memory_cwd):
+    def test_allowlist_read_passes_through(self, capsys, calm_cwd):
         out = _run_main_with_event(
             {
                 "tool_name": "Read",
@@ -612,7 +619,7 @@ class TestMainBlockFlow:
         assert out == {}
 
     def test_agent_tool_passes_through_with_id_literals(
-        self, capsys, cc_memory_cwd
+        self, capsys, calm_cwd
     ):
         # Agent SA spawn 時の prompt に素の内部 ID リテラルが含まれても block しない。
         # リテラル文字列を直接書くとこのファイル自体が hook で読み書き拒否されるため、
@@ -636,7 +643,7 @@ class TestMainBlockFlow:
         assert out == {}
 
     def test_task_tool_passes_through_with_id_literals(
-        self, capsys, cc_memory_cwd
+        self, capsys, calm_cwd
     ):
         # Task SA spawn 時も Agent と同様に prompt 内の内部 ID は委譲先への文脈伝達。
         # リテラル文字列を直接書くとこのファイル自体が hook で読み書き拒否されるため、
@@ -657,7 +664,7 @@ class TestMainBlockFlow:
         assert out == {}
 
     def test_workflow_tool_passes_through_with_id_literals(
-        self, capsys, cc_memory_cwd
+        self, capsys, calm_cwd
     ):
         # Workflow tool は script 内で agent() を呼ぶ。script / args に内部 ID が含まれても
         # サブ workflow / agent への文脈委譲として正当 (Agent / Task と同じ扱い)。
@@ -680,9 +687,9 @@ class TestMainBlockFlow:
         assert out == {}
 
     def test_allowlist_skips_project_check_io(
-        self, capsys, cc_memory_cwd, monkeypatch
+        self, capsys, calm_cwd, monkeypatch
     ):
-        # allowlist tool では _is_in_cc_memory_project が呼ばれないこと
+        # allowlist tool では _is_in_calm_project が呼ばれないこと
         # (頻出 tool で pyproject.toml の読み直しを避ける最適化)
         call_count = {"n": 0}
 
@@ -690,7 +697,7 @@ class TestMainBlockFlow:
             call_count["n"] += 1
             return True
 
-        monkeypatch.setattr(preblock_hook, "_is_in_cc_memory_project", _spy)
+        monkeypatch.setattr(preblock_hook, "_is_in_calm_project", _spy)
         _run_main_with_event(
             {
                 "tool_name": "Read",
@@ -702,7 +709,7 @@ class TestMainBlockFlow:
         assert call_count["n"] == 0
 
     def test_opt_out_env_var_passes_through(
-        self, capsys, cc_memory_cwd, monkeypatch
+        self, capsys, calm_cwd, monkeypatch
     ):
         monkeypatch.setenv("CALM_LEAK_GUARD", "off")
         out = _run_main_with_event(
@@ -715,7 +722,7 @@ class TestMainBlockFlow:
         )
         assert out == {}
 
-    def test_opt_out_case_insensitive(self, capsys, cc_memory_cwd, monkeypatch):
+    def test_opt_out_case_insensitive(self, capsys, calm_cwd, monkeypatch):
         monkeypatch.setenv("CALM_LEAK_GUARD", "OFF")
         out = _run_main_with_event(
             {
@@ -728,7 +735,7 @@ class TestMainBlockFlow:
         assert out == {}
 
     def test_opt_out_other_values_do_not_skip(
-        self, capsys, cc_memory_cwd, monkeypatch
+        self, capsys, calm_cwd, monkeypatch
     ):
         # "on" / "1" / "true" などは opt-out ではない
         monkeypatch.setenv("CALM_LEAK_GUARD", "on")
@@ -742,7 +749,7 @@ class TestMainBlockFlow:
         )
         assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
-    def test_non_cc_memory_project_passes_through(
+    def test_non_calm_project_passes_through(
         self, capsys, tmp_path, monkeypatch
     ):
         (tmp_path / "pyproject.toml").write_text(
@@ -762,8 +769,8 @@ class TestMainBlockFlow:
 
 
 class TestLogEventFields:
-    def test_log_written_with_required_fields(self, capsys, cc_memory_cwd):
-        _, log_path = cc_memory_cwd
+    def test_log_written_with_required_fields(self, capsys, calm_cwd):
+        _, log_path = calm_cwd
         _run_main_with_event(
             {
                 "tool_name": "Bash",
@@ -781,12 +788,12 @@ class TestLogEventFields:
         assert "M#123" in rec["matches"]
         assert "log #45" in rec["matches"]
         assert rec["tool_input_field"] == ["command"]
-        assert rec["cwd"] == str(cc_memory_cwd[0])
+        assert rec["cwd"] == str(calm_cwd[0])
         assert rec["session_id"] == "session-xyz"
         assert "timestamp" in rec
 
-    def test_log_field_for_nested_dict(self, capsys, cc_memory_cwd):
-        _, log_path = cc_memory_cwd
+    def test_log_field_for_nested_dict(self, capsys, calm_cwd):
+        _, log_path = calm_cwd
         _run_main_with_event(
             {
                 "tool_name": "Write",
@@ -801,8 +808,8 @@ class TestLogEventFields:
         rec = json.loads(log_path.read_text(encoding="utf-8").splitlines()[0])
         assert "content" in rec["tool_input_field"]
 
-    def test_no_log_when_clean(self, capsys, cc_memory_cwd):
-        _, log_path = cc_memory_cwd
+    def test_no_log_when_clean(self, capsys, calm_cwd):
+        _, log_path = calm_cwd
         _run_main_with_event(
             {
                 "tool_name": "Bash",
@@ -814,7 +821,7 @@ class TestLogEventFields:
         assert not log_path.exists()
 
     def test_log_write_failure_is_silent(
-        self, capsys, cc_memory_cwd, monkeypatch
+        self, capsys, calm_cwd, monkeypatch
     ):
         # LOG_PATH の親に書き込み権限がない状況を疑似的に再現するため、
         # _log_event 内の open を強制的に失敗させる
@@ -833,3 +840,37 @@ class TestLogEventFields:
         )
         # block 動作は継続している
         assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+class TestMainExceptionSignal:
+    def test_unhandled_exception_records_machine_error_signal(
+        self, capsys, calm_cwd, monkeypatch, temp_db
+    ):
+        """main()のtry内で捕捉されない例外が発生しても素通し + signal記録される。"""
+        def boom(*a, **kw):
+            raise RuntimeError("scan boom")
+
+        monkeypatch.setattr(preblock_hook, "_scan_tool_input", boom)
+
+        out = _run_main_with_event(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "echo hello"},
+                "session_id": "s1",
+            },
+            capsys,
+        )
+        # hook自体の不具合で全toolを止めないため素通しのまま
+        assert out == {}
+
+        from src.db import get_connection
+
+        conn = get_connection()
+        try:
+            row = conn.execute("SELECT * FROM signal_events").fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert row["kind"] == "machine_error"
+        assert row["source"] == "hook:preblock"
+        assert "scan boom" in row["summary"]

@@ -24,6 +24,7 @@ _PLUGIN_ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(_PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(_PLUGIN_ROOT))
 
+from hooks.signal_capture import try_capture_signal  # noqa: E402
 from src.env_compat import env_get  # noqa: E402
 from src.harness import select_harness  # noqa: E402
 from src.services.internal_id_patterns import (  # noqa: E402
@@ -182,7 +183,7 @@ def _scan_tool_input(value) -> list[dict]:
     return matches
 
 
-def _is_in_cc_memory_project() -> bool:
+def _is_in_calm_project() -> bool:
     """cwd から上方向に pyproject.toml を探索して cc-memory project か判定する。
 
     `[project].name` を tomllib で厳密パースし、`_PROJECT_NAMES` のいずれかに
@@ -241,7 +242,7 @@ def main() -> None:
             return
 
         # cwd 判定: cc-memory project 内のみ有効
-        if not _is_in_cc_memory_project():
+        if not _is_in_calm_project():
             harness.emit_empty()
             return
 
@@ -279,6 +280,7 @@ def main() -> None:
     except Exception as e:
         # hook 自体の不具合で全 tool を止めないため、例外時は素通し + stderr 通知
         print(f"preblock_hook.py error: {e}", file=sys.stderr)
+        try_capture_signal(kind="machine_error", source="hook:preblock", summary=str(e)[:200])
         harness.emit_empty()
 
 

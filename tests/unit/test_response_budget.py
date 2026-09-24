@@ -308,3 +308,155 @@ class TestBudgetPolicyValidation:
     def test_falsification_non_overlapping_policy_still_constructs(self):
         policy = _policy()  # protected_paths={"activity","kept"}, cut_steps targets list_a/list_b
         assert policy.protected_paths == frozenset({"activity", "kept"})
+
+
+class TestGetPath:
+    def test_returns_nested_value_for_dotted_path(self):
+        assert rb.get_path({"a": {"b": {"c": 1}}}, "a.b.c") == 1
+
+    def test_missing_key_returns_none(self):
+        assert rb.get_path({"a": {"b": 1}}, "a.x") is None
+
+    def test_non_dict_intermediate_node_returns_none(self):
+        assert rb.get_path({"a": "not-a-dict"}, "a.b") is None
+
+    def test_no_dot_behaves_like_top_level_key(self):
+        assert rb.get_path({"a": 1}, "a") == 1
+
+
+class TestDottedCutStepPaths:
+    """CutStep.pathがドット区切りで入れ子キーを指すとき、response直下のキーと
+    同じ手順（tail_list/stub_dict）が入れ子の値にもそのまま働くことを確認する。
+    """
+
+    def test_tail_list_cuts_nested_list(self):
+        response = {"container": {"list_a": ["x" * 20] * 10}}
+        policy = _policy(
+            budget_chars=40,
+            cut_steps=(rb.CutStep(path="container.list_a", mode="tail_list"),),
+        )
+        out = rb.apply_budget(response, policy)
+        assert len(out["container"]["list_a"]) < 10
+        assert out["truncated"]["cuts"][0]["section"] == "container.list_a"
+
+    def test_stub_dict_replaces_nested_dict(self):
+        response = {"container": {"doc": {"id_raw": 7, "title": "T", "content": "x" * 500}}}
+        policy = _policy(
+            budget_chars=50,
+            cut_steps=(rb.CutStep(path="container.doc", mode="stub_dict"),),
+        )
+        out = rb.apply_budget(response, policy)
+        assert out["container"]["doc"] == {
+            "id_raw": 7, "title": "T",
+            "chars": rb.measure_chars({"id_raw": 7, "title": "T", "content": "x" * 500}),
+        }
+
+    def test_falsification_top_level_path_does_not_reach_nested_list(self):
+        """CutStep.pathをドット無しの"list_a"のままにすると、container配下の
+        リストは見つからず削られない（ドット区切りpathが実際に入れ子を
+        探索していることの裏取り）。"""
+        response = {"container": {"list_a": ["x" * 20] * 10}}
+        policy = _policy(budget_chars=40, cut_steps=(rb.CutStep(path="list_a", mode="tail_list"),))
+        out = rb.apply_budget(response, policy)
+        assert len(out["container"]["list_a"]) == 10
+        assert out["truncated"]["over_budget"] is True
+
+
+class TestDottedCappedSectionExclusion:
+    """capped_sections.pathsがドット区切りで、同じ祖先を共有する複数の入れ子pathを
+    指すとき、両方とも全体予算から除外される（片方だけでは除外し切れない）ことを
+    確認する。
+    """
+
+    def test_multiple_nested_paths_sharing_an_ancestor_are_both_excluded(self):
+        response = {"env": {"tag_notes": "n" * 300, "hints": "h" * 300, "kept_sibling": "k" * 5}}
+        policy = _policy(
+            budget_chars=50,
+            cut_steps=(),
+            capped_sections=(
+                rb.CappedSection(
+                    name="capped", paths=("env.tag_notes", "env.hints"),
+                    cap_chars=100_000, fold=None,
+                ),
+            ),
+        )
+        out = rb.apply_budget(response, policy)
+        # tag_notes/hints抜きならenv.kept_sibling(5字)だけなので予算(50字)内に収まる
+        assert "truncated" not in out
+        # 祖先(env)自体はコピーとして残り、除外対象でない兄弟キーは保たれる
+        assert out["env"]["kept_sibling"] == "k" * 5
+
+    def test_sibling_key_under_shared_ancestor_still_counted(self):
+        """除外対象に指定していない兄弟キー(env.other)は、祖先を共有していても
+        引き続き全体予算に数えられる。"""
+        response = {"env": {"tag_notes": "n" * 5, "other": "o" * 200}}
+        policy = _policy(
+            budget_chars=50,
+            cut_steps=(),
+            capped_sections=(
+                rb.CappedSection(name="capped", paths=("env.tag_notes",), cap_chars=100_000, fold=None),
+            ),
+        )
+        out = rb.apply_budget(response, policy)
+        assert out["truncated"]["over_budget"] is True  # env.otherだけで予算超過
+
+    def test_falsification_excluding_only_one_of_two_nested_paths_still_over_budget(self):
+        """env.tag_notes/env.hintsの片方だけを除外指定すると、除外し損ねた方が
+        残って予算超過のままになる（上のテストが両方の除外を見ていることの裏取り）。"""
+        response = {"env": {"tag_notes": "n" * 300, "hints": "h" * 300}}
+        policy = _policy(
+            budget_chars=50,
+            cut_steps=(),
+            capped_sections=(
+                rb.CappedSection(name="capped", paths=("env.tag_notes",), cap_chars=100_000, fold=None),
+            ),
+        )
+        out = rb.apply_budget(response, policy)
+        assert out["truncated"]["over_budget"] is True
+
+
+class TestNonDefaultCoveragePath:
+    def test_coverage_numerator_rewritten_at_nested_coverage_path(self):
+        response = {
+            "env": {"coverage": {"b": "5/9"}},
+            "list_b": ["x" * 20] * 5,
+        }
+        policy = _policy(budget_chars=30, coverage_path="env.coverage")
+        out = rb.apply_budget(response, policy)
+        assert out["env"]["coverage"]["b"].endswith("/9")
+        numerator = int(out["env"]["coverage"]["b"].split("/")[0])
+        assert numerator == len(out["list_b"])
+        assert numerator < 5
+
+    def test_falsification_default_coverage_path_does_not_reach_nested_coverage(self):
+        """coverage_pathを明示せず既定値"coverage"のままだと、env.coverage配下は
+        見つからずnumeratorが書き換わらない（coverage_pathの指定が実際に
+        効いていることの裏取り。list_bの切り詰め自体はcoverage解決と独立に起きる）。"""
+        response = {
+            "env": {"coverage": {"b": "5/9"}},
+            "list_b": ["x" * 20] * 5,
+        }
+        policy = _policy(budget_chars=30)  # coverage_pathは既定値"coverage"のまま
+        out = rb.apply_budget(response, policy)
+        assert out["env"]["coverage"]["b"] == "5/9"
+        assert len(out["list_b"]) < 5
+
+
+class TestNonDefaultActivityPath:
+    def test_hard_max_cuts_description_at_nested_activity_path(self):
+        response = {"anchor": {"activity": {"description": "d" * 40000}}, "list_a": []}
+        policy = _policy(budget_chars=100, hard_max_chars=1000, activity_path="anchor.activity")
+        out = rb.apply_budget(response, policy)
+        assert len(out["anchor"]["activity"]["description"]) < 40000
+        assert out["anchor"]["activity"]["description_truncated"] is True
+        assert out["truncated"]["hard_max"] is True
+
+    def test_falsification_default_activity_path_does_not_reach_nested_activity(self):
+        """activity_pathを明示せず既定値"activity"のままだと、anchor.activity配下は
+        見つからずhard_maxが発動しない（activity_pathの指定が実際に効いている
+        ことの裏取り）。"""
+        response = {"anchor": {"activity": {"description": "d" * 40000}}, "list_a": []}
+        policy = _policy(budget_chars=100, hard_max_chars=1000)  # activity_pathは既定値のまま
+        out = rb.apply_budget(response, policy)
+        assert "hard_max" not in out.get("truncated", {})
+        assert len(out["anchor"]["activity"]["description"]) == 40000

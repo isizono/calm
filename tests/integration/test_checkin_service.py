@@ -1574,7 +1574,7 @@ class TestCheckInSessionRegistry:
 
     def test_add_activity_check_in_true_also_registers_session(self, temp_db, monkeypatch):
         """add_activity(check_in=True)経由でもレジストリ行が作られる
-        （内部でcheckin_service.check_inを呼ぶ経路のカバレッジ）"""
+        （内部でcheckin_tier_service.collect_and_assembleを呼ぶ経路のカバレッジ）"""
         self._stub_world(
             monkeypatch,
             {"bridge-1": {"cli_pid": 100, "cli_session_id": "cli-1", "name": "workspace-a1"}},

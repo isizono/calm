@@ -161,7 +161,7 @@ def test_check_in_flavor_readable_expands_goal_bound_titles(temp_db):
         main_module.citation_renderer.expand = original_expand
 
     assert "error" not in result
-    remaining = result["goal"]["remaining"]
+    remaining = result["control"]["goal"]["remaining"]
     assert len(remaining) == 1
     assert any("activity『" in text for text in expanded_inputs)
 

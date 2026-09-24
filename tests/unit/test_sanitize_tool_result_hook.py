@@ -152,7 +152,7 @@ def test_case_01_valid_target_converted_to_cite(fixture_db):
 # ---------------------------------------------------------------------------
 
 
-def test_case_02_non_cc_memory_tool_is_noop(fixture_db):
+def test_case_02_non_calm_tool_is_noop(fixture_db):
     payload = _payload("ref to M#1", tool_name="Read")
     stdout, code = _run_hook(payload)
     assert code == 0
@@ -187,11 +187,12 @@ def test_case_03_env_disable_short_circuits_even_for_subagent(fixture_db, monkey
 # ---------------------------------------------------------------------------
 
 
-def test_case_04_cwd_in_cc_memory_repo_skipped(fixture_db, tmp_path):
-    repo_root = tmp_path / "cc-memory-repo"
+@pytest.mark.parametrize("project_name", ["calm", "claude-code-memory"])
+def test_case_04_cwd_in_calm_repo_skipped(fixture_db, tmp_path, project_name):
+    repo_root = tmp_path / "calm-repo"
     repo_root.mkdir()
     (repo_root / "pyproject.toml").write_text(
-        '[project]\nname = "claude-code-memory"\nversion = "0.1.0"\n'
+        f'[project]\nname = "{project_name}"\nversion = "0.1.0"\n'
     )
     subdir = repo_root / "src" / "deep" / "nested"
     subdir.mkdir(parents=True)

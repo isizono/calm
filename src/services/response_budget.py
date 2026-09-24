@@ -24,15 +24,57 @@ def measure_chars(obj: object) -> int:
     return len(json.dumps(obj, ensure_ascii=False))
 
 
+def get_path(d: object, path: str) -> object:
+    """ドット区切りのpathでネストしたdictを辿って値を返す。無ければNone。
+
+    path中にドットが無ければ単純なトップレベルキー参照と同じになる
+    （既存のフラットな形の方針はそのまま動く）。
+    """
+    node = d
+    for part in path.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node
+
+
+def _excluding(d: dict, paths: set[str]) -> dict:
+    """dのうち、指定したドット区切りpath群を除いた辞書を返す。
+
+    除く必要のある祖先チェーンだけを新しいdictとしてコピーし、それ以外の
+    値は参照共有する（全体をdeepcopyしない軽量なpruned view）。
+    """
+    if not paths:
+        return d
+    result = dict(d)
+    top_only: set[str] = set()
+    grouped: dict[str, set[str]] = {}
+    for path in paths:
+        head, sep, rest = path.partition(".")
+        if sep:
+            grouped.setdefault(head, set()).add(rest)
+        else:
+            top_only.add(head)
+    for key in top_only:
+        result.pop(key, None)
+    for key, rest_paths in grouped.items():
+        child = result.get(key)
+        if isinstance(child, dict):
+            result[key] = _excluding(child, rest_paths)
+    return result
+
+
 @dataclass(frozen=True)
 class CutStep:
     """予算超過時に応答の1パスを削る手順。
 
-    path: response直下のキー名。
+    path: 削る対象のキー。ドット区切りで入れ子の箇所も指定できる
+        （例: "anchor.pinned"、"catalog.map"）。ドットが無ければ
+        response直下のキーとして扱う。
     mode: "tail_list"（リストを末尾から1件ずつ削る）| "stub_dict"
         （dictを{id_raw, title, chars, next}のスタブに置き換える）。
-    coverage_key: env.coverage（現状はresponse["coverage"]）の対応する分子名。
-        Noneならcoverageの書き換え対象にしない。
+    coverage_key: BudgetPolicy.coverage_pathが指すcoverage dictの対応する
+        分子名。Noneならcoverageの書き換え対象にしない。
     pointer: 削った後に"next"へ添えるポインタ一覧を組み立てる関数。response全体を
         受け取り [{"tool": ..., "args": ...}, ...] を返す。Noneなら付けない。
     """
@@ -46,8 +88,8 @@ class CutStep:
 class CappedSection:
     """全体予算には数えないが、独自の天井を持つ枠（例: 制御信号・tag_notes）。
 
-    paths: 合算して字数を測るresponse直下のキー名の集合。全体予算(budget_chars)には
-        数えない。
+    paths: 合算して字数を測るキーの集合。ドット区切りで入れ子の箇所も指定できる
+        （例: "env.tag_notes"）。全体予算(budget_chars)には数えない。
     cap_chars: この枠だけの天井。
     fold: 天井超過時に呼ぶ畳み込み関数。response全体を受け取りin-placeで畳む。
         Noneなら畳まずtruncatedにoverフラグを立てるだけにする。
@@ -62,7 +104,7 @@ class CappedSection:
 class PinnedPolicy:
     """pinned枠の縮小方針。
 
-    path: response直下のpinnedキー名。
+    path: pinnedキー。ドット区切りで入れ子の箇所も指定できる（例: "anchor.pinned"）。
     slot_chars: pinned専用の枠（予算全体10,000字の内側で確保される分）。
     content_field: 子キー（decisions/logs/materials等）ごとの本文フィールド名。
         枠をまたぐ要素の先頭を残して切るときに使う。無ければ丸ごとスタブにする。
@@ -81,6 +123,10 @@ class BudgetPolicy:
     「cut_stepsの対象に含めない」ことそのものであり、宣言と実装がずれて
     protected_pathsに載っているパスが将来のcut_steps追加でうっかり削られる、
     という事故をこの検証で防ぐ）。
+
+    coverage_path・activity_pathはそれぞれcoverage dict・activity dictの
+    置き場をドット区切りで指定する（フラットな形はどちらもトップレベルの
+    キー名なのでデフォルトのままでよい）。
     """
     budget_chars: int
     hard_max_chars: int
@@ -89,6 +135,8 @@ class BudgetPolicy:
     pinned: PinnedPolicy | None
     cut_steps: tuple[CutStep, ...]
     hard_max_pointer: Callable[[dict], list[dict]] | None = None
+    coverage_path: str = "coverage"
+    activity_path: str = "activity"
 
     def __post_init__(self) -> None:
         cut_paths = {step.path for step in self.cut_steps}
@@ -107,12 +155,13 @@ def _uncounted_paths(policy: BudgetPolicy) -> set[str]:
 
 
 def _total_chars(response: dict, uncounted: set[str]) -> int:
-    counted = {k: v for k, v in response.items() if k not in uncounted}
-    return measure_chars(counted)
+    return measure_chars(_excluding(response, uncounted))
 
 
-def _rewrite_coverage_numerator(response: dict, key: str, new_numerator: int) -> None:
-    coverage = response.get("coverage")
+def _rewrite_coverage_numerator(
+    response: dict, coverage_path: str, key: str, new_numerator: int
+) -> None:
+    coverage = get_path(response, coverage_path)
     if not isinstance(coverage, dict):
         return
     value = coverage.get(key)
@@ -127,14 +176,22 @@ def _item_id(item: dict) -> int | None:
 
 
 def _apply_cut_step(
-    response: dict, step: CutStep, budget_chars: int, uncounted: set[str], total: int
+    response: dict,
+    step: CutStep,
+    budget_chars: int,
+    uncounted: set[str],
+    total: int,
+    coverage_path: str,
 ) -> tuple[dict | None, int]:
     """1つのCutStepを適用する。呼び出し側が保持する実測総字数(total)を受け取り、
     更新後の総字数と併せて返す（tail_listモードでpopのたびに応答全体を
     再シリアライズするコストを避けるため、除去した要素自身の字数だけを引く
     近似で追跡し、ステップの終わりに一度だけ正確な値へ再同期する）。
+
+    step.pathで得た値をin-place（pop / clear+update）で書き換えるため、
+    途中の入れ子dictを再代入する必要が無く、ドット区切りのpathでもそのまま動く。
     """
-    value = response.get(step.path)
+    value = get_path(response, step.path)
 
     if step.mode == "tail_list":
         if not isinstance(value, list) or not value:
@@ -150,7 +207,7 @@ def _apply_cut_step(
             return None, total
         total = _total_chars(response, uncounted)
         if step.coverage_key is not None:
-            _rewrite_coverage_numerator(response, step.coverage_key, len(value))
+            _rewrite_coverage_numerator(response, coverage_path, step.coverage_key, len(value))
         cut_info = {"section": step.path, "kept": len(value), "cut": cut}
         if step.pointer is not None:
             cut_info["next"] = step.pointer(response)
@@ -165,10 +222,11 @@ def _apply_cut_step(
         stub = {"id_raw": _item_id(value), "title": value.get("title"), "chars": original_chars}
         if step.pointer is not None:
             stub["next"] = step.pointer(response)
-        response[step.path] = stub
+        value.clear()
+        value.update(stub)
         total = _total_chars(response, uncounted)
         if step.coverage_key is not None:
-            _rewrite_coverage_numerator(response, step.coverage_key, 0)
+            _rewrite_coverage_numerator(response, coverage_path, step.coverage_key, 0)
         return {"section": step.path, "kept": 0, "cut": 1}, total
 
     return None, total
@@ -178,7 +236,7 @@ def _shrink_pinned(response: dict, pinned_policy: PinnedPolicy, slot_chars: int)
     """pinnedを指定字数まで縮める。小さい要素から順に丸ごと残し、枠をまたぐ要素は
     先頭を残して切り、それ以降はスタブにする（種別をまたいだ小さい順）。
     """
-    pinned = response.get(pinned_policy.path)
+    pinned = get_path(response, pinned_policy.path)
     if not isinstance(pinned, dict) or not pinned:
         return None
     if measure_chars(pinned) <= slot_chars:
@@ -229,14 +287,15 @@ def _shrink_pinned(response: dict, pinned_policy: PinnedPolicy, slot_chars: int)
                 stub["next"] = pinned_policy.pointer(response, child_key, _item_id(item))
             new_pinned.setdefault(child_key, []).append(stub)
 
-    response[pinned_policy.path] = new_pinned
+    pinned.clear()
+    pinned.update(new_pinned)
     kept_count = len(kept_keys)
     return {"section": pinned_policy.path, "kept": kept_count, "cut": len(flat) - kept_count}
 
 
 def _apply_hard_max(response: dict, policy: BudgetPolicy) -> bool:
     """ハード上限超過時の最後の手段: activity.descriptionの先頭を残して切る。"""
-    activity = response.get("activity")
+    activity = get_path(response, policy.activity_path)
     if not isinstance(activity, dict):
         return False
     desc = activity.get("description")
@@ -267,7 +326,9 @@ def apply_budget(response: dict, policy: BudgetPolicy) -> dict:
 
     control_flags: dict[str, bool] = {}
     for section in policy.capped_sections:
-        size = measure_chars({p: response[p] for p in section.paths if p in response})
+        present = {p: get_path(response, p) for p in section.paths}
+        present = {p: v for p, v in present.items() if v is not None}
+        size = measure_chars(present)
         if size > section.cap_chars:
             control_flags[f"{section.name}_over"] = True
             if section.fold is not None:
@@ -297,7 +358,9 @@ def apply_budget(response: dict, policy: BudgetPolicy) -> dict:
     for step in policy.cut_steps:
         if total <= policy.budget_chars:
             break
-        cut, total = _apply_cut_step(response, step, policy.budget_chars, uncounted, total)
+        cut, total = _apply_cut_step(
+            response, step, policy.budget_chars, uncounted, total, policy.coverage_path
+        )
         if cut:
             cuts.append(cut)
 

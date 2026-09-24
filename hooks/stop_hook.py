@@ -334,6 +334,7 @@ def _collect_logs_sparse_nudges(
         from src.services import hint_service
     except ImportError as e:
         print(f"stop_hook.py logs_sparse import error: {e}", file=sys.stderr)
+        try_capture_signal(kind="machine_error", source="hook:stop:logs_sparse", summary=str(e)[:200])
         return []
 
     nudges: list[dict] = []
@@ -343,6 +344,7 @@ def _collect_logs_sparse_nudges(
             hints = hint_service.get_hints("topic", tid)
         except Exception as e:
             print(f"stop_hook.py logs_sparse get_hints error: {e}", file=sys.stderr)
+            try_capture_signal(kind="machine_error", source="hook:stop:logs_sparse", summary=str(e)[:200])
             continue
         for h in hints:
             if h.get("delivery_hint") != "deferred":

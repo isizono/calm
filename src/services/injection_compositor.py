@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from src import config
+from src.services.signal_service import capture_signal_safe
 
 SectionBuilder = Callable[..., str]  # (conn, session_id=..., source=..., transcript_path=..., **_kwargs) -> str
 
@@ -68,7 +69,9 @@ def compose(
     キーワード引数を`**_kwargs`で無視できる（シグネチャは全builder共通）。
 
     セクション単位のtry/exceptで例外を握り、そのセクションを空扱いにして残りは
-    続行する（既存hookの挙動を保持）。
+    続行する（既存hookの挙動を保持）。この握り自体は沈黙させず、
+    signal_events へ machine_error として記録する（設計上fail-openな箇所が
+    無警告のまま常態化するのを防ぐため）。
 
     Σ budget_chars が TOTAL_INJECTION_BUDGET_CHARS を超えている場合はValueErrorを
     送出する。両者は環境変数で個別にオーバーライド可能なため、実行時にも
@@ -91,7 +94,12 @@ def compose(
                 source=source,
                 transcript_path=transcript_path,
             )
-        except Exception:
+        except Exception as e:
+            capture_signal_safe(
+                kind="machine_error",
+                summary=f"section '{section.name}' failed: {e}"[:200],
+                source=f"hook:section:{section.name}",
+            )
             continue
         if not text:
             continue
