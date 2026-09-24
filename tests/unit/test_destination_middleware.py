@@ -14,6 +14,7 @@ register_alive_heartbeat_session/register_dead_heartbeat_sessionで実ファイ�
 """
 import contextlib
 import copy
+import os
 from unittest.mock import MagicMock
 
 import pytest
@@ -60,6 +61,25 @@ def _call_next_returning(tool_result: ToolResult):
     async def _inner(_ctx):
         return tool_result
     return _inner
+
+
+def _call_recorder(return_value=None):
+    """例外を投げず呼び出しを記録するだけのspy。
+
+    on_call_toolの本体はベストエフォートのtry/exceptで囲われているため、
+    「呼ばれてはいけない関数」を例外送出で差し替えると、実際に呼ばれても
+    例外がそこで握りつぶされてテストの外まで伝播しない（検出力が無くなる）。
+    呼び出し回数だけを記録し、正常系と同じ型の値を返すことで、誤って
+    呼ばれた場合でも後続処理をクラッシュさせずに素通りさせ、呼び出し
+    回数のassertでregressionを検出できるようにする。
+    """
+    calls = []
+
+    def _fn(*args, **kwargs):
+        calls.append((args, kwargs))
+        return return_value
+
+    return _fn, calls
 
 
 def _make_activity(title: str = "Act") -> int:
@@ -525,10 +545,10 @@ class TestBoardGating:
         """既定（PEER_NUDGE_ENABLED=False）ではadd_logsで候補算出処理が一切走らない。"""
         monkeypatch.setattr(config, "PEER_NUDGE_ENABLED", False)
 
-        def _boom(*_a, **_k):
-            raise AssertionError("PEER_NUDGE_ENABLED=Falseなのに候補算出処理が走った")
-        monkeypatch.setattr(destination_middleware, "_is_board_topic", _boom)
-        monkeypatch.setattr(destination_middleware, "_fetch_board_candidates", _boom)
+        is_board_topic, is_board_topic_calls = _call_recorder(return_value=False)
+        monkeypatch.setattr(destination_middleware, "_is_board_topic", is_board_topic)
+        fetch_board_candidates, fetch_board_candidates_calls = _call_recorder(return_value=[])
+        monkeypatch.setattr(destination_middleware, "_fetch_board_candidates", fetch_board_candidates)
 
         middleware = DestinationCandidateMiddleware()
         tool_result = ToolResult(structured_content={"created": [{"topic_id": 1}], "errors": []})
@@ -537,15 +557,16 @@ class TestBoardGating:
         )
 
         assert "destination_candidates" not in result.structured_content
+        assert is_board_topic_calls == []
+        assert fetch_board_candidates_calls == []
 
     @pytest.mark.asyncio
     async def test_non_board_tool_ignored_even_when_enabled(self, monkeypatch):
         """add_logs以外のツールはPEER_NUDGE_ENABLED=Trueでも board 経路の対象外。"""
         monkeypatch.setattr(config, "PEER_NUDGE_ENABLED", True)
 
-        def _boom(*_a, **_k):
-            raise AssertionError("add_logs以外なのにboard候補算出処理が走った")
-        monkeypatch.setattr(destination_middleware, "_is_board_topic", _boom)
+        is_board_topic, is_board_topic_calls = _call_recorder(return_value=False)
+        monkeypatch.setattr(destination_middleware, "_is_board_topic", is_board_topic)
 
         middleware = DestinationCandidateMiddleware()
         tool_result = ToolResult(structured_content={"created": [{"topic_id": 1}], "errors": []})
@@ -554,15 +575,15 @@ class TestBoardGating:
         )
 
         assert "destination_candidates" not in result.structured_content
+        assert is_board_topic_calls == []
 
     @pytest.mark.asyncio
     async def test_no_created_items_never_queries(self, monkeypatch):
         """createdが空（全item失敗）ならboard候補算出処理を走らせない。"""
         monkeypatch.setattr(config, "PEER_NUDGE_ENABLED", True)
 
-        def _boom(*_a, **_k):
-            raise AssertionError("createdが空なのに候補算出処理が走った")
-        monkeypatch.setattr(destination_middleware, "_is_board_topic", _boom)
+        is_board_topic, is_board_topic_calls = _call_recorder(return_value=False)
+        monkeypatch.setattr(destination_middleware, "_is_board_topic", is_board_topic)
 
         middleware = DestinationCandidateMiddleware()
         tool_result = ToolResult(structured_content={"created": [], "errors": [{"index": 0, "error": {}}]})
@@ -571,6 +592,7 @@ class TestBoardGating:
         )
 
         assert "destination_candidates" not in result.structured_content
+        assert is_board_topic_calls == []
 
     @pytest.mark.asyncio
     async def test_non_board_topic_never_queries_candidates(self, temp_db, monkeypatch):
@@ -578,9 +600,8 @@ class TestBoardGating:
         monkeypatch.setattr(config, "PEER_NUDGE_ENABLED", True)
         monkeypatch.setattr(destination_middleware, "get_caller_session_id", lambda: "self-session")
 
-        def _boom(*_a, **_k):
-            raise AssertionError("boardタグ無しのtopicなのに候補算出処理が走った")
-        monkeypatch.setattr(destination_middleware, "_fetch_board_candidates", _boom)
+        fetch_board_candidates, fetch_board_candidates_calls = _call_recorder(return_value=[])
+        monkeypatch.setattr(destination_middleware, "_fetch_board_candidates", fetch_board_candidates)
 
         plain_activity_id = _make_activity("Plain Activity")
         # plain_activity_idの親topic（boardタグ無し）へ実際にログを投稿する
@@ -595,6 +616,7 @@ class TestBoardGating:
         )
 
         assert "destination_candidates" not in result.structured_content
+        assert fetch_board_candidates_calls == []
 
 
 def _get_belongs_to_topic_id(activity_id: int) -> int:
@@ -727,6 +749,51 @@ class TestBoardInjection:
         assert result.structured_content["destination_candidates"] == [
             {"name": "test-cli", "activity_id_raw": shared_activity_id, "activity_title": "Shared Activity"}
         ]
+
+    @pytest.mark.asyncio
+    async def test_same_display_name_different_sessions_both_included(self, temp_db, monkeypatch):
+        """表示名(name)が同じでも別セッション（別session_id）なら両方候補に残ることを確認する。
+
+        nameだけでdedupすると、たまたま同じ表示名を持つ別セッションが黙って
+        片方だけになる（read_cli_sessionはnameの一意性を保証しない）。
+        """
+        monkeypatch.setattr(config, "PEER_NUDGE_ENABLED", True)
+        monkeypatch.setattr(destination_middleware, "get_caller_session_id", lambda: "self-session")
+
+        board_topic_a = _make_board_topic("Board A")
+        board_topic_b = _make_board_topic("Board B")
+        activity_a = _make_board_activity(board_topic_a, "Activity A")
+        activity_b = _make_board_activity(board_topic_b, "Activity B")
+
+        # 2つの別セッションが、たまたま同じ表示名("test-cli")を持つ状況を作る。
+        # pidは互いに異なる実在のalive pidにする必要があるため、テストプロセス自身の
+        # pidと親プロセスのpidを使う（どちらもテスト実行中は生存が保証される）。
+        pid_a = register_alive_heartbeat_session("session-a", pid=os.getpid())
+        _seed_session_row(
+            session_id="session-a", cli_session_id="session-a", cli_pid=pid_a,
+            activity_id=activity_a,
+        )
+        pid_b = register_alive_heartbeat_session("session-b", pid=os.getppid())
+        _seed_session_row(
+            session_id="session-b", cli_session_id="session-b", cli_pid=pid_b,
+            activity_id=activity_b,
+        )
+
+        log_result = add_logs([
+            {"topic_id": board_topic_a, "content": "c1"},
+            {"topic_id": board_topic_b, "content": "c2"},
+        ])
+        assert not log_result["errors"], log_result
+
+        middleware = DestinationCandidateMiddleware()
+        tool_result = ToolResult(structured_content=log_result)
+        result = await middleware.on_call_tool(
+            _make_context("add_logs"), _call_next_returning(tool_result)
+        )
+
+        candidates = result.structured_content["destination_candidates"]
+        assert {c["activity_id_raw"] for c in candidates} == {activity_a, activity_b}
+        assert all(c["name"] == "test-cli" for c in candidates)
 
     @pytest.mark.asyncio
     async def test_board_topic_related_to_parent_topic_pulls_candidates_from_parent_activity(

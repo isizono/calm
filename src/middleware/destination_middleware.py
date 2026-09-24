@@ -19,6 +19,7 @@ config.PEER_NUDGE_ENABLEDがTrueのときは、goal系の推奨文言にもpeer-
 from __future__ import annotations
 
 import contextlib
+import sqlite3
 import sys
 from typing import Any, Optional
 
@@ -179,29 +180,28 @@ def _fetch_candidates(goal_id: int, caller_session_id: str) -> list[dict]:
     return _rows_to_candidates(rows)
 
 
-def _fetch_board_candidates(topic_id: int, caller_session_id: str) -> list[dict]:
-    """topic_idに belongs_to で紐づくアクティビティへ最後にcheck-inした、生存中の他セッションを返す。
+def _fetch_board_candidates(conn: sqlite3.Connection, topic_id: int, caller_session_id: str) -> list:
+    """topic_idに belongs_to で紐づくアクティビティへ最後にcheck-inした、生存中の他セッションの行を返す。
 
-    caller_session_idによる自己除外の制約は_fetch_candidatesと同じ。
+    caller_session_idによる自己除外の制約は_fetch_candidatesと同じ。呼び出し元で
+    topic_idを跨いでsession_idによりdedupできるよう、_rows_to_candidatesに渡す前の
+    生の行をそのまま返す（候補dictはnameしか持たず、name一致でのdedupは表示名の
+    衝突で別セッションを取りこぼすため）。
     """
-    with contextlib.closing(get_connection(load_vec=False)) as conn:
-        rows = conn.execute(
-            _BOARD_CANDIDATE_QUERY,
-            (topic_id, caller_session_id, int(DEFAULT_LIVENESS_TIMEOUT_SEC)),
-        ).fetchall()
-    return _rows_to_candidates(rows)
+    return conn.execute(
+        _BOARD_CANDIDATE_QUERY,
+        (topic_id, caller_session_id, int(DEFAULT_LIVENESS_TIMEOUT_SEC)),
+    ).fetchall()
 
 
-def _is_board_topic(topic_id: int) -> bool:
+def _is_board_topic(conn: sqlite3.Connection, topic_id: int) -> bool:
     """topic_idが素タグ`board`(名前空間なし)を持つかどうかを返す。"""
-    with contextlib.closing(get_connection(load_vec=False)) as conn:
-        return conn.execute(_BOARD_TAG_QUERY, (topic_id,)).fetchone() is not None
+    return conn.execute(_BOARD_TAG_QUERY, (topic_id,)).fetchone() is not None
 
 
-def _related_topic_ids(topic_id: int) -> list[int]:
+def _related_topic_ids(conn: sqlite3.Connection, topic_id: int) -> list[int]:
     """topic_idとトピック同士でrelatedな(1段の)他トピックのIDを返す。"""
-    with contextlib.closing(get_connection(load_vec=False)) as conn:
-        rows = conn.execute(_RELATED_TOPIC_QUERY, (topic_id,)).fetchall()
+    rows = conn.execute(_RELATED_TOPIC_QUERY, (topic_id,)).fetchall()
     return [row["target_id"] for row in rows]
 
 
@@ -255,25 +255,27 @@ def _maybe_inject_board(result: Any) -> None:
     if caller_session_id is None:
         return
 
-    board_topic_ids = [tid for tid in topic_ids if _is_board_topic(tid)]
-    if not board_topic_ids:
-        return
+    # topic数ぶんDB接続を開き直さないよう、この呼び出し1回につき接続1本にまとめる。
+    with contextlib.closing(get_connection(load_vec=False)) as conn:
+        board_topic_ids = [tid for tid in topic_ids if _is_board_topic(conn, tid)]
+        if not board_topic_ids:
+            return
 
-    # 質問・周知・事前の声かけでは[議論]アクティビティを立てないため、boardトピック
-    # 自身へcheck-inする者がいないことが多い。元トピック(1段関連)側で作業している
-    # セッションも候補に含める。
-    target_topic_ids = set(board_topic_ids)
-    for tid in board_topic_ids:
-        target_topic_ids.update(_related_topic_ids(tid))
+        # 質問・周知・事前の声かけでは[議論]アクティビティを立てないため、boardトピック
+        # 自身へcheck-inする者がいないことが多い。元トピック(1段関連)側で作業している
+        # セッションも候補に含める。
+        target_topic_ids = set(board_topic_ids)
+        for tid in board_topic_ids:
+            target_topic_ids.update(_related_topic_ids(conn, tid))
 
-    candidates = []
-    seen_names = set()
-    for topic_id in sorted(target_topic_ids):
-        for c in _fetch_board_candidates(topic_id, caller_session_id):
-            if c["name"] in seen_names:
-                continue
-            seen_names.add(c["name"])
-            candidates.append(c)
+        # topicを跨いで同じセッションの行が重複しうるため、session_id（一意）でdedupする。
+        # nameは表示名でしかなく一意性が保証されない。
+        rows_by_session_id: dict = {}
+        for topic_id in sorted(target_topic_ids):
+            for row in _fetch_board_candidates(conn, topic_id, caller_session_id):
+                rows_by_session_id.setdefault(row["session_id"], row)
+
+    candidates = _rows_to_candidates(list(rows_by_session_id.values()))
     if not candidates:
         return
 
