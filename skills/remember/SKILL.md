@@ -38,7 +38,9 @@ description: 【必須】ユーザーが「覚えて」「保存して」「こ�
 ├─ 特定のactivity/topicに取り組んでいる間だけ必要？（終われば不要）
 │   └─ YES → pin（内容をdecision/materialとして記録し、add_pinで対象へ
 │       括り付ける。条件付き判断基準なら前判定で決めた判例decisionを
-│       そのままpinで指す。pin元へのcheck_inのたびに本文ごと再配達される）
+│       そのままpinで指す。pin元へのcheck_inのたびに本文ごと再配達される。
+│       ただしpinned合計が全体予算の枠を超えると、小さいものから優先して
+│       残り本文は先頭を残して切られ、続きへのポインタが付く縮退が起きる）
 │
 ├─ 特定のファイルに触れる時だけ必要？
 │   └─ YES → ~/.claude/rules/（パス付き）
@@ -105,6 +107,8 @@ description: 【必須】ユーザーが「覚えて」「保存して」「こ�
 強 ┃ habits（always層）        — 全文をSessionStartで常時投影。絶対守れ
    ┃ rules/                    — セッション起動時に全文注入。従え
    ┃ pin                       — pin元へのcheck_inのたび本文ごと再配達
+   ┃                             （pinned合計が予算超過時は小さい順に優先、
+   ┃                             溢れた分は先頭を残して切られポインタが付く）
    ┃ tag-notes                 — タグ文脈に触れた初回に全文注入
    ┃ CLAUDE.md                 — プロジェクト文脈として参照
    ┃ 判例decision              — search/pull_precedents/add_ask時にpullで届く
