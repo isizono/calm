@@ -131,23 +131,26 @@ def main() -> None:
             # activity_idを抽出して保存
             _update_checked_in_activity(state, all_events, transcript_path, harness)
 
-        if not has_checkin:
-            if current_turn == _CHECKIN_DEFER_TURNS:
-                # one-shot block: 正確にdefer turnで1回だけblock
-                state.increment_block_count()
-                harness.emit_block(
-                    "アクティビティにcheck-inしてください。"
-                    "該当するものがなければadd_activityで作成してください。"
-                )
-                return
-        elif (
+        if not has_checkin and current_turn == _CHECKIN_DEFER_TURNS:
+            # one-shot block: 正確にdefer turnで1回だけblock
+            state.increment_block_count()
+            harness.emit_block(
+                "アクティビティにcheck-inしてください。"
+                "該当するものがなければadd_activityで作成してください。"
+            )
+            return
+
+        if (
             not state.get_recording_obligation_fired()
             and not (session_id and is_recorder_attached(session_id))
             and _has_completion_signal(all_events)
-            and not _has_add_logs_since_first_checkin(all_events)
+            and not _has_add_logs_since_checkin(all_events)
         ):
-            # 記録義務block: 完了の合図(update_goalのsatisfiedかSendMessage)が
-            # あるのに、check_in以降にadd_logsが無いときだけ発火する。
+            # 記録義務block: 完了の合図(judge_goal呼び出し)があるのに、記録
+            # （check_inしていればその後、していなければセッション開始から）
+            # add_logsが無いときだけ発火する。has_checkinを問わない: check-in
+            # せずにgoal_idを直接指定してjudge_goalへ到達する経路があるため、
+            # check-inの有無で本検査を素通りさせない。
             # 1セッションにつき1回だけ: block_count(2回連続blockしないための
             # 短期カウンタ、approveのたびにリセットされる)には乗せず、
             # 専用の永続フラグ(recording_obligation_fired)で一度きりに保証する。
@@ -156,8 +159,8 @@ def main() -> None:
             state.set_recording_obligation_fired()
             state.increment_block_count()
             harness.emit_block(
-                "完了の合図（update_goalのsatisfiedまたはSendMessage）がありますが、"
-                "check-in以降にadd_logsが見当たりません。経緯をadd_logsで記録してから終了してください。"
+                "完了の合図（judge_goal呼び出し）がありますが、"
+                "記録以降にadd_logsが見当たりません。経緯をadd_logsで記録してから終了してください。"
             )
             return
 
@@ -200,31 +203,33 @@ def _is_in_skill_span(events: list[dict], current_turn: int) -> bool:
 
 
 def _has_completion_signal(events: list[dict]) -> bool:
-    """完了の合図(update_goalのsatisfiedかSendMessage)があるかを判定する。"""
-    return any(
-        e["e"] == "tool" and (e.get("name") == "SendMessage" or (e.get("name") == "update_goal" and e.get("satisfied")))
-        for e in events
-    )
+    """完了の合図(judge_goal呼び出し)があるかを判定する。
+
+    goalを閉じられるのはjudge_goalだけ(update_goalのsatisfiedはgoal_conditions
+    の1件を充足にするだけで、goal本体の完了には関与しない)。
+    """
+    return any(e["e"] == "tool" and e.get("name") == "judge_goal" for e in events)
 
 
-def _has_add_logs_since_first_checkin(events: list[dict]) -> bool:
-    """最初のcheck_in/add_activity以降にadd_logsの呼び出しがあるかを判定する。
+def _has_add_logs_since_checkin(events: list[dict]) -> bool:
+    """記録の基準turn以降にadd_logsの呼び出しがあるかを判定する。
 
+    基準turnは最初のcheck_in/add_activityのturn。check_in自体が無ければ
+    セッション開始（turn 0）を基準にする: judge_goalはgoal_idを直接指定
+    すればcheck_inなしでも呼べるため、check_inの有無でこの検査自体を
+    素通りさせない。
     最後のcheck_inではなく最初のcheck_inを基準にする。goal.nextを読み直す
     ためだけに同じactivityへcheck_inし直す行動は普通にあり、最後のcheck_in
     基準だとその都度add_logsの窓がリセットされ、経緯を書いていても
     誤ってblockされてしまうため。
-    check_in自体が無い場合はこの条件の対象外（check-in強制blockが別途扱う）。
     """
-    first_checkin_turn = None
+    baseline_turn = 0
     for e in events:
         if e["e"] == "tool" and e.get("name") in _CHECKIN_TOOLS:
-            first_checkin_turn = e.get("turn", 0)
+            baseline_turn = e.get("turn", 0)
             break
-    if first_checkin_turn is None:
-        return False
     return any(
-        e["e"] == "tool" and e.get("name") == "add_logs" and e.get("turn", 0) >= first_checkin_turn
+        e["e"] == "tool" and e.get("name") == "add_logs" and e.get("turn", 0) >= baseline_turn
         for e in events
     )
 

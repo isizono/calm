@@ -391,11 +391,18 @@ class TestActivityCheckinBlock:
 
 
 class TestRecordingObligationBlock:
-    """完了の合図(update_goalのsatisfiedかSendMessage)があるのに、check_in以降に
+    """完了の合図(judge_goal呼び出し)があるのに、記録の基準以降に
     add_logsが無いとき、1セッション1回だけblockする(記録義務block)。
+
+    goalを閉じられるのはjudge_goalだけで、update_goalのsatisfiedは
+    goal_conditionsの1件を充足にするだけ(goal本体の完了ではない)ため
+    単体では記録義務blockの対象にしない。SendMessageもセッション間の
+    中間的な状況共有に使われるため、単体では対象にしない。
     """
 
-    def test_send_message_without_logs_since_checkin_blocks(self, env_setup):
+    def test_send_message_alone_does_not_block(self, env_setup):
+        """SendMessageは完了の合図として扱わない(セッション間の中間的な
+        状況共有にも使われ、完了報告と誤検知するため)"""
         transcript = env_setup["tmp_path"] / "transcript.jsonl"
         _write_transcript(
             [
@@ -414,10 +421,11 @@ class TestRecordingObligationBlock:
         )
 
         result = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
-        assert result["decision"] == "block"
-        assert "add_logs" in result["reason"]
+        assert result["decision"] == "approve"
 
-    def test_update_goal_satisfied_without_logs_since_checkin_blocks(self, env_setup):
+    def test_update_goal_satisfied_alone_does_not_block(self, env_setup):
+        """update_goalのsatisfiedは条件1件の充足に過ぎず、goal本体の完了
+        ではないため単体では記録義務blockの対象にしない"""
         transcript = env_setup["tmp_path"] / "transcript.jsonl"
         _write_transcript(
             [
@@ -436,7 +444,107 @@ class TestRecordingObligationBlock:
         )
 
         result = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+        assert result["decision"] == "approve"
+
+    def test_judge_goal_without_logs_since_checkin_blocks(self, env_setup):
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("hi"),
+                _make_assistant_entry(
+                    tool_calls=["mcp__plugin_calm_calm__check_in"],
+                    tool_inputs=[{"activity_id": 42}],
+                ),
+                _make_user_entry("done"),
+                _make_assistant_entry(
+                    tool_calls=["mcp__plugin_calm_calm__judge_goal"],
+                    tool_inputs=[{"goal_id": 1, "verdict": "achieved"}],
+                ),
+            ],
+            transcript,
+        )
+
+        result = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
         assert result["decision"] == "block"
+        assert "add_logs" in result["reason"]
+
+    def test_satisfied_condition_does_not_consume_one_shot_before_real_completion(self, env_setup):
+        """条件を1つsatisfiedにしただけの中間更新ではblockせず、1回きりの
+        枠も消費しない。その後の本当の完了(judge_goal)ではまだ検査が働く"""
+        state_dir = Path(env_setup["state_dir"])
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("hi"),
+                _make_assistant_entry(
+                    tool_calls=["mcp__plugin_calm_calm__check_in"],
+                    tool_inputs=[{"activity_id": 42}],
+                ),
+                _make_user_entry("partial"),
+                _make_assistant_entry(
+                    tool_calls=["mcp__plugin_calm_calm__update_goal"],
+                    tool_inputs=[{"goal_id": 1, "changes": [{"op": "set", "id": 5, "state": "satisfied"}]}],
+                ),
+            ],
+            transcript,
+        )
+        first = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+        assert first["decision"] == "approve"
+
+        # 実運用ではblock_countは次回呼び出しの「ブロック上限」到達で強制
+        # approve+リセットされる。ここではそのリセット後の状態を再現する。
+        (state_dir / "block_count_test-session").unlink(missing_ok=True)
+
+        with open(transcript, "a") as f:
+            f.write(json.dumps(_make_user_entry("done")) + "\n")
+            f.write(json.dumps(_make_assistant_entry(
+                tool_calls=["mcp__plugin_calm_calm__judge_goal"],
+                tool_inputs=[{"goal_id": 1, "verdict": "achieved"}],
+            )) + "\n")
+
+        second = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+        assert second["decision"] == "block"
+        assert "add_logs" in second["reason"]
+
+    def test_judge_goal_without_checkin_and_without_logs_blocks(self, env_setup):
+        """check_inを一度も呼んでいなくても、judge_goalはgoal_idを直接指定
+        すれば呼べるため、記録義務blockはhas_checkinの有無で素通りさせない"""
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("hi"),
+                _make_assistant_entry(
+                    tool_calls=["mcp__plugin_calm_calm__judge_goal"],
+                    tool_inputs=[{"goal_id": 1, "verdict": "achieved"}],
+                ),
+            ],
+            transcript,
+        )
+
+        result = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+        assert result["decision"] == "block"
+        assert "add_logs" in result["reason"]
+
+    def test_judge_goal_without_checkin_but_with_logs_approves(self, env_setup):
+        """check_inが無くてもadd_logsさえあれば記録義務blockは発火しない
+        (check_inが無いときの基準turnはセッション開始)"""
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("hi"),
+                _make_assistant_entry(
+                    tool_calls=["mcp__plugin_calm_calm__add_logs", "mcp__plugin_calm_calm__judge_goal"],
+                    tool_inputs=[
+                        {"items": [{"topic_id": 1, "content": "経緯"}]},
+                        {"goal_id": 1, "verdict": "achieved"},
+                    ],
+                ),
+            ],
+            transcript,
+        )
+
+        result = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+        assert result["decision"] == "approve"
 
     def test_completion_signal_with_logs_since_checkin_approves(self, env_setup):
         transcript = env_setup["tmp_path"] / "transcript.jsonl"
@@ -449,8 +557,11 @@ class TestRecordingObligationBlock:
                 ),
                 _make_user_entry("done"),
                 _make_assistant_entry(
-                    tool_calls=["mcp__plugin_calm_calm__add_logs", "SendMessage"],
-                    tool_inputs=[{"items": [{"topic_id": 1, "content": "経緯"}]}, {"to": "main", "message": "完了"}],
+                    tool_calls=["mcp__plugin_calm_calm__add_logs", "mcp__plugin_calm_calm__judge_goal"],
+                    tool_inputs=[
+                        {"items": [{"topic_id": 1, "content": "経緯"}]},
+                        {"goal_id": 1, "verdict": "achieved"},
+                    ],
                 ),
             ],
             transcript,
@@ -492,7 +603,10 @@ class TestRecordingObligationBlock:
                     tool_inputs=[{"activity_id": 42}],
                 ),
                 _make_user_entry("done"),
-                _make_assistant_entry(tool_calls=["SendMessage"], tool_inputs=[{"to": "main", "message": "完了"}]),
+                _make_assistant_entry(
+                    tool_calls=["mcp__plugin_calm_calm__judge_goal"],
+                    tool_inputs=[{"goal_id": 1, "verdict": "achieved"}],
+                ),
             ],
             transcript,
         )
@@ -528,7 +642,10 @@ class TestRecordingObligationBlock:
                     tool_inputs=[{"activity_id": 42}],
                 ),
                 _make_user_entry("done"),
-                _make_assistant_entry(tool_calls=["SendMessage"], tool_inputs=[{"to": "main", "message": "完了"}]),
+                _make_assistant_entry(
+                    tool_calls=["mcp__plugin_calm_calm__judge_goal"],
+                    tool_inputs=[{"goal_id": 1, "verdict": "achieved"}],
+                ),
             ],
             transcript,
         )
@@ -558,7 +675,10 @@ class TestRecordingObligationBlock:
                     tool_inputs=[{"activity_id": 42}],
                 ),
                 _make_user_entry("done"),
-                _make_assistant_entry(tool_calls=["SendMessage"], tool_inputs=[{"to": "main", "message": "完了"}]),
+                _make_assistant_entry(
+                    tool_calls=["mcp__plugin_calm_calm__judge_goal"],
+                    tool_inputs=[{"goal_id": 1, "verdict": "achieved"}],
+                ),
             ],
             transcript,
         )
@@ -577,7 +697,10 @@ class TestRecordingObligationBlock:
                     tool_inputs=[{"activity_id": 42}],
                 ),
                 _make_user_entry("done"),
-                _make_assistant_entry(tool_calls=["SendMessage"], tool_inputs=[{"to": "main", "message": "完了"}]),
+                _make_assistant_entry(
+                    tool_calls=["mcp__plugin_calm_calm__judge_goal"],
+                    tool_inputs=[{"goal_id": 1, "verdict": "achieved"}],
+                ),
             ],
             transcript,
         )

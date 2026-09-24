@@ -511,20 +511,22 @@ class TestExtractAddDecisionsTopicIds:
         assert tool_events[0]["topic_ids"] == [7]
 
 
-# --- 完了の合図(SendMessage / update_goal satisfied) ---
+# --- 完了の合図(judge_goal呼び出し) ---
 
 
 class TestCompletionSignalEvents:
-    """SendMessage・update_goalのsatisfiedがtoolイベントとして拾われる"""
+    """SendMessageはCALMツールでないため無視され、update_goal/judge_goalは
+    特別なフィールド無しに素のtoolイベントとして拾われる
+    (完了の合図の絞り込みはstop_hook._has_completion_signal側の責務)。
+    """
 
-    def test_send_message_is_captured_as_tool_event(self):
+    def test_send_message_is_ignored(self):
         entries = [
             {"type": "user", "message": {"content": "hi"}},
             _make_assistant_entry(tool_calls=["SendMessage"], tool_inputs=[{"to": "main", "message": "done"}]),
         ]
         events, _ = extract_events([_entry(e) for e in entries], 0)
-        tool_events = [e for e in events if e["e"] == "tool" and e["name"] == "SendMessage"]
-        assert len(tool_events) == 1
+        assert events == []
 
     def test_non_calm_non_signal_tool_is_ignored(self):
         entries = [
@@ -534,7 +536,7 @@ class TestCompletionSignalEvents:
         events, _ = extract_events([_entry(e) for e in entries], 0)
         assert events == []
 
-    def test_update_goal_with_satisfied_change_flagged(self):
+    def test_update_goal_satisfied_change_has_no_special_field(self):
         entries = [
             {"type": "user", "message": {"content": "hi"}},
             _make_assistant_entry(
@@ -545,37 +547,20 @@ class TestCompletionSignalEvents:
         events, _ = extract_events([_entry(e) for e in entries], 0)
         tool_events = [e for e in events if e["e"] == "tool" and e["name"] == "update_goal"]
         assert len(tool_events) == 1
-        assert tool_events[0]["satisfied"] is True
+        assert set(tool_events[0]) == {"e", "name", "turn"}
 
-    def test_update_goal_without_satisfied_change_not_flagged(self):
+    def test_judge_goal_is_captured_as_plain_tool_event(self):
         entries = [
             {"type": "user", "message": {"content": "hi"}},
             _make_assistant_entry(
-                tool_calls=[f"{_LOCAL_PREFIX}update_goal"],
-                tool_inputs=[{"goal_id": 1, "changes": [{"op": "set", "id": 5, "state": "open"}]}],
+                tool_calls=[f"{_LOCAL_PREFIX}judge_goal"],
+                tool_inputs=[{"goal_id": 1, "verdict": "achieved"}],
             ),
         ]
         events, _ = extract_events([_entry(e) for e in entries], 0)
-        tool_events = [e for e in events if e["e"] == "tool" and e["name"] == "update_goal"]
+        tool_events = [e for e in events if e["e"] == "tool" and e["name"] == "judge_goal"]
         assert len(tool_events) == 1
-        assert "satisfied" not in tool_events[0]
-
-    def test_update_goal_with_add_op_not_flagged(self):
-        """opがsetでない(add)場合、stateがsatisfiedでもフラグを立てない
-        (addは新規条件の登録であり、完了の合図として扱わない)"""
-        entries = [
-            {"type": "user", "message": {"content": "hi"}},
-            _make_assistant_entry(
-                tool_calls=[f"{_LOCAL_PREFIX}update_goal"],
-                tool_inputs=[{
-                    "goal_id": 1,
-                    "changes": [{"op": "add", "statement": "x", "actor": "claude", "state": "satisfied"}],
-                }],
-            ),
-        ]
-        events, _ = extract_events([_entry(e) for e in entries], 0)
-        tool_events = [e for e in events if e["e"] == "tool" and e["name"] == "update_goal"]
-        assert "satisfied" not in tool_events[0]
+        assert set(tool_events[0]) == {"e", "name", "turn"}
 
 
 # --- extract_ask_registrations ---

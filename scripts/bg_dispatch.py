@@ -36,8 +36,8 @@ _TEMPLATE = """あなたはCALMのアクティビティ「{activity_title}」の
 - マイグレーション番号を勝手に取ること(必要になったら{report_to}へ宣言して返事を待つ){dont_block}
 
 ## 記録
-- 経緯はadd_logsで記録する。完了の合図(update_goalのsatisfiedかSendMessage)があるのに
-  check_in以降にadd_logsが無いと、Stop hookが1回blockする
+- 経緯はadd_logsで記録する。完了の合図(judge_goal呼び出し)があるのに
+  記録が無いと、Stop hookが1回blockする
 - 止める前に `{sync_memory_scope}` でsync-memoryを実行する
 
 ## 完了したら
