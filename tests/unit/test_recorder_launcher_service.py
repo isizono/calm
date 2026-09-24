@@ -386,8 +386,13 @@ class TestStart:
         monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", _MAIN_SID)
         monkeypatch.setenv("CLAUDE_PID", str(_MAIN_PID))
         write_marker(_MAIN_SID, _PANE_PID)
+        # transcriptを渡し、ガードが無ければtmux起動まで到達する状態にする
+        # (未指定だと、ガードを外してもresolve_main_transcriptのエラーで先に
+        # 落ちてしまい、tmux呼び出しを見るassertの検出力を確かめられない)。
+        transcript = tmp_path / "t.jsonl"
+        _write_jsonl(transcript, [_entry("u1")])
 
-        svc.start(calm_root=calm_root, sid_factory=_fixed_sid_factory("rec-x"))
+        svc.start(calm_root=calm_root, transcript=str(transcript), sid_factory=_fixed_sid_factory("rec-x"))
         # 二重起動ガードはis_recorder_attached判定の時点で即returnするため、
         # run_dirにもtmuxにも一切触れない。
         run_dir = watch_hook.run_dir_for(_MAIN_SID)
