@@ -186,6 +186,35 @@ class TestClosureWarnings:
         assert "error" not in result
         assert not any(w["kind"] == "supersede_target_outside" for w in result["closure_warnings"])
 
+    def test_destabilize_target_outside_detected(self, temp_db):
+        """destabilize先が選択範囲外だとclosure_warningsで検知される"""
+        t1 = _topic("Topic")
+        target_id = _decision(t1, decision="Target decision text", reason="Target reason")
+        source_id = _decision(t1, decision="Source decision text", reason="Source reason")
+        add_relation("decision", source_id, [{"type": "decision", "ids": [target_id]}], relation_type="destabilizes")
+
+        result = collect_export_candidates(roots=[{"type": "decision", "id": source_id}], max_depth=0)
+
+        assert "error" not in result
+        assert [c["id_raw"] for c in result["candidates"]] == [source_id]
+        warnings = [w for w in result["closure_warnings"] if w["kind"] == "destabilize_target_outside"]
+        assert len(warnings) == 1
+        assert warnings[0]["target"] == {"type": "decision", "id_raw": target_id}
+        assert warnings[0]["from_title"] == "Source decision text"
+        assert warnings[0]["target_title"] == "Target decision text"
+
+    def test_no_destabilize_warning_when_target_in_selection(self, temp_db):
+        """destabilize先が選択集合内ならclosure_warningsは出ない"""
+        t1 = _topic("Topic")
+        target_id = _decision(t1, decision="Target decision text", reason="Target reason")
+        source_id = _decision(t1, decision="Source decision text", reason="Source reason")
+        add_relation("decision", source_id, [{"type": "decision", "ids": [target_id]}], relation_type="destabilizes")
+
+        result = collect_export_candidates(roots=[{"type": "decision", "id": source_id}], max_depth=2)
+
+        assert "error" not in result
+        assert not any(w["kind"] == "destabilize_target_outside" for w in result["closure_warnings"])
+
     def test_cite_target_outside_detected(self, temp_db):
         """本文中citationの参照先が選択範囲外だとclosure_warningsで検知される"""
         t1 = _topic("Topic")

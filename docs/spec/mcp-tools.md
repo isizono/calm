@@ -398,6 +398,10 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 
 **closed_by/closed_reason**: completedでないactivityをcompletedにする呼び出しでだけ`closed_at`・`closed_by`・`closed_reason`を書く（既にcompletedのactivityにstatus="completed"を渡しても書き換えない）。`closed_by`引数を省略し、紐づくgoalが判定済みなら`"goal_judge"`がサーバー側で書かれ、`closed_reason`も省略時は`goals.judge_note`が使われる。それ以外で省略時は`closed_by`はNULL（不明）になる。`"goal_judge"`自体は引数としては受け付けない（VALIDATION_ERROR）。
 
+**closed_fields_unchanged**: 既にcompletedのactivityへstatus="completed"を再度指定し、かつ`closed_by`/`closed_reason`のどちらかも渡した場合、その値は上記の通り書き換わらない。呼び出し側が「渡した値が書き込まれた」と思い込まないよう、この場合は応答に`closed_fields_unchanged: true`を足す。`closed_by`/`closed_reason`をどちらも渡さなければこのキーは付かない。
+
+**goal_hint**: status="completed"の呼び出しでは、紐づくgoalが未判定（closed=0）なら応答に`goal_hint`（`{goal_id_raw, handle, label, next, open_activities_left, open_questions?, warning?}`）を添える。判定は拒否しない。紐づく未完了のactivityが残っていない（`open_activities_left`=0）ときは`warning`が載る。組み立てで例外が出ても完了自体は失われず、`goal_hint`に`{"error": {"code": "DATABASE_ERROR", ...}}`が入る。再呼び出し時（closed_fields_unchangedが付く場合）も`goal_hint`は今どおり返す。
+
 **goal_hint**: status="completed"の呼び出しでは、紐づくgoalが未判定（closed=0）なら応答に`goal_hint`（`{goal_id_raw, handle, label, next, open_activities_left, open_questions?, warning?}`）を添える。判定は拒否しない。紐づく未完了のactivityが残っていない（`open_activities_left`=0）ときは`warning`が載る。組み立てで例外が出ても完了自体は失われず、`goal_hint`に`{"error": {"code": "DATABASE_ERROR", ...}}`が入る。
 
 ### 2.14 add_material
@@ -503,7 +507,7 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 
 **返り値**: 成功時 `{candidates: [{type, id_raw, title, snippet, tags, depth, size_chars, parent_topic_title, retracted?, superseded?, status?}], closure_warnings: [{kind, from_title, target_title, target: {type, id_raw}}], total_count: int, truncated: bool}`。`retracted`はdecision/log/materialのみ、`superseded`はdecisionのみ、`status`はactivityのみ付く。`tag_roots`指定時のみ`co_tags: [{tag, overlap, share}]`が追加される。失敗時 `{error: {code: "VALIDATION_ERROR" | "INVALID_ENTITY_TYPE" | "INVALID_PARAMETER" | "DATABASE_ERROR", message}}`。
 **get_mapとの違い**: get_mapはnavigation用途でdecision/logを経由ノードとしてのみ扱いカタログに含めないが、本ツールはexport判断のため5型全部をカタログ本体に含める。走査自体は共有のrelation走査ロジックを使うが、ツールとしては独立している。
-**動作**: rootsからの走査結果とtag_rootsのシード結果（tag_rootsは深度0固定、グラフ拡張はしない）を合流し、型別の付加情報を付けて返す。`closure_warnings`は選択集合外を指すsupersede関係・本文中citation（`{{cite:X#NNN}}`）を検出する（供に情報提供のみで、自動的な集合拡張は行わない）。read-only（DBへの書き込みは一切行わない）。
+**動作**: rootsからの走査結果とtag_rootsのシード結果（tag_rootsは深度0固定、グラフ拡張はしない）を合流し、型別の付加情報を付けて返す。`closure_warnings`は選択集合外を指すsupersede関係・destabilize関係・本文中citation（`{{cite:X#NNN}}`）・belongs_to関係・related関係・depends_on関係を検出する（いずれも情報提供のみで、自動的な集合拡張は行わない）。read-only（DBへの書き込みは一切行わない）。
 
 ### 2.20c set_instance_identity
 

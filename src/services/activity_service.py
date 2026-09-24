@@ -626,8 +626,12 @@ def update_activity(
             受け付ける
 
     Returns:
-        更新されたアクティビティ情報。status="completed"の呼び出しでは、紐づく
-        goalが未判定ならgoal_hintも返す（拒否はしない）
+        更新されたアクティビティ情報。既にcompletedのactivityへstatus="completed"を
+        再度指定し、かつclosed_by/closed_reasonも渡した場合、その値は1回目の記録を
+        保持したまま書き換わらない。この場合closed_fields_unchanged=trueを応答に足す
+        （closed_by/closed_reasonを渡さなければ、このキーは付かない）。
+        status="completed"の呼び出しでは、紐づくgoalが未判定ならgoal_hintも返す
+        （拒否はしない）
     """
     # 最低1つのオプショナルパラメータが必要
     if (
@@ -727,6 +731,15 @@ def update_activity(
         # （closed_*は「最後に閉じたときの記録」であり、その遷移では閉じ直して
         # いないため）。
         is_completing = status == "completed" and old_status != "completed"
+        # 既にcompletedのactivityへstatus="completed"を再度指定し、かつ
+        # closed_by/closed_reasonも渡された場合、その値は書き換わらない
+        # （is_completingがFalseのため）。呼び出し側が「書き込まれた」と
+        # 思い込まないよう、応答でその旨を知らせる
+        reclose_without_rewrite = (
+            status == "completed"
+            and old_status == "completed"
+            and (closed_by is not None or closed_reason is not None)
+        )
         resolved_closed_by = None
         resolved_closed_reason = None
         if is_completing:
@@ -838,7 +851,10 @@ def update_activity(
 
         result = {"activity_id": activity_id, "status": updated["status"]}
 
-        # completedにする呼び出しでは、紐づくgoalが未判定ならgoal_hintを添える
+        if reclose_without_rewrite:
+            result["closed_fields_unchanged"] = True
+
+                # completedにする呼び出しでは、紐づくgoalが未判定ならgoal_hintを添える
         # （拒否はしない）。完了のコミットの後に組み立て、例外が出ても完了は
         # 失わずgoal_hintにエラーの形を置くだけにする。
         if status == "completed":

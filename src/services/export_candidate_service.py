@@ -222,7 +222,7 @@ def _build_closure_warnings_with_conn(
     candidate_set: set[tuple[str, int]],
     raw_text_by_key: dict[tuple[str, int], str],
 ) -> list[dict]:
-    """supersede先・引用(cite)先・belongs_to/related/depends_on先が選択範囲外のケースを検知する。"""
+    """supersede先・destabilize先・引用(cite)先・belongs_to/related/depends_on先が選択範囲外のケースを検知する。"""
     title_by_key = {(c["type"], c["id"]): c["title"] for c in candidates}
 
     ids_by_type: dict[str, list[int]] = defaultdict(list)
@@ -264,18 +264,23 @@ def _build_closure_warnings_with_conn(
 
     decision_ids = [c["id"] for c in candidates if c["type"] == "decision"]
     supersede_pairs: list[tuple[int, int]] = []
+    destabilize_pairs: list[tuple[int, int]] = []
     if decision_ids:
         placeholders = ",".join("?" * len(decision_ids))
         rows = conn.execute(
             f"""
-            SELECT source_id, target_id FROM decision_supersedes
-            WHERE kind = 'replaces' AND source_id IN ({placeholders})
+            SELECT source_id, target_id, kind FROM decision_supersedes
+            WHERE kind IN ('replaces', 'destabilizes') AND source_id IN ({placeholders})
             """,
             decision_ids,
         ).fetchall()
         for row in rows:
             if ("decision", row["target_id"]) not in candidate_set:
-                supersede_pairs.append((row["source_id"], row["target_id"]))
+                pair = (row["source_id"], row["target_id"])
+                if row["kind"] == "replaces":
+                    supersede_pairs.append(pair)
+                else:
+                    destabilize_pairs.append(pair)
 
     cite_pairs: list[tuple[tuple[str, int], str, int]] = []
     for key, text in raw_text_by_key.items():
@@ -287,6 +292,8 @@ def _build_closure_warnings_with_conn(
 
     missing_targets: dict[str, set[int]] = defaultdict(set)
     for _, target_id in supersede_pairs:
+        missing_targets["decision"].add(target_id)
+    for _, target_id in destabilize_pairs:
         missing_targets["decision"].add(target_id)
     for _, target_type, target_id in cite_pairs:
         missing_targets[target_type].add(target_id)
@@ -303,6 +310,15 @@ def _build_closure_warnings_with_conn(
         warnings.append(
             {
                 "kind": "supersede_target_outside",
+                "from_title": title_by_key.get(("decision", source_id), f"decision#{source_id}"),
+                "target_title": resolved_titles.get(("decision", target_id), f"decision#{target_id}"),
+                "target": {"type": "decision", "id_raw": target_id},
+            }
+        )
+    for source_id, target_id in destabilize_pairs:
+        warnings.append(
+            {
+                "kind": "destabilize_target_outside",
                 "from_title": title_by_key.get(("decision", source_id), f"decision#{source_id}"),
                 "target_title": resolved_titles.get(("decision", target_id), f"decision#{target_id}"),
                 "target": {"type": "decision", "id_raw": target_id},

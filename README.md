@@ -99,6 +99,7 @@ SessionStart(3スクリプト)・Stop・UserPromptSubmit・MessageDisplayに加�
 | 決定事項・アクティビティ等の記録が急に減った・消えたように見える | `/db-recovery`でスナップショットからの復旧を検討する |
 | 検索が過去の記録を拾わない／精度が低い | embeddingサーバーが未起動か古い可能性がある。`/restart`に`--restart-embedding`を付けて明示的に再起動する（`search`応答の`degraded: true`はベクトル検索が利用不可だったことを示す） |
 | MCPツールが使えない・CALMサーバーに接続できない | `/mcp`から再接続する。直らなければ`/restart` |
+| 記録ナッジやSessionStartの一部セクションが理由もなく出なくなった | hookがfail-openで例外を握っている可能性がある。[hookが黙って失敗したときに気づく](#hookが黙って失敗したときに気づく)を参照 |
 
 ## MCPツール
 
@@ -160,6 +161,20 @@ SessionStart(3スクリプト)・Stop・UserPromptSubmit・MessageDisplayに加�
 | `/ask-watch` | askストアを継続的に監視し、同型のaskが溜まっていたらメタaskとして起票します |
 | `/memory-export` | 記録を他インスタンスへ渡すexportバンドルを作成します |
 | `/memory-import` | 他インスタンスのexportバンドルを衝突裁定を経て取り込みます |
+
+## hookが黙って失敗したときに気づく
+
+embeddingサーバー起動失敗・検索の`degraded`については[よくある詰まり](#よくある詰まり)を参照してください。ここではその表に無い、hookのfail-open沈黙について書きます。
+
+CALMのhookはfail-open設計であり、1つのhookが例外を投げてもClaude Codeの他の操作（tool呼び出し・セッション開始等）を止めない。この設計自体は意図的だが、失敗は既定では標準エラー出力にしか残らず、記録ナッジやSessionStart注入の一部が黙って消えても「何も起きていない」ように見える。
+
+以下のhookは、hook本体のコードが実行された後に起きた例外を`signal_events`テーブルへ`kind: machine_error`として記録する。`get_signals`ツールで確認できるほか、1件でもあればSessionStart注入の「未トリアージのシグナル」行にも件数が現れる。
+
+- SessionStart注入の各セクション（アクティビティ一覧・habits・signals等）が個別に失敗した場合
+- Stop hookの記録ナッジ（`logs_sparse`判定）が失敗した場合
+- PreToolUseの内部IDリークブロックhookが失敗した場合
+
+venvの破損や依存パッケージの欠落でhookがimport時点で落ちた場合は、この記録自体が動かず標準エラー出力のみに残る（記録機構自体がDB層のimportに依存するため）。表示専用hook・transcript sanitize系hookも現状この記録の対象外。頻発する場合は`get_signals`で`source`（`hook:section:<セクション名>`等）を確認し、原因を調査する。
 
 ## 設定
 
