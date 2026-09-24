@@ -6,7 +6,10 @@ from src.env_compat import env_get
 
 # --- Database ---
 # CALM_DB_PATH（旧名 CCM_DB_PATH / CC_MEMORY_DB_PATH）を優先、
-# なければ既存の DISCUSSION_DB_PATH にフォールバック
+# なければ既存の DISCUSSION_DB_PATH にフォールバック。
+# モジュール初回import時に一度だけ評価される定数のため、本番の
+# DBパス解決には使わない（src/db.pyのget_db_path()が呼び出しのたびに
+# 環境変数を直接読む）。既存テストのmonkeypatch.setattr対象として残置。
 DB_PATH: str | None = env_get("CALM_DB_PATH") or os.environ.get("DISCUSSION_DB_PATH")
 
 # --- Activity ---

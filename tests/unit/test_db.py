@@ -25,6 +25,22 @@ def test_get_db_path_default():
     assert path.endswith(".claude-code-memory/discussion.db")
 
 
+def test_get_db_path_ignores_stale_config_db_path(monkeypatch):
+    """src.config.DB_PATHが別の値でも、get_db_path()は現在の環境変数を返す
+
+    src.config.DB_PATHはモジュール初回import時に一度だけ解決される定数。
+    get_db_path()がこれをキャッシュとして優先していた旧実装では、
+    DB_PATHが一度でも非空値で固定されると、以後の環境変数の変更が
+    無視され続けた。
+    """
+    import src.config as config
+
+    monkeypatch.setattr(config, "DB_PATH", "/tmp/stale-cached-path.db")
+    monkeypatch.setenv("DISCUSSION_DB_PATH", "/tmp/current-path.db")
+
+    assert get_db_path() == "/tmp/current-path.db"
+
+
 def test_init_database(temp_db):
     """データベース初期化が成功する"""
     conn = get_connection()

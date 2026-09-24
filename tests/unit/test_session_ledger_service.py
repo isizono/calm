@@ -5,28 +5,8 @@ register/mark_ended/record_checkinのDB書き込み契約のみを実DB(temp_db)
 """
 import threading
 
-import pytest
-
 from src.db import get_connection
 from src.services import session_ledger_service
-
-
-@pytest.fixture(autouse=True)
-def _force_runtime_db_path(monkeypatch):
-    """get_db_path()がtemp_dbのDISCUSSION_DB_PATHを確実に見るようにする。
-
-    src.config.DB_PATHはモジュール初回import時に一度だけ解決され、以後
-    固定値として扱われる(src/db.pyのget_db_path()参照)。本ファイルを単体で
-    実行するなど、他のテストより先にDB系フィクスチャが動く場合、初回import
-    タイミングが`_temp_db_template`フィクスチャ自身のテンプレートDB構築中と
-    重なり、DB_PATHがテンプレートDBのパスに固定されてしまうことがある。
-    sessions.session_idはTEXT PRIMARY KEYで、テストごとに同じ文字列
-    ("s1"等)を使い回すため、この固定が起きるとテスト間でテンプレートDBを
-    共有してしまい、他テストの行が見えてしまう。DB_PATHを明示的にNoneへ
-    戻し、毎テストのDISCUSSION_DB_PATH(temp_db)を必ず優先させる。
-    """
-    import src.config as config
-    monkeypatch.setattr(config, "DB_PATH", None)
 
 
 def _fetch_row(session_id: str) -> dict:
