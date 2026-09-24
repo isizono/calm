@@ -28,6 +28,7 @@ from hooks.hook_transcript import (
     extract_events,
     extract_last_activity_id,
 )
+from hooks.recorder_marker import is_recorder_attached
 from hooks.signal_capture import try_capture_signal
 from src.harness import Harness, select_harness
 
@@ -213,7 +214,7 @@ def _safe_post_approve(
         )
     if run_nudges:
         try:
-            _handle_nudges(state, events, current_turn)
+            _handle_nudges(state, events, current_turn, session_id=session_id)
         except Exception as e:
             print(
                 f"stop_hook.py post-approve error (nudge): {e}\n{traceback.format_exc()}",
@@ -233,13 +234,23 @@ def _update_state_on_approve(
         update_heartbeat(activity_id, session_id)
 
 
-def _handle_nudges(state: HookState, events: list[dict], current_turn: int) -> None:
+def _handle_nudges(
+    state: HookState, events: list[dict], current_turn: int,
+    session_id: str | None = None,
+) -> None:
     """nudge判定: events.jsonlから直接判定してnudgeイベントを追記する。
 
     user_prompt_submit_hookがevents.jsonlを読んでnudge注入を判定するため、
     nudgeフラグの代わりにnudgeイベントをevents.jsonlに追記する。
     typeはHintServiceの値域 (record_missing / follow_up_after_decision / logs_sparse) と統一する。
+
+    記録役(別セッションでlog/materialの記録を代行するプロセス)が付いている
+    セッションでは、催促の受け手が別にいるため本関数を素通りしnudgeイベント
+    自体を生成しない。check-in強制block（本関数の対象外）には影響しない。
     """
+    if session_id and is_recorder_attached(session_id):
+        return
+
     nudge_events: list[dict] = []
 
     if current_turn > 0 and current_turn % _NUDGE_INTERVAL == 0:
