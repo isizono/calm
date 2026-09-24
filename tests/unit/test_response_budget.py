@@ -4,7 +4,7 @@
 対象にする。ここでは check_in の実際の形に依存しない合成のpolicyを使い、
 削る手順・pinnedの縮小・capped_sections・ハード上限の各契約を検証する。
 check_inの実際の応答形（coverage書き換えの対応表等）に対する検証は
-tests/integration/test_checkin_service.py 側で行う。
+tests/integration/test_checkin_tier_service.py 側で行う。
 """
 import json
 
