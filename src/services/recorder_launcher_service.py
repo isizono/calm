@@ -333,8 +333,23 @@ def start(
 
     write_settings_json(run_dir, calm_root)
     write_mcp_json(run_dir, calm_root)
+    ensure_cursor(run_dir, main_transcript, from_start=from_start)
 
     recorder_sid = sid_factory()
+    session_name = tmux_session_name(main_sid)
+    _launch_tmux_session(session_name, run_dir, calm_root, recorder_sid)
+    try:
+        pane_pid = _pane_pid(session_name)
+        write_marker(main_sid, pane_pid)
+    except Exception:
+        # tmuxセッションは起動したが、pid取得かmarker書き込みで失敗した。
+        # 孤児セッションを残さないよう後始末してから、元の例外を投げ直す。
+        _terminate(run_dir, main_sid)
+        raise
+
+    # recorder_sidsへの追記は、記録役の起動が実際に確認できた後(write_marker
+    # 成功後)にする。ここより前で失敗すると、起動していない記録役のIDが
+    # run.jsonに残ってしまう。
     update_run_json(
         run_dir,
         main_sid=main_sid,
@@ -343,12 +358,6 @@ def start(
         main_transcript=main_transcript,
         recorder_sid=recorder_sid,
     )
-    ensure_cursor(run_dir, main_transcript, from_start=from_start)
-
-    session_name = tmux_session_name(main_sid)
-    _launch_tmux_session(session_name, run_dir, calm_root, recorder_sid)
-    pane_pid = _pane_pid(session_name)
-    write_marker(main_sid, pane_pid)
 
     return {
         "started": True,

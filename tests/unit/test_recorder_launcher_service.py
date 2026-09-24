@@ -229,6 +229,14 @@ class TestBuildSettings:
         for name in svc._ALLOWED_GET_TOOLS:
             assert f"{svc.MCP_TOOL_PREFIX}{name}" in allow
 
+    def test_write_settings_json_writes_file(self, calm_root, tmp_path):
+        run_dir = tmp_path / "run"
+        path = svc.write_settings_json(run_dir, calm_root)
+
+        assert path == run_dir / ".claude" / "settings.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data["hooks"]["Stop"][0]["hooks"][0]["asyncRewake"] is True
+
 
 class TestAllowedGetToolsMatchesMainPy:
     """settings.jsonが許可するget_系ツール名が、src/main.pyの実際の登録から
@@ -238,14 +246,6 @@ class TestAllowedGetToolsMatchesMainPy:
     def test_matches_registered_get_tools_in_main_py(self):
         expected = _registered_get_tool_names(_MAIN_PY_PATH)
         assert set(svc._ALLOWED_GET_TOOLS) == expected
-
-    def test_write_settings_json_writes_file(self, calm_root, tmp_path):
-        run_dir = tmp_path / "run"
-        path = svc.write_settings_json(run_dir, calm_root)
-
-        assert path == run_dir / ".claude" / "settings.json"
-        data = json.loads(path.read_text(encoding="utf-8"))
-        assert data["hooks"]["Stop"][0]["hooks"][0]["asyncRewake"] is True
 
 
 class TestMcpConfig:
@@ -392,7 +392,7 @@ class TestStart:
 
         assert result == {"started": False, "reason": "already attached", "main_sid": _MAIN_SID}
 
-    def test_double_start_does_not_touch_tmux(self, calm_root, tmp_path, monkeypatch):
+    def test_double_start_does_not_touch_tmux(self, calm_root, tmp_path, monkeypatch, _mock_subprocess):
         monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", _MAIN_SID)
         monkeypatch.setenv("CLAUDE_PID", str(_MAIN_PID))
         write_marker(_MAIN_SID, _PANE_PID)
@@ -402,6 +402,7 @@ class TestStart:
         # run_dirにもtmuxにも一切触れない。
         run_dir = watch_hook.run_dir_for(_MAIN_SID)
         assert not (run_dir / "run.json").exists()
+        assert _mock_subprocess == []
 
     def test_restart_appends_new_recorder_sid_to_existing_run_json(self, calm_root, tmp_path, monkeypatch):
         monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", _MAIN_SID)
@@ -419,6 +420,43 @@ class TestStart:
         run_dir = watch_hook.run_dir_for(_MAIN_SID)
         run_data = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
         assert run_data["recorder_sids"] == ["rec-1", "rec-2"]
+
+    def test_pane_pid_failure_cleans_up_tmux_and_does_not_record_recorder_sid(
+        self, calm_root, tmp_path, monkeypatch
+    ):
+        """tmuxセッションの起動自体は成功したが、pane_pid取得が失敗した場合。
+        孤児セッションを残さずkill-sessionで後始末し、起動していない
+        recorder_sidをrun.jsonに残さないことを確かめる。"""
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", _MAIN_SID)
+        monkeypatch.setenv("CLAUDE_PID", str(_MAIN_PID))
+        transcript = tmp_path / "t.jsonl"
+        _write_jsonl(transcript, [_entry("u1")])
+
+        tmux_calls: list[list[str]] = []
+
+        def _fake_run(cmd, **kwargs):
+            if cmd[0] == "tmux":
+                tmux_calls.append(cmd)
+                if cmd[1] == "display-message":
+                    raise subprocess.CalledProcessError(1, cmd, stderr="no such session")
+                return subprocess.CompletedProcess(cmd, 0)
+            return subprocess.CompletedProcess(cmd, 0, stdout=_FAKE_PS_STARTED_AT + "\n")
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+
+        with pytest.raises(svc.RecorderLaunchError):
+            svc.start(
+                calm_root=calm_root, transcript=str(transcript),
+                sid_factory=_fixed_sid_factory("rec-fail"),
+            )
+
+        kill_calls = [c for c in tmux_calls if c[1] == "kill-session"]
+        assert kill_calls == [["tmux", "kill-session", "-t", svc.tmux_session_name(_MAIN_SID)]]
+
+        run_dir = watch_hook.run_dir_for(_MAIN_SID)
+        assert not (run_dir / "run.json").exists()
+        assert is_recorder_attached(_MAIN_SID) is False
+        assert is_recorder_attached(_MAIN_SID) is False
 
 
 class TestStop:
@@ -468,3 +506,32 @@ class TestStatus:
         result = svc.status()
         assert result["attached"] is False
         assert result["cursor"] is None
+
+
+class TestMainCli:
+    def test_success_prints_json_to_stdout(self, monkeypatch, capsys):
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", _MAIN_SID)
+
+        svc.main(["status"])
+
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        data = json.loads(captured.out)
+        assert data == {
+            "main_sid": _MAIN_SID,
+            "attached": False,
+            "run_dir": str(watch_hook.run_dir_for(_MAIN_SID)),
+            "run_dir_exists": False,
+            "cursor": None,
+        }
+
+    def test_recorder_launch_error_exits_1_with_stderr(self, monkeypatch, capsys):
+        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+
+        with pytest.raises(SystemExit) as exc_info:
+            svc.main(["status"])
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "エラー" in captured.err
