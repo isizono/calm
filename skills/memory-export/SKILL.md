@@ -39,13 +39,13 @@ description: 【必須】cc-memoryの記録(topic/decision/log/material/activity
 | log | 手順3で`include_types`から明示除外しているため候補にも出ない(export対象外が既定のルール) |
 
 - `retracted`/`superseded`のcandidateはフラグ付きで表示し、既定は未選択のまま伝える
-- `closure_warnings`があれば候補提示より先に見せる(「supersede先/引用先が選択範囲外」)
+- `closure_warnings`があれば候補提示より先に見せる(「supersede先/destabilize先/引用先が選択範囲外」)
 - タグ方式(`tag_roots`)で呼んだ場合、レスポンスの`co_tags`のうち`share`が高いタグを「一緒に含めますか」と1回だけ確認する(同梱するかはユーザー裁定、既定は含めない)
 - activityは自動同梱の経路がない。候補一覧で明示的にチェックされた場合のみ選択リストに入る(親topicのような機械的な強制同梱はdecision/logのみの規則)
 
 ## 判断に迷ったときの既定
 
-- decision/logのsupersede先が選択範囲外: 既定は非同梱(エッジ情報のみ)。`closure_warnings`で検知されたら1回だけ同梱するか確認する
+- decision/logのsupersede先、decisionのdestabilize先が選択範囲外: 既定は非同梱(エッジ情報のみ)。`closure_warnings`で検知されたら1回だけ同梱するか確認する
 - retractedエンティティ: 既定では未選択のまま候補に残す。明示選択されればそのままバンドルに含める
 
 ## 記録

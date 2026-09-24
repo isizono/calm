@@ -499,7 +499,7 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 
 **返り値**: 成功時 `{candidates: [{type, id_raw, title, snippet, tags, depth, size_chars, parent_topic_title, retracted?, superseded?, status?}], closure_warnings: [{kind, from_title, target_title, target: {type, id_raw}}], total_count: int, truncated: bool}`。`retracted`はdecision/log/materialのみ、`superseded`はdecisionのみ、`status`はactivityのみ付く。`tag_roots`指定時のみ`co_tags: [{tag, overlap, share}]`が追加される。失敗時 `{error: {code: "VALIDATION_ERROR" | "INVALID_ENTITY_TYPE" | "INVALID_PARAMETER" | "DATABASE_ERROR", message}}`。
 **get_mapとの違い**: get_mapはnavigation用途でdecision/logを経由ノードとしてのみ扱いカタログに含めないが、本ツールはexport判断のため5型全部をカタログ本体に含める。走査自体は共有のrelation走査ロジックを使うが、ツールとしては独立している。
-**動作**: rootsからの走査結果とtag_rootsのシード結果（tag_rootsは深度0固定、グラフ拡張はしない）を合流し、型別の付加情報を付けて返す。`closure_warnings`は選択集合外を指すsupersede関係・本文中citation（`{{cite:X#NNN}}`）を検出する（供に情報提供のみで、自動的な集合拡張は行わない）。read-only（DBへの書き込みは一切行わない）。
+**動作**: rootsからの走査結果とtag_rootsのシード結果（tag_rootsは深度0固定、グラフ拡張はしない）を合流し、型別の付加情報を付けて返す。`closure_warnings`は選択集合外を指すsupersede関係・destabilize関係・本文中citation（`{{cite:X#NNN}}`）・belongs_to関係・related関係・depends_on関係を検出する（いずれも情報提供のみで、自動的な集合拡張は行わない）。read-only（DBへの書き込みは一切行わない）。
 
 ### 2.20c set_instance_identity
 
