@@ -498,9 +498,10 @@ class TestRule15BoundFailed:
         assert block["next"]["rule"] == 15
         assert block["next"]["actor"] == "claude"
         assert block["next"]["condition_id_raw"] == _condition_ids(goal_id)[0]
-        assert "子作業" in block["next"]["what"]
-        assert "失敗で閉じた" in block["next"]["what"]
-        assert "環境未整備" in block["next"]["what"]
+        assert block["next"]["what"] == (
+            "子『子作業』のgoalが失敗で閉じた（環境未整備）。"
+            "やり直しの子を起票してeditで束縛を張り替えるか、理由を書いてwaivedにする"
+        )
 
     def test_rule6_broken_wins_over_rule15(self, temp_db):
         """評価の順番は規則6（崩れ）が規則15（失敗した子）より先である。"""
@@ -547,6 +548,36 @@ class TestRule15BoundFailed:
         finally:
             conn.close()
         assert block["next"]["rule"] == 15
+
+
+class TestTruncateNote:
+    def test_text_within_limit_is_unchanged(self, temp_db):
+        assert gs._truncate_note("短い理由") == "短い理由"
+
+    def test_text_over_limit_is_truncated_with_ellipsis(self, temp_db):
+        long_text = "あ" * 35
+        assert gs._truncate_note(long_text) == "あ" * 30 + "…"
+
+    def test_judge_note_over_limit_is_truncated_in_rule15_wording(self, temp_db):
+        """30字を超えるjudge_noteは、規則15の文言でも省略される。"""
+        long_note = "環境が古く依存パッケージのビルドが通らず断念したため代替手段を検討する"
+        assert len(long_note) > 30
+        child, _ = _child_with_goal_verdict("failed", note=long_note, title="子作業")
+        parent = _activity("parent")
+        goal_id = _new_goal(
+            parent,
+            conditions=[
+                {"statement": "子作業が終わる", "actor": "claude", "bound": {"type": "activity", "id": child}}
+            ],
+        )["goal_id_raw"]
+        conn = get_connection()
+        try:
+            block = gs.build_goal_block_by_goal_id(conn, goal_id)
+        finally:
+            conn.close()
+        truncated = long_note[:30] + "…"
+        assert truncated in block["next"]["what"]
+        assert long_note not in block["next"]["what"]
 
 
 class TestNextRulesActivityScope:

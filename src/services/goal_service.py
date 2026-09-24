@@ -1197,11 +1197,12 @@ def _rule6_broken(ctx: dict) -> dict:
     return {"rule": 6, "what": _rule6_what(chosen), "actor": "claude", "condition_id_raw": chosen["id"]}
 
 
-def _truncate_note(text: Optional[str], limit: int = 30) -> str:
-    """judge_noteの先頭を短く切って表示用にする（無ければ「理由なし」）。"""
-    text = (text or "").strip()
-    if not text:
-        return "理由なし"
+def _truncate_note(text: str, limit: int = 30) -> str:
+    """judge_noteの先頭を短く切って表示用にする。judge_goalはverdict='failed'のとき
+    noteを非空文字列（空白のみも不可）に強制する（アプリ側検証とgoalsテーブルの
+    CHECK制約の両方）ので、textは常に非空である前提で扱う。
+    """
+    text = text.strip()
     if len(text) <= limit:
         return text
     return text[:limit].rstrip() + "…"
@@ -1214,7 +1215,7 @@ def _rule15_bound_failed(ctx: dict) -> dict:
     chosen = sorted(ctx["bound_failed"], key=lambda c: c["id"])[0]
     bound_state = chosen["bound_state"] or {}
     child_title = bound_state.get("title") or "?"
-    reason = _truncate_note(bound_state.get("judge_note"))
+    reason = _truncate_note(bound_state["judge_note"])
     what = (
         f"子『{child_title}』のgoalが失敗で閉じた（{reason}）。"
         "やり直しの子を起票してeditで束縛を張り替えるか、理由を書いてwaivedにする"
@@ -1339,7 +1340,7 @@ def _bound_display(bound_type: str, bound_state: Optional[dict]) -> Optional[str
     if state == "pending":
         return f"{bound_type}『{title}』: 未"
     if state == "failed":
-        reason = _truncate_note(bound_state.get("judge_note"))
+        reason = _truncate_note(bound_state["judge_note"])
         return f"{bound_type}『{title}』: 失敗（判定: {reason}）"
     reason = bound_state.get("reason")
     if reason == "replaced":
