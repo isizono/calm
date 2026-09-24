@@ -7,6 +7,7 @@ import math
 from datetime import datetime, timedelta, timezone
 import pytest
 import numpy as np
+from sqlite_vec import serialize_float32
 
 from src.db import get_connection
 from src.services.search_service import (
@@ -1574,6 +1575,52 @@ def test_qe_respects_distance_threshold(temp_db, mock_embedding_model):
         assert "qe-far" not in result
     finally:
         emb.search_similar_tags = original
+
+
+def test_qe_fires_via_real_tag_vec_cosine_knn(temp_db, mock_embedding_model, monkeypatch):
+    """search_similar_tagsをモックせず、tag_vecへの実embedding投入 + 実KNNでQEが発火する
+    ことを確認する(cosine化前はtag_vecが空/L2スケールのため構造的に発火しなかった経路の
+    統合検証)。
+
+    embeddingはノルム75(実embeddingサーバーの実測ノルム約75.5相当)の非正規化ベクトルで
+    揃える。cosine距離はノルムに依存しないため、query=[75,0,...]に対し
+    qe-cosine-near=[74.25,3.75,0,...](方向がわずかにずれた大ノルム)のcosine距離は
+    約0.0013でQE_DISTANCE_THRESHOLD(0.3)未満、qe-cosine-far=[0,75,0,...](直交)は
+    cosine距離1.0で閾値以上になる。一方、同じベクトル対のL2距離はnearが約3.82・
+    farが約106であり、nearも含めどちらもL2では閾値に届かない
+    (このテストがcosine化に固有の挙動を検証していることの裏付け)。
+    """
+    conn = get_connection()
+    try:
+        conn.execute("INSERT INTO tags (namespace, name) VALUES ('', 'qe-cosine-near')")
+        near_id = conn.execute(
+            "SELECT id FROM tags WHERE namespace = '' AND name = 'qe-cosine-near'"
+        ).fetchone()["id"]
+        conn.execute("INSERT INTO tags (namespace, name) VALUES ('', 'qe-cosine-far')")
+        far_id = conn.execute(
+            "SELECT id FROM tags WHERE namespace = '' AND name = 'qe-cosine-far'"
+        ).fetchone()["id"]
+
+        query_vec = [75.0, 0.0] + [0.0] * (EMBEDDING_DIM - 2)
+        near_vec = [74.25, 3.75] + [0.0] * (EMBEDDING_DIM - 2)
+        far_vec = [0.0, 75.0] + [0.0] * (EMBEDDING_DIM - 2)
+
+        conn.execute(
+            "INSERT INTO tag_vec(rowid, embedding) VALUES (?, ?)", (near_id, serialize_float32(near_vec))
+        )
+        conn.execute(
+            "INSERT INTO tag_vec(rowid, embedding) VALUES (?, ?)", (far_id, serialize_float32(far_vec))
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(emb, "encode_query", lambda text: query_vec)
+
+    result = _expand_query_with_tags(["some-keyword"])
+
+    assert "qe-cosine-near" in result
+    assert "qe-cosine-far" not in result
 
 
 def test_qe_max_expansions_limit(temp_db, mock_embedding_model):

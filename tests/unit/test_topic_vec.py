@@ -303,7 +303,8 @@ def test_backfill_noop_when_all_filled(temp_db, mock_embedding_server, monkeypat
 
 
 def test_ensure_initialized_runs_topic_backfill(temp_db, monkeypatch):
-    """_ensure_initialized: backfill_embeddings と同じ経路でbackfill_topic_embeddingsも呼ばれる
+    """_ensure_initialized: backfill_embeddings と同じ経路でbackfill_topic_embeddings /
+    backfill_tag_embeddingsも呼ばれる
 
     バックフィルはリクエスト経路をブロックしないよう daemon thread で非同期実行される
     ため、_ensure_initialized の戻り後に emb._backfill_thread を join してから検証する。
@@ -316,13 +317,14 @@ def test_ensure_initialized_runs_topic_backfill(temp_db, monkeypatch):
     monkeypatch.setattr(emb, '_ensure_server_running', lambda: True)
     monkeypatch.setattr(emb, 'backfill_embeddings', lambda: calls.append('embeddings') or 0)
     monkeypatch.setattr(emb, 'backfill_topic_embeddings', lambda: calls.append('topic_embeddings') or 0)
+    monkeypatch.setattr(emb, 'backfill_tag_embeddings', lambda: calls.append('tag_embeddings') or 0)
 
     emb._ensure_initialized()
     assert emb._backfill_thread is not None
     emb._backfill_thread.join(timeout=5.0)
 
-    assert calls == ['embeddings', 'topic_embeddings']
+    assert calls == ['embeddings', 'topic_embeddings', 'tag_embeddings']
 
     # 2回目は _backfill_done（threadの完了時に立つ）により再実行されない
     emb._ensure_initialized()
-    assert calls == ['embeddings', 'topic_embeddings']
+    assert calls == ['embeddings', 'topic_embeddings', 'tag_embeddings']

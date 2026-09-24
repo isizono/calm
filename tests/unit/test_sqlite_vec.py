@@ -72,10 +72,11 @@ def test_vec_index_knn_search(temp_db):
     """KNN検索: 最も近いベクトルが上位に返る"""
     conn = get_connection()
     try:
-        # 3つの異なるベクトルを挿入
-        vec_a = [1.0] * EMBEDDING_DIM
-        vec_b = [0.5] * EMBEDDING_DIM
-        vec_c = [0.0] * EMBEDDING_DIM
+        # 方向の異なる3つのベクトルを挿入(vec_indexはcosine距離のためノルムでなく
+        # 方向の違いで順位が決まる。定数倍しただけの平行なベクトルは区別できない)
+        vec_a = [1.0, 0.0] + [0.0] * (EMBEDDING_DIM - 2)
+        vec_b = [0.8, 0.6] + [0.0] * (EMBEDDING_DIM - 2)
+        vec_c = [0.0, 1.0] + [0.0] * (EMBEDDING_DIM - 2)
 
         conn.execute(
             "INSERT INTO vec_index(rowid, embedding) VALUES (?, ?)",
@@ -91,8 +92,8 @@ def test_vec_index_knn_search(temp_db):
         )
         conn.commit()
 
-        # vec_aに最も近い2件を検索
-        query = [0.9] * EMBEDDING_DIM
+        # vec_aに最も近い(方向が最も近い)2件を検索
+        query = [0.9, 0.1] + [0.0] * (EMBEDDING_DIM - 2)
         cursor = conn.execute(
             "SELECT rowid, distance FROM vec_index WHERE embedding MATCH ? AND k = 2",
             (serialize_float32(query),),
