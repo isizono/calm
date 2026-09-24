@@ -68,6 +68,11 @@ WAIT_LIMIT_SECONDS = 86400 - 300
 # （システム負荷等でNoneが返る）だけで、不可逆な終了処理を走らせないため。
 MAIN_DEAD_CONFIRM_POLLS = 3
 
+# 記録役のコンテキストが伸び続けないよう、この片数をDONEで確定するたびに
+# 記録役を立て直す（stop→start）。片の続きはcursor.jsonに残るため、立て
+# 直しても読み取り位置は失われない。
+CHUNKS_PER_RESTART = 20
+
 # activityの境界(check_in/add_activity)判定対象のtool short_name。
 _BOUNDARY_TOOLS = {"check_in", "add_activity"}
 
@@ -83,6 +88,8 @@ _DEFAULT_CURSOR: dict = {
     "unacked": [],
     "next_no": 1,
     "offset_lost": 0,
+    "chunks_since_restart": 0,
+    "restart_count": 0,
 }
 
 
@@ -491,6 +498,34 @@ def _terminate(run_dir: Path, main_sid: str) -> None:
         pass
 
 
+def _spawn_detached_restart(
+    calm_root: Path, main_sid: str, main_pid: int, main_transcript: Path
+) -> None:
+    """記録役の立て直し（stop→start）を、切り離したプロセスとして起動する。
+
+    この関数は、まだ生きている記録役のtmuxセッション内（そのStop hookの
+    実行中）から呼ばれる。tmux kill-sessionをここで直接呼ぶと、呼び出し元
+    である見張り自身のプロセスも巻き添えで終了してしまうため、実際の
+    stop/startは`start_new_session=True`で切り離した別プロセス
+    （`scripts/recorder.py restart`）に行わせ、本関数はその起動だけを行って
+    すぐ戻る。切り離しプロセスには`$CLAUDE_CODE_SESSION_ID`等のセッション
+    環境変数が伝わらないため、main_sid・main_pid・main_transcriptを引数で
+    明示的に渡す。
+    """
+    venv_python = calm_root / ".venv" / "bin" / "python"
+    recorder_script = calm_root / "scripts" / "recorder.py"
+    subprocess.Popen(
+        [
+            str(venv_python), str(recorder_script), "restart",
+            "--session-id", main_sid,
+            "--pid", str(main_pid),
+            "--transcript", str(main_transcript),
+        ],
+        start_new_session=True,
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+
 def _read_int_env(name: str) -> int | None:
     raw = os.environ.get(name)
     if not raw:
@@ -552,10 +587,18 @@ def _watch(run_dir: Path, hook_input: dict, *, sleep, now) -> int:
 
     if cursor.get("pending") is not None:
         outcome = _resolve_pending(cursor, last_msg)
+        if outcome == "done":
+            cursor["chunks_since_restart"] = cursor.get("chunks_since_restart", 0) + 1
         _write_cursor(cursor_path, cursor)
         if outcome == "retry":
             touch_marker(main_sid)
             return _emit_chunk_message(run_dir, cursor["pending"])
+        if outcome == "done" and cursor["chunks_since_restart"] >= CHUNKS_PER_RESTART:
+            cursor["chunks_since_restart"] = 0
+            cursor["restart_count"] = cursor.get("restart_count", 0) + 1
+            _write_cursor(cursor_path, cursor)
+            _spawn_detached_restart(_project_root, main_sid, main_pid, main_transcript)
+            return 0
 
     _ensure_activity_id_at_cursor(cursor, main_transcript, cursor_path)
 
