@@ -29,8 +29,12 @@ _CODEX_UNSUPPORTED_EVENTS = {"MessageDisplay"}
 # Codexに無いため、Codex側登録の期待値導出から除外するスクリプト。
 # ask_answer_rewake_hook.py: 待機中のhookがidleのセッションを起こす機構
 # (asyncRewake)がCodexに無く、登録しても回答を知らせられない。
+# sanitize_backfill_hook.py: Codexのrollout recorderは書き込みハンドルを
+# 保持しており、セッション中のrename方式書き換えはappend喪失を起こすことを
+# 実機確認済み。登録してもsupports_transcript_rewrite=Falseで即exitする（#613）。
 _CODEX_UNSUPPORTED_SCRIPTS: set[str] = {
     "ask_answer_rewake_hook.py",
+    "sanitize_backfill_hook.py",
 }
 
 # hooks/ 配下のスクリプトが自身の担当イベントを宣言する規約:

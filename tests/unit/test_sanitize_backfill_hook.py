@@ -674,3 +674,31 @@ def test_case_15_harness_race_recorded_as_failure_event(
     assert events[0]["verification_result"] is None
     assert events[0]["extra"]["failure_reason"] == "harness_race"
     assert HookState("sess-1").get_sanitize_offset() == 0
+
+
+# ---------------------------------------------------------------------------
+# Codex: transcript書き換えが無いハーネスでは何もしない (#613)
+# ---------------------------------------------------------------------------
+
+
+def test_codex_harness_no_rewrite_and_no_events(fixture_db, state_dir, tmp_path, monkeypatch):
+    """CALM_HARNESS=codexではtranscriptを書き換えない（rollout recorderが
+    書き込みハンドルを保持しており、rename方式の差し替えは以降のappendを
+    喪失させることを実機確認済み）。書き換えていない以上、citation_event_log
+    への記録もsanitize_offsetの更新も行わない。
+    """
+    monkeypatch.setenv("CALM_HARNESS", "codex")
+    transcript = tmp_path / "transcript.jsonl"
+    entries = [
+        _make_assistant_entry("toolu_01"),
+        _make_user_tool_result_entry("toolu_01", "found M#1 and D#1 here"),
+    ]
+    _write_transcript(transcript, entries)
+    before = transcript.read_text(encoding="utf-8")
+
+    stdout, stderr, code = _run_hook(_payload(str(transcript)))
+    assert code == 0
+    assert transcript.read_text(encoding="utf-8") == before
+    assert _read_citation_events(fixture_db) == []
+    # offsetは未設定のまま（既定0）で、ファイルサイズまで進んでいない
+    assert HookState("sess-1").get_sanitize_offset() == 0

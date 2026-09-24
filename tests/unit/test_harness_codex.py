@@ -114,6 +114,10 @@ class TestEmitDiffs:
         harness, _ = _make()
         assert harness.supports_monitor_watch is False
 
+    def test_transcript_rewriteをサポートしない(self):
+        harness, _ = _make()
+        assert harness.supports_transcript_rewrite is False
+
     def test_additional_contextは継承したhookSpecificOutput形式(self):
         harness, stdout = _make(hook_event_name="SessionStart")
         harness.emit_additional_context("文脈")

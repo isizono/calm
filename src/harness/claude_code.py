@@ -116,6 +116,10 @@ class ClaudeCodeHarness(Harness):
     def supports_monitor_watch(self) -> bool:
         return True
 
+    @property
+    def supports_transcript_rewrite(self) -> bool:
+        return True
+
     # ------------------------------------------------------------------
     # 2. transcript読み書き
     # ------------------------------------------------------------------
