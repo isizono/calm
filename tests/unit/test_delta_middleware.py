@@ -31,6 +31,7 @@ from src.services.decision_service import add_decisions
 from src.services.discussion_log_service import add_logs
 from src.services.material_service import add_material
 from src.services.pin_service import add_pin
+from src.services.relation_service import add_relation
 from src.services.topic_service import add_topic
 from src.main import check_in as tool_check_in
 from src.main import add_activity as tool_add_activity
@@ -122,7 +123,7 @@ def scope(temp_db):
 
 @pytest.mark.asyncio
 async def test_check_in_records_baseline_and_scope(scope, monkeypatch):
-    tid, aid = scope
+    _tid, aid = scope
     middleware = DeltaNotificationMiddleware()
 
     checkin_result = check_in(aid)
@@ -132,9 +133,12 @@ async def test_check_in_records_baseline_and_scope(scope, monkeypatch):
         _call_next_returning(ToolResult(structured_content=checkin_result)),
     )
 
+    # topicスコープはwatermarkに保存せず、以降の呼び出しのたびに引き直すため、
+    # ここではactivity_idとbaselineだけを確認する（スコープの中身は
+    # derive_scopeの単体テスト、および掲示板トピックの取りこぼしを確認する
+    # 統合テストで検証する）。
     wm = _watermarks["caller-A"]
     assert wm["activity_id"] == aid
-    assert wm["topic_ids"] == [tid]
     assert wm["decision_id"] == 0
     assert wm["log_id"] == 0
     assert wm["material_id"] == 0
@@ -167,7 +171,6 @@ async def test_add_activity_default_checkin_records_baseline(temp_db, monkeypatc
 
     wm = _watermarks["caller-A"]
     assert wm["activity_id"] == aid
-    assert wm["topic_ids"] == [tid]
 
 
 @pytest.mark.asyncio
@@ -317,7 +320,11 @@ async def test_self_write_not_notified_for_materials(scope, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_recheckin_resets_scope(temp_db, monkeypatch):
+async def test_recheckin_switches_active_scope(temp_db, monkeypatch):
+    """再check_in（別activity）で、以降の呼び出しの実効scopeが新activity側に
+    切り替わることを確認する（topicスコープは保存せず、activity_idを起点に
+    毎回引き直すため、旧activityのtopicへの書き込みはもう届かない）。
+    """
     topic1 = add_topic(title="Topic1", description="d", tags=["domain:test"])
     tid1 = topic1["topic_id"]
     activity1 = add_activity(
@@ -342,17 +349,28 @@ async def test_recheckin_resets_scope(temp_db, monkeypatch):
         _make_context("check_in"),
         _call_next_returning(ToolResult(structured_content=checkin1)),
     )
-    assert _watermarks["caller-A"]["topic_ids"] == [tid1]
     assert _watermarks["caller-A"]["activity_id"] == aid1
 
-    # (f) 再check_in（別activity）でscopeが上書きされる
+    # 再check_in（別activity）
     checkin2 = check_in(aid2)
     await middleware.on_call_tool(
         _make_context("check_in"),
         _call_next_returning(ToolResult(structured_content=checkin2)),
     )
-    assert _watermarks["caller-A"]["topic_ids"] == [tid2]
     assert _watermarks["caller-A"]["activity_id"] == aid2
+
+    # 再check_in後にtopic1へ書かれた決定は、もう実効scope外なので届かない
+    add_decision("topic1後の決定", "reason", topic_id=tid1)
+    # topic2への決定は現在のscope（activity2の1段先）なので届く
+    d2 = add_decision("topic2の決定", "reason", topic_id=tid2)
+
+    result = await middleware.on_call_tool(
+        _make_context("get_topics"),
+        _call_next_returning(_noop_tool_result()),
+    )
+    assert result.structured_content["delta"]["new_decisions"] == [
+        {"id": d2["decision_id"], "title": "topic2の決定"}
+    ]
 
 
 @pytest.mark.asyncio
@@ -463,6 +481,186 @@ async def test_out_of_scope_write_does_not_suppress_future_in_scope_deltas(temp_
     assert result.structured_content["delta"]["new_decisions"] == [
         {"id": b_decision["decision_id"], "title": "scope内の決定"}
     ]
+
+
+# ---------------------------------------------------------------------------
+# 掲示板トピック（boardタグ）によるスコープ拡張。購読テーブルは持たず、
+# ツール呼び出しのたびにderive_scopeでscopeを引き直すことを確認する。
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_board_tagged_topic_related_after_checkin_delivers_new_log(scope, monkeypatch):
+    """check-in後に新しくboard素タグのtopicを関連付けると、その後そのtopicに
+    書かれたログが次のツール呼び出しでdeltaとして届く。
+    """
+    tid, aid = scope
+    middleware = DeltaNotificationMiddleware()
+
+    _set_caller(monkeypatch, "caller-A")
+    checkin_result = check_in(aid)
+    await middleware.on_call_tool(
+        _make_context("check_in"),
+        _call_next_returning(ToolResult(structured_content=checkin_result)),
+    )
+
+    board_topic = add_topic(title="Board Topic", description="d", tags=["domain:test", "board"])
+    board_tid = board_topic["topic_id"]
+    add_relation("topic", tid, [{"type": "topic", "ids": [board_tid]}])
+
+    new_log = add_logs(
+        [{"topic_id": board_tid, "content": "掲示板への投稿", "title": "掲示板への投稿"}]
+    )["created"][0]
+
+    result = await middleware.on_call_tool(
+        _make_context("get_topics"),
+        _call_next_returning(_noop_tool_result()),
+    )
+    assert result.structured_content["delta"]["new_logs"] == [
+        {"id": new_log["log_id"], "title": "掲示板への投稿"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_related_topic_without_board_tag_is_not_included_in_scope(scope, monkeypatch):
+    """boardタグの無いtopicは、scope topicへ関連付けても2段目としてscopeに
+    入らない（2段目をboardタグで絞っていることの確認）。
+    """
+    tid, aid = scope
+    middleware = DeltaNotificationMiddleware()
+
+    _set_caller(monkeypatch, "caller-A")
+    checkin_result = check_in(aid)
+    await middleware.on_call_tool(
+        _make_context("check_in"),
+        _call_next_returning(ToolResult(structured_content=checkin_result)),
+    )
+
+    plain_topic = add_topic(title="Plain Related Topic", description="d", tags=["domain:test"])
+    plain_tid = plain_topic["topic_id"]
+    add_relation("topic", tid, [{"type": "topic", "ids": [plain_tid]}])
+
+    add_logs([
+        {"topic_id": plain_tid, "content": "boardタグ無しtopicへの投稿", "title": "届かないはずのログ"}
+    ])
+
+    result = await middleware.on_call_tool(
+        _make_context("get_topics"),
+        _call_next_returning(_noop_tool_result()),
+    )
+    assert len(result.content) == 1
+    assert "delta" not in (result.structured_content or {})
+
+
+@pytest.mark.asyncio
+async def test_pre_existing_log_in_later_related_board_topic_is_not_flooded(scope, monkeypatch):
+    """check-in前から存在するboardトピックの古いログは、check-in後にそのトピックを
+    scope topicへ関連付けても、まとめて新規通知されない。既読位置の初期値を
+    範囲内maxではなく全体maxにしているのは、このケースで古い記録が一斉に
+    押し寄せるのを防ぐため。
+    """
+    tid, aid = scope
+    middleware = DeltaNotificationMiddleware()
+
+    # check-in前に、まだ無関係なboardトピックへ古いログを書いておく
+    board_topic = add_topic(title="Board Topic", description="d", tags=["domain:test", "board"])
+    board_tid = board_topic["topic_id"]
+    add_logs([
+        {"topic_id": board_tid, "content": "check-in前の古い投稿", "title": "古い投稿"}
+    ])
+
+    _set_caller(monkeypatch, "caller-A")
+    checkin_result = check_in(aid)
+    await middleware.on_call_tool(
+        _make_context("check_in"),
+        _call_next_returning(ToolResult(structured_content=checkin_result)),
+    )
+
+    # check-in後にboardトピックを関連付ける
+    add_relation("topic", tid, [{"type": "topic", "ids": [board_tid]}])
+
+    result = await middleware.on_call_tool(
+        _make_context("get_topics"),
+        _call_next_returning(_noop_tool_result()),
+    )
+    assert len(result.content) == 1
+    assert "delta" not in (result.structured_content or {})
+
+
+@pytest.mark.asyncio
+async def test_global_baseline_matches_scoped_baseline_when_scope_unchanged(temp_db, monkeypatch):
+    """scopeがcheck-in後も変わらない通常のケースでは、既読位置の初期値を
+    範囲内maxから全体maxに変えても、配られる差分の集合は変わらないことを確認する。
+    check-in前にscope内の決定を1件（範囲内maxを非ゼロにする）、さらにscope外の
+    決定を1件（全体max > 範囲内maxの状況を作る）作ったうえで検証する。
+    """
+    scope_topic = add_topic(title="Scope Topic", description="d", tags=["domain:test"])
+    tid = scope_topic["topic_id"]
+    other_topic = add_topic(title="Other Topic", description="d", tags=["domain:test"])
+    other_tid = other_topic["topic_id"]
+    activity = add_activity(
+        title="Activity", description="d", tags=["domain:test"],
+        related=[{"type": "topic", "ids": [tid]}], check_in=False,
+    )
+    aid = activity["activity_id"]
+
+    d_old = add_decision("check-in前のscope内決定", "reason", topic_id=tid)
+    add_decision("scope外の後発決定", "reason", topic_id=other_tid)
+
+    middleware = DeltaNotificationMiddleware()
+    _set_caller(monkeypatch, "caller-A")
+    checkin_result = check_in(aid)
+    await middleware.on_call_tool(
+        _make_context("check_in"),
+        _call_next_returning(ToolResult(structured_content=checkin_result)),
+    )
+
+    d_new = add_decision("scope内の新しい決定", "reason", topic_id=tid)
+    result = await middleware.on_call_tool(
+        _make_context("get_topics"),
+        _call_next_returning(_noop_tool_result()),
+    )
+    # check-in後の新しい決定だけが届き、check-in前から存在した決定は再配信されない
+    assert result.structured_content["delta"]["new_decisions"] == [
+        {"id": d_new["decision_id"], "title": "scope内の新しい決定"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_self_write_to_newly_related_board_topic_is_not_self_notified(scope, monkeypatch):
+    """check-in後に新しく関連付けたboardトピックへの自分の投稿は、自己通知抑制の
+    対象になる。_handle_writeもscopeを毎回引き直さないと、新しく入ったtopicへの
+    自己投稿がscope外と誤判定され、自己通知抑制が効かなくなる。
+    """
+    tid, aid = scope
+    middleware = DeltaNotificationMiddleware()
+
+    _set_caller(monkeypatch, "caller-A")
+    checkin_result = check_in(aid)
+    await middleware.on_call_tool(
+        _make_context("check_in"),
+        _call_next_returning(ToolResult(structured_content=checkin_result)),
+    )
+
+    board_topic = add_topic(title="Board Topic", description="d", tags=["domain:test", "board"])
+    board_tid = board_topic["topic_id"]
+    add_relation("topic", tid, [{"type": "topic", "ids": [board_tid]}])
+
+    own_write_result = add_logs([
+        {"topic_id": board_tid, "content": "自分の投稿", "title": "自分の投稿"}
+    ])
+    write_result = await middleware.on_call_tool(
+        _make_context("add_logs"),
+        _call_next_returning(ToolResult(structured_content=own_write_result)),
+    )
+    assert "delta" not in (write_result.structured_content or {})
+
+    result = await middleware.on_call_tool(
+        _make_context("get_topics"),
+        _call_next_returning(_noop_tool_result()),
+    )
+    assert len(result.content) == 1
+    assert "delta" not in (result.structured_content or {})
 
 
 @pytest.mark.asyncio
@@ -592,7 +790,7 @@ async def test_no_identity_resolved_skips_notification_and_does_not_touch_waterm
 @pytest.mark.asyncio
 async def test_real_check_in_tool_response_sets_baseline(scope, monkeypatch):
     """main.check_in()（flavor適用+全体予算を経た本物の応答）でもbaselineが立つ。"""
-    tid, aid = scope
+    _tid, aid = scope
     middleware = DeltaNotificationMiddleware()
 
     real_result = tool_check_in(aid)  # flavor既定=internal、予算適用済み
@@ -604,7 +802,6 @@ async def test_real_check_in_tool_response_sets_baseline(scope, monkeypatch):
 
     wm = _watermarks["caller-A"]
     assert wm["activity_id"] == aid
-    assert wm["topic_ids"] == [tid]
 
 
 @pytest.mark.asyncio
@@ -628,7 +825,6 @@ async def test_real_add_activity_tool_response_sets_baseline(temp_db, monkeypatc
 
     wm = _watermarks["caller-A"]
     assert wm["activity_id"] == aid
-    assert wm["topic_ids"] == [tid]
 
 
 @pytest.mark.asyncio
@@ -658,7 +854,6 @@ async def test_real_check_in_tool_response_still_scopes_and_delivers_delta_when_
     )
     wm = _watermarks["caller-A"]
     assert wm["activity_id"] == aid
-    assert wm["topic_ids"] == [tid]
 
     # baseline成立後、別セッションの書き込みがdeltaとして届く
     b_decision = add_decision("予算超過後のBの決定", "reason", topic_id=tid)
