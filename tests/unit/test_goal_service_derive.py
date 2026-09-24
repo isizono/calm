@@ -836,9 +836,17 @@ class TestGetGoalLogsSinceCreated:
         add_logs([{"topic_id": topic_id, "content": "経緯1", "tags": ["domain:test"]}])
         add_logs([{"topic_id": topic_id, "content": "経緯2", "tags": ["domain:test"]}])
 
+        conn = get_connection()
+        try:
+            created_at = conn.execute(
+                "SELECT created_at FROM goals WHERE id = ?", (goal_id,)
+            ).fetchone()["created_at"]
+        finally:
+            conn.close()
+
         result = gs.get_goal(goal_id=goal_id)
         assert result["logs_since_created"]["count"] == 2
-        assert result["logs_since_created"]["since"] is not None
+        assert result["logs_since_created"]["since"] == created_at
 
     def test_zero_when_no_logs_added(self, temp_db):
         act = _activity()

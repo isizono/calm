@@ -1520,15 +1520,18 @@ def _full_condition_entry(c: dict) -> dict:
     return entry
 
 
-def _activity_topic_ids(conn: sqlite3.Connection, activity_id: int) -> list[int]:
-    """activityが直接属するtopicのidを返す(親帰属のbelongs_toのみ、逆引きは含まない)。"""
+def _topic_ids_for_activities(conn: sqlite3.Connection, activity_ids: list[int]) -> list[int]:
+    """複数activityが直接属するtopicのidを重複除去して返す(親帰属のbelongs_toのみ、逆引きは含まない)。"""
+    if not activity_ids:
+        return []
+    placeholders = ",".join("?" * len(activity_ids))
     rows = conn.execute(
-        """
-        SELECT target_id FROM relations
-        WHERE source_type = 'activity' AND source_id = ?
+        f"""
+        SELECT DISTINCT target_id FROM relations
+        WHERE source_type = 'activity' AND source_id IN ({placeholders})
           AND target_type = 'topic' AND relation_type = 'belongs_to'
         """,
-        (activity_id,),
+        tuple(activity_ids),
     ).fetchall()
     return [r["target_id"] for r in rows]
 
@@ -1646,14 +1649,7 @@ def get_goal(
         block["conditions"] = [_full_condition_entry(c) for c in enriched]
         block["activities"] = _linked_activities_payload(conn, resolved_goal_id)
 
-        linked_rows = _linked_activity_rows(conn, resolved_goal_id)
-        topic_ids: list[int] = []
-        seen_topics: set[int] = set()
-        for r in linked_rows:
-            for tid in _activity_topic_ids(conn, r["id"]):
-                if tid not in seen_topics:
-                    seen_topics.add(tid)
-                    topic_ids.append(tid)
+        topic_ids = _topic_ids_for_activities(conn, [a["id_raw"] for a in block["activities"]])
         block["logs_since_created"] = {
             "count": _log_count_since(conn, topic_ids, goal_row["created_at"]),
             "since": goal_row["created_at"],
