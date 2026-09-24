@@ -97,7 +97,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--branch", default=None, help="worktreeのブランチ名(表示用、省略可)")
     parser.add_argument(
         "--goal-handle", default=None,
-        help="依頼前にset_goalで作っておいたgoalのhandle(省略時はgoal未定義ならset_goalで書くよう指示する)",
+        help=(
+            "依頼前にset_goalで作っておいたgoalのhandle。英小文字・数字・ハイフンのみ、"
+            "40字以内(goal_serviceの制約と同じ、ここではバリデーションしない)。"
+            "省略時はgoal未定義ならset_goalで書くよう指示する"
+        ),
     )
     parser.add_argument(
         "--completion", action="append", default=None,

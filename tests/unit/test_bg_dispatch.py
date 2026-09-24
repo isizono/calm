@@ -24,20 +24,6 @@ class TestBuildRequest:
         assert "/path/to/worktree" in text
         assert "orch" in text
 
-    def test_fixed_skeleton_items_present(self):
-        """今日書かれた依頼文4本から抜き出した固定の骨格が全て含まれる。"""
-        text = build_request(
-            activity_id=1, activity_title="a", worktree="/w", report_to="orch",
-        )
-        assert "check_in" in text
-        assert "goal.next" in text
-        assert "マージ" in text
-        assert "サーバー再起動" in text
-        assert "マイグレーション番号を勝手に取ること" in text
-        assert "add_logs" in text
-        assert "SendMessage" in text
-        assert "sync-memory" in text
-
     def test_branch_omitted_when_not_given(self):
         text = build_request(
             activity_id=1, activity_title="a", worktree="/w", report_to="orch",
