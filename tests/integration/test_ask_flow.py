@@ -11,13 +11,12 @@ from src.services.checkin_service import check_in
 from src.services.topic_service import add_topic
 
 
-def _make_activity(title: str = "a1", orch_managed: bool = False) -> int:
+def _make_activity(title: str = "a1") -> int:
     return add_activity(
         title=title,
         description="d",
         tags=["domain:test"],
         check_in=False,
-        orch_managed=orch_managed,
     )["activity_id"]
 
 
@@ -132,18 +131,3 @@ class TestMultipleBlockedActivities:
 
         assert "asks" not in check_in(activity_a)
         assert "asks" not in check_in(activity_b)
-
-
-class TestOrchManagedActivityStillReceivesAskHints:
-    def test_triage_pending_hint_survives_orch_managed_suppression(self, temp_db):
-        """recompose系hintはorch-managed activityで全suppressされるが、
-        askは答え待ちのプロセス情報そのものとして扱い、suppressしない。"""
-        activity_id = _make_activity("orch-managed-activity", orch_managed=True)
-
-        ask = ak.add_ask("Orch-managed blocking question?", tags=["domain:test"], blocks=[activity_id])
-        ak.answer_ask(ask["id"], "answered")
-
-        result = check_in(activity_id)
-
-        assert result["asks"]["awaiting_triage"][0]["id_raw"] == ask["id"]
-        assert any("triage" in h for h in result["hints"])

@@ -168,7 +168,7 @@ Step 5-c で出た「次回ブレないための知識」を、§ pin 先判定�
 
 ### Step 7 完了後: 完了マーカー
 
-audit 主題に対応する代表 tag の tag note 末尾に `#audited-YYYY-MM-DD` ハッシュタグマーカーを追記する。24h 重複防止 (T-C2) の判定に使う。
+audit 主題に対応する代表 tag の tag note 末尾に `#audited-YYYY-MM-DD` ハッシュタグマーカーを追記する。24h 重複防止 (T-C2) の判定に使う。この追記で天井 (4,000字) を超える見込みなら拒否される (§ 判定フロー Q2 直後の注記参照) ため、超える見込みなら先に `demote_tag_notes` で縮めてから追記する。
 
 ```
 update_tag(tag="<代表tag>", notes="<既存notes>\n\n#audited-2026-06-22")
@@ -293,6 +293,15 @@ Q1: その知識は特定 tag に紐づくか?
 Q2: その tag の note は既に類似ルールを持つか?
   YES (類似ルール改訂) → tag note (update_tag)、ただし削除/書き換えはユーザー確認
   NO  (純粋追加)         → tag note (update_tag)、自律実行可
+
+  ※ Q2 のどちらの分岐も、書き込み前に「追記後（マージ後）の notes が天井 (4,000字)
+    を超えるか」を見積もる。天井は「新しい長さが4,000字を超え、かつ既存より増加して
+    いる」書き込みのみを拒否するため、対象タグの notes が現在は天井未満でも、この
+    追記で超える見込みなら書き込みは拒否される。超える見込みなら先に `demote_tag_notes`
+    で該当セクションを資材へ退避し、返り値の `notes_length.over_budget` が `false` に
+    なったことを確認してから書き込む。この見積もりは Step 7 完了後に追記する完了
+    マーカー (`#audited-YYYY-MM-DD`) にも同様にかかる (マーカーの追記も notes を
+    伸ばす書き込みのため)。
 Q3: その知識はセッション横断で常時想起されるべきか?
   YES → habit、ただし新規 habit はユーザー承認必須
   NO  → Q4 へ
@@ -310,6 +319,8 @@ Q5: その知識は経緯・調査結果そのものか?
 |---|---|
 | tag note への純粋追記 (既存削除なし) | 自律 |
 | tag note の書き換え / 削除 | ユーザー確認 |
+| `demote_tag_notes` (天井超過タグのnotes縮小、`mode="pointer"`) | 自律 (退避+ポインタ残しのため) |
+| `demote_tag_notes` (`mode="drop"`、ポインタも残さない) | ユーザー確認 |
 | 新規 habit | ユーザー確認 |
 | 既存 habit の更新 | ユーザー確認 |
 | material 新規 (audit material 自体) | 自律 |
@@ -337,7 +348,7 @@ Q5: その知識は経緯・調査結果そのものか?
 | pin (tag → material) | 主題の代表 tag が決まり、anchor 化が必要な場合 | `add_pin(source_type="tag", ...)` |
 | tag note 更新 | tag note に書くべき横断ルールが新たに見えた場合 | `update_tag(notes=...)` |
 | habit 追加 | tag 非依存の行動ルールが見えた場合 | `add_habit(...)` (ユーザー承認後) |
-| decision 改訂提案 | 既存 decision を retract / supersede すべきと判断した場合 | audit material 内 `## 検証結果` テーブルに「改訂提案」として記載 (直接 retract はしない)。頻繁に参照されるのに定型節（`docs/precedent-format.md`）が無い decision に遭遇した場合は、supersede 再記録時に定型節（特に却下案・検証）付きの reason で書き直すことを提案に含める。単純な retract は却下理由・射程の情報を失うため、頻出参照の decision は supersede を優先する |
+| decision 改訂提案 | 既存 decision を retract / supersede すべきと判断した場合 | audit material 内 `## 検証結果` テーブルに「改訂提案」として記載 (直接 retract はしない)。頻繁に参照されるのに定型節（書式は本スキル同梱の `references/precedent-format.md`）が無い decision に遭遇した場合は、supersede 再記録時に定型節（特に却下案・検証）付きの reason で書き直すことを提案に含める。単純な retract は却下理由・射程の情報を失うため、頻出参照の decision は supersede を優先する |
 | 新規 activity 起票 | フォローアップ作業が必要な場合 | `add_activity(intent:implement / discuss)` |
 
 ## 関連 skill との境界
@@ -380,7 +391,6 @@ audit skill は HintService (`src/services/hint_service.py`) とは**経路と�
 | 発火経路 | `check_in` 同期 / Stop hook 経由 additionalContext | description トリガー + ユーザー発話 |
 | 永続化 | hint type 表現 + tag note 内ハッシュタグマーカー (`#audited-YYYY-MM-DD` 等の suppress 用途) | audit material + 各種 pin |
 | severity | info/warn のみ (block 不採用) | severity 概念なし (skill は手続き) |
-| orch_managed=True activity | 全 suppress | 発動可 |
 
 完了マーカー `#audited-YYYY-MM-DD` は HintService 側 hint 重複抑制と共通の仕組みを意図しているが、audit skill 自身の 24h 重複防止 (T-C2) の判定にも使う。
 

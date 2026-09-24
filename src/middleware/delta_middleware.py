@@ -19,11 +19,15 @@ from mcp.types import TextContent
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 
 from src.db import get_connection
+from src.infra.session_identity import get_caller_session_id
 from src.services import delta_service
+from src.services.checkin_service import checkin_scope
 
-# セッション別watermark（ctx.session_idキー）。tag_service._injected_tagsと同じ
-# in-memory dict + ロックのパターン。セッション終了はこのモジュールに通知されない
-# ため、_injected_tagsと同様に上限超過時は挿入順の最古セッションから追い出す
+# セッション別watermark。キーはget_caller_session_id()の解決結果。Noneが
+# 返る呼び出しはwatermarkの読み書き自体を行わない（共有キーに相乗りすると
+# 別セッションの既読位置が混ざるため）。
+# セッション終了はこのモジュールに通知されないため、tag_service._injected_tagsと
+# 同様に上限超過時は挿入順の最古セッションから追い出す
 # （放置するとセッション数ぶん永久に成長するため）。
 _watermarks: dict[str, dict] = {}
 _watermarks_lock = threading.Lock()
@@ -68,13 +72,16 @@ class DeltaNotificationMiddleware(Middleware):
     ) -> Any:
         result = await call_next(context)
 
-        session_key = _session_key(context)
-        tool_name = context.message.name
-
         # デルタ通知は「あったら便利」な後付け機構であり、本来のツール呼び出しは
-        # 既に成功している。ここでの例外（DB busy、想定外のレスポンス形状変化等）が
-        # 全ツール呼び出しを道連れにしないよう、ベストエフォートで握りつぶす。
+        # 既に成功している。識別子解決を含め、ここでの例外（DB busy、想定外の
+        # レスポンス形状変化等）が全ツール呼び出しを道連れにしないよう、
+        # ベストエフォートで握りつぶす。
         try:
+            session_key = get_caller_session_id()
+            if session_key is None:
+                return result
+            tool_name = context.message.name
+
             if tool_name in _CHECK_IN_TOOL_NAMES:
                 _handle_check_in(session_key, result)
             elif tool_name in _CHECK_IN_NESTED_KEY_TOOL_NAMES:
@@ -89,14 +96,6 @@ class DeltaNotificationMiddleware(Middleware):
         return result
 
 
-def _session_key(context: MiddlewareContext) -> str:
-    try:
-        session_id = context.fastmcp_context.session_id if context.fastmcp_context else None
-    except Exception:
-        session_id = None
-    return session_id or "__default__"
-
-
 def _handle_check_in(session_key: str, result: Any, nested_key: str | None = None) -> None:
     """check_in結果からscope（topic_ids/activity_id）を読み取り、baselineで初期化する。
 
@@ -104,9 +103,11 @@ def _handle_check_in(session_key: str, result: Any, nested_key: str | None = Non
     structured_content[nested_key]をcheck_in結果として扱う（add_activity(check_in=True)
     がcheck_in結果をresult["check_in_result"]にネストして返すため）。
 
-    activityのid_rawが取れない場合（error応答・nested_keyの値が辞書でない＝
-    add_activity(check_in=False)相当等）は何もしない（直前のwatermarkがあれば
-    そのまま残す）。
+    scopeの読み方自体はcheckin_service.checkin_scopeに一本化している。check_in応答の
+    形が変わってもこのmiddlewareは直接キーを読まないため、スコープの読み方を変える
+    PRと形を変えるPRが必ず同じになる。checkin_scopeがNoneを返す場合（error応答・
+    nested_keyの値が辞書でない＝add_activity(check_in=False)相当等）は何もしない
+    （直前のwatermarkがあればそのまま残す）。
     """
     structured = getattr(result, "structured_content", None)
     if not structured:
@@ -115,17 +116,10 @@ def _handle_check_in(session_key: str, result: Any, nested_key: str | None = Non
         structured = structured.get(nested_key)
         if not isinstance(structured, dict):
             return
-    activity = structured.get("activity")
-    if not isinstance(activity, dict):
+    scope = checkin_scope(structured)
+    if scope is None:
         return
-    activity_id = activity.get("id_raw")
-    if activity_id is None:
-        return
-
-    topic_ids = [
-        t["id_raw"] for t in structured.get("related_topics", []) or []
-        if isinstance(t, dict) and "id_raw" in t
-    ]
+    activity_id, topic_ids = scope
 
     # delta_service.get_baselineは純relationalクエリでベクトル検索を使わないため、
     # sqlite-vecネイティブ拡張のロードをスキップしてオープンコストを削減する。

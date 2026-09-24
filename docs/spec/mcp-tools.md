@@ -2,8 +2,8 @@
 watch-tags: domain:calm, domain:cc-memory
 watch-direction: true
 watch-migrations: false
-last-synced: 2026-09-10
-last-synced-migration: 0048
+last-synced: 2026-09-23
+last-synced-migration: 0077
 -->
 
 # CALM MCPツール仕様書 v0
@@ -22,7 +22,7 @@ last-synced-migration: 0048
 
 ## 1. ツール一覧
 
-全56ツール。カテゴリ別に一覧する。
+全59ツール。カテゴリ別に一覧する。
 
 ### 1.1 記録系（add系）
 
@@ -149,6 +149,16 @@ activityが目指す終わりを、真偽の付く条件の集合として表現
 | `judge_goal` | goalの終了を明示的に判定して閉じる。紐づく未完了のactivityも同時に閉じる |
 | `get_goal` | 1つのgoalの全条件（充足済み含む）とid、紐づくactivityを読む（読み取り専用） |
 
+### 1.14 feedback系（躓きの知見を自分に配達する機構）
+
+Claudeが同じところで躓き続けるのを防ぐため、Claude自身が知見（フィードバックエントリ）を書き残し、発話・ツール失敗・ツール実行直前の3タイミングでhookが自分に配達する機構。CALMのDB内のエントリであり、ユーザーが設定するsettings/rules/habitsとは別の層（Claudeが自由に付け消し変更してよい）。
+
+| ツール | 概要 |
+| --- | --- |
+| `get_feedback_entries` | フィードバックエントリを引く。各エントリにnotes全件とread_mark（変更前に要求される印）を添える |
+| `write_feedback_entry` | フィードバックエントリを作る・直す・消す（create/update/delete）。update・delete・削除済み名前への復活はread_mark必須 |
+| `add_feedback_note` | フィードバックエントリに観測・経緯のノートを足す。read_mark不要、削除済みエントリにも足せる |
+
 ---
 
 ## 2. 各ツール詳細
@@ -190,11 +200,10 @@ activityが目指す終わりを、真偽の付く条件の集合として表現
 - `tags`: 省略時はtopicのタグを継承。内容を表すタグを積極的に追加することが望ましい。namespace規約はdocs/architecture/invariants.mdの「タグnamespace」節を参照。
 - `propagate_to`: `{type: "habit" | "tag_note", content: string, tag?: string}`。tagはtype="tag_note"のとき必須。type="tag_note"は教訓・注意点のみに使い、仕様・手順の全文転記には使わない。
 
-**返り値**: `{created: [...], errors: [...], propagation_failed?: [...], hints?: [string]}`。
+**返り値**: `{created: [...], errors: [...], propagation_failed?: [...]}`。
 - `created`の各要素には`related_decisions`（同topic内の類似decision上位3件、各`{id, title, distance}`。embeddingサーバー未起動時は空配列）が付く。既存decisionとの矛盾・重複に気づくための導線。
 - タグに`layer:direction`を含む要素には`existing_direction_decisions`（同domainの有効な方向性decision全件、自身除外・非ランク）と`direction_note`（supersede/併存の判断を促す文言）も付く。
 - `reason`に定型節があれば`precedent`（`{rejected_alternatives: 件数, scope: bool, verification_anchors: [文字列, ...], adjacent_check: [文字列, ...], warnings?: [文字列, ...]}`）をecho。書式ゆれ・空節・アンカー日付欠落等、または`intent:design`タグ付き要素で「隣接確認:」節が無い場合は`precedent_warnings`（文字列のリスト）も付く。いずれもsoft validationであり、decision作成自体は拒否しない。
-- `hints`はharness_serviceからの推奨行動。
 
 **propagation_failed**: propagate_toの伝搬が1件以上失敗した場合のみ付く配列。各要素は `{index, decision_id, type, tag?, message}`。decision自体の作成成否には影響しない（decisionは常に成功として作成される）ため、この配列を見ないと伝搬失敗（例: tag_note伝搬先タグの文字数上限超過）に気づけない。
 **関連**: `add_habit` / `update_tag(notes=...)` と連動。
@@ -382,7 +391,6 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 | title | string | no | null | 新しいタイトル |
 | description | string | no | null | 新しい説明 |
 | tags | list[string] | no | null | 全置換。1個以上 |
-| orch_managed | bool | no | null | orchが管理するアクティビティかを切り替える。nullなら変更しない |
 | closed_by | string | no | null | activityを閉じた意思の主体（`"user"`\|`"claude"`\|`"external"`）。status="completed"と同時のときだけ受け付ける |
 | closed_reason | string | no | null | 閉じた理由（自由文）。status="completed"と同時のときだけ受け付ける |
 
@@ -407,20 +415,22 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
 | material_id | int | yes | - | 対象ID |
-| content | string | no | null | 全体置換 |
+| content | string | no | null | mode次第で全体置換/先頭追記/末尾追記 |
 | title | string | no | null | 新しいタイトル |
 | tags | list[string] | no | null | 全置換 |
 | source | string | no | null | 新しい出自 |
+| mode | string | no | "overwrite" | `overwrite`/`prepend`/`append`。contentの結合動作。`overwrite`=上書き（既定）、`prepend`=新content+区切り+既存content、`append`=既存content+区切り+新content。区切りは`\n\n`。既存contentが空文字列ならoverwrite相当。contentを指定しない場合（None）はmodeは無視される |
 
-**制約**: 最低1つは指定する。contentは部分更新やappendではなく全体置換。
+**制約**: content/title/tags/sourceの少なくとも1つは指定する。
 
 ### 2.16 get_material
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
 | material_id | int | yes | - | 資材のID |
+| include_retracted | bool | no | false | trueで取り消し済みの資材も取得できる |
 
-**返り値**: 資材の全文。
+**返り値**: 資材の全文（material_id, title, content, source, tags, created_at, retracted_at?）。`retracted_at`は`include_retracted=true`で取り消し済みの資材を取得した場合のみ付く。flavor共通引数（後述）に対応する。
 
 ### 2.17 export_material
 
@@ -441,7 +451,7 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 **返り値**: `{coverage, activity, goal, related_topics, related_activities, pinned, tag_notes, materials, recent_decisions, latest_log, logs, catalog, summary, session}`。セッション内でcheck_inを初めて呼んだときのみ`flow_guide`（コンテキスト取得の手がかり）も含まれる。
 
 `goal`は`activity`の直後にあり、そのactivityのgoal機構上の現在状態と次の一手を1件返す（goal機構自体は2.50〜2.53参照）。未定義（`label="undefined"`）・不要印（`label="not_needed"`）・goal付き（`label="active"|"judge_ready"|"closed"`）のいずれかで、goal付きなら`next`（今やるべきこと1件）を含む。組み立てで例外が出ても他のキーは失われず、`goal`キーに`{"error": {"code": "DATABASE_ERROR", ...}}`が入る。flavor指定時はremaining/terminal内の束縛先表示とopen_questionsのtitleだけが展開され、goalの文（statement・条件文・note等）は展開されない。
-このactivityを`add_ask`のblocksでblockしているaskが1件以上あるときのみ`asks: {awaiting_answer, awaiting_triage}`が追加される（無ければキー自体が無い）。`awaiting_answer`はstatus='open'のask一覧（各`{id_raw, question, last_seen_at}`）、`awaiting_triage`はstatus='answered'かつ未トリアージのask一覧（各`{id_raw, question, answer_body, last_seen_at}`）。activities.statusがcompleted以外のときのみ配達され、promoted/dismissed/withdrawn済みのaskは配達されない。`awaiting_triage`が1件以上あるときは`hints`にも「answered状態のaskが未トリアージです。triage_askでpromote/dismissへ振り分けてください。」という文言が1件追加される。この`asks`関連のhintsは、recompose系hintと異なりorch-managed activityでもsuppressされない（答え待ちである事実はhintではなく状態情報として扱うため）。activityが紐づくdomain:タグのnotesが推奨文字数の上限を超えている場合、`hints`に整理を促す文言（`notes_over_budget`）も1件追加される。他のimmediate hintと異なり恒久抑制マーカーは効かず、超過が解消するまで発火し続ける（`demote_tag_notes`でnotesを資材へ退避して縮めることを想定した設計）。
+このactivityを`add_ask`のblocksでblockしているaskが1件以上あるときのみ`asks: {awaiting_answer, awaiting_triage}`が追加される（無ければキー自体が無い）。`awaiting_answer`はstatus='open'のask一覧（各`{id_raw, question, last_seen_at}`）、`awaiting_triage`はstatus='answered'かつ未トリアージのask一覧（各`{id_raw, question, answer_body, last_seen_at}`）。activities.statusがcompleted以外のときのみ配達され、promoted/dismissed/withdrawn済みのaskは配達されない。`awaiting_triage`が1件以上あるときは`hints`にも「answered状態のaskが未トリアージです。triage_askでpromote/dismissへ振り分けてください。」という文言が1件追加される。この`asks`関連のhintsは、答え待ちである事実をhintではなく状態情報として扱う。activityが紐づくdomain:タグのnotesが推奨文字数の上限を超えている場合、`hints`に整理を促す文言（`notes_over_budget`）も1件追加される。他のimmediate hintと異なり恒久抑制マーカーは効かず、超過が解消するまで発火し続ける（`demote_tag_notes`でnotesを資材へ退避して縮めることを想定した設計）。
 `session`は呼び出し元のClaude Code CLIプロセスを解決できた場合`{"name": str, "alias": str, "alias_collision": bool}`、解決できない場合（非CLIクライアント、launcher登録が間に合っていない起動直後等）は`{"registered": false, "reason": "cli_unresolved"}`。このセッション別名レジストリ更新はベストエフォートであり、失敗してもcheck_in本体は成功応答を返す。`alias_collision`がtrueのときは`hints`にも衝突を知らせる文言が追加される。詳細は2.42bを参照。
 **副作用**: statusがin_progress以外なら自動的にin_progressに更新。
 **呼び出し基準**: 既存アクティビティに関連する作業を始めるとき。summaryフィールドはそのまま出力することが推奨される。
@@ -566,7 +576,7 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 
 ### 2.25 get_config
 
-引数なし。返り値: `{heartbeat_timeout, in_progress_limit, pending_limit, recency_decay_rate, sync_disable_retrospective, sync_policy, snapshot_interval_hours, snapshot_max_count, snapshot_anomaly_threshold, precedent_budget_chars, budget_defaults, read_tool_limits}`。スキルが環境変数ベースの設定を参照するときに使う。`budget_defaults` は `budget_service` が把握する予算関連の既定値一覧（`precedent_budget_chars` / `recency_decay_rate` / `recency_decay_floor` / `precedent_response_chars_max`。いずれもsrc.config由来）。
+引数なし。返り値: `{heartbeat_timeout, in_progress_limit, pending_limit, recency_decay_rate, sync_disable_retrospective, snapshot_interval_hours, snapshot_max_count, snapshot_anomaly_threshold, precedent_budget_chars, budget_defaults, read_tool_limits}`。スキルが環境変数ベースの設定を参照するときに使う。`budget_defaults` は `budget_service` が把握する予算関連の既定値一覧（`precedent_budget_chars` / `recency_decay_rate` / `recency_decay_floor` / `recency_decay_floor_decision_live` / `precedent_response_chars_max`。いずれもsrc.config由来）。
 
 ### 2.26 roll_dice
 
@@ -807,6 +817,46 @@ Claude Codeセッション間の「CLI表示名（例: `workspace-a2`）→人�
 **エラー**: `VALIDATION_ERROR`（3引数のちょうど1つを指定していない）、`NOT_FOUND`（指したものが無い）、`DATABASE_ERROR`。
 **動作**: 読み取り専用（check_inと違いactivityのstatusを変えない）。`conditions`は充足済みを含む全件を返す点がcheck_inのgoalブロックと異なる。
 
+### 2.54 get_feedback_entries
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| name | string | no | null | 完全一致で1件に絞る |
+| query | string | no | null | body/refへの部分一致検索 |
+| include_deleted | bool | no | false | trueで削除済み（`deleted_at IS NOT NULL`）も含める |
+
+**返り値**: `{ok: true, entries: [{id, name, body, ref, strength, timing, condition, delivered_count, overridden_count, deleted_at, created_at, updated_at, notes: [{kind, body, created_at}, ...], read_mark: int}, ...]}`。
+**動作**: 読み取り専用。`read_mark`は`MAX(feedback_notes.id)`（ノートが無ければ0）。write_feedback_entryのupdate/delete、削除済み名前へのcreate（復活）はここで取得したread_markを要求する。
+
+### 2.55 write_feedback_entry
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| name | string | yes | - | 英小文字・数字・ハイフンのみ |
+| action | string | yes | - | `create` \| `update` \| `delete` |
+| body | string | create/updateで実質必須 | null | エントリ本文（100字以内） |
+| ref | string | no | null | 参照（500字以内） |
+| strength | string | create/updateで実質必須 | null | `notify`（知らせる） \| `block`（止める。timing='pre_tool'必須） |
+| timing | string | create/updateで実質必須 | null | `utterance`（発話時） \| `tool_fail`（ツール失敗時） \| `pre_tool`（実行直前） |
+| condition | dict \| string | no | null | `{"tool": str\|null, "all": [{"field","op":"regex"\|"len_gt","value"}, ...]}`（all は0〜3要素。dictまたはJSON文字列） |
+| read_mark | int | update/delete/復活で必須 | null | get_feedback_entriesで取得した最新値 |
+
+**返り値**: 成功時 `{ok: true, entry: {...}}`（get_feedback_entriesの1件と同形）。
+**エラー**: `{ok: false, error: {code, message, fix}}`。codeは`VALIDATION_ERROR`（形式違反、strength/timingの不整合、条件JSON不正、block+tool=null+all=[]等）、`NOT_FOUND`（update/deleteの対象が未作成または削除済み）、`CONFLICT`（read_markが古い）、`DUPLICATE`（createで既に使われている名前）、`DATABASE_ERROR`。
+**動作**: create/updateはbody/strength/timing/conditionを全て渡す全置き換え（部分更新ではない）。削除済み名前へのcreateは復活として扱い、read_markを要求する（骨格「変更前に必ずノートが読まれる」を仕組みで保証するため）。復活時はdeleted_atをクリアして新しい内容で上書きし、notes・delivered_count・overridden_countは引き継ぐ。deleteは`deleted_at`をセットするのみ（物理削除しない、notesは残す）。書き込みはBEGIN IMMEDIATEの1トランザクション。
+
+### 2.56 add_feedback_note
+
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| name | string | yes | - | 対象エントリの名前 |
+| kind | string | yes | - | `stumble`（踏んだ・躓いた事実） \| `note`（それ以外の経緯） |
+| body | string | yes | - | ノート本文（500字以内） |
+
+**返り値**: 成功時 `{ok: true, note: {kind, body, created_at}, read_mark: int}`。
+**エラー**: `{ok: false, error: {code, message, fix}}`。codeは`VALIDATION_ERROR`（kind不正・body空/超過）、`NOT_FOUND`（nameのエントリが存在しない）、`DATABASE_ERROR`。
+**動作**: read_mark引数は取らない（いつでも書ける）。削除済みエントリにも足せる（観測記録は削除後も続けられる）。`feedback_notes`は追記専用（UPDATE/DELETEはDBトリガーで拒否）。
+
 ---
 
 ## 3. 共通エンティティ型
@@ -857,8 +907,8 @@ CALMが扱うエンティティの内部表現。詳細スキーマは `docs/spe
 
 ### 3.7 Relation
 - `source_type, source_id, target_type, target_id, relation_type`
-- relation_type: `related | depends_on | supersedes`
-- `depends_on` はactivity同士、`supersedes` はdecision同士に限定
+- relation_type: `related | depends_on | supersedes | destabilizes | belongs_to`
+- `depends_on` はactivity同士、`supersedes` / `destabilizes` はdecision同士に限定
 
 ### 3.8 Tag
 - 文字列としては `namespace:name` または素タグ
@@ -871,7 +921,7 @@ CALMが扱うエンティティの内部表現。詳細スキーマは `docs/spe
 ## 4. ガード・前提
 
 ### 4.1 check-in 先行が前提のツール
-- `add_decisions` の hints はharness_service経由で「整合性確認」「pin見直し」などを示唆する。直前にcheck-inしていない場合、文脈不足のためhintsを過信しない方がよい。
+- `check_in` の hints は `hint_service` 経由で生成される（recompose_bootstrap/recompose_delta/logs_sparse/direction_overflow/activity_cleanup/notes_over_budget等、詳細は`docs/architecture/components.md`の該当節を参照）。`check_in` を経由せず `update_activity` 等を直接呼ぶ運用では、これらのhintsによる示唆（整理・確認の推奨）を受け取れない。
 - `check_in` を経由しないアクティビティへの操作（`update_activity` 等）は可能だが、その場合 tag_notes の自動注入は行われない。habitsのうち`trigger_mode='always'`のものは`~/.claude/rules`配下の自動生成ファイル経由でセッション起動時に配信されるため、check_inの有無に関係なく反映される（`'intelligently'`はタイトルのみのマニフェスト表示にとどまる）。
 
 ### 4.2 取り消し済みエンティティの扱い

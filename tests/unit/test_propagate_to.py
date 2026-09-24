@@ -7,6 +7,7 @@ from src.db import get_connection
 from src.services.topic_service import add_topic
 from src.services.decision_service import add_decisions
 import src.services.embedding_service as emb
+from tests.helpers import assert_no_write_errors
 
 
 DEFAULT_TAGS = ["domain:test"]
@@ -45,7 +46,7 @@ class TestPropagateToHabit:
             },
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         assert len(result["created"]) == 1
         assert len(result["errors"]) == 0
 
@@ -102,7 +103,7 @@ class TestPropagateToTagNote:
             },
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         assert len(result["created"]) == 1
 
         created = result["created"][0]
@@ -150,7 +151,7 @@ class TestPropagateToTagNote:
             },
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         created = result["created"][0]
         assert created["propagation"]["status"] == "ok"
 
@@ -186,7 +187,7 @@ class TestPropagateToErrors:
             },
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         assert len(result["created"]) == 1
         assert len(result["errors"]) == 0
 
@@ -223,7 +224,7 @@ class TestPropagateToErrors:
             },
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         assert len(result["created"]) == 1
 
         created = result["created"][0]
@@ -257,7 +258,7 @@ class TestPropagateToErrors:
             },
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         assert len(result["created"]) == 1
 
         created = result["created"][0]
@@ -291,7 +292,7 @@ class TestPropagateToErrors:
             },
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         assert len(result["created"]) == 1
 
         created = result["created"][0]
@@ -343,7 +344,7 @@ class TestPropagationFailedTopLevel:
             },
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         assert len(result["created"]) == 1
         assert len(result["errors"]) == 0
 
@@ -394,7 +395,7 @@ class TestPropagationFailedTopLevel:
             },
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         assert result["created"][0]["propagation"]["status"] == "ok"
         assert "propagation_failed" not in result
 
@@ -413,7 +414,7 @@ class TestPropagateToAbsent:
             },
         ])
 
-        assert "error" not in result
+        assert_no_write_errors(result)
         assert len(result["created"]) == 1
 
         created = result["created"][0]

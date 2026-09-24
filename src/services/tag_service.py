@@ -1233,13 +1233,16 @@ def collect_tag_notes_for_injection(
     Args:
         conn: DB接続
         tag_strings: タグ文字列リスト（例: ["domain:calm", "intent:design"]）
-        session_id: MCPセッションID。セッション別に注入済みを管理する
+        session_id: 呼び出し元の恒久識別子（get_caller_session_id()の解決結果）。
+            セッション別に注入済みを管理する。Noneの場合は_injected_tagsを読み書き
+            せず（mark=False相当）、毎回notesを全文返す。共有キーへの相乗りはしない
         always_inject_namespaces: 常時注入するnamespaceのリスト（例: ["intent"]）。
             このnamespaceに属するタグは _injected_tags チェックをスキップし、
             毎回 notes を返す。_injected_tags には登録しない。
-        mark: True（デフォルト）の場合、_injected_tags のチェックと更新を行う。
+        mark: True（デフォルト）の場合、_injected_tags のチェックと更新を行う
+            （ただしsession_idがNoneならmark指定に関わらずFalse相当になる）。
             False の場合、_injected_tags を参照も更新もしない（読み取り経路用）。
-            last_injected_at の更新（decay述語のトラッキング）も mark と連動する。
+            last_injected_at の更新（decay述語のトラッキング）も連動する。
 
     Returns:
         notes があるタグの一覧。なければ None
@@ -1252,7 +1255,9 @@ def collect_tag_notes_for_injection(
         always_inject_namespaces対象のタグは常時全文注入という既存契約が優先されるため、
         decay判定の対象から除外される（ポインタ文言に縮退しない）。
     """
-    session_key = session_id or "__default__"
+    # session_idが解決できない呼び出し（mainのMCPリクエストコンテキスト外）は
+    # _injected_tagsを読み書きしない（mark=False相当）。共有キーへの相乗りはしない。
+    effective_mark = mark and session_id is not None
     always_ns = set(always_inject_namespaces) if always_inject_namespaces else set()
 
     # always_inject対象とそれ以外を分離（パース結果も保持）
@@ -1267,19 +1272,20 @@ def collect_tag_notes_for_injection(
             normal_tags.append(t)
             normal_parsed.append((ns, name))
 
-    if mark:
+    if effective_mark:
         with _injected_tags_lock:
-            if session_key not in _injected_tags:
+            if session_id not in _injected_tags:
                 while len(_injected_tags) >= _INJECTED_TAGS_MAX_SESSIONS:
                     del _injected_tags[next(iter(_injected_tags))]
-            session_set = _injected_tags.setdefault(session_key, set())
+            session_set = _injected_tags.setdefault(session_id, set())
             new_normal = [
                 (t, p) for t, p in zip(normal_tags, normal_parsed)
                 if t not in session_set
             ]
             session_set.update(t for t, _ in new_normal)
     else:
-        # mark=False: 全タグをクエリ対象にし、_injected_tags は更新しない
+        # mark=False（またはsession_id未解決）: 全タグをクエリ対象にし、
+        # _injected_tags は更新しない
         new_normal = list(zip(normal_tags, normal_parsed))
 
     # クエリ対象: new_normal + always（always_tagsは毎回クエリ）
@@ -1311,11 +1317,11 @@ def collect_tag_notes_for_injection(
         results.append({"tag": tag_str, "notes": row["notes"]})
         fresh_ids.append(row["id"])
 
-    if mark and fresh_ids:
+    if effective_mark and fresh_ids:
         # 中間commit: resolve_tags（同ファイル内、force_new_tags/新規作成分岐）と同じ理由
         # （呼び出し元の共有connに対する後続処理への影響回避）で、ここで先にcommitする。
-        # mark=Falseの読み取り専用経路ではlast_injected_atも更新しない
-        # （mark引数が副作用全般を制御する既存契約に合わせる）。
+        # mark=False（またはsession_id未解決）の読み取り専用経路ではlast_injected_atも
+        # 更新しない（mark引数が副作用全般を制御する既存契約に合わせる）。
         placeholders_ids = ",".join("?" * len(fresh_ids))
         conn.execute(
             f"UPDATE tags SET last_injected_at = CURRENT_TIMESTAMP WHERE id IN ({placeholders_ids})",

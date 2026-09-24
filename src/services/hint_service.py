@@ -36,7 +36,6 @@ hintの種別と発火条件は仕様確定decisionに従う。
   （手動設定の長期抑制を優先する）。書き込みは_apply_cooldown_markerに集約する
 - direction_overflow / notes_over_budgetはこの日次クールダウンの対象外
   （手動マーカーのみで抑制する）
-- orch-managed activityでの全suppressは呼出側責務 (本moduleは判定しない)
 
 severity値域: info | warn のみ (block不採用)
 
@@ -274,7 +273,7 @@ def _notes_over_budget_message(tag_name: str, length: int) -> str:
 def _direction_overflow_message(tag_name: str, count: int) -> str:
     return (
         f"tag「{tag_name}」の有効な方向性decision（layer:direction）が{count}件"
-        f"あります。少数原則の維持のため、統合・supersede整理をユーザーに提案してください。"
+        f"あります。方向性decisionは少数に保つ運用のため、統合・supersede整理をユーザーに提案してください。"
         f"今は都合が悪い場合、tag notesに"
         f"「{MARKER_DIRECTION_OVERFLOW}-until:YYYY-MM-DD」（任意の未来日）を"
         f"追記すると、その日まで一時的に黙らせられます。恒久的に不要なら日付なしの"
@@ -297,26 +296,9 @@ def _activity_cleanup_message(count: int) -> str:
 # --- 公開API ---
 
 
-def is_orch_managed_activity(conn: sqlite3.Connection, activity_id: int) -> bool:
-    """activityがorch管理かを判定する。
-
-    activities.orch_managed カラムを参照する。
-    orch-managed activityでは全hint suppressとする呼出側ガードに使う。
-    存在しない activity_id は False を返す（フェイルオープン）。
-    """
-    row = conn.execute(
-        "SELECT orch_managed FROM activities WHERE id = ?",
-        (activity_id,),
-    ).fetchone()
-    if row is None:
-        return False
-    return bool(row["orch_managed"])
-
-
 def get_hints(scope: Scope, target_id: int) -> list[Hint]:
     """指定scope/target_idに該当するhintを返す。
 
-    呼出側はorch-managed等のsuppress判定を別途行うこと。本moduleはDB状態のみで判定する。
     本関数は自前のconnを所有するため、クールダウンマーカー書き込みのcommitは
     ここで行う（conn共有版のget_hints_with_connはcommitしない）。
     """
@@ -583,9 +565,7 @@ def _count_stale_activities(conn: sqlite3.Connection) -> int:
     MAX(updated_at, COALESCE(last_heartbeat_at, '')) が
     ACTIVITY_CLEANUP_STALE_DAYS日を超えて更新されていない件数を返す。
 
-    completedのactivityは母集団から除外する。orch_managedカラムは旧ow運用
-    体系の名残であり、本判定の母集団フィルタには使わない(orch_managed=1の
-    activityも他と同様に母集団に含める)。
+    completedのactivityは母集団から除外する。
     last_heartbeat_atがNULLの行はCOALESCEで''に正規化する。これを外すと
     MAX()の結果がNULLになり、当該行が誤ってカウントから漏れる。
     """

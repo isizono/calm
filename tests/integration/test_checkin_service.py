@@ -19,7 +19,7 @@ from src.services.hint_service import (
     RECOMPOSE_DELTA_THRESHOLD as _RECOMPOSE_HINT_DELTA_THRESHOLD,
 )
 from src.services import goal_service as gs
-from src.services import session_registry_service
+from src.services import session_ledger_service, session_registry_service
 from src.infra import session_identity
 
 
@@ -222,12 +222,16 @@ class TestCheckInFlowGuide:
         assert "error" not in result
         assert "flow_guide" in result
 
-    def test_flow_guide_present_on_first_call_without_session_id(self, activity_id):
-        """session_id未指定（既定キー扱い）でも初回はflow_guideが含まれる"""
-        result = check_in(activity_id)
+    def test_flow_guide_present_every_call_without_session_id(self, activity_id):
+        """session_id未解決（None）では記録を読み書きしないため、
+        何度呼んでも毎回flow_guideが含まれる（旧「__default__」共有キーは廃止）。"""
+        result1 = check_in(activity_id)
+        result2 = check_in(activity_id)
 
-        assert "error" not in result
-        assert "flow_guide" in result
+        assert "error" not in result1
+        assert "flow_guide" in result1
+        assert "error" not in result2
+        assert "flow_guide" in result2
 
 
 class TestCheckInTagNotes:
@@ -299,7 +303,7 @@ class TestCheckInTagNotes:
         assert len(intent_notes2) == 1
 
     def test_non_intent_tag_notes_injected_once(self, temp_db):
-        """intent:以外のタグのnotesはセッション初回のみ注入される"""
+        """intent:以外のタグのnotesは同一session_idでの初回のみ注入される"""
         conn = get_connection()
         try:
             conn.execute(
@@ -319,16 +323,42 @@ class TestCheckInTagNotes:
         aid = activity["activity_id"]
 
         # 1回目: 注入される
-        result1 = check_in(aid)
+        result1 = check_in(aid, session_id="sess-1")
         assert "error" not in result1
         domain_notes1 = [n for n in result1["tag_notes"] if n["tag"] == "domain:once"]
         assert len(domain_notes1) == 1
 
-        # 2回目: domain: は通常タグなので注入されない
-        result2 = check_in(aid)
+        # 2回目（同じsession_id）: domain: は通常タグなので注入されない
+        result2 = check_in(aid, session_id="sess-1")
         assert "error" not in result2
         domain_notes2 = [n for n in result2["tag_notes"] if n["tag"] == "domain:once"]
         assert len(domain_notes2) == 0
+
+    def test_no_session_id_never_dedups_tag_notes(self, temp_db):
+        """session_id未解決（None）ではcheck_inのたび毎回notesが注入される
+        （旧「__default__」共有キーは廃止。識別子が無いときは記録しない）。"""
+        conn = get_connection()
+        try:
+            conn.execute(
+                "INSERT INTO tags (namespace, name, notes) VALUES (?, ?, ?)",
+                ("domain", "unresolved", "識別子不明時の教訓"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        activity = add_activity(
+            title="Unresolved session task",
+            description="Desc",
+            tags=["domain:unresolved"],
+            check_in=False,
+        )
+        aid = activity["activity_id"]
+
+        result1 = check_in(aid, session_id=None)
+        result2 = check_in(aid, session_id=None)
+        assert [n for n in result1["tag_notes"] if n["tag"] == "domain:unresolved"]
+        assert [n for n in result2["tag_notes"] if n["tag"] == "domain:unresolved"]
 
 
 
@@ -1563,6 +1593,52 @@ class TestCheckInSessionRegistry:
         assert len(registered) == 1
         assert registered[0]["activity_title"] == "[作業] 新規タスク"
         assert registered[0]["is_self"] is True
+
+
+class TestCheckInSessionLedger:
+    """check_inからsession_ledger_service.record_checkinへの配線の統合テスト。"""
+
+    def _fetch_session(self, session_id: str):
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT * FROM sessions WHERE session_id = ?", (session_id,)
+            ).fetchone()
+            return dict(row) if row is not None else None
+        finally:
+            conn.close()
+
+    def test_records_last_checkin_on_existing_ledger_row(self, activity_id, monkeypatch):
+        session_ledger_service.register(
+            "bridge-1", id_kind="bridge", harness=None, host="h", mode="interactive",
+        )
+        monkeypatch.setattr(session_identity, "get_caller_session_id", lambda: "bridge-1")
+
+        result = check_in(activity_id)
+
+        assert "error" not in result
+        row = self._fetch_session("bridge-1")
+        assert row["last_checkin_activity_id"] == activity_id
+        assert row["last_checkin_at"] is not None
+
+    def test_no_bridge_id_does_not_fail_check_in(self, activity_id, monkeypatch):
+        monkeypatch.setattr(session_identity, "get_caller_session_id", lambda: None)
+
+        result = check_in(activity_id)
+
+        assert "error" not in result
+
+    def test_ledger_write_exception_does_not_fail_check_in(self, activity_id, monkeypatch):
+        def boom(session_id, activity_id):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(session_identity, "get_caller_session_id", lambda: "bridge-1")
+        monkeypatch.setattr(session_ledger_service, "record_checkin", boom)
+
+        result = check_in(activity_id)
+
+        assert "error" not in result
+        assert "summary" in result
 
 
 class TestCheckInGoalBlock:

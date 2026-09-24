@@ -3,14 +3,31 @@ import logging
 import sqlite3
 import threading
 
+from src.config import (
+    CHECKIN_BUDGET_CHARS,
+    CHECKIN_CONTROL_CAP_CHARS,
+    CHECKIN_HARD_MAX_CHARS,
+    CHECKIN_PINNED_SLOT_CHARS,
+    CHECKIN_TAG_NOTES_CAP_CHARS,
+)
 from src.db import get_connection, row_to_dict
-from src.services import activity_service, ask_service, goal_service, hint_service
+from src.infra import session_identity
+from src.services import (
+    activity_service,
+    ask_service,
+    goal_service,
+    hint_service,
+    response_budget,
+    session_ledger_service,
+)
 from src.services.readable_id import strip_entity_id_inplace
 from src.services.material_service import get_materials_by_relation_with_conn
 from src.services.relation_service import _get_map_with_conn
+from src.services.response_budget import BudgetPolicy, CappedSection, CutStep, PinnedPolicy
 from src.services.signal_service import record_signal
 from src.services.supersede_service import compute_destabilization_info_batch
 from src.services.tag_service import (
+    _decay_pointer_text,
     collect_tag_notes_for_injection,
     get_entity_tags,
 )
@@ -40,15 +57,141 @@ _FLOW_GUIDE_COMPACT = (
 )
 
 
+def _topic_ids(response: dict) -> list[int]:
+    return [
+        t["id_raw"] for t in response.get("related_topics", []) or []
+        if isinstance(t, dict) and "id_raw" in t
+    ]
+
+
+def _first_topic_pointer(tool: str):
+    """related_topicsの各topicごとに、指定toolへのポインタ一覧を組み立てる関数を返す。"""
+    def _pointer(response: dict) -> list[dict]:
+        return [
+            {"tool": tool, "args": {"entity_type": "topic", "entity_id": tid}}
+            for tid in _topic_ids(response)
+        ]
+    return _pointer
+
+
+def _catalog_pointer(response: dict) -> list[dict]:
+    activity = response.get("activity")
+    aid = activity.get("id_raw") if isinstance(activity, dict) else None
+    return [{"tool": "get_map", "args": {"entity_type": "activity", "entity_id": aid}}]
+
+
+def _materials_pointer(response: dict) -> list[dict]:
+    activity = response.get("activity")
+    aid = activity.get("id_raw") if isinstance(activity, dict) else None
+    return [{"tool": "get_timeline", "args": {"activity_id": aid, "entity_types": ["material"]}}]
+
+
+_PINNED_CHILD_SINGULAR = {
+    "decisions": "decision", "logs": "log", "materials": "material",
+    "topics": "topic", "activities": "activity",
+}
+
+
+def _pinned_item_pointer(response: dict, child_key: str, item_id: int | None) -> list[dict]:
+    if child_key == "materials":
+        return [{"tool": "get_material", "args": {"material_id": item_id}}]
+    singular = _PINNED_CHILD_SINGULAR.get(child_key, child_key)
+    return [{"tool": "get_by_ids", "args": {"items": [{"type": singular, "id": item_id}]}}]
+
+
+def _activity_description_pointer(response: dict) -> list[dict]:
+    activity = response.get("activity")
+    aid = activity.get("id_raw") if isinstance(activity, dict) else None
+    return [{"tool": "get_by_ids", "args": {"items": [{"type": "activity", "id": aid}]}}]
+
+
+def _fold_tag_notes(response: dict) -> None:
+    """tag_notesの天井超過分を、大きいnotesから順にdecayと同じ1行ポインタへ縮退させる。"""
+    notes = response.get("tag_notes")
+    if not isinstance(notes, list) or not notes:
+        return
+    sized = sorted(
+        (item for item in notes if isinstance(item, dict)),
+        key=lambda item: response_budget.measure_chars(item.get("notes", "")),
+        reverse=True,
+    )
+    for item in sized:
+        if response_budget.measure_chars(notes) <= CHECKIN_TAG_NOTES_CAP_CHARS:
+            break
+        tag = item.get("tag")
+        if isinstance(tag, str):
+            item["notes"] = _decay_pointer_text(tag)
+
+
+# 今のフラットなcheck_in応答形に対する予算方針。tier構造への書き直し後は、
+# 同じresponse_budget.apply_budgetを新しい方針定数に差し替えて使う（4.7節）。
+FLAT_FORM_BUDGET_POLICY = BudgetPolicy(
+    budget_chars=CHECKIN_BUDGET_CHARS,
+    hard_max_chars=CHECKIN_HARD_MAX_CHARS,
+    protected_paths=frozenset({
+        "coverage", "activity", "topic", "related_topics", "hints", "session",
+        "summary", "flow_guide",
+    }),
+    capped_sections=(
+        CappedSection(
+            name="control", paths=("goal", "asks", "dependencies"),
+            cap_chars=CHECKIN_CONTROL_CAP_CHARS, fold=None,
+        ),
+        CappedSection(
+            name="tag_notes", paths=("tag_notes",),
+            cap_chars=CHECKIN_TAG_NOTES_CAP_CHARS, fold=_fold_tag_notes,
+        ),
+    ),
+    pinned=PinnedPolicy(
+        path="pinned",
+        slot_chars=CHECKIN_PINNED_SLOT_CHARS,
+        content_field={"decisions": "reason", "logs": "content", "materials": "content"},
+        pointer=_pinned_item_pointer,
+    ),
+    cut_steps=(
+        CutStep(path="catalog", mode="tail_list", pointer=_catalog_pointer),
+        CutStep(path="logs", mode="tail_list", pointer=_first_topic_pointer("get_logs")),
+        CutStep(path="materials", mode="tail_list", coverage_key="materials", pointer=_materials_pointer),
+        CutStep(path="related_activities", mode="tail_list"),
+        CutStep(path="recent_decisions", mode="tail_list", coverage_key="decisions", pointer=_first_topic_pointer("get_decisions")),
+        CutStep(path="latest_log", mode="stub_dict", coverage_key="logs", pointer=_first_topic_pointer("get_logs")),
+    ),
+    hard_max_pointer=_activity_description_pointer,
+)
+
+
+def checkin_scope(result: dict) -> tuple[int, list[int]] | None:
+    """check_in応答からscope（activity_id, topic_ids）を読み取る。
+
+    差分通知middlewareはこの関数だけを呼び、check_in応答の形を直接読まない。
+    形を変えるPRとスコープの読み方を変えるPRを必ず同じにするための唯一の窓口。
+    activityのid_rawが取れない場合（error応答等）はNoneを返す。
+    """
+    if not isinstance(result, dict):
+        return None
+    activity = result.get("activity")
+    if not isinstance(activity, dict):
+        return None
+    activity_id = activity.get("id_raw")
+    if activity_id is None:
+        return None
+    return activity_id, _topic_ids(result)
+
+
 def _consume_first_call_flag(session_id: str | None) -> bool:
-    """このセッションでのcheck_in初回呼び出しならTrueを返し、以後はFalseにする。"""
-    session_key = session_id or "__default__"
+    """このセッションでのcheck_in初回呼び出しならTrueを返し、以後はFalseにする。
+
+    session_idが解決できない（None）場合は記録を読み書きせず、毎回Trueを返す
+    （flow_guideを毎回付ける扱い。共有キーへの相乗りはしない）。
+    """
+    if session_id is None:
+        return True
     with _greeted_sessions_lock:
-        if session_key in _greeted_sessions:
+        if session_id in _greeted_sessions:
             return False
         while len(_greeted_sessions) >= _GREETED_SESSIONS_MAX:
             del _greeted_sessions[next(iter(_greeted_sessions))]
-        _greeted_sessions[session_key] = True
+        _greeted_sessions[session_id] = True
         return True
 
 
@@ -437,10 +580,7 @@ def _get_immediate_hints(conn: sqlite3.Connection, activity_id: int) -> list[str
     domain:tagのrecomposeナッジに加え、activity_cleanupのようなグローバル判定の
     hintもHintService側で束ねられて返ってくるため、本関数はそれらを区別せず
     delivery_hint=immediateのものだけをtool responseに乗せる。
-    orch-managed activityでは全hint suppressする。
     """
-    if hint_service.is_orch_managed_activity(conn, activity_id):
-        return []
     hints = hint_service.get_hints_with_conn(conn, "activity", activity_id)
     return [h["message"] for h in hints if h["delivery_hint"] == "immediate"]
 
@@ -521,12 +661,7 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
         {"error": {"code": "DATABASE_ERROR", ...}}になり、check_inの他のキーは失われない
     """
     if session_id is None:
-        try:
-            from fastmcp.server.dependencies import get_context
-            ctx = get_context()
-            session_id = ctx.session_id
-        except (RuntimeError, ImportError):
-            pass
+        session_id = session_identity.get_caller_session_id()
     conn = get_connection()
     try:
         # 1. activity取得
@@ -622,8 +757,7 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
         immediate_hints = _get_immediate_hints(conn, activity_id)
 
         # 9a. このactivityをblockしているaskの配達（answer待ち・triage待ちフェーズ別）。
-        # immediate_hintsと異なりorch-managed activityでもsuppressしない
-        # （askは答え待ちというプロセス情報そのものであり、recompose系の提案とは扱いを分ける）。
+        # askは答え待ちというプロセス情報そのものであり、recompose系の提案とは扱いを分ける。
         pending_asks = _get_pending_asks(conn, activity_id)
 
         # 10. summary生成
@@ -702,11 +836,11 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
         # 11. セッション別名レジストリの更新（並行セッションの現在地表示用）。
         # 呼び出し元がClaude Code CLI経由でないなどCLIが解決できない場合や、
         # 内部で予期せぬ例外が起きた場合もcheck_in本体を失敗させない。
+        bridge_id = None
         try:
-            from src.infra.session_identity import get_caller_session_id
             from src.services import session_registry_service
 
-            bridge_id = get_caller_session_id()
+            bridge_id = session_identity.get_caller_session_id()
             reg = (
                 session_registry_service.register_checkin(
                     bridge_session_id=bridge_id,
@@ -743,6 +877,15 @@ def check_in(activity_id: int, session_id: str | None = None) -> dict:
             result["flow_guide"] = _FLOW_GUIDE_COMPACT
 
         conn.commit()
+
+        # セッション台帳(sessionsテーブル)へのcheck-in記録。connがまだ保持している
+        # かもしれない書き込みトランザクション中に別コネクションで書き込むと
+        # SQLiteのwriterロックで待たされうるため、conn.commit()の後に行う。
+        try:
+            session_ledger_service.record_checkin(bridge_id, activity_id)
+        except Exception:
+            logger.debug("session ledger check-in record failed", exc_info=True)
+
         return result
 
     except Exception as e:

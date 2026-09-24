@@ -7,17 +7,20 @@ import math
 from datetime import datetime, timedelta, timezone
 import pytest
 import numpy as np
+from sqlite_vec import serialize_float32
 
 from src.db import get_connection
 from src.services.search_service import (
     _rrf_merge, _apply_recency_boost, _attach_details, _compute_adaptive_weights,
     find_similar_topics, _expand_query_with_tags,
     RRF_K, RRF_W_FTS, RRF_W_VEC, RRF_W_TAG, RECENCY_DECAY_RATE, RECENCY_DECAY_FLOOR,
+    RECENCY_DECAY_FLOOR_DECISION_LIVE,
     QE_DISTANCE_THRESHOLD, QE_MAX_EXPANSIONS, QE_EXCLUDE_NAMESPACES,
     ADAPTIVE_RRF_ENABLED, ADAPTIVE_RRF_THRESHOLDS,
     DETAILS_MAX_RESULTS, DETAILS_DESCRIPTION_MAX,
 )
 from src.services import search_service
+from src.services.relation_service import add_relation
 from src.services.topic_service import add_topic
 from src.services.activity_service import add_activity
 from tests.helpers import add_log, add_decision
@@ -583,6 +586,109 @@ def test_recency_boost_cross_type(temp_db):
     for r in results:
         assert r["score"] > 0
         assert r["score"] <= base_score
+
+
+def test_recency_boost_non_superseded_decision_uses_higher_floor(temp_db):
+    """recency boost: supersedeされていない古いdecisionはRECENCY_DECAY_FLOOR_DECISION_LIVEを下限にする"""
+    topic = add_topic(title="型別recencyテスト用トピック", description="テスト", tags=DEFAULT_TAGS)
+    d = add_decision(
+        topic_id=topic["topic_id"],
+        decision="現役の古い決定",
+        reason="テスト用",
+    )
+
+    old_date = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    now = datetime(2025, 12, 31, tzinfo=timezone.utc)  # 730日後
+    conn = get_connection()
+    conn.execute(
+        "UPDATE decisions SET created_at = ? WHERE id = ?",
+        (old_date.strftime("%Y-%m-%d %H:%M:%S"), d["decision_id"]),
+    )
+    conn.commit()
+    conn.close()
+
+    results = [{"type": "decision", "id": d["decision_id"], "title": "現役の古い決定", "score": 1.0}]
+    _apply_recency_boost(results, now=now)
+
+    # exp(-730*0.0119) は既定floor(0.15)より小さいので、床にかかった値がそのまま観測できる
+    assert results[0]["score_breakdown"]["recency_factor"] == pytest.approx(RECENCY_DECAY_FLOOR_DECISION_LIVE)
+
+
+def test_recency_boost_superseded_decision_keeps_default_floor(temp_db):
+    """recency boost: supersedeされた古いdecisionは既定のRECENCY_DECAY_FLOORのままになる"""
+    topic = add_topic(title="型別recencyテスト用トピック2", description="テスト", tags=DEFAULT_TAGS)
+    d_old = add_decision(topic_id=topic["topic_id"], decision="置き換えられた古い決定", reason="テスト用")
+    d_new = add_decision(topic_id=topic["topic_id"], decision="置き換えた新しい決定", reason="テスト用")
+    add_relation(
+        "decision", d_new["decision_id"],
+        [{"type": "decision", "ids": [d_old["decision_id"]]}],
+        relation_type="supersedes",
+    )
+
+    old_date = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    now = datetime(2025, 12, 31, tzinfo=timezone.utc)  # 730日後
+    conn = get_connection()
+    conn.execute(
+        "UPDATE decisions SET created_at = ? WHERE id = ?",
+        (old_date.strftime("%Y-%m-%d %H:%M:%S"), d_old["decision_id"]),
+    )
+    conn.commit()
+    conn.close()
+
+    results = [{"type": "decision", "id": d_old["decision_id"], "title": "置き換えられた古い決定", "score": 1.0}]
+    _apply_recency_boost(results, now=now)
+
+    assert results[0]["score_breakdown"]["recency_factor"] == pytest.approx(RECENCY_DECAY_FLOOR)
+
+
+def test_recency_boost_carries_forward_superseded_by(temp_db):
+    """recency boost: floor判定のために引いたsuperseded_byを結果にそのまま付与する（後段の再クエリを避けるための持ち回し）"""
+    topic = add_topic(title="持ち回りテスト用トピック", description="テスト", tags=DEFAULT_TAGS)
+    d_old = add_decision(topic_id=topic["topic_id"], decision="持ち回りテスト旧決定", reason="テスト用")
+    d_new = add_decision(topic_id=topic["topic_id"], decision="持ち回りテスト新決定", reason="テスト用")
+    add_relation(
+        "decision", d_new["decision_id"],
+        [{"type": "decision", "ids": [d_old["decision_id"]]}],
+        relation_type="supersedes",
+    )
+
+    results = [
+        {"type": "decision", "id": d_old["decision_id"], "title": "持ち回りテスト旧決定", "score": 1.0},
+        {"type": "decision", "id": d_new["decision_id"], "title": "持ち回りテスト新決定", "score": 1.0},
+    ]
+    _apply_recency_boost(results)
+
+    old_item = next(r for r in results if r["id"] == d_old["decision_id"])
+    new_item = next(r for r in results if r["id"] == d_new["decision_id"])
+    assert old_item["superseded_by"] == d_new["decision_id"]
+    assert new_item["superseded_by"] is None
+
+
+def test_search_decision_results_issue_single_supersede_query(temp_db, mock_embedding_model, monkeypatch):
+    """search()経由でdecisionが複数件返るとき、get_superseded_by_batchはrerank+decorateを通じて1回だけ呼ばれる（重複クエリ回避）"""
+    topic = add_topic(title="重複クエリ検証用トピック", description="テスト", tags=DEFAULT_TAGS)
+    d_old = add_decision(topic_id=topic["topic_id"], decision="重複クエリ検証旧決定", reason="テスト用")
+    d_new = add_decision(topic_id=topic["topic_id"], decision="重複クエリ検証新決定", reason="テスト用")
+    add_relation(
+        "decision", d_new["decision_id"],
+        [{"type": "decision", "ids": [d_old["decision_id"]]}],
+        relation_type="supersedes",
+    )
+
+    real = search_service.get_superseded_by_batch
+    calls: list[list[int]] = []
+
+    def _spy(conn, decision_ids):
+        calls.append(list(decision_ids))
+        return real(conn, decision_ids)
+
+    monkeypatch.setattr(search_service, "get_superseded_by_batch", _spy)
+
+    result = search_service.search(keyword="重複クエリ検証", entity_type="decision")
+
+    assert "error" not in result
+    assert len(result["results"]) >= 2
+    assert len(calls) == 1
 
 
 # ========================================
@@ -1469,6 +1575,52 @@ def test_qe_respects_distance_threshold(temp_db, mock_embedding_model):
         assert "qe-far" not in result
     finally:
         emb.search_similar_tags = original
+
+
+def test_qe_fires_via_real_tag_vec_cosine_knn(temp_db, mock_embedding_model, monkeypatch):
+    """search_similar_tagsをモックせず、tag_vecへの実embedding投入 + 実KNNでQEが発火する
+    ことを確認する(cosine化前はtag_vecが空/L2スケールのため構造的に発火しなかった経路の
+    統合検証)。
+
+    embeddingはノルム75(実embeddingサーバーの実測ノルム約75.5相当)の非正規化ベクトルで
+    揃える。cosine距離はノルムに依存しないため、query=[75,0,...]に対し
+    qe-cosine-near=[74.25,3.75,0,...](方向がわずかにずれた大ノルム)のcosine距離は
+    約0.0013でQE_DISTANCE_THRESHOLD(0.3)未満、qe-cosine-far=[0,75,0,...](直交)は
+    cosine距離1.0で閾値以上になる。一方、同じベクトル対のL2距離はnearが約3.82・
+    farが約106であり、nearも含めどちらもL2では閾値に届かない
+    (このテストがcosine化に固有の挙動を検証していることの裏付け)。
+    """
+    conn = get_connection()
+    try:
+        conn.execute("INSERT INTO tags (namespace, name) VALUES ('', 'qe-cosine-near')")
+        near_id = conn.execute(
+            "SELECT id FROM tags WHERE namespace = '' AND name = 'qe-cosine-near'"
+        ).fetchone()["id"]
+        conn.execute("INSERT INTO tags (namespace, name) VALUES ('', 'qe-cosine-far')")
+        far_id = conn.execute(
+            "SELECT id FROM tags WHERE namespace = '' AND name = 'qe-cosine-far'"
+        ).fetchone()["id"]
+
+        query_vec = [75.0, 0.0] + [0.0] * (EMBEDDING_DIM - 2)
+        near_vec = [74.25, 3.75] + [0.0] * (EMBEDDING_DIM - 2)
+        far_vec = [0.0, 75.0] + [0.0] * (EMBEDDING_DIM - 2)
+
+        conn.execute(
+            "INSERT INTO tag_vec(rowid, embedding) VALUES (?, ?)", (near_id, serialize_float32(near_vec))
+        )
+        conn.execute(
+            "INSERT INTO tag_vec(rowid, embedding) VALUES (?, ?)", (far_id, serialize_float32(far_vec))
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(emb, "encode_query", lambda text: query_vec)
+
+    result = _expand_query_with_tags(["some-keyword"])
+
+    assert "qe-cosine-near" in result
+    assert "qe-cosine-far" not in result
 
 
 def test_qe_max_expansions_limit(temp_db, mock_embedding_model):

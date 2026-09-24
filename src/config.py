@@ -31,6 +31,9 @@ PIN_SURFACE_DECAY_DAYS: int = int(env_get("CALM_PIN_SURFACE_DECAY_DAYS", "60"))
 RECENCY_DECAY_RATE: float = float(env_get("CALM_RECENCY_DECAY_RATE", "0.0119"))
 # Recency boost の下限。約160日以降はこの値で一定になる
 RECENCY_DECAY_FLOOR: float = float(env_get("CALM_RECENCY_DECAY_FLOOR", "0.15"))
+# supersedeされていないdecision（現役の判例）専用のrecency boost下限。
+# 既定floorより高く設定し、古い基盤決定が一律減衰で検索順位から埋没するのを緩和する
+RECENCY_DECAY_FLOOR_DECISION_LIVE: float = float(env_get("CALM_RECENCY_DECAY_FLOOR_DECISION_LIVE", "0.7"))
 
 # --- Snapshot ---
 SNAPSHOT_INTERVAL_HOURS: int = int(env_get("CALM_SNAPSHOT_INTERVAL", "12"))
@@ -42,7 +45,6 @@ SYNC_DISABLE_RETROSPECTIVE: bool = env_get("CALM_SYNC_DISABLE_RETROSPECTIVE", "f
     "true",
     "1",
 )
-SYNC_POLICY: str | None = env_get("CALM_SYNC_POLICY") or None  # 空文字→None正規化
 
 # --- Habits ---
 # always層（常時注入枠）の定員（文字数）。update_habitでtrigger_mode='always'に
@@ -70,7 +72,7 @@ PROJECTION_MANIFEST_MAX_ITEMS: int = int(
 
 # --- Direction Layer ---
 # domainごとのactiveな方向性decision(layer:direction)件数がこの値以上になったら
-# direction_overflow hintを発火する（少数原則の維持を促す）
+# direction_overflow hintを発火する（統合・supersede整理をユーザーに促すため）
 DIRECTION_OVERFLOW_THRESHOLD: int = int(env_get("CALM_DIRECTION_OVERFLOW_THRESHOLD", "8"))
 
 # --- Migration Safety ---
@@ -89,7 +91,6 @@ ARCHIVED_DEMOTION_FACTOR: float = float(env_get("CALM_ARCHIVED_DEMOTION_FACTOR",
 INJECTION_BUDGET_SNAPSHOT_CHARS: int = int(env_get("CALM_INJECTION_BUDGET_SNAPSHOT", "1500"))
 INJECTION_BUDGET_ACTIVITIES_CHARS: int = int(env_get("CALM_INJECTION_BUDGET_ACTIVITIES", "4000"))
 INJECTION_BUDGET_HABITS_CHARS: int = int(env_get("CALM_INJECTION_BUDGET_HABITS", "2500"))
-INJECTION_BUDGET_SYNC_POLICY_CHARS: int = int(env_get("CALM_INJECTION_BUDGET_SYNC_POLICY", "1000"))
 INJECTION_BUDGET_SIGNALS_CHARS: int = int(env_get("CALM_INJECTION_BUDGET_SIGNALS", "500"))
 INJECTION_BUDGET_OPEN_ASKS_CHARS: int = int(env_get("CALM_INJECTION_BUDGET_OPEN_ASKS", "1200"))
 INJECTION_BUDGET_ASK_NOTIFY_CHARS: int = int(env_get("CALM_INJECTION_BUDGET_ASK_NOTIFY", "600"))
@@ -122,6 +123,19 @@ PRECEDENT_ROUTING_MISS_DISTANCE: float = float(env_get("CALM_PRECEDENT_ROUTING_M
 # （約2.5万トークン）に対する日本語主体レスポンスの文字/トークン比の安全側見積もり
 # から逆算した値
 PRECEDENT_RESPONSE_CHARS_MAX: int = int(env_get("CALM_PRECEDENT_RESPONSE_CHARS_MAX", "32000"))
+
+# --- check_in 応答の全体予算 ---
+# 応答全体（JSON文字列化後）の予算。制御信号（goal/asks/dependencies）とtag_notesは
+# 数えない（別枠、下記2定数）。
+CHECKIN_BUDGET_CHARS: int = int(env_get("CALM_CHECKIN_BUDGET_CHARS", "10000"))
+# pinned専用の枠（CHECKIN_BUDGET_CHARSの内側で確保される）。
+CHECKIN_PINNED_SLOT_CHARS: int = int(env_get("CALM_CHECKIN_PINNED_SLOT_CHARS", "3000"))
+# 制御信号（goal/asks/dependencies合算）の天井。CHECKIN_BUDGET_CHARSには数えない。
+CHECKIN_CONTROL_CAP_CHARS: int = int(env_get("CALM_CHECKIN_CONTROL_CAP_CHARS", "3000"))
+# tag_notesの天井。CHECKIN_BUDGET_CHARSには数えない。
+CHECKIN_TAG_NOTES_CAP_CHARS: int = int(env_get("CALM_CHECKIN_TAG_NOTES_CAP_CHARS", "6000"))
+# 応答全体の実用上限（超過時のみactivity.descriptionを切る最後の手段）。
+CHECKIN_HARD_MAX_CHARS: int = int(env_get("CALM_CHECKIN_HARD_MAX_CHARS", "32000"))
 
 # --- Decay predicates（レンダー時評価。バッチ/cronではない） ---
 # intelligently層habitのマニフェスト表示から、作成後この日数を超え、かつ

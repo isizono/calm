@@ -99,7 +99,6 @@ class TestComposeTotalBudgetEnforcement:
             config.INJECTION_BUDGET_SNAPSHOT_CHARS,
             config.INJECTION_BUDGET_ACTIVITIES_CHARS,
             config.INJECTION_BUDGET_HABITS_CHARS,
-            config.INJECTION_BUDGET_SYNC_POLICY_CHARS,
             config.INJECTION_BUDGET_SIGNALS_CHARS,
             config.INJECTION_BUDGET_TRANSCRIPT_PATH_CHARS,
         ]

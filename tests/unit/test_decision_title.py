@@ -8,6 +8,7 @@
 
 import numpy as np
 import pytest
+from sqlite_vec import serialize_float32
 
 from src.db import get_connection
 from src.services.topic_service import add_topic
@@ -15,6 +16,7 @@ from src.services.decision_service import add_decisions
 from src.services.search_service import find_similar_decisions, get_by_id
 from src.services.checkin_service import _get_decisions_from_topics
 import src.services.embedding_service as emb
+from tests.helpers import assert_no_write_errors
 
 
 EMBEDDING_DIM = 384
@@ -81,7 +83,7 @@ class TestTitleStored:
         result = add_decisions([
             {"topic_id": topic["topic_id"], "decision": "本文", "reason": "理由", "title": "要点1行"},
         ])
-        assert "error" not in result
+        assert_no_write_errors(result)
         did = result["created"][0]["decision_id"]
         assert _decision_title_in_db(did) == "要点1行"
 
@@ -90,7 +92,7 @@ class TestTitleStored:
         result = add_decisions([
             {"topic_id": topic["topic_id"], "decision": "本文", "reason": "理由"},
         ])
-        assert "error" not in result
+        assert_no_write_errors(result)
         did = result["created"][0]["decision_id"]
         assert _decision_title_in_db(did) is None
 
@@ -100,7 +102,7 @@ class TestTitleStored:
             {"topic_id": topic["topic_id"], "decision": "本文1", "reason": "理由", "title": ""},
             {"topic_id": topic["topic_id"], "decision": "本文2", "reason": "理由", "title": "   "},
         ])
-        assert "error" not in result
+        assert_no_write_errors(result)
         for c in result["created"]:
             assert _decision_title_in_db(c["decision_id"]) is None
 
@@ -113,7 +115,7 @@ class TestRelatedDecisionsResponse:
         result = add_decisions([
             {"topic_id": topic["topic_id"], "decision": "決定A", "reason": "理由A"},
         ])
-        assert "error" not in result
+        assert_no_write_errors(result)
         assert "related_decisions" in result["created"][0]
         assert isinstance(result["created"][0]["related_decisions"], list)
 
@@ -253,6 +255,77 @@ class TestFindSimilarDecisions:
             text="何か",
         )
         assert results == []
+
+    def test_topic_scoped_target_survives_global_recall_collapse(self, topic, mock_embedding_server):
+        """同topicのdecisionがグローバルKNNのtop-limit圏外でも、topic_idスコープの
+        filter-first KNNで取りこぼさない(recall collapse対策、フィルタ集合内の正確なtop-k)。
+
+        グローバルKNN→post-filterの実装に戻すと、デコイdecisionがクエリベクトルへ
+        極めて近い位置を大量に占めグローバルtop-limitを独占するため、同topicの対象decisionは
+        1件もそこに現れず0件になって落ちる。
+        """
+        limit = 3
+        n_decoys = 65  # どんな固定件数のグローバル事前取得を課しても飽和させるのに十分な数
+
+        target = add_decisions([
+            {"topic_id": topic["topic_id"], "decision": "同topicの対象決定", "reason": "理由"},
+        ])
+        target_id = target["created"][0]["decision_id"]
+
+        query_vec = [1.0] + [0.0] * (EMBEDDING_DIM - 1)
+        decoy_vec = [1.0 - 1e-4] + [1e-5] * (EMBEDDING_DIM - 1)
+        target_vec = [0.0] * (EMBEDDING_DIM - 1) + [1.0]
+
+        conn = get_connection()
+        try:
+            # decoyはembeddingを直接vec_indexへ書き込むため、add_decisions経由の
+            # embedding生成 + find_similar_decisions呼び出し(1件ごとに発生し65回累積すると
+            # 重い)は不要。search_index/search_index_ftsへの同期はdecisionsテーブルへの
+            # INSERTトリガー(migration 0046)が行うため、decisionsテーブルへの直接INSERTのみで足りる
+            conn.executemany(
+                "INSERT INTO decisions (decision, reason) VALUES (?, ?)",
+                [(f"デコイ決定{i}", "理由") for i in range(n_decoys)],
+            )
+            conn.commit()
+
+            decoy_rows = conn.execute(
+                "SELECT id, source_id FROM search_index"
+                " WHERE source_type = 'decision' AND title LIKE 'デコイ決定%'"
+            ).fetchall()
+            assert len(decoy_rows) == n_decoys
+            decoy_ids = [row["source_id"] for row in decoy_rows]
+
+            def _set_vec(search_index_id: int, vector: list[float]) -> None:
+                conn.execute("DELETE FROM vec_index WHERE rowid = ?", (search_index_id,))
+                conn.execute(
+                    "INSERT INTO vec_index(rowid, embedding) VALUES (?, ?)",
+                    (search_index_id, serialize_float32(vector)),
+                )
+
+            for row in decoy_rows:
+                _set_vec(row["id"], decoy_vec)
+            target_si_id = conn.execute(
+                "SELECT id FROM search_index WHERE source_type = 'decision' AND source_id = ?",
+                (target_id,),
+            ).fetchone()["id"]
+            _set_vec(target_si_id, target_vec)
+            conn.commit()
+        finally:
+            conn.close()
+
+        # sanity: topic絞り無しのグローバルKNNではデコイのみがtop-limitを占め、targetは現れない
+        # (recall collapse repro の前提が成立していることの確認)
+        unscoped = find_similar_decisions(exclude_id=999999, embedding=query_vec, limit=limit)
+        unscoped_ids = [r["id"] for r in unscoped]
+        assert len(unscoped_ids) == limit
+        assert target_id not in unscoped_ids
+        assert all(did in decoy_ids for did in unscoped_ids)
+
+        # 本題: topic_idで絞ると、グローバルには居ないtargetが返る
+        scoped = find_similar_decisions(
+            exclude_id=999999, topic_id=topic["topic_id"], embedding=query_vec, limit=limit,
+        )
+        assert [r["id"] for r in scoped] == [target_id]
 
 
 class TestDisplayFallback:

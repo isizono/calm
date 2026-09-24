@@ -1,7 +1,6 @@
 """get_overview MCPツールの配線テスト。
 
-境界値・COALESCEの落とし穴回帰検出・orch_managedを除外しないこと
-(TestOrchManagedNotFiltered)等のロジック本体は
+境界値・COALESCEの落とし穴回帰検出等のロジック本体は
 tests/unit/test_overview_service.py が持つ。ここではMCPツール層が
 overview_service.get_overview へ引数をそのまま渡し、戻り値をそのまま
 返すことだけを検証する。

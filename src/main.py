@@ -4,6 +4,7 @@ import logging
 import os
 import random
 import re
+import socket
 from datetime import datetime, timezone
 from pathlib import Path
 from fastmcp import FastMCP, Context
@@ -33,9 +34,10 @@ from src.services import (
     instance_service,
     overview_service,
     goal_service,
+    feedback_service,
 )
-from src.services.checkin_service import check_in as _check_in
-from src.services import session_registry_service
+from src.services.checkin_service import check_in as _check_in, FLAT_FORM_BUDGET_POLICY
+from src.services import response_budget, session_ledger_service, session_registry_service
 from src.infra.session_identity import get_caller_session_id
 from src.services.tag_service import (
     search_tags as _search_tags,
@@ -95,6 +97,10 @@ CALMが記録に振る内部の番号・記号は表記形式を問わず、発�
 
 askは離席中・セッション跨ぎ限定です。その場で答えられるなら聞いてdecision化します。発効は人間のメタask裁定のみです。
 
+## 躓いたら知見を残す
+
+同じところで躓いたら、write_feedback_entryで知見を書くか、既存エントリにadd_feedback_noteでノートを足してください。発話・ツール失敗・実行直前のタイミングで、後のセッションの自分に配達されます。
+
 ---
 
 あなたは壁打ち相手であり記録係です。ユーザーの発言は提案であり決定ではありません。懸念や代替案を積極的に提示し、双方が合意してから記録してください。
@@ -118,11 +124,7 @@ def _maybe_inject_tag_notes(result: dict, tag_strings: list[str], mark: bool = T
     Args:
         mark: False の場合、_injected_tags を参照も更新もしない（読み取り経路用）。
     """
-    try:
-        ctx = get_context()
-        session_id = ctx.session_id
-    except RuntimeError:
-        session_id = None
+    session_id = get_caller_session_id()
     with contextlib.closing(get_connection()) as conn:
         notes = collect_tag_notes_for_injection(conn, tag_strings, session_id=session_id, mark=mark)
     if notes:
@@ -1018,7 +1020,6 @@ def add_activity(
     related: list[dict] | None = None,
     pins: list[dict] | None = None,
     check_in: bool = True,
-    orch_managed: bool = False,
 ) -> dict:
     """
     新しいアクティビティを追加する。デフォルトで作成後にcheck_inも実行する。
@@ -1030,7 +1031,6 @@ def add_activity(
     - intent:implementはdecisionをrelateする: add_activity(..., ["domain:calm", "intent:implement"], related=[{"type": "decision", "ids": [10, 11]}])
     - 作成と同時にpinも張る: add_activity(..., pins=[{"type": "material", "ref": 42}, {"type": "tag", "ref": "domain:calm"}])
     - check_inなしで作成: add_activity(..., check_in=False)
-    - orch管理として作成: add_activity(..., orch_managed=True)
 
     Args:
         title: アクティビティのタイトル（35字以内）
@@ -1039,20 +1039,24 @@ def add_activity(
         related: 関連エンティティ（optional）。[{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...] 形式、複数同時紐付け可。作成と同時にリレーションを張る。intent:implementタグ時はtype="decision"を1件以上含めないとIMPLEMENT_WORKFLOW_GUARDエラーになる
         pins: 作成したactivity自身から張るpin（optional）。[{"type": "tag"|"activity"|"topic"|"decision"|"log"|"material", "ref": int|str}, ...] 形式（refはadd_pinのtarget_refと同じ、tagのみnamespace:name文字列可）。いずれか1件でも解決失敗すると、activity作成自体を含め全体がロールバックされる（部分成功なし）
         check_in: 作成後にcheck_inを実行するか（デフォルト: True）。Trueなら返り値にcheck_in_resultを含む
-        orch_managed: orch管理アクティビティか（デフォルト: False）。TrueならSessionStart一覧・Stop hookのcheck-in催促から除外される
 
     Returns:
-        作成されたアクティビティ情報（check_in=Trueの場合はcheck_in_resultにtag_notes等を含む）
+        作成されたアクティビティ情報（check_in=Trueの場合はcheck_in_resultにtag_notes等を含む）。
+        check_in_resultはcheck_inツールと同じ最終化（flavor=internal適用+全体予算）を通す
     """
     result = activity_service.add_activity(
         title, description, tags, related=related, pins=pins, check_in=check_in,
-        orch_managed=orch_managed,
     )
     if "error" not in result:
         # check_in=Trueの場合、check_in_resultにtag_notesが含まれるため
         # _maybe_inject_tag_notesは不要（二重注入防止）
         if not check_in:
             _maybe_inject_tag_notes(result, tags)
+        elif "check_in_result" in result:
+            # check_inツールと同じ最終化（flavor適用+全体予算）を通す。旧実装は
+            # ここが未適用のままで、pin合計の大きいタグでactivityを作ると
+            # 予算超過の応答がそのまま返っていた。
+            result["check_in_result"] = _finalize_checkin_result(result["check_in_result"], "internal")
     return result
 
 
@@ -1064,10 +1068,9 @@ def get_activities(
     since: str | None = None,
     until: str | None = None,
     flavor: _FlavorArg = "internal",
-    orch_managed: bool | None = None,
 ) -> dict:
     """
-    アクティビティ一覧を取得する（tags/status/orch_managed でフィルタリング可能）。
+    アクティビティ一覧を取得する（tags/statusでフィルタリング可能）。
 
     典型的な使い方:
     - 全アクティビティ確認: get_activities()
@@ -1075,7 +1078,6 @@ def get_activities(
     - 進行中のみ: get_activities(["domain:calm"], status="in_progress")
     - 完了アクティビティの確認: get_activities(status="completed")
     - 最近1週間: get_activities(since="2026-03-09")
-    - orch管理のみ: get_activities(orch_managed=True, status="in_progress")
 
     ワークフロー位置: アクティビティ状況の確認時
 
@@ -1088,7 +1090,6 @@ def get_activities(
         until: ISO日付文字列。この日付以前に更新されたアクティビティのみ返す
         flavor: citation展開モード（raw/internal/readable、既定internal）。3値の意味・出力例は
                 docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
-        orch_managed: True/False を指定すると activities.orch_managed カラムでフィルタする。None（デフォルト）はフィルタなし
 
     呼び出し時、更新日時がSNOOZE_DURATION_DAYS（デフォルト3日）を超過したsnoozedアクティビティは
     pendingへ自動的に一括復活する（このツールの呼び出し自体が復活のトリガーになる）。
@@ -1100,7 +1101,7 @@ def get_activities(
     """
     flavor = _normalize_flavor(flavor)
     result = activity_service.get_activities(
-        tags, status, limit, since, until, orch_managed=orch_managed,
+        tags, status, limit, since, until,
     )
     if "error" not in result:
         _apply_flavor_to_items(result.get("activities", []), "activity", flavor)
@@ -1118,12 +1119,11 @@ def update_activity(
     title: Optional[str] = None,
     description: Optional[str] = None,
     tags: Optional[list[str]] = None,
-    orch_managed: Optional[bool] = None,
     closed_by: Optional[str] = None,
     closed_reason: Optional[str] = None,
 ) -> dict:
     """
-    アクティビティのステータス・タイトル・説明・タグ・orch_managedを更新する。
+    アクティビティのステータス・タイトル・説明・タグを更新する。
 
     典型的な使い方:
     - アクティビティ開始: update_activity(activity_id, status="in_progress")
@@ -1133,7 +1133,6 @@ def update_activity(
     - タイトル変更: update_activity(activity_id, title="新しいタイトル")
     - 説明更新: update_activity(activity_id, description="新しい説明")
     - タグ変更: update_activity(activity_id, tags=["domain:calm", "intent:implement"])
-    - orch管理に切り替え: update_activity(activity_id, orch_managed=True)
 
     ワークフロー位置: アクティビティ進行状況の更新時
 
@@ -1149,7 +1148,6 @@ def update_activity(
         title: 新しいタイトル（35字以内）
         description: 新しい説明
         tags: 新しいタグ配列（指定時は全置換。1個以上必須）
-        orch_managed: orchが管理するアクティビティかを切り替える（True/False/None）。Noneなら変更しない
         closed_by: activityを閉じた意思の主体（"user"|"claude"|"external"）。
             status="completed"と同時のときだけ受け付ける
         closed_reason: 閉じた理由（自由文）。status="completed"と同時のときだけ受け付ける
@@ -1160,7 +1158,7 @@ def update_activity(
         open_questions?, warning?}）も返す（拒否はしない）
     """
     return activity_service.update_activity(
-        activity_id, status, title, description, tags, orch_managed=orch_managed,
+        activity_id, status, title, description, tags,
         closed_by=closed_by, closed_reason=closed_reason,
     )
 
@@ -1519,16 +1517,30 @@ def check_in(
         次の一手を1件返す。未定義（label="undefined"）・不要印（label="not_needed"）・
         goal付き（label="active"|"judge_ready"|"closed"）のいずれか。goal付きなら
         next（今やるべきこと1件）に従う
+        応答全体が10,000字を超えるときはtruncatedキーが付く（{budget, before, after,
+        over_budget, cuts: [{section, kept, cut, next?}, ...]}）。catalog/logs/materials/
+        related_activities/recent_decisions/latest_log/pinnedの順に切り詰められ、各cutの
+        nextには続きを取り直すツール呼び出し（{tool, args}）が付く。goal/asks/
+        dependencies（制御信号）とtag_notesはこの10,000字には数えず、それぞれ3,000字・
+        6,000字の天井を別に持つ（超過時はtruncated.control_over/tag_notes_overが立つ）
     """
     flavor = _normalize_flavor(flavor)
-    try:
-        ctx = get_context()
-        session_id = ctx.session_id
-    except RuntimeError:
-        session_id = None
+    session_id = get_caller_session_id()
     result = _check_in(activity_id, session_id=session_id)
-    if "error" not in result and flavor != "raw":
-        _apply_flavor_to_check_in_result(result, flavor)
+    return _finalize_checkin_result(result, flavor)
+
+
+def _finalize_checkin_result(result: dict, flavor: str) -> dict:
+    """check_in結果の最終化: flavor適用の直後に全体予算を適用する（共通の最終処理）。
+
+    check_inツールとadd_activity(check_in=True)の両方から呼ぶ。flavor適用は
+    字数を変えるため、必ずその後で予算を測る。raw指定時はflavorを適用しないが
+    予算は必ず適用する。
+    """
+    if "error" not in result:
+        if flavor != "raw":
+            _apply_flavor_to_check_in_result(result, flavor)
+        result = response_budget.apply_budget(result, FLAT_FORM_BUDGET_POLICY)
     return result
 
 
@@ -1571,7 +1583,40 @@ def _apply_flavor_to_check_in_result(result: dict, flavor: str) -> None:
         for item in result.get("recent_decisions", []) or []:
             _flavor_snippet(item, flavor, conn)
 
+        _apply_flavor_to_pinned(result.get("pinned"), flavor, conn)
         _apply_flavor_to_goal_block(result.get("goal"), flavor, conn)
+
+
+def _apply_flavor_to_pinned(pinned: object, flavor: str, conn) -> None:
+    """pinnedセクション（decisions/logs/materials/topics/activities）にflavorを適用する
+    (in-place)。旧実装ではpinnedにflavorが未適用のまま返っていた欠落を埋める。
+    """
+    if not isinstance(pinned, dict):
+        return
+    for dec in pinned.get("decisions", []) or []:
+        if isinstance(dec, dict):
+            if isinstance(dec.get("title"), str):
+                dec["title"] = citation_renderer.expand(dec["title"], flavor, conn)
+            if isinstance(dec.get("reason"), str):
+                dec["reason"] = citation_renderer.expand(dec["reason"], flavor, conn)
+    for log in pinned.get("logs", []) or []:
+        if isinstance(log, dict):
+            if isinstance(log.get("title"), str):
+                log["title"] = citation_renderer.expand(log["title"], flavor, conn)
+            if isinstance(log.get("content"), str):
+                log["content"] = citation_renderer.expand(log["content"], flavor, conn)
+    for mat in pinned.get("materials", []) or []:
+        if isinstance(mat, dict):
+            if isinstance(mat.get("title"), str):
+                mat["title"] = citation_renderer.expand(mat["title"], flavor, conn)
+            if isinstance(mat.get("content"), str):
+                mat["content"] = citation_renderer.expand(mat["content"], flavor, conn)
+    for topic in pinned.get("topics", []) or []:
+        if isinstance(topic, dict) and isinstance(topic.get("title"), str):
+            topic["title"] = citation_renderer.expand(topic["title"], flavor, conn)
+    for act in pinned.get("activities", []) or []:
+        if isinstance(act, dict) and isinstance(act.get("title"), str):
+            act["title"] = citation_renderer.expand(act["title"], flavor, conn)
 
 
 def _apply_flavor_to_goal_block(goal_block: object, flavor: str, conn) -> None:
@@ -2188,7 +2233,6 @@ def get_config() -> dict:
         "pending_limit": config.PENDING_LIMIT,
         "recency_decay_rate": budget_service.BUDGET_DEFAULTS["recency_decay_rate"],
         "sync_disable_retrospective": config.SYNC_DISABLE_RETROSPECTIVE,
-        "sync_policy": config.SYNC_POLICY,
         "snapshot_interval_hours": config.SNAPSHOT_INTERVAL_HOURS,
         "snapshot_max_count": config.SNAPSHOT_MAX_COUNT,
         "snapshot_anomaly_threshold": config.SNAPSHOT_ANOMALY_THRESHOLD,
@@ -2815,6 +2859,98 @@ def set_session_alias(alias: str) -> dict:
     return session_registry_service.set_alias(bridge_session_id=caller_session_id, alias=alias)
 
 
+@mcp.tool()
+def get_feedback_entries(
+    name: Optional[str] = None,
+    query: Optional[str] = None,
+    include_deleted: bool = False,
+) -> dict:
+    """Choose: 躓きを踏まえて自分に配達しているフィードバックエントリを読みたいとき。
+
+    write_feedback_entryでupdate/deleteする前には必ずこれを呼び、返ってきた
+    read_markを渡すこと(印が古いと拒否される)。
+
+    Args:
+        name: 完全一致で1件に絞る
+        query: body/refへの部分一致検索
+        include_deleted: Trueで削除済み(deleted_at IS NOT NULL)も含める
+
+    Returns:
+        {"ok": true, "entries": [{"id", "name", "body", "ref", "strength", "timing",
+         "condition", "delivered_count", "overridden_count", "deleted_at",
+         "created_at", "updated_at", "notes": [{"kind","body","created_at"}, ...],
+         "read_mark": int}, ...]}
+    """
+    return feedback_service.get_feedback_entries(name=name, query=query, include_deleted=include_deleted)
+
+
+@mcp.tool()
+def write_feedback_entry(
+    name: str,
+    action: Literal["create", "update", "delete"],
+    body: Optional[str] = None,
+    ref: Optional[str] = None,
+    strength: Optional[Literal["notify", "block"]] = None,
+    timing: Optional[Literal["utterance", "tool_fail", "pre_tool"]] = None,
+    condition: Optional[Union[dict, str]] = None,
+    read_mark: Optional[int] = None,
+) -> dict:
+    """Choose: フィードバックエントリを作る・直す・消すとき。
+
+    create/updateはbody/strength/timing/conditionを全て渡す(部分更新ではなく
+    全置き換え)。update・deleteと、削除済み名前へのcreate(復活)はread_mark
+    必須(get_feedback_entriesで取得した値をそのまま渡す)。名前が未使用の
+    通常のcreateだけread_mark不要。
+
+    Args:
+        name: 英小文字・数字・ハイフンのみ
+        action: "create" | "update" | "delete"
+        body: エントリ本文(100字以内)
+        ref: 参照(任意、500字以内)
+        strength: "notify"(知らせる) | "block"(止める、timing='pre_tool'必須)
+        timing: "utterance"(発話時) | "tool_fail"(ツール失敗時) | "pre_tool"(実行直前)
+        condition: {"tool": str|None, "all": [{"field","op":"regex"|"len_gt","value"}, ...]}
+            (all は0〜3要素、dictまたはJSON文字列)。timingごとのfield予約名は
+            get_feedback_entriesで既存エントリを見て確認すること
+        read_mark: update/delete/復活のときは対象エントリの最新read_mark必須
+
+    Returns:
+        成功時: {"ok": true, "entry": {...}}(get_feedback_entriesの1件と同形)
+        失敗時: {"ok": false, "error": {"code": "VALIDATION_ERROR"|"NOT_FOUND"
+            |"CONFLICT"|"DUPLICATE"|"DATABASE_ERROR", "message", "fix"}}
+    """
+    return feedback_service.write_feedback_entry(
+        name=name,
+        action=action,
+        body=body,
+        ref=ref,
+        strength=strength,
+        timing=timing,
+        condition=condition,
+        read_mark=read_mark,
+    )
+
+
+@mcp.tool()
+def add_feedback_note(name: str, kind: Literal["stumble", "note"], body: str) -> dict:
+    """Choose: フィードバックエントリに観測・経緯を書き足したいとき。
+
+    read_mark不要でいつでも書ける。削除済みエントリにも足せる(観測記録は
+    削除後も続けられる)。
+
+    Args:
+        name: 対象エントリの名前
+        kind: "stumble"(踏んだ・躓いた事実) | "note"(それ以外の経緯)
+        body: ノート本文(500字以内)
+
+    Returns:
+        成功時: {"ok": true, "note": {"kind","body","created_at"}, "read_mark": int}
+        失敗時: {"ok": false, "error": {"code": "VALIDATION_ERROR"|"NOT_FOUND"
+            |"DATABASE_ERROR", "message", "fix"}}
+    """
+    return feedback_service.add_feedback_note(name=name, kind=kind, body=body)
+
+
 # ヘルスチェックエンドポイント
 @mcp.custom_route("/health", methods=["GET"])
 async def health(_request: Request) -> JSONResponse:
@@ -2846,6 +2982,24 @@ async def session_register(request: Request) -> JSONResponse:
                 status_code=400,
             )
         is_new = mgr.register(session_id)
+        # セッション台帳への書き込みはベストエフォート。ここで例外を上げると
+        # mgr.register()自体は成功しているのに本エンドポイントが500になり、
+        # launcher側(ローカルモード)はこれを致命エラーとしてプロセス終了する。
+        # id_kindは常に'bridge'固定: このエンドポイントはlauncherが自分の
+        # session_id(UUID)を送る経路のみで呼ばれ、識別子が取れない
+        # ('ephemeral')状況は発生しない。
+        try:
+            body_harness = body.get("harness")
+            body_host = body.get("host")
+            session_ledger_service.register(
+                session_id,
+                id_kind="bridge",
+                harness=body_harness if isinstance(body_harness, str) else None,
+                host=body_host if isinstance(body_host, str) else socket.gethostname(),
+                mode="interactive",
+            )
+        except Exception:
+            logger.exception("session_ledger_service.register failed")
         return JSONResponse({
             "registered": is_new,
             "active_sessions": mgr.active_count,
@@ -2873,6 +3027,15 @@ async def session_unregister(request: Request) -> JSONResponse:
                 status_code=400,
             )
         removed = mgr.unregister(session_id)
+        # mgr.unregister()がTrueを返す経路はSessionManagerのon_session_removed
+        # コールバック(下のSessionManager()構築箇所)経由でmark_endedが既に走るが、
+        # サーバー再起動直後などmgr側にin-memory登録が無く(removed=False)
+        # コールバックが発火しないケースでも台帳は確実に閉じる。mark_endedは
+        # 冪等なので二重発火しても無害。
+        try:
+            session_ledger_service.mark_ended(session_id, "unregister")
+        except Exception:
+            logger.exception("session_ledger_service.mark_ended failed")
         return JSONResponse({
             "unregistered": removed,
             "active_sessions": mgr.active_count,
@@ -2949,7 +3112,6 @@ if __name__ == "__main__":
     init_database()
 
     if args.transport == "http":
-        import socket
         from src.infra.lock_file import acquire, release
         from src.infra.session_manager import SessionManager
 
@@ -2975,7 +3137,9 @@ if __name__ == "__main__":
             raise SystemExit(1)
 
         # セッションマネージャー初期化
-        _session_manager = SessionManager()
+        _session_manager = SessionManager(
+            on_session_removed=lambda sid, reason: session_ledger_service.mark_ended(sid, reason),
+        )
 
         def _shutdown_server():
             """ウォッチドッグから呼ばれるシャットダウンハンドラ"""

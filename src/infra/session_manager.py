@@ -102,7 +102,7 @@ class SessionManager:
         self,
         grace_period_sec: Optional[int] = None,
         liveness_timeout_sec: Optional[float] = None,
-        on_session_removed: Optional[Callable[[str], None]] = None,
+        on_session_removed: Optional[Callable[[str, str], None]] = None,
     ):
         self._active_sessions: set[str] = set()
         self._last_seen: dict[str, float] = {}
@@ -180,24 +180,25 @@ class SessionManager:
             return False
 
         logger.info(f"Session unregistered: {session_id} (active: {count})")
-        self._notify_removed(session_id)
+        self._notify_removed(session_id, "unregister")
 
         if count == 0:
             self._start_grace_timer()
         return True
 
-    def _notify_removed(self, session_id: str) -> None:
+    def _notify_removed(self, session_id: str, reason: str) -> None:
         """session除去後（ロック解放後）に on_session_removed コールバックを呼ぶ。
 
         unregister() と liveness reaper 経由の失効（_evict_if_still_stale）の
-        両方の除去経路から呼ばれる共通の通知点。ロック保持中に呼ぶと
-        コールバック側の I/O が register() の heartbeat をブロックしうるため、
-        必ずロック解放後に呼び出すこと。
+        両方の除去経路から呼ばれる共通の通知点。reasonで両者を区別する
+        （"unregister" / "ttl"）。ロック保持中に呼ぶとコールバック側の I/O が
+        register() の heartbeat をブロックしうるため、必ずロック解放後に
+        呼び出すこと。
         """
         if self._on_session_removed is None:
             return
         try:
-            self._on_session_removed(session_id)
+            self._on_session_removed(session_id, reason)
         except Exception:
             logger.exception("session removal hook failed: session=%s", session_id)
 
@@ -280,7 +281,7 @@ class SessionManager:
         if count is None:
             return
         logger.warning(f"Session liveness timeout, evicting: {session_id} (active: {count})")
-        self._notify_removed(session_id)
+        self._notify_removed(session_id, "ttl")
         if count == 0:
             self._start_grace_timer()
 

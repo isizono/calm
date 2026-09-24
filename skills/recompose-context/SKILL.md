@@ -133,7 +133,7 @@ SA（run_in_background）で並行実行。結果はマトリクス化して、�
 
 - decision/log → `retract`
   - 頻繁に参照される decision を無効化する場合は、単純な `retract` より定型節
-    （`docs/precedent-format.md`、正本）付きの新 decision で `supersede` し直すことを検討する。
+    （書式は本スキル同梱の `references/precedent-format.md`）付きの新 decision で `supersede` し直すことを検討する。
     retract は却下理由・射程の情報を残さないため、頻出参照の decision ほど supersede の価値が高い
 - material → `update_material` で上書き
 - topic/activity → retract非対応のため「直す」: status調整・合流・relation張り・新規作成
@@ -178,7 +178,9 @@ SA（run_in_background）で並行実行。結果はマトリクス化して、�
 
 **書かないもの**: 一過性の話題 / entity固有の文脈（→material行き）/ 既存記述と重複する内容
 
-判定が出たタグは `update_tag` で上書きする。肥大化したtag-noteは縮約する（判断任せ）。1タグ失敗でも他タグ処理は継続。該当なければスキップ。
+判定が出たタグは `update_tag` で上書きする。追記前に内容の種別を判定する: 教訓・落とし穴（行動を変える注意）と環境知識のみ全文で書ける。仕様スナップショット・運用手順・歴史記録は1行ポインタ（正典はコード/docs/decision/資材）に留め、状態・進行ジャーナル（「YYYY-MM-DD時点で〜中」等）は書かない。
+
+既存notesの整理、または追記後（マージ後のドラフト）が天井(4,000字)を超える場合は、`update_tag`で書き込む前に `demote_tag_notes(tag=..., sections=["見出しテキスト", ...])` で該当セクションを資材へ退避する（天井は「新しい長さが4,000字を超え、かつ既存より増加している」書き込みのみを拒否するため、現在は天井未満のタグでも追記で超える見込みなら先に縮める必要がある）。`sections` はnotes中の `## ` 見出しテキストで指定する（前文は退避不可）。`mode` は状態ジャーナル型のセクションのみ `drop`、それ以外は既定の `pointer`（退避後に1行ポインタを残す）を使う。整理の終了条件はdemoteの実行回数ではなく、返り値の `notes_length.over_budget` が `false` になったことで判定する。1タグ失敗でも他タグ処理は継続。該当なければスキップ。
 
 ### 8. relation補完
 

@@ -61,7 +61,7 @@ description: 一般化ルール（エージェントの今後の振る舞いを�
 | 軸1＼軸2 | 無条件規範 | 条件付き判断基準 | 手順 | 事実・参照 |
 |---|---|---|---|---|
 | 無契機 | habits always（100字未満なら）/ rules | 矛盾のサイン（エッジ表E1へ） | rules（順序制約だけ切り出す） | habits intelligently / ユーザーCLAUDE.md |
-| タグ文脈 | tag-notes | tag-notes（要旨+参照）＋判例decision（定型節を持てる判例側が正） | tag-notes | tag-notes |
+| タグ文脈 | tag-notes | tag-notes（要旨+参照）＋判例decision（定型節を持てる判例側が正） | tag-notes（1行ポインタ。全文の正典はコード/docs/資材） | tag-notes（1行ポインタが既定。そのタグ固有の環境知識のみ全文可） |
 | ファイル文脈 | rules（パス付き） | rules（パス付き、要旨+参照）＋判例decision（定型節を持てる判例側が正） | rules（パス付き） | rules（パス付き） |
 | 作業単位 | pin | pin（判例decisionをpinで指す） | pin（手順materialをpinで指す） | pin |
 | ツール呼び出し | docstring | docstring（要旨+参照）＋判例decision | docstring | docstring |
@@ -69,6 +69,8 @@ description: 一般化ルール（エージェントの今後の振る舞いを�
 | 自覚的な迷い | 型の再検査（迷いが発生するなら無条件ではない） | 判例decision | 判例decision＋material | 判例decision |
 
 条件付き判断基準の複合配置（「X＋判例decision」のセル）はすべて同じ規則の適用である: 全文の正は定型節を持てる判例decision側に置き、契機側の経路には要旨と判例への参照を書く。ファイル文脈のrules配置は、注入自体はセッション起動時の常時pushであり、パスは適用判断のスコープ注記である（発火条件ではない）。
+
+タグ文脈×手順・事実参照のセルは、tag-notes自体には全文を置かない。`demote_tag_notes`が正典として持つ記述規約（教訓・落とし穴と環境知識のみ全文、仕様スナップショット・運用手順・歴史記録は1行ポインタ、状態・進行ジャーナルは0行）に従う。
 
 ## Step 4: 軸3で強度を補正する
 
@@ -95,9 +97,9 @@ description: 一般化ルール（エージェントの今後の振る舞いを�
 | rules | セッション起動時に全文注入 | 最高（push常時） | ファイル編集で即時。ただしDB外で監査対象から漏れやすい。パス付き見出しでファイルスコープを表現する慣行がある（適用判断は本文の対象パス記述で行う） | 全型 |
 | habits always層 | 同上（投影ファイル経由） | 最高（push常時） | ツールで即時 | 無条件規範のみ（1件100字未満） |
 | habits intelligently層 | タイトルのみ投影、全文はon-demand | 低（pull。引かれない実測あり） | ツールで即時 | 弱い行儀 |
-| tag-notes | タグに触れるツール呼び出し時（セッション内初回のみ） | 高（push契機付き） | 全文置換で即時 | 全型 |
-| pin | pin元へのcheck_inのたび毎回、指す先の本文ごと | 高（push契機付き） | ツールで即時 | 全型（既存エンティティを指す） |
-| 判例decision | search / pull_precedents / add_ask時の類似判例同梱 | 中（pull。add_ask同梱は強制発火点） | supersedeで置換 | 条件付き判断基準（定型節の書式は docs/precedent-format.md） |
+| tag-notes | タグに触れるツール呼び出し時（セッション内初回のみ） | 高（push契機付き） | 全文置換で即時（天井超過時の縮小は`demote_tag_notes`でセクション単位に退避） | 全型（ただし全文可は教訓・落とし穴と環境知識のみ。手順・仕様・歴史は1行ポインタ、状態ジャーナルは不可） |
+| pin | pin元へのcheck_inのたび毎回、指す先の本文ごと（ただしpinned合計が全体予算の枠を超えると小さい順に優先され、溢れた分は先頭を残して切られポインタが付く縮退が起きる） | 高（push契機付き） | ツールで即時 | 全型（既存エンティティを指す） |
+| 判例decision | search / pull_precedents / add_ask時の類似判例同梱 | 中（pull。add_ask同梱は強制発火点） | supersedeで置換 | 条件付き判断基準（定型節の書式は本スキル同梱の `references/precedent-format.md`） |
 | skill | そのskillの発動場面 | 中（発動条件の記述精度に従属） | PR+デプロイ | 手順 |
 | ツールdocstring | ツール呼び出しの瞬間 | 高（push。契機が最も鋭い） | PR+デプロイ | 短文の規範・判断基準 |
 | server instructions | MCP接続中の全セッションに常時 | 最高（push常時） | PR+デプロイ | 無条件規範の要約 |

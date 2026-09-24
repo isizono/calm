@@ -274,14 +274,15 @@ def _run_backfill() -> None:
 
     _ensure_initialized から daemon thread に切り出して呼ばれる。呼び出し元の
     encode_document/encode_query 等のリクエスト経路をバックフィル完了までブロック
-    させないため。backfill_embeddings/backfill_topic_embeddings は内部で例外を
-    握りつぶし整数を返す契約のためここでは再送出しないが、想定外の例外で
+    させないため。backfill_embeddings/backfill_topic_embeddings/backfill_tag_embeddings
+    は内部で例外を握りつぶし整数を返す契約のためここでは再送出しないが、想定外の例外で
     `_backfill_done` の更新が漏れないよう finally で確実に立てる。
     """
     global _backfill_done
     try:
         backfill_embeddings()
         backfill_topic_embeddings()
+        backfill_tag_embeddings()
     finally:
         _backfill_done = True
 
@@ -520,6 +521,9 @@ def backfill_embeddings() -> int:
     可能性が高く同一種別内の再試行は無駄なため、残りのチャンクを諦めて次の種別へ進む。
     それまでにcommit済みの成果は失われない。
 
+    冒頭でsearch_indexに対応行を持たないvec_indexの孤児行を削除する
+    (エンティティ削除経路がvec_indexの掃除を保証しないための再発防止)。
+
     Returns: 生成したembedding数
     """
     if not _is_server_running():
@@ -565,8 +569,11 @@ def backfill_embeddings() -> int:
     }
 
     conn = get_connection()
+    total = 0
     try:
-        total = 0
+        conn.execute("DELETE FROM vec_index WHERE rowid NOT IN (SELECT id FROM search_index)")
+        conn.commit()
+
         for source_type, query in type_queries.items():
             rows = conn.execute(query).fetchall()
             if not rows:
@@ -676,12 +683,17 @@ def search_similar_tags(query_text: str, k: int = 10) -> list[tuple[int, float]]
 def backfill_tag_embeddings() -> int:
     """tag_vecが空のタグにembeddingを一括生成する。
 
+    backfill_embeddingsと同じ理由(数百〜千件超を1リクエストにまとめて送ると
+    _encode_batchの60秒固定timeoutをCPU推論が超え結果が破棄される)でチャンク分割する。
+    途中のチャンクが失敗した場合、それまでにcommit済みの成果は失われない。
+
     Returns: 生成したembedding数
     """
     if not _is_server_running():
         return 0
 
     conn = get_connection()
+    total = 0
     try:
         rows = conn.execute(
             """
@@ -695,27 +707,33 @@ def backfill_tag_embeddings() -> int:
         if not rows:
             return 0
 
-        ids = [row["id"] for row in rows]
-        texts = [row["name"] for row in rows]
+        items: list[tuple[int, str]] = [(row["id"], row["name"]) for row in rows if row["name"]]
 
-        try:
-            embeddings = _encode_batch(texts, "document")
+        for chunk in _chunk_backfill_items(items):
+            chunk_ids = [tag_id for tag_id, _ in chunk]
+            chunk_texts = [text for _, text in chunk]
+            try:
+                embeddings = _encode_batch(chunk_texts, "document")
+            except Exception as e:
+                logger.warning(f"Failed to backfill tag embeddings: {e}")
+                embeddings = None
             if embeddings is None:
-                return 0
-            total = 0
-            for tag_id, embedding in zip(ids, embeddings):
+                logger.warning(
+                    f"Backfill chunk failed for tags ({len(chunk_ids)} items); "
+                    "giving up on remaining chunks"
+                )
+                break
+            for tag_id, embedding in zip(chunk_ids, embeddings):
                 _insert_tag_embedding_row(conn, tag_id, embedding)
                 total += 1
             conn.commit()
-            logger.info(f"Backfilled {total} tag embeddings")
-            return total
-        except Exception as e:
-            logger.warning(f"Failed to backfill tag embeddings: {e}")
-            return 0
+
+        logger.info(f"Backfilled {total} tag embeddings")
+        return total
 
     except Exception as e:
         logger.warning(f"Tag embedding backfill failed: {e}")
-        return 0
+        return total
     finally:
         conn.close()
 
@@ -723,10 +741,9 @@ def backfill_tag_embeddings() -> int:
 # ========================================
 # Topic embedding ヘルパー
 #
-# topic_vec は distance_metric=cosine で作成される（migration 0049）。同じく非正規化
-# embedding を格納する vec_index（0005）と tag_vec（0009）は vec0 既定の L2 のままで、
-# topic_vec の distance とはスケールが異なり直接比較できない。topic_vec の近傍距離に
-# 閾値を掛ける際は L2 前提の既存しきい値（QE_DISTANCE_THRESHOLD 等）を流用しないこと。
+# topic_vec は distance_metric=cosine で作成される（migration 0050）。vec_index
+# （0005）と tag_vec（0009）も同じ非正規化embeddingを格納しており、migration 0081で
+# 同じくdistance_metric=cosineへ再構築済みのため、3テーブルのdistanceスケールは揃っている。
 # ========================================
 
 

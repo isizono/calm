@@ -21,18 +21,24 @@
 | habits（投影ファイルの鮮度検証+縮退フォールバック） | 0（fresh時）/ 約80字（stale時、通知1行）/ always全文+件数1行（absent時） | fresh・stale時: complete（注入なし、または1行通知のみ）/ absent時: always=complete, intelligently=truncated+count | 通常配信は`~/.claude/rules/cc-memory-habits.md`への自動生成ファイル（launch時読み込み、本hookとは別の注入面）が担う。本セクションはverify_and_healで当該セッションが投影ファイルを読み込めているかを検証するだけで、fresh時は注入ゼロ、stale時は1行通知のみ。投影ファイルが読めない・未生成・kill switch（`CALM_HABITS_RULES_EXPORT=0`）中に限り、always層全文+intelligently層は件数1行の縮退注入を行う |
 | signals | ≤120 | complete | 未トリアージ(status='new')件数をkind内訳付きで1行表示。0件時は非表示 |
 | open ask + 回答済み未捌き | ≤1,200（見出し・meta行・meta向けCTA・全体CTAが必須要素だけでこれを超える極端な場合は例外） | meta: 必須要素として常時complete（ただしmeta本文の合計が概ね1,000字前後（実績値：meta10件×約100字）を超えると、見出し・meta向けCTA・全体CTA分（2バケットで約70〜100字）を含めた必須要素合計がbudget_chars（1,200字）を超え、injection_compositorの機械的な末尾切り詰めに委ねる。件数の明示はしない）/ 非メタ: selected+remainder | open ask（status='open'）と回答済み未捌き（status='answered' AND triage未了）をバケットごとにタイトル表示。見出し・meta行・meta向けCTA・全体CTAを必須要素として先に確定し、非メタ本文と「他N件」の残り件数行はその残り予算内でのみ追加する（kind='meta'のaskは各バケットの表示上限（既定5件）に関わらず常時全件表示、非メタは表示上限または残り予算を超えたら「他N件」に縮退）。両バケットとも0件時は非表示 |
-| sync_policy | ≤250 | complete | 環境変数 `CALM_SYNC_POLICY` の設定値をそのまま全文配信。未設定時は非表示 |
 
 ## 2. check_in応答
 
+下表の保証種別は、各フィールドをその場で組み立てる時点でのものである。組み立て後、
+`response_budget`（応答dictと方針だけを入力に取る独立モジュール）が応答全体10,000字の
+予算を適用する。制御信号（goal/asks/dependencies）とtag_notesはこの10,000字には
+数えないが、それぞれ3,000字・6,000字の天井を別に持つ。超過分は「削る」ではなく
+「件数と続きへのポインタに畳む」形で縮退するため、下表の complete/selected+remainder は
+「予算内に収まっている限りの」保証と読む。
+
 | フィールド | 保証種別 | 備考 |
 |---|---|---|
-| recent_decisions | selected+remainder | 関連topic横断で新しい順に上位15件（`DECISIONS_FULL_LIMIT`）。`coverage.decisions` に "選抜件数/総件数" を明示 |
-| materials | selected+remainder | リレーション経由のカタログ形式。`coverage.materials` に総件数を明示 |
-| logs | selected+remainder | 最新1件はcontent付き、残りはid+titleのカタログ。`coverage.logs` に総件数を明示 |
-| pinned | complete | activity自身とそのタグにpinされた対象を全件content付きで返す |
-| tag_notes | complete | セッション内初回遭遇時のタグのみ（`intent:`は毎回）。対象タグのnotesは全文 |
-| catalog | complete | `get_map` によるリレーショングラフ（depth 1-2）を全件返す |
+| recent_decisions | selected+remainder | 関連topic横断で新しい順に上位15件（`DECISIONS_FULL_LIMIT`）。`coverage.decisions` に "選抜件数/総件数" を明示。全体予算超過時はさらに末尾から削られ、分子も削った後の件数へ書き換わる |
+| materials | selected+remainder | リレーション経由のカタログ形式。`coverage.materials` に総件数を明示。全体予算超過時はさらに末尾から削られ、分子も削った後の件数へ書き換わる |
+| logs | selected+remainder | 最新1件はcontent付き、残りはid+titleのカタログ。`coverage.logs` に総件数を明示。全体予算超過時はまずカタログ側が末尾から削られ、それでも収まらなければ最新1件がスタブ化される（このときのみ分子が0になる） |
+| pinned | selected+remainder | activity自身とそのタグにpinされた対象を全件content付きで返す。ただしpinned専用の枠（3,000字）を超えると、種別をまたいだ小さい順に丸ごと残し、枠をまたぐ1件は先頭を残して切りポインタを付け、残りはid+titleのスタブになる |
+| tag_notes | complete（6,000字の天井付き） | セッション内初回遭遇時のタグのみ（`intent:`は毎回）。対象タグのnotesは全文。合計が天井を超えると大きいnotesから順にdecayと同じ1行ポインタへ縮退する（全体予算10,000字には数えない） |
+| catalog | selected+remainder | `get_map` によるリレーショングラフ（depth 1-2）。全体予算超過時に最初に削られる対象で、末尾から間引かれる |
 
 ## 3. RULES（MCP instructions）
 

@@ -169,8 +169,6 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
     空殻を出さず固定ナビだけを返す。
 
     重複排除: 上位階層に採用された activity は下位階層（および統計対象）から除外する。
-
-    orch_managed=1 のアクティビティは全階層で除外する。
     """
     domains = get_active_domains_with_conn(conn)
 
@@ -179,8 +177,6 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
     for domain in domains:
         for a in get_active_activities_by_tag_with_conn(conn, domain["tag_id"]):
             if a["id"] in seen_collect:
-                continue
-            if a.get("orch_managed"):
                 continue
             seen_collect.add(a["id"])
             all_active.append(a)
@@ -191,8 +187,6 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
     pinned_ids = {a["id"] for a in pinned_all}
     for a in pinned_all:
         if a["id"] in seen_collect:
-            continue
-        if a.get("orch_managed"):
             continue
         seen_collect.add(a["id"])
         all_active.append(a)
@@ -411,13 +405,6 @@ def _build_habits_section(conn, session_id: str | None = None, source: str | Non
     return _build_degraded_habits_fallback(
         conn, always_contents=always_contents, manifest=manifest
     )
-
-
-def _build_sync_policy_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # conn, session_id, source, **_kwargs: 全セクション共通シグネチャ
-    """sync_policyが設定されていれば注入する。未設定時はコンテキスト消費ゼロ。"""
-    if not config.SYNC_POLICY:
-        return ""
-    return f"# sync_policy\n{config.SYNC_POLICY}\n"
 
 
 def _build_signals_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # conn, session_id, source, **_kwargs: 全セクション共通シグネチャ
@@ -746,7 +733,6 @@ _SECTIONS: list[Section] = [
     Section("snapshot", _build_snapshot_section, config.INJECTION_BUDGET_SNAPSHOT_CHARS, priority=0),
     Section("activities", _build_activities_section, config.INJECTION_BUDGET_ACTIVITIES_CHARS, priority=10),
     Section("habits", _build_habits_section, config.INJECTION_BUDGET_HABITS_CHARS, priority=20),
-    Section("sync_policy", _build_sync_policy_section, config.INJECTION_BUDGET_SYNC_POLICY_CHARS, priority=30),
     Section("signals", _build_signals_section, config.INJECTION_BUDGET_SIGNALS_CHARS, priority=40),
     Section("open_asks", _build_open_asks_section, config.INJECTION_BUDGET_OPEN_ASKS_CHARS, priority=41),
     Section("ask_notify", _build_ask_notify_section, config.INJECTION_BUDGET_ASK_NOTIFY_CHARS, priority=45),

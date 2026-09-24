@@ -93,44 +93,6 @@ def _seed_signal(kind: str, summary: str, source: str = "tool:test") -> int:
     return result["id"]
 
 
-def _tag_activity_bare(activity_id: int, tag_name: str) -> None:
-    """アクティビティに素タグ（namespaceなし）を付与する"""
-    conn = get_connection()
-    try:
-        tag_row = conn.execute(
-            "SELECT id FROM tags WHERE namespace = '' AND name = ?",
-            (tag_name,),
-        ).fetchone()
-        if tag_row:
-            tag_id = tag_row["id"]
-        else:
-            cursor = conn.execute(
-                "INSERT INTO tags (namespace, name) VALUES ('', ?)",
-                (tag_name,),
-            )
-            tag_id = cursor.lastrowid
-        conn.execute(
-            "INSERT INTO activity_tags (activity_id, tag_id) VALUES (?, ?)",
-            (activity_id, tag_id),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def _mark_orch_managed(activity_id: int) -> None:
-    """アクティビティの orch_managed カラムを 1 に設定する"""
-    conn = get_connection()
-    try:
-        conn.execute(
-            "UPDATE activities SET orch_managed = 1 WHERE id = ?",
-            (activity_id,),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
 def _seed_topic(title: str) -> int:
     """テスト用トピックを作成"""
     conn = get_connection()
@@ -199,7 +161,7 @@ class TestSessionStartHookBasic:
         finally:
             conn.close()
 
-        result = _run_session_start_hook(temp_db, env_remove=["CALM_SYNC_POLICY"])
+        result = _run_session_start_hook(temp_db)
 
         context = result["hookSpecificOutput"]["additionalContext"]
         assert "check_in（なければ作成 — activity-start）" in context
@@ -548,14 +510,10 @@ class TestSessionStartHookHabitsProjectionCutover:
 
         habits_path = tmp_path / "cc-memory-habits.md"
         # 1回目: absentからのheal。DB状態を投影ファイルへ反映させる
-        _run_session_start_hook(
-            temp_db, habits_rules_path=str(habits_path), env_remove=["CALM_SYNC_POLICY"]
-        )
+        _run_session_start_hook(temp_db, habits_rules_path=str(habits_path))
 
         # 2回目: freshのはず
-        result = _run_session_start_hook(
-            temp_db, habits_rules_path=str(habits_path), env_remove=["CALM_SYNC_POLICY"]
-        )
+        result = _run_session_start_hook(temp_db, habits_rules_path=str(habits_path))
         context = result["hookSpecificOutput"]["additionalContext"]
 
         assert "振る舞い" not in context
@@ -595,65 +553,6 @@ class TestSessionStartHookOwRoleEnvIgnored:
         assert "残存env下振る舞い" in context
 
 
-class TestSessionStartHookOrchManagedExclusion:
-    """orch_managed=1 アクティビティの除外テスト"""
-
-    def test_orch_managed_activity_excluded(self, temp_db):
-        """orch_managed=1 のアクティビティはアクティビティ一覧に出ない"""
-        activity_id = _seed_activity("[作業] orch管理タスク", status="in_progress")
-        _mark_orch_managed(activity_id)
-
-        result = _run_session_start_hook(temp_db, env_remove=["OW_ROLE"])
-        context = result["hookSpecificOutput"]["additionalContext"]
-
-        assert "orch管理タスク" not in context
-        assert f"(#{activity_id})" not in context
-
-    def test_non_orch_managed_activity_still_shown(self, temp_db):
-        """orch_managed=0 の通常アクティビティは引き続き表示される"""
-        normal_id = _seed_activity("[作業] 個人タスク", status="in_progress")
-        orch_id = _seed_activity("[作業] orch管理タスク", status="in_progress")
-        _mark_orch_managed(orch_id)
-
-        result = _run_session_start_hook(temp_db, env_remove=["OW_ROLE"])
-        context = result["hookSpecificOutput"]["additionalContext"]
-
-        assert "個人タスク" in context
-        assert f"(#{normal_id})" in context
-        assert "orch管理タスク" not in context
-        assert f"(#{orch_id})" not in context
-
-    def test_orch_managed_tag_without_column_is_still_shown(self, temp_db):
-        """旧 orch-managed 素タグだけ付いていて orch_managed カラムが 0 のアクティビティは
-        新仕様では普通に表示される（タグ判定は撤廃済み）。"""
-        activity_id = _seed_activity("[作業] レガシータグ", status="in_progress")
-        _tag_activity_bare(activity_id, "orch-managed")
-
-        result = _run_session_start_hook(temp_db, env_remove=["OW_ROLE"])
-        context = result["hookSpecificOutput"]["additionalContext"]
-
-        assert "レガシータグ" in context
-        assert f"(#{activity_id})" in context
-
-    def test_all_orch_managed_yields_no_activity_section(self, temp_db):
-        """全アクティビティが orch_managed=1 なら一覧セクション自体が出ない"""
-        activity_id = _seed_activity("[作業] orch管理のみ", status="in_progress")
-        _mark_orch_managed(activity_id)
-
-        # 初期振る舞いを削除してアクティビティ一覧の有無を純粋に判定
-        conn = get_connection()
-        try:
-            conn.execute("DELETE FROM habits")
-            conn.commit()
-        finally:
-            conn.close()
-
-        result = _run_session_start_hook(temp_db, env_remove=["OW_ROLE"])
-        context = result["hookSpecificOutput"]["additionalContext"]
-
-        assert "# アクティビティ一覧" not in context
-
-
 class TestSessionStartHookErrorHandling:
     """エラーハンドリングのテスト"""
 
@@ -679,35 +578,6 @@ class TestSessionStartHookErrorHandling:
         stdout = result.stdout.strip()
         assert json.loads(stdout) == {}
         assert "capture_signal_safe failed" in result.stderr
-
-
-class TestSessionStartHookSyncPolicy:
-    """sync_policyの注入テスト"""
-
-    def test_sync_policy_shown_when_set(self, temp_db):
-        """CALM_SYNC_POLICY設定時にsync_policyセクションが出力される"""
-        result = _run_session_start_hook(
-            temp_db, extra_env={"CALM_SYNC_POLICY": "PRマージ済みは自動で閉じて"}
-        )
-        context = result["hookSpecificOutput"]["additionalContext"]
-        assert "# sync_policy" in context
-        assert "PRマージ済みは自動で閉じて" in context
-
-    def test_sync_policy_hidden_when_unset(self, temp_db):
-        """CALM_SYNC_POLICY未設定時にsync_policyセクションが出力されない"""
-        result = _run_session_start_hook(
-            temp_db, env_remove=["CALM_SYNC_POLICY"]
-        )
-        context = result["hookSpecificOutput"]["additionalContext"]
-        assert "# sync_policy" not in context
-
-    def test_sync_policy_hidden_when_empty(self, temp_db):
-        """CALM_SYNC_POLICY空文字時にsync_policyセクションが出力されない"""
-        result = _run_session_start_hook(
-            temp_db, extra_env={"CALM_SYNC_POLICY": ""}
-        )
-        context = result["hookSpecificOutput"]["additionalContext"]
-        assert "# sync_policy" not in context
 
 
 class TestSessionStartHookTier2AndFixedNav:
@@ -1401,7 +1271,7 @@ class TestSessionStartHookContextBudget:
         for i in range(2):
             _seed_habit(f"標準的な長さの振る舞い内容その{i}")
 
-        result = _run_session_start_hook(temp_db, env_remove=["CALM_SYNC_POLICY"])
+        result = _run_session_start_hook(temp_db)
         context = result["hookSpecificOutput"]["additionalContext"]
 
         assert len(context) <= 1900, (
