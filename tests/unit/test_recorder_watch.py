@@ -329,6 +329,73 @@ class TestMainDeath:
         assert _mock_subprocess == [["tmux", "kill-session", "-t", f"calm-rec-{main_sid[:8]}"]]
 
 
+class TestOffsetLostRecovery:
+    def test_jumps_to_last_complete_line_and_updates_last_uuid(self, tmp_path, monkeypatch):
+        """last_uuidが見つからず取りこぼした(offset_lost)ときの復帰先を確かめる。
+
+        書きかけの末尾行(改行未到達)の途中を指さないこと、last_uuidも
+        その新しいbyte_offsetと矛盾しない値(最後の完結行のuuid)に
+        更新されることの両方を確かめる。更新しないと、次にoffsetがずれた
+        ときも同じ古いuuidで探しにいき、見つからずこの経路を繰り返しうる。
+        """
+        e1 = _entry("assistant", "u1", text="a")
+        e2 = _entry("assistant", "u2", text="b")
+        run_dir, transcript = _setup_run(tmp_path, transcript_lines=[e1, e2])
+        complete_size = transcript.stat().st_size
+        with open(transcript, "a", encoding="utf-8") as f:
+            f.write(json.dumps(_entry("assistant", "u3", text="c"), ensure_ascii=False))
+            # 改行を書かない(書きかけ)
+
+        # last_uuidが実在しない値、byte_offsetも行境界ではない値にして
+        # 取りこぼしを強制する。
+        cursor = dict(hook._DEFAULT_CURSOR)
+        cursor["byte_offset"] = 3
+        cursor["last_uuid"] = "does-not-exist"
+        (run_dir / "cursor.json").write_text(json.dumps(cursor), encoding="utf-8")
+
+        _mock_main_alive(monkeypatch)
+        sleep, now = _stub_sleep_and_clock()
+        code, stderr = _run_hook(cwd=run_dir, sleep=sleep, now=now)
+
+        assert code == 2
+        assert "DONE -" in stderr  # u3が書きかけのままなので、片にできる中身が無い
+        cursor_after = _cursor(run_dir)
+        assert cursor_after["offset_lost"] == 1
+        assert cursor_after["byte_offset"] == complete_size  # u3の途中を指していない
+        assert cursor_after["last_uuid"] == "u2"  # 最後の完結行に揃っている
+
+
+class TestActivityIdAtCursorBackfillInit:
+    def test_initializes_from_already_read_range_when_cursor_starts_null(self, tmp_path, monkeypatch):
+        """cursor.jsonの初期値がactivity_id_at_cursor=nullでも、既読範囲に
+        check_inがあれば遡って正しいactivity_idを持たせる。
+
+        通常の起動（開始位置は末尾から）で書かれるcursorの形を模している。
+        """
+        checkin = _entry(
+            "assistant", "u1",
+            tool_calls=["mcp__plugin_calm_calm__check_in"],
+            tool_inputs=[{"activity_id": 42}],
+        )
+        run_dir, transcript = _setup_run(tmp_path, transcript_lines=[checkin])
+        already_read_offset = transcript.stat().st_size
+
+        cursor = dict(hook._DEFAULT_CURSOR)
+        cursor["byte_offset"] = already_read_offset
+        cursor["last_uuid"] = "u1"
+        (run_dir / "cursor.json").write_text(json.dumps(cursor), encoding="utf-8")
+
+        _append_jsonl(transcript, [_entry("assistant", "u2", text="more")])
+        _mock_main_dead(monkeypatch)  # 閾値に頼らず、残り全部を渡す経路で確かめる
+
+        sleep, now = _stub_sleep_and_clock()
+        code, _ = _run_hook(cwd=run_dir, sleep=sleep, now=now)
+
+        assert code == 2
+        chunk = (run_dir / "chunks" / "0001.md").read_text(encoding="utf-8")
+        assert "activity_id: 42" in chunk
+
+
 class TestClearSessionIsolation:
     def test_clear_session_does_not_touch_cursor(self, tmp_path, monkeypatch):
         monkeypatch.setattr(hook, "CHAR_THRESHOLD", 1)

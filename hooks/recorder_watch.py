@@ -84,7 +84,6 @@ _DEFAULT_CURSOR: dict = {
 def run_dir_for(main_sid: str) -> Path:
     """main_sidに対応する実行ディレクトリを返す。
 
-    起動ラッパー（別PR）と本モジュールの両方が同じ規則を使う。
     `HookState.clear_session` が触るファイル名パターン（`*_<safe_sid>`、
     非再帰glob）とは重ならないため、SessionStartでのクリアの影響を受けない。
     """
@@ -193,13 +192,19 @@ def _locate_offset_by_uuid(path: Path, target_uuid: str | None) -> int | None:
     return None
 
 
-def _read_diff(path: Path, byte_offset: int, last_uuid: str | None) -> tuple[list[_Line], int, bool]:
+def _read_diff(
+    path: Path, byte_offset: int, last_uuid: str | None
+) -> tuple[list[_Line], int, bool, str | None]:
     """cursorのbyte_offsetから差分を読む。
 
     Returns:
-        (新規行, 新byte_offset, offset_lostが起きたか)。offset_lost時は
-        戻り値の行は空、新byte_offsetはファイル末尾（安全側に倒し、過去分を
-        再送しない）。
+        (新規行, 新byte_offset, offset_lostが起きたか, offset_lost時の新last_uuid)。
+        offset_lost時は戻り値の行は空。新byte_offsetは、ファイル全体を
+        読み直したときの最後の完結行の直後（書きかけの末尾行の途中を
+        指さない）。last_uuidもその位置と矛盾しない値へ更新する
+        （更新しないと、次にbackfillでoffsetがずれたときも同じ古いuuidで
+        探しにいき、見つからずこの経路を繰り返しうる）。offset_lostで
+        なければ4つ目の要素はNone。
 
     # ponytail: 片が確定するまで、確定済みbyte_offsetから毎周期まるごと
     # 読み直す（ポーリング間でインメモリのバッファを持ち越さない）。
@@ -210,11 +215,12 @@ def _read_diff(path: Path, byte_offset: int, last_uuid: str | None) -> tuple[lis
     if not _offset_looks_valid(path, offset):
         recovered = _locate_offset_by_uuid(path, last_uuid)
         if recovered is None:
-            size = path.stat().st_size if path.exists() else 0
-            return [], size, True
+            all_lines, end_offset = _read_lines(path, 0)
+            new_last_uuid = _last_uuid_up_to(all_lines, end_offset)
+            return [], end_offset, True, new_last_uuid
         offset = recovered
     lines, new_offset = _read_lines(path, offset)
-    return lines, new_offset, False
+    return lines, new_offset, False, None
 
 
 def _last_uuid_up_to(lines: list[_Line], end_offset: int) -> str | None:
@@ -445,8 +451,9 @@ def _emit_chunk_message(run_dir: Path, pending: dict) -> int:
 def _ensure_activity_id_at_cursor(cursor: dict, main_transcript: Path, cursor_path: Path) -> None:
     """activity_id_at_cursorが未設定のまま既読分がある場合、遡って初期化する。
 
-    起動ラッパーがcursor.jsonの初期値をactivity_id_at_cursor=nullで書いた
-    場合の穴埋め。境界の無い最初の片のactivity_idを正しくするために要る。
+    境界の無い最初の片のactivity_idを正しくするために要る（既読分の中に
+    check_in/add_activityがあっても、activity_id_at_cursorが未設定のままだと
+    その片は「未設定」表示になってしまう）。
     """
     if cursor.get("activity_id_at_cursor") is not None:
         return
@@ -553,10 +560,13 @@ def _watch(run_dir: Path, hook_input: dict, *, sleep, now) -> int:
         main_alive = process_start_signature(main_pid) == main_pid_started_at
         touch_marker(main_sid)
 
-        lines, new_offset, lost = _read_diff(main_transcript, cursor["byte_offset"], cursor["last_uuid"])
+        lines, new_offset, lost, lost_uuid = _read_diff(
+            main_transcript, cursor["byte_offset"], cursor["last_uuid"]
+        )
         if lost:
             cursor["offset_lost"] = cursor.get("offset_lost", 0) + 1
             cursor["byte_offset"] = new_offset
+            cursor["last_uuid"] = lost_uuid
             _write_cursor(cursor_path, cursor)
             lines = []
 
