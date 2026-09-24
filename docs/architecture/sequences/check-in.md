@@ -103,7 +103,7 @@ sequenceDiagram
 ## 3. ステップ詳細
 
 1. ユーザーがcheck-inを依頼する。スキルがアクティビティ選択を仲介する場合もある。
-2-3. スキルが `check_in(activity_id)` MCPツールを呼び、ツールは `checkin_service.check_in` に委譲する。session_idは `get_caller_session_id()`（起動器が発行する恒久識別子を優先し、無ければMCPコンテキストの `ctx.session_id` にフォールバック）で解決する。
+2-3. スキルが `check_in(activity_id)` MCPツールを呼び、ツールは `checkin_tier_service.collect_and_assemble` に委譲する。session_idは `get_caller_session_id()`（起動器が発行する恒久識別子を優先し、無ければMCPコンテキストの `ctx.session_id` にフォールバック）で解決する。
 4-5. activityをSELECTする。存在しなければ `NOT_FOUND` を返して終了する。
 6-8. アクティビティのタグを取得する（`activity_tags` JOIN `tags`）。
 9-12. tagsをもとに `collect_tag_notes_for_injection` を呼びtag_notesを集める。セッション内初回タグのみ注入されるが、`intent:` namespaceは毎回注入される。
@@ -174,7 +174,6 @@ sequenceDiagram
 - recompose hintsの閾値未達: `env.hints` キーごと省略される。
 - pinsテーブルの `source_type='tag'` は注入対象を5種に限定（decision/log/material/topic/activity）。`target_type='tag'` は処理しない。
 - goalブロックの組み立てで例外が起きる: `control.goal` にerror形が入るだけで他のキーは失われない。machine_errorのsignalが同じ接続で記録される。
-- orch_managedのactivity: `env.hints`（即時配達hint）だけが抑止される。`control.asks`は抑止しない。
 
 ## 6. 関連
 
