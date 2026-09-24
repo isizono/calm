@@ -7,6 +7,10 @@ type 名 → code mapping を集約する純粋層。
 対象にすると自然文中の「type 名+数字」の並び (例: "Activity 1") を誤って書き換える
 リスクがあるため、`#` 必須の `RAW_CITE_FULLWORD_HASH_REQUIRED_PATTERN` のみを使う。
 DB アクセス・ファイル I/O は持たない。
+
+`RAW_CITE_FULLWORD_PATTERN` の境界判定 (`.` / `>` の除外) は、シェルコマンド中の
+ファイル拡張子や fd 番号リダイレクト (`2>&1` 等) を type 名+数字の並びと
+誤認しないためのもの。詳細は当該パターン直前のコメントを参照。
 """
 import re
 
@@ -38,8 +42,13 @@ RAW_CITE_CODE_PATTERN = re.compile(
 # RAW_CITE_CODE_PATTERN と同様に、範囲表記の終端 ID を任意キャプチャし、
 # `/` 区切りの複数 ID 列挙を独立したトークンとして認識できるよう lookbehind
 # の除外対象から `/` を外している。
+# 前方 lookbehind は `.` も除外する。除外しないと、シェルコマンド中のファイル
+# 拡張子境界 (例: 拡張子 log のファイル名の直後にスペース+数字が続く形) を
+# type 名+数字の並びと誤認する。
+# 後方 lookahead は `>` も除外する。除外しないと、シェルの fd 番号リダイレクト
+# (例: `2>&1`) の数字部分を ID の末尾と誤認する。
 RAW_CITE_FULLWORD_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9_])(log|decision|activity|material|topic)(?: ?#| )(\d+)(?:-(\d+))?(?![A-Za-z0-9_])",
+    r"(?<![A-Za-z0-9_.])(log|decision|activity|material|topic)(?: ?#| )(\d+)(?:-(\d+))?(?![A-Za-z0-9_>])",
     re.IGNORECASE,
 )
 

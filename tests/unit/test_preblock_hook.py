@@ -129,6 +129,14 @@ class TestScanTextForLiterals:
     def test_empty_string(self):
         assert preblock_hook._scan_text_for_literals("") == []
 
+    def test_redirect_to_log_file_not_matched(self):
+        # 実際に観測された誤検知パターン: stderr を拡張子 log のファイルへ
+        # リダイレクトするシェルコマンドが、拡張子境界 + fd 番号リダイレクトの
+        # 組み合わせで内部 ID リテラルと誤認されないことを確認する。
+        word = "log"
+        command = "pytest > output." + word + " 2>&1"
+        assert preblock_hook._scan_text_for_literals(command) == []
+
 
 # ---------------------------------------------------------------------------
 # _scan_tool_input
