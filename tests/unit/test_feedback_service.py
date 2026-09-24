@@ -436,3 +436,28 @@ class TestAddFeedbackNote:
         r1 = fs.add_feedback_note(name="note-target", kind="stumble", body="1回目")
         r2 = fs.add_feedback_note(name="note-target", kind="stumble", body="2回目")
         assert r2["read_mark"] > r1["read_mark"]
+
+    def test_no_hint_key_when_pending_stumbles_below_threshold(self, temp_db):
+        """hintが無いときのadd_feedback_noteの戻り値は、従来と同じ形(keyが3つのみ)。"""
+        _create("note-target")
+        r1 = fs.add_feedback_note(name="note-target", kind="stumble", body="1回目")
+        assert set(r1) == {"ok", "note", "read_mark"}
+        r2 = fs.add_feedback_note(name="note-target", kind="stumble", body="2回目")
+        assert set(r2) == {"ok", "note", "read_mark"}
+
+    def test_hint_key_appears_on_3rd_pending_stumble(self, temp_db):
+        _create("note-target")
+        fs.add_feedback_note(name="note-target", kind="stumble", body="1回目")
+        fs.add_feedback_note(name="note-target", kind="stumble", body="2回目")
+        r3 = fs.add_feedback_note(name="note-target", kind="stumble", body="3回目")
+        assert "hint" in r3
+        assert "未処理の躓き3件" in r3["hint"]
+
+    def test_hint_key_absent_when_note_added(self, temp_db):
+        """noteを足す呼び出し自体ではhintは付かない(pending stumblesの計算はnote挿入後を基準にする)。"""
+        _create("note-target")
+        fs.add_feedback_note(name="note-target", kind="stumble", body="1回目")
+        fs.add_feedback_note(name="note-target", kind="stumble", body="2回目")
+        fs.add_feedback_note(name="note-target", kind="stumble", body="3回目")
+        r_note = fs.add_feedback_note(name="note-target", kind="note", body="対応した")
+        assert "hint" not in r_note

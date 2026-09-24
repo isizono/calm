@@ -865,7 +865,7 @@ Claude Codeセッション間の「CLI表示名（例: `workspace-a2`）→人�
 | kind | string | yes | - | `stumble`（踏んだ・躓いた事実） \| `note`（それ以外の経緯） |
 | body | string | yes | - | ノート本文（500字以内） |
 
-**返り値**: 成功時 `{ok: true, note: {kind, body, created_at}, read_mark: int}`。
+**返り値**: 成功時 `{ok: true, note: {kind, body, created_at}, read_mark: int, hint?: string}`。`hint`は最後の`note`より後の`stumble`が3件以上のときだけ付き、無ければキー自体が無い。
 **エラー**: `{ok: false, error: {code, message, fix}}`。codeは`VALIDATION_ERROR`（kind不正・body空/超過）、`NOT_FOUND`（nameのエントリが存在しない）、`DATABASE_ERROR`。
 **動作**: read_mark引数は取らない（いつでも書ける）。削除済みエントリにも足せる（観測記録は削除後も続けられる）。`feedback_notes`は追記専用（UPDATE/DELETEはDBトリガーで拒否）。
 

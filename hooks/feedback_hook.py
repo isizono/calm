@@ -10,6 +10,9 @@ mode値が不正のいずれも mode='off' 相当としてfail-open（何も出�
 で握って終了する（hook自体の不具合で他のtool実行を止めないため）。保存済みエントリの
 条件JSON評価で例外（壊れた正規表現等）が出た場合は、そのエントリだけ評価をスキップし
 他のエントリの評価は継続する（_matches内で握る）。
+
+サブエージェント発のUserPromptSubmitでは発話タイミングの配達を止める（ツール失敗・
+実行直前の配達は続ける）。
 """
 from __future__ import annotations
 
@@ -26,7 +29,11 @@ if str(_project_root) not in sys.path:
 
 from src.env_compat import env_get  # noqa: E402
 from src.harness import select_harness  # noqa: E402
-from src.services.feedback_rules import evaluate_condition  # noqa: E402
+from src.services.feedback_rules import (  # noqa: E402
+    PENDING_STUMBLES_SQL,
+    evaluate_condition,
+    maintenance_hint,
+)
 
 DEFAULT_DB_PATH = Path.home() / ".claude" / ".claude-code-memory" / "discussion.db"
 
@@ -36,8 +43,9 @@ TOOL_FAIL_BUDGET_CHARS = 600
 PRE_TOOL_BUDGET_CHARS = 600
 
 BOOTSTRAP_MESSAGE = (
-    "躓いた・エラーに遭遇したら、write_feedback_entryで知見を書くか、"
-    "既存エントリにadd_feedback_noteでノートを足してください。"
+    "躓いた・エラーに遭遇したら、get_feedback_entriesで既存を確かめ、"
+    "あればadd_feedback_noteでノートを足し、無ければwrite_feedback_entryで"
+    "知見を書いてください。"
 )
 
 
@@ -71,7 +79,8 @@ def _wrap(body: str) -> str:
 
 def _fetch_entries(conn: sqlite3.Connection, *, strength: str, timing: str) -> list[sqlite3.Row]:
     return conn.execute(
-        "SELECT * FROM feedback_entries WHERE strength = ? AND timing = ? AND deleted_at IS NULL ORDER BY id",
+        f"SELECT e.*, {PENDING_STUMBLES_SQL} AS pending_stumbles FROM feedback_entries e "
+        "WHERE e.strength = ? AND e.timing = ? AND e.deleted_at IS NULL ORDER BY e.id",
         (strength, timing),
     ).fetchall()
 
@@ -132,7 +141,9 @@ def _deliver(conn: sqlite3.Connection, session_id: str, prompt_id: str, shown: l
 
 
 def _notify_render(entry: sqlite3.Row) -> str:
-    return f"- {entry['body']}({entry['delivered_count'] + 1}回目)"
+    line = f"- {entry['body']}({entry['delivered_count'] + 1}回目)"
+    hint = maintenance_hint(entry["delivered_count"] + 1, entry["pending_stumbles"])
+    return line + ("\n" + hint if hint else "")
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +154,9 @@ def _notify_render(entry: sqlite3.Row) -> str:
 def _handle_user_prompt_submit(harness, event: dict) -> None:
     session_id = event.get("session_id") or ""
     if not session_id:
+        harness.emit_empty()
+        return
+    if event.get("agent_type"):
         harness.emit_empty()
         return
     prompt = event.get("prompt")
@@ -279,7 +293,9 @@ def _fingerprint(tool_input: dict) -> str:
 
 
 def _deny_render(entry: sqlite3.Row) -> str:
-    return f"- {entry['body']}"
+    line = f"- {entry['body']}"
+    hint = maintenance_hint(entry["delivered_count"] + 1, entry["pending_stumbles"])
+    return line + ("\n" + hint if hint else "")
 
 
 def _handle_pre_tool_use(harness, event: dict) -> None:

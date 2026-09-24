@@ -12,7 +12,13 @@ import sqlite3
 from typing import Optional
 
 from src.db import get_connection
-from src.services.feedback_rules import ConditionError, parse_condition, validate_condition
+from src.services.feedback_rules import (
+    PENDING_STUMBLES_SQL,
+    ConditionError,
+    maintenance_hint,
+    parse_condition,
+    validate_condition,
+)
 
 _NAME_RE = re.compile(r"[a-z0-9-]+")
 _VALID_STRENGTHS = ("notify", "block")
@@ -298,8 +304,12 @@ def add_feedback_note(name: str, kind: str, body: str) -> dict:
         note_row = conn.execute(
             "SELECT id, kind, body, created_at FROM feedback_notes WHERE id = ?", (cur.lastrowid,)
         ).fetchone()
+        pending_row = conn.execute(
+            f"SELECT {PENDING_STUMBLES_SQL} AS p FROM feedback_entries e WHERE e.id = ?",
+            (entry_id,),
+        ).fetchone()
         conn.commit()
-        return {
+        result = {
             "ok": True,
             "note": {
                 "kind": note_row["kind"],
@@ -308,6 +318,10 @@ def add_feedback_note(name: str, kind: str, body: str) -> dict:
             },
             "read_mark": note_row["id"],
         }
+        hint = maintenance_hint(0, pending_row["p"])
+        if hint:
+            result["hint"] = hint
+        return result
     except sqlite3.Error as e:
         conn.rollback()
         return _reject("DATABASE_ERROR", str(e))
