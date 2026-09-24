@@ -187,7 +187,8 @@ Claudeが同じところで躓き続けるのを防ぐため、Claude自身が�
 **返り値**: `{created: [...], errors: [{index, error}, ...], related_records: [...]}`。
 `related_records`（応答トップレベル、呼び出し全体で類似する既存記録上位3件、各
 `{type, id, title, snippet}`。similarity降順、topicを除く全種別が候補、閾値未満・
-セッション内で提示済みの記録は含まれない）は関連する既存記録に気づくための導線。
+embeddingサーバー未起動・セッション内で提示済みの記録は含まれない）は関連する既存記録に
+気づくための導線。
 **エラー**: 個別アイテム単位でerrorsに格納される。最大件数超過は全体エラー。
 **関連**: 決定に至る経緯のスナップショット。`retract` で論理削除可能。
 
@@ -417,7 +418,7 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 | source | string | yes | - | データ出自（ユーザー発言/公式ドキュメント/コード調査 等） |
 | related | list[RelatedRef] | no | null | 関連エンティティ |
 
-**返り値**: `{material_id: int, related_records: [...]}`。`related_records`（類似する既存記録上位3件、各`{type, id, title, snippet}`。similarity降順、topicを除く全種別が候補、閾値未満・セッション内で提示済みの記録は含まれない）は関連する既存記録に気づくための導線。
+**返り値**: `{material_id: int, related_records: [...]}`。`related_records`（類似する既存記録上位3件、各`{type, id, title, snippet}`。similarity降順、topicを除く全種別が候補、閾値未満・embeddingサーバー未起動・セッション内で提示済みの記録は含まれない）は関連する既存記録に気づくための導線。
 
 ### 2.15 update_material
 

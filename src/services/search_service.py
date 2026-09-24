@@ -2719,14 +2719,25 @@ def build_related_records_manifest(
     _presented_records_register(caller_session_id, [key for key, _ in top])
 
     source_type = created_items[0]["source_type"]
+    threads: list[threading.Thread] = []
     for source_id, attachments in by_source.items():
-        _record_injection_telemetry_async(
+        threads.extend(_record_injection_telemetry_async(
             trigger_tool=trigger_tool,
             source_type=source_type,
             source_id=source_id,
             attachments=attachments,
             caller_session_id=caller_session_id,
-        )
+        ))
+    # add_decisions/add_logs/add_material はSAVEPOINTベースの遅延トランザクションで
+    # 書込を行う呼び出し元であり、その直後に同じ呼び出し元が連続してadd_*を呼ぶことがある。
+    # present書込を検出不能なまま次の書込と競走させると、WALスナップショットが
+    # 古くなった側が busy_timeout を待たずに即座に database is locked になりうる
+    # （PR #760が診断したembeddingバックフィルスレッドと同型のレース）。ここで
+    # 短時間joinしておくことで、通常時（書込は数ms程度で終わる）はレース窓をほぼ塞ぐ。
+    # 失敗握りつぶし規約は変えない: join自体は例外を投げず、timeout超過時は
+    # threadを残したまま制御を返す（既存telemetryと同じ「投げっぱなし」のまま）。
+    for t in threads:
+        t.join(timeout=2.0)
 
     return manifest
 

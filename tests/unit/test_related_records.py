@@ -397,3 +397,45 @@ class TestInjectionTelemetryPresentRows:
         assert row["rank"] == 1
         assert row["similarity"] == pytest.approx(0.9, abs=1e-3)
         assert row["caller_session_id"] == "sess-present-1"
+
+
+class TestAddMaterialRelatedRecordsWiring:
+    """add_material戻り値のrelated_recordsの配線とcaller_session_id伝搬を検証する"""
+
+    def test_returns_related_records_with_matching_existing_material(
+        self, temp_db, controlled_embeddings
+    ):
+        """類似する既存materialがrelated_recordsに含まれる（builderへの配線確認）"""
+        controlled_embeddings["MARKER_MAT_EXISTING"] = _mix(0.9)
+        existing = add_material(
+            title="既存資材", content="MARKER_MAT_EXISTING 本文",
+            tags=DEFAULT_TAGS, source="test",
+        )
+
+        controlled_embeddings["MARKER_MAT_NEW"] = ANCHOR_VEC
+        result = add_material(
+            title="新規資材", content="MARKER_MAT_NEW 本文",
+            tags=DEFAULT_TAGS, source="test",
+        )
+
+        assert "related_records" in result
+        related_ids = [r["id"] for r in result["related_records"]]
+        assert existing["material_id"] in related_ids
+
+    def test_propagates_caller_session_id_to_builder(self, temp_db, monkeypatch):
+        """add_materialに渡したcaller_session_idがbuild_related_records_manifestまで
+        伝搬する（セッション内重複排除・injection_telemetryのcaller_session_id記録の前提）"""
+        captured = {}
+
+        def spy(*args, **kwargs):
+            captured["caller_session_id"] = kwargs.get("caller_session_id")
+            return []
+
+        monkeypatch.setattr(search_service, "build_related_records_manifest", spy)
+
+        add_material(
+            title="t", content="c", tags=DEFAULT_TAGS, source="test",
+            caller_session_id="sess-material-1",
+        )
+
+        assert captured["caller_session_id"] == "sess-material-1"

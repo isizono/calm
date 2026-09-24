@@ -59,7 +59,10 @@ class TestGetByIdsUsesStableSessionIdentity:
 
 
 class TestGetMaterialUsesStableSessionIdentity:
-    def test_passes_resolved_identity_as_caller_session_id(self, monkeypatch):
+    def test_passes_resolved_identity_as_caller_session_id(self, temp_db, monkeypatch):
+        # get_materialのラッパーはmaterial_service.get_materialをmockしても、後段の
+        # citation flavor適用（_apply_flavor_to_single）が実DBへcitationsテーブルを
+        # 問い合わせる。temp_dbで隔離しないと環境依存のDBパスに実接続してしまう。
         monkeypatch.setattr(
             main_module.material_service, "get_material",
             MagicMock(return_value={"material_id": 1, "title": "t", "content": "c",
