@@ -11,6 +11,9 @@ from pathlib import Path
 
 import pytest
 
+from hooks.hook_state import HookState
+from hooks.recorder_marker import write_marker
+
 # プロジェクトルート
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -529,6 +532,112 @@ class TestNudge:
         events = _read_events(state_dir, "test-session")
         follow_up_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "follow_up_after_decision"]
         assert len(follow_up_nudges) == 0
+
+
+class TestRecorderMarkerSuppressesNudges:
+    """記録役の目印ファイルがあるセッションではrecord_missing nudgeを抑制する。
+
+    follow_up_after_decision/logs_sparseの抑制も同一ガード（hooks/stop_hook.py::
+    _handle_nudges冒頭のearly return）で行われるため、種類ごとの生成ロジックは
+    tests/unit/test_stop_hook_recorder_gate.pyで直接検証済み。ここではHOOK_STATE_DIR
+    経由の実配線（目印ファイルの実配置・実psコマンドでの生死判定）を確認する。
+    """
+
+    def _write_marker(
+        self, state_dir: str, session_id: str, pid: int, monkeypatch
+    ) -> None:
+        """write_marker経由で目印ファイルを実際に書く(実psコマンドを使う)。
+        子プロセス(stop_hook.py)が読むstate_dirへ書き込むため、書き込み中だけ
+        HookState.BASE_DIRを一時的にそこへ向ける。"""
+        monkeypatch.setattr(HookState, "BASE_DIR", Path(state_dir))
+        write_marker(session_id, pid)
+
+    def _seed_no_recording_for_4_turns(self, env_setup) -> Path:
+        state_dir = env_setup["state_dir"]
+        _write_events(
+            [{"e": "tool", "name": "check_in", "turn": 1, "activity_id": 1}],
+            state_dir, "test-session",
+        )
+        Path(state_dir, "current_turn_test-session").write_text("1")
+        Path(state_dir, "checked_in_activity_test-session").write_text("1")
+
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("turn2"),
+                _make_assistant_entry(text="response 2"),
+                _make_user_entry("turn3"),
+                _make_assistant_entry(text="response 3"),
+                _make_user_entry("turn4"),
+                _make_assistant_entry(text="response 4"),
+            ],
+            transcript,
+        )
+        return transcript
+
+    def test_record_nudge_suppressed_when_recorder_pid_alive(self, env_setup, monkeypatch):
+        """目印ファイルのpidが生存(このテストプロセス自身)+起動時刻一致 → nudgeが出ない"""
+        state_dir = env_setup["state_dir"]
+        self._write_marker(state_dir, "test-session", pid=os.getpid(), monkeypatch=monkeypatch)
+        transcript = self._seed_no_recording_for_4_turns(env_setup)
+
+        result = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+        assert result["decision"] == "approve"
+
+        events = _read_events(state_dir, "test-session")
+        record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record_missing"]
+        assert record_nudges == []
+
+    def test_record_nudge_generated_when_marker_pid_dead(self, env_setup, monkeypatch):
+        """目印ファイルはあるがpidが死んでいる → 通常どおりnudgeが出る(フェイルセーフ)"""
+        state_dir = env_setup["state_dir"]
+        self._write_marker(state_dir, "test-session", pid=999999999, monkeypatch=monkeypatch)
+        transcript = self._seed_no_recording_for_4_turns(env_setup)
+
+        result = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+        assert result["decision"] == "approve"
+
+        events = _read_events(state_dir, "test-session")
+        record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record_missing"]
+        assert len(record_nudges) >= 1
+
+    def test_record_nudge_generated_when_marker_json_is_broken(self, env_setup):
+        """目印ファイルが壊れたJSON → 通常どおりnudgeが出る(フェイルセーフ)"""
+        state_dir = env_setup["state_dir"]
+        marker_dir = Path(state_dir) / "recorder"
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        (marker_dir / "test-session.json").write_text("{not valid json")
+        transcript = self._seed_no_recording_for_4_turns(env_setup)
+
+        result = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+        assert result["decision"] == "approve"
+
+        events = _read_events(state_dir, "test-session")
+        record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record_missing"]
+        assert len(record_nudges) >= 1
+
+    def test_checkin_block_unaffected_by_recorder_marker(self, env_setup, monkeypatch):
+        """記録役の目印ファイルがあってもcheck-in強制block(a)は普段どおり発火する"""
+        state_dir = env_setup["state_dir"]
+        self._write_marker(state_dir, "test-session", pid=os.getpid(), monkeypatch=monkeypatch)
+
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("hi"),
+                CONTEXT_RETRIEVAL_ENTRY,
+                _make_assistant_entry(text="response 1"),
+                _make_user_entry("continue"),
+                _make_assistant_entry(text="response 2"),
+                _make_user_entry("continue2"),
+                _make_assistant_entry(text="response 3"),
+            ],
+            transcript,
+        )
+
+        result = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+        assert result["decision"] == "block"
+        assert "check-in" in result["reason"]
 
 
 class TestStateUpdatedOnApprove:
