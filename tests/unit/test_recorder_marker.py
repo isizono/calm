@@ -110,6 +110,20 @@ class TestTouchMarker:
     def test_no_error_when_marker_missing(self, state_dir):
         touch_marker(_SESSION_ID)  # 例外を出さない
 
+    def test_no_error_when_os_utime_raises_permission_error(self, state_dir, monkeypatch):
+        """os.utimeがOSError系(PermissionError等)を出しても、見張りを落とさない
+        よう外に漏らさない。"""
+        _write_marker_with_ps_output(
+            _SESSION_ID, 1234, "Thu Jul 24 09:32:04 2026\n", monkeypatch
+        )
+
+        def fake_utime(path, times):
+            raise PermissionError("permission denied")
+
+        monkeypatch.setattr(os, "utime", fake_utime)
+
+        touch_marker(_SESSION_ID)  # 例外を出さない
+
 
 class TestFreshnessGate:
     """pid・起動時刻は一致するがmtimeが鮮度期限を過ぎている場合の判定"""

@@ -60,11 +60,15 @@ def touch_marker(session_id: str) -> None:
 
     見張り(記録役のポーリングプロセス)がポーリングのたびに呼ぶ想定。
     pidが生きていても見張り自体が止まっていれば記録は回っていないため、
-    is_recorder_attachedはこの鮮度も見る。ファイルが無い場合は何もしない。
+    is_recorder_attachedはこの鮮度も見る。ファイル欠落・権限エラー等の
+    OSError全般で何もしない。ここで例外を外に漏らすと見張り自体が落ちて
+    記録が止まってしまうため、mtime更新の失敗は無視して見張りを続行させる
+    (mtimeが更新されなければ鮮度切れとして催促が普段どおり戻るので、
+    握りつぶしても記録が失われたまま放置されることはない)。
     """
     try:
         os.utime(marker_path(session_id), None)
-    except FileNotFoundError:
+    except OSError:
         pass
 
 
