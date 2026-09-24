@@ -184,7 +184,10 @@ Claudeが同じところで躓き続けるのを防ぐため、Claude自身が�
 | --- | --- | --- | --- | --- |
 | items | list[object] | yes | - | 最大10件。各要素は `{topic_id, content, title?, tags?}` |
 
-**返り値**: `{created: [...], errors: [{index, error}, ...]}`。
+**返り値**: `{created: [...], errors: [{index, error}, ...], related_records: [...]}`。
+`related_records`（応答トップレベル、呼び出し全体で類似する既存記録上位3件、各
+`{type, id, title, snippet}`。similarity降順、topicを除く全種別が候補、閾値未満・
+セッション内で提示済みの記録は含まれない）は関連する既存記録に気づくための導線。
 **エラー**: 個別アイテム単位でerrorsに格納される。最大件数超過は全体エラー。
 **関連**: 決定に至る経緯のスナップショット。`retract` で論理削除可能。
 
@@ -200,8 +203,8 @@ Claudeが同じところで躓き続けるのを防ぐため、Claude自身が�
 - `tags`: 省略時はtopicのタグを継承。内容を表すタグを積極的に追加することが望ましい。namespace規約はdocs/architecture/invariants.mdの「タグnamespace」節を参照。
 - `propagate_to`: `{type: "habit" | "tag_note", content: string, tag?: string}`。tagはtype="tag_note"のとき必須。type="tag_note"は教訓・注意点のみに使い、仕様・手順の全文転記には使わない。
 
-**返り値**: `{created: [...], errors: [...], propagation_failed?: [...]}`。
-- `created`の各要素には`related_decisions`（同topic内の類似decision上位3件、各`{id, title, distance}`。embeddingサーバー未起動時は空配列）が付く。既存decisionとの矛盾・重複に気づくための導線。
+**返り値**: `{created: [...], errors: [...], related_decisions: [...], propagation_failed?: [...]}`。
+- `related_decisions`（応答トップレベル、呼び出し全体で同topic内の類似decision上位3件、各`{type, id, title, snippet}`。similarity降順、閾値未満・embeddingサーバー未起動・セッション内で提示済みのdecisionは含まれない）は既存decisionとの矛盾・重複に気づくための導線。
 - タグに`layer:direction`を含む要素には`existing_direction_decisions`（同domainの有効な方向性decision全件、自身除外・非ランク）と`direction_note`（supersede/併存の判断を促す文言）も付く。
 - `reason`に定型節があれば`precedent`（`{rejected_alternatives: 件数, scope: bool, verification_anchors: [文字列, ...], adjacent_check: [文字列, ...], warnings?: [文字列, ...]}`）をecho。書式ゆれ・空節・アンカー日付欠落等、または`intent:design`タグ付き要素で「隣接確認:」節が無い場合は`precedent_warnings`（文字列のリスト）も付く。いずれもsoft validationであり、decision作成自体は拒否しない。
 
@@ -413,6 +416,8 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 | tags | list[string] | yes | - | 1個以上 |
 | source | string | yes | - | データ出自（ユーザー発言/公式ドキュメント/コード調査 等） |
 | related | list[RelatedRef] | no | null | 関連エンティティ |
+
+**返り値**: `{material_id: int, related_records: [...]}`。`related_records`（類似する既存記録上位3件、各`{type, id, title, snippet}`。similarity降順、topicを除く全種別が候補、閾値未満・セッション内で提示済みの記録は含まれない）は関連する既存記録に気づくための導線。
 
 ### 2.15 update_material
 

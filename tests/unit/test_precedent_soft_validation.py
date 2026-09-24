@@ -242,7 +242,8 @@ class TestExistingResponseKeysUnchanged:
 
         assert_no_write_errors(result)
         created = result["created"][0]
-        assert "related_decisions" in created
+        assert "related_decisions" in result
+        assert "related_decisions" not in created
         assert created["propagation"]["status"] == "ok"
         assert created["propagation"]["type"] == "habit"
         # レスポンス軽量化された既存フィールドは従来通り除去される

@@ -13,6 +13,7 @@ from typing import Literal, Optional
 
 from sqlite_vec import serialize_float32
 
+from src import config
 from src.db import execute_query, get_connection, get_db_path, row_to_dict
 from src.services import embedding_service, precedent_pure
 from src.services.readable_id import strip_entity_id_inplace
@@ -30,6 +31,9 @@ logger = logging.getLogger(__name__)
 
 SEARCHABLE_TYPES = {'topic', 'decision', 'activity', 'log', 'material'}
 VALID_TYPES = SEARCHABLE_TYPES
+
+# 記録=クエリ添付でadd_logs/add_materialが使う候補type（全種別からtopicを除く）
+RELATED_RECORDS_CROSS_TYPES = ['decision', 'activity', 'material', 'log']
 
 GET_BY_IDS_MAX = 20
 
@@ -1116,6 +1120,108 @@ def find_similar_decisions(
 
     except (ValueError, RuntimeError, OSError, sqlite3.Error):
         logger.warning("find_similar_decisions failed", exc_info=True)
+        return []
+
+
+def find_related_records(
+    embedding: list[float],
+    entity_types: list[str],
+    exclude: set[tuple[str, int]],
+    topic_id: int | None = None,
+    limit: int = 10,
+) -> list[dict]:
+    """事前生成済みembeddingに類似する既存記録を複数typeにまたがってベクトル検索する。
+
+    記録=クエリ添付（add_logs/add_decisions/add_materialのbuilder）専用のKNN。
+    find_similar_decisions/find_similar_topicsと違い、type絞り込みが単一ではなく
+    entity_typesで複数指定できる点と、自身以外に「同じ呼び出しで作った他の記録」も
+    excludeでまとめて除外できる点が異なる。
+
+    Args:
+        embedding: 事前生成済みのembeddingベクトル（呼び出し元が生成済みのものを渡す。
+            本関数はencode_queryを呼ばない）
+        entity_types: 候補とするsource_typeのリスト（例: ["decision"]、
+            ["decision", "activity", "material", "log"]）
+        exclude: 候補から除外する (type, id) の集合。新規作成された自身、および
+            同一バッチで作られた他の記録を渡す
+        topic_id: 指定時はdecisionのbelongs_to関係でそのtopicに絞る。entity_typesに
+            'decision'以外を含む場合はtopic_idを指定しないこと（join対象がdecisionの
+            belongs_to relationに限定されるため、他typeの候補が誤って絞り込まれる）
+        limit: KNNのk（over-fetch用。呼び出し元が閾値・既出除外・上位N件選抜を
+            後段で行う前提のため、最終的な採用件数より広めに取ること）
+
+    Returns:
+        [{"type": str, "id": int, "title": str, "distance": float}, ...] distance昇順。
+        embeddingサーバー未起動時等、embedding自体がNoneの場合やKNN失敗時は空リスト。
+    """
+    if not entity_types:
+        return []
+    try:
+        blob = serialize_float32(embedding)
+        type_placeholders = ",".join("?" * len(entity_types))
+        params: list = list(entity_types)
+
+        joins = ""
+        topic_clause = ""
+        if topic_id is not None:
+            joins = (
+                " JOIN relations r ON r.source_type = si.source_type AND r.source_id = si.source_id"
+                " AND r.target_type = 'topic' AND r.relation_type = 'belongs_to'"
+            )
+            topic_clause = " AND r.target_id = ?"
+            params.append(topic_id)
+
+        exclude_clause = ""
+        for exclude_type, exclude_id in exclude:
+            exclude_clause += " AND NOT (si.source_type = ? AND si.source_id = ?)"
+            params.extend([exclude_type, exclude_id])
+
+        query = f"""
+        WITH candidates AS (
+            SELECT si.id
+            FROM search_index si
+            {joins}
+            WHERE si.source_type IN ({type_placeholders})
+              {topic_clause}
+              {exclude_clause}
+        )
+        SELECT rowid, distance FROM vec_index
+        WHERE embedding MATCH ?
+          AND rowid IN (SELECT id FROM candidates)
+          AND k = ?
+        ORDER BY distance
+        """
+        vec_rows = execute_query(query, (*params, blob, limit))
+        if not vec_rows:
+            return []
+
+        vec_data = {}
+        for row in vec_rows:
+            r = row_to_dict(row)
+            vec_data[r["rowid"]] = r["distance"]
+
+        rowids = list(vec_data.keys())
+        rowid_placeholders = ",".join("?" * len(rowids))
+        resolved_rows = execute_query(
+            f"SELECT id, source_type, source_id, title FROM search_index WHERE id IN ({rowid_placeholders})",
+            tuple(rowids),
+        )
+
+        results = []
+        for row in resolved_rows:
+            r = row_to_dict(row)
+            results.append({
+                "type": r["source_type"],
+                "id": r["source_id"],
+                "title": r["title"],
+                "distance": round(vec_data[r["id"]], 4),
+            })
+
+        results.sort(key=lambda x: x["distance"])
+        return results
+
+    except (ValueError, RuntimeError, OSError, sqlite3.Error):
+        logger.warning("find_related_records failed", exc_info=True)
         return []
 
 
@@ -2449,6 +2555,180 @@ def _record_injection_telemetry_async(
         logger.warning("injection_telemetry thread start failed: %s", e)
         return []
     return [thread]
+
+
+# 記録=クエリ添付のmanifest用スニペットソース対応表。SNIPPET_SOURCEと違いmaterialも
+# 同型の (table, column) で扱う（"title: content"のprefix結合はしない。manifestは
+# title/snippetを別フィールドで持つため、prefix結合は文字予算の無駄な重複になる）。
+_RELATED_RECORDS_SNIPPET_SOURCE: dict[str, tuple[str, str]] = {
+    **SNIPPET_SOURCE,
+    "material": ("materials", "content"),
+}
+
+
+def _fetch_related_records_snippets(keys: list[tuple[str, int]]) -> dict[tuple[str, int], str]:
+    """(type, id) 群から記録=クエリ添付manifest用のsnippetを一括取得する。
+
+    RELATED_RECORDS_SNIPPET_MAX_LEN文字で切り詰める。titleは呼び出し元
+    （search_index.title由来）が別途持つため、ここでは本文列のみを返す。
+    """
+    by_type: dict[str, list[int]] = {}
+    for type_, id_ in keys:
+        by_type.setdefault(type_, []).append(id_)
+
+    snippets: dict[tuple[str, int], str] = {}
+    for type_, ids in by_type.items():
+        source = _RELATED_RECORDS_SNIPPET_SOURCE.get(type_)
+        if source is None:
+            continue
+        table, column = source
+        placeholders = ",".join("?" * len(ids))
+        rows = execute_query(
+            f"SELECT id, {column} FROM {table} WHERE id IN ({placeholders})",
+            tuple(ids),
+        )
+        for row in rows:
+            r = row_to_dict(row)
+            snippets[(type_, r["id"])] = (r[column] or "")[:config.RELATED_RECORDS_SNIPPET_MAX_LEN]
+    return snippets
+
+
+# 記録=クエリ添付: セッション内で既に提示済みの (type, id) を追跡し、同一セッション内での
+# 再提示を防ぐ（重複排除はDB同期読みではなくメモリ内集合で行う設計判断による）。
+# tag_service._injected_tagsと同じ形（lock + 上限超過時の最古セッション追い出し）。
+# セッション終了はこのモジュールに通知されないため、追い出されたセッションは同じ記録を
+# 再度受け取るだけで実害はない。
+_presented_records: dict[str, set[tuple[str, int]]] = {}
+_presented_records_lock = threading.Lock()
+_PRESENTED_RECORDS_MAX_SESSIONS = 256
+
+
+def _presented_records_contains(session_id: Optional[str], key: tuple[str, int]) -> bool:
+    """session_idスコープで(type, id)が提示済みかを調べる。session_id=Noneは常にFalse
+    （識別できない呼び出しは除外判定の対象外として扱う契約）。"""
+    if session_id is None:
+        return False
+    with _presented_records_lock:
+        return key in _presented_records.get(session_id, ())
+
+
+def _presented_records_register(session_id: Optional[str], keys: list[tuple[str, int]]) -> None:
+    """実際にmanifestへ採用した(type, id)群をsession_idスコープの既出集合へ登録する。
+    session_id=Noneまたはkeysが空のときは何もしない。"""
+    if session_id is None or not keys:
+        return
+    with _presented_records_lock:
+        if session_id not in _presented_records:
+            while len(_presented_records) >= _PRESENTED_RECORDS_MAX_SESSIONS:
+                del _presented_records[next(iter(_presented_records))]
+        _presented_records.setdefault(session_id, set()).update(keys)
+
+
+def build_related_records_manifest(
+    trigger_tool: str,
+    created_items: list[dict],
+    entity_types: list[str],
+    caller_session_id: Optional[str] = None,
+) -> list[dict]:
+    """記録=クエリ添付: 記録系ツールの応答に載せる関連既存記録manifestを組み立てる。
+
+    add_logs/add_decisions/add_materialから呼び出しあたり1回だけ呼ぶ（作成物ごとではない。
+    予算・上位N件は呼び出し全体で共有する単位A）。処理順: (1) created_items各要素の
+    embeddingでKNN over-fetch（自身・同一バッチの他記録は候補から除外） (2) distanceを
+    similarity=max(0, 1-distance)へ変換し閾値未満を足切り (3) セッション内の既出を除外
+    (4) 同じ既存記録が複数のcreated_itemsにヒットしたら類似度最大の1行にまとめる
+    (5) 呼び出し全体で上位RELATED_RECORDS_TOP_N件に絞る (6) title/snippetを切り詰める
+    (7) 実際に採用した分だけ既出登録し、injection_telemetryへpresent行を非同期書込する。
+
+    Args:
+        trigger_tool: 'add_logs' | 'add_decisions' | 'add_material'
+        created_items: 今回作成された記録の一覧。各要素は
+            {"source_type": str, "source_id": int, "embedding": Optional[list[float]],
+             "topic_id": Optional[int]}。embeddingがNone（embedding生成失敗/サーバー未起動）
+             の要素はKNN対象から静かにスキップされる。topic_idはentity_types=["decision"]の
+             同topic限定検索でのみ使う
+        entity_types: 候補とするsource_typeのリスト。add_decisionsは同topic内decisionのみに
+            絞るため通常["decision"]、add_logs/add_materialは全種別（topic除く）を渡す想定
+        caller_session_id: 呼出セッションの相関キー。セッション内重複排除と
+            injection_telemetryの記録に使う。Noneのとき重複排除は働かず記録もNULLになる
+
+    Returns:
+        [{"type": str, "id": int, "title": str, "snippet": str}, ...]（最大
+        RELATED_RECORDS_TOP_N件、similarity降順）。候補が無ければ空リスト。
+    """
+    if not created_items:
+        return []
+
+    own_batch_exclude = {
+        (item["source_type"], item["source_id"]) for item in created_items
+    }
+
+    # key(type,id) -> {"similarity": float, "source_id": int, "title": str}
+    # 同じ既存記録が複数のcreated_itemsにヒットした場合は類似度最大の1件に絞る。
+    candidates: dict[tuple[str, int], dict] = {}
+    for item in created_items:
+        embedding = item.get("embedding")
+        if embedding is None:
+            continue
+        raw = find_related_records(
+            embedding=embedding,
+            entity_types=entity_types,
+            exclude=own_batch_exclude,
+            topic_id=item.get("topic_id"),
+            limit=config.RELATED_RECORDS_CANDIDATE_LIMIT,
+        )
+        for r in raw:
+            similarity = max(0.0, 1.0 - r["distance"])
+            if similarity < config.RELATED_RECORDS_SIMILARITY_THRESHOLD:
+                continue
+            key = (r["type"], r["id"])
+            if _presented_records_contains(caller_session_id, key):
+                continue
+            existing = candidates.get(key)
+            if existing is None or similarity > existing["similarity"]:
+                candidates[key] = {
+                    "similarity": similarity,
+                    "source_id": item["source_id"],
+                    "title": r["title"],
+                }
+
+    if not candidates:
+        return []
+
+    top = sorted(
+        candidates.items(), key=lambda kv: kv[1]["similarity"], reverse=True
+    )[:config.RELATED_RECORDS_TOP_N]
+
+    snippets = _fetch_related_records_snippets([key for key, _ in top])
+
+    manifest: list[dict] = []
+    by_source: dict[int, list[dict]] = {}
+    for rank, (key, info) in enumerate(top, start=1):
+        type_, id_ = key
+        title = (info["title"] or "")[:config.RELATED_RECORDS_TITLE_MAX_LEN]
+        snippet = snippets.get(key, "")
+        manifest.append({"type": type_, "id": id_, "title": title, "snippet": snippet})
+        by_source.setdefault(info["source_id"], []).append({
+            "type": type_,
+            "id": id_,
+            "rank": rank,
+            "similarity": round(info["similarity"], 4),
+            "diagnostics": None,
+        })
+
+    _presented_records_register(caller_session_id, [key for key, _ in top])
+
+    source_type = created_items[0]["source_type"]
+    for source_id, attachments in by_source.items():
+        _record_injection_telemetry_async(
+            trigger_tool=trigger_tool,
+            source_type=source_type,
+            source_id=source_id,
+            attachments=attachments,
+            caller_session_id=caller_session_id,
+        )
+
+    return manifest
 
 
 def _format_row(

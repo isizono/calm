@@ -64,7 +64,7 @@ def _apply_adjacent_check_warning(item: dict, tags: list[str]) -> None:
     item.setdefault("precedent_warnings", []).append(_ADJACENT_CHECK_WARNING)
 
 
-def add_decisions(items: list[dict]) -> dict:
+def add_decisions(items: list[dict], caller_session_id: Optional[str] = None) -> dict:
     """
     複数の決定事項を一括記録する（最大10件）。
 
@@ -82,10 +82,14 @@ def add_decisions(items: list[dict]) -> dict:
               人間の抽象方向性判断であることを明示するタグ（付けた場合はtitle必須）。intent:design を
               含む場合はreasonに「隣接確認:」節（実行時／関連既決との整合の2軸）の記入を推奨する
               （無くてもエラーにはならないsoft validation、warningがcreated要素に付く）
+        caller_session_id: 呼出セッションの相関キー。記録=クエリ添付のセッション内重複排除と
+            injection_telemetryの記録に使う。MCP context外の直接呼出ではNone
 
     Returns:
-        {created: [...], errors: [{index, error}]}
-        created各要素には related_decisions（同topic内の類似decision上位3件 [{id, title, distance}]）が付く。
+        {created: [...], errors: [{index, error}], related_decisions: [...]}
+        related_decisions（応答トップレベル、呼び出し全体で同topic内の類似decision上位3件
+        [{type, id, title, snippet}]、similarity降順）は既存decisionとの矛盾・重複に気づく
+        導線。閾値未満・embeddingサーバー未起動・セッション内で提示済みの記録は含まれない。
         tagsに layer:direction を含む要素には existing_direction_decisions（同domainの有効な
         方向性decision全件、自身除外・非ランク）と direction_note（supersede/併存の判断を促す文言）も付く。
         reasonに `docs/precedent-format.md` の定型節（却下案:/適用条件:/適用外:/検証:/隣接確認:）が
@@ -295,24 +299,22 @@ def add_decisions(items: list[dict]) -> dict:
                 c["tags"] = tags_map.get(c["decision_id"], [])
                 c["created_at"] = created_at_map.get(c["decision_id"])
 
-            # embedding一括生成 + 同topic内の関連decision取得（created分のみ。失敗してもエラーにしない）
-            # 関連decisionは矛盾・重複への気づきを促す導線。embeddingサーバー未起動時は空リスト。
+            # embedding一括生成（created分のみ。失敗してもエラーにしない）。
             # search_serviceは関数内importでcircular import（decision→search→...）を回避する。
             from src.services import search_service
+            related_records_items = []
             for c in created:
                 tag_text = " ".join(c["tags"]) if c["tags"] else ""
                 embedding = generate_and_store_embedding(
                     "decision", c["decision_id"],
                     build_embedding_text(c["decision"], c["reason"], tag_text),
                 )
-                related = []
-                if embedding is not None and c["topic_id"] is not None:
-                    related = search_service.find_similar_decisions(
-                        exclude_id=c["decision_id"],
-                        topic_id=c["topic_id"],
-                        embedding=embedding,
-                    )
-                c["related_decisions"] = related
+                related_records_items.append({
+                    "source_type": "decision",
+                    "source_id": c["decision_id"],
+                    "embedding": embedding,
+                    "topic_id": c["topic_id"],
+                })
 
                 # layer:direction item には同domainの既存active方向性decisionを
                 # 網羅列挙して付ける（矛盾・重複気づき導線のrelated_decisionsと違い
@@ -343,7 +345,7 @@ def add_decisions(items: list[dict]) -> dict:
                     )
 
             # レスポンス軽量化: embedding生成後は decision/reason/topic_id/tags/created_at を除去
-            # （decision_id/related_decisions/precedent/precedent_warnings/propagation/
+            # （decision_id/precedent/precedent_warnings/propagation/
             # existing_direction_decisions/direction_note は残す）
             for c in created:
                 c.pop("decision", None)
@@ -352,7 +354,19 @@ def add_decisions(items: list[dict]) -> dict:
                 c.pop("tags", None)
                 c.pop("created_at", None)
 
-        response = {"created": created, "errors": errors}
+            # 記録=クエリ添付: 呼び出し全体（created全件のembedding）で同topic内の
+            # 類似decision上位3件を組み立てる（単位A、created各要素ではなく応答
+            # トップレベルに1つ）。矛盾・重複への気づきを促す導線。
+            related_decisions = search_service.build_related_records_manifest(
+                trigger_tool="add_decisions",
+                created_items=related_records_items,
+                entity_types=["decision"],
+                caller_session_id=caller_session_id,
+            )
+        else:
+            related_decisions = []
+
+        response = {"created": created, "errors": errors, "related_decisions": related_decisions}
 
         if propagation_failures:
             response["propagation_failed"] = propagation_failures

@@ -145,12 +145,12 @@ class TestExistingDirectionDecisionsResponse:
         assert result["created"][0]["existing_direction_decisions"] == []
 
     def test_direction_item_still_has_related_decisions(self, topic_id):
-        """既存機構のrelated_decisionsキーもdirection itemに引き続き付く"""
+        """既存機構のrelated_decisionsキー（応答トップレベル）はdirection itemを含む呼び出しでも引き続き付く"""
         result = add_decisions([
             {"topic_id": topic_id, "decision": "方向性", "reason": "r", "title": "第1",
              "tags": [DIRECTION_TAG]},
         ])
-        assert "related_decisions" in result["created"][0]
+        assert "related_decisions" in result
 
     def test_internal_flag_not_leaked_to_response(self, topic_id):
         """内部フラグ_is_direction_itemがレスポンスに漏れない"""

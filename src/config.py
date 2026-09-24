@@ -90,6 +90,22 @@ CALM_MIGRATION_HASH_ENFORCE: str = env_get("CALM_MIGRATION_HASH_ENFORCE", "error
 # 全タグがarchivedのアイテムに適用する final_score の降格係数
 ARCHIVED_DEMOTION_FACTOR: float = float(env_get("CALM_ARCHIVED_DEMOTION_FACTOR", "0.3"))
 
+# --- 記録=クエリ添付（add_logs/add_decisions/add_materialへの関連記録manifest添付） ---
+# 呼び出しあたりの添付予算（文字数）。1件はtype/id/title(最大40字)/snippet(最大120字)で
+# 実測175字前後に収まるため、上位3件でもこの予算をほぼ使い切らない安全側の保険値。
+RELATED_RECORDS_BUDGET_CHARS: int = int(env_get("CALM_RELATED_RECORDS_BUDGET_CHARS", "600"))
+RELATED_RECORDS_TOP_N: int = int(env_get("CALM_RELATED_RECORDS_TOP_N", "3"))
+RELATED_RECORDS_TITLE_MAX_LEN: int = int(env_get("CALM_RELATED_RECORDS_TITLE_MAX_LEN", "40"))
+RELATED_RECORDS_SNIPPET_MAX_LEN: int = int(env_get("CALM_RELATED_RECORDS_SNIPPET_MAX_LEN", "120"))
+# 類似度（cosine類似度 max(0, 1-distance)、0〜1）の足切り閾値。初期値は根拠のない緩い仮値
+# （0.65未満は無添付）。1か月分のinjection_telemetryの類似度帯別追随率を見てから締める。
+RELATED_RECORDS_SIMILARITY_THRESHOLD: float = float(
+    env_get("CALM_RELATED_RECORDS_SIMILARITY_THRESHOLD", "0.65")
+)
+# KNN候補のover-fetch件数。閾値の足切り・セッション既出除外はKNN取得後にかかるため、
+# 最終的な上位RELATED_RECORDS_TOP_N件を確保するには候補を広めに取る必要がある。
+RELATED_RECORDS_CANDIDATE_LIMIT: int = int(env_get("CALM_RELATED_RECORDS_CANDIDATE_LIMIT", "10"))
+
 # --- SessionStart injection compositor（各セクションの宣言予算） ---
 INJECTION_BUDGET_SNAPSHOT_CHARS: int = int(env_get("CALM_INJECTION_BUDGET_SNAPSHOT", "1500"))
 INJECTION_BUDGET_ACTIVITIES_CHARS: int = int(env_get("CALM_INJECTION_BUDGET_ACTIVITIES", "4000"))
