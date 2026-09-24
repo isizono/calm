@@ -1285,7 +1285,7 @@ class TestMultiSessionIsolation:
 
 class TestSessionKeyConsistencyAcrossEntryPoints:
     """既出管理のキーが、main.check_in・main._maybe_inject_tag_notes経由の呼び出し・
-    checkin_serviceの内部フォールバックの3箇所で揃っていることを確認する。
+    checkin_tier_serviceの内部フォールバックの3箇所で揃っていることを確認する。
 
     3箇所が同じ識別子解決（get_caller_session_id）を共有していないと、同じタグの
     notesが同一セッション内で2回届く（キーがずれて別セッション扱いになる）。
@@ -1354,7 +1354,7 @@ class TestSessionKeyConsistencyAcrossEntryPoints:
         )
 
     def test_falsification_mismatched_keys_would_double_deliver(self, temp_db, monkeypatch):
-        """裏取り: main.check_inの識別子解決と、add_activity経由でcheckin_serviceが
+        """裏取り: main.check_inの識別子解決と、add_activity経由でcheckin_tier_serviceが
         内部フォールバックする識別子解決がずれていれば（旧仕様相当）、
         同じタグのnotesが両方の経路で届いてしまうことを示す対照テスト。
 
@@ -1476,10 +1476,10 @@ class TestArchivedPushExclusion:
     def test_checkin_excludes_archived_tag_notes(self, temp_db):
         """check_in経由でもarchivedタグのnotesはtag_notesから除外される
 
-        checkin_service.pyは本設計では変更しない（collect_tag_notes_for_injection経由の
-        除外が自動的に効く前提）。実際にcheck_in()を呼んで観察する。
+        collect_tag_notes_for_injection経由の除外がcheck_in経由でも自動的に効くことを
+        実際にcollect_and_assemble()を呼んで観察する。
         """
-        from src.services.checkin_service import check_in
+        from src.services.checkin_tier_service import collect_and_assemble
         from src.services.activity_service import add_activity
 
         act = add_activity(
@@ -1491,16 +1491,16 @@ class TestArchivedPushExclusion:
         update_tag("domain:active-checkin", "現役の教訓")
         update_tag("domain:legacy-checkin", archived=True, archived_reason="解体済み")
 
-        result = check_in(act["activity_id"])
+        result = collect_and_assemble(act["activity_id"])
         assert "error" not in result
-        tag_notes = result.get("tag_notes", [])
+        tag_notes = result.get("env", {}).get("tag_notes", [])
         tag_strs = {n["tag"] for n in tag_notes}
         assert "domain:legacy-checkin" not in tag_strs
         assert "domain:active-checkin" in tag_strs
 
     def test_checkin_response_keys_unchanged_by_archived(self, temp_db):
         """archivedタグの有無でcheck_in応答のトップレベルキー集合が変わらない（新規フィールド追加なし）"""
-        from src.services.checkin_service import check_in
+        from src.services.checkin_tier_service import collect_and_assemble
         from src.services.activity_service import add_activity
 
         act_plain = add_activity(
@@ -1516,8 +1516,8 @@ class TestArchivedPushExclusion:
         # flow_guideはセッション内最初のcheck_in呼び出しにのみ付与される（TestFlowGuide参照）。
         # 同一セッションで2回呼ぶと2回目はそれだけでキー集合が変わってしまうため、
         # archivedの有無以外の要因を排除できるよう別セッションIDで呼び分ける。
-        result_plain = check_in(act_plain["activity_id"], session_id="checkin-keys-plain")
-        result_archived = check_in(act_archived["activity_id"], session_id="checkin-keys-archived")
+        result_plain = collect_and_assemble(act_plain["activity_id"], session_id="checkin-keys-plain")
+        result_archived = collect_and_assemble(act_archived["activity_id"], session_id="checkin-keys-archived")
         assert "error" not in result_plain
         assert "error" not in result_archived
         assert set(result_plain.keys()) == set(result_archived.keys())

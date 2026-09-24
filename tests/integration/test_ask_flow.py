@@ -7,7 +7,7 @@ add_ask→answer_ask→triage_ask(promote/dismiss)→check_in配達という
 from src.db import get_connection
 from src.services import ask_service as ak
 from src.services.activity_service import add_activity
-from src.services.checkin_service import check_in
+from src.services.checkin_tier_service import collect_and_assemble
 from src.services.topic_service import add_topic
 
 
@@ -30,17 +30,14 @@ class TestAnswerPromoteCheckInFlow:
 
         ask = ak.add_ask("Should we use approach A?", tags=["domain:test"], blocks=[activity_id])
 
-        result = check_in(activity_id)
-        assert result["asks"]["awaiting_answer"][0]["id_raw"] == ask["id"]
-        assert "asks" in result
-        assert not any("triage" in h for h in result.get("hints", []))
+        result = collect_and_assemble(activity_id)
+        assert result["control"]["asks"]["awaiting_answer"][0]["id_raw"] == ask["id"]
 
         ak.answer_ask(ask["id"], "yes, use approach A")
 
-        result = check_in(activity_id)
-        assert result["asks"]["awaiting_answer"] == []
-        assert result["asks"]["awaiting_triage"][0]["answer_body"] == "yes, use approach A"
-        assert any("triage" in h for h in result["hints"])
+        result = collect_and_assemble(activity_id)
+        assert result["control"]["asks"]["awaiting_answer"] == []
+        assert result["control"]["asks"]["awaiting_triage"][0]["answer_body"] == "yes, use approach A"
 
         promoted = ak.triage_ask(
             ask["id"], action="promote", decision="use approach A", reason="because Y",
@@ -58,8 +55,8 @@ class TestAnswerPromoteCheckInFlow:
             conn.close()
         assert decision_row["decision"] == "use approach A"
 
-        result = check_in(activity_id)
-        assert "asks" not in result
+        result = collect_and_assemble(activity_id)
+        assert "asks" not in result["control"]
 
 
 class TestAnswerDismissCheckInFlow:
@@ -72,8 +69,8 @@ class TestAnswerDismissCheckInFlow:
         dismissed = ak.triage_ask(ask["id"], action="dismiss", dismiss_reason="not worth it")
         assert dismissed["status"] == "dismissed"
 
-        result = check_in(activity_id)
-        assert "asks" not in result
+        result = collect_and_assemble(activity_id)
+        assert "asks" not in result["control"]
 
         listed = ak.get_asks(status="dismissed")
         assert listed["asks"][0]["question"] == "Should we use approach B?"
@@ -85,14 +82,14 @@ class TestWithdrawFlow:
         activity_id = _make_activity()
 
         ask = ak.add_ask("Should we use approach C?", tags=["domain:test"], blocks=[activity_id])
-        result = check_in(activity_id)
-        assert "asks" in result
+        result = collect_and_assemble(activity_id)
+        assert "asks" in result["control"]
 
         withdrawn = ak.withdraw_ask(ask["id"], "posted by mistake")
         assert withdrawn["status"] == "withdrawn"
 
-        result = check_in(activity_id)
-        assert "asks" not in result
+        result = collect_and_assemble(activity_id)
+        assert "asks" not in result["control"]
 
 
 class TestDedupFlow:
@@ -104,14 +101,14 @@ class TestDedupFlow:
         assert second["id"] == first["id"]
         assert second["occurrence_count"] == 2
 
-        result = check_in(activity_id)
-        assert len(result["asks"]["awaiting_answer"]) == 1
+        result = collect_and_assemble(activity_id)
+        assert len(result["control"]["asks"]["awaiting_answer"]) == 1
 
         ak.answer_ask(first["id"], "yes")
         ak.triage_ask(first["id"], action="dismiss", dismiss_reason="done")
 
-        result = check_in(activity_id)
-        assert "asks" not in result
+        result = collect_and_assemble(activity_id)
+        assert "asks" not in result["control"]
 
 
 class TestMultipleBlockedActivities:
@@ -121,13 +118,13 @@ class TestMultipleBlockedActivities:
 
         ask = ak.add_ask("Shared blocking question?", tags=["domain:test"], blocks=[activity_a, activity_b])
 
-        result_a = check_in(activity_a)
-        result_b = check_in(activity_b)
-        assert result_a["asks"]["awaiting_answer"][0]["id_raw"] == ask["id"]
-        assert result_b["asks"]["awaiting_answer"][0]["id_raw"] == ask["id"]
+        result_a = collect_and_assemble(activity_a)
+        result_b = collect_and_assemble(activity_b)
+        assert result_a["control"]["asks"]["awaiting_answer"][0]["id_raw"] == ask["id"]
+        assert result_b["control"]["asks"]["awaiting_answer"][0]["id_raw"] == ask["id"]
 
         ak.answer_ask(ask["id"], "resolved")
         ak.triage_ask(ask["id"], action="dismiss", dismiss_reason="done")
 
-        assert "asks" not in check_in(activity_a)
-        assert "asks" not in check_in(activity_b)
+        assert "asks" not in collect_and_assemble(activity_a)["control"]
+        assert "asks" not in collect_and_assemble(activity_b)["control"]

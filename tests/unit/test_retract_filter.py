@@ -10,7 +10,7 @@ from src.services.topic_service import add_topic
 from src.services.discussion_log_service import add_logs, get_logs
 from src.services.decision_service import add_decisions, get_decisions
 from src.services.retract_service import retract
-from src.services.checkin_service import check_in
+from src.services.checkin_tier_service import collect_and_assemble
 from src.services.activity_service import add_activity
 from src.services.relation_service import add_relation
 from src.services.pin_service import add_pin
@@ -124,9 +124,9 @@ class TestCheckInFilter:
 
         retract("decision", [retracted_id])
 
-        checkin = check_in(aid)
+        checkin = collect_and_assemble(aid)
         assert "error" not in checkin
-        decision_ids = [d["id_raw"] for d in checkin.get("recent_decisions", [])]
+        decision_ids = [d["id_raw"] for d in checkin.get("context", {}).get("decisions", [])]
         assert retracted_id not in decision_ids
 
     def test_retracted_log_excluded_from_checkin(self, activity_with_topic):
@@ -144,12 +144,13 @@ class TestCheckInFilter:
         # 最新のログをretract
         retract("log", [retracted_id])
 
-        checkin = check_in(aid)
+        checkin = collect_and_assemble(aid)
         assert "error" not in checkin
 
         # latest_logがretractされたものではないことを確認
-        if checkin.get("latest_log"):
-            assert checkin["latest_log"]["id_raw"] != retracted_id
+        latest_log = checkin.get("context", {}).get("latest_log")
+        if latest_log:
+            assert latest_log["id_raw"] != retracted_id
 
     def test_pinned_retracted_decision_excluded_from_checkin(self, activity_with_topic):
         """pinsテーブルでpinされたdecisionをretractすると、check-inのpinnedに含まれない"""
@@ -165,11 +166,11 @@ class TestCheckInFilter:
         add_pin("activity", aid, "decision", decision_id)
         retract("decision", [decision_id])
 
-        checkin = check_in(aid)
+        checkin = collect_and_assemble(aid)
         assert "error" not in checkin
 
         # retractされているためpinnedセクションに含まれない
-        pinned = checkin.get("pinned", {})
+        pinned = checkin.get("anchor", {}).get("pinned", {})
         pinned_decision_ids = [d["id_raw"] for d in pinned.get("decisions", [])]
         assert decision_id not in pinned_decision_ids
 
@@ -187,11 +188,11 @@ class TestCheckInFilter:
         add_pin("activity", aid, "log", log_id)
         retract("log", [log_id])
 
-        checkin = check_in(aid)
+        checkin = collect_and_assemble(aid)
         assert "error" not in checkin
 
         # retractされているためpinnedセクションに含まれない
-        pinned = checkin.get("pinned", {})
+        pinned = checkin.get("anchor", {}).get("pinned", {})
         pinned_log_ids = [l["id_raw"] for l in pinned.get("logs", [])]
         assert log_id not in pinned_log_ids
 
@@ -208,10 +209,10 @@ class TestCheckInFilter:
 
         retract("decision", [retracted_id])
 
-        checkin = check_in(aid)
+        checkin = collect_and_assemble(aid)
         assert "error" not in checkin
         # coverage分母が1（retracted分を含まない）
-        assert checkin["coverage"]["decisions"] == "1/1"
+        assert checkin["env"]["coverage"]["decisions"] == "1/1"
 
 
 class TestSearchFilter:
@@ -441,10 +442,10 @@ class TestPinnedMaterialFilter:
         add_pin("activity", aid, "material", material_id)
         retract("material", [material_id])
 
-        checkin = check_in(aid)
+        checkin = collect_and_assemble(aid)
         assert "error" not in checkin
 
-        pinned = checkin.get("pinned", {})
+        pinned = checkin.get("anchor", {}).get("pinned", {})
         pinned_material_ids = [m["id_raw"] for m in pinned.get("materials", [])]
         assert material_id not in pinned_material_ids
 

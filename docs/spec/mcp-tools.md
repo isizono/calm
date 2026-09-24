@@ -827,7 +827,7 @@ Claude Codeセッション間の「CLI表示名（例: `workspace-a2`）→人�
 
 **返り値**: `{goal_id_raw, handle, statement, label, progress, claude, next, last_verdict, conditions: [...全件...], activities: [...], logs_since_created: {count, since}, open_questions?, open_questions_more?}` | `{label: "undefined"|"not_needed", next?, reason?}`（activity_idを指定してgoalが無い場合）。
 **エラー**: `VALIDATION_ERROR`（3引数のちょうど1つを指定していない）、`NOT_FOUND`（指したものが無い）、`DATABASE_ERROR`。
-**動作**: 読み取り専用（check_inと違いactivityのstatusを変えない）。`conditions`は充足済みを含む全件を返す点がcheck_inのgoalブロックと異なる。`label`が`judge_ready`のときだけ、判定待ちの未決（未回答のask・`[議論中]`のまま未決着のdecision）を`open_questions`（最大3件）に載せ、超過分があれば件数を`open_questions_more`に載せる（update_goalの応答と同じ形）。`logs_since_created`は、goalが見つかった場合に常に付く。このgoalに紐づく全activityが直接属するtopicへ、goalの`created_at`以降に付いた（取り消されていない）ログの件数（`count`）と基準時刻（`since`）。委譲先が自己申告どおり記録したかを、受け取る側が事実として確かめるための項目。
+**動作**: 読み取り専用（check_inと違いactivityのstatusを変えない）。`conditions`は充足済みを含む全件を返す点がcheck_inのgoalブロックと異なる。各`conditions[].flags`は`reopened`（差し戻し済みの条件が再びopen）／`broken`（束縛先が崩れた。充足済みかつdecision束縛のときは束縛先が`done`でなくなったこと、open束縛はどの型でも束縛先が消えたことを指す）／`bound_done`（open条件の束縛先が済んでいる）／`bound_failed`（open条件がactivityを束縛しており、束縛先activityのgoalがfailedで判定終了した）／`recheck`（担い手human/externalの条件が一定時間再確認されていない）の0件以上の組み合わせ。`conditions[].bound.state`は`done`\|`pending`\|`gone`\|`failed`のいずれか（`failed`はactivity束縛だけが持つ）。`label`が`judge_ready`のときだけ、判定待ちの未決（未回答のask・`[議論中]`のまま未決着のdecision）を`open_questions`（最大3件）に載せ、超過分があれば件数を`open_questions_more`に載せる（update_goalの応答と同じ形）。`logs_since_created`は、goalが見つかった場合に常に付く。このgoalに紐づく全activityが直接属するtopicへ、goalの`created_at`以降に付いた（取り消されていない）ログの件数（`count`）と基準時刻（`since`）。委譲先が自己申告どおり記録したかを、受け取る側が事実として確かめるための項目。
 
 ### 2.54 get_feedback_entries
 
@@ -865,7 +865,7 @@ Claude Codeセッション間の「CLI表示名（例: `workspace-a2`）→人�
 | kind | string | yes | - | `stumble`（踏んだ・躓いた事実） \| `note`（それ以外の経緯） |
 | body | string | yes | - | ノート本文（500字以内） |
 
-**返り値**: 成功時 `{ok: true, note: {kind, body, created_at}, read_mark: int}`。
+**返り値**: 成功時 `{ok: true, note: {kind, body, created_at}, read_mark: int, hint?: string}`。`hint`は最後の`note`より後の`stumble`が3件以上のときだけ付き、無ければキー自体が無い。
 **エラー**: `{ok: false, error: {code, message, fix}}`。codeは`VALIDATION_ERROR`（kind不正・body空/超過）、`NOT_FOUND`（nameのエントリが存在しない）、`DATABASE_ERROR`。
 **動作**: read_mark引数は取らない（いつでも書ける）。削除済みエントリにも足せる（観測記録は削除後も続けられる）。`feedback_notes`は追記専用（UPDATE/DELETEはDBトリガーで拒否）。
 

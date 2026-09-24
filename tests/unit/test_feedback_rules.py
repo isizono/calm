@@ -9,6 +9,7 @@ import pytest
 from src.services.feedback_rules import (
     ConditionError,
     evaluate_condition,
+    maintenance_hint,
     parse_condition,
     validate_condition,
 )
@@ -303,3 +304,35 @@ class TestEvaluateConditionAllClauses:
     def test_empty_all_with_tool_match_matches(self):
         cond = {"tool": "Bash", "all": []}
         assert evaluate_condition(cond, timing="pre_tool", tool_name="Bash", tool_input={})
+
+
+class TestMaintenanceHint:
+    def test_review_multiple_of_10_returns_review_line_only(self):
+        for result in (maintenance_hint(10, 0), maintenance_hint(20, 0)):
+            assert "見直し時期" in result
+            assert "未処理の躓き" not in result
+            assert "\n" not in result
+
+    def test_just_below_or_above_10_returns_empty(self):
+        assert maintenance_hint(9, 0) == ""
+        assert maintenance_hint(11, 0) == ""
+
+    def test_delivered_n_zero_returns_empty(self):
+        assert maintenance_hint(0, 0) == ""
+
+    def test_pending_stumbles_at_promote_threshold_returns_promote_line(self):
+        result = maintenance_hint(1, 3)
+        assert "未処理の躓き3件" in result
+        assert "見直し時期" not in result
+
+    def test_pending_stumbles_below_threshold_returns_empty(self):
+        assert maintenance_hint(1, 2) == ""
+
+    def test_both_conditions_join_review_then_promote_no_edge_newlines(self):
+        result = maintenance_hint(10, 3)
+        lines = result.split("\n")
+        assert len(lines) == 2
+        assert "見直し時期" in lines[0]
+        assert "未処理の躓き3件" in lines[1]
+        assert not result.startswith("\n")
+        assert not result.endswith("\n")

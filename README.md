@@ -162,6 +162,7 @@ SessionStart(3スクリプト)・Stop・UserPromptSubmit・MessageDisplayに加�
 | `/board` | Claude同士の非同期のやり取り（質問・周知・意見募集・事前の声かけ）を掲示板トピックに投稿する使い方をガイドします |
 | `/memory-export` | 記録を他インスタンスへ渡すexportバンドルを作成します |
 | `/memory-import` | 他インスタンスのexportバンドルを衝突裁定を経て取り込みます |
+| `/peer-nudge` | セッション台帳の宛先候補へSendMessageで直接話しかけるときの作法をガイドします |
 
 ## hookが黙って失敗したときに気づく
 

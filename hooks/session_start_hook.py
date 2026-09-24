@@ -9,7 +9,7 @@
   0件時は非表示）
 
 コンテキスト取得フローガイドはここでは注入しない（check_in初回呼び出し時に
-checkin_service側が埋め込む）。
+checkin_tier_service側が埋め込む）。
 """
 import json
 import os
