@@ -66,7 +66,7 @@ WAIT_LIMIT_SECONDS = 86400 - 300
 # activityの境界(check_in/add_activity)判定対象のtool short_name。
 _BOUNDARY_TOOLS = {"check_in", "add_activity"}
 
-_DONE_RE = re.compile(r"\bDONE\s+(-|\d+)\b")
+_DONE_RE = re.compile(r"\bDONE\s+(\d+)\b")
 
 _NOOP_MESSAGE = "片なし。`DONE -` とだけ返せ"
 
@@ -200,6 +200,11 @@ def _read_diff(path: Path, byte_offset: int, last_uuid: str | None) -> tuple[lis
         (新規行, 新byte_offset, offset_lostが起きたか)。offset_lost時は
         戻り値の行は空、新byte_offsetはファイル末尾（安全側に倒し、過去分を
         再送しない）。
+
+    # ponytail: 片が確定するまで、確定済みbyte_offsetから毎周期まるごと
+    # 読み直す（ポーリング間でインメモリのバッファを持ち越さない）。
+    # 単純さを優先した設計で、蓄積が大きい・周期が長いケースではI/Oが
+    # 周期ごとに増える。実測で問題になったら周期内バッファ方式に変える。
     """
     offset = byte_offset
     if not _offset_looks_valid(path, offset):
@@ -395,12 +400,13 @@ def _acquire_lock(run_dir: Path):
 # ===================================================================
 
 
-def _find_done_numbers(text: str) -> set:
-    result: set = set()
-    for m in _DONE_RE.finditer(text):
-        val = m.group(1)
-        result.add(val if val == "-" else int(val))
-    return result
+def _find_done_numbers(text: str) -> set[int]:
+    """last_assistant_messageに現れる `DONE <数字>` の値を全部集める。
+
+    片なし応答の `DONE -` はここでは拾わない（そもそも `pending` が無い
+    ときにしか送らない文言のため、確定判定の対象にはならない）。
+    """
+    return {int(m.group(1)) for m in _DONE_RE.finditer(text)}
 
 
 def _advance_cursor_from_pending(cursor: dict, pending: dict) -> None:
@@ -527,6 +533,7 @@ def _watch(run_dir: Path, hook_input: dict, *, sleep, now) -> int:
         outcome = _resolve_pending(cursor, last_msg)
         _write_cursor(cursor_path, cursor)
         if outcome == "retry":
+            touch_marker(main_sid)
             return _emit_chunk_message(run_dir, cursor["pending"])
 
     _ensure_activity_id_at_cursor(cursor, main_transcript, cursor_path)
