@@ -2,20 +2,31 @@
 
 record_missing(record系ツール未呼出)・follow_up_after_decision(decision単独呼出)・
 logs_sparse(topic scopeの遅延hint)の3種類のnudgeが、記録役セッション判定
-(is_recorder_attached)がTrueのときはまとめて抑制され、Falseのときは通常どおり
-生成されることを検証する。check-in強制block(turn==_CHECKIN_DEFER_TURNSでの
-block)は_handle_nudgesの対象外であり本ファイルの検証対象ではない。
+(is_recorder_attached)の結果に応じてまとめて抑制/生成されることを検証する。
+is_recorder_attached自体はmockせず、write_markerで実際に目印ファイルを置き、
+psコマンドの呼び出し(外部境界)だけをmonkeypatchする。check-in強制block
+(turn==_CHECKIN_DEFER_TURNSでのblock)は_handle_nudgesの対象外であり本ファイル
+の検証対象ではない。
 """
-import json
+import os
+import subprocess
+
+import pytest
 
 import hooks.stop_hook as stop_hook
 from hooks.hook_state import HookState
-from hooks.recorder_marker import marker_path
+from hooks.recorder_marker import write_marker
 from src.infra import process_signature
 from src.services.topic_service import add_topic
 from tests.helpers import add_decision
 
 _DOMAIN_TAG = "domain:stop-hook-recorder-gate-test"
+
+
+@pytest.fixture
+def state_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(HookState, "BASE_DIR", tmp_path)
+    return tmp_path
 
 
 class _FakeState:
@@ -35,6 +46,31 @@ def _seed_topic_with_sparse_logs() -> int:
     return topic["topic_id"]
 
 
+def _fake_ps(lstart_output: str, returncode: int = 0):
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, returncode, stdout=lstart_output, stderr="")
+    return fake_run
+
+
+def _attach_recorder(monkeypatch, session_id: str) -> None:
+    """write_markerで実際に目印ファイルを置き、以降のps呼び出しも同じ起動
+    時刻を返すようにして、自プロセス(os.getpid())を記録役として生存させる。"""
+    monkeypatch.setattr(
+        process_signature.subprocess, "run", _fake_ps("Thu Jul 24 09:32:04 2026\n")
+    )
+    write_marker(session_id, os.getpid())
+
+
+def _attach_dead_recorder_marker(monkeypatch, session_id: str) -> None:
+    """目印ファイルは実在するが、以降のps呼び出しはプロセス不在を返す
+    (記録役が死んでいる)状態を作る。"""
+    monkeypatch.setattr(
+        process_signature.subprocess, "run", _fake_ps("Thu Jul 24 09:32:04 2026\n")
+    )
+    write_marker(session_id, 999999999)
+    monkeypatch.setattr(process_signature.subprocess, "run", _fake_ps("", returncode=1))
+
+
 class TestRecordMissingGate:
     """b: record_missing nudge"""
 
@@ -42,8 +78,8 @@ class TestRecordMissingGate:
         # turn1でcheck_in、turn2以降記録なしのままturn4に到達(_NUDGE_INTERVAL=2の倍数)
         return [{"e": "tool", "name": "check_in", "turn": 1, "activity_id": 1}], 4
 
-    def test_suppressed_when_recorder_attached(self, temp_db, monkeypatch):
-        monkeypatch.setattr(stop_hook, "is_recorder_attached", lambda session_id: True)
+    def test_suppressed_when_recorder_attached(self, temp_db, state_dir, monkeypatch):
+        _attach_recorder(monkeypatch, "recorder-session")
         events, turn = self._events_and_turn()
         state = _FakeState()
 
@@ -51,12 +87,24 @@ class TestRecordMissingGate:
 
         assert state.appended == []
 
-    def test_generated_when_recorder_not_attached(self, temp_db, monkeypatch):
-        monkeypatch.setattr(stop_hook, "is_recorder_attached", lambda session_id: False)
+    def test_generated_when_recorder_not_attached(self, temp_db, state_dir):
         events, turn = self._events_and_turn()
         state = _FakeState()
 
         stop_hook._handle_nudges(state, events, turn, session_id="normal-session")
+
+        types = {e["type"] for e in state.appended if e["e"] == "nudge"}
+        assert types == {"record_missing"}
+
+    def test_generated_when_marker_present_but_recorder_dead(
+        self, temp_db, state_dir, monkeypatch
+    ):
+        """目印ファイルはあるが記録役が死んでいる → 通常どおり催促が出る"""
+        _attach_dead_recorder_marker(monkeypatch, "stale-recorder-session")
+        events, turn = self._events_and_turn()
+        state = _FakeState()
+
+        stop_hook._handle_nudges(state, events, turn, session_id="stale-recorder-session")
 
         types = {e["type"] for e in state.appended if e["e"] == "nudge"}
         assert types == {"record_missing"}
@@ -69,9 +117,9 @@ class TestFollowUpAndLogsSparseGate:
     なのでbのhas_recent_record判定によりbとは同時に発生しない)。
     """
 
-    def test_suppressed_when_recorder_attached(self, temp_db, monkeypatch):
+    def test_suppressed_when_recorder_attached(self, temp_db, state_dir, monkeypatch):
         topic_id = _seed_topic_with_sparse_logs()
-        monkeypatch.setattr(stop_hook, "is_recorder_attached", lambda session_id: True)
+        _attach_recorder(monkeypatch, "recorder-session")
         events = [{"e": "tool", "name": "add_decisions", "turn": 3, "topic_ids": [topic_id]}]
         state = _FakeState()
 
@@ -79,9 +127,8 @@ class TestFollowUpAndLogsSparseGate:
 
         assert state.appended == []
 
-    def test_generated_when_recorder_not_attached(self, temp_db, monkeypatch):
+    def test_generated_when_recorder_not_attached(self, temp_db, state_dir):
         topic_id = _seed_topic_with_sparse_logs()
-        monkeypatch.setattr(stop_hook, "is_recorder_attached", lambda session_id: False)
         events = [{"e": "tool", "name": "add_decisions", "turn": 3, "topic_ids": [topic_id]}]
         state = _FakeState()
 
@@ -92,17 +139,13 @@ class TestFollowUpAndLogsSparseGate:
 
 
 class TestGateFailsSafeOnUnexpectedException:
-    """is_recorder_attached自体はmockせず、目印ファイル判定の内部で予期しない
-    例外が起きた場合に、ゲートが「付いていない」側に倒れて催促が出ることを
-    確認する(is_recorder_attachedの広いexcept節の実地検証)。"""
+    """is_recorder_attached内部で予期しない例外が起きた場合に、ゲートが
+    「付いていない」側に倒れて催促が出ることを確認する。"""
 
     def test_nudge_generated_when_marker_check_raises_unexpected_error(
-        self, temp_db, monkeypatch, tmp_path
+        self, temp_db, state_dir, monkeypatch
     ):
-        monkeypatch.setattr(HookState, "BASE_DIR", tmp_path)
-        path = marker_path("recorder-session")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"pid": 1234, "started_at": "Thu Jul 24 09:32:04 2026"}))
+        _attach_recorder(monkeypatch, "recorder-session")
 
         def fake_run(cmd, **kwargs):
             raise RuntimeError("unexpected ps failure")
@@ -119,19 +162,14 @@ class TestGateFailsSafeOnUnexpectedException:
 
 
 class TestGateSkippedWithoutSessionId:
-    def test_session_id_none_does_not_call_is_recorder_attached(self, temp_db, monkeypatch):
-        """session_id未指定(None)ならゲート判定自体を素通りし、
-        is_recorder_attachedは呼ばれず通常どおりnudgeを生成する。"""
-        calls: list[str] = []
-        monkeypatch.setattr(
-            stop_hook, "is_recorder_attached",
-            lambda session_id: calls.append(session_id) or True,
-        )
+    def test_session_id_none_ignores_marker(self, temp_db, state_dir, monkeypatch):
+        """session_id未指定(None)ならゲート判定自体を素通りし、他セッションの
+        目印ファイルの有無に関わらず通常どおりnudgeを生成する。"""
+        _attach_recorder(monkeypatch, "unrelated-session")
         events = [{"e": "tool", "name": "check_in", "turn": 1, "activity_id": 1}]
         state = _FakeState()
 
         stop_hook._handle_nudges(state, events, current_turn=4, session_id=None)
 
-        assert calls == []
         types = {e["type"] for e in state.appended if e["e"] == "nudge"}
         assert types == {"record_missing"}

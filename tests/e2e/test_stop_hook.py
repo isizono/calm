@@ -11,6 +11,9 @@ from pathlib import Path
 
 import pytest
 
+from hooks.hook_state import HookState
+from hooks.recorder_marker import write_marker
+
 # プロジェクトルート
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -537,20 +540,13 @@ class TestRecorderMarkerSuppressesNudges:
     """
 
     def _write_marker(
-        self, state_dir: str, session_id: str, pid: int, started_at: str | None
+        self, state_dir: str, session_id: str, pid: int, monkeypatch
     ) -> None:
-        marker_dir = Path(state_dir) / "recorder"
-        marker_dir.mkdir(parents=True, exist_ok=True)
-        (marker_dir / f"{session_id}.json").write_text(
-            json.dumps({"pid": pid, "started_at": started_at})
-        )
-
-    def _own_process_start_signature(self) -> str:
-        result = subprocess.run(
-            ["ps", "-o", "lstart=", "-p", str(os.getpid())],
-            capture_output=True, text=True, check=False,
-        )
-        return result.stdout.strip()
+        """write_marker経由で目印ファイルを実際に書く(実psコマンドを使う)。
+        子プロセス(stop_hook.py)が読むstate_dirへ書き込むため、書き込み中だけ
+        HookState.BASE_DIRを一時的にそこへ向ける。"""
+        monkeypatch.setattr(HookState, "BASE_DIR", Path(state_dir))
+        write_marker(session_id, pid)
 
     def _seed_no_recording_for_4_turns(self, env_setup) -> Path:
         state_dir = env_setup["state_dir"]
@@ -575,13 +571,10 @@ class TestRecorderMarkerSuppressesNudges:
         )
         return transcript
 
-    def test_record_nudge_suppressed_when_recorder_pid_alive(self, env_setup):
+    def test_record_nudge_suppressed_when_recorder_pid_alive(self, env_setup, monkeypatch):
         """目印ファイルのpidが生存(このテストプロセス自身)+起動時刻一致 → nudgeが出ない"""
         state_dir = env_setup["state_dir"]
-        self._write_marker(
-            state_dir, "test-session", pid=os.getpid(),
-            started_at=self._own_process_start_signature(),
-        )
+        self._write_marker(state_dir, "test-session", pid=os.getpid(), monkeypatch=monkeypatch)
         transcript = self._seed_no_recording_for_4_turns(env_setup)
 
         result = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
@@ -591,13 +584,10 @@ class TestRecorderMarkerSuppressesNudges:
         record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record_missing"]
         assert record_nudges == []
 
-    def test_record_nudge_generated_when_marker_pid_dead(self, env_setup):
+    def test_record_nudge_generated_when_marker_pid_dead(self, env_setup, monkeypatch):
         """目印ファイルはあるがpidが死んでいる → 通常どおりnudgeが出る(フェイルセーフ)"""
         state_dir = env_setup["state_dir"]
-        self._write_marker(
-            state_dir, "test-session", pid=999999999,
-            started_at="Thu Jan  1 00:00:00 1970",
-        )
+        self._write_marker(state_dir, "test-session", pid=999999999, monkeypatch=monkeypatch)
         transcript = self._seed_no_recording_for_4_turns(env_setup)
 
         result = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
@@ -622,13 +612,10 @@ class TestRecorderMarkerSuppressesNudges:
         record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record_missing"]
         assert len(record_nudges) >= 1
 
-    def test_checkin_block_unaffected_by_recorder_marker(self, env_setup):
+    def test_checkin_block_unaffected_by_recorder_marker(self, env_setup, monkeypatch):
         """記録役の目印ファイルがあってもcheck-in強制block(a)は普段どおり発火する"""
         state_dir = env_setup["state_dir"]
-        self._write_marker(
-            state_dir, "test-session", pid=os.getpid(),
-            started_at=self._own_process_start_signature(),
-        )
+        self._write_marker(state_dir, "test-session", pid=os.getpid(), monkeypatch=monkeypatch)
 
         transcript = env_setup["tmp_path"] / "transcript.jsonl"
         _write_transcript(
