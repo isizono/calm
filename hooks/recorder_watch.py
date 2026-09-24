@@ -63,6 +63,11 @@ TRUNCATE_CHARS = 300
 # 見張り自身の登録タイムアウト（86400秒）の手前で自分から起こしにいく余裕。
 WAIT_LIMIT_SECONDS = 86400 - 300
 
+# メインの生死判定が連続でこの回数「死んでいる」を返したときだけ、確定して
+# 終了処理（目印削除・tmux kill-session）に入る。psコマンドの一時的な失敗
+# （システム負荷等でNoneが返る）だけで、不可逆な終了処理を走らせないため。
+MAIN_DEAD_CONFIRM_POLLS = 3
+
 # activityの境界(check_in/add_activity)判定対象のtool short_name。
 _BOUNDARY_TOOLS = {"check_in", "add_activity"}
 
@@ -89,6 +94,15 @@ def run_dir_for(main_sid: str) -> Path:
     """
     safe = main_sid.replace("/", "_")
     return HookState.BASE_DIR / "recorder_runs" / safe
+
+
+def tmux_session_name(main_sid: str) -> str:
+    """main_sidに対応するtmuxセッション名を返す。
+
+    起動側（セッションの立ち上げ）と終了処理（kill-session）の両方が
+    同じ規則を使う必要があるため、ここに一本化する。
+    """
+    return f"calm-rec-{main_sid[:8]}"
 
 
 # ===================================================================
@@ -470,7 +484,7 @@ def _ensure_activity_id_at_cursor(cursor: dict, main_transcript: Path, cursor_pa
 
 def _terminate(run_dir: Path, main_sid: str) -> None:
     remove_marker(main_sid)
-    tmux_name = f"calm-rec-{main_sid[:8]}"
+    tmux_name = tmux_session_name(main_sid)
     try:
         subprocess.run(["tmux", "kill-session", "-t", tmux_name], capture_output=True, timeout=10)
     except Exception:
@@ -547,6 +561,7 @@ def _watch(run_dir: Path, hook_input: dict, *, sleep, now) -> int:
 
     claude_pid = _read_int_env("CLAUDE_PID")
     start = now()
+    dead_poll_count = 0
 
     while True:
         if claude_pid is not None:
@@ -557,7 +572,11 @@ def _watch(run_dir: Path, hook_input: dict, *, sleep, now) -> int:
             except PermissionError:
                 pass
 
-        main_alive = process_start_signature(main_pid) == main_pid_started_at
+        if process_start_signature(main_pid) == main_pid_started_at:
+            dead_poll_count = 0
+        else:
+            dead_poll_count += 1
+        main_confirmed_dead = dead_poll_count >= MAIN_DEAD_CONFIRM_POLLS
         touch_marker(main_sid)
 
         lines, new_offset, lost, lost_uuid = _read_diff(
@@ -581,7 +600,7 @@ def _watch(run_dir: Path, hook_input: dict, *, sleep, now) -> int:
             end_offset = lines[-1].end_offset if lines else cursor["byte_offset"]
             return _emit_new_chunk(run_dir, cursor, cursor_path, lines, chunkable, end_offset)
 
-        if not main_alive:
+        if main_confirmed_dead:
             if chunkable:
                 end_offset = lines[-1].end_offset if lines else cursor["byte_offset"]
                 return _emit_new_chunk(run_dir, cursor, cursor_path, lines, chunkable, end_offset)

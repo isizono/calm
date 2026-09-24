@@ -137,6 +137,17 @@ def _stub_sleep_and_clock(*side_effects, start: float = 1000.0):
     return _sleep, _now
 
 
+def _stub_sleep_confirm_dead(*extra_side_effects, start: float = 1000.0):
+    """main死亡の確定(MAIN_DEAD_CONFIRM_POLLS回連続)を待つだけのsleepを作る。
+
+    最初の(MAIN_DEAD_CONFIRM_POLLS - 1)回は何もしない側副作用にして、
+    確定に必要な回数だけポーリングを続けさせる。extra_side_effectsは、
+    確定後さらにポーリングを続けさせたい場合にだけ足す。
+    """
+    noop_effects = [lambda: None] * (hook.MAIN_DEAD_CONFIRM_POLLS - 1)
+    return _stub_sleep_and_clock(*noop_effects, *extra_side_effects, start=start)
+
+
 def _run_hook(*, cwd, last_assistant_message: str = "", sleep=None, now=None) -> tuple[int, str]:
     payload = {
         "session_id": "recorder-sess",
@@ -260,8 +271,8 @@ class TestThresholdAndChunking:
         assert cursor["pending"]["end_uuid"] == "e2"
 
         # DONE確認 → e3(check_in)以降が次の片に含まれ、activity_idが反映される
-        _mock_main_dead(monkeypatch)  # 残りを即座に渡させて2本目の片を確認する
-        sleep2, now2 = _stub_sleep_and_clock()
+        _mock_main_dead(monkeypatch)  # 残りを渡させて2本目の片を確認する(3回連続で確定させる)
+        sleep2, now2 = _stub_sleep_confirm_dead()
         code2, _ = _run_hook(cwd=run_dir, last_assistant_message="DONE 0001", sleep=sleep2, now=now2)
         assert code2 == 2
         chunk2 = (run_dir / "chunks" / "0002.md").read_text(encoding="utf-8")
@@ -298,8 +309,9 @@ class TestDoneRetryAndUnacked:
         assert cursor2["unacked"] == []
 
         # 2回目もDONEなし → unackedへ。cursorは進み、残りが無ければ終了する
+        # (main死亡は3回連続の確認で確定するので、その分ポーリングを進める)
         _mock_main_dead(monkeypatch)
-        sleep3, now3 = _stub_sleep_and_clock()
+        sleep3, now3 = _stub_sleep_confirm_dead()
         code3, _ = _run_hook(cwd=run_dir, last_assistant_message="まだです2", sleep=sleep3, now=now3)
         assert code3 == 0
         cursor3 = _cursor(run_dir)
@@ -318,15 +330,53 @@ class TestMainDeath:
         assert marker_path(main_sid).exists()
 
         _mock_main_dead(monkeypatch)
-        sleep, now = _stub_sleep_and_clock()
+        sleep, now = _stub_sleep_confirm_dead()
         code, _ = _run_hook(cwd=run_dir, sleep=sleep, now=now)
         assert code == 2  # 残っている内容を最後の片として渡す
 
-        sleep2, now2 = _stub_sleep_and_clock()
+        sleep2, now2 = _stub_sleep_confirm_dead()
         code2, _ = _run_hook(cwd=run_dir, last_assistant_message="DONE 0001", sleep=sleep2, now=now2)
         assert code2 == 0
         assert not marker_path(main_sid).exists()
-        assert _mock_subprocess == [["tmux", "kill-session", "-t", f"calm-rec-{main_sid[:8]}"]]
+        assert _mock_subprocess == [["tmux", "kill-session", "-t", hook.tmux_session_name(main_sid)]]
+
+
+class TestMainDeathDebounce:
+    def test_one_or_two_dead_readings_do_not_trigger_termination(self, tmp_path, monkeypatch, _mock_subprocess):
+        """psの一時的な失敗のような単発〜2回の死亡判定だけでは、終了処理
+        （目印削除・tmux kill-session）に入らないことを確かめる。"""
+        main_sid = "main-flaky"
+        run_dir, transcript = _setup_run(tmp_path, main_sid=main_sid, transcript_lines=[])
+        write_marker(main_sid, _MAIN_PID)
+        _mock_main_dead(monkeypatch)
+
+        # MAIN_DEAD_CONFIRM_POLLS(3)回に届く前に締め切り超過へ倒し、
+        # 2回で止まることを確かめる(通常のno-op待ちで終わる)。
+        sleep, now = _stub_sleep_and_clock()
+        code, stderr = _run_hook(cwd=run_dir, sleep=sleep, now=now)
+
+        assert code == 2
+        assert "DONE -" in stderr  # 終了処理ではなく通常のno-opで終わっている
+        assert marker_path(main_sid).exists()
+        assert _mock_subprocess == []
+        # 締め切り超過による通常のno-op待ち(1回のsleep)で終わっている。
+        # MAIN_DEAD_CONFIRM_POLLS(3)回目には届いていない。
+        assert len(sleep.calls) == 1
+
+    def test_three_consecutive_dead_readings_confirm_and_terminate(self, tmp_path, monkeypatch, _mock_subprocess):
+        main_sid = "main-confirmed-dead"
+        run_dir, transcript = _setup_run(tmp_path, main_sid=main_sid, transcript_lines=[])
+        write_marker(main_sid, _MAIN_PID)
+        _mock_main_dead(monkeypatch)
+
+        sleep, now = _stub_sleep_confirm_dead()
+        code, _ = _run_hook(cwd=run_dir, sleep=sleep, now=now)
+
+        assert code == 0
+        assert not marker_path(main_sid).exists()
+        assert _mock_subprocess == [["tmux", "kill-session", "-t", hook.tmux_session_name(main_sid)]]
+        # 3回目のポーリングで確定するので、3回目のsleepは呼ばれない
+        assert len(sleep.calls) == hook.MAIN_DEAD_CONFIRM_POLLS - 1
 
 
 class TestOffsetLostRecovery:
@@ -388,7 +438,7 @@ class TestActivityIdAtCursorBackfillInit:
         _append_jsonl(transcript, [_entry("assistant", "u2", text="more")])
         _mock_main_dead(monkeypatch)  # 閾値に頼らず、残り全部を渡す経路で確かめる
 
-        sleep, now = _stub_sleep_and_clock()
+        sleep, now = _stub_sleep_confirm_dead()
         code, _ = _run_hook(cwd=run_dir, sleep=sleep, now=now)
 
         assert code == 2
@@ -495,7 +545,7 @@ class TestIncompleteTrailingLine:
         # 改行を足して完成させる → DONE確認後、次の片に含まれる
         with open(transcript, "a", encoding="utf-8") as f:
             f.write("\n")
-        sleep2, now2 = _stub_sleep_and_clock()
+        sleep2, now2 = _stub_sleep_confirm_dead()
         _mock_main_dead(monkeypatch)
         code2, _ = _run_hook(cwd=run_dir, last_assistant_message="DONE 0001", sleep=sleep2, now=now2)
         assert code2 == 2
@@ -540,10 +590,9 @@ class TestTopicCandidates:
             _entry("assistant", "u2", text="content after check-in"),
         ]
         run_dir, _ = _setup_run(tmp_path, transcript_lines=entries)
-        _mock_main_alive(monkeypatch)
         _mock_main_dead(monkeypatch)
 
-        sleep, now = _stub_sleep_and_clock()
+        sleep, now = _stub_sleep_confirm_dead()
         code, _ = _run_hook(cwd=run_dir, sleep=sleep, now=now)
         assert code == 2
         chunk = (run_dir / "chunks" / "0001.md").read_text(encoding="utf-8")
@@ -561,10 +610,9 @@ class TestTopicCandidates:
             _entry("assistant", "u2", text="x"),
         ]
         run_dir, _ = _setup_run(tmp_path, transcript_lines=entries)
-        _mock_main_alive(monkeypatch)
         _mock_main_dead(monkeypatch)
 
-        sleep, now = _stub_sleep_and_clock()
+        sleep, now = _stub_sleep_confirm_dead()
         code, _ = _run_hook(cwd=run_dir, sleep=sleep, now=now)
         assert code == 2
         chunk = (run_dir / "chunks" / "0001.md").read_text(encoding="utf-8")
