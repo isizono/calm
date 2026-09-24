@@ -19,29 +19,39 @@ description: アクティビティにcheck-inして関連情報を集約取得�
 5. check-in結果に含まれるタグ一覧を見て、明らかな表記揺れや重複に気づいたらユーザーにサジェストする。分析ツール（`analyze_tags`）は呼ばない
 6. 把握した内容を以下の2セクション構成でユーザーに伝える
 
-## pinnedフィールドの扱い
+check-in結果は5つの枠（`anchor`/`control`/`context`/`catalog`/`env`）に分かれている。フィールドの正確なパス・出力の形はcheck_inツールのdocstringを正本とし、以下は扱い方の説明に留める。
 
-check-in結果に `pinned` フィールドがある場合、その内容はタスクに常に意識してほしい情報としてpinされたエンティティ群である。以下の5種が含まれることがある（0件キーは省略される）:
+## anchor.pinnedフィールドの扱い
 
-- `pinned.decisions`: 重要な決定事項（id, title, reason付き）
-- `pinned.logs`: 重要な議事録・ログ（id, title, content付き）
-- `pinned.materials`: 重要な参考資材（id, title, content, source付き）
-- `pinned.topics`: 関連トピック（id, title）
-- `pinned.activities`: 関連アクティビティ（id, title, status）
+check-in結果に `anchor.pinned` フィールドがある場合、その内容はタスクに常に意識してほしい情報としてpinされたエンティティ群である。以下の5種が含まれることがある（0件キーは省略される）:
+
+- `anchor.pinned.decisions`: 重要な決定事項（id, title, reason付き）
+- `anchor.pinned.logs`: 重要な議事録・ログ（id, title, content付き）
+- `anchor.pinned.materials`: 重要な参考資材（id, title, content, source付き）
+- `anchor.pinned.topics`: 関連トピック（id, title）
+- `anchor.pinned.activities`: 関連アクティビティ（id, title, status）
 
 pinned情報は進捗把握の最初に確認し、概要・進捗の説明に反映すること。
 
 ## truncatedフィールドの扱い
 
-check-in結果に `truncated` フィールドがある場合、応答が全体予算を超えたため一部セクションが末尾やスタブへ切り詰められている。`cuts` の各要素に `next`（`{tool, args}` の形の続きへのポインタ）が付いていれば、そのツールをそのまま呼べば削られた分の本文を取り直せる。`over_budget: true` のときは全部を切り詰めてもなお超過している状態だが、それ自体はエラーではないので、必要な情報が足りないと感じた箇所だけ `next` で追加取得すればよい。
+check-in結果に `truncated` フィールドがある場合、応答が全体予算を超えたため一部セクションが末尾やスタブへ切り詰められている。`cuts` の各要素の `section` はドット区切りの入れ子パス（例: `anchor.pinned`、`catalog.map`）で、`next`（`{tool, args}` の形の続きへのポインタ）が付いていれば、そのツールをそのまま呼べば削られた分の本文を取り直せる。`over_budget: true` のときは全部を切り詰めてもなお超過している状態だが、それ自体はエラーではないので、必要な情報が足りないと感じた箇所だけ `next` で追加取得すればよい。
 
-## hintsフィールドの扱い
+## env.hintsフィールドの扱い
 
-check-in結果に `hints` フィールド（文字列リスト）がある場合、それはタグに蓄積したdecisionの整理（recompose-context skill）をおすすめしたい状況を示すナッジである。出力の最後に、各hintの内容を「〜をおすすめします」程度の一言として添えるに留めること。check-inの目的（現在のアクティビティの進捗把握）を差し置いてrecomposeに着手してはならない。
+check-in結果に `env.hints` フィールド（文字列リスト）がある場合、それはタグに蓄積したdecisionの整理（recompose-context skill）をおすすめしたい状況を示すナッジである。出力の最後に、各hintの内容を「〜をおすすめします」程度の一言として添えるに留めること。check-inの目的（現在のアクティビティの進捗把握）を差し置いてrecomposeに着手してはならない。
 
-## goalフィールドの扱い
+## control.asksフィールドの扱い
 
-check-in結果に `goal` フィールドがある場合、対象アクティビティの終了条件と次にやるべきこと1件（`next`）がまとまっている。`goal.error`が入っていれば組み立てに失敗しただけなので無視してよい。`label`に応じて次のとおり動く。
+check-in結果に `control.asks` フィールドがある場合、対象アクティビティをblockしているaskが1件以上ある。`awaiting_answer`は回答待ち、`awaiting_triage`は回答済みだが未トリアージのask一覧である。`awaiting_triage`が1件以上あれば、`triage_ask`でpromote/dismissへ振り分けること。`more`と`next`が付いていれば、件数分はまだ未取得なので`next`のツール呼び出しで残りを取得できる。
+
+## env.sessionフィールドの扱い
+
+`env.session.alias_collision`が`true`のときは、セッション別名が他セッションと衝突して付け替わった旨をユーザーに伝えること。
+
+## control.goalフィールドの扱い
+
+check-in結果に `control.goal` フィールドがある場合、対象アクティビティの終了条件と次にやるべきこと1件（`next`）がまとまっている。`goal.error`が入っていれば組み立てに失敗しただけなので無視してよい。`label`に応じて次のとおり動く。
 
 - `label: judge_ready`（判定待ち）: `open_questions`に未決があれば畳むかユーザーに1ターン確認する。そのうえで、`terminal`の充足が1件以上あれば`judge_goal(goal_id, verdict="achieved", note=...)`、0件なら`judge_goal(goal_id, verdict="failed", note=...)`をその場で呼ぶ。人間の判断は待たず、判定したことの報告もしない
 - `label: undefined`（未定義）: `next`の文面どおり、真偽の付く終了条件が会話にある、または意図から推せるなら`set_goal`で書く。ユーザーの追認は待たず、書いたことの報告もしない。候補が複数で定まらない、またはこの活動には終わりがあるはずだが何なのか推せないときだけユーザーに聞き、定まれば同様に書く。聞いても定まらない、またはそもそも判断材料が無いときは何もしない
@@ -55,10 +65,10 @@ check-in結果に `goal` フィールドがある場合、対象アクティビ�
 ## 出力フォーマット
 
 ```
-check-in: {activity.title}
+check-in: {anchor.activity.title}
 
 ## 概要
-{タスクの背景・目的・やることがユーザーに伝わる程度にまとめる。activity.descriptionと関連情報をもとに構成する}
+{タスクの背景・目的・やることがユーザーに伝わる程度にまとめる。anchor.activity.descriptionと関連情報をもとに構成する}
 
 ## 進捗
 intent: {タグから抽出した intent 値、なければ省略}

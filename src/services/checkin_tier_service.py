@@ -18,9 +18,16 @@ import logging
 import sqlite3
 import threading
 
+from src.config import (
+    CHECKIN_BUDGET_CHARS,
+    CHECKIN_CONTROL_CAP_CHARS,
+    CHECKIN_HARD_MAX_CHARS,
+    CHECKIN_PINNED_SLOT_CHARS,
+    CHECKIN_TAG_NOTES_CAP_CHARS,
+)
 from src.db import get_connection, row_to_dict
 from src.infra import session_identity
-from src.services import activity_service, goal_service, hint_service, session_ledger_service
+from src.services import activity_service, goal_service, hint_service, response_budget, session_ledger_service
 from src.services.ask_service import get_pending_asks_with_conn
 from src.services.checkin_service import (
     _get_activities_overview,
@@ -30,12 +37,14 @@ from src.services.checkin_service import (
     _get_pinned_targets,
     _get_topics_info,
     _count_decisions_from_topics,
+    _pinned_item_pointer,
 )
 from src.services.material_service import get_materials_by_relation_with_conn
 from src.services.readable_id import strip_entity_id_inplace
 from src.services.relation_service import _get_map_with_conn
+from src.services.response_budget import BudgetPolicy, CappedSection, CutStep, PinnedPolicy
 from src.services.signal_service import record_signal
-from src.services.tag_service import collect_tag_notes_for_injection, get_entity_tags
+from src.services.tag_service import _decay_pointer_text, collect_tag_notes_for_injection, get_entity_tags
 
 logger = logging.getLogger(__name__)
 
@@ -385,3 +394,104 @@ def collect_and_assemble(activity_id: int, session_id: str | None = None) -> dic
         return {"error": {"code": "DATABASE_ERROR", "message": str(e)}}
     finally:
         conn.close()
+
+
+# --- 全体予算（tier形の方針） -------------------------------------------------
+#
+# response_budget.apply_budgetはこのモジュールの応答形（anchor/control/context/
+# catalog/env）を知らない。パスをドット区切りで教える方針定数をここに置く。
+
+
+def _topic_ids(response: dict) -> list[int]:
+    topics = response.get("context", {}).get("topics") if isinstance(response.get("context"), dict) else None
+    return [t["id_raw"] for t in topics or [] if isinstance(t, dict) and "id_raw" in t]
+
+
+def _activity_id(response: dict) -> int | None:
+    anchor = response.get("anchor")
+    activity = anchor.get("activity") if isinstance(anchor, dict) else None
+    return activity.get("id_raw") if isinstance(activity, dict) else None
+
+
+def _first_topic_pointer(tool: str):
+    """context.topicsの各topicごとに、指定toolへのポインタ一覧を組み立てる関数を返す。"""
+    def _pointer(response: dict) -> list[dict]:
+        return [
+            {"tool": tool, "args": {"entity_type": "topic", "entity_id": tid}}
+            for tid in _topic_ids(response)
+        ]
+    return _pointer
+
+
+def _catalog_map_pointer(response: dict) -> list[dict]:
+    return [{"tool": "get_map", "args": {"entity_type": "activity", "entity_id": _activity_id(response)}}]
+
+
+def _materials_pointer(response: dict) -> list[dict]:
+    return [
+        {"tool": "get_timeline", "args": {"activity_id": _activity_id(response), "entity_types": ["material"]}}
+    ]
+
+
+def _activity_description_pointer(response: dict) -> list[dict]:
+    return [{"tool": "get_by_ids", "args": {"items": [{"type": "activity", "id": _activity_id(response)}]}}]
+
+
+def _fold_tag_notes(response: dict) -> None:
+    """env.tag_notesの天井超過分を、大きいnotesから順にdecayと同じ1行ポインタへ縮退させる。"""
+    env = response.get("env")
+    notes = env.get("tag_notes") if isinstance(env, dict) else None
+    if not isinstance(notes, list) or not notes:
+        return
+    sized = sorted(
+        (item for item in notes if isinstance(item, dict)),
+        key=lambda item: response_budget.measure_chars(item.get("notes", "")),
+        reverse=True,
+    )
+    for item in sized:
+        if response_budget.measure_chars(notes) <= CHECKIN_TAG_NOTES_CAP_CHARS:
+            break
+        tag = item.get("tag")
+        if isinstance(tag, str):
+            item["notes"] = _decay_pointer_text(tag)
+
+
+# tier形のcheck_in応答に対する予算方針。保護パス（予算に数えるが削らない）は
+# anchor.activity・context.topics・env.hints・env.session・env.coverage・
+# env.flow_guideの6つ。control全体とenv.tag_notesは全体予算10,000字には
+# 数えず、それぞれ独立の天井（3,000字・6,000字）を持つ。
+TIER_FORM_BUDGET_POLICY = BudgetPolicy(
+    budget_chars=CHECKIN_BUDGET_CHARS,
+    hard_max_chars=CHECKIN_HARD_MAX_CHARS,
+    coverage_path="env.coverage",
+    activity_path="anchor.activity",
+    protected_paths=frozenset({
+        "anchor.activity", "context.topics", "env.hints", "env.session",
+        "env.coverage", "env.flow_guide",
+    }),
+    capped_sections=(
+        CappedSection(
+            name="control", paths=("control",),
+            cap_chars=CHECKIN_CONTROL_CAP_CHARS, fold=None,
+        ),
+        CappedSection(
+            name="tag_notes", paths=("env.tag_notes",),
+            cap_chars=CHECKIN_TAG_NOTES_CAP_CHARS, fold=_fold_tag_notes,
+        ),
+    ),
+    pinned=PinnedPolicy(
+        path="anchor.pinned",
+        slot_chars=CHECKIN_PINNED_SLOT_CHARS,
+        content_field={"decisions": "reason", "logs": "content", "materials": "content"},
+        pointer=_pinned_item_pointer,
+    ),
+    cut_steps=(
+        CutStep(path="catalog.map", mode="tail_list", pointer=_catalog_map_pointer),
+        CutStep(path="catalog.logs", mode="tail_list", pointer=_first_topic_pointer("get_logs")),
+        CutStep(path="context.materials", mode="tail_list", coverage_key="materials", pointer=_materials_pointer),
+        CutStep(path="context.activities", mode="tail_list"),
+        CutStep(path="context.decisions", mode="tail_list", coverage_key="decisions", pointer=_first_topic_pointer("get_decisions")),
+        CutStep(path="context.latest_log", mode="stub_dict", coverage_key="logs", pointer=_first_topic_pointer("get_logs")),
+    ),
+    hard_max_pointer=_activity_description_pointer,
+)

@@ -166,16 +166,26 @@ def checkin_scope(result: dict) -> tuple[int, list[int]] | None:
     差分通知middlewareはこの関数だけを呼び、check_in応答の形を直接読まない。
     形を変えるPRとスコープの読み方を変えるPRを必ず同じにするための唯一の窓口。
     activityのid_rawが取れない場合（error応答等）はNoneを返す。
+
+    tier形（anchor.activity・context.topics）を読む。書き直し前のフラットな形
+    （activity・related_topics）は、checkin_service.check_inを直接呼ぶ経路
+    （main.pyの配線からは外れた比較用テスト等）専用となり、この関数の対象外。
     """
     if not isinstance(result, dict):
         return None
-    activity = result.get("activity")
+    anchor = result.get("anchor")
+    if not isinstance(anchor, dict):
+        return None
+    activity = anchor.get("activity")
     if not isinstance(activity, dict):
         return None
     activity_id = activity.get("id_raw")
     if activity_id is None:
         return None
-    return activity_id, _topic_ids(result)
+    context = result.get("context")
+    topics = context.get("topics") if isinstance(context, dict) else None
+    topic_ids = [t["id_raw"] for t in topics or [] if isinstance(t, dict) and "id_raw" in t]
+    return activity_id, topic_ids
 
 
 def _consume_first_call_flag(session_id: str | None) -> bool:

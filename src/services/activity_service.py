@@ -292,9 +292,9 @@ def add_activity(
     finally:
         conn.close()
 
-    # check_in実行（connを閉じた後に呼ぶ。checkin_serviceが別connを開くため）
+    # check_in実行（connを閉じた後に呼ぶ。checkin_tier_serviceが別connを開くため）
     if check_in:
-        from src.services.checkin_service import check_in as do_check_in
+        from src.services.checkin_tier_service import collect_and_assemble as do_check_in
         check_in_result = do_check_in(activity_id)
         result["check_in_result"] = check_in_result
 

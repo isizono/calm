@@ -70,7 +70,7 @@ class TestPinnedFlavorApplied(object):
         add_pin("activity", activity_id, "material", owner_id)
 
         result = tool_check_in(activity_id)  # flavor既定=internal
-        pinned_materials = result["pinned"]["materials"]
+        pinned_materials = result["anchor"]["pinned"]["materials"]
         assert len(pinned_materials) == 1
         assert f"(M#{target_id})" in pinned_materials[0]["content"]
 
@@ -89,7 +89,7 @@ class TestPinnedFlavorApplied(object):
         add_pin("activity", activity_id, "material", owner_id)
 
         result = tool_check_in(activity_id, flavor="raw")
-        pinned_materials = result["pinned"]["materials"]
+        pinned_materials = result["anchor"]["pinned"]["materials"]
         assert f"{{{{cite:M#{target_id}}}}}" in pinned_materials[0]["content"]
 
 
@@ -121,7 +121,7 @@ class TestBudgetAppliedToRealCheckIn:
         assert result["truncated"]["after"] <= result["truncated"]["budget"]
         assert result["truncated"]["over_budget"] is False
 
-        pinned_materials = {m["id_raw"]: m for m in result["pinned"]["materials"]}
+        pinned_materials = {m["id_raw"]: m for m in result["anchor"]["pinned"]["materials"]}
         index_item = pinned_materials[index_mat]
         big_item = pinned_materials[big_mat]
 
@@ -155,7 +155,7 @@ class TestBudgetAppliedToRealCheckIn:
 
         result = tool_check_in(activity_id, flavor="raw")
         assert "truncated" in result
-        item = result["pinned"]["materials"][0]
+        item = result["anchor"]["pinned"]["materials"][0]
         assert len(item["content"]) < len(big_content)
 
 
@@ -177,7 +177,7 @@ class TestAddActivityFinalization:
         )
         check_in_result = result["check_in_result"]
         # 旧実装ではpinnedにflavorが未適用のまま返っていた
-        pinned_materials = check_in_result["pinned"]["materials"]
+        pinned_materials = check_in_result["anchor"]["pinned"]["materials"]
         assert f"(M#{target_id})" in pinned_materials[0]["content"]
 
     def test_check_in_result_gets_budget_applied_when_pin_is_huge(self, temp_db):
@@ -192,7 +192,7 @@ class TestAddActivityFinalization:
         )
         check_in_result = result["check_in_result"]
         assert "truncated" in check_in_result
-        item = check_in_result["pinned"]["materials"][0]
+        item = check_in_result["anchor"]["pinned"]["materials"][0]
         assert len(item["content"]) < len(big_content)
 
     def test_falsification_check_in_false_skips_finalization(self, temp_db):

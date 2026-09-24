@@ -26,7 +26,7 @@ from fastmcp.tools.tool import ToolResult
 from src.infra import session_identity
 from src.services import session_registry_service
 from src.services.activity_service import add_activity
-from src.services.checkin_service import check_in
+from src.services.checkin_tier_service import collect_and_assemble as check_in
 from src.services.decision_service import add_decisions
 from src.services.discussion_log_service import add_logs
 from src.services.material_service import add_material
@@ -591,8 +591,8 @@ async def test_real_check_in_tool_response_still_scopes_and_delivers_delta_when_
 ):
     """pin合計が全体予算を大きく超えるactivity（43,000字のpinを合成）でも、
     truncatedが付いた本物の応答からbaselineが立ち、以降のdeltaが届く
-    （予算切り詰めがcheckin_scopeの読むキー(activity.id_raw/related_topics)を
-    壊していないことの実地確認）。
+    （予算切り詰めがcheckin_scopeの読むキー(anchor.activity.id_raw/
+    context.topics)を壊していないことの実地確認）。
     """
     tid, aid = scope
     huge = add_material(
