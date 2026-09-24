@@ -73,7 +73,7 @@ class TestBuildRequest:
         text = build_request(
             activity_id=1, activity_title="a", worktree="/w", report_to="orch",
         )
-        assert "束縛されているか" not in text
+        assert "boundが" not in text
 
     def test_parent_args_given_adds_parent_check_step(self):
         text = build_request(
@@ -81,8 +81,8 @@ class TestBuildRequest:
             parent_goal_handle="parent-handle", parent_condition_id=55,
         )
         assert 'get_goal(handle="parent-handle")' in text
-        assert "条件id=55が自分のアクティビティ(activity_id=9)に" in text
-        assert "束縛されているかを確かめる" in text
+        assert "id_raw=55の条件のboundが" in text
+        assert '{"type": "activity", "id": 9}' in text
         assert "orchへSendMessageで理由とともに返す" in text
 
     def test_partial_parent_args_raise_value_error(self):
@@ -128,7 +128,7 @@ class TestMainCli:
         ])
         out = capsys.readouterr().out
         assert 'get_goal(handle="orch-goal")' in out
-        assert "条件id=12" in out
+        assert "id_raw=12の条件のboundが" in out
 
     def test_main_requires_parent_args_or_no_parent(self, capsys):
         with pytest.raises(SystemExit) as exc_info:

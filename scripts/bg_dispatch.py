@@ -22,12 +22,12 @@ heartbeatが付いてしまい、止まっているかどうかの判定が壊�
 
 --parent-goal-handleと--parent-condition-idは、上記3段目でorchが作った
 束縛条件をこの依頼文の受け手に伝える引数で、セットで指定する。渡すと依頼文に
-「受けたbgは着手時に親goalをget_goalで読み、指定した条件が自分のアクティビティに
-束縛されているかを確かめ、外れていたら作業を始めずに振り主へ返す」検査が入る。
-ラッパー自身はDBに接続しないため、実際に結びついたかどうかまでは検査しない
-(受け側に確かめさせる宣言を強制するだけ)。親を持たない依頼には--no-parentを
-明示する。どちらも指定しない、または両方同時に指定する呼び出しはエラーで
-止まる。
+「受けたbgは着手時に親goalをget_goalで読み、指定した条件のboundが自分の
+アクティビティを指しているかを確かめ、外れていたら作業を始めずに振り主へ
+返す」検査が入る。ラッパー自身はDBに接続しないため、実際に結びついたかどうか
+までは検査しない(受け側に確かめさせる宣言を強制するだけ)。親を持たない依頼
+には--no-parentを明示する。どちらも指定しない、または両方同時に指定する
+呼び出しはエラーで止まる。
 
 出力したテキストをそのままclaude --bgに渡す起動形は未確認のため、ここでは
 規定しない。出力を確認してから貼り付ける、またはファイルに保存して使うこと。
@@ -98,8 +98,9 @@ def build_request(
     if parent_goal_handle is not None:
         parent_check_step = (
             f"\n3. get_goal(handle=\"{parent_goal_handle}\")で親goalを読み、"
-            f"条件id={parent_condition_id}が自分のアクティビティ(activity_id={activity_id})に"
-            "束縛されているかを確かめる。外れていたら作業を始めず、"
+            f"conditionsのid_raw={parent_condition_id}の条件のboundが"
+            f'{{"type": "activity", "id": {activity_id}}}(=自分のアクティビティ)を'
+            "指しているかを確かめる。外れていたら作業を始めず、"
             f"{report_to}へSendMessageで理由とともに返す"
         )
     else:
