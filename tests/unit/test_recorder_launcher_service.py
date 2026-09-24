@@ -169,25 +169,15 @@ class TestResolveMainTranscript:
 
 
 class TestTmuxSessionName:
+    def test_reexports_watchers_implementation(self):
+        """独自に再実装せず、見張り(hooks.recorder_watch)の実装をそのまま
+        importして使っていることを確かめる。別々に持つと式が食い違いうる
+        ため、起動側(このモジュール)と停止側(hooks.recorder_watch._terminate
+        が使う実装)を単一の関数に一本化している。"""
+        assert svc.tmux_session_name is watch_hook.tmux_session_name
+
     def test_uses_first_8_chars_of_sid(self):
         assert svc.tmux_session_name("abcdefgh-ijkl") == "calm-rec-abcdefgh"
-
-    def test_matches_watcher_termination_target(self, tmp_path, monkeypatch):
-        """起動時に組み立てるセッション名が、見張り(_terminate)が実際に
-        killする対象と一致することを、_terminateを実行して確かめる
-        (両実装が同じ式を独立に持つため、食い違いが起きうる)。"""
-        monkeypatch.setattr(HookState, "BASE_DIR", tmp_path / "state")
-        tmux_calls: list[list[str]] = []
-
-        def _fake_run(cmd, **kwargs):
-            tmux_calls.append(cmd)
-            return subprocess.CompletedProcess(cmd, 0)
-
-        monkeypatch.setattr(subprocess, "run", _fake_run)
-
-        watch_hook._terminate(tmp_path, _MAIN_SID)
-
-        assert tmux_calls == [["tmux", "kill-session", "-t", svc.tmux_session_name(_MAIN_SID)]]
 
 
 # ===================================================================

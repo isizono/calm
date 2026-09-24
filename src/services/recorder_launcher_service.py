@@ -4,9 +4,9 @@ CLIエントリポイントは scripts/recorder.py。本モジュールはtmux�
 claudeプロセスを起動し、そのセッション専用のsettings.json・mcp.json・
 run.json・cursor.jsonを実行ディレクトリ（`hooks.recorder_watch.run_dir_for`
 が返す場所）に用意する。目印ファイル（write_marker/remove_marker/
-is_recorder_attached）とtmuxセッションの終了処理は、見張り
-（hooks/recorder_watch.py）が既に持つ実装をそのまま再利用し、命名規則
-（tmuxセッション名の組み立て方等）が2つの実装で食い違わないようにする。
+is_recorder_attached）・tmuxセッションの終了処理・セッション名の組み立て
+（`tmux_session_name`）は、見張り（hooks/recorder_watch.py）が既に持つ
+実装をそのままimportして使い、この2つの実装で重複させない。
 
 CALMのMCPツール（add_*/update_*/check_in等）はここでは一切呼ばない。
 """
@@ -30,6 +30,7 @@ from hooks.recorder_watch import (
     _terminate,
     _write_cursor,
     run_dir_for,
+    tmux_session_name,
 )
 from src.infra.process_signature import process_start_signature
 
@@ -113,18 +114,6 @@ def resolve_main_transcript(
         f"main transcriptの候補が複数ある(session_id={main_sid})。"
         f"--transcriptで指定せよ: {[str(m) for m in matches]}"
     )
-
-
-def tmux_session_name(main_sid: str) -> str:
-    """記録役のtmuxセッション名。
-
-    `hooks/recorder_watch.py` の `_terminate` が終了時にkillする対象と
-    同じ式（`calm-rec-<main_sid先頭8桁>`）である必要がある。停止処理自体は
-    `_terminate` をそのまま再利用するためここでは重複しないが、起動時に
-    このセッション名を自分で組み立てる箇所がもう1つあるため、式を本関数に
-    集約する。
-    """
-    return f"calm-rec-{main_sid[:8]}"
 
 
 # ===================================================================
