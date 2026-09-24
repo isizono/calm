@@ -6,8 +6,10 @@ write_marker/process_start_signature経由でも呼ばれるため、コマン�
 ファイルシステム状態（settings.json・mcp.json・run.json・cursor.json）は
 実際に書かれうる形で検証する。
 """
+import ast
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -20,6 +22,23 @@ _FAKE_PS_STARTED_AT = "Thu Jul 24 09:32:04 2026"
 _MAIN_SID = "main-session-abcdefgh"
 _MAIN_PID = 12345
 _PANE_PID = 54321
+_MAIN_PY_PATH = Path(__file__).resolve().parents[2] / "src" / "main.py"
+
+
+def _registered_get_tool_names(main_py_path: Path) -> set[str]:
+    """src/main.pyの@mcp.tool()デコレータ付き関数のうち、get_で始まる名前を返す。"""
+    tree = ast.parse(main_py_path.read_text(encoding="utf-8"))
+    names = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not node.name.startswith("get_"):
+            continue
+        for deco in node.decorator_list:
+            if ast.unparse(deco) == "mcp.tool()":
+                names.add(node.name)
+                break
+    return names
 
 
 @pytest.fixture(autouse=True)
@@ -198,6 +217,27 @@ class TestBuildSettings:
         assert f"{svc.MCP_TOOL_PREFIX}add_relation" in allow
         assert not any("add_decisions" in a for a in allow)
         assert not any("check_in" in a for a in allow)
+
+    def test_get_tools_are_enumerated_not_wildcarded(self, calm_root, tmp_path):
+        """`mcp__calm__get_*`のような部分一致ワイルドカードが実際に解釈される
+        かは未確認のため、get_系ツールは名前を1つずつ列挙する。"""
+        run_dir = tmp_path / "run"
+        settings = svc.build_settings(calm_root, run_dir)
+
+        allow = settings["permissions"]["allow"]
+        assert not any(a.endswith("get_*") for a in allow)
+        for name in svc._ALLOWED_GET_TOOLS:
+            assert f"{svc.MCP_TOOL_PREFIX}{name}" in allow
+
+
+class TestAllowedGetToolsMatchesMainPy:
+    """settings.jsonが許可するget_系ツール名が、src/main.pyの実際の登録から
+    ズレていないことを確かめる(get_系ツールが増減しても列挙が古くならない
+    ように、実装から導出した期待値と突き合わせる)。"""
+
+    def test_matches_registered_get_tools_in_main_py(self):
+        expected = _registered_get_tool_names(_MAIN_PY_PATH)
+        assert set(svc._ALLOWED_GET_TOOLS) == expected
 
     def test_write_settings_json_writes_file(self, calm_root, tmp_path):
         run_dir = tmp_path / "run"

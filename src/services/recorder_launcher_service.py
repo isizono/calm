@@ -42,6 +42,20 @@ SUBPROCESS_TIMEOUT_SEC = 10.0
 # 必要がある。ずれていた場合はここだけ直せばよい。
 MCP_TOOL_PREFIX = "mcp__calm__"
 
+# read系ツール制限は「check_inのみ除外、search/get_*/get_mapは許可」に決着済み
+# （decision「記録役へのread系ツール制限」）。permissions.allowが部分一致の
+# ワイルドカード（"get_*"）を実際に解釈するかは未確認のため、src/main.pyに
+# @mcp.tool()登録されているget_系ツール名を1つずつ列挙する。src/main.py側で
+# get_系ツールが増減した場合にこの列挙が古くならないよう、
+# tests/unit/test_recorder_launcher_service.pyでsrc/main.pyから導出した
+# 期待値と突き合わせている。
+_ALLOWED_GET_TOOLS = (
+    "get_activities", "get_asks", "get_by_ids", "get_config", "get_decisions",
+    "get_feedback_entries", "get_goal", "get_habits", "get_logs", "get_map",
+    "get_material", "get_overview", "get_sessions", "get_signals", "get_timeline",
+    "get_topics",
+)
+
 INITIAL_PROMPT = "起動確認。片が届くまで何もせず `READY` とだけ返してターンを終えよ"
 
 
@@ -146,7 +160,7 @@ def build_settings(calm_root: Path, run_dir: Path) -> dict:
         "permissions": {
             "allow": [
                 f"{MCP_TOOL_PREFIX}search",
-                f"{MCP_TOOL_PREFIX}get_*",
+                *(f"{MCP_TOOL_PREFIX}{name}" for name in _ALLOWED_GET_TOOLS),
                 f"{MCP_TOOL_PREFIX}add_logs",
                 f"{MCP_TOOL_PREFIX}add_material",
                 f"{MCP_TOOL_PREFIX}add_relation",
