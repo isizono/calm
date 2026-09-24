@@ -82,7 +82,7 @@ class TestBuildRequest:
         )
         assert 'get_goal(handle="parent-handle")' in text
         assert "id_raw=55の条件のboundが" in text
-        assert '{"type": "activity", "id": 9}' in text
+        assert '{"type": "activity", "id_raw": 9}' in text
         assert "orchへSendMessageで理由とともに返す" in text
 
     def test_partial_parent_args_raise_value_error(self):

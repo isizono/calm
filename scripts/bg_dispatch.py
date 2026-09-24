@@ -99,7 +99,7 @@ def build_request(
         parent_check_step = (
             f"\n3. get_goal(handle=\"{parent_goal_handle}\")で親goalを読み、"
             f"conditionsのid_raw={parent_condition_id}の条件のboundが"
-            f'{{"type": "activity", "id": {activity_id}}}(=自分のアクティビティ)を'
+            f'{{"type": "activity", "id_raw": {activity_id}}}(=自分のアクティビティ)を'
             "指しているかを確かめる。外れていたら作業を始めず、"
             f"{report_to}へSendMessageで理由とともに返す"
         )
