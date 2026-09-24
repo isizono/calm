@@ -366,6 +366,31 @@ def stop(*, session_id: str | None = None) -> dict[str, Any]:
     return {"main_sid": main_sid, "was_attached": was_attached}
 
 
+def restart(
+    *,
+    calm_root: Path,
+    main_sid: str,
+    main_pid: int,
+    main_transcript: str,
+    sid_factory=lambda: str(uuid.uuid4()),
+) -> dict[str, Any]:
+    """記録役を立て直す(stop→start)。
+
+    見張り(hooks.recorder_watch)が切り離したプロセスとして起動する経路
+    専用で、`$CLAUDE_CODE_SESSION_ID`/`$CLAUDE_PID`のようなセッション環境
+    変数には頼れないため、main_sid・main_pid・main_transcriptを明示的に
+    受け取る。
+    """
+    stop(session_id=main_sid)
+    return start(
+        calm_root=calm_root,
+        session_id=main_sid,
+        pid=main_pid,
+        transcript=main_transcript,
+        sid_factory=sid_factory,
+    )
+
+
 def status(*, session_id: str | None = None) -> dict[str, Any]:
     main_sid = resolve_main_sid(session_id)
     run_dir = run_dir_for(main_sid)
@@ -410,6 +435,14 @@ def main(argv: list[str] | None = None) -> None:
     p_stop = sub.add_parser("stop", help="記録役を停止する")
     p_stop.add_argument("--session-id", help="既定: $CLAUDE_CODE_SESSION_ID")
 
+    p_restart = sub.add_parser(
+        "restart",
+        help="記録役を立て直す(stop→start)。見張りが切り離しプロセスとして呼ぶ専用",
+    )
+    p_restart.add_argument("--session-id", required=True, help="main_sid(環境変数には頼れない)")
+    p_restart.add_argument("--pid", type=int, required=True, help="main_pid(環境変数には頼れない)")
+    p_restart.add_argument("--transcript", required=True, help="main_transcript(環境変数には頼れない)")
+
     p_status = sub.add_parser("status", help="記録役の状態を表示する")
     p_status.add_argument("--session-id", help="既定: $CLAUDE_CODE_SESSION_ID")
 
@@ -426,6 +459,13 @@ def main(argv: list[str] | None = None) -> None:
             )
         elif args.command == "stop":
             result = stop(session_id=args.session_id)
+        elif args.command == "restart":
+            result = restart(
+                calm_root=_calm_root(),
+                main_sid=args.session_id,
+                main_pid=args.pid,
+                main_transcript=args.transcript,
+            )
         else:
             result = status(session_id=args.session_id)
     except RecorderLaunchError as e:

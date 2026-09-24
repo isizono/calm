@@ -617,3 +617,139 @@ class TestTopicCandidates:
         assert code == 2
         chunk = (run_dir / "chunks" / "0001.md").read_text(encoding="utf-8")
         assert "取得失敗" in chunk
+
+
+class TestRestartAfterNChunks:
+    """CHUNKS_PER_RESTART個の片をDONEで確定するたびに、記録役の立て直し
+    (切り離しプロセスでのscripts/recorder.py restart起動)をトリガーする。
+
+    tmux kill-sessionを見張り自身のプロセスから直接呼ぶと、呼び出し元の
+    見張りも巻き添えで終了してしまうため、実際のstop/startは
+    start_new_session付きのPopenで切り離す。ここではPopen自体を外部境界
+    としてmonkeypatchし、呼び出しの有無・引数だけを確かめる。
+    """
+
+    def _mock_popen(self, monkeypatch):
+        calls: list[tuple[list[str], dict]] = []
+
+        def _fake_popen(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return None
+
+        monkeypatch.setattr(hook.subprocess, "Popen", _fake_popen)
+        return calls
+
+    def _confirm_chunk(self, run_dir, transcript, no: int, text: str, *, monkeypatch):
+        """1個の片を作ってDONEで確定させる（閾値は極小に設定済みの前提）。"""
+        _append_jsonl(transcript, [_entry("assistant", f"e{no}", text=text)])
+        sleep, now = _stub_sleep_and_clock()
+        code, _ = _run_hook(cwd=run_dir, sleep=sleep, now=now)
+        assert code == 2
+        sleep2, now2 = _stub_sleep_and_clock()
+        code2, _ = _run_hook(
+            cwd=run_dir, last_assistant_message=f"DONE {no:04d}", sleep=sleep2, now=now2
+        )
+        return code2
+
+    def test_does_not_spawn_before_threshold(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(hook, "CHUNKS_PER_RESTART", 3)
+        monkeypatch.setattr(hook, "CHAR_THRESHOLD", 3)
+        run_dir, transcript = _setup_run(tmp_path, transcript_lines=[])
+        _mock_main_alive(monkeypatch)
+        popen_calls = self._mock_popen(monkeypatch)
+
+        self._confirm_chunk(run_dir, transcript, 1, "first chunk text", monkeypatch=monkeypatch)
+        self._confirm_chunk(run_dir, transcript, 2, "second chunk text", monkeypatch=monkeypatch)
+
+        assert popen_calls == []
+        cursor = _cursor(run_dir)
+        assert cursor["chunks_since_restart"] == 2
+        assert cursor["restart_count"] == 0
+
+    def test_spawns_detached_restart_and_resets_counter_on_threshold(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(hook, "CHUNKS_PER_RESTART", 2)
+        monkeypatch.setattr(hook, "CHAR_THRESHOLD", 3)
+        main_sid = "main-restart"
+        run_dir, transcript = _setup_run(tmp_path, main_sid=main_sid, transcript_lines=[])
+        _mock_main_alive(monkeypatch)
+        popen_calls = self._mock_popen(monkeypatch)
+
+        self._confirm_chunk(run_dir, transcript, 1, "first chunk text", monkeypatch=monkeypatch)
+        assert popen_calls == []
+
+        code = self._confirm_chunk(run_dir, transcript, 2, "second chunk text", monkeypatch=monkeypatch)
+
+        assert code == 0  # 立て直すので、このターンはこれ以上ポーリングしない
+        assert len(popen_calls) == 1
+        cmd, kwargs = popen_calls[0]
+        assert cmd[0].endswith(".venv/bin/python")
+        assert cmd[1].endswith("scripts/recorder.py")
+        assert cmd[2:] == [
+            "restart",
+            "--session-id", main_sid,
+            "--pid", str(_MAIN_PID),
+            "--transcript", str(transcript),
+        ]
+        assert kwargs["start_new_session"] is True
+        assert kwargs["stdin"] is subprocess.DEVNULL
+        assert kwargs["stdout"] is subprocess.DEVNULL
+        assert kwargs["stderr"] is subprocess.DEVNULL
+
+        cursor = _cursor(run_dir)
+        assert cursor["chunks_since_restart"] == 0
+        assert cursor["restart_count"] == 1
+
+    def test_retry_outcome_does_not_count_toward_restart(self, tmp_path, monkeypatch):
+        """DONEが来ない(retry)場合はpendingが残ったままなので、立て直しの
+        カウントは進めない(『まだ確定していない片があるときは立て直さない』
+        の裏付け)。"""
+        monkeypatch.setattr(hook, "CHUNKS_PER_RESTART", 1)
+        monkeypatch.setattr(hook, "CHAR_THRESHOLD", 3)
+        run_dir, transcript = _setup_run(
+            tmp_path, transcript_lines=[_entry("assistant", "e1", text="hello world")]
+        )
+        _mock_main_alive(monkeypatch)
+        popen_calls = self._mock_popen(monkeypatch)
+
+        sleep, now = _stub_sleep_and_clock()
+        code, _ = _run_hook(cwd=run_dir, sleep=sleep, now=now)
+        assert code == 2
+
+        sleep2, now2 = _stub_sleep_and_clock()
+        code2, _ = _run_hook(cwd=run_dir, last_assistant_message="まだです", sleep=sleep2, now=now2)
+        assert code2 == 2
+
+        assert popen_calls == []
+        cursor = _cursor(run_dir)
+        assert cursor["pending"] is not None
+        assert cursor["chunks_since_restart"] == 0
+        assert cursor["restart_count"] == 0
+
+    def test_unacked_outcome_does_not_count_toward_restart(self, tmp_path, monkeypatch):
+        """2回催促してもDONEが来ずunackedへ回った片は、DONEでの確定では
+        ないため立て直しのカウント対象にしない。"""
+        monkeypatch.setattr(hook, "CHUNKS_PER_RESTART", 1)
+        monkeypatch.setattr(hook, "CHAR_THRESHOLD", 3)
+        run_dir, transcript = _setup_run(
+            tmp_path, transcript_lines=[_entry("assistant", "e1", text="hello world")]
+        )
+        _mock_main_alive(monkeypatch)
+        popen_calls = self._mock_popen(monkeypatch)
+
+        sleep, now = _stub_sleep_and_clock()
+        code, _ = _run_hook(cwd=run_dir, sleep=sleep, now=now)
+        assert code == 2
+
+        sleep2, now2 = _stub_sleep_and_clock()
+        _run_hook(cwd=run_dir, last_assistant_message="まだです", sleep=sleep2, now=now2)
+
+        _mock_main_dead(monkeypatch)
+        sleep3, now3 = _stub_sleep_confirm_dead()
+        code3, _ = _run_hook(cwd=run_dir, last_assistant_message="まだです2", sleep=sleep3, now=now3)
+        assert code3 == 0
+
+        assert popen_calls == []
+        cursor = _cursor(run_dir)
+        assert cursor["unacked"] == [1]
+        assert cursor["chunks_since_restart"] == 0
+        assert cursor["restart_count"] == 0

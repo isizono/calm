@@ -482,6 +482,68 @@ class TestStop:
         assert result == {"main_sid": _MAIN_SID, "was_attached": False}
 
 
+class TestRestart:
+    """restart()は見張りが切り離しプロセスとして呼ぶ経路専用で、
+    $CLAUDE_CODE_SESSION_ID等のセッション環境変数には頼れない。テストでは
+    それらを未設定のまま明示引数だけでstop→startが動くことを確かめる。"""
+
+    def test_restarts_using_explicit_values_not_env(self, calm_root, tmp_path, monkeypatch):
+        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+        monkeypatch.delenv("CLAUDE_PID", raising=False)
+        transcript = tmp_path / "t.jsonl"
+        _write_jsonl(transcript, [_entry("u1")])
+        write_marker(_MAIN_SID, _PANE_PID)  # 既存の記録役が付いている状態を模す
+
+        result = svc.restart(
+            calm_root=calm_root, main_sid=_MAIN_SID, main_pid=_MAIN_PID,
+            main_transcript=str(transcript), sid_factory=_fixed_sid_factory("rec-restarted"),
+        )
+
+        assert result["started"] is True
+        assert result["recorder_sid"] == "rec-restarted"
+        assert is_recorder_attached(_MAIN_SID) is True
+
+    def test_kills_old_session_before_launching_new_one(
+        self, calm_root, tmp_path, monkeypatch, _mock_subprocess
+    ):
+        transcript = tmp_path / "t.jsonl"
+        _write_jsonl(transcript, [_entry("u1")])
+        write_marker(_MAIN_SID, _PANE_PID)
+
+        svc.restart(
+            calm_root=calm_root, main_sid=_MAIN_SID, main_pid=_MAIN_PID,
+            main_transcript=str(transcript), sid_factory=_fixed_sid_factory("rec-2"),
+        )
+
+        kill_idx = next(i for i, c in enumerate(_mock_subprocess) if c[1] == "kill-session")
+        new_session_idx = next(i for i, c in enumerate(_mock_subprocess) if c[1] == "new-session")
+        assert kill_idx < new_session_idx
+
+    def test_preserves_recorder_sids_and_cursor_across_restart(self, calm_root, tmp_path, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", _MAIN_SID)
+        monkeypatch.setenv("CLAUDE_PID", str(_MAIN_PID))
+        transcript = tmp_path / "t.jsonl"
+        _write_jsonl(transcript, [_entry("u1")])
+        svc.start(calm_root=calm_root, transcript=str(transcript), sid_factory=_fixed_sid_factory("rec-1"))
+        run_dir = watch_hook.run_dir_for(_MAIN_SID)
+        # 記録役が処理を進めた体で、cursor.jsonを書き換えておく(立て直しで
+        # 失われないことを確かめるため)。
+        cursor_path = run_dir / "cursor.json"
+        cursor = json.loads(cursor_path.read_text(encoding="utf-8"))
+        cursor["next_no"] = 42
+        cursor_path.write_text(json.dumps(cursor), encoding="utf-8")
+
+        svc.restart(
+            calm_root=calm_root, main_sid=_MAIN_SID, main_pid=_MAIN_PID,
+            main_transcript=str(transcript), sid_factory=_fixed_sid_factory("rec-2"),
+        )
+
+        run_data = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+        assert run_data["recorder_sids"] == ["rec-1", "rec-2"]
+        cursor2 = json.loads(cursor_path.read_text(encoding="utf-8"))
+        assert cursor2["next_no"] == 42
+
+
 class TestStatus:
     def test_reports_attached_and_cursor(self, tmp_path, monkeypatch):
         monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", _MAIN_SID)
@@ -530,3 +592,23 @@ class TestMainCli:
         captured = capsys.readouterr()
         assert captured.out == ""
         assert "エラー" in captured.err
+
+    def test_restart_requires_explicit_args(self):
+        """restartは$CLAUDE_CODE_SESSION_ID等に頼れないため、引数は必須にする。"""
+        with pytest.raises(SystemExit):
+            svc.main(["restart"])
+
+    def test_restart_calls_restart_with_explicit_cli_args(self, calm_root, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(svc, "_calm_root", lambda: calm_root)
+        transcript = tmp_path / "t.jsonl"
+        _write_jsonl(transcript, [_entry("u1")])
+
+        svc.main([
+            "restart", "--session-id", _MAIN_SID, "--pid", str(_MAIN_PID),
+            "--transcript", str(transcript),
+        ])
+
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["started"] is True
+        assert data["main_sid"] == _MAIN_SID
