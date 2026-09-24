@@ -738,6 +738,29 @@ class TestMaintenanceHintPromoteLine:
         )
         assert "未処理の躓き" not in out["hookSpecificOutput"]["additionalContext"]
 
+    def test_pending_stumbles_do_not_mix_across_entries(self, db, capsys):
+        """複数エントリがDBに同居し、それぞれstumble件数が異なるとき、格上げ行の
+        件数は各エントリ自身のpending_stumblesだけを反映する(他エントリの分が
+        混ざらない)。PENDING_STUMBLES_SQLの相関条件(n.entry_id = e.id)が正しく
+        効いていることの回帰検知。"""
+        _create_entry("entry-a", body="Aの躓き", condition={"tool": None, "all": []})
+        _create_entry("entry-b", body="Bの躓き", condition={"tool": None, "all": []})
+        for _ in range(3):
+            note = fs.add_feedback_note(name="entry-a", kind="stumble", body="踏んだ")
+            assert note["ok"], note
+        note = fs.add_feedback_note(name="entry-b", kind="stumble", body="踏んだ")
+        assert note["ok"], note
+
+        out = _run_main_with_event(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt_id": "p1", "prompt": "hello"},
+            capsys,
+        )
+        body = out["hookSpecificOutput"]["additionalContext"]
+        # entry-a(3件)にだけ格上げ行が出て、entry-b(1件、閾値未満)には出ない。
+        # 相関がずれて両者のstumbleが合算されると"4件"や2箇所出現になる。
+        assert body.count("未処理の躓き") == 1
+        assert "未処理の躓き3件" in body
+
     def test_deny_reason_includes_promote_line(self, db, capsys):
         _create_entry(
             "danger", strength="block", timing="pre_tool", body="危険",

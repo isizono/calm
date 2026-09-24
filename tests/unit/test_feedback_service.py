@@ -453,6 +453,22 @@ class TestAddFeedbackNote:
         assert "hint" in r3
         assert "未処理の躓き3件" in r3["hint"]
 
+    def test_pending_stumbles_do_not_mix_across_entries(self, temp_db):
+        """複数エントリがDBに同居するとき、hintの件数計算は対象エントリ自身の
+        pending_stumblesだけを見る(他エントリの分が混ざらない)。
+        PENDING_STUMBLES_SQLの相関条件(n.entry_id = e.id)が正しく効いていることの
+        回帰検知。"""
+        _create("entry-a")
+        _create("entry-b")
+        for i in range(3):
+            note = fs.add_feedback_note(name="entry-b", kind="stumble", body=f"B{i}")
+            assert note["ok"], note
+        # entry-aは1件だけ。相関がずれてentry-bの3件と合算されると閾値(3)を
+        # 超えてhintが付いてしまう。
+        r = fs.add_feedback_note(name="entry-a", kind="stumble", body="A1")
+        assert r["ok"], r
+        assert "hint" not in r
+
     def test_hint_key_absent_when_note_added(self, temp_db):
         """noteを足す呼び出し自体ではhintは付かない(pending stumblesの計算はnote挿入後を基準にする)。"""
         _create("note-target")

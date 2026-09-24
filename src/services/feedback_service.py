@@ -304,6 +304,8 @@ def add_feedback_note(name: str, kind: str, body: str) -> dict:
         note_row = conn.execute(
             "SELECT id, kind, body, created_at FROM feedback_notes WHERE id = ?", (cur.lastrowid,)
         ).fetchone()
+        # PENDING_STUMBLES_SQLはエイリアス`e`(=feedback_entries)を前提にした相関サブクエリなので、
+        # このクエリの`FROM feedback_entries e`は変更しないこと。
         pending_row = conn.execute(
             f"SELECT {PENDING_STUMBLES_SQL} AS p FROM feedback_entries e WHERE e.id = ?",
             (entry_id,),

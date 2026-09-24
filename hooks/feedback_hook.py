@@ -78,6 +78,8 @@ def _wrap(body: str) -> str:
 
 
 def _fetch_entries(conn: sqlite3.Connection, *, strength: str, timing: str) -> list[sqlite3.Row]:
+    # PENDING_STUMBLES_SQLはエイリアス`e`(=feedback_entries)を前提にした相関サブクエリなので、
+    # このクエリの`FROM feedback_entries e`は変更しないこと。
     return conn.execute(
         f"SELECT e.*, {PENDING_STUMBLES_SQL} AS pending_stumbles FROM feedback_entries e "
         "WHERE e.strength = ? AND e.timing = ? AND e.deleted_at IS NULL ORDER BY e.id",
