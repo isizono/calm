@@ -262,6 +262,35 @@ uv run --directory ${CLAUDE_PLUGIN_ROOT} python ${CLAUDE_PLUGIN_ROOT}/scripts/sn
 
 全kind横断のスナップショット一覧（kind・作成日時・サイズ・整合性チェック結果・パス）が表示される。復元先を選ぶ際の参考にできる。
 
+#### サイレント劣化に気づく
+
+CALMには「壊れてもエラーにならず、静かに機能が縮退する」種類の故障がいくつかある。データ消失（前項のスナップショット異常検知）とは別に、以下の3つは気づかないまま使い続けてしまいやすい。
+
+**embeddingサーバーの起動失敗**
+
+検索・check-in等でベクトル検索を使う際、embeddingサーバー（52836番ポート）が初回encode時に遅延起動する。起動に失敗しても例外は投げず、warningログのみを出して検索がキーワード一致（FTS5）のみに縮退したまま動き続ける。
+
+- **気づき方**: `curl http://localhost:52836/health` が `{"status": "ok"}` を返さない。または後述の`degraded`フラグが立ち続ける
+- **直し方**: `/restart`に`--restart-embedding`を付けて明示的に再起動する
+
+**検索応答の`degraded: true`**
+
+`search`ツールの応答に含まれる`degraded`は、その呼び出し時点でベクトル検索（embeddingサーバー）が利用不可だったことを示す。`true`のときの結果はFTS5キーワード一致・タグ名一致のみに基づき、意味的には関連するが字面が異なる項目を取りこぼしている可能性がある。「類似する情報が見つからない」と判断する前に、AIはこのフラグを確認すべきである。
+
+- **気づき方**: `search`応答の`degraded`キーを見る（バリデーションエラー等でベクトル検索を試す前に結果が確定した場合はキー自体が無い）
+- **直し方**: 少し時間を置いて再検索する、または上記のembeddingサーバー再起動を行う
+
+**hookが黙って失敗する**
+
+CALMの全hookはfail-open設計（1つのhookの失敗が他の操作を止めない）。この設計自体は意図的だが、失敗が既定では標準エラー出力にしか残らず、記録ナッジやSessionStart注入の一部セクションが黙って消えても「何も起きていない」ように見える。
+
+- **気づき方**: 以下のhookは、hook本体のコードが実行された後に起きた例外を`signal_events`へ`kind: machine_error`として記録する。`get_signals()`で確認できるほか、1件でもあればSessionStart注入の「未トリアージのシグナル」行にも現れる
+  - SessionStart注入の各セクション（`source`が`hook:section:<セクション名>`）
+  - Stop hookの記録ナッジ判定（`source`が`hook:stop:logs_sparse`）
+  - PreToolUseの内部IDリークブロックhook（`source`が`hook:preblock`）
+- **直し方**: `get_signals(kind="machine_error")`で`detail`・`summary`を確認し、原因（依存モジュールの欠落・DBスキーマ不一致等）を調査する。記録は失敗の発生を示すだけで、自動修復はしない
+- **限界**: この記録機構自体がDB層のimportに依存するため、venvの破損や依存パッケージの欠落でhookがimport時点で（`main()`に到達する前に）落ちた場合は記録されず、標準エラー出力のみに残る。MessageDisplay等の表示専用hook・transcript sanitize系hook（別途citation_event_logへ失敗を記録済み）も現状この記録の対象外
+
 #### カスタマイズできるもの
 
 - **tag-notes**: タグに紐づく常備情報。そのタグに関連する作業が始まったときにAIへ自動注入される。`/tag-notes`で確認・更新できる

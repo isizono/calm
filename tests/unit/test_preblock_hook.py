@@ -833,3 +833,37 @@ class TestLogEventFields:
         )
         # block 動作は継続している
         assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+class TestMainExceptionSignal:
+    def test_unhandled_exception_records_machine_error_signal(
+        self, capsys, cc_memory_cwd, monkeypatch, temp_db
+    ):
+        """main()のtry内で捕捉されない例外が発生しても素通し + signal記録される。"""
+        def boom(*a, **kw):
+            raise RuntimeError("scan boom")
+
+        monkeypatch.setattr(preblock_hook, "_scan_tool_input", boom)
+
+        out = _run_main_with_event(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "echo hello"},
+                "session_id": "s1",
+            },
+            capsys,
+        )
+        # hook自体の不具合で全toolを止めないため素通しのまま
+        assert out == {}
+
+        from src.db import get_connection
+
+        conn = get_connection()
+        try:
+            row = conn.execute("SELECT * FROM signal_events").fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert row["kind"] == "machine_error"
+        assert row["source"] == "hook:preblock"
+        assert "scan boom" in row["summary"]
