@@ -161,6 +161,7 @@ SessionStart(3スクリプト)・Stop・UserPromptSubmit・MessageDisplayに加�
 | `/ask-watch` | askストアを継続的に監視し、同型のaskが溜まっていたらメタaskとして起票します |
 | `/memory-export` | 記録を他インスタンスへ渡すexportバンドルを作成します |
 | `/memory-import` | 他インスタンスのexportバンドルを衝突裁定を経て取り込みます |
+| `/peer-nudge` | セッション台帳の宛先候補へSendMessageで直接話しかけるときの作法をガイドします |
 
 ## hookが黙って失敗したときに気づく
 
