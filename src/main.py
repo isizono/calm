@@ -1516,33 +1516,19 @@ def check_in(
             docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
 
     Returns:
-        中身が空の枠・キーは省く（anchor.activity・control.goal・env.coverage・
-        env.sessionは常に置く）。
-        - anchor: {activity, pinned}。pinned.decisionsの各要素は、未resolveな
-          destabilizesエッジを持つ場合のみdestabilization（{destabilized_by,
-          unresolved_count, latest_source, sources: [{decision_id, title,
-          created_at, kind_reason}, ...]}）が付く
-        - control: {goal, asks, dependencies}。goalはそのactivityの終了条件の
-          現在状態と次の一手を1件返す。未定義（label="undefined"）・不要印
-          （label="not_needed"）・goal付き（label="active"|"judge_ready"|
-          "closed"）のいずれか。goal付きならnext（今やるべきこと1件）に従う。
-          asksはこのactivityをblockしているaskをawaiting_answer/
-          awaiting_triageに分けて最大5件、超過分はmoreに件数とget_asksへの
-          ポインタを付ける。awaiting_triageが1件以上あれば、triage_askで
-          promote/dismissへ振り分けること
-        - context: {topics, activities, decisions, latest_log, materials}
-        - catalog: {logs, map}
-        - env: {tag_notes, hints, coverage, session, flow_guide}。sessionの
-          alias_collisionがtrueのときは、セッション別名が衝突した旨をユーザーに
-          伝えること。flow_guideはセッション内で最初のcheck_inのときのみ含まれる
-        応答全体が10,000字を超えるときはtruncatedキーが付く（{budget, before, after,
-        over_budget, cuts: [{section, kept, cut, next?}, ...]}）。sectionはドット
-        区切りの入れ子パス（例: "anchor.pinned"、"catalog.map"）。catalog.map/
-        catalog.logs/context.materials/context.activities/context.decisions/
-        context.latest_log/anchor.pinnedの順に切り詰められ、各cutのnextには
-        続きを取り直すツール呼び出し（{tool, args}）が付く。control（goal/asks/
-        dependencies）とenv.tag_notesはこの10,000字には数えず、それぞれ3,000字・
-        6,000字の天井を別に持つ（超過時はtruncated.control_over/tag_notes_overが立つ）
+        5つの枠（anchor: {activity, pinned} / control: {goal, asks,
+        dependencies} / context: {topics, activities, decisions, latest_log,
+        materials} / catalog: {logs, map} / env: {tag_notes, hints, coverage,
+        session, flow_guide}）に分けて返す。中身が空の枠・キーは省く
+        （anchor.activity・control.goal・env.coverage・env.sessionは常に置く）。
+        フィールドの詳細はdocs/spec/mcp-tools.md 2.18節を参照。
+        control.goalは終了条件の現在状態と次の一手（next）を1件返す（未定義=
+        undefined・不要印=not_needed・goal付き=active|judge_ready|closed）。
+        control.asks.awaiting_triageが1件以上あればtriage_askで振り分けること。
+        env.session.alias_collisionがtrueならユーザーに伝えること。
+        応答全体が10,000字を超えるとtruncatedキーが付く（cuts[].sectionは
+        "anchor.pinned"のようなドット区切りパス）。control・env.tag_notesは
+        この10,000字に数えず、それぞれ独立の天井を持つ
     """
     flavor = _normalize_flavor(flavor)
     session_id = get_caller_session_id()

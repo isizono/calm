@@ -11,10 +11,12 @@ from src.services.activity_service import add_activity
 from src.services.checkin_service import checkin_scope
 from src.services.material_service import add_material
 from src.services.pin_service import add_pin
+from src.services.relation_service import add_relation
 from src.services.topic_service import add_topic
 from src.main import check_in as tool_check_in
 from src.main import add_activity as tool_add_activity
 from src.main import get_material as tool_get_material
+from tests.helpers import add_log
 
 DEFAULT_TAGS = ["domain:test"]
 
@@ -91,6 +93,28 @@ class TestPinnedFlavorApplied(object):
         result = tool_check_in(activity_id, flavor="raw")
         pinned_materials = result["anchor"]["pinned"]["materials"]
         assert f"{{{{cite:M#{target_id}}}}}" in pinned_materials[0]["content"]
+
+
+class TestContextFlavorApplied:
+    """flavorがanchor.pinned以外の枠（context.latest_log）にも届くことの回帰テスト。
+
+    _apply_flavor_to_check_in_resultはtier形の全セクションを回るよう書き直した
+    ため、pinned以外の枠（context/catalog）で1箇所だけ実地確認する。
+    """
+
+    def test_check_in_expands_citation_in_context_latest_log(self, temp_db, activity_id):
+        topic = add_topic(title="T", description="d", tags=DEFAULT_TAGS)
+        topic_id = topic["topic_id"]
+        add_relation("activity", activity_id, [{"type": "topic", "ids": [topic_id]}])
+        target = add_material(
+            title="target", content="body", tags=DEFAULT_TAGS, source="t",
+        )
+        target_id = target["material_id"]
+        add_log(topic_id, content=f"議事メモ: see {{{{cite:M#{target_id}}}}} for context")
+
+        result = tool_check_in(activity_id)  # flavor既定=internal
+        latest_log = result["context"]["latest_log"]
+        assert f"(M#{target_id})" in latest_log["content"]
 
 
 class TestBudgetAppliedToRealCheckIn:
