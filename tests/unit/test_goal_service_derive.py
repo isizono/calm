@@ -211,6 +211,51 @@ class TestBoundStatesActivity:
             conn.close()
         assert states[("activity", child)]["state"] == "pending"
 
+    def test_done_via_goal_ignores_activity_status_reverted_afterward(self, temp_db):
+        """goalがachievedで閉じていれば、束縛先activityのstatusが(read-for-checkin
+        等で)in_progressに戻っても、束縛はdoneのまま読む（statusを優先しない）。"""
+        child, _ = _child_with_goal_verdict("achieved")
+        check_in(child)  # completed→in_progressへ戻す（既存の挙動）
+        conn = get_connection()
+        try:
+            states = gs._fetch_bound_states(conn, [("activity", child)])
+        finally:
+            conn.close()
+        assert states[("activity", child)]["state"] == "done"
+
+    def test_waived_child_completed_is_done_via_status(self, temp_db):
+        """不要印(waiver)を付けた束縛先activityはgoalが無い扱いなので、
+        従来通りstatusで読む。"""
+        child = _activity("子作業")
+        gs.set_goal(child, {"waiver": "常駐タスク"})
+        update_activity(child, status="completed")
+        conn = get_connection()
+        try:
+            states = gs._fetch_bound_states(conn, [("activity", child)])
+        finally:
+            conn.close()
+        state = states[("activity", child)]
+        assert state["state"] == "done"
+        assert state["via"] is None
+
+    def test_excludes_self_referencing_goal(self, temp_db):
+        """束縛先activityが自分自身と同じgoalに紐づく（循環）場合、goal無し扱いに
+        落としてstatusで読む。exclude_goal_idを渡さなければ従来通りgoal経由で
+        読み、開いている間ずっとpendingになることも合わせて確認する。"""
+        parent = _activity("parent")
+        goal_id = _new_goal(parent)["goal_id_raw"]
+        sibling = _activity("sibling")
+        gs.set_goal(sibling, {"goal_id": goal_id})
+        update_activity(sibling, status="completed")
+        conn = get_connection()
+        try:
+            without_exclude = gs._fetch_bound_states(conn, [("activity", sibling)])
+            with_exclude = gs._fetch_bound_states(conn, [("activity", sibling)], exclude_goal_id=goal_id)
+        finally:
+            conn.close()
+        assert without_exclude[("activity", sibling)]["state"] == "pending"
+        assert with_exclude[("activity", sibling)]["state"] == "done"
+
 
 class TestBoundStatesAsk:
     def test_five_states(self, temp_db):
@@ -549,6 +594,24 @@ class TestRule15BoundFailed:
             conn.close()
         assert block["next"]["rule"] == 15
 
+    def test_returns_claude_actor_even_for_human_condition(self, temp_db):
+        """条件の担い手がhumanでも、規則15は確かめる主体としてactor=claudeを返す。"""
+        child, _ = _child_with_goal_verdict("failed", note="断念", title="子作業")
+        parent = _activity("parent")
+        goal_id = _new_goal(
+            parent,
+            conditions=[
+                {"statement": "子作業が終わる", "actor": "human", "bound": {"type": "activity", "id": child}}
+            ],
+        )["goal_id_raw"]
+        conn = get_connection()
+        try:
+            block = gs.build_goal_block_by_goal_id(conn, goal_id)
+        finally:
+            conn.close()
+        assert block["next"]["rule"] == 15
+        assert block["next"]["actor"] == "claude"
+
 
 class TestTruncateNote:
     def test_text_within_limit_is_unchanged(self, temp_db):
@@ -800,6 +863,50 @@ class TestRule11ClaudeTurn:
         assert block["next"]["rule"] == 11
         assert block["next"]["what"] == "子『子作業』のgoalを判定する（get_goalで子を読んでjudge_goal）"
         assert "進める" not in block["next"]["what"]
+
+    def test_fires_for_human_actor_condition_when_child_closed_unjudged(self, temp_db):
+        """担い手がhumanの条件でも、束縛先activityが閉じているのにgoalが未判定なら
+        規則11（actor=claude）の『子のgoalを判定する』が次の一手になる。規則13の
+        『手でsatisfiedに』や規則14の『待ち』(actor=human)へ流れて誰も動かない
+        状態にしない（mainからの退行の回帰テスト）。"""
+        act = _activity()
+        child = _activity("子作業")
+        _new_goal(child, handle="child-unjudged-human")
+        update_activity(child, status="completed")
+        goal_id = _new_goal(
+            act,
+            conditions=[{"statement": "子作業を終える", "actor": "human", "bound": {"type": "activity", "id": child}}],
+        )["goal_id_raw"]
+        conn = get_connection()
+        try:
+            block = gs.build_goal_block_by_goal_id(conn, goal_id)
+        finally:
+            conn.close()
+        assert block["next"]["rule"] == 11
+        assert block["next"]["actor"] == "claude"
+        assert block["next"]["what"] == "子『子作業』のgoalを判定する（get_goalで子を読んでjudge_goal）"
+
+    def test_condition_bound_to_activity_sharing_own_goal_is_read_by_status(self, temp_db):
+        """条件が『同じgoalに紐づくactivity』を束縛していると自己参照になるため、
+        goal無し扱い（statusで読む）にする。goal経由で読むと、自分のgoalが開いて
+        いる間ずっとpendingになり、次の一手が自分自身のgoalを指し続けてしまう。"""
+        main = _activity("main")
+        sibling = _activity("sibling")
+        goal_id = _new_goal(
+            main,
+            conditions=[
+                {"statement": "siblingが終わる", "actor": "claude", "bound": {"type": "activity", "id": sibling}}
+            ],
+        )["goal_id_raw"]
+        gs.set_goal(sibling, {"goal_id": goal_id})
+        update_activity(sibling, status="completed")
+        conn = get_connection()
+        try:
+            block = gs.build_goal_block_by_goal_id(conn, goal_id)
+        finally:
+            conn.close()
+        assert block["next"]["rule"] == 10
+        assert block["next"]["what"] == "「siblingが終わる」の束縛先は済んでいる。確かめてsatisfiedに書く"
 
 
 class TestRule12NoStopLine:

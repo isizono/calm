@@ -814,12 +814,22 @@ def judge_goal(
 # ========================================
 
 
-def _fetch_bound_states(conn: sqlite3.Connection, bound_specs: list[tuple[str, int]]) -> dict:
+def _fetch_bound_states(
+    conn: sqlite3.Connection,
+    bound_specs: list[tuple[str, int]],
+    exclude_goal_id: Optional[int] = None,
+) -> dict:
     """複数の束縛先の現在状態を、束縛の型（最大3種）ごとに1本の問い合わせで読む。
 
     goalの条件が何件あっても、型の数だけ問い合わせを発行する（条件の数に比例しない）。
     decisionは、生きた置き換え（retractされていないdecisionからkind='replaces'の辺で
     直接指されていること）も同じ1本の問い合わせでまとめて読む。
+
+    exclude_goal_idは、今まさに読んでいるgoal自身のid。activity束縛の束縛先が
+    このgoalに紐づいている（＝自分自身のgoalを束縛先にする循環）場合、goal無し
+    （不要印・未定義と同じ扱い）としてstatusで読む。自分のgoalは自分が閉じる
+    まで判定されないため、goal経由の判定に頼ると開いている間ずっとpendingの
+    ままになり、次の一手も自分自身のgoalを指し続けてしまうため。
 
     Returns:
         {(bound_type, bound_id): {"state": "done"|"pending"|"gone"|"failed",
@@ -832,7 +842,8 @@ def _fetch_bound_states(conn: sqlite3.Connection, bound_specs: list[tuple[str, i
         reasonはstate="gone"のときだけ意味を持つ。"failed"はactivity束縛だけが持ち、
         束縛先activityが自分のgoalをfailedで判定終了したことを示す（judge_noteに
         判定理由）。via="goal"は、activity束縛のdone/failedが束縛先activity自身の
-        statusではなく、束縛先activityに紐づくgoalの判定から導かれたことを示す。
+        statusではなく、束縛先activityに紐づくgoalの判定から導かれたことを示す
+        （done・failedのどちらでも付く）。
         activity_statusはactivity束縛だけが持つ束縛先の生のstatusで、
         state="pending"かつactivity_status="completed"の組み合わせは
         「束縛先activityは閉じているが、そのgoalがまだ未判定」を意味する。
@@ -871,12 +882,16 @@ def _fetch_bound_states(conn: sqlite3.Connection, bound_specs: list[tuple[str, i
                 continue
             via = None
             judge_note = None
-            if row["goal_id"] is not None and row["goal_closed"] == 1:
+            row_goal_id = row["goal_id"]
+            if row_goal_id is not None and row_goal_id == exclude_goal_id:
+                # 束縛先activityが自分自身のgoalに紐づく循環。goal無し扱いに落とす
+                row_goal_id = None
+            if row_goal_id is not None and row["goal_closed"] == 1:
                 if row["goal_verdict"] == "achieved":
                     state, via = "done", "goal"
                 else:
-                    state, judge_note = "failed", row["goal_judge_note"]
-            elif row["goal_id"] is not None:
+                    state, via, judge_note = "failed", "goal", row["goal_judge_note"]
+            elif row_goal_id is not None:
                 # goalが紐づくが未判定（差し戻し後の再判定待ちを含む）。束縛先activityの
                 # statusは見ない（read-for-checkinで揺れ動く値のため）
                 state = "pending"
@@ -1042,11 +1057,13 @@ def _enrich_conditions(condition_rows, bound_states: dict) -> list[dict]:
     return enriched
 
 
-def _bound_states_for_conditions(conn: sqlite3.Connection, condition_rows) -> dict:
+def _bound_states_for_conditions(
+    conn: sqlite3.Connection, condition_rows, exclude_goal_id: Optional[int] = None
+) -> dict:
     bound_specs = [(c["bound_type"], c["bound_id"]) for c in condition_rows if c["bound_type"] is not None]
     if not bound_specs:
         return {}
-    return _fetch_bound_states(conn, bound_specs)
+    return _fetch_bound_states(conn, bound_specs, exclude_goal_id=exclude_goal_id)
 
 
 # ========================================
@@ -1178,6 +1195,17 @@ def _rule_context(goal_row, conditions: list[dict], activity_scoped: bool) -> di
         "claude_open": [c for c in open_conds if c["actor"] == "claude"],
         "claude_total": [c for c in conditions if c["actor"] == "claude"],
         "recheck": [c for c in open_conds if "recheck" in c["flags"]],
+        # 束縛先activityは閉じているのにそのgoalが未判定の条件。担い手を問わない
+        # （human/external担い手でも、確かめるのはClaudeの仕事であるため規則11の
+        # 対象に含める。actorをclaudeに絞ると、この状態が規則13/14に落ちて
+        # 「手でsatisfiedにする」方向に流れてしまう）
+        "bound_child_closed_unjudged": [
+            c
+            for c in open_conds
+            if c["bound_type"] == "activity"
+            and (c["bound_state"] or {}).get("state") == "pending"
+            and (c["bound_state"] or {}).get("activity_status") == "completed"
+        ],
     }
 
 
@@ -1261,7 +1289,15 @@ def _rule10_bound_done(ctx: dict) -> dict:
 
 
 def _rule11_claude_turn(ctx: dict) -> dict:
-    chosen = sorted(ctx["claude_open"], key=lambda c: c["id"])[0]
+    """規則11（claudeの手番）。束縛先activityが閉じているのにそのgoalが未判定の
+    条件（bound_child_closed_unjudged）は、担い手の実際のactorに関わらずここで
+    拾う。確かめるのがClaudeの仕事であることに変わりはないため、返すactorは
+    常に'claude'で固定する（下のreturn文と同じ）。
+    """
+    pool = {c["id"]: c for c in ctx["claude_open"]}
+    for c in ctx["bound_child_closed_unjudged"]:
+        pool.setdefault(c["id"], c)
+    chosen = sorted(pool.values(), key=lambda c: c["id"])[0]
     what = chosen["statement"]
     bound_state = chosen["bound_state"]
     if chosen["bound_type"] == "activity" and bound_state and bound_state.get("title"):
@@ -1311,7 +1347,7 @@ _GOAL_SCOPE_RULES: list[tuple[int, "callable", "callable"]] = [
     (8, lambda ctx: not ctx["open"] and bool(ctx["satisfied"]), _rule8_achieved_ready),
     (9, lambda ctx: not ctx["open"] and not ctx["satisfied"], _rule9_nothing_satisfied),
     (10, lambda ctx: bool(ctx["bound_done"]), _rule10_bound_done),
-    (11, lambda ctx: bool(ctx["claude_open"]), _rule11_claude_turn),
+    (11, lambda ctx: bool(ctx["claude_open"]) or bool(ctx["bound_child_closed_unjudged"]), _rule11_claude_turn),
     (12, lambda ctx: not ctx["claude_total"], _rule12_no_stop_line),
     (13, lambda ctx: bool(ctx["recheck"]), _rule13_recheck),
     (14, lambda ctx: True, _rule14_waiting),
@@ -1510,7 +1546,7 @@ def build_goal_block_for_activity(conn: sqlite3.Connection, activity_id: int) ->
     goal_id = link_row["goal_id"]
     goal_row = conn.execute("SELECT * FROM goals WHERE id = ?", (goal_id,)).fetchone()
     condition_rows = _load_conditions(conn, goal_id)
-    bound_states = _bound_states_for_conditions(conn, condition_rows)
+    bound_states = _bound_states_for_conditions(conn, condition_rows, exclude_goal_id=goal_id)
     enriched = _enrich_conditions(condition_rows, bound_states)
     next_info = scope_next or _select_next_goal_scope(goal_row, enriched, activity_scoped=True)
     linked_rows = _linked_activity_rows(conn, goal_id)
@@ -1525,7 +1561,7 @@ def build_goal_block_by_goal_id(conn: sqlite3.Connection, goal_id: int) -> Optio
     if goal_row is None:
         return None
     condition_rows = _load_conditions(conn, goal_id)
-    bound_states = _bound_states_for_conditions(conn, condition_rows)
+    bound_states = _bound_states_for_conditions(conn, condition_rows, exclude_goal_id=goal_id)
     enriched = _enrich_conditions(condition_rows, bound_states)
     next_info = _select_next_goal_scope(goal_row, enriched, activity_scoped=False)
     linked_rows = _linked_activity_rows(conn, goal_id)
@@ -1547,7 +1583,7 @@ def build_goal_hint(conn: sqlite3.Connection, activity_id: int) -> Optional[dict
         return None
 
     condition_rows = _load_conditions(conn, goal_id)
-    bound_states = _bound_states_for_conditions(conn, condition_rows)
+    bound_states = _bound_states_for_conditions(conn, condition_rows, exclude_goal_id=goal_id)
     enriched = _enrich_conditions(condition_rows, bound_states)
     next_info = _select_next_goal_scope(goal_row, enriched, activity_scoped=False)
 
@@ -1724,7 +1760,7 @@ def get_goal(
             return _not_found(f"goal {resolved_goal_id} not found")
 
         condition_rows = _load_conditions(conn, resolved_goal_id)
-        bound_states = _bound_states_for_conditions(conn, condition_rows)
+        bound_states = _bound_states_for_conditions(conn, condition_rows, exclude_goal_id=resolved_goal_id)
         enriched = _enrich_conditions(condition_rows, bound_states)
 
         scope_next = _activity_scope_next(pending_asks) if pending_asks is not None else None
