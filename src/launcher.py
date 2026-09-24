@@ -107,7 +107,11 @@ BACKOFF_CAP_SEC = 60
 
 # bridge identity ヘッダ名。全MCPリクエストに付与し、cc-memory server 再起動を
 # またいで安定な呼び出し元識別子として src/infra/session_identity.py が読む。
-BRIDGE_SESSION_HEADER = "X-CC-Memory-Bridge-Session-Id"
+BRIDGE_SESSION_HEADER = "X-Calm-Bridge-Session-Id"
+# 改名前の旧ヘッダ名。移行期間中は新旧両方に同じ値を載せて送る。main を pull
+# してからサーバーを再起動するまでの間、改名前のコードで動いているサーバーは
+# 旧ヘッダしか読まないため、新ヘッダだけだと呼び出し元を識別できなくなる。
+LEGACY_BRIDGE_SESSION_HEADER = "X-CC-Memory-Bridge-Session-Id"
 
 HEARTBEAT_INTERVAL_ENV = "CALM_LAUNCHER_HEARTBEAT_SEC"
 DEFAULT_HEARTBEAT_INTERVAL_SEC = 60.0
@@ -424,7 +428,12 @@ async def _bridge() -> None:
     # 全MCPリクエストに bridge identity ヘッダを同梱する。cc-memory server が
     # 再起動しても launcher プロセス（＝ _session_id）が生きている限り不変な値で、
     # 呼び出し元セッション識別子の解決（src/infra/session_identity.py）が読む。
-    http_client = create_mcp_http_client(headers={BRIDGE_SESSION_HEADER: _session_id})
+    http_client = create_mcp_http_client(
+        headers={
+            BRIDGE_SESSION_HEADER: _session_id,
+            LEGACY_BRIDGE_SESSION_HEADER: _session_id,
+        }
+    )
     async with http_client:
         # terminate_on_close=True: 切断時に DELETE でMCPセッションを終了させる。
         # ブリッジは再接続時にセッションを再利用せず毎回新規に張るため、DELETE を

@@ -489,13 +489,33 @@ class TestBridgeIdentityHeader:
 
     def test_bridge_attaches_bridge_session_header(self, monkeypatch):
         """streamable_http_client に渡す http_client のデフォルトヘッダに
-        X-CC-Memory-Bridge-Session-Id: <_session_id> が含まれる。
+        X-Calm-Bridge-Session-Id: <_session_id> が含まれる。
         """
         captured = self._run_bridge_and_capture_http_client(monkeypatch)
         http_client = captured["http_client"]
         assert (
             http_client.headers.get(launcher.BRIDGE_SESSION_HEADER)
             == launcher._session_id
+        )
+
+    def test_bridge_also_attaches_legacy_header_with_same_value(self, monkeypatch):
+        """移行期間中は改名前のサーバー向けに旧ヘッダにも同じ値を載せる。"""
+        captured = self._run_bridge_and_capture_http_client(monkeypatch)
+        http_client = captured["http_client"]
+        assert (
+            http_client.headers.get(launcher.LEGACY_BRIDGE_SESSION_HEADER)
+            == launcher._session_id
+        )
+
+    def test_header_names_match_server_side(self):
+        """launcher が送るヘッダ名とサーバー側が読むヘッダ名が一致する
+        （HTTPヘッダ名は大文字小文字を区別しないため小文字で比較）。"""
+        from src.infra import session_identity
+
+        assert launcher.BRIDGE_SESSION_HEADER.lower() == session_identity.BRIDGE_SESSION_HEADER
+        assert (
+            launcher.LEGACY_BRIDGE_SESSION_HEADER.lower()
+            == session_identity.LEGACY_BRIDGE_SESSION_HEADER
         )
 
     def test_bridge_uses_same_header_value_across_reconnects(self, monkeypatch):

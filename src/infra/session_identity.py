@@ -9,8 +9,10 @@ cc-memory の caller_session_id は本来 MCP 接続単位の ephemeral な値
 
 launcher.py（src/launcher.py）は Claude Code セッション（正確には launcher
 プロセス）ごとに 1 度だけ発行する UUID を既に保持しており、この値を
-X-CC-Memory-Bridge-Session-Id ヘッダとして全 MCP リクエストに同梱する。
+X-Calm-Bridge-Session-Id ヘッダとして全 MCP リクエストに同梱する。
 本モジュールはこのヘッダを優先的に読み、呼び出し元の識別子を解決する。
+改名前の旧ヘッダ X-CC-Memory-Bridge-Session-Id も受理する（改名前の launcher が
+接続したままの移行期間用）。
 
 SessionStart hook（hooks/session_start_hook.py）は Claude Code CLI が直接
 起動する独立プロセスであり、MCP リクエストコンテキスト自体を持たないため
@@ -43,7 +45,10 @@ from src.infra.lock_file import is_process_alive
 
 logger = logging.getLogger(__name__)
 
-BRIDGE_SESSION_HEADER = "x-cc-memory-bridge-session-id"
+BRIDGE_SESSION_HEADER = "x-calm-bridge-session-id"
+# 改名前の旧ヘッダ名。改名前のコードで起動した launcher は新しいサーバーに接続
+# し直しても旧ヘッダしか送らないため、新ヘッダが無いときのフォールバックとして読む。
+LEGACY_BRIDGE_SESSION_HEADER = "x-cc-memory-bridge-session-id"
 
 # launcher 側の登録ファイル生成（register_launcher_session）が祖先 pid チェーンを
 # さかのぼる最大段数。resolve_cli_session（`~/.claude/sessions/<pid>.json` を
@@ -97,7 +102,8 @@ def _ephemeral_session_id() -> Optional[str]:
 def get_caller_session_id() -> Optional[str]:
     """呼び出し元の識別子を解決する。
 
-    launcher.py 経由（X-CC-Memory-Bridge-Session-Id ヘッダ）の呼び出しは、
+    launcher.py 経由（X-Calm-Bridge-Session-Id ヘッダ、無ければ旧名の
+    X-CC-Memory-Bridge-Session-Id ヘッダ）の呼び出しは、
     cc-memory server の再起動をまたいで不変な識別子を返す。ヘッダが無い
     呼び出し元（本ヘッダを付与しない MCP クライアント）、および HTTP
     リクエストコンテキスト外からの呼び出し（import失敗・get_http_headers()
@@ -111,9 +117,10 @@ def get_caller_session_id() -> Optional[str]:
     except Exception:
         return _ephemeral_session_id()
 
-    stable_id = headers.get(BRIDGE_SESSION_HEADER)
-    if isinstance(stable_id, str) and stable_id.strip():
-        return stable_id.strip()
+    for header in (BRIDGE_SESSION_HEADER, LEGACY_BRIDGE_SESSION_HEADER):
+        stable_id = headers.get(header)
+        if isinstance(stable_id, str) and stable_id.strip():
+            return stable_id.strip()
     return _ephemeral_session_id()
 
 
@@ -356,6 +363,7 @@ def resolve_cli_session(session_id: str) -> Optional[dict]:
 
 __all__ = [
     "BRIDGE_SESSION_HEADER",
+    "LEGACY_BRIDGE_SESSION_HEADER",
     "get_caller_session_id",
     "ancestor_pids",
     "register_launcher_session",
