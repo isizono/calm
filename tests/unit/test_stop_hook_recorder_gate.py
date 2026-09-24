@@ -6,7 +6,12 @@ logs_sparse(topic scopeの遅延hint)の3種類のnudgeが、記録役セッシ�
 生成されることを検証する。check-in強制block(turn==_CHECKIN_DEFER_TURNSでの
 block)は_handle_nudgesの対象外であり本ファイルの検証対象ではない。
 """
+import json
+
 import hooks.stop_hook as stop_hook
+from hooks.hook_state import HookState
+from hooks.recorder_marker import marker_path
+from src.infra import process_signature
 from src.services.topic_service import add_topic
 from tests.helpers import add_decision
 
@@ -84,6 +89,33 @@ class TestFollowUpAndLogsSparseGate:
 
         types = {e["type"] for e in state.appended if e["e"] == "nudge"}
         assert types == {"follow_up_after_decision", "logs_sparse"}
+
+
+class TestGateFailsSafeOnUnexpectedException:
+    """is_recorder_attached自体はmockせず、目印ファイル判定の内部で予期しない
+    例外が起きた場合に、ゲートが「付いていない」側に倒れて催促が出ることを
+    確認する(is_recorder_attachedの広いexcept節の実地検証)。"""
+
+    def test_nudge_generated_when_marker_check_raises_unexpected_error(
+        self, temp_db, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(HookState, "BASE_DIR", tmp_path)
+        path = marker_path("recorder-session")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"pid": 1234, "started_at": "Thu Jul 24 09:32:04 2026"}))
+
+        def fake_run(cmd, **kwargs):
+            raise RuntimeError("unexpected ps failure")
+
+        monkeypatch.setattr(process_signature.subprocess, "run", fake_run)
+
+        events = [{"e": "tool", "name": "check_in", "turn": 1, "activity_id": 1}]
+        state = _FakeState()
+
+        stop_hook._handle_nudges(state, events, current_turn=4, session_id="recorder-session")
+
+        types = {e["type"] for e in state.appended if e["e"] == "nudge"}
+        assert types == {"record_missing"}
 
 
 class TestGateSkippedWithoutSessionId:

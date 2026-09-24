@@ -10,7 +10,7 @@ import pytest
 
 from hooks.hook_state import HookState
 from hooks.recorder_marker import is_recorder_attached, marker_path
-from src.services import restart_service
+from src.infra import process_signature
 
 _SESSION_ID = "test-session"
 
@@ -37,7 +37,7 @@ class TestRecorderAttached:
     def test_true_when_pid_alive_and_start_signature_matches(self, state_dir, monkeypatch):
         _write_marker(_SESSION_ID, pid=1234, started_at="Thu Jul 24 09:32:04 2026")
         monkeypatch.setattr(
-            restart_service.subprocess, "run", _fake_ps("  Thu Jul 24 09:32:04 2026  \n")
+            process_signature.subprocess, "run", _fake_ps("  Thu Jul 24 09:32:04 2026  \n")
         )
 
         assert is_recorder_attached(_SESSION_ID) is True
@@ -45,7 +45,7 @@ class TestRecorderAttached:
     def test_false_when_pid_dead(self, state_dir, monkeypatch):
         """psがプロセス不在を返す場合 → 付いていない扱い"""
         _write_marker(_SESSION_ID, pid=1234, started_at="Thu Jul 24 09:32:04 2026")
-        monkeypatch.setattr(restart_service.subprocess, "run", _fake_ps("", returncode=1))
+        monkeypatch.setattr(process_signature.subprocess, "run", _fake_ps("", returncode=1))
 
         assert is_recorder_attached(_SESSION_ID) is False
 
@@ -53,7 +53,7 @@ class TestRecorderAttached:
         """同じpidだが起動時刻が目印ファイル記録時と異なる(pid再利用) → 付いていない扱い"""
         _write_marker(_SESSION_ID, pid=1234, started_at="Thu Jul 24 09:32:04 2026")
         monkeypatch.setattr(
-            restart_service.subprocess, "run", _fake_ps("Fri Jul 25 10:00:00 2026\n")
+            process_signature.subprocess, "run", _fake_ps("Fri Jul 25 10:00:00 2026\n")
         )
 
         assert is_recorder_attached(_SESSION_ID) is False
@@ -65,7 +65,7 @@ class TestRecorderAttached:
         def fake_run(cmd, **kwargs):
             raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
 
-        monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
+        monkeypatch.setattr(process_signature.subprocess, "run", fake_run)
 
         assert is_recorder_attached(_SESSION_ID) is False
 
@@ -85,7 +85,21 @@ class TestRecorderAttached:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"pid": 1234}))
         monkeypatch.setattr(
-            restart_service.subprocess, "run", _fake_ps("Thu Jul 24 09:32:04 2026\n")
+            process_signature.subprocess, "run", _fake_ps("Thu Jul 24 09:32:04 2026\n")
         )
+
+        assert is_recorder_attached(_SESSION_ID) is False
+
+    def test_false_when_unexpected_exception_occurs(self, state_dir, monkeypatch):
+        """ps呼び出し中にTimeoutExpired以外の予期しない例外が出た場合も
+        (importの失敗を含め)催促を出す側に倒す。process_start_signature自体は
+        TimeoutExpiredしか捕まえないため、それ以外の例外はis_recorder_attached側の
+        広いexceptで初めて捕まる。"""
+        _write_marker(_SESSION_ID, pid=1234, started_at="Thu Jul 24 09:32:04 2026")
+
+        def fake_run(cmd, **kwargs):
+            raise RuntimeError("unexpected ps failure")
+
+        monkeypatch.setattr(process_signature.subprocess, "run", fake_run)
 
         assert is_recorder_attached(_SESSION_ID) is False

@@ -20,6 +20,7 @@ from typing import NamedTuple
 from src.env_compat import env_get, env_set
 from src.http_config import HTTP_PORT
 from src.infra.git_repo import resolve_main_repo_root
+from src.infra.process_signature import process_start_signature
 from src.services.embedding_service import PORT as EMBEDDING_SERVER_PORT
 
 MCP_PORT = HTTP_PORT
@@ -52,23 +53,6 @@ def find_listen_pids(port: int) -> list[int]:
     except subprocess.TimeoutExpired:
         return []
     return sorted({int(p) for p in result.stdout.split() if p.strip()})
-
-
-def process_start_signature(pid: int) -> str | None:
-    """プロセスの起動時刻を返す。プロセスが存在しなければNone。
-
-    LISTEN確認だけでは、PID再利用や検出タイミングのズレで
-    古いプロセスを新規と誤認しうる。起動時刻の比較でこれを防ぐ。
-    """
-    try:
-        result = subprocess.run(
-            ["ps", "-o", "lstart=", "-p", str(pid)],
-            capture_output=True, text=True, check=False, timeout=SUBPROCESS_TIMEOUT_SEC,
-        )
-    except subprocess.TimeoutExpired:
-        return None
-    output = result.stdout.strip()
-    return output or None
 
 
 def _process_alive(pid: int) -> bool:
