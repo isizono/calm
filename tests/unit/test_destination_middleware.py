@@ -13,6 +13,7 @@ register_alive_heartbeat_session/register_dead_heartbeat_sessionで実ファイ�
 （tests/CLAUDE.mdの規約）。
 """
 import contextlib
+import copy
 from unittest.mock import MagicMock
 
 import pytest
@@ -70,9 +71,18 @@ def _make_activity(title: str = "Act") -> int:
     return activity["activity_id"]
 
 
-def _make_board_topic(title: str = "Board Topic") -> int:
-    """素タグ`board`付きのトピックを作る。"""
-    topic = add_topic(title=title, description="d", tags=["domain:test", "board"])
+def _make_board_topic(title: str = "Board Topic", related_topic_id: int | None = None) -> int:
+    """素タグ`board`付きのトピックを作る。related_topic_idを指定すると、そのトピックとrelatedで関連付ける
+    （board skillの手順で「boardトピックはrelated引数で元トピックと同時に関連付ける」形を再現する）。
+    """
+    related = [{"type": "topic", "ids": [related_topic_id]}] if related_topic_id is not None else None
+    topic = add_topic(title=title, description="d", tags=["domain:test", "board"], related=related)
+    return topic["topic_id"]
+
+
+def _make_plain_topic(title: str = "Parent Topic") -> int:
+    """boardタグを持たない、通常のトピックを作る。"""
+    topic = add_topic(title=title, description="d", tags=["domain:test"])
     return topic["topic_id"]
 
 
@@ -718,6 +728,67 @@ class TestBoardInjection:
             {"name": "test-cli", "activity_id_raw": shared_activity_id, "activity_title": "Shared Activity"}
         ]
 
+    @pytest.mark.asyncio
+    async def test_board_topic_related_to_parent_topic_pulls_candidates_from_parent_activity(
+        self, temp_db, monkeypatch
+    ):
+        """質問・周知・事前の声かけでは[議論]アクティビティを立てないため、boardトピック自身へ
+        check-inする者がいない。boardトピックとrelatedで結ばれた元トピック側のアクティビティへ
+        check-inした生存中セッションが候補として拾えることを確認する。
+        """
+        monkeypatch.setattr(config, "PEER_NUDGE_ENABLED", True)
+        monkeypatch.setattr(destination_middleware, "get_caller_session_id", lambda: "self-session")
+
+        parent_topic_id = _make_plain_topic("Parent Topic")
+        parent_activity_id = add_activity(
+            title="Parent Activity", description="d", tags=["domain:test"],
+            related=[{"type": "topic", "ids": [parent_topic_id]}], check_in=False,
+        )["activity_id"]
+        board_topic_id = _make_board_topic("Announcement Board", related_topic_id=parent_topic_id)
+
+        pid = register_alive_heartbeat_session("cli-parent")
+        _seed_session_row(
+            session_id="parent-session", cli_session_id="cli-parent", cli_pid=pid,
+            activity_id=parent_activity_id,
+        )
+
+        log_result = add_logs([{"topic_id": board_topic_id, "content": "[self] 前提が変わりました"}])
+        assert not log_result["errors"], log_result
+
+        middleware = DestinationCandidateMiddleware()
+        tool_result = ToolResult(structured_content=log_result)
+        result = await middleware.on_call_tool(
+            _make_context("add_logs"), _call_next_returning(tool_result)
+        )
+
+        assert result.structured_content["destination_candidates"] == [
+            {"name": "test-cli", "activity_id_raw": parent_activity_id, "activity_title": "Parent Activity"}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_unrelated_topic_activity_not_pulled_as_candidate(self, temp_db, monkeypatch):
+        """boardトピックとrelatedで結ばれていないトピックのアクティビティは候補に含まれない。"""
+        monkeypatch.setattr(config, "PEER_NUDGE_ENABLED", True)
+        monkeypatch.setattr(destination_middleware, "get_caller_session_id", lambda: "self-session")
+
+        unrelated_activity_id = _make_activity("Unrelated Activity")
+        board_topic_id = _make_board_topic("Isolated Board")  # related_topic_id指定なし
+
+        pid = register_alive_heartbeat_session("cli-unrelated")
+        _seed_session_row(
+            session_id="unrelated-session", cli_session_id="cli-unrelated", cli_pid=pid,
+            activity_id=unrelated_activity_id,
+        )
+
+        log_result = add_logs([{"topic_id": board_topic_id, "content": "c"}])
+        middleware = DestinationCandidateMiddleware()
+        tool_result = ToolResult(structured_content=log_result)
+        result = await middleware.on_call_tool(
+            _make_context("add_logs"), _call_next_returning(tool_result)
+        )
+
+        assert "destination_candidates" not in result.structured_content
+
 
 # ========================================
 # フラグOFF時のバイト同一性（1バイトも応答が変わらないこと）
@@ -751,23 +822,23 @@ class TestPeerNudgeDisabledResponseParity:
         monkeypatch.setattr(config, "PEER_NUDGE_ENABLED", False)
         middleware = DestinationCandidateMiddleware()
         tool_result = ToolResult(structured_content=log_result)
-        original_content_len = len(tool_result.content)
-        original_structured_keys = set(tool_result.structured_content.keys())
+        original_structured = copy.deepcopy(tool_result.structured_content)
+        original_texts = [block.text for block in tool_result.content if hasattr(block, "text")]
 
         result = await middleware.on_call_tool(
             _make_context("add_logs"), _call_next_returning(tool_result)
         )
 
-        assert len(result.content) == original_content_len
-        assert set(result.structured_content.keys()) == original_structured_keys
-        assert "destination_candidates" not in result.structured_content
+        assert result.structured_content == original_structured
+        assert [block.text for block in result.content if hasattr(block, "text")] == original_texts
 
     @pytest.mark.asyncio
-    async def test_goal_response_unaffected_by_peer_nudge_flag(self, temp_db, monkeypatch):
-        """goal系（既存の_TARGET_TOOL_NAMES）の宛先候補injectionはPEER_NUDGE_ENABLEDの影響を受けない。
-
-        既決「声かけ推奨の環境変数は掲示板のSendMessageを縛らない」により、この環境変数が
-        切り替えるのはboard拡張だけであり、既存のgoal系の推奨文言はフラグと無関係に不変とする。
+    async def test_goal_response_off_is_byte_identical_on_adds_one_skill_hint_line(
+        self, temp_db, monkeypatch
+    ):
+        """goal系（set_goal等）の宛先候補injectionは、PEER_NUDGE_ENABLED=Falseのとき
+        フラグ導入前と完全に同じ文言を返す。Trueのときは末尾にpeer-nudgeスキルへの
+        誘導が1行だけ追加される。
         """
         monkeypatch.setattr(destination_middleware, "get_caller_session_id", lambda: "self-session")
         target_activity_id = _make_activity("Target Activity")
@@ -790,19 +861,23 @@ class TestPeerNudgeDisabledResponseParity:
 
         middleware = DestinationCandidateMiddleware()
 
-        results = {}
-        for flag in (False, True):
-            monkeypatch.setattr(config, "PEER_NUDGE_ENABLED", flag)
-            tool_result = ToolResult(structured_content=dict(set_goal_result))
-            result = await middleware.on_call_tool(
-                _make_context("set_goal"), _call_next_returning(tool_result)
-            )
-            results[flag] = (
-                result.structured_content["destination_candidates"],
-                [block.text for block in result.content if hasattr(block, "text")],
-            )
+        # ToolResult(structured_content=...)はcontent[0]にJSONシリアライズを自動生成するため、
+        # middlewareが.appendした宛先候補ブロックはcontent[-1]で取り出す。
+        monkeypatch.setattr(config, "PEER_NUDGE_ENABLED", False)
+        off_result = await middleware.on_call_tool(
+            _make_context("set_goal"),
+            _call_next_returning(ToolResult(structured_content=copy.deepcopy(set_goal_result))),
+        )
+        off_text = off_result.content[-1].text
+        assert off_text == (
+            "📮 [宛先候補] 判定待ちのgoalに関連する他セッションが1件あります。必要ならSendMessageで知らせてください。\n"
+            "  - test-cli（Target Activity）"
+        )
 
-        assert results[False] == results[True]
-        assert results[False][0] == [
-            {"name": "test-cli", "activity_id_raw": target_activity_id, "activity_title": "Target Activity"}
-        ]
+        monkeypatch.setattr(config, "PEER_NUDGE_ENABLED", True)
+        on_result = await middleware.on_call_tool(
+            _make_context("set_goal"),
+            _call_next_returning(ToolResult(structured_content=copy.deepcopy(set_goal_result))),
+        )
+        on_text = on_result.content[-1].text
+        assert on_text == off_text + "\n話しかける前にpeer-nudgeスキルを確認してください。"

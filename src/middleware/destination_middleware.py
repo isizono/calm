@@ -10,9 +10,11 @@ dictのキー参照だけで早期returnし、DBクエリ・生存確認・フ�
 
 add_logsでboardタグ付きトピックへ投稿したときも同様に宛先候補を返す
 （周知をいま生きているセッションへ届ける経路として、SendMessageで直接
-話しかけられるようにするため）。この経路は config.PEER_NUDGE_ENABLED
-（既定OFF）の配下に置く。goal系の経路は既存の挙動のまま、この設定の
-影響を受けない。
+話しかけられるようにするため）。この経路はconfig.PEER_NUDGE_ENABLED
+（既定OFF）がFalseの間は一切発火しない。config.PEER_NUDGE_ENABLEDがFalseの
+とき、goal系の応答（宛先候補・推奨文言）もPR適用前と完全に同一に保つ。
+config.PEER_NUDGE_ENABLEDがTrueのときは、goal系の推奨文言にもpeer-nudge
+スキルへの誘導を1行追加する。
 """
 from __future__ import annotations
 
@@ -78,6 +80,18 @@ _BOARD_TAG_QUERY = """
     SELECT 1 FROM topic_tags tt
     JOIN tags t ON t.id = tt.tag_id
     WHERE tt.topic_id = ? AND t.namespace = '' AND t.name = 'board'
+"""
+
+# boardトピックとトピック同士でrelatedな(1段の)他トピックのID。board skillの
+# 手順ではboardトピックは元トピックにrelatedで結ばれ、[議論]アクティビティを
+# 立てない質問・周知・事前の声かけではboardトピック自身へcheck-inする者がいない
+# ため、宛先候補は元トピック側で作業しているセッションから拾う必要がある。
+# relations_viewは双方向に展開済みなので正規化方向(activity<topicの並びとは
+# 別のtopic-topic間のsource_id<target_id)を気にせず引ける。
+_RELATED_TOPIC_QUERY = """
+    SELECT target_id FROM relations_view
+    WHERE source_type = 'topic' AND source_id = ?
+      AND target_type = 'topic' AND relation_type = 'related'
 """
 
 
@@ -184,6 +198,13 @@ def _is_board_topic(topic_id: int) -> bool:
         return conn.execute(_BOARD_TAG_QUERY, (topic_id,)).fetchone() is not None
 
 
+def _related_topic_ids(topic_id: int) -> list[int]:
+    """topic_idとトピック同士でrelatedな(1段の)他トピックのIDを返す。"""
+    with contextlib.closing(get_connection(load_vec=False)) as conn:
+        rows = conn.execute(_RELATED_TOPIC_QUERY, (topic_id,)).fetchall()
+    return [row["target_id"] for row in rows]
+
+
 def _maybe_inject(result: Any) -> None:
     goal_id = _find_judge_ready_goal_id(result)
     if goal_id is None:
@@ -203,6 +224,8 @@ def _maybe_inject(result: Any) -> None:
     ]
     for c in candidates:
         lines.append(f"  - {c['name']}（{c['activity_title']}）")
+    if config.PEER_NUDGE_ENABLED:
+        lines.append("話しかける前にpeer-nudgeスキルを確認してください。")
     result.content.append(TextContent(type="text", text="\n".join(lines)))
     result.structured_content["destination_candidates"] = candidates
 
@@ -236,9 +259,16 @@ def _maybe_inject_board(result: Any) -> None:
     if not board_topic_ids:
         return
 
+    # 質問・周知・事前の声かけでは[議論]アクティビティを立てないため、boardトピック
+    # 自身へcheck-inする者がいないことが多い。元トピック(1段関連)側で作業している
+    # セッションも候補に含める。
+    target_topic_ids = set(board_topic_ids)
+    for tid in board_topic_ids:
+        target_topic_ids.update(_related_topic_ids(tid))
+
     candidates = []
     seen_names = set()
-    for topic_id in board_topic_ids:
+    for topic_id in sorted(target_topic_ids):
         for c in _fetch_board_candidates(topic_id, caller_session_id):
             if c["name"] in seen_names:
                 continue
@@ -249,7 +279,7 @@ def _maybe_inject_board(result: Any) -> None:
 
     lines = [
         f"📮 [宛先候補] 投稿した掲示板トピックに関連する他セッションが{len(candidates)}件あります。"
-        "必要ならSendMessageで知らせてください。"
+        "話しかける前にpeer-nudgeスキルを確認してください。"
     ]
     for c in candidates:
         lines.append(f"  - {c['name']}（{c['activity_title']}）")

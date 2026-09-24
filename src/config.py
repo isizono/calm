@@ -74,9 +74,10 @@ PROJECTION_MANIFEST_MAX_ITEMS: int = int(
 )
 
 # --- Peer coordination ---
-# 既定OFF。ONにすると、boardタグ付きトピックへのadd_logsの応答に、
-# 関連する他セッションへの声かけを勧める文言を添える
-# （判定待ちgoalに反応する既存の宛先候補injectionはこのフラグの対象外、常時有効）
+# 既定OFF。ONにすると、boardタグ付きトピックへのadd_logsの応答に関連する
+# 他セッションへの声かけを勧める文言を添え、判定待ちgoalの宛先候補injection
+# （check_in/set_goal/update_goal/judge_goal/update_activity）の推奨文言にも
+# peer-nudgeスキルへの誘導を1行加える。Falseの間は両経路とも応答を変えない
 PEER_NUDGE_ENABLED: bool = env_get("CALM_PEER_NUDGE_ENABLED", "0") == "1"
 
 # --- Direction Layer ---
