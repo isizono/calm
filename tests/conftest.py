@@ -136,6 +136,20 @@ def _synchronous_fetch_telemetry(monkeypatch):
     monkeypatch.setattr(search_service, "_record_fetch_telemetry_async", synchronous_wrapper)
 
 
+@pytest.fixture(autouse=True)
+def _no_implicit_embedding_backfill(monkeypatch):
+    """embeddingサーバー接続成立時に自動起動するバックフィルスレッドをテストでは起動させない。
+
+    このスレッドはプロセスで1回だけ起動されてjoinされず、DBパスを接続のたびに
+    環境変数から解決する。起動したテストの終了後も生き残り、temp_dbが切り替えた
+    次のテストのDBへ書き込むため、そのテストの書き込みが database is locked で
+    失敗する。バックフィル自体を検証するテストは _backfill_done=False を
+    monkeypatchで明示して起動させる。
+    """
+    import src.services.embedding_service as emb
+    monkeypatch.setattr(emb, "_backfill_done", True)
+
+
 @pytest.fixture
 def disable_embedding(monkeypatch):
     """embeddingサービスを無効化する共通フィクスチャ。
