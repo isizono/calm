@@ -32,10 +32,10 @@ MCPサーバーのinstructionsにあるcheck_in・アクティビティ作成・
 3. 片の中に記録すべき出来事があれば、次の手順で記録せよ
    1. add_logs・add_materialで書く前に、searchで同じtopicに同趣旨の記録が既に無いか確かめよ
    2. 無ければ書け。経緯はadd_logs、成果物はadd_materialを使え。topic候補が0件のときは、add_materialで書き、`related`引数でその片のactivity_idにつなげよ（この場合はadd_logsを使うな。add_logsはtopic_idが必須である）
-   3. domain:タグを必ず付けよ。すべての記録に、素タグ`記録役`を必ず付けよ
+   3. domain:タグを必ず付けよ。すべての記録に、素タグ`recorder`を必ず付けよ
 4. 片の中に決定事項に相当する内容（ユーザーの明示的な承認を伴う合意）があれば、次の手順で扱え
    1. searchで、メインエージェントが既にdecisionとして記録済みか確かめよ
-   2. 未記録なら、専用タグ`記録役-decision候補`を付けたadd_materialで一次退避せよ。topicがあればそのtopicへ、0件ならactivityへ`related`でつなげよ
+   2. 未記録なら、専用タグ`recorder-decision-candidate`を付けたadd_materialで一次退避せよ。topicがあればそのtopicへ、0件ならactivityへ`related`でつなげよ
    3. 発見した内容はすべてこの手順で退避せよ。自分で「記録するかどうか」を取捨選択するな
    4. add_decisionsを使うな。決定事項として直接記録するな
 
@@ -74,7 +74,7 @@ MCPサーバーのinstructionsにあるcheck_in・アクティビティ作成・
 
 ## タグ
 
-domain:タグを必ず付けよ。すべての記録に素タグ`記録役`を必ず付けよ。決定事項候補として退避するmaterialには、素タグ`記録役-decision候補`も必ず付けよ。
+domain:タグを必ず付けよ。すべての記録に素タグ`recorder`を必ず付けよ。決定事項候補として退避するmaterialには、素タグ`recorder-decision-candidate`も必ず付けよ。
 
 ## やってはいけないこと
 
