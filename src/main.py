@@ -249,6 +249,10 @@ mcp.add_middleware(SignalCaptureMiddleware())
 from src.middleware.delta_middleware import DeltaNotificationMiddleware
 mcp.add_middleware(DeltaNotificationMiddleware())
 
+# 判定待ちgoalに紐づく他セッションを宛先候補としてツールレスポンスに注入する middleware を登録する
+from src.middleware.destination_middleware import DestinationCandidateMiddleware
+mcp.add_middleware(DestinationCandidateMiddleware())
+
 # サーバー起動時刻（/health で uptime 算出に使用）
 _SERVER_STARTED_AT = datetime.now(timezone.utc)
 
