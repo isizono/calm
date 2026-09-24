@@ -188,8 +188,7 @@ def temp_db(_temp_db_template):
     コピーして構築コストを避ける。DISCUSSION_DB_PATH 環境変数を一時パスに
     切り替える。テスト終了時にtmpdirごと破棄される。
     """
-    from src.services.checkin_service import _greeted_sessions
-    from src.services.checkin_tier_service import _greeted_sessions as _tier_greeted_sessions
+    from src.services.checkin_tier_service import _greeted_sessions
     from src.services.tag_service import _injected_tags
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
@@ -201,7 +200,6 @@ def temp_db(_temp_db_template):
         os.environ["DISCUSSION_DB_PATH"] = db_path
         _injected_tags.clear()
         _greeted_sessions.clear()
-        _tier_greeted_sessions.clear()
         yield db_path
         if "DISCUSSION_DB_PATH" in os.environ:
             del os.environ["DISCUSSION_DB_PATH"]

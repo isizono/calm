@@ -11,7 +11,7 @@ supersede_chain が destabilizes エッジの有無に影響されないこと�
 import pytest
 
 from src.services.activity_service import add_activity
-from src.services.checkin_service import check_in
+from src.services.checkin_tier_service import collect_and_assemble
 from src.services.decision_service import get_decisions
 from src.services.destabilization_service import resolve_destabilization
 from src.services.pin_service import add_pin
@@ -85,9 +85,9 @@ def _get_by_ids_item(decision_id: int) -> dict:
 
 
 def _check_in_pinned_item(activity_id: int, decision_id: int) -> dict:
-    result = check_in(activity_id)
+    result = collect_and_assemble(activity_id)
     assert "error" not in result, result
-    pinned_decisions = result.get("pinned", {}).get("decisions", [])
+    pinned_decisions = result.get("anchor", {}).get("pinned", {}).get("decisions", [])
     return _find_decision_item(pinned_decisions, decision_id)
 
 

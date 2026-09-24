@@ -1,12 +1,11 @@
-"""checkin_tier_serviceがcheckin_serviceの現行応答と機構として同等であることを比較する
-統合テスト（pinned集合・asks・goal・dependencies・statusの遷移・別名の記録・
+"""checkin_tier_service.collect_and_assembleの統合テスト
+（pinned集合・asks・goal・dependencies・statusの遷移・別名の記録・
 goal失敗の隔離）。呼び出しは各テストで別々のactivity・session_idを使い、
 セッション別の既出管理（tag_notes注入済み記録・flow_guide初回判定）が
 テスト間で干渉しないようにする。
 """
 import pytest
 
-import src.services.checkin_service as checkin_service
 import src.services.checkin_tier_service as checkin_tier_service
 from src.db import get_connection
 from src.infra import session_identity
@@ -30,20 +29,6 @@ def _make_activity(title: str, *, status: str | None = None) -> int:
     return activity_id
 
 
-def _strip_ids(value):
-    """比較用に、activity_id依存で値が変わるid系フィールド(handle・*_id_raw)を
-    再帰的に取り除く。"""
-    if isinstance(value, dict):
-        return {
-            k: _strip_ids(v)
-            for k, v in value.items()
-            if k != "handle" and k != "id_raw" and not k.endswith("_id_raw")
-        }
-    if isinstance(value, list):
-        return [_strip_ids(v) for v in value]
-    return value
-
-
 def _add_ask(conn, activity_id: int, question: str, *, answered: bool = False, answer_body: str = "") -> int:
     result = add_ask_with_conn(conn, question, [activity_id], DEFAULT_TAGS)
     assert "error" not in result
@@ -57,54 +42,48 @@ def _add_ask(conn, activity_id: int, question: str, *, answered: bool = False, a
     return ask_id
 
 
-class TestPinnedEquivalence:
-    def test_pinned_set_matches_between_old_and_new(self, temp_db):
-        topic = add_topic(title="pinned比較用トピック", description="pinned比較用", tags=DEFAULT_TAGS)
+class TestPinned:
+    def test_pinned_set_collected_correctly(self, temp_db):
+        topic = add_topic(title="pinned検証用トピック", description="pinned検証用", tags=DEFAULT_TAGS)
         decision = add_decision("決定X", "理由X", topic["topic_id"])
         log = add_log(topic["topic_id"], title="ログX", content="本文X")
         material = add_material(title="資材X", content="内容X", source="test", tags=DEFAULT_TAGS)
 
-        old_id = _make_activity("旧実装pinned")
-        new_id = _make_activity("新実装pinned")
-        for activity_id in (old_id, new_id):
-            add_pin("activity", activity_id, "decision", decision["decision_id"])
-            add_pin("activity", activity_id, "log", log["log_id"])
-            add_pin("activity", activity_id, "material", material["material_id"])
+        activity_id = _make_activity("pinned検証")
+        add_pin("activity", activity_id, "decision", decision["decision_id"])
+        add_pin("activity", activity_id, "log", log["log_id"])
+        add_pin("activity", activity_id, "material", material["material_id"])
 
-        old_result = checkin_service.check_in(old_id, session_id="old-pinned")
-        new_result = checkin_tier_service.collect_and_assemble(new_id, session_id="new-pinned")
+        result = checkin_tier_service.collect_and_assemble(activity_id, session_id="pinned-check")
 
-        assert "error" not in old_result
-        assert "error" not in new_result
-        old_pinned = old_result["pinned"]
-        new_pinned = new_result["anchor"]["pinned"]
-        assert set(old_pinned.keys()) == set(new_pinned.keys()) == {"decisions", "logs", "materials"}
-        for key in old_pinned:
-            assert old_pinned[key] == new_pinned[key]
+        assert "error" not in result
+        pinned = result["anchor"]["pinned"]
+        assert set(pinned.keys()) == {"decisions", "logs", "materials"}
+        assert pinned["decisions"][0]["id_raw"] == decision["decision_id"]
+        assert pinned["logs"][0]["id_raw"] == log["log_id"]
+        assert pinned["materials"][0]["id_raw"] == material["material_id"]
 
 
-class TestAsksEquivalence:
-    def test_asks_content_matches_old_and_new_when_under_cap(self, temp_db):
-        old_id = _make_activity("旧実装asks")
-        new_id = _make_activity("新実装asks")
+class TestAsks:
+    def test_asks_content_under_cap(self, temp_db):
+        activity_id = _make_activity("asks検証")
         conn = get_connection()
         try:
-            for activity_id in (old_id, new_id):
-                _add_ask(conn, activity_id, "未回答の質問")
-                _add_ask(conn, activity_id, "回答済み未トリアージの質問", answered=True, answer_body="回答本文")
+            _add_ask(conn, activity_id, "未回答の質問")
+            _add_ask(conn, activity_id, "回答済み未トリアージの質問", answered=True, answer_body="回答本文")
         finally:
             conn.close()
 
-        old_result = checkin_service.check_in(old_id, session_id="old-asks")
-        new_result = checkin_tier_service.collect_and_assemble(new_id, session_id="new-asks")
+        result = checkin_tier_service.collect_and_assemble(activity_id, session_id="asks-check")
 
-        assert _strip_ids(old_result["asks"]) == _strip_ids(new_result["control"]["asks"])
-        assert len(old_result["asks"]["awaiting_answer"]) == 1
-        assert len(old_result["asks"]["awaiting_triage"]) == 1
-        assert "more" not in new_result["control"]["asks"]
+        asks = result["control"]["asks"]
+        assert len(asks["awaiting_answer"]) == 1
+        assert len(asks["awaiting_triage"]) == 1
+        assert asks["awaiting_triage"][0]["answer_body"] == "回答本文"
+        assert "more" not in asks
 
     def test_asks_over_cap_folds_to_more_with_pointer_and_truncates_answer_body(self, temp_db):
-        activity_id = _make_activity("新実装asks上限超過")
+        activity_id = _make_activity("asks上限超過検証")
         conn = get_connection()
         try:
             for i in range(4):
@@ -115,7 +94,7 @@ class TestAsksEquivalence:
         finally:
             conn.close()
 
-        result = checkin_tier_service.collect_and_assemble(activity_id, session_id="new-asks-overflow")
+        result = checkin_tier_service.collect_and_assemble(activity_id, session_id="asks-overflow")
 
         asks = result["control"]["asks"]
         kept_total = len(asks["awaiting_answer"]) + len(asks["awaiting_triage"])
@@ -127,29 +106,28 @@ class TestAsksEquivalence:
             assert item["answer_truncated"] is True
 
 
-class TestDependenciesEquivalence:
-    def test_dependencies_content_matches_old_and_new_when_under_cap(self, temp_db):
+class TestDependencies:
+    def test_dependencies_content_under_cap(self, temp_db):
         dep = _make_activity("依存先")
-        old_id = _make_activity("旧実装依存")
-        new_id = _make_activity("新実装依存")
+        main_id = _make_activity("依存関係検証")
         conn = get_connection()
         try:
-            for main_id in (old_id, new_id):
-                conn.execute(
-                    "INSERT INTO activity_dependencies (dependent_id, dependency_id) VALUES (?, ?)",
-                    (main_id, dep),
-                )
+            conn.execute(
+                "INSERT INTO activity_dependencies (dependent_id, dependency_id) VALUES (?, ?)",
+                (main_id, dep),
+            )
             conn.commit()
         finally:
             conn.close()
 
-        old_result = checkin_service.check_in(old_id, session_id="old-deps")
-        new_result = checkin_tier_service.collect_and_assemble(new_id, session_id="new-deps")
+        result = checkin_tier_service.collect_and_assemble(main_id, session_id="deps-check")
 
-        assert old_result["dependencies"] == new_result["control"]["dependencies"]
+        deps = result["control"]["dependencies"]
+        assert len(deps) == 1
+        assert deps[0]["id_raw"] == dep
 
     def test_dependencies_over_cap_folds_to_items_and_more_with_pointer(self, temp_db):
-        main_id = _make_activity("新実装依存上限超過")
+        main_id = _make_activity("依存関係上限超過検証")
         conn = get_connection()
         try:
             dep_ids = [_make_activity(f"依存先{i}") for i in range(12)]
@@ -162,7 +140,7 @@ class TestDependenciesEquivalence:
         finally:
             conn.close()
 
-        result = checkin_tier_service.collect_and_assemble(main_id, session_id="new-deps-overflow")
+        result = checkin_tier_service.collect_and_assemble(main_id, session_id="deps-overflow")
 
         deps = result["control"]["dependencies"]
         assert len(deps["items"]) == checkin_tier_service.DEPENDENCIES_MAX
@@ -170,43 +148,37 @@ class TestDependenciesEquivalence:
         assert deps["next"] == [{"tool": "get_map", "args": {"entity_type": "activity", "entity_id": main_id}}]
 
 
-class TestGoalEquivalence:
-    def test_goal_block_matches_old_and_new(self, temp_db):
-        old_id = _make_activity("旧実装goal")
-        new_id = _make_activity("新実装goal")
-        for activity_id in (old_id, new_id):
-            gs.set_goal(
-                activity_id,
-                {"new": {"handle": f"tier-eq-{activity_id}", "statement": "終わりの一文", "conditions": [
-                    {"statement": "条件1", "actor": "claude"}
-                ]}},
-            )
+class TestGoal:
+    def test_goal_block_active_label(self, temp_db):
+        activity_id = _make_activity("goal検証")
+        gs.set_goal(
+            activity_id,
+            {"new": {"handle": "tier-goal-check", "statement": "終わりの一文", "conditions": [
+                {"statement": "条件1", "actor": "claude"}
+            ]}},
+        )
 
-        old_result = checkin_service.check_in(old_id, session_id="old-goal")
-        new_result = checkin_tier_service.collect_and_assemble(new_id, session_id="new-goal")
+        result = checkin_tier_service.collect_and_assemble(activity_id, session_id="goal-check")
 
-        assert _strip_ids(old_result["goal"]) == _strip_ids(new_result["control"]["goal"])
-        assert old_result["goal"]["label"] == new_result["control"]["goal"]["label"] == "active"
+        goal = result["control"]["goal"]
+        assert goal["label"] == "active"
+        assert goal["handle"] == "tier-goal-check"
+        assert goal["statement"] == "終わりの一文"
 
-    def test_goal_failure_is_isolated_in_both_implementations(self, temp_db, monkeypatch):
+    def test_goal_failure_is_isolated(self, temp_db, monkeypatch):
         """goalブロック組み立てで例外が出ても、他のキーは失われずgoalにerrorの形が
-        載る。machine_errorのsignalがcheck_inの接続で記録される（新旧とも同じ
-        goal_serviceモジュールを参照するため、1回のmonkeypatchで両方に効く）。
+        載る。machine_errorのsignalがcheck_inの接続で記録される。
         """
-        old_id = _make_activity("旧実装goal失敗")
-        new_id = _make_activity("新実装goal失敗")
+        activity_id = _make_activity("goal失敗検証")
         monkeypatch.setattr(
             gs, "build_goal_block_for_activity", lambda conn, aid: (_ for _ in ()).throw(RuntimeError("boom"))
         )
 
-        old_result = checkin_service.check_in(old_id, session_id="old-goal-fail")
-        new_result = checkin_tier_service.collect_and_assemble(new_id, session_id="new-goal-fail")
+        result = checkin_tier_service.collect_and_assemble(activity_id, session_id="goal-fail-check")
 
         expected_error_goal = {"error": {"code": "DATABASE_ERROR", "message": "goal ブロックを組み立てられなかった"}}
-        assert old_result["goal"] == expected_error_goal
-        assert new_result["control"]["goal"] == expected_error_goal
-        assert old_result["activity"]["status"] == "in_progress"
-        assert new_result["anchor"]["activity"]["status"] == "in_progress"
+        assert result["control"]["goal"] == expected_error_goal
+        assert result["anchor"]["activity"]["status"] == "in_progress"
 
         conn = get_connection()
         try:
@@ -215,49 +187,34 @@ class TestGoalEquivalence:
             ).fetchall()
         finally:
             conn.close()
-        assert len(rows) == 2
-        assert all("boom" in row["detail"] for row in rows)
+        assert len(rows) == 1
+        assert "boom" in rows[0]["detail"]
 
 
-class TestStatusTransitionEquivalence:
+class TestStatusTransition:
     """completedのactivityへのcheck_inが、asks収集より先にin_progressへ遷移することを
-    新旧それぞれで固定する（既決: 遷移が先でないと、再オープンしたactivityの
-    ブロックaskがcompleted扱いで除外されたままになる）。
+    固定する（既決: 遷移が先でないと、再オープンしたactivityのブロックaskが
+    completed扱いで除外されたままになる）。
     """
 
-    def test_old_reopens_completed_activity_and_delivers_blocking_ask(self, temp_db):
-        activity_id = _make_activity("旧実装完了済み再開")
+    def test_reopens_completed_activity_and_delivers_blocking_ask(self, temp_db):
+        activity_id = _make_activity("完了済み再開検証")
         conn = get_connection()
         try:
-            _add_ask(conn, activity_id, "完了済みactivityをブロックする質問(旧)")
+            _add_ask(conn, activity_id, "完了済みactivityをブロックする質問")
         finally:
             conn.close()
         update_activity(activity_id, status="completed")
 
-        result = checkin_service.check_in(activity_id, session_id="old-reopen")
-
-        assert result["activity"]["status"] == "in_progress"
-        assert "asks" in result
-        assert len(result["asks"]["awaiting_answer"]) == 1
-
-    def test_new_reopens_completed_activity_and_delivers_blocking_ask(self, temp_db):
-        activity_id = _make_activity("新実装完了済み再開")
-        conn = get_connection()
-        try:
-            _add_ask(conn, activity_id, "完了済みactivityをブロックする質問(新)")
-        finally:
-            conn.close()
-        update_activity(activity_id, status="completed")
-
-        result = checkin_tier_service.collect_and_assemble(activity_id, session_id="new-reopen")
+        result = checkin_tier_service.collect_and_assemble(activity_id, session_id="reopen-check")
 
         assert result["anchor"]["activity"]["status"] == "in_progress"
         assert "asks" in result["control"]
         assert len(result["control"]["asks"]["awaiting_answer"]) == 1
 
 
-class TestSessionAliasEquivalence:
-    """セッション別名レジストリへの登録が新旧で同じ結果になることを検証する。"""
+class TestSessionAlias:
+    """セッション別名レジストリへの登録を検証する。"""
 
     @pytest.fixture(autouse=True)
     def _isolate_registry_file(self, tmp_path, monkeypatch):
@@ -278,33 +235,22 @@ class TestSessionAliasEquivalence:
         )
         monkeypatch.setattr(session_identity, "get_caller_session_id", lambda: bridge_session_id)
 
-    def test_session_field_matches_old_and_new_when_cli_resolved(self, temp_db, monkeypatch):
-        old_id = _make_activity("旧実装セッション別名")
-        self._stub_world(monkeypatch, "bridge-old", "cli-old", 100, "workspace-old")
-        old_result = checkin_service.check_in(old_id, session_id="bridge-old")
-
-        new_id = _make_activity("新実装セッション別名")
+    def test_session_field_populated_when_cli_resolved(self, temp_db, monkeypatch):
+        activity_id = _make_activity("セッション別名検証")
         self._stub_world(monkeypatch, "bridge-new", "cli-new", 200, "workspace-new")
-        new_result = checkin_tier_service.collect_and_assemble(new_id, session_id="bridge-new")
 
-        assert old_result["session"] == {
-            "name": "workspace-old",
-            "alias": "旧実装セッション別名",
-            "alias_collision": False,
-        }
-        assert new_result["env"]["session"] == {
+        result = checkin_tier_service.collect_and_assemble(activity_id, session_id="bridge-new")
+
+        assert result["env"]["session"] == {
             "name": "workspace-new",
-            "alias": "新実装セッション別名",
+            "alias": "セッション別名検証",
             "alias_collision": False,
         }
 
-    def test_session_field_reports_unresolved_in_both_when_bridge_id_missing(self, temp_db, monkeypatch):
+    def test_session_field_reports_unresolved_when_bridge_id_missing(self, temp_db, monkeypatch):
         monkeypatch.setattr(session_identity, "get_caller_session_id", lambda: None)
 
-        old_id = _make_activity("旧実装未解決")
-        new_id = _make_activity("新実装未解決")
-        old_result = checkin_service.check_in(old_id, session_id="old-unresolved")
-        new_result = checkin_tier_service.collect_and_assemble(new_id, session_id="new-unresolved")
+        activity_id = _make_activity("セッション別名未解決検証")
+        result = checkin_tier_service.collect_and_assemble(activity_id, session_id="unresolved-check")
 
-        assert old_result["session"] == {"registered": False, "reason": "cli_unresolved"}
-        assert new_result["env"]["session"] == {"registered": False, "reason": "cli_unresolved"}
+        assert result["env"]["session"] == {"registered": False, "reason": "cli_unresolved"}

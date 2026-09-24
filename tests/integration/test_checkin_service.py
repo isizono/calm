@@ -1,15 +1,16 @@
-"""check-inサービスの統合テスト"""
+"""checkin_tier_service.collect_and_assembleの統合テスト"""
 import json
 import pytest
-import src.services.checkin_service as checkin_service
+import src.services.checkin_tier_service as checkin_tier_service
 from src.db import get_connection
 from src.services.activity_service import add_activity, update_activity
 from tests.helpers import add_decision, add_log, retract_decision
-from src.services.material_service import add_material, update_material
+from src.services.material_service import add_material
 from src.services.pin_service import add_pin
 from src.services.relation_service import add_relation
 from src.services.topic_service import add_topic
-from src.services.checkin_service import check_in, DECISIONS_FULL_LIMIT
+from src.services.checkin_tier_service import collect_and_assemble
+from src.services.checkin_service import DECISIONS_FULL_LIMIT
 from src.services.hint_service import (
     ACTIVITY_CLEANUP_AUTOTRIGGER_GUARD,
     ACTIVITY_CLEANUP_COUNT_THRESHOLD,
@@ -52,86 +53,83 @@ def activity_with_intent(temp_db):
 
 
 class TestCheckIn:
-    """check_inの統合テスト"""
+    """collect_and_assembleの統合テスト"""
 
     def test_check_in_success(self, activity_id):
         """check-inが成功し、必須フィールドがすべて返る"""
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert "activity" in result
-        assert result["activity"]["id_raw"] == activity_id
-        assert result["activity"]["title"] == "[作業] タグnotesカラム追加"
-        assert result["activity"]["description"] == "タグnotesカラムを追加する作業"
-        assert result["activity"]["status"] == "in_progress"
-        assert "tags" in result["activity"]
-        assert "tag_notes" in result
-        assert "materials" in result
-        assert "recent_decisions" in result
-        assert "summary" in result
+        assert result["anchor"]["activity"]["id_raw"] == activity_id
+        assert result["anchor"]["activity"]["title"] == "[作業] タグnotesカラム追加"
+        assert result["anchor"]["activity"]["description"] == "タグnotesカラムを追加する作業"
+        assert result["anchor"]["activity"]["status"] == "in_progress"
+        assert "tags" in result["anchor"]["activity"]
+        assert "coverage" in result["env"]
+        assert "session" in result["env"]
+        assert "goal" in result["control"]
 
     def test_check_in_status_updated_to_in_progress(self, activity_id):
         """pendingのアクティビティがin_progressに自動更新される"""
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert result["activity"]["status"] == "in_progress"
+        assert result["anchor"]["activity"]["status"] == "in_progress"
 
     def test_check_in_already_in_progress(self, activity_id):
         """すでにin_progressの場合、status変更なしでcheck-in成功"""
-        # 先にin_progressに変更
         update_activity(activity_id, status="in_progress")
 
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert result["activity"]["status"] == "in_progress"
+        assert result["anchor"]["activity"]["status"] == "in_progress"
 
     def test_check_in_completed_activity(self, activity_id):
         """completedのアクティビティもin_progressに戻る"""
         update_activity(activity_id, status="completed")
 
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert result["activity"]["status"] == "in_progress"
+        assert result["anchor"]["activity"]["status"] == "in_progress"
 
     def test_check_in_not_found(self, temp_db):
         """存在しないactivity_idでNOT_FOUNDエラーになる"""
-        result = check_in(9999)
+        result = collect_and_assemble(9999)
 
         assert "error" in result
         assert result["error"]["code"] == "NOT_FOUND"
         assert "9999" in result["error"]["message"]
 
     def test_check_in_no_related_topics_when_no_relations(self, activity_id):
-        """リレーションがない場合、related_topicsが結果に含まれない"""
-        result = check_in(activity_id)
+        """リレーションがない場合、context.topicsが結果に含まれない"""
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        # リレーションが未設定のため、related_topicsは省略される
-        assert "related_topics" not in result
+        assert "topics" not in result.get("context", {})
 
     def test_check_in_materials_empty(self, activity_id):
-        """materials 0件の場合、空リストが返る"""
-        result = check_in(activity_id)
+        """materialsが無い場合、context.materialsキーは省略される"""
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert result["materials"] == []
+        assert "materials" not in result.get("context", {})
 
     def test_check_in_with_materials(self, activity_id):
         """materialsがある場合、relationsテーブル経由でカタログ形式で返る"""
         add_material("設計書", "# 設計\n詳細内容", ["domain:test"], "テスト用データ",
                      related=[{"type": "activity", "ids": [activity_id]}])
-        m2 = add_material("調査結果", "# 調査\n結果内容", ["domain:test"], "テスト用データ",
-                          related=[{"type": "activity", "ids": [activity_id]}])
+        add_material("調査結果", "# 調査\n結果内容", ["domain:test"], "テスト用データ",
+                     related=[{"type": "activity", "ids": [activity_id]}])
 
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert len(result["materials"]) == 2
+        materials = result["context"]["materials"]
+        assert len(materials) == 2
         # カタログ形式: id_raw, title, snippet, source, created_at (contentなし)
-        for m in result["materials"]:
+        for m in materials:
             assert "id_raw" in m
             assert "id" not in m
             assert "title" in m
@@ -140,9 +138,8 @@ class TestCheckIn:
             assert "created_at" in m
             assert "content" not in m
             assert m["source"] == "テスト用データ"
-        # snippetの値が正しい
-        assert result["materials"][0]["snippet"] == "# 設計\n詳細内容"
-        assert result["materials"][1]["snippet"] == "# 調査\n結果内容"
+        assert materials[0]["snippet"] == "# 設計\n詳細内容"
+        assert materials[1]["snippet"] == "# 調査\n結果内容"
 
     def test_check_in_materials_snippet_truncated(self, activity_id):
         """materialsのsnippetが200文字に切り詰められる"""
@@ -150,95 +147,66 @@ class TestCheckIn:
         add_material("長い資材", long_content, ["domain:test"], "テスト用データ",
                       related=[{"type": "activity", "ids": [activity_id]}])
 
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert len(result["materials"]) == 1
-        assert len(result["materials"][0]["snippet"]) == 200
-        assert result["materials"][0]["snippet"] == "あ" * 200
+        materials = result["context"]["materials"]
+        assert len(materials) == 1
+        assert len(materials[0]["snippet"]) == 200
+        assert materials[0]["snippet"] == "あ" * 200
 
     def test_check_in_recent_decisions_empty_without_relations(self, activity_id):
-        """リレーションがない場合、recent_decisionsは空リスト"""
-        result = check_in(activity_id)
+        """リレーションがない場合、context.decisionsキーは省略される"""
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert result["recent_decisions"] == []
-
-
-class TestCheckInSummary:
-    """summary文字列のフォーマット確認"""
-
-    def test_summary_format_basic(self, activity_id):
-        """summaryが仕様のフォーマットに従っている"""
-        result = check_in(activity_id)
-
-        assert "error" not in result
-        summary = result["summary"]
-        lines = summary.split("\n")
-        assert len(lines) == 2
-        assert lines[0].startswith("check-in: ")
-        assert "[作業] タグnotesカラム追加" in lines[0]
-        assert "intent:" in lines[1]
-
-    def test_summary_intent_from_tag(self, activity_with_intent):
-        """intent:タグがある場合、summaryにintent値が表示される"""
-        result = check_in(activity_with_intent)
-
-        assert "error" not in result
-        assert "intent: design" in result["summary"]
-
-    def test_summary_intent_unset(self, activity_id):
-        """intent:タグがない場合、(未設定)と表示される"""
-        result = check_in(activity_id)
-
-        assert "error" not in result
-        assert "intent: (未設定)" in result["summary"]
+        assert "decisions" not in result.get("context", {})
 
 
 class TestCheckInFlowGuide:
     """flow_guide（セッション内初回のみのコンテキスト取得フローガイド）の確認"""
 
     def test_flow_guide_present_on_first_call(self, activity_id):
-        """セッション内初回のcheck_inではflow_guideが含まれる"""
-        result = check_in(activity_id, session_id="sess-1")
+        """セッション内初回のcheck_inではenv.flow_guideが含まれる"""
+        result = collect_and_assemble(activity_id, session_id="sess-1")
 
         assert "error" not in result
-        assert "flow_guide" in result
-        assert "get_decisions" in result["flow_guide"]
+        assert "flow_guide" in result["env"]
+        assert "get_decisions" in result["env"]["flow_guide"]
 
     def test_flow_guide_absent_on_second_call_same_session(self, activity_id):
-        """同一セッションの2回目以降のcheck_inではflow_guideが含まれない"""
-        check_in(activity_id, session_id="sess-1")
-        result = check_in(activity_id, session_id="sess-1")
+        """同一セッションの2回目以降のcheck_inではenv.flow_guideが含まれない"""
+        collect_and_assemble(activity_id, session_id="sess-1")
+        result = collect_and_assemble(activity_id, session_id="sess-1")
 
         assert "error" not in result
-        assert "flow_guide" not in result
+        assert "flow_guide" not in result["env"]
 
     def test_flow_guide_present_again_for_different_session(self, activity_id):
-        """異なるセッションではそれぞれ初回にflow_guideが含まれる"""
-        check_in(activity_id, session_id="sess-1")
-        result = check_in(activity_id, session_id="sess-2")
+        """異なるセッションではそれぞれ初回にenv.flow_guideが含まれる"""
+        collect_and_assemble(activity_id, session_id="sess-1")
+        result = collect_and_assemble(activity_id, session_id="sess-2")
 
         assert "error" not in result
-        assert "flow_guide" in result
+        assert "flow_guide" in result["env"]
 
     def test_flow_guide_present_every_call_without_session_id(self, activity_id):
         """session_id未解決（None）では記録を読み書きしないため、
-        何度呼んでも毎回flow_guideが含まれる（旧「__default__」共有キーは廃止）。"""
-        result1 = check_in(activity_id)
-        result2 = check_in(activity_id)
+        何度呼んでも毎回env.flow_guideが含まれる（旧「__default__」共有キーは廃止）。"""
+        result1 = collect_and_assemble(activity_id)
+        result2 = collect_and_assemble(activity_id)
 
         assert "error" not in result1
-        assert "flow_guide" in result1
+        assert "flow_guide" in result1["env"]
         assert "error" not in result2
-        assert "flow_guide" in result2
+        assert "flow_guide" in result2["env"]
 
 
 class TestCheckInTagNotes:
     """tag_notes注入の確認"""
 
     def test_tag_notes_injected(self, temp_db):
-        """notesを持つタグがtag_notesに含まれる"""
+        """notesを持つタグがenv.tag_notesに含まれる"""
         conn = get_connection()
         try:
             conn.execute(
@@ -256,19 +224,20 @@ class TestCheckInTagNotes:
             check_in=False,
         )
 
-        result = check_in(activity["activity_id"])
+        result = collect_and_assemble(activity["activity_id"])
 
         assert "error" not in result
-        assert len(result["tag_notes"]) == 1
-        assert result["tag_notes"][0]["tag"] == "domain:withnotes"
-        assert result["tag_notes"][0]["notes"] == "重要な教訓"
+        tag_notes = result["env"]["tag_notes"]
+        assert len(tag_notes) == 1
+        assert tag_notes[0]["tag"] == "domain:withnotes"
+        assert tag_notes[0]["notes"] == "重要な教訓"
 
     def test_tag_notes_empty_when_no_notes(self, activity_id):
-        """notesがないタグの場合、tag_notesは空リスト"""
-        result = check_in(activity_id)
+        """notesがないタグの場合、env.tag_notesキーは省略される"""
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert result["tag_notes"] == []
+        assert "tag_notes" not in result["env"]
 
     def test_intent_tag_notes_injected_every_time(self, temp_db):
         """intent:タグのnotesは毎回注入される（常時注入）"""
@@ -291,15 +260,15 @@ class TestCheckInTagNotes:
         aid = activity["activity_id"]
 
         # 1回目
-        result1 = check_in(aid)
+        result1 = collect_and_assemble(aid)
         assert "error" not in result1
-        intent_notes1 = [n for n in result1["tag_notes"] if n["tag"] == "intent:design"]
+        intent_notes1 = [n for n in result1["env"]["tag_notes"] if n["tag"] == "intent:design"]
         assert len(intent_notes1) == 1
 
         # 2回目: intent: は常時注入なので再度返る
-        result2 = check_in(aid)
+        result2 = collect_and_assemble(aid)
         assert "error" not in result2
-        intent_notes2 = [n for n in result2["tag_notes"] if n["tag"] == "intent:design"]
+        intent_notes2 = [n for n in result2["env"]["tag_notes"] if n["tag"] == "intent:design"]
         assert len(intent_notes2) == 1
 
     def test_non_intent_tag_notes_injected_once(self, temp_db):
@@ -323,15 +292,15 @@ class TestCheckInTagNotes:
         aid = activity["activity_id"]
 
         # 1回目: 注入される
-        result1 = check_in(aid, session_id="sess-1")
+        result1 = collect_and_assemble(aid, session_id="sess-1")
         assert "error" not in result1
-        domain_notes1 = [n for n in result1["tag_notes"] if n["tag"] == "domain:once"]
+        domain_notes1 = [n for n in result1["env"]["tag_notes"] if n["tag"] == "domain:once"]
         assert len(domain_notes1) == 1
 
         # 2回目（同じsession_id）: domain: は通常タグなので注入されない
-        result2 = check_in(aid, session_id="sess-1")
+        result2 = collect_and_assemble(aid, session_id="sess-1")
         assert "error" not in result2
-        domain_notes2 = [n for n in result2["tag_notes"] if n["tag"] == "domain:once"]
+        domain_notes2 = [n for n in result2["env"].get("tag_notes", []) if n["tag"] == "domain:once"]
         assert len(domain_notes2) == 0
 
     def test_no_session_id_never_dedups_tag_notes(self, temp_db):
@@ -355,10 +324,10 @@ class TestCheckInTagNotes:
         )
         aid = activity["activity_id"]
 
-        result1 = check_in(aid, session_id=None)
-        result2 = check_in(aid, session_id=None)
-        assert [n for n in result1["tag_notes"] if n["tag"] == "domain:unresolved"]
-        assert [n for n in result2["tag_notes"] if n["tag"] == "domain:unresolved"]
+        result1 = collect_and_assemble(aid, session_id=None)
+        result2 = collect_and_assemble(aid, session_id=None)
+        assert [n for n in result1["env"]["tag_notes"] if n["tag"] == "domain:unresolved"]
+        assert [n for n in result2["env"]["tag_notes"] if n["tag"] == "domain:unresolved"]
 
 
 
@@ -366,51 +335,25 @@ class TestCheckInRelations:
     """リレーション関連のcheck-inテスト"""
 
     def test_related_activities_returned(self, temp_db):
-        """関連アクティビティがrelated_activitiesに含まれる"""
+        """関連アクティビティがcontext.activitiesに含まれる"""
         a1 = add_activity(title="親タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
         a2 = add_activity(title="子タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
         add_relation("activity", a1["activity_id"], [{"type": "activity", "ids": [a2["activity_id"]]}])
 
-        result = check_in(a1["activity_id"])
+        result = collect_and_assemble(a1["activity_id"])
 
         assert "error" not in result
-        assert "related_activities" in result
-        assert len(result["related_activities"]) == 1
-        assert result["related_activities"][0]["id_raw"] == a2["activity_id"]
-        assert result["related_activities"][0]["title"] == "子タスク"
+        activities = result["context"]["activities"]
+        assert len(activities) == 1
+        assert activities[0]["id_raw"] == a2["activity_id"]
+        assert activities[0]["title"] == "子タスク"
 
     def test_no_related_activities_key_when_empty(self, activity_id):
-        """関連アクティビティがない場合、related_activitiesキーは省略される"""
-        result = check_in(activity_id)
+        """関連アクティビティがない場合、context.activitiesキーは省略される"""
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert "related_activities" not in result
-
-    def test_single_related_topic_sets_topic_key(self, temp_db):
-        """関連トピックが1件の場合、topicキーにdictがセットされる"""
-        topic = add_topic(title="テストトピック", description="Desc", tags=DEFAULT_TAGS)
-        a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
-        add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [topic["topic_id"]]}])
-
-        result = check_in(a["activity_id"])
-
-        assert "error" not in result
-        assert "topic" in result
-        assert result["topic"]["id_raw"] == topic["topic_id"]
-        assert result["related_topics"] == [result["topic"]]
-
-    def test_multiple_related_topics_no_topic_key(self, temp_db):
-        """関連トピックが複数の場合、topicキーは省略される"""
-        t1 = add_topic(title="トピック1", description="Desc", tags=DEFAULT_TAGS)
-        t2 = add_topic(title="トピック2", description="Desc", tags=DEFAULT_TAGS)
-        a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
-        add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [t1["topic_id"], t2["topic_id"]]}])
-
-        result = check_in(a["activity_id"])
-
-        assert "error" not in result
-        assert "topic" not in result
-        assert len(result["related_topics"]) == 2
+        assert "activities" not in result.get("context", {})
 
     def test_decisions_limited_to_max(self, temp_db):
         """decisionsがDECISIONS_FULL_LIMIT件に制限される"""
@@ -420,19 +363,19 @@ class TestCheckInRelations:
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
         add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [topic["topic_id"]]}])
 
-        result = check_in(a["activity_id"])
+        result = collect_and_assemble(a["activity_id"])
 
         assert "error" not in result
-        assert len(result["recent_decisions"]) == DECISIONS_FULL_LIMIT
+        assert len(result["context"]["decisions"]) == DECISIONS_FULL_LIMIT
 
     def test_related_topics_include_gravity_counts(self, temp_db):
-        """related_topicsの各topicにdecisions_count/materials_countが含まれる"""
+        """context.topicsの各topicにdecisions_count/materials_countが含まれる"""
         topic = add_topic(title="重力テスト", description="Desc", tags=DEFAULT_TAGS)
         tid = topic["topic_id"]
-        # decisions 2件
+        # decisionsを2件作る
         add_decision(decision="決定1", reason="理由", topic_id=tid)
         add_decision(decision="決定2", reason="理由", topic_id=tid)
-        # material 1件を直接紐づけ
+        # materialを1件、直接紐づける
         add_material("資材1", "内容", DEFAULT_TAGS, "src", related=[{"type": "topic", "ids": [tid]}])
         # activity経由のmaterialはmaterials_countに含まれないことを確認するためのダミー
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
@@ -442,27 +385,29 @@ class TestCheckInRelations:
             related=[{"type": "activity", "ids": [a["activity_id"]]}],
         )
 
-        result = check_in(a["activity_id"])
+        result = collect_and_assemble(a["activity_id"])
 
         assert "error" not in result
-        assert len(result["related_topics"]) == 1
-        rt = result["related_topics"][0]
+        topics = result["context"]["topics"]
+        assert len(topics) == 1
+        rt = topics[0]
         assert rt["id_raw"] == tid
         assert rt["decisions_count"] == 2
         # topic直接紐づけは1件のみ（activity経由のmaterialは含まない）
         assert rt["materials_count"] == 1
 
     def test_related_topics_zero_counts_present(self, temp_db):
-        """decisions/materialsがゼロのtopicでもdecisions_count=0, materials_count=0が返る"""
+        """decisions/materialsが無いtopicでもdecisions_count=0, materials_count=0が返る"""
         topic = add_topic(title="空のトピック", description="Desc", tags=DEFAULT_TAGS)
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
         add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [topic["topic_id"]]}])
 
-        result = check_in(a["activity_id"])
+        result = collect_and_assemble(a["activity_id"])
 
         assert "error" not in result
-        assert len(result["related_topics"]) == 1
-        rt = result["related_topics"][0]
+        topics = result["context"]["topics"]
+        assert len(topics) == 1
+        rt = topics[0]
         assert rt["decisions_count"] == 0
         assert rt["materials_count"] == 0
 
@@ -478,10 +423,10 @@ class TestCheckInRelations:
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
         add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [tid]}])
 
-        result = check_in(a["activity_id"])
+        result = collect_and_assemble(a["activity_id"])
 
         assert "error" not in result
-        rt = result["related_topics"][0]
+        rt = result["context"]["topics"][0]
         # retract済みを除いた1件のみカウント
         assert rt["decisions_count"] == 1
 
@@ -500,10 +445,10 @@ class TestCheckInRelations:
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
         add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [tid1, tid2]}])
 
-        result = check_in(a["activity_id"])
+        result = collect_and_assemble(a["activity_id"])
 
         assert "error" not in result
-        by_id = {rt["id_raw"]: rt for rt in result["related_topics"]}
+        by_id = {rt["id_raw"]: rt for rt in result["context"]["topics"]}
         assert by_id[tid1]["decisions_count"] == 2
         assert by_id[tid1]["materials_count"] == 1
         assert by_id[tid2]["decisions_count"] == 1
@@ -511,34 +456,27 @@ class TestCheckInRelations:
 
 
 class TestCheckInCoverage:
-    """coverageフィールドのテスト"""
+    """env.coverageフィールドのテスト"""
 
     def test_coverage_field_exists(self, activity_id):
-        """coverageフィールドがトップレベルに含まれる"""
-        result = check_in(activity_id)
+        """env.coverageに必要な内訳キーが含まれる"""
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert "coverage" in result
-        assert "decisions" in result["coverage"]
-        assert "materials" in result["coverage"]
-        assert "logs" in result["coverage"]
-
-    def test_coverage_is_first_key(self, activity_id):
-        """coverageがレスポンスの最初のキーである"""
-        result = check_in(activity_id)
-
-        assert "error" not in result
-        keys = list(result.keys())
-        assert keys[0] == "coverage"
+        coverage = result["env"]["coverage"]
+        assert "decisions" in coverage
+        assert "materials" in coverage
+        assert "logs" in coverage
 
     def test_coverage_no_relations_format(self, activity_id):
         """リレーションなしの場合、coverage分母は0"""
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert result["coverage"]["decisions"] == "0/0"
-        assert result["coverage"]["materials"] == "0/0"
-        assert result["coverage"]["logs"] == "0/0"
+        coverage = result["env"]["coverage"]
+        assert coverage["decisions"] == "0/0"
+        assert coverage["materials"] == "0/0"
+        assert coverage["logs"] == "0/0"
 
     def test_coverage_with_decisions(self, temp_db):
         """decisionsがある場合、coverageの分母に件数が反映される"""
@@ -548,11 +486,11 @@ class TestCheckInCoverage:
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
         add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [topic["topic_id"]]}])
 
-        result = check_in(a["activity_id"])
+        result = collect_and_assemble(a["activity_id"])
 
         assert "error" not in result
         # 分子: min(3, DECISIONS_FULL_LIMIT) = 3, 分母: 3
-        assert result["coverage"]["decisions"] == "3/3"
+        assert result["env"]["coverage"]["decisions"] == "3/3"
 
     def test_coverage_decisions_exceeds_limit(self, temp_db):
         """decisions総数がDECISIONS_FULL_LIMITを超えた場合、分子は制限値になる"""
@@ -563,20 +501,20 @@ class TestCheckInCoverage:
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
         add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [topic["topic_id"]]}])
 
-        result = check_in(a["activity_id"])
+        result = collect_and_assemble(a["activity_id"])
 
         assert "error" not in result
-        assert result["coverage"]["decisions"] == f"{DECISIONS_FULL_LIMIT}/{total}"
+        assert result["env"]["coverage"]["decisions"] == f"{DECISIONS_FULL_LIMIT}/{total}"
 
     def test_coverage_with_materials(self, activity_id):
         """materialsがある場合、coverageの分母に件数が反映される"""
         add_material("資材1", "内容1", DEFAULT_TAGS, "テスト用データ", related=[{"type": "activity", "ids": [activity_id]}])
         add_material("資材2", "内容2", DEFAULT_TAGS, "テスト用データ", related=[{"type": "activity", "ids": [activity_id]}])
 
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert result["coverage"]["materials"] == "2/2"
+        assert result["env"]["coverage"]["materials"] == "2/2"
 
     def test_coverage_logs_includes_latest(self, temp_db):
         """logsの分子に最新ログ1件が加算される"""
@@ -586,19 +524,20 @@ class TestCheckInCoverage:
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
         add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [topic["topic_id"]]}])
 
-        result = check_in(a["activity_id"])
+        result = collect_and_assemble(a["activity_id"])
 
         assert "error" not in result
-        assert result["coverage"]["logs"] == "1/3"
+        assert result["env"]["coverage"]["logs"] == "1/3"
 
     def test_coverage_zero_related_topics(self, activity_id):
-        """関連topic 0件の場合、coverage "0/0"が返る（Edge case）"""
-        result = check_in(activity_id)
+        """関連するtopicが無い場合、coverage "0/0"が返る（Edge case）"""
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert result["coverage"]["decisions"] == "0/0"
-        assert result["coverage"]["materials"] == "0/0"
-        assert result["coverage"]["logs"] == "0/0"
+        coverage = result["env"]["coverage"]
+        assert coverage["decisions"] == "0/0"
+        assert coverage["materials"] == "0/0"
+        assert coverage["logs"] == "0/0"
 
     def test_coverage_not_affected_by_pinned_targets(self, temp_db):
         """pinsテーブル経由で注入されたpinned targetsはcoverageの分子に加算されない"""
@@ -613,47 +552,39 @@ class TestCheckInCoverage:
         # 無関係topicのdecisionをpin → pins注入されるがcoverageには含まれないはず
         add_pin("activity", a["activity_id"], "decision", unrelated_d["decision_id"])
 
-        result = check_in(a["activity_id"])
+        result = collect_and_assemble(a["activity_id"])
 
         assert "error" not in result
-        assert "pinned" in result
-        assert len(result["pinned"]["decisions"]) == 1
+        assert len(result["anchor"]["pinned"]["decisions"]) == 1
         # coverageは関連topic配下のdecisionのみ: 通常1件/全体1件。pin注入分は加算されない
-        assert result["coverage"]["decisions"] == "1/1"
+        assert result["env"]["coverage"]["decisions"] == "1/1"
 
 
 class TestCheckInLogsCatalog:
     """logsカタログのテスト"""
 
-    def test_logs_field_exists(self, activity_id):
-        """logsフィールドが常に存在する"""
-        result = check_in(activity_id)
-
-        assert "error" not in result
-        assert "logs" in result
-
     def test_logs_empty_without_relations(self, activity_id):
-        """リレーションなしの場合、latest_logはNone、logsは空リスト"""
-        result = check_in(activity_id)
+        """リレーションなしの場合、context.latest_log/catalog.logsともキーが省略される"""
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert result["latest_log"] is None
-        assert result["logs"] == []
+        assert "latest_log" not in result.get("context", {})
+        assert "logs" not in result.get("catalog", {})
 
     def test_latest_log_has_content(self, temp_db):
-        """最新ログ1件がcontent付きでlatest_logに返る"""
+        """最新ログ1件がcontent付きでcontext.latest_logに返る"""
         topic = add_topic(title="トピック", description="Desc", tags=DEFAULT_TAGS)
         add_log(topic_id=topic["topic_id"], title="初回議論", content="詳細な内容")
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
         add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [topic["topic_id"]]}])
 
-        result = check_in(a["activity_id"])
+        result = collect_and_assemble(a["activity_id"])
 
         assert "error" not in result
-        assert result["latest_log"] is not None
-        assert result["latest_log"]["title"] == "初回議論"
-        assert result["latest_log"]["content"] == "詳細な内容"
-        assert result["logs"] == []
+        latest_log = result["context"]["latest_log"]
+        assert latest_log["title"] == "初回議論"
+        assert latest_log["content"] == "詳細な内容"
+        assert "logs" not in result.get("catalog", {})
 
     def test_logs_catalog_excludes_latest(self, temp_db):
         """最新1件以外のlogsはid+titleのカタログとして返る"""
@@ -663,14 +594,15 @@ class TestCheckInLogsCatalog:
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
         add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [topic["topic_id"]]}])
 
-        result = check_in(a["activity_id"])
+        result = collect_and_assemble(a["activity_id"])
 
         assert "error" not in result
-        assert result["latest_log"]["title"] == "新しいログ"
-        assert result["latest_log"]["content"] == "新しい内容"
-        assert len(result["logs"]) == 1
-        assert result["logs"][0]["title"] == "古いログ"
-        assert "content" not in result["logs"][0]
+        assert result["context"]["latest_log"]["title"] == "新しいログ"
+        assert result["context"]["latest_log"]["content"] == "新しい内容"
+        logs = result["catalog"]["logs"]
+        assert len(logs) == 1
+        assert logs[0]["title"] == "古いログ"
+        assert "content" not in logs[0]
 
     def test_logs_catalog_multiple_topics(self, temp_db):
         """複数topicのlogsが集約される（最新1件がlatest_log、残りがカタログ）"""
@@ -681,21 +613,22 @@ class TestCheckInLogsCatalog:
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
         add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [t1["topic_id"], t2["topic_id"]]}])
 
-        result = check_in(a["activity_id"])
+        result = collect_and_assemble(a["activity_id"])
 
         assert "error" not in result
-        assert result["latest_log"] is not None
-        assert len(result["logs"]) == 1
-        all_titles = {result["latest_log"]["title"]} | {l["title"] for l in result["logs"]}
+        assert "latest_log" in result["context"]
+        logs = result["catalog"]["logs"]
+        assert len(logs) == 1
+        all_titles = {result["context"]["latest_log"]["title"]} | {l["title"] for l in logs}
         assert "ログA" in all_titles
         assert "ログB" in all_titles
 
 
 class TestCheckInDependencies:
-    """check-in結果のdependenciesフィールドのテスト"""
+    """check-in結果のcontrol.dependenciesフィールドのテスト"""
 
     def test_dependencies_present_when_depends_on_exists(self, temp_db):
-        """depends_on関係がある場合、dependenciesフィールドが結果に含まれる"""
+        """depends_on関係がある場合、control.dependenciesフィールドが結果に含まれる"""
         dep = add_activity(title="依存先タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
         main = add_activity(title="メインタスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
 
@@ -709,21 +642,21 @@ class TestCheckInDependencies:
         finally:
             conn.close()
 
-        result = check_in(main["activity_id"])
+        result = collect_and_assemble(main["activity_id"])
 
         assert "error" not in result
-        assert "dependencies" in result
-        assert len(result["dependencies"]) == 1
-        assert result["dependencies"][0]["id_raw"] == dep["activity_id"]
-        assert result["dependencies"][0]["title"] == "依存先タスク"
-        assert result["dependencies"][0]["status"] == "pending"
+        deps = result["control"]["dependencies"]
+        assert len(deps) == 1
+        assert deps[0]["id_raw"] == dep["activity_id"]
+        assert deps[0]["title"] == "依存先タスク"
+        assert deps[0]["status"] == "pending"
 
     def test_dependencies_absent_when_no_depends_on(self, activity_id):
-        """depends_on関係がない場合、dependenciesフィールドは省略される"""
-        result = check_in(activity_id)
+        """depends_on関係がない場合、control.dependenciesフィールドは省略される"""
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert "dependencies" not in result
+        assert "dependencies" not in result["control"]
 
     def test_dependencies_multiple(self, temp_db):
         """複数の依存先がある場合、全件がdependenciesに含まれる"""
@@ -745,11 +678,12 @@ class TestCheckInDependencies:
         finally:
             conn.close()
 
-        result = check_in(main["activity_id"])
+        result = collect_and_assemble(main["activity_id"])
 
         assert "error" not in result
-        assert len(result["dependencies"]) == 2
-        dep_ids = {d["id_raw"] for d in result["dependencies"]}
+        deps = result["control"]["dependencies"]
+        assert len(deps) == 2
+        dep_ids = {d["id_raw"] for d in deps}
         assert dep1["activity_id"] in dep_ids
         assert dep2["activity_id"] in dep_ids
 
@@ -769,11 +703,10 @@ class TestCheckInDependencies:
         finally:
             conn.close()
 
-        result = check_in(main["activity_id"])
+        result = collect_and_assemble(main["activity_id"])
 
         assert "error" not in result
-        assert "dependencies" in result
-        assert result["dependencies"][0]["status"] == "completed"
+        assert result["control"]["dependencies"][0]["status"] == "completed"
 
     def test_dependencies_status_reflects_current(self, temp_db):
         """dependenciesの各要素のstatusがDB上の最新値を反映する"""
@@ -791,26 +724,26 @@ class TestCheckInDependencies:
         finally:
             conn.close()
 
-        result = check_in(main["activity_id"])
+        result = collect_and_assemble(main["activity_id"])
 
         assert "error" not in result
-        assert result["dependencies"][0]["status"] == "in_progress"
+        assert result["control"]["dependencies"][0]["status"] == "in_progress"
 
 
 class TestCheckInPinned:
     """pinsテーブル経由のpinned target注入テスト"""
 
     def test_no_pinned_field_when_nothing_pinned(self, temp_db):
-        """pinsテーブルに対象activity向けのpinがない場合、pinnedフィールドは省略される"""
+        """pinsテーブルに対象activity向けのpinがない場合、anchor.pinnedフィールドは省略される"""
         topic = add_topic(title="トピック", description="Desc", tags=DEFAULT_TAGS)
         add_decision(decision="通常の決定", reason="理由", topic_id=topic["topic_id"])
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
         add_relation("activity", a["activity_id"], [{"type": "topic", "ids": [topic["topic_id"]]}])
 
-        result = check_in(a["activity_id"])
+        result = collect_and_assemble(a["activity_id"])
 
         assert "error" not in result
-        assert "pinned" not in result
+        assert "pinned" not in result["anchor"]
 
     def test_activity_source_pin_injects_decision(self, temp_db):
         """source=activityのpinsテーブルエントリが、check-in時にpinned.decisionsにcontent付きで注入される"""
@@ -820,14 +753,13 @@ class TestCheckInPinned:
         # pinsにsource=activityでdecisionをpin
         add_pin("activity", a["activity_id"], "decision", d["decision_id"])
 
-        result = check_in(a["activity_id"])
+        result = collect_and_assemble(a["activity_id"])
 
         assert "error" not in result
-        assert "pinned" in result
-        assert "decisions" in result["pinned"]
-        assert len(result["pinned"]["decisions"]) == 1
-        assert result["pinned"]["decisions"][0]["title"] == "重要な決定"
-        assert result["pinned"]["decisions"][0]["reason"] == "根本的な理由"
+        pinned = result["anchor"]["pinned"]
+        assert len(pinned["decisions"]) == 1
+        assert pinned["decisions"][0]["title"] == "重要な決定"
+        assert pinned["decisions"][0]["reason"] == "根本的な理由"
 
     def test_tag_source_pin_injects_decision(self, temp_db):
         """source=tag（activity自身のtag）のpinsテーブルエントリが、check-in時にpinned.decisionsに注入される"""
@@ -837,16 +769,15 @@ class TestCheckInPinned:
         # pinsにsource=tagでdecisionをpin（domain:testタグ）
         add_pin("tag", "domain:test", "decision", d["decision_id"])
 
-        result = check_in(a["activity_id"])
+        result = collect_and_assemble(a["activity_id"])
 
         assert "error" not in result
-        assert "pinned" in result
-        assert "decisions" in result["pinned"]
-        assert len(result["pinned"]["decisions"]) == 1
-        assert result["pinned"]["decisions"][0]["title"] == "タグ経由重要決定"
+        pinned = result["anchor"]["pinned"]
+        assert len(pinned["decisions"]) == 1
+        assert pinned["decisions"][0]["title"] == "タグ経由重要決定"
 
     def test_pinned_decisions_included_in_recent_decisions(self, temp_db):
-        """pinsテーブルでpinされたdecisionはrecent_decisionsにも通常通り含まれる（除外されない）"""
+        """pinsテーブルでpinされたdecisionはcontext.decisionsにも通常通り含まれる（除外されない）"""
         topic = add_topic(title="トピック", description="Desc", tags=DEFAULT_TAGS)
         d = add_decision(decision="ピン済み決定", reason="理由", topic_id=topic["topic_id"])
         add_decision(decision="通常の決定", reason="理由", topic_id=topic["topic_id"])
@@ -855,12 +786,13 @@ class TestCheckInPinned:
         # decisionをpinする
         add_pin("activity", a["activity_id"], "decision", d["decision_id"])
 
-        result = check_in(a["activity_id"])
+        result = collect_and_assemble(a["activity_id"])
 
         assert "error" not in result
-        # recent_decisionsにはピン済み・非ピンの両方が含まれる（pinned列による除外なし）
-        assert len(result["recent_decisions"]) == 2
-        titles = {dec["title"] for dec in result["recent_decisions"]}
+        # context.decisionsにはピン済み・非ピンの両方が含まれる（pinned列による除外なし）
+        decisions = result["context"]["decisions"]
+        assert len(decisions) == 2
+        titles = {dec["title"] for dec in decisions}
         assert "ピン済み決定" in titles
         assert "通常の決定" in titles
 
@@ -871,17 +803,16 @@ class TestCheckInPinned:
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
         add_pin("activity", a["activity_id"], "log", log["log_id"])
 
-        result = check_in(a["activity_id"])
+        result = collect_and_assemble(a["activity_id"])
 
         assert "error" not in result
-        assert "pinned" in result
-        assert "logs" in result["pinned"]
-        assert len(result["pinned"]["logs"]) == 1
-        assert result["pinned"]["logs"][0]["title"] == "方向転換ログ"
-        assert result["pinned"]["logs"][0]["content"] == "## 経緯\n重要な方向転換"
+        pinned = result["anchor"]["pinned"]
+        assert len(pinned["logs"]) == 1
+        assert pinned["logs"][0]["title"] == "方向転換ログ"
+        assert pinned["logs"][0]["content"] == "## 経緯\n重要な方向転換"
 
     def test_pinned_log_also_appears_in_latest_log(self, temp_db):
-        """pinsテーブルでpinされたlogはlatest_logにも通常通り含まれる（除外されない）"""
+        """pinsテーブルでpinされたlogはcontext.latest_logにも通常通り含まれる（除外されない）"""
         topic = add_topic(title="トピック", description="Desc", tags=DEFAULT_TAGS)
         log1 = add_log(topic_id=topic["topic_id"], title="ピン済みログ", content="内容1")
         add_log(topic_id=topic["topic_id"], title="新しいログ", content="内容2")
@@ -890,14 +821,15 @@ class TestCheckInPinned:
         # log1をpinするが、IDが小さい（古い）ため latest_log には新しい方が来る
         add_pin("activity", a["activity_id"], "log", log1["log_id"])
 
-        result = check_in(a["activity_id"])
+        result = collect_and_assemble(a["activity_id"])
 
         assert "error" not in result
         # latest_logには最新のログが入る（pinned列による除外なし）
-        assert result["latest_log"]["title"] == "新しいログ"
+        assert result["context"]["latest_log"]["title"] == "新しいログ"
         # logsカタログにはpinされたログが残る
-        assert len(result["logs"]) == 1
-        assert result["logs"][0]["title"] == "ピン済みログ"
+        logs = result["catalog"]["logs"]
+        assert len(logs) == 1
+        assert logs[0]["title"] == "ピン済みログ"
 
     def test_activity_source_pin_injects_material(self, temp_db):
         """source=activityのpinsテーブルエントリが、check-in時にpinned.materialsにcontent付きで注入される"""
@@ -906,18 +838,17 @@ class TestCheckInPinned:
                          related=[{"type": "activity", "ids": [a["activity_id"]]}])
         add_pin("activity", a["activity_id"], "material", m["material_id"])
 
-        result = check_in(a["activity_id"])
+        result = collect_and_assemble(a["activity_id"])
 
         assert "error" not in result
-        assert "pinned" in result
-        assert "materials" in result["pinned"]
-        assert len(result["pinned"]["materials"]) == 1
-        assert result["pinned"]["materials"][0]["title"] == "設計書"
-        assert result["pinned"]["materials"][0]["content"] == "# 設計\n詳細な内容"
-        assert result["pinned"]["materials"][0]["source"] == "テスト用データ"
+        pinned = result["anchor"]["pinned"]
+        assert len(pinned["materials"]) == 1
+        assert pinned["materials"][0]["title"] == "設計書"
+        assert pinned["materials"][0]["content"] == "# 設計\n詳細な内容"
+        assert pinned["materials"][0]["source"] == "テスト用データ"
 
     def test_pinned_material_also_appears_in_materials(self, temp_db):
-        """pinsテーブルでpinされたmaterialはmaterialsフィールドにも通常通り含まれる（除外されない）"""
+        """pinsテーブルでpinされたmaterialはcontext.materialsにも通常通り含まれる（除外されない）"""
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
         m1 = add_material("ピン資材", "内容1", DEFAULT_TAGS, "テスト用データ",
                           related=[{"type": "activity", "ids": [a["activity_id"]]}])
@@ -925,12 +856,13 @@ class TestCheckInPinned:
                      related=[{"type": "activity", "ids": [a["activity_id"]]}])
         add_pin("activity", a["activity_id"], "material", m1["material_id"])
 
-        result = check_in(a["activity_id"])
+        result = collect_and_assemble(a["activity_id"])
 
         assert "error" not in result
-        # materialsにはpin済みも非ピンも両方含まれる（pinned列による除外なし）
-        assert len(result["materials"]) == 2
-        titles = {m["title"] for m in result["materials"]}
+        # context.materialsにはpin済みも非ピンも両方含まれる（pinned列による除外なし）
+        materials = result["context"]["materials"]
+        assert len(materials) == 2
+        titles = {m["title"] for m in materials}
         assert "ピン資材" in titles
         assert "通常資材" in titles
 
@@ -940,14 +872,13 @@ class TestCheckInPinned:
         a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
         add_pin("activity", a["activity_id"], "topic", topic["topic_id"])
 
-        result = check_in(a["activity_id"])
+        result = collect_and_assemble(a["activity_id"])
 
         assert "error" not in result
-        assert "pinned" in result
-        assert "topics" in result["pinned"]
-        assert len(result["pinned"]["topics"]) == 1
-        assert result["pinned"]["topics"][0]["id_raw"] == topic["topic_id"]
-        assert result["pinned"]["topics"][0]["title"] == "重要トピック"
+        pinned = result["anchor"]["pinned"]
+        assert len(pinned["topics"]) == 1
+        assert pinned["topics"][0]["id_raw"] == topic["topic_id"]
+        assert pinned["topics"][0]["title"] == "重要トピック"
 
     def test_activity_source_pin_injects_activity(self, temp_db):
         """source=activityのpinsテーブルエントリが、check-in時にpinned.activitiesに注入される"""
@@ -955,15 +886,14 @@ class TestCheckInPinned:
         a2 = add_activity(title="重要参照タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
         add_pin("activity", a1["activity_id"], "activity", a2["activity_id"])
 
-        result = check_in(a1["activity_id"])
+        result = collect_and_assemble(a1["activity_id"])
 
         assert "error" not in result
-        assert "pinned" in result
-        assert "activities" in result["pinned"]
-        assert len(result["pinned"]["activities"]) == 1
-        assert result["pinned"]["activities"][0]["id_raw"] == a2["activity_id"]
-        assert result["pinned"]["activities"][0]["title"] == "重要参照タスク"
-        assert result["pinned"]["activities"][0]["status"] == "pending"
+        pinned = result["anchor"]["pinned"]
+        assert len(pinned["activities"]) == 1
+        assert pinned["activities"][0]["id_raw"] == a2["activity_id"]
+        assert pinned["activities"][0]["title"] == "重要参照タスク"
+        assert pinned["activities"][0]["status"] == "pending"
 
     def test_distinct_deduplication_when_multiple_routes(self, temp_db):
         """同一targetがtagソースとactivityソースの両方からpinされても、pinned結果に1件だけ注入される"""
@@ -974,13 +904,13 @@ class TestCheckInPinned:
         add_pin("activity", a["activity_id"], "decision", d["decision_id"])
         add_pin("tag", "domain:test", "decision", d["decision_id"])
 
-        result = check_in(a["activity_id"])
+        result = collect_and_assemble(a["activity_id"])
 
         assert "error" not in result
-        assert "pinned" in result
+        pinned = result["anchor"]["pinned"]
         # (target_type, target_id) でDISTINCTされ、1件のみ
-        assert len(result["pinned"]["decisions"]) == 1
-        assert result["pinned"]["decisions"][0]["title"] == "重複テスト決定"
+        assert len(pinned["decisions"]) == 1
+        assert pinned["decisions"][0]["title"] == "重複テスト決定"
 
     def test_retracted_decision_excluded_from_pinned(self, temp_db):
         """retractされたdecisionはpinsテーブル経由でもpinned.decisionsに注入されない"""
@@ -991,11 +921,12 @@ class TestCheckInPinned:
         # decisionをretract
         retract_decision(d["decision_id"])
 
-        result = check_in(a["activity_id"])
+        result = collect_and_assemble(a["activity_id"])
 
         assert "error" not in result
-        # retractされているためpinnedキー自体が省略される（または decisions が空）
-        assert "pinned" not in result or "decisions" not in result.get("pinned", {})
+        # retractされているためpinned.decisionsキー自体が省略される
+        pinned = result["anchor"].get("pinned", {})
+        assert "decisions" not in pinned
 
     def test_tag_source_only_uses_activity_own_tags(self, temp_db):
         """tagソースのpinは、check-in対象activityが持つtagのみが使用される（他activityのtagは無視される）"""
@@ -1019,14 +950,14 @@ class TestCheckInPinned:
         finally:
             conn.close()
 
-        result = check_in(a1["activity_id"])
+        result = collect_and_assemble(a1["activity_id"])
 
         assert "error" not in result
         # a1はdomain:otherタグを持たないため、そのpinは注入されない
-        assert "pinned" not in result
+        assert "pinned" not in result["anchor"]
 
     def test_all_five_target_types_in_pinned(self, temp_db):
-        """decision/log/material/topic/activityの5種すべてがpinnedフィールドに含まれる"""
+        """decision/log/material/topic/activityの5種すべてがanchor.pinnedフィールドに含まれる"""
         topic = add_topic(title="重要トピック", description="Desc", tags=DEFAULT_TAGS)
         d = add_decision(decision="重要決定", reason="理由", topic_id=topic["topic_id"])
         log = add_log(topic_id=topic["topic_id"], title="重要ログ", content="内容")
@@ -1041,15 +972,15 @@ class TestCheckInPinned:
         add_pin("activity", a["activity_id"], "topic", topic["topic_id"])
         add_pin("activity", a["activity_id"], "activity", a2["activity_id"])
 
-        result = check_in(a["activity_id"])
+        result = collect_and_assemble(a["activity_id"])
 
         assert "error" not in result
-        assert "pinned" in result
-        assert len(result["pinned"]["decisions"]) == 1
-        assert len(result["pinned"]["logs"]) == 1
-        assert len(result["pinned"]["materials"]) == 1
-        assert len(result["pinned"]["topics"]) == 1
-        assert len(result["pinned"]["activities"]) == 1
+        pinned = result["anchor"]["pinned"]
+        assert len(pinned["decisions"]) == 1
+        assert len(pinned["logs"]) == 1
+        assert len(pinned["materials"]) == 1
+        assert len(pinned["topics"]) == 1
+        assert len(pinned["activities"]) == 1
 
     def test_zero_key_omission_in_pinned(self, temp_db):
         """pinned結果で0件のキーは省略される"""
@@ -1058,20 +989,19 @@ class TestCheckInPinned:
         # topicのみをpin（他のtypeはピンなし）
         add_pin("activity", a["activity_id"], "topic", topic["topic_id"])
 
-        result = check_in(a["activity_id"])
+        result = collect_and_assemble(a["activity_id"])
 
         assert "error" not in result
-        assert "pinned" in result
-        assert "topics" in result["pinned"]
+        pinned = result["anchor"]["pinned"]
+        assert "topics" in pinned
         # 0件のキーは省略される
-        assert "decisions" not in result["pinned"]
-        assert "logs" not in result["pinned"]
-        assert "materials" not in result["pinned"]
-        assert "activities" not in result["pinned"]
+        assert "decisions" not in pinned
+        assert "logs" not in pinned
+        assert "materials" not in pinned
+        assert "activities" not in pinned
 
 
-# recomposeナッジhintの境界条件テスト用。
-# D#2780により対象は domain: namespace のみに限定された。
+# recomposeナッジhintの境界条件テスト用。domain: namespaceのみが対象。
 DOMAIN_TAG_NAME = "hint-target"
 DOMAIN_TAG = f"domain:{DOMAIN_TAG_NAME}"
 PLAIN_TAG = "recompose-target"  # 素タグはhint対象外
@@ -1155,11 +1085,11 @@ class TestRecomposeHints:
         for i in range(_RECOMPOSE_HINT_BOOTSTRAP_THRESHOLD):
             add_decision(decision=f"決定{i}", reason="理由", topic_id=topic_id)
 
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert "hints" in result
-        bootstrap_hints = [h for h in result["hints"] if "蓄積しています" in h]
+        hints = result["env"]["hints"]
+        bootstrap_hints = [h for h in hints if "蓄積しています" in h]
         assert len(bootstrap_hints) == 1
         assert DOMAIN_TAG in bootstrap_hints[0]
         assert str(_RECOMPOSE_HINT_BOOTSTRAP_THRESHOLD) in bootstrap_hints[0]
@@ -1171,10 +1101,10 @@ class TestRecomposeHints:
         for i in range(_RECOMPOSE_HINT_BOOTSTRAP_THRESHOLD - 1):
             add_decision(decision=f"決定{i}", reason="理由", topic_id=topic_id)
 
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert "hints" not in result
+        assert "hints" not in result["env"]
 
     def test_bootstrap_hint_fires_via_decision_tags_direct(self, temp_db):
         """material未pinのtagで、decision_tags直付けのdecisionがしきい値蓄積するとブートストラップhintが発火する"""
@@ -1188,11 +1118,10 @@ class TestRecomposeHints:
                 tags=["domain:other", DOMAIN_TAG],
             )
 
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert "hints" in result
-        assert any("蓄積しています" in h and DOMAIN_TAG in h for h in result["hints"])
+        assert any("蓄積しています" in h and DOMAIN_TAG in h for h in result["env"]["hints"])
 
     def test_bootstrap_hint_excludes_retracted_decisions(self, temp_db):
         """retractedなdecisionはブートストラップ判定の件数に含まれない"""
@@ -1205,10 +1134,10 @@ class TestRecomposeHints:
             decision_ids.append(d["decision_id"])
         retract_decision(decision_ids[0])
 
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert "hints" not in result
+        assert "hints" not in result["env"]
 
     def test_delta_hint_fires_at_threshold(self, temp_db):
         """material pin済みのtagで、material最終更新後のdecisionが増分しきい値ちょうど増えるとメンテhintが発火する"""
@@ -1232,11 +1161,11 @@ class TestRecomposeHints:
             d = add_decision(decision=f"新決定{i}", reason="理由", topic_id=topic_id)
             _set_decision_created_at(d["decision_id"], "2024-07-01 00:00:00")
 
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert "hints" in result
-        delta_hints = [h for h in result["hints"] if "最終更新以降" in h]
+        hints = result["env"]["hints"]
+        delta_hints = [h for h in hints if "最終更新以降" in h]
         assert len(delta_hints) == 1
         assert DOMAIN_TAG in delta_hints[0]
         assert str(_RECOMPOSE_HINT_DELTA_THRESHOLD) in delta_hints[0]
@@ -1257,10 +1186,10 @@ class TestRecomposeHints:
             d = add_decision(decision=f"新決定{i}", reason="理由", topic_id=topic_id)
             _set_decision_created_at(d["decision_id"], "2024-07-01 00:00:00")
 
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert "hints" not in result
+        assert "hints" not in result["env"]
 
     def test_delta_hint_excludes_decisions_before_base_time(self, temp_db):
         """material最終更新時刻T以前のdecisionは増分カウントに含まれない"""
@@ -1279,10 +1208,10 @@ class TestRecomposeHints:
             d = add_decision(decision=f"旧決定{i}", reason="理由", topic_id=topic_id)
             _set_decision_created_at(d["decision_id"], "2024-05-01 00:00:00")
 
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert "hints" not in result
+        assert "hints" not in result["env"]
 
     def test_delta_hint_uses_max_updated_at_across_pinned_materials(self, temp_db):
         """tagに複数materialがpinされている場合、基準時刻Tは最大のupdated_atになる"""
@@ -1307,10 +1236,10 @@ class TestRecomposeHints:
             d = add_decision(decision=f"中間決定{i}", reason="理由", topic_id=topic_id)
             _set_decision_created_at(d["decision_id"], "2024-03-01 00:00:00")
 
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert "hints" not in result, (
+        assert "hints" not in result["env"], (
             "基準時刻Tが最大のupdated_at（2024-06-01）でなく最小（2024-01-01）で評価されている"
         )
 
@@ -1338,24 +1267,23 @@ class TestRecomposeHints:
         for i in range(_RECOMPOSE_HINT_BOOTSTRAP_THRESHOLD + 5):
             add_decision(decision=f"決定{i}", reason="理由", topic_id=topic["topic_id"])
 
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert "hints" not in result, (
+        assert "hints" not in result["env"], (
             "素タグ（namespace空文字）がhint判定対象になっている"
         )
 
     def test_hints_key_absent_when_no_tag_fires(self, temp_db):
-        """どのtagも発火条件を満たさないとき、resultにhintsキーは含まれない"""
+        """どのtagも発火条件を満たさないとき、env.hintsキーは含まれない"""
         activity_id = _make_activity_with_domain_tag()
         topic_id = _make_topic_with_domain_tag()
-        # ブートストラップしきい値未満のdecisionのみ
         add_decision(decision="単一決定", reason="理由", topic_id=topic_id)
 
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert "hints" not in result
+        assert "hints" not in result["env"]
 
 
 class TestRecomposeCooldownTransaction:
@@ -1375,9 +1303,9 @@ class TestRecomposeCooldownTransaction:
         def _boom(*args, **kwargs):
             raise RuntimeError("boom after hint generation")
 
-        monkeypatch.setattr(checkin_service, "_build_summary", _boom)
+        monkeypatch.setattr(checkin_tier_service, "_cap_asks", _boom)
 
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
         assert result.get("error", {}).get("code") == "DATABASE_ERROR"
         assert MARKER_RECOMPOSE_BOOTSTRAP not in _get_tag_notes(DOMAIN_TAG_NAME)
@@ -1385,10 +1313,9 @@ class TestRecomposeCooldownTransaction:
         # マーカーがロールバックされているため、パッチを戻して再度check_inすれば
         # hintが再発火する
         monkeypatch.undo()
-        result_retry = check_in(activity_id)
+        result_retry = collect_and_assemble(activity_id)
         assert "error" not in result_retry
-        assert "hints" in result_retry
-        assert any("蓄積しています" in h for h in result_retry["hints"])
+        assert any("蓄積しています" in h for h in result_retry["env"]["hints"])
 
 
 # activity_cleanup hintの本番到達経路(check_in経由)テスト用。
@@ -1423,7 +1350,7 @@ def _make_stale_activity_for_checkin() -> int:
 
 
 class TestActivityCleanupHintViaCheckIn:
-    """activity_cleanup hintが本番の到達経路(checkin_service.check_in経由、
+    """activity_cleanup hintが本番の到達経路(checkin_tier_service.collect_and_assemble経由、
     マーカー永続化はcheck_in末尾のcommitに依存)で正しく動作することの統合テスト。
 
     tests/unit/test_hint_service.pyの同種テストはget_hints(自前connでcommitする
@@ -1447,26 +1374,26 @@ class TestActivityCleanupHintViaCheckIn:
             check_in=False,
         )["activity_id"]
 
-        result_first = check_in(actor_id)
+        result_first = collect_and_assemble(actor_id)
         assert "error" not in result_first
         assert any(
             ACTIVITY_CLEANUP_AUTOTRIGGER_GUARD in h
-            for h in result_first.get("hints", [])
+            for h in result_first["env"].get("hints", [])
         )
         assert MARKER_ACTIVITY_CLEANUP in _get_tag_notes(
             ACTIVITY_MANAGEMENT_TAG_NAME, namespace=""
         )
 
-        result_second = check_in(actor_id)
+        result_second = collect_and_assemble(actor_id)
         assert "error" not in result_second
         assert not any(
             ACTIVITY_CLEANUP_AUTOTRIGGER_GUARD in h
-            for h in result_second.get("hints", [])
+            for h in result_second["env"].get("hints", [])
         )
 
 
 class TestCheckInSessionRegistry:
-    """check_inのセッション別名レジストリ統合（result["session"]、非致命性、衝突hint）。"""
+    """check_inのセッション別名レジストリ統合（env.session、非致命性、衝突検出）。"""
 
     @pytest.fixture(autouse=True)
     def _isolate_registry_file(self, tmp_path, monkeypatch):
@@ -1502,10 +1429,10 @@ class TestCheckInSessionRegistry:
         )
         monkeypatch.setattr(session_identity, "get_caller_session_id", lambda: "bridge-1")
 
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert result["session"] == {
+        assert result["env"]["session"] == {
             "name": "workspace-a1",
             "alias": "[作業] タグnotesカラム追加",
             "alias_collision": False,
@@ -1517,12 +1444,11 @@ class TestCheckInSessionRegistry:
         """呼び出し元のbridge session idが取れない場合、check_in本体は正常応答する"""
         monkeypatch.setattr(session_identity, "get_caller_session_id", lambda: None)
 
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert result["session"] == {"registered": False, "reason": "cli_unresolved"}
-        assert "activity" in result
-        assert "summary" in result
+        assert result["env"]["session"] == {"registered": False, "reason": "cli_unresolved"}
+        assert "activity" in result["anchor"]
 
     def test_registry_exception_does_not_fail_check_in(self, activity_id, monkeypatch, tmp_path):
         """レジストリ更新側が例外を投げても、check_in本体は成功応答を返す"""
@@ -1542,14 +1468,14 @@ class TestCheckInSessionRegistry:
             str(blocked_parent / "session_aliases.json"),
         )
 
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert result["session"] == {"registered": False, "reason": "cli_unresolved"}
-        assert "activity" in result
+        assert result["env"]["session"] == {"registered": False, "reason": "cli_unresolved"}
+        assert "activity" in result["anchor"]
 
-    def test_collision_adds_hint_to_result(self, activity_id, monkeypatch):
-        """別セッションが同じ導出aliasを既に確保している場合、衝突用hintが追加される"""
+    def test_collision_marks_alias_collision_in_session(self, activity_id, monkeypatch):
+        """別セッションが同じ導出aliasを既に確保している場合、env.sessionに衝突が記録される"""
         self._stub_world(
             monkeypatch,
             {
@@ -1565,12 +1491,11 @@ class TestCheckInSessionRegistry:
         )
         monkeypatch.setattr(session_identity, "get_caller_session_id", lambda: "bridge-1")
 
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert result["session"]["alias_collision"] is True
-        assert result["session"]["alias"] == "[作業] タグnotesカラム追加-2"
-        assert any("衝突" in h for h in result["hints"])
+        assert result["env"]["session"]["alias_collision"] is True
+        assert result["env"]["session"]["alias"] == "[作業] タグnotesカラム追加-2"
 
     def test_add_activity_check_in_true_also_registers_session(self, temp_db, monkeypatch):
         """add_activity(check_in=True)経由でもレジストリ行が作られる
@@ -1614,7 +1539,7 @@ class TestCheckInSessionLedger:
         )
         monkeypatch.setattr(session_identity, "get_caller_session_id", lambda: "bridge-1")
 
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
         row = self._fetch_session("bridge-1")
@@ -1624,7 +1549,7 @@ class TestCheckInSessionLedger:
     def test_no_bridge_id_does_not_fail_check_in(self, activity_id, monkeypatch):
         monkeypatch.setattr(session_identity, "get_caller_session_id", lambda: None)
 
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
 
@@ -1635,43 +1560,36 @@ class TestCheckInSessionLedger:
         monkeypatch.setattr(session_identity, "get_caller_session_id", lambda: "bridge-1")
         monkeypatch.setattr(session_ledger_service, "record_checkin", boom)
 
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert "summary" in result
+        assert "activity" in result["anchor"]
 
 
 class TestCheckInGoalBlock:
-    """check_inのgoalブロック配線の統合テスト。
+    """checkin_tier_service.collect_and_assembleのgoalブロック配線の統合テスト。
 
     ラベル・次の一手の導出ロジック自体はtest_goal_service_derive.pyが担保するため、
-    ここではcheckin_serviceがgoal_serviceを正しく呼び出し、活配置・例外処理・
+    ここではcollect_and_assembleがgoal_serviceを正しく呼び出し、活配置・例外処理・
     再オープンとの整合を保っているかだけを検証する。
     """
 
-    def test_goal_key_placed_right_after_activity(self, activity_id):
-        """goalキーはactivityキーの直後に置かれる（06_ツールIFとcheck_in注入.mdの取り決め）"""
-        result = check_in(activity_id)
-
-        keys = list(result.keys())
-        assert keys.index("goal") == keys.index("activity") + 1
-
     def test_undefined_when_no_goal_linked(self, activity_id):
         """紐づけ行が無いactivityはlabel=undefinedを返す"""
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
-        assert result["goal"]["label"] == "undefined"
-        assert result["goal"]["next"]["rule"] == 4
-        assert result["goal"]["next"]["actor"] == "claude"
+        assert result["control"]["goal"]["label"] == "undefined"
+        assert result["control"]["goal"]["next"]["rule"] == 4
+        assert result["control"]["goal"]["next"]["actor"] == "claude"
 
     def test_not_needed_when_waived(self, activity_id):
         """不要印を付けたactivityはlabel=not_needed・reasonを返す"""
         gs.set_goal(activity_id, {"waiver": "常駐タスクのため終了条件なし"})
 
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
-        assert result["goal"]["label"] == "not_needed"
-        assert result["goal"]["reason"] == "常駐タスクのため終了条件なし"
+        assert result["control"]["goal"]["label"] == "not_needed"
+        assert result["control"]["goal"]["reason"] == "常駐タスクのため終了条件なし"
 
     def test_goal_linked_active_label_and_next(self, activity_id):
         """goal付きのactivityはlabel=activeとgoalの本体（handle/statement/next）を返す"""
@@ -1686,9 +1604,9 @@ class TestCheckInGoalBlock:
             },
         )
 
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
-        goal = result["goal"]
+        goal = result["control"]["goal"]
         assert goal["label"] == "active"
         assert goal["handle"] == "checkin-wiring-g1"
         assert goal["statement"] == "終わりの一文"
@@ -1724,11 +1642,11 @@ class TestCheckInGoalBlock:
         assert row_before["status"] == "completed"
         assert row_before["closed_by"] == "goal_judge"
 
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
-        assert result["activity"]["status"] == "in_progress"
-        assert result["goal"]["label"] == "closed"
-        assert result["goal"]["next"]["rule"] == 5
+        assert result["anchor"]["activity"]["status"] == "in_progress"
+        assert result["control"]["goal"]["label"] == "closed"
+        assert result["control"]["goal"]["next"]["rule"] == 5
 
         conn = get_connection()
         try:
@@ -1750,29 +1668,28 @@ class TestCheckInGoalBlock:
             lambda conn, aid: (_ for _ in ()).throw(RuntimeError("boom")),
         )
 
-        result = check_in(activity_id)
+        result = collect_and_assemble(activity_id)
 
         assert "error" not in result
-        assert result["goal"] == {
+        assert result["control"]["goal"] == {
             "error": {
                 "code": "DATABASE_ERROR",
                 "message": "goal ブロックを組み立てられなかった",
             }
         }
-        assert "activity" in result
-        assert result["activity"]["status"] == "in_progress"
-        assert "summary" in result
+        assert "activity" in result["anchor"]
+        assert result["anchor"]["activity"]["status"] == "in_progress"
 
     def test_exception_in_goal_block_records_machine_error_signal(self, activity_id, monkeypatch):
         """goalブロック組み立ての例外は、check_inの接続を渡したrecord_signalで
-        machine_errorとして記録され、check_inのコミット後にDBへ残る（06 §4）。"""
+        machine_errorとして記録され、check_inのコミット後にDBへ残る。"""
         monkeypatch.setattr(
             gs,
             "build_goal_block_for_activity",
             lambda conn, aid: (_ for _ in ()).throw(RuntimeError("boom")),
         )
 
-        check_in(activity_id)
+        collect_and_assemble(activity_id)
 
         conn = get_connection()
         try:
@@ -1790,7 +1707,7 @@ class TestCheckInGoalBlock:
     ):
         """goalブロック組み立て失敗時のrecord_signalは、check_inが開いた接続を
         そのまま渡す。別接続を新たに開くcapture_signal_safeは使わない
-        （06 §4: check_inの接続が書き込みを保留していてもbusy_timeoutまで
+        （check_inの接続が書き込みを保留していてもbusy_timeoutまで
         待たないための取り決め）。同一接続の逐次実行は自分自身の保留中の
         書き込みでは絶対にブロックしないため、この配線自体が待ちなしを保証する。
         """
@@ -1801,7 +1718,7 @@ class TestCheckInGoalBlock:
         )
 
         connections_created = []
-        original_get_connection = checkin_service.get_connection
+        original_get_connection = checkin_tier_service.get_connection
 
         def spy_get_connection(*args, **kwargs):
             conn = original_get_connection(*args, **kwargs)
@@ -1809,16 +1726,16 @@ class TestCheckInGoalBlock:
             return conn
 
         signal_conns = []
-        original_record_signal = checkin_service.record_signal
+        original_record_signal = checkin_tier_service.record_signal
 
         def spy_record_signal(*args, **kwargs):
             signal_conns.append(kwargs.get("conn"))
             return original_record_signal(*args, **kwargs)
 
-        monkeypatch.setattr(checkin_service, "get_connection", spy_get_connection)
-        monkeypatch.setattr(checkin_service, "record_signal", spy_record_signal)
+        monkeypatch.setattr(checkin_tier_service, "get_connection", spy_get_connection)
+        monkeypatch.setattr(checkin_tier_service, "record_signal", spy_record_signal)
 
-        check_in(activity_id)
+        collect_and_assemble(activity_id)
 
         assert len(signal_conns) == 1
         # check_in自身が開いた接続はこの1本だけであり、record_signalに渡された
@@ -1828,8 +1745,7 @@ class TestCheckInGoalBlock:
 
     def test_goal_block_folds_to_budget_without_truncating_statement_or_conditions(self, activity_id):
         """goalブロックが目安の800字を超えるとき、remainingが件数表示に畳まれる。
-        goalのstatementと畳まれていない条件文は切り詰められない
-        （06_ツールIFとcheck_in注入.md「分量」）。"""
+        goalのstatementと畳まれていない条件文は切り詰められない。"""
         long_statement = "終わりの一文を長くする" * 40  # 480字程度
         long_condition_texts = [f"条件{i}を長くするための繰り返し文言" * 6 for i in range(5)]
         set_result = gs.set_goal(
@@ -1846,8 +1762,8 @@ class TestCheckInGoalBlock:
         )
         assert "error" not in set_result
 
-        result = check_in(activity_id)
-        goal = result["goal"]
+        result = collect_and_assemble(activity_id)
+        goal = result["control"]["goal"]
 
         # 折り畳み前提のデータ量になっていること自体を確かめる（前提の自己検証）
         assert len(json.dumps(goal, ensure_ascii=False)) <= 800 or isinstance(goal.get("remaining"), str)

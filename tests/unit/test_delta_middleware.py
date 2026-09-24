@@ -534,11 +534,12 @@ async def test_no_identity_resolved_skips_notification_and_does_not_touch_waterm
 
 
 # ---------------------------------------------------------------------------
-# 応答の形契約テスト: checkin_service.check_in（サービス層の生の戻り値）ではなく
-# main.check_in / main.add_activity という「本物のツール」の戻り値を middleware に
-# 通す。main側でflavor適用と全体予算（response_budget.apply_budget）が追加で
-# かかるため、上のテスト群（checkin_serviceを直接呼んで偽装したToolResult）だけでは
-# 形の変化を検出できない。checkin_scopeがこの2つの実ツール経路の応答からも
+# 応答の形契約テスト: checkin_tier_service.collect_and_assemble（サービス層の生の
+# 戻り値）ではなく main.check_in / main.add_activity という「本物のツール」の
+# 戻り値を middleware に通す。main側でflavor適用と全体予算
+# （response_budget.apply_budget）が追加でかかるため、上のテスト群
+# （collect_and_assembleを直接呼んで偽装したToolResult）だけでは形の変化を
+# 検出できない。checkin_scopeがこの2つの実ツール経路の応答からも
 # 正しくscopeを読めることを保証する。
 # ---------------------------------------------------------------------------
 
