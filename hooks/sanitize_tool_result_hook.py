@@ -50,7 +50,7 @@ DEFAULT_DB_PATH = Path.home() / ".claude" / ".claude-code-memory" / "discussion.
 _REPO_PROJECT_NAMES = ("claude-code-memory", "calm")
 
 
-def _is_in_cc_memory_repo(cwd: str | None) -> bool:
+def _is_in_calm_repo(cwd: str | None) -> bool:
     """cwd から上方向に pyproject.toml を探し name が _REPO_PROJECT_NAMES に含まれれば True。
 
     最初に見つかった pyproject.toml の name が一致しない場合は False (別プロジェクト)。
@@ -122,7 +122,7 @@ def main() -> int:
             return 0
         cwd = data.get("cwd", "")
         is_subagent_call = bool(data.get("agent_type"))
-        if not is_subagent_call and _is_in_cc_memory_repo(cwd):
+        if not is_subagent_call and _is_in_calm_repo(cwd):
             return 0
         tool_response = data.get("tool_response", {})
         if isinstance(tool_response, dict):

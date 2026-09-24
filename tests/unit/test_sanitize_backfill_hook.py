@@ -320,7 +320,7 @@ def test_case_05_non_tool_result_entries_untouched(fixture_db, state_dir, tmp_pa
 # ---------------------------------------------------------------------------
 
 
-def test_case_06_non_cc_memory_tool_result_skipped(fixture_db, state_dir, tmp_path):
+def test_case_06_non_calm_tool_result_skipped(fixture_db, state_dir, tmp_path):
     transcript = tmp_path / "transcript.jsonl"
     entries = [
         _make_assistant_entry("toolu_read", tool_name="Read"),
@@ -531,11 +531,12 @@ def test_case_11_env_disable_short_circuits(fixture_db, state_dir, tmp_path, mon
 # ---------------------------------------------------------------------------
 
 
-def test_case_12_cwd_in_cc_memory_repo_skipped(fixture_db, state_dir, tmp_path):
-    repo_root = tmp_path / "cc-memory-repo"
+@pytest.mark.parametrize("project_name", ["calm", "claude-code-memory"])
+def test_case_12_cwd_in_calm_repo_skipped(fixture_db, state_dir, tmp_path, project_name):
+    repo_root = tmp_path / "calm-repo"
     repo_root.mkdir()
     (repo_root / "pyproject.toml").write_text(
-        '[project]\nname = "claude-code-memory"\nversion = "0.1.0"\n'
+        f'[project]\nname = "{project_name}"\nversion = "0.1.0"\n'
     )
     nested = repo_root / "src" / "deep"
     nested.mkdir(parents=True)

@@ -55,7 +55,7 @@ _MAX_CONSECUTIVE_FAILURES = 3
 # ---------------------------------------------------------------------------
 
 
-def _is_in_cc_memory_repo(cwd: str | None) -> bool:
+def _is_in_calm_repo(cwd: str | None) -> bool:
     """cwd から上方向に pyproject.toml を探し name が _REPO_PROJECT_NAMES に含まれれば True。
 
     最初に見つかった pyproject.toml の name が一致しない場合は False (別プロジェクト)。
@@ -363,7 +363,7 @@ def main() -> int:
 
         if not transcript_path:
             return 0
-        if _is_in_cc_memory_repo(cwd):
+        if _is_in_calm_repo(cwd):
             return 0
 
         path = Path(transcript_path).expanduser()
