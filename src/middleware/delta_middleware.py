@@ -55,6 +55,13 @@ _ID_KEYS: dict[str, str] = {
     "material": "material_id",
 }
 
+# エンティティ種別 → delta_service.compute_deltaが返すリストのキー名
+_DELTA_LIST_KEYS: dict[str, str] = {
+    "decision": "new_decisions",
+    "log": "new_logs",
+    "material": "new_materials",
+}
+
 
 class DeltaNotificationMiddleware(Middleware):
     """check-in以降の関連topicスコープの鮮度差分をツールレスポンスに注入する。
@@ -140,7 +147,15 @@ def _handle_check_in(session_key: str, result: Any, nested_key: str | None = Non
 
 
 def _handle_write(session_key: str, tool_name: str, result: Any) -> None:
-    """write系ツールの自己通知抑制: 自分が作成したid（scope内のみ）でwatermarkを前進する。"""
+    """write系ツールの自己通知抑制: 自分の書き込みでscope内に未配信の差分があれば
+    先に注入してから、watermarkを実際のDB上のmaxまで前進する。
+
+    自分が作成したidだけでwatermarkを進めると、直前に他セッションがscope内に
+    書いた未配信の項目（idが自分の新規idより小さいもの）が、以降のcompute_delta
+    の下限を追い越されて黙って読み飛ばされる。先に compute_delta で「今のwatermark
+    以降の全件」を取得し、その中から自分が今回作成したid（＝自己通知抑制の対象）
+    だけを除いて注入することで、他セッション分を取りこぼさない。
+    """
     with _watermarks_lock:
         wm = _watermarks.get(session_key)
     if wm is None:
@@ -165,17 +180,32 @@ def _handle_write(session_key: str, tool_name: str, result: Any) -> None:
     if not created_ids:
         return
 
-    # _scoped_idsも純relationalクエリのみ（vec不要）。理由は_handle_check_in参照。
+    # _scoped_ids・compute_deltaはどちらも純relationalクエリのみ（vec不要）。
+    # 理由は_handle_check_in参照。
     with contextlib.closing(get_connection(load_vec=False)) as conn:
         scoped_ids = _scoped_ids(conn, entity_type, created_ids, wm["topic_ids"], wm["activity_id"])
-    if not scoped_ids:
-        return
+        if not scoped_ids:
+            # scope外への自己書き込みは自己通知抑制の対象にならないため、
+            # ここでは何もしない（他セッション分の配達は次のツール呼び出しに委ねる）
+            return
+        delta = delta_service.compute_delta(conn, wm["topic_ids"], wm["activity_id"], wm)
+
+    # 注入する内容だけ、自分が今回作成したid（＝この呼び出し自身の自己通知抑制対象）を
+    # 取り除く。他の2種別（例: decisionを書いた呼び出しでのlog/material）はこの
+    # 書き込みでは作られていないため、丸ごと他セッション分として扱ってよい。
+    # watermarkの前進にはフィルタ前のdeltaを使う（自分のid分もまとめて前進させる。
+    # _handle_otherと同じ_advance_watermarkを共有する）。
+    list_key = _DELTA_LIST_KEYS[entity_type]
+    notify_delta = {**delta, list_key: [item for item in delta[list_key] if item["id"] not in scoped_ids]}
+
+    if notify_delta["new_decisions"] or notify_delta["new_logs"] or notify_delta["new_materials"]:
+        _inject(result, notify_delta)
 
     with _watermarks_lock:
         current = _watermarks.get(session_key)
         if current is None:
             return
-        current[id_key] = max(current.get(id_key, 0), max(scoped_ids))
+        _advance_watermark(current, delta)
 
 
 def _handle_other(session_key: str, result: Any) -> None:
@@ -202,18 +232,23 @@ def _handle_other(session_key: str, result: Any) -> None:
         current = _watermarks.get(session_key)
         if current is None:
             return
-        if delta["new_decisions"]:
-            current["decision_id"] = max(
-                current["decision_id"], max(d["id"] for d in delta["new_decisions"])
-            )
-        if delta["new_logs"]:
-            current["log_id"] = max(
-                current["log_id"], max(l["id"] for l in delta["new_logs"])
-            )
-        if delta["new_materials"]:
-            current["material_id"] = max(
-                current["material_id"], max(m["id"] for m in delta["new_materials"])
-            )
+        _advance_watermark(current, delta)
+
+
+def _advance_watermark(current: dict, delta: dict) -> None:
+    """deltaに含まれる各種別のmax idまでwatermarkを前進する（後退はしない）。"""
+    if delta["new_decisions"]:
+        current["decision_id"] = max(
+            current["decision_id"], max(d["id"] for d in delta["new_decisions"])
+        )
+    if delta["new_logs"]:
+        current["log_id"] = max(
+            current["log_id"], max(l["id"] for l in delta["new_logs"])
+        )
+    if delta["new_materials"]:
+        current["material_id"] = max(
+            current["material_id"], max(m["id"] for m in delta["new_materials"])
+        )
 
 
 def _scoped_ids(

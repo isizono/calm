@@ -373,6 +373,99 @@ async def test_session_without_checkin_gets_no_notification(scope, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_self_write_does_not_drop_pending_delta_from_other_session(scope, monkeypatch):
+    """Bの未配信の書き込みが、Aの自己書き込みで黙って読み飛ばされないことを確認する。
+
+    (a) Aがcheck_in
+    (b) Bがscope内にdecisionを書く（Aへはまだ未配信）
+    (c) Aが自分の書き込みをscope内に行う。自己通知抑制の対象だが、watermarkを
+        自分のidまで一気に進める前に、Bの分をこの呼び出し自身の応答で配る
+        （でなければ以降のcompute_deltaの下限を追い越され、二度と拾えなくなる）
+    (d) 直後の別呼び出しでは、Bの決定は再配信されない（announce-once）。
+        自分の決定も一貫して届かない（自己通知抑制）
+    """
+    tid, aid = scope
+    middleware = DeltaNotificationMiddleware()
+
+    _set_caller(monkeypatch, "caller-A")
+    checkin_result = check_in(aid)
+    await middleware.on_call_tool(
+        _make_context("check_in"),
+        _call_next_returning(ToolResult(structured_content=checkin_result)),
+    )
+
+    # (b) 別セッションBがscope内にdecisionを書く。Aはまだこれを読みにいっていない
+    b_decision = add_decision("Bの決定（未配信）", "reason", topic_id=tid)
+
+    # (c) Aが自分の決定を書く。b_decisionより大きいidが振られる
+    own_write_result = add_decisions([{"topic_id": tid, "decision": "自分の決定", "reason": "r"}])
+    own_decision_id = own_write_result["created"][0]["decision_id"]
+    assert own_decision_id > b_decision["decision_id"]
+    write_result = await middleware.on_call_tool(
+        _make_context("add_decisions"),
+        _call_next_returning(ToolResult(structured_content=own_write_result)),
+    )
+    assert write_result.structured_content["delta"]["new_decisions"] == [
+        {"id": b_decision["decision_id"], "title": "Bの決定（未配信）"}
+    ]
+
+    # (d) 直後の呼び出しでは何も再配信されない
+    result = await middleware.on_call_tool(
+        _make_context("get_topics"),
+        _call_next_returning(_noop_tool_result()),
+    )
+    assert len(result.content) == 1
+    assert "delta" not in (result.structured_content or {})
+
+
+@pytest.mark.asyncio
+async def test_self_write_does_not_drop_pending_delta_from_other_session_for_materials(scope, monkeypatch):
+    """test_self_write_does_not_drop_pending_delta_from_other_sessionのmaterial版。
+
+    add_materialはcreated配列を持たずtop-levelにmaterial_idを直接返す特殊な応答形状
+    のため、_handle_writeのid抽出分岐（171-174行目）が decision/log とは別コードパス
+    になる。取りこぼし修正がこの分岐でも効くことを確認する。
+    """
+    tid, aid = scope
+    middleware = DeltaNotificationMiddleware()
+
+    _set_caller(monkeypatch, "caller-A")
+    checkin_result = check_in(aid)
+    await middleware.on_call_tool(
+        _make_context("check_in"),
+        _call_next_returning(ToolResult(structured_content=checkin_result)),
+    )
+
+    # (b) 別セッションBがscope内にmaterialを書く。Aはまだこれを読みにいっていない
+    b_material = add_material(
+        title="Bのmaterial（未配信）", content="x", tags=["domain:test"], source="test",
+        related=[{"type": "topic", "ids": [tid]}],
+    )
+
+    # (c) Aが自分のmaterialを書く。b_materialより大きいidが振られる
+    own_write_result = add_material(
+        title="自分のmaterial", content="x", tags=["domain:test"], source="test",
+        related=[{"type": "topic", "ids": [tid]}],
+    )
+    assert own_write_result["material_id"] > b_material["material_id"]
+    write_result = await middleware.on_call_tool(
+        _make_context("add_material"),
+        _call_next_returning(ToolResult(structured_content=own_write_result)),
+    )
+    assert write_result.structured_content["delta"]["new_materials"] == [
+        {"id": b_material["material_id"], "title": "Bのmaterial（未配信）"}
+    ]
+
+    # (d) 直後の呼び出しでは何も再配信されない
+    result = await middleware.on_call_tool(
+        _make_context("get_topics"),
+        _call_next_returning(_noop_tool_result()),
+    )
+    assert len(result.content) == 1
+    assert "delta" not in (result.structured_content or {})
+
+
+@pytest.mark.asyncio
 async def test_out_of_scope_write_does_not_suppress_future_in_scope_deltas(temp_db, monkeypatch):
     """scope外topicへの自己書き込みはwatermarkを進めず、後続の別セッションの
     scope内書き込みも正しく検出され続けることを確認する。
