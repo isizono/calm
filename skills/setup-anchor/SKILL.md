@@ -17,7 +17,7 @@ description: 合意事項のanchor（検証先＝どこを見れば正しさを�
 
 | 型 | 検証先の書き方 |
 |---|---|
-| 実装済 | 該当コードのファイル+関数（例: `src/services/checkin_service.py:check_in`）|
+| 実装済 | 該当コードのファイル+関数（例: `src/services/checkin_tier_service.py:collect_and_assemble`）|
 | 外部仕様準拠 | doc URL |
 | 未実装 | 周辺の実装済みコード＋関連decisionの前後関係（例: 「`pin_service.py:add_pin` の整合を見る」）|
 | 事実調査 | material内の一次ソース（例: `materialの調査結果`）|

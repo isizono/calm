@@ -102,7 +102,7 @@ askは離席中・セッション跨ぎ限定です。その場で答えられ�
 
 ## 躓いたら知見を残す
 
-同じところで躓いたら、write_feedback_entryで知見を書くか、既存エントリにadd_feedback_noteでノートを足してください。発話・ツール失敗・実行直前のタイミングで、後のセッションの自分に配達されます。
+躓いたら、get_feedback_entriesで既存を確かめ、あればadd_feedback_noteで躓きを足し、無ければwrite_feedback_entryで知見を書いてください。人に直されたときはcalm:remember skillで置き場を決めます。発話・ツール失敗・実行直前に自分へ配達されます。
 
 ---
 
@@ -2970,7 +2970,8 @@ def add_feedback_note(name: str, kind: Literal["stumble", "note"], body: str) ->
         body: ノート本文(500字以内)
 
     Returns:
-        成功時: {"ok": true, "note": {"kind","body","created_at"}, "read_mark": int}
+        成功時: {"ok": true, "note": {"kind","body","created_at"}, "read_mark": int,
+            "hint": str(任意。未処理の躓きが3件以上のときだけ付く)}
         失敗時: {"ok": false, "error": {"code": "VALIDATION_ERROR"|"NOT_FOUND"
             |"DATABASE_ERROR", "message", "fix"}}
     """

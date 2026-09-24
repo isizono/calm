@@ -40,7 +40,7 @@ graph TB
     subgraph Flow["フロー層 / 働き方"]
         Hooks["hooks/<br/>SessionStart/Stop/UserPromptSubmit/<br/>PreToolUse/PostToolUse/MessageDisplay"]
         Skills["skills/<br/>check-in/sync-memory/<br/>recompose 他"]
-        CheckinService["checkin_service"]
+        CheckinService["checkin_tier_service"]
         HintService["hint_service<br/>hint/recommendation"]
         HookState["hooks/hook_state.py<br/>state files + events.jsonl"]
     end
@@ -228,11 +228,12 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 - `skills/project-setup` / `skills/coding-project-setup`: 新規domainの知識フレームセットアップ
 - `skills/restart`: MCPサーバーの強制再起動
 - `skills/rule-placement`: 一般化ルールの配信経路（habits/tag-notes/rules等）判定
+- `skills/peer-nudge`: セッション台帳の宛先候補へSendMessageで直接話しかけるときの作法（担当確認手順・配慮・返事待ちの扱い）
 
 
 ### 4.3 フロー層 service
 
-- `src/services/checkin_tier_service.py`: check-inの本体実装。アクティビティに紐づく tag-notes・資材カタログ・pinned・関連decisions・recent logs を anchor/control/context/catalog/env の5枠に分けて一括取得し、coverage と recompose hints を計算する (recompose hint は HintService 経由)。`src/services/checkin_service.py` は書き直し前の実装で、旧形の比較用テストからのみ呼ばれる
+- `src/services/checkin_tier_service.py`: check-inの本体実装。アクティビティに紐づく tag-notes・資材カタログ・pinned・関連decisions・recent logs を anchor/control/context/catalog/env の5枠に分けて一括取得し、coverage と recompose hints を計算する (recompose hint は HintService 経由)。`src/services/checkin_service.py` はこのモジュールと差分通知middlewareが共有するクエリヘルパーと`checkin_scope`のみを持つ
 - `src/services/hint_service.py`: hint一元化（`get_hints(scope, target_id) -> list[Hint]`）。recompose_bootstrap / recompose_delta / logs_sparse / direction_overflow / activity_cleanup / notes_over_budget を統一フォーマット（`Hint`型）で返す。follow_up_after_decision / record_missingはevents.jsonl状態が必要なため本module自体では判定せず、Stop hookが生成しつつtype名だけ本moduleに合わせて統一する。delivery_hint で immediate (check_in 同期注入) と deferred (Stop hook → events.jsonl → UserPromptSubmit 注入) を分岐する
 - `src/services/habit_service.py`: habitのCRUD。書き込み後は`habit_projection`経由で`~/.claude/rules`配下の自動生成ファイルへ投影する。`trigger_mode='always'`は全文、`'intelligently'`はタイトルのみのマニフェストとして投影される
 
@@ -345,7 +346,7 @@ graph LR
 3. **circular import懸念**: `src/main.py` から services を読み、 services 同士の相互参照や、tag_serviceとtag_analysis_serviceの分担境界など整理余地がある（具体特定は未実施）
 4. **プロトコル層が薄い**: 独立した型/スキーマ定義モジュールがなく、エンティティ型はDBスキーマと各serviceの返却dictで表現される。型レベル規律が弱い
 5. **retract連鎖の未完**: `retract_service` が論理削除を立てるが、search_index物理クリーンアップなし、material/topic/activityにretracted_at列なし、関連pin/relationの扱いが未統一（`docs/spec-v0.md` §2.2）
-6. **HintService単一窓口の不在**: nudge発火源（hooks/各種、harness_service、checkin_serviceのrecompose hints、tag_service経由のtag-notes）が並走しており、しきい値・状態管理がバラバラ。recompose系・logs_sparse系・direction_overflow系・activity_cleanup系・notes_over_budget系のhintは`hint_service`（`get_hints`/`get_hints_with_conn`）に統一済み（#422、2026-06-21）。ただしfollow_up_after_decision/record_missingはevents.jsonl状態が必要なため引き続きStop hookが個別生成しており、nudge発火源の完全な一元化には至っていない
+6. **HintService単一窓口の不在**: nudge発火源（hooks/各種、harness_service、checkin_tier_serviceのrecompose hints、tag_service経由のtag-notes）が並走しており、しきい値・状態管理がバラバラ。recompose系・logs_sparse系・direction_overflow系・activity_cleanup系・notes_over_budget系のhintは`hint_service`（`get_hints`/`get_hints_with_conn`）に統一済み（#422、2026-06-21）。ただしfollow_up_after_decision/record_missingはevents.jsonl状態が必要なため引き続きStop hookが個別生成しており、nudge発火源の完全な一元化には至っていない
 7. **効果測定基盤の不在**: 検索のスコアリング・nudgeの効果・タグ付与の精度を測定する仕組みがない（`docs/spec-v0.md` §6 T-D）。search_telemetry導入が処方箋候補
 
 各課題の詳細・処方箋候補は5次元統合レポート本文（cc-memory material、要参照）と `docs/spec-v0.md` §6 横断テーマを参照のこと。

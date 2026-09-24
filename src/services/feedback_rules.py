@@ -20,6 +20,43 @@ MAX_EVAL_TEXT_LEN = 20_000
 _VALID_OPS = ("regex", "len_gt")
 _VALID_TIMINGS = ("utterance", "tool_fail", "pre_tool")
 
+# entryの行を`e`として持つクエリからの相関サブクエリとして書く
+# （呼び出し側は必ず `FROM feedback_entries e` で問い合わせること）。
+# 「最後のnoteより後のstumble件数」を1回のSELECTで数える。
+PENDING_STUMBLES_SQL = (
+    "(SELECT COUNT(*) FROM feedback_notes n"
+    " WHERE n.entry_id = e.id AND n.kind = 'stumble'"
+    " AND n.id > COALESCE((SELECT MAX(m.id) FROM feedback_notes m"
+    " WHERE m.entry_id = e.id AND m.kind = 'note'), 0))"
+)
+
+REVIEW_EVERY = 10
+PROMOTE_AT = 3
+
+_REVIEW_HINT = (
+    "  見直し時期: 場面に合わなければwrite_feedback_entryで条件を直すか消す"
+    "(read_markはget_feedback_entriesで取る)"
+)
+
+
+def maintenance_hint(delivered_n: int, pending_stumbles: int) -> str:
+    """配達文に添える手入れの行を返す。
+
+    delivered_n: 今回の配達が何回目か（= delivered_count + 1）。配達でない呼び出しは0。
+    pending_stumbles: 最後のnoteより後のstumble件数。
+    戻り値: 見直しの行 → 格上げの行の順に"\\n"で連結。先頭と末尾に改行は付けない。
+            どちらも無ければ""。
+    """
+    lines = []
+    if delivered_n > 0 and delivered_n % REVIEW_EVERY == 0:
+        lines.append(_REVIEW_HINT)
+    if pending_stumbles >= PROMOTE_AT:
+        lines.append(
+            f"  未処理の躓き{pending_stumbles}件: "
+            "条件修正・block化・rules/habits格上げ(要承認)を検討し、結果をnoteに残す"
+        )
+    return "\n".join(lines)
+
 
 class ConditionError(ValueError):
     """condition_jsonの形式・内容が不正なときに送出する。"""

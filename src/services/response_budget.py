@@ -1,8 +1,8 @@
 """check_in応答の全体予算切り詰めモジュール。
 
 入力は応答dictと方針(BudgetPolicy)の2つだけであり、DBにもcheck_inの組み立てにも
-触れない。書き直し前後どちらのcheck_in応答形にも、対応するpolicyを渡すことで
-同じ手順を適用できる（policy自体は形を持つ側=checkin_serviceが定数として持つ）。
+触れない。応答の形に対応するpolicyを渡すことで同じ手順を適用できる
+（policy自体は形を持つ側=checkin_tier_serviceが定数として持つ）。
 
 字数の数え方はlen(json.dumps(response, ensure_ascii=False))で統一する
 （config.PRECEDENT_RESPONSE_CHARS_MAXが使っている「JSON文字列化後の実測文字数」

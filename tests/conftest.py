@@ -136,6 +136,20 @@ def _synchronous_fetch_telemetry(monkeypatch):
     monkeypatch.setattr(search_service, "_record_fetch_telemetry_async", synchronous_wrapper)
 
 
+@pytest.fixture(autouse=True)
+def _no_implicit_embedding_backfill(monkeypatch):
+    """embeddingサーバー接続成立時に自動起動するバックフィルスレッドをテストでは起動させない。
+
+    このスレッドはプロセスで1回だけ起動されてjoinされず、DBパスを接続のたびに
+    環境変数から解決する。起動したテストの終了後も生き残り、temp_dbが切り替えた
+    次のテストのDBへ書き込むため、そのテストの書き込みが database is locked で
+    失敗する。バックフィル自体を検証するテストは _backfill_done=False を
+    monkeypatchで明示して起動させる。
+    """
+    import src.services.embedding_service as emb
+    monkeypatch.setattr(emb, "_backfill_done", True)
+
+
 @pytest.fixture
 def disable_embedding(monkeypatch):
     """embeddingサービスを無効化する共通フィクスチャ。
@@ -188,8 +202,7 @@ def temp_db(_temp_db_template):
     コピーして構築コストを避ける。DISCUSSION_DB_PATH 環境変数を一時パスに
     切り替える。テスト終了時にtmpdirごと破棄される。
     """
-    from src.services.checkin_service import _greeted_sessions
-    from src.services.checkin_tier_service import _greeted_sessions as _tier_greeted_sessions
+    from src.services.checkin_tier_service import _greeted_sessions
     from src.services.tag_service import _injected_tags
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
@@ -201,7 +214,6 @@ def temp_db(_temp_db_template):
         os.environ["DISCUSSION_DB_PATH"] = db_path
         _injected_tags.clear()
         _greeted_sessions.clear()
-        _tier_greeted_sessions.clear()
         yield db_path
         if "DISCUSSION_DB_PATH" in os.environ:
             del os.environ["DISCUSSION_DB_PATH"]
