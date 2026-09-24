@@ -28,7 +28,7 @@ from hooks.recorder_watch import (
     _last_uuid_up_to,
     _read_lines,
     _terminate,
-    _write_cursor,
+    _write_json_atomic,
     run_dir_for,
     tmux_session_name,
 )
@@ -161,11 +161,7 @@ def build_settings(calm_root: Path, run_dir: Path) -> dict:
 
 def write_settings_json(run_dir: Path, calm_root: Path) -> Path:
     path = run_dir / ".claude" / "settings.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(build_settings(calm_root, run_dir), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    _write_json_atomic(path, build_settings(calm_root, run_dir), indent=2)
     return path
 
 
@@ -180,10 +176,7 @@ def build_mcp_config(calm_root: Path) -> dict:
 
 def write_mcp_json(run_dir: Path, calm_root: Path) -> Path:
     path = run_dir / "mcp.json"
-    path.write_text(
-        json.dumps(build_mcp_config(calm_root), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    _write_json_atomic(path, build_mcp_config(calm_root), indent=2)
     return path
 
 
@@ -217,7 +210,7 @@ def update_run_json(
         "main_transcript": str(main_transcript),
         "recorder_sids": recorder_sids,
     }
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_json_atomic(path, data, indent=2)
     return data
 
 
@@ -236,7 +229,7 @@ def ensure_cursor(run_dir: Path, main_transcript: Path, *, from_start: bool) -> 
         lines, end_offset = _read_lines(main_transcript, 0)
         cursor["byte_offset"] = end_offset
         cursor["last_uuid"] = _last_uuid_up_to(lines, end_offset)
-    _write_cursor(cursor_path, cursor)
+    _write_json_atomic(cursor_path, cursor)
 
 
 # ===================================================================

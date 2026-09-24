@@ -107,9 +107,13 @@ def tmux_session_name(main_sid: str) -> str:
     """main_sidに対応するtmuxセッション名を返す。
 
     起動側（セッションの立ち上げ）と終了処理（kill-session）の両方が
-    同じ規則を使う必要があるため、ここに一本化する。
+    同じ規則を使う必要があるため、ここに一本化する。main_sidは切り詰めず
+    全体を使う（先頭8文字だけでは衝突しうる）。tmuxはセッション名の中の
+    `:`と`.`をターゲット指定（session:window.pane）の区切り文字として
+    解釈するため、`_`に置き換える。
     """
-    return f"calm-rec-{main_sid[:8]}"
+    safe = main_sid.replace(":", "_").replace(".", "_")
+    return f"calm-rec-{safe}"
 
 
 # ===================================================================
@@ -394,12 +398,18 @@ def _load_cursor(path: Path) -> dict:
     return cursor
 
 
-def _write_cursor(path: Path, cursor: dict) -> None:
+def _write_json_atomic(path: Path, data: dict, *, indent: int | None = None) -> None:
+    """dataをJSONとしてpathへアトミックに書く（同ディレクトリのtempfile→os.replace）。
+
+    cursor.json・settings.json・mcp.json・run.jsonの書き込みをこれ一本に
+    集約する。並行読み取り（見張り自身のポーリング、statusコマンド等）が
+    書きかけの中身を掴まないようにするため。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(cursor, f, ensure_ascii=False)
+            json.dump(data, f, ensure_ascii=False, indent=indent)
         os.replace(tmp_path, path)
     except OSError:
         Path(tmp_path).unlink(missing_ok=True)
@@ -486,7 +496,7 @@ def _ensure_activity_id_at_cursor(cursor: dict, main_transcript: Path, cursor_pa
     activity_id = extract_last_activity_id(prior_entries)
     if activity_id is not None:
         cursor["activity_id_at_cursor"] = activity_id
-        _write_cursor(cursor_path, cursor)
+        _write_json_atomic(cursor_path, cursor)
 
 
 def _terminate(run_dir: Path, main_sid: str) -> None:
@@ -499,7 +509,7 @@ def _terminate(run_dir: Path, main_sid: str) -> None:
 
 
 def _spawn_detached_restart(
-    calm_root: Path, main_sid: str, main_pid: int, main_transcript: Path
+    calm_root: Path, run_dir: Path, main_sid: str, main_pid: int, main_transcript: Path
 ) -> None:
     """記録役の立て直し（stop→start）を、切り離したプロセスとして起動する。
 
@@ -510,20 +520,23 @@ def _spawn_detached_restart(
     （`scripts/recorder.py restart`）に行わせ、本関数はその起動だけを行って
     すぐ戻る。切り離しプロセスには`$CLAUDE_CODE_SESSION_ID`等のセッション
     環境変数が伝わらないため、main_sid・main_pid・main_transcriptを引数で
-    明示的に渡す。
+    明示的に渡す。stdout/stderrは`run_dir/restart.log`に追記し、立て直しが
+    失敗したときに手がかりを残す（stdinはDEVNULLのまま。標準入力からの
+    確認プロンプト等に誤って答えてしまわないようにするため）。
     """
     venv_python = calm_root / ".venv" / "bin" / "python"
     recorder_script = calm_root / "scripts" / "recorder.py"
-    subprocess.Popen(
-        [
-            str(venv_python), str(recorder_script), "restart",
-            "--session-id", main_sid,
-            "--pid", str(main_pid),
-            "--transcript", str(main_transcript),
-        ],
-        start_new_session=True,
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    with open(run_dir / "restart.log", "a", encoding="utf-8") as log_fh:
+        subprocess.Popen(
+            [
+                str(venv_python), str(recorder_script), "restart",
+                "--session-id", main_sid,
+                "--pid", str(main_pid),
+                "--transcript", str(main_transcript),
+            ],
+            start_new_session=True,
+            stdin=subprocess.DEVNULL, stdout=log_fh, stderr=log_fh,
+        )
 
 
 def _read_int_env(name: str) -> int | None:
@@ -569,7 +582,7 @@ def _emit_new_chunk(
         "end_activity_id": activity_id,
         "retries": 0,
     }
-    _write_cursor(cursor_path, cursor)
+    _write_json_atomic(cursor_path, cursor)
     return _emit_chunk_message(run_dir, cursor["pending"])
 
 
@@ -589,15 +602,15 @@ def _watch(run_dir: Path, hook_input: dict, *, sleep, now) -> int:
         outcome = _resolve_pending(cursor, last_msg)
         if outcome == "done":
             cursor["chunks_since_restart"] = cursor.get("chunks_since_restart", 0) + 1
-        _write_cursor(cursor_path, cursor)
+        _write_json_atomic(cursor_path, cursor)
         if outcome == "retry":
             touch_marker(main_sid)
             return _emit_chunk_message(run_dir, cursor["pending"])
         if outcome == "done" and cursor["chunks_since_restart"] >= CHUNKS_PER_RESTART:
             cursor["chunks_since_restart"] = 0
             cursor["restart_count"] = cursor.get("restart_count", 0) + 1
-            _write_cursor(cursor_path, cursor)
-            _spawn_detached_restart(_project_root, main_sid, main_pid, main_transcript)
+            _write_json_atomic(cursor_path, cursor)
+            _spawn_detached_restart(_project_root, run_dir, main_sid, main_pid, main_transcript)
             return 0
 
     _ensure_activity_id_at_cursor(cursor, main_transcript, cursor_path)
@@ -629,7 +642,7 @@ def _watch(run_dir: Path, hook_input: dict, *, sleep, now) -> int:
             cursor["offset_lost"] = cursor.get("offset_lost", 0) + 1
             cursor["byte_offset"] = new_offset
             cursor["last_uuid"] = lost_uuid
-            _write_cursor(cursor_path, cursor)
+            _write_json_atomic(cursor_path, cursor)
             lines = []
 
         chunkable = [line for line in lines if _is_chunkable(line.entry)]

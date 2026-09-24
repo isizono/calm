@@ -8,6 +8,7 @@ write_marker/process_start_signature経由でも呼ばれるため、コマン�
 """
 import ast
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -176,8 +177,11 @@ class TestTmuxSessionName:
         が使う実装)を単一の関数に一本化している。"""
         assert svc.tmux_session_name is watch_hook.tmux_session_name
 
-    def test_uses_first_8_chars_of_sid(self):
-        assert svc.tmux_session_name("abcdefgh-ijkl") == "calm-rec-abcdefgh"
+    def test_uses_full_sid_not_truncated(self):
+        assert svc.tmux_session_name("abcdefgh-ijklmnop") == "calm-rec-abcdefgh-ijklmnop"
+
+    def test_replaces_colon_and_dot_with_underscore(self):
+        assert svc.tmux_session_name("sid.with:colons") == "calm-rec-sid_with_colons"
 
 
 # ===================================================================
@@ -291,6 +295,63 @@ class TestRunJson:
             recorder_sid="rec-2",
         )
         assert data["recorder_sids"] == ["rec-1", "rec-2"]
+
+
+class TestAtomicWrites:
+    """settings.json・mcp.json・run.jsonの書き込みが、cursor.jsonと同じ
+    tempfile→os.replaceのアトミックパターンを通ることを確かめる（見張り等の
+    並行読み取りが書きかけの中身を掴まないようにするため）。"""
+
+    def _track_replace(self, monkeypatch):
+        calls: list[tuple[str, str]] = []
+        real_replace = os.replace
+
+        def _tracking(src, dst):
+            calls.append((str(src), str(dst)))
+            real_replace(src, dst)
+
+        monkeypatch.setattr(watch_hook.os, "replace", _tracking)
+        return calls
+
+    def test_write_settings_json_goes_through_tmpfile_replace(self, calm_root, tmp_path, monkeypatch):
+        calls = self._track_replace(monkeypatch)
+        run_dir = tmp_path / "run"
+
+        path = svc.write_settings_json(run_dir, calm_root)
+
+        assert len(calls) == 1
+        tmp_src, dst = calls[0]
+        assert dst == str(path)
+        assert tmp_src != dst
+        assert Path(tmp_src).parent == path.parent
+
+    def test_write_mcp_json_goes_through_tmpfile_replace(self, calm_root, tmp_path, monkeypatch):
+        calls = self._track_replace(monkeypatch)
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+
+        path = svc.write_mcp_json(run_dir, calm_root)
+
+        assert len(calls) == 1
+        tmp_src, dst = calls[0]
+        assert dst == str(path)
+        assert tmp_src != dst
+
+    def test_update_run_json_goes_through_tmpfile_replace(self, tmp_path, monkeypatch):
+        calls = self._track_replace(monkeypatch)
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+
+        svc.update_run_json(
+            run_dir, main_sid=_MAIN_SID, main_pid=_MAIN_PID,
+            main_pid_started_at=_FAKE_PS_STARTED_AT, main_transcript=tmp_path / "t.jsonl",
+            recorder_sid="rec-1",
+        )
+
+        assert len(calls) == 1
+        tmp_src, dst = calls[0]
+        assert dst == str(run_dir / "run.json")
+        assert tmp_src != dst
 
 
 class TestEnsureCursor:
@@ -421,11 +482,18 @@ class TestStart:
     ):
         """tmuxセッションの起動自体は成功したが、pane_pid取得が失敗した場合。
         孤児セッションを残さずkill-sessionで後始末し、起動していない
-        recorder_sidをrun.jsonに残さないことを確かめる。"""
+        recorder_sidをrun.jsonに残さないことを確かめる。既存のrun.json
+        （前の記録役のrecorder_sids）がある状態から始め、失敗後もそれが
+        増えていないことを直接確かめる。"""
         monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", _MAIN_SID)
         monkeypatch.setenv("CLAUDE_PID", str(_MAIN_PID))
         transcript = tmp_path / "t.jsonl"
         _write_jsonl(transcript, [_entry("u1")])
+        run_dir = watch_hook.run_dir_for(_MAIN_SID)
+        run_dir.mkdir(parents=True)
+        (run_dir / "run.json").write_text(
+            json.dumps({"recorder_sids": ["rec-old"]}), encoding="utf-8"
+        )
 
         tmux_calls: list[list[str]] = []
 
@@ -448,9 +516,8 @@ class TestStart:
         kill_calls = [c for c in tmux_calls if c[1] == "kill-session"]
         assert kill_calls == [["tmux", "kill-session", "-t", svc.tmux_session_name(_MAIN_SID)]]
 
-        run_dir = watch_hook.run_dir_for(_MAIN_SID)
-        assert not (run_dir / "run.json").exists()
-        assert is_recorder_attached(_MAIN_SID) is False
+        run_data = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+        assert run_data["recorder_sids"] == ["rec-old"]
         assert is_recorder_attached(_MAIN_SID) is False
 
 
@@ -592,6 +659,9 @@ class TestMainCli:
         captured = capsys.readouterr()
         assert captured.out == ""
         assert "エラー" in captured.err
+        # 「エラー」を含むだけでなく、session_idを解決できなかった具体的な
+        # メッセージであることまで確かめる(他のRecorderLaunchErrorと混同しない)。
+        assert "session_idを解決できない" in captured.err
 
     def test_restart_requires_explicit_args(self):
         """restartは$CLAUDE_CODE_SESSION_ID等に頼れないため、引数は必須にする。"""

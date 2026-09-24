@@ -692,8 +692,12 @@ class TestRestartAfterNChunks:
         ]
         assert kwargs["start_new_session"] is True
         assert kwargs["stdin"] is subprocess.DEVNULL
-        assert kwargs["stdout"] is subprocess.DEVNULL
-        assert kwargs["stderr"] is subprocess.DEVNULL
+        # stdout/stderrはDEVNULLに捨てず、run_dir/restart.logへ追記する
+        # (立て直し失敗の手がかりを残すため)。
+        assert kwargs["stdout"] is not subprocess.DEVNULL
+        assert kwargs["stdout"] is kwargs["stderr"]
+        assert kwargs["stdout"].name == str(run_dir / "restart.log")
+        assert (run_dir / "restart.log").exists()
 
         cursor = _cursor(run_dir)
         assert cursor["chunks_since_restart"] == 0
