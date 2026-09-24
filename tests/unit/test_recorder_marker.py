@@ -6,15 +6,19 @@
 実際に書かれうる形のファイルでテストする。
 """
 import json
+import os
 import subprocess
+import time
 
 import pytest
 
 from hooks.hook_state import HookState
 from hooks.recorder_marker import (
+    _MARKER_FRESHNESS_SEC,
     is_recorder_attached,
     marker_path,
     remove_marker,
+    touch_marker,
     write_marker,
 )
 from src.infra import process_signature
@@ -83,6 +87,64 @@ class TestRemoveMarker:
 
     def test_no_error_when_marker_missing(self, state_dir):
         remove_marker(_SESSION_ID)  # 例外を出さない
+
+
+def _make_stale(path) -> None:
+    """目印ファイルのmtimeを鮮度期限より確実に古い時刻にする。"""
+    old_time = time.time() - _MARKER_FRESHNESS_SEC - 60
+    os.utime(path, (old_time, old_time))
+
+
+class TestTouchMarker:
+    def test_updates_mtime_to_now(self, state_dir, monkeypatch):
+        _write_marker_with_ps_output(
+            _SESSION_ID, 1234, "Thu Jul 24 09:32:04 2026\n", monkeypatch
+        )
+        path = marker_path(_SESSION_ID)
+        _make_stale(path)
+
+        touch_marker(_SESSION_ID)
+
+        assert time.time() - path.stat().st_mtime < 5
+
+    def test_no_error_when_marker_missing(self, state_dir):
+        touch_marker(_SESSION_ID)  # 例外を出さない
+
+
+class TestFreshnessGate:
+    """pid・起動時刻は一致するがmtimeが鮮度期限を過ぎている場合の判定"""
+
+    def test_false_when_marker_is_stale(self, state_dir, monkeypatch):
+        _write_marker_with_ps_output(
+            _SESSION_ID, 1234, "Thu Jul 24 09:32:04 2026\n", monkeypatch
+        )
+        _make_stale(marker_path(_SESSION_ID))
+
+        assert is_recorder_attached(_SESSION_ID) is False
+
+    def test_stale_marker_is_not_deleted(self, state_dir, monkeypatch):
+        """鮮度切れは死亡確定ではないため、ファイルは消さない
+        (見張りが復帰すればtouch_markerで削除せずに復活できるようにするため)"""
+        _write_marker_with_ps_output(
+            _SESSION_ID, 1234, "Thu Jul 24 09:32:04 2026\n", monkeypatch
+        )
+        _make_stale(marker_path(_SESSION_ID))
+
+        is_recorder_attached(_SESSION_ID)
+
+        assert marker_path(_SESSION_ID).exists()
+
+    def test_touch_marker_restores_attached_state(self, state_dir, monkeypatch):
+        """見張りがtouch_markerで鮮度を更新すれば、削除されていないため再びTrueになる"""
+        _write_marker_with_ps_output(
+            _SESSION_ID, 1234, "Thu Jul 24 09:32:04 2026\n", monkeypatch
+        )
+        _make_stale(marker_path(_SESSION_ID))
+        assert is_recorder_attached(_SESSION_ID) is False
+
+        touch_marker(_SESSION_ID)
+
+        assert is_recorder_attached(_SESSION_ID) is True
 
 
 class TestRecorderAttached:
