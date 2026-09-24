@@ -57,6 +57,17 @@ def main() -> None:
             harness.emit_approve("session_id is empty")
             return
 
+        # サブエージェント発のStop呼び出しは状態を一切更新せず即承認する。
+        # 判定はagent_id（実機では常にnullで届き使えない）ではなく
+        # agent_typeキーの有無(truthy)で行う。hooks/ask_answer_rewake_hook.py・
+        # hooks/sanitize_tool_result_hook.pyと同じ判定。
+        # session_idは親セッションと共有され得るため、ここで状態を更新すると
+        # 親のturn数・block_count・heartbeatがサブエージェントのターンで
+        # 進んでしまう。
+        if data.get("agent_type"):
+            harness.emit_approve("サブエージェント呼び出しのためスキップします。")
+            return
+
         state = HookState(session_id)
 
         # 2. ブロック上限チェック

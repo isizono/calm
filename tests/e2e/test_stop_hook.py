@@ -88,11 +88,15 @@ def _run_stop_hook(
     session_id: str,
     env_override: dict | None = None,
     return_stderr: bool = False,
+    agent_type: str | None = None,
 ) -> dict | tuple[dict, str]:
-    input_data = json.dumps({
+    payload = {
         "transcript_path": transcript_path,
         "session_id": session_id,
-    })
+    }
+    if agent_type is not None:
+        payload["agent_type"] = agent_type
+    input_data = json.dumps(payload)
 
     env = {**os.environ}
     # runnerのOW_ROLEを継承しない（テストの決定性確保。残存env検証テストはenv_overrideで明示設定する）
@@ -1030,6 +1034,83 @@ class TestStaleOwRoleEnvIgnored:
         events = _read_events(state_dir, "test-session")
         record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record_missing"]
         assert len(record_nudges) >= 1
+
+
+class TestSubagentStopSkipped:
+    """agent_type付き（サブエージェント発）のStop呼び出しは状態を一切更新せず即承認する"""
+
+    def test_agent_type_preserves_block_count(self, env_setup):
+        """block_count=1が事前にある状態でagent_type付き呼び出し → block_countは変化しない
+
+        修正前はブロック上限チェックでblock_countが0にリセットされてしまい、
+        親セッションのone-shot block（turn 3で1回だけblockする仕組み）が
+        再度発火してしまっていた。
+        """
+        state_dir = Path(env_setup["state_dir"])
+        block_file = state_dir / "block_count_test-session"
+        block_file.write_text("1")
+
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript([_make_user_entry("hi")], transcript)
+
+        result = _run_stop_hook(
+            str(transcript), "test-session", env_setup["env_override"],
+            agent_type="builder",
+        )
+        assert result["decision"] == "approve"
+        assert block_file.read_text() == "1"
+
+    def test_agent_type_skips_checkin_block(self, env_setup):
+        """check-in未呼出でturn==3相当のtranscriptでも、agent_type付きならblockされない
+
+        加えてtranscript_offset/current_turnのstateファイルも作られない
+        （サブエージェントのターンが親のturn数を進めない）。
+        """
+        state_dir = Path(env_setup["state_dir"])
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("hi"),
+                CONTEXT_RETRIEVAL_ENTRY,
+                _make_assistant_entry(text="response 1"),
+                _make_user_entry("continue"),
+                _make_assistant_entry(text="response 2"),
+                _make_user_entry("continue2"),
+                _make_assistant_entry(text="response 3"),
+            ],
+            transcript,
+        )
+
+        result = _run_stop_hook(
+            str(transcript), "test-session", env_setup["env_override"],
+            agent_type="builder",
+        )
+        assert result["decision"] == "approve"
+        assert not (state_dir / "transcript_offset_test-session").exists()
+        assert not (state_dir / "current_turn_test-session").exists()
+
+    def test_agent_type_skips_nudge(self, env_setup):
+        """add_decisions単発の呼び出しでも、agent_type付きならfollow_upナッジが出ない"""
+        state_dir = env_setup["state_dir"]
+
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript([
+            _make_user_entry("hi"),
+            CONTEXT_RETRIEVAL_ENTRY,
+            _make_assistant_entry(
+                tool_calls=["mcp__plugin_calm_calm__add_decisions"],
+                text="recorded",
+            ),
+        ], transcript)
+
+        result = _run_stop_hook(
+            str(transcript), "test-session", env_setup["env_override"],
+            agent_type="builder",
+        )
+        assert result["decision"] == "approve"
+
+        events = _read_events(state_dir, "test-session")
+        assert events == []
 
 
 # --- Codexハーネス（CALM_HARNESS=codex + rollout形式transcript） ---
