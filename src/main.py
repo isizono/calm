@@ -1283,7 +1283,8 @@ def get_goal(
     """Choose: 1つのgoalの全条件(充足済みを含む)とid、紐づくactivity一覧を読みたい
     とき。check_inの応答のgoalブロックは充足済み条件や4件目以降のopen条件を畳むので、
     全件が要るとき(差し戻しでopenに戻す条件を選ぶとき等)や、handleからgoalを引きたい
-    ときに使う。読み取り専用(check_inと違いactivityのstatusを変えない)。
+    ときに使う。読み取り専用(check_inと違いactivityのstatusを変えない)。labelが
+    judge_ready(判定待ち)のときは、判定待ちの未決(open_questions)も返す。
 
     Args:
         goal_id: goalを直接指す(3つのうちちょうど1つを指定する)
@@ -1293,7 +1294,8 @@ def get_goal(
 
     Returns:
         {"goal_id_raw", "handle", "statement", "label", "progress", "claude", "next",
-         "last_verdict", "conditions": [...全件...], "activities": [...]}
+         "last_verdict", "conditions": [...全件...], "activities": [...],
+         "open_questions"?, "open_questions_more"?}
          | {"label": "undefined"|"not_needed", "next"?, "reason"?}
         失敗時: {"error": {"code": "VALIDATION_ERROR"|"NOT_FOUND"|"DATABASE_ERROR",
             ...}}
