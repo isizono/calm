@@ -4,7 +4,7 @@
 
 本ドキュメントはAIエージェントへの自動注入面（SessionStart hookの各セクション、`check_in`応答、MCP instructions）ごとに、予算（字数上限の目安）と保証種別を一覧化したものである。仕様凍結を目的とせず、注入量の膨張を検知・議論するための作業用ドキュメントとして扱う。
 
-一次情報は各注入面を実装するコード（`hooks/session_start_hook.py`、`src/services/checkin_service.py`、`src/main.py` の `RULES` 定数）であり、本ドキュメントと食い違った場合はコードが正である。
+一次情報は各注入面を実装するコード（`hooks/session_start_hook.py`、`src/services/checkin_tier_service.py`、`src/main.py` の `RULES` 定数）であり、本ドキュメントと食い違った場合はコードが正である。
 
 ### 保証種別の凡例
 
@@ -33,12 +33,12 @@
 
 | フィールド | 保証種別 | 備考 |
 |---|---|---|
-| recent_decisions | selected+remainder | 関連topic横断で新しい順に上位15件（`DECISIONS_FULL_LIMIT`）。`coverage.decisions` に "選抜件数/総件数" を明示。全体予算超過時はさらに末尾から削られ、分子も削った後の件数へ書き換わる |
-| materials | selected+remainder | リレーション経由のカタログ形式。`coverage.materials` に総件数を明示。全体予算超過時はさらに末尾から削られ、分子も削った後の件数へ書き換わる |
-| logs | selected+remainder | 最新1件はcontent付き、残りはid+titleのカタログ。`coverage.logs` に総件数を明示。全体予算超過時はまずカタログ側が末尾から削られ、それでも収まらなければ最新1件がスタブ化される（このときのみ分子が0になる） |
-| pinned | selected+remainder | activity自身とそのタグにpinされた対象を全件content付きで返す。ただしpinned専用の枠（3,000字）を超えると、種別をまたいだ小さい順に丸ごと残し、枠をまたぐ1件は先頭を残して切りポインタを付け、残りはid+titleのスタブになる |
-| tag_notes | complete（6,000字の天井付き） | セッション内初回遭遇時のタグのみ（`intent:`は毎回）。対象タグのnotesは全文。合計が天井を超えると大きいnotesから順にdecayと同じ1行ポインタへ縮退する（全体予算10,000字には数えない） |
-| catalog | selected+remainder | `get_map` によるリレーショングラフ（depth 1-2）。全体予算超過時に最初に削られる対象で、末尾から間引かれる |
+| context.decisions | selected+remainder | 関連topic横断で新しい順に上位15件（`DECISIONS_FULL_LIMIT`）。`env.coverage.decisions` に "選抜件数/総件数" を明示。全体予算超過時はさらに末尾から削られ、分子も削った後の件数へ書き換わる |
+| context.materials | selected+remainder | リレーション経由のカタログ形式。`env.coverage.materials` に総件数を明示。全体予算超過時はさらに末尾から削られ、分子も削った後の件数へ書き換わる |
+| catalog.logs / context.latest_log | selected+remainder | 最新1件（`context.latest_log`）はcontent付き、残り（`catalog.logs`）はid+titleのカタログ。`env.coverage.logs` に総件数を明示。全体予算超過時はまずcatalog.logsが末尾から削られ、それでも収まらなければ最新1件がスタブ化される（このときのみ分子が0になる） |
+| anchor.pinned | selected+remainder | activity自身とそのタグにpinされた対象を全件content付きで返す。ただしpinned専用の枠（3,000字）を超えると、種別をまたいだ小さい順に丸ごと残し、枠をまたぐ1件は先頭を残して切りポインタを付け、残りはid+titleのスタブになる |
+| env.tag_notes | complete（6,000字の天井付き） | セッション内初回遭遇時のタグのみ（`intent:`は毎回）。対象タグのnotesは全文。合計が天井を超えると大きいnotesから順にdecayと同じ1行ポインタへ縮退する（全体予算10,000字には数えない） |
+| catalog.map | selected+remainder | `get_map` によるリレーショングラフ（depth 1-2）。全体予算超過時に最初に削られる対象で、末尾から間引かれる |
 
 ## 3. RULES（MCP instructions）
 

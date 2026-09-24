@@ -183,7 +183,7 @@ def _scan_tool_input(value) -> list[dict]:
     return matches
 
 
-def _is_in_cc_memory_project() -> bool:
+def _is_in_calm_project() -> bool:
     """cwd から上方向に pyproject.toml を探索して cc-memory project か判定する。
 
     `[project].name` を tomllib で厳密パースし、`_PROJECT_NAMES` のいずれかに
@@ -242,7 +242,7 @@ def main() -> None:
             return
 
         # cwd 判定: cc-memory project 内のみ有効
-        if not _is_in_cc_memory_project():
+        if not _is_in_calm_project():
             harness.emit_empty()
             return
 

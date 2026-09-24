@@ -91,15 +91,15 @@ class TestAddActivity:
         assert "check_in_result" in result
         check_in_result = result["check_in_result"]
         assert "error" not in check_in_result
-        assert "activity" in check_in_result
-        assert check_in_result["activity"]["status"] == "in_progress"
-        assert "tag_notes" in check_in_result
-        assert "summary" in check_in_result
+        assert "activity" in check_in_result["anchor"]
+        assert check_in_result["anchor"]["activity"]["status"] == "in_progress"
+        # このタグにnotesが無いためenv.tag_notesは空セクションとして省かれる
+        assert "tag_notes" not in check_in_result["env"]
         # goalブロックはcheck_in=Trueのadd_activity応答でもcheck_in_resultの中に
-        # 載る（06_ツールIFとcheck_in注入.md: check_in_resultの中にcheck_inの
-        # 戻り値がそのまま入る）。起票直後はgoalの紐づけが無いのでundefined。
-        assert "goal" in check_in_result
-        assert check_in_result["goal"]["label"] == "undefined"
+        # 載る（check_in_resultの中にcheck_inの戻り値がそのまま入る）。起票直後は
+        # goalの紐づけが無いのでundefined。
+        assert "goal" in check_in_result["control"]
+        assert check_in_result["control"]["goal"]["label"] == "undefined"
 
     def test_add_activity_with_check_in_false(self, temp_db):
         """check_in=Falseで従来動作（ステータスpending、check_in_resultなし）"""
@@ -195,11 +195,14 @@ class TestAddActivity:
         assert "check_in_result" in result
         check_in_result = result["check_in_result"]
         assert "error" not in check_in_result
-        # related_topicsに関連トピックが含まれる
-        assert "related_topics" in check_in_result
+        # context.topicsに関連トピックが含まれる
+        assert "topics" in check_in_result["context"]
         # α化: id_raw が元の整数 ID
-        assert any(t["id_raw"] == topic_id for t in check_in_result["related_topics"])
-        assert "recent_decisions" in check_in_result
+        assert any(t["id_raw"] == topic_id for t in check_in_result["context"]["topics"])
+        # decisionsはこのトピックに1件も無いため、空セクションとして省かれる
+        # （tier形は中身が空のキーを省く。旧フラット形は空リストでもキー自体を返していた）
+        assert "decisions" not in check_in_result.get("context", {})
+        assert check_in_result["env"]["coverage"]["decisions"] == "0/0"
 
     def test_add_activity_available_intents_format(self, temp_db):
         """available_intentsの各要素に"tag"と"description"がある"""

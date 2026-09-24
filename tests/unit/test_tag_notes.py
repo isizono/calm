@@ -1305,9 +1305,9 @@ class TestSessionKeyConsistencyAcrossEntryPoints:
         aid = activity["activity_id"]
         update_tag("domain:shared-key", "共有キー確認用の教訓")
 
-        # check_in経由（main.check_in → checkin_service.check_in）で先に注入
+        # check_in経由（main.check_in → checkin_tier_service.collect_and_assemble）で先に注入
         checkin_result = main_module.check_in(aid)
-        assert any(n["tag"] == "domain:shared-key" for n in checkin_result["tag_notes"])
+        assert any(n["tag"] == "domain:shared-key" for n in checkin_result["env"]["tag_notes"])
 
         # 同じ識別子で add_topic を呼ぶ（main._maybe_inject_tag_notes 経由）。
         # キーが揃っていれば、同じタグは既に注入済みとして扱われ再配達されない
@@ -1321,7 +1321,7 @@ class TestSessionKeyConsistencyAcrossEntryPoints:
     def test_check_in_and_add_activity_checkin_fallback_share_the_same_dedup_key(
         self, temp_db, monkeypatch
     ):
-        """main.check_inと、add_activity(check_in=True)経由でcheckin_serviceが
+        """main.check_inと、add_activity(check_in=True)経由でcheckin_tier_serviceが
         session_id=Noneから内部フォールバックする経路が、同じ識別子解決を共有する。
         """
         import src.main as main_module
@@ -1339,9 +1339,9 @@ class TestSessionKeyConsistencyAcrossEntryPoints:
 
         # main.check_in経由で先に注入
         checkin_result = main_module.check_in(aid)
-        assert any(n["tag"] == "domain:shared-key-fallback" for n in checkin_result["tag_notes"])
+        assert any(n["tag"] == "domain:shared-key-fallback" for n in checkin_result["env"]["tag_notes"])
 
-        # add_activity(check_in=True)経由（checkin_serviceのsession_id=Noneフォールバック）。
+        # add_activity(check_in=True)経由（checkin_tier_serviceのsession_id=Noneフォールバック）。
         # キーが揃っていれば、同じタグは既に注入済みとして扱われ再配達されない
         add_activity_result = main_module.add_activity(
             title="Shared Key Fallback Second Activity", description="d",
@@ -1349,7 +1349,8 @@ class TestSessionKeyConsistencyAcrossEntryPoints:
         )
         check_in_result = add_activity_result["check_in_result"]
         assert not any(
-            n["tag"] == "domain:shared-key-fallback" for n in check_in_result.get("tag_notes", [])
+            n["tag"] == "domain:shared-key-fallback"
+            for n in check_in_result.get("env", {}).get("tag_notes", [])
         )
 
     def test_falsification_mismatched_keys_would_double_deliver(self, temp_db, monkeypatch):
@@ -1359,10 +1360,11 @@ class TestSessionKeyConsistencyAcrossEntryPoints:
 
         main.check_in()はmain_module.get_caller_session_id()（main自身の束縛）を
         使う一方、add_activity(check_in=True)はactivity_service経由で
-        checkin_service.check_inをsession_id=Noneで直接呼び、checkin_service内部が
-        session_identity.get_caller_session_id()で解決する（main.pyを経由しない）。
-        本PRはこの2つの解決先を揃えたので、通常は同じ値を返す。ここでは意図的に
-        別々の値を返すよう差し替え、揃っていなければ何が起きるかを確認する。
+        checkin_tier_service.collect_and_assembleをsession_id=Noneで直接呼び、
+        checkin_tier_service内部がsession_identity.get_caller_session_id()で
+        解決する（main.pyを経由しない）。本PRはこの2つの解決先を揃えたので、
+        通常は同じ値を返す。ここでは意図的に別々の値を返すよう差し替え、
+        揃っていなければ何が起きるかを確認する。
         """
         import src.main as main_module
         from src.infra import session_identity
@@ -1379,19 +1381,20 @@ class TestSessionKeyConsistencyAcrossEntryPoints:
 
         # main.check_in経由: main_module.get_caller_session_id()（"bridge-A"）で注入
         checkin_result = main_module.check_in(aid)
-        assert any(n["tag"] == "domain:mismatched-key" for n in checkin_result["tag_notes"])
+        assert any(n["tag"] == "domain:mismatched-key" for n in checkin_result["env"]["tag_notes"])
 
-        # add_activity(check_in=True)経由: activity_serviceがcheckin_service.check_inを
-        # session_id=Noneで呼ぶため、checkin_service内部がsession_identity側
-        # （"bridge-B"）で解決する。キーがずれていれば別セッション扱いになり、
-        # 同じタグのnotesが再度届く
+        # add_activity(check_in=True)経由: activity_serviceがcheckin_tier_service.
+        # collect_and_assembleをsession_id=Noneで呼ぶため、checkin_tier_service内部が
+        # session_identity側（"bridge-B"）で解決する。キーがずれていれば別セッション
+        # 扱いになり、同じタグのnotesが再度届く
         add_activity_result = main_module.add_activity(
             title="Mismatched Key Second Activity", description="d",
             tags=["domain:mismatched-key"],
         )
         check_in_result = add_activity_result["check_in_result"]
         assert any(
-            n["tag"] == "domain:mismatched-key" for n in check_in_result.get("tag_notes", [])
+            n["tag"] == "domain:mismatched-key"
+            for n in check_in_result.get("env", {}).get("tag_notes", [])
         )
 
 

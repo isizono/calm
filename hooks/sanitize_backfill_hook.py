@@ -15,6 +15,9 @@ INSERT する (write 経路の apply_raw_to_cite_conversion と同じ「field/bl
 
 opt-out:
 - 環境変数 CALM_SANITIZE_DISABLE=1: 即 exit 0
+- transcript書き換えが無いハーネス (Codex。supports_transcript_rewrite が False):
+  即 exit 0。Codexのrollout recorderは書き込みハンドルを保持しており、rename方式の
+  差し替えは以降のappendを喪失させることを実機確認済み (#613)
 - cwd が cc-memory リポジトリ内 (pyproject.toml [project].name が _REPO_PROJECT_NAMES
   のいずれかに一致することを上方向探索で検出): 即 exit 0
 
@@ -39,6 +42,7 @@ from hooks.citation_event_log import log_event, log_events_batch
 from hooks.hook_state import HookState
 from hooks.hook_transcript import _is_calm_tool
 from src.env_compat import env_get
+from src.harness import select_harness
 from src.services.citations_pure import (
     check_target_exists,
     convert_raw_to_cite,
@@ -55,7 +59,7 @@ _MAX_CONSECUTIVE_FAILURES = 3
 # ---------------------------------------------------------------------------
 
 
-def _is_in_cc_memory_repo(cwd: str | None) -> bool:
+def _is_in_calm_repo(cwd: str | None) -> bool:
     """cwd から上方向に pyproject.toml を探し name が _REPO_PROJECT_NAMES に含まれれば True。
 
     最初に見つかった pyproject.toml の name が一致しない場合は False (別プロジェクト)。
@@ -351,6 +355,12 @@ def main() -> int:
     try:
         if env_get("CALM_SANITIZE_DISABLE") == "1":
             return 0
+        # transcript書き換えが無いハーネス（Codex）では何もしない。書き換えて
+        # いないのにsanitize済みイベントを残すとログと実態が乖離するため、
+        # citation_event_logへの記録も行わない（sanitize_tool_result_hookと
+        # 同じ契約）。
+        if not select_harness().supports_transcript_rewrite:
+            return 0
 
         raw = sys.stdin.read()
         if not raw.strip():
@@ -363,7 +373,7 @@ def main() -> int:
 
         if not transcript_path:
             return 0
-        if _is_in_cc_memory_repo(cwd):
+        if _is_in_calm_repo(cwd):
             return 0
 
         path = Path(transcript_path).expanduser()

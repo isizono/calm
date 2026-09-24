@@ -131,6 +131,17 @@ class CodexHarness(ClaudeCodeHarness):
         """
         return False
 
+    @property
+    def supports_transcript_rewrite(self) -> bool:
+        """Codexのrolloutはセッション中のファイル差し替えを許容しない。
+
+        実機確認（#613）: rollout recorderは書き込みハンドルを保持して
+        おり、セッション中にrename+backup方式（tmp書き込み→os.replace）で
+        差し替えると、以降の全appendが孤児化した旧inodeへ書かれて
+        サイレントに喪失する（task_complete等がpath上のファイルから消える）。
+        """
+        return False
+
     # ------------------------------------------------------------------
     # 2. transcript読み書き
     # ------------------------------------------------------------------
@@ -180,21 +191,19 @@ class CodexHarness(ClaudeCodeHarness):
         return TranscriptEntry(kind="other", content=[], raw=raw)
 
     def rewrite_transcript_entry(self, path: str, entry: TranscriptEntry) -> bool:
-        """rolloutの書き戻しは未実装のためFalse（未サポート扱い）。
+        """rolloutの書き戻しは非対応のためFalse（未サポート扱い）。
 
-        Codexがセッション中のrollout外部書き換えを許容するかは未検証で、
-        sanitize backfill相当のCodex対応で扱う。それまでは安全側に倒す。
+        セッション中のrename方式書き換えはappend喪失を起こすことを実機で
+        確認済み（根拠はsupports_transcript_rewriteのdocstringと #613）。
         """
         return False
 
     # ------------------------------------------------------------------
     # 3. プロセス識別
     # ------------------------------------------------------------------
-
-    def resolve_session_identity(self) -> str | None:
-        """CodexセッションのIdentity解決は未実装のためNone（fail-close）。
-
-        祖先pid探索の対象になるlauncher登録がCodexセッションでどう成立
-        するかの検証を含め、identity相当のCodex対応で扱う。
-        """
-        return None
+    # resolve_session_identityは継承したClaude Code実装をそのまま使う。
+    # CodexもMCPサーバー（launcher）とhookプロセスを同じCLIプロセスから
+    # 直接spawnするため、launcher登録（token有無に関わらず常に書かれる）と
+    # hookプロセス双方の祖先pidチェーンがCLIプロセスで交差し、
+    # resolve_identity_by_ancestry()の交差判定が無改修で成立する
+    # （実機確認の詳細は #614 を参照）。
