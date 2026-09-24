@@ -9,7 +9,7 @@ from src.services.topic_service import add_topic
 from src.services.relation_service import add_relation
 from src.services.decision_service import get_decisions
 from src.services.retract_service import retract
-from tests.helpers import add_decision
+from tests.helpers import add_decision, assert_no_write_errors
 
 
 DEFAULT_TAGS = ["domain:test"]
@@ -29,7 +29,7 @@ class TestGetDecisionsTotalCountTruncatedTopic:
         """decisionが30件以下ならtotal_countは実件数と一致し、truncatedはFalse"""
         tid = topic["topic_id"]
         for i in range(3):
-            add_decision(decision=f"決定{i}", reason=f"理由{i}", topic_id=tid)
+            assert_no_write_errors(add_decision(decision=f"決定{i}", reason=f"理由{i}", topic_id=tid))
 
         result = get_decisions("topic", tid)
 
@@ -42,7 +42,7 @@ class TestGetDecisionsTotalCountTruncatedTopic:
         """decisionが30件を超えると応答はlimit件までだがtotal_countは実件数、truncatedはTrue"""
         tid = topic["topic_id"]
         for i in range(40):
-            add_decision(decision=f"決定{i}", reason=f"理由{i}", topic_id=tid)
+            assert_no_write_errors(add_decision(decision=f"決定{i}", reason=f"理由{i}", topic_id=tid))
 
         result = get_decisions("topic", tid)
 
@@ -55,8 +55,10 @@ class TestGetDecisionsTotalCountTruncatedTopic:
         """デフォルト（include_retracted=False）ではtotal_countもretract済みを除外する"""
         tid = topic["topic_id"]
         kept = add_decision(decision="残る決定", reason="理由", topic_id=tid)
+        assert_no_write_errors(kept)
         removed = add_decision(decision="取り消される決定", reason="理由", topic_id=tid)
-        retract("decision", [removed["decision_id"]])
+        assert_no_write_errors(removed)
+        assert_no_write_errors(retract("decision", [removed["decision_id"]]))
 
         result = get_decisions("topic", tid)
 
@@ -69,8 +71,10 @@ class TestGetDecisionsTotalCountTruncatedTopic:
         """include_retracted=Trueのときtotal_countもretract済みを含めて数える"""
         tid = topic["topic_id"]
         kept = add_decision(decision="残る決定", reason="理由", topic_id=tid)
+        assert_no_write_errors(kept)
         removed = add_decision(decision="取り消される決定", reason="理由", topic_id=tid)
-        retract("decision", [removed["decision_id"]])
+        assert_no_write_errors(removed)
+        assert_no_write_errors(retract("decision", [removed["decision_id"]]))
 
         result = get_decisions("topic", tid, include_retracted=True)
 
@@ -91,7 +95,7 @@ class TestGetDecisionsTotalCountTruncatedTopic:
     def test_existing_fields_unaffected_by_extension(self, topic):
         """既存フィールド（topic_id/topic_name/decisions本文）は拡張後も従来通り返る"""
         tid = topic["topic_id"]
-        add_decision(decision="決定1", reason="理由1", topic_id=tid)
+        assert_no_write_errors(add_decision(decision="決定1", reason="理由1", topic_id=tid))
 
         result = get_decisions("topic", tid)
 
@@ -107,6 +111,8 @@ class TestGetDecisionsTotalCountTruncatedTopic:
             add_decision(decision=f"決定{i}", reason=f"理由{i}", topic_id=tid)
             for i in range(5)
         ]
+        for d in decisions:
+            assert_no_write_errors(d)
 
         result1 = get_decisions("topic", tid, limit=3)
         assert len(result1["decisions"]) == 3
@@ -133,6 +139,8 @@ class TestGetDecisionsTotalCountTruncatedTopic:
             add_decision(decision=f"決定{i}", reason=f"理由{i}", topic_id=tid)
             for i in range(5)
         ]
+        for d in decisions:
+            assert_no_write_errors(d)
         # decisions[2] 以降は3件（[2],[3],[4]）。limit=3 でちょうど収まる
         result = get_decisions(
             "topic", tid, start_id=decisions[2]["decision_id"], limit=3
@@ -148,6 +156,8 @@ class TestGetDecisionsTotalCountTruncatedTopic:
             add_decision(decision=f"決定{i}", reason=f"理由{i}", topic_id=tid)
             for i in range(5)
         ]
+        for d in decisions:
+            assert_no_write_errors(d)
         # decisions[1] 以降は4件。limit=2 → 2件返し、後続2件が残る
         result = get_decisions(
             "topic", tid, start_id=decisions[1]["decision_id"], limit=2
@@ -170,7 +180,7 @@ class TestGetDecisionsTotalCountTruncatedActivity:
     def test_under_limit_not_truncated(self, topic):
         tid = topic["topic_id"]
         for i in range(3):
-            add_decision(decision=f"決定{i}", reason=f"理由{i}", topic_id=tid)
+            assert_no_write_errors(add_decision(decision=f"決定{i}", reason=f"理由{i}", topic_id=tid))
         activity_id = self._activity_for_topic(tid)
 
         result = get_decisions("activity", activity_id)
@@ -183,7 +193,7 @@ class TestGetDecisionsTotalCountTruncatedActivity:
     def test_over_limit_is_truncated(self, topic):
         tid = topic["topic_id"]
         for i in range(40):
-            add_decision(decision=f"決定{i}", reason=f"理由{i}", topic_id=tid)
+            assert_no_write_errors(add_decision(decision=f"決定{i}", reason=f"理由{i}", topic_id=tid))
         activity_id = self._activity_for_topic(tid)
 
         result = get_decisions("activity", activity_id)
@@ -209,8 +219,8 @@ class TestGetDecisionsTotalCountTruncatedActivity:
         """複数topicにbelongs_toするdecisionが重複カウントされない"""
         t1 = add_topic(title="トピック1", description="Desc", tags=DEFAULT_TAGS)
         t2 = add_topic(title="トピック2", description="Desc", tags=DEFAULT_TAGS)
-        add_decision(decision="T1決定", reason="理由", topic_id=t1["topic_id"])
-        add_decision(decision="T2決定", reason="理由", topic_id=t2["topic_id"])
+        assert_no_write_errors(add_decision(decision="T1決定", reason="理由", topic_id=t1["topic_id"]))
+        assert_no_write_errors(add_decision(decision="T2決定", reason="理由", topic_id=t2["topic_id"]))
         act = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
         add_relation(
             "activity",
@@ -228,8 +238,9 @@ class TestGetDecisionsTotalCountTruncatedActivity:
     def test_retracted_excluded_from_total_count_by_default(self, topic):
         tid = topic["topic_id"]
         removed = add_decision(decision="取り消される決定", reason="理由", topic_id=tid)
-        add_decision(decision="残る決定", reason="理由", topic_id=tid)
-        retract("decision", [removed["decision_id"]])
+        assert_no_write_errors(removed)
+        assert_no_write_errors(add_decision(decision="残る決定", reason="理由", topic_id=tid))
+        assert_no_write_errors(retract("decision", [removed["decision_id"]]))
         activity_id = self._activity_for_topic(tid)
 
         result = get_decisions("activity", activity_id)
@@ -246,6 +257,8 @@ class TestGetDecisionsTotalCountTruncatedActivity:
             add_decision(decision=f"決定{i}", reason=f"理由{i}", topic_id=tid)
             for i in range(5)
         ]
+        for d in decisions:
+            assert_no_write_errors(d)
         activity_id = self._activity_for_topic(tid)
         # DESC 順: [4],[3],[2],[1],[0]。start_id=decisions[2].id で id<=2 → [2],[1],[0] の3件
         result = get_decisions(
@@ -262,6 +275,8 @@ class TestGetDecisionsTotalCountTruncatedActivity:
             add_decision(decision=f"決定{i}", reason=f"理由{i}", topic_id=tid)
             for i in range(5)
         ]
+        for d in decisions:
+            assert_no_write_errors(d)
         activity_id = self._activity_for_topic(tid)
         # start_id=decisions[3].id で id<=3 → [3],[2],[1],[0] の4件が対象。limit=2 で後続2件が残る
         result = get_decisions(
