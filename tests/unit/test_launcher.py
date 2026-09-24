@@ -936,10 +936,15 @@ class TestMainRetryLoop:
 
     def test_backoff_values(self, monkeypatch):
         """バックオフが2秒, 4秒, 8秒の順で適用される"""
+        import threading
+
         sleep_values = []
+        test_thread_id = threading.get_ident()
 
         def tracking_sleep(seconds):
-            sleep_values.append(seconds)
+            # ほかのテストのスレッドのsleepを拾わないため
+            if threading.get_ident() == test_thread_id:
+                sleep_values.append(seconds)
 
         self._setup_main(monkeypatch, [
             launcher.ServerDisconnected("lost"),
@@ -978,10 +983,15 @@ class TestMainRetryLoop:
 
     def test_backoff_capped_at_60_seconds(self, monkeypatch):
         """backoff は BACKOFF_CAP_SEC (60秒) で頭打ちになる"""
+        import threading
+
         sleep_values = []
+        test_thread_id = threading.get_ident()
 
         def tracking_sleep(seconds):
-            sleep_values.append(seconds)
+            # ほかのテストのスレッドのsleepを拾わないため
+            if threading.get_ident() == test_thread_id:
+                sleep_values.append(seconds)
 
         # attempt 0..7 で失敗させる（max_retries=8 で 8 回 sleep が発生）
         # 期待: 2, 4, 8, 16, 32, 60, 60, 60
