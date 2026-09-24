@@ -83,7 +83,7 @@ B選択時は何も実行せず終了する。
 - tag-notes → `retract`ツール非対応のため、`update_tag`で対象箇所を除いた全文を書き込む方式で代替する
 - auto-memory / CLAUDE.md / rules ファイル → 物理削除
 - skill → § skill撤回時の依存検出 で問題ないことを確認したうえで物理削除
-- rules・habits・CLAUDE.mdの規則を撤回したら、規則名で`get_feedback_entries(query=<規則名>)`を引き、その規則を参照しているエントリ（鏡像）を消すか直す。これはエントリの変更なので、ユーザーの確認は要らない。実行後に報告する
+- rules・habits・CLAUDE.mdの規則を撤回したら、規則名で`get_feedback_entries(query=<規則名>)`を引く。bodyかrefに、撤回した規則の名前かその規則へのポインタが明示されているエントリ（鏡像）だけを対象に絞り、消すか直す。対象かどうか迷うエントリは消さず、`add_feedback_note`でnoteを足すだけにとどめる。これはエントリの変更なので、ユーザーの確認は要らない。実行後に報告する
 
 ### 5. 実行結果をlogとして記録
 
