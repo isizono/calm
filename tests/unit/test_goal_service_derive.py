@@ -824,6 +824,70 @@ class TestGetGoal:
         assert result["open_questions_more"] == 1
 
 
+class TestGetGoalLogsSinceCreated:
+    def test_counts_logs_added_to_activity_topic_after_goal_created(self, temp_db):
+        from src.services.discussion_log_service import add_logs
+
+        act = _activity()
+        topic_id = add_topic(title=f"topic-{time.time()}", description="d", tags=["domain:test"])["topic_id"]
+        relation_service.add_relation("activity", act, [{"type": "topic", "ids": [topic_id]}])
+        goal_id = _new_goal(act, conditions=[{"statement": "c1", "actor": "claude"}])["goal_id_raw"]
+
+        add_logs([{"topic_id": topic_id, "content": "経緯1", "tags": ["domain:test"]}])
+        add_logs([{"topic_id": topic_id, "content": "経緯2", "tags": ["domain:test"]}])
+
+        conn = get_connection()
+        try:
+            created_at = conn.execute(
+                "SELECT created_at FROM goals WHERE id = ?", (goal_id,)
+            ).fetchone()["created_at"]
+        finally:
+            conn.close()
+
+        result = gs.get_goal(goal_id=goal_id)
+        assert result["logs_since_created"]["count"] == 2
+        assert result["logs_since_created"]["since"] == created_at
+
+    def test_zero_when_no_logs_added(self, temp_db):
+        act = _activity()
+        topic_id = add_topic(title=f"topic-{time.time()}", description="d", tags=["domain:test"])["topic_id"]
+        relation_service.add_relation("activity", act, [{"type": "topic", "ids": [topic_id]}])
+        goal_id = _new_goal(act, conditions=[{"statement": "c1", "actor": "claude"}])["goal_id_raw"]
+
+        result = gs.get_goal(goal_id=goal_id)
+        assert result["logs_since_created"]["count"] == 0
+
+    def test_retracted_logs_not_counted(self, temp_db):
+        from src.services.discussion_log_service import add_logs
+
+        act = _activity()
+        topic_id = add_topic(title=f"topic-{time.time()}", description="d", tags=["domain:test"])["topic_id"]
+        relation_service.add_relation("activity", act, [{"type": "topic", "ids": [topic_id]}])
+        goal_id = _new_goal(act, conditions=[{"statement": "c1", "actor": "claude"}])["goal_id_raw"]
+
+        created = add_logs([{"topic_id": topic_id, "content": "経緯1", "tags": ["domain:test"]}])["created"][0]
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE discussion_logs SET retracted_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (created["log_id"],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = gs.get_goal(goal_id=goal_id)
+        assert result["logs_since_created"]["count"] == 0
+
+    def test_available_via_activity_and_handle_scope_too(self, temp_db):
+        act = _activity()
+        goal_id = _new_goal(act, conditions=[{"statement": "c1", "actor": "claude"}])["goal_id_raw"]
+        by_activity = gs.get_goal(activity_id=act)
+        by_handle = gs.get_goal(handle=by_activity["handle"])
+        assert by_activity["logs_since_created"]["count"] == 0
+        assert by_handle["logs_since_created"]["count"] == 0
+
+
 class TestGoalBlockOnWriteTools:
     def test_set_goal_success_attaches_goal_block(self, temp_db):
         act = _activity()
