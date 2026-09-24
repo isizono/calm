@@ -822,11 +822,20 @@ def _fetch_bound_states(conn: sqlite3.Connection, bound_specs: list[tuple[str, i
     直接指されていること）も同じ1本の問い合わせでまとめて読む。
 
     Returns:
-        {(bound_type, bound_id): {"state": "done"|"pending"|"gone",
+        {(bound_type, bound_id): {"state": "done"|"pending"|"gone"|"failed",
                                    "title": str | None,
                                    "reason": "retracted"|"replaced"|"withdrawn"|"missing"|None,
-                                   "successor_title": str | None}}
-        reasonはstate="gone"のときだけ意味を持つ。
+                                   "successor_title": str | None,
+                                   "via": "goal"|None,
+                                   "judge_note": str | None,
+                                   "activity_status": str | None}}
+        reasonはstate="gone"のときだけ意味を持つ。"failed"はactivity束縛だけが持ち、
+        束縛先activityが自分のgoalをfailedで判定終了したことを示す（judge_noteに
+        判定理由）。via="goal"は、activity束縛のdone/failedが束縛先activity自身の
+        statusではなく、束縛先activityに紐づくgoalの判定から導かれたことを示す。
+        activity_statusはactivity束縛だけが持つ束縛先の生のstatusで、
+        state="pending"かつactivity_status="completed"の組み合わせは
+        「束縛先activityは閉じているが、そのgoalがまだ未判定」を意味する。
     """
     result: dict = {}
     by_type: dict[str, set[int]] = {}
@@ -839,16 +848,46 @@ def _fetch_bound_states(conn: sqlite3.Connection, bound_specs: list[tuple[str, i
         found = {
             r["id"]: r
             for r in conn.execute(
-                f"SELECT id, title, status FROM activities WHERE id IN ({placeholders})", ids
+                f"""
+                SELECT a.id AS id, a.title AS title, a.status AS status,
+                       ga.goal_id AS goal_id, g.closed AS goal_closed,
+                       g.verdict AS goal_verdict, g.judge_note AS goal_judge_note
+                FROM activities a
+                LEFT JOIN goal_activities ga ON ga.activity_id = a.id
+                LEFT JOIN goals g ON g.id = ga.goal_id
+                WHERE a.id IN ({placeholders})
+                """,
+                ids,
             ).fetchall()
         }
         for i in ids:
             row = found.get(i)
             if row is None:
-                result[("activity", i)] = {"state": "gone", "title": None, "reason": "missing", "successor_title": None}
+                result[("activity", i)] = {
+                    "state": "gone", "title": None, "reason": "missing",
+                    "successor_title": None, "via": None, "judge_note": None,
+                    "activity_status": None,
+                }
+                continue
+            via = None
+            judge_note = None
+            if row["goal_id"] is not None and row["goal_closed"] == 1:
+                if row["goal_verdict"] == "achieved":
+                    state, via = "done", "goal"
+                else:
+                    state, judge_note = "failed", row["goal_judge_note"]
+            elif row["goal_id"] is not None:
+                # goalが紐づくが未判定（差し戻し後の再判定待ちを含む）。束縛先activityの
+                # statusは見ない（read-for-checkinで揺れ動く値のため）
+                state = "pending"
             else:
+                # goalが無い（不要印・未定義）束縛先は、今までどおりstatusで読む
                 state = "done" if row["status"] == "completed" else "pending"
-                result[("activity", i)] = {"state": state, "title": row["title"], "reason": None, "successor_title": None}
+            result[("activity", i)] = {
+                "state": state, "title": row["title"], "reason": None,
+                "successor_title": None, "via": via, "judge_note": judge_note,
+                "activity_status": row["status"],
+            }
 
     if "ask" in by_type:
         ids = sorted(by_type["ask"])
@@ -932,12 +971,13 @@ def _fetch_bound_states(conn: sqlite3.Connection, bound_specs: list[tuple[str, i
 
 
 def _condition_flags(cond_row, bound_state: Optional[dict]) -> list[str]:
-    """条件1行の4フラグ（reopened/broken/bound_done/recheck）を導く。
+    """条件1行の5フラグ（reopened/broken/bound_done/bound_failed/recheck）を導く。
 
     崩れ（broken）は、充足済みの条件がdecisionを束縛している場合だけ検査する
     （activity/askの束縛は、read-for-checkinが子activityをin_progressへ戻す
     副作用と地続きになり、正しく達成したgoalが閉じられなくなるため対象外とする）。
-    open側の崩れ（束縛先が消えた）は型を問わない。
+    open側の崩れ（束縛先が消えた）は型を問わない。束縛先activityのgoalがfailedで
+    閉じたこと（bound_failed）は、崩れとは別物として扱う（崩れの範囲を広げない）。
     """
     flags = []
     if cond_row["state"] == "open" and cond_row["last_satisfied_at"] is not None:
@@ -953,6 +993,9 @@ def _condition_flags(cond_row, bound_state: Optional[dict]) -> list[str]:
 
     if cond_row["state"] == "open" and bound_state is not None and bound_state["state"] == "done":
         flags.append("bound_done")
+
+    if cond_row["state"] == "open" and bound_state is not None and bound_state["state"] == "failed":
+        flags.append("bound_failed")
 
     if cond_row["state"] == "open" and cond_row["is_recheck"]:
         flags.append("recheck")
@@ -1121,7 +1164,7 @@ def _rule6_what(cond: dict) -> str:
 
 
 def _rule_context(goal_row, conditions: list[dict], activity_scoped: bool) -> dict:
-    """規則5〜14の各一致条件が参照する集合を、条件リストから1回だけ切り出す。"""
+    """規則5〜15の各一致条件が参照する集合を、条件リストから1回だけ切り出す。"""
     open_conds = [c for c in conditions if c["state"] == "open"]
     return {
         "goal_row": goal_row,
@@ -1131,6 +1174,7 @@ def _rule_context(goal_row, conditions: list[dict], activity_scoped: bool) -> di
         "reopened_claude": [c for c in conditions if c["actor"] == "claude" and "reopened" in c["flags"]],
         "satisfied": [c for c in conditions if c["state"] == "satisfied"],
         "bound_done": [c for c in conditions if "bound_done" in c["flags"]],
+        "bound_failed": [c for c in conditions if "bound_failed" in c["flags"]],
         "claude_open": [c for c in open_conds if c["actor"] == "claude"],
         "claude_total": [c for c in conditions if c["actor"] == "claude"],
         "recheck": [c for c in open_conds if "recheck" in c["flags"]],
@@ -1151,6 +1195,31 @@ def _rule6_broken(ctx: dict) -> dict:
         ctx["broken"], key=lambda c: (c["last_satisfied_at"] is None, c["last_satisfied_at"] or "", c["id"])
     )[0]
     return {"rule": 6, "what": _rule6_what(chosen), "actor": "claude", "condition_id_raw": chosen["id"]}
+
+
+def _truncate_note(text: Optional[str], limit: int = 30) -> str:
+    """judge_noteの先頭を短く切って表示用にする（無ければ「理由なし」）。"""
+    text = (text or "").strip()
+    if not text:
+        return "理由なし"
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "…"
+
+
+def _rule15_bound_failed(ctx: dict) -> dict:
+    """規則15（失敗した子の手当て）。番号は規則5〜14を詰め直さず新規に振る一方、
+    評価の順番は規則6（崩れの手当て）の直後・規則7（差し戻し）の前に置く。
+    """
+    chosen = sorted(ctx["bound_failed"], key=lambda c: c["id"])[0]
+    bound_state = chosen["bound_state"] or {}
+    child_title = bound_state.get("title") or "?"
+    reason = _truncate_note(bound_state.get("judge_note"))
+    what = (
+        f"子『{child_title}』のgoalが失敗で閉じた（{reason}）。"
+        "やり直しの子を起票してeditで束縛を張り替えるか、理由を書いてwaivedにする"
+    )
+    return {"rule": 15, "what": what, "actor": "claude", "condition_id_raw": chosen["id"]}
 
 
 def _rule7_reopened(ctx: dict) -> dict:
@@ -1177,9 +1246,14 @@ def _rule9_nothing_satisfied(ctx: dict) -> dict:
 
 def _rule10_bound_done(ctx: dict) -> dict:
     chosen = sorted(ctx["bound_done"], key=lambda c: c["id"])[0]
+    bound_state = chosen["bound_state"] or {}
+    if bound_state.get("via") == "goal":
+        what = f"「{chosen['statement']}」の束縛先は子のgoalが達成で閉じた。確かめてsatisfiedに書く"
+    else:
+        what = f"「{chosen['statement']}」の束縛先は済んでいる。確かめてsatisfiedに書く"
     return {
         "rule": 10,
-        "what": f"「{chosen['statement']}」の束縛先は済んでいる。確かめてsatisfiedに書く",
+        "what": what,
         "actor": "claude",
         "condition_id_raw": chosen["id"],
     }
@@ -1190,7 +1264,13 @@ def _rule11_claude_turn(ctx: dict) -> dict:
     what = chosen["statement"]
     bound_state = chosen["bound_state"]
     if chosen["bound_type"] == "activity" and bound_state and bound_state.get("title"):
-        what = f"activity『{bound_state['title']}』を進める"
+        title = bound_state["title"]
+        if bound_state.get("state") == "pending" and bound_state.get("activity_status") == "completed":
+            # 束縛先activityは閉じているが、そのgoalが未判定（差し戻し後の再判定待ちを
+            # 含む）。「進める」ではなく、子のgoalを読んで判定することを指す
+            what = f"子『{title}』のgoalを判定する（get_goalで子を読んでjudge_goal）"
+        else:
+            what = f"activity『{title}』を進める"
     return {"rule": 11, "what": what, "actor": "claude", "condition_id_raw": chosen["id"]}
 
 
@@ -1217,12 +1297,15 @@ def _rule14_waiting(ctx: dict) -> dict:
     return {"rule": 14, "what": f"待ち: {chosen['statement']}", "actor": chosen["actor"], "condition_id_raw": chosen["id"]}
 
 
-# 規則5〜14。上から順に評価し、最初に一致した1件だけを返す。各行は
+# 規則5〜14と規則15。上から順に評価し、最初に一致した1件だけを返す。各行は
 # (規則番号, 一致条件, 返すものの組み立て) の3つ組で、規則の追加・並べ替えは
-# ここに1行足すか動かすだけでよい。
+# ここに1行足すか動かすだけでよい。規則15（失敗した子の手当て）は既存の
+# 規則5〜14を詰め直さずに追加したため番号は末尾だが、評価の順番は規則6の
+# 直後・規則7の前に置く（子の崩れの手当てが先、差し戻しの手当てが次）。
 _GOAL_SCOPE_RULES: list[tuple[int, "callable", "callable"]] = [
     (5, lambda ctx: ctx["goal_row"]["closed"] == 1, _rule5_judged),
     (6, lambda ctx: bool(ctx["broken"]), _rule6_broken),
+    (15, lambda ctx: bool(ctx["bound_failed"]), _rule15_bound_failed),
     (7, lambda ctx: bool(ctx["reopened_claude"]), _rule7_reopened),
     (8, lambda ctx: not ctx["open"] and bool(ctx["satisfied"]), _rule8_achieved_ready),
     (9, lambda ctx: not ctx["open"] and not ctx["satisfied"], _rule9_nothing_satisfied),
@@ -1235,7 +1318,7 @@ _GOAL_SCOPE_RULES: list[tuple[int, "callable", "callable"]] = [
 
 
 def _select_next_goal_scope(goal_row, conditions: list[dict], *, activity_scoped: bool) -> dict:
-    """規則5〜14（図2）。goal_id/handleで指した読み出しはこの入口から評価し、
+    """規則5〜14と規則15（図2）。goal_id/handleで指した読み出しはこの入口から評価し、
     activity_idで指した読み出しは規則1〜4が一致しなかったときにこの入口へ進む。
     """
     ctx = _rule_context(goal_row, conditions, activity_scoped)
@@ -1246,7 +1329,7 @@ def _select_next_goal_scope(goal_row, conditions: list[dict], *, activity_scoped
 
 
 def _bound_display(bound_type: str, bound_state: Optional[dict]) -> Optional[str]:
-    """goalブロック表示用の束縛先1行 `"<型>『<タイトル>』: <済/未/崩れの理由>"` を作る。"""
+    """goalブロック表示用の束縛先1行 `"<型>『<タイトル>』: <済/未/失敗/崩れの理由>"` を作る。"""
     if bound_state is None:
         return None
     title = bound_state.get("title") or "?"
@@ -1255,6 +1338,9 @@ def _bound_display(bound_type: str, bound_state: Optional[dict]) -> Optional[str
         return f"{bound_type}『{title}』: 済"
     if state == "pending":
         return f"{bound_type}『{title}』: 未"
+    if state == "failed":
+        reason = _truncate_note(bound_state.get("judge_note"))
+        return f"{bound_type}『{title}』: 失敗（判定: {reason}）"
     reason = bound_state.get("reason")
     if reason == "replaced":
         succ = bound_state.get("successor_title") or "?"
