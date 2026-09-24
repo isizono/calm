@@ -66,6 +66,12 @@ _CHECKIN_TOOLS = {
     "add_activity",
 }
 
+# --- 完了の合図となるツール(CALM MCPツールではない、名前をそのまま照合) ---
+
+_COMPLETION_SIGNAL_TOOLS = {
+    "SendMessage",
+}
+
 
 # ===================================================================
 # イベント駆動アーキテクチャ: イベント抽出
@@ -157,7 +163,20 @@ def extract_events(
                                         pass
                             if topic_ids:
                                 event["topic_ids"] = topic_ids
+                        elif short_name == "update_goal":
+                            changes = block.get("input", {}).get("changes", [])
+                            if isinstance(changes, list) and any(
+                                isinstance(c, dict) and c.get("op") == "set" and c.get("state") == "satisfied"
+                                for c in changes
+                            ):
+                                event["satisfied"] = True
                         events.append(event)
+                    elif name in _COMPLETION_SIGNAL_TOOLS:
+                        events.append({
+                            "e": "tool",
+                            "name": name,
+                            "turn": current_turn,
+                        })
 
     return events, current_turn
 

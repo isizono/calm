@@ -390,6 +390,204 @@ class TestActivityCheckinBlock:
         assert result["decision"] == "approve"
 
 
+class TestRecordingObligationBlock:
+    """完了の合図(update_goalのsatisfiedかSendMessage)があるのに、check_in以降に
+    add_logsが無いとき、1セッション1回だけblockする(記録義務block)。
+    """
+
+    def test_send_message_without_logs_since_checkin_blocks(self, env_setup):
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("hi"),
+                _make_assistant_entry(
+                    tool_calls=["mcp__plugin_calm_calm__check_in"],
+                    tool_inputs=[{"activity_id": 42}],
+                ),
+                _make_user_entry("done"),
+                _make_assistant_entry(
+                    tool_calls=["SendMessage"],
+                    tool_inputs=[{"to": "main", "message": "完了しました"}],
+                ),
+            ],
+            transcript,
+        )
+
+        result = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+        assert result["decision"] == "block"
+        assert "add_logs" in result["reason"]
+
+    def test_update_goal_satisfied_without_logs_since_checkin_blocks(self, env_setup):
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("hi"),
+                _make_assistant_entry(
+                    tool_calls=["mcp__plugin_calm_calm__check_in"],
+                    tool_inputs=[{"activity_id": 42}],
+                ),
+                _make_user_entry("done"),
+                _make_assistant_entry(
+                    tool_calls=["mcp__plugin_calm_calm__update_goal"],
+                    tool_inputs=[{"goal_id": 1, "changes": [{"op": "set", "id": 5, "state": "satisfied"}]}],
+                ),
+            ],
+            transcript,
+        )
+
+        result = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+        assert result["decision"] == "block"
+
+    def test_completion_signal_with_logs_since_checkin_approves(self, env_setup):
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("hi"),
+                _make_assistant_entry(
+                    tool_calls=["mcp__plugin_calm_calm__check_in"],
+                    tool_inputs=[{"activity_id": 42}],
+                ),
+                _make_user_entry("done"),
+                _make_assistant_entry(
+                    tool_calls=["mcp__plugin_calm_calm__add_logs", "SendMessage"],
+                    tool_inputs=[{"items": [{"topic_id": 1, "content": "経緯"}]}, {"to": "main", "message": "完了"}],
+                ),
+            ],
+            transcript,
+        )
+
+        result = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+        assert result["decision"] == "approve"
+
+    def test_no_completion_signal_does_not_block(self, env_setup):
+        """完了の合図が無ければ、check_in以降add_logsが無くてもblockしない"""
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("hi"),
+                _make_assistant_entry(
+                    tool_calls=["mcp__plugin_calm_calm__check_in"],
+                    tool_inputs=[{"activity_id": 42}],
+                ),
+                _make_user_entry("continue"),
+                _make_assistant_entry(text="作業中"),
+            ],
+            transcript,
+        )
+
+        result = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+        assert result["decision"] == "approve"
+
+    def test_block_is_one_shot_per_session(self, env_setup):
+        """記録義務blockは1セッションにつき1回だけ。block_count(2回連続block
+        しないための短期カウンタ)がリセットされた後の次のターンでも、既に
+        発火済みなら再度blockしない(専用の永続フラグで担保している)。"""
+        state_dir = Path(env_setup["state_dir"])
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("hi"),
+                _make_assistant_entry(
+                    tool_calls=["mcp__plugin_calm_calm__check_in"],
+                    tool_inputs=[{"activity_id": 42}],
+                ),
+                _make_user_entry("done"),
+                _make_assistant_entry(tool_calls=["SendMessage"], tool_inputs=[{"to": "main", "message": "完了"}]),
+            ],
+            transcript,
+        )
+
+        first = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+        assert first["decision"] == "block"
+
+        # 実運用ではblock_countは次回呼び出しの「ブロック上限」到達で強制
+        # approve+リセットされる。ここではそのリセット後の状態を再現し、
+        # 記録義務フラグ単体が効くかを検証する。
+        (state_dir / "block_count_test-session").unlink(missing_ok=True)
+
+        with open(transcript, "a") as f:
+            f.write(json.dumps(_make_user_entry("continue")) + "\n")
+            f.write(json.dumps(_make_assistant_entry(text="作業継続中")) + "\n")
+
+        second = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+        assert second["decision"] == "approve"
+
+    def test_recorder_attached_session_not_blocked(self, env_setup, monkeypatch):
+        """記録役の目印ファイルがあるセッションは、記録の責務が記録役に移っている
+        ため、完了の合図とadd_logs不在が揃っても記録義務blockの対象外になる"""
+        state_dir = env_setup["state_dir"]
+        monkeypatch.setattr(HookState, "BASE_DIR", Path(state_dir))
+        write_marker("test-session", os.getpid())
+
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("hi"),
+                _make_assistant_entry(
+                    tool_calls=["mcp__plugin_calm_calm__check_in"],
+                    tool_inputs=[{"activity_id": 42}],
+                ),
+                _make_user_entry("done"),
+                _make_assistant_entry(tool_calls=["SendMessage"], tool_inputs=[{"to": "main", "message": "完了"}]),
+            ],
+            transcript,
+        )
+
+        result = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+        assert result["decision"] == "approve"
+
+    def test_recheckin_after_add_logs_does_not_reset_window(self, env_setup):
+        """add_logsの後にgoal.nextを読み直すため同じactivityへcheck_inし直しても、
+        最初のcheck_in基準で判定するため誤ってblockされない"""
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("hi"),
+                _make_assistant_entry(
+                    tool_calls=["mcp__plugin_calm_calm__check_in"],
+                    tool_inputs=[{"activity_id": 42}],
+                ),
+                _make_user_entry("logged"),
+                _make_assistant_entry(
+                    tool_calls=["mcp__plugin_calm_calm__add_logs"],
+                    tool_inputs=[{"items": [{"topic_id": 1, "content": "経緯"}]}],
+                ),
+                _make_user_entry("recheck"),
+                _make_assistant_entry(
+                    tool_calls=["mcp__plugin_calm_calm__check_in"],
+                    tool_inputs=[{"activity_id": 42}],
+                ),
+                _make_user_entry("done"),
+                _make_assistant_entry(tool_calls=["SendMessage"], tool_inputs=[{"to": "main", "message": "完了"}]),
+            ],
+            transcript,
+        )
+
+        result = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+        assert result["decision"] == "approve"
+
+    def test_agent_type_subagent_not_blocked(self, env_setup):
+        """サブエージェント発のStop呼び出しは記録義務blockの対象外(状態を一切更新せず即承認)"""
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("hi"),
+                _make_assistant_entry(
+                    tool_calls=["mcp__plugin_calm_calm__check_in"],
+                    tool_inputs=[{"activity_id": 42}],
+                ),
+                _make_user_entry("done"),
+                _make_assistant_entry(tool_calls=["SendMessage"], tool_inputs=[{"to": "main", "message": "完了"}]),
+            ],
+            transcript,
+        )
+
+        result = _run_stop_hook(
+            str(transcript), "test-session", env_setup["env_override"], agent_type="builder",
+        )
+        assert result["decision"] == "approve"
+
+
 class TestSkillSpan:
     """Skill Span中のスキップ機能"""
 

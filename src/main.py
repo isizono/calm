@@ -1290,6 +1290,10 @@ def get_goal(
     ときに使う。読み取り専用(check_inと違いactivityのstatusを変えない)。labelが
     judge_ready(判定待ち)のときは、判定待ちの未決(open_questions)も返す。
 
+    委譲先に作業を任せた側が、自己申告に頼らず「記録したか」を確かめたいときは
+    logs_since_createdを見る。委譲先のセッション自身が経緯をadd_logsで書いていれば、
+    このgoal作成後の件数としてここに現れる。
+
     Args:
         goal_id: goalを直接指す(3つのうちちょうど1つを指定する)
         activity_id: activity経由で紐づくgoalを指す。goalが無い場合はエラーにせず
@@ -1299,10 +1303,15 @@ def get_goal(
     Returns:
         {"goal_id_raw", "handle", "statement", "label", "progress", "claude", "next",
          "last_verdict", "conditions": [...全件...], "activities": [...],
+         "logs_since_created": {"count", "since"},
          "open_questions"?, "open_questions_more"?}
          | {"label": "undefined"|"not_needed", "next"?, "reason"?}
         失敗時: {"error": {"code": "VALIDATION_ERROR"|"NOT_FOUND"|"DATABASE_ERROR",
             ...}}
+
+    logs_since_created: このgoalに紐づく全activityが直接属するtopicへ、goalの
+        created_at以降に付いた(取り消されていない)ログの件数(count)と基準時刻
+        (since)。goalが見つかったときは常に付く(undefined/not_needed/エラー時は無い)
     """
     return goal_service.get_goal(goal_id=goal_id, activity_id=activity_id, handle=handle)
 
