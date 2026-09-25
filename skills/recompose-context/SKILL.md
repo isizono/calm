@@ -1,6 +1,6 @@
 ---
 name: recompose-context
-description: アクティビティ・トピック・decisionなどの全関連情報を統合・整理し、anchor対応表を作って次のcheck-inを最適化する。リコンサイル（無効化・再編）も同時に行う。「/recompose」「recompose」「情報整理して」「まとめて」「リコンサイル」などで発動。
+description: アクティビティ・トピック・decisionなどの全関連情報を統合・整理し、anchor対応表を作って次のcheck-inを最適化する。リコンサイル（無効化・再編）と、整理範囲のアクティビティのgoal・親への結びつけのメンテも同時に行う。全体モード（`--all`）ではアクティビティ(active/shelved/snoozed)全域を棚卸しし、実態確認のうえでcompleted化・shelved化・description訂正・重複統合・裁定待ちに処遇する。TRIGGER: 「/recompose」「recompose」「情報整理して」「まとめて」「リコンサイル」、全体モードは「/recompose --all」「アクティビティ棚卸しして」「activity棚卸し」「アクティビティの整理して」など。DO NOT TRIGGER: sync-memory Step 4a(標準形のみで実行される、セッション終了時の軽い自己完結処理)の自動棚卸し、単一アクティビティを完了にせず中断する操作(activity-pause)、単一アクティビティの完了(activity-finish)、タグの共起分析・整理(tag-cleanup)には発動しない。
 ---
 
 # recompose-context
@@ -9,13 +9,18 @@ description: アクティビティ・トピック・decisionなどの全関連�
 
 anchorの新規作成・更新は [setup-anchor](../setup-anchor/SKILL.md) skillに委譲する（責務分離）。
 
+## モード
+
+- **局所モード（既定）**: 入口から辿れる整理単位を対象に、以下の手順1〜9をすべて行う。アクティビティのメンテ（[ステップ5](#アクティビティのメンテ)）は整理範囲に出てきたアクティビティだけに回す
+- **全体モード（`--all`）**: アクティビティ(active/shelved/snoozed)全域の棚卸しを行う。手順は [references/full-inventory.md](references/full-inventory.md) に従い、この本文の手順1〜9は回さない。アクティビティのメンテは全域に適用する
+
 ## 整理単位
 
 整理単位は「2-3個のtopicを囲む形で増殖した関連A/D群」。入口がactivity/decisionでも、関連relationを辿ってtopicまで遡って整理する。
 
 ## 発動契機
 
-実行は手動（ユーザーが「やるか」と言って初めて走る）。check-in時のナッジhint（tagスコープ内のdecision増分検知）から誘導されることもある。実行コンテキストは限定しない: 別セッションで単独実行しても、sync-memoryの延長でやってもよい。
+実行は手動（ユーザーが「やるか」と言って初めて走る）。check-in時のナッジhint（tagスコープ内のdecision増分検知、全体モードは放置アクティビティ件数の検知）から誘導されることもある。実行コンテキストは限定しない: 別セッションで単独実行しても、sync-memoryの延長でやってもよい。
 
 ## 手順
 
@@ -138,13 +143,29 @@ SA（run_in_background）で並行実行。結果はマトリクス化して、�
 - material → `update_material` で上書き
 - topic/activity → retract非対応のため「直す」: status調整・合流・relation張り・新規作成
 
+#### アクティビティのメンテ
+
+整理範囲のアクティビティ（ステップ2で収集したもののうちcompleted以外。全体モードでは全域）について、goalと親への結びつけを整える。未定義や結びつけ漏れを一度に遡及せず、recomposeが呼ばれるたびにその範囲の分だけ直していく。
+
+読み出しは `get_goal(activity_id=...)` と `get_by_ids` で行い、入口以外のアクティビティに `check_in` しない（statusがin_progressに変わり、作業中のセッションとしての記録も付くため）。
+
+- **goalが未定義（`label`が`undefined`）**: 記録（description・log・関連decision）から真偽の付く終了条件が推せるなら、`set_goal(activity_id, goal={"new": {"handle": ..., "statement": ..., "conditions": [...]}})` で書く。条件にはClaudeが自力で到達できるもの（`actor: "claude"`）を最低1本含める。既存の未判定goalの続きの作業だと分かるなら、新規作成せず `set_goal(activity_id, goal={"goal_id": <そのgoalのgoal_id_raw>})` で紐づける。推せない、または候補が複数で1つに絞れないときは何も書かない。未定義のまま残すのは正当な状態であり、雛形で埋めない
+- **不要印（`label`が`not_needed`）**: 触らない
+- **条件の充足と判定**: 記録からの推定だけで条件を `satisfied` にせず、`judge_goal` も呼ばない。外部の完了（PRのマージ等）は `gh` など実際の手段で確かめられた場合に限り `satisfied` に書く。goal付きアクティビティを閉じるのは `update_activity` ではなく `judge_goal` 経由で行う
+- **親への結びつけ**: 記録から、このアクティビティを子として振ったまとめ役のアクティビティが推せるなら、候補を提示せずそのまま結ぶ。結び先は直近の親のgoalにする（子の中で切り出された孫なら、まとめ役ではなく子のgoalに結ぶ）
+  1. `get_goal(activity_id=<親のid>)` で親のgoalを読む。未定義・不要印・判定済み（`label`が`closed`）なら結ばない
+  2. 親goalの `conditions[].bound` にこのアクティビティが既にあれば何もしない
+  3. `update_goal(goal_id=<親のgoal_id_raw>, changes=[{"op": "add", "statement": "子「<子のtitle>」のgoalがachievedで閉じた（済にする前にget_goalで判定を確かめる）", "actor": "claude", "bound": {"type": "activity", "id": <子のid>}}])` で条件を足す
+
+  誤った結びつけは条件をwaivedにして結び直せるので、ユーザーに確認しない。親が推せないときは何もしない
+
 #### 自律度ルール（暫定・運用後見直し前提）
 
 | ゾーン | アクション例 |
 |---|---|
-| 🟢 自律 | relation張り / status・title調整 / material上書き |
+| 🟢 自律 | relation張り / status・title調整 / material上書き / アクティビティのメンテ（推せたgoalの作成・親goalへの条件追加） |
 | 🟡 確証あれば自律 | decision/log retract / activity合流 |
-| 🔴 確認 | 新規entity作成（material以外）|
+| 🔴 確認 | 新規entity作成（material・アクティビティのメンテで作るgoalを除く）|
 
 #### 怪しき発火条件（全レーン共通で🔴に格上げ）
 
@@ -155,7 +176,7 @@ SA（run_in_background）で並行実行。結果はマトリクス化して、�
 - log に懸念明記
 - 推測でしか判定不可
 
-確認はバッファに溜めて最後に一括提示・ジャッジ。重大な矛盾だけはその場で確認（ハイブリッド）。
+確認はバッファに溜めて最後に一括提示・ジャッジ。重大な矛盾だけはその場で確認（ハイブリッド）。アクティビティのメンテで終了条件や親が推せないものは、確認に回さず何もしない。
 
 ### 6. material の保存と tag pin
 
@@ -211,6 +232,9 @@ logs・decisionsの中で言及されているが正式relationが張られて�
 
 ### relation補完
 - （追加したrelation。なければ「なし」）
+
+### アクティビティのメンテ
+- goalを書いた N件 / 親に結んだ N件
 ```
 
 確認待ちがあれば、報告後にユーザーと一括ジャッジする。

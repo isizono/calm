@@ -88,8 +88,7 @@ CALMは「着手 → 記録 → 完了 → 同期」のライフサイクルで�
 - **`/remember`** — 「覚えて」「保存して」と言ったときに、保存先（tag-notes/habits/auto-memory等）をAIが判定して振り分けてくれる
 - **`/rule-placement`** — メタask裁定で発効した一般化ルールを、rules/habits/tag-notes/pin/判例decision/skill/ツールdocstring/server instructionsのどこへ配信するかを評価軸に基づいて判定する。`/remember`の判定木で迷ったときや、1つの裁定に性質の異なる複数ルールが混ざっているときにも使う
 - **`/audit`** — 過去の決定事項との矛盾や方針のブレを疑ったときに、経緯を掘り下げて正しい記録場所に整理し直す
-- **`/recompose-context`** — アクティビティやトピックに散らばった関連情報を整理・統合し、次回のcheck-inを軽くする。「情報整理して」「まとめて」でも発動
-- **`/activity-cleanup`** — アクティビティ(active/shelved/snoozed)を棚卸しし、実態確認のうえでcompleted化・shelved化・description訂正・重複統合・裁定待ちのいずれかに処遇する。「アクティビティ棚卸しして」で発動
+- **`/recompose-context`** — アクティビティやトピックに散らばった関連情報を整理・統合し、次回のcheck-inを軽くする。整理範囲のアクティビティのgoal・親への結びつけも整える。「情報整理して」「まとめて」でも発動。`--all`（全体モード）ではアクティビティ(active/shelved/snoozed)全域を棚卸しし、実態確認のうえでcompleted化・shelved化・description訂正・重複統合・裁定待ちのいずれかに処遇する。「アクティビティ棚卸しして」で発動
 - **`/setup-anchor`** — 合意事項の検証先（anchor）をユーザーと対話しながら設定・更新する
 - **`/db-recovery`** — SessionStart hookがDBデータ異常減少を検知したときに、スナップショット所在確認から復元実行・再検証までを自律的に進める。DB件数の異常な少なさに自分で気づいたときも対象
 - **`/decision-record`** — ユーザーとの合意が成立したとき、または論点が未決のまま話題が移ったときに、決定事項の記録をガイドする
@@ -152,7 +151,8 @@ goal機構は、アクティビティの終了条件を構造化し、いつ・�
 - **起票**（activity-start）: 終了条件を書く／不要印を付ける／何も書かない、の3択にする。雛形で埋めない。条件は真偽の付く1文で書き、Claudeが推した条件も追認を待たずそのまま書く。候補が複数で定まらない、または終わりがあるはずだが何なのか推せないときだけユーザーに聞き、定まれば書く
 - **記録の直後**（recording・decision-record）: 条件を満たしたら、その場でupdate_goalに書く。根拠のdecisionなどがあれば、同じ呼び出しで束縛も張る。それで判定待ちになったら、そのまま判定に続く
 - **待ち**（ask-compose・activity-pause）: 会話や記録から満たされたと分かるなら確認せずsatisfiedに書く。分からない人間の判断待ちだけ、その場で聞けるなら聞いてdecisionにする。離席中・セッション跨ぎならaskにして、条件をそのaskに束縛する
-- **判定**（recording・decision-record・check-in・activity-finish・activity-cleanup）: 全条件が終端になった判定待ちの状態を見たら、そのセッションがその場でjudge_goalを呼ぶ。判定したことの報告はしない。未決（openなask・[議論中]のdecision）があれば、判定の前に畳むか1ターン聞く
+- **判定**（recording・decision-record・check-in・activity-finish・recompose-contextの全体モード）: 全条件が終端になった判定待ちの状態を見たら、そのセッションがその場でjudge_goalを呼ぶ。判定したことの報告はしない。未決（openなask・[議論中]のdecision）があれば、判定の前に畳むか1ターン聞く
+- **整理のついで**（recompose-context）: 整理範囲に出てきた未完了のアクティビティのうち、goalが未定義のものに記録から推せる終了条件を書く（推せなければ書かない。不要印は触らない）。振ったまとめ役が推せるなら、確認なしに親のgoalへ子を束縛先にした条件を足す。推定では条件を満たさず、判定もしない
 - **事後の記録**（sync-memory）: transcriptから推せる終了条件は確認なしで書く。候補が複数で定まらない、または推せないときは書かない（事後の一括処理でユーザーに聞けないため未定義のまま残す）。外部の完了はghなど実際の手段で確かめられればsatisfiedに書き、確かめた結果で終端すればjudge_goalも呼ぶ。確かめられない推測はsatisfiedにも判定にも使わない
 
 ### 終了条件を書かない選択
