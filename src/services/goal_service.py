@@ -1439,7 +1439,9 @@ def _stalled_hint(liveness: Optional[dict]) -> Optional[str]:
     """「止まっている」根拠のhintを返す。止まっていなければNone。
 
     優先順位は、人間の判断待ち（open ask）、判定せず完了、heartbeat途切れの順。
-    どれにも当たらなければ止まっていない。
+    どれにも当たらなければ止まっていない。snoozed/shelvedはheartbeatが
+    途切れていても「止まっている」扱いにしない（寝かせている最中で当然の
+    無音期間であり、overview_serviceのbacklog判定と同じ扱いに揃える）。
     """
     if liveness is None:
         return None
@@ -1447,6 +1449,8 @@ def _stalled_hint(liveness: Optional[dict]) -> Optional[str]:
         return f"ask待ち『{_truncate_note(liveness['open_ask_question'])}』"
     if liveness["status"] == "completed":
         return "判定せず完了"
+    if liveness["status"] in ("snoozed", "shelved"):
+        return None
     minutes_since = liveness["minutes_since"]
     if minutes_since is not None and minutes_since > HEARTBEAT_TIMEOUT_MINUTES:
         return f"最終活動{minutes_since}分前"

@@ -1474,6 +1474,32 @@ class TestAttention:
         assert item["mark"] == "止まっている"
         assert item["hint"] == "判定せず完了"
 
+    def test_snoozed_child_not_stalled_despite_heartbeat_timeout(self, temp_db):
+        child = _activity("snoozed-child")
+        update_activity(child, status="snoozed")
+        _set_activity_heartbeat(child, "-2 hours")
+        parent = _activity("parent")
+        goal_id = _new_goal(
+            parent,
+            conditions=[{"statement": "c1", "actor": "claude", "bound": {"type": "activity", "id": child}}],
+        )["goal_id_raw"]
+        block = gs.get_goal(goal_id=goal_id)
+        assert "attention" not in block
+        assert block["children"] == "子1: 進行中1"
+
+    def test_shelved_child_not_stalled_despite_heartbeat_timeout(self, temp_db):
+        child = _activity("shelved-child")
+        update_activity(child, status="shelved")
+        _set_activity_heartbeat(child, "-2 hours")
+        parent = _activity("parent")
+        goal_id = _new_goal(
+            parent,
+            conditions=[{"statement": "c1", "actor": "claude", "bound": {"type": "activity", "id": child}}],
+        )["goal_id_raw"]
+        block = gs.get_goal(goal_id=goal_id)
+        assert "attention" not in block
+        assert block["children"] == "子1: 進行中1"
+
     def test_achieved_and_in_progress_children_are_not_attention(self, temp_db):
         achieved_child, _ = _child_with_goal_verdict("achieved", title="achieved-child")
         in_progress_child = _activity("in-progress-child")
