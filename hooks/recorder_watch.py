@@ -506,34 +506,51 @@ def _terminate(run_dir: Path, main_sid: str) -> None:
         pass
 
 
+def _spawn_detached(calm_root: Path, run_dir: Path, log_name: str, args: list[str]) -> None:
+    """`scripts/recorder.py`のサブコマンドを、切り離したプロセスとして起動する。
+
+    tmux kill-sessionを伴うサブコマンド（stop・restart）を呼び出し元自身の
+    プロセスから直接呼ぶと、呼び出し元（記録役のtmuxセッション内で動く見張り
+    や、SessionStart hook）を巻き添えで終了・ブロックしうる。実際のコマンドは
+    `start_new_session=True`で切り離した別プロセスに行わせ、本関数はその起動
+    だけを行ってすぐ戻る。切り離しプロセスには呼び出し元のセッション環境変数
+    が伝わらないため、必要な引数はargsで明示的に渡す。stdout/stderrは
+    `run_dir/log_name`に追記し、失敗したときに手がかりを残す。
+    """
+    venv_python = calm_root / ".venv" / "bin" / "python"
+    recorder_script = calm_root / "scripts" / "recorder.py"
+    with open(run_dir / log_name, "a", encoding="utf-8") as log_fh:
+        subprocess.Popen(
+            [str(venv_python), str(recorder_script), *args],
+            start_new_session=True,
+            stdin=subprocess.DEVNULL, stdout=log_fh, stderr=log_fh,
+        )
+
+
 def _spawn_detached_restart(
     calm_root: Path, run_dir: Path, main_sid: str, main_pid: int, main_transcript: Path
 ) -> None:
     """記録役の立て直し（stop→start）を、切り離したプロセスとして起動する。
 
     この関数は、まだ生きている記録役のtmuxセッション内（そのStop hookの
-    実行中）から呼ばれる。tmux kill-sessionをここで直接呼ぶと、呼び出し元
-    である見張り自身のプロセスも巻き添えで終了してしまうため、実際の
-    stop/startは`start_new_session=True`で切り離した別プロセス
-    （`scripts/recorder.py restart`）に行わせ、本関数はその起動だけを行って
-    すぐ戻る。切り離しプロセスには`$CLAUDE_CODE_SESSION_ID`等のセッション
-    環境変数が伝わらないため、main_sid・main_pid・main_transcriptを引数で
-    明示的に渡す。stdout/stderrは`run_dir/restart.log`に追記し、立て直しが
-    失敗したときに手がかりを残す。
+    実行中）から呼ばれる。stdout/stderrは`run_dir/restart.log`に追記する。
     """
-    venv_python = calm_root / ".venv" / "bin" / "python"
-    recorder_script = calm_root / "scripts" / "recorder.py"
-    with open(run_dir / "restart.log", "a", encoding="utf-8") as log_fh:
-        subprocess.Popen(
-            [
-                str(venv_python), str(recorder_script), "restart",
-                "--session-id", main_sid,
-                "--pid", str(main_pid),
-                "--transcript", str(main_transcript),
-            ],
-            start_new_session=True,
-            stdin=subprocess.DEVNULL, stdout=log_fh, stderr=log_fh,
-        )
+    _spawn_detached(
+        calm_root, run_dir, "restart.log",
+        ["restart", "--session-id", main_sid, "--pid", str(main_pid), "--transcript", str(main_transcript)],
+    )
+
+
+def _spawn_detached_stop(calm_root: Path, run_dir: Path, main_sid: str) -> None:
+    """古い記録役の停止を、切り離したプロセスとして起動する。
+
+    `hooks.recorder_autostart_hook`のSessionStart hookから、/clear・resumeで
+    不要になった古い記録役を止めるために呼ばれる。tmux kill-sessionの
+    タイムアウトでSessionStart自体をブロックしないよう、`_spawn_detached_
+    restart`と同じく切り離したプロセス（`scripts/recorder.py stop`）に行わ
+    せる。stdout/stderrは`run_dir/autostart_stop.log`に追記する。
+    """
+    _spawn_detached(calm_root, run_dir, "autostart_stop.log", ["stop", "--session-id", main_sid])
 
 
 def _read_int_env(name: str) -> int | None:
