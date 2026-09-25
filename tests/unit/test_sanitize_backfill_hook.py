@@ -316,7 +316,7 @@ def test_case_05_non_tool_result_entries_untouched(fixture_db, state_dir, tmp_pa
 
 
 # ---------------------------------------------------------------------------
-# Case #6: tool_result の content が cc-memory tool 由来でない → スキップ
+# Case #6: tool_result の content が calm tool 由来でない → スキップ
 # ---------------------------------------------------------------------------
 
 
@@ -337,7 +337,7 @@ def test_case_06_non_calm_tool_result_skipped(fixture_db, state_dir, tmp_path):
     # Read tool 由来 → 変換しない
     assert new_entries[1]["message"]["content"][0]["content"] == \
         "Read result mentions M#1"
-    # cc-memory tool 由来 → 変換
+    # calm tool 由来 → 変換
     assert new_entries[3]["message"]["content"][0]["content"] == \
         "cc-memory {{cite:M#1}} ref"
 
@@ -527,7 +527,7 @@ def test_case_11_env_disable_short_circuits(fixture_db, state_dir, tmp_path, mon
 
 
 # ---------------------------------------------------------------------------
-# Case #12: cwd が cc-memory リポジトリ内 → 即 exit 0、log なし、offset 未更新
+# Case #12: cwd が calm リポジトリ内 → 即 exit 0、log なし、offset 未更新
 # ---------------------------------------------------------------------------
 
 

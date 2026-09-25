@@ -182,7 +182,7 @@ exit code は verdict を返せた場合は常に0。内部例外(検出器自�
 
 ### 何を影判定するか
 
-- 対象は cc-memory リポジトリの main 向け全 PR(例外なし)
+- 対象は calm リポジトリの main 向け全 PR(例外なし)
 - shadow 期間中、検出器の分類は**運用に一切使わない**。全案件を従来通り人間判断で進める。
   検出器は記録だけを積む
 
@@ -247,7 +247,7 @@ shadow 期の観察対象として記録しておく。`false_negative` とし�
 
 1設計案 = 1パッケージ。markdown文書で、先頭に機械可読ブロック(` ```go-package ` フェンス内
 YAML)、続いて人間が読む3区分本文(1-a 分類判定材料 / 1-b 地図メンテ材料 / 1-c 品質証跡、
-計10小見出し)を置く。保存先は cc-memory material(素タグ `go-package` + `domain:calm`
+計10小見出し)を置く。保存先は calm material(素タグ `go-package` + `domain:calm`
 必須)であり、PR本文には載せない(判例idを含む文書であり、PR本文の記述規則と衝突するため)。
 
 ### サブコマンド

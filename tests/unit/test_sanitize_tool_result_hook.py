@@ -148,7 +148,7 @@ def test_case_01_valid_target_converted_to_cite(fixture_db):
 
 
 # ---------------------------------------------------------------------------
-# Case #2: cc-memory tool 以外 → no-op (matcher で限定だが防御)
+# Case #2: calm tool 以外 → no-op (matcher で限定だが防御)
 # ---------------------------------------------------------------------------
 
 
@@ -183,7 +183,7 @@ def test_case_03_env_disable_short_circuits_even_for_subagent(fixture_db, monkey
 
 
 # ---------------------------------------------------------------------------
-# Case #4: cwd が cc-memory リポジトリ内 → skip (pyproject.toml で判定)
+# Case #4: cwd が calm リポジトリ内 → skip (pyproject.toml で判定)
 # ---------------------------------------------------------------------------
 
 
@@ -220,7 +220,7 @@ def test_case_04_cwd_in_unrelated_project_not_skipped(fixture_db, tmp_path):
 
 
 def test_case_04_agent_type_bypasses_cwd_repo_skip(fixture_db, tmp_path):
-    """agent_type付き(サブエージェント発)呼び出しは、cwdがcc-memoryリポジトリ内でもスキップしない。"""
+    """agent_type付き(サブエージェント発)呼び出しは、cwdがcalmリポジトリ内でもスキップしない。"""
     repo_root = tmp_path / "cc-memory-repo"
     repo_root.mkdir()
     (repo_root / "pyproject.toml").write_text(

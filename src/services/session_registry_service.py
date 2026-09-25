@@ -2,7 +2,7 @@
 
 配置: ``~/.cc-memory/session_aliases.json``（env ``CALM_SESSION_REGISTRY_PATH``
 で差し替え可）。DBマイグレーションを要さない揮発性データとして意図的に
-ファイル保持する。cc-memory server はローカル/リモードの複数プロセスで
+ファイル保持する。calm server はローカル/リモードの複数プロセスで
 稼働しうり、hookのような別プロセスからもMCP往復なしに読めることを優先した
 選択であり、in-memory辞書は採らない。
 

@@ -1,6 +1,6 @@
 """title 引数の長さ validation helper。
 
-cc-memory の add/update ツール群で title 引数を TITLE_MAX_LEN 字以内に揃える。
+calm の add/update ツール群で title 引数を TITLE_MAX_LEN 字以内に揃える。
 docstring 明記と validation の両輪で AI 側に制約を伝える。
 """
 

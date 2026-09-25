@@ -1,11 +1,11 @@
 ---
 name: memory-export
-description: 【必須】cc-memoryの記録(topic/decision/log/material/activity)を他のcc-memoryインスタンスへexportバンドルとして書き出す。「エクスポートして」「他のインスタンスに渡したい」「バンドル作って」「知識を共有したい」などで発動。このスキルを経由せずにexport_bundleを直接呼んではいけない。
+description: 【必須】calmの記録(topic/decision/log/material/activity)を他のcalmインスタンスへexportバンドルとして書き出す。「エクスポートして」「他のインスタンスに渡したい」「バンドル作って」「知識を共有したい」などで発動。このスキルを経由せずにexport_bundleを直接呼んではいけない。
 ---
 
 # memory-export
 
-起点(topic/activity)またはタグから到達可能な記録を選び、他のcc-memoryインスタンスへ渡すバンドル(manifest.yaml + エンティティ別mdファイル)を書き出す。
+起点(topic/activity)またはタグから到達可能な記録を選び、他のcalmインスタンスへ渡すバンドル(manifest.yaml + エンティティ別mdファイル)を書き出す。
 
 ## 手順
 

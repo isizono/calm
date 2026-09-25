@@ -40,7 +40,7 @@ CALMには「記憶の保持（半年後も価値が変わらない）」と「�
 **アンカー:**
 
 - 既存資料: プロダクト群マップ v1（CALM資料）、4層スタック決定（topic「プロダクト群マップ」配下）
-- コードベース: cc-memoryリポ直下のディレクトリ構造（services/ hooks/ skills/ migrations/）が大まかな層対応
+- コードベース: calmリポ直下のディレクトリ構造（services/ hooks/ skills/ migrations/）が大まかな層対応
 
 ### 1.2 playbook: 議論時に「どの層の話か」を最初に宣言する
 
@@ -93,7 +93,7 @@ CALMに関する議論を始めるとき、「これはどの層の話か」を�
 
 **アンカー:**
 
-- コードベース: cc-memoryリポのmodels/、migrations/
+- コードベース: calmリポのmodels/、migrations/
 - 既存決定: 3プロトコル決定、データセマンティクス凍結方針決定
 - 既存資料: プロダクト群マップ v1 §3, §5
 
@@ -163,7 +163,7 @@ CALMに関する議論を始めるとき、「これはどの層の話か」を�
 
 **アンカー:**
 
-- コードベース: cc-memoryリポのservices/search_service、services/material_service他
+- コードベース: calmリポのservices/search_service、services/material_service他
 - 既存資料: 5次元統合レポート Read Path 章（横断課題）
 
 ### 3.2 playbook
@@ -232,7 +232,7 @@ CALMに関する議論を始めるとき、「これはどの層の話か」を�
 
 **アンカー:**
 
-- コードベース: cc-memoryリポのhooks/、skills/
+- コードベース: calmリポのhooks/、skills/
 - 既存資料: 5次元統合レポート フック章・スキルIF章
 - 既存決定: nudgeエスカレーション仕様、SessionStart構造方針
 
@@ -304,7 +304,7 @@ orch運用下で生成される activity/decision/material 等には `orch-manag
 
 **アンカー:**
 
-- コードベース: cc-memoryリポのhooks/session_*（v1通信系の`services/ow_service`は撤去済み。後継のrelay v2 4動詞toolも`src/services/relay/`ごとCALM本体から撤去済み。識別子解決のみ`src/infra/session_identity.py`へ移設して継続利用）
+- コードベース: calmリポのhooks/session_*（v1通信系の`services/ow_service`は撤去済み。後継のrelay v2 4動詞toolも`src/services/relay/`ごとCALM本体から撤去済み。識別子解決のみ`src/infra/session_identity.py`へ移設して継続利用）
 - 既存資料: ow統合設計書 v3、orch役割境界 設計書 v2、5次元統合レポート マルチセッション章
 - 既存決定: 「orchは原則手を動かさない、workerに任せる」習慣、「workerはdecisionを直接書かない」習慣
 

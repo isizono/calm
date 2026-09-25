@@ -15,7 +15,7 @@ chunk 境界をまたぐ ID リテラル (例: chunk N が `M#`、chunk N+1 が 
 は補完漏れになる trade-off を受け入れる。`final=true` 待ち全文累積モデルは
 今回採用しない。
 
-cc-memory project 内かどうかは判定せず、全 session で有効。
+calm project 内かどうかは判定せず、全 session で有効。
 """
 from __future__ import annotations
 

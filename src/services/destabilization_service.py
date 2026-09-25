@@ -15,7 +15,7 @@ VALID_RESOLUTIONS = {"reaffirmed", "revised", "retracted"}
 # suggest_destabilized_candidates のスコア係数。
 # ow解体decisionの実例データでのsimulate試験（素案 0.6*embedding_similarity +
 # 0.3*tag_jaccard + 0.1*same_topic_bonus と本比較）の結果、tag_jaccard重視版の方が
-# 既知の影響decision群の順位が一貫して改善したため採用（cc-memory material
+# 既知の影響decision群の順位が一貫して改善したため採用（calm material
 # 「候補提示スコア係数simulate試験結果」参照）。
 _SCORE_WEIGHT_EMBEDDING = 0.3
 _SCORE_WEIGHT_TAG_JACCARD = 0.6
@@ -157,7 +157,7 @@ def resolve_destabilization(
 def _get_owner_topic_ids_batch(conn: sqlite3.Connection, decision_ids: list[int]) -> dict[int, "int | None"]:
     """複数decisionの所属topic_idを一括取得する（relations.belongs_to経由）。
 
-    cc-memoryには「decision→所属topic」を直接引く既存関数が無いため、
+    calmには「decision→所属topic」を直接引く既存関数が無いため、
     relationsテーブルのbelongs_toエッジを直接クエリする。複数topicにbelongs_toする
     decisionは最小のtopic_idを採用する（decision作成時は単一topicが基本で、
     複数belongs_toは後付けのrelated付け時のみ発生するレアケース）。

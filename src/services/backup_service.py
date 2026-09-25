@@ -782,7 +782,7 @@ def _cmd_restore(args: argparse.Namespace) -> int:
 
 def main() -> None:
     """CLI: list / take / verify / restore サブコマンド"""
-    parser = argparse.ArgumentParser(description="cc-memory DBスナップショット管理CLI")
+    parser = argparse.ArgumentParser(description="calm DBスナップショット管理CLI")
     parser.add_argument("--db-path", dest="db_path", default=None, help="対象DBのパス（省略時はCALM_DB_PATH等から解決）")
     sub = parser.add_subparsers(dest="command", required=True)
 

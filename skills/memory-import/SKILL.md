@@ -1,6 +1,6 @@
 ---
 name: memory-import
-description: 【必須】他のcc-memoryインスタンスが書き出したexportバンドルを取り込む。「このバンドルを取り込んで」「importして」「バンドルを読み込んで」などバンドルパスの提示を伴う発話で発動。このスキルを経由せずにimport_bundleを直接呼んではいけない。
+description: 【必須】他のcalmインスタンスが書き出したexportバンドルを取り込む。「このバンドルを取り込んで」「importして」「バンドルを読み込んで」などバンドルパスの提示を伴う発話で発動。このスキルを経由せずにimport_bundleを直接呼んではいけない。
 ---
 
 # memory-import

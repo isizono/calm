@@ -1,12 +1,12 @@
 """PreToolUse hook: tool_input に内部 ID リテラル (`[MDLAT]#NNN` または英語フルワード
 `log/decision/activity/material/topic #NNN`) が含まれていたら block する。
 
-cc-memory 開発現場以外で内部 ID 形式の文字列を外部に出すケースは想定されないため、
+calm 開発現場以外で内部 ID 形式の文字列を外部に出すケースは想定されないため、
 tool 引数段階で機械的に止めることで AI 経由の漏出を防ぐ (scope A 方針)。
 
-cc-memory (calm) project 内 (pyproject.toml の `[project].name` が `_PROJECT_NAMES` のいずれかに一致) のみで有効。
+calm project 内 (pyproject.toml の `[project].name` が `_PROJECT_NAMES` のいずれかに一致) のみで有効。
 `CALM_LEAK_GUARD=off` 環境変数で緊急時に opt-out 可能。
-allowlist tool (cc-memory 自身の MCP / Read 系 / harness 内部 tool) は素通し。
+allowlist tool (calm 自身の MCP / Read 系 / harness 内部 tool) は素通し。
 バックスラッシュエスケープ (`\\M#123`, `\\log #123`, `#`省略形の `\\log 123`) は字義扱いで非 block。
 
 検出時は `permissionDecision: "deny"` + 英文 reason を返し、
@@ -94,7 +94,7 @@ ALLOWLIST_EXACT: frozenset[str] = frozenset(
 
 LOG_PATH = pathlib.Path.home() / ".cc-memory" / "logs" / "preblock_hook.jsonl"
 
-# pyproject.toml `[project].name` がこのいずれかに一致したら cc-memory project と判定する。
+# pyproject.toml `[project].name` がこのいずれかに一致したら calm project と判定する。
 # 実プロジェクトの name は "calm" (旧 "claude-code-memory")。過去ドキュメントや一部 fixture が
 # "cc-memory" 表記を持つので合わせて受け入れる。
 _PROJECT_NAMES: tuple[str, ...] = ("cc-memory", "claude-code-memory", "calm")
@@ -184,10 +184,10 @@ def _scan_tool_input(value) -> list[dict]:
 
 
 def _is_in_calm_project() -> bool:
-    """cwd から上方向に pyproject.toml を探索して cc-memory project か判定する。
+    """cwd から上方向に pyproject.toml を探索して calm project か判定する。
 
     `[project].name` を tomllib で厳密パースし、`_PROJECT_NAMES` のいずれかに
-    一致するケースを cc-memory project とみなす。コメント行や別フィールドに
+    一致するケースを calm project とみなす。コメント行や別フィールドに
     たまたま許容値を含むケースで誤判定しないよう、文字列の部分一致ではなく
     パース済みの構造から取り出す。
     """
@@ -241,7 +241,7 @@ def main() -> None:
             harness.emit_empty()
             return
 
-        # cwd 判定: cc-memory project 内のみ有効
+        # cwd 判定: calm project 内のみ有効
         if not _is_in_calm_project():
             harness.emit_empty()
             return
