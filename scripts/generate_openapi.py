@@ -3,7 +3,7 @@
 
 一次情報は ``src/main.py`` の ``@mcp.tool()`` 関数群である。手動でopenapi.yamlを
 書き換えて追従させる運用は、ツール追加・引数変更のたびに乖離を生む
-（cc-memory 仕様書v0乖離監査で実測）。本スクリプトはツール一覧・引数スキーマを
+（calm 仕様書v0乖離監査で実測）。本スクリプトはツール一覧・引数スキーマを
 実行時に問い合わせて機械的にYAMLへ変換し、その乖離を構造的に無くす。
 
 使い方:
@@ -178,10 +178,10 @@ def build_openapi_doc() -> dict:
     doc = {
         "openapi": "3.0.3",
         "info": {
-            "title": "cc-memory MCP server",
+            "title": "calm MCP server",
             "version": "0",
             "description": _LiteralStr(
-                "cc-memory が提供する MCP ツール群の機械可読仕様。\n"
+                "calm が提供する MCP ツール群の機械可読仕様。\n"
                 "MCP は本来 JSON-RPC ベースだが、ここでは OpenAPI 3.0 形式で\n"
                 "1 ツール = 1 path (POST) として整理する。\n"
                 "本ファイルは scripts/generate_openapi.py が mcp.list_tools() から自動生成する。\n"
@@ -191,7 +191,7 @@ def build_openapi_doc() -> dict:
         },
         "servers": [
             {
-                "url": "mcp://cc-memory",
+                "url": "mcp://calm",
                 "description": "ローカル/HTTP/StreamableHTTP の任意のトランスポートを抽象化した仮想 base URL",
             }
         ],

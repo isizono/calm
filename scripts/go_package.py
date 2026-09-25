@@ -760,7 +760,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     sub.add_parser("template", help="テンプレートmarkdownをstdoutへ出す")
 
     p_new = sub.add_parser("new", help="機械判定欄を充填した雛形を生成する")
-    p_new.add_argument("--activity", type=int, required=True, help="cc-memory activity id")
+    p_new.add_argument("--activity", type=int, required=True, help="calm activity id")
     p_new.add_argument("--base", default="origin/main")
     p_new.add_argument("--head", default="HEAD")
     p_new.add_argument("--predicted", choices=CLASSIFICATIONS, default=None)

@@ -262,7 +262,7 @@ GO判定パッケージの生成にはこの時点でのコミットが要る。
 4. GO判定パッケージ（`iterations/{nn}-go-package.md`）の機械可読ブロック `prs` フィールドに、
    作成したPR番号を追記する
 5. `add_material` でGO判定パッケージ全文を保存する（title 40字以内、素タグ `go-package` +
-   `domain:cc-memory`、`related` にタスクのactivityを指定）。**GO判定パッケージはPR本文には
+   `domain:calm`、`related` にタスクのactivityを指定）。**GO判定パッケージはPR本文には
    載せない**（判例idを含む文書のため。PRとの対応は `prs` フィールドが持つ）
 6. plan.mdの当該サブプランの状態を✅完了に更新
 

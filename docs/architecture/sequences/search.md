@@ -2,11 +2,11 @@
 
 ## 0. 読み方
 
-本書はcc-memoryのsearchユースケースの動きを写し取ったシーケンス仕様である。実装の凍結を目的とするものではなく、コードが一次情報であり、本書はその時点の実装を読みやすく整理したスナップショットである。差異を見つけたらコードを正とする。
+本書はcalmのsearchユースケースの動きを写し取ったシーケンス仕様である。実装の凍結を目的とするものではなく、コードが一次情報であり、本書はその時点の実装を読みやすく整理したスナップショットである。差異を見つけたらコードを正とする。
 
 ## 1. 概要
 
-searchは、cc-memoryの中で記録済みエンティティ（topic / decision / activity / log / material）を横断検索するユースケースである。FTS5 trigram、ベクトルKNN、タグLIKEの3系統を並列に走らせ、RRF（Reciprocal Rank Fusion）でランク統合し、recency乗算で時間減衰させた結果をページネーションして返す。
+searchは、calmの中で記録済みエンティティ（topic / decision / activity / log / material）を横断検索するユースケースである。FTS5 trigram、ベクトルKNN、タグLIKEの3系統を並列に走らせ、RRF（Reciprocal Rank Fusion）でランク統合し、recency乗算で時間減衰させた結果をページネーションして返す。
 
 - 入口: MCPツール `search(keyword, tags, entity_type, limit, offset, keyword_mode, include_details, domain, date_after, date_before, include_retracted)`（`src/main.py`）
 - 呼び出し元: エージェントの調査・コンテキスト取得、各スキル

@@ -378,7 +378,7 @@ class TestIsInCalmProject:
         monkeypatch.chdir(subdir)
         # tmp_path 上にも pyproject.toml がないことを保証するため、
         # macOS / Linux の / までさかのぼると別の pyproject に当たる可能性があるが、
-        # その場合は cc-memory ではないという結果になる (False) のでテスト目的的は OK
+        # その場合は calm ではないという結果になる (False) のでテスト目的的は OK
         result = preblock_hook._is_in_calm_project()
         assert result is False
 

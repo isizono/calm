@@ -1,4 +1,4 @@
-"""cc-memory MCPサーバー・embeddingサーバーの強制再起動ロジック
+"""calm MCPサーバー・embeddingサーバーの強制再起動ロジック
 
 launcher.py の _ensure_server_running() は「生きていれば何もしない」ensure動作であり、
 プラグインアップデート後にコード変更が反映されない。本モジュールは既存プロセスを
@@ -361,7 +361,7 @@ def restart_all(project_root: Path, *, restart_embedding: bool = False) -> dict:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="cc-memory server restart")
+    parser = argparse.ArgumentParser(description="calm server restart")
     parser.add_argument(
         "--restart-embedding",
         action="store_true",

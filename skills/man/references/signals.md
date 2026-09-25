@@ -2,16 +2,16 @@
 
 ## 0. 読み方
 
-本ドキュメントは、cc-memory 自身への故障報告・使用感不満・矛盾検出・運用計測イベントを扱う Signal 機能（`report_signal` / `get_signals` / `update_signal` の3ツール）の仕様を、`src/main.py` の各ツール docstring から抽出してまとめたものである。ツール定義が正であり、本ドキュメントはその写しである。
+本ドキュメントは、calm 自身への故障報告・使用感不満・矛盾検出・運用計測イベントを扱う Signal 機能（`report_signal` / `get_signals` / `update_signal` の3ツール）の仕様を、`src/main.py` の各ツール docstring から抽出してまとめたものである。ツール定義が正であり、本ドキュメントはその写しである。
 
 ## 1. report_signal — 記録
 
-cc-memory 自身への故障報告・使用感不満・矛盾検出・運用計測イベントの統一入口。
+calm 自身への故障報告・使用感不満・矛盾検出・運用計測イベントの統一入口。
 
 ### 1.1 kind（8種類、いずれか必須）
 
 - `machine_error`: ツールエラー・hook 失敗・サーバー異常を観察した
-- `friction`: cc-memory の使い勝手への不満・違和感（ユーザー発話由来を含む）
+- `friction`: calm の使い勝手への不満・違和感（ユーザー発話由来を含む）
 - `contradiction`: 既存記録（decision/material/log）と矛盾する結論を出した/検出した。
   - `refs` に矛盾の両側の id を必ず含めること
   - `summary` は「`<新しい結論の要旨>` ↔ `<矛盾する既存記録の title>`」形式

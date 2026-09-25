@@ -1,7 +1,7 @@
-"""PostToolUse hook: cc-memory tool_result の生 X#NNN を {{cite:X#NNN}} に変換する。
+"""PostToolUse hook: calm tool_result の生 X#NNN を {{cite:X#NNN}} に変換する。
 
 stdin から JSON (tool_name / tool_response / cwd / session_id / transcript_path) を読み、
-cc-memory tool の場合に tool_response.content をサニタイズして
+calm tool の場合に tool_response.content をサニタイズして
 hookSpecificOutput.updatedToolOutput で stdout へ返す。応答の出力はHarness経由で、
 書き換え機構が無いハーネス (Codex。emit_updated_tool_output が False) では
 応答もイベント記録も行わず終了する。updatedToolOutput の型
@@ -10,10 +10,10 @@ hookSpecificOutput.updatedToolOutput で stdout へ返す。応答の出力はHa
 
 opt-out:
 - 環境変数 `CALM_SANITIZE_DISABLE=1` set: 即 exit 0 (サブエージェント呼び出しでも適用)
-- cwd が cc-memory リポジトリ内 (pyproject.toml `[project].name` が `_REPO_PROJECT_NAMES`
+- cwd が calm リポジトリ内 (pyproject.toml `[project].name` が `_REPO_PROJECT_NAMES`
   のいずれかに一致することを上方向探索で検出) かつ stdin に `agent_type` (Claude Codeが
   サブエージェント発の呼び出しにのみ付与するフィールド) が含まれない場合: 即 exit 0。
-  `agent_type` があるときはcwdに関わらずサニタイズする(cc-memoryのworktreeはメイン
+  `agent_type` があるときはcwdに関わらずサニタイズする(calmのworktreeはメイン
   セッションのcwdにも高頻度でなるため、cwdだけでは区別できない)。判定はキーの有無
   (truthy)のみで行い値の中身は見ない。`agent_id`は常にnullで届くため判定に使えない
   (メインセッション由来・サブエージェント由来を問わず存在するがnull)。

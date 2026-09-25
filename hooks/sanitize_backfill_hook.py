@@ -1,7 +1,7 @@
 """SessionStart hook: 過去 transcript の差分 backfill sanitize。
 
 stdin から JSON (session_id / transcript_path / cwd / source) を読み、
-transcript .jsonl 中の cc-memory tool_result から生 X#NNN を {{cite:X#NNN}} に変換し、
+transcript .jsonl 中の calm tool_result から生 X#NNN を {{cite:X#NNN}} に変換し、
 target 不在は [deleted X#NNN] に変換する。
 
 書き戻し方式: atomic rename + backup + mtime 再確認。
@@ -18,7 +18,7 @@ opt-out:
 - transcript書き換えが無いハーネス (Codex。supports_transcript_rewrite が False):
   即 exit 0。Codexのrollout recorderは書き込みハンドルを保持しており、rename方式の
   差し替えは以降のappendを喪失させることを実機確認済み (#613)
-- cwd が cc-memory リポジトリ内 (pyproject.toml [project].name が _REPO_PROJECT_NAMES
+- cwd が calm リポジトリ内 (pyproject.toml [project].name が _REPO_PROJECT_NAMES
   のいずれかに一致することを上方向探索で検出): 即 exit 0
 
 例外時は stderr 警告 + citation_event_log failure イベント記録 + exit 0 (Claude Code 起動非ブロック)。
@@ -55,7 +55,7 @@ _MAX_CONSECUTIVE_FAILURES = 3
 
 
 # ---------------------------------------------------------------------------
-# opt-out: cwd が cc-memory リポジトリ内か判定
+# opt-out: cwd が calm リポジトリ内か判定
 # ---------------------------------------------------------------------------
 
 
@@ -199,7 +199,7 @@ def _sanitize_transcript_bytes(
     offset: int,
     ro_conn: sqlite3.Connection,
 ) -> tuple[bytes, dict, bool, list[dict]]:
-    """transcript bytes を読み offset 以降の cc-memory tool_result を sanitize して再構築。
+    """transcript bytes を読み offset 以降の calm tool_result を sanitize して再構築。
 
     offset 未満の行は元バイト列のままパススルー (byte-perfect 維持)。
     Returns: (new_bytes, stats, modified, events)

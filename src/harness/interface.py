@@ -1,6 +1,6 @@
 """Harness抽象化インターフェース。
 
-cc-memoryの各hookは、これまでClaude Code固有のhookプロトコル
+calmの各hookは、これまでClaude Code固有のhookプロトコル
 （stdinからのJSON入力、`hookSpecificOutput`各種フィールドへの出力）・
 transcriptファイル形式（フラットな`type`/`message.content`のJSONL）・
 プロセス識別方式（祖先pid探索）に直接依存していた。Codex CLI対応に
