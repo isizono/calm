@@ -23,7 +23,10 @@ _CODEX_HOOKS_JSON_PATH = _PROJECT_ROOT / ".codex" / "hooks.json"
 
 # Codex CLIのhookイベント一覧（codex-rs/hooks/src/lib.rs HOOK_EVENT_NAMES）に
 # 存在しないイベント。Codex側登録（.codex/hooks.json）の期待値導出から除外する。
-_CODEX_UNSUPPORTED_EVENTS = {"MessageDisplay"}
+# PostToolUseFailure: Codexのhooks.jsonスキーマ（codex-rs/config/src/hook_config.rs
+# HookEventsToml）に対応キーが無く、登録しても未知キーとして無視され発火しない
+# （codex-cli 0.149.0で確認。#608, #610）。
+_CODEX_UNSUPPORTED_EVENTS = {"MessageDisplay", "PostToolUseFailure"}
 
 # イベント自体はCodexに存在するが、スクリプトが依存するハーネス機構が
 # Codexに無いため、Codex側登録の期待値導出から除外するスクリプト。

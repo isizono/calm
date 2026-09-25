@@ -1,5 +1,5 @@
 {
-  "description": "cc-memory (calm) hooks for Codex CLI. Claude Code版はhooks/hooks.json。MessageDisplayはCodexに対応イベントが無いため未登録（表示専用機能のため代替なし）。sanitize_backfill_hookはCodexのrollout recorderが書き込みハンドルを保持しセッション中のrename書き換えがappend喪失を起こすことを実機確認したため未登録＝transcript backfill sanitizeはCodex非対応（漏出防止の主壁はPreToolUseのpreblock_hookが担う。#613）。",
+  "description": "cc-memory (calm) hooks for Codex CLI. Claude Code版はhooks/hooks.json。MessageDisplayはCodexに対応イベントが無いため未登録（表示専用機能のため代替なし）。PostToolUseFailureもCodexに対応イベントが無い（hooks.jsonの未知キーは無視され発火しない）ため未登録＝feedback_hookのツール失敗時配達はCodex非対応（発話時・実行直前の配達はUserPromptSubmit/PreToolUseで動く。#608, #610）。sanitize_backfill_hookはCodexのrollout recorderが書き込みハンドルを保持しセッション中のrename書き換えがappend喪失を起こすことを実機確認したため未登録＝transcript backfill sanitizeはCodex非対応（漏出防止の主壁はPreToolUseのpreblock_hookが担う。#613）。",
   "hooks": {
     "SessionStart": [
       {
@@ -67,16 +67,6 @@
           {
             "type": "command",
             "command": "cd \"$(git rev-parse --show-toplevel)\" && CALM_HARNESS=codex exec uv run python hooks/sanitize_tool_result_hook.py"
-          }
-        ]
-      }
-    ],
-    "PostToolUseFailure": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "cd \"$(git rev-parse --show-toplevel)\" && CALM_HARNESS=codex exec uv run python hooks/feedback_hook.py"
           }
         ]
       }
