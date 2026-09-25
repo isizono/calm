@@ -293,7 +293,7 @@ def test_get_material_tool_records_fetch_telemetry(
     """main.get_material ツール呼出が fetch_telemetry に get_material として記録される"""
     import src.main as main_module
 
-    monkeypatch.setattr(main_module, "_current_session_id", lambda: "sess-get-material-tool")
+    monkeypatch.setattr(main_module, "get_caller_session_id", lambda: "sess-get-material-tool")
 
     material = add_material(
         title="get_materialツール計装検証",

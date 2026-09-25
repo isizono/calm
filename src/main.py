@@ -313,9 +313,12 @@ def add_logs(items: list[dict]) -> dict:
         - title (str, optional): ログのタイトル。省略時はcontentの先頭行から自動生成
         - tags (list[str], optional): 追加タグ。省略時はtopicのタグを継承。namespace: domain:(プロジェクト)/intent:(意図)/素タグ(キーワード)
 
-    Returns: {created: [...], errors: [{index, error}]}
+    Returns: {created: [...], errors: [{index, error}], related_records: [...]}
+        related_records（応答トップレベル、呼び出し全体で類似する既存記録上位3件
+        [{type, id, title, snippet}]、topicを除く全種別が対象）は関連する既存記録に
+        気づくための導線。
     """
-    result = discussion_log_service.add_logs(items)
+    result = discussion_log_service.add_logs(items, caller_session_id=get_caller_session_id())
     if "error" not in result:
         # tag_notes: 全アイテムのタグをUNIONして1回注入
         all_tags = set()
@@ -351,16 +354,16 @@ def add_decisions(items: list[dict], ctx: Context) -> dict:
             - tag: タグ文字列（type="tag_note"の場合のみ必須）
             type="tag_note"は教訓・注意点のみに使う。仕様・手順の全文転記には使わない。
 
-    Returns: {created: [...], errors: [{index, error}]}
-        created各要素には related_decisions（同topic内の類似decision上位3件）が付く。既存decision
-        との矛盾・重複に気づくための導線。tagsに layer:direction を含む要素には
-        existing_direction_decisions と direction_note も付く。reasonの定型節は precedent
-        としてecho、書式ゆれ等があれば precedent_warnings が付く（いずれもsoft validationであり、
-        decision作成自体は拒否しない）。propagate_to伝搬失敗時は応答トップレベルに
-        propagation_failedが付く（decision作成済）。フィールド形状の詳細は
-        docs/spec/mcp-tools.md 2.3節を参照。
+    Returns: {created: [...], errors: [{index, error}], related_decisions: [...]}
+        related_decisions（応答トップレベル、呼び出し全体で同topic内の類似decision上位3件
+        [{type, id, title, snippet}]）は既存decisionとの矛盾・重複に気づくための導線。
+        tagsに layer:direction を含む要素には existing_direction_decisions と direction_note
+        も付く。reasonの定型節は precedent としてecho、書式ゆれ等があれば precedent_warnings
+        が付く（いずれもsoft validationであり、decision作成自体は拒否しない）。propagate_to
+        伝搬失敗時は応答トップレベルに propagation_failedが付く（decision作成済）。フィールド
+        形状の詳細は docs/spec/mcp-tools.md 2.3節を参照。
     """
-    result = decision_service.add_decisions(items)
+    result = decision_service.add_decisions(items, caller_session_id=get_caller_session_id())
     if "error" not in result:
         # tag_notes: 全アイテムのタグをUNIONして1回注入
         all_tags = set()
@@ -688,7 +691,7 @@ def search(
     flavor = _normalize_flavor(flavor)
     result = search_service.search(
         keyword, tags, entity_type, limit, offset, keyword_mode, include_details,
-        domain, date_after, date_before, caller_session_id=_current_session_id(),
+        domain, date_after, date_before, caller_session_id=get_caller_session_id(),
     )
     if "error" not in result:
         _apply_flavor_to_snippets(result.get("results", []), flavor)
@@ -746,7 +749,7 @@ def detect_reask_candidates(
         search_top_n=search_top_n,
         search_limit=search_limit,
         score_threshold=score_threshold,
-        caller_session_id=_current_session_id(),
+        caller_session_id=get_caller_session_id(),
     )
 
 
@@ -784,7 +787,7 @@ def get_by_ids(
             （{tag, archived_reason}の配列。該当なしでも空配列で常に付く）
     """
     flavor = _normalize_flavor(flavor)
-    result = search_service.get_by_ids(items, caller_session_id=_current_session_id())
+    result = search_service.get_by_ids(items, caller_session_id=get_caller_session_id())
     if "error" not in result:
         with contextlib.closing(get_connection()) as conn:
             for entry in result.get("results", []):
@@ -1381,9 +1384,13 @@ def add_material(
         related: 関連エンティティ（optional）。[{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...] 形式
 
     Returns:
-        作成された資材情報（material_id, title, content, source, tags, created_at）
+        作成された資材情報。related_records（類似する既存記録上位3件
+        [{type, id, title, snippet}]、topicを除く全種別が対象）を含む。
     """
-    return material_service.add_material(title, content, tags, source, related=related)
+    return material_service.add_material(
+        title, content, tags, source, related=related,
+        caller_session_id=get_caller_session_id(),
+    )
 
 
 @mcp.tool()
@@ -1456,7 +1463,7 @@ def get_material(
     if "error" not in result:
         _apply_flavor_to_single(result, "material", flavor, id_key="material_id")
         search_service.record_material_fetch_telemetry(
-            material_id, caller_session_id=_current_session_id()
+            material_id, caller_session_id=get_caller_session_id()
         )
     return result
 
@@ -3175,27 +3182,6 @@ if __name__ == "__main__":
 
         _session_manager.set_shutdown_callback(_shutdown_server)
         _session_manager.start_watchdog()
-
-        # ファイルシステム陳腐化検知ウォッチドッグ。複数セッションが常時接続し
-        # 続ける運用では上記のセッション数ベースのウォッチドッグ（アクティブ0件
-        # → 猶予期間 → shutdown）が実質発火せず、プラグインアップデート後も
-        # 起動時に読み込んだ古いコードで動き続けてしまう。session_managerとは
-        # 独立したスレッド・独立した判定として動かす（状態機械は統合しない）。
-        # ユーザーが CALM_AUTO_SHUTDOWN_SEC=0 で auto-shutdown を明示的に
-        # 全無効化した場合は、この自死機構も起動しない。
-        from src.infra.staleness_watchdog import StalenessWatchdog
-
-        if _session_manager.is_auto_shutdown_disabled:
-            logger.info(
-                "Auto-shutdown disabled (CALM_AUTO_SHUTDOWN_SEC=0), "
-                "skipping staleness watchdog start"
-            )
-        else:
-            _staleness_watchdog = StalenessWatchdog(
-                project_root=_fixed_root,
-                shutdown_callback=_shutdown_server,
-            )
-            _staleness_watchdog.start()
 
         try:
             logger.info(f"Starting HTTP server on {HTTP_HOST}:{HTTP_PORT}")

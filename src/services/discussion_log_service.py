@@ -27,7 +27,7 @@ def _auto_generate_title(content: str) -> str | None:
     return title if title else None
 
 
-def add_logs(items: list[dict]) -> dict:
+def add_logs(items: list[dict], caller_session_id: Optional[str] = None) -> dict:
     """
     複数のログを一括追加する（最大10件）。
 
@@ -40,9 +40,14 @@ def add_logs(items: list[dict]) -> dict:
             - content (str, 必須): 議論内容（マークダウン可）
             - title (str, optional): ログのタイトル。省略時はcontentの先頭行から自動生成
             - tags (list[str], optional): 追加タグ。省略時はtopicのタグを継承
+        caller_session_id: 呼出セッションの相関キー。記録=クエリ添付のセッション内重複排除と
+            injection_telemetryの記録に使う。MCP context外の直接呼出ではNone
 
     Returns:
-        {created: [...], errors: [{index, error}]}
+        {created: [...], errors: [{index, error}], related_records: [...]}
+        related_records（応答トップレベル、呼び出し全体で類似する既存記録上位3件
+        [{type, id, title, snippet}]、similarity降順、topicを除く全種別が対象）は
+        関連する既存の議論・決定・資材に気づくための導線。
     """
     # バリデーション: 1 <= len(items) <= 10
     if not items:
@@ -171,19 +176,38 @@ def add_logs(items: list[dict]) -> dict:
                 c["tags"] = tags_map.get(c["log_id"], [])
                 c["created_at"] = created_at_map.get(c["log_id"])
 
-            # embedding一括生成（created分のみ。失敗してもエラーにしない）
+            # embedding一括生成（created分のみ。失敗してもエラーにしない）。
+            # search_serviceは関数内importでcircular import回避のため。
+            from src.services import search_service
+            related_records_items = []
             for c in created:
                 tag_text = " ".join(c["tags"]) if c["tags"] else ""
-                generate_and_store_embedding(
+                embedding = generate_and_store_embedding(
                     "log", c["log_id"],
                     build_embedding_text(c["title"], c["content"], tag_text),
                 )
+                related_records_items.append({
+                    "source_type": "log",
+                    "source_id": c["log_id"],
+                    "embedding": embedding,
+                })
 
             # レスポンス軽量化: embedding生成後にcontentを除去
             for c in created:
                 c.pop("content", None)
 
-        return {"created": created, "errors": errors}
+            # 記録=クエリ添付: 呼び出し全体で類似する既存記録（topicを除く全種別）
+            # 上位3件を組み立てる。
+            related_records = search_service.build_related_records_manifest(
+                trigger_tool="add_logs",
+                created_items=related_records_items,
+                entity_types=search_service.RELATED_RECORDS_CROSS_TYPES,
+                caller_session_id=caller_session_id,
+            )
+        else:
+            related_records = []
+
+        return {"created": created, "errors": errors, "related_records": related_records}
 
     except Exception as e:
         conn.rollback()

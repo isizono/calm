@@ -140,7 +140,14 @@ def _add_material_with_conn(
     }
 
 
-def add_material(title: str, content: str, tags: list[str], source: str, related: list[dict] | None = None) -> dict:
+def add_material(
+    title: str,
+    content: str,
+    tags: list[str],
+    source: str,
+    related: list[dict] | None = None,
+    caller_session_id: Optional[str] = None,
+) -> dict:
     """
     資材を追加する
 
@@ -153,9 +160,12 @@ def add_material(title: str, content: str, tags: list[str], source: str, related
             [{"type": "topic" | "activity" | "material" | "decision" | "log", "ids": [int, ...]}, ...] 形式。
             複数エンティティを配列で同時紐付け可能。
             例: [{"type": "activity", "ids": [123]}, {"type": "decision", "ids": [10]}]
+        caller_session_id: 呼出セッションの相関キー。記録=クエリ添付のセッション内重複排除と
+            injection_telemetryの記録に使う。MCP context外の直接呼出ではNone
 
     Returns:
-        作成された資材情報
+        作成された資材情報。related_records（類似する既存記録上位3件
+        [{type, id, title, snippet}]、topicを除く全種別が対象）を含む。
     """
     if not title or not title.strip():
         return {
@@ -208,12 +218,26 @@ def add_material(title: str, content: str, tags: list[str], source: str, related
 
         # embedding生成（失敗してもmaterial作成には影響しない）
         tag_text = " ".join(result["tag_strings"]) if result["tag_strings"] else ""
-        generate_and_store_embedding(
+        embedding = generate_and_store_embedding(
             "material", material_id,
             build_embedding_text(result["title"], result["content"], tag_text),
         )
 
-        return {"material_id": material_id}
+        # 記録=クエリ添付: 類似する既存記録（topicを除く全種別）上位3件を組み立てる。
+        # search_serviceは関数内importでcircular import回避のため。
+        from src.services import search_service
+        related_records = search_service.build_related_records_manifest(
+            trigger_tool="add_material",
+            created_items=[{
+                "source_type": "material",
+                "source_id": material_id,
+                "embedding": embedding,
+            }],
+            entity_types=search_service.RELATED_RECORDS_CROSS_TYPES,
+            caller_session_id=caller_session_id,
+        )
+
+        return {"material_id": material_id, "related_records": related_records}
 
     except sqlite3.IntegrityError as e:
         conn.rollback()
