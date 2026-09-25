@@ -20,6 +20,8 @@ sync-memory による漏れの救済は、ユーザーが `/sync-memory` を明�
 
 `add_decisions` / `add_topic` / `add_habit` は本スキルの案内対象外。
 
+掲示板トピックへの投稿（`board` skillが扱う`add_logs`呼び出し）も対象外。目的が自分の作業の経緯・成果物の記録ではなく他セッションへの伝達であるため、判断基準は`board` skill側が持つ。`add_logs`ツールのdocstringにある「呼び出し前にrecording skillの判断ガイドを通すこと」は、掲示板投稿以外の通常の`add_logs`呼び出しに対する指示であり、この例外を妨げない。
+
 CALM 自身の故障・使用感不満・既存記録との矛盾は `add_logs` ではなく `report_signal` を使う（下記「report_signal との切り分け」参照）。
 
 ## 発動例: add_logs（経緯記録）

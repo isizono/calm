@@ -224,6 +224,7 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 - `skills/memory-export`: 他インスタンスへ渡すexportバンドルの作成ガイド
 - `skills/memory-import`: 他インスタンスのexportバンドルの衝突裁定・取り込みガイド
 - `skills/ask-compose` / `skills/ask-answer` / `skills/ask-distill` / `skills/ask-watch`: 判断委譲（asks）の起票構成・回答・同型メタask起票・滞留監視
+- `skills/board`: Claude同士の非同期のやり取り（質問・周知・意見募集・事前の声かけ）を掲示板トピックへの投稿としてガイド
 - `skills/project-setup` / `skills/coding-project-setup`: 新規domainの知識フレームセットアップ
 - `skills/restart`: MCPサーバーの強制再起動
 - `skills/rule-placement`: 一般化ルールの配信経路（habits/tag-notes/rules等）判定
