@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: README（インストール・よくある詰まり・設定）
+    url: https://github.com/isizono/calm#readme
+    about: 起票前に、インストール手順や「よくある詰まり」で解決しないか確認してください。
+  - name: コントリビューションガイド
+    url: https://github.com/isizono/calm/blob/main/CONTRIBUTING.md
+    about: 開発環境・ブランチ運用・PR の出し方

@@ -1,0 +1,25 @@
+name: 機能提案
+description: 新しい機能や既存機能の改善を提案する
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: background
+    attributes:
+      label: 背景
+      description: どんな場面で何に困っているか、なぜ必要か。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 対応案
+      description: どう変わるとよいか。複数案があれば並べてください。
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: 補足
+      description: 影響範囲、検討した代替案、関連 issue / PR 等（任意）。
+    validations:
+      required: false
