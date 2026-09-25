@@ -32,9 +32,12 @@ _CODEX_UNSUPPORTED_EVENTS = {"MessageDisplay"}
 # sanitize_backfill_hook.py: Codexのrollout recorderは書き込みハンドルを
 # 保持しており、セッション中のrename方式書き換えはappend喪失を起こすことを
 # 実機確認済み。登録してもsupports_transcript_rewrite=Falseで即exitする（#613）。
+# deny_nested_bg_hook.py: 判定対象の `claude agents --json` はClaude Code CLI
+# 固有のサブコマンドで、Codexには対応するbg起動・一覧機構が無い。
 _CODEX_UNSUPPORTED_SCRIPTS: set[str] = {
     "ask_answer_rewake_hook.py",
     "sanitize_backfill_hook.py",
+    "deny_nested_bg_hook.py",
 }
 
 # hooks/ 配下のスクリプトが自身の担当イベントを宣言する規約:
