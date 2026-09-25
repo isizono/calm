@@ -41,6 +41,11 @@ class TestCommandSpawnsBg:
             "claude --model foo --bg",  # フラグ順序違い
             "FOO=1 claude --bg",  # 環境変数の前置き
             "exec claude --bg",  # exec 前置き
+            '/usr/local/bin/claude --bg "task"',  # パス指定 (basename判定)
+            "~/.local/bin/claude --bg",  # パス指定 (basename判定、チルダ)
+            "bash -c 'claude --bg \"task\"'",  # bash -c 経由
+            'sh -c "cd /tmp && claude --bg"',  # sh -c 経由
+            "zsh -c 'claude --bg'",  # zsh -c 経由
         ],
     )
     def test_matches(self, command):
@@ -61,6 +66,8 @@ class TestCommandSpawnsBg:
             'grep -n "claude --bg" skills/board/SKILL.md',  # クォート内の文字列参照
             'echo "claude --bg"',
             "cat file | grep 'claude --bg'",
+            'bash -c "echo hello"',  # -c の中身が bg 起動ではない
+            "bash -c 'grep \"claude --bg\" file'",  # -c の中身も文字列参照のみ
         ],
     )
     def test_does_not_match(self, command):

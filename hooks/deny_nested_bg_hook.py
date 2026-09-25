@@ -28,14 +28,21 @@ from src.harness import select_harness  # noqa: E402
 
 # `claude --bg` の実起動を、コマンド先頭語としての `claude` の位置でのみ検出する。
 # 対象になるのはコマンド先頭、または `;`/`&&`/`||`/`|`/`&`/`(`/改行の直後に来る
-# `claude`。変数代入 (`FOO=bar`) や `exec`/`command`/`nohup` の前置きは読み飛ばす。
+# `claude`。変数代入 (`FOO=bar`) や `exec`/`command`/`nohup` の前置きは読み飛ばし、
+# `/usr/local/bin/claude` のようなパス指定は basename で判定する。`bash -c '...'`
+# / `sh -c "..."` / `zsh -c ...` はその引数を同じ判定に再帰的にかける。
 # shlex (posix クォート解釈) でトークン化するため、`grep "claude --bg" file` の
 # ような文字列としての参照はマッチしない。変数に格納したバイナリ経由の起動
 # (`$CLAUDE --bg`) やスクリプトファイル内に隠れた起動、1行内でクォートが閉じず
 # トークン化に失敗するコマンドは静的検出できない (いずれも既知の限界、fail-open)。
 _SEGMENT_BOUNDARY_TOKENS = frozenset({";", "&&", "||", "|", "&", "("})
 _LEADING_SKIP_WORDS = frozenset({"exec", "command", "nohup"})
+_SHELL_INTERPRETERS = frozenset({"bash", "sh", "zsh"})
 _VAR_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _basename(token: str) -> str:
+    return token.rsplit("/", 1)[-1]
 
 
 def _segment_spawns_bg(tokens: list[str]) -> bool:
@@ -45,9 +52,17 @@ def _segment_spawns_bg(tokens: list[str]) -> bool:
         tokens[idx] in _LEADING_SKIP_WORDS or _VAR_ASSIGNMENT_RE.match(tokens[idx])
     ):
         idx += 1
-    if idx >= len(tokens) or tokens[idx] != "claude":
+    if idx >= len(tokens):
         return False
-    return any(tok == "--bg" or tok.startswith("--bg=") for tok in tokens[idx + 1 :])
+    leading = _basename(tokens[idx])
+    rest = tokens[idx + 1 :]
+    if leading == "claude":
+        return any(tok == "--bg" or tok.startswith("--bg=") for tok in rest)
+    if leading in _SHELL_INTERPRETERS and "-c" in rest:
+        c_idx = rest.index("-c")
+        if c_idx + 1 < len(rest):
+            return _command_spawns_bg(rest[c_idx + 1])
+    return False
 
 
 def _line_spawns_bg(line: str) -> bool:
