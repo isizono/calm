@@ -1,13 +1,47 @@
 """デルタ通知サービス
 
-check-in時にスナップショットしたtopicスコープに対し、以降追加された
-decision/log/materialを差分として取得するための純粋クエリ関数群。
-呼び出し元（delta_middleware）がconnとwatermarkを管理し、本モジュールは
-DB問い合わせのみを担う。
+topicスコープを引き直しつつ、以降追加されたdecision/log/materialを差分として
+取得するための純粋クエリ関数群。scopeは購読テーブルとして永続化せず、
+呼び出し元（delta_middleware）がツール呼び出しのたびにderive_scopeで引き直す。
+呼び出し元がconnとwatermarkを管理し、本モジュールはDB問い合わせのみを担う。
 """
 import sqlite3
 
 LOG_TITLE_SNIPPET_LEN = 50
+
+
+def derive_scope(conn: sqlite3.Connection, activity_id: int) -> list[int]:
+    """activity_idから差分通知のtopicスコープをその場で引き直す。
+
+    スコープは購読状態として保存せず、呼び出しのたびに次の2つの和として計算する。
+      - activity_idから1段の関連にあるtopic
+      - それらのtopicに関連する、素タグ `board`（namespace=''）の付いたtopic
+
+    2段目をboardタグで絞るのは、topic同士の関連をタグ無しでたどると、関係の薄い
+    topicの記録まで毎回のスコープに混ざるため。
+
+    Returns:
+        topic_idのリスト（重複なし、順不同）。activity_idに直接関連するtopicが
+        無ければ空リスト。
+    """
+    rows = conn.execute(
+        """
+        WITH direct(topic_id) AS (
+            SELECT target_id FROM relations_view
+            WHERE source_type = 'activity' AND source_id = ? AND target_type = 'topic'
+        )
+        SELECT topic_id FROM direct
+        UNION
+        SELECT rv.target_id
+        FROM relations_view rv
+        JOIN direct d ON rv.source_type = 'topic' AND rv.source_id = d.topic_id
+        JOIN topic_tags tt ON tt.topic_id = rv.target_id
+        JOIN tags t ON t.id = tt.tag_id AND t.namespace = '' AND t.name = 'board'
+        WHERE rv.target_type = 'topic'
+        """,
+        (activity_id,),
+    ).fetchall()
+    return [row["topic_id"] for row in rows]
 
 
 def material_scope_clause(
@@ -17,8 +51,8 @@ def material_scope_clause(
 
     topicとactivityは別々のオートインクリメント空間のため、値がたまたま一致しても
     type違いで誤爆しないよう、type毎にid集合をペアで絞り込む（IN列挙をtype横断で
-    共有しない）。get_baseline/compute_delta/delta_middleware._scoped_idsの3箇所で
-    同一ロジックを使うための共通ヘルパー。
+    共有しない）。compute_delta/delta_middleware._scoped_idsの2箇所で同一ロジックを
+    使うための共通ヘルパー。
 
     Returns:
         (sql_fragment, params)。両方とも空になるのはtopic_ids/activity_idが
@@ -37,66 +71,34 @@ def material_scope_clause(
     return " OR ".join(clauses), params
 
 
-def get_baseline(
-    conn: sqlite3.Connection, topic_ids: list[int], activity_id: int | None = None
-) -> dict:
-    """指定topic群（decision/log）・topic群+activity_id（material）の現在のmax idを返す。
+def get_baseline(conn: sqlite3.Connection) -> dict:
+    """decision/log/materialの現在の全体max id（scopeに関係なく）を返す。
 
-    materialのスコープをcompute_deltaと揃えてtopic群 **または** activity_idにしている
-    （揃えないと、activityにのみ紐づき check-in以前から存在していたmaterialが、
-    check-in直後の最初のdelta計算で新規と誤検知される）。
-    topic_ids・activity_idがいずれも無ければ全て0を返す（該当なし）。
+    差分通知の既読位置の初期値は、check-in時点のscopeにおけるmaxではなく、
+    テーブル全体のmaxを使う。scopeをツール呼び出しのたびに引き直す設計のもとでは、
+    scopeが後から広がったとき（例: topicへboardタグ付きtopicが新たに関連付けられた
+    とき）、新しく入ったtopicの古い項目がまとめて新規として検出されるのを防ぐ
+    （scope拡大より前に存在した項目は、topicに関係なく全てこのmaxのid以下になる）。
+
+    scopeが変化しない限り、scope内maxを使った場合と結果は変わらない。idは
+    テーブルごとに作成順で単調増加するため、「check-in以降に作られたか」という
+    判定はtopicの内外に関係なく成立し、scopeによる絞り込みはcompute_delta側の
+    topic条件だけで担保される。
+
     retracted_atは考慮しない（baselineは差分の起点となるidカットオフに過ぎず、
     retracted済みかどうかに関係なくidの大小のみが意味を持つため）。
 
     Returns:
         {"decision_id": int, "log_id": int, "material_id": int}
     """
-    decision_id = 0
-    log_id = 0
-
-    if topic_ids:
-        placeholders = ",".join("?" * len(topic_ids))
-
-        decision_row = conn.execute(
-            f"""
-            SELECT MAX(d.id) AS max_id
-            FROM decisions d
-            JOIN relations r ON r.source_type = 'decision' AND r.source_id = d.id
-                            AND r.target_type = 'topic' AND r.relation_type = 'belongs_to'
-                            AND r.target_id IN ({placeholders})
-            """,
-            tuple(topic_ids),
-        ).fetchone()
-        decision_id = (decision_row["max_id"] if decision_row else None) or 0
-
-        log_row = conn.execute(
-            f"""
-            SELECT MAX(l.id) AS max_id
-            FROM discussion_logs l
-            JOIN relations r ON r.source_type = 'log' AND r.source_id = l.id
-                            AND r.target_type = 'topic' AND r.relation_type = 'belongs_to'
-                            AND r.target_id IN ({placeholders})
-            """,
-            tuple(topic_ids),
-        ).fetchone()
-        log_id = (log_row["max_id"] if log_row else None) or 0
-
-    material_id = 0
-    scope_sql, scope_params = material_scope_clause(topic_ids, activity_id)
-    if scope_sql:
-        material_row = conn.execute(
-            f"""
-            SELECT MAX(m.id) AS max_id
-            FROM materials m
-            JOIN relations_view rv ON ({scope_sql})
-                                   AND rv.target_type = 'material' AND rv.target_id = m.id
-            """,
-            tuple(scope_params),
-        ).fetchone()
-        material_id = (material_row["max_id"] if material_row else None) or 0
-
-    return {"decision_id": decision_id, "log_id": log_id, "material_id": material_id}
+    decision_row = conn.execute("SELECT MAX(id) AS max_id FROM decisions").fetchone()
+    log_row = conn.execute("SELECT MAX(id) AS max_id FROM discussion_logs").fetchone()
+    material_row = conn.execute("SELECT MAX(id) AS max_id FROM materials").fetchone()
+    return {
+        "decision_id": (decision_row["max_id"] if decision_row else None) or 0,
+        "log_id": (log_row["max_id"] if log_row else None) or 0,
+        "material_id": (material_row["max_id"] if material_row else None) or 0,
+    }
 
 
 def compute_delta(

@@ -19,7 +19,6 @@ from src.services.ask_service import add_ask_with_conn
 from src.services.checkin_service import DECISIONS_FULL_LIMIT
 from src.services.checkin_tier_service import collect_and_assemble
 from src.services.hint_service import (
-    ACTIVITY_CLEANUP_AUTOTRIGGER_GUARD,
     ACTIVITY_CLEANUP_COUNT_THRESHOLD,
     MARKER_ACTIVITY_CLEANUP,
     MARKER_RECOMPOSE_BOOTSTRAP,
@@ -1384,7 +1383,7 @@ class TestActivityCleanupHintViaCheckIn:
         result_first = collect_and_assemble(actor_id)
         assert "error" not in result_first
         assert any(
-            ACTIVITY_CLEANUP_AUTOTRIGGER_GUARD in h
+            MARKER_ACTIVITY_CLEANUP in h
             for h in result_first["env"].get("hints", [])
         )
         assert MARKER_ACTIVITY_CLEANUP in _get_tag_notes(
@@ -1394,7 +1393,7 @@ class TestActivityCleanupHintViaCheckIn:
         result_second = collect_and_assemble(actor_id)
         assert "error" not in result_second
         assert not any(
-            ACTIVITY_CLEANUP_AUTOTRIGGER_GUARD in h
+            MARKER_ACTIVITY_CLEANUP in h
             for h in result_second["env"].get("hints", [])
         )
 

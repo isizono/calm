@@ -206,8 +206,7 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 
 - `skills/check-in`: 作業開始時の文脈ロード入り口
 - `skills/sync-memory`: セッション終了前の一括記録
-- `skills/recompose-context`: タグ・アクティビティの再構成
-- `skills/activity-cleanup`: アクティビティの棚卸し（実態確認・処遇判定・反映）
+- `skills/recompose-context`: タグ・アクティビティの再構成。全体モード（`--all`）でアクティビティの棚卸し（実態確認・処遇判定・反映）
 - `skills/setup-anchor`: anchor確定
 - `skills/remember`: 記憶要望の保存先振り分け
 - `skills/tag-notes` / `skills/tag-cleanup`: タグnotes管理・整理
@@ -225,6 +224,7 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 - `skills/memory-export`: 他インスタンスへ渡すexportバンドルの作成ガイド
 - `skills/memory-import`: 他インスタンスのexportバンドルの衝突裁定・取り込みガイド
 - `skills/ask-compose` / `skills/ask-answer` / `skills/ask-distill` / `skills/ask-watch`: 判断委譲（asks）の起票構成・回答・同型メタask起票・滞留監視
+- `skills/board`: Claude同士の非同期のやり取り（質問・周知・意見募集・事前の声かけ）を掲示板トピックへの投稿としてガイド
 - `skills/project-setup` / `skills/coding-project-setup`: 新規domainの知識フレームセットアップ
 - `skills/restart`: MCPサーバーの強制再起動
 - `skills/rule-placement`: 一般化ルールの配信経路（habits/tag-notes/rules等）判定
@@ -269,10 +269,10 @@ v1通信系（`ow_service` / `src/relay/`のvendoringされたSSE+SQLite中継�
 
 ### 6.1 プロセス起動・ブリッジ
 
-- `src/launcher.py`: stdio ↔ HTTPブリッジ。Claude Codeがstdioで接続してくる入口で、HTTPサーバー未起動なら自動でデーモン起動し、stdin JSON-RPCをStreamable HTTP経由で転送する。stdin EOFでセッション解除
+- `src/launcher.py`: stdio ↔ HTTPブリッジ。Claude Codeがstdioで接続してくる入口で、HTTPサーバー未起動なら自動でデーモン起動し、stdin JSON-RPCをStreamable HTTP経由で転送する。stdin EOFでセッション解除。`/session/register`の再送間隔は`CALM_LAUNCHER_HEARTBEAT_SEC`（既定60秒）
 - `src/main.py`: FastMCPサーバーエントリ（HTTPモード起動の本体）
 - `src/http_config.py`: HTTPサーバー設定
-- `src/infra/session_manager.py`: HTTPセッションカウントと自動停止ウォッチドッグ。セッション数0で猶予期間後にshutdown
+- `src/infra/session_manager.py`: HTTPセッションカウントと自動停止ウォッチドッグ。セッション数0で猶予期間後にshutdown。heartbeat途絶からliveness TTL失効までの猶予は`CALM_SESSION_LIVENESS_TIMEOUT_SEC`（既定300秒、0で無効化）
 - `src/infra/lock_file.py`: プロセス間ロック
 - `src/infra/cli_session.py`: Claude Code CLIプロセスが公開するsession fileの読み取り専用アクセサ（セッション別名解決の基盤）
 - `src/infra/git_repo.py`: git worktree配下からmain repoルートを解決する共有ユーティリティ（`launcher.py` / `restart_service.py`が利用）
