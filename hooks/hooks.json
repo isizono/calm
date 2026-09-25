@@ -68,6 +68,15 @@
             "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/feedback_hook.py"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/deny_nested_bg_hook.py"
+          }
+        ]
       }
     ],
     "PostToolUseFailure": [
