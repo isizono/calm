@@ -63,6 +63,21 @@ def _isolate_session_registry_files(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_claude_config(tmp_path, monkeypatch):
+    """記録役の起動が信頼確認を登録する~/.claude.jsonをテストごとの一時パスへ向ける。
+
+    recorder_launcher_service.startを通るテスト（autostart hook・見張りの
+    restart経路を含む）が、実行環境の~/.claude.jsonにtmpパスのエントリを
+    書き足してしまうのを防ぐ。
+    """
+    from src.services import recorder_launcher_service
+
+    monkeypatch.setattr(
+        recorder_launcher_service, "CLAUDE_CONFIG_PATH", tmp_path / "claude.json"
+    )
+
+
+@pytest.fixture(autouse=True)
 def _clear_ow_env(monkeypatch):
     """ow関連の環境変数をテストごとに除去する。
 
