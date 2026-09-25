@@ -1,11 +1,8 @@
----
-name: activity-cleanup
-description: アクティビティ(active/shelved/snoozed)を棚卸しし、実態確認のうえでcompleted化・shelved化・description訂正・重複統合・裁定待ちのいずれかに処遇する。「/activity-cleanup」「アクティビティ棚卸しして」「activity棚卸し」「アクティビティの整理して」などユーザーが明示的に呼び出したときに発動する。DO NOT TRIGGER: sync-memory Step 4a(標準形のみで実行される、セッション終了時の軽い自己完結処理)の自動棚卸し、decision/topic等を含む全関連情報の統合・anchor整備(recompose-context)、単一アクティビティを完了にせず中断する操作(activity-pause)、タグの共起分析・整理(tag-cleanup)には発動しない。
----
+# 全体モード: アクティビティ全域の棚卸し
 
-# activity-cleanup
+recompose-context を全体モード（`--all`）で呼んだときの手順。アクティビティ(active/shelved/snoozed)を対象に、記載されている状態を鵜呑みにせず機械的に実態確認したうえで処遇を判定し、反映する。人間が在席している状態での手動実行を前提とする。
 
-アクティビティ(active/shelved/snoozed)を対象に、記載されている状態を鵜呑みにせず機械的に実態確認したうえで処遇を判定し、反映する棚卸しskill。人間が在席している状態での手動実行を前提とする。
+全体モードでは SKILL.md の手順3〜8（統合material・anchor・軽照合・リコンサイル・tag-notes・relation補完）は回さない。全域にそれらを回すと毎回の実行が重くなるため、全体モードはこのファイルの棚卸しと、SKILL.md の「アクティビティのメンテ」節を全域に適用することに限る。
 
 ## 対象
 
@@ -26,7 +23,7 @@ description: アクティビティ(active/shelved/snoozed)を棚卸しし、実�
 
 ## 発動契機
 
-実行は手動のみ。ユーザーが「アクティビティ棚卸しして」「/activity-cleanup」などで明示的に呼び出したときに走る。人間が在席していることが前提の作業であり、session_end等のhookから無人で自律実行する運用は行わない。自律度ルールの🔴を「その場で確認」で処理できるのも、この手動・在席前提があるため。
+実行は手動のみ。ユーザーが「アクティビティ棚卸しして」「/recompose --all」などで明示的に呼び出したとき、または放置アクティビティの催促hintを受けてユーザーが実施を求めたときに走る。人間が在席していることが前提の作業であり、session_end等のhookから無人で自律実行する運用は行わない。自律度ルールの🔴を「その場で確認」で処理できるのも、この手動・在席前提があるため。
 
 ## 手順
 
@@ -70,7 +67,7 @@ snoozedの実態確認も同様に`check_in`を避けるが、`get_activities`�
 
 一方、descriptionの更新(再開条件の訂正・誤字修正など)は`update_activity`で行ってよい。shelved中にstatus以外のフィールド(title/description/tags)を更新しても自動復活は起きない(自動復活が起きるのはsnoozedにstatusを指定せず更新した場合のみで、shelvedには適用されない既存仕様)。
 
-**goal付きactivityの確認:** 各activityについて`get_goal(activity_id=...)`を呼び、`label`を確認する(`get_goal`は`check_in`と違いactivityのstatusを変えない読み取り専用なので、active/shelved/snoozedいずれでも使ってよい)。`label`が`judge_ready`(判定待ち)なら[手順3](#3-処遇判定)でjudge_goalによる判定に回す。`active`(openの条件が残る)なら、他の実態確認の結果に関わらず[手順3](#3-処遇判定)の`active`向け分岐(その場で確認、または一括提示までバッファ)に回し、`completed`・`relation+completedで統合`はこの場では選ばない(goal付きactivityをcompleted・重複統合の閉じる側にする判断は、judge_goalを経ずには下さない)。`undefined`・`not_needed`ならgoalに関する追加の考慮は要らない。
+**goal付きactivityの確認:** 各activityについて`get_goal(activity_id=...)`を呼び、`label`を確認する(`get_goal`は`check_in`と違いactivityのstatusを変えない読み取り専用なので、active/shelved/snoozedいずれでも使ってよい)。`label`が`judge_ready`(判定待ち)なら[手順3](#3-処遇判定)でjudge_goalによる判定に回す。`active`(openの条件が残る)なら、他の実態確認の結果に関わらず[手順3](#3-処遇判定)の`active`向け分岐(その場で確認、または一括提示までバッファ)に回し、`completed`・`relation+completedで統合`はこの場では選ばない(goal付きactivityをcompleted・重複統合の閉じる側にする判断は、judge_goalを経ずには下さない)。`not_needed`ならgoalに関する追加の考慮は要らない。この棚卸しで閉じないactivityには、SKILL.md の「[アクティビティのメンテ](../SKILL.md#アクティビティのメンテ)」節を適用する(`undefined`なら推せる終了条件を書き、推せなければ何も書かない。親への結びつけは`label`に関わらず同節に従う)。
 
 ### 3. 処遇判定
 
@@ -89,7 +86,7 @@ snoozedの実態確認も同様に`check_in`を避けるが、`get_activities`�
 
 **goal付きactivityの処遇:** 以下の`goal_id`はgoal_id_raw（`get_goal`の応答が持つ）を指す。[手順2](#2-実態確認)で`label`が`judge_ready`だったactivityは、completed化を`update_activity`ではなくgoal機構で行う。`get_goal`の応答の`open_questions`に未決があれば畳むか1ターン聞いたうえで、`conditions`のうち`state`が`satisfied`のものが1件以上あれば`judge_goal(goal_id, verdict="achieved")`、0件なら`judge_goal(goal_id, verdict="failed", note=理由)`で閉じる。`judged_by`は、ユーザーがその場でgoalの完了を明言したときだけ`"human"`、それ以外は`"session"`。
 
-`label`が`active`のactivity(openの条件が残る)は、上の6語彙のうち`completed`・`relation+completedで統合`をこの場では選ばず、まず🔴と同じ「その場で確認、または一括提示までバッファ」に回す。提示する選択肢は[activity-finish](../activity-finish/SKILL.md)のopen分岐と同じ3つ(残りの条件を理由付きでwaivedにしてから`judge_goal(goal_id, verdict="achieved", judged_by="human")`／`judge_goal(goal_id, verdict="failed", note=理由, judged_by="human")`で閉じる／未完了の兄弟activityが残るならこのactivityだけ`update_activity(status="completed", closed_by="user")`)。確認してもユーザーがその場では決め切れないと分かった場合にだけ、正式に`askで裁定待ち`に回す。
+`label`が`active`のactivity(openの条件が残る)は、上の6語彙のうち`completed`・`relation+completedで統合`をこの場では選ばず、まず🔴と同じ「その場で確認、または一括提示までバッファ」に回す。提示する選択肢は[activity-finish](../../activity-finish/SKILL.md)のopen分岐と同じ3つ(残りの条件を理由付きでwaivedにしてから`judge_goal(goal_id, verdict="achieved", judged_by="human")`／`judge_goal(goal_id, verdict="failed", note=理由, judged_by="human")`で閉じる／未完了の兄弟activityが残るならこのactivityだけ`update_activity(status="completed", closed_by="user")`)。確認してもユーザーがその場では決め切れないと分かった場合にだけ、正式に`askで裁定待ち`に回す。
 
 重複統合(`relation+completedで統合`)では、閉じる側にgoalの紐づけがあり残す側に無ければ、残す側を`set_goal(activity_id=<残す側のid>, goal={"goal_id": <閉じる側のgoal_id_raw>})`で同じgoalに紐づけてから閉じる側を閉じる。両方が別のgoalに紐づく場合は統合せず`askで裁定待ち`に回す。
 
@@ -97,7 +94,7 @@ snoozedの実態確認も同様に`check_in`を避けるが、`get_activities`�
 
 処遇判定の結果を既存の`update_activity`(・重複統合時は`add_relation`)で反映する。新規の一括処遇反映ツールは作らない。
 
-件数が少なければ手動で順に呼ぶ。件数が多い場合はWorkflowで並列実行してよい(規模に応じてどちらでも良い、既存のrecompose-context skillと同様の運用)。
+件数が少なければ手動で順に呼ぶ。件数が多い場合はWorkflowで並列実行してよい(規模に応じてどちらでも良い)。
 
 ### 5. 完了時クールダウン
 
@@ -122,9 +119,9 @@ snoozedの実態確認も同様に`check_in`を避けるが、`get_activities`�
 
 ## 自律度ルール
 
-recompose-context skillの自律度ルールをそのまま流用し、対象語彙をactivity-cleanupの処遇語彙に翻訳したもの。
+SKILL.md の自律度ルールをそのまま流用し、対象語彙を棚卸しの処遇語彙に翻訳したもの。
 
-| ゾーン | activity-cleanupでの処遇 |
+| ゾーン | 棚卸しでの処遇 |
 |---|---|
 | 🟢 自律 | description訂正(誤字・状態食い違いの修正) / PRマージ機械確認が取れたcompleted化 / 進行・着手待ちのまま現状維持 / `label`が`judge_ready`のgoal付きactivityのjudge_goalによる判定 |
 | 🟡 確証あれば自律 | shelved化(再開条件が明確に書ける場合) / relation+completedでの統合(重複が明白な場合) |
@@ -137,13 +134,13 @@ recompose-context skillの自律度ルールをそのまま流用し、対象語
 - descriptionやlogに懸念が明記されている
 - 推測でしか判定不可(PRの実在確認ができない、gitログが読めない等)
 
-**🔴は`ask`(離席中裁定用の機構)に流さない。** 棚卸しskillは人間が手動で呼び出す=セッション内に人間が在席している前提の作業であり、recompose-context原典の🔴も「その場で確認 / バッファに溜めて一括提示」という在席前提の確認機構である。離席中判断用のask機構に流すのは設計として不整合。
+**🔴は`ask`(離席中裁定用の機構)に流さない。** 全体モードは人間が手動で呼び出す=セッション内に人間が在席している前提の作業であり、SKILL.md の自律度ルールの🔴も「その場で確認 / バッファに溜めて一括提示」という在席前提の確認機構である。離席中判断用のask機構に流すのは設計として不整合。
 
-実行中に🔴に該当するケースが出たら、確認をバッファに溜めて最後に一括提示・ジャッジする(recompose-context原典と同じハイブリッド方式)。重大な矛盾はその場ですぐ確認してよい。
+実行中に🔴に該当するケースが出たら、確認をバッファに溜めて最後に一括提示・ジャッジする(SKILL.md の自律度ルールと同じハイブリッド方式)。重大な矛盾はその場ですぐ確認してよい。
 
 ## 注意
 
-- **sync-memory Step 4aとの関係**: sync-memory Step 4a(標準形のみで実行され、bg向けの最小形では実行されない)は、セッション終了時に自己完結で動く軽い自動棚卸し(重複・放置・フェーズ移行済みの検出とcompleted/snoozed化)であり、本skillとは独立に今後も動作し続けてよい。両者の判定基準が食い違った場合はactivity-cleanup(本skill)を正本とする。ただしsync-memory Step 4aは`get_activities(status="active")`で取得したactivityのみを対象にするため、判定を突き合わせられる範囲もactiveのものに限られる(shelved・snoozedはStep 4aの対象外)
+- **sync-memory Step 4aとの関係**: sync-memory Step 4a(標準形のみで実行され、bg向けの最小形では実行されない)は、セッション終了時に自己完結で動く軽い自動棚卸し(重複・放置・フェーズ移行済みの検出とcompleted/snoozed化)であり、本手順とは独立に今後も動作し続けてよい。両者の判定基準が食い違った場合は本手順を正本とする。ただしsync-memory Step 4aは`get_activities(status="active")`で取得したactivityのみを対象にするため、判定を突き合わせられる範囲もactiveのものに限られる(shelved・snoozedはStep 4aの対象外)
 - **PR状態の鵜呑み防止**: description本文の「マージ済み」「マージ待ち」等の文言は鮮度が保証されない。completed判定には必ず`gh pr view --json state,mergeStateStatus`等の機械確認を伴わせる
 - **内部IDを報告に出さない**: ユーザーへの報告や記録では、activityのタイトル・内容の要約で言及し、内部ID単体では言及しない
 - 判断に迷い🔴に該当するものは、消さない・completedにしない側に倒したうえでバッファに溜め、最後に一括確認する
