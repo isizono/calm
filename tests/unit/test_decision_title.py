@@ -1,7 +1,7 @@
 """decision title + 関連decision返却 のテスト（migration 0037 で追加した機能）
 
 - add_decisions が optional title を受け取り decisions.title に保存する
-- add_decisions のレスポンス created各要素に related_decisions（同topic内の類似decision）が付く
+- add_decisions のレスポンストップレベルに related_decisions（同topic内の類似decision）が付く
 - find_similar_decisions が同一topic・自身除外・retract除外で類似decisionを返す
 - 表示箇所（check-in の recent_decisions / get_by_id）が title優先・decision本文fallback になる
 """
@@ -108,16 +108,25 @@ class TestTitleStored:
 
 
 class TestRelatedDecisionsResponse:
-    """add_decisions のレスポンスに related_decisions が付く"""
+    """add_decisions のレスポンストップレベルに related_decisions が付く"""
 
-    def test_created_has_related_decisions_key(self, topic, mock_embedding_server):
-        """created各要素に related_decisions キーが存在する"""
+    @pytest.fixture(autouse=True)
+    def _no_similarity_threshold(self, monkeypatch):
+        """本クラスは候補マッチング・応答形状を検証する。閾値そのものの実測値検証は
+        別テスト（test_related_records.py）の責務のため、モック埋め込み同士の実測
+        cosine類似度に依存しないよう閾値を無効化する。"""
+        from src import config
+        monkeypatch.setattr(config, "RELATED_RECORDS_SIMILARITY_THRESHOLD", 0.0)
+
+    def test_response_has_related_decisions_key(self, topic, mock_embedding_server):
+        """応答トップレベルに related_decisions キーが存在する（created各要素には付かない）"""
         result = add_decisions([
             {"topic_id": topic["topic_id"], "decision": "決定A", "reason": "理由A"},
         ])
         assert_no_write_errors(result)
-        assert "related_decisions" in result["created"][0]
-        assert isinstance(result["created"][0]["related_decisions"], list)
+        assert "related_decisions" in result
+        assert isinstance(result["related_decisions"], list)
+        assert "related_decisions" not in result["created"][0]
 
     def test_related_includes_prior_same_topic_decision(self, topic, mock_embedding_server):
         """同topicの既存decisionが related_decisions に含まれ、自身は除外される"""
@@ -130,7 +139,7 @@ class TestRelatedDecisionsResponse:
             {"topic_id": topic["topic_id"], "decision": "新しい決定", "reason": "理由"},
         ])
         second_id = second["created"][0]["decision_id"]
-        related = second["created"][0]["related_decisions"]
+        related = second["related_decisions"]
 
         related_ids = [r["id"] for r in related]
         assert first_id in related_ids, "同topicの既存decisionがrelated_decisionsに含まれない"
@@ -149,7 +158,7 @@ class TestRelatedDecisionsResponse:
         result = add_decisions([
             {"topic_id": topic["topic_id"], "decision": "トリガー決定", "reason": "理由"},
         ])
-        related = {r["title"] for r in result["created"][0]["related_decisions"]}
+        related = {r["title"] for r in result["related_decisions"]}
         assert "要点A" in related, "titleありdecisionがtitleで表示されていない"
         assert "本文B（titleなし）" in related, "titleなしdecisionがdecision本文にfallbackしていない"
 
@@ -163,28 +172,21 @@ class TestRelatedDecisionsResponse:
         result = add_decisions([
             {"topic_id": topic["topic_id"], "decision": "対象topic決定", "reason": "理由"},
         ])
-        related_ids = [r["id"] for r in result["created"][0]["related_decisions"]]
+        related_ids = [r["id"] for r in result["related_decisions"]]
         assert other_id not in related_ids, "別topicのdecisionがrelated_decisionsに混入している"
 
-    def test_related_within_batch_respects_processing_order(self, topic, mock_embedding_server):
-        """同一バッチ内では、後続decisionのrelatedに先行decisionが現れ、逆は現れない。
-
-        add_decisionsはcreated順に「embedding生成→find_similar_decisions」を行う。
-        後続要素のfind時点では先行要素のembeddingが既にvec_index格納済みだが、
-        先行要素のfind時点では後続要素のembeddingが未格納であることに由来する挙動。
-        """
+    def test_related_excludes_same_batch_items(self, topic, mock_embedding_server):
+        """同一呼び出し（バッチ）内で作った他のdecisionはrelated_decisionsの候補から除外される"""
         result = add_decisions([
-            {"topic_id": topic["topic_id"], "decision": "バッチ先行", "reason": "理由"},
-            {"topic_id": topic["topic_id"], "decision": "バッチ後続", "reason": "理由"},
+            {"topic_id": topic["topic_id"], "decision": "バッチ1件目", "reason": "理由"},
+            {"topic_id": topic["topic_id"], "decision": "バッチ2件目", "reason": "理由"},
         ])
         first_id = result["created"][0]["decision_id"]
         second_id = result["created"][1]["decision_id"]
 
-        first_related = [r["id"] for r in result["created"][0]["related_decisions"]]
-        second_related = [r["id"] for r in result["created"][1]["related_decisions"]]
-
-        assert first_id in second_related, "後続decisionのrelatedに先行decisionが現れていない"
-        assert second_id not in first_related, "先行decisionのrelatedに後続decisionが現れている（処理順序の前提が崩れている）"
+        related_ids = [r["id"] for r in result["related_decisions"]]
+        assert first_id not in related_ids, "同一バッチのdecisionがrelated_decisionsに混入している"
+        assert second_id not in related_ids, "同一バッチのdecisionがrelated_decisionsに混入している"
 
     def test_related_capped_at_limit(self, topic, mock_embedding_server):
         """同topicに4件以上の先行decisionがあっても related_decisions は上位3件に絞られる"""
@@ -195,8 +197,8 @@ class TestRelatedDecisionsResponse:
         result = add_decisions([
             {"topic_id": topic["topic_id"], "decision": "トリガー決定", "reason": "理由"},
         ])
-        related = result["created"][0]["related_decisions"]
-        assert len(related) == 3, f"related_decisionsがlimit(3)で絞られていない: {len(related)}件"
+        related = result["related_decisions"]
+        assert len(related) == 3, f"related_decisionsがtop3に絞られていない: {len(related)}件"
 
     def test_related_empty_when_embedding_unavailable(self, topic, mock_embedding_unavailable):
         """embeddingが取得できない場合は related_decisions が空配列になる"""
@@ -207,7 +209,7 @@ class TestRelatedDecisionsResponse:
         result = add_decisions([
             {"topic_id": topic["topic_id"], "decision": "新決定", "reason": "理由"},
         ])
-        assert result["created"][0]["related_decisions"] == []
+        assert result["related_decisions"] == []
 
 
 class TestFindSimilarDecisions:

@@ -78,7 +78,7 @@ description: 【必須】ユーザーとの合意が成立したとき、また�
 
 ## 矛盾・重複への対処
 
-`add_decisions` のレスポンスには `related_decisions`（同 topic 内の類似 decision 上位3件）が付く。既存 decision と矛盾する、または同一内容の重複だと気づいたら、その場で `report_signal(kind="contradiction")` を呼んで報告する。retract や supersede の判断そのものは本スキルの対象外。
+`add_decisions` のレスポンストップレベルには `related_decisions`（呼び出し全体で同 topic 内の類似 decision 上位3件）が付く。既存 decision と矛盾する、または同一内容の重複だと気づいたら、その場で `report_signal(kind="contradiction")` を呼んで報告する。retract や supersede の判断そのものは本スキルの対象外。
 
 `tags` に `layer:direction` を含めた場合はレスポンスに `existing_direction_decisions`（同 domain の有効な方向性 decision 全件）と `direction_note` も付く。既存の方向性判断と食い違う場合は、そのまま並存させるかの判断が必要になる。
 
