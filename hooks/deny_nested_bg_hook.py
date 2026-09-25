@@ -13,6 +13,7 @@ tool・パターン非一致のコマンドでは agents コマンドを引か�
 import json
 import pathlib
 import re
+import shlex
 import subprocess
 import sys
 
@@ -25,13 +26,57 @@ if str(_PLUGIN_ROOT) not in sys.path:
 from hooks.signal_capture import try_capture_signal  # noqa: E402
 from src.harness import select_harness  # noqa: E402
 
-# `claude --bg` の起動を拾う。`cd X && claude --bg`、複数空白、フラグの順序違い
-# (`claude --model x --bg`) を拾う。`;`/`&`/`|`/改行を挟むと同一コマンドとは
-# みなさず非マッチにする (別コマンドの `--bg` を誤って claude 起動と結びつけない
-# ため)。変数に格納したバイナリ経由の起動 (`$CLAUDE --bg`) やスクリプトファイル内に
-# 隠れた起動は静的検出できない (既知の限界)。`claude --bg` という文字列を echo
-# しているだけの誤検知は、bg 内でだけ deny されるため許容する。
-_BG_SPAWN_PATTERN = re.compile(r"\bclaude\b[^\n;&|]*?\s--bg\b")
+# `claude --bg` の実起動を、コマンド先頭語としての `claude` の位置でのみ検出する。
+# 対象になるのはコマンド先頭、または `;`/`&&`/`||`/`|`/`&`/`(`/改行の直後に来る
+# `claude`。変数代入 (`FOO=bar`) や `exec`/`command`/`nohup` の前置きは読み飛ばす。
+# shlex (posix クォート解釈) でトークン化するため、`grep "claude --bg" file` の
+# ような文字列としての参照はマッチしない。変数に格納したバイナリ経由の起動
+# (`$CLAUDE --bg`) やスクリプトファイル内に隠れた起動、1行内でクォートが閉じず
+# トークン化に失敗するコマンドは静的検出できない (いずれも既知の限界、fail-open)。
+_SEGMENT_BOUNDARY_TOKENS = frozenset({";", "&&", "||", "|", "&", "("})
+_LEADING_SKIP_WORDS = frozenset({"exec", "command", "nohup"})
+_VAR_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _segment_spawns_bg(tokens: list[str]) -> bool:
+    """`;`/`&&`等で区切られた1コマンド分のトークン列が `claude --bg` 起動かどうか。"""
+    idx = 0
+    while idx < len(tokens) and (
+        tokens[idx] in _LEADING_SKIP_WORDS or _VAR_ASSIGNMENT_RE.match(tokens[idx])
+    ):
+        idx += 1
+    if idx >= len(tokens) or tokens[idx] != "claude":
+        return False
+    return any(tok == "--bg" or tok.startswith("--bg=") for tok in tokens[idx + 1 :])
+
+
+def _line_spawns_bg(line: str) -> bool:
+    """改行を含まない1行分のコマンドを shlex でトークン化し、セグメントごとに判定する。"""
+    lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""  # `#` を含む引数 (URL fragment 等) を欠落させないため
+    segment: list[str] = []
+    for token in lexer:
+        if token in _SEGMENT_BOUNDARY_TOKENS:
+            if _segment_spawns_bg(segment):
+                return True
+            segment = []
+        else:
+            segment.append(token)
+    return _segment_spawns_bg(segment)
+
+
+def _command_spawns_bg(command: str) -> bool:
+    """`claude --bg` の実起動を検出する。改行は常にコマンド境界として扱う。"""
+    for line in command.split("\n"):
+        try:
+            if _line_spawns_bg(line):
+                return True
+        except ValueError:
+            # クォートが閉じない等でトークン化できない行は fail-open (非該当) とする
+            continue
+    return False
+
 
 _AGENTS_TIMEOUT_SECONDS = 5
 
@@ -87,7 +132,7 @@ def main() -> None:
 
         tool_input = event.get("tool_input") or {}
         command = tool_input.get("command")
-        if not isinstance(command, str) or not _BG_SPAWN_PATTERN.search(command):
+        if not isinstance(command, str) or not _command_spawns_bg(command):
             harness.emit_empty()
             return
 

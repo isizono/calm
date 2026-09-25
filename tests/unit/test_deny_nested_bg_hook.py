@@ -4,7 +4,8 @@ PreToolUse hook の入出力 (stdin から event JSON 受領、stdout に
 permissionDecision JSON 出力 or 空 dict 出力) と、各補助関数の挙動を検証する。
 
 検証対象:
-- _BG_SPAWN_PATTERN: `claude --bg` 起動パターンの検出 (揺れの許容・非対象コマンドの除外)
+- _command_spawns_bg: `claude --bg` 起動パターンの検出 (揺れの許容・非対象コマンドの除外・
+  文字列としての参照との区別)
 - _is_background_session: `claude agents --json` の実行結果からの kind 判定、fail-open 経路
 - main: stdin event → deny / allow 判定の総合フロー、agents コマンドを引くか否か
 """
@@ -26,11 +27,11 @@ import deny_nested_bg_hook  # type: ignore  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# _BG_SPAWN_PATTERN
+# _command_spawns_bg
 # ---------------------------------------------------------------------------
 
 
-class TestBgSpawnPattern:
+class TestCommandSpawnsBg:
     @pytest.mark.parametrize(
         "command",
         [
@@ -38,11 +39,12 @@ class TestBgSpawnPattern:
             'cd /path && claude --bg "x"',
             "claude  --bg",  # 複数空白
             "claude --model foo --bg",  # フラグ順序違い
-            "echo claude --bg",  # echo 経由の誤検知 (許容)
+            "FOO=1 claude --bg",  # 環境変数の前置き
+            "exec claude --bg",  # exec 前置き
         ],
     )
     def test_matches(self, command):
-        assert deny_nested_bg_hook._BG_SPAWN_PATTERN.search(command)
+        assert deny_nested_bg_hook._command_spawns_bg(command)
 
     @pytest.mark.parametrize(
         "command",
@@ -55,15 +57,19 @@ class TestBgSpawnPattern:
             "claude --background-task foo",  # --bg の word boundary 非一致
             "echo hello",
             "",
+            "echo claude --bg",  # claude がコマンド先頭語ではない
+            'grep -n "claude --bg" skills/board/SKILL.md',  # クォート内の文字列参照
+            'echo "claude --bg"',
+            "cat file | grep 'claude --bg'",
         ],
     )
     def test_does_not_match(self, command):
-        assert not deny_nested_bg_hook._BG_SPAWN_PATTERN.search(command)
+        assert not deny_nested_bg_hook._command_spawns_bg(command)
 
     def test_separate_commands_via_semicolon_not_matched(self):
         # `claude foo; other --bg` は別コマンドの --bg であり claude 起動とは
         # 結び付けない (`;`/`&`/`|`/改行を挟むと非マッチにする設計)
-        assert not deny_nested_bg_hook._BG_SPAWN_PATTERN.search(
+        assert not deny_nested_bg_hook._command_spawns_bg(
             "claude foo; other --bg"
         )
 
