@@ -15,6 +15,10 @@
           {
             "type": "command",
             "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/sanitize_backfill_hook.py"
+          },
+          {
+            "type": "command",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/recorder_autostart_hook.py"
           }
         ]
       }
