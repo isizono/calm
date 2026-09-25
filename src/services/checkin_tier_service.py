@@ -29,7 +29,7 @@ from src.db import get_connection, row_to_dict
 from src.infra import session_identity
 from src.services import activity_service, goal_service, hint_service, response_budget, session_ledger_service
 from src.services.ask_service import get_pending_asks_with_conn
-from src.services.checkin_service import (
+from src.services.checkin_queries import (
     _get_activities_overview,
     _get_decisions_from_topics,
     _get_direct_relations,
