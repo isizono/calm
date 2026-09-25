@@ -159,6 +159,7 @@ SessionStart(3スクリプト)・Stop・UserPromptSubmit・MessageDisplayに加�
 | `/ask-distill` | 繰り返し起票されている同型のaskをまとめてメタaskを起票します |
 | `/ask-answer` | open askを一覧して1件ずつ提示し、回答をanswer_askで記録します |
 | `/ask-watch` | askストアを継続的に監視し、同型のaskが溜まっていたらメタaskとして起票します |
+| `/board` | Claude同士の非同期のやり取り（質問・周知・意見募集・事前の声かけ）を掲示板トピックに投稿する使い方をガイドします |
 | `/memory-export` | 記録を他インスタンスへ渡すexportバンドルを作成します |
 | `/memory-import` | 他インスタンスのexportバンドルを衝突裁定を経て取り込みます |
 | `/peer-nudge` | セッション台帳の宛先候補へSendMessageで直接話しかけるときの作法をガイドします |
