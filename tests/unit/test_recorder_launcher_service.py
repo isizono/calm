@@ -195,7 +195,9 @@ class TestBuildSettings:
         settings = svc.build_settings(calm_root, run_dir)
 
         hook_cmd = settings["hooks"]["Stop"][0]["hooks"][0]
-        assert hook_cmd["command"] == f"{calm_root}/.venv/bin/python {calm_root}/hooks/recorder_watch.py"
+        assert hook_cmd["command"] == (
+            f"{calm_root}/.venv/bin/python {calm_root}/hooks/recorder_watch.py {run_dir}"
+        )
         assert hook_cmd["asyncRewake"] is True
         assert hook_cmd["timeout"] == 86400
         assert "uv run" not in hook_cmd["command"]
@@ -205,7 +207,8 @@ class TestBuildSettings:
         settings = svc.build_settings(calm_root, run_dir)
 
         allow = settings["permissions"]["allow"]
-        assert f"Read({run_dir}/**)" in allow
+        assert f"Read(/{run_dir}/**)" in allow
+        assert f"Read(/{run_dir}/**)".startswith("Read(//")
         assert f"{svc.MCP_TOOL_PREFIX}add_logs" in allow
         assert f"{svc.MCP_TOOL_PREFIX}add_material" in allow
         assert f"{svc.MCP_TOOL_PREFIX}add_relation" in allow
@@ -227,7 +230,7 @@ class TestBuildSettings:
         run_dir = tmp_path / "run"
         path = svc.write_settings_json(run_dir, calm_root)
 
-        assert path == run_dir / ".claude" / "settings.json"
+        assert path == run_dir / "settings.json"
         data = json.loads(path.read_text(encoding="utf-8"))
         assert data["hooks"]["Stop"][0]["hooks"][0]["asyncRewake"] is True
 
@@ -423,7 +426,7 @@ class TestStart:
         assert result["pane_pid"] == _PANE_PID
 
         run_dir = watch_hook.run_dir_for(_MAIN_SID)
-        assert (run_dir / ".claude" / "settings.json").exists()
+        assert (run_dir / "settings.json").exists()
         assert (run_dir / "mcp.json").exists()
         run_data = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
         assert run_data["recorder_sids"] == ["rec-1"]
@@ -682,3 +685,94 @@ class TestMainCli:
         data = json.loads(captured.out)
         assert data["started"] is True
         assert data["main_sid"] == _MAIN_SID
+
+
+# ===================================================================
+# 起動フォルダの固定と信頼確認
+# ===================================================================
+
+
+class TestEnsureTrusted:
+    def test_registers_resolved_path_and_keeps_other_keys(self, tmp_path):
+        config = tmp_path / "claude.json"
+        config.write_text(
+            json.dumps({"numStartups": 3, "projects": {"/other": {"allowedTools": ["x"]}}}),
+            encoding="utf-8",
+        )
+        real = tmp_path / "real"
+        real.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(real)
+
+        assert svc.ensure_trusted(link, config) is True
+
+        data = json.loads(config.read_text(encoding="utf-8"))
+        assert data["numStartups"] == 3
+        assert data["projects"]["/other"] == {"allowedTools": ["x"]}
+        assert data["projects"][str(real.resolve())] == {"hasTrustDialogAccepted": True}
+        assert str(link) not in data["projects"]
+
+    def test_does_not_rewrite_when_already_trusted(self, tmp_path):
+        cwd = tmp_path / "cwd"
+        cwd.mkdir()
+        config = tmp_path / "claude.json"
+        original = json.dumps({"projects": {str(cwd.resolve()): {"hasTrustDialogAccepted": True}}})
+        config.write_text(original, encoding="utf-8")
+
+        assert svc.ensure_trusted(cwd, config) is False
+        assert config.read_text(encoding="utf-8") == original
+
+    def test_keeps_existing_entry_fields_when_adding_trust(self, tmp_path):
+        cwd = tmp_path / "cwd"
+        cwd.mkdir()
+        config = tmp_path / "claude.json"
+        config.write_text(
+            json.dumps({"projects": {str(cwd.resolve()): {"allowedTools": ["y"]}}}), encoding="utf-8"
+        )
+
+        svc.ensure_trusted(cwd, config)
+
+        entry = json.loads(config.read_text(encoding="utf-8"))["projects"][str(cwd.resolve())]
+        assert entry == {"allowedTools": ["y"], "hasTrustDialogAccepted": True}
+
+    def test_unreadable_config_is_not_overwritten(self, tmp_path):
+        cwd = tmp_path / "cwd"
+        cwd.mkdir()
+        config = tmp_path / "claude.json"
+        config.write_text("{broken", encoding="utf-8")
+
+        with pytest.raises(svc.RecorderLaunchError):
+            svc.ensure_trusted(cwd, config)
+        assert config.read_text(encoding="utf-8") == "{broken"
+
+
+class TestStartUsesSharedCwd:
+    def _start(self, calm_root, tmp_path, monkeypatch, main_sid, recorder_sid):
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", main_sid)
+        monkeypatch.setenv("CLAUDE_PID", str(_MAIN_PID))
+        transcript = tmp_path / f"{main_sid}.jsonl"
+        _write_jsonl(transcript, [_entry("u1")])
+        svc.start(calm_root=calm_root, transcript=str(transcript), sid_factory=_fixed_sid_factory(recorder_sid))
+
+    def test_every_session_launches_in_the_same_trusted_cwd(
+        self, calm_root, tmp_path, monkeypatch, _mock_subprocess
+    ):
+        self._start(calm_root, tmp_path, monkeypatch, "main-a", "rec-a")
+        self._start(calm_root, tmp_path, monkeypatch, "main-b", "rec-b")
+
+        new_sessions = [c for c in _mock_subprocess if c[1] == "new-session"]
+        cwds = {c[c.index("-c") + 1] for c in new_sessions}
+        assert cwds == {str(svc.recorder_cwd())}
+
+        projects = json.loads(svc.CLAUDE_CONFIG_PATH.read_text(encoding="utf-8"))["projects"]
+        assert projects == {str(svc.recorder_cwd().resolve()): {"hasTrustDialogAccepted": True}}
+
+    def test_settings_and_mcp_config_are_passed_by_absolute_path(
+        self, calm_root, tmp_path, monkeypatch, _mock_subprocess
+    ):
+        self._start(calm_root, tmp_path, monkeypatch, "main-a", "rec-a")
+
+        pane_command = next(c for c in _mock_subprocess if c[1] == "new-session")[-1]
+        run_dir = watch_hook.run_dir_for("main-a")
+        assert f"--settings {run_dir / 'settings.json'}" in pane_command
+        assert f"--mcp-config {run_dir / 'mcp.json'}" in pane_command

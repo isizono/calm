@@ -22,6 +22,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from hooks.hook_state import HookState
 from hooks.recorder_marker import is_recorder_attached, write_marker
 from hooks.recorder_watch import (
     _DEFAULT_CURSOR,
@@ -35,6 +36,17 @@ from hooks.recorder_watch import (
 from src.infra.process_signature import process_start_signature
 
 SUBPROCESS_TIMEOUT_SEC = 10.0
+
+# 記録役のclaudeはすべてこの1フォルダをcwdにして起動する。Claude Codeは初見の
+# フォルダで信頼確認を出して無人のtmuxが止まり、信頼すると~/.claude.jsonの
+# projectsにフォルダごとのエントリが残るため、セッションごとのrun_dirを
+# cwdにするとエントリが際限なく増える。recorder_runs/の下に置くのは、
+# 自動アタッチのhookが「recorder_runs配下のcwdは記録役自身」とみなして
+# 何もしない判定をそのまま効かせるため。
+RECORDER_CWD_NAME = "_cwd"
+
+# ユーザーの信頼確認の記録先。テストではmonkeypatchでtmpに向ける。
+CLAUDE_CONFIG_PATH = Path.home() / ".claude.json"
 
 # ponytail: --mcp-config での直接起動時にClaude Codeが組み立てるMCPツール名の
 # 接頭辞は実機未確認。プラグイン経由は "mcp__plugin_calm_calm__"、リモートMCP
@@ -130,6 +142,8 @@ def build_settings(calm_root: Path, run_dir: Path) -> dict:
     """
     venv_python = calm_root / ".venv" / "bin" / "python"
     watch_script = calm_root / "hooks" / "recorder_watch.py"
+    # cwdは全セッション共通のフォルダなので、見張りにはrun_dirを引数で渡す。
+    watch_command = " ".join(shlex.quote(str(p)) for p in (venv_python, watch_script, run_dir))
     return {
         "hooks": {
             "Stop": [
@@ -138,7 +152,7 @@ def build_settings(calm_root: Path, run_dir: Path) -> dict:
                     "hooks": [
                         {
                             "type": "command",
-                            "command": f"{venv_python} {watch_script}",
+                            "command": watch_command,
                             "asyncRewake": True,
                             "timeout": 86400,
                         }
@@ -153,16 +167,48 @@ def build_settings(calm_root: Path, run_dir: Path) -> dict:
                 f"{MCP_TOOL_PREFIX}add_logs",
                 f"{MCP_TOOL_PREFIX}add_material",
                 f"{MCP_TOOL_PREFIX}add_relation",
-                f"Read({run_dir}/**)",
+                # 権限ルールのパスは "/..." だと設定ファイルからの相対、"//..." で
+                # 絶対パスになる。run_dirは記録役のcwdの外にあるため絶対で指す。
+                f"Read(/{run_dir}/**)",
             ]
         },
     }
 
 
 def write_settings_json(run_dir: Path, calm_root: Path) -> Path:
-    path = run_dir / ".claude" / "settings.json"
+    path = run_dir / "settings.json"
     _write_json_atomic(path, build_settings(calm_root, run_dir), indent=2)
     return path
+
+
+def recorder_cwd() -> Path:
+    return HookState.BASE_DIR / "recorder_runs" / RECORDER_CWD_NAME
+
+
+def ensure_trusted(cwd: Path, config_path: Path | None = None) -> bool:
+    """cwdの信頼確認を済ませた状態にする。書き込んだときTrueを返す。
+
+    既に信頼済みなら何もしない。~/.claude.jsonは稼働中の各Claude Codeが
+    丸ごと書き直すファイルなので、読んでから書くまでの間に他プロセスが
+    書いた変更を潰しうる。書くのは印が無いときだけに限り、その窓を一度きりに
+    抑える。キーはClaude Codeが照合する実パス（シンボリックリンク解決済み）。
+    """
+    path = config_path or CLAUDE_CONFIG_PATH
+    key = str(cwd.resolve())
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        data = {}
+    except (OSError, json.JSONDecodeError) as e:
+        # 読めない設定ファイルを上書きするとユーザーの設定を失う
+        raise RecorderLaunchError(f"{path}を読めないため信頼確認を登録できない: {e}") from e
+    projects = data.setdefault("projects", {})
+    entry = projects.setdefault(key, {})
+    if entry.get("hasTrustDialogAccepted") is True:
+        return False
+    entry["hasTrustDialogAccepted"] = True
+    _write_json_atomic(path, data, indent=2)
+    return True
 
 
 def build_mcp_config(calm_root: Path) -> dict:
@@ -237,7 +283,7 @@ def ensure_cursor(run_dir: Path, main_transcript: Path, *, from_start: bool) -> 
 # ===================================================================
 
 
-def build_recorder_shell_command(calm_root: Path, recorder_sid: str) -> str:
+def build_recorder_shell_command(calm_root: Path, run_dir: Path, recorder_sid: str) -> str:
     """記録役のtmuxペインで実行するシェルコマンド文字列を組み立てる。
 
     `exec`でclaudeに置き換えることで、`tmux display-message '#{pane_pid}'`が
@@ -247,8 +293,9 @@ def build_recorder_shell_command(calm_root: Path, recorder_sid: str) -> str:
         "exec", "claude",
         "--session-id", recorder_sid,
         "--setting-sources", "project",
+        "--settings", str(run_dir / "settings.json"),
         "--strict-mcp-config",
-        "--mcp-config", "mcp.json",
+        "--mcp-config", str(run_dir / "mcp.json"),
         "--append-system-prompt-file", str(calm_root / "hooks" / "recorder_instructions.md"),
         "--permission-mode", "dontAsk",
         "--model", "sonnet",
@@ -257,11 +304,13 @@ def build_recorder_shell_command(calm_root: Path, recorder_sid: str) -> str:
     return " ".join(shlex.quote(part) for part in parts)
 
 
-def _launch_tmux_session(session_name: str, run_dir: Path, calm_root: Path, recorder_sid: str) -> None:
-    pane_command = build_recorder_shell_command(calm_root, recorder_sid)
+def _launch_tmux_session(
+    session_name: str, cwd: Path, run_dir: Path, calm_root: Path, recorder_sid: str
+) -> None:
+    pane_command = build_recorder_shell_command(calm_root, run_dir, recorder_sid)
     try:
         subprocess.run(
-            ["tmux", "new-session", "-d", "-s", session_name, "-c", str(run_dir), pane_command],
+            ["tmux", "new-session", "-d", "-s", session_name, "-c", str(cwd), pane_command],
             check=True, capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT_SEC,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
@@ -317,9 +366,13 @@ def start(
     write_mcp_json(run_dir, calm_root)
     ensure_cursor(run_dir, main_transcript, from_start=from_start)
 
+    cwd = recorder_cwd()
+    cwd.mkdir(parents=True, exist_ok=True)
+    ensure_trusted(cwd)
+
     recorder_sid = sid_factory()
     session_name = tmux_session_name(main_sid)
-    _launch_tmux_session(session_name, run_dir, calm_root, recorder_sid)
+    _launch_tmux_session(session_name, cwd, run_dir, calm_root, recorder_sid)
     try:
         pane_pid = _pane_pid(session_name)
         write_marker(main_sid, pane_pid)

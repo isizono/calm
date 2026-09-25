@@ -41,13 +41,10 @@ log/materialとして重複記録してしまう（既定の「起動時点の�
 ため、除去だけでは完全には防げない（実機確認: 既存サーバーに対する
 `new-session`はCALM_RECORDER=1を渡しても新paneには伝播しなかった＝
 サーバー起動時点の環境が優先される。根本対策はtmuxペイン起動側
-（`_launch_tmux_session`）の対応が要る）。hook入力のcwdが記録役の
-run_dir（`HookState.BASE_DIR/recorder_runs/`配下。tmuxペインは
-`-c run_dir`で起動されるため、記録役自身のセッションのcwdは必ずここに
-一致する）の下にある場合は無条件でスキップする二重の防御を持つ。
-run.jsonの有無では判定しない（tmuxセッション起動後・run.json書き込み前の
-窓でrun_dir自体は既に存在するため、run_dir配下かどうかで見るほうが
-タイミング競合が無い）。
+（`_launch_tmux_session`）の対応が要る）。hook入力のcwdが
+`HookState.BASE_DIR/recorder_runs/`の下にある場合は無条件でスキップする
+二重の防御を持つ（記録役のtmuxペインは同ディレクトリ直下の共通cwdで
+起動されるため、記録役自身のセッションのcwdは必ずここに入る）。
 
 何が起きてもexit 0にし、stdoutには何も出さない（session_start_hook.pyの
 additionalContextを汚さないため。本hookはhooks.jsonでsession_start_hook.py

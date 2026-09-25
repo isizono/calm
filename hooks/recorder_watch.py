@@ -6,7 +6,8 @@
 （chunk、markdownファイル）に切り出して記録役へ渡す。CALMのMCPツールは
 一切呼ばない（DB読み取りだけsqlite3で直接行う）。
 
-run_dirはhook入力のcwd（記録役プロセスの起動ディレクトリ）から決める。
+run_dirはコマンドライン引数で受け取る（記録役のcwdは全セッション共通のフォルダ
+のため）。引数が無ければhook入力のcwdを使う。
 `run.json`（main_sid・main_pid・main_pid_started_at・main_transcript）が
 無ければ、記録役の実行ディレクトリではないとみなして何もしない。
 
@@ -684,13 +685,13 @@ def _watch(run_dir: Path, hook_input: dict, *, sleep, now) -> int:
         sleep(POLL_INTERVAL_SECONDS)
 
 
-def main(*, sleep=time.sleep, now=time.time) -> int:
+def main(argv: list[str] | None = None, *, sleep=time.sleep, now=time.time) -> int:
     try:
         if os.environ.get("HOOK_STATE_DIR"):
             HookState.BASE_DIR = Path(os.environ["HOOK_STATE_DIR"])
 
         hook_input = select_harness(hook_event_name="Stop").read_hook_input()
-        run_dir = Path(hook_input.get("cwd") or os.getcwd())
+        run_dir = Path(argv[0]) if argv else Path(hook_input.get("cwd") or os.getcwd())
         if not (run_dir / "run.json").exists():
             return 0
 
@@ -706,4 +707,4 @@ def main(*, sleep=time.sleep, now=time.time) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))
