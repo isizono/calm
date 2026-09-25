@@ -97,6 +97,19 @@ def _condition_ids(goal_id: int) -> list[int]:
         conn.close()
 
 
+def _set_activity_heartbeat(activity_id: int, sql_offset: str) -> None:
+    """「止まっている」判定のテスト用に、updated_at/last_heartbeat_atを過去に書き換える。"""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE activities SET updated_at = datetime('now', ?), last_heartbeat_at = datetime('now', ?) WHERE id = ?",
+            (sql_offset, sql_offset, activity_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _set_condition_updated_at(condition_id: int, sql_offset: str) -> None:
     """recheckフラグのテスト用に、updated_atを過去に書き換える（時刻は外部境界としてDBを直接操作）。"""
     conn = get_connection()
@@ -217,7 +230,7 @@ class TestBoundStatesActivity:
         """goalがachievedで閉じていれば、束縛先activityのstatusが(read-for-checkin
         等で)in_progressに戻っても、束縛はdoneのまま読む（statusを優先しない）。"""
         child, _ = _child_with_goal_verdict("achieved")
-        check_in(child)  # completed→in_progressへ戻す（既存の挙動）
+        collect_and_assemble(child)  # completed→in_progressへ戻す（既存の挙動）
         conn = get_connection()
         try:
             states = gs._fetch_bound_states(conn, [("activity", child)], exclude_goal_id=None)
@@ -1346,3 +1359,185 @@ class TestGoalBlockOnWriteTools:
         result = gs.judge_goal(goal_id, "achieved")
         assert result["error"]["code"] == "GOAL_NOT_READY"
         assert "goal" not in result
+
+
+class TestChildrenSummary:
+    def test_omitted_when_no_activity_bound_condition(self, temp_db):
+        act = _activity("parent")
+        decision_id = _decision()
+        goal_id = _new_goal(
+            act,
+            conditions=[{"statement": "d1", "actor": "claude", "bound": {"type": "decision", "id": decision_id}}],
+        )["goal_id_raw"]
+        block = gs.get_goal(goal_id=goal_id)
+        assert "children" not in block
+        assert "attention" not in block
+
+    def test_counts_achieved_failed_in_progress_and_stalled(self, temp_db):
+        achieved_child, _ = _child_with_goal_verdict("achieved", title="achieved-child")
+        failed_child, _ = _child_with_goal_verdict("failed", note="断念", title="failed-child")
+        in_progress_child = _activity("in-progress-child")
+        stalled_child = _activity("stalled-child")
+        _set_activity_heartbeat(stalled_child, "-2 hours")
+        parent = _activity("parent")
+        goal_id = _new_goal(
+            parent,
+            conditions=[
+                {"statement": "c1", "actor": "claude", "bound": {"type": "activity", "id": achieved_child}},
+                {"statement": "c2", "actor": "claude", "bound": {"type": "activity", "id": failed_child}},
+                {"statement": "c3", "actor": "claude", "bound": {"type": "activity", "id": in_progress_child}},
+                {"statement": "c4", "actor": "claude", "bound": {"type": "activity", "id": stalled_child}},
+            ],
+        )["goal_id_raw"]
+        block = gs.get_goal(goal_id=goal_id)
+        assert block["children"] == "子4: 達成1・進行中1・失敗未処理1・停止1"
+
+    def test_satisfied_condition_counts_as_achieved_even_if_bound_pending(self, temp_db):
+        """親条件を先にsatisfiedへ書き込み済みなら、束縛先の判定状態に関わらずachievedとして数える。"""
+        child = _activity("child")
+        parent = _activity("parent")
+        goal_id = _new_goal(
+            parent,
+            conditions=[
+                {
+                    "statement": "c1",
+                    "actor": "claude",
+                    "state": "satisfied",
+                    "note": "確認済み",
+                    "bound": {"type": "activity", "id": child},
+                }
+            ],
+        )["goal_id_raw"]
+        block = gs.get_goal(goal_id=goal_id)
+        assert block["children"] == "子1: 達成1"
+
+
+class TestAttention:
+    def test_failed_child_has_mark_and_reason_hint(self, temp_db):
+        failed_child, _ = _child_with_goal_verdict("failed", note="設計が破綻していたため中止", title="failed-child")
+        parent = _activity("parent")
+        goal_id = _new_goal(
+            parent,
+            conditions=[{"statement": "c1", "actor": "claude", "bound": {"type": "activity", "id": failed_child}}],
+        )["goal_id_raw"]
+        cond_id = _condition_ids(goal_id)[0]
+        block = gs.get_goal(goal_id=goal_id)
+        assert block["attention"] == [
+            {
+                "condition_id_raw": cond_id,
+                "title": "failed-child",
+                "mark": "失敗",
+                "hint": "設計が破綻していたため中止",
+            }
+        ]
+        assert "attention_more" not in block
+
+    def test_stalled_child_via_heartbeat_timeout(self, temp_db):
+        stalled_child = _activity("stalled-child")
+        _set_activity_heartbeat(stalled_child, "-2 hours")
+        parent = _activity("parent")
+        goal_id = _new_goal(
+            parent,
+            conditions=[{"statement": "c1", "actor": "claude", "bound": {"type": "activity", "id": stalled_child}}],
+        )["goal_id_raw"]
+        block = gs.get_goal(goal_id=goal_id)
+        assert len(block["attention"]) == 1
+        item = block["attention"][0]
+        assert item["mark"] == "止まっている"
+        assert item["title"] == "stalled-child"
+        assert item["hint"].startswith("最終活動") and item["hint"].endswith("分前")
+
+    def test_stalled_child_via_open_ask(self, temp_db):
+        blocked_child = _activity("blocked-child")
+        _ask(blocked_child, question="どちらの方針で進めるか")
+        parent = _activity("parent")
+        goal_id = _new_goal(
+            parent,
+            conditions=[{"statement": "c1", "actor": "claude", "bound": {"type": "activity", "id": blocked_child}}],
+        )["goal_id_raw"]
+        block = gs.get_goal(goal_id=goal_id)
+        item = block["attention"][0]
+        assert item["mark"] == "止まっている"
+        assert item["hint"] == "ask待ち『どちらの方針で進めるか』"
+
+    def test_stalled_child_completed_without_judging_its_goal(self, temp_db):
+        child = _activity("closed-without-judge")
+        _new_goal(child, handle=f"child-goal-{child}", conditions=[{"statement": "終わる", "actor": "claude"}])
+        update_activity(child, status="completed")
+        parent = _activity("parent")
+        goal_id = _new_goal(
+            parent,
+            conditions=[{"statement": "c1", "actor": "claude", "bound": {"type": "activity", "id": child}}],
+        )["goal_id_raw"]
+        block = gs.get_goal(goal_id=goal_id)
+        item = block["attention"][0]
+        assert item["mark"] == "止まっている"
+        assert item["hint"] == "判定せず完了"
+
+    def test_achieved_and_in_progress_children_are_not_attention(self, temp_db):
+        achieved_child, _ = _child_with_goal_verdict("achieved", title="achieved-child")
+        in_progress_child = _activity("in-progress-child")
+        parent = _activity("parent")
+        goal_id = _new_goal(
+            parent,
+            conditions=[
+                {"statement": "c1", "actor": "claude", "bound": {"type": "activity", "id": achieved_child}},
+                {"statement": "c2", "actor": "claude", "bound": {"type": "activity", "id": in_progress_child}},
+            ],
+        )["goal_id_raw"]
+        block = gs.get_goal(goal_id=goal_id)
+        assert "attention" not in block
+
+    def test_capped_at_three_with_overflow_message(self, temp_db):
+        parent = _activity("parent")
+        conditions = []
+        for i in range(5):
+            child = _activity(f"failed-child-{i}")
+            gid = _new_goal(
+                child,
+                handle=f"failed-goal-{child}",
+                conditions=[{"statement": "終わる", "actor": "claude", "state": "satisfied", "note": "済"}],
+            )["goal_id_raw"]
+            gs.judge_goal(gid, "failed", note=f"理由{i}")
+            conditions.append(
+                {"statement": f"c{i}", "actor": "claude", "bound": {"type": "activity", "id": child}}
+            )
+        goal_id = _new_goal(parent, conditions=conditions)["goal_id_raw"]
+        block = gs.get_goal(goal_id=goal_id)
+        assert len(block["attention"]) == 3
+        assert block["attention_more"] == "他 2 件"
+
+    def test_survives_budget_fold_when_remaining_is_collapsed(self, temp_db):
+        """子が多くgoalブロックが800字を超えてremainingが件数表示に畳まれても、
+        attentionには失敗した子が残る（決定事項「orchのcheck-inに要対応の子を畳まず出す」）。
+        """
+        parent = _activity("parent")
+        failed_child, _ = _child_with_goal_verdict("failed", note="環境未整備で断念", title="failed-child")
+        conditions = [
+            {
+                "statement": "子『failed-child』のgoalが達成で閉じたことを確認して条件を満たす",
+                "actor": "claude",
+                "bound": {"type": "activity", "id": failed_child},
+            }
+        ]
+        for i in range(6):
+            child = _activity(f"progress-child-{i}")
+            conditions.append(
+                {
+                    "statement": f"子『progress-child-{i}』のgoalが達成で閉じたことを確認して条件を満たす作業",
+                    "actor": "claude",
+                    "bound": {"type": "activity", "id": child},
+                }
+            )
+        goal_id = _new_goal(parent, conditions=conditions)["goal_id_raw"]
+        conn = get_connection()
+        try:
+            block = gs.build_goal_block_by_goal_id(conn, goal_id)
+        finally:
+            conn.close()
+        # remainingが件数表示に畳まれるだけの字数であることを前提として検証する
+        assert isinstance(block["remaining"], str)
+        assert isinstance(block["attention"], list)
+        assert any(item["mark"] == "失敗" for item in block["attention"])
+        assert isinstance(block["children"], str)
+        assert block["children"].startswith("子7:")
