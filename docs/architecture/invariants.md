@@ -12,6 +12,7 @@ CALMの実装が前提とするデータ不変条件を列挙する。一次情�
 - DB側にCHECK制約は無く、検証はPython層のみで行う（`migrations/0039_extend_tag_namespace.sql` でDB側のCHECK制約は撤去済み）。namespace追加にmigrationは不要
 - `layer` namespaceの値は当面 `direction` のみ運用する（`layer:direction`）。他の値（例: `layer:precedent`）は未定義。判例＝direction以外の全decisionであり、デフォルト側にタグは不要（タグは例外側にだけ付ける）
 - `layer:direction` は decision に直付けされたときのみ方向性decisionとして扱われる（`decision_tags` への直接紐付けが判定条件。topic経由の継承タグでは`direction_service.get_direction_decisions`の対象にならない。継承はdomain絞り込みの条件としてのみ使われる）
+- 素タグ `board`（namespace=''）は、差分通知のスコープ拡張の起点として特別な意味を持つ（`delta_service.derive_scope`）。activityから1段の関連にあるtopicに加えて、それらのtopicに関連する`board`タグ付きtopicもスコープに含まれる（2段目まで。`board`同士がさらに連鎖しても3段目には広がらない）。複数セッションが同じ議論に後から合流する運用（掲示板的な使い方）を想定したタグで、topic作成側が意図的に付ける
 
 ---
 
