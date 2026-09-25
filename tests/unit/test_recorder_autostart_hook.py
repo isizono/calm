@@ -1,8 +1,9 @@
 """hooks/recorder_autostart_hook.py のユニットテスト。
 
-subprocess.Popen（記録役の起動）とrecorder_launcher_service.stop（古い
-記録役の停止）を外部境界としてmonkeypatchし、呼び出しの有無・引数・順序を
-検証する。実際のtmux/claudeプロセスは一切起動しない。
+subprocess.Popen（記録役の起動・古い記録役の停止はいずれも切り離した
+`scripts/recorder.py`プロセスとして起動される）とps（`process_start_
+signature`が内部で呼ぶ）を外部境界としてmonkeypatchし、呼び出しの
+有無・引数・順序を検証する。実際のtmux/claudeプロセスは一切起動しない。
 """
 import io
 import json
@@ -14,10 +15,16 @@ import pytest
 import hooks.recorder_autostart_hook as hook
 from hooks.hook_state import HookState
 from hooks.recorder_watch import run_dir_for
+from src.infra import process_signature
 
 _SID = "main-session-current"
 _PID = 11111
 _TRANSCRIPT = "/Users/x/.claude/projects/proj/main-session-current.jsonl"  # 実在しないパス
+
+# process_start_signature（ps -o lstart=）の既定の戻り値。current_pidと
+# 一致するrun.jsonのmain_pid_started_atにもこの値を使うことで、「同一
+# プロセス」として一致させる。
+_STARTED_AT = "Thu Jul 24 09:32:04 2026"
 
 
 @pytest.fixture(autouse=True)
@@ -27,38 +34,52 @@ def _isolate_state(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ATTENDED", "1")
     monkeypatch.setenv("CLAUDE_PID", str(_PID))
 
+    def _fake_ps(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout=f"{_STARTED_AT}\n", stderr="")
+
+    monkeypatch.setattr(process_signature.subprocess, "run", _fake_ps)
+
 
 @pytest.fixture
 def calls(monkeypatch):
-    """stop・Popenの呼び出しを1本のログに時系列で記録する（順序を検証するため）。"""
-    log: list[tuple] = []
-
-    def _fake_stop(*, session_id):
-        log.append(("stop", session_id))
-        return {"main_sid": session_id, "was_attached": True}
+    """recorder.pyへの起動(start)・古い記録役の停止(stop)のPopen呼び出しを
+    時系列で記録する（順序を検証するため）。どちらも切り離しプロセスとして
+    Popen経由で起動されるため、Popen自体を外部境界としてmonkeypatchする。
+    """
+    log: list[tuple[list[str], dict]] = []
 
     def _fake_popen(cmd, **kwargs):
-        log.append(("popen", cmd, kwargs))
+        log.append((cmd, kwargs))
         return None
 
-    monkeypatch.setattr(hook, "recorder_stop", _fake_stop)
     monkeypatch.setattr(hook.subprocess, "Popen", _fake_popen)
     return log
 
 
 def _stop_calls(log: list[tuple]) -> list[str]:
-    return [c[1] for c in log if c[0] == "stop"]
+    """"stop"を呼んだ対象session_idの一覧を、呼ばれた順に返す。"""
+    return [cmd[cmd.index("--session-id") + 1] for cmd, _ in log if cmd[2] == "stop"]
 
 
-def _popen_calls(log: list[tuple]) -> list[tuple]:
-    return [(c[1], c[2]) for c in log if c[0] == "popen"]
+def _start_calls(log: list[tuple]) -> list[tuple]:
+    """"start"呼び出しの(cmd, kwargs)一覧を、呼ばれた順に返す。"""
+    return [(cmd, kwargs) for cmd, kwargs in log if cmd[2] == "start"]
 
 
-def _write_run_json(sid_for_dir: str, *, main_sid: str, main_pid: int) -> None:
+def _write_run_json(
+    sid_for_dir: str, *, main_sid: str, main_pid: int, main_pid_started_at: str = _STARTED_AT
+) -> None:
     run_dir = run_dir_for(sid_for_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "run.json").write_text(
-        json.dumps({"main_sid": main_sid, "main_pid": main_pid}), encoding="utf-8"
+        json.dumps(
+            {
+                "main_sid": main_sid,
+                "main_pid": main_pid,
+                "main_pid_started_at": main_pid_started_at,
+            }
+        ),
+        encoding="utf-8",
     )
 
 
@@ -124,9 +145,9 @@ class TestSpawnsStart:
 
         assert code == 0
         assert _stop_calls(calls) == []  # 一致するstale run.jsonが無いので停止は起きない
-        popen = _popen_calls(calls)
-        assert len(popen) == 1
-        cmd, kwargs = popen[0]
+        starts = _start_calls(calls)
+        assert len(starts) == 1
+        cmd, kwargs = starts[0]
         assert cmd[0].endswith(".venv/bin/python")
         assert cmd[1].endswith("scripts/recorder.py")
         assert cmd[2:] == [
@@ -149,7 +170,7 @@ class TestSpawnsStart:
 
         _run_hook(transcript_path=str(real_transcript))
 
-        cmd, _ = _popen_calls(calls)[0]
+        cmd, _ = _start_calls(calls)[0]
         assert "--from-start" not in cmd
         assert cmd[cmd.index("--transcript") + 1] == str(real_transcript)
 
@@ -157,7 +178,7 @@ class TestSpawnsStart:
         """spec 4: 記録役自身に記録役が付かないよう、起動env自体からは取り除く。"""
         _run_hook()
 
-        _, kwargs = _popen_calls(calls)[0]
+        _, kwargs = _start_calls(calls)[0]
         assert "CALM_RECORDER" not in kwargs["env"]
         # 他のenvはそのまま引き継ぐ（stripが過剰でないことの確認）
         assert kwargs["env"]["CLAUDE_PID"] == str(_PID)
@@ -174,9 +195,9 @@ class TestStaleDetection:
         code = _run_hook(session_id=_SID)
 
         assert code == 0
-        assert [c[0] for c in calls] == ["stop", "popen"]  # 停止してから起動する順序
+        assert [cmd[2] for cmd, _ in calls] == ["stop", "start"]  # 停止してから起動する順序
         assert _stop_calls(calls) == [old_sid]
-        cmd, _ = _popen_calls(calls)[0]
+        cmd, _ = _start_calls(calls)[0]
         assert cmd[cmd.index("--session-id") + 1] == _SID  # 新しいsidで起動する（古いsidではない）
 
     def test_resume_same_sid_different_pid_stops_then_restarts_same_sid(self, calls):
@@ -186,9 +207,9 @@ class TestStaleDetection:
         code = _run_hook(session_id=_SID)
 
         assert code == 0
-        assert [c[0] for c in calls] == ["stop", "popen"]  # 停止してから起動する順序
+        assert [cmd[2] for cmd, _ in calls] == ["stop", "start"]  # 停止してから起動する順序
         assert _stop_calls(calls) == [_SID]
-        cmd, _ = _popen_calls(calls)[0]
+        cmd, _ = _start_calls(calls)[0]
         assert cmd[cmd.index("--session-id") + 1] == _SID
         assert cmd[cmd.index("--pid") + 1] == str(_PID)  # 新しいpidで起動する
 
@@ -201,7 +222,7 @@ class TestStaleDetection:
 
         assert code == 0
         assert _stop_calls(calls) == []
-        assert len(_popen_calls(calls)) == 1
+        assert len(_start_calls(calls)) == 1
 
     def test_unrelated_run_json_for_other_pid_and_sid_is_left_alone(self, calls):
         """自分と無関係な(別pid・別sid)の記録役には触れない。"""
@@ -210,22 +231,64 @@ class TestStaleDetection:
         _run_hook(session_id=_SID)
 
         assert _stop_calls(calls) == []
-        assert len(_popen_calls(calls)) == 1
+        assert len(_start_calls(calls)) == 1
 
-    def test_stop_failure_does_not_block_start(self, monkeypatch, calls):
-        """古い記録役の停止が失敗しても、新しい記録役の起動は妨げない。"""
+    def test_pid_match_with_different_start_signature_is_not_treated_as_stale(self, calls):
+        """同pidだが起動時刻(process_start_signature)が食い違う場合はOSのpid
+        再利用とみなし、無関係な古いsession_idをstale扱いしない
+        （`is_recorder_attached`と同じ照合方式）。"""
         old_sid = "main-session-before-clear"
-        _write_run_json(old_sid, main_sid=old_sid, main_pid=_PID)
-
-        def _raising_stop(*, session_id):
-            raise RuntimeError("tmux kill-session failed")
-
-        monkeypatch.setattr(hook, "recorder_stop", _raising_stop)
+        _write_run_json(
+            old_sid, main_sid=old_sid, main_pid=_PID,
+            main_pid_started_at="Mon Jan 01 00:00:00 2020",  # 現在のcurrent_pidの起動時刻と不一致
+        )
 
         code = _run_hook(session_id=_SID)
 
         assert code == 0
-        assert len(_popen_calls(calls)) == 1
+        assert _stop_calls(calls) == []
+        assert len(_start_calls(calls)) == 1
+
+    def test_stop_is_spawned_as_detached_process_not_blocking(self, calls):
+        """古い記録役の停止も、起動と同じくPopen経由の切り離しプロセスで行う
+        （tmux kill-sessionの完了をSessionStart hook自身が同期的に待たない）。"""
+        old_sid = "main-session-before-clear"
+        _write_run_json(old_sid, main_sid=old_sid, main_pid=_PID)
+
+        _run_hook(session_id=_SID)
+
+        stop_calls = [(cmd, kwargs) for cmd, kwargs in calls if cmd[2] == "stop"]
+        assert len(stop_calls) == 1
+        cmd, kwargs = stop_calls[0]
+        assert cmd[0].endswith(".venv/bin/python")
+        assert cmd[1].endswith("scripts/recorder.py")
+        assert cmd[2:] == ["stop", "--session-id", old_sid]
+        assert kwargs["start_new_session"] is True
+        assert kwargs["stdin"] is subprocess.DEVNULL
+        assert kwargs["stdout"] is kwargs["stderr"]
+        assert kwargs["stdout"].name == str(run_dir_for(old_sid) / "autostart_stop.log")
+
+    def test_stop_failure_does_not_block_start(self, monkeypatch):
+        """古い記録役の停止(Popen自体の失敗)が起きても、新しい記録役の起動は
+        妨げない。"""
+        old_sid = "main-session-before-clear"
+        _write_run_json(old_sid, main_sid=old_sid, main_pid=_PID)
+
+        log: list[tuple[list[str], dict]] = []
+
+        def _raising_popen(cmd, **kwargs):
+            if cmd[2] == "stop":
+                raise OSError("boom")
+            log.append((cmd, kwargs))
+            return None
+
+        monkeypatch.setattr(hook.subprocess, "Popen", _raising_popen)
+
+        code = _run_hook(session_id=_SID)
+
+        assert code == 0
+        assert len(log) == 1
+        assert log[0][0][2] == "start"
 
 
 class TestRecorderOwnDirGuard:
@@ -255,7 +318,7 @@ class TestRecorderOwnDirGuard:
 
         _run_hook(cwd=str(plain_dir))
 
-        assert len(_popen_calls(calls)) == 1
+        assert len(_start_calls(calls)) == 1
 
 
 class TestErrorHandling:
@@ -275,7 +338,7 @@ class TestErrorHandling:
 
         assert code == 0
         assert _stop_calls(calls) == []
-        assert len(_popen_calls(calls)) == 1
+        assert len(_start_calls(calls)) == 1
 
     def test_emits_nothing_to_stdout(self, calls):
         fake_stdout = io.StringIO()

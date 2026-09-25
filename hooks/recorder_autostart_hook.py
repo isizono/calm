@@ -23,8 +23,10 @@ compact（main_pid・session_idともに不変。実機確認済み）は上記�
 一致しないため何もせず、start()自体の二重起動防止（is_recorder_attached）
 がno-opにする。
 
-起動は`scripts/recorder.py start`を切り離したプロセスとして呼ぶ（hookの
-終了を待たせない）。main transcriptはSessionStart時点ではまだ存在しない
+起動・停止のいずれも`scripts/recorder.py start`/`stop`を切り離したプロセス
+として呼ぶ（hookの終了を待たせない。stop側がtmux kill-sessionの完了を
+同期的に待つと、その分だけSessionStart自体をブロックしてしまうため）。
+main transcriptはSessionStart時点ではまだ存在しない
 ことがある（実機確認: startup・/clear直後は未作成。resumeは既存ファイルが
 そのまま使われる）ため、resolve_main_transcriptのglob解決に頼らずhook
 入力のtranscript_pathを明示的に渡す。transcriptがまだ存在しない場合
@@ -66,9 +68,9 @@ if str(_project_root) not in sys.path:
 
 try:
     from hooks.hook_state import HookState
-    from hooks.recorder_watch import run_dir_for
+    from hooks.recorder_watch import _read_int_env, _spawn_detached_stop, run_dir_for
     from src.harness import select_harness
-    from src.services.recorder_launcher_service import stop as recorder_stop
+    from src.infra.process_signature import process_start_signature
 except Exception:
     # CALM_RECORDERを使っていない大多数のセッションのSessionStartを壊さない。
     # importしてテストする側（main()を直接呼ぶユニットテスト）には
@@ -78,26 +80,25 @@ except Exception:
     raise
 
 
-def _read_int_env(name: str) -> int | None:
-    raw = os.environ.get(name)
-    if not raw:
-        return None
-    try:
-        return int(raw)
-    except ValueError:
-        return None
-
-
 def _find_stale_sids(current_pid: int, current_sid: str) -> list[str]:
     """current_pid・current_sidの組と食い違う既存run.jsonのsession_idを返す。
 
     (別sid・同pid)は/clear、(同sid・別pid)はresumeに対応する（モジュール
-    docstring参照）。件数の少ないrecorder_runs直下を毎回総なめする単純な
-    実装（専用の索引は持たない）。
+    docstring参照）。同pid一致（/clear側）は、OSのpid再利用による誤判定を
+    避けるため`process_start_signature`（起動時刻）も一致することを確認する
+    （`hooks.recorder_marker.is_recorder_attached`・`recorder_watch._watch`と
+    同じ照合方式）。同sid一致（resume側）はsession_id自体が実質衝突しない
+    識別子のためこの照合を要さない。
+    recorder_runs直下を毎回iterdirで総なめする単純な実装（専用の索引は持た
+    ない）。
+    # ponytail: recorder_runs配下はstop後も削除されずGCが無いため、運用が
+    # 長期化するほどこの走査対象は増え続ける。実運用でコストが無視できなく
+    # なったら索引化やGCを検討する。
     """
     base = HookState.BASE_DIR / "recorder_runs"
     if not base.is_dir():
         return []
+    current_started_at = process_start_signature(current_pid)
     stale: list[str] = []
     for entry in base.iterdir():
         run_json = entry / "run.json"
@@ -107,11 +108,13 @@ def _find_stale_sids(current_pid: int, current_sid: str) -> list[str]:
             continue
         sid = data.get("main_sid")
         pid = data.get("main_pid")
+        started_at = data.get("main_pid_started_at")
         if not isinstance(sid, str) or not isinstance(pid, int):
             continue
-        if (sid != current_sid and pid == current_pid) or (
-            sid == current_sid and pid != current_pid
-        ):
+        if sid != current_sid and pid == current_pid:
+            if current_started_at is not None and started_at == current_started_at:
+                stale.append(sid)
+        elif sid == current_sid and pid != current_pid:
             stale.append(sid)
     return stale
 
@@ -170,7 +173,7 @@ def main() -> int:
 
         for old_sid in _find_stale_sids(main_pid, session_id):
             try:
-                recorder_stop(session_id=old_sid)
+                _spawn_detached_stop(_project_root, run_dir_for(old_sid), old_sid)
             except Exception:
                 pass
 
