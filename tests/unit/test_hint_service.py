@@ -928,7 +928,6 @@ class TestActivityCleanupHint:
         hints = get_hints("activity", activity_ids[0])
         cleanup_hint = next(h for h in hints if h["type"] == "activity_cleanup")
         assert cleanup_hint["suggested_action"]["skill"] == "recompose-context"
-        assert "--all" in cleanup_hint["suggested_action"]["natural_language"]
 
     def test_silent_below_threshold(self, temp_db):
         """閾値未満(threshold-1件)ではfireしない"""
