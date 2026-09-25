@@ -21,7 +21,7 @@ from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from src.db import get_connection
 from src.infra.session_identity import get_caller_session_id
 from src.services import delta_service
-from src.services.checkin_service import checkin_scope
+from src.services.checkin_queries import checkin_scope
 
 # セッション別watermark。キーはget_caller_session_id()の解決結果。Noneが
 # 返る呼び出しはwatermarkの読み書き自体を行わない（共有キーに相乗りすると
@@ -110,7 +110,7 @@ def _handle_check_in(session_key: str, result: Any, nested_key: str | None = Non
     structured_content[nested_key]をcheck_in結果として扱う（add_activity(check_in=True)
     がcheck_in結果をresult["check_in_result"]にネストして返すため）。
 
-    activity_idの読み方自体はcheckin_service.checkin_scopeに一本化している。check_in
+    activity_idの読み方自体はcheckin_queries.checkin_scopeに一本化している。check_in
     応答の形が変わってもこのmiddlewareは直接キーを読まないため、応答の形を変えるPRと
     activity_idの読み方を変えるPRが必ず同じになる。checkin_scopeが返すtopic_idsは
     使わない（topicスコープは購読テーブルとして固定せず、以降ツール呼び出しのたびに

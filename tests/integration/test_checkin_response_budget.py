@@ -8,7 +8,7 @@ import pytest
 
 from src.db import get_connection
 from src.services.activity_service import add_activity
-from src.services.checkin_service import checkin_scope
+from src.services.checkin_queries import checkin_scope
 from src.services.material_service import add_material
 from src.services.pin_service import add_pin
 from src.services.relation_service import add_relation

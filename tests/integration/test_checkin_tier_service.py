@@ -16,7 +16,7 @@ from src.services import goal_service as gs
 from src.services import session_ledger_service, session_registry_service
 from src.services.activity_service import add_activity, update_activity
 from src.services.ask_service import add_ask_with_conn
-from src.services.checkin_service import DECISIONS_FULL_LIMIT
+from src.services.checkin_queries import DECISIONS_FULL_LIMIT
 from src.services.checkin_tier_service import collect_and_assemble
 from src.services.hint_service import (
     ACTIVITY_CLEANUP_AUTOTRIGGER_GUARD,

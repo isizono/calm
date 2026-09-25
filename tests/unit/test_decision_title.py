@@ -14,7 +14,7 @@ from src.db import get_connection
 from src.services.topic_service import add_topic
 from src.services.decision_service import add_decisions
 from src.services.search_service import find_similar_decisions, get_by_id
-from src.services.checkin_service import _get_decisions_from_topics
+from src.services.checkin_queries import _get_decisions_from_topics
 import src.services.embedding_service as emb
 from tests.helpers import assert_no_write_errors
 

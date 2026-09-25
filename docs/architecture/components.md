@@ -132,7 +132,7 @@ graph TB
 - `src/services/retract_service.py`: 論理削除と検索からの除外（NOT EXISTSによるretract遅延除外）
 - `src/services/tag_analysis_service.py`: タグ共起分析（`analyze_tags`）。tag-cleanupスキルから利用
 - `src/services/destabilization_service.py`: destabilizesエッジの解消（`resolve_destabilization`）・候補提示（`suggest_destabilized_candidates`）
-- `src/services/supersede_service.py`: `decision_supersedes`を辿ったsupersedeチェーン算出のヘルパー。precedent系・direction_service・decision_service・checkin_service・search_service等decisionを扱う多数のserviceから共有される
+- `src/services/supersede_service.py`: `decision_supersedes`を辿ったsupersedeチェーン算出のヘルパー。precedent系・direction_service・decision_service・checkin_queries・search_service等decisionを扱う多数のserviceから共有される
 - `src/services/precedent_pull_service.py`: `pull_precedents`のtopic routing + browse保証（近傍topicの非retract decisionをLIMIT無しで網羅列挙）
 - `src/services/precedent_cluster_service.py`: `precedent_pull_service`から呼ばれ、seed decision集合をsupersede系譜／depth-1のrelatedエッジ／depth-1のcitationエッジで連結クラスタ展開する
 - `src/services/budget_service.py`: `pull_precedents`の予算配分ロジックと、decision/logページネーション用件数カウントの共通プリミティブ
@@ -234,7 +234,7 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 
 ### 4.3 フロー層 service
 
-- `src/services/checkin_tier_service.py`: check-inの本体実装。アクティビティに紐づく tag-notes・資材カタログ・pinned・関連decisions・recent logs を anchor/control/context/catalog/env の5枠に分けて一括取得し、coverage と recompose hints を計算する (recompose hint は HintService 経由)。`src/services/checkin_service.py` はこのモジュールと差分通知middlewareが共有するクエリヘルパーと`checkin_scope`のみを持つ
+- `src/services/checkin_tier_service.py`: check-inの本体実装。アクティビティに紐づく tag-notes・資材カタログ・pinned・関連decisions・recent logs を anchor/control/context/catalog/env の5枠に分けて一括取得し、coverage と recompose hints を計算する (recompose hint は HintService 経由)。`src/services/checkin_queries.py` はこのモジュールと差分通知middlewareが共有するクエリヘルパーと`checkin_scope`のみを持つ
 - `src/services/hint_service.py`: hint一元化（`get_hints(scope, target_id) -> list[Hint]`）。recompose_bootstrap / recompose_delta / logs_sparse / direction_overflow / activity_cleanup / notes_over_budget を統一フォーマット（`Hint`型）で返す。follow_up_after_decision / record_missingはevents.jsonl状態が必要なため本module自体では判定せず、Stop hookが生成しつつtype名だけ本moduleに合わせて統一する。delivery_hint で immediate (check_in 同期注入) と deferred (Stop hook → events.jsonl → UserPromptSubmit 注入) を分岐する
 - `src/services/habit_service.py`: habitのCRUD。書き込み後は`habit_projection`経由で`~/.claude/rules`配下の自動生成ファイルへ投影する。`trigger_mode='always'`は全文、`'intelligently'`はタイトルのみのマニフェストとして投影される
 
