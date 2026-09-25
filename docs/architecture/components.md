@@ -274,7 +274,6 @@ v1通信系（`ow_service` / `src/relay/`のvendoringされたSSE+SQLite中継�
 - `src/main.py`: FastMCPサーバーエントリ（HTTPモード起動の本体）
 - `src/http_config.py`: HTTPサーバー設定
 - `src/infra/session_manager.py`: HTTPセッションカウントと自動停止ウォッチドッグ。セッション数0で猶予期間後にshutdown
-- `src/infra/staleness_watchdog.py`: セッション数と無関係に、起動時ロードコードとディスク上の内容の乖離（プラグインアップデート）を検知して自死する経路
 - `src/infra/lock_file.py`: プロセス間ロック
 - `src/infra/cli_session.py`: Claude Code CLIプロセスが公開するsession fileの読み取り専用アクセサ（セッション別名解決の基盤）
 - `src/infra/git_repo.py`: git worktree配下からmain repoルートを解決する共有ユーティリティ（`launcher.py` / `restart_service.py`が利用）

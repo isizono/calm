@@ -64,7 +64,7 @@ kind の全種一覧は `report_signal` ツールのdocstring（`src/main.py`）
 |---|---|
 | `machine_error` | ツールエラー・hook 失敗・サーバー異常を観察した |
 | `friction` | 検索で引けるべき記録が引けなかった等、cc-memory の使い勝手への不満・違和感を感じた |
-| `contradiction` | 設計・実装中に既存 decision と矛盾する結論に達した / `add_decisions` の `related_decisions` で矛盾に気づいた |
+| `contradiction` | 設計・実装中に既存 decision と矛盾する結論に達した / `add_decisions` の `related_decisions`、`add_logs`/`add_material` の `related_records` で矛盾に気づいた |
 
 残り4種（`precedent_miss` / `precedent_misapplied` / `boundary_case` / `rollback`）は頻度が低く、判断に迷ったら `report_signal` ツールのdocstringを参照する。同一内容の再報告は `report_signal` 側で自動集約されるため、迷ったら報告してよい。
 

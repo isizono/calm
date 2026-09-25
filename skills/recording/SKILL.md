@@ -53,7 +53,7 @@ L5（バグ観察）はユーザーが取り組んでいる対象システムの
 |---|---|
 | `machine_error` | ツールエラー・hook 失敗・サーバー異常を観察した |
 | `friction` | 検索で引けるべき記録が引けなかった等、CALM の使い勝手への不満・違和感を感じた |
-| `contradiction` | 設計・実装中に既存 decision と矛盾する結論に達した / `add_decisions` の `related_decisions` で矛盾に気づいた |
+| `contradiction` | 設計・実装中に既存 decision と矛盾する結論に達した / `add_decisions` の `related_decisions`、`add_logs`/`add_material` の `related_records` で矛盾に気づいた |
 
 上記3種は頻出例であり、`report_signal` の kind は全8種ある（`precedent_miss` /
 `precedent_misapplied` / `boundary_case` / `rollback` / `goal_rollback` を含む）。
@@ -91,3 +91,4 @@ docstringを正とする。同一内容の再報告は `report_signal` 側で自
 - `tags` には `domain:` を必ず付け、内容を表す素タグも追加する。`intent:` namespace の例: `intent:discuss` / `intent:design` / `intent:implement` / `intent:investigate`
 - `related` で関連する activity / topic / decision / log / material と紐付ける
 - `add_logs` は `topic_id` 必須。tag だけでは紐付かない
+- `add_logs` / `add_material` のレスポンスには `related_records`（類似する既存記録の上位3件。同一セッションで一度提示した記録は再提示されない）が付く。既存記録と矛盾・重複に気づいたら `report_signal(kind="contradiction")` を呼ぶ
