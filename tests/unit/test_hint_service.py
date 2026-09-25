@@ -9,7 +9,6 @@ from src.services.activity_service import add_activity
 from src.services.decision_service import add_decisions
 from src.services.direction_service import DIRECTION_NAME, DIRECTION_NAMESPACE
 from src.services.hint_service import (
-    ACTIVITY_CLEANUP_AUTOTRIGGER_GUARD,
     ACTIVITY_CLEANUP_COUNT_THRESHOLD,
     DIRECTION_OVERFLOW_THRESHOLD,
     HINT_LOGS_SPARSE_MESSAGE,
@@ -920,7 +919,7 @@ class TestActivityCleanupHint:
         assert cleanup_hints[0]["delivery_hint"] == "immediate"
         assert str(ACTIVITY_CLEANUP_COUNT_THRESHOLD) in cleanup_hints[0]["message"]
 
-    def test_suggested_action_names_activity_cleanup_skill(self, temp_db):
+    def test_suggested_action_names_recompose_context_skill(self, temp_db):
         _ensure_activity_management_tag()
         activity_ids = [
             _make_activity_for_cleanup() for _ in range(ACTIVITY_CLEANUP_COUNT_THRESHOLD)
@@ -928,7 +927,7 @@ class TestActivityCleanupHint:
 
         hints = get_hints("activity", activity_ids[0])
         cleanup_hint = next(h for h in hints if h["type"] == "activity_cleanup")
-        assert cleanup_hint["suggested_action"]["skill"] == "activity-cleanup"
+        assert cleanup_hint["suggested_action"]["skill"] == "recompose-context"
 
     def test_silent_below_threshold(self, temp_db):
         """閾値未満(threshold-1件)ではfireしない"""
@@ -1194,7 +1193,7 @@ class TestActivityCleanupMessageHelper:
 
     def test_message_includes_autotrigger_guard(self):
         message = hint_service._activity_cleanup_message(42)
-        assert ACTIVITY_CLEANUP_AUTOTRIGGER_GUARD in message
+        assert RECOMPOSE_AUTOTRIGGER_GUARD in message
 
     def test_includes_snooze_instructions(self):
         message = hint_service._activity_cleanup_message(42)

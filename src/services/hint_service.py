@@ -219,9 +219,8 @@ def _autotrigger_guard(skill_name: str) -> str:
     """指定skillの自発実行を抑止する定型文を生成する。
 
     hintを受け取ったセッション自身がユーザーの明示的な要求なしにskillを実行
-    しないよう指示しつつ、別セッションでの実施は妨げない。recompose-context /
-    activity-cleanupなど、自発実行を抑止したいskillごとにこの関数から定数を
-    導出することで、文面の重複と drift を防ぐ。
+    しないよう指示しつつ、別セッションでの実施は妨げない。自発実行を抑止したい
+    skillごとにこの関数から定数を導出することで、文面の重複と drift を防ぐ。
     """
     return (
         "別セッションで実施することをおすすめする旨をユーザーに伝えてください。"
@@ -231,7 +230,6 @@ def _autotrigger_guard(skill_name: str) -> str:
 
 
 RECOMPOSE_AUTOTRIGGER_GUARD = _autotrigger_guard("recompose-context")
-ACTIVITY_CLEANUP_AUTOTRIGGER_GUARD = _autotrigger_guard("activity-cleanup")
 
 
 def _recompose_bootstrap_message(tag_name: str, total_count: int) -> str:
@@ -284,8 +282,9 @@ def _direction_overflow_message(tag_name: str, count: int) -> str:
 def _activity_cleanup_message(count: int) -> str:
     return (
         f"放置されているアクティビティが{count}件あります。"
-        f"activity-cleanup skillでの棚卸しをユーザーに提案してください。"
-        f"{ACTIVITY_CLEANUP_AUTOTRIGGER_GUARD}"
+        f"recompose-context skillの全体モード（--all）での棚卸しをユーザーに"
+        f"提案してください。"
+        f"{RECOMPOSE_AUTOTRIGGER_GUARD}"
         f"今は都合が悪い場合、activity-managementタグのnotesに"
         f"「{MARKER_ACTIVITY_CLEANUP}-until:YYYY-MM-DD」（任意の未来日）を"
         f"追記すると、その日まで一時的に黙らせられます。恒久的に不要なら日付なしの"
@@ -602,7 +601,7 @@ def _get_tag_id_and_notes(conn: sqlite3.Connection, tag_name: str) -> tuple[int 
 
 def _get_activity_cleanup_hint(conn: sqlite3.Connection) -> Hint | None:
     """放置activityの件数がACTIVITY_CLEANUP_COUNT_THRESHOLD以上のとき、
-    activity-cleanup skillでの棚卸しを促すhintを返す。
+    recompose-context skillの全体モードでの棚卸しを促すhintを返す。
 
     抑制マーカーはactivity-managementタグのnotesに置く。判定順序は
     recompose_bootstrap/deltaと同じ(マーカーチェック→件数計算→hint組み立て
@@ -623,8 +622,8 @@ def _get_activity_cleanup_hint(conn: sqlite3.Connection) -> Hint | None:
         "severity": "info",
         "message": _activity_cleanup_message(count),
         "suggested_action": {
-            "skill": "activity-cleanup",
-            "natural_language": "activity-cleanup skillでの棚卸しをユーザーに提案する",
+            "skill": "recompose-context",
+            "natural_language": "recompose-context skillの全体モード（--all）での棚卸しをユーザーに提案する",
         },
         "source": f"activity_cleanup:tag:{tag_id}",
         "delivery_hint": "immediate",
