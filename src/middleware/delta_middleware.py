@@ -1,10 +1,10 @@
 """デルタ通知 middleware
 
-check_inでスナップショットしたtopicスコープに対し、以降のツール呼び出しで
-関連topicへ新規追加されたdecision/log/materialがあれば、レスポンスに
-ベルとして注入する。watermarkはMCPサーバープロセス内のin-memory dictで
-保持し、DB・migrationは持たない。サーバー再起動でwipeされ、次のcheck_inで
-再ベースラインされる（意図した挙動）。
+check_inしたactivityを起点に、以降のツール呼び出しのたびにtopicスコープを
+引き直し（購読テーブルは持たない）、関連topicへ新規追加されたdecision/log/
+materialがあれば、レスポンスにベルとして注入する。watermarkはMCPサーバー
+プロセス内のin-memory dictで保持し、DB・migrationは持たない。サーバー再起動で
+wipeされ、次のcheck_inで再ベースラインされる（意図した挙動）。
 """
 from __future__ import annotations
 
@@ -104,17 +104,19 @@ class DeltaNotificationMiddleware(Middleware):
 
 
 def _handle_check_in(session_key: str, result: Any, nested_key: str | None = None) -> None:
-    """check_in結果からscope（topic_ids/activity_id）を読み取り、baselineで初期化する。
+    """check_in結果からactivity_idを読み取り、baselineで初期化する。
 
     nested_keyが指定された場合、structured_content自体ではなく
     structured_content[nested_key]をcheck_in結果として扱う（add_activity(check_in=True)
     がcheck_in結果をresult["check_in_result"]にネストして返すため）。
 
-    scopeの読み方自体はcheckin_service.checkin_scopeに一本化している。check_in応答の
-    形が変わってもこのmiddlewareは直接キーを読まないため、スコープの読み方を変える
-    PRと形を変えるPRが必ず同じになる。checkin_scopeがNoneを返す場合（error応答・
-    nested_keyの値が辞書でない＝add_activity(check_in=False)相当等）は何もしない
-    （直前のwatermarkがあればそのまま残す）。
+    activity_idの読み方自体はcheckin_service.checkin_scopeに一本化している。check_in
+    応答の形が変わってもこのmiddlewareは直接キーを読まないため、応答の形を変えるPRと
+    activity_idの読み方を変えるPRが必ず同じになる。checkin_scopeが返すtopic_idsは
+    使わない（topicスコープは購読テーブルとして固定せず、以降ツール呼び出しのたびに
+    delta_service.derive_scopeで引き直すため）。checkin_scopeがNoneを返す場合
+    （error応答・nested_keyの値が辞書でない＝add_activity(check_in=False)相当等）は
+    何もしない（直前のwatermarkがあればそのまま残す）。
     """
     structured = getattr(result, "structured_content", None)
     if not structured:
@@ -126,19 +128,20 @@ def _handle_check_in(session_key: str, result: Any, nested_key: str | None = Non
     scope = checkin_scope(structured)
     if scope is None:
         return
-    activity_id, topic_ids = scope
+    activity_id, _ = scope
 
-    # delta_service.get_baselineは純relationalクエリでベクトル検索を使わないため、
+    # topicスコープはここでは引かない。以降のツール呼び出しのたびに
+    # derive_scopeで引き直すため、check_in時点のスコープを保持する意味が無い。
+    # get_baselineは純relationalクエリでベクトル検索を使わないため、
     # sqlite-vecネイティブ拡張のロードをスキップしてオープンコストを削減する。
     with contextlib.closing(get_connection(load_vec=False)) as conn:
-        baseline = delta_service.get_baseline(conn, topic_ids, activity_id)
+        baseline = delta_service.get_baseline(conn)
 
     with _watermarks_lock:
         if session_key not in _watermarks:
             while len(_watermarks) >= _WATERMARKS_MAX_SESSIONS:
                 del _watermarks[next(iter(_watermarks))]
         _watermarks[session_key] = {
-            "topic_ids": topic_ids,
             "activity_id": activity_id,
             "decision_id": baseline["decision_id"],
             "log_id": baseline["log_id"],
@@ -180,15 +183,17 @@ def _handle_write(session_key: str, tool_name: str, result: Any) -> None:
     if not created_ids:
         return
 
-    # _scoped_ids・compute_deltaはどちらも純relationalクエリのみ（vec不要）。
-    # 理由は_handle_check_in参照。
+    # derive_scope・_scoped_ids・compute_deltaはどれも純relationalクエリのみ（vec不要）。
+    # 理由は_handle_check_in参照。topicスコープはここで毎回引き直す（後から
+    # boardトピックが関連付けられていれば、その変化がこの呼び出しから反映される）。
     with contextlib.closing(get_connection(load_vec=False)) as conn:
-        scoped_ids = _scoped_ids(conn, entity_type, created_ids, wm["topic_ids"], wm["activity_id"])
+        topic_ids = delta_service.derive_scope(conn, wm["activity_id"])
+        scoped_ids = _scoped_ids(conn, entity_type, created_ids, topic_ids, wm["activity_id"])
         if not scoped_ids:
             # scope外への自己書き込みは自己通知抑制の対象にならないため、
             # ここでは何もしない（他セッション分の配達は次のツール呼び出しに委ねる）
             return
-        delta = delta_service.compute_delta(conn, wm["topic_ids"], wm["activity_id"], wm)
+        delta = delta_service.compute_delta(conn, topic_ids, wm["activity_id"], wm)
 
     # 注入する内容だけ、自分が今回作成したid（＝この呼び出し自身の自己通知抑制対象）を
     # 取り除く。他の2種別（例: decisionを書いた呼び出しでのlog/material）はこの
@@ -215,13 +220,15 @@ def _handle_other(session_key: str, result: Any) -> None:
     if wm is None:
         return
 
-    # delta_service.compute_deltaも純relationalクエリのみ（vec不要）。
+    # delta_service.derive_scope・compute_deltaも純relationalクエリのみ（vec不要）。
     # PR #550レビュー指摘: check-in済みセッションの以降の全ツール呼び出しで無条件に
     # 発生するmiddleware専用接続のコストのうち、拡張ロード分だけでも削減する
-    # （接続オープン自体・クエリ3本のコストは残る。deltaの有無を事前に知る手段が
+    # （接続オープン自体・クエリのコストは残る。deltaの有無を事前に知る手段が
     # ないため、これ以上の早期リターンは設計を変えないと難しいと判断し見送った）。
+    # topicスコープはここで毎回引き直す（購読テーブルは持たない）。
     with contextlib.closing(get_connection(load_vec=False)) as conn:
-        delta = delta_service.compute_delta(conn, wm["topic_ids"], wm["activity_id"], wm)
+        topic_ids = delta_service.derive_scope(conn, wm["activity_id"])
+        delta = delta_service.compute_delta(conn, topic_ids, wm["activity_id"], wm)
 
     if not (delta["new_decisions"] or delta["new_logs"] or delta["new_materials"]):
         return
