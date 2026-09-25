@@ -62,12 +62,12 @@ def main() -> None:
         # 即承認する。判定はagent_id（実機では常にnullで届き使えない）ではなく
         # agent_typeキーの有無で行う。hooks/ask_answer_rewake_hook.py・
         # hooks/sanitize_tool_result_hook.pyと同じ判定。
-        # 実測では、AgentツールのSAが終了する際に発火するのはSubagentStopで
-        # あり、Stopではない。そのためこの分岐が、Agentツール経由のSAに対して
-        # 実際にStopイベント上でagent_type付きの入力を受け取っているかどうかは
-        # 確認できていない。session_idは親セッションと共有され得るため、ここで
-        # 状態を更新すると親のturn数・block_count・heartbeatがサブエージェントの
-        # ターンで進んでしまう。
+        # 実測では、フォアグラウンドのAgentツールSAが終了する際に発火するのは
+        # SubagentStopでありStopではないため、この分岐はそこを通らない。
+        # バックグラウンドSA・teammate等でagent_type付きのStop呼び出しが
+        # 届いた場合の保険として残している。session_idは親セッションと
+        # 共有され得るため、ここで状態を更新すると親のturn数・block_count・
+        # heartbeatがサブエージェントのターンで進んでしまう。
         if data.get("agent_type"):
             harness.emit_approve("サブエージェント呼び出しのためスキップします。")
             return
