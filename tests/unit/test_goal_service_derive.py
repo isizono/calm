@@ -217,7 +217,7 @@ class TestBoundStatesActivity:
         """goalがachievedで閉じていれば、束縛先activityのstatusが(read-for-checkin
         等で)in_progressに戻っても、束縛はdoneのまま読む（statusを優先しない）。"""
         child, _ = _child_with_goal_verdict("achieved")
-        check_in(child)  # completed→in_progressへ戻す（既存の挙動）
+        collect_and_assemble(child)  # completed→in_progressへ戻す（既存の挙動）
         conn = get_connection()
         try:
             states = gs._fetch_bound_states(conn, [("activity", child)], exclude_goal_id=None)
