@@ -28,6 +28,10 @@ jobs:
         uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
+          # uv キャッシュの保存は migration-lint ジョブだけが行う(復元のみ)。
+          # 全ジョブのキャッシュキーが同一のため、並列保存すると
+          # "Unable to reserve cache" で競合する
+          save-cache: false
           python-version: "3.12"
 
       - name: Install dependencies
@@ -49,6 +53,7 @@ jobs:
         uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
+          save-cache: false  # 保存は migration-lint のみ(上記 test ジョブのコメント参照)
           python-version: "3.12"
 
       - name: Install dependencies
@@ -73,6 +78,7 @@ jobs:
         uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
+          save-cache: false  # 保存は migration-lint のみ(上記 test ジョブのコメント参照)
           python-version: "3.12"
 
       - name: Install dependencies
@@ -96,6 +102,7 @@ jobs:
         uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
+          save-cache: false  # 保存は migration-lint のみ(上記 test ジョブのコメント参照)
           python-version: "3.12"
 
       - name: Check every tests/ subdirectory is referenced by a CI job
@@ -124,6 +131,9 @@ jobs:
         uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
+          # test.yml / pr-size.yml を通じて uv キャッシュを保存する唯一のジョブ。
+          # uv sync --frozen を実行し、テスト結果に左右されず失敗しにくいため保存役にする
+          save-cache: true
           python-version: "3.12"
 
       - name: Install dependencies
