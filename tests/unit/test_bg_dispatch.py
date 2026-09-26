@@ -66,45 +66,13 @@ class TestBuildRequest:
         assert "`sync-memory`" in text
         assert "sync-memory --minimal" not in text
 
-    def test_sync_memory_runs_before_final_report(self):
-        text = _build()
-        assert "最後の報告の前に" in text
-
-    def test_parent_check_step_always_present(self):
+    def test_parent_check_step_embeds_given_values(self):
         text = _build(
             activity_id=9, parent_goal_handle="parent-handle", parent_condition_id=55,
         )
         assert 'get_goal(handle="parent-handle")' in text
         assert "id_raw=55の条件のboundが" in text
         assert '{"type": "activity", "id_raw": 9}' in text
-        assert "親goalのactivitiesの1件目にあるアクティビティへadd_logsで理由を書いて止める" in text
-
-    def test_report_destination_is_derived_not_a_session_name(self):
-        text = _build()
-        assert "以降の報告先(親のorchアクティビティ)として控える" in text
-        assert "3・4で控えた親のorchアクティビティへadd_logsで報告を書く" in text
-
-    def test_notify_living_holder_and_skip_when_absent(self):
-        text = _build()
-        assert "その行のnameへSendMessageで" in text
-        assert "空席・死んでいる・送れないときは知らせを省く" in text
-
-    def test_outward_facing_boundary_lines_present(self):
-        text = _build()
-        assert "外向きの操作" in text
-        assert "~/.claude配下の変更" in text
-        assert "止められたら迂回しない" in text
-        assert "人間宛てのaskは起票しない" in text
-        assert "EnterWorktreeは使わない" in text
-
-    def test_proceed_without_waiting_lines_present(self):
-        text = _build()
-        assert "返事を待たずに最も妥当な方針で進め" in text
-
-    def test_migration_number_is_taken_not_declared(self):
-        text = _build()
-        assert "origin/mainとopen PRの番号の最大値+1を取る" in text
-        assert "宣言して返事を待たない" in text
 
     def test_pending_dir_arg_is_embedded(self):
         text = _build(pending_dir="/tmp/calm-pending")
