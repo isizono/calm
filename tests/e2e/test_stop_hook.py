@@ -567,7 +567,11 @@ class TestRecordingObligationBlock:
         assert result["decision"] == "approve"
 
     def test_agent_type_subagent_not_blocked(self, env_setup):
-        """サブエージェント発のStop呼び出しは記録義務blockの対象外(状態を一切更新せず即承認)"""
+        """agent_type付きのStop呼び出しは記録義務blockの対象外(状態を一切更新せず即承認)
+
+        フォアグラウンドSA終了時はSubagentStopが飛ぶためこの経路は通らない。
+        バックグラウンドSA・teammate等向けの保険分岐としての検証。
+        """
         transcript = env_setup["tmp_path"] / "transcript.jsonl"
         _write_transcript(
             [
@@ -1343,8 +1347,14 @@ class TestStaleOwRoleEnvIgnored:
         assert len(record_nudges) >= 1
 
 
-class TestSubagentStopSkipped:
-    """agent_type付き（サブエージェント発）のStop呼び出しは状態を一切更新せず即承認する"""
+class TestStopAgentTypeBypass:
+    """agent_type付きのStop呼び出しは状態を一切更新せず即承認する
+
+    フォアグラウンドのAgentツールSAが終了する際に発火するのはSubagentStopで
+    Stopではないため、この分岐はそこを通らない。バックグラウンドSA・
+    teammate等でagent_type付きのStop呼び出しが届いた場合の保険として
+    この分岐を検証する。
+    """
 
     def test_agent_type_preserves_block_count(self, env_setup):
         """block_count=1が事前にある状態でagent_type付き呼び出し → block_countは変化しない
