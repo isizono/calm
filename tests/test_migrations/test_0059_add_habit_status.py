@@ -3,26 +3,18 @@
 0059適用後に habits テーブルへ status 列が追加され、既定値 'active' と
 CHECK制約（'active'/'archived'のみ許可）が仕様通りであることを確認する。
 """
-import os
 import sqlite3
-import tempfile
 
 import pytest
 
-from src.db import get_connection, init_database
+from src.db import get_connection
 from test_migrations.conftest import get_column_names
 
 
 @pytest.fixture
-def migrated_db():
+def migrated_db(temp_db):
     """全migration（0059含む）を適用済みのテスト用DBを提供する。"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
+    yield temp_db
 
 
 class TestStatusColumnAdded:

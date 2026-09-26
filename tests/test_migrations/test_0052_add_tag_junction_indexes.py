@@ -4,30 +4,21 @@
 tag_id 逆引き index と search_index(created_at) の index が作成され、
 既存データ・タグフィルタ結果が変わらないことを確認する。
 """
-import os
-import tempfile
 
 import pytest
 from yoyo import default_migration_table, read_migrations
 from yoyo.connections import parse_uri
 from yoyo.migrations import MigrationList
 
-from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection, init_database
+from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection
 from src.services.tag_service import _injected_tags, ensure_tag_ids, link_tags
 from test_migrations.conftest import db_before_migration, index_names
 
 
 @pytest.fixture
-def migrated_db():
+def migrated_db(temp_db):
     """全 migration（0052 含む）を適用済みのテスト用 DB を提供する。"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        _injected_tags.clear()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
+    yield temp_db
 
 
 @pytest.fixture

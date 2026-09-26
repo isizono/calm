@@ -10,31 +10,22 @@ tags テーブルの namespace CHECK 制約を完全削除し、任意の namesp
 - 既存 junction 行（activity_tags 等）が消えずに新 tags への参照が維持される
 - 0038適用時点（CHECK 制約あり）では新規 namespace は拒否される（前提確認）
 """
-import os
 import sqlite3
-import tempfile
 
 import pytest
 from yoyo import default_migration_table, read_migrations
 from yoyo.connections import parse_uri
 from yoyo.migrations import MigrationList
 
-from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection, init_database
+from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection
 from src.services.tag_service import _injected_tags
 from test_migrations.conftest import db_before_migration
 
 
 @pytest.fixture
-def migrated_db():
+def migrated_db(temp_db):
     """全migration適用後（0039含む）"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        _injected_tags.clear()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
+    yield temp_db
 
 
 @pytest.fixture

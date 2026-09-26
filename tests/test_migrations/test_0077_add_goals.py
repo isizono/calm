@@ -5,9 +5,7 @@
 なること、既存の activities 行が壊れないこと、CASCADE・FK・NOT NULL（WITHOUT ROWID）が
 機能することを、goal_service を経由せず生SQLで検証する。
 """
-import os
 import sqlite3
-import tempfile
 
 import pytest
 
@@ -17,16 +15,9 @@ from test_migrations.conftest import db_before_migration, get_column_names, inde
 
 
 @pytest.fixture
-def migrated_db():
+def migrated_db(temp_db):
     """全migration（0077含む）を適用済みのテスト用DBを提供する。"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        _injected_tags.clear()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
+    yield temp_db
 
 
 @pytest.fixture

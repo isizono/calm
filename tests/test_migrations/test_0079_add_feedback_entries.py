@@ -5,13 +5,11 @@ feedback_bootstrap_seen / feedback_switchが期待通り存在し、CHECK制約�
 追記専用トリガー・feedback_switchの初期行が機能することを、feedback_serviceを
 経由せず生SQLで検証する。
 """
-import os
 import sqlite3
-import tempfile
 
 import pytest
 
-from src.db import get_connection, init_database
+from src.db import get_connection
 from src.services.tag_service import _injected_tags
 from test_migrations.conftest import db_before_migration, get_column_names, index_names, table_exists
 
@@ -26,16 +24,9 @@ _TABLES = (
 
 
 @pytest.fixture
-def migrated_db():
+def migrated_db(temp_db):
     """全migration（0079含む）を適用済みのテスト用DBを提供する。"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        _injected_tags.clear()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
+    yield temp_db
 
 
 @pytest.fixture
