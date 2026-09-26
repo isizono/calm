@@ -35,6 +35,9 @@ jobs:
         uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
+          # test.yml と同一のキャッシュキーを使うため復元のみ。保存は test.yml の
+          # migration-lint ジョブが行う(並列保存による "Unable to reserve cache" 回避)
+          save-cache: false
           python-version: "3.12"
 
       - name: Install dependencies
