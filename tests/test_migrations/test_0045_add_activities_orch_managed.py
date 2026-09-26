@@ -7,9 +7,7 @@ orch_managed 列は後続の migration（0080）で削除されるため、本�
 「0045 まで適用した時点」の DB で検証する（最新までの全 migration を
 適用した DB では 0080 によりこの列は既に存在しない）。
 """
-import os
 import sqlite3
-import tempfile
 
 import pytest
 from yoyo import default_migration_table, read_migrations
@@ -28,22 +26,9 @@ def migrated_db():
     orch_managed 列は 0080 で削除されるため、最新までの全 migration を
     適用した DB では検証できない。
     """
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-
-        parsed = parse_uri(f"sqlite:///{db_path}")
-        backend = _VecSQLiteBackend(parsed, default_migration_table)
-        backend.init_database()
-        all_migs = read_migrations(str(MIGRATIONS_DIR))
-        upto_0045 = MigrationList([m for m in all_migs if m.id < "0046"])
-        with backend.lock():
-            backend.apply_migrations(upto_0045)
-
+    with db_before_migration("0046") as db_path:
         _injected_tags.clear()
         yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 @pytest.fixture

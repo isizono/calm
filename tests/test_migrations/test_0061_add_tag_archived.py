@@ -7,31 +7,22 @@ archived_reason の長さ制約（100文字以内）が effectiveであること
 0061はスキーマ変更のみで、既存タグの archived_at / archived_reason を書き換える
 データ移行を含まない（既存タグは全てNULLのまま非archived扱いになる）。
 """
-import os
 import sqlite3
-import tempfile
 
 import pytest
 from yoyo import default_migration_table, read_migrations
 from yoyo.connections import parse_uri
 from yoyo.migrations import MigrationList
 
-from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection, init_database
+from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection
 from src.services.tag_service import _injected_tags
 from test_migrations.conftest import db_before_migration, get_column_names
 
 
 @pytest.fixture
-def migrated_db():
+def migrated_db(temp_db):
     """全migration（0061含む）を適用済みのテスト用DBを提供する。"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        _injected_tags.clear()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
+    yield temp_db
 
 
 @pytest.fixture

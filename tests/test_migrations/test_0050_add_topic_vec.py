@@ -3,8 +3,6 @@
 0050 適用後に topic_vec 仮想テーブルが作成され、rowid をキーにした
 ベクトルの INSERT / KNN 検索ができることを確認する。
 """
-import os
-import tempfile
 
 import pytest
 from sqlite_vec import serialize_float32
@@ -12,7 +10,7 @@ from yoyo import default_migration_table, read_migrations
 from yoyo.connections import parse_uri
 from yoyo.migrations import MigrationList
 
-from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection, init_database
+from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection
 from src.services.tag_service import _injected_tags
 from test_migrations.conftest import db_before_migration, table_exists
 
@@ -20,16 +18,9 @@ EMBEDDING_DIM = 384
 
 
 @pytest.fixture
-def migrated_db():
+def migrated_db(temp_db):
     """全 migration（0050 含む）を適用済みのテスト用 DB を提供する。"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        _injected_tags.clear()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
+    yield temp_db
 
 
 @pytest.fixture
