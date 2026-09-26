@@ -5,9 +5,6 @@ Codexのhookプロトコルは意図的にClaude Code互換で設計されてい
 codex-rs/hooks/src/schema.rs）。このためhook入出力はClaudeCodeHarnessを
 継承し、Codexに存在しない機構だけを上書きする:
 
-- Stop応答の `decision` はCodexでは `"block"` のみ有効で、`"approve"` は
-  `deny_unknown_fields` によりパースエラーになる。承認（続行許可）は
-  decisionフィールドの省略＝空応答で表現する（emit_approve）
 - `updatedToolOutput` / `displayContent` に相当するwireフィールドが無い
   （未サポート系統。False返却）
 - transcriptはrolloutファイル（`{timestamp, ordinal, type, payload}` の
@@ -92,7 +89,7 @@ class CodexHarness(ClaudeCodeHarness):
     """Codex CLI用のHarness実装。
 
     hookプロトコルの共通部分（stdin JSON読み・hookSpecificOutput系出力・
-    block判定・空応答）はClaudeCodeHarnessをそのまま継承し、Codexに
+    block・approve判定・空応答）はClaudeCodeHarnessをそのまま継承し、Codexに
     存在しない機構だけを上書きする。選択はhook登録側の環境変数
     `CALM_HARNESS=codex`（.codex/hooks.jsonのコマンドに付与）で行う。
     """
@@ -100,16 +97,6 @@ class CodexHarness(ClaudeCodeHarness):
     # ------------------------------------------------------------------
     # 1. hook入出力（差分のみ上書き）
     # ------------------------------------------------------------------
-
-    def emit_approve(self, reason: str = "") -> None:
-        """停止承認を空応答で出力する。
-
-        CodexのStop応答wireは `decision: "block"` のみを受理し、
-        `"approve"` はパースエラーになるため、承認はdecisionフィールドの
-        省略で表現する。reasonは載せ先が無いため出力しない（診断用の
-        文字列であり、動作には影響しない）。
-        """
-        self._emit({})
 
     def emit_updated_tool_output(self, updated_output: Any) -> bool:
         """Codexには相当機構が無いため、何も出力せずFalseを返す。"""

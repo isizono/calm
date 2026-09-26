@@ -96,10 +96,18 @@ class ClaudeCodeHarness(Harness):
         self._emit({"decision": "block", "reason": reason})
 
     def emit_approve(self, reason: str = "") -> None:
-        payload: dict = {"decision": "approve"}
+        """停止承認を、decisionフィールドを省略した空応答で出力する。
+
+        Claude Code公式ドキュメントのStop decision controlは `decision` に
+        `"block"` のみを定め、承認は省略で表す（"Omit to allow Claude to
+        stop"）。Codexも `"block"` 以外を受理しないため、両ハーネス共通の
+        実装になる。reasonは応答JSONに載せ先が無いためstderrへ診断用に出す
+        （exit 0のstderrはClaude Codeではdebug logのみ、CodexのStop処理では
+        参照されず、どちらも動作に影響しない）。
+        """
+        self._emit({})
         if reason:
-            payload["reason"] = reason
-        self._emit(payload)
+            print(f"stop hook approve: {reason}", file=sys.stderr)
 
     def emit_empty(self) -> None:
         self._emit({})
