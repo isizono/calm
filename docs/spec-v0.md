@@ -286,6 +286,8 @@ CALMに関する議論を始めるとき、「これはどの層の話か」を�
 
 ## 5. 協調層（orch/worker × CALMの接点）
 
+本章はorch/workerフレームワーク稼働時点の設計記述をそのまま残す。この体制は解体済みで、現行のorchの手順と権限の線は `skills/orch/SKILL.md`（calm:orch skill）に置く。
+
 ### 5.1 spec: CALMに関わる接点のみ
 
 orch/worker フレームワーク全体ではなく、CALMと接する3点に絞る。
@@ -401,9 +403,9 @@ session_id を捨てる heartbeat、events.jsonl と relay の二系統真実源
 
 **coverage**: check-inで「どれだけ情報を引けたか」を示すメトリクス。
 
-**orch**: orch/workerフレームワークの指揮役。worker spawn・queue管理・decision記録の集約を担う。
+**orch**: orch/workerフレームワークの指揮役。worker spawn・queue管理・decision記録の集約を担う。この体制は解体済みで、現行のorchの手順と権限の線は `skills/orch/SKILL.md`（calm:orch skill）に置く。
 
-**worker**: orch/workerフレームワークの実作業役。実装・テスト・PR等を担当する。
+**worker**: orch/workerフレームワークの実作業役。実装・テスト・PR等を担当する。この役割はorch/workerフレームワークの解体に伴い撤去済み（現行のorchはbgセッションへ子を振る運用に置き換わっている。`skills/orch/SKILL.md` 参照）。
 
 **orch-managed**: orch運用下で生成されたエンティティに付与するタグ。個人フローから除外するシグナルだったが、orch運用体系の解体に伴い撤去済み。
 

@@ -4,7 +4,9 @@ docs 配下（+ 明示指定ファイル）の ccm-doc-sync マーカーを走�
 （decisions / decision_supersedes / decision_tags / topic_tags 継承）と
 migrations/ のファイル名を突き合わせて、last-synced 以降に増えた変更を検出する。
 
-ローカル運用専用（recompose / orch 起動時の運用チェックの一部として手動・skill 起動で回す）。
+ローカル運用専用。自動起動の仕組みは無く、recompose 等の棚卸し作業時に手動で随時実行する。
+「orch 起動時の運用チェック」は旧 orch/worker 体制での構想であり、現行の calm:orch skill
+（skills/orch/SKILL.md）には組み込まれていない。
 CI には載せない — CI からユーザーの DB は見えない。migration 番号比較だけの
 CI 可能な部分は lint_doc_cochange.py が別途担う。
 
