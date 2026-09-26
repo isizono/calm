@@ -1,6 +1,6 @@
 ---
 name: activity-start
-description: 【必須】新しいアクティビティを開始する。「/as」「/activity-start」「新しい作業始める」「アクティビティ作って」「これやる」など、新規アクティビティの作成・開始の意図で発動する。このスキルを経由せずにadd_activityを直接呼んではいけない。
+description: 【必須】新しいアクティビティを開始する。「/as」「/activity-start」「新しい作業始める」「アクティビティ作って」「これやる」など、新規アクティビティの作成・開始の意図で発動する。このスキルを経由せずにadd_activityを直接呼んではいけない（orchアクティビティ自体の起票、orchの子の起票は、いずれも[orch](../orch/SKILL.md) skillの手順に従う例外とする）。
 ---
 
 # activity-start
@@ -31,6 +31,8 @@ description: 【必須】新しいアクティビティを開始する。「/as�
    - `description`: ユーザーの入力から得られた情報をできるだけ記載。構造の例: 背景（なぜやるか）/ スコープ（何をやるか）/ やらないこと（対象外）
    - `related`: 手順4・5で特定した関連エンティティを紐づける
 8. **終了条件の3択**（手順7で作成した`activity_id`に対して行う）
+
+   orchのアクティビティ（`orch`タグを付けるもの）はこの3択の対象外。[orch](../orch/SKILL.md) skillの「なる」節でgoalまで作る。
 
    既存の未判定goalに続く作業の場合は、3択に入る前にここで紐づけて次のステップへ進む。手順3〜4で特定した関連activityのうち続きとなるものについて`get_goal(activity_id=<関連activityのid>)`を呼び、返ってきた`label`が`closed`でないこと(未判定であること)を確認したうえで`goal_id_raw`を控える。控えた値を使って`set_goal(activity_id=<手順7で作成したactivity_id>, goal={"goal_id": <goal_id_raw>})`で紐づける。
 

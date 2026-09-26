@@ -24,7 +24,7 @@ import re
 import sqlite3
 from typing import Optional
 
-from src.config import GOAL_RECHECK_HOURS
+from src.config import GOAL_RECHECK_HOURS, HEARTBEAT_TIMEOUT_MINUTES
 from src.db import get_connection
 from src.services import ask_service
 from src.services.readable_id import strip_entity_id_inplace
@@ -1135,7 +1135,15 @@ def _open_questions_for_activities(conn: sqlite3.Connection, activity_ids: list[
 _REMAINING_MAX = 3
 _OTHER_ACTIVITIES_MAX = 3
 _OPEN_QUESTIONS_MAX = 3
+_ATTENTION_MAX = 3
 _GOAL_BLOCK_BUDGET_CHARS = 800
+
+_CHILD_CATEGORY_LABELS = [
+    ("achieved", "達成"),
+    ("in_progress", "進行中"),
+    ("failed_unhandled", "失敗未処理"),
+    ("stalled", "停止"),
+]
 
 _UNDEFINED_NEXT = {
     "rule": 4,
@@ -1395,6 +1403,123 @@ def _bound_display(bound_type: str, bound_state: Optional[dict]) -> Optional[str
     return f"{bound_type}『{title}』: 崩れ（束縛先が消えた）"
 
 
+def _fetch_child_liveness(conn: sqlite3.Connection, activity_ids: list[int]) -> dict[int, dict]:
+    """「止まっている」判定に使う情報を、活動idごとに1本の問い合わせでまとめて読む。
+
+    open askの有無（あればその問い文の先頭）と、max(updated_at, last_heartbeat_at)
+    からの経過分を返す。決定事項「orchのcheck-inに要対応の子を畳まず出す」の
+    「止まっている」の判定条件1・2に対応する（条件3の判定せず完了はactivities.status
+    だけで読めるためここには含めない）。
+    """
+    if not activity_ids:
+        return {}
+    placeholders = ",".join("?" * len(activity_ids))
+    rows = conn.execute(
+        f"""
+        SELECT a.id AS id, a.status AS status,
+               CAST(
+                   (julianday('now') - julianday(MAX(a.updated_at, COALESCE(a.last_heartbeat_at, ''))))
+                   * 24 * 60 AS INTEGER
+               ) AS minutes_since,
+               (
+                   SELECT ak.question FROM ask_blocks ab
+                   JOIN asks ak ON ak.id = ab.ask_id
+                   WHERE ab.activity_id = a.id AND ak.status = 'open'
+                   ORDER BY ak.id LIMIT 1
+               ) AS open_ask_question
+        FROM activities a
+        WHERE a.id IN ({placeholders})
+        """,
+        activity_ids,
+    ).fetchall()
+    return {r["id"]: dict(r) for r in rows}
+
+
+def _stalled_hint(liveness: Optional[dict]) -> Optional[str]:
+    """「止まっている」根拠のhintを返す。止まっていなければNone。
+
+    優先順位は、人間の判断待ち（open ask）、判定せず完了、heartbeat途切れの順。
+    どれにも当たらなければ止まっていない。snoozed/shelvedはheartbeatが
+    途切れていても「止まっている」扱いにしない（寝かせている最中で当然の
+    無音期間であり、overview_serviceのbacklog判定と同じ扱いに揃える）。
+    """
+    if liveness is None:
+        return None
+    if liveness["open_ask_question"] is not None:
+        return f"ask待ち『{_truncate_note(liveness['open_ask_question'])}』"
+    if liveness["status"] == "completed":
+        return "判定せず完了"
+    if liveness["status"] in ("snoozed", "shelved"):
+        return None
+    minutes_since = liveness["minutes_since"]
+    if minutes_since is not None and minutes_since > HEARTBEAT_TIMEOUT_MINUTES:
+        return f"最終活動{minutes_since}分前"
+    return None
+
+
+def _classify_activity_bound(cond: dict, liveness: Optional[dict]) -> str:
+    """activity束縛の条件1件を、achieved/in_progress/failed_unhandled/stalledの
+    いずれかに分類する（goalブロックのchildren・attentionが共有する分類）。
+
+    束縛先activityのgoalが未判定（gone=活動そのものが消えた場合を含む）で、かつ
+    _stalled_hintの判定条件に当たらなければin_progressとする。
+    """
+    if cond["state"] in ("satisfied", "waived"):
+        return "achieved"
+    bound_state = cond["bound_state"] or {}
+    bs_state = bound_state.get("state")
+    if bs_state == "failed":
+        return "failed_unhandled"
+    if bs_state == "done":
+        return "achieved"
+    if _stalled_hint(liveness) is not None:
+        return "stalled"
+    return "in_progress"
+
+
+def _children_summary(categories: list[str]) -> str:
+    """activity束縛の条件の内訳を1行の文字列にする（0件のカテゴリは省く）。"""
+    counts = {key: 0 for key, _ in _CHILD_CATEGORY_LABELS}
+    for category in categories:
+        counts[category] += 1
+    parts = [f"{label}{counts[key]}" for key, label in _CHILD_CATEGORY_LABELS if counts[key] > 0]
+    return f"子{len(categories)}: " + "・".join(parts)
+
+
+def _build_attention(
+    activity_bound: list[dict], liveness_map: dict[int, dict]
+) -> tuple[list[dict], int]:
+    """手を打つべき子（失敗して未処理・止まっている）を最大_ATTENTION_MAX件返す。
+
+    Returns: (表示するattention項目のリスト, 表示しきれなかった件数)
+    """
+    items = []
+    for cond in activity_bound:
+        if cond["state"] != "open":
+            continue
+        bound_state = cond["bound_state"] or {}
+        title = _truncate_note(bound_state.get("title") or "?", limit=40)
+        if bound_state.get("state") == "failed":
+            items.append(
+                {
+                    "condition_id_raw": cond["id"],
+                    "title": title,
+                    "mark": "失敗",
+                    "hint": _truncate_note(bound_state["judge_note"]),
+                }
+            )
+            continue
+        liveness = liveness_map.get(cond["bound_id"])
+        hint = _stalled_hint(liveness)
+        if hint is not None:
+            items.append(
+                {"condition_id_raw": cond["id"], "title": title, "mark": "止まっている", "hint": hint}
+            )
+    items.sort(key=lambda item: item["condition_id_raw"])
+    shown = items[:_ATTENTION_MAX]
+    return shown, len(items) - len(shown)
+
+
 def _condition_entry(cond: dict, *, terminal: bool = False) -> dict:
     """remaining用は{id, statement, actor, state, flags, bound}、terminal用は
     {id, statement, state, note, bound}を返す（actor/flagsはremaining専用）。
@@ -1486,6 +1611,33 @@ def _linked_activity_rows(conn: sqlite3.Connection, goal_id: int):
     ).fetchall()
 
 
+def _attach_children_attention(conn: sqlite3.Connection, block: dict, conditions: list[dict]) -> None:
+    """goalブロックに、activity束縛の内訳（children）と要対応の子（attention）を足す（in-place）。
+
+    check_in・get_goal・set_goal・update_goal・judge_goalの応答すべてに同じ形で出す
+    （決定事項「orchのcheck-inに要対応の子を畳まず出す」）。activity束縛の条件が
+    1件も無ければ何も足さない。
+    """
+    activity_bound = [c for c in conditions if c["bound_type"] == "activity"]
+    if not activity_bound:
+        return
+    pending_ids = sorted(
+        {
+            c["bound_id"]
+            for c in activity_bound
+            if c["state"] == "open" and (c["bound_state"] or {}).get("state") == "pending"
+        }
+    )
+    liveness_map = _fetch_child_liveness(conn, pending_ids)
+    categories = [_classify_activity_bound(c, liveness_map.get(c["bound_id"])) for c in activity_bound]
+    block["children"] = _children_summary(categories)
+    attention_shown, attention_overflow = _build_attention(activity_bound, liveness_map)
+    if attention_shown:
+        block["attention"] = attention_shown
+        if attention_overflow > 0:
+            block["attention_more"] = f"他 {attention_overflow} 件"
+
+
 def _assemble_goal_block(
     conn: sqlite3.Connection,
     goal_row,
@@ -1529,6 +1681,11 @@ def _assemble_goal_block(
             if more > 0:
                 block["open_questions_more"] = more
 
+    _attach_children_attention(conn, block, conditions)
+
+    # children・attentionは、goalブロックが目安の800字を超えても畳まない
+    # （決定事項「orchのcheck-inに要対応の子を畳まず出す」）。_fold_to_budgetの
+    # 畳み対象（other_activities・remaining・terminal）には含めない。
     _fold_to_budget(block)
     return block
 
@@ -1777,6 +1934,7 @@ def get_goal(
         block, label = _goal_core_fields(goal_row, enriched, next_info)
         block["conditions"] = [_full_condition_entry(c) for c in enriched]
         block["activities"] = _linked_activities_payload(conn, resolved_goal_id)
+        _attach_children_attention(conn, block, enriched)
 
         topic_ids = _topic_ids_for_activities(conn, [a["id_raw"] for a in block["activities"]])
         block["logs_since_created"] = {

@@ -1,4 +1,4 @@
-"""cc-memory 設定モジュール。環境変数で定数をオーバーライド可能にする。"""
+"""calm 設定モジュール。環境変数で定数をオーバーライド可能にする。"""
 import os
 from pathlib import Path
 

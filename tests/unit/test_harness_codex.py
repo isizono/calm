@@ -92,6 +92,10 @@ class TestEmitDiffs:
         harness.emit_approve("ブロック上限に達しました")
         assert json.loads(stdout.getvalue()) == {}
 
+    def test_approveはClaude_Codeと同じ実装を使う(self):
+        """Stop応答の承認表現（decision省略）は両ハーネス共通で、上書きしない。"""
+        assert CodexHarness.emit_approve is ClaudeCodeHarness.emit_approve
+
     def test_blockはClaude_Codeと同形式(self):
         harness, stdout = _make()
         harness.emit_block("check_inしてください")

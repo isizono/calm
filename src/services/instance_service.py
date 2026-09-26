@@ -1,4 +1,4 @@
-"""cc-memoryインスタンス識別子(instance_id)管理サービス
+"""calmインスタンス識別子(instance_id)管理サービス
 
 export/importバンドルの複合キー(`<instance_id>:<型コード><ローカルID>`)生成の
 基盤となるインスタンス自身の識別子を管理する。identifierはDB内の単一行テーブル

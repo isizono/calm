@@ -1,6 +1,6 @@
 """Harness抽象化インターフェース。
 
-cc-memoryの各hookは、これまでClaude Code固有のhookプロトコル
+calmの各hookは、これまでClaude Code固有のhookプロトコル
 （stdinからのJSON入力、`hookSpecificOutput`各種フィールドへの出力）・
 transcriptファイル形式（フラットな`type`/`message.content`のJSONL）・
 プロセス識別方式（祖先pid探索）に直接依存していた。Codex CLI対応に
@@ -32,7 +32,7 @@ Codex側に対応する仕組みが無い操作（`updatedToolOutput`相当の�
 | session_start_hook.py | stdin JSON (session_id/source/transcript_path) | read_hook_input |
 | | hookSpecificOutput.additionalContext | emit_additional_context |
 | stop_hook.py | stdin JSON (session_id/transcript_path) | read_hook_input |
-| | `{"decision": "approve"/"block", "reason"}` 出力 | emit_approve / emit_block |
+| | `{"decision": "block", "reason"}` / 空JSON `{}`（承認）出力 | emit_block / emit_approve |
 | | transcriptバイトオフセット差分読み | read_transcript_entries_from_offset |
 | user_prompt_submit_hook.py | stdin JSON (session_id) | read_hook_input |
 | | hookSpecificOutput.additionalContext | emit_additional_context |
@@ -138,7 +138,9 @@ class Harness(ABC):
     def emit_approve(self, reason: str = "") -> None:
         """エージェントの停止を承認する判定を応答として出力する。
 
-        Claude Codeでは `{"decision": "approve"}` 相当（reasonは省略可）。
+        Claude Code・Codexとも、decisionフィールドを省略した空JSON `{}`
+        相当（Stopのdecisionは `"block"` のみが定義された値）。reasonは
+        応答に載せ先が無い診断用の文字列で、動作には影響しない。
         Stop系hookが使う。
         """
 

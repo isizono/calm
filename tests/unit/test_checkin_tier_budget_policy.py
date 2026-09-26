@@ -13,7 +13,7 @@ DECISIONS_FULL_LIMIT件まで、tag_notesは1タグあたり_TAG_NOTES_RATCHET_C
 """
 from src.services import checkin_tier_service as cts
 from src.services import response_budget as rb
-from src.services.checkin_service import DECISIONS_FULL_LIMIT
+from src.services.checkin_queries import DECISIONS_FULL_LIMIT
 from src.services.tag_service import _decay_pointer_text, _TAG_NOTES_RATCHET_CEILING
 from src.config import (
     CHECKIN_BUDGET_CHARS,

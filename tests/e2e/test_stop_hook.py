@@ -168,11 +168,12 @@ class TestBlockLimitForceApprove:
             transcript,
         )
 
-        result = _run_stop_hook(
-            str(transcript), "test-session", env_setup["env_override"]
+        result, stderr = _run_stop_hook(
+            str(transcript), "test-session", env_setup["env_override"],
+            return_stderr=True,
         )
-        assert result["decision"] == "approve"
-        assert "ブロック上限" in result["reason"]
+        assert result == {}
+        assert "ブロック上限" in stderr
 
         assert not block_file.exists()
 
@@ -198,11 +199,12 @@ class TestExceptionFailOpen:
             transcript,
         )
 
-        result = _run_stop_hook(
+        result, stderr = _run_stop_hook(
             str(transcript), "test-session", env_override,
+            return_stderr=True,
         )
-        assert result["decision"] == "approve"
-        assert "error" in result.get("reason", "").lower()
+        assert result == {}
+        assert "error" in stderr.lower()
 
     def test_exception_records_machine_error_signal(self, env_setup, temp_db):
         """top-level except到達時にsignal_eventsへmachine_errorが記録される"""
@@ -228,7 +230,7 @@ class TestExceptionFailOpen:
         result = _run_stop_hook(
             str(transcript), "test-session", env_override,
         )
-        assert result["decision"] == "approve"
+        assert result == {}
 
         conn = get_connection()
         try:
@@ -277,7 +279,7 @@ class TestExceptionFailOpen:
         stdout_lines = result.stdout.strip().split("\n")
         assert len(stdout_lines) == 1, f"Expected 1 stdout line, got {len(stdout_lines)}: {result.stdout}"
         parsed = json.loads(stdout_lines[0])
-        assert parsed["decision"] == "approve"
+        assert parsed == {}
 
         # stderrにpost-approve errorログが出ている
         assert "post-approve error" in result.stderr
@@ -325,7 +327,7 @@ class TestActivityCheckinBlock:
         result = _run_stop_hook(
             str(transcript), "test-session", env_setup["env_override"],
         )
-        assert result["decision"] == "approve"
+        assert result == {}
 
     def test_checkin_called_approves(self, env_setup):
         """check_in呼出済み → approve"""
@@ -348,7 +350,7 @@ class TestActivityCheckinBlock:
         result = _run_stop_hook(
             str(transcript), "test-session", env_setup["env_override"],
         )
-        assert result["decision"] == "approve"
+        assert result == {}
 
     def test_add_activity_called_approves(self, env_setup):
         """add_activity呼出済み → approve"""
@@ -370,7 +372,7 @@ class TestActivityCheckinBlock:
         result = _run_stop_hook(
             str(transcript), "test-session", env_setup["env_override"],
         )
-        assert result["decision"] == "approve"
+        assert result == {}
 
     def test_before_defer_turns_no_block(self, env_setup):
         """猶予期間中（turn<2）ではcheck-in未呼出でもblockしない"""
@@ -387,7 +389,7 @@ class TestActivityCheckinBlock:
         result = _run_stop_hook(
             str(transcript), "test-session", env_setup["env_override"],
         )
-        assert result["decision"] == "approve"
+        assert result == {}
 
 
 class TestRecordingObligationBlock:
@@ -457,7 +459,7 @@ class TestRecordingObligationBlock:
         )
 
         result = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
-        assert result["decision"] == "approve"
+        assert result == {}
 
     def test_no_completion_signal_does_not_block(self, env_setup):
         """完了の合図が無ければ、check_in以降add_logsが無くてもblockしない"""
@@ -476,7 +478,7 @@ class TestRecordingObligationBlock:
         )
 
         result = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
-        assert result["decision"] == "approve"
+        assert result == {}
 
     def test_block_is_one_shot_per_session(self, env_setup):
         """記録義務blockは1セッションにつき1回だけ。block_count(2回連続block
@@ -510,7 +512,7 @@ class TestRecordingObligationBlock:
             f.write(json.dumps(_make_assistant_entry(text="作業継続中")) + "\n")
 
         second = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
-        assert second["decision"] == "approve"
+        assert second == {}
 
     def test_recorder_attached_session_not_blocked(self, env_setup, monkeypatch):
         """記録役の目印ファイルがあるセッションは、記録の責務が記録役に移っている
@@ -534,7 +536,7 @@ class TestRecordingObligationBlock:
         )
 
         result = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
-        assert result["decision"] == "approve"
+        assert result == {}
 
     def test_recheckin_after_add_logs_does_not_reset_window(self, env_setup):
         """add_logsの後にgoal.nextを読み直すため同じactivityへcheck_inし直しても、
@@ -564,10 +566,14 @@ class TestRecordingObligationBlock:
         )
 
         result = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
-        assert result["decision"] == "approve"
+        assert result == {}
 
     def test_agent_type_subagent_not_blocked(self, env_setup):
-        """サブエージェント発のStop呼び出しは記録義務blockの対象外(状態を一切更新せず即承認)"""
+        """agent_type付きのStop呼び出しは記録義務blockの対象外(状態を一切更新せず即承認)
+
+        フォアグラウンドSA終了時はSubagentStopが飛ぶためこの経路は通らない。
+        バックグラウンドSA・teammate等向けの保険分岐としての検証。
+        """
         transcript = env_setup["tmp_path"] / "transcript.jsonl"
         _write_transcript(
             [
@@ -585,7 +591,7 @@ class TestRecordingObligationBlock:
         result = _run_stop_hook(
             str(transcript), "test-session", env_setup["env_override"], agent_type="builder",
         )
-        assert result["decision"] == "approve"
+        assert result == {}
 
 
 class TestSkillSpan:
@@ -599,11 +605,12 @@ class TestSkillSpan:
             _make_assistant_entry(text="processing skill..."),
         ], transcript)
 
-        result = _run_stop_hook(
+        result, stderr = _run_stop_hook(
             str(transcript), "test-session", env_setup["env_override"],
+            return_stderr=True,
         )
-        assert result["decision"] == "approve"
-        assert "Skill Span" in result["reason"]
+        assert result == {}
+        assert "Skill Span" in stderr
 
     def test_skill_span_with_is_meta_entry(self, env_setup):
         """スキル内容注入（isMeta=true）がturnを進めずSkill Spanが維持される"""
@@ -621,11 +628,12 @@ class TestSkillSpan:
             _make_assistant_entry(text="activity list here"),
         ], transcript)
 
-        result = _run_stop_hook(
+        result, stderr = _run_stop_hook(
             str(transcript), "test-session", env_setup["env_override"],
+            return_stderr=True,
         )
-        assert result["decision"] == "approve"
-        assert "Skill Span" in result["reason"]
+        assert result == {}
+        assert "Skill Span" in stderr
 
     def test_skill_span_continues_on_next_skill_turn(self, env_setup):
         """連続するSkill turnでもSpan継続"""
@@ -643,11 +651,12 @@ class TestSkillSpan:
             _make_assistant_entry(text="still processing"),
         ], transcript)
 
-        result = _run_stop_hook(
+        result, stderr = _run_stop_hook(
             str(transcript), "test-session", env_setup["env_override"],
+            return_stderr=True,
         )
-        assert result["decision"] == "approve"
-        assert "Skill Span" in result["reason"]
+        assert result == {}
+        assert "Skill Span" in stderr
 
     def test_skill_span_ends_when_no_skill_event(self, env_setup):
         """Skill Span終了: skillイベントがないturnで通常チェック再開"""
@@ -669,12 +678,13 @@ class TestSkillSpan:
             _make_assistant_entry(text="response"),
         ], transcript)
 
-        result = _run_stop_hook(
+        result, stderr = _run_stop_hook(
             str(transcript), "test-session", env_setup["env_override"],
+            return_stderr=True,
         )
         # Skill Spanが終了し通常チェックが動く → approve（条件を満たしている）
-        assert result["decision"] == "approve"
-        assert "Skill Span" not in result.get("reason", "")
+        assert result == {}
+        assert "Skill Span" not in stderr
 
 
 class TestNudge:
@@ -697,7 +707,7 @@ class TestNudge:
         result = _run_stop_hook(
             str(transcript), "test-session", env_setup["env_override"],
         )
-        assert result["decision"] == "approve"
+        assert result == {}
 
         events = _read_events(state_dir, "test-session")
         nudge_events = [e for e in events if e.get("e") == "nudge"]
@@ -725,7 +735,7 @@ class TestNudge:
         result = _run_stop_hook(
             str(transcript), "test-session", env_setup["env_override"],
         )
-        assert result["decision"] == "approve"
+        assert result == {}
 
         events = _read_events(state_dir, "test-session")
         follow_up_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "follow_up_after_decision"]
@@ -780,7 +790,7 @@ class TestRecorderMarkerSuppressesNudges:
         transcript = self._seed_no_recording_for_4_turns(env_setup)
 
         result = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
-        assert result["decision"] == "approve"
+        assert result == {}
 
         events = _read_events(state_dir, "test-session")
         record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record_missing"]
@@ -793,7 +803,7 @@ class TestRecorderMarkerSuppressesNudges:
         transcript = self._seed_no_recording_for_4_turns(env_setup)
 
         result = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
-        assert result["decision"] == "approve"
+        assert result == {}
 
         events = _read_events(state_dir, "test-session")
         record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record_missing"]
@@ -808,7 +818,7 @@ class TestRecorderMarkerSuppressesNudges:
         transcript = self._seed_no_recording_for_4_turns(env_setup)
 
         result = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
-        assert result["decision"] == "approve"
+        assert result == {}
 
         events = _read_events(state_dir, "test-session")
         record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record_missing"]
@@ -1053,7 +1063,7 @@ class TestRecordNudgeMultiplication:
         result = _run_stop_hook(
             str(transcript), "test-session", env_setup["env_override"],
         )
-        assert result["decision"] == "approve"
+        assert result == {}
 
         events = _read_events(state_dir, "test-session")
         record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record_missing"]
@@ -1116,7 +1126,7 @@ class TestRecordNudgeMultiplication:
         result = _run_stop_hook(
             str(transcript), "test-session", env_setup["env_override"],
         )
-        assert result["decision"] == "approve"
+        assert result == {}
 
         events = _read_events(state_dir, "test-session")
         record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record_missing"]
@@ -1163,7 +1173,7 @@ class TestRecordNudgeMultiplication:
         result = _run_stop_hook(
             str(transcript), "test-session", env_setup["env_override"],
         )
-        assert result["decision"] == "approve"
+        assert result == {}
 
         events = _read_events(state_dir, "test-session")
         record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record_missing"]
@@ -1202,7 +1212,7 @@ class TestRecordNudgeMultiplication:
         result = _run_stop_hook(
             str(transcript), "test-session", env_setup["env_override"],
         )
-        assert result["decision"] == "approve"
+        assert result == {}
 
         events = _read_events(state_dir, "test-session")
         record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record_missing"]
@@ -1236,7 +1246,7 @@ class TestRecordNudgeMultiplication:
         result = _run_stop_hook(
             str(transcript), "test-session", env_setup["env_override"],
         )
-        assert result["decision"] == "approve"
+        assert result == {}
 
 
 class TestStaleOwRoleEnvIgnored:
@@ -1288,7 +1298,7 @@ class TestStaleOwRoleEnvIgnored:
 
         env_override = {**env_setup["env_override"], "OW_ROLE": "worker"}
         result = _run_stop_hook(str(transcript), "test-session", env_override)
-        assert result["decision"] == "approve"
+        assert result == {}
 
         events = _read_events(state_dir, "test-session")
         record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record_missing"]
@@ -1336,15 +1346,21 @@ class TestStaleOwRoleEnvIgnored:
         env_override = {**env_setup["env_override"], "DISCUSSION_DB_PATH": db_path}
         env_override.pop("OW_ROLE", None)
         result = _run_stop_hook(str(transcript), "test-session", env_override)
-        assert result["decision"] == "approve"
+        assert result == {}
 
         events = _read_events(state_dir, "test-session")
         record_nudges = [e for e in events if e.get("e") == "nudge" and e.get("type") == "record_missing"]
         assert len(record_nudges) >= 1
 
 
-class TestSubagentStopSkipped:
-    """agent_type付き（サブエージェント発）のStop呼び出しは状態を一切更新せず即承認する"""
+class TestStopAgentTypeBypass:
+    """agent_type付きのStop呼び出しは状態を一切更新せず即承認する
+
+    フォアグラウンドのAgentツールSAが終了する際に発火するのはSubagentStopで
+    Stopではないため、この分岐はそこを通らない。バックグラウンドSA・
+    teammate等でagent_type付きのStop呼び出しが届いた場合の保険として
+    この分岐を検証する。
+    """
 
     def test_agent_type_preserves_block_count(self, env_setup):
         """block_count=1が事前にある状態でagent_type付き呼び出し → block_countは変化しない
@@ -1364,7 +1380,7 @@ class TestSubagentStopSkipped:
             str(transcript), "test-session", env_setup["env_override"],
             agent_type="builder",
         )
-        assert result["decision"] == "approve"
+        assert result == {}
         assert block_file.read_text() == "1"
 
     def test_agent_type_skips_checkin_block(self, env_setup):
@@ -1392,7 +1408,7 @@ class TestSubagentStopSkipped:
             str(transcript), "test-session", env_setup["env_override"],
             agent_type="builder",
         )
-        assert result["decision"] == "approve"
+        assert result == {}
         assert not (state_dir / "transcript_offset_test-session").exists()
         assert not (state_dir / "current_turn_test-session").exists()
 
@@ -1414,7 +1430,7 @@ class TestSubagentStopSkipped:
             str(transcript), "test-session", env_setup["env_override"],
             agent_type="builder",
         )
-        assert result["decision"] == "approve"
+        assert result == {}
 
         events = _read_events(state_dir, "test-session")
         assert events == []

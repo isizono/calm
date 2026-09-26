@@ -148,7 +148,9 @@ def _stub_sleep_confirm_dead(*extra_side_effects, start: float = 1000.0):
     return _stub_sleep_and_clock(*noop_effects, *extra_side_effects, start=start)
 
 
-def _run_hook(*, cwd, last_assistant_message: str = "", sleep=None, now=None) -> tuple[int, str]:
+def _run_hook(
+    *, cwd, last_assistant_message: str = "", sleep=None, now=None, argv=None
+) -> tuple[int, str]:
     payload = {
         "session_id": "recorder-sess",
         "cwd": str(cwd),
@@ -164,7 +166,7 @@ def _run_hook(*, cwd, last_assistant_message: str = "", sleep=None, now=None) ->
     if now is not None:
         kwargs["now"] = now
     with patch.object(hook.sys, "stdin", fake_stdin), patch.object(hook.sys, "stderr", fake_stderr):
-        code = hook.main(**kwargs)
+        code = hook.main(argv, **kwargs)
     return code, fake_stderr.getvalue()
 
 
@@ -566,6 +568,19 @@ class TestNoOpNearDeadline:
         # そもそも発生しない(状態が変わっていないため)。次回起動時は
         # 既定値から始まり、pendingは無い状態のままになる。
         assert not (run_dir / "cursor.json").exists()
+
+
+class TestRunDirArgument:
+    def test_run_dir_argument_wins_over_shared_cwd(self, tmp_path, monkeypatch):
+        """記録役のcwdは全セッション共通のフォルダなので、run_dirは引数で決まる。"""
+        run_dir, _ = _setup_run(tmp_path, transcript_lines=[])
+        shared_cwd = tmp_path / "shared-cwd"
+        shared_cwd.mkdir()
+        _mock_main_alive(monkeypatch)
+        sleep, now = _stub_sleep_and_clock()
+        code, stderr = _run_hook(cwd=shared_cwd, argv=[str(run_dir)], sleep=sleep, now=now)
+        assert code == 2
+        assert "DONE -" in stderr
 
 
 class TestTopicCandidates:

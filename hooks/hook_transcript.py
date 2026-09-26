@@ -99,7 +99,7 @@ def extract_events(
     """transcriptエントリ群からイベントを抽出する。
 
     2型イベントを抽出:
-    - tool: cc-memoryツール呼び出し（assistantのtool_useブロック）
+    - tool: calmツール呼び出し（assistantのtool_useブロック）
     - skill: スキル開始検出（User Messageの<command-name>タグ）
 
     Args:
@@ -203,7 +203,7 @@ _CONTEXT_RETRIEVAL_SHORT_NAMES = {
 
 
 def _has_tool_calls(entries: list[dict], short_names: set[str]) -> bool:
-    """entriesに指定short_nameのcc-memoryツール呼び出しがあるかチェック。"""
+    """entriesに指定short_nameのcalmツール呼び出しがあるかチェック。"""
     for entry in entries:
         message = entry.get("message", {})
         content = message.get("content", [])

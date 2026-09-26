@@ -439,7 +439,7 @@ def collect_export_candidates(
             適用されない（常に深度0固定）
         include_types: 返却する型のフィルタ（デフォルト5型全部）。走査・closure_warnings
             判定には影響しない（表示フィルタのみ）
-        tag_roots: 指定タグ文字列（例: ["domain:cc-memory"]）を持つ全エンティティを
+        tag_roots: 指定タグ文字列（例: ["domain:calm"]）を持つ全エンティティを
             シード集合に合流させる
         include_snippets: Falseにすると各candidateからsnippetキーを省く
             （ドメイン規模での応答サイズ対策）

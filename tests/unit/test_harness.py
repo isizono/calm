@@ -92,15 +92,28 @@ class TestEmit:
             "reason": "check_inしてください",
         }
 
-    def test_approve_reason付き(self):
+    def test_approveはdecisionを省略した空応答で出力する(self):
+        """Stopの承認はdecision省略で表す（公式ドキュメントのStop decision control:
+        `"block"` prevents Claude from stopping. Omit to allow Claude to stop）。
+        未文書化の `"approve"` は出力しない。
+        """
         harness, stdout = _make()
         harness.emit_approve("上限到達")
-        assert _emitted(stdout) == {"decision": "approve", "reason": "上限到達"}
+        assert _emitted(stdout) == {}
 
-    def test_approve_reason省略時はdecisionのみ(self):
+    def test_approveのreasonはstderrへ診断出力する(self, capsys):
+        """reasonは応答JSONに載せ先が無いため、exit 0時に動作へ影響しない
+        stderr（Claude Codeではdebug logのみ）へ診断用に出す。
+        """
+        harness, _ = _make()
+        harness.emit_approve("上限到達")
+        assert "上限到達" in capsys.readouterr().err
+
+    def test_approve_reason省略時はstderrに何も出さない(self, capsys):
         harness, stdout = _make()
         harness.emit_approve()
-        assert _emitted(stdout) == {"decision": "approve"}
+        assert _emitted(stdout) == {}
+        assert capsys.readouterr().err == ""
 
     def test_empty(self):
         harness, stdout = _make()

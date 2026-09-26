@@ -4,7 +4,7 @@
 
 外縁ドキュメント = リポジトリに置かれ、DB の外で「地図」を担う文書（`docs/spec/db-schema.md` / `docs/spec/mcp-tools.md` / `docs/architecture/components.md` 等）。これらは一次情報（`migrations/` / `src/main.py`）を人間が読みやすく写し取ったものであり、一次情報が変わっても自動更新されないため陳腐化する。本書はその陳腐化を検出する仕組みと、検出後の更新責務を定める。
 
-サーバー本体（cc-memory MCP server）はリポジトリ側ドキュメントを読まない。cc-memory サーバーは任意ユーザーの汎用サーバーであり、特定リポジトリのファイル配置を知る立場にないためである。本規約が定める検査は本リポジトリ専用の `scripts/` 配下のローカルスクリプトと CI の 1 ステップで完結し、サーバー本体には一切手を入れない。
+サーバー本体（calm MCP server）はリポジトリ側ドキュメントを読まない。calm サーバーは任意ユーザーの汎用サーバーであり、特定リポジトリのファイル配置を知る立場にないためである。本規約が定める検査は本リポジトリ専用の `scripts/` 配下のローカルスクリプトと CI の 1 ステップで完結し、サーバー本体には一切手を入れない。
 
 ---
 
@@ -42,7 +42,7 @@ uv run python scripts/check_doc_freshness.py [--json] [--docs-root docs/] [--db 
 
 `docs/` 配下（+ 明示指定ファイル）の ccm-doc-sync マーカーを走査し、ローカル DB（decisions / decision_supersedes / decision_tags / topic_tags 継承）と `migrations/` のファイル名を突き合わせて、stale なドキュメントと理由を出力する。stale が 1 件でもあれば exit 1。
 
-- **実行タイミング**: recompose / orch 起動時の運用チェックの一部として手動・skill 起動で回す
+- **実行タイミング**: 自動起動の仕組みは無く、recompose 等の棚卸し作業時に手動で随時実行する。「orch 起動時の運用チェック」は旧 orch/worker 体制での構想であり、現行の calm:orch skill（`skills/orch/SKILL.md`）には組み込まれていない
 - **CI には載せない**: CI からユーザーのローカル DB は見えない。DB 参照を必要としない部分（migration 番号比較のみ）は次節の lint が別途 CI で担う
 
 ---

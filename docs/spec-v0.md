@@ -31,7 +31,7 @@ CALM（広義）は4層のレイヤースタックで整理される。
 | プロトコル | 紙の上の約束 | エンティティ型 + 関係 + supersede/retract | 共通の意味論 |
 | ストア | 書庫 | データの保持と読み出し | 読まれること |
 | フロー | 働き方 | check-in/scoring/nudge/habits/tag-notes | 動くこと |
-| 協調 | 指揮系統 | orch/worker（+powwow） | セッション間調停 |
+| 協調 | 指揮系統 | orch/worker（+powwow。解体済み、現行は`skills/orch/SKILL.md`） | セッション間調停 |
 
 CALMには「記憶の保持（半年後も価値が変わらない）」と「タスク管理（今日のユーザーを動かす）」という2役問題がある。これを概念上「ストア層 vs フロー層」で区別する。実装（プロセス・DB）は分割しない。分けるのは概念とインターフェースの帰属のみ。
 
@@ -40,7 +40,7 @@ CALMには「記憶の保持（半年後も価値が変わらない）」と「�
 **アンカー:**
 
 - 既存資料: プロダクト群マップ v1（CALM資料）、4層スタック決定（topic「プロダクト群マップ」配下）
-- コードベース: cc-memoryリポ直下のディレクトリ構造（services/ hooks/ skills/ migrations/）が大まかな層対応
+- コードベース: calmリポ直下のディレクトリ構造（services/ hooks/ skills/ migrations/）が大まかな層対応
 
 ### 1.2 playbook: 議論時に「どの層の話か」を最初に宣言する
 
@@ -93,7 +93,7 @@ CALMに関する議論を始めるとき、「これはどの層の話か」を�
 
 **アンカー:**
 
-- コードベース: cc-memoryリポのmodels/、migrations/
+- コードベース: calmリポのmodels/、migrations/
 - 既存決定: 3プロトコル決定、データセマンティクス凍結方針決定
 - 既存資料: プロダクト群マップ v1 §3, §5
 
@@ -163,7 +163,7 @@ CALMに関する議論を始めるとき、「これはどの層の話か」を�
 
 **アンカー:**
 
-- コードベース: cc-memoryリポのservices/search_service、services/material_service他
+- コードベース: calmリポのservices/search_service、services/material_service他
 - 既存資料: 5次元統合レポート Read Path 章（横断課題）
 
 ### 3.2 playbook
@@ -232,7 +232,7 @@ CALMに関する議論を始めるとき、「これはどの層の話か」を�
 
 **アンカー:**
 
-- コードベース: cc-memoryリポのhooks/、skills/
+- コードベース: calmリポのhooks/、skills/
 - 既存資料: 5次元統合レポート フック章・スキルIF章
 - 既存決定: nudgeエスカレーション仕様、SessionStart構造方針
 
@@ -286,6 +286,8 @@ CALMに関する議論を始めるとき、「これはどの層の話か」を�
 
 ## 5. 協調層（orch/worker × CALMの接点）
 
+本章はorch/workerフレームワーク稼働時点の設計記述をそのまま残す。この体制は解体済みで、現行のorchの手順と権限の線は `skills/orch/SKILL.md`（calm:orch skill）に置く。
+
 ### 5.1 spec: CALMに関わる接点のみ
 
 orch/worker フレームワーク全体ではなく、CALMと接する3点に絞る。
@@ -304,7 +306,7 @@ orch運用下で生成される activity/decision/material 等には `orch-manag
 
 **アンカー:**
 
-- コードベース: cc-memoryリポのhooks/session_*（v1通信系の`services/ow_service`は撤去済み。後継のrelay v2 4動詞toolも`src/services/relay/`ごとCALM本体から撤去済み。識別子解決のみ`src/infra/session_identity.py`へ移設して継続利用）
+- コードベース: calmリポのhooks/session_*（v1通信系の`services/ow_service`は撤去済み。後継のrelay v2 4動詞toolも`src/services/relay/`ごとCALM本体から撤去済み。識別子解決のみ`src/infra/session_identity.py`へ移設して継続利用）
 - 既存資料: ow統合設計書 v3、orch役割境界 設計書 v2、5次元統合レポート マルチセッション章
 - 既存決定: 「orchは原則手を動かさない、workerに任せる」習慣、「workerはdecisionを直接書かない」習慣
 
@@ -401,11 +403,11 @@ session_id を捨てる heartbeat、events.jsonl と relay の二系統真実源
 
 **coverage**: check-inで「どれだけ情報を引けたか」を示すメトリクス。
 
-**orch**: orch/workerフレームワークの指揮役。worker spawn・queue管理・decision記録の集約を担う。
+**orch**: orch/workerフレームワークの指揮役。worker spawn・queue管理・decision記録の集約を担う。解体済み（第5章冒頭の注記を参照）。
 
-**worker**: orch/workerフレームワークの実作業役。実装・テスト・PR等を担当する。
+**worker**: orch/workerフレームワークの実作業役。実装・テスト・PR等を担当する。解体済み（第5章冒頭の注記を参照）。
 
-**orch-managed**: orch運用下で生成されたエンティティに付与するタグ。個人フローから除外するシグナルだったが、orch運用体系の解体に伴い撤去済み。
+**orch-managed**: orch運用下で生成されたエンティティに付与するタグ。個人フローから除外するシグナルだったが、撤去済み（第5章冒頭の注記を参照）。
 
 **sync-memory**: セッション終了前に transcript を解析し、CALM への一括記録を行うスキル。
 

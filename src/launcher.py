@@ -105,7 +105,7 @@ MAX_RETRIES: int | None = _read_max_retries()
 # 長時間のHTTPサーバー復旧待ちでもリトライ間隔を上限内に抑える。
 BACKOFF_CAP_SEC = 60
 
-# bridge identity ヘッダ名。全MCPリクエストに付与し、cc-memory server 再起動を
+# bridge identity ヘッダ名。全MCPリクエストに付与し、calm server 再起動を
 # またいで安定な呼び出し元識別子として src/infra/session_identity.py が読む。
 BRIDGE_SESSION_HEADER = "X-Calm-Bridge-Session-Id"
 # 改名前の旧ヘッダ名。移行期間中は新旧両方に同じ値を載せて送る。main を pull
@@ -339,7 +339,7 @@ def _current_harness_name() -> str:
     """launcherプロセス自身のCALM_HARNESS envから起動器種別名を判定する。
 
     src.harness.select_harnessと同じ判定基準(未設定・未知値はclaude_code)。
-    cc-memory server は launcher から見て別プロセス(ローカルは launcher が
+    calm server は launcher から見て別プロセス(ローカルは launcher が
     subprocess.Popen で起動する子、リモードは既存の常駐プロセス)で、複数の
     launcher(異なるharness由来を含む)を1つのserverプロセスが共有しうるため、
     server側の自プロセスenvではなくlauncher側のenvで判定してPOSTボディに乗せる。
@@ -425,7 +425,7 @@ async def _bridge() -> None:
     # サーバー切断: server_to_stdoutが先に終了 → stdin_eofがFalse → ServerDisconnected
     stdin_eof = False
 
-    # 全MCPリクエストに bridge identity ヘッダを同梱する。cc-memory server が
+    # 全MCPリクエストに bridge identity ヘッダを同梱する。calm server が
     # 再起動しても launcher プロセス（＝ _session_id）が生きている限り不変な値で、
     # 呼び出し元セッション識別子の解決（src/infra/session_identity.py）が読む。
     http_client = create_mcp_http_client(
@@ -615,7 +615,7 @@ def main() -> None:
     atexit.register(_cleanup)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))  # atexitが発火する
 
-    # SessionStart hook（Claude Code CLI プロセスの別の子孫）や、cc-memory
+    # SessionStart hook（Claude Code CLI プロセスの別の子孫）や、calm
     # server 側のセッション別名解決（src/infra/session_identity.py の
     # resolve_cli_session）が祖先 pid チェーン経由で自分を見つけられるよう、
     # HTTPサーバー起動待機（最大30秒）より前に登録ファイルを書く。

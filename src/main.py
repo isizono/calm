@@ -1474,7 +1474,7 @@ def export_material(
     dest_path: Optional[str] = None,
 ) -> dict:
     """
-    Choose: 資材の全文を cc-memory 外で参照したい（obsidian vault に置く / docs リポに commit する / third-party レビュー用に配布する）とき。cc-memory 内で読むだけなら get_material、複数種別を横断で全文取得したいなら get_by_ids。
+    Choose: 資材の全文を calm 外で参照したい（obsidian vault に置く / docs リポに commit する / third-party レビュー用に配布する）とき。calm 内で読むだけなら get_material、複数種別を横断で全文取得したいなら get_by_ids。
 
     資材を YAML frontmatter + h1 + content 形式の md ファイルとして出力する。
 
@@ -1497,7 +1497,7 @@ def export_material(
 
     書き込み先は ~/cc-memory-export 配下に限定される。配下外を指す dest_path
     （シンボリックリンク経由の脱出を含む）は VALIDATION_ERROR で拒否され、
-    ファイルもディレクトリも作成されない。cc-memory 管理外の場所（obsidian vault や
+    ファイルもディレクトリも作成されない。calm 管理外の場所（obsidian vault や
     docs リポ等）へ置きたい場合は、この配下に出力してから移動する。
 
     上書き確認はしない。既存ファイルは無警告で上書きされる（戻り値の overwritten で通知）。
@@ -1903,7 +1903,7 @@ def collect_export_candidates(
             適用されない
         include_types: 返却する型のフィルタ（デフォルト5型全部）。走査・closure_warnings
             判定には影響しない表示フィルタ
-        tag_roots: 指定タグ文字列（例: ["domain:cc-memory"]）を持つ全エンティティを
+        tag_roots: 指定タグ文字列（例: ["domain:calm"]）を持つ全エンティティを
             シード集合に合流させる
         include_snippets: Falseにすると各candidateからsnippetキーを省く
             （ドメイン規模での応答サイズ対策）
@@ -2302,11 +2302,11 @@ def report_signal(
     refs: list[dict] | None = None,
     context: dict | None = None,
 ) -> dict:
-    """cc-memory 自身への故障報告・使用感不満・矛盾検出・運用計測イベントの統一入口。
+    """calm 自身への故障報告・使用感不満・矛盾検出・運用計測イベントの統一入口。
 
     kind（8種類、いずれか必須）:
       - "machine_error": ツールエラー・hook 失敗・サーバー異常を観察した
-      - "friction": cc-memory の使い勝手への不満・違和感（ユーザー発話由来を含む）
+      - "friction": calm の使い勝手への不満・違和感（ユーザー発話由来を含む）
       - "contradiction": 既存記録(decision/material/log)と矛盾する結論を出した/検出した。
         refs に矛盾の両側の id を必ず含めること。summary は
         「<新しい結論の要旨> ↔ <矛盾する既存記録の title>」形式。
@@ -2680,7 +2680,7 @@ def unsubscribe_ask(ask_id: int) -> dict:
 
 
 # asks ダッシュボード向けHTTP API（MCPプロトコル外の薄いラッパー）。
-# 認証なし（cc-memoryはlocalhostに他者がアクセスできる場合を脅威モデルに
+# 認証なし（calmはlocalhostに他者がアクセスできる場合を脅威モデルに
 # 含めていないため）。get_asks/answer_askの2呼び出しに限定し、他のMCPツール
 # （add_decisions等の破壊的・機微な操作）には一切触れない。
 # CSRF対策としてOriginヘッダのlocalhost限定チェックを行う（_check_origin）。
@@ -3132,7 +3132,7 @@ if __name__ == "__main__":
     import argparse
     import signal
 
-    parser = argparse.ArgumentParser(description="cc-memory MCP server")
+    parser = argparse.ArgumentParser(description="calm MCP server")
     parser.add_argument(
         "--transport",
         default="stdio",

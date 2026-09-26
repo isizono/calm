@@ -5,7 +5,7 @@ title が None の decision / log を返却する際、title フィールドが 
 
 対応箇所:
 - search_service._format_row (decision ブランチ) → get_by_id / get_by_ids 経由
-- checkin_service._get_logs_catalog_from_topics → check_in の latest_log / logs カタログ
+- checkin_queries._get_logs_catalog_from_topics → check_in の latest_log / logs カタログ
 """
 
 import pytest
@@ -15,7 +15,7 @@ from src.services.topic_service import add_topic
 from src.services.decision_service import add_decisions
 from src.services.discussion_log_service import add_logs
 from src.services.search_service import get_by_id, get_by_ids
-from src.services.checkin_service import _get_logs_catalog_from_topics
+from src.services.checkin_queries import _get_logs_catalog_from_topics
 
 
 DEFAULT_TAGS = ["domain:test"]

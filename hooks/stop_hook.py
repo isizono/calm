@@ -58,13 +58,16 @@ def main() -> None:
             harness.emit_approve("session_id is empty")
             return
 
-        # サブエージェント発のStop呼び出しは状態を一切更新せず即承認する。
-        # 判定はagent_id（実機では常にnullで届き使えない）ではなく
-        # agent_typeキーの有無(truthy)で行う。hooks/ask_answer_rewake_hook.py・
+        # Stop hookの入力にagent_typeキーがあれば（truthy）、状態を一切更新せず
+        # 即承認する。判定はagent_id（実機では常にnullで届き使えない）ではなく
+        # agent_typeキーの有無で行う。hooks/ask_answer_rewake_hook.py・
         # hooks/sanitize_tool_result_hook.pyと同じ判定。
-        # session_idは親セッションと共有され得るため、ここで状態を更新すると
-        # 親のturn数・block_count・heartbeatがサブエージェントのターンで
-        # 進んでしまう。
+        # 実測では、フォアグラウンドのAgentツールSAが終了する際に発火するのは
+        # SubagentStopでありStopではないため、この分岐はそこを通らない。
+        # バックグラウンドSA・teammate等でagent_type付きのStop呼び出しが
+        # 届いた場合の保険として残している。session_idは親セッションと
+        # 共有され得るため、ここで状態を更新すると親のturn数・block_count・
+        # heartbeatがサブエージェントのターンで進んでしまう。
         if data.get("agent_type"):
             harness.emit_approve("サブエージェント呼び出しのためスキップします。")
             return

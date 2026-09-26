@@ -2,7 +2,7 @@
 
 ## 0. 読み方
 
-本ドキュメントは、セッション中またはセッション終了時の情報を cc-memory のどのエンティティに記録するかの判定基準の詳細版である。本ドキュメントは `skills/recording/references/taxonomy.md` として recording skill のディレクトリ内に置かれており、recording skill はこれを補足参照として扱う。recording SKILL.md 本文自体が単体で自己完結した判断基準を持つため、本ドキュメントの参照が解決できない場合でも SKILL.md 本文の基準で判断できる。sync-memory skill は本ドキュメントへの直接参照を持たない（report_signal の kind 一覧などは `report_signal` ツールのdocstringを正とする）。
+本ドキュメントは、セッション中またはセッション終了時の情報を calm のどのエンティティに記録するかの判定基準の詳細版である。本ドキュメントは `skills/recording/references/taxonomy.md` として recording skill のディレクトリ内に置かれており、recording skill はこれを補足参照として扱う。recording SKILL.md 本文自体が単体で自己完結した判断基準を持つため、本ドキュメントの参照が解決できない場合でも SKILL.md 本文の基準で判断できる。sync-memory skill は本ドキュメントへの直接参照を持たない（report_signal の kind 一覧などは `report_signal` ツールのdocstringを正とする）。
 
 基準を変更する場合は本ドキュメントと recording SKILL.md 側のインライン表現の両方を確認する。本ドキュメントは `docs/spec/doc-sync-convention.md` が定める `ccm-doc-sync` マーカーの対象外である（DB スキーマや tool 定義の写しではなく運用ポリシー文書のため）。ドリフトの検知は自動化されておらず、監査・レビュー時に人手で突き合わせる前提である。
 
@@ -20,7 +20,7 @@
 
 上記に当てはまらなくても、後続セッションが文脈を引き継ぐために要る経緯が出たら同等に扱う。例: 仕様確定議論の脇で出た代替案メモ、調査の途中で得た一次資料の抜粋、設計レビューで指摘された未解決リスト、外部記事の要旨など。
 
-L5 との重要な区別: L5 はユーザーが取り組んでいる対象システムのバグ。cc-memory 自身の不具合・使用感の違和感・既存記録との矛盾は log ではなく report_signal を使う（4章参照）。
+L5 との重要な区別: L5 はユーザーが取り組んでいる対象システムのバグ。calm 自身の不具合・使用感の違和感・既存記録との矛盾は log ではなく report_signal を使う（4章参照）。
 
 ## 2. material（成果物） — add_material
 
@@ -56,19 +56,19 @@ material は decision と違って「双方の合意」が不要な成果物で�
 
 `[議論中]` は decision のプレフィックスとして、その論点がまだ結論に達していないという議論の状態を表す。`skills/audit/SKILL.md` は同一 tag で 3 件目の方針変更（supersedes / `[議論中]` 含む）を「方針が何度も揺れている」シグナルとして数える。
 
-## 4. report_signal（cc-memory 自身の不具合・違和感） — report_signal
+## 4. report_signal（calm 自身の不具合・違和感） — report_signal
 
 kind の全種一覧は `report_signal` ツールのdocstring（`src/main.py`）を正とし、本ドキュメントでは重複させない。セッション中の記録判断でよく使う3種のみ例示する。
 
 | kind | 発火例 |
 |---|---|
 | `machine_error` | ツールエラー・hook 失敗・サーバー異常を観察した |
-| `friction` | 検索で引けるべき記録が引けなかった等、cc-memory の使い勝手への不満・違和感を感じた |
+| `friction` | 検索で引けるべき記録が引けなかった等、calm の使い勝手への不満・違和感を感じた |
 | `contradiction` | 設計・実装中に既存 decision と矛盾する結論に達した / `add_decisions` の `related_decisions`、`add_logs`/`add_material` の `related_records` で矛盾に気づいた |
 
 残り4種（`precedent_miss` / `precedent_misapplied` / `boundary_case` / `rollback`）は頻度が低く、判断に迷ったら `report_signal` ツールのdocstringを参照する。同一内容の再報告は `report_signal` 側で自動集約されるため、迷ったら報告してよい。
 
-L5（バグ観察、add_logs 対象）との違い: L5 はユーザーが取り組んでいる対象システムのバグ。cc-memory 自身の不具合・違和感は report_signal。
+L5（バグ観察、add_logs 対象）との違い: L5 はユーザーが取り組んでいる対象システムのバグ。calm 自身の不具合・違和感は report_signal。
 
 ## 5. 呼び出し元別の記録先カテゴリ
 

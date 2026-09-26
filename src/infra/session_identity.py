@@ -1,7 +1,7 @@
 """呼び出し元セッションの安定 identity 解決。
 
-cc-memory の caller_session_id は本来 MCP 接続単位の ephemeral な値
-（fastmcp の `ctx.session_id`）であり、cc-memory server の再起動のたびに
+calm の caller_session_id は本来 MCP 接続単位の ephemeral な値
+（fastmcp の `ctx.session_id`）であり、calm server の再起動のたびに
 新しい値へ切り替わる。add_ask/answer_ask/triage_ask/withdraw_ask（要求元の
 記録）、get_sessions/set_session_alias（並行セッション表示）、check_in
 （セッション別名レジストリ更新）はいずれも server 再起動をまたいで安定した
@@ -104,7 +104,7 @@ def get_caller_session_id() -> Optional[str]:
 
     launcher.py 経由（X-Calm-Bridge-Session-Id ヘッダ、無ければ旧名の
     X-CC-Memory-Bridge-Session-Id ヘッダ）の呼び出しは、
-    cc-memory server の再起動をまたいで不変な識別子を返す。ヘッダが無い
+    calm server の再起動をまたいで不変な識別子を返す。ヘッダが無い
     呼び出し元（本ヘッダを付与しない MCP クライアント）、および HTTP
     リクエストコンテキスト外からの呼び出し（import失敗・get_http_headers()
     自体の失敗を含む）は、従来通り ctx.session_id（ephemeral、MCP 接続単位）
@@ -270,7 +270,7 @@ def resolve_identity_by_ancestry(pid: Optional[int] = None) -> Optional[str]:
     MCP リクエストコンテキストを持たない呼び出し元（SessionStart hook 等）
     専用のフォールバック経路。get_caller_session_id() のヘッダ/ctx.session_id
     経路が使えるコンテキスト（実際の MCP ツール呼び出し）では、そちらが
-    launcher とは別プロセス（cc-memory HTTP server）で動くため祖先チェーンに
+    launcher とは別プロセス（calm HTTP server）で動くため祖先チェーンに
     意味がなく、本関数を使ってはならない。
 
     判定は「共通祖先の有無」ではなく「双方の直近 _CLI_HOP_WINDOW ホップ
@@ -342,7 +342,7 @@ def resolve_cli_session(session_id: str) -> Optional[dict]:
     """bridge session id から、その呼び出し元 Claude Code CLI プロセスの
     表示情報（name / cli_session_id / cwd / cli_status）を解決する。
 
-    cc-memory の HTTP server は全セッション共有かつ CLI から detach された
+    calm の HTTP server は全セッション共有かつ CLI から detach された
     プロセスであり、自身の祖先 pid には呼び出し元 CLI が現れない。そのため
     server 自身の ppid は辿らず、launcher が起動時に記録した祖先 pid チェーン
     （`register_launcher_session` が書く `ancestor_pids`）を経由して解決する。

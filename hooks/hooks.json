@@ -15,6 +15,10 @@
           {
             "type": "command",
             "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/sanitize_backfill_hook.py"
+          },
+          {
+            "type": "command",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/recorder_autostart_hook.py"
           }
         ]
       }
@@ -66,6 +70,15 @@
           {
             "type": "command",
             "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/feedback_hook.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run python hooks/deny_nested_bg_hook.py"
           }
         ]
       }

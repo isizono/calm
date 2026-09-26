@@ -132,7 +132,7 @@ graph TB
 - `src/services/retract_service.py`: 論理削除と検索からの除外（NOT EXISTSによるretract遅延除外）
 - `src/services/tag_analysis_service.py`: タグ共起分析（`analyze_tags`）。tag-cleanupスキルから利用
 - `src/services/destabilization_service.py`: destabilizesエッジの解消（`resolve_destabilization`）・候補提示（`suggest_destabilized_candidates`）
-- `src/services/supersede_service.py`: `decision_supersedes`を辿ったsupersedeチェーン算出のヘルパー。precedent系・direction_service・decision_service・checkin_service・search_service等decisionを扱う多数のserviceから共有される
+- `src/services/supersede_service.py`: `decision_supersedes`を辿ったsupersedeチェーン算出のヘルパー。precedent系・direction_service・decision_service・checkin_queries・search_service等decisionを扱う多数のserviceから共有される
 - `src/services/precedent_pull_service.py`: `pull_precedents`のtopic routing + browse保証（近傍topicの非retract decisionをLIMIT無しで網羅列挙）
 - `src/services/precedent_cluster_service.py`: `precedent_pull_service`から呼ばれ、seed decision集合をsupersede系譜／depth-1のrelatedエッジ／depth-1のcitationエッジで連結クラスタ展開する
 - `src/services/budget_service.py`: `pull_precedents`の予算配分ロジックと、decision/logページネーション用件数カウントの共通プリミティブ
@@ -143,7 +143,7 @@ graph TB
 - `src/services/citation_renderer.py`（+ `citations_service.py` / `citations_pure.py`）: flavor引数（raw/internal/readable）に応じたcitationテンプレート・削除済み参照の展開
 - `src/services/direction_service.py`: `layer:direction`decisionの非ランク網羅列挙。`hint_service`のdirection_overflow判定と`add_decisions`のexisting_direction_decisions/direction_noteの土台
 - `src/services/reask_detection_service.py`: `detect_reask_candidates`のtranscript抽出ロジック
-- `src/services/restart_service.py`: cc-memory MCPサーバー・embeddingサーバーの強制再起動（`calm:restart` skillから利用）
+- `src/services/restart_service.py`: calm MCPサーバー・embeddingサーバーの強制再起動（`calm:restart` skillから利用）
 - `src/services/backup_service.py`: DBスナップショットの取得・ヘルスチェック・ローテーション・復元
 
 ### 3.3b エクスポート・インポート基盤
@@ -166,7 +166,7 @@ graph TB
 
 ### 3.6 既知の課題
 
-- 5次元統合レポート（cc-memory material 312、要参照）が指摘するサービス膨張・共通パターン未抽出（CRUDの定型処理がservice間でコピーされている）
+- 5次元統合レポート（calm material 312、要参照）が指摘するサービス膨張・共通パターン未抽出（CRUDの定型処理がservice間でコピーされている）
 - スコア解釈の不整合（`_apply_recency_boost` による正規化崩れ）。`docs/spec-v0.md` §3.1で言及あり
 
 ---
@@ -187,7 +187,7 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 | `hooks/user_prompt_submit_hook.py` | UserPromptSubmit（`*`） | 未消費nudge・ask通知の system-reminder 注入 |
 | `hooks/stop_hook.py` | Stop（`*`） | transcript差分抽出→events.jsonl追記、check-in判定、nudge発火判定、heartbeat更新 |
 | `hooks/preblock_hook.py` | PreToolUse（`*`） | tool_inputに含まれる内部ID表記のリテラルをblock（`deny`） |
-| `hooks/sanitize_tool_result_hook.py` | PostToolUse（`*`。cc-memoryツール以外は素通し） | cc-memory tool_resultの生ID参照を`{{cite:...}}`へ変換して返す |
+| `hooks/sanitize_tool_result_hook.py` | PostToolUse（`*`。calmツール以外は素通し） | calm tool_resultの生ID参照を`{{cite:...}}`へ変換して返す |
 | `hooks/ask_answer_rewake_hook.py` | PostToolUse（`mcp__.*calm__add_ask`、`asyncRewake`） | `add_ask`直後にaskのstatus変化をポーリングし、回答されたらidleセッションを起こす |
 | `hooks/message_display_id_titles.py` | MessageDisplay（`*`） | assistant発話中の内部ID表記の直後にエンティティタイトルを差し込んで表示（表示のみ、transcript/contextは無加工） |
 
@@ -233,7 +233,7 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 
 ### 4.3 フロー層 service
 
-- `src/services/checkin_tier_service.py`: check-inの本体実装。アクティビティに紐づく tag-notes・資材カタログ・pinned・関連decisions・recent logs を anchor/control/context/catalog/env の5枠に分けて一括取得し、coverage と recompose hints を計算する (recompose hint は HintService 経由)。`src/services/checkin_service.py` はこのモジュールと差分通知middlewareが共有するクエリヘルパーと`checkin_scope`のみを持つ
+- `src/services/checkin_tier_service.py`: check-inの本体実装。アクティビティに紐づく tag-notes・資材カタログ・pinned・関連decisions・recent logs を anchor/control/context/catalog/env の5枠に分けて一括取得し、coverage と recompose hints を計算する (recompose hint は HintService 経由)。`src/services/checkin_queries.py` はこのモジュールと差分通知middlewareが共有するクエリヘルパーと`checkin_scope`のみを持つ
 - `src/services/hint_service.py`: hint一元化（`get_hints(scope, target_id) -> list[Hint]`）。recompose_bootstrap / recompose_delta / logs_sparse / direction_overflow / activity_cleanup / notes_over_budget を統一フォーマット（`Hint`型）で返す。follow_up_after_decision / record_missingはevents.jsonl状態が必要なため本module自体では判定せず、Stop hookが生成しつつtype名だけ本moduleに合わせて統一する。delivery_hint で immediate (check_in 同期注入) と deferred (Stop hook → events.jsonl → UserPromptSubmit 注入) を分岐する
 - `src/services/habit_service.py`: habitのCRUD。書き込み後は`habit_projection`経由で`~/.claude/rules`配下の自動生成ファイルへ投影する。`trigger_mode='always'`は全文、`'intelligently'`はタイトルのみのマニフェストとして投影される
 
@@ -243,7 +243,7 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 SessionStart        → hook_state clear / session_start_hook / sanitize_backfill_hook
                        → 状態クリア / アクティビティダッシュボード・鮮度警告注入 / transcript差分backfill
 PreToolUse           → preblock_hook → 内部ID表記のtool_inputを検出しblock
-PostToolUse          → sanitize_tool_result_hook（cc-memoryツールのみ）→ tool_resultの生ID参照をcitationテンプレへ変換
+PostToolUse          → sanitize_tool_result_hook（calmツールのみ）→ tool_resultの生ID参照をcitationテンプレへ変換
                        → ask_answer_rewake_hook（add_ask限定、asyncRewake）→ 回答待ちポーリング→idle起床
 Stop                 → stop_hook → record_missing / follow_up_after_decision / logs_sparse nudge を events.jsonl に追記
 UserPromptSubmit     → user_prompt_submit_hook → 未消費 nudge・ask通知の system-reminder 注入
@@ -338,7 +338,7 @@ graph LR
 
 ## 8. 既知の課題
 
-`docs/spec-v0.md` §6 横断テーマと 5次元統合レポート（cc-memory material、要参照）に紐づく、コンポーネント構成上のpain。
+`docs/spec-v0.md` §6 横断テーマと 5次元統合レポート（calm material、要参照）に紐づく、コンポーネント構成上のpain。
 
 1. **サービス膨張**: `src/services/` 配下に20以上のserviceファイルが並び、共通パターン（CRUDの定型処理、タグ付与、retracted_atフィルタ）が未抽出。新エンティティ追加のたびに同型コードが増える
 2. **共通パターン未抽出**: search_serviceのSQL組み立て関数群（`_fts_search` / `_vector_search` / `_tag_like_search`）、relation/pin/supersedesの関係メカニズム5系統など、同型ロジックが複数箇所に存在する
@@ -348,4 +348,4 @@ graph LR
 6. **HintService単一窓口の不在**: nudge発火源（hooks/各種、harness_service、checkin_tier_serviceのrecompose hints、tag_service経由のtag-notes）が並走しており、しきい値・状態管理がバラバラ。recompose系・logs_sparse系・direction_overflow系・activity_cleanup系・notes_over_budget系のhintは`hint_service`（`get_hints`/`get_hints_with_conn`）に統一済み（#422、2026-06-21）。ただしfollow_up_after_decision/record_missingはevents.jsonl状態が必要なため引き続きStop hookが個別生成しており、nudge発火源の完全な一元化には至っていない
 7. **効果測定基盤の不在**: 検索のスコアリング・nudgeの効果・タグ付与の精度を測定する仕組みがない（`docs/spec-v0.md` §6 T-D）。search_telemetry導入が処方箋候補
 
-各課題の詳細・処方箋候補は5次元統合レポート本文（cc-memory material、要参照）と `docs/spec-v0.md` §6 横断テーマを参照のこと。
+各課題の詳細・処方箋候補は5次元統合レポート本文（calm material、要参照）と `docs/spec-v0.md` §6 横断テーマを参照のこと。

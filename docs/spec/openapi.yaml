@@ -3,17 +3,17 @@
 # 再生成: uv run python scripts/generate_openapi.py
 openapi: 3.0.3
 info:
-  title: cc-memory MCP server
+  title: calm MCP server
   version: '0'
   description: |
-    cc-memory が提供する MCP ツール群の機械可読仕様。
+    calm が提供する MCP ツール群の機械可読仕様。
     MCP は本来 JSON-RPC ベースだが、ここでは OpenAPI 3.0 形式で
     1 ツール = 1 path (POST) として整理する。
     本ファイルは scripts/generate_openapi.py が mcp.list_tools() から自動生成する。
     手動編集は次回生成で失われる。requestBody は実際の引数スキーマそのものだが、
     responses は自動抽出できないため簡略化してある（詳細は docs/spec/mcp-tools.md）。
 servers:
-- url: mcp://cc-memory
+- url: mcp://calm
   description: ローカル/HTTP/StreamableHTTP の任意のトランスポートを抽象化した仮想 base URL
 tags:
 - name: activity
@@ -771,8 +771,7 @@ paths:
     post:
       tags:
       - material
-      summary: 'Choose: 資材の全文を cc-memory 外で参照したい（obsidian vault に置く / docs リポに commit する / third-party
-        レビュー用に配布する）とき。'
+      summary: 'Choose: 資材の全文を calm 外で参照したい（obsidian vault に置く / docs リポに commit する / third-party レビュー用に配布する）とき。'
       requestBody:
         required: true
         content:
@@ -1682,7 +1681,7 @@ paths:
     post:
       tags:
       - misc
-      summary: cc-memory 自身への故障報告・使用感不満・矛盾検出・運用計測イベントの統一入口。
+      summary: calm 自身への故障報告・使用感不満・矛盾検出・運用計測イベントの統一入口。
       requestBody:
         required: true
         content:
