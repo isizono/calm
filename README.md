@@ -162,6 +162,7 @@ SessionStart(3スクリプト)・Stop・UserPromptSubmit・MessageDisplayに加�
 | `/memory-export` | 記録を他インスタンスへ渡すexportバンドルを作成します |
 | `/memory-import` | 他インスタンスのexportバンドルを衝突裁定を経て取り込みます |
 | `/peer-nudge` | セッション台帳の宛先候補へSendMessageで直接話しかけるときの作法をガイドします |
+| `/orch` | 仕事を複数の子に分けてbgに振り、まとめ役として追う・引き継ぐ・終わらせる手順をガイドします |
 
 ## hookが黙って失敗したときに気づく
 
