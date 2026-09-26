@@ -13,6 +13,9 @@ from tests.helpers import add_decision
 from src.services.activity_service import add_activity
 import src.services.embedding_service as emb
 
+# conftest の autouse fixture (_no_real_embedding_server) は _start_server を
+# 差し替えるため、_start_server 自体を検証するテストはここで捕捉した実体に戻す。
+_REAL_START_SERVER = emb._start_server
 
 EMBEDDING_DIM = 384
 DEFAULT_TAGS = ["domain:test"]
@@ -895,6 +898,7 @@ def test_start_server_failure_returns_none(temp_db, monkeypatch):
         raise FileNotFoundError("python not found")
 
     monkeypatch.setattr(subprocess, 'Popen', failing_popen)
+    monkeypatch.setattr(emb, "_start_server", _REAL_START_SERVER)
 
     result = emb._start_server()
     assert result is None
@@ -923,6 +927,7 @@ def test_start_server_uses_module_execution_form(temp_db, monkeypatch):
     monkeypatch.setenv("CALM_PROJECT_ROOT", str(root))
     monkeypatch.setattr(emb, "_project_root_cache", None)  # env反映のためキャッシュをクリア
     monkeypatch.setattr(subprocess, "Popen", capturing_popen)
+    monkeypatch.setattr(emb, "_start_server", _REAL_START_SERVER)
 
     assert emb._start_server() is sentinel
 
