@@ -31,7 +31,7 @@ CALM（広義）は4層のレイヤースタックで整理される。
 | プロトコル | 紙の上の約束 | エンティティ型 + 関係 + supersede/retract | 共通の意味論 |
 | ストア | 書庫 | データの保持と読み出し | 読まれること |
 | フロー | 働き方 | check-in/scoring/nudge/habits/tag-notes | 動くこと |
-| 協調 | 指揮系統 | orch/worker（+powwow） | セッション間調停 |
+| 協調 | 指揮系統 | orch/worker（+powwow。解体済み、現行は`skills/orch/SKILL.md`） | セッション間調停 |
 
 CALMには「記憶の保持（半年後も価値が変わらない）」と「タスク管理（今日のユーザーを動かす）」という2役問題がある。これを概念上「ストア層 vs フロー層」で区別する。実装（プロセス・DB）は分割しない。分けるのは概念とインターフェースの帰属のみ。
 
@@ -403,11 +403,11 @@ session_id を捨てる heartbeat、events.jsonl と relay の二系統真実源
 
 **coverage**: check-inで「どれだけ情報を引けたか」を示すメトリクス。
 
-**orch**: orch/workerフレームワークの指揮役。worker spawn・queue管理・decision記録の集約を担う。この体制は解体済みで、現行のorchの手順と権限の線は `skills/orch/SKILL.md`（calm:orch skill）に置く。
+**orch**: orch/workerフレームワークの指揮役。worker spawn・queue管理・decision記録の集約を担う。解体済み（第5章冒頭の注記を参照）。
 
-**worker**: orch/workerフレームワークの実作業役。実装・テスト・PR等を担当する。この役割はorch/workerフレームワークの解体に伴い撤去済み（現行のorchはbgセッションへ子を振る運用に置き換わっている。`skills/orch/SKILL.md` 参照）。
+**worker**: orch/workerフレームワークの実作業役。実装・テスト・PR等を担当する。解体済み（第5章冒頭の注記を参照）。
 
-**orch-managed**: orch運用下で生成されたエンティティに付与するタグ。個人フローから除外するシグナルだったが、orch運用体系の解体に伴い撤去済み。
+**orch-managed**: orch運用下で生成されたエンティティに付与するタグ。個人フローから除外するシグナルだったが、撤去済み（第5章冒頭の注記を参照）。
 
 **sync-memory**: セッション終了前に transcript を解析し、CALM への一括記録を行うスキル。
 
