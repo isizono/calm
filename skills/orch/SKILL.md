@@ -33,7 +33,7 @@ orchの担い手は、子になる作業をサブエージェントやWorkflow�
 
 - activity-startを経由せず、`add_activity`を直接呼ぶ（`check_in=True`）。intentは`intent:discuss`
 - タグに`orch`を含める。domainや内容を表す素タグも付ける
-- 説明の先頭に状態節の雛形を置く（[状態節とgoalの雛形](#状態節とgoalの雛形)節を参照）。担い手欄には自分（get_sessionsのnameと、その時点の自分のsessionId）を書く
+- 説明の先頭に状態節の雛形を置く（[状態節とgoalの雛形](#状態節とgoalの雛形)節を参照）。担い手欄には自分を書く（`claude agents --json`で`pid`が`$CLAUDE_PID`の行の`name`と`sessionId`を使う）
 - 起票と同じ手番で、goalを付ける。形は起点で選ぶ（[状態節とgoalの雛形](#状態節とgoalの雛形)節）
 - 最初に振る子が既に分かっているなら、起票のあとすぐに[振る](#振る)へ進み、子を束縛してから開始の宣言を返す
 
@@ -89,7 +89,7 @@ orchの担い手は、子になる作業をサブエージェントやWorkflow�
 生死の規則は2本ある。
 
 - **bgの生死**: `claude agents --json`で`kind=background`かつ`pid`あり。`state`は生死を表さない
-- **窓口（担い手）の生死**: 担い手欄のsessionIdの行に`pid`あり（`kind`は問わない。窓口の行は`kind=interactive`）
+- **窓口（担い手）の生死**: `claude agents --json`で、担い手欄の`sessionId`と`name`の両方が一致する行に`pid`あり（`kind`は問わない。窓口の行は`kind=interactive`）。`/resume`後は同じsessionIdの行が複数並ぶことがあり、sessionIdだけでは見分けがつかない
 
 許可待ちは`waitingFor`が`permission prompt`のときと見分ける。`attention`の「止まっている」は見に行く候補で、CI待ち・許可待ち・単純に止まった・まだ振っていない、を上の規則で見分ける。
 
@@ -101,7 +101,7 @@ goalの`children`の「達成」は外した子（waived）を含む。内訳は
 
 1. `search(keyword="orch", tags=["orch"], entity_type="activity")`で引き、`get_by_ids`で状態と説明を読んで未完了だけを残す
 2. 説明の先頭に担い手欄が無いものはorchとして扱わず、タグの付け間違いとして報告する
-3. `claude agents --json`で担い手のsessionIdの行にpidがあるかを見る
+3. `claude agents --json`で、担い手欄の`sessionId`と`name`の両方が一致する行に`pid`があるかを見る（生死の見方は[追う](#追う)節の窓口の生死の規則による）
 4. 各orchの`get_goal`の`children`と状態節のbg表を添える
 
 「各orchに○○して」と頼まれたら、この一覧の生きた担い手を宛先にし（担当確認・作業依頼はpeer-nudge skill経由）、空席のorchにはログを書く。
@@ -132,7 +132,7 @@ sync-memoryを実行する窓口が、このorchの担い手で、ユーザー�
 次にこのorchに触った窓口が行う。
 
 1. `check_in`する
-2. 担い手欄を自分に書き換える。名前と、その時点の自分のsessionIdを書く。以前の担い手のsessionIdと今の自分のsessionIdが違っていても（`/resume`等でセッションIDが変わることがある）、無条件で今の値に書き直す
+2. 担い手欄を自分に書き換える。`claude agents --json`で`pid`が`$CLAUDE_PID`の行の`name`と`sessionId`を書く。担い手欄は、以前の値にかかわらず無条件で今の自分の値に書き直す（`/resume`ではsessionIdが同じまま名前とpidだけが変わるので、sessionIdが一致していても書き直しを省かない）
 3. 状態節の更新時刻以降のログ（空席中のbgの報告を含む）を読む
 4. `claude agents --json`でbgの生死を見直し、報告済みで次の指示を待つbgのうち要らないものを止める
 
