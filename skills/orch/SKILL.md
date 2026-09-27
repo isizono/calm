@@ -101,7 +101,7 @@ goalの`children`の「達成」は外した子（waived）を含む。内訳は
 
 1. `search(keyword="orch", tags=["orch"], entity_type="activity")`で引き、`get_by_ids`で状態と説明を読んで未完了だけを残す
 2. 説明の先頭に担い手欄が無いものはorchとして扱わず、タグの付け間違いとして報告する
-3. `claude agents --json`で、担い手欄の`sessionId`と`name`の両方が一致する行に`pid`があるかを見る
+3. `claude agents --json`で、担い手欄の`sessionId`と`name`の両方が一致する行に`pid`があるかを見る（生死の見方は[追う](#追う)節の窓口の生死の規則による）
 4. 各orchの`get_goal`の`children`と状態節のbg表を添える
 
 「各orchに○○して」と頼まれたら、この一覧の生きた担い手を宛先にし（担当確認・作業依頼はpeer-nudge skill経由）、空席のorchにはログを書く。
@@ -132,7 +132,7 @@ sync-memoryを実行する窓口が、このorchの担い手で、ユーザー�
 次にこのorchに触った窓口が行う。
 
 1. `check_in`する
-2. 担い手欄を自分に書き換える。`claude agents --json`で`pid`が`$CLAUDE_PID`の行の`name`と`sessionId`を書く。`/resume`ではsessionIdは変わらず名前とpidだけが新しくなるため、以前の担い手欄とsessionIdが同じでも名前が違えば書き直す。sessionIdそのものが違う場合も、無条件で今の値に書き直す
+2. 担い手欄を自分に書き換える。`claude agents --json`で`pid`が`$CLAUDE_PID`の行の`name`と`sessionId`を書く。担い手欄は、以前の値にかかわらず無条件で今の自分の値に書き直す（`/resume`ではsessionIdが同じまま名前とpidだけが変わるので、sessionIdが一致していても書き直しを省かない）
 3. 状態節の更新時刻以降のログ（空席中のbgの報告を含む）を読む
 4. `claude agents --json`でbgの生死を見直し、報告済みで次の指示を待つbgのうち要らないものを止める
 
