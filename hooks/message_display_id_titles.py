@@ -109,7 +109,12 @@ def _strip_bracket_tag(title: str) -> str:
 
 
 def _session_display(entry: dict) -> str:
-    """セッション名の置換先文字列を返す。空文字は「置換しない」を意味する。"""
+    """セッション名の置換先文字列を返す。空文字は「置換しない」を意味する。
+
+    derive_alias() は `[作業]` 等の札を残す設計だが (区分の表示価値を優先)、
+    ここでは `<Session: ...>` という形自体が「セッション名」の目印になる
+    ため、画面幅を取る札は外して本文だけを見せる。
+    """
     if entry.get("alias_source") == "manual":
         raw = entry.get("alias")
         text = raw if isinstance(raw, str) else ""
@@ -118,6 +123,16 @@ def _session_display(entry: dict) -> str:
         text = _strip_bracket_tag(raw) if isinstance(raw, str) else ""
     text = text.strip()
     return _truncate(text) if text else ""
+
+
+def _updated_at_key(entry: dict) -> str:
+    """`updated_at` を比較可能な文字列にする。欠損・非文字列・空文字は
+    ISO8601 文字列より必ず小さい `""` に落とし、「他の行より優先しない」を
+    保証する (対応表の `updated_at` は `_now_iso()` 形式で統一されており、
+    文字列比較がそのまま時系列比較になる)。
+    """
+    value = entry.get("updated_at")
+    return value if isinstance(value, str) and value else ""
 
 
 def _session_name_displays() -> dict[str, str]:
@@ -130,6 +145,11 @@ def _session_name_displays() -> dict[str, str]:
     try に含めるのは、依存モジュール側の予期しない例外で ID 併記まで
     巻き込んで止めないため。ファイル不在・壊れた JSON・想定外の型・
     import 失敗はすべて空 dict (fail open: セッション名の置換だけを諦める)。
+
+    同じ `name` を持つ行が複数あるとき (CLI プロセス再起動でセッション ID
+    だけ変わった等) は `updated_at` が最も新しい行を採用する。行の採用
+    自体を先に決めてから表示名を計算するため、最新行の表示名が空でも
+    (角カッコの札だけのタイトル等) 古い行の表示名にフォールバックしない。
     """
     try:
         from src.services.session_registry_service import registry_path
@@ -142,13 +162,20 @@ def _session_name_displays() -> dict[str, str]:
     except Exception:
         return {}
 
-    displays: dict[str, str] = {}
+    winners: dict[str, dict] = {}
     for entry in sessions.values():
         if not isinstance(entry, dict):
             continue
         name = entry.get("name")
         if not isinstance(name, str) or not name:
             continue
+        current = winners.get(name)
+        if current is not None and _updated_at_key(entry) <= _updated_at_key(current):
+            continue
+        winners[name] = entry
+
+    displays: dict[str, str] = {}
+    for name, entry in winners.items():
         display = _session_display(entry)
         if display:
             displays[name] = display

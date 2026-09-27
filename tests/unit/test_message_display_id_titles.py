@@ -50,6 +50,7 @@ def _registry_entry(
     activity_title: str = "",
     activity_status: str = "in_progress",
     alias_activity_id: int = 1,
+    updated_at: str = "2026-09-27T00:00:00Z",
 ) -> dict:
     """`register_checkin` が書く1セッション分の row と同じ形を組み立てる。"""
     return {
@@ -62,7 +63,7 @@ def _registry_entry(
         "cli_pid": 99999,
         "cwd": "/tmp/example",
         "bridge_session_id": "bridge-test",
-        "updated_at": "2026-09-27T00:00:00Z",
+        "updated_at": updated_at,
     }
 
 
@@ -412,6 +413,91 @@ class TestSessionNameEnrich:
 
     def test_broken_registry_json_id_enrichment_still_works(self, fake_db, session_registry_path):
         session_registry_path.write_text("{not valid json", encoding="utf-8")
+        text = f"{_MN('M', 1)} と workspace-1b"
+        out = self._enrich(text, fake_db)
+        assert out == f"{_MN('M', 1)} (short title) と workspace-1b"
+
+    def test_updated_at_picks_newest_even_when_older_row_is_later_in_json(
+        self, fake_db, session_registry_path
+    ):
+        # dict の後勝ち (JSON上の出現順) ではなく updated_at で採用行を決める
+        # ことを保証する。newer を先, older を後の JSON 位置に置き、素朴な
+        # 「辞書の後勝ち」であれば older が勝ってしまう配置にする。
+        _write_registry(
+            session_registry_path,
+            {
+                "s1": _registry_entry(
+                    "workspace-1b",
+                    alias="a",
+                    activity_title="[作業] newer",
+                    updated_at="2026-09-27T10:00:00Z",
+                ),
+                "s2": _registry_entry(
+                    "workspace-1b",
+                    alias="b",
+                    activity_title="[作業] older",
+                    updated_at="2026-09-27T05:00:00Z",
+                ),
+            },
+        )
+        out = self._enrich("workspace-1b にて", fake_db)
+        assert out == "<Session: newer> にて"
+
+    @pytest.mark.parametrize(
+        "bad_updated_at",
+        [None, ""],
+        ids=["missing_updated_at", "empty_updated_at"],
+    )
+    def test_missing_or_empty_updated_at_does_not_outrank_row_with_timestamp(
+        self, fake_db, session_registry_path, bad_updated_at
+    ):
+        later_entry = _registry_entry(
+            "workspace-1b", alias="b", activity_title="[作業] no-timestamp"
+        )
+        if bad_updated_at is None:
+            del later_entry["updated_at"]
+        else:
+            later_entry["updated_at"] = bad_updated_at
+        _write_registry(
+            session_registry_path,
+            {
+                "s1": _registry_entry(
+                    "workspace-1b",
+                    alias="a",
+                    activity_title="[作業] has-timestamp",
+                    updated_at="2026-09-27T05:00:00Z",
+                ),
+                # updated_at が無い/空の行を JSON 上は後ろに置く (素朴な
+                # 「辞書の後勝ち」ならこちらが勝ってしまう配置)。
+                "s2": later_entry,
+            },
+        )
+        out = self._enrich("workspace-1b にて", fake_db)
+        assert out == "<Session: has-timestamp> にて"
+
+    @pytest.mark.parametrize(
+        "registry_content",
+        [
+            {"version": 1, "sessions": []},
+            {"version": 1, "sessions": None},
+            {"version": 1, "sessions": {"s1": "not a dict"}},
+            {"version": 1, "sessions": {"s1": {"name": "", "alias": "a", "alias_source": "manual"}}},
+            {"version": 1, "sessions": {"s1": {"name": 123, "alias": "a", "alias_source": "manual"}}},
+        ],
+        ids=[
+            "sessions_is_list",
+            "sessions_is_null",
+            "entry_not_dict",
+            "name_empty_string",
+            "name_not_string",
+        ],
+    )
+    def test_malformed_registry_shapes_fail_open(
+        self, fake_db, session_registry_path, registry_content
+    ):
+        session_registry_path.write_text(
+            json.dumps(registry_content, ensure_ascii=False), encoding="utf-8"
+        )
         text = f"{_MN('M', 1)} と workspace-1b"
         out = self._enrich(text, fake_db)
         assert out == f"{_MN('M', 1)} (short title) と workspace-1b"
