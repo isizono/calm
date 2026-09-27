@@ -195,15 +195,17 @@ class TestSessionStartHookActivities:
 
     def test_pending_non_pinned_activity_hidden_and_counted_in_nav(self, temp_db):
         """pinnedでもin_progressでもないpendingアクティビティは階層2に入らず、
-        固定ナビの未表示件数句としてのみ反映される（階層1・2とも0件のためヘッダも出ない）"""
+        末尾『未表示』節のdomain内訳としてのみ反映される（階層1・2とも0件でも
+        未表示があればヘッダは出る）"""
         _seed_activity("[設計] 設計作業", status="pending")
 
         result = _run_session_start_hook(temp_db)
         context = result["hookSpecificOutput"]["additionalContext"]
 
-        assert "# アクティビティ一覧" not in context
-        assert "設計作業" not in context
-        assert "未表示のアクティビティ1件" in context
+        assert "# アクティビティ一覧" in context
+        assert "## 優先" not in context
+        assert "## 未表示 1件" in context
+        assert "test 1件：[設計] 設計作業" in context
 
     def test_completed_activity_not_shown(self, temp_db):
         """completedアクティビティは表示されない"""
@@ -283,7 +285,7 @@ class TestSessionStartHookDuplicateActivities:
         context = result["hookSpecificOutput"]["additionalContext"]
 
         # アクティビティIDが1回だけ出現する
-        assert context.count(f"(#{activity_id})") == 1
+        assert context.count(f"#{activity_id} ") == 1
 
 
 class TestSessionStartHookHabits:
@@ -611,7 +613,7 @@ class TestSessionStartHookTier2AndFixedNav:
 
     def test_stale_non_pinned_pending_hidden_and_counted_in_nav(self, temp_db):
         """in_progressでもpinnedでもないpending（7日超はもちろん7日以内でも）
-        は階層2に入らず、固定ナビの未表示件数句にのみ反映される"""
+        は階層2に入らず、末尾『未表示』節のdomain内訳にのみ反映される"""
         excluded_id = _seed_activity("[作業] 古すぎタスク", status="pending")
         old_iso = (datetime.now(timezone.utc) - timedelta(days=45)).strftime(
             "%Y-%m-%d %H:%M:%S"
@@ -621,8 +623,9 @@ class TestSessionStartHookTier2AndFixedNav:
         result = _run_session_start_hook(temp_db)
         context = result["hookSpecificOutput"]["additionalContext"]
 
-        assert f"(#{excluded_id})" not in context
-        assert "未表示のアクティビティ1件" in context
+        assert f"#{excluded_id} " not in context
+        assert "## 未表示 1件" in context
+        assert "test 1件：[作業] 古すぎタスク" in context
 
     def test_heartbeat_section_unaffected_by_tier3_4_removal(self, temp_db):
         """heartbeat (別セッション) セクションは階層3・4廃止の影響を受けない"""
@@ -635,11 +638,12 @@ class TestSessionStartHookTier2AndFixedNav:
 
         assert "## 作業中（別セッション）" in context
         heartbeat_idx = context.index("## 作業中（別セッション）")
-        assert f"(#{activity_id})" in context[heartbeat_idx:]
-        assert context.count(f"(#{activity_id})") == 1
+        assert f"#{activity_id} " in context[heartbeat_idx:]
+        assert context.count(f"#{activity_id} ") == 1
 
-    def test_numbering_continuous_in_priority_tier(self, temp_db):
-        """階層 2『優先』は flat リストで連番になる"""
+    def test_priority_tier_lists_all_entries_flat(self, temp_db):
+        """階層 2『優先』は flat リストで、全件が `#id title` の行として出る
+        （通し番号・状態マーカーは廃止済み）"""
         a1 = _seed_activity("[作業] A-1", status="in_progress")
         a2 = _seed_activity("[作業] A-2", status="in_progress")
         b1 = _seed_activity("[作業] B-1", status="in_progress")
@@ -647,10 +651,8 @@ class TestSessionStartHookTier2AndFixedNav:
         result = _run_session_start_hook(temp_db)
         context = result["hookSpecificOutput"]["additionalContext"]
 
-        for expected in ("1. ● ", "2. ● ", "3. ● "):
-            assert expected in context, f"番号 '{expected}' のアクティビティ行が無い"
-        assert "4. ● " not in context
-        assert "4. ○ " not in context
+        for activity_id in (a1, a2, b1):
+            assert f"- #{activity_id} " in context
 
     def test_deterministic_render_notice_present(self, temp_db):
         """通常アクティビティが1件以上あれば末尾固定文が付く"""
@@ -717,7 +719,7 @@ class TestSessionStartHookSelfSessionHeartbeat:
             tail = context[other_block_start:]
             next_section = tail.find("\n## ", 1)
             other_block = tail if next_section == -1 else tail[:next_section]
-            assert f"(#{activity_id})" not in other_block, (
+            assert f"#{activity_id} " not in other_block, (
                 "自セッションの heartbeat が「作業中（別セッション）」に出てしまっている"
             )
 
@@ -734,7 +736,7 @@ class TestSessionStartHookSelfSessionHeartbeat:
 
         assert "## 作業中（別セッション）" in context
         heartbeat_idx = context.index("## 作業中（別セッション）")
-        assert f"(#{activity_id})" in context[heartbeat_idx:], (
+        assert f"#{activity_id} " in context[heartbeat_idx:], (
             "他セッション heartbeat が「作業中（別セッション）」に出ていない"
         )
 
@@ -751,7 +753,7 @@ class TestSessionStartHookSelfSessionHeartbeat:
         context = result["hookSpecificOutput"]["additionalContext"]
 
         assert "## 作業中（別セッション）" not in context
-        assert f"(#{activity_id})" in context
+        assert f"#{activity_id} " in context
 
     def test_no_stdin_session_id_keeps_other_session_block(self, temp_db):
         """stdin に session_id が無い場合は自セッション照合不能 → 生存中なら
@@ -766,7 +768,7 @@ class TestSessionStartHookSelfSessionHeartbeat:
 
         assert "## 作業中（別セッション）" in context
         heartbeat_idx = context.index("## 作業中（別セッション）")
-        assert f"(#{activity_id})" in context[heartbeat_idx:]
+        assert f"#{activity_id} " in context[heartbeat_idx:]
 
     def test_dead_other_session_heartbeat_hidden(self, temp_db):
         """別 session_id でも打刻主プロセスが死亡していれば別セッション扱いにしない"""
@@ -780,7 +782,7 @@ class TestSessionStartHookSelfSessionHeartbeat:
         context = result["hookSpecificOutput"]["additionalContext"]
 
         assert "## 作業中（別セッション）" not in context
-        assert f"(#{activity_id})" in context
+        assert f"#{activity_id} " in context
 
     def test_unregistered_other_session_heartbeat_hidden(self, temp_db):
         """別名ファイルにエントリが無い session_id（判定不能）は別セッション扱いにしない"""
@@ -794,7 +796,7 @@ class TestSessionStartHookSelfSessionHeartbeat:
         context = result["hookSpecificOutput"]["additionalContext"]
 
         assert "## 作業中（別セッション）" not in context
-        assert f"(#{activity_id})" in context
+        assert f"#{activity_id} " in context
 
 
 def _set_updated_at(activity_id: int, updated_at_iso: str) -> None:
@@ -890,13 +892,15 @@ class TestSessionStartHookTier1And2:
         idx_nav = context.index("check_in（なければ作成 — activity-start）")
 
         assert idx_tier1 < idx_tier2 < idx_nav
-        assert f"(#{heartbeat_id})" in context[idx_tier1:idx_tier2]
-        assert f"(#{priority_id})" in context[idx_tier2:idx_nav]
+        assert f"#{heartbeat_id} " in context[idx_tier1:idx_tier2]
+        assert f"#{priority_id} " in context[idx_tier2:idx_nav]
         # recent_id・other_id はいずれも in_progress でも pinned でもない
-        # pending のため階層2に入らず、固定ナビの未表示件数句にのみ反映される
-        assert f"(#{recent_id})" not in context
-        assert f"(#{other_id})" not in context
-        assert "未表示のアクティビティ2件" in context
+        # pending のため階層2に入らず、末尾『未表示』節のdomain内訳にのみ反映される
+        assert f"#{recent_id} " not in context
+        assert f"#{other_id} " not in context
+        assert "## 未表示 2件" in context
+        assert "新着タスク" in context
+        assert "過去タスク" in context
 
     def test_pinned_pending_activity_in_priority_tier(self, temp_db):
         """pinned な pending activity は階層 2『優先』に入る。📌 マーカー付き"""
@@ -912,11 +916,11 @@ class TestSessionStartHookTier1And2:
         idx_next = context.find("\n## ", idx_tier2 + 1)
         tier2_block = context[idx_tier2:] if idx_next == -1 else context[idx_tier2:idx_next]
 
-        assert f"(#{pinned_id})" in tier2_block, "pinned pending が階層 2 に入っていない"
+        assert f"#{pinned_id} " in tier2_block, "pinned pending が階層 2 に入っていない"
         assert "\U0001f4cc" in tier2_block, "📌 マーカーが階層 2 に出ていない"
 
         for line in tier2_block.splitlines():
-            if f"(#{pinned_id})" in line:
+            if f"#{pinned_id} " in line:
                 assert "\U0001f4cc" in line, "対象 pinned 行に 📌 が付いていない"
                 break
 
@@ -937,8 +941,8 @@ class TestSessionStartHookTier1And2:
         idx_next = context.find("\n## ", idx_tier2 + 1)
         tier2_block = context[idx_tier2:] if idx_next == -1 else context[idx_tier2:idx_next]
 
-        old_pos = tier2_block.index(f"(#{old_pinned_id})")
-        new_pos = tier2_block.index(f"(#{new_ip_id})")
+        old_pos = tier2_block.index(f"#{old_pinned_id} ")
+        new_pos = tier2_block.index(f"#{new_ip_id} ")
         assert old_pos < new_pos, (
             "pinned が新しい in_progress より下位に出ている（pinned-first 順序違反）"
         )
@@ -958,16 +962,12 @@ class TestSessionStartHookTier1And2:
         blocked_line_idx = None
         plain_line_idx = None
         for i, line in enumerate(lines):
-            if f"(#{blocked_id})" in line and line.lstrip().startswith(
-                ("1.", "2.", "3.", "4.", "5.")
-            ):
+            if f"#{blocked_id} " in line and line.lstrip().startswith("- "):
                 blocked_line_idx = i
-            if f"(#{plain_id})" in line and line.lstrip().startswith(
-                ("1.", "2.", "3.", "4.", "5.")
-            ):
+            if f"#{plain_id} " in line and line.lstrip().startswith("- "):
                 plain_line_idx = i
-        assert blocked_line_idx is not None, "blocked activity の番号付き行が見つからない"
-        assert plain_line_idx is not None, "plain activity の番号付き行が見つからない"
+        assert blocked_line_idx is not None, "blocked activity の行が見つからない"
+        assert plain_line_idx is not None, "plain activity の行が見つからない"
 
         assert lines[blocked_line_idx + 1].strip().startswith("blocked_by:")
         assert "blocker" in lines[blocked_line_idx + 1]
@@ -1004,14 +1004,15 @@ class TestSessionStartHookTier1And2:
         tier2_block = (
             context[idx_tier2:] if idx_next == -1 else context[idx_tier2:idx_next]
         )
-        assert f"(#{stale_id})" not in tier2_block, (
+        assert f"#{stale_id} " not in tier2_block, (
             "溢れた pinned が階層 2 の上限を無視して入っている"
         )
 
-        # 溢れた pinned はどの階層にも個別出現せず、固定ナビのpinned内訳として
-        # 脱落せずに残っている（脱落バグ回帰）
-        assert f"(#{stale_id})" not in context
-        assert "pinned 1件含む" in context
+        # 溢れた pinned はどの階層にも個別出現せず、末尾『未表示』節のdomain内訳
+        # として脱落せずに残っている（脱落バグ回帰）
+        assert f"#{stale_id} " not in context
+        assert "## 未表示 1件" in context
+        assert "test 1件：[作業] 溢れたpinned" in context
 
     def test_pinned_heartbeat_activity_shows_pin_marker_in_tier1(self, temp_db):
         """pinned かつ別セッション heartbeat の activity は階層 1 で 📌 付きで出る"""
@@ -1035,11 +1036,53 @@ class TestSessionStartHookTier1And2:
 
         target_line = None
         for line in tier1_block.splitlines():
-            if f"(#{heartbeat_id})" in line:
+            if f"#{heartbeat_id} " in line:
                 target_line = line
                 break
         assert target_line is not None, "pinned heartbeat が階層 1 に出ていない"
         assert "\U0001f4cc" in target_line, "階層 1 の pinned 行に 📌 が付いていない"
+
+
+class TestSessionStartHookOrchChildTree:
+    """goal_conditions（bound_type='activity'）から組み立てる親子ツリーのE2Eテスト
+
+    ユニットテスト（tests/unit/test_active_context.py）が判定ロジックの
+    詳細を担うため、ここではhookのsubprocess実行を通した配線の疎通のみ確認する。
+    """
+
+    def test_open_child_rendered_under_parent_via_subprocess(self, temp_db):
+        """subprocess経由のhook実行でも、未完了の子が親の下にツリーで出る"""
+        from src.services import goal_service
+        from hooks.session_start_hook import _LEGEND_LINE
+
+        parent_id = _seed_activity("[統合] 親orch", status="in_progress")
+        child_id = _seed_activity("[作業] 未着手の子", status="in_progress")
+
+        set_result = goal_service.set_goal(
+            parent_id,
+            {
+                "new": {
+                    "handle": "e2e-orch-child-tree",
+                    "statement": "子が終わる",
+                    "conditions": [
+                        {
+                            "statement": "子が終わる", "actor": "claude",
+                            "bound": {"type": "activity", "id": child_id},
+                        }
+                    ],
+                }
+            },
+        )
+        assert "error" not in set_result
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "## 優先" in context
+        assert f"- #{child_id} " not in context, "子が親から独立した行として出ている"
+        assert f"  └- ▷ #{child_id} [作業] 未着手の子" in context
+        assert "▷1" in context
+        assert _LEGEND_LINE in context
 
 
 class TestSessionStartHookSignals:

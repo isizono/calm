@@ -1,7 +1,8 @@
 """SessionStart hook: セッションレベル文脈注入
 
 サービス層経由でDBからデータを取得し、セッション開始時のコンテキストを注入する。
-- アクティビティ一覧（作業中・優先のみ個別表示。末尾に固定ナビ+未表示件数句）
+- アクティビティ一覧（作業中・優先を個別表示、goal束縛の親には未完了の子を
+  ツリーでぶら下げる。末尾にdomain別内訳の未表示節+凡例+固定ナビ）
 - 振る舞い（正は~/.claude/rules配下の自動生成ファイル。本hookは投影ファイルの
   鮮度検証と、読み込めていないセッションへの縮退フォールバックのみを担う）
 - open ask・回答済み未捌きaskの件数とタイトル一覧（メタaskは表示上限に関わらず
@@ -47,6 +48,14 @@ _RECENT_CREATED_HOURS = 24
 _TIER2_MAX_ITEMS = 5
 _PIN_MARK = "\U0001f4cc"
 _NEW_MARK = "\U0001f195"
+_CHILD_MARK_FAILED = "✕"  # ✕
+_CHILD_MARK_WAITING = "◷"  # ◷
+_CHILD_MARK_READY = "▷"  # ▷
+_CHILD_MARK_ACHIEVED = "✓"  # ✓
+_LEGEND_LINE = (
+    f"{_CHILD_MARK_ACHIEVED}達成 {_CHILD_MARK_READY}着手できる "
+    f"{_CHILD_MARK_WAITING}待ち {_CHILD_MARK_FAILED}失敗"
+)
 
 
 def _calc_elapsed_days(updated_at_str: str) -> int:
@@ -111,37 +120,163 @@ def _is_recent_created(created_at_str: str, hours: int = _RECENT_CREATED_HOURS) 
         return False
 
 
+def _fetch_children_by_parent(conn, parent_ids: list[int]) -> dict[int, list[dict]]:
+    """activity束縛のgoal条件から、親activity_idごとの子の一覧を一括取得する。
+
+    親子はgoal_conditionsのbound_type='activity' / bound_idで結ばれる
+    （goalはparent_ids側のactivityに紐づくものだけを見る）。子自身の
+    status（completed/snoozed/shelved等）は問わない（子の条件がopenな限り
+    未完了として扱う）ため、all_active経由ではなくactivitiesを直接引く。
+
+    Returns:
+        {parent_id: [{"parent_id", "condition_id", "state", "child_id",
+                      "child_title"}, ...]（condition_id昇順）, ...}
+    """
+    if not parent_ids:
+        return {}
+    placeholders = ",".join("?" * len(parent_ids))
+    rows = conn.execute(
+        f"""
+        SELECT ga.activity_id AS parent_id, gc.id AS condition_id, gc.state AS state,
+               gc.bound_id AS child_id, c.title AS child_title
+        FROM goal_activities ga
+        JOIN goal_conditions gc ON gc.goal_id = ga.goal_id AND gc.bound_type = 'activity'
+        JOIN activities c ON c.id = gc.bound_id
+        WHERE ga.activity_id IN ({placeholders})
+        ORDER BY gc.id
+        """,
+        tuple(parent_ids),
+    ).fetchall()
+    result: dict[int, list[dict]] = {}
+    for r in rows:
+        result.setdefault(r["parent_id"], []).append(dict(r))
+    return result
+
+
+def _classify_children(conn, child_ids: list[int]) -> dict[int, str | None]:
+    """未完了（open状態）の子1件ごとに、一覧表示用の状態記号を決める。
+
+    決定事項「止まっている子を『待ち』と『着手できる』に分ける」の判定を
+    そのまま実装する（check_inのattention判定・_stalled_hintは変更しない、
+    別物として並存させる）。子自身のgoal（あれば）の判定結果・open ask・
+    depends_onの未完了・heartbeatの4種を子ごとに1回ずつのバッチ問い合わせで
+    まとめて読む。
+
+    Returns:
+        {child_id: "✕"|"◷"|"▷"|None, ...}（Noneは無印＝動いている）
+    """
+    if not child_ids:
+        return {}
+    placeholders = ",".join("?" * len(child_ids))
+    rows = conn.execute(
+        f"""
+        SELECT a.id AS id,
+               a.last_heartbeat_at AS last_heartbeat_at,
+               CAST(
+                   (julianday('now') - julianday(MAX(a.updated_at, COALESCE(a.last_heartbeat_at, ''))))
+                   * 24 * 60 AS INTEGER
+               ) AS minutes_since,
+               (
+                   SELECT 1 FROM ask_blocks ab
+                   JOIN asks ak ON ak.id = ab.ask_id
+                   WHERE ab.activity_id = a.id AND ak.status = 'open'
+                   LIMIT 1
+               ) AS has_open_ask,
+               ga.goal_id AS own_goal_id,
+               g.closed AS own_goal_closed,
+               g.verdict AS own_goal_verdict
+        FROM activities a
+        LEFT JOIN goal_activities ga ON ga.activity_id = a.id
+        LEFT JOIN goals g ON g.id = ga.goal_id
+        WHERE a.id IN ({placeholders})
+        """,
+        tuple(child_ids),
+    ).fetchall()
+
+    own_goal_ids = sorted({r["own_goal_id"] for r in rows if r["own_goal_id"] is not None})
+    human_wait_goal_ids: set[int] = set()
+    if own_goal_ids:
+        goal_placeholders = ",".join("?" * len(own_goal_ids))
+        wait_rows = conn.execute(
+            f"""
+            SELECT DISTINCT goal_id FROM goal_conditions
+            WHERE goal_id IN ({goal_placeholders}) AND actor IN ('human', 'external') AND state = 'open'
+            """,
+            tuple(own_goal_ids),
+        ).fetchall()
+        human_wait_goal_ids = {r["goal_id"] for r in wait_rows}
+
+    unresolved_deps = _get_unresolved_deps(conn, child_ids)
+
+    marks: dict[int, str | None] = {}
+    for r in rows:
+        if r["own_goal_closed"] == 1 and r["own_goal_verdict"] == "failed":
+            marks[r["id"]] = _CHILD_MARK_FAILED
+            continue
+        waiting = (
+            bool(r["has_open_ask"])
+            or (r["own_goal_id"] is not None and r["own_goal_id"] in human_wait_goal_ids)
+            or r["id"] in unresolved_deps
+        )
+        if waiting:
+            marks[r["id"]] = _CHILD_MARK_WAITING
+            continue
+        never_active = r["last_heartbeat_at"] is None
+        stalled = (
+            r["minutes_since"] is not None
+            and r["minutes_since"] > config.HEARTBEAT_TIMEOUT_MINUTES
+        )
+        marks[r["id"]] = _CHILD_MARK_READY if (never_active or stalled) else None
+    return marks
+
+
 _DETERMINISTIC_RENDER_NOTICE = (
     "この一覧は CALM hook が決定論的に組み立てた表示用 markdown です。"
     "再フォーマットや優先順の再評価をせず、必要時はそのまま提示してください。"
 )
 
 
-def _build_fixed_nav(undisplayed_count: int, pinned_undisplayed_count: int) -> str:
+def _build_fixed_nav() -> str:
     """一覧セクション末尾の固定ナビを組み立てる。
 
-    check_in（なければactivity-start経由で作成）への導線が唯一の静的文。
-    undisplayed_count（表示対象母集団=active全件から実際に表示した件数を
-    引いた値）とpinned_undisplayed_count（そのうちpinnedの数）は呼び出し元が
-    機械算出した値をそのまま渡す想定（概算・手書き禁止）。
-    undisplayed_count が 0 なら件数句ごと省略し前半文のみ、
-    pinned_undisplayed_count が 0 なら括弧句のみ省略する。
+    check_in（なければactivity-start経由で作成）への導線と、未表示の内訳
+    （ドメイン別件数と例示）・過去の文脈の取得経路を案内する静的文。
+    未表示の実際の内訳は`## 未表示`節（_build_undisplayed_lines）が別途出す
+    ため、ここでは固定文言のみを返す。
     """
-    base = "作業開始時は該当アクティビティにcheck_in（なければ作成 — activity-start）。"
-    if undisplayed_count <= 0:
-        return base
-    if pinned_undisplayed_count > 0:
-        remainder = (
-            f"未表示のアクティビティ{undisplayed_count}件"
-            f"（pinned {pinned_undisplayed_count}件含む）"
-            "や過去の文脈はget_activities・search・get系で取得する。"
-        )
-    else:
-        remainder = (
-            f"未表示のアクティビティ{undisplayed_count}件や"
-            "過去の文脈はget_activities・search・get系で取得する。"
-        )
-    return base + remainder
+    return (
+        "作業開始時は該当アクティビティにcheck_in（なければ作成 — activity-start）。"
+        "未表示や過去の文脈はget_activities・search・get系で取得する。"
+    )
+
+
+def _build_undisplayed_lines(
+    undisplayed: list[dict], domains: list[dict], domain_pool: dict[int, list[dict]]
+) -> list[str]:
+    """末尾『未表示』節の行群を組み立てる。
+
+    domainごとの件数と、そのdomainで最近更新された順に2件のタイトルを
+    例示する（決定事項「未表示はdomain別の件数と各2件の例で出す」）。
+    domainタグを持たない未表示activity（pin経由のみ）は、そのタグを持つ
+    domainが無いため、どの内訳行にも現れない（見出しの総数には数えるが、
+    domain単位の内訳の対象外という受容済みの隙間）。
+    """
+    if not undisplayed:
+        return []
+    undisplayed_ids = {a["id"] for a in undisplayed}
+    groups: list[tuple[str, list[dict]]] = []
+    for domain in domains:
+        members = [a for a in domain_pool.get(domain["tag_id"], []) if a["id"] in undisplayed_ids]
+        if members:
+            groups.append((domain["name"], members))
+    groups.sort(key=lambda g: len(g[1]), reverse=True)
+
+    lines = [f"## 未表示 {len(undisplayed)}件"]
+    for name, members in groups:
+        ordered = sorted(members, key=lambda a: a["updated_at"], reverse=True)
+        examples = [a["title"] for a in ordered[:2]]
+        lines.append(f"- {name} {len(members)}件：{'、'.join(examples)} など")
+    return lines
 
 
 def _build_activities_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # source, **_kwargs: 全セクション共通シグネチャ（本セクションは未使用）
@@ -158,15 +293,16 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
         pinned が decay 日数を超えると階層 2 から外れる（pin 自体は残り、
         activity を touch すれば updated_at 更新により自動復帰する）。
 
-    行フォーマット:
-        - 階層 1: `- 📌 タイトル (#id) (Nd)`（📌 は pinned 時のみ）
-        - 階層 2: 番号 + status マーカー (●/○) + 📌（pinned 時）+ タイトル (#id)
-          + (Nd) + 🆕（24h 以内作成時）。blocked_by 未解決依存があるときのみ
-          meta 行 1 行を続ける。
+    行フォーマット: `#id タイトル`（📌 は pinned 時のみ先頭、🆕 は階層 2 で
+    24h 以内作成時のみ末尾）。blocked_by 未解決依存があるときのみ meta 行
+    1 行を続ける（階層 2 のみ）。goal条件がactivity束縛の親には、未完了の
+    子を `|` `├-` `└-` で行の下にぶら下げ、行の末尾に子の内訳
+    （✓達成数 ◷待ち数 ▷着手できる数 ✕失敗数のうち0件でないもの）を付ける。
+    子は階層 1・2 の候補プールそのものから除外し（親の下にのみ出す）、
+    親が表示されなかった子は未表示に数える。
 
-    末尾には固定ナビ（_build_fixed_nav）を必ず付与する。階層 1・2 がともに
-    0 件（activity が 1 件も無い場合を含む）のときは、ヘッダ・末尾固定文の
-    空殻を出さず固定ナビだけを返す。
+    末尾には『未表示』節（表示された親の下の子は含まない）と凡例・固定文・
+    固定ナビを付ける。active な activity が 1 件も無いときは固定ナビだけを返す。
 
     重複排除: 上位階層に採用された activity は下位階層（および統計対象）から除外する。
     """
@@ -174,8 +310,11 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
 
     seen_collect: set[int] = set()
     all_active: list[dict] = []
+    domain_pool: dict[int, list[dict]] = {}
     for domain in domains:
-        for a in get_active_activities_by_tag_with_conn(conn, domain["tag_id"]):
+        members = get_active_activities_by_tag_with_conn(conn, domain["tag_id"])
+        domain_pool[domain["tag_id"]] = members
+        for a in members:
             if a["id"] in seen_collect:
                 continue
             seen_collect.add(a["id"])
@@ -191,15 +330,36 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
         seen_collect.add(a["id"])
         all_active.append(a)
 
+    if not all_active:
+        return _build_fixed_nav()
+
+    all_active_ids = [a["id"] for a in all_active]
+    children_by_parent = _fetch_children_by_parent(conn, all_active_ids)
+    child_ids_excluded_from_pool = {
+        row["child_id"] for rows in children_by_parent.values() for row in rows
+    }
+    open_child_ids = sorted(
+        {
+            row["child_id"]
+            for rows in children_by_parent.values()
+            for row in rows
+            if row["state"] == "open"
+        }
+    )
+    child_marks = _classify_children(conn, open_child_ids)
+
     seen_ids: set[int] = set()
 
     # is_session_aliveはプロセス確認でpsサブプロセスを起動しうるため、同じ
     # last_heartbeat_session_idを持つ候補が複数あっても呼び出しは1回に抑える
     # （自セッション・鮮度切れの行は判定不要なので候補集合にも入れない）。
+    # 子は自分の親の下にのみ出すため、heartbeat中でも階層1の候補から外す
+    # （外さないと親の下と階層1に二重表示されうる）。
     tier1_candidates = [
         a
         for a in all_active
-        if a.get("is_heartbeat_active")
+        if a["id"] not in child_ids_excluded_from_pool
+        and a.get("is_heartbeat_active")
         and not (
             session_id is not None
             and a.get("last_heartbeat_session_id") == session_id
@@ -223,15 +383,18 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
     for a in tier1:
         seen_ids.add(a["id"])
 
-    # 階層 1 で消費済みの id はバッチ取得対象から外す。
+    # 階層 1 で消費済みの id はバッチ取得対象から外す。子（未完了分）の
+    # blocked_by・🆕判定に使う分もここでまとめて引く。
     lower_ids = [a["id"] for a in all_active if a["id"] not in seen_ids]
-    unresolved_deps = _get_unresolved_deps(conn, lower_ids)
-    created_ats = _get_created_ats(conn, lower_ids)
+    ids_for_meta = sorted(set(lower_ids) | set(open_child_ids))
+    unresolved_deps = _get_unresolved_deps(conn, ids_for_meta)
+    created_ats = _get_created_ats(conn, ids_for_meta)
 
     tier2_pool = [
         a
         for a in all_active
         if a["id"] not in seen_ids
+        and a["id"] not in child_ids_excluded_from_pool
         and (
             (
                 a["status"] == "in_progress"
@@ -249,14 +412,16 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
     for a in tier2:
         seen_ids.add(a["id"])
 
-    undisplayed = [a for a in all_active if a["id"] not in seen_ids]
-    nav = _build_fixed_nav(
-        len(undisplayed),
-        sum(1 for a in undisplayed if a["id"] in pinned_ids),
-    )
+    displayed_ids = {a["id"] for a in tier1} | {a["id"] for a in tier2}
+    rendered_child_ids = {
+        row["child_id"]
+        for parent_id in displayed_ids
+        for row in children_by_parent.get(parent_id, [])
+    }
 
-    if not tier1 and not tier2:
-        return nav
+    undisplayed = [
+        a for a in all_active if a["id"] not in seen_ids and a["id"] not in rendered_child_ids
+    ]
 
     parts: list[str] = ["# アクティビティ一覧", ""]
 
@@ -264,55 +429,120 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
         tier1.sort(key=lambda a: (a["updated_at"], a["id"]), reverse=True)
         parts.append("## 作業中（別セッション）")
         for a in tier1:
-            days = _calc_elapsed_days(a["updated_at"])
-            pin_mark = f"{_PIN_MARK} " if a["id"] in pinned_ids else ""
-            display = format_readable_id(a["id"], a["title"])
-            parts.append(f"- {pin_mark}{display} ({days}d)")
+            parts.extend(
+                _render_activity_block(
+                    a,
+                    pinned_ids=pinned_ids,
+                    created_ats=created_ats,
+                    unresolved_deps=unresolved_deps,
+                    children_by_parent=children_by_parent,
+                    child_marks=child_marks,
+                    include_meta=False,
+                )
+            )
         parts.append("")
 
     if tier2:
         parts.append("## 優先")
-        for idx, a in enumerate(tier2, start=1):
+        for a in tier2:
             parts.extend(
-                _render_numbered_line(a, idx, pinned_ids, created_ats, unresolved_deps)
+                _render_activity_block(
+                    a,
+                    pinned_ids=pinned_ids,
+                    created_ats=created_ats,
+                    unresolved_deps=unresolved_deps,
+                    children_by_parent=children_by_parent,
+                    child_marks=child_marks,
+                    include_meta=True,
+                )
             )
+        parts.append("")
+
+    parts.extend(_build_undisplayed_lines(undisplayed, domains, domain_pool))
+    if undisplayed:
+        parts.append("")
+
+    if tier1 or tier2:
+        parts.append(_LEGEND_LINE)
         parts.append("")
 
     parts.append(_DETERMINISTIC_RENDER_NOTICE)
     parts.append("")
-    parts.append(nav)
+    parts.append(_build_fixed_nav())
 
     return "\n".join(parts) + "\n"
 
 
-def _render_numbered_line(
+def _children_suffix(children: list[dict], child_marks: dict[int, str | None]) -> str:
+    """親の行の末尾に付ける子の内訳（✓達成数 ◷待ち数 ▷着手できる数 ✕失敗数）を返す。
+
+    0件のカテゴリは省く。子が1件も無い、またはどのカテゴリも0件のときは空文字列。
+    """
+    achieved = sum(1 for c in children if c["state"] in ("satisfied", "waived"))
+    counts = {_CHILD_MARK_ACHIEVED: achieved, _CHILD_MARK_WAITING: 0, _CHILD_MARK_READY: 0, _CHILD_MARK_FAILED: 0}
+    for c in children:
+        if c["state"] != "open":
+            continue
+        mark = child_marks.get(c["child_id"])
+        if mark in counts:
+            counts[mark] += 1
+    order = (_CHILD_MARK_ACHIEVED, _CHILD_MARK_WAITING, _CHILD_MARK_READY, _CHILD_MARK_FAILED)
+    parts = [f"{sym}{n}" for sym in order if (n := counts[sym]) > 0]
+    return ("  " + " ".join(parts)) if parts else ""
+
+
+def _render_activity_block(
     a: dict,
-    idx: int,
+    *,
     pinned_ids: set[int],
     created_ats: dict[int, str],
     unresolved_deps: dict[int, list[dict]],
+    children_by_parent: dict[int, list[dict]],
+    child_marks: dict[int, str | None],
+    include_meta: bool,
 ) -> list[str]:
-    """階層 2 用の 1 activity 分の行群を返す。
+    """1 activity 分の行群（本体行 + 子のツリー）を返す。
 
-    タイトル行 1 行と、blocked_by 未解決依存があるとき meta 行 1 行を続ける。
+    include_meta=True（階層 2）のときのみ blocked_by meta 行・🆕 マーカーを
+    出す（階層 1 は従来どおり本体行のみ）。子のツリーは階層の別を問わず、
+    未完了（open状態）の子だけを `|` `├-` `└-` で本体行の下にぶら下げる
+    （子どうしのネストはしない＝子が親であっても孫は展開しない）。
     """
     aid = a["id"]
-    days = _calc_elapsed_days(a["updated_at"])
-    status_mark = "●" if a["status"] == "in_progress" else "○"
     pin_mark = f"{_PIN_MARK} " if aid in pinned_ids else ""
-    created_at_str = created_ats.get(aid, "")
-    new_marker = (
-        f" {_NEW_MARK}"
-        if created_at_str and _is_recent_created(created_at_str)
-        else ""
-    )
     display = format_readable_id(aid, a["title"])
-    lines = [f"{idx}. {status_mark} {pin_mark}{display} ({days}d){new_marker}"]
+    children = children_by_parent.get(aid, [])
+    suffix = _children_suffix(children, child_marks)
 
-    deps = unresolved_deps.get(aid, [])
-    if deps:
-        dep_titles = [f"{d['title']}({d['status']})" for d in deps]
-        lines.append(f"   blocked_by: {', '.join(dep_titles)}")
+    if include_meta:
+        created_at_str = created_ats.get(aid, "")
+        new_marker = (
+            f" {_NEW_MARK}"
+            if created_at_str and _is_recent_created(created_at_str)
+            else ""
+        )
+        lines = [f"- {pin_mark}{display}{suffix}{new_marker}"]
+        deps = unresolved_deps.get(aid, [])
+        if deps:
+            dep_titles = [f"{d['title']}({d['status']})" for d in deps]
+            lines.append(f"   blocked_by: {', '.join(dep_titles)}")
+    else:
+        lines = [f"- {pin_mark}{display}{suffix}"]
+
+    open_children = [c for c in children if c["state"] == "open"]
+    if open_children:
+        lines.append("  |")
+        for i, c in enumerate(open_children):
+            connector = "└-" if i == len(open_children) - 1 else "├-"  # └- / ├-
+            mark = child_marks.get(c["child_id"])
+            mark_prefix = f"{mark} " if mark else ""
+            child_pin = f"{_PIN_MARK} " if c["child_id"] in pinned_ids else ""
+            child_display = format_readable_id(c["child_id"], c["child_title"])
+            lines.append(f"  {connector} {mark_prefix}{child_pin}{child_display}")
+            child_deps = unresolved_deps.get(c["child_id"], [])
+            if child_deps:
+                dep_titles = [f"{d['title']}({d['status']})" for d in child_deps]
+                lines.append(f"     blocked_by: {', '.join(dep_titles)}")
     return lines
 
 
