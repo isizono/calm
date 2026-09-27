@@ -15,10 +15,20 @@ chunk 境界をまたぐ ID リテラル (例: chunk N が `M#`、chunk N+1 が 
 は補完漏れになる trade-off を受け入れる。`final=true` 待ち全文累積モデルは
 今回採用しない。
 
+同じ仕組みで、稼働中セッションの CLI が付けた表示名 (`workspace-1b` の
+ような形) も `<Session: 表示名>` に丸ごと置き換える。対応表
+(`session_aliases.json`、`registry_path()`) に実在する name だけを対象にし、
+前後が英数字・ハイフン・アンダースコアに続く場合は照合しない (`workspace-1bc`
+の中の `workspace-1b` を拾わない)。バッククォート 1 個で挟まれたインライン
+コード内の一致は対象外にするが、判定は chunk 単体で行い chunk をまたぐ
+コードブロックは検出しない。対応表が無い・壊れている場合はセッション名の
+置換だけを諦め、内部 ID の併記は動き続ける。
+
 calm project 内かどうかは判定せず、全 session で有効。
 """
 from __future__ import annotations
 
+import json
 import pathlib
 import re
 import sqlite3
@@ -38,17 +48,23 @@ from src.services.internal_id_patterns import FULLWORD_TO_CODE  # noqa: E402
 # 括弧になるため、単一 regex の単一パスで処理する (re.sub は置換結果を scan
 # しないので、title 内に偶然マッチする ID が含まれても再 enrich されない)。
 # code 部分は大文字限定、fullword 部分のみ inline flag (?i:...) で
-# case-insensitive にする。
-_COMBINED_PATTERN = re.compile(
+# case-insensitive にする。セッション名を 1 件以上照合するときは、この
+# フラグメントに `sess` alternative を追加した regex を都度組み立てる
+# (`_build_pattern`)。セッション名は対応表を読むまで内容が分からないため
+# module import 時点では組み立てられない。
+_ID_FRAGMENT = (
     r"(?<![A-Za-z0-9_/])"
-    r"(?:([MDLAT])#|(?i:(log|decision|activity|material|topic) ?#))"
-    r"(\d+)"
+    r"(?:(?P<code>[MDLAT])#|(?i:(?P<fullword>log|decision|activity|material|topic) ?#))"
+    r"(?P<num>\d+)"
     r"(?![A-Za-z0-9_])"
 )
+_COMBINED_PATTERN = re.compile(_ID_FRAGMENT)
 
 DEFAULT_DB_PATH = pathlib.Path.home() / ".claude" / ".claude-code-memory" / "discussion.db"
 TITLE_MAX = 40
 _COLON_CHARS = (":", "：")
+_BRACKET_TAG_RE = re.compile(r"^\[[^\]]*\]\s*")
+_CODE_SPAN_RE = re.compile(r"`[^`\n]*`")
 
 CODE_TO_TABLE: dict[str, tuple[str, bool]] = {
     "M": ("materials", True),
@@ -85,6 +101,79 @@ def _truncate(title: str) -> str:
     if len(title) > TITLE_MAX:
         return title[:TITLE_MAX] + "…"
     return title
+
+
+def _strip_bracket_tag(title: str) -> str:
+    """先頭の `[作業] ` のような角カッコの札を1つだけ外す。"""
+    return _BRACKET_TAG_RE.sub("", title, count=1)
+
+
+def _session_display(entry: dict) -> str:
+    """セッション名の置換先文字列を返す。空文字は「置換しない」を意味する。"""
+    if entry.get("alias_source") == "manual":
+        raw = entry.get("alias")
+        text = raw if isinstance(raw, str) else ""
+    else:
+        raw = entry.get("activity_title")
+        text = _strip_bracket_tag(raw) if isinstance(raw, str) else ""
+    text = text.strip()
+    return _truncate(text) if text else ""
+
+
+def _session_name_displays() -> dict[str, str]:
+    """対応表 (`get_sessions` と同じ JSON) から `name → 表示名` を返す。
+
+    読み取り専用でロックは取らない。書き込み側 (register_checkin/set_alias)
+    は tmp file → os.replace の atomic rename で更新するため、ロック無しでも
+    torn read は起きない。本 hook は delta chunk ごとに高頻度で呼ばれるため、
+    書き込み側のロック待ちに巻き込まれる latency を避ける。import 自体を
+    try に含めるのは、依存モジュール側の予期しない例外で ID 併記まで
+    巻き込んで止めないため。ファイル不在・壊れた JSON・想定外の型・
+    import 失敗はすべて空 dict (fail open: セッション名の置換だけを諦める)。
+    """
+    try:
+        from src.services.session_registry_service import registry_path
+
+        path = registry_path()
+        data = json.loads(path.read_text(encoding="utf-8"))
+        sessions = data.get("sessions")
+        if not isinstance(sessions, dict):
+            return {}
+    except Exception:
+        return {}
+
+    displays: dict[str, str] = {}
+    for entry in sessions.values():
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        display = _session_display(entry)
+        if display:
+            displays[name] = display
+    return displays
+
+
+def _build_pattern(session_names: list[str]) -> re.Pattern[str]:
+    """ID 用 regex に、対応表にある session name の alternative を追加する。
+
+    session_names が空なら ID だけの `_COMBINED_PATTERN` をそのまま返す
+    (今までどおりの挙動)。session name 側の前後境界は英数字・ハイフン・
+    アンダースコアで、ID 側 (`_ID_FRAGMENT`) とは別の文字クラスを使う。
+    """
+    if not session_names:
+        return _COMBINED_PATTERN
+    ordered = sorted(session_names, key=len, reverse=True)
+    sess_alt = "|".join(re.escape(name) for name in ordered)
+    return re.compile(
+        _ID_FRAGMENT
+        + rf"|(?<![A-Za-z0-9_-])(?P<sess>{sess_alt})(?![A-Za-z0-9_-])"
+    )
+
+
+def _within_code_span(start: int, end: int, spans: list[tuple[int, int]]) -> bool:
+    return any(s <= start and end <= e for s, e in spans)
 
 
 def _fetch_display(conn: sqlite3.Connection, code: str, id_int: int) -> str | None:
@@ -133,15 +222,23 @@ def _wrap(
 
 def _enrich(text: str, conn: sqlite3.Connection) -> str:
     cache: dict[tuple[str, int], str | None] = {}
+    session_displays = _session_name_displays()
+    pattern = _build_pattern(list(session_displays.keys()))
+    code_spans = [m.span() for m in _CODE_SPAN_RE.finditer(text)] if session_displays else []
 
     def replace(match):
-        code_letter = match.group(1)
-        fullword = match.group(2)
-        id_int = int(match.group(3))
+        sess = match.groupdict().get("sess")
+        if sess is not None:
+            if _within_code_span(match.start(), match.end(), code_spans):
+                return match.group(0)
+            return f"<Session: {session_displays[sess]}>"
+        code_letter = match.group("code")
+        fullword = match.group("fullword")
+        id_int = int(match.group("num"))
         code = code_letter if code_letter is not None else FULLWORD_TO_CODE[fullword.lower()]
         return _wrap(match, code, id_int, cache, conn)
 
-    return _COMBINED_PATTERN.sub(replace, text)
+    return pattern.sub(replace, text)
 
 
 def main() -> None:
