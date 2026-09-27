@@ -330,6 +330,22 @@ class TestSessionNameEnrich:
         out = self._enrich("workspace-1b にて", fake_db)
         assert out == "<Session: 手動名> にて"
 
+    def test_manual_alias_keeps_bracket_tag(self, fake_db, session_registry_path):
+        # 手動別名はユーザーが選んだ表示をそのまま尊重するため、
+        # activity_title 由来 (derived) とは違い角カッコの札を外さない。
+        _write_registry(
+            session_registry_path,
+            {
+                "s1": _registry_entry(
+                    "workspace-1b",
+                    alias="[調査] ログ確認",
+                    alias_source="manual",
+                )
+            },
+        )
+        out = self._enrich("workspace-1b にて", fake_db)
+        assert out == "<Session: [調査] ログ確認> にて"
+
     def test_bracket_tag_stripped_and_truncated(self, fake_db, session_registry_path):
         long_title = "[作業] " + "あ" * (mdid.TITLE_MAX + 5)
         _write_registry(

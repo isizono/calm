@@ -131,11 +131,13 @@ def _session_display(entry: dict) -> str:
     """セッション名の置換先文字列を返す。空文字は「置換しない」を意味する。
 
     表示名は derive_alias() と同じ文字の掃除 (`_sanitize_display_text()`)
-    を先にかけてから、角カッコの札の除去・長さ上限の適用をする。
-    derive_alias() との違いは角カッコの札を外すことと長さ上限 (TITLE_MAX)
-    だけで、文字の掃除自体は同じにしている。札を外すのは、`<Session: ...>`
-    という形自体が「セッション名」の目印になるため (derive_alias() は
-    `[作業]` 等の札を区分の表示価値を優先して残す設計)。
+    をまずかける。角カッコの札の除去は activity_title 由来 (derived) の
+    ときだけ行う。`<Session: ...>` という形自体が「セッション名」の目印に
+    なるため、画面幅を取る札は外して本文だけを見せる (derive_alias() は
+    `[作業]` 等の札を区分の表示価値を優先して残す設計)。alias_source が
+    manual の手動別名は、ユーザーが選んだ表示をそのまま尊重し、文字の
+    掃除だけをかけて札は外さない。どちらの分岐も最後に長さ上限
+    (TITLE_MAX) で切り詰める。
     """
     if entry.get("alias_source") == "manual":
         raw = entry.get("alias")
