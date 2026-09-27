@@ -1,6 +1,6 @@
 ---
 name: recompose-context
-description: アクティビティ・トピック・decisionなどの全関連情報を統合・整理し、anchor対応表を作って次のcheck-inを最適化する。リコンサイル（無効化・再編）と、整理範囲のアクティビティのgoal・親への結びつけのメンテも同時に行う。全体モード（`--all`）ではアクティビティ(active/shelved/snoozed)全域を棚卸しし、実態確認のうえでcompleted化・shelved化・description訂正・重複統合・裁定待ちに処遇する。TRIGGER: 「/recompose」「recompose」「情報整理して」「まとめて」「リコンサイル」、全体モードは「/recompose --all」「アクティビティ棚卸しして」「activity棚卸し」「アクティビティの整理して」など。DO NOT TRIGGER: sync-memory Step 4a(標準形のみで実行される、セッション終了時の軽い自己完結処理)の自動棚卸し、単一アクティビティを完了にせず中断する操作(activity-pause)、単一アクティビティの完了(activity-finish)、タグの共起分析・整理(tag-cleanup)には発動しない。
+description: 関連するactivity・topic・decisionを統合・整理し、anchor対応表で次のcheck-inを最適化する。全体モード(`--all`)はアクティビティ全域を棚卸しする。TRIGGER: 「/recompose」「recompose」「情報整理して」「まとめて」「リコンサイル」、全体モードは「/recompose --all」「アクティビティ棚卸しして」「アクティビティの整理して」。DO NOT TRIGGER: sync-memory Step 4aの自動棚卸し、中断(activity-pause)、完了(activity-finish)、タグ整理(tag-cleanup)。
 ---
 
 # recompose-context
@@ -21,6 +21,18 @@ anchorの新規作成・更新は [setup-anchor](../setup-anchor/SKILL.md) skill
 ## 発動契機
 
 実行は手動（ユーザーが「やるか」と言って初めて走る）。check-in時のナッジhint（tagスコープ内のdecision増分検知、全体モードは放置アクティビティ件数の検知）から誘導されることもある。実行コンテキストは限定しない: 別セッションで単独実行しても、sync-memoryの延長でやってもよい。
+
+発動する発話の例:
+
+- 局所モード: 「/recompose」「recompose」「情報整理して」「まとめて」「リコンサイル」
+- 全体モード: 「/recompose --all」「アクティビティ棚卸しして」「activity棚卸し」「アクティビティの整理して」
+
+次には発動しない:
+
+- sync-memory Step 4a（標準形のみで実行される、セッション終了時の軽い自己完結処理）の自動棚卸し
+- 単一アクティビティを完了にせず中断する操作（activity-pause）
+- 単一アクティビティの完了（activity-finish）
+- タグの共起分析・整理（tag-cleanup）
 
 ## 手順
 

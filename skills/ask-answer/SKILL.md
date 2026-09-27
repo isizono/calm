@@ -1,6 +1,6 @@
 ---
 name: ask-answer
-description: 【必須】open askを一覧して1件ずつ人間に提示し、回答が得られたらanswer_askで記録する最小フロー。get_asksを1回呼び、順に提示してanswer_askを呼ぶだけの直線的な手順を踏む。「/ask-answer」「askに答える」「open ask消化して」「溜まってるask片付けたい」「判断待ちに回答する」などで発動。継続的なopen ask滞留の監視はask-watch、起票前のquestion/context構成はask-compose、起票後の同型メタask起票はask-distillの担当のため発動しない。このスキルを経由せずにanswer_askを直接呼んではいけない。
+description: 【必須】open askを一覧して1件ずつ人間に提示し、回答をanswer_askで記録する最小フロー。「/ask-answer」「askに答える」「open ask消化して」「溜まってるask片付けたい」「判断待ちに回答する」などで発動。このスキルを経由せずにanswer_askを直接呼んではいけない。DO NOT TRIGGER: 継続的なopen ask滞留の監視（ask-watch）、起票前のquestion/context構成（ask-compose）、起票後の同型メタask起票（ask-distill）。
 ---
 
 # ask-answer
