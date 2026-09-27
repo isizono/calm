@@ -300,7 +300,7 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
     24h 以内作成時のみ末尾）。blocked_by 未解決依存があるときのみ meta 行
     1 行を続ける（階層 2 のみ）。goal条件がactivity束縛の親には、未完了
     （open状態）の子を `|` `├-` `└-` で行の下にぶら下げ、行の末尾に子の
-    内訳（✓達成数 ◷待ち数 ▷着手できる数 ✕失敗数のうち0件でないもの）を
+    内訳（✓達成数 ▷着手できる数 ◷待ち数 ✕失敗数のうち0件でないもの）を
     付ける。openな子は必ず親の下にのみ出すため階層 1・2 の候補プールから
     除外する。束縛条件がsatisfied/waivedになった子（✓の内訳に数える分）は
     条件の充足と子自身のactivityの終了が別操作であるため除外しない
@@ -490,8 +490,9 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
 
 
 def _children_suffix(children: list[dict], child_marks: dict[int, str | None]) -> str:
-    """親の行の末尾に付ける子の内訳（✓達成数 ◷待ち数 ▷着手できる数 ✕失敗数）を返す。
+    """親の行の末尾に付ける子の内訳（✓達成数 ▷着手できる数 ◷待ち数 ✕失敗数）を返す。
 
+    並び順は_LEGEND_LINEと揃える（決定事項「一覧の状態記号は ✓ ▷ ◷ ✕ にする」）。
     0件のカテゴリは省く。子が1件も無い、またはどのカテゴリも0件のときは空文字列。
     """
     achieved = sum(1 for c in children if c["state"] in ("satisfied", "waived"))
@@ -502,7 +503,7 @@ def _children_suffix(children: list[dict], child_marks: dict[int, str | None]) -
         mark = child_marks.get(c["child_id"])
         if mark in counts:
             counts[mark] += 1
-    order = (_CHILD_MARK_ACHIEVED, _CHILD_MARK_WAITING, _CHILD_MARK_READY, _CHILD_MARK_FAILED)
+    order = (_CHILD_MARK_ACHIEVED, _CHILD_MARK_READY, _CHILD_MARK_WAITING, _CHILD_MARK_FAILED)
     parts = [f"{sym}{n}" for sym in order if (n := counts[sym]) > 0]
     return ("  " + " ".join(parts)) if parts else ""
 

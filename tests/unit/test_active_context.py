@@ -942,3 +942,31 @@ class TestOrchChildTree:
         ) as spy:
             _build_active_context_wrapper()
             assert spy.call_count == 1
+
+    def test_children_suffix_order_matches_legend(self, temp_db):
+        """親の行末尾の内訳は凡例と同じ並び（✓達成 ▷着手できる ◷待ち ✕失敗）で出る"""
+        parent = add_activity(title="[統合] 親J", description="d", tags=["domain:myapp"], check_in=False)
+        update_activity(parent["activity_id"], status="in_progress")
+        achieved_child = add_activity(title="[作業] 済子", description="d", tags=["domain:myapp"], check_in=False)
+        ready_child = add_activity(title="[作業] 着手できる子", description="d", tags=["domain:myapp"], check_in=False)
+        waiting_child = add_activity(title="[作業] 待ち子", description="d", tags=["domain:myapp"], check_in=False)
+
+        self._bind_children(parent["activity_id"], [
+            {
+                "statement": "済子が終わった", "actor": "claude", "state": "satisfied",
+                "bound": {"type": "activity", "id": achieved_child["activity_id"]},
+            },
+            {
+                "statement": "着手できる子が終わる", "actor": "claude",
+                "bound": {"type": "activity", "id": ready_child["activity_id"]},
+            },
+            {
+                "statement": "待ち子が終わる", "actor": "claude",
+                "bound": {"type": "activity", "id": waiting_child["activity_id"]},
+            },
+        ])
+        add_ask("これは判断が要る", blocks=[waiting_child["activity_id"]], tags=["domain:myapp"], notify=False)
+
+        result = _build_active_context_wrapper()
+
+        assert f"#{parent['activity_id']} [統合] 親J  ✓1 ▷1 ◷1" in result
