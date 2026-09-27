@@ -107,6 +107,10 @@ jobs:
       - name: Check no test function silently disappeared
         env:
           CALM_PR_BODY: ${{ github.event.pull_request.body }}
+          # 一時worktreeで uv sync するため、uvキャッシュと同じディスクに置く。
+          # Ubuntu 26.04 ランナーの /tmp は容量上限付きの別ファイルシステムで、
+          # ハードリンクできず torch 一式の全コピーが Disk quota exceeded になる。
+          TMPDIR: ${{ runner.temp }}
         run: |
           python3 scripts/check_test_removal.py \
             --base ${{ github.event.pull_request.base.sha }} \
