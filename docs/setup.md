@@ -25,7 +25,7 @@ SessionStart(3スクリプト)・Stop・UserPromptSubmit・MessageDisplayに加�
 
 **アンインストール後の残置物**
 
-`claude plugin uninstall`はプラグイン本体を削除しますが、上記の`$HOME`配下への書き込み（DB・スナップショット・rules投影ファイル・ログ）と、埋め込みモデルのダウンロードキャッシュ（`~/.cache/huggingface`、後述）は自動削除されません。不要になった場合は手動で削除してください。
+`claude plugin uninstall`はプラグイン本体を削除しますが、上記の`$HOME`配下への書き込み（DB・スナップショット・rules投影ファイル・ログ）と、埋め込みモデルのダウンロードキャッシュ（`~/.cache/huggingface`、詳しくは[初回起動が重い理由](troubleshooting.md#初回起動が重い理由)を参照）は自動削除されません。不要になった場合は手動で削除してください。
 
 ## 設定
 
