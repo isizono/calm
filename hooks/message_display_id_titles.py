@@ -33,6 +33,7 @@ import pathlib
 import re
 import sqlite3
 import sys
+import unicodedata
 
 _PLUGIN_ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(_PLUGIN_ROOT) not in sys.path:
@@ -65,6 +66,10 @@ TITLE_MAX = 40
 _COLON_CHARS = (":", "：")
 _BRACKET_TAG_RE = re.compile(r"^\[[^\]]*\]\s*")
 _CODE_SPAN_RE = re.compile(r"`[^`\n]*`")
+# session_registry_service.derive_alias() と同じ制御文字の定義 (同一の
+# サニタイズを別モジュールへ切り出さず、ここに複製する判断は
+# _sanitize_display_text() の docstring を参照)。
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 CODE_TO_TABLE: dict[str, tuple[str, bool]] = {
     "M": ("materials", True),
@@ -108,19 +113,36 @@ def _strip_bracket_tag(title: str) -> str:
     return _BRACKET_TAG_RE.sub("", title, count=1)
 
 
+def _sanitize_display_text(raw: str) -> str:
+    """`session_registry_service.derive_alias()` と同じ文字の掃除を行う。
+
+    NFKC正規化・制御文字 (`_CONTROL_CHARS_RE`) の除去・連続空白の単一空白
+    への折り畳みの3手順で、derive_alias() のロジックをこの hook 内に
+    複製したもの (対応表を書く側のモジュールへの依存を増やさないため、
+    session_registry_service 自体はリファクタしない)。改行・タブ・制御
+    文字を含むタイトルがそのまま `<Session: ...>` に出て表示が崩れるのを防ぐ。
+    """
+    s = unicodedata.normalize("NFKC", raw)
+    s = _CONTROL_CHARS_RE.sub("", s)
+    return re.sub(r"\s+", " ", s)
+
+
 def _session_display(entry: dict) -> str:
     """セッション名の置換先文字列を返す。空文字は「置換しない」を意味する。
 
-    derive_alias() は `[作業]` 等の札を残す設計だが (区分の表示価値を優先)、
-    ここでは `<Session: ...>` という形自体が「セッション名」の目印になる
-    ため、画面幅を取る札は外して本文だけを見せる。
+    表示名は derive_alias() と同じ文字の掃除 (`_sanitize_display_text()`)
+    を先にかけてから、角カッコの札の除去・長さ上限の適用をする。
+    derive_alias() との違いは角カッコの札を外すことと長さ上限 (TITLE_MAX)
+    だけで、文字の掃除自体は同じにしている。札を外すのは、`<Session: ...>`
+    という形自体が「セッション名」の目印になるため (derive_alias() は
+    `[作業]` 等の札を区分の表示価値を優先して残す設計)。
     """
     if entry.get("alias_source") == "manual":
         raw = entry.get("alias")
-        text = raw if isinstance(raw, str) else ""
+        text = _sanitize_display_text(raw) if isinstance(raw, str) else ""
     else:
         raw = entry.get("activity_title")
-        text = _strip_bracket_tag(raw) if isinstance(raw, str) else ""
+        text = _strip_bracket_tag(_sanitize_display_text(raw)) if isinstance(raw, str) else ""
     text = text.strip()
     return _truncate(text) if text else ""
 

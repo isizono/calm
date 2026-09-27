@@ -339,6 +339,35 @@ class TestSessionNameEnrich:
         out = self._enrich("workspace-1b にて", fake_db)
         assert out == f"<Session: {'あ' * mdid.TITLE_MAX}…> にて"
 
+    def test_sanitizes_control_chars_and_fullwidth_like_derive_alias(
+        self, fake_db, session_registry_path
+    ):
+        # derive_alias() と同じ掃除 (NFKC正規化・制御文字除去・連続空白の
+        # 折り畳み) が表示名 (derived branch) にもかかることを、改行・タブ・
+        # 制御文字・全角英数字・連続空白を含むタイトルで確かめる。
+        raw_title = "[作業]  Ａ\n Ｂ\t ３\x00 定例"
+        _write_registry(
+            session_registry_path,
+            {"s1": _registry_entry("workspace-1b", alias="a", activity_title=raw_title)},
+        )
+        out = self._enrich("workspace-1b にて", fake_db)
+        assert out == "<Session: A B 3 定例> にて"
+
+    def test_sanitizes_manual_alias_like_derive_alias(self, fake_db, session_registry_path):
+        # manual branch (alias) にも同じ掃除がかかることを確かめる。
+        _write_registry(
+            session_registry_path,
+            {
+                "s1": _registry_entry(
+                    "workspace-1b",
+                    alias="Ａ\n Ｂ\t ３\x00 定例",
+                    alias_source="manual",
+                )
+            },
+        )
+        out = self._enrich("workspace-1b にて", fake_db)
+        assert out == "<Session: A B 3 定例> にて"
+
     def test_empty_display_not_replaced(self, fake_db, session_registry_path):
         # 角カッコの札だけで実体が無いタイトルは表示名が空になり、置換しない。
         _write_registry(
