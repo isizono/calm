@@ -630,3 +630,180 @@ class TestResolveCliSession:
         _write_cli_session(cli_sessions_dir, 600, name="ancestor-session")
         result = session_identity.resolve_cli_session("bridge-uuid-1")
         assert result["name"] == "launcher-pid-session"
+
+
+
+def fake_ps(monkeypatch, table: dict[int, tuple[int, str]]):
+    """`ps` の呼び出し（subprocess 境界）を {pid: (ppid, 実行ファイルパス)} で差し替える。
+
+    `ps -o ppid= -p <pid>` と `ps -o comm= -p <pid>` の2形に応答する。表に無い
+    pid はプロセス不在として returncode=1 を返す（実際の `ps` と同じ）。
+    """
+    import subprocess
+
+    def fake_run(args, **kwargs):
+        pid = int(args[-1])
+        if args[:2] == ["ps", "-o"] and pid in table:
+            ppid, comm = table[pid]
+            out = str(ppid) if args[2] == "ppid=" else comm
+            return subprocess.CompletedProcess(args, 0, stdout=f"{out}\n", stderr="")
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="")
+
+    monkeypatch.setattr(session_identity.subprocess, "run", fake_run)
+
+
+# Claude Code の Bash ツールから `codex exec` を起動したときのプロセス木:
+# launcher(500) <- uv(501) <- codex(502) <- zsh(503) <- claude(504) <- login(505)
+CODEX_NESTED_UNDER_CLAUDE = {
+    500: (501, "/Users/u/products/calm/.venv/bin/python"),
+    501: (502, "/opt/homebrew/bin/uv"),
+    502: (503, "/opt/homebrew/Caskroom/codex/0.149.0/bin/codex"),
+    503: (504, "/bin/zsh"),
+    504: (505, "claude"),
+    505: (1, "login"),
+}
+
+
+class TestDetectHarnessByAncestry:
+    """祖先 pid 列から、最も近いエージェント CLI の種別を判定する。
+
+    Claude Code の Bash ツールから `codex exec` を起動した入れ子構成では、
+    Codex 側 launcher の祖先に Codex 本体と、その外側の Claude Code 本体の
+    両方が現れる。近い側（Codex）を採用しなければならない。
+    """
+
+    def test_codex_nested_under_claude_code_resolves_to_codex(
+        self, cli_sessions_dir, monkeypatch
+    ):
+        monkeypatch.setattr(cli_session, "is_process_alive", lambda pid: True)
+        fake_ps(monkeypatch, CODEX_NESTED_UNDER_CLAUDE)
+        _write_cli_session(cli_sessions_dir, 504, name="parent-claude")
+        chain = session_identity.ancestor_pids(500)
+        assert chain == [501, 502, 503, 504, 505]
+        assert session_identity.detect_harness_by_ancestry(chain) == "codex"
+
+    def test_claude_code_nested_under_codex_resolves_to_claude_code(
+        self, cli_sessions_dir, monkeypatch
+    ):
+        # launcher(500) <- uv(501) <- claude(502) <- zsh(503) <- codex(504)
+        monkeypatch.setattr(cli_session, "is_process_alive", lambda pid: True)
+        fake_ps(
+            monkeypatch,
+            {501: (502, "uv"), 502: (503, "claude"), 503: (504, "zsh"), 504: (1, "codex")},
+        )
+        _write_cli_session(cli_sessions_dir, 502, name="child-claude")
+        assert (
+            session_identity.detect_harness_by_ancestry([501, 502, 503, 504])
+            == "claude_code"
+        )
+
+    def test_claude_code_detected_by_process_name_without_session_file(
+        self, cli_sessions_dir, monkeypatch
+    ):
+        """CLI の session file が未作成でも、プロセス名で Claude Code と判定する"""
+        fake_ps(
+            monkeypatch,
+            {501: (502, "uv"), 502: (503, "/Users/u/.local/bin/claude"), 503: (1, "codex")},
+        )
+        assert (
+            session_identity.detect_harness_by_ancestry([501, 502, 503])
+            == "claude_code"
+        )
+
+    @pytest.mark.parametrize(
+        "comm",
+        [
+            "codex",
+            "/opt/homebrew/Caskroom/codex/0.149.0/bin/codex",
+            "/usr/lib/node_modules/@openai/codex/vendor/aarch64-apple-darwin/codex/codex",
+            "codex-aarch64-apple-darwin",
+            # Linux の ps comm は15文字で切り詰められる
+            "codex-x86_64-un",
+        ],
+    )
+    def test_recognizes_codex_process_name_variants(
+        self, cli_sessions_dir, monkeypatch, comm
+    ):
+        fake_ps(monkeypatch, {501: (502, "uv"), 502: (1, comm)})
+        assert session_identity.detect_harness_by_ancestry([501, 502]) == "codex"
+
+    def test_codex_helper_process_is_not_codex_cli(self, cli_sessions_dir, monkeypatch):
+        fake_ps(monkeypatch, {501: (1, "codex-code-mode-host")})
+        assert session_identity.detect_harness_by_ancestry([501]) is None
+
+    def test_returns_none_when_no_cli_ancestor(self, cli_sessions_dir, monkeypatch):
+        fake_ps(monkeypatch, {501: (502, "uv"), 502: (1, "zsh")})
+        assert session_identity.detect_harness_by_ancestry([501, 502]) is None
+
+
+class TestCodexNestedUnderClaudeCode:
+    """Claude Code 配下で起動された Codex の launcher が、外側の Claude Code
+    セッションとして解決されない（帰属の付け替えが起きない）ことの回帰テスト。
+    """
+
+    def test_registration_records_codex_harness(
+        self, sessions_state_dir, cli_sessions_dir, monkeypatch
+    ):
+        monkeypatch.setattr(cli_session, "is_process_alive", lambda pid: True)
+        fake_ps(monkeypatch, CODEX_NESTED_UNDER_CLAUDE)
+        _write_cli_session(cli_sessions_dir, 504, name="parent-claude")
+        path = session_identity.register_launcher_session("codex-bridge", pid=500)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data["harness"] == "codex"
+        assert data["ancestor_pids"] == [501, 502, 503, 504, 505]
+
+    def test_explicit_harness_is_recorded_as_is(
+        self, sessions_state_dir, cli_sessions_dir, monkeypatch
+    ):
+        fake_ps(monkeypatch, {})
+        path = session_identity.register_launcher_session(
+            "codex-bridge", pid=500, harness="codex"
+        )
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data["harness"] == "codex"
+
+    def test_codex_bridge_is_not_resolved_to_parent_claude_code_session(
+        self, sessions_state_dir, cli_sessions_dir, monkeypatch
+    ):
+        monkeypatch.setattr(session_identity, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(cli_session, "is_process_alive", lambda pid: True)
+        fake_ps(monkeypatch, CODEX_NESTED_UNDER_CLAUDE)
+        _write_cli_session(
+            cli_sessions_dir, 504, name="parent-claude", session_id="parent-cli-uuid"
+        )
+        session_identity.register_launcher_session("codex-bridge", pid=500)
+        assert session_identity.resolve_cli_session("codex-bridge") is None
+
+    def test_claude_code_bridge_still_resolves_to_its_cli(
+        self, sessions_state_dir, cli_sessions_dir, monkeypatch
+    ):
+        """入れ子でない Claude Code 配下の launcher は従来通り CLI へ解決される"""
+        monkeypatch.setattr(session_identity, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(cli_session, "is_process_alive", lambda pid: True)
+        fake_ps(
+            monkeypatch,
+            {500: (501, "python"), 501: (504, "uv"), 504: (505, "claude"), 505: (1, "login")},
+        )
+        _write_cli_session(
+            cli_sessions_dir, 504, name="workspace-a2", session_id="cli-uuid-1"
+        )
+        session_identity.register_launcher_session("claude-bridge", pid=500)
+        result = session_identity.resolve_cli_session("claude-bridge")
+        assert result is not None
+        assert (result["cli_pid"], result["cli_session_id"]) == (504, "cli-uuid-1")
+
+    def test_legacy_registration_without_harness_keeps_ancestor_resolution(
+        self, sessions_state_dir, cli_sessions_dir, monkeypatch
+    ):
+        """harness フィールドを持たない旧 launcher の登録は従来通り解決する"""
+        monkeypatch.setattr(session_identity, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(cli_session, "is_process_alive", lambda pid: True)
+        sessions_dir = sessions_state_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        (sessions_dir / "launcher-500.json").write_text(
+            json.dumps({"session_id": "bridge-uuid-1", "pid": 500, "ancestor_pids": [600]}),
+            encoding="utf-8",
+        )
+        _write_cli_session(cli_sessions_dir, 600, name="workspace-a2")
+        result = session_identity.resolve_cli_session("bridge-uuid-1")
+        assert result is not None and result["name"] == "workspace-a2"
