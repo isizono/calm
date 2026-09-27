@@ -499,14 +499,12 @@ class TestBridgeIdentityHeader:
             == launcher._session_id
         )
 
-    def test_bridge_also_attaches_legacy_header_with_same_value(self, monkeypatch):
-        """移行期間中は改名前のサーバー向けに旧ヘッダにも同じ値を載せる。"""
+    def test_bridge_does_not_send_legacy_header(self, monkeypatch):
+        """改名前の旧ヘッダ X-CC-Memory-Bridge-Session-Id は送らない。
+        サーバー側は移行期間として旧ヘッダの受理を続ける（#750）。"""
         captured = self._run_bridge_and_capture_http_client(monkeypatch)
         http_client = captured["http_client"]
-        assert (
-            http_client.headers.get(launcher.LEGACY_BRIDGE_SESSION_HEADER)
-            == launcher._session_id
-        )
+        assert "x-cc-memory-bridge-session-id" not in http_client.headers
 
     def test_header_names_match_server_side(self):
         """launcher が送るヘッダ名とサーバー側が読むヘッダ名が一致する
@@ -514,10 +512,6 @@ class TestBridgeIdentityHeader:
         from src.infra import session_identity
 
         assert launcher.BRIDGE_SESSION_HEADER.lower() == session_identity.BRIDGE_SESSION_HEADER
-        assert (
-            launcher.LEGACY_BRIDGE_SESSION_HEADER.lower()
-            == session_identity.LEGACY_BRIDGE_SESSION_HEADER
-        )
 
     def test_bridge_uses_same_header_value_across_reconnects(self, monkeypatch):
         """複数回の再接続（リトライループの複数周回）でも毎回同じ値が使われる。"""
