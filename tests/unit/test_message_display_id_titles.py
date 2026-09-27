@@ -502,6 +502,63 @@ class TestSessionNameEnrich:
         out = self._enrich(text, fake_db)
         assert out == f"{_MN('M', 1)} (short title) と workspace-1b"
 
+    def test_equal_updated_at_keeps_first_occurrence(self, fake_db, session_registry_path):
+        _write_registry(
+            session_registry_path,
+            {
+                "s1": _registry_entry(
+                    "workspace-1b",
+                    alias="a",
+                    activity_title="[作業] first",
+                    updated_at="2026-09-27T05:00:00Z",
+                ),
+                "s2": _registry_entry(
+                    "workspace-1b",
+                    alias="b",
+                    activity_title="[作業] second",
+                    updated_at="2026-09-27T05:00:00Z",
+                ),
+            },
+        )
+        out = self._enrich("workspace-1b にて", fake_db)
+        assert out == "<Session: first> にて"
+
+    def test_id_enrichment_works_when_no_registered_name_in_chunk(
+        self, fake_db, session_registry_path
+    ):
+        # 対応表に名前があっても、chunk にその名前が部分文字列として
+        # 含まれていなければ session alternative 付き regex を経由しない
+        # 高速パスを通る。その経路でも内部IDの併記は変わらず動く。
+        _write_registry(
+            session_registry_path,
+            {"s1": _registry_entry("workspace-1b", alias="a", activity_title="[作業] foo")},
+        )
+        text = f"{_MN('M', 1)} には workspace の名前が出てこない"
+        out = self._enrich(text, fake_db)
+        assert out == f"{_MN('M', 1)} (short title) には workspace の名前が出てこない"
+
+    def test_build_pattern_skipped_when_no_registered_name_in_chunk(
+        self, fake_db, session_registry_path, monkeypatch
+    ):
+        _write_registry(
+            session_registry_path,
+            {"s1": _registry_entry("workspace-1b", alias="a", activity_title="[作業] foo")},
+        )
+        calls: list[list[str]] = []
+        original = mdid._build_pattern
+
+        def spy(names):
+            calls.append(names)
+            return original(names)
+
+        monkeypatch.setattr(mdid, "_build_pattern", spy)
+
+        self._enrich(f"{_MN('M', 1)} だけ、名前は無し", fake_db)
+        assert calls == []
+
+        self._enrich("workspace-1b にて", fake_db)
+        assert len(calls) == 1
+
 
 class TestMain:
     def _run(self, monkeypatch, payload):

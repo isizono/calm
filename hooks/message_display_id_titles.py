@@ -150,6 +150,7 @@ def _session_name_displays() -> dict[str, str]:
     だけ変わった等) は `updated_at` が最も新しい行を採用する。行の採用
     自体を先に決めてから表示名を計算するため、最新行の表示名が空でも
     (角カッコの札だけのタイトル等) 古い行の表示名にフォールバックしない。
+    `updated_at` が完全に一致するときは対応表内で先に出現した行を採用する。
     """
     try:
         from src.services.session_registry_service import registry_path
@@ -250,8 +251,17 @@ def _wrap(
 def _enrich(text: str, conn: sqlite3.Connection) -> str:
     cache: dict[tuple[str, int], str | None] = {}
     session_displays = _session_name_displays()
-    pattern = _build_pattern(list(session_displays.keys()))
-    code_spans = [m.span() for m in _CODE_SPAN_RE.finditer(text)] if session_displays else []
+
+    # 対応表に名前があっても chunk 中に部分文字列として現れていなければ、
+    # session alternative 付き regex を組み立てるだけ無駄になる (対応表の
+    # 件数に比例して長くなる regex を chunk ごとに毎回組み立てる経路を
+    # 避ける)。対応表の読み込み自体はここでは省略しない。
+    if any(name in text for name in session_displays):
+        pattern = _build_pattern(list(session_displays.keys()))
+        code_spans = [m.span() for m in _CODE_SPAN_RE.finditer(text)]
+    else:
+        pattern = _COMBINED_PATTERN
+        code_spans = []
 
     def replace(match):
         sess = match.groupdict().get("sess")
