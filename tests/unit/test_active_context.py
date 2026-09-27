@@ -452,7 +452,8 @@ class TestUndisplayedSection:
         assert "## 未表示" not in result
 
     def test_examples_capped_at_two_with_suffix(self, temp_db):
-        """domain内の例示は直近更新順で2件までにし、末尾に「など」を付ける"""
+        """domain内の例示は直近更新順で2件までにし、まだ隠れた項目があるときだけ
+        末尾に「など」を付ける"""
         for i in range(3):
             add_activity(
                 title=f"[作業] Hidden{i}", description="Desc",
@@ -465,6 +466,16 @@ class TestUndisplayedSection:
         line = next(l for l in result.splitlines() if l.startswith("- myapp"))
         assert line.count("[作業] Hidden") == 2
         assert line.endswith("など")
+
+    def test_examples_all_shown_omits_suffix(self, temp_db):
+        """domain内の未表示が2件以内で例示に全件収まるときは「など」を付けない"""
+        add_activity(title="[作業] Solo", description="Desc", tags=["domain:myapp"], check_in=False)
+
+        result = _build_active_context_wrapper()
+
+        line = next(l for l in result.splitlines() if l.startswith("- myapp"))
+        assert line == "- myapp 1件：[作業] Solo"
+        assert "など" not in line
 
     def test_domains_ordered_by_count_descending(self, temp_db):
         """件数の多いdomainから並べる"""
@@ -727,6 +738,26 @@ class TestOrchChildTree:
         assert f"#{parent['activity_id']} [統合] 親A  ✓1" in result
         assert f"#{child['activity_id']}" not in result
 
+    def test_achieved_child_still_active_stays_visible(self, temp_db):
+        """束縛条件がsatisfiedになっても、子自身のactivityが非completedのまま
+        in_progressで残っていれば、通常のactivityとして一覧から消えない
+        （条件の充足と子自身の終了は別操作であるため）"""
+        parent = add_activity(title="[統合] 親H", description="d", tags=["domain:myapp"], check_in=False)
+        update_activity(parent["activity_id"], status="in_progress")
+        child = add_activity(title="[作業] 条件だけ済んだ子", description="d", tags=["domain:myapp"], check_in=False)
+        update_activity(child["activity_id"], status="in_progress")
+
+        self._bind_children(parent["activity_id"], [
+            {
+                "statement": "子が終わった", "actor": "claude", "state": "satisfied",
+                "bound": {"type": "activity", "id": child["activity_id"]},
+            },
+        ])
+
+        result = _build_active_context_wrapper()
+
+        assert f"- #{child['activity_id']} [作業] 条件だけ済んだ子" in result
+
     def test_never_active_open_child_marked_ready(self, temp_db):
         """openな子でheartbeat無し（一度も動いていない）は▷（着手できる）として
         `|` `└-` でぶら下がる"""
@@ -889,3 +920,25 @@ class TestOrchChildTree:
         assert result.count(f"#{child['activity_id']}") == 1
         assert f"- #{child['activity_id']}" not in result
         assert "## 未表示" not in result
+
+    def test_unresolved_deps_not_queried_twice_for_open_child(self, temp_db):
+        """未完了の子のdepends_on問い合わせは、blocked_by用のバッチ取得と
+        _classify_children内の判定とで重複して発行されない（N+1回避の契約）"""
+        import hooks.session_start_hook as hook_module
+
+        parent = add_activity(title="[統合] 親I", description="d", tags=["domain:myapp"], check_in=False)
+        update_activity(parent["activity_id"], status="in_progress")
+        child = add_activity(title="[作業] 重複確認子", description="d", tags=["domain:myapp"], check_in=False)
+
+        self._bind_children(parent["activity_id"], [
+            {
+                "statement": "重複確認子が終わる", "actor": "claude",
+                "bound": {"type": "activity", "id": child["activity_id"]},
+            },
+        ])
+
+        with patch.object(
+            hook_module, "_get_unresolved_deps", wraps=hook_module._get_unresolved_deps
+        ) as spy:
+            _build_active_context_wrapper()
+            assert spy.call_count == 1

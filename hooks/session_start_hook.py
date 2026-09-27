@@ -153,14 +153,18 @@ def _fetch_children_by_parent(conn, parent_ids: list[int]) -> dict[int, list[dic
     return result
 
 
-def _classify_children(conn, child_ids: list[int]) -> dict[int, str | None]:
+def _classify_children(
+    conn, child_ids: list[int], unresolved_deps: dict[int, list[dict]]
+) -> dict[int, str | None]:
     """未完了（open状態）の子1件ごとに、一覧表示用の状態記号を決める。
 
     決定事項「止まっている子を『待ち』と『着手できる』に分ける」の判定を
     そのまま実装する（check_inのattention判定・_stalled_hintは変更しない、
     別物として並存させる）。子自身のgoal（あれば）の判定結果・open ask・
-    depends_onの未完了・heartbeatの4種を子ごとに1回ずつのバッチ問い合わせで
-    まとめて読む。
+    heartbeatの3種を子ごとに1回ずつのバッチ問い合わせでまとめて読む。
+    depends_onの未完了はunresolved_depsを呼び出し元（blocked_by meta行の
+    組み立てと共有するids_for_metaのバッチ問い合わせ）からそのまま受け取り、
+    ここで再度問い合わせない。
 
     Returns:
         {child_id: "✕"|"◷"|"▷"|None, ...}（Noneは無印＝動いている）
@@ -205,8 +209,6 @@ def _classify_children(conn, child_ids: list[int]) -> dict[int, str | None]:
             tuple(own_goal_ids),
         ).fetchall()
         human_wait_goal_ids = {r["goal_id"] for r in wait_rows}
-
-    unresolved_deps = _get_unresolved_deps(conn, child_ids)
 
     marks: dict[int, str | None] = {}
     for r in rows:
@@ -275,7 +277,8 @@ def _build_undisplayed_lines(
     for name, members in groups:
         ordered = sorted(members, key=lambda a: a["updated_at"], reverse=True)
         examples = [a["title"] for a in ordered[:2]]
-        lines.append(f"- {name} {len(members)}件：{'、'.join(examples)} など")
+        suffix = " など" if len(members) > len(examples) else ""
+        lines.append(f"- {name} {len(members)}件：{'、'.join(examples)}{suffix}")
     return lines
 
 
@@ -295,14 +298,18 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
 
     行フォーマット: `#id タイトル`（📌 は pinned 時のみ先頭、🆕 は階層 2 で
     24h 以内作成時のみ末尾）。blocked_by 未解決依存があるときのみ meta 行
-    1 行を続ける（階層 2 のみ）。goal条件がactivity束縛の親には、未完了の
-    子を `|` `├-` `└-` で行の下にぶら下げ、行の末尾に子の内訳
-    （✓達成数 ◷待ち数 ▷着手できる数 ✕失敗数のうち0件でないもの）を付ける。
-    子は階層 1・2 の候補プールそのものから除外し（親の下にのみ出す）、
-    親が表示されなかった子は未表示に数える。
+    1 行を続ける（階層 2 のみ）。goal条件がactivity束縛の親には、未完了
+    （open状態）の子を `|` `├-` `└-` で行の下にぶら下げ、行の末尾に子の
+    内訳（✓達成数 ◷待ち数 ▷着手できる数 ✕失敗数のうち0件でないもの）を
+    付ける。openな子は必ず親の下にのみ出すため階層 1・2 の候補プールから
+    除外する。束縛条件がsatisfied/waivedになった子（✓の内訳に数える分）は
+    条件の充足と子自身のactivityの終了が別操作であるため除外しない
+    （子が非completedのまま残っていれば通常のactivityと同じ基準で候補
+    プールに残り、選ばれなければ未表示に数える）。
 
-    末尾には『未表示』節（表示された親の下の子は含まない）と凡例・固定文・
-    固定ナビを付ける。active な activity が 1 件も無いときは固定ナビだけを返す。
+    末尾には『未表示』節（表示された親の下に出たopenな子は含まない）と
+    凡例・固定文・固定ナビを付ける。active な activity が 1 件も無いとき
+    は固定ナビだけを返す。
 
     重複排除: 上位階層に採用された activity は下位階層（および統計対象）から除外する。
     """
@@ -335,9 +342,6 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
 
     all_active_ids = [a["id"] for a in all_active]
     children_by_parent = _fetch_children_by_parent(conn, all_active_ids)
-    child_ids_excluded_from_pool = {
-        row["child_id"] for rows in children_by_parent.values() for row in rows
-    }
     open_child_ids = sorted(
         {
             row["child_id"]
@@ -346,7 +350,13 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
             if row["state"] == "open"
         }
     )
-    child_marks = _classify_children(conn, open_child_ids)
+    # 除外するのはopenな子だけ（openな子は必ず親の下にツリー表示されるため、
+    # 優先枠と二重に競合させない）。束縛条件がsatisfied/waivedになった子は、
+    # 条件の充足と子自身のactivityの終了は別操作であるため状態問わず除外
+    # しない。子自身が非completedのまま残っていれば、通常のactivityと同じ
+    # 基準で候補プールに残り、選ばれなければ未表示に数える（状態を問わず
+    # 除外すると、まだ動いている作業が一覧から消えてしまう）。
+    child_ids_excluded_from_pool = set(open_child_ids)
 
     seen_ids: set[int] = set()
 
@@ -384,11 +394,13 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
         seen_ids.add(a["id"])
 
     # 階層 1 で消費済みの id はバッチ取得対象から外す。子（未完了分）の
-    # blocked_by・🆕判定に使う分もここでまとめて引く。
+    # blocked_by・🆕判定に使う分もここでまとめて引く。open_child_idsはこの
+    # 集合の部分集合なので、_classify_childrenへ渡して問い合わせの重複を避ける。
     lower_ids = [a["id"] for a in all_active if a["id"] not in seen_ids]
     ids_for_meta = sorted(set(lower_ids) | set(open_child_ids))
     unresolved_deps = _get_unresolved_deps(conn, ids_for_meta)
     created_ats = _get_created_ats(conn, ids_for_meta)
+    child_marks = _classify_children(conn, open_child_ids, unresolved_deps)
 
     tier2_pool = [
         a
@@ -413,10 +425,14 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
         seen_ids.add(a["id"])
 
     displayed_ids = {a["id"] for a in tier1} | {a["id"] for a in tier2}
+    # 未表示に数えなくてよいのは、実際にツリー行として出るopenな子だけ。
+    # satisfied/waivedの子は行として出ないため、ここでの除外対象に含めない
+    # （子自身が非completedのまま候補プールから漏れた場合は未表示に数える）。
     rendered_child_ids = {
         row["child_id"]
         for parent_id in displayed_ids
         for row in children_by_parent.get(parent_id, [])
+        if row["state"] == "open"
     }
 
     undisplayed = [
