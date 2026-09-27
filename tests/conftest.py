@@ -165,6 +165,29 @@ def _no_implicit_embedding_backfill(monkeypatch):
     monkeypatch.setattr(emb, "_backfill_done", True)
 
 
+@pytest.fixture(autouse=True)
+def _no_real_embedding_server(monkeypatch):
+    """テストから実embeddingサーバーへ接続・spawnさせない。
+
+    embeddingサーバーは外部境界であり、テストは mock するか未起動状態で検証する
+    (docs/spec/test-convention.md §1)。境界を切らないと、add_topic/add_decisions
+    等を呼ぶだけのテストが1件ごとに実モデル推論のHTTP往復を行い(ローカルでは
+    開発者が起動中のサーバーに接続し、CIではワーカー初回encodeでサーバーをspawn
+    してモデルロード完了まで最大30秒待つ)、件数の多いテストほど極端に遅くなる。
+
+    ヘルスチェック(HTTP)とプロセス起動(subprocess)の2境界だけを差し替え、
+    `_ensure_server_running` 自体のロジック(spawn直列化・クールダウン)は素通しする。
+    embeddingありの経路を検証するテストは `_encode_batch` を mock し
+    `_server_initialized=True` を立てる(test_embedding_service.py の
+    mock_embedding_server fixture)か、これら境界関数を個別に monkeypatch し直す。
+    """
+    import src.services.embedding_service as emb
+    monkeypatch.setattr(emb, "_server_initialized", False)
+    monkeypatch.setattr(emb, "_last_spawn_failed_at", None)
+    monkeypatch.setattr(emb, "_is_server_running", lambda: False)
+    monkeypatch.setattr(emb, "_start_server", lambda: None)
+
+
 @pytest.fixture
 def disable_embedding(monkeypatch):
     """embeddingサービスを無効化する共通フィクスチャ。

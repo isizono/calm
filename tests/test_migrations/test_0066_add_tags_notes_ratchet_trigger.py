@@ -5,29 +5,21 @@ tag notes（tags.notes）はSessionStart系の遭遇時注入(collect_tag_notes_
 は4000字を超える「増加」INSERT/UPDATEのみを拒否するラチェットをDBトリガーで課す
 （縮む更新は4000字超過中でも常に許可する）。
 """
-import os
 import sqlite3
-import tempfile
 
 import pytest
 from yoyo import default_migration_table, read_migrations
 from yoyo.connections import parse_uri
 from yoyo.migrations import MigrationList
 
-from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection, init_database
+from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection
 from test_migrations.conftest import db_before_migration
 
 
 @pytest.fixture
-def migrated_db():
+def migrated_db(temp_db):
     """全migration（0066含む）を適用済みのテスト用DBを提供する。"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-        init_database()
-        yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
+    yield temp_db
 
 
 @pytest.fixture

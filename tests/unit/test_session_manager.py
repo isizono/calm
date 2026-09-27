@@ -63,33 +63,33 @@ class TestGraceTimer:
     def test_shutdown_after_grace_period(self):
         """セッション0 → 猶予期間経過 → shutdownコールバックが呼ばれる"""
         shutdown_called = threading.Event()
-        mgr = SessionManager(grace_period_sec=1)
+        mgr = SessionManager(grace_period_sec=0.2)
         mgr.set_shutdown_callback(shutdown_called.set)
         mgr.start_watchdog()
 
-        # 1秒の猶予期間 + マージン
+        # 0.2秒の猶予期間 + マージン（発火すれば即座に戻る）
         assert shutdown_called.wait(timeout=3) is True
         assert mgr.is_shutdown_requested is True
 
     def test_grace_timer_cancelled_by_register(self):
         """猶予期間中にセッション登録があるとタイマーがキャンセルされる"""
         shutdown_called = threading.Event()
-        mgr = SessionManager(grace_period_sec=10)
+        mgr = SessionManager(grace_period_sec=0.5)
         mgr.set_shutdown_callback(shutdown_called.set)
         mgr.start_watchdog()
 
-        # 1秒後にセッション登録（grace_period=10sなので十分余裕がある）
-        time.sleep(1)
+        # 猶予期間(0.5s)内にセッション登録
+        time.sleep(0.1)
         mgr.register("s1")
 
-        # キャンセル後、少し待ってもshutdownは呼ばれない
-        assert shutdown_called.wait(timeout=3) is False
+        # 元の猶予期限を十分過ぎるまで待ってもshutdownは呼ばれない
+        assert shutdown_called.wait(timeout=1.0) is False
         assert mgr.is_shutdown_requested is False
 
     def test_grace_timer_restarted_on_last_unregister(self):
         """最後のセッション解除で猶予タイマーが再開される"""
         shutdown_called = threading.Event()
-        mgr = SessionManager(grace_period_sec=1)
+        mgr = SessionManager(grace_period_sec=0.2)
         mgr.set_shutdown_callback(shutdown_called.set)
 
         mgr.register("s1")
@@ -102,31 +102,31 @@ class TestGraceTimer:
     def test_no_shutdown_if_sessions_remain(self):
         """セッションが残っていればshutdownは呼ばれない"""
         shutdown_called = threading.Event()
-        mgr = SessionManager(grace_period_sec=1)
+        mgr = SessionManager(grace_period_sec=0.2)
         mgr.set_shutdown_callback(shutdown_called.set)
 
         mgr.register("s1")
         mgr.register("s2")
         mgr.unregister("s1")
 
-        # 猶予期間+マージンを待ってもshutdownは呼ばれない
-        assert shutdown_called.wait(timeout=3) is False
+        # 猶予期間(0.2s)+マージンを待ってもshutdownは呼ばれない
+        assert shutdown_called.wait(timeout=1.0) is False
         assert mgr.is_shutdown_requested is False
 
     def test_register_during_grace_resets_timer(self):
         """猶予期間中にregister→unregisterすると猶予がリセットされる"""
         shutdown_called = threading.Event()
-        mgr = SessionManager(grace_period_sec=3)
+        mgr = SessionManager(grace_period_sec=1.5)
         mgr.set_shutdown_callback(shutdown_called.set)
         mgr.start_watchdog()
 
-        # 1秒後にregister→即unregister（タイマーリセット）
-        time.sleep(1)
+        # 0.9秒後にregister→即unregister（タイマーリセット、新しい期限は約2.4秒時点）
+        time.sleep(0.9)
         mgr.register("s1")
         mgr.unregister("s1")
 
-        # リセット後の新しい猶予期間（3秒）の前にはshutdownされない
-        time.sleep(1)
+        # 元の期限(1.5秒)は過ぎたが、リセット後の新しい猶予期間の前にはshutdownされない
+        time.sleep(0.9)
         assert mgr.is_shutdown_requested is False
 
         # 合計で猶予期間分待てばshutdownされる

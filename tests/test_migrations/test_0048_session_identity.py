@@ -9,9 +9,7 @@ session_identity テーブルと caller_session_id 列は後続の migration
 「0048 まで適用した時点」の DB で検証する（最新までの全 migration を
 適用した DB では 0057 によりこれらは既に存在しない）。
 """
-import os
 import sqlite3
-import tempfile
 
 import pytest
 from yoyo import default_migration_table, read_migrations
@@ -30,22 +28,9 @@ def migrated_db():
     session_identity / caller_session_id は 0057 で削除されるため、
     最新までの全 migration を適用した DB では検証できない。
     """
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "test.db")
-        os.environ["DISCUSSION_DB_PATH"] = db_path
-
-        parsed = parse_uri(f"sqlite:///{db_path}")
-        backend = _VecSQLiteBackend(parsed, default_migration_table)
-        backend.init_database()
-        all_migs = read_migrations(str(MIGRATIONS_DIR))
-        upto_0048 = MigrationList([m for m in all_migs if m.id < "0049"])
-        with backend.lock():
-            backend.apply_migrations(upto_0048)
-
+    with db_before_migration("0049") as db_path:
         _injected_tags.clear()
         yield db_path
-        if "DISCUSSION_DB_PATH" in os.environ:
-            del os.environ["DISCUSSION_DB_PATH"]
 
 
 @pytest.fixture
