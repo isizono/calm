@@ -664,6 +664,9 @@ class TestBridgeStdinEofWithHeartbeat:
             # 固定sleepだとheartbeatが一度も走らずEOFに達しうるため条件待ちにする
             while not register_calls:
                 await asyncio.sleep(0.005)
+            # queue_to_serverは番兵(None)でのみEOFを検知するため、Eventだけで
+            # なくキューにも積む
+            state.outbound.put_nowait(None)
             state.stdin_eof.set()
 
         async def _drive() -> None:
@@ -737,9 +740,11 @@ class TestBridgeStdinEofGraceTimeout:
             fake_streamable_http_client,
         )
 
-        # stdin EOFを即座に確定させる（_bridge呼び出し前に立てても、
-        # queue_to_serverの初回チェックで即座に検知される）
+        # stdin EOFを即座に確定させる（queue_to_serverは番兵(None)を
+        # 素のQueue.get()で受け取って検知するため、_bridge呼び出し前に
+        # キューへ積んでおく）
         state = launcher._StdinBridgeState()
+        state.outbound.put_nowait(None)
         state.stdin_eof.set()
 
         start = time.monotonic()
@@ -935,6 +940,7 @@ class TestOutboundQueuePersistsAcrossBridgeFailure:
         async def _finish_once_forwarded() -> None:
             while not forwarded:
                 await asyncio.sleep(0.005)
+            state.outbound.put_nowait(None)
             state.stdin_eof.set()
 
         async def _drive() -> None:
@@ -1021,6 +1027,166 @@ class TestPendingRequestFailsOnBridgeDisconnect:
         assert "CALM server connection lost" in response["error"]["message"]
 
 
+class TestStdinAndRetryLoopIntegration:
+    """実stdin（os.pipe経由）・実`_stdin_reader_task`・実`_run_retry_loop`を使い、
+
+    HTTP層（`streamable_http_client`）だけをfakeにした統合寄りの検証。
+    stdinを丸ごとスタブに差し替える単体テストでは、(1)stdinのtransportを
+    1回だけ作って使い回すこと (2)リトライループが`_fail_pending_requests`を
+    呼ぶこと (3)readerのEOF通知、のいずれを壊しても検出できない。このテストは
+    それら3つの配線を一括で保証する。
+    """
+
+    def test_disconnect_reconnect_and_eof_over_real_stdin_pipe(self, monkeypatch):
+        import io
+        import types as std_types
+        from contextlib import asynccontextmanager
+
+        import anyio
+        import mcp.client.streamable_http as streamable_http_module
+        from mcp import types
+        from mcp.shared.message import SessionMessage
+
+        # --- stdin: 実パイプ ---
+        read_fd, write_fd = os.pipe()
+        read_file = os.fdopen(read_fd, "rb", buffering=0)
+        monkeypatch.setattr(
+            launcher.sys, "stdin", std_types.SimpleNamespace(buffer=read_file)
+        )
+
+        # --- stdout: キャプチャ ---
+        out_buf = io.BytesIO()
+        monkeypatch.setattr(
+            launcher.sys, "stdout", std_types.SimpleNamespace(buffer=out_buf)
+        )
+
+        def stdout_messages():
+            text = out_buf.getvalue().decode("utf-8")
+            return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+        # サーバー起動確認・セッション登録は外部境界としてモックする
+        monkeypatch.setattr(launcher, "_ensure_server_running", lambda: True)
+        monkeypatch.setattr(launcher, "_register_session", lambda: True)
+        monkeypatch.setattr(launcher, "_unregister_session", lambda: True)
+        monkeypatch.setattr(launcher, "_IS_LOCAL", True)
+        monkeypatch.setattr(launcher, "MAX_RETRIES", None)
+        monkeypatch.setattr(launcher, "HEARTBEAT_INTERVAL_SEC", 1000.0)
+
+        call_count = {"n": 0}
+
+        @asynccontextmanager
+        async def fake_streamable_http_client(**kwargs):
+            call_count["n"] += 1
+            call_no = call_count["n"]
+            read_send, read_recv = anyio.create_memory_object_stream(10)
+            write_send, write_recv = anyio.create_memory_object_stream(10)
+
+            async def _get_session_id():
+                return None
+
+            async def _serve_one_then_disconnect() -> None:
+                # 1件受け取ったら切断する。1回目は応答せずに切断（サーバー側
+                # 切断を模す）、2回目以降は応答してから切断する
+                # （応答後に接続が切れても、応答済みのidへ二重にエラーが出ない
+                # ことを検証するため）。
+                async for session_msg in write_recv:
+                    if call_no >= 2:
+                        req = session_msg.message.root
+                        resp = types.JSONRPCMessage(
+                            root=types.JSONRPCResponse(
+                                jsonrpc="2.0", id=req.id, result={}
+                            )
+                        )
+                        await read_send.send(SessionMessage(resp))
+                    await read_send.aclose()
+                    return
+
+            async with anyio.create_task_group() as watcher_tg:
+                watcher_tg.start_soon(_serve_one_then_disconnect)
+                try:
+                    yield (read_recv, write_send, _get_session_id)
+                finally:
+                    await write_recv.aclose()
+                    await read_recv.aclose()
+
+        monkeypatch.setattr(
+            streamable_http_module,
+            "streamable_http_client",
+            fake_streamable_http_client,
+        )
+
+        def write_line(obj: dict) -> None:
+            os.write(write_fd, (json.dumps(obj) + "\n").encode("utf-8"))
+
+        async def wait_until(predicate, timeout: float) -> None:
+            deadline = asyncio.get_running_loop().time() + timeout
+            while asyncio.get_running_loop().time() < deadline:
+                if predicate():
+                    return
+                await asyncio.sleep(0.02)
+            raise AssertionError("timed out waiting for condition")
+
+        async def drive() -> float:
+            import time as time_module
+
+            loop_task = asyncio.ensure_future(launcher._run_retry_loop())
+
+            # discoverはサーバー接続が無くても即座に-32601が返るはず
+            write_line({"jsonrpc": "2.0", "id": 0, "method": "server/discover", "params": {}})
+            await wait_until(
+                lambda: any(m.get("id") == 0 for m in stdout_messages()), timeout=5.0
+            )
+
+            # 1回目のbridgeで送信されるが応答が来ず切断される
+            write_line({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {}})
+            await wait_until(
+                lambda: any(
+                    m.get("id") == 1 and "error" in m for m in stdout_messages()
+                ),
+                timeout=5.0,
+            )
+
+            # 1回目の失敗後（2回目のbridge接続が確立する前）にstdinへ届いた行
+            write_line({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {}})
+            await wait_until(
+                lambda: any(
+                    m.get("id") == 2 and "result" in m for m in stdout_messages()
+                ),
+                timeout=5.0,
+            )
+
+            # id=2は応答後に接続が切れて2回目のbridgeも失敗扱いになるため、
+            # バックオフ待ちに入った直後にstdin EOFを発生させ、
+            # 「バックオフとEOFの早い方で抜ける」（backoffを待ち切らない）ことを計測する
+            eof_start = time_module.monotonic()
+            os.close(write_fd)
+            await asyncio.wait_for(loop_task, timeout=5.0)
+            return time_module.monotonic() - eof_start
+
+        elapsed_after_eof = asyncio.run(drive())
+        read_file.close()
+
+        messages = stdout_messages()
+
+        discover_resp = next(m for m in messages if m.get("id") == 0)
+        assert discover_resp["error"]["code"] == -32601
+
+        id1_resp = next(m for m in messages if m.get("id") == 1)
+        assert id1_resp["error"]["code"] == -32603
+
+        id2_responses = [m for m in messages if m.get("id") == 2]
+        # id=2は応答済みのため、その後bridgeが失敗扱いになっても二重にエラーが
+        # 出ていないこと（成功応答1件だけであること）
+        assert len(id2_responses) == 1
+        assert "result" in id2_responses[0]
+
+        # 2回目の失敗後のバックオフ（4秒）を待ち切らず、stdin EOFで即座に
+        # ループを抜けたこと（対策が無ければここが約4秒に張り付く）
+        assert elapsed_after_eof < 2.0, (
+            f"backoffがEOFで打ち切られていない可能性: {elapsed_after_eof:.2f}s"
+        )
+
+
 class TestMainRetryLoop:
     """main()のリトライループの動作検証"""
 
@@ -1042,10 +1208,15 @@ class TestMainRetryLoop:
         monkeypatch.setattr(launcher, "register_launcher_session", lambda *a, **kw: None)
         monkeypatch.setattr(launcher, "unregister_launcher_session", lambda *a, **kw: None)
 
-        async def no_op_sleep(seconds):
-            pass
+        async def no_op_wait_for(aw, timeout=None):
+            # バックオフは`asyncio.wait_for(state.stdin_eof.wait(), timeout=...)`で
+            # 行われる。stdin_eofが立たない（＝実際には待ち切る）状況を、
+            # 実時間を待たずに再現するため即座にTimeoutErrorを送出する。
+            if hasattr(aw, "close"):
+                aw.close()
+            raise asyncio.TimeoutError()
 
-        monkeypatch.setattr(launcher.asyncio, "sleep", no_op_sleep)
+        monkeypatch.setattr(launcher.asyncio, "wait_for", no_op_wait_for)
 
         call_count = {"bridge": 0}
 
@@ -1066,21 +1237,25 @@ class TestMainRetryLoop:
         return call_count
 
     def _track_sleep(self, monkeypatch):
-        """バックオフsleep記録用の共通セットアップ
+        """バックオフ長さ記録用の共通セットアップ
 
-        テスト本体のスレッドから呼ばれたsleepだけを記録するリストを返す。
-        バックオフは`asyncio.sleep`で行われるため、`launcher.asyncio.sleep`を
-        非同期の記録用関数に差し替える。
+        テスト本体のスレッドから呼ばれた分だけを記録するリストを返す。
+        バックオフは`asyncio.wait_for(state.stdin_eof.wait(), timeout=...)`で
+        行われるため、`launcher.asyncio.wait_for`のtimeout引数を記録し、
+        実時間を待たずに即座にTimeoutErrorを送出する。
         """
         sleep_values = []
         test_thread_id = threading.get_ident()
 
-        async def tracking_sleep(seconds):
-            # ほかのテストのスレッドのsleepを拾わないため
+        async def tracking_wait_for(aw, timeout=None):
+            # ほかのテストのスレッドの呼び出しを拾わないため
             if threading.get_ident() == test_thread_id:
-                sleep_values.append(seconds)
+                sleep_values.append(timeout)
+            if hasattr(aw, "close"):
+                aw.close()
+            raise asyncio.TimeoutError()
 
-        monkeypatch.setattr(launcher.asyncio, "sleep", tracking_sleep)
+        monkeypatch.setattr(launcher.asyncio, "wait_for", tracking_wait_for)
         return sleep_values
 
     def test_normal_exit_no_retry(self, monkeypatch):
