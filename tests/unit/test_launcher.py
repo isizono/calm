@@ -1027,6 +1027,191 @@ class TestPendingRequestFailsOnBridgeDisconnect:
         assert "CALM server connection lost" in response["error"]["message"]
 
 
+class TestPendingIdsDistinguishMessageDirection:
+    """pending_idsへの追加・削除が、メッセージの向き（クライアント→サーバーの
+
+    Requestか、サーバー→クライアントのResponse/Errorか）を区別することの検証。
+    idの有無だけで判定する実装（`_message_id`ベース）に戻すと、stdin側から
+    紛れ込んだResponse形のメッセージが誤って追跡対象になったり、サーバーから
+    来たRequest形のメッセージで正規のpendingが誤って消えたりする。
+    """
+
+    def test_error_response_targets_only_the_genuine_pending_request(self, monkeypatch):
+        import io
+        import types
+        from contextlib import asynccontextmanager
+
+        import anyio
+        import mcp.client.streamable_http as streamable_http_module
+        from mcp import types as mcp_types
+        from mcp.shared.message import SessionMessage
+
+        state = launcher._StdinBridgeState()
+        # 正規のクライアント→サーバーのリクエスト(id=1)
+        launcher._handle_stdin_line(
+            b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}', state
+        )
+        # stdin側から紛れ込んだResponse形のメッセージ(id=99)。Requestではない
+        # ため、pending_idsには追加されないはず
+        launcher._handle_stdin_line(
+            b'{"jsonrpc":"2.0","id":99,"result":{}}', state
+        )
+
+        @asynccontextmanager
+        async def fake_streamable_http_client(**kwargs):
+            read_send, read_recv = anyio.create_memory_object_stream(10)
+            write_send, write_recv = anyio.create_memory_object_stream(10)
+
+            async def _get_session_id():
+                return None
+
+            async def _echo_request_with_same_id() -> None:
+                # サーバー側から、pendingにあるid=1と同じidのJSONRPCRequestを
+                # 送る。Response/Errorではないため、これを受け取ってもpending_ids
+                # からid=1が消えないはず
+                async for _ in write_recv:
+                    bogus_request = mcp_types.JSONRPCMessage(
+                        root=mcp_types.JSONRPCRequest(
+                            jsonrpc="2.0", id=1, method="server/bogus", params={}
+                        )
+                    )
+                    await read_send.send(SessionMessage(bogus_request))
+                await read_send.aclose()
+
+            async with anyio.create_task_group() as watcher_tg:
+                watcher_tg.start_soon(_echo_request_with_same_id)
+                try:
+                    yield (read_recv, write_send, _get_session_id)
+                finally:
+                    await write_recv.aclose()
+                    await read_recv.aclose()
+
+        monkeypatch.setattr(
+            streamable_http_module, "streamable_http_client", fake_streamable_http_client
+        )
+        monkeypatch.setattr(launcher, "HEARTBEAT_INTERVAL_SEC", 1000.0)
+        monkeypatch.setattr(launcher, "STDIN_EOF_GRACE_SEC", 1000.0)
+
+        with pytest.raises(BaseException) as excinfo:
+            asyncio.run(asyncio.wait_for(launcher._bridge(state), timeout=2.0))
+        assert _contains_server_disconnected(excinfo.value)
+
+        # id=1はまだpendingのまま（サーバーから来たRequest形では消えない）
+        assert 1 in state.pending_ids
+        # id=99はそもそもRequestではないためpendingに載っていない
+        assert 99 not in state.pending_ids
+
+        out = io.BytesIO()
+        monkeypatch.setattr(launcher.sys, "stdout", types.SimpleNamespace(buffer=out))
+        launcher._fail_pending_requests(state, "CALM server connection lost")
+
+        responses = [
+            json.loads(line)
+            for line in out.getvalue().decode("utf-8").splitlines()
+            if line.strip()
+        ]
+        # エラー応答はid=1にだけ返り、id=99には返らない
+        assert [r["id"] for r in responses] == [1]
+        assert responses[0]["error"]["code"] == -32603
+
+
+class TestRetryLoopCancellationWhileBridgeConnected:
+    """接続中のbridgeを外側からcancelしたとき、再接続せずキャンセルとして
+
+    終わることの検証。`server_to_stdout`のfinally節は、stdin_eofがFalseの
+    まま中断されるとServerDisconnected（Exceptionのサブクラス）を送出するため、
+    対策が無いと外部からのcancel（CancelledError、BaseExceptionのサブクラス）が
+    リトライループの`except Exception`に「ただのbridge失敗」として吸収され、
+    再接続してしまう。
+    """
+
+    def test_cancel_ends_the_loop_without_reconnecting(self, monkeypatch):
+        from contextlib import asynccontextmanager
+
+        import anyio
+        import mcp.client.streamable_http as streamable_http_module
+
+        monkeypatch.setattr(launcher, "_ensure_server_running", lambda: True)
+        monkeypatch.setattr(launcher, "_register_session", lambda: True)
+        monkeypatch.setattr(launcher, "_unregister_session", lambda: True)
+        monkeypatch.setattr(launcher, "_IS_LOCAL", True)
+        monkeypatch.setattr(launcher, "MAX_RETRIES", None)
+        monkeypatch.setattr(launcher, "HEARTBEAT_INTERVAL_SEC", 1000.0)
+
+        connect_count = {"n": 0}
+        connected = {}
+
+        @asynccontextmanager
+        async def fake_streamable_http_client(**kwargs):
+            connect_count["n"] += 1
+            connected.setdefault("event", asyncio.Event())
+            connected["event"].set()
+            # read_stream には何も流さない（接続を維持したまま応答待ちにする）
+            read_send, read_recv = anyio.create_memory_object_stream(10)
+            write_send, write_recv = anyio.create_memory_object_stream(10)
+
+            async def _get_session_id():
+                return None
+
+            try:
+                yield (read_recv, write_send, _get_session_id)
+            finally:
+                await read_send.aclose()
+                await write_recv.aclose()
+
+        monkeypatch.setattr(
+            streamable_http_module,
+            "streamable_http_client",
+            fake_streamable_http_client,
+        )
+
+        async def fake_stdin_reader_task(state):
+            # 実stdinに触れず、キャンセルされるまで待つだけ
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(launcher, "_stdin_reader_task", fake_stdin_reader_task)
+
+        async def drive():
+            task = asyncio.ensure_future(launcher._run_retry_loop())
+
+            deadline = asyncio.get_running_loop().time() + 3.0
+            while "event" not in connected and asyncio.get_running_loop().time() < deadline:
+                await asyncio.sleep(0.01)
+            assert "event" in connected, "bridge接続が確立しなかった"
+            await connected["event"].wait()
+
+            task.cancel()
+
+            # ここでは意図的にawait taskしない。対策が無いとcancelがリトライへ
+            # 吸収され、taskが自発的には終わらないため、awaitすると
+            # ハングしうる。自然完了をポーリングで待つだけにする。
+            deadline2 = asyncio.get_running_loop().time() + 3.0
+            while not task.done() and asyncio.get_running_loop().time() < deadline2:
+                await asyncio.sleep(0.01)
+
+            if not task.done():
+                raise AssertionError(
+                    "cancel後3秒以内にリトライループが終了しなかった"
+                    "（cancelがリトライに吸収された可能性）"
+                )
+            if not task.cancelled():
+                exc = task.exception()
+                raise AssertionError(
+                    f"CancelledErrorではなく{exc!r}で終了した"
+                    "（cancelがリトライに吸収された可能性）"
+                )
+            return connect_count["n"]
+
+        loop = asyncio.new_event_loop()
+        try:
+            attempts = loop.run_until_complete(drive())
+        finally:
+            loop.close()
+
+        # cancel後に再接続していないこと（接続は最初の1回だけ）
+        assert attempts == 1
+
+
 class TestStdinAndRetryLoopIntegration:
     """実stdin（os.pipe経由）・実`_stdin_reader_task`・実`_run_retry_loop`を使い、
 
@@ -1049,8 +1234,18 @@ class TestStdinAndRetryLoopIntegration:
         from mcp.shared.message import SessionMessage
 
         # --- stdin: 実パイプ ---
+        # write_fdは正常系ではdrive()の途中で閉じるが、途中のassertで
+        # テストが失敗した場合にも両方のfdを確実に閉じるため、後始末は
+        # 最後のtry/finallyに一本化する（close_write_fdは多重close安全）。
         read_fd, write_fd = os.pipe()
         read_file = os.fdopen(read_fd, "rb", buffering=0)
+        write_fd_closed = {"done": False}
+
+        def close_write_fd() -> None:
+            if not write_fd_closed["done"]:
+                write_fd_closed["done"] = True
+                os.close(write_fd)
+
         monkeypatch.setattr(
             launcher.sys, "stdin", std_types.SimpleNamespace(buffer=read_file)
         )
@@ -1116,6 +1311,20 @@ class TestStdinAndRetryLoopIntegration:
             fake_streamable_http_client,
         )
 
+        # 「2回目のbridgeが失敗し、バックオフ待ちに入った」ことを、内部stateを
+        # 直接覗かずに観測するため、リトライループ自身が失敗のたびに出す
+        # "Bridge failed"ログの回数を数える。バックオフ中にEOFを発生させたい
+        # テストの意図を、タイミングの偶然ではなく確実に満たすための同期点。
+        bridge_failure_count = {"n": 0}
+        original_warning = launcher.logger.warning
+
+        def counting_warning(msg, *args, **kwargs):
+            if isinstance(msg, str) and msg.startswith("Bridge failed"):
+                bridge_failure_count["n"] += 1
+            return original_warning(msg, *args, **kwargs)
+
+        monkeypatch.setattr(launcher.logger, "warning", counting_warning)
+
         def write_line(obj: dict) -> None:
             os.write(write_fd, (json.dumps(obj) + "\n").encode("utf-8"))
 
@@ -1156,42 +1365,22 @@ class TestStdinAndRetryLoopIntegration:
                 timeout=5.0,
             )
 
-            # id=2は応答後に接続が切れて2回目のbridgeも失敗扱いになるため、
-            # バックオフ待ちに入った直後にstdin EOFを発生させ、
+            # id=2は応答後に接続が切れて2回目のbridgeも失敗扱いになる。
+            # タイミングの偶然に頼らず、2回目の失敗（バックオフ待ちへの突入）を
+            # ログで確認してからstdin EOFを発生させ、
             # 「バックオフとEOFの早い方で抜ける」（backoffを待ち切らない）ことを計測する。
-            #
-            # ここは意図的にloop_taskをcancelしない。readerのEOF通知が失われている
-            # 場合、loop_taskはEOFに気づけないまま次のbridge接続を開いてメッセージを
-            # 待ち続けるため、その状態でcancelすると、cancel伝播中にserver_to_stdout
-            # のfinally節がServerDisconnected（Exceptionのサブクラス）を送出し、
-            # リトライループがそれを「ただのbridge失敗」として吸収して次の接続へ
-            # 進んでしまう。この吸収が起きると、cancelを再度送らない限りタスクは
-            # 止まらず、asyncio.run()自身の終了処理（残タスクをcancelしてgatherする）
-            # まで巻き込んで無期限にハングする。そのため、ここでは自然完了を
-            # ポーリングで待つだけにし、対策が無い場合はタイムアウトで検出する
-            # （loop_taskの後始末は行わず、event loopごと捨てる）。
+            await wait_until(lambda: bridge_failure_count["n"] >= 2, timeout=5.0)
             eof_start = time_module.monotonic()
-            os.close(write_fd)
-            deadline = eof_start + 5.0
-            while not loop_task.done() and time_module.monotonic() < deadline:
-                await asyncio.sleep(0.02)
-            if not loop_task.done():
-                raise AssertionError(
-                    "stdin EOF後もリトライループが5秒以内にreturnしなかった"
-                )
-            await loop_task
+            close_write_fd()
+            await asyncio.wait_for(loop_task, timeout=5.0)
             return time_module.monotonic() - eof_start
 
-        # asyncio.run()は終了時に残っている全タスクをcancelしてgatherするが、
-        # 上のdrive()内コメントの理由によりそれ自体がハングしうるため、
-        # ここではeventループを手動管理し、drive()の結果だけを受け取ってから
-        # 後始末をせずにloopを閉じる（loop_taskが残っていても待ち合わせない）。
-        loop = asyncio.new_event_loop()
+        # fdの後始末は、途中のassert失敗時にも漏れないようfinallyで行う。
         try:
-            elapsed_after_eof = loop.run_until_complete(drive())
+            elapsed_after_eof = asyncio.run(drive())
         finally:
-            loop.close()
-        read_file.close()
+            close_write_fd()
+            read_file.close()
 
         messages = stdout_messages()
 

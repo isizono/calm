@@ -548,8 +548,8 @@ async def _bridge(state: "_StdinBridgeState") -> None:
     stdinの読み取り自体は`_stdin_reader_task`が担い、ここでは`state.outbound`
     キューから取り出してサーバーへ送るだけ（bridge失敗のたびに毎回作り直される
     のはHTTP接続側であり、stdin側は作り直さない）。
-    正常終了（stdin EOFかつキューが空）時はreturn、サーバー側切断時は
-    ServerDisconnectedをraiseする。
+    正常終了（stdin EOFの番兵を`state.outbound`から受け取った）時はreturn、
+    サーバー側切断時はServerDisconnectedをraiseする。
     """
     # 遅延import: デーモン起動ロジックはMCP SDKに依存しないため、
     # ブリッジ実行時まで重いimportを遅延させて起動速度を確保する
@@ -765,6 +765,18 @@ async def _run_retry_loop() -> None:
                 await _bridge(state)
                 break  # stdin EOF → 正常終了
             except Exception as e:
+                # server_to_stdoutのfinally節は、外部からのキャンセル（SIGINTで
+                # asyncio.runがmain taskをcancelする経路、SIGTERM後の後始末で
+                # 全タスクをcancelする経路のいずれも）でstdin_eofがFalseのまま
+                # 中断された場合もServerDisconnectedを送出する。これにより
+                # CancelledError（BaseException）がここのexcept Exceptionで
+                # 捕まる形のExceptionに化けてしまい、キャンセル要求を「ただの
+                # bridge失敗」としてリトライし続けてしまう。自タスクが実際に
+                # キャンセル中（cancelling() > 0）なら、化けた例外を元の
+                # CancelledErrorに戻して外側へ伝播させ、リトライさせない。
+                task = asyncio.current_task()
+                if task is not None and task.cancelling():
+                    raise asyncio.CancelledError() from e
                 # anyioのExceptionGroupによりServerDisconnectedが直接キャッチできない
                 # ケースがあるため、例外の種類を問わず統一的にリトライする。
                 # このbridge実行中に送信済みで応答の無かったリクエストへは、
