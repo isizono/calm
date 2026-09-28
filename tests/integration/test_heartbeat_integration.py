@@ -195,7 +195,7 @@ class TestBuildActiveContextHeartbeat:
         assert "[作業] HB機能実装" in result
 
     def test_normal_activity_in_hot_section(self, temp_db):
-        """heartbeat非活性アクティビティは●/○マーカーで表示
+        """heartbeat非活性アクティビティは階層2『優先』に個別表示される
 
         階層3・4は廃止されpending活動は個別表示されないため、検証するには
         pinで階層2（優先）に載せる必要がある。
@@ -208,7 +208,7 @@ class TestBuildActiveContextHeartbeat:
 
         result = _build_activities_section_wrapper()
 
-        assert "○" in result
+        assert "## 優先" in result
         assert "[作業] 通常タスク" in result
         assert "## 作業中（別セッション）" not in result
 
@@ -245,7 +245,7 @@ class TestBuildActiveContextHeartbeat:
         result = _build_activities_section_wrapper()
 
         assert "## 作業中（別セッション）" in result
-        assert "○" in result
+        assert "## 優先" in result
         assert "[作業] HB活性" in result
         assert "[作業] 通常" in result
 
@@ -275,7 +275,7 @@ class TestBuildActiveContextHeartbeat:
 
         result = _build_activities_section_wrapper()
 
-        assert "○" in result
+        assert "## 優先" in result
         assert "## 作業中（別セッション）" not in result
         assert "[作業] 期限切れHB" in result
 
