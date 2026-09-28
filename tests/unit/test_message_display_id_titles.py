@@ -20,6 +20,53 @@ if str(_HOOKS_DIR) not in sys.path:
 import message_display_id_titles as mdid  # type: ignore  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def session_registry_path(tmp_path, monkeypatch):
+    """対応表ファイルを実マシンの ``~/.cc-memory/session_aliases.json`` から
+    隔離する。既定ではファイルが存在しないパスを指す (=対応表なし状態)。
+    セッション名の対応表が要るテストは、返された path に
+    `_write_registry` で書き込んで使う。
+    """
+    path = tmp_path / "session_aliases.json"
+    monkeypatch.setenv("CALM_SESSION_REGISTRY_PATH", str(path))
+    return path
+
+
+def _write_registry(path: Path, sessions: dict) -> None:
+    """`register_checkin` が書き込む形 (``{"version": 1, "sessions": {...}}``)
+    で対応表ファイルを書く。
+    """
+    path.write_text(
+        json.dumps({"version": 1, "sessions": sessions}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def _registry_entry(
+    name: str,
+    *,
+    alias: str,
+    alias_source: str = "derived",
+    activity_title: str = "",
+    activity_status: str = "in_progress",
+    alias_activity_id: int = 1,
+    updated_at: str = "2026-09-27T00:00:00Z",
+) -> dict:
+    """`register_checkin` が書く1セッション分の row と同じ形を組み立てる。"""
+    return {
+        "name": name,
+        "alias": alias,
+        "alias_source": alias_source,
+        "alias_activity_id": alias_activity_id,
+        "activity_title": activity_title,
+        "activity_status": activity_status,
+        "cli_pid": 99999,
+        "cwd": "/tmp/example",
+        "bridge_session_id": "bridge-test",
+        "updated_at": updated_at,
+    }
+
+
 @pytest.fixture
 def fake_db(tmp_path, monkeypatch):
     """テスト用の最小スキーマ + 各 entity 種別のサンプル row を持つ DB。"""
@@ -196,6 +243,366 @@ class TestEnrich:
         text = f"see {_MN('M', 4)} here"
         expected = f"see {_MN('M', 4)} ({_FW('material', 2)} info) here"
         assert self._enrich(text, fake_db) == expected
+
+
+class TestSessionNameEnrich:
+    def _enrich(self, text, db_path):
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            return mdid._enrich(text, conn)
+        finally:
+            conn.close()
+
+    def test_registered_name_replaced(self, fake_db, session_registry_path):
+        _write_registry(
+            session_registry_path,
+            {"s1": _registry_entry("workspace-1b", alias="alias unused", activity_title="[作業] 何とかを直す")},
+        )
+        out = self._enrich("いま workspace-1b で作業中", fake_db)
+        assert out == "いま <Session: 何とかを直す> で作業中"
+
+    def test_unregistered_name_untouched(self, fake_db, session_registry_path):
+        _write_registry(
+            session_registry_path,
+            {"s1": _registry_entry("workspace-1b", alias="a", activity_title="[作業] foo")},
+        )
+        out = self._enrich("workspace-9z は対応表に無い", fake_db)
+        assert out == "workspace-9z は対応表に無い"
+
+    def test_long_name_not_matched_as_substring(self, fake_db, session_registry_path):
+        _write_registry(
+            session_registry_path,
+            {"s1": _registry_entry("workspace-1b", alias="a", activity_title="[作業] foo")},
+        )
+        text = "workspace-1bc は別セッション名"
+        assert self._enrich(text, fake_db) == text
+
+    def test_hyphen_boundary_not_matched(self, fake_db, session_registry_path):
+        _write_registry(
+            session_registry_path,
+            {"s1": _registry_entry("workspace-1b", alias="a", activity_title="[作業] foo")},
+        )
+        text = "workspace-1b-x も別セッション名"
+        assert self._enrich(text, fake_db) == text
+
+    def test_longest_name_wins_when_prefix_of_another(self, fake_db, session_registry_path):
+        _write_registry(
+            session_registry_path,
+            {
+                "s1": _registry_entry("workspace-1b", alias="a", activity_title="[作業] short"),
+                "s2": _registry_entry("workspace-1b-x", alias="b", activity_title="[作業] long"),
+            },
+        )
+        out = self._enrich("workspace-1b-x が対象", fake_db)
+        assert out == "<Session: long> が対象"
+
+    def test_derived_uses_activity_title_not_alias(self, fake_db, session_registry_path):
+        # alias と activity_title を意図的に違う値にし、alias が誤って
+        # 使われていないことを保証する (derived branch)。
+        _write_registry(
+            session_registry_path,
+            {
+                "s1": _registry_entry(
+                    "workspace-1b",
+                    alias="[作業] foo-2",
+                    alias_source="derived",
+                    activity_title="[作業] foo",
+                )
+            },
+        )
+        out = self._enrich("workspace-1b にて", fake_db)
+        assert out == "<Session: foo> にて"
+
+    def test_manual_alias_source_uses_alias(self, fake_db, session_registry_path):
+        # alias と activity_title を意図的に違う値にし、activity_title が
+        # 誤って使われていないことを保証する (manual branch)。
+        _write_registry(
+            session_registry_path,
+            {
+                "s1": _registry_entry(
+                    "workspace-1b",
+                    alias="手動名",
+                    alias_source="manual",
+                    activity_title="[作業] 別のタイトル",
+                )
+            },
+        )
+        out = self._enrich("workspace-1b にて", fake_db)
+        assert out == "<Session: 手動名> にて"
+
+    def test_manual_alias_keeps_bracket_tag(self, fake_db, session_registry_path):
+        # 手動別名はユーザーが選んだ表示をそのまま尊重するため、
+        # activity_title 由来 (derived) とは違い角カッコの札を外さない。
+        _write_registry(
+            session_registry_path,
+            {
+                "s1": _registry_entry(
+                    "workspace-1b",
+                    alias="[調査] ログ確認",
+                    alias_source="manual",
+                )
+            },
+        )
+        out = self._enrich("workspace-1b にて", fake_db)
+        assert out == "<Session: [調査] ログ確認> にて"
+
+    def test_bracket_tag_stripped_and_truncated(self, fake_db, session_registry_path):
+        long_title = "[作業] " + "あ" * (mdid.TITLE_MAX + 5)
+        _write_registry(
+            session_registry_path,
+            {"s1": _registry_entry("workspace-1b", alias="a", activity_title=long_title)},
+        )
+        out = self._enrich("workspace-1b にて", fake_db)
+        assert out == f"<Session: {'あ' * mdid.TITLE_MAX}…> にて"
+
+    def test_sanitizes_control_chars_and_fullwidth_like_derive_alias(
+        self, fake_db, session_registry_path
+    ):
+        # derive_alias() と同じ掃除 (NFKC正規化・制御文字除去・連続空白の
+        # 折り畳み) が表示名 (derived branch) にもかかることを、改行・タブ・
+        # 制御文字・全角英数字・連続空白を含むタイトルで確かめる。
+        raw_title = "[作業]  Ａ\n Ｂ\t ３\x00 定例"
+        _write_registry(
+            session_registry_path,
+            {"s1": _registry_entry("workspace-1b", alias="a", activity_title=raw_title)},
+        )
+        out = self._enrich("workspace-1b にて", fake_db)
+        assert out == "<Session: A B 3 定例> にて"
+
+    def test_sanitizes_manual_alias_like_derive_alias(self, fake_db, session_registry_path):
+        # manual branch (alias) にも同じ掃除がかかることを確かめる。
+        _write_registry(
+            session_registry_path,
+            {
+                "s1": _registry_entry(
+                    "workspace-1b",
+                    alias="Ａ\n Ｂ\t ３\x00 定例",
+                    alias_source="manual",
+                )
+            },
+        )
+        out = self._enrich("workspace-1b にて", fake_db)
+        assert out == "<Session: A B 3 定例> にて"
+
+    def test_empty_display_not_replaced(self, fake_db, session_registry_path):
+        # 角カッコの札だけで実体が無いタイトルは表示名が空になり、置換しない。
+        _write_registry(
+            session_registry_path,
+            {"s1": _registry_entry("workspace-1b", alias="a", activity_title="[作業]")},
+        )
+        text = "workspace-1b にて"
+        assert self._enrich(text, fake_db) == text
+
+    def test_inline_code_not_replaced(self, fake_db, session_registry_path):
+        _write_registry(
+            session_registry_path,
+            {"s1": _registry_entry("workspace-1b", alias="a", activity_title="[作業] foo")},
+        )
+        text = "コード内 `workspace-1b` はそのまま、地の文の workspace-1b は置換"
+        out = self._enrich(text, fake_db)
+        assert out == "コード内 `workspace-1b` はそのまま、地の文の <Session: foo> は置換"
+
+    def test_inserted_display_not_double_replaced(self, fake_db, session_registry_path):
+        # 挿入した表示名の中にセッション名リテラルが含まれていても、
+        # 単一 regex の単一パスなので再置換されない (title 自体に
+        # 'workspace-1b' を含む material を使う)。
+        conn = sqlite3.connect(fake_db)
+        conn.execute(
+            "INSERT INTO materials (id, title, retracted_at) VALUES (?, ?, ?)",
+            (5, "workspace-1b について", None),
+        )
+        conn.commit()
+        conn.close()
+        _write_registry(
+            session_registry_path,
+            {"s1": _registry_entry("workspace-1b", alias="a", activity_title="[作業] foo")},
+        )
+        text = f"see {_MN('M', 5)} here"
+        out = self._enrich(text, fake_db)
+        assert out == f"see {_MN('M', 5)} (workspace-1b について) here"
+        assert "<Session:" not in out
+
+    def test_inserted_session_display_not_double_replaced(self, fake_db, session_registry_path):
+        # 挿入した表示名 (activity_title 由来) 自体に内部IDリテラルと別の
+        # セッション名が混入していても、単一 regex の単一パスなので
+        # 再置換されない。
+        _write_registry(
+            session_registry_path,
+            {
+                "s1": _registry_entry(
+                    "workspace-1b",
+                    alias="a",
+                    activity_title=f"[作業] {_MN('M', 1)} と workspace-2c",
+                ),
+                "s2": _registry_entry("workspace-2c", alias="b", activity_title="[作業] bar"),
+            },
+        )
+        out = self._enrich("workspace-1b にて", fake_db)
+        assert out == f"<Session: {_MN('M', 1)} と workspace-2c> にて"
+        assert out.count("<Session:") == 1
+        assert "(short title)" not in out
+
+    def test_id_and_session_name_mixed_in_one_chunk(self, fake_db, session_registry_path):
+        _write_registry(
+            session_registry_path,
+            {"s1": _registry_entry("workspace-1b", alias="a", activity_title="[作業] foo")},
+        )
+        out = self._enrich(f"{_MN('M', 1)} は workspace-1b が担当", fake_db)
+        assert out == f"{_MN('M', 1)} (short title) は <Session: foo> が担当"
+
+    def test_missing_registry_file_id_enrichment_still_works(self, fake_db):
+        # session_registry_path fixture は既定で「ファイル無し」状態にする。
+        text = f"{_MN('M', 1)} と workspace-1b"
+        out = self._enrich(text, fake_db)
+        assert out == f"{_MN('M', 1)} (short title) と workspace-1b"
+
+    def test_broken_registry_json_id_enrichment_still_works(self, fake_db, session_registry_path):
+        session_registry_path.write_text("{not valid json", encoding="utf-8")
+        text = f"{_MN('M', 1)} と workspace-1b"
+        out = self._enrich(text, fake_db)
+        assert out == f"{_MN('M', 1)} (short title) と workspace-1b"
+
+    def test_updated_at_picks_newest_even_when_older_row_is_later_in_json(
+        self, fake_db, session_registry_path
+    ):
+        # dict の後勝ち (JSON上の出現順) ではなく updated_at で採用行を決める
+        # ことを保証する。newer を先, older を後の JSON 位置に置き、素朴な
+        # 「辞書の後勝ち」であれば older が勝ってしまう配置にする。
+        _write_registry(
+            session_registry_path,
+            {
+                "s1": _registry_entry(
+                    "workspace-1b",
+                    alias="a",
+                    activity_title="[作業] newer",
+                    updated_at="2026-09-27T10:00:00Z",
+                ),
+                "s2": _registry_entry(
+                    "workspace-1b",
+                    alias="b",
+                    activity_title="[作業] older",
+                    updated_at="2026-09-27T05:00:00Z",
+                ),
+            },
+        )
+        out = self._enrich("workspace-1b にて", fake_db)
+        assert out == "<Session: newer> にて"
+
+    @pytest.mark.parametrize(
+        "bad_updated_at",
+        [None, ""],
+        ids=["missing_updated_at", "empty_updated_at"],
+    )
+    def test_missing_or_empty_updated_at_does_not_outrank_row_with_timestamp(
+        self, fake_db, session_registry_path, bad_updated_at
+    ):
+        later_entry = _registry_entry(
+            "workspace-1b", alias="b", activity_title="[作業] no-timestamp"
+        )
+        if bad_updated_at is None:
+            del later_entry["updated_at"]
+        else:
+            later_entry["updated_at"] = bad_updated_at
+        _write_registry(
+            session_registry_path,
+            {
+                "s1": _registry_entry(
+                    "workspace-1b",
+                    alias="a",
+                    activity_title="[作業] has-timestamp",
+                    updated_at="2026-09-27T05:00:00Z",
+                ),
+                # updated_at が無い/空の行を JSON 上は後ろに置く (素朴な
+                # 「辞書の後勝ち」ならこちらが勝ってしまう配置)。
+                "s2": later_entry,
+            },
+        )
+        out = self._enrich("workspace-1b にて", fake_db)
+        assert out == "<Session: has-timestamp> にて"
+
+    @pytest.mark.parametrize(
+        "registry_content",
+        [
+            {"version": 1, "sessions": []},
+            {"version": 1, "sessions": None},
+            {"version": 1, "sessions": {"s1": "not a dict"}},
+            {"version": 1, "sessions": {"s1": {"name": "", "alias": "a", "alias_source": "manual"}}},
+            {"version": 1, "sessions": {"s1": {"name": 123, "alias": "a", "alias_source": "manual"}}},
+        ],
+        ids=[
+            "sessions_is_list",
+            "sessions_is_null",
+            "entry_not_dict",
+            "name_empty_string",
+            "name_not_string",
+        ],
+    )
+    def test_malformed_registry_shapes_fail_open(
+        self, fake_db, session_registry_path, registry_content
+    ):
+        session_registry_path.write_text(
+            json.dumps(registry_content, ensure_ascii=False), encoding="utf-8"
+        )
+        text = f"{_MN('M', 1)} と workspace-1b"
+        out = self._enrich(text, fake_db)
+        assert out == f"{_MN('M', 1)} (short title) と workspace-1b"
+
+    def test_equal_updated_at_keeps_first_occurrence(self, fake_db, session_registry_path):
+        _write_registry(
+            session_registry_path,
+            {
+                "s1": _registry_entry(
+                    "workspace-1b",
+                    alias="a",
+                    activity_title="[作業] first",
+                    updated_at="2026-09-27T05:00:00Z",
+                ),
+                "s2": _registry_entry(
+                    "workspace-1b",
+                    alias="b",
+                    activity_title="[作業] second",
+                    updated_at="2026-09-27T05:00:00Z",
+                ),
+            },
+        )
+        out = self._enrich("workspace-1b にて", fake_db)
+        assert out == "<Session: first> にて"
+
+    def test_id_enrichment_works_when_no_registered_name_in_chunk(
+        self, fake_db, session_registry_path
+    ):
+        # 対応表に名前があっても、chunk にその名前が部分文字列として
+        # 含まれていなければ session alternative 付き regex を経由しない
+        # 高速パスを通る。その経路でも内部IDの併記は変わらず動く。
+        _write_registry(
+            session_registry_path,
+            {"s1": _registry_entry("workspace-1b", alias="a", activity_title="[作業] foo")},
+        )
+        text = f"{_MN('M', 1)} には workspace の名前が出てこない"
+        out = self._enrich(text, fake_db)
+        assert out == f"{_MN('M', 1)} (short title) には workspace の名前が出てこない"
+
+    def test_build_pattern_skipped_when_no_registered_name_in_chunk(
+        self, fake_db, session_registry_path, monkeypatch
+    ):
+        _write_registry(
+            session_registry_path,
+            {"s1": _registry_entry("workspace-1b", alias="a", activity_title="[作業] foo")},
+        )
+        calls: list[list[str]] = []
+        original = mdid._build_pattern
+
+        def spy(names):
+            calls.append(names)
+            return original(names)
+
+        monkeypatch.setattr(mdid, "_build_pattern", spy)
+
+        self._enrich(f"{_MN('M', 1)} だけ、名前は無し", fake_db)
+        assert calls == []
+
+        self._enrich("workspace-1b にて", fake_db)
+        assert len(calls) == 1
 
 
 class TestMain:
