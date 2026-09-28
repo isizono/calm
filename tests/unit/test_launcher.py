@@ -1037,6 +1037,7 @@ class TestStdinAndRetryLoopIntegration:
     それら3つの配線を一括で保証する。
     """
 
+    @pytest.mark.timeout(20)
     def test_disconnect_reconnect_and_eof_over_real_stdin_pipe(self, monkeypatch):
         import io
         import types as std_types
@@ -1157,13 +1158,39 @@ class TestStdinAndRetryLoopIntegration:
 
             # id=2は応答後に接続が切れて2回目のbridgeも失敗扱いになるため、
             # バックオフ待ちに入った直後にstdin EOFを発生させ、
-            # 「バックオフとEOFの早い方で抜ける」（backoffを待ち切らない）ことを計測する
+            # 「バックオフとEOFの早い方で抜ける」（backoffを待ち切らない）ことを計測する。
+            #
+            # ここは意図的にloop_taskをcancelしない。readerのEOF通知が失われている
+            # 場合、loop_taskはEOFに気づけないまま次のbridge接続を開いてメッセージを
+            # 待ち続けるため、その状態でcancelすると、cancel伝播中にserver_to_stdout
+            # のfinally節がServerDisconnected（Exceptionのサブクラス）を送出し、
+            # リトライループがそれを「ただのbridge失敗」として吸収して次の接続へ
+            # 進んでしまう。この吸収が起きると、cancelを再度送らない限りタスクは
+            # 止まらず、asyncio.run()自身の終了処理（残タスクをcancelしてgatherする）
+            # まで巻き込んで無期限にハングする。そのため、ここでは自然完了を
+            # ポーリングで待つだけにし、対策が無い場合はタイムアウトで検出する
+            # （loop_taskの後始末は行わず、event loopごと捨てる）。
             eof_start = time_module.monotonic()
             os.close(write_fd)
-            await asyncio.wait_for(loop_task, timeout=5.0)
+            deadline = eof_start + 5.0
+            while not loop_task.done() and time_module.monotonic() < deadline:
+                await asyncio.sleep(0.02)
+            if not loop_task.done():
+                raise AssertionError(
+                    "stdin EOF後もリトライループが5秒以内にreturnしなかった"
+                )
+            await loop_task
             return time_module.monotonic() - eof_start
 
-        elapsed_after_eof = asyncio.run(drive())
+        # asyncio.run()は終了時に残っている全タスクをcancelしてgatherするが、
+        # 上のdrive()内コメントの理由によりそれ自体がハングしうるため、
+        # ここではeventループを手動管理し、drive()の結果だけを受け取ってから
+        # 後始末をせずにloopを閉じる（loop_taskが残っていても待ち合わせない）。
+        loop = asyncio.new_event_loop()
+        try:
+            elapsed_after_eof = loop.run_until_complete(drive())
+        finally:
+            loop.close()
         read_file.close()
 
         messages = stdout_messages()
