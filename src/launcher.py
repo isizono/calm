@@ -7,6 +7,7 @@ stdinからのJSON-RPCメッセージをStreamable HTTP経由で転送する。
 """
 import asyncio
 import atexit
+import contextlib
 import itertools
 import json
 import logging
@@ -406,22 +407,172 @@ def _cleanup():
 # =============================================
 
 
-async def _bridge() -> None:
-    """stdinからJSON-RPCメッセージを読み、HTTP POST /mcpに転送し、レスポンスをstdoutに書く。
+class _StdinBridgeState:
+    """stdin読み取りとサーバー転送キューの、bridgeリトライを跨いだ永続状態。
+
+    `_run_retry_loop` 内で1回だけ生成し、`_stdin_reader_task`（プロセス生存中
+    ずっと動く）と複数回呼ばれる`_bridge`（bridge失敗のたびに再実行される）の
+    双方から共有する。stdin側の読み取りバッファ・transportは`_stdin_reader_task`
+    のローカル変数として閉じ込め、ここでは「サーバーへ転送待ちのメッセージ」
+    「サーバーへ送信済みで応答待ちのリクエストid」「stdinがEOFに達したか」の
+    3つだけを持つ。
+    """
+
+    def __init__(self) -> None:
+        self.outbound: asyncio.Queue = asyncio.Queue()
+        self.pending_ids: set = set()
+        self.stdin_eof = asyncio.Event()
+
+
+def _message_id(message):
+    """JSONRPCMessageのroot（Request/Notification/Response/Error）からidを取り出す。
+
+    Notificationにはid自体が存在しないため、その場合はNoneを返す。
+    """
+    return getattr(message.root, "id", None)
+
+
+def _write_message_to_stdout(message) -> None:
+    """JSONRPCMessageを1行のJSONとしてstdoutに書く。"""
+    json_bytes = message.model_dump_json(by_alias=True, exclude_none=True).encode("utf-8")
+    sys.stdout.buffer.write(json_bytes + b"\n")
+    sys.stdout.buffer.flush()
+
+
+def _write_jsonrpc_error(request_id, code: int, message: str) -> None:
+    """サーバーへ転送せず、launcher自身がstdoutへJSON-RPCエラー応答を書く。"""
+    from mcp import types
+
+    _write_message_to_stdout(
+        types.JSONRPCMessage(
+            root=types.JSONRPCError(
+                jsonrpc="2.0",
+                id=request_id,
+                error=types.ErrorData(code=code, message=message),
+            )
+        )
+    )
+
+
+def _fail_pending_requests(state: "_StdinBridgeState", message: str) -> None:
+    """bridge失敗時、まだ応答の無いin-flightリクエストidそれぞれにエラーを返す。
+
+    通知（idの無いメッセージ）はそもそも`pending_ids`に載らないため対象外。
+    """
+    for request_id in list(state.pending_ids):
+        _write_jsonrpc_error(request_id, -32603, message)
+    state.pending_ids.clear()
+
+
+def _handle_stdin_line(line: bytes, state: "_StdinBridgeState") -> None:
+    """stdinの1行をJSON-RPCメッセージとしてパースし、振り分ける。
+
+    Claude Codeはinitializeより前にバージョン交渉probe（`server/discover`）を
+    送ってくることがある。MCP仕様上、このprobeにはどんなエラー応答を返しても
+    （401/403以外）clientは従来のinitializeにフォールバックするため、サーバーへ
+    転送せずlauncher自身が即座にMethod not foundで応答する。これによりHTTP
+    サーバーが未起動・再接続中でも応答できる。discoverが通知（idなし）で
+    来た場合は応答せず捨てる。
+    """
+    from mcp import types
+    from mcp.shared.message import SessionMessage
+
+    try:
+        message = types.JSONRPCMessage.model_validate_json(line)
+    except Exception:
+        logger.exception("Failed to parse stdin message")
+        return
+
+    if getattr(message.root, "method", None) == "server/discover":
+        request_id = _message_id(message)
+        if request_id is not None:
+            _write_jsonrpc_error(request_id, -32601, "Method not found")
+        return
+
+    state.outbound.put_nowait(SessionMessage(message))
+
+
+async def _wait_for_message_or_eof(state: "_StdinBridgeState"):
+    """outboundキューに次のメッセージが来るか、stdin EOFが確定するまで待つ。
+
+    キューに既にメッセージがあればそれを優先して返す。キューが空で、かつ
+    stdin EOFが確定している（＝今後も二度とメッセージが来ない）場合はNoneを返す。
+    """
+    if not state.outbound.empty():
+        return state.outbound.get_nowait()
+    get_task = asyncio.ensure_future(state.outbound.get())
+    eof_task = asyncio.ensure_future(state.stdin_eof.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            {get_task, eof_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if get_task in done:
+            return get_task.result()
+        return None
+    finally:
+        for task in (get_task, eof_task):
+            if not task.done():
+                task.cancel()
+
+
+async def _stdin_reader_task(state: "_StdinBridgeState") -> None:
+    """stdinをプロセス生存中1回だけ読み取り続ける、bridgeのリトライを跨いで
+    生きるタスク。
+
+    bridgeが失敗して再接続を試みている間も、このタスク自体は止まらない
+    （stdinのtransportをbridge失敗のたびに閉じて作り直すと、asyncioの
+    connect_read_pipeがイベントループを跨いで壊れるため）。行ごとにパースして
+    `_handle_stdin_line`に渡し、stdin EOFで終了して`state.stdin_eof`をセットする。
+    """
+    loop = asyncio.get_running_loop()
+    reader = asyncio.StreamReader()
+    transport, _ = await loop.connect_read_pipe(
+        lambda: asyncio.StreamReaderProtocol(reader),
+        sys.stdin.buffer,
+    )
+    buffer = b""
+    try:
+        while True:
+            chunk = await reader.read(65536)
+            if not chunk:
+                break
+            buffer += chunk
+            while b"\n" in buffer:
+                line, buffer = buffer.split(b"\n", 1)
+                line = line.strip()
+                if not line:
+                    continue
+                _handle_stdin_line(line, state)
+    except Exception:
+        logger.debug("stdin reader ended", exc_info=True)
+    finally:
+        if buffer.strip():
+            logger.warning(
+                f"Discarding {len(buffer)} bytes of incomplete data in stdin buffer"
+            )
+        transport.close()
+        state.stdin_eof.set()
+
+
+async def _bridge(state: "_StdinBridgeState") -> None:
+    """共有state経由でJSON-RPCメッセージをHTTP POST /mcpに転送し、レスポンスを
+    stdoutに書く。
 
     MCP SDK の streamable_http_client を利用し、ストリーム間のブリッジを行う。
-    正常終了（stdin EOF）時はreturn、サーバー側切断時はServerDisconnectedをraiseする。
+    stdinの読み取り自体は`_stdin_reader_task`が担い、ここでは`state.outbound`
+    キューから取り出してサーバーへ送るだけ（bridge失敗のたびに毎回作り直される
+    のはHTTP接続側であり、stdin側は作り直さない）。
+    正常終了（stdin EOFかつキューが空）時はreturn、サーバー側切断時は
+    ServerDisconnectedをraiseする。
     """
     # 遅延import: デーモン起動ロジックはMCP SDKに依存しないため、
     # ブリッジ実行時まで重いimportを遅延させて起動速度を確保する
     import anyio
-    from mcp import types
     from mcp.client.streamable_http import streamable_http_client
     from mcp.shared._httpx_utils import create_mcp_http_client
-    from mcp.shared.message import SessionMessage
 
     # stdin EOFとサーバー切断を区別するためのフラグ
-    # stdin EOF: stdin_to_serverが先に終了 → 正常終了
+    # stdin EOF: queue_to_serverが先に終了 → 正常終了
     # サーバー切断: server_to_stdoutが先に終了 → stdin_eofがFalse → ServerDisconnected
     stdin_eof = False
 
@@ -446,43 +597,25 @@ async def _bridge() -> None:
             terminate_on_close=True,
         ) as (read_stream, write_stream, _get_session_id):
 
-            async def stdin_to_server() -> None:
-                """stdinから1行ずつ読み、write_streamに送る。"""
+            async def queue_to_server() -> None:
+                """共有state.outboundキューから1件ずつ取り出し、write_streamに送る。
+
+                サーバーへ送るリクエスト（idあり）は`state.pending_ids`に記録する。
+                bridgeが失敗して転送できなかった分は、呼び出し側（リトライループ）が
+                `_fail_pending_requests`でエラー応答に倒す。
+                """
                 nonlocal stdin_eof
-                loop = asyncio.get_running_loop()
-                reader = asyncio.StreamReader()
-                transport, _ = await loop.connect_read_pipe(
-                    lambda: asyncio.StreamReaderProtocol(reader),
-                    sys.stdin.buffer,
-                )
                 try:
-                    buffer = b""
                     while True:
-                        chunk = await reader.read(65536)
-                        if not chunk:
+                        session_msg = await _wait_for_message_or_eof(state)
+                        if session_msg is None:
                             stdin_eof = True
                             break
-                        buffer += chunk
-                        while b"\n" in buffer:
-                            line, buffer = buffer.split(b"\n", 1)
-                            line = line.strip()
-                            if not line:
-                                continue
-                            try:
-                                message = types.JSONRPCMessage.model_validate_json(line)
-                                session_msg = SessionMessage(message)
-                                await write_stream.send(session_msg)
-                            except Exception:
-                                logger.exception("Failed to parse stdin message")
-                except Exception:
-                    stdin_eof = True  # stdin エラーも「stdin 側起因」として扱う
-                    logger.debug("stdin reader ended")
+                        msg_id = _message_id(session_msg.message)
+                        if msg_id is not None:
+                            state.pending_ids.add(msg_id)
+                        await write_stream.send(session_msg)
                 finally:
-                    if buffer.strip():
-                        logger.warning(
-                            f"Discarding {len(buffer)} bytes of incomplete data in stdin buffer"
-                        )
-                    transport.close()
                     await write_stream.aclose()
 
             async def server_to_stdout() -> None:
@@ -493,6 +626,7 @@ async def _bridge() -> None:
                 読み取り中に例外オブジェクトを MAX_CONSECUTIVE_STREAM_EXCEPTIONS 回
                 連続して受け取った場合は、ストリームが実質的に沈黙していると判断し
                 ループを自発的に打ち切る（finally節が同様に ServerDisconnected へ倒す）。
+                応答を書いたリクエストのidは`state.pending_ids`から取り除く。
                 """
                 consecutive_exceptions = 0
                 try:
@@ -509,12 +643,10 @@ async def _bridge() -> None:
                             continue
                         consecutive_exceptions = 0
                         message = session_msg_or_exc.message
-                        json_bytes = message.model_dump_json(
-                            by_alias=True, exclude_none=True
-                        ).encode("utf-8")
-
-                        sys.stdout.buffer.write(json_bytes + b"\n")
-                        sys.stdout.buffer.flush()
+                        resp_id = _message_id(message)
+                        if resp_id is not None:
+                            state.pending_ids.discard(resp_id)
+                        _write_message_to_stdout(message)
                 except anyio.ClosedResourceError:
                     pass
                 except Exception:
@@ -539,7 +671,7 @@ async def _bridge() -> None:
                     await anyio.to_thread.run_sync(_register_session)
 
             async def io_tasks() -> None:
-                """stdin_to_server / server_to_stdout をまとめて実行する。
+                """queue_to_server / server_to_stdout をまとめて実行する。
 
                 この内側 task group が例外なく完了するのは stdin EOF による
                 正常終了時のみ（サーバー切断時は server_to_stdout が
@@ -549,17 +681,17 @@ async def _bridge() -> None:
                 外側 tg の cancel_scope を明示的にキャンセルして道連れにする。
 
                 stdin EOF後、server_to_stdout が STDIN_EOF_GRACE_SEC 以内に自発終了
-                しない場合（サーバー側がストリームを閉じない「沈黙ゾンビ化」、
-                M#725）、eof_watchdog が io_tg 自体をキャンセルして強制退場する。
+                しない場合（サーバー側がストリームを閉じない「沈黙ゾンビ化」）、
+                eof_watchdog が io_tg 自体をキャンセルして強制退場する。
                 この経路では stdin_eof が既に True のため、server_to_stdout の
                 finally 節は ServerDisconnected を raise しない（意図的な正常終了）。
                 """
                 stdin_done = anyio.Event()
                 stdout_done = anyio.Event()
 
-                async def stdin_to_server_wrapper() -> None:
+                async def queue_to_server_wrapper() -> None:
                     try:
-                        await stdin_to_server()
+                        await queue_to_server()
                     finally:
                         stdin_done.set()
 
@@ -581,7 +713,7 @@ async def _bridge() -> None:
                     io_tg.cancel_scope.cancel()
 
                 async with anyio.create_task_group() as io_tg:
-                    io_tg.start_soon(stdin_to_server_wrapper)
+                    io_tg.start_soon(queue_to_server_wrapper)
                     io_tg.start_soon(server_to_stdout_wrapper)
                     io_tg.start_soon(eof_watchdog)
                 tg.cancel_scope.cancel()
@@ -591,12 +723,73 @@ async def _bridge() -> None:
                 tg.start_soon(heartbeat_loop)
 
 
-def main() -> None:
-    """ランチャーのメインエントリーポイント
+async def _run_retry_loop() -> None:
+    """1つのイベントループ内でstdin読み取りとbridgeのリトライ全体を回す。
+
+    stdinの`StreamReader`/transportは`_stdin_reader_task`としてここで1回だけ
+    起動し、bridge（`_bridge`）が何度失敗しても作り直さない。asyncio の
+    transport は生成したイベントループでしか使えないため、bridge のたびに
+    `asyncio.run`をやり直すとstdinの再接続が壊れる（作り直すべきなのはHTTP接続
+    側だけ）。
 
     サーバー側切断時は自動でリトライする。MAX_RETRIES が None なら無限、
     数値指定なら最大 MAX_RETRIES 回。stdin EOF（Claude Code終了）時は即座に終了する。
     """
+    state = _StdinBridgeState()
+    reader_task = asyncio.ensure_future(_stdin_reader_task(state))
+    try:
+        max_retries = MAX_RETRIES
+        retries_label = "inf" if max_retries is None else str(max_retries)
+
+        for attempt in itertools.count():
+            # 1. HTTPサーバーの起動確認（ローカルのみ。リモートはOAuth等の制約があるためスキップ）
+            if _IS_LOCAL and not await asyncio.to_thread(_ensure_server_running):
+                logger.error("Failed to ensure HTTP server is running")
+                sys.exit(1)
+
+            # 2. セッション登録（ローカル/リモート問わず試行する）。
+            #    ローカルは登録失敗を致命エラーとして扱う（ローカルサーバーは常に
+            #    このAPIを持つため、失敗は異常事態）。リモートは接続先がセッション
+            #    APIを持たない場合があるため、警告ログのみで続行する（bridge identity
+            #    ヘッダによる declaration/inbox 安定化自体はセッション登録の成否に
+            #    依存しない。ただしこの場合 lease_loop の生存ゲート対象には含まれない）。
+            registered = await asyncio.to_thread(_register_session)
+            if _IS_LOCAL and not registered:
+                logger.error("Failed to register session")
+                sys.exit(1)
+            if not _IS_LOCAL and not registered:
+                logger.warning(
+                    "Session register failed (destination may not support "
+                    "the session API); continuing without liveness heartbeat"
+                )
+
+            # 3. stdio <-> HTTP ブリッジ起動
+            try:
+                await _bridge(state)
+                break  # stdin EOF → 正常終了
+            except Exception as e:
+                # anyioのExceptionGroupによりServerDisconnectedが直接キャッチできない
+                # ケースがあるため、例外の種類を問わず統一的にリトライする。
+                # このbridge実行中に送信済みで応答の無かったリクエストへは、
+                # リトライの成否に関わらずここでエラー応答を返す。
+                _fail_pending_requests(state, "CALM server connection lost")
+                if max_retries is not None and attempt >= max_retries:
+                    logger.error("Bridge failed, max retries (%d) exceeded: %s", max_retries, e)
+                    break
+                backoff = min(2 ** (attempt + 1), BACKOFF_CAP_SEC)
+                logger.warning(
+                    "Bridge failed (%s), retrying in %ds (%d/%s)",
+                    e, backoff, attempt + 1, retries_label,
+                )
+                await asyncio.sleep(backoff)
+    finally:
+        reader_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await reader_task
+
+
+def main() -> None:
+    """ランチャーのメインエントリーポイント"""
     # ログ設定（stderrへ出力、stdoutはMCPプロトコル用）
     logging.basicConfig(
         level=logging.INFO,
@@ -625,49 +818,10 @@ def main() -> None:
     if not _IS_LOCAL:
         logger.info("Remote mode: connecting to %s", MCP_ENDPOINT)
 
-    max_retries = MAX_RETRIES
-    retries_label = "inf" if max_retries is None else str(max_retries)
-
-    for attempt in itertools.count():
-        # 1. HTTPサーバーの起動確認（ローカルのみ。リモートはOAuth等の制約があるためスキップ）
-        if _IS_LOCAL and not _ensure_server_running():
-            logger.error("Failed to ensure HTTP server is running")
-            sys.exit(1)
-
-        # 2. セッション登録（ローカル/リモート問わず試行する）。
-        #    ローカルは登録失敗を致命エラーとして扱う（ローカルサーバーは常に
-        #    このAPIを持つため、失敗は異常事態）。リモートは接続先がセッション
-        #    APIを持たない場合があるため、警告ログのみで続行する（bridge identity
-        #    ヘッダによる declaration/inbox 安定化自体はセッション登録の成否に
-        #    依存しない。ただしこの場合 lease_loop の生存ゲート対象には含まれない）。
-        registered = _register_session()
-        if _IS_LOCAL and not registered:
-            logger.error("Failed to register session")
-            sys.exit(1)
-        if not _IS_LOCAL and not registered:
-            logger.warning(
-                "Session register failed (destination may not support "
-                "the session API); continuing without liveness heartbeat"
-            )
-
-        # 3. stdio <-> HTTP ブリッジ起動
-        try:
-            asyncio.run(_bridge())
-            break  # stdin EOF → 正常終了
-        except KeyboardInterrupt:
-            break
-        except Exception as e:
-            # anyioのExceptionGroupによりServerDisconnectedが直接キャッチできない
-            # ケースがあるため、例外の種類を問わず統一的にリトライする
-            if max_retries is not None and attempt >= max_retries:
-                logger.error("Bridge failed, max retries (%d) exceeded: %s", max_retries, e)
-                break
-            backoff = min(2 ** (attempt + 1), BACKOFF_CAP_SEC)
-            logger.warning(
-                "Bridge failed (%s), retrying in %ds (%d/%s)",
-                e, backoff, attempt + 1, retries_label,
-            )
-            time.sleep(backoff)
+    try:
+        asyncio.run(_run_retry_loop())
+    except KeyboardInterrupt:
+        pass
 
     _cleanup()
 
