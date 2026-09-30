@@ -441,9 +441,11 @@ class TestWaitLimitAndFailures:
         os.killは「常に生存」を返す偽物にしておく。直接os.kill(pid, 0)を
         呼ぶ実装に戻っていたら、この偽物は例外を投げないため死亡を検知
         できず、通常のDBポーリング経路（sleepが呼ばれる）に落ちてしまう。
-        main()は例外をすべて握って0を返すため、os.kill側を例外にする形では
-        両実装を区別できない（is_process_alive経由のPermissionError処理は
-        「握って別経路へ落ちる」向きではなく「生存扱いにする」向きのため）。
+        os.killを例外にする形では両実装を区別できない: POSIXの
+        psutil.pid_existsは内部でos.kill(pid, 0)を呼ぶため、is_process_alive
+        経由でも直書きでも同じ例外で「死亡」と判定されてしまう。main()は
+        例外をすべて握って0を返すため、検出用の例外を投げさせる形もそもそも
+        使えない。
         """
         result = _make_ask(session_id="sess-1")
         monkeypatch.setenv("CLAUDE_PID", "424242")
