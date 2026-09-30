@@ -1,0 +1,80 @@
+name: Windows
+
+on:
+  push:
+    branches: [feat/windows-support]
+  pull_request:
+
+jobs:
+  windows-repro:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Report Python locale and ANSI codepage
+        shell: pwsh
+        run: |
+          python -c "import locale, sys; print(locale.getencoding(), sys.stdout.encoding, sys.flags.utf8_mode)"
+          Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\Nls\CodePage | Select-Object ACP, OEMCP
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+          save-cache: false
+          python-version: "3.12"
+
+      - name: Install Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "lts/*"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      # 各ステップはcontinue-on-errorでも通し、Windowsで壊れている箇所の一覧を
+      # 1回のCI実行でまとめて取る。フルスイートは対象外
+      # (修正前コードのos.kill(pid, 0)がWindowsではCtrl+Cの送信になるため、
+      # 無関係なテストまで自分自身を止めてしまう恐れがある)。
+      - name: R2 - import src.main
+        id: test-import
+        continue-on-error: true
+        run: uv run pytest --confcutdir=tests/windows tests/windows/test_windows_import.py -v
+
+      - name: R1 - launcher stdio bridge
+        id: test-launcher
+        continue-on-error: true
+        run: uv run pytest --confcutdir=tests/windows tests/windows/test_windows_launcher_stdio.py -v
+
+      - name: R3/R7/R8 - non-UTF-8 locale encoding
+        id: test-encoding
+        continue-on-error: true
+        run: uv run pytest --confcutdir=tests/windows tests/windows/test_windows_encoding.py -v
+
+      - name: R6 - hooks.json shell execution
+        id: test-hooks
+        continue-on-error: true
+        run: uv run pytest --confcutdir=tests/windows tests/windows/test_windows_hooks.py -v
+
+      - name: Summarize results
+        if: always()
+        shell: pwsh
+        run: |
+          $steps = @{
+            "R2 import src.main"              = "${{ steps.test-import.outcome }}"
+            "R1 launcher stdio bridge"         = "${{ steps.test-launcher.outcome }}"
+            "R3/R7/R8 non-UTF-8 locale"        = "${{ steps.test-encoding.outcome }}"
+            "R6 hooks.json shell execution"    = "${{ steps.test-hooks.outcome }}"
+          }
+          $failed = @()
+          foreach ($name in $steps.Keys) {
+            $outcome = $steps[$name]
+            "$name : $outcome" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            if ($outcome -ne "success") { $failed += $name }
+          }
+          if ($failed.Count -gt 0) {
+            Write-Host "Failing repro groups: $($failed -join ', ')"
+            exit 1
+          }
