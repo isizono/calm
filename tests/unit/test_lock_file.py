@@ -146,6 +146,17 @@ class TestIsProcessAlive:
 
         assert lock_file.is_process_alive(1234) is True
 
+    def test_relies_on_psutil_pid_exists_not_os_kill(self, monkeypatch):
+        """生死判定がpsutil.pid_exists経由であり、os.kill直書きでないことを確かめる。
+
+        自プロセス（実在し、os.kill(pid, 0)なら必ず成功する）でも
+        psutil.pid_existsがFalseと言えばFalseになることを確認する。
+        os.kill(pid, 0)の直接呼び出しに戻すと、実在するpidなのでkillが
+        成功してしまい、この結果はTrueのままになる。
+        """
+        monkeypatch.setattr(lock_file.psutil, "pid_exists", lambda pid: False)
+        assert lock_file.is_process_alive(os.getpid()) is False
+
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="os.fork()はPOSIX専用")
 class TestIsProcessAliveZombie:
@@ -182,6 +193,20 @@ class TestIsProcessAliveZombie:
 
     def test_is_zombie_false_for_normal_alive_process(self):
         """通常の生存プロセス（自プロセス）は_is_zombieがFalseを返す"""
+        assert lock_file._is_zombie(os.getpid()) is False
+
+    def test_is_zombie_skips_status_check_on_windows(self, monkeypatch):
+        """Windowsではpsutil.Process().status()を呼ばず常にFalseを返す。
+
+        psutil.Processが呼ばれたら失敗させることで、実際に呼ばれていない
+        ことを確認する。
+        """
+        monkeypatch.setattr(lock_file.sys, "platform", "win32")
+
+        def _boom(pid):
+            raise AssertionError("Windowsではstatus確認のためにpsutil.Processを呼んではいけない")
+
+        monkeypatch.setattr(lock_file.psutil, "Process", _boom)
         assert lock_file._is_zombie(os.getpid()) is False
 
 

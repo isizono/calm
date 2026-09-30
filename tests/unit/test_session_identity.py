@@ -140,6 +140,18 @@ class TestGetPpidReal:
     def test_none_for_nonexistent_pid(self):
         assert session_identity._get_ppid(999999999) is None
 
+    def test_resolves_without_ps_command_on_path(self, monkeypatch):
+        """psコマンドが引けない状態でも解決できることを確かめる。
+
+        Windowsのネイティブ環境にはpsが無いため、`ps`をサブプロセスで呼ぶ
+        実装に戻っていた場合、常にNoneになってしまう（psutilはpsを呼ばない）。
+        PATHを空文字にしてpsを引けなくした状態で確認する（PATH自体を
+        unsetすると、環境によってはos.defpathへフォールバックしてpsが
+        見つかってしまい、この退行を検出できない）。
+        """
+        monkeypatch.setenv("PATH", "")
+        assert session_identity._get_ppid(os.getpid()) == os.getppid()
+
 
 @pytest.fixture
 def sessions_state_dir(tmp_path, monkeypatch):

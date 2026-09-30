@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import socket
+import sys
 from pathlib import Path
 from typing import Optional, TypedDict
 
@@ -134,7 +135,12 @@ def _is_zombie(pid: int) -> bool:
 
     プロセス消滅・権限不足で判定できない場合は「ゾンビではない」扱いにする
     （「わからない」を安全側＝生存扱いに倒し、正常プロセスの誤stale化を避ける）。
+    Windowsのpsutil.status()はSTOPPED/RUNNINGしか返さずゾンビ概念自体が
+    無い（常にFalse）ため、判定のためだけに全プロセスを列挙するコストを
+    避けて先に返す。
     """
+    if sys.platform == "win32":
+        return False
     try:
         return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
     except (psutil.NoSuchProcess, psutil.AccessDenied):
