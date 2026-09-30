@@ -268,6 +268,18 @@ class TestAddActivity:
         intent_tags = [i["tag"] for i in result["available_intents"]]
         assert "intent:testalias" not in intent_tags
 
+    def test_add_activity_omits_available_intents_when_intent_given(self, temp_db):
+        """tagsにintent:が含まれていればavailable_intentsを返さない"""
+        result = add_activity(
+            title="Activity",
+            description="Desc",
+            tags=["domain:test", "intent:investigate"],
+            check_in=False,
+        )
+
+        assert "error" not in result
+        assert "available_intents" not in result
+
 
 class TestGetActivities:
     """get_activitiesの統合テスト"""
