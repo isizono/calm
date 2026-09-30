@@ -5,7 +5,6 @@ ask_serviceの実関数（add_ask/answer_ask/triage_ask/withdraw_ask/
 unsubscribe_ask）で作る。main()のsleep/now引数を差し替え、sleepの副作用
 としてDBを変化させることで「待機中に回答された」を再現する。
 """
-import fcntl
 import io
 import json
 import os
@@ -13,6 +12,7 @@ import sqlite3
 import time
 from unittest.mock import patch
 
+import filelock
 import pytest
 
 from hooks import ask_answer_rewake_hook as hook
@@ -336,8 +336,8 @@ class TestDoubleWaitPrevention:
         lock_dir = tmp_path / "state" / "ask_rewake"
         lock_dir.mkdir(parents=True)
         lock_path = lock_dir / f"sess-1_{ask_id}.lock"
-        lock_fh = open(lock_path, "a+")
-        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        other_lock = filelock.FileLock(str(lock_path), timeout=0)
+        other_lock.acquire()
         try:
             payload = _stdin_payload(session_id="sess-1", tool_response=json.dumps(result))
             sleep, now = _stub_sleep_and_clock()
@@ -345,7 +345,7 @@ class TestDoubleWaitPrevention:
             assert code == 0
             assert sleep.calls == []
         finally:
-            lock_fh.close()
+            other_lock.release()
 
     def test_lock_held_throughout_wait(self, db, tmp_path):
         """待機ループの間ずっと同じロックを保持し続けることを確かめる。
@@ -367,16 +367,14 @@ class TestDoubleWaitPrevention:
 
         def _probe_lock_then_answer():
             lock_path.parent.mkdir(parents=True, exist_ok=True)
-            probe_fh = open(lock_path, "a+")
+            probe = filelock.FileLock(str(lock_path), timeout=0)
             try:
-                fcntl.flock(probe_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
+                probe.acquire()
+            except filelock.Timeout:
                 could_acquire.append(False)
             else:
                 could_acquire.append(True)
-                fcntl.flock(probe_fh.fileno(), fcntl.LOCK_UN)
-            finally:
-                probe_fh.close()
+                probe.release()
             ask_service.answer_ask(ask_id, "answer body")
 
         payload = _stdin_payload(session_id="sess-1", tool_response=json.dumps(result))
@@ -496,21 +494,33 @@ class TestStaleLockCleanup:
 
         result = _make_ask(session_id="sess-1")
         ask_id = result["id"]
+        own_lock_path = lock_dir / f"sess-1_{ask_id}.lock"
+        own_lock_exists_while_held = []
+
+        def _check_own_lock_then_answer():
+            own_lock_exists_while_held.append(own_lock_path.exists())
+            ask_service.answer_ask(ask_id, "answer body")
+
         payload = _stdin_payload(session_id="sess-1", tool_response=json.dumps(result))
-        sleep, now = _stub_sleep_and_clock(lambda: ask_service.answer_ask(ask_id, "answer body"))
+        sleep, now = _stub_sleep_and_clock(_check_own_lock_then_answer)
         code, stderr = _run_hook(payload, sleep=sleep, now=now)
 
         assert code == 2
         assert f"#{ask_id}" in stderr
         assert not stale_path.exists()
         assert fresh_path.exists()
-        assert (lock_dir / f"sess-1_{ask_id}.lock").exists()
+        # 保持中は自分のロックファイルも存在する(掃除で消えていない)ことを、
+        # 解放後の存在で見るとfilelockのPOSIX/Windows非対称(モジュール
+        # docstring参照)に影響されるため、保持中(sleepの副作用)に確認する。
+        assert own_lock_exists_while_held == [True]
 
     def test_reacquiring_existing_lock_refreshes_mtime(self, db, tmp_path):
         """openだけではmtimeが動かないため、取得時に明示的に更新している
         ことを確かめる。更新していないと、同じ(session_id, ask_id)の
         ロックファイルを長時間保持し続けた場合に「古い」と誤判定され、
-        まだ生きているのに掃除で消される恐れがある。"""
+        まだ生きているのに掃除で消される恐れがある。ロック保持中(sleepの
+        副作用)にmtimeを見る: filelockはPOSIXでは解放時にファイルを削除
+        するため、解放後の存在・mtimeでは検証できない。"""
         result = _make_ask(session_id="sess-1")
         ask_id = result["id"]
         lock_dir = tmp_path / "state" / "ask_rewake"
@@ -521,12 +531,18 @@ class TestStaleLockCleanup:
         old_mtime = time.time() - hook.STALE_LOCK_AGE_SECONDS + 3600
         os.utime(own_lock_path, (old_mtime, old_mtime))
 
+        mtime_while_held = []
+
+        def _check_mtime_then_answer():
+            mtime_while_held.append(own_lock_path.stat().st_mtime)
+            ask_service.answer_ask(ask_id, "answer body")
+
         payload = _stdin_payload(session_id="sess-1", tool_response=json.dumps(result))
-        sleep, now = _stub_sleep_and_clock(lambda: ask_service.answer_ask(ask_id, "answer body"))
+        sleep, now = _stub_sleep_and_clock(_check_mtime_then_answer)
         code, stderr = _run_hook(payload, sleep=sleep, now=now)
 
         assert code == 2
-        assert own_lock_path.stat().st_mtime > old_mtime + 3000
+        assert mtime_while_held and mtime_while_held[0] > old_mtime + 3000
 
 
 class TestCallerFiltering:

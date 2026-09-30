@@ -1,7 +1,7 @@
 """hooks/recorder_autostart_hook.py のユニットテスト。
 
 subprocess.Popen（記録役の起動・古い記録役の停止はいずれも切り離した
-`scripts/recorder.py`プロセスとして起動される）とps（`process_start_
+`scripts/recorder.py`プロセスとして起動される）とpsutil（`process_start_
 signature`が内部で呼ぶ）を外部境界としてmonkeypatchし、呼び出しの
 有無・引数・順序を検証する。実際のtmux/claudeプロセスは一切起動しない。
 """
@@ -21,10 +21,17 @@ _SID = "main-session-current"
 _PID = 11111
 _TRANSCRIPT = "/Users/x/.claude/projects/proj/main-session-current.jsonl"  # 実在しないパス
 
-# process_start_signature（ps -o lstart=）の既定の戻り値。current_pidと
-# 一致するrun.jsonのmain_pid_started_atにもこの値を使うことで、「同一
-# プロセス」として一致させる。
+# process_start_signatureの既定の戻り値。current_pidと一致するrun.jsonの
+# main_pid_started_atにもこの値を使うことで、「同一プロセス」として一致させる。
 _STARTED_AT = "Thu Jul 24 09:32:04 2026"
+
+
+class _FakeProcess:
+    def __init__(self, signature: str):
+        self._signature = signature
+
+    def create_time(self):
+        return self._signature
 
 
 @pytest.fixture(autouse=True)
@@ -34,10 +41,7 @@ def _isolate_state(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ATTENDED", "1")
     monkeypatch.setenv("CLAUDE_PID", str(_PID))
 
-    def _fake_ps(cmd, **kwargs):
-        return subprocess.CompletedProcess(cmd, 0, stdout=f"{_STARTED_AT}\n", stderr="")
-
-    monkeypatch.setattr(process_signature.subprocess, "run", _fake_ps)
+    monkeypatch.setattr(process_signature.psutil, "Process", lambda pid: _FakeProcess(_STARTED_AT))
 
 
 @pytest.fixture
@@ -98,6 +102,13 @@ def _run_hook(*, session_id: str = _SID, transcript_path: str = _TRANSCRIPT, cwd
 
 class TestGating:
     """spec 1・5: CALM_RECORDER・対話判定のゲート。"""
+
+    def test_noop_on_windows_even_when_calm_recorder_set(self, monkeypatch, calls):
+        """記録役はtmux前提でWindowsには未対応。CALM_RECORDER=1でも起動しない。"""
+        monkeypatch.setattr(hook.sys, "platform", "win32")
+        code = _run_hook()
+        assert code == 0
+        assert calls == []
 
     def test_noop_when_calm_recorder_unset(self, monkeypatch, calls):
         monkeypatch.delenv("CALM_RECORDER", raising=False)

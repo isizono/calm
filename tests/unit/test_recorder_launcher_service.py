@@ -1,10 +1,9 @@
 """src/services/recorder_launcher_service.py の単体テスト。
 
-subprocess呼び出し(tmux・ps)を外部境界としてmonkeypatchする。ps呼び出しは
-write_marker/process_start_signature経由でも呼ばれるため、コマンド種別で
-振り分けて両方を成立させる（tests/unit/test_recorder_watch.pyと同じ方針）。
-ファイルシステム状態（settings.json・mcp.json・run.json・cursor.json）は
-実際に書かれうる形で検証する。
+subprocess呼び出し(tmux)とpsutil呼び出し(write_marker/process_start_
+signature経由)を外部境界としてmonkeypatchする。ファイルシステム状態
+（settings.json・mcp.json・run.json・cursor.json）は実際に書かれうる形で
+検証する。
 """
 import ast
 import json
@@ -17,7 +16,16 @@ import pytest
 from hooks import recorder_watch as watch_hook
 from hooks.hook_state import HookState
 from hooks.recorder_marker import is_recorder_attached, marker_path, remove_marker, write_marker
+from src.infra import process_signature
 from src.services import recorder_launcher_service as svc
+
+
+class _FakeProcess:
+    def __init__(self, signature: str):
+        self._signature = signature
+
+    def create_time(self):
+        return self._signature
 
 _FAKE_PS_STARTED_AT = "Thu Jul 24 09:32:04 2026"
 _MAIN_SID = "main-session-abcdefgh"
@@ -51,7 +59,8 @@ def _isolate_state(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _mock_subprocess(monkeypatch):
-    """tmux/psをコマンド種別で振り分ける。呼び出し履歴はtmuxの分だけ記録する。"""
+    """tmuxはsubprocess.run、起動時刻はpsutil.Processをモックする。
+    呼び出し履歴はtmuxの分だけ記録する。"""
     tmux_calls: list[list[str]] = []
 
     def _fake_run(cmd, **kwargs):
@@ -60,11 +69,12 @@ def _mock_subprocess(monkeypatch):
             if cmd[1] == "display-message":
                 return subprocess.CompletedProcess(cmd, 0, stdout=f"{_PANE_PID}\n", stderr="")
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        if cmd and cmd[0] == "ps":
-            return subprocess.CompletedProcess(cmd, 0, stdout=_FAKE_PS_STARTED_AT + "\n", stderr="")
         raise AssertionError(f"unexpected subprocess call: {cmd}")
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
+    monkeypatch.setattr(
+        process_signature.psutil, "Process", lambda pid: _FakeProcess(_FAKE_PS_STARTED_AT)
+    )
     return tmux_calls
 
 
@@ -410,6 +420,21 @@ def _fixed_sid_factory(value: str):
 
 
 class TestStart:
+    def test_windows_returns_unsupported_without_touching_tmux(
+        self, calm_root, tmp_path, monkeypatch, _mock_subprocess
+    ):
+        """記録役はtmux前提でWindowsには未対応。tmuxには一切触れず即座に返す。"""
+        monkeypatch.setattr(svc.sys, "platform", "win32")
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", _MAIN_SID)
+        monkeypatch.setenv("CLAUDE_PID", str(_MAIN_PID))
+        transcript = tmp_path / "t.jsonl"
+        _write_jsonl(transcript, [_entry("u1")])
+
+        result = svc.start(calm_root=calm_root, transcript=str(transcript))
+
+        assert result == {"started": False, "reason": "windows unsupported"}
+        assert _mock_subprocess == []
+
     def test_happy_path_creates_run_dir_contents_and_marker(self, calm_root, tmp_path, monkeypatch):
         monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", _MAIN_SID)
         monkeypatch.setenv("CLAUDE_PID", str(_MAIN_PID))

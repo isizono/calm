@@ -7,9 +7,10 @@ import json
 import logging
 import os
 import socket
-import subprocess
 from pathlib import Path
 from typing import Optional, TypedDict
+
+import psutil
 
 logger = logging.getLogger(__name__)
 
@@ -122,35 +123,22 @@ def release() -> None:
 def is_process_alive(pid: int) -> bool:
     """指定PIDのプロセスが生存しているか確認する。
 
-    ゾンビ（defunct）プロセスは `os.kill(pid, 0)` が成功してしまい誤って
-    「生存中」と判定されるため、別途 `_is_zombie()` でstat確認して死亡扱いにする。
+    ゾンビ（defunct）プロセスはpsutilの存在確認だけでは「生存中」と判定
+    されてしまうため、別途 `_is_zombie()` でstatusを確認して死亡扱いにする。
     """
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        # プロセスは存在するが権限がない → 生存している
-        return True
-    return not _is_zombie(pid)
+    return psutil.pid_exists(pid) and not _is_zombie(pid)
 
 
 def _is_zombie(pid: int) -> bool:
-    """`ps -o stat= -p <pid>` の出力がZ（zombie）で始まるか確認する。
+    """psutilのstatusがゾンビ（zombie）かを確認する。
 
-    ps自体が失敗・タイムアウトした場合は判定不能として「ゾンビではない」扱いにする
+    プロセス消滅・権限不足で判定できない場合は「ゾンビではない」扱いにする
     （「わからない」を安全側＝生存扱いに倒し、正常プロセスの誤stale化を避ける）。
     """
     try:
-        result = subprocess.run(
-            ["ps", "-o", "stat=", "-p", str(pid)],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (subprocess.TimeoutExpired, OSError):
+        return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
         return False
-    return result.stdout.strip().startswith("Z")
 
 
 def is_port_listening(port: int, host: str = "localhost", timeout: float = 1.0) -> bool:

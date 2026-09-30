@@ -346,6 +346,10 @@ def start(
     projects_root: Path | None = None,
     sid_factory=lambda: str(uuid.uuid4()),
 ) -> dict[str, Any]:
+    if sys.platform == "win32":
+        # tmuxに依存するためWindowsには未対応。
+        return {"started": False, "reason": "windows unsupported"}
+
     main_sid = resolve_main_sid(session_id)
 
     if is_recorder_attached(main_sid):

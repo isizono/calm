@@ -131,6 +131,16 @@ def _fake_ppid_chain(monkeypatch, graph: dict[int, int | None]):
     monkeypatch.setattr(session_identity, "_get_ppid", lambda pid: graph.get(pid))
 
 
+class TestGetPpidReal:
+    """_get_ppid自体はモックせず、psutil経由の実際の親pid解決を検証する。"""
+
+    def test_returns_real_parent_pid_of_self(self):
+        assert session_identity._get_ppid(os.getpid()) == os.getppid()
+
+    def test_none_for_nonexistent_pid(self):
+        assert session_identity._get_ppid(999999999) is None
+
+
 @pytest.fixture
 def sessions_state_dir(tmp_path, monkeypatch):
     """RELAY_STATE_DIR をtmp_pathに差し替え、_sessions_dir()を隔離する。"""

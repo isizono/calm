@@ -133,6 +133,19 @@ class TestIsProcessAlive:
         """存在しないPIDはFalse"""
         assert lock_file.is_process_alive(99999999) is False
 
+    def test_alive_when_status_check_is_permission_denied(self, monkeypatch):
+        """存在は確認できるがstatus取得だけ権限不足な場合は生存扱いにする"""
+        import psutil
+
+        monkeypatch.setattr(lock_file.psutil, "pid_exists", lambda pid: True)
+
+        def raise_access_denied(pid):
+            raise psutil.AccessDenied(pid)
+
+        monkeypatch.setattr(lock_file.psutil, "Process", raise_access_denied)
+
+        assert lock_file.is_process_alive(1234) is True
+
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="os.fork()はPOSIX専用")
 class TestIsProcessAliveZombie:

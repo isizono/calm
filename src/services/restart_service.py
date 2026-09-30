@@ -20,6 +20,7 @@ from typing import NamedTuple
 from src.env_compat import env_get, env_set
 from src.http_config import HTTP_PORT
 from src.infra.git_repo import resolve_main_repo_root
+from src.infra.lock_file import is_process_alive
 from src.infra.process_signature import process_start_signature
 from src.services.embedding_service import PORT as EMBEDDING_SERVER_PORT
 
@@ -55,17 +56,6 @@ def find_listen_pids(port: int) -> list[int]:
     return sorted({int(p) for p in result.stdout.split() if p.strip()})
 
 
-def _process_alive(pid: int) -> bool:
-    """シグナル0の送信でプロセスの生死を確認する(実際にはシグナルを送らない)。"""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
 def kill_pids(
     pids: list[int],
     *,
@@ -84,10 +74,10 @@ def kill_pids(
             pass
 
     deadline = time.monotonic() + escalate_after_sec
-    remaining = {pid for pid in pids if _process_alive(pid)}
+    remaining = {pid for pid in pids if is_process_alive(pid)}
     while remaining and time.monotonic() < deadline:
         time.sleep(poll_interval_sec)
-        remaining = {pid for pid in remaining if _process_alive(pid)}
+        remaining = {pid for pid in remaining if is_process_alive(pid)}
 
     for pid in remaining:
         try:

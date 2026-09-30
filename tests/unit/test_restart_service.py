@@ -69,68 +69,16 @@ def test_find_listen_pids_dedupes_and_sorts(monkeypatch):
     assert restart_service.find_listen_pids(52837) == [1234, 5678]
 
 
-def test_process_start_signature_returns_stripped_lstart_output(monkeypatch):
-    captured_cmd = []
-
-    def fake_run(cmd, **kwargs):
-        captured_cmd.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, stdout="  Thu Jul 24 09:32:04 2026  \n", stderr="")
-
-    monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
-
-    signature = restart_service.process_start_signature(1234)
-
-    assert signature == "Thu Jul 24 09:32:04 2026"
-    assert captured_cmd == [["ps", "-o", "lstart=", "-p", "1234"]]
-
-
-def test_process_start_signature_none_for_dead_process(monkeypatch):
-    def fake_run(cmd, **kwargs):
-        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="ps: 1234: No such process")
-
-    monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
-
-    assert restart_service.process_start_signature(1234) is None
-
-
-def test_process_start_signature_none_on_timeout(monkeypatch):
-    def fake_run(cmd, **kwargs):
-        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
-
-    monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
-
-    assert restart_service.process_start_signature(1234) is None
-
-
-def test_process_alive_false_when_process_lookup_error(monkeypatch):
-    def fake_kill(pid, sig):
-        raise ProcessLookupError
-
-    monkeypatch.setattr(restart_service.os, "kill", fake_kill)
-
-    assert restart_service._process_alive(1234) is False
-
-
-def test_process_alive_true_when_permission_denied(monkeypatch):
-    """権限エラーは「シグナルは送れないが存在はする」ことを意味するため生存扱いにする"""
-    def fake_kill(pid, sig):
-        raise PermissionError
-
-    monkeypatch.setattr(restart_service.os, "kill", fake_kill)
-
-    assert restart_service._process_alive(1234) is True
-
-
 def test_kill_pids_sends_sigterm_only_when_process_dies_promptly(monkeypatch):
     """SIGTERMだけで終了する場合はSIGKILLへエスカレーションしない"""
     signals_sent = []
 
     def fake_kill(pid, sig):
-        if sig == 0:
-            raise ProcessLookupError  # 生存確認: SIGTERM後すぐ死んだ想定
         signals_sent.append((pid, sig))
 
     monkeypatch.setattr(restart_service.os, "kill", fake_kill)
+    # 生存確認: SIGTERM後すぐ死んだ想定
+    monkeypatch.setattr(restart_service, "is_process_alive", lambda pid: False)
 
     restart_service.kill_pids([1234])
 
@@ -142,9 +90,10 @@ def test_kill_pids_escalates_to_sigkill_when_process_survives_sigterm(monkeypatc
     signals_sent = []
 
     def fake_kill(pid, sig):
-        signals_sent.append((pid, sig))  # sig=0(生存確認)も例外を投げず「生存」を返す
+        signals_sent.append((pid, sig))
 
     monkeypatch.setattr(restart_service.os, "kill", fake_kill)
+    monkeypatch.setattr(restart_service, "is_process_alive", lambda pid: True)
     monkeypatch.setattr(restart_service.time, "sleep", lambda _: None)
 
     restart_service.kill_pids([1234], escalate_after_sec=0, poll_interval_sec=0)
