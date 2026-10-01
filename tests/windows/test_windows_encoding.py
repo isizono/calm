@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.helpers import session_start_hook_env
 from tests.windows.support import REPO_ROOT, isolated_env, load_mcp_launcher_command, run_with_timeout
 
 _INIT_DB_SCRIPT = "from src.db import init_database; init_database(); print('OK')"
@@ -165,19 +166,25 @@ def _make_migrated_db(tmp_path: Path) -> Path:
 
 
 def _run_hook_under_cp932(hook_relpath: str, payload: dict, tmp_path: Path, db_path: Path):
-    env = _forced_non_utf8_env(tmp_path)
-    env["CALM_DB_PATH"] = str(db_path)
+    # env組み立てはtests.helpers.session_start_hook_envに委ねる(CALM_HABITS_RULES_PATH等の
+    # 隔離漏れを防ぐ共有ヘルパーを、hookのsubprocess起動箇所すべてで必ず通すため)。
+    # session_start_hook_envはDISCUSSION_DB_PATHしか設定しないため、config.pyの優先順位
+    # (CALM_DB_PATH優先)で呼び出し元環境のCALM_DB_PATHに上書きされないよう、
+    # ここでも明示的に正しいdb_pathへ上書きしてextra_envに含める。
+    forced_env = _forced_non_utf8_env(tmp_path)
+    forced_env["CALM_DB_PATH"] = str(db_path)
     transcript_path = tmp_path / "transcript.jsonl"
     transcript_path.touch()
     payload = {**payload, "transcript_path": str(transcript_path), "cwd": str(REPO_ROOT)}
     raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    return run_with_timeout(
-        [sys.executable, hook_relpath],
-        input_bytes=raw,
-        cwd=REPO_ROOT,
-        env=env,
-        timeout=60,
-    )
+    with session_start_hook_env(str(db_path), extra_env=forced_env) as env:
+        return run_with_timeout(
+            [sys.executable, hook_relpath],
+            input_bytes=raw,
+            cwd=REPO_ROOT,
+            env=env,
+            timeout=60,
+        )
 
 
 def _assert_hook_output_is_utf8_json(result, hook_name: str, error_marker: str) -> None:

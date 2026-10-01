@@ -164,8 +164,9 @@ class TestStartHttpServer:
     def test_uses_popen_detached_windows_wiring(self, tmp_path, monkeypatch):
         """popen_detached経由でWindows用kwargsが渡ること
 
-        直接subprocess.Popen(start_new_session=True)を呼ぶ実装に戻しても気づけない
-        回帰を防ぐため、popen_detachedのWindows分岐が実際に呼び出されることを確かめる。
+        popen_detachedを経由せずstart_new_session=Trueで直接起動する実装に戻しても
+        気づけない回帰を防ぐため、popen_detachedのWindows分岐が実際に呼び出される
+        ことを確かめる。
         """
         import src.db as db
         from src.infra import detached_process

@@ -57,6 +57,7 @@ def _run_probe(config: dict, tmp_path: Path) -> dict:
         ["node", str(PROBE_SCRIPT), str(config_path)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=180,
     )
     assert result.stdout.strip(), (

@@ -313,7 +313,7 @@ def test_restart_mcp_server_success_flow(monkeypatch, tmp_path):
 def test_restart_mcp_server_uses_popen_detached_windows_wiring(monkeypatch, tmp_path):
     """popen_detached経由でWindows用kwargsが渡ること
 
-    直接subprocess.Popen(cmd, start_new_session=True)を呼ぶ実装に戻しても
+    popen_detachedを経由せずstart_new_session=Trueで直接起動する実装に戻しても
     気づけない回帰を防ぐため、popen_detachedのWindows分岐が実際に
     呼び出されることを確かめる。
     """
