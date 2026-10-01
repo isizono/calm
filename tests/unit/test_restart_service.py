@@ -201,7 +201,10 @@ def test_kill_pids_windows_terminates_once_via_psutil(monkeypatch):
     restart_service.kill_pids([4242])
 
     assert terminated == [4242]
-    assert len(alive_calls) >= 2
+    # alive_sequenceの3要素(True, True, False)を使い切ったことを確かめる。
+    # 2回までしか消費しない変異(1回ポーリングしたら生死を問わず諦める、
+    # whileをifにする等)は、len(alive_calls) >= 2 のままでは検知できない。
+    assert len(alive_calls) == 3
 
 
 def test_kill_pids_windows_ignores_already_gone_process(monkeypatch):

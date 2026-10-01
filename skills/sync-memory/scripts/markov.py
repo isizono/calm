@@ -41,6 +41,12 @@ def generate(text: str, chain: dict[str, list[str]], n: int, length: int) -> str
 
 
 def main() -> None:
+    # Windows既定のANSIコードページ(cp932等)ではstdoutが非UTF-8になり、
+    # 生成文字列にcp932へ変換できない文字(em dash・絵文字等)が混じると
+    # UnicodeEncodeErrorで落ちる。
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+
     corpus_path = Path(sys.argv[1])
     try:
         corpus = corpus_path.read_text(encoding="utf-8").replace("\n", "")

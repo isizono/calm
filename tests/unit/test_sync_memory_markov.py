@@ -8,6 +8,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 _MARKOV_PATH = Path(__file__).resolve().parents[2] / "skills" / "sync-memory" / "scripts" / "markov.py"
 
 
@@ -78,3 +80,51 @@ def test_main_deletes_corpus_file_even_on_empty_corpus(tmp_path, monkeypatch, ca
 
     assert capsys.readouterr().out.strip() == "ab"
     assert not corpus_path.exists()
+
+
+def test_main_deletes_corpus_file_even_when_build_chain_raises(tmp_path, monkeypatch):
+    """build_chainが例外を出しても、finally節でコーパスファイルを削除する
+    (正常終了後の削除ではなく、try/finally構造そのものを確かめる)。
+    """
+    markov = _load_markov_module()
+    corpus_path = tmp_path / "markov_corpus.txt"
+    corpus_path.write_text("abcabcabcabc", encoding="utf-8")
+    monkeypatch.setattr(markov.sys, "argv", ["markov.py", str(corpus_path)])
+
+    def fake_build_chain(text, n):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(markov, "build_chain", fake_build_chain)
+
+    with pytest.raises(ValueError, match="boom"):
+        markov.main()
+
+    assert not corpus_path.exists()
+
+
+def test_main_reconfigures_stdout_to_utf8(tmp_path, monkeypatch):
+    """Windows既定のANSIコードページ(cp932等)では、コーパスに含まれうる
+    em dash・絵文字等でstdoutがUnicodeEncodeErrorになりうるため、UTF-8へ揃える。
+    """
+    markov = _load_markov_module()
+    corpus_path = tmp_path / "markov_corpus.txt"
+    corpus_path.write_text("abcabcabcabc", encoding="utf-8")
+    monkeypatch.setattr(markov.sys, "argv", ["markov.py", str(corpus_path)])
+
+    calls = []
+
+    class FakeStdout:
+        def reconfigure(self, **kwargs):
+            calls.append(kwargs)
+
+        def write(self, *a, **kw):
+            pass
+
+        def flush(self):
+            pass
+
+    monkeypatch.setattr(markov.sys, "stdout", FakeStdout())
+
+    markov.main()
+
+    assert calls == [{"encoding": "utf-8"}]

@@ -127,12 +127,19 @@ def test_main_skips_tick_on_query_failure_without_resetting_prev(monkeypatch, ca
 
     Noneを巻き戻し対象にすると、クエリ失敗の瞬間に変化扱いで誤発火したり、
     直後に元の値へ戻っただけなのに再度変化扱いで誤発火したりする。
+
+    並びは A, B, B, None, B (Aが初期prev)。B続きの2回目とNoneの後のBは
+    「1回の変化につき1行だけ出す」契約により出力されないはずで、
+    `prev = cur` を消す変異(変化を出した後も毎tickprevが更新されず、
+    同じ変化を出し続ける)が混じると、この2回でも誤って出力されてしまう。
     """
     poll = _load_poll_module()
     monkeypatch.setattr(poll.time, "sleep", lambda _: None)
     monkeypatch.setattr(poll, "get_db_path", lambda: "unused")
 
-    snapshots = iter([(1, "2026-01-01", "1"), None, (1, "2026-01-01", "1")])
+    snapshot_a = (1, "2026-01-01", "1")
+    snapshot_b = (2, "2026-01-02", "1,2")
+    snapshots = iter([snapshot_a, snapshot_b, snapshot_b, None, snapshot_b])
 
     def fake_snapshot(db_path):
         try:
@@ -145,4 +152,6 @@ def test_main_skips_tick_on_query_failure_without_resetting_prev(monkeypatch, ca
     with pytest.raises(RuntimeError, match="stop loop"):
         poll.main()
 
-    assert "ask store changed" not in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert out.count("ask store changed") == 1
+    assert f"ask store changed: {snapshot_b}" in out

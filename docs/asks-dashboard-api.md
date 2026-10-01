@@ -109,6 +109,8 @@ open状態のaskに1回だけ回答する。
 
 ### curl
 
+PowerShellでは`curl`がInvoke-WebRequestの別名になり`\`による行継続もできないため、`curl.exe`または`Invoke-RestMethod`を使う。
+
 ```bash
 # open askを一覧取得
 curl http://localhost:52837/api/asks?status=open
