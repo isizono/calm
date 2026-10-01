@@ -1,11 +1,12 @@
 """src/launcher.py の stdio ブリッジがMCPクライアントと同じ経路で応答することを
 確かめる。
 
-Windowsの既定イベントループ(Proactor)では、launcherが`sys.stdin.buffer`を
-`loop.connect_read_pipe`に渡す箇所(_stdin_reader_task)がWinError 6 →
-AttributeErrorの連鎖で壊れ、stdinを1バイトも読めなくなる。launcher自体は
-落ちずheartbeatを送り続けるため、MCPクライアント側からは`/mcp`が
-Request timed outに見える。
+Windowsの既定イベントループ(Proactor)では、`loop.connect_read_pipe`で
+stdinを読もうとするとWinError 6 → AttributeErrorの連鎖で壊れ、stdinを
+1バイトも読めなくなる。launcher自体は落ちずheartbeatを送り続けるため、
+MCPクライアント側からは`/mcp`がRequest timed outに見える。
+`_stdin_reader_task`は全OS共通でdaemonスレッド経由の読み取りに切り替えて
+この問題を回避している。
 
 ここではNode.jsのchild_process.spawn(pipe stdio)からlauncherを起動し、実際の
 Claude Code起動経路と同じ形でJSON-RPCメッセージを送って検証する。
@@ -74,7 +75,7 @@ def _run_probe(config: dict, tmp_path: Path) -> dict:
 
 @pytest.mark.skipif(not _node_available(), reason="node is required to drive the launcher over stdio")
 def test_discover_responds_and_exits_cleanly(tmp_path):
-    """R1: バックエンドが一切応答しない状態でも、`server/discover`への応答と
+    """バックエンドが一切応答しない状態でも、`server/discover`への応答と
     stdin close後の終了はlauncher自身のstdin読み取りにしか依存しない。
     """
     argv, mcp_env_overrides = load_mcp_launcher_command()
@@ -148,7 +149,7 @@ def _wellknown_ports_free() -> bool:
     ),
 )
 def test_full_roundtrip_against_local_server(tmp_path):
-    """R1(discover/initialize/tools)をローカルモードの実サーバーで一通り確認する。
+    """discover/initialize/toolsをローカルモードの実サーバーで一通り確認する。
 
     ポート52837/52836はsrc側でハードコードされておりテストから変更できない
     ため、開発者のマシンで既に稼働中のCALMサーバーに相乗りする事故を避ける

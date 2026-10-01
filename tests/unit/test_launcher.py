@@ -1275,6 +1275,38 @@ class TestStdinReaderTaskFailureHandling:
         assert state.outbound.get_nowait() is None
         assert "Failed to read stdin" in warnings
 
+    def test_thread_start_failure_logs_warning_and_reaches_eof(self, monkeypatch):
+        """threading.Thread(...).start()自体が失敗する（スレッド生成の失敗）場合"""
+        import types
+
+        class _FailingThread:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start(self):
+                raise RuntimeError("can't start new thread")
+
+        # launcher.threading（モジュール参照）だけを差し替える。グローバルな
+        # threading.Threadを差し替えるとasyncio.to_threadの内部
+        # ThreadPoolExecutorの動作まで巻き込んでしまう。
+        monkeypatch.setattr(launcher, "threading", types.SimpleNamespace(Thread=_FailingThread))
+        warnings = []
+        monkeypatch.setattr(
+            launcher.logger,
+            "warning",
+            lambda msg, *a, **kw: warnings.append(msg),
+        )
+
+        async def drive():
+            state = launcher._StdinBridgeState()
+            await asyncio.wait_for(launcher._stdin_reader_task(state), timeout=5.0)
+            return state
+
+        state = asyncio.run(drive())
+        assert state.stdin_eof.is_set()
+        assert state.outbound.get_nowait() is None
+        assert "stdin reader ended unexpectedly" in warnings
+
     def test_handle_stdin_line_failure_does_not_crash_the_task(self, monkeypatch):
         """_handle_stdin_line呼び出し先（discover応答のstdout書き込み等）が
 
@@ -1334,6 +1366,67 @@ class TestStdinReaderTaskFailureHandling:
         assert "stdin reader ended unexpectedly" in warnings
 
 
+class TestStdinReaderThreadSurvivesClosedLoop:
+    """読み取りスレッドが、イベントループが閉じた後にfeed_data/feed_eofを
+
+    呼んでも（`contextlib.suppress(RuntimeError)`により）クラッシュしないこと、
+    誤った「Failed to read stdin」WARNINGを出さないことの検証。max retries超過や
+    sys.exit経由でのキャンセル後も読み取りスレッドだけが生き残る状況を再現する。
+    """
+
+    def test_feed_after_loop_closed_does_not_crash_thread_or_warn(self, monkeypatch):
+        import types
+
+        unhandled_exceptions = []
+        original_excepthook = threading.excepthook
+        monkeypatch.setattr(
+            threading,
+            "excepthook",
+            lambda args: unhandled_exceptions.append(args.exc_value),
+        )
+
+        read_fd, write_fd = os.pipe()
+        read_file = os.fdopen(read_fd, "rb", buffering=0)
+        monkeypatch.setattr(
+            launcher.sys, "stdin", types.SimpleNamespace(buffer=read_file)
+        )
+        warnings = []
+        monkeypatch.setattr(
+            launcher.logger,
+            "warning",
+            lambda msg, *a, **kw: warnings.append(msg),
+        )
+
+        threads_before = set(threading.enumerate())
+
+        async def drive():
+            state = launcher._StdinBridgeState()
+            task = asyncio.ensure_future(launcher._stdin_reader_task(state))
+            # 読み取りスレッドがos.readでブロック中（まだ何も書いていない）の
+            # 状態でタスクをキャンセルする。max retries超過やsys.exit経路での
+            # 強制終了を模す。
+            await asyncio.sleep(0.2)
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+        try:
+            asyncio.run(drive())
+            # ここでイベントループは既に閉じている。読み取りスレッドは
+            # os.readでブロックしたまま生き残っているはず。
+            os.write(write_fd, b"irrelevant\n")
+            os.close(write_fd)
+
+            for t in set(threading.enumerate()) - threads_before:
+                t.join(timeout=5.0)
+        finally:
+            monkeypatch.setattr(threading, "excepthook", original_excepthook)
+            read_file.close()
+
+        assert unhandled_exceptions == []
+        assert "Failed to read stdin" not in warnings
+
+
 class TestStdinAndRetryLoopIntegration:
     """実stdin（os.pipe経由）・実`_stdin_reader_task`・実`_run_retry_loop`を使い、
 
@@ -1389,6 +1482,18 @@ class TestStdinAndRetryLoopIntegration:
         monkeypatch.setattr(launcher, "_IS_LOCAL", True)
         monkeypatch.setattr(launcher, "MAX_RETRIES", None)
         monkeypatch.setattr(launcher, "HEARTBEAT_INTERVAL_SEC", 1000.0)
+
+        # 読み取りスレッドがbridgeのリトライを跨いで1本だけ使い回されることを
+        # 検証するため、Thread生成回数を数える。launcher.threading（モジュール
+        # 参照）だけを差し替える。グローバルなthreading.Threadを差し替えると
+        # asyncio.to_threadの内部ThreadPoolExecutorの動作まで巻き込んでしまう。
+        thread_create_count = {"n": 0}
+
+        def counting_thread(*args, **kwargs):
+            thread_create_count["n"] += 1
+            return threading.Thread(*args, **kwargs)
+
+        monkeypatch.setattr(launcher, "threading", std_types.SimpleNamespace(Thread=counting_thread))
 
         call_count = {"n": 0}
 
@@ -1492,6 +1597,9 @@ class TestStdinAndRetryLoopIntegration:
             # ログで確認してからstdin EOFを発生させ、
             # 「バックオフとEOFの早い方で抜ける」（backoffを待ち切らない）ことを計測する。
             await wait_until(lambda: bridge_failure_count["n"] >= 2, timeout=5.0)
+            # 2回のbridge失敗（＝2回の再接続）を経ても、読み取りスレッドは
+            # 最初の1回しか作られていないこと。
+            assert thread_create_count["n"] == 1
             eof_start = time_module.monotonic()
             close_write_fd()
             await asyncio.wait_for(loop_task, timeout=5.0)
