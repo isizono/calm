@@ -1,16 +1,18 @@
 """hooks/hooks.json の全エントリを、Claude Codeが実行に使うシェルと同じもので
 起動できることを確かめる。
 
-hooks.jsonの14エントリは全て`"command": "cd ${CLAUDE_PLUGIN_ROOT} && exec uv run
-python ..."`というPOSIXシェル専用の書き方になっている。Windows PowerShell 5.1は
-`&&`をパースエラーにし、PowerShell 7には`exec`が無いため、Git for Windowsが
-無ければフックは毎回失敗する。Git BashがあってもGit Bashで動く保証は無い
-(PowerShellツールが既定で有効な場合がある)。
+hooks.jsonの全エントリは`"command": "uv", "args": [...]`のexec form (シェルを
+経由せずargvを直接渡す形) になっている。exec formはシェルを経由しないため、
+PowerShell 5.1の`&&`パースエラーやpwshに`exec`が無い問題は原理的に起きない。
+このテストは、誰かがshell form (1本のcommand文字列) に退行させた場合も
+Windows上での失敗として検知できるよう、exec formを前提に各エントリを実際に
+起動して確かめる。
 
-このテストは各エントリの`command`(将来execフォームに直った場合は`args`)を、
-POSIXではbashで、WindowsではGit Bashのbash.exe・PowerShell 5.1・pwshの
-それぞれで直接実行し、終了コード0・出力があればJSONとして解析できることを
-確かめる。利用できないシェルはskipする(fail扱いにしない)。
+各エントリの`command`/`args`を、POSIXではbashで、WindowsではGit Bashの
+bash.exe・PowerShell 5.1・pwshのそれぞれから直接起動し、終了コード0・出力が
+あればJSONとして解析できることを確かめる。shell形式のエントリはシェル経由、
+exec形式のエントリはシェルを経由せず直接起動する(`_run_entry`参照)。
+利用できないシェルはskipする(fail扱いにしない)。
 """
 from __future__ import annotations
 
@@ -72,8 +74,10 @@ def _build_payload(event_name: str, tmp_path: Path) -> dict:
 
 
 def _entry_id(event_name: str, matcher: str, hook: dict, idx: int) -> str:
-    script = hook.get("command") or " ".join(hook.get("args", []))
-    return f"{event_name}[{matcher}]#{idx}:{script.split()[-1] if script else '?'}"
+    # exec formではcommandが"uv"で固定のため、argsも連結してからスクリプト名を拾う
+    # (でないと全エントリのIDが`#N:uv`に潰れる)。
+    tokens = " ".join([hook.get("command", ""), *hook.get("args", [])]).split()
+    return f"{event_name}[{matcher}]#{idx}:{tokens[-1] if tokens else '?'}"
 
 
 _ENTRIES = list(iter_hook_entries(_HOOKS_JSON))
