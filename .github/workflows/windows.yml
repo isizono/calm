@@ -34,39 +34,54 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
-      # 各ステップはcontinue-on-errorでも通し、Windowsで壊れている箇所の一覧を
-      # 1回のCI実行でまとめて取る。フルスイートは対象外
-      # (修正前コードのos.kill(pid, 0)がWindowsではCtrl+Cの送信になるため、
-      # 無関係なテストまで自分自身を止めてしまう恐れがある)。
-      - name: R2 - import src.main
+      # 各ステップはcontinue-on-errorで通し、Windowsで壊れている箇所の一覧を
+      # 1回のCI実行でまとめて取る。最後のSummarizeで全ステップの成否を
+      # 集計し、1つでも失敗していればジョブ全体を失敗にする。
+      - name: Import src.main succeeds (no POSIX-only top-level imports)
         id: test-import
         continue-on-error: true
-        run: uv run pytest --confcutdir=tests/windows tests/windows/test_windows_import.py -v
+        run: uv run pytest tests/windows/test_windows_import.py -v
 
-      - name: R1 - launcher stdio bridge
+      - name: Launcher stdio bridge reads initialize without hanging
         id: test-launcher
         continue-on-error: true
-        run: uv run pytest --confcutdir=tests/windows tests/windows/test_windows_launcher_stdio.py -v
+        run: uv run pytest tests/windows/test_windows_launcher_stdio.py -v
 
-      - name: R3/R7/R8 - non-UTF-8 locale encoding
+      - name: DB init and hooks survive a non-UTF-8 locale
         id: test-encoding
         continue-on-error: true
-        run: uv run pytest --confcutdir=tests/windows tests/windows/test_windows_encoding.py -v
+        run: uv run pytest tests/windows/test_windows_encoding.py -v
 
-      - name: R6 - hooks.json shell execution
+      - name: hooks.json commands run under PowerShell and Git Bash
         id: test-hooks
         continue-on-error: true
-        run: uv run pytest --confcutdir=tests/windows tests/windows/test_windows_hooks.py -v
+        run: uv run pytest tests/windows/test_windows_hooks.py -v
+
+      - name: Unit tests
+        id: test-unit
+        continue-on-error: true
+        env:
+          PYTHONUTF8: "1"
+        run: uv run pytest -v --tb=short -n auto --durations=25 tests/unit tests/test_migrations tests/services
+
+      - name: Integration/e2e tests
+        id: test-integration-e2e
+        continue-on-error: true
+        env:
+          PYTHONUTF8: "1"
+        run: uv run pytest -v --tb=short -n auto --durations=25 tests/integration tests/e2e
 
       - name: Summarize results
         if: always()
         shell: pwsh
         run: |
           $steps = @{
-            "R2 import src.main"              = "${{ steps.test-import.outcome }}"
-            "R1 launcher stdio bridge"         = "${{ steps.test-launcher.outcome }}"
-            "R3/R7/R8 non-UTF-8 locale"        = "${{ steps.test-encoding.outcome }}"
-            "R6 hooks.json shell execution"    = "${{ steps.test-hooks.outcome }}"
+            "import src.main"                 = "${{ steps.test-import.outcome }}"
+            "launcher stdio bridge"           = "${{ steps.test-launcher.outcome }}"
+            "non-UTF-8 locale"                = "${{ steps.test-encoding.outcome }}"
+            "hooks.json shell execution"      = "${{ steps.test-hooks.outcome }}"
+            "unit tests"                      = "${{ steps.test-unit.outcome }}"
+            "integration/e2e tests"           = "${{ steps.test-integration-e2e.outcome }}"
           }
           $failed = @()
           foreach ($name in $steps.Keys) {
@@ -75,6 +90,6 @@ jobs:
             if ($outcome -ne "success") { $failed += $name }
           }
           if ($failed.Count -gt 0) {
-            Write-Host "Failing repro groups: $($failed -join ', ')"
+            Write-Host "Failing groups: $($failed -join ', ')"
             exit 1
           }

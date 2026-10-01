@@ -8,6 +8,7 @@ signature`が内部で呼ぶ）を外部境界としてmonkeypatchし、呼び�
 import io
 import json
 import subprocess
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -16,6 +17,15 @@ import hooks.recorder_autostart_hook as hook
 from hooks.hook_state import HookState
 from hooks.recorder_watch import run_dir_for
 from src.infra import process_signature
+
+# main()はWindowsでは先頭のガードで即return 0になる(tmux前提のため未対応)。
+# TestGatingのうちWindows分岐を実際に検証するのは専用のテスト1本だけで、
+# 残りは「code==0・起動なし」を期待するテストがたまたまこのガードでも
+# 同じ結果になるために無印のまま残っている(Windows固有の検証ではない)。
+# その先の実際の起動・停止ロジックを検証するクラスはPOSIX専用になる。
+_posix_only = pytest.mark.skipif(
+    sys.platform == "win32", reason="main()はWindowsでは即returnするため、その先の挙動はPOSIX専用の検証になる"
+)
 
 _SID = "main-session-current"
 _PID = 11111
@@ -151,6 +161,8 @@ class TestGating:
 class TestSpawnsStart:
     """spec 2: 通常起動時、切り離しプロセスとしてrecorder.py startを呼ぶ。"""
 
+    pytestmark = _posix_only
+
     def test_fresh_session_spawns_detached_start_with_expected_args(self, calls):
         code = _run_hook()
 
@@ -197,6 +209,8 @@ class TestSpawnsStart:
 
 class TestStaleDetection:
     """spec 3: /clear・resumeで古い記録役を止めてから付け直す。"""
+
+    pytestmark = _posix_only
 
     def test_clear_same_pid_different_sid_stops_old_then_starts_new(self, calls):
         """/clear: main_pidは同じプロセスのまま、session_idだけ変わる。"""
@@ -323,6 +337,7 @@ class TestRecorderOwnDirGuard:
         assert code == 0
         assert calls == []
 
+    @_posix_only
     def test_does_not_skip_for_an_unrelated_cwd(self, tmp_path, calls):
         plain_dir = tmp_path / "some_project_dir"
         plain_dir.mkdir(parents=True)
@@ -340,6 +355,7 @@ class TestErrorHandling:
             code = hook.main()
         assert code == 0
 
+    @_posix_only
     def test_corrupt_existing_run_json_is_skipped_not_raised(self, calls):
         run_dir = run_dir_for("corrupt-sid")
         run_dir.mkdir(parents=True, exist_ok=True)

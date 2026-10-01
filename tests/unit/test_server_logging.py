@@ -4,6 +4,7 @@ launcher が stdout/stderr を DEVNULL でサーバーを起動するため、
 RotatingFileHandler によるファイル永続化が正しく機能することを検証する。
 """
 import logging
+import sys
 
 import pytest
 
@@ -58,6 +59,7 @@ def test_root_logger_level_set_to_info(tmp_path, _clean_root_handlers):
     assert logging.getLogger().level == logging.INFO
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="mkdir(mode=)はWindowsでは無視されst_modeに反映されない")
 def test_directory_mode_is_owner_only(tmp_path, _clean_root_handlers):
     db_path = str(tmp_path / "db" / "discussion.db")
 

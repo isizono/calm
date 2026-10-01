@@ -261,15 +261,19 @@ class TestExport:
         assert list(projection_path.parent.glob(".cc-memory-habits-*.tmp")) == []
 
     def test_write_failure_returns_failed_status_without_raising(self, temp_db, tmp_path, monkeypatch):
-        readonly_dir = tmp_path / "readonly"
-        readonly_dir.mkdir()
-        target = readonly_dir / "cc-memory-habits.md"
+        """書込失敗をchmodでなく「配置先が既にディレクトリ」で作る。
+
+        chmodでの読み取り専用化はWindowsのディレクトリには効かない（NTFSは
+        ディレクトリの読み取り専用属性をエクスプローラ表示用に扱うだけで、
+        配下へのファイル作成を妨げない）。os.replace(tmp, target)がtargetの
+        既存ディレクトリを塗り潰せずに失敗する経路はPOSIX/Windows共通で
+        再現できる（POSIX: IsADirectoryError、Windows: PermissionError）。
+        """
+        target = tmp_path / "cc-memory-habits.md"
+        target.mkdir()
         monkeypatch.setattr(config, "HABITS_RULES_PATH", str(target))
-        readonly_dir.chmod(0o500)
-        try:
-            result = habit_projection.export()
-        finally:
-            readonly_dir.chmod(0o700)
+
+        result = habit_projection.export()
 
         assert result["status"] == "failed"
         assert "message" in result

@@ -6,6 +6,7 @@ SessionStart hook 用の祖先 pid チェーンによる identity 解決
 """
 import json
 import os
+import sys
 
 import pytest
 
@@ -194,6 +195,7 @@ class TestRegisterLauncherSession:
         assert data["ancestor_pids"] == [999]
         assert "created_at" in data
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="chmod(0o600)相当はWindowsのst_modeに反映されない")
     def test_registration_file_is_owner_only_permission(
         self, sessions_state_dir, monkeypatch
     ):

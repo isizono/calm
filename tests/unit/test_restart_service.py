@@ -6,6 +6,7 @@ subprocess呼び出し(lsof/ps/kill/Popen)を外部境界としてmonkeypatchし
 import json
 import os
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -25,6 +26,20 @@ def _isolate_lock_file(tmp_path, monkeypatch):
     lock_dir.mkdir()
     monkeypatch.setattr(lock_file, "LOCK_DIR", lock_dir)
     monkeypatch.setattr(lock_file, "LOCK_FILE", lock_dir / "server.lock")
+
+
+@pytest.fixture(autouse=True)
+def _default_to_posix_platform(monkeypatch):
+    """既定でPOSIX分岐を通す。
+
+    本ファイルの大半のテストはsubprocess呼び出し自体をfakeに差し替えており、
+    実行ホストのOSに関わらずfind_listen_pids/kill_pids/popen_detachedの
+    POSIX分岐を検証する意図を持つ(Windows分岐はtest名で明示し、個別に
+    sys.platform="win32"を上書きする)。この既定が無いと、実機のWindows CI上
+    ではsys.platformが本当に"win32"になるため、POSIX分岐を検証するつもりの
+    テストが無言でWindows分岐（psutil等、未fakeの実呼び出し）を通ってしまう。
+    """
+    monkeypatch.setattr(restart_service.sys, "platform", "darwin")
 
 
 @pytest.fixture(autouse=True)
@@ -141,6 +156,7 @@ def test_kill_pids_sends_sigterm_only_when_process_dies_promptly(monkeypatch):
     assert signals_sent == [(1234, restart_service.signal.SIGTERM)]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="signal.SIGKILLはWindowsに存在しない。Windows版はtest_kill_pids_windows_*で検証する")
 def test_kill_pids_escalates_to_sigkill_when_process_survives_sigterm(monkeypatch):
     """SIGTERMを送っても生存し続けるプロセスにはSIGKILLを送る"""
     signals_sent = []
@@ -364,6 +380,7 @@ def test_restart_mcp_server_skips_kill_when_nothing_was_listening(monkeypatch, t
     assert killed == []
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="signal.SIGKILLはWindowsに存在しない。Windows版のkill_pidsにはエスカレーションの概念自体が無い")
 def test_restart_mcp_server_replaces_old_process_that_ignores_sigterm(monkeypatch, tmp_path):
     """旧プロセスがSIGTERMを無視してもkill_pidsのSIGKILLエスカレーションで
     kill_wait_sec以内に確実に片付き、新規プロセスへ入れ替わることを検証する。
@@ -423,6 +440,7 @@ def test_restart_mcp_server_replaces_old_process_that_ignores_sigterm(monkeypatc
     assert process_alive[1111] is False
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="os.killpg/os.getpgidはWindowsに存在しない。Windows版はtest_kill_process_group_windows_*で検証する")
 def test_restart_mcp_server_proceeds_to_start_new_process_even_if_old_process_never_dies(monkeypatch, tmp_path):
     """SIGKILLを送っても消えない旧プロセス(D state等で応答しないケース)が
     kill_wait_sec以内に片付かない場合、現状の実装はエスカレーションや
@@ -463,6 +481,7 @@ def test_restart_mcp_server_proceeds_to_start_new_process_even_if_old_process_ne
     assert killpg_calls == [(9999, restart_service.signal.SIGKILL)]  # タイムアウト後は子プロセスグループを後始末する
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="os.killpg/os.getpgidはWindowsに存在しない。Windows版はtest_kill_process_group_windows_*で検証する")
 def test_restart_mcp_server_times_out_when_server_never_comes_up(monkeypatch, tmp_path):
     monkeypatch.setattr(restart_service, "find_listen_pids", lambda port: [])
     monkeypatch.setattr(restart_service, "kill_pids", lambda pids: None)
@@ -485,6 +504,7 @@ def test_restart_mcp_server_times_out_when_server_never_comes_up(monkeypatch, tm
     assert killpg_calls == [(4321, restart_service.signal.SIGKILL)]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="os.killpg/os.getpgidはWindowsに存在しない。Windows版はtest_kill_process_group_windows_*で検証する")
 def test_restart_mcp_server_ignores_process_lookup_error_when_killing_process_group(monkeypatch, tmp_path):
     """killpgが対象プロセスの消滅を示すProcessLookupErrorを送出しても後始末全体は失敗にしない"""
     monkeypatch.setattr(restart_service, "find_listen_pids", lambda port: [])
@@ -692,16 +712,17 @@ def _run_restart_minimal(monkeypatch, tmp_path):
     """restart_mcp_server()を、プロセス入れ替え判定に無関係な箇所だけfakeにして実行する。
 
     find_listen_pidsが常に[]を返すためサーバーは起動確認できず、timeoutで
-    後始末のkillpgへ進む(test_restart_mcp_server_times_out_when_server_never_comes_up
-    と同じ理由でos.getpgid/os.killpgもfakeにする)。
+    後始末の_kill_process_groupへ進む。os.getpgid/os.killpgはWindowsに存在
+    しないため、そのPOSIX実装ではなく呼び出し口の_kill_process_group自体を
+    fakeにする(本関数を使うテストはプロセスグループの終了方法を検証対象に
+    していないため、OS問わず動く形にできる)。
     """
     monkeypatch.setattr(restart_service, "find_listen_pids", lambda port: [])
     monkeypatch.setattr(restart_service, "kill_pids", lambda pids: None)
     monkeypatch.setattr(restart_service, "_resolve_main_repo_root", lambda project_root: project_root)
     monkeypatch.setattr(restart_service.subprocess, "Popen", lambda cmd, **kwargs: SimpleNamespace(pid=4321))
     monkeypatch.setattr(restart_service, "LAUNCHER_LOG_PATH", tmp_path / "logs" / "restart_launcher.log")
-    monkeypatch.setattr(restart_service.os, "getpgid", lambda pid: pid)
-    monkeypatch.setattr(restart_service.os, "killpg", lambda pgid, sig: None)
+    monkeypatch.setattr(restart_service, "_kill_process_group", lambda proc: None)
 
 
 def test_restart_mcp_server_sets_python_utf8_when_unset(monkeypatch, tmp_path):

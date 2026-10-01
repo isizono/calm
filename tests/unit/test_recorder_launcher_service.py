@@ -9,6 +9,7 @@ import ast
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,14 @@ from hooks.hook_state import HookState
 from hooks.recorder_marker import is_recorder_attached, marker_path, remove_marker, write_marker
 from src.infra import process_signature
 from src.services import recorder_launcher_service as svc
+
+# svc.start()はWindowsでは先頭のガードで即return "windows unsupported"になる
+# ため、それより先の挙動(tmux起動・run_dir構築等)を検証するテストは
+# POSIX専用になる。Windows側の挙動自体はtest_windows_returns_unsupported_
+# without_touching_tmuxで検証する。
+_posix_only_start = pytest.mark.skipif(
+    sys.platform == "win32", reason="svc.start()はWindowsでは即returnするため、その先の挙動はPOSIX専用の検証になる"
+)
 
 
 class _FakeProcess:
@@ -435,6 +444,7 @@ class TestStart:
         assert result == {"started": False, "reason": "windows unsupported"}
         assert _mock_subprocess == []
 
+    @_posix_only_start
     def test_happy_path_creates_run_dir_contents_and_marker(self, calm_root, tmp_path, monkeypatch):
         monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", _MAIN_SID)
         monkeypatch.setenv("CLAUDE_PID", str(_MAIN_PID))
@@ -461,6 +471,7 @@ class TestStart:
         marker = json.loads(marker_path(_MAIN_SID).read_text(encoding="utf-8"))
         assert marker["pid"] == _PANE_PID
 
+    @_posix_only_start
     def test_double_start_is_noop_when_already_attached(self, calm_root, tmp_path, monkeypatch):
         monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", _MAIN_SID)
         monkeypatch.setenv("CLAUDE_PID", str(_MAIN_PID))
@@ -471,6 +482,7 @@ class TestStart:
 
         assert result == {"started": False, "reason": "already attached", "main_sid": _MAIN_SID}
 
+    @_posix_only_start
     def test_double_start_does_not_touch_tmux(self, calm_root, tmp_path, monkeypatch, _mock_subprocess):
         monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", _MAIN_SID)
         monkeypatch.setenv("CLAUDE_PID", str(_MAIN_PID))
@@ -488,6 +500,7 @@ class TestStart:
         assert not (run_dir / "run.json").exists()
         assert _mock_subprocess == []
 
+    @_posix_only_start
     def test_restart_appends_new_recorder_sid_to_existing_run_json(self, calm_root, tmp_path, monkeypatch):
         monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", _MAIN_SID)
         monkeypatch.setenv("CLAUDE_PID", str(_MAIN_PID))
@@ -505,6 +518,7 @@ class TestStart:
         run_data = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
         assert run_data["recorder_sids"] == ["rec-1", "rec-2"]
 
+    @_posix_only_start
     def test_pane_pid_failure_cleans_up_tmux_and_does_not_record_recorder_sid(
         self, calm_root, tmp_path, monkeypatch
     ):
@@ -581,6 +595,8 @@ class TestRestart:
     """restart()は見張りが切り離しプロセスとして呼ぶ経路専用で、
     $CLAUDE_CODE_SESSION_ID等のセッション環境変数には頼れない。テストでは
     それらを未設定のまま明示引数だけでstop→startが動くことを確かめる。"""
+
+    pytestmark = _posix_only_start
 
     def test_restarts_using_explicit_values_not_env(self, calm_root, tmp_path, monkeypatch):
         monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
@@ -696,6 +712,7 @@ class TestMainCli:
         with pytest.raises(SystemExit):
             svc.main(["restart"])
 
+    @_posix_only_start
     def test_restart_calls_restart_with_explicit_cli_args(self, calm_root, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(svc, "_calm_root", lambda: calm_root)
         transcript = tmp_path / "t.jsonl"
@@ -772,6 +789,8 @@ class TestEnsureTrusted:
 
 
 class TestStartUsesSharedCwd:
+    pytestmark = _posix_only_start
+
     def _start(self, calm_root, tmp_path, monkeypatch, main_sid, recorder_sid):
         monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", main_sid)
         monkeypatch.setenv("CLAUDE_PID", str(_MAIN_PID))

@@ -1,10 +1,8 @@
 """tests/windows/ 配下のテスト共通ユーティリティ。
 
-stdlib のみに依存する。tests/conftest.py の autouse fixture が
-src.services.session_registry_service 経由で fcntl を import するため、収集時に
-この conftest を踏むと Windows では fcntl が無い間テスト収集自体が失敗する。
-このディレクトリのテストは `pytest --confcutdir=tests/windows tests/windows` で
-実行し、親の tests/conftest.py を読み込ませない前提を置く。そのため本ファイルは
+stdlib のみに依存する。このディレクトリのテストは、hooks.json・.mcp.json に
+書かれたコマンドをそのまま読んで実行し、本番の起動経路（別シェル・別
+インタプリタからの子プロセス起動）を忠実に再現する。そのため本ファイルは
 src.* / tests.helpers を import せず、対象コードは常に子プロセスとして起動する。
 """
 from __future__ import annotations
