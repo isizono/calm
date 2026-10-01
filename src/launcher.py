@@ -16,6 +16,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 import uuid
@@ -412,10 +413,10 @@ class _StdinBridgeState:
 
     `_run_retry_loop` 内で1回だけ生成し、`_stdin_reader_task`（プロセス生存中
     ずっと動く）と複数回呼ばれる`_bridge`（bridge失敗のたびに再実行される）の
-    双方から共有する。stdin側の読み取りバッファ・transportは`_stdin_reader_task`
-    のローカル変数として閉じ込め、ここでは「サーバーへ転送待ちのメッセージ」
-    「サーバーへ送信済みで応答待ちのリクエストid」「stdinがEOFに達したか」の
-    3つだけを持つ。
+    双方から共有する。stdin側の読み取りバッファ・読み取りスレッドは
+    `_stdin_reader_task`のローカル変数として閉じ込め、ここでは「サーバーへ
+    転送待ちのメッセージ」「サーバーへ送信済みで応答待ちのリクエストid」
+    「stdinがEOFに達したか」の3つだけを持つ。
 
     `outbound`は、stdin EOF時に`_stdin_reader_task`が番兵として`None`を積む。
     `None`を取り出した側（`_bridge`の`queue_to_server`）は、まだ動いている
@@ -500,21 +501,49 @@ async def _stdin_reader_task(state: "_StdinBridgeState") -> None:
     """stdinをプロセス生存中1回だけ読み取り続ける、bridgeのリトライを跨いで
     生きるタスク。
 
-    bridgeが失敗して再接続を試みている間も、このタスク自体は止まらない
-    （stdinのtransportをbridge失敗のたびに閉じて作り直すと、asyncioの
-    connect_read_pipeがイベントループを跨いで壊れるため）。行ごとにパースして
-    `_handle_stdin_line`に渡し、stdin EOFで終了する。終了時は`state.outbound`へ
-    番兵として`None`を積んでから`state.stdin_eof`をセットする（`queue_to_server`
-    側が素の`Queue.get()`だけでEOFを検知できるようにするため。`asyncio.wait`で
-    getとEvent待ちを競わせる方式は、getが完了した直後にキャンセルされると
-    取り出したメッセージが誰にも回収されずに消える窓があるため使わない）。
+    bridgeが失敗して再接続を試みている間も、このタスク自体は止まらない。
+    OSレベルの読み取りはブロッキングのdaemonスレッドで`os.read(fd, ...)`を
+    回し、`loop.call_soon_threadsafe`経由でイベントループ側の
+    `asyncio.StreamReader`へ`feed_data`/`feed_eof`する（asyncioの既定
+    イベントループの中には、stdinを`connect_read_pipe`で読もうとすると
+    壊れるものがあるため、全OS共通でスレッド読み取りに揃える）。イベント
+    ループが既に閉じた後にスレッド側から`call_soon_threadsafe`を呼ぶと
+    RuntimeErrorになるが、daemonスレッドなのでプロセス終了は妨げず、
+    その例外は握りつぶしてよい。読み取りの開始・継続いずれが失敗しても
+    WARNINGを出したうえでEOF扱いにし、終了経路に必ず乗せる。
+    行ごとにパースして`_handle_stdin_line`に渡し、stdin EOFで終了する。
+    終了時は`state.outbound`へ番兵として`None`を積んでから
+    `state.stdin_eof`をセットする（`queue_to_server`側が素の`Queue.get()`
+    だけでEOFを検知できるようにするため。`asyncio.wait`でgetとEvent待ちを
+    競わせる方式は、getが完了した直後にキャンセルされると取り出した
+    メッセージが誰にも回収されずに消える窓があるため使わない）。
     """
     loop = asyncio.get_running_loop()
     reader = asyncio.StreamReader()
-    transport, _ = await loop.connect_read_pipe(
-        lambda: asyncio.StreamReaderProtocol(reader),
-        sys.stdin.buffer,
-    )
+
+    def _feed_data(chunk: bytes) -> None:
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(reader.feed_data, chunk)
+
+    def _feed_eof() -> None:
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(reader.feed_eof)
+
+    def _read_stdin() -> None:
+        try:
+            fd = sys.stdin.buffer.fileno()
+            while True:
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    break
+                _feed_data(chunk)
+        except Exception:
+            logger.warning("Failed to read stdin", exc_info=True)
+        finally:
+            _feed_eof()
+
+    threading.Thread(target=_read_stdin, daemon=True).start()
+
     buffer = b""
     try:
         while True:
@@ -529,13 +558,16 @@ async def _stdin_reader_task(state: "_StdinBridgeState") -> None:
                     continue
                 _handle_stdin_line(line, state)
     except Exception:
-        logger.debug("stdin reader ended", exc_info=True)
+        # _handle_stdin_line呼び出し先（stdoutへの書き込み等）の失敗も含め、
+        # ここで吸収しないとこのタスクが例外で終わり、_run_retry_loopの
+        # 後始末（CancelledErrorだけをsuppressする）をすり抜けてプロセスが
+        # クラッシュする。
+        logger.warning("stdin reader ended unexpectedly", exc_info=True)
     finally:
         if buffer.strip():
             logger.warning(
                 f"Discarding {len(buffer)} bytes of incomplete data in stdin buffer"
             )
-        transport.close()
         state.outbound.put_nowait(None)
         state.stdin_eof.set()
 
@@ -717,11 +749,12 @@ async def _bridge(state: "_StdinBridgeState") -> None:
 async def _run_retry_loop() -> None:
     """1つのイベントループ内でstdin読み取りとbridgeのリトライ全体を回す。
 
-    stdinの`StreamReader`/transportは`_stdin_reader_task`としてここで1回だけ
-    起動し、bridge（`_bridge`）が何度失敗しても作り直さない。asyncio の
-    transport は生成したイベントループでしか使えないため、bridge のたびに
-    `asyncio.run`をやり直すとstdinの再接続が壊れる（作り直すべきなのはHTTP接続
-    側だけ）。
+    stdinの読み取り（`_stdin_reader_task`、内部のdaemonスレッドを含む）は
+    ここで1回だけ起動し、bridge（`_bridge`）が何度失敗しても作り直さない。
+    読み取りスレッドは生成元の`asyncio`イベントループを閉じ込めて
+    `call_soon_threadsafe`で戻すため、bridge のたびに`asyncio.run`をやり直すと
+    スレッドが古い（既に閉じた）ループを参照したまま残ってしまう
+    （作り直すべきなのはHTTP接続側だけ）。
 
     サーバー側切断時は自動でリトライする。MAX_RETRIES が None なら無限、
     数値指定なら最大 MAX_RETRIES 回。stdin EOF（Claude Code終了）時は即座に終了する。
@@ -818,7 +851,11 @@ def main() -> None:
     # _unregister_session()は失敗を握りつぶすため、登録エンドポイントを持たない
     # 接続先（例: セッションAPIを持たないremote展開）でも安全に呼べる。
     atexit.register(_cleanup)
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))  # atexitが発火する
+    _exit_handler = lambda *_: sys.exit(0)  # atexitが発火する
+    signal.signal(signal.SIGTERM, _exit_handler)
+    # SIGBREAK（Ctrl+Break）はWindowsにしか無い。
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, _exit_handler)
 
     # SessionStart hook（Claude Code CLI プロセスの別の子孫）や、calm
     # server 側のセッション別名解決（src/infra/session_identity.py の

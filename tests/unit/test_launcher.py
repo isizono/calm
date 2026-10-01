@@ -1212,11 +1212,126 @@ class TestRetryLoopCancellationWhileBridgeConnected:
         assert attempts == 1
 
 
+class TestStdinReaderTaskFailureHandling:
+    """_stdin_reader_task: 読み取りスレッドの開始・継続の失敗時も、
+
+    stdin EOFと同じ終了経路（WARNINGログ・state.outbound への番兵・
+    state.stdin_eof）に必ず乗ることの検証。
+    """
+
+    def test_fileno_failure_logs_warning_and_reaches_eof(self, monkeypatch):
+        """stdin.buffer.fileno()自体が失敗する（読み取り開始の失敗）場合"""
+        import types
+
+        broken_buffer = types.SimpleNamespace(
+            fileno=lambda: (_ for _ in ()).throw(OSError("no fd"))
+        )
+        monkeypatch.setattr(
+            launcher.sys, "stdin", types.SimpleNamespace(buffer=broken_buffer)
+        )
+        warnings = []
+        monkeypatch.setattr(
+            launcher.logger,
+            "warning",
+            lambda msg, *a, **kw: warnings.append(msg),
+        )
+
+        async def drive():
+            state = launcher._StdinBridgeState()
+            await asyncio.wait_for(launcher._stdin_reader_task(state), timeout=5.0)
+            return state
+
+        state = asyncio.run(drive())
+        assert state.stdin_eof.is_set()
+        assert state.outbound.get_nowait() is None
+        assert "Failed to read stdin" in warnings
+
+    def test_os_read_failure_logs_warning_and_reaches_eof(self, monkeypatch):
+        """fdは取れるがos.readが失敗する（読み取り継続の失敗）場合"""
+        import types
+
+        monkeypatch.setattr(
+            launcher.sys, "stdin", types.SimpleNamespace(buffer=types.SimpleNamespace(fileno=lambda: 999))
+        )
+
+        def failing_read(fd, n):
+            raise OSError("bad fd")
+
+        monkeypatch.setattr(launcher.os, "read", failing_read)
+        warnings = []
+        monkeypatch.setattr(
+            launcher.logger,
+            "warning",
+            lambda msg, *a, **kw: warnings.append(msg),
+        )
+
+        async def drive():
+            state = launcher._StdinBridgeState()
+            await asyncio.wait_for(launcher._stdin_reader_task(state), timeout=5.0)
+            return state
+
+        state = asyncio.run(drive())
+        assert state.stdin_eof.is_set()
+        assert state.outbound.get_nowait() is None
+        assert "Failed to read stdin" in warnings
+
+    def test_handle_stdin_line_failure_does_not_crash_the_task(self, monkeypatch):
+        """_handle_stdin_line呼び出し先（discover応答のstdout書き込み等）が
+
+        失敗しても、タスク自体は例外を外へ伝播させずEOF終了経路に乗ること
+        （ここで吸収しないと_run_retry_loopのCancelledErrorだけをsuppressする
+        後始末をすり抜けてプロセスがクラッシュする）。
+        """
+        import types
+
+        read_fd, write_fd = os.pipe()
+        read_file = os.fdopen(read_fd, "rb", buffering=0)
+        monkeypatch.setattr(
+            launcher.sys, "stdin", types.SimpleNamespace(buffer=read_file)
+        )
+
+        def failing_write(data):
+            raise BrokenPipeError("broken")
+
+        monkeypatch.setattr(
+            launcher.sys,
+            "stdout",
+            types.SimpleNamespace(
+                buffer=types.SimpleNamespace(write=failing_write, flush=lambda: None)
+            ),
+        )
+        warnings = []
+        monkeypatch.setattr(
+            launcher.logger,
+            "warning",
+            lambda msg, *a, **kw: warnings.append(msg),
+        )
+
+        os.write(
+            write_fd,
+            b'{"jsonrpc": "2.0", "id": 1, "method": "server/discover", "params": {}}\n',
+        )
+        os.close(write_fd)
+
+        async def drive():
+            state = launcher._StdinBridgeState()
+            await asyncio.wait_for(launcher._stdin_reader_task(state), timeout=5.0)
+            return state
+
+        try:
+            state = asyncio.run(drive())
+        finally:
+            read_file.close()
+
+        assert state.stdin_eof.is_set()
+        assert "stdin reader ended unexpectedly" in warnings
+
+
 class TestStdinAndRetryLoopIntegration:
     """実stdin（os.pipe経由）・実`_stdin_reader_task`・実`_run_retry_loop`を使い、
 
     HTTP層（`streamable_http_client`）だけをfakeにした統合寄りの検証。
-    stdinを丸ごとスタブに差し替える単体テストでは、(1)stdinのtransportを
+    stdinを丸ごとスタブに差し替える単体テストでは、(1)stdinの読み取りスレッドを
     1回だけ作って使い回すこと (2)リトライループが`_fail_pending_requests`を
     呼ぶこと (3)readerのEOF通知、のいずれを壊しても検出できない。このテストは
     それら3つの配線を一括で保証する。
@@ -1589,6 +1704,21 @@ class TestMainRetryLoop:
         )
         launcher.main()
         assert call_count["bridge"] == 6
+
+    def test_registers_sigbreak_alongside_sigterm_when_present(self, monkeypatch):
+        """SIGBREAK（Windows専用、存在する場合のみ）をSIGTERMと同じハンドラで登録する"""
+        self._setup_main(monkeypatch, [None])
+        monkeypatch.setattr(launcher.signal, "SIGBREAK", 99, raising=False)
+        registered: dict = {}
+        monkeypatch.setattr(
+            launcher.signal,
+            "signal",
+            lambda sig, handler: registered.setdefault(sig, handler),
+        )
+        launcher.main()
+        assert launcher.signal.SIGTERM in registered
+        assert 99 in registered
+        assert registered[99] is registered[launcher.signal.SIGTERM]
 
 
 class TestSessionRegistrationGating:
