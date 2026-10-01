@@ -43,7 +43,7 @@ def list_intelligently_habit_manifest_with_conn(conn) -> list[dict]:
 
     タグに相当する仕組みが habits に存在しないため tags は含めない。
     title は description を優先し、未設定（棚卸し前等）なら content の
-    先頭50文字にフォールバックする。
+    先頭50文字にフォールバックする（50字を超える場合は末尾に省略記号を付す）。
     importance_score昇順（同値はid昇順）で並べ、1(critical)を先頭に出す。
     status='archived'の振る舞いは除外する（activeとは独立した無効化軸）。
     created_atからHABIT_MANIFEST_DECAY_DAYSを超え、かつget_habits(habit_id=...)による
@@ -62,7 +62,13 @@ def list_intelligently_habit_manifest_with_conn(conn) -> list[dict]:
     for row in rows:
         if is_decay_eligible(row["created_at"], row["last_recalled_at"], HABIT_MANIFEST_DECAY_DAYS):
             continue
-        title = row["description"] or row["content"][:50]
+        content = row["content"]
+        if row["description"]:
+            title = row["description"]
+        elif len(content) > 50:
+            title = content[:50].rstrip() + "…"
+        else:
+            title = content
         manifest.append({
             "habit_id": row["id"],
             "title": title,
