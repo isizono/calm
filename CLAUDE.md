@@ -51,10 +51,10 @@ calmはローカルディレクトリをmarketplaceとして登録しており�
 
 手順1〜4（mainブランチの確認・pull・worktree削除・ブランチ削除）はOS非依存のためそのまま行う。手順5以降はWindowsでは稼働中のプロセスが`.venv`配下のファイルを開いたままにするため、**サーバーを先に止めてからキャッシュを消す**順序に入れ替える。
 
-このマシンで動いている他のClaude Codeセッションを手順5の前に全て閉じておくこと。セッションを残したまま停止すると、そのセッションのlauncherが数秒以内に新しいサーバーを自動起動し直し、手順6・7のファイル削除が使用中のファイルで失敗する。
+手順5〜8は、このmainブランチの作業を進めているセッション自身を含め、このマシンのClaude Codeセッションを全て閉じてから、人間が直接PowerShellで実行する。1つでもセッションを残したまま進めると、そのセッションのlauncherが数秒以内に新しいサーバーを自動起動し直し、手順6・7のファイル削除が使用中のファイルで失敗する。
 
 5. サーバーとembeddingサーバーを停止する: リポジトリ直下で `uv run --no-sync --directory . python scripts/restart_server.py --stop --restart-embedding`
 6. プラグインキャッシュを削除: `Remove-Item -Recurse -Force "$env:USERPROFILE\.claude\plugins\cache\calm-marketplace"`
 7. `__pycache__` を削除: `Get-ChildItem -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force`
 8. サーバーを起動し直す: `uv run --no-sync --directory . python scripts/restart_server.py`（embeddingサーバーは手順5で止めたまま再起動しない。次回encode時にlazy spawnする）
-9. 手順5の前に閉じたセッションを開き直す（新規セッションは起動時に自動でMCP接続するため、手順9の`/mcp`からのreconnectは不要）
+9. 閉じていたセッションを開き直す（新規セッションは起動時に自動でMCP接続するため、手順9の`/mcp`からのreconnectは不要）

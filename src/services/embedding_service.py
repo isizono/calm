@@ -22,9 +22,6 @@ logger = logging.getLogger(__name__)
 # サーバー接続設定
 # embedding_serverはIPv4(127.0.0.1)でしか待ち受けないため、"localhost"は使わない
 # （環境によっては::1が先に解決され、接続のたびに拒否待ちの遅延が乗りうる）。
-# ポート番号自体はsrc.http_configに定義する(restart_service.pyがこの値だけを
-# 必要とするのに、sqlite_vec/numpy等を含む本モジュールの重い依存一式を
-# import時に引き込んでしまうのを避けるため)。
 SERVER_URL = f"http://127.0.0.1:{PORT}"
 
 # 既定のurlopenはOS設定のプロキシを経由しうる。手動プロキシが設定され、かつ

@@ -84,11 +84,9 @@ Invoke-RestMethod http://localhost:52836/health
 
 **社内プロキシ環境での注意**
 
-ローカルのMCP通信（127.0.0.1宛のループバック接続）は、レジストリで手動プロキシが設定され環境変数が無い環境でも社内プロキシへ誤送されないよう対応済み。外部への通信は経路が2つあり、注意点が異なる:
+ローカルのMCP通信（127.0.0.1宛のループバック接続）は、レジストリで手動プロキシが設定され環境変数が無い環境でも社内プロキシへ誤送されないよう対応済み。一方、`uv sync`（依存解決）とembeddingモデルの初回ダウンロード（Hugging Face Hubへの外部通信）は、レジストリの手動プロキシ設定だけでは経由しない可能性がある。[uv公式ドキュメント](https://docs.astral.sh/uv/reference/environment/)が挙げるプロキシ設定手段は`HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`等の環境変数のみで、Windowsのレジストリ経由の検出には触れられていない。モデルのダウンロードも、依存バージョンによってはuvと同様にRust製の別クライアントを経由することがある。社内プロキシが必要な環境では`$env:HTTPS_PROXY`を明示的に設定しておくと、経路によらず確実に効く（HTTP用の`HTTP_PROXY`も設定する場合は、ループバック宛の通信を誤って巻き込まないよう`$env:NO_PROXY="localhost,127.0.0.1"`も併せて設定する）。
 
-- **`uv sync`（依存解決）**: `uv`は独立したバイナリで、[公式ドキュメント](https://docs.astral.sh/uv/reference/environment/)が挙げるのは`HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`等の環境変数のみで、Windowsのレジストリ経由の手動プロキシ検出には触れられていない。レジストリ設定だけで環境変数が無い場合は`$env:HTTPS_PROXY`を明示的に設定する
-- **embeddingモデルの初回ダウンロード（Hugging Face Hubへの外部通信）**: Pythonの`httpx`/`urllib`経由のため、環境変数が無くてもWindowsのレジストリの手動プロキシ設定へ自動的にフォールバックする（`urllib.request.getproxies()`の仕様）。通常は追加設定不要
-- **TLS傍受**: 社内プロキシがTLSを傍受する構成の場合、どちらの経路もそれぞれの既定のルート証明書（uvはMozilla製バンドル、Pythonは`certifi`）では社内プロキシの証明書を検証できず失敗する。`$env:SSL_CERT_FILE`に社内CA証明書を指定すると、uv・Python側の`httpx`の双方がそれを使うようになる
+社内プロキシがTLSを傍受する構成の場合、uvが同梱するMozilla製ルート証明書やPython側の`certifi`では社内プロキシの証明書を検証できず失敗することがある。`$env:SSL_CERT_FILE`に社内CA証明書を指定する。
 
 ## インストールすると何が起きるか
 
