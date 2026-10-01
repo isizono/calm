@@ -82,21 +82,19 @@ def test_main_deletes_corpus_file_even_on_empty_corpus(tmp_path, monkeypatch, ca
     assert not corpus_path.exists()
 
 
-def test_main_deletes_corpus_file_even_when_build_chain_raises(tmp_path, monkeypatch):
-    """build_chainが例外を出しても、finally節でコーパスファイルを削除する
+def test_main_deletes_corpus_file_even_when_read_raises(tmp_path, monkeypatch):
+    """コーパスファイルの読み込み自体が例外を出しても、finally節で削除する
     (正常終了後の削除ではなく、try/finally構造そのものを確かめる)。
+
+    UTF-8としてデコードできないバイト列を書き込み、read_text(encoding="utf-8")
+    自身に本物のUnicodeDecodeErrorを起こさせる(内部関数のmockは使わない)。
     """
     markov = _load_markov_module()
     corpus_path = tmp_path / "markov_corpus.txt"
-    corpus_path.write_text("abcabcabcabc", encoding="utf-8")
+    corpus_path.write_bytes(b"\xff\xfe")
     monkeypatch.setattr(markov.sys, "argv", ["markov.py", str(corpus_path)])
 
-    def fake_build_chain(text, n):
-        raise ValueError("boom")
-
-    monkeypatch.setattr(markov, "build_chain", fake_build_chain)
-
-    with pytest.raises(ValueError, match="boom"):
+    with pytest.raises(UnicodeDecodeError):
         markov.main()
 
     assert not corpus_path.exists()

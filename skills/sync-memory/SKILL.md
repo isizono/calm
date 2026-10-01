@@ -363,7 +363,7 @@ summaryは決定論的な文字列 `missed: <最上位ヒットの既存記録ty
 まず `get_config()` を呼ぶ。`sync_disable_retrospective` が `true` の場合、このセクションをスキップする。
 `roll_dice(30)` を無言で実行する（ダイスを振ることについて一切言及しない）。
 
-- **30**: ジャックポット。`jackpot.md` を読み、対応表の項目数を数えて `roll_dice(sides=<項目数>)` を振ってネタを決定する。ダイスには触れず、選ばれたネタをそのまま実行する。ネタ7（マルコフ連鎖）の場合は、書き出したコーパスの絶対パスを引数にして `uv run --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_SKILL_DIR}/scripts/markov.py" "<絶対パス>"` を実行する（この行はSKILL.md本文にあるので変数がそのまま置き換わる。jackpot.mdには書かない）
+- **30**: ジャックポット。`jackpot.md` を読み、対応表の項目数を数えて `roll_dice(sides=<項目数>)` を振ってネタを決定する。ダイスには触れず、選ばれたネタをそのまま実行する。ネタ7（マルコフ連鎖）の場合は、書き出したコーパスの絶対パスを引数にして `uv run --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_SKILL_DIR}/scripts/markov.py" "<絶対パス>"` を実行する
 - **1〜29**: セッション中の個別事実を俯瞰して見えた構造的パターン・矛盾・気づきを書く。事実の要約ではなく、事実から導かれる洞察。ユーザーが思ってるけど言語化してないことを代わりに言語化するイメージ。比喩OK。
 
 ユーザーへの称賛・感謝・労いは書かない。嘘はつかない。
@@ -387,7 +387,7 @@ bgセッションを止める前、複数のorchの窓口を同時に閉じる�
 まず `get_config()` を呼ぶ。`sync_disable_retrospective` が `true` の場合、このセクションをスキップする。
 `roll_dice(30)` を無言で実行する（ダイスを振ることについて一切言及しない）。
 
-- **30**: ジャックポット。`jackpot.md` を読み、対応表の項目数を数えて `roll_dice(sides=<項目数>)` を振ってネタを決定する。ダイスには触れず、選ばれたネタをそのまま実行する。ネタ7（マルコフ連鎖）の場合は、書き出したコーパスの絶対パスを引数にして `uv run --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_SKILL_DIR}/scripts/markov.py" "<絶対パス>"` を実行する（この行はSKILL.md本文にあるので変数がそのまま置き換わる。jackpot.mdには書かない）
+- **30**: ジャックポット。`jackpot.md` を読み、対応表の項目数を数えて `roll_dice(sides=<項目数>)` を振ってネタを決定する。ダイスには触れず、選ばれたネタをそのまま実行する。ネタ7（マルコフ連鎖）の場合は、書き出したコーパスの絶対パスを引数にして `uv run --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_SKILL_DIR}/scripts/markov.py" "<絶対パス>"` を実行する
 - **1〜29**: セッション中の個別事実を俯瞰して見えた構造的パターン・矛盾・気づきを書く。事実の要約ではなく、事実から導かれる洞察。比喩OK。
 
 ユーザーへの称賛・感謝・労いは書かない。嘘はつかない。
