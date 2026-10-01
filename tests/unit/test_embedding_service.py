@@ -974,8 +974,13 @@ def test_start_server_uses_module_execution_form(temp_db, monkeypatch):
     ファイルパスを直接実行する形式（`[sys.executable, server_path]`）だと
     sys.path[0]がembedding_server.py自身のディレクトリになり、内部の
     `from src.xxx import ...` がModuleNotFoundErrorでクラッシュする。
+
+    popen_detachedはsys.platformで分岐するため、POSIX分岐の検証であることを
+    明示する(Windows分岐はtest_start_server_uses_popen_detached_windows_wiringで
+    検証する)。
     """
     import subprocess
+    from src.infra import detached_process
 
     captured = {}
     sentinel = object()
@@ -990,6 +995,7 @@ def test_start_server_uses_module_execution_form(temp_db, monkeypatch):
     root = Path(emb.__file__).resolve().parents[2]
     monkeypatch.setenv("CALM_PROJECT_ROOT", str(root))
     monkeypatch.setattr(emb, "_project_root_cache", None)  # env反映のためキャッシュをクリア
+    monkeypatch.setattr(detached_process.sys, "platform", "darwin")
     monkeypatch.setattr(subprocess, "Popen", capturing_popen)
     monkeypatch.setattr(emb, "_start_server", _REAL_START_SERVER)
 

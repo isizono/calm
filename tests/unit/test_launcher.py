@@ -200,9 +200,15 @@ class TestStartHttpServer:
         assert called_with["kwargs"]["cwd"] == launcher._PROJECT_ROOT
 
     def test_overwrites_stderr_log_on_each_start(self, tmp_path, monkeypatch):
-        """肥大化しないよう、起動のたびにstderrログを上書きする"""
-        import src.db as db
+        """肥大化しないよう、起動のたびにstderrログを上書きする
 
+        popen_detachedはsys.platformで分岐するため、POSIX分岐の検証であることを
+        明示する(Windows分岐はtest_uses_popen_detached_windows_wiringで検証する)。
+        """
+        import src.db as db
+        from src.infra import detached_process
+
+        monkeypatch.setattr(detached_process.sys, "platform", "darwin")
         monkeypatch.setattr(db, "get_db_path", lambda: str(tmp_path / "discussion.db"))
         log_path = tmp_path / "logs" / "server.stderr.log"
         log_path.parent.mkdir(parents=True)
@@ -229,9 +235,14 @@ class TestStartHttpServer:
 
         logs/ディレクトリの代わりに同名の通常ファイルを置き、
         mkdir(parents=True, exist_ok=True)を実際のFileExistsErrorで失敗させる。
+
+        popen_detachedはsys.platformで分岐するため、POSIX分岐の検証であることを
+        明示する(Windows分岐はtest_uses_popen_detached_windows_wiringで検証する)。
         """
         import src.db as db
+        from src.infra import detached_process
 
+        monkeypatch.setattr(detached_process.sys, "platform", "darwin")
         monkeypatch.setattr(db, "get_db_path", lambda: str(tmp_path / "discussion.db"))
         (tmp_path / "logs").write_bytes(b"")
         called_with = {}
