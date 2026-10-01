@@ -540,20 +540,116 @@ def _handle_stdin_line(line: bytes, state: "_StdinBridgeState") -> None:
     state.outbound.put_nowait(SessionMessage(message))
 
 
+_ERROR_BROKEN_PIPE = 109
+_FILE_TYPE_PIPE = 3
+
+# PeekNamedPipeで読める量が0の間、再確認までの待ち時間（秒）。stdin到着から
+# launcherが気づくまでの応答遅延の上限になる。
+_WINDOWS_PIPE_POLL_INTERVAL_SEC = 0.02
+
+
+class _PeekNamedPipeFailed(OSError):
+    """PeekNamedPipeが失敗したことを示す。winerrorにGetLastErrorの値を持つ。"""
+
+    def __init__(self, winerror: int) -> None:
+        super().__init__(f"PeekNamedPipe failed with winerror={winerror}")
+        self.winerror = winerror
+
+
+def _win_stdin_pipe_api(fd: int):
+    """Windows専用: stdin(fd)のGetFileTypeとPeekNamedPipeの薄いラッパーを返す。
+
+    `msvcrt`・`ctypes.WinDLL`・`ctypes.get_last_error()`はWindows以外には
+    存在しないため、呼び出し側（Windowsでのみ到達する経路）の中でだけ
+    importする。共有の`ctypes.windll.kernel32`にargtypesを設定すると
+    プロセス全体に影響するため、専用の`WinDLL`を使う。
+    """
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetFileType.argtypes = [wintypes.HANDLE]
+    kernel32.GetFileType.restype = wintypes.DWORD
+    kernel32.PeekNamedPipe.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.LPDWORD,
+        wintypes.LPDWORD,
+        wintypes.LPDWORD,
+    ]
+    kernel32.PeekNamedPipe.restype = wintypes.BOOL
+
+    handle = wintypes.HANDLE(msvcrt.get_osfhandle(fd))
+    file_type = kernel32.GetFileType(handle)
+
+    def peek() -> int:
+        """ブロックせず読める残量(バイト数)を返す。失敗時は`_PeekNamedPipeFailed`。"""
+        bytes_available = wintypes.DWORD(0)
+        ok = kernel32.PeekNamedPipe(
+            handle, None, 0, None, ctypes.byref(bytes_available), None
+        )
+        if not ok:
+            raise _PeekNamedPipeFailed(ctypes.get_last_error())
+        return bytes_available.value
+
+    return file_type, peek
+
+
+def _read_stdin_chunk_windows_pipe(fd: int, peek) -> bytes:
+    """Windowsの無名パイプstdin専用の読み取り。空バイト列はEOFを意味する。
+
+    別スレッドでのnumpy初回import（同梱OpenBLASのDLLロード）が、stdinの
+    ブロッキング読み取り中は完了しない問題への対策。`peek()`で読める量を
+    確認し、0の間はブロックせず待ってから再確認する。
+    """
+    while True:
+        try:
+            available = peek()
+        except _PeekNamedPipeFailed as e:
+            if e.winerror == _ERROR_BROKEN_PIPE:
+                return b""  # 書き込み側close = EOF
+            logger.warning(
+                f"PeekNamedPipe failed (winerror={e.winerror}), treating as EOF"
+            )
+            return b""
+        if available > 0:
+            return os.read(fd, min(available, 65536))
+        time.sleep(_WINDOWS_PIPE_POLL_INTERVAL_SEC)
+
+
+def _stdin_chunk_reader(fd: int):
+    """stdinの読み方を1チャンク分選ぶ。呼び出すたびに1チャンク返す関数を返す。
+
+    Windowsでstdinが無名パイプ（GetFileType == FILE_TYPE_PIPE）の場合だけ
+    PeekNamedPipe方式を使う。それ以外（POSIX全般、Windowsでファイル
+    リダイレクト等パイプでない場合）は従来通りのブロッキング`os.read`。
+    """
+    if sys.platform == "win32":
+        file_type, peek = _win_stdin_pipe_api(fd)
+        if file_type == _FILE_TYPE_PIPE:
+            return lambda: _read_stdin_chunk_windows_pipe(fd, peek)
+    return lambda: os.read(fd, 65536)
+
+
 async def _stdin_reader_task(state: "_StdinBridgeState") -> None:
     """stdinをプロセス生存中1回だけ読み取り続ける、bridgeのリトライを跨いで
     生きるタスク。
 
     bridgeが失敗して再接続を試みている間も、このタスク自体は止まらない。
-    OSレベルの読み取りはブロッキングのdaemonスレッドで`os.read(fd, ...)`を
-    回し、`loop.call_soon_threadsafe`経由でイベントループ側の
+    OSレベルの読み取りはブロッキングのdaemonスレッドで回し、
+    `loop.call_soon_threadsafe`経由でイベントループ側の
     `asyncio.StreamReader`へ`feed_data`/`feed_eof`する（asyncioの既定
     イベントループの中には、stdinを`connect_read_pipe`で読もうとすると
-    壊れるものがあるため、全OS共通でスレッド読み取りに揃える）。イベント
-    ループが既に閉じた後にスレッド側から`call_soon_threadsafe`を呼ぶと
-    RuntimeErrorになるが、daemonスレッドなのでプロセス終了は妨げず、
-    その例外は握りつぶしてよい。読み取りの開始・継続いずれが失敗しても
-    WARNINGを出したうえでEOF扱いにし、終了経路に必ず乗せる。
+    壊れるものがあるため、全OS共通でスレッド読み取りに揃える）。読み取り方
+    自体は`_stdin_chunk_reader`が選ぶ（POSIXおよびWindowsでパイプでない
+    場合はブロッキングの`os.read`、Windowsで無名パイプの場合はPeekNamedPipe
+    方式）。イベントループが既に閉じた後にスレッド側から
+    `call_soon_threadsafe`を呼ぶとRuntimeErrorになるが、daemonスレッド
+    なのでプロセス終了は妨げず、その例外は握りつぶしてよい。読み取りの
+    開始・継続いずれが失敗してもWARNINGを出したうえでEOF扱いにし、終了
+    経路に必ず乗せる。
     行ごとにパースして`_handle_stdin_line`に渡し、stdin EOFで終了する。
     終了時は`state.outbound`へ番兵として`None`を積んでから
     `state.stdin_eof`をセットする（`queue_to_server`側が素の`Queue.get()`
@@ -575,8 +671,9 @@ async def _stdin_reader_task(state: "_StdinBridgeState") -> None:
     def _read_stdin() -> None:
         try:
             fd = sys.stdin.buffer.fileno()
+            read_chunk = _stdin_chunk_reader(fd)
             while True:
-                chunk = os.read(fd, 65536)
+                chunk = read_chunk()
                 if not chunk:
                     break
                 _feed_data(chunk)

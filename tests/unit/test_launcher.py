@@ -1523,6 +1523,150 @@ class TestStdinReaderTaskFailureHandling:
         assert "stdin reader ended unexpectedly" in warnings
 
 
+class TestReadStdinChunkWindowsPipe:
+    """_read_stdin_chunk_windows_pipe: PeekNamedPipeとos.readの偽物で駆動する。
+
+    実際のWindows API（ctypes.WinDLL）には触れず、`peek`引数に渡す関数と
+    `launcher.os.read`だけを差し替えて検証する。
+    """
+
+    def test_polls_while_zero_then_reads_once_available(self, monkeypatch):
+        """読める量が0の間はos.readを呼ばず、正になったら1回だけ読む"""
+        available_sequence = iter([0, 0, 5])
+        peek_calls = []
+
+        def fake_peek():
+            peek_calls.append(True)
+            return next(available_sequence)
+
+        sleeps = []
+        monkeypatch.setattr(launcher.time, "sleep", lambda s: sleeps.append(s))
+
+        read_calls = []
+
+        def fake_read(fd, n):
+            read_calls.append((fd, n))
+            return b"hello"
+
+        monkeypatch.setattr(launcher.os, "read", fake_read)
+
+        result = launcher._read_stdin_chunk_windows_pipe(999, fake_peek)
+
+        assert result == b"hello"
+        assert len(peek_calls) == 3
+        assert read_calls == [(999, 5)]
+        assert sleeps == [
+            launcher._WINDOWS_PIPE_POLL_INTERVAL_SEC,
+            launcher._WINDOWS_PIPE_POLL_INTERVAL_SEC,
+        ]
+
+    def test_broken_pipe_returns_eof_without_warning(self, monkeypatch):
+        """ERROR_BROKEN_PIPE(109)はEOFとして扱い、WARNINGは出さない"""
+
+        def fake_peek():
+            raise launcher._PeekNamedPipeFailed(launcher._ERROR_BROKEN_PIPE)
+
+        warnings = []
+        monkeypatch.setattr(
+            launcher.logger, "warning", lambda msg, *a, **kw: warnings.append(msg)
+        )
+        read_calls = []
+        monkeypatch.setattr(
+            launcher.os, "read", lambda fd, n: read_calls.append((fd, n))
+        )
+
+        result = launcher._read_stdin_chunk_windows_pipe(999, fake_peek)
+
+        assert result == b""
+        assert read_calls == []
+        assert warnings == []
+
+    def test_other_failure_logs_warning_and_returns_eof(self, monkeypatch):
+        """ERROR_BROKEN_PIPE以外の失敗はWARNINGを出したうえでEOF扱いにする"""
+
+        def fake_peek():
+            raise launcher._PeekNamedPipeFailed(5)
+
+        warnings = []
+        monkeypatch.setattr(
+            launcher.logger, "warning", lambda msg, *a, **kw: warnings.append(msg)
+        )
+        read_calls = []
+        monkeypatch.setattr(
+            launcher.os, "read", lambda fd, n: read_calls.append((fd, n))
+        )
+
+        result = launcher._read_stdin_chunk_windows_pipe(999, fake_peek)
+
+        assert result == b""
+        assert read_calls == []
+        assert len(warnings) == 1
+        assert "winerror=5" in warnings[0]
+
+
+class TestStdinChunkReaderSelection:
+    """_stdin_chunk_reader: プラットフォーム・stdinの種別に応じた読み方の選択。"""
+
+    def test_non_windows_uses_blocking_read(self, monkeypatch):
+        """Windows以外は常にブロッキングのos.readを選ぶ（_win_stdin_pipe_apiは呼ばない）"""
+        monkeypatch.setattr(launcher.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            launcher,
+            "_win_stdin_pipe_api",
+            lambda fd: (_ for _ in ()).throw(AssertionError("should not be called")),
+        )
+        read_calls = []
+        monkeypatch.setattr(
+            launcher.os, "read", lambda fd, n: read_calls.append((fd, n)) or b"x"
+        )
+
+        read_chunk = launcher._stdin_chunk_reader(42)
+        assert read_chunk() == b"x"
+        assert read_calls == [(42, 65536)]
+
+    def test_windows_non_pipe_uses_blocking_read(self, monkeypatch):
+        """Windowsでもstdinがパイプでない場合（ファイルリダイレクト等）はブロッキング読み取り"""
+        monkeypatch.setattr(launcher.sys, "platform", "win32")
+
+        def fake_peek():
+            raise AssertionError("peek should not be called when stdin is not a pipe")
+
+        monkeypatch.setattr(
+            launcher, "_win_stdin_pipe_api", lambda fd: (1, fake_peek)
+        )
+        read_calls = []
+        monkeypatch.setattr(
+            launcher.os, "read", lambda fd, n: read_calls.append((fd, n)) or b"x"
+        )
+
+        read_chunk = launcher._stdin_chunk_reader(42)
+        assert read_chunk() == b"x"
+        assert read_calls == [(42, 65536)]
+
+    def test_windows_pipe_uses_peek_reader(self, monkeypatch):
+        """Windowsでstdinが無名パイプの場合はPeekNamedPipe方式を選ぶ"""
+        monkeypatch.setattr(launcher.sys, "platform", "win32")
+
+        peek_calls = []
+
+        def fake_peek():
+            peek_calls.append(True)
+            return 3
+
+        monkeypatch.setattr(
+            launcher, "_win_stdin_pipe_api", lambda fd: (launcher._FILE_TYPE_PIPE, fake_peek)
+        )
+        read_calls = []
+        monkeypatch.setattr(
+            launcher.os, "read", lambda fd, n: read_calls.append((fd, n)) or b"abc"
+        )
+
+        read_chunk = launcher._stdin_chunk_reader(42)
+        assert read_chunk() == b"abc"
+        assert peek_calls == [True]
+        assert read_calls == [(42, 3)]
+
+
 class TestStdinReaderThreadSurvivesClosedLoop:
     """読み取りスレッドが、イベントループが閉じた後にfeed_data/feed_eofを
 
