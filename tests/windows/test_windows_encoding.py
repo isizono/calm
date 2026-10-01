@@ -16,7 +16,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from tests.windows.support import REPO_ROOT, isolated_env, run_with_timeout
+import pytest
+
+from tests.windows.support import REPO_ROOT, isolated_env, load_mcp_launcher_command, run_with_timeout
 
 _INIT_DB_SCRIPT = "from src.db import init_database; init_database(); print('OK')"
 
@@ -28,15 +30,54 @@ def _forced_non_utf8_env(tmp_path: Path) -> dict:
     return env
 
 
+def _real_non_utf8_locale_available() -> bool:
+    """POSIXでja_JP.SJISロケールが使えるか(無ければinit_databaseテストをskipする)。"""
+    if sys.platform == "win32":
+        return True
+    try:
+        result = subprocess.run(["locale", "-a"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return "ja_JP.SJIS" in result.stdout.split()
+
+
+def _non_utf8_locale_env(tmp_path: Path) -> dict:
+    """open()の既定encodingまで実際に非UTF-8(cp932相当)にする環境を返す。
+
+    PYTHONIOENCODINGはsys.stdin/stdout/stderrのエンコーディングにしか効かず、
+    open()の既定encoding(locale.getpreferredencoding(False)が決める)には影響
+    しない。WindowsはANSIコードページ自体が既定で非UTF-8なのでPYTHONUTF8=0
+    だけで足りるが、POSIXではLC_ALL/LANGでロケールそのものを切り替える必要が
+    ある(_real_non_utf8_locale_availableがFalseの環境では呼び出し側がskipする)。
+    """
+    env = isolated_env(tmp_path)
+    env["PYTHONUTF8"] = "0"
+    if sys.platform == "win32":
+        env["PYTHONIOENCODING"] = "cp932"
+    else:
+        env.pop("PYTHONIOENCODING", None)
+        env["LC_ALL"] = "ja_JP.SJIS"
+        env["LANG"] = "ja_JP.SJIS"
+    return env
+
+
 def test_init_database_under_forced_non_utf8_locale(tmp_path):
-    """R3: 新規DBに対するinit_database()が、UTF-8モード無効のロケールでも通ること。
+    """新規DBに対するinit_database()が、UTF-8モード無効のロケールでも通ること。
 
     現行コードのままWindows(既定ANSIコードページがcp932/cp1252等)で実行すると、
     yoyoのmigrationファイル読み込みがUnicodeDecodeErrorになり、サーバーは
-    起動前に落ちる。POSIX側はロケールがUTF-8である限りこの問題を再現しない
-    (open()の既定encodingはPYTHONUTF8ではなくlocale.getpreferredencoding()に従う)。
+    起動前に落ちる。この問題への対策は.mcp.jsonのcalm.env(PYTHONUTF8=1)で
+    launcher経由の起動時にUTF-8モードを強制することだけであり、yoyo自身の
+    open()はサードパーティのコードで直接は直せない。そのため、このテストは
+    ロケールそのものを非UTF-8にした上から.mcp.jsonのenvを重ねる
+    (本番の入口=launcher起動と同じ条件を再現し、.mcp.jsonのenvが消える・
+    書き換わる退行を拾う)。
     """
-    env = _forced_non_utf8_env(tmp_path)
+    if not _real_non_utf8_locale_available():
+        pytest.skip("ja_JP.SJIS locale not available on this system")
+    env = _non_utf8_locale_env(tmp_path)
+    _, mcp_env_overrides = load_mcp_launcher_command()
+    env.update(mcp_env_overrides)
     result = subprocess.run(
         [sys.executable, "-c", _INIT_DB_SCRIPT],
         cwd=str(REPO_ROOT),
@@ -46,8 +87,8 @@ def test_init_database_under_forced_non_utf8_locale(tmp_path):
         timeout=120,
     )
     assert result.returncode == 0, (
-        "init_database() failed under a forced non-UTF-8 locale "
-        f"(PYTHONUTF8=0, PYTHONIOENCODING=cp932):\n"
+        "init_database() failed under a forced non-UTF-8 locale layered with "
+        ".mcp.json's calm.env (the production launcher entry point):\n"
         f"stdout={result.stdout}\nstderr={result.stderr}"
     )
     assert "OK" in result.stdout
