@@ -3148,8 +3148,8 @@ if __name__ == "__main__":
 
     if args.transport == "http":
         # verify_sqlite_vec/init_databaseより前にログをファイルへ永続化する。
-        # この2つの起動時チェックの失敗（migrationのencoding絡み等）は
-        # logging未設定のままだと痕跡が残らない。
+        # この2つが`logger.error`してから`SystemExit`する失敗（sqlite-vec検証失敗、
+        # migrationの内容ハッシュ不一致等）は、logging未設定のままだと痕跡が残らない。
         _log_dir = _setup_server_logging(get_db_path())
         logger.info("Server log persisted to %s", _log_dir / "server.log")
 

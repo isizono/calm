@@ -296,23 +296,42 @@ def _server_stderr_log_path() -> Path:
     return Path(get_db_path()).parent / "logs" / "server.stderr.log"
 
 
+@contextlib.contextmanager
+def _resolve_server_stderr_target():
+    """server.stderr.logを開いて渡す。準備に失敗したらDEVNULLにフォールバックする。
+
+    診断用ログの用意（ディレクトリ作成・ファイルオープン）自体の失敗は、
+    サーバー起動そのものを止める理由にしない。
+    """
+    try:
+        stderr_path = _server_stderr_log_path()
+        stderr_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        stderr_log = open(stderr_path, "wb")
+    except OSError as e:
+        logger.warning(f"Failed to prepare server stderr log, falling back to DEVNULL: {e}")
+        yield subprocess.DEVNULL
+        return
+    try:
+        yield stderr_log
+    finally:
+        stderr_log.close()
+
+
 def _start_http_server() -> bool:
     """HTTPサーバーをデーモンとして起動する。
 
     sys.executableは.mcp.jsonの「uv run python -m src.launcher」経由で
     起動されることを前提とし、uv仮想環境のPython（.venv/bin/python）を使用する。
-    stderrはDEVNULLではなくファイルへ向ける（肥大しないよう起動のたびに
+    stderrは可能ならDEVNULLではなくファイルへ向ける（肥大しないよう起動のたびに
     上書きする。蓄積した過去ログが必要になるケースは想定していない）。
     """
-    stderr_path = _server_stderr_log_path()
     try:
-        stderr_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with open(stderr_path, "wb") as stderr_log:
+        with _resolve_server_stderr_target() as stderr_target:
             subprocess.Popen(
                 [sys.executable, "-m", "src.main", "--transport", "http"],
                 start_new_session=True,
                 stdout=subprocess.DEVNULL,
-                stderr=stderr_log,
+                stderr=stderr_target,
                 cwd=_PROJECT_ROOT,
             )
     except OSError as e:

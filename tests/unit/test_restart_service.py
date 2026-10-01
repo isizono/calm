@@ -15,15 +15,21 @@ from src.services import restart_service
 
 @pytest.fixture(autouse=True)
 def _isolate_calm_project_root_env():
-    """restart_mcp_server()のenv_set("CALM_PROJECT_ROOT", ...)はos.environを直接
-    書き換えるため、monkeypatch.delenv(raising=False)では捕捉されない(対象キーが
-    元々未設定だとundo記録が残らない: pytest monkeypatchの仕様)。放置すると
-    restart_mcp_server()を呼ぶどのテストからもCALM_PROJECT_ROOTがプロセス全体に
-    残留しうるため、本ファイル全体に適用してテスト順依存の非決定性を防ぐ。
+    """restart_mcp_server()のenv_set("CALM_PROJECT_ROOT", ...)、os.environ.setdefault
+    ("PYTHONUTF8", ...)はos.environを直接書き換えるため、monkeypatch.delenv
+    (raising=False)では捕捉されない(対象キーが元々未設定だとundo記録が残らない:
+    pytest monkeypatchの仕様)。放置するとrestart_mcp_server()を呼ぶどのテストからも
+    これらの環境変数がプロセス全体に残留しうるため、本ファイル全体に適用して
+    テスト順依存の非決定性を防ぐ。
     """
     snapshot = env_snapshot("CALM_PROJECT_ROOT")
+    python_utf8 = os.environ.get("PYTHONUTF8")
     yield
     env_restore(snapshot)
+    if python_utf8 is None:
+        os.environ.pop("PYTHONUTF8", None)
+    else:
+        os.environ["PYTHONUTF8"] = python_utf8
 
 
 def test_find_listen_pids_parses_lsof_output(monkeypatch):
@@ -482,6 +488,44 @@ class TestRestartMcpServerPropagatesCalmProjectRoot:
         )
 
         assert os.environ["CALM_PROJECT_ROOT"] == str(main_repo_root)
+
+
+def _run_restart_minimal(monkeypatch, tmp_path):
+    """restart_mcp_server()を、プロセス入れ替え判定に無関係な箇所だけfakeにして実行する。
+
+    find_listen_pidsが常に[]を返すためサーバーは起動確認できず、timeoutで
+    後始末のkillpgへ進む(test_restart_mcp_server_times_out_when_server_never_comes_up
+    と同じ理由でos.getpgid/os.killpgもfakeにする)。
+    """
+    monkeypatch.setattr(restart_service, "find_listen_pids", lambda port: [])
+    monkeypatch.setattr(restart_service, "kill_pids", lambda pids: None)
+    monkeypatch.setattr(restart_service, "_resolve_main_repo_root", lambda project_root: project_root)
+    monkeypatch.setattr(restart_service.subprocess, "Popen", lambda cmd, **kwargs: SimpleNamespace(pid=4321))
+    monkeypatch.setattr(restart_service, "LAUNCHER_LOG_PATH", tmp_path / "logs" / "restart_launcher.log")
+    monkeypatch.setattr(restart_service.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(restart_service.os, "killpg", lambda pgid, sig: None)
+
+
+def test_restart_mcp_server_sets_python_utf8_when_unset(monkeypatch, tmp_path):
+    """.mcp.jsonのcalm.env経由ではないこの再起動フローでも、新規launcherプロセスの
+    環境にPYTHONUTF8=1が伝播するよう、未設定ならos.environへ明示的に設定する。
+    """
+    monkeypatch.delenv("PYTHONUTF8", raising=False)
+    _run_restart_minimal(monkeypatch, tmp_path)
+
+    restart_service.restart_mcp_server(tmp_path, poll_interval_sec=0, start_timeout_sec=0)
+
+    assert os.environ["PYTHONUTF8"] == "1"
+
+
+def test_restart_mcp_server_does_not_override_existing_python_utf8(monkeypatch, tmp_path):
+    """PYTHONUTF8が既に設定済みなら上書きしない(明示的に無効化している利用者を尊重する)"""
+    monkeypatch.setenv("PYTHONUTF8", "0")
+    _run_restart_minimal(monkeypatch, tmp_path)
+
+    restart_service.restart_mcp_server(tmp_path, poll_interval_sec=0, start_timeout_sec=0)
+
+    assert os.environ["PYTHONUTF8"] == "0"
 
 
 def test_stop_embedding_server_kills_found_pids(monkeypatch):

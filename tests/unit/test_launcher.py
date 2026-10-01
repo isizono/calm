@@ -135,6 +135,24 @@ class TestStartHttpServer:
         monkeypatch.setattr(subprocess, "Popen", fake_popen)
         assert launcher._start_http_server() is False
 
+    def test_falls_back_to_devnull_when_stderr_log_cannot_be_prepared(self, tmp_path, monkeypatch):
+        """診断用stderrログの準備(mkdir/open)自体が失敗しても、サーバー起動は続行する"""
+        import src.db as db
+
+        monkeypatch.setattr(db, "get_db_path", lambda: str(tmp_path / "discussion.db"))
+        monkeypatch.setattr(
+            launcher, "_server_stderr_log_path", lambda: (_ for _ in ()).throw(OSError("boom"))
+        )
+        called_with = {}
+
+        class FakePopen:
+            def __init__(self, args, **kwargs):
+                called_with["kwargs"] = kwargs
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        assert launcher._start_http_server() is True
+        assert called_with["kwargs"]["stderr"] == subprocess.DEVNULL
+
 
 class TestEnsureServerRunning:
     def test_returns_true_if_already_running(self, monkeypatch):

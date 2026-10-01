@@ -184,6 +184,13 @@ def restart_mcp_server(
     if not env_get("CALM_PROJECT_ROOT"):
         env_set("CALM_PROJECT_ROOT", str(_resolve_main_repo_root(project_root)))
 
+    # .mcp.jsonのcalm.env経由ではなくこの再起動フローから直接launcherを起動する
+    # ため、.mcp.jsonのPYTHONUTF8=1がここでは伝播しない。Windows既定のANSIコード
+    # ページ下で新規DBのmigrationを読む際に文字化け・UnicodeDecodeErrorを防ぐため
+    # 明示的に設定する(CALM_プレフィックス専用のenv_set/env_getはPYTHONUTF8には
+    # 使えないため、os.environを直接操作する)。
+    os.environ.setdefault("PYTHONUTF8", "1")
+
     LAUNCHER_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(LAUNCHER_LOG_PATH, "w") as log_file:
         proc = subprocess.Popen(
