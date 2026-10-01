@@ -21,7 +21,7 @@ embeddingサーバー(52836)はコードの変更頻度が低いため既定で�
 ユーザーがこのスキルを明示的に呼び出したこと自体を実行の承認とみなし、追加確認は取らずに以下をBashツールで実行する。
 
 ```
-uv run --no-sync --directory ${CLAUDE_PLUGIN_ROOT} python ${CLAUDE_PLUGIN_ROOT}/scripts/restart_server.py
+uv run --no-sync --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/restart_server.py"
 ```
 
 embeddingサーバーも明示的に再起動したい場合は`--restart-embedding`を付ける。

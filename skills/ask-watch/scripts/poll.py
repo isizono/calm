@@ -1,10 +1,9 @@
 """asksテーブルのopen件数・最新last_seen_at・id集合のいずれかが変化した瞬間だけ
 1行出力するポーリングループ。
 
-bash + sqlite3 CLIはWindowsにネイティブ同梱されないため標準ライブラリの
-sqlite3モジュールで置き換える。GROUP_CONCAT(id)まで比較に含めているのは、
-件数が同じでもid構成が入れ替わる変化（1件closeして1件openになった等）を
-取りこぼさないため。
+Windowsはsqlite3 CLIを同梱しないため、標準ライブラリのsqlite3モジュールを使う。
+GROUP_CONCAT(id)まで比較に含めているのは、件数が同じでもid構成が入れ替わる変化
+（1件closeして1件openになった等）を取りこぼさないため。
 """
 from __future__ import annotations
 

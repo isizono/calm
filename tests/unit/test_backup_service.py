@@ -300,6 +300,19 @@ class TestRestoreServerRunningGuard:
         with pytest.raises(bs.RestoreBlockedError):
             bs.restore_snapshot(str(snapshot_path), temp_db)
 
+    def test_blocked_message_points_to_restart_server_cli_not_lsof(self, temp_db):
+        """案内文はWindowsに存在しないlsofではなく、OS非依存のCLIを示す"""
+        snapshot_path = bs.take_snapshot(temp_db, kind="manual")
+        lock_file.acquire(52837)
+
+        with pytest.raises(bs.RestoreBlockedError) as exc_info:
+            bs.restore_snapshot(str(snapshot_path), temp_db)
+
+        message = str(exc_info.value)
+        assert "restart_server.py" in message
+        assert "--stop" in message
+        assert "lsof" not in message
+
     def test_force_bypasses_running_check(self, temp_db):
         snapshot_path = bs.take_snapshot(temp_db, kind="manual")
         lock_file.acquire(52837)

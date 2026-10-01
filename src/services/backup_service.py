@@ -605,12 +605,16 @@ def restore_snapshot(
     # 1. サーバー稼働チェック
     running, detail = _server_appears_running()
     if running and not force:
+        # ${CLAUDE_PLUGIN_ROOT}のようなシェル変数テンプレートは、Python文字列として
+        # 出力してもそのまま展開されずに表示される(人間がターミナルで直接読んだ場合に
+        # コピペできない)ため、このモジュール自身の実位置から具体パスを組み立てる。
+        _project_root = Path(__file__).resolve().parents[2]
+        _restart_script = _project_root / "scripts" / "restart_server.py"
         raise RestoreBlockedError(
             "サーバーが稼働中のため復元を中断しました"
             f"（{detail}）。"
             "先にサーバーを停止してください: "
-            'uv run --no-sync --directory "${CLAUDE_PLUGIN_ROOT}" python '
-            '"${CLAUDE_PLUGIN_ROOT}/scripts/restart_server.py" --stop '
+            f'uv run --no-sync --directory "{_project_root}" python "{_restart_script}" --stop '
             "（停止済みであることを確認の上で続行する場合は --force を指定）"
         )
 

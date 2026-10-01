@@ -21,16 +21,18 @@ from typing import NamedTuple
 import psutil
 
 from src.env_compat import env_get, env_set
-from src.http_config import HTTP_PORT
+from src.http_config import EMBEDDING_PORT, HTTP_PORT
 from src.infra import lock_file
 from src.infra.detached_process import popen_detached
 from src.infra.git_repo import resolve_main_repo_root
 from src.infra.lock_file import is_process_alive
 from src.infra.process_signature import process_start_signature
-from src.services.embedding_service import PORT as EMBEDDING_SERVER_PORT
 
+# EMBEDDING_PORTはsrc.http_configから直接取る(src.services.embedding_service
+# 経由だと、Windowsで本CLI自身の--no-sync実行中にsqlite_vec/numpy等の重い
+# 依存一式がimport時にロードされ、後続のuv sync(subprocess)がそれらの
+# ファイルを更新しようとした際に競合しうるため)。
 MCP_PORT = HTTP_PORT
-EMBEDDING_PORT = EMBEDDING_SERVER_PORT
 LAUNCHER_LOG_PATH = Path.home() / ".cc-memory" / "logs" / "restart_launcher.log"
 
 DEFAULT_START_TIMEOUT_SEC = 30.0
@@ -154,9 +156,10 @@ def sync_dependencies(
 ) -> SyncResult:
     """`uv sync` でvenvを再構築する。
 
-    旧サーバーがまだポートを握っている間に実行することで、後続の
-    kill→起動→30秒監視のダウンタイムからvenv構築時間を切り離す。
-    失敗しても呼び出し側は後続の再起動処理を続行してよい。
+    POSIXでは旧サーバーがまだポートを握っている間に実行することで、後続の
+    kill→起動→30秒監視のダウンタイムからvenv構築時間を切り離す
+    (Windowsでは呼び出し側(`restart_all`)が旧サーバーを止めた後に呼ぶため、
+    この効果は無い)。失敗しても呼び出し側は後続の再起動処理を続行してよい。
     """
     # 実行中のインタープリタ自体がproject_root配下の.venvから起動している
     # ケース(uv run --directory経由の起動)があるため、この呼び出しの後に
