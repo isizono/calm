@@ -416,6 +416,11 @@ def test_restart_mcp_server_replaces_old_process_that_ignores_sigterm(monkeypatc
         # SIGTERMは無視され続ける(何もしない)
 
     monkeypatch.setattr(restart_service.os, "kill", fake_os_kill)
+    # kill_pidsの生存判定はis_process_alive()(psutil)を見る。Linux版psutilは
+    # os.kill(pid,0)に加えて/proc/{pid}/statusの実在確認を行うため、存在しない
+    # 偽PIDに対してos.kill差し替えだけでは「生存中」を偽装できない。生存判定
+    # そのものをprocess_aliveと同期させる。
+    monkeypatch.setattr(restart_service, "is_process_alive", lambda pid: process_alive.get(pid, False))
 
     new_server_started = {"flag": False}
 
