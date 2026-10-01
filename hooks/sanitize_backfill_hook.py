@@ -44,7 +44,6 @@ from hooks.hook_transcript import _is_calm_tool
 from src.env_compat import env_get
 from src.harness import select_harness
 from src.harness.claude_code import read_stdin_text
-from src.infra.file_ops import replace_retrying
 from src.services.citations_pure import (
     check_target_exists,
     convert_raw_to_cite,
@@ -319,8 +318,11 @@ def _write_back_transcript(
         tmp_path.unlink(missing_ok=True)
         return f"io_error: {exc}"
 
+    # ここだけは意図的にreplace_retryingを使わない。rename直前のmtime再確認の
+    # 直後に再試行すると、その間に書き込まれたharnessの並行appendを追記直後に
+    # 上書きして失いうる。
     try:
-        replace_retrying(tmp_path, transcript_path)
+        os.replace(tmp_path, transcript_path)
     except OSError as exc:
         tmp_path.unlink(missing_ok=True)
         backup_path.unlink(missing_ok=True)

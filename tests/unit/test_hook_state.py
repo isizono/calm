@@ -248,6 +248,29 @@ class TestClearSession:
         assert locked_path.exists()
         assert state.get_transcript_offset() == 0
 
+    def test_oserror_on_events_file_is_swallowed_and_others_still_removed(self, tmp_path, monkeypatch):
+        """events.jsonlは命名規則が違うため個別にunlinkしている。そちらの
+        unlinkがOSErrorを起こしても例外を外に出さず、残りのファイルは削除される。"""
+        monkeypatch.setattr(HookState, "BASE_DIR", tmp_path)
+        state = HookState("sess-partial-events")
+        state.set_transcript_offset(100)
+        state.append_events([{"e": "meta", "topic": "t", "turn": 1}])
+        events_path = state.events_path
+
+        real_unlink = Path.unlink
+
+        def flaky_unlink(self, *args, **kwargs):
+            if self == events_path:
+                raise OSError(32, "The process cannot access the file")
+            return real_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", flaky_unlink)
+
+        HookState.clear_session("sess-partial-events")
+
+        assert events_path.exists()
+        assert state.get_transcript_offset() == 0
+
 
 class TestClearSessionPreserve:
     """clear_session(preserve=...): 指定prefixのファイルをクリア対象から除外する。

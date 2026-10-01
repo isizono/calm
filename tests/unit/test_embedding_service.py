@@ -1,6 +1,9 @@
 """embeddingサービスのテスト（HTTPクライアント方式）"""
 import json
 import os
+import threading
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import pytest
 import numpy as np
@@ -749,6 +752,61 @@ class TestEncodeBatchRequestPayload:
 
         assert "日本語のテスト文書です".encode("utf-8") in captured["body"]
         assert b"\\u65e5" not in captured["body"]  # "日"のunicodeエスケープが含まれない
+
+
+# ========================================
+# _is_server_running: プロキシ回避が実際に効いていることの確認
+# ========================================
+#
+# 上の TestEncodeBatchRequestPayload は `_NO_PROXY_OPENER.open` 自体を
+# モックするため、_NO_PROXY_OPENER がプロキシ設定を読む構成（例:
+# urllib.request.build_opener()）に戻っても検出できない。_NO_PROXY_OPENER は
+# モジュールimport時に構築されるため、プロキシ環境変数を設定した状態で
+# importlib.reloadしないと、その退行を検出できない。ここでは実HTTPサーバーと
+# 実プロキシ環境変数を使い、_is_server_running を一切モックせず本物の
+# プロキシバイパスを確認する。
+
+
+class _HealthOkHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass  # テスト出力を汚さない
+
+
+def test_is_server_running_bypasses_http_proxy_env(monkeypatch):
+    """_is_server_running: HTTP_PROXY/http_proxyが設定されていても127.0.0.1への
+    ヘルスチェックはプロキシを経由しない。"""
+    import importlib
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _HealthOkHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        # 閉じたポートを指すプロキシ。バイパスできていなければ接続拒否でFalseになる。
+        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+        monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
+        importlib.reload(emb)
+        try:
+            monkeypatch.setattr(emb, "SERVER_URL", f"http://127.0.0.1:{port}")
+            # urllib.request.urlopenの既定openerはプロセス内で初回呼び出し時に
+            # 1度だけ構築されキャッシュされる。他のテストが先に本物のurlopenを
+            # 呼んでいた場合、そのキャッシュが現在の環境変数を反映しないまま
+            # 残ってしまうため、ここで強制的に作り直させる。
+            monkeypatch.setattr(urllib.request, "_opener", None)
+            assert emb._is_server_running() is True
+        finally:
+            monkeypatch.delenv("HTTP_PROXY", raising=False)
+            monkeypatch.delenv("http_proxy", raising=False)
+            importlib.reload(emb)  # importlib.reloadの副作用を素の状態に戻す
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
 
 
 # ========================================
