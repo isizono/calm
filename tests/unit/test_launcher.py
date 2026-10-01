@@ -86,9 +86,15 @@ class TestIsServerRunning:
 
 class TestStartHttpServer:
     def test_calls_popen_with_correct_args(self, tmp_path, monkeypatch):
-        """正しい引数でsubprocess.Popenが呼ばれ、stderrはファイルに向く"""
-        import src.db as db
+        """正しい引数でsubprocess.Popenが呼ばれ、stderrはファイルに向く
 
+        popen_detachedはsys.platformで分岐するため、POSIX分岐の検証であることを
+        明示する(Windows分岐はtest_uses_popen_detached_windows_wiringで検証する)。
+        """
+        import src.db as db
+        from src.infra import detached_process
+
+        monkeypatch.setattr(detached_process.sys, "platform", "darwin")
         monkeypatch.setattr(db, "get_db_path", lambda: str(tmp_path / "discussion.db"))
         called_with = {}
 
