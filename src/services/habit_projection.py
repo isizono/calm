@@ -8,11 +8,6 @@
 export()（または export_and_annotate()）を呼ぶこと。呼び忘れても次のセッション
 開始時のリコンサイル（verify_and_heal）が自己修復するため事故にはならないが、
 反映が1セッション分遅れる。
-
-注: verify_and_healはこのモジュール内に実装済みだが、本PR時点ではSessionStart
-hookからまだ呼び出されていない（接続は別PRで実施予定）。そのためこの docstring
-が説明する自己修復は現時点では発生せず、export呼び忘れは次にexportが呼ばれる
-（もしくはhook接続後のセッション開始）までそのまま反映されない。
 """
 import hashlib
 import logging

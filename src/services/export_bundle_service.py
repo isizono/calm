@@ -13,9 +13,9 @@ collect_export_candidatesで確定した候補リストから、他インスタ�
     ├── activities/A-<番号>-<slug>.md
     └── materials/M-<番号>-<slug>.md
 
-複合キーは`<instance_id>:<型コード><ローカルID>`(例: team-a:M12)。import_provenance
-テーブルはまだ無いため、本ツールが対象にするのは常に自インスタンス発のエンティティのみで、
-複合キーはinstance_id + 自身のローカルIDから直接組み立てる(provenance逆引きは行わない)。
+複合キーは`<instance_id>:<型コード><ローカルID>`(例: team-a:M12)。本ツールが対象にするのは
+常に自インスタンス発のエンティティのみで、複合キーはinstance_id + 自身のローカルIDから
+直接組み立てる(import_provenanceテーブルへの逆引きは行わない)。
 """
 import hashlib
 import json
