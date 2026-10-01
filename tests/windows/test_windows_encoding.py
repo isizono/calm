@@ -94,6 +94,18 @@ def test_init_database_under_forced_non_utf8_locale(tmp_path):
     assert "OK" in result.stdout
 
 
+def test_mcp_json_forces_python_utf8():
+    """init_database()を非UTF-8ロケールから守る唯一の対策である.mcp.jsonの
+    calm.env(PYTHONUTF8=1)が消えていないことを直接確認する。
+
+    test_init_database_under_forced_non_utf8_localeはja_JP.SJISロケールが
+    無い環境ではskipされるため、そうした環境でもこの配線自体の退行だけは
+    拾えるよう、ロケール非依存の最小限の保険として置く。
+    """
+    _, mcp_env_overrides = load_mcp_launcher_command()
+    assert mcp_env_overrides.get("PYTHONUTF8") == "1"
+
+
 def test_snapshot_cli_list_survives_cp932_stdio(tmp_path):
     """R19: backup_service CLI（scripts/snapshot.py）が非UTF-8ロケールでも
     日本語メッセージを正しく出力すること。
