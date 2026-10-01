@@ -358,6 +358,13 @@ def restart_all(project_root: Path, *, restart_embedding: bool = False) -> dict:
 
 
 def main() -> None:
+    # Windows既定のANSIコードページ（cp932等）ではstdoutが非UTF-8になり、
+    # json.dumps(..., ensure_ascii=False)が出す日本語（detailメッセージ等）が
+    # UnicodeEncodeErrorで落ちうる。復元・再起動自体は成功していてもこの出力で
+    # 落ちると「成功したのにexit 1」になる。
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+
     parser = argparse.ArgumentParser(description="calm server restart")
     parser.add_argument(
         "--restart-embedding",

@@ -994,3 +994,24 @@ class TestMainCli:
             assert False, "SystemExitが発生しなかった"
         except SystemExit as e:
             assert e.code == 1
+
+    def test_reconfigures_stdout_to_utf8(self, monkeypatch):
+        """Windows既定のANSIコードページ下でもjson.dumps(ensure_ascii=False)の
+        日本語出力がUnicodeEncodeErrorで落ちないよう、stdoutをUTF-8へ揃えること
+        """
+        calls = []
+
+        class FakeStdout:
+            def reconfigure(self, **kwargs):
+                calls.append(kwargs)
+
+            def write(self, *a, **kw):
+                pass
+
+            def flush(self):
+                pass
+
+        monkeypatch.setattr(restart_service.sys, "stdout", FakeStdout())
+        self._run_main(monkeypatch, [])
+
+        assert calls == [{"encoding": "utf-8"}]

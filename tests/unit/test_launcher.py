@@ -136,13 +136,15 @@ class TestStartHttpServer:
         assert launcher._start_http_server() is False
 
     def test_falls_back_to_devnull_when_stderr_log_cannot_be_prepared(self, tmp_path, monkeypatch):
-        """診断用stderrログの準備(mkdir/open)自体が失敗しても、サーバー起動は続行する"""
+        """診断用stderrログの準備(mkdir)自体が失敗しても、サーバー起動は続行する
+
+        logs/ディレクトリの代わりに同名の通常ファイルを置き、
+        mkdir(parents=True, exist_ok=True)を実際のFileExistsErrorで失敗させる。
+        """
         import src.db as db
 
         monkeypatch.setattr(db, "get_db_path", lambda: str(tmp_path / "discussion.db"))
-        monkeypatch.setattr(
-            launcher, "_server_stderr_log_path", lambda: (_ for _ in ()).throw(OSError("boom"))
-        )
+        (tmp_path / "logs").write_bytes(b"")
         called_with = {}
 
         class FakePopen:
