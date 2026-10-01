@@ -405,5 +405,5 @@ audit skill は HintService (`src/services/hint_service.py`) とは**経路と�
 | audit を recompose-context が呼んだ場合 | recompose 中の発見 (ズレ・矛盾) を発端として audit に降ろす経路は OK。audit 完了後に recompose に戻る |
 | skill 実行中 (他 skill 実行中) に audit トリガー | 現在 skill 完了まで待ち、終了後に audit 起動。skill 入れ子は禁止 |
 | 同 decision を 2 回 audit (T-C2 抜け) | T-C2 重複検知が漏れた場合は Step 2 (スコープ確定) で前回 material を発見し、重複と判定して `## 残課題` 引き継ぎのみで終了 |
-| HintService 側で consistency_check 完全削除済なのに過去の hint 残骸が見える | 残骸を発見したら `report_signal`（CALM 自身の故障報告、kind は recording skill の分類に従う）で報告する (audit の範囲外) |
+| HintService 側で consistency_check 完全削除済なのに過去の hint 残骸が見える | 残骸を発見したら `report_signal`（CALM 自身の故障報告、kind の全種定義は `report_signal` ツールの docstring を正とする）で報告する (audit の範囲外) |
 | 完了マーカー追記対象の tag が複数候補ある | 主題を最もよく代表する 1 つの tag にのみ追記 (全 tag 汚染回避) |
