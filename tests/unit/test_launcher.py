@@ -266,7 +266,9 @@ class TestStartHttpServer:
 
         assert launcher._start_http_server() is True
         assert called_with["kwargs"]["creationflags"] == (
-            detached_process._CREATE_NEW_PROCESS_GROUP | detached_process._CREATE_NO_WINDOW
+            detached_process._CREATE_NEW_PROCESS_GROUP
+            | detached_process._CREATE_NO_WINDOW
+            | detached_process._CREATE_BREAKAWAY_FROM_JOB
         )
         assert called_with["kwargs"]["stdin"] == subprocess.DEVNULL
 

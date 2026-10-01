@@ -346,7 +346,9 @@ def test_restart_mcp_server_uses_popen_detached_windows_wiring(monkeypatch, tmp_
     assert len(popen_calls) == 1
     kwargs = popen_calls[0]
     assert kwargs["creationflags"] == (
-        detached_process._CREATE_NEW_PROCESS_GROUP | detached_process._CREATE_NO_WINDOW
+        detached_process._CREATE_NEW_PROCESS_GROUP
+        | detached_process._CREATE_NO_WINDOW
+        | detached_process._CREATE_BREAKAWAY_FROM_JOB
     )
     assert kwargs["stdin"] == subprocess.DEVNULL
 

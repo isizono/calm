@@ -1029,7 +1029,9 @@ def test_start_server_uses_popen_detached_windows_wiring(temp_db, monkeypatch):
     emb._start_server()
 
     assert captured["kwargs"]["creationflags"] == (
-        detached_process._CREATE_NEW_PROCESS_GROUP | detached_process._CREATE_NO_WINDOW
+        detached_process._CREATE_NEW_PROCESS_GROUP
+        | detached_process._CREATE_NO_WINDOW
+        | detached_process._CREATE_BREAKAWAY_FROM_JOB
     )
     assert captured["kwargs"]["stdin"] == subprocess.DEVNULL
 
