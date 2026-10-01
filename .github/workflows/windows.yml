@@ -2,11 +2,11 @@ name: Windows
 
 on:
   push:
-    branches: [feat/windows-support]
+    branches: [main]
   pull_request:
 
 jobs:
-  windows-repro:
+  windows:
     runs-on: windows-latest
 
     steps:

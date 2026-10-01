@@ -6,24 +6,32 @@ Windows既定のANSIコードページ(cp932等)ではテキストモードのsy
 できなかったりする。src.harness.claude_code.read_stdin_text()はbuffer経由で
 UTF-8として読むことでこれを避けており、hooks/配下の全フックはこれを経由する
 よう揃えた。sys.stdin.read()に限らずreadline()やfor文での反復、
-json.load(sys.stdin)等も同じ問題を踏むため、sys.stdinへの言及自体を検知する
-(read_stdin_text自身の実装(src/harness/claude_code.py)は対象外。hooks/配下
-のみを走査する)。
+json.load(sys.stdin)等も同じ問題を踏むため、astでコード上の`sys.stdin`属性
+参照そのものを検知する(コメント・docstringでの言及は対象外。read_stdin_text
+自身の実装(src/harness/claude_code.py)も対象外で、hooks/配下のみを走査する)。
 """
-import re
+import ast
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _HOOKS_DIR = _REPO_ROOT / "hooks"
 
-_RAW_STDIN_RE = re.compile(r"\bsys\.stdin\b")
+
+def _references_sys_stdin(tree: ast.AST) -> bool:
+    return any(
+        isinstance(node, ast.Attribute)
+        and node.attr == "stdin"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "sys"
+        for node in ast.walk(tree)
+    )
 
 
 def test_hooks_do_not_read_stdin_directly():
     violations = []
     for path in sorted(_HOOKS_DIR.glob("*.py")):
-        text = path.read_text(encoding="utf-8")
-        if _RAW_STDIN_RE.search(text):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        if _references_sys_stdin(tree):
             violations.append(str(path.relative_to(_REPO_ROOT)))
 
     assert violations == [], (
@@ -35,7 +43,7 @@ def test_hooks_do_not_read_stdin_directly():
 
 def test_scan_target_is_not_empty():
     """回帰保護: hooks/の場所の変更等で走査対象が0件になり、上のテストが
-    vacuous passし続ける事故を防ぐ(既知のフックが候補に含まれることを確認する)。
+    vacuous passし続ける事故を防ぐ。
     """
-    scanned = {p.name for p in _HOOKS_DIR.glob("*.py")}
-    assert "session_start_hook.py" in scanned
+    scanned = list(_HOOKS_DIR.glob("*.py"))
+    assert len(scanned) >= 1

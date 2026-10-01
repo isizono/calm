@@ -14,7 +14,7 @@ from sqlite_vec import serialize_float32
 from src.db import execute_query, get_connection
 from src.env_compat import env_get
 from src.http_config import EMBEDDING_PORT as PORT
-from src.infra.detached_process import popen_detached
+from src.infra.detached_process import DetachedProcess, popen_detached
 from src.infra.lock_file import is_port_listening
 from src.infra.loopback_http import NO_PROXY_OPENER
 
@@ -150,7 +150,7 @@ def _is_server_running() -> bool:
         return False
 
 
-def _start_server() -> Optional[subprocess.Popen]:
+def _start_server() -> Optional[DetachedProcess]:
     """embedding_serverをdetachedプロセスとして起動する。成功でPopen、失敗でNone。
 
     `-m src.infra.embedding_server` のモジュール実行形式で起動する（launcher.py の

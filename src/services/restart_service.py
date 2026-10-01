@@ -23,7 +23,7 @@ import psutil
 from src.env_compat import env_get, env_set
 from src.http_config import EMBEDDING_PORT, HTTP_PORT
 from src.infra import lock_file
-from src.infra.detached_process import popen_detached
+from src.infra.detached_process import DetachedProcess, popen_detached
 from src.infra.git_repo import resolve_main_repo_root
 from src.infra.lock_file import is_process_alive
 from src.infra.process_signature import process_start_signature
@@ -297,7 +297,7 @@ def _start_mcp_server(
     )
 
 
-def _kill_process_group(proc: subprocess.Popen) -> None:
+def _kill_process_group(proc: DetachedProcess) -> None:
     """起動に失敗した新規launcherプロセスを、子孫ごと終了させる。
 
     proc.kill()単体では`uv run ... python -m src.launcher`という

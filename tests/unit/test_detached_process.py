@@ -379,6 +379,25 @@ def test_relayed_process_already_gone_at_construction_does_not_raise(monkeypatch
 
     proc = detached_process._RelayedProcess(4242)
 
-    assert proc.poll() is None
+    # Noneは「実行中」の意味なので、確定済みの終了をNoneで返してはならない
+    # (呼び出し側がproc.poll() is not Noneで終了を判定するため)。
+    assert proc.poll() is not None
+    assert proc.poll() == detached_process._UNKNOWN_RETURNCODE
     proc.terminate()
     proc.kill()
+
+
+def test_relayed_process_poll_returns_sentinel_when_psutil_cannot_determine_exit_code(monkeypatch):
+    """psutilのwait()がNone(終了コード不明)を返しても、poll()はNoneを返さない"""
+    fake = _FakePsutilProcess(4242)
+    fake._wait_result = None
+    monkeypatch.setattr(detached_process.psutil, "Process", lambda pid: fake)
+
+    proc = detached_process._RelayedProcess(4242)
+
+    result = proc.poll()
+    assert result is not None
+    assert result == detached_process._UNKNOWN_RETURNCODE
+    assert proc.returncode == detached_process._UNKNOWN_RETURNCODE
+    # 確定後は再度psutilへ問い合わせずキャッシュ値を返す
+    assert proc.poll() == detached_process._UNKNOWN_RETURNCODE

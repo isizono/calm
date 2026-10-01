@@ -32,10 +32,29 @@ import json
 import logging
 import subprocess
 import sys
+from typing import Protocol
 
 import psutil
 
 logger = logging.getLogger(__name__)
+
+
+class DetachedProcess(Protocol):
+    """popen_detached()の戻り値が満たす最小インターフェース。
+
+    `subprocess.Popen`と`_RelayedProcess`の両方を戻しうるため、呼び出し側が
+    これ以外(stdout/stdinなど)を使うとWindows版(`_RelayedProcess`)でのみ
+    `AttributeError`になる。呼び出し側の型注釈はこのProtocolで揃える。
+    """
+
+    pid: int
+    returncode: int | None
+
+    def poll(self) -> int | None: ...
+    def wait(self, timeout: float | None = None) -> int | None: ...
+    def terminate(self) -> None: ...
+    def kill(self) -> None: ...
+
 
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
 _CREATE_NO_WINDOW = 0x08000000
@@ -57,6 +76,13 @@ import sys
 
 
 def _resolve_stream(spec, stdout_handle):
+    '''kind=pathは常に追記(ab)で開く。
+
+    呼び出し元(popen_detached)が起動のたびに対象ファイルを書き込みモードで
+    用意してからパスだけをここへ渡す前提であり、ここで同じファイルを追記で
+    開き直しても親が用意した内容を上書きしない(呼び出し元が先に空にしなく
+    なると、この前提が崩れて過去の内容が残り続ける)。
+    '''
     kind = spec["kind"]
     if kind == "devnull":
         return subprocess.DEVNULL
@@ -86,6 +112,10 @@ def main():
     stdout_handle = _resolve_stream(spec["stdout"], None)
     stderr_handle = _resolve_stream(spec["stderr"], stdout_handle)
     proc = _launch(spec["argv"], spec.get("cwd"), stdout_handle, stderr_handle)
+    # 本命は起動時に親(ここ)のハンドルを引き継ぐ。起動後はここで閉じてよい。
+    for handle in {stdout_handle, stderr_handle}:
+        if hasattr(handle, "close"):
+            handle.close()
     sys.stdout.write(str(proc.pid) + "\n")
     sys.stdout.flush()
 
@@ -128,6 +158,13 @@ def _spawn_relay() -> subprocess.Popen:
         return subprocess.Popen(relay_args, creationflags=base_flags, **relay_kwargs)
 
 
+# psutilが終了コードを特定できない場合(WAIT_ABANDONED等、または対象プロセスが
+# 既に見つからない場合)にreturncodeへ入れる番兵値。poll()はNoneを「実行中」の
+# 意味で使うため、終了確定後もNoneのままだと呼び出し側が無期限に実行中と
+# 誤認する。シグナル終了(-signum、概ね-1〜-64)と紛れない値を選ぶ。
+_UNKNOWN_RETURNCODE = -1000
+
+
 class _RelayedProcess:
     """中継プロセスが起動した本命プロセスを指すハンドル。
 
@@ -135,10 +172,6 @@ class _RelayedProcess:
     `subprocess.Popen`では追跡できない。psutilで同じpidを追跡し、
     呼び出し元が実際に使っている`subprocess.Popen`相当のインターフェース
     （pid/poll/wait/returncode/terminate/kill）だけを実装する。
-
-    ponytail: psutilがWAIT_ABANDONED等で終了コードを特定できずNoneを返す
-    ケースでは、poll()は「実行中でまだNone」と区別できない。Windows実機の
-    稀なケースでしか再現せず現状は未対応（上限）。
     """
 
     def __init__(self, pid: int):
@@ -150,17 +183,19 @@ class _RelayedProcess:
         except psutil.NoSuchProcess:
             self._handle = None
             self._finished = True
+            self.returncode = _UNKNOWN_RETURNCODE
 
     def poll(self) -> int | None:
         if self._finished:
             return self.returncode
         try:
-            self.returncode = self._handle.wait(timeout=0)
+            rc = self._handle.wait(timeout=0)
         except psutil.TimeoutExpired:
             return None
         except psutil.NoSuchProcess:
-            pass
+            rc = None
         self._finished = True
+        self.returncode = _UNKNOWN_RETURNCODE if rc is None else rc
         return self.returncode
 
     def wait(self, timeout: float | None = None) -> int | None:
@@ -217,7 +252,7 @@ def _popen_detached_windows(args, cwd, stdout, stderr) -> _RelayedProcess:
     return _RelayedProcess(pid)
 
 
-def popen_detached(args, *, cwd=None, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL):
+def popen_detached(args, *, cwd=None, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) -> DetachedProcess:
     """親から切り離した子プロセスを起動する。"""
     if sys.platform == "win32":
         return _popen_detached_windows(args, cwd, stdout, stderr)
