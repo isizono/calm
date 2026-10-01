@@ -28,6 +28,46 @@ class _HealthOkHandler(BaseHTTPRequestHandler):
         pass  # テスト出力を汚さない
 
 
+class TestOpenBridgeRequest:
+    """_open_bridge_request: ローカル/リモートでopenerの選び方が切り替わること。
+
+    リモートモード（CALM_URL指定）の接続先はユーザー任意のホストであり、社内
+    プロキシ経由が必要な場合があるため、ループバック専用のNO_PROXY_OPENERに
+    固定してはいけない（ローカルモードのヘルスチェック・セッション登録/解除の
+    どれもこの関数を経由する）。
+    """
+
+    def test_local_mode_uses_no_proxy_opener(self, monkeypatch):
+        monkeypatch.setattr(launcher, "_IS_LOCAL", True)
+        calls = []
+        monkeypatch.setattr(
+            launcher.NO_PROXY_OPENER, "open",
+            lambda req, timeout=None: calls.append(("no_proxy_opener", timeout)) or object(),
+        )
+        monkeypatch.setattr(
+            urllib.request, "urlopen",
+            lambda req, timeout=None: (_ for _ in ()).throw(AssertionError("ローカルモードでurlopenが呼ばれた")),
+        )
+        req = urllib.request.Request("http://127.0.0.1:1/x")
+        launcher._open_bridge_request(req, timeout=3)
+        assert calls == [("no_proxy_opener", 3)]
+
+    def test_remote_mode_uses_default_urlopen(self, monkeypatch):
+        monkeypatch.setattr(launcher, "_IS_LOCAL", False)
+        calls = []
+        monkeypatch.setattr(
+            urllib.request, "urlopen",
+            lambda req, timeout=None: calls.append(("urlopen", timeout)) or object(),
+        )
+        monkeypatch.setattr(
+            launcher.NO_PROXY_OPENER, "open",
+            lambda req, timeout=None: (_ for _ in ()).throw(AssertionError("リモートモードでNO_PROXY_OPENERが呼ばれた")),
+        )
+        req = urllib.request.Request("http://example.com/x")
+        launcher._open_bridge_request(req, timeout=3)
+        assert calls == [("urlopen", 3)]
+
+
 class TestIsServerRunning:
     def test_returns_true_when_server_responds_200(self, monkeypatch):
         """サーバーが200を返す場合はTrueを返す"""

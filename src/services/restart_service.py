@@ -303,8 +303,9 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
     proc.kill()単体では`uv run ... python -m src.launcher`という
     ラッパー経由で起動した孫プロセス(実体のlauncher)が生き残ることがある。
 
-    Windowsにはプロセスグループやos.killpg/os.getpgid相当が無いため、
-    psutilで子孫プロセスを列挙してterminateする。
+    POSIXはプロセスグループ(os.killpg/os.getpgid)で子孫をまとめて終了できる。
+    Windowsには相当する機構が無いため、psutilで直下の子プロセスまでを
+    終了させる(詳細は_kill_process_group_windows参照)。
     """
     if sys.platform == "win32":
         _kill_process_group_windows(proc.pid)

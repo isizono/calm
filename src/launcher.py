@@ -265,6 +265,18 @@ _cleanup_done = False
 # =============================================
 
 
+def _open_bridge_request(req: urllib.request.Request, *, timeout: float):
+    """ローカルモード(ループバック接続)はプロキシを常に無視し、リモートモードは
+    既定のプロキシ設定(環境変数・Windowsレジストリ等)に従う。
+
+    リモートモードの接続先はユーザーが指定した任意のホストであり、社内プロキシ
+    経由が必要な場合があるため、ループバック専用のNO_PROXY_OPENERを使わない。
+    """
+    if _IS_LOCAL:
+        return NO_PROXY_OPENER.open(req, timeout=timeout)
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
 def _is_server_running() -> bool:
     """HTTPサーバーの生存確認を行う。
 
@@ -276,7 +288,7 @@ def _is_server_running() -> bool:
             MCP_ENDPOINT,
             method="GET",
         )
-        with NO_PROXY_OPENER.open(req, timeout=2) as resp:
+        with _open_bridge_request(req, timeout=2) as resp:
             return resp.status == 200
     except urllib.error.HTTPError as e:
         # 4xx系HTTPエラーは「サーバー起動済み」を意味する
@@ -410,7 +422,7 @@ def _register_session() -> bool:
             data=data,
             headers={"Content-Type": "application/json"},
         )
-        with NO_PROXY_OPENER.open(req, timeout=5) as resp:
+        with _open_bridge_request(req, timeout=5) as resp:
             result = json.loads(resp.read())
             logger.info(f"Session registered: {result}")
             return True
@@ -428,7 +440,7 @@ def _unregister_session() -> bool:
             data=data,
             headers={"Content-Type": "application/json"},
         )
-        with NO_PROXY_OPENER.open(req, timeout=5) as resp:
+        with _open_bridge_request(req, timeout=5) as resp:
             result = json.loads(resp.read())
             logger.info(f"Session unregistered: {result}")
             return True
