@@ -791,21 +791,48 @@ def test_restart_all_windows_stops_before_sync(monkeypatch, tmp_path):
 class TestGetStatus:
     """get_status(): 副作用なしでMCP/embeddingサーバーの稼働状況を返す契約を検証する。"""
 
-    def test_reports_running_server_with_started_at(self, monkeypatch):
+    def test_reports_running_server_with_started_at_matching_health_format(self, monkeypatch):
+        """started_atは/healthエンドポイントと同じISO8601(UTC)形式にする
+
+        (process_start_signature()が返す不透明な値は等価比較専用で、
+        人間・LLMが時刻として読み比べる用途には使わない)。
+        """
         def fake_find_listen_pids(port):
             return {restart_service.MCP_PORT: [111], restart_service.EMBEDDING_PORT: []}[port]
 
+        class FakeProcess:
+            def __init__(self, pid):
+                self.pid = pid
+
+            def create_time(self):
+                return 1735689600.0  # 2025-01-01T00:00:00+00:00
+
         monkeypatch.setattr(restart_service, "find_listen_pids", fake_find_listen_pids)
-        monkeypatch.setattr(restart_service, "process_start_signature", lambda pid: "1234.5")
+        monkeypatch.setattr(restart_service.psutil, "Process", FakeProcess)
 
         status = restart_service.get_status()
 
         assert status["mcp_server"] == {
-            "port": restart_service.MCP_PORT, "pids": [111], "running": True, "started_at": "1234.5",
+            "port": restart_service.MCP_PORT, "pids": [111], "running": True,
+            "started_at": "2025-01-01T00:00:00+00:00",
         }
         assert status["embedding_server"] == {
             "port": restart_service.EMBEDDING_PORT, "pids": [], "running": False, "started_at": None,
         }
+
+    def test_started_at_none_when_process_vanishes_before_lookup(self, monkeypatch):
+        """find_listen_pids()とcreate_time()取得の間にプロセスが消えるTOCTOUレースでも
+        例外を出さずNoneにする。"""
+        monkeypatch.setattr(restart_service, "find_listen_pids", lambda port: [111])
+
+        def fake_process(pid):
+            raise restart_service.psutil.NoSuchProcess(pid)
+
+        monkeypatch.setattr(restart_service.psutil, "Process", fake_process)
+
+        status = restart_service.get_status()
+
+        assert status["mcp_server"]["started_at"] is None
 
 
 class TestStopAll:

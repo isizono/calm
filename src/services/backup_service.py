@@ -608,7 +608,9 @@ def restore_snapshot(
         raise RestoreBlockedError(
             "サーバーが稼働中のため復元を中断しました"
             f"（{detail}）。"
-            "先にサーバーを停止してください: lsof -ti :52837 -sTCP:LISTEN | xargs kill "
+            "先にサーバーを停止してください: "
+            'uv run --no-sync --directory "${CLAUDE_PLUGIN_ROOT}" python '
+            '"${CLAUDE_PLUGIN_ROOT}/scripts/restart_server.py" --stop '
             "（停止済みであることを確認の上で続行する場合は --force を指定）"
         )
 

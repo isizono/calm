@@ -14,6 +14,7 @@ import signal
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
 
@@ -468,21 +469,29 @@ def restart_all(project_root: Path, *, restart_embedding: bool = False) -> dict:
     }
 
 
-def get_status() -> dict:
-    """MCP/embeddingサーバーの現在の稼働状況を返す(副作用なし)。
+def _process_started_at_iso(pid: int) -> str | None:
+    """プロセスの起動時刻をISO8601（UTC）文字列で返す。取得できなければNone。
 
-    `curl http://localhost:<port>/health`はWindowsのPowerShellでは`curl`が
-    `Invoke-WebRequest`の別名になり出力形式が変わるため、Bashツール越しの
-    自動実行（skillの手順）では当てにできない。OSに依存しないこの入口で
-    置き換える。
+    `/health`エンドポイントの`started_at`と同じ形式にすることで、人間・LLMが
+    「どちらが新しいか」を文字列のまま比較できるようにする
+    (`process_start_signature()`が返す不透明な値は等価比較専用で、
+    この用途には使わない)。
     """
+    try:
+        return datetime.fromtimestamp(psutil.Process(pid).create_time(), tz=timezone.utc).isoformat()
+    except psutil.Error:
+        return None
+
+
+def get_status() -> dict:
+    """MCP/embeddingサーバーの現在の稼働状況を返す(副作用なし)。"""
     def _server_info(port: int) -> dict:
         pids = find_listen_pids(port)
         return {
             "port": port,
             "pids": pids,
             "running": bool(pids),
-            "started_at": process_start_signature(pids[0]) if pids else None,
+            "started_at": _process_started_at_iso(pids[0]) if pids else None,
         }
 
     return {

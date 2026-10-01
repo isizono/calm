@@ -62,13 +62,13 @@ Windows 11（PowerShell）でもmacOS/Linuxと同じ手順でインストール�
 
 ```powershell
 # 状態確認（何も変更しない）
-uv run --directory . python scripts/restart_server.py --status
+uv run --no-sync --directory . python scripts/restart_server.py --status
 
 # 停止のみ（再起動しない）
-uv run --directory . python scripts/restart_server.py --stop
+uv run --no-sync --directory . python scripts/restart_server.py --stop
 ```
 
-`--stop`は停止確認後にserver.lockの後始末まで行うため、通常は手動で消す必要はない。Task Manager等このCLIを経由せずにプロセスを終了させてしまい、lockだけが残った場合に限り、以下で手動削除する:
+`--stop`は停止確認後にserver.lockの後始末まで行うため、通常は手動で消す必要はない。他に生きているClaude Codeセッションがあると、そのセッションのlauncherが数秒以内に新しいサーバーを自動起動し直す点に注意する（本当に停止させたい・キャッシュ削除等を控えて行う場合は、全セッションを閉じてから`--stop`を実行する）。Task Manager等このCLIを経由せずにプロセスを終了させてしまい、lockだけが残った場合に限り、以下で手動削除する:
 
 ```powershell
 Remove-Item "$env:USERPROFILE\.cc-memory\server.lock" -ErrorAction SilentlyContinue
@@ -84,7 +84,10 @@ Invoke-RestMethod http://localhost:52836/health
 
 **社内プロキシ環境での注意**
 
-ローカルのMCP通信（127.0.0.1宛のループバック接続）は、レジストリで手動プロキシが設定され環境変数が無い環境でも社内プロキシへ誤送されないよう対応済み。一方、`uv sync`での依存解決やembeddingモデルの初回ダウンロード（Hugging Face Hubへの外部通信）はレジストリの手動プロキシ設定だけでは拾われないことがあるため、社内プロキシが必要な環境では`$env:HTTPS_PROXY`を明示的に設定する。
+ローカルのMCP通信（127.0.0.1宛のループバック接続）は、レジストリで手動プロキシが設定され環境変数が無い環境でも社内プロキシへ誤送されないよう対応済み。一方、`uv sync`での依存解決やembeddingモデルの初回ダウンロード（Hugging Face Hubへの外部通信）には、以下の2点に注意する:
+
+- **プロキシ経路**: [uv公式ドキュメント](https://docs.astral.sh/uv/reference/environment/)によれば、uvは`HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`等の環境変数に対応するが、Windowsのレジストリで設定された手動プロキシを自動では読まない。社内プロキシが必要な環境では`$env:HTTPS_PROXY`を明示的に設定する
+- **TLS傍受**: 社内プロキシがTLSを傍受する構成の場合、uvが同梱するMozilla製ルート証明書では社内プロキシの証明書を検証できず失敗することがある。その場合は`$env:UV_SYSTEM_CERTS="1"`を設定してOSの証明書ストアを使わせるか、`SSL_CERT_FILE`で社内CA証明書を直接指定する
 
 ## インストールすると何が起きるか
 

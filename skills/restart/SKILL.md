@@ -13,7 +13,7 @@ embeddingサーバー(52836)はコードの変更頻度が低いため既定で�
 
 ## 再起動の前（CALMを使う）
 
-- 古い窓口から打たない: `uv run --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/restart_server.py" --status` の `mcp_server.started_at` を確かめ、直近の再起動より後の時刻であれば、別の窓口が既に打った後なので打ち直さない
+- 古い窓口から打たない: `uv run --no-sync --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/restart_server.py" --status` の `mcp_server.started_at` を確かめ、直近の再起動より後の時刻であれば、別の窓口が既に打った後なので打ち直さない
 - `orch` タグの付いたアクティビティ(orch)を検索し、担い手欄（読み方は `orch` タグのnotesを参照。orchの説明の先頭に書かれた、今の担い手の欄）と、生きている窓口(`claude agents --json`)を控える。直後の節で、控えた窓口への知らせと `/mcp` 再接続の案内に使う
 
 ## 実行
@@ -21,7 +21,7 @@ embeddingサーバー(52836)はコードの変更頻度が低いため既定で�
 ユーザーがこのスキルを明示的に呼び出したこと自体を実行の承認とみなし、追加確認は取らずに以下をBashツールで実行する。
 
 ```
-uv run --directory ${CLAUDE_PLUGIN_ROOT} python ${CLAUDE_PLUGIN_ROOT}/scripts/restart_server.py
+uv run --no-sync --directory ${CLAUDE_PLUGIN_ROOT} python ${CLAUDE_PLUGIN_ROOT}/scripts/restart_server.py
 ```
 
 embeddingサーバーも明示的に再起動したい場合は`--restart-embedding`を付ける。

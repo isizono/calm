@@ -58,7 +58,7 @@ hookの警告は `_build_snapshot_section`(`hooks/session_start_hook.py`)がSess
 
 1. サーバー停止・復元を一連の操作として承認を取る。「復旧していい?」への直接的なyes/noが必要(「任せる」等の一般的信任表明では実行しない)。この承認は停止・復元までを対象とし、再起動は含まない(下記6.で復元結果提示後に別途承認を取る)
 2. サーバーを停止するとMCP接続が切れて記録できなくなるため、停止前に現状(検知内容・確度・提示した復旧方法・ユーザーが承認した内容)を `add_logs` で記録する
-3. `uv run --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/restart_server.py" --stop` でサーバーを停止する(接続中のブリッジプロセスは巻き添えにせずLISTEN中のプロセスだけを狙って止める)
+3. `uv run --no-sync --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/restart_server.py" --stop` でサーバーを停止する(接続中のブリッジプロセスは巻き添えにせずLISTEN中のプロセスだけを狙って止める)
 4. `uv run --directory ${CLAUDE_PLUGIN_ROOT} python ${CLAUDE_PLUGIN_ROOT}/scripts/snapshot.py restore --latest`(Step2で特定した候補が最新でない場合は該当パスを直接指定)を実行する
    - `復元エラー: サーバーが稼働中のため復元を中断しました` が返った場合、上記3.(サーバー停止)が漏れている。サーバー停止を再確認してからリトライする
    - schema互換性警告(`--yes` を要求するメッセージ)が出た場合は、警告文をそのままユーザーに見せて `--yes` 付き再実行の可否を確認する。自己判断で `--yes` を付けない
