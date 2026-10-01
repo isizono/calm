@@ -11,12 +11,19 @@ import argparse
 import json
 import re
 import sqlite3
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 
 from src.infra import lock_file
 from src.services import backup_service as bs
+
+# isolate_server_running_check(autouse)が_check_health_endpoint自体を差し替えるため、
+# 本物の実装を検証するテスト(test_check_health_endpoint_bypasses_http_proxy_env)は
+# ここで捕捉した実体に一時的に戻す。
+_REAL_CHECK_HEALTH_ENDPOINT = bs._check_health_endpoint
 
 
 @pytest.fixture(autouse=True)
@@ -27,6 +34,52 @@ def isolate_server_running_check(tmp_path, monkeypatch):
     monkeypatch.setattr(lock_file, "LOCK_DIR", lock_dir)
     monkeypatch.setattr(lock_file, "LOCK_FILE", lock_dir / "server.lock")
     monkeypatch.setattr(bs, "_check_health_endpoint", lambda timeout=2.0: False)
+
+
+class _HealthOkHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass  # テスト出力を汚さない
+
+
+def test_check_health_endpoint_bypasses_http_proxy_env(monkeypatch):
+    """_check_health_endpoint: HTTP_PROXY/http_proxyが設定されていても
+    127.0.0.1へのヘルスチェックはプロキシを経由しない。
+
+    実HTTPサーバーと実プロキシ環境変数を使い、本物のプロキシバイパスを
+    確認する(NO_PROXY_OPENER自体の構成の退行はtest_embedding_service.pyの
+    test_is_server_running_bypasses_http_proxy_envが担当する)。
+    """
+    import urllib.request
+
+    from src import http_config
+
+    monkeypatch.setattr(bs, "_check_health_endpoint", _REAL_CHECK_HEALTH_ENDPOINT)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _HealthOkHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        monkeypatch.setattr(http_config, "HTTP_HOST", "127.0.0.1")
+        monkeypatch.setattr(http_config, "HTTP_PORT", port)
+        # 閉じたポートを指すプロキシ。バイパスできていなければ接続拒否でFalseになる。
+        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+        monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
+        # urllib.request.urlopenの既定openerはプロセス内で初回呼び出し時に1度だけ
+        # 構築されキャッシュされる。_check_health_endpointがNO_PROXY_OPENER経由では
+        # なく素のurlopenへ戻る退行が起きても、既定openerが別テストで既にプロキシ
+        # 無し状態のまま構築済みだと見逃しうるため、ここで作り直させる。
+        monkeypatch.setattr(urllib.request, "_opener", None)
+        assert bs._check_health_endpoint() is True
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
 
 
 def _seed_activities(db_path: str, count: int) -> None:

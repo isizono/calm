@@ -316,12 +316,18 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
 
 
 def _kill_process_group_windows(pid: int) -> None:
-    """psutilで子孫プロセス(先に列挙してから)含めてterminateする。"""
+    """psutilで直下の子プロセス(uv run経由のvenvリダイレクタ等)まで含めてterminateする。
+
+    孫以降は意図的に対象外にする。launcher.py自身が起動する実サーバー(HTTPサーバー)は
+    popen_detachedでCREATE_NEW_PROCESS_GROUPを付けて切り離されるが、Windowsの
+    ppidはこのフラグの影響を受けず起動元を指したままになるため、
+    children(recursive=True)で辿ると切り離したはずのサーバーまで終了させてしまう。
+    """
     try:
         parent = psutil.Process(pid)
     except psutil.NoSuchProcess:
         return
-    children = parent.children(recursive=True)
+    children = parent.children(recursive=False)
     for proc in [parent, *children]:
         try:
             proc.terminate()

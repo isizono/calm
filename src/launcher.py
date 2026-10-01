@@ -25,6 +25,7 @@ from pathlib import Path
 from src.env_compat import env_get, env_set
 from src.infra.detached_process import popen_detached
 from src.infra.git_repo import resolve_main_repo_root
+from src.infra.loopback_http import NO_PROXY_OPENER
 from src.infra.session_identity import (
     register_launcher_session,
     unregister_launcher_session,
@@ -275,7 +276,7 @@ def _is_server_running() -> bool:
             MCP_ENDPOINT,
             method="GET",
         )
-        with urllib.request.urlopen(req, timeout=2) as resp:
+        with NO_PROXY_OPENER.open(req, timeout=2) as resp:
             return resp.status == 200
     except urllib.error.HTTPError as e:
         # 4xx系HTTPエラーは「サーバー起動済み」を意味する
@@ -409,7 +410,7 @@ def _register_session() -> bool:
             data=data,
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with NO_PROXY_OPENER.open(req, timeout=5) as resp:
             result = json.loads(resp.read())
             logger.info(f"Session registered: {result}")
             return True
@@ -427,7 +428,7 @@ def _unregister_session() -> bool:
             data=data,
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with NO_PROXY_OPENER.open(req, timeout=5) as resp:
             result = json.loads(resp.read())
             logger.info(f"Session unregistered: {result}")
             return True

@@ -541,14 +541,12 @@ def _check_schema_compatibility(snapshot_schema_head: str | None) -> _Compatibil
 
 def _check_health_endpoint(timeout: float = 2.0) -> bool:
     """ローカルHTTPサーバーの/healthエンドポイント疎通確認。"""
-    import urllib.error
-    import urllib.request
-
     from src.http_config import HTTP_HOST, HTTP_PORT
+    from src.infra.loopback_http import NO_PROXY_OPENER
 
     url = f"http://{HTTP_HOST}:{HTTP_PORT}/health"
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310
+        with NO_PROXY_OPENER.open(url, timeout=timeout) as resp:  # noqa: S310
             return resp.status == 200
     except Exception:
         return False

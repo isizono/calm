@@ -528,10 +528,15 @@ def test_restart_mcp_server_ignores_process_lookup_error_when_killing_process_gr
     assert "did not come up on port 52837" in result.detail
 
 
-def test_kill_process_group_windows_terminates_parent_and_children(monkeypatch):
-    """Windowsにはos.killpg/os.getpgid相当が無いため、psutilで子孫プロセスを
-    列挙してterminateする(POSIXのkillpgは子孫も含めプロセスグループごと
-    終了させるため、Windowsでも子孫の取りこぼしが起きないことを確認する)。
+def test_kill_process_group_windows_terminates_direct_child_only(monkeypatch):
+    """Windowsにはos.killpg/os.getpgid相当が無いため、psutilで直下の子プロセス
+    (uv run経由のvenvリダイレクタ等)まで含めてterminateする。
+
+    孫プロセス(例: launcher.py自身が切り離して起動したHTTPサーバー)は対象外にする。
+    WindowsのppidはCREATE_NEW_PROCESS_GROUPの影響を受けず起動元を指したままなので、
+    children(recursive=True)のまま辿ると切り離したはずのサーバーまで終了させてしまう
+    (孫のFakeProc(3)がterminateされないことで、recursive=Falseになっていることを
+    間接的に確認する)。
     """
     monkeypatch.setattr(restart_service.sys, "platform", "win32")
     monkeypatch.delattr(restart_service.os, "killpg", raising=False)
@@ -548,14 +553,17 @@ def test_kill_process_group_windows_terminates_parent_and_children(monkeypatch):
 
     class FakeParent(FakeProc):
         def children(self, recursive=True):
-            assert recursive is True
-            return [FakeProc(2), FakeProc(3)]
+            # 孫プロセス(切り離されたサーバー相当、pid=3)はrecursive=Trueのときのみ
+            # 含まれる。recursive=Falseなら直下の子(venvリダイレクタ相当、pid=2)だけ。
+            if recursive:
+                return [FakeProc(2), FakeProc(3)]
+            return [FakeProc(2)]
 
     monkeypatch.setattr(restart_service.psutil, "Process", lambda pid: FakeParent(pid))
 
     restart_service._kill_process_group(SimpleNamespace(pid=1))
 
-    assert terminated == [1, 2, 3]
+    assert terminated == [1, 2]
 
 
 def test_kill_process_group_windows_ignores_already_gone_process(monkeypatch):

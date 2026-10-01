@@ -11,11 +11,21 @@ import subprocess
 import threading
 import urllib.error
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
 from src import launcher
 from src.infra import git_repo
+
+
+class _HealthOkHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass  # テスト出力を汚さない
 
 
 class TestIsServerRunning:
@@ -32,8 +42,8 @@ class TestIsServerRunning:
                 pass
 
         monkeypatch.setattr(
-            urllib.request,
-            "urlopen",
+            launcher.NO_PROXY_OPENER,
+            "open",
             lambda req, timeout=None: FakeResponse(),
         )
         assert launcher._is_server_running() is True
@@ -47,7 +57,7 @@ class TestIsServerRunning:
                 hdrs={}, fp=None,
             )
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(launcher.NO_PROXY_OPENER, "open", fake_urlopen)
         assert launcher._is_server_running() is True
 
     def test_returns_true_on_400(self, monkeypatch):
@@ -59,7 +69,7 @@ class TestIsServerRunning:
                 hdrs={}, fp=None,
             )
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(launcher.NO_PROXY_OPENER, "open", fake_urlopen)
         assert launcher._is_server_running() is True
 
     def test_returns_false_on_connection_error(self, monkeypatch):
@@ -68,7 +78,7 @@ class TestIsServerRunning:
         def fake_urlopen(req, timeout=None):
             raise ConnectionRefusedError("Connection refused")
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(launcher.NO_PROXY_OPENER, "open", fake_urlopen)
         assert launcher._is_server_running() is False
 
     def test_returns_false_on_500(self, monkeypatch):
@@ -80,8 +90,41 @@ class TestIsServerRunning:
                 hdrs={}, fp=None,
             )
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(launcher.NO_PROXY_OPENER, "open", fake_urlopen)
         assert launcher._is_server_running() is False
+
+    def test_bypasses_http_proxy_env(self, monkeypatch):
+        """HTTP_PROXY/http_proxyが設定されていても127.0.0.1へのヘルスチェックは
+        プロキシを経由しない。
+
+        NO_PROXY_OPENER.open自体をモックする他のテストは、_is_server_runningが
+        NO_PROXY_OPENER経由ではなく素のurllib.request.urlopenへ戻る退行があっても
+        検出できない(モックした時点でどちらのopenerか区別が付かないため)。ここでは
+        実HTTPサーバーと実プロキシ環境変数を使い、本物のプロキシバイパスを確認する。
+        NO_PROXY_OPENER自体の構成(プロキシを無視する実装かどうか)の退行は
+        tests/unit/test_embedding_service.pyのtest_is_server_running_bypasses_http_proxy_env
+        が担当する(src.infra.loopback_httpは両者で共有するため、検証を重複させない)。
+        """
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _HealthOkHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            # 閉じたポートを指すプロキシ。バイパスできていなければ接続拒否でFalseになる。
+            monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+            monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+            monkeypatch.delenv("NO_PROXY", raising=False)
+            monkeypatch.delenv("no_proxy", raising=False)
+            monkeypatch.setattr(launcher, "MCP_ENDPOINT", f"http://127.0.0.1:{port}")
+            # urllib.request.urlopenの既定openerはプロセス内で初回呼び出し時に1度だけ
+            # 構築されキャッシュされる。launcher._is_server_running()がNO_PROXY_OPENER
+            # を経由せず素の urlopen に戻る退行が起きても、既定openerが別テストで
+            # 既にプロキシ無し状態のまま構築済みだと見逃しうるため、ここで作り直させる。
+            monkeypatch.setattr(urllib.request, "_opener", None)
+            assert launcher._is_server_running() is True
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
 
 
 class TestStartHttpServer:
@@ -369,8 +412,8 @@ class TestSessionRegistration:
                 return json.dumps({"registered": True, "active_sessions": 1}).encode()
 
         monkeypatch.setattr(
-            urllib.request,
-            "urlopen",
+            launcher.NO_PROXY_OPENER,
+            "open",
             lambda req, timeout=None: FakeResponse(),
         )
         assert launcher._register_session() is True
@@ -381,7 +424,7 @@ class TestSessionRegistration:
         def fake_urlopen(req, timeout=None):
             raise ConnectionRefusedError("Connection refused")
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(launcher.NO_PROXY_OPENER, "open", fake_urlopen)
         assert launcher._register_session() is False
 
     def test_unregister_success(self, monkeypatch):
@@ -398,8 +441,8 @@ class TestSessionRegistration:
                 return json.dumps({"unregistered": True, "active_sessions": 0}).encode()
 
         monkeypatch.setattr(
-            urllib.request,
-            "urlopen",
+            launcher.NO_PROXY_OPENER,
+            "open",
             lambda req, timeout=None: FakeResponse(),
         )
         assert launcher._unregister_session() is True
@@ -410,7 +453,7 @@ class TestSessionRegistration:
         def fake_urlopen(req, timeout=None):
             raise ConnectionRefusedError("Connection refused")
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(launcher.NO_PROXY_OPENER, "open", fake_urlopen)
         assert launcher._unregister_session() is False
 
 

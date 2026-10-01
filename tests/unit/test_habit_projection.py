@@ -295,12 +295,23 @@ class TestExport:
 
         barrier = threading.Barrier(2)
         original_replace = os.replace
+        waited_thread_ids: set[int] = set()
+        waited_lock = threading.Lock()
 
         def synced_replace(src, dst):
             # 両スレッドがtmpファイルへのwrite_textを終えた後、os.replace直前で
             # 足並みを揃える。tmpファイル名が衝突していれば、一方のreplaceが
             # 相手に消費された後の実体無きパスを掴んで失敗する。
-            barrier.wait(timeout=5)
+            # replace_retrying経由では失敗時に同じスレッドから再試行がかかるが、
+            # barrierは2者揃うまでブロックするため、再試行のたびに待つと
+            # 相手が既に抜けたbarrierで孤立してタイムアウトする。各スレッド
+            # 最初の呼び出しだけ待つ。
+            thread_id = threading.get_ident()
+            with waited_lock:
+                already_waited = thread_id in waited_thread_ids
+                waited_thread_ids.add(thread_id)
+            if not already_waited:
+                barrier.wait(timeout=5)
             return original_replace(src, dst)
 
         monkeypatch.setattr(habit_projection.os, "replace", synced_replace)

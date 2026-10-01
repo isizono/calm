@@ -13,6 +13,7 @@ from src.db import get_connection, execute_query
 from src.services.topic_service import add_topic
 from tests.helpers import add_decision
 from src.services.activity_service import add_activity
+import src.infra.loopback_http as loopback_http
 import src.services.embedding_service as emb
 
 # conftest の autouse fixture (_no_real_embedding_server) は _start_server を
@@ -760,9 +761,11 @@ class TestEncodeBatchRequestPayload:
 #
 # 上の TestEncodeBatchRequestPayload は `_NO_PROXY_OPENER.open` 自体を
 # モックするため、_NO_PROXY_OPENER がプロキシ設定を読む構成（例:
-# urllib.request.build_opener()）に戻っても検出できない。_NO_PROXY_OPENER は
-# モジュールimport時に構築されるため、プロキシ環境変数を設定した状態で
-# importlib.reloadしないと、その退行を検出できない。ここでは実HTTPサーバーと
+# urllib.request.build_opener()）に戻っても検出できない。_NO_PROXY_OPENER の
+# 実体はsrc.infra.loopback_httpのモジュールimport時に構築されるため、プロキシ
+# 環境変数を設定した状態でそちらをimportlib.reloadしないと、その退行を検出
+# できない（emb自体をreloadしても、既にimport済みのloopback_httpから同じ
+# オブジェクトを再取得するだけで再構築はされない）。ここでは実HTTPサーバーと
 # 実プロキシ環境変数を使い、_is_server_running を一切モックせず本物の
 # プロキシバイパスを確認する。
 
@@ -791,6 +794,9 @@ def test_is_server_running_bypasses_http_proxy_env(monkeypatch):
         monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
         monkeypatch.delenv("NO_PROXY", raising=False)
         monkeypatch.delenv("no_proxy", raising=False)
+        # NO_PROXY_OPENERの実体を構築するloopback_http自体をreloadしないと、
+        # 退行(build_opener()への先祖返り等)が発生時のenv変数読み取りを再現できない。
+        importlib.reload(loopback_http)
         importlib.reload(emb)
         try:
             monkeypatch.setattr(emb, "SERVER_URL", f"http://127.0.0.1:{port}")
@@ -803,7 +809,8 @@ def test_is_server_running_bypasses_http_proxy_env(monkeypatch):
         finally:
             monkeypatch.delenv("HTTP_PROXY", raising=False)
             monkeypatch.delenv("http_proxy", raising=False)
-            importlib.reload(emb)  # importlib.reloadの副作用を素の状態に戻す
+            importlib.reload(loopback_http)  # importlib.reloadの副作用を素の状態に戻す
+            importlib.reload(emb)
     finally:
         server.shutdown()
         thread.join(timeout=2)

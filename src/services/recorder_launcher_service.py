@@ -216,7 +216,10 @@ def build_mcp_config(calm_root: Path) -> dict:
     要求する`{"mcpServers": {...}}`形式に包み直し、`${CLAUDE_PLUGIN_ROOT}`を
     実パスへ置き換える。"""
     raw_text = (calm_root / ".mcp.json").read_text(encoding="utf-8")
-    substituted = json.loads(raw_text.replace("${CLAUDE_PLUGIN_ROOT}", str(calm_root)))
+    # calm_rootをJSON文字列として正しくエスケープしてから埋め込む。生のパス文字列
+    # (Windowsでは`\`区切り)をそのまま置換すると不正なJSONエスケープになる。
+    escaped_root = json.dumps(str(calm_root))[1:-1]
+    substituted = json.loads(raw_text.replace("${CLAUDE_PLUGIN_ROOT}", escaped_root))
     return {"mcpServers": substituted}
 
 

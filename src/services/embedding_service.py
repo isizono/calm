@@ -16,6 +16,7 @@ from src.env_compat import env_get
 from src.http_config import EMBEDDING_PORT as PORT
 from src.infra.detached_process import popen_detached
 from src.infra.lock_file import is_port_listening
+from src.infra.loopback_http import NO_PROXY_OPENER
 
 logger = logging.getLogger(__name__)
 
@@ -24,11 +25,8 @@ logger = logging.getLogger(__name__)
 # （環境によっては::1が先に解決され、接続のたびに拒否待ちの遅延が乗りうる）。
 SERVER_URL = f"http://127.0.0.1:{PORT}"
 
-# 既定のurlopenはOS設定のプロキシを経由しうる。手動プロキシが設定され、かつ
-# その除外リストにIPアドレス表記の127.0.0.1が無い環境では、ループバック接続
-# すら社内プロキシに送られてしまう。ここはローカルの子プロセスへの接続のみ
-# なのでプロキシを常に無視する。
-_NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+# プロキシを無視するオープナー(src.infra.loopback_httpのdocstring参照)
+_NO_PROXY_OPENER = NO_PROXY_OPENER
 
 
 def _resolve_project_root() -> str:
