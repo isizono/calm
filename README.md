@@ -46,6 +46,46 @@ claude plugin install calm
 /man
 ```
 
+### Windows 11での利用
+
+Windows 11（PowerShell）でもmacOS/Linuxと同じ手順でインストールできますが、以下の点に注意してください。
+
+**前提条件**
+
+- [uv公式のインストール手順](https://docs.astral.sh/uv/getting-started/installation/)に従う。PowerShellスクリプト（`powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`）または`winget install --id=astral-sh.uv -e`のいずれかでインストールできる。インストール直後は現在のPowerShellウィンドウにPATHが反映されないため、ウィンドウを開き直してから`uv --version`で確認する
+- hookの実行シェルは[Git for Windows](https://gitforwindows.org/)の有無で変わる。入っていればhookは同梱のGit Bash（`sh`）で、無ければPowerShellで実行される。calmのhookはどちらでも動くように作られているが、「コマンドが見つからない」系のhook失敗に遭遇したらまずどちらの構成かを確認する
+- 初回の`/mcp`接続でvenv構築待ちが発生しないよう、インストール先（プラグインキャッシュ、または開発用チェックアウトのルート）で事前に`uv sync --frozen`を一度手動実行しておくとよい
+
+**状態確認・停止・lockの後始末（PowerShell）**
+
+稼働状況の確認や強制停止は、`/restart`と同じPythonの入口（`scripts/restart_server.py`）を使う。`curl`はPowerShellでは`Invoke-WebRequest`の別名に化けて出力形式が変わるため、ここでは使わない。インストール先のディレクトリで実行する（`.`はカレントディレクトリの意味）:
+
+```powershell
+# 状態確認（何も変更しない）
+uv run --directory . python scripts/restart_server.py --status
+
+# 停止のみ（再起動しない）
+uv run --directory . python scripts/restart_server.py --stop
+```
+
+`--stop`は停止確認後にserver.lockの後始末まで行うため、通常は手動で消す必要はない。Task Manager等このCLIを経由せずにプロセスを終了させてしまい、lockだけが残った場合に限り、以下で手動削除する:
+
+```powershell
+Remove-Item "$env:USERPROFILE\.cc-memory\server.lock" -ErrorAction SilentlyContinue
+```
+
+embeddingサーバーの疎通確認（[動作確認](#動作確認)の4.相当）は`curl`ではなく`curl.exe`または`Invoke-RestMethod`を使う:
+
+```powershell
+curl.exe http://localhost:52836/health
+# または
+Invoke-RestMethod http://localhost:52836/health
+```
+
+**社内プロキシ環境での注意**
+
+ローカルのMCP通信（127.0.0.1宛のループバック接続）は、レジストリで手動プロキシが設定され環境変数が無い環境でも社内プロキシへ誤送されないよう対応済み。一方、`uv sync`での依存解決やembeddingモデルの初回ダウンロード（Hugging Face Hubへの外部通信）はレジストリの手動プロキシ設定だけでは拾われないことがあるため、社内プロキシが必要な環境では`$env:HTTPS_PROXY`を明示的に設定する。
+
 ## インストールすると何が起きるか
 
 CALMは`$HOME`配下にいくつかのファイルを生成し、hookを全イベントに登録します。

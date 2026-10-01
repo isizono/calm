@@ -107,16 +107,21 @@ def read() -> Optional[LockInfo]:
         return None
 
 
-def release() -> None:
+def release(pid: Optional[int] = None) -> None:
     """ロックファイルを削除する。
 
-    自プロセスのPIDと一致する場合のみ削除する。
+    `pid`が記録されたpidと一致する場合のみ削除する。省略時は呼び出し元
+    プロセス自身のpidで判定する（サーバー自身がシャットダウン時に呼ぶ既定経路）。
+    外部から強制終了させたプロセスの後始末（Windowsの`TerminateProcess`は
+    対象プロセスのfinally節を経由しないため`release()`が走らない）にも
+    同じ関数を使えるよう、判定対象のpidを明示できるようにしている。
     ファイルが存在しない場合は何もしない。
     """
+    target_pid = os.getpid() if pid is None else pid
     existing = read()
     if existing is None:
         return
-    if existing["pid"] != os.getpid():
+    if existing["pid"] != target_pid:
         logger.warning(
             f"Lock file owned by another process: pid={existing['pid']}, skipping release"
         )

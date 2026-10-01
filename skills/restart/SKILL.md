@@ -13,7 +13,7 @@ embeddingサーバー(52836)はコードの変更頻度が低いため既定で�
 
 ## 再起動の前（CALMを使う）
 
-- 古い窓口から打たない: `curl http://localhost:52837/health` の `started_at` を確かめ、直近の再起動より後の時刻であれば、別の窓口が既に打った後なので打ち直さない
+- 古い窓口から打たない: `uv run --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/restart_server.py" --status` の `mcp_server.started_at` を確かめ、直近の再起動より後の時刻であれば、別の窓口が既に打った後なので打ち直さない
 - `orch` タグの付いたアクティビティ(orch)を検索し、担い手欄（読み方は `orch` タグのnotesを参照。orchの説明の先頭に書かれた、今の担い手の欄）と、生きている窓口(`claude agents --json`)を控える。直後の節で、控えた窓口への知らせと `/mcp` 再接続の案内に使う
 
 ## 実行
@@ -42,7 +42,7 @@ MCPサーバーの再起動が終わった直後、自分自身もまだ `/mcp` 
 
 - `uv_sync.ok` が `false`: 依存関係の同期に失敗している。`detail` を伝えつつ、`mcp_server` の再起動自体は実行済みなのでその結果と合わせて報告する
 - `mcp_server.ok` が `true`: 再起動成功。`old_pids`（旧プロセス）と`new_pids`（新プロセス）をユーザーに簡潔に伝える
-- `mcp_server.ok` が `false`: 再起動失敗。`detail` の内容をそのままユーザーに伝え、手動確認（`lsof -i tcp:52837 -sTCP:LISTEN`等）を促す。プラグイン更新直後の初回実行はvenv再構築が重く、稀にこのタイムアウトが起きることがある。その場合は再実行を促す
+- `mcp_server.ok` が `false`: 再起動失敗。`detail` の内容をそのままユーザーに伝え、`--status` での手動確認を促す。プラグイン更新直後の初回実行はvenv再構築が重く、稀にこのタイムアウトが起きることがある。その場合は再実行を促す
 - `embedding_server.stopped_pids` は空配列でよい（`--restart-embedding`を付けない限り既定では停止しない）
 - `caches` は削除したパスの記録。特に問題なければ触れなくてよい
 
@@ -58,4 +58,4 @@ MCPサーバーの再起動が終わった直後、自分自身もまだ `/mcp` 
 
 ## 固まった接続の見分け方
 
-再起動の前からいた接続は、古いサーバーを掴んだままのことがある。エラー文言がauto modeのclassifierの拒否のように見えても、実際は古いサーバーへの接続が固まっているだけのことがある。`curl http://localhost:52837/health` の `started_at` が今回の再起動時刻より前なら、その接続は古いサーバーを掴んだままだと分かる。
+再起動の前からいた接続は、古いサーバーを掴んだままのことがある。エラー文言がauto modeのclassifierの拒否のように見えても、実際は古いサーバーへの接続が固まっているだけのことがある。`--status` の `mcp_server.started_at` が今回の再起動時刻より前なら、その接続は古いサーバーを掴んだままだと分かる。

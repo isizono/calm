@@ -46,3 +46,13 @@ calmはローカルディレクトリをmarketplaceとして登録しており�
    - 起動後、`lsof -i tcp:52837 -sTCP:LISTEN` でLISTENしていることを確認する（LISTENが無ければ `/tmp/calm_http_server.log` を確認する）
 8. embeddingサーバーを停止: `lsof -ti tcp:52836 -sTCP:LISTEN | xargs kill`（再起動は不要。次回encode時に`embedding_service`がlazy spawnする。`-sTCP:LISTEN`を付けないと接続中クライアントを巻き添えにする）
 9. 生存している全Claude Codeセッションで `/mcp` からreconnectを実行する（個別でOK、全セッション同時に落とす必要なし）。reconnectで復旧しない場合はそのセッションを再起動する
+
+### Windows版（PowerShell）
+
+手順1〜4（mainブランチの確認・pull・worktree削除・ブランチ削除）はOS非依存のためそのまま行う。手順5以降はWindowsでは稼働中のプロセスが`.venv`配下のファイルを開いたままにするため、**サーバーを先に止めてからキャッシュを消す**順序に入れ替える。
+
+5. サーバーとembeddingサーバーを停止する: リポジトリ直下で `uv run --directory . python scripts/restart_server.py --stop --restart-embedding`
+6. プラグインキャッシュを削除: `Remove-Item -Recurse -Force "$env:USERPROFILE\.claude\plugins\cache\calm-marketplace"`
+7. `__pycache__` を削除: `Get-ChildItem -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force`
+8. サーバーを起動し直す: `uv run --directory . python scripts/restart_server.py`（embeddingサーバーは手順5で止めたまま再起動しない。次回encode時にlazy spawnする）
+9. 手順9（全Claude Codeセッションでのreconnect）と同じ

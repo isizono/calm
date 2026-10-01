@@ -248,7 +248,7 @@ CALMはセッション開始時（SessionStart hook）にDBの自動スナップ
 
 **スナップショットからの復元手順:**
 
-1. **全てのClaude Codeセッションを閉じ、稼働中のMCPサーバーを停止する**（DBへの書き込みを停止するため）。サーバーが稼働中（lock file または `/health` 応答で検知）のままだと復元コマンド自体が中断する。停止は `lsof -ti :52837 -sTCP:LISTEN | xargs kill` を実行する（`-sTCP:LISTEN` を外すと :52837 に接続中のブリッジプロセスまで巻き添えでkillされる。復元コマンドが中断した場合も同じコマンドを案内する。停止済みを確認済みで続行したい場合のみ `restore` に `--force` を付ける）
+1. **全てのClaude Codeセッションを閉じ、稼働中のMCPサーバーを停止する**（DBへの書き込みを停止するため）。サーバーが稼働中（lock file または `--status` の `mcp_server.running` で検知）のままだと復元コマンド自体が中断する。停止は `uv run --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/restart_server.py" --stop` を実行する（復元コマンドが中断した場合も同じコマンドを案内する。停止済みを確認済みで続行したい場合のみ `restore` に `--force` を付ける）
 2. ワンコマンドで最新のスナップショットから復元する:
    ```
    uv run --directory ${CLAUDE_PLUGIN_ROOT} python ${CLAUDE_PLUGIN_ROOT}/scripts/snapshot.py restore --latest
@@ -273,7 +273,7 @@ CALMには「壊れてもエラーにならず、静かに機能が縮退する�
 
 検索・check-in等でベクトル検索を使う際、embeddingサーバー（52836番ポート）が初回encode時に遅延起動する。起動に失敗しても例外は投げず、warningログのみを出して検索がキーワード一致（FTS5）のみに縮退したまま動き続ける。
 
-- **気づき方**: `curl http://localhost:52836/health` が `{"status": "ok"}` を返さない。または後述の`degraded`フラグが立ち続ける
+- **気づき方**: `uv run --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/restart_server.py" --status` の `embedding_server.running` が `false` のまま。または後述の`degraded`フラグが立ち続ける
 - **直し方**: `/restart`に`--restart-embedding`を付けて明示的に再起動する
 
 **検索応答の`degraded: true`**

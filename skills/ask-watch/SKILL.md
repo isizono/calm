@@ -57,11 +57,11 @@ Monitorツールを以下のパラメータで呼ぶ:
 
 - `description`: 監視対象がわかる説明（例: `"ask store open askの変化監視"`）
 - `timeout_ms`: `1800000`（Monitorの上限値。これより大きい値を渡しても30分に切り詰められるため、常に上限を明示する）
-- `command`: `bash "${CLAUDE_SKILL_DIR}/scripts/poll.sh"`
+- `command`: `uv run --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_SKILL_DIR}/scripts/poll.py"`
 
 Monitorは`timeout_ms`の上限である30分で必ず失効し、そのタイミングで失効通知が届く。監視を続ける場合はこのStep 2をそのまま繰り返してMonitorを張り直す（re-arm）。失効通知は「open askに変化があった」ことを意味しないため、Step 3の処理には進まず張り直すだけでよい。
 
-`scripts/poll.sh`はopen askの「件数・最新`last_seen_at`・id集合」のいずれかが変化した瞬間だけ1行出力する。`GROUP_CONCAT(id)`まで比較に含めているのは、件数が同じでもid構成が入れ替わる変化（1件closeして1件openになった等）を取りこぼさないため。出力される値はあくまでトリガーの参考情報であり、実際に読むべきask本文はStep 3で`get_asks`から取得する（DBを直接sqliteで読むのはポーリングの軽量化のためで、questionやcontextの中身までDB越しに読み取ることはしない）。
+`scripts/poll.py`はopen askの「件数・最新`last_seen_at`・id集合」のいずれかが変化した瞬間だけ1行出力する。`GROUP_CONCAT(id)`まで比較に含めているのは、件数が同じでもid構成が入れ替わる変化（1件closeして1件openになった等）を取りこぼさないため。出力される値はあくまでトリガーの参考情報であり、実際に読むべきask本文はStep 3で`get_asks`から取得する（DBを直接sqliteで読むのはポーリングの軽量化のためで、questionやcontextの中身までDB越しに読み取ることはしない）。
 
 ### Step 3: 変化検知時の処理手順
 

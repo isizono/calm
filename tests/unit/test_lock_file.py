@@ -100,6 +100,27 @@ class TestRelease:
         lock_file.release()
         assert lock_file.read() is not None  # 削除されていない
 
+    def test_release_with_explicit_pid_removes_matching_lock(self):
+        """pid引数を渡すと、自プロセスでなくそのpidを基準に判定する
+
+        Windowsのterminate(TerminateProcess)は対象プロセスのfinally節を経由しない
+        ため、外部から強制終了させたプロセスのロックは自分で後始末する必要がある。
+        """
+        lock_file.LOCK_FILE.write_text(
+            json.dumps({"pid": 54321, "port": 52837}), encoding="utf-8"
+        )
+        lock_file.release(pid=54321)
+        assert lock_file.read() is None
+
+    def test_release_with_explicit_pid_skips_mismatched_lock(self):
+        """pid引数が記録pidと一致しなければ削除しない(停止後に別プロセスが
+        新たにロックを取り直していた場合に誤って消さないための確認)"""
+        lock_file.LOCK_FILE.write_text(
+            json.dumps({"pid": 54321, "port": 52837}), encoding="utf-8"
+        )
+        lock_file.release(pid=11111)
+        assert lock_file.read() is not None
+
 
 class TestAcquirePortCheck:
     def test_acquire_reclaims_when_pid_alive_but_port_not_listening(self, monkeypatch):
