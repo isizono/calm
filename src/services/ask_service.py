@@ -400,6 +400,11 @@ def get_asks_with_conn(
         notify_wanted（0または1）は通知希望の有無（add_askのnotify引数、
         またはunsubscribe_askでの解除状態）を示す。
     """
+    if isinstance(status, str) and status.lower() == "null":
+        status = None
+    if isinstance(kind, str) and kind.lower() == "null":
+        kind = None
+
     if not triage_pending_only and status is not None and status not in VALID_STATUSES:
         return _validation_error(
             f"Invalid status: {status!r}. Must be one of {sorted(VALID_STATUSES)} or null"

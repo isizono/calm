@@ -332,6 +332,16 @@ class TestGetAsks:
 
         assert result["total_count"] == 2
 
+    def test_status_string_null_treated_as_none(self, temp_db):
+        act = _make_activity()
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+        ak.answer_ask(r1["id"], "a1")
+        ak.add_ask("q2", tags=["domain:test"], blocks=[act])
+
+        result = ak.get_asks(status="Null")
+
+        assert result["total_count"] == 2
+
     def test_blocking_activity_id_filter(self, temp_db):
         act1 = _make_activity("a1")
         act2 = _make_activity("a2")
@@ -391,6 +401,15 @@ class TestGetAsks:
     def test_invalid_kind_rejected(self, temp_db):
         result = ak.get_asks(kind="not_a_kind")
         assert result["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_kind_string_null_treated_as_none(self, temp_db):
+        act = _make_activity()
+        ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+        ak.add_ask("q2", tags=["domain:test", "meta-ask"], blocks=[act], kind="meta")
+
+        result = ak.get_asks(status=None, kind="null")
+
+        assert result["total_count"] == 2
 
     def test_kind_filter(self, temp_db):
         act = _make_activity()
