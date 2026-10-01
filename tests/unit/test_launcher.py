@@ -1318,9 +1318,16 @@ class TestStdinReaderTaskFailureHandling:
             await asyncio.wait_for(launcher._stdin_reader_task(state), timeout=5.0)
             return state
 
+        threads_before = set(threading.enumerate())
         try:
             state = asyncio.run(drive())
         finally:
+            # 読み取りスレッドが完全に終わってからfdを閉じる。スレッドが
+            # 生きたままfdを閉じると、別テストのos.pipe()がfd番号を再利用した
+            # ときにこのスレッドがそちらを読んでしまい、まれに関係ないテストを
+            # タイムアウトさせる。
+            for t in set(threading.enumerate()) - threads_before:
+                t.join(timeout=5.0)
             read_file.close()
 
         assert state.stdin_eof.is_set()

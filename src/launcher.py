@@ -542,10 +542,11 @@ async def _stdin_reader_task(state: "_StdinBridgeState") -> None:
         finally:
             _feed_eof()
 
-    threading.Thread(target=_read_stdin, daemon=True).start()
-
     buffer = b""
     try:
+        # スレッド生成自体の失敗（例: OSのスレッド数上限）もここでEOF終了
+        # 経路に乗せる必要があるため、try の外ではなく内側で起動する。
+        threading.Thread(target=_read_stdin, daemon=True).start()
         while True:
             chunk = await reader.read(65536)
             if not chunk:
