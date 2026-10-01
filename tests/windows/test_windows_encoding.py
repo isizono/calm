@@ -1,7 +1,5 @@
 """UTF-8モードを無効化した非UTF-8ロケール(Windows既定のANSIコードページ相当)で、
-DB初期化とフック入出力が壊れないことを確かめる回帰テスト。修正前のコードが
-どう壊れるか(=この修正が無いと何が起きるか)の説明であり、現行コードの挙動
-の説明ではない。
+DB初期化とフック入出力が壊れないことを確かめる回帰テスト。
 
 (a) init_database: yoyoが未適用migrationファイルをencoding指定無しの
     open()で読むため、ロケールがcp932/cp1252等だとUnicodeDecodeErrorになる。
@@ -9,11 +7,11 @@ DB初期化とフック入出力が壊れないことを確かめる回帰テス
     あり、起動経路ごとに.mcp.jsonのcalm.env(PYTHONUTF8=1、launcher経由)と
     restart_service(/restart経由)の2箇所がそれぞれ設定する。
 
-(b) hookの入出力: 修正前はharness.read_hook_inputがテキストモードの
-    sys.stdinを、_emitがensure_ascii=Falseのstdoutを使っていた。
-    PYTHONIOENCODING=cp932を強制すると、日本語やU+2014を含むJSONの
-    読み書きがOS問わず(Mac上でも)壊れうる。現行コードはbuffer経由の
-    UTF-8読み取りとensure_ascii=Trueで、ロケールに依存しない。
+(b) hookの入出力: harness.read_hook_input()はbuffer経由でUTF-8として読み取り、
+    _emitはensure_ascii=Trueで出力するため、PYTHONIOENCODING=cp932を強制しても
+    ロケールに依存せず日本語やU+2014を含むJSONを正しく読み書きできる
+    (text=Trueのsys.stdin読み取りやensure_ascii=Falseの出力だと、OS問わず
+    非UTF-8ロケール下で壊れる)。
 """
 from __future__ import annotations
 
@@ -120,7 +118,7 @@ def test_mcp_json_forces_python_utf8():
 
 
 def test_snapshot_cli_list_survives_cp932_stdio(tmp_path):
-    """R19: backup_service CLI（scripts/snapshot.py）が非UTF-8ロケールでも
+    """backup_service CLI（scripts/snapshot.py）が非UTF-8ロケールでも
     日本語メッセージを正しく出力すること。
 
     main()先頭のsys.stdout.reconfigure(encoding="utf-8")を外すと、本テストは
@@ -143,8 +141,9 @@ def test_snapshot_cli_list_survives_cp932_stdio(tmp_path):
 
 
 def _make_migrated_db(tmp_path: Path) -> Path:
-    """cp932回帰の影響を受けない通常環境でDBを1回作っておき、hookテスト側は
-    そのDBを使い回す(hook側のテストがR3の影響を受けて無関係に落ちるのを防ぐ)。
+    """cp932を強制しない通常環境でDBを1回作っておき、hookテスト側はそのDBを
+    使い回す(DB初期化自体がcp932ロケールの影響を受けて、hookの入出力テストと
+    無関係に落ちるのを防ぐ)。
     """
     db_path = tmp_path / "prebuilt.db"
     env = isolated_env(tmp_path)
@@ -156,6 +155,12 @@ def _make_migrated_db(tmp_path: Path) -> Path:
         env=env,
         capture_output=True,
         text=True,
+        # このpytestプロセス自身のロケール(Windows CIランナー上ではcp1252)で
+        # デコードすると、子プロセスの異常終了時のtracebackに非ASCII文字が
+        # 含まれた場合に、このテスト自体の検証と無関係にUnicodeDecodeErrorで
+        # 落ちうるため明示する。
+        encoding="utf-8",
+        errors="replace",
         timeout=120,
     )
     assert result.returncode == 0, (
@@ -195,9 +200,9 @@ def _assert_hook_output_is_utf8_json(result, hook_name: str, error_marker: str) 
     両フックとも`main()`全体をtry/exceptで囲み、UnicodeDecodeError /
     UnicodeEncodeErrorが起きても`harness.emit_empty()`で`{}`にfail-openする
     設計のため、「exit 0 かつ有効なJSON」だけでは常に真になってしまい
-    (`{}`はUTF-8としてもJSONとしても常に妥当)、cp932下でR7/R8が実際に
-    起きたかどうかを判別できない。fail-open時に必ず書かれるこの診断ログの
-    有無で判別する。
+    (`{}`はUTF-8としてもJSONとしても常に妥当)、cp932下で入力の取りこぼしや
+    出力側のUnicodeEncodeErrorが実際に起きたかどうかを判別できない。
+    fail-open時に必ず書かれるこの診断ログの有無で判別する。
     """
     assert result.returncode == 0, (
         f"{hook_name} exited with code={result.returncode} under a forced "
@@ -227,12 +232,9 @@ def _assert_hook_output_is_utf8_json(result, hook_name: str, error_marker: str) 
 
 
 def test_session_start_hook_survives_cp932_stdio(tmp_path):
-    """R7/R8: SessionStartフックへ日本語+U+2014入りのJSONをcp932固定stdioで渡す。
-
-    現行コードではharness.read_hook_input()がテキストモードのsys.stdinを読み、
-    _emitがensure_ascii=Falseのstdoutへprintするため、cp932では入力の取りこぼし
-    (R7)や出力側のUnicodeEncodeError(R8、hook自身の案内文に含まれるU+2014が
-    cp932で符号化できない)が起きる。
+    """SessionStartフックへ日本語+U+2014入りのJSONをcp932固定stdioで渡しても、
+    入力の取りこぼしや出力側のUnicodeEncodeError(hook自身の案内文に含まれる
+    U+2014がcp932で符号化できない、等)を起こさず処理できることを確認する。
     """
     db_path = _make_migrated_db(tmp_path)
     payload = {
@@ -246,7 +248,9 @@ def test_session_start_hook_survives_cp932_stdio(tmp_path):
 
 
 def test_user_prompt_submit_hook_survives_cp932_stdio(tmp_path):
-    """R7/R8: UserPromptSubmitフックへ日本語+U+2014入りのpromptをcp932固定stdioで渡す。"""
+    """UserPromptSubmitフックへ日本語+U+2014入りのpromptをcp932固定stdioで渡しても、
+    入力の取りこぼしや出力側のUnicodeEncodeErrorを起こさず処理できることを確認する。
+    """
     db_path = _make_migrated_db(tmp_path)
     payload = {
         "session_id": "windows-repro-session",

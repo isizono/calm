@@ -1772,6 +1772,52 @@ class TestStdinReaderThreadSurvivesClosedLoop:
         assert "Failed to read stdin" not in warnings
 
 
+class TestStdinReaderThreadIsDaemon:
+    """読み取りスレッドがdaemon=Trueで起動されること。
+
+    daemonでないと、このスレッドがos.readでブロックしたまま残っている間、
+    Pythonインタプリタの終了自体がブロックされ、stdin EOFなしでは
+    launcherプロセスが終了できなくなる。
+    """
+
+    def test_read_thread_is_daemon(self, monkeypatch):
+        import types
+
+        read_fd, write_fd = os.pipe()
+        read_file = os.fdopen(read_fd, "rb", buffering=0)
+        monkeypatch.setattr(
+            launcher.sys, "stdin", types.SimpleNamespace(buffer=read_file)
+        )
+
+        threads_before = set(threading.enumerate())
+        daemon_flags: list[bool] = []
+
+        async def drive():
+            state = launcher._StdinBridgeState()
+            task = asyncio.ensure_future(launcher._stdin_reader_task(state))
+            # 読み取りスレッドがos.readでブロック中(まだ何も書いていない)の
+            # 状態で、実際に起動されたThreadオブジェクトからdaemonフラグを拾う。
+            await asyncio.sleep(0.2)
+            new_threads = set(threading.enumerate()) - threads_before
+            daemon_flags.extend(t.daemon for t in new_threads)
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+        try:
+            asyncio.run(drive())
+            # イベントループは既に閉じているが、読み取りスレッドはos.readで
+            # ブロックしたまま生き残っている。書き込み側を閉じてEOFで解放する。
+            os.close(write_fd)
+            for t in set(threading.enumerate()) - threads_before:
+                t.join(timeout=5.0)
+        finally:
+            read_file.close()
+
+        assert daemon_flags, "読み取りスレッドが見つからなかった"
+        assert all(daemon_flags)
+
+
 class TestStdinAndRetryLoopIntegration:
     """実stdin（os.pipe経由）・実`_stdin_reader_task`・実`_run_retry_loop`を使い、
 

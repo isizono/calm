@@ -9,6 +9,7 @@ import io
 import json
 import os
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -342,8 +343,25 @@ class TestDoubleWaitPrevention:
         try:
             payload = _stdin_payload(session_id="sess-1", tool_response=json.dumps(result))
             sleep, now = _stub_sleep_and_clock()
-            code, stderr = _run_hook(payload, sleep=sleep, now=now)
-            assert code == 0
+            # _run_hookを別スレッドで動かし、短いjoinタイムアウトで待つ。
+            # _acquire_lockのtimeout=0がブロッキング待機(timeout未指定/長いtimeout)に
+            # 退行すると、other_lockが保持されたままのこのスレッドはjoinの間
+            # 戻ってこない。メインスレッド側でそれを検知してfailさせる
+            # (退行時にテストプロセスごとハングさせないため、このスレッドは
+            # daemon=Trueにし、other_lock解放後の自然終了に任せる)。
+            outcome: dict = {}
+
+            def _call_hook():
+                outcome["code"], outcome["stderr"] = _run_hook(payload, sleep=sleep, now=now)
+
+            thread = threading.Thread(target=_call_hook, daemon=True)
+            thread.start()
+            thread.join(timeout=2)
+            assert not thread.is_alive(), (
+                "lock acquisition did not return promptly while the lock was held; "
+                "_acquire_lock may have regressed from timeout=0 to a blocking wait"
+            )
+            assert outcome["code"] == 0
             assert sleep.calls == []
         finally:
             other_lock.release()

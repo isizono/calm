@@ -121,6 +121,24 @@ curl -X POST http://localhost:52837/api/asks/42/answer \
   -d '{"answer_body": "案Aで進めてください"}'
 ```
 
+### PowerShell
+
+PowerShell 5.1・7.0〜7.3の`Invoke-RestMethod`は、文字列で渡したボディをUTF-8で
+送信しない（環境既定のコードページに依存する）。日本語の回答を化けさせずに送るには、
+`-ContentType`でcharsetを明示したうえで、ボディ自体もUTF-8のバイト列として渡す。
+
+```powershell
+# open askを一覧取得
+Invoke-RestMethod http://localhost:52837/api/asks?status=open
+
+# ask id=42 に回答
+$json = @{ answer_body = "案Aで進めてください" } | ConvertTo-Json
+Invoke-RestMethod -Method Post `
+  -Uri http://localhost:52837/api/asks/42/answer `
+  -ContentType 'application/json; charset=utf-8' `
+  -Body ([System.Text.Encoding]::UTF8.GetBytes($json))
+```
+
 ### fetch()
 
 ```js
