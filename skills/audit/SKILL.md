@@ -1,6 +1,6 @@
 ---
 name: audit
-description: 【必須】過去 decision の正当性を疑った状況、同一 tag 内で 3 件目の方針変更 (supersedes 連鎖 / [議論中] 含む) を検知した状況、既決を見落として議論を始めかけた状況、同じバグを 2 回以上観察した状況、設計レビューで「この案前回却下した気がする」と感じた状況、ユーザーから「これ前に決めなかったっけ?」「また同じ話してる」「過去の情報と矛盾してない?」「グルグル回ってない?」「ちゃんと過去の議論を踏まえてる?」など過去判断への疑問・矛盾を表明された状況などで発動。一次リソース + 経緯 log を読み、全体像と文脈不足を分析し、知識を正しい場所 (tag note / habit / anchor / material / decision 改訂提案) に pin する長プロセス skill。このスキルを経由せずに decision の retract / supersede を直接提案してはいけない。TRIGGER: 上記の自発トリガー (T-A1〜T-A5) または ユーザー起点トリガー (T-B1〜T-B3) のいずれか。DO NOT TRIGGER: 設計議論中で挙動が未確定の論点 / 同主題 24h 内 audit 済 / ユーザーが「audit はいい」と明示拒否した直後 / 他 topic 管轄の仕組みのバグ観察 (委譲先 skill は無く、ユーザーへの直接報告に留める)。
+description: 【必須】過去 decision の正当性を疑った状況、同一 tag 内で 3 件目の方針変更 (supersedes 連鎖 / [議論中] 含む) を検知した状況、既決を見落として議論を始めかけた状況、同じバグを 2 回以上観察した状況、設計レビューで「この案前回却下した気がする」と感じた状況、ユーザーから「これ前に決めなかったっけ?」「また同じ話してる」「過去の情報と矛盾してない?」「グルグル回ってない?」「ちゃんと過去の議論を踏まえてる?」など過去判断への疑問・矛盾を表明された状況などで発動。一次リソース + 経緯 log を読み、全体像と文脈不足を分析し、知識を正しい場所 (tag note / habit / anchor / material / decision 改訂提案) に pin する長プロセス skill。このスキルを経由せずに decision の retract / supersede を直接提案してはいけない。TRIGGER: 上記の自発トリガー (T-A1〜T-A5) または ユーザー起点トリガー (T-B1〜T-B3) のいずれか。DO NOT TRIGGER: 設計議論中で挙動が未確定の論点 / 同主題 24h 内 audit 済 / ユーザーが「audit はいい」と明示拒否した直後 / 他 topic 管轄の仕組みのバグ観察 (委譲先 skill は無い)。
 ---
 
 # audit
@@ -52,7 +52,7 @@ description: 【必須】過去 decision の正当性を疑った状況、同一
 | T-C1 | 設計議論中で挙動が固まっていない論点に対する自発発動 | 「方針変更」ではなく「探索中」 |
 | T-C2 | 同 audit を 24h 以内に同主題で実行済み | 重複 (前回 material を参照すべき) |
 | T-C3 | ユーザーが「audit はいい、進めて」と明示拒否した直後 | 明示否認尊重 |
-| T-C4 | スコープが他 topic 管轄の仕組みのバグ観察である | audit の対象外 (委譲先 skill は無く、ユーザーへの直接報告に留める) |
+| T-C4 | スコープが他 topic 管轄の仕組みのバグ観察である | audit の対象外 (委譲先 skill は無い) |
 
 ## 起動時確認フロー
 
@@ -405,5 +405,5 @@ audit skill は HintService (`src/services/hint_service.py`) とは**経路と�
 | audit を recompose-context が呼んだ場合 | recompose 中の発見 (ズレ・矛盾) を発端として audit に降ろす経路は OK。audit 完了後に recompose に戻る |
 | skill 実行中 (他 skill 実行中) に audit トリガー | 現在 skill 完了まで待ち、終了後に audit 起動。skill 入れ子は禁止 |
 | 同 decision を 2 回 audit (T-C2 抜け) | T-C2 重複検知が漏れた場合は Step 2 (スコープ確定) で前回 material を発見し、重複と判定して `## 残課題` 引き継ぎのみで終了 |
-| HintService 側で consistency_check 完全削除済なのに過去の hint 残骸が見える | 残骸を発見したら HintService 側のバグとしてユーザーに直接報告する (委譲先 skill は無く、audit の範囲外) |
+| HintService 側で consistency_check 完全削除済なのに過去の hint 残骸が見える | 残骸を発見したら `report_signal`（CALM 自身の故障報告、kind は recording skill の分類に従う）で報告する (audit の範囲外) |
 | 完了マーカー追記対象の tag が複数候補ある | 主題を最もよく代表する 1 つの tag にのみ追記 (全 tag 汚染回避) |
