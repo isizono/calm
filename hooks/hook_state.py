@@ -261,7 +261,10 @@ if __name__ == "__main__":
     # のため保持する（resume/clear/startupではクリアされる。質問者セッションが
     # 実質終わった扱いとみなし、以降の回収はpull（check_in/get_asks）に委ねる
     # 設計）。
-    _COMPACT_PRESERVE = {"tracked_ask_ids"}
+    # sanitize_offset / sanitize_failure_count も同様にセッション単位の進行状態
+    # であり、compactで消すとsanitize_backfill_hookの冪等な再開とループ防止
+    # ガードがcompactごとにリセットされてしまうため保持する。
+    _COMPACT_PRESERVE = {"tracked_ask_ids", "sanitize_offset", "sanitize_failure_count"}
 
     if len(sys.argv) >= 2 and sys.argv[1] == "clear":
         data = json.loads(sys.stdin.read())
