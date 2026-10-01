@@ -1,7 +1,6 @@
 """embeddingサービスのテスト（HTTPクライアント方式）"""
 import json
 import os
-import urllib.request
 from pathlib import Path
 import pytest
 import numpy as np
@@ -724,11 +723,11 @@ class TestEncodeBatchRequestPayload:
             def read(self):
                 return json.dumps({"embeddings": [[0.0] * EMBEDDING_DIM]}).encode("utf-8")
 
-        def fake_urlopen(req, timeout=None):
+        def fake_open(req, timeout=None):
             captured["body"] = req.data
             return FakeResponse()
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(emb._NO_PROXY_OPENER, "open", fake_open)
         return captured
 
     def test_truncates_text_to_max_chars(self, monkeypatch):
@@ -837,11 +836,11 @@ def test_encode_batch_failure_resets_initialized_flag(temp_db, monkeypatch):
     monkeypatch.setattr(emb, '_server_initialized', True)
     monkeypatch.setattr(emb, '_backfill_done', True)
 
-    # urllib.request.urlopenを失敗させて本物の_encode_batchを通す
-    def failing_urlopen(*args, **kwargs):
+    # _NO_PROXY_OPENER.openを失敗させて本物の_encode_batchを通す
+    def failing_open(*args, **kwargs):
         raise ConnectionError("server crashed")
 
-    monkeypatch.setattr(urllib.request, 'urlopen', failing_urlopen)
+    monkeypatch.setattr(emb._NO_PROXY_OPENER, 'open', failing_open)
 
     result = emb.encode_document("テスト")
 
@@ -872,9 +871,9 @@ def test_recovery_after_encode_batch_failure(temp_db, monkeypatch):
     assert ensure_call_count == 1
     assert emb._server_initialized is True
 
-    # サーバー障害シミュレート（本物の_encode_batch + urlopen失敗）
+    # サーバー障害シミュレート（本物の_encode_batch + open失敗）
     monkeypatch.setattr(emb, '_encode_batch', real_encode_batch)
-    monkeypatch.setattr(urllib.request, 'urlopen', lambda *a, **kw: (_ for _ in ()).throw(ConnectionError("crash")))
+    monkeypatch.setattr(emb._NO_PROXY_OPENER, 'open', lambda *a, **kw: (_ for _ in ()).throw(ConnectionError("crash")))
 
     emb.encode_document("テスト2")
     assert emb._server_initialized is False  # フラグがリセットされた
@@ -937,6 +936,36 @@ def test_start_server_uses_module_execution_form(temp_db, monkeypatch):
     # モジュール自体は実在すること（パス自体は渡さないが、参照先が存在しないと
     # -m実行が即失敗するため）
     assert os.path.isfile(os.path.join(str(root), "src", "infra", "embedding_server.py"))
+
+
+def test_start_server_uses_popen_detached_windows_wiring(temp_db, monkeypatch):
+    """_start_server: popen_detached経由でWindows用kwargsが渡ること
+
+    直接subprocess.Popen(start_new_session=True)を呼ぶ実装に戻しても気づけない
+    回帰を防ぐため、popen_detachedのWindows分岐が実際に呼び出されることを確かめる。
+    """
+    import subprocess
+    from src.infra import detached_process
+
+    captured = {}
+
+    def capturing_popen(args, **kwargs):
+        captured["kwargs"] = kwargs
+        return object()
+
+    root = Path(emb.__file__).resolve().parents[2]
+    monkeypatch.setenv("CALM_PROJECT_ROOT", str(root))
+    monkeypatch.setattr(emb, "_project_root_cache", None)
+    monkeypatch.setattr(detached_process.sys, "platform", "win32")
+    monkeypatch.setattr(subprocess, "Popen", capturing_popen)
+    monkeypatch.setattr(emb, "_start_server", _REAL_START_SERVER)
+
+    emb._start_server()
+
+    assert captured["kwargs"]["creationflags"] == (
+        detached_process._CREATE_NEW_PROCESS_GROUP | detached_process._CREATE_NO_WINDOW
+    )
+    assert captured["kwargs"]["stdin"] == subprocess.DEVNULL
 
 
 def test_ensure_server_running_handles_start_failure(temp_db, monkeypatch):

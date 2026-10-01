@@ -15,6 +15,7 @@ import pytest
 
 from hooks import sanitize_backfill_hook
 from hooks.hook_state import HookState
+from src.infra import file_ops
 from src.services.citations_pure import TYPE_TO_TABLE
 
 
@@ -644,6 +645,35 @@ def test_case_15_write_back_success_uses_atomic_rename(tmp_path):
     assert transcript.read_bytes() == b"sanitized\n"
     leftover = [p.name for p in tmp_path.iterdir() if ".tmp" in p.name or ".bak" in p.name]
     assert leftover == [], f"leftover files: {leftover}"
+
+
+def test_case_15_write_back_recovers_after_transient_replace_error(tmp_path, monkeypatch):
+    """os.replaceの一時失敗（Windowsの共有違反相当）を再試行で乗り越え、
+    書き戻しを完了する。呼び出し側がreplace_retryingを経由せずos.replaceへ
+    直書きする退行を検知する。"""
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_bytes(b"original\n")
+    real_mtime = transcript.stat().st_mtime
+
+    real_replace = os.replace
+    calls = {"count": 0}
+
+    def flaky_replace(a, b):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise OSError(32, "The process cannot access the file")
+        return real_replace(a, b)
+
+    monkeypatch.setattr(file_ops.os, "replace", flaky_replace)
+    monkeypatch.setattr(file_ops.time, "sleep", lambda _: None)
+
+    result = sanitize_backfill_hook._write_back_transcript(
+        transcript, b"sanitized\n", real_mtime, int(time.time())
+    )
+
+    assert result is None
+    assert calls["count"] == 2
+    assert transcript.read_bytes() == b"sanitized\n"
 
 
 def test_case_15_harness_race_recorded_as_failure_event(

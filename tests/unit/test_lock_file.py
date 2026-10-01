@@ -1,4 +1,5 @@
 """lock_fileモジュールのユニットテスト"""
+import inspect
 import json
 import os
 import subprocess
@@ -229,6 +230,12 @@ class TestIsPortListening:
             port = s.getsockname()[1]
         # ソケットを閉じた後
         assert lock_file.is_port_listening(port) is False
+
+    def test_default_host_is_ipv4_loopback(self):
+        """既定hostがlocalhostに戻ると、ホスト名解決の仕方次第でIPv6優先環境との
+        挙動差が生まれうる。既定が127.0.0.1であることを固定する。"""
+        sig = inspect.signature(lock_file.is_port_listening)
+        assert sig.parameters["host"].default == "127.0.0.1"
 
 
 class TestAcquireRecordsStartTime:

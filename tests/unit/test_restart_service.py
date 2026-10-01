@@ -180,6 +180,47 @@ def test_restart_mcp_server_success_flow(monkeypatch, tmp_path):
     assert kwargs["cwd"] == str(tmp_path)
 
 
+def test_restart_mcp_server_uses_popen_detached_windows_wiring(monkeypatch, tmp_path):
+    """popen_detached経由でWindows用kwargsが渡ること
+
+    直接subprocess.Popen(cmd, start_new_session=True)を呼ぶ実装に戻しても
+    気づけない回帰を防ぐため、popen_detachedのWindows分岐が実際に
+    呼び出されることを確かめる。
+    """
+    from src.infra import detached_process
+
+    state = {"new_server_started": False}
+
+    def fake_find_listen_pids(port):
+        return [2222] if state["new_server_started"] else []
+
+    popen_calls = []
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append(kwargs)
+        state["new_server_started"] = True
+        return SimpleNamespace(pid=2222)
+
+    monkeypatch.setattr(restart_service, "find_listen_pids", fake_find_listen_pids)
+    monkeypatch.setattr(restart_service, "process_start_signature", lambda pid: "sig")
+    monkeypatch.setattr(restart_service, "kill_pids", lambda pids: None)
+    monkeypatch.setattr(restart_service, "_resolve_main_repo_root", lambda project_root: project_root)
+    monkeypatch.setattr(detached_process.sys, "platform", "win32")
+    monkeypatch.setattr(restart_service.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(restart_service.time, "sleep", lambda _: None)
+    monkeypatch.setattr(restart_service, "LAUNCHER_LOG_PATH", tmp_path / "logs" / "restart_launcher.log")
+
+    result = restart_service.restart_mcp_server(tmp_path, poll_interval_sec=0)
+
+    assert result.ok is True
+    assert len(popen_calls) == 1
+    kwargs = popen_calls[0]
+    assert kwargs["creationflags"] == (
+        detached_process._CREATE_NEW_PROCESS_GROUP | detached_process._CREATE_NO_WINDOW
+    )
+    assert kwargs["stdin"] == subprocess.DEVNULL
+
+
 def test_restart_mcp_server_skips_kill_when_nothing_was_listening(monkeypatch, tmp_path):
     """サーバーが元から起動していない場合はkillを呼ばずそのまま起動する"""
     state = {"new_server_started": False}

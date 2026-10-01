@@ -24,6 +24,12 @@ logger = logging.getLogger(__name__)
 PORT = 52836
 SERVER_URL = f"http://127.0.0.1:{PORT}"
 
+# 既定のurlopenはOS設定のプロキシを経由しうる。手動プロキシが設定され、かつ
+# その除外リストにIPアドレス表記の127.0.0.1が無い環境では、ループバック接続
+# すら社内プロキシに送られてしまう。ここはローカルの子プロセスへの接続のみ
+# なのでプロキシを常に無視する。
+_NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 
 def _resolve_project_root() -> str:
     """embedding_server を起動する cwd を決定する。
@@ -140,7 +146,7 @@ def _is_server_running() -> bool:
     """GET /health でサーバーの生存確認を行う。"""
     try:
         req = urllib.request.Request(f"{SERVER_URL}/health")
-        with urllib.request.urlopen(req, timeout=2) as resp:
+        with _NO_PROXY_OPENER.open(req, timeout=2) as resp:
             return resp.status == 200
     except Exception:
         return False
@@ -261,7 +267,7 @@ def _encode_batch(texts: list[str], prefix: str) -> Optional[list[list[float]]]:
             data=data,
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with _NO_PROXY_OPENER.open(req, timeout=60) as resp:
             result = json.loads(resp.read())
             return result["embeddings"]
     except Exception as e:

@@ -225,6 +225,29 @@ class TestClearSession:
         HookState.clear_session("sess-events")
         assert not state.events_path.exists()
 
+    def test_oserror_on_one_file_is_swallowed_and_others_still_removed(self, tmp_path, monkeypatch):
+        """1ファイルのunlinkがOSError（Windowsの共有違反相当）を起こしても例外を
+        外に出さず、残りのファイルは削除される。"""
+        monkeypatch.setattr(HookState, "BASE_DIR", tmp_path)
+        state = HookState("sess-partial")
+        state.increment_block_count()
+        state.set_transcript_offset(100)
+        locked_path = state._path("block_count")
+
+        real_unlink = Path.unlink
+
+        def flaky_unlink(self, *args, **kwargs):
+            if self == locked_path:
+                raise OSError(32, "The process cannot access the file")
+            return real_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", flaky_unlink)
+
+        HookState.clear_session("sess-partial")
+
+        assert locked_path.exists()
+        assert state.get_transcript_offset() == 0
+
 
 class TestClearSessionPreserve:
     """clear_session(preserve=...): 指定prefixのファイルをクリア対象から除外する。

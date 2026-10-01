@@ -155,6 +155,31 @@ class TestStartHttpServer:
         assert launcher._start_http_server() is True
         assert called_with["kwargs"]["stderr"] == subprocess.DEVNULL
 
+    def test_uses_popen_detached_windows_wiring(self, tmp_path, monkeypatch):
+        """popen_detached経由でWindows用kwargsが渡ること
+
+        直接subprocess.Popen(start_new_session=True)を呼ぶ実装に戻しても気づけない
+        回帰を防ぐため、popen_detachedのWindows分岐が実際に呼び出されることを確かめる。
+        """
+        import src.db as db
+        from src.infra import detached_process
+
+        monkeypatch.setattr(db, "get_db_path", lambda: str(tmp_path / "discussion.db"))
+        called_with = {}
+
+        class FakePopen:
+            def __init__(self, args, **kwargs):
+                called_with["kwargs"] = kwargs
+
+        monkeypatch.setattr(detached_process.sys, "platform", "win32")
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+
+        assert launcher._start_http_server() is True
+        assert called_with["kwargs"]["creationflags"] == (
+            detached_process._CREATE_NEW_PROCESS_GROUP | detached_process._CREATE_NO_WINDOW
+        )
+        assert called_with["kwargs"]["stdin"] == subprocess.DEVNULL
+
 
 class TestEnsureServerRunning:
     def test_returns_true_if_already_running(self, monkeypatch):
@@ -307,12 +332,19 @@ class TestEnsureServerRunningStaleLock:
             call_count["check"] += 1
             return call_count["check"] >= 3
 
+        start_calls = {"count": 0}
+
+        def fake_start_http_server():
+            start_calls["count"] += 1
+            return True
+
         monkeypatch.setattr(launcher, "_is_server_running", fake_is_running)
-        monkeypatch.setattr(launcher, "_start_http_server", lambda: True)
+        monkeypatch.setattr(launcher, "_start_http_server", fake_start_http_server)
         monkeypatch.setattr(launcher.time, "sleep", lambda _: None)
 
-        # unlinkがOSErrorを投げても例外は外に伝播しない
+        # unlinkがOSErrorを投げても例外は外に伝播せず、新サーバーの起動まで進む
         assert launcher._ensure_server_running() is True
+        assert start_calls["count"] == 1
 
 
 class TestSessionRegistration:
