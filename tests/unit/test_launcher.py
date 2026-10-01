@@ -253,6 +253,67 @@ class TestEnsureServerRunningStaleLock:
         # ロックファイルはそのまま
         assert lock_path.exists()
 
+    def test_stale_lock_pid_alive_but_start_time_mismatch(self, monkeypatch, tmp_path):
+        """PIDが生きていても起動時刻が記録と食い違う(PID再利用)場合はstaleとして削除する"""
+        from src.infra import lock_file
+
+        lock_dir = tmp_path / ".cc-memory"
+        lock_dir.mkdir()
+        lock_path = lock_dir / "server.lock"
+        lock_path.write_text(
+            '{"pid": 99999999, "port": 52837, "start_time": "old-sig"}', encoding="utf-8"
+        )
+        monkeypatch.setattr(lock_file, "LOCK_FILE", lock_path)
+        monkeypatch.setattr(lock_file, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(lock_file, "process_start_signature", lambda pid: "new-sig")
+
+        call_count = {"check": 0}
+
+        def fake_is_running():
+            call_count["check"] += 1
+            return call_count["check"] >= 3
+
+        monkeypatch.setattr(launcher, "_is_server_running", fake_is_running)
+        monkeypatch.setattr(launcher, "_start_http_server", lambda: True)
+        monkeypatch.setattr(launcher.time, "sleep", lambda _: None)
+
+        assert launcher._ensure_server_running() is True
+        assert not lock_path.exists()
+
+    def test_unlink_oserror_is_swallowed(self, monkeypatch, tmp_path):
+        """stale lock削除がOSErrorになっても例外を外に漏らさず起動フローを続ける"""
+        from src.infra import lock_file
+
+        lock_dir = tmp_path / ".cc-memory"
+        lock_dir.mkdir()
+        lock_path = lock_dir / "server.lock"
+        lock_path.write_text('{"pid": 99999999, "port": 52837}', encoding="utf-8")
+        monkeypatch.setattr(lock_file, "is_process_alive", lambda pid: False)
+
+        class _BoomPath:
+            """unlinkだけ共有違反風のOSErrorにし、他の操作は実パスに委譲する"""
+
+            def __getattr__(self, name):
+                return getattr(lock_path, name)
+
+            def unlink(self, missing_ok=True):
+                raise OSError(32, "The process cannot access the file")
+
+        monkeypatch.setattr(lock_file, "LOCK_FILE", _BoomPath())
+
+        call_count = {"check": 0}
+
+        def fake_is_running():
+            call_count["check"] += 1
+            return call_count["check"] >= 3
+
+        monkeypatch.setattr(launcher, "_is_server_running", fake_is_running)
+        monkeypatch.setattr(launcher, "_start_http_server", lambda: True)
+        monkeypatch.setattr(launcher.time, "sleep", lambda _: None)
+
+        # unlinkがOSErrorを投げても例外は外に伝播しない
+        assert launcher._ensure_server_running() is True
+
 
 class TestSessionRegistration:
     def test_register_success(self, monkeypatch):
@@ -570,6 +631,22 @@ class TestBridgeIdentityHeader:
             == second["http_client"].headers.get(launcher.BRIDGE_SESSION_HEADER)
             == launcher._session_id
         )
+
+    def test_bridge_disables_trust_env_when_local(self, monkeypatch):
+        """ローカルモードでは環境のプロキシ設定(trust_env)を無視する。
+
+        手動プロキシ設定はあるが環境変数が無い環境で、ループバック接続が
+        社内プロキシへ誤って送られるのを防ぐため。
+        """
+        monkeypatch.setattr(launcher, "_IS_LOCAL", True)
+        captured = self._run_bridge_and_capture_http_client(monkeypatch)
+        assert captured["http_client"].trust_env is False
+
+    def test_bridge_keeps_trust_env_when_remote(self, monkeypatch):
+        """リモートモード(CALM_URL指定時)ではtrust_envの既定(True)を変えない。"""
+        monkeypatch.setattr(launcher, "_IS_LOCAL", False)
+        captured = self._run_bridge_and_capture_http_client(monkeypatch)
+        assert captured["http_client"].trust_env is True
 
 
 class TestHeartbeatLoop:

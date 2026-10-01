@@ -1223,3 +1223,8 @@ def test_update_tag_canonical_regenerates_embedding(temp_db, monkeypatch):
     # 再生成テキストに元のトピックのタイトルが含まれる
     all_regen_text = " ".join(captured_texts)
     assert "canonical再生成テスト" in all_regen_text
+
+
+def test_server_url_uses_ipv4_loopback():
+    """localhostではなく127.0.0.1を使う（::1優先環境での接続遅延を避けるため）"""
+    assert emb.SERVER_URL == f"http://127.0.0.1:{emb.PORT}"

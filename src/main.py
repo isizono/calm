@@ -3184,9 +3184,15 @@ if __name__ == "__main__":
         )
 
         def _shutdown_server():
-            """ウォッチドッグから呼ばれるシャットダウンハンドラ"""
+            """ウォッチドッグから呼ばれるシャットダウンハンドラ
+
+            os.kill(os.getpid(), signal.SIGINT)はWindowsではTerminateProcess
+            相当になりfinallyのrelease()が走らない。signal.raise_signalは
+            プロセス内にシグナルを送る標準の手段で、全OSでPythonのシグナル
+            ハンドラ経由の正常終了経路に乗る。
+            """
             logger.info("Shutdown triggered by watchdog, sending SIGINT")
-            os.kill(os.getpid(), signal.SIGINT)
+            signal.raise_signal(signal.SIGINT)
 
         _session_manager.set_shutdown_callback(_shutdown_server)
         _session_manager.start_watchdog()

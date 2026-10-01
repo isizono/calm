@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import itertools
 import json
-import os
 import re
 import unicodedata
 from contextlib import contextmanager
@@ -33,6 +32,7 @@ import filelock
 
 from src.env_compat import env_get
 from src.infra import cli_session
+from src.infra.file_ops import replace_retrying
 from src.infra.lock_file import is_process_alive
 from src.infra import session_identity
 
@@ -88,7 +88,7 @@ def _save(data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    replace_retrying(tmp, path)
 
 
 def derive_alias(activity_title: str, activity_id: int) -> str:

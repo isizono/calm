@@ -23,6 +23,7 @@ import uuid
 from pathlib import Path
 
 from src.env_compat import env_get, env_set
+from src.infra.detached_process import popen_detached
 from src.infra.git_repo import resolve_main_repo_root
 from src.infra.session_identity import (
     register_launcher_session,
@@ -327,9 +328,8 @@ def _start_http_server() -> bool:
     """
     try:
         with _resolve_server_stderr_target() as stderr_target:
-            subprocess.Popen(
+            popen_detached(
                 [sys.executable, "-m", "src.main", "--transport", "http"],
-                start_new_session=True,
                 stdout=subprocess.DEVNULL,
                 stderr=stderr_target,
                 cwd=_PROJECT_ROOT,
@@ -347,14 +347,20 @@ def _ensure_server_running() -> bool:
         return True
     # ロックファイルが存在する場合、別のランチャーが起動中の可能性がある。
     # 二重起動を避けてサーバーの準備完了を待つだけにする。
-    # ただしプロセスが死んでいる場合はstale lockとして削除し、新規起動する。
-    from src.infra.lock_file import read as read_lock, is_process_alive
+    # ただしプロセスが死んでいる、またはPID再利用で別プロセスに入れ替わって
+    # いる場合はstale lockとして削除し、新規起動する（ポートの生死はここでは
+    # 見ない。acquire()とmcp.run()の間にポート未listenの窓があり、ここで
+    # ポートを見ると起動直後の正常なサーバーをstale誤判定しうるため）。
+    from src.infra.lock_file import read as read_lock, is_lock_stale
     from src.infra.lock_file import LOCK_FILE
 
     lock_info = read_lock()
-    if lock_info is not None and not is_process_alive(lock_info["pid"]):
+    if lock_info is not None and is_lock_stale(lock_info):
         logger.info(f"Removing stale lock file: pid={lock_info['pid']}")
-        LOCK_FILE.unlink(missing_ok=True)
+        try:
+            LOCK_FILE.unlink(missing_ok=True)
+        except OSError as e:
+            logger.warning(f"Failed to remove stale lock file: {e}")
         lock_info = None
     if lock_info is None:
         if not _start_http_server():
@@ -624,9 +630,10 @@ async def _bridge(state: "_StdinBridgeState") -> None:
     # 遅延import: デーモン起動ロジックはMCP SDKに依存しないため、
     # ブリッジ実行時まで重いimportを遅延させて起動速度を確保する
     import anyio
+    import httpx
     from mcp import types
     from mcp.client.streamable_http import streamable_http_client
-    from mcp.shared._httpx_utils import create_mcp_http_client
+    from mcp.shared._httpx_utils import MCP_DEFAULT_SSE_READ_TIMEOUT, MCP_DEFAULT_TIMEOUT
 
     # stdin EOFとサーバー切断を区別するためのフラグ
     # stdin EOF: queue_to_serverが先に終了 → 正常終了
@@ -636,11 +643,20 @@ async def _bridge(state: "_StdinBridgeState") -> None:
     # 全MCPリクエストに bridge identity ヘッダを同梱する。calm server が
     # 再起動しても launcher プロセス（＝ _session_id）が生きている限り不変な値で、
     # 呼び出し元セッション識別子の解決（src/infra/session_identity.py）が読む。
-    http_client = create_mcp_http_client(
+    #
+    # create_mcp_http_clientはtrust_envを渡せないため、同等のデフォルト
+    # timeoutを明示してhttpx.AsyncClientを直接組み立てる。ローカルモードでは
+    # trust_env=False（環境のプロキシ設定を無視する）にする。ループバック
+    # 接続が、手動プロキシ設定はあるが環境変数が無い環境で社内プロキシへ
+    # 誤って送られるのを防ぐため（リモートモードはプロキシ経由が必要な
+    # 場合があるため既定どおりtrust_env=Trueのままにする）。
+    http_client = httpx.AsyncClient(
         headers={
             BRIDGE_SESSION_HEADER: _session_id,
             LEGACY_BRIDGE_SESSION_HEADER: _session_id,
-        }
+        },
+        timeout=httpx.Timeout(MCP_DEFAULT_TIMEOUT, read=MCP_DEFAULT_SSE_READ_TIMEOUT),
+        trust_env=not _IS_LOCAL,
     )
     async with http_client:
         # terminate_on_close=True: 切断時に DELETE でMCPセッションを終了させる。

@@ -669,10 +669,21 @@ def restore_snapshot(
 
     # 5. 復元本体
     if file_copy:
-        shutil.copy2(snapshot_file, db_path)
+        # 本体を上書きする前に-wal/-shm/-journalの削除を試みる。Windowsでは
+        # 開いているファイルを削除できないため、DBを開いているプロセスが
+        # 残っていればここで失敗する。本体を上書きした後に失敗すると、
+        # 古いWALが残ったまま不整合な状態になるため、先に削除を済ませ、
+        # 失敗したら本体には触れずに中断する。
         # -journalを残すと次回オープン時にSQLiteが古いjournalで意図しないロールバックを試みうる。
         for suffix in ("-wal", "-shm", "-journal"):
-            Path(f"{db_path}{suffix}").unlink(missing_ok=True)
+            sidecar = Path(f"{db_path}{suffix}")
+            try:
+                sidecar.unlink(missing_ok=True)
+            except OSError as e:
+                raise RestoreBlockedError(
+                    f"{sidecar} を削除できませんでした（他プロセスが開いている可能性があります）: {e}"
+                ) from e
+        shutil.copy2(snapshot_file, db_path)
     else:
         source = sqlite3.connect(str(snapshot_file))
         try:

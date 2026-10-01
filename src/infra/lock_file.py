@@ -13,6 +13,8 @@ from typing import Optional, TypedDict
 
 import psutil
 
+from src.infra.process_signature import process_start_signature
+
 logger = logging.getLogger(__name__)
 
 LOCK_DIR = Path.home() / ".cc-memory"
@@ -23,6 +25,7 @@ class LockInfo(TypedDict):
     """ロックファイルに記録する情報"""
     pid: int
     port: int
+    start_time: Optional[str]
 
 
 def acquire(port: int) -> bool:
@@ -40,7 +43,11 @@ def acquire(port: int) -> bool:
     """
     LOCK_DIR.mkdir(parents=True, exist_ok=True)
 
-    info: LockInfo = {"pid": os.getpid(), "port": port}
+    info: LockInfo = {
+        "pid": os.getpid(),
+        "port": port,
+        "start_time": process_start_signature(os.getpid()),
+    }
 
     # まずアトミックな排他作成を試みる
     if _try_create_exclusive(info):
@@ -93,7 +100,7 @@ def read() -> Optional[LockInfo]:
     try:
         data = json.loads(LOCK_FILE.read_text(encoding="utf-8"))
         if isinstance(data, dict) and "pid" in data and "port" in data:
-            return LockInfo(pid=data["pid"], port=data["port"])
+            return LockInfo(pid=data["pid"], port=data["port"], start_time=data.get("start_time"))
         return None
     except (json.JSONDecodeError, OSError) as e:
         logger.warning(f"Failed to read lock file: {e}")
@@ -119,6 +126,24 @@ def release() -> None:
         logger.info("Lock file released")
     except OSError as e:
         logger.warning(f"Failed to release lock file: {e}")
+
+
+def is_lock_stale(info: LockInfo) -> bool:
+    """ロックファイルの指すサーバーがもう存在しないとみなせるか判定する。
+
+    PIDが死んでいれば無条件でstale。生きていても、ロック作成時に記録した
+    起動時刻と現在そのPIDが示すプロセスの起動時刻が食い違えば、PID再利用
+    （別プロセスが同じPIDを引き継いだ）とみなしstale扱いにする。
+    記録が無い（旧形式のロックファイル）場合や起動時刻が取得できない場合は
+    比較しようがないため、PID生存の結果をそのまま使う。
+    """
+    if not is_process_alive(info["pid"]):
+        return True
+    recorded = info.get("start_time")
+    if recorded is None:
+        return False
+    current = process_start_signature(info["pid"])
+    return current is not None and current != recorded
 
 
 def is_process_alive(pid: int) -> bool:
@@ -147,7 +172,7 @@ def _is_zombie(pid: int) -> bool:
         return False
 
 
-def is_port_listening(port: int, host: str = "localhost", timeout: float = 1.0) -> bool:
+def is_port_listening(port: int, host: str = "127.0.0.1", timeout: float = 1.0) -> bool:
     """指定ポートにTCP接続できるか確認する。"""
     try:
         with socket.create_connection((host, port), timeout=timeout):

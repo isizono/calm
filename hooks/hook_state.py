@@ -241,11 +241,19 @@ class HookState:
             prefix = f.name[: -len(suffix)]
             if prefix in preserve:
                 continue
-            f.unlink(missing_ok=True)
+            # 他プロセスが開いている瞬間と重なるとOSErrorになりうる
+            # （Windowsの共有違反）。1ファイルの失敗で残りの削除を止めない。
+            try:
+                f.unlink(missing_ok=True)
+            except OSError:
+                pass
         # events.jsonl は命名規則が異なるので個別削除
         if "events" not in preserve:
             events_file = cls.BASE_DIR / f"events_{session_id_safe}.jsonl"
-            events_file.unlink(missing_ok=True)
+            try:
+                events_file.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":

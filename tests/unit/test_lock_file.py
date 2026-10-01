@@ -229,3 +229,48 @@ class TestIsPortListening:
             port = s.getsockname()[1]
         # ソケットを閉じた後
         assert lock_file.is_port_listening(port) is False
+
+
+class TestAcquireRecordsStartTime:
+    def test_acquire_records_own_start_time(self):
+        """acquireが書き込むstart_timeは自プロセスのprocess_start_signatureと一致する"""
+        from src.infra.process_signature import process_start_signature
+
+        assert lock_file.acquire(52837) is True
+        info = lock_file.read()
+        assert info["start_time"] == process_start_signature(os.getpid())
+
+
+class TestIsLockStale:
+    def test_stale_when_pid_dead(self, monkeypatch):
+        """PIDが死んでいれば無条件でstale"""
+        monkeypatch.setattr(lock_file, "is_process_alive", lambda pid: False)
+        info = lock_file.LockInfo(pid=99999999, port=52837, start_time="t1")
+        assert lock_file.is_lock_stale(info) is True
+
+    def test_not_stale_when_pid_alive_and_no_recorded_start_time(self, monkeypatch):
+        """旧形式（start_time未記録）のロックはPID生存だけで判定する"""
+        monkeypatch.setattr(lock_file, "is_process_alive", lambda pid: True)
+        info = lock_file.LockInfo(pid=1234, port=52837, start_time=None)
+        assert lock_file.is_lock_stale(info) is False
+
+    def test_not_stale_when_start_time_matches(self, monkeypatch):
+        """PIDが生きていて起動時刻も一致すれば同一プロセスとみなしstaleではない"""
+        monkeypatch.setattr(lock_file, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(lock_file, "process_start_signature", lambda pid: "same-sig")
+        info = lock_file.LockInfo(pid=1234, port=52837, start_time="same-sig")
+        assert lock_file.is_lock_stale(info) is False
+
+    def test_stale_when_start_time_mismatches_due_to_pid_reuse(self, monkeypatch):
+        """PIDが生きていても起動時刻が食い違えばPID再利用とみなしstale"""
+        monkeypatch.setattr(lock_file, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(lock_file, "process_start_signature", lambda pid: "new-sig")
+        info = lock_file.LockInfo(pid=1234, port=52837, start_time="old-sig")
+        assert lock_file.is_lock_stale(info) is True
+
+    def test_not_stale_when_current_start_time_unobtainable(self, monkeypatch):
+        """現在の起動時刻が取れない場合は比較できないため安全側(非stale)に倒す"""
+        monkeypatch.setattr(lock_file, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(lock_file, "process_start_signature", lambda pid: None)
+        info = lock_file.LockInfo(pid=1234, port=52837, start_time="old-sig")
+        assert lock_file.is_lock_stale(info) is False

@@ -19,6 +19,7 @@ from typing import NamedTuple
 
 from src.env_compat import env_get, env_set
 from src.http_config import HTTP_PORT
+from src.infra.detached_process import popen_detached
 from src.infra.git_repo import resolve_main_repo_root
 from src.infra.lock_file import is_process_alive
 from src.infra.process_signature import process_start_signature
@@ -193,9 +194,8 @@ def restart_mcp_server(
 
     LAUNCHER_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(LAUNCHER_LOG_PATH, "w") as log_file:
-        proc = subprocess.Popen(
+        proc = popen_detached(
             ["uv", "run", "--directory", str(project_root), "python", "-m", "src.launcher"],
-            start_new_session=True,
             stdout=log_file,
             stderr=log_file,
             cwd=str(project_root),

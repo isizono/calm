@@ -13,13 +13,16 @@ from sqlite_vec import serialize_float32
 
 from src.db import execute_query, get_connection
 from src.env_compat import env_get
+from src.infra.detached_process import popen_detached
 from src.infra.lock_file import is_port_listening
 
 logger = logging.getLogger(__name__)
 
 # サーバー接続設定
+# embedding_serverはIPv4(127.0.0.1)でしか待ち受けないため、"localhost"は使わない
+# （環境によっては::1が先に解決され、接続のたびに拒否待ちの遅延が乗りうる）。
 PORT = 52836
-SERVER_URL = f"http://localhost:{PORT}"
+SERVER_URL = f"http://127.0.0.1:{PORT}"
 
 
 def _resolve_project_root() -> str:
@@ -160,9 +163,8 @@ def _start_server() -> Optional[subprocess.Popen]:
         logger.warning(f"Failed to resolve project root for embedding server: {e}")
         return None
     try:
-        proc = subprocess.Popen(
+        proc = popen_detached(
             [sys.executable, "-m", "src.infra.embedding_server"],
-            start_new_session=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             cwd=cwd,

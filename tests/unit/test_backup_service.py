@@ -366,6 +366,33 @@ class TestRestoreFileCopy:
         assert not shm.exists()
         assert bs.get_row_counts(temp_db) is not None
 
+    def test_file_copy_aborts_without_touching_db_when_sidecar_delete_fails(
+        self, temp_db, monkeypatch
+    ):
+        """-walの削除が失敗(Windowsの共有違反相当)した場合、本体は上書きされず
+        RestoreBlockedErrorで中断する（DBを開いたプロセスが残っている状態での
+        復元が、本体とWALが食い違う不整合な状態を作らないようにするため）。"""
+        snapshot_path = bs.take_snapshot(temp_db, kind="manual")
+
+        wal = Path(f"{temp_db}-wal")
+        wal.write_bytes(b"dummy-wal")
+        original_db_bytes = Path(temp_db).read_bytes()
+
+        real_unlink = Path.unlink
+
+        def flaky_unlink(self, missing_ok=False):
+            if self == wal:
+                raise OSError(32, "The process cannot access the file")
+            return real_unlink(self, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "unlink", flaky_unlink)
+
+        with pytest.raises(bs.RestoreBlockedError):
+            bs.restore_snapshot(str(snapshot_path), temp_db, file_copy=True)
+
+        # 本体はコピー前に中断しているため元のバイト列のまま
+        assert Path(temp_db).read_bytes() == original_db_bytes
+
 
 class TestRestorePrerestoreFallback:
     def test_falls_back_to_raw_file_copy_when_current_db_unreadable(self, temp_db):
