@@ -40,26 +40,31 @@ jobs:
       - name: Import src.main succeeds (no POSIX-only top-level imports)
         id: test-import
         continue-on-error: true
+        timeout-minutes: 10
         run: uv run pytest tests/windows/test_windows_import.py -v
 
       - name: Launcher stdio bridge reads initialize without hanging
         id: test-launcher
         continue-on-error: true
+        timeout-minutes: 10
         run: uv run pytest tests/windows/test_windows_launcher_stdio.py -v
 
       - name: DB init and hooks survive a non-UTF-8 locale
         id: test-encoding
         continue-on-error: true
+        timeout-minutes: 10
         run: uv run pytest tests/windows/test_windows_encoding.py -v
 
       - name: hooks.json commands run under PowerShell and Git Bash
         id: test-hooks
         continue-on-error: true
+        timeout-minutes: 10
         run: uv run pytest tests/windows/test_windows_hooks.py -v
 
       - name: Unit tests
         id: test-unit
         continue-on-error: true
+        timeout-minutes: 30
         env:
           PYTHONUTF8: "1"
         run: uv run pytest -v --tb=short -n auto --durations=25 tests/unit tests/test_migrations tests/services
@@ -67,6 +72,7 @@ jobs:
       - name: Integration/e2e tests
         id: test-integration-e2e
         continue-on-error: true
+        timeout-minutes: 30
         env:
           PYTHONUTF8: "1"
         run: uv run pytest -v --tb=short -n auto --durations=25 tests/integration tests/e2e

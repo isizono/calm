@@ -712,17 +712,19 @@ def _run_restart_minimal(monkeypatch, tmp_path):
     """restart_mcp_server()を、プロセス入れ替え判定に無関係な箇所だけfakeにして実行する。
 
     find_listen_pidsが常に[]を返すためサーバーは起動確認できず、timeoutで
-    後始末の_kill_process_groupへ進む。os.getpgid/os.killpgはWindowsに存在
-    しないため、そのPOSIX実装ではなく呼び出し口の_kill_process_group自体を
-    fakeにする(本関数を使うテストはプロセスグループの終了方法を検証対象に
-    していないため、OS問わず動く形にできる)。
+    後始末の_kill_process_groupへ進む。_default_to_posix_platformによりPOSIX
+    分岐(os.killpg/os.getpgid)を通るが、これらはWindowsのos/signalモジュール
+    には存在しないため、raising=Falseで外部境界(os.killpg/os.getpgid/
+    signal.SIGKILL)をfakeにする。
     """
     monkeypatch.setattr(restart_service, "find_listen_pids", lambda port: [])
     monkeypatch.setattr(restart_service, "kill_pids", lambda pids: None)
     monkeypatch.setattr(restart_service, "_resolve_main_repo_root", lambda project_root: project_root)
     monkeypatch.setattr(restart_service.subprocess, "Popen", lambda cmd, **kwargs: SimpleNamespace(pid=4321))
     monkeypatch.setattr(restart_service, "LAUNCHER_LOG_PATH", tmp_path / "logs" / "restart_launcher.log")
-    monkeypatch.setattr(restart_service, "_kill_process_group", lambda proc: None)
+    monkeypatch.setattr(restart_service.os, "killpg", lambda pgid, sig: None, raising=False)
+    monkeypatch.setattr(restart_service.os, "getpgid", lambda pid: pid, raising=False)
+    monkeypatch.setattr(restart_service.signal, "SIGKILL", 9, raising=False)
 
 
 def test_restart_mcp_server_sets_python_utf8_when_unset(monkeypatch, tmp_path):

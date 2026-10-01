@@ -209,6 +209,7 @@ class TestTmuxSessionName:
 
 
 class TestBuildSettings:
+    @_posix_only_start
     def test_stop_hook_execs_venv_python_directly(self, calm_root, tmp_path):
         run_dir = tmp_path / "run"
         settings = svc.build_settings(calm_root, run_dir)
@@ -221,6 +222,7 @@ class TestBuildSettings:
         assert hook_cmd["timeout"] == 86400
         assert "uv run" not in hook_cmd["command"]
 
+    @_posix_only_start
     def test_permissions_allow_scoped_read_to_run_dir(self, calm_root, tmp_path):
         run_dir = tmp_path / "run"
         settings = svc.build_settings(calm_root, run_dir)
