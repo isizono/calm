@@ -50,6 +50,10 @@ class TestCommandSpawnsBg:
             '& "C:\\Program Files\\claude\\claude.exe" --bg task',  # クォート付きWindows絶対パス(basename判定)
             'pwsh -c "claude --bg"',  # pwsh -c 経由
             'powershell -c "claude --bg"',  # powershell -c 経由
+            "Claude.exe --bg",  # 大文字始まり (NTFS/PowerShellは大文字小文字を区別しない)
+            "CLAUDE --bg",  # 全て大文字
+            'pwsh -Command "claude --bg"',  # pwsh -Command (長形式) 経由
+            'powershell -Command "claude --bg"',  # powershell -Command (長形式) 経由
         ],
     )
     def test_matches(self, command):

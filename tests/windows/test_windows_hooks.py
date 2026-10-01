@@ -17,6 +17,7 @@ exec形式のエントリはシェルを経由せず直接起動する(`_run_ent
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -84,6 +85,23 @@ _ENTRIES = list(iter_hook_entries(_HOOKS_JSON))
 _ENTRY_IDS = [_entry_id(*e) for e in _ENTRIES]
 
 
+def _without_active_venv(env: dict) -> dict:
+    # このテスト自身が`uv run pytest`経由(VIRTUAL_ENV設定/PATH先頭が.venvのbin)
+    # で起動されていると、--directoryが抜けたexecフォームのエントリでも、uvが
+    # 「現在有効なvenv」(=リポジトリの.venv、依存がすべて揃っている)へ暗黙に
+    # フォールバックして完走してしまい、欠落を検知できなくなる。VIRTUAL_ENVと
+    # PATH中のvenv binは、どちらか片方が残るだけでも再現するため両方除く。
+    env = dict(env)
+    env.pop("VIRTUAL_ENV", None)
+    venv_bin = os.path.normcase(os.path.normpath(
+        os.path.join(sys.prefix, "Scripts" if sys.platform == "win32" else "bin")
+    ))
+    parts = env.get("PATH", "").split(os.pathsep)
+    kept = [p for p in parts if os.path.normcase(os.path.normpath(p)) != venv_bin]
+    env["PATH"] = os.pathsep.join(kept)
+    return env
+
+
 def _run_via_exec_form(hook: dict, env: dict, input_bytes: bytes, timeout: float, cwd: Path) -> HookRunResult:
     # スラッシュ区切りへの変換はshell-form(_run_via_shell)ほど必須ではないが
     # (execフォームはargv直接受け渡しでシェルのエスケープを経由しない)、
@@ -96,7 +114,7 @@ def _run_via_exec_form(hook: dict, env: dict, input_bytes: bytes, timeout: float
     plugin_root = str(REPO_ROOT).replace("\\", "/")
     argv = [hook["command"], *hook.get("args", [])]
     argv = [a.replace("${CLAUDE_PLUGIN_ROOT}", plugin_root) for a in argv]
-    return run_with_timeout(argv, input_bytes=input_bytes, cwd=cwd, env=env, timeout=timeout)
+    return run_with_timeout(argv, input_bytes=input_bytes, cwd=cwd, env=_without_active_venv(env), timeout=timeout)
 
 
 def _run_via_shell(
