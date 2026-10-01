@@ -7,6 +7,7 @@ GROUP_CONCAT(id)まで比較に含めているのは、件数が同じでもid�
 """
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 import sys
 import time
@@ -26,14 +27,18 @@ _QUERY = "SELECT COUNT(*), MAX(last_seen_at), GROUP_CONCAT(id) FROM asks WHERE s
 def _snapshot(db_path: str) -> tuple | None:
     """open askの件数・最新last_seen_at・id集合のスナップショットを1回取得する。
 
-    DBロック・未作成等でクエリに失敗した場合はNoneを返し、呼び出し側で
+    DBロック・未作成・破損等でクエリに失敗した場合はNoneを返し、呼び出し側で
     このtickをスキップする(prevを巻き戻さず、次の正常tickとの比較で変化を
-    取りこぼさないようにする)。
+    取りこぼさないようにする)。sqlite3.connect()はファイルが無いと新規作成して
+    しまうため、先に存在確認する(復元中でDBファイルが一時的に無い間に
+    空ファイルを作ってしまわないため)。
     """
+    if not Path(db_path).exists():
+        return None
     try:
-        with sqlite3.connect(db_path, timeout=5) as conn:
+        with contextlib.closing(sqlite3.connect(db_path, timeout=5)) as conn:
             return conn.execute(_QUERY).fetchone()
-    except sqlite3.OperationalError as e:
+    except sqlite3.Error as e:
         print(f"ask-watch poll: query failed, skipping tick: {e}", file=sys.stderr, flush=True)
         return None
 

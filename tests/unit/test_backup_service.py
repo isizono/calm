@@ -9,6 +9,7 @@ HTTPヘルスエンドポイントに依存するため、autouseフィクスチ
 """
 import argparse
 import json
+import re
 import sqlite3
 from pathlib import Path
 
@@ -301,7 +302,13 @@ class TestRestoreServerRunningGuard:
             bs.restore_snapshot(str(snapshot_path), temp_db)
 
     def test_blocked_message_points_to_restart_server_cli_not_lsof(self, temp_db):
-        """案内文はWindowsに存在しないlsofではなく、OS非依存のCLIを示す"""
+        """案内文はWindowsに存在しないlsofではなく、OS非依存のCLIを示す。
+
+        `${CLAUDE_PLUGIN_ROOT}`のようなシェル変数テンプレートを文字列のまま
+        出力する実装に戻しても、"restart_server.py"・"--stop"の存在と
+        "lsof"の不在だけでは検知できないため、テンプレート変数が残っていない
+        ことと、案内文中のパスが実在するファイルを指すことまで確かめる。
+        """
         snapshot_path = bs.take_snapshot(temp_db, kind="manual")
         lock_file.acquire(52837)
 
@@ -312,6 +319,11 @@ class TestRestoreServerRunningGuard:
         assert "restart_server.py" in message
         assert "--stop" in message
         assert "lsof" not in message
+        assert "${" not in message
+
+        match = re.search(r'python "([^"]+restart_server\.py)"', message)
+        assert match is not None, message
+        assert Path(match.group(1)).exists()
 
     def test_force_bypasses_running_check(self, temp_db):
         snapshot_path = bs.take_snapshot(temp_db, kind="manual")

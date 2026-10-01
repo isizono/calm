@@ -57,7 +57,7 @@ Monitorツールを以下のパラメータで呼ぶ:
 
 - `description`: 監視対象がわかる説明（例: `"ask store open askの変化監視"`）
 - `timeout_ms`: `1800000`（Monitorの上限値。これより大きい値を渡しても30分に切り詰められるため、常に上限を明示する）
-- `command`: `uv run --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_SKILL_DIR}/scripts/poll.py"`
+- `command`: `uv run --no-sync --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_SKILL_DIR}/scripts/poll.py"`（30分ごとに張り直すたびの暗黙の依存同期を避ける。プラグインキャッシュ経由であれば起動時のhookが先に同期済みのため、venvが未同期になることはない）
 
 Monitorは`timeout_ms`の上限である30分で必ず失効し、そのタイミングで失効通知が届く。監視を続ける場合はこのStep 2をそのまま繰り返してMonitorを張り直す（re-arm）。失効通知は「open askに変化があった」ことを意味しないため、Step 3の処理には進まず張り直すだけでよい。
 

@@ -166,9 +166,14 @@ def test_kill_pids_windows_terminates_once_via_psutil(monkeypatch):
     signal.SIGKILL・os.killpg・os.getpgidを削除してから実行することで、
     Windows分岐がこれらを参照しないこと自体を検証する(参照すれば
     AttributeErrorになり、Windows実機と同じ壊れ方を再現できる)。
+
+    is_process_aliveをTrue→True→Falseの順で返すfakeにし、「生きている→死ぬ」の
+    遷移を実際に通す。この遷移が無いと、待ちループを丸ごと消しても、ポーリングの
+    たびにterminateを送り直しても、このテストは両者を見分けられない。
     """
     monkeypatch.setattr(restart_service.sys, "platform", "win32")
     monkeypatch.delattr(restart_service.signal, "SIGKILL", raising=False)
+    monkeypatch.delattr(restart_service.os, "kill", raising=False)
     monkeypatch.delattr(restart_service.os, "killpg", raising=False)
     monkeypatch.delattr(restart_service.os, "getpgid", raising=False)
 
@@ -182,15 +187,28 @@ def test_kill_pids_windows_terminates_once_via_psutil(monkeypatch):
             terminated.append(self.pid)
 
     monkeypatch.setattr(restart_service.psutil, "Process", FakeProcess)
-    monkeypatch.setattr(restart_service, "is_process_alive", lambda pid: False)
+
+    alive_sequence = iter([True, True, False])
+    alive_calls = []
+
+    def fake_is_process_alive(pid):
+        alive_calls.append(pid)
+        return next(alive_sequence)
+
+    monkeypatch.setattr(restart_service, "is_process_alive", fake_is_process_alive)
+    monkeypatch.setattr(restart_service.time, "sleep", lambda _: None)
 
     restart_service.kill_pids([4242])
 
     assert terminated == [4242]
+    assert len(alive_calls) >= 2
 
 
 def test_kill_pids_windows_ignores_already_gone_process(monkeypatch):
     monkeypatch.setattr(restart_service.sys, "platform", "win32")
+    monkeypatch.delattr(restart_service.os, "kill", raising=False)
+    monkeypatch.delattr(restart_service.os, "killpg", raising=False)
+    monkeypatch.delattr(restart_service.os, "getpgid", raising=False)
 
     def fake_process(pid):
         raise restart_service.psutil.NoSuchProcess(pid)
@@ -519,6 +537,8 @@ def test_kill_process_group_windows_terminates_parent_and_children(monkeypatch):
 
 def test_kill_process_group_windows_ignores_already_gone_process(monkeypatch):
     monkeypatch.setattr(restart_service.sys, "platform", "win32")
+    monkeypatch.delattr(restart_service.os, "killpg", raising=False)
+    monkeypatch.delattr(restart_service.os, "getpgid", raising=False)
 
     def fake_process(pid):
         raise restart_service.psutil.NoSuchProcess(pid)

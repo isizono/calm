@@ -248,19 +248,19 @@ CALMはセッション開始時（SessionStart hook）にDBの自動スナップ
 
 **スナップショットからの復元手順:**
 
-1. **全てのClaude Codeセッションを閉じ、稼働中のMCPサーバーを停止する**（DBへの書き込みを停止するため）。サーバーが稼働中（lock file または `--status` の `mcp_server.running` で検知）のままだと復元コマンド自体が中断する。停止は `uv run --no-sync --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/restart_server.py" --stop` を実行する（復元コマンドが中断した場合も同じコマンドを案内する。停止済みを確認済みで続行したい場合のみ `restore` に `--force` を付ける）
+1. **全てのClaude Codeセッションを閉じ、稼働中のMCPサーバーを停止する**（DBへの書き込みを停止するため）。サーバーが稼働中（lock fileまたは`/health`エンドポイントの応答で検知）のままだと復元コマンド自体が中断する。停止は `uv run --no-sync --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/restart_server.py" --stop` を実行する（復元コマンドが中断した場合も同じコマンドを案内する。停止済みを確認済みで続行したい場合のみ `restore` に `--force` を付ける）
 2. ワンコマンドで最新のスナップショットから復元する:
    ```
-   uv run --directory ${CLAUDE_PLUGIN_ROOT} python ${CLAUDE_PLUGIN_ROOT}/scripts/snapshot.py restore --latest
+   uv run --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/snapshot.py" restore --latest
    ```
-   特定の世代を指定したい場合は `uv run --directory ${CLAUDE_PLUGIN_ROOT} python ${CLAUDE_PLUGIN_ROOT}/scripts/snapshot.py restore <snapshot_db_path>` を使う（パスは次項の一覧コマンドで確認する）
+   特定の世代を指定したい場合は `uv run --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/snapshot.py" restore <snapshot_db_path>` を使う（パスは次項の一覧コマンドで確認する）
 3. 復元前の現行DBは自動で退避される（`prerestore`スナップショット）ため、復元操作自体を誤っても退避先からやり直せる
 4. Claude Codeを再起動する
 
 **スナップショット一覧の確認:**
 
 ```
-uv run --directory ${CLAUDE_PLUGIN_ROOT} python ${CLAUDE_PLUGIN_ROOT}/scripts/snapshot.py list
+uv run --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/snapshot.py" list
 ```
 
 全kind横断のスナップショット一覧（kind・作成日時・サイズ・整合性チェック結果・パス）が表示される。復元先を選ぶ際の参考にできる。

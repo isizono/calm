@@ -53,7 +53,7 @@ Windows 11（PowerShell）でもmacOS/Linuxと同じ手順でインストール�
 **前提条件**
 
 - [uv公式のインストール手順](https://docs.astral.sh/uv/getting-started/installation/)に従う。PowerShellスクリプト（`powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`）または`winget install --id=astral-sh.uv -e`のいずれかでインストールできる。インストール直後は現在のPowerShellウィンドウにPATHが反映されないため、ウィンドウを開き直してから`uv --version`で確認する
-- hookの実行シェルは[Git for Windows](https://gitforwindows.org/)の有無で変わる。入っていればhookは同梱のGit Bash（`sh`）で、無ければPowerShellで実行される。calmのhookはどちらでも動くように作られているが、「コマンドが見つからない」系のhook失敗に遭遇したらまずどちらの構成かを確認する
+- calmのhookはexec form（コマンドと引数を分けた形）で登録されておりシェルを経由しないため、[Git for Windows](https://gitforwindows.org/)の有無でhook自体の実行シェルが変わることはない。Git for Windowsの有無で変わるのは、スキルの中の手順をClaudeがBashツール（Git Bash経由）とPowerShellツールのどちらで実行するかの方である。無ければPowerShellツールで実行される
 - 初回の`/mcp`接続でvenv構築待ちが発生しないよう、インストール先（プラグインキャッシュ、または開発用チェックアウトのルート）で事前に`uv sync --frozen`を一度手動実行しておくとよい
 
 **状態確認・停止・lockの後始末（PowerShell）**
@@ -77,10 +77,12 @@ Remove-Item "$env:USERPROFILE\.cc-memory\server.lock" -ErrorAction SilentlyConti
 embeddingサーバーの疎通確認（[動作確認](#動作確認)の4.相当）は`curl`ではなく`curl.exe`または`Invoke-RestMethod`を使う:
 
 ```powershell
-curl.exe http://localhost:52836/health
+curl.exe http://127.0.0.1:52836/health
 # または
-Invoke-RestMethod http://localhost:52836/health
+Invoke-RestMethod http://127.0.0.1:52836/health
 ```
+
+（embeddingサーバーは127.0.0.1でのみ待ち受けており`localhost`では名前解決の分だけ余計な遅延が入りうるため、`127.0.0.1`を直接指定する）
 
 **社内プロキシ環境での注意**
 
