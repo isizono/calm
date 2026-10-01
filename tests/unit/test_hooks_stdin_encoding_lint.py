@@ -31,3 +31,11 @@ def test_hooks_do_not_read_stdin_directly():
         "src.harness.claude_code.read_stdin_text()を経由すること"
         "(Windows既定のANSIコードページ下でのデコード崩れを避けるため)。"
     )
+
+
+def test_scan_target_is_not_empty():
+    """回帰保護: hooks/の場所の変更等で走査対象が0件になり、上のテストが
+    vacuous passし続ける事故を防ぐ(既知のフックが候補に含まれることを確認する)。
+    """
+    scanned = {p.name for p in _HOOKS_DIR.glob("*.py")}
+    assert "session_start_hook.py" in scanned

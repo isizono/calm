@@ -1,13 +1,18 @@
 """UTF-8モードを無効化した非UTF-8ロケール(Windows既定のANSIコードページ相当)で、
-DB初期化とフック入出力が壊れないことを確かめる回帰テスト。
+DB初期化とフック入出力が壊れないことを確かめる回帰テスト。修正前のコードが
+どう壊れるか(=この修正が無いと何が起きるか)の説明であり、現行コードの挙動
+の説明ではない。
 
-(a) init_database(R3): yoyoが未適用migrationファイルをencoding指定無しの
+(a) init_database: yoyoが未適用migrationファイルをencoding指定無しの
     open()で読むため、ロケールがcp932/cp1252等だとUnicodeDecodeErrorになる。
-    サーバーはログ設定(logging.basicConfig)より前に落ちるため痕跡が残らない。
+    サードパーティのyoyo自身は直せないため、対策は.mcp.jsonのcalm.env
+    (PYTHONUTF8=1)でlauncher起動時にUTF-8モードを強制することだけである。
 
-(b) hookの入出力(R7/R8): harness.read_hook_inputはテキストモードのsys.stdinを、
-    _emitはensure_ascii=Falseのstdoutを使う。PYTHONIOENCODING=cp932を強制すると、
-    日本語やU+2014を含むJSONの読み書きがOS問わず(Mac上でも)壊れうる。
+(b) hookの入出力: 修正前はharness.read_hook_inputがテキストモードの
+    sys.stdinを、_emitがensure_ascii=Falseのstdoutを使っていた。
+    PYTHONIOENCODING=cp932を強制すると、日本語やU+2014を含むJSONの
+    読み書きがOS問わず(Mac上でも)壊れうる。現行コードはbuffer経由の
+    UTF-8読み取りとensure_ascii=Trueで、ロケールに依存しない。
 """
 from __future__ import annotations
 
@@ -83,7 +88,13 @@ def test_init_database_under_forced_non_utf8_locale(tmp_path):
         cwd=str(REPO_ROOT),
         env=env,
         capture_output=True,
-        text=True,
+        # text=Trueだと、このpytestプロセス自身のロケール(Windows CIランナー上
+        # ではcp1252)でstdout/stderrバイト列をデコードする。cp1252はいくつかの
+        # バイト値(0x81/0x8D/0x8F/0x90/0x9D)が未定義で、UTF-8/cp932の日本語の
+        # マルチバイト列と衝突しうる。この修正自体の検証がデコード例外で無関係に
+        # 落ちないよう、encodingを明示する。
+        encoding="utf-8",
+        errors="replace",
         timeout=120,
     )
     assert result.returncode == 0, (
