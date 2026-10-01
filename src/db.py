@@ -148,42 +148,49 @@ def _apply_migrations() -> None:
     db_path = get_db_path()
     parsed = parse_uri(f"sqlite:///{db_path}")
     backend = _VecSQLiteBackend(parsed, default_migration_table)
-    backend.init_database()
-    migrations = read_migrations(str(MIGRATIONS_DIR))
+    try:
+        backend.init_database()
+        migrations = read_migrations(str(MIGRATIONS_DIR))
 
-    with backend.lock():
-        pending = backend.to_apply(migrations)
+        with backend.lock():
+            pending = backend.to_apply(migrations)
 
-        if _is_fresh_database(backend):
-            _apply_pending_and_record(backend, pending)
-            return
+            if _is_fresh_database(backend):
+                _apply_pending_and_record(backend, pending)
+                return
 
-        ledger_existed_before = _migration_ledger_table_exists(backend.connection)
-        if ledger_existed_before:
-            mismatches = verify_migration_ledger(backend.connection, migrations)
-            if mismatches:
-                _handle_hash_mismatch(mismatches)
-            # 本適用（yoyo側コミット）とledger記録が別コミットのため、その間で
-            # プロセスが落ちると「適用済みだがledger未記録」のmigrationが残る。
-            # 毎起動でこの欠落を補填する（INSERT OR IGNOREで既存エントリは不変）。
-            _backfill_migration_ledger(backend.connection, backend, migrations)
+            ledger_existed_before = _migration_ledger_table_exists(backend.connection)
+            if ledger_existed_before:
+                mismatches = verify_migration_ledger(backend.connection, migrations)
+                if mismatches:
+                    _handle_hash_mismatch(mismatches)
+                # 本適用（yoyo側コミット）とledger記録が別コミットのため、その間で
+                # プロセスが落ちると「適用済みだがledger未記録」のmigrationが残る。
+                # 毎起動でこの欠落を補填する（INSERT OR IGNOREで既存エントリは不変）。
+                _backfill_migration_ledger(backend.connection, backend, migrations)
 
-        if not pending:
-            return
+            if not pending:
+                return
 
-        from src.config import CALM_MIGRATION_DRYRUN, CALM_MIGRATION_SNAPSHOT
+            from src.config import CALM_MIGRATION_DRYRUN, CALM_MIGRATION_SNAPSHOT
 
-        snapshot_path: str | None = None
-        if CALM_MIGRATION_SNAPSHOT:
-            snapshot_path = _take_premigration_snapshot(db_path, pending)
+            snapshot_path: str | None = None
+            if CALM_MIGRATION_SNAPSHOT:
+                snapshot_path = _take_premigration_snapshot(db_path, pending)
 
-        if CALM_MIGRATION_DRYRUN:
-            _run_dry_run_gate(db_path, pending, snapshot_path)
+            if CALM_MIGRATION_DRYRUN:
+                _run_dry_run_gate(db_path, pending, snapshot_path)
 
-        _apply_pending_and_record(backend, pending, guide_snapshot_path=snapshot_path)
+            _apply_pending_and_record(backend, pending, guide_snapshot_path=snapshot_path)
 
-        if not ledger_existed_before and _migration_ledger_table_exists(backend.connection):
-            _backfill_migration_ledger(backend.connection, backend, migrations)
+            if not ledger_existed_before and _migration_ledger_table_exists(backend.connection):
+                _backfill_migration_ledger(backend.connection, backend, migrations)
+    finally:
+        # sqlite3.Connectionはstatement cacheとの循環参照でGCが走るまで実ファイルを
+        # 閉じないことがある(CPython 3.12)。Windowsでは開いたままのファイルに
+        # 他プロセスからアクセスできずロックされうるため、early returnや例外経由でも
+        # ここで明示的に閉じる。
+        backend.connection.close()
 
 
 def _is_fresh_database(backend: "_VecSQLiteBackend") -> bool:

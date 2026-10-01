@@ -23,6 +23,7 @@ opt-out:
 
 例外時は stderr 警告 + citation_event_log failure イベント記録 + exit 0 (Claude Code 起動非ブロック)。
 """
+import contextlib
 import json
 import os
 import shutil
@@ -403,7 +404,7 @@ def main() -> int:
 
         raw_bytes = path.read_bytes()
 
-        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as ro_conn:
+        with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as ro_conn:
             new_bytes, stats, modified, events = _sanitize_transcript_bytes(
                 raw_bytes, offset, ro_conn
             )

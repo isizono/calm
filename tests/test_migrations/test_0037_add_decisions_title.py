@@ -52,6 +52,7 @@ def migrated_db_up_to_0037():
         up_to_0037 = MigrationList([m for m in all_migs if m.id < "0038"])
         with backend.lock():
             backend.apply_migrations(up_to_0037)
+        backend.connection.close()
 
         _injected_tags.clear()
         yield db_path
