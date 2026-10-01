@@ -5,8 +5,9 @@ DB初期化とフック入出力が壊れないことを確かめる回帰テス
 
 (a) init_database: yoyoが未適用migrationファイルをencoding指定無しの
     open()で読むため、ロケールがcp932/cp1252等だとUnicodeDecodeErrorになる。
-    サードパーティのyoyo自身は直せないため、対策は.mcp.jsonのcalm.env
-    (PYTHONUTF8=1)でlauncher起動時にUTF-8モードを強制することだけである。
+    サードパーティのyoyo自身は直せないため、対策はUTF-8モードの強制だけで
+    あり、起動経路ごとに.mcp.jsonのcalm.env(PYTHONUTF8=1、launcher経由)と
+    restart_service(/restart経由)の2箇所がそれぞれ設定する。
 
 (b) hookの入出力: 修正前はharness.read_hook_inputがテキストモードの
     sys.stdinを、_emitがensure_ascii=Falseのstdoutを使っていた。
@@ -71,12 +72,11 @@ def test_init_database_under_forced_non_utf8_locale(tmp_path):
 
     現行コードのままWindows(既定ANSIコードページがcp932/cp1252等)で実行すると、
     yoyoのmigrationファイル読み込みがUnicodeDecodeErrorになり、サーバーは
-    起動前に落ちる。この問題への対策は.mcp.jsonのcalm.env(PYTHONUTF8=1)で
-    launcher経由の起動時にUTF-8モードを強制することだけであり、yoyo自身の
-    open()はサードパーティのコードで直接は直せない。そのため、このテストは
-    ロケールそのものを非UTF-8にした上から.mcp.jsonのenvを重ねる
-    (本番の入口=launcher起動と同じ条件を再現し、.mcp.jsonのenvが消える・
-    書き換わる退行を拾う)。
+    起動前に落ちる。yoyo自身のopen()はサードパーティのコードで直接は直せ
+    ないため、対策はUTF-8モードの強制だけであり、本番の入口である.mcp.json
+    のcalm.env(PYTHONUTF8=1)がそれを担う。そのため、このテストはロケール
+    そのものを非UTF-8にした上から.mcp.jsonのenvを重ねる(launcher起動と
+    同じ条件を再現し、.mcp.jsonのenvが消える・書き換わる退行を拾う)。
     """
     if not _real_non_utf8_locale_available():
         pytest.skip("ja_JP.SJIS locale not available on this system")
@@ -106,8 +106,9 @@ def test_init_database_under_forced_non_utf8_locale(tmp_path):
 
 
 def test_mcp_json_forces_python_utf8():
-    """init_database()を非UTF-8ロケールから守る唯一の対策である.mcp.jsonの
-    calm.env(PYTHONUTF8=1)が消えていないことを直接確認する。
+    """init_database()を非UTF-8ロケールから守る対策(launcher起動時のUTF-8
+    モード強制)の本番の入口である、.mcp.jsonのcalm.env(PYTHONUTF8=1)が
+    消えていないことを直接確認する。
 
     test_init_database_under_forced_non_utf8_localeはja_JP.SJISロケールが
     無い環境ではskipされるため、そうした環境でもこの配線自体の退行だけは
