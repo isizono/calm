@@ -43,7 +43,7 @@ def _build_payload(event_name: str, tmp_path: Path) -> dict:
 
     深い機能検証はこのテストの目的ではない(hooks.jsonの実行形が壊れていない
     ことの確認)。実際に発火しうる分岐へ安全に倒すため、PreToolUse/PostToolUse系
-    はtool_name="Read"で統一する: deny_nested_bg_hook.py(Bashのみ処理)や
+    はtool_name="Read"で統一する: deny_nested_bg_hook.py(Bash/PowerShellのみ処理)や
     ask_answer_rewake_hook.py(add_ask呼び出しのみ処理)は早期returnで無害に
     終わり、86400秒ポーリングのような長時間パスへ入り込まない。
     """
@@ -84,14 +84,19 @@ _ENTRIES = list(iter_hook_entries(_HOOKS_JSON))
 _ENTRY_IDS = [_entry_id(*e) for e in _ENTRIES]
 
 
-def _run_via_exec_form(hook: dict, env: dict, input_bytes: bytes, timeout: float) -> HookRunResult:
+def _run_via_exec_form(hook: dict, env: dict, input_bytes: bytes, timeout: float, cwd: Path) -> HookRunResult:
     # スラッシュ区切りへの変換はshell-form(_run_via_shell)ほど必須ではないが
     # (execフォームはargv直接受け渡しでシェルのエスケープを経由しない)、
     # Windowsはフォワードスラッシュのパスも問題なく受け付けるため同じ変換に揃える。
+    #
+    # cwdはREPO_ROOTと異なる場所(呼び出し側はtmp_pathを渡す)にする。実際の
+    # Claude Codeはユーザーのプロジェクトをcwdにしてフックを起動するため、
+    # ここがREPO_ROOTのままだと特定エントリから`--directory`が抜けても
+    # (uvがcwdをプラグインルートへ変えないまま動いてしまい)検知できない。
     plugin_root = str(REPO_ROOT).replace("\\", "/")
     argv = [hook["command"], *hook.get("args", [])]
     argv = [a.replace("${CLAUDE_PLUGIN_ROOT}", plugin_root) for a in argv]
-    return run_with_timeout(argv, input_bytes=input_bytes, cwd=REPO_ROOT, env=env, timeout=timeout)
+    return run_with_timeout(argv, input_bytes=input_bytes, cwd=cwd, env=env, timeout=timeout)
 
 
 def _run_via_shell(
@@ -111,10 +116,12 @@ def _run_via_shell(
     return run_with_timeout(argv, input_bytes=input_bytes, cwd=REPO_ROOT, env=env, timeout=timeout)
 
 
-def _run_entry(hook: dict, shell_kind: str, shell_exe: Path | None, env: dict, input_bytes: bytes) -> HookRunResult:
+def _run_entry(
+    hook: dict, shell_kind: str, shell_exe: Path | None, env: dict, input_bytes: bytes, cwd: Path
+) -> HookRunResult:
     timeout = 90.0
     if "args" in hook:
-        return _run_via_exec_form(hook, env, input_bytes, timeout)
+        return _run_via_exec_form(hook, env, input_bytes, timeout, cwd)
     assert shell_exe is not None
     return _run_via_shell(hook["command"], shell_exe, shell_kind, env, input_bytes, timeout)
 
@@ -151,7 +158,7 @@ def test_hook_entry_runs_under_posix_bash(entry, tmp_path):
     payload = _build_payload(event_name, tmp_path)
     (tmp_path / "transcript.jsonl").touch()
     input_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    result = _run_entry(hook, "bash", bash, env, input_bytes)
+    result = _run_entry(hook, "bash", bash, env, input_bytes, tmp_path)
     _assert_hook_ran_cleanly(result, _entry_id(*entry))
 
 
@@ -174,5 +181,5 @@ def test_hook_entry_runs_under_windows_shell(entry, shell_name, resolver, shell_
     payload = _build_payload(event_name, tmp_path)
     (tmp_path / "transcript.jsonl").touch()
     input_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    result = _run_entry(hook, shell_kind, shell_exe, env, input_bytes)
+    result = _run_entry(hook, shell_kind, shell_exe, env, input_bytes, tmp_path)
     _assert_hook_ran_cleanly(result, f"{_entry_id(*entry)} via {shell_name}")

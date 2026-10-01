@@ -36,18 +36,20 @@ from src.harness import select_harness  # noqa: E402
 # ような文字列としての参照はマッチしない。変数に格納したバイナリ経由の起動
 # (`$CLAUDE --bg`) やスクリプトファイル内に隠れた起動、1行内でクォートが閉じず
 # トークン化に失敗するコマンドは静的検出できない (いずれも既知の限界、fail-open)。
-# PowerShellの `C:\...\claude.exe` 形式はshlexのposixエスケープ解釈でバックスラッシュ
-# が失われ basename 判定に乗らない。`Start-Process claude` や `pwsh -Command "..."`
-# も非対応。いずれも fail-open (deny しない) に倒れるだけなので安全側である。
+# PowerShellの `"C:\...\claude.exe"` 形式 (クォート付き) はbasenameが `\` も
+# 区切りとして扱うため検出できる。クォート無しの同形式はshlexのposixエスケープ
+# 解釈でバックスラッシュが失われ、basename 判定に乗らない。`Start-Process claude`
+# や、`-c`/`-Command` 以外の形でのpwsh/powershell起動も非対応。いずれも
+# fail-open (deny しない) に倒れるだけなので安全側である。
 _SEGMENT_BOUNDARY_TOKENS = frozenset({";", "&&", "||", "|", "&", "("})
 _LEADING_SKIP_WORDS = frozenset({"exec", "command", "nohup"})
-_SHELL_INTERPRETERS = frozenset({"bash", "sh", "zsh"})
+_SHELL_INTERPRETERS = frozenset({"bash", "sh", "zsh", "pwsh", "powershell"})
 _VAR_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _SHELL_TOOL_NAMES = frozenset({"Bash", "PowerShell"})
 
 
 def _basename(token: str) -> str:
-    name = token.rsplit("/", 1)[-1]
+    name = re.split(r"[\\/]", token)[-1]
     if name.lower().endswith(".exe"):
         name = name[: -len(".exe")]
     return name

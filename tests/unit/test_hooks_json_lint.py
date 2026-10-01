@@ -163,6 +163,31 @@ def test_declared_event_script_is_registered_in_hooks_json(script_path: Path):
     assert script_path.name in registered.get(event, [])
 
 
+def test_deny_nested_bg_hook_matcher_covers_bash_and_powershell():
+    """deny_nested_bg_hook.py を登録している matcher が、Bash と PowerShell の
+    両方の tool_name に re.fullmatch することを保証する。
+
+    本体側 (deny_nested_bg_hook._SHELL_TOOL_NAMES) は単体テストで守られているが、
+    hooks.json 側の matcher が "Bash" 単独に退行しても本体のテストは落ちない。
+    退行すると PowerShell ツールからの呼び出しは Claude Code の段階でこの
+    フックに届かず、本体の PowerShell 対応が死にコードになる。
+    """
+    data = _load_hooks_json()
+    matchers = [
+        block["matcher"]
+        for matcher_blocks in data.get("hooks", {}).values()
+        for block in matcher_blocks
+        if any(
+            "deny_nested_bg_hook.py" in " ".join([entry.get("command", ""), *entry.get("args", [])])
+            for entry in block.get("hooks", [])
+        )
+    ]
+    assert matchers, "deny_nested_bg_hook.py を登録している matcher ブロックが見つからない"
+    for matcher in matchers:
+        assert re.fullmatch(matcher, "Bash"), f"matcher {matcher!r} が Bash にマッチしない"
+        assert re.fullmatch(matcher, "PowerShell"), f"matcher {matcher!r} が PowerShell にマッチしない"
+
+
 class TestCodexHooksJsonConsistency:
     """.codex/hooks.json (Codex CLI向けのプロジェクト層hook登録) の整合性lint。
 

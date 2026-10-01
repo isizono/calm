@@ -25,7 +25,7 @@ CALMは、こうした文脈をSQLiteデータベースに保存し、新しい�
 ### 前提条件
 
 - [uv](https://docs.astral.sh/uv/) がインストールされていること
-- Claude Code v2.0.12以上
+- Claude Code v2.1.139以上
 - Python 3.12+（SQLite拡張ロード対応ビルドが必要）
   - pyenvのデフォルトビルドは `--enable-loadable-sqlite-extensions` が無効のため非対応
   - Homebrew Python (`brew install python@3.12`) を推奨

@@ -47,6 +47,9 @@ class TestCommandSpawnsBg:
             "bash -c 'claude --bg \"task\"'",  # bash -c 経由
             'sh -c "cd /tmp && claude --bg"',  # sh -c 経由
             "zsh -c 'claude --bg'",  # zsh -c 経由
+            '& "C:\\Program Files\\claude\\claude.exe" --bg task',  # クォート付きWindows絶対パス(basename判定)
+            'pwsh -c "claude --bg"',  # pwsh -c 経由
+            'powershell -c "claude --bg"',  # powershell -c 経由
         ],
     )
     def test_matches(self, command):
