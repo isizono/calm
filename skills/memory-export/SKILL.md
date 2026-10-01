@@ -18,7 +18,7 @@ description: 【必須】calmの記録(topic/decision/log/material/activity)を�
    - タグ方式: `tag_roots`(グラフ拡張はしない、深度ゼロ固定でシード集合に合流)
 4. **候補提示**: 総候補件数に応じて提示ポリシーを切り替える(下表)
 5. **確定リストの復唱**: 型別件数と主要タイトルを要約提示し、最終確認を取る
-6. `export_bundle`を呼ぶ。`selection`引数に手順3の入力(`roots`/`tag_roots`/`max_depth`)をそのまま渡す(将来の同一selectionでの再exportの前提になる)
+6. `export_bundle`を呼ぶ。`selection`引数に手順3の入力(`roots`/`tag_roots`/`max_depth`)をそのまま渡す(manifest.yamlに記録されるだけで、読み取り側の実装は無い)
 7. **結果報告**: 書き出しパス・型別件数・`auto_included`(選択していないのに親topic自動同梱等で機械的に含まれたエンティティ。ユーザーが選んだ覚えのないものが同梱されている、と気づけるように必ず伝える)・`unresolved_refs`(受け手への申し送りになる旨。各要素に`domain_tags`が付くので「次にどのdomainのバンドルを追加で送ってもらうべきか」の判断材料になる旨を説明)・`masked_literals`件数
 8. export実行の経緯を`add_logs`で記録する(recording skillの基準に従う)
 
