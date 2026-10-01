@@ -314,8 +314,8 @@ def test_restart_mcp_server_uses_popen_detached_windows_wiring(monkeypatch, tmp_
     """popen_detached経由でWindows用kwargsが渡ること
 
     popen_detachedを経由せずstart_new_session=Trueで直接起動する実装に戻しても
-    気づけない回帰を防ぐため、popen_detachedのWindows分岐が実際に
-    呼び出されることを確かめる。
+    気づけない回帰を防ぐため、popen_detachedのWindows分岐(中継プロセスの起動)が
+    実際に呼び出されることを確かめる。
     """
     from src.infra import detached_process
 
@@ -326,23 +326,29 @@ def test_restart_mcp_server_uses_popen_detached_windows_wiring(monkeypatch, tmp_
 
     popen_calls = []
 
-    def fake_popen(cmd, **kwargs):
-        popen_calls.append(kwargs)
-        state["new_server_started"] = True
-        return SimpleNamespace(pid=2222)
+    class FakeRelay:
+        def __init__(self, cmd, **kwargs):
+            popen_calls.append(kwargs)
+            state["new_server_started"] = True
+            self.returncode = 0
+
+        def communicate(self, input=None, timeout=None):
+            return b"2222\n", b""
 
     monkeypatch.setattr(restart_service, "find_listen_pids", fake_find_listen_pids)
     monkeypatch.setattr(restart_service, "process_start_signature", lambda pid: "sig")
     monkeypatch.setattr(restart_service, "kill_pids", lambda pids: None)
     monkeypatch.setattr(restart_service, "_resolve_main_repo_root", lambda project_root: project_root)
     monkeypatch.setattr(detached_process.sys, "platform", "win32")
-    monkeypatch.setattr(restart_service.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(detached_process.psutil, "Process", lambda pid: SimpleNamespace(pid=pid))
+    monkeypatch.setattr(restart_service.subprocess, "Popen", FakeRelay)
     monkeypatch.setattr(restart_service.time, "sleep", lambda _: None)
     monkeypatch.setattr(restart_service, "LAUNCHER_LOG_PATH", tmp_path / "logs" / "restart_launcher.log")
 
     result = restart_service.restart_mcp_server(tmp_path, poll_interval_sec=0)
 
     assert result.ok is True
+    assert result.new_pids == [2222]
     assert len(popen_calls) == 1
     kwargs = popen_calls[0]
     assert kwargs["creationflags"] == (
@@ -350,7 +356,9 @@ def test_restart_mcp_server_uses_popen_detached_windows_wiring(monkeypatch, tmp_
         | detached_process._CREATE_NO_WINDOW
         | detached_process._CREATE_BREAKAWAY_FROM_JOB
     )
-    assert kwargs["stdin"] == subprocess.DEVNULL
+    assert kwargs["stdin"] == subprocess.PIPE
+    assert kwargs["stdout"] == subprocess.PIPE
+    assert kwargs["stderr"] == subprocess.PIPE
 
 
 def test_restart_mcp_server_skips_kill_when_nothing_was_listening(monkeypatch, tmp_path):

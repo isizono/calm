@@ -248,8 +248,8 @@ class TestStartHttpServer:
         """popen_detached経由でWindows用kwargsが渡ること
 
         popen_detachedを経由せずstart_new_session=Trueで直接起動する実装に戻しても
-        気づけない回帰を防ぐため、popen_detachedのWindows分岐が実際に呼び出される
-        ことを確かめる。
+        気づけない回帰を防ぐため、popen_detachedのWindows分岐(中継プロセスの起動)が
+        実際に呼び出されることを確かめる。
         """
         import src.db as db
         from src.infra import detached_process
@@ -257,12 +257,16 @@ class TestStartHttpServer:
         monkeypatch.setattr(db, "get_db_path", lambda: str(tmp_path / "discussion.db"))
         called_with = {}
 
-        class FakePopen:
+        class FakeRelay:
             def __init__(self, args, **kwargs):
                 called_with["kwargs"] = kwargs
+                self.returncode = 0
+
+            def communicate(self, input=None, timeout=None):
+                return f"{os.getpid()}\n".encode(), b""
 
         monkeypatch.setattr(detached_process.sys, "platform", "win32")
-        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setattr(subprocess, "Popen", FakeRelay)
 
         assert launcher._start_http_server() is True
         assert called_with["kwargs"]["creationflags"] == (
@@ -270,7 +274,9 @@ class TestStartHttpServer:
             | detached_process._CREATE_NO_WINDOW
             | detached_process._CREATE_BREAKAWAY_FROM_JOB
         )
-        assert called_with["kwargs"]["stdin"] == subprocess.DEVNULL
+        assert called_with["kwargs"]["stdin"] == subprocess.PIPE
+        assert called_with["kwargs"]["stdout"] == subprocess.PIPE
+        assert called_with["kwargs"]["stderr"] == subprocess.PIPE
 
 
 class TestEnsureServerRunning:

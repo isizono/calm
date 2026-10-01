@@ -1007,33 +1007,40 @@ def test_start_server_uses_popen_detached_windows_wiring(temp_db, monkeypatch):
     """_start_server: popen_detached経由でWindows用kwargsが渡ること
 
     popen_detachedを経由せずstart_new_session=Trueで直接起動する実装に戻しても
-    気づけない回帰を防ぐため、popen_detachedのWindows分岐が実際に呼び出される
-    ことを確かめる。
+    気づけない回帰を防ぐため、popen_detachedのWindows分岐(中継プロセスの起動)が
+    実際に呼び出されることを確かめる。
     """
     import subprocess
     from src.infra import detached_process
 
     captured = {}
 
-    def capturing_popen(args, **kwargs):
-        captured["kwargs"] = kwargs
-        return object()
+    class FakeRelay:
+        def __init__(self, args, **kwargs):
+            captured["kwargs"] = kwargs
+            self.returncode = 0
+
+        def communicate(self, input=None, timeout=None):
+            return f"{os.getpid()}\n".encode(), b""
 
     root = Path(emb.__file__).resolve().parents[2]
     monkeypatch.setenv("CALM_PROJECT_ROOT", str(root))
     monkeypatch.setattr(emb, "_project_root_cache", None)
     monkeypatch.setattr(detached_process.sys, "platform", "win32")
-    monkeypatch.setattr(subprocess, "Popen", capturing_popen)
+    monkeypatch.setattr(subprocess, "Popen", FakeRelay)
     monkeypatch.setattr(emb, "_start_server", _REAL_START_SERVER)
 
-    emb._start_server()
+    proc = emb._start_server()
 
     assert captured["kwargs"]["creationflags"] == (
         detached_process._CREATE_NEW_PROCESS_GROUP
         | detached_process._CREATE_NO_WINDOW
         | detached_process._CREATE_BREAKAWAY_FROM_JOB
     )
-    assert captured["kwargs"]["stdin"] == subprocess.DEVNULL
+    assert captured["kwargs"]["stdin"] == subprocess.PIPE
+    assert captured["kwargs"]["stdout"] == subprocess.PIPE
+    assert captured["kwargs"]["stderr"] == subprocess.PIPE
+    assert proc.pid == os.getpid()
 
 
 def test_ensure_server_running_handles_start_failure(temp_db, monkeypatch):
