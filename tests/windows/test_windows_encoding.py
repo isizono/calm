@@ -53,6 +53,29 @@ def test_init_database_under_forced_non_utf8_locale(tmp_path):
     assert "OK" in result.stdout
 
 
+def test_snapshot_cli_list_survives_cp932_stdio(tmp_path):
+    """R19: backup_service CLI（scripts/snapshot.py）が非UTF-8ロケールでも
+    日本語メッセージを正しく出力すること。
+
+    main()先頭のsys.stdout.reconfigure(encoding="utf-8")を外すと、本テストは
+    「スナップショットはありません」のバイト列がcp932表現のまま出力され、
+    UTF-8としてデコードした結果が一致しなくなる（確認済み）。
+    """
+    env = _forced_non_utf8_env(tmp_path)
+    result = subprocess.run(
+        [sys.executable, "scripts/snapshot.py", "list"],
+        cwd=str(REPO_ROOT),
+        env=env,
+        capture_output=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, (
+        f"scripts/snapshot.py list failed under a forced cp932 stdio locale:\n"
+        f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+    )
+    assert "スナップショットはありません" in result.stdout.decode("utf-8")
+
+
 def _make_migrated_db(tmp_path: Path) -> Path:
     """cp932回帰の影響を受けない通常環境でDBを1回作っておき、hookテスト側は
     そのDBを使い回す(hook側のテストがR3の影響を受けて無関係に落ちるのを防ぐ)。

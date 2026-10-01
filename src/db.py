@@ -246,7 +246,15 @@ def _migration_ledger_table_exists(conn: sqlite3.Connection) -> bool:
 
 
 def _content_sha256(path: str) -> str:
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    """migrationファイルの内容ハッシュを計算する。
+
+    CRLFをLFへ正規化してからハッシュ化する。autocrlf=true等の改行変換が
+    かかる取得方法（Git for Windowsの既定設定）でも、同じmigrationに対して
+    常に同じハッシュになることを保証するため。LFのファイル（通常のmacOS/Linux
+    環境での取得）はこの正規化で内容が変わらないため、ハッシュも変わらない。
+    """
+    content = Path(path).read_bytes().replace(b"\r\n", b"\n")
+    return hashlib.sha256(content).hexdigest()
 
 
 def verify_migration_ledger(conn: sqlite3.Connection, migrations) -> list[dict]:

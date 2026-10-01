@@ -283,20 +283,38 @@ def _is_server_running() -> bool:
         return False
 
 
+def _server_stderr_log_path() -> Path:
+    """起動直後に落ちたサーバーの手がかりを残すstderrログ先。
+
+    `_setup_server_logging`（src/main.py）がserver.logを置く`logs/`
+    ディレクトリと同じ場所に置く。import時点で落ちるような致命的な失敗
+    （トップレベルimportの例外等）はlogging設定前のため、そちらでは
+    拾えずこちらにしか残らない。
+    """
+    from src.db import get_db_path
+
+    return Path(get_db_path()).parent / "logs" / "server.stderr.log"
+
+
 def _start_http_server() -> bool:
     """HTTPサーバーをデーモンとして起動する。
 
     sys.executableは.mcp.jsonの「uv run python -m src.launcher」経由で
     起動されることを前提とし、uv仮想環境のPython（.venv/bin/python）を使用する。
+    stderrはDEVNULLではなくファイルへ向ける（肥大しないよう起動のたびに
+    上書きする。蓄積した過去ログが必要になるケースは想定していない）。
     """
+    stderr_path = _server_stderr_log_path()
     try:
-        subprocess.Popen(
-            [sys.executable, "-m", "src.main", "--transport", "http"],
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            cwd=_PROJECT_ROOT,
-        )
+        stderr_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with open(stderr_path, "wb") as stderr_log:
+            subprocess.Popen(
+                [sys.executable, "-m", "src.main", "--transport", "http"],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_log,
+                cwd=_PROJECT_ROOT,
+            )
     except OSError as e:
         logger.warning(f"Failed to start HTTP server: {e}")
         return False

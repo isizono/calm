@@ -85,8 +85,11 @@ class TestIsServerRunning:
 
 
 class TestStartHttpServer:
-    def test_calls_popen_with_correct_args(self, monkeypatch):
-        """正しい引数でsubprocess.Popenが呼ばれる"""
+    def test_calls_popen_with_correct_args(self, tmp_path, monkeypatch):
+        """正しい引数でsubprocess.Popenが呼ばれ、stderrはファイルに向く"""
+        import src.db as db
+
+        monkeypatch.setattr(db, "get_db_path", lambda: str(tmp_path / "discussion.db"))
         called_with = {}
 
         class FakePopen:
@@ -101,11 +104,30 @@ class TestStartHttpServer:
         assert called_with["args"][1:] == ["-m", "src.main", "--transport", "http"]
         assert called_with["kwargs"]["start_new_session"] is True
         assert called_with["kwargs"]["stdout"] == subprocess.DEVNULL
-        assert called_with["kwargs"]["stderr"] == subprocess.DEVNULL
+        # DEVNULLではなく、既存のログディレクトリ配下のファイルに向ける
+        stderr_file = called_with["kwargs"]["stderr"]
+        assert stderr_file != subprocess.DEVNULL
+        assert stderr_file.name == str(tmp_path / "logs" / "server.stderr.log")
         assert called_with["kwargs"]["cwd"] == launcher._PROJECT_ROOT
 
-    def test_returns_false_on_oserror(self, monkeypatch):
+    def test_overwrites_stderr_log_on_each_start(self, tmp_path, monkeypatch):
+        """肥大化しないよう、起動のたびにstderrログを上書きする"""
+        import src.db as db
+
+        monkeypatch.setattr(db, "get_db_path", lambda: str(tmp_path / "discussion.db"))
+        log_path = tmp_path / "logs" / "server.stderr.log"
+        log_path.parent.mkdir(parents=True)
+        log_path.write_bytes(b"previous run's stale output\n" * 100)
+
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: None)
+        assert launcher._start_http_server() is True
+        assert log_path.read_bytes() == b""
+
+    def test_returns_false_on_oserror(self, tmp_path, monkeypatch):
         """OSErrorの場合はFalseを返す"""
+        import src.db as db
+
+        monkeypatch.setattr(db, "get_db_path", lambda: str(tmp_path / "discussion.db"))
 
         def fake_popen(*args, **kwargs):
             raise OSError("Permission denied")

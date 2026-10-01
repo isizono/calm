@@ -43,6 +43,7 @@ from hooks.hook_state import HookState
 from hooks.hook_transcript import _is_calm_tool
 from src.env_compat import env_get
 from src.harness import select_harness
+from src.harness.claude_code import read_stdin_text
 from src.services.citations_pure import (
     check_target_exists,
     convert_raw_to_cite,
@@ -362,7 +363,7 @@ def main() -> int:
         if not select_harness().supports_transcript_rewrite:
             return 0
 
-        raw = sys.stdin.read()
+        raw = read_stdin_text()
         if not raw.strip():
             return 0
         data = json.loads(raw)

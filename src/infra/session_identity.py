@@ -205,7 +205,7 @@ def register_launcher_session(session_id: str, pid: Optional[int] = None) -> Opt
         )
         tmp_path = Path(tmp_path_str)
         try:
-            with os.fdopen(fd, "w") as f:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False)
             path = _registration_path(pid)
             os.replace(tmp_path, path)

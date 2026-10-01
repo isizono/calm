@@ -49,7 +49,7 @@ def find_listen_pids(port: int) -> list[int]:
     try:
         result = subprocess.run(
             ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
-            capture_output=True, text=True, check=False, timeout=SUBPROCESS_TIMEOUT_SEC,
+            capture_output=True, text=True, encoding="utf-8", check=False, timeout=SUBPROCESS_TIMEOUT_SEC,
         )
     except subprocess.TimeoutExpired:
         return []
@@ -119,7 +119,7 @@ def sync_dependencies(
     try:
         result = subprocess.run(
             ["uv", "sync", "--directory", str(project_root)],
-            capture_output=True, text=True, check=False, timeout=timeout_sec,
+            capture_output=True, text=True, encoding="utf-8", check=False, timeout=timeout_sec,
         )
     except subprocess.TimeoutExpired:
         return SyncResult(False, time.monotonic() - start, f"uv sync timed out after {timeout_sec}s")
@@ -255,7 +255,7 @@ def _has_open_file_handles(path: Path) -> bool:
     try:
         result = subprocess.run(
             ["lsof", "+D", str(path)],
-            capture_output=True, text=True, check=False, timeout=PRUNE_LSOF_TIMEOUT_SEC,
+            capture_output=True, text=True, encoding="utf-8", check=False, timeout=PRUNE_LSOF_TIMEOUT_SEC,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return True

@@ -767,7 +767,7 @@ def _cmd_restore(args: argparse.Namespace) -> int:
 
     print(f"復元完了: {result.restored_from} -> {result.db_path}")
     if result.compatibility_note:
-        print(f"ℹ {result.compatibility_note}")
+        print(f"[info] {result.compatibility_note}")
     if result.prerestore_path:
         print(f"復元前の状態を退避: {result.prerestore_path}")
 
@@ -782,6 +782,12 @@ def _cmd_restore(args: argparse.Namespace) -> int:
 
 def main() -> None:
     """CLI: list / take / verify / restore サブコマンド"""
+    # Windows既定のANSIコードページ（cp932等）ではstdoutが非UTF-8になり、
+    # 本CLIが出力する日本語メッセージがUnicodeEncodeErrorで落ちうる。
+    # パイプ接続時などreconfigure非対応のストリームでは何もしない。
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+
     parser = argparse.ArgumentParser(description="calm DBスナップショット管理CLI")
     parser.add_argument("--db-path", dest="db_path", default=None, help="対象DBのパス（省略時はCALM_DB_PATH等から解決）")
     sub = parser.add_subparsers(dest="command", required=True)

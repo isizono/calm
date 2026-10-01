@@ -40,7 +40,7 @@ def _resolve_project_root() -> str:
         result = subprocess.run(
             ["git", "rev-parse", "--git-common-dir"],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8",
             check=True,
             cwd=Path(__file__).parent,
         )

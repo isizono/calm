@@ -114,7 +114,7 @@ def _is_background_session(session_id: str) -> bool:
             ["claude", "agents", "--json"],
             stdin=subprocess.DEVNULL,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8",
             timeout=_AGENTS_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.TimeoutExpired):

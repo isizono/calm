@@ -311,7 +311,7 @@ def _launch_tmux_session(
     try:
         subprocess.run(
             ["tmux", "new-session", "-d", "-s", session_name, "-c", str(cwd), pane_command],
-            check=True, capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT_SEC,
+            check=True, capture_output=True, text=True, encoding="utf-8", timeout=SUBPROCESS_TIMEOUT_SEC,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
         raise RecorderLaunchError(f"tmuxセッションの起動に失敗した: {e}") from e
@@ -321,7 +321,7 @@ def _pane_pid(session_name: str) -> int:
     try:
         result = subprocess.run(
             ["tmux", "display-message", "-p", "-t", session_name, "#{pane_pid}"],
-            check=True, capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT_SEC,
+            check=True, capture_output=True, text=True, encoding="utf-8", timeout=SUBPROCESS_TIMEOUT_SEC,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
         raise RecorderLaunchError(f"記録役のpid取得に失敗した: {e}") from e
