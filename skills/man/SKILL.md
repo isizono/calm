@@ -294,7 +294,7 @@ CALMの全hookはfail-open設計（1つのhookの失敗が他の操作を止め�
   - Stop hook本体（`source`が`hook:stop`）・記録ナッジ判定（`source`が`hook:stop:logs_sparse`）
   - PreToolUseの内部IDリークブロックhook（`source`が`hook:preblock`）
   - UserPromptSubmit hook（`source`が`hook:user_prompt_submit`）
-  - ネストbg起動拒否hook（`source`が`hook:deny_nested_bg`）
+  - PreToolUseのネストbg起動拒否hook（`source`が`hook:deny_nested_bg`）
 - **直し方**: `get_signals(kind="machine_error")`で`detail`・`summary`を確認し、原因（依存モジュールの欠落・DBスキーマ不一致等）を調査する。記録は失敗の発生を示すだけで、自動修復はしない
 - **限界**: この記録機構自体がDB層のimportに依存するため、venvの破損や依存パッケージの欠落でhookがimport時点で（`main()`に到達する前に）落ちた場合は記録されず、標準エラー出力のみに残る。MessageDisplay等の表示専用hook・transcript sanitize系hook（別途citation_event_logへ失敗を記録済み）も現状この記録の対象外
 
