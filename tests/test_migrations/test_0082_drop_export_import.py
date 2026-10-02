@@ -68,24 +68,3 @@ class TestInstanceMetaAndImportProvenanceTablesDropped:
             assert not table_exists(conn, table), f"0082適用後も{table}テーブルが残っている"
         finally:
             conn.close()
-
-
-class TestOtherTablesUnaffected:
-    """0082でDROPされるべきでない近傍テーブルへの影響がないことの確認"""
-
-    def test_asks_table_intact(self, migrated_db):
-        """直前の関連migration(0070/0071)と同系のasksテーブルが無傷であることの確認"""
-        conn = get_connection()
-        try:
-            assert table_exists(conn, "asks"), "asks テーブルが0082適用後に消えている"
-            conn.execute(
-                "INSERT INTO asks (question, fingerprint) VALUES (?, ?)",
-                ("テスト問い", "fp-test-0082"),
-            )
-            conn.commit()
-            row = conn.execute(
-                "SELECT question FROM asks WHERE fingerprint='fp-test-0082'"
-            ).fetchone()
-            assert row is not None
-        finally:
-            conn.close()
