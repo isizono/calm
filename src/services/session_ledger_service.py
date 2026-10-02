@@ -173,9 +173,12 @@ def close_stale_sessions(liveness_timeout_sec: float) -> int:
     場合は何もしない（「stale」の定義自体が存在しないため）。
 
     まだ生きていて、たまたまheartbeatがTTLを超えて途絶した直後の行も対象に
-    なりうるが、これはliveness reaperが通常運用で行う判定と同一の基準であり、
-    起動直後に遅れて評価されるだけの差でしかない（該当launcherは再接続時に
-    新しいheartbeatを送るが、閉じられた行自体は復活せず別行として記録される）。
+    なりうる。この場合、register()のON CONFLICT...WHERE ended_at IS NULLに
+    より、以後そのlauncherから届くheartbeatは無言のno-opになり行は復活しない
+    (該当launcherプロセスが終了し新しいsession_idで登録し直すまで、その行は
+    `ended_at`が立ったまま残る)。destination_middleware等のended_at IS NULLを
+    前提にした生存セッション参照（宛先候補の絞り込み等）からも、その間
+    対象外になる。
 
     Returns:
         閉じた行数。
