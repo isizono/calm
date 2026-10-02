@@ -541,19 +541,28 @@ def init_database() -> None:
         conn.close()
 
 
-def _check_fts5_available(conn: sqlite3.Connection) -> bool:
-    """FTS5が利用可能か確認する"""
+def _check_fts5_available() -> bool:
+    """FTS5が利用可能か確認する
+
+    確認用の仮想テーブルは本体DBではなく使い捨てのin-memory接続上に作る。CREATE直後の
+    DROPを本体DB上で行う実装だった旧版は、DROPがsqlite3.OperationalError（ロック競合等）
+    で失敗すると例外を握り潰して「FTS5利用不可」扱いにする一方、CREATEで自動生成された
+    仮想テーブルと影のテーブルは本体DBに残り続けた。in-memory接続なら、close時に接続と
+    ともに消えるため後始末が要らない。
+    """
+    check_conn = sqlite3.connect(":memory:")
     try:
-        conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS _fts5_check USING fts5(x)")
-        conn.execute("DROP TABLE IF EXISTS _fts5_check")
+        check_conn.execute("CREATE VIRTUAL TABLE _fts5_check USING fts5(x)")
         return True
     except sqlite3.OperationalError:
         return False
+    finally:
+        check_conn.close()
 
 
 def _migrate_fts5_search_index(conn: sqlite3.Connection) -> None:
     """FTS5検索インデックスの初期データマイグレーション（contentless方式）"""
-    if not _check_fts5_available(conn):
+    if not _check_fts5_available():
         logger.warning("FTS5 is not available. Skipping search index migration.")
         return
 
