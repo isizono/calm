@@ -1095,7 +1095,6 @@ class TestActivityCleanupHint:
         am_tag_id = _tag_id(ACTIVITY_MANAGEMENT_TAG_NAME, namespace="")
         assert _get_cooldown_until(am_tag_id, MARKER_ACTIVITY_CLEANUP) == today
         assert _get_tag_notes(ACTIVITY_MANAGEMENT_TAG_NAME, namespace="") == ""
-        assert _get_tag_notes(ACTIVITY_MANAGEMENT_TAG_NAME, namespace="") == ""
 
     def test_same_day_refire_is_suppressed_by_auto_marker(self, temp_db):
         _ensure_activity_management_tag()
