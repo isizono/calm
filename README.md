@@ -48,15 +48,15 @@ claude plugin install calm
 
 ### Windows 11での利用
 
-Windows 11（PowerShell）でもmacOS/Linuxと同じ手順でインストールできますが、以下の点に注意してください。
+Windows 11（PowerShell）でもmacOS/Linuxと同じ手順でインストールできますが、以下の点に注意してください。インストール手順（人が実行する手順・Claude Codeに任せる手順の2パターン）は[docs/windows-setup.md](docs/windows-setup.md)を参照してください。
 
-**前提条件**
+**前提条件の要点**
 
-- [uv公式のインストール手順](https://docs.astral.sh/uv/getting-started/installation/)に従う。PowerShellスクリプト（`powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`）または`winget install --id=astral-sh.uv -e`のいずれかでインストールできる。インストール直後は現在のPowerShellウィンドウにPATHが反映されないため、ウィンドウを開き直してから`uv --version`で確認する
+- [uv公式のインストール手順](https://docs.astral.sh/uv/getting-started/installation/)でインストールし、PATHが反映されているか`uv --version`で確認する
 - calmのhookはexec form（コマンドと引数を分けた形）で登録されておりシェルを経由しないため、[Git for Windows](https://gitforwindows.org/)の有無でhook自体の実行シェルが変わることはない。Git for Windowsの有無で変わるのは、スキルの中の手順をClaudeがBashツール（Git Bash経由）とPowerShellツールのどちらで実行するかの方である。無ければPowerShellツールで実行される
-- torchのimportには[Microsoft Visual C++ 再頒布可能パッケージ（x64）](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)が必要。無いと`c10.dll`のロードに失敗しWinError 126になる。`winget install Microsoft.VCRedist.2015+.x64`で入る
-- ARM64版Windowsでは、uvが既定で選ぶARM64版のCPythonではなくx64版のCPythonを使う必要がある。`uv python install cpython-3.12-windows-x86_64-none`でx64版を入れ、`UV_PYTHON`環境変数でそれを指すようユーザー環境変数として永続化してから（`uv sync`の実行シェルだけでなく、Claude Codeが起動する`uv`からも見える必要があるため）依存解決を行う
-- 初回の依存取得（`uv sync`）は1分以上かかることがあり、Claude CodeのMCP接続待ち（30秒）を超えて`/mcp`の初回接続が失敗することがある。これを避けるため、プラグインを入れた直後に、インストール先（プラグインキャッシュ、または開発用チェックアウトのルート）で`uv sync --frozen`を一度手動実行しておく
+- torchのimportには[Microsoft Visual C++ 再頒布可能パッケージ（x64）](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)が必要。無いと`c10.dll`のロードに失敗しWinError 126になる
+- ARM64版Windowsでは、uvが既定で選ぶARM64版のCPythonではなくx64版のCPythonを使う必要がある
+- 初回の依存取得（`uv sync`）は1分以上かかることがあり、Claude CodeのMCP接続待ち（30秒）を超えて`/mcp`の初回接続が失敗することがある。これを避けるため、プラグインを入れた直後に、インストール先で`uv sync --frozen`を一度手動実行しておく
 
 **状態確認・停止・lockの後始末（PowerShell）**
 
