@@ -131,28 +131,35 @@ def _resolve_collision(sessions: dict, base: str, self_key: str) -> tuple[str, b
             return cand, True
 
 
-def _entry_alive(cli_session_id: str, entry: dict, now: datetime) -> bool:
-    """行が生存・非stale と判定できるか（cli_pid生存・PID再利用でない・TTL内）。"""
+def _live_cli_session(cli_session_id: str, entry: dict, now: datetime) -> Optional[dict]:
+    """行が生存・非stale と判定できるなら、今の CLI セッション辞書（read_cli_session
+    の返り値）を返す。判定できなければ None（cli_pid死亡・PID再利用・TTL超過）。
+    """
     if not isinstance(entry, dict):
-        return False
+        return None
     pid = entry.get("cli_pid")
     if not isinstance(pid, int) or not is_process_alive(pid):
-        return False
+        return None
     session = cli_session.read_cli_session(pid)
     if session is None or session.get("cli_session_id") != cli_session_id:
-        return False
+        return None
     updated_at = entry.get("updated_at")
     if not isinstance(updated_at, str):
-        return False
+        return None
     try:
         ts = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
     except ValueError:
-        return False
+        return None
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
     if now - ts > timedelta(days=_TTL_DAYS):
-        return False
-    return True
+        return None
+    return session
+
+
+def _entry_alive(cli_session_id: str, entry: dict, now: datetime) -> bool:
+    """行が生存・非stale と判定できるか（cli_pid生存・PID再利用でない・TTL内）。"""
+    return _live_cli_session(cli_session_id, entry, now) is not None
 
 
 def is_session_alive(cli_session_id: Optional[str]) -> bool:
@@ -174,16 +181,25 @@ def is_session_alive(cli_session_id: Optional[str]) -> bool:
 
 
 def _gc(sessions: dict) -> bool:
-    """生存していない行・TTL超過行を削除し、上限超過分を最古から削除する（in-place）。
+    """生存していない行・TTL超過行を削除し、生存行の name を今の CLI 名に書き戻し、
+    上限超過分を最古から削除する（in-place）。name の書き戻しは alias / alias_source /
+    updated_at には触れない。
 
     Returns:
-        1件でも削除した場合True。呼び出し側が不要な _save() を避けるために使う。
+        1件でも削除または name 書き換えをした場合True。呼び出し側が不要な _save() を
+        避けるために使う。
     """
     now = datetime.now(timezone.utc)
     changed = False
-    for key in [k for k, e in sessions.items() if not _entry_alive(k, e, now)]:
-        del sessions[key]
-        changed = True
+    for key, entry in list(sessions.items()):
+        live = _live_cli_session(key, entry, now)
+        if live is None:
+            del sessions[key]
+            changed = True
+            continue
+        if entry.get("name") != live["name"]:
+            entry["name"] = live["name"]
+            changed = True
     overflow = len(sessions) - _MAX_ENTRIES
     if overflow > 0:
         ordered = sorted(sessions.items(), key=lambda kv: kv[1].get("updated_at") or "")
@@ -258,7 +274,8 @@ def list_sessions(*, self_bridge_session_id: Optional[str] = None) -> list[dict]
     """稼働中セッションの一覧を updated_at 降順で返す。
 
     呼び出し元自身の行（self_bridge_session_id から解決できた場合）は
-    ``is_self: True`` を持つ。
+    ``is_self: True`` を持つ。各行の ``name`` は呼び出し時点の CLI 名に最新化
+    される（GC経由）。``cli_session_id``（key）と ``cli_pid`` も返す。
     """
     self_cli_session_id: Optional[str] = None
     if self_bridge_session_id:
@@ -280,6 +297,8 @@ def list_sessions(*, self_bridge_session_id: Optional[str] = None) -> list[dict]
                 "activity_title": entry.get("activity_title"),
                 "activity_status": entry.get("activity_status"),
                 "cwd": entry.get("cwd"),
+                "cli_session_id": key,
+                "cli_pid": entry.get("cli_pid"),
                 "is_self": key == self_cli_session_id,
                 "updated_at": entry.get("updated_at"),
             }

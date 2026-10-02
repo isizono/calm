@@ -2854,14 +2854,29 @@ def get_sessions() -> dict:
     変換してから見せること。生の自動生成名のままではどのセッションが何をしているか
     判別できない。対応表に無い名前はそのまま表示し「未 check-in」と添える。
 
+    name は CLI 側で変わりうる宛先、cli_session_id と cli_pid は見分けのための値。
+    /resume の後は同じ cli_session_id のプロセスが複数ありうるので、見分けには
+    cli_pid を使う。
+
+    name が同じ行が複数あり ListAgents の宛先を1つに絞れないとき:
+    1. 目的のアクティビティの行を選び、その行の cli_pid を取る
+    2. `claude agents --json` でその pid の行を探し、kind と startedAt を見る
+    3. ListAgents で同じ名前の行のうち種類と「started 〜 ago」が合う行の ref を使い、
+       「名前 [ref]」で SendMessage する
+    4. それでも絞れなければ、候補全部へ目的のアクティビティ名を名指しし
+       「該当しなければ無視」と添えて送る
+
     Returns:
         {"sessions": [{"name": str, "alias": str,
                        "alias_source": "derived" | "manual",
                        "activity_id": int | None, "activity_title": str | None,
                        "activity_status": str | None, "cwd": str | None,
+                       "cli_session_id": str | None, "cli_pid": int | None,
                        "is_self": bool, "updated_at": str}, ...],
          "count": int}
-        updated_at 降順。呼び出し元自身の行は is_self: true（peer として再掲しないこと）
+        cli_session_id と cli_pid は `claude agents --json` の sessionId と pid と
+        同じ値。updated_at 降順。呼び出し元自身の行は is_self: true（peer として
+        再掲しないこと）
     """
     caller_session_id = get_caller_session_id()
     sessions = session_registry_service.list_sessions(self_bridge_session_id=caller_session_id)

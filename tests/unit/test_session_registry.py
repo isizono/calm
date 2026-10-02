@@ -39,6 +39,10 @@ class FakeCliWorld:
     def kill(self, pid):
         self._alive_pids.discard(pid)
 
+    def rename(self, pid, new_name):
+        """CLI側のリネーム（自動命名の上書き・/resume後の名前変化）を模す。"""
+        self._by_pid[pid]["name"] = new_name
+
     def is_process_alive(self, pid):
         return pid in self._alive_pids
 
@@ -311,6 +315,16 @@ class TestListSessions:
         assert sessions[0]["is_self"] is True
         assert sessions[1]["is_self"] is False
 
+    def test_rows_carry_cli_session_id_and_cli_pid_matching_checkin(self, world, registry_path):
+        world.add("bridge-a", pid=100, cli_session_id="cli-1", name="workspace-a1")
+        srs.register_checkin(
+            bridge_session_id="bridge-a", activity_id=1, activity_title="Foo", activity_status="in_progress"
+        )
+
+        sessions = srs.list_sessions()
+        assert sessions[0]["cli_session_id"] == "cli-1"
+        assert sessions[0]["cli_pid"] == 100
+
     def test_empty_registry_returns_empty_list(self, registry_path):
         assert srs.list_sessions() == []
 
@@ -343,6 +357,54 @@ class TestListSessions:
 
         data = json.loads(registry_path.read_text(encoding="utf-8"))
         assert "cli-1" not in data["sessions"]
+
+
+class TestNameRefresh:
+    """CLI側の名前変化（自動命名・/resume）をlist_sessionsが追従するかの検証。"""
+
+    def test_renamed_cli_session_name_is_refreshed_in_list_and_file(self, world, registry_path):
+        world.add("bridge-a", pid=100, cli_session_id="cli-1", name="workspace-a1")
+        srs.register_checkin(
+            bridge_session_id="bridge-a", activity_id=1, activity_title="Foo", activity_status="in_progress"
+        )
+        world.rename(100, "auto-generated sentence from first prompt")
+
+        sessions = srs.list_sessions()
+        assert sessions[0]["name"] == "auto-generated sentence from first prompt"
+
+        data = json.loads(registry_path.read_text(encoding="utf-8"))
+        assert data["sessions"]["cli-1"]["name"] == "auto-generated sentence from first prompt"
+
+    def test_rename_does_not_touch_alias_or_alias_source(self, world, registry_path):
+        world.add("bridge-a", pid=100, cli_session_id="cli-1", name="workspace-a1")
+        srs.register_checkin(
+            bridge_session_id="bridge-a", activity_id=1, activity_title="Foo", activity_status="in_progress"
+        )
+        before = json.loads(registry_path.read_text(encoding="utf-8"))["sessions"]["cli-1"]
+        world.rename(100, "renamed")
+
+        sessions = srs.list_sessions()
+        assert sessions[0]["alias"] == before["alias"]
+        assert sessions[0]["alias_source"] == before["alias_source"]
+
+    def test_rename_does_not_touch_updated_at(self, world, registry_path, monkeypatch):
+        """_now_iso()は秒精度のため、同一秒内のタイムスタンプ比較では
+        updated_atへの誤った書き込みを検出できない。以降の_now_iso()呼び出しが
+        必ず先の値より進むよう差し替え、名前書き戻しがupdated_atを更新したら
+        このテストが落ちるようにする。"""
+        _sequential_timestamps(monkeypatch)
+        world.add("bridge-a", pid=100, cli_session_id="cli-1", name="workspace-a1")
+        srs.register_checkin(
+            bridge_session_id="bridge-a", activity_id=1, activity_title="Foo", activity_status="in_progress"
+        )
+        before_updated_at = json.loads(registry_path.read_text(encoding="utf-8"))["sessions"]["cli-1"]["updated_at"]
+        world.rename(100, "renamed")
+
+        srs.list_sessions()
+
+        data = json.loads(registry_path.read_text(encoding="utf-8"))["sessions"]["cli-1"]
+        assert data["name"] == "renamed"
+        assert data["updated_at"] == before_updated_at
 
 
 class TestIsSessionAlive:
