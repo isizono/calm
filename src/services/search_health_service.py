@@ -21,7 +21,8 @@ class SearchHealthResult:
     """check_search_health() の結果。
 
     degraded_ratio/qe_fired_ratio は対応するサンプル数がmin_sample未満のとき
-    None（評価不能、異常判定もFalse固定）になる。
+    None（評価不能、異常判定もFalse固定）になる。qe_sample_count/qe_fired_countは
+    degraded=Trueの行を含まない（理由はcheck_search_health内のコメント参照）。
     """
     is_healthy: bool = True
     warnings: list[str] = field(default_factory=list)
@@ -106,6 +107,12 @@ def check_search_health(
         degraded_sample += 1
         if diag["degraded"]:
             degraded_count += 1
+            # クエリ拡張（_expand_query_with_tags）もembedding_service経由で
+            # tag_vecをKNN検索するため、ベクトル検索自体が利用不可な行は
+            # 必然的にqe_expansionsが空になる。QEの母集団に含めると
+            # embedding停止がQE側の異常としても二重に数えられ、
+            # tag_vec側固有の不具合と区別できなくなるため除外する。
+            continue
         qe_sample += 1
         if diag["qe_expansions"]:
             qe_fired_count += 1

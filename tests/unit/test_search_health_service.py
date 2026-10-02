@@ -9,6 +9,7 @@
 6. window_days より古い行は集計対象から除外される
 7. max_sample を超える行数があるとき、timestamp降順で新しい側だけが対象になる
 8. degraded/qe_expansionsキーが欠けた行はサンプルから除外される
+9. degraded=Trueの行はクエリ拡張側の母集団から除外される（embedding停止との二重検知を避ける）
 """
 import json
 from datetime import datetime, timedelta, timezone
@@ -201,6 +202,31 @@ def test_max_sample_limits_to_most_recent_rows(temp_db):
     assert result.degraded_count == 0
     assert result.degraded_unhealthy is False
     assert result.is_healthy is True
+
+
+def test_degraded_rows_are_excluded_from_qe_sample(temp_db):
+    """embedding停止による縮退(degraded=True)は、QE側の母集団に数えない。
+
+    クエリ拡張もembedding_service経由でtag_vecを検索するため、embedding停止中は
+    qe_expansionsが構造的に空になる。これをQEの母集団に含めると、embedding停止の
+    1件の障害が「縮退」と「クエリ拡張停止」の2つの異常として二重に検知されてしまう。
+    """
+    conn = get_connection()
+    try:
+        # 25件全部degraded（embedding停止中はqe_expansionsも常に空になる）
+        _seed_many(conn, 25, degraded=True, qe_expansions=[], start_days_ago=0.1)
+        conn.commit()
+        result = check_search_health(conn, **_DEFAULTS)
+    finally:
+        conn.close()
+
+    assert result.degraded_sample_count == 25
+    assert result.degraded_unhealthy is True
+    # QE側はdegraded行しかないため母集団ゼロ＝評価不能（異常としては検知しない）
+    assert result.qe_sample_count == 0
+    assert result.qe_fired_ratio is None
+    assert result.qe_unhealthy is False
+    assert not any("クエリ拡張" in w for w in result.warnings)
 
 
 def test_rows_missing_expected_keys_are_excluded_from_sample(temp_db):

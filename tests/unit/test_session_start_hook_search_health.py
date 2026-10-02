@@ -112,3 +112,31 @@ def test_repeated_builds_in_same_degraded_state_do_not_duplicate_signal(temp_db)
         assert rows[0]["occurrence_count"] == 3
     finally:
         conn.close()
+
+
+def test_degraded_warning_survives_full_compose_pipeline(temp_db):
+    """_build_session_context()（compose()経由の全セクション合成）でも
+    search_healthの1行注意とsignal_events書込が失われないことを確認する。
+
+    _build_search_health_section単体呼び出しのテストでは、他セクションの
+    処理やcompose()のセクション単位try/exceptを経由しない。本テストは
+    実際にSessionStartが注入する最終文字列にこの1行が含まれることを保証する。
+    """
+    conn = get_connection()
+    try:
+        _seed_many(conn, 5, degraded=True, qe_expansions=["x"], start_days_ago=0.1)
+        _seed_many(conn, 15, degraded=False, qe_expansions=["x"], start_days_ago=0.2)
+        conn.commit()
+    finally:
+        conn.close()
+
+    context = session_start_hook._build_session_context()
+
+    assert "検索品質の劣化" in context
+
+    conn = get_connection()
+    try:
+        rows = _signal_rows(conn, "hook:search_health")
+    finally:
+        conn.close()
+    assert len(rows) == 1
