@@ -25,6 +25,8 @@ IN_PROGRESS_LIMIT: int = int(env_get("CALM_IN_PROGRESS_LIMIT", "3"))
 PENDING_LIMIT: int = int(env_get("CALM_PENDING_LIMIT", "2"))
 # SessionStart一覧の階層2（優先）に in_progress アクティビティを載せる updated_at 上限（日）
 TIER2_MAX_AGE_DAYS: int = int(env_get("CALM_TIER2_MAX_AGE_DAYS", "7"))
+# SessionStart一覧の階層2（優先）に出すアクティビティ件数の上限
+TIER2_MAX_ITEMS: int = int(env_get("CALM_TIER2_MAX_ITEMS", "5"))
 # pinned アクティビティが階層2表示を維持できる updated_at 上限（日）。
 # 超過すると階層2から外れ固定ナビの未表示件数句に計上される（pin自体は残る）
 PIN_SURFACE_DECAY_DAYS: int = int(env_get("CALM_PIN_SURFACE_DECAY_DAYS", "60"))
