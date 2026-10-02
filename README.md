@@ -53,7 +53,7 @@ Windows 11（PowerShell）でもmacOS/Linuxと同じ手順でインストール�
 **前提条件の要点**
 
 - [uv公式のインストール手順](https://docs.astral.sh/uv/getting-started/installation/)でインストールし、PATHが反映されているか`uv --version`で確認する
-- calmのhookはexec form（コマンドと引数を分けた形）で登録されておりシェルを経由しないため、[Git for Windows](https://gitforwindows.org/)の有無でhook自体の実行シェルが変わることはない。Git for Windowsの有無で変わるのは、スキルの中の手順をClaudeがBashツール（Git Bash経由）とPowerShellツールのどちらで実行するかの方である。無ければPowerShellツールで実行される
+- [Git for Windows](https://gitforwindows.org/)が必要（マーケットプレイス`isizono/calm`はGitHubでホストされており、`claude plugin marketplace add`・`update`やプラグインのインストールのたびにClaude Codeが利用者側の`git`でcloneするため）。calmのhookはexec form（コマンドと引数を分けた形）で登録されておりシェルを経由しないため、hook自体の実行はGit for Windowsの有無に影響されない。Git for Windowsが入っていると、Claude Codeはスキルの中のシェル手順をBashツール（Git Bash経由）で実行できるようになる。これとは別に、PowerShellツールもclaude.ai・Consoleアカウントでは既定で有効になる
 - torchのimportには[Microsoft Visual C++ 再頒布可能パッケージ（x64）](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)が必要。無いと`c10.dll`のロードに失敗しWinError 126になる
 - ARM64版Windowsでは、uvが既定で選ぶARM64版のCPythonではなくx64版のCPythonを使う必要がある
 - 初回の依存取得（`uv sync`）は1分以上かかることがあり、Claude CodeのMCP接続待ち（30秒）を超えて`/mcp`の初回接続が失敗することがある。これを避けるため、プラグインを入れた直後に、インストール先で`uv sync --frozen`を一度手動実行しておく
