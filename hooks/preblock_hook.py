@@ -24,7 +24,7 @@ _PLUGIN_ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(_PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(_PLUGIN_ROOT))
 
-from hooks.signal_capture import try_capture_signal  # noqa: E402
+from hooks.signal_capture import try_capture_guard_block, try_capture_signal  # noqa: E402
 from src.env_compat import env_get  # noqa: E402
 from src.harness import select_harness  # noqa: E402
 from src.services.internal_id_patterns import (  # noqa: E402
@@ -183,6 +183,20 @@ def _scan_tool_input(value) -> list[dict]:
     return matches
 
 
+def _classify_literal(literal: str) -> str:
+    """検出済みリテラル1件がcode形式・fullword(#あり)・fullword(#省略)のどれかを返す。
+
+    guard_block signalのfingerprint用。fullwordの#省略形(\\log 1 のような日本語の
+    個数表現との衝突例)はcode形式より自然文との衝突可能性が高く、誤検知率が
+    別物であるため区別して集計する。
+    """
+    if RAW_CITE_CODE_PATTERN.fullmatch(literal):
+        return "code"
+    if "#" in literal:
+        return "fullword_hash"
+    return "fullword_no_hash"
+
+
 def _is_in_calm_project() -> bool:
     """cwd から上方向に pyproject.toml を探索して calm project か判定する。
 
@@ -274,6 +288,13 @@ def main() -> None:
                 "session_id": event.get("session_id"),
             }
         )
+
+        for rule in sorted({_classify_literal(lit) for lit in matched_literals}):
+            try_capture_guard_block(
+                source="hook:preblock",
+                summary=f"internal ID literal blocked ({rule})",
+                detail=f"tool={tool_name} fields={matched_fields}",
+            )
 
         harness.emit_permission_decision("deny", reason)
 

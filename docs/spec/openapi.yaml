@@ -1322,6 +1322,13 @@ paths:
                   - type: string
                   - type: 'null'
                   default: null
+                ids:
+                  anyOf:
+                  - items:
+                      type: integer
+                    type: array
+                  - type: 'null'
+                  default: null
                 limit:
                   default: 20
                   type: integer
