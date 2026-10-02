@@ -158,7 +158,7 @@ def main() -> None:
 
         try_capture_guard_block(
             source="hook:deny_nested_bg",
-            summary="nested bg spawn blocked",
+            summaries=["nested bg spawn blocked"],
             detail=f"session_id={session_id}",
         )
 

@@ -38,15 +38,18 @@ def try_capture_signal(
 
 def try_capture_guard_block(
     source: str,
-    summary: str,
+    summaries: list[str],
     *,
     detail: str | None = None,
 ) -> None:
     """hook が deny 判定を下したときに guard_block signal を記録する。
 
     deny 判定の経路（全tool呼び出しのうちdenyになった分だけ）から呼ぶ想定。
-    get_connection() の busy_timeout=5000・sqlite-vec ロードは deny 判定には
-    不要な遅延要因になるため経由せず、短いタイムアウトの独立接続で直接書き込む。
+    1回のdeny判定で複数の規則（例: 検出リテラルの種類違い）に当てはまる場合は
+    summariesに複数件渡す。get_connection() の busy_timeout=5000・sqlite-vec
+    ロードは deny 判定には不要な遅延要因になるため経由せず、短いタイムアウトの
+    独立接続を1回だけ開いてsummariesを全件書き込む（規則数に比例して接続を
+    開き直すと、DBロック時の待ち時間がそのまま積み重なるため）。
     DB ロック等で書き込みが失敗しても deny 判定自体の速度・結果には影響させない
     （try_capture_signal と同じく、いかなる例外も外に漏らさない）。
     """
@@ -58,7 +61,8 @@ def try_capture_guard_block(
 
         conn = sqlite3.connect(get_db_path(), timeout=0.5)
         try:
-            record_signal("guard_block", summary, source=source, detail=detail, conn=conn)
+            for summary in summaries:
+                record_signal("guard_block", summary, source=source, detail=detail, conn=conn)
             conn.commit()
         finally:
             conn.close()

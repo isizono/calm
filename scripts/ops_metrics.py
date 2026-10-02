@@ -133,9 +133,7 @@ def _rollback_metrics(
         "rollback_count": numerator,
         "post_veto_live_count": denominator,
         "rate": _rate(numerator, denominator),
-        # rollback・boundary_case のいずれも _NO_WRITER_CODE_KINDS に属するため、
-        # rateがN/Aまたは低いことは「巻き戻りが起きていない」ことの証拠にならない。
-        "no_writer_code": True,
+        "no_writer_code": "rollback" in _NO_WRITER_CODE_KINDS,
     }
 
 
@@ -161,8 +159,7 @@ def _shadow_divergence_metrics(boundary_rows: list[dict]) -> dict:
         "divergence_rate": _rate(len(diverged), total),
         "false_negative_count": len(false_negative),
         "false_negative_rate": _rate(len(false_negative), total),
-        # boundary_case は _NO_WRITER_CODE_KINDS に属する（分母自体が構造的に0になりうる）。
-        "no_writer_code": True,
+        "no_writer_code": "boundary_case" in _NO_WRITER_CODE_KINDS,
     }
 
 
@@ -195,7 +192,7 @@ def _count_applied_citations(packages: list[dict]) -> int:
 def _pull_metrics(conn: sqlite3.Connection, window_days: Optional[int], packages: Optional[list[dict]]) -> dict:
     """pull miss 件数 / hit率。--packages-file 未供給時は件数のみ返す。"""
     miss_rows = _fetch_signals(conn, "precedent_miss", window_days)
-    result: dict = {"miss_count": len(miss_rows), "no_writer_code": True}
+    result: dict = {"miss_count": len(miss_rows), "no_writer_code": "precedent_miss" in _NO_WRITER_CODE_KINDS}
     if packages is not None:
         denominator = _sum_citation_slots(packages)
         result["citation_slot_count"] = denominator
@@ -206,7 +203,10 @@ def _pull_metrics(conn: sqlite3.Connection, window_days: Optional[int], packages
 def _misapplied_metrics(conn: sqlite3.Connection, window_days: Optional[int], packages: Optional[list[dict]]) -> dict:
     """誤類推件数 / 誤類推率。--packages-file 未供給時は件数のみ返す。"""
     misapplied_rows = _fetch_signals(conn, "precedent_misapplied", window_days)
-    result: dict = {"misapplied_count": len(misapplied_rows), "no_writer_code": True}
+    result: dict = {
+        "misapplied_count": len(misapplied_rows),
+        "no_writer_code": "precedent_misapplied" in _NO_WRITER_CODE_KINDS,
+    }
     if packages is not None:
         denominator = _count_applied_citations(packages)
         result["applied_citation_count"] = denominator
@@ -370,8 +370,11 @@ def _fetch_follow_metrics(conn: sqlite3.Connection, window_days: Optional[int]) 
     search_rows = _fetch_rows(conn, "search_telemetry", "timestamp", window_days)
     fetch_rows = _fetch_rows(conn, "fetch_telemetry", "timestamp", window_days)
 
-    # session単位: (type, id) -> そのitemが最初にfetchされた時刻(文字列比較で十分な
-    # ISO風フォーマット)。「後続」判定(検索時刻以降のfetchか)に使う。
+    # session単位: (type, id) -> そのitemが最後にfetchされた時刻(文字列比較で十分な
+    # ISO風フォーマット)。「このitemが検索時刻以降にfetchされたことがあるか」は
+    # 最後のfetch時刻が検索時刻以降かどうかと同値（最後のfetchより前の時刻は
+    # 全て検索時刻以降ではあり得ないため）。最初のfetch時刻を使うと、検索より前に
+    # 1回fetchされた後、検索後に再fetchされたケースを後続と判定できない。
     fetched_at_by_session: dict[str, dict[tuple, str]] = {}
     for row in fetch_rows:
         session_id = row.get("caller_session_id")
@@ -387,7 +390,7 @@ def _fetch_follow_metrics(conn: sqlite3.Connection, window_days: Optional[int]) 
             if not isinstance(item, dict) or item.get("type") is None or item.get("id") is None:
                 continue
             key = (item["type"], item["id"])
-            if key not in bucket or ts < bucket[key]:
+            if key not in bucket or ts > bucket[key]:
                 bucket[key] = ts
 
     total_items = 0

@@ -538,6 +538,35 @@ class TestFetchFollowMetrics:
         assert ff["search_result_count"] == 1
         assert ff["followed_count"] == 0
 
+    def test_followed_when_item_also_fetched_before_search(self, temp_db):
+        """同一itemが検索より前に一度fetchされていても、検索後の再fetchがあれば追随に数える。
+
+        最初のfetch時刻だけを見ると「検索前のfetch」で後続判定が止まってしまうため、
+        同一(type,id)の最後のfetch時刻を使う必要がある。
+        """
+        _insert_fetch_telemetry(
+            temp_db,
+            items=[{"type": "decision", "id": 1}],
+            caller_session_id="s1",
+            timestamp="2026-01-01 00:00:00",
+        )
+        _insert_search_telemetry(
+            temp_db,
+            results=[{"type": "decision", "id": 1}],
+            caller_session_id="s1",
+            timestamp="2026-01-01 00:00:05",
+        )
+        _insert_fetch_telemetry(
+            temp_db,
+            items=[{"type": "decision", "id": 1}],
+            caller_session_id="s1",
+            timestamp="2026-01-01 00:00:10",
+        )
+
+        metrics = compute_metrics(temp_db, window_days=None)
+
+        assert metrics["fetch_follow"]["followed_count"] == 1
+
     def test_different_session_not_counted(self, temp_db):
         _insert_search_telemetry(
             temp_db, results=[{"type": "decision", "id": 1}], caller_session_id="s1",

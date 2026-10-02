@@ -289,12 +289,14 @@ def main() -> None:
             }
         )
 
-        for rule in sorted({_classify_literal(lit) for lit in matched_literals}):
-            try_capture_guard_block(
-                source="hook:preblock",
-                summary=f"internal ID literal blocked ({rule})",
-                detail=f"tool={tool_name} fields={matched_fields}",
-            )
+        try_capture_guard_block(
+            source="hook:preblock",
+            summaries=[
+                f"internal ID literal blocked ({rule})"
+                for rule in sorted({_classify_literal(lit) for lit in matched_literals})
+            ],
+            detail=f"tool={tool_name} fields={matched_fields}",
+        )
 
         harness.emit_permission_decision("deny", reason)
 
