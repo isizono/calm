@@ -685,8 +685,8 @@ def _traverse_relations_with_conn(
 
     複数rootsを起点にでき（同一エンティティが複数経路で到達する場合はMIN(depth)を採用）、
     catalog_typesで最終的にカタログへ含める型を絞る。decision/logを経由ノードとしてのみ
-    使いたい場合（get_map）はcatalog_typesから除外し、カタログ本体に含めたい場合
-    （collect_export_candidates）は含める。走査自体（再帰CTEの経由）は常に全種別を辿る。
+    使いたい場合（get_map）はcatalog_typesから除外する。走査自体（再帰CTEの経由）は常に
+    全種別を辿る。
 
     Args:
         roots: [(entity_type, entity_id), ...] 起点（重複可、空なら空リストを返す）

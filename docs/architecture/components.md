@@ -2,7 +2,7 @@
 watch-tags: domain:calm, domain:cc-memory
 watch-direction: true
 watch-migrations: false
-last-synced: 2026-09-23
+last-synced: 2026-10-02
 last-synced-migration: 0077
 -->
 
@@ -146,15 +146,6 @@ graph TB
 - `src/services/restart_service.py`: calm MCPサーバー・embeddingサーバーの強制再起動（`calm:restart` skillから利用）
 - `src/services/backup_service.py`: DBスナップショットの取得・ヘルスチェック・ローテーション・復元
 
-### 3.3b エクスポート・インポート基盤
-
-他インスタンスへの記録の受け渡し（`docs/spec/mcp-tools.md` §1.9）を担う。
-
-- `src/services/instance_service.py`: 自インスタンス識別子（`set_instance_identity`）の設定・複合キー発行の基盤
-- `src/services/export_candidate_service.py`: export候補の走査・提示（`collect_export_candidates`、read-only）
-- `src/services/export_bundle_service.py`: 確定候補からのバンドル書き出し（`export_bundle`、manifest.yaml + エンティティ別mdファイル）
-- `src/services/import_bundle_service.py`: バンドルの取り込み（`import_bundle`、dry_run衝突検知 / apply実書き込み）
-
 ### 3.4 埋め込み
 
 - `src/services/embedding_service.py`: アプリ側からembedding取得を呼ぶクライアント
@@ -221,8 +212,6 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 - `skills/forget`: 陳腐化・矛盾した記録の撤回
 - `skills/db-recovery`: DBデータ異常減少の検知〜復旧
 - `skills/audit`: 過去decisionの正当性検証・矛盾解消
-- `skills/memory-export`: 他インスタンスへ渡すexportバンドルの作成ガイド
-- `skills/memory-import`: 他インスタンスのexportバンドルの衝突裁定・取り込みガイド
 - `skills/ask-compose` / `skills/ask-answer` / `skills/ask-distill` / `skills/ask-watch`: 判断委譲（asks）の起票構成・回答・同型メタask起票・滞留監視
 - `skills/board`: Claude同士の非同期のやり取り（質問・周知・意見募集・事前の声かけ）を掲示板トピックへの投稿としてガイド
 - `skills/project-setup` / `skills/coding-project-setup`: 新規domainの知識フレームセットアップ

@@ -3,8 +3,6 @@
 budget_service が把握する予算関連の既定値一覧が get_config から取得できることを
 検証する。値そのものの正しさ（src.configとの一致）は test_budget_service.py 側で
 担保する。
-
-get_configはinstance_id参照のためDBアクセスを行うため、temp_db fixtureが必要。
 """
 
 import pytest

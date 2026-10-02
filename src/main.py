@@ -28,10 +28,6 @@ from src.services import (
     budget_service,
     ask_service,
     reask_detection_service,
-    export_candidate_service,
-    export_bundle_service,
-    import_bundle_service,
-    instance_service,
     overview_service,
     goal_service,
     feedback_service,
@@ -1877,190 +1873,6 @@ def get_map(
 
 
 @mcp.tool()
-def collect_export_candidates(
-    roots: Optional[list[dict]] = None,
-    max_depth: int = 2,
-    include_types: Optional[list[str]] = None,
-    tag_roots: Optional[list[str]] = None,
-    include_snippets: bool = True,
-    limit: Optional[int] = None,
-    offset: int = 0,
-) -> dict:
-    """Choose: 他インスタンスへのexport候補を洗い出したいとき。get_mapと違いdecision/logも
-    カタログ本体に含み、retracted/superseded/status/本文サイズ/親topicタイトル等の
-    export判断に必要な付加情報を返す。決定論的なexport実行そのもの（バンドル書き出し）は
-    別ツールが担い、このツールは読み取り専用の候補一覧化のみを行う。
-
-    起点(roots)からrelationを辿って到達可能な5型(topic/activity/material/decision/log)の
-    エンティティを収集する。tag_rootsを指定すると、指定タグを持つ全エンティティを深度0
-    固定でシード集合に合流させる（グラフ拡張はしない）。roots/tag_rootsの少なくとも
-    一方の指定が必須。
-
-    Args:
-        roots: 起点。[{"type": "topic"|"activity"|"material"|"decision"|"log", "id": int}, ...]
-            （複数起点可）。tag_rootsのみでシードする場合は省略可
-        max_depth: rootsからの走査深度上限（デフォルト2、上限10）。tag_rootsのシードには
-            適用されない
-        include_types: 返却する型のフィルタ（デフォルト5型全部）。走査・closure_warnings
-            判定には影響しない表示フィルタ
-        tag_roots: 指定タグ文字列（例: ["domain:calm"]）を持つ全エンティティを
-            シード集合に合流させる
-        include_snippets: Falseにすると各candidateからsnippetキーを省く
-            （ドメイン規模での応答サイズ対策）
-        limit: 返却candidates件数の上限（デフォルト無制限）
-        offset: 返却開始位置（デフォルト0）
-
-    Returns:
-        成功時: {candidates: [{type, id_raw, title, snippet, tags, depth, size_chars,
-            parent_topic_title, retracted?, superseded?, status?}, ...],
-            closure_warnings: [{kind: "supersede_target_outside"|"destabilize_target_outside"|
-            "cite_target_outside"|"belongs_to_target_outside"|"related_target_outside"|
-            "depends_on_target_outside", from_title, target_title, target: {type, id_raw}}, ...],
-            total_count: int, truncated: bool}
-        tag_roots指定時のみco_tags: [{tag, overlap, share}, ...]が追加される。
-        失敗時: {"error": {"code": ..., "message": ...}}
-    """
-    return export_candidate_service.collect_export_candidates(
-        roots=roots,
-        max_depth=max_depth,
-        include_types=include_types,
-        tag_roots=tag_roots,
-        include_snippets=include_snippets,
-        limit=limit,
-        offset=offset,
-    )
-
-
-@mcp.tool()
-def set_instance_identity(instance_id: str, force: bool = False) -> dict:
-    """Choose: 他インスタンスへexportバンドルを渡す前に、自インスタンスの識別子を初めて
-    設定する(または変更する)とき。export_bundleはこの識別子が未設定だとエラーを返す。
-
-    インスタンス識別子(instance_id)を設定する。バンドルの複合キー
-    (`<instance_id>:<型コード><ローカルID>`、例: team-a:M12)発行の基盤となる。
-
-    一度設定したら原則変更不可(force無しでは拒否)。複合キーは出生インスタンスの
-    識別子を基準に発行され続けるため、変更は既発行の複合キーの意味を壊す破壊的操作。
-    交換相手は互いを知っている前提のため、完全自由命名(ランダムsuffix自動付与なし)。
-
-    Args:
-        instance_id: 設定する識別子。DNSラベル風(`^[a-z][a-z0-9-]{2,31}$`、
-            英小文字始まり・英小文字数字ハイフンのみ・3〜32字)
-        force: Trueのとき既存の設定を上書きする(デフォルトFalse)
-
-    Returns:
-        成功時: {"instance_id": str, "created_at": str}
-        失敗時: {"error": {"code": "VALIDATION_ERROR" | "ALREADY_EXISTS" | "DATABASE_ERROR", "message": str}}
-    """
-    return instance_service.set_instance_identity(instance_id, force=force)
-
-
-@mcp.tool()
-def export_bundle(
-    items: list[dict],
-    bundle_name: Optional[str] = None,
-    include_supersede_targets: bool = False,
-    selection: Optional[dict] = None,
-) -> dict:
-    """Choose: collect_export_candidatesで確定した候補リストから、他インスタンスへ渡す
-    バンドル(manifest.yaml + エンティティ別mdファイル)を実際に書き出すとき。候補の
-    洗い出し自体はcollect_export_candidates、単発資材の書き出しはexport_materialを使う。
-
-    確定選択(items)からバンドルを書き出す。instance_idが未設定だとエラーを返す
-    (set_instance_identityで先に設定する)。
-
-    親topicの自動同梱: 選択されたdecision/logのbelongs_to先topicは必ずバンドルに
-    含まれる(機械規則、ユーザー裁定を経ない)。activityには適用しない(activityは
-    常に明示選択のみが対象)。
-
-    supersede先の扱い: 選択decisionのsupersede先(kind='replaces')が選択集合外の場合、
-    既定(include_supersede_targets=False)ではエッジ情報(複合キー)のみを運び実体は
-    同梱しない。同梱したい場合はTrueを指定する。
-
-    本文内参照は3段パイプラインで変換する: (1) 生の`X#NNN`参照を`{{cite:X#NNN}}`へ
-    正規化(DB不在なら`[deleted X#NNN]`) (2) 参照先を複合キー形式へ書き換え(選択集合外
-    でも書き換えは行う。DB不在なら`[deleted X#NNN]`) (3) `#`省略形式等の残存生リテラルを
-    マスク。マスク件数はmasked_literalsで返る。
-
-    出力先は`~/cc-memory-export/bundles/<bundle-name>/`配下に限定される(パスガード)。
-
-    Args:
-        items: 確定選択。[{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...]
-        bundle_name: バンドルディレクトリ名(省略時は`<instance_id>-<日時>-<起点slug>`)
-        include_supersede_targets: Trueのとき選択decisionのsupersede先実体も同梱する(デフォルトFalse)
-        selection: collect_export_candidatesへの入力をverbatimで記録する任意dict
-            (manifest.yamlのselectionフィールドにそのまま書き込まれる。再exportの追跡用)
-
-    Returns:
-        成功時: {"path": str, "bundle_id": str, "counts": {type: n}, "auto_included": [...],
-            "unresolved_refs": [...], "masked_literals": int, "warnings": [...]}
-        失敗時: {"error": {"code": "VALIDATION_ERROR" | "INSTANCE_ID_NOT_SET" | "NOT_FOUND" |
-            "IO_ERROR" | "DATABASE_ERROR", "message": str}}
-    """
-    return export_bundle_service.export_bundle(
-        items,
-        bundle_name=bundle_name,
-        include_supersede_targets=include_supersede_targets,
-        selection=selection,
-    )
-
-
-@mcp.tool()
-def import_bundle(
-    bundle_path: str,
-    mode: str = "dry_run",
-    resolutions: Optional[dict] = None,
-    skip_duplicate_check: bool = False,
-) -> dict:
-    """Choose: 他インスタンスのバンドルを取り込みたいとき。まずmode="dry_run"
-    (既定、DB無変更)でレポートを確認し、裁定をresolutionsに畳んでmode="apply"を
-    呼ぶと1トランザクションでDBへ書き込む(失敗時は部分書き込みを残さない)。
-
-    dry_runは(a)再importの冪等性(hash一致は変化なし、不一致はtopic/activity/material
-    なら上書き候補・decision/logなら既定skip+警告)、(b)ネイティブ重複の疑い(新規分の
-    embedding類似検索、サーバー未起動時はdegraded=Trueで継続)、(c)タグ衝突
-    (merge/create/archived_hit/alias_hitの4区分、domainタグ・notes持ちはreview_required)
-    を判定する。
-
-    applyは全参照(belongs_to/related/supersedes/depends_on・本文中cite)を
-    バンドル内→provenance逆引き→自インスタンス出生→解決不能の順で解決し、
-    解決不能な本文citationは「{title}」(未取り込みの外部記録)に置換、frontmatterの
-    エッジは解決不能なら張らず件数のみ計上する。新規エンティティのcreated_atは
-    import実行時刻を採用(originの値はimport_provenance.origin_created_atに保持)。
-    activityは明示選択のみが対象。新規作成時はstatusをバンドルの値のまま採用するが、
-    既存を上書き更新するときはローカルのstatus/retracted_atを保持し変更しない。
-    タグ紐付けは追加のみで、送信元で外れたタグの自動削除はしない。
-
-    Args:
-        bundle_path: `export_bundle`が書き出したバンドルディレクトリのパス
-            (`manifest.yaml`を直下に持つディレクトリ)。DEFAULT_EXPORT_DIR配下限定
-        mode: "dry_run"(既定)または"apply"
-        resolutions: mode="apply"向けの裁定結果。dry_runでは無視される。
-            {"tag_renames": {incoming_tag: local_tag, ...},
-             "on_upstream_change": {entity_type: "overwrite"|"skip", ...},
-             "entity_overrides": {composite_key: "skip"|{"action": "skip"|"import"}, ...}}
-        skip_duplicate_check: Trueのとき重複疑い検知をスキップ(既定False、dry_run限定)
-
-    Returns:
-        dry_run成功時: {"format_version_ok", "bundle_id", "source_instance",
-            "summary": {type: {status: n}}, "upstream_changed", "tag_report",
-            "duplicates_suspected", "dangling_refs", "degraded", "load_errors"}
-        apply成功時: {"format_version_ok", "bundle_id", "source_instance",
-            "created": {type: n}, "updated": {type: n}, "skipped": {type: n},
-            "skip_reasons": {status: n}, "created_edges", "dropped_edges",
-            "unresolved_body_refs", "warnings", "load_errors"}
-        失敗時: {"error": {"code": "VALIDATION_ERROR" | "NOT_FOUND" |
-            "INSTANCE_ID_NOT_SET" | "DATABASE_ERROR", "message": str}}
-    """
-    return import_bundle_service.import_bundle(
-        bundle_path,
-        mode=mode,
-        resolutions=resolutions,
-        skip_duplicate_check=skip_duplicate_check,
-    )
-
-
-@mcp.tool()
 def add_habit(content: str, importance_score: int = 3, status: str = "active") -> dict:
     """エージェントの振る舞いを登録する。新規habitはtrigger_mode='intelligently'
     （マニフェスト表示のみ、詳細はget_habits(habit_id=...)でon-demand取得）で作成され、
@@ -2254,13 +2066,9 @@ def get_config() -> dict:
     budget_defaultsはbudget_serviceが把握する予算関連の既定値一覧（同じくsrc.configから読む）。
     recency_decay_rate/precedent_budget_chars（トップレベル）はbudget_defaultsと同じ値を指す
     後方互換フィールドで、定義元はbudget_service.BUDGET_DEFAULTS（重複ハードコードを避ける）。
-
-    instance_idはexport/importバンドルの複合キー発行に使うインスタンス識別子。未設定なら
-    null（skillがこれを見てset_instance_identityを促す判断材料にする）。
     """
     from src import config
     return {
-        "instance_id": instance_service.get_instance_id(),
         "heartbeat_timeout": config.HEARTBEAT_TIMEOUT_MINUTES,
         "in_progress_limit": config.IN_PROGRESS_LIMIT,
         "pending_limit": config.PENDING_LIMIT,

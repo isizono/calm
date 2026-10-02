@@ -3,6 +3,10 @@
 0071適用後にimport_provenanceテーブルが期待通り存在し、PRIMARY KEY
 (entity_type, entity_id)・UNIQUE (origin_instance, entity_type, origin_id)・
 entity_type CHECK制約が機能することを、サービス層を経由せず生SQLで検証する。
+
+import_provenance は後続の migration（インスタンス間export/import機能の撤去に伴う
+0082）で削除されるため、本テストは「0071 まで適用した時点」の DB で検証する（最新
+までの全 migration を適用した DB では 0082 によりこのテーブルは既に存在しない）。
 """
 import sqlite3
 
@@ -14,9 +18,15 @@ from test_migrations.conftest import db_before_migration, get_column_names, tabl
 
 
 @pytest.fixture
-def migrated_db(temp_db):
-    """全migration(0071含む)を適用済みのテスト用DBを提供する。"""
-    yield temp_db
+def migrated_db():
+    """0072の直前まで（0071含む）を適用したテスト用DBを提供する。
+
+    import_provenance は 0082 で削除されるため、最新までの全 migration を
+    適用した DB では検証できない。
+    """
+    with db_before_migration("0072") as db_path:
+        _injected_tags.clear()
+        yield db_path
 
 
 @pytest.fixture
