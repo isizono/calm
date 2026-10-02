@@ -95,6 +95,26 @@ def _get_cooldown_until(tag_id: int, marker: str) -> str | None:
         conn.close()
 
 
+def _break_cooldown_write_for_tag(tag_id: int) -> None:
+    """指定tag_id分のhint_cooldowns書き込みをDBトリガーで強制的に失敗させる。
+    実DBのIntegrityErrorを発生させるための仕掛けであり、関数のmockではない。"""
+    conn = get_connection()
+    try:
+        conn.execute(
+            f"""
+            CREATE TRIGGER test_force_cooldown_write_failure_{tag_id}
+            BEFORE INSERT ON hint_cooldowns
+            WHEN NEW.tag_id = {tag_id}
+            BEGIN
+                SELECT RAISE(ABORT, 'forced failure for test');
+            END
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _fixed_date(y: int, m: int, d: int) -> type:
     """date.today()が固定値を返すdateサブクラスを生成する(monkeypatch用)。"""
     fixed = date(y, m, d)
@@ -770,6 +790,63 @@ class TestRecomposeCooldownMarker:
         assert any(h["type"] == "direction_overflow" for h in hints_second)
         assert MARKER_DIRECTION_OVERFLOW not in _get_tag_notes(DOMAIN_TAG_NAME)
         assert _get_cooldown_until(tag_id, MARKER_DIRECTION_OVERFLOW) is None
+
+
+class TestCooldownMarkerWriteFailure:
+    """hint_cooldownsへの書き込みが想定外のDBエラーで失敗しても、計算済みの
+    hintが呼び出し元で握りつぶされないことの検証"""
+
+    def test_tag_scope_hint_survives_marker_write_failure(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        for i in range(RECOMPOSE_BOOTSTRAP_THRESHOLD):
+            add_decision(decision=f"d{i}", reason="r", topic_id=topic["topic_id"])
+        tag_id = _tag_id(DOMAIN_TAG_NAME)
+        _break_cooldown_write_for_tag(tag_id)
+
+        hints = get_hints("tag", tag_id)
+        assert any(h["type"] == "recompose_bootstrap" for h in hints)
+        # クールダウン書き込みは失敗しているため行は残らない
+        assert _get_cooldown_until(tag_id, MARKER_RECOMPOSE_BOOTSTRAP) is None
+
+    def test_activity_scope_other_tag_hint_not_lost_when_one_tag_marker_write_fails(
+        self, temp_db
+    ):
+        """activity scopeの集約で、1タグのクールダウン書き込み失敗が他タグ分の
+        計算済みhintまで巻き添えで消さないことを確認する"""
+        other_tag_name = "hint-domain-other"
+        other_tag = f"domain:{other_tag_name}"
+
+        topic1 = add_topic(title="t1", description="d", tags=[DOMAIN_TAG])
+        for i in range(RECOMPOSE_BOOTSTRAP_THRESHOLD):
+            add_decision(decision=f"d{i}", reason="r", topic_id=topic1["topic_id"])
+        dec0 = add_decision(decision="anchor1", reason="r", topic_id=topic1["topic_id"])
+
+        topic2 = add_topic(title="t2", description="d", tags=[other_tag])
+        for i in range(RECOMPOSE_BOOTSTRAP_THRESHOLD):
+            add_decision(decision=f"e{i}", reason="r", topic_id=topic2["topic_id"])
+        dec1 = add_decision(decision="anchor2", reason="r", topic_id=topic2["topic_id"])
+
+        domain_tag_id = _tag_id(DOMAIN_TAG_NAME)
+        other_tag_id = _tag_id(other_tag_name)
+        _break_cooldown_write_for_tag(domain_tag_id)
+
+        activity = add_activity(
+            title="[作業] x", description="d",
+            tags=[DOMAIN_TAG, other_tag, "intent:implement"],
+            related=[
+                {"type": "decision", "ids": [dec0["decision_id"], dec1["decision_id"]]},
+            ],
+            check_in=False,
+        )
+
+        hints = get_hints("activity", activity["activity_id"])
+        recompose_hints = [h for h in hints if h["type"] == "recompose_bootstrap"]
+        sources = {h["source"] for h in recompose_hints}
+        assert f"recompose_bootstrap:tag:{domain_tag_id}" in sources
+        assert f"recompose_bootstrap:tag:{other_tag_id}" in sources
+
+        assert _get_cooldown_until(domain_tag_id, MARKER_RECOMPOSE_BOOTSTRAP) is None
+        assert _get_cooldown_until(other_tag_id, MARKER_RECOMPOSE_BOOTSTRAP) == date.today().isoformat()
 
 
 class TestCooldownPersistsOverNotesCeiling:
