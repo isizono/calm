@@ -105,7 +105,7 @@ def test_deterministic_render_notice_constant():
     assert "再フォーマットや優先順の再評価をせず" in _DETERMINISTIC_RENDER_NOTICE
 
 
-def test_tier2_max_items_default():
+def test_tier2_max_items_constant():
     """階層 2 の上限の既定値は 5"""
     assert config.TIER2_MAX_ITEMS == 5
 
