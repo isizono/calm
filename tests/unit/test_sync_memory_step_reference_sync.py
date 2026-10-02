@@ -14,7 +14,9 @@ SYNC_MEMORY_SKILL_MD = _REPO_ROOT / "skills" / "sync-memory" / "SKILL.md"
 
 _STEP_LABEL = "聞き返しの後追い検出"
 _STEP_HEADING_RE = re.compile(rf"^### (\d+)\. {_STEP_LABEL}", re.MULTILINE)
-_STEP_REF_RE = re.compile(r"ステップ(\d+)")
+# "sync-memory" を同一行で前方に伴う「ステップN」のみを対象にする。sync-memoryへの
+# 言及を伴わない無関係な「ステップN」（他skillの手順番号等）まで拾って誤検知しないため。
+_STEP_REF_RE = re.compile(r"sync-memory[^\n]*?ステップ(\d+)")
 
 # このステップを言及しているファイル群。sync-memory SKILL.md側で見出し番号が
 # 変わった場合、ここに列挙した各ファイルの表記も追従させる必要がある。
