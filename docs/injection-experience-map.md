@@ -17,6 +17,7 @@
 | セクション | 予算（字） | 保証種別 | 備考 |
 |---|---:|---|---|
 | snapshot警告 | 0（異常時のみ全文） | complete | DBデータ異常減少検知時のみ出力。定常予算はゼロで、異常時は予約枠として全文を出す |
+| 版チェック警告 | ≤300（`config.INJECTION_BUDGET_VERSION_CHECK_CHARS`） | complete | 稼働中サーバーの`/health`の`version`と、インストール版（`installed_plugins.json`から解決）が異なる場合のみ1行警告を出す。どちらかが解決不能（サーバー未応答・gitチェックアウト実行等）な場合は非表示 |
 | activities（一覧+未表示+固定ナビ） | ≤4,000（`config.INJECTION_BUDGET_ACTIVITIES_CHARS`） | selected+remainder | 階層1（別セッション作業中）は全件表示。階層2（優先）は in_progress かつ7日以内、または pinned（60日decay）の中から上位5件を表示。行は `#id タイトル` の形式。goal条件がactivity束縛の親には、未完了の子を `\|` `├-` `└-` で行の下にぶら下げ、行末尾に子の内訳（✓達成 ▷着手できる ◷待ち ✕失敗）を付ける。子は階層1・2の候補プールから除外し（親の下にのみ出す）、末尾の『未表示』節にdomain別の件数と直近更新2件の例示を出す（親の下に出た子は数えない）。active な activity が1件も無いときは固定ナビのみ返す |
 | habits（投影ファイルの鮮度検証+縮退フォールバック） | 0（fresh時）/ 約80字（stale時、通知1行）/ always全文+件数1行（absent時） | fresh・stale時: complete（注入なし、または1行通知のみ）/ absent時: always=complete, intelligently=truncated+count | 通常配信は`~/.claude/rules/cc-memory-habits.md`への自動生成ファイル（launch時読み込み、本hookとは別の注入面）が担う。本セクションはverify_and_healで当該セッションが投影ファイルを読み込めているかを検証するだけで、fresh時は注入ゼロ、stale時は1行通知のみ。投影ファイルが読めない・未生成・kill switch（`CALM_HABITS_RULES_EXPORT=0`）中に限り、always層全文+intelligently層は件数1行の縮退注入を行う |
 | signals | ≤120 | complete | 未トリアージ(status='new')件数をkind内訳付きで1行表示。0件時は非表示 |

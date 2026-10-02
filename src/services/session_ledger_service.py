@@ -134,7 +134,7 @@ def register(
         conn.close()
 
 
-def mark_ended(session_id: str, reason: Literal["unregister", "ttl"]) -> None:
+def mark_ended(session_id: str, reason: Literal["unregister", "ttl", "stale_on_startup"]) -> None:
     """session_idの行をended状態にする。
 
     既にended済みの行、または存在しないsession_idはno-op(冪等)。
@@ -150,6 +150,55 @@ def mark_ended(session_id: str, reason: Literal["unregister", "ttl"]) -> None:
             (reason, session_id),
         )
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def close_stale_sessions(liveness_timeout_sec: float) -> int:
+    """前のサーバープロセスの時代から`ended_at`が空のまま残っている行を閉じる。
+
+    サーバー起動直後はこのプロセスのSessionManagerが持つin-memoryのliveness
+    reaperがまだ何も監視していない（register()されたheartbeatの記録がゼロ）
+    ため、以前のサーバープロセスが生きていた間にliveness TTLを超えて
+    heartbeatが途絶していた行（＝旧サーバーのreaperが処理しきれないうちに
+    サーバー自体が終了したもの）は、新サーバーが自発的に拾わない限り
+    `ended_at IS NULL`のまま永久に残る。liveness reaperが本来使う判定基準
+    （`last_heartbeat_at`がTTLを超えて更新されていない）をサーバー起動時点に
+    1回だけ適用し、同じ経路で閉じる。
+
+    `liveness_timeout_sec<=0`（liveness reaper自体が無効化されている設定）の
+    場合は何もしない（「stale」の定義自体が存在しないため）。
+
+    まだ生きていて、たまたまheartbeatがTTLを超えて途絶した直後の行も対象に
+    なりうる。この場合、register()のON CONFLICT...WHERE ended_at IS NULLに
+    より、以後そのlauncherから届くheartbeatは無言のno-opになり行は復活しない
+    (該当launcherプロセスが終了し新しいsession_idで登録し直すまで、その行は
+    `ended_at`が立ったまま残る)。destination_middleware等のended_at IS NULLを
+    前提にした生存セッション参照（宛先候補の絞り込み等）からも、その間
+    対象外になる。
+
+    Returns:
+        閉じた行数。
+    """
+    if liveness_timeout_sec <= 0:
+        return 0
+
+    conn = get_connection(load_vec=False)
+    try:
+        cursor = conn.execute(
+            """
+            UPDATE sessions
+            SET ended_at = CURRENT_TIMESTAMP, ended_reason = 'stale_on_startup'
+            WHERE ended_at IS NULL
+              AND (last_heartbeat_at IS NULL OR last_heartbeat_at < datetime('now', ?))
+            """,
+            (f"-{liveness_timeout_sec} seconds",),
+        )
+        conn.commit()
+        return cursor.rowcount
     except Exception:
         conn.rollback()
         raise

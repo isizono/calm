@@ -9,7 +9,7 @@ import asyncio
 import pytest
 from starlette.requests import Request
 
-from src.main import health
+from src.main import health, _version_id_for_root
 
 
 @pytest.fixture
@@ -50,3 +50,27 @@ class TestHealthEndpoint:
         body = json.loads(response.body)
         assert isinstance(body["uptime_sec"], int)
         assert body["uptime_sec"] >= 0
+
+    def test_includes_version_key(self, fake_request):
+        """versionキー自体は常に含む（値はNoneの場合がある。_version_id_for_root参照）"""
+        response = asyncio.run(health(fake_request))
+        body = json.loads(response.body)
+        assert "version" in body
+
+
+class TestVersionIdForRoot:
+    """版識別子の導出(_version_id_for_root)の分岐を検証する。"""
+
+    def test_returns_directory_name_when_not_a_git_checkout(self, tmp_path):
+        version_dir = tmp_path / "4a4a61c14dde"
+        version_dir.mkdir()
+
+        assert _version_id_for_root(version_dir) == "4a4a61c14dde"
+
+    def test_returns_none_when_git_checkout(self, tmp_path):
+        """gitチェックアウト(worktree含む)から直接実行している場合は版不明として扱う"""
+        repo_root = tmp_path / "calm"
+        repo_root.mkdir()
+        (repo_root / ".git").mkdir()
+
+        assert _version_id_for_root(repo_root) is None
