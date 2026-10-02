@@ -6,6 +6,7 @@ check_inのtests/integration/test_checkin_response_budget.pyと同じ構造
 from src.config import ACTIVITIES_BUDGET_CHARS
 from src.main import get_activities as tool_get_activities
 from src.services.activity_service import ACTIVITY_DESC_MAX_LEN, add_activity
+from src.services.tag_service import update_tag
 
 DEFAULT_TAGS = ["domain:test"]
 
@@ -56,3 +57,22 @@ class TestActivitiesBudget:
         assert "truncated" not in result
         assert len(result["activities"]) == 2
         assert result["total_count"] == 2
+
+    def test_archived_tags_excludes_tags_cut_from_activities(self, temp_db):
+        """トリムで応答から消えたアクティビティだけが持つタグは、archived_tagsに
+        残らない（応答に残っているactivitiesのタグだけを集約する）。"""
+        add_activity(
+            title="cut target",
+            description="d",
+            tags=["domain:cut-only"],
+            check_in=False,
+        )
+        update_tag("domain:cut-only", archived=True, archived_reason="退役済み")
+        _make_pending_activities(60)
+
+        result = tool_get_activities(status="pending", limit=61)
+
+        assert "truncated" in result
+        assert "cut target" not in [a["title"] for a in result["activities"]]
+        archived_tag_names = {entry["tag"] for entry in result["archived_tags"]}
+        assert "domain:cut-only" not in archived_tag_names

@@ -1109,9 +1109,12 @@ def get_activities(
         アクティビティ一覧（total_countで該当ステータスの全件数を確認可能）
         archived_tags: 応答に含まれるアクティビティのタグのうちarchivedなものの集約
             （{tag, archived_reason}の配列。該当なしでも空配列で常に付く）
-        応答全体がACTIVITIES_BUDGET_CHARS（既定10,000字）を超えるとactivitiesを後方
+        activities・total_countの字数（archived_tags・tag_notesは含まない）が
+        ACTIVITIES_BUDGET_CHARS（既定10,000字）を超えるとactivitiesを後方
         （limitで絞った中の古い側）から切り、truncatedキー（budget/before/after/cuts）
-        が付く。cuts[].nextに絞り込みのヒントが入る（limitとは独立の別枠）
+        が付く。cuts[].nextに絞り込みのヒントが入る（limitとは独立の別枠）。
+        archived_tags・tag_notesはこの予算に数えない（切り詰め後に残ったactivities
+        だけから集めるため）
     """
     flavor = _normalize_flavor(flavor)
     result = activity_service.get_activities(
@@ -1119,13 +1122,14 @@ def get_activities(
     )
     if "error" not in result:
         _apply_flavor_to_items(result.get("activities", []), "activity", flavor)
+        # flavor展開後の字数で予算を測り、activitiesを先に確定させる。
+        # archived_tags/tag_notesはその後に残ったactivitiesだけから集める
+        # （トリムで消えたアクティビティのタグを残さないため）
+        result = response_budget.apply_budget(result, ACTIVITIES_BUDGET_POLICY)
         all_tags = _collect_result_tags(result.get("activities", []))
         if all_tags:
             _maybe_inject_tag_notes(result, all_tags, mark=False)
         _attach_archived_tags_summary(result, all_tags)
-        # flavor展開・archived_tags付与で字数が変わるため、それらの後に予算を測る
-        # （check_inの_finalize_checkin_resultと同じ理由）
-        result = response_budget.apply_budget(result, ACTIVITIES_BUDGET_POLICY)
     return result
 
 

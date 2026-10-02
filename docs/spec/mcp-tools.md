@@ -361,7 +361,7 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 | since | string | no | null | ISO日付（以降） |
 | until | string | no | null | ISO日付（以前） |
 
-**返り値**: `{activities: [Activity], total_count: int, archived_tags: [{tag, archived_reason}]}`。statusの`active`は pending+in_progress のエイリアス（snoozed/shelvedは含まない）。`archived_tags`は応答に含まれるアクティビティのタグのうちarchivedなものの集約で、該当なしでも常に空配列で付く。応答全体（JSON文字列化後）が`ACTIVITIES_BUDGET_CHARS`（既定10,000字）を超えると`activities`が後方（`limit`で絞った中の古い側）から切られ、`truncated`キー（`{budget, before, after, over_budget, cuts: [{section, kept, cut, next?}]}`）が付く。`total_count`は`limit`・この予算どちらの影響も受けない母集団件数のまま。
+**返り値**: `{activities: [Activity], total_count: int, archived_tags: [{tag, archived_reason}]}`。statusの`active`は pending+in_progress のエイリアス（snoozed/shelvedは含まない）。`archived_tags`は応答に含まれるアクティビティのタグのうちarchivedなものの集約で、該当なしでも常に空配列で付く。`activities`・`total_count`の字数（JSON文字列化後、`archived_tags`・`tag_notes`は含まない）が`ACTIVITIES_BUDGET_CHARS`（既定10,000字）を超えると`activities`が後方（`limit`で絞った中の古い側）から切られ、`truncated`キー（`{budget, before, after, over_budget, cuts: [{section, kept, cut, next?}]}`）が付く。`total_count`は`limit`・この予算どちらの影響も受けない母集団件数のまま。`archived_tags`・`tag_notes`はこの予算に数えず、切り詰め後に残った`activities`だけから集める（この2キー分だけ応答全体がこの予算を超えることがある）。
 **副作用**: 呼び出し時、updated_atがSNOOZE_DURATION_DAYS（デフォルト3日）を超過したsnoozedアクティビティをpendingへ一括自動復活させる。
 
 ### 2.12b get_overview

@@ -64,15 +64,17 @@ def _activities_next_pointer(_response: dict) -> list[dict]:
     return [{"hint": "tags/status/since/untilで対象を絞るか、limitを下げて再実行してください"}]
 
 
-# get_activities応答全体（JSON文字列化後）の予算方針。check_inのTIER_FORM_BUDGET_POLICY
-# と同じ考え方（超過時は後方を切り、truncatedで示す）。activity_pathに対応するキーが
-# 応答に無いため、hard_max側のactivity.description切り詰めは常にno-opになる
-# （budget_chars超過分はcut_stepsのtail_listのみで吸収する）。main.pyのget_activities
-# ツール側（flavor適用・archived_tags付与の後）が呼ぶ。
+# get_activities応答のうちactivities・total_count（JSON文字列化後）の予算方針。
+# check_inのTIER_FORM_BUDGET_POLICYと同じ考え方（超過時は後方を切り、truncatedで
+# 示す）。activity_pathに対応するキーが応答に無いため、hard_max側のactivity.description
+# 切り詰めは常にno-opになる（budget_chars超過分はcut_stepsのtail_listのみで吸収する）。
+# main.pyのget_activitiesツール側（flavor適用の後、archived_tags/tag_notes付与の前）
+# が呼ぶ。archived_tags/tag_notesはトリム後に残ったactivitiesだけから集めるため、
+# この予算には数えない。
 ACTIVITIES_BUDGET_POLICY = BudgetPolicy(
     budget_chars=ACTIVITIES_BUDGET_CHARS,
     hard_max_chars=ACTIVITIES_BUDGET_CHARS,
-    protected_paths=frozenset({"total_count", "archived_tags"}),
+    protected_paths=frozenset({"total_count"}),
     capped_sections=(),
     pinned=None,
     cut_steps=(
