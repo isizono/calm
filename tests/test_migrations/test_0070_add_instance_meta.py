@@ -1,7 +1,7 @@
 """migration 0070_add_instance_meta のテスト
 
 0070適用後にinstance_metaテーブルが期待通り存在し、単一行制約（id=1固定CHECK）が
-機能することを、instance_serviceを経由せず生SQLで検証する。
+機能することを、サービス層を経由せず生SQLで検証する。
 
 instance_meta は後続の migration（インスタンス間export/import機能の撤去に伴う 0082）
 で削除されるため、本テストは「0070 まで適用した時点」の DB で検証する（最新までの
