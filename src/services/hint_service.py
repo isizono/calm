@@ -19,7 +19,8 @@ hintの種別と発火条件は仕様確定decisionに従う。
 
 tag scope由来のhint（recompose_bootstrap / recompose_delta / direction_overflow /
 notes_over_budget、およびactivity scope経由で集約されるこれらのhint）は、対象タグが
-archived（tags.archived_at IS NOT NULL）の場合は一切発火しない。
+archived（tags.archived_at IS NOT NULL）の場合は一切発火しない。activity_cleanupも
+同様に、マーカーを置くactivity-managementタグがarchivedの場合は発火しない。
 
 抑制:
 - tag_notesに以下のハッシュタグマーカーがあれば該当hintをスキップ:
@@ -43,8 +44,8 @@ archived（tags.archived_at IS NOT NULL）の場合は一切発火しない。
   いずれかが有効ならtrue（OR条件）
 - direction_overflow / notes_over_budgetはこの日次クールダウンの対象外
   （手動マーカーのみで抑制する）
-- 導入前からtags.notes本文に残っている自動マーカー（`<marker>-until:YYYY-MM-DD`）
-  はhint_cooldownsへ移行しない。_is_marker_activeが従来どおりnotes本文も読むため、
+- tags.notes本文に既に存在する自動マーカー（`<marker>-until:YYYY-MM-DD`）は
+  hint_cooldownsへ移行しない。_is_marker_activeが従来どおりnotes本文も読むため、
   移行しなくても抑制は機能し続ける
 
 severity値域: info | warn のみ (block不採用)

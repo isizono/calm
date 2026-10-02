@@ -789,8 +789,8 @@ class TestCooldownPersistsOverNotesCeiling:
         hints_first = get_hints("tag", tag_id)
         assert any(h["type"] == "recompose_bootstrap" for h in hints_first)
 
-        # 修正前は天井超過によりクールダウンの永続化そのものが失敗し、2回目の
-        # 呼び出しでも同じ提案が出続けていた(本テストが固定する回帰点)
+        # notesが天井超過でもクールダウンは保存され、同日2回目の呼び出しでは
+        # 同じ提案が出ない
         hints_second = get_hints("tag", tag_id)
         assert not any(h["type"] == "recompose_bootstrap" for h in hints_second)
 
