@@ -31,7 +31,8 @@ logger = logging.getLogger(__name__)
 
 # get_activitiesでdescriptionを切り詰める上限文字数
 ACTIVITY_DESC_MAX_LEN = 200
-from src.config import HEARTBEAT_TIMEOUT_MINUTES, SNOOZE_DURATION_DAYS
+from src.config import ACTIVITIES_BUDGET_CHARS, HEARTBEAT_TIMEOUT_MINUTES, SNOOZE_DURATION_DAYS
+from src.services.response_budget import BudgetPolicy, CutStep
 # DB格納可能なステータス値
 REAL_STATUSES = {"pending", "in_progress", "completed", "snoozed", "shelved"}
 # "active"エイリアスが展開されるステータス
@@ -40,6 +41,44 @@ ACTIVE_STATUSES = ("in_progress", "pending")
 VALID_STATUSES = REAL_STATUSES | {"active"}
 # update_activityのclosed_by引数が受け付ける値（'goal_judge'はサーバー専用で引数としては受けない）
 VALID_CLOSED_BY = {"user", "claude", "external"}
+
+# 期限切れsnoozed（updated_atがSNOOZE_DURATION_DAYSを超過）をpending相当として扱うための
+# 共通条件・表示ステータス式。SNOOZE_DURATION_DAYSはconfigの固定intであり、文字列連結でも
+# 注入経路にはならない（_sql_in_listと同じ理由）。読み取り専用の一覧
+# （get_active_domains_with_conn等、session_start_hookが使う）がget_activitiesのような
+# 一括UPDATEを踏まずに済むよう、表示時だけpending扱いする（DBのstatusは書き換えない）。
+_EXPIRED_SNOOZED_SQL = (
+    f"(a.status = 'snoozed' AND a.updated_at <= datetime('now', '-{SNOOZE_DURATION_DAYS} days'))"
+)
+_DISPLAY_STATUS_SQL = f"CASE WHEN {_EXPIRED_SNOOZED_SQL} THEN 'pending' ELSE a.status END"
+
+
+def _activities_next_pointer(_response: dict) -> list[dict]:
+    """activitiesが文字数予算で切られたときの継続ヒント。
+
+    件数(limit)ではなく文字数超過でのcutのため、offset/start_id相当のcursorを
+    持たない。tags/status/since/untilで対象を絞るか、limitを下げて再実行することを
+    促す静的ヒントであり、他のcut_stepのpointerのような実行可能なtool呼び出しの
+    再現ではない。
+    """
+    return [{"hint": "tags/status/since/untilで対象を絞るか、limitを下げて再実行してください"}]
+
+
+# get_activities応答全体（JSON文字列化後）の予算方針。check_inのTIER_FORM_BUDGET_POLICY
+# と同じ考え方（超過時は後方を切り、truncatedで示す）。activity_pathに対応するキーが
+# 応答に無いため、hard_max側のactivity.description切り詰めは常にno-opになる
+# （budget_chars超過分はcut_stepsのtail_listのみで吸収する）。main.pyのget_activities
+# ツール側（flavor適用・archived_tags付与の後）が呼ぶ。
+ACTIVITIES_BUDGET_POLICY = BudgetPolicy(
+    budget_chars=ACTIVITIES_BUDGET_CHARS,
+    hard_max_chars=ACTIVITIES_BUDGET_CHARS,
+    protected_paths=frozenset({"total_count", "archived_tags"}),
+    capped_sections=(),
+    pinned=None,
+    cut_steps=(
+        CutStep(path="activities", mode="tail_list", pointer=_activities_next_pointer),
+    ),
+)
 
 
 IMPLEMENT_WORKFLOW_GUARD_MESSAGE = (
@@ -325,7 +364,9 @@ def get_activities(
         until: ISO日付文字列。この日付以前に更新されたアクティビティのみ返す
 
     Returns:
-        アクティビティ一覧とtotal_count
+        アクティビティ一覧とtotal_count。応答全体の予算適用はmain.pyのget_activities
+        ツール側が担う（flavor適用後の字数で測る必要があるため。_finalize_checkin_result
+        と同じ理由）。本関数自体は切り詰めを行わない
     """
     # タグのバリデーション（tags指定時のみ）
     parsed_tags = None
@@ -488,19 +529,23 @@ def get_activities(
 
 
 def get_active_domains_with_conn(conn) -> list[dict]:
-    """アクティブなアクティビティ（in_progress/pending）があるdomain:タグを取得する（conn共有版）。
+    """アクティブなアクティビティ（in_progress/pending、および期限切れsnoozed）がある
+    domain:タグを取得する（conn共有版）。
+
+    期限切れsnoozedをpending相当に含めるのは表示時の評価のみで、statusの書き換えは
+    行わない（_EXPIRED_SNOOZED_SQL参照）。
 
     Returns:
         [{"tag_id": int, "name": str}, ...]（name順ソート）
     """
     rows = conn.execute(
-        """
+        f"""
         SELECT DISTINCT t.id AS tag_id, t.name
         FROM tags t
         JOIN activity_tags at ON t.id = at.tag_id
         JOIN activities a ON at.activity_id = a.id
         WHERE t.namespace = 'domain'
-          AND a.status IN ('in_progress', 'pending')
+          AND (a.status IN ('in_progress', 'pending') OR {_EXPIRED_SNOOZED_SQL})
         ORDER BY t.name
         """,
     ).fetchall()
@@ -519,6 +564,9 @@ def get_active_domains() -> list[dict]:
 def get_active_activities_by_tag_with_conn(conn, tag_id: int) -> list[dict]:
     """domain:タグに紐づくホットアクティビティを取得する（conn共有版）。
 
+    期限切れsnoozedはpending相当として含める（statusを'pending'として返すが、DBの
+    statusは書き換えない。表示時の評価のみ。_EXPIRED_SNOOZED_SQL参照）。
+
     last_heartbeat_session_id は呼び出し側（session_start_hook）が自セッション
     照合に使うため一緒に返す。
 
@@ -528,14 +576,14 @@ def get_active_activities_by_tag_with_conn(conn, tag_id: int) -> list[dict]:
         （in_progress優先、updated_at降順）
     """
     rows = conn.execute(
-        """
-        SELECT a.id, a.title, a.status, a.updated_at, a.last_heartbeat_session_id,
+        f"""
+        SELECT a.id, a.title, {_DISPLAY_STATUS_SQL} AS status, a.updated_at, a.last_heartbeat_session_id,
                CASE WHEN a.last_heartbeat_at > datetime('now', '-' || ? || ' minutes') THEN 1 ELSE 0 END AS is_heartbeat_active
         FROM activities a
         JOIN activity_tags at ON a.id = at.activity_id
         WHERE at.tag_id = ?
-          AND a.status IN ('in_progress', 'pending')
-        ORDER BY CASE a.status WHEN 'in_progress' THEN 0 ELSE 1 END,
+          AND (a.status IN ('in_progress', 'pending') OR {_EXPIRED_SNOOZED_SQL})
+        ORDER BY CASE status WHEN 'in_progress' THEN 0 ELSE 1 END,
                  a.updated_at DESC
         """,
         (HEARTBEAT_TIMEOUT_MINUTES, tag_id),
@@ -561,7 +609,9 @@ def get_pinned_active_activities_with_conn(conn) -> list[dict]:
     """pinsテーブルでtargetがactivityになっているactive activitiesを取得する（conn共有版）。
 
     pinsテーブルを介したpin関係のうち target_type='activity' のものを引き、
-    status IN ('in_progress', 'pending') の activity を返す。
+    status IN ('in_progress', 'pending') の activity（および期限切れsnoozed。
+    pending相当として表示時に評価するのみでDBのstatusは書き換えない。
+    _EXPIRED_SNOOZED_SQL参照）を返す。
     複数の source（tag/activity 等）から同じ activity にpinされている場合でも
     DISTINCT で1件に集約する。
 
@@ -571,13 +621,13 @@ def get_pinned_active_activities_with_conn(conn) -> list[dict]:
         （updated_at 降順、id を tie-breaker）
     """
     rows = conn.execute(
-        """
-        SELECT DISTINCT a.id, a.title, a.status, a.updated_at,
+        f"""
+        SELECT DISTINCT a.id, a.title, {_DISPLAY_STATUS_SQL} AS status, a.updated_at,
                a.last_heartbeat_session_id,
                CASE WHEN a.last_heartbeat_at > datetime('now', '-' || ? || ' minutes') THEN 1 ELSE 0 END AS is_heartbeat_active
         FROM activities a
         JOIN pins p ON p.target_type = 'activity' AND p.target_id = a.id
-        WHERE a.status IN ('in_progress', 'pending')
+        WHERE (a.status IN ('in_progress', 'pending') OR {_EXPIRED_SNOOZED_SQL})
         ORDER BY a.updated_at DESC, a.id DESC
         """,
         (HEARTBEAT_TIMEOUT_MINUTES,),

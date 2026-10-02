@@ -20,6 +20,7 @@ from src.services.activity_service import (
 from src.services.pin_service import add_pin
 from src.services.ask_service import add_ask
 from src.services import goal_service
+from src.config import SNOOZE_DURATION_DAYS
 import src.services.embedding_service as emb
 from tests.helpers import add_decision
 from hooks.session_start_hook import (
@@ -970,3 +971,72 @@ class TestOrchChildTree:
         result = _build_active_context_wrapper()
 
         assert f"#{parent['activity_id']} [統合] 親J  ✓1 ▷1 ◷1" in result
+
+
+class TestExpiredSnoozedDisplayedAsPending:
+    """期限切れsnoozedは一覧上でpending相当として扱われる（表示時の評価のみ、
+    DBのstatusは書き換えない）。session_start_hookはget_activitiesのような
+    一括UPDATEを踏まないため、この表示時評価が無いと期限切れsnoozedは
+    一覧からも未表示件数からも永久に消える。
+    """
+
+    def test_expired_snoozed_counted_as_undisplayed_pending(self, temp_db):
+        """非pinnedの期限切れsnoozedは、非pinnedのpendingと同様に『未表示』節へ
+        （tier1・tier2には出ず、件数と例示タイトルの内訳としてのみ）現れる"""
+        r = add_activity(
+            title="[作業] 期限切れsnoozed", description="Desc",
+            tags=["domain:myapp"], check_in=False,
+        )
+        update_activity(r["activity_id"], status="snoozed")
+        _set_updated_at_days_ago(r["activity_id"], SNOOZE_DURATION_DAYS + 1)
+
+        result = _build_active_context_wrapper()
+
+        assert "## 未表示 1件" in result
+        assert "myapp 1件：[作業] 期限切れsnoozed" in result
+
+    def test_unexpired_snoozed_not_shown_at_all(self, temp_db):
+        """期限内のsnoozedは一覧にも未表示件数にも出ない（固定ナビのみ）"""
+        r = add_activity(
+            title="[作業] 期限内snoozed", description="Desc",
+            tags=["domain:myapp"], check_in=False,
+        )
+        update_activity(r["activity_id"], status="snoozed")
+
+        result = _build_active_context_wrapper()
+
+        assert result == _NAV_BASE
+
+    def test_expired_snoozed_display_does_not_rewrite_db(self, temp_db):
+        """表示時の評価であり、DBのstatusはsnoozedのまま変わらない"""
+        r = add_activity(
+            title="[作業] 期限切れsnoozed", description="Desc",
+            tags=["domain:myapp"], check_in=False,
+        )
+        update_activity(r["activity_id"], status="snoozed")
+        _set_updated_at_days_ago(r["activity_id"], SNOOZE_DURATION_DAYS + 1)
+
+        _build_active_context_wrapper()
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT status FROM activities WHERE id = ?", (r["activity_id"],)
+            ).fetchone()
+            assert row["status"] == "snoozed"
+        finally:
+            conn.close()
+
+    def test_pinned_expired_snoozed_shown_in_tier2(self, temp_db):
+        """pinnedかつ期限切れsnoozedは、pinnedかつpendingと同様に階層2へ表示される"""
+        r = add_activity(
+            title="[作業] pinned期限切れsnoozed", description="Desc",
+            tags=["domain:myapp"], check_in=False,
+        )
+        add_pin("tag", "domain:myapp", "activity", r["activity_id"])
+        update_activity(r["activity_id"], status="snoozed")
+        _set_updated_at_days_ago(r["activity_id"], SNOOZE_DURATION_DAYS + 1)
+
+        result = _build_active_context_wrapper()
+
+        assert "[作業] pinned期限切れsnoozed" in result

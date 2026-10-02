@@ -40,6 +40,7 @@ from src.services.checkin_tier_service import (
     collect_and_assemble as _check_in,
     TIER_FORM_BUDGET_POLICY,
 )
+from src.services.activity_service import ACTIVITIES_BUDGET_POLICY
 from src.services import response_budget, session_ledger_service, session_registry_service
 from src.infra.session_identity import get_caller_session_id
 from src.services.tag_service import (
@@ -1108,6 +1109,9 @@ def get_activities(
         アクティビティ一覧（total_countで該当ステータスの全件数を確認可能）
         archived_tags: 応答に含まれるアクティビティのタグのうちarchivedなものの集約
             （{tag, archived_reason}の配列。該当なしでも空配列で常に付く）
+        応答全体がACTIVITIES_BUDGET_CHARS（既定10,000字）を超えるとactivitiesを後方
+        （limitで絞った中の古い側）から切り、truncatedキー（budget/before/after/cuts）
+        が付く。cuts[].nextに絞り込みのヒントが入る（limitとは独立の別枠）
     """
     flavor = _normalize_flavor(flavor)
     result = activity_service.get_activities(
@@ -1119,6 +1123,9 @@ def get_activities(
         if all_tags:
             _maybe_inject_tag_notes(result, all_tags, mark=False)
         _attach_archived_tags_summary(result, all_tags)
+        # flavor展開・archived_tags付与で字数が変わるため、それらの後に予算を測る
+        # （check_inの_finalize_checkin_resultと同じ理由）
+        result = response_budget.apply_budget(result, ACTIVITIES_BUDGET_POLICY)
     return result
 
 
@@ -1343,7 +1350,10 @@ def get_overview(days: int = 7, limit: int = 20) -> dict:
       triage_pending_items にタイトル(question)付きで列挙する（meta も同様に limit
       無視で必ず含まれる）
     - backlog: それ以外の残り。件数と status 別・domain 別の内訳のみ。
-      stale_in_progress_count は「in_progress と宣言されているが days 日動いていない」件数
+      stale_in_progress_count は「in_progress と宣言されているが days 日動いていない」件数。
+      by_status は期限切れ snoozed（SNOOZE_DURATION_DAYS 超過）を pending として数える
+      （表示時の評価のみで、DB の status は書き換えない。get_activities のような
+      自動復活はここでは起こさない）
 
     working/recently_done/backlog の各節は count と total_count が異なる場合、
     limit で切り詰められている。awaiting_human は meta ask が limit を無視して
