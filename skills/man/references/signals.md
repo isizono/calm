@@ -8,7 +8,7 @@
 
 calm 自身への故障報告・使用感不満・矛盾検出・運用計測イベントの統一入口。
 
-### 1.1 kind（8種類、いずれか必須）
+### 1.1 kind（9種類、いずれか必須）
 
 - `machine_error`: ツールエラー・hook 失敗・サーバー異常を観察した
 - `friction`: calm の使い勝手への不満・違和感（ユーザー発話由来を含む）
@@ -20,12 +20,13 @@ calm 自身への故障報告・使用感不満・矛盾検出・運用計測イ
 - `precedent_miss` / `precedent_misapplied`: 判例参照の見落とし・誤類推の事後発覚。`context` に `missed_ids` / `cited_id` 等の規約キーを書く
 - `boundary_case` / `rollback`: 運用上の案件記録。`summary` に PR 番号等の案件識別子を含める（dedup の集約単位を案件ごとに分けるため）
 - `goal_rollback`: `update_goal` の `reopen_reason`（goal 判定の差し戻し）が書く専用の kind。手で `report_signal` を呼んで報告するものではない
+- `guard_block`: PreToolUse hook（内部IDリークブロック・bg入れ子起動ブロック）がdeny判定を下したときにそのhookが書く専用の kind。手で `report_signal` を呼んで報告するものではない。fingerprintはhook名と規則の種類だけで決まり、拒否した具体的な値（リテラル・コマンド文字列等）には依存しないため、同じ規則の再発は1行に畳まれる
 
 ### 1.2 引数
 
 | 引数 | 必須 | 内容 |
 |---|---|---|
-| `kind` | 必須 | 上記8種のいずれか |
+| `kind` | 必須 | 上記9種のいずれか |
 | `summary` | 必須 | 1行要約（空文字不可） |
 | `detail` | 任意 | traceback・引数ダイジェスト・自由記述 |
 | `refs` | 任意 | `[{"type": "decision", "id": 123}, ...]` 形式の参照リスト |
@@ -50,14 +51,17 @@ calm 自身への故障報告・使用感不満・矛盾検出・運用計測イ
 |---|---|---|
 | `status` | `"new"` | フィルタ対象の status（`"new"` \| `"triaged"` \| `"promoted"` \| `"dismissed"`）。null 指定で全 status 横断 |
 | `kind` | null | フィルタ対象の kind。null 指定で全 kind 横断 |
+| `ids` | null | 指定時はこの signal id の集合だけに絞る（他のフィルタとAND条件）。`get_asks` の `ids` と同じ規約で空配列は条件なし扱い。指定時は下記の detail 切り詰めを行わない |
 | `limit` | 20 | 取得件数上限（最大100件） |
 | `offset` | 0 | 取得開始位置（ページネーション用） |
 | `include_stats` | false | true のとき kind×status のクロス集計と直近30日サマリを付与 |
 
 ### 3.2 返り値
 
-- 成功時: `{"signals": [...], "total_count": int, "stats": {...}(include_stats時のみ)}`
+- 成功時: `{"signals": [...], "total_count": int, "stats": {...}(include_stats時のみ), "next": [...](下記切り詰め発生時のみ)}`
 - 失敗時: `{"error": {"code": ..., "message": ...}}`
+
+`ids` を指定しない一覧では、各行の `detail` が300字を超える場合は300字に切り詰め `detail_truncated: true` を付与する（DB上の値は変わらない）。切り詰めが発生した行がある場合、`next` に `{"tool": "get_signals", "args": {"ids": [...], "status": null}}` という全文取得用の呼び出しを示す（この経路は切り詰めない）。
 
 各 signal の id は他の get 系ツールと同様 `id_raw` として返る（`id` キー自体は含まない）。`refs` 内の各要素の `id`・`promoted_id`・`context` 内にネストした参照（`missed_ids` 等）も同じ変換で対応する `{id_key}_raw` に退避される。`session_id`/`fingerprint` は記録側の内部相関・dedup専用フィールドのため含まない。
 

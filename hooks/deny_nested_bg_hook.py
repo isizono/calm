@@ -23,7 +23,7 @@ _PLUGIN_ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(_PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(_PLUGIN_ROOT))
 
-from hooks.signal_capture import try_capture_signal  # noqa: E402
+from hooks.signal_capture import try_capture_guard_block, try_capture_signal  # noqa: E402
 from src.harness import select_harness  # noqa: E402
 
 # `claude --bg` の実起動を、コマンド先頭語としての `claude` の位置でのみ検出する。
@@ -155,6 +155,12 @@ def main() -> None:
         if not session_id or not _is_background_session(session_id):
             harness.emit_empty()
             return
+
+        try_capture_guard_block(
+            source="hook:deny_nested_bg",
+            summaries=["nested bg spawn blocked"],
+            detail=f"session_id={session_id}",
+        )
 
         harness.emit_permission_decision("deny", _DENY_REASON)
 
