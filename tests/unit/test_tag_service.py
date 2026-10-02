@@ -16,11 +16,31 @@ from src.services.tag_service import (
     demote_tag_notes,
     collect_tag_notes_for_injection,
     _TAG_NOTES_RATCHET_CEILING,
+    _max_timestamp,
 )
 from src.services.topic_service import add_topic
 from src.services.material_service import get_material
 import src.services.embedding_service as emb
 
+
+
+# ========================================
+# _max_timestamp テスト
+# ========================================
+
+
+class TestMaxTimestamp:
+    def test_both_none_returns_none(self):
+        assert _max_timestamp(None, None) is None
+
+    def test_one_side_none_returns_other(self):
+        assert _max_timestamp("2026-01-01 00:00:00", None) == "2026-01-01 00:00:00"
+        assert _max_timestamp(None, "2026-01-01 00:00:00") == "2026-01-01 00:00:00"
+
+    def test_returns_later_timestamp_regardless_of_argument_order(self):
+        older, newer = "2026-01-01 00:00:00", "2026-06-01 00:00:00"
+        assert _max_timestamp(older, newer) == newer
+        assert _max_timestamp(newer, older) == newer
 
 
 # ========================================
