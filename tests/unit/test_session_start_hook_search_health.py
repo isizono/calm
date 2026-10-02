@@ -82,6 +82,32 @@ def test_qe_dead_yields_warning_and_signal(temp_db):
         conn.close()
 
 
+def test_both_degraded_and_qe_unhealthy_yields_two_signals(temp_db):
+    """縮退とクエリ拡張停止が同時に閾値超過したとき、signal_eventsに2行（summaryが別）記録される。
+    注意文自体は1行のまま（両方の警告が同じ行に結合される）。
+    """
+    conn = get_connection()
+    try:
+        _seed_many(conn, 10, degraded=True, qe_expansions=[], start_days_ago=0.1)
+        _seed_many(conn, 20, degraded=False, qe_expansions=[], start_days_ago=0.2)
+        conn.commit()
+
+        text = session_start_hook._build_search_health_section(conn)
+
+        assert "縮退率" in text
+        assert "クエリ拡張" in text
+        assert text.count("\n") == 1  # 2つの異常でも注意は1行に集約される
+
+        rows = _signal_rows(conn, "hook:search_health")
+        assert len(rows) == 2
+        assert {r["summary"] for r in rows} == {
+            "検索がキーワード検索のみへ縮退している割合が閾値を超えている",
+            "クエリ拡張が発火していない状態が続いている",
+        }
+    finally:
+        conn.close()
+
+
 def test_insufficient_sample_count_yields_no_warning(temp_db):
     conn = get_connection()
     try:
