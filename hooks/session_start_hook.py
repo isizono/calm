@@ -260,12 +260,10 @@ def _build_undisplayed_lines(
     """末尾『未表示』節の行群を組み立てる。
 
     domainごとの件数と、そのdomainで最近更新された順に2件のタイトルを
-    例示する（決定事項「未表示はdomain別の件数と各2件の例で出す」を、
-    domainが多いときは上位 `_UNDISPLAYED_EXAMPLE_DOMAINS` 件のみ例示する
-    形に補う決定事項「未表示節は上位3 domainだけ例示し残りは1行に畳む」）。
-    未表示のいるdomainが `_UNDISPLAYED_EXAMPLE_DOMAINS + 1` 件以上のときだけ
-    畳み、件数上位 `_UNDISPLAYED_EXAMPLE_DOMAINS` 件は例示付きで出し、残りは
-    名前と件数だけを件数降順で1行にまとめる（省略せず全domain分を載せる）。
+    例示する。未表示のいるdomainが `_UNDISPLAYED_EXAMPLE_DOMAINS + 1` 件を
+    超えるとき（まとめ行が2 domain以上を受け持つとき）だけ畳み、件数上位
+    `_UNDISPLAYED_EXAMPLE_DOMAINS` 件は例示付きで出し、残りは名前と件数だけを
+    件数降順で1行にまとめる（省略せず全domain分を載せる）。
     domainタグを持たない未表示activity（pin経由のみ）は、そのタグを持つ
     domainが無いため、どの内訳行にも現れない（見出しの総数には数えるが、
     domain単位の内訳の対象外という受容済みの隙間）。

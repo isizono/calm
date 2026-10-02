@@ -110,6 +110,18 @@ def test_tier2_max_items_default():
     assert config.TIER2_MAX_ITEMS == 5
 
 
+def test_tier2_max_items_reads_env_var(monkeypatch):
+    """CALM_TIER2_MAX_ITEMSを設定してconfigを読み込むと、その値になる"""
+    import importlib.util
+
+    monkeypatch.setenv("CALM_TIER2_MAX_ITEMS", "10")
+    spec = importlib.util.find_spec("src.config")
+    fresh_config = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fresh_config)
+
+    assert fresh_config.TIER2_MAX_ITEMS == 10
+
+
 def test_calc_elapsed_days_today():
     now = datetime.now(timezone.utc).isoformat()
     assert _calc_elapsed_days(now) == 0
