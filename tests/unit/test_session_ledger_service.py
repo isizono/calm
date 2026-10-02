@@ -301,3 +301,91 @@ class TestRecordCheckin:
     def test_unknown_session_id_is_noop(self, temp_db):
         session_ledger_service.record_checkin("does-not-exist", 42)
         assert _fetch_row_or_none("does-not-exist") is None
+
+
+def _backdate_heartbeat(session_id: str, seconds_ago: int) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE sessions SET last_heartbeat_at = datetime('now', ?) WHERE session_id = ?",
+            (f"-{seconds_ago} seconds", session_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+class TestCloseStaleSessions:
+    def test_closes_rows_whose_heartbeat_exceeds_timeout(self, temp_db, monkeypatch):
+        monkeypatch.setattr(session_ledger_service, "resolve_cli_session", lambda sid: None)
+        session_ledger_service.register(
+            "stale-1", id_kind="bridge", harness=None, host="host-a", mode="interactive",
+        )
+        _backdate_heartbeat("stale-1", 999)
+
+        closed = session_ledger_service.close_stale_sessions(300)
+
+        assert closed == 1
+        row = _fetch_row("stale-1")
+        assert row["ended_at"] is not None
+        assert row["ended_reason"] == "stale_on_startup"
+
+    def test_does_not_close_rows_with_recent_heartbeat(self, temp_db, monkeypatch):
+        """heartbeatがTTL内であれば(=まだ生きている可能性がある)閉じない。"""
+        monkeypatch.setattr(session_ledger_service, "resolve_cli_session", lambda sid: None)
+        session_ledger_service.register(
+            "live-1", id_kind="bridge", harness=None, host="host-a", mode="interactive",
+        )
+
+        closed = session_ledger_service.close_stale_sessions(300)
+
+        assert closed == 0
+        row = _fetch_row("live-1")
+        assert row["ended_at"] is None
+        assert row["ended_reason"] is None
+
+    def test_does_not_overwrite_already_ended_rows(self, temp_db, monkeypatch):
+        monkeypatch.setattr(session_ledger_service, "resolve_cli_session", lambda sid: None)
+        session_ledger_service.register(
+            "ended-1", id_kind="bridge", harness=None, host="host-a", mode="interactive",
+        )
+        _backdate_heartbeat("ended-1", 999)
+        session_ledger_service.mark_ended("ended-1", "unregister")
+
+        closed = session_ledger_service.close_stale_sessions(300)
+
+        assert closed == 0
+        row = _fetch_row("ended-1")
+        assert row["ended_reason"] == "unregister"
+
+    def test_closes_rows_with_null_heartbeat(self, temp_db):
+        """last_heartbeat_atがNULLの行(登録経路の異常等)も「途絶している」側に倒して閉じる。"""
+        conn = get_connection()
+        try:
+            conn.execute(
+                "INSERT INTO sessions (session_id, id_kind, last_heartbeat_at) "
+                "VALUES ('null-heartbeat', 'bridge', NULL)"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        closed = session_ledger_service.close_stale_sessions(300)
+
+        assert closed == 1
+        row = _fetch_row("null-heartbeat")
+        assert row["ended_reason"] == "stale_on_startup"
+
+    def test_noop_when_liveness_timeout_disabled(self, temp_db, monkeypatch):
+        """liveness_timeout_sec<=0(reaper自体が無効化された設定)の場合は何もしない。"""
+        monkeypatch.setattr(session_ledger_service, "resolve_cli_session", lambda sid: None)
+        session_ledger_service.register(
+            "stale-2", id_kind="bridge", harness=None, host="host-a", mode="interactive",
+        )
+        _backdate_heartbeat("stale-2", 999)
+
+        closed = session_ledger_service.close_stale_sessions(0)
+
+        assert closed == 0
+        row = _fetch_row("stale-2")
+        assert row["ended_at"] is None

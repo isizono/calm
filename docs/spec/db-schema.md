@@ -603,8 +603,9 @@ activityとgoalの紐づけ、または不要印（このactivityには終了条
 - 既にended済みの行はheartbeat再送等で復活させない(`ON CONFLICT DO UPDATE ... WHERE ended_at IS NULL`によりno-opにする)。復活を許すと、supersededで閉じた旧世代の行に遅延したheartbeatが届いた際、新世代の生存行と`cli_session_id`が重複して部分一意索引違反になるため
 - `id_kind`は起動器の識別子が取れたか(`bridge`)/取れず揮発識別子で代替したか(`ephemeral`)の2値。現在の書き込み経路(`/session/register`)は起動器が自身のUUIDを送る前提のため常に`bridge`になる
 - `mode`列は無人実行かどうかを表す想定だが、判定条件を持つ既存コードが無いため現状は常に`interactive`を書き込む
+- `ended_reason='stale_on_startup'`: サーバー起動時(`session_ledger_service.close_stale_sessions`)に、前のサーバープロセスの時代からheartbeatがliveness TTLを超えて途絶したまま`ended_at IS NULL`で残っていた行を閉じる。旧サーバーが生きている間はin-memoryのliveness reaperが同じ基準で処理するが、reaperが処理しきれないうちにサーバー自体が終了すると行が永久に残るため、新サーバーの起動時に同じ基準で1回だけ掃除する
 
-関連 migration: 0078_add_sessions
+関連 migration: 0078_add_sessions, 0086_sessions_add_stale_on_startup_reason
 
 カラム一覧・インデックス: `db-schema-tables.md` の `sessions` 節参照。
 
@@ -828,6 +829,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0079_add_feedback_entries | feedback_entries / feedback_notes / feedback_holds / feedback_turn_marks / feedback_bootstrap_seen / feedback_switch テーブル新設（フィードバック機構、§3.32-3.37） |
 | 0080_drop_activities_orch_managed | activities.orch_managed カラムを削除（0045で追加した構造的属性の撤去。運用体系解体後も複数箇所で参照が残り誤読を誘発していたため） |
 | 0081_vec_cosine_rebuild | vec_index / tag_vec を一時テーブル退避方式（ALTER TABLE RENAME TOは不使用）で distance_metric=cosine へ再構築（両テーブルとも vec0 既定の L2 のまま運用されていたための是正、§3.15, §3.16） |
+| 0086_sessions_add_stale_on_startup_reason | sessions.ended_reason に 'stale_on_startup' を追加（§3.31） |
 
 重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。
 

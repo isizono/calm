@@ -21,8 +21,9 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from src.env_compat import env_get, env_set
+from src.env_compat import env_get, env_names, env_set
 from src.infra.git_repo import resolve_main_repo_root
+from src.infra.plugin_install import resolve_installed_plugin_root
 from src.infra.session_identity import (
     register_launcher_session,
     unregister_launcher_session,
@@ -282,19 +283,57 @@ def _is_server_running() -> bool:
         return False
 
 
+def _resolve_server_root() -> tuple[Path, str]:
+    """起動対象のプロジェクトルートを解決する。
+
+    `~/.claude/plugins/installed_plugins.json`から、Claude Codeが現在有効と
+    しているインストール先が解決でき、かつ`uv sync`済み（`.venv/bin/python`が
+    存在する）ならそれを使う。launcherプロセス自身は`_PROJECT_ROOT`
+    （自分がバンドルされているバージョン）に起動時点で固定されてしまうため、
+    毎回ここで読み直すことで、古い版のまま残っているlauncherが再起動しても
+    最新版からサーバーを立て直せるようにする。
+
+    解決できない（gitチェックアウトからの直接実行等）、またはまだsync済みで
+    ない場合は`_PROJECT_ROOT`にフォールバックする。未sync状態のまま
+    `-m src.main`を起動すると依存解決に失敗しうるため、安全側に倒す
+    （sync自体はこの関数の責務ではない。SessionStart hook等が`uv run`経由で
+    実行されることで、通常は既にsync済みになっている）。
+
+    Returns:
+        (root, source)。sourceは"installed"か"bundled"（ログ用）。
+    """
+    installed = resolve_installed_plugin_root(Path(_PROJECT_ROOT))
+    if installed is not None and (installed / ".venv" / "bin" / "python").exists():
+        return installed, "installed"
+    return Path(_PROJECT_ROOT), "bundled"
+
+
 def _start_http_server() -> bool:
     """HTTPサーバーをデーモンとして起動する。
 
-    sys.executableは.mcp.jsonの「uv run python -m src.launcher」経由で
-    起動されることを前提とし、uv仮想環境のPython（.venv/bin/python）を使用する。
+    起動元ルートの解決は`_resolve_server_root()`に委ねる。そのルート配下の
+    venv Python（`.venv/bin/python`）を使う（bundled rootの場合は
+    `.mcp.json`の「uv run python -m src.launcher」経由で起動された
+    sys.executable自体がそれに当たる）。embedding_service等の子プロセスが
+    起動元ルートを再解決できるよう、`CALM_PROJECT_ROOT`（新旧名）を起動対象の
+    ルートで上書きしたenvをこのプロセス専用に渡す（launcher自身のos.environは
+    変更しない）。
     """
+    root, source = _resolve_server_root()
+    logger.info(f"Starting HTTP server from {source} root: {root}")
+    python = str(root / ".venv" / "bin" / "python") if source == "installed" else sys.executable
+    env = os.environ.copy()
+    for name in env_names("CALM_PROJECT_ROOT"):
+        env.pop(name, None)
+    env["CALM_PROJECT_ROOT"] = str(root)
     try:
         subprocess.Popen(
-            [sys.executable, "-m", "src.main", "--transport", "http"],
+            [python, "-m", "src.main", "--transport", "http"],
             start_new_session=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            cwd=_PROJECT_ROOT,
+            cwd=str(root),
+            env=env,
         )
     except OSError as e:
         logger.warning(f"Failed to start HTTP server: {e}")

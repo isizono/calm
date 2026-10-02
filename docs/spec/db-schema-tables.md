@@ -5,7 +5,7 @@
 <!-- 再生成: uv run python scripts/dump_db_schema.py -->
 
 `migrations/` を通し番号順に全適用した結果として得られる、現在のテーブル/ビュー構造の機械的な写しである。
-カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0081）。
+カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0086）。
 
 「なぜこの形なのか」（設計判断の背景・変遷・既知の課題）は `docs/spec/db-schema.md` を参照。
 本ファイルは現在値のみを扱い、変遷の経緯（旧カラムの削除理由等）は記載しない。
@@ -1463,17 +1463,18 @@ CREATE TABLE search_telemetry (
 
 ```sql
 CREATE TABLE sessions (
-  session_id TEXT PRIMARY KEY,             -- 起動器の識別子。取れなければ 'eph:'||接続単位の揮発識別子
+  session_id TEXT PRIMARY KEY,
   id_kind TEXT NOT NULL CHECK (id_kind IN ('bridge','ephemeral')),
-  harness TEXT, host TEXT, cwd TEXT,       -- 起動器の申告。hostは到達判定、cwdは診断
-  cli_session_id TEXT, cli_pid INTEGER,    -- 会話識別子。解決関数が充填する
+  harness TEXT, host TEXT, cwd TEXT,
+  cli_session_id TEXT, cli_pid INTEGER,
   cli_resolve_status TEXT CHECK (cli_resolve_status IS NULL
     OR cli_resolve_status IN ('resolved','header_missing','not_found','stale')),
   mode TEXT NOT NULL DEFAULT 'interactive' CHECK (mode IN ('interactive','headless')),
-  last_heartbeat_at TIMESTAMP,             -- 起動器の心拍(60秒)
-  last_tool_call_at TIMESTAMP,             -- 全ツール呼び出しの touch(60秒スロットル)
+  last_heartbeat_at TIMESTAMP,
+  last_tool_call_at TIMESTAMP,
   last_checkin_activity_id INTEGER, last_checkin_at TIMESTAMP,
-  ended_at TIMESTAMP, ended_reason TEXT CHECK (ended_reason IS NULL OR ended_reason IN ('unregister','ttl','superseded')),
+  ended_at TIMESTAMP, ended_reason TEXT CHECK (ended_reason IS NULL
+    OR ended_reason IN ('unregister','ttl','superseded','stale_on_startup')),
   CHECK ((ended_at IS NULL) = (ended_reason IS NULL))
 )
 ```
