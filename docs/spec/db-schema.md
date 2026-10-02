@@ -2,8 +2,8 @@
 watch-tags: domain:calm, domain:cc-memory
 watch-direction: true
 watch-migrations: true
-last-synced: 2026-10-02
-last-synced-migration: 0084
+last-synced: 2026-09-23
+last-synced-migration: 0079
 -->
 
 # CALM DBスキーマ v0
