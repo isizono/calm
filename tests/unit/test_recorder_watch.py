@@ -843,6 +843,47 @@ class TestUnlinkedMaterials:
         cursor2 = _cursor(run_dir)
         assert cursor2["unlinked_materials"] == [55]  # relatedありの10は入らない
 
+    def test_orphan_chunk_unacked_still_collects_material_id(self, tmp_path, monkeypatch):
+        """DONEが来ずunackedへ回った片でも、収集は`_advance_cursor_from_pending`
+        を通るため行われることを確かめる。"""
+        monkeypatch.setattr(hook, "CHAR_THRESHOLD", 3)
+        run_dir, transcript = _setup_run(
+            tmp_path, transcript_lines=[_entry("assistant", "e1", text="orphan text")]
+        )
+        own_transcript = tmp_path / "recorder_own.jsonl"
+        own_transcript.write_text("", encoding="utf-8")
+        _mock_main_alive(monkeypatch)
+
+        sleep, now = _stub_sleep_and_clock()
+        code, _ = _run_hook(cwd=run_dir, sleep=sleep, now=now, own_transcript_path=str(own_transcript))
+        assert code == 2
+
+        _append_jsonl(own_transcript, [
+            _entry(
+                "assistant", "r1",
+                tool_calls=["mcp__plugin_calm_calm__add_material"],
+                tool_inputs=[{"title": "t", "content": "c", "tags": ["domain:x"], "source": "s"}],
+            ),
+            _tool_result("r1-res", "tu-r1-0", json.dumps({"material_id": 55})),
+        ])
+
+        sleep2, now2 = _stub_sleep_and_clock()
+        _run_hook(
+            cwd=run_dir, last_assistant_message="まだです", sleep=sleep2, now=now2,
+            own_transcript_path=str(own_transcript),
+        )
+
+        _mock_main_dead(monkeypatch)
+        sleep3, now3 = _stub_sleep_confirm_dead()
+        code3, _ = _run_hook(
+            cwd=run_dir, last_assistant_message="まだです2", sleep=sleep3, now=now3,
+            own_transcript_path=str(own_transcript),
+        )
+        assert code3 == 0
+        cursor3 = _cursor(run_dir)
+        assert cursor3["unacked"] == [1]
+        assert cursor3["unlinked_materials"] == [55]
+
     def test_material_written_in_activity_determined_chunk_is_not_collected(self, tmp_path, monkeypatch):
         run_dir, transcript = _setup_run(
             tmp_path, transcript_lines=[_entry("assistant", "e1", text="already has activity")]
@@ -972,13 +1013,20 @@ class TestUnlinkedMaterials:
         assert cursor4["unlinked_materials"] == [55]  # unackedでは空にならない
 
     def test_no_header_line_when_list_empty(self, tmp_path, monkeypatch):
+        """activity確定済みの片でも、unlinked_materialsが空ならヘッダーに
+        行が出ないことを確かめる（activity未設定の片では別の条件で
+        既に行が出ないため、activity確定済みの片で確かめる必要がある）。"""
         monkeypatch.setattr(hook, "CHAR_THRESHOLD", 3)
         run_dir, transcript = _setup_run(
             tmp_path, transcript_lines=[_entry("assistant", "e1", text="plain content")]
         )
+        cursor = dict(hook._DEFAULT_CURSOR)
+        cursor["activity_id_at_cursor"] = 7
+        (run_dir / "cursor.json").write_text(json.dumps(cursor), encoding="utf-8")
         _mock_main_alive(monkeypatch)
         sleep, now = _stub_sleep_and_clock()
         code, _ = _run_hook(cwd=run_dir, sleep=sleep, now=now)
         assert code == 2
         chunk = (run_dir / "chunks" / "0001.md").read_text(encoding="utf-8")
+        assert "activity_id: 7" in chunk  # activity確定済みであることの確認
         assert "未紐づけの記録" not in chunk
