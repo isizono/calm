@@ -1057,6 +1057,24 @@ def _get_tag_notes(name: str, namespace: str = "domain") -> str:
         conn.close()
 
 
+def _get_cooldown_until(tag_name: str, marker: str, namespace: str = "domain") -> str | None:
+    """指定タグの日次クールダウン(hint_cooldowns)のuntil_dateを別connで読み出す
+    （commit有無の検証用）。行が無ければNone。"""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT hc.until_date FROM hint_cooldowns hc
+            JOIN tags t ON t.id = hc.tag_id
+            WHERE t.namespace = ? AND t.name = ? AND hc.marker = ?
+            """,
+            (namespace, tag_name, marker),
+        ).fetchone()
+        return row["until_date"] if row else None
+    finally:
+        conn.close()
+
+
 def _make_activity_with_domain_tag() -> int:
     """domain:タグ DOMAIN_TAG を持つアクティビティを作成しIDを返す。
 
@@ -1314,7 +1332,7 @@ class TestRecomposeCooldownTransaction:
         result = collect_and_assemble(activity_id)
 
         assert result.get("error", {}).get("code") == "DATABASE_ERROR"
-        assert MARKER_RECOMPOSE_BOOTSTRAP not in _get_tag_notes(DOMAIN_TAG_NAME)
+        assert _get_cooldown_until(DOMAIN_TAG_NAME, MARKER_RECOMPOSE_BOOTSTRAP) is None
 
         # マーカーがロールバックされているため、パッチを戻して再度check_inすれば
         # hintが再発火する
@@ -1386,9 +1404,9 @@ class TestActivityCleanupHintViaCheckIn:
             MARKER_ACTIVITY_CLEANUP in h
             for h in result_first["env"].get("hints", [])
         )
-        assert MARKER_ACTIVITY_CLEANUP in _get_tag_notes(
-            ACTIVITY_MANAGEMENT_TAG_NAME, namespace=""
-        )
+        assert _get_cooldown_until(
+            ACTIVITY_MANAGEMENT_TAG_NAME, MARKER_ACTIVITY_CLEANUP, namespace=""
+        ) is not None
 
         result_second = collect_and_assemble(actor_id)
         assert "error" not in result_second
