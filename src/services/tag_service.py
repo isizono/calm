@@ -1362,7 +1362,10 @@ def _append_tag_notes_with_conn(conn, tag_str: str, content: str) -> int:
     tag_id = row["id"]
     existing = row["notes"]
     new_notes = f"{existing}\n\n{content}" if existing else content
-    conn.execute("UPDATE tags SET notes = ? WHERE id = ?", (new_notes, tag_id))
+    conn.execute(
+        "UPDATE tags SET notes = ?, notes_updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (new_notes, tag_id),
+    )
     return tag_id
 
 
