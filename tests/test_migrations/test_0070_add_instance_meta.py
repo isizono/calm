@@ -1,7 +1,11 @@
 """migration 0070_add_instance_meta のテスト
 
 0070適用後にinstance_metaテーブルが期待通り存在し、単一行制約（id=1固定CHECK）が
-機能することを、instance_serviceを経由せず生SQLで検証する。
+機能することを、サービス層を経由せず生SQLで検証する。
+
+instance_meta は後続の migration（インスタンス間export/import機能の撤去に伴う 0082）
+で削除されるため、本テストは「0070 まで適用した時点」の DB で検証する（最新までの
+全 migration を適用した DB では 0082 によりこのテーブルは既に存在しない）。
 """
 import sqlite3
 
@@ -13,9 +17,15 @@ from test_migrations.conftest import db_before_migration, get_column_names, tabl
 
 
 @pytest.fixture
-def migrated_db(temp_db):
-    """全migration（0070含む）を適用済みのテスト用DBを提供する。"""
-    yield temp_db
+def migrated_db():
+    """0071の直前まで（0070含む）を適用したテスト用DBを提供する。
+
+    instance_meta は 0082 で削除されるため、最新までの全 migration を
+    適用した DB では検証できない。
+    """
+    with db_before_migration("0071") as db_path:
+        _injected_tags.clear()
+        yield db_path
 
 
 @pytest.fixture

@@ -24,8 +24,6 @@ tags:
   description: アクティビティ check-in
 - name: decision
   description: 決定事項の記録・取得
-- name: export
-  description: 他インスタンスへのexport候補洗い出し・実行
 - name: feedback
   description: フィードバックエントリの記録・取得・ノート追加
 - name: goal
@@ -574,64 +572,6 @@ paths:
                 oneOf:
                 - type: object
                 - $ref: '#/components/schemas/ErrorResponse'
-  /tools/collect_export_candidates:
-    post:
-      tags:
-      - export
-      summary: 'Choose: 他インスタンスへのexport候補を洗い出したいとき。'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              additionalProperties: false
-              properties:
-                roots:
-                  anyOf:
-                  - items:
-                      additionalProperties: true
-                      type: object
-                    type: array
-                  - type: 'null'
-                  default: null
-                max_depth:
-                  default: 2
-                  type: integer
-                include_types:
-                  anyOf:
-                  - items:
-                      type: string
-                    type: array
-                  - type: 'null'
-                  default: null
-                tag_roots:
-                  anyOf:
-                  - items:
-                      type: string
-                    type: array
-                  - type: 'null'
-                  default: null
-                include_snippets:
-                  default: true
-                  type: boolean
-                limit:
-                  anyOf:
-                  - type: integer
-                  - type: 'null'
-                  default: null
-                offset:
-                  default: 0
-                  type: integer
-              type: object
-      responses:
-        '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
-          content:
-            application/json:
-              schema:
-                oneOf:
-                - type: object
-                - $ref: '#/components/schemas/ErrorResponse'
   /tools/demote_tag_notes:
     post:
       tags:
@@ -714,49 +654,6 @@ paths:
                   type: number
               required:
               - transcript_path
-              type: object
-      responses:
-        '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
-          content:
-            application/json:
-              schema:
-                oneOf:
-                - type: object
-                - $ref: '#/components/schemas/ErrorResponse'
-  /tools/export_bundle:
-    post:
-      tags:
-      - export
-      summary: 'Choose: collect_export_candidatesで確定した候補リストから、他インスタンスへ渡す'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              additionalProperties: false
-              properties:
-                items:
-                  items:
-                    additionalProperties: true
-                    type: object
-                  type: array
-                bundle_name:
-                  anyOf:
-                  - type: string
-                  - type: 'null'
-                  default: null
-                include_supersede_targets:
-                  default: false
-                  type: boolean
-                selection:
-                  anyOf:
-                  - additionalProperties: true
-                    type: object
-                  - type: 'null'
-                  default: null
-              required:
-              - items
               type: object
       responses:
         '200':
@@ -1454,44 +1351,6 @@ paths:
                 oneOf:
                 - type: object
                 - $ref: '#/components/schemas/ErrorResponse'
-  /tools/import_bundle:
-    post:
-      tags:
-      - export
-      summary: 'Choose: 他インスタンスのバンドルを取り込みたいとき。'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              additionalProperties: false
-              properties:
-                bundle_path:
-                  type: string
-                mode:
-                  default: dry_run
-                  type: string
-                resolutions:
-                  anyOf:
-                  - additionalProperties: true
-                    type: object
-                  - type: 'null'
-                  default: null
-                skip_duplicate_check:
-                  default: false
-                  type: boolean
-              required:
-              - bundle_path
-              type: object
-      responses:
-        '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
-          content:
-            application/json:
-              schema:
-                oneOf:
-                - type: object
-                - $ref: '#/components/schemas/ErrorResponse'
   /tools/judge_goal:
     post:
       tags:
@@ -1976,35 +1835,6 @@ paths:
               required:
               - activity_id
               - goal
-              type: object
-      responses:
-        '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
-          content:
-            application/json:
-              schema:
-                oneOf:
-                - type: object
-                - $ref: '#/components/schemas/ErrorResponse'
-  /tools/set_instance_identity:
-    post:
-      tags:
-      - export
-      summary: 'Choose: 他インスタンスへexportバンドルを渡す前に、自インスタンスの識別子を初めて'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              additionalProperties: false
-              properties:
-                instance_id:
-                  type: string
-                force:
-                  default: false
-                  type: boolean
-              required:
-              - instance_id
               type: object
       responses:
         '200':

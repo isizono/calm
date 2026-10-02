@@ -122,7 +122,6 @@ SessionStart(3スクリプト)・Stop・UserPromptSubmit・MessageDisplayに加�
 | セッション | `get_sessions`, `set_session_alias` | 稼働中セッションの表示名→別名の対応表取得、自セッションの別名の付け替え |
 | シグナル・計測 | `report_signal`, `get_signals`, `update_signal`, `detect_reask_candidates` | calm自身への故障報告・矛盾検出・聞き返し候補検出等の運用計測 |
 | Ask（人間への判断委譲） | `add_ask`, `get_asks`, `answer_ask`, `triage_ask`, `withdraw_ask`, `unsubscribe_ask` | 離席中・セッション跨ぎの判断待ち問いの起票・取得・回答・振り分け・取り下げ・通知解除 |
-| インスタンス間連携 | `set_instance_identity`, `collect_export_candidates`, `export_bundle`, `import_bundle` | 自インスタンス識別子の設定、export候補の洗い出し、バンドルの書き出し、他インスタンスのバンドルの取り込み |
 | フィードバック | `get_feedback_entries`, `write_feedback_entry`, `add_feedback_note` | 発話・ツール失敗・実行直前に配達するフィードバックエントリの取得・作成/変更/削除・ノート追加 |
 | その他 | `get_config`, `roll_dice` | 設定値の取得、ダイスロール |
 
@@ -159,8 +158,6 @@ SessionStart(3スクリプト)・Stop・UserPromptSubmit・MessageDisplayに加�
 | `/ask-answer` | open askを一覧して1件ずつ提示し、回答をanswer_askで記録します |
 | `/ask-watch` | askストアを継続的に監視し、同型のaskが溜まっていたらメタaskとして起票します |
 | `/board` | Claude同士の非同期のやり取り（質問・周知・意見募集・事前の声かけ）を掲示板トピックに投稿する使い方をガイドします |
-| `/memory-export` | 記録を他インスタンスへ渡すexportバンドルを作成します |
-| `/memory-import` | 他インスタンスのexportバンドルを衝突裁定を経て取り込みます |
 | `/peer-nudge` | セッション台帳の宛先候補へSendMessageで直接話しかけるときの作法をガイドします |
 | `/orch` | 仕事を複数の子に分けてbgに振り、まとめ役として追う・引き継ぐ・終わらせる手順をガイドします |
 
