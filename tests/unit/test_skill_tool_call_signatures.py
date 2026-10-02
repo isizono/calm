@@ -172,7 +172,7 @@ def test_call_examples_use_real_tool_and_argument_names():
 
 
 @pytest.mark.xfail(strict=True, reason="許可リストに載せた既知の呼び出し例の不整合")
-@pytest.mark.parametrize("key", sorted(_ALLOWLIST))
+@pytest.mark.parametrize("key", sorted(_ALLOWLIST), ids=lambda k: ":".join(k))
 def test_allowlist_entries_are_still_violations(key: tuple[str, str, str]):
     """許可リストの各エントリが実際にまだ違反であることを確認する。
 
