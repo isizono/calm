@@ -789,11 +789,13 @@ class TestCooldownPersistsOverNotesCeiling:
         hints_first = get_hints("tag", tag_id)
         assert any(h["type"] == "recompose_bootstrap" for h in hints_first)
 
-        today = date.today().isoformat()
-        assert _get_cooldown_until(tag_id, MARKER_RECOMPOSE_BOOTSTRAP) == today
-
+        # 修正前は天井超過によりクールダウンの永続化そのものが失敗し、2回目の
+        # 呼び出しでも同じ提案が出続けていた(本テストが固定する回帰点)
         hints_second = get_hints("tag", tag_id)
         assert not any(h["type"] == "recompose_bootstrap" for h in hints_second)
+
+        today = date.today().isoformat()
+        assert _get_cooldown_until(tag_id, MARKER_RECOMPOSE_BOOTSTRAP) == today
 
     def test_activity_scope_sibling_tag_hint_unaffected_by_other_tags_over_ceiling_notes(
         self, temp_db
@@ -1076,11 +1078,11 @@ class TestActivityCleanupHint:
         hints = get_hints("activity", activity_ids[0])
         assert not any(h["type"] == "activity_cleanup" for h in hints)
 
-    def test_fire_appends_daily_cooldown_to_cooldown_table(self, temp_db):
+    def test_fire_appends_exactly_one_daily_cooldown_marker(self, temp_db):
         """発火するとactivity-managementタグのhint_cooldownsに当日日付の日次
-        クールダウンが保存される。notes本文は変更されない
-        (skill実行完了時の期限付きマーカー書き込みはskill側の責務で、ここでは
-        notesに触れない)"""
+        クールダウンが1件(tag_id, marker単位のPRIMARY KEYにより構造的に1件に
+        限定される)保存される。notes本文は変更されない(skill実行完了時の
+        期限付きマーカー書き込みはskill側の責務で、ここではnotesに触れない)"""
         _ensure_activity_management_tag()
         activity_ids = [
             _make_activity_for_cleanup() for _ in range(ACTIVITY_CLEANUP_COUNT_THRESHOLD)
@@ -1092,6 +1094,7 @@ class TestActivityCleanupHint:
         today = date.today().isoformat()
         am_tag_id = _tag_id(ACTIVITY_MANAGEMENT_TAG_NAME, namespace="")
         assert _get_cooldown_until(am_tag_id, MARKER_ACTIVITY_CLEANUP) == today
+        assert _get_tag_notes(ACTIVITY_MANAGEMENT_TAG_NAME, namespace="") == ""
         assert _get_tag_notes(ACTIVITY_MANAGEMENT_TAG_NAME, namespace="") == ""
 
     def test_same_day_refire_is_suppressed_by_auto_marker(self, temp_db):
