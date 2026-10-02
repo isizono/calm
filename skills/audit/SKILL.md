@@ -53,6 +53,7 @@ description: 【必須】過去 decision の正当性を疑った状況、同一
 | T-C2 | 同 audit を 24h 以内に同主題で実行済み | 重複 (前回 material を参照すべき) |
 | T-C3 | ユーザーが「audit はいい、進めて」と明示拒否した直後 | 明示否認尊重 |
 | T-C4 | スコープが他 topic 管轄の仕組みのバグ観察である | `cross-topic-bug-report` skill の責務 |
+| T-C5 | 単発の新事実で decision/habit/tag-notes の前提が消えたとわかっている (再発や構造的パターンの疑いが無い) | 個別の撤回判断に留まるため `forget` skill の責務 |
 
 ## 起動時確認フロー
 

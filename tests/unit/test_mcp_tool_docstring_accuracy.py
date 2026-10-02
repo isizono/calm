@@ -82,6 +82,14 @@ class TestAddDecisionsPropagateToTagNoteScopeNote:
         assert "教訓・注意点のみに使う" in desc
 
 
+class TestAddAskDescriptionAccuracy:
+    def test_mentions_meta_kind_exclusion_from_ask_compose(self):
+        desc = _all_tool_descriptions()["add_ask"]
+        assert 'kind="meta"' in desc
+        assert "ask-distill" in desc
+        assert "ask-watch" in desc
+
+
 class TestRulesTagNotesConvention:
     def test_rules_mentions_notes_are_for_caution_only(self):
         from src.main import RULES

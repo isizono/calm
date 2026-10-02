@@ -928,7 +928,7 @@ def _build_transcript_path_section(
     MCPサーバーのサブプロセスにはtranscript_pathが渡らないため（session_id同様、
     Claude Code側にIPC経路が無い）、SessionStart hookのstdinで受け取った値を
     ここで会話コンテキストに載せ、Claudeが明示引数として`detect_reask_candidates`等の
-    tool呼び出しに転記する方式を取る。用途はsync-memoryステップ9（聞き返しの後追い検出）。
+    tool呼び出しに転記する方式を取る。用途はsync-memoryステップ5（聞き返しの後追い検出）。
     """
     if not transcript_path:
         return ""
