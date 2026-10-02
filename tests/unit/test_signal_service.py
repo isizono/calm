@@ -129,6 +129,58 @@ def test_record_signal_different_kind_or_source_not_deduped(temp_db):
     assert len({r1["id"], r2["id"], r3["id"]}) == 3
 
 
+class TestCustomKind:
+    """custom:<名前> 形式のkindの検証とdedupの挙動。"""
+
+    def test_records_custom_kind_as_is(self, temp_db):
+        result = ss.record_signal("custom:rule_conflict", "外部ルール衝突")
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT * FROM signal_events WHERE id = ?", (result["id"],)
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row["kind"] == "custom:rule_conflict"
+
+    @pytest.mark.parametrize(
+        "kind",
+        [
+            "custom:",  # 名前が空
+            "custom:Rule Conflict",  # 大文字・空白
+            "custom:" + "a" * 41,  # 41字
+            "custom:-x",  # 先頭がハイフン
+        ],
+    )
+    def test_rejects_malformed_custom_kind(self, temp_db, kind):
+        with pytest.raises(ValueError):
+            ss.record_signal(kind, "boom")
+
+    def test_rejects_unprefixed_unknown_word(self, temp_db):
+        """custom: プレフィックスの無い未知語は拒否される。"""
+        with pytest.raises(ValueError):
+            ss.record_signal("rule_conflict", "boom")
+
+    def test_rejects_misspelled_reserved_kind(self, temp_db):
+        """予約語の綴り違いは custom: が無ければ拒否される(検証が緩んでいないこと)。"""
+        with pytest.raises(ValueError):
+            ss.record_signal("precedent-miss", "boom")
+
+    def test_different_custom_names_are_not_deduped(self, temp_db):
+        r1 = ss.record_signal("custom:a", "same text", source="tool:foo")
+        r2 = ss.record_signal("custom:b", "same text", source="tool:foo")
+
+        assert r1["id"] != r2["id"]
+
+    def test_same_custom_name_dedups(self, temp_db):
+        r1 = ss.record_signal("custom:a", "same text", source="tool:foo")
+        r2 = ss.record_signal("custom:a", "same text", source="tool:foo")
+
+        assert r2["id"] == r1["id"]
+        assert r2["occurrence_count"] == 2
+
+
 def test_capture_signal_safe_never_raises_on_invalid_kind(temp_db):
     ss.capture_signal_safe("not_a_real_kind", "boom")  # 例外を投げないことのみ検証
 
@@ -208,6 +260,19 @@ class TestGetSignals:
 
     def test_invalid_kind_returns_validation_error(self, temp_db):
         result = ss.get_signals(kind="not_a_kind")
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_custom_kind_filter_returns_only_that_kind(self, temp_db):
+        ss.record_signal("custom:rule_conflict", "a", source="s1")
+        ss.record_signal("machine_error", "b", source="s2")
+
+        result = ss.get_signals(status=None, kind="custom:rule_conflict")
+
+        assert result["total_count"] == 1
+        assert result["signals"][0]["kind"] == "custom:rule_conflict"
+
+    def test_malformed_custom_kind_filter_returns_validation_error(self, temp_db):
+        result = ss.get_signals(kind="custom:Bad")
         assert result["error"]["code"] == "VALIDATION_ERROR"
 
     def test_refs_and_context_are_deserialized(self, temp_db):
