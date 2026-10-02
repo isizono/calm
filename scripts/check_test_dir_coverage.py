@@ -41,7 +41,7 @@ def workflow_text(workflows_dir: Path) -> str:
     if not workflows_dir.is_dir():
         return ""
     for path in sorted(workflows_dir.glob("*.yml")) + sorted(workflows_dir.glob("*.yaml")):
-        chunks.append(path.read_text())
+        chunks.append(path.read_text(encoding="utf-8"))
     return "\n".join(chunks)
 
 

@@ -34,9 +34,9 @@ def marker_path(session_id: str) -> Path:
 def write_marker(session_id: str, pid: int) -> None:
     """目印ファイルを書く。記録役プロセスの起動時に呼ばれる想定。
 
-    起動時刻は自プロセスの`ps -o lstart=`出力をそのまま保存し、hook側の
+    起動時刻(`process_start_signature`)をそのまま保存し、hook側の
     生存判定(is_recorder_attached)がpid再利用を誤って生存と判定しないように
-    する。ps呼び出しに失敗した場合はstarted_atがNoneのまま保存され、hook側は
+    する。取得に失敗した場合はstarted_atがNoneのまま保存され、hook側は
     「不一致」として「付いていない」扱いにする(フェイルセーフ)。
     """
     from src.infra.process_signature import process_start_signature
@@ -75,8 +75,8 @@ def touch_marker(session_id: str) -> None:
 def is_recorder_attached(session_id: str) -> bool:
     """このセッションに記録役が付いているかを判定する。
 
-    目印ファイルのpidが生存しており、かつ起動時刻(`ps -o lstart=`)が目印
-    ファイル記録時と一致し、さらに目印ファイルのmtimeが_MARKER_FRESHNESS_SEC
+    目印ファイルのpidが生存しており、かつ起動時刻(`process_start_signature`)が
+    目印ファイル記録時と一致し、さらに目印ファイルのmtimeが_MARKER_FRESHNESS_SEC
     以内(見張りが直近でポーリングした形跡がある)場合のみTrueを返す。pidが
     生きていても、見張り自体が死んでいたり、MCPが固まったり、許可待ちで
     止まったりしている間は記録は回っていないため、pid生存だけでは
@@ -92,10 +92,8 @@ def is_recorder_attached(session_id: str) -> bool:
     どおり出す側に倒す)。本関数はStop hookの毎回の呼び出し経路に乗るため、
     ここで例外を外に漏らすと記録催促そのものが黙って出なくなる。
 
-    # ponytail: 起動時刻はps -o lstart=の秒単位分解能までしか照合しない。
-    # 同一秒内でのpid再利用までは防げない。気にするならコマンドライン照合を足す。
-    # ponytail: ps呼び出しのタイムアウト等で生死が確定できない場合も
-    # 「死んでいる」扱いで削除する。頻発するなら区別を足す。
+    # ponytail: 起動時刻の照合だけでは同一起動時刻内でのpid再利用までは
+    # 防げない。気にするならコマンドライン照合を足す。
     """
     path = marker_path(session_id)
     try:
