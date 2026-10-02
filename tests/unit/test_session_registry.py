@@ -376,16 +376,19 @@ class TestNameRefresh:
         assert data["sessions"]["cli-1"]["name"] == "auto-generated sentence from first prompt"
 
     def test_rename_does_not_touch_alias_or_alias_source(self, world, registry_path):
+        """derived aliasのままだと、rename時にactivity_titleからaliasを
+        作り直しても値が偶然一致してしまい退行を検出できない。手動aliasを
+        付けた状態でrenameし、手動値が上書きされないことを確認する。"""
         world.add("bridge-a", pid=100, cli_session_id="cli-1", name="workspace-a1")
         srs.register_checkin(
             bridge_session_id="bridge-a", activity_id=1, activity_title="Foo", activity_status="in_progress"
         )
-        before = json.loads(registry_path.read_text(encoding="utf-8"))["sessions"]["cli-1"]
+        srs.set_alias(bridge_session_id="bridge-a", alias="MyAlias")
         world.rename(100, "renamed")
 
         sessions = srs.list_sessions()
-        assert sessions[0]["alias"] == before["alias"]
-        assert sessions[0]["alias_source"] == before["alias_source"]
+        assert sessions[0]["alias"] == "MyAlias"
+        assert sessions[0]["alias_source"] == "manual"
 
     def test_rename_does_not_touch_updated_at(self, world, registry_path, monkeypatch):
         """_now_iso()は秒精度のため、同一秒内のタイムスタンプ比較では
