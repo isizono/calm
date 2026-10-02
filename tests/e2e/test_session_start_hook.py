@@ -1131,14 +1131,14 @@ class TestSessionStartHookSignals:
 
     def test_custom_kind_folded_in_breakdown(self, temp_db):
         """custom:プレフィックスのkindは個別名を出さず「custom N」の1項目に畳まれる"""
-        _seed_signal("contradiction", "矛盾")
+        _seed_signal("machine_error", "boom")
         _seed_signal("custom:rule_conflict", "外部ルール衝突")
         _seed_signal("custom:other_thing", "別のカスタム観測")
 
         result = _run_session_start_hook(temp_db)
         context = result["hookSpecificOutput"]["additionalContext"]
 
-        assert "未トリアージのシグナル: 3件 (contradiction 1 / custom 2) → get_signals で確認" in context
+        assert "未トリアージのシグナル: 3件 (machine_error 1 / custom 2) → get_signals で確認" in context
         assert "custom:rule_conflict" not in context
         assert "custom:other_thing" not in context
 
