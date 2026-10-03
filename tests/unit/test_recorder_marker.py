@@ -1,15 +1,15 @@
 """hooks/recorder_marker.py のユニットテスト
 
 記録役セッションの目印ファイルの読み書き(write_marker/remove_marker)と
-生存判定(is_recorder_attached)を検証する。subprocess呼び出し(ps)を外部境界
-としてmonkeypatchする。目印ファイルは可能な限りwrite_marker経由で実際に書き、
+生存判定(is_recorder_attached)を検証する。psutil呼び出しを外部境界として
+monkeypatchする。目印ファイルは可能な限りwrite_marker経由で実際に書き、
 実際に書かれうる形のファイルでテストする。
 """
 import json
 import os
-import subprocess
 import time
 
+import psutil
 import pytest
 
 from hooks.hook_state import HookState
@@ -32,16 +32,35 @@ def state_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
+class _FakeProcess:
+    def __init__(self, signature: str):
+        self._signature = signature
+
+    def create_time(self):
+        return self._signature
+
+
 def _fake_ps(lstart_output: str, returncode: int = 0):
-    def fake_run(cmd, **kwargs):
-        return subprocess.CompletedProcess(cmd, returncode, stdout=lstart_output, stderr="")
-    return fake_run
+    """process_signature.psutil.Processをモックするfactoryを返す。
+
+    lstart_output(前後の空白を含みうる)をstripした値をcreate_time()の戻り値
+    にする。returncode!=0または空文字はプロセス不在(psutil.NoSuchProcess)を
+    意味する（旧`ps`実装のexit code慣習を踏襲した引数名のまま残す）。
+    """
+    signature = lstart_output.strip()
+
+    def fake_process(pid):
+        if returncode != 0 or not signature:
+            raise psutil.NoSuchProcess(pid)
+        return _FakeProcess(signature)
+
+    return fake_process
 
 
 def _write_marker_with_ps_output(session_id: str, pid: int, ps_output: str, monkeypatch) -> None:
-    """write_marker経由で目印ファイルを書く。write_marker自身がps -o lstart=を
-    呼ぶため、書き込み時点の出力をmonkeypatchで固定する。"""
-    monkeypatch.setattr(process_signature.subprocess, "run", _fake_ps(ps_output))
+    """write_marker経由で目印ファイルを書く。write_marker自身が起動時刻を
+    取得するため、書き込み時点の値をmonkeypatchで固定する。"""
+    monkeypatch.setattr(process_signature.psutil, "Process", _fake_ps(ps_output))
     write_marker(session_id, pid)
 
 
@@ -66,7 +85,7 @@ class TestWriteMarker:
     def test_started_at_none_when_ps_fails(self, state_dir, monkeypatch):
         """ps呼び出し失敗時はstarted_at=Noneのまま保存される
         (以後の照合は必ず不一致になり「付いていない」扱いになる)"""
-        monkeypatch.setattr(process_signature.subprocess, "run", _fake_ps("", returncode=1))
+        monkeypatch.setattr(process_signature.psutil, "Process", _fake_ps("", returncode=1))
 
         write_marker(_SESSION_ID, 1234)
 
@@ -174,7 +193,7 @@ class TestRecorderAttached:
         _write_marker_with_ps_output(
             _SESSION_ID, 1234, "Thu Jul 24 09:32:04 2026\n", monkeypatch
         )
-        monkeypatch.setattr(process_signature.subprocess, "run", _fake_ps("", returncode=1))
+        monkeypatch.setattr(process_signature.psutil, "Process", _fake_ps("", returncode=1))
 
         assert is_recorder_attached(_SESSION_ID) is False
 
@@ -184,7 +203,7 @@ class TestRecorderAttached:
         _write_marker_with_ps_output(
             _SESSION_ID, 1234, "Thu Jul 24 09:32:04 2026\n", monkeypatch
         )
-        monkeypatch.setattr(process_signature.subprocess, "run", _fake_ps("", returncode=1))
+        monkeypatch.setattr(process_signature.psutil, "Process", _fake_ps("", returncode=1))
 
         is_recorder_attached(_SESSION_ID)
 
@@ -196,7 +215,7 @@ class TestRecorderAttached:
             _SESSION_ID, 1234, "Thu Jul 24 09:32:04 2026\n", monkeypatch
         )
         monkeypatch.setattr(
-            process_signature.subprocess, "run", _fake_ps("Fri Jul 25 10:00:00 2026\n")
+            process_signature.psutil, "Process", _fake_ps("Fri Jul 25 10:00:00 2026\n")
         )
 
         assert is_recorder_attached(_SESSION_ID) is False
@@ -206,25 +225,12 @@ class TestRecorderAttached:
             _SESSION_ID, 1234, "Thu Jul 24 09:32:04 2026\n", monkeypatch
         )
         monkeypatch.setattr(
-            process_signature.subprocess, "run", _fake_ps("Fri Jul 25 10:00:00 2026\n")
+            process_signature.psutil, "Process", _fake_ps("Fri Jul 25 10:00:00 2026\n")
         )
 
         is_recorder_attached(_SESSION_ID)
 
         assert not marker_path(_SESSION_ID).exists()
-
-    def test_false_when_ps_call_times_out(self, state_dir, monkeypatch):
-        """ps呼び出し自体が失敗(タイムアウト) → 催促を出す側に倒す"""
-        _write_marker_with_ps_output(
-            _SESSION_ID, 1234, "Thu Jul 24 09:32:04 2026\n", monkeypatch
-        )
-
-        def fake_run(cmd, **kwargs):
-            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
-
-        monkeypatch.setattr(process_signature.subprocess, "run", fake_run)
-
-        assert is_recorder_attached(_SESSION_ID) is False
 
     def test_false_when_marker_file_missing(self, state_dir):
         assert is_recorder_attached(_SESSION_ID) is False
@@ -253,22 +259,22 @@ class TestRecorderAttached:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"pid": 1234}))
         monkeypatch.setattr(
-            process_signature.subprocess, "run", _fake_ps("Thu Jul 24 09:32:04 2026\n")
+            process_signature.psutil, "Process", _fake_ps("Thu Jul 24 09:32:04 2026\n")
         )
 
         assert is_recorder_attached(_SESSION_ID) is False
 
     def test_false_when_unexpected_exception_occurs(self, state_dir, monkeypatch):
-        """ps呼び出し中にTimeoutExpired以外の予期しない例外が出た場合も
-        (importの失敗を含め)催促を出す側に倒す。"""
+        """起動時刻取得中に想定外の例外が出た場合も(importの失敗を含め)
+        催促を出す側に倒す。"""
         _write_marker_with_ps_output(
             _SESSION_ID, 1234, "Thu Jul 24 09:32:04 2026\n", monkeypatch
         )
 
-        def fake_run(cmd, **kwargs):
-            raise RuntimeError("unexpected ps failure")
+        def fake_process(pid):
+            raise RuntimeError("unexpected failure")
 
-        monkeypatch.setattr(process_signature.subprocess, "run", fake_run)
+        monkeypatch.setattr(process_signature.psutil, "Process", fake_process)
 
         assert is_recorder_attached(_SESSION_ID) is False
 
@@ -278,10 +284,10 @@ class TestRecorderAttached:
             _SESSION_ID, 1234, "Thu Jul 24 09:32:04 2026\n", monkeypatch
         )
 
-        def fake_run(cmd, **kwargs):
-            raise RuntimeError("unexpected ps failure")
+        def fake_process(pid):
+            raise RuntimeError("unexpected failure")
 
-        monkeypatch.setattr(process_signature.subprocess, "run", fake_run)
+        monkeypatch.setattr(process_signature.psutil, "Process", fake_process)
 
         is_recorder_attached(_SESSION_ID)
 

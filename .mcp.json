@@ -1,6 +1,9 @@
 {
     "calm": {
       "command": "uv",
-      "args": ["run", "--directory", "${CLAUDE_PLUGIN_ROOT}", "python", "-m", "src.launcher"]
+      "args": ["run", "--directory", "${CLAUDE_PLUGIN_ROOT}", "python", "-m", "src.launcher"],
+      "env": {
+        "PYTHONUTF8": "1"
+      }
     }
   }
