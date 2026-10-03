@@ -189,7 +189,7 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 | `hooks/preblock_hook.py` | PreToolUse（`*`） | tool_inputに含まれる内部ID表記のリテラルをblock（`deny`） |
 | `hooks/sanitize_tool_result_hook.py` | PostToolUse（`*`。calmツール以外は素通し） | calm tool_resultの生ID参照を`{{cite:...}}`へ変換して返す |
 | `hooks/ask_answer_rewake_hook.py` | PostToolUse（`mcp__.*calm__add_ask`、`asyncRewake`） | `add_ask`直後にaskのstatus変化をポーリングし、回答されたらidleセッションを起こす |
-| `hooks/message_display_id_titles.py` | MessageDisplay（`*`） | assistant発話中の内部ID表記の直後にエンティティタイトルを差し込んで表示（表示のみ、transcript/contextは無加工） |
+| `hooks/message_display_id_titles.py` | MessageDisplay（`*`） | assistant発話中の内部ID表記の直後にエンティティタイトルを差し込み、稼働セッションのCLI表示名を`<Session: 表示名>`へ置き換えて表示（表示のみ、transcript/contextは無加工） |
 
 共通基盤:
 
@@ -247,7 +247,7 @@ PostToolUse          → sanitize_tool_result_hook（calmツールのみ）→ t
                        → ask_answer_rewake_hook（add_ask限定、asyncRewake）→ 回答待ちポーリング→idle起床
 Stop                 → stop_hook → record_missing / follow_up_after_decision / logs_sparse nudge を events.jsonl に追記
 UserPromptSubmit     → user_prompt_submit_hook → 未消費 nudge・ask通知の system-reminder 注入
-MessageDisplay       → message_display_id_titles → 内部ID表記の直後にエンティティタイトルを表示注入
+MessageDisplay       → message_display_id_titles → 内部ID表記の直後にエンティティタイトルを表示注入、CLIセッション名を`<Session: 表示名>`へ置換
 ```
 
 ### 4.5 既知の課題

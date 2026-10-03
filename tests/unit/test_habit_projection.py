@@ -261,15 +261,19 @@ class TestExport:
         assert list(projection_path.parent.glob(".cc-memory-habits-*.tmp")) == []
 
     def test_write_failure_returns_failed_status_without_raising(self, temp_db, tmp_path, monkeypatch):
-        readonly_dir = tmp_path / "readonly"
-        readonly_dir.mkdir()
-        target = readonly_dir / "cc-memory-habits.md"
+        """書込失敗をchmodでなく「配置先が既にディレクトリ」で作る。
+
+        chmodでの読み取り専用化はWindowsのディレクトリには効かない（NTFSは
+        ディレクトリの読み取り専用属性をエクスプローラ表示用に扱うだけで、
+        配下へのファイル作成を妨げない）。os.replace(tmp, target)がtargetの
+        既存ディレクトリを塗り潰せずに失敗する経路はPOSIX/Windows共通で
+        再現できる（POSIX: IsADirectoryError、Windows: PermissionError）。
+        """
+        target = tmp_path / "cc-memory-habits.md"
+        target.mkdir()
         monkeypatch.setattr(config, "HABITS_RULES_PATH", str(target))
-        readonly_dir.chmod(0o500)
-        try:
-            result = habit_projection.export()
-        finally:
-            readonly_dir.chmod(0o700)
+
+        result = habit_projection.export()
 
         assert result["status"] == "failed"
         assert "message" in result
@@ -291,12 +295,23 @@ class TestExport:
 
         barrier = threading.Barrier(2)
         original_replace = os.replace
+        waited_thread_ids: set[int] = set()
+        waited_lock = threading.Lock()
 
         def synced_replace(src, dst):
             # 両スレッドがtmpファイルへのwrite_textを終えた後、os.replace直前で
             # 足並みを揃える。tmpファイル名が衝突していれば、一方のreplaceが
             # 相手に消費された後の実体無きパスを掴んで失敗する。
-            barrier.wait(timeout=5)
+            # replace_retrying経由では失敗時に同じスレッドから再試行がかかるが、
+            # barrierは2者揃うまでブロックするため、再試行のたびに待つと
+            # 相手が既に抜けたbarrierで孤立してタイムアウトする。各スレッド
+            # 最初の呼び出しだけ待つ。
+            thread_id = threading.get_ident()
+            with waited_lock:
+                already_waited = thread_id in waited_thread_ids
+                waited_thread_ids.add(thread_id)
+            if not already_waited:
+                barrier.wait(timeout=5)
             return original_replace(src, dst)
 
         monkeypatch.setattr(habit_projection.os, "replace", synced_replace)

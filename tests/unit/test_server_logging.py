@@ -4,6 +4,7 @@ launcher が stdout/stderr を DEVNULL でサーバーを起動するため、
 RotatingFileHandler によるファイル永続化が正しく機能することを検証する。
 """
 import logging
+import sys
 
 import pytest
 
@@ -58,6 +59,7 @@ def test_root_logger_level_set_to_info(tmp_path, _clean_root_handlers):
     assert logging.getLogger().level == logging.INFO
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="mkdir(mode=)はWindowsでは無視されst_modeに反映されない")
 def test_directory_mode_is_owner_only(tmp_path, _clean_root_handlers):
     db_path = str(tmp_path / "db" / "discussion.db")
 
@@ -65,3 +67,15 @@ def test_directory_mode_is_owner_only(tmp_path, _clean_root_handlers):
 
     mode = log_dir.stat().st_mode & 0o777
     assert mode == 0o700
+
+
+def test_handler_encoding_is_utf8(tmp_path, _clean_root_handlers):
+    """Windows既定のANSIコードページ(cp932等)でも日本語ログがUnicodeEncodeError
+    なく書けるよう、encodingを明示していること。
+    """
+    db_path = str(tmp_path / "db" / "discussion.db")
+
+    _setup_server_logging(db_path)
+
+    handler = _clean_root_handlers.handlers[-1]
+    assert handler.encoding == "utf-8"
