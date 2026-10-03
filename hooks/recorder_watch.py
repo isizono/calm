@@ -23,10 +23,14 @@ harness側は読みかけの末尾行（改行未到達）の分もオフセッ�
 契約のため、そのまま使うと書きかけの行を「読了済み」として飲み込み、
 完成を待たずに消えてしまう。1エントリの正規化（`to_entry`）だけは
 ClaudeCodeHarnessを再利用する。
+
+tmux・flockに依存するためWindowsには移植しない。`main()`はWindowsでは
+何もせず即座に戻る。`import fcntl`はその手前に到達しないコード
+（`_acquire_lock`）に閉じ込め、モジュール自体はWindowsでもimportできる
+ようにする。
 """
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import re
@@ -49,6 +53,7 @@ from src.env_compat import env_get
 from src.harness import select_harness
 from src.harness.claude_code import ClaudeCodeHarness
 from src.harness.interface import TranscriptEntry
+from src.infra.lock_file import is_process_alive
 from src.infra.process_signature import process_start_signature
 
 DEFAULT_DB_PATH = Path.home() / ".claude" / ".claude-code-memory" / "discussion.db"
@@ -419,8 +424,11 @@ def _acquire_lock(run_dir: Path):
     """run_dir/watch.lockをexclusive lockして返す。取れなければNone。
 
     見張りは実測上つねに1本のはず（前のターンのhookが生きたまま次のStop
-    が来る）なので、取れないときは即座に諦める。
+    が来る）なので、取れないときは即座に諦める。fcntlはPOSIX専用のため、
+    main()のWindowsガードより後にしか到達しないここでimportする。
     """
+    import fcntl
+
     lock_path = run_dir / "watch.lock"
     fh = open(lock_path, "a+")
     try:
@@ -635,13 +643,8 @@ def _watch(run_dir: Path, hook_input: dict, *, sleep, now) -> int:
     dead_poll_count = 0
 
     while True:
-        if claude_pid is not None:
-            try:
-                os.kill(claude_pid, 0)
-            except ProcessLookupError:
-                return 0
-            except PermissionError:
-                pass
+        if claude_pid is not None and not is_process_alive(claude_pid):
+            return 0
 
         if process_start_signature(main_pid) == main_pid_started_at:
             dead_poll_count = 0
@@ -686,6 +689,10 @@ def _watch(run_dir: Path, hook_input: dict, *, sleep, now) -> int:
 
 
 def main(argv: list[str] | None = None, *, sleep=time.sleep, now=time.time) -> int:
+    if sys.platform == "win32":
+        # 記録役はtmux前提でWindowsには未対応。呼ばれる経路自体が無い想定だが、
+        # 万一呼ばれても何もせず戻る。
+        return 0
     try:
         if os.environ.get("HOOK_STATE_DIR"):
             HookState.BASE_DIR = Path(os.environ["HOOK_STATE_DIR"])

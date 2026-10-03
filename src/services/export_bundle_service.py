@@ -774,8 +774,11 @@ def export_bundle(
             slug = _slugify_title(title_raw)
             code = TYPE_NAME_TO_CODE[etype]
             filename = f"{code}-{eid}-{slug}.md"
-            rel_path = os.path.join(_DIR_NAME[etype], filename)
-            files_to_write.append((os.path.join(bundle_root, rel_path), file_content))
+            # manifestのpathはOS非依存のため常に`/`区切りで記録する(os.path.joinは
+            # Windowsでは`\`になり、別OSで取り込んだ側がパス解決できなくなる)。
+            # ディスクへの実書き込み先はos.path.joinでOS既定のセパレータにする。
+            rel_path = f"{_DIR_NAME[etype]}/{filename}"
+            files_to_write.append((os.path.join(bundle_root, _DIR_NAME[etype], filename), file_content))
 
             entities_manifest.append(
                 {

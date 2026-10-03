@@ -1,4 +1,5 @@
 """lock_fileモジュールのユニットテスト"""
+import inspect
 import json
 import os
 import subprocess
@@ -99,6 +100,27 @@ class TestRelease:
         lock_file.release()
         assert lock_file.read() is not None  # 削除されていない
 
+    def test_release_with_explicit_pid_removes_matching_lock(self):
+        """pid引数を渡すと、自プロセスでなくそのpidを基準に判定する
+
+        Windowsのterminate(TerminateProcess)は対象プロセスのfinally節を経由しない
+        ため、外部から強制終了させたプロセスのロックは自分で後始末する必要がある。
+        """
+        lock_file.LOCK_FILE.write_text(
+            json.dumps({"pid": 54321, "port": 52837}), encoding="utf-8"
+        )
+        lock_file.release(pid=54321)
+        assert lock_file.read() is None
+
+    def test_release_with_explicit_pid_skips_mismatched_lock(self):
+        """pid引数が記録pidと一致しなければ削除しない(停止後に別プロセスが
+        新たにロックを取り直していた場合に誤って消さないための確認)"""
+        lock_file.LOCK_FILE.write_text(
+            json.dumps({"pid": 54321, "port": 52837}), encoding="utf-8"
+        )
+        lock_file.release(pid=11111)
+        assert lock_file.read() is not None
+
 
 class TestAcquirePortCheck:
     def test_acquire_reclaims_when_pid_alive_but_port_not_listening(self, monkeypatch):
@@ -132,6 +154,30 @@ class TestIsProcessAlive:
     def test_nonexistent_process(self):
         """存在しないPIDはFalse"""
         assert lock_file.is_process_alive(99999999) is False
+
+    def test_alive_when_status_check_is_permission_denied(self, monkeypatch):
+        """存在は確認できるがstatus取得だけ権限不足な場合は生存扱いにする"""
+        import psutil
+
+        monkeypatch.setattr(lock_file.psutil, "pid_exists", lambda pid: True)
+
+        def raise_access_denied(pid):
+            raise psutil.AccessDenied(pid)
+
+        monkeypatch.setattr(lock_file.psutil, "Process", raise_access_denied)
+
+        assert lock_file.is_process_alive(1234) is True
+
+    def test_relies_on_psutil_pid_exists_not_os_kill(self, monkeypatch):
+        """生死判定がpsutil.pid_exists経由であり、os.kill直書きでないことを確かめる。
+
+        自プロセス（実在し、os.kill(pid, 0)なら必ず成功する）でも
+        psutil.pid_existsがFalseと言えばFalseになることを確認する。
+        os.kill(pid, 0)の直接呼び出しに戻すと、実在するpidなのでkillが
+        成功してしまい、この結果はTrueのままになる。
+        """
+        monkeypatch.setattr(lock_file.psutil, "pid_exists", lambda pid: False)
+        assert lock_file.is_process_alive(os.getpid()) is False
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="os.fork()はPOSIX専用")
@@ -171,6 +217,20 @@ class TestIsProcessAliveZombie:
         """通常の生存プロセス（自プロセス）は_is_zombieがFalseを返す"""
         assert lock_file._is_zombie(os.getpid()) is False
 
+    def test_is_zombie_skips_status_check_on_windows(self, monkeypatch):
+        """Windowsではpsutil.Process().status()を呼ばず常にFalseを返す。
+
+        psutil.Processが呼ばれたら失敗させることで、実際に呼ばれていない
+        ことを確認する。
+        """
+        monkeypatch.setattr(lock_file.sys, "platform", "win32")
+
+        def _boom(pid):
+            raise AssertionError("Windowsではstatus確認のためにpsutil.Processを呼んではいけない")
+
+        monkeypatch.setattr(lock_file.psutil, "Process", _boom)
+        assert lock_file._is_zombie(os.getpid()) is False
+
 
 class TestIsPortListening:
     def test_listening_port(self):
@@ -191,3 +251,54 @@ class TestIsPortListening:
             port = s.getsockname()[1]
         # ソケットを閉じた後
         assert lock_file.is_port_listening(port) is False
+
+    def test_default_host_is_ipv4_loopback(self):
+        """既定hostがlocalhostに戻ると、ホスト名解決の仕方次第でIPv6優先環境との
+        挙動差が生まれうる。既定が127.0.0.1であることを固定する。"""
+        sig = inspect.signature(lock_file.is_port_listening)
+        assert sig.parameters["host"].default == "127.0.0.1"
+
+
+class TestAcquireRecordsStartTime:
+    def test_acquire_records_own_start_time(self):
+        """acquireが書き込むstart_timeは自プロセスのprocess_start_signatureと一致する"""
+        from src.infra.process_signature import process_start_signature
+
+        assert lock_file.acquire(52837) is True
+        info = lock_file.read()
+        assert info["start_time"] == process_start_signature(os.getpid())
+
+
+class TestIsLockStale:
+    def test_stale_when_pid_dead(self, monkeypatch):
+        """PIDが死んでいれば無条件でstale"""
+        monkeypatch.setattr(lock_file, "is_process_alive", lambda pid: False)
+        info = lock_file.LockInfo(pid=99999999, port=52837, start_time="t1")
+        assert lock_file.is_lock_stale(info) is True
+
+    def test_not_stale_when_pid_alive_and_no_recorded_start_time(self, monkeypatch):
+        """旧形式（start_time未記録）のロックはPID生存だけで判定する"""
+        monkeypatch.setattr(lock_file, "is_process_alive", lambda pid: True)
+        info = lock_file.LockInfo(pid=1234, port=52837, start_time=None)
+        assert lock_file.is_lock_stale(info) is False
+
+    def test_not_stale_when_start_time_matches(self, monkeypatch):
+        """PIDが生きていて起動時刻も一致すれば同一プロセスとみなしstaleではない"""
+        monkeypatch.setattr(lock_file, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(lock_file, "process_start_signature", lambda pid: "same-sig")
+        info = lock_file.LockInfo(pid=1234, port=52837, start_time="same-sig")
+        assert lock_file.is_lock_stale(info) is False
+
+    def test_stale_when_start_time_mismatches_due_to_pid_reuse(self, monkeypatch):
+        """PIDが生きていても起動時刻が食い違えばPID再利用とみなしstale"""
+        monkeypatch.setattr(lock_file, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(lock_file, "process_start_signature", lambda pid: "new-sig")
+        info = lock_file.LockInfo(pid=1234, port=52837, start_time="old-sig")
+        assert lock_file.is_lock_stale(info) is True
+
+    def test_not_stale_when_current_start_time_unobtainable(self, monkeypatch):
+        """現在の起動時刻が取れない場合は比較できないため安全側(非stale)に倒す"""
+        monkeypatch.setattr(lock_file, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(lock_file, "process_start_signature", lambda pid: None)
+        info = lock_file.LockInfo(pid=1234, port=52837, start_time="old-sig")
+        assert lock_file.is_lock_stale(info) is False

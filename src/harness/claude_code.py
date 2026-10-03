@@ -26,6 +26,22 @@ _KIND_BY_TYPE = {
 }
 
 
+def read_stdin_text(stream: TextIO | None = None) -> str:
+    """標準入力をUTF-8として読む。
+
+    Windows既定のANSIコードページ（cp932等）ではテキストモードの
+    sys.stdinがロケールエンコーディングになり、日本語を含むJSON入力が
+    化けたりデコードできなかったりする。bufferを経由してUTF-8で読むことで
+    OSのロケール設定から独立させる。テストから注入されたTextIO（buffer
+    属性を持たないio.StringIO等）はそのまま`.read()`する。
+    """
+    s = stream if stream is not None else sys.stdin
+    buffer = getattr(s, "buffer", None)
+    if buffer is None:
+        return s.read()
+    return buffer.read().decode("utf-8")
+
+
 class ClaudeCodeHarness(Harness):
     """Claude Code用のHarness実装。
 
@@ -57,14 +73,17 @@ class ClaudeCodeHarness(Harness):
     # ------------------------------------------------------------------
 
     def read_hook_input(self) -> dict:
-        raw = (self._stdin or sys.stdin).read()
+        raw = read_stdin_text(self._stdin)
         if not raw.strip():
             return {}
         data = json.loads(raw)
         return data if isinstance(data, dict) else {}
 
     def _emit(self, payload: dict) -> None:
-        print(json.dumps(payload, ensure_ascii=False), file=self._stdout or sys.stdout)
+        # ensure_ascii=True（既定）にする。cp932等のコードページで非ASCII文字を
+        # 含むstdoutがUnicodeEncodeErrorになる問題と、2バイト目が0x5Cの文字が
+        # JSON解析時に不正なエスケープと誤認される問題の両方を避ける。
+        print(json.dumps(payload, ensure_ascii=True), file=self._stdout or sys.stdout)
 
     def _emit_hook_specific(self, fields: dict) -> None:
         if not self._hook_event_name:

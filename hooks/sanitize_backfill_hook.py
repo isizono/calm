@@ -23,6 +23,7 @@ opt-out:
 
 例外時は stderr 警告 + citation_event_log failure イベント記録 + exit 0 (Claude Code 起動非ブロック)。
 """
+import contextlib
 import json
 import os
 import shutil
@@ -43,6 +44,7 @@ from hooks.hook_state import HookState
 from hooks.hook_transcript import _is_calm_tool
 from src.env_compat import env_get
 from src.harness import select_harness
+from src.harness.claude_code import read_stdin_text
 from src.services.citations_pure import (
     check_target_exists,
     convert_raw_to_cite,
@@ -317,6 +319,9 @@ def _write_back_transcript(
         tmp_path.unlink(missing_ok=True)
         return f"io_error: {exc}"
 
+    # ここだけは意図的にreplace_retryingを使わない。rename直前のmtime再確認の
+    # 直後に再試行すると、その間に書き込まれたharnessの並行appendを追記直後に
+    # 上書きして失いうる。
     try:
         os.replace(tmp_path, transcript_path)
     except OSError as exc:
@@ -362,7 +367,7 @@ def main() -> int:
         if not select_harness().supports_transcript_rewrite:
             return 0
 
-        raw = sys.stdin.read()
+        raw = read_stdin_text()
         if not raw.strip():
             return 0
         data = json.loads(raw)
@@ -399,7 +404,7 @@ def main() -> int:
 
         raw_bytes = path.read_bytes()
 
-        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as ro_conn:
+        with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as ro_conn:
             new_bytes, stats, modified, events = _sanitize_transcript_bytes(
                 raw_bytes, offset, ro_conn
             )
