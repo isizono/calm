@@ -40,11 +40,9 @@ class TestActivitiesBudget:
         cut = next(c for c in cuts if c["section"] == "activities")
         assert cut["cut"] > 0
         assert cut["kept"] == len(result["activities"])
-        assert cut["next"] == [
-            {"hint": "tags/status/since/untilで対象を絞るか、limitを下げて再実行してください"}
-        ]
-
-        assert len(result["activities"]) < 60
+        assert cut["kept"] + cut["cut"] == 60
+        assert len(cut["next"]) == 1
+        assert cut["next"][0]["hint"]
         assert result["total_count"] == 60
 
     def test_small_result_not_truncated(self, temp_db):

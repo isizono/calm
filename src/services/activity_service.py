@@ -585,7 +585,7 @@ def get_active_activities_by_tag_with_conn(conn, tag_id: int) -> list[dict]:
         JOIN activity_tags at ON a.id = at.activity_id
         WHERE at.tag_id = ?
           AND (a.status IN ('in_progress', 'pending') OR {_EXPIRED_SNOOZED_SQL})
-        ORDER BY CASE status WHEN 'in_progress' THEN 0 ELSE 1 END,
+        ORDER BY CASE a.status WHEN 'in_progress' THEN 0 ELSE 1 END,
                  a.updated_at DESC
         """,
         (HEARTBEAT_TIMEOUT_MINUTES, tag_id),
