@@ -3118,10 +3118,11 @@ def _ensure_project_root_cwd() -> Path:
 def _setup_server_logging(db_path: str) -> Path:
     """HTTPサーバーのログをファイルへ永続化する。
 
-    launcher（`src/launcher.py`）はサーバープロセスを `stdout=DEVNULL, stderr=DEVNULL`
-    で起動する（stdout はMCPプロトコル用途のため塞げない）。このハンドラを
-    明示的に追加しない限り、ツール呼び出し以外のサーバー内部エラー（migration の
-    安全装置ログ等を含む）は一切観測できない。
+    launcher（`src/launcher.py`）はサーバープロセスを `stdout=DEVNULL` で起動する
+    （stdout はMCPプロトコル用途のため塞げない）。サーバーのstderrは
+    `logs/server.stderr.log` へ別途向けられるが、import直後に落ちるような
+    致命的な失敗（トップレベルimportの例外等）はこのハンドラでは拾えない
+    ため、stderrのファイル化と併用する。
 
     ログは DB ファイルと同階層の `logs/server.log` に書き、10MBごとに
     最大3世代までローテーションする。
@@ -3136,7 +3137,9 @@ def _setup_server_logging(db_path: str) -> Path:
 
     log_dir = Path(db_path).parent / "logs"
     log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    handler = RotatingFileHandler(log_dir / "server.log", maxBytes=10_000_000, backupCount=3)
+    handler = RotatingFileHandler(
+        log_dir / "server.log", maxBytes=10_000_000, backupCount=3, encoding="utf-8"
+    )
     handler.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(levelname)s %(message)s"))
     logging.getLogger().addHandler(handler)
     logging.getLogger().setLevel(logging.INFO)
@@ -3157,15 +3160,20 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     from src.db import verify_sqlite_vec, init_database, get_db_path
+
+    if args.transport == "http":
+        # verify_sqlite_vec/init_databaseより前にログをファイルへ永続化する。
+        # この2つが`logger.error`してから`SystemExit`する失敗（sqlite-vec検証失敗、
+        # migrationの内容ハッシュ不一致等）は、logging未設定のままだと痕跡が残らない。
+        _log_dir = _setup_server_logging(get_db_path())
+        logger.info("Server log persisted to %s", _log_dir / "server.log")
+
     verify_sqlite_vec()
     init_database()
 
     if args.transport == "http":
         from src.infra.lock_file import acquire, release
         from src.infra.session_manager import SessionManager
-
-        _log_dir = _setup_server_logging(get_db_path())
-        logger.info("Server log persisted to %s", _log_dir / "server.log")
 
         # 起動時cwdをプロジェクトルートに固定する。worktree内などからの起動による
         # cwd差し替えリスクを構造的に潰す（詳細は _ensure_project_root_cwd 参照）。
@@ -3191,9 +3199,15 @@ if __name__ == "__main__":
         )
 
         def _shutdown_server():
-            """ウォッチドッグから呼ばれるシャットダウンハンドラ"""
+            """ウォッチドッグから呼ばれるシャットダウンハンドラ
+
+            os.kill(os.getpid(), signal.SIGINT)はWindowsではTerminateProcess
+            相当になりfinallyのrelease()が走らない。signal.raise_signalは
+            プロセス内にシグナルを送る標準の手段で、全OSでPythonのシグナル
+            ハンドラ経由の正常終了経路に乗る。
+            """
             logger.info("Shutdown triggered by watchdog, sending SIGINT")
-            os.kill(os.getpid(), signal.SIGINT)
+            signal.raise_signal(signal.SIGINT)
 
         _session_manager.set_shutdown_callback(_shutdown_server)
         _session_manager.start_watchdog()

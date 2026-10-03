@@ -6,6 +6,7 @@ premigrationスナップショット連動、fresh DBスキップの各挙動を
 `_apply_migrations()` 全体の統合的な振る舞い（既存DB + pendingでのスナップショット
 取得・dry-run失敗時の実DB無傷確認）は tests/e2e/test_migration_pipeline.py で検証する。
 """
+import hashlib
 import sqlite3
 from pathlib import Path
 
@@ -235,6 +236,36 @@ class TestVerifyMigrationLedger:
             assert mismatches == []
         finally:
             conn.close()
+
+
+class TestContentSha256CrlfNormalization:
+    """改行コード違いでmigrationのハッシュが変わらないことを検証する。
+
+    autocrlf=true等でCRLF化されたファイルを取得しても、同じmigrationに
+    対して常に同じハッシュになる必要がある（さもなくば全migrationの
+    verify_migration_ledgerが不一致判定になり起動が止まる）。
+    """
+
+    def test_lf_file_hash_is_unchanged(self, tmp_path):
+        """LF（通常のmacOS/Linux環境での取得）のハッシュは、CRLF正規化を
+        導入する前と同じ値のまま（既存DBに記録済みのハッシュとの互換性）。
+        """
+        content = b"-- depends: 0048_session_identity\n\nCREATE TABLE x (id INTEGER);\n"
+        path = tmp_path / "lf.sql"
+        path.write_bytes(content)
+
+        assert db._content_sha256(str(path)) == hashlib.sha256(content).hexdigest()
+
+    def test_crlf_file_hashes_same_as_lf_equivalent(self, tmp_path):
+        lf_content = b"-- depends: 0048_session_identity\n\nCREATE TABLE x (id INTEGER);\n"
+        crlf_content = lf_content.replace(b"\n", b"\r\n")
+
+        lf_path = tmp_path / "lf.sql"
+        crlf_path = tmp_path / "crlf.sql"
+        lf_path.write_bytes(lf_content)
+        crlf_path.write_bytes(crlf_content)
+
+        assert db._content_sha256(str(lf_path)) == db._content_sha256(str(crlf_path))
 
 
 class TestHandleHashMismatch:
