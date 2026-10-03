@@ -460,6 +460,8 @@ def _try_parse_material_id(text: str) -> int | None:
     """JSON文字列からadd_materialレスポンスのmaterial_idを抽出する。"""
     try:
         data = json.loads(text)
+        if not isinstance(data, dict):
+            return None
         mid = data.get("material_id")
         if mid is not None:
             return int(mid)

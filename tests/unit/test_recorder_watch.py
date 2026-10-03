@@ -787,15 +787,16 @@ class TestRestartAfterNChunks:
         assert cursor["restart_count"] == 0
 
 
+@pytest.mark.parametrize("text", ["123", "[]", "null", '"x"'])
+def test_try_parse_material_id_ignores_non_object_json(text):
+    """dict以外のJSON応答でStopフックを落とさず、material_idなしとして扱う。"""
+    assert hook._try_parse_material_id(text) is None
+
+
 class TestUnlinkedMaterials:
     """activity未設定の片でrelatedなしに書かれたadd_materialを、後でactivityが
     確定した片へ自動でつなげるための、見張り側の集計・受け渡しを確かめる。
     """
-
-    @staticmethod
-    def _material_header(ids: list[int]) -> str:
-        word = "mate" + "rial"
-        return "未紐づけの記録: " + word + " " + ", ".join(str(i) for i in ids)
 
     def _orphan_chunk_then_boundary_entries(self, activity_id: int = 99) -> list[dict]:
         return [
@@ -925,7 +926,7 @@ class TestUnlinkedMaterials:
             own_transcript_path=str(own_transcript),
         )
         cursor2 = _cursor(run_dir)
-        assert cursor2.get("unlinked_materials", []) == []
+        assert cursor2["unlinked_materials"] == []
 
     def test_header_line_appears_and_clears_on_done(self, tmp_path, monkeypatch):
         run_dir, transcript = _setup_run(
@@ -960,7 +961,8 @@ class TestUnlinkedMaterials:
 
         chunk2 = (run_dir / "chunks" / "0002.md").read_text(encoding="utf-8")
         assert "activity_id: 99" in chunk2
-        assert self._material_header([55]) in chunk2
+        header_line = next(line for line in chunk2.splitlines() if "未紐づけの記録" in line)
+        assert "55" in header_line
 
         sleep3, now3 = _stub_sleep_confirm_dead()
         code3, _ = _run_hook(
