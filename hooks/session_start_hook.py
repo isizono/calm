@@ -45,7 +45,6 @@ from src.services import session_registry_service
 from hooks.signal_capture import try_capture_signal
 
 _RECENT_CREATED_HOURS = 24
-_TIER2_MAX_ITEMS = 5
 _PIN_MARK = "\U0001f4cc"
 _NEW_MARK = "\U0001f195"
 _CHILD_MARK_FAILED = "✕"  # ✕
@@ -252,13 +251,19 @@ def _build_fixed_nav() -> str:
     )
 
 
+_UNDISPLAYED_EXAMPLE_DOMAINS = 3
+
+
 def _build_undisplayed_lines(
     undisplayed: list[dict], domains: list[dict], domain_pool: dict[int, list[dict]]
 ) -> list[str]:
     """末尾『未表示』節の行群を組み立てる。
 
     domainごとの件数と、そのdomainで最近更新された順に2件のタイトルを
-    例示する（決定事項「未表示はdomain別の件数と各2件の例で出す」）。
+    例示する。未表示のいるdomainが `_UNDISPLAYED_EXAMPLE_DOMAINS + 1` 件を
+    超えるとき（まとめ行が2 domain以上を受け持つとき）だけ畳み、件数上位
+    `_UNDISPLAYED_EXAMPLE_DOMAINS` 件は例示付きで出し、残りは名前と件数だけを
+    件数降順で1行にまとめる（省略せず全domain分を載せる）。
     domainタグを持たない未表示activity（pin経由のみ）は、そのタグを持つ
     domainが無いため、どの内訳行にも現れない（見出しの総数には数えるが、
     domain単位の内訳の対象外という受容済みの隙間）。
@@ -273,12 +278,20 @@ def _build_undisplayed_lines(
             groups.append((domain["name"], members))
     groups.sort(key=lambda g: len(g[1]), reverse=True)
 
+    # 畳んでも残りが1 domainだけなら例示行と変わらないため、まとめ行は2 domain以上を受け持つときに限る
+    fold = len(groups) > _UNDISPLAYED_EXAMPLE_DOMAINS + 1
+    shown_groups = groups[:_UNDISPLAYED_EXAMPLE_DOMAINS] if fold else groups
+
     lines = [f"## 未表示 {len(undisplayed)}件"]
-    for name, members in groups:
+    for name, members in shown_groups:
         ordered = sorted(members, key=lambda a: a["updated_at"], reverse=True)
         examples = [a["title"] for a in ordered[:2]]
         suffix = " など" if len(members) > len(examples) else ""
         lines.append(f"- {name} {len(members)}件：{'、'.join(examples)}{suffix}")
+    if fold:
+        rest = groups[_UNDISPLAYED_EXAMPLE_DOMAINS:]
+        summary = "、".join(f"{name} {len(members)}件" for name, members in rest)
+        lines.append(f"- ほか{len(rest)} domain：{summary}")
     return lines
 
 
@@ -292,7 +305,8 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
     階層 2「優先」: 階層 1 に入らなかった activity のうち、
         (in_progress かつ updated_at が config.TIER2_MAX_AGE_DAYS 日以内) または
         (pinned かつ updated_at が config.PIN_SURFACE_DECAY_DAYS 日以内) を集約し、
-        pinned 先頭 → updated_at 降順で上位 5 件（flat、topic 別グルーピングなし）。
+        pinned 先頭 → updated_at 降順で上位 `config.TIER2_MAX_ITEMS` 件（既定5、
+        flat、topic 別グルーピングなし）。
         pinned が decay 日数を超えると階層 2 から外れる（pin 自体は残り、
         activity を touch すれば updated_at 更新により自動復帰する）。
 
@@ -420,7 +434,7 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
     ]
     tier2_pool.sort(key=lambda a: (a["updated_at"], a["id"]), reverse=True)
     tier2_pool.sort(key=lambda a: 0 if a["id"] in pinned_ids else 1)
-    tier2 = tier2_pool[:_TIER2_MAX_ITEMS]
+    tier2 = tier2_pool[:config.TIER2_MAX_ITEMS]
     for a in tier2:
         seen_ids.add(a["id"])
 
