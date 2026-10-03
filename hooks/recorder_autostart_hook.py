@@ -142,6 +142,9 @@ def _spawn_start(session_id: str, main_pid: int, transcript_path: str) -> None:
 
 
 def main() -> int:
+    if sys.platform == "win32":
+        # 記録役はtmux前提でWindowsには未対応。
+        return 0
     try:
         if os.environ.get("CALM_RECORDER") != "1":
             return 0

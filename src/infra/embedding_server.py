@@ -9,7 +9,9 @@ from logging.handlers import RotatingFileHandler
 
 from src.env_compat import env_get
 
-HOST = "localhost"
+# IPv4(127.0.0.1)固定。"localhost"だと::1が先に解決された環境で
+# クライアント（embedding_service）からの接続が拒否待ちになりうる。
+HOST = "127.0.0.1"
 PORT = 52836
 MAX_REQUEST_BYTES = 10 * 1024 * 1024  # 10MB
 
@@ -79,8 +81,13 @@ class EmbeddingHTTPServer(ThreadingHTTPServer):
     ヘルスチェック接続が listen backlog に溜まる。既定値 5 では数十秒のロード中に
     枯渇して SYN がドロップされ、クライアント側から「ポート未 bind」と区別が
     つかなくなるため余裕を持たせる。
+
+    allow_reuse_address はWindowsではSO_REUSEADDRの意味がPOSIXと異なり、
+    使用中のポートへのbindを許してしまう（多重起動防止が効かなくなる）ため
+    無効にする。
     """
     request_queue_size = 128
+    allow_reuse_address = sys.platform != "win32"
 
 
 class EmbeddingHandler(BaseHTTPRequestHandler):

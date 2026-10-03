@@ -43,9 +43,17 @@ class TestCommandSpawnsBg:
             "exec claude --bg",  # exec 前置き
             '/usr/local/bin/claude --bg "task"',  # パス指定 (basename判定)
             "~/.local/bin/claude --bg",  # パス指定 (basename判定、チルダ)
+            "claude.exe --bg",  # Windows拡張子付き (basename判定)
             "bash -c 'claude --bg \"task\"'",  # bash -c 経由
             'sh -c "cd /tmp && claude --bg"',  # sh -c 経由
             "zsh -c 'claude --bg'",  # zsh -c 経由
+            '& "C:\\Program Files\\claude\\claude.exe" --bg task',  # クォート付きWindows絶対パス(basename判定)
+            'pwsh -c "claude --bg"',  # pwsh -c 経由
+            'powershell -c "claude --bg"',  # powershell -c 経由
+            "Claude.exe --bg",  # 大文字始まり (NTFS/PowerShellは大文字小文字を区別しない)
+            "CLAUDE --bg",  # 全て大文字
+            'pwsh -Command "claude --bg"',  # pwsh -Command (長形式) 経由
+            'powershell -Command "claude --bg"',  # powershell -Command (長形式) 経由
         ],
     )
     def test_matches(self, command):
@@ -246,6 +254,19 @@ class TestMainFlow:
         assert spec["permissionDecision"] == "deny"
         assert "claude --bg" in spec["permissionDecisionReason"]
         assert "Agent" in spec["permissionDecisionReason"]
+        assert len(agents_spy) == 1
+
+    def test_powershell_bg_spawn_from_background_session_denies(self, capsys, agents_spy):
+        out = _run_main_with_event(
+            {
+                "tool_name": "PowerShell",
+                "tool_input": {"command": 'claude --bg "task"'},
+                "session_id": "bg-session-1",
+            },
+            capsys,
+        )
+        spec = out["hookSpecificOutput"]
+        assert spec["permissionDecision"] == "deny"
         assert len(agents_spy) == 1
 
     def test_bash_bg_spawn_from_interactive_session_allows(self, capsys, agents_spy):
