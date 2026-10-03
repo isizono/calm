@@ -1,0 +1,6 @@
+# Windows（Git for Windowsのautocrlf=true既定）でチェックアウトしても、
+# シェルスクリプトとmigrationのハッシュ対象ファイルがCRLF化されないようにする。
+* text=auto eol=lf
+
+*.sh text eol=lf
+migrations/** text eol=lf
