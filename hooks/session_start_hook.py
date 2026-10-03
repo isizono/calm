@@ -1020,13 +1020,13 @@ def _build_search_health_section(conn, session_id: str | None = None, source: st
 # compose()側でハード切り詰めされる（詳細はinjection_compositor.pyのdocstring参照）。
 _SECTIONS: list[Section] = [
     Section("snapshot", _build_snapshot_section, config.INJECTION_BUDGET_SNAPSHOT_CHARS, priority=0),
+    Section("search_health", _build_search_health_section, config.INJECTION_BUDGET_SEARCH_HEALTH_CHARS, priority=5),
     Section("activities", _build_activities_section, config.INJECTION_BUDGET_ACTIVITIES_CHARS, priority=10),
     Section("habits", _build_habits_section, config.INJECTION_BUDGET_HABITS_CHARS, priority=20),
     Section("signals", _build_signals_section, config.INJECTION_BUDGET_SIGNALS_CHARS, priority=40),
     Section("open_asks", _build_open_asks_section, config.INJECTION_BUDGET_OPEN_ASKS_CHARS, priority=41),
     Section("ask_notify", _build_ask_notify_section, config.INJECTION_BUDGET_ASK_NOTIFY_CHARS, priority=45),
     Section("transcript_path", _build_transcript_path_section, config.INJECTION_BUDGET_TRANSCRIPT_PATH_CHARS, priority=60),
-    Section("search_health", _build_search_health_section, config.INJECTION_BUDGET_SEARCH_HEALTH_CHARS, priority=5),
 ]
 
 

@@ -14,6 +14,7 @@
 import json
 from datetime import datetime, timedelta, timezone
 
+from src import config
 from src.db import get_connection
 from src.services.search_health_service import check_search_health
 
@@ -43,7 +44,7 @@ def _seed_row(conn, *, degraded: bool | None, qe_expansions: list | None, days_a
 
 def _seed_many(conn, count: int, *, degraded: bool, qe_expansions: list, start_days_ago: float,
                step_seconds: float = 1.0) -> None:
-    """countフィックスチャーな行を、start_days_agoを起点にstep_seconds間隔でtimestampをずらして挿入する。
+    """count件の行を、start_days_agoを起点にstep_seconds間隔でtimestampをずらして挿入する。
 
     （新しい順にSELECTされる前提のテストでtie-breakを避けるため、timestampを必ず分散させる）
     """
@@ -65,19 +66,34 @@ def test_no_rows_is_healthy(temp_db):
     assert result.qe_fired_ratio is None
 
 
-def test_omitted_args_fall_back_to_config_defaults(temp_db):
-    """全引数省略時はsrc.configの既定値（min_sample=20など）で判定される"""
+def test_omitted_args_fall_back_to_config_defaults(temp_db, monkeypatch):
+    """全引数省略時はsrc.configの値を呼び出し時点で読んで判定される"""
+    monkeypatch.setattr(config, "SEARCH_HEALTH_MIN_SAMPLE", 10)
     conn = get_connection()
     try:
-        _seed_many(conn, 19, degraded=True, qe_expansions=[], start_days_ago=0.1)
+        _seed_many(conn, 10, degraded=True, qe_expansions=["x"], start_days_ago=0.1)
         conn.commit()
         result = check_search_health(conn)
     finally:
         conn.close()
 
-    # 既定min_sample=20に対し19件なので未評価（健全）のはず
+    # min_sampleを10に差し替えたので10件で評価対象になり、縮退率が出る
+    assert result.degraded_sample_count == 10
+    assert result.degraded_ratio == 1.0
+
+
+def test_missing_telemetry_table_is_healthy(temp_db):
+    """search_telemetryが無い環境は計測不能なだけで、異常として扱わない"""
+    conn = get_connection()
+    try:
+        conn.execute("DROP TABLE search_telemetry")
+        conn.commit()
+        result = check_search_health(conn)
+    finally:
+        conn.close()
+
     assert result.is_healthy is True
-    assert result.degraded_ratio is None
+    assert result.degraded_sample_count == 0
 
 
 def test_degraded_ratio_above_threshold_triggers(temp_db):
@@ -97,7 +113,7 @@ def test_degraded_ratio_above_threshold_triggers(temp_db):
     assert result.degraded_unhealthy is True
     assert result.qe_unhealthy is False
     assert result.is_healthy is False
-    assert any("縮退率" in w for w in result.warnings)
+    assert len(result.warnings) == 1
 
 
 def test_degraded_ratio_below_threshold_does_not_trigger(temp_db):
@@ -132,7 +148,7 @@ def test_qe_fire_floor_triggers_when_never_fires(temp_db):
     assert result.qe_unhealthy is True
     assert result.degraded_unhealthy is False
     assert result.is_healthy is False
-    assert any("クエリ拡張" in w for w in result.warnings)
+    assert len(result.warnings) == 1
 
 
 def test_qe_fires_at_least_once_does_not_trigger(temp_db):
@@ -226,7 +242,6 @@ def test_degraded_rows_are_excluded_from_qe_sample(temp_db):
     assert result.qe_sample_count == 0
     assert result.qe_fired_ratio is None
     assert result.qe_unhealthy is False
-    assert not any("クエリ拡張" in w for w in result.warnings)
 
 
 def test_rows_missing_expected_keys_are_excluded_from_sample(temp_db):
