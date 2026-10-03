@@ -5,16 +5,10 @@ SKILL.md / references/*.md に書かれた「ツール名(引数名=...)」形�
 ツール一覧・引数名）と突き合わせ、存在しないツール・存在しない引数名を検出する。
 呼び出し例は1行に収まる前提で行単位で走査する。
 
-機械的に判定できない呼び出し（存在しないツール名・括弧や引用符が閉じない等）は
-_ALLOWLIST に理由付きで明示的に載せない限り違反として扱う。_ALLOWLIST の各行は
-test_allowlist_entries_are_still_violations により、実際にまだ違反であることを
-追跡する（直ったら xfail→pass に転じ、strict=True で失敗として検出される。その
-時点で該当行を削除すること）。
+存在しないツール名・存在しない引数名・括弧や引用符が閉じない呼び出しは違反とする。
 """
 import re
 from pathlib import Path
-
-import pytest
 
 from tests.helpers import all_tool_schemas
 
@@ -23,26 +17,6 @@ _SKILLS_DIR = _REPO_ROOT / "skills"
 
 _CALL_START_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\(")
 _KWARG_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=(?!=)")
-
-# 許可リスト: (相対パス, ツール名/識別子, 引数名) -> 除外理由。
-# 引数名を問わない除外（ツール不在・括弧未対応）は引数名に "" を使う。
-_ALLOWLIST: dict[tuple[str, str, str], str] = {
-    ("skills/audit/SKILL.md", "get_logs", "topic_id"):
-        "get_logsの引数はentity_type/entity_idであり、topic_idは存在しない",
-    ("skills/postmortem/SKILL.md", "get_logs", "topic_id"):
-        "get_logsの引数はentity_type/entity_idであり、topic_idは存在しない",
-    ("skills/postmortem/SKILL.md", "get_decisions", "topic_id"):
-        "get_decisionsの引数はentity_type/entity_idであり、topic_idは存在しない",
-    ("skills/scribe/SKILL.md", "get_decisions", "topic_id"):
-        "get_decisionsの引数はentity_type/entity_idであり、topic_idは存在しない",
-    ("skills/scribe/SKILL.md", "get_logs", "topic_id"):
-        "get_logsの引数はentity_type/entity_idであり、topic_idは存在しない",
-    ("skills/sync-memory/SKILL.md", "get_decisions", "topic_id"):
-        "get_decisionsの引数はentity_type/entity_idであり、topic_idは存在しない",
-    ("skills/sync-memory/SKILL.md", "get_logs", "topic_id"):
-        "get_logsの引数はentity_type/entity_idであり、topic_idは存在しない",
-}
-
 
 class Violation:
     __slots__ = ("path", "line_no", "tool", "arg", "snippet")
@@ -53,9 +27,6 @@ class Violation:
         self.tool = tool
         self.arg = arg
         self.snippet = snippet
-
-    def key(self) -> tuple[str, str, str]:
-        return (self.path, self.tool, self.arg)
 
     def __str__(self) -> str:
         return f"{self.path}:{self.line_no} `{self.snippet}`"
@@ -163,23 +134,8 @@ def _collect_violations() -> list[Violation]:
 
 
 def test_call_examples_use_real_tool_and_argument_names():
-    """許可リストに無い違反が0件であること。"""
+    """skillsの呼び出し例に存在しないツール名・引数名が無いこと。"""
     violations = _collect_violations()
-    unexpected = [v for v in violations if v.key() not in _ALLOWLIST]
-    assert not unexpected, "手順通りに呼ぶとエラーになる呼び出し例が見つかった:\n" + "\n".join(
-        str(v) for v in unexpected
+    assert not violations, "手順通りに呼ぶとエラーになる呼び出し例が見つかった:\n" + "\n".join(
+        str(v) for v in violations
     )
-
-
-@pytest.mark.xfail(strict=True, reason="許可リストに載せた既知の呼び出し例の不整合")
-@pytest.mark.parametrize("key", sorted(_ALLOWLIST), ids=lambda k: ":".join(k))
-def test_allowlist_entries_are_still_violations(key: tuple[str, str, str]):
-    """許可リストの各エントリが実際にまだ違反であることを確認する。
-
-    assertは「違反が無い」ことを検証する ＝ 違反が残っている限りこのassertは失敗し、
-    xfailにより期待された失敗として吸収される。直ったらassertが通ってxfail→passに
-    転じ、strict=Trueにより失敗として検出される（その時点で該当エントリを
-    _ALLOWLISTから削除すること）。
-    """
-    violations = _collect_violations()
-    assert not any(v.key() == key for v in violations)

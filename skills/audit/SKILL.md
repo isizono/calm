@@ -119,7 +119,7 @@ audit する**主題** (decision 1 件 / 設計テーマ / 同 tag の方針推�
 
 ### Step 4: 関連 log の一通り読み (経緯把握)
 
-`get_logs(topic_id=...)` + `search(keyword=主題キーワード, entity_type="log", tags=[domain_tag])` で経緯 log を取得し**時系列で読む**。N 件・time-window 上限を設けて爆発を防ぐ:
+`get_logs(entity_type="topic", entity_id=...)` + `search(keyword=主題キーワード, entity_type="log", tags=[domain_tag])` で経緯 log を取得し**時系列で読む**。N 件・time-window 上限を設けて爆発を防ぐ:
 
 - 上限: 直近 **30 件 / 90 日** のいずれか狭い方
 - 読む観点: 「誰が・いつ・どんな状況で・なぜ判断を変えたか」「却下案の理由」「再開ループの兆候」
