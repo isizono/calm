@@ -372,7 +372,7 @@ def get_asks_with_conn(
 
     Args:
         status: フィルタ対象のstatus（"open"|"answered"|"promoted"|"dismissed"|"withdrawn"）。
-            null指定で全status横断。triage_pending_only=Trueのときは無視される
+            null指定で全status横断（文字列"null"も大小文字不問で同じ）。triage_pending_only=Trueのときは無視される
         blocking_activity_id: 指定時はそのactivityをblockしているaskだけに絞る
         triage_pending_only: Trueでstatus='answered' AND triage IS NULLのみに絞る
             （statusの指定は無視される）

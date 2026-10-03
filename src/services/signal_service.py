@@ -210,6 +210,10 @@ def get_signals(
         各signalはidをid_rawへ退避しsession_id/fingerprintを含まない
         （_sanitize_signal_for_response参照）
     """
+    if isinstance(status, str) and status.lower() == "null":
+        status = None
+    if isinstance(kind, str) and kind.lower() == "null":
+        kind = None
     if status is not None and status not in VALID_STATUSES:
         return {
             "error": {

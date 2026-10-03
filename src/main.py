@@ -2357,8 +2357,8 @@ def get_signals(
 
     Args:
         status: フィルタ対象のstatus（"new"|"triaged"|"promoted"|"dismissed"）。
-            null指定で全status横断。デフォルトは未トリアージの"new"のみ
-        kind: フィルタ対象のkind。null指定で全kind横断
+            null指定で全status横断（文字列"null"も大小文字不問で同じ）。デフォルトは未トリアージの"new"のみ
+        kind: フィルタ対象のkind。null指定（文字列"null"も大小文字不問で同じ）で全kind横断
         limit: 取得件数上限（最大100件、デフォルト20）
         offset: 取得開始位置（ページネーション用）
         include_stats: Trueのとき kind×status のクロス集計と直近30日サマリを付与
@@ -2495,13 +2495,13 @@ def get_asks(
 
     Args:
         status: フィルタ対象のstatus（"open"|"answered"|"promoted"|"dismissed"|"withdrawn"）。
-            null指定で全status横断。デフォルトは答え待ちの"open"のみ。
+            null指定で全status横断（文字列"null"も大小文字不問で同じ）。デフォルトは答え待ちの"open"のみ。
             triage_pending_only指定時は無視される
         blocking_activity_id: 指定時はそのactivityをblockしているaskだけに絞る
         triage_pending_only: Trueでstatus='answered'かつ未トリアージのみに絞る
         tags: タグ配列（optional。指定時はAND条件でフィルタ、未指定時は全件。
             空配列を明示指定した場合はVALIDATION_ERRORになる）
-        kind: フィルタ対象のkind（"ask"|"meta"）。null指定でフィルタなし
+        kind: フィルタ対象のkind（"ask"|"meta"）。null指定（文字列"null"も大小文字不問で同じ）でフィルタなし
         ids: 指定時はこのask idの集合だけに絞る（他のフィルタとAND条件）。
             自分がadd_askした特定のask_id一覧の状態を直接引き当てたい場合に使う
             （statusは既定"open"のままだと絞り込まれてしまうため、状態を問わず
