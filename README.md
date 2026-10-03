@@ -25,7 +25,7 @@ CALMは、こうした文脈をSQLiteデータベースに保存し、新しい�
 ### 前提条件
 
 - [uv](https://docs.astral.sh/uv/) がインストールされていること
-- Claude Code v2.0.12以上
+- Claude Code v2.1.139以上
 - Python 3.12+（SQLite拡張ロード対応ビルドが必要）
   - pyenvのデフォルトビルドは `--enable-loadable-sqlite-extensions` が無効のため非対応
   - Homebrew Python (`brew install python@3.12`) を推奨
@@ -45,6 +45,54 @@ claude plugin install calm
 ```
 /man
 ```
+
+### Windows 11での利用
+
+Windows 11（PowerShell）でもmacOS/Linuxと同じ手順でインストールできますが、以下の点に注意してください。インストール手順（人が実行する手順・Claude Codeに任せる手順の2パターン）は[docs/windows-setup.md](docs/windows-setup.md)を参照してください。
+
+**前提条件の要点**
+
+- [uv公式のインストール手順](https://docs.astral.sh/uv/getting-started/installation/)でインストールし、PATHが反映されているか`uv --version`で確認する
+- [Git for Windows](https://gitforwindows.org/)が必要（マーケットプレイス`isizono/calm`はGitHubでホストされており、`claude plugin marketplace add`・`update`やプラグインのインストールのたびにClaude Codeが利用者側の`git`でcloneするため）。calmのhookはexec form（コマンドと引数を分けた形）で登録されておりシェルを経由しないため、hook自体の実行はGit for Windowsの有無に影響されない。Git for Windowsが入っていると、Claude Codeはスキルの中のシェル手順をBashツール（Git Bash経由）で実行できるようになる。これとは別に、PowerShellツールもclaude.ai・Consoleアカウントでは既定で有効になる
+- torchのimportには[Microsoft Visual C++ 再頒布可能パッケージ（x64）](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)が必要。無いと`c10.dll`のロードに失敗しWinError 126になる
+- ARM64版Windowsでは、uvが既定で選ぶARM64版のCPythonではなくx64版のCPythonを使う必要がある
+- 初回の依存取得（`uv sync`）は1分以上かかることがあり、Claude CodeのMCP接続待ち（30秒）を超えて`/mcp`の初回接続が失敗することがある。これを避けるため、プラグインを入れた直後に、インストール先で`uv sync --frozen`を一度手動実行しておく
+
+**状態確認・停止・lockの後始末（PowerShell）**
+
+稼働状況の確認や強制停止は、`/restart`と同じPythonの入口（`scripts/restart_server.py`）を使う。`curl`はPowerShellでは`Invoke-WebRequest`の別名に化けて出力形式が変わるため、ここでは使わない。インストール先のディレクトリで実行する（`.`はカレントディレクトリの意味）:
+
+```powershell
+# 状態確認（何も変更しない）
+uv run --no-sync --directory . python scripts/restart_server.py --status
+
+# 停止のみ（再起動しない）
+uv run --no-sync --directory . python scripts/restart_server.py --stop
+```
+
+`--stop`は停止確認後にserver.lockの後始末まで行うため、通常は手動で消す必要はない。他に生きているClaude Codeセッションがあると、そのセッションのlauncherが数秒以内に新しいサーバーを自動起動し直す点に注意する（本当に停止させたい・キャッシュ削除等を控えて行う場合は、全セッションを閉じてから`--stop`を実行する）。Task Manager等このCLIを経由せずにプロセスを終了させてしまい、lockだけが残った場合に限り、以下で手動削除する:
+
+```powershell
+Remove-Item "$env:USERPROFILE\.cc-memory\server.lock" -ErrorAction SilentlyContinue
+```
+
+embeddingサーバーの疎通確認（[動作確認](#動作確認)の4.相当）は`curl`ではなく`curl.exe`または`Invoke-RestMethod`を使う:
+
+```powershell
+curl.exe http://127.0.0.1:52836/health
+# または
+Invoke-RestMethod http://127.0.0.1:52836/health
+```
+
+（embeddingサーバーは127.0.0.1でのみ待ち受けており`localhost`では名前解決の分だけ余計な遅延が入りうるため、`127.0.0.1`を直接指定する）
+
+**社内プロキシ環境での注意**
+
+ローカルのMCP通信（127.0.0.1宛のループバック接続）は、レジストリで手動プロキシが設定され環境変数が無い環境でも社内プロキシへ誤送されないよう対応済み。一方、`uv sync`（依存解決）とembeddingモデルの初回ダウンロード（Hugging Face Hubへの外部通信）は、レジストリの手動プロキシ設定だけでは経由しない可能性がある。[uv公式ドキュメント](https://docs.astral.sh/uv/reference/environment/)が挙げるプロキシ設定手段は`HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`等の環境変数のみで、Windowsのレジストリ経由の検出には触れられていない。モデルのダウンロードも、依存バージョンによってはuvと同様にRust製の別クライアントを経由することがある。社内プロキシが必要な環境では`$env:HTTPS_PROXY`を設定しておく（HTTP用の`HTTP_PROXY`も設定する場合は、ループバック宛の通信を誤って巻き込まないよう`$env:NO_PROXY="localhost,127.0.0.1"`も併せて設定する）。
+
+社内プロキシがTLSを傍受する構成の場合、uvが同梱するMozilla製ルート証明書やPython側の`certifi`では社内プロキシの証明書を検証できず失敗することがある。`$env:SSL_CERT_FILE`に社内CA証明書を指定する。
+
+`HTTPS_PROXY`・`NO_PROXY`・`SSL_CERT_FILE`はいずれもPowerShellの`$env:`では現在のウィンドウにしか効かない。hook・MCPサーバー・embeddingサーバーはClaude Codeを起動したシェルの環境を引き継ぐため、`claude`を起動するシェルで設定するか、`[Environment]::SetEnvironmentVariable('HTTPS_PROXY', '<url>', 'User')`のようにユーザー環境変数として永続化する。
 
 ## インストールすると何が起きるか
 
