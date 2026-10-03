@@ -526,8 +526,7 @@ def pull_precedents(
 
     設計文脈から近傍 topic を特定し、routing が当たった topic の非 retract decision を
     ランク競争なしに全件、最低でも索引粒度で応答に含める。予算超過時も切り捨てず
-    truncated/budget で縮退を明示する。read-only（statusを更新する副作用なし。計測用
-    telemetryへの非同期書き込みはある）。
+    truncated/budget で縮退を明示する。read-only（statusは更新しない。telemetryへの非同期書き込みはある）。
 
     Args:
         context: これから決めようとしている論点の記述（自由記述、2文字以上）。
