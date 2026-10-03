@@ -291,6 +291,7 @@ def add_topic(
     """新しい議論トピックを追加する。
 
     title: トピックのタイトル（35字以内）
+    description: トピックの説明（必須）
     tags: タグ配列(必須、1個以上)。domain:タグに加えて内容を表すタグも付けること。namespace: domain:(プロジェクト)/intent:(意図)/素タグ(キーワード)。例: ["domain:calm", "intent:implement", "error-handling", "validation", "stdin"]
     related: 関連エンティティ（optional）。[{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...] 形式。複数エンティティを配列で同時紐付け可能。例: [{"type": "topic", "ids": [1, 2]}, {"type": "decision", "ids": [10]}]。作成と同時にリレーションを張る
 
@@ -525,7 +526,7 @@ def pull_precedents(
 
     設計文脈から近傍 topic を特定し、routing が当たった topic の非 retract decision を
     ランク競争なしに全件、最低でも索引粒度で応答に含める。予算超過時も切り捨てず
-    truncated/budget で縮退を明示する。read-only（副作用なし）。
+    truncated/budget で縮退を明示する。read-only（statusは更新しない。telemetryへの非同期書き込みはある）。
 
     Args:
         context: これから決めようとしている論点の記述（自由記述、2文字以上）。
@@ -720,7 +721,7 @@ def detect_reask_candidates(
     注入されたものをそのまま渡す。
 
     「この既存記録があれば聞き返しは不要だったか」の主観判定とreport_signalの呼び出しは
-    このtoolの範囲外（呼び出し側であるskills/sync-memory/SKILL.mdのステップ9が担う）。
+    このtoolの範囲外（呼び出し側であるskills/sync-memory/SKILL.mdのステップ5が担う）。
 
     Args:
         transcript_path: transcript JSONLのパス
@@ -1446,7 +1447,9 @@ def get_material(
     資材の全文を取得する。
 
     check_inのmaterialsセクションはsnippet（先頭200字）止まりで全文は含まれない。
-    全文が同梱されるのはpinされた資材とget_by_idsの応答のみ。check_in経由でsnippetしか
+    全文が同梱されるのはpinされた資材とget_by_idsの応答のみ。ただしpinされた資材も
+    check_in応答全体が予算を超えると途中で切られる・スタブ化されることがある（応答の
+    nextフィールドにget_materialへのポインタが残る）。check_in経由でsnippetしか
     見ていない資材の全文が必要なときや、material_idだけが手元にある単発ケースで使う。
 
     Args:
@@ -1989,7 +1992,8 @@ def export_bundle(
         bundle_name: バンドルディレクトリ名(省略時は`<instance_id>-<日時>-<起点slug>`)
         include_supersede_targets: Trueのとき選択decisionのsupersede先実体も同梱する(デフォルトFalse)
         selection: collect_export_candidatesへの入力をverbatimで記録する任意dict
-            (manifest.yamlのselectionフィールドにそのまま書き込まれる。再exportの追跡用)
+            (manifest.yamlのselectionフィールドにそのまま書き込まれるだけで、読み取り側の
+            実装は無い)
 
     Returns:
         成功時: {"path": str, "bundle_id": str, "counts": {type: n}, "auto_included": [...],
