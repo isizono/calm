@@ -372,7 +372,7 @@ def get_asks_with_conn(
 
     Args:
         status: フィルタ対象のstatus（"open"|"answered"|"promoted"|"dismissed"|"withdrawn"）。
-            null指定で全status横断。triage_pending_only=Trueのときは無視される
+            null指定で全status横断（文字列"null"も大小文字不問で同じ）。triage_pending_only=Trueのときは無視される
         blocking_activity_id: 指定時はそのactivityをblockしているaskだけに絞る
         triage_pending_only: Trueでstatus='answered' AND triage IS NULLのみに絞る
             （statusの指定は無視される）
@@ -400,6 +400,11 @@ def get_asks_with_conn(
         notify_wanted（0または1）は通知希望の有無（add_askのnotify引数、
         またはunsubscribe_askでの解除状態）を示す。
     """
+    if isinstance(status, str) and status.lower() == "null":
+        status = None
+    if isinstance(kind, str) and kind.lower() == "null":
+        kind = None
+
     if not triage_pending_only and status is not None and status not in VALID_STATUSES:
         return _validation_error(
             f"Invalid status: {status!r}. Must be one of {sorted(VALID_STATUSES)} or null"

@@ -202,6 +202,29 @@ class TestGetSignals:
         assert result["signals"][0]["kind"] == "machine_error"
         assert result["signals"][0]["status"] == "new"
 
+    @pytest.mark.parametrize("value", ["null", "NULL", "Null"])
+    def test_status_string_null_treated_as_none(self, temp_db, value):
+        r1 = ss.record_signal("machine_error", "a", source="s1")
+        ss.update_signal(r1["id"], "dismissed")
+        ss.record_signal("friction", "b", source="s2")
+
+        result = ss.get_signals(status=value)
+
+        assert result["total_count"] == 2
+
+    @pytest.mark.parametrize("value", ["null", "NULL", "Null"])
+    def test_kind_string_null_treated_as_none(self, temp_db, value):
+        ss.record_signal("machine_error", "a", source="s1")
+        ss.record_signal("friction", "b", source="s2")
+
+        result = ss.get_signals(status=None, kind=value)
+
+        assert result["total_count"] == 2
+
+    def test_near_miss_status_string_returns_validation_error(self, temp_db):
+        result = ss.get_signals(status="nul")
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
     def test_invalid_status_returns_validation_error(self, temp_db):
         result = ss.get_signals(status="not_a_status")
         assert result["error"]["code"] == "VALIDATION_ERROR"
