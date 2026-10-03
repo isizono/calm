@@ -68,7 +68,7 @@ kind の全種一覧は `report_signal` ツールのdocstring（`src/main.py`）
 
 残り4種（`precedent_miss` / `precedent_misapplied` / `boundary_case` / `rollback`）は頻度が低く、判断に迷ったら `report_signal` ツールのdocstringを参照する。同一内容の再報告は `report_signal` 側で自動集約されるため、迷ったら報告してよい。
 
-どれにも当てはまらなければ `custom:<名前>`、流用しない。
+予約kindのどれにも当てはまらない観測は `custom:<名前>` で記録する（既存kindへの流用は集計を汚すため避ける）。名前の形式と詳細は `report_signal` ツールのdocstringを参照する。
 
 L5（バグ観察、add_logs 対象）との違い: L5 はユーザーが取り組んでいる対象システムのバグ。calm 自身の不具合・違和感は report_signal。
 

@@ -1142,6 +1142,15 @@ class TestSessionStartHookSignals:
         assert "custom:rule_conflict" not in context
         assert "custom:other_thing" not in context
 
+    def test_custom_only_breakdown(self, temp_db):
+        """custom以外のkindが無いときもbreakdownは「custom N」だけになる"""
+        _seed_signal("custom:rule_conflict", "外部ルール衝突")
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "未トリアージのシグナル: 1件 (custom 1) → get_signals で確認" in context
+
 
 class TestSessionStartHookAskNotify:
     """add_ask通知セクション（HookState.tracked_ask_idsのhook側二重網）のE2Eテスト。

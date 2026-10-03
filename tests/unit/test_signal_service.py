@@ -180,6 +180,16 @@ class TestCustomKind:
         assert r2["id"] == r1["id"]
         assert r2["occurrence_count"] == 2
 
+    def test_include_stats_lists_custom_kind_individually(self, temp_db):
+        """get_signals の案内どおり、custom の個別名は include_stats の集計で見える。"""
+        ss.record_signal("custom:rule_conflict", "外部ルール衝突")
+        ss.record_signal("custom:other_thing", "別のカスタム観測")
+
+        result = ss.get_signals(status=None, include_stats=True)
+
+        assert result["stats"]["by_kind_status"]["custom:rule_conflict"]["new"] == 1
+        assert result["stats"]["by_kind_status"]["custom:other_thing"]["new"] == 1
+
 
 def test_capture_signal_safe_never_raises_on_invalid_kind(temp_db):
     ss.capture_signal_safe("not_a_real_kind", "boom")  # 例外を投げないことのみ検証
