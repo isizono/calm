@@ -1,8 +1,9 @@
 """データベース機能のテスト"""
 import os
+import sqlite3
 from pathlib import Path
 import pytest
-from src.db import get_db_path, get_connection, execute_query, execute_insert
+from src.db import get_db_path, get_connection, execute_query, execute_insert, _check_fts5_available
 
 
 
@@ -96,3 +97,60 @@ def test_get_connection_returns_row_factory(temp_db):
         assert row["title"] == "test-topic"  # 辞書ライクなアクセス
     finally:
         conn.close()
+
+
+def test_check_fts5_available_returns_true_when_supported():
+    """FTS5拡張が使える環境ではTrueを返す"""
+    assert _check_fts5_available() is True
+
+
+def test_check_fts5_available_leaves_no_tables_in_main_db(temp_db):
+    """チェック用の仮想テーブル・影のテーブルが本体DBに残らない
+
+    旧実装はCREATE VIRTUAL TABLE / DROP TABLEを本体DBの接続上で直接実行していたため、
+    DROPがsqlite3.OperationalErrorで失敗すると_fts5_checkと影のテーブルが本体DBに
+    残ったまま後始末されなかった。チェックをin-memory接続に切り替えたことで、
+    本体DBには構造的に何も作られない。
+    """
+    assert _check_fts5_available() is True
+
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE name LIKE '_fts5_check%'"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert rows == []
+
+
+def test_check_fts5_available_never_resolves_main_db_path(monkeypatch):
+    """チェックは本体DBのパス解決（get_db_path経由）を一切行わない
+
+    get_connection()はget_db_path()を内部で呼ぶため、get_db_pathが呼ばれないことは
+    チェックが本体DBへ一切接続していないことの証拠になる。
+    """
+    import src.db as db_module
+
+    def _fail_if_called():
+        raise AssertionError("本体DBのパス解決は行われないはず")
+
+    monkeypatch.setattr(db_module, "get_db_path", _fail_if_called)
+    assert db_module._check_fts5_available() is True
+
+
+def test_check_fts5_available_returns_false_when_fts5_missing(monkeypatch):
+    """FTS5拡張が無い環境ではFalseを返す（旧実装からの挙動維持）"""
+    import src.db as db_module
+
+    class _FakeConnWithoutFts5:
+        def execute(self, *args, **kwargs):
+            raise sqlite3.OperationalError("no such module: fts5")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        db_module.sqlite3, "connect", lambda *a, **k: _FakeConnWithoutFts5()
+    )
+    assert db_module._check_fts5_available() is False
