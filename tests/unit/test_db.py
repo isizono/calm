@@ -22,7 +22,7 @@ def test_get_db_path_default():
         del os.environ["DISCUSSION_DB_PATH"]
 
     path = get_db_path()
-    assert path.endswith(".claude-code-memory/discussion.db")
+    assert Path(path).parts[-2:] == (".claude-code-memory", "discussion.db")
 
 
 def test_get_db_path_ignores_stale_config_db_path(monkeypatch):

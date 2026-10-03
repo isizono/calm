@@ -646,6 +646,36 @@ def test_case_15_write_back_success_uses_atomic_rename(tmp_path):
     assert leftover == [], f"leftover files: {leftover}"
 
 
+def test_case_15_write_back_does_not_retry_replace_error(tmp_path, monkeypatch):
+    """os.replaceの失敗（Windowsの共有違反相当）を再試行せずrename_failedで
+    中断する。この関数はrename直前にmtimeを再確認するだけで、rename自体の
+    再試行はharnessの並行appendを追記直後に上書きしうるため行わない。"""
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_bytes(b"original\n")
+    real_mtime = transcript.stat().st_mtime
+
+    real_replace = os.replace
+    calls = {"count": 0}
+
+    def failing_once_replace(a, b):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise OSError(32, "The process cannot access the file")
+        return real_replace(a, b)  # pragma: no cover - 再試行されないことの確認用
+
+    monkeypatch.setattr(sanitize_backfill_hook.os, "replace", failing_once_replace)
+
+    result = sanitize_backfill_hook._write_back_transcript(
+        transcript, b"sanitized\n", real_mtime, int(time.time())
+    )
+
+    assert calls["count"] == 1
+    assert result is not None and result.startswith("rename_failed")
+    assert transcript.read_bytes() == b"original\n"
+    leftover = [p.name for p in tmp_path.iterdir() if ".tmp" in p.name or ".bak" in p.name]
+    assert leftover == [], f"leftover files: {leftover}"
+
+
 def test_case_15_harness_race_recorded_as_failure_event(
     fixture_db, state_dir, tmp_path, monkeypatch
 ):

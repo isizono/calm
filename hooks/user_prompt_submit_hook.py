@@ -32,6 +32,7 @@ from hooks.hook_state import HookState
 from hooks.signal_capture import try_capture_signal
 from hooks.turn_origin import is_nonhuman_turn
 from src.harness import select_harness
+from src.infra.file_ops import replace_retrying
 
 
 _FOLLOW_UP_NUDGE_MESSAGE = (
@@ -179,7 +180,7 @@ def _rewrite_events(state: HookState, events: list[dict]) -> None:
         tmp = f.name
         for event in events:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
-    os.replace(tmp, state.events_path)
+    replace_retrying(tmp, state.events_path)
 
 
 if __name__ == "__main__":
