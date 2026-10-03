@@ -81,7 +81,7 @@ def collect_test_ids(repo_root: Path, ref: str, *, uv_sync: bool = True) -> set[
             ["git", "worktree", "add", "--detach", "-f", str(worktree_dir), ref],
             cwd=repo_root,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8",
         )
         if add.returncode != 0:
             raise RuntimeError(
@@ -93,7 +93,7 @@ def collect_test_ids(repo_root: Path, ref: str, *, uv_sync: bool = True) -> set[
                     ["uv", "sync", "--frozen"],
                     cwd=worktree_dir,
                     capture_output=True,
-                    text=True,
+                    text=True, encoding="utf-8",
                 )
                 if sync.returncode != 0:
                     raise RuntimeError(
@@ -108,7 +108,7 @@ def collect_test_ids(repo_root: Path, ref: str, *, uv_sync: bool = True) -> set[
                 ["uv", "run", "pytest", "--collect-only", "-q", "tests"],
                 cwd=worktree_dir,
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8",
             )
             # pytestの終了コード: 0=正常, 2=一部収集エラーを含む(部分結果は使える),
             # 5=収集0件。それ以外は環境自体が壊れている可能性が高く、
@@ -132,7 +132,7 @@ def collect_test_ids(repo_root: Path, ref: str, *, uv_sync: bool = True) -> set[
                 ["git", "worktree", "remove", "--force", str(worktree_dir)],
                 cwd=repo_root,
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8",
             )
 
 
@@ -169,7 +169,7 @@ def detect_file_renames(repo_root: Path, base: str, head: str) -> dict[str, str]
         ["git", "diff", "--name-status", "-M", f"{base}..{head}", "--", "tests/"],
         cwd=repo_root,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8",
     )
     if result.returncode != 0:
         return {}
