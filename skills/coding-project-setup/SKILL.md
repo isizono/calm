@@ -1,6 +1,6 @@
 ---
 name: coding-project-setup
-description: コードプロジェクト向けの知識フレームセットアップ。原則project-setup skillのプロファイリング（Step 1〜2）を経て委譲される。エンジニアのユーザーが「coding-project-setup」と直接呼んだ場合も発動してよい（その場合もペルソナがauto-memoryに無ければproject-setup側のプロファイリングを先に行う）。DO NOT TRIGGER: コードを扱わない取り組みのセットアップ（project-setupの職種中立経路が担当）、exportバンドルの取り込み（memory-import）。
+description: コードプロジェクト向けの知識フレームセットアップ。原則project-setup skillのプロファイリング（Step 1〜2）を経て委譲される。DO NOT TRIGGER: コードを扱わない取り組みのセットアップ（project-setupの職種中立経路が担当）、exportバンドルの取り込み（memory-import）。
 user-invocable: false
 ---
 
