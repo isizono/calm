@@ -676,6 +676,7 @@ def test_run_detector_end_to_end_smoke_matches_classify(git_repo: Path):
     json.loads(verdict_to_json(verdict))
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="gate_check.shはbash専用で、gate.ymlもubuntu-latest限定で実行する")
 def test_gate_check_sh_falls_back_to_worktree_when_fetch_fails(tmp_path: Path):
     """gate_check.sh は origin 未設定などで git fetch が失敗しても非0終了せず、
     worktree 版検出器へフォールバックして verdict を返す(フェイルセーフ)。"""

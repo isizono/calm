@@ -1,8 +1,9 @@
-"""プロセスの起動時刻(ps -o lstart=)を取得する軽量ユーティリティ。
+"""プロセスの起動時刻を取得する軽量ユーティリティ。
 
 pidの一致だけでは、対象プロセスが終了した後に別プロセスが同じpidを再利用した
 場合に誤って「同一プロセスがまだ生存している」と判定してしまう。起動時刻を
-併せて照合することでこれを防ぐ。
+併せて照合することでこれを防ぐ。戻り値は2回の呼び出しを等価比較するための
+不透明な文字列であり、特定のフォーマットとして解析されることを想定しない。
 
 `src/services/restart_service.py`・`hooks/recorder_marker.py` の双方が必要と
 するが、どちらも重い依存(embedding_service・git_repo等、あるいはStop hookの
@@ -10,25 +11,12 @@ pidの一致だけでは、対象プロセスが終了した後に別プロセ�
 """
 from __future__ import annotations
 
-import subprocess
-
-SUBPROCESS_TIMEOUT_SEC = 5.0
+import psutil
 
 
-def process_start_signature(
-    pid: int, *, timeout_sec: float = SUBPROCESS_TIMEOUT_SEC
-) -> str | None:
-    """プロセスの起動時刻を返す。プロセスが存在しなければNone。
-
-    ps呼び出しがタイムアウトした場合もNone(呼び出し元は「わからない」を
-    「別プロセスである」側に倒す)。
-    """
+def process_start_signature(pid: int) -> str | None:
+    """プロセスの起動時刻を返す。プロセスが存在しなければNone。"""
     try:
-        result = subprocess.run(
-            ["ps", "-o", "lstart=", "-p", str(pid)],
-            capture_output=True, text=True, check=False, timeout=timeout_sec,
-        )
-    except subprocess.TimeoutExpired:
+        return str(psutil.Process(pid).create_time())
+    except psutil.Error:
         return None
-    output = result.stdout.strip()
-    return output or None

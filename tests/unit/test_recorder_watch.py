@@ -6,17 +6,21 @@ DBはtopic候補の取得だけが対象で、実SQLite（temp_db、全migration
 書かれうる形のファイルとして用意する。目印ファイルは`write_marker`で作る。
 
 外部境界としてmonkeypatchするのは次の3つだけ: `hook.process_start_signature`
-（メインの生死判定）・`subprocess.run`（ps・tmux呼び出し。psは`write_marker`
-経由でも呼ばれるため、コマンド種別で振り分けて両方を成立させる）・
-main()に注入する`sleep`/`now`。
+（メインの生死判定）・`subprocess.run`（tmux呼び出し）・main()に注入する
+`sleep`/`now`。
+
+recorder_watch.py自体はtmux・fcntlに依存しWindowsには移植しない。ロック
+（`_acquire_lock`）はfcntl.flockのままのため、Windowsではfcntlが無く
+importできない`fcntl`直接依存のテストはpytest.importorskipで丸ごとskipする。
 """
-import fcntl
 import io
 import json
 import subprocess
 from unittest.mock import patch
 
 import pytest
+
+fcntl = pytest.importorskip("fcntl")
 
 from hooks import recorder_watch as hook
 from hooks.hook_state import HookState
@@ -41,20 +45,13 @@ def _isolate_state(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _mock_subprocess(monkeypatch):
-    """subprocess.runをコマンド種別で振り分ける。
-
-    psはwrite_marker/process_start_signature、tmuxは見張りの終了処理が呼ぶ。
-    同じsubprocessモジュールを両経路が参照するため、1つのfixtureで両方
-    面倒を見る（別々にmonkeypatchすると片方が片方を上書きしてしまう）。
-    """
+    """subprocess.runをコマンド種別で振り分ける（tmuxは見張りの終了処理が呼ぶ）。"""
     tmux_calls: list[list[str]] = []
 
     def _fake_run(cmd, **kwargs):
         if cmd and cmd[0] == "tmux":
             tmux_calls.append(cmd)
             return subprocess.CompletedProcess(cmd, 0)
-        if cmd and cmd[0] == "ps":
-            return subprocess.CompletedProcess(cmd, 0, stdout=_FAKE_PS_STARTED_AT + "\n", stderr="")
         raise AssertionError(f"unexpected subprocess call: {cmd}")
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
@@ -184,6 +181,16 @@ def _cursor(run_dir) -> dict:
 
 
 class TestNoOpEntryPoints:
+    def test_windows_returns_zero_without_touching_run_dir(self, tmp_path, monkeypatch):
+        """Windowsではtmux・fcntlに触れる前にmain()が即座に戻る。"""
+        monkeypatch.setattr(hook.sys, "platform", "win32")
+        run_dir, _ = _setup_run(tmp_path)
+        sleep, now = _stub_sleep_and_clock()
+        code, stderr = _run_hook(cwd=run_dir, sleep=sleep, now=now)
+        assert code == 0
+        assert stderr == ""
+        assert sleep.calls == []
+
     def test_no_run_json_exits_zero_without_sleeping(self, tmp_path):
         stray_dir = tmp_path / "not-a-run-dir"
         stray_dir.mkdir()

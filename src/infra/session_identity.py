@@ -34,11 +34,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-import subprocess
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+import psutil
 
 from src.infra import cli_session
 from src.infra.lock_file import is_process_alive
@@ -125,28 +126,15 @@ def get_caller_session_id() -> Optional[str]:
 
 
 def _get_ppid(pid: int) -> Optional[int]:
-    """`ps` 経由で指定 pid の親 pid を取得する。
+    """指定 pid の親 pid を取得する。
 
-    標準ライブラリには移植可能な ppid 取得手段が無いため `ps -o ppid= -p <pid>`
-    に頼る（macOS / Linux いずれの `ps` 実装でも動く POSIX オプション）。
-    プロセス消滅・`ps` 不在・タイムアウト等はすべて None（呼び出し側は祖先探索を
-    打ち切るだけで例外にはしない）。
+    標準ライブラリには移植可能な ppid 取得手段が無いため psutil に頼る
+    （`ps` と異なり Windows でも同じ呼び出しで動く）。プロセス消滅・権限不足等は
+    すべて None（呼び出し側は祖先探索を打ち切るだけで例外にはしない）。
     """
     try:
-        result = subprocess.run(
-            ["ps", "-o", "ppid=", "-p", str(pid)],
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    raw = result.stdout.strip()
-    try:
-        return int(raw)
-    except ValueError:
+        return psutil.Process(pid).ppid()
+    except psutil.Error:
         return None
 
 
@@ -217,7 +205,7 @@ def register_launcher_session(session_id: str, pid: Optional[int] = None) -> Opt
         )
         tmp_path = Path(tmp_path_str)
         try:
-            with os.fdopen(fd, "w") as f:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False)
             path = _registration_path(pid)
             os.replace(tmp_path, path)
