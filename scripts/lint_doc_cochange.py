@@ -59,7 +59,7 @@ def git_diff_names(repo_root: Path, base: str, head: str) -> list[str]:
         ["git", "diff", "--name-only", f"{base}...{head}"],
         cwd=repo_root,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8",
         check=True,
     )
     return [line for line in result.stdout.splitlines() if line]
@@ -70,7 +70,7 @@ def git_show(repo_root: Path, ref: str, path: str) -> str | None:
         ["git", "show", f"{ref}:{path}"],
         cwd=repo_root,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8",
     )
     if result.returncode != 0:
         return None
@@ -82,7 +82,7 @@ def collect_commit_messages(repo_root: Path, base: str, head: str) -> str:
         ["git", "log", "--format=%B", f"{base}..{head}"],
         cwd=repo_root,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8",
     )
     return result.stdout if result.returncode == 0 else ""
 
@@ -92,7 +92,7 @@ def git_ls_tree_paths(repo_root: Path, ref: str, dir_path: str) -> list[str] | N
         ["git", "ls-tree", "-r", "--name-only", ref, "--", dir_path],
         cwd=repo_root,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8",
     )
     if result.returncode != 0:
         return None

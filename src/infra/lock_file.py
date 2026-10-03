@@ -7,9 +7,13 @@ import json
 import logging
 import os
 import socket
-import subprocess
+import sys
 from pathlib import Path
 from typing import Optional, TypedDict
+
+import psutil
+
+from src.infra.process_signature import process_start_signature
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +25,7 @@ class LockInfo(TypedDict):
     """ロックファイルに記録する情報"""
     pid: int
     port: int
+    start_time: Optional[str]
 
 
 def acquire(port: int) -> bool:
@@ -38,7 +43,11 @@ def acquire(port: int) -> bool:
     """
     LOCK_DIR.mkdir(parents=True, exist_ok=True)
 
-    info: LockInfo = {"pid": os.getpid(), "port": port}
+    info: LockInfo = {
+        "pid": os.getpid(),
+        "port": port,
+        "start_time": process_start_signature(os.getpid()),
+    }
 
     # まずアトミックな排他作成を試みる
     if _try_create_exclusive(info):
@@ -91,23 +100,28 @@ def read() -> Optional[LockInfo]:
     try:
         data = json.loads(LOCK_FILE.read_text(encoding="utf-8"))
         if isinstance(data, dict) and "pid" in data and "port" in data:
-            return LockInfo(pid=data["pid"], port=data["port"])
+            return LockInfo(pid=data["pid"], port=data["port"], start_time=data.get("start_time"))
         return None
     except (json.JSONDecodeError, OSError) as e:
         logger.warning(f"Failed to read lock file: {e}")
         return None
 
 
-def release() -> None:
+def release(pid: Optional[int] = None) -> None:
     """ロックファイルを削除する。
 
-    自プロセスのPIDと一致する場合のみ削除する。
+    `pid`が記録されたpidと一致する場合のみ削除する。省略時は呼び出し元
+    プロセス自身のpidで判定する（サーバー自身がシャットダウン時に呼ぶ既定経路）。
+    外部から強制終了させたプロセスの後始末（Windowsの`TerminateProcess`は
+    対象プロセスのfinally節を経由しないため`release()`が走らない）にも
+    同じ関数を使えるよう、判定対象のpidを明示できるようにしている。
     ファイルが存在しない場合は何もしない。
     """
+    target_pid = os.getpid() if pid is None else pid
     existing = read()
     if existing is None:
         return
-    if existing["pid"] != os.getpid():
+    if existing["pid"] != target_pid:
         logger.warning(
             f"Lock file owned by another process: pid={existing['pid']}, skipping release"
         )
@@ -119,41 +133,51 @@ def release() -> None:
         logger.warning(f"Failed to release lock file: {e}")
 
 
+def is_lock_stale(info: LockInfo) -> bool:
+    """ロックファイルの指すサーバーがもう存在しないとみなせるか判定する。
+
+    PIDが死んでいれば無条件でstale。生きていても、ロック作成時に記録した
+    起動時刻と現在そのPIDが示すプロセスの起動時刻が食い違えば、PID再利用
+    （別プロセスが同じPIDを引き継いだ）とみなしstale扱いにする。
+    記録が無い（旧形式のロックファイル）場合や起動時刻が取得できない場合は
+    比較しようがないため、PID生存の結果をそのまま使う。
+    """
+    if not is_process_alive(info["pid"]):
+        return True
+    recorded = info.get("start_time")
+    if recorded is None:
+        return False
+    current = process_start_signature(info["pid"])
+    return current is not None and current != recorded
+
+
 def is_process_alive(pid: int) -> bool:
     """指定PIDのプロセスが生存しているか確認する。
 
-    ゾンビ（defunct）プロセスは `os.kill(pid, 0)` が成功してしまい誤って
-    「生存中」と判定されるため、別途 `_is_zombie()` でstat確認して死亡扱いにする。
+    ゾンビ（defunct）プロセスはpsutilの存在確認だけでは「生存中」と判定
+    されてしまうため、別途 `_is_zombie()` でstatusを確認して死亡扱いにする。
     """
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        # プロセスは存在するが権限がない → 生存している
-        return True
-    return not _is_zombie(pid)
+    return psutil.pid_exists(pid) and not _is_zombie(pid)
 
 
 def _is_zombie(pid: int) -> bool:
-    """`ps -o stat= -p <pid>` の出力がZ（zombie）で始まるか確認する。
+    """psutilのstatusがゾンビ（zombie）かを確認する。
 
-    ps自体が失敗・タイムアウトした場合は判定不能として「ゾンビではない」扱いにする
+    プロセス消滅・権限不足で判定できない場合は「ゾンビではない」扱いにする
     （「わからない」を安全側＝生存扱いに倒し、正常プロセスの誤stale化を避ける）。
+    Windowsのpsutil.status()はSTOPPED/RUNNINGしか返さずゾンビ概念自体が
+    無い（常にFalse）ため、判定のためだけに全プロセスを列挙するコストを
+    避けて先に返す。
     """
-    try:
-        result = subprocess.run(
-            ["ps", "-o", "stat=", "-p", str(pid)],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (subprocess.TimeoutExpired, OSError):
+    if sys.platform == "win32":
         return False
-    return result.stdout.strip().startswith("Z")
+    try:
+        return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
 
 
-def is_port_listening(port: int, host: str = "localhost", timeout: float = 1.0) -> bool:
+def is_port_listening(port: int, host: str = "127.0.0.1", timeout: float = 1.0) -> bool:
     """指定ポートにTCP接続できるか確認する。"""
     try:
         with socket.create_connection((host, port), timeout=timeout):
