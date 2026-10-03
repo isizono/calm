@@ -1,10 +1,10 @@
 """PreToolUse hook: bg セッションからの `claude --bg` 起動 (入れ子 bg) を拒否する。
 
 決定事項「orch になれるのは窓口セッションだけ」により、bg セッションがさらに
-bg を立てる入れ子は許可しない。Bash tool_input.command が `claude --bg` の
-起動パターンを含む場合にだけ `claude agents --json` を実行し、hook 入力の
-session_id と一致するエントリの kind が "background" なら deny する。それ以外の
-tool・パターン非一致のコマンドでは agents コマンドを引かない。
+bg を立てる入れ子は許可しない。Bash/PowerShell tool_input.command が
+`claude --bg` の起動パターンを含む場合にだけ `claude agents --json` を実行し、
+hook 入力の session_id と一致するエントリの kind が "background" なら deny
+する。それ以外の tool・パターン非一致のコマンドでは agents コマンドを引かない。
 
 `claude agents --json` の実行失敗・タイムアウト・非ゼロ終了・JSON parse 失敗・
 該当セッション未検出は、いずれも fail-open (通す) とする。窓口からの起動を
@@ -29,20 +29,35 @@ from src.harness import select_harness  # noqa: E402
 # `claude --bg` の実起動を、コマンド先頭語としての `claude` の位置でのみ検出する。
 # 対象になるのはコマンド先頭、または `;`/`&&`/`||`/`|`/`&`/`(`/改行の直後に来る
 # `claude`。変数代入 (`FOO=bar`) や `exec`/`command`/`nohup` の前置きは読み飛ばし、
-# `/usr/local/bin/claude` のようなパス指定は basename で判定する。`bash -c '...'`
-# / `sh -c "..."` / `zsh -c ...` はその引数を同じ判定に再帰的にかける。
+# `/usr/local/bin/claude` や `claude.exe` のようなパス・拡張子付き指定は basename
+# で判定する。`bash -c '...'` / `sh -c "..."` / `zsh -c ...` / `pwsh -c/-Command ...` /
+# `powershell -c/-Command ...` はその引数を同じ判定に再帰的にかける。
 # shlex (posix クォート解釈) でトークン化するため、`grep "claude --bg" file` の
 # ような文字列としての参照はマッチしない。変数に格納したバイナリ経由の起動
 # (`$CLAUDE --bg`) やスクリプトファイル内に隠れた起動、1行内でクォートが閉じず
 # トークン化に失敗するコマンドは静的検出できない (いずれも既知の限界、fail-open)。
+# PowerShellの `"C:\...\claude.exe"` 形式 (クォート付き) はbasenameが `\` も
+# 区切りとして扱うため検出できる。クォート無しの同形式はshlexのposixエスケープ
+# 解釈でバックスラッシュが失われ、basename 判定に乗らない。`claude`/`-c`/
+# `-Command` の判定は大文字小文字を区別しない (PowerShellのパラメータ名・NTFSの
+# ファイル名解決がそうであるため)。`Start-Process claude` や、バッククォートに
+# よる行継続は非対応。いずれも fail-open (deny しない) に倒れるだけなので安全側
+# である。
 _SEGMENT_BOUNDARY_TOKENS = frozenset({";", "&&", "||", "|", "&", "("})
 _LEADING_SKIP_WORDS = frozenset({"exec", "command", "nohup"})
-_SHELL_INTERPRETERS = frozenset({"bash", "sh", "zsh"})
+_SHELL_INTERPRETERS = frozenset({"bash", "sh", "zsh", "pwsh", "powershell"})
+# bashの`-C`はnoclobberという既存の別フラグなので、`-c`以外も受け付ける
+# 大文字小文字非依存の判定はpwsh/powershellだけに絞る。
+_POWERSHELL_INTERPRETERS = frozenset({"pwsh", "powershell"})
 _VAR_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_SHELL_TOOL_NAMES = frozenset({"Bash", "PowerShell"})
 
 
 def _basename(token: str) -> str:
-    return token.rsplit("/", 1)[-1]
+    name = re.split(r"[\\/]", token)[-1]
+    if name.lower().endswith(".exe"):
+        name = name[: -len(".exe")]
+    return name
 
 
 def _segment_spawns_bg(tokens: list[str]) -> bool:
@@ -54,14 +69,18 @@ def _segment_spawns_bg(tokens: list[str]) -> bool:
         idx += 1
     if idx >= len(tokens):
         return False
-    leading = _basename(tokens[idx])
+    leading = _basename(tokens[idx]).lower()
     rest = tokens[idx + 1 :]
     if leading == "claude":
         return any(tok == "--bg" or tok.startswith("--bg=") for tok in rest)
-    if leading in _SHELL_INTERPRETERS and "-c" in rest:
-        c_idx = rest.index("-c")
-        if c_idx + 1 < len(rest):
-            return _command_spawns_bg(rest[c_idx + 1])
+    if leading in _POWERSHELL_INTERPRETERS:
+        c_idx = next((i for i, tok in enumerate(rest) if tok.lower() in ("-c", "-command")), None)
+    elif leading in _SHELL_INTERPRETERS:
+        c_idx = rest.index("-c") if "-c" in rest else None
+    else:
+        c_idx = None
+    if c_idx is not None and c_idx + 1 < len(rest):
+        return _command_spawns_bg(rest[c_idx + 1])
     return False
 
 
@@ -114,7 +133,7 @@ def _is_background_session(session_id: str) -> bool:
             ["claude", "agents", "--json"],
             stdin=subprocess.DEVNULL,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8",
             timeout=_AGENTS_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -141,7 +160,7 @@ def main() -> None:
             harness.emit_empty()
             return
 
-        if (event.get("tool_name") or "") != "Bash":
+        if (event.get("tool_name") or "") not in _SHELL_TOOL_NAMES:
             harness.emit_empty()
             return
 
