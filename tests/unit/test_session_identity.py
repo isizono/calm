@@ -6,6 +6,7 @@ SessionStart hook 用の祖先 pid チェーンによる identity 解決
 """
 import json
 import os
+import sys
 
 import pytest
 
@@ -131,6 +132,28 @@ def _fake_ppid_chain(monkeypatch, graph: dict[int, int | None]):
     monkeypatch.setattr(session_identity, "_get_ppid", lambda pid: graph.get(pid))
 
 
+class TestGetPpidReal:
+    """_get_ppid自体はモックせず、psutil経由の実際の親pid解決を検証する。"""
+
+    def test_returns_real_parent_pid_of_self(self):
+        assert session_identity._get_ppid(os.getpid()) == os.getppid()
+
+    def test_none_for_nonexistent_pid(self):
+        assert session_identity._get_ppid(999999999) is None
+
+    def test_resolves_without_ps_command_on_path(self, monkeypatch):
+        """psコマンドが引けない状態でも解決できることを確かめる。
+
+        Windowsのネイティブ環境にはpsが無いため、`ps`をサブプロセスで呼ぶ
+        実装に戻っていた場合、常にNoneになってしまう（psutilはpsを呼ばない）。
+        PATHを空文字にしてpsを引けなくした状態で確認する（PATH自体を
+        unsetすると、環境によってはos.defpathへフォールバックしてpsが
+        見つかってしまい、この退行を検出できない）。
+        """
+        monkeypatch.setenv("PATH", "")
+        assert session_identity._get_ppid(os.getpid()) == os.getppid()
+
+
 @pytest.fixture
 def sessions_state_dir(tmp_path, monkeypatch):
     """RELAY_STATE_DIR をtmp_pathに差し替え、_sessions_dir()を隔離する。"""
@@ -172,6 +195,7 @@ class TestRegisterLauncherSession:
         assert data["ancestor_pids"] == [999]
         assert "created_at" in data
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="chmod(0o600)相当はWindowsのst_modeに反映されない")
     def test_registration_file_is_owner_only_permission(
         self, sessions_state_dir, monkeypatch
     ):
@@ -634,19 +658,19 @@ class TestResolveCliSession:
 
 
 def fake_ps(monkeypatch, table: dict[int, tuple[int, str]]):
-    """`ps` の呼び出し（subprocess 境界）を {pid: (ppid, 実行ファイルパス)} で差し替える。
+    """{pid: (ppid, 実行ファイルパス)} で親pid（_get_ppid）と `ps -o comm=`（subprocess 境界）を差し替える。
 
-    `ps -o ppid= -p <pid>` と `ps -o comm= -p <pid>` の2形に応答する。表に無い
-    pid はプロセス不在として returncode=1 を返す（実際の `ps` と同じ）。
+    表に無い pid はプロセス不在として扱う（ppid は None、comm は returncode=1。実際の `ps` と同じ）。
     """
     import subprocess
+
+    _fake_ppid_chain(monkeypatch, {pid: ppid for pid, (ppid, _) in table.items()})
 
     def fake_run(args, **kwargs):
         pid = int(args[-1])
         if args[:2] == ["ps", "-o"] and pid in table:
-            ppid, comm = table[pid]
-            out = str(ppid) if args[2] == "ppid=" else comm
-            return subprocess.CompletedProcess(args, 0, stdout=f"{out}\n", stderr="")
+            _, comm = table[pid]
+            return subprocess.CompletedProcess(args, 0, stdout=f"{comm}\n", stderr="")
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="")
 
     monkeypatch.setattr(session_identity.subprocess, "run", fake_run)

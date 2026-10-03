@@ -4,7 +4,10 @@ HTTP server 起動時に cwd をプロジェクトルートへ強制固定する
 起動時 cwd (e.g. worktree内) に残置されると当該パスが消えたとき
 subprocess呼び出しが失敗するため、構造的に project_root へ寄せる。
 """
+import ast
 from pathlib import Path
+
+import pytest
 
 from src import main as main_module
 
@@ -36,3 +39,42 @@ class TestEnsureProjectRootCwd:
         returned = main_module._ensure_project_root_cwd()
         assert (returned / "src").is_dir()
         assert (returned / "src" / "main.py").is_file()
+
+
+class TestShutdownServerSignalChoice:
+    """_shutdown_serverは`if __name__ == "__main__":`ブロック内のクロージャで
+    テストから直接呼べないため、ソースをASTで検査する。os.kill(os.getpid(), ...)は
+    Windowsでは TerminateProcess 相当になり finally の release() が走らない。
+    """
+
+    def _source_tree(self):
+        source = Path(main_module.__file__).read_text(encoding="utf-8")
+        return ast.parse(source)
+
+    def test_does_not_use_os_kill_on_own_pid(self):
+        for node in ast.walk(self._source_tree()):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "kill"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "os"
+            ):
+                continue
+            if node.args and (
+                isinstance(node.args[0], ast.Call)
+                and isinstance(node.args[0].func, ast.Attribute)
+                and node.args[0].func.attr == "getpid"
+            ):
+                pytest.fail("os.kill(os.getpid(), ...) が検出された（Windowsでrelease()が走らない）")
+
+    def test_uses_raise_signal_for_shutdown(self):
+        found = any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "raise_signal"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "signal"
+            for node in ast.walk(self._source_tree())
+        )
+        assert found, "signal.raise_signal(...) 呼び出しが見つからない"

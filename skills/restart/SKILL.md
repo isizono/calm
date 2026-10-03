@@ -13,7 +13,7 @@ embeddingサーバー(52836)はコードの変更頻度が低いため既定で�
 
 ## 再起動の前（CALMを使う）
 
-- 古い窓口から打たない: `curl http://localhost:52837/health` の `started_at` を確かめ、直近の再起動より後の時刻であれば、別の窓口が既に打った後なので打ち直さない
+- 古い窓口から打たない: `uv run --no-sync --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/restart_server.py" --status` の `mcp_server.started_at` を確かめ、直近の再起動より後の時刻であれば、別の窓口が既に打った後なので打ち直さない
 - `orch` タグの付いたアクティビティ(orch)を検索し、担い手欄（読み方は `orch` タグのnotesを参照。orchの説明の先頭に書かれた、今の担い手の欄）と、生きている窓口(`claude agents --json`)を控える。直後の節で、控えた窓口への知らせと `/mcp` 再接続の案内に使う
 
 ## 実行
@@ -21,7 +21,7 @@ embeddingサーバー(52836)はコードの変更頻度が低いため既定で�
 ユーザーがこのスキルを明示的に呼び出したこと自体を実行の承認とみなし、追加確認は取らずに以下をBashツールで実行する。
 
 ```
-uv run --directory ${CLAUDE_PLUGIN_ROOT} python ${CLAUDE_PLUGIN_ROOT}/scripts/restart_server.py
+uv run --no-sync --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/restart_server.py"
 ```
 
 embeddingサーバーも明示的に再起動したい場合は`--restart-embedding`を付ける。
@@ -42,7 +42,7 @@ MCPサーバーの再起動が終わった直後、自分自身もまだ `/mcp` 
 
 - `uv_sync.ok` が `false`: 依存関係の同期に失敗している。`detail` を伝えつつ、`mcp_server` の再起動自体は実行済みなのでその結果と合わせて報告する
 - `mcp_server.ok` が `true`: 再起動成功。`old_pids`（旧プロセス）と`new_pids`（新プロセス）をユーザーに簡潔に伝える
-- `mcp_server.ok` が `false`: 再起動失敗。`detail` の内容をそのままユーザーに伝え、手動確認（`lsof -i tcp:52837 -sTCP:LISTEN`等）を促す。プラグイン更新直後の初回実行はvenv再構築が重く、稀にこのタイムアウトが起きることがある。その場合は再実行を促す
+- `mcp_server.ok` が `false`: 再起動失敗。`detail` の内容をそのままユーザーに伝え、`--status` での手動確認を促す。プラグイン更新直後の初回実行はvenv再構築が重く、稀にこのタイムアウトが起きることがある。その場合は再実行を促す
 - `embedding_server.stopped_pids` は空配列でよい（`--restart-embedding`を付けない限り既定では停止しない）
 - `caches` は削除したパスの記録。特に問題なければ触れなくてよい
 
@@ -54,8 +54,8 @@ MCPサーバーの再起動が終わった直後、自分自身もまだ `/mcp` 
 
 - CALMに書けなかった間の記録を退避ファイルに書き出していた場合は、`/mcp`の後に自分の分だけを名指しして流し込む。持ち主が生きていない分（respawnで消えたbg、閉じた窓口の分）は、中身を確かめてから名指しで流す。ディレクトリ直下を一括で流すような操作は行わない
 - 空席のorchの説明に書かれている、生きているbgの一覧（あれば）を、実際に起こし直した内容に直す
-- 反映待ちは `/health` の `started_at` とマージした時刻を突き合わせて確かめ、済んだものは消す
+- 反映待ちは `--status` の `mcp_server.started_at` とマージした時刻を突き合わせて確かめ、済んだものは消す
 
 ## 固まった接続の見分け方
 
-再起動の前からいた接続は、古いサーバーを掴んだままのことがある。エラー文言がauto modeのclassifierの拒否のように見えても、実際は古いサーバーへの接続が固まっているだけのことがある。`curl http://localhost:52837/health` の `started_at` が今回の再起動時刻より前なら、その接続は古いサーバーを掴んだままだと分かる。
+再起動の前からいた接続は、古いサーバーを掴んだままのことがある。エラー文言がauto modeのclassifierの拒否のように見えても、実際は古いサーバーへの接続が固まっているだけのことがある。`--status` の `mcp_server.started_at` が今回の再起動時刻より前なら、その接続は古いサーバーを掴んだままだと分かる。

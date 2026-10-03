@@ -466,7 +466,7 @@ def get_transcript_info(transcript_path: str) -> tuple[list[dict], bool]:
     last_user_has_command = False
 
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
                 if not line:
