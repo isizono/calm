@@ -7,11 +7,13 @@ is_process_alive・read_cli_session）は外部境界としてFakeCliWorld経由
 import datetime as dt
 import itertools
 import json
+import os
 import threading
 import time
 
 import pytest
 
+from src.infra import file_ops
 from src.services import session_registry_service as srs
 
 
@@ -68,6 +70,31 @@ def registry_path(tmp_path, monkeypatch):
     path = tmp_path / "session_aliases.json"
     monkeypatch.setenv(srs.REGISTRY_PATH_ENV, str(path))
     return path
+
+
+def test_save_recovers_from_transient_replace_error(world, registry_path, monkeypatch):
+    """_saveの置換がos.replaceの一時失敗（Windowsの共有違反相当）を再試行で
+    乗り越える。呼び出し側がreplace_retryingを経由せずos.replaceへ直書きする
+    退行を検知する。"""
+    world.add("bridge-a", pid=100, cli_session_id="cli-1")
+    real_replace = os.replace
+    calls = {"count": 0}
+
+    def flaky_replace(a, b):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise OSError(32, "The process cannot access the file")
+        return real_replace(a, b)
+
+    monkeypatch.setattr(file_ops.os, "replace", flaky_replace)
+    monkeypatch.setattr(file_ops.time, "sleep", lambda _: None)
+
+    srs.register_checkin(
+        bridge_session_id="bridge-a", activity_id=1, activity_title="Foo", activity_status="in_progress"
+    )
+
+    assert calls["count"] == 2
+    assert registry_path.exists()
 
 
 def _sequential_timestamps(monkeypatch, count=200):

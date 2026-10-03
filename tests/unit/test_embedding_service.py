@@ -1,7 +1,9 @@
 """embeddingサービスのテスト（HTTPクライアント方式）"""
 import json
 import os
+import threading
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import pytest
 import numpy as np
@@ -11,6 +13,7 @@ from src.db import get_connection, execute_query
 from src.services.topic_service import add_topic
 from tests.helpers import add_decision
 from src.services.activity_service import add_activity
+import src.infra.loopback_http as loopback_http
 import src.services.embedding_service as emb
 
 # conftest の autouse fixture (_no_real_embedding_server) は _start_server を
@@ -724,11 +727,11 @@ class TestEncodeBatchRequestPayload:
             def read(self):
                 return json.dumps({"embeddings": [[0.0] * EMBEDDING_DIM]}).encode("utf-8")
 
-        def fake_urlopen(req, timeout=None):
+        def fake_open(req, timeout=None):
             captured["body"] = req.data
             return FakeResponse()
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(emb._NO_PROXY_OPENER, "open", fake_open)
         return captured
 
     def test_truncates_text_to_max_chars(self, monkeypatch):
@@ -750,6 +753,67 @@ class TestEncodeBatchRequestPayload:
 
         assert "日本語のテスト文書です".encode("utf-8") in captured["body"]
         assert b"\\u65e5" not in captured["body"]  # "日"のunicodeエスケープが含まれない
+
+
+# ========================================
+# _is_server_running: プロキシ回避が実際に効いていることの確認
+# ========================================
+#
+# 上の TestEncodeBatchRequestPayload は `_NO_PROXY_OPENER.open` 自体を
+# モックするため、_NO_PROXY_OPENER がプロキシ設定を読む構成（例:
+# urllib.request.build_opener()）に戻っても検出できない。_NO_PROXY_OPENER の
+# 実体はsrc.infra.loopback_httpのモジュールimport時に構築されるため、プロキシ
+# 環境変数を設定した状態でそちらをimportlib.reloadしないと、その退行を検出
+# できない（emb自体をreloadしても、既にimport済みのloopback_httpから同じ
+# オブジェクトを再取得するだけで再構築はされない）。ここでは実HTTPサーバーと
+# 実プロキシ環境変数を使い、_is_server_running を一切モックせず本物の
+# プロキシバイパスを確認する。
+
+
+class _HealthOkHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass  # テスト出力を汚さない
+
+
+def test_is_server_running_bypasses_http_proxy_env(monkeypatch):
+    """_is_server_running: HTTP_PROXY/http_proxyが設定されていても127.0.0.1への
+    ヘルスチェックはプロキシを経由しない。"""
+    import importlib
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _HealthOkHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        # 閉じたポートを指すプロキシ。バイパスできていなければ接続拒否でFalseになる。
+        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+        monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
+        # NO_PROXY_OPENERの実体を構築するloopback_http自体をreloadしないと、
+        # 退行(build_opener()への先祖返り等)が発生時のenv変数読み取りを再現できない。
+        importlib.reload(loopback_http)
+        importlib.reload(emb)
+        try:
+            monkeypatch.setattr(emb, "SERVER_URL", f"http://127.0.0.1:{port}")
+            # urllib.request.urlopenの既定openerはプロセス内で初回呼び出し時に
+            # 1度だけ構築されキャッシュされる。他のテストが先に本物のurlopenを
+            # 呼んでいた場合、そのキャッシュが現在の環境変数を反映しないまま
+            # 残ってしまうため、ここで強制的に作り直させる。
+            monkeypatch.setattr(urllib.request, "_opener", None)
+            assert emb._is_server_running() is True
+        finally:
+            monkeypatch.delenv("HTTP_PROXY", raising=False)
+            monkeypatch.delenv("http_proxy", raising=False)
+            importlib.reload(loopback_http)  # importlib.reloadの副作用を素の状態に戻す
+            importlib.reload(emb)
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
 
 
 # ========================================
@@ -837,11 +901,11 @@ def test_encode_batch_failure_resets_initialized_flag(temp_db, monkeypatch):
     monkeypatch.setattr(emb, '_server_initialized', True)
     monkeypatch.setattr(emb, '_backfill_done', True)
 
-    # urllib.request.urlopenを失敗させて本物の_encode_batchを通す
-    def failing_urlopen(*args, **kwargs):
+    # _NO_PROXY_OPENER.openを失敗させて本物の_encode_batchを通す
+    def failing_open(*args, **kwargs):
         raise ConnectionError("server crashed")
 
-    monkeypatch.setattr(urllib.request, 'urlopen', failing_urlopen)
+    monkeypatch.setattr(emb._NO_PROXY_OPENER, 'open', failing_open)
 
     result = emb.encode_document("テスト")
 
@@ -872,9 +936,9 @@ def test_recovery_after_encode_batch_failure(temp_db, monkeypatch):
     assert ensure_call_count == 1
     assert emb._server_initialized is True
 
-    # サーバー障害シミュレート（本物の_encode_batch + urlopen失敗）
+    # サーバー障害シミュレート（本物の_encode_batch + open失敗）
     monkeypatch.setattr(emb, '_encode_batch', real_encode_batch)
-    monkeypatch.setattr(urllib.request, 'urlopen', lambda *a, **kw: (_ for _ in ()).throw(ConnectionError("crash")))
+    monkeypatch.setattr(emb._NO_PROXY_OPENER, 'open', lambda *a, **kw: (_ for _ in ()).throw(ConnectionError("crash")))
 
     emb.encode_document("テスト2")
     assert emb._server_initialized is False  # フラグがリセットされた
@@ -910,8 +974,13 @@ def test_start_server_uses_module_execution_form(temp_db, monkeypatch):
     ファイルパスを直接実行する形式（`[sys.executable, server_path]`）だと
     sys.path[0]がembedding_server.py自身のディレクトリになり、内部の
     `from src.xxx import ...` がModuleNotFoundErrorでクラッシュする。
+
+    popen_detachedはsys.platformで分岐するため、POSIX分岐の検証であることを
+    明示する(Windows分岐はtest_start_server_uses_popen_detached_windows_wiringで
+    検証する)。
     """
     import subprocess
+    from src.infra import detached_process
 
     captured = {}
     sentinel = object()
@@ -926,6 +995,7 @@ def test_start_server_uses_module_execution_form(temp_db, monkeypatch):
     root = Path(emb.__file__).resolve().parents[2]
     monkeypatch.setenv("CALM_PROJECT_ROOT", str(root))
     monkeypatch.setattr(emb, "_project_root_cache", None)  # env反映のためキャッシュをクリア
+    monkeypatch.setattr(detached_process.sys, "platform", "darwin")
     monkeypatch.setattr(subprocess, "Popen", capturing_popen)
     monkeypatch.setattr(emb, "_start_server", _REAL_START_SERVER)
 
@@ -937,6 +1007,46 @@ def test_start_server_uses_module_execution_form(temp_db, monkeypatch):
     # モジュール自体は実在すること（パス自体は渡さないが、参照先が存在しないと
     # -m実行が即失敗するため）
     assert os.path.isfile(os.path.join(str(root), "src", "infra", "embedding_server.py"))
+
+
+def test_start_server_uses_popen_detached_windows_wiring(temp_db, monkeypatch):
+    """_start_server: popen_detached経由でWindows用kwargsが渡ること
+
+    popen_detachedを経由せずstart_new_session=Trueで直接起動する実装に戻しても
+    気づけない回帰を防ぐため、popen_detachedのWindows分岐(中継プロセスの起動)が
+    実際に呼び出されることを確かめる。
+    """
+    import subprocess
+    from src.infra import detached_process
+
+    captured = {}
+
+    class FakeRelay:
+        def __init__(self, args, **kwargs):
+            captured["kwargs"] = kwargs
+            self.returncode = 0
+
+        def communicate(self, input=None, timeout=None):
+            return f"{os.getpid()}\n".encode(), b""
+
+    root = Path(emb.__file__).resolve().parents[2]
+    monkeypatch.setenv("CALM_PROJECT_ROOT", str(root))
+    monkeypatch.setattr(emb, "_project_root_cache", None)
+    monkeypatch.setattr(detached_process.sys, "platform", "win32")
+    monkeypatch.setattr(subprocess, "Popen", FakeRelay)
+    monkeypatch.setattr(emb, "_start_server", _REAL_START_SERVER)
+
+    proc = emb._start_server()
+
+    assert captured["kwargs"]["creationflags"] == (
+        detached_process._CREATE_NEW_PROCESS_GROUP
+        | detached_process._CREATE_NO_WINDOW
+        | detached_process._CREATE_BREAKAWAY_FROM_JOB
+    )
+    assert captured["kwargs"]["stdin"] == subprocess.PIPE
+    assert captured["kwargs"]["stdout"] == subprocess.PIPE
+    assert captured["kwargs"]["stderr"] == subprocess.PIPE
+    assert proc.pid == os.getpid()
 
 
 def test_ensure_server_running_handles_start_failure(temp_db, monkeypatch):
@@ -1223,3 +1333,8 @@ def test_update_tag_canonical_regenerates_embedding(temp_db, monkeypatch):
     # 再生成テキストに元のトピックのタイトルが含まれる
     all_regen_text = " ".join(captured_texts)
     assert "canonical再生成テスト" in all_regen_text
+
+
+def test_server_url_uses_ipv4_loopback():
+    """localhostではなく127.0.0.1を使う（::1優先環境での接続遅延を避けるため）"""
+    assert emb.SERVER_URL == f"http://127.0.0.1:{emb.PORT}"

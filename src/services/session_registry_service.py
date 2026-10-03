@@ -12,17 +12,15 @@ name はユーザーが CLI 側でリネームすると変わる可変フィー�
 ``src.infra.cli_session.read_cli_session`` から取り直して最新化する。
 
 read-modify-write は data file 自体ではなく専用の lock file
-（``~/.cc-memory/session_aliases.lock``）を flock する。data file は
+（``~/.cc-memory/session_aliases.lock``）を filelock で排他する。data file は
 tmp→``os.replace`` で更新するため inode が入れ替わり、data file 自体を
-flock すると待機中のプロセスが unlink 済み inode のロックを握ったまま
+ロックすると待機中のプロセスが unlink 済み inode のロックを握ったまま
 通過してしまう。
 """
 from __future__ import annotations
 
-import fcntl
 import itertools
 import json
-import os
 import re
 import unicodedata
 from contextlib import contextmanager
@@ -30,8 +28,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator, Optional
 
+import filelock
+
 from src.env_compat import env_get
 from src.infra import cli_session
+from src.infra.file_ops import replace_retrying
 from src.infra.lock_file import is_process_alive
 from src.infra import session_identity
 
@@ -58,12 +59,8 @@ def _lock_path() -> Path:
 def _locked() -> Iterator[None]:
     lock_path = _lock_path()
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock_path, "a+") as f:
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    with filelock.FileLock(str(lock_path)):
+        yield
 
 
 def _now_iso() -> str:
@@ -91,7 +88,7 @@ def _save(data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    replace_retrying(tmp, path)
 
 
 def derive_alias(activity_title: str, activity_id: int) -> str:
