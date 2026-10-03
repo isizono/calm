@@ -97,21 +97,6 @@ class TestGetSessions:
         result = main_module.get_sessions()
         assert result == {"sessions": [], "count": 0}
 
-    def test_rows_carry_cli_session_id_and_cli_pid_matching_checkin(self, registry_path, monkeypatch):
-        _stub_world(
-            monkeypatch,
-            {"bridge-a": {"cli_pid": 100, "cli_session_id": "cli-1", "name": "workspace-a1"}},
-        )
-        srs.register_checkin(
-            bridge_session_id="bridge-a", activity_id=1, activity_title="Foo", activity_status="in_progress"
-        )
-        _set_caller(monkeypatch, None)
-
-        result = main_module.get_sessions()
-
-        assert result["sessions"][0]["cli_session_id"] == "cli-1"
-        assert result["sessions"][0]["cli_pid"] == 100
-
 
 class TestSetSessionAliasNotRegistered:
     def test_returns_not_registered_when_never_checked_in(self, registry_path, monkeypatch):

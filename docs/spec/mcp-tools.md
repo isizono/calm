@@ -666,7 +666,7 @@ Claude Codeセッション間の「CLI表示名（例: `workspace-a2`）→人�
 **get_sessions**: 引数なし。
 **返り値**: `{"sessions": [{"name": str, "alias": str, "alias_source": "derived" | "manual", "activity_id": int | null, "activity_title": str | null, "activity_status": str | null, "cwd": str | null, "cli_session_id": str | null, "cli_pid": int | null, "is_self": bool, "updated_at": str}, ...], "count": int}`。`cli_session_id`と`cli_pid`は`claude agents --json`の`sessionId`と`pid`と同じ値。`name`は呼び出し時点のCLI名に最新化される（自動命名や`/resume`で変わっても追従する）。`updated_at`降順。呼び出し元自身の行は`is_self: true`。CLIプロセスが消滅したセッションの行は自動的に除外される。
 
-`name`が同じ行が複数あり`ListAgents`の宛先を1つに絞れないときは、対象行の`cli_pid`を`claude agents --json`の該当pidの行と突き合わせて`kind`・`startedAt`を確認し、`ListAgents`で種類と経過時間が一致する行のrefを使う。それでも絞れなければ候補全部へ目的のアクティビティ名を名指しした上で送る。
+`name`が同じ行が複数あり`ListAgents`の宛先を1つに絞れないときの手順は`get_sessions`のdocstringを正とする（手順を変えるときはdocstringだけを直す）。
 
 **set_session_alias**
 

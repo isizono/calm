@@ -342,7 +342,7 @@ class TestListSessions:
         assert sessions[0]["is_self"] is True
         assert sessions[1]["is_self"] is False
 
-    def test_rows_carry_cli_session_id_and_cli_pid_matching_checkin(self, world, registry_path):
+    def test_rows_carry_cli_session_id_and_cli_pid(self, world, registry_path):
         world.add("bridge-a", pid=100, cli_session_id="cli-1", name="workspace-a1")
         srs.register_checkin(
             bridge_session_id="bridge-a", activity_id=1, activity_title="Foo", activity_status="in_progress"
