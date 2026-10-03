@@ -1,6 +1,6 @@
 ---
 name: rule-placement
-description: 一般化ルール（エージェントの今後の振る舞いを変える規範・判断基準・手順）をどの文脈配信経路に置くかをfull評価で判定する。TRIGGER: メタask（kind="meta"）の裁定をtriage_askでpromoteする直前（必須）、remember skillの判定木の末端で迷った場合、1つの裁定・依頼に性質の異なる複数ルールが混ざっている場合、forget/audit中に既存配置の再配置を検討する場合、remember skillの再発の手順で、照合できない再発が3回目に達し格上げを検討する場合。DO NOT TRIGGER: remember skillのfast pathで判定できる日常の単純な「覚えて」、議論の合意事実の記録（decision-record skillの担当）。
+description: 一般化ルール（今後の振る舞いを変える規範・判断基準・手順）をどの文脈配信経路に置くかをfull評価で判定する。TRIGGER: メタask（kind="meta"）の裁定をtriage_askでpromoteする直前（必須）、rememberの判定木の末端で迷った、性質の異なる複数ルールが混在、forget/audit中の再配置検討、rememberの再発の手順で照合できない再発が3回目。DO NOT TRIGGER: rememberのfast pathで足りる日常の「覚えて」、合意事実の記録（decision-record）。詳細は本文「発動条件」。
 ---
 
 # rule-placement
@@ -9,6 +9,21 @@ description: 一般化ルール（エージェントの今後の振る舞いを�
 
 - 入力: メタask裁定のanswer_body、またはremember/forget/auditから持ち込まれたルール群
 - 出力: 承認が要る配置だけの配置計画表（ルール × 配置先 × 根拠となる軸の値）。承認が要らない配置は先に実行し、まとめて1行で報告する
+
+## 発動条件
+
+### 発動する
+
+- メタask（kind="meta"）の裁定をtriage_askでpromoteする直前（必須）
+- remember skillの判定木の末端で迷った場合
+- 1つの裁定・依頼に性質の異なる複数ルールが混ざっている場合
+- forget/audit中に既存配置の再配置を検討する場合
+- remember skillの再発の手順で、照合できない再発が3回目に達し格上げを検討する場合
+
+### 発動しない
+
+- remember skillのfast pathで判定できる日常の単純な「覚えて」
+- 議論の合意事実の記録（decision-record skillの担当）
 
 ## Step 0: 分解する
 
