@@ -96,7 +96,8 @@ material の content をそのまま渡せば同じ構造を得られる。た�
 採らず warning を記録する（節見出しと同様の効果は持たない）。
 
 ```
-却下例, 棄却案, 不採用案, 適用範囲, 対象外, 検証済み, rejected, scope
+却下例, 棄却案, 不採用案, 適用範囲, 対象外, 検証済み, rejected, scope,
+近接確認, 隣接チェック, 周辺確認
 ```
 
 このリストは `src/services/precedent_pure.py` の `NEAR_MISS_HEADERS` が正本である。
@@ -117,6 +118,7 @@ material の content をそのまま渡せば同じ構造を得られる。た�
   "verification_anchors": [
     {"raw": str, "date": str | None, "commit": str | None}, ...
   ],
+  "adjacent_check": [{"axis": str, "note": str}, ...],
   "warnings": [str, ...],   # 表記ゆれ・空節・アンカー日付欠落など
 }
 ```
@@ -132,6 +134,7 @@ warning はパース失敗を意味しない。パーサは常に best-effort �
   "rejected_alternatives": <件数>,
   "scope": <適用条件/適用外のいずれかが非空か bool>,
   "verification_anchors": [<raw 文字列>, ...],   # 生テキストのまま。空リスト=決定のみ
+  "adjacent_check": [<"軸: 内容" 文字列>, ...],   # 生テキスト表現。空リスト=節なし
   "warnings": [str, ...],   # 書式崩れがある場合のみ付与（無ければキー自体を省く）
 }
 ```
