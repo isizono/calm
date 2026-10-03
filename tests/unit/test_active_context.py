@@ -18,6 +18,8 @@ from src.services.activity_service import (
     get_pinned_active_activities,
 )
 from src.services.pin_service import add_pin
+from src.services.ask_service import add_ask
+from src.services import goal_service
 import src.services.embedding_service as emb
 from tests.helpers import add_decision
 from hooks.session_start_hook import (
@@ -25,10 +27,14 @@ from hooks.session_start_hook import (
     _build_fixed_nav,
     _calc_elapsed_days,
     _DETERMINISTIC_RENDER_NOTICE,
+    _LEGEND_LINE,
     _TIER2_MAX_ITEMS,
 )
 
-_NAV_BASE = "作業開始時は該当アクティビティにcheck_in（なければ作成 — activity-start）。"
+_NAV_BASE = (
+    "作業開始時は該当アクティビティにcheck_in（なければ作成 — activity-start）。"
+    "未表示や過去の文脈はget_activities・search・get系で取得する。"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -267,32 +273,19 @@ def test_get_pinned_active_activities_empty(temp_db):
 
 
 class TestBuildFixedNav:
-    """_build_fixed_nav（一覧末尾固定ナビ）のユニットテスト"""
+    """_build_fixed_nav（一覧末尾固定ナビ）のユニットテスト
 
-    def test_zero_undisplayed_omits_remainder_clause(self):
-        """未表示0件なら件数句ごと省略し前半文のみ"""
-        assert _build_fixed_nav(0, 0) == _NAV_BASE
+    未表示の内訳（domain別件数・例示）は_build_undisplayed_linesが別途
+    組み立てるため、本関数は引数を取らない固定文言を返すだけになった。
+    """
 
-    def test_negative_undisplayed_treated_as_zero(self):
-        """未表示件数が0未満（呼び出し側の丸め誤差等）でも前半文のみ扱い"""
-        assert _build_fixed_nav(-1, 0) == _NAV_BASE
-
-    def test_positive_undisplayed_zero_pinned_omits_parenthetical(self):
-        """未表示>0だがpinned0件なら括弧句のみ省略"""
-        nav = _build_fixed_nav(3, 0)
-        assert nav.startswith(_NAV_BASE)
-        assert "未表示のアクティビティ3件" in nav
-        assert "pinned" not in nav
-
-    def test_positive_undisplayed_positive_pinned_includes_parenthetical(self):
-        """未表示>0かつpinned>0なら括弧句を含む"""
-        nav = _build_fixed_nav(5, 2)
-        assert "未表示のアクティビティ5件" in nav
-        assert "pinned 2件含む" in nav
+    def test_returns_fixed_nav_base(self):
+        """固定ナビは_NAV_BASEと完全一致する（パラメータ化廃止）"""
+        assert _build_fixed_nav() == _NAV_BASE
 
     def test_no_direct_add_activity_wording(self):
         """activity-startスキル経由を案内し、add_activityで直接作成とは書かない"""
-        nav = _build_fixed_nav(1, 0)
+        nav = _build_fixed_nav()
         assert "activity-start" in nav
         assert "add_activityで直接作成" not in nav
 
@@ -312,16 +305,21 @@ class TestBuildActivitiesSectionEarlyReturn:
         result = _build_active_context_wrapper()
         assert result == _NAV_BASE
 
-    def test_pending_non_pinned_only_returns_nav_only(self, temp_db):
-        """pendingかつ非pinnedのみ（階層1・2とも0件）なら固定ナビのみ返す"""
+    def test_pending_non_pinned_only_shows_undisplayed_section(self, temp_db):
+        """pendingかつ非pinnedのみ（階層1・2とも0件）でも、未表示activityが
+        1件でもあればヘッダ・未表示節・末尾固定文が出る（活動が1件も無い
+        ときとは区別する）"""
         add_activity(
             title="[作業] 放置タスク", description="Desc",
             tags=["domain:myapp"], check_in=False,
         )
         result = _build_active_context_wrapper()
-        assert "# アクティビティ一覧" not in result
-        assert _DETERMINISTIC_RENDER_NOTICE not in result
-        assert "未表示のアクティビティ1件" in result
+        assert "# アクティビティ一覧" in result
+        assert "## 未表示 1件" in result
+        assert "myapp 1件：[作業] 放置タスク" in result
+        assert _DETERMINISTIC_RENDER_NOTICE in result
+        # 階層1・2とも0件のため、ツリー記号を説明する凡例は出さない
+        assert _LEGEND_LINE not in result
 
 
 class TestTier2AgeBoundary:
@@ -354,8 +352,8 @@ class TestTier2AgeBoundary:
 
         result = _build_active_context_wrapper()
 
-        assert "[作業] A" not in result
-        assert "未表示のアクティビティ1件" in result
+        assert "## 優先" not in result
+        assert "myapp 1件：[作業] A" in result
 
 
 class TestTier2PinnedDecay:
@@ -381,15 +379,15 @@ class TestTier2PinnedDecay:
         assert "[作業] B" in result
 
     def test_pinned_61_days_decays_out_of_tier2(self, temp_db):
-        """pinnedでも60日超のupdated_atは階層2から外れ、未表示件数句のpinned内訳に計上される"""
+        """pinnedでも60日超のupdated_atは階層2から外れ、未表示のdomain内訳に計上される"""
         r = add_activity(title="[作業] C", description="Desc", tags=["domain:myapp"], check_in=False)
         add_pin("tag", "domain:myapp", "activity", r["activity_id"])
         _set_updated_at_days_ago(r["activity_id"], 61)
 
         result = _build_active_context_wrapper()
 
-        assert "[作業] C" not in result
-        assert "pinned 1件含む" in result
+        assert "## 優先" not in result
+        assert "myapp 1件：[作業] C" in result
 
     def test_pinned_decay_does_not_remove_pin_itself(self, temp_db):
         """60日decayでpinが階層2から落ちても、pinned一覧からは消えない（pin自体は残る）"""
@@ -425,10 +423,14 @@ class TestNoStatsLine:
         assert "他:" not in result
 
 
-class TestFixedNavCountMatchesPopulation:
-    """固定ナビの未表示件数が「母集団（active全件）−表示済み件数」に一致する"""
+class TestUndisplayedSection:
+    """末尾『未表示』節: domain別件数と直近更新順2件の例示
 
-    def test_undisplayed_count_matches(self, temp_db):
+    決定事項「未表示はdomain別の件数と各2件の例で出す」の実装。
+    """
+
+    def test_undisplayed_heading_count_matches_population(self, temp_db):
+        """見出しの件数は「母集団（active全件）−表示済み件数」に一致する"""
         r1 = add_activity(title="[作業] Shown", description="Desc", tags=["domain:myapp"], check_in=False)
         update_activity(r1["activity_id"], status="in_progress")
         add_activity(title="[作業] Hidden1", description="Desc", tags=["domain:myapp"], check_in=False)
@@ -437,18 +439,22 @@ class TestFixedNavCountMatchesPopulation:
         result = _build_active_context_wrapper()
 
         assert "[作業] Shown" in result
-        assert "未表示のアクティビティ2件" in result
+        assert "## 未表示 2件" in result
+        assert "myapp 2件：" in result
 
-    def test_zero_undisplayed_omits_count_phrase(self, temp_db):
+    def test_zero_undisplayed_omits_section(self, temp_db):
+        """未表示が0件なら『未表示』節自体が出ない"""
         r1 = add_activity(title="[作業] Only", description="Desc", tags=["domain:myapp"], check_in=False)
         update_activity(r1["activity_id"], status="in_progress")
 
         result = _build_active_context_wrapper()
 
-        assert "未表示のアクティビティ" not in result
+        assert "## 未表示" not in result
 
-    def test_zero_pinned_undisplayed_omits_parenthetical(self, temp_db):
-        for i in range(2):
+    def test_examples_capped_at_two_with_suffix(self, temp_db):
+        """domain内の例示は直近更新順で2件までにし、まだ隠れた項目があるときだけ
+        末尾に「など」を付ける"""
+        for i in range(3):
             add_activity(
                 title=f"[作業] Hidden{i}", description="Desc",
                 tags=["domain:myapp"], check_in=False,
@@ -456,28 +462,33 @@ class TestFixedNavCountMatchesPopulation:
 
         result = _build_active_context_wrapper()
 
-        assert "未表示のアクティビティ2件" in result
-        assert "pinned" not in result
+        assert "## 未表示 3件" in result
+        line = next(l for l in result.splitlines() if l.startswith("- myapp"))
+        assert line.count("[作業] Hidden") == 2
+        assert line.endswith("など")
 
+    def test_examples_all_shown_omits_suffix(self, temp_db):
+        """domain内の未表示が2件以内で例示に全件収まるときは「など」を付けない"""
+        add_activity(title="[作業] Solo", description="Desc", tags=["domain:myapp"], check_in=False)
 
-def test_build_activities_section_status_marker_in_progress(temp_db):
-    """in_progress アクティビティは階層 2 で●マーカーが付く"""
-    r = add_activity(title="[作業] 実装する", description="Desc", tags=["domain:myapp"], check_in=False)
-    update_activity(r["activity_id"], status="in_progress")
+        result = _build_active_context_wrapper()
 
-    result = _build_active_context_wrapper()
+        line = next(l for l in result.splitlines() if l.startswith("- myapp"))
+        assert line == "- myapp 1件：[作業] Solo"
+        assert "など" not in line
 
-    assert "●" in result
+    def test_domains_ordered_by_count_descending(self, temp_db):
+        """件数の多いdomainから並べる"""
+        for i in range(3):
+            add_activity(title=f"[作業] Big{i}", description="Desc", tags=["domain:big"], check_in=False)
+        add_activity(title="[作業] Small0", description="Desc", tags=["domain:small"], check_in=False)
 
+        result = _build_active_context_wrapper()
 
-def test_build_activities_section_elapsed_days_in_title_line(temp_db):
-    """経過日数はタイトル行末尾に `(Nd)` として付く"""
-    r = add_activity(title="[作業] 実装する", description="Desc", tags=["domain:myapp"], check_in=False)
-    update_activity(r["activity_id"], status="in_progress")
-
-    result = _build_active_context_wrapper()
-
-    assert "(0d)" in result
+        idx_section = result.index("## 未表示")
+        idx_big = result.index("- big", idx_section)
+        idx_small = result.index("- small", idx_section)
+        assert idx_big < idx_small
 
 
 def test_build_activities_section_no_topic_section(temp_db):
@@ -493,7 +504,7 @@ def test_build_activities_section_no_topic_section(temp_db):
 
 
 def test_build_activities_section_tier2_capped_at_five(temp_db):
-    """階層 2『優先』は上位 5 件までに絞られる"""
+    """階層 2『優先』は上位 5 件までに絞られ、残りは未表示に回る"""
     for i in range(7):
         r = add_activity(
             title=f"[作業] Activity {i}", description="Desc",
@@ -506,23 +517,9 @@ def test_build_activities_section_tier2_capped_at_five(temp_db):
     idx_tier2 = result.index("## 優先")
     next_section = result.find("\n## ", idx_tier2 + 1)
     tier2_block = result[idx_tier2:] if next_section == -1 else result[idx_tier2:next_section]
-    for expected in ("1. ●", "2. ●", "3. ●", "4. ●", "5. ●"):
-        assert expected in tier2_block, f"番号 '{expected}' が階層 2 に無い"
-    assert "6. ●" not in tier2_block
-    assert "未表示のアクティビティ2件" in result
-
-
-def test_build_activities_section_numbered_list(temp_db):
-    """階層 2 で連番が振られる"""
-    r1 = add_activity(title="First", description="Desc", tags=["domain:myapp"], check_in=False)
-    r2 = add_activity(title="Second", description="Desc", tags=["domain:myapp"], check_in=False)
-    update_activity(r1["activity_id"], status="in_progress")
-    update_activity(r2["activity_id"], status="in_progress")
-
-    result = _build_active_context_wrapper()
-
-    assert "1. " in result
-    assert "2. " in result
+    shown = [line for line in tier2_block.splitlines() if line.startswith("- #")]
+    assert len(shown) == 5
+    assert "## 未表示 2件" in result
 
 
 def test_build_activities_section_domain_with_zero_activities_skipped(temp_db):
@@ -544,14 +541,14 @@ def test_build_activities_section_domain_with_zero_activities_skipped(temp_db):
 
 
 def test_build_activities_section_activity_id_in_bracket(temp_db):
-    """アクティビティIDが「title (#NNN)」形式で表示される（個別表示は階層 2 のみ対象）"""
-    activity = add_activity(title="Activity 1", description="Desc", tags=["domain:myapp"], check_in=False)
+    """アクティビティIDが「#NNN title」形式で表示される（個別表示は階層 2 のみ対象）"""
+    activity = add_activity(title="Sample Task", description="Desc", tags=["domain:myapp"], check_in=False)
     activity_id = activity["activity_id"]
     update_activity(activity_id, status="in_progress")
 
     result = _build_active_context_wrapper()
 
-    assert f"Activity 1 (#{activity_id})" in result
+    assert f"#{activity_id} Sample Task" in result
 
 
 def test_build_activities_section_raises_on_invalid_db(temp_db):
@@ -672,7 +669,8 @@ def test_build_activities_section_no_blocked_by_when_dep_completed(temp_db):
 
 
 def test_build_activities_section_deduplicates_multi_domain(temp_db):
-    """複数domainに属するアクティビティは未表示件数句でも1件として重複なく数えられる"""
+    """複数domainに属するアクティビティは未表示の見出し件数でも1件として重複なく数えられる
+    （domain別の内訳では両方のdomainに例示されてよい）"""
     add_activity(
         title="Multi Domain Task", description="Desc",
         tags=["domain:app", "domain:lib"], check_in=False,
@@ -680,7 +678,9 @@ def test_build_activities_section_deduplicates_multi_domain(temp_db):
 
     result = _build_active_context_wrapper()
 
-    assert "未表示のアクティビティ1件" in result
+    assert "## 未表示 1件" in result
+    assert "app 1件：Multi Domain Task" in result
+    assert "lib 1件：Multi Domain Task" in result
 
 
 def test_build_activities_section_tier2_flat_no_topic_grouping(temp_db):
@@ -701,5 +701,272 @@ def test_build_activities_section_tier2_flat_no_topic_grouping(temp_db):
     tier2_block = result[idx_tier2:] if next_section == -1 else result[idx_tier2:next_section]
 
     assert "## TopicA" not in tier2_block
-    assert "1. ●" in tier2_block
-    assert "[議論] stop_hookのスキップ機能" in tier2_block
+    assert f"- #{r1['activity_id']} [議論] stop_hookのスキップ機能" in tier2_block
+
+
+class TestOrchChildTree:
+    """goal_conditions（bound_type='activity'）から組み立てる親子ツリーのテスト
+
+    決定事項「起動時の一覧でorchの子を親の下に線でぶら下げる」
+    「一覧の状態記号は ✓ ▷ ◷ ✕ にする」
+    「止まっている子を『待ち』と『着手できる』に分ける」の実装を検証する。
+    """
+
+    def _bind_children(self, parent_id, conditions):
+        result = goal_service.set_goal(
+            parent_id,
+            {"new": {"handle": f"test-goal-{parent_id}", "statement": "test", "conditions": conditions}},
+        )
+        assert "error" not in result
+        return result
+
+    def test_achieved_child_counted_not_rendered(self, temp_db):
+        """satisfied条件の子は✓の内訳数に入り、ツリー行としては出ない"""
+        parent = add_activity(title="[統合] 親A", description="d", tags=["domain:myapp"], check_in=False)
+        update_activity(parent["activity_id"], status="in_progress")
+        child = add_activity(title="[作業] 子済", description="d", tags=["domain:myapp"], check_in=False)
+
+        self._bind_children(parent["activity_id"], [
+            {
+                "statement": "子済が終わった", "actor": "claude", "state": "satisfied",
+                "bound": {"type": "activity", "id": child["activity_id"]},
+            },
+        ])
+
+        result = _build_active_context_wrapper()
+
+        assert f"#{parent['activity_id']} [統合] 親A  ✓1" in result
+        assert f"#{child['activity_id']}" not in result
+
+    def test_achieved_child_still_active_stays_visible(self, temp_db):
+        """束縛条件がsatisfiedになっても、子自身のactivityが非completedのまま
+        in_progressで残っていれば、通常のactivityとして一覧から消えない
+        （条件の充足と子自身の終了は別操作であるため）"""
+        parent = add_activity(title="[統合] 親H", description="d", tags=["domain:myapp"], check_in=False)
+        update_activity(parent["activity_id"], status="in_progress")
+        child = add_activity(title="[作業] 条件だけ済んだ子", description="d", tags=["domain:myapp"], check_in=False)
+        update_activity(child["activity_id"], status="in_progress")
+
+        self._bind_children(parent["activity_id"], [
+            {
+                "statement": "子が終わった", "actor": "claude", "state": "satisfied",
+                "bound": {"type": "activity", "id": child["activity_id"]},
+            },
+        ])
+
+        result = _build_active_context_wrapper()
+
+        assert f"- #{child['activity_id']} [作業] 条件だけ済んだ子" in result
+
+    def test_never_active_open_child_marked_ready(self, temp_db):
+        """openな子でheartbeat無し（一度も動いていない）は▷（着手できる）として
+        `|` `└-` でぶら下がる"""
+        parent = add_activity(title="[統合] 親B", description="d", tags=["domain:myapp"], check_in=False)
+        update_activity(parent["activity_id"], status="in_progress")
+        child = add_activity(title="[作業] 子未着手", description="d", tags=["domain:myapp"], check_in=False)
+
+        self._bind_children(parent["activity_id"], [
+            {
+                "statement": "子未着手が終わる", "actor": "claude",
+                "bound": {"type": "activity", "id": child["activity_id"]},
+            },
+        ])
+
+        result = _build_active_context_wrapper()
+
+        idx_tier2 = result.index("## 優先")
+        tier2_block = result[idx_tier2:]
+        assert "  |" in tier2_block
+        assert f"└- ▷ #{child['activity_id']} [作業] 子未着手" in tier2_block
+        assert "▷1" in tier2_block
+
+    def test_open_ask_marks_child_waiting(self, temp_db):
+        """子を止めるopen askがあれば◷（待ち）になる"""
+        parent = add_activity(title="[統合] 親C", description="d", tags=["domain:myapp"], check_in=False)
+        update_activity(parent["activity_id"], status="in_progress")
+        child = add_activity(title="[作業] ask待ち子", description="d", tags=["domain:myapp"], check_in=False)
+
+        self._bind_children(parent["activity_id"], [
+            {
+                "statement": "ask待ち子が終わる", "actor": "claude",
+                "bound": {"type": "activity", "id": child["activity_id"]},
+            },
+        ])
+        add_ask("これは判断が要る", blocks=[child["activity_id"]], tags=["domain:myapp"], notify=False)
+
+        result = _build_active_context_wrapper()
+
+        idx_tier2 = result.index("## 優先")
+        tier2_block = result[idx_tier2:]
+        assert f"◷ #{child['activity_id']}" in tier2_block
+        assert "◷1" in tier2_block
+
+    def test_unresolved_dependency_marks_child_waiting(self, temp_db):
+        """未完了のdepends_on先があれば◷（待ち）になり、blocked_byも出す"""
+        parent = add_activity(title="[統合] 親D", description="d", tags=["domain:myapp"], check_in=False)
+        update_activity(parent["activity_id"], status="in_progress")
+        blocker = add_activity(title="[作業] 依存先", description="d", tags=["domain:myapp"], check_in=False)
+        child = add_activity(title="[作業] 依存待ち子", description="d", tags=["domain:myapp"], check_in=False)
+
+        conn = get_connection()
+        try:
+            conn.execute(
+                "INSERT INTO activity_dependencies (dependent_id, dependency_id) VALUES (?, ?)",
+                (child["activity_id"], blocker["activity_id"]),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        self._bind_children(parent["activity_id"], [
+            {
+                "statement": "依存待ち子が終わる", "actor": "claude",
+                "bound": {"type": "activity", "id": child["activity_id"]},
+            },
+        ])
+
+        result = _build_active_context_wrapper()
+
+        idx_tier2 = result.index("## 優先")
+        tier2_block = result[idx_tier2:]
+        assert f"◷ #{child['activity_id']}" in tier2_block
+        assert "blocked_by:" in tier2_block
+        assert "依存先" in tier2_block
+
+    def test_child_own_human_condition_marks_waiting(self, temp_db):
+        """子自身のgoalにactorがhumanのopen条件があれば◷（待ち）になる"""
+        parent = add_activity(title="[統合] 親E", description="d", tags=["domain:myapp"], check_in=False)
+        update_activity(parent["activity_id"], status="in_progress")
+        child = add_activity(title="[作業] 人間待ち子", description="d", tags=["domain:myapp"], check_in=False)
+
+        own_goal_result = goal_service.set_goal(
+            child["activity_id"],
+            {
+                "new": {
+                    "handle": "test-child-own-goal",
+                    "statement": "test",
+                    "conditions": [{"statement": "ユーザーの承認", "actor": "human"}],
+                }
+            },
+        )
+        assert "error" not in own_goal_result
+
+        self._bind_children(parent["activity_id"], [
+            {
+                "statement": "人間待ち子が終わる", "actor": "claude",
+                "bound": {"type": "activity", "id": child["activity_id"]},
+            },
+        ])
+
+        result = _build_active_context_wrapper()
+
+        idx_tier2 = result.index("## 優先")
+        tier2_block = result[idx_tier2:]
+        assert f"◷ #{child['activity_id']}" in tier2_block
+
+    def test_failed_child_goal_marks_failed(self, temp_db):
+        """子自身のgoalがfailedで閉じ、親の条件がまだopenなら✕（失敗）になる"""
+        parent = add_activity(title="[統合] 親F", description="d", tags=["domain:myapp"], check_in=False)
+        update_activity(parent["activity_id"], status="in_progress")
+        child = add_activity(title="[作業] 失敗子", description="d", tags=["domain:myapp"], check_in=False)
+
+        own_goal_result = goal_service.set_goal(
+            child["activity_id"],
+            {
+                "new": {
+                    "handle": "test-child-failed-goal",
+                    "statement": "test",
+                    "conditions": [{"statement": "何かをする", "actor": "claude"}],
+                }
+            },
+        )
+        assert "error" not in own_goal_result
+        judge_result = goal_service.judge_goal(
+            own_goal_result["goal"]["goal_id_raw"], "failed", note="うまくいかなかった"
+        )
+        assert "error" not in judge_result
+
+        self._bind_children(parent["activity_id"], [
+            {
+                "statement": "失敗子が終わる", "actor": "claude",
+                "bound": {"type": "activity", "id": child["activity_id"]},
+            },
+        ])
+
+        result = _build_active_context_wrapper()
+
+        idx_tier2 = result.index("## 優先")
+        tier2_block = result[idx_tier2:]
+        assert f"✕ #{child['activity_id']}" in tier2_block
+        assert "✕1" in tier2_block
+
+    def test_open_child_excluded_from_flat_pool_and_undisplayed(self, temp_db):
+        """子は優先の上位5件の枠から独立には出ず、親の下にのみ出る。
+        表示された親の下の子は未表示にも数えない"""
+        parent = add_activity(title="[統合] 親G", description="d", tags=["domain:myapp"], check_in=False)
+        update_activity(parent["activity_id"], status="in_progress")
+        child = add_activity(title="[作業] 除外確認子", description="d", tags=["domain:myapp"], check_in=False)
+        update_activity(child["activity_id"], status="in_progress")
+
+        self._bind_children(parent["activity_id"], [
+            {
+                "statement": "除外確認子が終わる", "actor": "claude",
+                "bound": {"type": "activity", "id": child["activity_id"]},
+            },
+        ])
+
+        result = _build_active_context_wrapper()
+
+        assert result.count(f"#{child['activity_id']}") == 1
+        assert f"- #{child['activity_id']}" not in result
+        assert "## 未表示" not in result
+
+    def test_unresolved_deps_not_queried_twice_for_open_child(self, temp_db):
+        """未完了の子のdepends_on問い合わせは、blocked_by用のバッチ取得と
+        _classify_children内の判定とで重複して発行されない（N+1回避の契約）"""
+        import hooks.session_start_hook as hook_module
+
+        parent = add_activity(title="[統合] 親I", description="d", tags=["domain:myapp"], check_in=False)
+        update_activity(parent["activity_id"], status="in_progress")
+        child = add_activity(title="[作業] 重複確認子", description="d", tags=["domain:myapp"], check_in=False)
+
+        self._bind_children(parent["activity_id"], [
+            {
+                "statement": "重複確認子が終わる", "actor": "claude",
+                "bound": {"type": "activity", "id": child["activity_id"]},
+            },
+        ])
+
+        with patch.object(
+            hook_module, "_get_unresolved_deps", wraps=hook_module._get_unresolved_deps
+        ) as spy:
+            _build_active_context_wrapper()
+            assert spy.call_count == 1
+
+    def test_children_suffix_order_matches_legend(self, temp_db):
+        """親の行末尾の内訳は凡例と同じ並び（✓達成 ▷着手できる ◷待ち ✕失敗）で出る"""
+        parent = add_activity(title="[統合] 親J", description="d", tags=["domain:myapp"], check_in=False)
+        update_activity(parent["activity_id"], status="in_progress")
+        achieved_child = add_activity(title="[作業] 済子", description="d", tags=["domain:myapp"], check_in=False)
+        ready_child = add_activity(title="[作業] 着手できる子", description="d", tags=["domain:myapp"], check_in=False)
+        waiting_child = add_activity(title="[作業] 待ち子", description="d", tags=["domain:myapp"], check_in=False)
+
+        self._bind_children(parent["activity_id"], [
+            {
+                "statement": "済子が終わった", "actor": "claude", "state": "satisfied",
+                "bound": {"type": "activity", "id": achieved_child["activity_id"]},
+            },
+            {
+                "statement": "着手できる子が終わる", "actor": "claude",
+                "bound": {"type": "activity", "id": ready_child["activity_id"]},
+            },
+            {
+                "statement": "待ち子が終わる", "actor": "claude",
+                "bound": {"type": "activity", "id": waiting_child["activity_id"]},
+            },
+        ])
+        add_ask("これは判断が要る", blocks=[waiting_child["activity_id"]], tags=["domain:myapp"], notify=False)
+
+        result = _build_active_context_wrapper()
+
+        assert f"#{parent['activity_id']} [統合] 親J  ✓1 ▷1 ◷1" in result

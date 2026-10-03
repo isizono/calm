@@ -17,14 +17,14 @@ from readable_id_format import format_readable_id  # type: ignore  # noqa: E402
 
 def test_format_readable_id_normal():
     """title 付きの readable 形式が組み立てられる"""
-    assert format_readable_id(789, "[作業] something") == "[作業] something (#789)"
+    assert format_readable_id(789, "[作業] something") == "#789 [作業] something"
 
 
 def test_format_readable_id_missing_title():
-    """title=None の場合は (#NNN) のみ"""
-    assert format_readable_id(100, None) == "(#100)"
+    """title=None の場合は #NNN のみ"""
+    assert format_readable_id(100, None) == "#100"
 
 
 def test_format_readable_id_empty_title():
-    """title="" の場合は (#NNN) のみ"""
-    assert format_readable_id(200, "") == "(#200)"
+    """title="" の場合は #NNN のみ"""
+    assert format_readable_id(200, "") == "#200"

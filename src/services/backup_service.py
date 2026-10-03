@@ -541,14 +541,12 @@ def _check_schema_compatibility(snapshot_schema_head: str | None) -> _Compatibil
 
 def _check_health_endpoint(timeout: float = 2.0) -> bool:
     """ローカルHTTPサーバーの/healthエンドポイント疎通確認。"""
-    import urllib.error
-    import urllib.request
-
     from src.http_config import HTTP_HOST, HTTP_PORT
+    from src.infra.loopback_http import NO_PROXY_OPENER
 
     url = f"http://{HTTP_HOST}:{HTTP_PORT}/health"
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310
+        with NO_PROXY_OPENER.open(url, timeout=timeout) as resp:  # noqa: S310
             return resp.status == 200
     except Exception:
         return False
@@ -605,10 +603,16 @@ def restore_snapshot(
     # 1. サーバー稼働チェック
     running, detail = _server_appears_running()
     if running and not force:
+        # ${CLAUDE_PLUGIN_ROOT}のようなシェル変数テンプレートは、Python文字列として
+        # 出力してもそのまま展開されずに表示される(人間がターミナルで直接読んだ場合に
+        # コピペできない)ため、このモジュール自身の実位置から具体パスを組み立てる。
+        _project_root = Path(__file__).resolve().parents[2]
+        _restart_script = _project_root / "scripts" / "restart_server.py"
         raise RestoreBlockedError(
             "サーバーが稼働中のため復元を中断しました"
             f"（{detail}）。"
-            "先にサーバーを停止してください: lsof -ti :52837 -sTCP:LISTEN | xargs kill "
+            "先にサーバーを停止してください: "
+            f'uv run --no-sync --directory "{_project_root}" python "{_restart_script}" --stop '
             "（停止済みであることを確認の上で続行する場合は --force を指定）"
         )
 
@@ -669,10 +673,21 @@ def restore_snapshot(
 
     # 5. 復元本体
     if file_copy:
-        shutil.copy2(snapshot_file, db_path)
+        # 本体を上書きする前に-wal/-shm/-journalの削除を試みる。Windowsでは
+        # 開いているファイルを削除できないため、DBを開いているプロセスが
+        # 残っていればここで失敗する。本体を上書きした後に失敗すると、
+        # 古いWALが残ったまま不整合な状態になるため、先に削除を済ませ、
+        # 失敗したら本体には触れずに中断する。
         # -journalを残すと次回オープン時にSQLiteが古いjournalで意図しないロールバックを試みうる。
         for suffix in ("-wal", "-shm", "-journal"):
-            Path(f"{db_path}{suffix}").unlink(missing_ok=True)
+            sidecar = Path(f"{db_path}{suffix}")
+            try:
+                sidecar.unlink(missing_ok=True)
+            except OSError as e:
+                raise RestoreBlockedError(
+                    f"{sidecar} を削除できませんでした（他プロセスが開いている可能性があります）: {e}"
+                ) from e
+        shutil.copy2(snapshot_file, db_path)
     else:
         source = sqlite3.connect(str(snapshot_file))
         try:
@@ -767,7 +782,7 @@ def _cmd_restore(args: argparse.Namespace) -> int:
 
     print(f"復元完了: {result.restored_from} -> {result.db_path}")
     if result.compatibility_note:
-        print(f"ℹ {result.compatibility_note}")
+        print(f"[info] {result.compatibility_note}")
     if result.prerestore_path:
         print(f"復元前の状態を退避: {result.prerestore_path}")
 
@@ -782,6 +797,15 @@ def _cmd_restore(args: argparse.Namespace) -> int:
 
 def main() -> None:
     """CLI: list / take / verify / restore サブコマンド"""
+    # Windows既定のANSIコードページ（cp932等）ではstdout/stderrが非UTF-8になり、
+    # 本CLIが出力する日本語メッセージがUnicodeEncodeErrorで落ちたり、エラー出力が
+    # 元のバイト列のまま化けたりしうる。reconfigureを持たないストリーム
+    # （差し替え済みのストリーム、pythonw実行時のNone等）だけ何もしない。
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8")
+
     parser = argparse.ArgumentParser(description="calm DBスナップショット管理CLI")
     parser.add_argument("--db-path", dest="db_path", default=None, help="対象DBのパス（省略時はCALM_DB_PATH等から解決）")
     sub = parser.add_subparsers(dest="command", required=True)

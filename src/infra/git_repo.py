@@ -27,7 +27,7 @@ def resolve_main_repo_root(
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--git-common-dir"],
-            capture_output=True, text=True, check=True,
+            capture_output=True, text=True, encoding="utf-8", check=True,
             cwd=project_root, timeout=timeout_sec,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):

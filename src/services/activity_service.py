@@ -268,10 +268,12 @@ def add_activity(
         generate_and_store_embedding("activity", activity_id, build_embedding_text(title, description, tag_text))
 
         result = {"activity_id": activity_id}
-        try:
-            result["available_intents"] = get_available_intents()
-        except Exception:
-            result["available_intents"] = []
+        # intent一覧は固定の約1KBなので、intentを選び終えている呼び出しには返さない（#804）
+        if not any(namespace == "intent" for namespace, _ in parsed_tags):
+            try:
+                result["available_intents"] = get_available_intents()
+            except Exception:
+                result["available_intents"] = []
 
     except sqlite3.IntegrityError as e:
         conn.rollback()

@@ -27,7 +27,7 @@ Claude Code向けの最小手順です。
 ### 前提条件
 
 - [uv](https://docs.astral.sh/uv/) がインストールされていること
-- Claude Code v2.0.12以上
+- Claude Code v2.1.139以上
 - Python 3.12+（SQLite拡張ロード対応ビルドが必要）
   - pyenvのデフォルトビルドは非対応なため、Homebrew Python (`brew install python@3.12`) を推奨します
 
@@ -44,6 +44,10 @@ claude plugin install calm
 2. `/calm:man`を実行し、使い方の案内が返ってくることを確認します（名前衝突がなければ`/man`でも呼び出せますが、確実に通るのは`/calm:man`です）
 
 初回起動時はembeddingモデル（約290MB）をダウンロードするため時間がかかります。これはネットワーク接続が必要な一度きりの処理で、2回目以降はキャッシュされるため高速になります。
+
+### Windows 11での利用
+
+Windows 11（PowerShell）でもmacOS/Linuxと同じ手順でインストールできます。前提条件（Git for Windowsなど）、インストール手順、状態確認・停止、社内プロキシ環境での設定は[docs/windows-setup.md](docs/windows-setup.md)にまとめています。
 
 ## 仕組みの概要
 
