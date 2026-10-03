@@ -105,6 +105,18 @@ def test_deterministic_render_notice_constant():
     assert "再フォーマットや優先順の再評価をせず" in _DETERMINISTIC_RENDER_NOTICE
 
 
+def test_tier2_max_items_constant(monkeypatch):
+    """環境変数が未設定なら階層 2 の上限は既定の5"""
+    import importlib.util
+
+    monkeypatch.delenv("CALM_TIER2_MAX_ITEMS", raising=False)
+    spec = importlib.util.find_spec("src.config")
+    fresh_config = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fresh_config)
+
+    assert fresh_config.TIER2_MAX_ITEMS == 5
+
+
 def test_tier2_max_items_reads_env_var(monkeypatch):
     """CALM_TIER2_MAX_ITEMSを設定してconfigを読み込むと、その値になる"""
     import importlib.util
