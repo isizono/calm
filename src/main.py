@@ -720,7 +720,7 @@ def detect_reask_candidates(
     注入されたものをそのまま渡す。
 
     「この既存記録があれば聞き返しは不要だったか」の主観判定とreport_signalの呼び出しは
-    このtoolの範囲外（呼び出し側であるskills/sync-memory/SKILL.mdのステップ9が担う）。
+    このtoolの範囲外（呼び出し側であるskills/sync-memory/SKILL.mdのステップ5が担う）。
 
     Args:
         transcript_path: transcript JSONLのパス
@@ -2424,7 +2424,9 @@ def add_ask(
 ) -> dict:
     """人間の判断を待つ問いを1件積む（答え待ちの間、blocksで指定したactivityを止める）。
 
-    question/contextの構成は`ask-compose` skillを必ず経由すること。
+    question/contextの構成は`ask-compose` skillを必ず経由すること。ただし
+    kind="meta"のメタaskはこの限りではなく、`ask-distill`/`ask-watch`各skillの
+    組み立て方に従って直接本ツールを呼ぶ。
 
     同じ問い（正規化後questionのfingerprint一致）が答え待ち（open）で既にあれば
     新規行を作らず出現回数を+1し、blocks/要求元セッションはUNIONで追記、

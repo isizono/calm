@@ -30,5 +30,6 @@ description: add_askのレスポンスのsimilar_asksを見て、同型の問い
 
 ## 注意
 
+- 手順3のメタask起票は`ask-compose` skillを経由しない。本スキル自身がメタask専用の組み立て方（question/context/blocksの構成）を持つため。
 - メタaskの裁定（人間の回答）が「自己裁定してよい」であっても、一般化ルールが自動発効するわけではない。発効は人間のメタask裁定でのみ行われ、機械もLLMも勝手に発効しない（`RULES`の「## Asks（判断委譲）」節参照）。
 - メタask自体も答え待ちの間、渡した`blocks`のactivityを止める。トリガーaskと同じblocksを渡すため、二重に答え待ちが積まれる形になるが、これは意図的（両方とも同じactivityの進行を実際に止めている判断待ちのため）。
