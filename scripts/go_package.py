@@ -620,7 +620,7 @@ def run_gate_check(repo: Path, base: str, head: str) -> tuple[dict, str, str]:
             ["sh", gate_sh, "--base", base, "--head", head, "--repo", str(repo), "--format", "both", "--out", str(out_path)],
             cwd=str(repo),
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8",
         )
         if proc.returncode != 0:
             raise RuntimeError(f"gate_check.sh failed (exit {proc.returncode}): {proc.stderr}")
