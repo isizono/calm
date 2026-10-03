@@ -35,7 +35,7 @@ def load_allowlist(path: Path) -> set[str]:
     if not path.is_file():
         return set()
     names: set[str] = set()
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
@@ -51,7 +51,7 @@ def find_violations(unit_dir: Path, allowlist: set[str]) -> list[str]:
     for path in sorted(unit_dir.glob("*.py")):
         if path.name in allowlist:
             continue
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         if _SUBPROCESS_CALL_RE.search(text):
             violations.append(path.name)
     return violations

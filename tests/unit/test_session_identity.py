@@ -6,6 +6,7 @@ SessionStart hook 用の祖先 pid チェーンによる identity 解決
 """
 import json
 import os
+import sys
 
 import pytest
 
@@ -131,6 +132,28 @@ def _fake_ppid_chain(monkeypatch, graph: dict[int, int | None]):
     monkeypatch.setattr(session_identity, "_get_ppid", lambda pid: graph.get(pid))
 
 
+class TestGetPpidReal:
+    """_get_ppid自体はモックせず、psutil経由の実際の親pid解決を検証する。"""
+
+    def test_returns_real_parent_pid_of_self(self):
+        assert session_identity._get_ppid(os.getpid()) == os.getppid()
+
+    def test_none_for_nonexistent_pid(self):
+        assert session_identity._get_ppid(999999999) is None
+
+    def test_resolves_without_ps_command_on_path(self, monkeypatch):
+        """psコマンドが引けない状態でも解決できることを確かめる。
+
+        Windowsのネイティブ環境にはpsが無いため、`ps`をサブプロセスで呼ぶ
+        実装に戻っていた場合、常にNoneになってしまう（psutilはpsを呼ばない）。
+        PATHを空文字にしてpsを引けなくした状態で確認する（PATH自体を
+        unsetすると、環境によってはos.defpathへフォールバックしてpsが
+        見つかってしまい、この退行を検出できない）。
+        """
+        monkeypatch.setenv("PATH", "")
+        assert session_identity._get_ppid(os.getpid()) == os.getppid()
+
+
 @pytest.fixture
 def sessions_state_dir(tmp_path, monkeypatch):
     """RELAY_STATE_DIR をtmp_pathに差し替え、_sessions_dir()を隔離する。"""
@@ -172,6 +195,7 @@ class TestRegisterLauncherSession:
         assert data["ancestor_pids"] == [999]
         assert "created_at" in data
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="chmod(0o600)相当はWindowsのst_modeに反映されない")
     def test_registration_file_is_owner_only_permission(
         self, sessions_state_dir, monkeypatch
     ):
