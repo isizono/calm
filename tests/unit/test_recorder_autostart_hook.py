@@ -1,13 +1,14 @@
 """hooks/recorder_autostart_hook.py のユニットテスト。
 
 subprocess.Popen（記録役の起動・古い記録役の停止はいずれも切り離した
-`scripts/recorder.py`プロセスとして起動される）とps（`process_start_
+`scripts/recorder.py`プロセスとして起動される）とpsutil（`process_start_
 signature`が内部で呼ぶ）を外部境界としてmonkeypatchし、呼び出しの
 有無・引数・順序を検証する。実際のtmux/claudeプロセスは一切起動しない。
 """
 import io
 import json
 import subprocess
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -17,14 +18,30 @@ from hooks.hook_state import HookState
 from hooks.recorder_watch import run_dir_for
 from src.infra import process_signature
 
+# main()はWindowsでは先頭のガードで即return 0になる(tmux前提のため未対応)。
+# TestGatingのうちWindows分岐を実際に検証するのは専用のテスト1本だけで、
+# 残りは「code==0・起動なし」を期待するテストがたまたまこのガードでも
+# 同じ結果になるために無印のまま残っている(Windows固有の検証ではない)。
+# その先の実際の起動・停止ロジックを検証するクラスはPOSIX専用になる。
+_posix_only = pytest.mark.skipif(
+    sys.platform == "win32", reason="main()はWindowsでは即returnするため、その先の挙動はPOSIX専用の検証になる"
+)
+
 _SID = "main-session-current"
 _PID = 11111
 _TRANSCRIPT = "/Users/x/.claude/projects/proj/main-session-current.jsonl"  # 実在しないパス
 
-# process_start_signature（ps -o lstart=）の既定の戻り値。current_pidと
-# 一致するrun.jsonのmain_pid_started_atにもこの値を使うことで、「同一
-# プロセス」として一致させる。
+# process_start_signatureの既定の戻り値。current_pidと一致するrun.jsonの
+# main_pid_started_atにもこの値を使うことで、「同一プロセス」として一致させる。
 _STARTED_AT = "Thu Jul 24 09:32:04 2026"
+
+
+class _FakeProcess:
+    def __init__(self, signature: str):
+        self._signature = signature
+
+    def create_time(self):
+        return self._signature
 
 
 @pytest.fixture(autouse=True)
@@ -34,10 +51,7 @@ def _isolate_state(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ATTENDED", "1")
     monkeypatch.setenv("CLAUDE_PID", str(_PID))
 
-    def _fake_ps(cmd, **kwargs):
-        return subprocess.CompletedProcess(cmd, 0, stdout=f"{_STARTED_AT}\n", stderr="")
-
-    monkeypatch.setattr(process_signature.subprocess, "run", _fake_ps)
+    monkeypatch.setattr(process_signature.psutil, "Process", lambda pid: _FakeProcess(_STARTED_AT))
 
 
 @pytest.fixture
@@ -99,6 +113,13 @@ def _run_hook(*, session_id: str = _SID, transcript_path: str = _TRANSCRIPT, cwd
 class TestGating:
     """spec 1・5: CALM_RECORDER・対話判定のゲート。"""
 
+    def test_noop_on_windows_even_when_calm_recorder_set(self, monkeypatch, calls):
+        """記録役はtmux前提でWindowsには未対応。CALM_RECORDER=1でも起動しない。"""
+        monkeypatch.setattr(hook.sys, "platform", "win32")
+        code = _run_hook()
+        assert code == 0
+        assert calls == []
+
     def test_noop_when_calm_recorder_unset(self, monkeypatch, calls):
         monkeypatch.delenv("CALM_RECORDER", raising=False)
         code = _run_hook()
@@ -139,6 +160,8 @@ class TestGating:
 
 class TestSpawnsStart:
     """spec 2: 通常起動時、切り離しプロセスとしてrecorder.py startを呼ぶ。"""
+
+    pytestmark = _posix_only
 
     def test_fresh_session_spawns_detached_start_with_expected_args(self, calls):
         code = _run_hook()
@@ -186,6 +209,8 @@ class TestSpawnsStart:
 
 class TestStaleDetection:
     """spec 3: /clear・resumeで古い記録役を止めてから付け直す。"""
+
+    pytestmark = _posix_only
 
     def test_clear_same_pid_different_sid_stops_old_then_starts_new(self, calls):
         """/clear: main_pidは同じプロセスのまま、session_idだけ変わる。"""
@@ -312,6 +337,7 @@ class TestRecorderOwnDirGuard:
         assert code == 0
         assert calls == []
 
+    @_posix_only
     def test_does_not_skip_for_an_unrelated_cwd(self, tmp_path, calls):
         plain_dir = tmp_path / "some_project_dir"
         plain_dir.mkdir(parents=True)
@@ -329,6 +355,7 @@ class TestErrorHandling:
             code = hook.main()
         assert code == 0
 
+    @_posix_only
     def test_corrupt_existing_run_json_is_skipped_not_raised(self, calls):
         run_dir = run_dir_for("corrupt-sid")
         run_dir.mkdir(parents=True, exist_ok=True)

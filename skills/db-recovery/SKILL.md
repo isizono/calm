@@ -22,7 +22,7 @@ hookの警告は `_build_snapshot_section`(`hooks/session_start_hook.py`)がSess
 ### 1. 異常確認
 
 - hook警告本文をパースし、どのテーブルが何件減ったか(`discussion_topics` / `decisions` / `discussion_logs` / `activities` / `materials`)を把握する
-- 現在のDB状態を実際にクエリして裏取りする(`get_activities` / `get_decisions` 等のCALMツール、または `uv run --directory ${CLAUDE_PLUGIN_ROOT} python ${CLAUDE_PLUGIN_ROOT}/scripts/snapshot.py list` で分かる直近の行数)。警告は前回スナップショット取得時点との差分であり、直近の正当な操作(大量retract・tag-cleanup等)による見かけ上の減少でないか確認する
+- 現在のDB状態を実際にクエリして裏取りする(`get_activities` / `get_decisions` 等のCALMツール、または `uv run --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/snapshot.py" list` で分かる直近の行数)。警告は前回スナップショット取得時点との差分であり、直近の正当な操作(大量retract・tag-cleanup等)による見かけ上の減少でないか確認する
 - 確度を判定する:
   - **明確な異常**: 直近セッションで該当テーブルへの意図的な大量削除・retract操作の記憶がない
   - **説明可能**: 直近でtag-cleanup・大量retract等の正当な操作があったことが会話履歴やlogから確認できる
@@ -30,7 +30,7 @@ hookの警告は `_build_snapshot_section`(`hooks/session_start_hook.py`)がSess
 
 ### 2. スナップショット所在確認
 
-- `uv run --directory ${CLAUDE_PLUGIN_ROOT} python ${CLAUDE_PLUGIN_ROOT}/scripts/snapshot.py list` で全kind横断の一覧を取得する
+- `uv run --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/snapshot.py" list` で全kind横断の一覧を取得する
 - 各エントリの `kind` / `created_at` / `db_size_bytes` / `quick_check` を確認する。`quick_check` が `ok` 以外のものは復元候補から除外する
 - 異常検知直前(=データがまだ健全だった時点)に最も近いスナップショットを候補として特定する
 - 補足: `_build_snapshot_section` は異常検知時(`is_healthy=False`)に新規periodicスナップショットの取得をスキップする実装のため、異常検知セッション中に直前の健全世代が壊れたスナップショットで上書きされることはない
@@ -58,8 +58,8 @@ hookの警告は `_build_snapshot_section`(`hooks/session_start_hook.py`)がSess
 
 1. サーバー停止・復元を一連の操作として承認を取る。「復旧していい?」への直接的なyes/noが必要(「任せる」等の一般的信任表明では実行しない)。この承認は停止・復元までを対象とし、再起動は含まない(下記6.で復元結果提示後に別途承認を取る)
 2. サーバーを停止するとMCP接続が切れて記録できなくなるため、停止前に現状(検知内容・確度・提示した復旧方法・ユーザーが承認した内容)を `add_logs` で記録する
-3. `lsof -ti :52837 -sTCP:LISTEN | xargs kill` でサーバーを停止する(`-sTCP:LISTEN` を外すと :52837 に接続中のブリッジプロセスまで巻き添えでkillされ、生存セッションの再接続競争を誘発する)
-4. `uv run --directory ${CLAUDE_PLUGIN_ROOT} python ${CLAUDE_PLUGIN_ROOT}/scripts/snapshot.py restore --latest`(Step2で特定した候補が最新でない場合は該当パスを直接指定)を実行する
+3. `uv run --no-sync --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/restart_server.py" --stop` でサーバーを停止する(接続中のブリッジプロセスは巻き添えにせずLISTEN中のプロセスだけを狙って止める)
+4. `uv run --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/snapshot.py" restore --latest`(Step2で特定した候補が最新でない場合は該当パスを直接指定)を実行する
    - `復元エラー: サーバーが稼働中のため復元を中断しました` が返った場合、上記3.(サーバー停止)が漏れている。サーバー停止を再確認してからリトライする
    - schema互換性警告(`--yes` を要求するメッセージ)が出た場合は、警告文をそのままユーザーに見せて `--yes` 付き再実行の可否を確認する。自己判断で `--yes` を付けない
 5. 実行結果(`復元完了: ... -> ...`、行数の変化テーブル、`prerestore_path`)をそのままユーザーに提示する
@@ -72,7 +72,7 @@ Cを選んだ場合は、誤検知と判断した理由を `add_logs` に記録�
 
 ### 5. 再検証
 
-- 復元後、主要データが戻っているかを確認する(`get_activities` / `search` 等、または `uv run --directory ${CLAUDE_PLUGIN_ROOT} python ${CLAUDE_PLUGIN_ROOT}/scripts/snapshot.py list` で最新スナップショットの行数と突き合わせ)
+- 復元後、主要データが戻っているかを確認する(`get_activities` / `search` 等、または `uv run --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/snapshot.py" list` で最新スナップショットの行数と突き合わせ)
 - 異常が解消していない場合、Step2に戻り別の復元候補(一つ古い世代等)を提案する
 - 解消しない場合は「これ以上の自動復旧は困難」と報告し、ユーザー判断に委ねる(無限に世代を遡り続けない。現存する全世代を試して尽きたら停止する)
 

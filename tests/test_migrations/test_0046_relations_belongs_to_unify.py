@@ -45,6 +45,7 @@ def db_up_to_0046():
         up_to_0046 = MigrationList([m for m in all_migs if m.id < "0047"])
         with backend.lock():
             backend.apply_migrations(up_to_0046)
+        backend.connection.close()
         yield db_path
         if "DISCUSSION_DB_PATH" in os.environ:
             del os.environ["DISCUSSION_DB_PATH"]
@@ -433,6 +434,7 @@ class TestMigration0047:
                 all_migs = read_migrations(str(MIGRATIONS_DIR))
                 with backend.lock():
                     backend.apply_migrations(all_migs)
+                backend.connection.close()
 
                 conn = sqlite3.connect(db_path)
                 try:
