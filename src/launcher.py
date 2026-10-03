@@ -112,10 +112,6 @@ BACKOFF_CAP_SEC = 60
 # bridge identity ヘッダ名。全MCPリクエストに付与し、calm server 再起動を
 # またいで安定な呼び出し元識別子として src/infra/session_identity.py が読む。
 BRIDGE_SESSION_HEADER = "X-Calm-Bridge-Session-Id"
-# 改名前の旧ヘッダ名。移行期間中は新旧両方に同じ値を載せて送る。main を pull
-# してからサーバーを再起動するまでの間、改名前のコードで動いているサーバーは
-# 旧ヘッダしか読まないため、新ヘッダだけだと呼び出し元を識別できなくなる。
-LEGACY_BRIDGE_SESSION_HEADER = "X-CC-Memory-Bridge-Session-Id"
 
 HEARTBEAT_INTERVAL_ENV = "CALM_LAUNCHER_HEARTBEAT_SEC"
 DEFAULT_HEARTBEAT_INTERVAL_SEC = 60.0
@@ -763,7 +759,6 @@ async def _bridge(state: "_StdinBridgeState") -> None:
     http_client = httpx.AsyncClient(
         headers={
             BRIDGE_SESSION_HEADER: _session_id,
-            LEGACY_BRIDGE_SESSION_HEADER: _session_id,
         },
         timeout=httpx.Timeout(MCP_DEFAULT_TIMEOUT, read=MCP_DEFAULT_SSE_READ_TIMEOUT),
         trust_env=not _IS_LOCAL,
