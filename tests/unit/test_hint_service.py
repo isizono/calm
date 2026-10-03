@@ -81,6 +81,40 @@ def _get_tag_notes(name: str, namespace: str = "domain") -> str:
         conn.close()
 
 
+def _get_cooldown_until(tag_id: int, marker: str) -> str | None:
+    """hint_cooldownsテーブルに保存された自動クールダウンのuntil_dateを返す
+    (行が無ければNone)。"""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT until_date FROM hint_cooldowns WHERE tag_id = ? AND marker = ?",
+            (tag_id, marker),
+        ).fetchone()
+        return row["until_date"] if row else None
+    finally:
+        conn.close()
+
+
+def _break_cooldown_write_for_tag(tag_id: int) -> None:
+    """指定tag_id分のhint_cooldowns書き込みをDBトリガーで強制的に失敗させる。
+    実DBのIntegrityErrorを発生させるための仕掛けであり、関数のmockではない。"""
+    conn = get_connection()
+    try:
+        conn.execute(
+            f"""
+            CREATE TRIGGER test_force_cooldown_write_failure_{tag_id}
+            BEFORE INSERT ON hint_cooldowns
+            WHEN NEW.tag_id = {tag_id}
+            BEGIN
+                SELECT RAISE(ABORT, 'forced failure for test');
+            END
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _fixed_date(y: int, m: int, d: int) -> type:
     """date.today()が固定値を返すdateサブクラスを生成する(monkeypatch用)。"""
     fixed = date(y, m, d)
@@ -482,6 +516,53 @@ class TestActivityScope:
         assert any(h["type"] == "recompose_bootstrap" for h in hints)
 
 
+class TestArchivedTagSuppression:
+    """archived済み(tags.archived_at IS NOT NULL)のタグはtag scope由来のhint
+    判定自体を行わず、提案が一切出ないことの検証"""
+
+    def test_tag_scope_silent_when_archived(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        for i in range(RECOMPOSE_BOOTSTRAP_THRESHOLD):
+            add_decision(decision=f"d{i}", reason="r", topic_id=topic["topic_id"])
+        tag_id = _tag_id(DOMAIN_TAG_NAME)
+
+        # archive前は発火条件を満たすことを確認しておく(前提の裏取り)。
+        # get_hints_with_conn + rollbackで判定だけ行い、日次クールダウンの
+        # コミットを後続の本題判定に持ち越さない(get_hints()だと自前commitのため
+        # 使えない)
+        conn = get_connection()
+        try:
+            hints_before = get_hints_with_conn(conn, "tag", tag_id)
+        finally:
+            conn.rollback()
+            conn.close()
+        assert hints_before != []
+
+        result = update_tag(DOMAIN_TAG, archived=True)
+        assert "error" not in result, result
+
+        assert get_hints("tag", tag_id) == []
+
+    def test_activity_scope_excludes_archived_domain_tag(self, temp_db):
+        """activityに紐づくdomain:タグがarchived済みの場合、activity scope経由の
+        集約でもそのタグ由来のrecompose_bootstrapは現れない"""
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        for i in range(RECOMPOSE_BOOTSTRAP_THRESHOLD):
+            add_decision(decision=f"d{i}", reason="r", topic_id=topic["topic_id"])
+        dec0 = add_decision(decision="anchor", reason="r", topic_id=topic["topic_id"])
+        update_tag(DOMAIN_TAG, archived=True)
+
+        activity = add_activity(
+            title="[作業] x", description="d",
+            tags=[DOMAIN_TAG, "intent:implement"],
+            related=[{"type": "decision", "ids": [dec0["decision_id"]]}],
+            check_in=False,
+        )
+
+        hints = get_hints("activity", activity["activity_id"])
+        assert not any(h["type"] == "recompose_bootstrap" for h in hints)
+
+
 class TestIsMarkerActiveHelper:
     """_is_marker_active: 恒久/期限付きマーカー判定の純粋関数テスト（DB不要）"""
 
@@ -618,18 +699,22 @@ class TestMergeCooldownMarkerHelper:
 
 
 class TestRecomposeCooldownMarker:
-    """hint発火に伴う日次クールダウンマーカーの自動追記・DB結線テスト"""
+    """hint発火に伴う日次クールダウンのhint_cooldownsテーブルへの自動UPSERT・
+    DB結線テスト"""
 
     def test_bootstrap_fire_appends_cooldown_marker(self, temp_db):
         topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
         for i in range(RECOMPOSE_BOOTSTRAP_THRESHOLD):
             add_decision(decision=f"d{i}", reason="r", topic_id=topic["topic_id"])
 
-        hints = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        tag_id = _tag_id(DOMAIN_TAG_NAME)
+        hints = get_hints("tag", tag_id)
         assert any(h["type"] == "recompose_bootstrap" for h in hints)
 
         today = date.today().isoformat()
-        assert f"{MARKER_RECOMPOSE_BOOTSTRAP}-until:{today}" in _get_tag_notes(DOMAIN_TAG_NAME)
+        assert _get_cooldown_until(tag_id, MARKER_RECOMPOSE_BOOTSTRAP) == today
+        # notes本文は変更されない(保存先がhint_cooldownsテーブルに分離されたため)
+        assert _get_tag_notes(DOMAIN_TAG_NAME) == ""
 
     def test_delta_fire_appends_cooldown_marker(self, temp_db):
         topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
@@ -641,11 +726,12 @@ class TestRecomposeCooldownMarker:
             d = add_decision(decision=f"d{i}", reason="r", topic_id=topic["topic_id"])
             _set_decision_created_at(d["decision_id"], "2024-07-01 00:00:00")
 
-        hints = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        tag_id = _tag_id(DOMAIN_TAG_NAME)
+        hints = get_hints("tag", tag_id)
         assert any(h["type"] == "recompose_delta" for h in hints)
 
         today = date.today().isoformat()
-        assert f"{MARKER_RECOMPOSE_DELTA}-until:{today}" in _get_tag_notes(DOMAIN_TAG_NAME)
+        assert _get_cooldown_until(tag_id, MARKER_RECOMPOSE_DELTA) == today
 
     def test_same_day_refire_is_suppressed_by_auto_marker(self, temp_db):
         topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
@@ -656,7 +742,7 @@ class TestRecomposeCooldownMarker:
         assert any(h["type"] == "recompose_bootstrap" for h in hints_first)
 
         # decision数(発火条件)は満たしたままだが、直前の発火で付いた当日付き
-        # クールダウンマーカーにより2回目は抑制される
+        # クールダウンにより2回目は抑制される
         hints_second = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
         assert not any(h["type"] == "recompose_bootstrap" for h in hints_second)
 
@@ -664,65 +750,68 @@ class TestRecomposeCooldownMarker:
         topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
         for i in range(RECOMPOSE_BOOTSTRAP_THRESHOLD):
             add_decision(decision=f"d{i}", reason="r", topic_id=topic["topic_id"])
+        tag_id = _tag_id(DOMAIN_TAG_NAME)
 
         monkeypatch.setattr(hint_service, "date", _fixed_date(2026, 1, 1))
-        hints_day1 = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        hints_day1 = get_hints("tag", tag_id)
         assert any(h["type"] == "recompose_bootstrap" for h in hints_day1)
-        assert f"{MARKER_RECOMPOSE_BOOTSTRAP}-until:2026-01-01" in _get_tag_notes(DOMAIN_TAG_NAME)
+        assert _get_cooldown_until(tag_id, MARKER_RECOMPOSE_BOOTSTRAP) == "2026-01-01"
 
         monkeypatch.setattr(hint_service, "date", _fixed_date(2026, 1, 2))
-        hints_day2 = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        hints_day2 = get_hints("tag", tag_id)
         assert any(h["type"] == "recompose_bootstrap" for h in hints_day2)
-        assert f"{MARKER_RECOMPOSE_BOOTSTRAP}-until:2026-01-02" in _get_tag_notes(DOMAIN_TAG_NAME)
+        assert _get_cooldown_until(tag_id, MARKER_RECOMPOSE_BOOTSTRAP) == "2026-01-02"
 
     def test_manual_future_marker_is_not_overwritten_by_auto_cooldown(self, temp_db):
-        """手動で未来日のuntilマーカーを設定済みの場合、hint自体が抑制され続け、
-        そのマーカーの日付もget_hints呼び出しによって書き換えられない"""
+        """手動で未来日のuntilマーカーをnotesに設定済みの場合、hint自体が抑制され
+        続け、そのマーカーの日付もget_hints呼び出しによって書き換えられない。
+        抑制済みのためhint_cooldowns側にも行は作られない"""
         topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
         for i in range(RECOMPOSE_BOOTSTRAP_THRESHOLD):
             add_decision(decision=f"d{i}", reason="r", topic_id=topic["topic_id"])
         update_tag(DOMAIN_TAG, notes=f"{MARKER_RECOMPOSE_BOOTSTRAP}-until:2099-01-01")
+        tag_id = _tag_id(DOMAIN_TAG_NAME)
 
-        hints = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        hints = get_hints("tag", tag_id)
         assert not any(h["type"] == "recompose_bootstrap" for h in hints)
         assert f"{MARKER_RECOMPOSE_BOOTSTRAP}-until:2099-01-01" in _get_tag_notes(DOMAIN_TAG_NAME)
+        assert _get_cooldown_until(tag_id, MARKER_RECOMPOSE_BOOTSTRAP) is None
 
     def test_direction_overflow_not_subject_to_cooldown(self, temp_db):
-        """direction_overflowは日次クールダウンの対象外。連続発火してもマーカーは付かない"""
+        """direction_overflowは日次クールダウンの対象外。連続発火してもnotes・
+        hint_cooldownsのいずれにもマーカーは付かない"""
         topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
         for i in range(DIRECTION_OVERFLOW_THRESHOLD):
             _add_direction_decision(topic["topic_id"], i)
+        tag_id = _tag_id(DOMAIN_TAG_NAME)
 
-        get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
-        hints_second = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        get_hints("tag", tag_id)
+        hints_second = get_hints("tag", tag_id)
         assert any(h["type"] == "direction_overflow" for h in hints_second)
         assert MARKER_DIRECTION_OVERFLOW not in _get_tag_notes(DOMAIN_TAG_NAME)
+        assert _get_cooldown_until(tag_id, MARKER_DIRECTION_OVERFLOW) is None
 
 
 class TestCooldownMarkerWriteFailure:
-    """tags.notesラチェット天井(migrations/0066)によりクールダウンマーカーの
-    追記が失敗しても、計算済みのhintが握りつぶされないことの検証"""
+    """hint_cooldownsへの書き込みが想定外のDBエラーで失敗しても、計算済みの
+    hintが呼び出し元で握りつぶされないことの検証"""
 
     def test_tag_scope_hint_survives_marker_write_failure(self, temp_db):
         topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
         for i in range(RECOMPOSE_BOOTSTRAP_THRESHOLD):
             add_decision(decision=f"d{i}", reason="r", topic_id=topic["topic_id"])
+        tag_id = _tag_id(DOMAIN_TAG_NAME)
+        _break_cooldown_write_for_tag(tag_id)
 
-        # notesを天井ちょうど(4000字)にしておく。クールダウンマーカー追記は
-        # 必ず4000字を超え、DBトリガーがIntegrityErrorで拒否する状況を作る
-        ceiling_notes = "x" * 4000
-        result = update_tag(DOMAIN_TAG, notes=ceiling_notes)
-        assert "error" not in result, result
-
-        hints = get_hints("tag", _tag_id(DOMAIN_TAG_NAME))
+        hints = get_hints("tag", tag_id)
         assert any(h["type"] == "recompose_bootstrap" for h in hints)
-        # マーカー追記は天井超過で失敗しているため、notesは変化しないまま
-        assert _get_tag_notes(DOMAIN_TAG_NAME) == ceiling_notes
+        # クールダウン書き込みは失敗しているため行は残らない
+        assert _get_cooldown_until(tag_id, MARKER_RECOMPOSE_BOOTSTRAP) is None
 
     def test_activity_scope_other_tag_hint_not_lost_when_one_tag_marker_write_fails(
         self, temp_db
     ):
-        """activity scopeの集約で、1タグのマーカー書き込み失敗が他タグ分の
+        """activity scopeの集約で、1タグのクールダウン書き込み失敗が他タグ分の
         計算済みhintまで巻き添えで消さないことを確認する"""
         other_tag_name = "hint-domain-other"
         other_tag = f"domain:{other_tag_name}"
@@ -737,9 +826,9 @@ class TestCooldownMarkerWriteFailure:
             add_decision(decision=f"e{i}", reason="r", topic_id=topic2["topic_id"])
         dec1 = add_decision(decision="anchor2", reason="r", topic_id=topic2["topic_id"])
 
-        # DOMAIN_TAGのnotesだけを天井ちょうどにしておき、そちらのマーカー追記を失敗させる
-        result = update_tag(DOMAIN_TAG, notes="x" * 4000)
-        assert "error" not in result, result
+        domain_tag_id = _tag_id(DOMAIN_TAG_NAME)
+        other_tag_id = _tag_id(other_tag_name)
+        _break_cooldown_write_for_tag(domain_tag_id)
 
         activity = add_activity(
             title="[作業] x", description="d",
@@ -753,8 +842,78 @@ class TestCooldownMarkerWriteFailure:
         hints = get_hints("activity", activity["activity_id"])
         recompose_hints = [h for h in hints if h["type"] == "recompose_bootstrap"]
         sources = {h["source"] for h in recompose_hints}
-        assert f"recompose_bootstrap:tag:{_tag_id(DOMAIN_TAG_NAME)}" in sources
-        assert f"recompose_bootstrap:tag:{_tag_id(other_tag_name)}" in sources
+        assert f"recompose_bootstrap:tag:{domain_tag_id}" in sources
+        assert f"recompose_bootstrap:tag:{other_tag_id}" in sources
+
+        assert _get_cooldown_until(domain_tag_id, MARKER_RECOMPOSE_BOOTSTRAP) is None
+        assert _get_cooldown_until(other_tag_id, MARKER_RECOMPOSE_BOOTSTRAP) == date.today().isoformat()
+
+
+class TestCooldownPersistsOverNotesCeiling:
+    """hint_cooldownsはtags.notesとは別の保存先のため、notesがラチェット天井
+    (migrations/0066, 4000字)を超過しているタグでも日次クールダウンが保存され、
+    同じ日の再発火を抑制できることの検証"""
+
+    def test_bootstrap_cooldown_persists_and_suppresses_same_day_refire(self, temp_db):
+        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        for i in range(RECOMPOSE_BOOTSTRAP_THRESHOLD):
+            add_decision(decision=f"d{i}", reason="r", topic_id=topic["topic_id"])
+        tag_id = _tag_id(DOMAIN_TAG_NAME)
+        # 天井超過はmigration 0066導入前からの既存データを模す(force_notes_over_ceiling
+        # は通常経路で天井超過状態を作れないための専用ヘルパー)
+        force_notes_over_ceiling(tag_id, _TAG_NOTES_RATCHET_CEILING + 1)
+
+        hints_first = get_hints("tag", tag_id)
+        assert any(h["type"] == "recompose_bootstrap" for h in hints_first)
+
+        # notesが天井超過でもクールダウンは保存され、同日2回目の呼び出しでは
+        # 同じ提案が出ない
+        hints_second = get_hints("tag", tag_id)
+        assert not any(h["type"] == "recompose_bootstrap" for h in hints_second)
+
+        today = date.today().isoformat()
+        assert _get_cooldown_until(tag_id, MARKER_RECOMPOSE_BOOTSTRAP) == today
+
+    def test_activity_scope_sibling_tag_hint_unaffected_by_other_tags_over_ceiling_notes(
+        self, temp_db
+    ):
+        """activity scopeの集約で、1タグのnotesが天井超過でも、同じactivityに
+        紐づく他タグ分の計算済みhintに影響しないことを確認する"""
+        other_tag_name = "hint-domain-other"
+        other_tag = f"domain:{other_tag_name}"
+
+        topic1 = add_topic(title="t1", description="d", tags=[DOMAIN_TAG])
+        for i in range(RECOMPOSE_BOOTSTRAP_THRESHOLD):
+            add_decision(decision=f"d{i}", reason="r", topic_id=topic1["topic_id"])
+        dec0 = add_decision(decision="anchor1", reason="r", topic_id=topic1["topic_id"])
+
+        topic2 = add_topic(title="t2", description="d", tags=[other_tag])
+        for i in range(RECOMPOSE_BOOTSTRAP_THRESHOLD):
+            add_decision(decision=f"e{i}", reason="r", topic_id=topic2["topic_id"])
+        dec1 = add_decision(decision="anchor2", reason="r", topic_id=topic2["topic_id"])
+
+        domain_tag_id = _tag_id(DOMAIN_TAG_NAME)
+        other_tag_id = _tag_id(other_tag_name)
+        force_notes_over_ceiling(domain_tag_id, _TAG_NOTES_RATCHET_CEILING + 1)
+
+        activity = add_activity(
+            title="[作業] x", description="d",
+            tags=[DOMAIN_TAG, other_tag, "intent:implement"],
+            related=[
+                {"type": "decision", "ids": [dec0["decision_id"], dec1["decision_id"]]},
+            ],
+            check_in=False,
+        )
+
+        hints = get_hints("activity", activity["activity_id"])
+        recompose_hints = [h for h in hints if h["type"] == "recompose_bootstrap"]
+        sources = {h["source"] for h in recompose_hints}
+        assert f"recompose_bootstrap:tag:{domain_tag_id}" in sources
+        assert f"recompose_bootstrap:tag:{other_tag_id}" in sources
+
+        today = date.today().isoformat()
+        assert _get_cooldown_until(domain_tag_id, MARKER_RECOMPOSE_BOOTSTRAP) == today
+        assert _get_cooldown_until(other_tag_id, MARKER_RECOMPOSE_BOOTSTRAP) == today
 
 
 class TestEdgeCases:
@@ -984,11 +1143,23 @@ class TestActivityCleanupHint:
         hints = get_hints("activity", activity_ids[0])
         assert not any(h["type"] == "activity_cleanup" for h in hints)
 
+    def test_silent_when_activity_management_tag_archived(self, temp_db):
+        """activity-managementタグがarchived済みの場合も判定不能として
+        静かにスキップする(タグ未作成時と同じ扱い)"""
+        _ensure_activity_management_tag()
+        update_tag(ACTIVITY_MANAGEMENT_TAG, archived=True)
+        activity_ids = [
+            _make_activity_for_cleanup() for _ in range(ACTIVITY_CLEANUP_COUNT_THRESHOLD)
+        ]
+
+        hints = get_hints("activity", activity_ids[0])
+        assert not any(h["type"] == "activity_cleanup" for h in hints)
+
     def test_fire_appends_exactly_one_daily_cooldown_marker(self, temp_db):
-        """発火するとactivity-managementタグのnotesに当日日付の日次クールダウン
-        マーカーが1つだけ追記される。マーカー出現数を1に固定することで、
-        7日等の長期マーカーがhint_service側で別途書き込まれていないこと
-        (skill実行完了時の期限付きマーカー書き込みはskill側の責務)を検証する"""
+        """発火するとactivity-managementタグのhint_cooldownsに当日日付の日次
+        クールダウンが1件(tag_id, marker単位のPRIMARY KEYにより構造的に1件に
+        限定される)保存される。notes本文は変更されない(skill実行完了時の
+        期限付きマーカー書き込みはskill側の責務で、ここではnotesに触れない)"""
         _ensure_activity_management_tag()
         activity_ids = [
             _make_activity_for_cleanup() for _ in range(ACTIVITY_CLEANUP_COUNT_THRESHOLD)
@@ -998,9 +1169,9 @@ class TestActivityCleanupHint:
         assert any(h["type"] == "activity_cleanup" for h in hints)
 
         today = date.today().isoformat()
-        notes = _get_tag_notes(ACTIVITY_MANAGEMENT_TAG_NAME, namespace="")
-        assert f"{MARKER_ACTIVITY_CLEANUP}-until:{today}" in notes
-        assert notes.count(f"{MARKER_ACTIVITY_CLEANUP}-until:") == 1
+        am_tag_id = _tag_id(ACTIVITY_MANAGEMENT_TAG_NAME, namespace="")
+        assert _get_cooldown_until(am_tag_id, MARKER_ACTIVITY_CLEANUP) == today
+        assert _get_tag_notes(ACTIVITY_MANAGEMENT_TAG_NAME, namespace="") == ""
 
     def test_same_day_refire_is_suppressed_by_auto_marker(self, temp_db):
         _ensure_activity_management_tag()
