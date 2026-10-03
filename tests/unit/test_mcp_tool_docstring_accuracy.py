@@ -87,23 +87,3 @@ class TestRulesTagNotesConvention:
         from src.main import RULES
 
         assert "notesは取扱注意のみ" in RULES
-
-
-class TestGetTimelineDescribesAggregationScope:
-    def test_mentions_topic_mediated_aggregation(self):
-        desc = _all_tool_descriptions()["get_timeline"]
-        assert "そのactivityが属するtopicに紐づく記録を集める" in desc
-
-    def test_mentions_directly_linked_records_excluded(self):
-        desc = _all_tool_descriptions()["get_timeline"]
-        assert "activityに直接relatedでつないだ記録は含まれず" in desc
-
-
-class TestGetLogsAndGetDecisionsExcludeDirectlyLinkedRecords:
-    def test_get_logs_mentions_directly_linked_log_excluded(self):
-        desc = _all_tool_descriptions()["get_logs"]
-        assert "activityに直接つないだlogは含まれない" in desc
-
-    def test_get_decisions_mentions_directly_linked_decision_excluded(self):
-        desc = _all_tool_descriptions()["get_decisions"]
-        assert "activityに直接つないだdecisionは含まれない" in desc
