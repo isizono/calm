@@ -163,6 +163,12 @@ CHECKIN_TAG_NOTES_CAP_CHARS: int = int(env_get("CALM_CHECKIN_TAG_NOTES_CAP_CHARS
 # 応答全体の実用上限（超過時のみactivity.descriptionを切る最後の手段）。
 CHECKIN_HARD_MAX_CHARS: int = int(env_get("CALM_CHECKIN_HARD_MAX_CHARS", "32000"))
 
+# --- get_activities 応答の全体予算 ---
+# 応答全体（JSON文字列化後）の予算。check_inと同じ考え方（超過時は後方を切り、
+# truncatedで示す）だが、limitとは独立の別枠として働く（limit件数内でも文字数が
+# 超過すれば切る）。check_inとは別ツールのため専用の環境変数で独立にチューニングできる。
+ACTIVITIES_BUDGET_CHARS: int = int(env_get("CALM_ACTIVITIES_BUDGET_CHARS", "10000"))
+
 # --- Decay predicates（レンダー時評価。バッチ/cronではない） ---
 # intelligently層habitのマニフェスト表示から、作成後この日数を超え、かつ
 # get_habits(habit_id=...)によるon-demand参照実績も同日数以内に更新されていない

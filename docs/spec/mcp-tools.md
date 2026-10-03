@@ -361,7 +361,7 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 | since | string | no | null | ISO日付（以降） |
 | until | string | no | null | ISO日付（以前） |
 
-**返り値**: `{activities: [Activity], total_count: int, archived_tags: [{tag, archived_reason}]}`。statusの`active`は pending+in_progress のエイリアス（snoozed/shelvedは含まない）。`archived_tags`は応答に含まれるアクティビティのタグのうちarchivedなものの集約で、該当なしでも常に空配列で付く。
+**返り値**: `{activities: [Activity], total_count: int, archived_tags: [{tag, archived_reason}]}`。statusの`active`は pending+in_progress のエイリアス（snoozed/shelvedは含まない）。`archived_tags`は応答に含まれるアクティビティのタグのうちarchivedなものの集約で、該当なしでも常に空配列で付く。`activities`・`total_count`の字数（JSON文字列化後、`archived_tags`・`tag_notes`は含まない）が`ACTIVITIES_BUDGET_CHARS`（既定10,000字）を超えると`activities`が後方（`limit`で絞った中の古い側）から切られ、`truncated`キー（`{budget, before, after, over_budget, cuts: [{section, kept, cut, next?}]}`）が付く。`total_count`は`limit`・この予算どちらの影響も受けない母集団件数のまま。`archived_tags`・`tag_notes`はこの予算に数えず、切り詰め後に残った`activities`だけから集める（この2キー分だけ応答全体がこの予算を超えることがある）。
 **副作用**: 呼び出し時、updated_atがSNOOZE_DURATION_DAYS（デフォルト3日）を超過したsnoozedアクティビティをpendingへ一括自動復活させる。
 
 ### 2.12b get_overview
@@ -380,7 +380,7 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 - `working`: 今動いているもの。`{items: [{id_raw, title, status, domains, last_touch_at, is_live, days_since_touch, open_ask_count}], count, total_count}`。`is_live`はheartbeatがタイムアウト以内かの真偽値
 - `recently_done`: 最近終わったもの。`{items: [{id_raw, title, status, domains, updated_at, days_ago}], count, total_count}`
 - `awaiting_human`: 人間の裁定待ち（statusが`open`のask）。`{items: [{id_raw, question, kind, choices, occurrence_count, first_seen_at, days_open, domains, blocks}], count, total_count, triage_pending_count, triage_pending_items}`。`kind="meta"`のaskは`items`・`triage_pending_items`いずれも`limit`を超えて他のaskが多数存在していても必ず含み、両配列内で非メタaskより先頭に並ぶ。`triage_pending_count`は回答済み未トリアージ（`status='answered' AND triage IS NULL`）の件数、`triage_pending_items`はそのaskを`items`と同じ形状（`{id_raw, question, kind, choices, occurrence_count, first_seen_at, days_open, domains, blocks}`）で列挙したもの（件数のみだった従来の`triage_pending_count`はそのまま残す）
-- `backlog`: それ以外の残り。`{total_count, stale_in_progress_count, by_status, by_domain, no_domain_count}`。個別アクティビティは返さない
+- `backlog`: それ以外の残り。`{total_count, stale_in_progress_count, by_status, by_domain, no_domain_count}`。個別アクティビティは返さない。`by_status`は期限切れsnoozed（updated_atがSNOOZE_DURATION_DAYS超過）を`pending`として数える（表示時の評価のみでDBのstatusは書き換えない。`get_activities`のような自動復活はここでは起こさない）
 
 **副作用**: なし。
 
