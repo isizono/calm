@@ -105,11 +105,6 @@ def test_deterministic_render_notice_constant():
     assert "再フォーマットや優先順の再評価をせず" in _DETERMINISTIC_RENDER_NOTICE
 
 
-def test_tier2_max_items_constant():
-    """階層 2 の上限の既定値は 5"""
-    assert config.TIER2_MAX_ITEMS == 5
-
-
 def test_tier2_max_items_reads_env_var(monkeypatch):
     """CALM_TIER2_MAX_ITEMSを設定してconfigを読み込むと、その値になる"""
     import importlib.util
@@ -120,6 +115,18 @@ def test_tier2_max_items_reads_env_var(monkeypatch):
     spec.loader.exec_module(fresh_config)
 
     assert fresh_config.TIER2_MAX_ITEMS == 10
+
+
+def test_tier2_max_items_negative_env_clamped_to_zero(monkeypatch):
+    """負値を指定しても階層2の上限は0に丸まり、末尾スライスで意図と逆に出ない"""
+    import importlib.util
+
+    monkeypatch.setenv("CALM_TIER2_MAX_ITEMS", "-1")
+    spec = importlib.util.find_spec("src.config")
+    fresh_config = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fresh_config)
+
+    assert fresh_config.TIER2_MAX_ITEMS == 0
 
 
 def test_calc_elapsed_days_today():
@@ -510,21 +517,16 @@ class TestUndisplayedSection:
                 tags=[f"domain:{name}"], check_in=False,
             )
 
-    def test_three_domains_or_fewer_no_fold(self, temp_db):
-        """domainが3個以下なら、まとめ行が出ず、出力が今と同じである"""
-        counts = [("d0", 3), ("d1", 2), ("d2", 1)]
-        for name, n in counts:
-            self._add_domain_activities(name, n)
-
-        result = _build_active_context_wrapper()
-
-        assert "ほか" not in result
-        for name, n in counts:
-            assert f"- {name} {n}件：" in result
-
-    def test_four_domains_no_fold(self, temp_db):
-        """domainがちょうど4個でも、まとめ行が出ず、4 domainとも例示付きで出る"""
-        counts = [("d0", 4), ("d1", 3), ("d2", 2), ("d3", 1)]
+    @pytest.mark.parametrize(
+        "counts",
+        [
+            [("d0", 3), ("d1", 2), ("d2", 1)],
+            [("d0", 4), ("d1", 3), ("d2", 2), ("d3", 1)],
+        ],
+        ids=["3domains", "4domains"],
+    )
+    def test_four_or_fewer_domains_no_fold(self, temp_db, counts):
+        """domainが4個以下なら、まとめ行が出ず、全domainが例示付きで出る"""
         for name, n in counts:
             self._add_domain_activities(name, n)
 

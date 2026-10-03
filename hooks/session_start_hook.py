@@ -278,6 +278,7 @@ def _build_undisplayed_lines(
             groups.append((domain["name"], members))
     groups.sort(key=lambda g: len(g[1]), reverse=True)
 
+    # 畳んでも残りが1 domainだけなら例示行と変わらないため、まとめ行は2 domain以上を受け持つときに限る
     fold = len(groups) > _UNDISPLAYED_EXAMPLE_DOMAINS + 1
     shown_groups = groups[:_UNDISPLAYED_EXAMPLE_DOMAINS] if fold else groups
 
