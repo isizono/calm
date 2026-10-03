@@ -15,13 +15,19 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _WORKFLOW_PATH = _PROJECT_ROOT / ".github" / "workflows" / "gate.yml"
 _REAL_DETECTOR_PATH = _PROJECT_ROOT / "scripts" / "gate_check.py"
+
+# gate.ymlのこのステップはbash -eo pipefailで書かれ、ubuntu-latest限定で
+# 実行される(gate_check.sh同様にWindowsへ移植する対象ではない)。
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="gate.ymlのrunステップはbash専用で、ubuntu-latest限定で実行する")
 
 
 def _extract_gate_step() -> dict:

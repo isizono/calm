@@ -22,19 +22,19 @@ class HookState:
 
     def _read_int(self, path: Path, default: int = 0) -> int:
         try:
-            return int(path.read_text().strip())
+            return int(path.read_text(encoding="utf-8").strip())
         except (FileNotFoundError, ValueError):
             return default
 
     def _read_str(self, path: Path) -> str | None:
         try:
-            value = path.read_text().strip()
+            value = path.read_text(encoding="utf-8").strip()
             return value if value else None
         except FileNotFoundError:
             return None
 
     def _write(self, path: Path, value: str) -> None:
-        path.write_text(value)
+        path.write_text(value, encoding="utf-8")
 
     def _delete(self, path: Path) -> None:
         path.unlink(missing_ok=True)
@@ -124,7 +124,7 @@ class HookState:
         """checked_in_activity_{session_id} を読む"""
         path = self._path("checked_in_activity")
         try:
-            content = path.read_text().strip()
+            content = path.read_text(encoding="utf-8").strip()
             return int(content) if content else None
         except (FileNotFoundError, ValueError):
             return None
@@ -148,7 +148,7 @@ class HookState:
         """
         path = self._path("tracked_ask_ids")
         try:
-            content = path.read_text()
+            content = path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return []
         ids: list[int] = []
@@ -241,17 +241,33 @@ class HookState:
             prefix = f.name[: -len(suffix)]
             if prefix in preserve:
                 continue
-            f.unlink(missing_ok=True)
+            # 他プロセスが開いている瞬間と重なるとOSErrorになりうる
+            # （Windowsの共有違反）。1ファイルの失敗で残りの削除を止めない。
+            try:
+                f.unlink(missing_ok=True)
+            except OSError:
+                pass
         # events.jsonl は命名規則が異なるので個別削除
         if "events" not in preserve:
             events_file = cls.BASE_DIR / f"events_{session_id_safe}.jsonl"
-            events_file.unlink(missing_ok=True)
+            try:
+                events_file.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":
     import json
     import os
     import sys
+
+    # このモジュール自体は標準ライブラリのみに依存する設計のため、
+    # harnessの読み取り共通化はCLIエントリポイント内に閉じ込める
+    # （他ファイルからの `from hooks.hook_state import HookState` では発生させない）。
+    _project_root = Path(__file__).resolve().parents[1]
+    if str(_project_root) not in sys.path:
+        sys.path.insert(0, str(_project_root))
+    from src.harness.claude_code import read_stdin_text
 
     if os.environ.get("HOOK_STATE_DIR"):
         HookState.BASE_DIR = Path(os.environ["HOOK_STATE_DIR"])
@@ -264,7 +280,7 @@ if __name__ == "__main__":
     _COMPACT_PRESERVE = {"tracked_ask_ids"}
 
     if len(sys.argv) >= 2 and sys.argv[1] == "clear":
-        data = json.loads(sys.stdin.read())
+        data = json.loads(read_stdin_text())
         session_id = data.get("session_id", "")
         source = data.get("source")
         if session_id:

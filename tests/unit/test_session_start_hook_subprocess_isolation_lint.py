@@ -51,7 +51,7 @@ def test_session_start_hook_subprocess_launchers_import_shared_helper():
         text = path.read_text(encoding="utf-8")
         if _HOOK_MENTION_RE.search(text) and _SUBPROCESS_CALL_RE.search(text):
             if not _HELPERS_IMPORT_RE.search(text):
-                violations.append(str(path.relative_to(_REPO_ROOT)))
+                violations.append(path.relative_to(_REPO_ROOT).as_posix())
 
     assert violations == [], (
         "session_start_hook.pyをsubprocess起動していながらtests.helpersの"
@@ -67,7 +67,7 @@ def test_lint_target_scan_actually_finds_the_known_launchers():
     （検出条件の書き間違いで0件のままvacuous passし続ける事故を防ぐ）。
     """
     matched = {
-        str(p.relative_to(_REPO_ROOT))
+        p.relative_to(_REPO_ROOT).as_posix()
         for p in _candidate_test_files()
         if _HOOK_MENTION_RE.search(p.read_text(encoding="utf-8"))
         and _SUBPROCESS_CALL_RE.search(p.read_text(encoding="utf-8"))

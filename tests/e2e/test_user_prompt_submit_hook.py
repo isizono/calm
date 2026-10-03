@@ -4,12 +4,15 @@ user_prompt_submit_hook.pyを呼び出し、stdin→stdoutの入出力をテス�
 nudge判定はevents.jsonl内のnudgeイベントに基づく。
 """
 import json
+import os
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from hooks import user_prompt_submit_hook
 from hooks.hook_state import HookState
+from src.infra import file_ops
 from tests.helpers import run_hook_subprocess
 
 _SESSION_ID = "e2e-test-session-001"
@@ -416,3 +419,32 @@ class TestFailOpen:
             conn.close()
         assert row is not None
         assert row["kind"] == "machine_error"
+
+
+class TestRewriteEventsRetry:
+    """_rewrite_eventsはsubprocess経由のsignal_eventsと無関係なため、
+    直接importしてos.replaceの一時失敗を再現する（in-process）。"""
+
+    def test_recovers_after_transient_replace_error(self, state_dir, monkeypatch):
+        """os.replaceの一時失敗（Windowsの共有違反相当）を再試行で乗り越え、
+        書き換えを完了する。呼び出し側がreplace_retryingを経由せずos.replaceへ
+        直書きする退行を検知する。"""
+        state = HookState(_SESSION_ID)
+        state.append_events([{"e": "nudge", "turn": 1}])
+
+        real_replace = os.replace
+        calls = {"count": 0}
+
+        def flaky_replace(a, b):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise OSError(32, "The process cannot access the file")
+            return real_replace(a, b)
+
+        monkeypatch.setattr(file_ops.os, "replace", flaky_replace)
+        monkeypatch.setattr(file_ops.time, "sleep", lambda _: None)
+
+        user_prompt_submit_hook._rewrite_events(state, [{"e": "nudge", "turn": 1, "consumed": True}])
+
+        assert calls["count"] == 2
+        assert state.read_events() == [{"e": "nudge", "turn": 1, "consumed": True}]
