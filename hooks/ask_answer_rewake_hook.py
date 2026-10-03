@@ -13,9 +13,8 @@ sanitize_tool_result_hook.py:124と同じ判定で、agent_idは実機検証の�
 常にnullで届き使えないことが確認済み）・無人実行
 （CLAUDE_CODE_SESSION_ATTENDED=="0"）のadd_askも待たない。
 
-同じ(session_id, ask_id)の二重待機はロックファイル（flock、LOCK_EX|LOCK_NB）
-で防ぐ。ロックファイルは消さない: 消すと、消えた後のinodeに対するロックと
-新規作成されたファイルへのロックが並存し得る競合を生む。
+同じ(session_id, ask_id)の二重待機はロックファイル（filelock、timeout=0）
+で防ぐ。
 
 DBは読み取り専用（sqlite3 URI mode=ro）で毎回開いて閉じる。既存の読み取り
 専用hook（sanitize_tool_result_hook.py等）と同じ流儀で、書き込み系hookが
@@ -23,12 +22,13 @@ DBは読み取り専用（sqlite3 URI mode=ro）で毎回開いて閉じる。�
 """
 from __future__ import annotations
 
-import fcntl
 import os
 import sqlite3
 import sys
 import time
 from pathlib import Path
+
+import filelock
 
 _project_root = Path(__file__).resolve().parents[1]
 if str(_project_root) not in sys.path:
@@ -38,6 +38,7 @@ from hooks.hook_state import HookState
 from hooks.hook_transcript import _extract_short_name, _is_calm_tool, _parse_ask_id_from_result
 from src.env_compat import env_get
 from src.harness import select_harness
+from src.infra.lock_file import is_process_alive
 
 DEFAULT_DB_PATH = Path.home() / ".claude" / ".claude-code-memory" / "discussion.db"
 
@@ -49,11 +50,11 @@ POLL_INTERVAL_SECONDS = 15
 # スリープを含む場合にmonotonicで測ると先にkillされうるため。
 WAIT_LIMIT_SECONDS = 86400 - 300
 
-# ロックファイルは消さない設計（モジュールdocstring参照）だが、掃除しないと
-# 待機のたびに1ファイルずつ増え続ける。ロック取得のたびにmtimeを更新する
-# （_acquire_lock参照。openだけでは既存ファイルのmtimeは動かないため）ので、
-# 待機プロセスがWAIT_LIMIT_SECONDS（約24時間）を超えて生きない以上、それより
-# 確実に長いこの年齢のロックファイルを握っているプロセスは存在しない。
+# filelockはWindowsでは解放時にロックファイルを消さない（POSIXは消す）ため、
+# 掃除しないと待機のたびに1ファイルずつ増え続ける環境がある。ロック取得のたびに
+# mtimeを更新する（_acquire_lock参照）ので、待機プロセスがWAIT_LIMIT_SECONDS
+# （約24時間）を超えて生きない以上、それより確実に長いこの年齢のロックファイル
+# を握っているプロセスは存在しない。
 STALE_LOCK_AGE_SECONDS = 48 * 60 * 60
 
 _RESOLVED_STATUSES = ("answered", "promoted", "dismissed")
@@ -99,31 +100,29 @@ def _cleanup_stale_locks(lock_dir: Path) -> None:
         pass
 
 
-def _acquire_lock(session_id: str, ask_id: int):
+def _acquire_lock(session_id: str, ask_id: int) -> filelock.BaseFileLock | None:
     """(session_id, ask_id)専用のロックファイルをexclusive lockして返す。
 
-    既に別プロセスが保持していればNoneを返す。戻り値のfile objectは
-    呼び出し側が握り続けること（GCされるとfdが閉じ、flockも解放される）。
+    既に別プロセスが保持していればNoneを返す。戻り値のlockオブジェクトは
+    呼び出し側が保持し続け、終了時に `release()` すること。
     """
     lock_dir = HookState.BASE_DIR / "ask_rewake"
     lock_dir.mkdir(parents=True, exist_ok=True)
     _cleanup_stale_locks(lock_dir)
     safe_session_id = session_id.replace("/", "_")
     lock_path = lock_dir / f"{safe_session_id}_{ask_id}.lock"
-    fh = open(lock_path, "a+")
+    lock = filelock.FileLock(str(lock_path), timeout=0)
     try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        fh.close()
+        lock.acquire()
+    except filelock.Timeout:
         return None
-    # openだけでは既存ファイルのmtimeは動かない。STALE_LOCK_AGE_SECONDSの
-    # 前提（この年齢のファイルに生きた保持者はいない）を成立させるため、
-    # 取得できたタイミングでmtimeを更新する。
+    # STALE_LOCK_AGE_SECONDSの前提（この年齢のファイルに生きた保持者はいない）
+    # を成立させるため、取得できたタイミングでmtimeを更新する。
     try:
-        os.utime(fh.fileno())
+        os.utime(lock_path)
     except OSError:
         pass
-    return fh
+    return lock
 
 
 def main(*, sleep=time.sleep, now=time.time) -> int:
@@ -150,13 +149,13 @@ def main(*, sleep=time.sleep, now=time.time) -> int:
         if ask_id is None:
             return 0
 
-        lock_fh = _acquire_lock(session_id, ask_id)
-        if lock_fh is None:
+        lock = _acquire_lock(session_id, ask_id)
+        if lock is None:
             return 0
         try:
             return _wait_for_resolution(ask_id, sleep=sleep, now=now)
         finally:
-            lock_fh.close()
+            lock.release()
     except Exception:
         return 0
 
@@ -167,13 +166,8 @@ def _wait_for_resolution(ask_id: int, *, sleep, now) -> int:
     start = now()
 
     while True:
-        if claude_pid is not None:
-            try:
-                os.kill(claude_pid, 0)
-            except ProcessLookupError:
-                return 0
-            except PermissionError:
-                pass  # 生存はしているが権限が無いだけ
+        if claude_pid is not None and not is_process_alive(claude_pid):
+            return 0
 
         row, db_ok = _read_ask_row(db_path, ask_id)
         if db_ok:
