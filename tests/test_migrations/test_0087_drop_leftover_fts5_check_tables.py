@@ -50,21 +50,15 @@ def _create_leftover_fts5_check(conn: sqlite3.Connection) -> None:
 
 
 class TestLeftoverTablesDropped:
-    def test_leftover_tables_exist_before_0087(self, db_before_0087):
-        conn = get_connection()
-        try:
-            _create_leftover_fts5_check(conn)
-            conn.commit()
-            for table in _ALL_TABLES:
-                assert table_exists(conn, table), table
-        finally:
-            conn.close()
-
     def test_leftover_tables_are_dropped_after_0087(self, db_before_0087):
         conn = get_connection()
         try:
             _create_leftover_fts5_check(conn)
+            conn.execute("CREATE TABLE _keep_probe (v TEXT)")
+            conn.execute("INSERT INTO _keep_probe (v) VALUES ('keep')")
             conn.commit()
+            for table in _ALL_TABLES:
+                assert table_exists(conn, table), table
         finally:
             conn.close()
 
@@ -74,6 +68,9 @@ class TestLeftoverTablesDropped:
         try:
             for table in _ALL_TABLES:
                 assert not table_exists(conn, table), table
+            assert table_exists(conn, "_keep_probe")
+            rows = conn.execute("SELECT v FROM _keep_probe").fetchall()
+            assert [row[0] for row in rows] == ["keep"]
         finally:
             conn.close()
 

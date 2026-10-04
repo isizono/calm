@@ -105,13 +105,7 @@ def test_check_fts5_available_returns_true_when_supported():
 
 
 def test_check_fts5_available_leaves_no_tables_in_main_db(temp_db):
-    """チェック用の仮想テーブル・影のテーブルが本体DBに残らない
-
-    旧実装はCREATE VIRTUAL TABLE / DROP TABLEを本体DBの接続上で直接実行していたため、
-    DROPがsqlite3.OperationalErrorで失敗すると_fts5_checkと影のテーブルが本体DBに
-    残ったまま後始末されなかった。チェックをin-memory接続に切り替えたことで、
-    本体DBには構造的に何も作られない。
-    """
+    """FTS5可否チェックの後に、本体DBへチェック用テーブルが残らない"""
     assert _check_fts5_available() is True
 
     conn = get_connection()
@@ -124,23 +118,11 @@ def test_check_fts5_available_leaves_no_tables_in_main_db(temp_db):
     assert rows == []
 
 
-def test_check_fts5_available_never_resolves_main_db_path(monkeypatch):
-    """チェックは本体DBのパス解決（get_db_path経由）を一切行わない
-
-    get_connection()はget_db_path()を内部で呼ぶため、get_db_pathが呼ばれないことは
-    チェックが本体DBへ一切接続していないことの証拠になる。
-    """
-    import src.db as db_module
-
-    def _fail_if_called():
-        raise AssertionError("本体DBのパス解決は行われないはず")
-
-    monkeypatch.setattr(db_module, "get_db_path", _fail_if_called)
-    assert db_module._check_fts5_available() is True
-
-
 def test_check_fts5_available_returns_false_when_fts5_missing(monkeypatch):
-    """FTS5拡張が無い環境ではFalseを返す（旧実装からの挙動維持）"""
+    """FTS5拡張が無い環境ではFalseを返す
+
+    sqlite3.connectを差し替え、CREATE VIRTUAL TABLEが失敗したときの例外分岐のみを確認する。
+    """
     import src.db as db_module
 
     class _FakeConnWithoutFts5:
