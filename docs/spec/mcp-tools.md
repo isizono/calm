@@ -891,7 +891,7 @@ CALMが扱うエンティティの内部表現。詳細スキーマは `docs/spe
 - `title: string`
 - `description: string`
 - `tags: list[string]`
-- `created_at: string`、`updated_at: string`
+- `created_at: string`
 
 ### 3.2 Decision
 - `decision_id: int`
