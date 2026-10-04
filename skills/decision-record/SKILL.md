@@ -1,6 +1,7 @@
 ---
 name: decision-record
 description: 【必須】ユーザーとの合意が成立したとき、または論点が結論未定のまま先送りされるときに発動し、add_decisionsでの記録をガイドする。「OK」「それでいこう」「その方針で」等の明示的な承認があった、提案への同意が得られた、「〜で決定」と宣言された、[議論中]の論点を残したまま話題が移る、などが発動タイミング。このスキルを経由せずにadd_decisionsを直接呼んではいけない。経緯（add_logs）と成果物（add_material）の記録はrecordingが担当する。
+user-invocable: false
 ---
 
 # decision-record
