@@ -597,7 +597,11 @@ activity束縛の条件が1件以上あるgoalには`children`（内訳を1行�
 
 ### 2.25 get_config
 
-引数なし。返り値: `{heartbeat_timeout, in_progress_limit, pending_limit, recency_decay_rate, sync_disable_retrospective, snapshot_interval_hours, snapshot_max_count, snapshot_anomaly_threshold, precedent_budget_chars, budget_defaults, read_tool_limits}`。スキルが環境変数ベースの設定を参照するときに使う。`budget_defaults` は `budget_service` が把握する予算関連の既定値一覧（`precedent_budget_chars` / `recency_decay_rate` / `recency_decay_floor` / `recency_decay_floor_decision_live` / `precedent_response_chars_max`。いずれもsrc.config由来）。
+| 名前 | 型 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- | --- |
+| env_kind | string \| null | no | "user" | `env_vars`に載せる環境変数の種類。`user`（利用者が調整する値）/`internal`/`emergency`/`session`/`ci`、`"all"`または`null`で全種類 |
+
+返り値: `{instance_id, heartbeat_timeout, recency_decay_rate, sync_disable_retrospective, snapshot_interval_hours, snapshot_max_count, snapshot_anomaly_threshold, precedent_budget_chars, env_vars, budget_defaults, read_tool_limits}`。`env_vars`は環境変数の台帳（src/config_registry.py）と現在値で、要素は`{name, kind, default, description, value}`（`value`は未設定なら`null`）。スキルが環境変数ベースの設定を参照するときに使う。`budget_defaults` は `budget_service` が把握する予算関連の既定値一覧（`precedent_budget_chars` / `recency_decay_rate` / `recency_decay_floor` / `recency_decay_floor_decision_live` / `precedent_response_chars_max`。いずれもsrc.config由来）。
 
 ### 2.26 roll_dice
 

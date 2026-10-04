@@ -35,8 +35,7 @@ MCPツールの詳細仕様は[docs/spec/mcp-tools.md](spec/mcp-tools.md)にあ�
 |--------|------|
 | `/man` | CALMの使い方をAIが説明します |
 | `/overview` | 進行中・直近完了・裁定待ち・残件の内訳を一望表示します |
-| `/project-setup` | 新しいプロジェクト・取り組みの知識フレームをCALMにセットアップします |
-| `/coding-project-setup` | コードプロジェクト向けの知識フレームをセットアップします（project-setupから委譲） |
+| `/setup` | セットアップ・設定変更の入口です。初期セットアップ・プロジェクト登録（project-setup）・環境変数の設定変更（env-config）に振り分けます |
 | `/activity-start` | 新しいアクティビティを開始します |
 | `/activity-pause` | 進行中のアクティビティを完了にせず中断します |
 | `/activity-finish` | アクティビティを完了にします |

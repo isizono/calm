@@ -960,7 +960,12 @@ paths:
           application/json:
             schema:
               additionalProperties: false
-              properties: {}
+              properties:
+                env_kind:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: user
               type: object
       responses:
         '200':
