@@ -27,6 +27,10 @@ from src.infra.detached_process import popen_detached
 from src.infra.git_repo import resolve_main_repo_root
 from src.infra.loopback_http import NO_PROXY_OPENER
 from src.infra.session_identity import (
+    HARNESS_CLAUDE_CODE,
+    HARNESS_CODEX,
+    ancestor_pids,
+    detect_harness_by_ancestry,
     register_launcher_session,
     unregister_launcher_session,
 )
@@ -389,16 +393,46 @@ def _ensure_server_running() -> bool:
 # =============================================
 
 
-def _current_harness_name() -> str:
-    """launcherプロセス自身のCALM_HARNESS envから起動器種別名を判定する。
+# _current_harness_name() の判定結果。祖先 pid の探索は `ps` を複数回呼ぶため、
+# heartbeat ごとの再登録で繰り返さないよう初回の結果を保持する（launcher の
+# 生存中に起動元 CLI が変わることは無い）。
+_harness_name_cache: str | None = None
 
-    src.harness.select_harnessと同じ判定基準(未設定・未知値はclaude_code)。
+
+def _current_harness_name() -> str:
+    """launcherを起動したエージェントCLIの種別名を判定する。
+
+    判定順:
+    1. launcherプロセス自身の`CALM_HARNESS`が`codex`ならcodex
+       (src.harness.select_harnessと同じ明示指定)
+    2. 祖先プロセスを自分に近い順にたどり、最初に見つかったエージェントCLI
+       (detect_harness_by_ancestry)
+    3. どちらでも決まらなければclaude_code(従来挙動)
+
+    2 が必要なのは、Codexが`~/.codex/config.toml`の`[mcp_servers.calm]`から
+    launcherを起動する際、MCPサーバーへ親の環境変数を引き継がず、
+    `CALM_HARNESS`も付与されないため。この状態で既定のclaude_codeへ倒すと、
+    Claude CodeのBashツールから起動した`codex exec`配下のlauncherが、親の
+    Claude Codeセッションとして台帳へ記録される。近い側のCLIを採用すれば
+    入れ子構成でもCodexと判定できる。
+
     calm server は launcher から見て別プロセス(ローカルは launcher が
     subprocess.Popen で起動する子、リモードは既存の常駐プロセス)で、複数の
     launcher(異なるharness由来を含む)を1つのserverプロセスが共有しうるため、
-    server側の自プロセスenvではなくlauncher側のenvで判定してPOSTボディに乗せる。
+    server側の自プロセスではなくlauncher側で判定してPOSTボディに乗せる。
     """
-    return "codex" if env_get("CALM_HARNESS", "").lower() == "codex" else "claude_code"
+    global _harness_name_cache
+    if _harness_name_cache is not None:
+        return _harness_name_cache
+    if env_get("CALM_HARNESS", "").lower() == HARNESS_CODEX:
+        name = HARNESS_CODEX
+    else:
+        name = (
+            detect_harness_by_ancestry(ancestor_pids(os.getpid()))
+            or HARNESS_CLAUDE_CODE
+        )
+    _harness_name_cache = name
+    return name
 
 
 def _register_session() -> bool:
@@ -1021,7 +1055,7 @@ def main() -> None:
     # resolve_cli_session）が祖先 pid チェーン経由で自分を見つけられるよう、
     # HTTPサーバー起動待機（最大30秒）より前に登録ファイルを書く。
     # 書込失敗は非致命（ベストエフォート）。
-    register_launcher_session(_session_id)
+    register_launcher_session(_session_id, harness=_current_harness_name())
 
     if not _IS_LOCAL:
         logger.info("Remote mode: connecting to %s", MCP_ENDPOINT)
