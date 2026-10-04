@@ -182,7 +182,7 @@ class TestGetLogsActivityTopicLimit:
     """get_logs(entity_type="activity") のrelated topics上限10件テスト"""
 
     def test_get_logs_by_activity_limits_related_topics_to_10(self, temp_db):
-        """related topicsが10件を超える場合、10件で切られる"""
+        """related topicsが10件を超える場合、新しいtopic（id降順）の10件で切られる"""
         # 11個のtopicを作成し、それぞれにログを追加
         topics = []
         for i in range(11):
@@ -200,8 +200,10 @@ class TestGetLogsActivityTopicLimit:
         result = get_logs("activity", act["activity_id"])
 
         assert "error" not in result
-        # 11個のtopicがあるが、10件の上限により最大10件分のlogsが返る
-        assert len(result["logs"]) == 10
+        # 11個のtopicのうち最も古いトピック0が外れ、トピック1〜10のlogsが返る
+        assert sorted(log["title"] for log in result["logs"]) == sorted(
+            f"ログ{i}" for i in range(1, 11)
+        )
 
 
 class TestGetLogsInvalidType:
@@ -339,7 +341,7 @@ class TestGetDecisionsActivityTopicLimit:
     """get_decisions(entity_type="activity") のrelated topics上限10件テスト"""
 
     def test_get_decisions_by_activity_limits_related_topics_to_10(self, temp_db):
-        """related topicsが10件を超える場合、10件で切られる"""
+        """related topicsが10件を超える場合、新しいtopic（id降順）の10件で切られる"""
         topics = []
         for i in range(11):
             t = add_topic(title=f"トピック{i}", description="Desc", tags=DEFAULT_TAGS)
@@ -356,8 +358,10 @@ class TestGetDecisionsActivityTopicLimit:
         result = get_decisions("activity", act["activity_id"])
 
         assert "error" not in result
-        # 11個のtopicがあるが、10件の上限により最大10件分のdecisionsが返る
-        assert len(result["decisions"]) == 10
+        # 11個のtopicのうち最も古いトピック0が外れ、トピック1〜10のdecisionsが返る
+        assert sorted(d["decision"] for d in result["decisions"]) == sorted(
+            f"決定{i}" for i in range(1, 11)
+        )
 
 
 class TestGetDecisionsInvalidType:
