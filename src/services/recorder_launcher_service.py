@@ -216,7 +216,10 @@ def build_mcp_config(calm_root: Path) -> dict:
     要求する`{"mcpServers": {...}}`形式に包み直し、`${CLAUDE_PLUGIN_ROOT}`を
     実パスへ置き換える。"""
     raw_text = (calm_root / ".mcp.json").read_text(encoding="utf-8")
-    substituted = json.loads(raw_text.replace("${CLAUDE_PLUGIN_ROOT}", str(calm_root)))
+    # calm_rootをJSON文字列として正しくエスケープしてから埋め込む。生のパス文字列
+    # (Windowsでは`\`区切り)をそのまま置換すると不正なJSONエスケープになる。
+    escaped_root = json.dumps(str(calm_root))[1:-1]
+    substituted = json.loads(raw_text.replace("${CLAUDE_PLUGIN_ROOT}", escaped_root))
     return {"mcpServers": substituted}
 
 
@@ -311,7 +314,7 @@ def _launch_tmux_session(
     try:
         subprocess.run(
             ["tmux", "new-session", "-d", "-s", session_name, "-c", str(cwd), pane_command],
-            check=True, capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT_SEC,
+            check=True, capture_output=True, text=True, encoding="utf-8", timeout=SUBPROCESS_TIMEOUT_SEC,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
         raise RecorderLaunchError(f"tmuxセッションの起動に失敗した: {e}") from e
@@ -321,7 +324,7 @@ def _pane_pid(session_name: str) -> int:
     try:
         result = subprocess.run(
             ["tmux", "display-message", "-p", "-t", session_name, "#{pane_pid}"],
-            check=True, capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT_SEC,
+            check=True, capture_output=True, text=True, encoding="utf-8", timeout=SUBPROCESS_TIMEOUT_SEC,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
         raise RecorderLaunchError(f"記録役のpid取得に失敗した: {e}") from e
@@ -346,6 +349,10 @@ def start(
     projects_root: Path | None = None,
     sid_factory=lambda: str(uuid.uuid4()),
 ) -> dict[str, Any]:
+    if sys.platform == "win32":
+        # tmuxに依存するためWindowsには未対応。
+        return {"started": False, "reason": "windows unsupported"}
+
     main_sid = resolve_main_sid(session_id)
 
     if is_recorder_attached(main_sid):

@@ -25,7 +25,7 @@ def get_timeline(
     """トピックまたはアクティビティに紐づくdecision・log・materialを時系列で返す。
 
     topic_idまたはactivity_idのいずれか一方を必須で指定する（排他）。
-    activity_id指定時はtopic_activity_relationsから関連topic_idsを取得し、
+    activity_id指定時はrelations（activity→topicのbelongs_to）から関連topic_idsを取得し、
     それらのtopic_idsに紐づくエンティティを集約する。
 
     Args:

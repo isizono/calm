@@ -1,6 +1,7 @@
 ---
 name: recording
 description: 【必須】議論で複数案を比較して採択した、作業中に詰まって解決した、PR レビューで複数 fix した、ドラフト・調査レポート・比較表が出来上がった、バグを観察した、ユーザー指示で方針が変わったなど、セッション中に「経緯」または「成果物」が発生したときに発動。このスキルを経由せずに add_logs / add_material を直接呼んではいけない。記録ガイドが docstring から本スキルに集約されているため、判断基準を skip すると記録漏れが発生する。発動対象は add_logs と add_material のみ。add_decisions / add_topic / add_habit は対象外（別経路で扱う）。
+user-invocable: false
 ---
 
 # recording

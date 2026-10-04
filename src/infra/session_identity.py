@@ -34,11 +34,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+import psutil
 
 from src.infra import cli_session
 from src.infra.lock_file import is_process_alive
@@ -66,6 +69,17 @@ _MAX_ANCESTOR_DEPTH = 5
 # は CLI より上にしか現れないため、この窓の交差は「同じ CLI の子孫」の場合に
 # 限られる。spawn 経路に wrapper を足す変更をしたら要見直し。
 _CLI_HOP_WINDOW = 2
+
+# 祖先プロセスのうち Codex CLI 本体とみなす実行ファイル名（basename）。
+# Homebrew 版・npm 版の native バイナリは `codex`、旧 npm 版は
+# `codex-<target triple>`（例: codex-aarch64-apple-darwin）。Linux の
+# `ps -o comm=` は15文字で切り詰めるため、triple の途中で切れた形も受理する。
+# 同梱ヘルパー（codex-code-mode-host 等）は CLI 本体ではないので除外する。
+_CODEX_PROCESS_NAME_RE = re.compile(r"^codex(-(x86_64|aarch64|arm64)-.*)?$")
+_CLAUDE_PROCESS_NAME = "claude"
+
+HARNESS_CLAUDE_CODE = "claude_code"
+HARNESS_CODEX = "codex"
 
 _REGISTRATION_PREFIX = "launcher-"
 _REGISTRATION_SUFFIX = ".json"
@@ -125,28 +139,15 @@ def get_caller_session_id() -> Optional[str]:
 
 
 def _get_ppid(pid: int) -> Optional[int]:
-    """`ps` 経由で指定 pid の親 pid を取得する。
+    """指定 pid の親 pid を取得する。
 
-    標準ライブラリには移植可能な ppid 取得手段が無いため `ps -o ppid= -p <pid>`
-    に頼る（macOS / Linux いずれの `ps` 実装でも動く POSIX オプション）。
-    プロセス消滅・`ps` 不在・タイムアウト等はすべて None（呼び出し側は祖先探索を
-    打ち切るだけで例外にはしない）。
+    標準ライブラリには移植可能な ppid 取得手段が無いため psutil に頼る
+    （`ps` と異なり Windows でも同じ呼び出しで動く）。プロセス消滅・権限不足等は
+    すべて None（呼び出し側は祖先探索を打ち切るだけで例外にはしない）。
     """
     try:
-        result = subprocess.run(
-            ["ps", "-o", "ppid=", "-p", str(pid)],
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    raw = result.stdout.strip()
-    try:
-        return int(raw)
-    except ValueError:
+        return psutil.Process(pid).ppid()
+    except psutil.Error:
         return None
 
 
@@ -166,6 +167,53 @@ def ancestor_pids(pid: int, max_depth: int = _MAX_ANCESTOR_DEPTH) -> list[int]:
         result.append(ppid)
         current = ppid
     return result
+
+
+def _get_process_name(pid: int) -> Optional[str]:
+    """`ps` 経由で指定 pid の実行ファイル名（basename）を取得する。
+
+    取得できない場合（プロセス消滅・`ps` 不在・タイムアウト等）は None。
+    """
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "comm=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    raw = result.stdout.strip()
+    return os.path.basename(raw) or None
+
+
+def detect_harness_by_ancestry(pids: list[int]) -> Optional[str]:
+    """自分に近い順の祖先 pid 列から、最も近いエージェント CLI の種別を返す。
+
+    Claude Code の Bash ツールから `codex exec` を起動するような入れ子構成では、
+    Codex が起動した launcher の祖先に Codex 本体と、その外側の Claude Code
+    本体の両方が現れる。launcher を直接 spawn したのは近い側の CLI なので、
+    列を先頭から見て最初に見つかった CLI を採用する。
+
+    - Claude Code: `~/.claude/sessions/<pid>.json` が読めるか、実行ファイル名が
+      `claude`（session file の書き出し前でも判定できるようにする）
+    - Codex: 実行ファイル名が `_CODEX_PROCESS_NAME_RE` に一致
+
+    どちらも見つからなければ None（判定不能）。
+    """
+    for pid in pids:
+        if cli_session.read_cli_session(pid) is not None:
+            return HARNESS_CLAUDE_CODE
+        name = _get_process_name(pid)
+        if name is None:
+            continue
+        if name == _CLAUDE_PROCESS_NAME:
+            return HARNESS_CLAUDE_CODE
+        if _CODEX_PROCESS_NAME_RE.match(name):
+            return HARNESS_CODEX
+    return None
 
 
 def _registration_path(pid: int) -> Path:
@@ -192,8 +240,15 @@ def _gc_stale_launcher_registrations() -> None:
             path.unlink(missing_ok=True)
 
 
-def register_launcher_session(session_id: str, pid: Optional[int] = None) -> Optional[Path]:
+def register_launcher_session(
+    session_id: str, pid: Optional[int] = None, harness: Optional[str] = None
+) -> Optional[Path]:
     """launcher 起動時に自身の登録ファイルを書く。
+
+    `harness` には launcher を起動したエージェント CLI の種別を記録する。
+    省略時は祖先 pid チェーンから判定する（`detect_harness_by_ancestry`）。
+    判定できなければ null を書く。`resolve_cli_session` はこの値を見て、
+    Codex 配下の launcher を外側の Claude Code セッションへ解決しない。
 
     書込前に stale な登録ファイル（プロセスが生存していないもの）を GC する。
     書込に失敗しても例外は投げず None を返す（ファイル書込は launcher の
@@ -204,10 +259,14 @@ def register_launcher_session(session_id: str, pid: Optional[int] = None) -> Opt
         _gc_stale_launcher_registrations()
         sessions_dir = _sessions_dir()
         sessions_dir.mkdir(parents=True, exist_ok=True)
+        ancestors = ancestor_pids(pid)
+        if harness is None:
+            harness = detect_harness_by_ancestry(ancestors)
         payload = {
             "session_id": session_id,
             "pid": pid,
-            "ancestor_pids": ancestor_pids(pid),
+            "ancestor_pids": ancestors,
+            "harness": harness,
             "created_at": _now_iso(),
         }
         # mkstemp は既定で 0600 を作るため、同一 dir 上の atomic rename で
@@ -217,7 +276,7 @@ def register_launcher_session(session_id: str, pid: Optional[int] = None) -> Opt
         )
         tmp_path = Path(tmp_path_str)
         try:
-            with os.fdopen(fd, "w") as f:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False)
             path = _registration_path(pid)
             os.replace(tmp_path, path)
@@ -347,10 +406,20 @@ def resolve_cli_session(session_id: str) -> Optional[dict]:
     server 自身の ppid は辿らず、launcher が起動時に記録した祖先 pid チェーン
     （`register_launcher_session` が書く `ancestor_pids`）を経由して解決する。
 
+    launcher 登録の `harness` が codex の場合は None を返す。Claude Code の
+    Bash ツールから `codex exec` を起動した入れ子構成では、Codex 側 launcher の
+    祖先チェーンの先に外側の Claude Code 本体が現れるため、そのまま辿ると
+    Codex のセッションが親の Claude Code セッションとして解決されてしまう。
+    Codex の会話識別子（thread id）をここで解決する手段は無いため、推定で
+    外側の CLI を返さず解決不能として扱う（fail-close）。`harness` を持たない
+    旧 launcher の登録は従来通り祖先チェーンで解決する。
+
     解決できない場合は None を返す（例外は投げない）。
     """
     entry = find_launcher_registration(session_id)
     if entry is None:
+        return None
+    if entry.get("harness") == HARNESS_CODEX:
         return None
     launcher_pid = entry.get("pid")
     if not isinstance(launcher_pid, int):
@@ -366,6 +435,9 @@ __all__ = [
     "LEGACY_BRIDGE_SESSION_HEADER",
     "get_caller_session_id",
     "ancestor_pids",
+    "detect_harness_by_ancestry",
+    "HARNESS_CLAUDE_CODE",
+    "HARNESS_CODEX",
     "register_launcher_session",
     "unregister_launcher_session",
     "resolve_identity_by_ancestry",

@@ -5,14 +5,16 @@ ask_serviceの実関数（add_ask/answer_ask/triage_ask/withdraw_ask/
 unsubscribe_ask）で作る。main()のsleep/now引数を差し替え、sleepの副作用
 としてDBを変化させることで「待機中に回答された」を再現する。
 """
-import fcntl
 import io
 import json
 import os
 import sqlite3
+import threading
 import time
+from pathlib import Path
 from unittest.mock import patch
 
+import filelock
 import pytest
 
 from hooks import ask_answer_rewake_hook as hook
@@ -336,16 +338,33 @@ class TestDoubleWaitPrevention:
         lock_dir = tmp_path / "state" / "ask_rewake"
         lock_dir.mkdir(parents=True)
         lock_path = lock_dir / f"sess-1_{ask_id}.lock"
-        lock_fh = open(lock_path, "a+")
-        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        other_lock = filelock.FileLock(str(lock_path), timeout=0)
+        other_lock.acquire()
         try:
             payload = _stdin_payload(session_id="sess-1", tool_response=json.dumps(result))
             sleep, now = _stub_sleep_and_clock()
-            code, stderr = _run_hook(payload, sleep=sleep, now=now)
-            assert code == 0
+            # _run_hookを別スレッドで動かし、短いjoinタイムアウトで待つ。
+            # _acquire_lockのtimeout=0がブロッキング待機(timeout未指定/長いtimeout)に
+            # 退行すると、other_lockが保持されたままのこのスレッドはjoinの間
+            # 戻ってこない。メインスレッド側でそれを検知してfailさせる
+            # (退行時にテストプロセスごとハングさせないため、このスレッドは
+            # daemon=Trueにし、other_lock解放後の自然終了に任せる)。
+            outcome: dict = {}
+
+            def _call_hook():
+                outcome["code"], outcome["stderr"] = _run_hook(payload, sleep=sleep, now=now)
+
+            thread = threading.Thread(target=_call_hook, daemon=True)
+            thread.start()
+            thread.join(timeout=2)
+            assert not thread.is_alive(), (
+                "lock acquisition did not return promptly while the lock was held; "
+                "_acquire_lock may have regressed from timeout=0 to a blocking wait"
+            )
+            assert outcome["code"] == 0
             assert sleep.calls == []
         finally:
-            lock_fh.close()
+            other_lock.release()
 
     def test_lock_held_throughout_wait(self, db, tmp_path):
         """待機ループの間ずっと同じロックを保持し続けることを確かめる。
@@ -367,16 +386,14 @@ class TestDoubleWaitPrevention:
 
         def _probe_lock_then_answer():
             lock_path.parent.mkdir(parents=True, exist_ok=True)
-            probe_fh = open(lock_path, "a+")
+            probe = filelock.FileLock(str(lock_path), timeout=0)
             try:
-                fcntl.flock(probe_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
+                probe.acquire()
+            except filelock.Timeout:
                 could_acquire.append(False)
             else:
                 could_acquire.append(True)
-                fcntl.flock(probe_fh.fileno(), fcntl.LOCK_UN)
-            finally:
-                probe_fh.close()
+                probe.release()
             ask_service.answer_ask(ask_id, "answer body")
 
         payload = _stdin_payload(session_id="sess-1", tool_response=json.dumps(result))
@@ -437,13 +454,29 @@ class TestWaitLimitAndFailures:
         assert sleep.calls == []
 
     def test_claude_code_exit_stops_waiting(self, db, monkeypatch):
+        """生存確認はis_process_alive経由で行われることを確かめる。
+
+        os.killは「常に生存」を返す偽物にしておく。直接os.kill(pid, 0)を
+        呼ぶ実装に戻っていたら、この偽物は例外を投げないため死亡を検知
+        できず、通常のDBポーリング経路（sleepが呼ばれる）に落ちてしまう。
+        os.killを例外にする形では両実装を区別できない: POSIXの
+        psutil.pid_existsは内部でos.kill(pid, 0)を呼ぶため、is_process_alive
+        経由でも直書きでも同じ例外で「死亡」と判定されてしまう。main()は
+        例外をすべて握って0を返すため、検出用の例外を投げさせる形もそもそも
+        使えない。
+        """
         result = _make_ask(session_id="sess-1")
         monkeypatch.setenv("CLAUDE_PID", "424242")
 
-        def _raise_lookup(pid, sig):
-            raise ProcessLookupError()
+        monkeypatch.setattr(hook.os, "kill", lambda pid, sig: None)
+        checked_pids: list[int] = []
 
-        monkeypatch.setattr(hook.os, "kill", _raise_lookup)
+        def _fake_is_process_alive(pid):
+            checked_pids.append(pid)
+            return False
+
+        monkeypatch.setattr(hook, "is_process_alive", _fake_is_process_alive)
+
         sleep, now = _stub_sleep_and_clock()
         code, stderr = _run_hook(
             _stdin_payload(session_id="sess-1", tool_response=json.dumps(result)),
@@ -452,6 +485,7 @@ class TestWaitLimitAndFailures:
         )
         assert code == 0
         assert stderr == ""
+        assert checked_pids == [424242]
         # claude_pidの死亡はループ先頭・sleep前に判定されるので、sleepは
         # 一度も呼ばれない。ここで0回でないなら、その判定が抜けて通常の
         # DBポーリング経路に落ちている（結果のcode/stderrだけでは区別
@@ -496,21 +530,72 @@ class TestStaleLockCleanup:
 
         result = _make_ask(session_id="sess-1")
         ask_id = result["id"]
+        own_lock_path = lock_dir / f"sess-1_{ask_id}.lock"
+        own_lock_exists_while_held = []
+
+        def _check_own_lock_then_answer():
+            own_lock_exists_while_held.append(own_lock_path.exists())
+            ask_service.answer_ask(ask_id, "answer body")
+
         payload = _stdin_payload(session_id="sess-1", tool_response=json.dumps(result))
-        sleep, now = _stub_sleep_and_clock(lambda: ask_service.answer_ask(ask_id, "answer body"))
+        sleep, now = _stub_sleep_and_clock(_check_own_lock_then_answer)
         code, stderr = _run_hook(payload, sleep=sleep, now=now)
 
         assert code == 2
         assert f"#{ask_id}" in stderr
         assert not stale_path.exists()
         assert fresh_path.exists()
-        assert (lock_dir / f"sess-1_{ask_id}.lock").exists()
+        # 保持中は自分のロックファイルも存在する(掃除で消えていない)ことを、
+        # 解放後の存在で見るとfilelockのPOSIX/Windows非対称(モジュール
+        # docstring参照)に影響されるため、保持中(sleepの副作用)に確認する。
+        assert own_lock_exists_while_held == [True]
+
+    def test_lock_acquisition_calls_os_utime_with_path(self, db, tmp_path, monkeypatch):
+        """ロック取得時にos.utime(path)を明示的に呼んでいることを確かめる。
+
+        filelockのUnixFileLockはO_TRUNC付きでロックファイルを開くため、
+        POSIXでは取得するだけでmtimeが更新されてしまい、直後のテスト
+        （mtimeの値を見るだけの検証）ではこの呼び出し自体の退行を検出
+        できない（WindowsFileLockはO_TRUNCを使わないため、Windowsでは
+        この呼び出しだけがmtimeを更新する）。ここではos.utime呼び出し
+        そのものをスパイで観測し、引数がfd（int）ではなくパスであること
+        も合わせて確認する。
+        """
+        result = _make_ask(session_id="sess-1")
+        ask_id = result["id"]
+        lock_dir = tmp_path / "state" / "ask_rewake"
+        expected_lock_path = lock_dir / f"sess-1_{ask_id}.lock"
+
+        calls: list[tuple] = []
+        real_utime = os.utime
+
+        def _spy_utime(*args, **kwargs):
+            calls.append((args, kwargs))
+            return real_utime(*args, **kwargs)
+
+        monkeypatch.setattr(hook.os, "utime", _spy_utime)
+
+        payload = _stdin_payload(session_id="sess-1", tool_response=json.dumps(result))
+        sleep, now = _stub_sleep_and_clock(lambda: ask_service.answer_ask(ask_id, "answer body"))
+        code, stderr = _run_hook(payload, sleep=sleep, now=now)
+
+        assert code == 2
+        assert len(calls) == 1
+        args, kwargs = calls[0]
+        assert kwargs == {}
+        assert len(args) == 1
+        (target,) = args
+        assert not isinstance(target, int)
+        assert Path(target) == expected_lock_path
 
     def test_reacquiring_existing_lock_refreshes_mtime(self, db, tmp_path):
-        """openだけではmtimeが動かないため、取得時に明示的に更新している
-        ことを確かめる。更新していないと、同じ(session_id, ask_id)の
-        ロックファイルを長時間保持し続けた場合に「古い」と誤判定され、
-        まだ生きているのに掃除で消される恐れがある。"""
+        """再取得のたびにmtimeが更新されることを確かめる（掃除の誤爆防止）。
+
+        同じ(session_id, ask_id)のロックファイルを長時間保持し続けた場合に
+        「古い」と誤判定され、まだ生きているのに掃除で消される恐れがある。
+        ロック保持中(sleepの副作用)にmtimeを見る: filelockはPOSIXでは解放時に
+        ファイルを削除するため、解放後の存在・mtimeでは検証できない。
+        os.utime呼び出し自体の検証は直上のテストが担う。"""
         result = _make_ask(session_id="sess-1")
         ask_id = result["id"]
         lock_dir = tmp_path / "state" / "ask_rewake"
@@ -521,12 +606,18 @@ class TestStaleLockCleanup:
         old_mtime = time.time() - hook.STALE_LOCK_AGE_SECONDS + 3600
         os.utime(own_lock_path, (old_mtime, old_mtime))
 
+        mtime_while_held = []
+
+        def _check_mtime_then_answer():
+            mtime_while_held.append(own_lock_path.stat().st_mtime)
+            ask_service.answer_ask(ask_id, "answer body")
+
         payload = _stdin_payload(session_id="sess-1", tool_response=json.dumps(result))
-        sleep, now = _stub_sleep_and_clock(lambda: ask_service.answer_ask(ask_id, "answer body"))
+        sleep, now = _stub_sleep_and_clock(_check_mtime_then_answer)
         code, stderr = _run_hook(payload, sleep=sleep, now=now)
 
         assert code == 2
-        assert own_lock_path.stat().st_mtime > old_mtime + 3000
+        assert mtime_while_held and mtime_while_held[0] > old_mtime + 3000
 
 
 class TestCallerFiltering:
