@@ -1,12 +1,13 @@
 ---
 name: activity-start
-description: 【必須】新しいアクティビティを開始する。「/as」「/activity-start」「新しい作業始める」「アクティビティ作って」「これやる」など、新規アクティビティの作成・開始の意図で発動する。このスキルを経由せずにadd_activityを直接呼んではいけない（orchアクティビティ自体の起票、orchの子の起票は、いずれも[orch](../orch/SKILL.md) skillの手順に従う例外とする）。
+description: 【必須】新しいアクティビティを作成してcheck-inする。「/as」「新しい作業始める」「アクティビティ作って」「これやる」など新規作業の開始で発動。このスキルを経由せずにadd_activityを呼ばない（orchの起票はorch skillに従う）。
 ---
 
 # activity-start
 
 新しいアクティビティを作成してcheck-inする。
 
+orchアクティビティ自体の起票と、orchの子の起票は、本スキルではなく[orch](../orch/SKILL.md) skillの手順に従う。
 ## 手順
 
 1. ユーザーの入力と会話の文脈から、以下3つを判定する:
