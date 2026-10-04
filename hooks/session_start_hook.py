@@ -752,6 +752,20 @@ def _section_text_len(lines: list[str]) -> int:
     return sum(len(line) for line in lines) + len(lines)
 
 
+def _ask_blocks_suffix(ask: dict) -> str:
+    """askが止めている作業の題を行末に添える文字列（blocksが無ければ空）。
+
+    題は最大2件まで並べ、超過分は件数で示す。
+    """
+    titles = [b["title"] for b in ask.get("blocks") or [] if b.get("title")]
+    if not titles:
+        return ""
+    shown = "／".join(titles[:2])
+    if len(titles) > 2:
+        shown += f" 他{len(titles) - 2}件"
+    return f" ［止めている作業: {shown}］"
+
+
 def _render_open_asks_section(open_result: dict, pending_result: dict, budget_chars: int) -> str:
     """open_result/pending_resultから、セクション全体のテキストを組み立てる。
 
@@ -806,7 +820,7 @@ def _render_open_asks_section(open_result: dict, pending_result: dict, budget_ch
     for label, bucket in buckets:
         bucket_lines = [f"## {label}"]
         for a in bucket["meta"]:
-            bucket_lines.append(f"- [meta] (#{a['id_raw']}) {a['question']}")
+            bucket_lines.append(f"- [meta] (#{a['id_raw']}) {a['question']}{_ask_blocks_suffix(a)}")
         if bucket["meta"]:
             bucket_lines.append(_OPEN_ASKS_META_CTA)
         required_by_bucket.append(bucket_lines)
@@ -838,7 +852,7 @@ def _render_open_asks_section(open_result: dict, pending_result: dict, budget_ch
 
         shown = 0
         for a in non_meta:
-            candidate = f"- (#{a['id_raw']}) {a['question']}"
+            candidate = f"- (#{a['id_raw']}) {a['question']}{_ask_blocks_suffix(a)}"
             cost = len(candidate) + 1
             if cost <= available:
                 bucket_optional.append(candidate)

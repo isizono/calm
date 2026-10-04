@@ -148,6 +148,8 @@ Claude Codeでは、`add_ask`を呼んだ直後からCALMのhookが裏で回答�
 
 その場で待つ必要が無いask（後で気づけば十分な優先度のもの）は`notify=False`で積む。hookは待たず、起こしもしない。積んだ後で待つのをやめたい場合は`unsubscribe_ask`を呼ぶ（待機中のhookも止まる。ただし複数セッションから積まれた同じ問いのaskには使えない）。
 
+積んだaskが、その後の会話の途中で実質決着していると気づいたとき（ユーザーが別の場で同じ件に答えた、議論の中で結論が出た、など）は、その時点で答えを `add_decisions` で決定事項に記録してから取り下げる（未回答なら `withdraw_ask`、回答済み未triageなら `triage_ask`）。askを開いたまま残すと、完了したactivityにぶら下がって誰にも届かない待ちになる。
+
 hookが待つのは最長で約24時間。それを過ぎた場合や、hookの無いハーネス（Codex等）では、SessionStart/UserPromptSubmit hookがこのセッションの登録したaskの解決状況を毎ターン確認して知らせる。
 
 ## ask-distillとの境界

@@ -5,7 +5,7 @@ import sqlite3
 from typing import Optional
 
 from src.db import get_connection, row_to_dict
-from src.services import goal_service
+from src.services import ask_handover_service, goal_service
 from src.services.citations_service import (
     apply_and_writeback_conversions,
     apply_raw_to_cite_conversion,
@@ -607,6 +607,8 @@ def update_activity(
     tags: Optional[list[str]] = None,
     closed_by: Optional[str] = None,
     closed_reason: Optional[str] = None,
+    move_asks_to: Optional[int] = None,
+    move_ask_ids: Optional[list[int]] = None,
 ) -> dict:
     """
     アクティビティを更新する（ステータス、タイトル、説明、タグを変更可能）
@@ -626,6 +628,12 @@ def update_activity(
             引数として渡せない）
         closed_reason: 閉じた理由（自由文）。status="completed"と同時のときだけ
             受け付ける
+        move_asks_to: このactivityを止めている未決着ask（openまたは回答済み未triage）の
+            blockを、指定したactivityへ付け替える。付け替え先は存在し、完了済みでない
+            こと。他のフィールドの更新・status変更と同じ呼び出しで行える
+        move_ask_ids: move_asks_toと一緒に渡すと、そのaskだけを付け替える。省略時は
+            未決着askを全件付け替える。このactivityを止めている未決着askでないidが
+            あれば、何も変更せずVALIDATION_ERRORにする
 
     Returns:
         更新されたアクティビティ情報。既にcompletedのactivityへstatus="completed"を
@@ -633,8 +641,18 @@ def update_activity(
         保持したまま書き換わらない。この場合closed_fields_unchanged=trueを応答に足す
         （closed_by/closed_reasonを渡さなければ、このキーは付かない）。
         status="completed"の呼び出しでは、紐づくgoalが未判定ならgoal_hintも返す
-        （拒否はしない）
+        （拒否はしない）。同じ呼び出しで、このactivityを止めている未決着ask
+        （付け替え後に残ったもの）があれば{id_raw, question, status}の一覧を
+        pending_asksに添える（完了は止めない）。付け替えたaskはmoved_asksに返す
     """
+    if move_ask_ids is not None and move_asks_to is None:
+        return {
+            "error": {
+                "code": "VALIDATION_ERROR",
+                "message": "move_ask_ids is only accepted together with move_asks_to",
+            }
+        }
+
     # 最低1つのオプショナルパラメータが必要
     if (
         status is None
@@ -722,6 +740,15 @@ def update_activity(
                     "message": f"Activity with id {activity_id} not found",
                 }
             }
+
+        moved_asks: list[dict] = []
+        if move_asks_to is not None:
+            move_result = ask_handover_service.move_pending_asks_with_conn(
+                conn, activity_id, move_asks_to, move_ask_ids
+            )
+            if "error" in move_result:
+                return move_result
+            moved_asks = move_result["moved"]
 
         # snoozed中にstatus指定なしでフィールド更新 → 自動復活
         old_status = row["status"]
@@ -855,6 +882,24 @@ def update_activity(
 
         if reclose_without_rewrite:
             result["closed_fields_unchanged"] = True
+
+        if moved_asks:
+            result["moved_asks"] = moved_asks
+
+        # completedにする呼び出しでは、このactivityを止めている未決着askを添える
+        # （完了は止めない）。完了のコミット後に読み、失敗しても完了は失わない。
+        if status == "completed":
+            try:
+                pending_asks = ask_handover_service.get_pending_asks_blocking(conn, activity_id)
+                if pending_asks:
+                    result["pending_asks"] = pending_asks
+            except Exception as e:
+                capture_signal_safe(
+                    "machine_error",
+                    f"update_activityでpending_asks取得に失敗: activity {activity_id}",
+                    source="tool:update_activity",
+                    detail=str(e),
+                )
 
                 # completedにする呼び出しでは、紐づくgoalが未判定ならgoal_hintを添える
         # （拒否はしない）。完了のコミットの後に組み立て、例外が出ても完了は

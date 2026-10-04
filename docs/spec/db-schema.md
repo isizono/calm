@@ -495,7 +495,7 @@ CALM自身の故障報告・使用感不満・矛盾検出・運用計測イベ�
 
 ### 3.23 ask_blocks / ask_requesters / ask_tags
 
-- `ask_blocks`: ask ↔ activity の junction（`PRIMARY KEY (ask_id, activity_id)`、両方 `ON DELETE CASCADE`）。このaskが答え待ちで止めているactivityを表す。answer/triage/withdrawのいずれの遷移でも該当askの行は削除される（blockの解除）
+- `ask_blocks`: ask ↔ activity の junction（`PRIMARY KEY (ask_id, activity_id)`、両方 `ON DELETE CASCADE`）。このaskが答え待ちで止めているactivityを表す。withdrawでのみ該当askの行は削除される（blockの解除）。answer/triage（promote・dismiss）では残り、決着後も「どの作業を止めていたaskか」を辿れる。「待ち」の判定はaskのstatus（open）で行う
 - `ask_requesters`: ask ↔ 要求元 `session_id` の junction（`PRIMARY KEY (ask_id, requester_session_id)`）。同じaskへの複数セッションからの要求をUNIONで蓄積する。withdraw時も削除しない（参照ログとして残す）
 - `ask_tags`（0068 追加）: ask ↔ tag の junction。`decision_tags`/`material_tags`（§3.8）と全く同型（`PRIMARY KEY (ask_id, tag_id)`、両方 `ON DELETE CASCADE`）。`add_ask` はタグを必須（`domain:` タグを最低1つ含む）とし、`tag_service.resolve_tags` の完全一致・KNN統合を経て解決したタグIDをここに紐付ける。dedup時（同一fingerprintのopen ask再post）は今回渡されたタグを無視し、初回投入時の紐付けを保持する。既存31件（0068適用前のask）への遡及的タグ付与は行っていない
 

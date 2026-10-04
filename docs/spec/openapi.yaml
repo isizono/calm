@@ -2206,6 +2206,18 @@ paths:
                   - type: string
                   - type: 'null'
                   default: null
+                move_asks_to:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                move_ask_ids:
+                  anyOf:
+                  - items:
+                      type: integer
+                    type: array
+                  - type: 'null'
+                  default: null
               required:
               - activity_id
               type: object

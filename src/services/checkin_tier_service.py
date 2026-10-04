@@ -7,7 +7,7 @@
 anchor.activity・control.goal・env.coverage・env.sessionは常に置く）。
 
     anchor:  activity, pinned
-    control: goal, asks, dependencies
+    control: goal, asks, neighbor_asks, recent_settled_asks, dependencies
     context: topics, activities, decisions, latest_log, materials
     catalog: logs, map
     env:     tag_notes, hints, coverage, session, flow_guide
@@ -27,7 +27,14 @@ from src.config import (
 )
 from src.db import get_connection, row_to_dict
 from src.infra import session_identity
-from src.services import activity_service, goal_service, hint_service, response_budget, session_ledger_service
+from src.services import (
+    activity_service,
+    ask_handover_service,
+    goal_service,
+    hint_service,
+    response_budget,
+    session_ledger_service,
+)
 from src.services.ask_service import get_pending_asks_with_conn
 from src.services.checkin_queries import (
     _get_activities_overview,
@@ -57,6 +64,10 @@ CATALOG_MAP_MAX = 30
 # control.asksの上限。awaiting_answer/awaiting_triageを合わせて新しい順に数える。
 ASKS_MAX = 5
 ASK_ANSWER_BODY_MAX_CHARS = 300
+
+# control.neighbor_asks / control.recent_settled_asksそれぞれの上限件数。
+# 超えた分は件数（more）とget_asksへのポインタにする。
+HANDOVER_ASKS_MAX = 3
 
 # control.dependenciesの上限。
 DEPENDENCIES_MAX = 10
@@ -144,6 +155,20 @@ def _cap_asks(pending_asks: dict, activity_id: int) -> dict | None:
     if overflow:
         result["more"] = len(overflow)
         result["next"] = [{"tool": "get_asks", "args": {"blocking_activity_id": activity_id}}]
+    return result
+
+
+def _cap_handover(items: list[dict], overflow: int, activity_id: int) -> dict | None:
+    """隣の作業のask・最近決着したaskの枠を組み立てる。件数は取得側でHANDOVER_ASKS_MAX
+    に絞り済みで、超過分は件数とget_asksへのポインタにする（黙って落とさない）。
+    回答本文は載せない。
+    """
+    if not items:
+        return None
+    result: dict = {"items": items}
+    if overflow:
+        result["more"] = overflow
+        result["next"] = [{"tool": "get_asks", "args": {"blocking_activity_id": activity_id, "status": None}}]
     return result
 
 
@@ -324,6 +349,14 @@ def collect_and_assemble(activity_id: int, session_id: str | None = None) -> dic
 
         immediate_hints = _get_immediate_hints(conn, activity_id)
         pending_asks = get_pending_asks_with_conn(conn, activity_id)
+        neighbor_asks = _cap_handover(
+            *ask_handover_service.get_neighbor_pending_asks(conn, activity_id, HANDOVER_ASKS_MAX),
+            activity_id,
+        )
+        recent_settled_asks = _cap_handover(
+            *ask_handover_service.get_recent_settled_asks(conn, activity_id, HANDOVER_ASKS_MAX),
+            activity_id,
+        )
         goal_block = _build_goal_block(conn, activity_id, session_id)
         session_block, bridge_id = _register_session(activity_id, activity)
         flow_guide = _FLOW_GUIDE_COMPACT if _consume_first_call_flag(session_id) else None
@@ -346,6 +379,8 @@ def collect_and_assemble(activity_id: int, session_id: str | None = None) -> dic
             {
                 "goal": goal_block,
                 "asks": _cap_asks(pending_asks, activity_id),
+                "neighbor_asks": neighbor_asks,
+                "recent_settled_asks": recent_settled_asks,
                 "dependencies": _cap_dependencies(static["dependencies"], activity_id),
             }
         )

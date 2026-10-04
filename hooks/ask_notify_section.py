@@ -80,6 +80,7 @@ def build_ask_notify_lines(
         lines = [header, *item_lines]
         resolved_ids = [a["id_raw"] for a in resolved if isinstance(a.get("id_raw"), int)]
         state.remove_tracked_ask_ids(resolved_ids)
+        state.add_notified_ask_ids(resolved_ids)
         return lines
 
     lines = [header]
@@ -102,6 +103,7 @@ def build_ask_notify_lines(
 
     resolved_ids = [a["id_raw"] for a in consumed if isinstance(a.get("id_raw"), int)]
     state.remove_tracked_ask_ids(resolved_ids)
+    state.add_notified_ask_ids(resolved_ids)
     return lines
 
 
@@ -120,3 +122,65 @@ def _format_ask_line(ask: dict) -> str:
     else:
         detail = status or ""
     return f"(#{aid}) {question} → {detail}"
+
+
+NEIGHBOR_LINES_MAX = 5
+
+
+def build_neighbor_ask_lines(
+    session_id: str | None, conn: sqlite3.Connection | None = None
+) -> tuple[list[str], list[int]]:
+    """check_in先と隣の作業を止めていたaskのうち、check_inの後に回答されたものの表示行と、
+    その行に含めたask_idを返す。回答本文は含めない。
+
+    check_in先とcheck_in時刻はStop hookがHookStateへ書き足したもの
+    （checked_in_activity / checked_in_at）を使う。どちらかが無い、該当が0件、
+    問い合わせに失敗した場合は空を返す。既に知らせたask（自分のaskの通知として
+    消費済みのものを含む）は除く。
+
+    この関数は知らせたask_idを消費済みにしない。出力が実際に注入されたことを
+    確認した呼び出し元が、返り値のask_idを `mark_neighbor_asks_notified` に渡す。
+    """
+    if not session_id:
+        return [], []
+    state = HookState(session_id)
+    activity_id = state.get_checked_in_activity()
+    since = state.get_checked_in_at()
+    if activity_id is None or since is None:
+        return [], []
+
+    from src.services import ask_handover_service
+
+    owns_conn = conn is None
+    try:
+        if owns_conn:
+            from src.db import get_connection
+
+            conn = get_connection()
+        asks = ask_handover_service.get_asks_answered_since(conn, activity_id, since)
+    except Exception:
+        return [], []
+    finally:
+        if owns_conn and conn is not None:
+            conn.close()
+
+    notified = state.get_notified_ask_ids()
+    fresh = [a for a in asks if a["id_raw"] not in notified]
+    if not fresh:
+        return [], []
+
+    shown = fresh[:NEIGHBOR_LINES_MAX]
+    lines = [
+        f"関連する作業のaskに回答が付いています（{len(fresh)}件。自分のaskでなければ読み流してよい）:"
+    ]
+    for a in shown:
+        lines.append(
+            f"- (#{a['id_raw']}) {a['question']} ［作業: {a['activity']}］ → 回答あり（get_asksで本文を確認）"
+        )
+    if len(fresh) > len(shown):
+        lines.append(f"他{len(fresh) - len(shown)}件（get_asksで確認）")
+    return lines, [a["id_raw"] for a in shown]
+
+
+def mark_neighbor_asks_notified(session_id: str, ask_ids: list[int]) -> None:
+    HookState(session_id).add_notified_ask_ids(ask_ids)
