@@ -270,7 +270,7 @@ def main() -> int:
         return 0
 
     if args.check:
-        current = OUTPUT_PATH.read_text() if OUTPUT_PATH.exists() else ""
+        current = OUTPUT_PATH.read_text(encoding="utf-8") if OUTPUT_PATH.exists() else ""
         if current != rendered:
             print(f"differs: {OUTPUT_PATH} is stale relative to src/main.py の tool 定義", file=sys.stderr)
             print("再生成: uv run python scripts/generate_openapi.py", file=sys.stderr)
@@ -278,7 +278,7 @@ def main() -> int:
         print(f"ok: {OUTPUT_PATH} is up to date")
         return 0
 
-    OUTPUT_PATH.write_text(rendered)
+    OUTPUT_PATH.write_text(rendered, encoding="utf-8")
     print(f"wrote {OUTPUT_PATH}")
     return 0
 
