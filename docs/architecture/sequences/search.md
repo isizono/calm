@@ -179,7 +179,7 @@ sequenceDiagram
 - **retract後のsearch_index/vec_index物理クリーンアップ無しでKNN実効recall劣化**（P3）。`vec_index` のk件スロットを「将来除外される候補」が消費する。Pr3で物理削除＋トップレベルWHERE一発除外を提案している。
 - **FTS下限**: `keyword_mode="and"` で1つでも2文字キーワードが混ざるとFTSは丸ごとスキップされる（min_len<3）。エージェントが「2文字＋3文字」のmixed入力を出すとFTS恩恵が消える。
 - **snippetがFTSのマッチ位置ではなく単純な先頭200字**（P11）。FTS5 `snippet()` 関数未使用のため、「なぜ上位か」がスニペットから読めず、特にQE拡張で増えた候補で誤マッチを判別しづらい。Pr13で `snippet(...)` 置換を提案している。
-- **検索効果測定の仕組みが皆無**（P6）。`QE_DISTANCE_THRESHOLD=0.3` / `W_VEC=1.0` / `RECENCY_DECAY_RATE` などのパラメータを実データで再評価する経路がなく、調整が「感覚」になっている。Pr7で `search_telemetry` テーブル導入を提案している。
+- **検索効果測定の読み手が無い**（P6）。`search_telemetry`テーブル（migration 0041/0054で導入済み、検索結果は書込済み）を読んで`QE_DISTANCE_THRESHOLD=0.3` / `W_VEC=1.0` / `RECENCY_DECAY_RATE` などのパラメータを実データで再評価する経路がなく、調整が「感覚」になっている。
 - **QE が「素タグ前提」**（P13）。`QE_EXCLUDE_NAMESPACES=True` のため `domain:*` / `intent:*` は除外され、素タグの少ないドメインでは QE がほぼ無効化される。
 - **tag_like AND の意味論が不揃い**（P14）。「全キーワードを1つのタグ名が含む」セマンティクスはFTS/ベクトルのAND（複数語が文書内で共起）とずれる。Pr14で「タグ集合のAND」セマンティクスへの変更を提案している。
 - **3呼びラウンドトリップ**（P4）：〔解消済〕`get_by_ids` の material レスポンスに `content` / `source` を同梱したため、`search → get_by_ids` の2呼びで material 全文取得が完結する。`get_material` は material_id 単発取得用として残存。

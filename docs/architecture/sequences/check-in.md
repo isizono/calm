@@ -118,7 +118,7 @@ sequenceDiagram
 31-32. coverage算出用に「topic横断の全decision件数」と「activity直接関連のmaterial件数」をCOUNTする。logsは取得済み件数から組み立てる。coverageは `"N/M"` 文字列でレスポンス先頭キーとして返る。
 33-35. `relation_service._get_map_with_conn` が depth=1〜2 の再帰CTEで隣接カタログを取得する。返却フィルタは topic/activity/material（decision/log は経由のみ）。
 36-40. activityのstatusがin_progress以外ならupdate_activityで自動更新する。`update_activity` は別connで独立コミットされ、失敗してもwarningだけ出してチェックインは継続する（fail-soft）。
-41-42. activityに紐づく素タグ（namespace='' のみ）を対象に、`_get_recompose_hints` がpinされたmaterialの最終更新時刻Tを基準に「Tより後に追加されたdecisionが閾値以上か（メンテナッジ）」または「materialが無くてもdecision総数が閾値以上か（ブートストラップナッジ）」を判定し、`env.hints` として返す。
+41-42. activityに紐づく`domain:`タグを対象に、`_get_hints_for_activity`/`_get_hints_for_tag` がpinされたmaterialの最終更新時刻Tを基準に「Tより後に追加されたdecisionが閾値以上か（メンテナッジ）」または「materialが無くてもdecision総数が閾値以上か（ブートストラップナッジ）」を判定し、`env.hints` として返す。
 43. 収集した情報をanchor/control/context/catalog/envの5枠に組み立てる（summary文字列は生成しない。スキル側が`anchor.activity.title`とintentタグから同じ内容を自前で組む）。
 44-46. 結果がツール経由でスキルに返り、スキルは概要セクションと進捗セクションに整形してユーザーに伝える。
 
@@ -188,7 +188,7 @@ sequenceDiagram
 
 - **coverage の materials 分母が pin注入分を含まない**（P9）。`coverage.materials` は `relations(source=activity)` の件数しか分母に含まないため、pinで寄せた重要materialを「カバーし切ったか」の判断指標として片手落ちになる。Pr9で `pinned_materials: "K"` をcoverageに足す案あり。
 - **coverageを先頭キーに置く設計は強み**（S6）の一方で、coverageが「3呼び」（search → get_by_ids → get_material）のループを誘発する一因になっているという指摘がP4にあった。本変更で `get_by_ids` の material レスポンスに `content` / `source` を同梱し、2呼びに短縮済み。
-- **hint生成が二重実装**（P8）。`_get_recompose_hints`（tag単位、増分30/初回15）と `harness_service.get_recommendations`（topic単位）が並走しており、エージェントから見ると2系統の `hints` がどちらも `result["hints"]` に乗り得る。Pr10でHintService統一を提案している。
+- **hint生成は`hint_service`に統一済み**（P8は解消）。recompose系のhintは`_get_hints_for_tag`/`_get_hints_for_activity`（tag単位、domain:限定、初回30/増分100）に一本化されており、並走する別実装は存在しない（`docs/architecture/components.md` §3.6参照）。
 - **update_activityが別コネクション**で独立コミットされる（既存APIの制約）。check_inのトランザクションとは独立しており、片方だけ成功するケースがあり得る。
 - **SessionStartのトピック別グルーピング合意（D#2464-2466）と現状実装の乖離**（P7）。check-in skillのactivity選択UI体験に直接影響する。
-- **recompose hintsの閾値**（増分30 / 初回15）は暫定値であり、運用フィードバックで調整する前提。テレメトリ基盤（Pr7）がないため定量根拠を得る手段が現状ない。
+- **recompose hintsの閾値**（初回30 / 増分100）は暫定値であり、運用フィードバックで調整する前提。テレメトリ基盤（Pr7）がないため定量根拠を得る手段が現状ない。
