@@ -218,7 +218,7 @@ def get_signals(
 
     Returns:
         {"signals": [...], "total_count": int, "stats": {...} (include_stats時のみ),
-         "next": [{"tool": "get_signals", "args": {"ids": [...], "status": None}}]
+         "next": [{"tool": "get_signals", "args": {"ids": [...], "status": None, "limit": N}}]
          (detail切り詰めが発生した行がある場合のみ)}
         失敗時: {"error": {"code": ..., "message": ...}}
         各signalはidをid_rawへ退避しsession_id/fingerprintを含まない
@@ -239,6 +239,14 @@ def get_signals(
             "error": {
                 "code": "VALIDATION_ERROR",
                 "message": f"Invalid kind: {kind!r}. Must be one of {sorted(KNOWN_KINDS)} or null",
+            }
+        }
+
+    if ids and len(ids) > _MAX_LIMIT:
+        return {
+            "error": {
+                "code": "VALIDATION_ERROR",
+                "message": f"ids must have at most {_MAX_LIMIT} items, got {len(ids)}",
             }
         }
 
@@ -290,7 +298,10 @@ def get_signals(
             result["stats"] = _compute_stats(conn)
         if truncated_ids:
             result["next"] = [
-                {"tool": "get_signals", "args": {"ids": truncated_ids, "status": None}}
+                {
+                    "tool": "get_signals",
+                    "args": {"ids": truncated_ids, "status": None, "limit": len(truncated_ids)},
+                }
             ]
         return result
     except Exception as e:

@@ -59,6 +59,8 @@ def try_capture_guard_block(
         from src.db import get_db_path
         from src.services.signal_service import record_signal
 
+        # get_connection()を使わない: busy_timeout（5秒）とsqlite-vecのロードがdeny判定の遅延になるため。
+        # signal_eventsは外部キーを持たないので、get_connection()が設定するPRAGMA（外部キー等）を省いても挙動は変わらない。
         conn = sqlite3.connect(get_db_path(), timeout=0.5)
         try:
             for summary in summaries:

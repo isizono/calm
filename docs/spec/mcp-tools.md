@@ -632,7 +632,7 @@ activity束縛の条件が1件以上あるgoalには`children`（内訳を1行�
 | offset | int | no | 0 | ページネーション |
 | include_stats | bool | no | false | trueでkind×statusのクロス集計と直近30日サマリを付与 |
 
-**返り値**: `{signals: [...], total_count: int, stats?: {by_kind_status, last_30d}, next?: [{"tool": "get_signals", "args": {"ids": [...], "status": null}}]}`。
+**返り値**: `{signals: [...], total_count: int, stats?: {by_kind_status, last_30d}, next?: [{"tool": "get_signals", "args": {"ids": [...], "status": null, "limit": N}}]}`。
 **動作**: `ids`を指定しない一覧では、各行の`detail`が300字を超える場合は300字に切り詰め`detail_truncated: true`を付与する（DB上の値は変わらない）。切り詰めが発生した行がある場合、`next`に全文取得用の`ids`呼び出しを示す。
 
 ### 2.31 update_signal
