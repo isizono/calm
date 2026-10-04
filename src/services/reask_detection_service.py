@@ -4,7 +4,7 @@ transcript path解決済みの前提で、候補抽出（scripts/detect_reask_ca
 excluded_reason付き候補の除外→残候補上位N件のsearchバッチ実行、までを行う。
 既存記録との類似度に基づく「聞き返しが不要だったか」の主観判定と
 report_signal(kind="precedent_miss")の呼び出しは、本サービスの範囲外のまま
-呼び出し側（skills/sync-memory/SKILL.md ステップ9）に残す。
+呼び出し側（skills/sync-memory/SKILL.md ステップ5）に残す。
 """
 from pathlib import Path
 from typing import Optional
