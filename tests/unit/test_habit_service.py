@@ -420,6 +420,47 @@ class TestTriggerModeSplit:
         finally:
             conn.close()
 
+    def test_manifest_title_truncates_long_content_with_ellipsis(self, temp_db):
+        """descriptionが無く50字超のcontentは末尾に省略記号を付けて切り詰める"""
+        conn = get_connection()
+        try:
+            content = "あ" * 60
+            habit_id = add_habit(content)["habit_id"]
+
+            manifest = list_intelligently_habit_manifest_with_conn(conn)
+
+            entry = next(m for m in manifest if m["habit_id"] == habit_id)
+            assert entry["title"] == "あ" * 50 + "…"
+        finally:
+            conn.close()
+
+    def test_manifest_title_at_exactly_50_chars_has_no_ellipsis(self, temp_db):
+        """50字ちょうどは切り詰めの対象外（省略記号を付けない）"""
+        conn = get_connection()
+        try:
+            habit_id = add_habit("あ" * 50)["habit_id"]
+
+            manifest = list_intelligently_habit_manifest_with_conn(conn)
+
+            entry = next(m for m in manifest if m["habit_id"] == habit_id)
+            assert entry["title"] == "あ" * 50
+        finally:
+            conn.close()
+
+    def test_manifest_title_strips_trailing_space_before_ellipsis(self, temp_db):
+        """50字目が空白の場合、末尾の空白を落としてから省略記号を付ける"""
+        conn = get_connection()
+        try:
+            content = "あ" * 49 + " " + "い" * 10
+            habit_id = add_habit(content)["habit_id"]
+
+            manifest = list_intelligently_habit_manifest_with_conn(conn)
+
+            entry = next(m for m in manifest if m["habit_id"] == habit_id)
+            assert entry["title"] == "あ" * 49 + "…"
+        finally:
+            conn.close()
+
     def test_manifest_excludes_inactive(self, temp_db):
         """active=0のintelligently振る舞いはマニフェストに出ない"""
         conn = get_connection()

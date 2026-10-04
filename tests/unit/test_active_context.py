@@ -554,12 +554,18 @@ def test_build_activities_section_activity_id_in_bracket(temp_db):
 
 def test_build_activities_section_raises_on_invalid_db(temp_db):
     """DB接続失敗時は例外が発生する（hookのmain()がcatchする前提）"""
+    from src.env_compat import env_set
+
     os.environ["DISCUSSION_DB_PATH"] = "/nonexistent/path/test.db"
+    # temp_dbフィクスチャが設定したCALM_DB_PATHが残っていると、DISCUSSION_DB_PATH
+    # より優先されてこの無効パスへの差し替えが素通りしてしまうため、同時に上書きする。
+    env_set("CALM_DB_PATH", "/nonexistent/path/test.db")
 
     with pytest.raises(Exception):
         _build_active_context_wrapper()
 
     os.environ["DISCUSSION_DB_PATH"] = temp_db
+    env_set("CALM_DB_PATH", temp_db)
 
 
 def test_build_activities_section_completed_activities_excluded(temp_db):

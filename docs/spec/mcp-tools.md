@@ -237,7 +237,7 @@ embeddingサーバー未起動・セッション内で提示済みの記録は�
 | include_retracted | bool | no | false | trueで取り消し済みも含む |
 
 **返り値**: `get_logs` は `{logs: [DiscussionLog], total_count: int, truncated: bool, archived_tags: [{tag, archived_reason}]}`、`get_decisions` は `{decisions: [Decision], total_count: int, truncated: bool, archived_tags: [{tag, archived_reason}]}`。`total_count` は対象log/decisionの総件数（limit/start_idの影響を受けない）、`truncated` は limit/start_id で後続を打ち切ったとき true（続きのページが存在する）。`archived_tags` は応答に含まれるlog/decisionのタグのうちarchivedなものの集約で、該当なしでも常に空配列で付く。
-**特殊挙動**: entity_type="activity" の場合、related topics経由で集約される。
+**特殊挙動**: entity_type="activity" の場合、related topics経由で集約される。activityに直接relatedでつないだlog/decisionは含まれない。
 
 ### 2.6 search
 
@@ -592,6 +592,8 @@ activity束縛の条件が1件以上あるgoalには`children`（内訳を1行�
 | before | string | no | null | ページネーション用カーソル（ISO 8601） |
 | limit | int | no | 50 | 最大100 |
 | order | string | no | "desc" | `"desc"` または `"asc"` |
+
+**集約範囲**: activity_id指定時は、そのactivityが属するtopicに紐づく記録をtopic経由で集める。activityに直接relatedでつないだ記録は含まれず、topicを持たないactivityでは空になる。activityに直接つないだ資材はget_map(entity_type="activity")かcheck_inのcontext.materialsで見える。
 
 ### 2.25 get_config
 
