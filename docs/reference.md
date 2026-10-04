@@ -46,7 +46,6 @@ MCPツールの詳細仕様は[docs/spec/mcp-tools.md](spec/mcp-tools.md)にあ�
 | `/remember` | 「覚えて」等の依頼を受けて、情報の保存先を判定します |
 | `/forget` | 現状と矛盾・陳腐化した過去の記録を撤回します |
 | `/rule-placement` | 一般化ルールの配置先（habit・tag notes・CLAUDE.md等）をfull評価で判定します |
-| `/tag-notes` | タグのnotesを確認・更新します |
 | `/tag-cleanup` | タグの共起分析を実行し、整理提案をユーザーに提示します |
 | `/sync-memory` | セッション終了前にtranscriptを解析し、トピック・決定事項・ログ・アクティビティを一括で記録・更新します |
 | `/digest` | 直近の記録を期間横断で俯瞰するダイジェストを生成します |
