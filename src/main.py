@@ -2314,7 +2314,7 @@ def report_signal(
 ) -> dict:
     """calm 自身への故障報告・使用感不満・矛盾検出・運用計測イベントの統一入口。
 
-    kind（8種類、いずれか必須）:
+    kind（予約8種、いずれか必須。または custom:<名前> で独自区分を追加できる）:
       - "machine_error": ツールエラー・hook 失敗・サーバー異常を観察した
       - "friction": calm の使い勝手への不満・違和感（ユーザー発話由来を含む）
       - "contradiction": 既存記録(decision/material/log)と矛盾する結論を出した/検出した。
@@ -2328,11 +2328,15 @@ def report_signal(
         案件識別子を含める（dedup の集約単位を案件ごとに分けるため）
       - "goal_rollback": update_goal の reopen_reason（goal 判定の差し戻し）が
         書く専用の kind。手で report_signal を呼んで報告するものではない
+      - "custom:<名前>": 予約8種のどれにも当てはまらない観測を記録する
+        （例: "custom:external_rule_conflict" で外部の指示と calm が配るルールの
+        衝突を記録する）。既存 kind への流用は、その kind を数える集計を汚すため
+        避けること。名前は [a-z0-9][a-z0-9_-]{0,39}（英小文字・数字・_・-、1〜40字）
 
     同一内容の再報告は自動で集約される(occurrence_count)。
 
     Args:
-        kind: 上記8種のいずれか
+        kind: 上記8種のいずれか、または custom:<名前>
         summary: 1行要約（空文字不可）
         detail: traceback・引数ダイジェスト・自由記述（optional）
         refs: [{"type": "decision", "id": 123}, ...] 形式の参照リスト（optional）
@@ -2368,7 +2372,9 @@ def get_signals(
     Args:
         status: フィルタ対象のstatus（"new"|"triaged"|"promoted"|"dismissed"）。
             null指定で全status横断。デフォルトは未トリアージの"new"のみ
-        kind: フィルタ対象のkind。null指定で全kind横断
+        kind: フィルタ対象のkind（予約8種またはcustom:<名前>）。null指定で全kind横断。
+            custom の個別名はSessionStartの内訳表示ではcustom N 1件に畳まれるため、
+            include_stats=Trueの集計で見る
         limit: 取得件数上限（最大100件、デフォルト20）
         offset: 取得開始位置（ページネーション用）
         include_stats: Trueのとき kind×status のクロス集計と直近30日サマリを付与

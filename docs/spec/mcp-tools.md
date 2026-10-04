@@ -611,7 +611,7 @@ activity束縛の条件が1件以上あるgoalには`children`（内訳を1行�
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
-| kind | string | yes | - | `machine_error` / `friction` / `contradiction` / `precedent_miss` / `precedent_misapplied` / `boundary_case` / `rollback` / `goal_rollback` の8種のいずれか。`goal_rollback`は`update_goal`の`reopen_reason`（goal判定の差し戻し）が書く専用のkindで、手で報告するものではない |
+| kind | string | yes | - | `machine_error` / `friction` / `contradiction` / `precedent_miss` / `precedent_misapplied` / `boundary_case` / `rollback` / `goal_rollback` の8種のいずれか、または `custom:<名前>`（名前は`[a-z0-9][a-z0-9_-]{0,39}`）。`goal_rollback`は`update_goal`の`reopen_reason`（goal判定の差し戻し）が書く専用のkindで、手で報告するものではない。予約8種のどれにも当てはまらない観測は`custom:<名前>`で記録する（既存kindへの流用はその集計を汚す） |
 | summary | string | yes | - | 1行要約（空文字不可） |
 | detail | string | no | null | traceback・引数ダイジェスト・自由記述 |
 | refs | list[{"type", "id"}] | no | null | 参照リスト。`contradiction` では矛盾の両側のidを必須とする |
@@ -626,7 +626,7 @@ activity束縛の条件が1件以上あるgoalには`children`（内訳を1行�
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
 | status | string \| null | no | "new" | `new`/`triaged`/`promoted`/`dismissed`。nullで全status横断 |
-| kind | string \| null | no | null | フィルタ対象のkind。nullで全kind横断 |
+| kind | string \| null | no | null | フィルタ対象のkind（予約8種または`custom:<名前>`）。nullで全kind横断 |
 | limit | int | no | 20 | 最大100 |
 | offset | int | no | 0 | ページネーション |
 | include_stats | bool | no | false | trueでkind×statusのクロス集計と直近30日サマリを付与 |
