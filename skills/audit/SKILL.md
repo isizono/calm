@@ -1,6 +1,7 @@
 ---
 name: audit
 description: 【必須】過去 decision の正当性を疑った状況、同一 tag 内で 3 件目の方針変更 (supersedes 連鎖 / [議論中] 含む) を検知した状況、既決を見落として議論を始めかけた状況、同じバグを 2 回以上観察した状況、設計レビューで「この案前回却下した気がする」と感じた状況、ユーザーから「これ前に決めなかったっけ?」「また同じ話してる」「過去の情報と矛盾してない?」「グルグル回ってない?」「ちゃんと過去の議論を踏まえてる?」など過去判断への疑問・矛盾を表明された状況などで発動。一次リソース + 経緯 log を読み、全体像と文脈不足を分析し、知識を正しい場所 (tag note / habit / anchor / material / decision 改訂提案) に pin する長プロセス skill。このスキルを経由せずに decision の retract / supersede を直接提案してはいけない。TRIGGER: 上記の自発トリガー (T-A1〜T-A5) または ユーザー起点トリガー (T-B1〜T-B3) のいずれか。DO NOT TRIGGER: 設計議論中で挙動が未確定の論点 / 同主題 24h 内 audit 済 / ユーザーが「audit はいい」と明示拒否した直後 / 他 topic 管轄の仕組みのバグ観察 (それは cross-topic-bug-report)。
+user-invocable: false
 ---
 
 # audit
@@ -119,7 +120,7 @@ audit する**主題** (decision 1 件 / 設計テーマ / 同 tag の方針推�
 
 ### Step 4: 関連 log の一通り読み (経緯把握)
 
-`get_logs(topic_id=...)` + `search(keyword=主題キーワード, entity_type="log", tags=[domain_tag])` で経緯 log を取得し**時系列で読む**。N 件・time-window 上限を設けて爆発を防ぐ:
+`get_logs(entity_type="topic", entity_id=...)` + `search(keyword=主題キーワード, entity_type="log", tags=[domain_tag])` で経緯 log を取得し**時系列で読む**。N 件・time-window 上限を設けて爆発を防ぐ:
 
 - 上限: 直近 **30 件 / 90 日** のいずれか狭い方
 - 読む観点: 「誰が・いつ・どんな状況で・なぜ判断を変えたか」「却下案の理由」「再開ループの兆候」

@@ -434,7 +434,8 @@ def get_logs(
         議論ログ一覧（各logにtags付き）
         entity_type == "activity" の場合はrelated topics（上限10件）経由でlogs集約。
             related topics が10件を超える場合、11件目以降の topic に属する log は
-            total_count / truncated の対象外（この上限による切り捨ては可視化されない）
+            total_count / truncated の対象外（この上限による切り捨ては可視化されない）。
+            activityに直接つないだlogは含まれない
         total_count: 対象 topic 全体の log 総件数（retractフィルタ適用後、limit/start_idの影響を受けない）
         truncated: この応答が limit/start_id により後続の log を打ち切ったとき true
             （＝続きのページが存在する）
@@ -479,7 +480,8 @@ def get_decisions(
         決定事項一覧（各decisionにtags付き）
         entity_type == "activity" の場合はrelated topics（上限10件）経由でdecisions集約。
             related topics が10件を超える場合、11件目以降の topic に属する decision は
-            total_count / truncated の対象外（この上限による切り捨ては可視化されない）
+            total_count / truncated の対象外（この上限による切り捨ては可視化されない）。
+            activityに直接つないだdecisionは含まれない
         total_count: 対象 topic 全体の decision 総件数（retractフィルタ適用後、limit/start_idの影響を受けない）
         truncated: この応答が limit/start_id により後続の decision を打ち切ったとき true
             （＝続きのページが存在する）。start_id 未指定時は total_count > limit と一致し、
@@ -2220,6 +2222,10 @@ def get_timeline(
     Choose: topic/activity に紐づく decision/log/material を時系列順に並べたいとき。log だけなら get_logs、decision だけなら get_decisions、関連グラフ走査なら get_map、activity の文脈集約なら check_in（status を in_progress に自動更新する副作用あり、着手時のみ）。
 
     トピックまたはアクティビティに紐づくdecision・log・materialを時系列で返す。
+
+    activity_idを指定すると、そのactivityが属するtopicに紐づく記録を集める。
+    activityに直接relatedでつないだ記録は含まれず、topicを持たないactivityでは空になる。
+    activityに直接つないだ資材は、get_map(entity_type="activity")かcheck_inのcontext.materialsで見える。
 
     Args:
         topic_id: トピックID（activity_idと排他）

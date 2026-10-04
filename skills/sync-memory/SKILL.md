@@ -18,7 +18,7 @@ description: セッション終了前にtranscriptを解析し、トピック・
 まだ記録されていない区間（トピック・決定事項・ログ・資材・アクティビティ）を洗い出す。ここで洗い出した範囲を次のステップでまとめて記録する。同じ突き合わせをステップ4以降でやり直す必要はない。
 
 **アクション:**
-- セッション中に使ったトピックの `get_decisions(topic_id=...)` と `get_logs(topic_id=...)` を実行し、直近の決定事項・ログを取得
+- セッション中に使ったトピックの `get_decisions(entity_type="topic", entity_id=...)` と `get_logs(entity_type="topic", entity_id=...)` を実行し、直近の決定事項・ログを取得
 - `get_activities(status="active")` で未完了アクティビティを取得（pending + in_progress）
 - 取得した既存データとtranscriptを照合し、まだ記録されていない議論・決定・成果物・アクティビティの範囲を特定する
 
