@@ -130,14 +130,20 @@ def _run_stop_hook(
 
 @pytest.fixture
 def env_setup(tmp_path):
+    from src.env_compat import env_names
+
     state_dir = str(tmp_path / "state")
     os.makedirs(state_dir, exist_ok=True)
+    isolated_db_path = str(tmp_path / "isolated.db")
 
     env_override = {
         "HOOK_STATE_DIR": state_dir,
         # 本番DBへ接続しないよう隔離DBを指す。未初期化の空パスのため
         # DB参照を伴う処理は接続/クエリに失敗し、フェイルオープンになる。
-        "DISCUSSION_DB_PATH": str(tmp_path / "isolated.db"),
+        # CALM_DB_PATH（旧名含む）が実行環境に設定されていると
+        # DISCUSSION_DB_PATHより優先されるため、同じ隔離パスで上書きする。
+        "DISCUSSION_DB_PATH": isolated_db_path,
+        **{name: isolated_db_path for name in env_names("CALM_DB_PATH")},
     }
 
     yield {

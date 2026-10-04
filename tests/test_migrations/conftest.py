@@ -5,6 +5,7 @@ sqlite_master / PRAGMA から取得する純粋ヘルパーを提供する。
 """
 import atexit
 import contextlib
+import gc
 import os
 import shutil
 import sqlite3
@@ -72,6 +73,11 @@ def db_before_migration(migration_id: str):
             yield db_path
         finally:
             os.environ.pop("DISCUSSION_DB_PATH", None)
+            # sqlite3.Connectionはstatement cacheとの循環参照でGCが走るまで
+            # 実ファイルを閉じないことがある(CPython 3.12)。Windowsでは開いた
+            # ままのファイルをrmtreeできずWinError 32になるため、tmpdirの
+            # 自動削除(このwith blockを抜けるとき)の前に明示的に回収する。
+            gc.collect()
 
 
 def get_column_names(conn: sqlite3.Connection, table: str) -> set[str]:

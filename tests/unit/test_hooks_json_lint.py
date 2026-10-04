@@ -57,15 +57,20 @@ def _load_hooks_json() -> dict:
 
 
 def _registered_scripts_by_event(hooks_json_path: Path = _HOOKS_JSON_PATH) -> dict[str, list[str]]:
-    """hooks.json の各イベントに登録されているスクリプトのファイル名一覧を返す。"""
+    """hooks.json の各イベントに登録されているスクリプトのファイル名一覧を返す。
+
+    Claude Code側 (exec form: command="uv", スクリプトパスはargsの要素) と
+    Codex側 (shell form: command文字列にスクリプトパスを含む) の両方を扱うため、
+    command と args を連結してから正規表現を当てる。
+    """
     data = json.loads(hooks_json_path.read_text(encoding="utf-8"))
     result: dict[str, list[str]] = {}
     for event_name, matcher_blocks in data.get("hooks", {}).items():
         scripts: list[str] = []
         for block in matcher_blocks:
             for entry in block.get("hooks", []):
-                command = entry.get("command", "")
-                scripts.extend(_COMMAND_SCRIPT_PATTERN.findall(command))
+                haystack = " ".join([entry.get("command", ""), *entry.get("args", [])])
+                scripts.extend(_COMMAND_SCRIPT_PATTERN.findall(haystack))
         result[event_name] = scripts
     return result
 
@@ -108,6 +113,40 @@ class TestHooksJsonScriptExistence:
         assert missing == []
 
 
+def _all_claude_hook_entries() -> list[tuple[str, int, dict]]:
+    data = _load_hooks_json()
+    entries: list[tuple[str, int, dict]] = []
+    for event_name, matcher_blocks in data.get("hooks", {}).items():
+        for block in matcher_blocks:
+            for idx, entry in enumerate(block.get("hooks", [])):
+                entries.append((event_name, idx, entry))
+    return entries
+
+
+_CLAUDE_HOOK_ENTRIES = _all_claude_hook_entries()
+_CLAUDE_HOOK_ENTRY_IDS = [
+    f"{event}#{idx}:{(entry.get('args') or [''])[-1]}" for event, idx, entry in _CLAUDE_HOOK_ENTRIES
+]
+
+
+@pytest.mark.parametrize("event_name,idx,entry", _CLAUDE_HOOK_ENTRIES, ids=_CLAUDE_HOOK_ENTRY_IDS)
+def test_entry_uses_exec_form_without_shell_metacharacters(event_name, idx, entry):
+    """hooks.json の各エントリが exec form (command/args 分離) のままであることを
+    保証する。PowerShell 5.1 は `&&` を、pwsh は `exec` をそれぞれ解釈できないため、
+    shell form (1本の command 文字列) へ退行すると Windows 上のフックが毎回失敗する。
+    """
+    assert entry.get("command") == "uv", f"{event_name}#{idx} は command=='uv' の exec form になっていない"
+    args = entry.get("args")
+    assert args, f"{event_name}#{idx} に args が無い (shell form への退行の疑い)"
+    assert "--directory" in args
+    assert args[args.index("--directory") + 1] == "${CLAUDE_PLUGIN_ROOT}"
+    python_idx = args.index("python")
+    assert args[python_idx + 1 : python_idx + 3] == ["-X", "utf8"]
+    for token in args:
+        assert token not in ("&&", "exec"), f"{event_name}#{idx} にシェル専用トークンが残っている: {token!r}"
+        assert not token.startswith("cd "), f"{event_name}#{idx} にシェル専用トークンが残っている: {token!r}"
+
+
 @pytest.mark.parametrize(
     "script_path", _DECLARING_SCRIPTS, ids=[p.name for p in _DECLARING_SCRIPTS]
 )
@@ -122,6 +161,31 @@ def test_declared_event_script_is_registered_in_hooks_json(script_path: Path):
     event = _declared_event(script_path)
     registered = _registered_scripts_by_event()
     assert script_path.name in registered.get(event, [])
+
+
+def test_deny_nested_bg_hook_matcher_covers_bash_and_powershell():
+    """deny_nested_bg_hook.py を登録している matcher が、Bash と PowerShell の
+    両方の tool_name に re.fullmatch することを保証する。
+
+    本体側 (deny_nested_bg_hook._SHELL_TOOL_NAMES) は単体テストで守られているが、
+    hooks.json 側の matcher が "Bash" 単独に退行しても本体のテストは落ちない。
+    退行すると PowerShell ツールからの呼び出しは Claude Code の段階でこの
+    フックに届かず、本体の PowerShell 対応が死にコードになる。
+    """
+    data = _load_hooks_json()
+    matchers = [
+        block["matcher"]
+        for matcher_blocks in data.get("hooks", {}).values()
+        for block in matcher_blocks
+        if any(
+            "deny_nested_bg_hook.py" in " ".join([entry.get("command", ""), *entry.get("args", [])])
+            for entry in block.get("hooks", [])
+        )
+    ]
+    assert matchers, "deny_nested_bg_hook.py を登録している matcher ブロックが見つからない"
+    for matcher in matchers:
+        assert re.fullmatch(matcher, "Bash"), f"matcher {matcher!r} が Bash にマッチしない"
+        assert re.fullmatch(matcher, "PowerShell"), f"matcher {matcher!r} が PowerShell にマッチしない"
 
 
 class TestCodexHooksJsonConsistency:
@@ -163,7 +227,7 @@ class TestCodexHooksJsonConsistency:
     "script_path", _DECLARING_SCRIPTS, ids=[p.name for p in _DECLARING_SCRIPTS]
 )
 def test_script_module_imports_succeed_under_declared_cwd(script_path: Path):
-    """hooks.json の実行コマンド (`cd ${CLAUDE_PLUGIN_ROOT} && uv run python
+    """hooks.json の実行コマンド (`uv run --directory ${CLAUDE_PLUGIN_ROOT} python
     hooks/<script>.py`) が想定する cwd = プロジェクトルートで、スクリプトの
     トップレベル import が解決できることを確認する。
 
