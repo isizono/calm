@@ -696,7 +696,9 @@ def _build_signals_section(conn, session_id: str | None = None, source: str | No
 
     0件時はコンテキスト消費ゼロ（空文字を返す）。signal_events テーブルが
     存在しない場合は例外が呼び出し元のsection単位try/exceptで握られ、
-    セクション非表示にフォールバックする。
+    セクション非表示にフォールバックする。custom: で始まるkindは個別名を
+    出さず「custom N」の1項目に畳む（予約budget_charsをcustomの増殖で
+    越えて行末の誘導が切れるのを防ぐため）。
     """
     rows = conn.execute(
         "SELECT kind, COUNT(*) AS c FROM signal_events WHERE status = 'new' GROUP BY kind"
@@ -705,7 +707,11 @@ def _build_signals_section(conn, session_id: str | None = None, source: str | No
         return ""
 
     total = sum(row["c"] for row in rows)
-    breakdown = " / ".join(f"{row['kind']} {row['c']}" for row in rows)
+    custom_total = sum(row["c"] for row in rows if row["kind"].startswith("custom:"))
+    parts = [f"{row['kind']} {row['c']}" for row in rows if not row["kind"].startswith("custom:")]
+    if custom_total:
+        parts.append(f"custom {custom_total}")
+    breakdown = " / ".join(parts)
     return f"未トリアージのシグナル: {total}件 ({breakdown}) → get_signals で確認\n"
 
 
