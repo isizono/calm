@@ -291,6 +291,7 @@ def add_topic(
     """新しい議論トピックを追加する。
 
     title: トピックのタイトル（35字以内）
+    description: トピックの説明（必須）
     tags: タグ配列(必須、1個以上)。domain:タグに加えて内容を表すタグも付けること。namespace: domain:(プロジェクト)/intent:(意図)/素タグ(キーワード)。例: ["domain:calm", "intent:implement", "error-handling", "validation", "stdin"]
     related: 関連エンティティ（optional）。[{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...] 形式。複数エンティティを配列で同時紐付け可能。例: [{"type": "topic", "ids": [1, 2]}, {"type": "decision", "ids": [10]}]。作成と同時にリレーションを張る
 
@@ -433,8 +434,9 @@ def get_logs(
     Returns:
         議論ログ一覧（各logにtags付き）
         entity_type == "activity" の場合はrelated topics（上限10件）経由でlogs集約。
-            related topics が10件を超える場合、11件目以降の topic に属する log は
-            total_count / truncated の対象外（この上限による切り捨ては可視化されない）
+            related topics が10件を超える場合、古い側の topic に属する log は
+            total_count / truncated の対象外（この上限による切り捨ては可視化されない）。
+            activityに直接つないだlogは含まれない
         total_count: 対象 topic 全体の log 総件数（retractフィルタ適用後、limit/start_idの影響を受けない）
         truncated: この応答が limit/start_id により後続の log を打ち切ったとき true
             （＝続きのページが存在する）
@@ -478,8 +480,9 @@ def get_decisions(
     Returns:
         決定事項一覧（各decisionにtags付き）
         entity_type == "activity" の場合はrelated topics（上限10件）経由でdecisions集約。
-            related topics が10件を超える場合、11件目以降の topic に属する decision は
-            total_count / truncated の対象外（この上限による切り捨ては可視化されない）
+            related topics が10件を超える場合、古い側の topic に属する decision は
+            total_count / truncated の対象外（この上限による切り捨ては可視化されない）。
+            activityに直接つないだdecisionは含まれない
         total_count: 対象 topic 全体の decision 総件数（retractフィルタ適用後、limit/start_idの影響を受けない）
         truncated: この応答が limit/start_id により後続の decision を打ち切ったとき true
             （＝続きのページが存在する）。start_id 未指定時は total_count > limit と一致し、
@@ -525,7 +528,7 @@ def pull_precedents(
 
     設計文脈から近傍 topic を特定し、routing が当たった topic の非 retract decision を
     ランク競争なしに全件、最低でも索引粒度で応答に含める。予算超過時も切り捨てず
-    truncated/budget で縮退を明示する。read-only（副作用なし）。
+    truncated/budget で縮退を明示する。read-only（statusは更新しない。telemetryへの非同期書き込みはある）。
 
     Args:
         context: これから決めようとしている論点の記述（自由記述、2文字以上）。
@@ -1446,7 +1449,9 @@ def get_material(
     資材の全文を取得する。
 
     check_inのmaterialsセクションはsnippet（先頭200字）止まりで全文は含まれない。
-    全文が同梱されるのはpinされた資材とget_by_idsの応答のみ。check_in経由でsnippetしか
+    全文が同梱されるのはpinされた資材とget_by_idsの応答のみ。ただしpinされた資材も
+    check_in応答全体が予算を超えると途中で切られる・スタブ化されることがある（応答の
+    nextフィールドにget_materialへのポインタが残る）。check_in経由でsnippetしか
     見ていない資材の全文が必要なときや、material_idだけが手元にある単発ケースで使う。
 
     Args:
@@ -1989,7 +1994,8 @@ def export_bundle(
         bundle_name: バンドルディレクトリ名(省略時は`<instance_id>-<日時>-<起点slug>`)
         include_supersede_targets: Trueのとき選択decisionのsupersede先実体も同梱する(デフォルトFalse)
         selection: collect_export_candidatesへの入力をverbatimで記録する任意dict
-            (manifest.yamlのselectionフィールドにそのまま書き込まれる。再exportの追跡用)
+            (manifest.yamlのselectionフィールドにそのまま書き込まれるだけで、読み取り側の
+            実装は無い)
 
     Returns:
         成功時: {"path": str, "bundle_id": str, "counts": {type: n}, "auto_included": [...],
@@ -2221,6 +2227,10 @@ def get_timeline(
 
     トピックまたはアクティビティに紐づくdecision・log・materialを時系列で返す。
 
+    activity_idを指定すると、そのactivityが属するtopicに紐づく記録を集める。
+    activityに直接relatedでつないだ記録は含まれず、topicを持たないactivityでは空になる。
+    activityに直接つないだ資材は、get_map(entity_type="activity")かcheck_inのcontext.materialsで見える。
+
     Args:
         topic_id: トピックID（activity_idと排他）
         activity_id: アクティビティID（topic_idと排他）
@@ -2304,7 +2314,7 @@ def report_signal(
 ) -> dict:
     """calm 自身への故障報告・使用感不満・矛盾検出・運用計測イベントの統一入口。
 
-    kind（8種類、いずれか必須）:
+    kind（予約8種、いずれか必須。または custom:<名前> で独自区分を追加できる）:
       - "machine_error": ツールエラー・hook 失敗・サーバー異常を観察した
       - "friction": calm の使い勝手への不満・違和感（ユーザー発話由来を含む）
       - "contradiction": 既存記録(decision/material/log)と矛盾する結論を出した/検出した。
@@ -2318,11 +2328,15 @@ def report_signal(
         案件識別子を含める（dedup の集約単位を案件ごとに分けるため）
       - "goal_rollback": update_goal の reopen_reason（goal 判定の差し戻し）が
         書く専用の kind。手で report_signal を呼んで報告するものではない
+      - "custom:<名前>": 予約8種のどれにも当てはまらない観測を記録する
+        （例: "custom:external_rule_conflict" で外部の指示と calm が配るルールの
+        衝突を記録する）。既存 kind への流用は、その kind を数える集計を汚すため
+        避けること。名前は [a-z0-9][a-z0-9_-]{0,39}（英小文字・数字・_・-、1〜40字）
 
     同一内容の再報告は自動で集約される(occurrence_count)。
 
     Args:
-        kind: 上記8種のいずれか
+        kind: 上記8種のいずれか、または custom:<名前>
         summary: 1行要約（空文字不可）
         detail: traceback・引数ダイジェスト・自由記述（optional）
         refs: [{"type": "decision", "id": 123}, ...] 形式の参照リスト（optional）
@@ -2358,7 +2372,9 @@ def get_signals(
     Args:
         status: フィルタ対象のstatus（"new"|"triaged"|"promoted"|"dismissed"）。
             null指定で全status横断。デフォルトは未トリアージの"new"のみ
-        kind: フィルタ対象のkind。null指定で全kind横断
+        kind: フィルタ対象のkind（予約8種またはcustom:<名前>）。null指定で全kind横断。
+            custom の個別名はSessionStartの内訳表示ではcustom N 1件に畳まれるため、
+            include_stats=Trueの集計で見る
         limit: 取得件数上限（最大100件、デフォルト20）
         offset: 取得開始位置（ページネーション用）
         include_stats: Trueのとき kind×status のクロス集計と直近30日サマリを付与
@@ -2856,14 +2872,29 @@ def get_sessions() -> dict:
     変換してから見せること。生の自動生成名のままではどのセッションが何をしているか
     判別できない。対応表に無い名前はそのまま表示し「未 check-in」と添える。
 
+    name は CLI 側で変わりうる宛先、cli_session_id と cli_pid は見分けのための値。
+    /resume の後は同じ cli_session_id のプロセスが複数ありうるので、見分けには
+    cli_pid を使う。
+
+    name が同じ行が複数あり ListAgents の宛先を1つに絞れないとき:
+    1. 目的のアクティビティの行を選び、その行の cli_pid を取る
+    2. `claude agents --json` でその pid の行を探し、kind と startedAt を見る
+    3. ListAgents で同じ名前の行のうち種類と「started 〜 ago」が合う行の ref を使い、
+       「名前 [ref]」で SendMessage する
+    4. それでも絞れなければ、候補全部へ目的のアクティビティ名を名指しし
+       「該当しなければ無視」と添えて送る
+
     Returns:
         {"sessions": [{"name": str, "alias": str,
                        "alias_source": "derived" | "manual",
                        "activity_id": int | None, "activity_title": str | None,
                        "activity_status": str | None, "cwd": str | None,
+                       "cli_session_id": str | None, "cli_pid": int | None,
                        "is_self": bool, "updated_at": str}, ...],
          "count": int}
-        updated_at 降順。呼び出し元自身の行は is_self: true（peer として再掲しないこと）
+        cli_session_id と cli_pid は `claude agents --json` の sessionId と pid と
+        同じ値。updated_at 降順。呼び出し元自身の行は is_self: true（peer として
+        再掲しないこと）
     """
     caller_session_id = get_caller_session_id()
     sessions = session_registry_service.list_sessions(self_bridge_session_id=caller_session_id)

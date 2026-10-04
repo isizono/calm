@@ -211,11 +211,16 @@ def _temp_db_template(tmp_path_factory):
     ファイルへマージしてから返す(コピー先で-wal/-shmを気にしなくてよくする)。
     """
     from src.db import init_database
+    from src.env_compat import env_restore, env_set, env_snapshot
 
     template_dir = tmp_path_factory.mktemp("temp_db_template")
     db_path = str(template_dir / "template.db")
     prev_path = os.environ.get("DISCUSSION_DB_PATH")
+    # CALM_DB_PATH（旧名含む）が実行環境に設定されていると
+    # DISCUSSION_DB_PATHより優先されるため、同じ隔離パスで上書きする。
+    calm_db_path_snapshot = env_snapshot("CALM_DB_PATH")
     os.environ["DISCUSSION_DB_PATH"] = db_path
+    env_set("CALM_DB_PATH", db_path)
     try:
         init_database()
     finally:
@@ -223,6 +228,7 @@ def _temp_db_template(tmp_path_factory):
             os.environ.pop("DISCUSSION_DB_PATH", None)
         else:
             os.environ["DISCUSSION_DB_PATH"] = prev_path
+        env_restore(calm_db_path_snapshot)
 
     conn = sqlite3.connect(db_path)
     try:
@@ -240,6 +246,7 @@ def temp_db(_temp_db_template):
     コピーして構築コストを避ける。DISCUSSION_DB_PATH 環境変数を一時パスに
     切り替える。テスト終了時にtmpdirごと破棄される。
     """
+    from src.env_compat import env_pop, env_set
     from src.services.checkin_tier_service import _greeted_sessions
     from src.services.tag_service import _injected_tags
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -250,8 +257,12 @@ def temp_db(_temp_db_template):
             if os.path.exists(aux_src):
                 shutil.copyfile(aux_src, db_path + suffix)
         os.environ["DISCUSSION_DB_PATH"] = db_path
+        # CALM_DB_PATH（旧名含む）が実行環境に設定されていると
+        # DISCUSSION_DB_PATHより優先されるため、同じ隔離パスで上書きする。
+        env_set("CALM_DB_PATH", db_path)
         _injected_tags.clear()
         _greeted_sessions.clear()
         yield db_path
         if "DISCUSSION_DB_PATH" in os.environ:
             del os.environ["DISCUSSION_DB_PATH"]
+        env_pop("CALM_DB_PATH")

@@ -239,7 +239,7 @@ embeddingサーバー未起動・セッション内で提示済みの記録は�
 | include_retracted | bool | no | false | trueで取り消し済みも含む |
 
 **返り値**: `get_logs` は `{logs: [DiscussionLog], total_count: int, truncated: bool, archived_tags: [{tag, archived_reason}]}`、`get_decisions` は `{decisions: [Decision], total_count: int, truncated: bool, archived_tags: [{tag, archived_reason}]}`。`total_count` は対象log/decisionの総件数（limit/start_idの影響を受けない）、`truncated` は limit/start_id で後続を打ち切ったとき true（続きのページが存在する）。`archived_tags` は応答に含まれるlog/decisionのタグのうちarchivedなものの集約で、該当なしでも常に空配列で付く。
-**特殊挙動**: entity_type="activity" の場合、related topics経由で集約される。
+**特殊挙動**: entity_type="activity" の場合、related topics経由で集約される。activityに直接relatedでつないだlog/decisionは含まれない。
 
 ### 2.6 search
 
@@ -595,6 +595,8 @@ activity束縛の条件が1件以上あるgoalには`children`（内訳を1行�
 | limit | int | no | 50 | 最大100 |
 | order | string | no | "desc" | `"desc"` または `"asc"` |
 
+**集約範囲**: activity_id指定時は、そのactivityが属するtopicに紐づく記録をtopic経由で集める。activityに直接relatedでつないだ記録は含まれず、topicを持たないactivityでは空になる。activityに直接つないだ資材はget_map(entity_type="activity")かcheck_inのcontext.materialsで見える。
+
 ### 2.25 get_config
 
 引数なし。返り値: `{heartbeat_timeout, in_progress_limit, pending_limit, recency_decay_rate, sync_disable_retrospective, snapshot_interval_hours, snapshot_max_count, snapshot_anomaly_threshold, precedent_budget_chars, budget_defaults, read_tool_limits}`。スキルが環境変数ベースの設定を参照するときに使う。`budget_defaults` は `budget_service` が把握する予算関連の既定値一覧（`precedent_budget_chars` / `recency_decay_rate` / `recency_decay_floor` / `recency_decay_floor_decision_live` / `precedent_response_chars_max`。いずれもsrc.config由来）。
@@ -611,7 +613,7 @@ activity束縛の条件が1件以上あるgoalには`children`（内訳を1行�
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
-| kind | string | yes | - | `machine_error` / `friction` / `contradiction` / `precedent_miss` / `precedent_misapplied` / `boundary_case` / `rollback` / `goal_rollback` の8種のいずれか。`goal_rollback`は`update_goal`の`reopen_reason`（goal判定の差し戻し）が書く専用のkindで、手で報告するものではない |
+| kind | string | yes | - | `machine_error` / `friction` / `contradiction` / `precedent_miss` / `precedent_misapplied` / `boundary_case` / `rollback` / `goal_rollback` の8種のいずれか、または `custom:<名前>`（名前は`[a-z0-9][a-z0-9_-]{0,39}`）。`goal_rollback`は`update_goal`の`reopen_reason`（goal判定の差し戻し）が書く専用のkindで、手で報告するものではない。予約8種のどれにも当てはまらない観測は`custom:<名前>`で記録する（既存kindへの流用はその集計を汚す） |
 | summary | string | yes | - | 1行要約（空文字不可） |
 | detail | string | no | null | traceback・引数ダイジェスト・自由記述 |
 | refs | list[{"type", "id"}] | no | null | 参照リスト。`contradiction` では矛盾の両側のidを必須とする |
@@ -626,7 +628,7 @@ activity束縛の条件が1件以上あるgoalには`children`（内訳を1行�
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
 | status | string \| null | no | "new" | `new`/`triaged`/`promoted`/`dismissed`。nullで全status横断 |
-| kind | string \| null | no | null | フィルタ対象のkind。nullで全kind横断 |
+| kind | string \| null | no | null | フィルタ対象のkind（予約8種または`custom:<名前>`）。nullで全kind横断 |
 | limit | int | no | 20 | 最大100 |
 | offset | int | no | 0 | ページネーション |
 | include_stats | bool | no | false | trueでkind×statusのクロス集計と直近30日サマリを付与 |
@@ -666,7 +668,9 @@ Claude Codeセッション間の「CLI表示名（例: `workspace-a2`）→人�
 別名は各セッションが`check_in`したアクティビティタイトルから自動生成される（先頭の`[議論]`/`[作業]`等の区分プレフィックスは残し、24文字を超える場合は省略記号「…」で切り詰める）。他セッションの別名と衝突した場合は`-2`, `-3`…のサフィックスが自動で付く。手動で付けた別名（`set_session_alias`）は同じアクティビティへの再check_inでは保持されるが、別のアクティビティへcheck_inし直すと自動生成の別名に戻る。
 
 **get_sessions**: 引数なし。
-**返り値**: `{"sessions": [{"name": str, "alias": str, "alias_source": "derived" | "manual", "activity_id": int | null, "activity_title": str | null, "activity_status": str | null, "cwd": str | null, "is_self": bool, "updated_at": str}, ...], "count": int}`。`updated_at`降順。呼び出し元自身の行は`is_self: true`。CLIプロセスが消滅したセッションの行は自動的に除外される。
+**返り値**: `{"sessions": [{"name": str, "alias": str, "alias_source": "derived" | "manual", "activity_id": int | null, "activity_title": str | null, "activity_status": str | null, "cwd": str | null, "cli_session_id": str | null, "cli_pid": int | null, "is_self": bool, "updated_at": str}, ...], "count": int}`。`cli_session_id`と`cli_pid`は`claude agents --json`の`sessionId`と`pid`と同じ値。`name`は呼び出し時点のCLI名に最新化される（自動命名や`/resume`で変わっても追従する）。`updated_at`降順。呼び出し元自身の行は`is_self: true`。CLIプロセスが消滅したセッションの行は自動的に除外される。
+
+`name`が同じ行が複数あり`ListAgents`の宛先を1つに絞れないときの手順は`get_sessions`のdocstringを正とする（手順を変えるときはdocstringだけを直す）。
 
 **set_session_alias**
 
@@ -889,7 +893,7 @@ CALMが扱うエンティティの内部表現。詳細スキーマは `docs/spe
 - `title: string`
 - `description: string`
 - `tags: list[string]`
-- `created_at: string`、`updated_at: string`
+- `created_at: string`
 
 ### 3.2 Decision
 - `decision_id: int`
