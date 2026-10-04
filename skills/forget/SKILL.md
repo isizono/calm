@@ -1,6 +1,7 @@
 ---
 name: forget
 description: 【必須】過去の記録が現状と矛盾・陳腐化していると判断した状況で発動する自律発動スキル。撤回専用（新規の記憶・保存はrememberの担当で、このスキルでは行わない）。発動状況: (a) 新しいdecisionを記録した直後、過去のdecision/habit/tag-notesと矛盾すると気づいた (b) ユーザー発話に方針転換のニュアンス（「やっぱり」「（保存済みの記録・以前の方針について）もう要らない」「あれはナシで」「今のは撤回」等）が読み取れる (c) 作業・棚卸し中に古いhabits/rules/tag-notesと現状のズレに気づいた (d) 議論クローズ（/af前後）で整理すべき撤回対象が見えた、など。このスキルを経由せずにretractや、auto-memory/CLAUDE.md/rulesファイルの削除を直接行ってはいけない。
+user-invocable: false
 ---
 
 # forget
