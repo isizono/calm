@@ -6,7 +6,11 @@ from src.config import PRECEDENT_ROUTING_K_MAX, PRECEDENT_ROUTING_MISS_DISTANCE
 from src.db import get_connection
 from src.services.precedent_pull_service import route_topics
 from src.services.retract_service import retract
-from src.services.tag_service import get_effective_tags_batch_by_ids, parse_tag, resolve_tag_ids
+from src.services.tag_service import (
+    get_effective_tags_batch_by_ids,
+    parse_tag,
+    resolve_tag_ids,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +168,7 @@ def _get_owner_topic_ids_batch(conn: sqlite3.Connection, decision_ids: list[int]
 
     Returns: {decision_id: topic_id or None}
     """
-    result: dict[int, "int | None"] = {did: None for did in decision_ids}
+    result: dict[int, int | None] = {did: None for did in decision_ids}
     if not decision_ids:
         return result
     placeholders = ",".join("?" * len(decision_ids))

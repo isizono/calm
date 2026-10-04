@@ -10,7 +10,6 @@ import traceback
 from typing import Any
 
 import mcp.types as mt
-
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 
 from src.services import signal_service

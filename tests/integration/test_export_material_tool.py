@@ -9,7 +9,6 @@ from src.services.activity_service import add_activity
 from src.services.material_service import add_material, export_material_to_file
 from src.services.retract_service import retract
 
-
 DEFAULT_TAGS = ["domain:test"]
 
 
@@ -60,7 +59,7 @@ def _export_dir_under_tmp(monkeypatch, tmp_path):
 
 
 def _read(path: str) -> str:
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         return f.read()
 
 

@@ -364,8 +364,8 @@ def _ensure_server_running() -> bool:
     # いる場合はstale lockとして削除し、新規起動する（ポートの生死はここでは
     # 見ない。acquire()とmcp.run()の間にポート未listenの窓があり、ここで
     # ポートを見ると起動直後の正常なサーバーをstale誤判定しうるため）。
-    from src.infra.lock_file import read as read_lock, is_lock_stale
-    from src.infra.lock_file import LOCK_FILE
+    from src.infra.lock_file import LOCK_FILE, is_lock_stale
+    from src.infra.lock_file import read as read_lock
 
     lock_info = read_lock()
     if lock_info is not None and is_lock_stale(lock_info):
@@ -773,7 +773,10 @@ async def _bridge(state: "_StdinBridgeState") -> None:
     import httpx
     from mcp import types
     from mcp.client.streamable_http import streamable_http_client
-    from mcp.shared._httpx_utils import MCP_DEFAULT_SSE_READ_TIMEOUT, MCP_DEFAULT_TIMEOUT
+    from mcp.shared._httpx_utils import (
+        MCP_DEFAULT_SSE_READ_TIMEOUT,
+        MCP_DEFAULT_TIMEOUT,
+    )
 
     # stdin EOFとサーバー切断を区別するためのフラグ
     # stdin EOF: queue_to_serverが先に終了 → 正常終了
@@ -1044,7 +1047,8 @@ def main() -> None:
     # _unregister_session()は失敗を握りつぶすため、登録エンドポイントを持たない
     # 接続先（例: セッションAPIを持たないremote展開）でも安全に呼べる。
     atexit.register(_cleanup)
-    _exit_handler = lambda *_: sys.exit(0)  # atexitが発火する
+    def _exit_handler(*_):
+        return sys.exit(0)  # atexitが発火する
     signal.signal(signal.SIGTERM, _exit_handler)
     # SIGBREAK（Ctrl+Break）はWindowsにしか無い。
     if hasattr(signal, "SIGBREAK"):

@@ -1,9 +1,9 @@
 """update_activityのユニットテスト"""
 import pytest
+
 from src.db import get_connection
 from src.services import goal_service as gs
-from src.services.activity_service import add_activity, update_activity, get_activities
-
+from src.services.activity_service import add_activity, get_activities, update_activity
 
 DEFAULT_TAGS = ["domain:test"]
 

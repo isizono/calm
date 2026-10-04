@@ -16,7 +16,7 @@ with_conn版の分離はconn共有のためではなくテストでの単体呼�
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from src.config import HEARTBEAT_TIMEOUT_MINUTES
 from src.db import get_connection, row_to_dict
@@ -110,7 +110,7 @@ def _days_since(timestamp_str: str, now: datetime) -> int:
     読むと、generated_at・SQL側の:nowバインドと基準時刻がずれうるため
     （日跨ぎの瞬間に発生しうる不整合を避ける）。
     """
-    ts = datetime.fromisoformat(timestamp_str).replace(tzinfo=timezone.utc)
+    ts = datetime.fromisoformat(timestamp_str).replace(tzinfo=UTC)
     return (now - ts).days
 
 
@@ -378,7 +378,7 @@ def get_overview(days: int = DEFAULT_DAYS, limit: int = DEFAULT_LIMIT) -> dict:
     # 同じ基準時刻にする。個別にdatetime.now()するとその間の実時間経過分だけ
     # 理論上ずれうるため、1回だけ計算して使い回す（now_strはSQL・generated_at用、
     # nowはPython側でdays_openを計算する_days_since用）。
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     now_str = now.strftime("%Y-%m-%d %H:%M:%S")
 
     conn = get_connection()

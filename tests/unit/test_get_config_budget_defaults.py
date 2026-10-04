@@ -7,7 +7,6 @@ budget_service が把握する予算関連の既定値一覧が get_config か�
 get_configはinstance_id参照のためDBアクセスを行うため、temp_db fixtureが必要。
 """
 
-import pytest
 
 
 

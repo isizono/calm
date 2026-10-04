@@ -12,7 +12,8 @@ from src.services import search_service
 from src.services.activity_service import add_activity
 from src.services.search_service import fts_retrieve
 from src.services.topic_service import add_topic
-from tests.helpers import add_decision, make_search_context as _make_ctx
+from tests.helpers import add_decision
+from tests.helpers import make_search_context as _make_ctx
 
 DEFAULT_TAGS = ["domain:test"]
 

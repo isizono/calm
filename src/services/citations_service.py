@@ -12,7 +12,7 @@ X は M/D/L/A/T のいずれかで、それぞれ material/decision/log/activity
 """
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from src.db import get_connection
@@ -298,7 +298,7 @@ def record_citation_event(
 
 def _utc_now_stamp() -> str:
     """SQLite の datetime('now') と整合する UTC タイムスタンプ。"""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def apply_raw_to_cite_conversion(
@@ -353,7 +353,7 @@ def apply_raw_to_cite_conversion(
         def validator(target_type: str, target_id: int) -> bool:
             exists = check_target_exists(conn, target_type, target_id)
             if not exists:
-                dangling_set.add((target_type, target_id))
+                dangling_set.add((target_type, target_id))  # noqa: B023 (同じループ内で即時に呼ばれる)
             return exists
 
         converted, counters = convert_raw_to_cite(

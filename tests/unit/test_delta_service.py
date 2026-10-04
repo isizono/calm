@@ -6,11 +6,11 @@ import pytest
 
 from src.db import get_connection
 from src.services.activity_service import add_activity
+from src.services.delta_service import compute_delta, derive_scope, get_baseline
 from src.services.material_service import add_material
 from src.services.relation_service import add_relation
 from src.services.retract_service import retract
 from src.services.topic_service import add_topic
-from src.services.delta_service import compute_delta, derive_scope, get_baseline
 from tests.helpers import add_decision, add_log
 
 
@@ -141,8 +141,8 @@ def test_get_baseline_returns_global_max_regardless_of_topic(temp_db, scope_topi
 
 def test_compute_delta_returns_new_entities_after_watermark(temp_db, scope_topic):
     d_old = add_decision("old decision", "reason", topic_id=scope_topic)
-    l_old = add_log(topic_id=scope_topic, content="old log")
-    m_old = add_material(
+    add_log(topic_id=scope_topic, content="old log")
+    add_material(
         title="Old Material", content="old", tags=["domain:test"], source="test",
         related=[{"type": "topic", "ids": [scope_topic]}],
     )

@@ -12,7 +12,6 @@ import json
 import logging
 import sqlite3
 import threading
-from typing import Optional
 
 from sqlite_vec import serialize_float32
 
@@ -24,7 +23,10 @@ from src.config import (
     PRECEDENT_ROUTING_MISS_DISTANCE,
 )
 from src.db import get_connection, get_db_path, row_to_dict
-from src.services.budget_service import allocate_decision_budget, compute_allocation_order
+from src.services.budget_service import (
+    allocate_decision_budget,
+    compute_allocation_order,
+)
 from src.services.embedding_service import encode_query
 from src.services.material_service import SNIPPET_MAX_LEN
 from src.services.precedent_cluster_service import expand_decision_cluster
@@ -133,10 +135,10 @@ def _decision_display_title(dec: dict) -> str:
 def _build_index_item(
     dec: dict,
     supersede_map: dict[int, dict],
-    superseded_by_map: dict[int, Optional[int]],
+    superseded_by_map: dict[int, int | None],
     material_ids_by_decision: dict[int, set[int]],
-    also_in: Optional[list[int]] = None,
-    destabilization_map: Optional[dict[int, dict]] = None,
+    also_in: list[int] | None = None,
+    destabilization_map: dict[int, dict] | None = None,
 ) -> dict:
     did = dec["id"]
     info = supersede_map.get(did, {"is_superseded": False})
@@ -164,9 +166,9 @@ def _build_full_item(
     dec: dict,
     tags_map: dict[int, list[str]],
     supersede_map: dict[int, dict],
-    superseded_by_map: dict[int, Optional[int]],
+    superseded_by_map: dict[int, int | None],
     material_ids_by_decision: dict[int, set[int]],
-    destabilization_map: Optional[dict[int, dict]] = None,
+    destabilization_map: dict[int, dict] | None = None,
 ) -> dict:
     did = dec["id"]
     info = supersede_map.get(did, {"is_superseded": False, "supersede_chain": [did]})
@@ -313,13 +315,13 @@ def _apply_response_size_gate(
     full_item_locations: dict[int, tuple[int, int]],
     decision_by_id: dict[int, dict],
     supersede_map: dict[int, dict],
-    superseded_by_map: dict[int, Optional[int]],
+    superseded_by_map: dict[int, int | None],
     material_ids_by_decision: dict[int, set[int]],
     response_chars_max: int,
     *,
     topic_rank: dict[int, int],
     owner_of: dict[int, int],
-    destabilization_map: Optional[dict[int, dict]] = None,
+    destabilization_map: dict[int, dict] | None = None,
 ) -> tuple[bool, bool]:
     """本文文字数予算（PRECEDENT_BUDGET_CHARS）内に収まっていても、tags/sections/
     supersede_chain の重複計上やmaterialカタログの併載で実レスポンスが数倍に
@@ -444,7 +446,7 @@ def collect_precedents_with_conn(
             "materials_truncated": False,
         }
 
-    topic_titles: dict[int, Optional[str]] = {}
+    topic_titles: dict[int, str | None] = {}
     topic_decisions: dict[int, list[dict]] = {}
     for topic_id in topic_ids:
         row = conn.execute(
@@ -584,9 +586,9 @@ def collect_precedents_with_conn(
 
 def pull_precedents(
     context: str,
-    topic_ids: Optional[list[int]] = None,
+    topic_ids: list[int] | None = None,
     k: int = 3,
-    budget_chars: Optional[int] = None,
+    budget_chars: int | None = None,
     include_materials: bool = True,
 ) -> dict:
     """route_topics + collect_precedents_with_conn の合成。MCP ツール本体（flavor 適用は呼出側）。
@@ -709,7 +711,7 @@ def _record_precedent_telemetry_async(
     routing: dict,
     decisions_total: int,
     full_count: int,
-) -> Optional[threading.Thread]:
+) -> threading.Thread | None:
     """pull_precedents 呼出の telemetry を別スレッドで非同期書込する。
 
     書込失敗（シリアライズ・DB・スレッド起動のいずれも）は呼出元の応答を壊さず

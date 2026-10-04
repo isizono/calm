@@ -336,7 +336,6 @@ def test_runtime_sync_decision_display_title_null(temp_db):
         install(conn, spec)
         # decisions に投入するには topic が要る
         conn.execute("INSERT INTO discussion_topics (title, description) VALUES ('t', 'd')")
-        topic_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         conn.execute(
             "INSERT INTO decisions (decision, reason, title) VALUES (?, ?, NULL)",
             ("決定本文 uniqdectoken", "理由 uniqreasontoken"),
@@ -367,7 +366,6 @@ def test_runtime_sync_decision_display_title_set(temp_db):
     try:
         install(conn, spec)
         conn.execute("INSERT INTO discussion_topics (title, description) VALUES ('t2', 'd2')")
-        topic_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         conn.execute(
             "INSERT INTO decisions (decision, reason, title) VALUES (?, ?, ?)",
             ("本文タイトルではない", "理由本文", "短いタイトル uniqshort"),
@@ -393,7 +391,6 @@ def test_runtime_sync_all_specs_after_install_all(temp_db):
         conn.execute(
             "INSERT INTO discussion_topics (title, description) VALUES ('tp uniqA001', 'dp uniqA002')"
         )
-        topic_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         # activity
         conn.execute(
             "INSERT INTO activities (title, description, status) VALUES ('act uniqA003', 'desc uniqA004', 'in_progress')"

@@ -14,7 +14,7 @@ import signal
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
 
@@ -488,7 +488,7 @@ def _process_started_at_iso(pid: int) -> str | None:
     この用途には使わない)。
     """
     try:
-        return datetime.fromtimestamp(psutil.Process(pid).create_time(), tz=timezone.utc).isoformat()
+        return datetime.fromtimestamp(psutil.Process(pid).create_time(), tz=UTC).isoformat()
     except psutil.Error:
         return None
 

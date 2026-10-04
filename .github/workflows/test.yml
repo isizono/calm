@@ -67,6 +67,26 @@ jobs:
             --base ${{ github.event.pull_request.base.sha }} \
             --head ${{ github.event.pull_request.head.sha }}
 
+  pre-commit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+          save-cache: false  # 保存は migration-lint のみ(上記 test ジョブのコメント参照)
+          python-version: "3.12"
+
+      - name: Run pre-commit hooks on all files
+        env:
+          # main への直接コミット防止はローカル専用。CI では対象外にする
+          SKIP: no-commit-to-branch
+        run: uvx pre-commit run --all-files --show-diff-on-failure
+
   doc-gen-drift:
     runs-on: ubuntu-latest
 

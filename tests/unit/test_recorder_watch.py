@@ -22,10 +22,10 @@ import pytest
 
 fcntl = pytest.importorskip("fcntl")
 
-from hooks import recorder_watch as hook
-from hooks.hook_state import HookState
-from hooks.recorder_marker import marker_path, write_marker
-from src.harness.claude_code import ClaudeCodeHarness
+from hooks import recorder_watch as hook  # noqa: E402
+from hooks.hook_state import HookState  # noqa: E402
+from hooks.recorder_marker import marker_path, write_marker  # noqa: E402
+from src.harness.claude_code import ClaudeCodeHarness  # noqa: E402
 
 _FAKE_PS_STARTED_AT = "Thu Jul 24 09:32:04 2026"
 _MAIN_PID = 999

@@ -7,7 +7,6 @@ import pytest
 from src.db import get_connection
 from src.services.tag_service import ensure_tag_ids, link_tags
 
-
 DEFAULT_TAGS = [("domain", "test")]
 
 

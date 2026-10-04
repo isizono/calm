@@ -9,7 +9,7 @@ import os
 import socket
 import sys
 from pathlib import Path
-from typing import Optional, TypedDict
+from typing import TypedDict
 
 import psutil
 
@@ -25,7 +25,7 @@ class LockInfo(TypedDict):
     """ロックファイルに記録する情報"""
     pid: int
     port: int
-    start_time: Optional[str]
+    start_time: str | None
 
 
 def acquire(port: int) -> bool:
@@ -89,7 +89,7 @@ def _try_create_exclusive(info: LockInfo) -> bool:
         return False
 
 
-def read() -> Optional[LockInfo]:
+def read() -> LockInfo | None:
     """ロックファイルを読み取る。
 
     Returns:
@@ -107,7 +107,7 @@ def read() -> Optional[LockInfo]:
         return None
 
 
-def release(pid: Optional[int] = None) -> None:
+def release(pid: int | None = None) -> None:
     """ロックファイルを削除する。
 
     `pid`が記録されたpidと一致する場合のみ削除する。省略時は呼び出し元

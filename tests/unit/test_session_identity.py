@@ -10,8 +10,7 @@ import sys
 
 import pytest
 
-from src.infra import cli_session
-from src.infra import session_identity
+from src.infra import cli_session, session_identity
 
 
 class TestGetCallerSessionId:

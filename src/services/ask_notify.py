@@ -17,7 +17,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -80,7 +80,7 @@ def write_notification(ask_id: int, status: str) -> None:
             {
                 "ask_id": ask_id,
                 "status": status,
-                "at": datetime.now(timezone.utc).isoformat(),
+                "at": datetime.now(UTC).isoformat(),
             },
             ensure_ascii=False,
         )

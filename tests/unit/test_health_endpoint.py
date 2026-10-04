@@ -3,8 +3,8 @@
 worker self-exit on MCP loss のための death judgement に使われる。
 """
 
-import json
 import asyncio
+import json
 
 import pytest
 from starlette.requests import Request

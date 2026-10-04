@@ -1,35 +1,42 @@
 """決定事項管理サービス"""
 import sqlite3
-from typing import Optional
+
 from src.db import get_connection, row_to_dict
+from src.services.budget_service import count_entities_for_topics
 from src.services.citations_service import (
     apply_and_writeback_conversions,
     upsert_citations_for_owner_with_conn,
 )
-from src.services.readable_id import strip_entity_id_inplace
-from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
-from src.services.tag_service import (
-    validate_and_parse_tags,
-    ensure_tag_ids,
-    link_tags,
-    get_effective_tags_batch,
-    get_effective_tags_batch_by_ids,
-    parse_tag,
-    resolve_tag_ids,
-    _append_tag_notes_with_conn,
-)
 from src.services.direction_service import (
-    DIRECTION_NAMESPACE,
     DIRECTION_NAME,
+    DIRECTION_NAMESPACE,
     get_direction_decisions,
 )
-from src.services.budget_service import count_entities_for_topics
+from src.services.embedding_service import (
+    build_embedding_text,
+    generate_and_store_embedding,
+)
 from src.services.habit_service import _add_habit_with_conn
-from src.services.precedent_pure import attach_precedent, parse_precedent_sections, summarize_precedent
+from src.services.precedent_pure import (
+    attach_precedent,
+    parse_precedent_sections,
+    summarize_precedent,
+)
+from src.services.readable_id import strip_entity_id_inplace
 from src.services.relation_service import _add_relation_with_conn
 from src.services.supersede_service import (
     compute_destabilization_info_batch,
     compute_supersede_info_batch,
+)
+from src.services.tag_service import (
+    _append_tag_notes_with_conn,
+    ensure_tag_ids,
+    get_effective_tags_batch,
+    get_effective_tags_batch_by_ids,
+    link_tags,
+    parse_tag,
+    resolve_tag_ids,
+    validate_and_parse_tags,
 )
 from src.services.title_validation import validate_title
 
@@ -64,7 +71,7 @@ def _apply_adjacent_check_warning(item: dict, tags: list[str]) -> None:
     item.setdefault("precedent_warnings", []).append(_ADJACENT_CHECK_WARNING)
 
 
-def add_decisions(items: list[dict], caller_session_id: Optional[str] = None) -> dict:
+def add_decisions(items: list[dict], caller_session_id: str | None = None) -> dict:
     """
     複数の決定事項を一括記録する（最大10件）。
 
@@ -393,7 +400,7 @@ def _build_decision_item(
     dec: dict,
     tags_map: dict[int, list[str]],
     supersede_map: dict[int, dict],
-    destabilization_map: Optional[dict[int, dict]] = None,
+    destabilization_map: dict[int, dict] | None = None,
 ) -> dict:
     """SELECT * FROM decisions の 1 行から返却用の decision item を組み立てる。
 
@@ -441,7 +448,7 @@ def _count_decisions_for_topics(
     conn: sqlite3.Connection,
     topic_ids: list[int],
     decision_retract_filter: str,
-    id_bound: Optional[tuple[str, int]] = None,
+    id_bound: tuple[str, int] | None = None,
 ) -> int:
     """topic_ids にbelongs_toするdecision件数（DISTINCTで重複除外）を返す。
 
@@ -457,7 +464,7 @@ def _count_decisions_for_topics(
 def get_decisions(
     entity_type: str,
     entity_id: int,
-    start_id: Optional[int] = None,
+    start_id: int | None = None,
     limit: int = 30,
     include_retracted: bool = False,
 ) -> dict:

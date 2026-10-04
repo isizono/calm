@@ -3,7 +3,6 @@
 hooks/heartbeat.py, hook_state.py (checked_in_activity), hook_transcript.py (extract_checkin_activity_id)
 """
 import json
-from pathlib import Path
 
 import pytest
 
@@ -15,8 +14,7 @@ from src.harness import ClaudeCodeHarness
 def _read_entries(path: str):
     """extract_last_activity_id用に実運用と同じ経路でtranscriptを読む。"""
     return ClaudeCodeHarness().read_transcript_entries(path)
-from src.db import get_connection
-
+from src.db import get_connection  # noqa: E402
 
 # ========================================
 # hook_state: checked_in_activity
@@ -328,8 +326,8 @@ class TestExtractLastActivityId:
 class TestUpdateHeartbeat:
     def test_updates_last_heartbeat_at(self, temp_db):
         """update_heartbeatでlast_heartbeat_atが更新される"""
-        from src.services.activity_service import add_activity
         from hooks.heartbeat import update_heartbeat
+        from src.services.activity_service import add_activity
 
         result = add_activity(
             title="Heartbeat Test",
@@ -362,8 +360,8 @@ class TestUpdateHeartbeat:
 
     def test_multiple_updates(self, temp_db):
         """複数回呼び出しても最新の時刻に更新される"""
-        from src.services.activity_service import add_activity
         from hooks.heartbeat import update_heartbeat
+        from src.services.activity_service import add_activity
 
         result = add_activity(
             title="Heartbeat Test 2",
@@ -396,8 +394,8 @@ class TestUpdateHeartbeat:
 
     def test_writes_session_id_when_provided(self, temp_db):
         """update_heartbeat に session_id を渡すと last_heartbeat_session_id に保存される"""
-        from src.services.activity_service import add_activity
         from hooks.heartbeat import update_heartbeat
+        from src.services.activity_service import add_activity
 
         result = add_activity(
             title="Heartbeat session_id Test",
@@ -422,8 +420,8 @@ class TestUpdateHeartbeat:
 
     def test_session_id_defaults_to_null(self, temp_db):
         """session_id を渡さない場合 last_heartbeat_session_id は NULL のまま"""
-        from src.services.activity_service import add_activity
         from hooks.heartbeat import update_heartbeat
+        from src.services.activity_service import add_activity
 
         result = add_activity(
             title="Heartbeat no-session_id Test",
@@ -448,8 +446,8 @@ class TestUpdateHeartbeat:
 
     def test_session_id_updated_on_subsequent_heartbeat(self, temp_db):
         """別 session_id で再度 update_heartbeat すると上書きされる"""
-        from src.services.activity_service import add_activity
         from hooks.heartbeat import update_heartbeat
+        from src.services.activity_service import add_activity
 
         result = add_activity(
             title="Heartbeat session_id Overwrite Test",

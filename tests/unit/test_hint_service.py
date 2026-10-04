@@ -31,8 +31,8 @@ from src.services.hint_service import (
 )
 from src.services.material_service import add_material
 from src.services.pin_service import add_pin
-from src.services.topic_service import add_topic
 from src.services.tag_service import _TAG_NOTES_RATCHET_CEILING, update_tag
+from src.services.topic_service import add_topic
 from tests.helpers import add_decision, assert_no_write_errors, force_notes_over_ceiling
 
 DOMAIN_TAG_NAME = "hint-domain"
@@ -372,7 +372,7 @@ class TestDirectionOverflow:
 
 class TestNotesOverBudget:
     def test_fires_when_over_ceiling(self, temp_db):
-        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        add_topic(title="t", description="d", tags=[DOMAIN_TAG])
         tag_id = _tag_id(DOMAIN_TAG_NAME)
         force_notes_over_ceiling(tag_id, _TAG_NOTES_RATCHET_CEILING + 1)
 
@@ -385,7 +385,7 @@ class TestNotesOverBudget:
         assert budget_hints[0]["suggested_action"]["tool"] == "demote_tag_notes"
 
     def test_silent_within_ceiling(self, temp_db):
-        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        add_topic(title="t", description="d", tags=[DOMAIN_TAG])
         tag_id = _tag_id(DOMAIN_TAG_NAME)
         update_tag(DOMAIN_TAG, notes="x" * _TAG_NOTES_RATCHET_CEILING)
 
@@ -396,7 +396,7 @@ class TestNotesOverBudget:
         """notes_over_budgetは恒久抑制（日付なしマーカー）を認めない。notesが
         長すぎる状態を恒久的に黙らせられるべきではないため、超過が解消するまで
         発火し続ける。"""
-        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        add_topic(title="t", description="d", tags=[DOMAIN_TAG])
         tag_id = _tag_id(DOMAIN_TAG_NAME)
         over_budget_with_marker = (
             "x" * (_TAG_NOTES_RATCHET_CEILING + 1) + f"\n\n{MARKER_NOTES_OVER_BUDGET}"
@@ -407,7 +407,7 @@ class TestNotesOverBudget:
         assert any(h["type"] == "notes_over_budget" for h in hints)
 
     def test_suppressed_by_dated_marker_not_yet_expired(self, temp_db):
-        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        add_topic(title="t", description="d", tags=[DOMAIN_TAG])
         tag_id = _tag_id(DOMAIN_TAG_NAME)
         over_budget_with_marker = (
             "x" * (_TAG_NOTES_RATCHET_CEILING + 1)
@@ -419,7 +419,7 @@ class TestNotesOverBudget:
         assert [h for h in hints if h["type"] == "notes_over_budget"] == []
 
     def test_fires_again_after_dated_marker_expires(self, temp_db):
-        topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
+        add_topic(title="t", description="d", tags=[DOMAIN_TAG])
         tag_id = _tag_id(DOMAIN_TAG_NAME)
         over_budget_with_expired_marker = (
             "x" * (_TAG_NOTES_RATCHET_CEILING + 1)

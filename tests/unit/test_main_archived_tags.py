@@ -8,13 +8,13 @@
 """
 import pytest
 
-from src.services.tag_service import update_tag as _svc_update_tag, _injected_tags
-from src.services.topic_service import add_topic
-from src.services.discussion_log_service import add_logs
-from src.services.decision_service import add_decisions
 from src.services.activity_service import add_activity
+from src.services.decision_service import add_decisions
+from src.services.discussion_log_service import add_logs
+from src.services.tag_service import _injected_tags
+from src.services.tag_service import update_tag as _svc_update_tag
+from src.services.topic_service import add_topic
 from tests.helpers import add_decision, assert_no_write_errors
-
 
 DEFAULT_TAGS = ["domain:test"]
 
@@ -306,8 +306,8 @@ class TestSearchArchivedTagsSummary:
     """
 
     def test_archived_tag_present_in_summary(self, temp_db, monkeypatch):
-        from src.main import search
         import src.services.embedding_service as emb
+        from src.main import search
 
         monkeypatch.setattr(emb, "_server_initialized", False)
         monkeypatch.setattr(emb, "_backfill_done", True)
@@ -332,8 +332,8 @@ class TestSearchArchivedTagsSummary:
         assert "domain:main-search-summary-legacy" in tags_seen
 
     def test_no_archived_tags_returns_empty_list(self, temp_db, monkeypatch):
-        from src.main import search
         import src.services.embedding_service as emb
+        from src.main import search
 
         monkeypatch.setattr(emb, "_server_initialized", False)
         monkeypatch.setattr(emb, "_backfill_done", True)

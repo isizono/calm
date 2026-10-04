@@ -7,7 +7,6 @@ report_signal(kind="precedent_miss")の呼び出しは、本サービスの範�
 呼び出し側（skills/sync-memory/SKILL.md ステップ5）に残す。
 """
 from pathlib import Path
-from typing import Optional
 
 from scripts.detect_reask_candidates import extract_candidates
 from src.services import search_service
@@ -24,7 +23,7 @@ def detect_reask_candidates(
     search_top_n: int = DEFAULT_SEARCH_TOP_N,
     search_limit: int = DEFAULT_SEARCH_LIMIT,
     score_threshold: float = DEFAULT_SCORE_THRESHOLD,
-    caller_session_id: Optional[str] = None,
+    caller_session_id: str | None = None,
 ) -> dict:
     """transcriptから聞き返し候補を抽出し、上位N件について既存記録の類似検索まで行う。
 

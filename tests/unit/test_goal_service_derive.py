@@ -115,7 +115,7 @@ def _set_condition_updated_at(condition_id: int, sql_offset: str) -> None:
     conn = get_connection()
     try:
         conn.execute(
-            f"UPDATE goal_conditions SET updated_at = datetime('now', ?) WHERE id = ?",
+            "UPDATE goal_conditions SET updated_at = datetime('now', ?) WHERE id = ?",
             (sql_offset, condition_id),
         )
         conn.commit()
@@ -1286,7 +1286,7 @@ class TestGetGoalLogsSinceCreated:
 
     def test_available_via_activity_and_handle_scope_too(self, temp_db):
         act = _activity()
-        goal_id = _new_goal(act, conditions=[{"statement": "c1", "actor": "claude"}])["goal_id_raw"]
+        _new_goal(act, conditions=[{"statement": "c1", "actor": "claude"}])
         by_activity = gs.get_goal(activity_id=act)
         by_handle = gs.get_goal(handle=by_activity["handle"])
         assert by_activity["logs_since_created"]["count"] == 0

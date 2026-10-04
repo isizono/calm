@@ -7,7 +7,6 @@ A#975 / D#2755 で導入したパス解決ロジック:
 
 worktree 経由の解決はモックではなく実 git で検証する（plan.md 指示）。
 """
-import os
 import subprocess
 from pathlib import Path
 

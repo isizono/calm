@@ -8,9 +8,6 @@ import sqlite3
 import pytest
 
 import src.services.embedding_service as emb
-from src.services.topic_service import add_topic
-from src.services.tag_service import update_tag
-
 from scripts.rules_promotion_scan import (
     _embed_texts,
     _open_readonly_connection,
@@ -19,6 +16,8 @@ from scripts.rules_promotion_scan import (
     render_text_report,
     scan_candidates,
 )
+from src.services.tag_service import update_tag
+from src.services.topic_service import add_topic
 
 
 @pytest.fixture

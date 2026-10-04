@@ -7,11 +7,11 @@ import sys
 
 import src.services as services_pkg
 from hooks.stop_hook import _collect_logs_sparse_nudges
-from src.db import get_connection
 
 # collection時点でconfig.DB_PATHをNoneに確定させ、temp_dbの一時パスがテンプレDBに
 # 固定される既存の潜在バグ(本ファイル単体実行時のみ再現)を回避する。
 from src import config  # noqa: F401,E402
+from src.db import get_connection
 
 
 def _decision_events(topic_id: int = 1) -> list[dict]:

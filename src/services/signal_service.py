@@ -11,7 +11,6 @@ import logging
 import re
 import sqlite3
 import sys
-from typing import Optional
 
 from src.db import get_connection, row_to_dict
 from src.services.dedup_helpers import compute_fingerprint16, normalize_text
@@ -74,7 +73,7 @@ def _invalid_kind_message(kind: str) -> str:
     )
 
 
-def _to_json_or_raise(value: Optional[object], field_name: str) -> Optional[str]:
+def _to_json_or_raise(value: object | None, field_name: str) -> str | None:
     if value is None:
         return None
     try:
@@ -88,11 +87,11 @@ def record_signal(
     summary: str,
     *,
     source: str = "agent",
-    detail: Optional[str] = None,
-    refs: Optional[list[dict]] = None,
-    context: Optional[dict] = None,
-    session_id: Optional[str] = None,
-    conn: Optional[sqlite3.Connection] = None,
+    detail: str | None = None,
+    refs: list[dict] | None = None,
+    context: dict | None = None,
+    session_id: str | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> dict:
     """検証あり・例外を投げる通常経路でシグナルを1件記録する。
 
@@ -181,10 +180,10 @@ def capture_signal_safe(
     summary: str,
     *,
     source: str = "agent",
-    detail: Optional[str] = None,
-    refs: Optional[list[dict]] = None,
-    context: Optional[dict] = None,
-    session_id: Optional[str] = None,
+    detail: str | None = None,
+    refs: list[dict] | None = None,
+    context: dict | None = None,
+    session_id: str | None = None,
 ) -> None:
     """捕捉経路用。いかなる例外も外に漏らさない (stderr へ出すのみ)。
 
@@ -206,8 +205,8 @@ def capture_signal_safe(
 
 
 def get_signals(
-    status: Optional[str] = "new",
-    kind: Optional[str] = None,
+    status: str | None = "new",
+    kind: str | None = None,
     limit: int = 20,
     offset: int = 0,
     include_stats: bool = False,
@@ -380,8 +379,8 @@ def _compute_stats(conn: sqlite3.Connection) -> dict:
 def update_signal(
     signal_id: int,
     status: str,
-    promoted_type: Optional[str] = None,
-    promoted_id: Optional[int] = None,
+    promoted_type: str | None = None,
+    promoted_id: int | None = None,
 ) -> dict:
     """シグナルのトリアージ状態を遷移する。
 

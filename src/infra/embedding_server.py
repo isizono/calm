@@ -122,7 +122,7 @@ class EmbeddingHandler(BaseHTTPRequestHandler):
                 return
             body = self.rfile.read(content_length)
             data = json.loads(body)
-        except (json.JSONDecodeError, ValueError) as e:
+        except (json.JSONDecodeError, ValueError):
             self._send_json(400, {"error": "Invalid request body"})
             return
 

@@ -1315,7 +1315,7 @@ class TestStaleOwRoleEnvIgnored:
         state_dir = env_setup["state_dir"]
         db_path = str(env_setup["tmp_path"] / "normal.db")
         import src.config
-        from src.db import init_database, get_connection
+        from src.db import get_connection, init_database
         monkeypatch.setenv("DISCUSSION_DB_PATH", db_path)
         monkeypatch.setattr(src.config, "DB_PATH", db_path)
         init_database()

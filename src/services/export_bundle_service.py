@@ -23,25 +23,26 @@ import logging
 import os
 import sqlite3
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import yaml
 
 from src.db import get_connection, row_to_dict
+from src.services import material_service
 from src.services.citations_pure import (
+    _CITE_PATTERN,
     OWNER_TEXT_FIELDS,
     TYPE_CODE_TO_NAME,
     TYPE_NAME_TO_CODE,
     TYPE_TO_TABLE,
     TYPE_TO_TITLE_EXPR,
     TYPES_WITH_RETRACT,
-    _CITE_PATTERN,
     check_target_exists,
     convert_raw_to_cite,
 )
 from src.services.export_candidate_service import (
-    ALL_CATALOG_TYPES,
     _JUNCTION,
+    ALL_CATALOG_TYPES,
     _fetch_rows_for_type_with_conn,
 )
 from src.services.instance_service import get_instance_id_with_conn
@@ -49,7 +50,6 @@ from src.services.internal_id_patterns import (
     RAW_CITE_CODE_PATTERN,
     RAW_CITE_FULLWORD_PATTERN,
 )
-from src.services import material_service
 from src.services.material_service import _is_within_export_dir, _slugify_title
 from src.services.relation_service import (
     _fetch_belongs_to_ids_with_conn,
@@ -492,7 +492,7 @@ def _compute_content_hash(
 
 
 def _default_bundle_name(instance_id: str, rows_by_key: dict, items: list[dict]) -> str:
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     first_item = items[0]
     first_key = (first_item["type"], first_item["ids"][0])
     row_d = rows_by_key.get(first_key, {})
@@ -832,8 +832,8 @@ def export_bundle(
             all_tag_strings.update(tags)
         tag_definitions = _fetch_tag_definitions_with_conn(conn, all_tag_strings)
 
-        bundle_id = f"{instance_id}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
-        exported_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        bundle_id = f"{instance_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
+        exported_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
         manifest = {
             "format": BUNDLE_FORMAT,
             "bundle_id": bundle_id,

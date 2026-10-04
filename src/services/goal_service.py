@@ -22,7 +22,6 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from typing import Optional
 
 from src.config import GOAL_RECHECK_HOURS, HEARTBEAT_TIMEOUT_MINUTES
 from src.db import get_connection
@@ -199,7 +198,7 @@ def _insert_condition(conn: sqlite3.Connection, goal_id: int, value: dict) -> in
 # ========================================
 
 
-def _validate_handle(handle: object) -> Optional[dict]:
+def _validate_handle(handle: object) -> dict | None:
     if not isinstance(handle, str) or not _HANDLE_RE.match(handle):
         return _validation_error("handle must contain only lowercase letters, digits, and hyphens")
     if len(handle) > HANDLE_MAX_LEN:
@@ -207,7 +206,7 @@ def _validate_handle(handle: object) -> Optional[dict]:
     return None
 
 
-def _validate_goal_arg(goal: object) -> Optional[dict]:
+def _validate_goal_arg(goal: object) -> dict | None:
     """set_goalのgoal引数（4形のいずれか）の形を検証する。中身の詳細検証は各分岐で行う。"""
     if goal is None:
         return None
@@ -219,7 +218,7 @@ def _validate_goal_arg(goal: object) -> Optional[dict]:
     return None
 
 
-def set_goal_with_conn(conn: sqlite3.Connection, activity_id: int, goal: Optional[dict], replace: bool = False) -> dict:
+def set_goal_with_conn(conn: sqlite3.Connection, activity_id: int, goal: dict | None, replace: bool = False) -> dict:
     err = _validate_goal_arg(goal)
     if err:
         return err
@@ -388,7 +387,7 @@ def set_goal_with_conn(conn: sqlite3.Connection, activity_id: int, goal: Optiona
     return result
 
 
-def set_goal(activity_id: int, goal: Optional[dict], replace: bool = False) -> dict:
+def set_goal(activity_id: int, goal: dict | None, replace: bool = False) -> dict:
     """activityのgoal上の立場を決める（新規作成/既存への紐づけ/不要印/未定義への解除）。
 
     成功時は、このactivityを指定した読み出しとしてgoalブロック（規則1〜4を
@@ -422,7 +421,7 @@ def set_goal(activity_id: int, goal: Optional[dict], replace: bool = False) -> d
 # ========================================
 
 
-def _apply_change_add(conn: sqlite3.Connection, goal_id: int, change: dict) -> Optional[dict]:
+def _apply_change_add(conn: sqlite3.Connection, goal_id: int, change: dict) -> dict | None:
     result = _validate_condition_form(change)
     if not result["ok"]:
         return result["error"]
@@ -448,7 +447,7 @@ def _get_condition_for_goal(conn: sqlite3.Connection, goal_id: int, condition_id
     return {"ok": True, "row": row}
 
 
-def _apply_change_set(conn: sqlite3.Connection, goal_id: int, change: dict) -> Optional[dict]:
+def _apply_change_set(conn: sqlite3.Connection, goal_id: int, change: dict) -> dict | None:
     lookup = _get_condition_for_goal(conn, goal_id, change.get("id"))
     if not lookup["ok"]:
         return lookup["error"]
@@ -484,7 +483,7 @@ def _apply_change_set(conn: sqlite3.Connection, goal_id: int, change: dict) -> O
     return None
 
 
-def _apply_change_edit(conn: sqlite3.Connection, goal_id: int, change: dict) -> Optional[dict]:
+def _apply_change_edit(conn: sqlite3.Connection, goal_id: int, change: dict) -> dict | None:
     lookup = _get_condition_for_goal(conn, goal_id, change.get("id"))
     if not lookup["ok"]:
         return lookup["error"]
@@ -527,7 +526,7 @@ def _apply_change_edit(conn: sqlite3.Connection, goal_id: int, change: dict) -> 
 _CHANGE_APPLIERS = {"add": _apply_change_add, "set": _apply_change_set, "edit": _apply_change_edit}
 
 
-def _validate_changes_structure(changes: list) -> Optional[dict]:
+def _validate_changes_structure(changes: list) -> dict | None:
     if not isinstance(changes, list):
         return _validation_error("changes must be a list")
     seen: set[tuple[int, str]] = set()
@@ -552,10 +551,10 @@ def _validate_changes_structure(changes: list) -> Optional[dict]:
 def update_goal_with_conn(
     conn: sqlite3.Connection,
     goal_id: int,
-    changes: Optional[list[dict]] = None,
-    statement: Optional[str] = None,
-    reopen_reason: Optional[str] = None,
-    session_id: Optional[str] = None,
+    changes: list[dict] | None = None,
+    statement: str | None = None,
+    reopen_reason: str | None = None,
+    session_id: str | None = None,
 ) -> dict:
     changes = changes or []
 
@@ -636,10 +635,10 @@ def update_goal_with_conn(
 
 def update_goal(
     goal_id: int,
-    changes: Optional[list[dict]] = None,
-    statement: Optional[str] = None,
-    reopen_reason: Optional[str] = None,
-    session_id: Optional[str] = None,
+    changes: list[dict] | None = None,
+    statement: str | None = None,
+    reopen_reason: str | None = None,
+    session_id: str | None = None,
 ) -> dict:
     """条件の追加・状態の書き込み・担い手と束縛の変更、goalの一文の修正、差し戻しを行う。
 
@@ -672,7 +671,7 @@ def judge_goal_with_conn(
     conn: sqlite3.Connection,
     goal_id: int,
     verdict: str,
-    note: Optional[str] = None,
+    note: str | None = None,
     judged_by: str = "session",
 ) -> dict:
     if verdict not in VALID_VERDICTS:
@@ -784,7 +783,7 @@ def judge_goal_with_conn(
 def judge_goal(
     goal_id: int,
     verdict: str,
-    note: Optional[str] = None,
+    note: str | None = None,
     judged_by: str = "session",
 ) -> dict:
     """goalの終了を明示的に判定して閉じる。紐づく未完了のactivityも同時に閉じる。
@@ -820,7 +819,7 @@ def _fetch_bound_states(
     conn: sqlite3.Connection,
     bound_specs: list[tuple[str, int]],
     *,
-    exclude_goal_id: Optional[int],
+    exclude_goal_id: int | None,
 ) -> dict:
     """複数の束縛先の現在状態を、束縛の型（最大3種）ごとに1本の問い合わせで読む。
 
@@ -991,7 +990,7 @@ def _fetch_bound_states(
     return result
 
 
-def _condition_flags(cond_row, bound_state: Optional[dict]) -> list[str]:
+def _condition_flags(cond_row, bound_state: dict | None) -> list[str]:
     """条件1行の5フラグ（reopened/broken/bound_done/bound_failed/recheck）を導く。
 
     崩れ（broken）は、充足済みの条件がdecisionを束縛している場合だけ検査する
@@ -1064,7 +1063,7 @@ def _enrich_conditions(condition_rows, bound_states: dict) -> list[dict]:
 
 
 def _bound_states_for_conditions(
-    conn: sqlite3.Connection, condition_rows, *, exclude_goal_id: Optional[int]
+    conn: sqlite3.Connection, condition_rows, *, exclude_goal_id: int | None
 ) -> dict:
     bound_specs = [(c["bound_type"], c["bound_id"]) for c in condition_rows if c["bound_type"] is not None]
     if not bound_specs:
@@ -1158,7 +1157,7 @@ _UNDEFINED_NEXT = {
 }
 
 
-def _activity_scope_next(pending_asks: Optional[dict]) -> Optional[dict]:
+def _activity_scope_next(pending_asks: dict | None) -> dict | None:
     """規則1（回答待ちのask）・規則2（振り分け待ちのask）。
 
     activityを指定した読み出しでだけ評価する。completedのactivityでは
@@ -1353,7 +1352,7 @@ def _rule14_waiting(ctx: dict) -> dict:
 # ここに1行足すか動かすだけでよい。規則15（失敗した子の手当て）は既存の
 # 規則5〜14を詰め直さずに追加したため番号は末尾だが、評価の順番は規則6の
 # 直後・規則7の前に置く（子の崩れの手当てが先、差し戻しの手当てが次）。
-_GOAL_SCOPE_RULES: list[tuple[int, "callable", "callable"]] = [
+_GOAL_SCOPE_RULES: list[tuple[int, callable, callable]] = [
     (5, lambda ctx: ctx["goal_row"]["closed"] == 1, _rule5_judged),
     (6, lambda ctx: bool(ctx["broken"]), _rule6_broken),
     (15, lambda ctx: bool(ctx["bound_failed"]), _rule15_bound_failed),
@@ -1379,7 +1378,7 @@ def _select_next_goal_scope(goal_row, conditions: list[dict], *, activity_scoped
     raise AssertionError("規則14が常にTrueを返すため、ここには到達しない")
 
 
-def _bound_display(bound_type: str, bound_state: Optional[dict]) -> Optional[str]:
+def _bound_display(bound_type: str, bound_state: dict | None) -> str | None:
     """goalブロック表示用の束縛先1行 `"<型>『<タイトル>』: <済/未/失敗/崩れの理由>"` を作る。"""
     if bound_state is None:
         return None
@@ -1435,7 +1434,7 @@ def _fetch_child_liveness(conn: sqlite3.Connection, activity_ids: list[int]) -> 
     return {r["id"]: dict(r) for r in rows}
 
 
-def _stalled_hint(liveness: Optional[dict]) -> Optional[str]:
+def _stalled_hint(liveness: dict | None) -> str | None:
     """「止まっている」根拠のhintを返す。止まっていなければNone。
 
     優先順位は、人間の判断待ち（open ask）、判定せず完了、heartbeat途切れの順。
@@ -1457,7 +1456,7 @@ def _stalled_hint(liveness: Optional[dict]) -> Optional[str]:
     return None
 
 
-def _classify_activity_bound(cond: dict, liveness: Optional[dict]) -> str:
+def _classify_activity_bound(cond: dict, liveness: dict | None) -> str:
     """activity束縛の条件1件を、achieved/in_progress/failed_unhandled/stalledの
     いずれかに分類する（goalブロックのchildren・attentionが共有する分類）。
 
@@ -1645,7 +1644,7 @@ def _assemble_goal_block(
     next_info: dict,
     linked_rows,
     *,
-    exclude_activity_id: Optional[int] = None,
+    exclude_activity_id: int | None = None,
 ) -> dict:
     """check_in・set_goal・update_goal・judge_goal・goal_hintが共有するgoalブロックを
     組み立てる（remaining/terminal/other_activities/open_questionsの畳み込みを含む）。
@@ -1716,7 +1715,7 @@ def build_goal_block_for_activity(conn: sqlite3.Connection, activity_id: int) ->
     return _assemble_goal_block(conn, goal_row, enriched, next_info, linked_rows, exclude_activity_id=activity_id)
 
 
-def build_goal_block_by_goal_id(conn: sqlite3.Connection, goal_id: int) -> Optional[dict]:
+def build_goal_block_by_goal_id(conn: sqlite3.Connection, goal_id: int) -> dict | None:
     """goal_idで指した読み出し（update_goal・judge_goalの応答）向けのgoalブロックを
     組み立てる。規則5〜14だけを評価する（activity単位の規則1〜4は評価しない）。
     """
@@ -1731,7 +1730,7 @@ def build_goal_block_by_goal_id(conn: sqlite3.Connection, goal_id: int) -> Optio
     return _assemble_goal_block(conn, goal_row, enriched, next_info, linked_rows)
 
 
-def build_goal_hint(conn: sqlite3.Connection, activity_id: int) -> Optional[dict]:
+def build_goal_hint(conn: sqlite3.Connection, activity_id: int) -> dict | None:
     """update_activityでcompletedにした直後、紐づくgoalが未判定なら添えるgoal_hintを
     組み立てる。completedの書き込みをコミットした後の接続で呼ぶ想定である。
 
@@ -1861,9 +1860,9 @@ def _linked_activities_payload(conn: sqlite3.Connection, goal_id: int) -> list[d
 
 
 def get_goal(
-    goal_id: Optional[int] = None,
-    activity_id: Optional[int] = None,
-    handle: Optional[str] = None,
+    goal_id: int | None = None,
+    activity_id: int | None = None,
+    handle: str | None = None,
 ) -> dict:
     """1つのgoalの全条件（充足済みを含む）とid、紐づくactivityを読む（読み取り専用）。
 

@@ -11,12 +11,11 @@ title が None の decision / log を返却する際、title フィールドが 
 import pytest
 
 from src.db import get_connection
-from src.services.topic_service import add_topic
+from src.services.checkin_queries import _get_logs_catalog_from_topics
 from src.services.decision_service import add_decisions
 from src.services.discussion_log_service import add_logs
 from src.services.search_service import get_by_id, get_by_ids
-from src.services.checkin_queries import _get_logs_catalog_from_topics
-
+from src.services.topic_service import add_topic
 
 DEFAULT_TAGS = ["domain:test"]
 

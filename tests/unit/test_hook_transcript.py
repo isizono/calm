@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-from src.harness import ClaudeCodeHarness
 from hooks.hook_transcript import (
     _extract_short_name,
     _is_calm_tool,
@@ -15,7 +14,7 @@ from hooks.hook_transcript import (
     has_recent_recording,
     is_user_message,
 )
-
+from src.harness import ClaudeCodeHarness
 
 # --- ヘルパー ---
 

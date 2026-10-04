@@ -1,9 +1,8 @@
 """データベース機能のテスト"""
 import os
 from pathlib import Path
-import pytest
-from src.db import get_db_path, get_connection, execute_query, execute_insert
 
+from src.db import execute_insert, execute_query, get_connection, get_db_path
 
 
 def test_get_db_path_with_env():

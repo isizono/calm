@@ -8,7 +8,10 @@ import sqlite3
 
 from src.services.readable_id import strip_entity_id_inplace
 from src.services.supersede_service import compute_destabilization_info_batch
-from src.services.topic_service import count_decisions_per_topic, count_materials_per_topic
+from src.services.topic_service import (
+    count_decisions_per_topic,
+    count_materials_per_topic,
+)
 
 # 1次 decisions の展開上限
 DECISIONS_FULL_LIMIT = 15
@@ -420,4 +423,3 @@ def _get_pinned_targets(conn: sqlite3.Connection, activity_id: int) -> dict:
             result["activities"] = activities
 
     return result
-

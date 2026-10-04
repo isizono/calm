@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import io
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -26,7 +25,6 @@ if str(_HOOKS_DIR) not in sys.path:
     sys.path.insert(0, str(_HOOKS_DIR))
 
 import preblock_hook  # type: ignore  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # _scan_text_for_literals

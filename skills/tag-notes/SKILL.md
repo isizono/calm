@@ -38,4 +38,3 @@ description: タグのnotesを確認・更新する。「/tag-notes」「タグ�
 ## タグの退役（archived）との違い
 
 「もう使わないタグ」「退役させたい」のような意図は notes の編集ではなく `update_tag(tag=..., archived=True, archived_reason=...)` を単体で呼ぶ（`notes` と `archived` は相互排他で同時指定できない）。archived化するとタグ notes の自動注入から除外され、search結果でも下位表示になる（物理削除ではなく `archived=False` でいつでも解除できる）。タグの共起分析に基づく退役提案は `tag-cleanup` skillの担当。
-

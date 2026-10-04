@@ -1,8 +1,6 @@
 """collect_export_candidatesの統合テスト（relation走査・タグ・supersede・citation横断）"""
 
-import pytest
 
-from src.db import get_connection
 from src.services.activity_service import add_activity, update_activity
 from src.services.export_candidate_service import collect_export_candidates
 from src.services.material_service import add_material

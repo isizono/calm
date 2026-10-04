@@ -5,8 +5,6 @@ try_capture_signal が (1) 正常系で signal_events に記録し、
 """
 import sys
 
-import pytest
-
 from hooks.signal_capture import try_capture_signal
 from src.db import get_connection
 

@@ -11,8 +11,8 @@ import pytest
 
 from src.db import get_connection
 from src.services.activity_service import add_activity
-from src.services.topic_service import add_topic
 from src.services.retract_service import retract
+from src.services.topic_service import add_topic
 from tests.helpers import add_decision
 
 

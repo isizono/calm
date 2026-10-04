@@ -8,7 +8,7 @@ DB を立ち上げないことでオーケストレータ単独の挙動 (ステ
 戻り値合成、_SearchEarlyReturn のキャッチ、例外時の DATABASE_ERROR 化) を
 集中して確認する。
 """
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 

@@ -16,7 +16,7 @@ import json
 import pathlib
 import sys
 import tomllib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 # プラグイン経由で `${CLAUDE_PLUGIN_ROOT}` を cwd として起動されるため、
 # 同居ソースを import path に通す。
@@ -265,7 +265,7 @@ def main() -> None:
 
         _log_event(
             {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "tool_name": tool_name,
                 "decision": "block",
                 "matches": matched_literals,

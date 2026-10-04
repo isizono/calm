@@ -7,11 +7,6 @@ subprocess呼び出し（tests/e2e/test_session_start_hook.py）ではなく、�
 直接importしテスト用DBのconnをそのまま渡す（他の_build_*_sectionユニット
 テストと同じ方式）。
 """
-from src import config
-from src.db import get_connection
-from src.services import ask_service
-from src.services.topic_service import add_topic
-
 from hooks.session_start_hook import (
     _ASK_SERVICE_MAX_LIMIT,
     _OPEN_ASKS_GLOBAL_CTA,
@@ -19,6 +14,10 @@ from hooks.session_start_hook import (
     _build_open_asks_section,
     _section_text_len,
 )
+from src import config
+from src.db import get_connection
+from src.services import ask_service
+from src.services.topic_service import add_topic
 
 
 def _seed_activity(conn, title: str, status: str = "pending") -> int:

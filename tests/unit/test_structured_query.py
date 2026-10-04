@@ -4,14 +4,11 @@ search()に追加された構造化フィルタの動作を検証する。
 """
 import pytest
 
-from src.db import get_connection
-from src.services.topic_service import add_topic
-from src.services.activity_service import add_activity
-from tests.helpers import add_log, add_decision
-from src.services.material_service import add_material
-from src.services import search_service
 import src.services.embedding_service as emb
-
+from src.db import get_connection
+from src.services import search_service
+from src.services.activity_service import add_activity
+from src.services.topic_service import add_topic
 
 DEFAULT_TAGS = ["domain:test"]
 

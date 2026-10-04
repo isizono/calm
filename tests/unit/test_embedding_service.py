@@ -5,16 +5,17 @@ import threading
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-import pytest
+
 import numpy as np
+import pytest
 from sqlite_vec import serialize_float32
 
-from src.db import get_connection, execute_query
-from src.services.topic_service import add_topic
-from tests.helpers import add_decision
-from src.services.activity_service import add_activity
 import src.infra.loopback_http as loopback_http
 import src.services.embedding_service as emb
+from src.db import execute_query, get_connection
+from src.services.activity_service import add_activity
+from src.services.topic_service import add_topic
+from tests.helpers import add_decision
 
 # conftest の autouse fixture (_no_real_embedding_server) は _start_server を
 # 差し替えるため、_start_server 自体を検証するテストはここで捕捉した実体に戻す。
@@ -751,7 +752,7 @@ class TestEncodeBatchRequestPayload:
 
         emb._encode_batch(["日本語のテスト文書です"], "document")
 
-        assert "日本語のテスト文書です".encode("utf-8") in captured["body"]
+        assert "日本語のテスト文書です".encode() in captured["body"]
         assert b"\\u65e5" not in captured["body"]  # "日"のunicodeエスケープが含まれない
 
 
@@ -980,6 +981,7 @@ def test_start_server_uses_module_execution_form(temp_db, monkeypatch):
     検証する)。
     """
     import subprocess
+
     from src.infra import detached_process
 
     captured = {}
@@ -1017,6 +1019,7 @@ def test_start_server_uses_popen_detached_windows_wiring(temp_db, monkeypatch):
     実際に呼び出されることを確かめる。
     """
     import subprocess
+
     from src.infra import detached_process
 
     captured = {}
@@ -1315,7 +1318,7 @@ def test_update_tag_canonical_regenerates_embedding(temp_db, monkeypatch):
         description="new-tagを持つ",
         tags=["domain:test", "new-tag"],
     )
-    topic = add_topic(
+    add_topic(
         title="canonical再生成テスト",
         description="テスト説明",
         tags=["domain:test", "old-tag"],

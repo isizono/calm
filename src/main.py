@@ -5,58 +5,70 @@ import os
 import random
 import re
 import socket
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from fastmcp import FastMCP, Context
+from typing import Literal, get_args
+
+from fastmcp import Context, FastMCP
 from fastmcp.server.dependencies import get_context
-from typing import Literal, Optional, Union, get_args
-from src.services import (
-    topic_service,
-    discussion_log_service,
-    decision_service,
-    search_service,
-    activity_service,
-    material_service,
-    habit_service,
-    relation_service,
-    pin_service,
-    retract_service,
-    destabilization_service,
-    timeline_service,
-    precedent_pull_service,
-    signal_service,
-    budget_service,
-    ask_service,
-    reask_detection_service,
-    export_candidate_service,
-    export_bundle_service,
-    import_bundle_service,
-    instance_service,
-    overview_service,
-    goal_service,
-    feedback_service,
-)
-from src.services.checkin_tier_service import (
-    collect_and_assemble as _check_in,
-    TIER_FORM_BUDGET_POLICY,
-)
-from src.services import response_budget, session_ledger_service, session_registry_service
-from src.infra.session_identity import get_caller_session_id
-from src.services.tag_service import (
-    search_tags as _search_tags,
-    update_tag as _update_tag,
-    demote_tag_notes as _demote_tag_notes,
-    collect_tag_notes_for_injection,
-    get_archived_tags_for_strings,
-)
-from src.services.tag_analysis_service import analyze_tags as _analyze_tags
-from src.services import citation_renderer
-from src.db import get_connection
-from starlette.requests import Request
-from starlette.responses import JSONResponse
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+
+from src.db import get_connection
+from src.infra.session_identity import get_caller_session_id
+from src.services import (
+    activity_service,
+    ask_service,
+    budget_service,
+    citation_renderer,
+    decision_service,
+    destabilization_service,
+    discussion_log_service,
+    export_bundle_service,
+    export_candidate_service,
+    feedback_service,
+    goal_service,
+    habit_service,
+    import_bundle_service,
+    instance_service,
+    material_service,
+    overview_service,
+    pin_service,
+    precedent_pull_service,
+    reask_detection_service,
+    relation_service,
+    response_budget,
+    retract_service,
+    search_service,
+    session_ledger_service,
+    session_registry_service,
+    signal_service,
+    timeline_service,
+    topic_service,
+)
+from src.services.checkin_tier_service import (
+    TIER_FORM_BUDGET_POLICY,
+)
+from src.services.checkin_tier_service import (
+    collect_and_assemble as _check_in,
+)
+from src.services.tag_analysis_service import analyze_tags as _analyze_tags
+from src.services.tag_service import (
+    collect_tag_notes_for_injection,
+    get_archived_tags_for_strings,
+)
+from src.services.tag_service import (
+    demote_tag_notes as _demote_tag_notes,
+)
+from src.services.tag_service import (
+    search_tags as _search_tags,
+)
+from src.services.tag_service import (
+    update_tag as _update_tag,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -245,19 +257,24 @@ def _apply_flavor_to_snippets(items: list[dict], flavor: str) -> None:
 mcp = FastMCP("calm", instructions=build_instructions())
 
 # tool呼び出し中の未捕捉例外を signal_events へ自動捕捉する middleware を登録する
-from src.services.signal_middleware import SignalCaptureMiddleware
+from src.services.signal_middleware import SignalCaptureMiddleware  # noqa: E402
+
 mcp.add_middleware(SignalCaptureMiddleware())
 
 # check_in以降の関連topicスコープの鮮度差分をツールレスポンスに注入する middleware を登録する
-from src.middleware.delta_middleware import DeltaNotificationMiddleware
+from src.middleware.delta_middleware import DeltaNotificationMiddleware  # noqa: E402
+
 mcp.add_middleware(DeltaNotificationMiddleware())
 
 # 判定待ちgoalに紐づく他セッションを宛先候補としてツールレスポンスに注入する middleware を登録する
-from src.middleware.destination_middleware import DestinationCandidateMiddleware
+from src.middleware.destination_middleware import (  # noqa: E402
+    DestinationCandidateMiddleware,
+)
+
 mcp.add_middleware(DestinationCandidateMiddleware())
 
 # サーバー起動時刻（/health で uptime 算出に使用）
-_SERVER_STARTED_AT = datetime.now(timezone.utc)
+_SERVER_STARTED_AT = datetime.now(UTC)
 
 # セッション管理（HTTPモードで使用）
 _session_manager = None
@@ -268,7 +285,7 @@ def get_session_manager():
     return _session_manager
 
 
-def _current_session_id() -> Optional[str]:
+def _current_session_id() -> str | None:
     """MCP context から呼び出しセッションの session_id を取得する。
 
     MCP のツール実行コンテキスト外（テスト等）では None を返す。
@@ -412,7 +429,7 @@ def get_topics(
 def get_logs(
     entity_type: Literal["topic", "activity"],
     entity_id: int,
-    start_id: Optional[int] = None,
+    start_id: int | None = None,
     limit: int = 30,
     include_retracted: bool = False,
     flavor: _FlavorArg = "internal",
@@ -458,7 +475,7 @@ def get_logs(
 def get_decisions(
     entity_type: Literal["topic", "activity"],
     entity_id: int,
-    start_id: Optional[int] = None,
+    start_id: int | None = None,
     limit: int = 30,
     include_retracted: bool = False,
     flavor: _FlavorArg = "internal",
@@ -515,9 +532,9 @@ def get_decisions(
 @mcp.tool()
 def pull_precedents(
     context: str,
-    topic_ids: Optional[list[int]] = None,
+    topic_ids: list[int] | None = None,
     k: int = 3,
-    budget_chars: Optional[int] = None,
+    budget_chars: int | None = None,
     include_materials: bool = True,
     flavor: _FlavorArg = "internal",
 ) -> dict:
@@ -616,15 +633,15 @@ def _apply_flavor_to_pull_precedents_result(result: dict, flavor: str) -> None:
 @mcp.tool()
 def search(
     keyword: str | list[str],
-    tags: Optional[list[str]] = None,
-    entity_type: Optional[Literal["topic", "decision", "activity", "log", "material"]] = None,
+    tags: list[str] | None = None,
+    entity_type: Literal["topic", "decision", "activity", "log", "material"] | None = None,
     limit: int = 10,
     offset: int = 0,
     keyword_mode: str = "and",
     include_details: bool = False,
-    domain: Optional[str] = None,
-    date_after: Optional[str] = None,
-    date_before: Optional[str] = None,
+    domain: str | None = None,
+    date_after: str | None = None,
+    date_before: str | None = None,
     flavor: _FlavorArg = "internal",
 ) -> dict:
     """
@@ -815,7 +832,7 @@ def get_by_ids(
 @mcp.tool()
 def search_tags(
     query: str,
-    namespace: Optional[str] = None,
+    namespace: str | None = None,
     include_notes: bool = False,
     limit: int = 20,
 ) -> dict:
@@ -842,12 +859,12 @@ def search_tags(
 @mcp.tool()
 def update_tag(
     tag: str,
-    notes: Optional[str] = None,
-    canonical: Optional[str] = None,
-    rename: Optional[str] = None,
-    description: Optional[str] = None,
-    archived: Optional[bool] = None,
-    archived_reason: Optional[str] = None,
+    notes: str | None = None,
+    canonical: str | None = None,
+    rename: str | None = None,
+    description: str | None = None,
+    archived: bool | None = None,
+    archived_reason: str | None = None,
 ) -> dict:
     """
     既存タグの notes（教訓・運用ルール）、canonical（エイリアス先）、name（リネーム）、
@@ -922,9 +939,9 @@ def demote_tag_notes(
     sections: list[str],
     ctx: Context,
     mode: Literal["pointer", "drop"] = "pointer",
-    archive_material_id: Optional[int] = None,
-    archive_tags: Optional[list[str]] = None,
-    reason: Optional[str] = None,
+    archive_material_id: int | None = None,
+    archive_tags: list[str] | None = None,
+    reason: str | None = None,
 ) -> dict:
     """tag notesの指定セクションを資材へ逐語退避し、notesを縮小する。
 
@@ -996,9 +1013,9 @@ def demote_tag_notes(
 
 @mcp.tool()
 def analyze_tags(
-    domain: Optional[str] = None,
+    domain: str | None = None,
     include_domain_tags: bool = False,
-    focus_tag: Optional[str] = None,
+    focus_tag: str | None = None,
     min_usage: int = 2,
     top_n: int = 20,
 ) -> dict:
@@ -1128,12 +1145,12 @@ def get_activities(
 @mcp.tool()
 def update_activity(
     activity_id: int,
-    status: Optional[str] = None,
-    title: Optional[str] = None,
-    description: Optional[str] = None,
-    tags: Optional[list[str]] = None,
-    closed_by: Optional[str] = None,
-    closed_reason: Optional[str] = None,
+    status: str | None = None,
+    title: str | None = None,
+    description: str | None = None,
+    tags: list[str] | None = None,
+    closed_by: str | None = None,
+    closed_reason: str | None = None,
 ) -> dict:
     """
     アクティビティのステータス・タイトル・説明・タグを更新する。
@@ -1186,7 +1203,7 @@ def update_activity(
 
 
 @mcp.tool()
-def set_goal(activity_id: int, goal: Optional[dict], replace: bool = False) -> dict:
+def set_goal(activity_id: int, goal: dict | None, replace: bool = False) -> dict:
     """Choose: activityの終了条件(goal)上の立場を決めたいとき。goal自体はactivityから
     作る。既存のgoal(goal_id)に紐づける・不要印(waiver)を付ける・未定義に戻す(None)も
     この1本で扱う。充足の記録・条件の追加はupdate_goal、終了の明示判定はjudge_goal。
@@ -1218,9 +1235,9 @@ def set_goal(activity_id: int, goal: Optional[dict], replace: bool = False) -> d
 @mcp.tool()
 def update_goal(
     goal_id: int,
-    changes: Optional[list[dict]] = None,
-    statement: Optional[str] = None,
-    reopen_reason: Optional[str] = None,
+    changes: list[dict] | None = None,
+    statement: str | None = None,
+    reopen_reason: str | None = None,
 ) -> dict:
     """Choose: goalの条件を追加・状態変更(充足/保留)・担い手や束縛の変更をしたいとき。
     goalの一文(statement)の修正、判定済みgoalの差し戻し(reopen_reason)もこの1本で行う。
@@ -1261,7 +1278,7 @@ def update_goal(
 def judge_goal(
     goal_id: int,
     verdict: str,
-    note: Optional[str] = None,
+    note: str | None = None,
     judged_by: str = "session",
 ) -> dict:
     """Choose: goalの終了を明示的に判定して閉じたいとき。紐づく未完了のactivityも
@@ -1289,9 +1306,9 @@ def judge_goal(
 
 @mcp.tool()
 def get_goal(
-    goal_id: Optional[int] = None,
-    activity_id: Optional[int] = None,
-    handle: Optional[str] = None,
+    goal_id: int | None = None,
+    activity_id: int | None = None,
+    handle: str | None = None,
 ) -> dict:
     """Choose: 1つのgoalの全条件(充足済みを含む)とid、紐づくactivity一覧を読みたい
     とき。check_inの応答のgoalブロックは充足済み条件や4件目以降のopen条件を畳むので、
@@ -1476,7 +1493,7 @@ def get_material(
 @mcp.tool()
 def export_material(
     material_id: int,
-    dest_path: Optional[str] = None,
+    dest_path: str | None = None,
 ) -> dict:
     """
     Choose: 資材の全文を calm 外で参照したい（obsidian vault に置く / docs リポに commit する / third-party レビュー用に配布する）とき。calm 内で読むだけなら get_material、複数種別を横断で全文取得したいなら get_by_ids。
@@ -1777,7 +1794,7 @@ def resolve_destabilization(
     source_decision_id: int,
     target_decision_id: int,
     resolution: Literal["reaffirmed", "revised", "retracted"],
-    revised_to_decision_id: Optional[int] = None,
+    revised_to_decision_id: int | None = None,
     note: str = "",
 ) -> dict:
     """
@@ -1883,12 +1900,12 @@ def get_map(
 
 @mcp.tool()
 def collect_export_candidates(
-    roots: Optional[list[dict]] = None,
+    roots: list[dict] | None = None,
     max_depth: int = 2,
-    include_types: Optional[list[str]] = None,
-    tag_roots: Optional[list[str]] = None,
+    include_types: list[str] | None = None,
+    tag_roots: list[str] | None = None,
     include_snippets: bool = True,
-    limit: Optional[int] = None,
+    limit: int | None = None,
     offset: int = 0,
 ) -> dict:
     """Choose: 他インスタンスへのexport候補を洗い出したいとき。get_mapと違いdecision/logも
@@ -1963,9 +1980,9 @@ def set_instance_identity(instance_id: str, force: bool = False) -> dict:
 @mcp.tool()
 def export_bundle(
     items: list[dict],
-    bundle_name: Optional[str] = None,
+    bundle_name: str | None = None,
     include_supersede_targets: bool = False,
-    selection: Optional[dict] = None,
+    selection: dict | None = None,
 ) -> dict:
     """Choose: collect_export_candidatesで確定した候補リストから、他インスタンスへ渡す
     バンドル(manifest.yaml + エンティティ別mdファイル)を実際に書き出すとき。候補の
@@ -2015,7 +2032,7 @@ def export_bundle(
 def import_bundle(
     bundle_path: str,
     mode: str = "dry_run",
-    resolutions: Optional[dict] = None,
+    resolutions: dict | None = None,
     skip_duplicate_check: bool = False,
 ) -> dict:
     """Choose: 他インスタンスのバンドルを取り込みたいとき。まずmode="dry_run"
@@ -2093,12 +2110,12 @@ def get_habits(active: bool = True, habit_id: int | None = None) -> dict:
 @mcp.tool()
 def update_habit(
     habit_id: int,
-    content: Optional[str] = None,
-    active: Optional[bool] = None,
-    trigger_mode: Optional[str] = None,
-    description: Optional[str] = None,
-    importance_score: Optional[int] = None,
-    status: Optional[str] = None,
+    content: str | None = None,
+    active: bool | None = None,
+    trigger_mode: str | None = None,
+    description: str | None = None,
+    importance_score: int | None = None,
+    status: str | None = None,
 ) -> dict:
     """振る舞いを更新する。active=Falseで無効化、active=Trueで再有効化。
     trigger_modeは'always'（~/.claude/rules配下の自動生成ファイルで全文常時配信）/
@@ -2126,9 +2143,9 @@ def update_habit(
 @mcp.tool()
 def add_pin(
     source_type: Literal["tag", "activity", "topic", "decision", "log", "material"],
-    source_ref: Union[int, str],
+    source_ref: int | str,
     target_type: Literal["tag", "activity", "topic", "decision", "log", "material"],
-    target_ref: Union[int, str],
+    target_ref: int | str,
 ) -> dict:
     """pinを追加する（source → target）。
 
@@ -2170,9 +2187,9 @@ def add_pin(
 @mcp.tool()
 def remove_pin(
     source_type: Literal["tag", "activity", "topic", "decision", "log", "material"],
-    source_ref: Union[int, str],
+    source_ref: int | str,
     target_type: Literal["tag", "activity", "topic", "decision", "log", "material"],
-    target_ref: Union[int, str],
+    target_ref: int | str,
 ) -> dict:
     """pinを削除する（source → target）。
 
@@ -2925,8 +2942,8 @@ def set_session_alias(alias: str) -> dict:
 
 @mcp.tool()
 def get_feedback_entries(
-    name: Optional[str] = None,
-    query: Optional[str] = None,
+    name: str | None = None,
+    query: str | None = None,
     include_deleted: bool = False,
 ) -> dict:
     """Choose: 躓きを踏まえて自分に配達しているフィードバックエントリを読みたいとき。
@@ -2952,12 +2969,12 @@ def get_feedback_entries(
 def write_feedback_entry(
     name: str,
     action: Literal["create", "update", "delete"],
-    body: Optional[str] = None,
-    ref: Optional[str] = None,
-    strength: Optional[Literal["notify", "block"]] = None,
-    timing: Optional[Literal["utterance", "tool_fail", "pre_tool"]] = None,
-    condition: Optional[Union[dict, str]] = None,
-    read_mark: Optional[int] = None,
+    body: str | None = None,
+    ref: str | None = None,
+    strength: Literal["notify", "block"] | None = None,
+    timing: Literal["utterance", "tool_fail", "pre_tool"] | None = None,
+    condition: dict | str | None = None,
+    read_mark: int | None = None,
 ) -> dict:
     """Choose: フィードバックエントリを作る・直す・消すとき。
 
@@ -3019,7 +3036,7 @@ def add_feedback_note(name: str, kind: Literal["stumble", "note"], body: str) ->
 # ヘルスチェックエンドポイント
 @mcp.custom_route("/health", methods=["GET"])
 async def health(_request: Request) -> JSONResponse:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return JSONResponse({
         "status": "ok",
         "pid": os.getpid(),
@@ -3111,7 +3128,7 @@ async def session_unregister(request: Request) -> JSONResponse:
 
 
 # サーバー起動
-from src.http_config import HTTP_HOST, HTTP_PORT
+from src.http_config import HTTP_HOST, HTTP_PORT  # noqa: E402
 
 
 def _ensure_project_root_cwd() -> Path:
@@ -3175,7 +3192,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    from src.db import verify_sqlite_vec, init_database, get_db_path
+    from src.db import get_db_path, init_database, verify_sqlite_vec
 
     if args.transport == "http":
         # verify_sqlite_vec/init_databaseより前にログをファイルへ永続化する。
@@ -3200,9 +3217,9 @@ if __name__ == "__main__":
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.bind((HTTP_HOST, HTTP_PORT))
-        except OSError:
+        except OSError as exc:
             logger.error(f"Port {HTTP_PORT} is already in use")
-            raise SystemExit(1)
+            raise SystemExit(1) from exc
 
         # ロックファイル取得
         if not acquire(HTTP_PORT):

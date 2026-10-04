@@ -19,16 +19,16 @@ from yoyo.connections import parse_uri  # noqa: E402
 
 from src.db import (  # noqa: E402
     MIGRATIONS_DIR,
-    _VecSQLiteBackend,
     _content_sha256,
     _migration_ledger_table_exists,
     _record_content_hashes,
+    _VecSQLiteBackend,
     dry_run_migrations,
     get_db_path,
 )
 
 
-def _backend_for(db_path: str) -> "_VecSQLiteBackend":
+def _backend_for(db_path: str) -> _VecSQLiteBackend:
     parsed = parse_uri(f"sqlite:///{db_path}")
     backend = _VecSQLiteBackend(parsed, default_migration_table)
     backend.init_database()

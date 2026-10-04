@@ -34,7 +34,6 @@ from hooks.turn_origin import is_nonhuman_turn
 from src.harness import select_harness
 from src.infra.file_ops import replace_retrying
 
-
 _FOLLOW_UP_NUDGE_MESSAGE = (
     "<system-reminder>"
     "直近で add_decisions を呼んだものの、関連エンティティ（topic/logs/activity/material/tag_notes）"

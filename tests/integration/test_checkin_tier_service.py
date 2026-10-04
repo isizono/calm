@@ -7,6 +7,7 @@ dependencies・recomposeナッジ・セッション別名登録・goal配線）�
 再開順序など、tier実装固有の振る舞いを確認する。
 """
 import json
+
 import pytest
 
 import src.services.checkin_tier_service as checkin_tier_service
@@ -22,7 +23,11 @@ from src.services.hint_service import (
     ACTIVITY_CLEANUP_COUNT_THRESHOLD,
     MARKER_ACTIVITY_CLEANUP,
     MARKER_RECOMPOSE_BOOTSTRAP,
+)
+from src.services.hint_service import (
     RECOMPOSE_BOOTSTRAP_THRESHOLD as _RECOMPOSE_HINT_BOOTSTRAP_THRESHOLD,
+)
+from src.services.hint_service import (
     RECOMPOSE_DELTA_THRESHOLD as _RECOMPOSE_HINT_DELTA_THRESHOLD,
 )
 from src.services.material_service import add_material
@@ -625,7 +630,7 @@ class TestCheckInLogsCatalog:
         assert "latest_log" in result["context"]
         logs = result["catalog"]["logs"]
         assert len(logs) == 1
-        all_titles = {result["context"]["latest_log"]["title"]} | {l["title"] for l in logs}
+        all_titles = {result["context"]["latest_log"]["title"]} | {log["title"] for log in logs}
         assert "ログA" in all_titles
         assert "ログB" in all_titles
 

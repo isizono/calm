@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Literal
 
 from src.db import get_connection
 from src.infra.session_identity import resolve_cli_session
@@ -16,8 +16,8 @@ def register(
     session_id: str,
     *,
     id_kind: Literal["bridge", "ephemeral"],
-    harness: Optional[str],
-    host: Optional[str],
+    harness: str | None,
+    host: str | None,
     mode: Literal["interactive", "headless"],
 ) -> None:
     """起動器プロセスをセッション台帳へ登録する(heartbeat再送も同じ経路を通る)。
@@ -157,7 +157,7 @@ def mark_ended(session_id: str, reason: Literal["unregister", "ttl"]) -> None:
         conn.close()
 
 
-def record_checkin(session_id: Optional[str], activity_id: int) -> None:
+def record_checkin(session_id: str | None, activity_id: int) -> None:
     """check_in時にlast_checkin_activity_id/last_checkin_atを書く。
 
     session_idがNone、または対応する行が無い場合は何もしない。

@@ -19,6 +19,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from scripts.gate_check import MAX_FILES, MAX_LINES  # noqa: E402
 from scripts.pr_size_check import (  # noqa: E402
     LARGE_LINES_MAX,
     PR_SIZE_COMMENT_MARKER,
@@ -32,8 +33,6 @@ from scripts.pr_size_check import (  # noqa: E402
     run_ci,
     upsert_pr_comment,
 )
-from scripts.gate_check import MAX_FILES, MAX_LINES  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # ヘルパー(実 git リポジトリ)
@@ -351,7 +350,7 @@ def test_upsert_pr_comment_creates_new_when_none_exists(monkeypatch):
 
     post_calls = [c for c in calls if "POST" in c]
     assert len(post_calls) == 1
-    assert f"repos/owner/repo/issues/42/comments" in post_calls[0]
+    assert "repos/owner/repo/issues/42/comments" in post_calls[0]
 
 
 def test_upsert_pr_comment_patches_existing(monkeypatch):

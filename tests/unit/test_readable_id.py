@@ -1,5 +1,4 @@
 """readable_id helper (strip_entity_id_inplace) の単体テスト"""
-import pytest
 
 from src.services.readable_id import strip_entity_id_inplace
 

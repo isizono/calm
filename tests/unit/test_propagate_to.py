@@ -3,12 +3,12 @@
 decision保存と同時にhabit/tag-noteへの伝搬を検証する。
 """
 import pytest
-from src.db import get_connection
-from src.services.topic_service import add_topic
-from src.services.decision_service import add_decisions
-import src.services.embedding_service as emb
-from tests.helpers import assert_no_write_errors
 
+import src.services.embedding_service as emb
+from src.db import get_connection
+from src.services.decision_service import add_decisions
+from src.services.topic_service import add_topic
+from tests.helpers import assert_no_write_errors
 
 DEFAULT_TAGS = ["domain:test"]
 

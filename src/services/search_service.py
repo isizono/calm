@@ -8,8 +8,8 @@ import sqlite3
 import textwrap
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Literal, Optional
+from datetime import UTC, datetime
+from typing import Literal
 
 from sqlite_vec import serialize_float32
 
@@ -17,13 +17,16 @@ from src import config
 from src.db import execute_query, get_connection, get_db_path, row_to_dict
 from src.services import embedding_service, precedent_pure
 from src.services.readable_id import strip_entity_id_inplace
-from src.services.supersede_service import compute_destabilization_info_batch, get_superseded_by_batch
+from src.services.supersede_service import (
+    compute_destabilization_info_batch,
+    get_superseded_by_batch,
+)
 from src.services.tag_service import (
     get_archived_tags_for_strings,
-    get_entity_tags,
-    get_entity_tags_batch,
     get_effective_tags,
     get_effective_tags_batch_by_ids,
+    get_entity_tags,
+    get_entity_tags_batch,
     parse_tag,
 )
 
@@ -81,7 +84,7 @@ assert all(
     for i in range(len(ADAPTIVE_RRF_THRESHOLDS) - 1)
 ), "ADAPTIVE_RRF_THRESHOLDS must be sorted in ascending order of threshold"
 
-from src.config import (
+from src.config import (  # noqa: E402
     ARCHIVED_DEMOTION_FACTOR,
     RECENCY_DECAY_FLOOR,
     RECENCY_DECAY_FLOOR_DECISION_LIVE,
@@ -125,17 +128,17 @@ class SearchContext:
     """
     keywords: tuple[str, ...]
     fts_keywords: tuple[str, ...]
-    original_keyword_count: Optional[int]
-    tag_ids: Optional[tuple[int, ...]]
-    entity_type: Optional[str]
+    original_keyword_count: int | None
+    tag_ids: tuple[int, ...] | None
+    entity_type: str | None
     limit: int
     offset: int
     fetch_limit: int
     keyword_mode: Literal["and", "or"]
     include_details: bool
-    date_after: Optional[str]
-    date_before: Optional[str]
-    domain: Optional[str]
+    date_after: str | None
+    date_before: str | None
+    domain: str | None
 
 
 def build_common_where(
@@ -680,7 +683,7 @@ def _build_tag_filter_cte(tag_ids: list[int]) -> tuple[str, list]:
 
 
 def _build_vector_candidates_cte(
-    tag_ids: Optional[list[int]], common_where: str, common_params: list,
+    tag_ids: list[int] | None, common_where: str, common_params: list,
 ) -> tuple[str, list]:
     """filter-first KNN の候補集合(candidates CTE)を組み立てる。
 
@@ -827,7 +830,7 @@ def fts_retrieve(ctx: SearchContext, conn: sqlite3.Connection) -> list[dict]:
     return results
 
 
-def vector_retrieve(ctx: SearchContext, conn: sqlite3.Connection) -> Optional[list[dict]]:
+def vector_retrieve(ctx: SearchContext, conn: sqlite3.Connection) -> list[dict] | None:
     """ベクトル retriever。ベクトル検索が無効/失敗時は None を返す。
 
     OR + 複数キーワード時も含め、embedding 取得に1つでも成功していれば
@@ -1457,7 +1460,7 @@ def _apply_recency_boost(results: list[dict], now: datetime | None = None) -> No
         return
 
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
     # 初期値: score_breakdown が無い場合は score を rrf_normalized 相当として扱い、
     # recency_factor=1.0 で初期化。score_breakdown はあるが個別キーが欠ける場合も
@@ -1473,7 +1476,7 @@ def _apply_recency_boost(results: list[dict], now: datetime | None = None) -> No
     # decisionはsupersede状態でfloorを分けるため、対象idのsuperseded_byを先に引く。
     # ベクトル検索は使わないためload_vec=Falseでsqlite-vec拡張ロードを省く
     decision_ids = [item["id"] for item in results if item["type"] == "decision"]
-    superseded_by_map: dict[int, Optional[int]] = {}
+    superseded_by_map: dict[int, int | None] = {}
     if decision_ids:
         conn = get_connection(load_vec=False)
         try:
@@ -1503,7 +1506,7 @@ def _apply_recency_boost(results: list[dict], now: datetime | None = None) -> No
         for item in items:
             created_str = created_map.get(item["id"])
             if created_str:
-                created = datetime.fromisoformat(created_str).replace(tzinfo=timezone.utc)
+                created = datetime.fromisoformat(created_str).replace(tzinfo=UTC)
                 age_days = max(0, (now - created).days)
                 if type_name == "decision" and superseded_by_map.get(item["id"]) is None:
                     floor = RECENCY_DECAY_FLOOR_DECISION_LIVE
@@ -1523,7 +1526,7 @@ def _apply_recency_boost(results: list[dict], now: datetime | None = None) -> No
     results.sort(key=lambda x: x["final_score"], reverse=True)
 
 
-def _apply_archived_demotion(results: list[dict]) -> dict[str, Optional[str]]:
+def _apply_archived_demotion(results: list[dict]) -> dict[str, str | None]:
     """archived タグしか付いていないアイテムを下位表示に降格する（in-place）。
 
     各結果の item["tags"]（_attach_tags 済み前提）を見て、1つでも非 archived タグを
@@ -1546,7 +1549,7 @@ def _apply_archived_demotion(results: list[dict]) -> dict[str, Optional[str]]:
     for item in results:
         all_tag_strings.update(item.get("tags", []))
 
-    archived_lookup: dict[str, Optional[str]] = {}
+    archived_lookup: dict[str, str | None] = {}
     if all_tag_strings:
         conn = get_connection()
         try:
@@ -1596,8 +1599,8 @@ def _rrf_merge(
     fts_results: list[dict],
     vec_results: list[dict],
     limit: int,
-    tag_results: Optional[list[dict]] = None,
-    adaptive_weights: Optional[tuple[float, float]] = None,
+    tag_results: list[dict] | None = None,
+    adaptive_weights: tuple[float, float] | None = None,
 ) -> list[dict]:
     """RRF（Reciprocal Rank Fusion）でFTS5・ベクトル・タグLIKE結果を統合する。
 
@@ -1697,11 +1700,11 @@ class _SearchEarlyReturn(Exception):
 def _validate(
     keyword: str | list[str],
     keyword_mode: str,
-    entity_type: Optional[str],
-    domain: Optional[str],
-    date_after: Optional[str],
-    date_before: Optional[str],
-) -> tuple[list[str], Optional[str], Optional[str], Optional[str], Optional[str]]:
+    entity_type: str | None,
+    domain: str | None,
+    date_after: str | None,
+    date_before: str | None,
+) -> tuple[list[str], str | None, str | None, str | None, str | None]:
     """search 引数のバリデーションと表層的な正規化 (空文字 → None, strip) を行う。
 
     Returns:
@@ -1771,30 +1774,30 @@ def _validate(
         try:
             fmt = "%Y-%m-%d %H:%M:%S" if len(param_value) > 10 else "%Y-%m-%d"
             datetime.strptime(param_value, fmt)
-        except ValueError:
+        except ValueError as exc:
             raise _SearchEarlyReturn({
                 "error": {
                     "code": "INVALID_PARAMETER",
                     "message": f"{param_name} contains invalid date value: '{param_value}'",
                 }
-            })
+            }) from exc
 
     return keywords, entity_type, domain, date_after, date_before
 
 
 def _normalize(
     keywords: list[str],
-    tags: Optional[list[str]],
-    entity_type: Optional[str],
-    domain: Optional[str],
-    date_after: Optional[str],
-    date_before: Optional[str],
+    tags: list[str] | None,
+    entity_type: str | None,
+    domain: str | None,
+    date_after: str | None,
+    date_before: str | None,
     limit: int,
     offset: int,
     keyword_mode: str,
     include_details: bool,
     conn: sqlite3.Connection,
-) -> tuple[SearchContext, Optional[list[int]], Optional[list[str]]]:
+) -> tuple[SearchContext, list[int] | None, list[str] | None]:
     """SearchContext を組み立てるステージ。
 
     - domain → tags マージ (元 list があれば破壊的更新、None なら新規生成)
@@ -1823,7 +1826,7 @@ def _normalize(
     limit = max(1, min(limit, 50))
     offset = max(0, offset)
 
-    tag_ids: Optional[list[int]] = None
+    tag_ids: list[int] | None = None
     if tags:
         tag_ids = _resolve_tag_ids_readonly(conn, tags)
         # 指定タグの一部でも DB に存在しない場合、AND フィルタは必ず空結果
@@ -1861,7 +1864,7 @@ def _expand(ctx: SearchContext) -> SearchContext:
     元キーワードを使い、FTS のみが拡張済み fts_keywords を使う。
     """
     fts_keywords = _expand_query_with_tags(list(ctx.keywords))
-    original_kw_count: Optional[int] = None
+    original_kw_count: int | None = None
     if len(fts_keywords) > len(ctx.keywords):
         logger.info(
             "Query expanded: %s -> %s",
@@ -2006,7 +2009,7 @@ def _rerank(ctx: SearchContext, merged: list[dict]) -> list[dict]:
     return merged
 
 
-def _demote_archived(merged: list[dict]) -> tuple[list[dict], dict[str, Optional[str]]]:
+def _demote_archived(merged: list[dict]) -> tuple[list[dict], dict[str, str | None]]:
     """archived 降格ステージ。tags を付与した上で降格判定・再ソートする。
 
     降格判定には各アイテムのタグ集合が要る。tags 付与（`_attach_tags`）を
@@ -2073,7 +2076,7 @@ def _attach_superseded_by(results: list[dict]) -> None:
 def _decorate(
     ctx: SearchContext,
     sliced: list[dict],
-    query_tag_ids: Optional[list[int]],
+    query_tag_ids: list[int] | None,
 ) -> tuple[list[dict], list[dict]]:
     """検索結果に snippet / details / superseded_by / readable_id を付与し、nearby_tags を計算する。
 
@@ -2104,16 +2107,16 @@ def _decorate(
 
 def search(
     keyword: str | list[str],
-    tags: Optional[list[str]] = None,
-    entity_type: Optional[str] = None,
+    tags: list[str] | None = None,
+    entity_type: str | None = None,
     limit: int = 10,
     offset: int = 0,
     keyword_mode: str = "and",
     include_details: bool = False,
-    domain: Optional[str] = None,
-    date_after: Optional[str] = None,
-    date_before: Optional[str] = None,
-    caller_session_id: Optional[str] = None,
+    domain: str | None = None,
+    date_after: str | None = None,
+    date_before: str | None = None,
+    caller_session_id: str | None = None,
 ) -> dict:
     """
     キーワードで横断検索する。
@@ -2363,9 +2366,9 @@ def _record_search_telemetry_async(
     query: str | list[str],
     parameters: dict,
     result_count: int,
-    results: Optional[list[dict]] = None,
-    diagnostics: Optional[dict] = None,
-    caller_session_id: Optional[str] = None,
+    results: list[dict] | None = None,
+    diagnostics: dict | None = None,
+    caller_session_id: str | None = None,
 ) -> threading.Thread | None:
     """search 呼出の telemetry を別スレッドで非同期書込する。
 
@@ -2406,7 +2409,7 @@ def _record_search_telemetry_async(
 def _record_fetch_telemetry_async(
     tool: str,
     items: list[dict],
-    caller_session_id: Optional[str] = None,
+    caller_session_id: str | None = None,
 ) -> threading.Thread | None:
     """取得系ツール呼出（get_by_ids 等）を fetch_telemetry へ非同期書込する。
 
@@ -2435,7 +2438,7 @@ def _record_fetch_telemetry_async(
 
 def record_material_fetch_telemetry(
     material_id: int,
-    caller_session_id: Optional[str] = None,
+    caller_session_id: str | None = None,
 ) -> threading.Thread | None:
     """get_material 呼出を fetch_telemetry へ非同期書込する（追随カウンタの fetch 側計装）。
 
@@ -2463,7 +2466,7 @@ def _record_injection_telemetry_async(
     source_type: str,
     source_id: int,
     attachments: list[dict],
-    caller_session_id: Optional[str] = None,
+    caller_session_id: str | None = None,
 ) -> list[threading.Thread]:
     """記録系ツールの top3 添付（記録=クエリ添付）を injection_telemetry へ非同期書込する。
 
@@ -2603,7 +2606,7 @@ _presented_records_lock = threading.Lock()
 _PRESENTED_RECORDS_MAX_SESSIONS = 256
 
 
-def _presented_records_contains(session_id: Optional[str], key: tuple[str, int]) -> bool:
+def _presented_records_contains(session_id: str | None, key: tuple[str, int]) -> bool:
     """session_idスコープで(type, id)が提示済みかを調べる。session_id=Noneは常にFalse
     （識別できない呼び出しは除外判定の対象外として扱う契約）。"""
     if session_id is None:
@@ -2612,7 +2615,7 @@ def _presented_records_contains(session_id: Optional[str], key: tuple[str, int])
         return key in _presented_records.get(session_id, ())
 
 
-def _presented_records_register(session_id: Optional[str], keys: list[tuple[str, int]]) -> None:
+def _presented_records_register(session_id: str | None, keys: list[tuple[str, int]]) -> None:
     """実際にmanifestへ採用した(type, id)群をsession_idスコープの既出集合へ登録する。
     session_id=Noneまたはkeysが空のときは何もしない。"""
     if session_id is None or not keys:
@@ -2628,7 +2631,7 @@ def build_related_records_manifest(
     trigger_tool: str,
     created_items: list[dict],
     entity_types: list[str],
-    caller_session_id: Optional[str] = None,
+    caller_session_id: str | None = None,
 ) -> list[dict]:
     """記録=クエリ添付: 記録系ツールの応答に載せる関連既存記録manifestを組み立てる。
 
@@ -2747,8 +2750,8 @@ def _format_row(
     data: dict,
     tags: list[str],
     conn: sqlite3.Connection,
-    superseded_by_map: Optional[dict[int, Optional[int]]] = None,
-    destabilization_map: Optional[dict[int, dict]] = None,
+    superseded_by_map: dict[int, int | None] | None = None,
+    destabilization_map: dict[int, dict] | None = None,
 ) -> dict:
     """typeに応じたレスポンス整形
 
@@ -2942,7 +2945,7 @@ def get_by_id(type: str, id: int, conn=None, superseded_by_map=None, destabiliza
             conn.close()
 
 
-def get_by_ids(items: list[dict], caller_session_id: Optional[str] = None) -> dict:
+def get_by_ids(items: list[dict], caller_session_id: str | None = None) -> dict:
     """
     複数のtype+idペアをバッチ取得する。
 

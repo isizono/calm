@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Optional
 
 MAX_CLAUSES = 3
 MAX_REGEX_VALUE_LEN = 200
@@ -129,7 +128,7 @@ def validate_condition(condition: dict, *, strength: str, timing: str) -> dict:
     return {"tool": tool, "all": clauses}
 
 
-def _resolve_dot_path(data, path: str) -> Optional[str]:
+def _resolve_dot_path(data, path: str) -> str | None:
     """dictキーのみを辿ってpathを解決し、文字列化して返す。
 
     途中でlist等（非dict）に当たった場合・キーが存在しない場合はNone
@@ -150,10 +149,10 @@ def _resolve_field_text(
     field: str,
     *,
     timing: str,
-    tool_input: Optional[dict],
-    error_text: Optional[str],
-    prompt_text: Optional[str],
-) -> Optional[str]:
+    tool_input: dict | None,
+    error_text: str | None,
+    prompt_text: str | None,
+) -> str | None:
     """フィールド名を実際の評価対象テキストへ解決する。該当なしはNone。"""
     if timing == "utterance":
         return prompt_text if field == "prompt" else None
@@ -166,9 +165,9 @@ def _evaluate_clause(
     clause: dict,
     *,
     timing: str,
-    tool_input: Optional[dict],
-    error_text: Optional[str],
-    prompt_text: Optional[str],
+    tool_input: dict | None,
+    error_text: str | None,
+    prompt_text: str | None,
 ) -> bool:
     text = _resolve_field_text(
         clause["field"],
@@ -194,10 +193,10 @@ def evaluate_condition(
     condition: dict,
     *,
     timing: str,
-    tool_name: Optional[str] = None,
-    tool_input: Optional[dict] = None,
-    error_text: Optional[str] = None,
-    prompt_text: Optional[str] = None,
+    tool_name: str | None = None,
+    tool_input: dict | None = None,
+    error_text: str | None = None,
+    prompt_text: str | None = None,
 ) -> bool:
     """正規化済みcondition（validate_conditionの戻り値と同じ形状）を実データに対して評価する。
 
