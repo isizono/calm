@@ -1,11 +1,11 @@
 """calmが読む環境変数の台帳。
 
 名前・既定値・説明・種類を1か所に集約する。get_config がこの台帳と現在値を返し、
-config スキルが利用者の調整対象（kind="user"）だけを見せる。README・man・
+env-config スキルが利用者の調整対象（kind="user"）だけを見せる。README・man・
 docs/setup.md の環境変数表はここを正として揃える。
 
 kind:
-  user       利用者が調整する値。configスキルの対象
+  user       利用者が調整する値。env-configスキルの対象
   internal   内部の調整用・配備用の値。利用者は通常触らない
   emergency  不具合時に機能を止めるための緊急スイッチ
   session    セッションごとにプロセスが立てる値。settings.jsonに書くと全セッションに効いて困る

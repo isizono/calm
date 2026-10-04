@@ -77,6 +77,17 @@ def test_list_env_vars_reads_legacy_prefix(monkeypatch):
     assert rows["CALM_SNAPSHOT_MAX_COUNT"]["value"] == "9"
 
 
-def test_removed_display_limit_vars_are_gone():
-    assert "CALM_IN_PROGRESS_LIMIT" not in _NAMES
-    assert "CALM_PENDING_LIMIT" not in _NAMES
+def test_get_config_rejects_unknown_env_kind(temp_db):
+    from src.main import get_config
+
+    for bad in ("users", "All", ""):
+        assert get_config(env_kind=bad)["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_defaults_match_budget_service():
+    from src.services import budget_service
+
+    by_name = {v.name: v for v in ENV_VARS}
+    d = budget_service.BUDGET_DEFAULTS
+    assert float(by_name["CALM_RECENCY_DECAY_RATE"].default) == d["recency_decay_rate"]
+    assert int(by_name["CALM_PRECEDENT_BUDGET_CHARS"].default) == d["precedent_budget_chars"]

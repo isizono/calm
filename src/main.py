@@ -2274,6 +2274,10 @@ def get_config(env_kind: str | None = "user") -> dict:
     null（skillがこれを見てset_instance_identityを促す判断材料にする）。
     """
     from src import config
+    if env_kind not in (None, "all", *config_registry.KINDS):
+        return {"error": {"code": "VALIDATION_ERROR", "message": (
+            f"env_kind は {', '.join(config_registry.KINDS)}, all のいずれか: {env_kind!r}"
+        )}}
     return {
         "instance_id": instance_service.get_instance_id(),
         "heartbeat_timeout": config.HEARTBEAT_TIMEOUT_MINUTES,
