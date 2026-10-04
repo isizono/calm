@@ -611,7 +611,7 @@ activity束縛の条件が1件以上あるgoalには`children`（内訳を1行�
 
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
-| kind | string | yes | - | `machine_error` / `friction` / `contradiction` / `precedent_miss` / `precedent_misapplied` / `boundary_case` / `rollback` / `goal_rollback` / `guard_block` の9種のいずれか。`goal_rollback`は`update_goal`の`reopen_reason`（goal判定の差し戻し）が、`guard_block`はPreToolUse hookのdeny判定が書く専用のkindで、いずれも手で報告するものではない |
+| kind | string | yes | - | `machine_error` / `friction` / `contradiction` / `precedent_miss` / `precedent_misapplied` / `boundary_case` / `rollback` / `goal_rollback` / `guard_block` の9種のいずれか、または `custom:<名前>`（名前は`[a-z0-9][a-z0-9_-]{0,39}`）。`goal_rollback`は`update_goal`の`reopen_reason`（goal判定の差し戻し）が、`guard_block`はPreToolUse hookのdeny判定が書く専用のkindで、いずれも手で報告するものではない |
 | summary | string | yes | - | 1行要約（空文字不可） |
 | detail | string | no | null | traceback・引数ダイジェスト・自由記述 |
 | refs | list[{"type", "id"}] | no | null | 参照リスト。`contradiction` では矛盾の両側のidを必須とする |
@@ -626,7 +626,7 @@ activity束縛の条件が1件以上あるgoalには`children`（内訳を1行�
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
 | status | string \| null | no | "new" | `new`/`triaged`/`promoted`/`dismissed`。nullで全status横断 |
-| kind | string \| null | no | null | フィルタ対象のkind。nullで全kind横断 |
+| kind | string \| null | no | null | フィルタ対象のkind（予約9種または`custom:<名前>`）。nullで全kind横断 |
 | ids | list[int] \| null | no | null | 指定時はこのsignal idの集合だけに絞る（他のフィルタとAND条件）。`get_asks`の`ids`と同じ規約で空配列は条件なし扱い。指定時はdetailを切り詰めない |
 | limit | int | no | 20 | 最大100 |
 | offset | int | no | 0 | ページネーション |
@@ -668,7 +668,9 @@ Claude Codeセッション間の「CLI表示名（例: `workspace-a2`）→人�
 別名は各セッションが`check_in`したアクティビティタイトルから自動生成される（先頭の`[議論]`/`[作業]`等の区分プレフィックスは残し、24文字を超える場合は省略記号「…」で切り詰める）。他セッションの別名と衝突した場合は`-2`, `-3`…のサフィックスが自動で付く。手動で付けた別名（`set_session_alias`）は同じアクティビティへの再check_inでは保持されるが、別のアクティビティへcheck_inし直すと自動生成の別名に戻る。
 
 **get_sessions**: 引数なし。
-**返り値**: `{"sessions": [{"name": str, "alias": str, "alias_source": "derived" | "manual", "activity_id": int | null, "activity_title": str | null, "activity_status": str | null, "cwd": str | null, "is_self": bool, "updated_at": str}, ...], "count": int}`。`updated_at`降順。呼び出し元自身の行は`is_self: true`。CLIプロセスが消滅したセッションの行は自動的に除外される。
+**返り値**: `{"sessions": [{"name": str, "alias": str, "alias_source": "derived" | "manual", "activity_id": int | null, "activity_title": str | null, "activity_status": str | null, "cwd": str | null, "cli_session_id": str | null, "cli_pid": int | null, "is_self": bool, "updated_at": str}, ...], "count": int}`。`cli_session_id`と`cli_pid`は`claude agents --json`の`sessionId`と`pid`と同じ値。`name`は呼び出し時点のCLI名に最新化される（自動命名や`/resume`で変わっても追従する）。`updated_at`降順。呼び出し元自身の行は`is_self: true`。CLIプロセスが消滅したセッションの行は自動的に除外される。
+
+`name`が同じ行が複数あり`ListAgents`の宛先を1つに絞れないときの手順は`get_sessions`のdocstringを正とする（手順を変えるときはdocstringだけを直す）。
 
 **set_session_alias**
 
@@ -891,7 +893,7 @@ CALMが扱うエンティティの内部表現。詳細スキーマは `docs/spe
 - `title: string`
 - `description: string`
 - `tags: list[string]`
-- `created_at: string`、`updated_at: string`
+- `created_at: string`
 
 ### 3.2 Decision
 - `decision_id: int`

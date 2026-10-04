@@ -40,9 +40,13 @@ CALMのhookはfail-open設計であり、1つのhookが例外を投げてもClau
 
 以下のhookは、hook本体のコードが実行された後に起きた例外を`signal_events`テーブルへ`kind: machine_error`として記録する。`get_signals`ツールで確認できるほか、1件でもあればSessionStart注入の「未トリアージのシグナル」行にも件数が現れる。
 
-- SessionStart注入の各セクション（アクティビティ一覧・habits・signals等）が個別に失敗した場合
-- Stop hookの記録ナッジ（`logs_sparse`判定）が失敗した場合
-- PreToolUseの内部IDリークブロックhookが失敗した場合
+- SessionStart注入の各セクション（アクティビティ一覧・habits・signals等）が個別に失敗した場合（`hook:section:<セクション名>`）
+- SessionStart hook本体が失敗した場合（`hook:session_start`）
+- Stop hookの記録ナッジ（`logs_sparse`判定）が失敗した場合（`hook:stop:logs_sparse`）
+- Stop hook本体が失敗した場合（`hook:stop`）
+- UserPromptSubmit hookが失敗した場合（`hook:user_prompt_submit`）
+- PreToolUseの内部IDリークブロックhookが失敗した場合（`hook:preblock`）
+- PreToolUseのbg起動拒否hookが失敗した場合（`hook:deny_nested_bg`）
 
 venvの破損や依存パッケージの欠落でhookがimport時点で落ちた場合は、この記録自体が動かず標準エラー出力のみに残る（記録機構自体がDB層のimportに依存するため）。表示専用hook・transcript sanitize系hookも現状この記録の対象外。頻発する場合は`get_signals`で`source`（`hook:section:<セクション名>`等）を確認し、原因を調査する。
 

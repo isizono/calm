@@ -115,7 +115,7 @@ snoozedの実態確認も同様に`check_in`を避けるが、`get_activities`�
 
 ### 6. 運用計測の確認
 
-棚卸しの最後に`uv run python scripts/ops_metrics.py`を実行する。出力の`goal放置件数`(判定待ちのまま紐づくactivityが全部completedになっているgoalの件数)が0件でなければ、その件数をユーザーに一言報告する。goal機構の3表(goals/goal_conditions/goal_activities)が無いDBでは出力にgoalの行自体が現れないので、その場合はこの手順を無視してよい。
+棚卸しの最後に`uv run --directory ${CLAUDE_PLUGIN_ROOT} python ${CLAUDE_PLUGIN_ROOT}/scripts/ops_metrics.py`を実行する。出力の`goal放置件数`(判定待ちのまま紐づくactivityが全部completedになっているgoalの件数)が0件でなければ、その件数をユーザーに一言報告する。goal機構の3表(goals/goal_conditions/goal_activities)が無いDBでは出力にgoalの行自体が現れないので、その場合はこの手順を無視してよい。
 
 `goal放置件数`以外の指標（search縮退率・クエリ拡張発火率・precedent_telemetryのguarantee内訳・追随率・citation_event_logの検証結果内訳・guard_block件数）も目を通す。これらは閾値判定を行わない生データの集計であり、「異常かどうか」の判断は実行者が行う。`巻き戻し率`・`shadow乖離率`・`pull miss`・`誤類推率`には書き手コードが存在しないkindが混ざっており、出力に「書き手コードなし」の注記が付く場合は0件/N/Aが構造的なものであって「インシデントが起きていない」ことの証拠にはならないため、その注記が付いていない指標から見る。
 

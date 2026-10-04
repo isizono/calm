@@ -57,7 +57,7 @@ orchの担い手は、子になる作業をサブエージェントやWorkflow�
 
 子1本につき、次の3段を同じ手番で続けて行う。
 
-1. `add_activity`を`check_in=False`で呼び、子を作る
+1. `add_activity`を`check_in=False`で呼び、子を作る（`orch`タグは付けない。このタグはorchアクティビティ自体にだけ付ける）
 2. 子に`set_goal`でgoalを作る
 3. orchのgoalに`update_goal`（`op=add`）で、子のアクティビティへ束縛した条件を足す
 

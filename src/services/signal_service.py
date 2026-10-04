@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import sys
 from typing import Optional
@@ -29,6 +30,10 @@ KNOWN_KINDS = {
     "goal_rollback",
     "guard_block",
 }
+
+# custom:<名前> 形式のkindの名前部分。先頭は英小文字/数字、以降は英小文字/数字/_/-で
+# 1〜40字。大文字・空白・非ASCIIを拒否し、表記揺れで同じ区分が割れるのを防ぐ。
+_CUSTOM_KIND_PATTERN = re.compile(r"custom:[a-z0-9][a-z0-9_-]{0,39}")
 
 VALID_STATUSES = {"new", "triaged", "promoted", "dismissed"}
 
@@ -65,6 +70,18 @@ def _compute_fingerprint(kind: str, source: str, summary: str) -> str:
     return compute_fingerprint16(kind, source, normalize_text(summary))
 
 
+def _is_valid_kind(kind: str) -> bool:
+    """kindが予約9種(KNOWN_KINDS)、またはcustom:<名前>形式かを判定する。"""
+    return kind in KNOWN_KINDS or bool(_CUSTOM_KIND_PATTERN.fullmatch(kind))
+
+
+def _invalid_kind_message(kind: str) -> str:
+    return (
+        f"Invalid kind: {kind!r}. Must be one of {sorted(KNOWN_KINDS)} "
+        "or 'custom:<name>' (name: [a-z0-9][a-z0-9_-]{0,39})"
+    )
+
+
 def _to_json_or_raise(value: Optional[object], field_name: str) -> Optional[str]:
     if value is None:
         return None
@@ -87,8 +104,8 @@ def record_signal(
 ) -> dict:
     """検証あり・例外を投げる通常経路でシグナルを1件記録する。
 
-    kind が KNOWN_KINDS に含まれない場合、summary が空の場合、refs/context が
-    JSON serialize 不能な場合は ValueError を投げる。
+    kind が KNOWN_KINDS にも custom:<名前> 形式にも合致しない場合、summary が
+    空の場合、refs/context が JSON serialize 不能な場合は ValueError を投げる。
 
     同一 fingerprint (sha256(kind|source|正規化summary) 先頭16hex) の
     status='new' 行が既存なら、新規行を作らず occurrence_count を +1 し
@@ -102,8 +119,8 @@ def record_signal(
     アトミックに行うため、並行書き込みでも競合が起きない。
 
     Args:
-        kind: signal種別（machine_error/friction/contradiction/precedent_miss/
-            precedent_misapplied/boundary_case/rollback のいずれか）
+        kind: KNOWN_KINDS のいずれか、または custom:<名前>
+            （[a-z0-9][a-z0-9_-]{0,39}形式）
         summary: 1行要約（空文字不可）
         source: 発生源。'tool:<name>' / 'hook:<name>' / 'migration' / 'backup' /
             'agent' / 'user' / 'gate' 等
@@ -117,8 +134,8 @@ def record_signal(
     Returns:
         {"id": int, "deduped": bool, "occurrence_count": int}
     """
-    if kind not in KNOWN_KINDS:
-        raise ValueError(f"Invalid kind: {kind!r}. Must be one of {sorted(KNOWN_KINDS)}")
+    if not _is_valid_kind(kind):
+        raise ValueError(_invalid_kind_message(kind))
     if not summary or not summary.strip():
         raise ValueError("summary must not be empty")
 
@@ -234,11 +251,11 @@ def get_signals(
                 "message": f"Invalid status: {status!r}. Must be one of {sorted(VALID_STATUSES)} or null",
             }
         }
-    if kind is not None and kind not in KNOWN_KINDS:
+    if kind is not None and not _is_valid_kind(kind):
         return {
             "error": {
                 "code": "VALIDATION_ERROR",
-                "message": f"Invalid kind: {kind!r}. Must be one of {sorted(KNOWN_KINDS)} or null",
+                "message": _invalid_kind_message(kind),
             }
         }
 

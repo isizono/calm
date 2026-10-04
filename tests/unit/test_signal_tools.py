@@ -21,6 +21,11 @@ class TestReportSignalTool:
         result = report_signal("friction", "")
         assert result["error"]["code"] == "VALIDATION_ERROR"
 
+    def test_custom_kind_returns_success_dict(self, temp_db):
+        result = report_signal("custom:rule_conflict", "外部ルール衝突")
+        assert "id" in result
+        assert result["deduped"] is False
+
 
 class TestGetSignalsTool:
     def test_returns_reported_signal(self, temp_db):
