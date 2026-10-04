@@ -1,5 +1,5 @@
 """migration / MCPツールIF変更と外縁ドキュメント更新の同一PR co-change lint、
-および README.md のツール・スキル表の実装との整合性チェック。
+および docs/reference.md のツール・スキル表の実装との整合性チェック。
 
 git diffだけで判定できる規約をCIで強制する（.github/workflows/test.ymlから呼ばれる）:
 
@@ -9,10 +9,10 @@ git diffだけで判定できる規約をCIで強制する（.github/workflows/t
 2. src/main.py の @mcp.tool() デコレータ付き関数のシグネチャ・増減に差分がある PR は
    docs/spec/mcp-tools.md にも差分があること。
    例外: `[no-tool-surface-change]` を含める。
-3. README.md の「MCPツール」表に載っているツール名の集合は、src/main.py の
+3. docs/reference.md の「MCPツール」表に載っているツール名の集合は、src/main.py の
    @mcp.tool() 登録関数の集合と一致すること（head ref の状態を毎回比較する。
    co-change判定ではないので例外マーカーは無い）。
-4. README.md の「スキル」表に載っているスキル名の集合は、skills/*/SKILL.md が
+4. docs/reference.md の「スキル」表に載っているスキル名の集合は、skills/*/SKILL.md が
    存在するディレクトリ名の集合と一致すること（同上、例外マーカーは無い）。
 
 判定不能（ast parse失敗、対象セクションが見つからない等）は警告のみでpass する
@@ -42,9 +42,9 @@ MCP_TOOLS_DOC = "docs/spec/mcp-tools.md"
 NO_SCHEMA_SHAPE_CHANGE_MARKER = "[no-schema-shape-change]"
 NO_TOOL_SURFACE_CHANGE_MARKER = "[no-tool-surface-change]"
 
-README_PATH = "README.md"
-README_TOOLS_HEADING = "## MCPツール"
-README_SKILLS_HEADING = "## スキル"
+REFERENCE_DOC_PATH = "docs/reference.md"
+REFERENCE_TOOLS_HEADING = "## MCPツール"
+REFERENCE_SKILLS_HEADING = "## スキル"
 
 ToolSignature = dict[str, list[tuple[str, str | None, bool]]]
 
@@ -59,7 +59,7 @@ def git_diff_names(repo_root: Path, base: str, head: str) -> list[str]:
         ["git", "diff", "--name-only", f"{base}...{head}"],
         cwd=repo_root,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8",
         check=True,
     )
     return [line for line in result.stdout.splitlines() if line]
@@ -70,7 +70,7 @@ def git_show(repo_root: Path, ref: str, path: str) -> str | None:
         ["git", "show", f"{ref}:{path}"],
         cwd=repo_root,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8",
     )
     if result.returncode != 0:
         return None
@@ -82,7 +82,7 @@ def collect_commit_messages(repo_root: Path, base: str, head: str) -> str:
         ["git", "log", "--format=%B", f"{base}..{head}"],
         cwd=repo_root,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8",
     )
     return result.stdout if result.returncode == 0 else ""
 
@@ -92,7 +92,7 @@ def git_ls_tree_paths(repo_root: Path, ref: str, dir_path: str) -> list[str] | N
         ["git", "ls-tree", "-r", "--name-only", ref, "--", dir_path],
         cwd=repo_root,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8",
     )
     if result.returncode != 0:
         return None
@@ -170,7 +170,7 @@ def diff_tool_signatures(base: ToolSignature, head: ToolSignature) -> dict[str, 
 
 
 # ---------------------------------------------------------------------------
-# README.md 表パース（純粋関数。git呼び出しから切り離してテストしやすくする）
+# docs/reference.md 表パース（純粋関数。git呼び出しから切り離してテストしやすくする）
 # ---------------------------------------------------------------------------
 
 
@@ -192,9 +192,9 @@ def _extract_section(text: str, heading: str) -> str | None:
     return "\n".join(lines[start:end])
 
 
-def extract_readme_tool_names(readme_text: str) -> set[str] | None:
+def extract_reference_tool_names(reference_text: str) -> set[str] | None:
     """「MCPツール」表の「ツール」列（2列目）の backtick 名だけを集める。説明列は見ない。"""
-    section = _extract_section(readme_text, README_TOOLS_HEADING)
+    section = _extract_section(reference_text, REFERENCE_TOOLS_HEADING)
     if section is None:
         return None
     names: set[str] = set()
@@ -208,9 +208,9 @@ def extract_readme_tool_names(readme_text: str) -> set[str] | None:
     return names
 
 
-def extract_readme_skill_names(readme_text: str) -> set[str] | None:
+def extract_reference_skill_names(reference_text: str) -> set[str] | None:
     """「スキル」表の1列目の backtick 名（先頭の `/` を除く）だけを集める。説明列は見ない。"""
-    section = _extract_section(readme_text, README_SKILLS_HEADING)
+    section = _extract_section(reference_text, REFERENCE_SKILLS_HEADING)
     if section is None:
         return None
     names: set[str] = set()
@@ -234,47 +234,47 @@ def extract_skill_dir_names(skill_paths: list[str]) -> set[str]:
     return names
 
 
-def check_readme_tables(
-    readme_text: str | None,
+def check_reference_tables(
+    reference_text: str | None,
     tool_names: set[str] | None,
     skill_names: set[str] | None,
 ) -> tuple[list[str], list[str]]:
-    """README.md のMCPツール表・スキル表が実装と一致するかを判定する。co-changeではなく
+    """docs/reference.md のMCPツール表・スキル表が実装と一致するかを判定する。co-changeではなく
     head refの状態同士を毎回突き合わせるスナップショット比較なので、例外マーカーは無い。"""
     failures: list[str] = []
     warnings: list[str] = []
 
-    if readme_text is None:
-        warnings.append(f"{README_PATH} の取得に失敗した。README表の突合をスキップした。")
+    if reference_text is None:
+        warnings.append(f"{REFERENCE_DOC_PATH} の取得に失敗した。リファレンス表の突合をスキップした。")
         return failures, warnings
 
-    readme_tool_names = extract_readme_tool_names(readme_text)
-    if readme_tool_names is None:
-        warnings.append(f"{README_PATH} に '{README_TOOLS_HEADING}' セクションが見つからない。MCPツール表の突合をスキップした。")
+    reference_tool_names = extract_reference_tool_names(reference_text)
+    if reference_tool_names is None:
+        warnings.append(f"{REFERENCE_DOC_PATH} に '{REFERENCE_TOOLS_HEADING}' セクションが見つからない。MCPツール表の突合をスキップした。")
     elif tool_names is None:
         warnings.append("src/main.py からのツール名取得に失敗した。MCPツール表の突合をスキップした。")
     else:
-        missing_in_readme = sorted(tool_names - readme_tool_names)
-        extra_in_readme = sorted(readme_tool_names - tool_names)
-        if missing_in_readme or extra_in_readme:
+        missing_in_reference = sorted(tool_names - reference_tool_names)
+        extra_in_reference = sorted(reference_tool_names - tool_names)
+        if missing_in_reference or extra_in_reference:
             failures.append(
-                f"{README_PATH} の「MCPツール」表が実装とずれている "
-                f"(README に無い: {missing_in_readme} / 実装に無い: {extra_in_readme})。"
+                f"{REFERENCE_DOC_PATH} の「MCPツール」表が実装とずれている "
+                f"({REFERENCE_DOC_PATH} に無い: {missing_in_reference} / 実装に無い: {extra_in_reference})。"
                 "ツールの追加・削除に合わせて表を更新すること。"
             )
 
-    readme_skill_names = extract_readme_skill_names(readme_text)
-    if readme_skill_names is None:
-        warnings.append(f"{README_PATH} に '{README_SKILLS_HEADING}' セクションが見つからない。スキル表の突合をスキップした。")
+    reference_skill_names = extract_reference_skill_names(reference_text)
+    if reference_skill_names is None:
+        warnings.append(f"{REFERENCE_DOC_PATH} に '{REFERENCE_SKILLS_HEADING}' セクションが見つからない。スキル表の突合をスキップした。")
     elif skill_names is None:
         warnings.append("skills/ 配下からのスキル名取得に失敗した。スキル表の突合をスキップした。")
     else:
-        missing_in_readme = sorted(skill_names - readme_skill_names)
-        extra_in_readme = sorted(readme_skill_names - skill_names)
-        if missing_in_readme or extra_in_readme:
+        missing_in_reference = sorted(skill_names - reference_skill_names)
+        extra_in_reference = sorted(reference_skill_names - skill_names)
+        if missing_in_reference or extra_in_reference:
             failures.append(
-                f"{README_PATH} の「スキル」表が実装とずれている "
-                f"(README に無い: {missing_in_readme} / 実装に無い: {extra_in_readme})。"
+                f"{REFERENCE_DOC_PATH} の「スキル」表が実装とずれている "
+                f"({REFERENCE_DOC_PATH} に無い: {missing_in_reference} / 実装に無い: {extra_in_reference})。"
                 "スキルの追加・削除に合わせて表を更新すること。"
             )
 
@@ -367,24 +367,24 @@ def main(argv: list[str] | None = None) -> int:
         changed_files, commit_messages, pr_body, base_main_py, head_main_py
     )
 
-    # 3・4. README.md のMCPツール表・スキル表 <-> 実装（head refのスナップショット比較。
+    # 3・4. docs/reference.md のMCPツール表・スキル表 <-> 実装（head refのスナップショット比較。
     # co-changeではないので常に実行する。差分が無いPRでも既存のドリフトを検出する）
-    head_main_py_for_readme = head_main_py if head_main_py is not None else git_show(
+    head_main_py_for_reference = head_main_py if head_main_py is not None else git_show(
         args.repo_root, args.head, "src/main.py"
     )
     tool_names = None
-    if head_main_py_for_readme is not None:
-        head_sig = extract_tool_signatures(head_main_py_for_readme)
+    if head_main_py_for_reference is not None:
+        head_sig = extract_tool_signatures(head_main_py_for_reference)
         if head_sig is not None:
             tool_names = set(head_sig)
 
     skill_paths = git_ls_tree_paths(args.repo_root, args.head, "skills/")
     skill_names = extract_skill_dir_names(skill_paths) if skill_paths is not None else None
 
-    head_readme = git_show(args.repo_root, args.head, README_PATH)
-    readme_failures, readme_warnings = check_readme_tables(head_readme, tool_names, skill_names)
-    failures += readme_failures
-    warnings += readme_warnings
+    head_reference = git_show(args.repo_root, args.head, REFERENCE_DOC_PATH)
+    reference_failures, reference_warnings = check_reference_tables(head_reference, tool_names, skill_names)
+    failures += reference_failures
+    warnings += reference_warnings
 
     for w in warnings:
         print(f"WARNING: {w}", file=sys.stderr)

@@ -9,22 +9,31 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
 
-from src.env_compat import env_get, env_set
-from src.http_config import HTTP_PORT
-from src.infra.git_repo import resolve_main_repo_root
-from src.infra.process_signature import process_start_signature
-from src.services.embedding_service import PORT as EMBEDDING_SERVER_PORT
+import psutil
 
+from src.env_compat import env_get, env_set
+from src.http_config import EMBEDDING_PORT, HTTP_PORT
+from src.infra import lock_file
+from src.infra.detached_process import DetachedProcess, popen_detached
+from src.infra.git_repo import resolve_main_repo_root
+from src.infra.lock_file import is_process_alive
+from src.infra.process_signature import process_start_signature
+
+# EMBEDDING_PORTはsrc.http_configから直接取る(src.services.embedding_service
+# 経由だと、Windowsで本CLI自身の--no-sync実行中にsqlite_vec/numpy等の重い
+# 依存一式がimport時にロードされ、後続のuv sync(subprocess)がそれらの
+# ファイルを更新しようとした際に競合しうるため)。
 MCP_PORT = HTTP_PORT
-EMBEDDING_PORT = EMBEDDING_SERVER_PORT
 LAUNCHER_LOG_PATH = Path.home() / ".cc-memory" / "logs" / "restart_launcher.log"
 
 DEFAULT_START_TIMEOUT_SEC = 30.0
@@ -40,30 +49,37 @@ PRUNE_LSOF_TIMEOUT_SEC = 15.0
 def find_listen_pids(port: int) -> list[int]:
     """指定ポートでLISTEN中のPIDを返す。
 
+    Windowsにはlsofが無いためpsutilで代替する(POSIXは引き続きlsofを使う。
     -sTCP:LISTEN条件で絞り込むことで、接続中のクライアント(ブリッジ等)を
-    巻き添えにしない。lsofがハングした場合はタイムアウトし、空リストとして扱う
+    巻き添えにしない)。lsofがハングした場合はタイムアウトし、空リストとして扱う
     (「わからない」を「いない」として安全側に倒す。再起動フロー全体を
     無期限にブロックしないことを優先する)。
     """
+    if sys.platform == "win32":
+        return _find_listen_pids_windows(port)
     try:
         result = subprocess.run(
             ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
-            capture_output=True, text=True, check=False, timeout=SUBPROCESS_TIMEOUT_SEC,
+            capture_output=True, text=True, encoding="utf-8", check=False, timeout=SUBPROCESS_TIMEOUT_SEC,
         )
     except subprocess.TimeoutExpired:
         return []
     return sorted({int(p) for p in result.stdout.split() if p.strip()})
 
 
-def _process_alive(pid: int) -> bool:
-    """シグナル0の送信でプロセスの生死を確認する(実際にはシグナルを送らない)。"""
+def _find_listen_pids_windows(port: int) -> list[int]:
+    """psutilでLISTEN中のTCP接続を列挙し、該当ポートのPIDを返す。
+
+    一部の接続は権限不足でpidがNoneになりうる(他ユーザーのプロセス等)ため除外する。
+    """
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+        conns = psutil.net_connections(kind="tcp")
+    except (psutil.AccessDenied, OSError):
+        return []
+    return sorted({
+        c.pid for c in conns
+        if c.pid is not None and c.status == psutil.CONN_LISTEN and c.laddr and c.laddr.port == port
+    })
 
 
 def kill_pids(
@@ -72,11 +88,21 @@ def kill_pids(
     escalate_after_sec: float = DEFAULT_KILL_ESCALATE_SEC,
     poll_interval_sec: float = DEFAULT_POLL_INTERVAL_SEC,
 ) -> None:
-    """各PIDにSIGTERMを送り、escalate_after_sec待っても生存していればSIGKILLで強制終了する。
+    """各PIDを終了させる。
 
-    SIGTERMのみで終了しないプロセスを生かしたまま次の処理に進むと、
-    新規サーバーがポートのbindに失敗して見えない失敗を招く。
+    POSIXではSIGTERMを送り、escalate_after_sec待っても生存していればSIGKILLで
+    強制終了する(SIGTERMのみで終了しないプロセスを生かしたまま次の処理に進むと、
+    新規サーバーがポートのbindに失敗して見えない失敗を招く)。
+
+    Windowsではsignal.SIGKILLが存在せず、os.kill(pid, signal.SIGTERM)も
+    TerminateProcessとして即座に終了するだけでSIGTERMの猶予的な意味を持たない
+    ため、エスカレーションの概念自体が無い。psutilのterminate()を1回送って
+    生存確認で待つだけにする。
     """
+    if sys.platform == "win32":
+        _kill_pids_windows(pids, wait_sec=escalate_after_sec, poll_interval_sec=poll_interval_sec)
+        return
+
     for pid in pids:
         try:
             os.kill(pid, signal.SIGTERM)
@@ -84,16 +110,31 @@ def kill_pids(
             pass
 
     deadline = time.monotonic() + escalate_after_sec
-    remaining = {pid for pid in pids if _process_alive(pid)}
+    remaining = {pid for pid in pids if is_process_alive(pid)}
     while remaining and time.monotonic() < deadline:
         time.sleep(poll_interval_sec)
-        remaining = {pid for pid in remaining if _process_alive(pid)}
+        remaining = {pid for pid in remaining if is_process_alive(pid)}
 
     for pid in remaining:
         try:
             os.kill(pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+
+
+def _kill_pids_windows(pids: list[int], *, wait_sec: float, poll_interval_sec: float) -> None:
+    """psutil.Process.terminate()(TerminateProcess相当)を1回送り、生存確認で待つ。"""
+    for pid in pids:
+        try:
+            psutil.Process(pid).terminate()
+        except psutil.NoSuchProcess:
+            pass
+
+    deadline = time.monotonic() + wait_sec
+    remaining = {pid for pid in pids if is_process_alive(pid)}
+    while remaining and time.monotonic() < deadline:
+        time.sleep(poll_interval_sec)
+        remaining = {pid for pid in remaining if is_process_alive(pid)}
 
 
 class RestartResult(NamedTuple):
@@ -116,8 +157,9 @@ def sync_dependencies(
 ) -> SyncResult:
     """`uv sync` でvenvを再構築する。
 
-    旧サーバーがまだポートを握っている間に実行することで、後続の
-    kill→起動→30秒監視のダウンタイムからvenv構築時間を切り離す。
+    POSIXでは旧サーバーがまだポートを握っている間に実行することで、後続の
+    kill→起動→30秒監視のダウンタイムからvenv構築時間を切り離す
+    (Windowsではサーバーを止めた後に呼ぶため、この効果は無い)。
     失敗しても呼び出し側は後続の再起動処理を続行してよい。
     """
     # 実行中のインタープリタ自体がproject_root配下の.venvから起動している
@@ -129,7 +171,7 @@ def sync_dependencies(
     try:
         result = subprocess.run(
             ["uv", "sync", "--directory", str(project_root)],
-            capture_output=True, text=True, check=False, timeout=timeout_sec,
+            capture_output=True, text=True, encoding="utf-8", check=False, timeout=timeout_sec,
         )
     except subprocess.TimeoutExpired:
         return SyncResult(False, time.monotonic() - start, f"uv sync timed out after {timeout_sec}s")
@@ -175,6 +217,23 @@ def restart_mcp_server(
     新PIDの起動時刻が旧PIDの記録と一致しないことをもって
     「新規プロセスへの入れ替わり」を確認してから成功とみなす。
     """
+    old_pids, old_signatures = _stop_mcp_server(kill_wait_sec, poll_interval_sec)
+    return _start_mcp_server(
+        project_root, old_pids, old_signatures,
+        start_timeout_sec=start_timeout_sec, poll_interval_sec=poll_interval_sec,
+    )
+
+
+def _stop_mcp_server(kill_wait_sec: float, poll_interval_sec: float) -> tuple[list[int], dict[int, str | None]]:
+    """既存のMCPサーバープロセスを止め、入れ替え判定用の旧PID・起動時刻記録を返す。
+
+    Windowsのterminate(TerminateProcess相当)はrelease()のfinally節を経由しない
+    ため、停止確認後もserver.lockが残り続ける(POSIXでも、SIGTERMを無視し
+    SIGKILLで強制終了したケースは同様にfinally節を経由しない)。殺したpidと
+    記録pidが一致し、かつ既に死んでいる場合だけ明示的に消す。生存中に誤って
+    消さないための確認であり、停止後に別プロセスが新たにロックを取り直して
+    いた場合に誤って消さないための確認でもある。
+    """
     old_pids = find_listen_pids(MCP_PORT)
     old_signatures = {pid: process_start_signature(pid) for pid in old_pids}
 
@@ -183,7 +242,22 @@ def restart_mcp_server(
         deadline = time.monotonic() + kill_wait_sec
         while time.monotonic() < deadline and find_listen_pids(MCP_PORT):
             time.sleep(poll_interval_sec)
+        for pid in old_pids:
+            if not is_process_alive(pid):
+                lock_file.release(pid)
 
+    return old_pids, old_signatures
+
+
+def _start_mcp_server(
+    project_root: Path,
+    old_pids: list[int],
+    old_signatures: dict[int, str | None],
+    *,
+    start_timeout_sec: float,
+    poll_interval_sec: float,
+) -> RestartResult:
+    """新規launcherプロセスを起動し、ポートの入れ替わりを確認する。"""
     # 新規launcherプロセスはos.environを継承する(Popenにenv未指定)。プラグイン
     # キャッシュ配置(gitリポジトリ外)ではlauncher起動時の_propagate_plugin_root_env()
     # がCLAUDE_PLUGIN_ROOT頼みで、この再起動フロー経由の子プロセスにその値が
@@ -194,11 +268,17 @@ def restart_mcp_server(
     if not env_get("CALM_PROJECT_ROOT"):
         env_set("CALM_PROJECT_ROOT", str(_resolve_main_repo_root(project_root)))
 
+    # .mcp.jsonのcalm.env経由ではなくこの再起動フローから直接launcherを起動する
+    # ため、.mcp.jsonのPYTHONUTF8=1がここでは伝播しない。Windows既定のANSIコード
+    # ページ下で新規DBのmigrationを読む際に文字化け・UnicodeDecodeErrorを防ぐため
+    # 明示的に設定する(CALM_プレフィックス専用のenv_set/env_getはPYTHONUTF8には
+    # 使えないため、os.environを直接操作する)。
+    os.environ.setdefault("PYTHONUTF8", "1")
+
     LAUNCHER_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(LAUNCHER_LOG_PATH, "w") as log_file:
-        proc = subprocess.Popen(
+        proc = popen_detached(
             ["uv", "run", "--directory", str(project_root), "python", "-m", "src.launcher"],
-            start_new_session=True,
             stdout=log_file,
             stderr=log_file,
             cwd=str(project_root),
@@ -218,16 +298,43 @@ def restart_mcp_server(
     )
 
 
-def _kill_process_group(proc: subprocess.Popen) -> None:
-    """start_new_sessionで分離したプロセスグループごと終了させる。
+def _kill_process_group(proc: DetachedProcess) -> None:
+    """起動に失敗した新規launcherプロセスを、子孫ごと終了させる。
 
     proc.kill()単体では`uv run ... python -m src.launcher`という
     ラッパー経由で起動した孫プロセス(実体のlauncher)が生き残ることがある。
+
+    POSIXはプロセスグループ(os.killpg/os.getpgid)で子孫をまとめて終了できる。
+    Windowsには相当する機構が無いため、psutilで直下の子プロセスまでを
+    終了させる(詳細は_kill_process_group_windows参照)。
     """
+    if sys.platform == "win32":
+        _kill_process_group_windows(proc.pid)
+        return
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
     except ProcessLookupError:
         pass
+
+
+def _kill_process_group_windows(pid: int) -> None:
+    """psutilで直下の子プロセス(uv run経由のvenvリダイレクタ等)まで含めてterminateする。
+
+    孫以降は意図的に対象外にする。launcher.py自身が起動する実サーバー(HTTPサーバー)は
+    popen_detachedでCREATE_NEW_PROCESS_GROUPを付けて切り離されるが、Windowsの
+    ppidはこのフラグの影響を受けず起動元を指したままになるため、
+    children(recursive=True)で辿ると切り離したはずのサーバーまで終了させてしまう。
+    """
+    try:
+        parent = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return
+    children = parent.children(recursive=False)
+    for proc in [parent, *children]:
+        try:
+            proc.terminate()
+        except psutil.NoSuchProcess:
+            pass
 
 
 def stop_embedding_server() -> list[int]:
@@ -265,7 +372,7 @@ def _has_open_file_handles(path: Path) -> bool:
     try:
         result = subprocess.run(
             ["lsof", "+D", str(path)],
-            capture_output=True, text=True, check=False, timeout=PRUNE_LSOF_TIMEOUT_SEC,
+            capture_output=True, text=True, encoding="utf-8", check=False, timeout=PRUNE_LSOF_TIMEOUT_SEC,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return True
@@ -322,6 +429,11 @@ def prune_orphaned_plugin_versions(project_root: Path) -> dict:
 # MCPサーバー本体（ローカル・リモート共通。両者とも同じ`-m src.main --transport http`
 # で起動される）が対象。launcherは対象外(_is_launcher_commandで別途除外する)。
 _ORPHAN_CANDIDATE_MODULES = ("src.main", "src.infra.embedding_server")
+# 部分一致だとパスや引数に同じ文字列を含む無関係なプロセスまで停止対象になるため、
+# `-m <module>`として完全に一致するものだけを候補にする
+_ORPHAN_CANDIDATE_RE = re.compile(
+    r"(?:^|\s)-m\s+(?:" + "|".join(re.escape(m) for m in _ORPHAN_CANDIDATE_MODULES) + r")(?:\s|$)"
+)
 ORPHAN_LSOF_TIMEOUT_SEC = 5.0
 
 
@@ -353,7 +465,7 @@ def _list_server_family_processes() -> list[tuple[int, str]]:
         pid_str, _, command = line.partition(" ")
         if _is_launcher_command(command):
             continue
-        if not any(module in command for module in _ORPHAN_CANDIDATE_MODULES):
+        if not _ORPHAN_CANDIDATE_RE.search(command):
             continue
         try:
             pid = int(pid_str)
@@ -414,10 +526,14 @@ def find_orphaned_plugin_cache_processes() -> dict:
 def restart_all(project_root: Path, *, restart_embedding: bool = False) -> dict:
     """依存関係の同期・キャッシュ掃除・MCP再起動を順に行う。
 
-    uv syncとキャッシュ掃除は、旧MCPサーバーがまだ稼働している間に
+    POSIXではuv syncとキャッシュ掃除を、旧MCPサーバーがまだ稼働している間に
     済ませておく。これによりkill〜新規プロセス起動〜起動監視という
     ダウンタイムの区間からvenv構築時間を切り離す。uv syncが失敗しても
     後続のMCP再起動は試行する(結果には成否を含めて返す)。
+
+    Windowsでは稼働中のサーバーが`.venv`配下のファイルを開いたままにするため、
+    POSIXと同じ順序でsyncすると差し替え対象のファイルが使用中で失敗しうる。
+    サーバーを先に止めてからsyncする。
 
     embeddingサーバーはコードの変更頻度が低いため、既定では停止しない
     (次にencodeが必要になったとき自動でlazy spawnされるだけで、都度停止すると
@@ -432,9 +548,18 @@ def restart_all(project_root: Path, *, restart_embedding: bool = False) -> dict:
     成否に関わらず常に行う。削除済みディレクトリから動き続けているプロセスは
     再起動が失敗した場合でも(むしろ失敗の原因調査中はなおさら)掃除する価値がある。
     """
-    sync_result = sync_dependencies(project_root)
-    cache_result = clean_caches(project_root)
-    mcp_result = restart_mcp_server(project_root)
+    if sys.platform == "win32":
+        old_pids, old_signatures = _stop_mcp_server(DEFAULT_KILL_WAIT_SEC, DEFAULT_POLL_INTERVAL_SEC)
+        sync_result = sync_dependencies(project_root)
+        cache_result = clean_caches(project_root)
+        mcp_result = _start_mcp_server(
+            project_root, old_pids, old_signatures,
+            start_timeout_sec=DEFAULT_START_TIMEOUT_SEC, poll_interval_sec=DEFAULT_POLL_INTERVAL_SEC,
+        )
+    else:
+        sync_result = sync_dependencies(project_root)
+        cache_result = clean_caches(project_root)
+        mcp_result = restart_mcp_server(project_root)
     embedding_stopped = stop_embedding_server() if restart_embedding else []
     prune_result = prune_orphaned_plugin_versions(project_root) if mcp_result.ok else {
         "removed": [], "skipped": [],
@@ -459,7 +584,55 @@ def restart_all(project_root: Path, *, restart_embedding: bool = False) -> dict:
     }
 
 
+def _process_started_at_iso(pid: int) -> str | None:
+    """プロセスの起動時刻をISO8601（UTC）文字列で返す。取得できなければNone。
+
+    `/health`エンドポイントの`started_at`と同じ形式にすることで、人間・LLMが
+    「どちらが新しいか」を文字列のまま比較できるようにする
+    (`process_start_signature()`が返す不透明な値は等価比較専用で、
+    この用途には使わない)。
+    """
+    try:
+        return datetime.fromtimestamp(psutil.Process(pid).create_time(), tz=timezone.utc).isoformat()
+    except psutil.Error:
+        return None
+
+
+def get_status() -> dict:
+    """MCP/embeddingサーバーの現在の稼働状況を返す(副作用なし)。"""
+    def _server_info(port: int) -> dict:
+        pids = find_listen_pids(port)
+        return {
+            "port": port,
+            "pids": pids,
+            "running": bool(pids),
+            "started_at": _process_started_at_iso(pids[0]) if pids else None,
+        }
+
+    return {
+        "mcp_server": _server_info(MCP_PORT),
+        "embedding_server": _server_info(EMBEDDING_PORT),
+    }
+
+
+def stop_all(*, stop_embedding: bool = False) -> dict:
+    """再起動せず、MCPサーバー(と指定時はembeddingサーバー)を停止するだけで終了する。"""
+    old_pids, _ = _stop_mcp_server(DEFAULT_KILL_WAIT_SEC, DEFAULT_POLL_INTERVAL_SEC)
+    embedding_stopped = stop_embedding_server() if stop_embedding else []
+    return {
+        "mcp_server": {"stopped_pids": old_pids},
+        "embedding_server": {"stopped_pids": embedding_stopped},
+    }
+
+
 def main() -> None:
+    # Windows既定のANSIコードページ（cp932等）ではstdoutが非UTF-8になり、
+    # json.dumps(..., ensure_ascii=False)が出す日本語（detailメッセージ等）が
+    # UnicodeEncodeErrorで落ちうる。再起動自体は成功していてもこの出力で
+    # 落ちると「成功したのにexit 1」になる。
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+
     parser = argparse.ArgumentParser(description="calm server restart")
     parser.add_argument(
         "--restart-embedding",
@@ -469,7 +642,24 @@ def main() -> None:
             "自動でlazy spawnされる)"
         ),
     )
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--status", action="store_true",
+        help="状態を確認するだけで何も変更しない",
+    )
+    mode_group.add_argument(
+        "--stop", action="store_true",
+        help="再起動せず、MCPサーバー(と--restart-embedding指定時はembeddingサーバー)を停止するだけで終了する",
+    )
     args = parser.parse_args()
+
+    if args.status:
+        print(json.dumps(get_status(), ensure_ascii=False, indent=2))
+        return
+
+    if args.stop:
+        print(json.dumps(stop_all(stop_embedding=args.restart_embedding), ensure_ascii=False, indent=2))
+        return
 
     project_root = Path(__file__).resolve().parent.parent.parent
     result = restart_all(project_root, restart_embedding=args.restart_embedding)

@@ -3,27 +3,62 @@
 subprocess呼び出し(lsof/ps/kill/Popen)を外部境界としてmonkeypatchし、
 プロセス入れ替え判定ロジック・キャッシュ削除の契約を検証する。
 """
+import json
 import os
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
 
 from src.env_compat import env_restore, env_snapshot
+from src.infra import lock_file
 from src.services import restart_service
 
 
 @pytest.fixture(autouse=True)
+def _isolate_lock_file(tmp_path, monkeypatch):
+    """_stop_mcp_server()がserver.lockの後始末でlock_file.release()を呼びうるため、
+    テストごとにロックファイルのパスを一時ディレクトリへ差し替える(このマシンで
+    実際に稼働中のサーバーの~/.cc-memory/server.lockを読み書きしないため)。
+    """
+    lock_dir = tmp_path / ".cc-memory"
+    lock_dir.mkdir()
+    monkeypatch.setattr(lock_file, "LOCK_DIR", lock_dir)
+    monkeypatch.setattr(lock_file, "LOCK_FILE", lock_dir / "server.lock")
+
+
+@pytest.fixture(autouse=True)
+def _default_to_posix_platform(monkeypatch):
+    """既定でPOSIX分岐を通す。
+
+    本ファイルの大半のテストはsubprocess呼び出し自体をfakeに差し替えており、
+    実行ホストのOSに関わらずfind_listen_pids/kill_pids/popen_detachedの
+    POSIX分岐を検証する意図を持つ(Windows分岐はtest名で明示し、個別に
+    sys.platform="win32"を上書きする)。この既定が無いと、実機のWindows CI上
+    ではsys.platformが本当に"win32"になるため、POSIX分岐を検証するつもりの
+    テストが無言でWindows分岐（psutil等、未fakeの実呼び出し）を通ってしまう。
+    """
+    monkeypatch.setattr(restart_service.sys, "platform", "darwin")
+
+
+@pytest.fixture(autouse=True)
 def _isolate_calm_project_root_env():
-    """restart_mcp_server()のenv_set("CALM_PROJECT_ROOT", ...)はos.environを直接
-    書き換えるため、monkeypatch.delenv(raising=False)では捕捉されない(対象キーが
-    元々未設定だとundo記録が残らない: pytest monkeypatchの仕様)。放置すると
-    restart_mcp_server()を呼ぶどのテストからもCALM_PROJECT_ROOTがプロセス全体に
-    残留しうるため、本ファイル全体に適用してテスト順依存の非決定性を防ぐ。
+    """restart_mcp_server()のenv_set("CALM_PROJECT_ROOT", ...)、os.environ.setdefault
+    ("PYTHONUTF8", ...)はos.environを直接書き換えるため、monkeypatch.delenv
+    (raising=False)では捕捉されない(対象キーが元々未設定だとundo記録が残らない:
+    pytest monkeypatchの仕様)。放置するとrestart_mcp_server()を呼ぶどのテストからも
+    これらの環境変数がプロセス全体に残留しうるため、本ファイル全体に適用して
+    テスト順依存の非決定性を防ぐ。
     """
     snapshot = env_snapshot("CALM_PROJECT_ROOT")
+    python_utf8 = os.environ.get("PYTHONUTF8")
     yield
     env_restore(snapshot)
+    if python_utf8 is None:
+        os.environ.pop("PYTHONUTF8", None)
+    else:
+        os.environ["PYTHONUTF8"] = python_utf8
 
 
 def test_find_listen_pids_parses_lsof_output(monkeypatch):
@@ -69,56 +104,40 @@ def test_find_listen_pids_dedupes_and_sorts(monkeypatch):
     assert restart_service.find_listen_pids(52837) == [1234, 5678]
 
 
-def test_process_start_signature_returns_stripped_lstart_output(monkeypatch):
-    captured_cmd = []
+def test_find_listen_pids_windows_uses_psutil_not_lsof(monkeypatch):
+    """Windowsにはlsofが無いためpsutilのLISTEN接続一覧から該当ポートのpidを拾う"""
+    monkeypatch.setattr(restart_service.sys, "platform", "win32")
 
     def fake_run(cmd, **kwargs):
-        captured_cmd.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, stdout="  Thu Jul 24 09:32:04 2026  \n", stderr="")
+        raise AssertionError("Windows分岐ではlsofを呼んではいけない")
 
     monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
 
-    signature = restart_service.process_start_signature(1234)
+    conns = [
+        SimpleNamespace(pid=111, status=restart_service.psutil.CONN_LISTEN,
+                         laddr=SimpleNamespace(port=52837)),
+        SimpleNamespace(pid=222, status=restart_service.psutil.CONN_LISTEN,
+                         laddr=SimpleNamespace(port=9999)),  # 別ポートは除外
+        SimpleNamespace(pid=333, status="ESTABLISHED",
+                         laddr=SimpleNamespace(port=52837)),  # LISTEN以外は除外
+        SimpleNamespace(pid=None, status=restart_service.psutil.CONN_LISTEN,
+                         laddr=SimpleNamespace(port=52837)),  # pid不明(権限不足等)は除外
+    ]
+    monkeypatch.setattr(restart_service.psutil, "net_connections", lambda kind="inet": conns)
 
-    assert signature == "Thu Jul 24 09:32:04 2026"
-    assert captured_cmd == [["ps", "-o", "lstart=", "-p", "1234"]]
-
-
-def test_process_start_signature_none_for_dead_process(monkeypatch):
-    def fake_run(cmd, **kwargs):
-        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="ps: 1234: No such process")
-
-    monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
-
-    assert restart_service.process_start_signature(1234) is None
-
-
-def test_process_start_signature_none_on_timeout(monkeypatch):
-    def fake_run(cmd, **kwargs):
-        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
-
-    monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
-
-    assert restart_service.process_start_signature(1234) is None
+    assert restart_service.find_listen_pids(52837) == [111]
 
 
-def test_process_alive_false_when_process_lookup_error(monkeypatch):
-    def fake_kill(pid, sig):
-        raise ProcessLookupError
+def test_find_listen_pids_windows_empty_on_access_denied(monkeypatch):
+    """権限不足で接続一覧が取得できない場合は空リストにする(安全側)"""
+    monkeypatch.setattr(restart_service.sys, "platform", "win32")
 
-    monkeypatch.setattr(restart_service.os, "kill", fake_kill)
+    def fake_net_connections(kind="inet"):
+        raise restart_service.psutil.AccessDenied()
 
-    assert restart_service._process_alive(1234) is False
+    monkeypatch.setattr(restart_service.psutil, "net_connections", fake_net_connections)
 
-
-def test_process_alive_true_when_permission_denied(monkeypatch):
-    """権限エラーは「シグナルは送れないが存在はする」ことを意味するため生存扱いにする"""
-    def fake_kill(pid, sig):
-        raise PermissionError
-
-    monkeypatch.setattr(restart_service.os, "kill", fake_kill)
-
-    assert restart_service._process_alive(1234) is True
+    assert restart_service.find_listen_pids(52837) == []
 
 
 def test_kill_pids_sends_sigterm_only_when_process_dies_promptly(monkeypatch):
@@ -126,31 +145,97 @@ def test_kill_pids_sends_sigterm_only_when_process_dies_promptly(monkeypatch):
     signals_sent = []
 
     def fake_kill(pid, sig):
-        if sig == 0:
-            raise ProcessLookupError  # 生存確認: SIGTERM後すぐ死んだ想定
         signals_sent.append((pid, sig))
 
     monkeypatch.setattr(restart_service.os, "kill", fake_kill)
+    # 生存確認: SIGTERM後すぐ死んだ想定
+    monkeypatch.setattr(restart_service, "is_process_alive", lambda pid: False)
 
     restart_service.kill_pids([1234])
 
     assert signals_sent == [(1234, restart_service.signal.SIGTERM)]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="signal.SIGKILLはWindowsに存在しない。Windows版はtest_kill_pids_windows_*で検証する")
 def test_kill_pids_escalates_to_sigkill_when_process_survives_sigterm(monkeypatch):
     """SIGTERMを送っても生存し続けるプロセスにはSIGKILLを送る"""
     signals_sent = []
 
     def fake_kill(pid, sig):
-        signals_sent.append((pid, sig))  # sig=0(生存確認)も例外を投げず「生存」を返す
+        signals_sent.append((pid, sig))
 
     monkeypatch.setattr(restart_service.os, "kill", fake_kill)
+    monkeypatch.setattr(restart_service, "is_process_alive", lambda pid: True)
     monkeypatch.setattr(restart_service.time, "sleep", lambda _: None)
 
     restart_service.kill_pids([1234], escalate_after_sec=0, poll_interval_sec=0)
 
     assert (1234, restart_service.signal.SIGTERM) in signals_sent
     assert (1234, restart_service.signal.SIGKILL) in signals_sent
+
+
+def test_kill_pids_windows_terminates_once_via_psutil(monkeypatch):
+    """Windowsではsignal.SIGKILLが存在せず、os.kill(pid, SIGTERM)もTerminateProcess
+    として即座に終了するだけでSIGTERMの猶予的な意味を持たないため、エスカレーション
+    せずpsutilのterminate()を1回送って生存確認で待つだけにする。
+
+    signal.SIGKILL・os.killpg・os.getpgidを削除してから実行することで、
+    Windows分岐がこれらを参照しないこと自体を検証する(参照すれば
+    AttributeErrorになり、Windows実機と同じ壊れ方を再現できる)。
+
+    is_process_aliveをTrue→True→Falseの順で返すfakeにし、「生きている→死ぬ」の
+    遷移を実際に通す。この遷移が無いと、待ちループを丸ごと消しても、ポーリングの
+    たびにterminateを送り直しても、このテストは両者を見分けられない。
+    """
+    monkeypatch.setattr(restart_service.sys, "platform", "win32")
+    monkeypatch.delattr(restart_service.signal, "SIGKILL", raising=False)
+    monkeypatch.delattr(restart_service.os, "kill", raising=False)
+    monkeypatch.delattr(restart_service.os, "killpg", raising=False)
+    monkeypatch.delattr(restart_service.os, "getpgid", raising=False)
+
+    terminated = []
+
+    class FakeProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def terminate(self):
+            terminated.append(self.pid)
+
+    monkeypatch.setattr(restart_service.psutil, "Process", FakeProcess)
+
+    alive_sequence = iter([True, True, False])
+    alive_calls = []
+
+    def fake_is_process_alive(pid):
+        alive_calls.append(pid)
+        return next(alive_sequence)
+
+    monkeypatch.setattr(restart_service, "is_process_alive", fake_is_process_alive)
+    monkeypatch.setattr(restart_service.time, "sleep", lambda _: None)
+
+    restart_service.kill_pids([4242])
+
+    assert terminated == [4242]
+    # alive_sequenceの3要素(True, True, False)を使い切ったことを確かめる。
+    # 2回までしか消費しない変異(1回ポーリングしたら生死を問わず諦める、
+    # whileをifにする等)は、len(alive_calls) >= 2 のままでは検知できない。
+    assert len(alive_calls) == 3
+
+
+def test_kill_pids_windows_ignores_already_gone_process(monkeypatch):
+    monkeypatch.setattr(restart_service.sys, "platform", "win32")
+    monkeypatch.delattr(restart_service.os, "kill", raising=False)
+    monkeypatch.delattr(restart_service.os, "killpg", raising=False)
+    monkeypatch.delattr(restart_service.os, "getpgid", raising=False)
+
+    def fake_process(pid):
+        raise restart_service.psutil.NoSuchProcess(pid)
+
+    monkeypatch.setattr(restart_service.psutil, "Process", fake_process)
+    monkeypatch.setattr(restart_service, "is_process_alive", lambda pid: False)
+
+    restart_service.kill_pids([4242])  # 例外が出なければOK
 
 
 def test_is_replaced_true_when_new_pid_unseen_before(monkeypatch):
@@ -225,6 +310,57 @@ def test_restart_mcp_server_success_flow(monkeypatch, tmp_path):
     assert kwargs["cwd"] == str(tmp_path)
 
 
+def test_restart_mcp_server_uses_popen_detached_windows_wiring(monkeypatch, tmp_path):
+    """popen_detached経由でWindows用kwargsが渡ること
+
+    popen_detachedを経由せずstart_new_session=Trueで直接起動する実装に戻しても
+    気づけない回帰を防ぐため、popen_detachedのWindows分岐(中継プロセスの起動)が
+    実際に呼び出されることを確かめる。
+    """
+    from src.infra import detached_process
+
+    state = {"new_server_started": False}
+
+    def fake_find_listen_pids(port):
+        return [2222] if state["new_server_started"] else []
+
+    popen_calls = []
+
+    class FakeRelay:
+        def __init__(self, cmd, **kwargs):
+            popen_calls.append(kwargs)
+            state["new_server_started"] = True
+            self.returncode = 0
+
+        def communicate(self, input=None, timeout=None):
+            return b"2222\n", b""
+
+    monkeypatch.setattr(restart_service, "find_listen_pids", fake_find_listen_pids)
+    monkeypatch.setattr(restart_service, "process_start_signature", lambda pid: "sig")
+    monkeypatch.setattr(restart_service, "kill_pids", lambda pids: None)
+    monkeypatch.setattr(restart_service, "_resolve_main_repo_root", lambda project_root: project_root)
+    monkeypatch.setattr(detached_process.sys, "platform", "win32")
+    monkeypatch.setattr(detached_process.psutil, "Process", lambda pid: SimpleNamespace(pid=pid))
+    monkeypatch.setattr(restart_service.subprocess, "Popen", FakeRelay)
+    monkeypatch.setattr(restart_service.time, "sleep", lambda _: None)
+    monkeypatch.setattr(restart_service, "LAUNCHER_LOG_PATH", tmp_path / "logs" / "restart_launcher.log")
+
+    result = restart_service.restart_mcp_server(tmp_path, poll_interval_sec=0)
+
+    assert result.ok is True
+    assert result.new_pids == [2222]
+    assert len(popen_calls) == 1
+    kwargs = popen_calls[0]
+    assert kwargs["creationflags"] == (
+        detached_process._CREATE_NEW_PROCESS_GROUP
+        | detached_process._CREATE_NO_WINDOW
+        | detached_process._CREATE_BREAKAWAY_FROM_JOB
+    )
+    assert kwargs["stdin"] == subprocess.PIPE
+    assert kwargs["stdout"] == subprocess.PIPE
+    assert kwargs["stderr"] == subprocess.PIPE
+
+
 def test_restart_mcp_server_skips_kill_when_nothing_was_listening(monkeypatch, tmp_path):
     """サーバーが元から起動していない場合はkillを呼ばずそのまま起動する"""
     state = {"new_server_started": False}
@@ -254,6 +390,7 @@ def test_restart_mcp_server_skips_kill_when_nothing_was_listening(monkeypatch, t
     assert killed == []
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="signal.SIGKILLはWindowsに存在しない。Windows版のkill_pidsにはエスカレーションの概念自体が無い")
 def test_restart_mcp_server_replaces_old_process_that_ignores_sigterm(monkeypatch, tmp_path):
     """旧プロセスがSIGTERMを無視してもkill_pidsのSIGKILLエスカレーションで
     kill_wait_sec以内に確実に片付き、新規プロセスへ入れ替わることを検証する。
@@ -279,6 +416,11 @@ def test_restart_mcp_server_replaces_old_process_that_ignores_sigterm(monkeypatc
         # SIGTERMは無視され続ける(何もしない)
 
     monkeypatch.setattr(restart_service.os, "kill", fake_os_kill)
+    # kill_pidsの生存判定はis_process_alive()(psutil)を見る。Linux版psutilは
+    # os.kill(pid,0)に加えて/proc/{pid}/statusの実在確認を行うため、存在しない
+    # 偽PIDに対してos.kill差し替えだけでは「生存中」を偽装できない。生存判定
+    # そのものをprocess_aliveと同期させる。
+    monkeypatch.setattr(restart_service, "is_process_alive", lambda pid: process_alive.get(pid, False))
 
     new_server_started = {"flag": False}
 
@@ -313,6 +455,7 @@ def test_restart_mcp_server_replaces_old_process_that_ignores_sigterm(monkeypatc
     assert process_alive[1111] is False
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="os.killpg/os.getpgidはWindowsに存在しない。Windows版はtest_kill_process_group_windows_*で検証する")
 def test_restart_mcp_server_proceeds_to_start_new_process_even_if_old_process_never_dies(monkeypatch, tmp_path):
     """SIGKILLを送っても消えない旧プロセス(D state等で応答しないケース)が
     kill_wait_sec以内に片付かない場合、現状の実装はエスカレーションや
@@ -353,6 +496,7 @@ def test_restart_mcp_server_proceeds_to_start_new_process_even_if_old_process_ne
     assert killpg_calls == [(9999, restart_service.signal.SIGKILL)]  # タイムアウト後は子プロセスグループを後始末する
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="os.killpg/os.getpgidはWindowsに存在しない。Windows版はtest_kill_process_group_windows_*で検証する")
 def test_restart_mcp_server_times_out_when_server_never_comes_up(monkeypatch, tmp_path):
     monkeypatch.setattr(restart_service, "find_listen_pids", lambda port: [])
     monkeypatch.setattr(restart_service, "kill_pids", lambda pids: None)
@@ -375,6 +519,7 @@ def test_restart_mcp_server_times_out_when_server_never_comes_up(monkeypatch, tm
     assert killpg_calls == [(4321, restart_service.signal.SIGKILL)]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="os.killpg/os.getpgidはWindowsに存在しない。Windows版はtest_kill_process_group_windows_*で検証する")
 def test_restart_mcp_server_ignores_process_lookup_error_when_killing_process_group(monkeypatch, tmp_path):
     """killpgが対象プロセスの消滅を示すProcessLookupErrorを送出しても後始末全体は失敗にしない"""
     monkeypatch.setattr(restart_service, "find_listen_pids", lambda port: [])
@@ -396,6 +541,57 @@ def test_restart_mcp_server_ignores_process_lookup_error_when_killing_process_gr
 
     assert result.ok is False
     assert "did not come up on port 52837" in result.detail
+
+
+def test_kill_process_group_windows_terminates_direct_child_only(monkeypatch):
+    """Windowsにはos.killpg/os.getpgid相当が無いため、psutilで直下の子プロセス
+    (uv run経由のvenvリダイレクタ等)まで含めてterminateする。
+
+    孫プロセス(例: launcher.py自身が切り離して起動したHTTPサーバー)は対象外にする。
+    WindowsのppidはCREATE_NEW_PROCESS_GROUPの影響を受けず起動元を指したままなので、
+    children(recursive=True)のまま辿ると切り離したはずのサーバーまで終了させてしまう
+    (孫のFakeProc(3)がterminateされないことで、recursive=Falseになっていることを
+    間接的に確認する)。
+    """
+    monkeypatch.setattr(restart_service.sys, "platform", "win32")
+    monkeypatch.delattr(restart_service.os, "killpg", raising=False)
+    monkeypatch.delattr(restart_service.os, "getpgid", raising=False)
+
+    terminated = []
+
+    class FakeProc:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def terminate(self):
+            terminated.append(self.pid)
+
+    class FakeParent(FakeProc):
+        def children(self, recursive=True):
+            # 孫プロセス(切り離されたサーバー相当、pid=3)はrecursive=Trueのときのみ
+            # 含まれる。recursive=Falseなら直下の子(venvリダイレクタ相当、pid=2)だけ。
+            if recursive:
+                return [FakeProc(2), FakeProc(3)]
+            return [FakeProc(2)]
+
+    monkeypatch.setattr(restart_service.psutil, "Process", lambda pid: FakeParent(pid))
+
+    restart_service._kill_process_group(SimpleNamespace(pid=1))
+
+    assert terminated == [1, 2]
+
+
+def test_kill_process_group_windows_ignores_already_gone_process(monkeypatch):
+    monkeypatch.setattr(restart_service.sys, "platform", "win32")
+    monkeypatch.delattr(restart_service.os, "killpg", raising=False)
+    monkeypatch.delattr(restart_service.os, "getpgid", raising=False)
+
+    def fake_process(pid):
+        raise restart_service.psutil.NoSuchProcess(pid)
+
+    monkeypatch.setattr(restart_service.psutil, "Process", fake_process)
+
+    restart_service._kill_process_group(SimpleNamespace(pid=1))  # 例外が出なければOK
 
 
 def test_restart_mcp_server_writes_launcher_output_to_log_file(monkeypatch, tmp_path):
@@ -533,6 +729,204 @@ class TestRestartMcpServerPropagatesCalmProjectRoot:
         )
 
         assert os.environ["CALM_PROJECT_ROOT"] == str(main_repo_root)
+
+
+def _run_restart_minimal(monkeypatch, tmp_path):
+    """restart_mcp_server()を、プロセス入れ替え判定に無関係な箇所だけfakeにして実行する。
+
+    find_listen_pidsが常に[]を返すためサーバーは起動確認できず、timeoutで
+    後始末の_kill_process_groupへ進む。_default_to_posix_platformによりPOSIX
+    分岐(os.killpg/os.getpgid)を通るが、これらはWindowsのos/signalモジュール
+    には存在しないため、raising=Falseで外部境界(os.killpg/os.getpgid/
+    signal.SIGKILL)をfakeにする。
+    """
+    monkeypatch.setattr(restart_service, "find_listen_pids", lambda port: [])
+    monkeypatch.setattr(restart_service, "kill_pids", lambda pids: None)
+    monkeypatch.setattr(restart_service, "_resolve_main_repo_root", lambda project_root: project_root)
+    monkeypatch.setattr(restart_service.subprocess, "Popen", lambda cmd, **kwargs: SimpleNamespace(pid=4321))
+    monkeypatch.setattr(restart_service, "LAUNCHER_LOG_PATH", tmp_path / "logs" / "restart_launcher.log")
+    monkeypatch.setattr(restart_service.os, "killpg", lambda pgid, sig: None, raising=False)
+    monkeypatch.setattr(restart_service.os, "getpgid", lambda pid: pid, raising=False)
+    monkeypatch.setattr(restart_service.signal, "SIGKILL", 9, raising=False)
+
+
+def test_restart_mcp_server_sets_python_utf8_when_unset(monkeypatch, tmp_path):
+    """.mcp.jsonのcalm.env経由ではないこの再起動フローでも、新規launcherプロセスの
+    環境にPYTHONUTF8=1が伝播するよう、未設定ならos.environへ明示的に設定する。
+    """
+    monkeypatch.delenv("PYTHONUTF8", raising=False)
+    _run_restart_minimal(monkeypatch, tmp_path)
+
+    restart_service.restart_mcp_server(tmp_path, poll_interval_sec=0, start_timeout_sec=0)
+
+    assert os.environ["PYTHONUTF8"] == "1"
+
+
+def test_restart_mcp_server_does_not_override_existing_python_utf8(monkeypatch, tmp_path):
+    """PYTHONUTF8が既に設定済みなら上書きしない(明示的に無効化している利用者を尊重する)"""
+    monkeypatch.setenv("PYTHONUTF8", "0")
+    _run_restart_minimal(monkeypatch, tmp_path)
+
+    restart_service.restart_mcp_server(tmp_path, poll_interval_sec=0, start_timeout_sec=0)
+
+    assert os.environ["PYTHONUTF8"] == "0"
+
+
+class TestStopMcpServerLockCleanup:
+    """_stop_mcp_server(): 停止確認後のserver.lock後始末の契約を検証する。
+
+    Windowsのterminate(TerminateProcess相当)はrelease()のfinally節を経由しない
+    ため、停止確認後もserver.lockが残り続ける(POSIXでもSIGKILL強制終了の場合は
+    同様)。殺したpidと記録pidが一致し、かつ既に死んでいる場合だけ消す。
+    """
+
+    def _run_stop(self, monkeypatch, *, recorded_pid, process_alive):
+        calls = {"n": 0}
+
+        def fake_find_listen_pids(port):
+            calls["n"] += 1
+            return [1111] if calls["n"] == 1 else []
+
+        monkeypatch.setattr(restart_service, "find_listen_pids", fake_find_listen_pids)
+        monkeypatch.setattr(restart_service, "process_start_signature", lambda pid: "sig")
+        monkeypatch.setattr(restart_service, "kill_pids", lambda pids: None)
+        monkeypatch.setattr(restart_service, "is_process_alive", lambda pid: process_alive)
+        lock_file.LOCK_FILE.write_text(
+            json.dumps({"pid": recorded_pid, "port": 52837}), encoding="utf-8",
+        )
+        return restart_service._stop_mcp_server(kill_wait_sec=0, poll_interval_sec=0)
+
+    def test_clears_lock_when_killed_pid_matches_and_dead(self, monkeypatch):
+        old_pids, _ = self._run_stop(monkeypatch, recorded_pid=1111, process_alive=False)
+
+        assert old_pids == [1111]
+        assert lock_file.read() is None
+
+    def test_keeps_lock_when_recorded_pid_differs(self, monkeypatch):
+        """停止後に別プロセスが新たにロックを取り直していた場合は消さない
+        (respawnレース: 別セッションのlauncherが先に新サーバーを起動した場合)"""
+        self._run_stop(monkeypatch, recorded_pid=9999, process_alive=False)
+
+        assert lock_file.read() == {"pid": 9999, "port": 52837, "start_time": None}
+
+    def test_keeps_lock_when_pid_still_alive(self, monkeypatch):
+        """kill_wait_sec以内に死ななかった場合、生存中のプロセスのlockを誤って消さない"""
+        self._run_stop(monkeypatch, recorded_pid=1111, process_alive=True)
+
+        assert lock_file.read() is not None
+
+
+def test_restart_all_windows_stops_before_sync(monkeypatch, tmp_path):
+    """Windowsでは稼働中のサーバーが`.venv`配下のファイルを開いたままにするため、
+    POSIXと逆にサーバーを先に止めてからsyncする。
+    """
+    monkeypatch.setattr(restart_service.sys, "platform", "win32")
+    call_order = []
+
+    def fake_stop_mcp_server(kill_wait_sec, poll_interval_sec):
+        call_order.append("stop")
+        return [1111], {1111: "old-sig"}
+
+    def fake_sync_dependencies(project_root):
+        call_order.append("sync")
+        return restart_service.SyncResult(True, 0.1, "synced")
+
+    def fake_clean_caches(project_root):
+        call_order.append("clean_caches")
+        return {"removed_pycache_dirs": []}
+
+    def fake_start_mcp_server(project_root, old_pids, old_signatures, *, start_timeout_sec, poll_interval_sec):
+        call_order.append("start")
+        return restart_service.RestartResult(True, old_pids, [2222], "restarted")
+
+    monkeypatch.setattr(restart_service, "_stop_mcp_server", fake_stop_mcp_server)
+    monkeypatch.setattr(restart_service, "sync_dependencies", fake_sync_dependencies)
+    monkeypatch.setattr(restart_service, "clean_caches", fake_clean_caches)
+    monkeypatch.setattr(restart_service, "_start_mcp_server", fake_start_mcp_server)
+    monkeypatch.setattr(restart_service, "stop_embedding_server", lambda: [])
+    monkeypatch.setattr(
+        restart_service, "prune_orphaned_plugin_versions",
+        lambda project_root: {"removed": [], "skipped": []},
+    )
+
+    result = restart_service.restart_all(tmp_path)
+
+    assert call_order == ["stop", "sync", "clean_caches", "start"]
+    assert result["mcp_server"]["ok"] is True
+    assert result["mcp_server"]["old_pids"] == [1111]
+    assert result["mcp_server"]["new_pids"] == [2222]
+
+
+class TestGetStatus:
+    """get_status(): 副作用なしでMCP/embeddingサーバーの稼働状況を返す契約を検証する。"""
+
+    def test_reports_running_server_with_started_at_matching_health_format(self, monkeypatch):
+        """started_atは/healthエンドポイントと同じISO8601(UTC)形式にする
+
+        (process_start_signature()が返す不透明な値は等価比較専用で、
+        人間・LLMが時刻として読み比べる用途には使わない)。
+        """
+        def fake_find_listen_pids(port):
+            return {restart_service.MCP_PORT: [111], restart_service.EMBEDDING_PORT: []}[port]
+
+        class FakeProcess:
+            def __init__(self, pid):
+                self.pid = pid
+
+            def create_time(self):
+                return 1735689600.0  # 2025-01-01T00:00:00+00:00
+
+        monkeypatch.setattr(restart_service, "find_listen_pids", fake_find_listen_pids)
+        monkeypatch.setattr(restart_service.psutil, "Process", FakeProcess)
+
+        status = restart_service.get_status()
+
+        assert status["mcp_server"] == {
+            "port": restart_service.MCP_PORT, "pids": [111], "running": True,
+            "started_at": "2025-01-01T00:00:00+00:00",
+        }
+        assert status["embedding_server"] == {
+            "port": restart_service.EMBEDDING_PORT, "pids": [], "running": False, "started_at": None,
+        }
+
+    def test_started_at_none_when_process_vanishes_before_lookup(self, monkeypatch):
+        """find_listen_pids()とcreate_time()取得の間にプロセスが消えるTOCTOUレースでも
+        例外を出さずNoneにする。"""
+        monkeypatch.setattr(restart_service, "find_listen_pids", lambda port: [111])
+
+        def fake_process(pid):
+            raise restart_service.psutil.NoSuchProcess(pid)
+
+        monkeypatch.setattr(restart_service.psutil, "Process", fake_process)
+
+        status = restart_service.get_status()
+
+        assert status["mcp_server"]["started_at"] is None
+
+
+class TestStopAll:
+    """stop_all(): 再起動せず停止だけを行う契約を検証する。"""
+
+    def test_stops_mcp_only_by_default(self, monkeypatch):
+        monkeypatch.setattr(restart_service, "_stop_mcp_server", lambda kw, pi: ([1111], {1111: "sig"}))
+        stop_embedding_calls = []
+        monkeypatch.setattr(
+            restart_service, "stop_embedding_server",
+            lambda: stop_embedding_calls.append(1) or [9999],
+        )
+
+        result = restart_service.stop_all()
+
+        assert result == {"mcp_server": {"stopped_pids": [1111]}, "embedding_server": {"stopped_pids": []}}
+        assert stop_embedding_calls == []
+
+    def test_stops_embedding_when_requested(self, monkeypatch):
+        monkeypatch.setattr(restart_service, "_stop_mcp_server", lambda kw, pi: ([1111], {1111: "sig"}))
+        monkeypatch.setattr(restart_service, "stop_embedding_server", lambda: [9999])
+
+        result = restart_service.stop_all(stop_embedding=True)
+
+        assert result == {"mcp_server": {"stopped_pids": [1111]}, "embedding_server": {"stopped_pids": [9999]}}
 
 
 def test_stop_embedding_server_kills_found_pids(monkeypatch):
@@ -1051,6 +1445,83 @@ class TestMainCli:
         except SystemExit as e:
             assert e.code == 1
 
+    def test_reconfigures_stdout_to_utf8(self, monkeypatch):
+        """Windows既定のANSIコードページ下でもjson.dumps(ensure_ascii=False)の
+        日本語出力がUnicodeEncodeErrorで落ちないよう、stdoutをUTF-8へ揃えること
+        """
+        calls = []
+
+        class FakeStdout:
+            def reconfigure(self, **kwargs):
+                calls.append(kwargs)
+
+            def write(self, *a, **kw):
+                pass
+
+            def flush(self):
+                pass
+
+        monkeypatch.setattr(restart_service.sys, "stdout", FakeStdout())
+        self._run_main(monkeypatch, [])
+
+        assert calls == [{"encoding": "utf-8"}]
+
+    def test_status_flag_prints_status_without_restarting(self, monkeypatch, capsys):
+        """--status は状態を表示するだけで、restart_all(実際の再起動)は呼ばない"""
+        restart_called = []
+        monkeypatch.setattr(restart_service, "restart_all", lambda *a, **kw: restart_called.append(1))
+        monkeypatch.setattr(
+            restart_service, "get_status",
+            lambda: {"mcp_server": {"running": True}, "embedding_server": {"running": False}},
+        )
+        monkeypatch.setattr(restart_service.sys, "argv", ["restart_service.py", "--status"])
+
+        restart_service.main()
+
+        assert restart_called == []
+        assert '"running": true' in capsys.readouterr().out
+
+    def test_stop_flag_stops_without_restarting(self, monkeypatch):
+        """--stop は停止するだけで、restart_all(新規プロセスの起動)は呼ばない"""
+        restart_called = []
+        monkeypatch.setattr(restart_service, "restart_all", lambda *a, **kw: restart_called.append(1))
+        stop_calls = []
+
+        def fake_stop_all(*, stop_embedding=False):
+            stop_calls.append(stop_embedding)
+            return {"mcp_server": {"stopped_pids": [1]}, "embedding_server": {"stopped_pids": []}}
+
+        monkeypatch.setattr(restart_service, "stop_all", fake_stop_all)
+        monkeypatch.setattr(restart_service.sys, "argv", ["restart_service.py", "--stop"])
+
+        restart_service.main()
+
+        assert restart_called == []
+        assert stop_calls == [False]
+
+    def test_stop_and_restart_embedding_flags_combine(self, monkeypatch):
+        """--stop --restart-embedding は両方のサーバーを停止するだけで終了する"""
+        stop_calls = []
+
+        def fake_stop_all(*, stop_embedding=False):
+            stop_calls.append(stop_embedding)
+            return {"mcp_server": {"stopped_pids": []}, "embedding_server": {"stopped_pids": []}}
+
+        monkeypatch.setattr(restart_service, "stop_all", fake_stop_all)
+        monkeypatch.setattr(
+            restart_service.sys, "argv", ["restart_service.py", "--stop", "--restart-embedding"],
+        )
+
+        restart_service.main()
+
+        assert stop_calls == [True]
+
+    def test_status_and_stop_are_mutually_exclusive(self, monkeypatch):
+        monkeypatch.setattr(restart_service.sys, "argv", ["restart_service.py", "--status", "--stop"])
+
+        with pytest.raises(SystemExit):
+            restart_service.main()
+
 
 def test_list_server_family_processes_filters_to_known_modules_and_excludes_launcher(monkeypatch):
     ps_output = "\n".join([
@@ -1069,6 +1540,21 @@ def test_list_server_family_processes_filters_to_known_modules_and_excludes_laun
     found = restart_service._list_server_family_processes()
 
     assert [pid for pid, _ in found] == [100, 200]
+
+
+def test_list_server_family_processes_requires_exact_module_argument(monkeypatch):
+    ps_output = "\n".join([
+        "600 /opt/python /x/src.main/tool.py",
+        "700 /opt/python -m src.main_helper",
+        "800 /opt/python -m src.main --transport http",
+    ])
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout=ps_output, stderr="")
+
+    monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
+
+    assert [pid for pid, _ in restart_service._list_server_family_processes()] == [800]
 
 
 def test_list_server_family_processes_empty_on_timeout(monkeypatch):
