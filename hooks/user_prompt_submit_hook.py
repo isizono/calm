@@ -30,7 +30,9 @@ if str(_project_root) not in sys.path:
 
 from hooks.hook_state import HookState
 from hooks.signal_capture import try_capture_signal
+from hooks.turn_origin import is_nonhuman_turn
 from src.harness import select_harness
+from src.infra.file_ops import replace_retrying
 
 
 _FOLLOW_UP_NUDGE_MESSAGE = (
@@ -130,6 +132,13 @@ def main() -> None:
             harness.emit_additional_context(_wrap_system_reminder("\n".join(ask_notify_lines)))
             return
 
+        # 3.6 人間の発話でないターン（SAの報告中継・他セッションからのメッセージ・
+        # バックグラウンドタスク通知・システム通知）ではnudgeを配達しない。
+        # イベントはconsumedマークせず温存し、次の人間の発話で改めて判定する。
+        if is_nonhuman_turn(data.get("prompt")):
+            harness.emit_empty()
+            return
+
         # 4. 未消費のnudgeイベント判定（events空なら for loop は即抜ける）
         # 最新のnudgeイベントを探す（consumed=Trueでないもの）
         for e in reversed(events):
@@ -171,7 +180,7 @@ def _rewrite_events(state: HookState, events: list[dict]) -> None:
         tmp = f.name
         for event in events:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
-    os.replace(tmp, state.events_path)
+    replace_retrying(tmp, state.events_path)
 
 
 if __name__ == "__main__":

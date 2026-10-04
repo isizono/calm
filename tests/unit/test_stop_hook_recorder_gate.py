@@ -4,13 +4,13 @@ record_missing(record系ツール未呼出)・follow_up_after_decision(decision�
 logs_sparse(topic scopeの遅延hint)の3種類のnudgeが、記録役セッション判定
 (is_recorder_attached)の結果に応じてまとめて抑制/生成されることを検証する。
 is_recorder_attached自体はmockせず、write_markerで実際に目印ファイルを置き、
-psコマンドの呼び出し(外部境界)だけをmonkeypatchする。check-in強制block
+起動時刻の取得(psutil、外部境界)だけをmonkeypatchする。check-in強制block
 (turn==_CHECKIN_DEFER_TURNSでのblock)は_handle_nudgesの対象外であり本ファイル
 の検証対象ではない。
 """
 import os
-import subprocess
 
+import psutil
 import pytest
 
 import hooks.stop_hook as stop_hook
@@ -46,29 +46,44 @@ def _seed_topic_with_sparse_logs() -> int:
     return topic["topic_id"]
 
 
+class _FakeProcess:
+    def __init__(self, signature: str):
+        self._signature = signature
+
+    def create_time(self):
+        return self._signature
+
+
 def _fake_ps(lstart_output: str, returncode: int = 0):
-    def fake_run(cmd, **kwargs):
-        return subprocess.CompletedProcess(cmd, returncode, stdout=lstart_output, stderr="")
-    return fake_run
+    """process_signature.psutil.Processをモックするfactoryを返す(旧ps実装の
+    exit code慣習を踏襲した引数名のまま残す)。"""
+    signature = lstart_output.strip()
+
+    def fake_process(pid):
+        if returncode != 0 or not signature:
+            raise psutil.NoSuchProcess(pid)
+        return _FakeProcess(signature)
+
+    return fake_process
 
 
 def _attach_recorder(monkeypatch, session_id: str) -> None:
-    """write_markerで実際に目印ファイルを置き、以降のps呼び出しも同じ起動
-    時刻を返すようにして、自プロセス(os.getpid())を記録役として生存させる。"""
+    """write_markerで実際に目印ファイルを置き、以降の起動時刻取得も同じ値を
+    返すようにして、自プロセス(os.getpid())を記録役として生存させる。"""
     monkeypatch.setattr(
-        process_signature.subprocess, "run", _fake_ps("Thu Jul 24 09:32:04 2026\n")
+        process_signature.psutil, "Process", _fake_ps("Thu Jul 24 09:32:04 2026\n")
     )
     write_marker(session_id, os.getpid())
 
 
 def _attach_dead_recorder_marker(monkeypatch, session_id: str) -> None:
-    """目印ファイルは実在するが、以降のps呼び出しはプロセス不在を返す
+    """目印ファイルは実在するが、以降の起動時刻取得はプロセス不在を返す
     (記録役が死んでいる)状態を作る。"""
     monkeypatch.setattr(
-        process_signature.subprocess, "run", _fake_ps("Thu Jul 24 09:32:04 2026\n")
+        process_signature.psutil, "Process", _fake_ps("Thu Jul 24 09:32:04 2026\n")
     )
     write_marker(session_id, 999999999)
-    monkeypatch.setattr(process_signature.subprocess, "run", _fake_ps("", returncode=1))
+    monkeypatch.setattr(process_signature.psutil, "Process", _fake_ps("", returncode=1))
 
 
 class TestRecordMissingGate:
@@ -147,10 +162,10 @@ class TestGateFailsSafeOnUnexpectedException:
     ):
         _attach_recorder(monkeypatch, "recorder-session")
 
-        def fake_run(cmd, **kwargs):
-            raise RuntimeError("unexpected ps failure")
+        def fake_process(pid):
+            raise RuntimeError("unexpected failure")
 
-        monkeypatch.setattr(process_signature.subprocess, "run", fake_run)
+        monkeypatch.setattr(process_signature.psutil, "Process", fake_process)
 
         events = [{"e": "tool", "name": "check_in", "turn": 1, "activity_id": 1}]
         state = _FakeState()
