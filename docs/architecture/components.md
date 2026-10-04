@@ -210,7 +210,7 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 - `skills/setup-anchor`: anchor確定
 - `skills/remember`: 記憶要望の保存先振り分け
 - `skills/tag-notes` / `skills/tag-cleanup`: タグnotes管理・整理
-- `skills/activity-start` / `skills/activity-finish` / `skills/activity-pause`: アクティビティのライフサイクル操作
+- `skills/activity-start` / `skills/activity-finish`: アクティビティのライフサイクル操作（activity-finishは完了と中断の両方を受ける）
 - `skills/postmortem`: 完了アクティビティの振り返り
 - `skills/scribe`: CALM記録からドキュメント生成
 - `skills/man`: pull型の使い方説明
