@@ -7,11 +7,11 @@ import scripts.lint_doc_cochange as lint_doc_cochange
 from scripts.lint_doc_cochange import (
     DB_SCHEMA_DOC,
     MCP_TOOLS_DOC,
-    check_readme_tables,
+    check_reference_tables,
     diff_tool_signatures,
     evaluate,
-    extract_readme_skill_names,
-    extract_readme_tool_names,
+    extract_reference_skill_names,
+    extract_reference_tool_names,
     extract_skill_dir_names,
     extract_tool_signatures,
     has_exception_marker,
@@ -288,9 +288,9 @@ def test_evaluate_reports_both_failures_independently():
     assert len(failures) == 2
 
 
-# --- README表パース ---
+# --- 参照ドキュメント表パース ---
 
-README_TEXT = """# CALM
+REFERENCE_TEXT = """# CALM
 
 ## MCPツール
 
@@ -310,19 +310,19 @@ README_TEXT = """# CALM
 """
 
 
-def test_extract_readme_tool_names_reads_only_tool_column():
-    names = extract_readme_tool_names(README_TEXT)
+def test_extract_reference_tool_names_reads_only_tool_column():
+    names = extract_reference_tool_names(REFERENCE_TEXT)
     assert names == {"add_topic", "get_topics", "check_in"}
 
 
-def test_extract_readme_skill_names_ignores_description_backticks():
+def test_extract_reference_skill_names_ignores_description_backticks():
     # /ask-compose の説明列にある `add_ask` を誤ってスキル名として拾わないこと
-    names = extract_readme_skill_names(README_TEXT)
+    names = extract_reference_skill_names(REFERENCE_TEXT)
     assert names == {"man", "ask-compose"}
 
 
-def test_extract_readme_tool_names_returns_none_when_section_missing():
-    assert extract_readme_tool_names("# CALM\n\n## スキル\n\n| `/man` | x |\n") is None
+def test_extract_reference_tool_names_returns_none_when_section_missing():
+    assert extract_reference_tool_names("# CALM\n\n## スキル\n\n| `/man` | x |\n") is None
 
 
 def test_extract_skill_dir_names_requires_skill_md():
@@ -335,9 +335,9 @@ def test_extract_skill_dir_names_requires_skill_md():
     assert extract_skill_dir_names(paths) == {"man", "ask-compose"}
 
 
-def test_check_readme_tables_passes_when_sets_match():
-    failures, warnings = check_readme_tables(
-        README_TEXT,
+def test_check_reference_tables_passes_when_sets_match():
+    failures, warnings = check_reference_tables(
+        REFERENCE_TEXT,
         tool_names={"add_topic", "get_topics", "check_in"},
         skill_names={"man", "ask-compose"},
     )
@@ -345,9 +345,9 @@ def test_check_readme_tables_passes_when_sets_match():
     assert warnings == []
 
 
-def test_check_readme_tables_fails_on_missing_tool():
-    failures, _ = check_readme_tables(
-        README_TEXT,
+def test_check_reference_tables_fails_on_missing_tool():
+    failures, _ = check_reference_tables(
+        REFERENCE_TEXT,
         tool_names={"add_topic", "get_topics", "check_in", "get_goal"},
         skill_names={"man", "ask-compose"},
     )
@@ -355,9 +355,9 @@ def test_check_readme_tables_fails_on_missing_tool():
     assert "get_goal" in failures[0]
 
 
-def test_check_readme_tables_fails_on_extra_skill_in_readme():
-    failures, _ = check_readme_tables(
-        README_TEXT,
+def test_check_reference_tables_fails_on_extra_skill_in_reference():
+    failures, _ = check_reference_tables(
+        REFERENCE_TEXT,
         tool_names={"add_topic", "get_topics", "check_in"},
         skill_names={"man"},  # ask-compose はもう存在しない想定
     )
@@ -365,25 +365,25 @@ def test_check_readme_tables_fails_on_extra_skill_in_readme():
     assert "ask-compose" in failures[0]
 
 
-def test_check_readme_tables_warns_only_when_readme_missing():
-    failures, warnings = check_readme_tables(None, tool_names=set(), skill_names=set())
+def test_check_reference_tables_warns_only_when_reference_missing():
+    failures, warnings = check_reference_tables(None, tool_names=set(), skill_names=set())
     assert failures == []
     assert len(warnings) == 1
 
 
-def test_check_readme_tables_warns_only_when_section_missing():
+def test_check_reference_tables_warns_only_when_section_missing():
     text_without_tools_section = "# CALM\n\n## スキル\n\n| `/man` | x |\n"
-    failures, warnings = check_readme_tables(
+    failures, warnings = check_reference_tables(
         text_without_tools_section, tool_names={"add_topic"}, skill_names={"man"}
     )
     assert failures == []
     assert len(warnings) == 1
 
 
-def test_check_readme_tables_reports_both_table_failures_independently():
-    failures, _ = check_readme_tables(
-        README_TEXT,
-        tool_names={"add_topic", "get_topics", "check_in", "get_goal"},  # get_goalがREADMEに無い
+def test_check_reference_tables_reports_both_table_failures_independently():
+    failures, _ = check_reference_tables(
+        REFERENCE_TEXT,
+        tool_names={"add_topic", "get_topics", "check_in", "get_goal"},  # get_goalがdocs/reference.mdに無い
         skill_names={"man"},  # ask-composeはもう存在しない想定
     )
     assert len(failures) == 2
@@ -391,21 +391,21 @@ def test_check_readme_tables_reports_both_table_failures_independently():
     assert any("ask-compose" in f for f in failures)
 
 
-# --- main(): head_main_py_for_readme のフォールバック配線 ---
+# --- main(): head_main_py_for_reference のフォールバック配線 ---
 
 
-def test_main_fetches_head_main_py_for_readme_when_main_py_not_in_diff(monkeypatch, capsys):
+def test_main_fetches_head_main_py_for_reference_when_main_py_not_in_diff(monkeypatch, capsys):
     """src/main.py が diff に含まれない（=1・2のツールIFチェックは走らない）PRでも、
-    3のREADME表チェックはheadのsrc/main.pyを別途取得して実行されることを確認する。"""
+    3のリファレンス表チェックはheadのsrc/main.pyを別途取得して実行されることを確認する。"""
 
     def fake_git_show(repo_root, ref, path):
         if path == "src/main.py":
             return HEAD_MAIN_PY_ADDED_TOOL
-        if path == lint_doc_cochange.README_PATH:
-            return README_TEXT
+        if path == lint_doc_cochange.REFERENCE_DOC_PATH:
+            return REFERENCE_TEXT
         raise AssertionError(f"unexpected path: {path}")
 
-    monkeypatch.setattr(lint_doc_cochange, "git_diff_names", lambda repo_root, base, head: ["README.md"])
+    monkeypatch.setattr(lint_doc_cochange, "git_diff_names", lambda repo_root, base, head: ["docs/reference.md"])
     monkeypatch.setattr(lint_doc_cochange, "collect_commit_messages", lambda repo_root, base, head: "")
     monkeypatch.setattr(lint_doc_cochange, "git_show", fake_git_show)
     monkeypatch.setattr(
@@ -418,4 +418,4 @@ def test_main_fetches_head_main_py_for_readme_when_main_py_not_in_diff(monkeypat
 
     assert exit_code == 1
     err = capsys.readouterr().err
-    assert "export_material" in err  # HEAD_MAIN_PY_ADDED_TOOLのツールがREADME_TEXTに無い
+    assert "export_material" in err  # HEAD_MAIN_PY_ADDED_TOOLのツールがREFERENCE_TEXTに無い

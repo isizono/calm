@@ -9,7 +9,9 @@ from logging.handlers import RotatingFileHandler
 
 from src.env_compat import env_get
 
-HOST = "localhost"
+# IPv4(127.0.0.1)固定。"localhost"だと::1が先に解決された環境で
+# クライアント（embedding_service）からの接続が拒否待ちになりうる。
+HOST = "127.0.0.1"
 PORT = 52836
 MAX_REQUEST_BYTES = 10 * 1024 * 1024  # 10MB
 
@@ -59,7 +61,13 @@ def _load_model():
 
         # Apple SiliconではMPSが自動選択され、過去にMetal GPUの数十GB級メモリ暴走を
         # 起こしたため、小型モデルはCPU固定とする。
-        _model = SentenceTransformer(MODEL_NAME, device="cpu")
+        # キャッシュ済みでもHubへの更新確認で起動ごとに約3秒かかるため、
+        # まずローカルキャッシュだけで読み、無いとき（初回）だけHubから取得する。
+        try:
+            _model = SentenceTransformer(MODEL_NAME, device="cpu", local_files_only=True)
+        except OSError:
+            logger.info(f"Model not in local cache, downloading: {MODEL_NAME}")
+            _model = SentenceTransformer(MODEL_NAME, device="cpu")
         logger.info(f"Model loaded successfully: {MODEL_NAME}")
     except Exception as e:
         logger.error(f"Model loading failed: {e}")
@@ -73,8 +81,13 @@ class EmbeddingHTTPServer(ThreadingHTTPServer):
     ヘルスチェック接続が listen backlog に溜まる。既定値 5 では数十秒のロード中に
     枯渇して SYN がドロップされ、クライアント側から「ポート未 bind」と区別が
     つかなくなるため余裕を持たせる。
+
+    allow_reuse_address はWindowsではSO_REUSEADDRの意味がPOSIXと異なり、
+    使用中のポートへのbindを許してしまう（多重起動防止が効かなくなる）ため
+    無効にする。
     """
     request_queue_size = 128
+    allow_reuse_address = sys.platform != "win32"
 
 
 class EmbeddingHandler(BaseHTTPRequestHandler):

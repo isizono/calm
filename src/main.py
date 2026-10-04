@@ -434,7 +434,8 @@ def get_logs(
         議論ログ一覧（各logにtags付き）
         entity_type == "activity" の場合はrelated topics（上限10件）経由でlogs集約。
             related topics が10件を超える場合、11件目以降の topic に属する log は
-            total_count / truncated の対象外（この上限による切り捨ては可視化されない）
+            total_count / truncated の対象外（この上限による切り捨ては可視化されない）。
+            activityに直接つないだlogは含まれない
         total_count: 対象 topic 全体の log 総件数（retractフィルタ適用後、limit/start_idの影響を受けない）
         truncated: この応答が limit/start_id により後続の log を打ち切ったとき true
             （＝続きのページが存在する）
@@ -479,7 +480,8 @@ def get_decisions(
         決定事項一覧（各decisionにtags付き）
         entity_type == "activity" の場合はrelated topics（上限10件）経由でdecisions集約。
             related topics が10件を超える場合、11件目以降の topic に属する decision は
-            total_count / truncated の対象外（この上限による切り捨ては可視化されない）
+            total_count / truncated の対象外（この上限による切り捨ては可視化されない）。
+            activityに直接つないだdecisionは含まれない
         total_count: 対象 topic 全体の decision 総件数（retractフィルタ適用後、limit/start_idの影響を受けない）
         truncated: この応答が limit/start_id により後続の decision を打ち切ったとき true
             （＝続きのページが存在する）。start_id 未指定時は total_count > limit と一致し、
@@ -2220,6 +2222,10 @@ def get_timeline(
 
     トピックまたはアクティビティに紐づくdecision・log・materialを時系列で返す。
 
+    activity_idを指定すると、そのactivityが属するtopicに紐づく記録を集める。
+    activityに直接relatedでつないだ記録は含まれず、topicを持たないactivityでは空になる。
+    activityに直接つないだ資材は、get_map(entity_type="activity")かcheck_inのcontext.materialsで見える。
+
     Args:
         topic_id: トピックID（activity_idと排他）
         activity_id: アクティビティID（topic_idと排他）
@@ -3102,10 +3108,11 @@ def _ensure_project_root_cwd() -> Path:
 def _setup_server_logging(db_path: str) -> Path:
     """HTTPサーバーのログをファイルへ永続化する。
 
-    launcher（`src/launcher.py`）はサーバープロセスを `stdout=DEVNULL, stderr=DEVNULL`
-    で起動する（stdout はMCPプロトコル用途のため塞げない）。このハンドラを
-    明示的に追加しない限り、ツール呼び出し以外のサーバー内部エラー（migration の
-    安全装置ログ等を含む）は一切観測できない。
+    launcher（`src/launcher.py`）はサーバープロセスを `stdout=DEVNULL` で起動する
+    （stdout はMCPプロトコル用途のため塞げない）。サーバーのstderrは
+    `logs/server.stderr.log` へ別途向けられるが、import直後に落ちるような
+    致命的な失敗（トップレベルimportの例外等）はこのハンドラでは拾えない
+    ため、stderrのファイル化と併用する。
 
     ログは DB ファイルと同階層の `logs/server.log` に書き、10MBごとに
     最大3世代までローテーションする。
@@ -3120,7 +3127,9 @@ def _setup_server_logging(db_path: str) -> Path:
 
     log_dir = Path(db_path).parent / "logs"
     log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    handler = RotatingFileHandler(log_dir / "server.log", maxBytes=10_000_000, backupCount=3)
+    handler = RotatingFileHandler(
+        log_dir / "server.log", maxBytes=10_000_000, backupCount=3, encoding="utf-8"
+    )
     handler.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(levelname)s %(message)s"))
     logging.getLogger().addHandler(handler)
     logging.getLogger().setLevel(logging.INFO)
@@ -3141,15 +3150,20 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     from src.db import verify_sqlite_vec, init_database, get_db_path
+
+    if args.transport == "http":
+        # verify_sqlite_vec/init_databaseより前にログをファイルへ永続化する。
+        # この2つが`logger.error`してから`SystemExit`する失敗（sqlite-vec検証失敗、
+        # migrationの内容ハッシュ不一致等）は、logging未設定のままだと痕跡が残らない。
+        _log_dir = _setup_server_logging(get_db_path())
+        logger.info("Server log persisted to %s", _log_dir / "server.log")
+
     verify_sqlite_vec()
     init_database()
 
     if args.transport == "http":
         from src.infra.lock_file import acquire, release
         from src.infra.session_manager import SessionManager
-
-        _log_dir = _setup_server_logging(get_db_path())
-        logger.info("Server log persisted to %s", _log_dir / "server.log")
 
         # 起動時cwdをプロジェクトルートに固定する。worktree内などからの起動による
         # cwd差し替えリスクを構造的に潰す（詳細は _ensure_project_root_cwd 参照）。
@@ -3175,9 +3189,15 @@ if __name__ == "__main__":
         )
 
         def _shutdown_server():
-            """ウォッチドッグから呼ばれるシャットダウンハンドラ"""
+            """ウォッチドッグから呼ばれるシャットダウンハンドラ
+
+            os.kill(os.getpid(), signal.SIGINT)はWindowsではTerminateProcess
+            相当になりfinallyのrelease()が走らない。signal.raise_signalは
+            プロセス内にシグナルを送る標準の手段で、全OSでPythonのシグナル
+            ハンドラ経由の正常終了経路に乗る。
+            """
             logger.info("Shutdown triggered by watchdog, sending SIGINT")
-            os.kill(os.getpid(), signal.SIGINT)
+            signal.raise_signal(signal.SIGINT)
 
         _session_manager.set_shutdown_callback(_shutdown_server)
         _session_manager.start_watchdog()
