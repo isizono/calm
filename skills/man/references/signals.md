@@ -8,7 +8,7 @@
 
 calm 自身への故障報告・使用感不満・矛盾検出・運用計測イベントの統一入口。
 
-### 1.1 kind（8種類、いずれか必須）
+### 1.1 kind（予約8種、いずれか必須。または `custom:<名前>` で独自区分を追加できる）
 
 - `machine_error`: ツールエラー・hook 失敗・サーバー異常を観察した
 - `friction`: calm の使い勝手への不満・違和感（ユーザー発話由来を含む）
@@ -20,12 +20,13 @@ calm 自身への故障報告・使用感不満・矛盾検出・運用計測イ
 - `precedent_miss` / `precedent_misapplied`: 判例参照の見落とし・誤類推の事後発覚。`context` に `missed_ids` / `cited_id` 等の規約キーを書く
 - `boundary_case` / `rollback`: 運用上の案件記録。`summary` に PR 番号等の案件識別子を含める（dedup の集約単位を案件ごとに分けるため）
 - `goal_rollback`: `update_goal` の `reopen_reason`（goal 判定の差し戻し）が書く専用の kind。手で `report_signal` を呼んで報告するものではない
+- `custom:<名前>`: 予約8種のどれにも当てはまらない観測を記録する（例: `custom:external_rule_conflict`）。既存 kind への流用は、その kind を数える集計を汚すため避けること。名前は `[a-z0-9][a-z0-9_-]{0,39}`（英小文字・数字・`_`・`-`、1〜40字）
 
 ### 1.2 引数
 
 | 引数 | 必須 | 内容 |
 |---|---|---|
-| `kind` | 必須 | 上記8種のいずれか |
+| `kind` | 必須 | 上記8種のいずれか、または `custom:<名前>` |
 | `summary` | 必須 | 1行要約（空文字不可） |
 | `detail` | 任意 | traceback・引数ダイジェスト・自由記述 |
 | `refs` | 任意 | `[{"type": "decision", "id": 123}, ...]` 形式の参照リスト |
