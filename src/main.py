@@ -1148,8 +1148,6 @@ def update_activity(
     - タイトル変更: update_activity(activity_id, title="新しいタイトル")
     - 説明更新: update_activity(activity_id, description="新しい説明")
     - タグ変更: update_activity(activity_id, tags=["domain:calm", "intent:implement"])
-    - askの付け替え: update_activity(activity_id, move_asks_to=新activity_id) —
-      このactivityを止めている未決着askを別のactivityへ移す（完了と同時にもできる）
 
     ワークフロー位置: アクティビティ進行状況の更新時
 
@@ -1168,10 +1166,9 @@ def update_activity(
         closed_by: activityを閉じた意思の主体（"user"|"claude"|"external"）。
             status="completed"と同時のときだけ受け付ける
         closed_reason: 閉じた理由（自由文）。status="completed"と同時のときだけ受け付ける
-        move_asks_to: このactivityを止めている未決着ask（openまたは回答済み未triage）の
-            blockを、指定したactivityへ付け替える（付け替え先は完了済みでないこと）
-        move_ask_ids: move_asks_toと一緒に渡すと、そのaskだけを付け替える（省略時は全件）。
-            このactivityを止めている未決着askでないidがあれば何も変更せずエラー
+        move_asks_to: このactivityを止めている未決着ask（open・回答済み未triage）を
+            付け替える先のactivity（完了済み不可）
+        move_ask_ids: move_asks_toと併用し、そのaskだけ付け替える（省略時は全件）
 
     Returns:
         更新されたアクティビティ情報。既にcompletedのactivityへstatus="completed"を
@@ -1181,9 +1178,8 @@ def update_activity(
         status="completed"の呼び出しでは、紐づくgoalが未判定ならgoal_hint
         （{goal_id_raw, handle, label, next, open_activities_left,
         open_questions?, warning?}）も返す（拒否はしない）。
-        status="completed"の呼び出しでは、このactivityを止めている未決着ask
-        （付け替え後に残ったもの）を{id_raw, question, status}の一覧としてpending_asksに
-        添える（完了は止めない）。付け替えたaskはmoved_asksに返す
+        status="completed"では、止めている未決着ask（付け替え後の残り）を
+        pending_asks、付け替えたaskをmoved_asksに返す（完了は止めない）
     """
     return activity_service.update_activity(
         activity_id, status, title, description, tags,
