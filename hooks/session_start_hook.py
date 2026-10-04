@@ -130,7 +130,8 @@ def _fetch_children_by_parent(conn, parent_ids: list[int]) -> dict[int, list[dic
 
     Returns:
         {parent_id: [{"parent_id", "condition_id", "state", "child_id",
-                      "child_title"}, ...]（condition_id昇順）, ...}
+                      "child_title", "child_status", "child_updated_at",
+                      "child_last_heartbeat_at"}, ...]（condition_id昇順）, ...}
     """
     if not parent_ids:
         return {}
@@ -138,7 +139,9 @@ def _fetch_children_by_parent(conn, parent_ids: list[int]) -> dict[int, list[dic
     rows = conn.execute(
         f"""
         SELECT ga.activity_id AS parent_id, gc.id AS condition_id, gc.state AS state,
-               gc.bound_id AS child_id, c.title AS child_title
+               gc.bound_id AS child_id, c.title AS child_title,
+               c.status AS child_status, c.updated_at AS child_updated_at,
+               c.last_heartbeat_at AS child_last_heartbeat_at
         FROM goal_activities ga
         JOIN goal_conditions gc ON gc.goal_id = ga.goal_id AND gc.bound_type = 'activity'
         JOIN activities c ON c.id = gc.bound_id
@@ -151,6 +154,31 @@ def _fetch_children_by_parent(conn, parent_ids: list[int]) -> dict[int, list[dic
     for r in rows:
         result.setdefault(r["parent_id"], []).append(dict(r))
     return result
+
+
+def _inherit_freshness_from_children(
+    all_active: list[dict], children_by_parent: dict[int, list[dict]]
+) -> None:
+    """親の行のupdated_at・statusを、条件がopenの子の進みで引き上げる（行をその場で書き換える）。
+
+    子のcheck_inやheartbeatは親の行を更新しない。openな子は親の下にしか出さない
+    ため、引き上げないと担い手のいない親が鮮度切れやpendingで階層2から落ちたとき、
+    動いている子までまとめて一覧から消える。実効の更新時刻は親自身とopenな子の
+    updated_at・last_heartbeat_atのうち最新（いずれもSQLiteの
+    'YYYY-MM-DD HH:MM:SS'形式なので文字列で比べられる）。openな子に
+    in_progressが1件でもあれば親もin_progressとして扱う。
+    """
+    for a in all_active:
+        open_children = [c for c in children_by_parent.get(a["id"], []) if c["state"] == "open"]
+        if not open_children:
+            continue
+        a["updated_at"] = max(
+            [a["updated_at"] or ""]
+            + [c["child_updated_at"] or "" for c in open_children]
+            + [c["child_last_heartbeat_at"] or "" for c in open_children]
+        )
+        if any(c["child_status"] == "in_progress" for c in open_children):
+            a["status"] = "in_progress"
 
 
 def _classify_children(
@@ -302,7 +330,8 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
     （open状態）の子を `|` `├-` `└-` で行の下にぶら下げ、行の末尾に子の
     内訳（✓達成数 ▷着手できる数 ◷待ち数 ✕失敗数のうち0件でないもの）を
     付ける。openな子は必ず親の下にのみ出すため階層 1・2 の候補プールから
-    除外する。束縛条件がsatisfied/waivedになった子（✓の内訳に数える分）は
+    除外し、その代わり親の鮮度と状態をopenな子から引き継ぐ
+    （_inherit_freshness_from_children）。束縛条件がsatisfied/waivedになった子（✓の内訳に数える分）は
     条件の充足と子自身のactivityの終了が別操作であるため除外しない
     （子が非completedのまま残っていれば通常のactivityと同じ基準で候補
     プールに残り、選ばれなければ未表示に数える）。
@@ -357,6 +386,7 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
     # 基準で候補プールに残り、選ばれなければ未表示に数える（状態を問わず
     # 除外すると、まだ動いている作業が一覧から消えてしまう）。
     child_ids_excluded_from_pool = set(open_child_ids)
+    _inherit_freshness_from_children(all_active, children_by_parent)
 
     seen_ids: set[int] = set()
 
