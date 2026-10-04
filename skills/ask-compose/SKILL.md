@@ -1,6 +1,7 @@
 ---
 name: ask-compose
 description: 【必須】add_askを呼ぶ前に必ず発動し、question/contextをテンプレートに沿って構成することをガイドする。離席中・セッション跨ぎでしか答えられない判断が発生しadd_askを呼ぼうとしている場面（AI自発判断）に加え、「これ聞いといて」「これaskして」「判断委譲しといて」「離席するから後で確認して」「非同期で聞いておいて」「これは私が戻ってから判断する」など、ユーザーが明示的に非同期の判断委譲を指示した場面でも発動する。このスキルを経由せずにaskのquestion/contextを直接書いてはいけない。add_ask呼び出し**後**にレスポンスのsimilar_asksを見てメタask起票を検討するのは別役割のask-distill skill（起票**前**の構成は本スキル、起票**後**の同型判定はask-distill）。
+user-invocable: false
 ---
 
 # ask-compose
