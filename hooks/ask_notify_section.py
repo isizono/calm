@@ -158,7 +158,12 @@ def build_neighbor_ask_lines(
 
             conn = get_connection()
         asks = ask_handover_service.get_asks_answered_since(conn, activity_id, since)
-    except Exception:
+    except Exception as e:
+        from hooks.signal_capture import try_capture_signal
+
+        try_capture_signal(
+            kind="machine_error", source="hook:ask_notify_section", summary=str(e)[:200]
+        )
         return [], []
     finally:
         if owns_conn and conn is not None:

@@ -129,7 +129,29 @@ class TestCheckInFrames:
 
         assert len(frame["items"]) == 3
         assert frame["more"] == 2
-        assert frame["next"][0]["tool"] == "get_asks"
+        assert frame["next"] == [
+            {"tool": "get_asks", "args": {"blocking_activity_id": child, "status": None}}
+        ]
+
+    def test_overflow_pointers_name_each_neighbor_holding_overflow(self, temp_db):
+        parent, child_a, child_b = _act("p"), _act("a"), _act("b")
+        _parent_with_child(parent, child_a, "h8")
+        add_relation("activity", parent, [{"type": "activity", "ids": [child_b]}], relation_type="depends_on")
+        for i in range(3):
+            _ask(f"a{i}", child_a)
+        _ask("b0", child_b)
+        conn = get_connection()
+        try:
+            # 並びを固定: b側のaskが最も古く、超過に入る
+            conn.execute("UPDATE asks SET last_seen_at = datetime('now', '-1 day') WHERE question = 'b0'")
+            conn.commit()
+        finally:
+            conn.close()
+
+        frame = collect_and_assemble(parent)["control"]["neighbor_asks"]
+
+        assert frame["more"] == 1
+        assert [n["args"]["blocking_activity_id"] for n in frame["next"]] == [child_b]
 
     def test_recent_settled_asks_within_seven_days_with_detail(self, temp_db):
         parent, child = _act("p"), _act("c")
@@ -251,7 +273,21 @@ class TestMoveAsks:
         result = update_activity(old, move_asks_to=new, move_ask_ids=[foreign])
 
         assert result["error"]["code"] == "VALIDATION_ERROR"
+        assert "not pending on this activity" in result["error"]["message"]
         assert _block_count(foreign) == 1
+
+    def test_move_alone_without_other_fields_succeeds(self, temp_db):
+        old, new = _act("old"), _act("new")
+        ask = _ask("q", old)
+
+        result = update_activity(old, move_asks_to=new)
+
+        assert [a["id_raw"] for a in result["moved_asks"]] == [ask]
+        conn = get_connection()
+        try:
+            assert conn.execute("SELECT activity_id FROM ask_blocks WHERE ask_id = ?", (ask,)).fetchone()[0] == new
+        finally:
+            conn.close()
 
     def test_move_ask_ids_without_target_rejected(self, temp_db):
         old = _act("old")
@@ -285,6 +321,19 @@ class TestNeighborAskLines:
         assert ids == [ask]
         assert "子の問い" in lines[1] and "子の作業" in lines[1]
         assert "回答本文" not in "\n".join(lines)
+        assert build_neighbor_ask_lines(self.SESSION)[1] == [ask]
+
+    def test_answered_in_the_same_second_as_check_in_is_included(self, temp_db, hook_state_dir):
+        act = _act("work")
+        ask = _ask("q", act)
+        ak.answer_ask(ask, "a")
+        conn = get_connection()
+        try:
+            answered_at = conn.execute("SELECT answered_at FROM asks WHERE id = ?", (ask,)).fetchone()[0]
+        finally:
+            conn.close()
+        self._checked_in(act, since=answered_at)
+
         assert build_neighbor_ask_lines(self.SESSION)[1] == [ask]
 
     def test_answered_before_check_in_is_excluded(self, temp_db, hook_state_dir):

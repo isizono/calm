@@ -661,12 +661,13 @@ def update_activity(
         and tags is None
         and closed_by is None
         and closed_reason is None
+        and move_asks_to is None
     ):
         return {
             "error": {
                 "code": "VALIDATION_ERROR",
                 "message": (
-                    "At least one of status, title, description, or tags "
+                    "At least one of status, title, description, tags, or move_asks_to "
                     "must be provided"
                 ),
             }

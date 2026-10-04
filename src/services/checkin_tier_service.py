@@ -158,17 +158,20 @@ def _cap_asks(pending_asks: dict, activity_id: int) -> dict | None:
     return result
 
 
-def _cap_handover(items: list[dict], overflow: int, activity_id: int) -> dict | None:
+def _cap_handover(items: list[dict], overflow: int, overflow_activity_ids: list[int]) -> dict | None:
     """隣の作業のask・最近決着したaskの枠を組み立てる。件数は取得側でHANDOVER_ASKS_MAX
-    に絞り済みで、超過分は件数とget_asksへのポインタにする（黙って落とさない）。
-    回答本文は載せない。
+    に絞り済みで、超過分は件数と、超過したaskを止めている作業ごとのget_asksへの
+    ポインタにする（黙って落とさない）。回答本文は載せない。
     """
     if not items:
         return None
     result: dict = {"items": items}
     if overflow:
         result["more"] = overflow
-        result["next"] = [{"tool": "get_asks", "args": {"blocking_activity_id": activity_id, "status": None}}]
+        result["next"] = [
+            {"tool": "get_asks", "args": {"blocking_activity_id": aid, "status": None}}
+            for aid in overflow_activity_ids[:HANDOVER_ASKS_MAX]
+        ]
     return result
 
 
@@ -350,12 +353,10 @@ def collect_and_assemble(activity_id: int, session_id: str | None = None) -> dic
         immediate_hints = _get_immediate_hints(conn, activity_id)
         pending_asks = get_pending_asks_with_conn(conn, activity_id)
         neighbor_asks = _cap_handover(
-            *ask_handover_service.get_neighbor_pending_asks(conn, activity_id, HANDOVER_ASKS_MAX),
-            activity_id,
+            *ask_handover_service.get_neighbor_pending_asks(conn, activity_id, HANDOVER_ASKS_MAX)
         )
         recent_settled_asks = _cap_handover(
-            *ask_handover_service.get_recent_settled_asks(conn, activity_id, HANDOVER_ASKS_MAX),
-            activity_id,
+            *ask_handover_service.get_recent_settled_asks(conn, activity_id, HANDOVER_ASKS_MAX)
         )
         goal_block = _build_goal_block(conn, activity_id, session_id)
         session_block, bridge_id = _register_session(activity_id, activity)

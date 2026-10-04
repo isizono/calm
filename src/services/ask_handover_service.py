@@ -75,19 +75,21 @@ def get_pending_asks_blocking(conn: sqlite3.Connection, activity_id: int) -> lis
 
 def get_neighbor_pending_asks(
     conn: sqlite3.Connection, activity_id: int, limit: int
-) -> tuple[list[dict], int]:
+) -> tuple[list[dict], int, list[int]]:
     """隣の作業を止めている未決・回答済み（未triage）のask。
 
     activity自身も止めているaskは含めない（自分の枠に出るため）。
     要素: {"id_raw", "question", "status", "activity": 作業の題}。
-    Returns: (limit件までの要素, 超過件数)
+    Returns: (limit件までの要素, 超過件数, 超過したaskが止めている作業のid一覧)
     """
     neighbors = get_neighbor_activity_ids(conn, activity_id)
     if not neighbors:
-        return [], 0
+        return [], 0, []
     rows = conn.execute(
         f"""
-        SELECT a.id, a.question, a.status, MIN(act.title) AS title
+        SELECT a.id, a.question, a.status, MIN(act.id) AS activity_id, -- 単一のMINと並べた裸のカラムは最小行の値になる（SQLite）
+              
+               act.title AS title
           FROM asks a
           JOIN ask_blocks ab ON ab.ask_id = a.id
           JOIN activities act ON act.id = ab.activity_id
@@ -109,24 +111,26 @@ def get_neighbor_pending_asks(
         }
         strip_entity_id_inplace(item)
         items.append(item)
-    return items, max(len(rows) - limit, 0)
+    return items, max(len(rows) - limit, 0), list(dict.fromkeys(r["activity_id"] for r in rows[limit:]))
 
 
 def get_recent_settled_asks(
     conn: sqlite3.Connection, activity_id: int, limit: int, days: int = RECENT_SETTLED_DAYS
-) -> tuple[list[dict], int]:
+) -> tuple[list[dict], int, list[int]]:
     """activityと隣の作業を止めていたaskのうち、triageから`days`日以内のもの。
 
     要素: {"id_raw", "question", "activity": 作業の題, "outcome": "promoted"|"dismissed",
     "detail": promoteなら昇格先decisionの見出し・dismissなら却下理由}。
-    Returns: (limit件までの要素, 超過件数)
+    Returns: (limit件までの要素, 超過件数, 超過したaskが止めている作業のid一覧)
     """
     scope = [activity_id, *get_neighbor_activity_ids(conn, activity_id)]
     rows = conn.execute(
         f"""
         SELECT a.id, a.question, a.status, a.triage_reason,
                d.title AS decision_title, d.decision AS decision_text,
-               MIN(act.title) AS title
+               MIN(act.id) AS activity_id, -- 単一のMINと並べた裸のカラムは最小行の値になる（SQLite）
+              
+               act.title AS title
           FROM asks a
           JOIN ask_blocks ab ON ab.ask_id = a.id
           JOIN activities act ON act.id = ab.activity_id
@@ -154,14 +158,14 @@ def get_recent_settled_asks(
         }
         strip_entity_id_inplace(item)
         items.append(item)
-    return items, max(len(rows) - limit, 0)
+    return items, max(len(rows) - limit, 0), list(dict.fromkeys(r["activity_id"] for r in rows[limit:]))
 
 
 def get_asks_answered_since(
     conn: sqlite3.Connection, activity_id: int, since: str
 ) -> list[dict]:
-    """activityと隣の作業を止めていたaskのうち、`since`（UTCの`YYYY-MM-DD HH:MM:SS`）より後に
-    回答されたもの（回答後にtriage済みのものも含む）。回答本文は含まない。
+    """activityと隣の作業を止めていたaskのうち、`since`（UTCの`YYYY-MM-DD HH:MM:SS`）以降に
+    回答されたもの（秒精度のため、同一秒の回答を取りこぼさないよう境界を含める）（回答後にtriage済みのものも含む）。回答本文は含まない。
 
     要素: {"id_raw", "question", "status", "activity": 作業の題}。回答の新しい順。
     """
@@ -174,7 +178,7 @@ def get_asks_answered_since(
           JOIN activities act ON act.id = ab.activity_id
          WHERE ab.activity_id IN ({_in_clause(scope)})
            AND a.status IN ('answered', 'promoted', 'dismissed')
-           AND a.answered_at > ?
+           AND a.answered_at >= ?
          GROUP BY a.id
          ORDER BY a.answered_at DESC, a.id DESC
         """,
