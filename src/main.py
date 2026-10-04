@@ -434,7 +434,7 @@ def get_logs(
     Returns:
         議論ログ一覧（各logにtags付き）
         entity_type == "activity" の場合はrelated topics（上限10件）経由でlogs集約。
-            related topics が10件を超える場合、11件目以降の topic に属する log は
+            related topics が10件を超える場合、古い側の topic に属する log は
             total_count / truncated の対象外（この上限による切り捨ては可視化されない）。
             activityに直接つないだlogは含まれない
         total_count: 対象 topic 全体の log 総件数（retractフィルタ適用後、limit/start_idの影響を受けない）
@@ -480,7 +480,7 @@ def get_decisions(
     Returns:
         決定事項一覧（各decisionにtags付き）
         entity_type == "activity" の場合はrelated topics（上限10件）経由でdecisions集約。
-            related topics が10件を超える場合、11件目以降の topic に属する decision は
+            related topics が10件を超える場合、古い側の topic に属する decision は
             total_count / truncated の対象外（この上限による切り捨ては可視化されない）。
             activityに直接つないだdecisionは含まれない
         total_count: 対象 topic 全体の decision 総件数（retractフィルタ適用後、limit/start_idの影響を受けない）
