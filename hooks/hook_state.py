@@ -309,10 +309,13 @@ if __name__ == "__main__":
     # のため保持する（resume/clear/startupではクリアされる。質問者セッションが
     # 実質終わった扱いとみなし、以降の回収はpull（check_in/get_asks）に委ねる
     # 設計）。
+    # notified_ask_ids（check_in先と隣の作業のaskとして既に知らせたask_id一覧）も
+    # 保持する。compactで消すと、直後のStopがtranscriptを先頭から読み直して
+    # check_in先とcheck_in時刻を元の値で復元し、知らせ済みのaskをもう一度知らせてしまう。
     # sanitize_offset / sanitize_failure_count も同様にセッション単位の進行状態
     # であり、compactで消すとsanitize_backfill_hookの冪等な再開とループ防止
     # ガードがcompactごとにリセットされてしまうため保持する。
-    _COMPACT_PRESERVE = {"tracked_ask_ids", "sanitize_offset", "sanitize_failure_count"}
+    _COMPACT_PRESERVE = {"tracked_ask_ids", "notified_ask_ids", "sanitize_offset", "sanitize_failure_count"}
 
     if len(sys.argv) >= 2 and sys.argv[1] == "clear":
         data = json.loads(read_stdin_text())
