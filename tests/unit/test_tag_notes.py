@@ -132,6 +132,16 @@ class TestUpdateTag:
         finally:
             conn.close()
 
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE tags SET notes_updated_at = '2000-01-01 00:00:00' "
+                "WHERE namespace='domain' AND name='test'"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
         result = update_tag("domain:test", "教訓")
         assert "error" not in result
 
@@ -140,9 +150,15 @@ class TestUpdateTag:
             row_after = conn.execute(
                 "SELECT notes_updated_at FROM tags WHERE namespace='domain' AND name='test'"
             ).fetchone()
-            assert row_after["notes_updated_at"] is not None
         finally:
             conn.close()
+
+        from datetime import datetime, timezone
+
+        written = datetime.strptime(row_after["notes_updated_at"], "%Y-%m-%d %H:%M:%S").replace(
+            tzinfo=timezone.utc
+        )
+        assert abs((datetime.now(timezone.utc) - written).total_seconds()) < 60
 
     # 「トリガー導入前から4000字超のnotesを持つタグを縮める／さらに伸ばす」ケースは
     # migrations/0066のDBトリガー自体がINSERT時点で4000字超を拒否するため、
