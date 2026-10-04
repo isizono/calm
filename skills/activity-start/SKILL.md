@@ -32,7 +32,7 @@ description: 【必須】新しいアクティビティを開始する。「/as�
    - `related`: 手順4・5で特定した関連エンティティを紐づける
 8. **終了条件の3択**（手順7で作成した`activity_id`に対して行う）
 
-   orchのアクティビティ（`orch`タグを付けるもの）はこの3択の対象外。[orch](../orch/SKILL.md) skillの「なる」節でgoalまで作る。
+   orchのアクティビティは[orch](../orch/SKILL.md) skillの「なる」節で起票し、goalまでそこで作るので、この3択の対象外。activity-startで作るアクティビティには`orch`タグを付けない（`orch`はorchの目印専用のタグ。話題としてのorchには`orchestration`、別の意味ならその意味が分かる別の語を使う）。
 
    既存の未判定goalに続く作業の場合は、3択に入る前にここで紐づけて次のステップへ進む。手順3〜4で特定した関連activityのうち続きとなるものについて`get_goal(activity_id=<関連activityのid>)`を呼び、返ってきた`label`が`closed`でないこと(未判定であること)を確認したうえで`goal_id_raw`を控える。控えた値を使って`set_goal(activity_id=<手順7で作成したactivity_id>, goal={"goal_id": <goal_id_raw>})`で紐づける。
 
