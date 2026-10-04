@@ -14,7 +14,7 @@ description: 【必須】アクティビティを完了にする。「/af」「/
    - 候補が複数ある場合は**1ターンだけ**どれを完了にするか確認する
    - セッション内に該当がなければ `get_activities(limit=15)` で一覧を提示し選んでもらう（`limit` を省略するとデフォルト5件になり対象が一覧から漏れうるため明示する。タイトルベースで提示し、内部ID・数値は表示しない）
 
-   対象が`orch`タグの付いたアクティビティ（orch）なら、この手順の続きに進まず[orch](../orch/SKILL.md) skillの「終える」節へ進む
+   対象がorch（`orch`タグが付き、説明の先頭に担い手欄があるもの）なら、この手順の続きに進まず[orch](../orch/SKILL.md) skillの「終える」節へ進む。担い手欄が無ければorchではないので、このまま続ける
 2. **終了条件（goal）の確認**: 手元に今のgoalブロックが無ければ `get_goal(activity_id=...)` で読み直し、`label` を見る（`get_goal`は`check_in`と違いactivityのstatusを変えない読み取り専用なので、statusを書き換えずに確認できる）。以下の `goal_id` は`get_goal`応答の `goal_id_raw` を指す
 3. **止めているaskの処理**: このactivityを止めている未決着のask（未回答、または回答済みで未triage）を取得する。`get_asks(blocking_activity_id=...)`（未回答）と `get_asks(blocking_activity_id=..., triage_pending_only=true)`（回答済み未triage）で読む。`update_activity(status="completed")` の応答に `pending_asks` が付いたときも同じ一覧である（付いていたら、完了後でも次の判断を行う。完了自体は止められない）。0件なら次へ進む。1件以上あれば、askを1件ずつ次のとおり判断する
    - **続きの残タスクがあるなら、そこへ付け替える（原則）**: 残タスクがすでに別のactivityとして存在するならそのactivityへ、無ければ [activity-start](../activity-start/SKILL.md) skillで先に起こしてから、`update_activity(activity_id, move_asks_to=<新activityのid>, move_ask_ids=[<askのid>])` で付け替える。完了と同じ呼び出しに `move_asks_to` を含めてもよい（`move_ask_ids` を省くと未決着askを全件付け替える）
