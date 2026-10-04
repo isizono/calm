@@ -160,29 +160,6 @@ def _is_marker_active(notes: str, marker: str, allow_permanent: bool = True) -> 
     return marker in remainder
 
 
-def _merge_cooldown_marker(notes: str, marker: str, today: date) -> str:
-    """notesに対してmarkerの日次クールダウンマーカーを解析し、更新後のnotesを返す。
-
-    既存の日付付きマーカー（`<marker>-until:YYYY-MM-DD`）がtodayより後（未来）で
-    あれば、ユーザーが意図的に設定した長期抑制とみなしnotesをそのまま返す（no-op）。
-    存在しない、不正な日付形式、またはtoday以前の日付であれば、既存の日付付き
-    マーカーを除去したうえでtoday基準のマーカーを追記する（更新は「除去→末尾追記」
-    で実現し、出現位置は保持しない）。素の恒久マーカーの扱いは呼び出し元の責務
-    （hintが生成された時点で恒久抑制は既に効いていないことが前提）。
-    """
-    pattern = _dated_marker_pattern(marker)
-    for date_str in pattern.findall(notes):
-        try:
-            until = date.fromisoformat(date_str)
-        except ValueError:
-            continue
-        if until > today:
-            return notes
-    remainder = pattern.sub("", notes).strip()
-    new_marker = f"{marker}{_DATED_MARKER_SUFFIX}{today.isoformat()}"
-    return f"{remainder}\n\n{new_marker}" if remainder else new_marker
-
-
 def _is_auto_cooldown_active(conn: sqlite3.Connection, tag_id: int, marker: str) -> bool:
     """hint_cooldownsテーブルに記録された自動クールダウンが有効かを判定する。
 

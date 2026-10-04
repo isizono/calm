@@ -7,6 +7,8 @@ dependencies・recomposeナッジ・セッション別名登録・goal配線）�
 再開順序など、tier実装固有の振る舞いを確認する。
 """
 import json
+from datetime import date
+
 import pytest
 
 import src.services.checkin_tier_service as checkin_tier_service
@@ -1406,7 +1408,7 @@ class TestActivityCleanupHintViaCheckIn:
         )
         assert _get_cooldown_until(
             ACTIVITY_MANAGEMENT_TAG_NAME, MARKER_ACTIVITY_CLEANUP, namespace=""
-        ) is not None
+        ) == date.today().isoformat()
 
         result_second = collect_and_assemble(actor_id)
         assert "error" not in result_second

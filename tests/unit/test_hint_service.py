@@ -25,7 +25,6 @@ from src.services.hint_service import (
     RECOMPOSE_DELTA_THRESHOLD,
     _count_stale_activities,
     _is_marker_active,
-    _merge_cooldown_marker,
     get_hints,
     get_hints_with_conn,
 )
@@ -653,49 +652,6 @@ class TestDatedMarkerSnooze:
     def test_logs_sparse_message_includes_snooze_instructions(self):
         assert "-until:" in HINT_LOGS_SPARSE_MESSAGE
         assert MARKER_LOGS_SPARSE in HINT_LOGS_SPARSE_MESSAGE
-
-
-class TestMergeCooldownMarkerHelper:
-    """_merge_cooldown_marker: 日次クールダウンマーカー更新の純粋関数テスト（DB不要）"""
-
-    def test_no_existing_marker_appends_today(self):
-        today = date(2026, 1, 15)
-        result = _merge_cooldown_marker("既存メモ", MARKER_RECOMPOSE_BOOTSTRAP, today)
-        assert f"{MARKER_RECOMPOSE_BOOTSTRAP}-until:2026-01-15" in result
-        assert "既存メモ" in result
-
-    def test_past_dated_marker_updated_to_today(self):
-        today = date(2026, 1, 15)
-        notes = f"メモ {MARKER_RECOMPOSE_BOOTSTRAP}-until:2026-01-01"
-        result = _merge_cooldown_marker(notes, MARKER_RECOMPOSE_BOOTSTRAP, today)
-        assert f"{MARKER_RECOMPOSE_BOOTSTRAP}-until:2026-01-15" in result
-        assert "2026-01-01" not in result
-
-    def test_today_dated_marker_updated(self):
-        """境界値: 既存マーカーの日付がtodayと同一の場合も"今日以前"として更新処理を通す"""
-        today = date(2026, 1, 15)
-        notes = f"{MARKER_RECOMPOSE_BOOTSTRAP}-until:2026-01-15"
-        result = _merge_cooldown_marker(notes, MARKER_RECOMPOSE_BOOTSTRAP, today)
-        assert f"{MARKER_RECOMPOSE_BOOTSTRAP}-until:2026-01-15" in result
-
-    def test_future_dated_marker_not_overwritten(self):
-        """ユーザーが意図的に設定した未来日の長期抑制は上書きしない"""
-        today = date(2026, 1, 15)
-        notes = f"メモ {MARKER_RECOMPOSE_BOOTSTRAP}-until:2099-01-01"
-        result = _merge_cooldown_marker(notes, MARKER_RECOMPOSE_BOOTSTRAP, today)
-        assert result == notes
-
-    def test_invalid_date_format_replaced(self):
-        today = date(2026, 1, 15)
-        notes = f"{MARKER_RECOMPOSE_BOOTSTRAP}-until:2026-13-99"
-        result = _merge_cooldown_marker(notes, MARKER_RECOMPOSE_BOOTSTRAP, today)
-        assert f"{MARKER_RECOMPOSE_BOOTSTRAP}-until:2026-01-15" in result
-        assert "2026-13-99" not in result
-
-    def test_empty_notes_produces_marker_only(self):
-        today = date(2026, 1, 15)
-        result = _merge_cooldown_marker("", MARKER_RECOMPOSE_DELTA, today)
-        assert result == f"{MARKER_RECOMPOSE_DELTA}-until:2026-01-15"
 
 
 class TestRecomposeCooldownMarker:
