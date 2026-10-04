@@ -1,0 +1,47 @@
+name: バグ報告
+description: 期待どおりに動かない挙動を報告する
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        報告ありがとうございます。起票前に README の「よくある詰まり」で解決しないか確認してください。
+  - type: textarea
+    id: phenomenon
+    attributes:
+      label: 現象
+      description: 何をしたら、何が起きたか。期待していた挙動との違いも書いてください。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 再現手順
+      description: 分かる範囲で。再現しない・条件が不明な場合はその旨を書いてください。
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: エラーメッセージ・ログ
+      description: エラー出力や `get_signals` の内容があれば貼ってください。
+      render: shell
+    validations:
+      required: false
+  - type: textarea
+    id: environment
+    attributes:
+      label: 環境
+      description: OS、Claude Code のバージョン、Python のバージョン・入手元（Homebrew 等）、CALM のバージョンやコミット等
+    validations:
+      required: false
+  - type: textarea
+    id: cause
+    attributes:
+      label: 原因・対応案
+      description: 見当がついていれば書いてください（任意）。
+    validations:
+      required: false

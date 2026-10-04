@@ -4,14 +4,14 @@
 
 前提として、Claude Code（ネイティブ版）がインストール済みでログイン済みであること。加えて[Git for Windows](https://gitforwindows.org/)が必要（マーケットプレイス`isizono/calm`はGitHubでホストされており、`claude plugin marketplace add`・`update`やプラグインのインストールのたびにClaude Codeが利用者側の`git`でcloneするため）。calmのhookはexec form（コマンドと引数を分けた形）で登録されておりシェルを経由しないため、hook自体の実行はGit for Windowsの有無に影響されない。Git for Windowsが入っていると、Claude Codeはスキルの中のシェル手順をBashツール（Git Bash経由）で実行できるようになる。これとは別に、PowerShellツールもclaude.ai・Consoleアカウントでは既定で有効になる。
 
-社内プロキシ環境を使っている場合は、uvの導入（パターン1・パターン2とも手順3）より前に[README.mdの社内プロキシ環境での注意](../README.md#windows-11での利用)の設定（`HTTPS_PROXY`・`NO_PROXY`・`SSL_CERT_FILE`のユーザー環境変数への設定）を済ませておく。
+社内プロキシ環境を使っている場合は、uvの導入（パターン1・パターン2とも手順3）より前に[社内プロキシ環境での注意](#社内プロキシ環境での注意)の設定（`HTTPS_PROXY`・`NO_PROXY`・`SSL_CERT_FILE`のユーザー環境変数への設定）を済ませておく。
 
 2つの手順を用意する。
 
 - [パターン1](#パターン1-人がpowershellで実行する手順): 人がPowerShellで1行ずつ実行する手順
 - [パターン2](#パターン2-claude-codeに貼り付けるプロンプト): Claude Codeに貼り付けて、確認・実行・成功確認を自走させるプロンプト
 
-状態確認・停止・lockの後始末は[README.mdのWindows 11の節](../README.md#windows-11での利用)に既にあるため、本ドキュメントでは重複させずリンクする。
+状態確認・停止・lockの後始末と社内プロキシ環境での注意は、末尾の[補足](#補足)にまとめる。
 
 ## パターン1: 人がPowerShellで実行する手順
 
@@ -192,15 +192,15 @@ Test-Path "$env:USERPROFILE\.claude\rules\cc-memory-habits.md"
 2. `/man`を実行し、使い方の案内が返ってくることを確認する（MCPツール呼び出しの疎通確認を兼ねる）
 3. ARM64機では`$env:UV_PYTHON`が`cpython-3.12-windows-x86_64-none`を返すことを確認する
 
-1.と2.はREADME.mdの[正常に動いているかの確認](../README.md#正常に動いているかの確認)と同じ内容である。
+1.と2.はREADME.mdの[正常に動いているかの確認](troubleshooting.md#正常に動いているかの確認)と同じ内容である。
 
 ## うまくいかないとき
 
 - **MCPの接続ログ**: `%LOCALAPPDATA%\claude-cli-nodejs\Cache\<cwd>\mcp-logs-plugin-calm-calm\`にClaude Code側のMCP接続ログが残る。
 - **CALMのサーバーログ**: 既定のDBパス（`%USERPROFILE%\.claude\.claude-code-memory\`）と同じフォルダの`logs\server.log`（Pythonの`logging`経由の通常ログ。起動確認・DB初期化等）と`logs\server.stderr.log`（起動直後に落ちるような致命的失敗用。起動のたびに上書きされるため、再試行する前に読む。launcherはサーバープロセスの標準出力をDEVNULLに捨てるため、標準出力自体にはログは出ない）に書かれる。`CALM_DB_PATH`を変更している場合はそのディレクトリ配下になる。
 - **embeddingサーバーのログ**: `%USERPROFILE%\.cache\cc-memory\embedding-server.log`。torchのimportに失敗している場合、このログに`c10.dll`関連のエラーが出ていないか確認する。
-- **残ったlockファイルの扱い**: README.mdの[状態確認・停止・lockの後始末](../README.md#windows-11での利用)を参照。
-- **社内プロキシ環境での注意**: README.mdの[社内プロキシ環境での注意](../README.md#windows-11での利用)を参照。
+- **残ったlockファイルの扱い**: 末尾の[状態確認・停止・lockの後始末](#状態確認停止lockの後始末powershell)を参照。
+- **社内プロキシ環境での注意**: 末尾の[社内プロキシ環境での注意](#社内プロキシ環境での注意)を参照。
 - **初回の`uv sync`を忘れたときの症状**: 初回の`/mcp`接続がタイムアウトする。7.の`uv sync --frozen`を手動実行してから`/mcp`を再接続する。
 
 ## パターン2: Claude Codeに貼り付けるプロンプト
@@ -262,3 +262,41 @@ CALM（isizono/calm）をこのWindows機にセットアップしてほしい。
    - 再起動後のセッションで `/mcp` を実行し、calmサーバーが connected になっていることを確認すること（ARM64機では合わせて `$env:UV_PYTHON` も確認する）
    これはClaude Code自身のセッションの再起動が要るため、今のセッションの中では完結できない。
 ```
+
+## 補足
+
+### 状態確認・停止・lockの後始末（PowerShell）
+
+稼働状況の確認や強制停止は、`/restart`と同じPythonの入口（`scripts/restart_server.py`）を使う。`curl`はPowerShellでは`Invoke-WebRequest`の別名に化けて出力形式が変わるため、ここでは使わない。インストール先のディレクトリで実行する（`.`はカレントディレクトリの意味）:
+
+```powershell
+# 状態確認（何も変更しない）
+uv run --no-sync --directory . python scripts/restart_server.py --status
+
+# 停止のみ（再起動しない）
+uv run --no-sync --directory . python scripts/restart_server.py --stop
+```
+
+`--stop`は停止確認後にserver.lockの後始末まで行うため、通常は手動で消す必要はない。他に生きているClaude Codeセッションがあると、そのセッションのlauncherが数秒以内に新しいサーバーを自動起動し直す点に注意する（本当に停止させたい・キャッシュ削除等を控えて行う場合は、全セッションを閉じてから`--stop`を実行する）。Task Manager等このCLIを経由せずにプロセスを終了させてしまい、lockだけが残った場合に限り、以下で手動削除する:
+
+```powershell
+Remove-Item "$env:USERPROFILE\.cc-memory\server.lock" -ErrorAction SilentlyContinue
+```
+
+embeddingサーバーの疎通確認（[正常に動いているかの確認](troubleshooting.md#正常に動いているかの確認)の4.相当）は`curl`ではなく`curl.exe`または`Invoke-RestMethod`を使う:
+
+```powershell
+curl.exe http://127.0.0.1:52836/health
+# または
+Invoke-RestMethod http://127.0.0.1:52836/health
+```
+
+（embeddingサーバーは127.0.0.1でのみ待ち受けており`localhost`では名前解決の分だけ余計な遅延が入りうるため、`127.0.0.1`を直接指定する）
+
+### 社内プロキシ環境での注意
+
+ローカルのMCP通信（127.0.0.1宛のループバック接続）は、レジストリで手動プロキシが設定され環境変数が無い環境でも社内プロキシへ誤送されないよう対応済み。一方、`uv sync`（依存解決）とembeddingモデルの初回ダウンロード（Hugging Face Hubへの外部通信）は、レジストリの手動プロキシ設定だけでは経由しない可能性がある。[uv公式ドキュメント](https://docs.astral.sh/uv/reference/environment/)が挙げるプロキシ設定手段は`HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`等の環境変数のみで、Windowsのレジストリ経由の検出には触れられていない。モデルのダウンロードも、依存バージョンによってはuvと同様にRust製の別クライアントを経由することがある。社内プロキシが必要な環境では`$env:HTTPS_PROXY`を設定しておく（HTTP用の`HTTP_PROXY`も設定する場合は、ループバック宛の通信を誤って巻き込まないよう`$env:NO_PROXY="localhost,127.0.0.1"`も併せて設定する）。
+
+社内プロキシがTLSを傍受する構成の場合、uvが同梱するMozilla製ルート証明書やPython側の`certifi`では社内プロキシの証明書を検証できず失敗することがある。`$env:SSL_CERT_FILE`に社内CA証明書を指定する。
+
+`HTTPS_PROXY`・`NO_PROXY`・`SSL_CERT_FILE`はいずれもPowerShellの`$env:`では現在のウィンドウにしか効かない。hook・MCPサーバー・embeddingサーバーはClaude Codeを起動したシェルの環境を引き継ぐため、`claude`を起動するシェルで設定するか、`[Environment]::SetEnvironmentVariable('HTTPS_PROXY', '<url>', 'User')`のようにユーザー環境変数として永続化する。
