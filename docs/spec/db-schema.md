@@ -518,7 +518,7 @@ asks 専用の sqlite-vec 仮想テーブル（384次元、`distance_metric=cosi
 補足:
 - FK・UNIQUE制約は張らない（既存telemetryテーブル群と同じ、生データ台帳としての性質を優先）。同一セッションで同じ`(attached_type, attached_id)`が複数回提示されるのは正常挙動で、集計側で`GROUP BY MIN(timestamp)`して縮約する
 - 書込は既存telemetryと同じdaemon thread + 失敗握りつぶし規約に従う
-- 本 migration が導入する範囲は、テーブル定義・writable columns allowlist・present書込ヘルパ（`_record_injection_telemetry_async`）・`get_material`のfetch側計装のみ。`add_logs`/`add_decisions`/`add_material`側から実際にpresent行を書く呼出し実装は、添付内容の組み立て方を規定する記録=クエリ添付の詳細設計が別途確定してから追加する
+- present側の書込呼出しは`add_logs`（`discussion_log_service.py`）/`add_decisions`（`decision_service.py`）/`add_material`（`material_service.py`）の3箇所から`search_service.build_related_records_manifest`経由で実装済み。同関数内で採用した添付候補ごとに`_record_injection_telemetry_async`を呼び、present行を非同期書込する
 
 関連 migration: 0067_add_injection_telemetry
 
