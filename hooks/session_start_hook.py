@@ -163,13 +163,20 @@ def _inherit_freshness_from_children(
 
     子のcheck_inやheartbeatは親の行を更新しない。openな子は親の下にしか出さない
     ため、引き上げないと担い手のいない親が鮮度切れやpendingで階層2から落ちたとき、
-    動いている子までまとめて一覧から消える。実効の更新時刻は親自身とopenな子の
-    updated_at・last_heartbeat_atのうち最新（いずれもSQLiteの
-    'YYYY-MM-DD HH:MM:SS'形式なので文字列で比べられる）。openな子に
-    in_progressが1件でもあれば親もin_progressとして扱う。
+    動いている子までまとめて一覧から消える。実効の更新時刻は親自身と、条件が
+    openかつ子自身が終了していない（pending/in_progress）子のupdated_at・
+    last_heartbeat_atのうち最新（いずれもSQLiteの'YYYY-MM-DD HH:MM:SS'形式
+    なので文字列で比べられる）。その子にin_progressが1件でもあれば親も
+    in_progressとして扱う。書き換えた値は階層判定に限らず、この一覧の組み立て
+    全体（並び順・未表示の例示）で使われる。子の値はDBの行から読むため引き継ぎは
+    1段だけで、孫の進みは祖父に伝わらない。
     """
     for a in all_active:
-        open_children = [c for c in children_by_parent.get(a["id"], []) if c["state"] == "open"]
+        open_children = [
+            c
+            for c in children_by_parent.get(a["id"], [])
+            if c["state"] == "open" and c["child_status"] in ("pending", "in_progress")
+        ]
         if not open_children:
             continue
         a["updated_at"] = max(

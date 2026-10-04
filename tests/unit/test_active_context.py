@@ -978,6 +978,48 @@ class TestOrchChildTree:
         assert f"#{child['activity_id']} [作業] 最近の子" in result
         assert "## 未表示" not in result
 
+    def test_pending_parent_promoted_by_in_progress_child_without_heartbeat(self, temp_db):
+        """heartbeatが無くても、in_progressの子が最近更新されていればpendingの親が
+        優先に出る（状態の引き上げがheartbeatに依存しない）"""
+        parent = add_activity(title="[統合] 親N", description="d", tags=["domain:myapp"], check_in=False)
+        child = add_activity(title="[作業] 着手済みの子", description="d", tags=["domain:myapp"], check_in=False)
+        update_activity(child["activity_id"], status="in_progress")
+        self._bind_children(parent["activity_id"], [
+            {
+                "statement": "着手済みの子が終わる", "actor": "claude",
+                "bound": {"type": "activity", "id": child["activity_id"]},
+            },
+        ])
+        _set_updated_at_days_ago(parent["activity_id"], 30)
+
+        result = _build_active_context_wrapper()
+
+        assert f"- #{parent['activity_id']} [統合] 親N" in result
+        assert f"#{child['activity_id']} [作業] 着手済みの子" in result
+
+    @pytest.mark.parametrize(
+        "condition_state, child_status",
+        [("satisfied", "in_progress"), ("open", "completed")],
+        ids=["condition_satisfied", "child_completed"],
+    )
+    def test_parent_not_refreshed_by_finished_child(self, temp_db, condition_state, child_status):
+        """条件が済んだ子や、子自身が終了済みの子からは鮮度を引き継がない"""
+        parent = add_activity(title="[統合] 親O", description="d", tags=["domain:myapp"], check_in=False)
+        update_activity(parent["activity_id"], status="in_progress")
+        child = add_activity(title="[作業] 済んだ側の子", description="d", tags=["domain:myapp"], check_in=False)
+        update_activity(child["activity_id"], status=child_status)
+        self._bind_children(parent["activity_id"], [
+            {
+                "statement": "済んだ側の子が終わる", "actor": "claude", "state": condition_state,
+                "bound": {"type": "activity", "id": child["activity_id"]},
+            },
+        ])
+        _set_updated_at_days_ago(parent["activity_id"], 30)
+
+        result = _build_active_context_wrapper()
+
+        assert f"- #{parent['activity_id']}" not in result
+
     def test_stale_parent_and_children_stay_undisplayed(self, temp_db):
         """親も子も古ければ従来どおり両方とも未表示に数える"""
         parent = add_activity(title="[統合] 親M", description="d", tags=["domain:myapp"], check_in=False)
