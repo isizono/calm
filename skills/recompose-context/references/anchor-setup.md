@@ -1,14 +1,8 @@
----
-name: setup-anchor
-description: 合意事項のanchor（正しさを確かめる検証先）をユーザーと対話して新規に決める・更新する。recompose-contextから呼ばれるほか、「anchor作って」「アンカー設定」「検証先決めたい」などで発動。
-user-invocable: false
----
-
-# setup-anchor
+# anchor確定手順
 
 合意事項（decision/log/material）の anchor（「この合意が正しいか、どこを見れば判断できるか」を表すテキスト）を、ユーザーと対話して**新規確定 or 既存更新**する。
 
-recompose-contextから呼ばれるほか単独でも利用できる。「anchor作って」「アンカー設定」「検証先決めたい」「anchor更新したい」などの依頼で使う。
+recompose-contextの手順3-bから読まれるほか、「anchor作って」「アンカー設定」「検証先決めたい」「anchor更新したい」などの依頼で単独でも使う。
 
 ## 役割の境界
 
