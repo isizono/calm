@@ -55,7 +55,7 @@ decisionのretract / supersedeは、本スキルを経由せずに直接提案�
 | T-C1 | 設計議論中で挙動が固まっていない論点に対する自発発動 | 「方針変更」ではなく「探索中」 |
 | T-C2 | 同 audit を 24h 以内に同主題で実行済み | 重複 (前回 material を参照すべき) |
 | T-C3 | ユーザーが「audit はいい、進めて」と明示拒否した直後 | 明示否認尊重 |
-| T-C4 | スコープが他 topic 管轄の仕組みのバグ観察である | `cross-topic-bug-report` skill の責務 |
+| T-C4 | スコープが他 topic 管轄の仕組みのバグ観察である | audit の対象外 (委譲先 skill は無い) |
 
 ## 起動時確認フロー
 
@@ -358,13 +358,13 @@ Q5: その知識は経緯・調査結果そのものか?
 
 ### 対比表
 
-| 軸 | audit | recompose-context | setup-anchor | cross-topic-bug-report | postmortem |
-|---|---|---|---|---|---|
-| 動機 | 過去判断の**正当性疑い** | 累積情報の**整理** | anchor の**確定** | 他 topic への**バグ報告** | completed activity の**振り返り** |
-| 対象スコープ | decision / 設計テーマ / 同一 tag 方針推移 | activity / topic / decision (関連グラフ全体) | 合意事項 1 件 | 1 観察事象 | 完了 activity 1 件 |
-| 入口 | 自発トリガー T-A* / ユーザー T-B* | 手動 (「/recompose」「整理して」) or hint 誘導 | recompose 内部 or 単独 | 3 条件 AND 自発 | 手動 (「/postmortem」or activity 指定) |
-| 出力 | audit material + pin 群 + 完了マーカー | 統合 material + anchor 対応表 + リコンサイル | anchor 対応表エントリ | log 1 件 | 反省ポイント material + 教訓永続化 |
-| 重さ | 長 (1 セッション級) | 中 (整理単位次第) | 短 (合意 1 件) | 短 (log 1 件) | 中 (ステップ分解 + 対話) |
+| 軸 | audit | recompose-context | setup-anchor | postmortem |
+|---|---|---|---|---|
+| 動機 | 過去判断の**正当性疑い** | 累積情報の**整理** | anchor の**確定** | completed activity の**振り返り** |
+| 対象スコープ | decision / 設計テーマ / 同一 tag 方針推移 | activity / topic / decision (関連グラフ全体) | 合意事項 1 件 | 完了 activity 1 件 |
+| 入口 | 自発トリガー T-A* / ユーザー T-B* | 手動 (「/recompose」「整理して」) or hint 誘導 | recompose 内部 or 単独 | 手動 (「/postmortem」or activity 指定) |
+| 出力 | audit material + pin 群 + 完了マーカー | 統合 material + anchor 対応表 + リコンサイル | anchor 対応表エントリ | 反省ポイント material + 教訓永続化 |
+| 重さ | 長 (1 セッション級) | 中 (整理単位次第) | 短 (合意 1 件) | 中 (ステップ分解 + 対話) |
 
 ### 重なる動作の役割分担
 
@@ -381,7 +381,6 @@ Q5: その知識は経緯・調査結果そのものか?
 - 「decision 引用時に怪しい」→ audit (自発 T-A1) → audit 中で anchor 不在判明 → setup-anchor 起動
 - 「topic#X 全体を整理したい」→ recompose-context → 統合中にズレ発見 → audit を提案
 - 「completed activity の振り返り」→ postmortem → 反省ポイントから知識永続化先迷う → audit の判定マトリクス参照 (任意)
-- 「他 topic の仕組みバグ観察」→ cross-topic-bug-report (audit ではない)
 
 ## HintService との境界
 
@@ -409,5 +408,5 @@ audit skill は HintService (`src/services/hint_service.py`) とは**経路と�
 | audit を recompose-context が呼んだ場合 | recompose 中の発見 (ズレ・矛盾) を発端として audit に降ろす経路は OK。audit 完了後に recompose に戻る |
 | skill 実行中 (他 skill 実行中) に audit トリガー | 現在 skill 完了まで待ち、終了後に audit 起動。skill 入れ子は禁止 |
 | 同 decision を 2 回 audit (T-C2 抜け) | T-C2 重複検知が漏れた場合は Step 2 (スコープ確定) で前回 material を発見し、重複と判定して `## 残課題` 引き継ぎのみで終了 |
-| HintService 側で consistency_check 完全削除済なのに過去の hint 残骸が見える | 残骸を発見したら HintService 側のバグとして `cross-topic-bug-report` に降ろす (audit の範囲外) |
+| HintService 側で consistency_check 完全削除済なのに過去の hint 残骸が見える | 残骸を発見したら `report_signal`（CALM 自身の故障報告、kind の全種定義は `report_signal` ツールの docstring を正とする）で報告する (audit の範囲外) |
 | 完了マーカー追記対象の tag が複数候補ある | 主題を最もよく代表する 1 つの tag にのみ追記 (全 tag 汚染回避) |
