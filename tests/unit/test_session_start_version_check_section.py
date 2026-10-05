@@ -9,20 +9,15 @@ from hooks.session_start_hook import (
     _build_version_check_section,
     _fetch_running_server_version,
 )
+from pathlib import Path
+
 from hooks import session_start_hook
 from src.infra import loopback_http
 
 
-class _FakePath:
-    """resolve_installed_plugin_rootの戻り値（Path）のうち`.name`だけを使う部分double。"""
-
-    def __init__(self, name: str):
-        self.name = name
-
-
 def test_returns_empty_when_versions_match(monkeypatch):
     monkeypatch.setattr(
-        session_start_hook, "resolve_installed_plugin_root", lambda root: _FakePath("abc123")
+        session_start_hook, "resolve_installed_plugin_root", lambda root: Path("/plugins/cache/calm/calm/abc123")
     )
     monkeypatch.setattr(session_start_hook, "_fetch_running_server_version", lambda: "abc123")
 
@@ -31,7 +26,7 @@ def test_returns_empty_when_versions_match(monkeypatch):
 
 def test_warns_when_versions_differ(monkeypatch):
     monkeypatch.setattr(
-        session_start_hook, "resolve_installed_plugin_root", lambda root: _FakePath("newver")
+        session_start_hook, "resolve_installed_plugin_root", lambda root: Path("/plugins/cache/calm/calm/newver")
     )
     monkeypatch.setattr(session_start_hook, "_fetch_running_server_version", lambda: "oldver")
 
@@ -51,7 +46,7 @@ def test_silent_when_installed_version_unresolvable(monkeypatch):
 def test_silent_when_running_version_unresolvable(monkeypatch):
     """サーバーに繋がらない・/healthにversionキーが無い等は判定不能として何も出さない"""
     monkeypatch.setattr(
-        session_start_hook, "resolve_installed_plugin_root", lambda root: _FakePath("abc123")
+        session_start_hook, "resolve_installed_plugin_root", lambda root: Path("/plugins/cache/calm/calm/abc123")
     )
     monkeypatch.setattr(session_start_hook, "_fetch_running_server_version", lambda: None)
 

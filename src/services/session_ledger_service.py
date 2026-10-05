@@ -59,11 +59,17 @@ def register(
     try:
         conn.execute("BEGIN IMMEDIATE")
         existing = conn.execute(
-            "SELECT cli_session_id, cli_pid, cwd, cli_resolve_status, ended_at "
+            "SELECT cli_session_id, cli_pid, cwd, cli_resolve_status, ended_at, ended_reason "
             "FROM sessions WHERE session_id = ?",
             (session_id,),
         ).fetchone()
-        already_ended = existing is not None and existing["ended_at"] is not None
+        # stale_on_startupで閉じた行は、同じsession_idのheartbeatが届いた時点で
+        # 生きていたと分かるため復活させる(下のON CONFLICT参照)。
+        already_ended = (
+            existing is not None
+            and existing["ended_at"] is not None
+            and existing["ended_reason"] != "stale_on_startup"
+        )
 
         if entry is not None and entry.get("cli_session_id") is not None:
             cli_session_id = entry.get("cli_session_id")
@@ -121,8 +127,10 @@ def register(
                 cli_pid = excluded.cli_pid,
                 cli_resolve_status = excluded.cli_resolve_status,
                 mode = excluded.mode,
-                last_heartbeat_at = excluded.last_heartbeat_at
-            WHERE ended_at IS NULL
+                last_heartbeat_at = excluded.last_heartbeat_at,
+                ended_at = NULL,
+                ended_reason = NULL
+            WHERE ended_at IS NULL OR ended_reason = 'stale_on_startup'
             """,
             (session_id, id_kind, harness, host, cwd, cli_session_id, cli_pid, cli_resolve_status, mode),
         )
@@ -173,12 +181,8 @@ def close_stale_sessions(liveness_timeout_sec: float) -> int:
     場合は何もしない（「stale」の定義自体が存在しないため）。
 
     まだ生きていて、たまたまheartbeatがTTLを超えて途絶した直後の行も対象に
-    なりうる。この場合、register()のON CONFLICT...WHERE ended_at IS NULLに
-    より、以後そのlauncherから届くheartbeatは無言のno-opになり行は復活しない
-    (該当launcherプロセスが終了し新しいsession_idで登録し直すまで、その行は
-    `ended_at`が立ったまま残る)。destination_middleware等のended_at IS NULLを
-    前提にした生存セッション参照（宛先候補の絞り込み等）からも、その間
-    対象外になる。
+    なりうる。この場合も、以後そのlauncherからheartbeat（register()）が届いた
+    時点で行は復活する（ended_at/ended_reasonがNULLに戻る）。
 
     Returns:
         閉じた行数。

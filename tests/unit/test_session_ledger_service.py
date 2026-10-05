@@ -330,6 +330,35 @@ class TestCloseStaleSessions:
         assert row["ended_at"] is not None
         assert row["ended_reason"] == "stale_on_startup"
 
+    def test_heartbeat_revives_row_closed_on_startup(self, temp_db, monkeypatch):
+        monkeypatch.setattr(session_ledger_service, "resolve_cli_session", lambda sid: None)
+        session_ledger_service.register(
+            "alive-1", id_kind="bridge", harness=None, host="host-a", mode="interactive",
+        )
+        _backdate_heartbeat("alive-1", 999)
+        session_ledger_service.close_stale_sessions(300)
+
+        session_ledger_service.register(
+            "alive-1", id_kind="bridge", harness=None, host="host-a", mode="interactive",
+        )
+
+        row = _fetch_row("alive-1")
+        assert row["ended_at"] is None
+        assert row["ended_reason"] is None
+
+    def test_heartbeat_does_not_revive_row_ended_by_unregister(self, temp_db, monkeypatch):
+        monkeypatch.setattr(session_ledger_service, "resolve_cli_session", lambda sid: None)
+        session_ledger_service.register(
+            "gone-1", id_kind="bridge", harness=None, host="host-a", mode="interactive",
+        )
+        session_ledger_service.mark_ended("gone-1", "unregister")
+
+        session_ledger_service.register(
+            "gone-1", id_kind="bridge", harness=None, host="host-a", mode="interactive",
+        )
+
+        assert _fetch_row("gone-1")["ended_reason"] == "unregister"
+
     def test_does_not_close_rows_with_recent_heartbeat(self, temp_db, monkeypatch):
         """heartbeatがTTL内であれば(=まだ生きている可能性がある)閉じない。"""
         monkeypatch.setattr(session_ledger_service, "resolve_cli_session", lambda sid: None)
