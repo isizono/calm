@@ -52,6 +52,7 @@ from src.services.tag_service import (
 )
 from src.services.tag_analysis_service import analyze_tags as _analyze_tags
 from src.services import citation_renderer
+from src import config_registry
 from src.db import get_connection
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -2277,8 +2278,12 @@ def get_timeline(
 
 
 @mcp.tool()
-def get_config() -> dict:
+def get_config(env_kind: str | None = "user") -> dict:
     """現在の設定値を返す。スキルが環境変数ベースの設定を参照するために使用する。
+
+    env_varsはcalmが読む環境変数の台帳（src/config_registry.py）と現在値
+    （name/kind/default/description/value。valueは未設定ならnull）。env_kindで種類を絞る
+    （user=利用者が調整する値、既定。internal/emergency/session/ci、"all"で全種類）。
 
     read_tool_limitsはtool呼び出し前にレスポンスサイズを見積もるための既定上限一覧。
     search/get_logs/get_decisions/get_timelineの上限は各serviceにハードコードされており
@@ -2291,17 +2296,20 @@ def get_config() -> dict:
     null（skillがこれを見てset_instance_identityを促す判断材料にする）。
     """
     from src import config
+    if env_kind not in (None, "all", *config_registry.KINDS):
+        return {"error": {"code": "VALIDATION_ERROR", "message": (
+            f"env_kind は {', '.join(config_registry.KINDS)}, all のいずれか: {env_kind!r}"
+        )}}
     return {
         "instance_id": instance_service.get_instance_id(),
         "heartbeat_timeout": config.HEARTBEAT_TIMEOUT_MINUTES,
-        "in_progress_limit": config.IN_PROGRESS_LIMIT,
-        "pending_limit": config.PENDING_LIMIT,
         "recency_decay_rate": budget_service.BUDGET_DEFAULTS["recency_decay_rate"],
         "sync_disable_retrospective": config.SYNC_DISABLE_RETROSPECTIVE,
         "snapshot_interval_hours": config.SNAPSHOT_INTERVAL_HOURS,
         "snapshot_max_count": config.SNAPSHOT_MAX_COUNT,
         "snapshot_anomaly_threshold": config.SNAPSHOT_ANOMALY_THRESHOLD,
         "precedent_budget_chars": budget_service.BUDGET_DEFAULTS["precedent_budget_chars"],
+        "env_vars": config_registry.list_env_vars(None if env_kind == "all" else env_kind),
         "budget_defaults": budget_service.BUDGET_DEFAULTS,
         "read_tool_limits": {
             "search": {"default": 10, "max": 50},

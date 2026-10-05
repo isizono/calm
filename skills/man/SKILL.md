@@ -32,7 +32,14 @@ CALMは「着手 → 記録 → 完了 → 同期」のライフサイクルで�
 
 ## 主要スキル
 
-### `/project-setup` — 新しいプロジェクト・取り組みを始めるとき（一度だけの前準備）
+### `/setup` — セットアップ・設定変更の入口
+
+- やりたいことを判断して、中のスキルに振り分ける。ユーザーが打つのはこのスキルだけ
+  - インストール直後: 前提条件（uv・sqlite拡張・embeddingサーバー）の確認、ペルソナのヒアリング、使い方の案内（initial-setup）
+  - 新しいプロジェクト・取り組みを始めるとき: 下記のproject-setup
+  - 環境変数による設定変更: 一覧を見せ、確認を取って`settings.json`に書く（env-config）
+
+#### project-setup（`/setup`の振り分け先）— 新しいプロジェクト・取り組みを始めるとき（一度だけの前準備）
 
 - 新しいプロジェクト・取り組み（新しいdomain）の知識フレーム（プロジェクト識別子・主要な関心事・既に決まっている方針・直近やること・参照ポインタ）を対話的にセットアップする
 - コード開発が目的なら、自動的に`coding-project-setup`（リポジトリのREADME・docs等の走査を伴う）へ引き継がれる
@@ -303,18 +310,17 @@ CALMの全hookはfail-open設計（1つのhookの失敗が他の操作を止め�
 - **tag-notes**: タグに紐づく常備情報。そのタグに関連する作業が始まったときにAIへ自動注入される。`/tag-notes`で確認・更新できる
 - **振る舞い（habits）**: 全セッション共通のルール。alwaysタイプは全文、intelligentlyタイプはタイトル一覧（マニフェスト）が`~/.claude/rules`配下の自動生成ファイル経由でセッション開始時に読み込まれる（詳細は「記録の構造」参照）。AIに「覚えといて」と言えばOK
 - **`intent:`タグのtag-notes**: 議論・設計・作業の各フェーズでAIにどう振る舞ってほしいかを定義できる。初期状態でdiscussとdesignが登録されている
-- **環境変数**: `.mcp.json`の`env`フィールドで以下の値をオーバーライドできる。未設定ならデフォルト値で動作する
+- **環境変数**: `~/.claude/settings.json`の`env`フィールドで以下の値をオーバーライドできる。未設定ならデフォルト値で動作する。`/setup`から設定変更を選ぶと、一覧の表示と書き込みをAIが手伝う。変更後は`/calm:restart`でMCPサーバーを再起動する
 
 | 環境変数名 | デフォルト | 説明 |
 |-----------|-----------|------|
 | `CALM_DB_PATH` | `~/.claude/.claude-code-memory/discussion.db` | データベースファイルのパス |
 | `CALM_HEARTBEAT_TIMEOUT` | `20` | ホットアクティビティ判定の閾値（分） |
-| `CALM_IN_PROGRESS_LIMIT` | `3` | アクティブコンテキストのin_progress表示件数 |
-| `CALM_PENDING_LIMIT` | `2` | アクティブコンテキストのpending表示件数 |
 | `CALM_TIER2_MAX_AGE_DAYS` | `7` | SessionStart一覧の階層2にin_progressアクティビティを載せるupdated_at上限（日） |
 | `CALM_PIN_SURFACE_DECAY_DAYS` | `60` | pinnedアクティビティが階層2表示を維持できるupdated_at上限（日） |
 | `CALM_TIER2_MAX_ITEMS` | `5` | SessionStart一覧の『優先』に出す件数の上限。hookが読むため`~/.claude/settings.json`の`env`で設定する。増やすときは`CALM_INJECTION_BUDGET_ACTIVITIES`も上げる（各セクションの予算の合計が`CALM_TOTAL_INJECTION_BUDGET_CHARS`を超えるとcomposeがValueErrorを出す。既定の合計は10500字で、総予算12000字との差は1500字） |
 | `CALM_RECENCY_DECAY_RATE` | `0.0119` | 検索の時間減衰率 |
+| `CALM_PRECEDENT_BUDGET_CHARS` | `24000` | `pull_precedents`が本文展開（decision＋reason）に使う文字数予算 |
 | `CALM_SYNC_DISABLE_RETROSPECTIVE` | `false` | `/sync-memory`のふりかえりセクションを非表示にする |
 | `CALM_SNAPSHOT_INTERVAL` | `12` | スナップショット取得間隔（時間） |
 | `CALM_SNAPSHOT_MAX_COUNT` | `5` | スナップショット最大保持数 |

@@ -29,15 +29,13 @@ SessionStart(3スクリプト)・Stop・UserPromptSubmit・MessageDisplayに加�
 
 ## 設定
 
-`.mcp.json`の`env`フィールドで以下の環境変数を設定すると、デフォルト値をオーバーライドできます。未設定の項目はデフォルト値で動作するため、ゼロコンフィグで使用可能です。ここに載せているのは利用者が調整する機会が多いものの抜粋です。挙動の内部調整用に他にも環境変数がありますが、必要になったら`/man`でAIに聞いてください。
+`~/.claude/settings.json`の`env`フィールドで以下の環境変数を設定すると、デフォルト値をオーバーライドできます（`/calm:setup`から設定変更を選ぶと、一覧の表示と書き込みをAIが手伝います）。設定を変えたら`/calm:restart`でMCPサーバーを再起動してください。未設定の項目はデフォルト値で動作するため、ゼロコンフィグで使用可能です。ここに載せているのは利用者が調整する機会が多いものの抜粋です。挙動の内部調整用に他にも環境変数がありますが、必要になったら`/man`でAIに聞いてください。
 
 | 環境変数名 | デフォルト | 説明 |
 |-----------|-----------|------|
 | `CALM_DB_PATH` | `~/.claude/.claude-code-memory/discussion.db` | データベースファイルのパス |
 | `CALM_HEARTBEAT_TIMEOUT` | `20` | ホットアクティビティ判定の閾値（分） |
 | `CALM_GOAL_RECHECK_HOURS` | `6` | goalの担い手human/external条件で要確認フラグを立てるまでの経過時間（時間） |
-| `CALM_IN_PROGRESS_LIMIT` | `3` | アクティブコンテキストのin_progress表示件数 |
-| `CALM_PENDING_LIMIT` | `2` | アクティブコンテキストのpending表示件数 |
 | `CALM_TIER2_MAX_AGE_DAYS` | `7` | SessionStart一覧の階層2にin_progressアクティビティを載せるupdated_at上限（日） |
 | `CALM_TIER2_MAX_ITEMS` | `5` | SessionStart一覧の『優先』に出す件数の上限。hookが読むため`~/.claude/settings.json`の`env`で設定する。増やすときは`CALM_INJECTION_BUDGET_ACTIVITIES`も上げる（各セクションの予算の合計が`CALM_TOTAL_INJECTION_BUDGET_CHARS`を超えるとcomposeがValueErrorを出す。既定の合計は10500字で、総予算12000字との差は1500字） |
 | `CALM_PIN_SURFACE_DECAY_DAYS` | `60` | pinnedアクティビティが階層2表示を維持できるupdated_at上限（日） |
