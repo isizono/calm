@@ -378,6 +378,60 @@ class TestMainCli:
         assert state.get_current_turn() == 0
         assert state.get_tracked_ask_ids() == [1, 2]
 
+    def test_compact_source_preserves_notified_ask_ids(self, tmp_path, monkeypatch):
+        """compactをまたいでも知らせ済みask_idが残る（compact後のStopでcheck_in時刻が
+        元の値に戻っても、同じaskを二度知らせないため）。startup等では消える"""
+        monkeypatch.setattr(HookState, "BASE_DIR", tmp_path)
+        project_root = Path(__file__).resolve().parents[2]
+
+        def clear(session: str, source: str) -> None:
+            result = subprocess.run(
+                [sys.executable, "hooks/hook_state.py", "clear"],
+                input=json.dumps({"session_id": session, "source": source}),
+                capture_output=True,
+                text=True,
+                cwd=str(project_root),
+                env={**os.environ, "HOOK_STATE_DIR": str(tmp_path)},
+            )
+            assert result.returncode == 0
+
+        compact = HookState("cli-compact-notified")
+        compact.add_notified_ask_ids([5, 7])
+        compact.set_checked_in_at("2026-10-04 05:12:33")
+        clear("cli-compact-notified", "compact")
+        assert compact.get_notified_ask_ids() == {5, 7}
+        assert compact.get_checked_in_at() is None
+
+        startup = HookState("cli-startup-notified")
+        startup.add_notified_ask_ids([5])
+        clear("cli-startup-notified", "startup")
+        assert startup.get_notified_ask_ids() == set()
+
+    def test_compact_source_preserves_sanitize_state(self, tmp_path, monkeypatch):
+        """source=compactのclear呼び出しでは、sanitize_backfill_hookの再開位置
+        （sanitize_offset）と連続失敗回数（sanitize_failure_count）もクリア
+        されない（これらが消えると冪等な再開とループ防止ガードがcompactごとに
+        リセットされてしまうため）"""
+        monkeypatch.setattr(HookState, "BASE_DIR", tmp_path)
+        state = HookState("cli-compact-sanitize-sess")
+        state.set_sanitize_offset(123)
+        state.set_sanitize_failure_count(2)
+
+        project_root = Path(__file__).resolve().parents[2]
+        input_json = json.dumps({"session_id": "cli-compact-sanitize-sess", "source": "compact"})
+        result = subprocess.run(
+            [sys.executable, "hooks/hook_state.py", "clear"],
+            input=input_json,
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            env={**os.environ, "HOOK_STATE_DIR": str(tmp_path)},
+        )
+        assert result.returncode == 0
+
+        assert state.get_sanitize_offset() == 123
+        assert state.get_sanitize_failure_count() == 2
+
     def test_non_compact_source_clears_tracked_ask_ids(self, tmp_path, monkeypatch):
         """source=startup等の通常clearでは従来通りtracked_ask_idsもクリアされる
         （質問者セッションが実質終わった扱いとなり、以降の回収はpullに委ねる設計）"""

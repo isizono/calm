@@ -40,6 +40,7 @@ from src.services.checkin_tier_service import (
     collect_and_assemble as _check_in,
     TIER_FORM_BUDGET_POLICY,
 )
+from src.services.activity_service import ACTIVITIES_BUDGET_POLICY
 from src.services import response_budget, session_ledger_service, session_registry_service
 from src.infra.session_identity import get_caller_session_id
 from src.services.tag_service import (
@@ -291,6 +292,7 @@ def add_topic(
     """新しい議論トピックを追加する。
 
     title: トピックのタイトル（35字以内）
+    description: トピックの説明（必須）
     tags: タグ配列(必須、1個以上)。domain:タグに加えて内容を表すタグも付けること。namespace: domain:(プロジェクト)/intent:(意図)/素タグ(キーワード)。例: ["domain:calm", "intent:implement", "error-handling", "validation", "stdin"]
     related: 関連エンティティ（optional）。[{"type": "topic"|"activity"|"material"|"decision"|"log", "ids": [int, ...]}, ...] 形式。複数エンティティを配列で同時紐付け可能。例: [{"type": "topic", "ids": [1, 2]}, {"type": "decision", "ids": [10]}]。作成と同時にリレーションを張る
 
@@ -433,8 +435,9 @@ def get_logs(
     Returns:
         議論ログ一覧（各logにtags付き）
         entity_type == "activity" の場合はrelated topics（上限10件）経由でlogs集約。
-            related topics が10件を超える場合、11件目以降の topic に属する log は
-            total_count / truncated の対象外（この上限による切り捨ては可視化されない）
+            related topics が10件を超える場合、古い側の topic に属する log は
+            total_count / truncated の対象外（この上限による切り捨ては可視化されない）。
+            activityに直接つないだlogは含まれない
         total_count: 対象 topic 全体の log 総件数（retractフィルタ適用後、limit/start_idの影響を受けない）
         truncated: この応答が limit/start_id により後続の log を打ち切ったとき true
             （＝続きのページが存在する）
@@ -478,8 +481,9 @@ def get_decisions(
     Returns:
         決定事項一覧（各decisionにtags付き）
         entity_type == "activity" の場合はrelated topics（上限10件）経由でdecisions集約。
-            related topics が10件を超える場合、11件目以降の topic に属する decision は
-            total_count / truncated の対象外（この上限による切り捨ては可視化されない）
+            related topics が10件を超える場合、古い側の topic に属する decision は
+            total_count / truncated の対象外（この上限による切り捨ては可視化されない）。
+            activityに直接つないだdecisionは含まれない
         total_count: 対象 topic 全体の decision 総件数（retractフィルタ適用後、limit/start_idの影響を受けない）
         truncated: この応答が limit/start_id により後続の decision を打ち切ったとき true
             （＝続きのページが存在する）。start_id 未指定時は total_count > limit と一致し、
@@ -525,7 +529,7 @@ def pull_precedents(
 
     設計文脈から近傍 topic を特定し、routing が当たった topic の非 retract decision を
     ランク競争なしに全件、最低でも索引粒度で応答に含める。予算超過時も切り捨てず
-    truncated/budget で縮退を明示する。read-only（副作用なし）。
+    truncated/budget で縮退を明示する。read-only（statusは更新しない。telemetryへの非同期書き込みはある）。
 
     Args:
         context: これから決めようとしている論点の記述（自由記述、2文字以上）。
@@ -720,7 +724,7 @@ def detect_reask_candidates(
     注入されたものをそのまま渡す。
 
     「この既存記録があれば聞き返しは不要だったか」の主観判定とreport_signalの呼び出しは
-    このtoolの範囲外（呼び出し側であるskills/sync-memory/SKILL.mdのステップ9が担う）。
+    このtoolの範囲外（呼び出し側であるskills/sync-memory/SKILL.mdのステップ5が担う）。
 
     Args:
         transcript_path: transcript JSONLのパス
@@ -1108,6 +1112,12 @@ def get_activities(
         アクティビティ一覧（total_countで該当ステータスの全件数を確認可能）
         archived_tags: 応答に含まれるアクティビティのタグのうちarchivedなものの集約
             （{tag, archived_reason}の配列。該当なしでも空配列で常に付く）
+        activities・total_countの字数（archived_tags・tag_notesは含まない）が
+        ACTIVITIES_BUDGET_CHARS（既定10,000字）を超えるとactivitiesを後方
+        （limitで絞った中の古い側）から切り、truncatedキー（budget/before/after/cuts）
+        が付く。cuts[].nextに絞り込みのヒントが入る（limitとは独立の別枠）。
+        archived_tags・tag_notesはこの予算に数えない（切り詰め後に残ったactivities
+        だけから集めるため）
     """
     flavor = _normalize_flavor(flavor)
     result = activity_service.get_activities(
@@ -1115,6 +1125,10 @@ def get_activities(
     )
     if "error" not in result:
         _apply_flavor_to_items(result.get("activities", []), "activity", flavor)
+        # flavor展開後の字数で予算を測り、activitiesを先に確定させる。
+        # archived_tags/tag_notesはその後に残ったactivitiesだけから集める
+        # （トリムで消えたアクティビティのタグを残さないため）
+        result = response_budget.apply_budget(result, ACTIVITIES_BUDGET_POLICY)
         all_tags = _collect_result_tags(result.get("activities", []))
         if all_tags:
             _maybe_inject_tag_notes(result, all_tags, mark=False)
@@ -1131,6 +1145,8 @@ def update_activity(
     tags: Optional[list[str]] = None,
     closed_by: Optional[str] = None,
     closed_reason: Optional[str] = None,
+    move_asks_to: Optional[int] = None,
+    move_ask_ids: Optional[list[int]] = None,
 ) -> dict:
     """
     アクティビティのステータス・タイトル・説明・タグを更新する。
@@ -1161,6 +1177,9 @@ def update_activity(
         closed_by: activityを閉じた意思の主体（"user"|"claude"|"external"）。
             status="completed"と同時のときだけ受け付ける
         closed_reason: 閉じた理由（自由文）。status="completed"と同時のときだけ受け付ける
+        move_asks_to: このactivityを止めている未決着ask（open・回答済み未triage）を
+            付け替える先のactivity（完了済み不可）
+        move_ask_ids: move_asks_toと併用し、そのaskだけ付け替える（省略時は全件）
 
     Returns:
         更新されたアクティビティ情報。既にcompletedのactivityへstatus="completed"を
@@ -1169,11 +1188,14 @@ def update_activity(
         （closed_by/closed_reasonを渡さなければ、このキーは付かない）。
         status="completed"の呼び出しでは、紐づくgoalが未判定ならgoal_hint
         （{goal_id_raw, handle, label, next, open_activities_left,
-        open_questions?, warning?}）も返す（拒否はしない）
+        open_questions?, warning?}）も返す（拒否はしない）。
+        status="completed"では、止めている未決着ask（付け替え後の残り）を
+        pending_asks、付け替えたaskをmoved_asksに返す（完了は止めない）
     """
     return activity_service.update_activity(
         activity_id, status, title, description, tags,
         closed_by=closed_by, closed_reason=closed_reason,
+        move_asks_to=move_asks_to, move_ask_ids=move_ask_ids,
     )
 
 
@@ -1343,7 +1365,10 @@ def get_overview(days: int = 7, limit: int = 20) -> dict:
       triage_pending_items にタイトル(question)付きで列挙する（meta も同様に limit
       無視で必ず含まれる）
     - backlog: それ以外の残り。件数と status 別・domain 別の内訳のみ。
-      stale_in_progress_count は「in_progress と宣言されているが days 日動いていない」件数
+      stale_in_progress_count は「in_progress と宣言されているが days 日動いていない」件数。
+      by_status は期限切れ snoozed（SNOOZE_DURATION_DAYS 超過）を pending として数える
+      （表示時の評価のみで、DB の status は書き換えない。get_activities のような
+      自動復活はここでは起こさない）
 
     working/recently_done/backlog の各節は count と total_count が異なる場合、
     limit で切り詰められている。awaiting_human は meta ask が limit を無視して
@@ -1446,7 +1471,9 @@ def get_material(
     資材の全文を取得する。
 
     check_inのmaterialsセクションはsnippet（先頭200字）止まりで全文は含まれない。
-    全文が同梱されるのはpinされた資材とget_by_idsの応答のみ。check_in経由でsnippetしか
+    全文が同梱されるのはpinされた資材とget_by_idsの応答のみ。ただしpinされた資材も
+    check_in応答全体が予算を超えると途中で切られる・スタブ化されることがある（応答の
+    nextフィールドにget_materialへのポインタが残る）。check_in経由でsnippetしか
     見ていない資材の全文が必要なときや、material_idだけが手元にある単発ケースで使う。
 
     Args:
@@ -1989,7 +2016,8 @@ def export_bundle(
         bundle_name: バンドルディレクトリ名(省略時は`<instance_id>-<日時>-<起点slug>`)
         include_supersede_targets: Trueのとき選択decisionのsupersede先実体も同梱する(デフォルトFalse)
         selection: collect_export_candidatesへの入力をverbatimで記録する任意dict
-            (manifest.yamlのselectionフィールドにそのまま書き込まれる。再exportの追跡用)
+            (manifest.yamlのselectionフィールドにそのまま書き込まれるだけで、読み取り側の
+            実装は無い)
 
     Returns:
         成功時: {"path": str, "bundle_id": str, "counts": {type: n}, "auto_included": [...],
@@ -2221,6 +2249,10 @@ def get_timeline(
 
     トピックまたはアクティビティに紐づくdecision・log・materialを時系列で返す。
 
+    activity_idを指定すると、そのactivityが属するtopicに紐づく記録を集める。
+    activityに直接relatedでつないだ記録は含まれず、topicを持たないactivityでは空になる。
+    activityに直接つないだ資材は、get_map(entity_type="activity")かcheck_inのcontext.materialsで見える。
+
     Args:
         topic_id: トピックID（activity_idと排他）
         activity_id: アクティビティID（topic_idと排他）
@@ -2304,7 +2336,7 @@ def report_signal(
 ) -> dict:
     """calm 自身への故障報告・使用感不満・矛盾検出・運用計測イベントの統一入口。
 
-    kind（8種類、いずれか必須）:
+    kind（予約8種、いずれか必須。または custom:<名前> で独自区分を追加できる）:
       - "machine_error": ツールエラー・hook 失敗・サーバー異常を観察した
       - "friction": calm の使い勝手への不満・違和感（ユーザー発話由来を含む）
       - "contradiction": 既存記録(decision/material/log)と矛盾する結論を出した/検出した。
@@ -2318,11 +2350,15 @@ def report_signal(
         案件識別子を含める（dedup の集約単位を案件ごとに分けるため）
       - "goal_rollback": update_goal の reopen_reason（goal 判定の差し戻し）が
         書く専用の kind。手で report_signal を呼んで報告するものではない
+      - "custom:<名前>": 予約8種のどれにも当てはまらない観測を記録する
+        （例: "custom:external_rule_conflict" で外部の指示と calm が配るルールの
+        衝突を記録する）。既存 kind への流用は、その kind を数える集計を汚すため
+        避けること。名前は [a-z0-9][a-z0-9_-]{0,39}（英小文字・数字・_・-、1〜40字）
 
     同一内容の再報告は自動で集約される(occurrence_count)。
 
     Args:
-        kind: 上記8種のいずれか
+        kind: 上記8種のいずれか、または custom:<名前>
         summary: 1行要約（空文字不可）
         detail: traceback・引数ダイジェスト・自由記述（optional）
         refs: [{"type": "decision", "id": 123}, ...] 形式の参照リスト（optional）
@@ -2358,7 +2394,9 @@ def get_signals(
     Args:
         status: フィルタ対象のstatus（"new"|"triaged"|"promoted"|"dismissed"）。
             null指定で全status横断（文字列"null"も大小文字不問で同じ）。デフォルトは未トリアージの"new"のみ
-        kind: フィルタ対象のkind。null指定（文字列"null"も大小文字不問で同じ）で全kind横断
+        kind: フィルタ対象のkind（予約8種またはcustom:<名前>）。null指定（文字列"null"も大小文字不問で同じ）で全kind横断。
+            custom の個別名はSessionStartの内訳表示ではcustom N 1件に畳まれるため、
+            include_stats=Trueの集計で見る
         limit: 取得件数上限（最大100件、デフォルト20）
         offset: 取得開始位置（ページネーション用）
         include_stats: Trueのとき kind×status のクロス集計と直近30日サマリを付与
@@ -2582,8 +2620,9 @@ def triage_ask(
 
     promoteはdecision/reason/title/tags/topic_idをそのままadd_decisionsに渡して
     decisionを生成し、promoted_decision_idとして紐付ける。dismissはdismiss_reasonを
-    記録するのみで実体は作らない。いずれもこのaskが止めていたactivityの
-    blockは解除する（ask_blocksを削除）。
+    記録するのみで実体は作らない。このaskが止めていたactivityとの紐づけ
+    （ask_blocks）は残す。待ち状態の判定はaskのstatusで行われるため、決着後は
+    待ちとして表示されず、check_inの「最近決着したask」枠から辿れる。
 
     一般化ルール（同型の問いを今後AIが自己裁定してよいというルール）の発効は、
     必ずこのtriage_askによるメタask（kind="meta"のask）への人間のpromote裁定を
@@ -2854,14 +2893,29 @@ def get_sessions() -> dict:
     変換してから見せること。生の自動生成名のままではどのセッションが何をしているか
     判別できない。対応表に無い名前はそのまま表示し「未 check-in」と添える。
 
+    name は CLI 側で変わりうる宛先、cli_session_id と cli_pid は見分けのための値。
+    /resume の後は同じ cli_session_id のプロセスが複数ありうるので、見分けには
+    cli_pid を使う。
+
+    name が同じ行が複数あり ListAgents の宛先を1つに絞れないとき:
+    1. 目的のアクティビティの行を選び、その行の cli_pid を取る
+    2. `claude agents --json` でその pid の行を探し、kind と startedAt を見る
+    3. ListAgents で同じ名前の行のうち種類と「started 〜 ago」が合う行の ref を使い、
+       「名前 [ref]」で SendMessage する
+    4. それでも絞れなければ、候補全部へ目的のアクティビティ名を名指しし
+       「該当しなければ無視」と添えて送る
+
     Returns:
         {"sessions": [{"name": str, "alias": str,
                        "alias_source": "derived" | "manual",
                        "activity_id": int | None, "activity_title": str | None,
                        "activity_status": str | None, "cwd": str | None,
+                       "cli_session_id": str | None, "cli_pid": int | None,
                        "is_self": bool, "updated_at": str}, ...],
          "count": int}
-        updated_at 降順。呼び出し元自身の行は is_self: true（peer として再掲しないこと）
+        cli_session_id と cli_pid は `claude agents --json` の sessionId と pid と
+        同じ値。updated_at 降順。呼び出し元自身の行は is_self: true（peer として
+        再掲しないこと）
     """
     caller_session_id = get_caller_session_id()
     sessions = session_registry_service.list_sessions(self_bridge_session_id=caller_session_id)

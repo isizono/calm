@@ -495,7 +495,7 @@ CALM自身の故障報告・使用感不満・矛盾検出・運用計測イベ�
 
 ### 3.23 ask_blocks / ask_requesters / ask_tags
 
-- `ask_blocks`: ask ↔ activity の junction（`PRIMARY KEY (ask_id, activity_id)`、両方 `ON DELETE CASCADE`）。このaskが答え待ちで止めているactivityを表す。answer/triage/withdrawのいずれの遷移でも該当askの行は削除される（blockの解除）
+- `ask_blocks`: ask ↔ activity の junction（`PRIMARY KEY (ask_id, activity_id)`、両方 `ON DELETE CASCADE`）。このaskが答え待ちで止めているactivityを表す。withdrawでのみ該当askの行は削除される（blockの解除）。answer/triage（promote・dismiss）では残り、決着後も「どの作業を止めていたaskか」を辿れる。「待ち」の判定はaskのstatus（open）で行う
 - `ask_requesters`: ask ↔ 要求元 `session_id` の junction（`PRIMARY KEY (ask_id, requester_session_id)`）。同じaskへの複数セッションからの要求をUNIONで蓄積する。withdraw時も削除しない（参照ログとして残す）
 - `ask_tags`（0068 追加）: ask ↔ tag の junction。`decision_tags`/`material_tags`（§3.8）と全く同型（`PRIMARY KEY (ask_id, tag_id)`、両方 `ON DELETE CASCADE`）。`add_ask` はタグを必須（`domain:` タグを最低1つ含む）とし、`tag_service.resolve_tags` の完全一致・KNN統合を経て解決したタグIDをここに紐付ける。dedup時（同一fingerprintのopen ask再post）は今回渡されたタグを無視し、初回投入時の紐付けを保持する。既存31件（0068適用前のask）への遡及的タグ付与は行っていない
 
@@ -518,7 +518,7 @@ asks 専用の sqlite-vec 仮想テーブル（384次元、`distance_metric=cosi
 補足:
 - FK・UNIQUE制約は張らない（既存telemetryテーブル群と同じ、生データ台帳としての性質を優先）。同一セッションで同じ`(attached_type, attached_id)`が複数回提示されるのは正常挙動で、集計側で`GROUP BY MIN(timestamp)`して縮約する
 - 書込は既存telemetryと同じdaemon thread + 失敗握りつぶし規約に従う
-- 本 migration が導入する範囲は、テーブル定義・writable columns allowlist・present書込ヘルパ（`_record_injection_telemetry_async`）・`get_material`のfetch側計装のみ。`add_logs`/`add_decisions`/`add_material`側から実際にpresent行を書く呼出し実装は、添付内容の組み立て方を規定する記録=クエリ添付の詳細設計が別途確定してから追加する
+- present側の書込呼出しは`add_logs`（`discussion_log_service.py`）/`add_decisions`（`decision_service.py`）/`add_material`（`material_service.py`）の3箇所から`search_service.build_related_records_manifest`経由で実装済み。同関数内で採用した添付候補ごとに`_record_injection_telemetry_async`を呼び、present行を非同期書込する
 
 関連 migration: 0067_add_injection_telemetry
 
@@ -828,6 +828,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0079_add_feedback_entries | feedback_entries / feedback_notes / feedback_holds / feedback_turn_marks / feedback_bootstrap_seen / feedback_switch テーブル新設（フィードバック機構、§3.32-3.37） |
 | 0080_drop_activities_orch_managed | activities.orch_managed カラムを削除（0045で追加した構造的属性の撤去。運用体系解体後も複数箇所で参照が残り誤読を誘発していたため） |
 | 0081_vec_cosine_rebuild | vec_index / tag_vec を一時テーブル退避方式（ALTER TABLE RENAME TOは不使用）で distance_metric=cosine へ再構築（両テーブルとも vec0 既定の L2 のまま運用されていたための是正、§3.15, §3.16） |
+| 0087_drop_leftover_fts5_check_tables | 起動時FTS5可否チェック（_check_fts5_available）が後始末漏れで残した_fts5_checkと影のテーブル5つを削除（チェック自体はin-memory接続に切替済み、代替スキーマへの移行なし） |
 
 重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。
 

@@ -61,7 +61,13 @@ def _load_model():
 
         # Apple SiliconではMPSが自動選択され、過去にMetal GPUの数十GB級メモリ暴走を
         # 起こしたため、小型モデルはCPU固定とする。
-        _model = SentenceTransformer(MODEL_NAME, device="cpu")
+        # キャッシュ済みでもHubへの更新確認で起動ごとに約3秒かかるため、
+        # まずローカルキャッシュだけで読み、無いとき（初回）だけHubから取得する。
+        try:
+            _model = SentenceTransformer(MODEL_NAME, device="cpu", local_files_only=True)
+        except OSError:
+            logger.info(f"Model not in local cache, downloading: {MODEL_NAME}")
+            _model = SentenceTransformer(MODEL_NAME, device="cpu")
         logger.info(f"Model loaded successfully: {MODEL_NAME}")
     except Exception as e:
         logger.error(f"Model loading failed: {e}")

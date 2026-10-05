@@ -130,14 +130,20 @@ def _run_stop_hook(
 
 @pytest.fixture
 def env_setup(tmp_path):
+    from src.env_compat import env_names
+
     state_dir = str(tmp_path / "state")
     os.makedirs(state_dir, exist_ok=True)
+    isolated_db_path = str(tmp_path / "isolated.db")
 
     env_override = {
         "HOOK_STATE_DIR": state_dir,
         # 本番DBへ接続しないよう隔離DBを指す。未初期化の空パスのため
         # DB参照を伴う処理は接続/クエリに失敗し、フェイルオープンになる。
-        "DISCUSSION_DB_PATH": str(tmp_path / "isolated.db"),
+        # CALM_DB_PATH（旧名含む）が実行環境に設定されていると
+        # DISCUSSION_DB_PATHより優先されるため、同じ隔離パスで上書きする。
+        "DISCUSSION_DB_PATH": isolated_db_path,
+        **{name: isolated_db_path for name in env_names("CALM_DB_PATH")},
     }
 
     yield {
@@ -390,6 +396,56 @@ class TestActivityCheckinBlock:
             str(transcript), "test-session", env_setup["env_override"],
         )
         assert result == {}
+
+
+class TestCheckedInAt:
+    """check_inした時刻（transcript行のtimestamp）をDBのCURRENT_TIMESTAMPと同じUTC書式で保存する。"""
+
+    def _checkin_entry(self, ts: str | None) -> dict:
+        entry = _make_assistant_entry(
+            tool_calls=["mcp__plugin_calm_calm__check_in"], tool_inputs=[{"activity_id": 42}]
+        )
+        if ts is not None:
+            entry["timestamp"] = ts
+        return entry
+
+    def test_check_in_timestamp_is_saved_as_utc_sqlite_format(self, env_setup):
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [_make_user_entry("hi"), self._checkin_entry("2026-10-04T05:12:33.456Z")], transcript
+        )
+
+        _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+
+        state_file = Path(env_setup["state_dir"]) / "checked_in_at_test-session"
+        assert state_file.read_text().strip() == "2026-10-04 05:12:33"
+
+    def test_later_stop_without_new_check_in_keeps_the_saved_time(self, env_setup):
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [_make_user_entry("hi"), self._checkin_entry("2026-10-04T05:12:33Z")], transcript
+        )
+        _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+
+        with open(transcript, "a") as f:
+            f.write(json.dumps(_make_user_entry("next")) + "\n")
+            f.write(json.dumps(_make_assistant_entry(text="reply")) + "\n")
+        _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+
+        state_file = Path(env_setup["state_dir"]) / "checked_in_at_test-session"
+        assert state_file.read_text().strip() == "2026-10-04 05:12:33"
+
+    def test_missing_timestamp_falls_back_to_now_once(self, env_setup):
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript([_make_user_entry("hi"), self._checkin_entry(None)], transcript)
+
+        _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+
+        state_file = Path(env_setup["state_dir"]) / "checked_in_at_test-session"
+        saved = state_file.read_text().strip()
+        assert len(saved) == len("2026-10-04 05:12:33")
+        _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+        assert state_file.read_text().strip() == saved
 
 
 class TestRecordingObligationBlock:

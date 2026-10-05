@@ -133,6 +133,38 @@ class HookState:
         """checked_in_activity_{session_id} に書く"""
         self._write(self._path("checked_in_activity"), str(activity_id))
 
+    # --- checked_in_at（check_inした時刻。UTCの"YYYY-MM-DD HH:MM:SS"） ---
+    #
+    # DBのCURRENT_TIMESTAMP（asks.answered_at等）と文字列比較できる形式で持つ。
+    # 「check_inの後に回答されたask」の判定基準に使う。
+
+    def get_checked_in_at(self) -> str | None:
+        return self._read_str(self._path("checked_in_at"))
+
+    def set_checked_in_at(self, ts: str) -> None:
+        self._write(self._path("checked_in_at"), ts)
+
+    # --- notified_ask_ids（check_in先と隣の作業のaskとして既に知らせたask_id一覧） ---
+
+    def get_notified_ask_ids(self) -> set[int]:
+        try:
+            content = self._path("notified_ask_ids").read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return set()
+        ids: set[int] = set()
+        for line in content.splitlines():
+            try:
+                ids.add(int(line.strip()))
+            except ValueError:
+                continue
+        return ids
+
+    def add_notified_ask_ids(self, ask_ids: list[int]) -> None:
+        if not ask_ids:
+            return
+        merged = sorted(self.get_notified_ask_ids() | set(ask_ids))
+        self._write(self._path("notified_ask_ids"), "\n".join(str(a) for a in merged))
+
     # --- tracked_ask_ids（このセッションがadd_askし通知待ちで追跡中のask_id一覧） ---
     #
     # add_ask/unsubscribe_askの呼び出し検出（hooks/hook_transcript.py
@@ -277,7 +309,13 @@ if __name__ == "__main__":
     # のため保持する（resume/clear/startupではクリアされる。質問者セッションが
     # 実質終わった扱いとみなし、以降の回収はpull（check_in/get_asks）に委ねる
     # 設計）。
-    _COMPACT_PRESERVE = {"tracked_ask_ids"}
+    # notified_ask_ids（check_in先と隣の作業のaskとして既に知らせたask_id一覧）も
+    # 保持する。compactで消すと、直後のStopがtranscriptを先頭から読み直して
+    # check_in先とcheck_in時刻を元の値で復元し、知らせ済みのaskをもう一度知らせてしまう。
+    # sanitize_offset / sanitize_failure_count も同様にセッション単位の進行状態
+    # であり、compactで消すとsanitize_backfill_hookの冪等な再開とループ防止
+    # ガードがcompactごとにリセットされてしまうため保持する。
+    _COMPACT_PRESERVE = {"tracked_ask_ids", "notified_ask_ids", "sanitize_offset", "sanitize_failure_count"}
 
     if len(sys.argv) >= 2 and sys.argv[1] == "clear":
         data = json.loads(read_stdin_text())

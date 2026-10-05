@@ -16,7 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from src import launcher
-from src.infra import git_repo
+from src.infra import git_repo, session_identity
 
 
 class _HealthOkHandler(BaseHTTPRequestHandler):
@@ -66,6 +66,18 @@ class TestOpenBridgeRequest:
         req = urllib.request.Request("http://example.com/x")
         launcher._open_bridge_request(req, timeout=3)
         assert calls == [("urlopen", 3)]
+
+
+@pytest.fixture(autouse=True)
+def _no_process_exit_hooks(monkeypatch):
+    """main()が登録するatexit・SIGTERMハンドラをpytestプロセスに残さない。
+
+    atexitに登録されたlauncher._cleanupは、テスト後にmonkeypatchが戻った本物の
+    _unregister_sessionをpytest終了時に呼び、起動中のcalmサーバーへ
+    POST /session/unregisterを送ってしまう。
+    """
+    monkeypatch.setattr(launcher.atexit, "register", lambda *a, **kw: None)
+    monkeypatch.setattr(launcher.signal, "signal", lambda *a, **kw: None)
 
 
 class TestIsServerRunning:
@@ -456,6 +468,87 @@ class TestEnsureServerRunningStaleLock:
         assert start_calls["count"] == 1
 
 
+class TestCurrentHarnessName:
+    """launcherがセッション台帳へ申告するharness名の判定。
+
+    Codexは`~/.codex/config.toml`の`[mcp_servers.calm]`からlauncherを起動し、
+    MCPサーバーへは親の環境変数を引き継がない。CALM_HARNESSが無い場合でも、
+    祖先プロセスで最も近いエージェントCLIから種別を判定する。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(launcher, "_harness_name_cache", None)
+        for name in ("CALM_HARNESS", "CCM_HARNESS", "CC_MEMORY_HARNESS"):
+            monkeypatch.delenv(name, raising=False)
+        # 実環境の ~/.claude/sessions を読まない
+        claude_dir = tmp_path / "claude-sessions"
+        claude_dir.mkdir()
+        monkeypatch.setenv("CALM_CLAUDE_SESSIONS_DIR", str(claude_dir))
+
+    @staticmethod
+    def _fake_ps(monkeypatch, table: dict[int, tuple[int, str]]) -> list[list[str]]:
+        """{pid: (ppid, comm)} で親pid（_get_ppid）と `ps -o comm=`（subprocess境界）を差し替え、`ps` の呼び出しを記録する。"""
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            session_identity,
+            "_get_ppid",
+            lambda pid: table[pid][0] if pid in table else None,
+        )
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            pid = int(args[-1])
+            if args[:2] == ["ps", "-o"] and pid in table:
+                _, comm = table[pid]
+                return subprocess.CompletedProcess(args, 0, stdout=f"{comm}\n", stderr="")
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        return calls
+
+    def _codex_nested_under_claude(self) -> dict[int, tuple[int, str]]:
+        # launcher <- uv <- codex <- zsh <- claude（Claude CodeのBashからcodex exec）
+        me = os.getpid()
+        return {
+            me: (9001, "python"),
+            9001: (9002, "uv"),
+            9002: (9003, "/opt/homebrew/Caskroom/codex/0.149.0/bin/codex"),
+            9003: (9004, "/bin/zsh"),
+            9004: (1, "claude"),
+        }
+
+    def test_codex_nested_under_claude_code_without_env_is_codex(self, monkeypatch):
+        """Claude CodeのBashから起動したcodex exec配下のlauncherはcodexと申告する"""
+        self._fake_ps(monkeypatch, self._codex_nested_under_claude())
+        assert launcher._current_harness_name() == "codex"
+
+    def test_claude_code_parent_is_claude_code(self, monkeypatch):
+        me = os.getpid()
+        self._fake_ps(
+            monkeypatch, {me: (9001, "python"), 9001: (9002, "uv"), 9002: (1, "claude")}
+        )
+        assert launcher._current_harness_name() == "claude_code"
+
+    def test_env_codex_wins_without_process_inspection(self, monkeypatch):
+        monkeypatch.setenv("CALM_HARNESS", "codex")
+        calls = self._fake_ps(monkeypatch, {})
+        assert launcher._current_harness_name() == "codex"
+        assert calls == []
+
+    def test_falls_back_to_claude_code_when_undetected(self, monkeypatch):
+        self._fake_ps(monkeypatch, {})
+        assert launcher._current_harness_name() == "claude_code"
+
+    def test_process_inspection_runs_only_once(self, monkeypatch):
+        """heartbeatごとの再登録でpsを呼び直さない"""
+        calls = self._fake_ps(monkeypatch, self._codex_nested_under_claude())
+        assert launcher._current_harness_name() == "codex"
+        first = len(calls)
+        assert launcher._current_harness_name() == "codex"
+        assert len(calls) == first
+
+
 class TestSessionRegistration:
     def test_register_success(self, monkeypatch):
         """セッション登録が成功する"""
@@ -743,14 +836,12 @@ class TestBridgeIdentityHeader:
             == launcher._session_id
         )
 
-    def test_bridge_also_attaches_legacy_header_with_same_value(self, monkeypatch):
-        """移行期間中は改名前のサーバー向けに旧ヘッダにも同じ値を載せる。"""
+    def test_bridge_does_not_send_legacy_header(self, monkeypatch):
+        """改名前の旧ヘッダ X-CC-Memory-Bridge-Session-Id は送らない。
+        サーバー側は移行期間として旧ヘッダの受理を続ける（#750）。"""
         captured = self._run_bridge_and_capture_http_client(monkeypatch)
         http_client = captured["http_client"]
-        assert (
-            http_client.headers.get(launcher.LEGACY_BRIDGE_SESSION_HEADER)
-            == launcher._session_id
-        )
+        assert "x-cc-memory-bridge-session-id" not in http_client.headers
 
     def test_header_names_match_server_side(self):
         """launcher が送るヘッダ名とサーバー側が読むヘッダ名が一致する
@@ -758,10 +849,6 @@ class TestBridgeIdentityHeader:
         from src.infra import session_identity
 
         assert launcher.BRIDGE_SESSION_HEADER.lower() == session_identity.BRIDGE_SESSION_HEADER
-        assert (
-            launcher.LEGACY_BRIDGE_SESSION_HEADER.lower()
-            == session_identity.LEGACY_BRIDGE_SESSION_HEADER
-        )
 
     def test_bridge_uses_same_header_value_across_reconnects(self, monkeypatch):
         """複数回の再接続（リトライループの複数周回）でも毎回同じ値が使われる。"""
@@ -2346,9 +2433,11 @@ class TestLauncherSessionRegistrationWiring:
         """register_launcher_session が自身の _session_id で呼ばれる"""
         received = {}
 
-        def fake_register(session_id, pid=None):
+        def fake_register(session_id, pid=None, harness=None):
             received["session_id"] = session_id
+            received["harness"] = harness
 
+        monkeypatch.setattr(launcher, "_current_harness_name", lambda: "codex")
         monkeypatch.setattr(launcher, "MAX_RETRIES", 0)
         monkeypatch.setattr(launcher, "_IS_LOCAL", True)
         monkeypatch.setattr(launcher, "_cleanup_done", False)
@@ -2369,12 +2458,14 @@ class TestLauncherSessionRegistrationWiring:
         monkeypatch.setattr(launcher, "_stdin_reader_task", fake_stdin_reader_task)
         launcher.main()
         assert received["session_id"] == launcher._session_id
+        # 台帳へ申告するharnessと同じ値を登録ファイルにも記録する
+        assert received["harness"] == "codex"
 
     def test_main_registers_before_server_wait(self, monkeypatch):
         """register_launcher_session は _ensure_server_running（最大30秒待機）より前に呼ばれる"""
         order: list[str] = []
 
-        def fake_register(session_id, pid=None):
+        def fake_register(session_id, pid=None, harness=None):
             order.append("register_launcher_session")
 
         def fake_ensure_server_running():
@@ -2431,7 +2522,7 @@ class TestLauncherSessionRegistrationUnconditional:
         """main()の実行経路上でregister_launcher_sessionが呼ばれる"""
         called = {"count": 0}
 
-        def fake_register(session_id, pid=None):
+        def fake_register(session_id, pid=None, harness=None):
             called["count"] += 1
 
         monkeypatch.setattr(launcher, "register_launcher_session", fake_register)

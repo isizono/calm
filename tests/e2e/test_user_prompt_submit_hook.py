@@ -202,6 +202,43 @@ class TestFollowUpNudge:
         assert "直近の応答で記録ツール" in ctx2
 
 
+class TestNonhumanTurnSuppressesNudge:
+    """promptが人間の発話でないターン（中継・通知）のときはnudgeを配達しない。
+    イベントはconsumedマークされず温存され、次の人間の発話で改めて配達される。"""
+
+    def test_cross_session_relay_prompt_suppresses_nudge(self, state_dir):
+        _write_events([{"e": "nudge", "type": "record", "turn": 2}], state_dir)
+        prompt = (
+            'Another Claude session sent a message:\n'
+            '<agent-message from="abc">report body</agent-message>'
+        )
+
+        result = _run_hook({"session_id": _SESSION_ID, "prompt": prompt}, state_dir)
+        assert result.returncode == 0
+        assert json.loads(result.stdout) == {}
+
+        # 温存されているので、次の人間の発話で配達される
+        result2 = _run_hook({"session_id": _SESSION_ID, "prompt": "次のふつうの発話"}, state_dir)
+        ctx2 = json.loads(result2.stdout)["hookSpecificOutput"]["additionalContext"]
+        assert "直近の応答で記録ツール" in ctx2
+
+    def test_task_notification_prompt_suppresses_nudge(self, state_dir):
+        _write_events([{"e": "nudge", "type": "follow_up", "turn": 3}], state_dir)
+        prompt = "<task-notification>\n<status>completed</status>\n</task-notification>"
+
+        result = _run_hook({"session_id": _SESSION_ID, "prompt": prompt}, state_dir)
+        assert result.returncode == 0
+        assert json.loads(result.stdout) == {}
+
+    def test_plain_human_prompt_still_delivers_nudge(self, state_dir):
+        """マーカーを含まない通常の発話では、従来通り配達される（回帰確認）。"""
+        _write_events([{"e": "nudge", "type": "record", "turn": 2}], state_dir)
+
+        result = _run_hook({"session_id": _SESSION_ID, "prompt": "ふつうの発話です"}, state_dir)
+        ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+        assert "直近の応答で記録ツール" in ctx
+
+
 class TestEmptySessionId:
     """session_id空 → 空JSON"""
 
@@ -214,6 +251,77 @@ class TestEmptySessionId:
         result = _run_hook({"session_id": None}, state_dir)
         assert result.returncode == 0
         assert json.loads(result.stdout) == {}
+
+
+class TestNeighborAskNotify:
+    """check_in先と隣の作業を止めていたaskの知らせ。自分のaskの行と同じ1回の出力にまとまり、
+    早期returnは自分のaskの行を出したときだけ起きる（隣の作業の行は記録の促しを押し出さない）。
+    """
+
+    def _answered_other_ask(self, state_dir: Path, question: str = "別セッションの問い") -> tuple[int, HookState]:
+        from src.services import ask_service as ak
+        from src.services.activity_service import add_activity
+
+        act = add_activity(title="a1", description="d", tags=["domain:test"], check_in=False)["activity_id"]
+        ask_id = ak.add_ask(question, tags=["domain:test"], blocks=[act])["id"]
+        ak.answer_ask(ask_id, "回答本文")
+        state = HookState(_SESSION_ID)
+        state.set_checked_in_activity(act)
+        state.set_checked_in_at("2000-01-01 00:00:00")
+        return ask_id, state
+
+    def _run(self, state_dir: Path, temp_db: str, prompt: str | None = None) -> str:
+        payload = {"session_id": _SESSION_ID}
+        if prompt is not None:
+            payload["prompt"] = prompt
+        result = _run_hook(payload, state_dir, extra_env={"DISCUSSION_DB_PATH": temp_db})
+        return json.loads(result.stdout).get("hookSpecificOutput", {}).get("additionalContext", "")
+
+    def test_neighbor_line_is_injected_once_without_answer_body(self, state_dir, temp_db):
+        ask_id, state = self._answered_other_ask(state_dir)
+
+        ctx = self._run(state_dir, temp_db)
+
+        assert "別セッションの問い" in ctx
+        assert "回答本文" not in ctx
+        assert state.get_notified_ask_ids() == {ask_id}
+        assert self._run(state_dir, temp_db) == ""
+
+    def test_neighbor_line_does_not_push_out_record_nudge(self, state_dir, temp_db):
+        self._answered_other_ask(state_dir)
+        _write_events([{"e": "nudge", "type": "record", "turn": 2}], state_dir)
+
+        ctx = self._run(state_dir, temp_db)
+
+        assert "別セッションの問い" in ctx
+        assert "直近の応答で記録ツール" in ctx
+
+    def test_own_ask_line_and_neighbor_line_share_one_output_and_nudge_is_kept(self, state_dir, temp_db):
+        from src.services import ask_service as ak
+
+        _ask_id, state = self._answered_other_ask(state_dir)
+        own = ak.add_ask(
+            "自分の問い", tags=["domain:test"], blocks=[state.get_checked_in_activity()]
+        )["id"]
+        ak.answer_ask(own, "自分の回答")
+        state.add_tracked_ask_ids([own])
+        _write_events([{"e": "nudge", "type": "record", "turn": 2}], state_dir)
+
+        ctx = self._run(state_dir, temp_db)
+
+        assert "askの回答が届いています" in ctx and "自分の問い" in ctx
+        assert "別セッションの問い" in ctx
+        assert ctx.count("自分の問い") == 1
+        assert "直近の応答で記録ツール" not in ctx
+        assert "直近の応答で記録ツール" in self._run(state_dir, temp_db)
+
+    def test_neighbor_line_is_held_on_nonhuman_turn(self, state_dir, temp_db):
+        ask_id, state = self._answered_other_ask(state_dir)
+        prompt = "<task-notification>\n<status>completed</status>\n</task-notification>"
+
+        assert self._run(state_dir, temp_db, prompt) == ""
+        assert state.get_notified_ask_ids() == set()
+        assert "別セッションの問い" in self._run(state_dir, temp_db)
 
 
 class TestAskNotify:
@@ -315,6 +423,28 @@ class TestAskNotify:
         ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
         assert "askの回答が届いています" not in ctx
         assert "直近の応答で記録ツール" in ctx
+
+    def test_ask_notify_delivered_even_on_nonhuman_turn(self, state_dir, temp_db):
+        """promptが人間の発話でないターン（中継・通知）でも、ask通知は配達される
+        （3.5節は非人間ターン判定より前に処理され、識別には一切触れない）。"""
+        from src.services import ask_service as ak
+
+        act = self._seed_activity()
+        r1 = ak.add_ask("非人間ターンでも届くはずの質問", tags=["domain:test"], blocks=[act])
+        ak.answer_ask(r1["id"], "回答")
+
+        state = HookState(_SESSION_ID)
+        state.add_tracked_ask_ids([r1["id"]])
+
+        prompt = "<task-notification>\n<status>completed</status>\n</task-notification>"
+        result = _run_hook(
+            {"session_id": _SESSION_ID, "prompt": prompt},
+            state_dir,
+            extra_env={"DISCUSSION_DB_PATH": temp_db},
+        )
+        ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+        assert "askの回答が届いています" in ctx
+        assert "非人間ターンでも届くはずの質問" in ctx
 
     def test_questions_exceeding_session_start_budget_are_shown_in_full_and_consumed(
         self, state_dir, temp_db

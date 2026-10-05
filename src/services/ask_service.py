@@ -657,6 +657,9 @@ def triage_ask_with_conn(
     （decision_serviceがconn共有版を提供していないための制約。極めて稀な
     競合時のみ発生し、孤立decision自体は無効なデータではない）。
 
+    ask_blocksは削除しない（どの作業を止めていたaskかを決着後も辿れるように残す）。
+    「待ち」の判定はaskのstatusで行う。
+
     notify_pathへの通知書き込みはここでは行わない。呼び出し元（triage_ask）が
     commit成功後に行う責務を持つ（answer_ask_with_connと同じ理由。docstring
     参照）。dismissかつ対象askがnotify_wanted=trueのときのみ、戻り値に
@@ -719,7 +722,6 @@ def triage_ask_with_conn(
             if cursor.rowcount == 0:
                 raise ValueError(f"ask id={ask_id} is no longer awaiting triage")
 
-            conn.execute("DELETE FROM ask_blocks WHERE ask_id = ?", (ask_id,))
             conn.execute("RELEASE SAVEPOINT triage_ask")
             result = {"id": ask_id, "status": "promoted", "promoted_decision_id": promoted_decision_id}
             if pre_row["kind"] == "meta":
@@ -745,7 +747,6 @@ def triage_ask_with_conn(
         if cursor.rowcount == 0:
             raise ValueError(f"ask id={ask_id} is no longer awaiting triage")
 
-        conn.execute("DELETE FROM ask_blocks WHERE ask_id = ?", (ask_id,))
         conn.execute("RELEASE SAVEPOINT triage_ask")
         result = {"id": ask_id, "status": "dismissed"}
         if pre_row["notify_wanted"]:

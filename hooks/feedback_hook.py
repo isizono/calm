@@ -11,8 +11,11 @@ mode値が不正のいずれも mode='off' 相当としてfail-open（何も出�
 条件JSON評価で例外（壊れた正規表現等）が出た場合は、そのエントリだけ評価をスキップし
 他のエントリの評価は継続する（_matches内で握る）。
 
-サブエージェント発のUserPromptSubmitでは発話タイミングの配達を止める（ツール失敗・
-実行直前の配達は続ける）。
+サブエージェント発（agent_type付き）の呼び出しでは、UserPromptSubmit・
+PostToolUseFailureのいずれも配達を止める（実行直前の配達は続ける。書き込みを
+禁止されたサブエージェントに促しを届けても実行できないため）。UserPromptSubmit
+では、agent_typeの有無に関わらず、プロンプトが人間の発話でないターン
+（hooks/turn_origin.py参照）のときも発話タイミングの配達を止める。
 """
 from __future__ import annotations
 
@@ -27,6 +30,7 @@ _project_root = Path(__file__).resolve().parents[1]
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
+from hooks.turn_origin import is_nonhuman_turn  # noqa: E402
 from src.env_compat import env_get  # noqa: E402
 from src.harness import select_harness  # noqa: E402
 from src.services.feedback_rules import (  # noqa: E402
@@ -164,6 +168,9 @@ def _handle_user_prompt_submit(harness, event: dict) -> None:
     prompt = event.get("prompt")
     if not isinstance(prompt, str):
         prompt = ""
+    if is_nonhuman_turn(prompt):
+        harness.emit_empty()
+        return
     prompt_id = event.get("prompt_id") or ""
 
     conn = _connect()
@@ -225,6 +232,9 @@ def _extract_error_text(event: dict) -> str:
 def _handle_post_tool_use_failure(harness, event: dict) -> None:
     session_id = event.get("session_id") or ""
     if not session_id:
+        harness.emit_empty()
+        return
+    if event.get("agent_type"):
         harness.emit_empty()
         return
     tool_name = event.get("tool_name")

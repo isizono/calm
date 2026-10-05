@@ -93,12 +93,13 @@ CALMは「着手 → 記録 → 完了 → 同期」のライフサイクルで�
 - **`/db-recovery`** — SessionStart hookがDBデータ異常減少を検知したときに、スナップショット所在確認から復元実行・再検証までを自律的に進める。DB件数の異常な少なさに自分で気づいたときも対象
 - **`/decision-record`** — ユーザーとの合意が成立したとき、または論点が未決のまま話題が移ったときに、決定事項の記録をガイドする
 - **`/digest`** — 直近の記録を期間横断で俯瞰するダイジェストを生成する。「最近何やったっけ」「今週のまとめ」など期間ベースの振り返りに
+- **`/overview`** — 今動いているもの・最近終わったもの・人間の裁定待ち・残りの内訳を一望表示する。「今何が進んでる」「全体状況見せて」などで発動
 - **`/forget`** — 過去の記録が現状と矛盾・陳腐化していると判断したときに、撤回候補を提示してユーザー確認後に撤回する
 - **`/recording`** — セッション中に発生した経緯（log）や成果物（material）を、判断基準に沿って記録する
 - **`/ask-compose`** — `add_ask`を呼ぶ前に、question/contextをテンプレートに沿って構成する。「これ聞いといて」「離席するから後で確認して」のように非同期の判断委譲を指示したときにも発動する
 - **`/ask-distill`** — `add_ask`のsimilar_asksを見て、同型の問いが繰り返され裁定が一貫していると気づいたときに、判例をまとめてメタask（kind="meta"）を起票する
 - **`/memory-export`** / **`/memory-import`** — CALMの記録（トピック・決定事項・ログ・資材・アクティビティ）を他のCALMインスタンスとやり取りする。exportは書き出し、importは受け取ったバンドルの取り込み。知識を別環境・別の相手と共有したいときに
-- **`/restart`** — calmのローカルMCPサーバー・embeddingサーバーを強制再起動する。プラグインアップデート後にコード変更を反映させたいときに
+- **`/restart`** — calmのローカルMCPサーバーを強制再起動する（embeddingサーバーは既定では対象外、`--restart-embedding`指定時のみ）。プラグインアップデート後にコード変更を反映させたいときに
 - **`/ask-watch`** — Ask storeをMonitorツールでイベント駆動監視し、同型の問いが繰り返されていないか確認する。「ask storeを監視して」「asksを見張って」等で発動
 - **`/board`** — Claude同士の非同期のやり取り（質問・周知・意見募集・事前の声かけ）を、掲示板トピックへの投稿としてガイドする。相手が今生きていてすぐ返事が欲しいときはSendMessageで直接話しかける（このスキルの対象外）
 - **`/peer-nudge`** — セッション台帳の宛先候補へSendMessageで直接話しかける前に、担当範囲の確認手順・書き方・配慮・返事が来ないときの扱いをガイドする。相手が今生きていない、または往復が1回で済まない意見募集は`board`の担当
@@ -289,8 +290,11 @@ CALMの全hookはfail-open設計（1つのhookの失敗が他の操作を止め�
 
 - **気づき方**: 以下のhookは、hook本体のコードが実行された後に起きた例外を`signal_events`へ`kind: machine_error`として記録する。`get_signals()`で確認できるほか、1件でもあればSessionStart注入の「未トリアージのシグナル」行にも現れる
   - SessionStart注入の各セクション（`source`が`hook:section:<セクション名>`）
-  - Stop hookの記録ナッジ判定（`source`が`hook:stop:logs_sparse`）
+  - SessionStart hook本体（`source`が`hook:session_start`）
+  - Stop hook本体（`source`が`hook:stop`）・記録ナッジ判定（`source`が`hook:stop:logs_sparse`）
   - PreToolUseの内部IDリークブロックhook（`source`が`hook:preblock`）
+  - UserPromptSubmit hook（`source`が`hook:user_prompt_submit`）
+  - PreToolUseのネストbg起動拒否hook（`source`が`hook:deny_nested_bg`）
 - **直し方**: `get_signals(kind="machine_error")`で`detail`・`summary`を確認し、原因（依存モジュールの欠落・DBスキーマ不一致等）を調査する。記録は失敗の発生を示すだけで、自動修復はしない
 - **限界**: この記録機構自体がDB層のimportに依存するため、venvの破損や依存パッケージの欠落でhookがimport時点で（`main()`に到達する前に）落ちた場合は記録されず、標準エラー出力のみに残る。MessageDisplay等の表示専用hook・transcript sanitize系hook（別途citation_event_logへ失敗を記録済み）も現状この記録の対象外
 
@@ -309,7 +313,8 @@ CALMの全hookはfail-open設計（1つのhookの失敗が他の操作を止め�
 | `CALM_PENDING_LIMIT` | `2` | アクティブコンテキストのpending表示件数 |
 | `CALM_TIER2_MAX_AGE_DAYS` | `7` | SessionStart一覧の階層2にin_progressアクティビティを載せるupdated_at上限（日） |
 | `CALM_PIN_SURFACE_DECAY_DAYS` | `60` | pinnedアクティビティが階層2表示を維持できるupdated_at上限（日） |
-| `CALM_RECENCY_DECAY_RATE` | `0.0014` | 検索の時間減衰率 |
+| `CALM_TIER2_MAX_ITEMS` | `5` | SessionStart一覧の『優先』に出す件数の上限。hookが読むため`~/.claude/settings.json`の`env`で設定する。増やすときは`CALM_INJECTION_BUDGET_ACTIVITIES`も上げる（各セクションの予算の合計が`CALM_TOTAL_INJECTION_BUDGET_CHARS`を超えるとcomposeがValueErrorを出す。既定の合計は10500字で、総予算12000字との差は1500字） |
+| `CALM_RECENCY_DECAY_RATE` | `0.0119` | 検索の時間減衰率 |
 | `CALM_SYNC_DISABLE_RETROSPECTIVE` | `false` | `/sync-memory`のふりかえりセクションを非表示にする |
 | `CALM_SNAPSHOT_INTERVAL` | `12` | スナップショット取得間隔（時間） |
 | `CALM_SNAPSHOT_MAX_COUNT` | `5` | スナップショット最大保持数 |

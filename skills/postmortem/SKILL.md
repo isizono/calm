@@ -28,8 +28,8 @@ completedアクティビティの行動を時系列で振り返り、ユーザ�
 対象アクティビティに関連するデータを収集する:
 
 - check-in結果の `related_topics` から `topic_id` を取得する。`related_topics` が空の場合は、アクティビティのタグで `search` するか、ユーザーに関連トピックを確認する
-- `get_logs(topic_id=...)` でログを取得
-- `get_decisions(topic_id=...)` で決定事項を取得
+- `get_logs(entity_type="topic", entity_id=topic_id)` でログを取得
+- `get_decisions(entity_type="topic", entity_id=topic_id)` で決定事項を取得
 - `get_map(entity_type="activity", entity_id=...)` で関連エンティティを探索し、追加の情報源がないか確認する
 - `search(entity_type="material")` / `get_material` で資材を確認
 
