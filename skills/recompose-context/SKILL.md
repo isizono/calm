@@ -24,7 +24,7 @@ anchorの新規作成・更新は [setup-anchor](../setup-anchor/SKILL.md) skill
 
 発話の例: 「/recompose」「recompose」「情報整理して」「まとめて」「リコンサイル」。全体モードは「/recompose --all」「アクティビティ棚卸しして」「activity棚卸し」「アクティビティの整理して」など。
 
-次には発動しない: sync-memory標準形のStep 4a（セッション終了時の軽い自己完結処理）の自動棚卸し、単一アクティビティを完了にせず中断する操作（activity-pause）、単一アクティビティの完了（activity-finish）、タグの共起分析・整理（tag-cleanup）。
+次には発動しない: sync-memory標準形のStep 4a（セッション終了時の軽い自己完結処理）の自動棚卸し、単一アクティビティの完了・中断（activity-finish）、タグの共起分析・整理（tag-cleanup）。
 
 ## 手順
 
