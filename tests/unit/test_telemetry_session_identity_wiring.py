@@ -2,9 +2,9 @@
 session_id解決 配線のunit test。
 
 記録=クエリ添付の追随カウンタ（injection_telemetry）は、提示側と取得側のセッションIDが
-一致して初めてJOINが成立する。取得側4箇所をephemeral IDではなく`get_caller_session_id()`（server再起動をまたいで安定な恒久ID）に
-揃える配線を検証する（test_ask_tool_session_identity_wiring.pyと同じ形）。各サービス自体の
-telemetry記録ロジックはtests/unit/test_search_telemetry.py・test_injection_telemetry.pyが
+一致して初めてJOINが成立する。取得側4箇所をephemeral IDではなく`get_caller_session_id()`
+（server再起動をまたいで安定な恒久ID）に揃える配線を検証する
+（test_ask_tool_session_identity_wiring.pyと同じ形）。各サービス自体のtelemetry記録ロジックはtests/unit/test_search_telemetry.py・test_injection_telemetry.pyが
 担うためここでは扱わない。
 """
 from unittest.mock import MagicMock

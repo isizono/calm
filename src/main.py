@@ -263,7 +263,8 @@ mcp.add_middleware(DestinationCandidateMiddleware())
 
 # サーバー再起動後も既存クライアントがMCPセッションを張り直さずに続行できるよう、
 # MCPセッションIDをサーバー側に保持しない（stateless）。呼び出し元の識別は
-# get_caller_session_id()（bridge ID）が担う。
+# get_caller_session_id()（bridge ID）が担う。サーバー→クライアントの通知
+# （list_changed等）、elicitation、samplingは使えない。
 HTTP_STATELESS = True
 
 # サーバー起動時刻（/health で uptime 算出に使用）

@@ -4,6 +4,8 @@
 やり直さず）リクエストしても成功することを、実際のASGIアプリで確かめる。
 また update_goal / report_signal が MCPセッションIDではなく bridge ID を記録することを確かめる。
 """
+import json
+
 import pytest
 from starlette.testclient import TestClient
 
@@ -14,6 +16,14 @@ _HEADERS = {
     "content-type": "application/json",
     "accept": "application/json, text/event-stream",
 }
+
+
+def _tool_result(resp):
+    """JSON / SSE どちらの応答形式でも tools/call の structuredContent を返す。"""
+    body = resp.text
+    if body.lstrip().startswith("event:") or "\ndata:" in body or body.startswith("data:"):
+        body = next(l[5:] for l in body.splitlines() if l.startswith("data:"))
+    return json.loads(body)["result"]["structuredContent"]
 
 
 def _call(client, name, arguments, extra_headers=None):
@@ -36,20 +46,16 @@ def client(temp_db):
         yield c
 
 
-def test_server_runs_stateless():
-    assert main_module.HTTP_STATELESS is True
-
-
 def test_tool_call_without_initialize_succeeds(client):
     r = _call(client, "roll_dice", {"sides": 6})
     assert r.status_code == 200, r.text
-    assert '"result"' in r.text
+    assert 1 <= _tool_result(r)["result"] <= 6
 
 
 def test_tool_call_with_unknown_session_id_succeeds(client):
     r = _call(client, "roll_dice", {"sides": 6}, {"mcp-session-id": "stale-id-from-previous-server"})
     assert r.status_code == 200, r.text
-    assert '"result"' in r.text
+    assert 1 <= _tool_result(r)["result"] <= 6
 
 
 def test_report_signal_records_bridge_id(client):
@@ -70,13 +76,33 @@ def test_report_signal_records_bridge_id(client):
     assert row["session_id"] == "bridge-abc"
 
 
-def test_update_goal_passes_bridge_id(monkeypatch):
-    seen = {}
-    monkeypatch.setattr(main_module, "get_caller_session_id", lambda: "bridge-xyz")
-    monkeypatch.setattr(
-        main_module.goal_service,
-        "update_goal",
-        lambda *a, **kw: seen.update(kw) or {},
+def test_update_goal_records_bridge_id(client):
+    from src.main import judge_goal, set_goal
+    from src.services.activity_service import add_activity
+
+    act = add_activity(title="a", description="d", tags=["domain:test"], check_in=False)["activity_id"]
+    created = set_goal(
+        act,
+        {"new": {"handle": "g", "statement": "終わる", "conditions": [
+            {"statement": "c1", "actor": "claude", "state": "satisfied", "note": "済"},
+        ]}},
     )
-    main_module.update_goal(1, reopen_reason="x")
-    assert seen["session_id"] == "bridge-xyz"
+    goal_id = created["goal"]["goal_id_raw"]
+    judge_goal(goal_id, "achieved")
+
+    r = _call(
+        client,
+        "update_goal",
+        {"goal_id": goal_id, "reopen_reason": "誤判定"},
+        {"x-calm-bridge-session-id": "bridge-xyz", "mcp-session-id": "stale"},
+    )
+    assert r.status_code == 200, r.text
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT session_id FROM signal_events WHERE kind = 'goal_rollback'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row["session_id"] == "bridge-xyz"
+

@@ -44,7 +44,7 @@ class SignalCaptureMiddleware(Middleware):
                 summary=f"{type(e).__name__}: {str(e)[:200]}",
                 source=f"tool:{context.message.name}",
                 detail=_traceback_and_args_digest(e, context),
-                session_id=_safe_session_id(context),
+                session_id=get_caller_session_id(),
             )
             raise
 
@@ -66,10 +66,3 @@ def _traceback_and_args_digest(exc: Exception, context: MiddlewareContext) -> st
 
     digest = f"{tb_text}\nargs: {args_summary}"
     return digest[-_DETAIL_MAX_LEN:]
-
-
-def _safe_session_id(context: MiddlewareContext) -> str | None:
-    try:
-        return get_caller_session_id()
-    except Exception:
-        return None

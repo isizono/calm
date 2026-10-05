@@ -1,8 +1,7 @@
 """呼び出し元セッションの安定 identity 解決。
 
-calm の caller_session_id は本来 MCP 接続単位の ephemeral な値
-（fastmcp の `ctx.session_id`）であり、calm server の再起動のたびに
-新しい値へ切り替わる。add_ask/answer_ask/triage_ask/withdraw_ask（要求元の
+fastmcp の `ctx.session_id` は ephemeral な値であり、calm server の再起動の
+たびに（stateless HTTP ではリクエストごとに）切り替わる。add_ask/answer_ask/triage_ask/withdraw_ask（要求元の
 記録）、get_sessions/set_session_alias（並行セッション表示）、check_in
 （セッション別名レジストリ更新）はいずれも server 再起動をまたいで安定した
 識別子を必要とする。
@@ -121,7 +120,7 @@ def get_caller_session_id() -> Optional[str]:
     calm server の再起動をまたいで不変な識別子を返す。ヘッダが無い
     呼び出し元（本ヘッダを付与しない MCP クライアント）、および HTTP
     リクエストコンテキスト外からの呼び出し（import失敗・get_http_headers()
-    自体の失敗を含む）は、従来通り ctx.session_id（ephemeral、MCP 接続単位）
+    自体の失敗を含む）は、ctx.session_id（ephemeral。stateless HTTP ではリクエスト単位で、リクエストごとに変わりうる）
     にフォールバックする。
     """
     try:
