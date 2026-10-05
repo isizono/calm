@@ -7,7 +7,7 @@
 anchor.activity・control.goal・env.coverage・env.sessionは常に置く）。
 
     anchor:  activity, pinned
-    control: goal, asks, neighbor_asks, recent_settled_asks, dependencies
+    control: goal, asks, neighbor_asks, recent_settled_asks, decision_candidates, dependencies
     context: topics, activities, decisions, latest_log, materials
     catalog: logs, map
     env:     tag_notes, hints, coverage, session, flow_guide
@@ -40,6 +40,7 @@ from src.services.checkin_queries import (
     _get_activities_overview,
     _get_decisions_from_topics,
     _get_direct_relations,
+    _get_unpromoted_decision_candidates,
     _get_logs_catalog_from_topics,
     _get_pinned_targets,
     _get_topics_info,
@@ -68,6 +69,17 @@ ASK_ANSWER_BODY_MAX_CHARS = 300
 # control.neighbor_asks / control.recent_settled_asksそれぞれの上限件数。
 # 超えた分は件数（more）とget_asksへのポインタにする。
 HANDOVER_ASKS_MAX = 3
+
+# control.decision_candidatesの上限件数と、1件あたりのtitleの上限文字数。
+# 超えた分は件数（more）に畳む。
+DECISION_CANDIDATES_MAX = 3
+DECISION_CANDIDATE_TITLE_MAX_CHARS = 60
+
+_DECISION_CANDIDATES_GUIDE = (
+    "記録役が退避した決定事項の候補で、まだ閉じていない。本文に明示的な承認があれば"
+    "add_decisionsで決定事項にしてadd_relationで候補と結ぶ（同じ決定事項が既にあればそれと結ぶ）。"
+    "合意でなかったならretractする。曖昧ならユーザーに確かめる。"
+)
 
 # control.dependenciesの上限。
 DEPENDENCIES_MAX = 10
@@ -191,6 +203,31 @@ def _cap_dependencies(dependencies: list[dict], activity_id: int):
     }
 
 
+def _cap_decision_candidates(candidates: list[dict], activity_id: int) -> dict | None:
+    """閉じていない決定候補をDECISION_CANDIDATES_MAX件へ絞り、閉じ方の案内を付ける。
+
+    超えた分は件数（more）とget_timelineへのポインタに畳む（黙って落とさない）。
+    """
+    if not candidates:
+        return None
+    kept, overflow = candidates[:DECISION_CANDIDATES_MAX], candidates[DECISION_CANDIDATES_MAX:]
+    items = []
+    for c in kept:
+        title = c["title"] or ""
+        if len(title) > DECISION_CANDIDATE_TITLE_MAX_CHARS:
+            title = title[:DECISION_CANDIDATE_TITLE_MAX_CHARS] + "…"
+        item = {"id": c["id"], "title": title}
+        strip_entity_id_inplace(item)
+        items.append(item)
+    result: dict = {"items": items, "guide": _DECISION_CANDIDATES_GUIDE}
+    if overflow:
+        result["more"] = len(overflow)
+        result["next"] = [
+            {"tool": "get_timeline", "args": {"activity_id": activity_id, "entity_types": ["material"]}}
+        ]
+    return result
+
+
 def _collect_static(conn: sqlite3.Connection, activity_id: int, session_id: str | None) -> dict | None:
     """statusを変更する前に完結する読み取り（tag_notesの注入済み記録更新は除く）。
 
@@ -210,6 +247,9 @@ def _collect_static(conn: sqlite3.Connection, activity_id: int, session_id: str 
     related_activities = _get_activities_overview(conn, direct["activity"])
     dependencies = _get_dependencies(conn, activity_id)
     pinned_targets = _get_pinned_targets(conn, activity_id)
+    decision_candidates = _cap_decision_candidates(
+        _get_unpromoted_decision_candidates(conn, activity_id, direct["topic"]), activity_id
+    )
 
     materials_full = get_materials_by_relation_with_conn(conn, activity_id)
     recent_decisions = _get_decisions_from_topics(conn, direct["topic"])
@@ -233,6 +273,7 @@ def _collect_static(conn: sqlite3.Connection, activity_id: int, session_id: str 
         "related_activities": related_activities[:RELATED_ACTIVITIES_MAX],
         "dependencies": dependencies,
         "pinned_targets": pinned_targets,
+        "decision_candidates": decision_candidates,
         "materials": materials_full[:MATERIALS_MAX],
         "recent_decisions": recent_decisions,
         "latest_log": latest_log,
@@ -382,6 +423,7 @@ def collect_and_assemble(activity_id: int, session_id: str | None = None) -> dic
                 "asks": _cap_asks(pending_asks, activity_id),
                 "neighbor_asks": neighbor_asks,
                 "recent_settled_asks": recent_settled_asks,
+                "decision_candidates": static["decision_candidates"],
                 "dependencies": _cap_dependencies(static["dependencies"], activity_id),
             }
         )
