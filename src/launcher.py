@@ -1124,6 +1124,7 @@ def _is_target_alive(pid: int, created: float) -> bool:
 def _start_parent_watchdog(targets: list[tuple[int, float]]) -> None:
     """見張り対象が1つでも消えたら、自プロセスにSIGTERMを送って終了させる。"""
     if not targets:
+        logger.warning("No parent process to watch; orphan detection is disabled")
         return
 
     def _watch() -> None:
