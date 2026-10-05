@@ -85,7 +85,7 @@ orchは無いが、同じ範囲を束ねる未完了のまとめ役（`orch`タ�
 2. 子に`set_goal`でgoalを作る
 3. orchのgoalに`update_goal`（`op=add`）で、子のアクティビティへ束縛した条件を足す
 
-続けて依頼文ラッパーで起動する。親goalの指定を必須にする（orchの子は依頼文ラッパーで親goalを指定して振る）。起動後、`waitingFor`を1回見て、起動の入口で止まっていないか確かめる。起動できたら状態節のbg表に1行足す。
+続けて依頼文ラッパー（`${CLAUDE_PLUGIN_ROOT}/scripts/bg_dispatch.py`。必須引数は`--activity-id`・`--activity-title`・`--worktree`・`--parent-goal-handle`・`--parent-condition-id`）で起動する。親goalの指定を必須にする（orchの子は依頼文ラッパーで親goalを指定して振る）。起動後、`waitingFor`を1回見て、起動の入口で止まっていないか確かめる。起動できたら状態節のbg表に1行足す。
 
 期限付きのorchにも、最初の子と範囲の違う子を後から足してよい。2本目のbgのために2本目のorchを作らない。
 
