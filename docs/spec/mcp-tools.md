@@ -120,6 +120,8 @@ CALM自身の故障・使用感不満・矛盾検出・運用計測イベント�
 
 AIエージェントが人間の判断を待つ問いを1箇所に積み、人間が回答するだけで作業を再開できるようにする受け皿。`signal_events`と似た設計思想だが、状態遷移（open→answered→promoted/dismissed、open→withdrawn）を持つため専用テーブル（`asks`）に記録される。answer時点ではトリアージ（promote/dismiss）を行わず、次の`check_in`で配達されるまで遅延する。
 
+`add_ask`/`withdraw_ask`はlauncher経由のClaude Codeセッションに限らず、HTTPトランスポートの`/mcp`エンドポイントへ直接つなぐ任意のMCPクライアント（calmリポジトリ外の外部連携プロセス等）からも呼び出せる。そうした呼び出し元が`X-Calm-Bridge-Session-Id`ヘッダを送らない場合、`get_caller_session_id`（`src/infra/session_identity.py`）はephemeralなセッションidにフォールバックする。この経路で作成・取り下げされたaskの要求元セッションid（`first_seen_session_id`/`withdrawn_session_id`、`get_asks`応答では`requesters`）はephemeral idになり、`withdraw_reason`は呼び出し元が渡した自由文字列であって、calm本体のテンプレート文言ではない。
+
 | ツール | 概要 |
 | --- | --- |
 | `add_ask` | 答え待ちの問いを1件積む（blocksで指定したactivityを止める） |
@@ -269,7 +271,7 @@ embeddingサーバー未起動・セッション内で提示済みの記録は�
 | score_threshold | float | no | 0.4 | `candidates[].top_hits` に残す最小final_score |
 
 **返り値**: `{candidates: [{kind, turn, text, context_snippet, options?, degraded, top_hits: [{type, id, score, title}], search_error?}, ...], total_extracted, excluded_count, searched_count, truncated_count, degraded, score_threshold}`。`search_error`は候補に対するsearch呼び出しがエラーを返した場合のみ付与される（`{"code", "message"}`）。excluded_reason付き候補・search_top_nを超えた候補は`candidates`に含まれない。transcript_pathが存在しない場合は`{"error": {"code": "TRANSCRIPT_NOT_FOUND", ...}}`。
-**用途**: `skills/sync-memory/SKILL.md` ステップ9（聞き返しの後追い検出）の候補抽出＋照合searchを1回の呼び出しに集約する。既存記録があれば聞き返しが不要だったかの主観判定と`report_signal`呼び出しは呼び出し側が行う。
+**用途**: `skills/sync-memory/SKILL.md` ステップ5（聞き返しの後追い検出）の候補抽出＋照合searchを1回の呼び出しに集約する。既存記録があれば聞き返しが不要だったかの主観判定と`report_signal`呼び出しは呼び出し側が行う。
 
 ### 2.7 get_by_ids
 

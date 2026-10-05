@@ -23,6 +23,8 @@ user-invocable: false
 
 `add_ask`呼び出し後、レスポンスの`similar_asks`から同型askの反復に気づいたときのメタask起票は`ask-distill` skillが担当する。本スキルはメタask化の判定を行わない。
 
+`kind="meta"`のメタask自体の起票は本スキルを経由しない。`ask-distill`・`ask-watch`が各々の組み立て方（question/context/blocksの構成）に従って直接`add_ask`を呼ぶ。
+
 ## なぜこの構成にするか
 
 askはダッシュボード等、Markdown装飾が効かない環境で読まれることがある。装飾に頼らず「今どの節を読んでいるか」が見出し文字列だけで伝わるよう、節を固定順の構成に分けている。
