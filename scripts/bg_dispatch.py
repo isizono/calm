@@ -49,6 +49,7 @@ if str(_project_root) not in sys.path:
 
 from hooks.delegate_marker import write_delegate_marker  # noqa: E402
 
+# 「完了したら」節の担い手の生死の規則は、skills/orch/SKILL.mdの窓口の生死の規則と揃える（bgはorch skillを読まずに動くため再掲している）
 _TEMPLATE = """あなたはCALMのアクティビティ「{activity_title}」の実装担当のbgセッションです。
 指示を出したのはこのアクティビティを束ねるorchです。報告は常にそのorchアクティビティへadd_logsで書いてください(具体的な宛先は下のステップ3・4で確認します)。
 

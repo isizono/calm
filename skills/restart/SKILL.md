@@ -17,7 +17,7 @@ embeddingサーバー(52836)はMCPサーバーの再起動より前に必ず停�
 ## 再起動の前（CALMを使う）
 
 - 古い窓口から打たない: `uv run --no-sync --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/restart_server.py" --status` の `mcp_server.started_at` を確かめ、直近の再起動より後の時刻であれば、別の窓口が既に打った後なので打ち直さない
-- `orch` タグの付いたアクティビティ(orch)を検索し、担い手欄（読み方は `orch` タグのnotesを参照。orchの説明の先頭に書かれた、今の担い手の欄）と、生きている窓口(`claude agents --json`)を控える。直後の節で、控えた窓口への知らせと `/mcp` 再接続の案内に使う
+- `orch` タグの付いたアクティビティ(orch)を検索し、担い手欄（読み方は `orch` タグのnotesを参照。orchの説明の先頭に書かれた、今の担い手の欄）の`sessionId`と、生きている窓口(`claude agents --json`)の`sessionId`を控える。名前は控えない（bgをstop/respawnする間に名前が変わりうるため）。直後の節で、控えた`sessionId`の窓口への知らせと `/mcp` 再接続の案内に使い、宛先の名前は使う直前に `claude agents --json` で引き直す
 
 ## 実行
 
@@ -34,8 +34,8 @@ MCPサーバーの再起動が終わった直後、自分自身もまだ `/mcp` 
 - `claude agents --json` で生きているbg（`kind=background` かつ `pid` あり）を全部列挙する
 - 各bgを `claude stop <id>` で止め、`claude respawn <id>` で会話を引き継いだまま起こし直す（依頼文の再送は不要）。respawnで短い参照(id)が変わることがあるので、`SendMessage` は新しい参照へ「`get_config` を呼んで疎通を確認して」と伝える
 - `claude stop` がauto modeのclassifierに止められたら、迂回せずユーザーに `! claude stop <id>` を頼む
-- 前の節で控えた、生きている窓口の名前を「`/mcp` の再接続が要る窓口」としてユーザーに示す
-- 控えた担い手のうち生きている窓口（担い手欄の`sessionId`が一致し`pid`がある行。宛先はその行の今の`name`）には、`SendMessage` で「bgを起こし直した」と伝える
+- 前の節で控えた、生きている窓口を「`/mcp` の再接続が要る窓口」としてユーザーに示す。示す名前は、示す直前に `claude agents --json` で`sessionId`から引き直した今の`name`にする
+- 控えた担い手のうち生きている窓口には、`SendMessage` の直前に `claude agents --json` を引き直し、控えた`sessionId`が一致し`pid`がある行（複数あれば`startedAt`が最も新しい行）の今の`name`を宛先にして、`SendMessage` で「bgを起こし直した」と伝える
 
 ## 結果の報告
 
