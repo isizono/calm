@@ -69,7 +69,7 @@ Monitorの通知には2種類ある。`ask store changed: ...`という1行を�
 
 1. **state file読み込み**: 無ければStep 1へ戻る
 2. **全open ask取得**: `get_asks(status="open", include_stats=true, limit=100)`。`total_count`が`limit`を超える場合は`offset`を進めて全件回収する
-3. **同型群の判定**: 取得した全askの`question`・`context`・`tags`を読み、「主題は違うが判断構造（問いの型）が同一」の集まりがないかLLM自身が判断する（機械的閾値なし）
+3. **同型群の判定**: 取得した全askの`question`・`context`・`tags`を読み、「主題は違うが判断構造（問いの型）が同一」の集まりがないかLLM自身が判断する。目安として同型2件以上が集まっている状態を対象にするが、これは判断のガイドラインであり、機構が自動的に判定する固定閾値ではない。対象はopen ask同士の同型なので、裁定が既に一貫しているかどうかは問わない（まだ誰も回答していないケースが主）
 4. **重複起票防止の確認**: 同型群を見つけたら`get_asks(kind="meta", status=None, limit=100)`で既存の全メタask（open/answered/promoted/dismissed問わず）を確認する
    - 既にopenなメタaskがあれば起票しない。短報に「既知の型、裁定待ち」として記載
    - 既にpromoted済み（発効済み＝自己裁定してよいと人間が既に判断した型）であれば起票しない。ただし該当の同型askがまだopenで残っていること自体は「本来もう自己裁定できたはずの型が取りこぼされている」観察なので短報に記載する（ask-watch自身がwithdrawや自己裁定を代行することはしない、スコープ外）
