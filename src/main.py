@@ -2501,7 +2501,7 @@ def add_ask(
     choices: list[str] | None = None,
     notify: bool = True,
 ) -> dict:
-    """人間の判断を待つ問いを1件積む（add an ask）。答え待ちの間、blocksで指定したactivityを止める。
+    """人間にしか決められない判断を問いとして1件積む（add an ask）。答え待ちの間、blocksで指定したactivityを止める。
 
     離席中・セッション跨ぎでしか答えられない判断に限る。その場で答えられるなら
     聞いてdecisionにする。
@@ -2515,7 +2515,7 @@ def add_ask(
     同一問いは別のライフとして新規行になる（訂正は新規postで行い、リンクは張らない）。
     dedup時（同一fingerprintのopen ask再post）は今回渡したkind/choicesを無視し、
     初回投入時の値を保持する。tagsはこのaskにまだ1件も紐付いていない場合のみ解決・付与される
-    （通常は初回投入時のみだが、タグ解決自体が失敗した場合は次回の同一問い再postで
+    （タグ解決自体が失敗した場合は次回の同一問い再postで
     再試行される）。
 
     レスポンスのsimilar_asks（裁定内容込み）を読み、同型の問いが繰り返され裁定が
