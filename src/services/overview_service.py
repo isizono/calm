@@ -18,7 +18,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timezone
 
-from src.config import HEARTBEAT_TIMEOUT_MINUTES
+from src.config import HEARTBEAT_TIMEOUT_MINUTES, SNOOZE_DURATION_DAYS
 from src.db import get_connection, row_to_dict
 from src.services import ask_service
 from src.services.activity_service import REAL_STATUSES
@@ -90,6 +90,16 @@ _BACKLOG_WHERE = f"""
     a.status IN ({_sql_in_list(_BACKLOG_STATUSES)})
     AND NOT ({_WORKING_ELIGIBLE_STATUS} AND {_HOT})
 """
+
+# by_statusの内訳表示専用。期限切れsnoozed（updated_atがSNOOZE_DURATION_DAYSを超過）は
+# pending相当として数える（モジュールdocstring通り書き込みは行わず、表示時の評価のみ）。
+# _BACKLOG_WHERE側の母集団条件は変えない（snoozed/shelvedの母集団所属はそのまま）。
+# :nowは呼び出し元が1回だけ計算した基準時刻（本関数の`now`引数）を使う。'now'リテラルの
+# 直書きはgenerated_at等との基準時刻ずれを生むため使わない（モジュールdocstring参照）。
+_DISPLAY_STATUS_FOR_BACKLOG = (
+    f"CASE WHEN a.status = 'snoozed' AND a.updated_at <= datetime(:now, '-{SNOOZE_DURATION_DAYS} days')"
+    " THEN 'pending' ELSE a.status END"
+)
 
 
 def _invalid_parameter(message: str) -> dict:
@@ -218,7 +228,10 @@ def _collect_backlog_with_conn(conn: sqlite3.Connection, *, days: int, hb_min: i
 
     by_status: dict[str, int] = {}
     for row in conn.execute(
-        f"SELECT a.status, COUNT(*) AS c FROM activities a WHERE {_BACKLOG_WHERE} GROUP BY a.status",
+        f"""
+        SELECT {_DISPLAY_STATUS_FOR_BACKLOG} AS status, COUNT(*) AS c
+        FROM activities a WHERE {_BACKLOG_WHERE} GROUP BY status
+        """,
         params,
     ).fetchall():
         by_status[row["status"]] = row["c"]
