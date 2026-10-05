@@ -425,23 +425,20 @@ def _get_pinned_targets(conn: sqlite3.Connection, activity_id: int) -> dict:
     return result
 
 
-
 def _get_unpromoted_decision_candidates(
-    conn: sqlite3.Connection, activity_id: int, topic_ids: list[int]
-) -> list[dict]:
-    """activityに直接つながる、またはtopic_idsのtopicに属する、閉じていない決定候補を新しい順に返す。
+    conn: sqlite3.Connection, activity_id: int, topic_ids: list[int], limit: int
+) -> tuple[list[dict], int]:
+    """activityに直接つながる、またはtopic_idsのtopicに属する、閉じていない決定候補を返す。
 
     閉じていない = retractされておらず、decisionとの関係を持たないmaterial。
-    各要素は{id, title}（idはstrip_entity_id_inplaceでid_rawになる）。
+    戻り値は(新しい順の先頭limit件の{id, title}, 閉じていない候補の総数)。
     """
     topic_clause = ""
     params: list = [RECORDER_DECISION_CANDIDATE_TAG, activity_id]
     if topic_ids:
         topic_clause = f" OR (rv.target_type = 'topic' AND rv.target_id IN ({','.join('?' * len(topic_ids))}))"
         params += topic_ids
-    rows = conn.execute(
-        f"""SELECT m.id, m.title FROM materials m
-            WHERE m.retracted_at IS NULL
+    where = f"""WHERE m.retracted_at IS NULL
               AND EXISTS (
                   SELECT 1 FROM material_tags mt JOIN tags t ON t.id = mt.tag_id
                   WHERE mt.material_id = m.id AND t.namespace = '' AND t.name = ?)
@@ -452,8 +449,10 @@ def _get_unpromoted_decision_candidates(
               AND NOT EXISTS (
                   SELECT 1 FROM relations_view rd
                   WHERE rd.source_type = 'material' AND rd.source_id = m.id
-                    AND rd.target_type = 'decision')
-            ORDER BY m.created_at DESC, m.id DESC""",
-        params,
+                    AND rd.target_type = 'decision')"""
+    total = conn.execute(f"SELECT COUNT(*) FROM materials m {where}", params).fetchone()[0]
+    rows = conn.execute(
+        f"SELECT m.id, m.title FROM materials m {where} ORDER BY m.created_at DESC, m.id DESC LIMIT ?",
+        params + [limit],
     ).fetchall()
-    return [{"id": r["id"], "title": r["title"]} for r in rows]
+    return [{"id": r["id"], "title": r["title"]} for r in rows], total

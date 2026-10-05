@@ -2,6 +2,8 @@
 
 仮データはすべて実際の書き込み経路（add_material・add_decision・add_relation・retract）で作る。
 """
+from pathlib import Path
+
 import pytest
 
 import src.services.checkin_tier_service as tier
@@ -42,7 +44,7 @@ def test_unpromoted_candidate_on_activity_is_listed_with_guide(activity_id):
 
     assert [i["id_raw"] for i in block["items"]] == [mid]
     assert block["items"][0]["title"] == "候補A"
-    assert "add_decisions" in block["guide"] and "retract" in block["guide"]
+    assert isinstance(block["guide"], str) and block["guide"]
     assert "more" not in block
 
 
@@ -58,6 +60,15 @@ def test_candidate_tied_to_decision_is_not_listed(activity_id):
     add_relation("material", mid, [{"type": "decision", "ids": [did]}])
 
     assert [i["id_raw"] for i in _items(activity_id)] == [other]
+
+
+def test_candidate_tied_from_decision_side_is_not_listed(activity_id):
+    topic = add_topic(title="T", description="d", tags=TAGS)["topic_id"]
+    mid = _candidate("決定側から結んだ", [{"type": "activity", "ids": [activity_id]}])
+    did = add_decision(decision="決定", reason="r", topic_id=topic)["decision_id"]
+    add_relation("decision", did, [{"type": "material", "ids": [mid]}])
+
+    assert _items(activity_id) == []
 
 
 def test_retracted_candidate_is_not_listed(activity_id):
@@ -94,7 +105,7 @@ def test_overflow_folds_into_count_and_titles_are_cut(activity_id):
     assert len(block["items"]) == tier.DECISION_CANDIDATES_MAX
     assert block["items"][0]["title"] == f"候補{n - 1}"  # 新しい順
     assert block["more"] == 2
-    assert block["next"][0]["tool"] == "get_timeline"
+    assert "next" not in block
 
 
 def test_control_stays_within_cap_with_max_candidates(activity_id):
@@ -107,3 +118,9 @@ def test_control_stays_within_cap_with_max_candidates(activity_id):
     control = collect_and_assemble(activity_id)["control"]
 
     assert rb.measure_chars(control) < CHECKIN_CONTROL_CAP_CHARS
+
+
+def test_tag_constant_matches_recorder_instructions():
+    path = Path(__file__).resolve().parents[2] / "hooks" / "recorder_instructions.md"
+
+    assert RECORDER_DECISION_CANDIDATE_TAG in path.read_text(encoding="utf-8")

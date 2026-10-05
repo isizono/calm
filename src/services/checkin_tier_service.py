@@ -40,10 +40,10 @@ from src.services.checkin_queries import (
     _get_activities_overview,
     _get_decisions_from_topics,
     _get_direct_relations,
-    _get_unpromoted_decision_candidates,
     _get_logs_catalog_from_topics,
     _get_pinned_targets,
     _get_topics_info,
+    _get_unpromoted_decision_candidates,
     _count_decisions_from_topics,
     _pinned_item_pointer,
 )
@@ -79,6 +79,7 @@ _DECISION_CANDIDATES_GUIDE = (
     "記録役が退避した決定事項の候補で、まだ閉じていない。本文に明示的な承認があれば"
     "add_decisionsで決定事項にしてadd_relationで候補と結ぶ（同じ決定事項が既にあればそれと結ぶ）。"
     "合意でなかったならretractする。曖昧ならユーザーに確かめる。"
+    "閉じると、残りの候補が次のcheck_inで出る。"
 )
 
 # control.dependenciesの上限。
@@ -203,16 +204,15 @@ def _cap_dependencies(dependencies: list[dict], activity_id: int):
     }
 
 
-def _cap_decision_candidates(candidates: list[dict], activity_id: int) -> dict | None:
-    """閉じていない決定候補をDECISION_CANDIDATES_MAX件へ絞り、閉じ方の案内を付ける。
+def _build_decision_candidates(candidates: list[dict], total: int) -> dict | None:
+    """閉じていない決定候補(取得側でDECISION_CANDIDATES_MAX件に絞り済み)に閉じ方の案内を付ける。
 
-    超えた分は件数（more）とget_timelineへのポインタに畳む（黙って落とさない）。
+    総数が表示件数を超えるときはmoreに残りの件数を入れる（黙って落とさない）。
     """
     if not candidates:
         return None
-    kept, overflow = candidates[:DECISION_CANDIDATES_MAX], candidates[DECISION_CANDIDATES_MAX:]
     items = []
-    for c in kept:
+    for c in candidates:
         title = c["title"] or ""
         if len(title) > DECISION_CANDIDATE_TITLE_MAX_CHARS:
             title = title[:DECISION_CANDIDATE_TITLE_MAX_CHARS] + "…"
@@ -220,11 +220,8 @@ def _cap_decision_candidates(candidates: list[dict], activity_id: int) -> dict |
         strip_entity_id_inplace(item)
         items.append(item)
     result: dict = {"items": items, "guide": _DECISION_CANDIDATES_GUIDE}
-    if overflow:
-        result["more"] = len(overflow)
-        result["next"] = [
-            {"tool": "get_timeline", "args": {"activity_id": activity_id, "entity_types": ["material"]}}
-        ]
+    if total > len(items):
+        result["more"] = total - len(items)
     return result
 
 
@@ -247,8 +244,8 @@ def _collect_static(conn: sqlite3.Connection, activity_id: int, session_id: str 
     related_activities = _get_activities_overview(conn, direct["activity"])
     dependencies = _get_dependencies(conn, activity_id)
     pinned_targets = _get_pinned_targets(conn, activity_id)
-    decision_candidates = _cap_decision_candidates(
-        _get_unpromoted_decision_candidates(conn, activity_id, direct["topic"]), activity_id
+    decision_candidates = _build_decision_candidates(
+        *_get_unpromoted_decision_candidates(conn, activity_id, direct["topic"], DECISION_CANDIDATES_MAX)
     )
 
     materials_full = get_materials_by_relation_with_conn(conn, activity_id)
