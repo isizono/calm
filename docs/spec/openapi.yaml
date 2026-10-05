@@ -122,14 +122,17 @@ paths:
               properties:
                 question:
                   type: string
-                blocks:
-                  items:
-                    type: integer
-                  type: array
                 tags:
                   items:
                     type: string
                   type: array
+                blocks:
+                  anyOf:
+                  - items:
+                      type: integer
+                    type: array
+                  - type: 'null'
+                  default: null
                 kind:
                   default: ask
                   type: string
@@ -150,7 +153,6 @@ paths:
                   type: boolean
               required:
               - question
-              - blocks
               - tags
               type: object
       responses:
