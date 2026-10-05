@@ -16,11 +16,15 @@ from hooks.hook_state import HookState
 
 # 目印がこの秒数より古ければ委譲先ではないとみなす。委譲先の作業が終わったあと
 # 同じactivityへ窓口がcheck-inしてもblockされないようにするための寿命。
+# ponytail: 近似。TTL内に窓口が同じactivityへcheck-inすれば1回blockされ得るし、24hを超える
+# 委譲先作業はblock対象から外れる。厳密にするなら委譲先のcheck-in時にsession_idへ紐付ける。
 _MARKER_TTL_SEC = 24 * 60 * 60
 
 
 def marker_path(activity_id: int) -> Path:
-    return HookState.BASE_DIR / "delegate" / f"{int(activity_id)}"
+    # stop_hookと同じくHOOK_STATE_DIRがあればそちらを優先する(グローバルは書き換えない)
+    base = Path(os.environ["HOOK_STATE_DIR"]) if os.environ.get("HOOK_STATE_DIR") else HookState.BASE_DIR
+    return base / "delegate" / f"{int(activity_id)}"
 
 
 def write_delegate_marker(activity_id: int) -> None:
@@ -28,8 +32,6 @@ def write_delegate_marker(activity_id: int) -> None:
 
     目印は補助情報なので、書けなくても例外は外に出さない(依頼文の出力を止めない)。
     """
-    if os.environ.get("HOOK_STATE_DIR"):
-        HookState.BASE_DIR = Path(os.environ["HOOK_STATE_DIR"])
     try:
         path = marker_path(activity_id)
         path.parent.mkdir(parents=True, exist_ok=True)
