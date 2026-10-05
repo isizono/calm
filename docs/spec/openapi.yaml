@@ -112,7 +112,7 @@ paths:
     post:
       tags:
       - ask
-      summary: 人間にしか決められない判断を問いとして1件積む（add/create an ask for a human）。
+      summary: 人間の判断を待つ問いを1件積む（add an ask）。
       requestBody:
         required: true
         content:

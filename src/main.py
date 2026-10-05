@@ -545,8 +545,7 @@ def pull_precedents(
     flavor: _FlavorArg = "internal",
 ) -> dict:
     """
-    Choose: 設計・裁定の前に、近傍 topic の判例(decision)を網羅確認（pull precedents）したいとき。ランクtop-Nの確率的発見ならsearch、topic直下の一覧（LIMIT30・
-    truncationの可視化なし）ならget_decisions。
+    Choose: 設計・裁定の前に、近傍 topic の判例(decision)を網羅確認（pull precedents）したいとき。ランクtop-Nの確率的発見ならsearch、topic直下の一覧（LIMIT30・truncationの可視化なし）ならget_decisions。
 
     設計文脈から近傍 topic を特定し、routing が当たった topic の非 retract decision を
     ランク競争なしに全件、最低でも索引粒度で応答に含める。予算超過時も切り捨てず
@@ -739,9 +738,9 @@ def detect_reask_candidates(
     score_threshold: float = 0.4,
 ) -> dict:
     """
-    Choose: sync-memoryの聞き返し後追い検出ステップで、聞き返し候補を検出する（detect re-ask candidates）とき。transcriptから聞き返し候補
-    （AskUserQuestion呼び出し・ユーザー訂正発話）を抽出し、除外辞書適用後の上位N件について
-    既存記録の類似searchまで一括で行う。transcript_pathはSessionStart時にコンテキストへ
+    Choose: sync-memoryの聞き返し後追い検出ステップで、聞き返し候補を検出する（detect re-ask candidates）とき。
+    transcriptから聞き返し候補（AskUserQuestion呼び出し・ユーザー訂正発話）を抽出し、
+    除外辞書適用後の上位N件について既存記録の類似searchまで一括で行う。transcript_pathはSessionStart時にコンテキストへ
     注入されたものをそのまま渡す。
 
     「この既存記録があれば聞き返しは不要だったか」の主観判定とreport_signalの呼び出しは
@@ -2502,7 +2501,7 @@ def add_ask(
     choices: list[str] | None = None,
     notify: bool = True,
 ) -> dict:
-    """人間にしか決められない判断を問いとして1件積む（add/create an ask for a human）。答え待ちの間、blocksで指定したactivityを止める。
+    """人間の判断を待つ問いを1件積む（add an ask）。答え待ちの間、blocksで指定したactivityを止める。
 
     離席中・セッション跨ぎでしか答えられない判断に限る。その場で答えられるなら
     聞いてdecisionにする。
