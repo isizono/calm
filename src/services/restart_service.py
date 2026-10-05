@@ -436,27 +436,29 @@ def restart_all(project_root: Path) -> dict:
     POSIXと同じ順序でsyncすると差し替え対象のファイルが使用中で失敗しうる。
     サーバーを先に止めてからsyncする。
 
-    embeddingサーバーは常にMCPサーバーの再起動より前に停止する。embedding側の
-    コード変更を確実に反映させ、かつ新しいHTTPプロセスが起動時ウォームアップで
-    立ち上げたembeddingサーバーやバックフィルを、後から止めて途中で切らないため。
+    embeddingサーバーは常に「旧MCPサーバーの停止直後・新MCPサーバーの起動前」に
+    止める。旧MCPが動いている間に止めると、他セッションの記録・検索で旧MCPが
+    古いコードのembeddingサーバーを再spawnしてしまい、新MCPのウォームアップが
+    それを使い続ける。新MCPの起動後に止めると、新MCPのバックフィルを途中で切る。
 
     プラグインキャッシュの旧バージョン掃除(prune_orphaned_plugin_versions)は
     MCP再起動が成功した場合のみ行う。再起動自体が失敗している状況で
     キャッシュディレクトリまで変化させると、原因調査中の変数を増やすだけになる。
     """
-    embedding_stopped = stop_embedding_server()
+    start_kwargs = dict(
+        start_timeout_sec=DEFAULT_START_TIMEOUT_SEC, poll_interval_sec=DEFAULT_POLL_INTERVAL_SEC,
+    )
     if sys.platform == "win32":
         old_pids, old_signatures = _stop_mcp_server(DEFAULT_KILL_WAIT_SEC, DEFAULT_POLL_INTERVAL_SEC)
+        embedding_stopped = stop_embedding_server()
         sync_result = sync_dependencies(project_root)
         cache_result = clean_caches(project_root)
-        mcp_result = _start_mcp_server(
-            project_root, old_pids, old_signatures,
-            start_timeout_sec=DEFAULT_START_TIMEOUT_SEC, poll_interval_sec=DEFAULT_POLL_INTERVAL_SEC,
-        )
     else:
         sync_result = sync_dependencies(project_root)
         cache_result = clean_caches(project_root)
-        mcp_result = restart_mcp_server(project_root)
+        old_pids, old_signatures = _stop_mcp_server(DEFAULT_KILL_WAIT_SEC, DEFAULT_POLL_INTERVAL_SEC)
+        embedding_stopped = stop_embedding_server()
+    mcp_result = _start_mcp_server(project_root, old_pids, old_signatures, **start_kwargs)
     prune_result = prune_orphaned_plugin_versions(project_root) if mcp_result.ok else {
         "removed": [], "skipped": [],
     }
