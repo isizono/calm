@@ -319,6 +319,11 @@ CALMの全hookはfail-open設計（1つのhookの失敗が他の操作を止め�
 | `CALM_SNAPSHOT_INTERVAL` | `12` | スナップショット取得間隔（時間） |
 | `CALM_SNAPSHOT_MAX_COUNT` | `5` | スナップショット最大保持数 |
 | `CALM_SNAPSHOT_ANOMALY_THRESHOLD` | `100` | 行数減少の異常検知閾値（件） |
+| `CALM_SEARCH_HEALTH_WINDOW_DAYS` | `7` | 検索縮退・クエリ拡張停止検知の集計対象ウィンドウ（日） |
+| `CALM_SEARCH_HEALTH_MAX_SAMPLE` | `100` | 同集計で見る最大件数（timestamp降順） |
+| `CALM_SEARCH_HEALTH_MIN_SAMPLE` | `20` | 同集計の判定に必要な最小サンプル数（未満なら常に健全扱い） |
+| `CALM_SEARCH_HEALTH_DEGRADED_RATIO` | `0.2` | 検索の縮退率がこの値以上なら異常とみなす閾値 |
+| `CALM_SEARCH_HEALTH_QE_FIRE_FLOOR` | `0.0` | クエリ拡張の発火率がこの値以下なら異常とみなす閾値 |
 | `CALM_PROJECTION_MANIFEST_MAX_ITEMS` | `30` | intelligently habitsマニフェストの掲載件数上限 |
 | `CALM_GOAL_RECHECK_HOURS` | `6` | goalの条件のうち担い手がhuman/externalのopen条件を「要確認」とみなすまでの時間（時間） |
 | `CALM_PROJECT_ROOT` | 自動解決（`CLAUDE_PLUGIN_ROOT` → `git rev-parse --git-common-dir`） | `embedding_server`を起動するプロジェクトルート。優先順位は 明示設定 → プラグイン実行時は`CLAUDE_PLUGIN_ROOT`の値から自動設定 → `embedding_server`自身の`git rev-parse --git-common-dir`解決 → いずれも失敗した場合はRuntimeError。加えて`/calm:restart`（強制再起動）実行時は、上記のいずれでも未設定であれば`restart_service`自身も同じgit-common-dir解決（gitリポジトリでなければ実行時のプロジェクトルート）で先回りして設定する。通常は自動解決されるため設定不要だが、いずれの自動解決にも失敗する環境（gitリポジトリ外かつ`CLAUDE_PLUGIN_ROOT`も未設定）では明示設定が必要 |

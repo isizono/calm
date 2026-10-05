@@ -41,6 +41,7 @@ from src.services.habit_service import (
 from src.services import habit_projection
 from src.services.backup_service import health_check, should_take_snapshot, take_snapshot
 from src.services.injection_compositor import Section, compose
+from src.services.search_health_service import check_search_health
 from src.services import session_registry_service
 from hooks.signal_capture import try_capture_signal
 
@@ -1044,11 +1045,53 @@ def _build_snapshot_section(conn, session_id: str | None = None, source: str | N
     return ""
 
 
+def _build_search_health_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # conn, session_id, source, **_kwargs: 全セクション共通シグネチャ
+    """search_telemetryの直近記録から検索の縮退・クエリ拡張停止を検知する。
+
+    閾値超過時のみ1行の注意を返し、signal_eventsにmachine_errorとして記録する
+    （summaryは数値を含まない固定文のため、同じ異常が続く間はfingerprint dedupで
+    1行に集約される。閾値を下回った後に再発したときは新規行になる）。
+    """
+    result = check_search_health(conn)
+    if result.is_healthy:
+        return ""
+
+    parts = [w.lstrip("- ") for w in result.warnings]
+    line = (
+        "⚠️ 検索品質の劣化を検知: " + "、".join(parts)
+        + "。search_telemetryのdiagnostics_jsonを集計して確認してください。"
+    )
+
+    if result.degraded_unhealthy:
+        try_capture_signal(
+            kind="machine_error",
+            summary="検索がキーワード検索のみへ縮退している割合が閾値を超えている",
+            source="hook:search_health",
+            detail=(
+                f"degraded_ratio={result.degraded_ratio:.3f} "
+                f"({result.degraded_count}/{result.degraded_sample_count})"
+            ),
+        )
+    if result.qe_unhealthy:
+        try_capture_signal(
+            kind="machine_error",
+            summary="クエリ拡張が発火していない状態が続いている",
+            source="hook:search_health",
+            detail=(
+                f"qe_fired_ratio={result.qe_fired_ratio:.3f} "
+                f"({result.qe_fired_count}/{result.qe_sample_count})"
+            ),
+        )
+
+    return line + "\n"
+
+
 # セクション登録レジストリ。priorityは既存builders順（出力順）をそのまま踏襲する。
 # budget_charsは各セクションの宣言予算（文字数）で、実出力がこれを超えた場合
 # compose()側でハード切り詰めされる（詳細はinjection_compositor.pyのdocstring参照）。
 _SECTIONS: list[Section] = [
     Section("snapshot", _build_snapshot_section, config.INJECTION_BUDGET_SNAPSHOT_CHARS, priority=0),
+    Section("search_health", _build_search_health_section, config.INJECTION_BUDGET_SEARCH_HEALTH_CHARS, priority=5),
     Section("activities", _build_activities_section, config.INJECTION_BUDGET_ACTIVITIES_CHARS, priority=10),
     Section("habits", _build_habits_section, config.INJECTION_BUDGET_HABITS_CHARS, priority=20),
     Section("signals", _build_signals_section, config.INJECTION_BUDGET_SIGNALS_CHARS, priority=40),
