@@ -33,7 +33,8 @@ NEAR_MISS_HEADERS = (
 # 却下案 / 適用条件 / 適用外 / 隣接確認: 見出し行のみで完結し、以降の箇条書き行が項目になる。
 # コロンは半角・全角どちらも許容する（却下案項目の区切りが全角を許すのと揃える）。
 _LIST_HEADING_RE = re.compile(r"^(却下案|適用条件|適用外|隣接確認)\s*[:：]\s*$")
-# 検証: 見出しと内容が同一行（複数行許容、行ごとに独立したアンカーとして扱う）
+# 検証: 見出しと内容が同一行（複数行許容、行ごとに独立したアンカーとして扱う）。
+# 内容が空（見出しのみ）なら節を開き、続く箇条書き項目を 1 項目 1 アンカーとして拾う。
 _VERIFY_HEADING_RE = re.compile(r"^検証\s*[:：]\s*(.*)$")
 # 節本文の箇条書き項目
 _ITEM_RE = re.compile(r"^-\s+(.*)$")
@@ -71,12 +72,23 @@ def _split_colon_item(text: str) -> tuple[str, str, bool]:
     return text.strip(), "", False
 
 
+def _make_anchor(raw_content: str) -> dict:
+    date_m = _DATE_RE.search(raw_content)
+    sha_m = _SHA_RE.search(raw_content)
+    return {
+        "raw": raw_content,
+        "date": date_m.group(0) if date_m else None,
+        "commit": sha_m.group(0) if sha_m else None,
+    }
+
+
 def parse_precedent_sections(reason: str) -> dict | None:
     """reason（または material の content）本文から定型節をパースする。
 
     行単位の状態機械で処理する。`^(却下案|適用条件|適用外|隣接確認)\\s*[:：]\\s*$`
     （見出し行のみ）で節を開き、次の見出しか本文終端で閉じる。`^検証\\s*[:：]` は同一行に
-    内容を取り、行ごとに独立したアンカーとして扱う（複数行許容）。見出しのコロンは半角・
+    内容を取り、行ごとに独立したアンカーとして扱う（複数行許容）。見出しのみの `検証:` は
+    節を開き、続く箇条書き項目を 1 項目 1 アンカーとして扱う。見出しのコロンは半角・
     全角どちらも許容する。見出し行より前・節の外にあるテキストは自由記述本文として
     そのまま無視する（本文を書き換えない）。
 
@@ -114,11 +126,22 @@ def parse_precedent_sections(reason: str) -> dict | None:
     current_section: str | None = None
     current_items: list = []
 
+    def _add_anchor(raw_content: str) -> None:
+        anchor = _make_anchor(raw_content)
+        if anchor["date"] is None:
+            warnings.append(f"verification anchor without date: {raw_content!r}")
+        verification_anchors.append(anchor)
+
     def _close_section() -> None:
         nonlocal current_section, current_items
         if current_section is None:
             return
-        if not current_items:
+        if current_section == "検証":
+            if not current_items:
+                warnings.append("empty verification heading: 検証:")
+            for raw_content in current_items:
+                _add_anchor(raw_content)
+        elif not current_items:
             warnings.append(f"empty section: {current_section}:")
         else:
             key = _SECTION_KEY[current_section]
@@ -148,20 +171,12 @@ def parse_precedent_sections(reason: str) -> dict | None:
             any_marker = True
             raw_content = m_verify.group(1).strip()
             if not raw_content:
-                # 内容の無い `検証:` 行はアンカーとして採らない（空文字 raw が
-                # verification_anchors に混ざると「空リスト=決定のみ」判別が崩れる）。
-                warnings.append("empty verification heading: 検証:")
+                # 見出しのみ。続く箇条書きを拾う（項目が無ければ close 時に警告する。
+                # 空文字 raw が verification_anchors に混ざると「空リスト=決定のみ」判別が崩れる）。
+                current_section = "検証"
+                current_items = []
                 continue
-            date_m = _DATE_RE.search(raw_content)
-            sha_m = _SHA_RE.search(raw_content)
-            anchor = {
-                "raw": raw_content,
-                "date": date_m.group(0) if date_m else None,
-                "commit": sha_m.group(0) if sha_m else None,
-            }
-            if anchor["date"] is None:
-                warnings.append(f"verification anchor without date: {raw_content!r}")
-            verification_anchors.append(anchor)
+            _add_anchor(raw_content)
             continue
 
         near_hit = next(

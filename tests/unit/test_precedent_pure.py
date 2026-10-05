@@ -317,6 +317,42 @@ class TestEmptyVerificationHeading:
         assert parsed["verification_anchors"][0]["raw"] == "実機確認 / 2026-07-04"
 
 
+class TestVerificationBullets:
+    """見出しのみの `検証:` に続く箇条書きは 1 項目 1 アンカーとして拾う"""
+
+    def test_bullets_become_one_anchor_each(self):
+        reason = (
+            "検証:\n"
+            "- 実機確認 / abc1234 / 2026-07-04\n"
+            "- 再確認 / 2026-07-05\n"
+        )
+        parsed = parse_precedent_sections(reason)
+        anchors = parsed["verification_anchors"]
+        assert [a["raw"] for a in anchors] == [
+            "実機確認 / abc1234 / 2026-07-04",
+            "再確認 / 2026-07-05",
+        ]
+        assert anchors[0]["date"] == "2026-07-04"
+        assert anchors[0]["commit"] == "abc1234"
+        assert anchors[1]["commit"] is None
+        assert "warnings" not in summarize_precedent(parsed)
+
+    def test_bullets_end_at_next_heading(self):
+        reason = "検証:\n- 確認 / 2026-07-04\n隣接確認:\n- 実行時: 問題なし\n"
+        parsed = parse_precedent_sections(reason)
+        assert len(parsed["verification_anchors"]) == 1
+        assert parsed["adjacent_check"] == [{"axis": "実行時", "note": "問題なし"}]
+
+    def test_one_line_form_unchanged(self):
+        parsed = parse_precedent_sections("検証: 実機確認 / 2026-07-04\n")
+        assert [a["raw"] for a in parsed["verification_anchors"]] == ["実機確認 / 2026-07-04"]
+
+    def test_heading_followed_by_next_heading_warns(self):
+        parsed = parse_precedent_sections("検証:\n適用外:\n- 例\n")
+        assert parsed["verification_anchors"] == []
+        assert any("empty verification" in w for w in parsed["warnings"])
+
+
 class TestSummarizeWarningsExposure:
     """書式崩れがあるとき summarize が warnings を載せ、崩れが無いときは省く"""
 
