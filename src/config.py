@@ -21,8 +21,6 @@ SNOOZE_DURATION_DAYS: int = int(env_get("CALM_SNOOZE_DURATION_DAYS", "3"))
 GOAL_RECHECK_HOURS: int = int(env_get("CALM_GOAL_RECHECK_HOURS", "6"))
 
 # --- Active Context 表示 ---
-IN_PROGRESS_LIMIT: int = int(env_get("CALM_IN_PROGRESS_LIMIT", "3"))
-PENDING_LIMIT: int = int(env_get("CALM_PENDING_LIMIT", "2"))
 # SessionStart一覧の階層2（優先）に in_progress アクティビティを載せる updated_at 上限（日）
 TIER2_MAX_AGE_DAYS: int = int(env_get("CALM_TIER2_MAX_AGE_DAYS", "7"))
 # SessionStart一覧の階層2（優先）に出すアクティビティ件数の上限。負値は末尾スライスになり意図と逆になるため0に丸める
@@ -44,6 +42,17 @@ RECENCY_DECAY_FLOOR_DECISION_LIVE: float = float(env_get("CALM_RECENCY_DECAY_FLO
 SNAPSHOT_INTERVAL_HOURS: int = int(env_get("CALM_SNAPSHOT_INTERVAL", "12"))
 SNAPSHOT_MAX_COUNT: int = int(env_get("CALM_SNAPSHOT_MAX_COUNT", "5"))
 SNAPSHOT_ANOMALY_THRESHOLD: int = int(env_get("CALM_SNAPSHOT_ANOMALY_THRESHOLD", "100"))
+
+# --- Search health（search_telemetryの直近記録からの縮退・クエリ拡張停止検知） ---
+# 集計対象ウィンドウ（日数）と、その中で見る最大件数（timestamp降順）
+SEARCH_HEALTH_WINDOW_DAYS: int = int(env_get("CALM_SEARCH_HEALTH_WINDOW_DAYS", "7"))
+SEARCH_HEALTH_MAX_SAMPLE: int = int(env_get("CALM_SEARCH_HEALTH_MAX_SAMPLE", "100"))
+# 判定に必要な最小サンプル数（degraded・QEの各集計ごとに独立に適用。これ未満なら常に健全扱い）
+SEARCH_HEALTH_MIN_SAMPLE: int = int(env_get("CALM_SEARCH_HEALTH_MIN_SAMPLE", "20"))
+# この比率以上の検索がdegraded（ベクトル検索利用不可によるキーワード検索のみへの縮退）なら異常
+SEARCH_HEALTH_DEGRADED_RATIO: float = float(env_get("CALM_SEARCH_HEALTH_DEGRADED_RATIO", "0.2"))
+# クエリ拡張の発火率がこの値以下なら異常（既定0.0 = 一度も発火していない）
+SEARCH_HEALTH_QE_FIRE_FLOOR: float = float(env_get("CALM_SEARCH_HEALTH_QE_FIRE_FLOOR", "0.0"))
 
 # --- Sync Memory ---
 SYNC_DISABLE_RETROSPECTIVE: bool = env_get("CALM_SYNC_DISABLE_RETROSPECTIVE", "false").lower() in (
@@ -123,6 +132,7 @@ INJECTION_BUDGET_SIGNALS_CHARS: int = int(env_get("CALM_INJECTION_BUDGET_SIGNALS
 INJECTION_BUDGET_OPEN_ASKS_CHARS: int = int(env_get("CALM_INJECTION_BUDGET_OPEN_ASKS", "1200"))
 INJECTION_BUDGET_ASK_NOTIFY_CHARS: int = int(env_get("CALM_INJECTION_BUDGET_ASK_NOTIFY", "600"))
 INJECTION_BUDGET_TRANSCRIPT_PATH_CHARS: int = int(env_get("CALM_INJECTION_BUDGET_TRANSCRIPT_PATH", "200"))
+INJECTION_BUDGET_SEARCH_HEALTH_CHARS: int = int(env_get("CALM_INJECTION_BUDGET_SEARCH_HEALTH", "300"))
 # Σ上のINJECTION_BUDGET_*を超えない値にする（CIゼロサムテストで検証）。実装者が
 # セクションを追加・調整する際は必ずこの上限も合わせて見直すこと。
 TOTAL_INJECTION_BUDGET_CHARS: int = int(env_get("CALM_TOTAL_INJECTION_BUDGET_CHARS", "12000"))

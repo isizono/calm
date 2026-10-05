@@ -960,6 +960,31 @@ CREATE TABLE "habits" (
 
 </details>
 
+### hint_cooldowns
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| tag_id | INTEGER | NO | — | PK |
+| marker | TEXT | NO | — | PK |
+| until_date | TEXT | NO | — | — |
+| updated_at | TIMESTAMP | NO | `CURRENT_TIMESTAMP` | — |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE hint_cooldowns (
+    tag_id      INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    marker      TEXT NOT NULL,
+    until_date  TEXT NOT NULL,
+    updated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (tag_id, marker)
+)
+```
+
+</details>
+
 ### import_provenance
 
 | カラム名 | 型 | NULL | デフォルト | PK |

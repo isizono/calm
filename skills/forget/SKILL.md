@@ -25,6 +25,7 @@ user-invocable: false
 - 議論中でまだ結論が出ていない論点（撤回ではなく`[議論中]`decision、`decision-record` skillの担当）
 - ユーザーが直前に「forgetはいい」等、発動を明示的に拒否した直後
 - ユーザーがClaudeの今の振る舞いを直したが、保存済みの記録に矛盾・陳腐化が無い場合（[remember](../remember/SKILL.md) skillの担当）
+- 同一タグで方針変更が繰り返されている、または構造的な再発が疑われる場合（単発の新事実による前提消失ではなく、再発原因の分析が要る。[audit](../audit/SKILL.md) skillの担当）
 
 ## 起動時確認フロー
 
