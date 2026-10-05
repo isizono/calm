@@ -35,7 +35,11 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 from hooks.hook_state import HookState
-from hooks.hook_transcript import _extract_short_name, _is_calm_tool, _parse_ask_id_from_result
+from hooks.hook_transcript import (
+    _extract_short_name,
+    _is_calm_tool,
+    _parse_ask_id_from_result,
+)
 from src.env_compat import env_get
 from src.harness import select_harness
 from src.infra.lock_file import is_process_alive

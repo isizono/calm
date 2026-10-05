@@ -2,17 +2,26 @@
 
 MCPサーバーのtool description/instructionsが一定の文字数を超えると切り詰められる
 ことが実機検証で確認されている。src.main の @mcp.tool() docstring が安全マージンと
-して1,900字以内に収まることを検証する。
+して1,900字以内に収まることと、全ツールの description と入力スキーマの合計が
+上限内に収まることを検証する。
 
 既知の超過項目(KNOWN_OVER_BUDGET)は本テスト新設時点で既に超過しており、削減は
 本PRの対応範囲外のため xfail として明示する。超過が解消されたら一覧から名前を
 外すこと(xfail(strict=True)のため、解消後も一覧に残すとテストが失敗して気づける)。
 """
+import json
+
 import pytest
 
-from tests.helpers import all_tool_descriptions
+from tests.helpers import all_tool_descriptions, all_tool_schemas
 
 DOCSTRING_CHAR_BUDGET = 1900
+
+# 全ツールの description + 入力スキーマ(JSON)の UTF-8 合計バイト数の上限。
+# ツール定義はリクエストのたびにモデルの入力に載るため、1本ずつ上限内でも合計の増加は
+# 応答時間とコストに効く(#803)。新設時点の実測 128,307 バイトに少し余裕を持たせた値。
+# 超過したら、description を短くするか、増やす理由をPRに書いてこの値を引き上げること。
+TOTAL_TOOL_DEFINITION_BYTES_BUDGET = 130_000
 
 # 実測で1,900字を超えている既知のツール(本テスト新設時点の記録)。
 KNOWN_OVER_BUDGET = {"search"}
@@ -41,3 +50,15 @@ def test_known_over_budget_docstrings_still_exceed(name):
     """
     descriptions = all_tool_descriptions()
     assert len(descriptions[name]) <= DOCSTRING_CHAR_BUDGET
+
+
+def test_total_tool_definitions_within_budget():
+    """全ツールの description と入力スキーマの合計が上限を超えていないことを検証する。"""
+    descriptions = all_tool_descriptions()
+    schemas = all_tool_schemas()
+    total = sum(len((desc or "").encode()) for desc in descriptions.values()) + sum(
+        len(json.dumps(schema, ensure_ascii=False).encode()) for schema in schemas.values()
+    )
+    assert total <= TOTAL_TOOL_DEFINITION_BYTES_BUDGET, (
+        f"ツール定義の合計が{TOTAL_TOOL_DEFINITION_BYTES_BUDGET}バイトを超えた: {total}バイト"
+    )

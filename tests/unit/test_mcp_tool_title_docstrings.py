@@ -9,7 +9,6 @@ src.main の @mcp.tool() 関数の docstring から生成されるため、そ�
 """
 from tests.helpers import all_tool_descriptions as _all_tool_descriptions
 
-
 TITLE_TOOLS = [
     "add_topic",
     "add_decisions",

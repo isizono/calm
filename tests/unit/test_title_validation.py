@@ -4,14 +4,12 @@ helper の境界値テストと、6 つの add/update 系サービスが 40 字�
 VALIDATION_ERROR を返すことを確認する。
 """
 
-import pytest
 
 from src.services.activity_service import add_activity, update_activity
 from src.services.decision_service import add_decisions
 from src.services.material_service import add_material, update_material
 from src.services.title_validation import TITLE_MAX_LEN, validate_title
 from src.services.topic_service import add_topic
-
 
 DEFAULT_TAGS = ["domain:test"]
 

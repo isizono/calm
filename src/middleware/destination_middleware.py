@@ -21,12 +21,11 @@ from __future__ import annotations
 import contextlib
 import sqlite3
 import sys
-from typing import Any, Optional
+from typing import Any
 
 import mcp.types as mt
-from mcp.types import TextContent
-
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
+from mcp.types import TextContent
 
 from src import config
 from src.db import get_connection
@@ -121,7 +120,7 @@ class DestinationCandidateMiddleware(Middleware):
         return result
 
 
-def _find_judge_ready_goal_id(result: Any) -> Optional[int]:
+def _find_judge_ready_goal_id(result: Any) -> int | None:
     """応答のgoal/goal_hintブロックがjudge_readyならそのgoal_idを返す。"""
     structured = getattr(result, "structured_content", None)
     if not isinstance(structured, dict):

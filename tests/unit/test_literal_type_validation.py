@@ -20,7 +20,6 @@ from src.services.activity_service import add_activity
 from src.services.topic_service import add_topic
 from tests.helpers import add_decision, all_tool_schemas
 
-
 DEFAULT_TAGS = ["domain:test"]
 
 

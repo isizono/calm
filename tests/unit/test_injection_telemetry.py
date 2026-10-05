@@ -18,7 +18,6 @@ from src.db import get_connection
 from src.services import search_service
 from src.services.material_service import add_material
 
-
 DEFAULT_TAGS = ["domain:test"]
 
 

@@ -2,10 +2,10 @@
 import re
 import sqlite3
 import threading
-from typing import Literal, Optional, Union
+from typing import Literal
 
 from src.config import TAG_NOTES_DECAY_DAYS
-from src.db import execute_query, get_connection, row_to_dict
+from src.db import get_connection, row_to_dict
 from src.services.decay_utils import is_decay_eligible
 
 VALID_NAMESPACES = {'', 'domain', 'intent', 'glossary', 'layer'}
@@ -47,7 +47,7 @@ def parse_tag(tag_str: str) -> tuple[str, str]:
 def validate_and_parse_tags(
     tags: list[str],
     required: bool = False,
-) -> Union[list[tuple[str, str]], dict]:
+) -> list[tuple[str, str]] | dict:
     """タグ配列をバリデーション・パースする。
 
     Args:
@@ -507,7 +507,7 @@ def get_effective_tags_batch_by_ids(
 
 def get_effective_tags(conn: sqlite3.Connection, entity_type: str, entity_id: int) -> list[str]:
     """entity(decision/log)の有効タグ（topic_tags UNION entity_tags）を取得する。"""
-    entity_table = _ENTITY_TABLE[entity_type]
+    _ENTITY_TABLE[entity_type]  # 未知のentity_typeをKeyErrorで弾く（下のf-string SQLに埋め込むため）
     junction_table = f"{entity_type}_tags"
     id_column = f"{entity_type}_id"
 
@@ -577,7 +577,7 @@ _SEARCH_TAGS_W_VEC = 1.0
 
 def search_tags(
     query: str,
-    namespace: Optional[str] = None,
+    namespace: str | None = None,
     include_notes: bool = False,
     limit: int = 20,
 ) -> dict:
@@ -590,9 +590,8 @@ def search_tags(
     Args:
         query: 検索キーワード（タグ名部分一致 + ベクトル検索）
         namespace: namespaceフィルタ（"domain", "intent", ""、未指定で全タグ）
-        include_notes: Trueのときnotesを返す（デフォルトFalse）。notesを持つ結果の
-            last_injected_atも更新する（tag notes decay述語の明示参照による復帰経路。
-            get_habits(habit_id=...)がhabits側で持つ参照スタンプ更新と同じ役割）
+        include_notes: Trueのときnotesを返す（デフォルトFalse）。検索での参照は
+            tag notes decayの鮮度を戻さない（last_injected_at等は更新しない）
         limit: 取得件数上限（デフォルト20）
 
     Returns:
@@ -755,24 +754,6 @@ def search_tags(
                 if include_notes:
                     entry["notes"] = r["notes"]
                 tags.append(entry)
-
-            if include_notes:
-                # notesを実際に返したタグのlast_injected_atを更新する。tag notesには
-                # get_habits(habit_id=...)に相当する明示参照の復帰経路が他に無いため、
-                # これが無いと一度decay判定されたタグは自動注入から永久にpointer化された
-                # ままになる（is_decay_eligibleはlast_injected_atが更新されない限り
-                # 恒久的にTrueを返し続けるため）。
-                referenced_ids = [
-                    tag_id for tag_id, _ in scored
-                    if like_tag_data.get(tag_id, {}).get("notes")
-                ]
-                if referenced_ids:
-                    ph = ",".join("?" * len(referenced_ids))
-                    conn.execute(
-                        f"UPDATE tags SET last_injected_at = CURRENT_TIMESTAMP WHERE id IN ({ph})",
-                        referenced_ids,
-                    )
-                    conn.commit()
 
             return {"tags": tags}
 
@@ -974,7 +955,7 @@ def update_tag(
                     }
                 }
             conn.execute(
-                "UPDATE tags SET notes = ? WHERE id = ?",
+                "UPDATE tags SET notes = ?, notes_updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (notes, tag_id),
             )
             conn.commit()
@@ -1223,6 +1204,18 @@ _injected_tags_lock = threading.Lock()
 _INJECTED_TAGS_MAX_SESSIONS = 256
 
 
+def _max_timestamp(a: str | None, b: str | None) -> str | None:
+    """2つのDB TIMESTAMP文字列（CURRENT_TIMESTAMPが生成する"YYYY-MM-DD HH:MM:SS"
+    固定長）のうち新しい方を返す。どちらもNoneならNone、片方だけNoneなら他方を返す。
+    固定長かつ同一フォーマットのため、辞書順比較がそのまま時系列比較になる。
+    """
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return max(a, b)
+
+
 def collect_tag_notes_for_injection(
     conn: sqlite3.Connection,
     tag_strings: list[str],
@@ -1251,8 +1244,9 @@ def collect_tag_notes_for_injection(
         [{"tag": "domain:calm", "notes": "..."}, ...]
         notes が空文字列（全セクションを退避し尽くした後の tags.notes 等）のタグは
         対象外にする（NULL 判定だけでは拾えないため）。
-        タグ作成からTAG_NOTES_DECAY_DAYSを超え、かつ全文配信実績（last_injected_at）も
-        同日数以内に更新されていないタグは、notesの全文の代わりに1行ポインタ文言へ縮退する
+        タグ作成からTAG_NOTES_DECAY_DAYSを超え、かつ全文配信実績（last_injected_at）と
+        notes本文の最終更新（notes_updated_at）のどちらも同日数以内に更新されていない
+        タグは、notesの全文の代わりに1行ポインタ文言へ縮退する
         （レンダー時decay。search_tags等の返却対象からは除外しない）。
         always_inject_namespaces対象のタグは常時全文注入という既存契約が優先されるため、
         decay判定の対象から除外される（ポインタ文言に縮退しない）。
@@ -1281,14 +1275,14 @@ def collect_tag_notes_for_injection(
                     del _injected_tags[next(iter(_injected_tags))]
             session_set = _injected_tags.setdefault(session_id, set())
             new_normal = [
-                (t, p) for t, p in zip(normal_tags, normal_parsed)
+                (t, p) for t, p in zip(normal_tags, normal_parsed, strict=False)
                 if t not in session_set
             ]
             session_set.update(t for t, _ in new_normal)
     else:
         # mark=False（またはsession_id未解決）: 全タグをクエリ対象にし、
         # _injected_tags は更新しない
-        new_normal = list(zip(normal_tags, normal_parsed))
+        new_normal = list(zip(normal_tags, normal_parsed, strict=False))
 
     # クエリ対象: new_normal + always（always_tagsは毎回クエリ）
     parsed = [p for _, p in new_normal] + always_parsed
@@ -1297,7 +1291,8 @@ def collect_tag_notes_for_injection(
     placeholders = " OR ".join(["(namespace = ? AND name = ?)"] * len(parsed))
     params = [v for pair in parsed for v in pair]
     rows = conn.execute(
-        f"SELECT id, namespace, name, notes, created_at, last_injected_at FROM tags "
+        f"SELECT id, namespace, name, notes, created_at, last_injected_at, notes_updated_at "
+        f"FROM tags "
         f"WHERE ({placeholders}) AND notes IS NOT NULL AND LENGTH(notes) > 0 AND archived_at IS NULL",
         params
     ).fetchall()
@@ -1309,10 +1304,15 @@ def collect_tag_notes_for_injection(
     fresh_ids = []
     for row in rows:
         tag_str = f"{row['namespace']}:{row['name']}" if row["namespace"] else row["name"]
+        # 参照実績はlast_injected_at（全文配信実績）とnotes_updated_at（notes本文の
+        # 最終更新）の新しい方を見る。古いタグにnotesを書いた直後、次の遭遇でも
+        # 全文が届くようにするため（last_injected_atだけでは、notes書き込みが
+        # 反映されず即座にdecay対象になる）。
+        last_referenced_at = _max_timestamp(row["last_injected_at"], row["notes_updated_at"])
         # always_inject_namespaces対象は常時全文注入契約が優先されるため、decay判定自体を
         # スキップする。
         if row["namespace"] not in always_ns and is_decay_eligible(
-            row["created_at"], row["last_injected_at"], TAG_NOTES_DECAY_DAYS
+            row["created_at"], last_referenced_at, TAG_NOTES_DECAY_DAYS
         ):
             results.append({"tag": tag_str, "notes": _decay_pointer_text(tag_str)})
             continue
@@ -1342,9 +1342,21 @@ def _decay_pointer_text(tag_str: str) -> str:
     )
 
 
-def _set_tag_notes_by_id_with_conn(conn: sqlite3.Connection, tag_id: int, notes: str) -> None:
-    """tag_id指定でnotesを全文置換する。commitは呼び出し元が行う。"""
-    conn.execute("UPDATE tags SET notes = ? WHERE id = ?", (notes, tag_id))
+def _set_tag_notes_by_id_with_conn(
+    conn: sqlite3.Connection, tag_id: int, notes: str, *, touch_notes_updated_at: bool = False
+) -> None:
+    """tag_id指定でnotesを全文置換する。commitは呼び出し元が行う。
+
+    touch_notes_updated_at=True のとき notes_updated_at も現在時刻に更新する。
+    クールダウンマーカーのような機械的な書き換えでdecay猶予を延ばさないよう、既定はFalse。
+    """
+    if touch_notes_updated_at:
+        conn.execute(
+            "UPDATE tags SET notes = ?, notes_updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (notes, tag_id),
+        )
+    else:
+        conn.execute("UPDATE tags SET notes = ? WHERE id = ?", (notes, tag_id))
 
 
 def _append_tag_notes_with_conn(conn, tag_str: str, content: str) -> int:
@@ -1364,7 +1376,10 @@ def _append_tag_notes_with_conn(conn, tag_str: str, content: str) -> int:
     tag_id = row["id"]
     existing = row["notes"]
     new_notes = f"{existing}\n\n{content}" if existing else content
-    conn.execute("UPDATE tags SET notes = ? WHERE id = ?", (new_notes, tag_id))
+    conn.execute(
+        "UPDATE tags SET notes = ?, notes_updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (new_notes, tag_id),
+    )
     return tag_id
 
 
@@ -1422,7 +1437,7 @@ def _split_tag_notes_layers(notes: str) -> dict:
     trailer = "".join(lines[trailer_start:])
     body_lines = lines[:trailer_start]
 
-    heading_indices = [i for i, l in enumerate(body_lines) if l.startswith(_SECTION_HEADING_PREFIX)]
+    heading_indices = [i for i, ln in enumerate(body_lines) if ln.startswith(_SECTION_HEADING_PREFIX)]
     if not heading_indices:
         preamble = "".join(body_lines)
         sections: list[dict] = []
@@ -1458,9 +1473,9 @@ def demote_tag_notes(
     tag: str,
     sections: list[str],
     mode: Literal["pointer", "drop"] = "pointer",
-    archive_material_id: Optional[int] = None,
-    archive_tags: Optional[list[str]] = None,
-    reason: Optional[str] = None,
+    archive_material_id: int | None = None,
+    archive_tags: list[str] | None = None,
+    reason: str | None = None,
 ) -> dict:
     """tag notesの指定セクションを資材へ逐語退避し、notesを縮小する。
 
@@ -1521,11 +1536,14 @@ def demote_tag_notes(
     # NOTE: 上記docstringは main.py の demote_tag_notes ツールdocstringと
     # 同一に保つこと(二層とも同じ内容が必要)。
     # material_serviceがtag_serviceをimportするため、循環import回避のためlocal import
+    from src.services.embedding_service import (
+        build_embedding_text,
+        generate_and_store_embedding,
+    )
     from src.services.material_service import (
         _add_material_with_conn,
         _append_material_content_with_conn,
     )
-    from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
     from src.services.title_validation import TITLE_MAX_LEN
 
     if not sections:
@@ -1655,7 +1673,7 @@ def demote_tag_notes(
             for sec in remaining_sections:
                 if _normalize_section_key(sec["heading"]) == _normalize_section_key(_DEMOTE_INDEX_HEADING):
                     body_lines = sec["block"].splitlines()
-                    existing_index_lines = [l for l in body_lines[1:] if l.strip()]
+                    existing_index_lines = [ln for ln in body_lines[1:] if ln.strip()]
                 else:
                     kept_sections.append(sec)
             all_lines = list(existing_index_lines)
@@ -1689,6 +1707,10 @@ def demote_tag_notes(
         # 追加で退避すべきか機械的に判断できるようにするため。
         try:
             _set_tag_notes_by_id_with_conn(conn, tag_id, new_notes)
+            conn.execute(
+                "UPDATE tags SET notes_updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (tag_id,),
+            )
         except sqlite3.IntegrityError:
             conn.rollback()
             return {

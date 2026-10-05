@@ -1,5 +1,5 @@
 """staleness_service（アンカー抽出・chain head 算出・staleness 付与）の単体テスト"""
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -13,7 +13,6 @@ from src.services.staleness_service import (
 from src.services.supersede_service import get_superseded_by_batch
 from src.services.topic_service import add_topic
 from tests.helpers import add_decision
-
 
 DEFAULT_TAGS = ["domain:test"]
 
@@ -253,7 +252,7 @@ class TestAnnotateStaleness:
             )
             conn.commit()
             items = [{"id": d["decision_id"], "created_at": created_at}]
-            now = datetime(2026, 6, 15, tzinfo=timezone.utc)
+            now = datetime(2026, 6, 15, tzinfo=UTC)
             annotate_staleness(conn, items, now=now)
         finally:
             conn.close()
@@ -327,4 +326,4 @@ class TestAnnotateStaleness:
 
 
 def _now_str() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")

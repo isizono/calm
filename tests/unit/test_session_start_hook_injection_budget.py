@@ -10,7 +10,7 @@
    個々のセクション内部実装がこの膨張を自前で防いでいなくても、compose()の
    ハード切り詰めにより全体予算は常に守られるという契約の確認が目的。
 """
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from hooks import session_start_hook
 from src import config
@@ -88,7 +88,7 @@ def _seed_domain_tag(conn, name: str) -> int:
 
 def _seed_many_heartbeat_activities(conn, count: int, domain_tag_id: int) -> None:
     """別セッションでheartbeat中のactivityをcount件作成する（階層1は件数上限が無い）。"""
-    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    now_iso = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     for i in range(count):
         cursor = conn.execute(
             "INSERT INTO activities "
@@ -104,7 +104,7 @@ def _seed_many_heartbeat_activities(conn, count: int, domain_tag_id: int) -> Non
 
 
 def _seed_many_signal_kinds(conn, count: int) -> None:
-    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    now_iso = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     for i in range(count):
         conn.execute(
             "INSERT INTO signal_events "

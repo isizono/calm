@@ -5,10 +5,11 @@
 - バリデーション: 他パラメータとの排他
 """
 import pytest
+
+import src.services.embedding_service as emb
 from src.db import get_connection
 from src.services.tag_service import update_tag
 from src.services.topic_service import add_topic
-import src.services.embedding_service as emb
 
 
 @pytest.fixture(autouse=True)

@@ -11,15 +11,15 @@ DECISIONS_FULL_LIMIT件まで、tag_notesは1タグあたり_TAG_NOTES_RATCHET_C
 字まで）。到達不能な形（例: 40件のcontrol.dependenciesが素のリストのまま）は
 使わない。
 """
-from src.services import checkin_tier_service as cts
-from src.services import response_budget as rb
-from src.services.checkin_queries import DECISIONS_FULL_LIMIT
-from src.services.tag_service import _decay_pointer_text, _TAG_NOTES_RATCHET_CEILING
 from src.config import (
     CHECKIN_BUDGET_CHARS,
     CHECKIN_CONTROL_CAP_CHARS,
     CHECKIN_TAG_NOTES_CAP_CHARS,
 )
+from src.services import checkin_tier_service as cts
+from src.services import response_budget as rb
+from src.services.checkin_queries import DECISIONS_FULL_LIMIT
+from src.services.tag_service import _TAG_NOTES_RATCHET_CEILING, _decay_pointer_text
 
 
 def _activity(desc: str = "d") -> dict:

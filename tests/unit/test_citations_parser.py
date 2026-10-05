@@ -1,5 +1,4 @@
 """citations_pure.extract_citations のパーサ単体テスト"""
-import pytest
 
 from src.services.citations_pure import extract_citations
 

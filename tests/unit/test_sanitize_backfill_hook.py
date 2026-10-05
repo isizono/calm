@@ -17,7 +17,6 @@ from hooks import sanitize_backfill_hook
 from hooks.hook_state import HookState
 from src.services.citations_pure import TYPE_TO_TABLE
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

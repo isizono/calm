@@ -7,15 +7,14 @@
 
 import pytest
 
+import src.services.embedding_service as emb
 from src.config import ARCHIVED_DEMOTION_FACTOR
 from src.services import search_service
+from src.services.activity_service import add_activity
 from src.services.search_service import _apply_archived_demotion
 from src.services.tag_service import update_tag
 from src.services.topic_service import add_topic
-from src.services.activity_service import add_activity
 from tests.helpers import add_decision
-import src.services.embedding_service as emb
-
 
 DEFAULT_TAGS = ["domain:test"]
 

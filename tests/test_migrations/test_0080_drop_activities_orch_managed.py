@@ -5,7 +5,6 @@
 ことを確認する。SQLite 3.35+ で ALTER TABLE ... DROP COLUMN が使用可能なことを
 前提とする。
 """
-import sqlite3
 
 import pytest
 from yoyo import default_migration_table, read_migrations

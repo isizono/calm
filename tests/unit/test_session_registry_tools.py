@@ -53,7 +53,7 @@ def _sequential_timestamps(monkeypatch, count=10):
 
     同一秒内に複数register_checkinが呼ばれるとタイムスタンプが衝突しうるため。
     """
-    base = dt.datetime.now(dt.timezone.utc)
+    base = dt.datetime.now(dt.UTC)
     values = iter(
         (base + dt.timedelta(seconds=i)).strftime("%Y-%m-%dT%H:%M:%SZ") for i in range(count)
     )

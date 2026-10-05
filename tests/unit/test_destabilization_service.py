@@ -9,12 +9,14 @@ from sqlite_vec import serialize_float32
 
 from src.db import get_connection
 from src.services import precedent_pull_service as pps
-from src.services.topic_service import add_topic
 from src.services.decision_service import add_decisions
-from src.services.destabilization_service import resolve_destabilization, suggest_destabilized_candidates
+from src.services.destabilization_service import (
+    resolve_destabilization,
+    suggest_destabilized_candidates,
+)
 from src.services.relation_service import add_relation
+from src.services.topic_service import add_topic
 from tests.helpers import add_decision
-
 
 DEFAULT_TAGS = ["domain:test"]
 EMBEDDING_DIM = 384

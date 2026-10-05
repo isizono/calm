@@ -1,11 +1,11 @@
 """資材サービスの統合テスト"""
 import pytest
+
 from src.db import get_connection
 from src.services.activity_service import add_activity
 from src.services.material_service import add_material, get_material, update_material
 from src.services.retract_service import retract
 from src.services.search_service import get_by_id, get_by_ids
-
 
 DEFAULT_TAGS = ["domain:test"]
 

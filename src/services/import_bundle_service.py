@@ -33,7 +33,7 @@ import os
 import re
 import sqlite3
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import yaml
 from sqlite_vec import serialize_float32
@@ -55,7 +55,7 @@ from src.services.embedding_service import (
     generate_and_store_embedding,
     insert_topic_embedding_with_conn,
 )
-from src.services.export_bundle_service import BUNDLE_FORMAT, _MAIN_FIELD
+from src.services.export_bundle_service import _MAIN_FIELD, BUNDLE_FORMAT
 from src.services.export_candidate_service import _JUNCTION
 from src.services.instance_service import get_instance_id_with_conn
 from src.services.material_service import _is_within_export_dir
@@ -66,11 +66,11 @@ from src.services.relation_service import (
 )
 from src.services.retract_service import _delete_search_index_entry
 from src.services.tag_service import (
+    _set_tag_notes_by_id_with_conn,
     ensure_tag_ids,
     get_entity_tags,
     link_tags,
     parse_tag,
-    _set_tag_notes_by_id_with_conn,
 )
 
 logger = logging.getLogger(__name__)
@@ -106,7 +106,7 @@ def _load_manifest(bundle_root: str) -> dict | None:
     manifest_path = os.path.join(bundle_root, "manifest.yaml")
     if not os.path.isfile(manifest_path):
         return None
-    with open(manifest_path, "r", encoding="utf-8") as f:
+    with open(manifest_path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
     return data if isinstance(data, dict) else None
 
@@ -243,7 +243,7 @@ def _load_bundle_entities(bundle_root: str, entities_meta: list) -> tuple[dict[s
         if not os.path.isfile(abs_path):
             errors.append({"key": key, "error": "file_not_found"})
             continue
-        with open(abs_path, "r", encoding="utf-8") as f:
+        with open(abs_path, encoding="utf-8") as f:
             text = f.read()
         split = _split_frontmatter(text)
         if split is None:
@@ -632,7 +632,7 @@ def _check_duplicates_with_conn(
     if query_embeddings is None:
         return duplicates, True
 
-    for (key, info), query_embedding in zip(candidates, query_embeddings):
+    for (key, info), query_embedding in zip(candidates, query_embeddings, strict=False):
         similar = _find_similar_local_entities_with_conn(conn, query_embedding, DUPLICATE_SEARCH_LIMIT)
         if similar:
             duplicates.append({"key": key, "title": info["title"], "similar": similar})
@@ -771,7 +771,9 @@ def _resolve_and_apply_tags_with_conn(
         if row is None:
             tag_id = ensure_tag_ids(conn, [(ns, name)])[0]
             if incoming_notes:
-                _set_tag_notes_by_id_with_conn(conn, tag_id, incoming_notes)
+                _set_tag_notes_by_id_with_conn(
+                    conn, tag_id, incoming_notes, touch_notes_updated_at=True
+                )
             result[raw] = tag_id
             continue
 
@@ -780,7 +782,9 @@ def _resolve_and_apply_tags_with_conn(
             diff = _notes_diff(local_notes, incoming_notes)
             if diff:
                 merged = f"{local_notes}\n\n{diff}" if local_notes else diff
-                _set_tag_notes_by_id_with_conn(conn, row["id"], merged)
+                _set_tag_notes_by_id_with_conn(
+                    conn, row["id"], merged, touch_notes_updated_at=True
+                )
 
         result[raw] = row["canonical_id"] if row["canonical_id"] is not None else row["id"]
     return result
@@ -978,7 +982,7 @@ def _apply_bundle_with_conn(
     on_upstream_change: dict[str, str] = resolutions.get("on_upstream_change") or {}
     entity_overrides: dict = resolutions.get("entity_overrides") or {}
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
 
     # --- タグ解決・作成・notesマージ(create/update本体より先に全タグを解決する) ---
     all_tag_strings: set[str] = set()

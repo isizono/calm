@@ -3,17 +3,16 @@
 get_topicsはtags引数でフィルタリングする。
 get_logs/get_decisionsは各アイテムにtagsフィールドを含む。
 """
-import pytest
 from src.db import get_connection
+from src.services.decision_service import get_decisions
+from src.services.discussion_log_service import get_logs
 from src.services.topic_service import (
+    DESC_ELLIPSIS,
+    TOPIC_DESC_MAX_LEN,
     add_topic,
     get_topics,
-    TOPIC_DESC_MAX_LEN,
 )
-from tests.helpers import add_log, add_decision
-from src.services.discussion_log_service import get_logs
-from src.services.decision_service import get_decisions
-
+from tests.helpers import add_decision, add_log
 
 DEFAULT_TAGS = ["domain:test"]
 
@@ -350,8 +349,7 @@ def test_get_topics_description_truncated(temp_db):
 
     assert "error" not in result
     topic = result["topics"][0]
-    assert len(topic["description"]) == TOPIC_DESC_MAX_LEN
-    assert topic["description"] == "A" * TOPIC_DESC_MAX_LEN
+    assert topic["description"] == "A" * TOPIC_DESC_MAX_LEN + DESC_ELLIPSIS
 
 
 
@@ -560,3 +558,13 @@ def test_get_decisions_with_extra_tags(temp_db):
     assert "domain:test" in dec["tags"]
     # decision個別のタグも含む
     assert "intent:design" in dec["tags"]
+
+
+def test_get_topics_marks_truncated_description(temp_db):
+    long = "あ" * (TOPIC_DESC_MAX_LEN + 50)
+    add_topic(title="long", description=long, tags=["domain:test"])
+    add_topic(title="short", description="short", tags=["domain:test"])
+    items = {t["title"]: t for t in get_topics()["topics"]}
+    assert items["long"]["description"] == long[:TOPIC_DESC_MAX_LEN] + DESC_ELLIPSIS
+    assert items["long"]["description_truncated"] is True
+    assert "description_truncated" not in items["short"]

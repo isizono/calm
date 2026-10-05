@@ -1,5 +1,6 @@
 """habit_serviceのユニットテスト"""
 import pytest
+
 from src.config import ALWAYS_POOL_CAPACITY
 from src.db import get_connection
 from src.services.habit_service import (
@@ -10,7 +11,6 @@ from src.services.habit_service import (
     list_intelligently_habit_manifest_with_conn,
     update_habit,
 )
-
 
 
 class TestAddHabit:

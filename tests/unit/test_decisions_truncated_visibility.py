@@ -5,12 +5,11 @@ LIMIT 30 による黙示的な切り捨てを応答フィールドで可視化�
 import pytest
 
 from src.services.activity_service import add_activity
-from src.services.topic_service import add_topic
-from src.services.relation_service import add_relation
 from src.services.decision_service import get_decisions
+from src.services.relation_service import add_relation
 from src.services.retract_service import retract
+from src.services.topic_service import add_topic
 from tests.helpers import add_decision, assert_no_write_errors
-
 
 DEFAULT_TAGS = ["domain:test"]
 

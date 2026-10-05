@@ -5,21 +5,24 @@
 - get_by_ids での遭遇時注入
 - 4ツール（get_topics/get_activities/get_logs/get_decisions）の結果ベース注入
 """
+from datetime import UTC
+
 import pytest
+
+import src.services.embedding_service as emb
 from src.db import get_connection
-from src.services.tag_service import (
-    update_tag,
-    collect_tag_notes_for_injection,
-    search_tags,
-    _injected_tags,
-)
-from src.services.topic_service import add_topic
+from src.services.activity_service import add_activity
 from src.services.decision_service import add_decisions
 from src.services.discussion_log_service import add_logs
-from src.services.activity_service import add_activity
 from src.services.search_service import get_by_ids
+from src.services.tag_service import (
+    _injected_tags,
+    collect_tag_notes_for_injection,
+    search_tags,
+    update_tag,
+)
+from src.services.topic_service import add_topic
 from tests.helpers import add_decision
-import src.services.embedding_service as emb
 
 
 @pytest.fixture(autouse=True)
@@ -117,6 +120,48 @@ class TestUpdateTag:
         result = update_tag("domain:test", "x" * 100)
         assert "error" not in result
         assert result["notes"] == "x" * 100
+
+    def test_notes_write_updates_notes_updated_at(self, temp_db):
+        """update_tagでnotesを書き込むとnotes_updated_atが更新される
+        （180日超過タグにnotesを書いた直後の遭遇で全文が届くための前提）"""
+        add_topic(title="Test", description="Desc", tags=["domain:test"])
+
+        conn = get_connection()
+        try:
+            row_before = conn.execute(
+                "SELECT notes_updated_at FROM tags WHERE namespace='domain' AND name='test'"
+            ).fetchone()
+            assert row_before["notes_updated_at"] is None
+        finally:
+            conn.close()
+
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE tags SET notes_updated_at = '2000-01-01 00:00:00' "
+                "WHERE namespace='domain' AND name='test'"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = update_tag("domain:test", "教訓")
+        assert "error" not in result
+
+        conn = get_connection()
+        try:
+            row_after = conn.execute(
+                "SELECT notes_updated_at FROM tags WHERE namespace='domain' AND name='test'"
+            ).fetchone()
+        finally:
+            conn.close()
+
+        from datetime import datetime
+
+        written = datetime.strptime(row_after["notes_updated_at"], "%Y-%m-%d %H:%M:%S").replace(
+            tzinfo=UTC
+        )
+        assert abs((datetime.now(UTC) - written).total_seconds()) < 60
 
     # 「トリガー導入前から4000字超のnotesを持つタグを縮める／さらに伸ばす」ケースは
     # migrations/0066のDBトリガー自体がINSERT時点で4000字超を拒否するため、
@@ -463,6 +508,7 @@ class TestTagNotesInjection:
     def test_session_eviction_concurrent_new_sessions(self, temp_db):
         """上限到達状態で複数スレッドが同時に新規セッションを登録しても例外が出ない"""
         import threading
+
         from src.services import tag_service
 
         add_topic(title="Test", description="Desc", tags=["domain:test"])
@@ -1479,8 +1525,8 @@ class TestArchivedPushExclusion:
         collect_tag_notes_for_injection経由の除外がcheck_in経由でも自動的に効くことを
         実際にcollect_and_assemble()を呼んで観察する。
         """
-        from src.services.checkin_tier_service import collect_and_assemble
         from src.services.activity_service import add_activity
+        from src.services.checkin_tier_service import collect_and_assemble
 
         act = add_activity(
             title="CheckinArchivedExclusion", description="Desc",
@@ -1500,8 +1546,8 @@ class TestArchivedPushExclusion:
 
     def test_checkin_response_keys_unchanged_by_archived(self, temp_db):
         """archivedタグの有無でcheck_in応答のトップレベルキー集合が変わらない（新規フィールド追加なし）"""
-        from src.services.checkin_tier_service import collect_and_assemble
         from src.services.activity_service import add_activity
+        from src.services.checkin_tier_service import collect_and_assemble
 
         act_plain = add_activity(
             title="CheckinKeysPlain", description="Desc",
@@ -1557,14 +1603,16 @@ class TestTagNotesDecay:
     """collect_tag_notes_for_injectionのレンダー時decay（180日）のテスト"""
 
     def test_old_tag_without_injection_returns_pointer_text(self, temp_db):
-        """180日超過+last_injected_at無しのタグはnotes全文の代わりにポインタ文言が返る"""
+        """180日超過+last_injected_at無し+notes_updated_atも180日超過のタグは
+        notes全文の代わりにポインタ文言が返る"""
         add_topic(title="Test", description="Desc", tags=["domain:old-tag"])
         update_tag("domain:old-tag", "古い教訓の全文")
 
         conn = get_connection()
         try:
             conn.execute(
-                "UPDATE tags SET created_at = datetime('now', '-181 days') "
+                "UPDATE tags SET created_at = datetime('now', '-181 days'), "
+                "notes_updated_at = datetime('now', '-181 days') "
                 "WHERE namespace = 'domain' AND name = 'old-tag'"
             )
             conn.commit()
@@ -1588,6 +1636,33 @@ class TestTagNotesDecay:
             result = collect_tag_notes_for_injection(conn, ["domain:fresh-tag"])
             assert result is not None
             assert result[0]["notes"] == "新しい教訓の全文"
+        finally:
+            conn.close()
+
+    def test_notes_written_on_old_tag_delivers_full_text_immediately(self, temp_db):
+        """作成から180日超過したタグでも、update_tagでnotesを書いた直後の遭遇では
+        全文が届く（notes_updated_atがdecay判定に反映されることの確認）"""
+        add_topic(title="Test", description="Desc", tags=["domain:revived-by-write-tag"])
+
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE tags SET created_at = datetime('now', '-181 days') "
+                "WHERE namespace = 'domain' AND name = 'revived-by-write-tag'"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        update_tag("domain:revived-by-write-tag", "書いた直後に届くべき教訓全文")
+
+        conn = get_connection()
+        try:
+            result = collect_tag_notes_for_injection(
+                conn, ["domain:revived-by-write-tag"], session_id="writer-session"
+            )
+            assert result is not None
+            assert result[0]["notes"] == "書いた直後に届くべき教訓全文"
         finally:
             conn.close()
 
@@ -1658,7 +1733,8 @@ class TestTagNotesDecay:
         conn = get_connection()
         try:
             conn.execute(
-                "UPDATE tags SET created_at = datetime('now', '-181 days') "
+                "UPDATE tags SET created_at = datetime('now', '-181 days'), "
+                "notes_updated_at = datetime('now', '-181 days') "
                 "WHERE namespace = 'domain' AND name = 'locked-tag'"
             )
             conn.commit()
@@ -1680,31 +1756,31 @@ class TestTagNotesDecay:
         finally:
             conn.close()
 
-    def test_search_tags_include_notes_updates_last_injected_at(self, temp_db):
-        """search_tags(include_notes=True)が対象タグのlast_injected_atを更新する
-        （decay恒久ロック回避のエスケープハッチ）"""
-        add_topic(title="Test", description="Desc", tags=["domain:escape-hatch-tag"])
-        update_tag("domain:escape-hatch-tag", "教訓")
+    def test_search_tags_include_notes_does_not_update_last_injected_at(self, temp_db):
+        """search_tags(include_notes=True)で引っかかっても対象タグのlast_injected_atは
+        更新されない（検索での参照は鮮度を戻さない）"""
+        add_topic(title="Test", description="Desc", tags=["domain:no-revive-tag"])
+        update_tag("domain:no-revive-tag", "教訓")
 
         conn = get_connection()
         try:
             row_before = conn.execute(
-                "SELECT last_injected_at FROM tags WHERE namespace = 'domain' AND name = 'escape-hatch-tag'"
+                "SELECT last_injected_at FROM tags WHERE namespace = 'domain' AND name = 'no-revive-tag'"
             ).fetchone()
             assert row_before["last_injected_at"] is None
         finally:
             conn.close()
 
-        result = search_tags("escape-hatch-tag", include_notes=True)
+        result = search_tags("no-revive-tag", include_notes=True)
         assert "error" not in result
-        assert any(t["name"] == "escape-hatch-tag" for t in result["tags"])
+        assert any(t["name"] == "no-revive-tag" for t in result["tags"])
 
         conn = get_connection()
         try:
             row_after = conn.execute(
-                "SELECT last_injected_at FROM tags WHERE namespace = 'domain' AND name = 'escape-hatch-tag'"
+                "SELECT last_injected_at FROM tags WHERE namespace = 'domain' AND name = 'no-revive-tag'"
             ).fetchone()
-            assert row_after["last_injected_at"] is not None
+            assert row_after["last_injected_at"] is None
         finally:
             conn.close()
 
@@ -1725,24 +1801,25 @@ class TestTagNotesDecay:
         finally:
             conn.close()
 
-    def test_search_tags_escape_hatch_revives_decayed_tag(self, temp_db):
-        """search_tags(include_notes=True)後は、collect_tag_notes_for_injectionが
-        再び全文を返すようになる（エスケープハッチが実際にdecayを解消することの確認）"""
+    def test_search_tags_does_not_revive_decayed_tag(self, temp_db):
+        """search_tags(include_notes=True)で参照しても、collect_tag_notes_for_injection
+        は引き続きポインタ文言を返す（検索経由の参照はdecayを解消しないことの確認）"""
         add_topic(title="Test", description="Desc", tags=["domain:revive-tag"])
-        update_tag("domain:revive-tag", "復帰する教訓全文")
+        update_tag("domain:revive-tag", "復帰しない教訓全文")
 
         conn = get_connection()
         try:
             conn.execute(
-                "UPDATE tags SET created_at = datetime('now', '-181 days') "
+                "UPDATE tags SET created_at = datetime('now', '-181 days'), "
+                "notes_updated_at = datetime('now', '-181 days') "
                 "WHERE namespace = 'domain' AND name = 'revive-tag'"
             )
             conn.commit()
 
             decayed = collect_tag_notes_for_injection(
-                conn, ["domain:revive-tag"], session_id="before-revive"
+                conn, ["domain:revive-tag"], session_id="before-search"
             )
-            assert "復帰する教訓全文" not in decayed[0]["notes"]
+            assert "復帰しない教訓全文" not in decayed[0]["notes"]
         finally:
             conn.close()
 
@@ -1750,11 +1827,11 @@ class TestTagNotesDecay:
 
         conn = get_connection()
         try:
-            revived = collect_tag_notes_for_injection(
-                conn, ["domain:revive-tag"], session_id="after-revive"
+            still_decayed = collect_tag_notes_for_injection(
+                conn, ["domain:revive-tag"], session_id="after-search"
             )
-            assert revived is not None
-            assert revived[0]["notes"] == "復帰する教訓全文"
+            assert still_decayed is not None
+            assert "復帰しない教訓全文" not in still_decayed[0]["notes"]
         finally:
             conn.close()
 
@@ -1828,7 +1905,8 @@ class TestTagNotesDecay:
         conn = get_connection()
         try:
             conn.execute(
-                "UPDATE tags SET created_at = datetime('now', '-181 days') "
+                "UPDATE tags SET created_at = datetime('now', '-181 days'), "
+                "notes_updated_at = datetime('now', '-181 days') "
                 "WHERE namespace IN ('intent', 'domain') "
                 "AND name IN ('mixed-always', 'mixed-normal')"
             )

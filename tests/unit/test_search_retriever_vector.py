@@ -173,7 +173,7 @@ def _set_vec_embedding(conn, search_index_id: int, vector: list[float]) -> None:
 
 def _cosine_distance(a: list[float], b: list[float]) -> float:
     """vec_index(distance_metric=cosine)が返すdistanceと同じ定義(1 - cosine類似度)で計算する。"""
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(x * x for x in b))
     return 1 - dot / (norm_a * norm_b)

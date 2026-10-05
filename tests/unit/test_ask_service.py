@@ -5,12 +5,12 @@ open→withdrawn）、TOCTOU回避（1段クエリUPDATEのrowcountチェック�
 duplicate blocksの静かなdedupeを検証する。
 """
 import json
-import sqlite3
 
 import pytest
 
 from src.db import get_connection
-from src.services import ask_notify, ask_service as ak
+from src.services import ask_notify
+from src.services import ask_service as ak
 from src.services.activity_service import add_activity, update_activity
 from src.services.topic_service import add_topic
 
@@ -99,7 +99,7 @@ class TestAddAskValidation:
 
     def test_default_kind_is_ask(self, temp_db):
         act = _make_activity()
-        r1 = ak.add_ask("q", tags=["domain:test"], blocks=[act])
+        ak.add_ask("q", tags=["domain:test"], blocks=[act])
         listed = ak.get_asks()
         assert listed["asks"][0]["kind"] == "ask"
 
@@ -197,7 +197,7 @@ class TestAddAskDedup:
     def test_dedup_unions_blocks_and_requesters(self, temp_db):
         act1 = _make_activity("a1")
         act2 = _make_activity("a2")
-        r1 = ak.add_ask("same question", tags=["domain:test"], blocks=[act1], session_id="sess-1")
+        ak.add_ask("same question", tags=["domain:test"], blocks=[act1], session_id="sess-1")
         ak.add_ask("same question", tags=["domain:test"], blocks=[act2], session_id="sess-2")
 
         listed = ak.get_asks()

@@ -9,7 +9,7 @@ from src.infra.session_manager import (
     LIVENESS_TIMEOUT_ENV,
     SessionManager,
     _read_grace_period_sec,
-    _read_liveness_timeout_sec,
+    read_liveness_timeout_sec,
 )
 
 
@@ -253,22 +253,22 @@ class TestReadLivenessTimeoutSec:
     def test_env_unset_returns_default(self, monkeypatch):
         """env未設定時はデフォルト値を返す"""
         monkeypatch.delenv(LIVENESS_TIMEOUT_ENV, raising=False)
-        assert _read_liveness_timeout_sec() == DEFAULT_LIVENESS_TIMEOUT_SEC
+        assert read_liveness_timeout_sec() == DEFAULT_LIVENESS_TIMEOUT_SEC
 
     def test_env_numeric_returns_value(self, monkeypatch):
         """env数値指定時はその値を返す"""
         monkeypatch.setenv(LIVENESS_TIMEOUT_ENV, "120")
-        assert _read_liveness_timeout_sec() == 120.0
+        assert read_liveness_timeout_sec() == 120.0
 
     def test_env_zero_returns_zero(self, monkeypatch):
         """env=0 は0をそのまま返す（reaper無効化マーカー）"""
         monkeypatch.setenv(LIVENESS_TIMEOUT_ENV, "0")
-        assert _read_liveness_timeout_sec() == 0.0
+        assert read_liveness_timeout_sec() == 0.0
 
     def test_env_invalid_returns_default(self, monkeypatch, capsys):
         """env無効値時はデフォルトにフォールバック + stderr警告"""
         monkeypatch.setenv(LIVENESS_TIMEOUT_ENV, "abc")
-        assert _read_liveness_timeout_sec() == DEFAULT_LIVENESS_TIMEOUT_SEC
+        assert read_liveness_timeout_sec() == DEFAULT_LIVENESS_TIMEOUT_SEC
         captured = capsys.readouterr()
         assert "WARNING" in captured.err
         assert "Invalid" in captured.err
@@ -276,7 +276,7 @@ class TestReadLivenessTimeoutSec:
     def test_env_negative_returns_default(self, monkeypatch, capsys):
         """env負値時はデフォルトにフォールバック + stderr警告"""
         monkeypatch.setenv(LIVENESS_TIMEOUT_ENV, "-1")
-        assert _read_liveness_timeout_sec() == DEFAULT_LIVENESS_TIMEOUT_SEC
+        assert read_liveness_timeout_sec() == DEFAULT_LIVENESS_TIMEOUT_SEC
         captured = capsys.readouterr()
         assert "WARNING" in captured.err
         assert ">= 0" in captured.err

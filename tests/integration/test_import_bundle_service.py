@@ -11,7 +11,6 @@ import_bundle(mode="dry_run")で読み込み、以下を検証する:
 """
 import os
 import sqlite3
-import tempfile
 
 import numpy as np
 import pytest
@@ -415,7 +414,7 @@ class TestTagReport:
 
         _switch_db(db_b)
         _set_instance("team-b")
-        local_m = _material(title="Local User", tags=["domain:shared-tag"])
+        _material(title="Local User", tags=["domain:shared-tag"])
         update_tag("domain:shared-tag", notes="incoming line one")
 
         result = import_bundle(bundle["path"], skip_duplicate_check=True)
@@ -518,7 +517,10 @@ class TestDuplicatesSuspected:
             title="Duplicate Candidate", content="This exact content already exists locally"
         )
         # backfill_embeddings相当: ローカル既存materialのembeddingを生成しておく
-        from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
+        from src.services.embedding_service import (
+            build_embedding_text,
+            generate_and_store_embedding,
+        )
 
         generate_and_store_embedding("material", local_m, build_embedding_text("Duplicate Candidate", "This exact content already exists locally"))
 
@@ -794,12 +796,14 @@ class TestApplyTags:
         conn = get_connection(load_vec=False)
         try:
             row = conn.execute(
-                "SELECT notes FROM tags WHERE namespace = 'domain' AND name = 'brand-new-tag'"
+                "SELECT notes, notes_updated_at FROM tags "
+                "WHERE namespace = 'domain' AND name = 'brand-new-tag'"
             ).fetchone()
         finally:
             conn.close()
         assert row is not None
         assert row["notes"] == "How to use this tag"
+        assert row["notes_updated_at"] is not None
 
     def test_apply_merges_notes_diff_into_existing_tag(self, dbs, mock_embedding_server):
         db_a, db_b = dbs
@@ -813,6 +817,12 @@ class TestApplyTags:
         _set_instance("team-b")
         _material(title="Local User", tags=["domain:shared-tag"])
         update_tag("domain:shared-tag", notes="incoming line one")
+        conn = get_connection(load_vec=False)
+        try:
+            conn.execute("UPDATE tags SET notes_updated_at = NULL WHERE name = 'shared-tag'")
+            conn.commit()
+        finally:
+            conn.close()
 
         result = import_bundle(bundle["path"], mode="apply")
         assert "error" not in result
@@ -820,11 +830,13 @@ class TestApplyTags:
         conn = get_connection(load_vec=False)
         try:
             row = conn.execute(
-                "SELECT notes FROM tags WHERE namespace = 'domain' AND name = 'shared-tag'"
+                "SELECT notes, notes_updated_at FROM tags "
+                "WHERE namespace = 'domain' AND name = 'shared-tag'"
             ).fetchone()
         finally:
             conn.close()
         assert row["notes"] == "incoming line one\n\nincoming line two"
+        assert row["notes_updated_at"] is not None
 
     def test_apply_tag_renames_resolution_redirects_to_local_tag(self, dbs, mock_embedding_server):
         db_a, db_b = dbs

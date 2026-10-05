@@ -1,30 +1,33 @@
 """議論トピック管理サービス"""
 import re
 import sqlite3
+
 from src.db import get_connection, row_to_dict
 from src.services.citations_service import (
     apply_and_writeback_conversions,
     upsert_citations_for_owner_with_conn,
 )
-from src.services.readable_id import strip_entity_id_inplace
 from src.services.embedding_service import (
     build_embedding_text,
     generate_and_store_embedding,
     insert_topic_embedding_with_conn,
 )
+from src.services.readable_id import strip_entity_id_inplace
 from src.services.relation_service import _add_relation_with_conn, _validate_targets
 from src.services.search_service import find_similar_topics
-from src.services.title_validation import validate_title
 from src.services.tag_service import (
-    validate_and_parse_tags,
     ensure_tag_ids,
-    resolve_tag_ids,
-    link_tags,
     get_entity_tags,
     get_entity_tags_batch,
+    link_tags,
+    resolve_tag_ids,
+    validate_and_parse_tags,
 )
+from src.services.title_validation import validate_title
 
 TOPIC_DESC_MAX_LEN = 200
+# 切り詰めたdescriptionの末尾に足す省略記号
+DESC_ELLIPSIS = "…"
 
 
 def get_activity_topics_batch(
@@ -380,13 +383,17 @@ def get_topics(
             topics = []
             for row in rows:
                 topic = row_to_dict(row)
+                full_description = topic["description"] or ""
                 item = {
                     "id": topic["id"],
                     "title": topic["title"],
-                    "description": (topic["description"] or "")[:TOPIC_DESC_MAX_LEN],
+                    "description": full_description[:TOPIC_DESC_MAX_LEN],
                     "tags": tags_map.get(topic["id"], []),
                     "created_at": topic["created_at"],
                 }
+                if len(full_description) > TOPIC_DESC_MAX_LEN:
+                    item["description"] += DESC_ELLIPSIS
+                    item["description_truncated"] = True
                 strip_entity_id_inplace(item)
                 topics.append(item)
 

@@ -2,9 +2,14 @@
 import os
 import sqlite3
 from pathlib import Path
-import pytest
-from src.db import get_db_path, get_connection, execute_query, execute_insert, _check_fts5_available
 
+from src.db import (
+    _check_fts5_available,
+    execute_insert,
+    execute_query,
+    get_connection,
+    get_db_path,
+)
 
 
 def test_get_db_path_with_env():

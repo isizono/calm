@@ -4,12 +4,10 @@ migration 0038 で intent:thinking が tags テーブルに INSERT され、desc
 設定される。add_activity から intent:thinking タグを付けたactivityを作成できることも検証する。
 """
 
-import pytest
 
 from src.db import get_connection
 from src.services.activity_service import add_activity
 from src.services.tag_service import get_available_intents
-
 
 
 class TestIntentThinkingMigration:

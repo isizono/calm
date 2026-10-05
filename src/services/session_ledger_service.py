@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Literal
 
 from src.db import get_connection
 from src.infra.session_identity import resolve_cli_session
@@ -16,8 +16,8 @@ def register(
     session_id: str,
     *,
     id_kind: Literal["bridge", "ephemeral"],
-    harness: Optional[str],
-    host: Optional[str],
+    harness: str | None,
+    host: str | None,
     mode: Literal["interactive", "headless"],
 ) -> None:
     """起動器プロセスをセッション台帳へ登録する(heartbeat再送も同じ経路を通る)。
@@ -59,11 +59,17 @@ def register(
     try:
         conn.execute("BEGIN IMMEDIATE")
         existing = conn.execute(
-            "SELECT cli_session_id, cli_pid, cwd, cli_resolve_status, ended_at "
+            "SELECT cli_session_id, cli_pid, cwd, cli_resolve_status, ended_at, ended_reason "
             "FROM sessions WHERE session_id = ?",
             (session_id,),
         ).fetchone()
-        already_ended = existing is not None and existing["ended_at"] is not None
+        # stale_on_startupで閉じた行は、同じsession_idのheartbeatが届いた時点で
+        # 生きていたと分かるため復活させる(下のON CONFLICT参照)。
+        already_ended = (
+            existing is not None
+            and existing["ended_at"] is not None
+            and existing["ended_reason"] != "stale_on_startup"
+        )
 
         if entry is not None and entry.get("cli_session_id") is not None:
             cli_session_id = entry.get("cli_session_id")
@@ -121,8 +127,10 @@ def register(
                 cli_pid = excluded.cli_pid,
                 cli_resolve_status = excluded.cli_resolve_status,
                 mode = excluded.mode,
-                last_heartbeat_at = excluded.last_heartbeat_at
-            WHERE ended_at IS NULL
+                last_heartbeat_at = excluded.last_heartbeat_at,
+                ended_at = NULL,
+                ended_reason = NULL
+            WHERE ended_at IS NULL OR ended_reason = 'stale_on_startup'
             """,
             (session_id, id_kind, harness, host, cwd, cli_session_id, cli_pid, cli_resolve_status, mode),
         )
@@ -134,7 +142,7 @@ def register(
         conn.close()
 
 
-def mark_ended(session_id: str, reason: Literal["unregister", "ttl"]) -> None:
+def mark_ended(session_id: str, reason: Literal["unregister", "ttl", "stale_on_startup"]) -> None:
     """session_idの行をended状態にする。
 
     既にended済みの行、または存在しないsession_idはno-op(冪等)。
@@ -157,7 +165,52 @@ def mark_ended(session_id: str, reason: Literal["unregister", "ttl"]) -> None:
         conn.close()
 
 
-def record_checkin(session_id: Optional[str], activity_id: int) -> None:
+def close_stale_sessions(liveness_timeout_sec: float) -> int:
+    """前のサーバープロセスの時代から`ended_at`が空のまま残っている行を閉じる。
+
+    サーバー起動直後はこのプロセスのSessionManagerが持つin-memoryのliveness
+    reaperがまだ何も監視していない（register()されたheartbeatの記録がゼロ）
+    ため、以前のサーバープロセスが生きていた間にliveness TTLを超えて
+    heartbeatが途絶していた行（＝旧サーバーのreaperが処理しきれないうちに
+    サーバー自体が終了したもの）は、新サーバーが自発的に拾わない限り
+    `ended_at IS NULL`のまま永久に残る。liveness reaperが本来使う判定基準
+    （`last_heartbeat_at`がTTLを超えて更新されていない）をサーバー起動時点に
+    1回だけ適用し、同じ経路で閉じる。
+
+    `liveness_timeout_sec<=0`（liveness reaper自体が無効化されている設定）の
+    場合は何もしない（「stale」の定義自体が存在しないため）。
+
+    まだ生きていて、たまたまheartbeatがTTLを超えて途絶した直後の行も対象に
+    なりうる。この場合も、以後そのlauncherからheartbeat（register()）が届いた
+    時点で行は復活する（ended_at/ended_reasonがNULLに戻る）。
+
+    Returns:
+        閉じた行数。
+    """
+    if liveness_timeout_sec <= 0:
+        return 0
+
+    conn = get_connection(load_vec=False)
+    try:
+        cursor = conn.execute(
+            """
+            UPDATE sessions
+            SET ended_at = CURRENT_TIMESTAMP, ended_reason = 'stale_on_startup'
+            WHERE ended_at IS NULL
+              AND (last_heartbeat_at IS NULL OR last_heartbeat_at < datetime('now', ?))
+            """,
+            (f"-{liveness_timeout_sec} seconds",),
+        )
+        conn.commit()
+        return cursor.rowcount
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def record_checkin(session_id: str | None, activity_id: int) -> None:
     """check_in時にlast_checkin_activity_id/last_checkin_atを書く。
 
     session_idがNone、または対応する行が無い場合は何もしない。

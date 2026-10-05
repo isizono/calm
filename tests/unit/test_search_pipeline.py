@@ -14,8 +14,6 @@ from src.services import search_service
 from src.services.activity_service import add_activity
 from src.services.search_service import SearchContext, build_common_where
 from src.services.topic_service import add_topic
-from tests.helpers import add_decision, add_log as add_log_entry
-
 
 DEFAULT_TAGS = ["domain:test"]
 

@@ -46,7 +46,7 @@ def test_activities_columns_match_live_pragma():
     for c in cols:
         if c["notnull"] or c["pk"]:
             assert f"| {c['name']} |" in section
-            row_line = next(l for l in section.splitlines() if l.startswith(f"| {c['name']} |"))
+            row_line = next(ln for ln in section.splitlines() if ln.startswith(f"| {c['name']} |"))
             assert "| NO |" in row_line, row_line
 
 

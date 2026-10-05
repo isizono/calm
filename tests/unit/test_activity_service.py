@@ -7,9 +7,8 @@ import pytest
 from src.db import get_connection
 from src.services.activity_service import add_activity
 from src.services.material_service import add_material
-from src.services.topic_service import add_topic
 from src.services.tag_service import ensure_tag_ids
-
+from src.services.topic_service import add_topic
 
 DEFAULT_TAGS = ["domain:test"]
 

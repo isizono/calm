@@ -39,14 +39,15 @@ calmはローカルディレクトリをmarketplaceとして登録しており�
 
    ```sh
    lsof -ti tcp:52837 -sTCP:LISTEN | xargs kill
+   lsof -ti tcp:52836 -sTCP:LISTEN | xargs kill
    nohup .venv/bin/python -m src.main --transport http > /tmp/calm_http_server.log 2>&1 &
    ```
 
    - `-sTCP:LISTEN` を付けないと :52837 に接続中のブリッジプロセスまで巻き添えで kill され、生存セッションの再接続競争を誘発する。多数のセッションが同時接続している状態でkillすると、再接続待ちのブリッジ全部が同時に起動リトライを行い、起動が失敗することがある
    - 起動するのはブリッジ（`src.launcher`）ではなくサーバー本体（`src.main --transport http`）。launcherはstdio MCPブリッジで、stdinが`/dev/null`になる非対話シェル（エージェントのツール実行・スクリプト等）から起動すると即EOFでサイレント終了し、HTTPサーバーが再起動されないままになる。各セッションのブリッジは既存の再接続機構で新サーバーへ自動的に繋ぎ直すため、launcher自体の再起動は不要
+   - embeddingサーバー（:52836）は旧httpサーバーを止めた直後・新httpサーバーを起動する前に止める。旧サーバーが生きている間に止めると他セッションの記録・検索で旧サーバーが古いコードのまま再起動してしまい、新サーバーの起動後に止めるとバックフィルを途中で切る。止めたあとは再起動不要で、新サーバーの起動直後に自動で立ち上がって温まる
    - 起動後、`lsof -i tcp:52837 -sTCP:LISTEN` でLISTENしていることを確認する（LISTENが無ければ `/tmp/calm_http_server.log` を確認する）
-8. embeddingサーバーを停止: `lsof -ti tcp:52836 -sTCP:LISTEN | xargs kill`（再起動は不要。次回encode時に`embedding_service`がlazy spawnする。`-sTCP:LISTEN`を付けないと接続中クライアントを巻き添えにする）
-9. 生存している全Claude Codeセッションで `/mcp` からreconnectを実行する（個別でOK、全セッション同時に落とす必要なし）。reconnectで復旧しない場合はそのセッションを再起動する
+8. 生存している全Claude Codeセッションで `/mcp` からreconnectを実行する（個別でOK、全セッション同時に落とす必要なし）。reconnectで復旧しない場合はそのセッションを再起動する
 
 ### Windows版（PowerShell）
 
@@ -54,8 +55,8 @@ calmはローカルディレクトリをmarketplaceとして登録しており�
 
 手順5〜8は、このmainブランチの作業を進めているセッション自身を含め、このマシンのClaude Codeセッションを全て閉じてから、人間が直接PowerShellで実行する。1つでもセッションを残したまま進めると、そのセッションのlauncherが数秒以内に新しいサーバーを自動起動し直し、手順6・7のファイル削除が使用中のファイルで失敗する。
 
-5. サーバーとembeddingサーバーを停止する: リポジトリ直下で `uv run --no-sync --directory . python scripts/restart_server.py --stop --restart-embedding`
+5. サーバーとembeddingサーバーを停止する: リポジトリ直下で `uv run --no-sync --directory . python scripts/restart_server.py --stop`（MCPサーバーとembeddingサーバーの両方が止まる）
 6. プラグインキャッシュを削除: `Remove-Item -Recurse -Force "$env:USERPROFILE\.claude\plugins\cache\calm-marketplace"`
 7. `__pycache__` を削除（`.venv`配下は対象外。含めて消すと手順8の起動時に依存パッケージのバイトコードを再コンパイルする羽目になり遅くなる）: `Get-ChildItem -Recurse -Directory -Filter __pycache__ | Where-Object FullName -notmatch '\\\.venv\\' | Remove-Item -Recurse -Force`
-8. サーバーを起動し直す: `uv run --no-sync --directory . python scripts/restart_server.py`（embeddingサーバーは手順5で止めたまま再起動しない。次回encode時にlazy spawnする）
-9. 閉じていたセッションを開き直す（新規セッションは起動時に自動でMCP接続するため、macOS版の手順9にあるような`/mcp`からのreconnectは不要）
+8. サーバーを起動し直す: `uv run --no-sync --directory . python scripts/restart_server.py`（embeddingサーバーはhttpサーバーの起動直後に自動で立ち上がって温まる）
+9. 閉じていたセッションを開き直す（新規セッションは起動時に自動でMCP接続するため、macOS版の手順8にあるような`/mcp`からのreconnectは不要）

@@ -843,7 +843,7 @@ def test_restart_all_windows_stops_before_sync(monkeypatch, tmp_path):
     monkeypatch.setattr(restart_service, "sync_dependencies", fake_sync_dependencies)
     monkeypatch.setattr(restart_service, "clean_caches", fake_clean_caches)
     monkeypatch.setattr(restart_service, "_start_mcp_server", fake_start_mcp_server)
-    monkeypatch.setattr(restart_service, "stop_embedding_server", lambda: [])
+    monkeypatch.setattr(restart_service, "stop_embedding_server", lambda: call_order.append("stop_embedding") or [])
     monkeypatch.setattr(
         restart_service, "prune_orphaned_plugin_versions",
         lambda project_root: {"removed": [], "skipped": []},
@@ -851,7 +851,7 @@ def test_restart_all_windows_stops_before_sync(monkeypatch, tmp_path):
 
     result = restart_service.restart_all(tmp_path)
 
-    assert call_order == ["stop", "sync", "clean_caches", "start"]
+    assert call_order == ["stop", "stop_embedding", "sync", "clean_caches", "start"]
     assert result["mcp_server"]["ok"] is True
     assert result["mcp_server"]["old_pids"] == [1111]
     assert result["mcp_server"]["new_pids"] == [2222]
@@ -907,24 +907,11 @@ class TestGetStatus:
 class TestStopAll:
     """stop_all(): 再起動せず停止だけを行う契約を検証する。"""
 
-    def test_stops_mcp_only_by_default(self, monkeypatch):
-        monkeypatch.setattr(restart_service, "_stop_mcp_server", lambda kw, pi: ([1111], {1111: "sig"}))
-        stop_embedding_calls = []
-        monkeypatch.setattr(
-            restart_service, "stop_embedding_server",
-            lambda: stop_embedding_calls.append(1) or [9999],
-        )
-
-        result = restart_service.stop_all()
-
-        assert result == {"mcp_server": {"stopped_pids": [1111]}, "embedding_server": {"stopped_pids": []}}
-        assert stop_embedding_calls == []
-
-    def test_stops_embedding_when_requested(self, monkeypatch):
+    def test_stops_both_servers(self, monkeypatch):
         monkeypatch.setattr(restart_service, "_stop_mcp_server", lambda kw, pi: ([1111], {1111: "sig"}))
         monkeypatch.setattr(restart_service, "stop_embedding_server", lambda: [9999])
 
-        result = restart_service.stop_all(stop_embedding=True)
+        result = restart_service.stop_all()
 
         assert result == {"mcp_server": {"stopped_pids": [1111]}, "embedding_server": {"stopped_pids": [9999]}}
 
@@ -1162,7 +1149,6 @@ class TestPruneOrphanedPluginVersions:
         assert sibling.exists()
 
     def test_handles_missing_versions_root_gracefully(self, tmp_path):
-        lonely = tmp_path  # tmp_path自身をcurrentとして渡すと親はpytest管理外の実在パス
         # 親ディレクトリ自体が存在しないケースを模すため、存在しないパスの子を渡す
         current = tmp_path / "nonexistent_parent" / "calm-version"
 
@@ -1212,14 +1198,11 @@ def test_sync_dependencies_timeout(monkeypatch, tmp_path):
     assert "timed out" in result.detail
 
 
-def test_restart_all_calls_in_expected_order_without_stopping_embedding(monkeypatch, tmp_path):
-    """uv sync → キャッシュ掃除 → MCP再起動、の順で呼ばれ、既定ではembeddingサーバーを
-    停止しないことを検証する。
+def test_restart_all_stops_embedding_between_old_mcp_stop_and_new_mcp_start(monkeypatch, tmp_path):
+    """POSIX: uv sync → キャッシュ掃除 → 旧MCP停止 → embedding停止 → 新MCP起動、の順で呼ばれる。
 
-    uv syncとキャッシュ掃除を旧サーバー稼働中に済ませ、
-    kill〜起動〜監視のダウンタイムを最小化する狙いのため、この順序が重要。
-    embeddingサーバーはコード変更頻度が低いため、MCP再起動のたびに巻き添えで
-    停止させない(次に必要になったときlazy spawnされるだけで都度停止するメリットが薄い)。
+    embeddingは旧MCPの停止直後・新MCPの起動前に止める。旧MCPが動いている間に
+    止めると旧MCPに再spawnされ、新MCPの起動後に止めるとバックフィルを切る。
     """
     call_order = []
 
@@ -1231,9 +1214,13 @@ def test_restart_all_calls_in_expected_order_without_stopping_embedding(monkeypa
         call_order.append("clean_caches")
         return {"removed_pycache_dirs": []}
 
-    def fake_restart_mcp_server(project_root):
-        call_order.append("restart_mcp_server")
-        return restart_service.RestartResult(True, [1111], [2222], "restarted")
+    def fake_stop_mcp_server(kill_wait_sec, poll_interval_sec):
+        call_order.append("stop_mcp_server")
+        return [1111], {1111: "sig"}
+
+    def fake_start_mcp_server(project_root, old_pids, old_signatures, *, start_timeout_sec, poll_interval_sec):
+        call_order.append("start_mcp_server")
+        return restart_service.RestartResult(True, old_pids, [2222], "restarted")
 
     def fake_stop_embedding_server():
         call_order.append("stop_embedding_server")
@@ -1245,52 +1232,27 @@ def test_restart_all_calls_in_expected_order_without_stopping_embedding(monkeypa
 
     monkeypatch.setattr(restart_service, "sync_dependencies", fake_sync_dependencies)
     monkeypatch.setattr(restart_service, "clean_caches", fake_clean_caches)
-    monkeypatch.setattr(restart_service, "restart_mcp_server", fake_restart_mcp_server)
+    monkeypatch.setattr(restart_service, "_stop_mcp_server", fake_stop_mcp_server)
+    monkeypatch.setattr(restart_service, "_start_mcp_server", fake_start_mcp_server)
     monkeypatch.setattr(restart_service, "stop_embedding_server", fake_stop_embedding_server)
     monkeypatch.setattr(restart_service, "prune_orphaned_plugin_versions", fake_prune)
+    monkeypatch.setattr(
+        restart_service, "find_orphaned_plugin_cache_processes",
+        lambda: {"stopped": [], "kept": []},
+    )
 
     result = restart_service.restart_all(tmp_path)
 
-    assert call_order == ["sync", "clean_caches", "restart_mcp_server", "prune_orphaned_plugin_versions"]
+    assert call_order == [
+        "sync", "clean_caches", "stop_mcp_server", "stop_embedding_server", "start_mcp_server",
+        "prune_orphaned_plugin_versions",
+    ]
     assert result["uv_sync"] == {"ok": True, "duration_sec": 1.5, "detail": "synced"}
     assert result["mcp_server"]["ok"] is True
-    assert result["embedding_server"] == {"stopped_pids": []}
+    assert result["embedding_server"] == {"stopped_pids": [9999]}
     assert result["caches"] == {"removed_pycache_dirs": []}
     assert result["plugin_cache_prune"] == {"removed": [], "skipped": []}
-
-
-def test_restart_all_stops_embedding_when_requested(monkeypatch, tmp_path):
-    """restart_embedding=True を指定したときだけ stop_embedding_server が呼ばれる"""
-    call_order = []
-
-    monkeypatch.setattr(
-        restart_service, "sync_dependencies",
-        lambda project_root: restart_service.SyncResult(True, 0.1, "synced"),
-    )
-    monkeypatch.setattr(
-        restart_service, "clean_caches",
-        lambda project_root: {"removed_pycache_dirs": []},
-    )
-
-    def fake_restart_mcp_server(project_root):
-        call_order.append("restart_mcp_server")
-        return restart_service.RestartResult(True, [1111], [2222], "restarted")
-
-    def fake_stop_embedding_server():
-        call_order.append("stop_embedding_server")
-        return [9999]
-
-    monkeypatch.setattr(restart_service, "restart_mcp_server", fake_restart_mcp_server)
-    monkeypatch.setattr(restart_service, "stop_embedding_server", fake_stop_embedding_server)
-    monkeypatch.setattr(
-        restart_service, "prune_orphaned_plugin_versions",
-        lambda project_root: {"removed": [], "skipped": []},
-    )
-
-    result = restart_service.restart_all(tmp_path, restart_embedding=True)
-
-    assert call_order == ["restart_mcp_server", "stop_embedding_server"]
-    assert result["embedding_server"] == {"stopped_pids": [9999]}
+    assert result["orphaned_processes"] == {"stopped": [], "kept": []}
 
 
 def test_restart_all_continues_to_mcp_restart_when_uv_sync_fails(monkeypatch, tmp_path):
@@ -1300,17 +1262,22 @@ def test_restart_all_continues_to_mcp_restart_when_uv_sync_fails(monkeypatch, tm
 
     mcp_restart_called = []
 
-    def fake_restart_mcp_server(project_root):
+    def fake_start_mcp_server(project_root, old_pids, old_signatures, *, start_timeout_sec, poll_interval_sec):
         mcp_restart_called.append(project_root)
         return restart_service.RestartResult(True, [], [2222], "restarted")
 
     monkeypatch.setattr(restart_service, "sync_dependencies", fake_sync_dependencies)
     monkeypatch.setattr(restart_service, "clean_caches", lambda project_root: {"removed_pycache_dirs": []})
-    monkeypatch.setattr(restart_service, "restart_mcp_server", fake_restart_mcp_server)
+    monkeypatch.setattr(restart_service, "_stop_mcp_server", lambda kw, pi: ([], {}))
+    monkeypatch.setattr(restart_service, "_start_mcp_server", fake_start_mcp_server)
     monkeypatch.setattr(restart_service, "stop_embedding_server", lambda: [])
     monkeypatch.setattr(
         restart_service, "prune_orphaned_plugin_versions",
         lambda project_root: {"removed": [], "skipped": []},
+    )
+    monkeypatch.setattr(
+        restart_service, "find_orphaned_plugin_cache_processes",
+        lambda: {"stopped": [], "kept": []},
     )
 
     result = restart_service.restart_all(tmp_path)
@@ -1330,14 +1297,20 @@ def test_restart_all_skips_plugin_cache_prune_when_mcp_restart_fails(monkeypatch
         lambda project_root: restart_service.SyncResult(True, 0.1, "synced"),
     )
     monkeypatch.setattr(restart_service, "clean_caches", lambda project_root: {"removed_pycache_dirs": []})
+    monkeypatch.setattr(restart_service, "_stop_mcp_server", lambda kw, pi: ([1111], {}))
     monkeypatch.setattr(
-        restart_service, "restart_mcp_server",
-        lambda project_root: restart_service.RestartResult(False, [1111], [], "did not come up"),
+        restart_service, "_start_mcp_server",
+        lambda project_root, old_pids, old_signatures, **kw: restart_service.RestartResult(
+            False, [1111], [], "did not come up"),
     )
     monkeypatch.setattr(restart_service, "stop_embedding_server", lambda: [])
     monkeypatch.setattr(
         restart_service, "prune_orphaned_plugin_versions",
         lambda project_root: prune_called.append(project_root) or {"removed": [], "skipped": []},
+    )
+    monkeypatch.setattr(
+        restart_service, "find_orphaned_plugin_cache_processes",
+        lambda: {"stopped": [], "kept": []},
     )
 
     result = restart_service.restart_all(tmp_path)
@@ -1347,14 +1320,48 @@ def test_restart_all_skips_plugin_cache_prune_when_mcp_restart_fails(monkeypatch
     assert result["plugin_cache_prune"] == {"removed": [], "skipped": []}
 
 
+def test_restart_all_detects_orphaned_processes_even_when_mcp_restart_fails(monkeypatch, tmp_path):
+    """孤児プロセスの検出・停止は、MCP再起動が失敗した場合でも行う
+    (削除済みディレクトリから動き続けているプロセスは、再起動が失敗していても
+    掃除する価値があるため、プラグインキャッシュ掃除とは異なり成否で出し分けない)"""
+    monkeypatch.setattr(
+        restart_service, "sync_dependencies",
+        lambda project_root: restart_service.SyncResult(True, 0.1, "synced"),
+    )
+    monkeypatch.setattr(restart_service, "clean_caches", lambda project_root: {"removed_pycache_dirs": []})
+    monkeypatch.setattr(restart_service, "_stop_mcp_server", lambda kw, pi: ([1111], {}))
+    monkeypatch.setattr(
+        restart_service, "_start_mcp_server",
+        lambda project_root, old_pids, old_signatures, **kw: restart_service.RestartResult(
+            False, [1111], [], "did not come up"),
+    )
+    monkeypatch.setattr(restart_service, "stop_embedding_server", lambda: [])
+    monkeypatch.setattr(
+        restart_service, "prune_orphaned_plugin_versions",
+        lambda project_root: {"removed": [], "skipped": []},
+    )
+    monkeypatch.setattr(
+        restart_service, "find_orphaned_plugin_cache_processes",
+        lambda: {"stopped": [{"pid": 71102, "command": "embedding_server", "cwd": "/deleted"}], "kept": []},
+    )
+
+    result = restart_service.restart_all(tmp_path)
+
+    assert result["mcp_server"]["ok"] is False
+    assert result["orphaned_processes"] == {
+        "stopped": [{"pid": 71102, "command": "embedding_server", "cwd": "/deleted"}],
+        "kept": [],
+    }
+
+
 class TestMainCli:
-    """main(): --restart-embedding フラグのargparse配線を検証する"""
+    """main(): argparse配線を検証する"""
 
     def _run_main(self, monkeypatch, argv):
         captured = {}
 
-        def fake_restart_all(project_root, *, restart_embedding=False):
-            captured["restart_embedding"] = restart_embedding
+        def fake_restart_all(project_root):
+            captured["called"] = True
             return {
                 "uv_sync": {"ok": True, "duration_sec": 0.0, "detail": "synced"},
                 "mcp_server": {"ok": True, "old_pids": [], "new_pids": [1], "detail": "restarted"},
@@ -1367,19 +1374,9 @@ class TestMainCli:
         restart_service.main()
         return captured
 
-    def test_flag_absent_defaults_to_false(self, monkeypatch):
-        """--restart-embedding を付けない場合、restart_all は restart_embedding=False で呼ばれる"""
-        captured = self._run_main(monkeypatch, [])
-        assert captured["restart_embedding"] is False
-
-    def test_flag_present_passes_true(self, monkeypatch):
-        """--restart-embedding を付けると restart_all は restart_embedding=True で呼ばれる"""
-        captured = self._run_main(monkeypatch, ["--restart-embedding"])
-        assert captured["restart_embedding"] is True
-
     def test_exits_nonzero_when_mcp_restart_fails(self, monkeypatch, capsys):
         """mcp_server.ok が False のとき sys.exit(1) する"""
-        def fake_restart_all(project_root, *, restart_embedding=False):
+        def fake_restart_all(project_root):
             return {
                 "uv_sync": {"ok": True, "duration_sec": 0.0, "detail": "synced"},
                 "mcp_server": {"ok": False, "old_pids": [], "new_pids": [], "detail": "timed out"},
@@ -1392,7 +1389,7 @@ class TestMainCli:
 
         try:
             restart_service.main()
-            assert False, "SystemExitが発生しなかった"
+            raise AssertionError("SystemExitが発生しなかった")
         except SystemExit as e:
             assert e.code == 1
 
@@ -1438,8 +1435,8 @@ class TestMainCli:
         monkeypatch.setattr(restart_service, "restart_all", lambda *a, **kw: restart_called.append(1))
         stop_calls = []
 
-        def fake_stop_all(*, stop_embedding=False):
-            stop_calls.append(stop_embedding)
+        def fake_stop_all():
+            stop_calls.append(1)
             return {"mcp_server": {"stopped_pids": [1]}, "embedding_server": {"stopped_pids": []}}
 
         monkeypatch.setattr(restart_service, "stop_all", fake_stop_all)
@@ -1448,27 +1445,169 @@ class TestMainCli:
         restart_service.main()
 
         assert restart_called == []
-        assert stop_calls == [False]
-
-    def test_stop_and_restart_embedding_flags_combine(self, monkeypatch):
-        """--stop --restart-embedding は両方のサーバーを停止するだけで終了する"""
-        stop_calls = []
-
-        def fake_stop_all(*, stop_embedding=False):
-            stop_calls.append(stop_embedding)
-            return {"mcp_server": {"stopped_pids": []}, "embedding_server": {"stopped_pids": []}}
-
-        monkeypatch.setattr(restart_service, "stop_all", fake_stop_all)
-        monkeypatch.setattr(
-            restart_service.sys, "argv", ["restart_service.py", "--stop", "--restart-embedding"],
-        )
-
-        restart_service.main()
-
-        assert stop_calls == [True]
+        assert stop_calls == [1]
 
     def test_status_and_stop_are_mutually_exclusive(self, monkeypatch):
         monkeypatch.setattr(restart_service.sys, "argv", ["restart_service.py", "--status", "--stop"])
 
         with pytest.raises(SystemExit):
             restart_service.main()
+
+
+def test_list_server_family_processes_filters_to_known_modules_and_excludes_launcher(monkeypatch):
+    ps_output = "\n".join([
+        "100 /opt/python -m src.main --transport http",
+        "200 /opt/python -m src.infra.embedding_server",
+        "300 uv run --directory /x/calm/1.0.0 python -m src.launcher",
+        "400 /opt/python -m src.launcher",
+        "500 /opt/python -m some.other.module",
+    ])
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout=ps_output, stderr="")
+
+    monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
+
+    found = restart_service._list_server_family_processes()
+
+    assert [pid for pid, _ in found] == [100, 200]
+
+
+def test_list_server_family_processes_requires_exact_module_argument(monkeypatch):
+    ps_output = "\n".join([
+        "600 /opt/python /x/src.main/tool.py",
+        "700 /opt/python -m src.main_helper",
+        "800 /opt/python -m src.main --transport http",
+    ])
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout=ps_output, stderr="")
+
+    monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
+
+    assert [pid for pid, _ in restart_service._list_server_family_processes()] == [800]
+
+
+def test_list_server_family_processes_empty_on_timeout(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+    monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
+
+    assert restart_service._list_server_family_processes() == []
+
+
+def test_process_cwd_parses_lsof_n_line(monkeypatch):
+    captured_cmd = []
+
+    def fake_run(cmd, **kwargs):
+        captured_cmd.append(cmd)
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout="p71102\nfcwd\nn/path/to/deleted/version\n", stderr="",
+        )
+
+    monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
+
+    assert restart_service._process_cwd(71102) == "/path/to/deleted/version"
+    assert captured_cmd == [["lsof", "-a", "-p", "71102", "-d", "cwd", "-Fn"]]
+
+
+def test_process_cwd_none_on_timeout(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+    monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
+
+    assert restart_service._process_cwd(71102) is None
+
+
+def test_process_cwd_none_when_lsof_reports_nothing(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+    monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
+
+    assert restart_service._process_cwd(71102) is None
+
+
+class TestFindOrphanedPluginCacheProcesses:
+    """削除済みプラグインディレクトリから動いているサーバー系プロセスの検出・停止を検証する。"""
+
+    def test_stops_process_whose_cwd_directory_no_longer_exists(self, monkeypatch, tmp_path):
+        deleted_dir = tmp_path / "deleted_version"  # mkdirしない(=存在しない)
+
+        monkeypatch.setattr(
+            restart_service, "_list_server_family_processes",
+            lambda: [(71102, "/opt/python -m src.infra.embedding_server")],
+        )
+        monkeypatch.setattr(restart_service, "_process_cwd", lambda pid: str(deleted_dir))
+        killed = []
+        monkeypatch.setattr(restart_service, "kill_pids", lambda pids: killed.extend(pids))
+
+        result = restart_service.find_orphaned_plugin_cache_processes()
+
+        assert result == {
+            "stopped": [{
+                "pid": 71102,
+                "command": "/opt/python -m src.infra.embedding_server",
+                "cwd": str(deleted_dir),
+            }],
+            "kept": [],
+        }
+        assert killed == [71102]
+
+    def test_keeps_process_whose_cwd_directory_still_exists(self, monkeypatch, tmp_path):
+        live_dir = tmp_path / "current_version"
+        live_dir.mkdir()
+
+        monkeypatch.setattr(
+            restart_service, "_list_server_family_processes",
+            lambda: [(66799, "/opt/python -m src.main --transport http")],
+        )
+        monkeypatch.setattr(restart_service, "_process_cwd", lambda pid: str(live_dir))
+        killed = []
+        monkeypatch.setattr(restart_service, "kill_pids", lambda pids: killed.extend(pids))
+
+        result = restart_service.find_orphaned_plugin_cache_processes()
+
+        assert result == {
+            "stopped": [],
+            "kept": [{
+                "pid": 66799,
+                "command": "/opt/python -m src.main --transport http",
+                "cwd": str(live_dir),
+                "reason": "directory still exists",
+            }],
+        }
+        assert killed == []
+
+    def test_keeps_process_when_cwd_unknown(self, monkeypatch):
+        """cwdが判定できない(lsofタイムアウト等)場合は安全側に倒して停止しない"""
+        monkeypatch.setattr(
+            restart_service, "_list_server_family_processes",
+            lambda: [(12345, "/opt/python -m src.main --transport http")],
+        )
+        monkeypatch.setattr(restart_service, "_process_cwd", lambda pid: None)
+        killed = []
+        monkeypatch.setattr(restart_service, "kill_pids", lambda pids: killed.extend(pids))
+
+        result = restart_service.find_orphaned_plugin_cache_processes()
+
+        assert result == {
+            "stopped": [],
+            "kept": [{
+                "pid": 12345,
+                "command": "/opt/python -m src.main --transport http",
+                "cwd": None,
+                "reason": "cwd unknown",
+            }],
+        }
+        assert killed == []
+
+    def test_noop_when_no_candidates(self, monkeypatch):
+        monkeypatch.setattr(restart_service, "_list_server_family_processes", lambda: [])
+        killed = []
+        monkeypatch.setattr(restart_service, "kill_pids", lambda pids: killed.extend(pids))
+
+        assert restart_service.find_orphaned_plugin_cache_processes() == {"stopped": [], "kept": []}
+        assert killed == []

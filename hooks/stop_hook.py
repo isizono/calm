@@ -12,7 +12,7 @@
 import os
 import sys
 import traceback
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 # プロジェクトルートをパスに追加（src.db等の参照用）
@@ -271,8 +271,8 @@ def _sqlite_utc(iso_ts: str | None) -> str | None:
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _update_checked_in_at(state: HookState, iso_ts: str | None, *, reset: bool = False) -> None:
@@ -283,7 +283,7 @@ def _update_checked_in_at(state: HookState, iso_ts: str | None, *, reset: bool =
     if ts is None:
         if not reset and state.get_checked_in_at() is not None:
             return
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     state.set_checked_in_at(ts)
 
 

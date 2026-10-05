@@ -7,7 +7,7 @@ import logging
 import sys
 import threading
 import time
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from src.env_compat import env_get
 
@@ -53,7 +53,7 @@ def _read_grace_period_sec() -> int:
     return value
 
 
-def _read_liveness_timeout_sec() -> float:
+def read_liveness_timeout_sec() -> float:
     """env `CALM_SESSION_LIVENESS_TIMEOUT_SEC` から liveness TTL を読む。
 
     未設定・無効値の場合は既定値にフォールバックする。0 を指定すると
@@ -100,9 +100,9 @@ class SessionManager:
 
     def __init__(
         self,
-        grace_period_sec: Optional[int] = None,
-        liveness_timeout_sec: Optional[float] = None,
-        on_session_removed: Optional[Callable[[str, str], None]] = None,
+        grace_period_sec: int | None = None,
+        liveness_timeout_sec: float | None = None,
+        on_session_removed: Callable[[str, str], None] | None = None,
     ):
         self._active_sessions: set[str] = set()
         self._last_seen: dict[str, float] = {}
@@ -113,15 +113,15 @@ class SessionManager:
         )
         self._liveness_timeout = (
             liveness_timeout_sec if liveness_timeout_sec is not None
-            else _read_liveness_timeout_sec()
+            else read_liveness_timeout_sec()
         )
         self._on_session_removed = on_session_removed
-        self._shutdown_callback: Optional[Callable[[], None]] = None
+        self._shutdown_callback: Callable[[], None] | None = None
         self._shutdown_event = threading.Event()
         self._cancel_event = threading.Event()
-        self._watchdog_thread: Optional[threading.Thread] = None
+        self._watchdog_thread: threading.Thread | None = None
         self._liveness_stop_event = threading.Event()
-        self._liveness_thread: Optional[threading.Thread] = None
+        self._liveness_thread: threading.Thread | None = None
 
     @property
     def active_count(self) -> int:
@@ -202,7 +202,7 @@ class SessionManager:
         except Exception:
             logger.exception("session removal hook failed: session=%s", session_id)
 
-    def _remove_session_locked(self, session_id: str) -> Optional[int]:
+    def _remove_session_locked(self, session_id: str) -> int | None:
         """``self._lock`` 保持中に呼び出すこと。
 
         セッションを除去し、除去後のアクティブ数を返す。未登録の場合は

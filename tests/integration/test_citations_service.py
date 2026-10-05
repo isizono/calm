@@ -6,12 +6,11 @@ import pytest
 
 from src.db import get_connection
 from src.services.activity_service import add_activity, update_activity
-from src.services.material_service import add_material, get_material, update_material
 from src.services.decision_service import add_decisions
 from src.services.discussion_log_service import add_logs
-from src.services.topic_service import add_topic
+from src.services.material_service import add_material, update_material
 from src.services.retract_service import retract
-from src.services import citation_renderer
+from src.services.topic_service import add_topic
 
 DEFAULT_TAGS = ["domain:test"]
 

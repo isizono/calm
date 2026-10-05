@@ -7,8 +7,8 @@ main() は bind → モデルロードの順で進む必要がある（並行 sp
 import socket
 
 import pytest
-
 import sentence_transformers
+
 from src.infra import embedding_server
 from src.infra.lock_file import is_port_listening
 

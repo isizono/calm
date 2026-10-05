@@ -16,7 +16,12 @@ import pytest
 
 from hooks import recorder_watch as watch_hook
 from hooks.hook_state import HookState
-from hooks.recorder_marker import is_recorder_attached, marker_path, remove_marker, write_marker
+from hooks.recorder_marker import (
+    is_recorder_attached,
+    marker_path,
+    remove_marker,
+    write_marker,
+)
 from src.infra import process_signature
 from src.services import recorder_launcher_service as svc
 

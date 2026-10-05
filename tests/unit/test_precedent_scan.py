@@ -8,9 +8,6 @@ import sqlite3
 
 import pytest
 
-from src.services.topic_service import add_topic
-from tests.helpers import add_decision, retract_decision
-
 from scripts.precedent_scan import (
     _categorize_warning,
     _open_readonly_connection,
@@ -18,6 +15,8 @@ from scripts.precedent_scan import (
     render_text_report,
     scan_precedents,
 )
+from src.services.topic_service import add_topic
+from tests.helpers import add_decision, retract_decision
 
 DEFAULT_TAGS = ["domain:test"]
 

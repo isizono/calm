@@ -1,12 +1,12 @@
 """decay_utilsのユニットテスト（純ロジック、DB不要）"""
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from src.services.decay_utils import is_decay_eligible
 
 
 def _ts(days_ago: float) -> str:
     """days_ago日前のタイムスタンプ文字列（DBのTIMESTAMP列と同じ書式）を返す。"""
-    dt = datetime.now(timezone.utc) - timedelta(days=days_ago)
+    dt = datetime.now(UTC) - timedelta(days=days_ago)
     return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 

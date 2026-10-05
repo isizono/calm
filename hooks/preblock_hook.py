@@ -16,7 +16,7 @@ import json
 import pathlib
 import sys
 import tomllib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 # プラグイン経由で `${CLAUDE_PLUGIN_ROOT}` を cwd として起動されるため、
 # 同居ソースを import path に通す。
@@ -24,7 +24,10 @@ _PLUGIN_ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(_PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(_PLUGIN_ROOT))
 
-from hooks.signal_capture import try_capture_guard_block, try_capture_signal  # noqa: E402
+from hooks.signal_capture import (  # noqa: E402
+    try_capture_guard_block,
+    try_capture_signal,
+)
 from src.env_compat import env_get  # noqa: E402
 from src.harness import select_harness  # noqa: E402
 from src.services.internal_id_patterns import (  # noqa: E402
@@ -279,7 +282,7 @@ def main() -> None:
 
         _log_event(
             {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "tool_name": tool_name,
                 "decision": "block",
                 "matches": matched_literals,

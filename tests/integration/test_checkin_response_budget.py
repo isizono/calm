@@ -6,16 +6,15 @@ Verification V2)は、合成データ(このテストで作るpin)で代替す�
 """
 import pytest
 
-from src.db import get_connection
+from src.main import add_activity as tool_add_activity
+from src.main import check_in as tool_check_in
+from src.main import get_material as tool_get_material
 from src.services.activity_service import add_activity
 from src.services.checkin_queries import checkin_scope
 from src.services.material_service import add_material
 from src.services.pin_service import add_pin
 from src.services.relation_service import add_relation
 from src.services.topic_service import add_topic
-from src.main import check_in as tool_check_in
-from src.main import add_activity as tool_add_activity
-from src.main import get_material as tool_get_material
 from tests.helpers import add_log
 
 DEFAULT_TAGS = ["domain:test"]
@@ -54,7 +53,7 @@ class TestCheckinScope:
         assert checkin_scope({"related_topics": [{"id_raw": 1}]}) is None
 
 
-class TestPinnedFlavorApplied(object):
+class TestPinnedFlavorApplied:
     """旧main.pyの欠落（pinnedにflavor未適用）を埋めたことの回帰テスト。"""
 
     def test_check_in_expands_citation_in_pinned_material_content(self, temp_db, activity_id):

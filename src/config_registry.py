@@ -78,6 +78,7 @@ ENV_VARS: tuple[EnvVar, ...] = (
     EnvVar("CALM_INJECTION_BUDGET_OPEN_ASKS", "1200", "SessionStart注入のopen ask節の予算（文字数）", "internal"),
     EnvVar("CALM_INJECTION_BUDGET_ASK_NOTIFY", "600", "SessionStart注入のask通知節の予算（文字数）", "internal"),
     EnvVar("CALM_INJECTION_BUDGET_TRANSCRIPT_PATH", "200", "SessionStart注入のtranscriptパス節の予算（文字数）", "internal"),
+    EnvVar("CALM_INJECTION_BUDGET_VERSION_CHECK", "300", "SessionStart注入の版チェック節の予算（文字数）", "internal"),
     EnvVar("CALM_INJECTION_BUDGET_SEARCH_HEALTH", "300", "SessionStart注入の検索健全性節の予算（文字数）", "internal"),
     EnvVar("CALM_ACTIVITIES_BUDGET_CHARS", "10000", "get_activities応答全体の予算（文字数）", "internal"),
     EnvVar("CALM_TOTAL_INJECTION_BUDGET_CHARS", "12000", "SessionStart注入全体の上限（文字数）。各節の予算の合計以下にする", "internal"),
@@ -90,8 +91,10 @@ ENV_VARS: tuple[EnvVar, ...] = (
     EnvVar("CALM_CHECKIN_TAG_NOTES_CAP_CHARS", "6000", "check_inのtag notes枠の天井（文字数）", "internal"),
     EnvVar("CALM_CHECKIN_HARD_MAX_CHARS", "32000", "check_in応答の実用上限（文字数）", "internal"),
     # --- internal: embedding・launcher・セッション・配備 ---
+    EnvVar("CALM_INSTALLED_PLUGINS_PATH", None, "installed_plugins.jsonのパス（未設定なら~/.claude/plugins/installed_plugins.json）", "internal"),
     EnvVar("CALM_EMBEDDING_BACKFILL_CHAR_BUDGET", "48000", "embedding backfill1回あたりの文字数予算", "internal"),
     EnvVar("CALM_EMBEDDING_BACKFILL_MAX_ITEMS", "64", "embedding backfill1回あたりの件数上限", "internal"),
+    EnvVar("CALM_EMBEDDING_WARMUP", "1", "HTTPサーバー起動時にembeddingサーバーを先行起動する。0またはfalseで無効", "internal"),
     EnvVar("CALM_EMBEDDING_TEXT_MAX_CHARS", "8000", "embeddingに渡す1テキストの最大文字数", "internal"),
     EnvVar("CALM_EMBEDDING_LOG_MAX_BYTES", "5242880", "embeddingサーバーのログのローテーションサイズ（バイト）", "internal"),
     EnvVar("CALM_EMBEDDING_LOG_BACKUP_COUNT", "3", "embeddingサーバーのログの保持世代数", "internal"),

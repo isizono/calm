@@ -2,7 +2,6 @@
 import logging
 import re
 import sqlite3
-from typing import Optional
 
 from src.db import get_connection, row_to_dict
 from src.services import ask_handover_service, goal_service
@@ -11,28 +10,38 @@ from src.services.citations_service import (
     apply_raw_to_cite_conversion,
     upsert_citations_for_owner_with_conn,
 )
+from src.services.embedding_service import (
+    build_embedding_text,
+    generate_and_store_embedding,
+)
+from src.services.pin_service import ENTITY_TABLE_MAP as PIN_ENTITY_TABLE_MAP
+from src.services.pin_service import _add_pin_with_conn, bump_updated_at_with_conn
 from src.services.readable_id import strip_entity_id_inplace
-from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
-from src.services.pin_service import ENTITY_TABLE_MAP as PIN_ENTITY_TABLE_MAP, _add_pin_with_conn, bump_updated_at_with_conn
 from src.services.relation_service import _add_relation_with_conn, _validate_targets
 from src.services.signal_service import capture_signal_safe
-from src.services.title_validation import validate_title
 from src.services.tag_service import (
-    validate_and_parse_tags,
     ensure_tag_ids,
-    resolve_tag_ids,
-    link_tags,
+    get_available_intents,
     get_entity_tags,
     get_entity_tags_batch,
-    get_available_intents,
+    link_tags,
+    resolve_tag_ids,
+    validate_and_parse_tags,
 )
+from src.services.title_validation import validate_title
 
 logger = logging.getLogger(__name__)
 
 # get_activitiesでdescriptionを切り詰める上限文字数
 ACTIVITY_DESC_MAX_LEN = 200
-from src.config import ACTIVITIES_BUDGET_CHARS, HEARTBEAT_TIMEOUT_MINUTES, SNOOZE_DURATION_DAYS
-from src.services.response_budget import BudgetPolicy, CutStep
+from src.config import (  # noqa: E402
+    ACTIVITIES_BUDGET_CHARS,
+    HEARTBEAT_TIMEOUT_MINUTES,
+    SNOOZE_DURATION_DAYS,
+)
+from src.services.response_budget import BudgetPolicy, CutStep  # noqa: E402
+from src.services.topic_service import DESC_ELLIPSIS  # noqa: E402
+
 # DB格納可能なステータス値
 REAL_STATUSES = {"pending", "in_progress", "completed", "snoozed", "shelved"}
 # "active"エイリアスが展開されるステータス
@@ -337,7 +346,9 @@ def add_activity(
 
     # check_in実行（connを閉じた後に呼ぶ。checkin_tier_serviceが別connを開くため）
     if check_in:
-        from src.services.checkin_tier_service import collect_and_assemble as do_check_in
+        from src.services.checkin_tier_service import (
+            collect_and_assemble as do_check_in,
+        )
         check_in_result = do_check_in(activity_id)
         result["check_in_result"] = check_in_result
 
@@ -504,16 +515,20 @@ def get_activities(
         activities = []
         for row in rows:
             activity = row_to_dict(row)
+            full_description = activity["description"] or ""
             item = {
                 "id": activity["id"],
                 "title": activity["title"],
-                "description": (activity["description"] or "")[:ACTIVITY_DESC_MAX_LEN],
+                "description": full_description[:ACTIVITY_DESC_MAX_LEN],
                 "status": activity["status"],
                 "tags": tags_map.get(activity["id"], []),
                 "created_at": activity["created_at"],
                 "updated_at": activity["updated_at"],
                 "is_heartbeat_active": bool(activity["is_heartbeat_active"]),
             }
+            if len(full_description) > ACTIVITY_DESC_MAX_LEN:
+                item["description"] += DESC_ELLIPSIS
+                item["description_truncated"] = True
             strip_entity_id_inplace(item)
             activities.append(item)
 
@@ -653,14 +668,14 @@ def get_pinned_active_activities() -> list[dict]:
 
 def update_activity(
     activity_id: int,
-    status: Optional[str] = None,
-    title: Optional[str] = None,
-    description: Optional[str] = None,
-    tags: Optional[list[str]] = None,
-    closed_by: Optional[str] = None,
-    closed_reason: Optional[str] = None,
-    move_asks_to: Optional[int] = None,
-    move_ask_ids: Optional[list[int]] = None,
+    status: str | None = None,
+    title: str | None = None,
+    description: str | None = None,
+    tags: list[str] | None = None,
+    closed_by: str | None = None,
+    closed_reason: str | None = None,
+    move_asks_to: int | None = None,
+    move_ask_ids: list[int] | None = None,
 ) -> dict:
     """
     アクティビティを更新する（ステータス、タイトル、説明、タグを変更可能）
@@ -672,7 +687,8 @@ def update_activity(
         activity_id: アクティビティID
         status: 新しいステータス（optional）
         title: 新しいタイトル（optional、35字以内）
-        description: 新しい説明（optional）
+        description: 新しい説明（optional）。現在値の先頭200字（末尾の省略記号・前後の空白は
+            無視）と一致する値（get_activitiesが切って返した形）はVALIDATION_ERRORで拒否する
         tags: 新しいタグ配列（optional、指定時は全置換。1個以上必須）
         closed_by: activityを閉じた意思の主体（"user"|"claude"|"external"）。
             status="completed"と同時のときだけ受け付ける。省略時、紐づくgoalが
@@ -791,6 +807,26 @@ def update_activity(
                 "error": {
                     "code": "NOT_FOUND",
                     "message": f"Activity with id {activity_id} not found",
+                }
+            }
+
+        # 一覧で切られたdescription（先頭200字＋省略記号）をそのまま書き戻すと
+        # 後半が消えるため止める
+        current_description = row["description"] or ""
+        if (
+            description is not None
+            and len(current_description) > ACTIVITY_DESC_MAX_LEN
+            and description.strip().removesuffix(DESC_ELLIPSIS)
+            == current_description[:ACTIVITY_DESC_MAX_LEN]
+        ):
+            return {
+                "error": {
+                    "code": "VALIDATION_ERROR",
+                    "message": (
+                        "description is the truncated form shown in get_activities "
+                        f"(first {ACTIVITY_DESC_MAX_LEN} chars + '{DESC_ELLIPSIS}'). "
+                        "Fetch the full text with get_by_ids before rewriting"
+                    ),
                 }
             }
 

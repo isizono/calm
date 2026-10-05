@@ -3,12 +3,12 @@
 decision保存と同時にhabit/tag-noteへの伝搬を検証する。
 """
 import pytest
-from src.db import get_connection
-from src.services.topic_service import add_topic
-from src.services.decision_service import add_decisions
-import src.services.embedding_service as emb
-from tests.helpers import assert_no_write_errors
 
+import src.services.embedding_service as emb
+from src.db import get_connection
+from src.services.decision_service import add_decisions
+from src.services.topic_service import add_topic
+from tests.helpers import assert_no_write_errors
 
 DEFAULT_TAGS = ["domain:test"]
 
@@ -164,6 +164,47 @@ class TestPropagateToTagNote:
             ).fetchone()
             assert row is not None
             assert row["notes"] == "テストカバレッジ80%以上を維持すること"
+        finally:
+            conn.close()
+
+    def test_propagate_to_tag_note_on_old_tag_delivers_full_text_immediately(self, topic):
+        """作成から180日超過したタグへのdecision伝搬でも、伝搬直後の遭遇では
+        全文が届く（_append_tag_notes_with_connがnotes_updated_atを更新することの確認）"""
+        from src.services.tag_service import collect_tag_notes_for_injection
+
+        tid = topic["topic_id"]
+        conn = get_connection()
+        try:
+            conn.execute(
+                "INSERT INTO tags (namespace, name, created_at) "
+                "VALUES ('domain', 'old-propagated-tag', datetime('now', '-181 days'))"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = add_decisions([
+            {
+                "topic_id": tid,
+                "decision": "命名規則をcamelCaseに統一する",
+                "reason": "チーム間の一貫性のため",
+                "propagate_to": {
+                    "type": "tag_note",
+                    "tag": "domain:old-propagated-tag",
+                    "content": "命名規則: camelCaseを使用すること",
+                },
+            },
+        ])
+        assert_no_write_errors(result)
+        assert result["created"][0]["propagation"]["status"] == "ok"
+
+        conn = get_connection()
+        try:
+            injected = collect_tag_notes_for_injection(
+                conn, ["domain:old-propagated-tag"], session_id="writer-session"
+            )
+            assert injected is not None
+            assert injected[0]["notes"] == "命名規則: camelCaseを使用すること"
         finally:
             conn.close()
 

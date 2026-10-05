@@ -8,12 +8,11 @@ get_decisions で先行実装済みの total_count / truncated を対称的に g
 import pytest
 
 from src.services.activity_service import add_activity
-from src.services.topic_service import add_topic
-from src.services.relation_service import add_relation
 from src.services.discussion_log_service import get_logs
+from src.services.relation_service import add_relation
 from src.services.retract_service import retract
+from src.services.topic_service import add_topic
 from tests.helpers import add_log
-
 
 DEFAULT_TAGS = ["domain:test"]
 
@@ -54,7 +53,7 @@ class TestGetLogsTotalCountTruncatedTopic:
 
     def test_retracted_excluded_from_total_count_by_default(self, topic):
         tid = topic["topic_id"]
-        kept = add_log(topic_id=tid, content="残るログ")
+        add_log(topic_id=tid, content="残るログ")
         removed = add_log(topic_id=tid, content="取り消されるログ")
         retract("log", [removed["log_id"]])
 
@@ -67,7 +66,7 @@ class TestGetLogsTotalCountTruncatedTopic:
 
     def test_retracted_included_in_total_count_when_requested(self, topic):
         tid = topic["topic_id"]
-        kept = add_log(topic_id=tid, content="残るログ")
+        add_log(topic_id=tid, content="残るログ")
         removed = add_log(topic_id=tid, content="取り消されるログ")
         retract("log", [removed["log_id"]])
 

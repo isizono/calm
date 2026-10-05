@@ -11,7 +11,7 @@ import shutil
 import sqlite3
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, get_args
 
@@ -240,8 +240,8 @@ def should_take_snapshot(snapshot_dir: Path | None = None, interval_hours: int |
     try:
         created_at = datetime.fromisoformat(created_at_str)
         if created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=timezone.utc)
-        now = datetime.now(timezone.utc)
+            created_at = created_at.replace(tzinfo=UTC)
+        now = datetime.now(UTC)
         elapsed_hours = (now - created_at).total_seconds() / 3600
         return elapsed_hours >= interval_hours
     except (ValueError, TypeError):
@@ -265,7 +265,7 @@ def _unique_snapshot_paths(snapshot_dir: Path) -> tuple[Path, Path]:
     """
     snapshot_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     timestamp = now.strftime("%Y%m%d_%H%M%S")
     base_stem = f"{SNAPSHOT_PREFIX}{timestamp}"
 
@@ -307,7 +307,7 @@ def take_snapshot(
 
     snapshot_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     snapshot_db_path, snapshot_json_path = _unique_snapshot_paths(snapshot_dir)
 
     # sqlite3.backup()でスナップショット取得
@@ -657,7 +657,7 @@ def restore_snapshot(
             # 破損DBの生コピーにもメタデータJSONを添える。JSONが無いとlist_snapshots()の
             # 列挙対象から漏れ、破損時の「最後の砦」がユーザーから不可視になる。
             fallback_metadata = {
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_at": datetime.now(UTC).isoformat(),
                 "db_size_bytes": fallback_path.stat().st_size,
                 "row_counts": {},
                 "kind": "prerestore",

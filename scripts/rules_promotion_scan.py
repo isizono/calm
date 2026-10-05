@@ -101,7 +101,11 @@ def _embed_texts(texts: list[str]) -> list[list[float]] | None:
     （初回棚卸しは一部の候補だけ欠けた不完全な結果より、degradedとして
     区別できる方を優先する）。
     """
-    from src.services.embedding_service import _chunk_backfill_items, _encode_batch, _ensure_initialized
+    from src.services.embedding_service import (
+        _chunk_backfill_items,
+        _encode_batch,
+        _ensure_initialized,
+    )
 
     if not texts:
         return []
@@ -115,7 +119,7 @@ def _embed_texts(texts: list[str]) -> list[list[float]] | None:
         chunk_embeddings = _encode_batch(chunk_texts, "document")
         if chunk_embeddings is None:
             return None
-        for idx, embedding in zip(chunk_indices, chunk_embeddings):
+        for idx, embedding in zip(chunk_indices, chunk_embeddings, strict=False):
             embeddings[idx] = embedding
     return embeddings
 

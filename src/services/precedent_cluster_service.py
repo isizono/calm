@@ -15,8 +15,14 @@ from src.db import row_to_dict
 from src.services.decision_service import _build_decision_item
 from src.services.material_service import SNIPPET_MAX_LEN
 from src.services.readable_id import strip_entity_id_inplace
-from src.services.supersede_service import compute_supersede_info_batch, get_superseded_by_batch
-from src.services.tag_service import get_effective_tags_batch_by_ids, get_entity_tags_batch
+from src.services.supersede_service import (
+    compute_supersede_info_batch,
+    get_superseded_by_batch,
+)
+from src.services.tag_service import (
+    get_effective_tags_batch_by_ids,
+    get_entity_tags_batch,
+)
 
 DEFAULT_MAX_EXPANSION_NODES = 30
 
