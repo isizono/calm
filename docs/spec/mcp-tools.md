@@ -701,8 +701,8 @@ Claude Codeセッション間の「CLI表示名（例: `workspace-a2`）→人�
 | 名前 | 型 | 必須 | デフォルト | 説明 |
 | --- | --- | --- | --- | --- |
 | question | string | yes | - | 問い本文（空不可、500字以内） |
-| blocks | list[int] | yes | - | この問いが答え待ちで止めているactivityのid一覧（1件以上必須）。全て存在するactivityであること。全てcompleted状態のときはエラー |
 | tags | list[string] | yes | - | タグ配列（1個以上必須）。`domain:`タグを最低1つ含むこと。素タグは任意。`tag_service.resolve_tags`（完全一致・KNN統合）で解決する |
+| blocks | list[int] \| null | 通常askはyes | null | この問いが答え待ちで止めているactivityのid一覧。`kind="ask"`では1件以上必須。`kind="meta"`のときだけ省略・空配列を許す（特定のactivityを止めない裁定依頼のため）。指定する場合は全て存在するactivityであること。全てcompleted状態のときはエラー |
 | kind | string | no | "ask" | `"ask"`（通常ask）または`"meta"`（メタask） |
 | context | string | no | null | 背景（8000字以内） |
 | choices | list[string] \| null | no | null | 選択肢テンプレート（最大3件、1件100字以内）。AskUserQuestion風の選択式UIをダッシュボード等で組み立てるための添え物。回答（`answer_ask`）は引き続き自由文字列のまま |
@@ -710,7 +710,7 @@ Claude Codeセッション間の「CLI表示名（例: `workspace-a2`）→人�
 
 **返り値**: `{id: int, deduped: bool, occurrence_count: int, notify_path: string, similar_precedents: [...], similar_asks: [...]}`。`similar_precedents`/`similar_asks`はそれぞれ近傍のdecision/ask最大3件（embeddingサーバー未起動時は空配列）。`notify_path`はこの時点では存在しない場合がある（`answer_ask`/`triage_ask`側が初めて書き込む瞬間に生成されるため）。
 **動作**: question/contextの構成は`ask-compose` skillを必ず経由すること。同じ問い（正規化後questionのfingerprint一致）が答え待ち（open）で既にあれば新規行を作らず`occurrence_count`を+1し、blocks/要求元セッションはUNIONで追記、context/最終出現時刻は今回の値で上書きする。answered/promoted/dismissed/withdrawnの同一問いは別のライフとして新規行になる（訂正は新規postで行い、supersedes等のリンクは張らない）。dedup時（同一fingerprintのopen ask再post）は今回渡したtags/kind/choices/notifyを無視し、初回投入時の値を保持する。レスポンスのsimilar_asks（裁定内容込み）を読み、同型の問いが繰り返され裁定が一貫していると判断した場合は、`ask-distill` skillでメタaskの起票を検討する。
-**エラー処理**: question空・500字超、context 8000字超、blocks空・存在しないactivity id含む・全てcompleted状態、同一fingerprintの直近withdrawから5分未満の再post、kindが"ask"/"meta"以外、choicesが0件または4件以上・要素が空文字列・101字以上はいずれも`VALIDATION_ERROR`。tagsが空・namespace不正等は`TAGS_REQUIRED`/`INVALID_TAG_NAMESPACE`/`INVALID_TAG_NAME`、`domain:`タグを含まない場合は`VALIDATION_ERROR`。
+**エラー処理**: question空・500字超、context 8000字超、`kind="ask"`でblocksが空または省略・存在しないactivity id含む・全てcompleted状態、同一fingerprintの直近withdrawから5分未満の再post、kindが"ask"/"meta"以外、choicesが0件または4件以上・要素が空文字列・101字以上はいずれも`VALIDATION_ERROR`。tagsが空・namespace不正等は`TAGS_REQUIRED`/`INVALID_TAG_NAMESPACE`/`INVALID_TAG_NAME`、`domain:`タグを含まない場合は`VALIDATION_ERROR`。
 
 ### 2.44 get_asks
 
@@ -892,7 +892,7 @@ Claude Codeセッション間の「CLI表示名（例: `workspace-a2`）→人�
 | kind | string | yes | - | `stumble`（踏んだ・躓いた事実） \| `note`（それ以外の経緯） |
 | body | string | yes | - | ノート本文（500字以内） |
 
-**返り値**: 成功時 `{ok: true, note: {kind, body, created_at}, read_mark: int, hint?: string}`。`hint`は最後の`note`より後の`stumble`が3件以上のときだけ付き、無ければキー自体が無い。
+**返り値**: 成功時 `{ok: true, note: {kind, body, created_at}, read_mark: int, hint?: string}`。`hint`は最後の`note`より後の`stumble`が1件以上のときだけ付き、無ければキー自体が無い。
 **エラー**: `{ok: false, error: {code, message, fix}}`。codeは`VALIDATION_ERROR`（kind不正・body空/超過）、`NOT_FOUND`（nameのエントリが存在しない）、`DATABASE_ERROR`。
 **動作**: read_mark引数は取らない（いつでも書ける）。削除済みエントリにも足せる（観測記録は削除後も続けられる）。`feedback_notes`は追記専用（UPDATE/DELETEはDBトリガーで拒否）。
 

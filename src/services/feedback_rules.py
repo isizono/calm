@@ -30,7 +30,7 @@ PENDING_STUMBLES_SQL = (
 )
 
 REVIEW_EVERY = 10
-PROMOTE_AT = 3
+PROMOTE_AT = 1
 
 _REVIEW_HINT = (
     "  見直し時期: 場面に合わなければwrite_feedback_entryで条件を直すか消す"
