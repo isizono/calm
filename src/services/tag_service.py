@@ -1340,9 +1340,21 @@ def _decay_pointer_text(tag_str: str) -> str:
     )
 
 
-def _set_tag_notes_by_id_with_conn(conn: sqlite3.Connection, tag_id: int, notes: str) -> None:
-    """tag_id指定でnotesを全文置換する。commitは呼び出し元が行う。"""
-    conn.execute("UPDATE tags SET notes = ? WHERE id = ?", (notes, tag_id))
+def _set_tag_notes_by_id_with_conn(
+    conn: sqlite3.Connection, tag_id: int, notes: str, *, touch_notes_updated_at: bool = False
+) -> None:
+    """tag_id指定でnotesを全文置換する。commitは呼び出し元が行う。
+
+    touch_notes_updated_at=True のとき notes_updated_at も現在時刻に更新する。
+    クールダウンマーカーのような機械的な書き換えでdecay猶予を延ばさないよう、既定はFalse。
+    """
+    if touch_notes_updated_at:
+        conn.execute(
+            "UPDATE tags SET notes = ?, notes_updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (notes, tag_id),
+        )
+    else:
+        conn.execute("UPDATE tags SET notes = ? WHERE id = ?", (notes, tag_id))
 
 
 def _append_tag_notes_with_conn(conn, tag_str: str, content: str) -> int:

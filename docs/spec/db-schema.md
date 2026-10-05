@@ -254,8 +254,9 @@ namespace + name による分類タグ。
   タグは自動注入時に notes 全文の代わりに1行ポインタ文言へ縮退する
 - 0066 で、notes が4000字を超えて増加する INSERT/UPDATE を `RAISE(ABORT)` で拒否する
   DBトリガー（1タグあたりのラチェット型天井、縮む変更は天井超過中でも常に許可）を追加
-- 0083 で notes_updated_at 追加。`update_tag` の notes 書き込み・`demote_tag_notes`
-  の縮小時にこの列を更新する。レンダー時decay述語（`is_decay_eligible`）の入力は
+- 0083 で notes_updated_at 追加。`update_tag` の notes 書き込み・`demote_tag_notes`、
+  import 経由の notes 書き込みでこの列を更新する（整理・取り込みしたタグは「いま手入れした」扱いで全文配信が戻る）。
+  レンダー時decay述語（`is_decay_eligible`）の入力は
   last_injected_at と notes_updated_at のうち新しい方を使う
 
 関連 migration: 0009 / 0012 / 0014 / 0015_tag_canonical / 0024 / 0039_extend_tag_namespace / 0061_add_tag_archived / 0064_add_tags_last_injected_at / 0066_add_tags_notes_ratchet_trigger / 0083_add_tags_notes_updated_at
