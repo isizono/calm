@@ -56,9 +56,8 @@ uv run python scripts/lint_doc_cochange.py --base <ref> --head <ref>
 git diff だけで判定できる規約を CI（`.github/workflows/test.yml`）で強制する:
 
 1. `migrations/*.sql` に差分がある PR は `docs/spec/db-schema.md` にも差分があること。例外はコミットメッセージまたは PR 本文に `[no-schema-shape-change]` を含める（index 追加のみ等、スキーマ形状が変わらない変更）
-2. `src/main.py` の `@mcp.tool()` デコレータ付き関数のシグネチャ・増減に差分がある PR は `docs/spec/mcp-tools.md` にも差分があること。例外マーカーは `[no-tool-surface-change]`
-3. `docs/reference.md` の「MCPツール」表に載っているツール名の集合は、`src/main.py` の `@mcp.tool()` 登録関数の集合と常に一致すること（head ref のスナップショット比較。co-change 判定ではないので例外マーカーは無い）
-4. `docs/reference.md` の「スキル」表に載っているスキル名の集合は、`skills/*/SKILL.md` が存在するディレクトリ名の集合と常に一致すること（同上、例外マーカーは無い）
+2. `docs/reference.md` の「MCPツール」表に載っているツール名の集合は、`src/main.py` の `@mcp.tool()` 登録関数の集合と常に一致すること（head ref のスナップショット比較。co-change 判定ではないので例外マーカーは無い）
+3. `docs/reference.md` の「スキル」表に載っているスキル名の集合は、`skills/*/SKILL.md` が存在するディレクトリ名の集合と常に一致すること（同上、例外マーカーは無い）
 
 判定不能（`ast.parse` 失敗、対象セクションが見つからない等）は警告のみで pass する。doc lint で開発を止めないためで、締め領域の防壁（マージ可否の最終ゲート）は別コンポーネントの管轄であり、この lint は地図メンテの補助輪という位置づけである。
 
@@ -79,10 +78,10 @@ PR 本文をチェック対象に含めるには環境変数 `CALM_PR_BODY` に�
 | ドキュメント | 内容 | 陳腐化トリガー |
 |---|---|---|
 | `docs/spec/db-schema.md` | スキーマ写し | `migrations/` への変更 |
-| `docs/spec/mcp-tools.md` | ツール IF | `src/main.py` のツール定義変更 |
+| `docs/spec/mcp-tools.md` | ツール横断の約束事（docstring が参照する節のみ。各ツールの仕様は `src/main.py` の docstring が正本） | ツール横断の約束事の変更 |
 | `docs/architecture/components.md` | 構成地図 | サービス追加・依存変化 |
 
-各文書のマーカーはこのトリガー表に対応させる。`watch-migrations: true` は migration がトリガーである `db-schema.md` にのみ付ける。`mcp-tools.md` / `components.md` のトリガーは migration ではないため `watch-migrations: false` とし、`src/main.py` のツール定義変更は §3 の lint（`lint_doc_cochange.py` ルール2）が別途強制する。checker が migration 番号の増加だけで stale 判定する仕様上、`watch-migrations: true` を付けると index 追加のみの migration でも当該文書が無条件で stale 扱いになるためである。
+各文書のマーカーはこのトリガー表に対応させる。`watch-migrations: true` は migration がトリガーである `db-schema.md` にのみ付ける。`mcp-tools.md` / `components.md` のトリガーは migration ではないため `watch-migrations: false` とする。checker が migration 番号の増加だけで stale 判定する仕様上、`watch-migrations: true` を付けると index 追加のみの migration でも当該文書が無条件で stale 扱いになるためである。`mcp-tools.md` は各ツールの詳細を持たないため、ツール定義の変更に同期を強制する lint は置かない。
 
 3 文書とも本規約導入時点でマーカーを敷設済み。`docs/spec/db-schema.md` は当時判明していた陳腐化（`decisions.topic_id` / `discussion_logs.topic_id` の直接 FK 記載が migration 0047 で既に削除済みだったこと、および 0040〜0048 の未反映）を修正したうえでマーカーを敷設した。他の 2 文書はマーカー敷設時点の内容をそのまま起点とし、以降の drift を checker / lint で捕捉する。
 

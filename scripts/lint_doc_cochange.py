@@ -1,4 +1,4 @@
-"""migration / MCPツールIF変更と外縁ドキュメント更新の同一PR co-change lint、
+"""migration変更と外縁ドキュメント更新の同一PR co-change lint、
 および docs/reference.md のツール・スキル表の実装との整合性チェック。
 
 git diffだけで判定できる規約をCIで強制する（.github/workflows/test.ymlから呼ばれる）:
@@ -6,13 +6,10 @@ git diffだけで判定できる規約をCIで強制する（.github/workflows/t
 1. migrations/*.sql に差分がある PR は docs/spec/db-schema.md にも差分があること。
    例外: コミットメッセージまたはPR本文に `[no-schema-shape-change]` を含める
    （index追加のみ等、スキーマ形状が変わらない変更）。
-2. src/main.py の @mcp.tool() デコレータ付き関数のシグネチャ・増減に差分がある PR は
-   docs/spec/mcp-tools.md にも差分があること。
-   例外: `[no-tool-surface-change]` を含める。
-3. docs/reference.md の「MCPツール」表に載っているツール名の集合は、src/main.py の
+2. docs/reference.md の「MCPツール」表に載っているツール名の集合は、src/main.py の
    @mcp.tool() 登録関数の集合と一致すること（head ref の状態を毎回比較する。
    co-change判定ではないので例外マーカーは無い）。
-4. docs/reference.md の「スキル」表に載っているスキル名の集合は、skills/*/SKILL.md が
+3. docs/reference.md の「スキル」表に載っているスキル名の集合は、skills/*/SKILL.md が
    存在するディレクトリ名の集合と一致すること（同上、例外マーカーは無い）。
 
 判定不能（ast parse失敗、対象セクションが見つからない等）は警告のみでpass する
@@ -38,15 +35,11 @@ if str(_PROJECT_ROOT) not in sys.path:
 from src.env_compat import env_get  # noqa: E402
 
 DB_SCHEMA_DOC = "docs/spec/db-schema.md"
-MCP_TOOLS_DOC = "docs/spec/mcp-tools.md"
 NO_SCHEMA_SHAPE_CHANGE_MARKER = "[no-schema-shape-change]"
-NO_TOOL_SURFACE_CHANGE_MARKER = "[no-tool-surface-change]"
 
 REFERENCE_DOC_PATH = "docs/reference.md"
 REFERENCE_TOOLS_HEADING = "## MCPツール"
 REFERENCE_SKILLS_HEADING = "## スキル"
-
-ToolSignature = dict[str, list[tuple[str, str | None, bool]]]
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +93,7 @@ def git_ls_tree_paths(repo_root: Path, ref: str, dir_path: str) -> list[str] | N
 
 
 # ---------------------------------------------------------------------------
-# @mcp.tool() シグネチャ抽出（純粋関数、ast のみに依存）
+# @mcp.tool() 登録関数名の抽出（純粋関数、ast のみに依存）
 # ---------------------------------------------------------------------------
 
 
@@ -113,60 +106,18 @@ def _has_mcp_tool_decorator(node: ast.FunctionDef | ast.AsyncFunctionDef) -> boo
     return False
 
 
-def _annotation_str(node: ast.expr | None) -> str | None:
-    if node is None:
-        return None
-    try:
-        return ast.unparse(node)
-    except Exception:
-        return "<unparseable>"
-
-
-def _signature_shape(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[tuple[str, str | None, bool]]:
-    args = node.args
-    positional = list(args.posonlyargs) + list(args.args)
-    defaults_count = len(args.defaults)
-    default_offset = len(positional) - defaults_count
-
-    shape: list[tuple[str, str | None, bool]] = []
-    for i, a in enumerate(positional):
-        has_default = i >= default_offset
-        shape.append((a.arg, _annotation_str(a.annotation), has_default))
-
-    for a, kw_default in zip(args.kwonlyargs, args.kw_defaults, strict=False):
-        shape.append((a.arg, _annotation_str(a.annotation), kw_default is not None))
-
-    return shape
-
-
-def extract_tool_signatures(source: str) -> ToolSignature | None:
-    """@mcp.tool() 装飾された関数名 -> シグネチャ形状のdict。パース失敗時はNone。"""
+def extract_tool_names(source: str) -> set[str] | None:
+    """@mcp.tool() 装飾された関数名の集合。パース失敗時はNone。"""
     try:
         tree = ast.parse(source)
     except SyntaxError:
         return None
 
-    result: ToolSignature = {}
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _has_mcp_tool_decorator(node):
-            result[node.name] = _signature_shape(node)
-    return result
-
-
-def diff_tool_signatures(base: ToolSignature, head: ToolSignature) -> dict[str, list[str]]:
-    """ツール名の増減 + 既存ツールのシグネチャ変更を検出する。差分無しは空dict。"""
-    added = sorted(set(head) - set(base))
-    removed = sorted(set(base) - set(head))
-    changed = sorted(name for name in (set(base) & set(head)) if base[name] != head[name])
-
-    diff: dict[str, list[str]] = {}
-    if added:
-        diff["added"] = added
-    if removed:
-        diff["removed"] = removed
-    if changed:
-        diff["changed"] = changed
-    return diff
+    return {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _has_mcp_tool_decorator(node)
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -294,8 +245,6 @@ def evaluate(
     changed_files: list[str],
     commit_messages: str,
     pr_body: str,
-    base_main_py: str | None,
-    head_main_py: str | None,
 ) -> tuple[list[str], list[str]]:
     """(failures, warnings) を返す。failuresが非空ならlintはexit 1で落ちる。"""
     failures: list[str] = []
@@ -303,7 +252,7 @@ def evaluate(
 
     changed_set = set(changed_files)
 
-    # 1. migrations/*.sql <-> db-schema.md
+    # migrations/*.sql <-> db-schema.md
     migration_changed = any(
         f.startswith("migrations/") and f.endswith(".sql") for f in changed_files
     )
@@ -316,27 +265,6 @@ def evaluate(
                 f"スキーマ形状が変わらない変更（index追加のみ等）なら "
                 f"コミットメッセージまたはPR本文に {NO_SCHEMA_SHAPE_CHANGE_MARKER} を含めること。"
             )
-
-    # 2. src/main.py の @mcp.tool() <-> mcp-tools.md
-    if "src/main.py" in changed_set:
-        if base_main_py is None or head_main_py is None:
-            warnings.append("src/main.py の base/head 取得に失敗した。ツールIF差分の判定をスキップした。")
-        else:
-            base_sig = extract_tool_signatures(base_main_py)
-            head_sig = extract_tool_signatures(head_main_py)
-            if base_sig is None or head_sig is None:
-                warnings.append("src/main.py の ast parse に失敗した。ツールIF差分の判定をスキップした。")
-            else:
-                diff = diff_tool_signatures(base_sig, head_sig)
-                if diff and MCP_TOOLS_DOC not in changed_set:
-                    if has_exception_marker(NO_TOOL_SURFACE_CHANGE_MARKER, commit_messages, pr_body):
-                        pass
-                    else:
-                        failures.append(
-                            f"@mcp.tool() のシグネチャ/増減に差分があるが {MCP_TOOLS_DOC} に差分がない "
-                            f"(diff: {diff})。"
-                            f"意図的な例外なら {NO_TOOL_SURFACE_CHANGE_MARKER} を含めること。"
-                        )
 
     return failures, warnings
 
@@ -357,26 +285,12 @@ def main(argv: list[str] | None = None) -> int:
     commit_messages = collect_commit_messages(args.repo_root, args.base, args.head)
     pr_body = env_get("CALM_PR_BODY", "")
 
-    base_main_py = None
-    head_main_py = None
-    if "src/main.py" in changed_files:
-        base_main_py = git_show(args.repo_root, args.base, "src/main.py")
-        head_main_py = git_show(args.repo_root, args.head, "src/main.py")
+    failures, warnings = evaluate(changed_files, commit_messages, pr_body)
 
-    failures, warnings = evaluate(
-        changed_files, commit_messages, pr_body, base_main_py, head_main_py
-    )
-
-    # 3・4. docs/reference.md のMCPツール表・スキル表 <-> 実装（head refのスナップショット比較。
+    # 2・3. docs/reference.md のMCPツール表・スキル表 <-> 実装（head refのスナップショット比較。
     # co-changeではないので常に実行する。差分が無いPRでも既存のドリフトを検出する）
-    head_main_py_for_reference = head_main_py if head_main_py is not None else git_show(
-        args.repo_root, args.head, "src/main.py"
-    )
-    tool_names = None
-    if head_main_py_for_reference is not None:
-        head_sig = extract_tool_signatures(head_main_py_for_reference)
-        if head_sig is not None:
-            tool_names = set(head_sig)
+    head_main_py = git_show(args.repo_root, args.head, "src/main.py")
+    tool_names = extract_tool_names(head_main_py) if head_main_py is not None else None
 
     skill_paths = git_ls_tree_paths(args.repo_root, args.head, "skills/")
     skill_names = extract_skill_dir_names(skill_paths) if skill_paths is not None else None

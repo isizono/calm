@@ -21,7 +21,6 @@ _STEP_REF_RE = re.compile(r"sync-memory[^\n]*?ステップ(\d+)")
 # このステップを言及しているファイル群。sync-memory SKILL.md側で見出し番号が
 # 変わった場合、ここに列挙した各ファイルの表記も追従させる必要がある。
 _REFERENCING_FILES = (
-    _REPO_ROOT / "docs" / "spec" / "mcp-tools.md",
     _REPO_ROOT / "hooks" / "session_start_hook.py",
     _REPO_ROOT / "src" / "services" / "reask_detection_service.py",
     _REPO_ROOT / "src" / "main.py",
