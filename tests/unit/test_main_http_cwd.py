@@ -78,3 +78,34 @@ class TestShutdownServerSignalChoice:
             for node in ast.walk(self._source_tree())
         )
         assert found, "signal.raise_signal(...) 呼び出しが見つからない"
+
+
+class TestEmbeddingWarmup:
+    """HTTP起動時のembeddingウォームアップ。無効化の環境変数で止められること。"""
+
+    def test_runs_ensure_initialized_in_background_thread(self, monkeypatch):
+        import threading
+
+        monkeypatch.delenv("CALM_EMBEDDING_WARMUP", raising=False)
+        ran_in = []
+        monkeypatch.setattr(
+            main_module.embedding_service, "_ensure_initialized",
+            lambda: ran_in.append(threading.current_thread()) or True,
+        )
+
+        thread = main_module._start_embedding_warmup()
+        thread.join(timeout=5)
+
+        assert len(ran_in) == 1
+        assert ran_in[0] is thread and thread.daemon
+
+    @pytest.mark.parametrize("value", ["0", "false", "False"])
+    def test_disabled_by_env_does_not_start(self, monkeypatch, value):
+        monkeypatch.setenv("CALM_EMBEDDING_WARMUP", value)
+        called = []
+        monkeypatch.setattr(
+            main_module.embedding_service, "_ensure_initialized", lambda: called.append(1) or True,
+        )
+
+        assert main_module._start_embedding_warmup() is None
+        assert called == []

@@ -1,6 +1,6 @@
 ---
 name: restart
-description: CALMのローカルMCPサーバーを強制再起動する。プラグイン更新後にコード変更を反映したいときに使う。`--restart-embedding`を付けるとembeddingサーバーも再起動する。
+description: CALMのローカルMCPサーバーを強制再起動する。プラグイン更新後にコード変更を反映したいときに使う。embeddingサーバーも停止され、新しいサーバーの起動直後に自動で立ち上がる。
 disable-model-invocation: true
 ---
 
@@ -12,7 +12,7 @@ PRマージ後の後片付け全体（worktree削除やgit pull等）はリポ�
 
 launcherの通常起動は「生きていれば何もしない」ensure動作のため、プラグインをアップデートした後もコード変更が反映されないことがある。このスキルは既存プロセスを明示的に終了させてから新規プロセスを起動する。
 
-embeddingサーバー(52836)はコードの変更頻度が低いため既定では再起動しない(次にencodeが必要になったとき自動でlazy spawnされる)。embedding_server.py側のコードを変更した場合など、明示的に反映させたいときだけ`--restart-embedding`を付ける。
+embeddingサーバー(52836)はMCPサーバーの再起動より前に必ず停止する。新しいMCPサーバーが起動直後に自動でembeddingサーバーを立ち上げて温めるため、embedding側のコード変更も反映される。
 
 ## 再起動の前（CALMを使う）
 
@@ -26,8 +26,6 @@ embeddingサーバー(52836)はコードの変更頻度が低いため既定で�
 ```
 uv run --no-sync --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/restart_server.py"
 ```
-
-embeddingサーバーも明示的に再起動したい場合は`--restart-embedding`を付ける。
 
 ## 直後（CALMを使わない）
 
@@ -46,7 +44,7 @@ MCPサーバーの再起動が終わった直後、自分自身もまだ `/mcp` 
 - `uv_sync.ok` が `false`: 依存関係の同期に失敗している。`detail` を伝えつつ、`mcp_server` の再起動自体は実行済みなのでその結果と合わせて報告する
 - `mcp_server.ok` が `true`: 再起動成功。`old_pids`（旧プロセス）と`new_pids`（新プロセス）をユーザーに簡潔に伝える
 - `mcp_server.ok` が `false`: 再起動失敗。`detail` の内容をそのままユーザーに伝え、`--status` での手動確認を促す。プラグイン更新直後の初回実行はvenv再構築が重く、稀にこのタイムアウトが起きることがある。その場合は再実行を促す
-- `embedding_server.stopped_pids` は空配列でよい（`--restart-embedding`を付けない限り既定では停止しない）
+- `embedding_server.stopped_pids` は停止したembeddingサーバーのPID。空配列なら元々停止していただけなので触れなくてよい
 - `caches` は削除したパスの記録。特に問題なければ触れなくてよい
 - `orphaned_processes.stopped` が空配列でない場合: 削除済みのプラグインディレクトリから動き続けていたプロセス（embeddingサーバー・MCPサーバー本体等）を検出して停止したことを伝える（`pid`・`cwd`で何を止めたか分かる）。launcherプロセス（各セッションのブリッジ）は対象外で、この一覧に出てくることはない。`orphaned_processes.kept` は、同種のプロセスのうち起動元ディレクトリがまだ存在していた（＝孤児ではない）ものの記録で、特に問題なければ触れなくてよい
 - `plugin_cache_prune` はプラグインキャッシュ旧バージョンの掃除結果（`removed`/`skipped`）。削除件数があれば一言触れる、空配列なら触れなくてよい

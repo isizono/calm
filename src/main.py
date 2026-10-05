@@ -5,6 +5,7 @@ import os
 import random
 import re
 import socket
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, get_args
@@ -18,6 +19,7 @@ from starlette.responses import JSONResponse
 
 from src import config_registry
 from src.db import get_connection
+from src.env_compat import env_get
 from src.infra.session_identity import get_caller_session_id
 from src.services import (
     activity_service,
@@ -27,6 +29,7 @@ from src.services import (
     decision_service,
     destabilization_service,
     discussion_log_service,
+    embedding_service,
     export_bundle_service,
     export_candidate_service,
     feedback_service,
@@ -3219,6 +3222,26 @@ def _ensure_project_root_cwd() -> Path:
     return project_root
 
 
+def _start_embedding_warmup() -> "threading.Thread | None":
+    """embeddingサーバーの起動とバックフィルをdaemon threadで先行実行する。
+
+    停止中のembeddingサーバーは最初の記録・検索でlazy spawnされ、モデルロード
+    完了まで最大30秒その呼び出しを待たせる。HTTPサーバーの起動と並行して
+    温めておくことで、この待ちを初回リクエストから外す。起動処理自体は
+    `_ensure_initialized`（spawnロック・クールダウン・バックフィル多重起動防止）に
+    任せ、ここでは呼ぶだけにする。
+
+    `CALM_EMBEDDING_WARMUP` が `0` または `false`（大文字小文字不問）で無効化できる。
+    """
+    if env_get("CALM_EMBEDDING_WARMUP", "1").lower() in ("0", "false"):
+        return None
+    thread = threading.Thread(
+        target=embedding_service._ensure_initialized, name="embedding-warmup", daemon=True
+    )
+    thread.start()
+    return thread
+
+
 def _setup_server_logging(db_path: str) -> Path:
     """HTTPサーバーのログをファイルへ永続化する。
 
@@ -3327,6 +3350,7 @@ if __name__ == "__main__":
         _session_manager.start_watchdog()
 
         try:
+            _start_embedding_warmup()
             logger.info(f"Starting HTTP server on {HTTP_HOST}:{HTTP_PORT}")
             mcp.run(
                 transport="http",
