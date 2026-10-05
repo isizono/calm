@@ -13,6 +13,10 @@ import time
 import psutil
 import pytest
 
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIXのシグナル・pipe継承を前提とする"
+)
+
 # launcher本体を起こす子スクリプト。argv[1]は見張り対象として差し替えるpid。
 _LAUNCHER_SCRIPT = textwrap.dedent(
     """
