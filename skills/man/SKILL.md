@@ -112,7 +112,7 @@ CALMは「着手 → 記録 → 完了 → 同期」のライフサイクルで�
 - **`/ask-compose`** — `add_ask`を呼ぶ前に、question/contextをテンプレートに沿って構成する。「これ聞いといて」「離席するから後で確認して」のように非同期の判断委譲を指示したときにも発動する
 - **`/ask-distill`** — `add_ask`のsimilar_asksを見て、同型の問いが繰り返され裁定が一貫していると気づいたときに、判例をまとめてメタask（kind="meta"）を起票する
 - **`/memory-export`** / **`/memory-import`** — CALMの記録（トピック・決定事項・ログ・資材・アクティビティ）を他のCALMインスタンスとやり取りする。exportは書き出し、importは受け取ったバンドルの取り込み。知識を別環境・別の相手と共有したいときに
-- **`/restart`** — calmのローカルMCPサーバーを強制再起動する（embeddingサーバーは既定では対象外、`--restart-embedding`指定時のみ）。プラグインアップデート後にコード変更を反映させたいときに
+- **`/calm:restart`** — calmのローカルMCPサーバーを強制再起動する（embeddingサーバーは既定では対象外、`--restart-embedding`指定時のみ）。プラグインアップデート後にコード変更を反映させたいときに。ユーザーが手動で打つコマンドで、`restart_server.py`やkill・起動コマンドを自分で実行せず、ユーザーに`/calm:restart`を打ってもらう
 - **`/ask-watch`** — Ask storeをMonitorツールでイベント駆動監視し、同型の問いが繰り返されていないか確認する。「ask storeを監視して」「asksを見張って」等で発動
 - **`/board`** — Claude同士の非同期のやり取り（質問・周知・意見募集・事前の声かけ）を、掲示板トピックへの投稿としてガイドする。相手が今生きていてすぐ返事が欲しいときはSendMessageで直接話しかける（このスキルの対象外）
 - **`/peer-nudge`** — セッション台帳の宛先候補へSendMessageで直接話しかける前に、担当範囲の確認手順・書き方・配慮・返事が来ないときの扱いをガイドする。相手が今生きていない、または往復が1回で済まない意見募集は`board`の担当
@@ -288,7 +288,7 @@ CALMには「壊れてもエラーにならず、静かに機能が縮退する�
 検索・check-in等でベクトル検索を使う際、embeddingサーバー（52836番ポート）が初回encode時に遅延起動する。起動に失敗しても例外は投げず、warningログのみを出して検索がキーワード一致（FTS5）のみに縮退したまま動き続ける。
 
 - **気づき方**: `uv run --no-sync --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/restart_server.py" --status` の `embedding_server.running` が `false` のまま。または後述の`degraded`フラグが立ち続ける
-- **直し方**: `/restart`に`--restart-embedding`を付けて明示的に再起動する
+- **直し方**: ユーザーに`/calm:restart --restart-embedding`を打ってもらって明示的に再起動する。`restart_server.py`やkill・起動コマンドは自分で実行しない
 
 **検索応答の`degraded: true`**
 
@@ -326,6 +326,7 @@ CALMの全hookはfail-open設計（1つのhookの失敗が他の操作を止め�
 | `CALM_PENDING_LIMIT` | `2` | アクティブコンテキストのpending表示件数 |
 | `CALM_TIER2_MAX_AGE_DAYS` | `7` | SessionStart一覧の階層2にin_progressアクティビティを載せるupdated_at上限（日） |
 | `CALM_PIN_SURFACE_DECAY_DAYS` | `60` | pinnedアクティビティが階層2表示を維持できるupdated_at上限（日） |
+| `CALM_TIER2_MAX_ITEMS` | `5` | SessionStart一覧の『優先』に出す件数の上限。hookが読むため`~/.claude/settings.json`の`env`で設定する。増やすときは`CALM_INJECTION_BUDGET_ACTIVITIES`も上げる（各セクションの予算の合計が`CALM_TOTAL_INJECTION_BUDGET_CHARS`を超えるとcomposeがValueErrorを出す。既定の合計は10500字で、総予算12000字との差は1500字） |
 | `CALM_RECENCY_DECAY_RATE` | `0.0119` | 検索の時間減衰率 |
 | `CALM_SYNC_DISABLE_RETROSPECTIVE` | `false` | `/sync-memory`のふりかえりセクションを非表示にする |
 | `CALM_SNAPSHOT_INTERVAL` | `12` | スナップショット取得間隔（時間） |

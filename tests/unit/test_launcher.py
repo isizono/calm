@@ -68,6 +68,18 @@ class TestOpenBridgeRequest:
         assert calls == [("urlopen", 3)]
 
 
+@pytest.fixture(autouse=True)
+def _no_process_exit_hooks(monkeypatch):
+    """main()が登録するatexit・SIGTERMハンドラをpytestプロセスに残さない。
+
+    atexitに登録されたlauncher._cleanupは、テスト後にmonkeypatchが戻った本物の
+    _unregister_sessionをpytest終了時に呼び、起動中のcalmサーバーへ
+    POST /session/unregisterを送ってしまう。
+    """
+    monkeypatch.setattr(launcher.atexit, "register", lambda *a, **kw: None)
+    monkeypatch.setattr(launcher.signal, "signal", lambda *a, **kw: None)
+
+
 class TestIsServerRunning:
     def test_returns_true_when_server_responds_200(self, monkeypatch):
         """サーバーが200を返す場合はTrueを返す"""

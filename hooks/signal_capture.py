@@ -23,7 +23,7 @@ def try_capture_signal(
     hook はこの関数の成否に関わらず既定のフェイルオープン出力を継続すること。
 
     Args:
-        kind: signal種別（machine_error 等、KNOWN_KINDS のいずれか）
+        kind: signal種別（KNOWN_KINDS のいずれか、または custom:<名前>）
         summary: 1行要約
         source: 発生源。hook からの呼び出しは 'hook:<hook名>' を渡す
         detail: traceback・自由記述
