@@ -678,7 +678,7 @@ class TestTriageAsk:
         finally:
             conn.close()
         assert dec_row["decision"] == "do X"
-        assert blocks_count == 0
+        assert blocks_count == 1  # triage後もblockは残る
         assert belongs_to_count == 1
 
     def test_promote_without_topic_id_rejected(self, temp_db):

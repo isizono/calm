@@ -1145,6 +1145,8 @@ def update_activity(
     tags: Optional[list[str]] = None,
     closed_by: Optional[str] = None,
     closed_reason: Optional[str] = None,
+    move_asks_to: Optional[int] = None,
+    move_ask_ids: Optional[list[int]] = None,
 ) -> dict:
     """
     アクティビティのステータス・タイトル・説明・タグを更新する。
@@ -1175,6 +1177,9 @@ def update_activity(
         closed_by: activityを閉じた意思の主体（"user"|"claude"|"external"）。
             status="completed"と同時のときだけ受け付ける
         closed_reason: 閉じた理由（自由文）。status="completed"と同時のときだけ受け付ける
+        move_asks_to: このactivityを止めている未決着ask（open・回答済み未triage）を
+            付け替える先のactivity（完了済み不可）
+        move_ask_ids: move_asks_toと併用し、そのaskだけ付け替える（省略時は全件）
 
     Returns:
         更新されたアクティビティ情報。既にcompletedのactivityへstatus="completed"を
@@ -1183,11 +1188,14 @@ def update_activity(
         （closed_by/closed_reasonを渡さなければ、このキーは付かない）。
         status="completed"の呼び出しでは、紐づくgoalが未判定ならgoal_hint
         （{goal_id_raw, handle, label, next, open_activities_left,
-        open_questions?, warning?}）も返す（拒否はしない）
+        open_questions?, warning?}）も返す（拒否はしない）。
+        status="completed"では、止めている未決着ask（付け替え後の残り）を
+        pending_asks、付け替えたaskをmoved_asksに返す（完了は止めない）
     """
     return activity_service.update_activity(
         activity_id, status, title, description, tags,
         closed_by=closed_by, closed_reason=closed_reason,
+        move_asks_to=move_asks_to, move_ask_ids=move_ask_ids,
     )
 
 
@@ -2612,8 +2620,9 @@ def triage_ask(
 
     promoteはdecision/reason/title/tags/topic_idをそのままadd_decisionsに渡して
     decisionを生成し、promoted_decision_idとして紐付ける。dismissはdismiss_reasonを
-    記録するのみで実体は作らない。いずれもこのaskが止めていたactivityの
-    blockは解除する（ask_blocksを削除）。
+    記録するのみで実体は作らない。このaskが止めていたactivityとの紐づけ
+    （ask_blocks）は残す。待ち状態の判定はaskのstatusで行われるため、決着後は
+    待ちとして表示されず、check_inの「最近決着したask」枠から辿れる。
 
     一般化ルール（同型の問いを今後AIが自己裁定してよいというルール）の発効は、
     必ずこのtriage_askによるメタask（kind="meta"のask）への人間のpromote裁定を

@@ -63,6 +63,35 @@ class TestEmptyState:
             conn.close()
 
 
+class TestBlockedWorkTitle:
+    def test_non_meta_and_meta_lines_show_title_of_blocked_work(self, temp_db):
+        """askが止めている作業の題が行末に添えられる（meta行にも）"""
+        conn = get_connection()
+        try:
+            _seed_ask(conn, "通常の問い")
+            _seed_ask(conn, "メタの問い", kind="meta")
+            result = _build_open_asks_section(conn)
+        finally:
+            conn.close()
+        lines = result.splitlines()
+        plain = next(line for line in lines if "通常の問い" in line)
+        meta = next(line for line in lines if "メタの問い" in line)
+        assert plain.endswith("［止めている作業: [作業] 通常の問いのblocks先］")
+        assert meta.endswith("［止めている作業: [作業] メタの問いのblocks先］")
+
+    def test_more_than_two_blocked_works_are_counted(self, temp_db):
+        conn = get_connection()
+        try:
+            acts = [_seed_activity(conn, f"作業{i}") for i in range(4)]
+            result = ask_service.add_ask_with_conn(conn, "多重の問い", acts, ["domain:open-asks-test"])
+            assert "error" not in result, result
+            conn.commit()
+            section = _build_open_asks_section(conn)
+        finally:
+            conn.close()
+        assert "［止めている作業: 作業0／作業1 他2件］" in section
+
+
 class TestNonMetaTitleDisplay:
     def test_open_ask_shows_question_title(self, temp_db):
         """非メタのopen askは件数のみでなくタイトル(question)が表示される"""

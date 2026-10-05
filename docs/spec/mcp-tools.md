@@ -58,7 +58,7 @@ last-synced-migration: 0077
 
 | ツール | 概要 |
 | --- | --- |
-| `update_activity` | アクティビティのstatus/title/description/tagsを更新する |
+| `update_activity` | アクティビティのstatus/title/description/tagsを更新する（完了時は止めている未決着askを返す。askの付け替えも可） |
 | `update_material` | 資材のcontent/title/tags/sourceを更新する |
 | `update_habit` | 振る舞いを更新する（content/active） |
 | `update_tag` | タグのnotes/canonical/rename/descriptionを更新する |
@@ -397,6 +397,8 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 | tags | list[string] | no | null | 全置換。1個以上 |
 | closed_by | string | no | null | activityを閉じた意思の主体（`"user"`\|`"claude"`\|`"external"`）。status="completed"と同時のときだけ受け付ける |
 | closed_reason | string | no | null | 閉じた理由（自由文）。status="completed"と同時のときだけ受け付ける |
+| move_asks_to | int | no | null | このactivityを止めている未決着ask（open、または回答済みで未triage）のblockを、指定したactivityへ付け替える。付け替え先は存在し、完了済みでないこと。完了と同じ呼び出しで渡せる。この引数だけの呼び出しでも付け替えできる |
+| move_ask_ids | list[int] | no | null | `move_asks_to`と一緒に渡すと、そのaskだけを付け替える（省略時は未決着askを全件）。このactivityを止めている未決着askでないidが含まれていれば、何も変更せず`VALIDATION_ERROR` |
 
 **副作用**: snoozed状態のアクティビティにstatusを指定せず他フィールドのみ更新すると、自動的にstatus="pending"へ復活する。
 
@@ -407,6 +409,8 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 **goal_hint**: status="completed"の呼び出しでは、紐づくgoalが未判定（closed=0）なら応答に`goal_hint`（`{goal_id_raw, handle, label, next, open_activities_left, open_questions?, warning?}`）を添える。判定は拒否しない。紐づく未完了のactivityが残っていない（`open_activities_left`=0）ときは`warning`が載る。組み立てで例外が出ても完了自体は失われず、`goal_hint`に`{"error": {"code": "DATABASE_ERROR", ...}}`が入る。再呼び出し時（closed_fields_unchangedが付く場合）も`goal_hint`は今どおり返す。
 
 **goal_hint**: status="completed"の呼び出しでは、紐づくgoalが未判定（closed=0）なら応答に`goal_hint`（`{goal_id_raw, handle, label, next, open_activities_left, open_questions?, warning?}`）を添える。判定は拒否しない。紐づく未完了のactivityが残っていない（`open_activities_left`=0）ときは`warning`が載る。組み立てで例外が出ても完了自体は失われず、`goal_hint`に`{"error": {"code": "DATABASE_ERROR", ...}}`が入る。
+
+**pending_asks / moved_asks**: status="completed"の呼び出しでは、このactivityを止めている未決着ask（openまたは回答済み未triage）が（`move_asks_to`で付け替えた後に）残っていれば、応答に`pending_asks`（各`{id_raw, question, status}`、回答本文は含まない）を添える。完了自体は止めない。`move_asks_to`で付け替えたaskは`moved_asks`（同じ形）に返す。付け替えは完了と同じトランザクションで行われ、付け替え先がcompletedや不在などで拒否された場合は何も変更されない。
 
 ### 2.14 add_material
 
@@ -461,7 +465,7 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 **返り値**: 5つの枠（`anchor`/`control`/`context`/`catalog`/`env`）に分けて返す。中身が空の枠・キーは省く（`anchor.activity`・`control.goal`・`env.coverage`・`env.session`は常に置く）。
 
 - `anchor`: `{activity, pinned}`
-- `control`: `{goal, asks, dependencies}`
+- `control`: `{goal, asks, neighbor_asks, recent_settled_asks, dependencies}`
 - `context`: `{topics, activities, decisions, latest_log, materials}`
 - `catalog`: `{logs, map}`
 - `env`: `{tag_notes, hints, coverage, session, flow_guide}`。セッション内でcheck_inを初めて呼んだときのみ`flow_guide`（コンテキスト取得の手がかり）も含まれる
@@ -470,6 +474,7 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 activity束縛の条件が1件以上あるgoalには`children`（内訳を1行にした文字列、例「子4: 達成1・進行中1・失敗未処理1・停止1」）が付く。手を打つべき子（失敗して未処理・止まっている）があれば`attention`（各`{condition_id_raw, title, mark, hint}`、markは`失敗`\|`止まっている`、最大3件）も付き、超過分は`attention_more`（`"他 N 件"`）に畳む。「止まっている」は、束縛先activityのgoalが未判定で、子を止めているopen askがある・heartbeatが`HEARTBEAT_TIMEOUT_MINUTES`（既定20分）を超えて途切れている・判定せずに完了している、のいずれかに当たること。`remaining`/`other_activities`/`terminal`はgoalブロックが目安の800字を超えると件数表示に畳まれるが、`children`・`attention`はこの畳み込みの対象外で、どれだけ子が多くても畳まれない。
 `anchor.pinned.decisions`の各要素は、未resolveなdestabilizesエッジを持つ場合のみdestabilizationが付く。
 このactivityを`add_ask`のblocksでblockしているaskが1件以上あるときのみ`control.asks: {awaiting_answer, awaiting_triage}`が追加される（無ければキー自体が無い）。`awaiting_answer`はstatus='open'のask一覧（各`{id_raw, question, last_seen_at}`）、`awaiting_triage`はstatus='answered'かつ未トリアージのask一覧（各`{id_raw, question, answer_body, last_seen_at}`）。activities.statusがcompleted以外のときのみ配達され、promoted/dismissed/withdrawn済みのaskは配達されない。合わせて新しい順に最大5件、超過分は`more`（件数）と`next`（`get_asks`へのポインタ）に畳む。`awaiting_triage`の存在自体が「triage_askで振り分けるべき」という状態情報であり、`env.hints`にはこの旨のテキストを重複させない。activityが紐づくdomain:タグのnotesが推奨文字数の上限を超えている場合、`env.hints`に整理を促す文言（`notes_over_budget`）が1件追加される。他のimmediate hintと異なり恒久抑制マーカーは効かず、超過が解消するまで発火し続ける（`demote_tag_notes`でnotesを資材へ退避して縮めることを想定した設計）。
+`control.neighbor_asks`は、このactivityと隣の作業（goalの親子関係にある作業、`depends_on`でつながる作業。向きは問わない）を止めている、未決（open）または回答済み未トリアージのaskのうち、このactivity自身は止めていないもの。`{items: [{id_raw, question, status, activity}], more?, next?}`で、`activity`はどの作業のaskかを示す作業の題。回答本文は載せない。`control.recent_settled_asks`は、このactivityと隣の作業を止めていたaskのうちトリアージから7日以内のもの。`{items: [{id_raw, question, activity, outcome, detail}], more?, next?}`で、`outcome`は`promoted`|`dismissed`、`detail`はpromoteなら昇格先decisionの見出し、dismissなら却下理由。どちらも新しい順に最大3件、超過分は`more`（件数）と`next`（超過したaskを止めている作業ごとの`get_asks(blocking_activity_id=<その作業>, status=null)`へのポインタ。最大3件）に畳み、該当が無ければキー自体を省く。`control`は10,000字の予算に数えない枠なので、予算の切り詰め対象は変わらない。
 `env.session`は呼び出し元のClaude Code CLIプロセスを解決できた場合`{"name": str, "alias": str, "alias_collision": bool}`、解決できない場合（非CLIクライアント、launcher登録が間に合っていない起動直後等）は`{"registered": false, "reason": "cli_unresolved"}`。このセッション別名レジストリ更新はベストエフォートであり、失敗してもcheck_in本体は成功応答を返す。`alias_collision`がtrueの場合にユーザーへ伝えるかどうかは呼び出し側（check-inスキル等）の責務であり、`env.hints`には重複させない。詳細は2.42bを参照。
 応答全体が10,000字を超えるときは`truncated`キーが付く（`{budget, before, after, over_budget, cuts: [{section, kept, cut, next?}, ...]}`）。`section`はドット区切りの入れ子パス（例: `anchor.pinned`、`catalog.map`）。`catalog.map`/`catalog.logs`/`context.materials`/`context.activities`/`context.decisions`/`context.latest_log`/`anchor.pinned`の順に切り詰められる。`control`（goal/asks/dependencies）と`env.tag_notes`はこの10,000字には数えず、それぞれ3,000字・6,000字の天井を別に持つ（超過時は`truncated.control_over`/`tag_notes_over`が立つ）。
 **副作用**: statusがin_progress以外なら自動的にin_progressに更新。
@@ -736,7 +741,7 @@ Claude Codeセッション間の「CLI表示名（例: `workspace-a2`）→人�
 | dismiss_reason | string | action=dismissのとき必須 | null | 見送り理由 |
 
 **返り値**: promote時 `{id: int, status: "promoted", promoted_decision_id: int}`、dismiss時 `{id: int, status: "dismissed"}`。promote時、対象askが`kind="meta"`のときのみ`next_step: str`が追加で含まれる。
-**動作**: promoteはdecision/reason/title/tags/topic_idをそのまま`add_decisions`に渡してdecisionを生成し、promoted_decision_idとして紐付ける。いずれもこのaskが止めていたactivityのblockを解除する（ask_blocksを削除）。`kind="meta"`のpromoteは、`rule-placement` skillに従いhabits/tag-notes/pin/判例decision/rules等への配置を先に済ませてから呼ぶ。dismissかつ対象askの`notify_wanted`がtrueなら、`answer_ask`と同じ`notify_path`へ完了通知を1行追記する（promoteでは書かない。`answer_ask`時点で既に一度通知済みのため）。
+**動作**: promoteはdecision/reason/title/tags/topic_idをそのまま`add_decisions`に渡してdecisionを生成し、promoted_decision_idとして紐付ける。いずれもask_blocksは削除せず残す（どの作業のaskだったかを決着後も辿れる。「待ち」の判定はaskのstatusで行う）。`kind="meta"`のpromoteは、`rule-placement` skillに従いhabits/tag-notes/pin/判例decision/rules等への配置を先に済ませてから呼ぶ。dismissかつ対象askの`notify_wanted`がtrueなら、`answer_ask`と同じ`notify_path`へ完了通知を1行追記する（promoteでは書かない。`answer_ask`時点で既に一度通知済みのため）。
 **エラー処理**: 対象がanswered かつ未トリアージでない場合、action不正、promote時のdecision/reason/topic_id欠落、dismiss時のdismiss_reason欠落はいずれも`VALIDATION_ERROR`（topic_id欠落は`add_decisions`側の必須バリデーションに起因する）。promote処理中にdecision生成が失敗した場合はask側の状態変更もロールバックされ`answered`のまま残る。
 
 ### 2.47 withdraw_ask

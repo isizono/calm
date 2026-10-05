@@ -147,6 +147,9 @@ def extract_events(
                                     event["activity_id"] = int(aid)
                                 except (ValueError, TypeError):
                                     pass
+                            ts = entry.raw.get("timestamp") if isinstance(entry.raw, dict) else None
+                            if isinstance(ts, str) and ts:
+                                event["ts"] = ts
                         elif short_name == "add_decisions":
                             items = block.get("input", {}).get("items", [])
                             topic_ids: list[int] = []
