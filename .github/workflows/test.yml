@@ -8,10 +8,12 @@ on:
     # ([no-schema-shape-change] 等) を追記したとき lint-docs を再実行させるため。
     types: [opened, synchronize, reopened, edited]
 
-# 同一PRへの連続pushや、main連続pushで古いrunを止める
+# 同一PRへの連続pushで古いrunを止める。PR本文の編集(edited)は別groupにし、
+# 編集のたびに実行中のコード変更のrunをキャンセルしないようにする。
+# main の push run は uv キャッシュの保存まで走り切らせるためキャンセルしない
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.action == 'edited' && 'edited' || 'code' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -101,6 +103,8 @@ jobs:
         run: uv run python scripts/dump_db_schema.py --check
 
   test-pyramid:
+    # HEAD^1 は pull_request のマージコミットの第一親(base側)を指す前提のため、
+    # push では走らせない
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
