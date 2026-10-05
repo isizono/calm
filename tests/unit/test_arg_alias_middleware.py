@@ -117,3 +117,21 @@ async def test_close_tags_in_nested_values_are_stripped():
         {"items": [{"topic_id": 1, "content": "c</content>\n</invoke>", "tags": ["a</invoke>"]}]},
     )
     assert out == {"items": [{"topic_id": 1, "content": "c", "tags": ["a"]}]}
+
+
+@pytest.mark.asyncio
+async def test_text_continuing_after_invoke_tag_is_kept():
+    body = "本文</invoke>x"
+    assert await _run("answer_ask", {"answer_body": body}) == {"answer_body": body}
+
+
+@pytest.mark.asyncio
+async def test_text_made_only_of_close_tags_becomes_empty_and_non_strings_pass():
+    out = await _run("answer_ask", {"answer_body": "</invoke>", "n": 3, "x": None})
+    assert out == {"answer_body": "", "n": 3, "x": None}
+
+
+@pytest.mark.asyncio
+async def test_namespaced_invoke_tag_is_stripped():
+    out = await _run("answer_ask", {"answer_body": "本文</ns:parameter>\n</ns:invoke>"})
+    assert out == {"answer_body": "本文"}

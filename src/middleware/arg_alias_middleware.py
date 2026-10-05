@@ -41,12 +41,27 @@ _USAGE: dict[str, tuple[str, str]] = {
 
 # 呼び出し側の書式ミスで文字列引数の末尾に混入する閉じタグの並び。最後が invoke
 # の閉じタグ（名前空間付き可）のときだけ、間の空白ごと除く。本文の途中は触らない。
-_TRAILING_CLOSE_TAGS = re.compile(r"(?:\s*</[\w:.\-]+>)*\s*</(?:[\w.\-]+:)?invoke>\s*\Z")
+_CLOSE_TAG = re.compile(r"</[\w:.\-]+>")
+_INVOKE_TAG = re.compile(r"</(?:[\w.\-]+:)?invoke>")
+
+
+def _strip_trailing_close_tags(text: str) -> str:
+    """末尾から閉じタグを1つずつ剥がす（正規表現を全位置で試すと病的入力で二乗になる）。"""
+    end = len(text.rstrip())
+    if not _INVOKE_TAG.fullmatch(text, text.rfind("</", 0, end), end):
+        return text
+    cut = text.rfind("</", 0, end)
+    while True:
+        end = len(text[:cut].rstrip())
+        start = text.rfind("</", 0, end)
+        if start < 0 or not _CLOSE_TAG.fullmatch(text, start, end):
+            return text[:cut]
+        cut = start
 
 
 def _strip_close_tags(value: Any) -> Any:
     if isinstance(value, str):
-        return _TRAILING_CLOSE_TAGS.sub("", value)
+        return _strip_trailing_close_tags(value)
     if isinstance(value, list):
         return [_strip_close_tags(v) for v in value]
     if isinstance(value, dict):
