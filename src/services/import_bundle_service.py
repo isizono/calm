@@ -771,7 +771,9 @@ def _resolve_and_apply_tags_with_conn(
         if row is None:
             tag_id = ensure_tag_ids(conn, [(ns, name)])[0]
             if incoming_notes:
-                _set_tag_notes_by_id_with_conn(conn, tag_id, incoming_notes)
+                _set_tag_notes_by_id_with_conn(
+                    conn, tag_id, incoming_notes, touch_notes_updated_at=True
+                )
             result[raw] = tag_id
             continue
 
@@ -780,7 +782,9 @@ def _resolve_and_apply_tags_with_conn(
             diff = _notes_diff(local_notes, incoming_notes)
             if diff:
                 merged = f"{local_notes}\n\n{diff}" if local_notes else diff
-                _set_tag_notes_by_id_with_conn(conn, row["id"], merged)
+                _set_tag_notes_by_id_with_conn(
+                    conn, row["id"], merged, touch_notes_updated_at=True
+                )
 
         result[raw] = row["canonical_id"] if row["canonical_id"] is not None else row["id"]
     return result

@@ -250,6 +250,10 @@ mcp = FastMCP("calm", instructions=build_instructions())
 from src.services.signal_middleware import SignalCaptureMiddleware
 mcp.add_middleware(SignalCaptureMiddleware())
 
+# 観測済みの引数名の取り違えを、バリデーションの前に書き換える middleware を登録する
+from src.middleware.arg_alias_middleware import ArgAliasMiddleware
+mcp.add_middleware(ArgAliasMiddleware())
+
 # check_in以降の関連topicスコープの鮮度差分をツールレスポンスに注入する middleware を登録する
 from src.middleware.delta_middleware import DeltaNotificationMiddleware
 mcp.add_middleware(DeltaNotificationMiddleware())
@@ -396,7 +400,9 @@ def get_topics(
         docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
 
     Returns:
-        トピック一覧。archived_tags（応答に含まれるトピックのタグのうちarchivedなものの
+        トピック一覧。descriptionは200字で切って返し、切った項目には末尾に「…」と
+        description_truncated: trueが付く。書き換える前はget_by_idsで全文を取る。
+        archived_tags（応答に含まれるトピックのタグのうちarchivedなものの
         集約、{tag, archived_reason}の配列。該当なしでも空配列で常に付く）が付く。
     """
     flavor = _normalize_flavor(flavor)
@@ -830,9 +836,8 @@ def search_tags(
     Args:
         query: 検索キーワード（タグ名部分一致 + ベクトル検索）
         namespace: namespaceフィルタ（"domain", "intent", ""。未指定で全タグ）
-        include_notes: Trueのときnotesを返す（デフォルトFalse）。notesを持つ結果は
-            取得と同時にlast_injected_atが更新される（tag notes decay述語の参照実績
-            記録。get_habits(habit_id=...)のlast_recalled_at更新と同じ役割）
+        include_notes: Trueのときnotesを返す（デフォルトFalse）。検索での参照は
+            tag notes decayの鮮度を戻さない
         limit: 取得件数上限（デフォルト20）
 
     Returns:
@@ -1111,6 +1116,8 @@ def get_activities(
 
     Returns:
         アクティビティ一覧（total_countで該当ステータスの全件数を確認可能）
+        descriptionは200字で切って返し、切った項目には末尾に「…」と
+        description_truncated: trueが付く。書き換える前はget_by_idsで全文を取る
         archived_tags: 応答に含まれるアクティビティのタグのうちarchivedなものの集約
             （{tag, archived_reason}の配列。該当なしでも空配列で常に付く）
         activities・total_countの字数（archived_tags・tag_notesは含まない）が
@@ -1159,6 +1166,8 @@ def update_activity(
     - アクティビティを棚上げする: update_activity(activity_id, status="shelved")
     - タイトル変更: update_activity(activity_id, title="新しいタイトル")
     - 説明更新: update_activity(activity_id, description="新しい説明")
+      （get_activitiesが切って返した値＝現在値の先頭200字（末尾の「…」・前後の空白は無視）はVALIDATION_ERRORで拒否する。
+      書き換える前はget_by_idsで全文を取る）
     - タグ変更: update_activity(activity_id, tags=["domain:calm", "intent:implement"])
 
     ワークフロー位置: アクティビティ進行状況の更新時
@@ -1565,7 +1574,7 @@ def check_in(
 
     Returns:
         5つの枠（anchor: {activity, pinned} / control: {goal, asks,
-        dependencies} / context: {topics, activities, decisions, latest_log,
+        decision_candidates, dependencies} / context: {topics, activities, decisions, latest_log,
         materials} / catalog: {logs, map} / env: {tag_notes, hints, coverage,
         session, flow_guide}）に分けて返す。中身が空の枠・キーは省く
         （anchor.activity・control.goal・env.coverage・env.sessionは常に置く）。
@@ -1573,6 +1582,8 @@ def check_in(
         control.goalは終了条件の現在状態と次の一手（next）を1件返す（未定義=
         undefined・不要印=not_needed・goal付き=active|judge_ready|closed）。
         control.asks.awaiting_triageが1件以上あればtriage_askで振り分けること。
+        control.decision_candidatesは記録役が退避した閉じていない決定事項の候補
+        （guideに閉じ方がある。decisionと結ぶかretractすると出なくなる）。
         env.session.alias_collisionがtrueならユーザーに伝えること。
         応答全体が10,000字を超えるとtruncatedキーが付く（cuts[].sectionは
         "anchor.pinned"のようなドット区切りパス）。control・env.tag_notesは

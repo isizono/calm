@@ -224,7 +224,7 @@ embeddingサーバー未起動・セッション内で提示済みの記録は�
 | since | string | no | null | ISO日付（以降） |
 | until | string | no | null | ISO日付（以前） |
 
-**返り値**: `{topics: [Topic], total_count: int, tag_notes?: [TagNote], archived_tags: [{tag, archived_reason}]}`。`archived_tags` は応答に含まれるtopicのタグのうちarchivedなものの集約で、該当なしでも常に空配列で付く。
+**返り値**: `{topics: [Topic], total_count: int, tag_notes?: [TagNote], archived_tags: [{tag, archived_reason}]}`。`archived_tags` は応答に含まれるtopicのタグのうちarchivedなものの集約で、該当なしでも常に空配列で付く。`description`は200字で切って返し、切った項目だけ末尾に`…`が付き`description_truncated: true`が立つ（全文は`get_by_ids`で取る）。
 
 ### 2.5 get_logs / get_decisions
 
@@ -363,7 +363,7 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 | since | string | no | null | ISO日付（以降） |
 | until | string | no | null | ISO日付（以前） |
 
-**返り値**: `{activities: [Activity], total_count: int, archived_tags: [{tag, archived_reason}]}`。statusの`active`は pending+in_progress のエイリアス（snoozed/shelvedは含まない）。`archived_tags`は応答に含まれるアクティビティのタグのうちarchivedなものの集約で、該当なしでも常に空配列で付く。`activities`・`total_count`の字数（JSON文字列化後、`archived_tags`・`tag_notes`は含まない）が`ACTIVITIES_BUDGET_CHARS`（既定10,000字）を超えると`activities`が後方（`limit`で絞った中の古い側）から切られ、`truncated`キー（`{budget, before, after, over_budget, cuts: [{section, kept, cut, next?}]}`）が付く。`total_count`は`limit`・この予算どちらの影響も受けない母集団件数のまま。`archived_tags`・`tag_notes`はこの予算に数えず、切り詰め後に残った`activities`だけから集める（この2キー分だけ応答全体がこの予算を超えることがある）。
+**返り値**: `{activities: [Activity], total_count: int, archived_tags: [{tag, archived_reason}]}`。`description`は200字で切って返し、切った項目だけ末尾に`…`が付き`description_truncated: true`が立つ（全文は`get_by_ids`で取る）。statusの`active`は pending+in_progress のエイリアス（snoozed/shelvedは含まない）。`archived_tags`は応答に含まれるアクティビティのタグのうちarchivedなものの集約で、該当なしでも常に空配列で付く。`activities`・`total_count`の字数（JSON文字列化後、`archived_tags`・`tag_notes`は含まない）が`ACTIVITIES_BUDGET_CHARS`（既定10,000字）を超えると`activities`が後方（`limit`で絞った中の古い側）から切られ、`truncated`キー（`{budget, before, after, over_budget, cuts: [{section, kept, cut, next?}]}`）が付く。`total_count`は`limit`・この予算どちらの影響も受けない母集団件数のまま。`archived_tags`・`tag_notes`はこの予算に数えず、切り詰め後に残った`activities`だけから集める（この2キー分だけ応答全体がこの予算を超えることがある）。
 **副作用**: 呼び出し時、updated_atがSNOOZE_DURATION_DAYS（デフォルト3日）を超過したsnoozedアクティビティをpendingへ一括自動復活させる。
 
 ### 2.12b get_overview
@@ -403,6 +403,8 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 | move_ask_ids | list[int] | no | null | `move_asks_to`と一緒に渡すと、そのaskだけを付け替える（省略時は未決着askを全件）。このactivityを止めている未決着askでないidが含まれていれば、何も変更せず`VALIDATION_ERROR` |
 
 **副作用**: snoozed状態のアクティビティにstatusを指定せず他フィールドのみ更新すると、自動的にstatus="pending"へ復活する。
+
+**descriptionの上書きガード**: 渡された`description`が現在値の先頭200字（末尾の`…`・前後の空白は無視して比較。`get_activities`が切って返す形）と一致し、かつ現在値が200字を超えるとき、何も変更せず`VALIDATION_ERROR`を返す。
 
 **closed_by/closed_reason**: completedでないactivityをcompletedにする呼び出しでだけ`closed_at`・`closed_by`・`closed_reason`を書く（既にcompletedのactivityにstatus="completed"を渡しても書き換えない）。`closed_by`引数を省略し、紐づくgoalが判定済みなら`"goal_judge"`がサーバー側で書かれ、`closed_reason`も省略時は`goals.judge_note`が使われる。それ以外で省略時は`closed_by`はNULL（不明）になる。`"goal_judge"`自体は引数としては受け付けない（VALIDATION_ERROR）。
 
@@ -467,7 +469,7 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 **返り値**: 5つの枠（`anchor`/`control`/`context`/`catalog`/`env`）に分けて返す。中身が空の枠・キーは省く（`anchor.activity`・`control.goal`・`env.coverage`・`env.session`は常に置く）。
 
 - `anchor`: `{activity, pinned}`
-- `control`: `{goal, asks, neighbor_asks, recent_settled_asks, dependencies}`
+- `control`: `{goal, asks, neighbor_asks, recent_settled_asks, decision_candidates, dependencies}`
 - `context`: `{topics, activities, decisions, latest_log, materials}`
 - `catalog`: `{logs, map}`
 - `env`: `{tag_notes, hints, coverage, session, flow_guide}`。セッション内でcheck_inを初めて呼んだときのみ`flow_guide`（コンテキスト取得の手がかり）も含まれる
@@ -477,6 +479,7 @@ activity束縛の条件が1件以上あるgoalには`children`（内訳を1行�
 `anchor.pinned.decisions`の各要素は、未resolveなdestabilizesエッジを持つ場合のみdestabilizationが付く。
 このactivityを`add_ask`のblocksでblockしているaskが1件以上あるときのみ`control.asks: {awaiting_answer, awaiting_triage}`が追加される（無ければキー自体が無い）。`awaiting_answer`はstatus='open'のask一覧（各`{id_raw, question, last_seen_at}`）、`awaiting_triage`はstatus='answered'かつ未トリアージのask一覧（各`{id_raw, question, answer_body, last_seen_at}`）。activities.statusがcompleted以外のときのみ配達され、promoted/dismissed/withdrawn済みのaskは配達されない。合わせて新しい順に最大5件、超過分は`more`（件数）と`next`（`get_asks`へのポインタ）に畳む。`awaiting_triage`の存在自体が「triage_askで振り分けるべき」という状態情報であり、`env.hints`にはこの旨のテキストを重複させない。activityが紐づくdomain:タグのnotesが推奨文字数の上限を超えている場合、`env.hints`に整理を促す文言（`notes_over_budget`）が1件追加される。他のimmediate hintと異なり恒久抑制マーカーは効かず、超過が解消するまで発火し続ける（`demote_tag_notes`でnotesを資材へ退避して縮めることを想定した設計）。
 `control.neighbor_asks`は、このactivityと隣の作業（goalの親子関係にある作業、`depends_on`でつながる作業。向きは問わない）を止めている、未決（open）または回答済み未トリアージのaskのうち、このactivity自身は止めていないもの。`{items: [{id_raw, question, status, activity}], more?, next?}`で、`activity`はどの作業のaskかを示す作業の題。回答本文は載せない。`control.recent_settled_asks`は、このactivityと隣の作業を止めていたaskのうちトリアージから7日以内のもの。`{items: [{id_raw, question, activity, outcome, detail}], more?, next?}`で、`outcome`は`promoted`|`dismissed`、`detail`はpromoteなら昇格先decisionの見出し、dismissなら却下理由。どちらも新しい順に最大3件、超過分は`more`（件数）と`next`（超過したaskを止めている作業ごとの`get_asks(blocking_activity_id=<その作業>, status=null)`へのポインタ。最大3件）に畳み、該当が無ければキー自体を省く。`control`は10,000字の予算に数えない枠なので、予算の切り詰め対象は変わらない。
+`control.decision_candidates`は、記録役が決定事項の候補として退避したmaterial（素タグ`recorder-decision-candidate`）のうち、閉じていないものを新しい順に出す。対象は、このactivityに直接つながる候補と、このactivityの関連topicに属する候補。閉じているとは、retractされている、またはdecisionとの関係（`add_relation`）を持つこと。`{items: [{id_raw, title}], guide, more?}`で、`items`は最大3件（titleは60字で切る）、超過分は`more`（残りの件数）に畳む（ポインタは付けない。閉じると残りが次のcheck_inで出る）。`guide`は閉じ方の案内で、本文に明示的な承認があれば`add_decisions`で決定事項にして候補と`add_relation`で結ぶ（同じ決定事項が既にあればそれと結ぶ）、合意でなかったなら`retract`、曖昧ならユーザーに確かめる、という内容。該当が無ければキー自体を省く。`control`の3,000字の天井の中に収まるよう件数とtitleの長さを絞っている。
 `env.session`は呼び出し元のClaude Code CLIプロセスを解決できた場合`{"name": str, "alias": str, "alias_collision": bool}`、解決できない場合（非CLIクライアント、launcher登録が間に合っていない起動直後等）は`{"registered": false, "reason": "cli_unresolved"}`。このセッション別名レジストリ更新はベストエフォートであり、失敗してもcheck_in本体は成功応答を返す。`alias_collision`がtrueの場合にユーザーへ伝えるかどうかは呼び出し側（check-inスキル等）の責務であり、`env.hints`には重複させない。詳細は2.42bを参照。
 応答全体が10,000字を超えるときは`truncated`キーが付く（`{budget, before, after, over_budget, cuts: [{section, kept, cut, next?}, ...]}`）。`section`はドット区切りの入れ子パス（例: `anchor.pinned`、`catalog.map`）。`catalog.map`/`catalog.logs`/`context.materials`/`context.activities`/`context.decisions`/`context.latest_log`/`anchor.pinned`の順に切り詰められる。`control`（goal/asks/dependencies）と`env.tag_notes`はこの10,000字には数えず、それぞれ3,000字・6,000字の天井を別に持つ（超過時は`truncated.control_over`/`tag_notes_over`が立つ）。
 **副作用**: statusがin_progress以外なら自動的にin_progressに更新。
