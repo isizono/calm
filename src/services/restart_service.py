@@ -337,7 +337,7 @@ def _kill_process_group_windows(pid: int) -> None:
 
 
 def stop_embedding_server() -> list[int]:
-    """embeddingサーバーを停止する。再起動はしない(次回encode呼び出し時にlazy spawnされる)。"""
+    """embeddingサーバーを停止する。再起動はしない(新しいHTTPサーバーの起動時ウォームアップが立ち上げる)。"""
     pids = find_listen_pids(EMBEDDING_PORT)
     kill_pids(pids)
     return pids
@@ -424,7 +424,7 @@ def prune_orphaned_plugin_versions(project_root: Path) -> dict:
     return {"removed": removed, "skipped": skipped}
 
 
-def restart_all(project_root: Path, *, restart_embedding: bool = False) -> dict:
+def restart_all(project_root: Path) -> dict:
     """依存関係の同期・キャッシュ掃除・MCP再起動を順に行う。
 
     POSIXではuv syncとキャッシュ掃除を、旧MCPサーバーがまだ稼働している間に
@@ -436,15 +436,15 @@ def restart_all(project_root: Path, *, restart_embedding: bool = False) -> dict:
     POSIXと同じ順序でsyncすると差し替え対象のファイルが使用中で失敗しうる。
     サーバーを先に止めてからsyncする。
 
-    embeddingサーバーはコードの変更頻度が低いため、既定では停止しない
-    (次にencodeが必要になったとき自動でlazy spawnされるだけで、都度停止すると
-    モデル再ロード分の起動遅延を毎回背負うだけでメリットが薄い)。
-    明示的にコード変更を反映させたい場合のみ `restart_embedding=True` を指定する。
+    embeddingサーバーは常にMCPサーバーの再起動より前に停止する。embedding側の
+    コード変更を確実に反映させ、かつ新しいHTTPプロセスが起動時ウォームアップで
+    立ち上げたembeddingサーバーやバックフィルを、後から止めて途中で切らないため。
 
     プラグインキャッシュの旧バージョン掃除(prune_orphaned_plugin_versions)は
     MCP再起動が成功した場合のみ行う。再起動自体が失敗している状況で
     キャッシュディレクトリまで変化させると、原因調査中の変数を増やすだけになる。
     """
+    embedding_stopped = stop_embedding_server()
     if sys.platform == "win32":
         old_pids, old_signatures = _stop_mcp_server(DEFAULT_KILL_WAIT_SEC, DEFAULT_POLL_INTERVAL_SEC)
         sync_result = sync_dependencies(project_root)
@@ -457,7 +457,6 @@ def restart_all(project_root: Path, *, restart_embedding: bool = False) -> dict:
         sync_result = sync_dependencies(project_root)
         cache_result = clean_caches(project_root)
         mcp_result = restart_mcp_server(project_root)
-    embedding_stopped = stop_embedding_server() if restart_embedding else []
     prune_result = prune_orphaned_plugin_versions(project_root) if mcp_result.ok else {
         "removed": [], "skipped": [],
     }
@@ -510,10 +509,10 @@ def get_status() -> dict:
     }
 
 
-def stop_all(*, stop_embedding: bool = False) -> dict:
-    """再起動せず、MCPサーバー(と指定時はembeddingサーバー)を停止するだけで終了する。"""
+def stop_all() -> dict:
+    """再起動せず、MCPサーバーとembeddingサーバーを停止するだけで終了する。"""
     old_pids, _ = _stop_mcp_server(DEFAULT_KILL_WAIT_SEC, DEFAULT_POLL_INTERVAL_SEC)
-    embedding_stopped = stop_embedding_server() if stop_embedding else []
+    embedding_stopped = stop_embedding_server()
     return {
         "mcp_server": {"stopped_pids": old_pids},
         "embedding_server": {"stopped_pids": embedding_stopped},
@@ -529,14 +528,6 @@ def main() -> None:
         sys.stdout.reconfigure(encoding="utf-8")
 
     parser = argparse.ArgumentParser(description="calm server restart")
-    parser.add_argument(
-        "--restart-embedding",
-        action="store_true",
-        help=(
-            "embeddingサーバーも停止する(既定では停止しない。次回のencode呼び出し時に"
-            "自動でlazy spawnされる)"
-        ),
-    )
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument(
         "--status", action="store_true",
@@ -544,7 +535,7 @@ def main() -> None:
     )
     mode_group.add_argument(
         "--stop", action="store_true",
-        help="再起動せず、MCPサーバー(と--restart-embedding指定時はembeddingサーバー)を停止するだけで終了する",
+        help="再起動せず、MCPサーバーとembeddingサーバーを停止するだけで終了する",
     )
     args = parser.parse_args()
 
@@ -553,11 +544,11 @@ def main() -> None:
         return
 
     if args.stop:
-        print(json.dumps(stop_all(stop_embedding=args.restart_embedding), ensure_ascii=False, indent=2))
+        print(json.dumps(stop_all(), ensure_ascii=False, indent=2))
         return
 
     project_root = Path(__file__).resolve().parent.parent.parent
-    result = restart_all(project_root, restart_embedding=args.restart_embedding)
+    result = restart_all(project_root)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if not result["mcp_server"]["ok"]:
         sys.exit(1)

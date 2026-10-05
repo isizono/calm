@@ -907,24 +907,11 @@ class TestGetStatus:
 class TestStopAll:
     """stop_all(): 再起動せず停止だけを行う契約を検証する。"""
 
-    def test_stops_mcp_only_by_default(self, monkeypatch):
-        monkeypatch.setattr(restart_service, "_stop_mcp_server", lambda kw, pi: ([1111], {1111: "sig"}))
-        stop_embedding_calls = []
-        monkeypatch.setattr(
-            restart_service, "stop_embedding_server",
-            lambda: stop_embedding_calls.append(1) or [9999],
-        )
-
-        result = restart_service.stop_all()
-
-        assert result == {"mcp_server": {"stopped_pids": [1111]}, "embedding_server": {"stopped_pids": []}}
-        assert stop_embedding_calls == []
-
-    def test_stops_embedding_when_requested(self, monkeypatch):
+    def test_stops_both_servers(self, monkeypatch):
         monkeypatch.setattr(restart_service, "_stop_mcp_server", lambda kw, pi: ([1111], {1111: "sig"}))
         monkeypatch.setattr(restart_service, "stop_embedding_server", lambda: [9999])
 
-        result = restart_service.stop_all(stop_embedding=True)
+        result = restart_service.stop_all()
 
         assert result == {"mcp_server": {"stopped_pids": [1111]}, "embedding_server": {"stopped_pids": [9999]}}
 
@@ -1212,14 +1199,11 @@ def test_sync_dependencies_timeout(monkeypatch, tmp_path):
     assert "timed out" in result.detail
 
 
-def test_restart_all_calls_in_expected_order_without_stopping_embedding(monkeypatch, tmp_path):
-    """uv sync → キャッシュ掃除 → MCP再起動、の順で呼ばれ、既定ではembeddingサーバーを
-    停止しないことを検証する。
+def test_restart_all_stops_embedding_before_mcp_restart(monkeypatch, tmp_path):
+    """embeddingサーバー停止 → uv sync → キャッシュ掃除 → MCP再起動、の順で呼ばれる。
 
-    uv syncとキャッシュ掃除を旧サーバー稼働中に済ませ、
-    kill〜起動〜監視のダウンタイムを最小化する狙いのため、この順序が重要。
-    embeddingサーバーはコード変更頻度が低いため、MCP再起動のたびに巻き添えで
-    停止させない(次に必要になったときlazy spawnされるだけで都度停止するメリットが薄い)。
+    embeddingを先に止めるのは、新しいHTTPプロセスが起動時ウォームアップで立ち上げた
+    embeddingサーバーとバックフィルを後から切らないため。
     """
     call_order = []
 
@@ -1251,46 +1235,14 @@ def test_restart_all_calls_in_expected_order_without_stopping_embedding(monkeypa
 
     result = restart_service.restart_all(tmp_path)
 
-    assert call_order == ["sync", "clean_caches", "restart_mcp_server", "prune_orphaned_plugin_versions"]
+    assert call_order == [
+        "stop_embedding_server", "sync", "clean_caches", "restart_mcp_server", "prune_orphaned_plugin_versions",
+    ]
     assert result["uv_sync"] == {"ok": True, "duration_sec": 1.5, "detail": "synced"}
     assert result["mcp_server"]["ok"] is True
-    assert result["embedding_server"] == {"stopped_pids": []}
+    assert result["embedding_server"] == {"stopped_pids": [9999]}
     assert result["caches"] == {"removed_pycache_dirs": []}
     assert result["plugin_cache_prune"] == {"removed": [], "skipped": []}
-
-
-def test_restart_all_stops_embedding_when_requested(monkeypatch, tmp_path):
-    """restart_embedding=True を指定したときだけ stop_embedding_server が呼ばれる"""
-    call_order = []
-
-    monkeypatch.setattr(
-        restart_service, "sync_dependencies",
-        lambda project_root: restart_service.SyncResult(True, 0.1, "synced"),
-    )
-    monkeypatch.setattr(
-        restart_service, "clean_caches",
-        lambda project_root: {"removed_pycache_dirs": []},
-    )
-
-    def fake_restart_mcp_server(project_root):
-        call_order.append("restart_mcp_server")
-        return restart_service.RestartResult(True, [1111], [2222], "restarted")
-
-    def fake_stop_embedding_server():
-        call_order.append("stop_embedding_server")
-        return [9999]
-
-    monkeypatch.setattr(restart_service, "restart_mcp_server", fake_restart_mcp_server)
-    monkeypatch.setattr(restart_service, "stop_embedding_server", fake_stop_embedding_server)
-    monkeypatch.setattr(
-        restart_service, "prune_orphaned_plugin_versions",
-        lambda project_root: {"removed": [], "skipped": []},
-    )
-
-    result = restart_service.restart_all(tmp_path, restart_embedding=True)
-
-    assert call_order == ["restart_mcp_server", "stop_embedding_server"]
-    assert result["embedding_server"] == {"stopped_pids": [9999]}
 
 
 def test_restart_all_continues_to_mcp_restart_when_uv_sync_fails(monkeypatch, tmp_path):
@@ -1348,13 +1300,13 @@ def test_restart_all_skips_plugin_cache_prune_when_mcp_restart_fails(monkeypatch
 
 
 class TestMainCli:
-    """main(): --restart-embedding フラグのargparse配線を検証する"""
+    """main(): argparse配線を検証する"""
 
     def _run_main(self, monkeypatch, argv):
         captured = {}
 
-        def fake_restart_all(project_root, *, restart_embedding=False):
-            captured["restart_embedding"] = restart_embedding
+        def fake_restart_all(project_root):
+            captured["called"] = True
             return {
                 "uv_sync": {"ok": True, "duration_sec": 0.0, "detail": "synced"},
                 "mcp_server": {"ok": True, "old_pids": [], "new_pids": [1], "detail": "restarted"},
@@ -1367,19 +1319,9 @@ class TestMainCli:
         restart_service.main()
         return captured
 
-    def test_flag_absent_defaults_to_false(self, monkeypatch):
-        """--restart-embedding を付けない場合、restart_all は restart_embedding=False で呼ばれる"""
-        captured = self._run_main(monkeypatch, [])
-        assert captured["restart_embedding"] is False
-
-    def test_flag_present_passes_true(self, monkeypatch):
-        """--restart-embedding を付けると restart_all は restart_embedding=True で呼ばれる"""
-        captured = self._run_main(monkeypatch, ["--restart-embedding"])
-        assert captured["restart_embedding"] is True
-
     def test_exits_nonzero_when_mcp_restart_fails(self, monkeypatch, capsys):
         """mcp_server.ok が False のとき sys.exit(1) する"""
-        def fake_restart_all(project_root, *, restart_embedding=False):
+        def fake_restart_all(project_root):
             return {
                 "uv_sync": {"ok": True, "duration_sec": 0.0, "detail": "synced"},
                 "mcp_server": {"ok": False, "old_pids": [], "new_pids": [], "detail": "timed out"},
@@ -1438,8 +1380,8 @@ class TestMainCli:
         monkeypatch.setattr(restart_service, "restart_all", lambda *a, **kw: restart_called.append(1))
         stop_calls = []
 
-        def fake_stop_all(*, stop_embedding=False):
-            stop_calls.append(stop_embedding)
+        def fake_stop_all():
+            stop_calls.append(1)
             return {"mcp_server": {"stopped_pids": [1]}, "embedding_server": {"stopped_pids": []}}
 
         monkeypatch.setattr(restart_service, "stop_all", fake_stop_all)
@@ -1448,24 +1390,7 @@ class TestMainCli:
         restart_service.main()
 
         assert restart_called == []
-        assert stop_calls == [False]
-
-    def test_stop_and_restart_embedding_flags_combine(self, monkeypatch):
-        """--stop --restart-embedding は両方のサーバーを停止するだけで終了する"""
-        stop_calls = []
-
-        def fake_stop_all(*, stop_embedding=False):
-            stop_calls.append(stop_embedding)
-            return {"mcp_server": {"stopped_pids": []}, "embedding_server": {"stopped_pids": []}}
-
-        monkeypatch.setattr(restart_service, "stop_all", fake_stop_all)
-        monkeypatch.setattr(
-            restart_service.sys, "argv", ["restart_service.py", "--stop", "--restart-embedding"],
-        )
-
-        restart_service.main()
-
-        assert stop_calls == [True]
+        assert stop_calls == [1]
 
     def test_status_and_stop_are_mutually_exclusive(self, monkeypatch):
         monkeypatch.setattr(restart_service.sys, "argv", ["restart_service.py", "--status", "--stop"])
