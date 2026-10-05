@@ -6,6 +6,7 @@ machine_error で繰り返し観測された取り違えだけを正しい名前
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import mcp.types as mt
@@ -36,6 +37,21 @@ _USAGE: dict[str, tuple[str, str]] = {
         'add_decisions(items=[{"topic_id": 1, "decision": "...", "reason": "..."}])',
     ),
 }
+
+
+# 呼び出し側の書式ミスで文字列引数の末尾に混入する閉じタグの並び。最後が invoke
+# の閉じタグ（名前空間付き可）のときだけ、間の空白ごと除く。本文の途中は触らない。
+_TRAILING_CLOSE_TAGS = re.compile(r"(?:\s*</[\w:.\-]+>)*\s*</(?:[\w.\-]+:)?invoke>\s*\Z")
+
+
+def _strip_close_tags(value: Any) -> Any:
+    if isinstance(value, str):
+        return _TRAILING_CLOSE_TAGS.sub("", value)
+    if isinstance(value, list):
+        return [_strip_close_tags(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _strip_close_tags(v) for k, v in value.items()}
+    return value
 
 
 def _rewrite(tool: str, args: dict[str, Any]) -> None:
@@ -71,6 +87,7 @@ class ArgAliasMiddleware(Middleware):
         tool = context.message.name
         args = context.message.arguments
         if isinstance(args, dict):
+            args.update(_strip_close_tags(args))
             _rewrite(tool, args)
             usage = _USAGE.get(tool)
             if usage and usage[0] not in args:
