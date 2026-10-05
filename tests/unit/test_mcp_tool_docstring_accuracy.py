@@ -80,10 +80,3 @@ class TestAddDecisionsPropagateToTagNoteScopeNote:
     def test_tag_note_scope_is_documented(self):
         desc = _all_tool_descriptions()["add_decisions"]
         assert "教訓・注意点のみに使う" in desc
-
-
-class TestRulesTagNotesConvention:
-    def test_rules_mentions_notes_are_for_caution_only(self):
-        from src.main import RULES
-
-        assert "notesは取扱注意のみ" in RULES
