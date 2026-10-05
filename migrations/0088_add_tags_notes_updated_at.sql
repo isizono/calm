@@ -1,4 +1,4 @@
--- Migration 0083: tags.notes_updated_at 追加（notes本文の更新実績トラッキング用）
+-- Migration 0088: tags.notes_updated_at 追加（notes本文の更新実績トラッキング用）
 --
 -- depends: 0081_vec_cosine_rebuild
 --

@@ -120,6 +120,8 @@ CALM自身の故障・使用感不満・矛盾検出・運用計測イベント�
 
 AIエージェントが人間の判断を待つ問いを1箇所に積み、人間が回答するだけで作業を再開できるようにする受け皿。`signal_events`と似た設計思想だが、状態遷移（open→answered→promoted/dismissed、open→withdrawn）を持つため専用テーブル（`asks`）に記録される。answer時点ではトリアージ（promote/dismiss）を行わず、次の`check_in`で配達されるまで遅延する。
 
+`add_ask`/`withdraw_ask`はlauncher経由のClaude Codeセッションに限らず、HTTPトランスポートの`/mcp`エンドポイントへ直接つなぐ任意のMCPクライアント（calmリポジトリ外の外部連携プロセス等）からも呼び出せる。そうした呼び出し元が`X-Calm-Bridge-Session-Id`ヘッダを送らない場合、`get_caller_session_id`（`src/infra/session_identity.py`）はephemeralなセッションidにフォールバックする。この経路で作成・取り下げされたaskの要求元セッションid（`first_seen_session_id`/`withdrawn_session_id`、`get_asks`応答では`requesters`）はephemeral idになり、`withdraw_reason`は呼び出し元が渡した自由文字列であって、calm本体のテンプレート文言ではない。
+
 | ツール | 概要 |
 | --- | --- |
 | `add_ask` | 答え待ちの問いを1件積む（blocksで指定したactivityを止める） |
@@ -269,7 +271,7 @@ embeddingサーバー未起動・セッション内で提示済みの記録は�
 | score_threshold | float | no | 0.4 | `candidates[].top_hits` に残す最小final_score |
 
 **返り値**: `{candidates: [{kind, turn, text, context_snippet, options?, degraded, top_hits: [{type, id, score, title}], search_error?}, ...], total_extracted, excluded_count, searched_count, truncated_count, degraded, score_threshold}`。`search_error`は候補に対するsearch呼び出しがエラーを返した場合のみ付与される（`{"code", "message"}`）。excluded_reason付き候補・search_top_nを超えた候補は`candidates`に含まれない。transcript_pathが存在しない場合は`{"error": {"code": "TRANSCRIPT_NOT_FOUND", ...}}`。
-**用途**: `skills/sync-memory/SKILL.md` ステップ9（聞き返しの後追い検出）の候補抽出＋照合searchを1回の呼び出しに集約する。既存記録があれば聞き返しが不要だったかの主観判定と`report_signal`呼び出しは呼び出し側が行う。
+**用途**: `skills/sync-memory/SKILL.md` ステップ5（聞き返しの後追い検出）の候補抽出＋照合searchを1回の呼び出しに集約する。既存記録があれば聞き返しが不要だったかの主観判定と`report_signal`呼び出しは呼び出し側が行う。
 
 ### 2.7 get_by_ids
 
@@ -465,7 +467,7 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 **返り値**: 5つの枠（`anchor`/`control`/`context`/`catalog`/`env`）に分けて返す。中身が空の枠・キーは省く（`anchor.activity`・`control.goal`・`env.coverage`・`env.session`は常に置く）。
 
 - `anchor`: `{activity, pinned}`
-- `control`: `{goal, asks, neighbor_asks, recent_settled_asks, dependencies}`
+- `control`: `{goal, asks, neighbor_asks, recent_settled_asks, decision_candidates, dependencies}`
 - `context`: `{topics, activities, decisions, latest_log, materials}`
 - `catalog`: `{logs, map}`
 - `env`: `{tag_notes, hints, coverage, session, flow_guide}`。セッション内でcheck_inを初めて呼んだときのみ`flow_guide`（コンテキスト取得の手がかり）も含まれる
@@ -475,6 +477,7 @@ activity束縛の条件が1件以上あるgoalには`children`（内訳を1行�
 `anchor.pinned.decisions`の各要素は、未resolveなdestabilizesエッジを持つ場合のみdestabilizationが付く。
 このactivityを`add_ask`のblocksでblockしているaskが1件以上あるときのみ`control.asks: {awaiting_answer, awaiting_triage}`が追加される（無ければキー自体が無い）。`awaiting_answer`はstatus='open'のask一覧（各`{id_raw, question, last_seen_at}`）、`awaiting_triage`はstatus='answered'かつ未トリアージのask一覧（各`{id_raw, question, answer_body, last_seen_at}`）。activities.statusがcompleted以外のときのみ配達され、promoted/dismissed/withdrawn済みのaskは配達されない。合わせて新しい順に最大5件、超過分は`more`（件数）と`next`（`get_asks`へのポインタ）に畳む。`awaiting_triage`の存在自体が「triage_askで振り分けるべき」という状態情報であり、`env.hints`にはこの旨のテキストを重複させない。activityが紐づくdomain:タグのnotesが推奨文字数の上限を超えている場合、`env.hints`に整理を促す文言（`notes_over_budget`）が1件追加される。他のimmediate hintと異なり恒久抑制マーカーは効かず、超過が解消するまで発火し続ける（`demote_tag_notes`でnotesを資材へ退避して縮めることを想定した設計）。
 `control.neighbor_asks`は、このactivityと隣の作業（goalの親子関係にある作業、`depends_on`でつながる作業。向きは問わない）を止めている、未決（open）または回答済み未トリアージのaskのうち、このactivity自身は止めていないもの。`{items: [{id_raw, question, status, activity}], more?, next?}`で、`activity`はどの作業のaskかを示す作業の題。回答本文は載せない。`control.recent_settled_asks`は、このactivityと隣の作業を止めていたaskのうちトリアージから7日以内のもの。`{items: [{id_raw, question, activity, outcome, detail}], more?, next?}`で、`outcome`は`promoted`|`dismissed`、`detail`はpromoteなら昇格先decisionの見出し、dismissなら却下理由。どちらも新しい順に最大3件、超過分は`more`（件数）と`next`（超過したaskを止めている作業ごとの`get_asks(blocking_activity_id=<その作業>, status=null)`へのポインタ。最大3件）に畳み、該当が無ければキー自体を省く。`control`は10,000字の予算に数えない枠なので、予算の切り詰め対象は変わらない。
+`control.decision_candidates`は、記録役が決定事項の候補として退避したmaterial（素タグ`recorder-decision-candidate`）のうち、閉じていないものを新しい順に出す。対象は、このactivityに直接つながる候補と、このactivityの関連topicに属する候補。閉じているとは、retractされている、またはdecisionとの関係（`add_relation`）を持つこと。`{items: [{id_raw, title}], guide, more?}`で、`items`は最大3件（titleは60字で切る）、超過分は`more`（残りの件数）に畳む（ポインタは付けない。閉じると残りが次のcheck_inで出る）。`guide`は閉じ方の案内で、本文に明示的な承認があれば`add_decisions`で決定事項にして候補と`add_relation`で結ぶ（同じ決定事項が既にあればそれと結ぶ）、合意でなかったなら`retract`、曖昧ならユーザーに確かめる、という内容。該当が無ければキー自体を省く。`control`の3,000字の天井の中に収まるよう件数とtitleの長さを絞っている。
 `env.session`は呼び出し元のClaude Code CLIプロセスを解決できた場合`{"name": str, "alias": str, "alias_collision": bool}`、解決できない場合（非CLIクライアント、launcher登録が間に合っていない起動直後等）は`{"registered": false, "reason": "cli_unresolved"}`。このセッション別名レジストリ更新はベストエフォートであり、失敗してもcheck_in本体は成功応答を返す。`alias_collision`がtrueの場合にユーザーへ伝えるかどうかは呼び出し側（check-inスキル等）の責務であり、`env.hints`には重複させない。詳細は2.42bを参照。
 応答全体が10,000字を超えるときは`truncated`キーが付く（`{budget, before, after, over_budget, cuts: [{section, kept, cut, next?}, ...]}`）。`section`はドット区切りの入れ子パス（例: `anchor.pinned`、`catalog.map`）。`catalog.map`/`catalog.logs`/`context.materials`/`context.activities`/`context.decisions`/`context.latest_log`/`anchor.pinned`の順に切り詰められる。`control`（goal/asks/dependencies）と`env.tag_notes`はこの10,000字には数えず、それぞれ3,000字・6,000字の天井を別に持つ（超過時は`truncated.control_over`/`tag_notes_over`が立つ）。
 **副作用**: statusがin_progress以外なら自動的にin_progressに更新。

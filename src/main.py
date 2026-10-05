@@ -1564,7 +1564,7 @@ def check_in(
 
     Returns:
         5つの枠（anchor: {activity, pinned} / control: {goal, asks,
-        dependencies} / context: {topics, activities, decisions, latest_log,
+        decision_candidates, dependencies} / context: {topics, activities, decisions, latest_log,
         materials} / catalog: {logs, map} / env: {tag_notes, hints, coverage,
         session, flow_guide}）に分けて返す。中身が空の枠・キーは省く
         （anchor.activity・control.goal・env.coverage・env.sessionは常に置く）。
@@ -1572,6 +1572,8 @@ def check_in(
         control.goalは終了条件の現在状態と次の一手（next）を1件返す（未定義=
         undefined・不要印=not_needed・goal付き=active|judge_ready|closed）。
         control.asks.awaiting_triageが1件以上あればtriage_askで振り分けること。
+        control.decision_candidatesは記録役が退避した閉じていない決定事項の候補
+        （guideに閉じ方がある。decisionと結ぶかretractすると出なくなる）。
         env.session.alias_collisionがtrueならユーザーに伝えること。
         応答全体が10,000字を超えるとtruncatedキーが付く（cuts[].sectionは
         "anchor.pinned"のようなドット区切りパス）。control・env.tag_notesは
@@ -2481,7 +2483,9 @@ def add_ask(
 ) -> dict:
     """人間の判断を待つ問いを1件積む（答え待ちの間、blocksで指定したactivityを止める）。
 
-    question/contextの構成は`ask-compose` skillを必ず経由すること。
+    question/contextの構成は`ask-compose` skillを必ず経由すること。ただし
+    kind="meta"のメタaskはこの限りではなく、`ask-distill`/`ask-watch`各skillの
+    組み立て方に従って直接本ツールを呼ぶ。
 
     同じ問い（正規化後questionのfingerprint一致）が答え待ち（open）で既にあれば
     新規行を作らず出現回数を+1し、blocks/要求元セッションはUNIONで追記、

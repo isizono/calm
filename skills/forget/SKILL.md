@@ -1,6 +1,6 @@
 ---
 name: forget
-description: 【必須】過去の記録が現状と矛盾・陳腐化していると判断した状況で発動する自律発動スキル。撤回専用（新規の記憶・保存はrememberの担当で、このスキルでは行わない）。発動状況: (a) 新しいdecisionを記録した直後、過去のdecision/habit/tag-notesと矛盾すると気づいた (b) ユーザー発話に方針転換のニュアンス（「やっぱり」「（保存済みの記録・以前の方針について）もう要らない」「あれはナシで」「今のは撤回」等）が読み取れる (c) 作業・棚卸し中に古いhabits/rules/tag-notesと現状のズレに気づいた (d) 議論クローズ（/af前後）で整理すべき撤回対象が見えた、など。このスキルを経由せずにretractや、auto-memory/CLAUDE.md/rulesファイルの削除を直接行ってはいけない。
+description: 【必須】過去の記録が現状と矛盾・陳腐化したと気づいたとき、撤回候補を示して確認後に撤回する。新しい決定との矛盾や、「やっぱり」「あれはナシで」「今のは撤回」などで発動。このスキルを経由せずにretractやauto-memory・CLAUDE.md・rulesの削除をしない。
 user-invocable: false
 ---
 
@@ -25,6 +25,7 @@ user-invocable: false
 - 議論中でまだ結論が出ていない論点（撤回ではなく`[議論中]`decision、`decision-record` skillの担当）
 - ユーザーが直前に「forgetはいい」等、発動を明示的に拒否した直後
 - ユーザーがClaudeの今の振る舞いを直したが、保存済みの記録に矛盾・陳腐化が無い場合（[remember](../remember/SKILL.md) skillの担当）
+- 同一タグで方針変更が繰り返されている、または構造的な再発が疑われる場合（単発の新事実による前提消失ではなく、再発原因の分析が要る。[audit](../audit/SKILL.md) skillの担当）
 
 ## 起動時確認フロー
 
