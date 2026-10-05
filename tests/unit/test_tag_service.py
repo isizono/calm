@@ -16,11 +16,31 @@ from src.services.tag_service import (
     demote_tag_notes,
     collect_tag_notes_for_injection,
     _TAG_NOTES_RATCHET_CEILING,
+    _max_timestamp,
 )
 from src.services.topic_service import add_topic
 from src.services.material_service import get_material
 import src.services.embedding_service as emb
 
+
+
+# ========================================
+# _max_timestamp テスト
+# ========================================
+
+
+class TestMaxTimestamp:
+    def test_both_none_returns_none(self):
+        assert _max_timestamp(None, None) is None
+
+    def test_one_side_none_returns_other(self):
+        assert _max_timestamp("2026-01-01 00:00:00", None) == "2026-01-01 00:00:00"
+        assert _max_timestamp(None, "2026-01-01 00:00:00") == "2026-01-01 00:00:00"
+
+    def test_returns_later_timestamp_regardless_of_argument_order(self):
+        older, newer = "2026-01-01 00:00:00", "2026-06-01 00:00:00"
+        assert _max_timestamp(older, newer) == newer
+        assert _max_timestamp(newer, older) == newer
 
 
 # ========================================
@@ -777,6 +797,20 @@ def _get_tag_notes(tag_str: str) -> str:
     return (row["notes"] or "") if row else ""
 
 
+def _get_tag_notes_updated_at(tag_str: str):
+    """テスト用: 指定タグの現在のnotes_updated_atを取得する（タグ不在ならNone）。"""
+    namespace, name = parse_tag(tag_str)
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT notes_updated_at FROM tags WHERE namespace = ? AND name = ?",
+            (namespace, name),
+        ).fetchone()
+    finally:
+        conn.close()
+    return row["notes_updated_at"] if row else None
+
+
 def _count_materials() -> int:
     conn = get_connection()
     try:
@@ -880,6 +914,32 @@ class TestDemoteTagNotes:
         result = demote_tag_notes("domain:test", sections=["A"], mode="drop")
         assert "error" not in result
         assert _get_tag_notes("domain:test").endswith("#audited-2026-09-04\n")
+
+    def test_demote_updates_notes_updated_at(self, temp_db):
+        """demote_tag_notesでnotesを縮小するとnotes_updated_atが更新される"""
+        add_topic(title="T", description="D", tags=["domain:test"])
+        update_tag("domain:test", notes="## A\n本文A\n\n## B\n本文B\n")
+
+        # 解像度1秒のCURRENT_TIMESTAMP同値による偽陰性を避けるため、明示的に
+        # 過去日時へ下げてから更新されたかどうかを見る
+        stale_timestamp = "2000-01-01 00:00:00"
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE tags SET notes_updated_at = ? "
+                "WHERE namespace = 'domain' AND name = 'test'",
+                (stale_timestamp,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = demote_tag_notes("domain:test", sections=["A"], mode="drop")
+
+        assert "error" not in result
+        after = _get_tag_notes_updated_at("domain:test")
+        assert after is not None
+        assert after != stale_timestamp
 
     def test_trailer_dated_hint_cooldown_marker_is_preserved_after_demote(self, temp_db):
         """手書き・または過去に自動で書き込まれたコロン付き日次マーカー
