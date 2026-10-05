@@ -1,0 +1,86 @@
+"""ArgAliasMiddleware: 引数名の取り違えが書き換えられ、直せないものは例つきエラーになる。"""
+import re
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from fastmcp.exceptions import ToolError
+
+from src.middleware.arg_alias_middleware import ArgAliasMiddleware
+
+
+async def _run(tool, arguments):
+    ctx = MagicMock()
+    ctx.message.name = tool
+    ctx.message.arguments = arguments
+    call_next = AsyncMock(return_value="ok")
+    await ArgAliasMiddleware().on_call_tool(ctx, call_next)
+    call_next.assert_awaited_once_with(ctx)
+    return ctx.message.arguments
+
+
+@pytest.mark.asyncio
+async def test_search_query_and_type_are_renamed():
+    assert await _run("search", {"query": "x", "type": "decision"}) == {
+        "keyword": "x",
+        "entity_type": "decision",
+    }
+
+
+@pytest.mark.asyncio
+async def test_search_correct_name_wins_over_alias():
+    assert await _run("search", {"keyword": "a", "query": "b"}) == {"keyword": "a"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", ["get_logs", "get_decisions"])
+@pytest.mark.parametrize("kind", ["topic", "activity"])
+async def test_get_logs_decisions_id_alias(tool, kind):
+    out = await _run(tool, {f"{kind}_id": "5", "limit": 3})
+    assert out == {"entity_type": kind, "entity_id": "5", "limit": 3}
+
+
+@pytest.mark.asyncio
+async def test_single_item_is_wrapped_into_items():
+    out = await _run("add_logs", {"topic_id": 1, "content": "c", "title": "t"})
+    assert out == {"items": [{"topic_id": 1, "content": "c", "title": "t"}]}
+
+
+@pytest.mark.asyncio
+async def test_add_decisions_single_item_is_wrapped():
+    args = {"topic_id": 1, "decision": "d", "reason": "r", "tags": ["a"]}
+    assert await _run("add_decisions", dict(args)) == {"items": [args]}
+
+
+@pytest.mark.asyncio
+async def test_entity_args_already_given_are_kept():
+    args = {"entity_type": "topic", "entity_id": 1, "activity_id": 2}
+    assert await _run("get_logs", dict(args)) == args
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool,args,example",
+    [
+        ("get_by_ids", {"ids": "[1]"}, "get_by_ids(items="),
+        ("add_logs", {"topic_id": 1}, "add_logs(items="),
+        ("add_logs", {"topic_id": 1, "content": "c", "flavor": "raw"}, "add_logs(items="),
+        ("add_decisions", {"entity_type": "activity"}, "add_decisions(items="),
+    ],
+)
+async def test_unfixable_call_raises_error_with_example(tool, args, example):
+    ctx = MagicMock()
+    ctx.message.name = tool
+    ctx.message.arguments = args
+    call_next = AsyncMock()
+    with pytest.raises(ToolError, match=re.escape(example)):
+        await ArgAliasMiddleware().on_call_tool(ctx, call_next)
+    call_next.assert_not_awaited()
+
+
+def test_middleware_is_registered_after_signal_capture():
+    from src.main import mcp
+    from src.services.signal_middleware import SignalCaptureMiddleware
+
+    kinds = [type(m) for m in mcp.middleware]
+    # SignalCapture が外側: 書き換え前の取り違えと例つきエラーが machine_error として観測される
+    assert kinds.index(SignalCaptureMiddleware) < kinds.index(ArgAliasMiddleware)
