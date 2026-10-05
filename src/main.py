@@ -3199,9 +3199,9 @@ def _start_embedding_warmup() -> "threading.Thread | None":
     `_ensure_initialized`（spawnロック・クールダウン・バックフィル多重起動防止）に
     任せ、ここでは呼ぶだけにする。
 
-    `CALM_EMBEDDING_WARMUP=0` で無効化できる。
+    `CALM_EMBEDDING_WARMUP` が `0` または `false`（大文字小文字不問）で無効化できる。
     """
-    if env_get("CALM_EMBEDDING_WARMUP", "1") == "0":
+    if env_get("CALM_EMBEDDING_WARMUP", "1").lower() in ("0", "false"):
         return None
     thread = threading.Thread(
         target=embedding_service._ensure_initialized, name="embedding-warmup", daemon=True

@@ -158,7 +158,7 @@ graph TB
 ### 3.4 埋め込み
 
 - `src/services/embedding_service.py`: アプリ側からembedding取得を呼ぶクライアント
-- `src/infra/embedding_server.py`: モデル保持・encodeを1プロセスに集約するHTTPサーバー（localhost:52836、モデル `cl-nagoya/ruri-v3-70m`）。`KeyboardInterrupt`で終了するか、`restart_service.py`の`stop_embedding_server`から強制停止される。HTTPサーバー起動時にウォームアップ（`CALM_EMBEDDING_WARMUP=0`で無効）として先行起動される。横断インフラ寄りだが本体はストア層が読むため §3 にも記載
+- `src/infra/embedding_server.py`: モデル保持・encodeを1プロセスに集約するHTTPサーバー（localhost:52836、モデル `cl-nagoya/ruri-v3-70m`）。`KeyboardInterrupt`で終了するか、`restart_service.py`の`stop_embedding_server`から強制停止される。HTTPサーバー起動時にウォームアップ（`CALM_EMBEDDING_WARMUP`を`0`または`false`にすると無効）として先行起動される。横断インフラ寄りだが本体はストア層が読むため §3 にも記載
 
 ### 3.5 公開IF
 

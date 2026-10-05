@@ -99,8 +99,9 @@ class TestEmbeddingWarmup:
         assert len(ran_in) == 1
         assert ran_in[0] is thread and thread.daemon
 
-    def test_disabled_by_env_does_not_start(self, monkeypatch):
-        monkeypatch.setenv("CALM_EMBEDDING_WARMUP", "0")
+    @pytest.mark.parametrize("value", ["0", "false", "False"])
+    def test_disabled_by_env_does_not_start(self, monkeypatch, value):
+        monkeypatch.setenv("CALM_EMBEDDING_WARMUP", value)
         called = []
         monkeypatch.setattr(
             main_module.embedding_service, "_ensure_initialized", lambda: called.append(1) or True,

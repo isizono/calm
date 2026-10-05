@@ -92,7 +92,7 @@ ENV_VARS: tuple[EnvVar, ...] = (
     # --- internal: embedding・launcher・セッション・配備 ---
     EnvVar("CALM_EMBEDDING_BACKFILL_CHAR_BUDGET", "48000", "embedding backfill1回あたりの文字数予算", "internal"),
     EnvVar("CALM_EMBEDDING_BACKFILL_MAX_ITEMS", "64", "embedding backfill1回あたりの件数上限", "internal"),
-    EnvVar("CALM_EMBEDDING_WARMUP", "1", "HTTPサーバー起動時にembeddingサーバーを先行起動する。0で無効", "internal"),
+    EnvVar("CALM_EMBEDDING_WARMUP", "1", "HTTPサーバー起動時にembeddingサーバーを先行起動する。0またはfalseで無効", "internal"),
     EnvVar("CALM_EMBEDDING_TEXT_MAX_CHARS", "8000", "embeddingに渡す1テキストの最大文字数", "internal"),
     EnvVar("CALM_EMBEDDING_LOG_MAX_BYTES", "5242880", "embeddingサーバーのログのローテーションサイズ（バイト）", "internal"),
     EnvVar("CALM_EMBEDDING_LOG_BACKUP_COUNT", "3", "embeddingサーバーのログの保持世代数", "internal"),
