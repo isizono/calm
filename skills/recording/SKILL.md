@@ -56,10 +56,11 @@ L5（バグ観察）はユーザーが取り組んでいる対象システムの
 | `friction` | 検索で引けるべき記録が引けなかった等、CALM の使い勝手への不満・違和感を感じた |
 | `contradiction` | 設計・実装中に既存 decision と矛盾する結論に達した / `add_decisions` の `related_decisions`、`add_logs`/`add_material` の `related_records` で矛盾に気づいた |
 
-上記3種は頻出例であり、`report_signal` の kind は全8種ある（`precedent_miss` /
-`precedent_misapplied` / `boundary_case` / `rollback` / `goal_rollback` を含む）。
-`goal_rollback` は `update_goal` の `reopen_reason`（goal 判定の差し戻し）が書く
-専用の kind で、手で報告するものではない。全種の定義は `report_signal` ツールの
+上記3種は頻出例であり、`report_signal` の kind は全9種ある（`precedent_miss` /
+`precedent_misapplied` / `boundary_case` / `rollback` / `goal_rollback` /
+`guard_block` を含む）。`goal_rollback` は `update_goal` の `reopen_reason`
+（goal 判定の差し戻し）が、`guard_block` はhookのdeny判定が書く専用の kind で、
+いずれも手で報告するものではない。全種の定義は `report_signal` ツールの
 docstringを正とする。同一内容の再報告は `report_signal` 側で自動集約されるため、
 迷ったら報告してよい。
 
