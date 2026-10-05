@@ -466,3 +466,39 @@ class TestUpdateActivityGoalHint:
         row = _activity_row(activity_id)
         assert row["status"] == "completed"
         assert row["closed_by"] == "user"
+
+
+class TestDescriptionTruncationGuard:
+    """一覧で切ったdescriptionの印と上書きガード"""
+
+    LONG = "あ" * 150 + "い" * 100  # 250字
+
+    def _make(self, description):
+        return add_activity(
+            title="long", description=description, tags=DEFAULT_TAGS, check_in=False
+        )["activity_id"]
+
+    def test_list_marks_only_truncated_items(self, temp_db):
+        self._make(self.LONG)
+        self._make("short")
+        items = {a["description"][:5]: a for a in get_activities()["activities"]}
+        long_item = items["あああああ"]
+        assert long_item["description_truncated"] is True
+        assert long_item["description"] == self.LONG[:200] + "…"
+        assert "description_truncated" not in items["short"]
+
+    def test_truncated_value_rejected_and_nothing_written(self, temp_db):
+        aid = self._make(self.LONG)
+        result = update_activity(aid, description=self.LONG[:200] + "…")
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+        row = get_connection().execute(
+            "SELECT description FROM activities WHERE id = ?", (aid,)
+        ).fetchone()
+        assert row["description"] == self.LONG
+
+    def test_full_text_and_short_lookalike_accepted(self, temp_db):
+        aid = self._make(self.LONG)
+        assert "error" not in update_activity(aid, description=self.LONG + "追記")
+        short_id = self._make("x" * 200)
+        # 現在値が200字以内なら、先頭200字＋省略記号でも正当な新値として通す
+        assert "error" not in update_activity(short_id, description="x" * 200 + "…")

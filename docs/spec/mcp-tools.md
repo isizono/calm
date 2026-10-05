@@ -224,7 +224,7 @@ embeddingサーバー未起動・セッション内で提示済みの記録は�
 | since | string | no | null | ISO日付（以降） |
 | until | string | no | null | ISO日付（以前） |
 
-**返り値**: `{topics: [Topic], total_count: int, tag_notes?: [TagNote], archived_tags: [{tag, archived_reason}]}`。`archived_tags` は応答に含まれるtopicのタグのうちarchivedなものの集約で、該当なしでも常に空配列で付く。
+**返り値**: `{topics: [Topic], total_count: int, tag_notes?: [TagNote], archived_tags: [{tag, archived_reason}]}`。`archived_tags` は応答に含まれるtopicのタグのうちarchivedなものの集約で、該当なしでも常に空配列で付く。`description`は200字で切って返し、切った項目だけ末尾に`…`が付き`description_truncated: true`が立つ（全文は`get_by_ids`で取る）。
 
 ### 2.5 get_logs / get_decisions
 
@@ -363,7 +363,7 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 | since | string | no | null | ISO日付（以降） |
 | until | string | no | null | ISO日付（以前） |
 
-**返り値**: `{activities: [Activity], total_count: int, archived_tags: [{tag, archived_reason}]}`。statusの`active`は pending+in_progress のエイリアス（snoozed/shelvedは含まない）。`archived_tags`は応答に含まれるアクティビティのタグのうちarchivedなものの集約で、該当なしでも常に空配列で付く。`activities`・`total_count`の字数（JSON文字列化後、`archived_tags`・`tag_notes`は含まない）が`ACTIVITIES_BUDGET_CHARS`（既定10,000字）を超えると`activities`が後方（`limit`で絞った中の古い側）から切られ、`truncated`キー（`{budget, before, after, over_budget, cuts: [{section, kept, cut, next?}]}`）が付く。`total_count`は`limit`・この予算どちらの影響も受けない母集団件数のまま。`archived_tags`・`tag_notes`はこの予算に数えず、切り詰め後に残った`activities`だけから集める（この2キー分だけ応答全体がこの予算を超えることがある）。
+**返り値**: `{activities: [Activity], total_count: int, archived_tags: [{tag, archived_reason}]}`。`description`は200字で切って返し、切った項目だけ末尾に`…`が付き`description_truncated: true`が立つ（全文は`get_by_ids`で取る）。statusの`active`は pending+in_progress のエイリアス（snoozed/shelvedは含まない）。`archived_tags`は応答に含まれるアクティビティのタグのうちarchivedなものの集約で、該当なしでも常に空配列で付く。`activities`・`total_count`の字数（JSON文字列化後、`archived_tags`・`tag_notes`は含まない）が`ACTIVITIES_BUDGET_CHARS`（既定10,000字）を超えると`activities`が後方（`limit`で絞った中の古い側）から切られ、`truncated`キー（`{budget, before, after, over_budget, cuts: [{section, kept, cut, next?}]}`）が付く。`total_count`は`limit`・この予算どちらの影響も受けない母集団件数のまま。`archived_tags`・`tag_notes`はこの予算に数えず、切り詰め後に残った`activities`だけから集める（この2キー分だけ応答全体がこの予算を超えることがある）。
 **副作用**: 呼び出し時、updated_atがSNOOZE_DURATION_DAYS（デフォルト3日）を超過したsnoozedアクティビティをpendingへ一括自動復活させる。
 
 ### 2.12b get_overview
@@ -403,6 +403,8 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 | move_ask_ids | list[int] | no | null | `move_asks_to`と一緒に渡すと、そのaskだけを付け替える（省略時は未決着askを全件）。このactivityを止めている未決着askでないidが含まれていれば、何も変更せず`VALIDATION_ERROR` |
 
 **副作用**: snoozed状態のアクティビティにstatusを指定せず他フィールドのみ更新すると、自動的にstatus="pending"へ復活する。
+
+**descriptionの上書きガード**: 渡された`description`が現在値の先頭200字＋`…`（`get_activities`が切って返す形）と一致し、かつ現在値が200字を超えるとき、何も変更せず`VALIDATION_ERROR`を返す。
 
 **closed_by/closed_reason**: completedでないactivityをcompletedにする呼び出しでだけ`closed_at`・`closed_by`・`closed_reason`を書く（既にcompletedのactivityにstatus="completed"を渡しても書き換えない）。`closed_by`引数を省略し、紐づくgoalが判定済みなら`"goal_judge"`がサーバー側で書かれ、`closed_reason`も省略時は`goals.judge_note`が使われる。それ以外で省略時は`closed_by`はNULL（不明）になる。`"goal_judge"`自体は引数としては受け付けない（VALIDATION_ERROR）。
 

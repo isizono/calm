@@ -500,7 +500,7 @@ class TestGetActivities:
 
         assert "error" not in result
         activity = result["activities"][0]
-        assert len(activity["description"]) == ACTIVITY_DESC_MAX_LEN
+        assert activity["description"] == "a" * ACTIVITY_DESC_MAX_LEN + "…"
 
 
 class TestUpdateActivity:

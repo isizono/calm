@@ -350,8 +350,7 @@ def test_get_topics_description_truncated(temp_db):
 
     assert "error" not in result
     topic = result["topics"][0]
-    assert len(topic["description"]) == TOPIC_DESC_MAX_LEN
-    assert topic["description"] == "A" * TOPIC_DESC_MAX_LEN
+    assert topic["description"] == "A" * TOPIC_DESC_MAX_LEN + "…"
 
 
 
@@ -560,3 +559,15 @@ def test_get_decisions_with_extra_tags(temp_db):
     assert "domain:test" in dec["tags"]
     # decision個別のタグも含む
     assert "intent:design" in dec["tags"]
+
+
+def test_get_topics_marks_truncated_description(temp_db):
+    from src.services.topic_service import add_topic, get_topics
+
+    long = "あ" * 250
+    add_topic(title="long", description=long, tags=["domain:test"])
+    add_topic(title="short", description="short", tags=["domain:test"])
+    items = {t["title"]: t for t in get_topics()["topics"]}
+    assert items["long"]["description"] == long[:200] + "…"
+    assert items["long"]["description_truncated"] is True
+    assert "description_truncated" not in items["short"]

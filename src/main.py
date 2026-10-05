@@ -396,7 +396,9 @@ def get_topics(
         docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
 
     Returns:
-        トピック一覧。archived_tags（応答に含まれるトピックのタグのうちarchivedなものの
+        トピック一覧。descriptionは200字で切って返し、切った項目には末尾に「…」と
+        description_truncated: trueが付く。書き換える前はget_by_idsで全文を取る。
+        archived_tags（応答に含まれるトピックのタグのうちarchivedなものの
         集約、{tag, archived_reason}の配列。該当なしでも空配列で常に付く）が付く。
     """
     flavor = _normalize_flavor(flavor)
@@ -1111,6 +1113,8 @@ def get_activities(
 
     Returns:
         アクティビティ一覧（total_countで該当ステータスの全件数を確認可能）
+        descriptionは200字で切って返し、切った項目には末尾に「…」と
+        description_truncated: trueが付く。書き換える前はget_by_idsで全文を取る
         archived_tags: 応答に含まれるアクティビティのタグのうちarchivedなものの集約
             （{tag, archived_reason}の配列。該当なしでも空配列で常に付く）
         activities・total_countの字数（archived_tags・tag_notesは含まない）が
@@ -1159,6 +1163,8 @@ def update_activity(
     - アクティビティを棚上げする: update_activity(activity_id, status="shelved")
     - タイトル変更: update_activity(activity_id, title="新しいタイトル")
     - 説明更新: update_activity(activity_id, description="新しい説明")
+      （get_activitiesが切って返した値＝現在値の先頭200字＋「…」はVALIDATION_ERRORで拒否する。
+      書き換える前はget_by_idsで全文を取る）
     - タグ変更: update_activity(activity_id, tags=["domain:calm", "intent:implement"])
 
     ワークフロー位置: アクティビティ進行状況の更新時
