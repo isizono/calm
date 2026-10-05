@@ -51,13 +51,14 @@ Windows 11（PowerShell）でもmacOS/Linuxと同じ手順でインストール�
 
 ## Codexで古いモデルを使う場合
 
-CALMのMCPツール定義は59本・約12万バイトあり、全部がモデルへ渡されると会話のたびにコンテキストを大きく占める。Codexはtool searchが使えるモデル（OpenAIのドキュメントではgpt-5.4以降）ではツールを必要になってから読み込むが、それより前のモデルでは全ツール定義が毎回載る可能性がある。
+CALMのMCPツール定義は59本・約12万バイトあり、全部がモデルへ渡されると会話のたびにコンテキストを大きく占めます。Codexはtool searchが使えるモデル（OpenAIのドキュメントではgpt-5.4以降）ではツールを必要になってから読み込みますが、それより前のモデルでは全ツール定義が毎回載る可能性があります。
 
-その場合は、Codexの`~/.codex/config.toml`でCALMサーバーに`disabled_tools`（`enabled_tools`の後に適用される拒否リスト）を設定し、普段使わないツールを隠せる。次の例は、他インスタンスとの記録の受け渡し、タグの整理、前提の揺らぎ管理、計測、補助ツールを隠す。
+その場合は、Codexの`~/.codex/config.toml`でCALMのMCPサーバーに`disabled_tools`（`enabled_tools`の後に適用される拒否リスト）を設定すると、普段使わないツールを隠せます。次の例は、他インスタンスとの記録の受け渡し、タグの整理、前提の揺らぎ管理、計測、補助のツールを隠します。
+
+CALMをCodexのプラグインとして入れている場合は、プラグイン用のキーに書きます。`<plugin>`には`プラグイン名@マーケットプレイス名`を入れます。
 
 ```toml
-[mcp_servers.calm]
-# 既存のcommand / urlなどの設定はそのまま残す
+[plugins."calm@calm-marketplace".mcp_servers.calm]
 disabled_tools = [
   "collect_export_candidates", "export_bundle", "import_bundle", "set_instance_identity",
   "analyze_tags", "demote_tag_notes",
@@ -66,7 +67,20 @@ disabled_tools = [
 ]
 ```
 
-隠したツールを使うスキル（`/memory-export`、`/memory-import`、`/tag-cleanup`など）は動かなくなる。必要になったらそのツールを一覧から外す。設定項目の詳細は[Codexの設定リファレンス](https://developers.openai.com/codex/config-reference)を参照。ツール名の一覧は[リファレンス](docs/reference.md)にある。
+MCPサーバーとして手動で登録している場合は、登録したサーバーのキーに書きます。次の例は`calm`という名前で登録した場合です。
+
+```toml
+[mcp_servers.calm]
+# 既存のcommand / urlなどの設定はそのまま残します
+disabled_tools = [
+  "collect_export_candidates", "export_bundle", "import_bundle", "set_instance_identity",
+  "analyze_tags", "demote_tag_notes",
+  "resolve_destabilization", "suggest_destabilized_candidates",
+  "detect_reask_candidates", "export_material", "roll_dice",
+]
+```
+
+隠したツールを使うスキル（`/memory-export`、`/memory-import`、`/tag-cleanup`など）は動かなくなります。必要になったらそのツールを一覧から外してください。設定項目の詳細は[Codexの設定リファレンス](https://developers.openai.com/codex/config-reference)を参照してください。ツール名の一覧は[リファレンス](docs/reference.md)にあります。
 
 ## 仕組みの概要
 
