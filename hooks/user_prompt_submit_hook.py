@@ -90,6 +90,11 @@ def _format_nudge_message(event: dict, ntype: str | None) -> str | None:
         # 近似値(repeat*2)にフォールバックする。
         turns_since = event.get("turns_since", repeat * 2)
         return _wrap_system_reminder(_record_nudge_body(repeat, turns_since))
+    if ntype == "record_before_finish":
+        return _wrap_system_reminder(
+            "完了の合図（update_goalのsatisfiedまたはSendMessage）がありますが、"
+            "check-in以降にadd_logsが見当たりません。経緯があればadd_logsで記録してください。"
+        )
     if ntype == "logs_sparse":
         body = event.get("message", "")
         if not body:

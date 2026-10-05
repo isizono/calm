@@ -85,6 +85,17 @@ class TestRecordNudge:
         assert "直近の応答で記録ツール" in ctx
         assert "add_decisions" in ctx
 
+    def test_record_before_finish_nudge_injected_once(self, state_dir):
+        _write_events([{"e": "nudge", "type": "record_before_finish", "turn": 2}], state_dir)
+
+        first = json.loads(_run_hook({"session_id": _SESSION_ID}, state_dir).stdout)
+        ctx = first["hookSpecificOutput"]["additionalContext"]
+        assert "<system-reminder>" in ctx
+        assert "add_logs" in ctx
+
+        second = _run_hook({"session_id": _SESSION_ID}, state_dir)
+        assert json.loads(second.stdout) == {}
+
     def test_nudge_consumed_after_injection(self, state_dir):
         """nudge消費後は空JSON"""
         _write_events(

@@ -20,6 +20,7 @@ _project_root = Path(__file__).resolve().parents[1]
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
+from hooks.delegate_marker import is_delegate_activity
 from hooks.heartbeat import update_heartbeat
 from hooks.hook_state import HookState
 from hooks.hook_transcript import (
@@ -150,20 +151,28 @@ def main() -> None:
             and _has_completion_signal(all_events)
             and not _has_add_logs_since_first_checkin(all_events)
         ):
-            # 記録義務block: 完了の合図(update_goalのsatisfiedかSendMessage)が
-            # あるのに、check_in以降にadd_logsが無いときだけ発火する。
+            # 記録義務: 完了の合図(update_goalのsatisfiedかSendMessage)があるのに、
+            # check_in以降にadd_logsが無いときに発火する。blockするのは
+            # bg_dispatch.pyで立てた委譲先(check-in中のactivityに目印がある)だけで、
+            # 人間と対話する窓口等は次のプロンプトでの注意表示(非block)に留める。
             # 1セッションにつき1回だけ: block_count(2回連続blockしないための
             # 短期カウンタ、approveのたびにリセットされる)には乗せず、
             # 専用の永続フラグ(recording_obligation_fired)で一度きりに保証する。
             # 記録役が付いているセッションは、記録の責務が記録役に移っている
             # ため対象外にする(nudge判定の抑制と同じ扱い)。
             state.set_recording_obligation_fired()
-            state.increment_block_count()
-            harness.emit_block(
-                "完了の合図（update_goalのsatisfiedまたはSendMessage）がありますが、"
-                "check-in以降にadd_logsが見当たりません。経緯をadd_logsで記録してから終了してください。"
-            )
-            return
+            if is_delegate_activity(state.get_checked_in_activity()):
+                state.increment_block_count()
+                harness.emit_block(
+                    "完了の合図（update_goalのsatisfiedまたはSendMessage）がありますが、"
+                    "check-in以降にadd_logsが見当たりません。経緯をadd_logsで記録してから終了してください。"
+                )
+                return
+            state.append_events([{
+                "e": "nudge",
+                "type": "record_before_finish",
+                "turn": current_turn,
+            }])
 
         # 7. nudge判定 + 状態更新 + approve
         state.reset_block_count()
