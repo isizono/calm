@@ -26,7 +26,7 @@ _LAUNCHER_SCRIPT = textwrap.dedent(
     launcher.PARENT_WATCH_INTERVAL_SEC = 0.2
     watched = int(sys.argv[1]) if len(sys.argv) > 1 else None
     if watched:
-        launcher._parent_watch_targets = lambda: [(watched, psutil.Process(watched).create_time())]
+        launcher._parent_watch_targets = lambda: [psutil.Process(watched)]
     launcher.main()
     """
 )

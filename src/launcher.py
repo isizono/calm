@@ -1078,14 +1078,17 @@ PARENT_WATCH_INTERVAL_SEC = 5.0
 SHUTDOWN_DEADLINE_SEC = 10.0
 
 
-def _parent_watch_targets() -> list[tuple[int, float]]:
-    """親の終了を検知するために見張るプロセスの (pid, 起動時刻) を返す。
+def _parent_watch_targets() -> list[psutil.Process]:
+    """親の終了を検知するために見張るプロセスを返す。
 
     launcherは`uv run`経由で起動されるため、直接の親（uv）は、その親のエージェント
     CLIが終了しても生き残って孤児になり、stdin EOFも届かないことがある。
     直接の親に加え、祖先のうち最も近いエージェントCLI本体を見張る。祖先を全部
     見ると、CLIの外側の起動元シェルが先に終わるだけで誤って終了するため見ない。
-    起動時刻も保存し、pidの再利用を「生存」と誤認しないようにする。
+    Processオブジェクトを保持して`is_running()`で判定する。psutilはpidと
+    起動後経過時間（システム時計の補正に影響されない値）の組で同一性を
+    確かめるため、pid再利用を見分けつつ、時計のステップ補正で生きている親を
+    死んだと誤判定しない。
     """
     ancestors = ancestor_pids(os.getpid())
     pids = ancestors[:1]
@@ -1095,7 +1098,7 @@ def _parent_watch_targets() -> list[tuple[int, float]]:
     targets = []
     for pid in pids:
         try:
-            targets.append((pid, psutil.Process(pid).create_time()))
+            targets.append(psutil.Process(pid))
         except psutil.Error:
             pass
     return targets
@@ -1109,19 +1112,14 @@ def _force_exit() -> None:
     os._exit(1)
 
 
-def _is_target_alive(pid: int, created: float) -> bool:
+def _is_target_alive(proc: psutil.Process) -> bool:
     try:
-        proc = psutil.Process(pid)
-        # create_timeは浮動小数のため、丸め差を許容して同一プロセスと見なす
-        return (
-            abs(proc.create_time() - created) < 0.01
-            and proc.status() != psutil.STATUS_ZOMBIE
-        )
+        return proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE
     except psutil.Error:
         return False
 
 
-def _start_parent_watchdog(targets: list[tuple[int, float]]) -> None:
+def _start_parent_watchdog(targets: list[psutil.Process]) -> None:
     """見張り対象が1つでも消えたら、自プロセスにSIGTERMを送って終了させる。"""
     if not targets:
         logger.warning("No parent process to watch; orphan detection is disabled")
@@ -1130,14 +1128,17 @@ def _start_parent_watchdog(targets: list[tuple[int, float]]) -> None:
     def _watch() -> None:
         while True:
             time.sleep(PARENT_WATCH_INTERVAL_SEC)
-            if not all(_is_target_alive(pid, created) for pid, created in targets):
+            if not all(_is_target_alive(proc) for proc in targets):
                 logger.warning("Parent process is gone; exiting launcher")
                 if sys.platform == "win32":
                     # WindowsのSIGTERM送信はTerminateProcess相当でハンドラもatexitも走らない
                     _cleanup()
                     os._exit(0)
                 os.kill(os.getpid(), signal.SIGTERM)
-                return
+                # SIGTERMハンドラと期限タイマーはメインスレッドがCの呼び出しで
+                # 止まっていると動かないため、この見張りスレッドからも期限を守る
+                time.sleep(SHUTDOWN_DEADLINE_SEC)
+                _force_exit()
 
     threading.Thread(target=_watch, daemon=True).start()
 
