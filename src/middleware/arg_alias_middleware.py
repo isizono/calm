@@ -21,10 +21,11 @@ _RENAMES: dict[str, dict[str, str]] = {
 # get_logs / get_decisions は topic_id・activity_id を entity_type + entity_id に直す。
 _ENTITY_TOOLS = {"get_logs", "get_decisions"}
 
-# 1件の dict を items=[...] で包み忘れる書き方を吸収するツールと、その必須キー。
-_ITEMS_WRAP: dict[str, tuple[str, ...]] = {
-    "add_logs": ("topic_id", "content"),
-    "add_decisions": ("topic_id", "decision", "reason"),
+# 1件の dict を items=[...] で包み忘れる書き方を吸収するツールと、(必須キー, 任意キー)。
+# これ以外のキーが混ざる呼び出しは包まず、そのまま例つきエラーに回す。
+_ITEMS_WRAP: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "add_logs": (("topic_id", "content"), ("title", "tags")),
+    "add_decisions": (("topic_id", "decision", "reason"), ("title", "tags")),
 }
 
 # 書き換えでは直せない取り違えに添える、正しい呼び方（必須引数が欠けたときのみ）。
@@ -40,8 +41,9 @@ _USAGE: dict[str, tuple[str, str]] = {
 
 def _rewrite(tool: str, args: dict[str, Any]) -> None:
     for wrong, right in _RENAMES.get(tool, {}).items():
-        if wrong in args and right not in args:
-            args[right] = args.pop(wrong)
+        if wrong in args:
+            value = args.pop(wrong)
+            args.setdefault(right, value)
 
     if tool in _ENTITY_TOOLS and "entity_type" not in args and "entity_id" not in args:
         for kind in ("topic", "activity"):
@@ -50,10 +52,13 @@ def _rewrite(tool: str, args: dict[str, Any]) -> None:
                 args["entity_id"] = args.pop(f"{kind}_id")
                 break
 
-    required = _ITEMS_WRAP.get(tool)
-    if required and "items" not in args and all(k in args for k in required):
-        keys = [k for k in args if k not in ("flavor",)]
-        args["items"] = [{k: args.pop(k) for k in keys}]
+    wrap = _ITEMS_WRAP.get(tool)
+    if wrap and "items" not in args:
+        required, optional = wrap
+        if all(k in args for k in required) and set(args) <= {*required, *optional}:
+            args["items"] = [dict(args)]
+            for k in args["items"][0]:
+                del args[k]
 
 
 class ArgAliasMiddleware(Middleware):
