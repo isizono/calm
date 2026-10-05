@@ -244,6 +244,10 @@ def get_signals(
         detail_truncated: trueを付与する（DB上の値そのものは変更しない）。
         全文が必要な場合はidsにid_rawを指定して再度呼ぶ（この経路は切り詰めない）
     """
+    if isinstance(status, str) and status.lower() == "null":
+        status = None
+    if isinstance(kind, str) and kind.lower() == "null":
+        kind = None
     if status is not None and status not in VALID_STATUSES:
         return {
             "error": {
