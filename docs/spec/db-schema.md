@@ -678,6 +678,20 @@ strength='block'のエントリに一度当たったあとの1回止め保留。
 
 カラム一覧・インデックス: `db-schema-tables.md` の `feedback_switch` 節参照。
 
+### 3.38 hint_cooldowns
+
+hint_serviceが自動で発火に伴い付与する日次クールダウンの保存先。`(tag_id, marker)`単位でPKを持ち、1件のUPSERTで最新の`until_date`に置き換わる。
+
+補足:
+- 対象は`recompose_bootstrap` / `recompose_delta` / `activity_cleanup`の3種のみ（他のhint種別は自動クールダウンの対象外）
+- 導入前は同じ役割をtags.notes本文への追記で担っていたが、notesはmigration 0066のラチェット天井(4000字)を持つため、既に天井を超えているタグでは追記がIntegrityErrorで拒否され、hintが判定のたびに再発火し続ける不具合があった。本テーブルはnotesとは別の保存先に持つことでこの天井の影響を受けない
+- 人間やAIがtags.notesへ手で書く抑制マーカー（`<marker>` / `<marker>-until:YYYY-MM-DD`）は従来どおりnotes本文で読む。本テーブルは自動クールダウン専用で、手書きマーカーとは独立に判定しOR条件で合算する
+- 導入前からnotes本文に残っている自動マーカーは本テーブルへ移行しない（読み取りは従来のnotes経路のまま機能するため）
+
+関連 migration: 0084_add_hint_cooldowns
+
+カラム一覧・インデックス: `db-schema-tables.md` の `hint_cooldowns` 節参照。
+
 ---
 
 ## 4. 関係メカニズム
@@ -828,6 +842,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0079_add_feedback_entries | feedback_entries / feedback_notes / feedback_holds / feedback_turn_marks / feedback_bootstrap_seen / feedback_switch テーブル新設（フィードバック機構、§3.32-3.37） |
 | 0080_drop_activities_orch_managed | activities.orch_managed カラムを削除（0045で追加した構造的属性の撤去。運用体系解体後も複数箇所で参照が残り誤読を誘発していたため） |
 | 0081_vec_cosine_rebuild | vec_index / tag_vec を一時テーブル退避方式（ALTER TABLE RENAME TOは不使用）で distance_metric=cosine へ再構築（両テーブルとも vec0 既定の L2 のまま運用されていたための是正、§3.15, §3.16） |
+| 0084_add_hint_cooldowns | hint_cooldowns テーブル新設（hint_serviceの自動日次クールダウンの保存先、§3.38） |
 | 0087_drop_leftover_fts5_check_tables | 起動時FTS5可否チェック（_check_fts5_available）が後始末漏れで残した_fts5_checkと影のテーブル5つを削除（チェック自体はin-memory接続に切替済み、代替スキーマへの移行なし） |
 
 重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。
