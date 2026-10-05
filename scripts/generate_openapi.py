@@ -14,8 +14,7 @@
 自動生成できるのはツール名・引数スキーマ（requestBody）・カテゴリタグ・summaryのみ。
 各ツールの返り値の型（response schema）はdocstringからの機械抽出ができないため、
 共通のゆるいスキーマ（ErrorResponseとのoneOf）に統一している。返り値の詳細な形は
-`docs/spec/mcp-tools.md` の手書き記述、または実装（`src/main.py` / `src/services/`）を
-参照すること。
+各ツールのdocstring（`src/main.py`）または実装（`src/services/`）を参照すること。
 """
 import argparse
 import asyncio
@@ -159,7 +158,7 @@ def build_openapi_doc() -> dict:
                 },
                 "responses": {
                     "200": {
-                        "description": "ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照",
+                        "description": "ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -186,7 +185,7 @@ def build_openapi_doc() -> dict:
                 "1 ツール = 1 path (POST) として整理する。\n"
                 "本ファイルは scripts/generate_openapi.py が mcp.list_tools() から自動生成する。\n"
                 "手動編集は次回生成で失われる。requestBody は実際の引数スキーマそのものだが、\n"
-                "responses は自動抽出できないため簡略化してある（詳細は docs/spec/mcp-tools.md）。\n"
+                "responses は自動抽出できないため簡略化してある（詳細は各ツールのdocstring）。\n"
             ),
         },
         "servers": [
