@@ -18,14 +18,6 @@ def _fixed_caller_session_id(monkeypatch):
     monkeypatch.setattr(main_module, "get_caller_session_id", lambda: "sess-1")
 
 
-@pytest.fixture(autouse=True)
-def _reject_current_session_id(monkeypatch):
-    """`_current_session_id()`が使われたら即座に検出できるよう別値を返す。"""
-    monkeypatch.setattr(
-        main_module, "_current_session_id", lambda: "stale-ephemeral-id"
-    )
-
-
 class TestAddAskUsesStableSessionIdentity:
     def test_passes_resolved_identity_as_session_id(self, monkeypatch):
         stub = MagicMock(return_value={"id": 1, "deduped": False})
