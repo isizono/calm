@@ -1542,6 +1542,21 @@ def test_list_server_family_processes_filters_to_known_modules_and_excludes_laun
     assert [pid for pid, _ in found] == [100, 200]
 
 
+def test_list_server_family_processes_requires_exact_module_argument(monkeypatch):
+    ps_output = "\n".join([
+        "600 /opt/python /x/src.main/tool.py",
+        "700 /opt/python -m src.main_helper",
+        "800 /opt/python -m src.main --transport http",
+    ])
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout=ps_output, stderr="")
+
+    monkeypatch.setattr(restart_service.subprocess, "run", fake_run)
+
+    assert [pid for pid, _ in restart_service._list_server_family_processes()] == [800]
+
+
 def test_list_server_family_processes_empty_on_timeout(monkeypatch):
     def fake_run(cmd, **kwargs):
         raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))

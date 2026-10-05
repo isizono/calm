@@ -10,6 +10,7 @@ from hooks.session_start_hook import (
     _fetch_running_server_version,
 )
 from hooks import session_start_hook
+from src.infra import loopback_http
 
 
 class _FakePath:
@@ -58,12 +59,10 @@ def test_silent_when_running_version_unresolvable(monkeypatch):
 
 
 def test_fetch_running_server_version_returns_none_on_connection_error(monkeypatch):
-    import urllib.request
-
     def fake_urlopen(url, timeout=None):
         raise ConnectionRefusedError("no server")
 
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(loopback_http.NO_PROXY_OPENER, "open", fake_urlopen)
 
     assert _fetch_running_server_version() is None
 
@@ -71,8 +70,6 @@ def test_fetch_running_server_version_returns_none_on_connection_error(monkeypat
 def test_fetch_running_server_version_returns_none_when_version_key_missing(monkeypatch):
     """versionキーを返さない旧版サーバーへの接続は判定不能として扱う"""
     import json
-    import urllib.request
-
     class FakeResponse:
         def __enter__(self):
             return self
@@ -83,15 +80,13 @@ def test_fetch_running_server_version_returns_none_when_version_key_missing(monk
         def read(self):
             return json.dumps({"status": "ok", "pid": 1}).encode("utf-8")
 
-    monkeypatch.setattr(urllib.request, "urlopen", lambda url, timeout=None: FakeResponse())
+    monkeypatch.setattr(loopback_http.NO_PROXY_OPENER, "open", lambda url, timeout=None: FakeResponse())
 
     assert _fetch_running_server_version() is None
 
 
 def test_fetch_running_server_version_returns_value_on_success(monkeypatch):
     import json
-    import urllib.request
-
     class FakeResponse:
         def __enter__(self):
             return self
@@ -102,6 +97,6 @@ def test_fetch_running_server_version_returns_value_on_success(monkeypatch):
         def read(self):
             return json.dumps({"status": "ok", "version": "abc123"}).encode("utf-8")
 
-    monkeypatch.setattr(urllib.request, "urlopen", lambda url, timeout=None: FakeResponse())
+    monkeypatch.setattr(loopback_http.NO_PROXY_OPENER, "open", lambda url, timeout=None: FakeResponse())
 
     assert _fetch_running_server_version() == "abc123"

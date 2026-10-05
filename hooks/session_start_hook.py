@@ -1097,12 +1097,11 @@ def _fetch_running_server_version(timeout_sec: float = _VERSION_CHECK_TIMEOUT_SE
     サーバー等）はすべてNoneとする（判定不能として呼び出し側が黙って
     スキップするための戻り値で、例外は外に伝播させない）。
     """
-    import urllib.request
-
     from src.http_config import HTTP_HOST, HTTP_PORT
+    from src.infra.loopback_http import NO_PROXY_OPENER
 
     try:
-        with urllib.request.urlopen(
+        with NO_PROXY_OPENER.open(
             f"http://{HTTP_HOST}:{HTTP_PORT}/health", timeout=timeout_sec
         ) as resp:
             body = json.loads(resp.read())

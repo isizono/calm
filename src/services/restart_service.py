@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -428,6 +429,11 @@ def prune_orphaned_plugin_versions(project_root: Path) -> dict:
 # MCPサーバー本体（ローカル・リモート共通。両者とも同じ`-m src.main --transport http`
 # で起動される）が対象。launcherは対象外(_is_launcher_commandで別途除外する)。
 _ORPHAN_CANDIDATE_MODULES = ("src.main", "src.infra.embedding_server")
+# 部分一致だとパスや引数に同じ文字列を含む無関係なプロセスまで停止対象になるため、
+# `-m <module>`として完全に一致するものだけを候補にする
+_ORPHAN_CANDIDATE_RE = re.compile(
+    r"(?:^|\s)-m\s+(?:" + "|".join(re.escape(m) for m in _ORPHAN_CANDIDATE_MODULES) + r")(?:\s|$)"
+)
 ORPHAN_LSOF_TIMEOUT_SEC = 5.0
 
 
@@ -459,7 +465,7 @@ def _list_server_family_processes() -> list[tuple[int, str]]:
         pid_str, _, command = line.partition(" ")
         if _is_launcher_command(command):
             continue
-        if not any(module in command for module in _ORPHAN_CANDIDATE_MODULES):
+        if not _ORPHAN_CANDIDATE_RE.search(command):
             continue
         try:
             pid = int(pid_str)
