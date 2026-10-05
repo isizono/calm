@@ -311,7 +311,7 @@ def add_topic(
     tags: list[str],
     related: list[dict] | None = None,
 ) -> dict:
-    """新しい議論トピックを追加する。
+    """1つの関心事・問題・機能を表す議論トピックを新規作成する（add/create a new discussion topic）。
 
     title: トピックのタイトル（35字以内）
     description: トピックの説明（必須）
@@ -327,7 +327,7 @@ def add_topic(
 
 @mcp.tool()
 def add_logs(items: list[dict]) -> dict:
-    """複数のログを一括追加する（最大10件）。
+    """議論の経緯・調査メモ・観察をログとして一括記録する（add/record discussion logs、最大10件）。
 
     呼び出し前に recording skill の判断ガイドを通すこと。
 
@@ -356,7 +356,7 @@ def add_logs(items: list[dict]) -> dict:
 
 @mcp.tool()
 def add_decisions(items: list[dict], ctx: Context) -> dict:
-    """複数の決定事項を一括記録する（最大10件）。
+    """ユーザーと合意した決定事項を一括記録する（record/add decisions、最大10件）。
 
     呼び出し前に decision-record skill の判断ガイドを通すこと。
 
@@ -408,7 +408,7 @@ def get_topics(
     until: str | None = None,
     flavor: _FlavorArg = "internal",
 ) -> dict:
-    """トピックを新しい順に取得する（ページネーション付き）。
+    """トピックを新しい順に一覧取得する（list/get discussion topics、ページネーション付き）。
 
     tags: タグ配列（optional）。指定時はAND条件でフィルタ。未指定時は全件返す。例: ["domain:calm"]
     since: ISO日付文字列（例: "2026-03-10"）。この日付以降に作成されたトピックのみ返す
@@ -443,7 +443,7 @@ def get_logs(
     flavor: _FlavorArg = "internal",
 ) -> dict:
     """
-    Choose: topic/activity に紐づく log 一覧が欲しいとき。決定事項一覧なら get_decisions、log/decision/material の混合時系列なら get_timeline、起点からの関連グラフ走査なら get_map、activity 着手時の文脈集約なら check_in（status を in_progress に自動更新する副作用あり、着手時のみ）。
+    Choose: topic/activity に紐づく log 一覧（list/get discussion logs）が欲しいとき。決定事項一覧なら get_decisions、log/decision/material の混合時系列なら get_timeline、起点からの関連グラフ走査なら get_map、activity 着手時の文脈集約なら check_in（status を in_progress に自動更新する副作用あり、着手時のみ）。
 
     指定エンティティの議論ログを取得する。
 
@@ -489,9 +489,7 @@ def get_decisions(
     flavor: _FlavorArg = "internal",
 ) -> dict:
     """
-    Choose: topic/activity に紐づく decision 一覧が欲しいとき。議論経緯の log なら get_logs、log/decision/material の混合時系列なら get_timeline、起点からの関連グラフ走査なら get_map、activity 着手時の文脈集約なら check_in（status を in_progress に自動更新する副作用あり、着手時のみ）、設計判断前に近傍 topic の判例を網羅確認したいなら pull_precedents。
-
-    指定エンティティに関連する決定事項を取得する。
+    Choose: topic/activity に紐づく decision 一覧（list/get decisions）が欲しいとき。議論経緯の log なら get_logs、log/decision/material の混合時系列なら get_timeline、起点からの関連グラフ走査なら get_map、activity 着手時の文脈集約なら check_in（status を in_progress に自動更新する副作用あり、着手時のみ）、設計判断前に近傍 topic の判例を網羅確認したいなら pull_precedents。
 
     Args:
         entity_type: エンティティタイプ（"topic" または "activity"）
@@ -547,9 +545,7 @@ def pull_precedents(
     flavor: _FlavorArg = "internal",
 ) -> dict:
     """
-    Choose: 設計・裁定の前に、近傍 topic の判例(decision)を確率的発見ではなく網羅的に
-    確認したいとき。ランクtop-Nの確率的発見ならsearch、topic直下の一覧（LIMIT30・
-    truncationの可視化なし）ならget_decisions。
+    Choose: 設計・裁定の前に、近傍 topic の判例(decision)を網羅確認（pull precedents）したいとき。ランクtop-Nの確率的発見ならsearch、topic直下の一覧（LIMIT30・truncationの可視化なし）ならget_decisions。
 
     設計文脈から近傍 topic を特定し、routing が当たった topic の非 retract decision を
     ランク競争なしに全件、最低でも索引粒度で応答に含める。予算超過時も切り捨てず
@@ -653,7 +649,7 @@ def search(
     flavor: _FlavorArg = "internal",
 ) -> dict:
     """
-    キーワードで横断検索する。
+    キーワードで過去の記録（topic/decision/log/material/activity）を横断検索する（search past records by keyword）。
 
     FTS5 trigramとベクトル検索のハイブリッド。RRFスコアで統合・ランキング。
     2文字以上のキーワードを指定する。3文字以上のキーワードのみFTS5（完全一致trigram）が
@@ -742,9 +738,9 @@ def detect_reask_candidates(
     score_threshold: float = 0.4,
 ) -> dict:
     """
-    Choose: sync-memoryの聞き返し後追い検出ステップで使う。transcriptから聞き返し候補
-    （AskUserQuestion呼び出し・ユーザー訂正発話）を抽出し、除外辞書適用後の上位N件について
-    既存記録の類似searchまで一括で行う。transcript_pathはSessionStart時にコンテキストへ
+    Choose: sync-memoryの聞き返し後追い検出ステップで、聞き返し候補を検出する（detect re-ask candidates）とき。
+    transcriptから聞き返し候補（AskUserQuestion呼び出し・ユーザー訂正発話）を抽出し、
+    除外辞書適用後の上位N件について既存記録の類似searchまで一括で行う。transcript_pathはSessionStart時にコンテキストへ
     注入されたものをそのまま渡す。
 
     「この既存記録があれば聞き返しは不要だったか」の主観判定とreport_signalの呼び出しは
@@ -787,7 +783,7 @@ def get_by_ids(
     flavor: _FlavorArg = "internal",
 ) -> dict:
     """
-    Choose: search 結果の type+id ペアを本文付きで一括取得したいとき（複数種別 OK）。material 単独なら get_material、topic/activity 起点の log/decision 集約なら get_logs / get_decisions、関連グラフ走査なら get_map。
+    Choose: search 結果の type+id ペアを本文付きで一括取得（get records by ids, fetch full text）したいとき（複数種別 OK）。material 単独なら get_material、topic/activity 起点の log/decision 集約なら get_logs / get_decisions、関連グラフ走査なら get_map。
 
     search結果の詳細情報を取得する。
 
@@ -845,7 +841,7 @@ def search_tags(
     limit: int = 20,
 ) -> dict:
     """
-    タグをキーワード検索する。
+    タグをキーワードで検索する（search/find tags by keyword）。
 
     タグ名の部分一致とベクトル検索のハイブリッドで、関連するタグを見つける。
     include_notes=Trueでnotesも確認できる。
@@ -874,8 +870,7 @@ def update_tag(
     archived_reason: str | None = None,
 ) -> dict:
     """
-    既存タグの notes（教訓・運用ルール）、canonical（エイリアス先）、name（リネーム）、
-    description（短い説明文）、またはarchived（退役状態）を更新する。
+    既存タグの notes（教訓・運用ルール）・エイリアス・名前・説明・退役状態を更新する（update tag notes, rename, alias, archive a tag）。
 
     notes / canonical / rename / description / archived は相互排他（1つだけ指定可能）。
     少なくとも1つを指定する。
@@ -950,7 +945,7 @@ def demote_tag_notes(
     archive_tags: list[str] | None = None,
     reason: str | None = None,
 ) -> dict:
-    """tag notesの指定セクションを資材へ逐語退避し、notesを縮小する。
+    """tag notesの指定セクションを資材へ逐語退避し、notesを縮小する（demote/archive tag notes to a material）。
 
     ## tag notes 記述規約(正典)
 
@@ -1026,7 +1021,7 @@ def analyze_tags(
     min_usage: int = 2,
     top_n: int = 20,
 ) -> dict:
-    """タグの共起分析を実行する。PMIで共起の重みを計算し、クラスタ検出・孤児タグ検出・重複候補検出を行う。
+    """タグの共起分析を実行して整理候補を出す（analyze tag co-occurrence）。PMIで共起の重みを計算し、クラスタ検出・孤児タグ検出・重複候補検出を行う。
 
     Args:
         domain: domainフィルタ（例: "calm"）。指定時はそのdomainに属するエンティティのみを分析対象にする
@@ -1059,7 +1054,7 @@ def add_activity(
     check_in: bool = True,
 ) -> dict:
     """
-    新しいアクティビティを追加する。デフォルトで作成後にcheck_inも実行する。
+    作業・議論の単位となるアクティビティを新規作成する（add/create a new activity, start a task）。デフォルトで作成後にcheck_inも実行する。
 
     典型的な使い方:
     - 作業アクティビティを作成: add_activity("○○機能を実装", "詳細説明...", ["domain:calm", "intent:implement", "search"])
@@ -1107,7 +1102,7 @@ def get_activities(
     flavor: _FlavorArg = "internal",
 ) -> dict:
     """
-    アクティビティ一覧を取得する（tags/statusでフィルタリング可能）。
+    アクティビティ一覧を取得する（list/get activities、tags/statusでフィルタリング可能）。
 
     典型的な使い方:
     - 全アクティビティ確認: get_activities()
@@ -1174,7 +1169,7 @@ def update_activity(
     move_ask_ids: list[int] | None = None,
 ) -> dict:
     """
-    アクティビティのステータス・タイトル・説明・タグを更新する。
+    アクティビティのステータス・タイトル・説明・タグを更新する（update activity status, complete or snooze a task）。
 
     典型的な使い方:
     - アクティビティ開始: update_activity(activity_id, status="in_progress")
@@ -1186,8 +1181,6 @@ def update_activity(
       （get_activitiesが切って返した値＝現在値の先頭200字（末尾の「…」・前後の空白は無視）はVALIDATION_ERRORで拒否する。
       書き換える前はget_by_idsで全文を取る）
     - タグ変更: update_activity(activity_id, tags=["domain:calm", "intent:implement"])
-
-    ワークフロー位置: アクティビティ進行状況の更新時
 
     snoozed状態のアクティビティに対しstatusを指定せずtitle/description等のみ更新すると、
     自動的にstatus="pending"へ復活する（明示的にsnoozedを維持したい更新はできない）。
@@ -1233,7 +1226,7 @@ def update_activity(
 
 @mcp.tool()
 def set_goal(activity_id: int, goal: dict | None, replace: bool = False) -> dict:
-    """Choose: activityの終了条件(goal)上の立場を決めたいとき。goal自体はactivityから
+    """Choose: activityの終了条件(goal)上の立場を決めたいとき（set or define a goal for an activity）。goal自体はactivityから
     作る。既存のgoal(goal_id)に紐づける・不要印(waiver)を付ける・未定義に戻す(None)も
     この1本で扱う。充足の記録・条件の追加はupdate_goal、終了の明示判定はjudge_goal。
 
@@ -1268,7 +1261,7 @@ def update_goal(
     statement: str | None = None,
     reopen_reason: str | None = None,
 ) -> dict:
-    """Choose: goalの条件を追加・状態変更(充足/保留)・担い手や束縛の変更をしたいとき。
+    """Choose: goalの条件を追加・状態変更(充足/保留)・担い手や束縛の変更をしたいとき（update goal conditions, mark satisfied）。
     goalの一文(statement)の修正、判定済みgoalの差し戻し(reopen_reason)もこの1本で行う。
     新しいgoalを作って紐づけるのはset_goal、終了の明示判定はjudge_goal。
 
@@ -1310,7 +1303,7 @@ def judge_goal(
     note: str | None = None,
     judged_by: str = "session",
 ) -> dict:
-    """Choose: goalの終了を明示的に判定して閉じたいとき。紐づく未完了のactivityも
+    """Choose: goalの終了を明示的に判定して閉じたいとき（judge and close a goal as achieved or failed）。紐づく未完了のactivityも
     同時にcompletedにする(closed_by="goal_judge")。判定はachieved(達成)か
     failed(達成せず終了。不可能・不要化・取り下げを含む)。achievedはopenの条件が
     残っている・satisfiedが0件・崩れた条件があるといずれも拒否するので、先に
@@ -1339,8 +1332,7 @@ def get_goal(
     activity_id: int | None = None,
     handle: str | None = None,
 ) -> dict:
-    """Choose: 1つのgoalの全条件(充足済みを含む)とid、紐づくactivity一覧を読みたい
-    とき。check_inの応答のgoalブロックは充足済み条件や4件目以降のopen条件を畳むので、
+    """Choose: 1つのgoalの全条件(充足済みを含む)とid、紐づくactivity一覧を読みたいとき（get goal conditions and activities）。check_inの応答のgoalブロックは充足済み条件や4件目以降のopen条件を畳むので、
     全件が要るとき(差し戻しでopenに戻す条件を選ぶとき等)や、handleからgoalを引きたい
     ときに使う。読み取り専用(check_inと違いactivityのstatusを変えない)。labelが
     judge_ready(判定待ち)のときは、判定待ちの未決(open_questions)も返す。
@@ -1373,7 +1365,7 @@ def get_goal(
 
 @mcp.tool()
 def get_overview(days: int = 7, limit: int = 20) -> dict:
-    """Choose: 「今何が進んでいて、次に何をすべきか」をユーザーに一望で見せたいとき。
+    """Choose: 「今何が進んでいて、次に何をすべきか」をユーザーに一望で見せたいとき（get overview of activities and asks）。
 
     DB の現状（アクティビティの status / heartbeat、ask の status）から4節を1回で集計して
     返す。読み取り専用で、DB を一切書き換えない（get_activities のような snoozed 自動復活も
@@ -1427,7 +1419,7 @@ def add_material(
     related: list[dict] | None = None,
 ) -> dict:
     """
-    資材を追加する。独立エンティティとしてタグ付きで保存される。
+    ドラフト・調査結果・分析などの成果物を資材として保存する（add/save a material, document, or report）。独立エンティティとしてタグ付きで保存される。
 
     呼び出し前に recording skill の判断ガイドを通すこと。
 
@@ -1458,7 +1450,7 @@ def update_material(
     mode: Literal["overwrite", "prepend", "append"] = "overwrite",
 ) -> dict:
     """
-    既存の資材を更新する。content、title、tags、sourceを個別または同時に更新できる。
+    既存の資材の内容・タイトル・タグ・出典を更新する（update/edit a material）。content、title、tags、sourceを個別または同時に更新できる。
 
     contentはmodeで動作を選べる。"overwrite"（既定）は上書き、"prepend"は新content+区切り+既存content、
     "append"は既存content+区切り+新content。区切りは改行2つ("\n\n")。既存contentが空の場合はoverwrite相当。
@@ -1496,7 +1488,7 @@ def get_material(
     include_retracted: bool = False,
 ) -> dict:
     """
-    Choose: material_id 既知で資材の全文だけ取得したいとき。複数種別を一括なら get_by_ids、起点からの関連グラフ走査なら get_map、log/decision/material の混合時系列なら get_timeline。
+    Choose: material_id 既知で資材の全文だけ取得したいとき（get/read a material's full text）。複数種別を一括なら get_by_ids、起点からの関連グラフ走査なら get_map、log/decision/material の混合時系列なら get_timeline。
 
     資材の全文を取得する。
 
@@ -1531,7 +1523,7 @@ def export_material(
     dest_path: str | None = None,
 ) -> dict:
     """
-    Choose: 資材の全文を calm 外で参照したい（obsidian vault に置く / docs リポに commit する / third-party レビュー用に配布する）とき。calm 内で読むだけなら get_material、複数種別を横断で全文取得したいなら get_by_ids。
+    Choose: 資材の全文を calm 外で参照したい（obsidian vault に置く / docs リポに commit する / third-party レビュー用に配布する）とき（export a material to a file）。calm 内で読むだけなら get_material、複数種別を横断で全文取得したいなら get_by_ids。
 
     資材を YAML frontmatter + h1 + content 形式の md ファイルとして出力する。
 
@@ -1577,7 +1569,7 @@ def check_in(
     flavor: _FlavorArg = "internal",
 ) -> dict:
     """
-    Choose: アクティビティに着手するときに関連情報を一括取得したいとき（status を in_progress に自動更新）。関連グラフだけ俯瞰したいなら get_map、log/decision/material の時系列なら get_timeline、log だけなら get_logs、decision だけなら get_decisions、設計判断前に近傍 topic の判例を網羅確認したいなら pull_precedents。
+    Choose: アクティビティに着手・再開するときに関連情報を一括取得したいとき（check in to an activity, resume work）。status を in_progress に自動更新する。関連グラフだけ俯瞰したいなら get_map、log/decision/material の時系列なら get_timeline、log だけなら get_logs、decision だけなら get_decisions、設計判断前に近傍 topic の判例を網羅確認したいなら pull_precedents。
 
     アクティビティにcheck-inする。関連情報を5つの枠（anchor/control/context/catalog/env）に
     分けて集約取得する。
@@ -1753,7 +1745,7 @@ def add_relation(
     relation_type: str = "related",
 ) -> dict:
     """
-    エンティティ間のリレーションを追加する。
+    topic/activity/decision等の記録同士を関連付ける（add a relation, link records）。
 
     典型的な使い方:
     - トピック同士を関連付け: add_relation("topic", 1, [{"type": "topic", "ids": [2, 3]}])
@@ -1798,7 +1790,7 @@ def remove_relation(
     relation_type: str = "related",
 ) -> dict:
     """
-    エンティティ間のリレーションを削除する。
+    記録同士のリレーションを削除する（remove/unlink a relation）。
 
     典型的な使い方:
     - 関連リレーション削除: remove_relation("topic", 1, [{"type": "topic", "ids": [2]}])
@@ -1835,7 +1827,7 @@ def resolve_destabilization(
     note: str = "",
 ) -> dict:
     """
-    destabilizesエッジ1本を解消（resolve）する。add_relation(relation_type="destabilizes")で
+    destabilizesエッジ1本を解消する（resolve a destabilization edge）。add_relation(relation_type="destabilizes")で
     張られたエッジを、再検証の結果に応じて閉じるときに使う。
 
     resolution:
@@ -1873,7 +1865,7 @@ def suggest_destabilized_candidates(
     include_already_resolved: bool = False,
 ) -> dict:
     """
-    軸変更decisionからdestabilizeされそうな候補decisionを提示する（候補提示のみ、read-only）。
+    軸変更decisionからdestabilizeされそうな候補decisionを提示する（suggest destabilized decision candidates、候補提示のみ、read-only）。
 
     候補は「(a) sourceとtag集合が重なるnon-retract decision」と「(b) sourceが属するtopicの
     embedding近傍topicに属するnon-retract decision」の和集合。各候補についてtag重なり
@@ -1914,7 +1906,7 @@ def get_map(
     max_depth: int = 2,
 ) -> dict:
     """
-    Choose: 起点エンティティから relation を辿って到達可能な topic/activity/material のカタログが欲しいとき。log/decision/material の時系列なら get_timeline、特定 activity の文脈集約なら check_in（status を in_progress に自動更新する副作用あり、着手時のみ）、log/decision の本文一覧なら get_logs / get_decisions。
+    Choose: 起点エンティティから relation を辿って到達可能な topic/activity/material のカタログ（relation graph map）が欲しいとき。log/decision/material の時系列なら get_timeline、特定 activity の文脈集約なら check_in（status を in_progress に自動更新する副作用あり、着手時のみ）、log/decision の本文一覧なら get_logs / get_decisions。
 
     リレーショングラフを走査し、到達可能エンティティのカタログを返す。
 
@@ -1945,7 +1937,7 @@ def collect_export_candidates(
     limit: int | None = None,
     offset: int = 0,
 ) -> dict:
-    """Choose: 他インスタンスへのexport候補を洗い出したいとき。get_mapと違いdecision/logも
+    """Choose: 他インスタンスへのexport候補を洗い出したいとき（collect export candidates）。get_mapと違いdecision/logも
     カタログ本体に含み、retracted/superseded/status/本文サイズ/親topicタイトル等の
     export判断に必要な付加情報を返す。決定論的なexport実行そのもの（バンドル書き出し）は
     別ツールが担い、このツールは読み取り専用の候補一覧化のみを行う。
@@ -1992,8 +1984,7 @@ def collect_export_candidates(
 
 @mcp.tool()
 def set_instance_identity(instance_id: str, force: bool = False) -> dict:
-    """Choose: 他インスタンスへexportバンドルを渡す前に、自インスタンスの識別子を初めて
-    設定する(または変更する)とき。export_bundleはこの識別子が未設定だとエラーを返す。
+    """Choose: export前に自インスタンスの識別子を初めて設定・変更するとき（set instance identity/id）。export_bundleはこの識別子が未設定だとエラーを返す。
 
     インスタンス識別子(instance_id)を設定する。バンドルの複合キー
     (`<instance_id>:<型コード><ローカルID>`、例: team-a:M12)発行の基盤となる。
@@ -2021,8 +2012,7 @@ def export_bundle(
     include_supersede_targets: bool = False,
     selection: dict | None = None,
 ) -> dict:
-    """Choose: collect_export_candidatesで確定した候補リストから、他インスタンスへ渡す
-    バンドル(manifest.yaml + エンティティ別mdファイル)を実際に書き出すとき。候補の
+    """Choose: collect_export_candidatesで確定した候補リストから、他インスタンスへ渡すバンドルを書き出すとき（export a bundle to files）。候補の
     洗い出し自体はcollect_export_candidates、単発資材の書き出しはexport_materialを使う。
 
     確定選択(items)からバンドルを書き出す。instance_idが未設定だとエラーを返す
@@ -2072,9 +2062,9 @@ def import_bundle(
     resolutions: dict | None = None,
     skip_duplicate_check: bool = False,
 ) -> dict:
-    """Choose: 他インスタンスのバンドルを取り込みたいとき。まずmode="dry_run"
+    """Choose: 他インスタンスのバンドルを取り込みたいとき（import a bundle）。まずmode="dry_run"
     (既定、DB無変更)でレポートを確認し、裁定をresolutionsに畳んでmode="apply"を
-    呼ぶと1トランザクションでDBへ書き込む(失敗時は部分書き込みを残さない)。
+    呼ぶと1トランザクションでDBへ書き込む(失敗時は全巻き戻し)。
 
     dry_runは(a)再importの冪等性(hash一致は変化なし、不一致はtopic/activity/material
     なら上書き候補・decision/logなら既定skip+警告)、(b)ネイティブ重複の疑い(新規分の
@@ -2089,7 +2079,7 @@ def import_bundle(
     import実行時刻を採用(originの値はimport_provenance.origin_created_atに保持)。
     activityは明示選択のみが対象。新規作成時はstatusをバンドルの値のまま採用するが、
     既存を上書き更新するときはローカルのstatus/retracted_atを保持し変更しない。
-    タグ紐付けは追加のみで、送信元で外れたタグの自動削除はしない。
+    タグ紐付けは追加のみ（外れたタグは削除しない）。
 
     Args:
         bundle_path: `export_bundle`が書き出したバンドルディレクトリのパス
@@ -2122,7 +2112,7 @@ def import_bundle(
 
 @mcp.tool()
 def add_habit(content: str, importance_score: int = 3, status: str = "active") -> dict:
-    """エージェントの振る舞いを登録する。新規habitはtrigger_mode='intelligently'
+    """エージェントの振る舞い(habit)を登録する（add a habit / behavior rule）。新規habitはtrigger_mode='intelligently'
     （マニフェスト表示のみ、詳細はget_habits(habit_id=...)でon-demand取得）で作成され、
     ~/.claude/rules配下の自動生成ファイル経由で常時配信されるのはtrigger_mode='always'
     のみ（セッション途中の登録は次セッション起動から反映）。常時配信層への昇格は
@@ -2136,7 +2126,7 @@ def add_habit(content: str, importance_score: int = 3, status: str = "active") -
 
 @mcp.tool()
 def get_habits(active: bool = True, habit_id: int | None = None) -> dict:
-    """登録済みの振る舞い一覧を取得する。既定でactive=1のみ返す。無効化済みも含む全件が
+    """登録済みの振る舞い(habit)一覧を取得する（list/get habits）。既定でactive=1のみ返す。無効化済みも含む全件が
     欲しいときはactive=Falseを渡す。~/.claude/rules配下の自動生成ファイルで全文配信
     されるのはtrigger_mode='always'のみで、'intelligently'はタイトルのみのマニフェスト
     表示になる。habit_idを渡すとその1件だけを本文付きで取得でき、intelligentlyな
@@ -2154,7 +2144,7 @@ def update_habit(
     importance_score: int | None = None,
     status: str | None = None,
 ) -> dict:
-    """振る舞いを更新する。active=Falseで無効化、active=Trueで再有効化。
+    """振る舞い(habit)を更新・無効化する（update/deactivate a habit）。active=Falseで無効化、active=Trueで再有効化。
     trigger_modeは'always'（~/.claude/rules配下の自動生成ファイルで全文常時配信）/
     'intelligently'（マニフェストのみ、詳細はget_habits(habit_id=...)でon-demand取得）
     のいずれか。'intelligently'から
@@ -2184,7 +2174,7 @@ def add_pin(
     target_type: Literal["tag", "activity", "topic", "decision", "log", "material"],
     target_ref: int | str,
 ) -> dict:
-    """pinを追加する（source → target）。
+    """check-in時にsourceへ自動注入されるtargetを指定するpinを追加する（add a pin from source to target）。
 
     pinはsourceエンティティからtargetエンティティへの関係として記録される。
     check-in時にsourceに対応するpinのtargetが自動注入される。
@@ -2228,7 +2218,7 @@ def remove_pin(
     target_type: Literal["tag", "activity", "topic", "decision", "log", "material"],
     target_ref: int | str,
 ) -> dict:
-    """pinを削除する（source → target）。
+    """pinを削除する（remove/unpin source → target）。
 
     unpin基準: 「もう知らなくてもいい状態になったか」。
 
@@ -2252,7 +2242,7 @@ def remove_pin(
 
 @mcp.tool()
 def retract(entity_type: Literal["decision", "log", "material"], ids: list[int], undo: bool = False) -> dict:
-    """決定事項・ログ・資材を取り消す（論理削除）。取り消し済みエンティティは検索・取得でデフォルト除外される。
+    """決定事項・ログ・資材を取り消す（retract/delete/undo a record、論理削除）。取り消し済みエンティティは検索・取得でデフォルト除外される。
 
     retract時はsearch_index/FTS/vecインデックスからも物理削除される。undo（un-retract）時は
     retracted_atをNULLに戻すと同時に、search_index/FTSへも再登録され、再び検索でヒットする
@@ -2277,7 +2267,7 @@ def get_timeline(
     flavor: _FlavorArg = "internal",
 ) -> dict:
     """
-    Choose: topic/activity に紐づく decision/log/material を時系列順に並べたいとき。log だけなら get_logs、decision だけなら get_decisions、関連グラフ走査なら get_map、activity の文脈集約なら check_in（status を in_progress に自動更新する副作用あり、着手時のみ）。
+    Choose: topic/activity に紐づく decision/log/material を時系列順に並べたいとき（get timeline）。log だけなら get_logs、decision だけなら get_decisions、関連グラフ走査なら get_map、activity の文脈集約なら check_in（status を in_progress に自動更新する副作用あり、着手時のみ）。
 
     トピックまたはアクティビティに紐づくdecision・log・materialを時系列で返す。
 
@@ -2310,7 +2300,7 @@ def get_timeline(
 
 @mcp.tool()
 def get_config(env_kind: str | None = "user") -> dict:
-    """現在の設定値を返す。スキルが環境変数ベースの設定を参照するために使用する。
+    """現在の設定値・環境変数を返す（get config settings）。スキルが環境変数ベースの設定を参照するために使用する。
 
     env_varsはcalmが読む環境変数の台帳（src/config_registry.py）と現在値
     （name/kind/default/description/value。valueは未設定ならnull）。env_kindで種類を絞る
@@ -2356,7 +2346,7 @@ def get_config(env_kind: str | None = "user") -> dict:
 
 @mcp.tool()
 def roll_dice(sides: int = 10) -> dict:
-    """指定面数のダイスを振る。デフォルト1d10。"""
+    """指定面数のダイスを振る（roll a dice）。デフォルト1d10。"""
     return {"result": random.randint(1, sides)}
 
 
@@ -2373,7 +2363,7 @@ def report_signal(
     refs: list[dict] | None = None,
     context: dict | None = None,
 ) -> dict:
-    """calm 自身への故障報告・使用感不満・矛盾検出・運用計測イベントの統一入口。
+    """calm 自身への故障報告・使用感不満・矛盾検出・運用計測イベントを記録する（report a signal: bug, friction, contradiction）。
 
     kind（予約9種、いずれか必須。または custom:<名前> で独自区分を追加できる）:
       - "machine_error": ツールエラー・hook 失敗・サーバー異常を観察した
@@ -2431,7 +2421,7 @@ def get_signals(
     offset: int = 0,
     include_stats: bool = False,
 ) -> dict:
-    """report_signal で記録されたシグナルを一覧・集計する。
+    """report_signal で記録されたシグナルを一覧・集計する（list/get signals）。
 
     Args:
         status: フィルタ対象のstatus（"new"|"triaged"|"promoted"|"dismissed"）。
@@ -2472,7 +2462,7 @@ def update_signal(
     promoted_type: str | None = None,
     promoted_id: int | None = None,
 ) -> dict:
-    """シグナルのトリアージ状態を遷移する（orch/親セッション専用）。
+    """シグナルのトリアージ状態を遷移する（update signal triage status、orch/親セッション専用）。
 
     promoted_type/promoted_id は既存エンティティ（topic/activity/decision/log/material）
     への参照であり、両方指定時のみ実在チェックの上でリンクする。実体の作成は行わない
@@ -2511,7 +2501,7 @@ def add_ask(
     choices: list[str] | None = None,
     notify: bool = True,
 ) -> dict:
-    """人間の判断を待つ問いを1件積む（答え待ちの間、blocksで指定したactivityを止める）。
+    """人間にしか決められない判断を問いとして1件積む（add an ask）。答え待ちの間、blocksで指定したactivityを止める。
 
     離席中・セッション跨ぎでしか答えられない判断に限る。その場で答えられるなら
     聞いてdecisionにする。
@@ -2525,7 +2515,7 @@ def add_ask(
     同一問いは別のライフとして新規行になる（訂正は新規postで行い、リンクは張らない）。
     dedup時（同一fingerprintのopen ask再post）は今回渡したkind/choicesを無視し、
     初回投入時の値を保持する。tagsはこのaskにまだ1件も紐付いていない場合のみ解決・付与される
-    （通常は初回投入時のみだが、タグ解決自体が失敗した場合は次回の同一問い再postで
+    （タグ解決自体が失敗した場合は次回の同一問い再postで
     再試行される）。
 
     レスポンスのsimilar_asks（裁定内容込み）を読み、同型の問いが繰り返され裁定が
@@ -2586,7 +2576,7 @@ def get_asks(
     offset: int = 0,
     include_stats: bool = False,
 ) -> dict:
-    """add_askで記録されたaskを一覧・集計する。
+    """add_askで記録されたaskを一覧・集計する（list/get asks）。
 
     Args:
         status: フィルタ対象のstatus（"open"|"answered"|"promoted"|"dismissed"|"withdrawn"）。
@@ -2638,7 +2628,7 @@ def get_asks(
 
 @mcp.tool()
 def answer_ask(ask_id: int, answer_body: str) -> dict:
-    """答え待ち（open）のaskに回答する。1問1答（answerは1回のみ）。
+    """答え待ち（open）のaskに回答する（answer an ask）。1問1答（answerは1回のみ）。
 
     open askを一覧して1件ずつ回答する定型作業は`ask-answer` skillを経由すること。
 
@@ -2673,7 +2663,7 @@ def triage_ask(
     topic_id: int | None = None,
     dismiss_reason: str | None = None,
 ) -> dict:
-    """answered状態のaskをpromote（decision化）またはdismissへ振り分ける。
+    """answered状態のaskをpromote（decision化）またはdismissへ振り分ける（triage an answered ask）。
 
     promoteはdecision/reason/title/tags/topic_idをそのままadd_decisionsに渡して
     decisionを生成し、promoted_decision_idとして紐付ける。dismissはdismiss_reasonを
@@ -2724,7 +2714,7 @@ def triage_ask(
 
 @mcp.tool()
 def withdraw_ask(ask_id: int, reason: str) -> dict:
-    """答え待ち（open）のaskを自発的に取り下げる。
+    """答え待ち（open）のaskを自発的に取り下げる（withdraw/cancel an ask）。
 
     誤って積んでしまった問いを、人間の回答を待たずに取り消す導線。取り下げ後は
     このaskが止めていたactivityのblockを解除する（ask_blocksを削除、
@@ -2752,7 +2742,7 @@ def withdraw_ask(ask_id: int, reason: str) -> dict:
 
 @mcp.tool()
 def unsubscribe_ask(ask_id: int) -> dict:
-    """このaskの通知希望（notify_wanted）を明示的に外す。
+    """このaskの通知希望（notify_wanted）を明示的に外す（unsubscribe from ask notifications）。
 
     以後answer_ask/triage_ask(dismiss)が実行されても、add_askが返した
     notify_pathへの書き込みが行われなくなる（Monitor監視やhookの自動通知が
@@ -2939,7 +2929,7 @@ async def http_answer_ask(request: Request) -> JSONResponse:
 
 @mcp.tool()
 def get_sessions() -> dict:
-    """Choose: ListAgents 等で見えた他セッションの自動生成名（例: workspace-a2）が、どのアクティビティを担当しているのか知りたいとき。
+    """Choose: ListAgents 等で見えた他セッションの自動生成名（例: workspace-a2）が、どのアクティビティを担当しているのか知りたいとき（get sessions, session name lookup）。
 
     稼働中の Claude Code セッションについて「CLI 表示名 → 人間可読な別名」の対応表を
     返す。別名は各セッションが check_in したアクティビティから自動生成され、
@@ -2981,7 +2971,7 @@ def get_sessions() -> dict:
 
 @mcp.tool()
 def set_session_alias(alias: str) -> dict:
-    """Choose: 自セッションの別名を明示的に付け替えたいとき（自動生成された別名が分かりにくい、他セッションと衝突して接尾辞が付いた、など）。
+    """Choose: 自セッションの別名を明示的に付け替えたいとき（set/rename session alias）。自動生成名が分かりにくい・他セッションと衝突して接尾辞が付いた場合など。
 
     別名は現在 check_in しているアクティビティに紐づく。別のアクティビティへ
     check_in し直すと、自動生成された別名に戻る。
@@ -3009,7 +2999,7 @@ def get_feedback_entries(
     query: str | None = None,
     include_deleted: bool = False,
 ) -> dict:
-    """Choose: 躓きを踏まえて自分に配達しているフィードバックエントリを読みたいとき。
+    """Choose: 躓きを踏まえて自分に配達しているフィードバックエントリを読みたいとき（get feedback entries）。
 
     write_feedback_entryでupdate/deleteする前には必ずこれを呼び、返ってきた
     read_markを渡すこと(印が古いと拒否される)。
@@ -3039,7 +3029,7 @@ def write_feedback_entry(
     condition: dict | str | None = None,
     read_mark: int | None = None,
 ) -> dict:
-    """Choose: フィードバックエントリを作る・直す・消すとき。
+    """Choose: フィードバックエントリを作る・直す・消すとき（write/create/update/delete a feedback entry）。
 
     create/updateはbody/strength/timing/conditionを全て渡す(部分更新ではなく
     全置き換え)。update・deleteと、削除済み名前へのcreate(復活)はread_mark
@@ -3077,7 +3067,7 @@ def write_feedback_entry(
 
 @mcp.tool()
 def add_feedback_note(name: str, kind: Literal["stumble", "note"], body: str) -> dict:
-    """Choose: フィードバックエントリに観測・経緯を書き足したいとき。
+    """Choose: フィードバックエントリに観測・経緯を書き足したいとき（add a note to a feedback entry）。
 
     read_mark不要でいつでも書ける。削除済みエントリにも足せる(観測記録は
     削除後も続けられる)。
