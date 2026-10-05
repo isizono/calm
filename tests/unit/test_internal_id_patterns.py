@@ -463,11 +463,10 @@ class TestRawCiteFullwordPatternCounter:
         "type_name,num,tail",
         [
             ("log", "3", "件"),
-            ("decision", "14", " 件"),
+            ("decision", "14", "件"),
             ("activity", "2", "個"),
             ("material", "5", "本"),
             ("topic", "1", "回"),
-            ("log", "3", "つ"),
             ("decision", "2-5", "件"),
         ],
     )
@@ -485,7 +484,9 @@ class TestRawCiteFullwordPatternCounter:
         text = "log" + sharp + "3"
         assert _fullword_matches(text + "件") == [text]
 
-    @pytest.mark.parametrize("tail", [" is", "です", "。"])
+    @pytest.mark.parametrize(
+        "tail", [" is", "です", "。", " 回避策", " 本文", " 個別", " 回答", "つまり", " 件"]
+    )
     def test_non_counter_suffix_still_matches(self, tail: str) -> None:
         text = "decision " + "14"
         assert _fullword_matches(text + tail) == [text]
