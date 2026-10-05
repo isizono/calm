@@ -15,7 +15,7 @@ checkin_tier_service側が埋め込む）。
 import json
 import os
 import sys
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 # プロジェクトルートをパスに追加（src.db等の参照用）
@@ -23,29 +23,28 @@ _project_root = Path(__file__).resolve().parents[1]
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
-from hooks.hook_state import HookState
-from hooks.readable_id_format import format_readable_id
-from hooks.signal_capture import try_capture_signal
 from src import config
 from src.db import get_connection, get_db_path
 from src.harness import select_harness
-from src.services import ask_service, habit_projection, session_registry_service
 from src.services.activity_service import (
-    get_active_activities_by_tag_with_conn,
     get_active_domains_with_conn,
+    get_active_activities_by_tag_with_conn,
     get_pinned_active_activities_with_conn,
 )
-from src.services.backup_service import (
-    health_check,
-    should_take_snapshot,
-    take_snapshot,
-)
+from hooks.hook_state import HookState
+from hooks.readable_id_format import format_readable_id
+from src.services import ask_service
 from src.services.habit_service import (
     get_active_habit_contents_with_conn,
     list_intelligently_habit_manifest_with_conn,
 )
+from src.services import habit_projection
+from src.services.backup_service import health_check, should_take_snapshot, take_snapshot
 from src.services.injection_compositor import Section, compose
 from src.services.search_health_service import check_search_health
+from src.services import session_registry_service
+from src.infra.plugin_install import resolve_installed_plugin_root
+from hooks.signal_capture import try_capture_signal
 
 _RECENT_CREATED_HOURS = 24
 _PIN_MARK = "\U0001f4cc"
@@ -63,8 +62,8 @@ _LEGEND_LINE = (
 def _calc_elapsed_days(updated_at_str: str) -> int:
     """updated_atからの経過日数を計算する。"""
     try:
-        updated = datetime.fromisoformat(updated_at_str).replace(tzinfo=UTC)
-        now = datetime.now(UTC)
+        updated = datetime.fromisoformat(updated_at_str).replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
         return (now - updated).days
     except (ValueError, TypeError):
         return 0
@@ -115,8 +114,8 @@ def _get_created_ats(conn, activity_ids: list[int]) -> dict[int, str]:
 def _is_recent_created(created_at_str: str, hours: int = _RECENT_CREATED_HOURS) -> bool:
     """created_atが指定時間以内かを判定する。"""
     try:
-        created = datetime.fromisoformat(created_at_str).replace(tzinfo=UTC)
-        now = datetime.now(UTC)
+        created = datetime.fromisoformat(created_at_str).replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
         return (now - created).total_seconds() < hours * 3600
     except (ValueError, TypeError):
         return False
@@ -899,7 +898,7 @@ def _render_open_asks_section(open_result: dict, pending_result: dict, budget_ch
     # 非メタ行・残り件数行（調整可能要素）を、残り予算(available)の範囲内で
     # バケット順に1行ずつ追加する。
     optional_by_bucket: list[list[str]] = []
-    for (_label, bucket), reserved in zip(buckets, reserved_by_bucket, strict=False):
+    for (label, bucket), reserved in zip(buckets, reserved_by_bucket):
         bucket_optional: list[str] = []
         non_meta = bucket["non_meta"]
         total_count = bucket["non_meta_total_count"]
@@ -926,7 +925,7 @@ def _render_open_asks_section(open_result: dict, pending_result: dict, budget_ch
         optional_by_bucket.append(bucket_optional)
 
     lines: list[str] = []
-    for bucket_required, bucket_optional in zip(required_by_bucket, optional_by_bucket, strict=False):
+    for bucket_required, bucket_optional in zip(required_by_bucket, optional_by_bucket):
         lines.extend(bucket_required)
         lines.extend(bucket_optional)
     lines.append(_OPEN_ASKS_GLOBAL_CTA)
@@ -1088,11 +1087,53 @@ def _build_search_health_section(conn, session_id: str | None = None, source: st
     return line + "\n"
 
 
+_VERSION_CHECK_TIMEOUT_SEC = 1.0
+
+
+def _fetch_running_server_version(timeout_sec: float = _VERSION_CHECK_TIMEOUT_SEC) -> str | None:
+    """稼働中サーバーの `/health` から版識別子（`version`キー）を取得する。
+
+    接続不可・タイムアウト・応答不正・フィールド欠落（versionを返さない旧版
+    サーバー等）はすべてNoneとする（判定不能として呼び出し側が黙って
+    スキップするための戻り値で、例外は外に伝播させない）。
+    """
+    from src.http_config import HTTP_HOST, HTTP_PORT
+    from src.infra.loopback_http import NO_PROXY_OPENER
+
+    try:
+        with NO_PROXY_OPENER.open(
+            f"http://{HTTP_HOST}:{HTTP_PORT}/health", timeout=timeout_sec
+        ) as resp:
+            body = json.loads(resp.read())
+    except Exception:
+        return None
+    version = body.get("version")
+    return version if isinstance(version, str) else None
+
+
+def _build_version_check_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # conn, session_id, source, **_kwargs: 全セクション共通シグネチャ
+    """稼働中のCALMサーバーが現在のインストール版と異なる場合に1行の注意を出す。
+
+    インストール版が解決できない（gitチェックアウトからの直接実行等）、または
+    稼働中サーバーの `/health` から版識別子が取得できない（未応答・旧版で
+    `version`キー自体が無い等）場合は判定不能として何も出さない。自動では
+    再起動しない（過去に自動再起動でセッションの接続が切れた実績がある）。
+    """
+    installed_root = resolve_installed_plugin_root(_project_root)
+    if installed_root is None:
+        return ""
+    running_version = _fetch_running_server_version()
+    if running_version is None or running_version == installed_root.name:
+        return ""
+    return "⚠ CALMサーバーが古い版で動いている。/restart で最新版に切り替えられる\n"
+
+
 # セクション登録レジストリ。priorityは既存builders順（出力順）をそのまま踏襲する。
 # budget_charsは各セクションの宣言予算（文字数）で、実出力がこれを超えた場合
 # compose()側でハード切り詰めされる（詳細はinjection_compositor.pyのdocstring参照）。
 _SECTIONS: list[Section] = [
     Section("snapshot", _build_snapshot_section, config.INJECTION_BUDGET_SNAPSHOT_CHARS, priority=0),
+    Section("version_check", _build_version_check_section, config.INJECTION_BUDGET_VERSION_CHECK_CHARS, priority=5),
     Section("search_health", _build_search_health_section, config.INJECTION_BUDGET_SEARCH_HEALTH_CHARS, priority=5),
     Section("activities", _build_activities_section, config.INJECTION_BUDGET_ACTIVITIES_CHARS, priority=10),
     Section("habits", _build_habits_section, config.INJECTION_BUDGET_HABITS_CHARS, priority=20),

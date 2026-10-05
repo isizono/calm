@@ -53,7 +53,7 @@ def _read_grace_period_sec() -> int:
     return value
 
 
-def _read_liveness_timeout_sec() -> float:
+def read_liveness_timeout_sec() -> float:
     """env `CALM_SESSION_LIVENESS_TIMEOUT_SEC` から liveness TTL を読む。
 
     未設定・無効値の場合は既定値にフォールバックする。0 を指定すると
@@ -113,7 +113,7 @@ class SessionManager:
         )
         self._liveness_timeout = (
             liveness_timeout_sec if liveness_timeout_sec is not None
-            else _read_liveness_timeout_sec()
+            else read_liveness_timeout_sec()
         )
         self._on_session_removed = on_session_removed
         self._shutdown_callback: Callable[[], None] | None = None
