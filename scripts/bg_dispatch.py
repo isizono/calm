@@ -40,6 +40,14 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
+from pathlib import Path
+
+_project_root = Path(__file__).resolve().parents[1]
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
+
+from hooks.delegate_marker import write_delegate_marker  # noqa: E402
 
 _TEMPLATE = """あなたはCALMのアクティビティ「{activity_title}」の実装担当のbgセッションです。
 指示を出したのはこのアクティビティを束ねるorchです。報告は常にそのorchアクティビティへadd_logsで書いてください(具体的な宛先は下のステップ3・4で確認します)。
@@ -69,7 +77,7 @@ _TEMPLATE = """あなたはCALMのアクティビティ「{activity_title}」の
 
 ## 記録
 - 経緯はadd_logsで記録する。完了の合図(update_goalのsatisfiedかSendMessage)があるのに
-  check_in以降にadd_logsが無いと、Stop hookが1回blockする
+  check_in以降にadd_logsが無いと、Stop hookが1回blockする(この依頼文で立てた委譲先だけが対象)
 - CALMに書き込めない内容は{pending_line}
 - 最後の報告の前に `{sync_memory_scope}` でsync-memoryを実行する
 
@@ -182,6 +190,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
+    # 依頼文を出す宛先activityを委譲先として記録する(Stop hookの記録義務block用)。
+    # 依頼文の生成そのものはbuild_requestに閉じ、ファイルを書くのはCLI実行時だけ。
+    write_delegate_marker(args.activity_id)
     print(build_request(
         activity_id=args.activity_id,
         activity_title=args.activity_title,

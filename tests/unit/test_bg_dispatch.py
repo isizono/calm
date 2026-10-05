@@ -151,3 +151,18 @@ class TestMainCli:
         assert exc_info.value.code == 2
         err = capsys.readouterr().err
         assert "--parent-condition-id" in err
+
+
+def test_main_marks_activity_as_delegate(tmp_path, monkeypatch, capsys):
+    from hooks.delegate_marker import is_delegate_activity
+    from hooks.hook_state import HookState
+
+    monkeypatch.setattr(HookState, "BASE_DIR", tmp_path)
+    assert not is_delegate_activity(99)
+    main([
+        "--activity-id", "99", "--activity-title", "t", "--worktree", "/w",
+        "--parent-goal-handle", "g", "--parent-condition-id", "1",
+    ])
+    assert is_delegate_activity(99)
+    assert not is_delegate_activity(98)
+    assert not is_delegate_activity(None)

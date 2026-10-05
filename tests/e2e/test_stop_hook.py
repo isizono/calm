@@ -448,12 +448,20 @@ class TestCheckedInAt:
         assert state_file.read_text().strip() == saved
 
 
+def _mark_delegate(env_setup, activity_id: int = 42) -> None:
+    """bg_dispatch.pyが立てる委譲先の目印を置く。"""
+    d = Path(env_setup["state_dir"]) / "delegate"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / str(activity_id)).write_text("1")
+
+
 class TestRecordingObligationBlock:
     """完了の合図(update_goalのsatisfiedかSendMessage)があるのに、check_in以降に
     add_logsが無いとき、1セッション1回だけblockする(記録義務block)。
     """
 
     def test_send_message_without_logs_since_checkin_blocks(self, env_setup):
+        _mark_delegate(env_setup)
         transcript = env_setup["tmp_path"] / "transcript.jsonl"
         _write_transcript(
             [
@@ -476,6 +484,7 @@ class TestRecordingObligationBlock:
         assert "add_logs" in result["reason"]
 
     def test_update_goal_satisfied_without_logs_since_checkin_blocks(self, env_setup):
+        _mark_delegate(env_setup)
         transcript = env_setup["tmp_path"] / "transcript.jsonl"
         _write_transcript(
             [
@@ -495,6 +504,48 @@ class TestRecordingObligationBlock:
 
         result = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
         assert result["decision"] == "block"
+
+    def test_non_delegate_session_gets_notice_not_block(self, env_setup):
+        """目印の無い窓口セッションは、同じ条件でもblockせず次のプロンプトで
+        注意表示(nudgeイベント)が出る"""
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("hi"),
+                _make_assistant_entry(
+                    tool_calls=["mcp__plugin_calm_calm__check_in"],
+                    tool_inputs=[{"activity_id": 42}],
+                ),
+                _make_user_entry("done"),
+                _make_assistant_entry(tool_calls=["SendMessage"], tool_inputs=[{"to": "main", "message": "完了"}]),
+            ],
+            transcript,
+        )
+
+        result = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+        assert result == {}
+        events = (Path(env_setup["state_dir"]) / "events_test-session.jsonl").read_text()
+        assert "record_before_finish" in events
+
+    def test_marker_for_other_activity_does_not_block(self, env_setup):
+        """目印は別activityのものなら、check-in中のactivityには効かない"""
+        _mark_delegate(env_setup, activity_id=7)
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(
+            [
+                _make_user_entry("hi"),
+                _make_assistant_entry(
+                    tool_calls=["mcp__plugin_calm_calm__check_in"],
+                    tool_inputs=[{"activity_id": 42}],
+                ),
+                _make_user_entry("done"),
+                _make_assistant_entry(tool_calls=["SendMessage"], tool_inputs=[{"to": "main", "message": "完了"}]),
+            ],
+            transcript,
+        )
+
+        result = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
+        assert result == {}
 
     def test_completion_signal_with_logs_since_checkin_approves(self, env_setup):
         transcript = env_setup["tmp_path"] / "transcript.jsonl"
@@ -537,6 +588,7 @@ class TestRecordingObligationBlock:
         assert result == {}
 
     def test_block_is_one_shot_per_session(self, env_setup):
+        _mark_delegate(env_setup)
         """記録義務blockは1セッションにつき1回だけ。block_count(2回連続block
         しないための短期カウンタ)がリセットされた後の次のターンでも、既に
         発火済みなら再度blockしない(専用の永続フラグで担保している)。"""
