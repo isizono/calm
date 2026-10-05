@@ -2,14 +2,15 @@ name: Claude Code Review
 
 on:
   pull_request:
-    types: [opened]
+    types: [opened, ready_for_review]
   workflow_dispatch:
 
 jobs:
   claude-review:
     # fork PRではsecretsが配布されずOIDCも無効化されるため認証手段がなく必ず失敗する。
     # fork PRをレビューしたい場合はworkflow_dispatchから手動起動する。詳細: #645
-    if: '! github.event.pull_request.head.repo.fork'
+    # draft PRは除外する。workflow_dispatchにはpull_requestコンテキストが無いため別扱いにする。
+    if: github.event_name == 'workflow_dispatch' || (!github.event.pull_request.head.repo.fork && !github.event.pull_request.draft)
 
     # Optional: Filter by PR author
     # if: |
