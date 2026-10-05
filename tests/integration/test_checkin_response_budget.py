@@ -182,6 +182,34 @@ class TestBudgetAppliedToRealCheckIn:
         assert len(item["content"]) < len(big_content)
 
 
+class TestFlavorAppliedBeforeBudget:
+    def test_budget_is_measured_on_flavor_expanded_size(self, temp_db, activity_id):
+        """生のままなら予算内だが、citation展開後は予算を超えるpinを作る。
+        flavorを先に当ててから予算を測る順序なら、internalではtruncatedが付き
+        before/afterも展開後の字数で数えられる。rawでは付かない。
+        """
+        target = add_material(
+            title="long-target-title-for-expansion-xxxxxx", content="body",
+            tags=DEFAULT_TAGS, source="t",
+            related=[{"type": "activity", "ids": [activity_id]}],
+        )["material_id"]
+        owner = add_material(
+            title="owner", content=f"{{{{cite:M#{target}}}}}" * 300,  # 生で約3,600字
+            tags=DEFAULT_TAGS, source="t",
+            related=[{"type": "activity", "ids": [activity_id]}],
+        )["material_id"]
+        add_pin("activity", activity_id, "material", owner)
+
+        raw = tool_check_in(activity_id, flavor="raw")
+        assert "truncated" not in raw  # 前提: 展開前は予算内
+
+        result = tool_check_in(activity_id)  # flavor既定=internal
+        assert "truncated" in result
+        t = result["truncated"]
+        assert t["before"] > t["budget"]
+        assert t["after"] <= t["before"]
+
+
 class TestAddActivityFinalization:
     def test_check_in_result_gets_flavor_and_budget_applied(self, temp_db):
         target = add_material(

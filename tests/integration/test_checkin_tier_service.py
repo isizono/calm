@@ -34,6 +34,7 @@ from src.services.hint_service import (
 from src.services.material_service import add_material
 from src.services.pin_service import add_pin
 from src.services.relation_service import add_relation
+from src.services.retract_service import retract
 from src.services.topic_service import add_topic
 from tests.helpers import add_decision, add_log, retract_decision
 
@@ -939,6 +940,30 @@ class TestCheckInPinned:
         # retractされているためpinned.decisionsキー自体が省略される
         pinned = result["anchor"].get("pinned", {})
         assert "decisions" not in pinned
+
+    def test_retracted_log_and_material_excluded_from_pinned(self, temp_db):
+        """retractされたlog/materialはpinnedに注入されず、生きている同種のpinだけが残る"""
+        topic = add_topic(title="トピック", description="Desc", tags=DEFAULT_TAGS)
+        tid = topic["topic_id"]
+        dead_log = add_log(tid, title="取り消し済みログ", content="dead log")
+        live_log = add_log(tid, title="生きているログ", content="live log")
+        dead_mat = add_material(title="取り消し済み資材", content="dead mat", tags=DEFAULT_TAGS, source="t")
+        live_mat = add_material(title="生きている資材", content="live mat", tags=DEFAULT_TAGS, source="t")
+        a = add_activity(title="タスク", description="Desc", tags=DEFAULT_TAGS, check_in=False)
+        aid = a["activity_id"]
+        add_pin("activity", aid, "log", dead_log["log_id"])
+        add_pin("activity", aid, "log", live_log["log_id"])
+        add_pin("activity", aid, "material", dead_mat["material_id"])
+        add_pin("activity", aid, "material", live_mat["material_id"])
+        retract("log", [dead_log["log_id"]])
+        retract("material", [dead_mat["material_id"]])
+
+        result = collect_and_assemble(aid)
+
+        assert "error" not in result
+        pinned = result["anchor"]["pinned"]
+        assert [x["title"] for x in pinned["logs"]] == ["生きているログ"]
+        assert [x["title"] for x in pinned["materials"]] == ["生きている資材"]
 
     def test_tag_source_only_uses_activity_own_tags(self, temp_db):
         """tagソースのpinは、check-in対象activityが持つtagのみが使用される（他activityのtagは無視される）"""
