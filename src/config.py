@@ -25,6 +25,8 @@ IN_PROGRESS_LIMIT: int = int(env_get("CALM_IN_PROGRESS_LIMIT", "3"))
 PENDING_LIMIT: int = int(env_get("CALM_PENDING_LIMIT", "2"))
 # SessionStart一覧の階層2（優先）に in_progress アクティビティを載せる updated_at 上限（日）
 TIER2_MAX_AGE_DAYS: int = int(env_get("CALM_TIER2_MAX_AGE_DAYS", "7"))
+# SessionStart一覧の階層2（優先）に出すアクティビティ件数の上限。負値は末尾スライスになり意図と逆になるため0に丸める
+TIER2_MAX_ITEMS: int = max(0, int(env_get("CALM_TIER2_MAX_ITEMS", "5")))
 # pinned アクティビティが階層2表示を維持できる updated_at 上限（日）。
 # 超過すると階層2から外れ固定ナビの未表示件数句に計上される（pin自体は残る）
 PIN_SURFACE_DECAY_DAYS: int = int(env_get("CALM_PIN_SURFACE_DECAY_DAYS", "60"))
@@ -162,6 +164,12 @@ CHECKIN_CONTROL_CAP_CHARS: int = int(env_get("CALM_CHECKIN_CONTROL_CAP_CHARS", "
 CHECKIN_TAG_NOTES_CAP_CHARS: int = int(env_get("CALM_CHECKIN_TAG_NOTES_CAP_CHARS", "6000"))
 # 応答全体の実用上限（超過時のみactivity.descriptionを切る最後の手段）。
 CHECKIN_HARD_MAX_CHARS: int = int(env_get("CALM_CHECKIN_HARD_MAX_CHARS", "32000"))
+
+# --- get_activities 応答の全体予算 ---
+# 応答全体（JSON文字列化後）の予算。check_inと同じ考え方（超過時は後方を切り、
+# truncatedで示す）だが、limitとは独立の別枠として働く（limit件数内でも文字数が
+# 超過すれば切る）。check_inとは別ツールのため専用の環境変数で独立にチューニングできる。
+ACTIVITIES_BUDGET_CHARS: int = int(env_get("CALM_ACTIVITIES_BUDGET_CHARS", "10000"))
 
 # --- Decay predicates（レンダー時評価。バッチ/cronではない） ---
 # intelligently層habitのマニフェスト表示から、作成後この日数を超え、かつ

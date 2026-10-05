@@ -609,7 +609,7 @@ def _check_duplicates_with_conn(
     """新規importエンティティ(status="new")について類似ローカルエンティティを検索する。
 
     embeddingサーバー未起動時は各候補でNoneが返り続けるためdegraded=Trueになるが、
-    クラッシュはしない(fable原案5.2節のdegraded表示方針と同じ)。
+    クラッシュはしない。
     """
     from src.services import embedding_service
 
