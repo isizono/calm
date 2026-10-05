@@ -321,18 +321,18 @@ class TestMaintenanceHint:
         assert maintenance_hint(0, 0) == ""
 
     def test_pending_stumbles_at_promote_threshold_returns_promote_line(self):
-        result = maintenance_hint(1, 3)
-        assert "未処理の躓き3件" in result
+        result = maintenance_hint(1, 1)
+        assert "未処理の躓き1件" in result
         assert "見直し時期" not in result
 
-    def test_pending_stumbles_below_threshold_returns_empty(self):
-        assert maintenance_hint(1, 2) == ""
+    def test_no_pending_stumbles_returns_empty(self):
+        assert maintenance_hint(1, 0) == ""
 
     def test_both_conditions_join_review_then_promote_no_edge_newlines(self):
-        result = maintenance_hint(10, 3)
+        result = maintenance_hint(10, 1)
         lines = result.split("\n")
         assert len(lines) == 2
         assert "見直し時期" in lines[0]
-        assert "未処理の躓き3件" in lines[1]
+        assert "未処理の躓き1件" in lines[1]
         assert not result.startswith("\n")
         assert not result.endswith("\n")

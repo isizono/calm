@@ -30,7 +30,7 @@ def _seed_activity(conn, title: str, status: str = "pending") -> int:
 
 def _seed_ask(conn, question: str, *, kind: str = "ask") -> int:
     """askを1件作成しopen状態のまま返す。専用のpending activityを1件作って
-    blocks先として紐付ける（add_ask_with_connはblocksが空だとエラーになる）。
+    blocks先として紐付ける（add_ask_with_connはblocksが空だと通常askはエラーになる）。
 
     add_ask（embedding生成・近傍検索を伴うMCPツール本体）ではなく
     add_ask_with_connを直接呼ぶことで、embeddingサーバー起動を伴わずに
@@ -49,6 +49,21 @@ def _answer_ask(conn, ask_id: int, answer_body: str = "回答済み") -> None:
     result = ask_service.answer_ask_with_conn(conn, ask_id, answer_body)
     assert "error" not in result, result
     conn.commit()
+
+
+class TestBlocklessMeta:
+    def test_meta_ask_without_blocks_is_listed(self, temp_db):
+        """blocksを持たないメタaskもopen一覧に出る（blocks先に依存しない）"""
+        conn = get_connection()
+        try:
+            result = ask_service.add_ask_with_conn(
+                conn, "格上げしてよいか", None, ["domain:open-asks-test"], kind="meta"
+            )
+            assert "error" not in result, result
+            conn.commit()
+            assert "格上げしてよいか" in _build_open_asks_section(conn)
+        finally:
+            conn.close()
 
 
 class TestEmptyState:
