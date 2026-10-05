@@ -453,6 +453,44 @@ class TestRawCiteFullwordPatternHashOptional:
         assert m_hash.group(2) == "14"
 
 
+class TestRawCiteFullwordPatternCounter:
+    """`#` 省略形の直後に助数詞が続く件数表現は検出しない。
+
+    リテラル組み立ては preblock hook 回避のため動的に行う。
+    """
+
+    @pytest.mark.parametrize(
+        "type_name,num,tail",
+        [
+            ("log", "3", "件"),
+            ("decision", "14", " 件"),
+            ("activity", "2", "個"),
+            ("material", "5", "本"),
+            ("topic", "1", "回"),
+            ("log", "3", "つ"),
+            ("decision", "2-5", "件"),
+        ],
+    )
+    def test_counter_expression_does_not_match(
+        self, type_name: str, num: str, tail: str
+    ) -> None:
+        assert _fullword_matches(f"{type_name} {num}{tail}") == []
+
+    def test_counter_exclusion_does_not_hide_real_reference_nearby(self) -> None:
+        real = "decision " + "14"
+        assert _fullword_matches("log " + "3件 and " + real) == [real]
+
+    def test_hash_form_with_counter_char_still_matches(self) -> None:
+        sharp = chr(35)
+        text = "log" + sharp + "3"
+        assert _fullword_matches(text + "件") == [text]
+
+    @pytest.mark.parametrize("tail", [" is", "です", "。"])
+    def test_non_counter_suffix_still_matches(self, tail: str) -> None:
+        text = "decision " + "14"
+        assert _fullword_matches(text + tail) == [text]
+
+
 class TestFullwordToCode:
     def test_mapping_covers_all_five_types(self) -> None:
         assert set(FULLWORD_TO_CODE.keys()) == {
