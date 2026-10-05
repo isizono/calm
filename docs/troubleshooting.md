@@ -49,3 +49,5 @@ CALMのhookはfail-open設計であり、1つのhookが例外を投げてもClau
 - PreToolUseのbg起動拒否hookが失敗した場合（`hook:deny_nested_bg`）
 
 venvの破損や依存パッケージの欠落でhookがimport時点で落ちた場合は、この記録自体が動かず標準エラー出力のみに残る（記録機構自体がDB層のimportに依存するため）。表示専用hook・transcript sanitize系hookも現状この記録の対象外。頻発する場合は`get_signals`で`source`（`hook:section:<セクション名>`等）を確認し、原因を調査する。
+
+上記はhook自身が壊れた場合の記録。これとは別に、PreToolUseの内部IDリークブロックhookとbg入れ子起動ブロックhookは、正常に動作して呼び出しをdeny（拒否）したときに`kind: guard_block`として記録する。同じhook・同じ規則の拒否は1行に畳まれるため、`get_signals(kind="guard_block")`で誤検知・検知漏れの傾向を件数で確認できる。
