@@ -2777,11 +2777,14 @@ class TestParentWatch:
         import psutil
 
         proc = psutil.Process(os.getpid())
+        # パッチ前に一度判定してcreate_timeをキャッシュさせる(補正後の値と比べさせるため)
+        assert launcher._is_target_alive(proc)
         # psutilの時計補正の内部実装に依存するため、触れない環境ではskipする
         if sys.platform == "darwin" and hasattr(psutil._psosx, "INIT_BOOT_TIME"):
             monkeypatch.setattr(psutil._psosx, "INIT_BOOT_TIME", psutil._psosx.INIT_BOOT_TIME + 2)
         elif sys.platform.startswith("linux") and hasattr(psutil._pslinux, "boot_time"):
-            monkeypatch.setattr(psutil._pslinux, "boot_time", lambda: psutil.boot_time() + 2)
+            orig = psutil._pslinux.boot_time
+            monkeypatch.setattr(psutil._pslinux, "boot_time", lambda: orig() + 2)
         else:
             pytest.skip("時計補正を再現できないプラットフォーム")
         assert launcher._is_target_alive(proc)
