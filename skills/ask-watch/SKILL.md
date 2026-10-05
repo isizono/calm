@@ -1,6 +1,6 @@
 ---
 name: ask-watch
-description: calmのask store（人間の判断待ちaskのインボックス）をMonitorツールでイベント駆動監視する。asksテーブルのstatus='open'件数・last_seen_at・id集合を10秒間隔でポーリングし、前回値から変化を検知したときだけ全open askを読み直し、「主題は違うが判断構造が同一」の同型群をLLM自身が判定してメタask（kind="meta"）を起票する。「ask storeを監視して」「ask-watch」「asksを見張って」「open askの滞留をチェックして」「`/ask-watch`」などで発動。1回限りのask確認（get_asksを直接呼ぶだけ）やcalm自体の使い方説明には発動しない。
+description: 人間の判断待ちaskの受け箱をMonitorで監視し、判断構造が同じopen askが溜まっていればメタaskを起票する。「ask storeを監視して」「asksを見張って」「open askの滞留をチェックして」などで発動。
 ---
 
 # ask-watch
@@ -69,7 +69,7 @@ Monitorの通知には2種類ある。`ask store changed: ...`という1行を�
 
 1. **state file読み込み**: 無ければStep 1へ戻る
 2. **全open ask取得**: `get_asks(status="open", include_stats=true, limit=100)`。`total_count`が`limit`を超える場合は`offset`を進めて全件回収する
-3. **同型群の判定**: 取得した全askの`question`・`context`・`tags`を読み、「主題は違うが判断構造（問いの型）が同一」の集まりがないかLLM自身が判断する（機械的閾値なし）
+3. **同型群の判定**: 取得した全askの`question`・`context`・`tags`を読み、「主題は違うが判断構造（問いの型）が同一」の集まりがないかLLM自身が判断する。目安として同型2件以上が集まっている状態を対象にするが、これは判断のガイドラインであり、機構が自動的に判定する固定閾値ではない。対象はopen ask同士の同型なので、裁定が既に一貫しているかどうかは問わない（まだ誰も回答していないケースが主）
 4. **重複起票防止の確認**: 同型群を見つけたら`get_asks(kind="meta", status=None, limit=100)`で既存の全メタask（open/answered/promoted/dismissed問わず）を確認する
    - 既にopenなメタaskがあれば起票しない。短報に「既知の型、裁定待ち」として記載
    - 既にpromoted済み（発効済み＝自己裁定してよいと人間が既に判断した型）であれば起票しない。ただし該当の同型askがまだopenで残っていること自体は「本来もう自己裁定できたはずの型が取りこぼされている」観察なので短報に記載する（ask-watch自身がwithdrawや自己裁定を代行することはしない、スコープ外）
@@ -105,6 +105,7 @@ Monitorの通知には2種類ある。`ask store changed: ...`という1行を�
 
 ## 注意事項
 
+- **Step 4のメタask起票は`ask-compose` skillを経由しない**: 本スキル自身がメタask専用の組み立て方（Step 4参照）を持つため
 - **Monitorでイベント駆動監視する**: 固定間隔で毎回ターンが起動するcron方式ではなく、Monitorツールでバックグラウンドのシェルスクリプトを走らせ、asksテーブルに変化があったときだけ通知として受け取る。変化がなければターンは発生しない
 - **全件精読の理由**: 差分検知（新規askのみ確認）では今回の実害（新規に増えない古い滞留の見逃し）を再発させる。そのためStep 3では既読管理を持たず、毎回`status="open"`の全件を読み直す設計にしている
 - **同型判定に閾値を埋め込まない**: 「同型何件で起票するか」を機構側の固定ロジックにはしない。判断は都度LLM自身が行う

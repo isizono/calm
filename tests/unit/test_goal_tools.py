@@ -1,7 +1,7 @@
 """set_goal・update_goal・judge_goal・get_goal MCPツールのユニットテスト。
 
 src.main 経由の薄い配線（goal_service への委譲、update_goal での
-_current_session_id() の注入）だけを検証する。分岐の詳細は
+get_caller_session_id() の注入）だけを検証する。分岐の詳細は
 tests/unit/test_goal_service.py・test_goal_service_derive.py が担う。
 
 update_activity・check_in が goal 機構と接続する main.py 側の薄い配線
@@ -69,7 +69,7 @@ def test_judge_goal_closes_and_reports_activities(temp_db):
 def test_update_goal_reopen_records_signal_without_exposing_session_id_arg(temp_db):
     """update_goal は session_id を引数に取らず、main.py が自動で注入する。
 
-    MCP実行コンテキスト外（このテスト）では _current_session_id() は None を
+    MCP実行コンテキスト外（このテスト）では get_caller_session_id() は None を
     返すため、session_id 無しの差し戻しでも signal_events への記録自体は
     成功することを確かめる（main.py側の配線がこの経路を壊していないこと）。
     """

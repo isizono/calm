@@ -481,7 +481,7 @@ def get_decisions(
         決定事項一覧（各decisionにtags付き）
         entity_type == "topic": topic_id で直接取得
         entity_type == "activity": related topics（上限10件）経由でdecisions集約。
-            related topics が10件を超える場合、11件目以降の topic に属する decision は
+            related topics が10件を超える場合、古い側の topic に属する decision は
             total_count / truncated の対象外（この上限による切り捨ては可視化されない）
         total_count: 対象 topic 全体の decision 総件数（retractフィルタ適用後、limit/start_idの影響を受けない）
         truncated: この応答が limit/start_id により後続の decision を打ち切ったとき true
@@ -572,12 +572,14 @@ def get_decisions(
             }
 
         elif entity_type == "activity":
-            # activity → related topics（上限10件）→ decisions集約
+            # activity → related topics（新しい順に上限10件）→ decisions集約
             relation_rows = conn.execute(
-                "SELECT target_type, target_id FROM relations_view WHERE source_type = ? AND source_id = ?",
+                "SELECT target_id FROM relations_view"
+                " WHERE source_type = ? AND source_id = ? AND target_type = 'topic'"
+                " ORDER BY target_id DESC LIMIT 10",
                 ("activity", entity_id),
             ).fetchall()
-            topic_ids = [r["target_id"] for r in relation_rows if r["target_type"] == "topic"][:10]
+            topic_ids = [r["target_id"] for r in relation_rows]
 
             if not topic_ids:
                 return {"decisions": [], "total_count": 0, "truncated": False}

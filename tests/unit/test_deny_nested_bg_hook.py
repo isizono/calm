@@ -25,6 +25,14 @@ if str(_HOOKS_DIR) not in sys.path:
 
 import deny_nested_bg_hook  # type: ignore  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def _isolate_signal_db(temp_db):
+    """deny経路がguard_block signalをDBへ書くため、ファイル内の全テストで
+    DISCUSSION_DB_PATHを一時DBへ固定する（本番DBへの書き込み事故を防ぐ）。"""
+    return temp_db
+
+
 # ---------------------------------------------------------------------------
 # _command_spawns_bg
 # ---------------------------------------------------------------------------
@@ -254,6 +262,79 @@ class TestMainFlow:
         assert "claude --bg" in spec["permissionDecisionReason"]
         assert "Agent" in spec["permissionDecisionReason"]
         assert len(agents_spy) == 1
+
+    def test_deny_records_guard_block_signal(self, capsys, agents_spy, temp_db):
+        from src.db import get_connection
+
+        _run_main_with_event(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": 'claude --bg "task"'},
+                "session_id": "bg-session-1",
+            },
+            capsys,
+        )
+
+        conn = get_connection()
+        try:
+            row = conn.execute("SELECT * FROM signal_events WHERE kind = 'guard_block'").fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert row["source"] == "hook:deny_nested_bg"
+        assert row["status"] == "new"
+
+    def test_deny_dedupes_across_sessions(self, capsys, agents_spy, temp_db):
+        """異なるコマンド文字列でも、同じ規則(nested bg spawn)なら1行に畳む。"""
+        from src.db import get_connection
+
+        _run_main_with_event(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": 'claude --bg "task-a"'},
+                "session_id": "bg-session-1",
+            },
+            capsys,
+        )
+        _run_main_with_event(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": 'claude --bg "task-b"'},
+                "session_id": "bg-session-1",
+            },
+            capsys,
+        )
+
+        conn = get_connection()
+        try:
+            rows = conn.execute("SELECT * FROM signal_events WHERE kind = 'guard_block'").fetchall()
+        finally:
+            conn.close()
+        assert len(rows) == 1
+        assert rows[0]["occurrence_count"] == 2
+
+    def test_deny_signal_failure_does_not_change_decision(
+        self, capsys, agents_spy, monkeypatch, tmp_path
+    ):
+        """guard_block記録が失敗しても、deny判定・速度には影響しない(fail-open)。
+
+        try_capture_guard_block は get_connection() を経由せず独自に接続するため、
+        DBを開けない状況を src.db.get_db_path の差し替えで再現する。
+        """
+        import src.db as db
+
+        unreachable = tmp_path / "nonexistent_dir" / "db.sqlite"
+        monkeypatch.setattr(db, "get_db_path", lambda: str(unreachable))
+
+        out = _run_main_with_event(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": 'claude --bg "task"'},
+                "session_id": "bg-session-1",
+            },
+            capsys,
+        )
+        assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
     def test_powershell_bg_spawn_from_background_session_denies(self, capsys, agents_spy):
         out = _run_main_with_event(

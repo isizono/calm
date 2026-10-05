@@ -1,11 +1,14 @@
 ---
 name: restart
-description: 【必須】CALMのローカルMCPサーバーを強制再起動する（embeddingサーバーは既定では対象外、`--restart-embedding`で明示指定した場合のみ）。プラグインアップデート後にコード変更を反映させたいときに使う。「/restart」「MCPサーバー再起動して」「CALMのサーバー再起動」「サーバー再起動して」などで発動。このスキルを経由せずに再起動用のkill/起動コマンドを直接組み立てて実行してはいけない。DO NOT TRIGGER: 再起動について相談・検討しているだけで実行をまだ求めていない場合、worktree削除やgit pull等PRマージ後の後片付け全体を求められた場合（それはリポジトリのCLAUDE.mdの手順に従う）。
+description: CALMのローカルMCPサーバーを強制再起動する。プラグイン更新後にコード変更を反映したいときに使う。`--restart-embedding`を付けるとembeddingサーバーも再起動する。
+disable-model-invocation: true
 ---
 
 # restart
 
 CALMのローカルMCPサーバー(52837)を強制的に再起動する。
+
+PRマージ後の後片付け全体（worktree削除やgit pull等）はリポジトリのCLAUDE.mdの手順に従う。本スキルはサーバーの再起動だけを行う。
 
 launcherの通常起動は「生きていれば何もしない」ensure動作のため、プラグインをアップデートした後もコード変更が反映されないことがある。このスキルは既存プロセスを明示的に終了させてから新規プロセスを起動する。
 

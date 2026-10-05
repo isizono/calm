@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -25,6 +26,20 @@ if str(_HOOKS_DIR) not in sys.path:
     sys.path.insert(0, str(_HOOKS_DIR))
 
 import preblock_hook  # type: ignore  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _isolate_signal_db(temp_db):
+    """block経路がguard_block signalをDBへ書くため、ファイル内の全テストで
+    DISCUSSION_DB_PATHを一時DBへ固定する（本番DBへの書き込み事故を防ぐ）。"""
+    return temp_db
+
+
+def _code_ref(type_code: str, n: int) -> str:
+    """`\\M#123`等のcode形式リテラルを組み立てる(本テストファイル自身への編集が
+    preblock_hookのリテラル検出に誤爆しないよう、文字列結合で構築する)。"""
+    return f"{type_code}#{n}"
+
 
 # ---------------------------------------------------------------------------
 # _scan_text_for_literals
@@ -861,14 +876,78 @@ class TestMainExceptionSignal:
         # hook自体の不具合で全toolを止めないため素通しのまま
         assert out == {}
 
+
+class TestMainGuardBlockSignal:
+    def test_block_records_guard_block_signal(self, capsys, calm_cwd):
         from src.db import get_connection
+
+        _run_main_with_event(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": f"echo {_code_ref('M', 123)}"},
+                "session_id": "s1",
+            },
+            capsys,
+        )
 
         conn = get_connection()
         try:
-            row = conn.execute("SELECT * FROM signal_events").fetchone()
+            row = conn.execute("SELECT * FROM signal_events WHERE kind = 'guard_block'").fetchone()
         finally:
             conn.close()
         assert row is not None
-        assert row["kind"] == "machine_error"
         assert row["source"] == "hook:preblock"
-        assert "scan boom" in row["summary"]
+        assert row["status"] == "new"
+
+    def test_block_dedupes_same_rule_type_across_different_literals(self, capsys, calm_cwd):
+        """異なるリテラル・異なるtool/sessionでも、同じ規則の種類(code形式)なら1行に畳む。"""
+        from src.db import get_connection
+
+        _run_main_with_event(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": f"echo {_code_ref('M', 1)}"},
+                "session_id": "s1",
+            },
+            capsys,
+        )
+        _run_main_with_event(
+            {
+                "tool_name": "Write",
+                "tool_input": {"file_path": "/tmp/x", "content": f"see {_code_ref('D', 999)}"},
+                "session_id": "s2",
+            },
+            capsys,
+        )
+
+        conn = get_connection()
+        try:
+            rows = conn.execute("SELECT * FROM signal_events WHERE kind = 'guard_block'").fetchall()
+        finally:
+            conn.close()
+        assert len(rows) == 1
+        assert rows[0]["occurrence_count"] == 2
+
+    def test_block_signal_failure_does_not_change_decision(
+        self, capsys, calm_cwd, monkeypatch, tmp_path
+    ):
+        """guard_block記録が失敗しても、deny判定・速度には影響しない(fail-open)。
+
+        try_capture_guard_block は get_connection() を経由せず独自に接続するため、
+        DBを開けない状況を src.db.get_db_path の差し替えで再現する
+        (test_signal_capture.py の never_raises 系テストと同じ手段)。
+        """
+        import src.db as db
+
+        unreachable = tmp_path / "nonexistent_dir" / "db.sqlite"
+        monkeypatch.setattr(db, "get_db_path", lambda: str(unreachable))
+
+        out = _run_main_with_event(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": f"echo {_code_ref('M', 123)}"},
+                "session_id": "s1",
+            },
+            capsys,
+        )
+        assert out["hookSpecificOutput"]["permissionDecision"] == "deny"

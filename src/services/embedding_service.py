@@ -1,4 +1,5 @@
 """Embeddingサービス: embedding_serverへのHTTPクライアント + vec_index操作"""
+import contextlib
 import json
 import logging
 import subprocess
@@ -7,6 +8,7 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
+from typing import Optional
 
 from sqlite_vec import serialize_float32
 
@@ -60,7 +62,7 @@ def _resolve_project_root() -> str:
         raise RuntimeError(
             "Failed to resolve project root: set CALM_PROJECT_ROOT "
             f"or run from within a git repo. cause: {e}"
-        ) from e
+        )
 
 
 # グローバル状態
@@ -72,7 +74,7 @@ def _resolve_project_root() -> str:
 # は `_init_lock`（後述）で保護する。バックフィルの多重起動を防ぐため。
 _server_initialized = False
 _backfill_done = False
-_project_root_cache: str | None = None
+_project_root_cache: Optional[str] = None
 
 # _ensure_initialized 全体を保護するロック。ロック無しだと、サーバー復帰直後の
 # 並行呼び出しが _server_initialized をまだ見ていない状態で複数スレッド同時に
@@ -84,7 +86,7 @@ _init_lock = threading.Lock()
 # 起動済みかどうかのフラグ（_init_lock保持中のみ読み書き）、_backfill_thread は
 # テストからjoinできるよう起動したthreadを保持する（実行時は参照しなくてよい）。
 _backfill_started = False
-_backfill_thread: threading.Thread | None = None
+_backfill_thread: Optional[threading.Thread] = None
 
 # spawn 直列化ロック。FastMCP は sync ツールを threadpool で並行実行するため、
 # ロックなしだとサーバー停止中の並行呼び出しが全スレッド分の embedding_server を
@@ -96,7 +98,7 @@ _spawn_lock = threading.Lock()
 # 子プロセスは失敗までに sentence_transformers の import 分のメモリを毎回確保する
 # ため、失敗直後の再 spawn は許可しない。_spawn_lock 保持中のみ読み書きする。
 _SPAWN_RETRY_COOLDOWN_SEC = 30.0
-_last_spawn_failed_at: float | None = None
+_last_spawn_failed_at: Optional[float] = None
 
 
 def _read_positive_int_env(name: str, default: int) -> int:
@@ -149,7 +151,41 @@ def _is_server_running() -> bool:
         return False
 
 
-def _start_server() -> DetachedProcess | None:
+# embedding_server自身のembedding-server.log（src/infra/embedding_server.py）と同じ場所
+_SERVER_STDERR_LOG_PATH = Path("~/.cache/cc-memory/embedding-server.stderr.log")
+
+
+_SERVER_STDERR_LOG_MAX_BYTES = 1024 * 1024
+
+
+@contextlib.contextmanager
+def _resolve_server_stderr_target():
+    """embedding_serverのstderr先を開いて渡す。準備に失敗したらDEVNULLにフォールバックする。
+
+    ロガー設定前に落ちるimportエラー等はembedding-server.logに残らず、こちらにしか
+    残らない。生きている先行プロセスがまだ書いている可能性があるため追記で開き、
+    起動ごとに区切り行を入れる。肥大は上限超過時のみ起動時にtruncateして防ぐ。
+    診断用ログの用意の失敗はサーバー起動を止める理由にしない。
+    """
+    try:
+        path = _SERVER_STDERR_LOG_PATH.expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.stat().st_size > _SERVER_STDERR_LOG_MAX_BYTES:
+            path.write_bytes(b"")
+        stderr_log = open(path, "ab")
+        stderr_log.write(f"--- spawn {time.strftime('%Y-%m-%dT%H:%M:%S%z')} ---\n".encode())
+        stderr_log.flush()
+    except OSError as e:
+        logger.warning(f"Failed to prepare embedding server stderr log, falling back to DEVNULL: {e}")
+        yield subprocess.DEVNULL
+        return
+    try:
+        yield stderr_log
+    finally:
+        stderr_log.close()
+
+
+def _start_server() -> Optional[DetachedProcess]:
     """embedding_serverをdetachedプロセスとして起動する。成功でPopen、失敗でNone。
 
     `-m src.infra.embedding_server` のモジュール実行形式で起動する（launcher.py の
@@ -166,12 +202,13 @@ def _start_server() -> DetachedProcess | None:
         logger.warning(f"Failed to resolve project root for embedding server: {e}")
         return None
     try:
-        proc = popen_detached(
-            [sys.executable, "-m", "src.infra.embedding_server"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            cwd=cwd,
-        )
+        with _resolve_server_stderr_target() as stderr_target:
+            proc = popen_detached(
+                [sys.executable, "-m", "src.infra.embedding_server"],
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_target,
+                cwd=cwd,
+            )
     except OSError as e:
         logger.warning(f"Failed to start embedding server: {e}")
         return None
@@ -221,7 +258,7 @@ def _ensure_server_running() -> bool:
                 _last_spawn_failed_at = time.time()
                 return False
         # タイムアウト。bind 済み（= ロード進行中で、完了すれば応答する）なら生かし、
-        # bind 前に固まっている子は回収する。放置すると stdout/stderr が DEVNULL の
+        # bind 前に固まっている子は回収する。放置すると stdout が DEVNULL の
         # 不可視プロセスとしてモデルロード分のメモリを抱えたまま残留するため。
         if is_port_listening(PORT):
             logger.warning(
@@ -240,7 +277,7 @@ def _ensure_server_running() -> bool:
         return False
 
 
-def _encode_batch(texts: list[str], prefix: str) -> list[list[float]] | None:
+def _encode_batch(texts: list[str], prefix: str) -> Optional[list[list[float]]]:
     """POST /encode にバッチリクエストを送信する。
 
     各テキストは `TEXT_MAX_CHARS` 文字に切り詰めてから送る。日本語テキストは
@@ -313,12 +350,12 @@ def _ensure_initialized() -> bool:
         return running
 
 
-def build_embedding_text(*fields: str | None) -> str:
+def build_embedding_text(*fields: Optional[str]) -> str:
     """embeddingテキストを構築する。None/空文字列は除外してスペース結合。"""
     return " ".join(f for f in fields if f)
 
 
-def encode_document(text: str) -> list[float] | None:
+def encode_document(text: str) -> Optional[list[float]]:
     """ドキュメント用embedding生成。"""
     if not _ensure_initialized():
         return None
@@ -328,7 +365,7 @@ def encode_document(text: str) -> list[float] | None:
     return result[0]
 
 
-def encode_query(text: str) -> list[float] | None:
+def encode_query(text: str) -> Optional[list[float]]:
     """クエリ用embedding生成。"""
     if not _ensure_initialized():
         return None
@@ -338,7 +375,7 @@ def encode_query(text: str) -> list[float] | None:
     return result[0]
 
 
-def encode_queries(texts: list[str]) -> list[list[float]] | None:
+def encode_queries(texts: list[str]) -> Optional[list[list[float]]]:
     """クエリ用embeddingをバッチ生成する。複数テキストを1回のHTTPリクエストにまとめる。"""
     if not texts:
         return []
@@ -347,7 +384,7 @@ def encode_queries(texts: list[str]) -> list[list[float]] | None:
     return _encode_batch(texts, "query")
 
 
-def generate_and_store_embedding(source_type: str, source_id: int, text: str) -> list[float] | None:
+def generate_and_store_embedding(source_type: str, source_id: int, text: str) -> Optional[list[float]]:
     """search_indexからIDを取得してembeddingを生成・保存する。失敗してもraiseしない。
 
     Returns:
@@ -473,7 +510,7 @@ def regenerate_embedding(source_type: str, source_id: int) -> None:
 
 def _get_entity_tag_text(conn, source_type: str, source_id: int) -> str:
     """エンティティに紐づくタグ文字列をスペース結合で返す（embedding生成・再生成・backfill共通）。"""
-    from src.services.tag_service import get_effective_tags, get_entity_tags
+    from src.services.tag_service import get_entity_tags, get_effective_tags
 
     if source_type == "topic":
         tags = get_entity_tags(conn, "topic_tags", "topic_id", source_id)
@@ -608,7 +645,7 @@ def backfill_embeddings() -> int:
                         f"({len(chunk_ids)} items); giving up on remaining chunks for this type"
                     )
                     break
-                for search_index_id, embedding in zip(chunk_ids, embeddings, strict=False):
+                for search_index_id, embedding in zip(chunk_ids, embeddings):
                     _insert_embedding_row(conn, search_index_id, embedding)
                     total += 1
                 conn.commit()
@@ -728,7 +765,7 @@ def backfill_tag_embeddings() -> int:
                     "giving up on remaining chunks"
                 )
                 break
-            for tag_id, embedding in zip(chunk_ids, embeddings, strict=False):
+            for tag_id, embedding in zip(chunk_ids, embeddings):
                 _insert_tag_embedding_row(conn, tag_id, embedding)
                 total += 1
             conn.commit()

@@ -12,6 +12,7 @@ from typing import Any
 import mcp.types as mt
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 
+from src.infra.session_identity import get_caller_session_id
 from src.services import signal_service
 
 # detail に書き込む traceback + 引数ダイジェストの最大文字数。DB カラムに上限は
@@ -42,7 +43,7 @@ class SignalCaptureMiddleware(Middleware):
                 summary=f"{type(e).__name__}: {str(e)[:200]}",
                 source=f"tool:{context.message.name}",
                 detail=_traceback_and_args_digest(e, context),
-                session_id=_safe_session_id(context),
+                session_id=get_caller_session_id(),
             )
             raise
 
@@ -64,10 +65,3 @@ def _traceback_and_args_digest(exc: Exception, context: MiddlewareContext) -> st
 
     digest = f"{tb_text}\nargs: {args_summary}"
     return digest[-_DETAIL_MAX_LEN:]
-
-
-def _safe_session_id(context: MiddlewareContext) -> str | None:
-    try:
-        return context.fastmcp_context.session_id if context.fastmcp_context else None
-    except Exception:
-        return None

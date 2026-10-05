@@ -343,12 +343,14 @@ def get_logs(
             }
 
         elif entity_type == "activity":
-            # activity → related topics（上限10件）→ logs集約
+            # activity → related topics（新しい順に上限10件）→ logs集約
             relation_rows = conn.execute(
-                "SELECT target_type, target_id FROM relations_view WHERE source_type = ? AND source_id = ?",
+                "SELECT target_id FROM relations_view"
+                " WHERE source_type = ? AND source_id = ? AND target_type = 'topic'"
+                " ORDER BY target_id DESC LIMIT 10",
                 ("activity", entity_id),
             ).fetchall()
-            topic_ids = [r["target_id"] for r in relation_rows if r["target_type"] == "topic"][:10]
+            topic_ids = [r["target_id"] for r in relation_rows]
 
             if not topic_ids:
                 return {"logs": [], "total_count": 0, "truncated": False}

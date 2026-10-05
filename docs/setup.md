@@ -29,16 +29,15 @@ SessionStart(3スクリプト)・Stop・UserPromptSubmit・MessageDisplayに加�
 
 ## 設定
 
-`.mcp.json`の`env`フィールドで以下の環境変数を設定すると、デフォルト値をオーバーライドできます。未設定の項目はデフォルト値で動作するため、ゼロコンフィグで使用可能です。ここに載せているのは利用者が調整する機会が多いものの抜粋です。挙動の内部調整用に他にも環境変数がありますが、必要になったら`/man`でAIに聞いてください。
+`~/.claude/settings.json`の`env`フィールドで以下の環境変数を設定すると、デフォルト値をオーバーライドできます（`/calm:setup`から設定変更を選ぶと、一覧の表示と書き込みをAIが手伝います）。設定を変えたら`/calm:restart`でMCPサーバーを再起動してください。未設定の項目はデフォルト値で動作するため、ゼロコンフィグで使用可能です。ここに載せているのは利用者が調整する機会が多いものの抜粋です。挙動の内部調整用に他にも環境変数がありますが、必要になったら`/man`でAIに聞いてください。
 
 | 環境変数名 | デフォルト | 説明 |
 |-----------|-----------|------|
 | `CALM_DB_PATH` | `~/.claude/.claude-code-memory/discussion.db` | データベースファイルのパス |
 | `CALM_HEARTBEAT_TIMEOUT` | `20` | ホットアクティビティ判定の閾値（分） |
 | `CALM_GOAL_RECHECK_HOURS` | `6` | goalの担い手human/external条件で要確認フラグを立てるまでの経過時間（時間） |
-| `CALM_IN_PROGRESS_LIMIT` | `3` | アクティブコンテキストのin_progress表示件数 |
-| `CALM_PENDING_LIMIT` | `2` | アクティブコンテキストのpending表示件数 |
 | `CALM_TIER2_MAX_AGE_DAYS` | `7` | SessionStart一覧の階層2にin_progressアクティビティを載せるupdated_at上限（日） |
+| `CALM_TIER2_MAX_ITEMS` | `5` | SessionStart一覧の『優先』に出す件数の上限。hookが読むため`~/.claude/settings.json`の`env`で設定する。増やすときは`CALM_INJECTION_BUDGET_ACTIVITIES`も上げる（各セクションの予算の合計が`CALM_TOTAL_INJECTION_BUDGET_CHARS`を超えるとcomposeがValueErrorを出す。既定の合計は10500字で、総予算12000字との差は1500字） |
 | `CALM_PIN_SURFACE_DECAY_DAYS` | `60` | pinnedアクティビティが階層2表示を維持できるupdated_at上限（日） |
 | `CALM_RECENCY_DECAY_RATE` | `0.0119` | 検索の時間減衰率 |
 | `CALM_PRECEDENT_BUDGET_CHARS` | `24000` | `pull_precedents`が本文展開（decision＋reason）に使う文字数予算 |
@@ -46,6 +45,11 @@ SessionStart(3スクリプト)・Stop・UserPromptSubmit・MessageDisplayに加�
 | `CALM_SNAPSHOT_INTERVAL` | `12` | スナップショット取得間隔（時間） |
 | `CALM_SNAPSHOT_MAX_COUNT` | `5` | スナップショット最大保持数 |
 | `CALM_SNAPSHOT_ANOMALY_THRESHOLD` | `100` | 行数減少の異常検知閾値（件） |
+| `CALM_SEARCH_HEALTH_WINDOW_DAYS` | `7` | 検索縮退・クエリ拡張停止検知の集計対象ウィンドウ（日） |
+| `CALM_SEARCH_HEALTH_MAX_SAMPLE` | `100` | 同集計で見る最大件数（timestamp降順） |
+| `CALM_SEARCH_HEALTH_MIN_SAMPLE` | `20` | 同集計の判定に必要な最小サンプル数（未満なら常に健全扱い） |
+| `CALM_SEARCH_HEALTH_DEGRADED_RATIO` | `0.2` | 検索の縮退率がこの値以上なら異常とみなす閾値 |
+| `CALM_SEARCH_HEALTH_QE_FIRE_FLOOR` | `0.0` | クエリ拡張の発火率がこの値以下なら異常とみなす閾値 |
 | `CALM_PROJECTION_MANIFEST_MAX_ITEMS` | `30` | intelligently habitsマニフェストの掲載件数上限 |
 | `CALM_PROJECT_ROOT` | 自動解決（`CLAUDE_PLUGIN_ROOT` → `git rev-parse --git-common-dir`） | `embedding_server`を起動するプロジェクトルート。優先順位は 明示設定 → プラグイン実行時は`CLAUDE_PLUGIN_ROOT`の値から自動設定 → `embedding_server`自身の`git rev-parse --git-common-dir`解決 → いずれも失敗した場合はRuntimeError。加えて`/calm:restart`（強制再起動）実行時は、上記のいずれでも未設定であれば`restart_service`自身も同じgit-common-dir解決（gitリポジトリでなければ実行時のプロジェクトルート）で先回りして設定する。通常は自動解決されるため設定不要だが、いずれの自動解決にも失敗する環境（gitリポジトリ外かつ`CLAUDE_PLUGIN_ROOT`も未設定）では明示設定が必要 |
 

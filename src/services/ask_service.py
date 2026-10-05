@@ -374,7 +374,7 @@ def get_asks_with_conn(
 
     Args:
         status: フィルタ対象のstatus（"open"|"answered"|"promoted"|"dismissed"|"withdrawn"）。
-            null指定で全status横断。triage_pending_only=Trueのときは無視される
+            null指定で全status横断（文字列"null"も大小文字不問で同じ）。triage_pending_only=Trueのときは無視される
         blocking_activity_id: 指定時はそのactivityをblockしているaskだけに絞る
         triage_pending_only: Trueでstatus='answered' AND triage IS NULLのみに絞る
             （statusの指定は無視される）
@@ -402,6 +402,11 @@ def get_asks_with_conn(
         notify_wanted（0または1）は通知希望の有無（add_askのnotify引数、
         またはunsubscribe_askでの解除状態）を示す。
     """
+    if isinstance(status, str) and status.lower() == "null":
+        status = None
+    if isinstance(kind, str) and kind.lower() == "null":
+        kind = None
+
     if not triage_pending_only and status is not None and status not in VALID_STATUSES:
         return _validation_error(
             f"Invalid status: {status!r}. Must be one of {sorted(VALID_STATUSES)} or null"
@@ -654,6 +659,9 @@ def triage_ask_with_conn(
     （decision_serviceがconn共有版を提供していないための制約。極めて稀な
     競合時のみ発生し、孤立decision自体は無効なデータではない）。
 
+    ask_blocksは削除しない（どの作業を止めていたaskかを決着後も辿れるように残す）。
+    「待ち」の判定はaskのstatusで行う。
+
     notify_pathへの通知書き込みはここでは行わない。呼び出し元（triage_ask）が
     commit成功後に行う責務を持つ（answer_ask_with_connと同じ理由。docstring
     参照）。dismissかつ対象askがnotify_wanted=trueのときのみ、戻り値に
@@ -716,7 +724,6 @@ def triage_ask_with_conn(
             if cursor.rowcount == 0:
                 raise ValueError(f"ask id={ask_id} is no longer awaiting triage")
 
-            conn.execute("DELETE FROM ask_blocks WHERE ask_id = ?", (ask_id,))
             conn.execute("RELEASE SAVEPOINT triage_ask")
             result = {"id": ask_id, "status": "promoted", "promoted_decision_id": promoted_decision_id}
             if pre_row["kind"] == "meta":
@@ -742,7 +749,6 @@ def triage_ask_with_conn(
         if cursor.rowcount == 0:
             raise ValueError(f"ask id={ask_id} is no longer awaiting triage")
 
-        conn.execute("DELETE FROM ask_blocks WHERE ask_id = ?", (ask_id,))
         conn.execute("RELEASE SAVEPOINT triage_ask")
         result = {"id": ask_id, "status": "dismissed"}
         if pre_row["notify_wanted"]:

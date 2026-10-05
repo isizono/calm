@@ -14,8 +14,13 @@ hintの種別と発火条件は仕様確定decisionに従う。
 - activity_cleanup (immediate): activity scope, activity固有のtagとは無関係な
   システム全体判定。pending/in_progress/shelved/snoozedのうち
   ACTIVITY_CLEANUP_STALE_DAYS日以上放置された件数 ≥ ACTIVITY_CLEANUP_COUNT_THRESHOLD
-- notes_over_budget (immediate): tag scope, domain: namespaceのみ,
+- notes_over_budget (immediate): tag scope, namespace不問（domain:に限らず素タグ等も対象）,
   tag notesの文字数がtag_serviceのラチェット天井（_TAG_NOTES_RATCHET_CEILING）を超過
+
+tag scope由来のhint（recompose_bootstrap / recompose_delta / direction_overflow /
+notes_over_budget、およびactivity scope経由で集約されるこれらのhint）は、対象タグが
+archived（tags.archived_at IS NOT NULL）の場合は一切発火しない。activity_cleanupも
+同様に、マーカーを置くactivity-managementタグがarchivedの場合は発火しない。
 
 抑制:
 - tag_notesに以下のハッシュタグマーカーがあれば該当hintをスキップ:
@@ -31,11 +36,17 @@ hintの種別と発火条件は仕様確定decisionに従う。
   （`_is_marker_active(..., allow_permanent=False)`）。notesが長すぎる状態を
   恒久的に黙らせられるのは望ましくないため、超過が解消するまで発火し続ける
 - recompose_bootstrap / recompose_delta / activity_cleanupはhintが実際に生成される
-  都度、対象tagのnotesへ `<marker>-until:{today}` を自動追記する日次クールダウンを
-  持つ（同日内の再発火を防ぐ）。既存の日付付きマーカーが未来日の場合は上書きしない
-  （手動設定の長期抑制を優先する）。書き込みは_apply_cooldown_markerに集約する
+  都度、hint_cooldownsテーブル（tag_id, marker単位）へ当日日付を自動UPSERTする
+  日次クールダウンを持つ（同日内の再発火を防ぐ）。tags.notes本文とは別の保存先
+  に持つため、notes側のラチェット天井（migrations/0066、4000字）の影響を受けない。
+  書き込みは_apply_cooldown_markerに集約する。判定時はnotes本文の手書きマーカー
+  （_is_marker_active）とhint_cooldownsテーブル（_is_auto_cooldown_active）の
+  いずれかが有効ならtrue（OR条件）
 - direction_overflow / notes_over_budgetはこの日次クールダウンの対象外
   （手動マーカーのみで抑制する）
+- tags.notes本文に既に存在する自動マーカー（`<marker>-until:YYYY-MM-DD`）は
+  hint_cooldownsへ移行しない。_is_marker_activeが従来どおりnotes本文も読むため、
+  移行しなくても抑制は機能し続ける
 
 severity値域: info | warn のみ (block不採用)
 
@@ -56,10 +67,7 @@ from typing import Any, Literal, TypedDict
 from src.config import DIRECTION_OVERFLOW_THRESHOLD
 from src.db import get_connection
 from src.services.direction_service import count_direction_decisions
-from src.services.tag_service import (
-    _TAG_NOTES_RATCHET_CEILING,
-    _set_tag_notes_by_id_with_conn,
-)
+from src.services.tag_service import _TAG_NOTES_RATCHET_CEILING
 
 # --- 型定義 ---
 
@@ -152,54 +160,53 @@ def _is_marker_active(notes: str, marker: str, allow_permanent: bool = True) -> 
     return marker in remainder
 
 
-def _merge_cooldown_marker(notes: str, marker: str, today: date) -> str:
-    """notesに対してmarkerの日次クールダウンマーカーを解析し、更新後のnotesを返す。
+def _is_auto_cooldown_active(conn: sqlite3.Connection, tag_id: int, marker: str) -> bool:
+    """hint_cooldownsテーブルに記録された自動クールダウンが有効かを判定する。
 
-    既存の日付付きマーカー（`<marker>-until:YYYY-MM-DD`）がtodayより後（未来）で
-    あれば、ユーザーが意図的に設定した長期抑制とみなしnotesをそのまま返す（no-op）。
-    存在しない、不正な日付形式、またはtoday以前の日付であれば、既存の日付付き
-    マーカーを除去したうえでtoday基準のマーカーを追記する（更新は「除去→末尾追記」
-    で実現し、出現位置は保持しない）。素の恒久マーカーの扱いは呼び出し元の責務
-    （hintが生成された時点で恒久抑制は既に効いていないことが前提）。
+    date.today() <= until_date の間だけ抑制する。行が存在しない、または
+    until_dateが不正な日付形式の場合は非アクティブ（フェイルオープン）とする。
     """
-    pattern = _dated_marker_pattern(marker)
-    for date_str in pattern.findall(notes):
-        try:
-            until = date.fromisoformat(date_str)
-        except ValueError:
-            continue
-        if until > today:
-            return notes
-    remainder = pattern.sub("", notes).strip()
-    new_marker = f"{marker}{_DATED_MARKER_SUFFIX}{today.isoformat()}"
-    return f"{remainder}\n\n{new_marker}" if remainder else new_marker
+    row = conn.execute(
+        "SELECT until_date FROM hint_cooldowns WHERE tag_id = ? AND marker = ?",
+        (tag_id, marker),
+    ).fetchone()
+    if row is None:
+        return False
+    try:
+        until = date.fromisoformat(row["until_date"])
+    except ValueError:
+        return False
+    return date.today() <= until
 
 
-def _apply_cooldown_marker(
-    conn: sqlite3.Connection, tag_id: int, notes: str, marker: str
-) -> str:
-    """hint発火に伴い、対象tagのnotesへ日次クールダウンマーカーを書き込む。
+def _apply_cooldown_marker(conn: sqlite3.Connection, tag_id: int, marker: str) -> None:
+    """hint発火に伴い、対象tagのhint_cooldownsへ当日日付の日次クールダウンを
+    UPSERTする。
 
     conn共有版の規約に従い、commitは呼び出し元に委ねる（本関数はcommitしない）。
-    _merge_cooldown_markerがno-opと判定した場合はDB書き込みを行わない。
-    呼び出し元（_get_hints_for_tag）は後続の判定で更新後のnotesを参照する必要が
-    あるため、返り値を使い回すこと。
+    呼び出し元は本関数を呼ぶ前に対象markerが非アクティブであることを確認済みの
+    ため、既存行があっても常にtoday基準へ上書きしてよい。
 
-    notesがDB側の長さ上限に抵触する等でDB書き込みが失敗した場合はbest-effortとして
-    握りつぶし、引数のnotesをそのまま返す。マーカー永続化の失敗によって、既に計算
-    済みのhint（このtag分・集約元の他tag分を問わず）を呼び出し元で失わせないため。
+    書き込み失敗（想定外のDBエラー）はbest-effortとして握りつぶす。マーカー
+    永続化の失敗によって、既に計算済みのhint（このtag分・集約元の他tag分を
+    問わず）を呼び出し元で失わせないため。
     """
-    new_notes = _merge_cooldown_marker(notes, marker, date.today())
-    if new_notes != notes:
-        try:
-            _set_tag_notes_by_id_with_conn(conn, tag_id, new_notes)
-        except sqlite3.IntegrityError as e:
-            print(
-                f"hint_service: cooldown marker write failed for tag {tag_id}: {e}",
-                file=sys.stderr,
-            )
-            return notes
-    return new_notes
+    try:
+        conn.execute(
+            """
+            INSERT INTO hint_cooldowns (tag_id, marker, until_date)
+            VALUES (?, ?, ?)
+            ON CONFLICT(tag_id, marker) DO UPDATE SET
+                until_date = excluded.until_date,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (tag_id, marker, date.today().isoformat()),
+        )
+    except sqlite3.Error as e:
+        print(
+            f"hint_service: cooldown write failed for tag {tag_id}: {e}",
+            file=sys.stderr,
+        )
 
 
 # --- 文言 ---
@@ -331,81 +338,87 @@ def get_hints_with_conn(
 
 
 def _get_hints_for_tag(conn: sqlite3.Connection, tag_id: int) -> list[Hint]:
-    """tagに対するrecompose_bootstrap/recompose_delta/direction_overflow判定。
+    """tagに対するrecompose_bootstrap/recompose_delta/direction_overflow/notes_over_budget判定。
 
-    対象tagはdomain: namespaceに限定する。
+    recompose_bootstrap/recompose_delta/direction_overflowはdomain: namespaceに限定する。
+    notes_over_budgetはnamespace不問（素タグ等も対象。天井超過は所属namespaceを
+    問わず気づかれるべきであるため）。archived済み（archived_at IS NOT NULL）
+    のタグは判定自体を行わず空リストを返す。
     """
     tag_row = conn.execute(
-        "SELECT id, namespace, name, notes FROM tags WHERE id = ?",
+        "SELECT id, namespace, name, notes, archived_at FROM tags WHERE id = ?",
         (tag_id,),
     ).fetchone()
     if tag_row is None:
         return []
-    if tag_row["namespace"] != "domain":
+    if tag_row["archived_at"] is not None:
         return []
 
     notes = tag_row["notes"] or ""
-    tag_name = f"{tag_row['namespace']}:{tag_row['name']}"
+    tag_name = f"{tag_row['namespace']}:{tag_row['name']}" if tag_row["namespace"] else tag_row["name"]
     hints: list[Hint] = []
 
-    base_time = _get_pinned_material_max_time(conn, tag_id)
-    if base_time is not None:
-        if not (_is_marker_active(notes, MARKER_RECOMPOSE_GENERIC)
-                or _is_marker_active(notes, MARKER_RECOMPOSE_DELTA)):
-            delta = _count_tag_scope_decisions(conn, tag_id, after=base_time)
-            if delta >= RECOMPOSE_DELTA_THRESHOLD:
-                hints.append({
-                    "type": "recompose_delta",
-                    "severity": "info",
-                    "message": _recompose_delta_message(tag_name, delta),
-                    "suggested_action": {
-                        "skill": "recompose-context",
-                        "args_hint": {"tag": tag_name},
-                        "natural_language": (
-                            f"tag「{tag_name}」のrecompose-context skillでメンテを提案する"
-                        ),
-                    },
-                    "source": f"recompose_delta:tag:{tag_id}",
-                    "delivery_hint": "immediate",
-                })
-                notes = _apply_cooldown_marker(conn, tag_id, notes, MARKER_RECOMPOSE_DELTA)
-    else:
-        if not (_is_marker_active(notes, MARKER_RECOMPOSE_GENERIC)
-                or _is_marker_active(notes, MARKER_RECOMPOSE_BOOTSTRAP)):
-            total = _count_tag_scope_decisions(conn, tag_id)
-            if total >= RECOMPOSE_BOOTSTRAP_THRESHOLD:
-                hints.append({
-                    "type": "recompose_bootstrap",
-                    "severity": "info",
-                    "message": _recompose_bootstrap_message(tag_name, total),
-                    "suggested_action": {
-                        "skill": "recompose-context",
-                        "args_hint": {"tag": tag_name},
-                        "natural_language": (
-                            f"tag「{tag_name}」の初回統合をrecompose-context skillで提案する"
-                        ),
-                    },
-                    "source": f"recompose_bootstrap:tag:{tag_id}",
-                    "delivery_hint": "immediate",
-                })
-                notes = _apply_cooldown_marker(conn, tag_id, notes, MARKER_RECOMPOSE_BOOTSTRAP)
+    if tag_row["namespace"] == "domain":
+        base_time = _get_pinned_material_max_time(conn, tag_id)
+        if base_time is not None:
+            if not (_is_marker_active(notes, MARKER_RECOMPOSE_GENERIC)
+                    or _is_marker_active(notes, MARKER_RECOMPOSE_DELTA)
+                    or _is_auto_cooldown_active(conn, tag_id, MARKER_RECOMPOSE_DELTA)):
+                delta = _count_tag_scope_decisions(conn, tag_id, after=base_time)
+                if delta >= RECOMPOSE_DELTA_THRESHOLD:
+                    hints.append({
+                        "type": "recompose_delta",
+                        "severity": "info",
+                        "message": _recompose_delta_message(tag_name, delta),
+                        "suggested_action": {
+                            "skill": "recompose-context",
+                            "args_hint": {"tag": tag_name},
+                            "natural_language": (
+                                f"tag「{tag_name}」のrecompose-context skillでメンテを提案する"
+                            ),
+                        },
+                        "source": f"recompose_delta:tag:{tag_id}",
+                        "delivery_hint": "immediate",
+                    })
+                    _apply_cooldown_marker(conn, tag_id, MARKER_RECOMPOSE_DELTA)
+        else:
+            if not (_is_marker_active(notes, MARKER_RECOMPOSE_GENERIC)
+                    or _is_marker_active(notes, MARKER_RECOMPOSE_BOOTSTRAP)
+                    or _is_auto_cooldown_active(conn, tag_id, MARKER_RECOMPOSE_BOOTSTRAP)):
+                total = _count_tag_scope_decisions(conn, tag_id)
+                if total >= RECOMPOSE_BOOTSTRAP_THRESHOLD:
+                    hints.append({
+                        "type": "recompose_bootstrap",
+                        "severity": "info",
+                        "message": _recompose_bootstrap_message(tag_name, total),
+                        "suggested_action": {
+                            "skill": "recompose-context",
+                            "args_hint": {"tag": tag_name},
+                            "natural_language": (
+                                f"tag「{tag_name}」の初回統合をrecompose-context skillで提案する"
+                            ),
+                        },
+                        "source": f"recompose_bootstrap:tag:{tag_id}",
+                        "delivery_hint": "immediate",
+                    })
+                    _apply_cooldown_marker(conn, tag_id, MARKER_RECOMPOSE_BOOTSTRAP)
 
-    if not _is_marker_active(notes, MARKER_DIRECTION_OVERFLOW):
-        direction_count = count_direction_decisions(conn, domain_tag_ids=[tag_id])
-        if direction_count >= DIRECTION_OVERFLOW_THRESHOLD:
-            hints.append({
-                "type": "direction_overflow",
-                "severity": "info",
-                "message": _direction_overflow_message(tag_name, direction_count),
-                "suggested_action": {
-                    "natural_language": (
-                        f"tag「{tag_name}」の方向性decisionの統合・supersede整理を"
-                        "ユーザーに提案する"
-                    ),
-                },
-                "source": f"direction_overflow:tag:{tag_id}",
-                "delivery_hint": "immediate",
-            })
+        if not _is_marker_active(notes, MARKER_DIRECTION_OVERFLOW):
+            direction_count = count_direction_decisions(conn, domain_tag_ids=[tag_id])
+            if direction_count >= DIRECTION_OVERFLOW_THRESHOLD:
+                hints.append({
+                    "type": "direction_overflow",
+                    "severity": "info",
+                    "message": _direction_overflow_message(tag_name, direction_count),
+                    "suggested_action": {
+                        "natural_language": (
+                            f"tag「{tag_name}」の方向性decisionの統合・supersede整理を"
+                            "ユーザーに提案する"
+                        ),
+                    },
+                    "source": f"direction_overflow:tag:{tag_id}",
+                    "delivery_hint": "immediate",
+                })
 
     if not _is_marker_active(notes, MARKER_NOTES_OVER_BUDGET, allow_permanent=False):
         if len(notes) > _TAG_NOTES_RATCHET_CEILING:
@@ -588,10 +601,10 @@ def _get_tag_id_and_notes(conn: sqlite3.Connection, tag_name: str) -> tuple[int 
     namespace=''に絞って検索する。これにより、将来同名の`domain:activity-management`
     のような別namespaceのタグが作られても、本ヘルパーの解決結果には影響しない。
     既存に同等のヘルパーが無いため新設する。見つからなければ(None, "")を返す
-    (タグ未作成の場合はhint判定自体を静かにスキップする)。
+    (タグ未作成、またはarchived済みの場合はhint判定自体を静かにスキップする)。
     """
     row = conn.execute(
-        "SELECT id, notes FROM tags WHERE name = ? AND namespace = ''",
+        "SELECT id, notes FROM tags WHERE name = ? AND namespace = '' AND archived_at IS NULL",
         (tag_name,),
     ).fetchone()
     if row is None:
@@ -605,18 +618,20 @@ def _get_activity_cleanup_hint(conn: sqlite3.Connection) -> Hint | None:
 
     抑制マーカーはactivity-managementタグのnotesに置く。判定順序は
     recompose_bootstrap/deltaと同じ(マーカーチェック→件数計算→hint組み立て
-    →クールダウン書き込み)。activity-managementタグが未作成の場合は
-    判定不能としてNoneを返す(恒久沈黙ではない)。
+    →クールダウン書き込み)。activity-managementタグが未作成、またはarchived済み
+    の場合は判定不能としてNoneを返す(恒久沈黙ではない)。
     """
     tag_id, notes = _get_tag_id_and_notes(conn, "activity-management")
     if tag_id is None:
         return None
-    if _is_marker_active(notes, MARKER_ACTIVITY_CLEANUP):
+    if _is_marker_active(notes, MARKER_ACTIVITY_CLEANUP) or _is_auto_cooldown_active(
+        conn, tag_id, MARKER_ACTIVITY_CLEANUP
+    ):
         return None
     count = _count_stale_activities(conn)
     if count < ACTIVITY_CLEANUP_COUNT_THRESHOLD:
         return None
-    _apply_cooldown_marker(conn, tag_id, notes, MARKER_ACTIVITY_CLEANUP)
+    _apply_cooldown_marker(conn, tag_id, MARKER_ACTIVITY_CLEANUP)
     return {
         "type": "activity_cleanup",
         "severity": "info",
@@ -636,17 +651,19 @@ def _get_activity_cleanup_hint(conn: sqlite3.Connection) -> Hint | None:
 def _get_hints_for_activity(
     conn: sqlite3.Connection, activity_id: int
 ) -> list[Hint]:
-    """activityに紐づくdomain:tagを展開してrecompose系hintを集約し、
+    """activityに紐づく全tagを展開して_get_hints_for_tag判定を集約し、
     activity固有のtagとは独立したactivity_cleanup(システム全体の放置件数判定)
     も追加する。
 
-    activityの所属tagのうちdomain:namespaceのみ対象。
+    domain:namespace限定のrecompose系hintと、namespace不問のnotes_over_budgetの
+    両方を同じループで拾うため、namespaceで絞らず全tagを対象にする
+    （namespace限定は_get_hints_for_tag側の判定に委ねる）。
     """
     rows = conn.execute(
         """
         SELECT t.id FROM tags t
         JOIN activity_tags at ON at.tag_id = t.id
-        WHERE at.activity_id = ? AND t.namespace = 'domain'
+        WHERE at.activity_id = ?
         """,
         (activity_id,),
     ).fetchall()

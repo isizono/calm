@@ -1,13 +1,10 @@
 """アクティビティサービスの統合テスト"""
 import pytest
-
 from src.db import get_connection
-from src.services.activity_service import (
-    ACTIVITY_DESC_MAX_LEN,
-    add_activity,
-    get_activities,
-    update_activity,
-)
+from src.services.activity_service import add_activity, get_activities, update_activity
+from src.services.activity_service import add_activity, get_activities, update_activity, ACTIVITY_DESC_MAX_LEN
+from src.services.topic_service import DESC_ELLIPSIS
+
 
 DEFAULT_TAGS = ["domain:test"]
 
@@ -359,7 +356,7 @@ class TestGetActivities:
     def test_get_activities_pending_sorted_by_updated_at_desc(self, temp_db):
         """pendingのソート順がupdated_at DESCになっている"""
         a1 = add_activity(title="Old pending", description="Desc", tags=DEFAULT_TAGS, check_in=False)
-        add_activity(title="New pending", description="Desc", tags=DEFAULT_TAGS, check_in=False)
+        a2 = add_activity(title="New pending", description="Desc", tags=DEFAULT_TAGS, check_in=False)
 
         # a1のupdated_atを古い値に書き換えてソート順を明確にする
         conn = get_connection()
@@ -504,7 +501,7 @@ class TestGetActivities:
 
         assert "error" not in result
         activity = result["activities"][0]
-        assert len(activity["description"]) == ACTIVITY_DESC_MAX_LEN
+        assert activity["description"] == "a" * ACTIVITY_DESC_MAX_LEN + DESC_ELLIPSIS
 
 
 class TestUpdateActivity:

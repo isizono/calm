@@ -2,40 +2,38 @@
 import logging
 import re
 import sqlite3
+from typing import Optional
 
 from src.db import get_connection, row_to_dict
-from src.services import goal_service
+from src.services import ask_handover_service, goal_service
 from src.services.citations_service import (
     apply_and_writeback_conversions,
     apply_raw_to_cite_conversion,
     upsert_citations_for_owner_with_conn,
 )
-from src.services.embedding_service import (
-    build_embedding_text,
-    generate_and_store_embedding,
-)
-from src.services.pin_service import ENTITY_TABLE_MAP as PIN_ENTITY_TABLE_MAP
-from src.services.pin_service import _add_pin_with_conn, bump_updated_at_with_conn
 from src.services.readable_id import strip_entity_id_inplace
+from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
+from src.services.pin_service import ENTITY_TABLE_MAP as PIN_ENTITY_TABLE_MAP, _add_pin_with_conn, bump_updated_at_with_conn
 from src.services.relation_service import _add_relation_with_conn, _validate_targets
 from src.services.signal_service import capture_signal_safe
+from src.services.title_validation import validate_title
 from src.services.tag_service import (
+    validate_and_parse_tags,
     ensure_tag_ids,
-    get_available_intents,
+    resolve_tag_ids,
+    link_tags,
     get_entity_tags,
     get_entity_tags_batch,
-    link_tags,
-    resolve_tag_ids,
-    validate_and_parse_tags,
+    get_available_intents,
 )
-from src.services.title_validation import validate_title
 
 logger = logging.getLogger(__name__)
 
 # get_activitiesでdescriptionを切り詰める上限文字数
 ACTIVITY_DESC_MAX_LEN = 200
-from src.config import HEARTBEAT_TIMEOUT_MINUTES, SNOOZE_DURATION_DAYS  # noqa: E402
-
+from src.config import ACTIVITIES_BUDGET_CHARS, HEARTBEAT_TIMEOUT_MINUTES, SNOOZE_DURATION_DAYS
+from src.services.topic_service import DESC_ELLIPSIS
+from src.services.response_budget import BudgetPolicy, CutStep
 # DB格納可能なステータス値
 REAL_STATUSES = {"pending", "in_progress", "completed", "snoozed", "shelved"}
 # "active"エイリアスが展開されるステータス
@@ -44,6 +42,46 @@ ACTIVE_STATUSES = ("in_progress", "pending")
 VALID_STATUSES = REAL_STATUSES | {"active"}
 # update_activityのclosed_by引数が受け付ける値（'goal_judge'はサーバー専用で引数としては受けない）
 VALID_CLOSED_BY = {"user", "claude", "external"}
+
+# 期限切れsnoozed（updated_atがSNOOZE_DURATION_DAYSを超過）をpending相当として扱うための
+# 共通条件・表示ステータス式。SNOOZE_DURATION_DAYSはconfigの固定intであり、文字列連結でも
+# 注入経路にはならない（_sql_in_listと同じ理由）。読み取り専用の一覧
+# （get_active_domains_with_conn等、session_start_hookが使う）がget_activitiesのような
+# 一括UPDATEを踏まずに済むよう、表示時だけpending扱いする（DBのstatusは書き換えない）。
+_EXPIRED_SNOOZED_SQL = (
+    f"(a.status = 'snoozed' AND a.updated_at <= datetime('now', '-{SNOOZE_DURATION_DAYS} days'))"
+)
+_DISPLAY_STATUS_SQL = f"CASE WHEN {_EXPIRED_SNOOZED_SQL} THEN 'pending' ELSE a.status END"
+
+
+def _activities_next_pointer(_response: dict) -> list[dict]:
+    """activitiesが文字数予算で切られたときの継続ヒント。
+
+    件数(limit)ではなく文字数超過でのcutのため、offset/start_id相当のcursorを
+    持たない。tags/status/since/untilで対象を絞るか、limitを下げて再実行することを
+    促す静的ヒントであり、他のcut_stepのpointerのような実行可能なtool呼び出しの
+    再現ではない。
+    """
+    return [{"hint": "tags/status/since/untilで対象を絞るか、limitを下げて再実行してください"}]
+
+
+# get_activities応答のうちactivities・total_count（JSON文字列化後）の予算方針。
+# check_inのTIER_FORM_BUDGET_POLICYと同じ考え方（超過時は後方を切り、truncatedで
+# 示す）。activity_pathに対応するキーが応答に無いため、hard_max側のactivity.description
+# 切り詰めは常にno-opになる（budget_chars超過分はcut_stepsのtail_listのみで吸収する）。
+# main.pyのget_activitiesツール側（flavor適用の後、archived_tags/tag_notes付与の前）
+# が呼ぶ。archived_tags/tag_notesはトリム後に残ったactivitiesだけから集めるため、
+# この予算には数えない。
+ACTIVITIES_BUDGET_POLICY = BudgetPolicy(
+    budget_chars=ACTIVITIES_BUDGET_CHARS,
+    hard_max_chars=ACTIVITIES_BUDGET_CHARS,
+    protected_paths=frozenset({"total_count"}),
+    capped_sections=(),
+    pinned=None,
+    cut_steps=(
+        CutStep(path="activities", mode="tail_list", pointer=_activities_next_pointer),
+    ),
+)
 
 
 IMPLEMENT_WORKFLOW_GUARD_MESSAGE = (
@@ -300,9 +338,7 @@ def add_activity(
 
     # check_in実行（connを閉じた後に呼ぶ。checkin_tier_serviceが別connを開くため）
     if check_in:
-        from src.services.checkin_tier_service import (
-            collect_and_assemble as do_check_in,
-        )
+        from src.services.checkin_tier_service import collect_and_assemble as do_check_in
         check_in_result = do_check_in(activity_id)
         result["check_in_result"] = check_in_result
 
@@ -331,7 +367,9 @@ def get_activities(
         until: ISO日付文字列。この日付以前に更新されたアクティビティのみ返す
 
     Returns:
-        アクティビティ一覧とtotal_count
+        アクティビティ一覧とtotal_count。応答全体の予算適用はmain.pyのget_activities
+        ツール側が担う（flavor適用後の字数で測る必要があるため。_finalize_checkin_result
+        と同じ理由）。本関数自体は切り詰めを行わない
     """
     # タグのバリデーション（tags指定時のみ）
     parsed_tags = None
@@ -467,16 +505,20 @@ def get_activities(
         activities = []
         for row in rows:
             activity = row_to_dict(row)
+            full_description = activity["description"] or ""
             item = {
                 "id": activity["id"],
                 "title": activity["title"],
-                "description": (activity["description"] or "")[:ACTIVITY_DESC_MAX_LEN],
+                "description": full_description[:ACTIVITY_DESC_MAX_LEN],
                 "status": activity["status"],
                 "tags": tags_map.get(activity["id"], []),
                 "created_at": activity["created_at"],
                 "updated_at": activity["updated_at"],
                 "is_heartbeat_active": bool(activity["is_heartbeat_active"]),
             }
+            if len(full_description) > ACTIVITY_DESC_MAX_LEN:
+                item["description"] += DESC_ELLIPSIS
+                item["description_truncated"] = True
             strip_entity_id_inplace(item)
             activities.append(item)
 
@@ -494,19 +536,23 @@ def get_activities(
 
 
 def get_active_domains_with_conn(conn) -> list[dict]:
-    """アクティブなアクティビティ（in_progress/pending）があるdomain:タグを取得する（conn共有版）。
+    """アクティブなアクティビティ（in_progress/pending、および期限切れsnoozed）がある
+    domain:タグを取得する（conn共有版）。
+
+    期限切れsnoozedをpending相当に含めるのは表示時の評価のみで、statusの書き換えは
+    行わない（_EXPIRED_SNOOZED_SQL参照）。
 
     Returns:
         [{"tag_id": int, "name": str}, ...]（name順ソート）
     """
     rows = conn.execute(
-        """
+        f"""
         SELECT DISTINCT t.id AS tag_id, t.name
         FROM tags t
         JOIN activity_tags at ON t.id = at.tag_id
         JOIN activities a ON at.activity_id = a.id
         WHERE t.namespace = 'domain'
-          AND a.status IN ('in_progress', 'pending')
+          AND (a.status IN ('in_progress', 'pending') OR {_EXPIRED_SNOOZED_SQL})
         ORDER BY t.name
         """,
     ).fetchall()
@@ -525,6 +571,9 @@ def get_active_domains() -> list[dict]:
 def get_active_activities_by_tag_with_conn(conn, tag_id: int) -> list[dict]:
     """domain:タグに紐づくホットアクティビティを取得する（conn共有版）。
 
+    期限切れsnoozedはpending相当として含める（statusを'pending'として返すが、DBの
+    statusは書き換えない。表示時の評価のみ。_EXPIRED_SNOOZED_SQL参照）。
+
     last_heartbeat_session_id は呼び出し側（session_start_hook）が自セッション
     照合に使うため一緒に返す。
 
@@ -534,13 +583,13 @@ def get_active_activities_by_tag_with_conn(conn, tag_id: int) -> list[dict]:
         （in_progress優先、updated_at降順）
     """
     rows = conn.execute(
-        """
-        SELECT a.id, a.title, a.status, a.updated_at, a.last_heartbeat_session_id,
+        f"""
+        SELECT a.id, a.title, {_DISPLAY_STATUS_SQL} AS status, a.updated_at, a.last_heartbeat_session_id,
                CASE WHEN a.last_heartbeat_at > datetime('now', '-' || ? || ' minutes') THEN 1 ELSE 0 END AS is_heartbeat_active
         FROM activities a
         JOIN activity_tags at ON a.id = at.activity_id
         WHERE at.tag_id = ?
-          AND a.status IN ('in_progress', 'pending')
+          AND (a.status IN ('in_progress', 'pending') OR {_EXPIRED_SNOOZED_SQL})
         ORDER BY CASE a.status WHEN 'in_progress' THEN 0 ELSE 1 END,
                  a.updated_at DESC
         """,
@@ -567,7 +616,9 @@ def get_pinned_active_activities_with_conn(conn) -> list[dict]:
     """pinsテーブルでtargetがactivityになっているactive activitiesを取得する（conn共有版）。
 
     pinsテーブルを介したpin関係のうち target_type='activity' のものを引き、
-    status IN ('in_progress', 'pending') の activity を返す。
+    status IN ('in_progress', 'pending') の activity（および期限切れsnoozed。
+    pending相当として表示時に評価するのみでDBのstatusは書き換えない。
+    _EXPIRED_SNOOZED_SQL参照）を返す。
     複数の source（tag/activity 等）から同じ activity にpinされている場合でも
     DISTINCT で1件に集約する。
 
@@ -577,13 +628,13 @@ def get_pinned_active_activities_with_conn(conn) -> list[dict]:
         （updated_at 降順、id を tie-breaker）
     """
     rows = conn.execute(
-        """
-        SELECT DISTINCT a.id, a.title, a.status, a.updated_at,
+        f"""
+        SELECT DISTINCT a.id, a.title, {_DISPLAY_STATUS_SQL} AS status, a.updated_at,
                a.last_heartbeat_session_id,
                CASE WHEN a.last_heartbeat_at > datetime('now', '-' || ? || ' minutes') THEN 1 ELSE 0 END AS is_heartbeat_active
         FROM activities a
         JOIN pins p ON p.target_type = 'activity' AND p.target_id = a.id
-        WHERE a.status IN ('in_progress', 'pending')
+        WHERE (a.status IN ('in_progress', 'pending') OR {_EXPIRED_SNOOZED_SQL})
         ORDER BY a.updated_at DESC, a.id DESC
         """,
         (HEARTBEAT_TIMEOUT_MINUTES,),
@@ -607,12 +658,14 @@ def get_pinned_active_activities() -> list[dict]:
 
 def update_activity(
     activity_id: int,
-    status: str | None = None,
-    title: str | None = None,
-    description: str | None = None,
-    tags: list[str] | None = None,
-    closed_by: str | None = None,
-    closed_reason: str | None = None,
+    status: Optional[str] = None,
+    title: Optional[str] = None,
+    description: Optional[str] = None,
+    tags: Optional[list[str]] = None,
+    closed_by: Optional[str] = None,
+    closed_reason: Optional[str] = None,
+    move_asks_to: Optional[int] = None,
+    move_ask_ids: Optional[list[int]] = None,
 ) -> dict:
     """
     アクティビティを更新する（ステータス、タイトル、説明、タグを変更可能）
@@ -624,7 +677,8 @@ def update_activity(
         activity_id: アクティビティID
         status: 新しいステータス（optional）
         title: 新しいタイトル（optional、35字以内）
-        description: 新しい説明（optional）
+        description: 新しい説明（optional）。現在値の先頭200字（末尾の省略記号・前後の空白は
+            無視）と一致する値（get_activitiesが切って返した形）はVALIDATION_ERRORで拒否する
         tags: 新しいタグ配列（optional、指定時は全置換。1個以上必須）
         closed_by: activityを閉じた意思の主体（"user"|"claude"|"external"）。
             status="completed"と同時のときだけ受け付ける。省略時、紐づくgoalが
@@ -632,6 +686,12 @@ def update_activity(
             引数として渡せない）
         closed_reason: 閉じた理由（自由文）。status="completed"と同時のときだけ
             受け付ける
+        move_asks_to: このactivityを止めている未決着ask（openまたは回答済み未triage）の
+            blockを、指定したactivityへ付け替える。付け替え先は存在し、完了済みでない
+            こと。他のフィールドの更新・status変更と同じ呼び出しで行える
+        move_ask_ids: move_asks_toと一緒に渡すと、そのaskだけを付け替える。省略時は
+            未決着askを全件付け替える。このactivityを止めている未決着askでないidが
+            あれば、何も変更せずVALIDATION_ERRORにする
 
     Returns:
         更新されたアクティビティ情報。既にcompletedのactivityへstatus="completed"を
@@ -639,8 +699,18 @@ def update_activity(
         保持したまま書き換わらない。この場合closed_fields_unchanged=trueを応答に足す
         （closed_by/closed_reasonを渡さなければ、このキーは付かない）。
         status="completed"の呼び出しでは、紐づくgoalが未判定ならgoal_hintも返す
-        （拒否はしない）
+        （拒否はしない）。同じ呼び出しで、このactivityを止めている未決着ask
+        （付け替え後に残ったもの）があれば{id_raw, question, status}の一覧を
+        pending_asksに添える（完了は止めない）。付け替えたaskはmoved_asksに返す
     """
+    if move_ask_ids is not None and move_asks_to is None:
+        return {
+            "error": {
+                "code": "VALIDATION_ERROR",
+                "message": "move_ask_ids is only accepted together with move_asks_to",
+            }
+        }
+
     # 最低1つのオプショナルパラメータが必要
     if (
         status is None
@@ -649,12 +719,13 @@ def update_activity(
         and tags is None
         and closed_by is None
         and closed_reason is None
+        and move_asks_to is None
     ):
         return {
             "error": {
                 "code": "VALIDATION_ERROR",
                 "message": (
-                    "At least one of status, title, description, or tags "
+                    "At least one of status, title, description, tags, or move_asks_to "
                     "must be provided"
                 ),
             }
@@ -728,6 +799,35 @@ def update_activity(
                     "message": f"Activity with id {activity_id} not found",
                 }
             }
+
+        # 一覧で切られたdescription（先頭200字＋省略記号）をそのまま書き戻すと
+        # 後半が消えるため止める
+        current_description = row["description"] or ""
+        if (
+            description is not None
+            and len(current_description) > ACTIVITY_DESC_MAX_LEN
+            and description.strip().removesuffix(DESC_ELLIPSIS)
+            == current_description[:ACTIVITY_DESC_MAX_LEN]
+        ):
+            return {
+                "error": {
+                    "code": "VALIDATION_ERROR",
+                    "message": (
+                        "description is the truncated form shown in get_activities "
+                        f"(first {ACTIVITY_DESC_MAX_LEN} chars + '{DESC_ELLIPSIS}'). "
+                        "Fetch the full text with get_by_ids before rewriting"
+                    ),
+                }
+            }
+
+        moved_asks: list[dict] = []
+        if move_asks_to is not None:
+            move_result = ask_handover_service.move_pending_asks_with_conn(
+                conn, activity_id, move_asks_to, move_ask_ids
+            )
+            if "error" in move_result:
+                return move_result
+            moved_asks = move_result["moved"]
 
         # snoozed中にstatus指定なしでフィールド更新 → 自動復活
         old_status = row["status"]
@@ -861,6 +961,24 @@ def update_activity(
 
         if reclose_without_rewrite:
             result["closed_fields_unchanged"] = True
+
+        if moved_asks:
+            result["moved_asks"] = moved_asks
+
+        # completedにする呼び出しでは、このactivityを止めている未決着askを添える
+        # （完了は止めない）。完了のコミット後に読み、失敗しても完了は失わない。
+        if status == "completed":
+            try:
+                pending_asks = ask_handover_service.get_pending_asks_blocking(conn, activity_id)
+                if pending_asks:
+                    result["pending_asks"] = pending_asks
+            except Exception as e:
+                capture_signal_safe(
+                    "machine_error",
+                    f"update_activityでpending_asks取得に失敗: activity {activity_id}",
+                    source="tool:update_activity",
+                    detail=str(e),
+                )
 
                 # completedにする呼び出しでは、紐づくgoalが未判定ならgoal_hintを添える
         # （拒否はしない）。完了のコミットの後に組み立て、例外が出ても完了は

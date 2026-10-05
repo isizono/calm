@@ -11,6 +11,7 @@ import logging
 import re
 import sqlite3
 import sys
+from typing import Optional
 
 from src.db import get_connection, row_to_dict
 from src.services.dedup_helpers import compute_fingerprint16, normalize_text
@@ -27,6 +28,7 @@ KNOWN_KINDS = {
     "boundary_case",
     "rollback",
     "goal_rollback",
+    "guard_block",
 }
 
 # custom:<名前> 形式のkindの名前部分。先頭は英小文字/数字、以降は英小文字/数字/_/-で
@@ -51,6 +53,13 @@ PROMOTED_ENTITY_TABLE = {
 # 実装判断で採用する (シグナルはトリアージ目的で多めに一覧したいケースがある)。
 _MAX_LIMIT = 100
 
+# get_signals の一覧で各行の detail を切る長さ。machine_error は middleware 側で
+# 500字に切っているが、friction/contradiction 等は report_signal 呼び出し元が
+# 自由に書けるため上限が無い。limit=100 の一覧で全行が長いdetailを持つと応答が
+# 肥大化するため、checkin_tier_service.ASK_ANSWER_BODY_MAX_CHARS と同じ考え方で
+# 一覧表示専用の上限を設ける(update_signal の単発応答やDB上の値そのものは切らない)。
+DETAIL_MAX_CHARS = 300
+
 # stats.last_30d の集計期間。設計文書は「固定 vs 引数化」を実装者判断としており、
 # v1 は固定で開始する。
 _STATS_RECENT_DAYS = 30
@@ -62,7 +71,7 @@ def _compute_fingerprint(kind: str, source: str, summary: str) -> str:
 
 
 def _is_valid_kind(kind: str) -> bool:
-    """kindが予約8種(KNOWN_KINDS)、またはcustom:<名前>形式かを判定する。"""
+    """kindが予約9種(KNOWN_KINDS)、またはcustom:<名前>形式かを判定する。"""
     return kind in KNOWN_KINDS or bool(_CUSTOM_KIND_PATTERN.fullmatch(kind))
 
 
@@ -73,7 +82,7 @@ def _invalid_kind_message(kind: str) -> str:
     )
 
 
-def _to_json_or_raise(value: object | None, field_name: str) -> str | None:
+def _to_json_or_raise(value: Optional[object], field_name: str) -> Optional[str]:
     if value is None:
         return None
     try:
@@ -87,11 +96,11 @@ def record_signal(
     summary: str,
     *,
     source: str = "agent",
-    detail: str | None = None,
-    refs: list[dict] | None = None,
-    context: dict | None = None,
-    session_id: str | None = None,
-    conn: sqlite3.Connection | None = None,
+    detail: Optional[str] = None,
+    refs: Optional[list[dict]] = None,
+    context: Optional[dict] = None,
+    session_id: Optional[str] = None,
+    conn: Optional[sqlite3.Connection] = None,
 ) -> dict:
     """検証あり・例外を投げる通常経路でシグナルを1件記録する。
 
@@ -180,10 +189,10 @@ def capture_signal_safe(
     summary: str,
     *,
     source: str = "agent",
-    detail: str | None = None,
-    refs: list[dict] | None = None,
-    context: dict | None = None,
-    session_id: str | None = None,
+    detail: Optional[str] = None,
+    refs: Optional[list[dict]] = None,
+    context: Optional[dict] = None,
+    session_id: Optional[str] = None,
 ) -> None:
     """捕捉経路用。いかなる例外も外に漏らさない (stderr へ出すのみ)。
 
@@ -205,8 +214,9 @@ def capture_signal_safe(
 
 
 def get_signals(
-    status: str | None = "new",
-    kind: str | None = None,
+    status: Optional[str] = "new",
+    kind: Optional[str] = None,
+    ids: Optional[list[int]] = None,
     limit: int = 20,
     offset: int = 0,
     include_stats: bool = False,
@@ -216,16 +226,28 @@ def get_signals(
     Args:
         status: フィルタ対象のstatus。None指定で全status横断
         kind: フィルタ対象のkind。None指定で全kind横断
+        ids: 指定時はこのsignal idの集合だけに絞る（他のフィルタとAND条件）。
+            get_asksのids引数と同じ規約で、空配列はids条件なし（他の引数と異なり
+            エラーにはしない）。指定時はdetailの切り詰めを行わない（下記Returns参照）
         limit: 取得件数上限（最大100件）
         offset: 取得開始位置
         include_stats: Trueのとき kind×status のクロス集計と直近30日サマリを付与
 
     Returns:
-        {"signals": [...], "total_count": int, "stats": {...} (include_stats時のみ)}
+        {"signals": [...], "total_count": int, "stats": {...} (include_stats時のみ),
+         "next": [{"tool": "get_signals", "args": {"ids": [...], "status": None, "limit": N}}]
+         (detail切り詰めが発生した行がある場合のみ)}
         失敗時: {"error": {"code": ..., "message": ...}}
         各signalはidをid_rawへ退避しsession_id/fingerprintを含まない
-        （_sanitize_signal_for_response参照）
+        （_sanitize_signal_for_response参照）。idsを指定しない通常の一覧では、
+        各行のdetailがDETAIL_MAX_CHARSを超える場合に切り詰め
+        detail_truncated: trueを付与する（DB上の値そのものは変更しない）。
+        全文が必要な場合はidsにid_rawを指定して再度呼ぶ（この経路は切り詰めない）
     """
+    if isinstance(status, str) and status.lower() == "null":
+        status = None
+    if isinstance(kind, str) and kind.lower() == "null":
+        kind = None
     if status is not None and status not in VALID_STATUSES:
         return {
             "error": {
@@ -238,6 +260,14 @@ def get_signals(
             "error": {
                 "code": "VALIDATION_ERROR",
                 "message": _invalid_kind_message(kind),
+            }
+        }
+
+    if ids and len(ids) > _MAX_LIMIT:
+        return {
+            "error": {
+                "code": "VALIDATION_ERROR",
+                "message": f"ids must have at most {_MAX_LIMIT} items, got {len(ids)}",
             }
         }
 
@@ -254,6 +284,10 @@ def get_signals(
         if kind is not None:
             where_parts.append("kind = ?")
             params.append(kind)
+        if ids:
+            placeholders = ",".join("?" * len(ids))
+            where_parts.append(f"id IN ({placeholders})")
+            params.extend(ids)
         where_clause = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
 
         total_count = conn.execute(
@@ -271,9 +305,25 @@ def get_signals(
 
         signals = [_sanitize_signal_for_response(_signal_row_to_dict(row)) for row in rows]
 
+        truncated_ids: list[int] = []
+        if not ids:
+            for signal in signals:
+                detail = signal.get("detail")
+                if detail and len(detail) > DETAIL_MAX_CHARS:
+                    signal["detail"] = detail[:DETAIL_MAX_CHARS]
+                    signal["detail_truncated"] = True
+                    truncated_ids.append(signal["id_raw"])
+
         result: dict = {"signals": signals, "total_count": total_count}
         if include_stats:
             result["stats"] = _compute_stats(conn)
+        if truncated_ids:
+            result["next"] = [
+                {
+                    "tool": "get_signals",
+                    "args": {"ids": truncated_ids, "status": None, "limit": len(truncated_ids)},
+                }
+            ]
         return result
     except Exception as e:
         return {"error": {"code": "DATABASE_ERROR", "message": str(e)}}
@@ -379,8 +429,8 @@ def _compute_stats(conn: sqlite3.Connection) -> dict:
 def update_signal(
     signal_id: int,
     status: str,
-    promoted_type: str | None = None,
-    promoted_id: int | None = None,
+    promoted_type: Optional[str] = None,
+    promoted_id: Optional[int] = None,
 ) -> dict:
     """シグナルのトリアージ状態を遷移する。
 

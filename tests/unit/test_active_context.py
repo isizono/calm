@@ -4,33 +4,34 @@
 表示整形関数はhooks/session_start_hook.pyに配置されている。
 """
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from unittest.mock import patch
 
 import pytest
-
+from src import config
+from src.db import get_connection
+from src.services.topic_service import add_topic
+from src.services.activity_service import (
+    add_activity,
+    update_activity,
+    get_active_domains,
+    get_active_activities_by_tag,
+    get_pinned_active_activities,
+)
+from src.services.pin_service import add_pin
+from src.services.ask_service import add_ask
+from src.services import goal_service
+from src.config import SNOOZE_DURATION_DAYS
 import src.services.embedding_service as emb
+from tests.helpers import add_decision
 from hooks.session_start_hook import (
-    _DETERMINISTIC_RENDER_NOTICE,
-    _LEGEND_LINE,
-    _TIER2_MAX_ITEMS,
     _build_activities_section,
     _build_fixed_nav,
     _calc_elapsed_days,
+    _DETERMINISTIC_RENDER_NOTICE,
+    _LEGEND_LINE,
+    _UNDISPLAYED_EXAMPLE_DOMAINS,
 )
-from src.db import get_connection
-from src.services import goal_service
-from src.services.activity_service import (
-    add_activity,
-    get_active_activities_by_tag,
-    get_active_domains,
-    get_pinned_active_activities,
-    update_activity,
-)
-from src.services.ask_service import add_ask
-from src.services.pin_service import add_pin
-from src.services.topic_service import add_topic
-from tests.helpers import add_decision
 
 _NAV_BASE = (
     "作業開始時は該当アクティビティにcheck_in（なければ作成 — activity-start）。"
@@ -73,7 +74,7 @@ def _age_activities(hours: int = 48) -> None:
     """全アクティビティの created_at / updated_at を指定時間前に書き戻す。"""
     conn = get_connection()
     try:
-        past = (datetime.now(UTC) - timedelta(hours=hours)).strftime(
+        past = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         conn.execute(
@@ -88,7 +89,7 @@ def _set_updated_at_days_ago(activity_id: int, days: int) -> None:
     """指定activityのupdated_atをdays日前に書き換える（境界値テスト用）。"""
     conn = get_connection()
     try:
-        past = (datetime.now(UTC) - timedelta(days=days)).strftime(
+        past = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         conn.execute(
@@ -105,18 +106,49 @@ def test_deterministic_render_notice_constant():
     assert "再フォーマットや優先順の再評価をせず" in _DETERMINISTIC_RENDER_NOTICE
 
 
-def test_tier2_max_items_constant():
-    """階層 2 の上限は 5"""
-    assert _TIER2_MAX_ITEMS == 5
+def test_tier2_max_items_constant(monkeypatch):
+    """環境変数が未設定なら階層 2 の上限は既定の5"""
+    import importlib.util
+
+    monkeypatch.delenv("CALM_TIER2_MAX_ITEMS", raising=False)
+    spec = importlib.util.find_spec("src.config")
+    fresh_config = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fresh_config)
+
+    assert fresh_config.TIER2_MAX_ITEMS == 5
+
+
+def test_tier2_max_items_reads_env_var(monkeypatch):
+    """CALM_TIER2_MAX_ITEMSを設定してconfigを読み込むと、その値になる"""
+    import importlib.util
+
+    monkeypatch.setenv("CALM_TIER2_MAX_ITEMS", "10")
+    spec = importlib.util.find_spec("src.config")
+    fresh_config = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fresh_config)
+
+    assert fresh_config.TIER2_MAX_ITEMS == 10
+
+
+def test_tier2_max_items_negative_env_clamped_to_zero(monkeypatch):
+    """負値を指定しても階層2の上限は0に丸まり、末尾スライスで意図と逆に出ない"""
+    import importlib.util
+
+    monkeypatch.setenv("CALM_TIER2_MAX_ITEMS", "-1")
+    spec = importlib.util.find_spec("src.config")
+    fresh_config = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fresh_config)
+
+    assert fresh_config.TIER2_MAX_ITEMS == 0
 
 
 def test_calc_elapsed_days_today():
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     assert _calc_elapsed_days(now) == 0
 
 
 def test_calc_elapsed_days_3_days_ago():
-    three_days_ago = (datetime.now(UTC) - timedelta(days=3)).isoformat()
+    three_days_ago = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
     assert _calc_elapsed_days(three_days_ago) == 3
 
 
@@ -215,7 +247,7 @@ def test_get_active_activities_by_tag_excludes_completed(temp_db):
 
 
 def test_get_active_activities_by_tag_sort_order(temp_db):
-    add_activity(title="Pending Activity", description="Desc", tags=["domain:test-proj"], check_in=False)
+    r1 = add_activity(title="Pending Activity", description="Desc", tags=["domain:test-proj"], check_in=False)
     r2 = add_activity(title="In Progress Activity", description="Desc", tags=["domain:test-proj"], check_in=False)
     update_activity(r2["activity_id"], status="in_progress")
     tag_id = _get_tag_id("domain", "test-proj")
@@ -464,7 +496,7 @@ class TestUndisplayedSection:
         result = _build_active_context_wrapper()
 
         assert "## 未表示 3件" in result
-        line = next(ln for ln in result.splitlines() if ln.startswith("- myapp"))
+        line = next(l for l in result.splitlines() if l.startswith("- myapp"))
         assert line.count("[作業] Hidden") == 2
         assert line.endswith("など")
 
@@ -474,7 +506,7 @@ class TestUndisplayedSection:
 
         result = _build_active_context_wrapper()
 
-        line = next(ln for ln in result.splitlines() if ln.startswith("- myapp"))
+        line = next(l for l in result.splitlines() if l.startswith("- myapp"))
         assert line == "- myapp 1件：[作業] Solo"
         assert "など" not in line
 
@@ -490,6 +522,93 @@ class TestUndisplayedSection:
         idx_big = result.index("- big", idx_section)
         idx_small = result.index("- small", idx_section)
         assert idx_big < idx_small
+
+    def _add_domain_activities(self, name: str, n: int) -> None:
+        for i in range(n):
+            add_activity(
+                title=f"[作業] {name}-{i}", description="Desc",
+                tags=[f"domain:{name}"], check_in=False,
+            )
+
+    @pytest.mark.parametrize(
+        "counts",
+        [
+            [("d0", 3), ("d1", 2), ("d2", 1)],
+            [("d0", 4), ("d1", 3), ("d2", 2), ("d3", 1)],
+        ],
+        ids=["3domains", "4domains"],
+    )
+    def test_four_or_fewer_domains_no_fold(self, temp_db, counts):
+        """domainが4個以下なら、まとめ行が出ず、全domainが例示付きで出る"""
+        for name, n in counts:
+            self._add_domain_activities(name, n)
+
+        result = _build_active_context_wrapper()
+
+        assert "ほか" not in result
+        for name, n in counts:
+            assert f"- {name} {n}件：" in result
+
+    def test_five_domains_folds_to_top_three_plus_summary(self, temp_db):
+        """5 domain（件数がすべて異なる）なら、例示行がちょうど3行、件数の
+        多い順に出て、そのあとにまとめ行が1行出る"""
+        counts = [("d0", 5), ("d1", 4), ("d2", 3), ("d3", 2), ("d4", 1)]
+        for name, n in counts:
+            self._add_domain_activities(name, n)
+
+        result = _build_active_context_wrapper()
+
+        assert "## 未表示 15件" in result
+        section = result[result.index("## 未表示"):]
+        example_lines = [
+            line for line in section.splitlines()
+            if line.startswith("- ") and not line.startswith("- ほか")
+        ]
+        assert len(example_lines) == _UNDISPLAYED_EXAMPLE_DOMAINS
+        assert [line.split(" ")[1] for line in example_lines] == ["d0", "d1", "d2"]
+
+        summary_line = next(line for line in section.splitlines() if line.startswith("- ほか"))
+        assert summary_line == "- ほか2 domain：d3 2件、d4 1件"
+
+    def test_undisplayed_heading_unaffected_by_folding(self, temp_db):
+        """未表示の見出し総数は、畳んでも畳まなくても変わらない"""
+        counts = [("d0", 3), ("d1", 2), ("d2", 2), ("d3", 1), ("d4", 1)]
+        for name, n in counts:
+            self._add_domain_activities(name, n)
+
+        result = _build_active_context_wrapper()
+
+        assert "## 未表示 9件" in result
+
+    def test_many_domains_summary_lists_all_without_truncation_within_budget(self, temp_db):
+        """まとめ行に、例示されなかったdomainが件数の多い順で漏れなく出る
+        （30 domainでも、どのdomain名も一覧から消えない）。組み立て結果は
+        既定予算4000字に収まり、固定ナビで終わる（切り詰めの印が出ない）"""
+        top = [("t0", 5), ("t1", 4), ("t2", 3)]
+        # 偶奇で件数を入れ違いに作り、まとめ行がdomain作成順ではなく
+        # 件数降順で並ぶことを検証する
+        rest = [(f"r{i:02d}", 2 if i % 2 == 0 else 1) for i in range(27)]
+        for name, n in top + rest:
+            self._add_domain_activities(name, n)
+
+        result = _build_active_context_wrapper()
+
+        total = sum(n for _, n in top + rest)
+        assert f"## 未表示 {total}件" in result
+
+        section = result[result.index("## 未表示"):]
+        summary_line = next(line for line in section.splitlines() if line.startswith("- ほか"))
+        assert summary_line.startswith(f"- ほか{len(rest)} domain：")
+        for name, _ in rest:
+            assert name in summary_line
+
+        entries = summary_line.split("：", 1)[1].split("、")
+        summary_counts = [int(entry.split(" ")[-1].rstrip("件")) for entry in entries]
+        assert summary_counts == sorted(summary_counts, reverse=True)
+
+        assert len(result) <= config.INJECTION_BUDGET_ACTIVITIES_CHARS
+        assert "切り詰め" not in result
+        assert result.endswith(_build_fixed_nav() + "\n")
 
 
 def test_build_activities_section_no_topic_section(temp_db):
@@ -520,6 +639,26 @@ def test_build_activities_section_tier2_capped_at_five(temp_db):
     tier2_block = result[idx_tier2:] if next_section == -1 else result[idx_tier2:next_section]
     shown = [line for line in tier2_block.splitlines() if line.startswith("- #")]
     assert len(shown) == 5
+    assert "## 未表示 2件" in result
+
+
+def test_build_activities_section_tier2_max_items_env_override(temp_db, monkeypatch):
+    """config.TIER2_MAX_ITEMSを増やすと、階層2の表示件数も連動して増える"""
+    monkeypatch.setattr(config, "TIER2_MAX_ITEMS", 10)
+    for i in range(12):
+        r = add_activity(
+            title=f"[作業] Activity {i}", description="Desc",
+            tags=["domain:myapp"], check_in=False,
+        )
+        update_activity(r["activity_id"], status="in_progress")
+
+    result = _build_active_context_wrapper()
+
+    idx_tier2 = result.index("## 優先")
+    next_section = result.find("\n## ", idx_tier2 + 1)
+    tier2_block = result[idx_tier2:] if next_section == -1 else result[idx_tier2:next_section]
+    shown = [line for line in tier2_block.splitlines() if line.startswith("- #")]
+    assert len(shown) == 10
     assert "## 未表示 2件" in result
 
 
@@ -561,7 +700,7 @@ def test_build_activities_section_raises_on_invalid_db(temp_db):
     # より優先されてこの無効パスへの差し替えが素通りしてしまうため、同時に上書きする。
     env_set("CALM_DB_PATH", "/nonexistent/path/test.db")
 
-    with pytest.raises(Exception):  # noqa: B017
+    with pytest.raises(Exception):
         _build_active_context_wrapper()
 
     os.environ["DISCUSSION_DB_PATH"] = temp_db
@@ -928,6 +1067,119 @@ class TestOrchChildTree:
         assert f"- #{child['activity_id']}" not in result
         assert "## 未表示" not in result
 
+    def test_pending_parent_surfaces_with_heartbeating_child(self, temp_db):
+        """pendingの親でも、openな子がin_progressでheartbeat中なら親が子付きで
+        優先に出て、子は未表示に数えない"""
+        parent = add_activity(title="[統合] 親K", description="d", tags=["domain:myapp"], check_in=False)
+        child = add_activity(title="[作業] 動いている子", description="d", tags=["domain:myapp"], check_in=False)
+        update_activity(child["activity_id"], status="in_progress")
+        self._bind_children(parent["activity_id"], [
+            {
+                "statement": "動いている子が終わる", "actor": "claude",
+                "bound": {"type": "activity", "id": child["activity_id"]},
+            },
+        ])
+        _set_updated_at_days_ago(parent["activity_id"], 30)
+        _set_updated_at_days_ago(child["activity_id"], 30)
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE activities SET last_heartbeat_at = datetime('now') WHERE id = ?",
+                (child["activity_id"],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = _build_active_context_wrapper()
+
+        assert f"- #{parent['activity_id']} [統合] 親K" in result
+        assert f"#{child['activity_id']} [作業] 動いている子" in result
+        assert "## 未表示" not in result
+
+    def test_stale_parent_surfaces_with_recently_updated_child(self, temp_db):
+        """in_progressでもupdated_atが鮮度の上限を超えた親は、openな子が最近
+        更新されていれば子付きで優先に出る"""
+        parent = add_activity(title="[統合] 親L", description="d", tags=["domain:myapp"], check_in=False)
+        update_activity(parent["activity_id"], status="in_progress")
+        child = add_activity(title="[作業] 最近の子", description="d", tags=["domain:myapp"], check_in=False)
+        self._bind_children(parent["activity_id"], [
+            {
+                "statement": "最近の子が終わる", "actor": "claude",
+                "bound": {"type": "activity", "id": child["activity_id"]},
+            },
+        ])
+        _set_updated_at_days_ago(parent["activity_id"], 30)
+        _set_updated_at_days_ago(child["activity_id"], 1)
+
+        result = _build_active_context_wrapper()
+
+        assert f"- #{parent['activity_id']} [統合] 親L" in result
+        assert f"#{child['activity_id']} [作業] 最近の子" in result
+        assert "## 未表示" not in result
+
+    def test_pending_parent_promoted_by_in_progress_child_without_heartbeat(self, temp_db):
+        """heartbeatが無くても、in_progressの子が最近更新されていればpendingの親が
+        優先に出る（状態の引き上げがheartbeatに依存しない）"""
+        parent = add_activity(title="[統合] 親N", description="d", tags=["domain:myapp"], check_in=False)
+        child = add_activity(title="[作業] 着手済みの子", description="d", tags=["domain:myapp"], check_in=False)
+        update_activity(child["activity_id"], status="in_progress")
+        self._bind_children(parent["activity_id"], [
+            {
+                "statement": "着手済みの子が終わる", "actor": "claude",
+                "bound": {"type": "activity", "id": child["activity_id"]},
+            },
+        ])
+        _set_updated_at_days_ago(parent["activity_id"], 30)
+
+        result = _build_active_context_wrapper()
+
+        assert f"- #{parent['activity_id']} [統合] 親N" in result
+        assert f"#{child['activity_id']} [作業] 着手済みの子" in result
+
+    @pytest.mark.parametrize(
+        "condition_state, child_status",
+        [("satisfied", "in_progress"), ("open", "completed")],
+        ids=["condition_satisfied", "child_completed"],
+    )
+    def test_parent_not_refreshed_by_finished_child(self, temp_db, condition_state, child_status):
+        """条件が済んだ子や、子自身が終了済みの子からは鮮度を引き継がない"""
+        parent = add_activity(title="[統合] 親O", description="d", tags=["domain:myapp"], check_in=False)
+        update_activity(parent["activity_id"], status="in_progress")
+        child = add_activity(title="[作業] 済んだ側の子", description="d", tags=["domain:myapp"], check_in=False)
+        update_activity(child["activity_id"], status=child_status)
+        self._bind_children(parent["activity_id"], [
+            {
+                "statement": "済んだ側の子が終わる", "actor": "claude", "state": condition_state,
+                "bound": {"type": "activity", "id": child["activity_id"]},
+            },
+        ])
+        _set_updated_at_days_ago(parent["activity_id"], 30)
+
+        result = _build_active_context_wrapper()
+
+        assert f"- #{parent['activity_id']}" not in result
+
+    def test_stale_parent_and_children_stay_undisplayed(self, temp_db):
+        """親も子も古ければ従来どおり両方とも未表示に数える"""
+        parent = add_activity(title="[統合] 親M", description="d", tags=["domain:myapp"], check_in=False)
+        update_activity(parent["activity_id"], status="in_progress")
+        child = add_activity(title="[作業] 古い子", description="d", tags=["domain:myapp"], check_in=False)
+        update_activity(child["activity_id"], status="in_progress")
+        self._bind_children(parent["activity_id"], [
+            {
+                "statement": "古い子が終わる", "actor": "claude",
+                "bound": {"type": "activity", "id": child["activity_id"]},
+            },
+        ])
+        _set_updated_at_days_ago(parent["activity_id"], 30)
+        _set_updated_at_days_ago(child["activity_id"], 30)
+
+        result = _build_active_context_wrapper()
+
+        assert f"- #{parent['activity_id']}" not in result
+        assert "## 未表示 2件" in result
+
     def test_unresolved_deps_not_queried_twice_for_open_child(self, temp_db):
         """未完了の子のdepends_on問い合わせは、blocked_by用のバッチ取得と
         _classify_children内の判定とで重複して発行されない（N+1回避の契約）"""
@@ -977,3 +1229,72 @@ class TestOrchChildTree:
         result = _build_active_context_wrapper()
 
         assert f"#{parent['activity_id']} [統合] 親J  ✓1 ▷1 ◷1" in result
+
+
+class TestExpiredSnoozedDisplayedAsPending:
+    """期限切れsnoozedは一覧上でpending相当として扱われる（表示時の評価のみ、
+    DBのstatusは書き換えない）。session_start_hookはget_activitiesのような
+    一括UPDATEを踏まないため、この表示時評価が無いと期限切れsnoozedは
+    一覧からも未表示件数からも永久に消える。
+    """
+
+    def test_expired_snoozed_counted_as_undisplayed_pending(self, temp_db):
+        """非pinnedの期限切れsnoozedは、非pinnedのpendingと同様に『未表示』節へ
+        （tier1・tier2には出ず、件数と例示タイトルの内訳としてのみ）現れる"""
+        r = add_activity(
+            title="[作業] 期限切れsnoozed", description="Desc",
+            tags=["domain:myapp"], check_in=False,
+        )
+        update_activity(r["activity_id"], status="snoozed")
+        _set_updated_at_days_ago(r["activity_id"], SNOOZE_DURATION_DAYS + 1)
+
+        result = _build_active_context_wrapper()
+
+        assert "## 未表示 1件" in result
+        assert "myapp 1件：[作業] 期限切れsnoozed" in result
+
+    def test_unexpired_snoozed_not_shown_at_all(self, temp_db):
+        """期限内のsnoozedは一覧にも未表示件数にも出ない（固定ナビのみ）"""
+        r = add_activity(
+            title="[作業] 期限内snoozed", description="Desc",
+            tags=["domain:myapp"], check_in=False,
+        )
+        update_activity(r["activity_id"], status="snoozed")
+
+        result = _build_active_context_wrapper()
+
+        assert result == _NAV_BASE
+
+    def test_expired_snoozed_display_does_not_rewrite_db(self, temp_db):
+        """表示時の評価であり、DBのstatusはsnoozedのまま変わらない"""
+        r = add_activity(
+            title="[作業] 期限切れsnoozed", description="Desc",
+            tags=["domain:myapp"], check_in=False,
+        )
+        update_activity(r["activity_id"], status="snoozed")
+        _set_updated_at_days_ago(r["activity_id"], SNOOZE_DURATION_DAYS + 1)
+
+        _build_active_context_wrapper()
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT status FROM activities WHERE id = ?", (r["activity_id"],)
+            ).fetchone()
+            assert row["status"] == "snoozed"
+        finally:
+            conn.close()
+
+    def test_pinned_expired_snoozed_shown_in_tier2(self, temp_db):
+        """pinnedかつ期限切れsnoozedは、pinnedかつpendingと同様に階層2へ表示される"""
+        r = add_activity(
+            title="[作業] pinned期限切れsnoozed", description="Desc",
+            tags=["domain:myapp"], check_in=False,
+        )
+        add_pin("tag", "domain:myapp", "activity", r["activity_id"])
+        update_activity(r["activity_id"], status="snoozed")
+        _set_updated_at_days_ago(r["activity_id"], SNOOZE_DURATION_DAYS + 1)
+
+        result = _build_active_context_wrapper()
+
+        assert "[作業] pinned期限切れsnoozed" in result

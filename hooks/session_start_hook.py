@@ -15,7 +15,7 @@ checkin_tier_service側が埋め込む）。
 import json
 import os
 import sys
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 # プロジェクトルートをパスに追加（src.db等の参照用）
@@ -23,31 +23,29 @@ _project_root = Path(__file__).resolve().parents[1]
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
-from hooks.hook_state import HookState
-from hooks.readable_id_format import format_readable_id
-from hooks.signal_capture import try_capture_signal
 from src import config
 from src.db import get_connection, get_db_path
 from src.harness import select_harness
-from src.services import ask_service, habit_projection, session_registry_service
 from src.services.activity_service import (
-    get_active_activities_by_tag_with_conn,
     get_active_domains_with_conn,
+    get_active_activities_by_tag_with_conn,
     get_pinned_active_activities_with_conn,
 )
-from src.services.backup_service import (
-    health_check,
-    should_take_snapshot,
-    take_snapshot,
-)
+from hooks.hook_state import HookState
+from hooks.readable_id_format import format_readable_id
+from src.services import ask_service
 from src.services.habit_service import (
     get_active_habit_contents_with_conn,
     list_intelligently_habit_manifest_with_conn,
 )
+from src.services import habit_projection
+from src.services.backup_service import health_check, should_take_snapshot, take_snapshot
 from src.services.injection_compositor import Section, compose
+from src.services.search_health_service import check_search_health
+from src.services import session_registry_service
+from hooks.signal_capture import try_capture_signal
 
 _RECENT_CREATED_HOURS = 24
-_TIER2_MAX_ITEMS = 5
 _PIN_MARK = "\U0001f4cc"
 _NEW_MARK = "\U0001f195"
 _CHILD_MARK_FAILED = "✕"  # ✕
@@ -63,8 +61,8 @@ _LEGEND_LINE = (
 def _calc_elapsed_days(updated_at_str: str) -> int:
     """updated_atからの経過日数を計算する。"""
     try:
-        updated = datetime.fromisoformat(updated_at_str).replace(tzinfo=UTC)
-        now = datetime.now(UTC)
+        updated = datetime.fromisoformat(updated_at_str).replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
         return (now - updated).days
     except (ValueError, TypeError):
         return 0
@@ -115,8 +113,8 @@ def _get_created_ats(conn, activity_ids: list[int]) -> dict[int, str]:
 def _is_recent_created(created_at_str: str, hours: int = _RECENT_CREATED_HOURS) -> bool:
     """created_atが指定時間以内かを判定する。"""
     try:
-        created = datetime.fromisoformat(created_at_str).replace(tzinfo=UTC)
-        now = datetime.now(UTC)
+        created = datetime.fromisoformat(created_at_str).replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
         return (now - created).total_seconds() < hours * 3600
     except (ValueError, TypeError):
         return False
@@ -132,7 +130,8 @@ def _fetch_children_by_parent(conn, parent_ids: list[int]) -> dict[int, list[dic
 
     Returns:
         {parent_id: [{"parent_id", "condition_id", "state", "child_id",
-                      "child_title"}, ...]（condition_id昇順）, ...}
+                      "child_title", "child_status", "child_updated_at",
+                      "child_last_heartbeat_at"}, ...]（condition_id昇順）, ...}
     """
     if not parent_ids:
         return {}
@@ -140,7 +139,9 @@ def _fetch_children_by_parent(conn, parent_ids: list[int]) -> dict[int, list[dic
     rows = conn.execute(
         f"""
         SELECT ga.activity_id AS parent_id, gc.id AS condition_id, gc.state AS state,
-               gc.bound_id AS child_id, c.title AS child_title
+               gc.bound_id AS child_id, c.title AS child_title,
+               c.status AS child_status, c.updated_at AS child_updated_at,
+               c.last_heartbeat_at AS child_last_heartbeat_at
         FROM goal_activities ga
         JOIN goal_conditions gc ON gc.goal_id = ga.goal_id AND gc.bound_type = 'activity'
         JOIN activities c ON c.id = gc.bound_id
@@ -153,6 +154,38 @@ def _fetch_children_by_parent(conn, parent_ids: list[int]) -> dict[int, list[dic
     for r in rows:
         result.setdefault(r["parent_id"], []).append(dict(r))
     return result
+
+
+def _inherit_freshness_from_children(
+    all_active: list[dict], children_by_parent: dict[int, list[dict]]
+) -> None:
+    """親の行のupdated_at・statusを、条件がopenの子の進みで引き上げる（行をその場で書き換える）。
+
+    子のcheck_inやheartbeatは親の行を更新しない。openな子は親の下にしか出さない
+    ため、引き上げないと担い手のいない親が鮮度切れやpendingで階層2から落ちたとき、
+    動いている子までまとめて一覧から消える。実効の更新時刻は親自身と、条件が
+    openかつ子自身が終了していない（pending/in_progress）子のupdated_at・
+    last_heartbeat_atのうち最新（いずれもSQLiteの'YYYY-MM-DD HH:MM:SS'形式
+    なので文字列で比べられる）。その子にin_progressが1件でもあれば親も
+    in_progressとして扱う。書き換えた値は階層判定に限らず、この一覧の組み立て
+    全体（並び順・未表示の例示）で使われる。子の値はDBの行から読むため引き継ぎは
+    1段だけで、孫の進みは祖父に伝わらない。
+    """
+    for a in all_active:
+        open_children = [
+            c
+            for c in children_by_parent.get(a["id"], [])
+            if c["state"] == "open" and c["child_status"] in ("pending", "in_progress")
+        ]
+        if not open_children:
+            continue
+        a["updated_at"] = max(
+            [a["updated_at"] or ""]
+            + [c["child_updated_at"] or "" for c in open_children]
+            + [c["child_last_heartbeat_at"] or "" for c in open_children]
+        )
+        if any(c["child_status"] == "in_progress" for c in open_children):
+            a["status"] = "in_progress"
 
 
 def _classify_children(
@@ -254,13 +287,19 @@ def _build_fixed_nav() -> str:
     )
 
 
+_UNDISPLAYED_EXAMPLE_DOMAINS = 3
+
+
 def _build_undisplayed_lines(
     undisplayed: list[dict], domains: list[dict], domain_pool: dict[int, list[dict]]
 ) -> list[str]:
     """末尾『未表示』節の行群を組み立てる。
 
     domainごとの件数と、そのdomainで最近更新された順に2件のタイトルを
-    例示する（決定事項「未表示はdomain別の件数と各2件の例で出す」）。
+    例示する。未表示のいるdomainが `_UNDISPLAYED_EXAMPLE_DOMAINS + 1` 件を
+    超えるとき（まとめ行が2 domain以上を受け持つとき）だけ畳み、件数上位
+    `_UNDISPLAYED_EXAMPLE_DOMAINS` 件は例示付きで出し、残りは名前と件数だけを
+    件数降順で1行にまとめる（省略せず全domain分を載せる）。
     domainタグを持たない未表示activity（pin経由のみ）は、そのタグを持つ
     domainが無いため、どの内訳行にも現れない（見出しの総数には数えるが、
     domain単位の内訳の対象外という受容済みの隙間）。
@@ -275,12 +314,20 @@ def _build_undisplayed_lines(
             groups.append((domain["name"], members))
     groups.sort(key=lambda g: len(g[1]), reverse=True)
 
+    # 畳んでも残りが1 domainだけなら例示行と変わらないため、まとめ行は2 domain以上を受け持つときに限る
+    fold = len(groups) > _UNDISPLAYED_EXAMPLE_DOMAINS + 1
+    shown_groups = groups[:_UNDISPLAYED_EXAMPLE_DOMAINS] if fold else groups
+
     lines = [f"## 未表示 {len(undisplayed)}件"]
-    for name, members in groups:
+    for name, members in shown_groups:
         ordered = sorted(members, key=lambda a: a["updated_at"], reverse=True)
         examples = [a["title"] for a in ordered[:2]]
         suffix = " など" if len(members) > len(examples) else ""
         lines.append(f"- {name} {len(members)}件：{'、'.join(examples)}{suffix}")
+    if fold:
+        rest = groups[_UNDISPLAYED_EXAMPLE_DOMAINS:]
+        summary = "、".join(f"{name} {len(members)}件" for name, members in rest)
+        lines.append(f"- ほか{len(rest)} domain：{summary}")
     return lines
 
 
@@ -294,7 +341,8 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
     階層 2「優先」: 階層 1 に入らなかった activity のうち、
         (in_progress かつ updated_at が config.TIER2_MAX_AGE_DAYS 日以内) または
         (pinned かつ updated_at が config.PIN_SURFACE_DECAY_DAYS 日以内) を集約し、
-        pinned 先頭 → updated_at 降順で上位 5 件（flat、topic 別グルーピングなし）。
+        pinned 先頭 → updated_at 降順で上位 `config.TIER2_MAX_ITEMS` 件（既定5、
+        flat、topic 別グルーピングなし）。
         pinned が decay 日数を超えると階層 2 から外れる（pin 自体は残り、
         activity を touch すれば updated_at 更新により自動復帰する）。
 
@@ -304,7 +352,8 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
     （open状態）の子を `|` `├-` `└-` で行の下にぶら下げ、行の末尾に子の
     内訳（✓達成数 ▷着手できる数 ◷待ち数 ✕失敗数のうち0件でないもの）を
     付ける。openな子は必ず親の下にのみ出すため階層 1・2 の候補プールから
-    除外する。束縛条件がsatisfied/waivedになった子（✓の内訳に数える分）は
+    除外し、その代わり親の鮮度と状態をopenな子から引き継ぐ
+    （_inherit_freshness_from_children）。束縛条件がsatisfied/waivedになった子（✓の内訳に数える分）は
     条件の充足と子自身のactivityの終了が別操作であるため除外しない
     （子が非completedのまま残っていれば通常のactivityと同じ基準で候補
     プールに残り、選ばれなければ未表示に数える）。
@@ -359,6 +408,7 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
     # 基準で候補プールに残り、選ばれなければ未表示に数える（状態を問わず
     # 除外すると、まだ動いている作業が一覧から消えてしまう）。
     child_ids_excluded_from_pool = set(open_child_ids)
+    _inherit_freshness_from_children(all_active, children_by_parent)
 
     seen_ids: set[int] = set()
 
@@ -422,7 +472,7 @@ def _build_activities_section(conn, session_id: str | None = None, source: str |
     ]
     tier2_pool.sort(key=lambda a: (a["updated_at"], a["id"]), reverse=True)
     tier2_pool.sort(key=lambda a: 0 if a["id"] in pinned_ids else 1)
-    tier2 = tier2_pool[:_TIER2_MAX_ITEMS]
+    tier2 = tier2_pool[:config.TIER2_MAX_ITEMS]
     for a in tier2:
         seen_ids.add(a["id"])
 
@@ -754,6 +804,20 @@ def _section_text_len(lines: list[str]) -> int:
     return sum(len(line) for line in lines) + len(lines)
 
 
+def _ask_blocks_suffix(ask: dict) -> str:
+    """askが止めている作業の題を行末に添える文字列（blocksが無ければ空）。
+
+    題は最大2件まで並べ、超過分は件数で示す。
+    """
+    titles = [b["title"] for b in ask.get("blocks") or [] if b.get("title")]
+    if not titles:
+        return ""
+    shown = "／".join(titles[:2])
+    if len(titles) > 2:
+        shown += f" 他{len(titles) - 2}件"
+    return f" ［止めている作業: {shown}］"
+
+
 def _render_open_asks_section(open_result: dict, pending_result: dict, budget_chars: int) -> str:
     """open_result/pending_resultから、セクション全体のテキストを組み立てる。
 
@@ -808,7 +872,7 @@ def _render_open_asks_section(open_result: dict, pending_result: dict, budget_ch
     for label, bucket in buckets:
         bucket_lines = [f"## {label}"]
         for a in bucket["meta"]:
-            bucket_lines.append(f"- [meta] (#{a['id_raw']}) {a['question']}")
+            bucket_lines.append(f"- [meta] (#{a['id_raw']}) {a['question']}{_ask_blocks_suffix(a)}")
         if bucket["meta"]:
             bucket_lines.append(_OPEN_ASKS_META_CTA)
         required_by_bucket.append(bucket_lines)
@@ -833,14 +897,14 @@ def _render_open_asks_section(open_result: dict, pending_result: dict, budget_ch
     # 非メタ行・残り件数行（調整可能要素）を、残り予算(available)の範囲内で
     # バケット順に1行ずつ追加する。
     optional_by_bucket: list[list[str]] = []
-    for (_label, bucket), reserved in zip(buckets, reserved_by_bucket, strict=False):
+    for (label, bucket), reserved in zip(buckets, reserved_by_bucket):
         bucket_optional: list[str] = []
         non_meta = bucket["non_meta"]
         total_count = bucket["non_meta_total_count"]
 
         shown = 0
         for a in non_meta:
-            candidate = f"- (#{a['id_raw']}) {a['question']}"
+            candidate = f"- (#{a['id_raw']}) {a['question']}{_ask_blocks_suffix(a)}"
             cost = len(candidate) + 1
             if cost <= available:
                 bucket_optional.append(candidate)
@@ -860,7 +924,7 @@ def _render_open_asks_section(open_result: dict, pending_result: dict, budget_ch
         optional_by_bucket.append(bucket_optional)
 
     lines: list[str] = []
-    for bucket_required, bucket_optional in zip(required_by_bucket, optional_by_bucket, strict=False):
+    for bucket_required, bucket_optional in zip(required_by_bucket, optional_by_bucket):
         lines.extend(bucket_required)
         lines.extend(bucket_optional)
     lines.append(_OPEN_ASKS_GLOBAL_CTA)
@@ -936,7 +1000,7 @@ def _build_transcript_path_section(
     MCPサーバーのサブプロセスにはtranscript_pathが渡らないため（session_id同様、
     Claude Code側にIPC経路が無い）、SessionStart hookのstdinで受け取った値を
     ここで会話コンテキストに載せ、Claudeが明示引数として`detect_reask_candidates`等の
-    tool呼び出しに転記する方式を取る。用途はsync-memoryステップ9（聞き返しの後追い検出）。
+    tool呼び出しに転記する方式を取る。用途はsync-memoryステップ5（聞き返しの後追い検出）。
     """
     if not transcript_path:
         return ""
@@ -981,11 +1045,53 @@ def _build_snapshot_section(conn, session_id: str | None = None, source: str | N
     return ""
 
 
+def _build_search_health_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # conn, session_id, source, **_kwargs: 全セクション共通シグネチャ
+    """search_telemetryの直近記録から検索の縮退・クエリ拡張停止を検知する。
+
+    閾値超過時のみ1行の注意を返し、signal_eventsにmachine_errorとして記録する
+    （summaryは数値を含まない固定文のため、同じ異常が続く間はfingerprint dedupで
+    1行に集約される。閾値を下回った後に再発したときは新規行になる）。
+    """
+    result = check_search_health(conn)
+    if result.is_healthy:
+        return ""
+
+    parts = [w.lstrip("- ") for w in result.warnings]
+    line = (
+        "⚠️ 検索品質の劣化を検知: " + "、".join(parts)
+        + "。search_telemetryのdiagnostics_jsonを集計して確認してください。"
+    )
+
+    if result.degraded_unhealthy:
+        try_capture_signal(
+            kind="machine_error",
+            summary="検索がキーワード検索のみへ縮退している割合が閾値を超えている",
+            source="hook:search_health",
+            detail=(
+                f"degraded_ratio={result.degraded_ratio:.3f} "
+                f"({result.degraded_count}/{result.degraded_sample_count})"
+            ),
+        )
+    if result.qe_unhealthy:
+        try_capture_signal(
+            kind="machine_error",
+            summary="クエリ拡張が発火していない状態が続いている",
+            source="hook:search_health",
+            detail=(
+                f"qe_fired_ratio={result.qe_fired_ratio:.3f} "
+                f"({result.qe_fired_count}/{result.qe_sample_count})"
+            ),
+        )
+
+    return line + "\n"
+
+
 # セクション登録レジストリ。priorityは既存builders順（出力順）をそのまま踏襲する。
 # budget_charsは各セクションの宣言予算（文字数）で、実出力がこれを超えた場合
 # compose()側でハード切り詰めされる（詳細はinjection_compositor.pyのdocstring参照）。
 _SECTIONS: list[Section] = [
     Section("snapshot", _build_snapshot_section, config.INJECTION_BUDGET_SNAPSHOT_CHARS, priority=0),
+    Section("search_health", _build_search_health_section, config.INJECTION_BUDGET_SEARCH_HEALTH_CHARS, priority=5),
     Section("activities", _build_activities_section, config.INJECTION_BUDGET_ACTIVITIES_CHARS, priority=10),
     Section("habits", _build_habits_section, config.INJECTION_BUDGET_HABITS_CHARS, priority=20),
     Section("signals", _build_signals_section, config.INJECTION_BUDGET_SIGNALS_CHARS, priority=40),

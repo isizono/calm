@@ -1,11 +1,13 @@
 ---
 name: ask-answer
-description: 【必須】open askを一覧して1件ずつ人間に提示し、回答が得られたらanswer_askで記録する最小フロー。get_asksを1回呼び、順に提示してanswer_askを呼ぶだけの直線的な手順を踏む。「/ask-answer」「askに答える」「open ask消化して」「溜まってるask片付けたい」「判断待ちに回答する」などで発動。継続的なopen ask滞留の監視はask-watch、起票前のquestion/context構成はask-compose、起票後の同型メタask起票はask-distillの担当のため発動しない。このスキルを経由せずにanswer_askを直接呼んではいけない。
+description: 【必須】open askを1件ずつ人間に提示し、回答をanswer_askで記録する。「askに答える」「open ask消化して」「溜まってるask片付けたい」などで発動。このスキルを経由せずにanswer_askを呼ばない。
 ---
 
 # ask-answer
 
 open askを一覧し、1件ずつ人間に提示して回答を得たら`answer_ask`で記録する最小skill。トリアージ判定・同型判定・監視ループは持たず、「聞く→答える→記録する」の直線フローだけを担当する。
+
+「askに答える」「open ask消化して」「溜まってるask片付けたい」「判断待ちに回答する」などの依頼で使う。
 
 ## 手順
 
@@ -21,7 +23,7 @@ open askを一覧し、1件ずつ人間に提示して回答を得たら`answer_
 - 回答本文（`answer_body`）は人間の発言・意図をそのまま反映したものであり、AIが自分の判断で作文して埋めてはならない
 - 1つのaskに対して`answer_ask`が成功するのは1回だけ。既にanswered/promoted/dismissed等になったaskへの再回答は拒否される
 - `triage_ask`（promote/dismiss）・`withdraw_ask`はこのskillの手順に含めない。答えた後の裁定（一般化ルールとして発効させるか、見送るか）は別経路（次回のcheck-in・`get_asks(triage_pending_only=true)`を使った非メタask自走裁定等）に委ねる。理由: このskillのスコープは「順に答えるだけ」であり、答えたその場でのtriageまでは含まない設計判断のため
-- `answer_ask`はaskがblockしているactivityのブロックを解除しない（解除するのは`triage_ask`のpromote/dismiss、または`withdraw_ask`のみ）。このskillで回答した後もblockは残った状態のままであることを、完了報告時に人間へ伝える
+- `answer_ask`だけではaskは「回答済み・未triage」として残り、止めているactivityのcheck_inにも回答済み未triageとして出続ける（待ちから外れるのは`triage_ask`のpromote/dismiss、または`withdraw_ask`）。このskillで回答した後もその状態のままであることを、完了報告時に人間へ伝える
 - 提示は常にタイトル・question・context等の内容ベースで行い、内部ID（`id_raw`）をユーザーに見せない
 - `kind="meta"`のaskも通常のaskと同じ手順（一覧→提示→`answer_ask`）で処理できる（`answer_ask`のシグネチャは`kind`に依存しない）。メタask固有の配置作業（`rule-placement` skillへの誘導）はこのskillの手順に含めない
 

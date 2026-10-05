@@ -5,70 +5,59 @@ import os
 import random
 import re
 import socket
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, get_args
-
-from fastmcp import Context, FastMCP
-from fastmcp.server.dependencies import get_context
-from starlette.middleware import Middleware
-from starlette.middleware.cors import CORSMiddleware
-from starlette.middleware.trustedhost import TrustedHostMiddleware
-from starlette.requests import Request
-from starlette.responses import JSONResponse
-
-from src.db import get_connection
-from src.infra.session_identity import get_caller_session_id
+from fastmcp import FastMCP, Context
+from typing import Literal, Optional, Union, get_args
 from src.services import (
-    activity_service,
-    ask_service,
-    budget_service,
-    citation_renderer,
-    decision_service,
-    destabilization_service,
+    topic_service,
     discussion_log_service,
-    export_bundle_service,
-    export_candidate_service,
-    feedback_service,
-    goal_service,
+    decision_service,
+    search_service,
+    activity_service,
+    material_service,
     habit_service,
+    relation_service,
+    pin_service,
+    retract_service,
+    destabilization_service,
+    timeline_service,
+    precedent_pull_service,
+    signal_service,
+    budget_service,
+    ask_service,
+    reask_detection_service,
+    export_candidate_service,
+    export_bundle_service,
     import_bundle_service,
     instance_service,
-    material_service,
     overview_service,
-    pin_service,
-    precedent_pull_service,
-    reask_detection_service,
-    relation_service,
-    response_budget,
-    retract_service,
-    search_service,
-    session_ledger_service,
-    session_registry_service,
-    signal_service,
-    timeline_service,
-    topic_service,
-)
-from src.services.checkin_tier_service import (
-    TIER_FORM_BUDGET_POLICY,
+    goal_service,
+    feedback_service,
 )
 from src.services.checkin_tier_service import (
     collect_and_assemble as _check_in,
+    TIER_FORM_BUDGET_POLICY,
 )
-from src.services.tag_analysis_service import analyze_tags as _analyze_tags
+from src.services.activity_service import ACTIVITIES_BUDGET_POLICY
+from src.services import response_budget, session_ledger_service, session_registry_service
+from src.infra.session_identity import get_caller_session_id
 from src.services.tag_service import (
+    search_tags as _search_tags,
+    update_tag as _update_tag,
+    demote_tag_notes as _demote_tag_notes,
     collect_tag_notes_for_injection,
     get_archived_tags_for_strings,
 )
-from src.services.tag_service import (
-    demote_tag_notes as _demote_tag_notes,
-)
-from src.services.tag_service import (
-    search_tags as _search_tags,
-)
-from src.services.tag_service import (
-    update_tag as _update_tag,
-)
+from src.services.tag_analysis_service import analyze_tags as _analyze_tags
+from src.services import citation_renderer
+from src import config_registry
+from src.db import get_connection
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -257,24 +246,29 @@ def _apply_flavor_to_snippets(items: list[dict], flavor: str) -> None:
 mcp = FastMCP("calm", instructions=build_instructions())
 
 # tool呼び出し中の未捕捉例外を signal_events へ自動捕捉する middleware を登録する
-from src.services.signal_middleware import SignalCaptureMiddleware  # noqa: E402
-
+from src.services.signal_middleware import SignalCaptureMiddleware
 mcp.add_middleware(SignalCaptureMiddleware())
 
-# check_in以降の関連topicスコープの鮮度差分をツールレスポンスに注入する middleware を登録する
-from src.middleware.delta_middleware import DeltaNotificationMiddleware  # noqa: E402
+# 観測済みの引数名の取り違えを、バリデーションの前に書き換える middleware を登録する
+from src.middleware.arg_alias_middleware import ArgAliasMiddleware
+mcp.add_middleware(ArgAliasMiddleware())
 
+# check_in以降の関連topicスコープの鮮度差分をツールレスポンスに注入する middleware を登録する
+from src.middleware.delta_middleware import DeltaNotificationMiddleware
 mcp.add_middleware(DeltaNotificationMiddleware())
 
 # 判定待ちgoalに紐づく他セッションを宛先候補としてツールレスポンスに注入する middleware を登録する
-from src.middleware.destination_middleware import (  # noqa: E402
-    DestinationCandidateMiddleware,
-)
-
+from src.middleware.destination_middleware import DestinationCandidateMiddleware
 mcp.add_middleware(DestinationCandidateMiddleware())
 
+# サーバー再起動後も既存クライアントがMCPセッションを張り直さずに続行できるよう、
+# MCPセッションIDをサーバー側に保持しない（stateless）。呼び出し元の識別は
+# get_caller_session_id()（bridge ID）が担う。サーバー→クライアントの通知
+# （list_changed等）、elicitation、samplingは使えない。
+HTTP_STATELESS = True
+
 # サーバー起動時刻（/health で uptime 算出に使用）
-_SERVER_STARTED_AT = datetime.now(UTC)
+_SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 # セッション管理（HTTPモードで使用）
 _session_manager = None
@@ -283,18 +277,6 @@ _session_manager = None
 def get_session_manager():
     """現在のSessionManagerインスタンスを返す。HTTPモード以外ではNone。"""
     return _session_manager
-
-
-def _current_session_id() -> str | None:
-    """MCP context から呼び出しセッションの session_id を取得する。
-
-    MCP のツール実行コンテキスト外（テスト等）では None を返す。
-    """
-    try:
-        return get_context().session_id
-    except RuntimeError:
-        return None
-
 
 
 # MCPツール定義
@@ -411,7 +393,9 @@ def get_topics(
         docs/spec/mcp-tools.mdの「flavor共通引数」節を参照
 
     Returns:
-        トピック一覧。archived_tags（応答に含まれるトピックのタグのうちarchivedなものの
+        トピック一覧。descriptionは200字で切って返し、切った項目には末尾に「…」と
+        description_truncated: trueが付く。書き換える前はget_by_idsで全文を取る。
+        archived_tags（応答に含まれるトピックのタグのうちarchivedなものの
         集約、{tag, archived_reason}の配列。該当なしでも空配列で常に付く）が付く。
     """
     flavor = _normalize_flavor(flavor)
@@ -429,7 +413,7 @@ def get_topics(
 def get_logs(
     entity_type: Literal["topic", "activity"],
     entity_id: int,
-    start_id: int | None = None,
+    start_id: Optional[int] = None,
     limit: int = 30,
     include_retracted: bool = False,
     flavor: _FlavorArg = "internal",
@@ -451,7 +435,7 @@ def get_logs(
     Returns:
         議論ログ一覧（各logにtags付き）
         entity_type == "activity" の場合はrelated topics（上限10件）経由でlogs集約。
-            related topics が10件を超える場合、11件目以降の topic に属する log は
+            related topics が10件を超える場合、古い側の topic に属する log は
             total_count / truncated の対象外（この上限による切り捨ては可視化されない）。
             activityに直接つないだlogは含まれない
         total_count: 対象 topic 全体の log 総件数（retractフィルタ適用後、limit/start_idの影響を受けない）
@@ -475,7 +459,7 @@ def get_logs(
 def get_decisions(
     entity_type: Literal["topic", "activity"],
     entity_id: int,
-    start_id: int | None = None,
+    start_id: Optional[int] = None,
     limit: int = 30,
     include_retracted: bool = False,
     flavor: _FlavorArg = "internal",
@@ -497,7 +481,7 @@ def get_decisions(
     Returns:
         決定事項一覧（各decisionにtags付き）
         entity_type == "activity" の場合はrelated topics（上限10件）経由でdecisions集約。
-            related topics が10件を超える場合、11件目以降の topic に属する decision は
+            related topics が10件を超える場合、古い側の topic に属する decision は
             total_count / truncated の対象外（この上限による切り捨ては可視化されない）。
             activityに直接つないだdecisionは含まれない
         total_count: 対象 topic 全体の decision 総件数（retractフィルタ適用後、limit/start_idの影響を受けない）
@@ -532,9 +516,9 @@ def get_decisions(
 @mcp.tool()
 def pull_precedents(
     context: str,
-    topic_ids: list[int] | None = None,
+    topic_ids: Optional[list[int]] = None,
     k: int = 3,
-    budget_chars: int | None = None,
+    budget_chars: Optional[int] = None,
     include_materials: bool = True,
     flavor: _FlavorArg = "internal",
 ) -> dict:
@@ -633,15 +617,15 @@ def _apply_flavor_to_pull_precedents_result(result: dict, flavor: str) -> None:
 @mcp.tool()
 def search(
     keyword: str | list[str],
-    tags: list[str] | None = None,
-    entity_type: Literal["topic", "decision", "activity", "log", "material"] | None = None,
+    tags: Optional[list[str]] = None,
+    entity_type: Optional[Literal["topic", "decision", "activity", "log", "material"]] = None,
     limit: int = 10,
     offset: int = 0,
     keyword_mode: str = "and",
     include_details: bool = False,
-    domain: str | None = None,
-    date_after: str | None = None,
-    date_before: str | None = None,
+    domain: Optional[str] = None,
+    date_after: Optional[str] = None,
+    date_before: Optional[str] = None,
     flavor: _FlavorArg = "internal",
 ) -> dict:
     """
@@ -832,7 +816,7 @@ def get_by_ids(
 @mcp.tool()
 def search_tags(
     query: str,
-    namespace: str | None = None,
+    namespace: Optional[str] = None,
     include_notes: bool = False,
     limit: int = 20,
 ) -> dict:
@@ -845,9 +829,8 @@ def search_tags(
     Args:
         query: 検索キーワード（タグ名部分一致 + ベクトル検索）
         namespace: namespaceフィルタ（"domain", "intent", ""。未指定で全タグ）
-        include_notes: Trueのときnotesを返す（デフォルトFalse）。notesを持つ結果は
-            取得と同時にlast_injected_atが更新される（tag notes decay述語の参照実績
-            記録。get_habits(habit_id=...)のlast_recalled_at更新と同じ役割）
+        include_notes: Trueのときnotesを返す（デフォルトFalse）。検索での参照は
+            tag notes decayの鮮度を戻さない
         limit: 取得件数上限（デフォルト20）
 
     Returns:
@@ -859,12 +842,12 @@ def search_tags(
 @mcp.tool()
 def update_tag(
     tag: str,
-    notes: str | None = None,
-    canonical: str | None = None,
-    rename: str | None = None,
-    description: str | None = None,
-    archived: bool | None = None,
-    archived_reason: str | None = None,
+    notes: Optional[str] = None,
+    canonical: Optional[str] = None,
+    rename: Optional[str] = None,
+    description: Optional[str] = None,
+    archived: Optional[bool] = None,
+    archived_reason: Optional[str] = None,
 ) -> dict:
     """
     既存タグの notes（教訓・運用ルール）、canonical（エイリアス先）、name（リネーム）、
@@ -939,9 +922,9 @@ def demote_tag_notes(
     sections: list[str],
     ctx: Context,
     mode: Literal["pointer", "drop"] = "pointer",
-    archive_material_id: int | None = None,
-    archive_tags: list[str] | None = None,
-    reason: str | None = None,
+    archive_material_id: Optional[int] = None,
+    archive_tags: Optional[list[str]] = None,
+    reason: Optional[str] = None,
 ) -> dict:
     """tag notesの指定セクションを資材へ逐語退避し、notesを縮小する。
 
@@ -1013,9 +996,9 @@ def demote_tag_notes(
 
 @mcp.tool()
 def analyze_tags(
-    domain: str | None = None,
+    domain: Optional[str] = None,
     include_domain_tags: bool = False,
-    focus_tag: str | None = None,
+    focus_tag: Optional[str] = None,
     min_usage: int = 2,
     top_n: int = 20,
 ) -> dict:
@@ -1126,8 +1109,16 @@ def get_activities(
 
     Returns:
         アクティビティ一覧（total_countで該当ステータスの全件数を確認可能）
+        descriptionは200字で切って返し、切った項目には末尾に「…」と
+        description_truncated: trueが付く。書き換える前はget_by_idsで全文を取る
         archived_tags: 応答に含まれるアクティビティのタグのうちarchivedなものの集約
             （{tag, archived_reason}の配列。該当なしでも空配列で常に付く）
+        activities・total_countの字数（archived_tags・tag_notesは含まない）が
+        ACTIVITIES_BUDGET_CHARS（既定10,000字）を超えるとactivitiesを後方
+        （limitで絞った中の古い側）から切り、truncatedキー（budget/before/after/cuts）
+        が付く。cuts[].nextに絞り込みのヒントが入る（limitとは独立の別枠）。
+        archived_tags・tag_notesはこの予算に数えない（切り詰め後に残ったactivities
+        だけから集めるため）
     """
     flavor = _normalize_flavor(flavor)
     result = activity_service.get_activities(
@@ -1135,6 +1126,10 @@ def get_activities(
     )
     if "error" not in result:
         _apply_flavor_to_items(result.get("activities", []), "activity", flavor)
+        # flavor展開後の字数で予算を測り、activitiesを先に確定させる。
+        # archived_tags/tag_notesはその後に残ったactivitiesだけから集める
+        # （トリムで消えたアクティビティのタグを残さないため）
+        result = response_budget.apply_budget(result, ACTIVITIES_BUDGET_POLICY)
         all_tags = _collect_result_tags(result.get("activities", []))
         if all_tags:
             _maybe_inject_tag_notes(result, all_tags, mark=False)
@@ -1145,12 +1140,14 @@ def get_activities(
 @mcp.tool()
 def update_activity(
     activity_id: int,
-    status: str | None = None,
-    title: str | None = None,
-    description: str | None = None,
-    tags: list[str] | None = None,
-    closed_by: str | None = None,
-    closed_reason: str | None = None,
+    status: Optional[str] = None,
+    title: Optional[str] = None,
+    description: Optional[str] = None,
+    tags: Optional[list[str]] = None,
+    closed_by: Optional[str] = None,
+    closed_reason: Optional[str] = None,
+    move_asks_to: Optional[int] = None,
+    move_ask_ids: Optional[list[int]] = None,
 ) -> dict:
     """
     アクティビティのステータス・タイトル・説明・タグを更新する。
@@ -1162,6 +1159,8 @@ def update_activity(
     - アクティビティを棚上げする: update_activity(activity_id, status="shelved")
     - タイトル変更: update_activity(activity_id, title="新しいタイトル")
     - 説明更新: update_activity(activity_id, description="新しい説明")
+      （get_activitiesが切って返した値＝現在値の先頭200字（末尾の「…」・前後の空白は無視）はVALIDATION_ERRORで拒否する。
+      書き換える前はget_by_idsで全文を取る）
     - タグ変更: update_activity(activity_id, tags=["domain:calm", "intent:implement"])
 
     ワークフロー位置: アクティビティ進行状況の更新時
@@ -1181,6 +1180,9 @@ def update_activity(
         closed_by: activityを閉じた意思の主体（"user"|"claude"|"external"）。
             status="completed"と同時のときだけ受け付ける
         closed_reason: 閉じた理由（自由文）。status="completed"と同時のときだけ受け付ける
+        move_asks_to: このactivityを止めている未決着ask（open・回答済み未triage）を
+            付け替える先のactivity（完了済み不可）
+        move_ask_ids: move_asks_toと併用し、そのaskだけ付け替える（省略時は全件）
 
     Returns:
         更新されたアクティビティ情報。既にcompletedのactivityへstatus="completed"を
@@ -1189,11 +1191,14 @@ def update_activity(
         （closed_by/closed_reasonを渡さなければ、このキーは付かない）。
         status="completed"の呼び出しでは、紐づくgoalが未判定ならgoal_hint
         （{goal_id_raw, handle, label, next, open_activities_left,
-        open_questions?, warning?}）も返す（拒否はしない）
+        open_questions?, warning?}）も返す（拒否はしない）。
+        status="completed"では、止めている未決着ask（付け替え後の残り）を
+        pending_asks、付け替えたaskをmoved_asksに返す（完了は止めない）
     """
     return activity_service.update_activity(
         activity_id, status, title, description, tags,
         closed_by=closed_by, closed_reason=closed_reason,
+        move_asks_to=move_asks_to, move_ask_ids=move_ask_ids,
     )
 
 
@@ -1203,7 +1208,7 @@ def update_activity(
 
 
 @mcp.tool()
-def set_goal(activity_id: int, goal: dict | None, replace: bool = False) -> dict:
+def set_goal(activity_id: int, goal: Optional[dict], replace: bool = False) -> dict:
     """Choose: activityの終了条件(goal)上の立場を決めたいとき。goal自体はactivityから
     作る。既存のgoal(goal_id)に紐づける・不要印(waiver)を付ける・未定義に戻す(None)も
     この1本で扱う。充足の記録・条件の追加はupdate_goal、終了の明示判定はjudge_goal。
@@ -1235,9 +1240,9 @@ def set_goal(activity_id: int, goal: dict | None, replace: bool = False) -> dict
 @mcp.tool()
 def update_goal(
     goal_id: int,
-    changes: list[dict] | None = None,
-    statement: str | None = None,
-    reopen_reason: str | None = None,
+    changes: Optional[list[dict]] = None,
+    statement: Optional[str] = None,
+    reopen_reason: Optional[str] = None,
 ) -> dict:
     """Choose: goalの条件を追加・状態変更(充足/保留)・担い手や束縛の変更をしたいとき。
     goalの一文(statement)の修正、判定済みgoalの差し戻し(reopen_reason)もこの1本で行う。
@@ -1270,7 +1275,7 @@ def update_goal(
             "message": ...}}
     """
     return goal_service.update_goal(
-        goal_id, changes, statement, reopen_reason, session_id=_current_session_id()
+        goal_id, changes, statement, reopen_reason, session_id=get_caller_session_id()
     )
 
 
@@ -1278,7 +1283,7 @@ def update_goal(
 def judge_goal(
     goal_id: int,
     verdict: str,
-    note: str | None = None,
+    note: Optional[str] = None,
     judged_by: str = "session",
 ) -> dict:
     """Choose: goalの終了を明示的に判定して閉じたいとき。紐づく未完了のactivityも
@@ -1306,9 +1311,9 @@ def judge_goal(
 
 @mcp.tool()
 def get_goal(
-    goal_id: int | None = None,
-    activity_id: int | None = None,
-    handle: str | None = None,
+    goal_id: Optional[int] = None,
+    activity_id: Optional[int] = None,
+    handle: Optional[str] = None,
 ) -> dict:
     """Choose: 1つのgoalの全条件(充足済みを含む)とid、紐づくactivity一覧を読みたい
     とき。check_inの応答のgoalブロックは充足済み条件や4件目以降のopen条件を畳むので、
@@ -1363,7 +1368,10 @@ def get_overview(days: int = 7, limit: int = 20) -> dict:
       triage_pending_items にタイトル(question)付きで列挙する（meta も同様に limit
       無視で必ず含まれる）
     - backlog: それ以外の残り。件数と status 別・domain 別の内訳のみ。
-      stale_in_progress_count は「in_progress と宣言されているが days 日動いていない」件数
+      stale_in_progress_count は「in_progress と宣言されているが days 日動いていない」件数。
+      by_status は期限切れ snoozed（SNOOZE_DURATION_DAYS 超過）を pending として数える
+      （表示時の評価のみで、DB の status は書き換えない。get_activities のような
+      自動復活はここでは起こさない）
 
     working/recently_done/backlog の各節は count と total_count が異なる場合、
     limit で切り詰められている。awaiting_human は meta ask が limit を無視して
@@ -1493,7 +1501,7 @@ def get_material(
 @mcp.tool()
 def export_material(
     material_id: int,
-    dest_path: str | None = None,
+    dest_path: Optional[str] = None,
 ) -> dict:
     """
     Choose: 資材の全文を calm 外で参照したい（obsidian vault に置く / docs リポに commit する / third-party レビュー用に配布する）とき。calm 内で読むだけなら get_material、複数種別を横断で全文取得したいなら get_by_ids。
@@ -1559,7 +1567,7 @@ def check_in(
 
     Returns:
         5つの枠（anchor: {activity, pinned} / control: {goal, asks,
-        dependencies} / context: {topics, activities, decisions, latest_log,
+        decision_candidates, dependencies} / context: {topics, activities, decisions, latest_log,
         materials} / catalog: {logs, map} / env: {tag_notes, hints, coverage,
         session, flow_guide}）に分けて返す。中身が空の枠・キーは省く
         （anchor.activity・control.goal・env.coverage・env.sessionは常に置く）。
@@ -1567,6 +1575,8 @@ def check_in(
         control.goalは終了条件の現在状態と次の一手（next）を1件返す（未定義=
         undefined・不要印=not_needed・goal付き=active|judge_ready|closed）。
         control.asks.awaiting_triageが1件以上あればtriage_askで振り分けること。
+        control.decision_candidatesは記録役が退避した閉じていない決定事項の候補
+        （guideに閉じ方がある。decisionと結ぶかretractすると出なくなる）。
         env.session.alias_collisionがtrueならユーザーに伝えること。
         応答全体が10,000字を超えるとtruncatedキーが付く（cuts[].sectionは
         "anchor.pinned"のようなドット区切りパス）。control・env.tag_notesは
@@ -1794,7 +1804,7 @@ def resolve_destabilization(
     source_decision_id: int,
     target_decision_id: int,
     resolution: Literal["reaffirmed", "revised", "retracted"],
-    revised_to_decision_id: int | None = None,
+    revised_to_decision_id: Optional[int] = None,
     note: str = "",
 ) -> dict:
     """
@@ -1900,12 +1910,12 @@ def get_map(
 
 @mcp.tool()
 def collect_export_candidates(
-    roots: list[dict] | None = None,
+    roots: Optional[list[dict]] = None,
     max_depth: int = 2,
-    include_types: list[str] | None = None,
-    tag_roots: list[str] | None = None,
+    include_types: Optional[list[str]] = None,
+    tag_roots: Optional[list[str]] = None,
     include_snippets: bool = True,
-    limit: int | None = None,
+    limit: Optional[int] = None,
     offset: int = 0,
 ) -> dict:
     """Choose: 他インスタンスへのexport候補を洗い出したいとき。get_mapと違いdecision/logも
@@ -1980,9 +1990,9 @@ def set_instance_identity(instance_id: str, force: bool = False) -> dict:
 @mcp.tool()
 def export_bundle(
     items: list[dict],
-    bundle_name: str | None = None,
+    bundle_name: Optional[str] = None,
     include_supersede_targets: bool = False,
-    selection: dict | None = None,
+    selection: Optional[dict] = None,
 ) -> dict:
     """Choose: collect_export_candidatesで確定した候補リストから、他インスタンスへ渡す
     バンドル(manifest.yaml + エンティティ別mdファイル)を実際に書き出すとき。候補の
@@ -2032,7 +2042,7 @@ def export_bundle(
 def import_bundle(
     bundle_path: str,
     mode: str = "dry_run",
-    resolutions: dict | None = None,
+    resolutions: Optional[dict] = None,
     skip_duplicate_check: bool = False,
 ) -> dict:
     """Choose: 他インスタンスのバンドルを取り込みたいとき。まずmode="dry_run"
@@ -2110,12 +2120,12 @@ def get_habits(active: bool = True, habit_id: int | None = None) -> dict:
 @mcp.tool()
 def update_habit(
     habit_id: int,
-    content: str | None = None,
-    active: bool | None = None,
-    trigger_mode: str | None = None,
-    description: str | None = None,
-    importance_score: int | None = None,
-    status: str | None = None,
+    content: Optional[str] = None,
+    active: Optional[bool] = None,
+    trigger_mode: Optional[str] = None,
+    description: Optional[str] = None,
+    importance_score: Optional[int] = None,
+    status: Optional[str] = None,
 ) -> dict:
     """振る舞いを更新する。active=Falseで無効化、active=Trueで再有効化。
     trigger_modeは'always'（~/.claude/rules配下の自動生成ファイルで全文常時配信）/
@@ -2143,9 +2153,9 @@ def update_habit(
 @mcp.tool()
 def add_pin(
     source_type: Literal["tag", "activity", "topic", "decision", "log", "material"],
-    source_ref: int | str,
+    source_ref: Union[int, str],
     target_type: Literal["tag", "activity", "topic", "decision", "log", "material"],
-    target_ref: int | str,
+    target_ref: Union[int, str],
 ) -> dict:
     """pinを追加する（source → target）。
 
@@ -2187,9 +2197,9 @@ def add_pin(
 @mcp.tool()
 def remove_pin(
     source_type: Literal["tag", "activity", "topic", "decision", "log", "material"],
-    source_ref: int | str,
+    source_ref: Union[int, str],
     target_type: Literal["tag", "activity", "topic", "decision", "log", "material"],
-    target_ref: int | str,
+    target_ref: Union[int, str],
 ) -> dict:
     """pinを削除する（source → target）。
 
@@ -2272,8 +2282,12 @@ def get_timeline(
 
 
 @mcp.tool()
-def get_config() -> dict:
+def get_config(env_kind: str | None = "user") -> dict:
     """現在の設定値を返す。スキルが環境変数ベースの設定を参照するために使用する。
+
+    env_varsはcalmが読む環境変数の台帳（src/config_registry.py）と現在値
+    （name/kind/default/description/value。valueは未設定ならnull）。env_kindで種類を絞る
+    （user=利用者が調整する値、既定。internal/emergency/session/ci、"all"で全種類）。
 
     read_tool_limitsはtool呼び出し前にレスポンスサイズを見積もるための既定上限一覧。
     search/get_logs/get_decisions/get_timelineの上限は各serviceにハードコードされており
@@ -2286,17 +2300,20 @@ def get_config() -> dict:
     null（skillがこれを見てset_instance_identityを促す判断材料にする）。
     """
     from src import config
+    if env_kind not in (None, "all", *config_registry.KINDS):
+        return {"error": {"code": "VALIDATION_ERROR", "message": (
+            f"env_kind は {', '.join(config_registry.KINDS)}, all のいずれか: {env_kind!r}"
+        )}}
     return {
         "instance_id": instance_service.get_instance_id(),
         "heartbeat_timeout": config.HEARTBEAT_TIMEOUT_MINUTES,
-        "in_progress_limit": config.IN_PROGRESS_LIMIT,
-        "pending_limit": config.PENDING_LIMIT,
         "recency_decay_rate": budget_service.BUDGET_DEFAULTS["recency_decay_rate"],
         "sync_disable_retrospective": config.SYNC_DISABLE_RETROSPECTIVE,
         "snapshot_interval_hours": config.SNAPSHOT_INTERVAL_HOURS,
         "snapshot_max_count": config.SNAPSHOT_MAX_COUNT,
         "snapshot_anomaly_threshold": config.SNAPSHOT_ANOMALY_THRESHOLD,
         "precedent_budget_chars": budget_service.BUDGET_DEFAULTS["precedent_budget_chars"],
+        "env_vars": config_registry.list_env_vars(None if env_kind == "all" else env_kind),
         "budget_defaults": budget_service.BUDGET_DEFAULTS,
         "read_tool_limits": {
             "search": {"default": 10, "max": 50},
@@ -2331,7 +2348,7 @@ def report_signal(
 ) -> dict:
     """calm 自身への故障報告・使用感不満・矛盾検出・運用計測イベントの統一入口。
 
-    kind（予約8種、いずれか必須。または custom:<名前> で独自区分を追加できる）:
+    kind（予約9種、いずれか必須。または custom:<名前> で独自区分を追加できる）:
       - "machine_error": ツールエラー・hook 失敗・サーバー異常を観察した
       - "friction": calm の使い勝手への不満・違和感（ユーザー発話由来を含む）
       - "contradiction": 既存記録(decision/material/log)と矛盾する結論を出した/検出した。
@@ -2345,7 +2362,9 @@ def report_signal(
         案件識別子を含める（dedup の集約単位を案件ごとに分けるため）
       - "goal_rollback": update_goal の reopen_reason（goal 判定の差し戻し）が
         書く専用の kind。手で report_signal を呼んで報告するものではない
-      - "custom:<名前>": 予約8種のどれにも当てはまらない観測を記録する
+      - "guard_block": PreToolUse hook がリクエストを deny したときにそのhookが書く
+        専用の kind。手で report_signal を呼んで報告するものではない
+      - "custom:<名前>": 予約9種のどれにも当てはまらない観測を記録する
         （例: "custom:external_rule_conflict" で外部の指示と calm が配るルールの
         衝突を記録する）。既存 kind への流用は、その kind を数える集計を汚すため
         避けること。名前は [a-z0-9][a-z0-9_-]{0,39}（英小文字・数字・_・-、1〜40字）
@@ -2353,7 +2372,7 @@ def report_signal(
     同一内容の再報告は自動で集約される(occurrence_count)。
 
     Args:
-        kind: 上記8種のいずれか、または custom:<名前>
+        kind: 上記9種のいずれか、または custom:<名前>
         summary: 1行要約（空文字不可）
         detail: traceback・引数ダイジェスト・自由記述（optional）
         refs: [{"type": "decision", "id": 123}, ...] 形式の参照リスト（optional）
@@ -2370,7 +2389,7 @@ def report_signal(
             detail=detail,
             refs=refs,
             context=context,
-            session_id=_current_session_id(),
+            session_id=get_caller_session_id(),
         )
     except ValueError as e:
         return {"error": {"code": "VALIDATION_ERROR", "message": str(e)}}
@@ -2380,6 +2399,7 @@ def report_signal(
 def get_signals(
     status: str | None = "new",
     kind: str | None = None,
+    ids: list[int] | None = None,
     limit: int = 20,
     offset: int = 0,
     include_stats: bool = False,
@@ -2388,24 +2408,33 @@ def get_signals(
 
     Args:
         status: フィルタ対象のstatus（"new"|"triaged"|"promoted"|"dismissed"）。
-            null指定で全status横断。デフォルトは未トリアージの"new"のみ
-        kind: フィルタ対象のkind（予約8種またはcustom:<名前>）。null指定で全kind横断。
+            null指定で全status横断（文字列"null"も大小文字不問で同じ）。デフォルトは未トリアージの"new"のみ
+        kind: フィルタ対象のkind（予約9種またはcustom:<名前>）。null指定（文字列"null"も大小文字不問で同じ）で全kind横断。
             custom の個別名はSessionStartの内訳表示ではcustom N 1件に畳まれるため、
             include_stats=Trueの集計で見る
+        ids: 指定時はこのsignal idの集合だけに絞る（他のフィルタとAND条件）。
+            get_asksのids同様、空配列はids条件なし扱い。この経路はdetailを
+            切り詰めない（下記Returns参照）
         limit: 取得件数上限（最大100件、デフォルト20）
         offset: 取得開始位置（ページネーション用）
         include_stats: Trueのとき kind×status のクロス集計と直近30日サマリを付与
 
     Returns:
-        成功時: {"signals": [...], "total_count": int, "stats": {...}(include_stats時のみ)}
+        成功時: {"signals": [...], "total_count": int, "stats": {...}(include_stats時のみ),
+            "next": [{"tool": "get_signals", "args": {"ids": [...], "status": null}}]
+            (下記の切り詰めが発生した行がある場合のみ)}
         失敗時: {"error": {"code": ..., "message": ...}}
         各signalのidは他のget系ツールと同様id_rawとして返る（idキー自体は含まない）。
         refs内の各要素のid・promoted_id・context内にネストした参照（missed_ids等）も
         同じ変換で対応する`{id_key}_raw`に退避される。
-        session_id/fingerprintは記録側の内部相関・dedup専用フィールドのため含まない
+        session_id/fingerprintは記録側の内部相関・dedup専用フィールドのため含まない。
+        idsを指定しない一覧では、各行のdetailが300字を超える場合は300字に切り詰め
+        detail_truncated: trueを付与する（DB上の値は変わらない）。全文が必要なら
+        返ってきたidsをnextに従ってget_signals(ids=[...], status=null)で取り直す
     """
     return signal_service.get_signals(
-        status=status, kind=kind, limit=limit, offset=offset, include_stats=include_stats
+        status=status, kind=kind, ids=ids, limit=limit, offset=offset,
+        include_stats=include_stats,
     )
 
 
@@ -2457,7 +2486,9 @@ def add_ask(
 ) -> dict:
     """人間の判断を待つ問いを1件積む（答え待ちの間、blocksで指定したactivityを止める）。
 
-    question/contextの構成は`ask-compose` skillを必ず経由すること。
+    question/contextの構成は`ask-compose` skillを必ず経由すること。ただし
+    kind="meta"のメタaskはこの限りではなく、`ask-distill`/`ask-watch`各skillの
+    組み立て方に従って直接本ツールを呼ぶ。
 
     同じ問い（正規化後questionのfingerprint一致）が答え待ち（open）で既にあれば
     新規行を作らず出現回数を+1し、blocks/要求元セッションはUNIONで追記、
@@ -2528,13 +2559,13 @@ def get_asks(
 
     Args:
         status: フィルタ対象のstatus（"open"|"answered"|"promoted"|"dismissed"|"withdrawn"）。
-            null指定で全status横断。デフォルトは答え待ちの"open"のみ。
+            null指定で全status横断（文字列"null"も大小文字不問で同じ）。デフォルトは答え待ちの"open"のみ。
             triage_pending_only指定時は無視される
         blocking_activity_id: 指定時はそのactivityをblockしているaskだけに絞る
         triage_pending_only: Trueでstatus='answered'かつ未トリアージのみに絞る
         tags: タグ配列（optional。指定時はAND条件でフィルタ、未指定時は全件。
             空配列を明示指定した場合はVALIDATION_ERRORになる）
-        kind: フィルタ対象のkind（"ask"|"meta"）。null指定でフィルタなし
+        kind: フィルタ対象のkind（"ask"|"meta"）。null指定（文字列"null"も大小文字不問で同じ）でフィルタなし
         ids: 指定時はこのask idの集合だけに絞る（他のフィルタとAND条件）。
             自分がadd_askした特定のask_id一覧の状態を直接引き当てたい場合に使う
             （statusは既定"open"のままだと絞り込まれてしまうため、状態を問わず
@@ -2615,8 +2646,9 @@ def triage_ask(
 
     promoteはdecision/reason/title/tags/topic_idをそのままadd_decisionsに渡して
     decisionを生成し、promoted_decision_idとして紐付ける。dismissはdismiss_reasonを
-    記録するのみで実体は作らない。いずれもこのaskが止めていたactivityの
-    blockは解除する（ask_blocksを削除）。
+    記録するのみで実体は作らない。このaskが止めていたactivityとの紐づけ
+    （ask_blocks）は残す。待ち状態の判定はaskのstatusで行われるため、決着後は
+    待ちとして表示されず、check_inの「最近決着したask」枠から辿れる。
 
     一般化ルール（同型の問いを今後AIが自己裁定してよいというルール）の発効は、
     必ずこのtriage_askによるメタask（kind="meta"のask）への人間のpromote裁定を
@@ -2942,8 +2974,8 @@ def set_session_alias(alias: str) -> dict:
 
 @mcp.tool()
 def get_feedback_entries(
-    name: str | None = None,
-    query: str | None = None,
+    name: Optional[str] = None,
+    query: Optional[str] = None,
     include_deleted: bool = False,
 ) -> dict:
     """Choose: 躓きを踏まえて自分に配達しているフィードバックエントリを読みたいとき。
@@ -2969,12 +3001,12 @@ def get_feedback_entries(
 def write_feedback_entry(
     name: str,
     action: Literal["create", "update", "delete"],
-    body: str | None = None,
-    ref: str | None = None,
-    strength: Literal["notify", "block"] | None = None,
-    timing: Literal["utterance", "tool_fail", "pre_tool"] | None = None,
-    condition: dict | str | None = None,
-    read_mark: int | None = None,
+    body: Optional[str] = None,
+    ref: Optional[str] = None,
+    strength: Optional[Literal["notify", "block"]] = None,
+    timing: Optional[Literal["utterance", "tool_fail", "pre_tool"]] = None,
+    condition: Optional[Union[dict, str]] = None,
+    read_mark: Optional[int] = None,
 ) -> dict:
     """Choose: フィードバックエントリを作る・直す・消すとき。
 
@@ -3036,7 +3068,7 @@ def add_feedback_note(name: str, kind: Literal["stumble", "note"], body: str) ->
 # ヘルスチェックエンドポイント
 @mcp.custom_route("/health", methods=["GET"])
 async def health(_request: Request) -> JSONResponse:
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     return JSONResponse({
         "status": "ok",
         "pid": os.getpid(),
@@ -3128,7 +3160,7 @@ async def session_unregister(request: Request) -> JSONResponse:
 
 
 # サーバー起動
-from src.http_config import HTTP_HOST, HTTP_PORT  # noqa: E402
+from src.http_config import HTTP_HOST, HTTP_PORT
 
 
 def _ensure_project_root_cwd() -> Path:
@@ -3192,7 +3224,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    from src.db import get_db_path, init_database, verify_sqlite_vec
+    from src.db import verify_sqlite_vec, init_database, get_db_path
 
     if args.transport == "http":
         # verify_sqlite_vec/init_databaseより前にログをファイルへ永続化する。
@@ -3217,9 +3249,9 @@ if __name__ == "__main__":
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.bind((HTTP_HOST, HTTP_PORT))
-        except OSError as exc:
+        except OSError:
             logger.error(f"Port {HTTP_PORT} is already in use")
-            raise SystemExit(1) from exc
+            raise SystemExit(1)
 
         # ロックファイル取得
         if not acquire(HTTP_PORT):
@@ -3251,6 +3283,7 @@ if __name__ == "__main__":
                 transport="http",
                 host=HTTP_HOST,
                 port=HTTP_PORT,
+                stateless_http=HTTP_STATELESS,
                 middleware=[_build_trusted_host_middleware(), _build_cors_middleware()],
             )
         finally:

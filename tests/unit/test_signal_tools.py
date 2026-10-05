@@ -48,6 +48,15 @@ class TestGetSignalsTool:
         assert "id" not in signal
         assert signal["id_raw"] == created["id"]
 
+    def test_ids_argument_is_forwarded_to_service(self, temp_db):
+        created_a = report_signal("friction", "a")
+        report_signal("friction", "b")
+
+        result = get_signals(status=None, ids=[created_a["id"]])
+
+        assert result["total_count"] == 1
+        assert result["signals"][0]["id_raw"] == created_a["id"]
+
 
 class TestUpdateSignalTool:
     def test_can_update(self, temp_db):

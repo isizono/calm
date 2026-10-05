@@ -7,7 +7,7 @@
 anchor.activity・control.goal・env.coverage・env.sessionは常に置く）。
 
     anchor:  activity, pinned
-    control: goal, asks, dependencies
+    control: goal, asks, neighbor_asks, recent_settled_asks, decision_candidates, dependencies
     context: topics, activities, decisions, latest_log, materials
     catalog: logs, map
     env:     tag_notes, hints, coverage, session, flow_guide
@@ -29,6 +29,7 @@ from src.db import get_connection, row_to_dict
 from src.infra import session_identity
 from src.services import (
     activity_service,
+    ask_handover_service,
     goal_service,
     hint_service,
     response_budget,
@@ -36,30 +37,22 @@ from src.services import (
 )
 from src.services.ask_service import get_pending_asks_with_conn
 from src.services.checkin_queries import (
-    _count_decisions_from_topics,
     _get_activities_overview,
     _get_decisions_from_topics,
     _get_direct_relations,
     _get_logs_catalog_from_topics,
     _get_pinned_targets,
     _get_topics_info,
+    _get_unpromoted_decision_candidates,
+    _count_decisions_from_topics,
     _pinned_item_pointer,
 )
 from src.services.material_service import get_materials_by_relation_with_conn
 from src.services.readable_id import strip_entity_id_inplace
 from src.services.relation_service import _get_map_with_conn
-from src.services.response_budget import (
-    BudgetPolicy,
-    CappedSection,
-    CutStep,
-    PinnedPolicy,
-)
+from src.services.response_budget import BudgetPolicy, CappedSection, CutStep, PinnedPolicy
 from src.services.signal_service import record_signal
-from src.services.tag_service import (
-    _decay_pointer_text,
-    collect_tag_notes_for_injection,
-    get_entity_tags,
-)
+from src.services.tag_service import _decay_pointer_text, collect_tag_notes_for_injection, get_entity_tags
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +65,22 @@ CATALOG_MAP_MAX = 30
 # control.asksの上限。awaiting_answer/awaiting_triageを合わせて新しい順に数える。
 ASKS_MAX = 5
 ASK_ANSWER_BODY_MAX_CHARS = 300
+
+# control.neighbor_asks / control.recent_settled_asksそれぞれの上限件数。
+# 超えた分は件数（more）とget_asksへのポインタにする。
+HANDOVER_ASKS_MAX = 3
+
+# control.decision_candidatesの上限件数と、1件あたりのtitleの上限文字数。
+# 超えた分は件数（more）に畳む。
+DECISION_CANDIDATES_MAX = 3
+DECISION_CANDIDATE_TITLE_MAX_CHARS = 60
+
+_DECISION_CANDIDATES_GUIDE = (
+    "記録役が退避した決定事項の候補で、まだ閉じていない。本文に明示的な承認があれば"
+    "add_decisionsで決定事項にしてadd_relationで候補と結ぶ（同じ決定事項が既にあればそれと結ぶ）。"
+    "合意でなかったならretractする。曖昧ならユーザーに確かめる。"
+    "閉じると、残りの候補が次のcheck_inで出る。"
+)
 
 # control.dependenciesの上限。
 DEPENDENCIES_MAX = 10
@@ -162,6 +171,23 @@ def _cap_asks(pending_asks: dict, activity_id: int) -> dict | None:
     return result
 
 
+def _cap_handover(items: list[dict], overflow: int, overflow_activity_ids: list[int]) -> dict | None:
+    """隣の作業のask・最近決着したaskの枠を組み立てる。件数は取得側でHANDOVER_ASKS_MAX
+    に絞り済みで、超過分は件数と、超過したaskを止めている作業ごとのget_asksへの
+    ポインタにする（黙って落とさない）。回答本文は載せない。
+    """
+    if not items:
+        return None
+    result: dict = {"items": items}
+    if overflow:
+        result["more"] = overflow
+        result["next"] = [
+            {"tool": "get_asks", "args": {"blocking_activity_id": aid, "status": None}}
+            for aid in overflow_activity_ids[:HANDOVER_ASKS_MAX]
+        ]
+    return result
+
+
 def _cap_dependencies(dependencies: list[dict], activity_id: int):
     """DEPENDENCIES_MAX件へ絞る。超えた分は件数とget_mapへのポインタにする
     （黙って落とさない）。超過が無ければ素のリストのまま返す。
@@ -176,6 +202,27 @@ def _cap_dependencies(dependencies: list[dict], activity_id: int):
         "more": len(overflow),
         "next": [{"tool": "get_map", "args": {"entity_type": "activity", "entity_id": activity_id}}],
     }
+
+
+def _build_decision_candidates(candidates: list[dict], total: int) -> dict | None:
+    """閉じていない決定候補(取得側でDECISION_CANDIDATES_MAX件に絞り済み)に閉じ方の案内を付ける。
+
+    総数が表示件数を超えるときはmoreに残りの件数を入れる（黙って落とさない）。
+    """
+    if not candidates:
+        return None
+    items = []
+    for c in candidates:
+        title = c["title"] or ""
+        if len(title) > DECISION_CANDIDATE_TITLE_MAX_CHARS:
+            title = title[:DECISION_CANDIDATE_TITLE_MAX_CHARS] + "…"
+        item = {"id": c["id"], "title": title}
+        strip_entity_id_inplace(item)
+        items.append(item)
+    result: dict = {"items": items, "guide": _DECISION_CANDIDATES_GUIDE}
+    if total > len(items):
+        result["more"] = total - len(items)
+    return result
 
 
 def _collect_static(conn: sqlite3.Connection, activity_id: int, session_id: str | None) -> dict | None:
@@ -197,6 +244,9 @@ def _collect_static(conn: sqlite3.Connection, activity_id: int, session_id: str 
     related_activities = _get_activities_overview(conn, direct["activity"])
     dependencies = _get_dependencies(conn, activity_id)
     pinned_targets = _get_pinned_targets(conn, activity_id)
+    decision_candidates = _build_decision_candidates(
+        *_get_unpromoted_decision_candidates(conn, activity_id, direct["topic"], DECISION_CANDIDATES_MAX)
+    )
 
     materials_full = get_materials_by_relation_with_conn(conn, activity_id)
     recent_decisions = _get_decisions_from_topics(conn, direct["topic"])
@@ -220,6 +270,7 @@ def _collect_static(conn: sqlite3.Connection, activity_id: int, session_id: str 
         "related_activities": related_activities[:RELATED_ACTIVITIES_MAX],
         "dependencies": dependencies,
         "pinned_targets": pinned_targets,
+        "decision_candidates": decision_candidates,
         "materials": materials_full[:MATERIALS_MAX],
         "recent_decisions": recent_decisions,
         "latest_log": latest_log,
@@ -339,6 +390,12 @@ def collect_and_assemble(activity_id: int, session_id: str | None = None) -> dic
 
         immediate_hints = _get_immediate_hints(conn, activity_id)
         pending_asks = get_pending_asks_with_conn(conn, activity_id)
+        neighbor_asks = _cap_handover(
+            *ask_handover_service.get_neighbor_pending_asks(conn, activity_id, HANDOVER_ASKS_MAX)
+        )
+        recent_settled_asks = _cap_handover(
+            *ask_handover_service.get_recent_settled_asks(conn, activity_id, HANDOVER_ASKS_MAX)
+        )
         goal_block = _build_goal_block(conn, activity_id, session_id)
         session_block, bridge_id = _register_session(activity_id, activity)
         flow_guide = _FLOW_GUIDE_COMPACT if _consume_first_call_flag(session_id) else None
@@ -361,6 +418,9 @@ def collect_and_assemble(activity_id: int, session_id: str | None = None) -> dic
             {
                 "goal": goal_block,
                 "asks": _cap_asks(pending_asks, activity_id),
+                "neighbor_asks": neighbor_asks,
+                "recent_settled_asks": recent_settled_asks,
+                "decision_candidates": static["decision_candidates"],
                 "dependencies": _cap_dependencies(static["dependencies"], activity_id),
             }
         )
