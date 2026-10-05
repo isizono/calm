@@ -2722,3 +2722,48 @@ class TestMaxRetriesDefault:
             assert launcher.MAX_RETRIES == 7
         finally:
             launcher.MAX_RETRIES = None
+
+
+class TestParentWatch:
+    """親の終了検知の判定部分: 見張り対象の選定、pid再利用の見分け、強制終了の契約。"""
+
+    def test_targets_are_direct_parent_and_nearest_cli(self, monkeypatch):
+        monkeypatch.setattr(launcher, "ancestor_pids", lambda pid: [10, 20, 30])
+        monkeypatch.setattr(launcher, "nearest_agent_cli_pid", lambda pids: 30)
+        created = {10: 1.0, 30: 3.0}
+
+        class FakeProc:
+            def __init__(self, pid):
+                self.pid = pid
+
+            def create_time(self):
+                return created[self.pid]
+
+        monkeypatch.setattr(launcher.psutil, "Process", FakeProc)
+        assert launcher._parent_watch_targets() == [(10, 1.0), (30, 3.0)]
+
+    def test_targets_do_not_duplicate_when_parent_is_cli(self, monkeypatch):
+        monkeypatch.setattr(launcher, "ancestor_pids", lambda pid: [10, 20])
+        monkeypatch.setattr(launcher, "nearest_agent_cli_pid", lambda pids: 10)
+        monkeypatch.setattr(
+            launcher.psutil, "Process",
+            lambda pid: type("P", (), {"create_time": lambda self: 1.0})(),
+        )
+        assert launcher._parent_watch_targets() == [(10, 1.0)]
+
+    def test_alive_when_same_process(self):
+        me = launcher.psutil.Process(os.getpid())
+        assert launcher._is_target_alive(me.pid, me.create_time())
+
+    def test_reused_pid_is_treated_as_dead(self):
+        me = launcher.psutil.Process(os.getpid())
+        assert not launcher._is_target_alive(me.pid, me.create_time() - 100)
+
+    def test_missing_pid_is_dead(self):
+        assert not launcher._is_target_alive(2**22 + 12345, 0.0)
+
+    def test_force_exit_uses_nonzero_code(self, monkeypatch):
+        codes = []
+        monkeypatch.setattr(launcher.os, "_exit", codes.append)
+        launcher._force_exit()
+        assert codes == [1]

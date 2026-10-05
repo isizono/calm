@@ -1112,7 +1112,11 @@ def _force_exit() -> None:
 def _is_target_alive(pid: int, created: float) -> bool:
     try:
         proc = psutil.Process(pid)
-        return abs(proc.create_time() - created) < 0.01 and proc.status() != psutil.STATUS_ZOMBIE
+        # create_timeは浮動小数のため、丸め差を許容して同一プロセスと見なす
+        return (
+            abs(proc.create_time() - created) < 0.01
+            and proc.status() != psutil.STATUS_ZOMBIE
+        )
     except psutil.Error:
         return False
 
@@ -1127,6 +1131,10 @@ def _start_parent_watchdog(targets: list[tuple[int, float]]) -> None:
             time.sleep(PARENT_WATCH_INTERVAL_SEC)
             if not all(_is_target_alive(pid, created) for pid, created in targets):
                 logger.warning("Parent process is gone; exiting launcher")
+                if sys.platform == "win32":
+                    # WindowsのSIGTERM送信はTerminateProcess相当でハンドラもatexitも走らない
+                    _cleanup()
+                    os._exit(0)
                 os.kill(os.getpid(), signal.SIGTERM)
                 return
 
