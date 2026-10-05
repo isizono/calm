@@ -1,6 +1,6 @@
 ---
 name: ask-distill
-description: add_askのレスポンスのsimilar_asksを見て、同型の問いが繰り返され裁定が一貫していると気づいたときに、判例をまとめてメタask（kind="meta"）を起票する。「同じような質問を何度もaskしている」「similar_asksの裁定が毎回同じ」に気づいた場面で発動する。add_askのdocstringから参照される。
+description: add_askの応答のsimilar_asksを見て、同型の問いが繰り返され裁定が一貫していると気づいたとき、判例をまとめてメタask（kind="meta"）を起票する。
 user-invocable: false
 ---
 
@@ -16,6 +16,8 @@ user-invocable: false
 - それらの裁定（`answer_body`）が一貫している（毎回同じ方針で答えられている）
 
 裁定が割れている・件数が少ない（同型が初出）・`similar_asks`が空、のいずれかに該当する場合は発動しない。
+
+`add_ask`のdocstringからも本スキルが案内される。
 
 ## 手順
 

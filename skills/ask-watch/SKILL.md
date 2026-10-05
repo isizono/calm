@@ -1,6 +1,6 @@
 ---
 name: ask-watch
-description: calmのask store（人間の判断待ちaskのインボックス）をMonitorツールでイベント駆動監視する。asksテーブルのstatus='open'件数・last_seen_at・id集合を10秒間隔でポーリングし、前回値から変化を検知したときだけ全open askを読み直し、「主題は違うが判断構造が同一」の同型群をLLM自身が判定してメタask（kind="meta"）を起票する。「ask storeを監視して」「ask-watch」「asksを見張って」「open askの滞留をチェックして」「`/ask-watch`」などで発動。1回限りのask確認（get_asksを直接呼ぶだけ）やcalm自体の使い方説明には発動しない。
+description: 人間の判断待ちaskの受け箱をMonitorで監視し、判断構造が同じopen askが溜まっていればメタaskを起票する。「ask storeを監視して」「asksを見張って」「open askの滞留をチェックして」などで発動。
 ---
 
 # ask-watch
