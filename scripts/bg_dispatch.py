@@ -77,7 +77,7 @@ _TEMPLATE = """あなたはCALMのアクティビティ「{activity_title}」の
 
 ## 記録
 - 経緯はadd_logsで記録する。完了の合図(update_goalのsatisfiedかSendMessage)があるのに
-  check_in以降にadd_logsが無いと、Stop hookが1回blockする(この依頼文で立てた委譲先だけが対象)
+  check_in以降にadd_logsが無いと、Stop hookが1回blockする(この依頼文の宛先activityにcheck-inしたセッションだけが対象)
 - CALMに書き込めない内容は{pending_line}
 - 最後の報告の前に `{sync_memory_scope}` でsync-memoryを実行する
 

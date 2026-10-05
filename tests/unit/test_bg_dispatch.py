@@ -166,3 +166,23 @@ def test_main_marks_activity_as_delegate(tmp_path, monkeypatch, capsys):
     assert is_delegate_activity(99)
     assert not is_delegate_activity(98)
     assert not is_delegate_activity(None)
+
+
+def test_delegate_marker_expires_and_env_override(tmp_path, monkeypatch):
+    import os
+
+    from hooks.delegate_marker import (
+        is_delegate_activity,
+        marker_path,
+        write_delegate_marker,
+    )
+    from hooks.hook_state import HookState
+
+    monkeypatch.setattr(HookState, "BASE_DIR", tmp_path / "other")
+    monkeypatch.setenv("HOOK_STATE_DIR", str(tmp_path / "env"))
+    write_delegate_marker(5)
+    assert marker_path(5).parent == tmp_path / "env" / "delegate"
+    assert is_delegate_activity(5)
+    old = marker_path(5).stat().st_mtime - 2 * 24 * 60 * 60
+    os.utime(marker_path(5), (old, old))
+    assert not is_delegate_activity(5)

@@ -524,8 +524,8 @@ class TestRecordingObligationBlock:
 
         result = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
         assert result == {}
-        events = (Path(env_setup["state_dir"]) / "events_test-session.jsonl").read_text()
-        assert "record_before_finish" in events
+        nudges = [e for e in _read_events(env_setup["state_dir"], "test-session") if e["e"] == "nudge" and e["type"] == "record_before_finish"]
+        assert [e["turn"] for e in nudges] == [2]
 
     def test_marker_for_other_activity_does_not_block(self, env_setup):
         """目印は別activityのものなら、check-in中のactivityには効かない"""
@@ -588,10 +588,10 @@ class TestRecordingObligationBlock:
         assert result == {}
 
     def test_block_is_one_shot_per_session(self, env_setup):
-        _mark_delegate(env_setup)
         """記録義務blockは1セッションにつき1回だけ。block_count(2回連続block
         しないための短期カウンタ)がリセットされた後の次のターンでも、既に
         発火済みなら再度blockしない(専用の永続フラグで担保している)。"""
+        _mark_delegate(env_setup)
         state_dir = Path(env_setup["state_dir"])
         transcript = env_setup["tmp_path"] / "transcript.jsonl"
         _write_transcript(
