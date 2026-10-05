@@ -249,7 +249,7 @@ SessionStart        → hook_state clear / session_start_hook / sanitize_backfil
 PreToolUse           → preblock_hook → 内部ID表記のtool_inputを検出しblock
 PostToolUse          → sanitize_tool_result_hook（calmツールのみ）→ tool_resultの生ID参照をcitationテンプレへ変換
                        → ask_answer_rewake_hook（add_ask限定、asyncRewake）→ 回答待ちポーリング→idle起床
-Stop                 → stop_hook → record_missing / follow_up_after_decision / logs_sparse nudge を events.jsonl に追記
+Stop                 → stop_hook → record_missing / follow_up_after_decision / logs_sparse nudge を events.jsonl に追記。完了の合図があるのにcheck_in以降add_logsが無いときは、bg_dispatch.pyで立てた委譲先（宛先activityに目印あり）だけblockし、それ以外はrecord_before_finish nudgeに留める
 UserPromptSubmit     → user_prompt_submit_hook → 未消費 nudge・ask通知の system-reminder 注入
 MessageDisplay       → message_display_id_titles → 内部ID表記の直後にエンティティタイトルを表示注入、CLIセッション名を`<Session: 表示名>`へ置換
 ```

@@ -830,3 +830,24 @@ class TestCodexNestedUnderClaudeCode:
         _write_cli_session(cli_sessions_dir, 600, name="workspace-a2")
         result = session_identity.resolve_cli_session("bridge-uuid-1")
         assert result is not None and result["name"] == "workspace-a2"
+
+
+class TestNearestAgentCliPid:
+    """最も近いエージェントCLIの祖先だけを選ぶ（外側の起動元シェル等は選ばない）。"""
+
+    def test_picks_nearest_cli_skipping_non_cli_ancestors(self, monkeypatch):
+        names = {10: "uv", 20: "claude", 30: "zsh", 40: "claude"}
+        monkeypatch.setattr(session_identity.cli_session, "read_cli_session", lambda pid: None)
+        monkeypatch.setattr(session_identity, "_get_process_name", lambda pid: names.get(pid))
+        assert session_identity.nearest_agent_cli_pid([10, 20, 30, 40]) == 20
+
+    def test_detects_codex(self, monkeypatch):
+        names = {10: "uv", 20: "codex"}
+        monkeypatch.setattr(session_identity.cli_session, "read_cli_session", lambda pid: None)
+        monkeypatch.setattr(session_identity, "_get_process_name", lambda pid: names.get(pid))
+        assert session_identity.nearest_agent_cli_pid([10, 20]) == 20
+
+    def test_none_when_no_cli(self, monkeypatch):
+        monkeypatch.setattr(session_identity.cli_session, "read_cli_session", lambda pid: None)
+        monkeypatch.setattr(session_identity, "_get_process_name", lambda pid: "zsh")
+        assert session_identity.nearest_agent_cli_pid([10, 20]) is None

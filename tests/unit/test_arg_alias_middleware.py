@@ -84,3 +84,69 @@ def test_middleware_is_registered_after_signal_capture():
     kinds = [type(m) for m in mcp.middleware]
     # SignalCapture が外側: 書き換え前の取り違えと例つきエラーが machine_error として観測される
     assert kinds.index(SignalCaptureMiddleware) < kinds.index(ArgAliasMiddleware)
+
+
+@pytest.mark.asyncio
+async def test_trailing_close_tags_are_stripped():
+    out = await _run("answer_ask", {"answer_body": "本文。</answer_body>\n</invoke>"})
+    assert out == {"answer_body": "本文。"}
+
+
+@pytest.mark.asyncio
+async def test_multiple_tags_and_trailing_newline_are_stripped():
+    body = "本文</parameter>\n</invoke>\n"
+    assert await _run("answer_ask", {"answer_body": body}) == {"answer_body": "本文"}
+
+
+@pytest.mark.asyncio
+async def test_close_tags_in_the_middle_are_kept():
+    body = "説明: </invoke> が混入する。続き"
+    assert await _run("answer_ask", {"answer_body": body}) == {"answer_body": body}
+
+
+@pytest.mark.asyncio
+async def test_trailing_tags_without_invoke_are_kept():
+    body = "本文</parameter>"
+    assert await _run("answer_ask", {"answer_body": body}) == {"answer_body": body}
+
+
+@pytest.mark.asyncio
+async def test_close_tags_in_nested_values_are_stripped():
+    out = await _run(
+        "add_logs",
+        {"items": [{"topic_id": 1, "content": "c</content>\n</invoke>", "tags": ["a</invoke>"]}]},
+    )
+    assert out == {"items": [{"topic_id": 1, "content": "c", "tags": ["a"]}]}
+
+
+@pytest.mark.asyncio
+async def test_text_continuing_after_invoke_tag_is_kept():
+    body = "本文</invoke>x"
+    assert await _run("answer_ask", {"answer_body": body}) == {"answer_body": body}
+
+
+@pytest.mark.asyncio
+async def test_text_made_only_of_close_tags_becomes_empty():
+    assert await _run("answer_ask", {"answer_body": "</invoke>"}) == {"answer_body": ""}
+
+
+@pytest.mark.asyncio
+async def test_non_string_values_pass_through():
+    assert await _run("answer_ask", {"n": 3, "x": None}) == {"n": 3, "x": None}
+
+
+@pytest.mark.asyncio
+async def test_close_tags_are_stripped_before_aliases_are_applied():
+    assert await _run("search", {"query": "x</invoke>"}) == {"keyword": "x"}
+
+
+@pytest.mark.asyncio
+async def test_many_close_tags_are_stripped_without_blowup():
+    body = "x" + "</a>\n" * 50000 + "</invoke>"
+    assert await _run("answer_ask", {"answer_body": body}) == {"answer_body": "x"}
+
+
+@pytest.mark.asyncio
+async def test_namespaced_invoke_tag_is_stripped():
+    out = await _run("answer_ask", {"answer_body": "本文</ns:parameter>\n</ns:invoke>"})
+    assert out == {"answer_body": "本文"}

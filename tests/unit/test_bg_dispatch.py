@@ -151,3 +151,60 @@ class TestMainCli:
         assert exc_info.value.code == 2
         err = capsys.readouterr().err
         assert "--parent-condition-id" in err
+
+
+@pytest.fixture
+def marker_dir(tmp_path, monkeypatch):
+    from hooks.hook_state import HookState
+
+    monkeypatch.delenv("HOOK_STATE_DIR", raising=False)
+    monkeypatch.setattr(HookState, "BASE_DIR", tmp_path)
+    return tmp_path
+
+
+def _dispatch(activity_id: int) -> None:
+    main([
+        "--activity-id", str(activity_id), "--activity-title", "t", "--worktree", "/w",
+        "--parent-goal-handle", "g", "--parent-condition-id", "1",
+    ])
+
+
+def test_main_marks_only_target_activity_as_delegate(marker_dir):
+    from hooks.delegate_marker import is_delegate_activity
+
+    _dispatch(99)
+    assert is_delegate_activity(99)
+    assert not is_delegate_activity(98)
+
+
+def test_marker_valid_within_ttl_and_expires_after(marker_dir):
+    import os
+
+    from hooks.delegate_marker import is_delegate_activity, marker_path
+
+    _dispatch(5)
+    path = marker_path(5)
+    now = path.stat().st_mtime
+    os.utime(path, (now - 23 * 3600, now - 23 * 3600))
+    assert is_delegate_activity(5)
+    os.utime(path, (now - 25 * 3600, now - 25 * 3600))
+    assert not is_delegate_activity(5)
+
+
+def test_marker_follows_hook_state_dir_env(marker_dir, monkeypatch):
+    from hooks.delegate_marker import marker_path
+
+    monkeypatch.setenv("HOOK_STATE_DIR", str(marker_dir / "env"))
+    _dispatch(6)
+    assert marker_path(6).parent == marker_dir / "env" / "delegate"
+    assert marker_path(6).exists()
+
+
+def test_request_still_printed_when_marker_write_fails(marker_dir, monkeypatch, capsys):
+    from hooks.hook_state import HookState
+
+    blocker = marker_dir / "blocker"
+    blocker.write_text("file")
+    monkeypatch.setattr(HookState, "BASE_DIR", blocker)  # 配下にmkdirできない
+    _dispatch(7)
+    assert "実装担当のbgセッション" in capsys.readouterr().out

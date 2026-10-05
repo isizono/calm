@@ -1502,7 +1502,7 @@ def demote_tag_notes(
     この規約は tag notes に触れる全てのツール呼び出しへ配る正典であり、update_tag
     等の他ツールのdocstringには要約と本docstringへの参照のみを置く。
 
-    ## 引数(詳細は docs/spec/mcp-tools.md 参照)
+    ## 引数(詳細は docs/spec/mcp-tools.md 2.9b節参照)
 
     tag: 対象タグ。
     sections: 退避する見出しテキストの配列("## "の有無は問わず正規化して照合)。

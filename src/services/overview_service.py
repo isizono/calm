@@ -5,13 +5,14 @@ activity_service.get_activities が持つ「期限切れ snoozed の自動復活
 本サービスに持ち込まない（窓を覗いた副作用で status が動くと、窓が
 映しているものと DB の実態がずれる）。
 
-get_overview 1回の呼び出しで開く sqlite 接続は計5本になる
-（activities側の接続1本 + ask_service.get_asksを4回呼ぶことによる4本）。
+get_overview 1回の呼び出しで開く sqlite 接続は計6本になる
+（activities側の接続1本 + ask_service.get_asksを4回呼ぶことによる4本 +
+goal条件の読み取り1本の計6本）。
 awaiting_human節はopen側・回答済み未捌き(pending)側それぞれで「非メタ取得+
 kind="meta"専用取得」の2回呼びを行うため、この節だけで4本になる（メタaskは
 表示上限（limit）を超えて他のaskが多数存在していても必ず表示するため）。
 with_conn版の分離はconn共有のためではなくテストでの単体呼び出しやすさが
-目的で、この5本を1本に集約する最適化は行っていない。
+目的で、この6本を1本に集約する最適化は行っていない。
 """
 from __future__ import annotations
 
@@ -325,6 +326,55 @@ def _format_ask_item(ask: dict, now: datetime) -> dict:
     }
 
 
+def _collect_goal_human_conditions(conn: sqlite3.Connection, *, limit: int, now: datetime) -> dict:
+    """担い手がhumanでopenのgoal条件を、条件1件につき1行で列挙する。
+
+    goalには複数activityが属しうるため、条件単位に集約する。未完了
+    （completed・shelved以外）のactivityが1件でもあればwaiting、属するactivityが
+    全てcompleted・shelvedならstale（閉じ忘れ）。activityは1件だけ添える
+    （waitingは未完了のうち最小id、staleは最小id）。経過日数は条件のupdated_at
+    から数える（条件に開いた時刻の列が無く、最後に動いた時刻での近似。条件の
+    編集でリセットされる）。どちらも古い順。total_countはlimitに依らない。
+    """
+    finished = {"completed", "shelved"}
+    rows = conn.execute(
+        """
+        SELECT gc.id AS cond_id, gc.statement, gc.updated_at, g.handle AS goal_handle,
+               a.id AS act_id, a.title, a.status
+        FROM goal_conditions gc
+        JOIN goals g ON g.id = gc.goal_id
+        JOIN goal_activities ga ON ga.goal_id = gc.goal_id
+        JOIN activities a ON a.id = ga.activity_id
+        WHERE gc.actor = 'human' AND gc.state = 'open'
+        ORDER BY gc.updated_at ASC, gc.id ASC, a.id ASC
+        """
+    ).fetchall()
+
+    by_cond: dict[int, list[sqlite3.Row]] = {}
+    for r in rows:
+        by_cond.setdefault(r["cond_id"], []).append(r)
+
+    sections: dict[str, list[dict]] = {"waiting": [], "stale": []}
+    for group in by_cond.values():  # dictは挿入順 = 古い順
+        live = [r for r in group if r["status"] not in finished]
+        r = (live or group)[0]
+        item = {
+            "id": r["cond_id"],
+            "statement": r["statement"],
+            "goal_handle": r["goal_handle"],
+            "days_open": _days_since(r["updated_at"], now),
+            "activity": {"id": r["act_id"], "title": r["title"], "status": r["status"]},
+        }
+        strip_entity_id_inplace(item)
+        strip_entity_id_inplace(item["activity"])
+        sections["waiting" if live else "stale"].append(item)
+
+    return {
+        key: {"items": items[:limit], "count": len(items[:limit]), "total_count": len(items)}
+        for key, items in sections.items()
+    }
+
+
 def _collect_awaiting_human(*, limit: int, now: datetime) -> dict:
     """awaiting_human節（人間の裁定待ちで止まっているもの）を集計する。
 
@@ -354,12 +404,20 @@ def _collect_awaiting_human(*, limit: int, now: datetime) -> dict:
     items = [_format_ask_item(ask, now) for ask in raw["asks"]]
     triage_pending_items = [_format_ask_item(ask, now) for ask in pending["asks"]]
 
+    conn = get_connection()
+    try:
+        goal_human = _collect_goal_human_conditions(conn, limit=limit, now=now)
+    finally:
+        conn.close()
+
     return {
         "items": items,
         "count": len(items),
         "total_count": raw["total_count"],
         "triage_pending_count": pending["total_count"],
         "triage_pending_items": triage_pending_items,
+        "goal_human_waiting": goal_human["waiting"],
+        "goal_human_stale": goal_human["stale"],
     }
 
 
