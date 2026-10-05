@@ -6,6 +6,7 @@ machine_error で繰り返し観測された取り違えだけを正しい名前
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import mcp.types as mt
@@ -36,6 +37,45 @@ _USAGE: dict[str, tuple[str, str]] = {
         'add_decisions(items=[{"topic_id": 1, "decision": "...", "reason": "..."}])',
     ),
 }
+
+
+# 呼び出し側の書式ミスで文字列引数の末尾に混入する閉じタグの並び。最後が invoke
+# の閉じタグ（名前空間付き可）のときだけ、間の空白ごと除く。本文の途中は触らない。
+_CLOSE_TAG = re.compile(r"</[\w:.\-]+>")
+_INVOKE_TAG = re.compile(r"</(?:[\w.\-]+:)?invoke>")
+
+
+def _strip_trailing_close_tags(text: str) -> str:
+    """末尾から閉じタグを1つずつ剥がす。文字列をコピーせず添字だけで進めるので線形で済む。"""
+
+    def rstrip_end(end: int) -> int:
+        while end > 0 and text[end - 1].isspace():
+            end -= 1
+        return end
+
+    end = rstrip_end(len(text))
+    if end == 0 or text[end - 1] != ">":
+        return text
+    start = text.rfind("</", 0, end)
+    if start < 0 or not _INVOKE_TAG.fullmatch(text, start, end):
+        return text
+    cut = start
+    while True:
+        end = rstrip_end(cut)
+        start = text.rfind("</", 0, end)
+        if start < 0 or not _CLOSE_TAG.fullmatch(text, start, end):
+            return text[:cut]
+        cut = start
+
+
+def _strip_close_tags(value: Any) -> Any:
+    if isinstance(value, str):
+        return _strip_trailing_close_tags(value)
+    if isinstance(value, list):
+        return [_strip_close_tags(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _strip_close_tags(v) for k, v in value.items()}
+    return value
 
 
 def _rewrite(tool: str, args: dict[str, Any]) -> None:
@@ -71,6 +111,7 @@ class ArgAliasMiddleware(Middleware):
         tool = context.message.name
         args = context.message.arguments
         if isinstance(args, dict):
+            args.update(_strip_close_tags(args))
             _rewrite(tool, args)
             usage = _USAGE.get(tool)
             if usage and usage[0] not in args:
