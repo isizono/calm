@@ -391,6 +391,82 @@ class TestGetSignals:
         assert result["total_count"] == 3
         assert len(result["signals"]) == 3
 
+    def test_ids_filter_restricts_to_given_ids(self, temp_db):
+        r1 = ss.record_signal("friction", "a", source="s1")
+        r2 = ss.record_signal("friction", "b", source="s2")
+        ss.record_signal("friction", "c", source="s3")
+
+        result = ss.get_signals(status=None, ids=[r1["id"], r2["id"]])
+
+        assert result["total_count"] == 2
+        assert {s["id_raw"] for s in result["signals"]} == {r1["id"], r2["id"]}
+
+    def test_empty_ids_list_is_treated_as_no_filter(self, temp_db):
+        for i in range(3):
+            ss.record_signal("friction", f"item {i}", source=f"s{i}")
+
+        result = ss.get_signals(status=None, ids=[])
+
+        assert result["total_count"] == 3
+
+    def test_detail_over_budget_is_truncated_with_marker(self, temp_db):
+        long_detail = "x" * (ss.DETAIL_MAX_CHARS + 50)
+        r1 = ss.record_signal("friction", "a", source="s1", detail=long_detail)
+
+        result = ss.get_signals(status=None)
+
+        signal = result["signals"][0]
+        assert len(signal["detail"]) == ss.DETAIL_MAX_CHARS
+        assert signal["detail_truncated"] is True
+        assert result["next"] == [
+            {"tool": "get_signals", "args": {"ids": [r1["id"]], "status": None, "limit": 1}}
+        ]
+
+    def test_detail_within_budget_is_not_truncated(self, temp_db):
+        ss.record_signal("friction", "a", source="s1", detail="short")
+
+        result = ss.get_signals(status=None)
+
+        signal = result["signals"][0]
+        assert signal["detail"] == "short"
+        assert "detail_truncated" not in signal
+        assert "next" not in result
+
+    def test_next_args_fetch_every_truncated_row(self, temp_db):
+        """切り詰め行数が既定limit(20)を超えても、nextの指示どおりに呼べば全件が返る。"""
+        long_detail = "x" * (ss.DETAIL_MAX_CHARS + 50)
+        ids = [
+            ss.record_signal("friction", f"item {i}", source=f"s{i}", detail=long_detail)["id"]
+            for i in range(25)
+        ]
+
+        listing = ss.get_signals(status=None, limit=100)
+        followup = ss.get_signals(**listing["next"][0]["args"])
+
+        assert {s["id_raw"] for s in followup["signals"]} == set(ids)
+        assert followup["total_count"] == 25
+
+    def test_ids_over_max_limit_is_rejected(self, temp_db):
+        result = ss.get_signals(status=None, ids=list(range(1, ss._MAX_LIMIT + 2)))
+
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_ids_lookup_skips_truncation(self, temp_db):
+        """idsで明示的に絞った取得は、listingと違いdetailを切り詰めない。"""
+        long_detail = "x" * (ss.DETAIL_MAX_CHARS + 50)
+        r1 = ss.record_signal("friction", "a", source="s1", detail=long_detail)
+
+        result = ss.get_signals(status=None, ids=[r1["id"]])
+
+        signal = result["signals"][0]
+        assert signal["detail"] == long_detail
+        assert "detail_truncated" not in signal
+        assert "next" not in result
+
+    def test_empty_table_does_not_error(self, temp_db):
+        result = ss.get_signals(status=None)
+        assert result == {"signals": [], "total_count": 0}
+
 
 class TestUpdateSignal:
     def test_status_transition_without_promotion(self, temp_db):
