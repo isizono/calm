@@ -25,6 +25,8 @@ from src.services.tag_service import (
 )
 
 TOPIC_DESC_MAX_LEN = 200
+# 切り詰めたdescriptionの末尾に足す省略記号
+DESC_ELLIPSIS = "…"
 
 
 def get_activity_topics_batch(
@@ -380,13 +382,17 @@ def get_topics(
             topics = []
             for row in rows:
                 topic = row_to_dict(row)
+                full_description = topic["description"] or ""
                 item = {
                     "id": topic["id"],
                     "title": topic["title"],
-                    "description": (topic["description"] or "")[:TOPIC_DESC_MAX_LEN],
+                    "description": full_description[:TOPIC_DESC_MAX_LEN],
                     "tags": tags_map.get(topic["id"], []),
                     "created_at": topic["created_at"],
                 }
+                if len(full_description) > TOPIC_DESC_MAX_LEN:
+                    item["description"] += DESC_ELLIPSIS
+                    item["description_truncated"] = True
                 strip_entity_id_inplace(item)
                 topics.append(item)
 
