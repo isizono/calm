@@ -1,13 +1,13 @@
 ---
 name: recompose-context
-description: 関連するアクティビティ・トピック・decisionを統合整理し、anchor対応表付きの資材にして次のcheck-inを軽くする。「情報整理して」「まとめて」「リコンサイル」、全域の棚卸しは「アクティビティ棚卸しして」などで発動。
+description: 関連するアクティビティ・トピック・decisionを統合整理し、anchor対応表付きの資材にして次のcheck-inを軽くする。「情報整理して」「まとめて」「リコンサイル」「anchor作って」、全域の棚卸しは「アクティビティ棚卸しして」などで発動。
 ---
 
 # recompose-context
 
 指定された入口（activity/topic/decisionどれでもOK）から関連する全情報（topics, decisions, logs, materials）を読み込み、統合material（anchor対応表付き）の生成・軽照合・リコンサイル・tag pin・tag-notes更新を行う。**次のcheck-inだけで作業に必要な情報が全部揃っている状態**を作ることがゴール。
 
-anchorの新規作成・更新は [setup-anchor](../setup-anchor/SKILL.md) skillに委譲する（責務分離）。
+anchorの新規作成・更新の対話手順は [references/anchor-setup.md](references/anchor-setup.md) に従う。「anchor作って」「検証先決めたい」など、anchorだけを決めたい依頼でもこの手順だけを使う。
 
 ## モード
 
@@ -112,9 +112,9 @@ tagスコープとmaterialは原則1対1。1つのtagに複数のmaterialが必�
 
 推測できた合意事項は anchor対応表 に直接追加。推測できない / 確証が低いものは **buffer** に溜める。
 
-#### 3-b. setup-anchor 起動
+#### 3-b. anchor確定の対話
 
-buffer が空でなければ setup-anchor skill を起動して、ユーザーと対話してanchor確定する。結果（mode=created）は anchor対応表 に merge する。
+buffer が空でなければ [references/anchor-setup.md](references/anchor-setup.md) の手順で、ユーザーと対話してanchor確定する。結果（mode=created）は anchor対応表 に merge する。
 
 #### 3-c. anchor対応表の統合
 
@@ -132,7 +132,7 @@ buffer が空でなければ setup-anchor skill を起動して、ユーザー�
 SA（run_in_background）で並行実行。結果はマトリクス化して、合意との一致/ズレを記録。
 
 - 一致 → そのまま維持
-- ズレ → 「残論点」に追加。ズレが「anchor側が古い」起因なら setup-anchor の更新モードに回す候補としてマーク
+- ズレ → 「残論点」に追加。ズレが「anchor側が古い」起因なら anchor-setup.md の更新モードに回す候補としてマーク
 
 ### 5. リコンサイル（無効化・再編）
 
@@ -222,7 +222,7 @@ logs・decisionsの中で言及されているが正式relationが張られて�
 - M#xxx（tag pin: <代表tag>）
 
 ### anchor対応表
-- 合計N件（推測のみ N件 / setup-anchor確定 N件 / 更新 N件）
+- 合計N件（推測のみ N件 / 対話確定 N件 / 更新 N件）
 
 ### 軽照合
 - 一致 N件 / ズレ N件（→残論点）

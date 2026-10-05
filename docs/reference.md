@@ -54,7 +54,6 @@ MCPツールの詳細仕様は[docs/spec/mcp-tools.md](spec/mcp-tools.md)にあ�
 | `/postmortem` | completedアクティビティを振り返り、教訓を永続化します |
 | `/audit` | 過去の決定事項の矛盾・陳腐化を検証し、知識を正しい場所に記録し直します |
 | `/recompose-context` | アクティビティ・トピック等の関連情報を統合整理し、anchor対応表を作ります。整理範囲のアクティビティのgoal・親への結びつけも整えます。`--all` でアクティビティ(active/shelved/snoozed)全域を棚卸しし、completed化・shelved化・統合などの処遇に反映します |
-| `/setup-anchor` | 合意事項の検証先（anchor）を対話的に確定・更新します |
 | `/scribe` | CALMの記録からドキュメントを生成します |
 | `/db-recovery` | DBデータの異常減少を検知した際に、スナップショットから復旧します |
 | `/restart` | CALMのローカルMCPサーバー・embeddingサーバーを再起動します |

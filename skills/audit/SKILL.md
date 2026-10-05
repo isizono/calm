@@ -119,7 +119,7 @@ audit する**主題** (decision 1 件 / 設計テーマ / 同 tag の方針推�
 3. **anchor 参照先**: 該当 decision を pin している material (`search(tags=["anchor", domain_tag])`) があれば取得し anchor 対応表の検証先を読む
 4. **コード anchor**: 「実装済」anchor のコードパスを `Read` で確認 (variable / function 名で `grep` 補完)
 
-「最新 decision を静的参照」は不可 (setup-anchor の「anchor の型」と整合)。
+「最新 decision を静的参照」は不可 (recompose-context の anchor確定手順の「anchorの型」と整合)。
 
 ### Step 4: 関連 log の一通り読み (経緯把握)
 
@@ -284,7 +284,7 @@ Step 7 の核となる判定。「正しい場所」とは、**知識を再利�
 |---|---|---|---|---|
 | **tag note** | 特定 tag を持つ entity に遭遇したとき | tag が活きるセッションで自動注入 | `update_tag` で上書き | 中 |
 | **habit** | 全セッション横断、tag 非依存 | `~/.claude/rules`配下の自動生成ファイルで配信（`trigger_mode='always'`は全文、`'intelligently'`はタイトルのみのマニフェスト） | `update_habit` で上書き、ユーザー承認必要 | 小 (件数制限) |
-| **anchor (material 内)** | 特定合意の真偽判定先 | recompose-context 経由 or 個別 audit で参照 | recompose-context で再生成 / setup-anchor で更新 | 大 (material 単位) |
+| **anchor (material 内)** | 特定合意の真偽判定先 | recompose-context 経由 or 個別 audit で参照 | recompose-context で再生成・更新 | 大 (material 単位) |
 | **material (新規 audit 結果)** | 経緯・調査結果そのもの | search hit / 関連 entity 経由 | `update_material` で上書き | 大 |
 | (参考) decision | 単発の合意事項 | get_decisions / search hit | 直接更新不可 (新規 + supersedes) | 小 |
 
@@ -310,7 +310,7 @@ Q3: その知識はセッション横断で常時想起されるべきか?
   YES → habit、ただし新規 habit はユーザー承認必須
   NO  → Q4 へ
 Q4: その知識は「合意の真偽判定先」(anchor) か?
-  YES → anchor (recompose-context 連携 or setup-anchor 起動)
+  YES → anchor (recompose-context 連携)
   NO  → Q5 へ
 Q5: その知識は経緯・調査結果そのものか?
   YES → material (audit material 自体に収まる、別途追加 material 不要)
@@ -329,7 +329,7 @@ Q5: その知識は経緯・調査結果そのものか?
 | 既存 habit の更新 | ユーザー確認 |
 | material 新規 (audit material 自体) | 自律 |
 | material 更新 (anchor 対応表追加など) | 確証あれば自律 |
-| anchor 新規/更新 | setup-anchor 起動経路 |
+| anchor 新規/更新 | recompose-context の anchor確定手順 |
 | decision retract / supersede 提案 | ユーザー裁定経由 (audit material に「提案」として記載のみ) |
 | `add_pin` | 自律 (純粋追加のため) |
 | `remove_pin` | ユーザー確認 |
@@ -359,27 +359,27 @@ Q5: その知識は経緯・調査結果そのものか?
 
 ### 対比表
 
-| 軸 | audit | recompose-context | setup-anchor | postmortem |
-|---|---|---|---|---|
-| 動機 | 過去判断の**正当性疑い** | 累積情報の**整理** | anchor の**確定** | completed activity の**振り返り** |
-| 対象スコープ | decision / 設計テーマ / 同一 tag 方針推移 | activity / topic / decision (関連グラフ全体) | 合意事項 1 件 | 完了 activity 1 件 |
-| 入口 | 自発トリガー T-A* / ユーザー T-B* | 手動 (「/recompose」「整理して」) or hint 誘導 | recompose 内部 or 単独 | 手動 (「/postmortem」or activity 指定) |
-| 出力 | audit material + pin 群 + 完了マーカー | 統合 material + anchor 対応表 + リコンサイル | anchor 対応表エントリ | 反省ポイント material + 教訓永続化 |
-| 重さ | 長 (1 セッション級) | 中 (整理単位次第) | 短 (合意 1 件) | 中 (ステップ分解 + 対話) |
+| 軸 | audit | recompose-context | postmortem |
+|---|---|---|---|
+| 動機 | 過去判断の**正当性疑い** | 累積情報の**整理** | completed activity の**振り返り** |
+| 対象スコープ | decision / 設計テーマ / 同一 tag 方針推移 | activity / topic / decision (関連グラフ全体) | 完了 activity 1 件 |
+| 入口 | 自発トリガー T-A* / ユーザー T-B* | 手動 (「/recompose」「整理して」) or hint 誘導 | 手動 (「/postmortem」or activity 指定) |
+| 出力 | audit material + pin 群 + 完了マーカー | 統合 material + anchor 対応表 + リコンサイル | 反省ポイント material + 教訓永続化 |
+| 重さ | 長 (1 セッション級) | 中 (整理単位次第) | 中 (ステップ分解 + 対話) |
 
 ### 重なる動作の役割分担
 
 | 動作 | 第一責務 | audit との関係 |
 |---|---|---|
 | 一次リソース取得 | recompose-context | audit も実施するが「過去判断の妥当性」の観点で読む (recompose は「最新統合」の観点) |
-| anchor 設定 | setup-anchor | audit が anchor 不在を発見したら setup-anchor を呼ぶ (recompose 経由でも可) |
+| anchor 設定 | recompose-context | audit が anchor 不在を発見したら recompose-context の anchor確定手順を使う |
 | 経緯 log 整理 | recompose-context / postmortem | audit は経緯を「ブレの原因分析」目的で読む (postmortem は「行動ステップごとの教訓抽出」) |
 | 知識の pin (tag note / habit / anchor) | audit (固有) | recompose-context は anchor 対応表のみ更新、その他 pin 先選定は audit が担う |
 | decision 改訂提案 | audit (固有) | retract/supersede は audit からの「提案」止まりで、決定はユーザー裁定 |
 
 ### 起動順序 (典型シナリオ)
 
-- 「decision 引用時に怪しい」→ audit (自発 T-A1) → audit 中で anchor 不在判明 → setup-anchor 起動
+- 「decision 引用時に怪しい」→ audit (自発 T-A1) → audit 中で anchor 不在判明 → recompose-context の anchor確定手順
 - 「topic#X 全体を整理したい」→ recompose-context → 統合中にズレ発見 → audit を提案
 - 「completed activity の振り返り」→ postmortem → 反省ポイントから知識永続化先迷う → audit の判定マトリクス参照 (任意)
 
@@ -403,7 +403,7 @@ audit skill は HintService (`src/services/hint_service.py`) とは**経路と�
 |---|---|
 | audit 対象 decision が retract 済 | audit material の `## 検証結果` に「対象は既 retract」と記録し、supersede 先の決定が今も妥当かを副次 audit |
 | 対象 topic が他セッションで並行修正中 | 並行修正の log を Step 4 で拾い、現在 in-flight な議論を `## 残課題` に明示 |
-| 一次リソース (コード) が存在しない (anchor リンク切れ) | `## 文脈不足の分析` に「anchor が剥がれている」と記録し、setup-anchor 起動候補としてマーク |
+| 一次リソース (コード) が存在しない (anchor リンク切れ) | `## 文脈不足の分析` に「anchor が剥がれている」と記録し、anchor確定手順の対象としてマーク |
 | 「過去 decision を引用」した直後で実際にはマッチしていた (T-A1 誤検知) | Step 1 の発端明文化時点で「マッチ確認済」と書き、Step 2 でスコープなしとして audit 中断 (空 audit) |
 | ユーザーが Step 5 途中で「もういい、わかった」と中断 | 部分的な audit material を「下書き」として保存 (§ 中断・再開) |
 | audit を recompose-context が呼んだ場合 | recompose 中の発見 (ズレ・矛盾) を発端として audit に降ろす経路は OK。audit 完了後に recompose に戻る |
