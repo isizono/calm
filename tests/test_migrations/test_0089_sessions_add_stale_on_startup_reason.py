@@ -1,6 +1,6 @@
-"""migration 0088_sessions_add_stale_on_startup_reason のテスト
+"""migration 0089_sessions_add_stale_on_startup_reason のテスト
 
-0088適用前後で以下が成立することを検証する:
+0089適用前後で以下が成立することを検証する:
 
 - 適用前: ended_reasonのCHECK制約は'unregister'/'ttl'/'superseded'のみを許可し、
   'stale_on_startup'はIntegrityErrorで拒否される
@@ -17,12 +17,12 @@ from test_migrations.conftest import db_before_migration, index_names
 
 
 @pytest.fixture
-def db_before_0088():
-    with db_before_migration("0088") as db_path:
+def db_before_0089():
+    with db_before_migration("0089") as db_path:
         yield db_path
 
 
-def test_rejects_new_reason_before_migration(db_before_0088):
+def test_rejects_new_reason_before_migration(db_before_0089):
     conn = get_connection(load_vec=False)
     try:
         with pytest.raises(sqlite3.IntegrityError):
@@ -36,7 +36,7 @@ def test_rejects_new_reason_before_migration(db_before_0088):
         conn.close()
 
 
-def test_accepts_new_reason_and_preserves_existing_rows_after_migration(db_before_0088):
+def test_accepts_new_reason_and_preserves_existing_rows_after_migration(db_before_0089):
     # 適用前の状態で既存行を1件投入する（旧3値のうちの1つ）
     conn = get_connection(load_vec=False)
     try:
@@ -48,7 +48,7 @@ def test_accepts_new_reason_and_preserves_existing_rows_after_migration(db_befor
     finally:
         conn.close()
 
-    init_database()  # 0088（および以降の未適用分）を適用する
+    init_database()  # 0089（および以降の未適用分）を適用する
 
     conn = get_connection(load_vec=False)
     try:
@@ -81,7 +81,7 @@ def test_accepts_new_reason_and_preserves_existing_rows_after_migration(db_befor
         conn.close()
 
 
-def test_indexes_recreated_after_migration(db_before_0088):
+def test_indexes_recreated_after_migration(db_before_0089):
     init_database()
 
     conn = get_connection(load_vec=False)

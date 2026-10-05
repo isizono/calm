@@ -846,7 +846,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 | 0081_vec_cosine_rebuild | vec_index / tag_vec を一時テーブル退避方式（ALTER TABLE RENAME TOは不使用）で distance_metric=cosine へ再構築（両テーブルとも vec0 既定の L2 のまま運用されていたための是正、§3.15, §3.16） |
 | 0084_add_hint_cooldowns | hint_cooldowns テーブル新設（hint_serviceの自動日次クールダウンの保存先、§3.38） |
 | 0087_drop_leftover_fts5_check_tables | 起動時FTS5可否チェック（_check_fts5_available）が後始末漏れで残した_fts5_checkと影のテーブル5つを削除（チェック自体はin-memory接続に切替済み、代替スキーマへの移行なし） |
-| 0088_sessions_add_stale_on_startup_reason | sessions.ended_reason に 'stale_on_startup' を追加（§3.31） |
+| 0089_sessions_add_stale_on_startup_reason | sessions.ended_reason に 'stale_on_startup' を追加（§3.31） |
 
 重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。
 
