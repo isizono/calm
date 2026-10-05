@@ -1407,7 +1407,10 @@ def get_overview(days: int = 7, limit: int = 20) -> dict:
       limit に関わらず必ず items に含まれる（非メタのみ limit で切り詰められる）。
       回答済みで未トリアージのものは triage_pending_count として件数を返すのに加え、
       triage_pending_items にタイトル(question)付きで列挙する（meta も同様に limit
-      無視で必ず含まれる）
+      無視で必ず含まれる）。加えて、担い手が human で open の goal 条件を
+      goal_human_waiting（未完了 activity に紐づくもの）と goal_human_stale
+      （completed・shelved の activity に残った閉じ忘れ）に、条件文・goal の
+      handle・activity・経過日数（条件の更新日時から）つきで古い順に返す
     - backlog: それ以外の残り。件数と status 別・domain 別の内訳のみ。
       stale_in_progress_count は「in_progress と宣言されているが days 日動いていない」件数。
       by_status は期限切れ snoozed（SNOOZE_DURATION_DAYS 超過）を pending として数える

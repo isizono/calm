@@ -252,6 +252,69 @@ class TestAwaitingHumanSection:
         assert result["items"][0]["days_open"] == 5
 
 
+class TestAwaitingHumanGoalConditions:
+    def _goal(self, act, handle, conditions):
+        from src.services.goal_service import set_goal
+        r = set_goal(act, {"new": {"handle": handle, "statement": "s", "conditions": conditions}})
+        assert "error" not in r, r
+
+    def _set_cond_updated_at(self, value):
+        conn = get_connection()
+        try:
+            conn.execute("UPDATE goal_conditions SET updated_at = ?", (value,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_open_human_condition_of_unfinished_activity_is_waiting_with_days(self, temp_db):
+        act = _make_activity(title="w", status="in_progress")
+        self._goal(act, "g-wait", [
+            {"statement": "人が見る", "actor": "human"},
+            {"statement": "claudeがやる", "actor": "claude"},
+        ])
+        self._set_cond_updated_at(_days_ago(9))
+
+        section = ov.get_overview()["awaiting_human"]
+
+        waiting = section["goal_human_waiting"]
+        assert waiting["total_count"] == 1
+        item = waiting["items"][0]
+        assert item["statement"] == "人が見る"
+        assert item["goal_handle"] == "g-wait"
+        assert item["days_open"] == 9
+        assert item["activity"] == {"id_raw": act, "title": "w", "status": "in_progress"}
+        assert section["goal_human_stale"]["items"] == []
+
+    @pytest.mark.parametrize("status", ["completed", "shelved"])
+    def test_open_human_condition_left_on_finished_activity_is_stale(self, temp_db, status):
+        act = _make_activity(status="in_progress")
+        self._goal(act, "g-stale", [{"statement": "閉じ忘れ", "actor": "human"}])
+        update_activity(act, status=status)
+
+        section = ov.get_overview()["awaiting_human"]
+
+        assert section["goal_human_waiting"]["items"] == []
+        assert [i["statement"] for i in section["goal_human_stale"]["items"]] == ["閉じ忘れ"]
+
+    def test_satisfied_human_condition_is_not_listed(self, temp_db):
+        act = _make_activity(status="in_progress")
+        self._goal(act, "g-done", [{"statement": "済み", "actor": "human", "state": "satisfied"}])
+
+        section = ov.get_overview()["awaiting_human"]
+
+        assert section["goal_human_waiting"]["total_count"] == 0
+        assert section["goal_human_stale"]["total_count"] == 0
+
+    def test_limit_truncates_items_but_not_total_count_and_oldest_first(self, temp_db):
+        act = _make_activity(status="in_progress")
+        self._goal(act, "g-many", [{"statement": f"c{i}", "actor": "human"} for i in range(3)])
+
+        waiting = ov.get_overview(limit=2)["awaiting_human"]["goal_human_waiting"]
+
+        assert waiting["count"] == 2
+        assert waiting["total_count"] == 3
+
+
 class TestAwaitingHumanMetaVisibility:
     """kind="meta"のask常時表示・回答済み未捌きのtriage_pending_itemsを検証する。"""
 
