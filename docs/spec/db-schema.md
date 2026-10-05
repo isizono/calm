@@ -770,89 +770,9 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 
 ---
 
-## 7. マイグレーション履歴
+## 7. （欠番）
 
-| ファイル | 概要 |
-|---|---|
-| 0001_initial_schema | projects / discussion_topics / discussion_logs / decisions / tasks の初期5テーブル + インデックス |
-| 0002_add_fts5_search | search_index + contentless FTS5 + topic / decision / task の同期トリガー新設 |
-| 0003_project_to_subject | projects → subjects リネーム、project_id → subject_id、asana_url 削除、トリガー9本再作成 |
-| 0004_fix_decisions_update_trigger | decision update トリガーの NULL ケース漏れバグ修正（1本 → 3本に分割） |
-| 0005_add_vec_index | sqlite-vec の vec0 仮想テーブル新設（384次元） |
-| 0005_decisions_topic_id_not_null | decisions.topic_id を NOT NULL 化、トリガーを再簡素化（**0005 番号重複**） |
-| 0006_add_on_delete_cascade | discussion_logs / decisions の topic_id に ON DELETE CASCADE 追加 |
-| 0007_remove_blocked_status | tasks.status の CHECK 制約から `blocked` 削除 |
-| 0008_add_log_search_index | discussion_logs.title 追加 + 検索インデックス登録 |
-| 0009_tag_infrastructure | tags / topic_tags / task_tags / decision_tags / log_tags / tag_vec 新設、subjects → domain:タグ移行 |
-| 0010_remove_subjects | subjects 廃止、subject_id / parent_topic_id / tasks.topic_id カラム削除、トリガー12本書き直し |
-| 0011_rename_task_to_activity | tasks → activities, task_tags → activity_tags リネーム、トリガー差し替え |
-| 0012_add_tag_notes | tags.notes カラム追加 |
-| 0013_add_materials | materials テーブル新設（activity_id FK 直結） |
-| 0014_intent_namespace | scope: → 素タグ、mode: → intent: リネーム、intent:初期タグ投入、CHECK 制約更新 |
-| 0015_intent_tag_notes | intent:* タグへ振る舞いガイド notes を投入 |
-| 0015_tag_canonical | tags.canonical_id 追加（エイリアス用）（**0015 番号重複**） |
-| 0016_add_activity_topic_id | activities.topic_id カラムを復活（0010 で削除されたもの） |
-| 0017_add_heartbeat | activities.last_heartbeat_at 追加 |
-| 0018_add_material_search_index | materials を search_index に登録、INSERT/UPDATE/DELETE トリガー新設 |
-| 0019_add_reminders | reminders テーブル新設 |
-| 0020_add_relation_tables | topic_relations / topic_activity_relations / activity_relations 新設 + relations_view（初版） |
-| 0021_migrate_topic_id_to_relations | activities.topic_id を topic_activity_relations へ移行し、カラム削除 |
-| 0022_add_detail_reminders | reminders に追加データを投入（運用ノウハウの文面） |
-| 0023_material_independent_entity | material_tags / topic_material_relations / activity_material_relations 新設、materials.activity_id 削除、relations_view 拡張 |
-| 0024_tag_description | tags.description 追加、intent:debug 新設、intent:* description 設定 |
-| 0025_rename_reminders_to_habits | reminders → habits リネーム |
-| 0026_add_snoozed_status | activities.status CHECK 制約に snoozed 追加、トリガー3本再生成 |
-| 0027_add_shelved_status | activities.status CHECK 制約に shelved 追加、トリガー3本再生成 |
-| 0028_add_activity_dependencies | activity_dependencies 新設、relations_view 拡張（depends_on 追加） |
-| 0029_add_pinned | discussion_logs / decisions / materials に pinned BOOLEAN カラム追加 |
-| 0030_add_search_index_created_at | search_index.created_at 追加 + 5エンティティ INSERT トリガー再生成 |
-| 0031_add_retracted_at | decisions / discussion_logs に retracted_at 追加 |
-| 0032_add_material_source | materials.source カラム追加（DEFAULT `'unknown'`） |
-| 0033_relation_expansion | 旧5 relation テーブルを relations 単一テーブルに統合、decision_supersedes 新設、CASCADE トリガー5本、relations_view 再構築 |
-| 0034_pins_directed_relation | pins テーブル新設、pinned=1 material を pins へ移行 |
-| 0035_drop_pinned_columns | discussion_logs / decisions / materials の pinned カラム削除 |
-| 0036_add_materials_updated_at | materials.updated_at 追加（既存行は created_at でバックフィル） |
-| 0037_add_decisions_title | decisions.title 追加、search_index トリガーで `COALESCE(title, decision)` 表示 |
-| 0038_pins_target_index_and_cascade | pins(target_type, target_id) インデックス追加、pins CASCADE トリガー6本（topic / activity / material / decision / log / tag）追加 |
-| 0039_extend_tag_namespace | tags の namespace CHECK 制約撤廃（テーブル再構築）、妥当性は Python 層検証へ |
-| 0039_intent_thinking | intent:thinking タグ新設、description / notes 設定（**0039 番号重複**） |
-| 0040_add_heartbeat_session_id | activities.last_heartbeat_session_id 追加（自セッションheartbeatの誤表示解消） |
-| 0041_add_search_telemetry | search_telemetry テーブル新設（§3.18） |
-| 0042_citations_table | citations テーブル新設 + owner側cascade削除トリガー5本（§3.19） |
-| 0043_add_materials_retracted_at | materials.retracted_at 追加（decision/log 同様の retract 機構を対称化） |
-| 0044_sanitize_log_table | sanitize_log テーブル新設（INSERT経路未実装のまま据置。0046で作り直し） |
-| 0045_add_activities_orch_managed | activities.orch_managed 追加（素タグ `orch-managed` からの構造的属性昇格 + データ移行） |
-| 0046_relations_belongs_to_unify | relations.relation_type CHECK を `('related','belongs_to')` に緩和、partial index 2本追加、既存 material/activity/decision/log→topic の `related` 行を `belongs_to` に変換、decisions/discussion_logs.topic_id を relations.belongs_to へ複製したうえで NULLABLE 化・FK 削除（トリガー再作成込み） |
-| 0046_sanitize_log_to_citation_event_log | sanitize_log を DROP し citation_event_log として作り直し（逐次行型 + VIEW 3本、§3.20）（**0046 番号重複**） |
-| 0047_drop_decisions_logs_topic_id | decisions.topic_id / discussion_logs.topic_id カラムを物理削除（0046で確保した前提条件を受けての Contract） |
-| 0048_session_identity | session_identity テーブル新設 + decisions/discussion_logs/discussion_topics/activities/materials に caller_session_id 追加（0057で全て削除） |
-| 0057_drop_capability_gating | session_identity テーブル削除 + decisions/discussion_logs/discussion_topics/activities/materials の caller_session_id カラム削除（role-based capability gating機構の呼び出し元解体に伴う撤去） |
-| 0058_add_habit_trigger_mode | habits に description / trigger_mode / importance_score / last_recalled_at を追加（スキーマ変更のみ、データ移行なし。trigger_modeの切り替えはupdate_habit経由で個別適用） |
-| 0059_add_habit_status | habits に status（'active'/'archived'、既定'active'）を追加 |
-| 0060_add_habit_importance_score_check | trigger_mode='intelligently'かつimportance_score=1.0(未設定)のhabitを3に補正したうえで、importance_scoreにCHECK(IN (1, 2, 3))を追加（テーブル再構築） |
-| 0061_add_tag_archived | tags に archived_at（退役日時）/ archived_reason（退役理由、100文字以内のCHECK制約付き）を追加、archived_at 用の部分インデックス idx_tags_archived_at を新設（スキーマ変更のみ、データ移行なし） |
-| 0062_add_asks | asks / ask_blocks / ask_requesters テーブル新設 + ask専用 vec0 仮想テーブル ask_vec 新設（§3.22-3.24） |
-| 0063_add_decision_supersedes_kind | decision_supersedes に kind 列（'replaces'/'destabilizes'）追加（テーブル再構築、PK に kind を含める形へ変更）、decision_destabilization_resolutions テーブル新設、relations_view の supersedes 由来行を kind で出し分け（§3.11, §3.11a, §3.17） |
-| 0064_add_tags_last_injected_at | tags に last_injected_at（tag notes 全文配信の最終実績日時、既定NULL）を追加。レンダー時decay述語（`is_decay_eligible`）の入力として使う（スキーマ変更のみ、データ移行なし） |
-| 0065_add_habits_always_pool_ratchet_trigger | trigger_mode='always'かつactive=1なhabitのcontent合計文字数が2000字を超えて増加するINSERT/UPDATEをRAISE(ABORT)で拒否するトリガー2本を新設（ラチェット型天井、縮む変更は常に許可） |
-| 0066_add_tags_notes_ratchet_trigger | tags.notesが4000字を超えて増加するINSERT/UPDATEをRAISE(ABORT)で拒否するトリガー2本を新設（1タグあたりのラチェット型天井、縮む変更は常に許可） |
-| 0067_add_injection_telemetry | injection_telemetry テーブル新設（記録=クエリ添付の追随カウンタ present側台帳、§3.25） |
-| 0068_add_asks_kind_and_tags | asks に kind 列（'ask'/'meta'、既定'ask'）を追加、ask_tags junction テーブル新設（§3.22, §3.23） |
-| 0069_add_asks_choices | asks に choices 列（JSON配列文字列の選択肢テンプレート、nullable）を追加（§3.22） |
-| 0070_add_instance_meta | instance_meta テーブル新設（自インスタンス識別子の保持、export/importバンドルの複合キー発行の基盤、§3.26） |
-| 0071_add_import_provenance | import_provenance テーブル新設（importしたエンティティの出自台帳。再import冪等性・上流変更検知・参照自己解決の基盤、§3.27） |
-| 0073_add_asks_notify_wanted | asks に notify_wanted 列（通知希望フラグ、既定1）を追加（§3.22） |
-| 0074_drop_relay_outbox | relay_outbox テーブル削除（relay統合機能の撤去に伴う。0056で新設、代替スキーマへの移行なし） |
-| 0077_add_goals | goals / goal_conditions / goal_activities テーブル新設（goal機構、§3.28-3.30）+ activities に closed_at・closed_by・closed_reason（NULL許容）を追加 |
-| 0078_add_sessions | sessions テーブル新設（セッション台帳、§3.31） |
-| 0079_add_feedback_entries | feedback_entries / feedback_notes / feedback_holds / feedback_turn_marks / feedback_bootstrap_seen / feedback_switch テーブル新設（フィードバック機構、§3.32-3.37） |
-| 0080_drop_activities_orch_managed | activities.orch_managed カラムを削除（0045で追加した構造的属性の撤去。運用体系解体後も複数箇所で参照が残り誤読を誘発していたため） |
-| 0081_vec_cosine_rebuild | vec_index / tag_vec を一時テーブル退避方式（ALTER TABLE RENAME TOは不使用）で distance_metric=cosine へ再構築（両テーブルとも vec0 既定の L2 のまま運用されていたための是正、§3.15, §3.16） |
-| 0084_add_hint_cooldowns | hint_cooldowns テーブル新設（hint_serviceの自動日次クールダウンの保存先、§3.38） |
-| 0087_drop_leftover_fts5_check_tables | 起動時FTS5可否チェック（_check_fts5_available）が後始末漏れで残した_fts5_checkと影のテーブル5つを削除（チェック自体はin-memory接続に切替済み、代替スキーマへの移行なし） |
-| 0089_sessions_add_stale_on_startup_reason | sessions.ended_reason に 'stale_on_startup' を追加（§3.31） |
-
-重複番号: **0005** （add_vec_index / decisions_topic_id_not_null）、**0015** （intent_tag_notes / tag_canonical）、**0039** （extend_tag_namespace / intent_thinking）、**0046** （relations_belongs_to_unify / sanitize_log_to_citation_event_log）。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている。
+旧「マイグレーション履歴」。`migrations/` のファイル名が正本であり、番号は他文書からの参照を保つため繰り上げない。
 
 ---
 
@@ -876,7 +796,7 @@ tags テーブル用の独立 vec0 仮想テーブル。新規タグ作成時の
 
 8. **タグ解決 `resolve_tags()` のアトミック性欠如**: tag_service の `resolve_tags()` はループ内で中間 commit を行うため、複数タグ処理途中のエラーで前半 INSERT がロールバックされず中途半端な状態が残る。
 
-9. **スキーマ進化のデザインデット**: migration 番号の重複（0005×2 / 0015×2 / 0039×2 / 0046×2）と、materials の高頻度改修（0013 / 0018 / 0023 / 0029 / 0032 / 0034 / 0035 / 0036 / 0043 / 0048 / 0057 で計11回）。
+9. **スキーマ進化のデザインデット**: migration 番号の重複（0005×2 / 0015×2 / 0039×2 / 0046×2。yoyo は depends 宣言で順序を解決するため運用上は機能するが、ファイル名上の連番ユニーク性が崩れている）と、materials の高頻度改修（0013 / 0018 / 0023 / 0029 / 0032 / 0034 / 0035 / 0036 / 0043 / 0048 / 0057 で計11回）。
 
 10. **`update_tag()` の単一関数4操作**: tag_service の `update_tag()` は rename / notes / canonical / description の4種を1関数に集約し if 分岐している。
 

@@ -2,7 +2,7 @@
 
 [← README](../README.md)
 
-MCPツールの詳細仕様は[docs/spec/mcp-tools.md](spec/mcp-tools.md)にあります。
+MCPツールの詳細仕様は `src/main.py` の各ツールのdocstringにあります。複数ツールに共通する約束事と返り値の形状は[docs/spec/mcp-tools.md](spec/mcp-tools.md)にあります。
 
 ## MCPツール
 

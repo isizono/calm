@@ -71,7 +71,6 @@ uv run pytest -n auto tests/integration tests/e2e
 CI の `lint-docs` ジョブ（`scripts/lint_doc_cochange.py`）が、コードと外縁ドキュメントの同時更新を検査します。
 
 - `migrations/*.sql` を変更したら `docs/spec/db-schema.md` も更新する（スキーマ形状が変わらない場合は PR 本文かコミットメッセージに `[no-schema-shape-change]`）
-- `src/main.py` の MCP ツールのシグネチャ・増減を変更したら `docs/spec/mcp-tools.md` も更新する（例外マーカーは `[no-tool-surface-change]`）
 - README の「MCPツール」「スキル」表は、実装されたツール・`skills/*/SKILL.md` と一致させる
 
 手元では次で確認できます。

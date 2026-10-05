@@ -11,7 +11,7 @@ info:
     1 ツール = 1 path (POST) として整理する。
     本ファイルは scripts/generate_openapi.py が mcp.list_tools() から自動生成する。
     手動編集は次回生成で失われる。requestBody は実際の引数スキーマそのものだが、
-    responses は自動抽出できないため簡略化してある（詳細は docs/spec/mcp-tools.md）。
+    responses は自動抽出できないため簡略化してある（詳細は各ツールのdocstring）。
 servers:
 - url: mcp://calm
   description: ローカル/HTTP/StreamableHTTP の任意のトランスポートを抽象化した仮想 base URL
@@ -101,7 +101,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -157,7 +157,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -186,7 +186,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -221,7 +221,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -253,7 +253,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -282,7 +282,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -327,7 +327,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -380,7 +380,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -424,7 +424,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -466,7 +466,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -507,7 +507,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -536,7 +536,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -569,7 +569,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -627,7 +627,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -681,7 +681,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -719,7 +719,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -762,7 +762,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -793,7 +793,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -845,7 +845,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -908,7 +908,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -944,7 +944,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -971,7 +971,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -1021,7 +1021,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -1056,7 +1056,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -1093,7 +1093,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -1123,7 +1123,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -1173,7 +1173,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -1214,7 +1214,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -1250,7 +1250,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -1278,7 +1278,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -1300,7 +1300,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -1348,7 +1348,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -1409,7 +1409,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -1461,7 +1461,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -1499,7 +1499,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -1536,7 +1536,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -1587,7 +1587,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -1640,7 +1640,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -1684,7 +1684,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -1732,7 +1732,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -1776,7 +1776,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -1814,7 +1814,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -1839,7 +1839,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -1921,7 +1921,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -1958,7 +1958,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -1993,7 +1993,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -2022,7 +2022,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -2048,7 +2048,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -2080,7 +2080,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -2141,7 +2141,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -2167,7 +2167,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -2237,7 +2237,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -2281,7 +2281,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -2337,7 +2337,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -2392,7 +2392,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -2431,7 +2431,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -2487,7 +2487,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -2516,7 +2516,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:
@@ -2588,7 +2588,7 @@ paths:
               type: object
       responses:
         '200':
-          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）または docs/spec/mcp-tools.md を参照
+          description: ツール実行結果。正確な形状は該当ツールのdocstring（src/main.py）を参照
           content:
             application/json:
               schema:

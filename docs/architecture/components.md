@@ -78,7 +78,7 @@ graph TB
 
 - `migrations/0001_initial_schema.sql` 〜 `migrations/0039_*` 系: テーブル・インデックス・トリガー定義。エンティティ型（topics / decisions / discussion_logs / activities / materials / pins / relations / habits / tags / tag_canonicals）と関係（supersedes / depends_on / pin / relation）のスキーマはここに具現化されている
 - `migrations/0033_relation_expansion.sql`, `migrations/0034_pins_directed_relation.sql`: 関係の汎化と方向性導入
-- `migrations/0009_tag_infrastructure.sql`, `migrations/0014_intent_namespace.sql`, `migrations/0015_tag_canonical.sql`, `migrations/0024_tag_description.sql`, `migrations/0039_extend_tag_namespace.sql`, `migrations/0039_intent_thinking.sql`: タグ名前空間と二段防御（tag_canonicals）。なお `0039_*.sql` は番号重複（`docs/spec/db-schema.md` §7 を参照）
+- `migrations/0009_tag_infrastructure.sql`, `migrations/0014_intent_namespace.sql`, `migrations/0015_tag_canonical.sql`, `migrations/0024_tag_description.sql`, `migrations/0039_extend_tag_namespace.sql`, `migrations/0039_intent_thinking.sql`: タグ名前空間と二段防御（tag_canonicals）。なお `0039_*.sql` は番号重複（`docs/spec/db-schema.md` §8 を参照）
 
 ### 2.2 操作の実体
 
@@ -148,7 +148,7 @@ graph TB
 
 ### 3.3b エクスポート・インポート基盤
 
-他インスタンスへの記録の受け渡し（`docs/spec/mcp-tools.md` §1.9）を担う。
+他インスタンスへの記録の受け渡し（`export_bundle` / `import_bundle` ツール）を担う。
 
 - `src/services/instance_service.py`: 自インスタンス識別子（`set_instance_identity`）の設定・複合キー発行の基盤
 - `src/services/export_candidate_service.py`: export候補の走査・提示（`collect_export_candidates`、read-only）
