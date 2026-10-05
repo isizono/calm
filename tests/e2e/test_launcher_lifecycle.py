@@ -9,6 +9,7 @@ import subprocess
 import sys
 import textwrap
 import time
+from pathlib import Path
 
 import psutil
 import pytest
@@ -74,9 +75,18 @@ def _spawn_launcher(env, spawned, watched_pid=None):
         args.append(str(watched_pid))
     p = subprocess.Popen(args, env=env, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
     spawned.append(p)
-    time.sleep(1.5)  # signal登録・watchdog起動を待つ
-    assert p.poll() is None
+    _wait_registered(env, p.pid)
     return p
+
+
+def _wait_registered(env, pid: int) -> None:
+    """launcherがシグナル登録を終え、登録ファイルを書くまで待つ（その直後にwatchdogが始まる）。"""
+    path = Path(env["RELAY_STATE_DIR"]) / "sessions" / f"launcher-{pid}.json"
+    deadline = time.time() + 20
+    while not path.exists():
+        assert time.time() < deadline, "launcherが起動しなかった"
+        time.sleep(0.05)
+    time.sleep(0.5)
 
 
 def _wait_gone(pid: int, timeout: float) -> bool:
@@ -91,7 +101,7 @@ def _wait_gone(pid: int, timeout: float) -> bool:
 def test_sigterm_terminates_launcher(launcher_env, spawned):
     p = _spawn_launcher(launcher_env, spawned)
     p.send_signal(signal.SIGTERM)
-    assert p.wait(timeout=15) == 0
+    assert p.wait(timeout=15) == 0  # 強制終了(1)ではなく通常終了
 
 
 def test_launcher_exits_when_watched_cli_dies_even_if_direct_parent_lives(launcher_env, spawned, held_stdin):
@@ -103,7 +113,7 @@ def test_launcher_exits_when_watched_cli_dies_even_if_direct_parent_lives(launch
     )
     spawned.append(middle)
     launcher_pid = int(middle.stdout.readline())
-    time.sleep(1.5)
+    _wait_registered(launcher_env, launcher_pid)
     assert psutil.pid_exists(launcher_pid)
 
     cli.kill()
@@ -120,7 +130,7 @@ def test_launcher_exits_when_direct_parent_dies(launcher_env, spawned, held_stdi
     )
     spawned.append(middle)
     launcher_pid = int(middle.stdout.readline())
-    time.sleep(1.5)
+    _wait_registered(launcher_env, launcher_pid)
     assert psutil.pid_exists(launcher_pid)
 
     middle.kill()

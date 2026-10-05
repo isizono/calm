@@ -1101,10 +1101,18 @@ def _parent_watch_targets() -> list[tuple[int, float]]:
     return targets
 
 
+_shutdown_timer_started = False
+
+
+def _force_exit() -> None:
+    logger.error("Shutdown did not finish within %ss; forcing exit", SHUTDOWN_DEADLINE_SEC)
+    os._exit(1)
+
+
 def _is_target_alive(pid: int, created: float) -> bool:
     try:
         proc = psutil.Process(pid)
-        return proc.create_time() == created and proc.status() != psutil.STATUS_ZOMBIE
+        return abs(proc.create_time() - created) < 0.01 and proc.status() != psutil.STATUS_ZOMBIE
     except psutil.Error:
         return False
 
@@ -1147,9 +1155,12 @@ def main() -> None:
         # 終了処理（asyncioのタスク回収・スレッドのjoin・セッション解除のHTTP呼び出し）
         # が詰まっても確実に消えるよう、期限付きの強制終了を仕掛けておく。
         # daemonなので、通常終了すればプロセスと共に消える。
-        killer = threading.Timer(SHUTDOWN_DEADLINE_SEC, os._exit, (0,))
-        killer.daemon = True
-        killer.start()
+        global _shutdown_timer_started
+        if not _shutdown_timer_started:
+            _shutdown_timer_started = True
+            killer = threading.Timer(SHUTDOWN_DEADLINE_SEC, _force_exit)
+            killer.daemon = True
+            killer.start()
         return sys.exit(0)  # atexitが発火する
     signal.signal(signal.SIGTERM, _exit_handler)
     # SIGBREAK（Ctrl+Break）はWindowsにしか無い。
