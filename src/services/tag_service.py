@@ -1477,7 +1477,7 @@ def demote_tag_notes(
     archive_tags: list[str] | None = None,
     reason: str | None = None,
 ) -> dict:
-    """tag notesの指定セクションを資材へ逐語退避し、notesを縮小する。
+    """tag notesの指定セクションを資材へ逐語退避し、notesを縮小する（demote/archive tag notes to a material）。
 
     ## tag notes 記述規約(正典)
 

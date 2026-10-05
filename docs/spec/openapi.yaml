@@ -59,7 +59,7 @@ paths:
     post:
       tags:
       - activity
-      summary: 新しいアクティビティを追加する。
+      summary: 作業・議論の単位となるアクティビティを新規作成する（add/create a new activity, start a task）。
       requestBody:
         required: true
         content:
@@ -112,7 +112,7 @@ paths:
     post:
       tags:
       - ask
-      summary: 人間の判断を待つ問いを1件積む（答え待ちの間、blocksで指定したactivityを止める）。
+      summary: 人間にしか決められない判断を問いとして1件積む（add/create an ask for a human。
       requestBody:
         required: true
         content:
@@ -168,7 +168,7 @@ paths:
     post:
       tags:
       - decision
-      summary: 複数の決定事項を一括記録する（最大10件）。
+      summary: ユーザーと合意した決定事項を一括記録する（record/add decisions、最大10件）。
       requestBody:
         required: true
         content:
@@ -197,7 +197,7 @@ paths:
     post:
       tags:
       - feedback
-      summary: 'Choose: フィードバックエントリに観測・経緯を書き足したいとき。'
+      summary: 'Choose: フィードバックエントリに観測・経緯を書き足したいとき（add a note to a feedback entry）。'
       requestBody:
         required: true
         content:
@@ -232,7 +232,7 @@ paths:
     post:
       tags:
       - habit
-      summary: エージェントの振る舞いを登録する。
+      summary: エージェントの振る舞い(habit)を登録する（add a habit / behavior rule）。
       requestBody:
         required: true
         content:
@@ -264,7 +264,7 @@ paths:
     post:
       tags:
       - log
-      summary: 複数のログを一括追加する（最大10件）。
+      summary: 議論の経緯・調査メモ・観察をログとして一括記録する（add/record discussion logs、最大10件）。
       requestBody:
         required: true
         content:
@@ -293,7 +293,7 @@ paths:
     post:
       tags:
       - material
-      summary: 資材を追加する。
+      summary: ドラフト・調査結果・分析などの成果物を資材として保存する（add/save a material, document, or report）。
       requestBody:
         required: true
         content:
@@ -338,7 +338,7 @@ paths:
     post:
       tags:
       - pin
-      summary: pinを追加する（source → target）。
+      summary: check-in時にsourceへ自動注入されるtargetを指定するpinを追加する（add a pin from source to target）。
       requestBody:
         required: true
         content:
@@ -391,7 +391,7 @@ paths:
     post:
       tags:
       - relation
-      summary: エンティティ間のリレーションを追加する。
+      summary: topic/activity/decision等の記録同士を関連付ける（add a relation, link records）。
       requestBody:
         required: true
         content:
@@ -435,7 +435,7 @@ paths:
     post:
       tags:
       - topic
-      summary: 新しい議論トピックを追加する。
+      summary: 1つの関心事・問題・機能を表す議論トピックを新規作成する（add/create a new discussion topic）。
       requestBody:
         required: true
         content:
@@ -477,7 +477,7 @@ paths:
     post:
       tags:
       - tag
-      summary: タグの共起分析を実行する。
+      summary: タグの共起分析を実行して整理候補を出す（analyze tag co-occurrence）。
       requestBody:
         required: true
         content:
@@ -518,7 +518,7 @@ paths:
     post:
       tags:
       - ask
-      summary: 答え待ち（open）のaskに回答する。
+      summary: 答え待ち（open）のaskに回答する（answer an ask）。
       requestBody:
         required: true
         content:
@@ -547,7 +547,7 @@ paths:
     post:
       tags:
       - checkin
-      summary: 'Choose: アクティビティに着手するときに関連情報を一括取得したいとき（status を in_progress に自動更新）。'
+      summary: 'Choose: アクティビティに着手・再開するときに関連情報を一括取得したいとき（check in to an activity, resume work。'
       requestBody:
         required: true
         content:
@@ -580,7 +580,7 @@ paths:
     post:
       tags:
       - export
-      summary: 'Choose: 他インスタンスへのexport候補を洗い出したいとき。'
+      summary: 'Choose: 他インスタンスへのexport候補を洗い出したいとき（collect export candidates）。'
       requestBody:
         required: true
         content:
@@ -638,7 +638,7 @@ paths:
     post:
       tags:
       - tag
-      summary: tag notesの指定セクションを資材へ逐語退避し、notesを縮小する。
+      summary: tag notesの指定セクションを資材へ逐語退避し、notesを縮小する（demote/archive tag notes to a material）。
       requestBody:
         required: true
         content:
@@ -692,7 +692,7 @@ paths:
     post:
       tags:
       - misc
-      summary: 'Choose: sync-memoryの聞き返し後追い検出ステップで使う。'
+      summary: 'Choose: sync-memoryの聞き返し後追い検出ステップで、聞き返し候補を検出する（detect re-ask candidates）とき。'
       requestBody:
         required: true
         content:
@@ -730,7 +730,8 @@ paths:
     post:
       tags:
       - export
-      summary: 'Choose: collect_export_candidatesで確定した候補リストから、他インスタンスへ渡す'
+      summary: 'Choose: collect_export_candidatesで確定した候補リストから、他インスタンスへ渡すバンドルを書き出すとき（export a bundle to
+        files）。'
       requestBody:
         required: true
         content:
@@ -773,7 +774,8 @@ paths:
     post:
       tags:
       - material
-      summary: 'Choose: 資材の全文を calm 外で参照したい（obsidian vault に置く / docs リポに commit する / third-party レビュー用に配布する）とき。'
+      summary: 'Choose: 資材の全文を calm 外で参照したい（obsidian vault に置く / docs リポに commit する / third-party レビュー用に配布する）とき（export
+        a material to a file）。'
       requestBody:
         required: true
         content:
@@ -804,7 +806,7 @@ paths:
     post:
       tags:
       - activity
-      summary: アクティビティ一覧を取得する（tags/statusでフィルタリング可能）。
+      summary: アクティビティ一覧を取得する（list/get activities、tags/statusでフィルタリング可能）。
       requestBody:
         required: true
         content:
@@ -856,7 +858,7 @@ paths:
     post:
       tags:
       - ask
-      summary: add_askで記録されたaskを一覧・集計する。
+      summary: add_askで記録されたaskを一覧・集計する（list/get asks）。
       requestBody:
         required: true
         content:
@@ -919,7 +921,8 @@ paths:
     post:
       tags:
       - search
-      summary: 'Choose: search 結果の type+id ペアを本文付きで一括取得したいとき（複数種別 OK）。'
+      summary: 'Choose: search 結果の type+id ペアを本文付きで一括取得（get records by ids, fetch full text）したいとき（複数種別
+        OK）。'
       requestBody:
         required: true
         content:
@@ -955,7 +958,7 @@ paths:
     post:
       tags:
       - misc
-      summary: 現在の設定値を返す。
+      summary: 現在の設定値・環境変数を返す（get config settings）。
       requestBody:
         required: true
         content:
@@ -982,7 +985,7 @@ paths:
     post:
       tags:
       - decision
-      summary: 'Choose: topic/activity に紐づく decision 一覧が欲しいとき。'
+      summary: 'Choose: topic/activity に紐づく decision 一覧（list/get decisions）が欲しいとき。'
       requestBody:
         required: true
         content:
@@ -1032,7 +1035,7 @@ paths:
     post:
       tags:
       - feedback
-      summary: 'Choose: 躓きを踏まえて自分に配達しているフィードバックエントリを読みたいとき。'
+      summary: 'Choose: 躓きを踏まえて自分に配達しているフィードバックエントリを読みたいとき（get feedback entries）。'
       requestBody:
         required: true
         content:
@@ -1067,7 +1070,7 @@ paths:
     post:
       tags:
       - goal
-      summary: 'Choose: 1つのgoalの全条件(充足済みを含む)とid、紐づくactivity一覧を読みたい'
+      summary: 'Choose: 1つのgoalの全条件(充足済みを含む)とid、紐づくactivity一覧を読みたいとき（get goal conditions and activities）。'
       requestBody:
         required: true
         content:
@@ -1104,7 +1107,7 @@ paths:
     post:
       tags:
       - habit
-      summary: 登録済みの振る舞い一覧を取得する。
+      summary: 登録済みの振る舞い(habit)一覧を取得する（list/get habits）。
       requestBody:
         required: true
         content:
@@ -1134,7 +1137,7 @@ paths:
     post:
       tags:
       - log
-      summary: 'Choose: topic/activity に紐づく log 一覧が欲しいとき。'
+      summary: 'Choose: topic/activity に紐づく log 一覧（list/get discussion logs）が欲しいとき。'
       requestBody:
         required: true
         content:
@@ -1184,7 +1187,7 @@ paths:
     post:
       tags:
       - timeline
-      summary: 'Choose: 起点エンティティから relation を辿って到達可能な topic/activity/material のカタログが欲しいとき。'
+      summary: 'Choose: 起点エンティティから relation を辿って到達可能な topic/activity/material のカタログ（relation graph map）が欲しいとき。'
       requestBody:
         required: true
         content:
@@ -1225,7 +1228,7 @@ paths:
     post:
       tags:
       - material
-      summary: 'Choose: material_id 既知で資材の全文だけ取得したいとき。'
+      summary: 'Choose: material_id 既知で資材の全文だけ取得したいとき（get/read a material''s full text）。'
       requestBody:
         required: true
         content:
@@ -1261,7 +1264,8 @@ paths:
     post:
       tags:
       - activity
-      summary: 'Choose: 「今何が進んでいて、次に何をすべきか」をユーザーに一望で見せたいとき。'
+      summary: 'Choose: 「今何が進んでいて、次に何をすべきか」をユーザーに一望で見せたいとき（show overview of in-progress activities and
+        pending asks）。'
       requestBody:
         required: true
         content:
@@ -1289,7 +1293,8 @@ paths:
     post:
       tags:
       - session
-      summary: 'Choose: ListAgents 等で見えた他セッションの自動生成名（例: workspace-a2）が、どのアクティビティを担当しているのか知りたいとき。'
+      summary: 'Choose: ListAgents 等で見えた他セッションの自動生成名（例: workspace-a2）が、どのアクティビティを担当しているのか知りたいとき（get sessions,
+        session name lookup）。'
       requestBody:
         required: true
         content:
@@ -1311,7 +1316,7 @@ paths:
     post:
       tags:
       - misc
-      summary: report_signal で記録されたシグナルを一覧・集計する。
+      summary: report_signal で記録されたシグナルを一覧・集計する（list/get signals）。
       requestBody:
         required: true
         content:
@@ -1359,7 +1364,7 @@ paths:
     post:
       tags:
       - timeline
-      summary: 'Choose: topic/activity に紐づく decision/log/material を時系列順に並べたいとき。'
+      summary: 'Choose: topic/activity に紐づく decision/log/material を時系列順に並べたいとき（get timeline）。'
       requestBody:
         required: true
         content:
@@ -1420,7 +1425,7 @@ paths:
     post:
       tags:
       - topic
-      summary: トピックを新しい順に取得する（ページネーション付き）。
+      summary: トピックを新しい順に一覧取得する（list/get discussion topics、ページネーション付き）。
       requestBody:
         required: true
         content:
@@ -1472,7 +1477,7 @@ paths:
     post:
       tags:
       - export
-      summary: 'Choose: 他インスタンスのバンドルを取り込みたいとき。'
+      summary: 'Choose: 他インスタンスのバンドルを取り込みたいとき（import a bundle）。'
       requestBody:
         required: true
         content:
@@ -1510,7 +1515,7 @@ paths:
     post:
       tags:
       - goal
-      summary: 'Choose: goalの終了を明示的に判定して閉じたいとき。'
+      summary: 'Choose: goalの終了を明示的に判定して閉じたいとき（judge and close a goal as achieved or failed）。'
       requestBody:
         required: true
         content:
@@ -1547,7 +1552,7 @@ paths:
     post:
       tags:
       - misc
-      summary: 'Choose: 設計・裁定の前に、近傍 topic の判例(decision)を確率的発見ではなく網羅的に'
+      summary: 'Choose: 設計・裁定の前に、近傍 topic の判例(decision)を網羅確認（pull precedents）したいとき。'
       requestBody:
         required: true
         content:
@@ -1598,7 +1603,7 @@ paths:
     post:
       tags:
       - pin
-      summary: pinを削除する（source → target）。
+      summary: pinを削除する（remove/unpin source → target）。
       requestBody:
         required: true
         content:
@@ -1651,7 +1656,7 @@ paths:
     post:
       tags:
       - relation
-      summary: エンティティ間のリレーションを削除する。
+      summary: 記録同士のリレーションを削除する（remove/unlink a relation）。
       requestBody:
         required: true
         content:
@@ -1695,7 +1700,7 @@ paths:
     post:
       tags:
       - misc
-      summary: calm 自身への故障報告・使用感不満・矛盾検出・運用計測イベントの統一入口。
+      summary: 'calm 自身への故障報告・使用感不満・矛盾検出・運用計測イベントを記録する（report a signal: bug, friction, contradiction）。'
       requestBody:
         required: true
         content:
@@ -1743,7 +1748,7 @@ paths:
     post:
       tags:
       - relation
-      summary: destabilizesエッジ1本を解消（resolve）する。
+      summary: destabilizesエッジ1本を解消する（resolve a destabilization edge）。
       requestBody:
         required: true
         content:
@@ -1787,7 +1792,7 @@ paths:
     post:
       tags:
       - retract
-      summary: 決定事項・ログ・資材を取り消す（論理削除）。
+      summary: 決定事項・ログ・資材を取り消す（retract/delete/undo a record、論理削除）。
       requestBody:
         required: true
         content:
@@ -1825,7 +1830,7 @@ paths:
     post:
       tags:
       - misc
-      summary: 指定面数のダイスを振る。
+      summary: 指定面数のダイスを振る（roll a dice）。
       requestBody:
         required: true
         content:
@@ -1850,7 +1855,7 @@ paths:
     post:
       tags:
       - search
-      summary: キーワードで横断検索する。
+      summary: キーワードで過去の記録（topic/decision/log/material/activity）を横断検索する（search past records by keyword）。
       requestBody:
         required: true
         content:
@@ -1932,7 +1937,7 @@ paths:
     post:
       tags:
       - tag
-      summary: タグをキーワード検索する。
+      summary: タグをキーワードで検索する（search/find tags by keyword）。
       requestBody:
         required: true
         content:
@@ -1969,7 +1974,7 @@ paths:
     post:
       tags:
       - goal
-      summary: 'Choose: activityの終了条件(goal)上の立場を決めたいとき。'
+      summary: 'Choose: activityの終了条件(goal)の有無を決めたいとき（set or define a goal for an activity）。'
       requestBody:
         required: true
         content:
@@ -2004,7 +2009,7 @@ paths:
     post:
       tags:
       - export
-      summary: 'Choose: 他インスタンスへexportバンドルを渡す前に、自インスタンスの識別子を初めて'
+      summary: 'Choose: export前に自インスタンスの識別子を初めて設定・変更するとき（set instance identity/id）。'
       requestBody:
         required: true
         content:
@@ -2033,7 +2038,7 @@ paths:
     post:
       tags:
       - session
-      summary: 'Choose: 自セッションの別名を明示的に付け替えたいとき（自動生成された別名が分かりにくい、他セッションと衝突して接尾辞が付いた、など）。'
+      summary: 'Choose: 自セッションの別名を明示的に付け替えたいとき（set/rename session alias。'
       requestBody:
         required: true
         content:
@@ -2059,7 +2064,7 @@ paths:
     post:
       tags:
       - relation
-      summary: 軸変更decisionからdestabilizeされそうな候補decisionを提示する（候補提示のみ、read-only）。
+      summary: 軸変更decisionからdestabilizeされそうな候補decisionを提示する（suggest destabilized decision candidates、候補提示のみ、read-only）。
       requestBody:
         required: true
         content:
@@ -2091,7 +2096,7 @@ paths:
     post:
       tags:
       - ask
-      summary: answered状態のaskをpromote（decision化）またはdismissへ振り分ける。
+      summary: answered状態のaskをpromote（decision化）またはdismissへ振り分ける（triage an answered ask）。
       requestBody:
         required: true
         content:
@@ -2152,7 +2157,7 @@ paths:
     post:
       tags:
       - ask
-      summary: このaskの通知希望（notify_wanted）を明示的に外す。
+      summary: このaskの通知希望（notify_wanted）を明示的に外す（unsubscribe from ask notifications）。
       requestBody:
         required: true
         content:
@@ -2178,7 +2183,7 @@ paths:
     post:
       tags:
       - activity
-      summary: アクティビティのステータス・タイトル・説明・タグを更新する。
+      summary: アクティビティのステータス・タイトル・説明・タグを更新する（update activity status, complete or snooze a task）。
       requestBody:
         required: true
         content:
@@ -2248,7 +2253,7 @@ paths:
     post:
       tags:
       - goal
-      summary: 'Choose: goalの条件を追加・状態変更(充足/保留)・担い手や束縛の変更をしたいとき。'
+      summary: 'Choose: goalの条件を追加・状態変更(充足/保留)・担い手や束縛の変更をしたいとき（update goal conditions, mark satisfied）。'
       requestBody:
         required: true
         content:
@@ -2292,7 +2297,7 @@ paths:
     post:
       tags:
       - habit
-      summary: 振る舞いを更新する。
+      summary: 振る舞い(habit)を更新・無効化する（update/deactivate a habit）。
       requestBody:
         required: true
         content:
@@ -2348,7 +2353,7 @@ paths:
     post:
       tags:
       - material
-      summary: 既存の資材を更新する。
+      summary: 既存の資材の内容・タイトル・タグ・出典を更新する（update/edit a material）。
       requestBody:
         required: true
         content:
@@ -2403,7 +2408,7 @@ paths:
     post:
       tags:
       - misc
-      summary: シグナルのトリアージ状態を遷移する（orch/親セッション専用）。
+      summary: シグナルのトリアージ状態を遷移する（update signal triage status、orch/親セッション専用）。
       requestBody:
         required: true
         content:
@@ -2442,7 +2447,8 @@ paths:
     post:
       tags:
       - tag
-      summary: 既存タグの notes（教訓・運用ルール）、canonical（エイリアス先）、name（リネーム）、
+      summary: 既存タグの notes（教訓・運用ルール）・エイリアス・名前・説明・退役状態を更新する（update tag notes, rename, alias, archive a
+        tag）。
       requestBody:
         required: true
         content:
@@ -2498,7 +2504,7 @@ paths:
     post:
       tags:
       - ask
-      summary: 答え待ち（open）のaskを自発的に取り下げる。
+      summary: 答え待ち（open）のaskを自発的に取り下げる（withdraw/cancel an ask）。
       requestBody:
         required: true
         content:
@@ -2527,7 +2533,7 @@ paths:
     post:
       tags:
       - feedback
-      summary: 'Choose: フィードバックエントリを作る・直す・消すとき。'
+      summary: 'Choose: フィードバックエントリを作る・直す・消すとき（write/create/update/delete a feedback entry）。'
       requestBody:
         required: true
         content:
