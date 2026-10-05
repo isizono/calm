@@ -4,34 +4,35 @@
 表示整形関数はhooks/session_start_hook.pyに配置されている。
 """
 import os
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
-from src import config
-from src.db import get_connection
-from src.services.topic_service import add_topic
-from src.services.activity_service import (
-    add_activity,
-    update_activity,
-    get_active_domains,
-    get_active_activities_by_tag,
-    get_pinned_active_activities,
-)
-from src.services.pin_service import add_pin
-from src.services.ask_service import add_ask
-from src.services import goal_service
-from src.config import SNOOZE_DURATION_DAYS
+
 import src.services.embedding_service as emb
-from tests.helpers import add_decision
 from hooks.session_start_hook import (
-    _build_activities_section,
-    _build_fixed_nav,
-    _calc_elapsed_days,
     _DETERMINISTIC_RENDER_NOTICE,
     _LEGEND_LINE,
     _UNDISPLAYED_EXAMPLE_DOMAINS,
+    _build_activities_section,
+    _build_fixed_nav,
+    _calc_elapsed_days,
 )
+from src import config
+from src.config import SNOOZE_DURATION_DAYS
+from src.db import get_connection
+from src.services import goal_service
+from src.services.activity_service import (
+    add_activity,
+    get_active_activities_by_tag,
+    get_active_domains,
+    get_pinned_active_activities,
+    update_activity,
+)
+from src.services.ask_service import add_ask
+from src.services.pin_service import add_pin
+from src.services.topic_service import add_topic
+from tests.helpers import add_decision
 
 _NAV_BASE = (
     "作業開始時は該当アクティビティにcheck_in（なければ作成 — activity-start）。"
@@ -74,7 +75,7 @@ def _age_activities(hours: int = 48) -> None:
     """全アクティビティの created_at / updated_at を指定時間前に書き戻す。"""
     conn = get_connection()
     try:
-        past = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime(
+        past = (datetime.now(UTC) - timedelta(hours=hours)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         conn.execute(
@@ -89,7 +90,7 @@ def _set_updated_at_days_ago(activity_id: int, days: int) -> None:
     """指定activityのupdated_atをdays日前に書き換える（境界値テスト用）。"""
     conn = get_connection()
     try:
-        past = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
+        past = (datetime.now(UTC) - timedelta(days=days)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         conn.execute(
@@ -143,12 +144,12 @@ def test_tier2_max_items_negative_env_clamped_to_zero(monkeypatch):
 
 
 def test_calc_elapsed_days_today():
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     assert _calc_elapsed_days(now) == 0
 
 
 def test_calc_elapsed_days_3_days_ago():
-    three_days_ago = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+    three_days_ago = (datetime.now(UTC) - timedelta(days=3)).isoformat()
     assert _calc_elapsed_days(three_days_ago) == 3
 
 
@@ -247,7 +248,7 @@ def test_get_active_activities_by_tag_excludes_completed(temp_db):
 
 
 def test_get_active_activities_by_tag_sort_order(temp_db):
-    r1 = add_activity(title="Pending Activity", description="Desc", tags=["domain:test-proj"], check_in=False)
+    add_activity(title="Pending Activity", description="Desc", tags=["domain:test-proj"], check_in=False)
     r2 = add_activity(title="In Progress Activity", description="Desc", tags=["domain:test-proj"], check_in=False)
     update_activity(r2["activity_id"], status="in_progress")
     tag_id = _get_tag_id("domain", "test-proj")
@@ -496,7 +497,7 @@ class TestUndisplayedSection:
         result = _build_active_context_wrapper()
 
         assert "## 未表示 3件" in result
-        line = next(l for l in result.splitlines() if l.startswith("- myapp"))
+        line = next(ln for ln in result.splitlines() if ln.startswith("- myapp"))
         assert line.count("[作業] Hidden") == 2
         assert line.endswith("など")
 
@@ -506,7 +507,7 @@ class TestUndisplayedSection:
 
         result = _build_active_context_wrapper()
 
-        line = next(l for l in result.splitlines() if l.startswith("- myapp"))
+        line = next(ln for ln in result.splitlines() if ln.startswith("- myapp"))
         assert line == "- myapp 1件：[作業] Solo"
         assert "など" not in line
 
@@ -700,7 +701,7 @@ def test_build_activities_section_raises_on_invalid_db(temp_db):
     # より優先されてこの無効パスへの差し替えが素通りしてしまうため、同時に上書きする。
     env_set("CALM_DB_PATH", "/nonexistent/path/test.db")
 
-    with pytest.raises(Exception):
+    with pytest.raises(Exception):  # noqa: B017
         _build_active_context_wrapper()
 
     os.environ["DISCUSSION_DB_PATH"] = temp_db

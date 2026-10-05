@@ -8,7 +8,8 @@ import pytest
 from hooks.ask_notify_section import build_ask_notify_lines, build_neighbor_ask_lines
 from hooks.hook_state import HookState
 from src.db import get_connection
-from src.services import ask_handover_service as ah, ask_service as ak
+from src.services import ask_handover_service as ah
+from src.services import ask_service as ak
 from src.services.activity_service import add_activity, update_activity
 from src.services.checkin_tier_service import collect_and_assemble
 from src.services.goal_service import set_goal

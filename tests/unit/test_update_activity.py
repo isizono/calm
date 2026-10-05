@@ -1,5 +1,6 @@
 """update_activityのユニットテスト"""
 import pytest
+
 from src.db import get_connection
 from src.services import goal_service as gs
 from src.services.activity_service import (
@@ -9,7 +10,6 @@ from src.services.activity_service import (
     update_activity,
 )
 from src.services.topic_service import DESC_ELLIPSIS
-
 
 DEFAULT_TAGS = ["domain:test"]
 

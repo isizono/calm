@@ -3,18 +3,16 @@
 get_topicsはtags引数でフィルタリングする。
 get_logs/get_decisionsは各アイテムにtagsフィールドを含む。
 """
-import pytest
 from src.db import get_connection
+from src.services.decision_service import get_decisions
+from src.services.discussion_log_service import get_logs
 from src.services.topic_service import (
+    DESC_ELLIPSIS,
+    TOPIC_DESC_MAX_LEN,
     add_topic,
     get_topics,
-    TOPIC_DESC_MAX_LEN,
-    DESC_ELLIPSIS,
 )
-from tests.helpers import add_log, add_decision
-from src.services.discussion_log_service import get_logs
-from src.services.decision_service import get_decisions
-
+from tests.helpers import add_decision, add_log
 
 DEFAULT_TAGS = ["domain:test"]
 

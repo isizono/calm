@@ -5,6 +5,8 @@
 - get_by_ids での遭遇時注入
 - 4ツール（get_topics/get_activities/get_logs/get_decisions）の結果ベース注入
 """
+from datetime import UTC
+
 import pytest
 
 import src.services.embedding_service as emb
@@ -154,12 +156,12 @@ class TestUpdateTag:
         finally:
             conn.close()
 
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         written = datetime.strptime(row_after["notes_updated_at"], "%Y-%m-%d %H:%M:%S").replace(
-            tzinfo=timezone.utc
+            tzinfo=UTC
         )
-        assert abs((datetime.now(timezone.utc) - written).total_seconds()) < 60
+        assert abs((datetime.now(UTC) - written).total_seconds()) < 60
 
     # 「トリガー導入前から4000字超のnotesを持つタグを縮める／さらに伸ばす」ケースは
     # migrations/0066のDBトリガー自体がINSERT時点で4000字超を拒否するため、

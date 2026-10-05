@@ -483,7 +483,7 @@ class TestExpiredSnoozedDisplayedAsPendingInBacklog:
         assert _get_status(act) == "snoozed"
 
     def test_unexpired_snoozed_still_counted_under_snoozed(self, temp_db):
-        act = _make_activity(status="snoozed")
+        _make_activity(status="snoozed")
 
         result = ov.get_overview()
 

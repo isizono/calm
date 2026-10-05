@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 
 @dataclass
@@ -83,7 +83,7 @@ def check_search_health(
     )
 
     try:
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=window_days)).strftime(
+        cutoff = (datetime.now(UTC) - timedelta(days=window_days)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         rows = conn.execute(

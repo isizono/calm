@@ -629,7 +629,7 @@ class TestGuardBlockMetrics:
         assert by_rule[("hook:deny_nested_bg", "nested bg spawn blocked")] == 1
 
     def test_window_days_filters_by_last_seen_at(self, temp_db):
-        recent = ss.record_signal("guard_block", "nested bg spawn blocked", source="hook:deny_nested_bg")
+        ss.record_signal("guard_block", "nested bg spawn blocked", source="hook:deny_nested_bg")
         old = ss.record_signal("guard_block", "internal ID literal blocked (code)", source="hook:preblock")
         _backdate(temp_db, old["id"], days_ago=90)
 

@@ -1,28 +1,27 @@
 """タグユーティリティのユニットテスト"""
-import pytest
 import numpy as np
+import pytest
+
+import src.services.embedding_service as emb
 from src.db import get_connection
+from src.services.material_service import get_material
 from src.services.tag_service import (
-    parse_tag,
-    validate_and_parse_tags,
-    ensure_tag_ids,
-    resolve_tag_ids,
-    resolve_tags,
-    link_tags,
-    format_tags,
-    get_entity_tags,
-    get_effective_tags_batch,
-    update_tag,
-    demote_tag_notes,
-    collect_tag_notes_for_injection,
     _TAG_NOTES_RATCHET_CEILING,
     _max_timestamp,
+    collect_tag_notes_for_injection,
+    demote_tag_notes,
+    ensure_tag_ids,
+    format_tags,
+    get_effective_tags_batch,
+    get_entity_tags,
+    link_tags,
+    parse_tag,
+    resolve_tag_ids,
+    resolve_tags,
+    update_tag,
+    validate_and_parse_tags,
 )
 from src.services.topic_service import add_topic
-from src.services.material_service import get_material
-import src.services.embedding_service as emb
-
-
 
 # ========================================
 # _max_timestamp テスト
@@ -692,7 +691,7 @@ class TestTagEmbeddingHelpers:
         finally:
             conn.close()
 
-        for tag_id, name in zip(ids, ["hook", "design", "testing"]):
+        for tag_id, name in zip(ids, ["hook", "design", "testing"], strict=False):
             emb.generate_and_store_tag_embedding(tag_id, name)
 
         results = emb.search_similar_tags("hooks", k=3)
@@ -825,6 +824,7 @@ class TestDemoteTagNotesDocstringSync:
 
     def test_tool_and_service_docstrings_are_identical(self):
         import inspect
+
         from src.main import demote_tag_notes as tool_fn
 
         assert inspect.getdoc(tool_fn) == inspect.getdoc(demote_tag_notes)
@@ -839,6 +839,7 @@ class TestUpdateTagNotesConventionDocstringSync:
 
     def test_service_layer_mentions_convention_and_demote_tool(self):
         import inspect
+
         from src.services.tag_service import update_tag as service_fn
 
         doc = inspect.getdoc(service_fn)
@@ -847,6 +848,7 @@ class TestUpdateTagNotesConventionDocstringSync:
 
     def test_tool_layer_mentions_convention_and_demote_tool(self):
         import inspect
+
         from src.main import update_tag as tool_fn
 
         doc = inspect.getdoc(tool_fn)
@@ -947,7 +949,10 @@ class TestDemoteTagNotes:
         場合、末尾trailerとして退避後も残る。マーカーの実際の書式は
         hint_service側から導出し、本テストではハードコードしない
         (audit重複防止とhintマーカーが同時に壊れる最重要ケースの一つ)。"""
-        from src.services.hint_service import _DATED_MARKER_SUFFIX, MARKER_RECOMPOSE_DELTA
+        from src.services.hint_service import (
+            _DATED_MARKER_SUFFIX,
+            MARKER_RECOMPOSE_DELTA,
+        )
 
         marker_line = f"{MARKER_RECOMPOSE_DELTA}{_DATED_MARKER_SUFFIX}2026-09-04"
 

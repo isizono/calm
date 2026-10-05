@@ -22,7 +22,7 @@ def _tool_result(resp):
     """JSON / SSE どちらの応答形式でも tools/call の structuredContent を返す。"""
     body = resp.text
     if body.lstrip().startswith("event:") or "\ndata:" in body or body.startswith("data:"):
-        body = next(l[5:] for l in body.splitlines() if l.startswith("data:"))
+        body = next(ln[5:] for ln in body.splitlines() if ln.startswith("data:"))
     return json.loads(body)["result"]["structuredContent"]
 
 
@@ -105,4 +105,3 @@ def test_update_goal_records_bridge_id(client):
     finally:
         conn.close()
     assert row["session_id"] == "bridge-xyz"
-

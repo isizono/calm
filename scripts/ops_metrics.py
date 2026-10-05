@@ -278,7 +278,7 @@ def _goal_metrics(conn: sqlite3.Connection, window_days: int | None) -> dict | N
     }
 
 
-def _fetch_rows(conn: sqlite3.Connection, table: str, timestamp_col: str, window_days: Optional[int]) -> list[dict]:
+def _fetch_rows(conn: sqlite3.Connection, table: str, timestamp_col: str, window_days: int | None) -> list[dict]:
     """telemetryテーブルの全カラムをdictの一覧で返す（signal_eventsのcontext/refsのような
     JSONカラムのパースは呼び出し側に委ねる。テーブルごとにパース対象カラムが異なるため）。
     """
@@ -290,7 +290,7 @@ def _fetch_rows(conn: sqlite3.Connection, table: str, timestamp_col: str, window
     return [dict(row) for row in conn.execute(query, params).fetchall()]
 
 
-def _search_telemetry_metrics(conn: sqlite3.Connection, window_days: Optional[int]) -> dict:
+def _search_telemetry_metrics(conn: sqlite3.Connection, window_days: int | None) -> dict:
     """search_telemetry の縮退率（ベクトル検索利用不可率）とクエリ拡張発火率。
 
     diagnostics_json（migration 0054以降のみ記録、旧行はNULL）が無い行は
@@ -327,7 +327,7 @@ def _search_telemetry_metrics(conn: sqlite3.Connection, window_days: Optional[in
 _PRECEDENT_GUARANTEES = ("enumerated", "routing_miss", "routing_unavailable")
 
 
-def _precedent_telemetry_metrics(conn: sqlite3.Connection, window_days: Optional[int]) -> dict:
+def _precedent_telemetry_metrics(conn: sqlite3.Connection, window_days: int | None) -> dict:
     """precedent_telemetry のguarantee内訳（routingの当たり外れ）と列挙カバレッジ。
 
     カバレッジ(full_count/decisions_total)はguarantee=enumeratedかつdecisions_total>0の
@@ -355,7 +355,7 @@ def _precedent_telemetry_metrics(conn: sqlite3.Connection, window_days: Optional
     }
 
 
-def _fetch_follow_metrics(conn: sqlite3.Connection, window_days: Optional[int]) -> dict:
+def _fetch_follow_metrics(conn: sqlite3.Connection, window_days: int | None) -> dict:
     """search_telemetry の検索結果が同一セッションの fetch_telemetry で後から取得された
     割合（追随率）。migrations/0054 が定める生データの意図通り、caller_session_id で
     post-hocにJOINする。
@@ -423,7 +423,7 @@ def _fetch_follow_metrics(conn: sqlite3.Connection, window_days: Optional[int]) 
 _CITATION_VERIFICATION_RESULTS = ("exists", "dangling", "skip")
 
 
-def _citation_event_log_metrics(conn: sqlite3.Connection, window_days: Optional[int]) -> dict:
+def _citation_event_log_metrics(conn: sqlite3.Connection, window_days: int | None) -> dict:
     """citation_event_log の検証結果（verification_result）内訳。
 
     verification_resultは`{{cite:X#NNN}}`参照先の存在確認結果。NULL（未検証、
@@ -442,7 +442,7 @@ def _citation_event_log_metrics(conn: sqlite3.Connection, window_days: Optional[
     return {"count": len(rows), "by_verification_result": by_result}
 
 
-def _guard_block_metrics(conn: sqlite3.Connection, window_days: Optional[int]) -> dict:
+def _guard_block_metrics(conn: sqlite3.Connection, window_days: int | None) -> dict:
     """hookのdeny判定が記録したguard_block signalの件数を(hook, 規則)単位で集計する。
 
     signal_eventsのdedupは同一(kind, source, summary)の再発をoccurrence_count加算
