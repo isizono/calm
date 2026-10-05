@@ -40,6 +40,7 @@ from src.services.checkin_tier_service import (
     collect_and_assemble as _check_in,
     TIER_FORM_BUDGET_POLICY,
 )
+from src.services.activity_service import ACTIVITIES_BUDGET_POLICY
 from src.services import response_budget, session_ledger_service, session_registry_service
 from src.infra.session_identity import get_caller_session_id
 from src.services.tag_service import (
@@ -51,6 +52,7 @@ from src.services.tag_service import (
 )
 from src.services.tag_analysis_service import analyze_tags as _analyze_tags
 from src.services import citation_renderer
+from src import config_registry
 from src.db import get_connection
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -434,7 +436,7 @@ def get_logs(
     Returns:
         議論ログ一覧（各logにtags付き）
         entity_type == "activity" の場合はrelated topics（上限10件）経由でlogs集約。
-            related topics が10件を超える場合、11件目以降の topic に属する log は
+            related topics が10件を超える場合、古い側の topic に属する log は
             total_count / truncated の対象外（この上限による切り捨ては可視化されない）。
             activityに直接つないだlogは含まれない
         total_count: 対象 topic 全体の log 総件数（retractフィルタ適用後、limit/start_idの影響を受けない）
@@ -480,7 +482,7 @@ def get_decisions(
     Returns:
         決定事項一覧（各decisionにtags付き）
         entity_type == "activity" の場合はrelated topics（上限10件）経由でdecisions集約。
-            related topics が10件を超える場合、11件目以降の topic に属する decision は
+            related topics が10件を超える場合、古い側の topic に属する decision は
             total_count / truncated の対象外（この上限による切り捨ては可視化されない）。
             activityに直接つないだdecisionは含まれない
         total_count: 対象 topic 全体の decision 総件数（retractフィルタ適用後、limit/start_idの影響を受けない）
@@ -1110,6 +1112,12 @@ def get_activities(
         アクティビティ一覧（total_countで該当ステータスの全件数を確認可能）
         archived_tags: 応答に含まれるアクティビティのタグのうちarchivedなものの集約
             （{tag, archived_reason}の配列。該当なしでも空配列で常に付く）
+        activities・total_countの字数（archived_tags・tag_notesは含まない）が
+        ACTIVITIES_BUDGET_CHARS（既定10,000字）を超えるとactivitiesを後方
+        （limitで絞った中の古い側）から切り、truncatedキー（budget/before/after/cuts）
+        が付く。cuts[].nextに絞り込みのヒントが入る（limitとは独立の別枠）。
+        archived_tags・tag_notesはこの予算に数えない（切り詰め後に残ったactivities
+        だけから集めるため）
     """
     flavor = _normalize_flavor(flavor)
     result = activity_service.get_activities(
@@ -1117,6 +1125,10 @@ def get_activities(
     )
     if "error" not in result:
         _apply_flavor_to_items(result.get("activities", []), "activity", flavor)
+        # flavor展開後の字数で予算を測り、activitiesを先に確定させる。
+        # archived_tags/tag_notesはその後に残ったactivitiesだけから集める
+        # （トリムで消えたアクティビティのタグを残さないため）
+        result = response_budget.apply_budget(result, ACTIVITIES_BUDGET_POLICY)
         all_tags = _collect_result_tags(result.get("activities", []))
         if all_tags:
             _maybe_inject_tag_notes(result, all_tags, mark=False)
@@ -1133,6 +1145,8 @@ def update_activity(
     tags: Optional[list[str]] = None,
     closed_by: Optional[str] = None,
     closed_reason: Optional[str] = None,
+    move_asks_to: Optional[int] = None,
+    move_ask_ids: Optional[list[int]] = None,
 ) -> dict:
     """
     アクティビティのステータス・タイトル・説明・タグを更新する。
@@ -1163,6 +1177,9 @@ def update_activity(
         closed_by: activityを閉じた意思の主体（"user"|"claude"|"external"）。
             status="completed"と同時のときだけ受け付ける
         closed_reason: 閉じた理由（自由文）。status="completed"と同時のときだけ受け付ける
+        move_asks_to: このactivityを止めている未決着ask（open・回答済み未triage）を
+            付け替える先のactivity（完了済み不可）
+        move_ask_ids: move_asks_toと併用し、そのaskだけ付け替える（省略時は全件）
 
     Returns:
         更新されたアクティビティ情報。既にcompletedのactivityへstatus="completed"を
@@ -1171,11 +1188,14 @@ def update_activity(
         （closed_by/closed_reasonを渡さなければ、このキーは付かない）。
         status="completed"の呼び出しでは、紐づくgoalが未判定ならgoal_hint
         （{goal_id_raw, handle, label, next, open_activities_left,
-        open_questions?, warning?}）も返す（拒否はしない）
+        open_questions?, warning?}）も返す（拒否はしない）。
+        status="completed"では、止めている未決着ask（付け替え後の残り）を
+        pending_asks、付け替えたaskをmoved_asksに返す（完了は止めない）
     """
     return activity_service.update_activity(
         activity_id, status, title, description, tags,
         closed_by=closed_by, closed_reason=closed_reason,
+        move_asks_to=move_asks_to, move_ask_ids=move_ask_ids,
     )
 
 
@@ -1345,7 +1365,10 @@ def get_overview(days: int = 7, limit: int = 20) -> dict:
       triage_pending_items にタイトル(question)付きで列挙する（meta も同様に limit
       無視で必ず含まれる）
     - backlog: それ以外の残り。件数と status 別・domain 別の内訳のみ。
-      stale_in_progress_count は「in_progress と宣言されているが days 日動いていない」件数
+      stale_in_progress_count は「in_progress と宣言されているが days 日動いていない」件数。
+      by_status は期限切れ snoozed（SNOOZE_DURATION_DAYS 超過）を pending として数える
+      （表示時の評価のみで、DB の status は書き換えない。get_activities のような
+      自動復活はここでは起こさない）
 
     working/recently_done/backlog の各節は count と total_count が異なる場合、
     limit で切り詰められている。awaiting_human は meta ask が limit を無視して
@@ -2254,8 +2277,12 @@ def get_timeline(
 
 
 @mcp.tool()
-def get_config() -> dict:
+def get_config(env_kind: str | None = "user") -> dict:
     """現在の設定値を返す。スキルが環境変数ベースの設定を参照するために使用する。
+
+    env_varsはcalmが読む環境変数の台帳（src/config_registry.py）と現在値
+    （name/kind/default/description/value。valueは未設定ならnull）。env_kindで種類を絞る
+    （user=利用者が調整する値、既定。internal/emergency/session/ci、"all"で全種類）。
 
     read_tool_limitsはtool呼び出し前にレスポンスサイズを見積もるための既定上限一覧。
     search/get_logs/get_decisions/get_timelineの上限は各serviceにハードコードされており
@@ -2268,17 +2295,20 @@ def get_config() -> dict:
     null（skillがこれを見てset_instance_identityを促す判断材料にする）。
     """
     from src import config
+    if env_kind not in (None, "all", *config_registry.KINDS):
+        return {"error": {"code": "VALIDATION_ERROR", "message": (
+            f"env_kind は {', '.join(config_registry.KINDS)}, all のいずれか: {env_kind!r}"
+        )}}
     return {
         "instance_id": instance_service.get_instance_id(),
         "heartbeat_timeout": config.HEARTBEAT_TIMEOUT_MINUTES,
-        "in_progress_limit": config.IN_PROGRESS_LIMIT,
-        "pending_limit": config.PENDING_LIMIT,
         "recency_decay_rate": budget_service.BUDGET_DEFAULTS["recency_decay_rate"],
         "sync_disable_retrospective": config.SYNC_DISABLE_RETROSPECTIVE,
         "snapshot_interval_hours": config.SNAPSHOT_INTERVAL_HOURS,
         "snapshot_max_count": config.SNAPSHOT_MAX_COUNT,
         "snapshot_anomaly_threshold": config.SNAPSHOT_ANOMALY_THRESHOLD,
         "precedent_budget_chars": budget_service.BUDGET_DEFAULTS["precedent_budget_chars"],
+        "env_vars": config_registry.list_env_vars(None if env_kind == "all" else env_kind),
         "budget_defaults": budget_service.BUDGET_DEFAULTS,
         "read_tool_limits": {
             "search": {"default": 10, "max": 50},
@@ -2370,8 +2400,8 @@ def get_signals(
 
     Args:
         status: フィルタ対象のstatus（"new"|"triaged"|"promoted"|"dismissed"）。
-            null指定で全status横断。デフォルトは未トリアージの"new"のみ
-        kind: フィルタ対象のkind（予約8種またはcustom:<名前>）。null指定で全kind横断。
+            null指定で全status横断（文字列"null"も大小文字不問で同じ）。デフォルトは未トリアージの"new"のみ
+        kind: フィルタ対象のkind（予約8種またはcustom:<名前>）。null指定（文字列"null"も大小文字不問で同じ）で全kind横断。
             custom の個別名はSessionStartの内訳表示ではcustom N 1件に畳まれるため、
             include_stats=Trueの集計で見る
         limit: 取得件数上限（最大100件、デフォルト20）
@@ -2510,13 +2540,13 @@ def get_asks(
 
     Args:
         status: フィルタ対象のstatus（"open"|"answered"|"promoted"|"dismissed"|"withdrawn"）。
-            null指定で全status横断。デフォルトは答え待ちの"open"のみ。
+            null指定で全status横断（文字列"null"も大小文字不問で同じ）。デフォルトは答え待ちの"open"のみ。
             triage_pending_only指定時は無視される
         blocking_activity_id: 指定時はそのactivityをblockしているaskだけに絞る
         triage_pending_only: Trueでstatus='answered'かつ未トリアージのみに絞る
         tags: タグ配列（optional。指定時はAND条件でフィルタ、未指定時は全件。
             空配列を明示指定した場合はVALIDATION_ERRORになる）
-        kind: フィルタ対象のkind（"ask"|"meta"）。null指定でフィルタなし
+        kind: フィルタ対象のkind（"ask"|"meta"）。null指定（文字列"null"も大小文字不問で同じ）でフィルタなし
         ids: 指定時はこのask idの集合だけに絞る（他のフィルタとAND条件）。
             自分がadd_askした特定のask_id一覧の状態を直接引き当てたい場合に使う
             （statusは既定"open"のままだと絞り込まれてしまうため、状態を問わず
@@ -2597,8 +2627,9 @@ def triage_ask(
 
     promoteはdecision/reason/title/tags/topic_idをそのままadd_decisionsに渡して
     decisionを生成し、promoted_decision_idとして紐付ける。dismissはdismiss_reasonを
-    記録するのみで実体は作らない。いずれもこのaskが止めていたactivityの
-    blockは解除する（ask_blocksを削除）。
+    記録するのみで実体は作らない。このaskが止めていたactivityとの紐づけ
+    （ask_blocks）は残す。待ち状態の判定はaskのstatusで行われるため、決着後は
+    待ちとして表示されず、check_inの「最近決着したask」枠から辿れる。
 
     一般化ルール（同型の問いを今後AIが自己裁定してよいというルール）の発効は、
     必ずこのtriage_askによるメタask（kind="meta"のask）への人間のpromote裁定を

@@ -960,7 +960,12 @@ paths:
           application/json:
             schema:
               additionalProperties: false
-              properties: {}
+              properties:
+                env_kind:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  default: user
               type: object
       responses:
         '200':
@@ -2204,6 +2209,18 @@ paths:
                 closed_reason:
                   anyOf:
                   - type: string
+                  - type: 'null'
+                  default: null
+                move_asks_to:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                move_ask_ids:
+                  anyOf:
+                  - items:
+                      type: integer
+                    type: array
                   - type: 'null'
                   default: null
               required:

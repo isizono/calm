@@ -21,7 +21,7 @@ open askを一覧し、1件ずつ人間に提示して回答を得たら`answer_
 - 回答本文（`answer_body`）は人間の発言・意図をそのまま反映したものであり、AIが自分の判断で作文して埋めてはならない
 - 1つのaskに対して`answer_ask`が成功するのは1回だけ。既にanswered/promoted/dismissed等になったaskへの再回答は拒否される
 - `triage_ask`（promote/dismiss）・`withdraw_ask`はこのskillの手順に含めない。答えた後の裁定（一般化ルールとして発効させるか、見送るか）は別経路（次回のcheck-in・`get_asks(triage_pending_only=true)`を使った非メタask自走裁定等）に委ねる。理由: このskillのスコープは「順に答えるだけ」であり、答えたその場でのtriageまでは含まない設計判断のため
-- `answer_ask`はaskがblockしているactivityのブロックを解除しない（解除するのは`triage_ask`のpromote/dismiss、または`withdraw_ask`のみ）。このskillで回答した後もblockは残った状態のままであることを、完了報告時に人間へ伝える
+- `answer_ask`だけではaskは「回答済み・未triage」として残り、止めているactivityのcheck_inにも回答済み未triageとして出続ける（待ちから外れるのは`triage_ask`のpromote/dismiss、または`withdraw_ask`）。このskillで回答した後もその状態のままであることを、完了報告時に人間へ伝える
 - 提示は常にタイトル・question・context等の内容ベースで行い、内部ID（`id_raw`）をユーザーに見せない
 - `kind="meta"`のaskも通常のaskと同じ手順（一覧→提示→`answer_ask`）で処理できる（`answer_ask`のシグネチャは`kind`に依存しない）。メタask固有の配置作業（`rule-placement` skillへの誘導）はこのskillの手順に含めない
 

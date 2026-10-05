@@ -332,6 +332,21 @@ class TestGetAsks:
 
         assert result["total_count"] == 2
 
+    @pytest.mark.parametrize("value", ["null", "NULL", "Null"])
+    def test_status_string_null_treated_as_none(self, temp_db, value):
+        act = _make_activity()
+        r1 = ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+        ak.answer_ask(r1["id"], "a1")
+        ak.add_ask("q2", tags=["domain:test"], blocks=[act])
+
+        result = ak.get_asks(status=value)
+
+        assert result["total_count"] == 2
+
+    def test_near_miss_status_string_returns_validation_error(self, temp_db):
+        result = ak.get_asks(status="nul")
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
     def test_blocking_activity_id_filter(self, temp_db):
         act1 = _make_activity("a1")
         act2 = _make_activity("a2")
@@ -391,6 +406,16 @@ class TestGetAsks:
     def test_invalid_kind_rejected(self, temp_db):
         result = ak.get_asks(kind="not_a_kind")
         assert result["error"]["code"] == "VALIDATION_ERROR"
+
+    @pytest.mark.parametrize("value", ["null", "NULL", "Null"])
+    def test_kind_string_null_treated_as_none(self, temp_db, value):
+        act = _make_activity()
+        ak.add_ask("q1", tags=["domain:test"], blocks=[act])
+        ak.add_ask("q2", tags=["domain:test", "meta-ask"], blocks=[act], kind="meta")
+
+        result = ak.get_asks(status="null", kind=value)
+
+        assert result["total_count"] == 2
 
     def test_kind_filter(self, temp_db):
         act = _make_activity()
@@ -678,7 +703,7 @@ class TestTriageAsk:
         finally:
             conn.close()
         assert dec_row["decision"] == "do X"
-        assert blocks_count == 0
+        assert blocks_count == 1  # triage後もblockは残る
         assert belongs_to_count == 1
 
     def test_promote_without_topic_id_rejected(self, temp_db):
