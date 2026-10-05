@@ -967,7 +967,9 @@ def update_tag(
                         "message": (
                             f"notes must be at most {_TAG_NOTES_RATCHET_CEILING} characters "
                             f"when increasing in length (current: {len(existing_notes)}, "
-                            f"attempted: {len(notes)})."
+                            f"attempted: {len(notes)}). Move specs/history to a canonical "
+                            f"source (e.g. material) with demote_tag_notes, leaving only "
+                            f"a one-line pointer, then shrink the notes."
                         ),
                     }
                 }

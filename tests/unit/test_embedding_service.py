@@ -1338,3 +1338,46 @@ def test_update_tag_canonical_regenerates_embedding(temp_db, monkeypatch):
 def test_server_url_uses_ipv4_loopback():
     """localhostではなく127.0.0.1を使う（::1優先環境での接続遅延を避けるため）"""
     assert emb.SERVER_URL == f"http://127.0.0.1:{emb.PORT}"
+
+
+def test_start_server_redirects_stderr_to_file(temp_db, monkeypatch, tmp_path):
+    """_start_server: 子のstderrをDEVNULLではなくログファイルへ向ける"""
+    import subprocess
+
+    log_path = tmp_path / "logs" / "embedding-server.stderr.log"
+    captured = {}
+    sentinel = object()
+
+    def capturing_popen(args, **kwargs):
+        captured["stderr"] = kwargs["stderr"]
+        return sentinel
+
+    monkeypatch.setattr(emb, "_SERVER_STDERR_LOG_PATH", log_path)
+    monkeypatch.setattr(emb, "popen_detached", capturing_popen)
+    monkeypatch.setattr(emb, "_start_server", _REAL_START_SERVER)
+
+    assert emb._start_server() is sentinel
+    assert captured["stderr"] is not subprocess.DEVNULL
+    assert captured["stderr"].name == str(log_path)
+    assert log_path.exists()
+
+
+def test_start_server_falls_back_to_devnull_when_stderr_log_unavailable(temp_db, monkeypatch, tmp_path):
+    """_start_server: ログファイルを開けなくても起動は続行しDEVNULLにフォールバックする"""
+    import subprocess
+
+    blocker = tmp_path / "file"
+    blocker.write_text("x")  # 親ディレクトリがファイルなのでmkdirが失敗する
+    captured = {}
+    sentinel = object()
+
+    def capturing_popen(args, **kwargs):
+        captured["stderr"] = kwargs["stderr"]
+        return sentinel
+
+    monkeypatch.setattr(emb, "_SERVER_STDERR_LOG_PATH", blocker / "x.log")
+    monkeypatch.setattr(emb, "popen_detached", capturing_popen)
+    monkeypatch.setattr(emb, "_start_server", _REAL_START_SERVER)
+
+    assert emb._start_server() is sentinel
+    assert captured["stderr"] is subprocess.DEVNULL

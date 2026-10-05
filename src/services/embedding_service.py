@@ -1,4 +1,5 @@
 """Embeddingサービス: embedding_serverへのHTTPクライアント + vec_index操作"""
+import contextlib
 import json
 import logging
 import subprocess
@@ -150,6 +151,32 @@ def _is_server_running() -> bool:
         return False
 
 
+# embedding_server自身のembedding-server.log（src/infra/embedding_server.py）と同じ場所
+_SERVER_STDERR_LOG_PATH = Path("~/.cache/cc-memory/embedding-server.stderr.log")
+
+
+@contextlib.contextmanager
+def _resolve_server_stderr_target():
+    """embedding_serverのstderr先を開いて渡す。準備に失敗したらDEVNULLにフォールバックする。
+
+    ロガー設定前に落ちるimportエラー等はembedding-server.logに残らず、こちらにしか
+    残らない。肥大しないよう起動のたびに上書きする。診断用ログの用意の失敗は
+    サーバー起動を止める理由にしない。
+    """
+    try:
+        path = _SERVER_STDERR_LOG_PATH.expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        stderr_log = open(path, "wb")
+    except OSError as e:
+        logger.warning(f"Failed to prepare embedding server stderr log, falling back to DEVNULL: {e}")
+        yield subprocess.DEVNULL
+        return
+    try:
+        yield stderr_log
+    finally:
+        stderr_log.close()
+
+
 def _start_server() -> Optional[DetachedProcess]:
     """embedding_serverをdetachedプロセスとして起動する。成功でPopen、失敗でNone。
 
@@ -167,12 +194,13 @@ def _start_server() -> Optional[DetachedProcess]:
         logger.warning(f"Failed to resolve project root for embedding server: {e}")
         return None
     try:
-        proc = popen_detached(
-            [sys.executable, "-m", "src.infra.embedding_server"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            cwd=cwd,
-        )
+        with _resolve_server_stderr_target() as stderr_target:
+            proc = popen_detached(
+                [sys.executable, "-m", "src.infra.embedding_server"],
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_target,
+                cwd=cwd,
+            )
     except OSError as e:
         logger.warning(f"Failed to start embedding server: {e}")
         return None
@@ -222,7 +250,7 @@ def _ensure_server_running() -> bool:
                 _last_spawn_failed_at = time.time()
                 return False
         # タイムアウト。bind 済み（= ロード進行中で、完了すれば応答する）なら生かし、
-        # bind 前に固まっている子は回収する。放置すると stdout/stderr が DEVNULL の
+        # bind 前に固まっている子は回収する。放置すると stdout が DEVNULL の
         # 不可視プロセスとしてモデルロード分のメモリを抱えたまま残留するため。
         if is_port_listening(PORT):
             logger.warning(
