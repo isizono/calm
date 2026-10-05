@@ -23,6 +23,8 @@ user-invocable: false
 
 `add_ask`呼び出し後、レスポンスの`similar_asks`から同型askの反復に気づいたときのメタask起票は`ask-distill` skillが担当する。本スキルはメタask化の判定を行わない。
 
+`kind="meta"`のメタask自体の起票は本スキルを経由しない。`ask-distill`・`ask-watch`が各々の組み立て方（question/context/blocksの構成）に従って直接`add_ask`を呼ぶ。
+
 ## なぜこの構成にするか
 
 askはダッシュボード等、Markdown装飾が効かない環境で読まれることがある。装飾に頼らず「今どの節を読んでいるか」が見出し文字列だけで伝わるよう、節を固定順の構成に分けている。
@@ -147,6 +149,8 @@ Claude Codeでは、`add_ask`を呼んだ直後からCALMのhookが裏で回答�
 3. statusが`answered`なら、読んだら早めに`triage_ask`で処理済みにする（決定として残す内容なら`promote`、そうでなければ`dismiss`）。回答済み・未トリアージのまま残すと、check_inでの再配達や外部の作業再開の仕組みが同じaskで二重に動くことがある
 
 その場で待つ必要が無いask（後で気づけば十分な優先度のもの）は`notify=False`で積む。hookは待たず、起こしもしない。積んだ後で待つのをやめたい場合は`unsubscribe_ask`を呼ぶ（待機中のhookも止まる。ただし複数セッションから積まれた同じ問いのaskには使えない）。
+
+積んだaskが、その後の会話の途中で実質決着していると気づいたとき（ユーザーが別の場で同じ件に答えた、議論の中で結論が出た、など）は、その時点で答えを `add_decisions` で決定事項に記録してから取り下げる（未回答なら `withdraw_ask`、回答済み未triageなら `triage_ask`）。askを開いたまま残すと、完了したactivityにぶら下がって誰にも届かない待ちになる。
 
 hookが待つのは最長で約24時間。それを過ぎた場合や、hookの無いハーネス（Codex等）では、SessionStart/UserPromptSubmit hookがこのセッションの登録したaskの解決状況を毎ターン確認して知らせる。
 
