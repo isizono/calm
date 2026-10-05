@@ -8,7 +8,6 @@ import socket
 from datetime import datetime, timezone
 from pathlib import Path
 from fastmcp import FastMCP, Context
-from fastmcp.server.dependencies import get_context
 from typing import Literal, Optional, Union, get_args
 from src.services import (
     topic_service,
@@ -262,6 +261,11 @@ mcp.add_middleware(DeltaNotificationMiddleware())
 from src.middleware.destination_middleware import DestinationCandidateMiddleware
 mcp.add_middleware(DestinationCandidateMiddleware())
 
+# サーバー再起動後も既存クライアントがMCPセッションを張り直さずに続行できるよう、
+# MCPセッションIDをサーバー側に保持しない（stateless）。呼び出し元の識別は
+# get_caller_session_id()（bridge ID）が担う。
+HTTP_STATELESS = True
+
 # サーバー起動時刻（/health で uptime 算出に使用）
 _SERVER_STARTED_AT = datetime.now(timezone.utc)
 
@@ -272,18 +276,6 @@ _session_manager = None
 def get_session_manager():
     """現在のSessionManagerインスタンスを返す。HTTPモード以外ではNone。"""
     return _session_manager
-
-
-def _current_session_id() -> Optional[str]:
-    """MCP context から呼び出しセッションの session_id を取得する。
-
-    MCP のツール実行コンテキスト外（テスト等）では None を返す。
-    """
-    try:
-        return get_context().session_id
-    except RuntimeError:
-        return None
-
 
 
 # MCPツール定義
@@ -1283,7 +1275,7 @@ def update_goal(
             "message": ...}}
     """
     return goal_service.update_goal(
-        goal_id, changes, statement, reopen_reason, session_id=_current_session_id()
+        goal_id, changes, statement, reopen_reason, session_id=get_caller_session_id()
     )
 
 
@@ -2397,7 +2389,7 @@ def report_signal(
             detail=detail,
             refs=refs,
             context=context,
-            session_id=_current_session_id(),
+            session_id=get_caller_session_id(),
         )
     except ValueError as e:
         return {"error": {"code": "VALIDATION_ERROR", "message": str(e)}}
@@ -3291,6 +3283,7 @@ if __name__ == "__main__":
                 transport="http",
                 host=HTTP_HOST,
                 port=HTTP_PORT,
+                stateless_http=HTTP_STATELESS,
                 middleware=[_build_trusted_host_middleware(), _build_cors_middleware()],
             )
         finally:
