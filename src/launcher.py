@@ -22,10 +22,11 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from src.env_compat import env_get, env_set
+from src.env_compat import env_get, env_names, env_set
 from src.infra.detached_process import popen_detached
 from src.infra.git_repo import resolve_main_repo_root
 from src.infra.loopback_http import NO_PROXY_OPENER
+from src.infra.plugin_install import resolve_installed_plugin_root
 from src.infra.session_identity import (
     HARNESS_CLAUDE_CODE,
     HARNESS_CODEX,
@@ -297,6 +298,31 @@ def _is_server_running() -> bool:
         return False
 
 
+def _resolve_server_root() -> tuple[Path, str]:
+    """起動対象のプロジェクトルートを解決する。
+
+    `~/.claude/plugins/installed_plugins.json`から、Claude Codeが現在有効と
+    しているインストール先が解決でき、かつ`uv sync`済み（`.venv/bin/python`が
+    存在する）ならそれを使う。launcherプロセス自身は`_PROJECT_ROOT`
+    （自分がバンドルされているバージョン）に起動時点で固定されてしまうため、
+    毎回ここで読み直すことで、古い版のまま残っているlauncherが再起動しても
+    最新版からサーバーを立て直せるようにする。
+
+    解決できない（gitチェックアウトからの直接実行等）、またはまだsync済みで
+    ない場合は`_PROJECT_ROOT`にフォールバックする。未sync状態のまま
+    `-m src.main`を起動すると依存解決に失敗しうるため、安全側に倒す
+    （sync自体はこの関数の責務ではない。SessionStart hook等が`uv run`経由で
+    実行されることで、通常は既にsync済みになっている）。
+
+    Returns:
+        (root, source)。sourceは"installed"か"bundled"（ログ用）。
+    """
+    installed = resolve_installed_plugin_root(Path(_PROJECT_ROOT))
+    if installed is not None and (installed / ".venv" / "bin" / "python").exists():
+        return installed, "installed"
+    return Path(_PROJECT_ROOT), "bundled"
+
+
 def _server_stderr_log_path() -> Path:
     """起動直後に落ちたサーバーの手がかりを残すstderrログ先。
 
@@ -334,18 +360,31 @@ def _resolve_server_stderr_target():
 def _start_http_server() -> bool:
     """HTTPサーバーをデーモンとして起動する。
 
-    sys.executableは.mcp.jsonの「uv run python -m src.launcher」経由で
-    起動されることを前提とし、uv仮想環境のPython（.venv/bin/python）を使用する。
+    起動元ルートの解決は`_resolve_server_root()`に委ねる。そのルート配下の
+    venv Python（`.venv/bin/python`）を使う（bundled rootの場合は
+    `.mcp.json`の「uv run python -m src.launcher」経由で起動された
+    sys.executable自体がそれに当たる）。embedding_service等の子プロセスが
+    起動元ルートを再解決できるよう、`CALM_PROJECT_ROOT`（新旧名）を起動対象の
+    ルートで上書きしたenvをこのプロセス専用に渡す（launcher自身のos.environは
+    変更しない）。
     stderrは可能ならDEVNULLではなくファイルへ向ける（肥大しないよう起動のたびに
     上書きする。蓄積した過去ログが必要になるケースは想定していない）。
     """
+    root, source = _resolve_server_root()
+    logger.info(f"Starting HTTP server from {source} root: {root}")
+    python = str(root / ".venv" / "bin" / "python") if source == "installed" else sys.executable
+    env = os.environ.copy()
+    for name in env_names("CALM_PROJECT_ROOT"):
+        env.pop(name, None)
+    env["CALM_PROJECT_ROOT"] = str(root)
     try:
         with _resolve_server_stderr_target() as stderr_target:
             popen_detached(
-                [sys.executable, "-m", "src.main", "--transport", "http"],
+                [python, "-m", "src.main", "--transport", "http"],
                 stdout=subprocess.DEVNULL,
                 stderr=stderr_target,
-                cwd=_PROJECT_ROOT,
+                cwd=str(root),
+                env=env,
             )
     except OSError as e:
         logger.warning(f"Failed to start HTTP server: {e}")
@@ -364,8 +403,8 @@ def _ensure_server_running() -> bool:
     # いる場合はstale lockとして削除し、新規起動する（ポートの生死はここでは
     # 見ない。acquire()とmcp.run()の間にポート未listenの窓があり、ここで
     # ポートを見ると起動直後の正常なサーバーをstale誤判定しうるため）。
-    from src.infra.lock_file import read as read_lock, is_lock_stale
-    from src.infra.lock_file import LOCK_FILE
+    from src.infra.lock_file import LOCK_FILE, is_lock_stale
+    from src.infra.lock_file import read as read_lock
 
     lock_info = read_lock()
     if lock_info is not None and is_lock_stale(lock_info):
@@ -773,7 +812,10 @@ async def _bridge(state: "_StdinBridgeState") -> None:
     import httpx
     from mcp import types
     from mcp.client.streamable_http import streamable_http_client
-    from mcp.shared._httpx_utils import MCP_DEFAULT_SSE_READ_TIMEOUT, MCP_DEFAULT_TIMEOUT
+    from mcp.shared._httpx_utils import (
+        MCP_DEFAULT_SSE_READ_TIMEOUT,
+        MCP_DEFAULT_TIMEOUT,
+    )
 
     # stdin EOFとサーバー切断を区別するためのフラグ
     # stdin EOF: queue_to_serverが先に終了 → 正常終了
@@ -1044,7 +1086,8 @@ def main() -> None:
     # _unregister_session()は失敗を握りつぶすため、登録エンドポイントを持たない
     # 接続先（例: セッションAPIを持たないremote展開）でも安全に呼べる。
     atexit.register(_cleanup)
-    _exit_handler = lambda *_: sys.exit(0)  # atexitが発火する
+    def _exit_handler(*_):
+        return sys.exit(0)  # atexitが発火する
     signal.signal(signal.SIGTERM, _exit_handler)
     # SIGBREAK（Ctrl+Break）はWindowsにしか無い。
     if hasattr(signal, "SIGBREAK"):

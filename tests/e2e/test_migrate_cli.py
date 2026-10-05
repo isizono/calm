@@ -3,12 +3,10 @@
 subprocess経由で実際に `uv run` 相当（sys.executable）で起動し、終了コードと標準出力を検証する。
 """
 import os
+import sqlite3
 import subprocess
 import sys
-import sqlite3
 from pathlib import Path
-
-import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 

@@ -10,7 +10,6 @@ from src.services.relation_service import add_relation
 from src.services.topic_service import add_topic
 from tests.helpers import add_decision
 
-
 EMBEDDING_DIM = 384
 DEFAULT_TAGS = ["domain:test"]
 

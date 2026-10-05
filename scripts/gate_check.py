@@ -28,7 +28,7 @@ import sys
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Optional, Union
+from typing import Literal
 
 # ---------------------------------------------------------------------------
 # 定数: 検出パターン・パスリスト・閾値
@@ -101,7 +101,7 @@ class FileChange:
     """git diff --name-status 1件分の正規化表現。"""
 
     path: str  # rename は新パス
-    old_path: Optional[str]
+    old_path: str | None
     status: str  # "A" | "M" | "D" | "R" | "C" | "T"
     additions: int  # numstat 由来。バイナリは -1、未解決は 0
     deletions: int
@@ -113,7 +113,7 @@ class NumstatRow:
     """git diff --numstat 1行分の正規化表現。"""
 
     path: str
-    old_path: Optional[str]
+    old_path: str | None
     additions: int  # バイナリは -1
     deletions: int
     is_binary: bool
@@ -125,8 +125,8 @@ class DiffLine:
 
     path: str
     sign: str  # "+" | "-"
-    new_lineno: Optional[int]  # 追加行のみ
-    old_lineno: Optional[int]  # 削除行のみ
+    new_lineno: int | None  # 追加行のみ
+    old_lineno: int | None  # 削除行のみ
     text: str  # +/- 記号を除いた本文
 
 
@@ -134,7 +134,7 @@ class DiffLine:
 class Finding:
     detector: str
     path: str
-    lineno: Optional[int]
+    lineno: int | None
     evidence: str
     status: str  # "counted" | "downgraded_tests" | "policy_pending"
 
@@ -144,7 +144,7 @@ class AxisB:
     lines_changed: int
     files_changed: int
     size_ok: bool
-    has_tests: Union[bool, str]  # True / False / "waived_docs_only"
+    has_tests: bool | str  # True / False / "waived_docs_only"
     mechanical_rollback: bool
     met: bool
 
@@ -165,8 +165,7 @@ _EMPTY_PUBLIC_IF_DELTA = {
 def _run_git_bytes(repo: Path, args: list[str]) -> bytes:
     result = subprocess.run(
         ["git", "-C", str(repo), *args],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=True,
     )
     return result.stdout
@@ -184,7 +183,7 @@ def get_head_sha(repo: Path, head_ref: str) -> str:
     return _run_git_text(repo, ["rev-parse", head_ref]).strip()
 
 
-def _git_show_file(repo: Path, rev: str, path: str) -> Optional[str]:
+def _git_show_file(repo: Path, rev: str, path: str) -> str | None:
     """rev 時点の path の内容を返す。存在しない(新規追加/既に削除)なら None。"""
     try:
         raw = _run_git_bytes(repo, ["show", f"{rev}:{path}"])
@@ -262,7 +261,7 @@ def parse_numstat(raw: bytes) -> list[NumstatRow]:
             # rename/copy: old-path・new-path が後続の NUL 要素として続く
             if i + 1 >= len(tokens):
                 raise ValueError(f"truncated numstat rename record: {head!r}")
-            old_path: Optional[str] = tokens[i]
+            old_path: str | None = tokens[i]
             i += 1
             new_path = tokens[i]
             i += 1
@@ -289,7 +288,7 @@ def merge_numstat_into_changes(changes: list[FileChange], numstat_rows: list[Num
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
-def _strip_diff_prefix(path: str) -> Optional[str]:
+def _strip_diff_prefix(path: str) -> str | None:
     if path == "/dev/null":
         return None
     if path.startswith("a/") or path.startswith("b/"):
@@ -304,11 +303,11 @@ def parse_diff_lines(diff_text: str) -> list[DiffLine]:
     """
     lines = diff_text.split("\n")
     result: list[DiffLine] = []
-    old_path: Optional[str] = None
-    new_path: Optional[str] = None
-    current_path: Optional[str] = None
-    old_lineno: Optional[int] = None
-    new_lineno: Optional[int] = None
+    old_path: str | None = None
+    new_path: str | None = None
+    current_path: str | None = None
+    old_lineno: int | None = None
+    new_lineno: int | None = None
     in_hunk = False
 
     for line in lines:
@@ -482,7 +481,7 @@ def _unparse_safe(node: ast.AST) -> str:
         return "<?>"
 
 
-def _format_tool_params(node: Union[ast.FunctionDef, ast.AsyncFunctionDef]) -> tuple[str, ...]:
+def _format_tool_params(node: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[str, ...]:
     args = node.args
     params: list[str] = []
     positional = list(getattr(args, "posonlyargs", [])) + list(args.args)
@@ -500,7 +499,7 @@ def _format_tool_params(node: Union[ast.FunctionDef, ast.AsyncFunctionDef]) -> t
         if args.vararg.annotation is not None:
             seg += f": {_unparse_safe(args.vararg.annotation)}"
         params.append(seg)
-    for kwa, d in zip(args.kwonlyargs, args.kw_defaults):
+    for kwa, d in zip(args.kwonlyargs, args.kw_defaults, strict=False):
         seg = kwa.arg
         if kwa.annotation is not None:
             seg += f": {_unparse_safe(kwa.annotation)}"
@@ -515,7 +514,7 @@ def _format_tool_params(node: Union[ast.FunctionDef, ast.AsyncFunctionDef]) -> t
     return tuple(params)
 
 
-def extract_tool_surface(source: Optional[str], errors: list[str], label: str) -> dict[str, ToolSig]:
+def extract_tool_surface(source: str | None, errors: list[str], label: str) -> dict[str, ToolSig]:
     """`@mcp.tool()` 付き関数の表面を抽出する。
 
     parse 失敗は例外を投げず errors に積んで空辞書を返す(呼び出し側の
@@ -566,7 +565,7 @@ def _describe_params_change(name: str, before: tuple[str, ...], after: tuple[str
     return f"{name}: {'; '.join(parts)}"
 
 
-def compute_public_if_delta(base_source: Optional[str], head_source: Optional[str], errors: list[str]) -> dict:
+def compute_public_if_delta(base_source: str | None, head_source: str | None, errors: list[str]) -> dict:
     base_tools = extract_tool_surface(base_source, errors, "base")
     head_tools = extract_tool_surface(head_source, errors, "head")
     added = sorted(set(head_tools) - set(base_tools))
@@ -618,7 +617,7 @@ def count_diff_size(numstat_rows: list[NumstatRow]) -> tuple[int, int]:
     return lines, files
 
 
-def compute_has_tests(numstat_rows: list[NumstatRow]) -> Union[bool, str]:
+def compute_has_tests(numstat_rows: list[NumstatRow]) -> bool | str:
     paths = [row.path for row in numstat_rows if row.path != DEPENDENCY_LOCK_FILE]
     if not paths:
         return True
@@ -694,8 +693,8 @@ def run_detector(repo: Path, base_ref: str, head_ref: str, detector_source: str 
     changes: list[FileChange] = []
     diff_lines: list[DiffLine] = []
     numstat_rows: list[NumstatRow] = []
-    merge_base: Optional[str] = None
-    head_sha: Optional[str] = None
+    merge_base: str | None = None
+    head_sha: str | None = None
 
     try:
         merge_base = get_merge_base(repo, base_ref, head_ref)
@@ -844,14 +843,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _write_output(text: str, out_path: Optional[str]) -> None:
+def _write_output(text: str, out_path: str | None) -> None:
     if out_path:
         Path(out_path).write_text(text, encoding="utf-8")
     else:
         sys.stdout.write(text if text.endswith("\n") else text + "\n")
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 

@@ -1,12 +1,13 @@
 """FTS5統合検索（search / get_by_id）のテスト"""
 import pytest
-from src.services.topic_service import add_topic
-from src.services.activity_service import add_activity
-from tests.helpers import add_log as add_log_entry, add_decision
-from src.services.material_service import add_material
-from src.services import search_service
-import src.services.embedding_service as emb
 
+import src.services.embedding_service as emb
+from src.services import search_service
+from src.services.activity_service import add_activity
+from src.services.material_service import add_material
+from src.services.topic_service import add_topic
+from tests.helpers import add_decision
+from tests.helpers import add_log as add_log_entry
 
 DEFAULT_TAGS = ["domain:test"]
 
@@ -300,7 +301,7 @@ def test_get_by_ids_single_log(temp_db):
     assert "domain:test" in item["data"]["tags"]
 
 
-def test_get_by_ids_single_material(temp_db):
+def test_get_by_ids_single_material_includes_content_and_source(temp_db):
     """get_by_ids(material) はsnippetではなくcontent全文とsourceをレスポンスに含む"""
     mat = add_material(
         title="詳細取得テスト素材",
@@ -313,7 +314,7 @@ def test_get_by_ids_single_material(temp_db):
     item = result["results"][0]
     assert "error" not in item
     assert item["type"] == "material"
-    assert item["data"]["material_id"] == mat["material_id"]
+    assert item["data"]["material_id_raw"] == mat["material_id"]
     assert item["data"]["title"] == "詳細取得テスト素材"
     assert item["data"]["content"] == "素材本文の全文がレスポンスに含まれることを確認する"
     assert item["data"]["source"] == "単体テスト"
@@ -332,7 +333,7 @@ def test_get_by_ids_single_not_found(temp_db):
     assert item["error"]["code"] == "NOT_FOUND"
 
 
-def test_get_by_ids_invalid_type(temp_db):
+def test_get_by_ids_invalid_type_returns_error_code(temp_db):
     """get_by_ids: 不正な種別でINVALID_TYPEエラー"""
     result = search_service.get_by_ids([{"type": "invalid", "id": 1}])
     assert len(result["results"]) == 1

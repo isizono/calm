@@ -9,12 +9,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
 
@@ -424,6 +425,104 @@ def prune_orphaned_plugin_versions(project_root: Path) -> dict:
     return {"removed": removed, "skipped": skipped}
 
 
+# 孤児検出の対象にするCALMサーバー系プロセスのモジュール名。embeddingサーバーと
+# MCPサーバー本体（ローカル・リモート共通。両者とも同じ`-m src.main --transport http`
+# で起動される）が対象。launcherは対象外(_is_launcher_commandで別途除外する)。
+_ORPHAN_CANDIDATE_MODULES = ("src.main", "src.infra.embedding_server")
+# 部分一致だとパスや引数に同じ文字列を含む無関係なプロセスまで停止対象になるため、
+# `-m <module>`として完全に一致するものだけを候補にする
+_ORPHAN_CANDIDATE_RE = re.compile(
+    r"(?:^|\s)-m\s+(?:" + "|".join(re.escape(m) for m in _ORPHAN_CANDIDATE_MODULES) + r")(?:\s|$)"
+)
+ORPHAN_LSOF_TIMEOUT_SEC = 5.0
+
+
+def _is_launcher_command(command: str) -> bool:
+    return "src.launcher" in command
+
+
+def _list_server_family_processes() -> list[tuple[int, str]]:
+    """稼働中の全プロセスから、CALMのサーバー系プロセス(embedding_server・
+    MCPサーバー本体)をコマンドライン文字列でフィルタして`(pid, command)`の
+    リストを返す。launcherプロセス(各セッションのブリッジ)は対象から除外する。
+
+    `ps`がタイムアウトした場合は空リストとして扱う(「わからない」を
+    「いない」として安全側に倒す。find_listen_pids()と同じ向き)。
+    """
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "pid=,command="],
+            capture_output=True, text=True, check=False, timeout=SUBPROCESS_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        return []
+
+    found: list[tuple[int, str]] = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        pid_str, _, command = line.partition(" ")
+        if _is_launcher_command(command):
+            continue
+        if not _ORPHAN_CANDIDATE_RE.search(command):
+            continue
+        try:
+            pid = int(pid_str)
+        except ValueError:
+            continue
+        found.append((pid, command))
+    return found
+
+
+def _process_cwd(pid: int) -> str | None:
+    """pidのcwdを`lsof -d cwd`で取得する。取得できない場合はNone。"""
+    try:
+        result = subprocess.run(
+            ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
+            capture_output=True, text=True, check=False, timeout=ORPHAN_LSOF_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    for line in result.stdout.splitlines():
+        if line.startswith("n"):
+            return line[1:]
+    return None
+
+
+def find_orphaned_plugin_cache_processes() -> dict:
+    """削除済みのプラグインディレクトリから動いているCALMのサーバー系プロセス
+    (embeddingサーバー・MCPサーバー本体。リモート展開も同じモジュールで動くため
+    同様に対象)を検出して停止する。
+
+    launcherプロセス(各セッションのブリッジ)は`_list_server_family_processes`
+    の時点で候補からそもそも除外される（停止対象にも「止めなかった」一覧にも
+    現れない）。cwdが判定できない(lsofタイムアウト等)プロセスは安全側に倒して
+    停止しない。
+
+    Returns:
+        `{"stopped": [{"pid", "command", "cwd"}], "kept": [{"pid", "command",
+        "cwd", "reason"}]}`。
+    """
+    stopped: list[dict] = []
+    kept: list[dict] = []
+
+    for pid, command in _list_server_family_processes():
+        cwd = _process_cwd(pid)
+        if cwd is None:
+            kept.append({"pid": pid, "command": command, "cwd": None, "reason": "cwd unknown"})
+            continue
+        if Path(cwd).exists():
+            kept.append({"pid": pid, "command": command, "cwd": cwd, "reason": "directory still exists"})
+            continue
+        stopped.append({"pid": pid, "command": command, "cwd": cwd})
+
+    if stopped:
+        kill_pids([entry["pid"] for entry in stopped])
+
+    return {"stopped": stopped, "kept": kept}
+
+
 def restart_all(project_root: Path) -> dict:
     """依存関係の同期・キャッシュ掃除・MCP再起動を順に行う。
 
@@ -444,6 +543,10 @@ def restart_all(project_root: Path) -> dict:
     プラグインキャッシュの旧バージョン掃除(prune_orphaned_plugin_versions)は
     MCP再起動が成功した場合のみ行う。再起動自体が失敗している状況で
     キャッシュディレクトリまで変化させると、原因調査中の変数を増やすだけになる。
+
+    孤児プロセスの検出(find_orphaned_plugin_cache_processes)はMCP再起動の
+    成否に関わらず常に行う。削除済みディレクトリから動き続けているプロセスは
+    再起動が失敗した場合でも(むしろ失敗の原因調査中はなおさら)掃除する価値がある。
     """
     start_kwargs = dict(
         start_timeout_sec=DEFAULT_START_TIMEOUT_SEC, poll_interval_sec=DEFAULT_POLL_INTERVAL_SEC,
@@ -462,6 +565,7 @@ def restart_all(project_root: Path) -> dict:
     prune_result = prune_orphaned_plugin_versions(project_root) if mcp_result.ok else {
         "removed": [], "skipped": [],
     }
+    orphan_result = find_orphaned_plugin_cache_processes()
     return {
         "uv_sync": {
             "ok": sync_result.ok,
@@ -477,6 +581,7 @@ def restart_all(project_root: Path) -> dict:
         "embedding_server": {"stopped_pids": embedding_stopped},
         "caches": cache_result,
         "plugin_cache_prune": prune_result,
+        "orphaned_processes": orphan_result,
     }
 
 
@@ -489,7 +594,7 @@ def _process_started_at_iso(pid: int) -> str | None:
     この用途には使わない)。
     """
     try:
-        return datetime.fromtimestamp(psutil.Process(pid).create_time(), tz=timezone.utc).isoformat()
+        return datetime.fromtimestamp(psutil.Process(pid).create_time(), tz=UTC).isoformat()
     except psutil.Error:
         return None
 

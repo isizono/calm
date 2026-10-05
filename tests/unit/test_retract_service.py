@@ -6,17 +6,16 @@
 import numpy as np
 import pytest
 
+import src.services.embedding_service as emb
 from src.db import get_connection
-from src.services.topic_service import add_topic
-from src.services.discussion_log_service import add_logs
+from src.services.activity_service import add_activity
 from src.services.decision_service import add_decisions
+from src.services.discussion_log_service import add_logs
 from src.services.material_service import add_material, get_material
+from src.services.pin_service import add_pin
 from src.services.retract_service import retract
 from src.services.search_service import search
-from src.services.pin_service import add_pin
-from src.services.activity_service import add_activity
-import src.services.embedding_service as emb
-
+from src.services.topic_service import add_topic
 
 DEFAULT_TAGS = ["domain:test"]
 

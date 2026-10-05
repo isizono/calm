@@ -13,7 +13,6 @@ from src.services.search_service import get_by_id, get_by_ids
 from src.services.topic_service import add_topic
 from tests.helpers import add_decision, assert_no_write_errors
 
-
 DEFAULT_TAGS = ["domain:test"]
 
 

@@ -3,26 +3,29 @@ import logging
 import os
 import re
 import sqlite3
-from typing import Literal, Optional
+from typing import Literal
 
 import yaml
 
 from src.db import get_connection, row_to_dict
-from src.services.readable_id import strip_entity_id_inplace
-from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
 from src.services.citations_service import (
     apply_raw_to_cite_conversion,
     upsert_citations_for_owner_with_conn,
 )
+from src.services.embedding_service import (
+    build_embedding_text,
+    generate_and_store_embedding,
+)
+from src.services.readable_id import strip_entity_id_inplace
 from src.services.relation_service import _add_relation_with_conn, _validate_targets
-from src.services.title_validation import validate_title
 from src.services.tag_service import (
-    validate_and_parse_tags,
     ensure_tag_ids,
-    link_tags,
     get_entity_tags,
     get_entity_tags_batch,
+    link_tags,
+    validate_and_parse_tags,
 )
+from src.services.title_validation import validate_title
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +149,7 @@ def add_material(
     tags: list[str],
     source: str,
     related: list[dict] | None = None,
-    caller_session_id: Optional[str] = None,
+    caller_session_id: str | None = None,
 ) -> dict:
     """
     資材を追加する
@@ -627,7 +630,7 @@ def _slugify_title(title: str) -> str:
     return slug or "untitled"
 
 
-def _resolve_dest_path(entity_id: int, title: str, dest_path: Optional[str]) -> str:
+def _resolve_dest_path(entity_id: int, title: str, dest_path: str | None) -> str:
     """dest_path を 3 パターンで振り分けて絶対パスを返す。
 
     - None: DEFAULT_EXPORT_DIR/M-{id}-{slug}.md
@@ -699,7 +702,7 @@ def _build_frontmatter(
     return f"---\n{body}---\n"
 
 
-def export_material_to_file(material_id: int, dest_path: Optional[str] = None) -> dict:
+def export_material_to_file(material_id: int, dest_path: str | None = None) -> dict:
     """資材を md ファイルとして出力する。
 
     書き込み先は DEFAULT_EXPORT_DIR のサブツリー内に限定する。配下外を指す

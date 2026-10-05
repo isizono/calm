@@ -14,18 +14,15 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import pytest
-
 from src.services.backup_service import (
+    SNAPSHOT_JSON_SUFFIX,
+    SNAPSHOT_PREFIX,
     health_check,
     should_take_snapshot,
     take_snapshot,
-    HealthCheckResult,
-    SNAPSHOT_PREFIX,
-    SNAPSHOT_JSON_SUFFIX,
 )
 from tests.helpers import run_session_start_hook as _run_session_start_hook
 
@@ -215,7 +212,7 @@ class TestShouldTakeSnapshot:
         snapshot_dir.mkdir(parents=True, exist_ok=True)
 
         # 古いスナップショットJSONを手動作成
-        old_time = datetime.now(timezone.utc) - timedelta(hours=13)
+        old_time = datetime.now(UTC) - timedelta(hours=13)
         meta = {
             "created_at": old_time.isoformat(),
             "db_size_bytes": 1000,

@@ -4,7 +4,7 @@ src.main 経由の統合的な挙動 (validationエラーのdict化) を検証�
 record_signal/get_signals/update_signalの詳細な分岐は
 tests/unit/test_signal_service.py が担う。
 """
-from src.main import report_signal, get_signals, update_signal
+from src.main import get_signals, report_signal, update_signal
 
 
 class TestReportSignalTool:

@@ -23,7 +23,6 @@ from src.services import ask_service
 from src.services.activity_service import add_activity
 from src.services.topic_service import add_topic
 
-
 ADD_ASK_TOOL_NAME = "mcp__plugin_calm_calm__add_ask"
 
 

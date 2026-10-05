@@ -19,7 +19,6 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _SCRIPT_DIR.parent
@@ -297,7 +296,7 @@ def _detect_statement_findings(statements: list[SqlStatement]) -> list[Finding]:
     return findings
 
 
-def _migration_number(path: Path) -> Optional[int]:
+def _migration_number(path: Path) -> int | None:
     m = _NUMBER_PREFIX_RE.match(path.stem)
     return int(m.group(1)) if m else None
 
@@ -353,7 +352,7 @@ def _detect_missing_depends(text: str) -> list[Finding]:
 # ---------------------------------------------------------------------------
 
 
-def lint_file(path: "str | Path", *, grandfathered: bool = False) -> LintResult:
+def lint_file(path: str | Path, *, grandfathered: bool = False) -> LintResult:
     """1 ファイルを lint する。findings は `-- destructive:` 宣言・grandfather・
     `-- lint-ok:` により該当ルールが免除された場合 severity="info" に降格される。
 
@@ -392,7 +391,7 @@ def lint_file(path: "str | Path", *, grandfathered: bool = False) -> LintResult:
     )
 
 
-def lint_files(paths: list[Path], *, grandfathered_paths: "Optional[set[Path]]" = None) -> list[LintResult]:
+def lint_files(paths: list[Path], *, grandfathered_paths: set[Path] | None = None) -> list[LintResult]:
     gf = grandfathered_paths if grandfathered_paths is not None else set()
     return [lint_file(p, grandfathered=Path(p) in gf) for p in paths]
 
@@ -408,7 +407,7 @@ def lint_ok(result: LintResult) -> bool:
 
 
 def _run_git(repo: Path, args: list[str]) -> str:
-    result = subprocess.run(["git", "-C", str(repo), *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    result = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, check=True)
     return result.stdout.decode("utf-8")
 
 
@@ -489,7 +488,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
     repo = Path(args.repo).resolve()

@@ -1,12 +1,10 @@
 """topic_serviceの統合テスト"""
 
-import pytest
 
 from src.db import get_connection
 from src.services.activity_service import add_activity
 from src.services.relation_service import add_relation
 from src.services.topic_service import add_topic, get_activity_topics_batch
-
 
 
 class TestGetActivityTopicsBatch:

@@ -8,9 +8,9 @@ import numpy as np
 import pytest
 from sqlite_vec import serialize_float32
 
+import src.services.embedding_service as emb
 from src.db import get_connection
 from src.services.topic_service import add_topic
-import src.services.embedding_service as emb
 
 EMBEDDING_DIM = 384
 DEFAULT_TAGS = ["domain:test"]
@@ -280,7 +280,7 @@ def test_backfill_skips_topic_without_vec_index_embedding(temp_db, monkeypatch):
     # backfill 自体はサーバー復帰後に走る想定。vec_index が無いこのtopicが
     # 複製対象外であることを検証するため、backfillガードは通過させる。
     monkeypatch.setattr(emb, '_is_server_running', lambda: True)
-    filled = emb.backfill_topic_embeddings()
+    emb.backfill_topic_embeddings()
 
     conn = get_connection()
     try:

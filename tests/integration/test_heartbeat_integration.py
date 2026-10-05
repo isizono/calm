@@ -5,20 +5,22 @@ get_activities の is_heartbeat_active, _build_activities_section の別セッ�
 
 import pytest
 
+import src.services.embedding_service as emb
+from hooks.session_start_hook import _build_activities_section
 from src.db import get_connection
+from src.services import session_registry_service
 from src.services.activity_service import (
     add_activity,
+    get_active_activities_by_tag,
     get_activities,
     update_activity,
-    get_active_activities_by_tag,
 )
 from src.services.pin_service import add_pin
-from hooks.session_start_hook import _build_activities_section
 from src.services.topic_service import add_topic
-from src.services import session_registry_service
-from tests.helpers import register_alive_heartbeat_session, register_dead_heartbeat_session
-import src.services.embedding_service as emb
-
+from tests.helpers import (
+    register_alive_heartbeat_session,
+    register_dead_heartbeat_session,
+)
 
 DEFAULT_TAGS = ["domain:test"]
 

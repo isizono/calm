@@ -5,21 +5,24 @@
 - get_by_ids での遭遇時注入
 - 4ツール（get_topics/get_activities/get_logs/get_decisions）の結果ベース注入
 """
+from datetime import UTC
+
 import pytest
+
+import src.services.embedding_service as emb
 from src.db import get_connection
-from src.services.tag_service import (
-    update_tag,
-    collect_tag_notes_for_injection,
-    search_tags,
-    _injected_tags,
-)
-from src.services.topic_service import add_topic
+from src.services.activity_service import add_activity
 from src.services.decision_service import add_decisions
 from src.services.discussion_log_service import add_logs
-from src.services.activity_service import add_activity
 from src.services.search_service import get_by_ids
+from src.services.tag_service import (
+    _injected_tags,
+    collect_tag_notes_for_injection,
+    search_tags,
+    update_tag,
+)
+from src.services.topic_service import add_topic
 from tests.helpers import add_decision
-import src.services.embedding_service as emb
 
 
 @pytest.fixture(autouse=True)
@@ -153,12 +156,12 @@ class TestUpdateTag:
         finally:
             conn.close()
 
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         written = datetime.strptime(row_after["notes_updated_at"], "%Y-%m-%d %H:%M:%S").replace(
-            tzinfo=timezone.utc
+            tzinfo=UTC
         )
-        assert abs((datetime.now(timezone.utc) - written).total_seconds()) < 60
+        assert abs((datetime.now(UTC) - written).total_seconds()) < 60
 
     # 「トリガー導入前から4000字超のnotesを持つタグを縮める／さらに伸ばす」ケースは
     # migrations/0066のDBトリガー自体がINSERT時点で4000字超を拒否するため、
@@ -505,6 +508,7 @@ class TestTagNotesInjection:
     def test_session_eviction_concurrent_new_sessions(self, temp_db):
         """上限到達状態で複数スレッドが同時に新規セッションを登録しても例外が出ない"""
         import threading
+
         from src.services import tag_service
 
         add_topic(title="Test", description="Desc", tags=["domain:test"])
@@ -1521,8 +1525,8 @@ class TestArchivedPushExclusion:
         collect_tag_notes_for_injection経由の除外がcheck_in経由でも自動的に効くことを
         実際にcollect_and_assemble()を呼んで観察する。
         """
-        from src.services.checkin_tier_service import collect_and_assemble
         from src.services.activity_service import add_activity
+        from src.services.checkin_tier_service import collect_and_assemble
 
         act = add_activity(
             title="CheckinArchivedExclusion", description="Desc",
@@ -1542,8 +1546,8 @@ class TestArchivedPushExclusion:
 
     def test_checkin_response_keys_unchanged_by_archived(self, temp_db):
         """archivedタグの有無でcheck_in応答のトップレベルキー集合が変わらない（新規フィールド追加なし）"""
-        from src.services.checkin_tier_service import collect_and_assemble
         from src.services.activity_service import add_activity
+        from src.services.checkin_tier_service import collect_and_assemble
 
         act_plain = add_activity(
             title="CheckinKeysPlain", description="Desc",

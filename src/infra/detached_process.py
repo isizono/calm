@@ -93,8 +93,8 @@ def _resolve_stream(spec, stdout_handle):
     raise ValueError("unknown stream kind: " + repr(kind))
 
 
-def _launch(argv, cwd, stdout, stderr):
-    kwargs = dict(cwd=cwd, stdout=stdout, stderr=stderr)
+def _launch(argv, cwd, stdout, stderr, env=None):
+    kwargs = dict(cwd=cwd, stdout=stdout, stderr=stderr, env=env)
     if sys.platform != "win32":
         return subprocess.Popen(argv, **kwargs)
     kwargs["stdin"] = subprocess.DEVNULL
@@ -111,7 +111,7 @@ def main():
     spec = json.loads(sys.stdin.read())
     stdout_handle = _resolve_stream(spec["stdout"], None)
     stderr_handle = _resolve_stream(spec["stderr"], stdout_handle)
-    proc = _launch(spec["argv"], spec.get("cwd"), stdout_handle, stderr_handle)
+    proc = _launch(spec["argv"], spec.get("cwd"), stdout_handle, stderr_handle, spec.get("env"))
     # 本命は起動時に親(ここ)のハンドルを引き継ぐ。起動後はここで閉じてよい。
     for handle in {stdout_handle, stderr_handle}:
         if hasattr(handle, "close"):
@@ -225,20 +225,22 @@ class _RelayedProcess:
                 pass
 
 
-def _popen_detached_windows(args, cwd, stdout, stderr) -> _RelayedProcess:
+def _popen_detached_windows(args, cwd, stdout, stderr, env) -> _RelayedProcess:
     stdout_spec = _stream_spec(stdout)
     stderr_spec = _stream_spec(stderr, stdout_stream=stdout)
-    payload = json.dumps({"argv": list(args), "cwd": cwd, "stdout": stdout_spec, "stderr": stderr_spec})
+    payload = json.dumps(
+        {"argv": list(args), "cwd": cwd, "env": env, "stdout": stdout_spec, "stderr": stderr_spec}
+    )
 
     relay = _spawn_relay()
     try:
         out, err = relay.communicate(payload.encode("utf-8"), timeout=_RELAY_TIMEOUT_SEC)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         relay.kill()
         _, err = relay.communicate()
         raise OSError(
             f"detached relay timed out after {_RELAY_TIMEOUT_SEC}s: {err.decode('utf-8', 'replace').strip()}"
-        )
+        ) from exc
 
     pid_lines = out.decode("utf-8", "replace").strip().splitlines()
     if relay.returncode != 0 or not pid_lines:
@@ -247,13 +249,15 @@ def _popen_detached_windows(args, cwd, stdout, stderr) -> _RelayedProcess:
         )
     try:
         pid = int(pid_lines[0])
-    except ValueError:
-        raise OSError(f"detached relay returned a non-numeric pid: {pid_lines[0]!r}")
+    except ValueError as exc:
+        raise OSError(f"detached relay returned a non-numeric pid: {pid_lines[0]!r}") from exc
     return _RelayedProcess(pid)
 
 
-def popen_detached(args, *, cwd=None, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) -> DetachedProcess:
-    """親から切り離した子プロセスを起動する。"""
+def popen_detached(
+    args, *, cwd=None, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=None
+) -> DetachedProcess:
+    """親から切り離した子プロセスを起動する。envがNoneなら親の環境変数を引き継ぐ。"""
     if sys.platform == "win32":
-        return _popen_detached_windows(args, cwd, stdout, stderr)
-    return subprocess.Popen(args, cwd=cwd, stdout=stdout, stderr=stderr, start_new_session=True)
+        return _popen_detached_windows(args, cwd, stdout, stderr, env)
+    return subprocess.Popen(args, cwd=cwd, stdout=stdout, stderr=stderr, start_new_session=True, env=env)

@@ -6,17 +6,18 @@
 - E2Eフロー: タグ付きtopic作成 → エイリアス設定 → 検索でcanonical側にヒット
 """
 import pytest
+
+import src.services.embedding_service as emb
 from src.db import get_connection
+from src.services.activity_service import add_activity
+from src.services.search_service import _resolve_tag_ids_readonly
 from src.services.tag_service import (
     ensure_tag_ids,
     resolve_tag_ids,
     update_tag,
 )
-from src.services.search_service import _resolve_tag_ids_readonly
 from src.services.topic_service import add_topic
-from src.services.activity_service import add_activity
-from tests.helpers import add_log, add_decision
-import src.services.embedding_service as emb
+from tests.helpers import add_decision, add_log
 
 
 @pytest.fixture(autouse=True)
@@ -383,7 +384,7 @@ class TestE2EFlow:
     def test_alias_search_resolves_via_canonical(self, temp_db):
         """タグ付きtopic作成 → エイリアス設定 → エイリアス名で検索するとcanonical側で解決"""
         # 1. topicをdomain:BEタグで作成
-        topic = add_topic(title="Backend Topic", description="BE work", tags=["domain:BE"])
+        add_topic(title="Backend Topic", description="BE work", tags=["domain:BE"])
 
         # 2. prmタグを作成してdomain:BEのエイリアスにする
         conn = get_connection()

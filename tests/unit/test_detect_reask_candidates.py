@@ -19,7 +19,6 @@ from scripts.detect_reask_candidates import (
     main,
 )
 
-
 # --- ヘルパー ---
 
 
@@ -483,7 +482,6 @@ class TestCliMain:
     def test_max_flag_overrides_default(self, make_transcript):
         entries = [_assistant_ask([{"question": f"Q{i}?"}]) for i in range(10)]
         path = make_transcript(entries)
-        out_path = None
 
         candidates = extract_candidates(path, max_candidates=3)
         assert len(candidates) == 3

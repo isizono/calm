@@ -22,7 +22,6 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Optional
 
 # プロジェクトルートをパスに追加(scripts.gate_check の import 用)
 _project_root = Path(__file__).resolve().parents[1]
@@ -58,8 +57,7 @@ _NEXT_HEADING_RE = re.compile(r"^##\s", re.MULTILINE)
 def _diff_numstat(repo: Path, merge_base: str, head_ref: str) -> bytes:
     result = subprocess.run(
         ["git", "-C", str(repo), "diff", "--numstat", "-M", "-z", merge_base, head_ref],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=True,
     )
     return result.stdout
@@ -143,7 +141,7 @@ def _extract_revert_section(pr_body: str) -> str:
     return pr_body[start:end]
 
 
-def _extract_revert_declaration(pr_body: str) -> Optional[str]:
+def _extract_revert_declaration(pr_body: str) -> str | None:
     """PR body の `## Revert` セクションから R1/R2 の自己申告を読み取る。
 
     テンプレのガイドコメントをそのまま残した(R1/R2 両方が文中に出る)場合や
@@ -159,7 +157,7 @@ def _extract_revert_declaration(pr_body: str) -> Optional[str]:
     return None
 
 
-def check_revert_mismatch(pr_body: str, migrations_touched: bool) -> Optional[str]:
+def check_revert_mismatch(pr_body: str, migrations_touched: bool) -> str | None:
     declared = _extract_revert_declaration(pr_body)
     if declared == "R1" and migrations_touched:
         return (
@@ -187,7 +185,7 @@ def render_text(verdict: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def render_comment_body(verdict: dict, revert_note: Optional[str]) -> str:
+def render_comment_body(verdict: dict, revert_note: str | None) -> str:
     lines = [PR_SIZE_COMMENT_MARKER, "## PR サイズ検査", "", f"**判定: {verdict['verdict']}**", ""]
     lines.append("| 項目 | 値 |")
     lines.append("|---|---|")
@@ -236,11 +234,10 @@ def _load_pr_context() -> tuple[str, int, str, list[str], str]:
     return repo, int(pr_number), pr_body, labels, base_ref
 
 
-def _find_existing_comment(repo: str, pr_number: int) -> Optional[int]:
+def _find_existing_comment(repo: str, pr_number: int) -> int | None:
     result = subprocess.run(
         ["gh", "api", f"repos/{repo}/issues/{pr_number}/comments", "--paginate"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=True,
     )
     comments = json.loads(result.stdout.decode("utf-8"))
@@ -325,7 +322,7 @@ def run_ci(args: argparse.Namespace) -> int:
     return 0
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
     if args.ci:

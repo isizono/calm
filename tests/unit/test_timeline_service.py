@@ -7,15 +7,13 @@
 import pytest
 
 from src.db import get_connection
-from src.services.topic_service import add_topic
-from src.services.discussion_log_service import add_logs
-from src.services.decision_service import add_decisions
-from src.services.material_service import add_material
 from src.services.activity_service import add_activity
-from src.services.relation_service import add_relation
+from src.services.decision_service import add_decisions
+from src.services.discussion_log_service import add_logs
+from src.services.material_service import add_material
 from src.services.retract_service import retract
 from src.services.timeline_service import get_timeline
-
+from src.services.topic_service import add_topic
 
 DEFAULT_TAGS = ["domain:test"]
 
@@ -537,7 +535,7 @@ class TestMaterialDedup:
         aid = act["activity_id"]
 
         # 1つのmaterialを両方のトピックに紐づける
-        mat = add_material(
+        add_material(
             title="共有資材",
             content="共有の内容",
             tags=DEFAULT_TAGS,

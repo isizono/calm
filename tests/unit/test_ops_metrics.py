@@ -10,6 +10,7 @@ import json
 import sqlite3
 
 import pytest
+from test_migrations.conftest import db_before_migration
 
 from scripts.ops_metrics import (
     compute_metrics,
@@ -20,7 +21,6 @@ from scripts.ops_metrics import (
 from src.services import goal_service as gs
 from src.services import signal_service as ss
 from src.services.activity_service import add_activity, update_activity
-from test_migrations.conftest import db_before_migration
 
 
 def _backdate(db_path: str, signal_id: int, days_ago: int) -> None:
@@ -299,7 +299,7 @@ class TestPullAndMisappliedMetrics:
 
 class TestWindowDaysFiltering:
     def test_rows_outside_window_are_excluded(self, temp_db):
-        recent = ss.record_signal("rollback", "revert PR#recent", source="gate")
+        ss.record_signal("rollback", "revert PR#recent", source="gate")
         old = ss.record_signal("rollback", "revert PR#old", source="gate")
         _backdate(temp_db, old["id"], days_ago=90)
 
@@ -629,7 +629,7 @@ class TestGuardBlockMetrics:
         assert by_rule[("hook:deny_nested_bg", "nested bg spawn blocked")] == 1
 
     def test_window_days_filters_by_last_seen_at(self, temp_db):
-        recent = ss.record_signal("guard_block", "nested bg spawn blocked", source="hook:deny_nested_bg")
+        ss.record_signal("guard_block", "nested bg spawn blocked", source="hook:deny_nested_bg")
         old = ss.record_signal("guard_block", "internal ID literal blocked (code)", source="hook:preblock")
         _backdate(temp_db, old["id"], days_ago=90)
 

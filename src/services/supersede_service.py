@@ -4,7 +4,6 @@ decision_supersedes(source_id, target_id): source が target を supersede す�
 source が新しい / target が古い。多対多。
 """
 import sqlite3
-from typing import Optional
 
 
 def _bfs_related(
@@ -249,7 +248,7 @@ def compute_destabilization_info_batch(
 def get_superseded_by_batch(
     conn: sqlite3.Connection,
     decision_ids: list[int],
-) -> dict[int, Optional[int]]:
+) -> dict[int, int | None]:
     """各 decision_id について、それを supersede している最新の source_id を返す。
 
     複数 superseder が存在する場合は decision_supersedes.created_at が最新の1件を採用する
@@ -258,7 +257,7 @@ def get_superseded_by_batch(
     Returns:
         {decision_id: latest_superseder_id or None}
     """
-    result: dict[int, Optional[int]] = {did: None for did in decision_ids}
+    result: dict[int, int | None] = {did: None for did in decision_ids}
     if not decision_ids:
         return result
 

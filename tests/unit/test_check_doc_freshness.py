@@ -2,12 +2,6 @@
 import os
 from pathlib import Path
 
-import pytest
-
-from src.db import get_connection
-from src.services.topic_service import add_topic
-from tests.helpers import add_decision
-
 from scripts.check_doc_freshness import (
     DocMarker,
     check_doc,
@@ -18,7 +12,9 @@ from scripts.check_doc_freshness import (
     parse_marker,
     run,
 )
-
+from src.db import get_connection
+from src.services.topic_service import add_topic
+from tests.helpers import add_decision
 
 
 def _tag_decision(decision_id: int, namespace: str, name: str) -> None:

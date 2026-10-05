@@ -8,7 +8,7 @@ HEAD の祖先か等）はサーバの知識外のため行わない。
 実装であり、本モジュールは独自の正規表現を持たずそれを import して使う。
 """
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from src.services.precedent_pure import parse_precedent_sections
 from src.services.supersede_service import get_superseded_by_batch
@@ -120,7 +120,7 @@ def annotate_staleness(
     if not items:
         return
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
     ids = [item["id"] for item in items]
     superseded_by_map = get_superseded_by_batch(conn, ids)
@@ -142,5 +142,5 @@ def annotate_staleness(
 
 def _age_days(created_at: str, now: datetime) -> int:
     """created_at（DB の ISO8601 相当文字列）から now までの経過日数を計算する。"""
-    created = datetime.fromisoformat(created_at).replace(tzinfo=timezone.utc)
+    created = datetime.fromisoformat(created_at).replace(tzinfo=UTC)
     return max((now - created).days, 0)

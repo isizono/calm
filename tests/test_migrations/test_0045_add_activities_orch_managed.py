@@ -62,7 +62,7 @@ def _insert_activity(conn: sqlite3.Connection, title: str) -> int:
 
 def _attach_orch_managed_tag(conn: sqlite3.Connection, activity_id: int) -> None:
     """素タグ 'orch-managed' を activity_id にリンクする。"""
-    cur = conn.execute(
+    conn.execute(
         "INSERT OR IGNORE INTO tags (namespace, name) VALUES (?, ?)",
         ("", "orch-managed"),
     )
@@ -177,7 +177,7 @@ class TestBackfillFromTag:
         conn = get_connection()
         try:
             aid = _insert_activity(conn, "namespaced tag activity")
-            cur = conn.execute(
+            conn.execute(
                 "INSERT OR IGNORE INTO tags (namespace, name) VALUES (?, ?)",
                 ("foo", "orch-managed"),
             )

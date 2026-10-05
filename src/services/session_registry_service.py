@@ -23,18 +23,17 @@ import itertools
 import json
 import re
 import unicodedata
+from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Iterator, Optional
 
 import filelock
 
 from src.env_compat import env_get
-from src.infra import cli_session
+from src.infra import cli_session, session_identity
 from src.infra.file_ops import replace_retrying
 from src.infra.lock_file import is_process_alive
-from src.infra import session_identity
 
 REGISTRY_PATH_ENV = "CALM_SESSION_REGISTRY_PATH"
 
@@ -64,7 +63,7 @@ def _locked() -> Iterator[None]:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _load() -> dict:
@@ -128,7 +127,7 @@ def _resolve_collision(sessions: dict, base: str, self_key: str) -> tuple[str, b
             return cand, True
 
 
-def _live_cli_session(cli_session_id: str, entry: dict, now: datetime) -> Optional[dict]:
+def _live_cli_session(cli_session_id: str, entry: dict, now: datetime) -> dict | None:
     """行が生存・非stale と判定できるなら、今の CLI セッション辞書（read_cli_session
     の返り値）を返す。判定できなければ None（cli_pid死亡・PID再利用・TTL超過）。
     """
@@ -148,7 +147,7 @@ def _live_cli_session(cli_session_id: str, entry: dict, now: datetime) -> Option
     except ValueError:
         return None
     if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
+        ts = ts.replace(tzinfo=UTC)
     if now - ts > timedelta(days=_TTL_DAYS):
         return None
     return session
@@ -159,7 +158,7 @@ def _entry_alive(cli_session_id: str, entry: dict, now: datetime) -> bool:
     return _live_cli_session(cli_session_id, entry, now) is not None
 
 
-def is_session_alive(cli_session_id: Optional[str]) -> bool:
+def is_session_alive(cli_session_id: str | None) -> bool:
     """cli_session_id に対応する行が生存・非staleと判定できるか（読み取り専用）。
 
     行が無い・pid死亡・pid再利用・TTL超過・読み取り中の例外はすべて False
@@ -172,7 +171,7 @@ def is_session_alive(cli_session_id: Optional[str]) -> bool:
         with _locked():
             data = _load()
             entry = data["sessions"].get(cli_session_id)
-            return _entry_alive(cli_session_id, entry, datetime.now(timezone.utc))
+            return _entry_alive(cli_session_id, entry, datetime.now(UTC))
     except Exception:
         return False
 
@@ -186,7 +185,7 @@ def _gc(sessions: dict) -> bool:
         1件でも削除または name 書き換えをした場合True。呼び出し側が不要な _save() を
         避けるために使う。
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     changed = False
     for key, entry in list(sessions.items()):
         live = _live_cli_session(key, entry, now)
@@ -208,11 +207,11 @@ def _gc(sessions: dict) -> bool:
 
 def register_checkin(
     *,
-    bridge_session_id: Optional[str],
+    bridge_session_id: str | None,
     activity_id: int,
     activity_title: str,
     activity_status: str,
-) -> Optional[dict]:
+) -> dict | None:
     """check_in 時に呼ばれ、呼び出し元セッションの行を作成・更新する。
 
     CLI を解決できない（launcher 登録不在・CLI session file 不在・非CLIクライアント
@@ -267,14 +266,14 @@ def register_checkin(
     return {"name": cli["name"], "alias": alias, "collided": collided}
 
 
-def list_sessions(*, self_bridge_session_id: Optional[str] = None) -> list[dict]:
+def list_sessions(*, self_bridge_session_id: str | None = None) -> list[dict]:
     """稼働中セッションの一覧を updated_at 降順で返す。
 
     呼び出し元自身の行（self_bridge_session_id から解決できた場合）は
     ``is_self: True`` を持つ。各行の ``name`` は呼び出し時点の CLI 名に最新化
     される（GC経由）。``cli_session_id``（key）と ``cli_pid`` も返す。
     """
-    self_cli_session_id: Optional[str] = None
+    self_cli_session_id: str | None = None
     if self_bridge_session_id:
         self_cli = session_identity.resolve_cli_session(self_bridge_session_id)
         if self_cli is not None:
@@ -306,7 +305,7 @@ def list_sessions(*, self_bridge_session_id: Optional[str] = None) -> list[dict]
     return items
 
 
-def _normalize_manual_alias(alias: str) -> Optional[str]:
+def _normalize_manual_alias(alias: str) -> str | None:
     """set_alias 用の手動 alias 検証。改行・制御文字を含む、または前後空白を
     除いて1〜24文字の範囲外なら None（呼び出し側は VALIDATION_ERROR にする）。
     """
@@ -318,7 +317,7 @@ def _normalize_manual_alias(alias: str) -> Optional[str]:
     return stripped
 
 
-def set_alias(*, bridge_session_id: Optional[str], alias: str) -> dict:
+def set_alias(*, bridge_session_id: str | None, alias: str) -> dict:
     """自セッションの alias を手動で上書きする。"""
     normalized = _normalize_manual_alias(alias)
     if normalized is None:

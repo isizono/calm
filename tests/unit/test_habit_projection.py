@@ -6,7 +6,7 @@ tests/conftest.py の autouse fixture (_isolate_habits_rules_projection) が
 """
 import os
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -208,7 +208,7 @@ class TestFileStateRoundtrip:
 
     def test_roundtrip(self, tmp_path):
         body = "# test\n\n- a\n"
-        now = datetime(2026, 7, 9, 10, 0, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 7, 9, 10, 0, 0, tzinfo=UTC)
         content = habit_projection.render_file(body, now)
         path = tmp_path / "out.md"
         path.write_text(content, encoding="utf-8")

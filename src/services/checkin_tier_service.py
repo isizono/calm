@@ -37,6 +37,7 @@ from src.services import (
 )
 from src.services.ask_service import get_pending_asks_with_conn
 from src.services.checkin_queries import (
+    _count_decisions_from_topics,
     _get_activities_overview,
     _get_decisions_from_topics,
     _get_direct_relations,
@@ -44,15 +45,23 @@ from src.services.checkin_queries import (
     _get_pinned_targets,
     _get_topics_info,
     _get_unpromoted_decision_candidates,
-    _count_decisions_from_topics,
     _pinned_item_pointer,
 )
 from src.services.material_service import get_materials_by_relation_with_conn
 from src.services.readable_id import strip_entity_id_inplace
 from src.services.relation_service import _get_map_with_conn
-from src.services.response_budget import BudgetPolicy, CappedSection, CutStep, PinnedPolicy
+from src.services.response_budget import (
+    BudgetPolicy,
+    CappedSection,
+    CutStep,
+    PinnedPolicy,
+)
 from src.services.signal_service import record_signal
-from src.services.tag_service import _decay_pointer_text, collect_tag_notes_for_injection, get_entity_tags
+from src.services.tag_service import (
+    _decay_pointer_text,
+    collect_tag_notes_for_injection,
+    get_entity_tags,
+)
 
 logger = logging.getLogger(__name__)
 

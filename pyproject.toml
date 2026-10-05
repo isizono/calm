@@ -20,8 +20,22 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "pytest-timeout>=2.4.0",
     "pytest-xdist>=3.5.0",
+    "ruff>=0.16.10",
 ]
 
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+target-version = "py312"
+extend-exclude = [".trees"]
+
+[tool.ruff.lint]
+select = ["E", "F", "UP", "B", "I"]
+# 行長は ruff format 導入時に別途扱う
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# hook はプロジェクトルートを sys.path に追加してから src/hooks を import する
+"hooks/*.py" = ["E402"]

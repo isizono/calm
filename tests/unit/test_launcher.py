@@ -8,6 +8,7 @@ import contextlib
 import json
 import os
 import subprocess
+import sys
 import threading
 import urllib.error
 import urllib.request
@@ -180,6 +181,11 @@ class TestIsServerRunning:
 
 
 class TestStartHttpServer:
+    @pytest.fixture(autouse=True)
+    def _bundled_root_by_default(self, monkeypatch):
+        """実機の~/.claude/plugins/installed_plugins.jsonに依存させず、既定ではbundled rootから起動する"""
+        monkeypatch.setattr(launcher, "resolve_installed_plugin_root", lambda bundled_root: None)
+
     def test_calls_popen_with_correct_args(self, tmp_path, monkeypatch):
         """正しい引数でsubprocess.Popenが呼ばれ、stderrはファイルに向く
 
@@ -209,6 +215,56 @@ class TestStartHttpServer:
         stderr_file = called_with["kwargs"]["stderr"]
         assert stderr_file != subprocess.DEVNULL
         assert stderr_file.name == str(tmp_path / "logs" / "server.stderr.log")
+        assert called_with["kwargs"]["cwd"] == launcher._PROJECT_ROOT
+        assert called_with["kwargs"]["env"]["CALM_PROJECT_ROOT"] == launcher._PROJECT_ROOT
+
+    def test_calls_popen_with_installed_root_when_resolved_and_synced(self, tmp_path, monkeypatch):
+        """インストール先が解決でき、uv sync済み（.venv/bin/python存在）ならそこから起動する"""
+        import src.db as db
+        from src.infra import detached_process
+
+        monkeypatch.setattr(detached_process.sys, "platform", "darwin")
+        monkeypatch.setattr(db, "get_db_path", lambda: str(tmp_path / "discussion.db"))
+        installed_root = tmp_path / "installed" / "newver"
+        venv_python = installed_root / ".venv" / "bin" / "python"
+        venv_python.parent.mkdir(parents=True)
+        venv_python.touch()
+        called_with = {}
+
+        class FakePopen:
+            def __init__(self, args, **kwargs):
+                called_with["args"] = args
+                called_with["kwargs"] = kwargs
+
+        monkeypatch.setattr(launcher, "resolve_installed_plugin_root", lambda bundled_root: installed_root)
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+
+        assert launcher._start_http_server() is True
+        assert called_with["args"] == [str(venv_python), "-m", "src.main", "--transport", "http"]
+        assert called_with["kwargs"]["cwd"] == str(installed_root)
+        assert called_with["kwargs"]["env"]["CALM_PROJECT_ROOT"] == str(installed_root)
+
+    def test_falls_back_to_bundled_root_when_installed_venv_not_synced(self, tmp_path, monkeypatch):
+        """インストール先は解決できても.venv/bin/pythonが無い（未sync）場合はbundled rootにフォールバックする"""
+        import src.db as db
+        from src.infra import detached_process
+
+        monkeypatch.setattr(detached_process.sys, "platform", "darwin")
+        monkeypatch.setattr(db, "get_db_path", lambda: str(tmp_path / "discussion.db"))
+        installed_root = tmp_path / "installed" / "newver"
+        installed_root.mkdir(parents=True)
+        called_with = {}
+
+        class FakePopen:
+            def __init__(self, args, **kwargs):
+                called_with["args"] = args
+                called_with["kwargs"] = kwargs
+
+        monkeypatch.setattr(launcher, "resolve_installed_plugin_root", lambda bundled_root: installed_root)
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+
+        assert launcher._start_http_server() is True
+        assert called_with["args"] == [sys.executable, "-m", "src.main", "--transport", "http"]
         assert called_with["kwargs"]["cwd"] == launcher._PROJECT_ROOT
 
     def test_overwrites_stderr_log_on_each_start(self, tmp_path, monkeypatch):
@@ -2197,7 +2253,7 @@ class TestMainRetryLoop:
             # 実時間を待たずに再現するため即座にTimeoutErrorを送出する。
             if hasattr(aw, "close"):
                 aw.close()
-            raise asyncio.TimeoutError()
+            raise TimeoutError()
 
         monkeypatch.setattr(launcher.asyncio, "wait_for", no_op_wait_for)
 
@@ -2236,7 +2292,7 @@ class TestMainRetryLoop:
                 sleep_values.append(timeout)
             if hasattr(aw, "close"):
                 aw.close()
-            raise asyncio.TimeoutError()
+            raise TimeoutError()
 
         monkeypatch.setattr(launcher.asyncio, "wait_for", tracking_wait_for)
         return sleep_values

@@ -4,29 +4,40 @@ _rrf_merge単体テスト + _apply_recency_boost単体テスト + タグ対応�
 """
 import hashlib
 import math
-from datetime import datetime, timedelta, timezone
-import pytest
+from datetime import UTC, datetime, timedelta
+
 import numpy as np
+import pytest
 from sqlite_vec import serialize_float32
 
-from src.db import get_connection
-from src.services.search_service import (
-    _rrf_merge, _apply_recency_boost, _attach_details, _compute_adaptive_weights,
-    find_similar_topics, _expand_query_with_tags,
-    RRF_K, RRF_W_FTS, RRF_W_VEC, RRF_W_TAG, RECENCY_DECAY_RATE, RECENCY_DECAY_FLOOR,
-    RECENCY_DECAY_FLOOR_DECISION_LIVE,
-    QE_DISTANCE_THRESHOLD, QE_MAX_EXPANSIONS, QE_EXCLUDE_NAMESPACES,
-    ADAPTIVE_RRF_ENABLED, ADAPTIVE_RRF_THRESHOLDS,
-    DETAILS_MAX_RESULTS, DETAILS_DESCRIPTION_MAX,
-)
-from src.services import search_service
-from src.services.relation_service import add_relation
-from src.services.topic_service import add_topic
-from src.services.activity_service import add_activity
-from tests.helpers import add_log, add_decision
-from src.services.material_service import add_material
 import src.services.embedding_service as emb
-
+from src.db import get_connection
+from src.services import search_service
+from src.services.activity_service import add_activity
+from src.services.material_service import add_material
+from src.services.relation_service import add_relation
+from src.services.search_service import (
+    DETAILS_DESCRIPTION_MAX,
+    DETAILS_MAX_RESULTS,
+    QE_DISTANCE_THRESHOLD,
+    QE_EXCLUDE_NAMESPACES,
+    QE_MAX_EXPANSIONS,
+    RECENCY_DECAY_FLOOR,
+    RECENCY_DECAY_FLOOR_DECISION_LIVE,
+    RECENCY_DECAY_RATE,
+    RRF_K,
+    RRF_W_FTS,
+    RRF_W_TAG,
+    RRF_W_VEC,
+    _apply_recency_boost,
+    _attach_details,
+    _compute_adaptive_weights,
+    _expand_query_with_tags,
+    _rrf_merge,
+    find_similar_topics,
+)
+from src.services.topic_service import add_topic
+from tests.helpers import add_decision, add_log
 
 EMBEDDING_DIM = 384
 DEFAULT_TAGS = ["domain:test"]
@@ -446,7 +457,7 @@ def test_recency_boost_newer_scores_higher(temp_db):
     )
 
     # t1のcreated_atを365日前に書き換え
-    old_date = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d %H:%M:%S")
+    old_date = (datetime.now(UTC) - timedelta(days=365)).strftime("%Y-%m-%d %H:%M:%S")
     conn = get_connection()
     conn.execute("UPDATE discussion_topics SET created_at = ? WHERE id = ?", (old_date, t1["topic_id"]))
     conn.commit()
@@ -478,8 +489,8 @@ def test_recency_boost_decay_formula(temp_db):
     )
 
     # created_atを固定日時に設定し、nowも固定して厳密に検証
-    created_at = datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
-    now = datetime(2025, 4, 1, 0, 0, 0, tzinfo=timezone.utc)  # 90日後
+    created_at = datetime(2025, 1, 1, 0, 0, 0, tzinfo=UTC)
+    now = datetime(2025, 4, 1, 0, 0, 0, tzinfo=UTC)  # 90日後
     conn = get_connection()
     conn.execute(
         "UPDATE discussion_topics SET created_at = ? WHERE id = ?",
@@ -509,8 +520,8 @@ def test_recency_boost_floor(temp_db):
     )
 
     # 730日前（約2年前）に設定
-    created_at = datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
-    now = datetime(2025, 12, 31, 0, 0, 0, tzinfo=timezone.utc)  # 730日後
+    created_at = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
+    now = datetime(2025, 12, 31, 0, 0, 0, tzinfo=UTC)  # 730日後
     conn = get_connection()
     conn.execute(
         "UPDATE discussion_topics SET created_at = ? WHERE id = ?",
@@ -543,7 +554,7 @@ def test_recency_boost_reorders_by_score(temp_db):
     t2 = add_topic(title="トピックB", description="テスト", tags=DEFAULT_TAGS)
 
     # t1を古く、t2を新しくする
-    old_date = (datetime.now(timezone.utc) - timedelta(days=730)).strftime("%Y-%m-%d %H:%M:%S")
+    old_date = (datetime.now(UTC) - timedelta(days=730)).strftime("%Y-%m-%d %H:%M:%S")
     conn = get_connection()
     conn.execute("UPDATE discussion_topics SET created_at = ? WHERE id = ?", (old_date, t1["topic_id"]))
     conn.commit()
@@ -597,8 +608,8 @@ def test_recency_boost_non_superseded_decision_uses_higher_floor(temp_db):
         reason="テスト用",
     )
 
-    old_date = datetime(2024, 1, 1, tzinfo=timezone.utc)
-    now = datetime(2025, 12, 31, tzinfo=timezone.utc)  # 730日後
+    old_date = datetime(2024, 1, 1, tzinfo=UTC)
+    now = datetime(2025, 12, 31, tzinfo=UTC)  # 730日後
     conn = get_connection()
     conn.execute(
         "UPDATE decisions SET created_at = ? WHERE id = ?",
@@ -625,8 +636,8 @@ def test_recency_boost_superseded_decision_keeps_default_floor(temp_db):
         relation_type="supersedes",
     )
 
-    old_date = datetime(2024, 1, 1, tzinfo=timezone.utc)
-    now = datetime(2025, 12, 31, tzinfo=timezone.utc)  # 730日後
+    old_date = datetime(2024, 1, 1, tzinfo=UTC)
+    now = datetime(2025, 12, 31, tzinfo=UTC)  # 730日後
     conn = get_connection()
     conn.execute(
         "UPDATE decisions SET created_at = ? WHERE id = ?",
@@ -845,8 +856,8 @@ def test_apply_recency_boost_recency_factor_floor(temp_db):
     """非常に古いアイテムの recency_factor は FLOOR で打ち止め"""
     t = add_topic(title="floor breakdown 検証", description="テスト", tags=DEFAULT_TAGS)
 
-    created_at = datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
-    now = datetime(2025, 12, 31, 0, 0, 0, tzinfo=timezone.utc)  # 730日後
+    created_at = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
+    now = datetime(2025, 12, 31, 0, 0, 0, tzinfo=UTC)  # 730日後
     conn = get_connection()
     conn.execute(
         "UPDATE discussion_topics SET created_at = ? WHERE id = ?",
@@ -943,7 +954,7 @@ def test_search_recency_boost_applied(temp_db, mock_embedding_model):
     )
 
     # 古いほうのcreated_atを1年前に設定
-    old_date = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d %H:%M:%S")
+    old_date = (datetime.now(UTC) - timedelta(days=365)).strftime("%Y-%m-%d %H:%M:%S")
     conn = get_connection()
     conn.execute("UPDATE discussion_topics SET created_at = ? WHERE id = ?", (old_date, t_old["topic_id"]))
     conn.commit()
@@ -1036,7 +1047,7 @@ def test_search_offset_zero_is_default(temp_db, mock_embedding_model):
     assert "error" not in result_default
     assert "error" not in result_zero
     assert len(result_default["results"]) == len(result_zero["results"])
-    for r1, r2 in zip(result_default["results"], result_zero["results"]):
+    for r1, r2 in zip(result_default["results"], result_zero["results"], strict=False):
         assert r1["id_raw"] == r2["id_raw"]
 
 
@@ -1441,7 +1452,7 @@ def test_search_tag_like_methods_used(temp_db, mock_embedding_model):
 
 def test_search_tag_like_with_entity_type(temp_db, disable_embedding):
     """タグLIKE検索: entity_typeとの組み合わせ"""
-    topic = add_topic(
+    add_topic(
         title="タグLIKEフィルタテスト用トピック",
         description="テスト",
         tags=["domain:unique-tag-filter-test"],
@@ -1508,7 +1519,6 @@ def test_qe_expansion_with_similar_tags(temp_db, mock_embedding_model):
     # タグを作成してIDを取得
     conn = get_connection()
     conn.execute("INSERT INTO tags (namespace, name) VALUES ('', 'qe-search')")
-    search_id = conn.execute("SELECT id FROM tags WHERE namespace = '' AND name = 'qe-search'").fetchone()["id"]
     conn.execute("INSERT INTO tags (namespace, name) VALUES ('', 'qe-query')")
     query_id = conn.execute("SELECT id FROM tags WHERE namespace = '' AND name = 'qe-query'").fetchone()["id"]
     conn.commit()

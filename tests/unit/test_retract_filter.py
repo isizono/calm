@@ -6,15 +6,14 @@ retractされたエンティティがデフォルト除外されることを確�
 import pytest
 
 from src.db import get_connection
-from src.services.topic_service import add_topic
-from src.services.discussion_log_service import add_logs, get_logs
-from src.services.decision_service import add_decisions, get_decisions
-from src.services.retract_service import retract
-from src.services.checkin_tier_service import collect_and_assemble
 from src.services.activity_service import add_activity
-from src.services.relation_service import add_relation
+from src.services.checkin_tier_service import collect_and_assemble
+from src.services.decision_service import add_decisions, get_decisions
+from src.services.discussion_log_service import add_logs, get_logs
 from src.services.pin_service import add_pin
-
+from src.services.relation_service import add_relation
+from src.services.retract_service import retract
+from src.services.topic_service import add_topic
 
 DEFAULT_TAGS = ["domain:test"]
 
@@ -87,7 +86,7 @@ class TestGetLogsFilter:
         retract("log", [retracted_id])
 
         logs = get_logs("topic", tid)
-        ids = [l["id_raw"] for l in logs["logs"]]
+        ids = [log["id_raw"] for log in logs["logs"]]
         assert retracted_id not in ids
         assert len(logs["logs"]) == 1
 
@@ -103,7 +102,7 @@ class TestGetLogsFilter:
         retract("log", [retracted_id])
 
         logs = get_logs("topic", tid, include_retracted=True)
-        ids = [l["id_raw"] for l in logs["logs"]]
+        ids = [log["id_raw"] for log in logs["logs"]]
         assert retracted_id in ids
         assert len(logs["logs"]) == 2
 
@@ -139,7 +138,6 @@ class TestCheckInFilter:
             {"topic_id": tid, "content": "取り消すログ（最新）", "title": "ログ2"},
         ])
         retracted_id = result["created"][1]["log_id"]
-        valid_id = result["created"][0]["log_id"]
 
         # 最新のログをretract
         retract("log", [retracted_id])
@@ -193,7 +191,7 @@ class TestCheckInFilter:
 
         # retractされているためpinnedセクションに含まれない
         pinned = checkin.get("anchor", {}).get("pinned", {})
-        pinned_log_ids = [l["id_raw"] for l in pinned.get("logs", [])]
+        pinned_log_ids = [log["id_raw"] for log in pinned.get("logs", [])]
         assert log_id not in pinned_log_ids
 
     def test_retracted_excluded_from_count(self, activity_with_topic):

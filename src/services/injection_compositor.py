@@ -17,8 +17,8 @@ budget_chars ちょうどの出力をすると、結合後の実際の長さは
 成り立つ限り、compose() の返り値は常に TOTAL_INJECTION_BUDGET_CHARS 以内になる。
 """
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from src import config
 from src.services.signal_service import capture_signal_safe

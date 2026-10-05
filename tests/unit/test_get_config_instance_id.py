@@ -4,7 +4,6 @@ export/importバンドルの複合キー発行に使うインスタンス識別�
 設定後はその値でget_configから取得できることを検証する。
 """
 
-import pytest
 
 
 

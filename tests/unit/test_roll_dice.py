@@ -1,7 +1,6 @@
 """roll_dice MCPツールのユニットテスト"""
 from src.main import roll_dice
 
-
 # FastMCP 3.xでは@mcp.tool()が元の関数をそのまま返す
 _roll = roll_dice
 

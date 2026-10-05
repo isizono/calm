@@ -12,12 +12,11 @@
 9. degraded=Trueの行はクエリ拡張側の母集団から除外される（embedding停止との二重検知を避ける）
 """
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from src import config
 from src.db import get_connection
 from src.services.search_health_service import check_search_health
-
 
 _DEFAULTS = dict(
     window_days=7,
@@ -30,7 +29,7 @@ _DEFAULTS = dict(
 
 def _seed_row(conn, *, degraded: bool | None, qe_expansions: list | None, days_ago: float = 0.0,
               missing_keys: bool = False) -> None:
-    ts = (datetime.now(timezone.utc) - timedelta(days=days_ago)).strftime("%Y-%m-%d %H:%M:%S.%f")
+    ts = (datetime.now(UTC) - timedelta(days=days_ago)).strftime("%Y-%m-%d %H:%M:%S.%f")
     if missing_keys:
         diagnostics = {}
     else:

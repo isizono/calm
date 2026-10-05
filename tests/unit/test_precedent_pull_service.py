@@ -494,7 +494,7 @@ class TestBudget:
         """予算不足時: full+indexの合計は常に全件、truncated=true、budget.used<=limit、full件数と一致"""
         topic_id = _make_topic("t", 0)
         ids = []
-        for i in range(5):
+        for _i in range(5):
             ids.append(_decision(topic_id, "d", "x" * 1000))
 
         result = pps.pull_precedents("文脈", topic_ids=[topic_id], budget_chars=2500)
@@ -512,7 +512,7 @@ class TestBudget:
     def test_allocation_order_is_deterministic(self, temp_db, mock_embedding_server):
         """同一入力に対して同じfull/index割当が得られる（配分順の決定性）"""
         topic_id = _make_topic("t", 0)
-        for i in range(6):
+        for _i in range(6):
             _decision(topic_id, "d", "x" * 800)
 
         result1 = pps.pull_precedents("文脈", topic_ids=[topic_id], budget_chars=2500)

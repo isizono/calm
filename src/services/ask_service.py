@@ -12,13 +12,15 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Optional
 
 from src.db import get_connection, row_to_dict
 from src.services import ask_notify, search_service
 from src.services.decision_service import add_decisions
 from src.services.dedup_helpers import compute_fingerprint16, normalize_text
-from src.services.embedding_service import encode_document, insert_ask_embedding_with_conn
+from src.services.embedding_service import (
+    encode_document,
+    insert_ask_embedding_with_conn,
+)
 from src.services.readable_id import strip_entity_id_inplace
 from src.services.tag_service import (
     get_entity_tags_batch,
@@ -63,9 +65,9 @@ def add_ask_with_conn(
     blocks: list[int],
     tags: list[str],
     kind: str = "ask",
-    context: Optional[str] = None,
-    choices: Optional[list[str]] = None,
-    session_id: Optional[str] = None,
+    context: str | None = None,
+    choices: list[str] | None = None,
+    session_id: str | None = None,
     notify: bool = True,
 ) -> dict:
     """検証 + upsert + ask_blocks/ask_requestersのUNION追記をconn上で行う。
@@ -202,9 +204,9 @@ def add_ask(
     blocks: list[int],
     tags: list[str],
     kind: str = "ask",
-    context: Optional[str] = None,
-    choices: Optional[list[str]] = None,
-    session_id: Optional[str] = None,
+    context: str | None = None,
+    choices: list[str] | None = None,
+    session_id: str | None = None,
     notify: bool = True,
 ) -> dict:
     """MCPツール本体。add_ask_with_connで書き込みcommit後、タグ解決・紐付け、
@@ -355,12 +357,12 @@ def _compute_ask_stats(conn: sqlite3.Connection) -> dict:
 
 def get_asks_with_conn(
     conn: sqlite3.Connection,
-    status: Optional[str] = "open",
-    blocking_activity_id: Optional[int] = None,
+    status: str | None = "open",
+    blocking_activity_id: int | None = None,
     triage_pending_only: bool = False,
-    tags: Optional[list[str]] = None,
-    kind: Optional[str] = None,
-    ids: Optional[list[int]] = None,
+    tags: list[str] | None = None,
+    kind: str | None = None,
+    ids: list[int] | None = None,
     limit: int = 20,
     offset: int = 0,
     include_stats: bool = False,
@@ -501,12 +503,12 @@ def get_asks_with_conn(
 
 
 def get_asks(
-    status: Optional[str] = "open",
-    blocking_activity_id: Optional[int] = None,
+    status: str | None = "open",
+    blocking_activity_id: int | None = None,
     triage_pending_only: bool = False,
-    tags: Optional[list[str]] = None,
-    kind: Optional[str] = None,
-    ids: Optional[list[int]] = None,
+    tags: list[str] | None = None,
+    kind: str | None = None,
+    ids: list[int] | None = None,
     limit: int = 20,
     offset: int = 0,
     include_stats: bool = False,
@@ -540,7 +542,7 @@ def answer_ask_with_conn(
     conn: sqlite3.Connection,
     ask_id: int,
     answer_body: str,
-    session_id: Optional[str] = None,
+    session_id: str | None = None,
 ) -> dict:
     """状態確認とUPDATEを1段クエリに畳んでopen→answeredに遷移する（TOCTOU回避）。
 
@@ -610,7 +612,7 @@ def answer_ask_with_conn(
     }
 
 
-def answer_ask(ask_id: int, answer_body: str, session_id: Optional[str] = None) -> dict:
+def answer_ask(ask_id: int, answer_body: str, session_id: str | None = None) -> dict:
     conn = get_connection()
     try:
         result = answer_ask_with_conn(conn, ask_id, answer_body, session_id=session_id)
@@ -640,13 +642,13 @@ def triage_ask_with_conn(
     conn: sqlite3.Connection,
     ask_id: int,
     action: str,
-    decision: Optional[str] = None,
-    reason: Optional[str] = None,
-    title: Optional[str] = None,
-    tags: Optional[list[str]] = None,
-    topic_id: Optional[int] = None,
-    dismiss_reason: Optional[str] = None,
-    session_id: Optional[str] = None,
+    decision: str | None = None,
+    reason: str | None = None,
+    title: str | None = None,
+    tags: list[str] | None = None,
+    topic_id: int | None = None,
+    dismiss_reason: str | None = None,
+    session_id: str | None = None,
 ) -> dict:
     """answered状態のaskをpromote（decision化）またはdismissへトリアージする。
 
@@ -766,13 +768,13 @@ def triage_ask_with_conn(
 def triage_ask(
     ask_id: int,
     action: str,
-    decision: Optional[str] = None,
-    reason: Optional[str] = None,
-    title: Optional[str] = None,
-    tags: Optional[list[str]] = None,
-    topic_id: Optional[int] = None,
-    dismiss_reason: Optional[str] = None,
-    session_id: Optional[str] = None,
+    decision: str | None = None,
+    reason: str | None = None,
+    title: str | None = None,
+    tags: list[str] | None = None,
+    topic_id: int | None = None,
+    dismiss_reason: str | None = None,
+    session_id: str | None = None,
 ) -> dict:
     conn = get_connection()
     try:
@@ -813,7 +815,7 @@ def withdraw_ask_with_conn(
     conn: sqlite3.Connection,
     ask_id: int,
     reason: str,
-    session_id: Optional[str] = None,
+    session_id: str | None = None,
 ) -> dict:
     """openのaskを取り下げる（状態確認とUPDATEを1段クエリに畳む、TOCTOU回避）。
 
@@ -852,7 +854,7 @@ def withdraw_ask_with_conn(
     return {"id": ask_id, "status": "withdrawn"}
 
 
-def withdraw_ask(ask_id: int, reason: str, session_id: Optional[str] = None) -> dict:
+def withdraw_ask(ask_id: int, reason: str, session_id: str | None = None) -> dict:
     conn = get_connection()
     try:
         result = withdraw_ask_with_conn(conn, ask_id, reason, session_id=session_id)

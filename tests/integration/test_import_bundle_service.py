@@ -11,7 +11,6 @@ import_bundle(mode="dry_run")で読み込み、以下を検証する:
 """
 import os
 import sqlite3
-import tempfile
 
 import numpy as np
 import pytest
@@ -415,7 +414,7 @@ class TestTagReport:
 
         _switch_db(db_b)
         _set_instance("team-b")
-        local_m = _material(title="Local User", tags=["domain:shared-tag"])
+        _material(title="Local User", tags=["domain:shared-tag"])
         update_tag("domain:shared-tag", notes="incoming line one")
 
         result = import_bundle(bundle["path"], skip_duplicate_check=True)
@@ -518,7 +517,10 @@ class TestDuplicatesSuspected:
             title="Duplicate Candidate", content="This exact content already exists locally"
         )
         # backfill_embeddings相当: ローカル既存materialのembeddingを生成しておく
-        from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
+        from src.services.embedding_service import (
+            build_embedding_text,
+            generate_and_store_embedding,
+        )
 
         generate_and_store_embedding("material", local_m, build_embedding_text("Duplicate Candidate", "This exact content already exists locally"))
 

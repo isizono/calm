@@ -133,7 +133,7 @@ def _signature_shape(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[tuple
         has_default = i >= default_offset
         shape.append((a.arg, _annotation_str(a.annotation), has_default))
 
-    for a, kw_default in zip(args.kwonlyargs, args.kw_defaults):
+    for a, kw_default in zip(args.kwonlyargs, args.kw_defaults, strict=False):
         shape.append((a.arg, _annotation_str(a.annotation), kw_default is not None))
 
     return shape

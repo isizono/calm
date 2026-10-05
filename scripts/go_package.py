@@ -29,7 +29,6 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Union
 
 import yaml
 
@@ -121,13 +120,13 @@ _PLACEHOLDER_TITLE = "{変更の短い名前}"
 
 
 def build_machine_block(
-    activity: Optional[int],
-    machine_classification: Optional[str],
-    detector_sha256: Optional[str],
-    verdict_sha256: Optional[str],
-    predicted: Optional[str],
-    presented: Union[str, list],
-    guarantee: Optional[str],
+    activity: int | None,
+    machine_classification: str | None,
+    detector_sha256: str | None,
+    verdict_sha256: str | None,
+    predicted: str | None,
+    presented: str | list,
+    guarantee: str | None,
 ) -> dict:
     """機械可読ブロックのdictを組み立てる。
 
@@ -219,12 +218,12 @@ def render_document(machine_block: dict, gate_render_md: str, title: str = _PLAC
 _FENCE_RE = re.compile(r"```go-package\n(.*?)\n```", re.DOTALL)
 
 
-def find_machine_block_yaml(text: str) -> Optional[str]:
+def find_machine_block_yaml(text: str) -> str | None:
     m = _FENCE_RE.search(text)
     return m.group(1) if m else None
 
 
-def extract_machine_block(text: str) -> tuple[Optional[dict], Optional[str]]:
+def extract_machine_block(text: str) -> tuple[dict | None, str | None]:
     """機械可読ブロックをパースする。(data, error_message) を返す。"""
     yaml_text = find_machine_block_yaml(text)
     if yaml_text is None:
@@ -248,7 +247,7 @@ def _body_after_fence(text: str) -> str:
 _HEADING_RE = re.compile(r"^(#{2,3})\s+(.*)$")
 
 
-def _classify_heading(heading_text: str) -> Optional[str]:
+def _classify_heading(heading_text: str) -> str | None:
     for canonical, keywords in _SECTION_KEYWORDS:
         if all(kw in heading_text for kw in keywords):
             return canonical
@@ -262,7 +261,7 @@ def parse_sections(body: str) -> dict[str, str]:
     属さない扱いにする)。"## "(レベル2)見出しもcurrentをリセットする。
     """
     sections: dict[str, list[str]] = {}
-    current: Optional[str] = None
+    current: str | None = None
     for line in body.split("\n"):
         m = _HEADING_RE.match(line.strip())
         if m:
@@ -477,7 +476,7 @@ def lint_document(text: str, mode: str = "shadow", allow_placeholder: bool = Fal
 # ---------------------------------------------------------------------------
 
 
-def load_pull_json(path: Optional[str]) -> tuple[Union[str, list], Optional[str]]:
+def load_pull_json(path: str | None) -> tuple[str | list, str | None]:
     """pull_precedents 応答JSON(docs/spec/mcp-tools.md 2.32節 pull_precedentsのスキーマ)から
     pull.presented / pull.guarantee を機械転記する。
 
@@ -707,7 +706,9 @@ def cmd_shadow_report(args: argparse.Namespace) -> int:
     if args.db:
         env_set("CALM_DB_PATH", args.db)
     try:
-        from src.db import get_connection  # 遅延import: このサブコマンドのみ src.db に依存する
+        from src.db import (
+            get_connection,  # 遅延import: このサブコマンドのみ src.db に依存する
+        )
 
         conn = get_connection()
         try:
@@ -787,7 +788,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 

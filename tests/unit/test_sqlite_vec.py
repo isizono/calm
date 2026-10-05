@@ -1,8 +1,8 @@
 """sqlite-vec拡張のロードとvec_indexテーブルの動作テスト"""
 import pytest
 from sqlite_vec import serialize_float32
-from src.db import get_connection
 
+from src.db import get_connection
 
 EMBEDDING_DIM = 384
 

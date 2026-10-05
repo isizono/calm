@@ -88,7 +88,7 @@ def get_neighbor_pending_asks(
     rows = conn.execute(
         f"""
         SELECT a.id, a.question, a.status, MIN(act.id) AS activity_id, -- 単一のMINと並べた裸のカラムは最小行の値になる（SQLite）
-              
+
                act.title AS title
           FROM asks a
           JOIN ask_blocks ab ON ab.ask_id = a.id
@@ -129,7 +129,7 @@ def get_recent_settled_asks(
         SELECT a.id, a.question, a.status, a.triage_reason,
                d.title AS decision_title, d.decision AS decision_text,
                MIN(act.id) AS activity_id, -- 単一のMINと並べた裸のカラムは最小行の値になる（SQLite）
-              
+
                act.title AS title
           FROM asks a
           JOIN ask_blocks ab ON ab.ask_id = a.id

@@ -9,7 +9,6 @@ from __future__ import annotations
 from typing import Any
 
 import mcp.types as mt
-
 from fastmcp.exceptions import ToolError
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 

@@ -2,7 +2,6 @@
 
 import pytest
 
-from src.db import get_connection
 from src.services.decision_service import add_decisions
 from src.services.direction_service import DIRECTION_NAME, DIRECTION_NAMESPACE
 from src.services.topic_service import add_topic

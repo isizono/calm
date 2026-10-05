@@ -285,7 +285,7 @@ class TestCheckTargetExists:
         for table in TYPE_TO_TABLE.values():
             temp_conn.execute(f"INSERT INTO {table} (id) VALUES (?)", (1,))
         temp_conn.commit()
-        for code, type_name in TYPE_CODE_TO_NAME.items():
+        for _code, type_name in TYPE_CODE_TO_NAME.items():
             assert check_target_exists(temp_conn, type_name, 1) is True
 
     def test_unknown_target_type_returns_false(self, temp_conn):

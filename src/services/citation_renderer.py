@@ -11,14 +11,13 @@ target が物理削除 / retracted (decision/log) の場合:
 
 コードブロック内 / `\\{{cite:...}}` エスケープはどの flavor でも無加工で残す。
 """
-import re
 import sqlite3
 from typing import Literal
 
 from src.services.citations_pure import (
+    _CITE_PATTERN,
     TYPE_CODE_TO_NAME,
     TYPE_NAME_TO_CODE,
-    _CITE_PATTERN,
 )
 from src.services.citations_service import (
     _get_in_out_with_conn,
