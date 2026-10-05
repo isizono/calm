@@ -1,6 +1,7 @@
 ---
 name: project-setup
 description: 新しいプロジェクト・取り組み（新しいdomain）の知識フレームをCALMに用意する。ペルソナを確かめ、相手に合った経路で埋める。「このプロジェクトをセットアップして」「CALMに登録して」「新しく〇〇を始めるから準備して」などで発動。
+user-invocable: false
 ---
 
 # project-setup
