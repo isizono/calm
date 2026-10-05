@@ -51,7 +51,7 @@ Windows 11（PowerShell）でもmacOS/Linuxと同じ手順でインストール�
 
 ## Codexで古いモデルを使う場合
 
-CALMのMCPツール定義は59本・約12万バイトあり、全部がモデルへ渡されると会話のたびにコンテキストを大きく占めます。Codexはtool searchが使えるモデル（OpenAIのドキュメントではgpt-5.4以降）ではツールを必要になってから読み込みますが、それより前のモデルでは全ツール定義が毎回載る可能性があります。
+CALMのMCPツール定義は約60本・約12万バイトあり、全部がモデルへ渡されると会話のたびにコンテキストを大きく占めます。Codexはtool searchが使えるモデル（OpenAIのドキュメントではgpt-5.4以降）ではツールを必要になってから読み込みますが、それより前のモデルでは全ツール定義が毎回載る可能性があります。
 
 その場合は、Codexの`~/.codex/config.toml`でCALMのMCPサーバーに`disabled_tools`（`enabled_tools`の後に適用される拒否リスト）を設定すると、普段使わないツールを隠せます。次の例は、他インスタンスとの記録の受け渡し、タグの整理、前提の揺らぎ管理、補助のツールを隠します。
 
@@ -69,7 +69,7 @@ disabled_tools = [
 
 MCPサーバーとして手動で登録している場合は、テーブル名を登録したサーバーのキー（`calm`という名前で登録したなら`[mcp_servers.calm]`）に差し替え、`disabled_tools`は同じ内容を書きます。既存のcommandやurlなどの設定はそのまま残します。
 
-隠したツールを使うスキル（`/memory-export`、`/memory-import`、`/tag-cleanup`）は動かなくなります。`/audit`や`/remember`などでタグのnotesを縮める手順も、`demote_tag_notes`を隠すと実行できません。必要になったらそのツールを一覧から外してください。設定項目の詳細は[Codexの設定リファレンス](https://developers.openai.com/codex/config-reference)を参照してください。ツール名の一覧は[リファレンス](docs/reference.md)にあります。
+隠したツールを使うスキル（`/memory-export`、`/memory-import`、`/tag-cleanup`）は動かなくなります。`/audit`、`/remember`、`/recompose-context`でタグのnotesを縮める手順も、`demote_tag_notes`を隠すと実行できません。必要になったらそのツールを一覧から外してください。設定項目の詳細は[Codexの設定リファレンス](https://developers.openai.com/codex/config-reference)を参照してください。ツール名の一覧は[リファレンス](docs/reference.md)にあります。
 
 ## 仕組みの概要
 
