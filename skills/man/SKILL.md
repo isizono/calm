@@ -45,7 +45,14 @@ CALMは「着手 → 記録 → 完了 → 同期」のライフサイクルで�
 
 ## 主要スキル
 
-### `/project-setup` — 新しいプロジェクト・取り組みを始めるとき（一度だけの前準備）
+### `/setup` — セットアップ・設定変更の入口
+
+- やりたいことを判断して、中のスキルに振り分ける。ユーザーが打つのはこのスキルだけ
+  - インストール直後: 前提条件（uv・sqlite拡張・embeddingサーバー）の確認、ペルソナのヒアリング、使い方の案内（initial-setup）
+  - 新しいプロジェクト・取り組みを始めるとき: 下記のproject-setup
+  - 環境変数による設定変更: 一覧を見せ、確認を取って`settings.json`に書く（env-config）
+
+#### project-setup（`/setup`の振り分け先）— 新しいプロジェクト・取り組みを始めるとき（一度だけの前準備）
 
 - 新しいプロジェクト・取り組み（新しいdomain）の知識フレーム（プロジェクト識別子・主要な関心事・既に決まっている方針・直近やること・参照ポインタ）を対話的にセットアップする
 - コード開発が目的なら、自動的に`coding-project-setup`（リポジトリのREADME・docs等の走査を伴う）へ引き継がれる
@@ -315,22 +322,26 @@ CALMの全hookはfail-open設計（1つのhookの失敗が他の操作を止め�
 - **tag-notes**: タグに紐づく常備情報。そのタグに関連する作業が始まったときにAIへ自動注入される。`/tag-notes`で確認・更新できる
 - **振る舞い（habits）**: 全セッション共通のルール。alwaysタイプは全文、intelligentlyタイプはタイトル一覧（マニフェスト）が`~/.claude/rules`配下の自動生成ファイル経由でセッション開始時に読み込まれる（詳細は「記録の構造」参照）。AIに「覚えといて」と言えばOK
 - **`intent:`タグのtag-notes**: 議論・設計・作業の各フェーズでAIにどう振る舞ってほしいかを定義できる。初期状態でdiscussとdesignが登録されている
-- **環境変数**: `.mcp.json`の`env`フィールドで以下の値をオーバーライドできる。未設定ならデフォルト値で動作する
+- **環境変数**: `~/.claude/settings.json`の`env`フィールドで以下の値をオーバーライドできる。未設定ならデフォルト値で動作する。`/setup`から設定変更を選ぶと、一覧の表示と書き込みをAIが手伝う。変更後は`/calm:restart`でMCPサーバーを再起動する
 
 | 環境変数名 | デフォルト | 説明 |
 |-----------|-----------|------|
 | `CALM_DB_PATH` | `~/.claude/.claude-code-memory/discussion.db` | データベースファイルのパス |
 | `CALM_HEARTBEAT_TIMEOUT` | `20` | ホットアクティビティ判定の閾値（分） |
-| `CALM_IN_PROGRESS_LIMIT` | `3` | アクティブコンテキストのin_progress表示件数 |
-| `CALM_PENDING_LIMIT` | `2` | アクティブコンテキストのpending表示件数 |
 | `CALM_TIER2_MAX_AGE_DAYS` | `7` | SessionStart一覧の階層2にin_progressアクティビティを載せるupdated_at上限（日） |
 | `CALM_PIN_SURFACE_DECAY_DAYS` | `60` | pinnedアクティビティが階層2表示を維持できるupdated_at上限（日） |
 | `CALM_TIER2_MAX_ITEMS` | `5` | SessionStart一覧の『優先』に出す件数の上限。hookが読むため`~/.claude/settings.json`の`env`で設定する。増やすときは`CALM_INJECTION_BUDGET_ACTIVITIES`も上げる（各セクションの予算の合計が`CALM_TOTAL_INJECTION_BUDGET_CHARS`を超えるとcomposeがValueErrorを出す。既定の合計は10500字で、総予算12000字との差は1500字） |
 | `CALM_RECENCY_DECAY_RATE` | `0.0119` | 検索の時間減衰率 |
+| `CALM_PRECEDENT_BUDGET_CHARS` | `24000` | `pull_precedents`が本文展開（decision＋reason）に使う文字数予算 |
 | `CALM_SYNC_DISABLE_RETROSPECTIVE` | `false` | `/sync-memory`のふりかえりセクションを非表示にする |
 | `CALM_SNAPSHOT_INTERVAL` | `12` | スナップショット取得間隔（時間） |
 | `CALM_SNAPSHOT_MAX_COUNT` | `5` | スナップショット最大保持数 |
 | `CALM_SNAPSHOT_ANOMALY_THRESHOLD` | `100` | 行数減少の異常検知閾値（件） |
+| `CALM_SEARCH_HEALTH_WINDOW_DAYS` | `7` | 検索縮退・クエリ拡張停止検知の集計対象ウィンドウ（日） |
+| `CALM_SEARCH_HEALTH_MAX_SAMPLE` | `100` | 同集計で見る最大件数（timestamp降順） |
+| `CALM_SEARCH_HEALTH_MIN_SAMPLE` | `20` | 同集計の判定に必要な最小サンプル数（未満なら常に健全扱い） |
+| `CALM_SEARCH_HEALTH_DEGRADED_RATIO` | `0.2` | 検索の縮退率がこの値以上なら異常とみなす閾値 |
+| `CALM_SEARCH_HEALTH_QE_FIRE_FLOOR` | `0.0` | クエリ拡張の発火率がこの値以下なら異常とみなす閾値 |
 | `CALM_PROJECTION_MANIFEST_MAX_ITEMS` | `30` | intelligently habitsマニフェストの掲載件数上限 |
 | `CALM_GOAL_RECHECK_HOURS` | `6` | goalの条件のうち担い手がhuman/externalのopen条件を「要確認」とみなすまでの時間（時間） |
 | `CALM_PROJECT_ROOT` | 自動解決（`CLAUDE_PLUGIN_ROOT` → `git rev-parse --git-common-dir`） | `embedding_server`を起動するプロジェクトルート。優先順位は 明示設定 → プラグイン実行時は`CLAUDE_PLUGIN_ROOT`の値から自動設定 → `embedding_server`自身の`git rev-parse --git-common-dir`解決 → いずれも失敗した場合はRuntimeError。加えて`/calm:restart`（強制再起動）実行時は、上記のいずれでも未設定であれば`restart_service`自身も同じgit-common-dir解決（gitリポジトリでなければ実行時のプロジェクトルート）で先回りして設定する。通常は自動解決されるため設定不要だが、いずれの自動解決にも失敗する環境（gitリポジトリ外かつ`CLAUDE_PLUGIN_ROOT`も未設定）では明示設定が必要 |

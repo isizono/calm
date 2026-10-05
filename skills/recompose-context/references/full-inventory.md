@@ -117,6 +117,21 @@ snoozedの実態確認も同様に`check_in`を避けるが、`get_activities`�
 
 棚卸しの最後に`uv run --directory ${CLAUDE_PLUGIN_ROOT} python ${CLAUDE_PLUGIN_ROOT}/scripts/ops_metrics.py`を実行する。出力の`goal放置件数`(判定待ちのまま紐づくactivityが全部completedになっているgoalの件数)が0件でなければ、その件数をユーザーに一言報告する。goal機構の3表(goals/goal_conditions/goal_activities)が無いDBでは出力にgoalの行自体が現れないので、その場合はこの手順を無視してよい。
 
+`goal放置件数`以外の指標（search縮退率・クエリ拡張発火率・precedent_telemetryのguarantee内訳・追随率・citation_event_logの検証結果内訳・guard_block件数）も目を通す。これらは閾値判定を行わない生データの集計であり、「異常かどうか」の判断は実行者が行う。`巻き戻し率`・`shadow乖離率`・`pull miss`・`誤類推率`には書き手コードが存在しないkindが混ざっており、出力に「書き手コードなし」の注記が付く場合は0件/N/Aが構造的なものであって「インシデントが起きていない」ことの証拠にはならないため、その注記が付いていない指標から見る。
+
+数値が明らかにおかしいと判断した場合（例: 縮退率・false_negative率が急に高い、クエリ拡張発火率が長期間0%のまま、特定の規則のguard_block件数だけ急増している等）は、観察した内容を`report_signal`（calm自身の運用上の不具合・使用感の問題として、`kind="friction"`または該当するkind）か`add_logs`で記録に起こす。棚卸しの場で原因調査まで行う必要はない。
+
+### 7. 未トリアージsignalの振り分け
+
+`get_signals`の`status="new"`はトリアージ未着手のまま溜まりやすい（既定で新しい順にしか並ばない）。上位（再発回数が多い）ものから優先的に`dismissed`/`promoted`へ振り分ける。
+
+1. `get_signals(status="new", kind=<対象kind>, limit=100, include_stats=True)`を呼ぶ。`detail`が長いkind（friction/contradiction等）は一度に複数kindを混ぜず分けて呼ぶ方が応答が見やすい
+2. 返ってきた`signals`を`occurrence_count`の降順で並べ替える（`get_signals`自体は`last_seen_at`降順でしか返さないため、ソートは呼び出し側で行う。再発するたびに`last_seen_at`が更新される仕様上、再発の多い行は自然と直近100件に残りやすい）
+3. 上位（目安10件程度、または`occurrence_count`が明らかに多い行が解消するまで）から`summary`/`detail`/`context`を確認し、次のいずれかで処遇する
+   - 既知の問題で対応不要、または様子見でよいもの: `update_signal(signal_id, status="dismissed")`
+   - 記録・対応に値する実害: 対応する decision/activity/log/material を既存の手段（decision-record/activity-start/recording skill等）で先に作成し、そのidで`update_signal(signal_id, status="promoted", promoted_type=..., promoted_id=...)`を呼んで紐付ける（`update_signal`自体はエンティティを作らない）
+4. 全件を判定しない。手順3の目安に達したら残りは次回に残してよい
+
 ## 自律度ルール
 
 SKILL.md の自律度ルールをそのまま流用し、対象語彙を棚卸しの処遇語彙に翻訳したもの。

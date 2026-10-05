@@ -266,7 +266,7 @@ class TestRolloutEventExtraction:
         assert current_turn == 2
         tool_events = [e for e in events if e["e"] == "tool"]
         assert tool_events == [
-            {"e": "tool", "name": "check_in", "turn": 1, "activity_id": 7}
+            {"e": "tool", "name": "check_in", "turn": 1, "activity_id": 7, "ts": "2026-08-25T14:14:22.000Z"}
         ]
 
     def test_add_activityのresultからactivity_idを抽出できる(self, tmp_path):
