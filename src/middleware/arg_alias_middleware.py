@@ -46,13 +46,22 @@ _INVOKE_TAG = re.compile(r"</(?:[\w.\-]+:)?invoke>")
 
 
 def _strip_trailing_close_tags(text: str) -> str:
-    """末尾から閉じタグを1つずつ剥がす（正規表現を全位置で試すと病的入力で二乗になる）。"""
-    end = len(text.rstrip())
-    if not _INVOKE_TAG.fullmatch(text, text.rfind("</", 0, end), end):
+    """末尾から閉じタグを1つずつ剥がす。文字列をコピーせず添字だけで進めるので線形で済む。"""
+
+    def rstrip_end(end: int) -> int:
+        while end > 0 and text[end - 1].isspace():
+            end -= 1
+        return end
+
+    end = rstrip_end(len(text))
+    if end == 0 or text[end - 1] != ">":
         return text
-    cut = text.rfind("</", 0, end)
+    start = text.rfind("</", 0, end)
+    if start < 0 or not _INVOKE_TAG.fullmatch(text, start, end):
+        return text
+    cut = start
     while True:
-        end = len(text[:cut].rstrip())
+        end = rstrip_end(cut)
         start = text.rfind("</", 0, end)
         if start < 0 or not _CLOSE_TAG.fullmatch(text, start, end):
             return text[:cut]

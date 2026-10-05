@@ -93,7 +93,7 @@ async def test_trailing_close_tags_are_stripped():
 
 
 @pytest.mark.asyncio
-async def test_namespaced_invoke_and_multiple_tags_are_stripped():
+async def test_multiple_tags_and_trailing_newline_are_stripped():
     body = "本文</parameter>\n</invoke>\n"
     assert await _run("answer_ask", {"answer_body": body}) == {"answer_body": "本文"}
 
@@ -126,9 +126,24 @@ async def test_text_continuing_after_invoke_tag_is_kept():
 
 
 @pytest.mark.asyncio
-async def test_text_made_only_of_close_tags_becomes_empty_and_non_strings_pass():
-    out = await _run("answer_ask", {"answer_body": "</invoke>", "n": 3, "x": None})
-    assert out == {"answer_body": "", "n": 3, "x": None}
+async def test_text_made_only_of_close_tags_becomes_empty():
+    assert await _run("answer_ask", {"answer_body": "</invoke>"}) == {"answer_body": ""}
+
+
+@pytest.mark.asyncio
+async def test_non_string_values_pass_through():
+    assert await _run("answer_ask", {"n": 3, "x": None}) == {"n": 3, "x": None}
+
+
+@pytest.mark.asyncio
+async def test_close_tags_are_stripped_before_aliases_are_applied():
+    assert await _run("search", {"query": "x</invoke>"}) == {"keyword": "x"}
+
+
+@pytest.mark.asyncio
+async def test_many_close_tags_are_stripped_without_blowup():
+    body = "x" + "</a>\n" * 50000 + "</invoke>"
+    assert await _run("answer_ask", {"answer_body": body}) == {"answer_body": "x"}
 
 
 @pytest.mark.asyncio
