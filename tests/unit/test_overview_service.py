@@ -466,6 +466,46 @@ class TestSideEffectFree:
         assert _get_status(act) == "snoozed"
 
 
+class TestExpiredSnoozedDisplayedAsPendingInBacklog:
+    """backlog.by_statusは期限切れsnoozedをpending相当として数える（表示時の
+    評価のみ。get_activitiesのような自動復活はget_overviewでは行わない）。
+    """
+
+    def test_expired_snoozed_counted_under_pending(self, temp_db):
+        act = _make_activity(status="snoozed")
+        _set_updated_at(act, _days_ago(SNOOZE_DURATION_DAYS + 1))
+
+        result = ov.get_overview()
+
+        assert result["backlog"]["by_status"].get("pending") == 1
+        assert "snoozed" not in result["backlog"]["by_status"]
+        # DBのstatusは書き換えない
+        assert _get_status(act) == "snoozed"
+
+    def test_unexpired_snoozed_still_counted_under_snoozed(self, temp_db):
+        act = _make_activity(status="snoozed")
+
+        result = ov.get_overview()
+
+        assert result["backlog"]["by_status"].get("snoozed") == 1
+        assert "pending" not in result["backlog"]["by_status"]
+
+    def test_genuine_in_progress_not_affected(self, temp_db):
+        """期限切れsnoozedの折り込みがin_progressの集計に紛れ込まない
+        （stale_in_progress_countはby_status['in_progress']から導出されるため）。
+        in_progressはdays日（既定7日）超の未更新でworkingから外れbacklogに入る"""
+        stale_in_progress = _make_activity(status="in_progress")
+        _set_updated_at(stale_in_progress, _days_ago(8))
+        expired_snoozed = _make_activity(status="snoozed")
+        _set_updated_at(expired_snoozed, _days_ago(SNOOZE_DURATION_DAYS + 1))
+
+        result = ov.get_overview()
+
+        assert result["backlog"]["by_status"].get("in_progress") == 1
+        assert result["backlog"]["by_status"].get("pending") == 1
+        assert result["backlog"]["stale_in_progress_count"] == 1
+
+
 class TestLimitBehavior:
     def test_limit_below_population_truncates_items_but_total_count_reflects_full_population(self, temp_db):
         for i in range(5):

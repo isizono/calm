@@ -16,7 +16,7 @@ description: 【必須】現在のアクティビティを完了にする、ま�
 
    完了ではなく中断・切り替えの意図（「一旦ここまで」「今日はここで止める」など）なら、手順2以降ではなく「中断する」節へ進む
 
-   対象が`orch`タグの付いたアクティビティ（orch）なら、この手順の続きに進まず[orch](../orch/SKILL.md) skillの「終える」節へ進む
+   対象がorch（`orch`タグが付き、説明の先頭に担い手欄があるもの）なら、この手順の続きに進まず[orch](../orch/SKILL.md) skillの「終える」節へ進む。担い手欄が無ければorchではないので、このまま続ける
 2. **終了条件（goal）の確認**: 手元に今のgoalブロックが無ければ `get_goal(activity_id=...)` で読み直し、`label` を見る（`get_goal`は`check_in`と違いactivityのstatusを変えない読み取り専用なので、statusを書き換えずに確認できる）。以下の `goal_id` は`get_goal`応答の `goal_id_raw` を指す
 3. `label` に応じて完了させる
    - `undefined`（goal無し）: `update_activity(status="completed", closed_by="user", closed_reason=...)`。事後にgoalを促すことはしない。ただし、ユーザーがその場で「何をもって終わったか」を条件として言ったときだけ、`set_goal(activity_id, goal={"new": {...条件はstate="satisfied"か理由付きwaivedで作成...}})` で全条件を終端にして作り、続けて `judge_goal` で判定する（`update_activity` は呼ばない。activityの完了はjudge_goal側で行われる）
