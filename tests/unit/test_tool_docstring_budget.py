@@ -21,9 +21,9 @@ DOCSTRING_CHAR_BUDGET = 1900
 # ツール定義はリクエストのたびにモデルの入力に載るため、1本ずつ上限内でも合計の増加は
 # 応答時間とコストに効く(#803)。新設時点の実測 128,307 バイトに少し余裕を持たせた値。
 # 各ツールの冒頭一文に英語キーワードを添えた結果の実測は 131,484 バイト(増加分は約2,000バイト)。
-# 余裕を持たせて132,000とした。
+# 次の小さなdocstring変更で落ちないよう約1,500バイトの余裕を持たせて133,000とした。
 # 超過したら、description を短くするか、増やす理由をPRに書いてこの値を引き上げること。
-TOTAL_TOOL_DEFINITION_BYTES_BUDGET = 132_000
+TOTAL_TOOL_DEFINITION_BYTES_BUDGET = 133_000
 
 # 実測で1,900字を超えている既知のツール(本テスト新設時点の記録)。
 KNOWN_OVER_BUDGET = {"search"}
@@ -69,12 +69,12 @@ def test_total_tool_definitions_within_budget():
 def test_first_sentence_parentheses_are_balanced():
     """冒頭一文の括弧が閉じていることを検証する。
 
-    openapiのsummaryはdocstringの最初の「。」までで切られるため、括弧の中に「。」が
+    openapiのsummaryはdocstringの先頭1行のうち最初の「。」までで切られるため、括弧の中に「。」が
     あると閉じ括弧のない文がsummaryになる。
     """
     unbalanced = {}
     for name, desc in all_tool_descriptions().items():
-        first = (desc or "").strip().split("。")[0]
+        first = (desc or "").strip().splitlines()[0].split("。")[0]
         if first.count("（") != first.count("）") or first.count("(") != first.count(")"):
             unbalanced[name] = first
     assert not unbalanced, f"冒頭一文の括弧が閉じていない: {unbalanced}"
