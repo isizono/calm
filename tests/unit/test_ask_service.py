@@ -109,6 +109,22 @@ class TestAddAskValidation:
         listed = ak.get_asks(kind="meta")
         assert listed["asks"][0]["kind"] == "meta"
 
+    @pytest.mark.parametrize("blocks", [None, []])
+    def test_meta_without_blocks_accepted_and_listed(self, temp_db, blocks):
+        result = ak.add_ask("q", tags=["domain:test"], blocks=blocks, kind="meta")
+        assert "error" not in result, result
+        listed = ak.get_asks(kind="meta")
+        assert [a["id_raw"] for a in listed["asks"]] == [result["id"]]
+        assert listed["asks"][0]["blocks"] == []
+
+    def test_meta_with_nonexistent_block_still_rejected(self, temp_db):
+        result = ak.add_ask("q", tags=["domain:test"], blocks=[999999], kind="meta")
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_ask_without_blocks_rejected(self, temp_db):
+        result = ak.add_ask("q", tags=["domain:test"], blocks=None)
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
     def test_tags_persisted_and_returned_by_get_asks(self, temp_db):
         act = _make_activity()
         ak.add_ask("q", tags=["domain:test", "plain-tag"], blocks=[act])

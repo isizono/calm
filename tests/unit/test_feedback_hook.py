@@ -707,16 +707,15 @@ class TestMaintenanceHintReviewLine:
 
 
 class TestMaintenanceHintPromoteLine:
-    def test_promote_line_appears_after_3_stumbles_and_clears_after_note(self, db, capsys):
+    def test_promote_line_appears_after_1_stumble_and_clears_after_note(self, db, capsys):
         _create_entry("stump-a", body="躓きメモ", condition={"tool": None, "all": []})
-        for _ in range(3):
-            note = fs.add_feedback_note(name="stump-a", kind="stumble", body="踏んだ")
-            assert note["ok"], note
+        note = fs.add_feedback_note(name="stump-a", kind="stumble", body="踏んだ")
+        assert note["ok"], note
         out = _run_main_with_event(
             {"hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt_id": "p1", "prompt": "hello"},
             capsys,
         )
-        assert "未処理の躓き3件" in out["hookSpecificOutput"]["additionalContext"]
+        assert "未処理の躓き1件" in out["hookSpecificOutput"]["additionalContext"]
 
         note = fs.add_feedback_note(name="stump-a", kind="note", body="対応した")
         assert note["ok"], note
@@ -726,7 +725,7 @@ class TestMaintenanceHintPromoteLine:
         )
         assert "未処理の躓き" not in out["hookSpecificOutput"]["additionalContext"]
 
-    def test_promote_line_does_not_reappear_with_only_1_stumble_after_note(self, db, capsys):
+    def test_promote_line_counts_only_stumbles_after_last_note(self, db, capsys):
         _create_entry("stump-a", body="躓きメモ", condition={"tool": None, "all": []})
         for _ in range(3):
             fs.add_feedback_note(name="stump-a", kind="stumble", body="踏んだ")
@@ -736,7 +735,7 @@ class TestMaintenanceHintPromoteLine:
             {"hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt_id": "p1", "prompt": "hello"},
             capsys,
         )
-        assert "未処理の躓き" not in out["hookSpecificOutput"]["additionalContext"]
+        assert "未処理の躓き1件" in out["hookSpecificOutput"]["additionalContext"]
 
     def test_pending_stumbles_do_not_mix_across_entries(self, db, capsys):
         """複数エントリがDBに同居し、それぞれstumble件数が異なるとき、格上げ行の
@@ -756,10 +755,12 @@ class TestMaintenanceHintPromoteLine:
             capsys,
         )
         body = out["hookSpecificOutput"]["additionalContext"]
-        # entry-a(3件)にだけ格上げ行が出て、entry-b(1件、閾値未満)には出ない。
-        # 相関がずれて両者のstumbleが合算されると"4件"や2箇所出現になる。
-        assert body.count("未処理の躓き") == 1
+        # 各エントリが自身の件数(a=3件、b=1件)で1行ずつ出る。
+        # 相関がずれて両者のstumbleが合算されると"4件"になる。
+        assert body.count("未処理の躓き") == 2
         assert "未処理の躓き3件" in body
+        assert "未処理の躓き1件" in body
+        assert "未処理の躓き4件" not in body
 
     def test_deny_reason_includes_promote_line(self, db, capsys):
         _create_entry(

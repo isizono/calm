@@ -62,7 +62,7 @@ def _validation_error(message: str) -> dict:
 def add_ask_with_conn(
     conn: sqlite3.Connection,
     question: str,
-    blocks: list[int],
+    blocks: list[int] | None,
     tags: list[str],
     kind: str = "ask",
     context: str | None = None,
@@ -100,10 +100,13 @@ def add_ask_with_conn(
         return _validation_error(f"question must not exceed {QUESTION_MAX_LEN} characters")
     if context is not None and len(context) > CONTEXT_MAX_LEN:
         return _validation_error(f"context must not exceed {CONTEXT_MAX_LEN} characters")
-    if not blocks:
-        return _validation_error("blocks must not be empty")
     if kind not in VALID_KINDS:
         return _validation_error(f"Invalid kind: {kind!r}. Must be one of {sorted(VALID_KINDS)}")
+    # メタaskは特定のactivityを止めない裁定依頼（格上げの承認など）にも使うため、
+    # blocksなしを許す。通常askは答え待ちで止める作業が必須。
+    blocks = blocks or []
+    if not blocks and kind != "meta":
+        return _validation_error("blocks must not be empty")
 
     if choices is not None:
         if not (1 <= len(choices) <= CHOICES_MAX_COUNT):
@@ -130,19 +133,20 @@ def add_ask_with_conn(
 
     # duplicate activity_idはサービス層でset化して静かにdedupeする（エラーにしない）。
     block_ids = list(dict.fromkeys(blocks))
-    placeholders = ",".join("?" * len(block_ids))
-    rows = conn.execute(
-        f"SELECT id, status FROM activities WHERE id IN ({placeholders})",
-        tuple(block_ids),
-    ).fetchall()
-    status_by_id = {row["id"]: row["status"] for row in rows}
-    missing = [bid for bid in block_ids if bid not in status_by_id]
-    if missing:
-        return _validation_error(f"blocks references nonexistent activity id(s): {missing}")
-    if all(status == "completed" for status in status_by_id.values()):
-        return _validation_error(
-            "blocks must include at least one activity that is not completed"
-        )
+    if block_ids:
+        placeholders = ",".join("?" * len(block_ids))
+        rows = conn.execute(
+            f"SELECT id, status FROM activities WHERE id IN ({placeholders})",
+            tuple(block_ids),
+        ).fetchall()
+        status_by_id = {row["id"]: row["status"] for row in rows}
+        missing = [bid for bid in block_ids if bid not in status_by_id]
+        if missing:
+            return _validation_error(f"blocks references nonexistent activity id(s): {missing}")
+        if all(status == "completed" for status in status_by_id.values()):
+            return _validation_error(
+                "blocks must include at least one activity that is not completed"
+            )
 
     fingerprint = compute_fingerprint16(normalize_text(question))
 
@@ -201,7 +205,7 @@ def add_ask_with_conn(
 
 def add_ask(
     question: str,
-    blocks: list[int],
+    blocks: list[int] | None,
     tags: list[str],
     kind: str = "ask",
     context: str | None = None,

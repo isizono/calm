@@ -2518,8 +2518,8 @@ def update_signal(
 @mcp.tool()
 def add_ask(
     question: str,
-    blocks: list[int],
     tags: list[str],
+    blocks: list[int] | None = None,
     kind: str = "ask",
     context: str | None = None,
     choices: list[str] | None = None,
@@ -2550,10 +2550,12 @@ def add_ask(
 
     Args:
         question: 問い本文（空不可、500字以内）
-        blocks: この問いが答え待ちで止めているactivityのid一覧（1件以上必須）。
-            全て存在するactivityであること。全てcompleted状態のときはエラー
-            （1件でも進行中/未着手/一時停止のactivityがあれば通す）
         tags: タグ配列（必須、1個以上。`domain:`タグを最低1つ含むこと。素タグは任意）
+        blocks: この問いが答え待ちで止めているactivityのid一覧。通常ask（kind="ask"）では
+            1件以上必須。kind="meta"のときだけ省略・空配列を許す（特定のactivityを
+            止めない裁定依頼のため）。指定する場合は全て存在するactivityであること。
+            全てcompleted状態のときはエラー（1件でも進行中/未着手/一時停止のactivityが
+            あれば通す）
         kind: "ask"（通常ask、デフォルト）または"meta"（メタask）
         context: 背景（optional、8000字以内）
         choices: 選択肢テンプレート（optional、最大3件、1件100字以内）。指定すると
