@@ -270,6 +270,26 @@ HTTP_STATELESS = True
 # サーバー起動時刻（/health で uptime 算出に使用）
 _SERVER_STARTED_AT = datetime.now(timezone.utc)
 
+
+def _version_id_for_root(root: Path) -> Optional[str]:
+    """`root`のディレクトリ名を版識別子として返す。
+
+    プラグインキャッシュ配置では`.../plugins/cache/<marketplace>/<plugin>/<version>/`の
+    versionディレクトリ名がこれに当たり、installed_plugins.jsonのエントリと
+    直接比較できる。gitチェックアウト（開発用worktree含む）から直接実行して
+    いる場合はディレクトリ名がバージョンを意味しないため、Noneを返す
+    （呼び出し側は版不明として扱う）。
+    """
+    if (root / ".git").exists():
+        return None
+    return root.name
+
+
+# サーバー自身の起動元ルートと版識別子（/health で返す。起動中は不変なので
+# 一度だけ計算する）
+_SERVER_ROOT = Path(__file__).resolve().parent.parent
+_SERVER_VERSION_ID = _version_id_for_root(_SERVER_ROOT)
+
 # セッション管理（HTTPモードで使用）
 _session_manager = None
 
@@ -3074,6 +3094,7 @@ async def health(_request: Request) -> JSONResponse:
         "pid": os.getpid(),
         "started_at": _SERVER_STARTED_AT.isoformat(),
         "uptime_sec": int((now - _SERVER_STARTED_AT).total_seconds()),
+        "version": _SERVER_VERSION_ID,
     })
 
 
@@ -3238,7 +3259,17 @@ if __name__ == "__main__":
 
     if args.transport == "http":
         from src.infra.lock_file import acquire, release
-        from src.infra.session_manager import SessionManager
+        from src.infra.session_manager import SessionManager, read_liveness_timeout_sec
+
+        # 前のサーバープロセスの時代からended_atが空のまま残っているsessions行を
+        # 閉じる（session_ledger_service.close_stale_sessions参照）。ベストエフォート:
+        # 失敗してもサーバー起動自体は継続する。
+        try:
+            closed = session_ledger_service.close_stale_sessions(read_liveness_timeout_sec())
+            if closed:
+                logger.info(f"Closed {closed} stale session row(s) from a previous server era")
+        except Exception:
+            logger.exception("close_stale_sessions failed")
 
         # 起動時cwdをプロジェクトルートに固定する。worktree内などからの起動による
         # cwd差し替えリスクを構造的に潰す（詳細は _ensure_project_root_cwd 参照）。

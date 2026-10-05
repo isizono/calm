@@ -43,6 +43,7 @@ from src.services.backup_service import health_check, should_take_snapshot, take
 from src.services.injection_compositor import Section, compose
 from src.services.search_health_service import check_search_health
 from src.services import session_registry_service
+from src.infra.plugin_install import resolve_installed_plugin_root
 from hooks.signal_capture import try_capture_signal
 
 _RECENT_CREATED_HOURS = 24
@@ -1086,11 +1087,53 @@ def _build_search_health_section(conn, session_id: str | None = None, source: st
     return line + "\n"
 
 
+_VERSION_CHECK_TIMEOUT_SEC = 1.0
+
+
+def _fetch_running_server_version(timeout_sec: float = _VERSION_CHECK_TIMEOUT_SEC) -> str | None:
+    """稼働中サーバーの `/health` から版識別子（`version`キー）を取得する。
+
+    接続不可・タイムアウト・応答不正・フィールド欠落（versionを返さない旧版
+    サーバー等）はすべてNoneとする（判定不能として呼び出し側が黙って
+    スキップするための戻り値で、例外は外に伝播させない）。
+    """
+    from src.http_config import HTTP_HOST, HTTP_PORT
+    from src.infra.loopback_http import NO_PROXY_OPENER
+
+    try:
+        with NO_PROXY_OPENER.open(
+            f"http://{HTTP_HOST}:{HTTP_PORT}/health", timeout=timeout_sec
+        ) as resp:
+            body = json.loads(resp.read())
+    except Exception:
+        return None
+    version = body.get("version")
+    return version if isinstance(version, str) else None
+
+
+def _build_version_check_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # conn, session_id, source, **_kwargs: 全セクション共通シグネチャ
+    """稼働中のCALMサーバーが現在のインストール版と異なる場合に1行の注意を出す。
+
+    インストール版が解決できない（gitチェックアウトからの直接実行等）、または
+    稼働中サーバーの `/health` から版識別子が取得できない（未応答・旧版で
+    `version`キー自体が無い等）場合は判定不能として何も出さない。自動では
+    再起動しない（過去に自動再起動でセッションの接続が切れた実績がある）。
+    """
+    installed_root = resolve_installed_plugin_root(_project_root)
+    if installed_root is None:
+        return ""
+    running_version = _fetch_running_server_version()
+    if running_version is None or running_version == installed_root.name:
+        return ""
+    return "⚠ CALMサーバーが古い版で動いている。/restart で最新版に切り替えられる\n"
+
+
 # セクション登録レジストリ。priorityは既存builders順（出力順）をそのまま踏襲する。
 # budget_charsは各セクションの宣言予算（文字数）で、実出力がこれを超えた場合
 # compose()側でハード切り詰めされる（詳細はinjection_compositor.pyのdocstring参照）。
 _SECTIONS: list[Section] = [
     Section("snapshot", _build_snapshot_section, config.INJECTION_BUDGET_SNAPSHOT_CHARS, priority=0),
+    Section("version_check", _build_version_check_section, config.INJECTION_BUDGET_VERSION_CHECK_CHARS, priority=5),
     Section("search_health", _build_search_health_section, config.INJECTION_BUDGET_SEARCH_HEALTH_CHARS, priority=5),
     Section("activities", _build_activities_section, config.INJECTION_BUDGET_ACTIVITIES_CHARS, priority=10),
     Section("habits", _build_habits_section, config.INJECTION_BUDGET_HABITS_CHARS, priority=20),
