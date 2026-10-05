@@ -347,6 +347,11 @@ class TestVerificationBullets:
         parsed = parse_precedent_sections("検証: 実機確認 / 2026-07-04\n")
         assert [a["raw"] for a in parsed["verification_anchors"]] == ["実機確認 / 2026-07-04"]
 
+    def test_bullet_without_date_warns_like_one_line_form(self):
+        parsed = parse_precedent_sections("検証:\n- 実機確認\n")
+        assert parsed["verification_anchors"][0]["date"] is None
+        assert any("without date" in w for w in parsed["warnings"])
+
     def test_heading_followed_by_next_heading_warns(self):
         parsed = parse_precedent_sections("検証:\n適用外:\n- 例\n")
         assert parsed["verification_anchors"] == []
