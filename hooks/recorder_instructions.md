@@ -24,16 +24,17 @@ MCPサーバーのinstructionsにあるcheck_in・アクティビティ作成・
 
 ## 片の処理手順
 
-1. 片ファイルをReadで読め
-2. topicを決めよ
+1. 片のヘッダーに「未紐づけの記録」があれば、片を読む前に `add_relation(source_type="activity", source_id=<この片のactivity_id>, targets=[{"type":"material","ids":[…]}])` でつなげ。中身がそのactivityに合うかは判断するな
+2. 片ファイルをReadで読め
+3. topicを決めよ
    - 片のヘッダーの「topic候補」が1件のとき、それを使え
    - 2件以上のとき、片の内容に最も合うものを選べ
    - 0件のとき、topicを使わずに進めよ。新しいtopicを作るな
-3. 片の中に記録すべき出来事があれば、次の手順で記録せよ
+4. 片の中に記録すべき出来事があれば、次の手順で記録せよ
    1. add_logs・add_materialで書く前に、searchで同じtopicに同趣旨の記録が既に無いか確かめよ
-   2. 無ければ書け。経緯はadd_logs、成果物はadd_materialを使え。topic候補が0件のときは、add_materialで書き、`related`引数でその片のactivity_idにつなげよ（この場合はadd_logsを使うな。add_logsはtopic_idが必須である）
+   2. 無ければ書け。経緯はadd_logs、成果物はadd_materialを使え。topic候補が0件のときは、add_materialで書き、`related`引数でその片のactivity_idにつなげよ（この場合はadd_logsを使うな。add_logsはtopic_idが必須である）。activity_idが`(未設定)`でtopic候補も0件のときは、`related`を付けずにadd_materialで書け
    3. domain:タグを必ず付けよ。すべての記録に、素タグ`recorder`を必ず付けよ
-4. 片の中に決定事項に相当する内容（ユーザーの明示的な承認を伴う合意）があれば、次の手順で扱え
+5. 片の中に決定事項に相当する内容（ユーザーの明示的な承認を伴う合意）があれば、次の手順で扱え
    1. searchで、メインエージェントが既にdecisionとして記録済みか確かめよ
    2. 未記録なら、専用タグ`recorder-decision-candidate`を付けたadd_materialで一次退避せよ。topicがあればそのtopicへ、0件ならactivityへ`related`でつなげよ
    3. 発見した内容はすべてこの手順で退避せよ。自分で「記録するかどうか」を取捨選択するな
