@@ -11,9 +11,9 @@ description: 今動いているもの・最近終わったもの・人間の裁�
 
 1. `get_overview()` を1回だけ呼ぶ。ユーザーが期間や件数を指定していれば`days`/`limit`に渡す。他のツール（`get_activities`/`get_asks`等）は呼ばない。
 2. 返ってきた4節を **`working` → `recently_done` → `awaiting_human` → `backlog` の固定順**で見出しにして出す。順序を入れ替えたり節を統合したりしない。
-3. `working`/`recently_done`/`awaiting_human`は`items`を1行1件で列挙する。`working`は`is_live`が trueのものに印を付け、`days_since_touch`と`open_ask_count > 0`を添える。`awaiting_human`は`days_open`と`blocks`のタイトルを添える。`awaiting_human.triage_pending_items`（回答済み未捌き）が1件以上あれば、`items`とは別枠でquestionを列挙する（`triage_pending_count`の件数表示だけで済ませない）。`awaiting_human.goal_human_waiting`（goalの人間条件待ち）が1件以上あれば、askとは別枠で条件文・activityのタイトル・`days_open`を列挙し、`goal_human_stale`（完了・棚上げしたactivityに残った閉じ忘れ）は「閉じ忘れ」として更に別枠で出す。`items`が空の節は見出しごと省略する。
+3. `working`/`recently_done`/`awaiting_human`は`items`を1行1件で列挙する。`working`は`is_live`が trueのものに印を付け、`days_since_touch`と`open_ask_count > 0`を添える。`awaiting_human`は`days_open`と`blocks`のタイトルを添える。`awaiting_human.triage_pending_items`（回答済み未捌き）が1件以上あれば、`items`とは別枠でquestionを列挙する（`triage_pending_count`の件数表示だけで済ませない）。`awaiting_human.goal_human_waiting`（goalの人間条件待ち）が1件以上あれば、askとは別枠で条件文・activityのタイトル・`days_open`を列挙し、`goal_human_stale`（完了・棚上げしたactivityに残った閉じ忘れ）は「閉じ忘れ」として更に別枠で出す。`awaiting_human`は`items`・`triage_pending_items`・`goal_human_waiting`・`goal_human_stale`がすべて空のときだけ見出しごと省略し、他の節は`items`が空なら見出しごと省略する。
 4. `backlog`は`total_count`/`stale_in_progress_count`/`by_status`/`by_domain`/`no_domain_count`をそのまま提示する。個別のアクティビティは列挙しない。
-5. いずれかの節で`count < total_count`なら「上位N件のみ表示（全M件）」と明記する。記録系ツール（`add_*`/`update_*`/`retract`等）は一切呼ばない。
+5. いずれかの節（`goal_human_waiting`・`goal_human_stale`を含む）で`count < total_count`なら「上位N件のみ表示（全M件）」と明記する。記録系ツール（`add_*`/`update_*`/`retract`等）は一切呼ばない。
 
 ## 注意
 

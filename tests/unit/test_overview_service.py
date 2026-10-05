@@ -348,7 +348,11 @@ class TestAwaitingHumanGoalConditions:
         done = _make_activity(title="done one", status="in_progress")
         self._goal(done, "g-multi", [{"statement": "人が見る", "actor": "human"}])
         live = _make_activity(title="live one", status="in_progress")
-        goal_id = get_connection().execute("SELECT id FROM goals WHERE handle='g-multi'").fetchone()["id"]
+        conn = get_connection()
+        try:
+            goal_id = conn.execute("SELECT id FROM goals WHERE handle='g-multi'").fetchone()["id"]
+        finally:
+            conn.close()
         assert "error" not in set_goal(live, {"goal_id": goal_id})
         update_activity(done, status="completed")
 
