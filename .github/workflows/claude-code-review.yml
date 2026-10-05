@@ -2,7 +2,7 @@ name: Claude Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize, ready_for_review]
+    types: [opened, ready_for_review]
   workflow_dispatch:
 
 jobs:
@@ -11,12 +11,6 @@ jobs:
     # fork PRをレビューしたい場合はworkflow_dispatchから手動起動する。詳細: #645
     # draft PRは除外する。workflow_dispatchにはpull_requestコンテキストが無いため別扱いにする。
     if: github.event_name == 'workflow_dispatch' || (!github.event.pull_request.head.repo.fork && !github.event.pull_request.draft)
-
-    # 追加pushで古いコミットのレビューを打ち切り、最新のコミットだけをレビューする。
-    # draftでskipされるrunが走行中のレビューを巻き込んで止めないよう、workflow直下ではなくjob側に置く。
-    concurrency:
-      group: claude-code-review-${{ github.event.pull_request.number || github.ref }}
-      cancel-in-progress: true
 
     # Optional: Filter by PR author
     # if: |
