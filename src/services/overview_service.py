@@ -327,52 +327,52 @@ def _format_ask_item(ask: dict, now: datetime) -> dict:
 
 
 def _collect_goal_human_conditions(conn: sqlite3.Connection, *, limit: int, now: datetime) -> dict:
-    """担い手がhumanでopenのgoal条件を、紐づくactivityごとに列挙する。
+    """担い手がhumanでopenのgoal条件を、条件1件につき1行で列挙する。
 
-    未完了activity（completed・shelved以外）に紐づくものがwaiting、completed・
-    shelvedのactivityに残ったものがstale（閉じ忘れ）。経過日数は条件の
-    updated_atから数える（条件を開いたまま動いていない期間の近似）。
-    どちらも古い順。totalはlimitに依らない母集団件数。
+    goalには複数activityが属しうるため、条件単位に集約する。未完了
+    （completed・shelved以外）のactivityが1件でもあればwaiting、属するactivityが
+    全てcompleted・shelvedならstale（閉じ忘れ）。activityは1件だけ添える
+    （waitingは未完了のうち最小id、staleは最小id）。経過日数は条件のupdated_at
+    から数える（条件に開いた時刻の列が無く、最後に動いた時刻での近似。条件の
+    編集でリセットされる）。どちらも古い順。total_countはlimitに依らない。
     """
-    stale_statuses = ("completed", "shelved")
-    in_stale = _sql_in_list(stale_statuses)
-    base = """
+    finished = {"completed", "shelved"}
+    rows = conn.execute(
+        """
+        SELECT gc.id AS cond_id, gc.statement, gc.updated_at, g.handle AS goal_handle,
+               a.id AS act_id, a.title, a.status
         FROM goal_conditions gc
         JOIN goals g ON g.id = gc.goal_id
         JOIN goal_activities ga ON ga.goal_id = gc.goal_id
         JOIN activities a ON a.id = ga.activity_id
         WHERE gc.actor = 'human' AND gc.state = 'open'
-    """
-    result = {}
-    for key, cond in (
-        ("waiting", f"a.status NOT IN ({in_stale})"),
-        ("stale", f"a.status IN ({in_stale})"),
-    ):
-        total = conn.execute(f"SELECT COUNT(*) {base} AND {cond}").fetchone()[0]
-        rows = conn.execute(
-            f"""
-            SELECT gc.id AS cond_id, gc.statement, gc.updated_at, g.handle AS goal_handle,
-                   a.id AS act_id, a.title, a.status
-            {base} AND {cond}
-            ORDER BY gc.updated_at ASC, gc.id ASC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-        items = []
-        for r in rows:
-            item = {
-                "id": r["cond_id"],
-                "statement": r["statement"],
-                "goal_handle": r["goal_handle"],
-                "days_open": _days_since(r["updated_at"], now),
-                "activity": {"id": r["act_id"], "title": r["title"], "status": r["status"]},
-            }
-            strip_entity_id_inplace(item)
-            strip_entity_id_inplace(item["activity"])
-            items.append(item)
-        result[key] = {"items": items, "count": len(items), "total_count": total}
-    return result
+        ORDER BY gc.updated_at ASC, gc.id ASC, a.id ASC
+        """
+    ).fetchall()
+
+    by_cond: dict[int, list[sqlite3.Row]] = {}
+    for r in rows:
+        by_cond.setdefault(r["cond_id"], []).append(r)
+
+    sections: dict[str, list[dict]] = {"waiting": [], "stale": []}
+    for group in by_cond.values():  # dictは挿入順 = 古い順
+        live = [r for r in group if r["status"] not in finished]
+        r = (live or group)[0]
+        item = {
+            "id": r["cond_id"],
+            "statement": r["statement"],
+            "goal_handle": r["goal_handle"],
+            "days_open": _days_since(r["updated_at"], now),
+            "activity": {"id": r["act_id"], "title": r["title"], "status": r["status"]},
+        }
+        strip_entity_id_inplace(item)
+        strip_entity_id_inplace(item["activity"])
+        sections["waiting" if live else "stale"].append(item)
+
+    return {
+        key: {"items": items[:limit], "count": len(items[:limit]), "total_count": len(items)}
+        for key, items in sections.items()
+    }
 
 
 def _collect_awaiting_human(*, limit: int, now: datetime) -> dict:

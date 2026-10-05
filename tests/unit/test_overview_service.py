@@ -305,7 +305,18 @@ class TestAwaitingHumanGoalConditions:
         assert section["goal_human_waiting"]["total_count"] == 0
         assert section["goal_human_stale"]["total_count"] == 0
 
-    def test_limit_truncates_items_but_not_total_count_and_oldest_first(self, temp_db):
+    def test_waived_human_condition_is_not_listed(self, temp_db):
+        act = _make_activity(status="in_progress")
+        self._goal(act, "g-waived", [
+            {"statement": "不要", "actor": "human", "state": "waived", "note": "不要になった"},
+        ])
+
+        section = ov.get_overview()["awaiting_human"]
+
+        assert section["goal_human_waiting"]["total_count"] == 0
+        assert section["goal_human_stale"]["total_count"] == 0
+
+    def test_limit_truncates_items_but_not_total_count(self, temp_db):
         act = _make_activity(status="in_progress")
         self._goal(act, "g-many", [{"statement": f"c{i}", "actor": "human"} for i in range(3)])
 
@@ -313,6 +324,40 @@ class TestAwaitingHumanGoalConditions:
 
         assert waiting["count"] == 2
         assert waiting["total_count"] == 3
+
+    def test_items_are_ordered_oldest_condition_first(self, temp_db):
+        act = _make_activity(status="in_progress")
+        self._goal(act, "g-order", [
+            {"statement": "new", "actor": "human"},
+            {"statement": "old", "actor": "human"},
+        ])
+        conn = get_connection()
+        try:
+            conn.execute("UPDATE goal_conditions SET updated_at = ? WHERE statement = 'old'", (_days_ago(5),))
+            conn.execute("UPDATE goal_conditions SET updated_at = ? WHERE statement = 'new'", (_days_ago(1),))
+            conn.commit()
+        finally:
+            conn.close()
+
+        items = ov.get_overview()["awaiting_human"]["goal_human_waiting"]["items"]
+
+        assert [i["statement"] for i in items] == ["old", "new"]
+
+    def test_goal_with_several_activities_lists_each_condition_once(self, temp_db):
+        from src.services.goal_service import set_goal
+        done = _make_activity(title="done one", status="in_progress")
+        self._goal(done, "g-multi", [{"statement": "人が見る", "actor": "human"}])
+        live = _make_activity(title="live one", status="in_progress")
+        goal_id = get_connection().execute("SELECT id FROM goals WHERE handle='g-multi'").fetchone()["id"]
+        assert "error" not in set_goal(live, {"goal_id": goal_id})
+        update_activity(done, status="completed")
+
+        section = ov.get_overview()["awaiting_human"]
+
+        waiting = section["goal_human_waiting"]
+        assert waiting["total_count"] == 1
+        assert waiting["items"][0]["activity"]["title"] == "live one"
+        assert section["goal_human_stale"]["total_count"] == 0
 
 
 class TestAwaitingHumanMetaVisibility:
