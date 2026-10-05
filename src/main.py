@@ -1565,7 +1565,7 @@ def check_in(
 
     Returns:
         5つの枠（anchor: {activity, pinned} / control: {goal, asks,
-        dependencies} / context: {topics, activities, decisions, latest_log,
+        decision_candidates, dependencies} / context: {topics, activities, decisions, latest_log,
         materials} / catalog: {logs, map} / env: {tag_notes, hints, coverage,
         session, flow_guide}）に分けて返す。中身が空の枠・キーは省く
         （anchor.activity・control.goal・env.coverage・env.sessionは常に置く）。
@@ -1573,6 +1573,8 @@ def check_in(
         control.goalは終了条件の現在状態と次の一手（next）を1件返す（未定義=
         undefined・不要印=not_needed・goal付き=active|judge_ready|closed）。
         control.asks.awaiting_triageが1件以上あればtriage_askで振り分けること。
+        control.decision_candidatesは記録役が退避した閉じていない決定事項の候補
+        （guideに閉じ方がある。decisionと結ぶかretractすると出なくなる）。
         env.session.alias_collisionがtrueならユーザーに伝えること。
         応答全体が10,000字を超えるとtruncatedキーが付く（cuts[].sectionは
         "anchor.pinned"のようなドット区切りパス）。control・env.tag_notesは
