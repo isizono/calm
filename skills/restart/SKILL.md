@@ -35,7 +35,7 @@ MCPサーバーの再起動が終わった直後、自分自身もまだ `/mcp` 
 - 各bgを `claude stop <id>` で止め、`claude respawn <id>` で会話を引き継いだまま起こし直す（依頼文の再送は不要）。respawnで短い参照(id)が変わることがあるので、`SendMessage` は新しい参照へ「`get_config` を呼んで疎通を確認して」と伝える
 - `claude stop` がauto modeのclassifierに止められたら、迂回せずユーザーに `! claude stop <id>` を頼む
 - 前の節で控えた、生きている窓口の名前を「`/mcp` の再接続が要る窓口」としてユーザーに示す
-- 控えた担い手のうち生きている窓口には、`SendMessage` で「bgを起こし直した」と伝える
+- 控えた担い手のうち生きている窓口（担い手欄の`sessionId`が一致し`pid`がある行。宛先はその行の今の`name`）には、`SendMessage` で「bgを起こし直した」と伝える
 
 ## 結果の報告
 

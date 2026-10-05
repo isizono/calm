@@ -75,7 +75,7 @@ _TEMPLATE = """あなたはCALMのアクティビティ「{activity_title}」の
 
 ## 完了したら
 3・4で控えた親のorchアクティビティへadd_logsで報告を書く。書く内容は、PR番号・CIの状態・自分で判断したこと・残っていること。
-そのあとget_by_idsでそのアクティビティの説明の担い手欄(名前とsessionId)を読み、`claude agents --json`でそのsessionIdと名前の両方が一致する行にpidがあれば、その行のnameへSendMessageで「orchのログに報告を書いた」と要旨を知らせる。空席・死んでいる・送れないときは知らせを省く。
+そのあとget_by_idsでそのアクティビティの説明の担い手欄(sessionId)を読み、`claude agents --json`でそのsessionIdが一致しpidがある行を探す（名前は照合に使わない。複数あればstartedAtが最も新しい行）。あれば、その行の今のnameへSendMessageで「orchのログに報告を書いた」と要旨を知らせる。空席・死んでいる・送れないときは知らせを省く。
 報告のあとは次の指示を待ち、自分から終わらない。
 """
 
