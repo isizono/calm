@@ -1,10 +1,19 @@
 name: Test
 
 on:
+  push:
+    branches: [main]
   pull_request:
     # edited を含めるのは、CI fail 後に PR 本文へ例外マーカー
     # ([no-schema-shape-change] 等) を追記したとき lint-docs を再実行させるため。
     types: [opened, synchronize, reopened, edited]
+
+# 同一PRへの連続pushで古いrunを止める。PR本文の編集(edited)は別groupにし、
+# 編集のたびに実行中のコード変更のrunをキャンセルしないようにする。
+# main の push run は uv キャッシュの保存まで走り切らせるためキャンセルしない
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.action == 'edited' && 'edited' || 'code' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -28,7 +37,7 @@ jobs:
         uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
-          # uv キャッシュの保存は migration-lint ジョブだけが行う(復元のみ)。
+          # uv キャッシュの保存は doc-gen-drift ジョブだけが行う(復元のみ)。
           # 全ジョブのキャッシュキーが同一のため、並列保存すると
           # "Unable to reserve cache" で競合する
           save-cache: false
@@ -41,6 +50,7 @@ jobs:
         run: uv run pytest -v --tb=short -n auto --durations=25 ${{ matrix.path }}
 
   lint-docs:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
 
     steps:
@@ -53,7 +63,7 @@ jobs:
         uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
-          save-cache: false  # 保存は migration-lint のみ(上記 test ジョブのコメント参照)
+          save-cache: false  # 保存は doc-gen-drift のみ(上記 test ジョブのコメント参照)
           python-version: "3.12"
 
       - name: Install dependencies
@@ -78,7 +88,9 @@ jobs:
         uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
-          save-cache: false  # 保存は migration-lint のみ(上記 test ジョブのコメント参照)
+          save-cache: true
+          # push(main)でもPRでも走り、テスト結果に左右されず失敗しにくいため保存役にする。
+          # main で保存したキャッシュだけが他のPRのrunから復元できる
           python-version: "3.12"
 
       - name: Install dependencies
@@ -91,6 +103,9 @@ jobs:
         run: uv run python scripts/dump_db_schema.py --check
 
   test-pyramid:
+    # HEAD^1 は pull_request のマージコミットの第一親(base側)を指す前提のため、
+    # push では走らせない
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -102,7 +117,7 @@ jobs:
         uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
-          save-cache: false  # 保存は migration-lint のみ(上記 test ジョブのコメント参照)
+          save-cache: false  # 保存は doc-gen-drift のみ(上記 test ジョブのコメント参照)
           python-version: "3.12"
 
       - name: Check every tests/ subdirectory is referenced by a CI job
@@ -120,10 +135,11 @@ jobs:
           TMPDIR: ${{ runner.temp }}
         run: |
           python3 scripts/check_test_removal.py \
-            --base ${{ github.event.pull_request.base.sha }} \
-            --head ${{ github.event.pull_request.head.sha }}
+            --base HEAD^1 \
+            --head HEAD
 
   migration-lint:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -135,9 +151,7 @@ jobs:
         uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
-          # test.yml / pr-size.yml を通じて uv キャッシュを保存する唯一のジョブ。
-          # uv sync --frozen を実行し、テスト結果に左右されず失敗しにくいため保存役にする
-          save-cache: true
+          save-cache: false  # 保存は doc-gen-drift のみ(上記 test ジョブのコメント参照)
           python-version: "3.12"
 
       - name: Install dependencies
