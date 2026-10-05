@@ -202,16 +202,29 @@ def detect_harness_by_ancestry(pids: list[int]) -> str | None:
     どちらも見つからなければ None（判定不能）。
     """
     for pid in pids:
-        if cli_session.read_cli_session(pid) is not None:
-            return HARNESS_CLAUDE_CODE
-        name = _get_process_name(pid)
-        if name is None:
-            continue
-        if name == _CLAUDE_PROCESS_NAME:
-            return HARNESS_CLAUDE_CODE
-        if _CODEX_PROCESS_NAME_RE.match(name):
-            return HARNESS_CODEX
+        harness = _classify_agent_cli(pid)
+        if harness is not None:
+            return harness
     return None
+
+
+def _classify_agent_cli(pid: int) -> str | None:
+    """pid がエージェント CLI 本体ならその種別、そうでなければ None。"""
+    if cli_session.read_cli_session(pid) is not None:
+        return HARNESS_CLAUDE_CODE
+    name = _get_process_name(pid)
+    if name is None:
+        return None
+    if name == _CLAUDE_PROCESS_NAME:
+        return HARNESS_CLAUDE_CODE
+    if _CODEX_PROCESS_NAME_RE.match(name):
+        return HARNESS_CODEX
+    return None
+
+
+def nearest_agent_cli_pid(pids: list[int]) -> int | None:
+    """自分に近い順の祖先 pid 列から、最も近いエージェント CLI 本体の pid を返す。"""
+    return next((p for p in pids if _classify_agent_cli(p) is not None), None)
 
 
 def _registration_path(pid: int) -> Path:
