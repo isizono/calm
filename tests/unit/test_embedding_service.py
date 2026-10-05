@@ -1359,7 +1359,26 @@ def test_start_server_redirects_stderr_to_file(temp_db, monkeypatch, tmp_path):
     assert emb._start_server() is sentinel
     assert captured["stderr"] is not subprocess.DEVNULL
     assert captured["stderr"].name == str(log_path)
+    assert captured["stderr"].closed  # withを抜けたらcloseされる
     assert log_path.exists()
+
+
+def test_start_server_stderr_log_appends_and_truncates_over_limit(temp_db, monkeypatch, tmp_path):
+    """stderrログ: 通常は先行の出力を残して追記し、上限超過時のみ空にしてから書く"""
+    log_path = tmp_path / "embedding-server.stderr.log"
+    monkeypatch.setattr(emb, "_SERVER_STDERR_LOG_PATH", log_path)
+
+    log_path.write_text("previous crash\n")
+    with emb._resolve_server_stderr_target() as f:
+        f.write(b"new output\n")
+    text = log_path.read_text()
+    assert text.startswith("previous crash\n")
+    assert "--- spawn " in text and text.endswith("new output\n")
+
+    monkeypatch.setattr(emb, "_SERVER_STDERR_LOG_MAX_BYTES", 5)
+    with emb._resolve_server_stderr_target():
+        pass
+    assert "previous crash" not in log_path.read_text()
 
 
 def test_start_server_falls_back_to_devnull_when_stderr_log_unavailable(temp_db, monkeypatch, tmp_path):

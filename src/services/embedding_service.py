@@ -155,18 +155,26 @@ def _is_server_running() -> bool:
 _SERVER_STDERR_LOG_PATH = Path("~/.cache/cc-memory/embedding-server.stderr.log")
 
 
+_SERVER_STDERR_LOG_MAX_BYTES = 1024 * 1024
+
+
 @contextlib.contextmanager
 def _resolve_server_stderr_target():
     """embedding_serverのstderr先を開いて渡す。準備に失敗したらDEVNULLにフォールバックする。
 
     ロガー設定前に落ちるimportエラー等はembedding-server.logに残らず、こちらにしか
-    残らない。肥大しないよう起動のたびに上書きする。診断用ログの用意の失敗は
-    サーバー起動を止める理由にしない。
+    残らない。生きている先行プロセスがまだ書いている可能性があるため追記で開き、
+    起動ごとに区切り行を入れる。肥大は上限超過時のみ起動時にtruncateして防ぐ。
+    診断用ログの用意の失敗はサーバー起動を止める理由にしない。
     """
     try:
         path = _SERVER_STDERR_LOG_PATH.expanduser()
         path.parent.mkdir(parents=True, exist_ok=True)
-        stderr_log = open(path, "wb")
+        if path.exists() and path.stat().st_size > _SERVER_STDERR_LOG_MAX_BYTES:
+            path.write_bytes(b"")
+        stderr_log = open(path, "ab")
+        stderr_log.write(f"--- spawn {time.strftime('%Y-%m-%dT%H:%M:%S%z')} ---\n".encode())
+        stderr_log.flush()
     except OSError as e:
         logger.warning(f"Failed to prepare embedding server stderr log, falling back to DEVNULL: {e}")
         yield subprocess.DEVNULL
