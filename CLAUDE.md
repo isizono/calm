@@ -29,7 +29,8 @@ calmはローカルディレクトリをmarketplaceとして登録しており�
    - 別 worktree が main を握っていれば `git worktree remove <path>` で開放（対象 worktree に未コミット変更が残っているとコマンドが失敗するため、先に stash / commit してから実行する）
    - その上で `git checkout main`
    - 理由: 手順 7 のサーバー起動は cwd 配下のコードで動くため、メインディレクトリが main 以外だとプラグインキャッシュ（main 由来）とサーバー本体（別ブランチ由来）のミスマッチで動作不整合が起きる
-2. `git pull origin main`
+2. `git pull origin main` の後、`uv sync` で依存を同期する
+   - 理由: マージで依存が増えていた場合、同期しないまま手順7で起動するとサーバーが `ModuleNotFoundError` で起動直後に落ちる（例: #820 で追加された `psutil`）
 3. マージ済みworktreeを削除: `git worktree remove .trees/<name>`（対象 worktree に未コミット変更が残っているとコマンドが失敗するため、先に stash / commit してから実行する）
 4. ローカルブランチを削除: `git branch -D <branch>`
 5. プラグインキャッシュを削除: `rm -rf ~/.claude/plugins/cache/calm-marketplace/`
