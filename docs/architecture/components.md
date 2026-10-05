@@ -158,7 +158,7 @@ graph TB
 ### 3.4 埋め込み
 
 - `src/services/embedding_service.py`: アプリ側からembedding取得を呼ぶクライアント
-- `src/infra/embedding_server.py`: モデル保持・encodeを1プロセスに集約するHTTPサーバー（localhost:52836、リクエストTTL 3600秒/drain idle 30秒/drain deadline 1800秒でgraceful shutdown、いずれもenv varで調整可、モデル `cl-nagoya/ruri-v3-70m`）。横断インフラ寄りだが本体はストア層が読むため §3 にも記載
+- `src/infra/embedding_server.py`: モデル保持・encodeを1プロセスに集約するHTTPサーバー（localhost:52836、モデル `cl-nagoya/ruri-v3-70m`）。`KeyboardInterrupt`で終了するか、`restart_service.py`の`stop_embedding_server`から強制停止される。横断インフラ寄りだが本体はストア層が読むため §3 にも記載
 
 ### 3.5 公開IF
 
@@ -184,9 +184,12 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 | `hooks/hook_state.py`（`clear`サブコマンド） | SessionStart（`*`） | 前セッションの状態ファイルをクリア |
 | `hooks/session_start_hook.py` | SessionStart（`*`） | habits投影ファイルの鮮度検証+縮退フォールバック、アクティビティダッシュボード注入、鮮度警告 |
 | `hooks/sanitize_backfill_hook.py` | SessionStart（`*`） | 直近transcriptの差分backfill（生ID参照を`{{cite:...}}`へ変換） |
+| `hooks/recorder_autostart_hook.py` | SessionStart（`*`） | `CALM_RECORDER=1`のとき記録役セッションを自動で付ける |
 | `hooks/user_prompt_submit_hook.py` | UserPromptSubmit（`*`） | 未消費nudge・ask通知の system-reminder 注入 |
+| `hooks/feedback_hook.py` | UserPromptSubmit・PreToolUse・PostToolUseFailure（いずれも`*`） | フィードバック機構（1ファイルで3イベントを処理） |
 | `hooks/stop_hook.py` | Stop（`*`） | transcript差分抽出→events.jsonl追記、check-in判定、nudge発火判定、heartbeat更新 |
 | `hooks/preblock_hook.py` | PreToolUse（`*`） | tool_inputに含まれる内部ID表記のリテラルをblock（`deny`） |
+| `hooks/deny_nested_bg_hook.py` | PreToolUse（`Bash`） | bgセッションからの`claude --bg`起動（入れ子bg）を拒否 |
 | `hooks/sanitize_tool_result_hook.py` | PostToolUse（`*`。calmツール以外は素通し） | calm tool_resultの生ID参照を`{{cite:...}}`へ変換して返す |
 | `hooks/ask_answer_rewake_hook.py` | PostToolUse（`mcp__.*calm__add_ask`、`asyncRewake`） | `add_ask`直後にaskのstatus変化をポーリングし、回答されたらidleセッションを起こす |
 | `hooks/message_display_id_titles.py` | MessageDisplay（`*`） | assistant発話中の内部ID表記の直後にエンティティタイトルを差し込み、稼働セッションのCLI表示名を`<Session: 表示名>`へ置き換えて表示（表示のみ、transcript/contextは無加工） |
@@ -197,6 +200,8 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 - `hooks/hook_transcript.py`: transcriptの差分抽出
 - `hooks/heartbeat.py`: `stop_hook`から呼ばれるheartbeat更新の隔離モジュール（独立したhookイベントではない）
 - `hooks/readable_id_format.py` / `hooks/signal_capture.py` / `hooks/citation_event_log.py` / `hooks/ask_notify_section.py`: 上記hookエントリポイントから共通利用されるヘルパーモジュール
+- `hooks/recorder_marker.py`: 記録役セッションの目印ファイル管理。記録役が付いているセッションではStop hookの記録催促を抑制する
+- `hooks/recorder_watch.py`: 記録役セッションの見張り（Stop hook、asyncRewake）。プラグイン共通の`hooks/hooks.json`には登録せず、記録役の実行ディレクトリにだけ動的生成されたsettings.json経由でサブプロセス起動される
 
 ### 4.2 skills/
 
@@ -345,6 +350,6 @@ graph LR
 4. **プロトコル層が薄い**: 独立した型/スキーマ定義モジュールがなく、エンティティ型はDBスキーマと各serviceの返却dictで表現される。型レベル規律が弱い
 5. **retract連鎖の未完**: `retract_service` が論理削除を立てるが、search_index物理クリーンアップなし、material/topic/activityにretracted_at列なし、関連pin/relationの扱いが未統一（`docs/spec-v0.md` §2.2）
 6. **HintService単一窓口の不在**: nudge発火源（hooks/各種、harness_service、checkin_tier_serviceのrecompose hints、tag_service経由のtag-notes）が並走しており、しきい値・状態管理がバラバラ。recompose系・logs_sparse系・direction_overflow系・activity_cleanup系・notes_over_budget系のhintは`hint_service`（`get_hints`/`get_hints_with_conn`）に統一済み（#422、2026-06-21）。ただしfollow_up_after_decision/record_missingはevents.jsonl状態が必要なため引き続きStop hookが個別生成しており、nudge発火源の完全な一元化には至っていない
-7. **効果測定基盤の不在**: 検索のスコアリング・nudgeの効果・タグ付与の精度を測定する仕組みがない（`docs/spec-v0.md` §6 T-D）。search_telemetry導入が処方箋候補
+7. **効果測定基盤の読み手不在**: `search_telemetry`（migration 0041/0054で導入済み、検索結果は書込済み）を読んで検索のスコアリング・nudgeの効果・タグ付与の精度を測定する経路がない（`docs/spec-v0.md` §6 T-D）
 
 各課題の詳細・処方箋候補は5次元統合レポート本文（calm material、要参照）と `docs/spec-v0.md` §6 横断テーマを参照のこと。
