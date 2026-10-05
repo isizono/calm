@@ -2,7 +2,13 @@
 import pytest
 from src.db import get_connection
 from src.services import goal_service as gs
-from src.services.activity_service import add_activity, update_activity, get_activities
+from src.services.activity_service import (
+    ACTIVITY_DESC_MAX_LEN,
+    add_activity,
+    get_activities,
+    update_activity,
+)
+from src.services.topic_service import DESC_ELLIPSIS
 
 
 DEFAULT_TAGS = ["domain:test"]
@@ -471,34 +477,48 @@ class TestUpdateActivityGoalHint:
 class TestDescriptionTruncationGuard:
     """一覧で切ったdescriptionの印と上書きガード"""
 
-    LONG = "あ" * 150 + "い" * 100  # 250字
+    LONG = "あ" * 150 + "い" * 100  # ACTIVITY_DESC_MAX_LENを超える
 
-    def _make(self, description):
+    def _make(self, description, title="long"):
         return add_activity(
-            title="long", description=description, tags=DEFAULT_TAGS, check_in=False
+            title=title, description=description, tags=DEFAULT_TAGS, check_in=False
         )["activity_id"]
 
     def test_list_marks_only_truncated_items(self, temp_db):
-        self._make(self.LONG)
-        self._make("short")
-        items = {a["description"][:5]: a for a in get_activities()["activities"]}
-        long_item = items["あああああ"]
-        assert long_item["description_truncated"] is True
-        assert long_item["description"] == self.LONG[:200] + "…"
+        self._make(self.LONG, title="long")
+        self._make("short", title="short")
+        items = {a["title"]: a for a in get_activities()["activities"]}
+        assert items["long"]["description_truncated"] is True
+        assert items["long"]["description"] == self.LONG[:ACTIVITY_DESC_MAX_LEN] + DESC_ELLIPSIS
         assert "description_truncated" not in items["short"]
 
-    def test_truncated_value_rejected_and_nothing_written(self, temp_db):
+    def test_boundary_exactly_max_len_is_not_marked(self, temp_db):
+        self._make("x" * ACTIVITY_DESC_MAX_LEN, title="exact")
+        self._make("x" * (ACTIVITY_DESC_MAX_LEN + 1), title="over")
+        items = {a["title"]: a for a in get_activities()["activities"]}
+        assert "description_truncated" not in items["exact"]
+        assert items["over"]["description_truncated"] is True
+
+    @pytest.mark.parametrize("decorate", [
+        lambda t: t + DESC_ELLIPSIS,
+        lambda t: t,
+        lambda t: " " + t + DESC_ELLIPSIS + "\n",
+    ])
+    def test_truncated_value_rejected_and_nothing_written(self, temp_db, decorate):
         aid = self._make(self.LONG)
-        result = update_activity(aid, description=self.LONG[:200] + "…")
+        result = update_activity(aid, description=decorate(self.LONG[:ACTIVITY_DESC_MAX_LEN]))
         assert result["error"]["code"] == "VALIDATION_ERROR"
         row = get_connection().execute(
             "SELECT description FROM activities WHERE id = ?", (aid,)
         ).fetchone()
         assert row["description"] == self.LONG
 
-    def test_full_text_and_short_lookalike_accepted(self, temp_db):
+    def test_full_text_accepted(self, temp_db):
         aid = self._make(self.LONG)
         assert "error" not in update_activity(aid, description=self.LONG + "追記")
-        short_id = self._make("x" * 200)
-        # 現在値が200字以内なら、先頭200字＋省略記号でも正当な新値として通す
-        assert "error" not in update_activity(short_id, description="x" * 200 + "…")
+
+    def test_not_rejected_when_current_value_is_within_max_len(self, temp_db):
+        # 現在値が上限ちょうどなら切られていないので、同じ先頭部分でも正当な新値
+        current = "x" * ACTIVITY_DESC_MAX_LEN
+        aid = self._make(current)
+        assert "error" not in update_activity(aid, description=current + DESC_ELLIPSIS)

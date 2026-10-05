@@ -31,9 +31,8 @@ logger = logging.getLogger(__name__)
 
 # get_activitiesでdescriptionを切り詰める上限文字数
 ACTIVITY_DESC_MAX_LEN = 200
-# 切り詰めたdescriptionの末尾に足す省略記号
-DESC_ELLIPSIS = "…"
 from src.config import ACTIVITIES_BUDGET_CHARS, HEARTBEAT_TIMEOUT_MINUTES, SNOOZE_DURATION_DAYS
+from src.services.topic_service import DESC_ELLIPSIS
 from src.services.response_budget import BudgetPolicy, CutStep
 # DB格納可能なステータス値
 REAL_STATUSES = {"pending", "in_progress", "completed", "snoozed", "shelved"}
@@ -678,8 +677,8 @@ def update_activity(
         activity_id: アクティビティID
         status: 新しいステータス（optional）
         title: 新しいタイトル（optional、35字以内）
-        description: 新しい説明（optional）。現在値の先頭200字＋省略記号と一致する値
-            （get_activitiesが切って返した形）はVALIDATION_ERRORで拒否する
+        description: 新しい説明（optional）。現在値の先頭200字（末尾の省略記号・前後の空白は
+            無視）と一致する値（get_activitiesが切って返した形）はVALIDATION_ERRORで拒否する
         tags: 新しいタグ配列（optional、指定時は全置換。1個以上必須）
         closed_by: activityを閉じた意思の主体（"user"|"claude"|"external"）。
             status="completed"と同時のときだけ受け付ける。省略時、紐づくgoalが
@@ -807,7 +806,8 @@ def update_activity(
         if (
             description is not None
             and len(current_description) > ACTIVITY_DESC_MAX_LEN
-            and description == current_description[:ACTIVITY_DESC_MAX_LEN] + DESC_ELLIPSIS
+            and description.strip().removesuffix(DESC_ELLIPSIS)
+            == current_description[:ACTIVITY_DESC_MAX_LEN]
         ):
             return {
                 "error": {

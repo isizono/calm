@@ -404,7 +404,7 @@ tag notesの指定セクションを資材へ逐語退避し、notesを縮小す
 
 **副作用**: snoozed状態のアクティビティにstatusを指定せず他フィールドのみ更新すると、自動的にstatus="pending"へ復活する。
 
-**descriptionの上書きガード**: 渡された`description`が現在値の先頭200字＋`…`（`get_activities`が切って返す形）と一致し、かつ現在値が200字を超えるとき、何も変更せず`VALIDATION_ERROR`を返す。
+**descriptionの上書きガード**: 渡された`description`が現在値の先頭200字（末尾の`…`・前後の空白は無視して比較。`get_activities`が切って返す形）と一致し、かつ現在値が200字を超えるとき、何も変更せず`VALIDATION_ERROR`を返す。
 
 **closed_by/closed_reason**: completedでないactivityをcompletedにする呼び出しでだけ`closed_at`・`closed_by`・`closed_reason`を書く（既にcompletedのactivityにstatus="completed"を渡しても書き換えない）。`closed_by`引数を省略し、紐づくgoalが判定済みなら`"goal_judge"`がサーバー側で書かれ、`closed_reason`も省略時は`goals.judge_note`が使われる。それ以外で省略時は`closed_by`はNULL（不明）になる。`"goal_judge"`自体は引数としては受け付けない（VALIDATION_ERROR）。
 

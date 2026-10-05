@@ -1163,7 +1163,7 @@ def update_activity(
     - アクティビティを棚上げする: update_activity(activity_id, status="shelved")
     - タイトル変更: update_activity(activity_id, title="新しいタイトル")
     - 説明更新: update_activity(activity_id, description="新しい説明")
-      （get_activitiesが切って返した値＝現在値の先頭200字＋「…」はVALIDATION_ERRORで拒否する。
+      （get_activitiesが切って返した値＝現在値の先頭200字（末尾の「…」・前後の空白は無視）はVALIDATION_ERRORで拒否する。
       書き換える前はget_by_idsで全文を取る）
     - タグ変更: update_activity(activity_id, tags=["domain:calm", "intent:implement"])
 
