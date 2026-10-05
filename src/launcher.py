@@ -1132,6 +1132,9 @@ def _start_parent_watchdog(targets: list[psutil.Process]) -> None:
                 logger.warning("Parent process is gone; exiting launcher")
                 if sys.platform == "win32":
                     # WindowsのSIGTERM送信はTerminateProcess相当でハンドラもatexitも走らない
+                    killer = threading.Timer(SHUTDOWN_DEADLINE_SEC, _force_exit)
+                    killer.daemon = True
+                    killer.start()
                     _cleanup()
                     os._exit(0)
                 os.kill(os.getpid(), signal.SIGTERM)

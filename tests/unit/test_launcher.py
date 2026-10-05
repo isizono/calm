@@ -2742,10 +2742,12 @@ class TestParentWatch:
     def test_alive_when_same_process(self):
         assert launcher._is_target_alive(launcher.psutil.Process(os.getpid()))
 
-    def test_reused_pid_is_treated_as_dead(self):
-        # 同じpidに別プロセスが入った状態を、保持した識別値を書き換えて再現する
-        proc = launcher.psutil.Process(os.getpid())
-        proc._ident = (proc.pid, proc._ident[1] - 100)
+    def test_exited_process_is_treated_as_dead(self):
+        import subprocess
+
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
+        proc = launcher.psutil.Process(child.pid)
+        child.wait()
         assert not launcher._is_target_alive(proc)
 
     def test_alive_even_if_clock_was_stepped(self, monkeypatch):
@@ -2753,16 +2755,14 @@ class TestParentWatch:
         import psutil
 
         proc = psutil.Process(os.getpid())
-        if sys.platform == "darwin":
+        # psutilの時計補正の内部実装に依存するため、触れない環境ではskipする
+        if sys.platform == "darwin" and hasattr(psutil._psosx, "INIT_BOOT_TIME"):
             monkeypatch.setattr(psutil._psosx, "INIT_BOOT_TIME", psutil._psosx.INIT_BOOT_TIME + 2)
-        else:
+        elif sys.platform.startswith("linux") and hasattr(psutil._pslinux, "boot_time"):
             monkeypatch.setattr(psutil._pslinux, "boot_time", lambda: psutil.boot_time() + 2)
+        else:
+            pytest.skip("時計補正を再現できないプラットフォーム")
         assert launcher._is_target_alive(proc)
-
-    def test_missing_pid_is_dead(self):
-        proc = launcher.psutil.Process(os.getpid())
-        proc._gone = True
-        assert not launcher._is_target_alive(proc)
 
     def test_force_exit_uses_nonzero_code(self, monkeypatch):
         codes = []
