@@ -84,6 +84,5 @@ class TestAddDecisionsPropagateToTagNoteScopeNote:
 
 class TestRulesTagNotesConvention:
     def test_rules_mentions_notes_are_for_caution_only(self):
-        from src.main import RULES
-
-        assert "notesは取扱注意のみ" in RULES
+        desc = _all_tool_descriptions()["update_tag"]
+        assert "行動を変える取扱注意のみ" in desc
