@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from typing import Optional
 
 from src.db import get_connection
 from src.services.feedback_rules import (
@@ -102,8 +101,8 @@ def _row_to_entry(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
 
 
 def get_feedback_entries(
-    name: Optional[str] = None,
-    query: Optional[str] = None,
+    name: str | None = None,
+    query: str | None = None,
     include_deleted: bool = False,
 ) -> dict:
     conn = get_connection()
@@ -139,7 +138,7 @@ def _require_body(body) -> str:
     return body
 
 
-def _check_ref(ref) -> Optional[str]:
+def _check_ref(ref) -> str | None:
     if ref is not None and (not isinstance(ref, str) or len(ref) > REF_MAX_LEN):
         raise _Rejected(_reject("VALIDATION_ERROR", f"ref は{REF_MAX_LEN}字以内の文字列"))
     return ref
@@ -238,12 +237,12 @@ def _apply_create(conn: sqlite3.Connection, name, existing, body, ref, strength,
 def write_feedback_entry(
     name: str,
     action: str,
-    body: Optional[str] = None,
-    ref: Optional[str] = None,
-    strength: Optional[str] = None,
-    timing: Optional[str] = None,
+    body: str | None = None,
+    ref: str | None = None,
+    strength: str | None = None,
+    timing: str | None = None,
     condition=None,
-    read_mark: Optional[int] = None,
+    read_mark: int | None = None,
 ) -> dict:
     if action not in ("create", "update", "delete"):
         return _reject("VALIDATION_ERROR", f"action は create/update/delete のいずれか: {action}")

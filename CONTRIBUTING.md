@@ -21,10 +21,12 @@ cd calm
 uv sync
 ```
 
-コミット前チェックに [pre-commit](https://pre-commit.com/) を使っています（`.pre-commit-config.yaml`）。`main` への直接コミットもこのフックで防止されます。
+コミット前チェックに [pre-commit](https://pre-commit.com/) を使っています（`.pre-commit-config.yaml`）。`main` への直接コミットもこのフックで防止されます。lint には [ruff](https://docs.astral.sh/ruff/) を使っており、設定は `pyproject.toml` の `[tool.ruff]` にあります。CI の `pre-commit` ジョブでも同じフックを全ファイルに実行します。
 
 ```bash
 pre-commit install
+# 手元で全ファイルを検査する場合
+uv run ruff check .
 ```
 
 ## ブランチと worktree

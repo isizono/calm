@@ -5,7 +5,7 @@ tests/unit/test_search_health_service.py が check_search_health() 自体の閾�
 再起動しても重複しないdedup）をin-process importで検証する。
 """
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from hooks import session_start_hook
 from src.db import get_connection
@@ -15,7 +15,7 @@ def _seed_many(conn, count: int, *, degraded: bool, qe_expansions: list, start_d
                step_seconds: float = 1.0) -> None:
     for i in range(count):
         days_ago = start_days_ago - (i * step_seconds) / 86400
-        ts = (datetime.now(timezone.utc) - timedelta(days=days_ago)).strftime("%Y-%m-%d %H:%M:%S.%f")
+        ts = (datetime.now(UTC) - timedelta(days=days_ago)).strftime("%Y-%m-%d %H:%M:%S.%f")
         diagnostics = {"degraded": degraded, "qe_expansions": qe_expansions}
         conn.execute(
             "INSERT INTO search_telemetry (query, parameters, result_count, diagnostics_json, timestamp) "

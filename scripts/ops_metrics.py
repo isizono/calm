@@ -18,7 +18,6 @@ import json
 import sqlite3
 import sys
 from pathlib import Path
-from typing import Optional
 
 # プロジェクトルートをパスに追加（src.db等の参照用）
 _project_root = Path(__file__).resolve().parents[1]
@@ -61,7 +60,7 @@ def _connect(db_path: str) -> sqlite3.Connection:
     return conn
 
 
-def _fetch_signals(conn: sqlite3.Connection, kind: str, window_days: Optional[int]) -> list[dict]:
+def _fetch_signals(conn: sqlite3.Connection, kind: str, window_days: int | None) -> list[dict]:
     """指定 kind の signal_events 行を取得し、context/refs を JSON パースして返す。
 
     window_days が None のときは全期間、指定時は first_seen_at が
@@ -86,14 +85,14 @@ def _fetch_signals(conn: sqlite3.Connection, kind: str, window_days: Optional[in
     return result
 
 
-def _rate(numerator: int, denominator: int) -> Optional[float]:
+def _rate(numerator: int, denominator: int) -> float | None:
     """denominator が 0 のとき None（N/A）を返し、ゼロ除算を避ける。"""
     if denominator == 0:
         return None
     return numerator / denominator
 
 
-def _contradiction_metrics(conn: sqlite3.Connection, window_days: Optional[int]) -> dict:
+def _contradiction_metrics(conn: sqlite3.Connection, window_days: int | None) -> dict:
     """矛盾イベント数と resolution 内訳を返す。"""
     rows = _fetch_signals(conn, "contradiction", window_days)
     by_resolution = {res: 0 for res in _CONTRADICTION_RESOLUTIONS}
@@ -109,7 +108,7 @@ def _contradiction_metrics(conn: sqlite3.Connection, window_days: Optional[int])
 
 def _rollback_metrics(
     conn: sqlite3.Connection,
-    window_days: Optional[int],
+    window_days: int | None,
     boundary_rows: list[dict],
 ) -> dict:
     """巻き戻し率 = rollback件数 / boundary_case(mode=live, machine_verdict=post_veto_candidate)件数。
@@ -189,7 +188,7 @@ def _count_applied_citations(packages: list[dict]) -> int:
     return total
 
 
-def _pull_metrics(conn: sqlite3.Connection, window_days: Optional[int], packages: Optional[list[dict]]) -> dict:
+def _pull_metrics(conn: sqlite3.Connection, window_days: int | None, packages: list[dict] | None) -> dict:
     """pull miss 件数 / hit率。--packages-file 未供給時は件数のみ返す。"""
     miss_rows = _fetch_signals(conn, "precedent_miss", window_days)
     result: dict = {"miss_count": len(miss_rows), "no_writer_code": "precedent_miss" in _NO_WRITER_CODE_KINDS}
@@ -200,7 +199,7 @@ def _pull_metrics(conn: sqlite3.Connection, window_days: Optional[int], packages
     return result
 
 
-def _misapplied_metrics(conn: sqlite3.Connection, window_days: Optional[int], packages: Optional[list[dict]]) -> dict:
+def _misapplied_metrics(conn: sqlite3.Connection, window_days: int | None, packages: list[dict] | None) -> dict:
     """誤類推件数 / 誤類推率。--packages-file 未供給時は件数のみ返す。"""
     misapplied_rows = _fetch_signals(conn, "precedent_misapplied", window_days)
     result: dict = {
@@ -229,7 +228,7 @@ def _goal_tables_exist(conn: sqlite3.Connection) -> bool:
     return row["c"] == 3
 
 
-def _goal_metrics(conn: sqlite3.Connection, window_days: Optional[int]) -> Optional[dict]:
+def _goal_metrics(conn: sqlite3.Connection, window_days: int | None) -> dict | None:
     """goal機構の観測: 差し戻し回数・判定件数・誤判定率・放置件数。
 
     goal は活動と異なり時系列のイベントログではなく現在の状態そのもの
@@ -279,7 +278,7 @@ def _goal_metrics(conn: sqlite3.Connection, window_days: Optional[int]) -> Optio
     }
 
 
-def _fetch_rows(conn: sqlite3.Connection, table: str, timestamp_col: str, window_days: Optional[int]) -> list[dict]:
+def _fetch_rows(conn: sqlite3.Connection, table: str, timestamp_col: str, window_days: int | None) -> list[dict]:
     """telemetryテーブルの全カラムをdictの一覧で返す（signal_eventsのcontext/refsのような
     JSONカラムのパースは呼び出し側に委ねる。テーブルごとにパース対象カラムが異なるため）。
     """
@@ -291,7 +290,7 @@ def _fetch_rows(conn: sqlite3.Connection, table: str, timestamp_col: str, window
     return [dict(row) for row in conn.execute(query, params).fetchall()]
 
 
-def _search_telemetry_metrics(conn: sqlite3.Connection, window_days: Optional[int]) -> dict:
+def _search_telemetry_metrics(conn: sqlite3.Connection, window_days: int | None) -> dict:
     """search_telemetry の縮退率（ベクトル検索利用不可率）とクエリ拡張発火率。
 
     diagnostics_json（migration 0054以降のみ記録、旧行はNULL）が無い行は
@@ -328,7 +327,7 @@ def _search_telemetry_metrics(conn: sqlite3.Connection, window_days: Optional[in
 _PRECEDENT_GUARANTEES = ("enumerated", "routing_miss", "routing_unavailable")
 
 
-def _precedent_telemetry_metrics(conn: sqlite3.Connection, window_days: Optional[int]) -> dict:
+def _precedent_telemetry_metrics(conn: sqlite3.Connection, window_days: int | None) -> dict:
     """precedent_telemetry のguarantee内訳（routingの当たり外れ）と列挙カバレッジ。
 
     カバレッジ(full_count/decisions_total)はguarantee=enumeratedかつdecisions_total>0の
@@ -356,7 +355,7 @@ def _precedent_telemetry_metrics(conn: sqlite3.Connection, window_days: Optional
     }
 
 
-def _fetch_follow_metrics(conn: sqlite3.Connection, window_days: Optional[int]) -> dict:
+def _fetch_follow_metrics(conn: sqlite3.Connection, window_days: int | None) -> dict:
     """search_telemetry の検索結果が同一セッションの fetch_telemetry で後から取得された
     割合（追随率）。migrations/0054 が定める生データの意図通り、caller_session_id で
     post-hocにJOINする。
@@ -424,7 +423,7 @@ def _fetch_follow_metrics(conn: sqlite3.Connection, window_days: Optional[int]) 
 _CITATION_VERIFICATION_RESULTS = ("exists", "dangling", "skip")
 
 
-def _citation_event_log_metrics(conn: sqlite3.Connection, window_days: Optional[int]) -> dict:
+def _citation_event_log_metrics(conn: sqlite3.Connection, window_days: int | None) -> dict:
     """citation_event_log の検証結果（verification_result）内訳。
 
     verification_resultは`{{cite:X#NNN}}`参照先の存在確認結果。NULL（未検証、
@@ -443,7 +442,7 @@ def _citation_event_log_metrics(conn: sqlite3.Connection, window_days: Optional[
     return {"count": len(rows), "by_verification_result": by_result}
 
 
-def _guard_block_metrics(conn: sqlite3.Connection, window_days: Optional[int]) -> dict:
+def _guard_block_metrics(conn: sqlite3.Connection, window_days: int | None) -> dict:
     """hookのdeny判定が記録したguard_block signalの件数を(hook, 規則)単位で集計する。
 
     signal_eventsのdedupは同一(kind, source, summary)の再発をoccurrence_count加算
@@ -470,8 +469,8 @@ def _guard_block_metrics(conn: sqlite3.Connection, window_days: Optional[int]) -
 
 def compute_metrics(
     db_path: str,
-    window_days: Optional[int] = 30,
-    packages: Optional[list[dict]] = None,
+    window_days: int | None = 30,
+    packages: list[dict] | None = None,
 ) -> dict:
     """signal_events (+ 供給時は packages) を読み、率指標の突合集計結果を返す。
 
@@ -513,7 +512,7 @@ def compute_metrics(
         conn.close()
 
 
-def load_packages(packages_file: Optional[str]) -> Optional[list[dict]]:
+def load_packages(packages_file: str | None) -> list[dict] | None:
     """--packages-file を読み込みパースする。未指定時は None を返す。
 
     ファイルは go-package 機械可読ブロックの JSON 配列でなければならない。
@@ -529,7 +528,7 @@ def load_packages(packages_file: Optional[str]) -> Optional[list[dict]]:
     return data
 
 
-def _format_rate(value: Optional[float]) -> str:
+def _format_rate(value: float | None) -> str:
     return "N/A" if value is None else f"{value:.1%}"
 
 
@@ -640,7 +639,7 @@ def format_text(metrics: dict) -> str:
     return "\n".join(lines)
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "signal_events + go-package抽出データの突合集計"

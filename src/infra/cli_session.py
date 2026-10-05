@@ -8,8 +8,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, Optional
 
 from src.env_compat import env_get
 from src.infra.lock_file import is_process_alive
@@ -23,7 +23,7 @@ def sessions_dir() -> Path:
     return Path(raw).expanduser() if raw else Path.home() / ".claude" / "sessions"
 
 
-def read_cli_session(pid: int) -> Optional[dict]:
+def read_cli_session(pid: int) -> dict | None:
     """``<pid>.json`` を読み、CLI セッションの表示情報を返す。
 
     次のいずれかに該当したら None を返す:
@@ -57,7 +57,7 @@ def read_cli_session(pid: int) -> Optional[dict]:
     }
 
 
-def find_cli_session(pids: Iterable[int]) -> Optional[dict]:
+def find_cli_session(pids: Iterable[int]) -> dict | None:
     """pid 列を先頭から順に見て、最初に解決できた CLI セッションを返す。
 
     呼び出し側は「自分に近い順」で pid を渡すこと。claude が claude を起動する

@@ -55,8 +55,8 @@ def _isolate_session_registry_files(tmp_path, monkeypatch):
     無隔離だと実行環境の~/.cc-memory/session_aliases.jsonや~/.claude/sessionsを
     読みにいき、テストがホストマシンの実セッション状態に依存し非決定的になる。
     """
-    from src.services.session_registry_service import REGISTRY_PATH_ENV
     from src.infra.cli_session import CLAUDE_SESSIONS_DIR_ENV
+    from src.services.session_registry_service import REGISTRY_PATH_ENV
 
     monkeypatch.setenv(REGISTRY_PATH_ENV, str(tmp_path / "session_aliases.json"))
     monkeypatch.setenv(CLAUDE_SESSIONS_DIR_ENV, str(tmp_path / "claude-sessions"))

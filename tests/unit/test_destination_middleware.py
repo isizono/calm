@@ -21,14 +21,17 @@ import pytest
 from fastmcp.tools.tool import ToolResult
 
 import src.config as config
+import src.middleware.destination_middleware as destination_middleware
 from src.db import get_connection
+from src.middleware.destination_middleware import DestinationCandidateMiddleware
 from src.services.activity_service import add_activity, update_activity
 from src.services.discussion_log_service import add_logs
 from src.services.goal_service import set_goal
 from src.services.topic_service import add_topic
-import src.middleware.destination_middleware as destination_middleware
-from src.middleware.destination_middleware import DestinationCandidateMiddleware
-from tests.helpers import register_alive_heartbeat_session, register_dead_heartbeat_session
+from tests.helpers import (
+    register_alive_heartbeat_session,
+    register_dead_heartbeat_session,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -245,7 +248,7 @@ class TestTriggerGating:
             called = []
             monkeypatch.setattr(
                 destination_middleware, "_fetch_candidates",
-                lambda *_a, **_k: (called.append(True) or []),
+                lambda *_a, **_k: (called.append(True) or []),  # noqa: B023 (同じループ内で即時に呼ばれる)
             )
             middleware = DestinationCandidateMiddleware()
             tool_result = ToolResult(structured_content={"goal": {"label": "judge_ready", "goal_id_raw": 1}})

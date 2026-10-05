@@ -1,15 +1,14 @@
 """データベース接続と初期化を管理するモジュール"""
 import hashlib
-import sqlite3
-import os
 import logging
+import os
+import sqlite3
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import sqlite_vec
-from yoyo import read_migrations
-from yoyo import default_migration_table
+from yoyo import default_migration_table, read_migrations
 from yoyo.backends import SQLiteBackend
 from yoyo.connections import parse_uri
 
@@ -58,7 +57,7 @@ def verify_sqlite_vec() -> None:
 
         try:
             conn.enable_load_extension(True)
-        except AttributeError:
+        except AttributeError as exc:
             logger.error(
                 "sqlite-vec startup check failed: "
                 "enable_load_extension() exists but is not callable.\n"
@@ -67,7 +66,7 @@ def verify_sqlite_vec() -> None:
                 "  brew install python@3.12\n"
                 "  UV_PYTHON=/opt/homebrew/opt/python@3.12/bin/python3.12 uv sync"
             )
-            raise SystemExit(1)
+            raise SystemExit(1) from exc
 
         # Step 2: sqlite_vec.load()の成否チェック（パターンB: ネイティブ拡張非互換）
         try:
@@ -80,7 +79,7 @@ def verify_sqlite_vec() -> None:
                 "Fix: reinstall sqlite-vec or use a compatible Python build.\n"
                 "  UV_PYTHON=/opt/homebrew/opt/python@3.12/bin/python3.12 uv sync"
             )
-            raise SystemExit(1)
+            raise SystemExit(1) from e
         finally:
             conn.enable_load_extension(False)
     finally:
@@ -440,9 +439,9 @@ def dry_run_migrations(db_path: str, pending) -> DryRunResult:
     未宣言（`-- destructive:`ヘッダ無し）のmigrationが含まれる場合は失敗扱いにする
     （意図しないデータ破壊と宣言済みのデータ整理を区別する）。
     """
+    from scripts.migration_lint import lint_files
     from src.config import SNAPSHOT_ANOMALY_THRESHOLD
     from src.services.backup_service import HEALTH_CHECK_TABLES, get_row_counts
-    from scripts.migration_lint import lint_files
 
     if not pending:
         return DryRunResult(ok=True)

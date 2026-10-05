@@ -1,7 +1,7 @@
 """エンティティの取り消し（retract）管理サービス"""
 import logging
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from src.db import get_connection
 from src.services import embedding_service
@@ -229,7 +229,7 @@ def retract(entity_type: str, ids: list[int], undo: bool = False) -> dict:
                 else:
                     # retract: retracted_at IS NULLの場合のみ更新 + search index物理削除
                     if row["retracted_at"] is None:
-                        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                        now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
                         conn.execute(
                             f"UPDATE {table} SET retracted_at = ? WHERE id = ?",
                             (now, entity_id),

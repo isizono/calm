@@ -2,13 +2,12 @@
 import pytest
 
 from src.services.activity_service import add_activity
-from src.services.topic_service import add_topic
-from src.services.relation_service import add_relation
-from src.services.discussion_log_service import get_logs
 from src.services.decision_service import get_decisions
+from src.services.discussion_log_service import get_logs
+from src.services.relation_service import add_relation
 from src.services.retract_service import retract
-from tests.helpers import add_log, add_decision
-
+from src.services.topic_service import add_topic
+from tests.helpers import add_decision, add_log
 
 DEFAULT_TAGS = ["domain:test"]
 
@@ -45,7 +44,7 @@ class TestGetLogsTopicType:
 
         assert "error" not in result
         assert len(result["logs"]) == 2
-        titles = [l["title"] for l in result["logs"]]
+        titles = [log["title"] for log in result["logs"]]
         assert "ログ1" in titles
         assert "ログ2" in titles
 
@@ -72,7 +71,7 @@ class TestGetLogsTopicType:
         tid = topic["topic_id"]
         l1 = add_log(topic_id=tid, title="ログ1", content="内容1")
         l2 = add_log(topic_id=tid, title="ログ2", content="内容2")
-        l3 = add_log(topic_id=tid, title="ログ3", content="内容3")
+        add_log(topic_id=tid, title="ログ3", content="内容3")
 
         first_log_id = l1["log_id"]
         second_log_id = l2["log_id"]
@@ -83,7 +82,7 @@ class TestGetLogsTopicType:
         assert "error" not in result
         assert len(result["logs"]) == 2
         # α化により id は文字列 "title (#N)"、元の整数 ID は id_raw に退避
-        ids = [l["id_raw"] for l in result["logs"]]
+        ids = [log["id_raw"] for log in result["logs"]]
         assert first_log_id not in ids
         assert second_log_id in ids
 
@@ -124,7 +123,7 @@ class TestGetLogsActivityType:
 
         assert "error" not in result
         assert len(result["logs"]) == 2
-        titles = {l["title"] for l in result["logs"]}
+        titles = {log["title"] for log in result["logs"]}
         assert "T1ログ" in titles
         assert "T2ログ" in titles
 
@@ -172,7 +171,7 @@ class TestGetLogsActivityType:
         assert "error" not in result
         # l2とl1が返る（l3はl2より大きいIDなので除外）
         # α化により id は文字列 "title (#N)"、元の整数 ID は id_raw に退避
-        ids = [l["id_raw"] for l in result["logs"]]
+        ids = [log["id_raw"] for log in result["logs"]]
         assert l3["log_id"] not in ids
         assert l2["log_id"] in ids
         assert l1["log_id"] in ids
@@ -247,7 +246,7 @@ class TestGetDecisionsTopicType:
         tid = topic["topic_id"]
         d1 = add_decision(decision="決定1", reason="理由1", topic_id=tid)
         d2 = add_decision(decision="決定2", reason="理由2", topic_id=tid)
-        d3 = add_decision(decision="決定3", reason="理由3", topic_id=tid)
+        add_decision(decision="決定3", reason="理由3", topic_id=tid)
 
         second_id = d2["decision_id"]
 

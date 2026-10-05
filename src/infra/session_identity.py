@@ -36,9 +36,8 @@ import os
 import re
 import subprocess
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 import psutil
 
@@ -96,10 +95,10 @@ def _sessions_dir() -> Path:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _ephemeral_session_id() -> Optional[str]:
+def _ephemeral_session_id() -> str | None:
     """MCP context から呼び出しセッションの session_id を取得する（ephemeral）。
 
     MCP のツール実行コンテキスト外（テスト等）では None を返す。
@@ -112,7 +111,7 @@ def _ephemeral_session_id() -> Optional[str]:
         return None
 
 
-def get_caller_session_id() -> Optional[str]:
+def get_caller_session_id() -> str | None:
     """呼び出し元の識別子を解決する。
 
     launcher.py 経由（X-Calm-Bridge-Session-Id ヘッダ、無ければ旧名の
@@ -137,7 +136,7 @@ def get_caller_session_id() -> Optional[str]:
     return _ephemeral_session_id()
 
 
-def _get_ppid(pid: int) -> Optional[int]:
+def _get_ppid(pid: int) -> int | None:
     """指定 pid の親 pid を取得する。
 
     標準ライブラリには移植可能な ppid 取得手段が無いため psutil に頼る
@@ -168,7 +167,7 @@ def ancestor_pids(pid: int, max_depth: int = _MAX_ANCESTOR_DEPTH) -> list[int]:
     return result
 
 
-def _get_process_name(pid: int) -> Optional[str]:
+def _get_process_name(pid: int) -> str | None:
     """`ps` 経由で指定 pid の実行ファイル名（basename）を取得する。
 
     取得できない場合（プロセス消滅・`ps` 不在・タイムアウト等）は None。
@@ -188,7 +187,7 @@ def _get_process_name(pid: int) -> Optional[str]:
     return os.path.basename(raw) or None
 
 
-def detect_harness_by_ancestry(pids: list[int]) -> Optional[str]:
+def detect_harness_by_ancestry(pids: list[int]) -> str | None:
     """自分に近い順の祖先 pid 列から、最も近いエージェント CLI の種別を返す。
 
     Claude Code の Bash ツールから `codex exec` を起動するような入れ子構成では、
@@ -240,8 +239,8 @@ def _gc_stale_launcher_registrations() -> None:
 
 
 def register_launcher_session(
-    session_id: str, pid: Optional[int] = None, harness: Optional[str] = None
-) -> Optional[Path]:
+    session_id: str, pid: int | None = None, harness: str | None = None
+) -> Path | None:
     """launcher 起動時に自身の登録ファイルを書く。
 
     `harness` には launcher を起動したエージェント CLI の種別を記録する。
@@ -288,7 +287,7 @@ def register_launcher_session(
         return None
 
 
-def unregister_launcher_session(pid: Optional[int] = None) -> None:
+def unregister_launcher_session(pid: int | None = None) -> None:
     """launcher 終了時に自身の登録ファイルを削除する（存在しなくても無害）。"""
     pid = pid if pid is not None else os.getpid()
     try:
@@ -297,7 +296,7 @@ def unregister_launcher_session(pid: Optional[int] = None) -> None:
         logger.warning(f"Failed to remove launcher session registration: {e}")
 
 
-def _load_registration(path: Path) -> Optional[dict]:
+def _load_registration(path: Path) -> dict | None:
     """登録ファイルを読み込み、型・生存確認を通ったデータのみ返す。
 
     壊れた JSON・想定外の型・pid が死んでいる登録は None（呼び出し側は
@@ -321,7 +320,7 @@ def _load_registration(path: Path) -> Optional[dict]:
     return data
 
 
-def resolve_identity_by_ancestry(pid: Optional[int] = None) -> Optional[str]:
+def resolve_identity_by_ancestry(pid: int | None = None) -> str | None:
     """自プロセスの祖先 pid チェーンから、同じ Claude Code CLI プロセスを
     親に持つ launcher の identity（session_id）を解決する。
 
@@ -369,7 +368,7 @@ def resolve_identity_by_ancestry(pid: Optional[int] = None) -> Optional[str]:
     return eligible[0][1]
 
 
-def find_launcher_registration(session_id: str) -> Optional[dict]:
+def find_launcher_registration(session_id: str) -> dict | None:
     """bridge session id に対応する launcher 登録ファイルの中身を返す。
 
     生存していない launcher の登録は無視する（GC は register 側
@@ -396,7 +395,7 @@ def find_launcher_registration(session_id: str) -> Optional[dict]:
     return None
 
 
-def resolve_cli_session(session_id: str) -> Optional[dict]:
+def resolve_cli_session(session_id: str) -> dict | None:
     """bridge session id から、その呼び出し元 Claude Code CLI プロセスの
     表示情報（name / cli_session_id / cwd / cli_status）を解決する。
 

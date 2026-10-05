@@ -2253,7 +2253,7 @@ class TestMainRetryLoop:
             # 実時間を待たずに再現するため即座にTimeoutErrorを送出する。
             if hasattr(aw, "close"):
                 aw.close()
-            raise asyncio.TimeoutError()
+            raise TimeoutError()
 
         monkeypatch.setattr(launcher.asyncio, "wait_for", no_op_wait_for)
 
@@ -2292,7 +2292,7 @@ class TestMainRetryLoop:
                 sleep_values.append(timeout)
             if hasattr(aw, "close"):
                 aw.close()
-            raise asyncio.TimeoutError()
+            raise TimeoutError()
 
         monkeypatch.setattr(launcher.asyncio, "wait_for", tracking_wait_for)
         return sleep_values

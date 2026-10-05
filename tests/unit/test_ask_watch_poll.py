@@ -144,8 +144,8 @@ def test_main_skips_tick_on_query_failure_without_resetting_prev(monkeypatch, ca
     def fake_snapshot(db_path):
         try:
             return next(snapshots)
-        except StopIteration:
-            raise RuntimeError("stop loop")
+        except StopIteration as exc:
+            raise RuntimeError("stop loop") from exc
 
     monkeypatch.setattr(poll, "_snapshot", fake_snapshot)
 

@@ -4,7 +4,7 @@
 COALESCE/MAX()の落とし穴回帰検出、副作用ゼロ、
 引数バリデーション、limitの丸めと切り詰めを検証する。
 """
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -44,11 +44,11 @@ def _utc_str(dt: datetime) -> str:
 
 
 def _minutes_ago(minutes: int) -> str:
-    return _utc_str(datetime.now(timezone.utc) - timedelta(minutes=minutes))
+    return _utc_str(datetime.now(UTC) - timedelta(minutes=minutes))
 
 
 def _days_ago(days: int) -> str:
-    return _utc_str(datetime.now(timezone.utc) - timedelta(days=days))
+    return _utc_str(datetime.now(UTC) - timedelta(days=days))
 
 
 def _set_updated_at(activity_id: int, value: str) -> None:
@@ -158,7 +158,7 @@ class TestWorkingSection:
 
     def test_pending_without_heartbeat_is_not_working(self, temp_db):
         """pendingは鮮度だけでは拾わない(_IS_LIVE側の分岐でしかworkingに入らない)。"""
-        act = _make_activity(status="pending")
+        _make_activity(status="pending")
 
         result = ov.get_overview()
 
@@ -184,7 +184,7 @@ def _frozen_datetime_class(frozen_now: datetime) -> type:
 class TestRecentlyDoneSection:
     def test_completed_within_days_included_with_correct_days_ago(self, temp_db, monkeypatch):
         """基準時刻をfreezeし、実時刻との差分ではなく固定値に対してdays_agoを検証する。"""
-        frozen_now = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        frozen_now = datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
         act = _make_activity(status="completed")
         _set_updated_at(act, _utc_str(frozen_now - timedelta(days=2)))
 
@@ -209,7 +209,7 @@ class TestRecentlyDoneSection:
         assert result["recently_done"]["total_count"] == 0
 
     def test_items_include_domains_field(self, temp_db):
-        act = _make_activity(status="completed", tags=["domain:calm", "domain:infra"])
+        _make_activity(status="completed", tags=["domain:calm", "domain:infra"])
 
         result = ov.get_overview()
 
@@ -246,7 +246,7 @@ class TestAwaitingHumanSection:
         ask_service.add_ask("q", tags=["domain:test"], blocks=[act])
 
         result = ov._collect_awaiting_human(
-            limit=20, now=datetime.now(timezone.utc) + timedelta(days=5)
+            limit=20, now=datetime.now(UTC) + timedelta(days=5)
         )
 
         assert result["items"][0]["days_open"] == 5
@@ -483,7 +483,7 @@ class TestExpiredSnoozedDisplayedAsPendingInBacklog:
         assert _get_status(act) == "snoozed"
 
     def test_unexpired_snoozed_still_counted_under_snoozed(self, temp_db):
-        act = _make_activity(status="snoozed")
+        _make_activity(status="snoozed")
 
         result = ov.get_overview()
 
@@ -568,13 +568,13 @@ class TestExhaustiveClassification:
         fresh_in_progress = _make_activity(status="in_progress")
         stale_in_progress = _make_activity(status="in_progress")
         _set_updated_at(stale_in_progress, _days_ago(ov.DEFAULT_DAYS + 1))
-        pending_act = _make_activity(status="pending")
+        _make_activity(status="pending")
         snoozed_act = _make_activity(status="snoozed")
         # heartbeat生存中でもworking対象statusではないためbacklogに残ることを
         # この網羅性テストでも確認する(TestWorkingBacklogStatusSymmetryの単体
         # ケースと合わせて、母集団カウントの側でも回帰を検出できるようにする)
         _set_heartbeat(snoozed_act, _minutes_ago(1))
-        shelved_act = _make_activity(status="shelved")
+        _make_activity(status="shelved")
         recent_completed = _make_activity(status="completed")
 
         result = ov.get_overview(days=7, limit=100)

@@ -16,7 +16,6 @@ from src.services.supersede_service import (
 from src.services.topic_service import add_topic
 from tests.helpers import add_decision
 
-
 DEFAULT_TAGS = ["domain:test"]
 
 

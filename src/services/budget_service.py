@@ -9,7 +9,6 @@ allocate_decision_budget は precedent_pull_service の既存配分ロジック�
 予算値はハードコードせず src.config から読む。
 """
 import sqlite3
-from typing import Optional
 
 from src.config import (
     CHECKIN_BUDGET_CHARS,
@@ -45,8 +44,8 @@ def compute_allocation_order(
     decision_by_id: dict[int, dict],
     supersede_map: dict[int, dict],
     *,
-    topic_rank: Optional[dict[int, int]] = None,
-    owner_of: Optional[dict[int, int]] = None,
+    topic_rank: dict[int, int] | None = None,
+    owner_of: dict[int, int] | None = None,
 ) -> list[int]:
     """allocate_decision_budget が本文展開の優先順位付けに使う配分順を返す。
 
@@ -74,8 +73,8 @@ def allocate_decision_budget(
     supersede_map: dict[int, dict],
     budget_chars: int,
     *,
-    topic_rank: Optional[dict[int, int]] = None,
-    owner_of: Optional[dict[int, int]] = None,
+    topic_rank: dict[int, int] | None = None,
+    owner_of: dict[int, int] | None = None,
 ) -> tuple[set[int], int]:
     """配分順（topicの関連度順 → 同topic内は非superseded→新しい順 → superseded→
     新しい順。topic_rank/owner_of省略時はtopic順を考慮しない）に予算内へ
@@ -111,7 +110,7 @@ def count_entities_for_topics(
     source_type: str,
     topic_ids: list[int],
     retract_filter: str,
-    id_bound: Optional[tuple[str, int]] = None,
+    id_bound: tuple[str, int] | None = None,
 ) -> int:
     """topic_ids にbelongs_toするエンティティ件数（DISTINCTで重複除外）を返す。
 

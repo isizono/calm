@@ -25,15 +25,14 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 import src.config as _config
 from src.db import get_connection
 from src.env_compat import CANONICAL_PREFIX, env_names
-from src.services.discussion_log_service import add_logs
 from src.services.decision_service import add_decisions
+from src.services.discussion_log_service import add_logs
 from src.services.retract_service import retract
 from src.services.search_service import SearchContext
 from src.services.tag_service import _TAG_NOTES_RATCHET_CEILING
@@ -142,9 +141,9 @@ def make_search_context(**overrides) -> SearchContext:
 
 def add_log(
     topic_id: int,
-    title: Optional[str] = None,
+    title: str | None = None,
     content: str = "",
-    tags: Optional[list[str]] = None,
+    tags: list[str] | None = None,
 ) -> dict:
     """単件のログ追加（add_logsのラッパー）。旧add_logと同じ戻り値形式を返す。"""
     item = {"topic_id": topic_id, "content": content}
@@ -168,7 +167,7 @@ def add_decision(
     decision: str,
     reason: str,
     topic_id: int,
-    tags: Optional[list[str]] = None,
+    tags: list[str] | None = None,
 ) -> dict:
     """単件の決定事項追加（add_decisionsのラッパー）。旧add_decisionと同じ戻り値形式を返す。"""
     item = {"topic_id": topic_id, "decision": decision, "reason": reason}
@@ -209,9 +208,9 @@ def retract_decision(decision_id: int) -> dict:
 def session_start_hook_env(
     db_path: str,
     *,
-    extra_env: Optional[dict] = None,
-    env_remove: Optional[list] = None,
-    habits_rules_path: Optional[str] = None,
+    extra_env: dict | None = None,
+    env_remove: list | None = None,
+    habits_rules_path: str | None = None,
 ):
     """hooks/session_start_hook.py をsubprocess起動する際のenvを組み立てるcontext manager。
 
@@ -275,10 +274,10 @@ def session_start_hook_env(
 def run_session_start_hook(
     db_path: str,
     *,
-    extra_env: Optional[dict] = None,
-    env_remove: Optional[list] = None,
-    stdin_payload: Optional[dict] = None,
-    habits_rules_path: Optional[str] = None,
+    extra_env: dict | None = None,
+    env_remove: list | None = None,
+    stdin_payload: dict | None = None,
+    habits_rules_path: str | None = None,
 ) -> dict:
     """session_start_hook.pyを`[sys.executable, ...]`で実行しstdoutのJSONを返す。
 
@@ -309,7 +308,7 @@ def run_hook_subprocess(
     hook_relpath: str,
     stdin_text: str,
     *,
-    extra_env: Optional[dict] = None,
+    extra_env: dict | None = None,
 ) -> subprocess.CompletedProcess:
     """任意のhookスクリプトを`[sys.executable, <hook_relpath>]`でsubprocess起動する。
 
@@ -333,10 +332,10 @@ def run_hook_subprocess(
 def run_session_start_hook_process(
     db_path: str,
     *,
-    extra_env: Optional[dict] = None,
-    env_remove: Optional[list] = None,
-    stdin_payload: Optional[dict] = None,
-    habits_rules_path: Optional[str] = None,
+    extra_env: dict | None = None,
+    env_remove: list | None = None,
+    stdin_payload: dict | None = None,
+    habits_rules_path: str | None = None,
 ) -> subprocess.CompletedProcess:
     """session_start_hook.pyを実行し、生のCompletedProcess（stdout/stderr/returncode）を返す。
 
@@ -375,12 +374,12 @@ def _write_registry_entry(session_id: str, pid: int) -> None:
         data = json.loads(path.read_text(encoding="utf-8"))
     data["sessions"][session_id] = {
         "cli_pid": pid,
-        "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "updated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
 
-def register_alive_heartbeat_session(session_id: str, pid: Optional[int] = None) -> int:
+def register_alive_heartbeat_session(session_id: str, pid: int | None = None) -> int:
     """session_id を「生存中の打刻主」として扱わせる実ファイルを書く。
 
     is_session_alive はCLIセッションファイル（~/.claude/sessions/<pid>.json

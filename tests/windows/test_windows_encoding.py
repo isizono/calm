@@ -23,7 +23,12 @@ from pathlib import Path
 import pytest
 
 from tests.helpers import session_start_hook_env
-from tests.windows.support import REPO_ROOT, isolated_env, load_mcp_launcher_command, run_with_timeout
+from tests.windows.support import (
+    REPO_ROOT,
+    isolated_env,
+    load_mcp_launcher_command,
+    run_with_timeout,
+)
 
 _INIT_DB_SCRIPT = "from src.db import init_database; init_database(); print('OK')"
 
@@ -215,13 +220,13 @@ def _assert_hook_output_is_utf8_json(result, hook_name: str, error_marker: str) 
         except UnicodeDecodeError as e:
             raise AssertionError(
                 f"{hook_name} stdout is not valid UTF-8: {stdout_bytes!r} ({e})"
-            )
+            ) from e
         try:
             data = json.loads(stdout_text)
         except json.JSONDecodeError as e:
             raise AssertionError(
                 f"{hook_name} stdout is not valid JSON once decoded as UTF-8: {stdout_text!r} ({e})"
-            )
+            ) from e
         assert isinstance(data, dict)
 
     stderr_text = result.stderr_text()

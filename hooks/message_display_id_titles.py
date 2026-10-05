@@ -251,7 +251,7 @@ def _fetch_display(conn: sqlite3.Connection, code: str, id_int: int) -> str | No
 
 
 def _wrap(
-    match: "object",
+    match: object,
     code: str,
     id_int: int,
     cache: dict[tuple[str, int], str | None],

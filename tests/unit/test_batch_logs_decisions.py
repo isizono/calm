@@ -2,17 +2,16 @@
 
 V1-V10 の受け入れ基準をカバーする。
 """
-import pytest
+
 import numpy as np
-from unittest.mock import patch
+import pytest
 
-from src.db import get_connection, execute_query
-from src.services.topic_service import add_topic
-from src.services.discussion_log_service import add_logs
-from src.services.decision_service import add_decisions
 import src.services.embedding_service as emb
+from src.db import execute_query, get_connection
+from src.services.decision_service import add_decisions
+from src.services.discussion_log_service import add_logs
+from src.services.topic_service import add_topic
 from tests.helpers import assert_no_write_errors
-
 
 EMBEDDING_DIM = 384
 DEFAULT_TAGS = ["domain:test"]
@@ -90,7 +89,7 @@ class TestV1BatchSuccess:
         assert len(result["created"]) == 3
         assert len(result["errors"]) == 0
 
-        for i, c in enumerate(result["created"]):
+        for _i, c in enumerate(result["created"]):
             assert c["decision_id"] > 0
             # レスポンス軽量化: decision_idのみ含まれる
             assert "topic_id" not in c

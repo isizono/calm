@@ -4,7 +4,6 @@ SessionStart/UserPromptSubmit両hookが共有する、tracked_ask_ids（HookStat
 get_asksで直接照会して表示・消費するロジックを、実DB + 実HookStateファイルで
 検証する（identity解決には一切触れない経路であることの確認も兼ねる）。
 """
-from pathlib import Path
 
 import pytest
 

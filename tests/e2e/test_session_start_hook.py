@@ -14,7 +14,7 @@ import json
 import os
 import shutil
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -24,7 +24,11 @@ from src.db import get_connection
 from tests.helpers import (
     register_alive_heartbeat_session,
     register_dead_heartbeat_session,
+)
+from tests.helpers import (
     run_session_start_hook as _run_session_start_hook,
+)
+from tests.helpers import (
     run_session_start_hook_process as _run_session_start_hook_process,
 )
 
@@ -605,7 +609,7 @@ class TestSessionStartHookTier2AndFixedNav:
         """旧統計行（他: ... → check_in・get_activitiesで確認）は出力されない"""
         _seed_activity("[作業] 優先タスク", status="in_progress")
         stale_id = _seed_activity("[作業] 古いpending", status="pending")
-        old_iso = (datetime.now(timezone.utc) - timedelta(days=45)).strftime(
+        old_iso = (datetime.now(UTC) - timedelta(days=45)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         _set_updated_at(stale_id, old_iso)
@@ -621,7 +625,7 @@ class TestSessionStartHookTier2AndFixedNav:
         """in_progressでもpinnedでもないpending（7日超はもちろん7日以内でも）
         は階層2に入らず、末尾『未表示』節のdomain内訳にのみ反映される"""
         excluded_id = _seed_activity("[作業] 古すぎタスク", status="pending")
-        old_iso = (datetime.now(timezone.utc) - timedelta(days=45)).strftime(
+        old_iso = (datetime.now(UTC) - timedelta(days=45)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         _set_updated_at(excluded_id, old_iso)
@@ -692,7 +696,7 @@ class TestSessionStartHookTier2AndFixedNav:
 
 def _set_heartbeat(activity_id: int, session_id: str | None) -> None:
     """activity の heartbeat を「今」に更新し session_id を同梱する"""
-    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    now_iso = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     conn = get_connection()
     try:
         conn.execute(
@@ -870,7 +874,7 @@ class TestSessionStartHookTier1And2:
     ) -> int:
         """created_at / updated_at を N 日前に設定した activity を作成する"""
         activity_id = _seed_activity(title, status=status)
-        iso = (datetime.now(timezone.utc) - timedelta(days=days_ago)).strftime(
+        iso = (datetime.now(UTC) - timedelta(days=days_ago)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         _set_created_at(activity_id, iso)
@@ -1058,8 +1062,8 @@ class TestSessionStartHookOrchChildTree:
 
     def test_open_child_rendered_under_parent_via_subprocess(self, temp_db):
         """subprocess経由のhook実行でも、未完了の子が親の下にツリーで出る"""
-        from src.services import goal_service
         from hooks.session_start_hook import _LEGEND_LINE
+        from src.services import goal_service
 
         parent_id = _seed_activity("[統合] 親orch", status="in_progress")
         child_id = _seed_activity("[作業] 未着手の子", status="in_progress")

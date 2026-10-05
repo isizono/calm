@@ -1,23 +1,26 @@
 """議論ログ管理サービス"""
 import re
 import sqlite3
-from typing import Optional
+
 from src.db import get_connection, row_to_dict
+from src.services.budget_service import count_entities_for_topics
 from src.services.citations_service import (
     apply_and_writeback_conversions,
     upsert_citations_for_owner_with_conn,
 )
+from src.services.embedding_service import (
+    build_embedding_text,
+    generate_and_store_embedding,
+)
 from src.services.readable_id import strip_entity_id_inplace
-from src.services.budget_service import count_entities_for_topics
-from src.services.embedding_service import build_embedding_text, generate_and_store_embedding
+from src.services.relation_service import _add_relation_with_conn
 from src.services.tag_service import (
-    validate_and_parse_tags,
     ensure_tag_ids,
-    link_tags,
     get_effective_tags_batch,
     get_effective_tags_batch_by_ids,
+    link_tags,
+    validate_and_parse_tags,
 )
-from src.services.relation_service import _add_relation_with_conn
 
 
 def _auto_generate_title(content: str) -> str | None:
@@ -27,7 +30,7 @@ def _auto_generate_title(content: str) -> str | None:
     return title if title else None
 
 
-def add_logs(items: list[dict], caller_session_id: Optional[str] = None) -> dict:
+def add_logs(items: list[dict], caller_session_id: str | None = None) -> dict:
     """
     複数のログを一括追加する（最大10件）。
 
@@ -225,7 +228,7 @@ def _count_logs_for_topics(
     conn: sqlite3.Connection,
     topic_ids: list[int],
     log_retract_filter: str,
-    id_bound: Optional[tuple[str, int]] = None,
+    id_bound: tuple[str, int] | None = None,
 ) -> int:
     """topic_ids にbelongs_toするlog件数（DISTINCTで重複除外）を返す。
 
@@ -241,7 +244,7 @@ def _count_logs_for_topics(
 def get_logs(
     entity_type: str,
     entity_id: int,
-    start_id: Optional[int] = None,
+    start_id: int | None = None,
     limit: int = 30,
     include_retracted: bool = False,
 ) -> dict:

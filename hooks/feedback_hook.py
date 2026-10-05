@@ -24,7 +24,6 @@ import json
 import sqlite3
 import sys
 from pathlib import Path
-from typing import Optional
 
 _project_root = Path(__file__).resolve().parents[1]
 if str(_project_root) not in sys.path:
@@ -57,7 +56,7 @@ def _resolve_db_path() -> str:
     return env_get("CALM_DB_PATH", str(DEFAULT_DB_PATH))
 
 
-def _connect() -> Optional[sqlite3.Connection]:
+def _connect() -> sqlite3.Connection | None:
     """DB接続を試みる。失敗したらNone（呼び出し側でfail-open扱いする）。"""
     try:
         conn = sqlite3.connect(_resolve_db_path(), timeout=5.0)

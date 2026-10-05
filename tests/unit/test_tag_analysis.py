@@ -3,19 +3,18 @@ import math
 
 import pytest
 
+import src.services.embedding_service as emb
 from src.db import get_connection
-from src.services.topic_service import add_topic
 from src.services.activity_service import add_activity
-from src.services.tag_service import _TAG_NOTES_RATCHET_CEILING, update_tag
-from tests.helpers import add_log, add_decision, force_notes_over_ceiling
 from src.services.tag_analysis_service import (
-    analyze_tags,
-    calc_pmi,
     _find_clusters,
     _find_orphans,
+    analyze_tags,
+    calc_pmi,
 )
-import src.services.embedding_service as emb
-
+from src.services.tag_service import _TAG_NOTES_RATCHET_CEILING, update_tag
+from src.services.topic_service import add_topic
+from tests.helpers import add_decision, add_log, force_notes_over_ceiling
 
 DEFAULT_TAGS = ["domain:test"]
 
@@ -500,7 +499,7 @@ class TestIntegration:
 
     def test_cross_entity_co_occurrence(self, temp_db):
         """異なるエンティティタイプ間の共起が集計される"""
-        topic = add_topic(title="T1", description="D", tags=["domain:test", "arch", "design"])
+        add_topic(title="T1", description="D", tags=["domain:test", "arch", "design"])
         add_activity(title="A1", description="D", tags=["domain:test", "arch", "design"], check_in=False)
 
         result = analyze_tags()

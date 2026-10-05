@@ -47,7 +47,7 @@ def git_repo(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     (repo / "src.py").write_text("VALUE = 1\n", encoding="utf-8")
-    base = _commit_all(repo, "initial")
+    _commit_all(repo, "initial")
     return repo
 
 

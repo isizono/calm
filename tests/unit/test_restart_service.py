@@ -1162,7 +1162,6 @@ class TestPruneOrphanedPluginVersions:
         assert sibling.exists()
 
     def test_handles_missing_versions_root_gracefully(self, tmp_path):
-        lonely = tmp_path  # tmp_path自身をcurrentとして渡すと親はpytest管理外の実在パス
         # 親ディレクトリ自体が存在しないケースを模すため、存在しないパスの子を渡す
         current = tmp_path / "nonexistent_parent" / "calm-version"
 
@@ -1441,7 +1440,7 @@ class TestMainCli:
 
         try:
             restart_service.main()
-            assert False, "SystemExitが発生しなかった"
+            raise AssertionError("SystemExitが発生しなかった")
         except SystemExit as e:
             assert e.code == 1
 

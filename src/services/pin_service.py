@@ -1,7 +1,6 @@
 """エンティティのpin管理サービス"""
 import logging
 import sqlite3
-from typing import Optional, Union
 
 from src.db import get_connection
 from src.services.supersede_service import get_superseded_by_batch
@@ -41,7 +40,7 @@ def bump_updated_at_with_conn(conn: sqlite3.Connection, entity_type: str, entity
         conn.execute(f"UPDATE {table} SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (entity_id,))
 
 
-def _is_decision_superseded(conn: sqlite3.Connection, decision_id: int) -> Optional[int]:
+def _is_decision_superseded(conn: sqlite3.Connection, decision_id: int) -> int | None:
     """decisionがsupersedeされていれば、supersederのdecision_id（1件）を返す。
 
     複数のsupersederがある場合は最新の1件を返す（最新判定の tie-break は
@@ -111,8 +110,8 @@ def _transfer_pins_with_conn(
 
 
 def _resolve_ref(
-    conn: sqlite3.Connection, entity_type: str, ref: Union[int, str]
-) -> tuple[Optional[int], Optional[dict]]:
+    conn: sqlite3.Connection, entity_type: str, ref: int | str
+) -> tuple[int | None, dict | None]:
     """entity_type と ref から entity_id を解決する。
 
     tag かつ str の場合は parse_tag → resolve_tag_ids で解決する。
@@ -143,9 +142,9 @@ def _resolve_ref(
 def _add_pin_with_conn(
     conn: sqlite3.Connection,
     source_type: str,
-    source_ref: Union[int, str],
+    source_ref: int | str,
     target_type: str,
-    target_ref: Union[int, str],
+    target_ref: int | str,
     bump: bool = True,
 ) -> dict:
     """conn共有版: pinを追加する（source → target）。
@@ -287,9 +286,9 @@ def _add_pin_with_conn(
 
 def add_pin(
     source_type: str,
-    source_ref: Union[int, str],
+    source_ref: int | str,
     target_type: str,
-    target_ref: Union[int, str],
+    target_ref: int | str,
 ) -> dict:
     """pinを追加する（source → target）。
 
@@ -324,9 +323,9 @@ def add_pin(
 
 def remove_pin(
     source_type: str,
-    source_ref: Union[int, str],
+    source_ref: int | str,
     target_type: str,
-    target_ref: Union[int, str],
+    target_ref: int | str,
 ) -> dict:
     """pinを削除する（source → target）。
 

@@ -10,7 +10,14 @@ update_activity・check_in が goal 機構と接続する main.py 側の薄い�
 tests/unit/test_update_activity.py が担う。
 """
 from src.db import get_connection
-from src.main import check_in, set_goal, update_activity, update_goal, judge_goal, get_goal
+from src.main import (
+    check_in,
+    get_goal,
+    judge_goal,
+    set_goal,
+    update_activity,
+    update_goal,
+)
 from src.services.activity_service import add_activity
 
 

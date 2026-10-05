@@ -15,7 +15,6 @@ import sys
 from pathlib import Path
 
 import pytest
-import yaml
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
@@ -47,7 +46,6 @@ from scripts.go_package import (  # noqa: E402
     render_yaml_block,
     run_gate_check,
 )
-
 
 # ---------------------------------------------------------------------------
 # ヘルパー

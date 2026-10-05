@@ -72,7 +72,7 @@ def _set_instance(instance_id="team-a"):
 
 
 def _read(path: str) -> str:
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         return f.read()
 
 
@@ -85,7 +85,7 @@ def _split_frontmatter(text: str) -> tuple[dict, str]:
 
 
 def _load_manifest(bundle_path: str) -> dict:
-    with open(os.path.join(bundle_path, "manifest.yaml"), "r", encoding="utf-8") as f:
+    with open(os.path.join(bundle_path, "manifest.yaml"), encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 

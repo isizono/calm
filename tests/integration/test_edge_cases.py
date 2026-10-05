@@ -1,9 +1,5 @@
 """サービス層の単体テスト（エラーハンドリング、特殊文字など）"""
-import sqlite3
-import pytest
 from src.services.topic_service import add_topic
-from tests.helpers import add_decision
-
 
 DEFAULT_TAGS = ["domain:test"]
 

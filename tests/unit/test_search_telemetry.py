@@ -20,12 +20,11 @@ import json
 
 import pytest
 
+import src.services.embedding_service as emb
 from src.db import get_connection
 from src.services import search_service
-from src.services.topic_service import add_topic
 from src.services.decision_service import add_decisions
-import src.services.embedding_service as emb
-
+from src.services.topic_service import add_topic
 
 DEFAULT_TAGS = ["domain:test"]
 
@@ -294,7 +293,6 @@ def test_search_unaffected_when_thread_start_fails(
         tags=DEFAULT_TAGS,
     )
 
-    import threading as _threading
 
     original_thread_cls = search_service.threading.Thread
 
@@ -325,7 +323,6 @@ def test_search_unaffected_when_telemetry_write_fails(
         tags=DEFAULT_TAGS,
     )
 
-    real_get_connection = search_service._telemetry_get_connection
     call_counter = {"writer": 0}
 
     def flaky_get_connection():

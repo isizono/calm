@@ -235,12 +235,12 @@ def _popen_detached_windows(args, cwd, stdout, stderr, env) -> _RelayedProcess:
     relay = _spawn_relay()
     try:
         out, err = relay.communicate(payload.encode("utf-8"), timeout=_RELAY_TIMEOUT_SEC)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         relay.kill()
         _, err = relay.communicate()
         raise OSError(
             f"detached relay timed out after {_RELAY_TIMEOUT_SEC}s: {err.decode('utf-8', 'replace').strip()}"
-        )
+        ) from exc
 
     pid_lines = out.decode("utf-8", "replace").strip().splitlines()
     if relay.returncode != 0 or not pid_lines:
@@ -249,8 +249,8 @@ def _popen_detached_windows(args, cwd, stdout, stderr, env) -> _RelayedProcess:
         )
     try:
         pid = int(pid_lines[0])
-    except ValueError:
-        raise OSError(f"detached relay returned a non-numeric pid: {pid_lines[0]!r}")
+    except ValueError as exc:
+        raise OSError(f"detached relay returned a non-numeric pid: {pid_lines[0]!r}") from exc
     return _RelayedProcess(pid)
 
 

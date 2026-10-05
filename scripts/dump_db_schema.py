@@ -79,7 +79,7 @@ def _build_fresh_connection() -> sqlite3.Connection:
     os.environ["DISCUSSION_DB_PATH"] = db_path
     env_pop("CALM_DB_PATH")
     try:
-        from src.db import init_database, get_connection
+        from src.db import get_connection, init_database
 
         init_database()
         conn = get_connection()

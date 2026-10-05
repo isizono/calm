@@ -1,5 +1,6 @@
 """citation_renderer.expand / adjust_snippet_boundary の単体テスト"""
 import sqlite3
+
 import pytest
 
 from src.services.citation_renderer import (

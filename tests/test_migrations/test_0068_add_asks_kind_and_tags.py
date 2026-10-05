@@ -14,7 +14,12 @@ from yoyo.migrations import MigrationList
 
 from src.db import MIGRATIONS_DIR, _VecSQLiteBackend, get_connection
 from src.services.tag_service import _injected_tags
-from test_migrations.conftest import db_before_migration, get_column_names, index_names, table_exists
+from test_migrations.conftest import (
+    db_before_migration,
+    get_column_names,
+    index_names,
+    table_exists,
+)
 
 
 @pytest.fixture

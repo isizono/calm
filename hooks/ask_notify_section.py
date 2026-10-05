@@ -85,7 +85,7 @@ def build_ask_notify_lines(
 
     lines = [header]
     consumed = []
-    for ask, item_line in zip(resolved, item_lines):
+    for ask, item_line in zip(resolved, item_lines, strict=False):
         candidate = lines + [item_line]
         if len("\n".join(candidate) + "\n") > budget_chars:
             break

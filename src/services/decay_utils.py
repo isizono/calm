@@ -5,7 +5,7 @@
 判定結果はDBに書き戻さない。対象はSessionStartマニフェスト等の自動注入経路のみで、
 一覧・検索系のAPI（get_habits・search_tags等）の返却対象からは除外しない。
 """
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 def _parse_utc(ts: str | None) -> datetime | None:
@@ -16,7 +16,7 @@ def _parse_utc(ts: str | None) -> datetime | None:
     if not ts:
         return None
     try:
-        return datetime.fromisoformat(ts).replace(tzinfo=timezone.utc)
+        return datetime.fromisoformat(ts).replace(tzinfo=UTC)
     except (ValueError, TypeError):
         return None
 
@@ -41,7 +41,7 @@ def is_decay_eligible(
     created = _parse_utc(created_at)
     if created is None:
         return False
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if (now - created).days <= decay_days:
         return False
     last_ref = _parse_utc(last_referenced_at)

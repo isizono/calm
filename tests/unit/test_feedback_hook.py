@@ -19,8 +19,8 @@ if str(_HOOKS_DIR) not in sys.path:
 
 import feedback_hook as hook  # type: ignore  # noqa: E402
 
-from src.db import get_connection
-from src.services import feedback_service as fs
+from src.db import get_connection  # noqa: E402
+from src.services import feedback_service as fs  # noqa: E402
 
 
 @pytest.fixture
@@ -883,7 +883,7 @@ class TestNonhumanTurnSuppressesUtteranceDelivery:
     def test_plain_human_prompt_still_delivered(self, db, capsys):
         """マーカーを含まない通常の発話では、従来通り配達される（回帰確認）。"""
         _create_entry("stump-human", condition={"tool": None, "all": []})
-        out = _run_main_with_event(
+        _run_main_with_event(
             {
                 "hook_event_name": "UserPromptSubmit",
                 "session_id": "s1",

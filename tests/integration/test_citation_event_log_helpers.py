@@ -23,7 +23,6 @@ from src.services.citations_service import (
 )
 
 
-
 def _seed_material(title: str = "tgt", content: str = "body") -> int:
     """seed 用に materials へ 1 行 INSERT して id を返す。"""
     conn = get_connection()

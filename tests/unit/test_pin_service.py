@@ -6,15 +6,14 @@ pinsテーブルへの有向関係（source → target）の追加・削除と
 import pytest
 
 from src.db import get_connection
-from src.services.topic_service import add_topic
-from src.services.discussion_log_service import add_logs
-from src.services.decision_service import add_decisions
-from src.services.material_service import add_material
 from src.services.activity_service import add_activity
+from src.services.decision_service import add_decisions
+from src.services.discussion_log_service import add_logs
+from src.services.material_service import add_material
 from src.services.pin_service import add_pin, remove_pin
 from src.services.retract_service import retract
 from src.services.tag_service import ensure_tag_ids
-
+from src.services.topic_service import add_topic
 
 DEFAULT_TAGS = ["domain:test"]
 
@@ -340,9 +339,8 @@ class TestRemovePin:
 
         conn = get_connection()
         try:
-            tag_ids = ensure_tag_ids(conn, [("domain", "calm")])
+            ensure_tag_ids(conn, [("domain", "calm")])
             conn.commit()
-            tag_id = tag_ids[0]
         finally:
             conn.close()
 

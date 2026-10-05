@@ -12,7 +12,7 @@ _project_root = Path(__file__).resolve().parents[1]
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
-from src.services.backup_service import (  # noqa: F401  (後方互換のためのre-export)
+from src.services.backup_service import (  # noqa: E402, F401  (後方互換のためのre-export)
     HEALTH_CHECK_TABLES,
     KIND_QUOTAS,
     SNAPSHOT_DB_SUFFIX,

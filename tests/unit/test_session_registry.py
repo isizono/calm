@@ -5,7 +5,6 @@ is_process_alive・read_cli_session）は外部境界としてFakeCliWorld経由
 ファイルI/O・ロック・alias生成・衝突解決・GCは実ファイルで検証する。
 """
 import datetime as dt
-import itertools
 import json
 import os
 import threading
@@ -109,7 +108,7 @@ def _sequential_timestamps(monkeypatch, count=200):
     基点は現在時刻（GCのTTL判定 `datetime.now(timezone.utc)` は差し替えないため、
     固定の過去日付を基点にすると7日TTLに引っかかってGCされてしまう）。
     """
-    base = dt.datetime.now(dt.timezone.utc)
+    base = dt.datetime.now(dt.UTC)
     values = iter(
         (base + dt.timedelta(seconds=i)).strftime("%Y-%m-%dT%H:%M:%SZ") for i in range(count)
     )

@@ -51,7 +51,6 @@ from scripts.gate_check import (  # noqa: E402
     verdict_to_json,
 )
 
-
 # ---------------------------------------------------------------------------
 # ヘルパー
 # ---------------------------------------------------------------------------
@@ -428,13 +427,13 @@ def test_parse_numstat_rename_uses_separate_z_tokens():
 
 def test_parse_numstat_preserves_non_ascii_path_verbatim():
     # -z は quotepath エスケープをせず生パスをそのまま返す
-    rows = parse_numstat("1\t0\tsrc/なまえ.py\0".encode("utf-8"))
+    rows = parse_numstat("1\t0\tsrc/なまえ.py\0".encode())
     assert rows[0].path == "src/なまえ.py"
     assert rows[0].old_path is None
 
 
 def test_parse_numstat_handles_add_and_rename_together():
-    raw = "1\t0\ta b.txt\0".encode("utf-8") + b"0\t0\t\0old.py\0new.py\0"
+    raw = b"1\t0\ta b.txt\0" + b"0\t0\t\0old.py\0new.py\0"
     rows = parse_numstat(raw)
     by_path = {r.path: r for r in rows}
     assert by_path["a b.txt"].old_path is None

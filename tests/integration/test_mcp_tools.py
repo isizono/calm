@@ -1,11 +1,9 @@
 """MCPツールのテスト（subjects廃止後）"""
-import pytest
-from src.services.topic_service import add_topic
 from src.services.activity_service import add_activity
-from src.services.discussion_log_service import add_logs
 from src.services.decision_service import add_decisions
+from src.services.discussion_log_service import add_logs
 from src.services.timeline_service import get_timeline
-
+from src.services.topic_service import add_topic
 
 
 def test_add_topic_with_tags(temp_db):

@@ -10,10 +10,10 @@ nudge warning が再現されること（TestAdjacentCheckWarningReadout）も�
 
 import pytest
 
+import src.services.embedding_service as emb
 from src.services import search_service
 from src.services.decision_service import get_decisions
 from src.services.topic_service import add_topic
-import src.services.embedding_service as emb
 from tests.helpers import add_decision
 
 DEFAULT_TAGS = ["domain:test"]

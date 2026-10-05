@@ -23,7 +23,11 @@ from unittest.mock import MagicMock
 import pytest
 from fastmcp.tools.tool import ToolResult
 
+import src.middleware.delta_middleware as delta_middleware
 from src.infra import session_identity
+from src.main import add_activity as tool_add_activity
+from src.main import check_in as tool_check_in
+from src.middleware.delta_middleware import DeltaNotificationMiddleware, _watermarks
 from src.services import session_registry_service
 from src.services.activity_service import add_activity
 from src.services.checkin_tier_service import collect_and_assemble as check_in
@@ -33,10 +37,6 @@ from src.services.material_service import add_material
 from src.services.pin_service import add_pin
 from src.services.relation_service import add_relation
 from src.services.topic_service import add_topic
-from src.main import check_in as tool_check_in
-from src.main import add_activity as tool_add_activity
-import src.middleware.delta_middleware as delta_middleware
-from src.middleware.delta_middleware import DeltaNotificationMiddleware, _watermarks
 from tests.helpers import add_decision
 
 
@@ -651,7 +651,7 @@ async def test_global_baseline_matches_scoped_baseline_when_scope_unchanged(temp
     )
     aid = activity["activity_id"]
 
-    d_old = add_decision("check-in前のscope内決定", "reason", topic_id=tid)
+    add_decision("check-in前のscope内決定", "reason", topic_id=tid)
     add_decision("scope外の後発決定", "reason", topic_id=other_tid)
 
     middleware = DeltaNotificationMiddleware()

@@ -15,7 +15,7 @@ checkin_tier_service側が埋め込む）。
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 # プロジェクトルートをパスに追加（src.db等の参照用）
@@ -23,28 +23,30 @@ _project_root = Path(__file__).resolve().parents[1]
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
+from hooks.hook_state import HookState
+from hooks.readable_id_format import format_readable_id
+from hooks.signal_capture import try_capture_signal
 from src import config
 from src.db import get_connection, get_db_path
 from src.harness import select_harness
+from src.infra.plugin_install import resolve_installed_plugin_root
+from src.services import ask_service, habit_projection, session_registry_service
 from src.services.activity_service import (
-    get_active_domains_with_conn,
     get_active_activities_by_tag_with_conn,
+    get_active_domains_with_conn,
     get_pinned_active_activities_with_conn,
 )
-from hooks.hook_state import HookState
-from hooks.readable_id_format import format_readable_id
-from src.services import ask_service
+from src.services.backup_service import (
+    health_check,
+    should_take_snapshot,
+    take_snapshot,
+)
 from src.services.habit_service import (
     get_active_habit_contents_with_conn,
     list_intelligently_habit_manifest_with_conn,
 )
-from src.services import habit_projection
-from src.services.backup_service import health_check, should_take_snapshot, take_snapshot
 from src.services.injection_compositor import Section, compose
 from src.services.search_health_service import check_search_health
-from src.services import session_registry_service
-from src.infra.plugin_install import resolve_installed_plugin_root
-from hooks.signal_capture import try_capture_signal
 
 _RECENT_CREATED_HOURS = 24
 _PIN_MARK = "\U0001f4cc"
@@ -62,8 +64,8 @@ _LEGEND_LINE = (
 def _calc_elapsed_days(updated_at_str: str) -> int:
     """updated_atからの経過日数を計算する。"""
     try:
-        updated = datetime.fromisoformat(updated_at_str).replace(tzinfo=timezone.utc)
-        now = datetime.now(timezone.utc)
+        updated = datetime.fromisoformat(updated_at_str).replace(tzinfo=UTC)
+        now = datetime.now(UTC)
         return (now - updated).days
     except (ValueError, TypeError):
         return 0
@@ -114,8 +116,8 @@ def _get_created_ats(conn, activity_ids: list[int]) -> dict[int, str]:
 def _is_recent_created(created_at_str: str, hours: int = _RECENT_CREATED_HOURS) -> bool:
     """created_atが指定時間以内かを判定する。"""
     try:
-        created = datetime.fromisoformat(created_at_str).replace(tzinfo=timezone.utc)
-        now = datetime.now(timezone.utc)
+        created = datetime.fromisoformat(created_at_str).replace(tzinfo=UTC)
+        now = datetime.now(UTC)
         return (now - created).total_seconds() < hours * 3600
     except (ValueError, TypeError):
         return False
@@ -898,7 +900,7 @@ def _render_open_asks_section(open_result: dict, pending_result: dict, budget_ch
     # 非メタ行・残り件数行（調整可能要素）を、残り予算(available)の範囲内で
     # バケット順に1行ずつ追加する。
     optional_by_bucket: list[list[str]] = []
-    for (label, bucket), reserved in zip(buckets, reserved_by_bucket):
+    for (_label, bucket), reserved in zip(buckets, reserved_by_bucket, strict=False):
         bucket_optional: list[str] = []
         non_meta = bucket["non_meta"]
         total_count = bucket["non_meta_total_count"]
@@ -925,7 +927,7 @@ def _render_open_asks_section(open_result: dict, pending_result: dict, budget_ch
         optional_by_bucket.append(bucket_optional)
 
     lines: list[str] = []
-    for bucket_required, bucket_optional in zip(required_by_bucket, optional_by_bucket):
+    for bucket_required, bucket_optional in zip(required_by_bucket, optional_by_bucket, strict=False):
         lines.extend(bucket_required)
         lines.extend(bucket_optional)
     lines.append(_OPEN_ASKS_GLOBAL_CTA)

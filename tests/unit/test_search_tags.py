@@ -1,11 +1,11 @@
 """search_tags機能のユニットテスト"""
 import pytest
-from src.db import get_connection
-from src.services.topic_service import add_topic
-from src.services.activity_service import add_activity
-from src.services.tag_service import search_tags, _SEARCH_TAGS_RRF_K
-import src.services.embedding_service as emb
 
+import src.services.embedding_service as emb
+from src.db import get_connection
+from src.services.activity_service import add_activity
+from src.services.tag_service import _SEARCH_TAGS_RRF_K, search_tags
+from src.services.topic_service import add_topic
 
 DEFAULT_TAGS = ["domain:test"]
 

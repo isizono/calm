@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
 
 from src.env_compat import env_get
 
@@ -24,7 +23,7 @@ def installed_plugins_path() -> Path:
     return Path(raw).expanduser() if raw else Path.home() / ".claude" / "plugins" / "installed_plugins.json"
 
 
-def _plugin_key(bundled_root: Path) -> Optional[str]:
+def _plugin_key(bundled_root: Path) -> str | None:
     """`bundled_root`から`installed_plugins.json`のキー（`<plugin>@<marketplace>`）を導出する。
 
     プラグインキャッシュの配置規則`.../plugins/cache/<marketplace>/<plugin>/<version>/`を
@@ -41,7 +40,7 @@ def _plugin_key(bundled_root: Path) -> Optional[str]:
     return f"{plugin_dir.name}@{marketplace_dir.name}"
 
 
-def resolve_installed_plugin_root(bundled_root: Path) -> Optional[Path]:
+def resolve_installed_plugin_root(bundled_root: Path) -> Path | None:
     """`bundled_root`から導出したプラグインエントリの、現在のインストール先を返す。
 
     解決できない場合（キー導出不能・ファイル欠落・パース失敗・エントリ無し・

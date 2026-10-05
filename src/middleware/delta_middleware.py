@@ -14,9 +14,8 @@ import threading
 from typing import Any
 
 import mcp.types as mt
-from mcp.types import TextContent
-
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
+from mcp.types import TextContent
 
 from src.db import get_connection
 from src.infra.session_identity import get_caller_session_id
@@ -250,7 +249,7 @@ def _advance_watermark(current: dict, delta: dict) -> None:
         )
     if delta["new_logs"]:
         current["log_id"] = max(
-            current["log_id"], max(l["id"] for l in delta["new_logs"])
+            current["log_id"], max(log["id"] for log in delta["new_logs"])
         )
     if delta["new_materials"]:
         current["material_id"] = max(
@@ -308,8 +307,8 @@ def _inject(result: Any, delta: dict) -> None:
     lines = ["📨 [デルタ通知] check-in以降、関連トピックに新しい記録が追加されました。"]
     for d in delta["new_decisions"]:
         lines.append(f"  - decision: {d['title']}（get_decisionsで取得可）")
-    for l in delta["new_logs"]:
-        lines.append(f"  - log: {l['title']}")
+    for log in delta["new_logs"]:
+        lines.append(f"  - log: {log['title']}")
     for m in delta["new_materials"]:
         lines.append(f"  - material: {m['title']}（get_materialで取得可）")
     lines.append("ユーザーへの応答を返す前に、内容を確認してください。")

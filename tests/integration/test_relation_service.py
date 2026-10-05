@@ -8,7 +8,6 @@ from src.services.relation_service import add_relation, get_map, remove_relation
 from src.services.retract_service import retract
 from tests.helpers import add_decision, retract_decision
 
-
 DEFAULT_TAGS = [("domain", "test")]
 
 

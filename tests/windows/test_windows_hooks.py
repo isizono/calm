@@ -156,11 +156,11 @@ def _assert_hook_ran_cleanly(result: HookRunResult, label: str) -> None:
     try:
         text = stdout.decode("utf-8")
     except UnicodeDecodeError as e:
-        raise AssertionError(f"{label} stdout is not valid UTF-8: {stdout!r} ({e})")
+        raise AssertionError(f"{label} stdout is not valid UTF-8: {stdout!r} ({e})") from e
     try:
         json.loads(text)
     except json.JSONDecodeError as e:
-        raise AssertionError(f"{label} stdout is not valid JSON: {text!r} ({e})")
+        raise AssertionError(f"{label} stdout is not valid JSON: {text!r} ({e})") from e
 
 
 @pytest.mark.skipif(resolve_posix_bash() is None, reason="bash not found")
