@@ -112,7 +112,7 @@ paths:
     post:
       tags:
       - ask
-      summary: 人間にしか決められない判断を問いとして1件積む（add/create an ask for a human。
+      summary: 人間にしか決められない判断を問いとして1件積む（add/create an ask for a human）。
       requestBody:
         required: true
         content:
@@ -547,7 +547,7 @@ paths:
     post:
       tags:
       - checkin
-      summary: 'Choose: アクティビティに着手・再開するときに関連情報を一括取得したいとき（check in to an activity, resume work。'
+      summary: 'Choose: アクティビティに着手・再開するときに関連情報を一括取得したいとき（check in to an activity, resume work）。'
       requestBody:
         required: true
         content:
@@ -1264,8 +1264,7 @@ paths:
     post:
       tags:
       - activity
-      summary: 'Choose: 「今何が進んでいて、次に何をすべきか」をユーザーに一望で見せたいとき（show overview of in-progress activities and
-        pending asks）。'
+      summary: 'Choose: 「今何が進んでいて、次に何をすべきか」をユーザーに一望で見せたいとき（get overview of activities and asks）。'
       requestBody:
         required: true
         content:
@@ -1974,7 +1973,7 @@ paths:
     post:
       tags:
       - goal
-      summary: 'Choose: activityの終了条件(goal)の有無を決めたいとき（set or define a goal for an activity）。'
+      summary: 'Choose: activityの終了条件(goal)上の立場を決めたいとき（set or define a goal for an activity）。'
       requestBody:
         required: true
         content:
@@ -2038,7 +2037,7 @@ paths:
     post:
       tags:
       - session
-      summary: 'Choose: 自セッションの別名を明示的に付け替えたいとき（set/rename session alias。'
+      summary: 'Choose: 自セッションの別名を明示的に付け替えたいとき（set/rename session alias）。'
       requestBody:
         required: true
         content:

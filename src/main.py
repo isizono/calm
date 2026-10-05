@@ -1244,7 +1244,7 @@ def update_activity(
 
 @mcp.tool()
 def set_goal(activity_id: int, goal: dict | None, replace: bool = False) -> dict:
-    """Choose: activityの終了条件(goal)の有無を決めたいとき（set or define a goal for an activity）。goal自体はactivityから
+    """Choose: activityの終了条件(goal)上の立場を決めたいとき（set or define a goal for an activity）。goal自体はactivityから
     作る。既存のgoal(goal_id)に紐づける・不要印(waiver)を付ける・未定義に戻す(None)も
     この1本で扱う。充足の記録・条件の追加はupdate_goal、終了の明示判定はjudge_goal。
 
@@ -1383,7 +1383,7 @@ def get_goal(
 
 @mcp.tool()
 def get_overview(days: int = 7, limit: int = 20) -> dict:
-    """Choose: 「今何が進んでいて、次に何をすべきか」をユーザーに一望で見せたいとき（show overview of in-progress activities and pending asks）。
+    """Choose: 「今何が進んでいて、次に何をすべきか」をユーザーに一望で見せたいとき（get overview of activities and asks）。
 
     DB の現状（アクティビティの status / heartbeat、ask の status）から4節を1回で集計して
     返す。読み取り専用で、DB を一切書き換えない（get_activities のような snoozed 自動復活も
@@ -1587,7 +1587,7 @@ def check_in(
     flavor: _FlavorArg = "internal",
 ) -> dict:
     """
-    Choose: アクティビティに着手・再開するときに関連情報を一括取得したいとき（check in to an activity, resume work。status を in_progress に自動更新）。関連グラフだけ俯瞰したいなら get_map、log/decision/material の時系列なら get_timeline、log だけなら get_logs、decision だけなら get_decisions、設計判断前に近傍 topic の判例を網羅確認したいなら pull_precedents。
+    Choose: アクティビティに着手・再開するときに関連情報を一括取得したいとき（check in to an activity, resume work）。status を in_progress に自動更新する。関連グラフだけ俯瞰したいなら get_map、log/decision/material の時系列なら get_timeline、log だけなら get_logs、decision だけなら get_decisions、設計判断前に近傍 topic の判例を網羅確認したいなら pull_precedents。
 
     アクティビティにcheck-inする。関連情報を5つの枠（anchor/control/context/catalog/env）に
     分けて集約取得する。
@@ -2519,7 +2519,7 @@ def add_ask(
     choices: list[str] | None = None,
     notify: bool = True,
 ) -> dict:
-    """人間にしか決められない判断を問いとして1件積む（add/create an ask for a human。答え待ちの間、blocksで指定したactivityを止める）。
+    """人間にしか決められない判断を問いとして1件積む（add/create an ask for a human）。答え待ちの間、blocksで指定したactivityを止める。
 
     question/contextの構成は`ask-compose` skillを必ず経由すること。ただし
     kind="meta"のメタaskはこの限りではなく、`ask-distill`/`ask-watch`各skillの
@@ -2987,7 +2987,7 @@ def get_sessions() -> dict:
 
 @mcp.tool()
 def set_session_alias(alias: str) -> dict:
-    """Choose: 自セッションの別名を明示的に付け替えたいとき（set/rename session alias。自動生成名が分かりにくい、他セッションと衝突して接尾辞が付いた、など）。
+    """Choose: 自セッションの別名を明示的に付け替えたいとき（set/rename session alias）。自動生成名が分かりにくい・他セッションと衝突して接尾辞が付いた場合など。
 
     別名は現在 check_in しているアクティビティに紐づく。別のアクティビティへ
     check_in し直すと、自動生成された別名に戻る。
