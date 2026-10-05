@@ -93,8 +93,8 @@ def _resolve_stream(spec, stdout_handle):
     raise ValueError("unknown stream kind: " + repr(kind))
 
 
-def _launch(argv, cwd, stdout, stderr):
-    kwargs = dict(cwd=cwd, stdout=stdout, stderr=stderr)
+def _launch(argv, cwd, stdout, stderr, env=None):
+    kwargs = dict(cwd=cwd, stdout=stdout, stderr=stderr, env=env)
     if sys.platform != "win32":
         return subprocess.Popen(argv, **kwargs)
     kwargs["stdin"] = subprocess.DEVNULL
@@ -111,7 +111,7 @@ def main():
     spec = json.loads(sys.stdin.read())
     stdout_handle = _resolve_stream(spec["stdout"], None)
     stderr_handle = _resolve_stream(spec["stderr"], stdout_handle)
-    proc = _launch(spec["argv"], spec.get("cwd"), stdout_handle, stderr_handle)
+    proc = _launch(spec["argv"], spec.get("cwd"), stdout_handle, stderr_handle, spec.get("env"))
     # 本命は起動時に親(ここ)のハンドルを引き継ぐ。起動後はここで閉じてよい。
     for handle in {stdout_handle, stderr_handle}:
         if hasattr(handle, "close"):
@@ -145,10 +145,10 @@ def _stream_spec(stream, *, stdout_stream=None):
     )
 
 
-def _spawn_relay(env=None) -> subprocess.Popen:
+def _spawn_relay() -> subprocess.Popen:
     base_flags = _CREATE_NEW_PROCESS_GROUP | _CREATE_NO_WINDOW
     relay_args = [sys.executable, "-c", _RELAY_SCRIPT]
-    relay_kwargs = dict(stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    relay_kwargs = dict(stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         return subprocess.Popen(relay_args, creationflags=base_flags | _CREATE_BREAKAWAY_FROM_JOB, **relay_kwargs)
     except OSError as e:
@@ -225,13 +225,14 @@ class _RelayedProcess:
                 pass
 
 
-def _popen_detached_windows(args, cwd, stdout, stderr, env=None) -> _RelayedProcess:
+def _popen_detached_windows(args, cwd, stdout, stderr, env) -> _RelayedProcess:
     stdout_spec = _stream_spec(stdout)
     stderr_spec = _stream_spec(stderr, stdout_stream=stdout)
-    payload = json.dumps({"argv": list(args), "cwd": cwd, "stdout": stdout_spec, "stderr": stderr_spec})
+    payload = json.dumps(
+        {"argv": list(args), "cwd": cwd, "env": env, "stdout": stdout_spec, "stderr": stderr_spec}
+    )
 
-    # 本命は中継の子として起動されるため、envは中継プロセスに渡せば継承される
-    relay = _spawn_relay(env)
+    relay = _spawn_relay()
     try:
         out, err = relay.communicate(payload.encode("utf-8"), timeout=_RELAY_TIMEOUT_SEC)
     except subprocess.TimeoutExpired:
@@ -253,8 +254,10 @@ def _popen_detached_windows(args, cwd, stdout, stderr, env=None) -> _RelayedProc
     return _RelayedProcess(pid)
 
 
-def popen_detached(args, *, cwd=None, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=None) -> DetachedProcess:
-    """親から切り離した子プロセスを起動する。"""
+def popen_detached(
+    args, *, cwd=None, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=None
+) -> DetachedProcess:
+    """親から切り離した子プロセスを起動する。envがNoneなら親の環境変数を引き継ぐ。"""
     if sys.platform == "win32":
         return _popen_detached_windows(args, cwd, stdout, stderr, env)
-    return subprocess.Popen(args, cwd=cwd, stdout=stdout, stderr=stderr, env=env, start_new_session=True)
+    return subprocess.Popen(args, cwd=cwd, stdout=stdout, stderr=stderr, start_new_session=True, env=env)

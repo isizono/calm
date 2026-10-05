@@ -25,8 +25,8 @@ from pathlib import Path
 from src.env_compat import env_get, env_names, env_set
 from src.infra.detached_process import popen_detached
 from src.infra.git_repo import resolve_main_repo_root
-from src.infra.plugin_install import resolve_installed_plugin_root
 from src.infra.loopback_http import NO_PROXY_OPENER
+from src.infra.plugin_install import resolve_installed_plugin_root
 from src.infra.session_identity import (
     HARNESS_CLAUDE_CODE,
     HARNESS_CODEX,
@@ -298,6 +298,31 @@ def _is_server_running() -> bool:
         return False
 
 
+def _resolve_server_root() -> tuple[Path, str]:
+    """起動対象のプロジェクトルートを解決する。
+
+    `~/.claude/plugins/installed_plugins.json`から、Claude Codeが現在有効と
+    しているインストール先が解決でき、かつ`uv sync`済み（`.venv/bin/python`が
+    存在する）ならそれを使う。launcherプロセス自身は`_PROJECT_ROOT`
+    （自分がバンドルされているバージョン）に起動時点で固定されてしまうため、
+    毎回ここで読み直すことで、古い版のまま残っているlauncherが再起動しても
+    最新版からサーバーを立て直せるようにする。
+
+    解決できない（gitチェックアウトからの直接実行等）、またはまだsync済みで
+    ない場合は`_PROJECT_ROOT`にフォールバックする。未sync状態のまま
+    `-m src.main`を起動すると依存解決に失敗しうるため、安全側に倒す
+    （sync自体はこの関数の責務ではない。SessionStart hook等が`uv run`経由で
+    実行されることで、通常は既にsync済みになっている）。
+
+    Returns:
+        (root, source)。sourceは"installed"か"bundled"（ログ用）。
+    """
+    installed = resolve_installed_plugin_root(Path(_PROJECT_ROOT))
+    if installed is not None and (installed / ".venv" / "bin" / "python").exists():
+        return installed, "installed"
+    return Path(_PROJECT_ROOT), "bundled"
+
+
 def _server_stderr_log_path() -> Path:
     """起動直後に落ちたサーバーの手がかりを残すstderrログ先。
 
@@ -332,31 +357,6 @@ def _resolve_server_stderr_target():
         stderr_log.close()
 
 
-def _resolve_server_root() -> tuple[Path, str]:
-    """起動対象のプロジェクトルートを解決する。
-
-    `~/.claude/plugins/installed_plugins.json`から、Claude Codeが現在有効と
-    しているインストール先が解決でき、かつ`uv sync`済み（`.venv/bin/python`が
-    存在する）ならそれを使う。launcherプロセス自身は`_PROJECT_ROOT`
-    （自分がバンドルされているバージョン）に起動時点で固定されてしまうため、
-    毎回ここで読み直すことで、古い版のまま残っているlauncherが再起動しても
-    最新版からサーバーを立て直せるようにする。
-
-    解決できない（gitチェックアウトからの直接実行等）、またはまだsync済みで
-    ない場合は`_PROJECT_ROOT`にフォールバックする。未sync状態のまま
-    `-m src.main`を起動すると依存解決に失敗しうるため、安全側に倒す
-    （sync自体はこの関数の責務ではない。SessionStart hook等が`uv run`経由で
-    実行されることで、通常は既にsync済みになっている）。
-
-    Returns:
-        (root, source)。sourceは"installed"か"bundled"（ログ用）。
-    """
-    installed = resolve_installed_plugin_root(Path(_PROJECT_ROOT))
-    if installed is not None and (installed / ".venv" / "bin" / "python").exists():
-        return installed, "installed"
-    return Path(_PROJECT_ROOT), "bundled"
-
-
 def _start_http_server() -> bool:
     """HTTPサーバーをデーモンとして起動する。
 
@@ -366,8 +366,9 @@ def _start_http_server() -> bool:
     sys.executable自体がそれに当たる）。embedding_service等の子プロセスが
     起動元ルートを再解決できるよう、`CALM_PROJECT_ROOT`（新旧名）を起動対象の
     ルートで上書きしたenvをこのプロセス専用に渡す（launcher自身のos.environは
-    変更しない）。stderrは可能ならDEVNULLではなくファイルへ向ける（肥大しないよう
-    起動のたびに上書きする）。
+    変更しない）。
+    stderrは可能ならDEVNULLではなくファイルへ向ける（肥大しないよう起動のたびに
+    上書きする。蓄積した過去ログが必要になるケースは想定していない）。
     """
     root, source = _resolve_server_root()
     logger.info(f"Starting HTTP server from {source} root: {root}")

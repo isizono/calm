@@ -181,8 +181,13 @@ class TestIsServerRunning:
 
 
 class TestStartHttpServer:
-    def test_calls_popen_with_bundled_root_when_resolution_unavailable(self, tmp_path, monkeypatch):
-        """インストール先が解決できない場合はbundled rootから起動し、stderrはファイルに向く
+    @pytest.fixture(autouse=True)
+    def _bundled_root_by_default(self, monkeypatch):
+        """実機の~/.claude/plugins/installed_plugins.jsonに依存させず、既定ではbundled rootから起動する"""
+        monkeypatch.setattr(launcher, "resolve_installed_plugin_root", lambda bundled_root: None)
+
+    def test_calls_popen_with_correct_args(self, tmp_path, monkeypatch):
+        """正しい引数でsubprocess.Popenが呼ばれ、stderrはファイルに向く
 
         popen_detachedはsys.platformで分岐するため、POSIX分岐の検証であることを
         明示する(Windows分岐はtest_uses_popen_detached_windows_wiringで検証する)。
@@ -199,12 +204,11 @@ class TestStartHttpServer:
                 called_with["args"] = args
                 called_with["kwargs"] = kwargs
 
-        monkeypatch.setattr(launcher, "resolve_installed_plugin_root", lambda bundled_root: None)
         monkeypatch.setattr(subprocess, "Popen", FakePopen)
         result = launcher._start_http_server()
 
         assert result is True
-        assert called_with["args"] == [sys.executable, "-m", "src.main", "--transport", "http"]
+        assert called_with["args"][1:] == ["-m", "src.main", "--transport", "http"]
         assert called_with["kwargs"]["start_new_session"] is True
         assert called_with["kwargs"]["stdout"] == subprocess.DEVNULL
         # DEVNULLではなく、既存のログディレクトリ配下のファイルに向ける
@@ -214,8 +218,13 @@ class TestStartHttpServer:
         assert called_with["kwargs"]["cwd"] == launcher._PROJECT_ROOT
         assert called_with["kwargs"]["env"]["CALM_PROJECT_ROOT"] == launcher._PROJECT_ROOT
 
-    def test_calls_popen_with_installed_root_when_resolved_and_synced(self, monkeypatch, tmp_path):
+    def test_calls_popen_with_installed_root_when_resolved_and_synced(self, tmp_path, monkeypatch):
         """インストール先が解決でき、uv sync済み（.venv/bin/python存在）ならそこから起動する"""
+        import src.db as db
+        from src.infra import detached_process
+
+        monkeypatch.setattr(detached_process.sys, "platform", "darwin")
+        monkeypatch.setattr(db, "get_db_path", lambda: str(tmp_path / "discussion.db"))
         installed_root = tmp_path / "installed" / "newver"
         venv_python = installed_root / ".venv" / "bin" / "python"
         venv_python.parent.mkdir(parents=True)
@@ -229,15 +238,19 @@ class TestStartHttpServer:
 
         monkeypatch.setattr(launcher, "resolve_installed_plugin_root", lambda bundled_root: installed_root)
         monkeypatch.setattr(subprocess, "Popen", FakePopen)
-        result = launcher._start_http_server()
 
-        assert result is True
+        assert launcher._start_http_server() is True
         assert called_with["args"] == [str(venv_python), "-m", "src.main", "--transport", "http"]
         assert called_with["kwargs"]["cwd"] == str(installed_root)
         assert called_with["kwargs"]["env"]["CALM_PROJECT_ROOT"] == str(installed_root)
 
-    def test_falls_back_to_bundled_root_when_installed_venv_not_synced(self, monkeypatch, tmp_path):
+    def test_falls_back_to_bundled_root_when_installed_venv_not_synced(self, tmp_path, monkeypatch):
         """インストール先は解決できても.venv/bin/pythonが無い（未sync）場合はbundled rootにフォールバックする"""
+        import src.db as db
+        from src.infra import detached_process
+
+        monkeypatch.setattr(detached_process.sys, "platform", "darwin")
+        monkeypatch.setattr(db, "get_db_path", lambda: str(tmp_path / "discussion.db"))
         installed_root = tmp_path / "installed" / "newver"
         installed_root.mkdir(parents=True)
         called_with = {}
@@ -249,9 +262,8 @@ class TestStartHttpServer:
 
         monkeypatch.setattr(launcher, "resolve_installed_plugin_root", lambda bundled_root: installed_root)
         monkeypatch.setattr(subprocess, "Popen", FakePopen)
-        result = launcher._start_http_server()
 
-        assert result is True
+        assert launcher._start_http_server() is True
         assert called_with["args"] == [sys.executable, "-m", "src.main", "--transport", "http"]
         assert called_with["kwargs"]["cwd"] == launcher._PROJECT_ROOT
 
@@ -276,7 +288,6 @@ class TestStartHttpServer:
 
     def test_returns_false_on_oserror(self, tmp_path, monkeypatch):
         """OSErrorの場合はFalseを返す"""
-        monkeypatch.setattr(launcher, "resolve_installed_plugin_root", lambda bundled_root: None)
         import src.db as db
 
         monkeypatch.setattr(db, "get_db_path", lambda: str(tmp_path / "discussion.db"))
