@@ -6,8 +6,6 @@ installed_plugins.jsonの読み取り・プラグインキー導出・インス�
 """
 import json
 
-import pytest
-
 from src.infra import plugin_install
 
 

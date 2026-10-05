@@ -289,7 +289,7 @@ HTTP_STATELESS = True
 _SERVER_STARTED_AT = datetime.now(UTC)
 
 
-def _version_id_for_root(root: Path) -> Optional[str]:
+def _version_id_for_root(root: Path) -> str | None:
     """`root`のディレクトリ名を版識別子として返す。
 
     プラグインキャッシュ配置では`.../plugins/cache/<marketplace>/<plugin>/<version>/`の

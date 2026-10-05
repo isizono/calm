@@ -9,7 +9,7 @@ import json
 import pytest
 from starlette.requests import Request
 
-from src.main import health, _version_id_for_root
+from src.main import _version_id_for_root, health
 
 
 @pytest.fixture

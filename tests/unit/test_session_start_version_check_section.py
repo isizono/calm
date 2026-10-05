@@ -5,13 +5,13 @@
 `/health`応答（_fetch_running_server_version）の両方をmockし、一致・不一致・
 判定不能（いずれかが解決不能）の分岐を検証する。
 """
+from pathlib import Path
+
+from hooks import session_start_hook
 from hooks.session_start_hook import (
     _build_version_check_section,
     _fetch_running_server_version,
 )
-from pathlib import Path
-
-from hooks import session_start_hook
 from src.infra import loopback_http
 
 
