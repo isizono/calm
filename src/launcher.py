@@ -22,6 +22,8 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+import psutil
+
 from src.env_compat import env_get, env_names, env_set
 from src.infra.detached_process import popen_detached
 from src.infra.git_repo import resolve_main_repo_root
@@ -32,6 +34,7 @@ from src.infra.session_identity import (
     HARNESS_CODEX,
     ancestor_pids,
     detect_harness_by_ancestry,
+    nearest_agent_cli_pid,
     register_launcher_session,
     unregister_launcher_session,
 )
@@ -1068,6 +1071,81 @@ async def _run_retry_loop() -> None:
             await reader_task
 
 
+# 親プロセス生存確認の間隔（秒）
+PARENT_WATCH_INTERVAL_SEC = 5.0
+
+# SIGTERM受信後、通常の終了処理がこの秒数で終わらなければ強制終了する
+SHUTDOWN_DEADLINE_SEC = 10.0
+
+
+def _parent_watch_targets() -> list[psutil.Process]:
+    """親の終了を検知するために見張るプロセスを返す。
+
+    launcherは`uv run`経由で起動されるため、直接の親（uv）は、その親のエージェント
+    CLIが終了しても生き残って孤児になり、stdin EOFも届かないことがある。
+    直接の親に加え、祖先のうち最も近いエージェントCLI本体を見張る。祖先を全部
+    見ると、CLIの外側の起動元シェルが先に終わるだけで誤って終了するため見ない。
+    Processオブジェクトを保持して`is_running()`で判定する。psutilはpidと
+    起動後経過時間（システム時計の補正に影響されない値）の組で同一性を
+    確かめるため、pid再利用を見分けつつ、時計のステップ補正で生きている親を
+    死んだと誤判定しない。
+    """
+    ancestors = ancestor_pids(os.getpid())
+    pids = ancestors[:1]
+    cli = nearest_agent_cli_pid(ancestors)
+    if cli is not None and cli not in pids:
+        pids.append(cli)
+    targets = []
+    for pid in pids:
+        try:
+            targets.append(psutil.Process(pid))
+        except psutil.Error:
+            pass
+    return targets
+
+
+_shutdown_timer_started = False
+
+
+def _force_exit() -> None:
+    logger.error("Shutdown did not finish within %ss; forcing exit", SHUTDOWN_DEADLINE_SEC)
+    os._exit(1)
+
+
+def _is_target_alive(proc: psutil.Process) -> bool:
+    try:
+        return proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE
+    except psutil.Error:
+        return False
+
+
+def _start_parent_watchdog(targets: list[psutil.Process]) -> None:
+    """見張り対象が1つでも消えたら、自プロセスにSIGTERMを送って終了させる。"""
+    if not targets:
+        logger.warning("No parent process to watch; orphan detection is disabled")
+        return
+
+    def _watch() -> None:
+        while True:
+            time.sleep(PARENT_WATCH_INTERVAL_SEC)
+            if not all(_is_target_alive(proc) for proc in targets):
+                logger.warning("Parent process is gone; exiting launcher")
+                if sys.platform == "win32":
+                    # WindowsのSIGTERM送信はTerminateProcess相当でハンドラもatexitも走らない
+                    killer = threading.Timer(SHUTDOWN_DEADLINE_SEC, _force_exit)
+                    killer.daemon = True
+                    killer.start()
+                    _cleanup()
+                    os._exit(0)
+                os.kill(os.getpid(), signal.SIGTERM)
+                # SIGTERMハンドラと期限タイマーはメインスレッドがCの呼び出しで
+                # 止まっていると動かないため、この見張りスレッドからも期限を守る
+                time.sleep(SHUTDOWN_DEADLINE_SEC)
+                _force_exit()
+
+    threading.Thread(target=_watch, daemon=True).start()
+
+
 def main() -> None:
     """ランチャーのメインエントリーポイント"""
     # ログ設定（stderrへ出力、stdoutはMCPプロトコル用）
@@ -1087,6 +1165,15 @@ def main() -> None:
     # 接続先（例: セッションAPIを持たないremote展開）でも安全に呼べる。
     atexit.register(_cleanup)
     def _exit_handler(*_):
+        # 終了処理（asyncioのタスク回収・スレッドのjoin・セッション解除のHTTP呼び出し）
+        # が詰まっても確実に消えるよう、期限付きの強制終了を仕掛けておく。
+        # daemonなので、通常終了すればプロセスと共に消える。
+        global _shutdown_timer_started
+        if not _shutdown_timer_started:
+            _shutdown_timer_started = True
+            killer = threading.Timer(SHUTDOWN_DEADLINE_SEC, _force_exit)
+            killer.daemon = True
+            killer.start()
         return sys.exit(0)  # atexitが発火する
     signal.signal(signal.SIGTERM, _exit_handler)
     # SIGBREAK（Ctrl+Break）はWindowsにしか無い。
@@ -1102,6 +1189,8 @@ def main() -> None:
 
     if not _IS_LOCAL:
         logger.info("Remote mode: connecting to %s", MCP_ENDPOINT)
+
+    _start_parent_watchdog(_parent_watch_targets())
 
     try:
         asyncio.run(_run_retry_loop())

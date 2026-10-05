@@ -2722,3 +2722,75 @@ class TestMaxRetriesDefault:
             assert launcher.MAX_RETRIES == 7
         finally:
             launcher.MAX_RETRIES = None
+
+
+class TestParentWatch:
+    """親の終了検知の判定部分: 見張り対象の選定、pid再利用の見分け、強制終了の契約。"""
+
+    def test_targets_are_direct_parent_and_nearest_cli(self, monkeypatch):
+        monkeypatch.setattr(launcher, "ancestor_pids", lambda pid: [10, 20, 30])
+        monkeypatch.setattr(launcher, "nearest_agent_cli_pid", lambda pids: 30)
+        monkeypatch.setattr(launcher.psutil, "Process", lambda pid: pid)
+        assert launcher._parent_watch_targets() == [10, 30]
+
+    def test_targets_do_not_duplicate_when_parent_is_cli(self, monkeypatch):
+        monkeypatch.setattr(launcher, "ancestor_pids", lambda pid: [10, 20])
+        monkeypatch.setattr(launcher, "nearest_agent_cli_pid", lambda pids: 10)
+        monkeypatch.setattr(launcher.psutil, "Process", lambda pid: pid)
+        assert launcher._parent_watch_targets() == [10]
+
+    def test_alive_when_same_process(self):
+        assert launcher._is_target_alive(launcher.psutil.Process(os.getpid()))
+
+    def test_not_running_is_dead(self):
+        class Stub:
+            def is_running(self):
+                return False
+
+        assert not launcher._is_target_alive(Stub())
+
+    def test_zombie_is_dead(self):
+        class Stub:
+            def is_running(self):
+                return True
+
+            def status(self):
+                return launcher.psutil.STATUS_ZOMBIE
+
+        assert not launcher._is_target_alive(Stub())
+
+    def test_psutil_error_is_dead(self):
+        class Stub:
+            def is_running(self):
+                raise launcher.psutil.AccessDenied()
+
+        assert not launcher._is_target_alive(Stub())
+
+    def test_watchdog_without_targets_starts_no_thread(self, monkeypatch):
+        started = []
+        monkeypatch.setattr(launcher.threading, "Thread", lambda *a, **k: started.append(1))
+        launcher._start_parent_watchdog([])
+        assert started == []
+
+    def test_alive_even_if_clock_was_stepped(self, monkeypatch):
+        """システム時計の補正でcreate_time()がずれても、生きている親を死亡扱いしない。"""
+        import psutil
+
+        proc = psutil.Process(os.getpid())
+        # パッチ前に一度判定してcreate_timeをキャッシュさせる(補正後の値と比べさせるため)
+        assert launcher._is_target_alive(proc)
+        # psutilの時計補正の内部実装に依存するため、触れない環境ではskipする
+        if sys.platform == "darwin" and hasattr(psutil._psosx, "INIT_BOOT_TIME"):
+            monkeypatch.setattr(psutil._psosx, "INIT_BOOT_TIME", psutil._psosx.INIT_BOOT_TIME + 2)
+        elif sys.platform.startswith("linux") and hasattr(psutil._pslinux, "boot_time"):
+            orig = psutil._pslinux.boot_time
+            monkeypatch.setattr(psutil._pslinux, "boot_time", lambda: orig() + 2)
+        else:
+            pytest.skip("時計補正を再現できないプラットフォーム")
+        assert launcher._is_target_alive(proc)
+
+    def test_force_exit_uses_nonzero_code(self, monkeypatch):
+        codes = []
+        monkeypatch.setattr(launcher.os, "_exit", codes.append)
+        launcher._force_exit()
+        assert codes == [1]
