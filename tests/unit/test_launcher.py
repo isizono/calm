@@ -2742,13 +2742,35 @@ class TestParentWatch:
     def test_alive_when_same_process(self):
         assert launcher._is_target_alive(launcher.psutil.Process(os.getpid()))
 
-    def test_exited_process_is_treated_as_dead(self):
-        import subprocess
+    def test_not_running_is_dead(self):
+        class Stub:
+            def is_running(self):
+                return False
 
-        child = subprocess.Popen([sys.executable, "-c", "pass"])
-        proc = launcher.psutil.Process(child.pid)
-        child.wait()
-        assert not launcher._is_target_alive(proc)
+        assert not launcher._is_target_alive(Stub())
+
+    def test_zombie_is_dead(self):
+        class Stub:
+            def is_running(self):
+                return True
+
+            def status(self):
+                return launcher.psutil.STATUS_ZOMBIE
+
+        assert not launcher._is_target_alive(Stub())
+
+    def test_psutil_error_is_dead(self):
+        class Stub:
+            def is_running(self):
+                raise launcher.psutil.AccessDenied()
+
+        assert not launcher._is_target_alive(Stub())
+
+    def test_watchdog_without_targets_starts_no_thread(self, monkeypatch):
+        started = []
+        monkeypatch.setattr(launcher.threading, "Thread", lambda *a, **k: started.append(1))
+        launcher._start_parent_watchdog([])
+        assert started == []
 
     def test_alive_even_if_clock_was_stepped(self, monkeypatch):
         """システム時計の補正でcreate_time()がずれても、生きている親を死亡扱いしない。"""

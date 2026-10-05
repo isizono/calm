@@ -137,3 +137,13 @@ def test_launcher_exits_when_direct_parent_dies(launcher_env, spawned, held_stdi
     middle.wait()
 
     assert _wait_gone(launcher_pid, 15), "直接の親が死んだのにlauncherが残った"
+
+
+def test_exited_process_is_treated_as_dead(spawned):
+    from src import launcher
+
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    spawned.append(child)
+    proc = psutil.Process(child.pid)
+    child.wait()
+    assert not launcher._is_target_alive(proc)
