@@ -49,6 +49,7 @@ if str(_project_root) not in sys.path:
 
 from hooks.delegate_marker import write_delegate_marker  # noqa: E402
 
+# 「完了したら」節の担い手の生死の規則は、skills/orch/SKILL.mdの窓口の生死の規則と揃える（bgはorch skillを読まずに動くため再掲している）
 _TEMPLATE = """あなたはCALMのアクティビティ「{activity_title}」の実装担当のbgセッションです。
 指示を出したのはこのアクティビティを束ねるorchです。報告は常にそのorchアクティビティへadd_logsで書いてください(具体的な宛先は下のステップ3・4で確認します)。
 
@@ -83,7 +84,7 @@ _TEMPLATE = """あなたはCALMのアクティビティ「{activity_title}」の
 
 ## 完了したら
 3・4で控えた親のorchアクティビティへadd_logsで報告を書く。書く内容は、PR番号・CIの状態・自分で判断したこと・残っていること。
-そのあとget_by_idsでそのアクティビティの説明の担い手欄(名前とsessionId)を読み、`claude agents --json`でそのsessionIdと名前の両方が一致する行にpidがあれば、その行のnameへSendMessageで「orchのログに報告を書いた」と要旨を知らせる。空席・死んでいる・送れないときは知らせを省く。
+そのあとget_by_idsでそのアクティビティの説明の担い手欄(sessionId)を読み、`claude agents --json`でそのsessionIdが一致しpidがある行を探す（名前は照合に使わない。複数あればstartedAtが最も新しい行）。あれば、その行の今のnameへSendMessageで「orchのログに報告を書いた」と要旨を知らせる。空席・死んでいる・送れないときは知らせを省く。
 報告のあとは次の指示を待ち、自分から終わらない。
 """
 
