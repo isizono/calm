@@ -8,6 +8,7 @@ from datetime import datetime, timezone, timedelta
 from unittest.mock import patch
 
 import pytest
+from src import config
 from src.db import get_connection
 from src.services.topic_service import add_topic
 from src.services.activity_service import (
@@ -29,7 +30,7 @@ from hooks.session_start_hook import (
     _calc_elapsed_days,
     _DETERMINISTIC_RENDER_NOTICE,
     _LEGEND_LINE,
-    _TIER2_MAX_ITEMS,
+    _UNDISPLAYED_EXAMPLE_DOMAINS,
 )
 
 _NAV_BASE = (
@@ -105,9 +106,40 @@ def test_deterministic_render_notice_constant():
     assert "再フォーマットや優先順の再評価をせず" in _DETERMINISTIC_RENDER_NOTICE
 
 
-def test_tier2_max_items_constant():
-    """階層 2 の上限は 5"""
-    assert _TIER2_MAX_ITEMS == 5
+def test_tier2_max_items_constant(monkeypatch):
+    """環境変数が未設定なら階層 2 の上限は既定の5"""
+    import importlib.util
+
+    monkeypatch.delenv("CALM_TIER2_MAX_ITEMS", raising=False)
+    spec = importlib.util.find_spec("src.config")
+    fresh_config = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fresh_config)
+
+    assert fresh_config.TIER2_MAX_ITEMS == 5
+
+
+def test_tier2_max_items_reads_env_var(monkeypatch):
+    """CALM_TIER2_MAX_ITEMSを設定してconfigを読み込むと、その値になる"""
+    import importlib.util
+
+    monkeypatch.setenv("CALM_TIER2_MAX_ITEMS", "10")
+    spec = importlib.util.find_spec("src.config")
+    fresh_config = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fresh_config)
+
+    assert fresh_config.TIER2_MAX_ITEMS == 10
+
+
+def test_tier2_max_items_negative_env_clamped_to_zero(monkeypatch):
+    """負値を指定しても階層2の上限は0に丸まり、末尾スライスで意図と逆に出ない"""
+    import importlib.util
+
+    monkeypatch.setenv("CALM_TIER2_MAX_ITEMS", "-1")
+    spec = importlib.util.find_spec("src.config")
+    fresh_config = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fresh_config)
+
+    assert fresh_config.TIER2_MAX_ITEMS == 0
 
 
 def test_calc_elapsed_days_today():
@@ -491,6 +523,93 @@ class TestUndisplayedSection:
         idx_small = result.index("- small", idx_section)
         assert idx_big < idx_small
 
+    def _add_domain_activities(self, name: str, n: int) -> None:
+        for i in range(n):
+            add_activity(
+                title=f"[作業] {name}-{i}", description="Desc",
+                tags=[f"domain:{name}"], check_in=False,
+            )
+
+    @pytest.mark.parametrize(
+        "counts",
+        [
+            [("d0", 3), ("d1", 2), ("d2", 1)],
+            [("d0", 4), ("d1", 3), ("d2", 2), ("d3", 1)],
+        ],
+        ids=["3domains", "4domains"],
+    )
+    def test_four_or_fewer_domains_no_fold(self, temp_db, counts):
+        """domainが4個以下なら、まとめ行が出ず、全domainが例示付きで出る"""
+        for name, n in counts:
+            self._add_domain_activities(name, n)
+
+        result = _build_active_context_wrapper()
+
+        assert "ほか" not in result
+        for name, n in counts:
+            assert f"- {name} {n}件：" in result
+
+    def test_five_domains_folds_to_top_three_plus_summary(self, temp_db):
+        """5 domain（件数がすべて異なる）なら、例示行がちょうど3行、件数の
+        多い順に出て、そのあとにまとめ行が1行出る"""
+        counts = [("d0", 5), ("d1", 4), ("d2", 3), ("d3", 2), ("d4", 1)]
+        for name, n in counts:
+            self._add_domain_activities(name, n)
+
+        result = _build_active_context_wrapper()
+
+        assert "## 未表示 15件" in result
+        section = result[result.index("## 未表示"):]
+        example_lines = [
+            line for line in section.splitlines()
+            if line.startswith("- ") and not line.startswith("- ほか")
+        ]
+        assert len(example_lines) == _UNDISPLAYED_EXAMPLE_DOMAINS
+        assert [line.split(" ")[1] for line in example_lines] == ["d0", "d1", "d2"]
+
+        summary_line = next(line for line in section.splitlines() if line.startswith("- ほか"))
+        assert summary_line == "- ほか2 domain：d3 2件、d4 1件"
+
+    def test_undisplayed_heading_unaffected_by_folding(self, temp_db):
+        """未表示の見出し総数は、畳んでも畳まなくても変わらない"""
+        counts = [("d0", 3), ("d1", 2), ("d2", 2), ("d3", 1), ("d4", 1)]
+        for name, n in counts:
+            self._add_domain_activities(name, n)
+
+        result = _build_active_context_wrapper()
+
+        assert "## 未表示 9件" in result
+
+    def test_many_domains_summary_lists_all_without_truncation_within_budget(self, temp_db):
+        """まとめ行に、例示されなかったdomainが件数の多い順で漏れなく出る
+        （30 domainでも、どのdomain名も一覧から消えない）。組み立て結果は
+        既定予算4000字に収まり、固定ナビで終わる（切り詰めの印が出ない）"""
+        top = [("t0", 5), ("t1", 4), ("t2", 3)]
+        # 偶奇で件数を入れ違いに作り、まとめ行がdomain作成順ではなく
+        # 件数降順で並ぶことを検証する
+        rest = [(f"r{i:02d}", 2 if i % 2 == 0 else 1) for i in range(27)]
+        for name, n in top + rest:
+            self._add_domain_activities(name, n)
+
+        result = _build_active_context_wrapper()
+
+        total = sum(n for _, n in top + rest)
+        assert f"## 未表示 {total}件" in result
+
+        section = result[result.index("## 未表示"):]
+        summary_line = next(line for line in section.splitlines() if line.startswith("- ほか"))
+        assert summary_line.startswith(f"- ほか{len(rest)} domain：")
+        for name, _ in rest:
+            assert name in summary_line
+
+        entries = summary_line.split("：", 1)[1].split("、")
+        summary_counts = [int(entry.split(" ")[-1].rstrip("件")) for entry in entries]
+        assert summary_counts == sorted(summary_counts, reverse=True)
+
+        assert len(result) <= config.INJECTION_BUDGET_ACTIVITIES_CHARS
+        assert "切り詰め" not in result
+        assert result.endswith(_build_fixed_nav() + "\n")
+
 
 def test_build_activities_section_no_topic_section(temp_db):
     """旧トピックセクション（最新トピック:）は出力されない"""
@@ -520,6 +639,26 @@ def test_build_activities_section_tier2_capped_at_five(temp_db):
     tier2_block = result[idx_tier2:] if next_section == -1 else result[idx_tier2:next_section]
     shown = [line for line in tier2_block.splitlines() if line.startswith("- #")]
     assert len(shown) == 5
+    assert "## 未表示 2件" in result
+
+
+def test_build_activities_section_tier2_max_items_env_override(temp_db, monkeypatch):
+    """config.TIER2_MAX_ITEMSを増やすと、階層2の表示件数も連動して増える"""
+    monkeypatch.setattr(config, "TIER2_MAX_ITEMS", 10)
+    for i in range(12):
+        r = add_activity(
+            title=f"[作業] Activity {i}", description="Desc",
+            tags=["domain:myapp"], check_in=False,
+        )
+        update_activity(r["activity_id"], status="in_progress")
+
+    result = _build_active_context_wrapper()
+
+    idx_tier2 = result.index("## 優先")
+    next_section = result.find("\n## ", idx_tier2 + 1)
+    tier2_block = result[idx_tier2:] if next_section == -1 else result[idx_tier2:next_section]
+    shown = [line for line in tier2_block.splitlines() if line.startswith("- #")]
+    assert len(shown) == 10
     assert "## 未表示 2件" in result
 
 
