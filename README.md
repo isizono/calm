@@ -53,9 +53,9 @@ Windows 11（PowerShell）でもmacOS/Linuxと同じ手順でインストール�
 
 CALMのMCPツール定義は59本・約12万バイトあり、全部がモデルへ渡されると会話のたびにコンテキストを大きく占めます。Codexはtool searchが使えるモデル（OpenAIのドキュメントではgpt-5.4以降）ではツールを必要になってから読み込みますが、それより前のモデルでは全ツール定義が毎回載る可能性があります。
 
-その場合は、Codexの`~/.codex/config.toml`でCALMのMCPサーバーに`disabled_tools`（`enabled_tools`の後に適用される拒否リスト）を設定すると、普段使わないツールを隠せます。次の例は、他インスタンスとの記録の受け渡し、タグの整理、前提の揺らぎ管理、計測、補助のツールを隠します。
+その場合は、Codexの`~/.codex/config.toml`でCALMのMCPサーバーに`disabled_tools`（`enabled_tools`の後に適用される拒否リスト）を設定すると、普段使わないツールを隠せます。次の例は、他インスタンスとの記録の受け渡し、タグの整理、前提の揺らぎ管理、補助のツールを隠します。
 
-CALMをCodexのプラグインとして入れている場合は、プラグイン用のキーに書きます。`<plugin>`には`プラグイン名@マーケットプレイス名`を入れます。
+次の例はCALMをCodexのプラグインとして入れている場合の書き方です。テーブル名の`plugins."calm@calm-marketplace".mcp_servers.calm`は`plugins."プラグイン名@マーケットプレイス名".mcp_servers.<サーバー名>`の形です。
 
 ```toml
 [plugins."calm@calm-marketplace".mcp_servers.calm]
@@ -63,24 +63,13 @@ disabled_tools = [
   "collect_export_candidates", "export_bundle", "import_bundle", "set_instance_identity",
   "analyze_tags", "demote_tag_notes",
   "resolve_destabilization", "suggest_destabilized_candidates",
-  "detect_reask_candidates", "export_material", "roll_dice",
+  "export_material",
 ]
 ```
 
-MCPサーバーとして手動で登録している場合は、登録したサーバーのキーに書きます。次の例は`calm`という名前で登録した場合です。
+MCPサーバーとして手動で登録している場合は、テーブル名を登録したサーバーのキー（`calm`という名前で登録したなら`[mcp_servers.calm]`）に差し替え、`disabled_tools`は同じ内容を書きます。既存のcommandやurlなどの設定はそのまま残します。
 
-```toml
-[mcp_servers.calm]
-# 既存のcommand / urlなどの設定はそのまま残します
-disabled_tools = [
-  "collect_export_candidates", "export_bundle", "import_bundle", "set_instance_identity",
-  "analyze_tags", "demote_tag_notes",
-  "resolve_destabilization", "suggest_destabilized_candidates",
-  "detect_reask_candidates", "export_material", "roll_dice",
-]
-```
-
-隠したツールを使うスキル（`/memory-export`、`/memory-import`、`/tag-cleanup`など）は動かなくなります。必要になったらそのツールを一覧から外してください。設定項目の詳細は[Codexの設定リファレンス](https://developers.openai.com/codex/config-reference)を参照してください。ツール名の一覧は[リファレンス](docs/reference.md)にあります。
+隠したツールを使うスキル（`/memory-export`、`/memory-import`、`/tag-cleanup`）は動かなくなります。`/audit`や`/remember`などでタグのnotesを縮める手順も、`demote_tag_notes`を隠すと実行できません。必要になったらそのツールを一覧から外してください。設定項目の詳細は[Codexの設定リファレンス](https://developers.openai.com/codex/config-reference)を参照してください。ツール名の一覧は[リファレンス](docs/reference.md)にあります。
 
 ## 仕組みの概要
 
