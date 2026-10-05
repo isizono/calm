@@ -188,6 +188,7 @@ ACTIVITIES_BUDGET_CHARS: int = int(env_get("CALM_ACTIVITIES_BUDGET_CHARS", "1000
 # ものを除外する。get_habits・searchの返却対象からは除外しない（マニフェスト表示のみ制御）
 HABIT_MANIFEST_DECAY_DAYS: int = int(env_get("CALM_HABIT_MANIFEST_DECAY_DAYS", "90"))
 # tag notesの遭遇時自動注入から、作成後この日数を超え、かつ実際に全文配信された
-# 実績（last_injected_at）も同日数以内に更新されていないものを除外し、1行ポインタへ縮退する。
+# 実績（last_injected_at）・notes本文の最終更新（notes_updated_at）のどちらも
+# 同日数以内に更新されていないものを除外し、1行ポインタへ縮退する。
 # search_tags・update_tag等の返却対象からは除外しない（自動注入のみ制御）
 TAG_NOTES_DECAY_DAYS: int = int(env_get("CALM_TAG_NOTES_DECAY_DAYS", "180"))

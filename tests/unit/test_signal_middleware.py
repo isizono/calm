@@ -27,7 +27,10 @@ def _make_call_context(tool_name="add_decisions", arguments=None, session_id="se
 
 
 @pytest.mark.asyncio
-async def test_records_machine_error_on_unhandled_exception(temp_db):
+async def test_records_machine_error_on_unhandled_exception(temp_db, monkeypatch):
+    monkeypatch.setattr(
+        "src.services.signal_middleware.get_caller_session_id", lambda: "sess-1"
+    )
     middleware = SignalCaptureMiddleware()
     context = _make_call_context(tool_name="add_decisions")
 

@@ -417,6 +417,39 @@ class TestNotesOverBudget:
         assert str(_TAG_NOTES_RATCHET_CEILING + 1) in budget_hints[0]["message"]
         assert budget_hints[0]["suggested_action"]["tool"] == "demote_tag_notes"
 
+    def test_fires_for_plain_tag(self, temp_db):
+        """notes_over_budgetはdomain:に限らず素タグ(namespace無し)でも発火する"""
+        add_topic(title="t", description="d", tags=["plain-over-budget"])
+        tag_id = _tag_id("plain-over-budget", namespace="")
+        force_notes_over_ceiling(tag_id, _TAG_NOTES_RATCHET_CEILING + 1)
+
+        hints = get_hints("tag", tag_id)
+        budget_hints = [h for h in hints if h["type"] == "notes_over_budget"]
+        assert len(budget_hints) == 1
+        assert budget_hints[0]["suggested_action"]["tool"] == "demote_tag_notes"
+        assert budget_hints[0]["suggested_action"]["args_hint"] == {"tag": "plain-over-budget"}
+
+    def test_fires_for_plain_tag_attached_to_activity(self, temp_db):
+        """活動に紐づく素タグがnotes天井を超えている場合、check_inの
+        get_hints_with_conn("activity", ...)経由でもnotes_over_budgetが出る
+        （_get_hints_for_activityがdomain:限定で絞り込んでいないことの確認）"""
+        activity = add_activity(
+            "t", "d", tags=[DOMAIN_TAG, "plain-activity-over-budget"]
+        )
+        tag_id = _tag_id("plain-activity-over-budget", namespace="")
+        force_notes_over_ceiling(tag_id, _TAG_NOTES_RATCHET_CEILING + 1)
+
+        conn = get_connection()
+        try:
+            hints = get_hints_with_conn(conn, "activity", activity["activity_id"])
+        finally:
+            conn.rollback()
+            conn.close()
+
+        budget_hints = [h for h in hints if h["type"] == "notes_over_budget"]
+        assert len(budget_hints) == 1
+        assert budget_hints[0]["source"] == f"notes_over_budget:tag:{tag_id}"
+
     def test_silent_within_ceiling(self, temp_db):
         topic = add_topic(title="t", description="d", tags=[DOMAIN_TAG])
         tag_id = _tag_id(DOMAIN_TAG_NAME)

@@ -3,6 +3,7 @@ import pytest
 from src.db import get_connection
 from src.services.activity_service import add_activity, get_activities, update_activity
 from src.services.activity_service import add_activity, get_activities, update_activity, ACTIVITY_DESC_MAX_LEN
+from src.services.topic_service import DESC_ELLIPSIS
 
 
 DEFAULT_TAGS = ["domain:test"]
@@ -500,7 +501,7 @@ class TestGetActivities:
 
         assert "error" not in result
         activity = result["activities"][0]
-        assert len(activity["description"]) == ACTIVITY_DESC_MAX_LEN
+        assert activity["description"] == "a" * ACTIVITY_DESC_MAX_LEN + DESC_ELLIPSIS
 
 
 class TestUpdateActivity:

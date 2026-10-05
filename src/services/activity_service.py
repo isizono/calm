@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 # get_activitiesでdescriptionを切り詰める上限文字数
 ACTIVITY_DESC_MAX_LEN = 200
 from src.config import ACTIVITIES_BUDGET_CHARS, HEARTBEAT_TIMEOUT_MINUTES, SNOOZE_DURATION_DAYS
+from src.services.topic_service import DESC_ELLIPSIS
 from src.services.response_budget import BudgetPolicy, CutStep
 # DB格納可能なステータス値
 REAL_STATUSES = {"pending", "in_progress", "completed", "snoozed", "shelved"}
@@ -504,16 +505,20 @@ def get_activities(
         activities = []
         for row in rows:
             activity = row_to_dict(row)
+            full_description = activity["description"] or ""
             item = {
                 "id": activity["id"],
                 "title": activity["title"],
-                "description": (activity["description"] or "")[:ACTIVITY_DESC_MAX_LEN],
+                "description": full_description[:ACTIVITY_DESC_MAX_LEN],
                 "status": activity["status"],
                 "tags": tags_map.get(activity["id"], []),
                 "created_at": activity["created_at"],
                 "updated_at": activity["updated_at"],
                 "is_heartbeat_active": bool(activity["is_heartbeat_active"]),
             }
+            if len(full_description) > ACTIVITY_DESC_MAX_LEN:
+                item["description"] += DESC_ELLIPSIS
+                item["description_truncated"] = True
             strip_entity_id_inplace(item)
             activities.append(item)
 
@@ -672,7 +677,8 @@ def update_activity(
         activity_id: アクティビティID
         status: 新しいステータス（optional）
         title: 新しいタイトル（optional、35字以内）
-        description: 新しい説明（optional）
+        description: 新しい説明（optional）。現在値の先頭200字（末尾の省略記号・前後の空白は
+            無視）と一致する値（get_activitiesが切って返した形）はVALIDATION_ERRORで拒否する
         tags: 新しいタグ配列（optional、指定時は全置換。1個以上必須）
         closed_by: activityを閉じた意思の主体（"user"|"claude"|"external"）。
             status="completed"と同時のときだけ受け付ける。省略時、紐づくgoalが
@@ -791,6 +797,26 @@ def update_activity(
                 "error": {
                     "code": "NOT_FOUND",
                     "message": f"Activity with id {activity_id} not found",
+                }
+            }
+
+        # 一覧で切られたdescription（先頭200字＋省略記号）をそのまま書き戻すと
+        # 後半が消えるため止める
+        current_description = row["description"] or ""
+        if (
+            description is not None
+            and len(current_description) > ACTIVITY_DESC_MAX_LEN
+            and description.strip().removesuffix(DESC_ELLIPSIS)
+            == current_description[:ACTIVITY_DESC_MAX_LEN]
+        ):
+            return {
+                "error": {
+                    "code": "VALIDATION_ERROR",
+                    "message": (
+                        "description is the truncated form shown in get_activities "
+                        f"(first {ACTIVITY_DESC_MAX_LEN} chars + '{DESC_ELLIPSIS}'). "
+                        "Fetch the full text with get_by_ids before rewriting"
+                    ),
                 }
             }
 
