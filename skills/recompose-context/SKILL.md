@@ -1,13 +1,13 @@
 ---
 name: recompose-context
-description: アクティビティ・トピック・decisionなどの全関連情報を統合・整理し、anchor対応表を作って次のcheck-inを最適化する。リコンサイル（無効化・再編）と、整理範囲のアクティビティのgoal・親への結びつけのメンテも同時に行う。全体モード（`--all`）ではアクティビティ(active/shelved/snoozed)全域を棚卸しし、実態確認のうえでcompleted化・shelved化・description訂正・重複統合・裁定待ちに処遇する。TRIGGER: 「/recompose」「recompose」「情報整理して」「まとめて」「リコンサイル」、全体モードは「/recompose --all」「アクティビティ棚卸しして」「activity棚卸し」「アクティビティの整理して」など。DO NOT TRIGGER: sync-memory Step 4a(標準形のみで実行される、セッション終了時の軽い自己完結処理)の自動棚卸し、単一アクティビティを完了にせず中断する操作(activity-pause)、単一アクティビティの完了(activity-finish)、タグの共起分析・整理(tag-cleanup)には発動しない。
+description: 関連するアクティビティ・トピック・decisionを統合整理し、anchor対応表付きの資材にして次のcheck-inを軽くする。「情報整理して」「まとめて」「リコンサイル」「anchor作って」、全域の棚卸しは「アクティビティ棚卸しして」などで発動。
 ---
 
 # recompose-context
 
 指定された入口（activity/topic/decisionどれでもOK）から関連する全情報（topics, decisions, logs, materials）を読み込み、統合material（anchor対応表付き）の生成・軽照合・リコンサイル・tag pin・tag-notes更新を行う。**次のcheck-inだけで作業に必要な情報が全部揃っている状態**を作ることがゴール。
 
-anchorの新規作成・更新は [setup-anchor](../setup-anchor/SKILL.md) skillに委譲する（責務分離）。
+anchorの新規作成・更新の対話手順は [references/anchor-setup.md](references/anchor-setup.md) に従う。「anchor作って」「検証先決めたい」など、anchorだけを決めたい依頼でもこの手順だけを使う。
 
 ## モード
 
@@ -21,6 +21,10 @@ anchorの新規作成・更新は [setup-anchor](../setup-anchor/SKILL.md) skill
 ## 発動契機
 
 実行は手動（ユーザーが「やるか」と言って初めて走る）。check-in時のナッジhint（tagスコープ内のdecision増分検知、全体モードは放置アクティビティ件数の検知）から誘導されることもある。実行コンテキストは限定しない: 別セッションで単独実行しても、sync-memoryの延長でやってもよい。
+
+発話の例: 「/recompose」「recompose」「情報整理して」「まとめて」「リコンサイル」。全体モードは「/recompose --all」「アクティビティ棚卸しして」「activity棚卸し」「アクティビティの整理して」など。
+
+次には発動しない: sync-memory標準形のStep 4a（セッション終了時の軽い自己完結処理）の自動棚卸し、単一アクティビティの完了・中断（activity-finish）、タグの共起分析・整理（tag-cleanup）。
 
 ## 手順
 
@@ -62,7 +66,7 @@ OK が出たら自走モードに入り、以降ステップ2-8はユーザー�
 
 #### サイズ予算
 
-2,000〜3,000字を目安、最大5,000字まで許容（参考値、実運用で調整）。このmaterialはcheck-inのたびに**全文注入**されるため、予算超過は継続コストになる。超えそうなら要約の密度を上げるか、整理単位の分割を検討する。
+2,000〜3,000字を目安、最大5,000字まで許容（参考値、実運用で調整）。このmaterialはcheck-inのたびに**全文注入**されるため、予算超過は継続コストになる。check-in応答全体が予算を超えると、pin枠を超えた分から途中で切られる・スタブ化される（応答のnextフィールドにget_materialへのポインタが残る）ため、超えそうなら要約の密度を上げるか、整理単位の分割を検討する。
 
 #### tagスコープとの対応
 
@@ -108,9 +112,9 @@ tagスコープとmaterialは原則1対1。1つのtagに複数のmaterialが必�
 
 推測できた合意事項は anchor対応表 に直接追加。推測できない / 確証が低いものは **buffer** に溜める。
 
-#### 3-b. setup-anchor 起動
+#### 3-b. anchor確定の対話
 
-buffer が空でなければ setup-anchor skill を起動して、ユーザーと対話してanchor確定する。結果（mode=created）は anchor対応表 に merge する。
+buffer が空でなければ [references/anchor-setup.md](references/anchor-setup.md) の手順で、ユーザーと対話してanchor確定する。結果（mode=created）は anchor対応表 に merge する。
 
 #### 3-c. anchor対応表の統合
 
@@ -128,7 +132,7 @@ buffer が空でなければ setup-anchor skill を起動して、ユーザー�
 SA（run_in_background）で並行実行。結果はマトリクス化して、合意との一致/ズレを記録。
 
 - 一致 → そのまま維持
-- ズレ → 「残論点」に追加。ズレが「anchor側が古い」起因なら setup-anchor の更新モードに回す候補としてマーク
+- ズレ → 「残論点」に追加。ズレが「anchor側が古い」起因なら anchor-setup.md の更新モードに回す候補としてマーク
 
 ### 5. リコンサイル（無効化・再編）
 
@@ -158,6 +162,7 @@ SA（run_in_background）で並行実行。結果はマトリクス化して、�
   3. `update_goal(goal_id=<親のgoal_id_raw>, changes=[{"op": "add", "statement": "子「<子のtitle>」のgoalがachievedで閉じた（済にする前にget_goalで判定を確かめる）", "actor": "claude", "bound": {"type": "activity", "id": <子のid>}}])` で条件を足す
 
   誤った結びつけは条件をwaivedにして結び直せるので、ユーザーに確認しない。親が推せないときは何もしない
+- **束ね役の親の提案**（上の「親が推せないときは何もしない」の例外）: どの親にも結べない未完了のアクティビティが、共通する素タグ（`domain:`と`intent:`以外）で見て同じテーマで3本以上溜まっているときは、確認レーンに「常設の領域orchを立てて結ぶ」案を積む（子の候補とテーマを添える）。同じテーマかの判定に迷うものは提案に含めない。先に、そのテーマを束ねるorchが既にあるかを[orch](../orch/SKILL.md) skillの「一覧」と同じ取り方で探す。同じ範囲に空席のorchがあれば新設せず、そこへ結ぶ（上の「親への結びつけ」に戻る）。無いときだけ提案し、了承を得たら、orch skillの「担い手空席の常設orchとして起票する」手順で立てて子を結ぶ。了承なしには立てない
 
 #### 自律度ルール（暫定・運用後見直し前提）
 
@@ -176,7 +181,7 @@ SA（run_in_background）で並行実行。結果はマトリクス化して、�
 - log に懸念明記
 - 推測でしか判定不可
 
-確認はバッファに溜めて最後に一括提示・ジャッジ。重大な矛盾だけはその場で確認（ハイブリッド）。アクティビティのメンテで終了条件や親が推せないものは、確認に回さず何もしない。
+確認はバッファに溜めて最後に一括提示・ジャッジ。重大な矛盾だけはその場で確認（ハイブリッド）。アクティビティのメンテで終了条件や親が推せないものは、確認に回さず何もしない（束ね役の親の提案を除く）。
 
 ### 6. material の保存と tag pin
 
@@ -218,7 +223,7 @@ logs・decisionsの中で言及されているが正式relationが張られて�
 - M#xxx（tag pin: <代表tag>）
 
 ### anchor対応表
-- 合計N件（推測のみ N件 / setup-anchor確定 N件 / 更新 N件）
+- 合計N件（推測のみ N件 / 対話確定 N件 / 更新 N件）
 
 ### 軽照合
 - 一致 N件 / ズレ N件（→残論点）

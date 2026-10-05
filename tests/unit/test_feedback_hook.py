@@ -782,9 +782,10 @@ class TestMaintenanceHintPromoteLine:
         assert "未処理の躓き3件" in reason
 
 
-class TestAgentTypeSuppressesUtteranceOnly:
-    """サブエージェント発のUserPromptSubmit(agent_typeがtruthy)は発話タイミングの
-    配達を止めるが、ツール失敗・実行直前の配達は続ける。"""
+class TestAgentTypeSuppressesUtteranceAndToolFail:
+    """サブエージェント発(agent_typeがtruthy)は発話タイミング・ツール失敗の
+    いずれも配達を止める（書き込みを禁止されたサブエージェントに促しを
+    届けても実行できないため）。実行直前の配達（block）は続ける。"""
 
     def test_agent_type_suppresses_utterance_delivery(self, db, capsys):
         _create_entry(
@@ -804,7 +805,7 @@ class TestAgentTypeSuppressesUtteranceOnly:
         assert out == {}
         assert _row("stump-a")["delivered_count"] == 0
 
-    def test_agent_type_does_not_suppress_tool_fail_delivery(self, db, capsys):
+    def test_agent_type_suppresses_tool_fail_delivery(self, db, capsys):
         _create_entry(
             "fail-a",
             body="タイムアウトの躓き",
@@ -822,7 +823,8 @@ class TestAgentTypeSuppressesUtteranceOnly:
             },
             capsys,
         )
-        assert "タイムアウトの躓き" in out["hookSpecificOutput"]["additionalContext"]
+        assert out == {}
+        assert _row("fail-a")["delivered_count"] == 0
 
     def test_agent_type_does_not_suppress_pre_tool_block(self, db, capsys):
         _create_entry(
@@ -839,3 +841,55 @@ class TestAgentTypeSuppressesUtteranceOnly:
             capsys,
         )
         assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+class TestNonhumanTurnSuppressesUtteranceDelivery:
+    """prompt本文に中継・通知のマーカーが含まれるUserPromptSubmitは、
+    agent_typeキーが無くても発話タイミングの配達を止める。"""
+
+    def test_cross_session_relay_prompt_suppresses_delivery(self, db, capsys):
+        _create_entry("stump-relay", condition={"tool": None, "all": []})
+        prompt = (
+            'Another Claude session sent a message:\n'
+            '<agent-message from="abc">report body</agent-message>'
+        )
+        out = _run_main_with_event(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "prompt": prompt,
+            },
+            capsys,
+        )
+        assert out == {}
+        assert _row("stump-relay")["delivered_count"] == 0
+
+    def test_task_notification_prompt_suppresses_delivery(self, db, capsys):
+        _create_entry("stump-task", condition={"tool": None, "all": []})
+        prompt = "<task-notification>\n<status>completed</status>\n</task-notification>"
+        out = _run_main_with_event(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "prompt": prompt,
+            },
+            capsys,
+        )
+        assert out == {}
+        assert _row("stump-task")["delivered_count"] == 0
+
+    def test_plain_human_prompt_still_delivered(self, db, capsys):
+        """マーカーを含まない通常の発話では、従来通り配達される（回帰確認）。"""
+        _create_entry("stump-human", condition={"tool": None, "all": []})
+        out = _run_main_with_event(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "s1",
+                "prompt_id": "p1",
+                "prompt": "これはふつうの発話です",
+            },
+            capsys,
+        )
+        assert _row("stump-human")["delivered_count"] == 1

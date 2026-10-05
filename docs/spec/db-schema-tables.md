@@ -5,7 +5,7 @@
 <!-- 再生成: uv run python scripts/dump_db_schema.py -->
 
 `migrations/` を通し番号順に全適用した結果として得られる、現在のテーブル/ビュー構造の機械的な写しである。
-カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0086）。
+カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0088）。
 
 「なぜこの形なのか」（設計判断の背景・変遷・既知の課題）は `docs/spec/db-schema.md` を参照。
 本ファイルは現在値のみを扱い、変遷の経緯（旧カラムの削除理由等）は記載しない。
@@ -955,6 +955,31 @@ CREATE TABLE "habits" (
     importance_score REAL NOT NULL DEFAULT 1.0 CHECK(importance_score IN (1, 2, 3)),
     last_recalled_at TIMESTAMP NULL,
     status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived'))
+)
+```
+
+</details>
+
+### hint_cooldowns
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| tag_id | INTEGER | NO | — | PK |
+| marker | TEXT | NO | — | PK |
+| until_date | TEXT | NO | — | — |
+| updated_at | TIMESTAMP | NO | `CURRENT_TIMESTAMP` | — |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE hint_cooldowns (
+    tag_id      INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    marker      TEXT NOT NULL,
+    until_date  TEXT NOT NULL,
+    updated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (tag_id, marker)
 )
 ```
 

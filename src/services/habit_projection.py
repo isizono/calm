@@ -8,11 +8,6 @@
 export()（または export_and_annotate()）を呼ぶこと。呼び忘れても次のセッション
 開始時のリコンサイル（verify_and_heal）が自己修復するため事故にはならないが、
 反映が1セッション分遅れる。
-
-注: verify_and_healはこのモジュール内に実装済みだが、本PR時点ではSessionStart
-hookからまだ呼び出されていない（接続は別PRで実施予定）。そのためこの docstring
-が説明する自己修復は現時点では発生せず、export呼び忘れは次にexportが呼ばれる
-（もしくはhook接続後のセッション開始）までそのまま反映されない。
 """
 import hashlib
 import logging
@@ -26,6 +21,7 @@ from pathlib import Path
 
 from src import config
 from src.db import get_connection
+from src.infra.file_ops import replace_retrying
 from src.services.habit_service import (
     get_active_habit_contents_with_conn,
     list_intelligently_habit_manifest_with_conn,
@@ -238,7 +234,7 @@ def _write(body: str, *, force: bool) -> dict:
             / f"{_TMP_FILE_PREFIX}{os.getpid()}-{threading.get_ident()}{_TMP_FILE_SUFFIX}"
         )
         tmp_path.write_text(file_content, encoding="utf-8")
-        os.replace(tmp_path, path)
+        replace_retrying(tmp_path, path)
 
         _cleanup_stale_tmp_files(path.parent)
 

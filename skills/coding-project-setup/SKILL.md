@@ -1,11 +1,18 @@
 ---
 name: coding-project-setup
-description: コードプロジェクト向けの知識フレームセットアップ。原則project-setup skillのプロファイリング（Step 1〜2）を経て委譲される。エンジニアのユーザーが「coding-project-setup」と直接呼んだ場合も発動してよい（その場合もペルソナがauto-memoryに無ければproject-setup側のプロファイリングを先に行う）。DO NOT TRIGGER: コードを扱わない取り組みのセットアップ（project-setupの職種中立経路が担当）、exportバンドルの取り込み（memory-import）。
+description: コードプロジェクトの知識フレームを、リポジトリのmd走査とヒアリングで埋める。通常はproject-setupのプロファイリングを経て引き継がれ、「coding-project-setupして」と直接頼まれたときも発動。
+user-invocable: false
 ---
 
 # coding-project-setup
 
 コードプロジェクトの知識フレームをセットアップする。project-setupのsub-skillで、プロファイリング済み（相手はエンジニア・目的は開発）を前提とする。ゴールは「次のセッションがcheck_in・searchで文脈を取れる状態」。既存mdの走査とインタビューは排他ではなく、同一フレームを埋める2つの充填手段。mdで埋まった項目はスキップし、穴だけ聞く。
+
+## 発動の入口
+
+原則として[project-setup](../project-setup/SKILL.md) skillのプロファイリング（Step 1〜2）を経て委譲される。エンジニアのユーザーが直接頼んだ場合も発動してよいが、ペルソナがauto-memoryに無ければproject-setup側のプロファイリングを先に行う。
+
+コードを扱わない取り組みのセットアップはproject-setupの職種中立経路の担当であり、本スキルは発動しない。
 
 ## フレーム定義（最低限ここまで）
 

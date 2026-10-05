@@ -147,6 +147,9 @@ def extract_events(
                                     event["activity_id"] = int(aid)
                                 except (ValueError, TypeError):
                                     pass
+                            ts = entry.raw.get("timestamp") if isinstance(entry.raw, dict) else None
+                            if isinstance(ts, str) and ts:
+                                event["ts"] = ts
                         elif short_name == "add_decisions":
                             items = block.get("input", {}).get("items", [])
                             topic_ids: list[int] = []
@@ -466,7 +469,7 @@ def get_transcript_info(transcript_path: str) -> tuple[list[dict], bool]:
     last_user_has_command = False
 
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
                 if not line:

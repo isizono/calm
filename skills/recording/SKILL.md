@@ -1,6 +1,7 @@
 ---
 name: recording
-description: 【必須】議論で複数案を比較して採択した、作業中に詰まって解決した、PR レビューで複数 fix した、ドラフト・調査レポート・比較表が出来上がった、バグを観察した、ユーザー指示で方針が変わったなど、セッション中に「経緯」または「成果物」が発生したときに発動。このスキルを経由せずに add_logs / add_material を直接呼んではいけない。記録ガイドが docstring から本スキルに集約されているため、判断基準を skip すると記録漏れが発生する。発動対象は add_logs と add_material のみ。add_decisions / add_topic / add_habit は対象外（別経路で扱う）。
+description: 【必須】セッション中の経緯と成果物を記録する。複数案からの採択、詰まりの解決、PRレビューでの複数修正、バグの観察、指示による方針転換、ドラフト・調査レポート・比較表の完成などで発動。このスキルを経由せずにadd_logs・add_materialを呼ばない。
+user-invocable: false
 ---
 
 # recording
@@ -55,10 +56,11 @@ L5（バグ観察）はユーザーが取り組んでいる対象システムの
 | `friction` | 検索で引けるべき記録が引けなかった等、CALM の使い勝手への不満・違和感を感じた |
 | `contradiction` | 設計・実装中に既存 decision と矛盾する結論に達した / `add_decisions` の `related_decisions`、`add_logs`/`add_material` の `related_records` で矛盾に気づいた |
 
-上記3種は頻出例であり、`report_signal` の kind は全8種ある（`precedent_miss` /
-`precedent_misapplied` / `boundary_case` / `rollback` / `goal_rollback` を含む）。
-`goal_rollback` は `update_goal` の `reopen_reason`（goal 判定の差し戻し）が書く
-専用の kind で、手で報告するものではない。全種の定義は `report_signal` ツールの
+上記3種は頻出例であり、`report_signal` の kind は全9種ある（`precedent_miss` /
+`precedent_misapplied` / `boundary_case` / `rollback` / `goal_rollback` /
+`guard_block` を含む）。`goal_rollback` は `update_goal` の `reopen_reason`
+（goal 判定の差し戻し）が、`guard_block` はhookのdeny判定が書く専用の kind で、
+いずれも手で報告するものではない。全種の定義は `report_signal` ツールの
 docstringを正とする。同一内容の再報告は `report_signal` 側で自動集約されるため、
 迷ったら報告してよい。
 

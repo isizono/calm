@@ -30,7 +30,9 @@ if str(_project_root) not in sys.path:
 
 from hooks.hook_state import HookState
 from hooks.signal_capture import try_capture_signal
+from hooks.turn_origin import is_nonhuman_turn
 from src.harness import select_harness
+from src.infra.file_ops import replace_retrying
 
 
 _FOLLOW_UP_NUDGE_MESSAGE = (
@@ -123,11 +125,41 @@ def main() -> None:
         # 本経路はcompose()を経由せずharness.emit_additional_contextへ直接
         # 渡すため文字数予算による切り詰めが発生しない。budget_charsを渡さず
         # resolved全件をそのまま消費する。
-        from hooks.ask_notify_section import build_ask_notify_lines
+        from hooks.ask_notify_section import (
+            build_ask_notify_lines,
+            build_neighbor_ask_lines,
+            mark_neighbor_asks_notified,
+        )
 
         ask_notify_lines = build_ask_notify_lines(session_id)
+        # check_in先と隣の作業を止めていたaskの知らせ。自分のaskの行と同じ1回の
+        # 出力にまとめる。早期returnは自分のaskの行を出したときだけで、隣の作業の
+        # 行だけのときは下の人間発話判定・nudge判定へ進み、記録の促しを押し出さない。
+        neighbor_lines, neighbor_ids = build_neighbor_ask_lines(session_id)
         if ask_notify_lines:
-            harness.emit_additional_context(_wrap_system_reminder("\n".join(ask_notify_lines)))
+            body = "\n".join([*ask_notify_lines, *neighbor_lines])
+            mark_neighbor_asks_notified(session_id, neighbor_ids)
+            harness.emit_additional_context(_wrap_system_reminder(body))
+            return
+
+        def _emit(message: str | None) -> None:
+            """neighbor行（あれば）とnudge文面（あれば）を1回の出力にまとめて出す。"""
+            parts = []
+            if neighbor_lines:
+                parts.append(_wrap_system_reminder("\n".join(neighbor_lines)))
+                mark_neighbor_asks_notified(session_id, neighbor_ids)
+            if message:
+                parts.append(message)
+            if parts:
+                harness.emit_additional_context("\n".join(parts))
+            else:
+                harness.emit_empty()
+
+        # 3.6 人間の発話でないターン（SAの報告中継・他セッションからのメッセージ・
+        # バックグラウンドタスク通知・システム通知）ではnudgeを配達しない。
+        # イベントはconsumedマークせず温存し、次の人間の発話で改めて判定する。
+        if is_nonhuman_turn(data.get("prompt")):
+            harness.emit_empty()
             return
 
         # 4. 未消費のnudgeイベント判定（events空なら for loop は即抜ける）
@@ -148,11 +180,11 @@ def main() -> None:
 
             e["consumed"] = True
             _rewrite_events(state, events)
-            harness.emit_additional_context(message)
+            _emit(message)
             return
 
-        # 5. 何もなし
-        harness.emit_empty()
+        # 5. nudgeなし（隣の作業のask行があればそれだけを出す）
+        _emit(None)
 
     except Exception as e:
         # フェイルオープン: 例外時は空応答 + stderrログ
@@ -171,7 +203,7 @@ def _rewrite_events(state: HookState, events: list[dict]) -> None:
         tmp = f.name
         for event in events:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
-    os.replace(tmp, state.events_path)
+    replace_retrying(tmp, state.events_path)
 
 
 if __name__ == "__main__":

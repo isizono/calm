@@ -1,6 +1,7 @@
 ---
 name: ask-distill
-description: add_askのレスポンスのsimilar_asksを見て、同型の問いが繰り返され裁定が一貫していると気づいたときに、判例をまとめてメタask（kind="meta"）を起票する。「同じような質問を何度もaskしている」「similar_asksの裁定が毎回同じ」に気づいた場面で発動する。add_askのdocstringから参照される。
+description: add_askの応答のsimilar_asksを見て、同型の問いが繰り返され裁定が一貫していると気づいたとき、判例をまとめてメタask（kind="meta"）を起票する。
+user-invocable: false
 ---
 
 # ask-distill
@@ -16,6 +17,8 @@ description: add_askのレスポンスのsimilar_asksを見て、同型の問い
 
 裁定が割れている・件数が少ない（同型が初出）・`similar_asks`が空、のいずれかに該当する場合は発動しない。
 
+`add_ask`のdocstringからも本スキルが案内される。
+
 ## 手順
 
 1. **トリガーaskのblocksを確認する**: 今まさに起票したask（直前の`add_ask`呼び出しの返り値の`id`）について、その`add_ask`呼び出しに渡した`blocks`引数の値をそのまま使う（改めて`get_asks`等で取り直さない）。
@@ -30,5 +33,6 @@ description: add_askのレスポンスのsimilar_asksを見て、同型の問い
 
 ## 注意
 
+- 手順3のメタask起票は`ask-compose` skillを経由しない。本スキル自身がメタask専用の組み立て方（question/context/blocksの構成）を持つため。
 - メタaskの裁定（人間の回答）が「自己裁定してよい」であっても、一般化ルールが自動発効するわけではない。発効は人間のメタask裁定でのみ行われ、機械もLLMも勝手に発効しない（`RULES`の「## Asks（判断委譲）」節参照）。
 - メタask自体も答え待ちの間、渡した`blocks`のactivityを止める。トリガーaskと同じblocksを渡すため、二重に答え待ちが積まれる形になるが、これは意図的（両方とも同じactivityの進行を実際に止めている判断待ちのため）。

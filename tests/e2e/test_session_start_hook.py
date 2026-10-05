@@ -36,6 +36,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 def temp_db(_temp_db_template):
     """テスト用の一時的なデータベースを作成する"""
     import src.config
+    from src.env_compat import env_pop, env_set
+
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
         shutil.copyfile(_temp_db_template, db_path)
@@ -44,10 +46,14 @@ def temp_db(_temp_db_template):
             if os.path.exists(aux_src):
                 shutil.copyfile(aux_src, db_path + suffix)
         os.environ["DISCUSSION_DB_PATH"] = db_path
+        # CALM_DB_PATH（旧名含む）が実行環境に設定されていると
+        # DISCUSSION_DB_PATHより優先されるため、同じ隔離パスで上書きする。
+        env_set("CALM_DB_PATH", db_path)
         src.config.DB_PATH = db_path
         yield db_path
         if "DISCUSSION_DB_PATH" in os.environ:
             del os.environ["DISCUSSION_DB_PATH"]
+        env_pop("CALM_DB_PATH")
         src.config.DB_PATH = None
 
 
@@ -1128,6 +1134,28 @@ class TestSessionStartHookSignals:
         context = result["hookSpecificOutput"]["additionalContext"]
 
         assert "未トリアージのシグナル" not in context
+
+    def test_custom_kind_folded_in_breakdown(self, temp_db):
+        """custom:プレフィックスのkindは個別名を出さず「custom N」の1項目に畳まれる"""
+        _seed_signal("machine_error", "boom")
+        _seed_signal("custom:rule_conflict", "外部ルール衝突")
+        _seed_signal("custom:other_thing", "別のカスタム観測")
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "未トリアージのシグナル: 3件 (machine_error 1 / custom 2) → get_signals で確認" in context
+        assert "custom:rule_conflict" not in context
+        assert "custom:other_thing" not in context
+
+    def test_custom_only_breakdown(self, temp_db):
+        """custom以外のkindが無いときもbreakdownは「custom N」だけになる"""
+        _seed_signal("custom:rule_conflict", "外部ルール衝突")
+
+        result = _run_session_start_hook(temp_db)
+        context = result["hookSpecificOutput"]["additionalContext"]
+
+        assert "未トリアージのシグナル: 1件 (custom 1) → get_signals で確認" in context
 
 
 class TestSessionStartHookAskNotify:

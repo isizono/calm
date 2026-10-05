@@ -1,6 +1,7 @@
 ---
 name: ask-compose
-description: 【必須】add_askを呼ぶ前に必ず発動し、question/contextをテンプレートに沿って構成することをガイドする。離席中・セッション跨ぎでしか答えられない判断が発生しadd_askを呼ぼうとしている場面（AI自発判断）に加え、「これ聞いといて」「これaskして」「判断委譲しといて」「離席するから後で確認して」「非同期で聞いておいて」「これは私が戻ってから判断する」など、ユーザーが明示的に非同期の判断委譲を指示した場面でも発動する。このスキルを経由せずにaskのquestion/contextを直接書いてはいけない。add_ask呼び出し**後**にレスポンスのsimilar_asksを見てメタask起票を検討するのは別役割のask-distill skill（起票**前**の構成は本スキル、起票**後**の同型判定はask-distill）。
+description: 【必須】add_askでaskを起票する前に、question/contextをテンプレートで組み立てる。離席中・セッション跨ぎでしか答えられない判断が出たときや、「これ聞いといて」「判断委譲しといて」「後で確認して」などで発動。このスキルを経由せずにaskの文面を書かない（メタaskを除く）。
+user-invocable: false
 ---
 
 # ask-compose
@@ -21,6 +22,8 @@ description: 【必須】add_askを呼ぶ前に必ず発動し、question/contex
 - `add_ask`のquestion/context欄の構成
 
 `add_ask`呼び出し後、レスポンスの`similar_asks`から同型askの反復に気づいたときのメタask起票は`ask-distill` skillが担当する。本スキルはメタask化の判定を行わない。
+
+`kind="meta"`のメタask自体の起票は本スキルを経由しない。`ask-distill`・`ask-watch`が各々の組み立て方（question/context/blocksの構成）に従って直接`add_ask`を呼ぶ。
 
 ## なぜこの構成にするか
 
@@ -146,6 +149,8 @@ Claude Codeでは、`add_ask`を呼んだ直後からCALMのhookが裏で回答�
 3. statusが`answered`なら、読んだら早めに`triage_ask`で処理済みにする（決定として残す内容なら`promote`、そうでなければ`dismiss`）。回答済み・未トリアージのまま残すと、check_inでの再配達や外部の作業再開の仕組みが同じaskで二重に動くことがある
 
 その場で待つ必要が無いask（後で気づけば十分な優先度のもの）は`notify=False`で積む。hookは待たず、起こしもしない。積んだ後で待つのをやめたい場合は`unsubscribe_ask`を呼ぶ（待機中のhookも止まる。ただし複数セッションから積まれた同じ問いのaskには使えない）。
+
+積んだaskが、その後の会話の途中で実質決着していると気づいたとき（ユーザーが別の場で同じ件に答えた、議論の中で結論が出た、など）は、その時点で答えを `add_decisions` で決定事項に記録してから取り下げる（未回答なら `withdraw_ask`、回答済み未triageなら `triage_ask`）。askを開いたまま残すと、完了したactivityにぶら下がって誰にも届かない待ちになる。
 
 hookが待つのは最長で約24時間。それを過ぎた場合や、hookの無いハーネス（Codex等）では、SessionStart/UserPromptSubmit hookがこのセッションの登録したaskの解決状況を毎ターン確認して知らせる。
 

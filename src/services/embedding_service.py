@@ -1,4 +1,5 @@
 """Embeddingサービス: embedding_serverへのHTTPクライアント + vec_index操作"""
+import contextlib
 import json
 import logging
 import subprocess
@@ -13,13 +14,20 @@ from sqlite_vec import serialize_float32
 
 from src.db import execute_query, get_connection
 from src.env_compat import env_get
+from src.http_config import EMBEDDING_PORT as PORT
+from src.infra.detached_process import DetachedProcess, popen_detached
 from src.infra.lock_file import is_port_listening
+from src.infra.loopback_http import NO_PROXY_OPENER
 
 logger = logging.getLogger(__name__)
 
 # サーバー接続設定
-PORT = 52836
-SERVER_URL = f"http://localhost:{PORT}"
+# embedding_serverはIPv4(127.0.0.1)でしか待ち受けないため、"localhost"は使わない
+# （環境によっては::1が先に解決され、接続のたびに拒否待ちの遅延が乗りうる）。
+SERVER_URL = f"http://127.0.0.1:{PORT}"
+
+# プロキシを無視するオープナー(src.infra.loopback_httpのdocstring参照)
+_NO_PROXY_OPENER = NO_PROXY_OPENER
 
 
 def _resolve_project_root() -> str:
@@ -40,7 +48,7 @@ def _resolve_project_root() -> str:
         result = subprocess.run(
             ["git", "rev-parse", "--git-common-dir"],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8",
             check=True,
             cwd=Path(__file__).parent,
         )
@@ -137,13 +145,47 @@ def _is_server_running() -> bool:
     """GET /health でサーバーの生存確認を行う。"""
     try:
         req = urllib.request.Request(f"{SERVER_URL}/health")
-        with urllib.request.urlopen(req, timeout=2) as resp:
+        with _NO_PROXY_OPENER.open(req, timeout=2) as resp:
             return resp.status == 200
     except Exception:
         return False
 
 
-def _start_server() -> Optional[subprocess.Popen]:
+# embedding_server自身のembedding-server.log（src/infra/embedding_server.py）と同じ場所
+_SERVER_STDERR_LOG_PATH = Path("~/.cache/cc-memory/embedding-server.stderr.log")
+
+
+_SERVER_STDERR_LOG_MAX_BYTES = 1024 * 1024
+
+
+@contextlib.contextmanager
+def _resolve_server_stderr_target():
+    """embedding_serverのstderr先を開いて渡す。準備に失敗したらDEVNULLにフォールバックする。
+
+    ロガー設定前に落ちるimportエラー等はembedding-server.logに残らず、こちらにしか
+    残らない。生きている先行プロセスがまだ書いている可能性があるため追記で開き、
+    起動ごとに区切り行を入れる。肥大は上限超過時のみ起動時にtruncateして防ぐ。
+    診断用ログの用意の失敗はサーバー起動を止める理由にしない。
+    """
+    try:
+        path = _SERVER_STDERR_LOG_PATH.expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.stat().st_size > _SERVER_STDERR_LOG_MAX_BYTES:
+            path.write_bytes(b"")
+        stderr_log = open(path, "ab")
+        stderr_log.write(f"--- spawn {time.strftime('%Y-%m-%dT%H:%M:%S%z')} ---\n".encode())
+        stderr_log.flush()
+    except OSError as e:
+        logger.warning(f"Failed to prepare embedding server stderr log, falling back to DEVNULL: {e}")
+        yield subprocess.DEVNULL
+        return
+    try:
+        yield stderr_log
+    finally:
+        stderr_log.close()
+
+
+def _start_server() -> Optional[DetachedProcess]:
     """embedding_serverをdetachedプロセスとして起動する。成功でPopen、失敗でNone。
 
     `-m src.infra.embedding_server` のモジュール実行形式で起動する（launcher.py の
@@ -160,13 +202,13 @@ def _start_server() -> Optional[subprocess.Popen]:
         logger.warning(f"Failed to resolve project root for embedding server: {e}")
         return None
     try:
-        proc = subprocess.Popen(
-            [sys.executable, "-m", "src.infra.embedding_server"],
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            cwd=cwd,
-        )
+        with _resolve_server_stderr_target() as stderr_target:
+            proc = popen_detached(
+                [sys.executable, "-m", "src.infra.embedding_server"],
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_target,
+                cwd=cwd,
+            )
     except OSError as e:
         logger.warning(f"Failed to start embedding server: {e}")
         return None
@@ -216,7 +258,7 @@ def _ensure_server_running() -> bool:
                 _last_spawn_failed_at = time.time()
                 return False
         # タイムアウト。bind 済み（= ロード進行中で、完了すれば応答する）なら生かし、
-        # bind 前に固まっている子は回収する。放置すると stdout/stderr が DEVNULL の
+        # bind 前に固まっている子は回収する。放置すると stdout が DEVNULL の
         # 不可視プロセスとしてモデルロード分のメモリを抱えたまま残留するため。
         if is_port_listening(PORT):
             logger.warning(
@@ -259,7 +301,7 @@ def _encode_batch(texts: list[str], prefix: str) -> Optional[list[list[float]]]:
             data=data,
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with _NO_PROXY_OPENER.open(req, timeout=60) as resp:
             result = json.loads(resp.read())
             return result["embeddings"]
     except Exception as e:

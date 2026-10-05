@@ -23,10 +23,14 @@ harness側は読みかけの末尾行（改行未到達）の分もオフセッ�
 契約のため、そのまま使うと書きかけの行を「読了済み」として飲み込み、
 完成を待たずに消えてしまう。1エントリの正規化（`to_entry`）だけは
 ClaudeCodeHarnessを再利用する。
+
+tmux・flockに依存するためWindowsには移植しない。`main()`はWindowsでは
+何もせず即座に戻る。`import fcntl`はその手前に到達しないコード
+（`_acquire_lock`）に閉じ込め、モジュール自体はWindowsでもimportできる
+ようにする。
 """
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import re
@@ -49,6 +53,7 @@ from src.env_compat import env_get
 from src.harness import select_harness
 from src.harness.claude_code import ClaudeCodeHarness
 from src.harness.interface import TranscriptEntry
+from src.infra.lock_file import is_process_alive
 from src.infra.process_signature import process_start_signature
 
 DEFAULT_DB_PATH = Path.home() / ".claude" / ".claude-code-memory" / "discussion.db"
@@ -91,6 +96,7 @@ _DEFAULT_CURSOR: dict = {
     "offset_lost": 0,
     "chunks_since_restart": 0,
     "restart_count": 0,
+    "unlinked_materials": [],
 }
 
 
@@ -366,6 +372,7 @@ def _format_topics(topics: list[dict] | None) -> str:
 def _render_chunk(
     no: int, activity_id: int | None, topics: list[dict] | None,
     start_uuid: str | None, end_uuid: str | None, cut_chunkable: list[_Line],
+    unlinked_materials: list[int] | None = None,
 ) -> str:
     header = [
         f"# 片 {no:04d}",
@@ -373,10 +380,11 @@ def _render_chunk(
         f"- activity_id: {activity_id if activity_id is not None else '(未設定)'}",
         f"- topic候補: {_format_topics(topics)}",
         f"- 範囲: {start_uuid or '(先頭)'} 〜 {end_uuid or '(不明)'}",
-        "",
-        "---",
-        "",
     ]
+    if activity_id is not None and unlinked_materials:
+        ids = ", ".join(str(m) for m in unlinked_materials)
+        header.append(f"- 未紐づけの記録: material {ids}")
+    header += ["", "---", ""]
     body_parts = [t for line in cut_chunkable if (t := _normalize_line_text(line.entry))]
     return "\n".join(header) + "\n\n".join(body_parts) + "\n"
 
@@ -419,8 +427,11 @@ def _acquire_lock(run_dir: Path):
     """run_dir/watch.lockをexclusive lockして返す。取れなければNone。
 
     見張りは実測上つねに1本のはず（前のターンのhookが生きたまま次のStop
-    が来る）なので、取れないときは即座に諦める。
+    が来る）なので、取れないときは即座に諦める。fcntlはPOSIX専用のため、
+    main()のWindowsガードより後にしか到達しないここでimportする。
     """
+    import fcntl
+
     lock_path = run_dir / "watch.lock"
     fh = open(lock_path, "a+")
     try:
@@ -445,10 +456,66 @@ def _find_done_numbers(text: str) -> set[int]:
     return {int(m.group(1)) for m in _DONE_RE.finditer(text)}
 
 
+def _try_parse_material_id(text: str) -> int | None:
+    """JSON文字列からadd_materialレスポンスのmaterial_idを抽出する。"""
+    try:
+        data = json.loads(text)
+        if not isinstance(data, dict):
+            return None
+        mid = data.get("material_id")
+        if mid is not None:
+            return int(mid)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        pass
+    return None
+
+
+def _collect_unlinked_materials(path: Path, start_offset: int) -> list[int]:
+    """start_offset以降の記録役自身のtranscriptから、`related`なしで呼ばれた
+    add_materialのmaterial_idを集める（activity未設定の片を処理したターン分）。
+    """
+    lines, _ = _read_lines(path, start_offset)
+    pending_use_ids: set[str] = set()
+    material_ids: list[int] = []
+    for line in lines:
+        for block in line.entry.content:
+            block_type = block.get("type")
+            if block_type == "tool_use":
+                name = block.get("name", "")
+                if not _is_calm_tool(name) or _extract_short_name(name) != "add_material":
+                    continue
+                if block.get("input", {}).get("related"):
+                    continue
+                use_id = block.get("id")
+                if use_id:
+                    pending_use_ids.add(use_id)
+            elif block_type == "tool_result":
+                use_id = block.get("tool_use_id")
+                if use_id not in pending_use_ids:
+                    continue
+                content = block.get("content", "")
+                if isinstance(content, str):
+                    texts = [content]
+                elif isinstance(content, list):
+                    texts = [b.get("text", "") for b in content if isinstance(b, dict)]
+                else:
+                    texts = []
+                for text in texts:
+                    material_id = _try_parse_material_id(text)
+                    if material_id is not None:
+                        material_ids.append(material_id)
+                        break
+    return material_ids
+
+
 def _advance_cursor_from_pending(cursor: dict, pending: dict) -> None:
     cursor["last_uuid"] = pending["end_uuid"]
     cursor["byte_offset"] = pending["end_offset"]
     cursor["activity_id_at_cursor"] = pending["end_activity_id"]
+    own_transcript_path = pending.get("own_transcript_path")
+    if own_transcript_path is not None:
+        new_ids = _collect_unlinked_materials(Path(own_transcript_path), pending["own_transcript_offset"])
+        cursor.setdefault("unlinked_materials", []).extend(new_ids)
 
 
 def _resolve_pending(cursor: dict, last_msg: str) -> str:
@@ -457,6 +524,8 @@ def _resolve_pending(cursor: dict, last_msg: str) -> str:
     done_numbers = _find_done_numbers(last_msg)
     if pending["no"] in done_numbers:
         _advance_cursor_from_pending(cursor, pending)
+        if pending.get("clears_unlinked_materials"):
+            cursor["unlinked_materials"] = []
         cursor["pending"] = None
         return "done"
     if pending.get("retries", 0) == 0:
@@ -572,6 +641,7 @@ def _read_int_env(name: str) -> int | None:
 def _emit_new_chunk(
     run_dir: Path, cursor: dict, cursor_path: Path,
     lines: list[_Line], cut_chunkable: list[_Line], cut_end_offset: int,
+    own_transcript_path: str | None,
 ) -> int:
     no = cursor["next_no"]
     cursor["next_no"] = no + 1
@@ -582,21 +652,30 @@ def _emit_new_chunk(
         activity_id = cursor.get("activity_id_at_cursor")
 
     topics = _topic_candidates(_resolve_db_path(), activity_id)
+    unlinked_materials = cursor.get("unlinked_materials") or []
 
     chunk_path = run_dir / "chunks" / f"{no:04d}.md"
     chunk_path.parent.mkdir(parents=True, exist_ok=True)
     chunk_path.write_text(
-        _render_chunk(no, activity_id, topics, cursor.get("last_uuid"), end_uuid, cut_chunkable),
+        _render_chunk(no, activity_id, topics, cursor.get("last_uuid"), end_uuid, cut_chunkable, unlinked_materials),
         encoding="utf-8",
     )
 
-    cursor["pending"] = {
+    pending = {
         "no": no,
         "end_uuid": end_uuid,
         "end_offset": cut_end_offset,
         "end_activity_id": activity_id,
         "retries": 0,
     }
+    if activity_id is None and own_transcript_path:
+        own_path = Path(own_transcript_path)
+        pending["own_transcript_path"] = str(own_path)
+        pending["own_transcript_offset"] = own_path.stat().st_size if own_path.exists() else 0
+    if activity_id is not None and unlinked_materials:
+        pending["clears_unlinked_materials"] = True
+
+    cursor["pending"] = pending
     _write_json_atomic(cursor_path, cursor)
     return _emit_chunk_message(run_dir, cursor["pending"])
 
@@ -612,6 +691,7 @@ def _watch(run_dir: Path, hook_input: dict, *, sleep, now) -> int:
     cursor = _load_cursor(cursor_path)
 
     last_msg = hook_input.get("last_assistant_message") or ""
+    own_transcript_path = hook_input.get("transcript_path")
 
     if cursor.get("pending") is not None:
         outcome = _resolve_pending(cursor, last_msg)
@@ -635,13 +715,8 @@ def _watch(run_dir: Path, hook_input: dict, *, sleep, now) -> int:
     dead_poll_count = 0
 
     while True:
-        if claude_pid is not None:
-            try:
-                os.kill(claude_pid, 0)
-            except ProcessLookupError:
-                return 0
-            except PermissionError:
-                pass
+        if claude_pid is not None and not is_process_alive(claude_pid):
+            return 0
 
         if process_start_signature(main_pid) == main_pid_started_at:
             dead_poll_count = 0
@@ -665,16 +740,16 @@ def _watch(run_dir: Path, hook_input: dict, *, sleep, now) -> int:
 
         if boundary_idx is not None:
             cut = chunkable[:boundary_idx]
-            return _emit_new_chunk(run_dir, cursor, cursor_path, lines, cut, cut[-1].end_offset)
+            return _emit_new_chunk(run_dir, cursor, cursor_path, lines, cut, cut[-1].end_offset, own_transcript_path)
 
         if _total_chars(chunkable) >= CHAR_THRESHOLD:
             end_offset = lines[-1].end_offset if lines else cursor["byte_offset"]
-            return _emit_new_chunk(run_dir, cursor, cursor_path, lines, chunkable, end_offset)
+            return _emit_new_chunk(run_dir, cursor, cursor_path, lines, chunkable, end_offset, own_transcript_path)
 
         if main_confirmed_dead:
             if chunkable:
                 end_offset = lines[-1].end_offset if lines else cursor["byte_offset"]
-                return _emit_new_chunk(run_dir, cursor, cursor_path, lines, chunkable, end_offset)
+                return _emit_new_chunk(run_dir, cursor, cursor_path, lines, chunkable, end_offset, own_transcript_path)
             _terminate(run_dir, main_sid)
             return 0
 
@@ -686,6 +761,10 @@ def _watch(run_dir: Path, hook_input: dict, *, sleep, now) -> int:
 
 
 def main(argv: list[str] | None = None, *, sleep=time.sleep, now=time.time) -> int:
+    if sys.platform == "win32":
+        # 記録役はtmux前提でWindowsには未対応。呼ばれる経路自体が無い想定だが、
+        # 万一呼ばれても何もせず戻る。
+        return 0
     try:
         if os.environ.get("HOOK_STATE_DIR"):
             HookState.BASE_DIR = Path(os.environ["HOOK_STATE_DIR"])

@@ -16,15 +16,22 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 import uuid
 from pathlib import Path
 
 from src.env_compat import env_get, env_names, env_set
+from src.infra.detached_process import popen_detached
 from src.infra.git_repo import resolve_main_repo_root
 from src.infra.plugin_install import resolve_installed_plugin_root
+from src.infra.loopback_http import NO_PROXY_OPENER
 from src.infra.session_identity import (
+    HARNESS_CLAUDE_CODE,
+    HARNESS_CODEX,
+    ancestor_pids,
+    detect_harness_by_ancestry,
     register_launcher_session,
     unregister_launcher_session,
 )
@@ -110,10 +117,6 @@ BACKOFF_CAP_SEC = 60
 # bridge identity ヘッダ名。全MCPリクエストに付与し、calm server 再起動を
 # またいで安定な呼び出し元識別子として src/infra/session_identity.py が読む。
 BRIDGE_SESSION_HEADER = "X-Calm-Bridge-Session-Id"
-# 改名前の旧ヘッダ名。移行期間中は新旧両方に同じ値を載せて送る。main を pull
-# してからサーバーを再起動するまでの間、改名前のコードで動いているサーバーは
-# 旧ヘッダしか読まないため、新ヘッダだけだと呼び出し元を識別できなくなる。
-LEGACY_BRIDGE_SESSION_HEADER = "X-CC-Memory-Bridge-Session-Id"
 
 HEARTBEAT_INTERVAL_ENV = "CALM_LAUNCHER_HEARTBEAT_SEC"
 DEFAULT_HEARTBEAT_INTERVAL_SEC = 60.0
@@ -263,6 +266,18 @@ _cleanup_done = False
 # =============================================
 
 
+def _open_bridge_request(req: urllib.request.Request, *, timeout: float):
+    """ローカルモード(ループバック接続)はプロキシを常に無視し、リモートモードは
+    既定のプロキシ設定(環境変数・Windowsレジストリ等)に従う。
+
+    リモートモードの接続先はユーザーが指定した任意のホストであり、社内プロキシ
+    経由が必要な場合があるため、ループバック専用のNO_PROXY_OPENERを使わない。
+    """
+    if _IS_LOCAL:
+        return NO_PROXY_OPENER.open(req, timeout=timeout)
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
 def _is_server_running() -> bool:
     """HTTPサーバーの生存確認を行う。
 
@@ -274,13 +289,47 @@ def _is_server_running() -> bool:
             MCP_ENDPOINT,
             method="GET",
         )
-        with urllib.request.urlopen(req, timeout=2) as resp:
+        with _open_bridge_request(req, timeout=2) as resp:
             return resp.status == 200
     except urllib.error.HTTPError as e:
         # 4xx系HTTPエラーは「サーバー起動済み」を意味する
         return e.code in (405, 406, 400)
     except Exception:
         return False
+
+
+def _server_stderr_log_path() -> Path:
+    """起動直後に落ちたサーバーの手がかりを残すstderrログ先。
+
+    `_setup_server_logging`（src/main.py）がserver.logを置く`logs/`
+    ディレクトリと同じ場所に置く。import時点で落ちるような致命的な失敗
+    （トップレベルimportの例外等）はlogging設定前のため、そちらでは
+    拾えずこちらにしか残らない。
+    """
+    from src.db import get_db_path
+
+    return Path(get_db_path()).parent / "logs" / "server.stderr.log"
+
+
+@contextlib.contextmanager
+def _resolve_server_stderr_target():
+    """server.stderr.logを開いて渡す。準備に失敗したらDEVNULLにフォールバックする。
+
+    診断用ログの用意（ディレクトリ作成・ファイルオープン）自体の失敗は、
+    サーバー起動そのものを止める理由にしない。
+    """
+    try:
+        stderr_path = _server_stderr_log_path()
+        stderr_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        stderr_log = open(stderr_path, "wb")
+    except OSError as e:
+        logger.warning(f"Failed to prepare server stderr log, falling back to DEVNULL: {e}")
+        yield subprocess.DEVNULL
+        return
+    try:
+        yield stderr_log
+    finally:
+        stderr_log.close()
 
 
 def _resolve_server_root() -> tuple[Path, str]:
@@ -317,7 +366,8 @@ def _start_http_server() -> bool:
     sys.executable自体がそれに当たる）。embedding_service等の子プロセスが
     起動元ルートを再解決できるよう、`CALM_PROJECT_ROOT`（新旧名）を起動対象の
     ルートで上書きしたenvをこのプロセス専用に渡す（launcher自身のos.environは
-    変更しない）。
+    変更しない）。stderrは可能ならDEVNULLではなくファイルへ向ける（肥大しないよう
+    起動のたびに上書きする）。
     """
     root, source = _resolve_server_root()
     logger.info(f"Starting HTTP server from {source} root: {root}")
@@ -327,14 +377,14 @@ def _start_http_server() -> bool:
         env.pop(name, None)
     env["CALM_PROJECT_ROOT"] = str(root)
     try:
-        subprocess.Popen(
-            [python, "-m", "src.main", "--transport", "http"],
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            cwd=str(root),
-            env=env,
-        )
+        with _resolve_server_stderr_target() as stderr_target:
+            popen_detached(
+                [python, "-m", "src.main", "--transport", "http"],
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_target,
+                cwd=str(root),
+                env=env,
+            )
     except OSError as e:
         logger.warning(f"Failed to start HTTP server: {e}")
         return False
@@ -348,14 +398,20 @@ def _ensure_server_running() -> bool:
         return True
     # ロックファイルが存在する場合、別のランチャーが起動中の可能性がある。
     # 二重起動を避けてサーバーの準備完了を待つだけにする。
-    # ただしプロセスが死んでいる場合はstale lockとして削除し、新規起動する。
-    from src.infra.lock_file import read as read_lock, is_process_alive
+    # ただしプロセスが死んでいる、またはPID再利用で別プロセスに入れ替わって
+    # いる場合はstale lockとして削除し、新規起動する（ポートの生死はここでは
+    # 見ない。acquire()とmcp.run()の間にポート未listenの窓があり、ここで
+    # ポートを見ると起動直後の正常なサーバーをstale誤判定しうるため）。
+    from src.infra.lock_file import read as read_lock, is_lock_stale
     from src.infra.lock_file import LOCK_FILE
 
     lock_info = read_lock()
-    if lock_info is not None and not is_process_alive(lock_info["pid"]):
+    if lock_info is not None and is_lock_stale(lock_info):
         logger.info(f"Removing stale lock file: pid={lock_info['pid']}")
-        LOCK_FILE.unlink(missing_ok=True)
+        try:
+            LOCK_FILE.unlink(missing_ok=True)
+        except OSError as e:
+            logger.warning(f"Failed to remove stale lock file: {e}")
         lock_info = None
     if lock_info is None:
         if not _start_http_server():
@@ -375,16 +431,46 @@ def _ensure_server_running() -> bool:
 # =============================================
 
 
-def _current_harness_name() -> str:
-    """launcherプロセス自身のCALM_HARNESS envから起動器種別名を判定する。
+# _current_harness_name() の判定結果。祖先 pid の探索は `ps` を複数回呼ぶため、
+# heartbeat ごとの再登録で繰り返さないよう初回の結果を保持する（launcher の
+# 生存中に起動元 CLI が変わることは無い）。
+_harness_name_cache: str | None = None
 
-    src.harness.select_harnessと同じ判定基準(未設定・未知値はclaude_code)。
+
+def _current_harness_name() -> str:
+    """launcherを起動したエージェントCLIの種別名を判定する。
+
+    判定順:
+    1. launcherプロセス自身の`CALM_HARNESS`が`codex`ならcodex
+       (src.harness.select_harnessと同じ明示指定)
+    2. 祖先プロセスを自分に近い順にたどり、最初に見つかったエージェントCLI
+       (detect_harness_by_ancestry)
+    3. どちらでも決まらなければclaude_code(従来挙動)
+
+    2 が必要なのは、Codexが`~/.codex/config.toml`の`[mcp_servers.calm]`から
+    launcherを起動する際、MCPサーバーへ親の環境変数を引き継がず、
+    `CALM_HARNESS`も付与されないため。この状態で既定のclaude_codeへ倒すと、
+    Claude CodeのBashツールから起動した`codex exec`配下のlauncherが、親の
+    Claude Codeセッションとして台帳へ記録される。近い側のCLIを採用すれば
+    入れ子構成でもCodexと判定できる。
+
     calm server は launcher から見て別プロセス(ローカルは launcher が
     subprocess.Popen で起動する子、リモードは既存の常駐プロセス)で、複数の
     launcher(異なるharness由来を含む)を1つのserverプロセスが共有しうるため、
-    server側の自プロセスenvではなくlauncher側のenvで判定してPOSTボディに乗せる。
+    server側の自プロセスではなくlauncher側で判定してPOSTボディに乗せる。
     """
-    return "codex" if env_get("CALM_HARNESS", "").lower() == "codex" else "claude_code"
+    global _harness_name_cache
+    if _harness_name_cache is not None:
+        return _harness_name_cache
+    if env_get("CALM_HARNESS", "").lower() == HARNESS_CODEX:
+        name = HARNESS_CODEX
+    else:
+        name = (
+            detect_harness_by_ancestry(ancestor_pids(os.getpid()))
+            or HARNESS_CLAUDE_CODE
+        )
+    _harness_name_cache = name
+    return name
 
 
 def _register_session() -> bool:
@@ -404,7 +490,7 @@ def _register_session() -> bool:
             data=data,
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with _open_bridge_request(req, timeout=5) as resp:
             result = json.loads(resp.read())
             logger.info(f"Session registered: {result}")
             return True
@@ -422,7 +508,7 @@ def _unregister_session() -> bool:
             data=data,
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with _open_bridge_request(req, timeout=5) as resp:
             result = json.loads(resp.read())
             logger.info(f"Session unregistered: {result}")
             return True
@@ -451,10 +537,10 @@ class _StdinBridgeState:
 
     `_run_retry_loop` 内で1回だけ生成し、`_stdin_reader_task`（プロセス生存中
     ずっと動く）と複数回呼ばれる`_bridge`（bridge失敗のたびに再実行される）の
-    双方から共有する。stdin側の読み取りバッファ・transportは`_stdin_reader_task`
-    のローカル変数として閉じ込め、ここでは「サーバーへ転送待ちのメッセージ」
-    「サーバーへ送信済みで応答待ちのリクエストid」「stdinがEOFに達したか」の
-    3つだけを持つ。
+    双方から共有する。stdin側の読み取りバッファ・読み取りスレッドは
+    `_stdin_reader_task`のローカル変数として閉じ込め、ここでは「サーバーへ
+    転送待ちのメッセージ」「サーバーへ送信済みで応答待ちのリクエストid」
+    「stdinがEOFに達したか」の3つだけを持つ。
 
     `outbound`は、stdin EOF時に`_stdin_reader_task`が番兵として`None`を積む。
     `None`を取り出した側（`_bridge`の`queue_to_server`）は、まだ動いている
@@ -535,27 +621,153 @@ def _handle_stdin_line(line: bytes, state: "_StdinBridgeState") -> None:
     state.outbound.put_nowait(SessionMessage(message))
 
 
+_ERROR_BROKEN_PIPE = 109
+_FILE_TYPE_PIPE = 3
+
+# PeekNamedPipeで読める量が0の間、再確認までの待ち時間（秒）。stdin到着から
+# launcherが気づくまでの応答遅延の上限になる。
+_WINDOWS_PIPE_POLL_INTERVAL_SEC = 0.02
+
+
+class _PeekNamedPipeFailed(OSError):
+    """PeekNamedPipeが失敗したことを示す。winerrorにGetLastErrorの値を持つ。"""
+
+    def __init__(self, winerror: int) -> None:
+        super().__init__(f"PeekNamedPipe failed with winerror={winerror}")
+        self.winerror = winerror
+
+
+def _win_stdin_pipe_api(fd: int):
+    """Windows専用: stdin(fd)のGetFileTypeとPeekNamedPipeの薄いラッパーを返す。
+
+    `msvcrt`・`ctypes.WinDLL`・`ctypes.get_last_error()`はWindows以外には
+    存在しないため、呼び出し側（Windowsでのみ到達する経路）の中でだけ
+    importする。共有の`ctypes.windll.kernel32`にargtypesを設定すると
+    プロセス全体に影響するため、専用の`WinDLL`を使う。
+    """
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetFileType.argtypes = [wintypes.HANDLE]
+    kernel32.GetFileType.restype = wintypes.DWORD
+    kernel32.PeekNamedPipe.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.LPDWORD,
+        wintypes.LPDWORD,
+        wintypes.LPDWORD,
+    ]
+    kernel32.PeekNamedPipe.restype = wintypes.BOOL
+
+    handle = wintypes.HANDLE(msvcrt.get_osfhandle(fd))
+    file_type = kernel32.GetFileType(handle)
+
+    def peek() -> int:
+        """ブロックせず読める残量(バイト数)を返す。失敗時は`_PeekNamedPipeFailed`。"""
+        bytes_available = wintypes.DWORD(0)
+        ok = kernel32.PeekNamedPipe(
+            handle, None, 0, None, ctypes.byref(bytes_available), None
+        )
+        if not ok:
+            raise _PeekNamedPipeFailed(ctypes.get_last_error())
+        return bytes_available.value
+
+    return file_type, peek
+
+
+def _read_stdin_chunk_windows_pipe(fd: int, peek) -> bytes:
+    """Windowsの無名パイプstdin専用の読み取り。空バイト列はEOFを意味する。
+
+    別スレッドでのnumpy初回import（同梱OpenBLASのDLLロード）が、stdinの
+    ブロッキング読み取り中は完了しない問題への対策。`peek()`で読める量を
+    確認し、0の間はブロックせず待ってから再確認する。
+    """
+    while True:
+        try:
+            available = peek()
+        except _PeekNamedPipeFailed as e:
+            if e.winerror == _ERROR_BROKEN_PIPE:
+                return b""  # 書き込み側close = EOF
+            logger.warning(
+                f"PeekNamedPipe failed (winerror={e.winerror}), treating as EOF"
+            )
+            return b""
+        if available > 0:
+            return os.read(fd, min(available, 65536))
+        time.sleep(_WINDOWS_PIPE_POLL_INTERVAL_SEC)
+
+
+def _stdin_chunk_reader(fd: int):
+    """stdinの読み方を1チャンク分選ぶ。呼び出すたびに1チャンク返す関数を返す。
+
+    Windowsでstdinが無名パイプ（GetFileType == FILE_TYPE_PIPE）の場合だけ
+    PeekNamedPipe方式を使う。それ以外（POSIX全般、Windowsでファイル
+    リダイレクト等パイプでない場合）は従来通りのブロッキング`os.read`。
+    """
+    if sys.platform == "win32":
+        file_type, peek = _win_stdin_pipe_api(fd)
+        if file_type == _FILE_TYPE_PIPE:
+            return lambda: _read_stdin_chunk_windows_pipe(fd, peek)
+    return lambda: os.read(fd, 65536)
+
+
 async def _stdin_reader_task(state: "_StdinBridgeState") -> None:
     """stdinをプロセス生存中1回だけ読み取り続ける、bridgeのリトライを跨いで
     生きるタスク。
 
-    bridgeが失敗して再接続を試みている間も、このタスク自体は止まらない
-    （stdinのtransportをbridge失敗のたびに閉じて作り直すと、asyncioの
-    connect_read_pipeがイベントループを跨いで壊れるため）。行ごとにパースして
-    `_handle_stdin_line`に渡し、stdin EOFで終了する。終了時は`state.outbound`へ
-    番兵として`None`を積んでから`state.stdin_eof`をセットする（`queue_to_server`
-    側が素の`Queue.get()`だけでEOFを検知できるようにするため。`asyncio.wait`で
-    getとEvent待ちを競わせる方式は、getが完了した直後にキャンセルされると
-    取り出したメッセージが誰にも回収されずに消える窓があるため使わない）。
+    bridgeが失敗して再接続を試みている間も、このタスク自体は止まらない。
+    OSレベルの読み取りはブロッキングのdaemonスレッドで回し、
+    `loop.call_soon_threadsafe`経由でイベントループ側の
+    `asyncio.StreamReader`へ`feed_data`/`feed_eof`する（asyncioの既定
+    イベントループの中には、stdinを`connect_read_pipe`で読もうとすると
+    壊れるものがあるため、全OS共通でスレッド読み取りに揃える）。読み取り方
+    自体は`_stdin_chunk_reader`が選ぶ（POSIXおよびWindowsでパイプでない
+    場合はブロッキングの`os.read`、Windowsで無名パイプの場合はPeekNamedPipe
+    方式）。イベントループが既に閉じた後にスレッド側から
+    `call_soon_threadsafe`を呼ぶとRuntimeErrorになるが、daemonスレッド
+    なのでプロセス終了は妨げず、その例外は握りつぶしてよい。読み取りの
+    開始・継続いずれが失敗してもWARNINGを出したうえでEOF扱いにし、終了
+    経路に必ず乗せる。
+    行ごとにパースして`_handle_stdin_line`に渡し、stdin EOFで終了する。
+    終了時は`state.outbound`へ番兵として`None`を積んでから
+    `state.stdin_eof`をセットする（`queue_to_server`側が素の`Queue.get()`
+    だけでEOFを検知できるようにするため。`asyncio.wait`でgetとEvent待ちを
+    競わせる方式は、getが完了した直後にキャンセルされると取り出した
+    メッセージが誰にも回収されずに消える窓があるため使わない）。
     """
     loop = asyncio.get_running_loop()
     reader = asyncio.StreamReader()
-    transport, _ = await loop.connect_read_pipe(
-        lambda: asyncio.StreamReaderProtocol(reader),
-        sys.stdin.buffer,
-    )
+
+    def _feed_data(chunk: bytes) -> None:
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(reader.feed_data, chunk)
+
+    def _feed_eof() -> None:
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(reader.feed_eof)
+
+    def _read_stdin() -> None:
+        try:
+            fd = sys.stdin.buffer.fileno()
+            read_chunk = _stdin_chunk_reader(fd)
+            while True:
+                chunk = read_chunk()
+                if not chunk:
+                    break
+                _feed_data(chunk)
+        except Exception:
+            logger.warning("Failed to read stdin", exc_info=True)
+        finally:
+            _feed_eof()
+
     buffer = b""
     try:
+        # スレッド生成自体の失敗（例: OSのスレッド数上限）もここでEOF終了
+        # 経路に乗せる必要があるため、try の外ではなく内側で起動する。
+        threading.Thread(target=_read_stdin, daemon=True).start()
         while True:
             chunk = await reader.read(65536)
             if not chunk:
@@ -568,13 +780,16 @@ async def _stdin_reader_task(state: "_StdinBridgeState") -> None:
                     continue
                 _handle_stdin_line(line, state)
     except Exception:
-        logger.debug("stdin reader ended", exc_info=True)
+        # _handle_stdin_line呼び出し先（stdoutへの書き込み等）の失敗も含め、
+        # ここで吸収しないとこのタスクが例外で終わり、_run_retry_loopの
+        # 後始末（CancelledErrorだけをsuppressする）をすり抜けてプロセスが
+        # クラッシュする。
+        logger.warning("stdin reader ended unexpectedly", exc_info=True)
     finally:
         if buffer.strip():
             logger.warning(
                 f"Discarding {len(buffer)} bytes of incomplete data in stdin buffer"
             )
-        transport.close()
         state.outbound.put_nowait(None)
         state.stdin_eof.set()
 
@@ -593,9 +808,10 @@ async def _bridge(state: "_StdinBridgeState") -> None:
     # 遅延import: デーモン起動ロジックはMCP SDKに依存しないため、
     # ブリッジ実行時まで重いimportを遅延させて起動速度を確保する
     import anyio
+    import httpx
     from mcp import types
     from mcp.client.streamable_http import streamable_http_client
-    from mcp.shared._httpx_utils import create_mcp_http_client
+    from mcp.shared._httpx_utils import MCP_DEFAULT_SSE_READ_TIMEOUT, MCP_DEFAULT_TIMEOUT
 
     # stdin EOFとサーバー切断を区別するためのフラグ
     # stdin EOF: queue_to_serverが先に終了 → 正常終了
@@ -605,11 +821,19 @@ async def _bridge(state: "_StdinBridgeState") -> None:
     # 全MCPリクエストに bridge identity ヘッダを同梱する。calm server が
     # 再起動しても launcher プロセス（＝ _session_id）が生きている限り不変な値で、
     # 呼び出し元セッション識別子の解決（src/infra/session_identity.py）が読む。
-    http_client = create_mcp_http_client(
+    #
+    # create_mcp_http_clientはtrust_envを渡せないため、同等のデフォルト
+    # timeoutを明示してhttpx.AsyncClientを直接組み立てる。ローカルモードでは
+    # trust_env=False（環境のプロキシ設定を無視する）にする。ループバック
+    # 接続が、手動プロキシ設定はあるが環境変数が無い環境で社内プロキシへ
+    # 誤って送られるのを防ぐため（リモートモードはプロキシ経由が必要な
+    # 場合があるため既定どおりtrust_env=Trueのままにする）。
+    http_client = httpx.AsyncClient(
         headers={
             BRIDGE_SESSION_HEADER: _session_id,
-            LEGACY_BRIDGE_SESSION_HEADER: _session_id,
-        }
+        },
+        timeout=httpx.Timeout(MCP_DEFAULT_TIMEOUT, read=MCP_DEFAULT_SSE_READ_TIMEOUT),
+        trust_env=not _IS_LOCAL,
     )
     async with http_client:
         # terminate_on_close=True: 切断時に DELETE でMCPセッションを終了させる。
@@ -756,11 +980,12 @@ async def _bridge(state: "_StdinBridgeState") -> None:
 async def _run_retry_loop() -> None:
     """1つのイベントループ内でstdin読み取りとbridgeのリトライ全体を回す。
 
-    stdinの`StreamReader`/transportは`_stdin_reader_task`としてここで1回だけ
-    起動し、bridge（`_bridge`）が何度失敗しても作り直さない。asyncio の
-    transport は生成したイベントループでしか使えないため、bridge のたびに
-    `asyncio.run`をやり直すとstdinの再接続が壊れる（作り直すべきなのはHTTP接続
-    側だけ）。
+    stdinの読み取り（`_stdin_reader_task`、内部のdaemonスレッドを含む）は
+    ここで1回だけ起動し、bridge（`_bridge`）が何度失敗しても作り直さない。
+    読み取りスレッドは生成元の`asyncio`イベントループを閉じ込めて
+    `call_soon_threadsafe`で戻すため、bridge のたびに`asyncio.run`をやり直すと
+    スレッドが古い（既に閉じた）ループを参照したまま残ってしまう
+    （作り直すべきなのはHTTP接続側だけ）。
 
     サーバー側切断時は自動でリトライする。MAX_RETRIES が None なら無限、
     数値指定なら最大 MAX_RETRIES 回。stdin EOF（Claude Code終了）時は即座に終了する。
@@ -857,14 +1082,18 @@ def main() -> None:
     # _unregister_session()は失敗を握りつぶすため、登録エンドポイントを持たない
     # 接続先（例: セッションAPIを持たないremote展開）でも安全に呼べる。
     atexit.register(_cleanup)
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))  # atexitが発火する
+    _exit_handler = lambda *_: sys.exit(0)  # atexitが発火する
+    signal.signal(signal.SIGTERM, _exit_handler)
+    # SIGBREAK（Ctrl+Break）はWindowsにしか無い。
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, _exit_handler)
 
     # SessionStart hook（Claude Code CLI プロセスの別の子孫）や、calm
     # server 側のセッション別名解決（src/infra/session_identity.py の
     # resolve_cli_session）が祖先 pid チェーン経由で自分を見つけられるよう、
     # HTTPサーバー起動待機（最大30秒）より前に登録ファイルを書く。
     # 書込失敗は非致命（ベストエフォート）。
-    register_launcher_session(_session_id)
+    register_launcher_session(_session_id, harness=_current_harness_name())
 
     if not _IS_LOCAL:
         logger.info("Remote mode: connecting to %s", MCP_ENDPOINT)

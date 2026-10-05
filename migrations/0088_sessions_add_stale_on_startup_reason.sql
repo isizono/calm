@@ -1,6 +1,6 @@
--- Migration 0086: sessions.ended_reasonに'stale_on_startup'を追加
+-- Migration 0088: sessions.ended_reasonに'stale_on_startup'を追加
 --
--- depends: 0081_vec_cosine_rebuild
+-- depends: 0087_drop_leftover_fts5_check_tables
 --
 -- 背景:
 --   サーバー起動時、前のサーバープロセスの時代からended_atが空のまま残っている
@@ -11,7 +11,7 @@
 
 PRAGMA legacy_alter_table = ON;
 
-ALTER TABLE sessions RENAME TO sessions_old_0086;
+ALTER TABLE sessions RENAME TO sessions_old_0088;
 
 CREATE TABLE sessions (
   session_id TEXT PRIMARY KEY,
@@ -42,9 +42,9 @@ SELECT
   last_heartbeat_at, last_tool_call_at,
   last_checkin_activity_id, last_checkin_at,
   ended_at, ended_reason
-FROM sessions_old_0086;
+FROM sessions_old_0088;
 
-DROP TABLE sessions_old_0086;
+DROP TABLE sessions_old_0088;
 
 CREATE INDEX idx_sessions_live ON sessions(last_heartbeat_at) WHERE ended_at IS NULL;
 CREATE UNIQUE INDEX idx_sessions_cli_live ON sessions(harness, cli_session_id)

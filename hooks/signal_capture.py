@@ -23,7 +23,7 @@ def try_capture_signal(
     hook はこの関数の成否に関わらず既定のフェイルオープン出力を継続すること。
 
     Args:
-        kind: signal種別（machine_error 等、KNOWN_KINDS のいずれか）
+        kind: signal種別（KNOWN_KINDS のいずれか、または custom:<名前>）
         summary: 1行要約
         source: 発生源。hook からの呼び出しは 'hook:<hook名>' を渡す
         detail: traceback・自由記述
@@ -34,3 +34,39 @@ def try_capture_signal(
         capture_signal_safe(kind=kind, summary=summary, source=source, detail=detail)
     except Exception as e:
         print(f"signal_capture.py failed: {type(e).__name__}: {e}", file=sys.stderr)
+
+
+def try_capture_guard_block(
+    source: str,
+    summaries: list[str],
+    *,
+    detail: str | None = None,
+) -> None:
+    """hook が deny 判定を下したときに guard_block signal を記録する。
+
+    deny 判定の経路（全tool呼び出しのうちdenyになった分だけ）から呼ぶ想定。
+    1回のdeny判定で複数の規則（例: 検出リテラルの種類違い）に当てはまる場合は
+    summariesに複数件渡す。get_connection() の busy_timeout=5000・sqlite-vec
+    ロードは deny 判定には不要な遅延要因になるため経由せず、短いタイムアウトの
+    独立接続を1回だけ開いてsummariesを全件書き込む（規則数に比例して接続を
+    開き直すと、DBロック時の待ち時間がそのまま積み重なるため）。
+    DB ロック等で書き込みが失敗しても deny 判定自体の速度・結果には影響させない
+    （try_capture_signal と同じく、いかなる例外も外に漏らさない）。
+    """
+    try:
+        import sqlite3
+
+        from src.db import get_db_path
+        from src.services.signal_service import record_signal
+
+        # get_connection()を使わない: busy_timeout（5秒）とsqlite-vecのロードがdeny判定の遅延になるため。
+        # signal_eventsは外部キーを持たないので、get_connection()が設定するPRAGMA（外部キー等）を省いても挙動は変わらない。
+        conn = sqlite3.connect(get_db_path(), timeout=0.5)
+        try:
+            for summary in summaries:
+                record_signal("guard_block", summary, source=source, detail=detail, conn=conn)
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"signal_capture.py (guard_block) failed: {type(e).__name__}: {e}", file=sys.stderr)

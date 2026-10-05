@@ -148,42 +148,49 @@ def _apply_migrations() -> None:
     db_path = get_db_path()
     parsed = parse_uri(f"sqlite:///{db_path}")
     backend = _VecSQLiteBackend(parsed, default_migration_table)
-    backend.init_database()
-    migrations = read_migrations(str(MIGRATIONS_DIR))
+    try:
+        backend.init_database()
+        migrations = read_migrations(str(MIGRATIONS_DIR))
 
-    with backend.lock():
-        pending = backend.to_apply(migrations)
+        with backend.lock():
+            pending = backend.to_apply(migrations)
 
-        if _is_fresh_database(backend):
-            _apply_pending_and_record(backend, pending)
-            return
+            if _is_fresh_database(backend):
+                _apply_pending_and_record(backend, pending)
+                return
 
-        ledger_existed_before = _migration_ledger_table_exists(backend.connection)
-        if ledger_existed_before:
-            mismatches = verify_migration_ledger(backend.connection, migrations)
-            if mismatches:
-                _handle_hash_mismatch(mismatches)
-            # 本適用（yoyo側コミット）とledger記録が別コミットのため、その間で
-            # プロセスが落ちると「適用済みだがledger未記録」のmigrationが残る。
-            # 毎起動でこの欠落を補填する（INSERT OR IGNOREで既存エントリは不変）。
-            _backfill_migration_ledger(backend.connection, backend, migrations)
+            ledger_existed_before = _migration_ledger_table_exists(backend.connection)
+            if ledger_existed_before:
+                mismatches = verify_migration_ledger(backend.connection, migrations)
+                if mismatches:
+                    _handle_hash_mismatch(mismatches)
+                # 本適用（yoyo側コミット）とledger記録が別コミットのため、その間で
+                # プロセスが落ちると「適用済みだがledger未記録」のmigrationが残る。
+                # 毎起動でこの欠落を補填する（INSERT OR IGNOREで既存エントリは不変）。
+                _backfill_migration_ledger(backend.connection, backend, migrations)
 
-        if not pending:
-            return
+            if not pending:
+                return
 
-        from src.config import CALM_MIGRATION_DRYRUN, CALM_MIGRATION_SNAPSHOT
+            from src.config import CALM_MIGRATION_DRYRUN, CALM_MIGRATION_SNAPSHOT
 
-        snapshot_path: str | None = None
-        if CALM_MIGRATION_SNAPSHOT:
-            snapshot_path = _take_premigration_snapshot(db_path, pending)
+            snapshot_path: str | None = None
+            if CALM_MIGRATION_SNAPSHOT:
+                snapshot_path = _take_premigration_snapshot(db_path, pending)
 
-        if CALM_MIGRATION_DRYRUN:
-            _run_dry_run_gate(db_path, pending, snapshot_path)
+            if CALM_MIGRATION_DRYRUN:
+                _run_dry_run_gate(db_path, pending, snapshot_path)
 
-        _apply_pending_and_record(backend, pending, guide_snapshot_path=snapshot_path)
+            _apply_pending_and_record(backend, pending, guide_snapshot_path=snapshot_path)
 
-        if not ledger_existed_before and _migration_ledger_table_exists(backend.connection):
-            _backfill_migration_ledger(backend.connection, backend, migrations)
+            if not ledger_existed_before and _migration_ledger_table_exists(backend.connection):
+                _backfill_migration_ledger(backend.connection, backend, migrations)
+    finally:
+        # sqlite3.Connectionはstatement cacheとの循環参照でGCが走るまで実ファイルを
+        # 閉じないことがある(CPython 3.12)。Windowsでは開いたままのファイルに
+        # 他プロセスからアクセスできずロックされうるため、early returnや例外経由でも
+        # ここで明示的に閉じる。
+        backend.connection.close()
 
 
 def _is_fresh_database(backend: "_VecSQLiteBackend") -> bool:
@@ -246,7 +253,15 @@ def _migration_ledger_table_exists(conn: sqlite3.Connection) -> bool:
 
 
 def _content_sha256(path: str) -> str:
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    """migrationファイルの内容ハッシュを計算する。
+
+    CRLFをLFへ正規化してからハッシュ化する。autocrlf=true等の改行変換が
+    かかる取得方法（Git for Windowsの既定設定）でも、同じmigrationに対して
+    常に同じハッシュになることを保証するため。LFのファイル（通常のmacOS/Linux
+    環境での取得）はこの正規化で内容が変わらないため、ハッシュも変わらない。
+    """
+    content = Path(path).read_bytes().replace(b"\r\n", b"\n")
+    return hashlib.sha256(content).hexdigest()
 
 
 def verify_migration_ledger(conn: sqlite3.Connection, migrations) -> list[dict]:
@@ -541,19 +556,28 @@ def init_database() -> None:
         conn.close()
 
 
-def _check_fts5_available(conn: sqlite3.Connection) -> bool:
-    """FTS5が利用可能か確認する"""
+def _check_fts5_available() -> bool:
+    """FTS5が利用可能か確認する
+
+    確認用の仮想テーブルは本体DBではなく使い捨てのin-memory接続上に作る。CREATE直後の
+    DROPを本体DB上で行う実装だった旧版は、DROPがsqlite3.OperationalError（ロック競合等）
+    で失敗すると例外を握り潰して「FTS5利用不可」扱いにする一方、CREATEで自動生成された
+    仮想テーブルと影のテーブルは本体DBに残り続けた。in-memory接続なら、close時に接続と
+    ともに消えるため後始末が要らない。
+    """
+    check_conn = sqlite3.connect(":memory:")
     try:
-        conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS _fts5_check USING fts5(x)")
-        conn.execute("DROP TABLE IF EXISTS _fts5_check")
+        check_conn.execute("CREATE VIRTUAL TABLE _fts5_check USING fts5(x)")
         return True
     except sqlite3.OperationalError:
         return False
+    finally:
+        check_conn.close()
 
 
 def _migrate_fts5_search_index(conn: sqlite3.Connection) -> None:
     """FTS5検索インデックスの初期データマイグレーション（contentless方式）"""
-    if not _check_fts5_available(conn):
+    if not _check_fts5_available():
         logger.warning("FTS5 is not available. Skipping search index migration.")
         return
 

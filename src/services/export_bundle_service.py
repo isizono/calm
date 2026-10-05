@@ -13,9 +13,9 @@ collect_export_candidatesで確定した候補リストから、他インスタ�
     ├── activities/A-<番号>-<slug>.md
     └── materials/M-<番号>-<slug>.md
 
-複合キーは`<instance_id>:<型コード><ローカルID>`(例: team-a:M12)。import_provenance
-テーブルはまだ無いため、本ツールが対象にするのは常に自インスタンス発のエンティティのみで、
-複合キーはinstance_id + 自身のローカルIDから直接組み立てる(provenance逆引きは行わない)。
+複合キーは`<instance_id>:<型コード><ローカルID>`(例: team-a:M12)。本ツールが対象にするのは
+常に自インスタンス発のエンティティのみで、複合キーはinstance_id + 自身のローカルIDから
+直接組み立てる(import_provenanceテーブルへの逆引きは行わない)。
 """
 import hashlib
 import json
@@ -774,8 +774,11 @@ def export_bundle(
             slug = _slugify_title(title_raw)
             code = TYPE_NAME_TO_CODE[etype]
             filename = f"{code}-{eid}-{slug}.md"
-            rel_path = os.path.join(_DIR_NAME[etype], filename)
-            files_to_write.append((os.path.join(bundle_root, rel_path), file_content))
+            # manifestのpathはOS非依存のため常に`/`区切りで記録する(os.path.joinは
+            # Windowsでは`\`になり、別OSで取り込んだ側がパス解決できなくなる)。
+            # ディスクへの実書き込み先はos.path.joinでOS既定のセパレータにする。
+            rel_path = f"{_DIR_NAME[etype]}/{filename}"
+            files_to_write.append((os.path.join(bundle_root, _DIR_NAME[etype], filename), file_content))
 
             entities_manifest.append(
                 {

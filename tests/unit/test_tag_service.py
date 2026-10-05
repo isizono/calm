@@ -882,15 +882,14 @@ class TestDemoteTagNotes:
         assert _get_tag_notes("domain:test").endswith("#audited-2026-09-04\n")
 
     def test_trailer_dated_hint_cooldown_marker_is_preserved_after_demote(self, temp_db):
-        """hint_serviceが実際に書き込むコロン付き日次クールダウンマーカー
-        (例: #recompose-delta-skipped-until:YYYY-MM-DD)も末尾trailerとして
-        退避後に残る。マーカーの実際の書式はhint_service側から導出し、
-        本テストではハードコードしない(audit重複防止とhintクールダウンが
-        同時に壊れる最重要ケースの一つ)。"""
-        from datetime import date
-        from src.services.hint_service import MARKER_RECOMPOSE_DELTA, _merge_cooldown_marker
+        """手書き・または過去に自動で書き込まれたコロン付き日次マーカー
+        (例: #recompose-delta-skipped-until:YYYY-MM-DD)がnotes本文に存在する
+        場合、末尾trailerとして退避後も残る。マーカーの実際の書式は
+        hint_service側から導出し、本テストではハードコードしない
+        (audit重複防止とhintマーカーが同時に壊れる最重要ケースの一つ)。"""
+        from src.services.hint_service import _DATED_MARKER_SUFFIX, MARKER_RECOMPOSE_DELTA
 
-        marker_line = _merge_cooldown_marker("", MARKER_RECOMPOSE_DELTA, date(2026, 9, 4))
+        marker_line = f"{MARKER_RECOMPOSE_DELTA}{_DATED_MARKER_SUFFIX}2026-09-04"
 
         add_topic(title="T", description="D", tags=["domain:test"])
         update_tag("domain:test", notes=f"## A\n本文A\n\n{marker_line}\n")

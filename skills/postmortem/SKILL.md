@@ -1,11 +1,16 @@
 ---
 name: postmortem
-description: completedアクティビティを選択し、行動を1ステップずつ振り返って教訓を永続化するポストモーテム。「/postmortem」「ポストモーテムやろう」「振り返りしたい」「反省会」「この作業を振り返りたい」など、完了した作業の振り返り意図で発動する。完了操作そのもの（activity-finish）や記録の同期（sync-memory）には発動しない。
+description: 完了したアクティビティの行動を1ステップずつ振り返り、教訓を永続化する。「ポストモーテムやろう」「振り返りしたい」「反省会」などで発動。
 ---
 
 # ポストモーテム
 
 completedアクティビティの行動を時系列で振り返り、ユーザーと対話しながら教訓を抽出・永続化する。
+
+## 関連skillとの境界
+
+- 「この作業を振り返りたい」のような、完了した作業の振り返りの依頼で使う
+- 完了操作そのもの（activity-finish）と記録の同期（sync-memory）では発動しない
 
 ## 1. 対象アクティビティの選択
 
@@ -28,8 +33,8 @@ completedアクティビティの行動を時系列で振り返り、ユーザ�
 対象アクティビティに関連するデータを収集する:
 
 - check-in結果の `related_topics` から `topic_id` を取得する。`related_topics` が空の場合は、アクティビティのタグで `search` するか、ユーザーに関連トピックを確認する
-- `get_logs(topic_id=...)` でログを取得
-- `get_decisions(topic_id=...)` で決定事項を取得
+- `get_logs(entity_type="topic", entity_id=topic_id)` でログを取得
+- `get_decisions(entity_type="topic", entity_id=topic_id)` で決定事項を取得
 - `get_map(entity_type="activity", entity_id=...)` で関連エンティティを探索し、追加の情報源がないか確認する
 - `search(entity_type="material")` / `get_material` で資材を確認
 

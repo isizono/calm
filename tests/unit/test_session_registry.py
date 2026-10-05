@@ -7,11 +7,13 @@ is_process_alive・read_cli_session）は外部境界としてFakeCliWorld経由
 import datetime as dt
 import itertools
 import json
+import os
 import threading
 import time
 
 import pytest
 
+from src.infra import file_ops
 from src.services import session_registry_service as srs
 
 
@@ -38,6 +40,10 @@ class FakeCliWorld:
 
     def kill(self, pid):
         self._alive_pids.discard(pid)
+
+    def rename(self, pid, new_name):
+        """CLI側のリネーム（自動命名の上書き・/resume後の名前変化）を模す。"""
+        self._by_pid[pid]["name"] = new_name
 
     def is_process_alive(self, pid):
         return pid in self._alive_pids
@@ -68,6 +74,31 @@ def registry_path(tmp_path, monkeypatch):
     path = tmp_path / "session_aliases.json"
     monkeypatch.setenv(srs.REGISTRY_PATH_ENV, str(path))
     return path
+
+
+def test_save_recovers_from_transient_replace_error(world, registry_path, monkeypatch):
+    """_saveの置換がos.replaceの一時失敗（Windowsの共有違反相当）を再試行で
+    乗り越える。呼び出し側がreplace_retryingを経由せずos.replaceへ直書きする
+    退行を検知する。"""
+    world.add("bridge-a", pid=100, cli_session_id="cli-1")
+    real_replace = os.replace
+    calls = {"count": 0}
+
+    def flaky_replace(a, b):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise OSError(32, "The process cannot access the file")
+        return real_replace(a, b)
+
+    monkeypatch.setattr(file_ops.os, "replace", flaky_replace)
+    monkeypatch.setattr(file_ops.time, "sleep", lambda _: None)
+
+    srs.register_checkin(
+        bridge_session_id="bridge-a", activity_id=1, activity_title="Foo", activity_status="in_progress"
+    )
+
+    assert calls["count"] == 2
+    assert registry_path.exists()
 
 
 def _sequential_timestamps(monkeypatch, count=200):
@@ -311,6 +342,16 @@ class TestListSessions:
         assert sessions[0]["is_self"] is True
         assert sessions[1]["is_self"] is False
 
+    def test_rows_carry_cli_session_id_and_cli_pid(self, world, registry_path):
+        world.add("bridge-a", pid=100, cli_session_id="cli-1", name="workspace-a1")
+        srs.register_checkin(
+            bridge_session_id="bridge-a", activity_id=1, activity_title="Foo", activity_status="in_progress"
+        )
+
+        sessions = srs.list_sessions()
+        assert sessions[0]["cli_session_id"] == "cli-1"
+        assert sessions[0]["cli_pid"] == 100
+
     def test_empty_registry_returns_empty_list(self, registry_path):
         assert srs.list_sessions() == []
 
@@ -343,6 +384,57 @@ class TestListSessions:
 
         data = json.loads(registry_path.read_text(encoding="utf-8"))
         assert "cli-1" not in data["sessions"]
+
+
+class TestNameRefresh:
+    """CLI側の名前変化（自動命名・/resume）をlist_sessionsが追従するかの検証。"""
+
+    def test_renamed_cli_session_name_is_refreshed_in_list_and_file(self, world, registry_path):
+        world.add("bridge-a", pid=100, cli_session_id="cli-1", name="workspace-a1")
+        srs.register_checkin(
+            bridge_session_id="bridge-a", activity_id=1, activity_title="Foo", activity_status="in_progress"
+        )
+        world.rename(100, "auto-generated sentence from first prompt")
+
+        sessions = srs.list_sessions()
+        assert sessions[0]["name"] == "auto-generated sentence from first prompt"
+
+        data = json.loads(registry_path.read_text(encoding="utf-8"))
+        assert data["sessions"]["cli-1"]["name"] == "auto-generated sentence from first prompt"
+
+    def test_rename_does_not_touch_alias_or_alias_source(self, world, registry_path):
+        """derived aliasのままだと、rename時にactivity_titleからaliasを
+        作り直しても値が偶然一致してしまい退行を検出できない。手動aliasを
+        付けた状態でrenameし、手動値が上書きされないことを確認する。"""
+        world.add("bridge-a", pid=100, cli_session_id="cli-1", name="workspace-a1")
+        srs.register_checkin(
+            bridge_session_id="bridge-a", activity_id=1, activity_title="Foo", activity_status="in_progress"
+        )
+        srs.set_alias(bridge_session_id="bridge-a", alias="MyAlias")
+        world.rename(100, "renamed")
+
+        sessions = srs.list_sessions()
+        assert sessions[0]["alias"] == "MyAlias"
+        assert sessions[0]["alias_source"] == "manual"
+
+    def test_rename_does_not_touch_updated_at(self, world, registry_path, monkeypatch):
+        """_now_iso()は秒精度のため、同一秒内のタイムスタンプ比較では
+        updated_atへの誤った書き込みを検出できない。以降の_now_iso()呼び出しが
+        必ず先の値より進むよう差し替え、名前書き戻しがupdated_atを更新したら
+        このテストが落ちるようにする。"""
+        _sequential_timestamps(monkeypatch)
+        world.add("bridge-a", pid=100, cli_session_id="cli-1", name="workspace-a1")
+        srs.register_checkin(
+            bridge_session_id="bridge-a", activity_id=1, activity_title="Foo", activity_status="in_progress"
+        )
+        before_updated_at = json.loads(registry_path.read_text(encoding="utf-8"))["sessions"]["cli-1"]["updated_at"]
+        world.rename(100, "renamed")
+
+        srs.list_sessions()
+
+        data = json.loads(registry_path.read_text(encoding="utf-8"))["sessions"]["cli-1"]
+        assert data["name"] == "renamed"
+        assert data["updated_at"] == before_updated_at
 
 
 class TestIsSessionAlive:

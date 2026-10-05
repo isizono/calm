@@ -3,6 +3,8 @@
 signal_events テーブルに record_signal で fixture 行を積み、定義式どおりの
 巻き戻し率・shadow乖離率・矛盾/miss/誤類推件数・goal観測が計算されること、
 分母0での N/A 表示、--packages-file 供給/未供給でのフォールバックを検証する。
+search_telemetry/precedent_telemetry/fetch_telemetry/citation_event_log の
+集計、guard_block件数、書き手コードが無いkindのno_writer_codeフラグも対象。
 """
 import json
 import sqlite3
@@ -47,6 +49,109 @@ def _backdate_goal_judged_at(db_path: str, goal_id: int, days_ago: int) -> None:
             (f"-{days_ago} days", goal_id),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def _insert_search_telemetry(
+    db_path: str,
+    *,
+    diagnostics: dict | None = None,
+    results: list | None = None,
+    caller_session_id: str | None = None,
+    timestamp: str | None = None,
+) -> int:
+    """search_telemetry に1行挿入する(search()実行時に書かれる実際の列形状を再現)。"""
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.execute(
+            """
+            INSERT INTO search_telemetry
+                (query, parameters, result_count, results_json, diagnostics_json,
+                 caller_session_id, timestamp)
+            VALUES (?, '{}', 0, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+            """,
+            (
+                "q",
+                json.dumps(results) if results is not None else None,
+                json.dumps(diagnostics) if diagnostics is not None else None,
+                caller_session_id,
+                timestamp,
+            ),
+        )
+        conn.commit()
+        return cursor.lastrowid
+    finally:
+        conn.close()
+
+
+def _insert_fetch_telemetry(
+    db_path: str,
+    *,
+    items: list,
+    caller_session_id: str | None = None,
+    timestamp: str | None = None,
+) -> int:
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.execute(
+            """
+            INSERT INTO fetch_telemetry (tool, items_json, caller_session_id, timestamp)
+            VALUES ('get_by_ids', ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+            """,
+            (json.dumps(items), caller_session_id, timestamp),
+        )
+        conn.commit()
+        return cursor.lastrowid
+    finally:
+        conn.close()
+
+
+def _insert_precedent_telemetry(
+    db_path: str, *, guarantee: str, decisions_total: int = 0, full_count: int = 0
+) -> int:
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.execute(
+            """
+            INSERT INTO precedent_telemetry
+                (context, parameters, guarantee, routing_json, decisions_total, full_count)
+            VALUES ('ctx', '{}', ?, '{}', ?, ?)
+            """,
+            (guarantee, decisions_total, full_count),
+        )
+        conn.commit()
+        return cursor.lastrowid
+    finally:
+        conn.close()
+
+
+def _backdate_telemetry(db_path: str, table: str, row_id: int, days_ago: int, ts_col: str = "timestamp") -> None:
+    """telemetryテーブル1行のtimestamp系カラムをdays_ago日前に書き換える(window_days検証用)。"""
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            f"UPDATE {table} SET {ts_col} = datetime('now', ?) WHERE id = ?",
+            (f"-{days_ago} days", row_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _insert_citation_event_log(db_path: str, *, verification_result: str | None) -> int:
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.execute(
+            """
+            INSERT INTO citation_event_log
+                (source, before_text, after_text, verification_result)
+            VALUES ('write_auto_convert', 'before', 'after', ?)
+            """,
+            (verification_result,),
+        )
+        conn.commit()
+        return cursor.lastrowid
     finally:
         conn.close()
 
@@ -169,10 +274,11 @@ class TestPullAndMisappliedMetrics:
 
         metrics = compute_metrics(temp_db, window_days=None, packages=None)
 
-        assert metrics["pull"] == {"miss_count": 1}
-        assert metrics["precedent_misapplied"] == {"misapplied_count": 1}
+        assert metrics["pull"] == {"miss_count": 1, "no_writer_code": True}
+        assert metrics["precedent_misapplied"] == {"misapplied_count": 1, "no_writer_code": True}
         text = format_text(metrics)
         assert "率は算出不可" in text
+        assert "書き手コードなし" in text
 
     def test_with_packages_file_computes_rates(self, temp_db):
         ss.record_signal("precedent_miss", "missed decision 9", source="agent")
@@ -311,6 +417,269 @@ class TestGoalMetrics:
             assert metrics["contradiction"]["count"] == 1  # 他の指標は普段どおり動く
             text = format_text(metrics)
             assert "goal" not in text
+
+
+class TestSearchTelemetryMetrics:
+    def test_degraded_and_qe_rates_computed_from_diagnostics(self, temp_db):
+        _insert_search_telemetry(temp_db, diagnostics={"degraded": True, "qe_expansions": []})
+        _insert_search_telemetry(temp_db, diagnostics={"degraded": True, "qe_expansions": ["x"]})
+        _insert_search_telemetry(temp_db, diagnostics={"degraded": False, "qe_expansions": ["x"]})
+        _insert_search_telemetry(temp_db, diagnostics={"degraded": False, "qe_expansions": []})
+
+        metrics = compute_metrics(temp_db, window_days=None)
+
+        st = metrics["search_telemetry"]
+        assert st["total_count"] == 4
+        assert st["diagnostics_count"] == 4
+        assert st["degraded_count"] == 2
+        assert st["degraded_rate"] == pytest.approx(0.5)
+        assert st["qe_fired_count"] == 2
+        assert st["qe_fire_rate"] == pytest.approx(0.5)
+
+    def test_rows_without_diagnostics_excluded_from_denominator(self, temp_db):
+        _insert_search_telemetry(temp_db, diagnostics=None)  # migration 0054以前相当の旧行
+        _insert_search_telemetry(temp_db, diagnostics={"degraded": True, "qe_expansions": []})
+
+        metrics = compute_metrics(temp_db, window_days=None)
+
+        st = metrics["search_telemetry"]
+        assert st["total_count"] == 2
+        assert st["diagnostics_count"] == 1
+        assert st["degraded_count"] == 1
+        assert st["degraded_rate"] == pytest.approx(1.0)
+
+    def test_empty_table_returns_none_rates(self, temp_db):
+        metrics = compute_metrics(temp_db, window_days=None)
+
+        st = metrics["search_telemetry"]
+        assert st == {
+            "total_count": 0,
+            "diagnostics_count": 0,
+            "degraded_count": 0,
+            "degraded_rate": None,
+            "qe_fired_count": 0,
+            "qe_fire_rate": None,
+        }
+
+
+class TestPrecedentTelemetryMetrics:
+    def test_guarantee_breakdown_and_coverage(self, temp_db):
+        _insert_precedent_telemetry(temp_db, guarantee="enumerated", decisions_total=4, full_count=4)
+        _insert_precedent_telemetry(temp_db, guarantee="enumerated", decisions_total=4, full_count=2)
+        _insert_precedent_telemetry(temp_db, guarantee="routing_miss")
+        _insert_precedent_telemetry(temp_db, guarantee="routing_unavailable")
+
+        metrics = compute_metrics(temp_db, window_days=None)
+
+        pt = metrics["precedent_telemetry"]
+        assert pt["count"] == 4
+        assert pt["by_guarantee"] == {
+            "enumerated": 2, "routing_miss": 1, "routing_unavailable": 1, "unknown": 0,
+        }
+        # (4/4 + 2/4) / 2 = 0.75
+        assert pt["enumerated_full_coverage_rate"] == pytest.approx(0.75)
+
+    def test_enumerated_with_zero_decisions_excluded_from_coverage(self, temp_db):
+        """decisions_total=0のenumerated行(対象decisionが0件)はカバレッジ平均の対象外。"""
+        _insert_precedent_telemetry(temp_db, guarantee="enumerated", decisions_total=0, full_count=0)
+
+        metrics = compute_metrics(temp_db, window_days=None)
+
+        assert metrics["precedent_telemetry"]["enumerated_full_coverage_rate"] is None
+
+    def test_empty_table_returns_zero_counts(self, temp_db):
+        metrics = compute_metrics(temp_db, window_days=None)
+
+        pt = metrics["precedent_telemetry"]
+        assert pt["count"] == 0
+        assert pt["enumerated_full_coverage_rate"] is None
+
+
+class TestFetchFollowMetrics:
+    def test_follow_rate_when_fetch_occurs_after_search(self, temp_db):
+        _insert_search_telemetry(
+            temp_db,
+            results=[{"type": "decision", "id": 1}],
+            caller_session_id="s1",
+            timestamp="2026-01-01 00:00:00",
+        )
+        _insert_fetch_telemetry(
+            temp_db,
+            items=[{"type": "decision", "id": 1}],
+            caller_session_id="s1",
+            timestamp="2026-01-01 00:00:05",
+        )
+
+        metrics = compute_metrics(temp_db, window_days=None)
+
+        ff = metrics["fetch_follow"]
+        assert ff["search_result_count"] == 1
+        assert ff["followed_count"] == 1
+        assert ff["follow_rate"] == pytest.approx(1.0)
+
+    def test_fetch_before_search_not_counted(self, temp_db):
+        """fetchがsearchより前に起きた場合は「後続」ではないため追随に数えない。"""
+        _insert_fetch_telemetry(
+            temp_db,
+            items=[{"type": "decision", "id": 1}],
+            caller_session_id="s1",
+            timestamp="2026-01-01 00:00:00",
+        )
+        _insert_search_telemetry(
+            temp_db,
+            results=[{"type": "decision", "id": 1}],
+            caller_session_id="s1",
+            timestamp="2026-01-01 00:00:05",
+        )
+
+        metrics = compute_metrics(temp_db, window_days=None)
+
+        ff = metrics["fetch_follow"]
+        assert ff["search_result_count"] == 1
+        assert ff["followed_count"] == 0
+
+    def test_followed_when_item_also_fetched_before_search(self, temp_db):
+        """同一itemが検索より前に一度fetchされていても、検索後の再fetchがあれば追随に数える。
+
+        最初のfetch時刻だけを見ると「検索前のfetch」で後続判定が止まってしまうため、
+        同一(type,id)の最後のfetch時刻を使う必要がある。
+        """
+        _insert_fetch_telemetry(
+            temp_db,
+            items=[{"type": "decision", "id": 1}],
+            caller_session_id="s1",
+            timestamp="2026-01-01 00:00:00",
+        )
+        _insert_search_telemetry(
+            temp_db,
+            results=[{"type": "decision", "id": 1}],
+            caller_session_id="s1",
+            timestamp="2026-01-01 00:00:05",
+        )
+        _insert_fetch_telemetry(
+            temp_db,
+            items=[{"type": "decision", "id": 1}],
+            caller_session_id="s1",
+            timestamp="2026-01-01 00:00:10",
+        )
+
+        metrics = compute_metrics(temp_db, window_days=None)
+
+        assert metrics["fetch_follow"]["followed_count"] == 1
+
+    def test_different_session_not_counted(self, temp_db):
+        _insert_search_telemetry(
+            temp_db, results=[{"type": "decision", "id": 1}], caller_session_id="s1",
+        )
+        _insert_fetch_telemetry(
+            temp_db, items=[{"type": "decision", "id": 1}], caller_session_id="s2",
+        )
+
+        metrics = compute_metrics(temp_db, window_days=None)
+
+        assert metrics["fetch_follow"]["followed_count"] == 0
+
+    def test_empty_tables_return_none_rate(self, temp_db):
+        metrics = compute_metrics(temp_db, window_days=None)
+
+        ff = metrics["fetch_follow"]
+        assert ff == {"search_result_count": 0, "followed_count": 0, "follow_rate": None}
+
+
+class TestCitationEventLogMetrics:
+    def test_verification_result_breakdown(self, temp_db):
+        _insert_citation_event_log(temp_db, verification_result="exists")
+        _insert_citation_event_log(temp_db, verification_result="exists")
+        _insert_citation_event_log(temp_db, verification_result="dangling")
+        _insert_citation_event_log(temp_db, verification_result="skip")
+        _insert_citation_event_log(temp_db, verification_result=None)
+
+        metrics = compute_metrics(temp_db, window_days=None)
+
+        ce = metrics["citation_event_log"]
+        assert ce["count"] == 5
+        assert ce["by_verification_result"] == {
+            "exists": 2, "dangling": 1, "skip": 1, "not_verified": 1,
+        }
+
+    def test_empty_table_returns_zero(self, temp_db):
+        metrics = compute_metrics(temp_db, window_days=None)
+
+        ce = metrics["citation_event_log"]
+        assert ce["count"] == 0
+        assert ce["by_verification_result"] == {
+            "exists": 0, "dangling": 0, "skip": 0, "not_verified": 0,
+        }
+
+
+class TestGuardBlockMetrics:
+    def test_counts_by_rule_using_occurrence_sum(self, temp_db):
+        """同一(source, summary)の再発はsignal_events側で1行に畳まれる
+        (occurrence_count加算)ため、SUM(occurrence_count)で件数を数える。"""
+        ss.record_signal("guard_block", "internal ID literal blocked (code)", source="hook:preblock")
+        ss.record_signal("guard_block", "internal ID literal blocked (code)", source="hook:preblock")
+        ss.record_signal("guard_block", "nested bg spawn blocked", source="hook:deny_nested_bg")
+
+        metrics = compute_metrics(temp_db, window_days=None)
+
+        gb = metrics["guard_block"]
+        assert gb["total_count"] == 3
+        by_rule = {(r["source"], r["summary"]): r["count"] for r in gb["by_rule"]}
+        assert by_rule[("hook:preblock", "internal ID literal blocked (code)")] == 2
+        assert by_rule[("hook:deny_nested_bg", "nested bg spawn blocked")] == 1
+
+    def test_window_days_filters_by_last_seen_at(self, temp_db):
+        recent = ss.record_signal("guard_block", "nested bg spawn blocked", source="hook:deny_nested_bg")
+        old = ss.record_signal("guard_block", "internal ID literal blocked (code)", source="hook:preblock")
+        _backdate(temp_db, old["id"], days_ago=90)
+
+        metrics = compute_metrics(temp_db, window_days=30)
+        assert metrics["guard_block"]["total_count"] == 1
+
+        metrics_all = compute_metrics(temp_db, window_days=None)
+        assert metrics_all["guard_block"]["total_count"] == 2
+
+    def test_empty_returns_zero(self, temp_db):
+        metrics = compute_metrics(temp_db, window_days=None)
+        assert metrics["guard_block"] == {"total_count": 0, "by_rule": []}
+
+
+class TestNoWriterCodeFlag:
+    """precedent_miss/precedent_misapplied/boundary_case/rollbackは書き手の自動化
+    コードが存在しないkindであることをno_writer_codeフラグで明示する(構造的0件の可視化)。"""
+
+    def test_flag_present_even_when_count_is_nonzero(self, temp_db):
+        """手動report_signalでboundary_caseが記録されても(0件ではなくなっても)、
+        フラグは「書き手コードが無い」という構造的事実を表すため変わらず立つ。"""
+        ss.record_signal(
+            "boundary_case", "case PR#1", source="gate",
+            context={"mode": "live", "machine_verdict": "post_veto_candidate"},
+        )
+
+        metrics = compute_metrics(temp_db, window_days=None)
+
+        assert metrics["rollback"]["no_writer_code"] is True
+        assert metrics["shadow_divergence"]["no_writer_code"] is True
+
+    def test_flag_absent_from_goal_metrics(self, temp_db):
+        """goal_rollbackは書き手コード(goal_service)が実在するため対象外。"""
+        metrics = compute_metrics(temp_db, window_days=None)
+        assert "no_writer_code" not in (metrics["goal"] or {})
+
+
+class TestComputeMetricsEmptyDb:
+    def test_all_new_sections_present_and_do_not_crash(self, temp_db):
+        """全telemetryテーブル・signal_eventsが空でも例外にならず、各節が現れる。"""
+        metrics = compute_metrics(temp_db, window_days=None)
+
+        for key in (
+            "search_telemetry", "precedent_telemetry", "fetch_follow",
+            "citation_event_log", "guard_block",
+        ):
+            assert key in metrics
+
+        text = format_text(metrics)
+        assert "guard_block件数: 0 件" in text
 
 
 class TestLoadPackages:

@@ -6,17 +6,21 @@ DBはtopic候補の取得だけが対象で、実SQLite（temp_db、全migration
 書かれうる形のファイルとして用意する。目印ファイルは`write_marker`で作る。
 
 外部境界としてmonkeypatchするのは次の3つだけ: `hook.process_start_signature`
-（メインの生死判定）・`subprocess.run`（ps・tmux呼び出し。psは`write_marker`
-経由でも呼ばれるため、コマンド種別で振り分けて両方を成立させる）・
-main()に注入する`sleep`/`now`。
+（メインの生死判定）・`subprocess.run`（tmux呼び出し）・main()に注入する
+`sleep`/`now`。
+
+recorder_watch.py自体はtmux・fcntlに依存しWindowsには移植しない。ロック
+（`_acquire_lock`）はfcntl.flockのままのため、Windowsではfcntlが無く
+importできない`fcntl`直接依存のテストはpytest.importorskipで丸ごとskipする。
 """
-import fcntl
 import io
 import json
 import subprocess
 from unittest.mock import patch
 
 import pytest
+
+fcntl = pytest.importorskip("fcntl")
 
 from hooks import recorder_watch as hook
 from hooks.hook_state import HookState
@@ -41,20 +45,13 @@ def _isolate_state(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _mock_subprocess(monkeypatch):
-    """subprocess.runをコマンド種別で振り分ける。
-
-    psはwrite_marker/process_start_signature、tmuxは見張りの終了処理が呼ぶ。
-    同じsubprocessモジュールを両経路が参照するため、1つのfixtureで両方
-    面倒を見る（別々にmonkeypatchすると片方が片方を上書きしてしまう）。
-    """
+    """subprocess.runをコマンド種別で振り分ける（tmuxは見張りの終了処理が呼ぶ）。"""
     tmux_calls: list[list[str]] = []
 
     def _fake_run(cmd, **kwargs):
         if cmd and cmd[0] == "tmux":
             tmux_calls.append(cmd)
             return subprocess.CompletedProcess(cmd, 0)
-        if cmd and cmd[0] == "ps":
-            return subprocess.CompletedProcess(cmd, 0, stdout=_FAKE_PS_STARTED_AT + "\n", stderr="")
         raise AssertionError(f"unexpected subprocess call: {cmd}")
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
@@ -84,6 +81,11 @@ def _entry(kind: str, uuid: str, *, text: str = "", tool_calls=None, tool_inputs
     if is_meta:
         raw["isMeta"] = True
     return raw
+
+
+def _tool_result(uuid: str, tool_use_id: str, content_text: str) -> dict:
+    content = [{"type": "tool_result", "tool_use_id": tool_use_id, "content": [{"type": "text", "text": content_text}]}]
+    return {"type": "user", "uuid": uuid, "message": {"content": content}}
 
 
 def _write_jsonl(path, entries: list[dict]) -> None:
@@ -149,12 +151,13 @@ def _stub_sleep_confirm_dead(*extra_side_effects, start: float = 1000.0):
 
 
 def _run_hook(
-    *, cwd, last_assistant_message: str = "", sleep=None, now=None, argv=None
+    *, cwd, last_assistant_message: str = "", sleep=None, now=None, argv=None,
+    own_transcript_path: str = "/irrelevant.jsonl",
 ) -> tuple[int, str]:
     payload = {
         "session_id": "recorder-sess",
         "cwd": str(cwd),
-        "transcript_path": "/irrelevant.jsonl",
+        "transcript_path": own_transcript_path,
         "last_assistant_message": last_assistant_message,
         "hook_event_name": "Stop",
     }
@@ -178,6 +181,16 @@ def _cursor(run_dir) -> dict:
 
 
 class TestNoOpEntryPoints:
+    def test_windows_returns_zero_without_touching_run_dir(self, tmp_path, monkeypatch):
+        """Windowsではtmux・fcntlに触れる前にmain()が即座に戻る。"""
+        monkeypatch.setattr(hook.sys, "platform", "win32")
+        run_dir, _ = _setup_run(tmp_path)
+        sleep, now = _stub_sleep_and_clock()
+        code, stderr = _run_hook(cwd=run_dir, sleep=sleep, now=now)
+        assert code == 0
+        assert stderr == ""
+        assert sleep.calls == []
+
     def test_no_run_json_exits_zero_without_sleeping(self, tmp_path):
         stray_dir = tmp_path / "not-a-run-dir"
         stray_dir.mkdir()
@@ -772,3 +785,257 @@ class TestRestartAfterNChunks:
         assert cursor["unacked"] == [1]
         assert cursor["chunks_since_restart"] == 0
         assert cursor["restart_count"] == 0
+
+
+@pytest.mark.parametrize("text", ["123", "[]", "null", '"x"'])
+def test_try_parse_material_id_ignores_non_object_json(text):
+    """dict以外のJSON応答でStopフックを落とさず、material_idなしとして扱う。"""
+    assert hook._try_parse_material_id(text) is None
+
+
+class TestUnlinkedMaterials:
+    """activity未設定の片でrelatedなしに書かれたadd_materialを、後でactivityが
+    確定した片へ自動でつなげるための、見張り側の集計・受け渡しを確かめる。
+    """
+
+    def _orphan_chunk_then_boundary_entries(self, activity_id: int = 99) -> list[dict]:
+        return [
+            _entry("assistant", "e1", text="doing orphan work"),
+            _entry(
+                "assistant", "e2",
+                tool_calls=["mcp__plugin_calm_calm__check_in"],
+                tool_inputs=[{"activity_id": activity_id}],
+            ),
+            _entry("assistant", "e3", text="doing thing B"),
+        ]
+
+    def test_orphan_chunk_done_collects_material_id_without_related(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(hook, "CHAR_THRESHOLD", 3)
+        run_dir, transcript = _setup_run(
+            tmp_path, transcript_lines=[_entry("assistant", "e1", text="orphan text")]
+        )
+        own_transcript = tmp_path / "recorder_own.jsonl"
+        own_transcript.write_text("", encoding="utf-8")
+        _mock_main_alive(monkeypatch)
+
+        sleep, now = _stub_sleep_and_clock()
+        code, _ = _run_hook(cwd=run_dir, sleep=sleep, now=now, own_transcript_path=str(own_transcript))
+        assert code == 2
+        pending = _cursor(run_dir)["pending"]
+        assert pending["own_transcript_path"] == str(own_transcript)
+        assert pending["own_transcript_offset"] == 0
+
+        # 記録役が片の処理中に、relatedありのadd_material(除外対象)と
+        # relatedなしのadd_material(収集対象)を1件ずつ呼んだとする。
+        _append_jsonl(own_transcript, [
+            _entry(
+                "assistant", "r1",
+                tool_calls=["mcp__plugin_calm_calm__add_material"],
+                tool_inputs=[{"title": "t1", "content": "c1", "tags": ["domain:x"], "source": "s", "related": [{"type": "topic", "ids": [1]}]}],
+            ),
+            _tool_result("r1-res", "tu-r1-0", json.dumps({"material_id": 10})),
+            _entry(
+                "assistant", "r2",
+                tool_calls=["mcp__plugin_calm_calm__add_material"],
+                tool_inputs=[{"title": "t2", "content": "c2", "tags": ["domain:x"], "source": "s"}],
+            ),
+            _tool_result("r2-res", "tu-r2-0", json.dumps({"material_id": 55})),
+        ])
+
+        sleep2, now2 = _stub_sleep_and_clock()
+        code2, _ = _run_hook(
+            cwd=run_dir, last_assistant_message="DONE 0001", sleep=sleep2, now=now2,
+            own_transcript_path=str(own_transcript),
+        )
+        assert code2 == 2
+        cursor2 = _cursor(run_dir)
+        assert cursor2["unlinked_materials"] == [55]  # relatedありの10は入らない
+
+    def test_orphan_chunk_unacked_still_collects_material_id(self, tmp_path, monkeypatch):
+        """DONEが来ずunackedへ回った片でも、収集は`_advance_cursor_from_pending`
+        を通るため行われることを確かめる。"""
+        monkeypatch.setattr(hook, "CHAR_THRESHOLD", 3)
+        run_dir, transcript = _setup_run(
+            tmp_path, transcript_lines=[_entry("assistant", "e1", text="orphan text")]
+        )
+        own_transcript = tmp_path / "recorder_own.jsonl"
+        own_transcript.write_text("", encoding="utf-8")
+        _mock_main_alive(monkeypatch)
+
+        sleep, now = _stub_sleep_and_clock()
+        code, _ = _run_hook(cwd=run_dir, sleep=sleep, now=now, own_transcript_path=str(own_transcript))
+        assert code == 2
+
+        _append_jsonl(own_transcript, [
+            _entry(
+                "assistant", "r1",
+                tool_calls=["mcp__plugin_calm_calm__add_material"],
+                tool_inputs=[{"title": "t", "content": "c", "tags": ["domain:x"], "source": "s"}],
+            ),
+            _tool_result("r1-res", "tu-r1-0", json.dumps({"material_id": 55})),
+        ])
+
+        sleep2, now2 = _stub_sleep_and_clock()
+        _run_hook(
+            cwd=run_dir, last_assistant_message="まだです", sleep=sleep2, now=now2,
+            own_transcript_path=str(own_transcript),
+        )
+
+        _mock_main_dead(monkeypatch)
+        sleep3, now3 = _stub_sleep_confirm_dead()
+        code3, _ = _run_hook(
+            cwd=run_dir, last_assistant_message="まだです2", sleep=sleep3, now=now3,
+            own_transcript_path=str(own_transcript),
+        )
+        assert code3 == 0
+        cursor3 = _cursor(run_dir)
+        assert cursor3["unacked"] == [1]
+        assert cursor3["unlinked_materials"] == [55]
+
+    def test_material_written_in_activity_determined_chunk_is_not_collected(self, tmp_path, monkeypatch):
+        run_dir, transcript = _setup_run(
+            tmp_path, transcript_lines=[_entry("assistant", "e1", text="already has activity")]
+        )
+        cursor = dict(hook._DEFAULT_CURSOR)
+        cursor["activity_id_at_cursor"] = 7
+        (run_dir / "cursor.json").write_text(json.dumps(cursor), encoding="utf-8")
+        own_transcript = tmp_path / "recorder_own.jsonl"
+        own_transcript.write_text("", encoding="utf-8")
+        monkeypatch.setattr(hook, "CHAR_THRESHOLD", 3)
+        _mock_main_alive(monkeypatch)
+
+        sleep, now = _stub_sleep_and_clock()
+        code, _ = _run_hook(cwd=run_dir, sleep=sleep, now=now, own_transcript_path=str(own_transcript))
+        assert code == 2
+        pending = _cursor(run_dir)["pending"]
+        assert pending["end_activity_id"] == 7
+        assert "own_transcript_path" not in pending  # activity確定済みなので追跡しない
+
+        _append_jsonl(own_transcript, [
+            _entry(
+                "assistant", "r1",
+                tool_calls=["mcp__plugin_calm_calm__add_material"],
+                tool_inputs=[{"title": "t", "content": "c", "tags": ["domain:x"], "source": "s"}],
+            ),
+            _tool_result("r1-res", "tu-r1-0", json.dumps({"material_id": 999})),
+        ])
+
+        sleep2, now2 = _stub_sleep_and_clock()
+        _run_hook(
+            cwd=run_dir, last_assistant_message="DONE 0001", sleep=sleep2, now=now2,
+            own_transcript_path=str(own_transcript),
+        )
+        cursor2 = _cursor(run_dir)
+        assert cursor2["unlinked_materials"] == []
+
+    def test_header_line_appears_and_clears_on_done(self, tmp_path, monkeypatch):
+        run_dir, transcript = _setup_run(
+            tmp_path, transcript_lines=self._orphan_chunk_then_boundary_entries()
+        )
+        own_transcript = tmp_path / "recorder_own.jsonl"
+        own_transcript.write_text("", encoding="utf-8")
+        _mock_main_alive(monkeypatch)
+
+        sleep, now = _stub_sleep_and_clock()
+        code, _ = _run_hook(cwd=run_dir, sleep=sleep, now=now, own_transcript_path=str(own_transcript))
+        assert code == 2  # e1のみの片(activity未設定)
+
+        _append_jsonl(own_transcript, [
+            _entry(
+                "assistant", "r1",
+                tool_calls=["mcp__plugin_calm_calm__add_material"],
+                tool_inputs=[{"title": "t", "content": "c", "tags": ["domain:x"], "source": "s"}],
+            ),
+            _tool_result("r1-res", "tu-r1-0", json.dumps({"material_id": 55})),
+        ])
+
+        _mock_main_dead(monkeypatch)  # 残りを渡させて片2を続けて確認する
+        sleep2, now2 = _stub_sleep_confirm_dead()
+        code2, _ = _run_hook(
+            cwd=run_dir, last_assistant_message="DONE 0001", sleep=sleep2, now=now2,
+            own_transcript_path=str(own_transcript),
+        )
+        assert code2 == 2
+        cursor2 = _cursor(run_dir)
+        assert cursor2["unlinked_materials"] == [55]
+
+        chunk2 = (run_dir / "chunks" / "0002.md").read_text(encoding="utf-8")
+        assert "activity_id: 99" in chunk2
+        header_line = next(line for line in chunk2.splitlines() if "未紐づけの記録" in line)
+        assert "55" in header_line
+
+        sleep3, now3 = _stub_sleep_confirm_dead()
+        code3, _ = _run_hook(
+            cwd=run_dir, last_assistant_message="DONE 0002", sleep=sleep3, now=now3,
+            own_transcript_path=str(own_transcript),
+        )
+        assert code3 == 0  # main死亡確定・残りなし → 終了処理
+        cursor3 = _cursor(run_dir)
+        assert cursor3["unlinked_materials"] == []  # 片2がdoneで確定し、空になる
+
+    def test_header_list_survives_unacked_chunk(self, tmp_path, monkeypatch):
+        run_dir, transcript = _setup_run(
+            tmp_path, transcript_lines=self._orphan_chunk_then_boundary_entries()
+        )
+        own_transcript = tmp_path / "recorder_own.jsonl"
+        own_transcript.write_text("", encoding="utf-8")
+        _mock_main_alive(monkeypatch)
+
+        sleep, now = _stub_sleep_and_clock()
+        code, _ = _run_hook(cwd=run_dir, sleep=sleep, now=now, own_transcript_path=str(own_transcript))
+        assert code == 2
+
+        _append_jsonl(own_transcript, [
+            _entry(
+                "assistant", "r1",
+                tool_calls=["mcp__plugin_calm_calm__add_material"],
+                tool_inputs=[{"title": "t", "content": "c", "tags": ["domain:x"], "source": "s"}],
+            ),
+            _tool_result("r1-res", "tu-r1-0", json.dumps({"material_id": 55})),
+        ])
+
+        _mock_main_dead(monkeypatch)
+        sleep2, now2 = _stub_sleep_confirm_dead()
+        code2, _ = _run_hook(
+            cwd=run_dir, last_assistant_message="DONE 0001", sleep=sleep2, now=now2,
+            own_transcript_path=str(own_transcript),
+        )
+        assert code2 == 2
+        assert _cursor(run_dir)["unlinked_materials"] == [55]
+
+        # 片2(activity確定済み・未紐づけ行つき)にDONEが来ず、unackedへ回る
+        sleep3, now3 = _stub_sleep_and_clock()
+        code3, _ = _run_hook(
+            cwd=run_dir, last_assistant_message="まだです", sleep=sleep3, now=now3,
+            own_transcript_path=str(own_transcript),
+        )
+        assert code3 == 2
+
+        sleep4, now4 = _stub_sleep_confirm_dead()
+        code4, _ = _run_hook(
+            cwd=run_dir, last_assistant_message="まだです2", sleep=sleep4, now=now4,
+            own_transcript_path=str(own_transcript),
+        )
+        assert code4 == 0
+        cursor4 = _cursor(run_dir)
+        assert cursor4["unacked"] == [2]
+        assert cursor4["unlinked_materials"] == [55]  # unackedでは空にならない
+
+    def test_no_header_line_when_list_empty(self, tmp_path, monkeypatch):
+        """activity確定済みの片でも、unlinked_materialsが空ならヘッダーに
+        行が出ないことを確かめる（activity未設定の片では別の条件で
+        既に行が出ないため、activity確定済みの片で確かめる必要がある）。"""
+        monkeypatch.setattr(hook, "CHAR_THRESHOLD", 3)
+        run_dir, transcript = _setup_run(
+            tmp_path, transcript_lines=[_entry("assistant", "e1", text="plain content")]
+        )
+        cursor = dict(hook._DEFAULT_CURSOR)
+        cursor["activity_id_at_cursor"] = 7
+        (run_dir / "cursor.json").write_text(json.dumps(cursor), encoding="utf-8")
+        _mock_main_alive(monkeypatch)
+        sleep, now = _stub_sleep_and_clock()
+        code, _ = _run_hook(cwd=run_dir, sleep=sleep, now=now)
+        assert code == 2
+        chunk = (run_dir / "chunks" / "0001.md").read_text(encoding="utf-8")
+        assert "activity_id: 7" in chunk  # activity確定済みであることの確認
+        assert "未紐づけの記録" not in chunk

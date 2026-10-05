@@ -129,6 +129,68 @@ def test_record_signal_different_kind_or_source_not_deduped(temp_db):
     assert len({r1["id"], r2["id"], r3["id"]}) == 3
 
 
+class TestCustomKind:
+    """custom:<名前> 形式のkindの検証とdedupの挙動。"""
+
+    def test_records_custom_kind_as_is(self, temp_db):
+        result = ss.record_signal("custom:rule_conflict", "外部ルール衝突")
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT * FROM signal_events WHERE id = ?", (result["id"],)
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row["kind"] == "custom:rule_conflict"
+
+    @pytest.mark.parametrize(
+        "kind",
+        [
+            "custom:",  # 名前が空
+            "custom:Rule Conflict",  # 大文字・空白
+            "custom:" + "a" * 41,  # 41字
+            "custom:-x",  # 先頭がハイフン
+        ],
+    )
+    def test_rejects_malformed_custom_kind(self, temp_db, kind):
+        with pytest.raises(ValueError):
+            ss.record_signal(kind, "boom")
+
+    def test_rejects_unprefixed_unknown_word(self, temp_db):
+        """custom: プレフィックスの無い未知語は拒否される。"""
+        with pytest.raises(ValueError):
+            ss.record_signal("rule_conflict", "boom")
+
+    def test_rejects_misspelled_reserved_kind(self, temp_db):
+        """予約語の綴り違いは custom: が無ければ拒否される(検証が緩んでいないこと)。"""
+        with pytest.raises(ValueError):
+            ss.record_signal("precedent-miss", "boom")
+
+    def test_different_custom_names_are_not_deduped(self, temp_db):
+        r1 = ss.record_signal("custom:a", "same text", source="tool:foo")
+        r2 = ss.record_signal("custom:b", "same text", source="tool:foo")
+
+        assert r1["id"] != r2["id"]
+
+    def test_same_custom_name_dedups(self, temp_db):
+        r1 = ss.record_signal("custom:a", "same text", source="tool:foo")
+        r2 = ss.record_signal("custom:a", "same text", source="tool:foo")
+
+        assert r2["id"] == r1["id"]
+        assert r2["occurrence_count"] == 2
+
+    def test_include_stats_lists_custom_kind_individually(self, temp_db):
+        """get_signals の案内どおり、custom の個別名は include_stats の集計で見える。"""
+        ss.record_signal("custom:rule_conflict", "外部ルール衝突")
+        ss.record_signal("custom:other_thing", "別のカスタム観測")
+
+        result = ss.get_signals(status=None, include_stats=True)
+
+        assert result["stats"]["by_kind_status"]["custom:rule_conflict"]["new"] == 1
+        assert result["stats"]["by_kind_status"]["custom:other_thing"]["new"] == 1
+
+
 def test_capture_signal_safe_never_raises_on_invalid_kind(temp_db):
     ss.capture_signal_safe("not_a_real_kind", "boom")  # 例外を投げないことのみ検証
 
@@ -202,12 +264,48 @@ class TestGetSignals:
         assert result["signals"][0]["kind"] == "machine_error"
         assert result["signals"][0]["status"] == "new"
 
+    @pytest.mark.parametrize("value", ["null", "NULL", "Null"])
+    def test_status_string_null_treated_as_none(self, temp_db, value):
+        r1 = ss.record_signal("machine_error", "a", source="s1")
+        ss.update_signal(r1["id"], "dismissed")
+        ss.record_signal("friction", "b", source="s2")
+
+        result = ss.get_signals(status=value)
+
+        assert result["total_count"] == 2
+
+    @pytest.mark.parametrize("value", ["null", "NULL", "Null"])
+    def test_kind_string_null_treated_as_none(self, temp_db, value):
+        ss.record_signal("machine_error", "a", source="s1")
+        ss.record_signal("friction", "b", source="s2")
+
+        result = ss.get_signals(status=None, kind=value)
+
+        assert result["total_count"] == 2
+
+    def test_near_miss_status_string_returns_validation_error(self, temp_db):
+        result = ss.get_signals(status="nul")
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
     def test_invalid_status_returns_validation_error(self, temp_db):
         result = ss.get_signals(status="not_a_status")
         assert result["error"]["code"] == "VALIDATION_ERROR"
 
     def test_invalid_kind_returns_validation_error(self, temp_db):
         result = ss.get_signals(kind="not_a_kind")
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_custom_kind_filter_returns_only_that_kind(self, temp_db):
+        ss.record_signal("custom:rule_conflict", "a", source="s1")
+        ss.record_signal("machine_error", "b", source="s2")
+
+        result = ss.get_signals(status=None, kind="custom:rule_conflict")
+
+        assert result["total_count"] == 1
+        assert result["signals"][0]["kind"] == "custom:rule_conflict"
+
+    def test_malformed_custom_kind_filter_returns_validation_error(self, temp_db):
+        result = ss.get_signals(kind="custom:Bad")
         assert result["error"]["code"] == "VALIDATION_ERROR"
 
     def test_refs_and_context_are_deserialized(self, temp_db):
@@ -292,6 +390,82 @@ class TestGetSignals:
 
         assert result["total_count"] == 3
         assert len(result["signals"]) == 3
+
+    def test_ids_filter_restricts_to_given_ids(self, temp_db):
+        r1 = ss.record_signal("friction", "a", source="s1")
+        r2 = ss.record_signal("friction", "b", source="s2")
+        ss.record_signal("friction", "c", source="s3")
+
+        result = ss.get_signals(status=None, ids=[r1["id"], r2["id"]])
+
+        assert result["total_count"] == 2
+        assert {s["id_raw"] for s in result["signals"]} == {r1["id"], r2["id"]}
+
+    def test_empty_ids_list_is_treated_as_no_filter(self, temp_db):
+        for i in range(3):
+            ss.record_signal("friction", f"item {i}", source=f"s{i}")
+
+        result = ss.get_signals(status=None, ids=[])
+
+        assert result["total_count"] == 3
+
+    def test_detail_over_budget_is_truncated_with_marker(self, temp_db):
+        long_detail = "x" * (ss.DETAIL_MAX_CHARS + 50)
+        r1 = ss.record_signal("friction", "a", source="s1", detail=long_detail)
+
+        result = ss.get_signals(status=None)
+
+        signal = result["signals"][0]
+        assert len(signal["detail"]) == ss.DETAIL_MAX_CHARS
+        assert signal["detail_truncated"] is True
+        assert result["next"] == [
+            {"tool": "get_signals", "args": {"ids": [r1["id"]], "status": None, "limit": 1}}
+        ]
+
+    def test_detail_within_budget_is_not_truncated(self, temp_db):
+        ss.record_signal("friction", "a", source="s1", detail="short")
+
+        result = ss.get_signals(status=None)
+
+        signal = result["signals"][0]
+        assert signal["detail"] == "short"
+        assert "detail_truncated" not in signal
+        assert "next" not in result
+
+    def test_next_args_fetch_every_truncated_row(self, temp_db):
+        """切り詰め行数が既定limit(20)を超えても、nextの指示どおりに呼べば全件が返る。"""
+        long_detail = "x" * (ss.DETAIL_MAX_CHARS + 50)
+        ids = [
+            ss.record_signal("friction", f"item {i}", source=f"s{i}", detail=long_detail)["id"]
+            for i in range(25)
+        ]
+
+        listing = ss.get_signals(status=None, limit=100)
+        followup = ss.get_signals(**listing["next"][0]["args"])
+
+        assert {s["id_raw"] for s in followup["signals"]} == set(ids)
+        assert followup["total_count"] == 25
+
+    def test_ids_over_max_limit_is_rejected(self, temp_db):
+        result = ss.get_signals(status=None, ids=list(range(1, ss._MAX_LIMIT + 2)))
+
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_ids_lookup_skips_truncation(self, temp_db):
+        """idsで明示的に絞った取得は、listingと違いdetailを切り詰めない。"""
+        long_detail = "x" * (ss.DETAIL_MAX_CHARS + 50)
+        r1 = ss.record_signal("friction", "a", source="s1", detail=long_detail)
+
+        result = ss.get_signals(status=None, ids=[r1["id"]])
+
+        signal = result["signals"][0]
+        assert signal["detail"] == long_detail
+        assert "detail_truncated" not in signal
+        assert "next" not in result
+
+    def test_empty_table_does_not_error(self, temp_db):
+        result = ss.get_signals(status=None)
+        assert result == {"signals": [], "total_count": 0}
 
 
 class TestUpdateSignal:

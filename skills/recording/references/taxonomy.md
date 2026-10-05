@@ -47,7 +47,7 @@ material は decision と違って「双方の合意」が不要な成果物で�
 - AI の提案に対して明示的な同意があった
 - 「〜で決定」「〜に決めた」等の表現がある
 
-### 3.2 未決定の論点（`[議論中]` / `[未完]`）
+### 3.2 未決定の論点（decisionは`[議論中]`、アクティビティは`[未完]`）
 
 決定していなくても、以下は記録する。
 
@@ -67,6 +67,8 @@ kind の全種一覧は `report_signal` ツールのdocstring（`src/main.py`）
 | `contradiction` | 設計・実装中に既存 decision と矛盾する結論に達した / `add_decisions` の `related_decisions`、`add_logs`/`add_material` の `related_records` で矛盾に気づいた |
 
 残り4種（`precedent_miss` / `precedent_misapplied` / `boundary_case` / `rollback`）は頻度が低く、判断に迷ったら `report_signal` ツールのdocstringを参照する。同一内容の再報告は `report_signal` 側で自動集約されるため、迷ったら報告してよい。
+
+予約kindのどれにも当てはまらない観測は `custom:<名前>` で記録する（既存kindへの流用は集計を汚すため避ける）。名前の形式と詳細は `report_signal` ツールのdocstringを参照する。
 
 L5（バグ観察、add_logs 対象）との違い: L5 はユーザーが取り組んでいる対象システムのバグ。calm 自身の不具合・違和感は report_signal。
 

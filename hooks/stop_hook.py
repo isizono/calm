@@ -12,6 +12,7 @@
 import os
 import sys
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 
 # プロジェクトルートをパスに追加（src.db等の参照用）
@@ -250,12 +251,40 @@ def _update_checked_in_activity(
     for e in reversed(events):
         if e["e"] == "tool" and e.get("name") == "check_in" and "activity_id" in e:
             state.set_checked_in_activity(e["activity_id"])
+            _update_checked_in_at(state, e.get("ts"))
             return
 
     # フォールバック: transcript全走査（add_activityのtool_result対応）
     aid = extract_last_activity_id(harness.read_transcript_entries(transcript_path))
     if aid is not None:
+        if state.get_checked_in_activity() != aid:
+            _update_checked_in_at(state, None, reset=True)
         state.set_checked_in_activity(aid)
+
+
+def _sqlite_utc(iso_ts: str | None) -> str | None:
+    """transcriptのISO8601時刻をDBのCURRENT_TIMESTAMPと同じUTC書式へ直す。解釈できなければNone。"""
+    if not iso_ts:
+        return None
+    try:
+        parsed = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _update_checked_in_at(state: HookState, iso_ts: str | None, *, reset: bool = False) -> None:
+    """check_inした時刻を保存する。transcriptから時刻が取れず、既に値がある場合は触らない
+    （Stopのたびに現在時刻で上書きして「check_in後」の基準が進むのを防ぐ。
+    resetは対象activityが替わったときに既存値を捨てて現在時刻で取り直す指定）。"""
+    ts = _sqlite_utc(iso_ts)
+    if ts is None:
+        if not reset and state.get_checked_in_at() is not None:
+            return
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    state.set_checked_in_at(ts)
 
 
 def _safe_post_approve(

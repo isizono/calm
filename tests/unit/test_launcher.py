@@ -12,11 +12,73 @@ import sys
 import threading
 import urllib.error
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
 from src import launcher
-from src.infra import git_repo
+from src.infra import git_repo, session_identity
+
+
+class _HealthOkHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass  # テスト出力を汚さない
+
+
+class TestOpenBridgeRequest:
+    """_open_bridge_request: ローカル/リモートでopenerの選び方が切り替わること。
+
+    リモートモード（CALM_URL指定）の接続先はユーザー任意のホストであり、社内
+    プロキシ経由が必要な場合があるため、ループバック専用のNO_PROXY_OPENERに
+    固定してはいけない（ローカルモードのヘルスチェック・セッション登録/解除の
+    どれもこの関数を経由する）。
+    """
+
+    def test_local_mode_uses_no_proxy_opener(self, monkeypatch):
+        monkeypatch.setattr(launcher, "_IS_LOCAL", True)
+        calls = []
+        monkeypatch.setattr(
+            launcher.NO_PROXY_OPENER, "open",
+            lambda req, timeout=None: calls.append(("no_proxy_opener", timeout)) or object(),
+        )
+        monkeypatch.setattr(
+            urllib.request, "urlopen",
+            lambda req, timeout=None: (_ for _ in ()).throw(AssertionError("ローカルモードでurlopenが呼ばれた")),
+        )
+        req = urllib.request.Request("http://127.0.0.1:1/x")
+        launcher._open_bridge_request(req, timeout=3)
+        assert calls == [("no_proxy_opener", 3)]
+
+    def test_remote_mode_uses_default_urlopen(self, monkeypatch):
+        monkeypatch.setattr(launcher, "_IS_LOCAL", False)
+        calls = []
+        monkeypatch.setattr(
+            urllib.request, "urlopen",
+            lambda req, timeout=None: calls.append(("urlopen", timeout)) or object(),
+        )
+        monkeypatch.setattr(
+            launcher.NO_PROXY_OPENER, "open",
+            lambda req, timeout=None: (_ for _ in ()).throw(AssertionError("リモートモードでNO_PROXY_OPENERが呼ばれた")),
+        )
+        req = urllib.request.Request("http://example.com/x")
+        launcher._open_bridge_request(req, timeout=3)
+        assert calls == [("urlopen", 3)]
+
+
+@pytest.fixture(autouse=True)
+def _no_process_exit_hooks(monkeypatch):
+    """main()が登録するatexit・SIGTERMハンドラをpytestプロセスに残さない。
+
+    atexitに登録されたlauncher._cleanupは、テスト後にmonkeypatchが戻った本物の
+    _unregister_sessionをpytest終了時に呼び、起動中のcalmサーバーへ
+    POST /session/unregisterを送ってしまう。
+    """
+    monkeypatch.setattr(launcher.atexit, "register", lambda *a, **kw: None)
+    monkeypatch.setattr(launcher.signal, "signal", lambda *a, **kw: None)
 
 
 class TestIsServerRunning:
@@ -33,8 +95,8 @@ class TestIsServerRunning:
                 pass
 
         monkeypatch.setattr(
-            urllib.request,
-            "urlopen",
+            launcher.NO_PROXY_OPENER,
+            "open",
             lambda req, timeout=None: FakeResponse(),
         )
         assert launcher._is_server_running() is True
@@ -48,7 +110,7 @@ class TestIsServerRunning:
                 hdrs={}, fp=None,
             )
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(launcher.NO_PROXY_OPENER, "open", fake_urlopen)
         assert launcher._is_server_running() is True
 
     def test_returns_true_on_400(self, monkeypatch):
@@ -60,7 +122,7 @@ class TestIsServerRunning:
                 hdrs={}, fp=None,
             )
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(launcher.NO_PROXY_OPENER, "open", fake_urlopen)
         assert launcher._is_server_running() is True
 
     def test_returns_false_on_connection_error(self, monkeypatch):
@@ -69,7 +131,7 @@ class TestIsServerRunning:
         def fake_urlopen(req, timeout=None):
             raise ConnectionRefusedError("Connection refused")
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(launcher.NO_PROXY_OPENER, "open", fake_urlopen)
         assert launcher._is_server_running() is False
 
     def test_returns_false_on_500(self, monkeypatch):
@@ -81,13 +143,55 @@ class TestIsServerRunning:
                 hdrs={}, fp=None,
             )
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(launcher.NO_PROXY_OPENER, "open", fake_urlopen)
         assert launcher._is_server_running() is False
+
+    def test_bypasses_http_proxy_env(self, monkeypatch):
+        """HTTP_PROXY/http_proxyが設定されていても127.0.0.1へのヘルスチェックは
+        プロキシを経由しない。
+
+        NO_PROXY_OPENER.open自体をモックする他のテストは、_is_server_runningが
+        NO_PROXY_OPENER経由ではなく素のurllib.request.urlopenへ戻る退行があっても
+        検出できない(モックした時点でどちらのopenerか区別が付かないため)。ここでは
+        実HTTPサーバーと実プロキシ環境変数を使い、本物のプロキシバイパスを確認する。
+        NO_PROXY_OPENER自体の構成(プロキシを無視する実装かどうか)の退行は
+        tests/unit/test_embedding_service.pyのtest_is_server_running_bypasses_http_proxy_env
+        が担当する(src.infra.loopback_httpは両者で共有するため、検証を重複させない)。
+        """
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _HealthOkHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            # 閉じたポートを指すプロキシ。バイパスできていなければ接続拒否でFalseになる。
+            monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+            monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+            monkeypatch.delenv("NO_PROXY", raising=False)
+            monkeypatch.delenv("no_proxy", raising=False)
+            monkeypatch.setattr(launcher, "MCP_ENDPOINT", f"http://127.0.0.1:{port}")
+            # urllib.request.urlopenの既定openerはプロセス内で初回呼び出し時に1度だけ
+            # 構築されキャッシュされる。launcher._is_server_running()がNO_PROXY_OPENER
+            # を経由せず素の urlopen に戻る退行が起きても、既定openerが別テストで
+            # 既にプロキシ無し状態のまま構築済みだと見逃しうるため、ここで作り直させる。
+            monkeypatch.setattr(urllib.request, "_opener", None)
+            assert launcher._is_server_running() is True
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
 
 
 class TestStartHttpServer:
-    def test_calls_popen_with_bundled_root_when_resolution_unavailable(self, monkeypatch):
-        """インストール先が解決できない場合は従来どおりbundled rootから起動する"""
+    def test_calls_popen_with_bundled_root_when_resolution_unavailable(self, tmp_path, monkeypatch):
+        """インストール先が解決できない場合はbundled rootから起動し、stderrはファイルに向く
+
+        popen_detachedはsys.platformで分岐するため、POSIX分岐の検証であることを
+        明示する(Windows分岐はtest_uses_popen_detached_windows_wiringで検証する)。
+        """
+        import src.db as db
+        from src.infra import detached_process
+
+        monkeypatch.setattr(detached_process.sys, "platform", "darwin")
+        monkeypatch.setattr(db, "get_db_path", lambda: str(tmp_path / "discussion.db"))
         called_with = {}
 
         class FakePopen:
@@ -103,7 +207,10 @@ class TestStartHttpServer:
         assert called_with["args"] == [sys.executable, "-m", "src.main", "--transport", "http"]
         assert called_with["kwargs"]["start_new_session"] is True
         assert called_with["kwargs"]["stdout"] == subprocess.DEVNULL
-        assert called_with["kwargs"]["stderr"] == subprocess.DEVNULL
+        # DEVNULLではなく、既存のログディレクトリ配下のファイルに向ける
+        stderr_file = called_with["kwargs"]["stderr"]
+        assert stderr_file != subprocess.DEVNULL
+        assert stderr_file.name == str(tmp_path / "logs" / "server.stderr.log")
         assert called_with["kwargs"]["cwd"] == launcher._PROJECT_ROOT
         assert called_with["kwargs"]["env"]["CALM_PROJECT_ROOT"] == launcher._PROJECT_ROOT
 
@@ -148,15 +255,96 @@ class TestStartHttpServer:
         assert called_with["args"] == [sys.executable, "-m", "src.main", "--transport", "http"]
         assert called_with["kwargs"]["cwd"] == launcher._PROJECT_ROOT
 
-    def test_returns_false_on_oserror(self, monkeypatch):
+    def test_overwrites_stderr_log_on_each_start(self, tmp_path, monkeypatch):
+        """肥大化しないよう、起動のたびにstderrログを上書きする
+
+        popen_detachedはsys.platformで分岐するため、POSIX分岐の検証であることを
+        明示する(Windows分岐はtest_uses_popen_detached_windows_wiringで検証する)。
+        """
+        import src.db as db
+        from src.infra import detached_process
+
+        monkeypatch.setattr(detached_process.sys, "platform", "darwin")
+        monkeypatch.setattr(db, "get_db_path", lambda: str(tmp_path / "discussion.db"))
+        log_path = tmp_path / "logs" / "server.stderr.log"
+        log_path.parent.mkdir(parents=True)
+        log_path.write_bytes(b"previous run's stale output\n" * 100)
+
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: None)
+        assert launcher._start_http_server() is True
+        assert log_path.read_bytes() == b""
+
+    def test_returns_false_on_oserror(self, tmp_path, monkeypatch):
         """OSErrorの場合はFalseを返す"""
         monkeypatch.setattr(launcher, "resolve_installed_plugin_root", lambda bundled_root: None)
+        import src.db as db
+
+        monkeypatch.setattr(db, "get_db_path", lambda: str(tmp_path / "discussion.db"))
 
         def fake_popen(*args, **kwargs):
             raise OSError("Permission denied")
 
         monkeypatch.setattr(subprocess, "Popen", fake_popen)
         assert launcher._start_http_server() is False
+
+    def test_falls_back_to_devnull_when_stderr_log_cannot_be_prepared(self, tmp_path, monkeypatch):
+        """診断用stderrログの準備(mkdir)自体が失敗しても、サーバー起動は続行する
+
+        logs/ディレクトリの代わりに同名の通常ファイルを置き、
+        mkdir(parents=True, exist_ok=True)を実際のFileExistsErrorで失敗させる。
+
+        popen_detachedはsys.platformで分岐するため、POSIX分岐の検証であることを
+        明示する(Windows分岐はtest_uses_popen_detached_windows_wiringで検証する)。
+        """
+        import src.db as db
+        from src.infra import detached_process
+
+        monkeypatch.setattr(detached_process.sys, "platform", "darwin")
+        monkeypatch.setattr(db, "get_db_path", lambda: str(tmp_path / "discussion.db"))
+        (tmp_path / "logs").write_bytes(b"")
+        called_with = {}
+
+        class FakePopen:
+            def __init__(self, args, **kwargs):
+                called_with["kwargs"] = kwargs
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        assert launcher._start_http_server() is True
+        assert called_with["kwargs"]["stderr"] == subprocess.DEVNULL
+
+    def test_uses_popen_detached_windows_wiring(self, tmp_path, monkeypatch):
+        """popen_detached経由でWindows用kwargsが渡ること
+
+        popen_detachedを経由せずstart_new_session=Trueで直接起動する実装に戻しても
+        気づけない回帰を防ぐため、popen_detachedのWindows分岐(中継プロセスの起動)が
+        実際に呼び出されることを確かめる。
+        """
+        import src.db as db
+        from src.infra import detached_process
+
+        monkeypatch.setattr(db, "get_db_path", lambda: str(tmp_path / "discussion.db"))
+        called_with = {}
+
+        class FakeRelay:
+            def __init__(self, args, **kwargs):
+                called_with["kwargs"] = kwargs
+                self.returncode = 0
+
+            def communicate(self, input=None, timeout=None):
+                return f"{os.getpid()}\n".encode(), b""
+
+        monkeypatch.setattr(detached_process.sys, "platform", "win32")
+        monkeypatch.setattr(subprocess, "Popen", FakeRelay)
+
+        assert launcher._start_http_server() is True
+        assert called_with["kwargs"]["creationflags"] == (
+            detached_process._CREATE_NEW_PROCESS_GROUP
+            | detached_process._CREATE_NO_WINDOW
+            | detached_process._CREATE_BREAKAWAY_FROM_JOB
+        )
+        assert called_with["kwargs"]["stdin"] == subprocess.PIPE
+        assert called_with["kwargs"]["stdout"] == subprocess.PIPE
+        assert called_with["kwargs"]["stderr"] == subprocess.PIPE
 
 
 class TestEnsureServerRunning:
@@ -256,6 +444,155 @@ class TestEnsureServerRunningStaleLock:
         # ロックファイルはそのまま
         assert lock_path.exists()
 
+    def test_stale_lock_pid_alive_but_start_time_mismatch(self, monkeypatch, tmp_path):
+        """PIDが生きていても起動時刻が記録と食い違う(PID再利用)場合はstaleとして削除する"""
+        from src.infra import lock_file
+
+        lock_dir = tmp_path / ".cc-memory"
+        lock_dir.mkdir()
+        lock_path = lock_dir / "server.lock"
+        lock_path.write_text(
+            '{"pid": 99999999, "port": 52837, "start_time": "old-sig"}', encoding="utf-8"
+        )
+        monkeypatch.setattr(lock_file, "LOCK_FILE", lock_path)
+        monkeypatch.setattr(lock_file, "is_process_alive", lambda pid: True)
+        monkeypatch.setattr(lock_file, "process_start_signature", lambda pid: "new-sig")
+
+        call_count = {"check": 0}
+
+        def fake_is_running():
+            call_count["check"] += 1
+            return call_count["check"] >= 3
+
+        monkeypatch.setattr(launcher, "_is_server_running", fake_is_running)
+        monkeypatch.setattr(launcher, "_start_http_server", lambda: True)
+        monkeypatch.setattr(launcher.time, "sleep", lambda _: None)
+
+        assert launcher._ensure_server_running() is True
+        assert not lock_path.exists()
+
+    def test_unlink_oserror_is_swallowed(self, monkeypatch, tmp_path):
+        """stale lock削除がOSErrorになっても例外を外に漏らさず起動フローを続ける"""
+        from src.infra import lock_file
+
+        lock_dir = tmp_path / ".cc-memory"
+        lock_dir.mkdir()
+        lock_path = lock_dir / "server.lock"
+        lock_path.write_text('{"pid": 99999999, "port": 52837}', encoding="utf-8")
+        monkeypatch.setattr(lock_file, "is_process_alive", lambda pid: False)
+
+        class _BoomPath:
+            """unlinkだけ共有違反風のOSErrorにし、他の操作は実パスに委譲する"""
+
+            def __getattr__(self, name):
+                return getattr(lock_path, name)
+
+            def unlink(self, missing_ok=True):
+                raise OSError(32, "The process cannot access the file")
+
+        monkeypatch.setattr(lock_file, "LOCK_FILE", _BoomPath())
+
+        call_count = {"check": 0}
+
+        def fake_is_running():
+            call_count["check"] += 1
+            return call_count["check"] >= 3
+
+        start_calls = {"count": 0}
+
+        def fake_start_http_server():
+            start_calls["count"] += 1
+            return True
+
+        monkeypatch.setattr(launcher, "_is_server_running", fake_is_running)
+        monkeypatch.setattr(launcher, "_start_http_server", fake_start_http_server)
+        monkeypatch.setattr(launcher.time, "sleep", lambda _: None)
+
+        # unlinkがOSErrorを投げても例外は外に伝播せず、新サーバーの起動まで進む
+        assert launcher._ensure_server_running() is True
+        assert start_calls["count"] == 1
+
+
+class TestCurrentHarnessName:
+    """launcherがセッション台帳へ申告するharness名の判定。
+
+    Codexは`~/.codex/config.toml`の`[mcp_servers.calm]`からlauncherを起動し、
+    MCPサーバーへは親の環境変数を引き継がない。CALM_HARNESSが無い場合でも、
+    祖先プロセスで最も近いエージェントCLIから種別を判定する。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(launcher, "_harness_name_cache", None)
+        for name in ("CALM_HARNESS", "CCM_HARNESS", "CC_MEMORY_HARNESS"):
+            monkeypatch.delenv(name, raising=False)
+        # 実環境の ~/.claude/sessions を読まない
+        claude_dir = tmp_path / "claude-sessions"
+        claude_dir.mkdir()
+        monkeypatch.setenv("CALM_CLAUDE_SESSIONS_DIR", str(claude_dir))
+
+    @staticmethod
+    def _fake_ps(monkeypatch, table: dict[int, tuple[int, str]]) -> list[list[str]]:
+        """{pid: (ppid, comm)} で親pid（_get_ppid）と `ps -o comm=`（subprocess境界）を差し替え、`ps` の呼び出しを記録する。"""
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            session_identity,
+            "_get_ppid",
+            lambda pid: table[pid][0] if pid in table else None,
+        )
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            pid = int(args[-1])
+            if args[:2] == ["ps", "-o"] and pid in table:
+                _, comm = table[pid]
+                return subprocess.CompletedProcess(args, 0, stdout=f"{comm}\n", stderr="")
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        return calls
+
+    def _codex_nested_under_claude(self) -> dict[int, tuple[int, str]]:
+        # launcher <- uv <- codex <- zsh <- claude（Claude CodeのBashからcodex exec）
+        me = os.getpid()
+        return {
+            me: (9001, "python"),
+            9001: (9002, "uv"),
+            9002: (9003, "/opt/homebrew/Caskroom/codex/0.149.0/bin/codex"),
+            9003: (9004, "/bin/zsh"),
+            9004: (1, "claude"),
+        }
+
+    def test_codex_nested_under_claude_code_without_env_is_codex(self, monkeypatch):
+        """Claude CodeのBashから起動したcodex exec配下のlauncherはcodexと申告する"""
+        self._fake_ps(monkeypatch, self._codex_nested_under_claude())
+        assert launcher._current_harness_name() == "codex"
+
+    def test_claude_code_parent_is_claude_code(self, monkeypatch):
+        me = os.getpid()
+        self._fake_ps(
+            monkeypatch, {me: (9001, "python"), 9001: (9002, "uv"), 9002: (1, "claude")}
+        )
+        assert launcher._current_harness_name() == "claude_code"
+
+    def test_env_codex_wins_without_process_inspection(self, monkeypatch):
+        monkeypatch.setenv("CALM_HARNESS", "codex")
+        calls = self._fake_ps(monkeypatch, {})
+        assert launcher._current_harness_name() == "codex"
+        assert calls == []
+
+    def test_falls_back_to_claude_code_when_undetected(self, monkeypatch):
+        self._fake_ps(monkeypatch, {})
+        assert launcher._current_harness_name() == "claude_code"
+
+    def test_process_inspection_runs_only_once(self, monkeypatch):
+        """heartbeatごとの再登録でpsを呼び直さない"""
+        calls = self._fake_ps(monkeypatch, self._codex_nested_under_claude())
+        assert launcher._current_harness_name() == "codex"
+        first = len(calls)
+        assert launcher._current_harness_name() == "codex"
+        assert len(calls) == first
+
 
 class TestSessionRegistration:
     def test_register_success(self, monkeypatch):
@@ -272,8 +609,8 @@ class TestSessionRegistration:
                 return json.dumps({"registered": True, "active_sessions": 1}).encode()
 
         monkeypatch.setattr(
-            urllib.request,
-            "urlopen",
+            launcher.NO_PROXY_OPENER,
+            "open",
             lambda req, timeout=None: FakeResponse(),
         )
         assert launcher._register_session() is True
@@ -284,7 +621,7 @@ class TestSessionRegistration:
         def fake_urlopen(req, timeout=None):
             raise ConnectionRefusedError("Connection refused")
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(launcher.NO_PROXY_OPENER, "open", fake_urlopen)
         assert launcher._register_session() is False
 
     def test_unregister_success(self, monkeypatch):
@@ -301,8 +638,8 @@ class TestSessionRegistration:
                 return json.dumps({"unregistered": True, "active_sessions": 0}).encode()
 
         monkeypatch.setattr(
-            urllib.request,
-            "urlopen",
+            launcher.NO_PROXY_OPENER,
+            "open",
             lambda req, timeout=None: FakeResponse(),
         )
         assert launcher._unregister_session() is True
@@ -313,7 +650,7 @@ class TestSessionRegistration:
         def fake_urlopen(req, timeout=None):
             raise ConnectionRefusedError("Connection refused")
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(launcher.NO_PROXY_OPENER, "open", fake_urlopen)
         assert launcher._unregister_session() is False
 
 
@@ -544,14 +881,12 @@ class TestBridgeIdentityHeader:
             == launcher._session_id
         )
 
-    def test_bridge_also_attaches_legacy_header_with_same_value(self, monkeypatch):
-        """移行期間中は改名前のサーバー向けに旧ヘッダにも同じ値を載せる。"""
+    def test_bridge_does_not_send_legacy_header(self, monkeypatch):
+        """改名前の旧ヘッダ X-CC-Memory-Bridge-Session-Id は送らない。
+        サーバー側は移行期間として旧ヘッダの受理を続ける（#750）。"""
         captured = self._run_bridge_and_capture_http_client(monkeypatch)
         http_client = captured["http_client"]
-        assert (
-            http_client.headers.get(launcher.LEGACY_BRIDGE_SESSION_HEADER)
-            == launcher._session_id
-        )
+        assert "x-cc-memory-bridge-session-id" not in http_client.headers
 
     def test_header_names_match_server_side(self):
         """launcher が送るヘッダ名とサーバー側が読むヘッダ名が一致する
@@ -559,10 +894,6 @@ class TestBridgeIdentityHeader:
         from src.infra import session_identity
 
         assert launcher.BRIDGE_SESSION_HEADER.lower() == session_identity.BRIDGE_SESSION_HEADER
-        assert (
-            launcher.LEGACY_BRIDGE_SESSION_HEADER.lower()
-            == session_identity.LEGACY_BRIDGE_SESSION_HEADER
-        )
 
     def test_bridge_uses_same_header_value_across_reconnects(self, monkeypatch):
         """複数回の再接続（リトライループの複数周回）でも毎回同じ値が使われる。"""
@@ -573,6 +904,22 @@ class TestBridgeIdentityHeader:
             == second["http_client"].headers.get(launcher.BRIDGE_SESSION_HEADER)
             == launcher._session_id
         )
+
+    def test_bridge_disables_trust_env_when_local(self, monkeypatch):
+        """ローカルモードでは環境のプロキシ設定(trust_env)を無視する。
+
+        手動プロキシ設定はあるが環境変数が無い環境で、ループバック接続が
+        社内プロキシへ誤って送られるのを防ぐため。
+        """
+        monkeypatch.setattr(launcher, "_IS_LOCAL", True)
+        captured = self._run_bridge_and_capture_http_client(monkeypatch)
+        assert captured["http_client"].trust_env is False
+
+    def test_bridge_keeps_trust_env_when_remote(self, monkeypatch):
+        """リモートモード(CALM_URL指定時)ではtrust_envの既定(True)を変えない。"""
+        monkeypatch.setattr(launcher, "_IS_LOCAL", False)
+        captured = self._run_bridge_and_capture_http_client(monkeypatch)
+        assert captured["http_client"].trust_env is True
 
 
 class TestHeartbeatLoop:
@@ -1257,11 +1604,416 @@ class TestRetryLoopCancellationWhileBridgeConnected:
         assert attempts == 1
 
 
+class TestStdinReaderTaskFailureHandling:
+    """_stdin_reader_task: 読み取りスレッドの開始・継続の失敗時も、
+
+    stdin EOFと同じ終了経路（WARNINGログ・state.outbound への番兵・
+    state.stdin_eof）に必ず乗ることの検証。
+    """
+
+    def test_fileno_failure_logs_warning_and_reaches_eof(self, monkeypatch):
+        """stdin.buffer.fileno()自体が失敗する（読み取り開始の失敗）場合"""
+        import types
+
+        broken_buffer = types.SimpleNamespace(
+            fileno=lambda: (_ for _ in ()).throw(OSError("no fd"))
+        )
+        monkeypatch.setattr(
+            launcher.sys, "stdin", types.SimpleNamespace(buffer=broken_buffer)
+        )
+        warnings = []
+        monkeypatch.setattr(
+            launcher.logger,
+            "warning",
+            lambda msg, *a, **kw: warnings.append(msg),
+        )
+
+        async def drive():
+            state = launcher._StdinBridgeState()
+            await asyncio.wait_for(launcher._stdin_reader_task(state), timeout=5.0)
+            return state
+
+        state = asyncio.run(drive())
+        assert state.stdin_eof.is_set()
+        assert state.outbound.get_nowait() is None
+        assert "Failed to read stdin" in warnings
+
+    def test_os_read_failure_logs_warning_and_reaches_eof(self, monkeypatch):
+        """fdは取れるがos.readが失敗する（読み取り継続の失敗）場合"""
+        import types
+
+        monkeypatch.setattr(
+            launcher.sys, "stdin", types.SimpleNamespace(buffer=types.SimpleNamespace(fileno=lambda: 999))
+        )
+
+        def failing_read(fd, n):
+            raise OSError("bad fd")
+
+        monkeypatch.setattr(launcher.os, "read", failing_read)
+        warnings = []
+        monkeypatch.setattr(
+            launcher.logger,
+            "warning",
+            lambda msg, *a, **kw: warnings.append(msg),
+        )
+
+        async def drive():
+            state = launcher._StdinBridgeState()
+            await asyncio.wait_for(launcher._stdin_reader_task(state), timeout=5.0)
+            return state
+
+        state = asyncio.run(drive())
+        assert state.stdin_eof.is_set()
+        assert state.outbound.get_nowait() is None
+        assert "Failed to read stdin" in warnings
+
+    def test_thread_start_failure_logs_warning_and_reaches_eof(self, monkeypatch):
+        """threading.Thread(...).start()自体が失敗する（スレッド生成の失敗）場合"""
+        import types
+
+        class _FailingThread:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start(self):
+                raise RuntimeError("can't start new thread")
+
+        # launcher.threading（モジュール参照）だけを差し替える。グローバルな
+        # threading.Threadを差し替えるとasyncio.to_threadの内部
+        # ThreadPoolExecutorの動作まで巻き込んでしまう。
+        monkeypatch.setattr(launcher, "threading", types.SimpleNamespace(Thread=_FailingThread))
+        warnings = []
+        monkeypatch.setattr(
+            launcher.logger,
+            "warning",
+            lambda msg, *a, **kw: warnings.append(msg),
+        )
+
+        async def drive():
+            state = launcher._StdinBridgeState()
+            await asyncio.wait_for(launcher._stdin_reader_task(state), timeout=5.0)
+            return state
+
+        state = asyncio.run(drive())
+        assert state.stdin_eof.is_set()
+        assert state.outbound.get_nowait() is None
+        assert "stdin reader ended unexpectedly" in warnings
+
+    def test_handle_stdin_line_failure_does_not_crash_the_task(self, monkeypatch):
+        """_handle_stdin_line呼び出し先（discover応答のstdout書き込み等）が
+
+        失敗しても、タスク自体は例外を外へ伝播させずEOF終了経路に乗ること
+        （ここで吸収しないと_run_retry_loopのCancelledErrorだけをsuppressする
+        後始末をすり抜けてプロセスがクラッシュする）。
+        """
+        import types
+
+        read_fd, write_fd = os.pipe()
+        read_file = os.fdopen(read_fd, "rb", buffering=0)
+        monkeypatch.setattr(
+            launcher.sys, "stdin", types.SimpleNamespace(buffer=read_file)
+        )
+
+        def failing_write(data):
+            raise BrokenPipeError("broken")
+
+        monkeypatch.setattr(
+            launcher.sys,
+            "stdout",
+            types.SimpleNamespace(
+                buffer=types.SimpleNamespace(write=failing_write, flush=lambda: None)
+            ),
+        )
+        warnings = []
+        monkeypatch.setattr(
+            launcher.logger,
+            "warning",
+            lambda msg, *a, **kw: warnings.append(msg),
+        )
+
+        os.write(
+            write_fd,
+            b'{"jsonrpc": "2.0", "id": 1, "method": "server/discover", "params": {}}\n',
+        )
+        os.close(write_fd)
+
+        async def drive():
+            state = launcher._StdinBridgeState()
+            await asyncio.wait_for(launcher._stdin_reader_task(state), timeout=5.0)
+            return state
+
+        threads_before = set(threading.enumerate())
+        try:
+            state = asyncio.run(drive())
+        finally:
+            # 読み取りスレッドが完全に終わってからfdを閉じる。スレッドが
+            # 生きたままfdを閉じると、別テストのos.pipe()がfd番号を再利用した
+            # ときにこのスレッドがそちらを読んでしまい、まれに関係ないテストを
+            # タイムアウトさせる。
+            for t in set(threading.enumerate()) - threads_before:
+                t.join(timeout=5.0)
+            read_file.close()
+
+        assert state.stdin_eof.is_set()
+        assert "stdin reader ended unexpectedly" in warnings
+
+
+class TestReadStdinChunkWindowsPipe:
+    """_read_stdin_chunk_windows_pipe: PeekNamedPipeとos.readの偽物で駆動する。
+
+    実際のWindows API（ctypes.WinDLL）には触れず、`peek`引数に渡す関数と
+    `launcher.os.read`だけを差し替えて検証する。
+    """
+
+    def test_polls_while_zero_then_reads_once_available(self, monkeypatch):
+        """読める量が0の間はos.readを呼ばず、正になったら1回だけ読む"""
+        available_sequence = iter([0, 0, 5])
+        peek_calls = []
+
+        def fake_peek():
+            peek_calls.append(True)
+            return next(available_sequence)
+
+        sleeps = []
+        monkeypatch.setattr(launcher.time, "sleep", lambda s: sleeps.append(s))
+
+        read_calls = []
+
+        def fake_read(fd, n):
+            read_calls.append((fd, n))
+            return b"hello"
+
+        monkeypatch.setattr(launcher.os, "read", fake_read)
+
+        result = launcher._read_stdin_chunk_windows_pipe(999, fake_peek)
+
+        assert result == b"hello"
+        assert len(peek_calls) == 3
+        assert read_calls == [(999, 5)]
+        assert sleeps == [
+            launcher._WINDOWS_PIPE_POLL_INTERVAL_SEC,
+            launcher._WINDOWS_PIPE_POLL_INTERVAL_SEC,
+        ]
+
+    def test_broken_pipe_returns_eof_without_warning(self, monkeypatch):
+        """ERROR_BROKEN_PIPE(109)はEOFとして扱い、WARNINGは出さない"""
+
+        def fake_peek():
+            raise launcher._PeekNamedPipeFailed(launcher._ERROR_BROKEN_PIPE)
+
+        warnings = []
+        monkeypatch.setattr(
+            launcher.logger, "warning", lambda msg, *a, **kw: warnings.append(msg)
+        )
+        read_calls = []
+        monkeypatch.setattr(
+            launcher.os, "read", lambda fd, n: read_calls.append((fd, n))
+        )
+
+        result = launcher._read_stdin_chunk_windows_pipe(999, fake_peek)
+
+        assert result == b""
+        assert read_calls == []
+        assert warnings == []
+
+    def test_other_failure_logs_warning_and_returns_eof(self, monkeypatch):
+        """ERROR_BROKEN_PIPE以外の失敗はWARNINGを出したうえでEOF扱いにする"""
+
+        def fake_peek():
+            raise launcher._PeekNamedPipeFailed(5)
+
+        warnings = []
+        monkeypatch.setattr(
+            launcher.logger, "warning", lambda msg, *a, **kw: warnings.append(msg)
+        )
+        read_calls = []
+        monkeypatch.setattr(
+            launcher.os, "read", lambda fd, n: read_calls.append((fd, n))
+        )
+
+        result = launcher._read_stdin_chunk_windows_pipe(999, fake_peek)
+
+        assert result == b""
+        assert read_calls == []
+        assert len(warnings) == 1
+        assert "winerror=5" in warnings[0]
+
+
+class TestStdinChunkReaderSelection:
+    """_stdin_chunk_reader: プラットフォーム・stdinの種別に応じた読み方の選択。"""
+
+    def test_non_windows_uses_blocking_read(self, monkeypatch):
+        """Windows以外は常にブロッキングのos.readを選ぶ（_win_stdin_pipe_apiは呼ばない）"""
+        monkeypatch.setattr(launcher.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            launcher,
+            "_win_stdin_pipe_api",
+            lambda fd: (_ for _ in ()).throw(AssertionError("should not be called")),
+        )
+        read_calls = []
+        monkeypatch.setattr(
+            launcher.os, "read", lambda fd, n: read_calls.append((fd, n)) or b"x"
+        )
+
+        read_chunk = launcher._stdin_chunk_reader(42)
+        assert read_chunk() == b"x"
+        assert read_calls == [(42, 65536)]
+
+    def test_windows_non_pipe_uses_blocking_read(self, monkeypatch):
+        """Windowsでもstdinがパイプでない場合（ファイルリダイレクト等）はブロッキング読み取り"""
+        monkeypatch.setattr(launcher.sys, "platform", "win32")
+
+        def fake_peek():
+            raise AssertionError("peek should not be called when stdin is not a pipe")
+
+        monkeypatch.setattr(
+            launcher, "_win_stdin_pipe_api", lambda fd: (1, fake_peek)
+        )
+        read_calls = []
+        monkeypatch.setattr(
+            launcher.os, "read", lambda fd, n: read_calls.append((fd, n)) or b"x"
+        )
+
+        read_chunk = launcher._stdin_chunk_reader(42)
+        assert read_chunk() == b"x"
+        assert read_calls == [(42, 65536)]
+
+    def test_windows_pipe_uses_peek_reader(self, monkeypatch):
+        """Windowsでstdinが無名パイプの場合はPeekNamedPipe方式を選ぶ"""
+        monkeypatch.setattr(launcher.sys, "platform", "win32")
+
+        peek_calls = []
+
+        def fake_peek():
+            peek_calls.append(True)
+            return 3
+
+        monkeypatch.setattr(
+            launcher, "_win_stdin_pipe_api", lambda fd: (launcher._FILE_TYPE_PIPE, fake_peek)
+        )
+        read_calls = []
+        monkeypatch.setattr(
+            launcher.os, "read", lambda fd, n: read_calls.append((fd, n)) or b"abc"
+        )
+
+        read_chunk = launcher._stdin_chunk_reader(42)
+        assert read_chunk() == b"abc"
+        assert peek_calls == [True]
+        assert read_calls == [(42, 3)]
+
+
+class TestStdinReaderThreadSurvivesClosedLoop:
+    """読み取りスレッドが、イベントループが閉じた後にfeed_data/feed_eofを
+
+    呼んでも（`contextlib.suppress(RuntimeError)`により）クラッシュしないこと、
+    誤った「Failed to read stdin」WARNINGを出さないことの検証。max retries超過や
+    sys.exit経由でのキャンセル後も読み取りスレッドだけが生き残る状況を再現する。
+    """
+
+    def test_feed_after_loop_closed_does_not_crash_thread_or_warn(self, monkeypatch):
+        import types
+
+        unhandled_exceptions = []
+        original_excepthook = threading.excepthook
+        monkeypatch.setattr(
+            threading,
+            "excepthook",
+            lambda args: unhandled_exceptions.append(args.exc_value),
+        )
+
+        read_fd, write_fd = os.pipe()
+        read_file = os.fdopen(read_fd, "rb", buffering=0)
+        monkeypatch.setattr(
+            launcher.sys, "stdin", types.SimpleNamespace(buffer=read_file)
+        )
+        warnings = []
+        monkeypatch.setattr(
+            launcher.logger,
+            "warning",
+            lambda msg, *a, **kw: warnings.append(msg),
+        )
+
+        threads_before = set(threading.enumerate())
+
+        async def drive():
+            state = launcher._StdinBridgeState()
+            task = asyncio.ensure_future(launcher._stdin_reader_task(state))
+            # 読み取りスレッドがos.readでブロック中（まだ何も書いていない）の
+            # 状態でタスクをキャンセルする。max retries超過やsys.exit経路での
+            # 強制終了を模す。
+            await asyncio.sleep(0.2)
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+        try:
+            asyncio.run(drive())
+            # ここでイベントループは既に閉じている。読み取りスレッドは
+            # os.readでブロックしたまま生き残っているはず。
+            os.write(write_fd, b"irrelevant\n")
+            os.close(write_fd)
+
+            for t in set(threading.enumerate()) - threads_before:
+                t.join(timeout=5.0)
+        finally:
+            monkeypatch.setattr(threading, "excepthook", original_excepthook)
+            read_file.close()
+
+        assert unhandled_exceptions == []
+        assert "Failed to read stdin" not in warnings
+
+
+class TestStdinReaderThreadIsDaemon:
+    """読み取りスレッドがdaemon=Trueで起動されること。
+
+    daemonでないと、このスレッドがos.readでブロックしたまま残っている間、
+    Pythonインタプリタの終了自体がブロックされ、stdin EOFなしでは
+    launcherプロセスが終了できなくなる。
+    """
+
+    def test_read_thread_is_daemon(self, monkeypatch):
+        import types
+
+        read_fd, write_fd = os.pipe()
+        read_file = os.fdopen(read_fd, "rb", buffering=0)
+        monkeypatch.setattr(
+            launcher.sys, "stdin", types.SimpleNamespace(buffer=read_file)
+        )
+
+        threads_before = set(threading.enumerate())
+        daemon_flags: list[bool] = []
+
+        async def drive():
+            state = launcher._StdinBridgeState()
+            task = asyncio.ensure_future(launcher._stdin_reader_task(state))
+            # 読み取りスレッドがos.readでブロック中(まだ何も書いていない)の
+            # 状態で、実際に起動されたThreadオブジェクトからdaemonフラグを拾う。
+            await asyncio.sleep(0.2)
+            new_threads = set(threading.enumerate()) - threads_before
+            daemon_flags.extend(t.daemon for t in new_threads)
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+        try:
+            asyncio.run(drive())
+            # イベントループは既に閉じているが、読み取りスレッドはos.readで
+            # ブロックしたまま生き残っている。書き込み側を閉じてEOFで解放する。
+            os.close(write_fd)
+            for t in set(threading.enumerate()) - threads_before:
+                t.join(timeout=5.0)
+        finally:
+            read_file.close()
+
+        assert daemon_flags, "読み取りスレッドが見つからなかった"
+        assert all(daemon_flags)
+
+
 class TestStdinAndRetryLoopIntegration:
     """実stdin（os.pipe経由）・実`_stdin_reader_task`・実`_run_retry_loop`を使い、
 
     HTTP層（`streamable_http_client`）だけをfakeにした統合寄りの検証。
-    stdinを丸ごとスタブに差し替える単体テストでは、(1)stdinのtransportを
+    stdinを丸ごとスタブに差し替える単体テストでは、(1)stdinの読み取りスレッドを
     1回だけ作って使い回すこと (2)リトライループが`_fail_pending_requests`を
     呼ぶこと (3)readerのEOF通知、のいずれを壊しても検出できない。このテストは
     それら3つの配線を一括で保証する。
@@ -1312,6 +2064,18 @@ class TestStdinAndRetryLoopIntegration:
         monkeypatch.setattr(launcher, "_IS_LOCAL", True)
         monkeypatch.setattr(launcher, "MAX_RETRIES", None)
         monkeypatch.setattr(launcher, "HEARTBEAT_INTERVAL_SEC", 1000.0)
+
+        # 読み取りスレッドがbridgeのリトライを跨いで1本だけ使い回されることを
+        # 検証するため、Thread生成回数を数える。launcher.threading（モジュール
+        # 参照）だけを差し替える。グローバルなthreading.Threadを差し替えると
+        # asyncio.to_threadの内部ThreadPoolExecutorの動作まで巻き込んでしまう。
+        thread_create_count = {"n": 0}
+
+        def counting_thread(*args, **kwargs):
+            thread_create_count["n"] += 1
+            return threading.Thread(*args, **kwargs)
+
+        monkeypatch.setattr(launcher, "threading", std_types.SimpleNamespace(Thread=counting_thread))
 
         call_count = {"n": 0}
 
@@ -1415,6 +2179,9 @@ class TestStdinAndRetryLoopIntegration:
             # ログで確認してからstdin EOFを発生させ、
             # 「バックオフとEOFの早い方で抜ける」（backoffを待ち切らない）ことを計測する。
             await wait_until(lambda: bridge_failure_count["n"] >= 2, timeout=5.0)
+            # 2回のbridge失敗（＝2回の再接続）を経ても、読み取りスレッドは
+            # 最初の1回しか作られていないこと。
+            assert thread_create_count["n"] == 1
             eof_start = time_module.monotonic()
             close_write_fd()
             await asyncio.wait_for(loop_task, timeout=5.0)
@@ -1635,6 +2402,21 @@ class TestMainRetryLoop:
         launcher.main()
         assert call_count["bridge"] == 6
 
+    def test_registers_sigbreak_alongside_sigterm_when_present(self, monkeypatch):
+        """SIGBREAK（Windows専用、存在する場合のみ）をSIGTERMと同じハンドラで登録する"""
+        self._setup_main(monkeypatch, [None])
+        monkeypatch.setattr(launcher.signal, "SIGBREAK", 99, raising=False)
+        registered: dict = {}
+        monkeypatch.setattr(
+            launcher.signal,
+            "signal",
+            lambda sig, handler: registered.setdefault(sig, handler),
+        )
+        launcher.main()
+        assert launcher.signal.SIGTERM in registered
+        assert 99 in registered
+        assert registered[99] is registered[launcher.signal.SIGTERM]
+
 
 class TestSessionRegistrationGating:
     """main(): セッション登録の _IS_LOCAL による致命度の切り替え検証"""
@@ -1696,9 +2478,11 @@ class TestLauncherSessionRegistrationWiring:
         """register_launcher_session が自身の _session_id で呼ばれる"""
         received = {}
 
-        def fake_register(session_id, pid=None):
+        def fake_register(session_id, pid=None, harness=None):
             received["session_id"] = session_id
+            received["harness"] = harness
 
+        monkeypatch.setattr(launcher, "_current_harness_name", lambda: "codex")
         monkeypatch.setattr(launcher, "MAX_RETRIES", 0)
         monkeypatch.setattr(launcher, "_IS_LOCAL", True)
         monkeypatch.setattr(launcher, "_cleanup_done", False)
@@ -1719,12 +2503,14 @@ class TestLauncherSessionRegistrationWiring:
         monkeypatch.setattr(launcher, "_stdin_reader_task", fake_stdin_reader_task)
         launcher.main()
         assert received["session_id"] == launcher._session_id
+        # 台帳へ申告するharnessと同じ値を登録ファイルにも記録する
+        assert received["harness"] == "codex"
 
     def test_main_registers_before_server_wait(self, monkeypatch):
         """register_launcher_session は _ensure_server_running（最大30秒待機）より前に呼ばれる"""
         order: list[str] = []
 
-        def fake_register(session_id, pid=None):
+        def fake_register(session_id, pid=None, harness=None):
             order.append("register_launcher_session")
 
         def fake_ensure_server_running():
@@ -1781,7 +2567,7 @@ class TestLauncherSessionRegistrationUnconditional:
         """main()の実行経路上でregister_launcher_sessionが呼ばれる"""
         called = {"count": 0}
 
-        def fake_register(session_id, pid=None):
+        def fake_register(session_id, pid=None, harness=None):
             called["count"] += 1
 
         monkeypatch.setattr(launcher, "register_launcher_session", fake_register)

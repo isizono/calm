@@ -1,6 +1,6 @@
 ---
 name: man
-description: CALMの使い方をユーザーに説明する。「使い方を教えて」「どう使えばいい？」などの質問時に発動。加えて、Claude自身が次のような瞬間に直面したとき、ユーザー発話を待たず自身の判断で参照してよい: (a) CALMの記録モデル（トピック/decision/log/activity/material/tag-notes/habits/goal）の使い分け、環境変数の既定値、スナップショット復元手順など、本ファイルにしかない情報を確認せず記憶だけで断定しようとしている (b) ユーザーがCALMの機能・挙動を前提に話しているのに、自分がその機能を把握できていないと気づいた。DO NOT TRIGGER: どのskillを呼ぶべきか判断がつかないだけの場合（各skillのfrontmatter descriptionは既にシステムプロンプトに全件注入されており、manを経由する必要はない）、同一セッション内で既に参照済みの内容を再確認するためだけの再発動、単一ツールの引数仕様などそのツール自身のdocstringで足りる疑問。manは索引・説明用のskillであり、該当する【必須】skillが担う判定・手順（保存先の判定はremember、決定事項の記録はdecision-record等）を代替しない。
+description: CALMの使い方を説明する。「使い方を教えて」「どう使えばいい？」などで発動。記録モデルの使い分け・環境変数の既定値・スナップショット復元手順を記憶だけで断定しそうなときも自分の判断で参照してよい。
 ---
 
 # man
@@ -10,6 +10,19 @@ description: CALMの使い方をユーザーに説明する。「使い方を教
 ユーザーが漠然と「使い方教えて」と言った場合は、基本サイクルから始めてください。
 
 なお、Claude自身が状況判断のためにこのファイルを参照する場合は、基本サイクル・主要スキル・その他のスキル・記録の構造・goal機構、および「長く使っていくあなたに」内の環境変数表とスナップショット復元手順を情報源として使ってください。「熟練度別アドバイス」はユーザーへの語りかけ文体で書かれた説明用の文章であり、自分の行動判断の根拠にはせず、ユーザーに説明する際の材料としてのみ参照してください。
+
+Claude自身は、次の瞬間にユーザー発話を待たず本ファイルを参照してよい。
+
+- CALMの記録モデル（トピック/decision/log/activity/material/tag-notes/habits/goal）の使い分け、環境変数の既定値、スナップショット復元手順など、本ファイルにしかない情報を確認せず記憶だけで断定しようとしている
+- ユーザーがCALMの機能・挙動を前提に話しているのに、自分がその機能を把握できていないと気づいた
+
+次の場合は参照しない。
+
+- どのskillを呼ぶべきか判断がつかないだけの場合（各skillのdescriptionはskill一覧で渡されている。ただし一覧の文字数予算を超えると、説明文が落ちて名前だけになることがある）
+- 同一セッション内で既に参照済みの内容を再確認するためだけの場合
+- 単一ツールの引数仕様など、そのツール自身のdocstringで足りる疑問
+
+manは索引・説明用のskillであり、該当する【必須】skillが担う判定・手順（保存先の判定はremember、決定事項の記録はdecision-record等）を代替しない。
 
 ---
 
@@ -32,7 +45,14 @@ CALMは「着手 → 記録 → 完了 → 同期」のライフサイクルで�
 
 ## 主要スキル
 
-### `/project-setup` — 新しいプロジェクト・取り組みを始めるとき（一度だけの前準備）
+### `/setup` — セットアップ・設定変更の入口
+
+- やりたいことを判断して、中のスキルに振り分ける。ユーザーが打つのはこのスキルだけ
+  - インストール直後: 前提条件（uv・sqlite拡張・embeddingサーバー）の確認、ペルソナのヒアリング、使い方の案内（initial-setup）
+  - 新しいプロジェクト・取り組みを始めるとき: 下記のproject-setup
+  - 環境変数による設定変更: 一覧を見せ、確認を取って`settings.json`に書く（env-config）
+
+#### project-setup（`/setup`の振り分け先）— 新しいプロジェクト・取り組みを始めるとき（一度だけの前準備）
 
 - 新しいプロジェクト・取り組み（新しいdomain）の知識フレーム（プロジェクト識別子・主要な関心事・既に決まっている方針・直近やること・参照ポインタ）を対話的にセットアップする
 - コード開発が目的なら、自動的に`coding-project-setup`（リポジトリのREADME・docs等の走査を伴う）へ引き継がれる
@@ -45,16 +65,11 @@ CALMは「着手 → 記録 → 完了 → 同期」のライフサイクルで�
 - 「このissueの調査をアクティビティにして」のように、自分が管理したい粒度を指示できる
 - **タイミング**: 新しい作業・議論・設計を始めるとき
 
-### `/activity-finish`（`/af`）— 作業が完了したとき
+### `/activity-finish`（`/af`）— 作業が完了したとき、または中断するとき
 
 - 現在のアクティビティをcompleted状態にする
-- **タイミング**: 一つの作業のまとまりが終わったとき
-
-### `/activity-pause`（`/ap`）— 作業を中断するとき
-
-- 進行中のアクティビティを完了にせず中断し、再開メモを添えて寝かせる
-- 「一旦ここまで」「今日はここで止める」のように、完了ではなく中断・切り替えの意図で使う
-- **タイミング**: 完了させず、後で再開する前提で一旦離れるとき
+- 完了ではなく、「一旦ここまで」「今日はここで止める」のように後で戻る前提で離れるときは、再開メモを添えて寝かせる（pending・snoozed・shelvedのいずれか）
+- **タイミング**: 一つの作業のまとまりが終わったとき、または完了させず一旦離れるとき
 
 ### `/check-in` — 作業再開時に打つ
 
@@ -70,16 +85,6 @@ CALMは「着手 → 記録 → 完了 → 同期」のライフサイクルで�
 - **タイミング**: セッションを終える前。長いセッションでは途中で打ってもOK。自動実行はされないため必ず手動で打つ
 - 2回目以降に打っても、前回の記録と重複して記録されることはないので安心して使える
 
-### `/tag-notes` — 常に覚えていてほしい情報を残す
-
-- 特定のタグを扱うときにAIが必ず参照する情報を登録・更新できる
-- MEMORY.mdに近いが、特定のタグに紐づく点が異なる。そのタグに関連する作業が始まったときだけ自動的にAIに注入される
-- 用途の例:
-  - 特定ドメインに関する用語集やリポジトリの前提知識
-  - 特定のintent（議論・設計など）で作業するときの振る舞いやスタンスの定義
-- 初期状態では「discuss」と「design」のintentが登録されている。変更したくなったらこのスキルで更新できる
-- **タイミング**: コンテキストに関係なく、常に覚えていてほしい情報があるとき
-
 ## その他のスキル
 
 - **`/postmortem`** — 完了したアクティビティを振り返り、うまくいったこと・いかなかったことを整理して、教訓をtag-notesやhabitsに永続化する。大きめの作業が終わったあとに
@@ -89,16 +94,16 @@ CALMは「着手 → 記録 → 完了 → 同期」のライフサイクルで�
 - **`/rule-placement`** — メタask裁定で発効した一般化ルールを、rules/habits/tag-notes/pin/判例decision/skill/ツールdocstring/server instructionsのどこへ配信するかを評価軸に基づいて判定する。`/remember`の判定木で迷ったときや、1つの裁定に性質の異なる複数ルールが混ざっているときにも使う
 - **`/audit`** — 過去の決定事項との矛盾や方針のブレを疑ったときに、経緯を掘り下げて正しい記録場所に整理し直す
 - **`/recompose-context`** — アクティビティやトピックに散らばった関連情報を整理・統合し、次回のcheck-inを軽くする。整理範囲のアクティビティのgoal・親への結びつけも整える。「情報整理して」「まとめて」でも発動。`--all`（全体モード）ではアクティビティ(active/shelved/snoozed)全域を棚卸しし、実態確認のうえでcompleted化・shelved化・description訂正・重複統合・裁定待ちのいずれかに処遇する。「アクティビティ棚卸しして」で発動
-- **`/setup-anchor`** — 合意事項の検証先（anchor）をユーザーと対話しながら設定・更新する
 - **`/db-recovery`** — SessionStart hookがDBデータ異常減少を検知したときに、スナップショット所在確認から復元実行・再検証までを自律的に進める。DB件数の異常な少なさに自分で気づいたときも対象
 - **`/decision-record`** — ユーザーとの合意が成立したとき、または論点が未決のまま話題が移ったときに、決定事項の記録をガイドする
 - **`/digest`** — 直近の記録を期間横断で俯瞰するダイジェストを生成する。「最近何やったっけ」「今週のまとめ」など期間ベースの振り返りに
+- **`/overview`** — 今動いているもの・最近終わったもの・人間の裁定待ち・残りの内訳を一望表示する。「今何が進んでる」「全体状況見せて」などで発動
 - **`/forget`** — 過去の記録が現状と矛盾・陳腐化していると判断したときに、撤回候補を提示してユーザー確認後に撤回する
 - **`/recording`** — セッション中に発生した経緯（log）や成果物（material）を、判断基準に沿って記録する
 - **`/ask-compose`** — `add_ask`を呼ぶ前に、question/contextをテンプレートに沿って構成する。「これ聞いといて」「離席するから後で確認して」のように非同期の判断委譲を指示したときにも発動する
 - **`/ask-distill`** — `add_ask`のsimilar_asksを見て、同型の問いが繰り返され裁定が一貫していると気づいたときに、判例をまとめてメタask（kind="meta"）を起票する
 - **`/memory-export`** / **`/memory-import`** — CALMの記録（トピック・決定事項・ログ・資材・アクティビティ）を他のCALMインスタンスとやり取りする。exportは書き出し、importは受け取ったバンドルの取り込み。知識を別環境・別の相手と共有したいときに
-- **`/restart`** — calmのローカルMCPサーバー・embeddingサーバーを強制再起動する。プラグインアップデート後にコード変更を反映させたいときに
+- **`/calm:restart`** — calmのローカルMCPサーバーを強制再起動する（embeddingサーバーは既定では対象外、`--restart-embedding`指定時のみ）。プラグインアップデート後にコード変更を反映させたいときに。ユーザーが手動で打つコマンドで、`restart_server.py`やkill・起動コマンドを自分で実行せず、ユーザーに`/calm:restart`を打ってもらう
 - **`/ask-watch`** — Ask storeをMonitorツールでイベント駆動監視し、同型の問いが繰り返されていないか確認する。「ask storeを監視して」「asksを見張って」等で発動
 - **`/board`** — Claude同士の非同期のやり取り（質問・周知・意見募集・事前の声かけ）を、掲示板トピックへの投稿としてガイドする。相手が今生きていてすぐ返事が欲しいときはSendMessageで直接話しかける（このスキルの対象外）
 - **`/peer-nudge`** — セッション台帳の宛先候補へSendMessageで直接話しかける前に、担当範囲の確認手順・書き方・配慮・返事が来ないときの扱いをガイドする。相手が今生きていない、または往復が1回で済まない意見募集は`board`の担当
@@ -152,7 +157,7 @@ goal機構は、アクティビティの終了条件を構造化し、いつ・�
 
 - **起票**（activity-start）: 終了条件を書く／不要印を付ける／何も書かない、の3択にする。雛形で埋めない。条件は真偽の付く1文で書き、Claudeが推した条件も追認を待たずそのまま書く。候補が複数で定まらない、または終わりがあるはずだが何なのか推せないときだけユーザーに聞き、定まれば書く
 - **記録の直後**（recording・decision-record）: 条件を満たしたら、その場でupdate_goalに書く。根拠のdecisionなどがあれば、同じ呼び出しで束縛も張る。それで判定待ちになったら、そのまま判定に続く
-- **待ち**（ask-compose・activity-pause）: 会話や記録から満たされたと分かるなら確認せずsatisfiedに書く。分からない人間の判断待ちだけ、その場で聞けるなら聞いてdecisionにする。離席中・セッション跨ぎならaskにして、条件をそのaskに束縛する
+- **待ち**（ask-compose・activity-finishの中断）: 会話や記録から満たされたと分かるなら確認せずsatisfiedに書く。分からない人間の判断待ちだけ、その場で聞けるなら聞いてdecisionにする。離席中・セッション跨ぎならaskにして、条件をそのaskに束縛する
 - **判定**（recording・decision-record・check-in・activity-finish・recompose-contextの全体モード）: 全条件が終端になった判定待ちの状態を見たら、そのセッションがその場でjudge_goalを呼ぶ。判定したことの報告はしない。未決（openなask・[議論中]のdecision）があれば、判定の前に畳むか1ターン聞く
 - **整理のついで**（recompose-context）: 整理範囲に出てきた未完了のアクティビティのうち、goalが未定義のものに記録から推せる終了条件を書く（推せなければ書かない。不要印は触らない）。振ったまとめ役が推せるなら、確認なしに親のgoalへ子を束縛先にした条件を足す。推定では条件を満たさず、判定もしない
 - **事後の記録**（sync-memory）: transcriptから推せる終了条件は確認なしで書く。候補が複数で定まらない、または推せないときは書かない（事後の一括処理でユーザーに聞けないため未定義のまま残す）。外部の完了はghなど実際の手段で確かめられればsatisfiedに書き、確かめた結果で終端すればjudge_goalも呼ぶ。確かめられない推測はsatisfiedにも判定にも使わない
@@ -223,7 +228,7 @@ CALMは情報を構造的に管理している。
 - **アクティビティの範囲を指示する**: 「このissueの調査をアクティビティにして」「設計と実装は別アクティビティに分けて」のように、自分が管理したい粒度で切るようAIに伝える。AIに任せると1セッション＝1アクティビティになりがちだが、実際には1セッションで複数の話題を扱うことも、複数セッションで1つの作業を続けることもある
 - **タグを指示する**: 「`domain:backend`をつけて」「`sprint-3`タグで管理したい」のように、自分の整理軸をAIに伝える。`domain:`タグはアクティブコンテキスト（SessionStart hookの注入情報）のグルーピングに直結するので、複数プロジェクトを扱うなら早めに設計しておくと効く
 - **議論→設計→作業のフェーズを意識する**: 急いで作業に入らず、議論と設計を丁寧にやるとAIの引き継ぎ品質が上がる。「まず議論フェーズで進めて」「設計が固まったら作業アクティビティを作って」のように、フェーズ遷移も明示するとAIが適切な`intent:`タグ（discuss / design / implement）を付けてくれる
-- **`/tag-notes` で繰り返し伝えていることを永続化する**: 同じフィードバックを2回以上したら登録のサイン。「AIに毎回言い直している指示」があれば、それはtag-notesに書くべき情報
+- **繰り返し伝えていることをtag-notesに永続化する**: 同じフィードバックを2回以上したら登録のサイン。「AIに毎回言い直している指示」があれば、それはtag-notesに書くべき情報。「このタグのnotesに追記して」と頼めばAIが`update_tag`で書く
 
 ### 長く使っていくあなたに
 
@@ -248,19 +253,19 @@ CALMはセッション開始時（SessionStart hook）にDBの自動スナップ
 
 **スナップショットからの復元手順:**
 
-1. **全てのClaude Codeセッションを閉じ、稼働中のMCPサーバーを停止する**（DBへの書き込みを停止するため）。サーバーが稼働中（lock file または `/health` 応答で検知）のままだと復元コマンド自体が中断する。停止は `lsof -ti :52837 -sTCP:LISTEN | xargs kill` を実行する（`-sTCP:LISTEN` を外すと :52837 に接続中のブリッジプロセスまで巻き添えでkillされる。復元コマンドが中断した場合も同じコマンドを案内する。停止済みを確認済みで続行したい場合のみ `restore` に `--force` を付ける）
+1. **全てのClaude Codeセッションを閉じ、稼働中のMCPサーバーを停止する**（DBへの書き込みを停止するため）。サーバーが稼働中（lock fileまたは`/health`エンドポイントの応答で検知）のままだと復元コマンド自体が中断する。停止は `uv run --no-sync --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/restart_server.py" --stop` を実行する（復元コマンドが中断した場合も同じコマンドを案内する。停止済みを確認済みで続行したい場合のみ `restore` に `--force` を付ける）
 2. ワンコマンドで最新のスナップショットから復元する:
    ```
-   uv run --directory ${CLAUDE_PLUGIN_ROOT} python ${CLAUDE_PLUGIN_ROOT}/scripts/snapshot.py restore --latest
+   uv run --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/snapshot.py" restore --latest
    ```
-   特定の世代を指定したい場合は `uv run --directory ${CLAUDE_PLUGIN_ROOT} python ${CLAUDE_PLUGIN_ROOT}/scripts/snapshot.py restore <snapshot_db_path>` を使う（パスは次項の一覧コマンドで確認する）
+   特定の世代を指定したい場合は `uv run --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/snapshot.py" restore <snapshot_db_path>` を使う（パスは次項の一覧コマンドで確認する）
 3. 復元前の現行DBは自動で退避される（`prerestore`スナップショット）ため、復元操作自体を誤っても退避先からやり直せる
 4. Claude Codeを再起動する
 
 **スナップショット一覧の確認:**
 
 ```
-uv run --directory ${CLAUDE_PLUGIN_ROOT} python ${CLAUDE_PLUGIN_ROOT}/scripts/snapshot.py list
+uv run --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/snapshot.py" list
 ```
 
 全kind横断のスナップショット一覧（kind・作成日時・サイズ・整合性チェック結果・パス）が表示される。復元先を選ぶ際の参考にできる。
@@ -273,8 +278,8 @@ CALMには「壊れてもエラーにならず、静かに機能が縮退する�
 
 検索・check-in等でベクトル検索を使う際、embeddingサーバー（52836番ポート）が初回encode時に遅延起動する。起動に失敗しても例外は投げず、warningログのみを出して検索がキーワード一致（FTS5）のみに縮退したまま動き続ける。
 
-- **気づき方**: `curl http://localhost:52836/health` が `{"status": "ok"}` を返さない。または後述の`degraded`フラグが立ち続ける
-- **直し方**: `/restart`に`--restart-embedding`を付けて明示的に再起動する
+- **気づき方**: `uv run --no-sync --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/restart_server.py" --status` の `embedding_server.running` が `false` のまま。または後述の`degraded`フラグが立ち続ける
+- **直し方**: ユーザーに`/calm:restart --restart-embedding`を打ってもらって明示的に再起動する。`restart_server.py`やkill・起動コマンドは自分で実行しない
 
 **検索応答の`degraded: true`**
 
@@ -289,31 +294,39 @@ CALMの全hookはfail-open設計（1つのhookの失敗が他の操作を止め�
 
 - **気づき方**: 以下のhookは、hook本体のコードが実行された後に起きた例外を`signal_events`へ`kind: machine_error`として記録する。`get_signals()`で確認できるほか、1件でもあればSessionStart注入の「未トリアージのシグナル」行にも現れる
   - SessionStart注入の各セクション（`source`が`hook:section:<セクション名>`）
-  - Stop hookの記録ナッジ判定（`source`が`hook:stop:logs_sparse`）
+  - SessionStart hook本体（`source`が`hook:session_start`）
+  - Stop hook本体（`source`が`hook:stop`）・記録ナッジ判定（`source`が`hook:stop:logs_sparse`）
   - PreToolUseの内部IDリークブロックhook（`source`が`hook:preblock`）
+  - UserPromptSubmit hook（`source`が`hook:user_prompt_submit`）
+  - PreToolUseのネストbg起動拒否hook（`source`が`hook:deny_nested_bg`）
 - **直し方**: `get_signals(kind="machine_error")`で`detail`・`summary`を確認し、原因（依存モジュールの欠落・DBスキーマ不一致等）を調査する。記録は失敗の発生を示すだけで、自動修復はしない
 - **限界**: この記録機構自体がDB層のimportに依存するため、venvの破損や依存パッケージの欠落でhookがimport時点で（`main()`に到達する前に）落ちた場合は記録されず、標準エラー出力のみに残る。MessageDisplay等の表示専用hook・transcript sanitize系hook（別途citation_event_logへ失敗を記録済み）も現状この記録の対象外
 
 #### カスタマイズできるもの
 
-- **tag-notes**: タグに紐づく常備情報。そのタグに関連する作業が始まったときにAIへ自動注入される。`/tag-notes`で確認・更新できる
+- **tag-notes**: タグに紐づく常備情報。そのタグに関連する作業が始まったときにAIへ自動注入される。「タグノート見せて」「このタグのnotes更新して」とAIに頼めば確認・更新できる
 - **振る舞い（habits）**: 全セッション共通のルール。alwaysタイプは全文、intelligentlyタイプはタイトル一覧（マニフェスト）が`~/.claude/rules`配下の自動生成ファイル経由でセッション開始時に読み込まれる（詳細は「記録の構造」参照）。AIに「覚えといて」と言えばOK
 - **`intent:`タグのtag-notes**: 議論・設計・作業の各フェーズでAIにどう振る舞ってほしいかを定義できる。初期状態でdiscussとdesignが登録されている
-- **環境変数**: `.mcp.json`の`env`フィールドで以下の値をオーバーライドできる。未設定ならデフォルト値で動作する
+- **環境変数**: `~/.claude/settings.json`の`env`フィールドで以下の値をオーバーライドできる。未設定ならデフォルト値で動作する。`/setup`から設定変更を選ぶと、一覧の表示と書き込みをAIが手伝う。変更後は`/calm:restart`でMCPサーバーを再起動する
 
 | 環境変数名 | デフォルト | 説明 |
 |-----------|-----------|------|
 | `CALM_DB_PATH` | `~/.claude/.claude-code-memory/discussion.db` | データベースファイルのパス |
 | `CALM_HEARTBEAT_TIMEOUT` | `20` | ホットアクティビティ判定の閾値（分） |
-| `CALM_IN_PROGRESS_LIMIT` | `3` | アクティブコンテキストのin_progress表示件数 |
-| `CALM_PENDING_LIMIT` | `2` | アクティブコンテキストのpending表示件数 |
 | `CALM_TIER2_MAX_AGE_DAYS` | `7` | SessionStart一覧の階層2にin_progressアクティビティを載せるupdated_at上限（日） |
 | `CALM_PIN_SURFACE_DECAY_DAYS` | `60` | pinnedアクティビティが階層2表示を維持できるupdated_at上限（日） |
-| `CALM_RECENCY_DECAY_RATE` | `0.0014` | 検索の時間減衰率 |
+| `CALM_TIER2_MAX_ITEMS` | `5` | SessionStart一覧の『優先』に出す件数の上限。hookが読むため`~/.claude/settings.json`の`env`で設定する。増やすときは`CALM_INJECTION_BUDGET_ACTIVITIES`も上げる（各セクションの予算の合計が`CALM_TOTAL_INJECTION_BUDGET_CHARS`を超えるとcomposeがValueErrorを出す。既定の合計は10500字で、総予算12000字との差は1500字） |
+| `CALM_RECENCY_DECAY_RATE` | `0.0119` | 検索の時間減衰率 |
+| `CALM_PRECEDENT_BUDGET_CHARS` | `24000` | `pull_precedents`が本文展開（decision＋reason）に使う文字数予算 |
 | `CALM_SYNC_DISABLE_RETROSPECTIVE` | `false` | `/sync-memory`のふりかえりセクションを非表示にする |
 | `CALM_SNAPSHOT_INTERVAL` | `12` | スナップショット取得間隔（時間） |
 | `CALM_SNAPSHOT_MAX_COUNT` | `5` | スナップショット最大保持数 |
 | `CALM_SNAPSHOT_ANOMALY_THRESHOLD` | `100` | 行数減少の異常検知閾値（件） |
+| `CALM_SEARCH_HEALTH_WINDOW_DAYS` | `7` | 検索縮退・クエリ拡張停止検知の集計対象ウィンドウ（日） |
+| `CALM_SEARCH_HEALTH_MAX_SAMPLE` | `100` | 同集計で見る最大件数（timestamp降順） |
+| `CALM_SEARCH_HEALTH_MIN_SAMPLE` | `20` | 同集計の判定に必要な最小サンプル数（未満なら常に健全扱い） |
+| `CALM_SEARCH_HEALTH_DEGRADED_RATIO` | `0.2` | 検索の縮退率がこの値以上なら異常とみなす閾値 |
+| `CALM_SEARCH_HEALTH_QE_FIRE_FLOOR` | `0.0` | クエリ拡張の発火率がこの値以下なら異常とみなす閾値 |
 | `CALM_PROJECTION_MANIFEST_MAX_ITEMS` | `30` | intelligently habitsマニフェストの掲載件数上限 |
 | `CALM_GOAL_RECHECK_HOURS` | `6` | goalの条件のうち担い手がhuman/externalのopen条件を「要確認」とみなすまでの時間（時間） |
 | `CALM_PROJECT_ROOT` | 自動解決（`CLAUDE_PLUGIN_ROOT` → `git rev-parse --git-common-dir`） | `embedding_server`を起動するプロジェクトルート。優先順位は 明示設定 → プラグイン実行時は`CLAUDE_PLUGIN_ROOT`の値から自動設定 → `embedding_server`自身の`git rev-parse --git-common-dir`解決 → いずれも失敗した場合はRuntimeError。加えて`/calm:restart`（強制再起動）実行時は、上記のいずれでも未設定であれば`restart_service`自身も同じgit-common-dir解決（gitリポジトリでなければ実行時のプロジェクトルート）で先回りして設定する。通常は自動解決されるため設定不要だが、いずれの自動解決にも失敗する環境（gitリポジトリ外かつ`CLAUDE_PLUGIN_ROOT`も未設定）では明示設定が必要 |

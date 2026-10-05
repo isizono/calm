@@ -1,11 +1,16 @@
 ---
 name: scribe
-description: CALMの記録からドキュメントを生成する。「ドキュメント化して」「ADR書いて」「この議論を書き出して」「議事録にまとめて」「設計ドキュメントに起こして」などで発動。記録の整理・統合（recompose-context）や教訓抽出（postmortem）には発動しない。
+description: CALMの記録からADR・議事録・設計ドキュメントなどを書き起こす。「ドキュメント化して」「ADR書いて」「議事録にまとめて」などで発動。
 ---
 
 # scribe
 
 CALMの記録（decisions, logs, materials）を元に、外部共有可能なドキュメントを生成する。
+
+## 関連skillとの境界
+
+- 「この議論を書き出して」「設計ドキュメントに起こして」のような、記録を外部共有用の文書にする依頼で使う
+- 記録の整理・統合（recompose-context）と教訓抽出（postmortem）では発動しない
 
 ## 1. 対象アクティビティの選択
 
@@ -28,8 +33,8 @@ CALMの記録（decisions, logs, materials）を元に、外部共有可能な�
 
 - `check_in(activity_id=...)` でアクティビティ情報を取得
 - check-in結果の `context.topics` から `topic_id` を取得する
-- `get_decisions(topic_id=...)` で決定事項を取得
-- `get_logs(topic_id=...)` で議論経緯を取得
+- `get_decisions(entity_type="topic", entity_id=topic_id)` で決定事項を取得
+- `get_logs(entity_type="topic", entity_id=topic_id)` で議論経緯を取得
 - `search(entity_type="material")` / `get_material` で資材を取得
 
 必要に応じて、ソースアクティビティのタグで `search` し、関連する別トピックの情報も補足的に収集する。

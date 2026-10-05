@@ -1,8 +1,9 @@
 """データベース機能のテスト"""
 import os
+import sqlite3
 from pathlib import Path
 import pytest
-from src.db import get_db_path, get_connection, execute_query, execute_insert
+from src.db import get_db_path, get_connection, execute_query, execute_insert, _check_fts5_available
 
 
 
@@ -22,7 +23,7 @@ def test_get_db_path_default():
         del os.environ["DISCUSSION_DB_PATH"]
 
     path = get_db_path()
-    assert path.endswith(".claude-code-memory/discussion.db")
+    assert Path(path).parts[-2:] == (".claude-code-memory", "discussion.db")
 
 
 def test_get_db_path_ignores_stale_config_db_path(monkeypatch):
@@ -96,3 +97,42 @@ def test_get_connection_returns_row_factory(temp_db):
         assert row["title"] == "test-topic"  # 辞書ライクなアクセス
     finally:
         conn.close()
+
+
+def test_check_fts5_available_returns_true_when_supported():
+    """FTS5拡張が使える環境ではTrueを返す"""
+    assert _check_fts5_available() is True
+
+
+def test_check_fts5_available_leaves_no_tables_in_main_db(temp_db):
+    """FTS5可否チェックの後に、本体DBへチェック用テーブルが残らない"""
+    assert _check_fts5_available() is True
+
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE name LIKE '_fts5_check%'"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert rows == []
+
+
+def test_check_fts5_available_returns_false_when_fts5_missing(monkeypatch):
+    """FTS5拡張が無い環境ではFalseを返す
+
+    sqlite3.connectを差し替え、CREATE VIRTUAL TABLEが失敗したときの例外分岐のみを確認する。
+    """
+    import src.db as db_module
+
+    class _FakeConnWithoutFts5:
+        def execute(self, *args, **kwargs):
+            raise sqlite3.OperationalError("no such module: fts5")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        db_module.sqlite3, "connect", lambda *a, **k: _FakeConnWithoutFts5()
+    )
+    assert db_module._check_fts5_available() is False
