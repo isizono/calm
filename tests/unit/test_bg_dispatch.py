@@ -41,7 +41,7 @@ class TestBuildRequest:
 
     def test_branch_omitted_when_not_given(self):
         text = _build()
-        assert "ブランチ" not in text
+        assert "、ブランチ " not in text
 
     def test_branch_included_when_given(self):
         text = _build(branch="feature/x")
@@ -62,7 +62,7 @@ class TestBuildRequest:
         assert "goalが未定義なら、スコープを条件としてset_goalで書く" in text
 
     def test_forbids_pr_creation_and_asks_for_pr_body_draft(self):
-        text = build_request(**_BASE)
+        text = _build()
         assert "PRの作成(gh pr create)" in text
         assert "ブランチをpushするところまでで止める" in text
         assert "PR本文の案" in text
