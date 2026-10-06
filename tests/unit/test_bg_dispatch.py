@@ -40,8 +40,8 @@ class TestBuildRequest:
         assert "/path/to/worktree" in text
 
     def test_branch_omitted_when_not_given(self):
-        text = _build()
-        assert "ブランチ" not in text
+        with_branch = _build(branch="feature/x")
+        assert with_branch.replace("、ブランチ feature/x", "") == _build()
 
     def test_branch_included_when_given(self):
         text = _build(branch="feature/x")

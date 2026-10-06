@@ -74,7 +74,8 @@ _TEMPLATE = """あなたはCALMのアクティビティ「{activity_title}」の
 - マイグレーション番号が必要なときは、origin/mainとopen PRの番号の最大値+1を取る。宣言して返事を待たない
 
 ## やらないこと
-- マージ、--delete-branchの使用{dont_block}
+- マージ、--delete-branchの使用
+- PRの作成(gh pr create)。PRは窓口が作る。止められても再実行しない{dont_block}
 
 ## 記録
 - 経緯はadd_logsで記録する。完了の合図(update_goalのsatisfiedかSendMessage)があるのに
@@ -83,7 +84,8 @@ _TEMPLATE = """あなたはCALMのアクティビティ「{activity_title}」の
 - 最後の報告の前に `{sync_memory_scope}` でsync-memoryを実行する
 
 ## 完了したら
-3・4で控えた親のorchアクティビティへadd_logsで報告を書く。書く内容は、PR番号・CIの状態・自分で判断したこと・残っていること。
+変更をコミットしてブランチをpushするところまでで止める。
+3・4で控えた親のorchアクティビティへadd_logsで報告を書く。書く内容は、ブランチ名・コミット・PR本文の案(何が変わるか・なぜ要るか・テスト計画。窓口がそのままPRにできる粒度)・自分で判断したこと・残っていること。
 そのあとget_by_idsでそのアクティビティの説明の担い手欄(sessionId)を読み、`claude agents --json`でそのsessionIdが一致しpidがある行を探す（名前は照合に使わない。複数あればstartedAtが最も新しい行）。あれば、その行の今のnameへSendMessageで「orchのログに報告を書いた」と要旨を知らせる。空席・死んでいる・送れないときは知らせを省く。
 報告のあとは次の指示を待ち、自分から終わらない。
 """
