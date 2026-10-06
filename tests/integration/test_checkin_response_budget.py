@@ -11,6 +11,7 @@ from src.main import check_in as tool_check_in
 from src.main import get_material as tool_get_material
 from src.services.activity_service import add_activity
 from src.services.checkin_queries import checkin_scope
+from src.services.checkin_tier_service import CHECKIN_BUDGET_CHARS
 from src.services.material_service import add_material
 from src.services.pin_service import add_pin
 from src.services.relation_service import add_relation
@@ -180,6 +181,45 @@ class TestBudgetAppliedToRealCheckIn:
         assert "truncated" in result
         item = result["anchor"]["pinned"]["materials"][0]
         assert len(item["content"]) < len(big_content)
+
+
+class TestFlavorAppliedBeforeBudget:
+    def test_budget_is_measured_on_flavor_expanded_size(self, temp_db, activity_id):
+        """生のままなら予算内だが、citation展開後は予算を超えるpinを作る。
+        flavorを先に当ててから予算を測る順序なら、internalではtruncatedが付き
+        before/afterも展開後の字数で数えられる。rawでは付かない。
+        """
+        title = "long-target-title-for-expansion-xxxxxx"
+        target = add_material(
+            title=title, content="body", tags=DEFAULT_TAGS, source="t",
+            related=[{"type": "activity", "ids": [activity_id]}],
+        )["material_id"]
+        cite = f"{{{{cite:M#{target}}}}}"
+        # 1件あたり生で約12字、展開後は約46字。予算は定数から導出し、
+        # 生は予算の約4割・展開後は約1.5倍になる件数にする
+        count = CHECKIN_BUDGET_CHARS // 30
+        raw_content_len = len(cite) * count
+        assert raw_content_len < CHECKIN_BUDGET_CHARS * 0.5
+        owner = add_material(
+            title="owner", content=cite * count,
+            tags=DEFAULT_TAGS, source="t",
+            related=[{"type": "activity", "ids": [activity_id]}],
+        )["material_id"]
+        add_pin("activity", activity_id, "material", owner)
+
+        raw = tool_check_in(activity_id, flavor="raw")
+        assert "truncated" not in raw  # 前提: 展開前は予算内
+
+        result = tool_check_in(activity_id)  # flavor既定=internal
+        assert "truncated" in result
+        t = result["truncated"]
+        assert t["budget"] == CHECKIN_BUDGET_CHARS
+        # beforeは生の長さではなくflavor展開後の字数で数えられている
+        assert t["before"] > raw_content_len
+        assert t["before"] >= count * len(title)
+        assert t["before"] > t["budget"]
+        assert t["after"] <= t["budget"]
+        assert t["over_budget"] is False
 
 
 class TestAddActivityFinalization:

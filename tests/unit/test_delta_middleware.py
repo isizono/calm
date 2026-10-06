@@ -915,6 +915,46 @@ async def test_real_check_in_tool_response_still_scopes_and_delivers_delta_when_
 
 
 @pytest.mark.asyncio
+async def test_real_add_activity_tool_response_still_records_baseline_and_delivers_delta_when_over_budget(
+    temp_db, monkeypatch
+):
+    """add_activity(check_in=True)の本物のツール応答が、43,000字のpinで
+    予算切り詰め(truncated)されていても、check_in_resultからbaselineが立ち、
+    以降のdeltaが届く。
+    """
+    topic = add_topic(title="Over Budget Add Topic", description="d", tags=["domain:test"])
+    tid = topic["topic_id"]
+    huge = add_material(
+        title="huge pinned material", content="z" * 43_000,
+        tags=["domain:test"], source="t",
+    )
+    middleware = DeltaNotificationMiddleware()
+
+    real_result = tool_add_activity(
+        title="Over Budget Add Activity", description="d", tags=["domain:test"],
+        related=[{"type": "topic", "ids": [tid]}],
+        pins=[{"type": "material", "ref": huge["material_id"]}],
+    )
+    assert "truncated" in real_result["check_in_result"]  # 前提: 実際に予算切り詰めが発動している
+
+    _set_caller(monkeypatch, "caller-A")
+    await middleware.on_call_tool(
+        _make_context("add_activity"),
+        _call_next_returning(ToolResult(structured_content=real_result)),
+    )
+    assert _watermarks["caller-A"]["activity_id"] == real_result["activity_id"]
+
+    b_decision = add_decision("予算超過後のBの決定", "reason", topic_id=tid)
+    result = await middleware.on_call_tool(
+        _make_context("get_topics"),
+        _call_next_returning(_noop_tool_result()),
+    )
+    assert result.structured_content["delta"]["new_decisions"] == [
+        {"id": b_decision["decision_id"], "title": "予算超過後のBの決定"}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_falsification_broken_checkin_scope_breaks_real_tool_contract(scope, monkeypatch):
     """checkin_scopeが読むキー名が変わると、本物のツール応答を通したこの契約テストが
     落ちることを確認する（形を変えるPRとスコープの読み方を変えるPRが必ず同じになる、
