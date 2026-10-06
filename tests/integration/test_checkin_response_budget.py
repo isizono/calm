@@ -11,6 +11,7 @@ from src.main import check_in as tool_check_in
 from src.main import get_material as tool_get_material
 from src.services.activity_service import add_activity
 from src.services.checkin_queries import checkin_scope
+from src.services.checkin_tier_service import CHECKIN_BUDGET_CHARS
 from src.services.material_service import add_material
 from src.services.pin_service import add_pin
 from src.services.relation_service import add_relation
@@ -188,13 +189,19 @@ class TestFlavorAppliedBeforeBudget:
         flavorを先に当ててから予算を測る順序なら、internalではtruncatedが付き
         before/afterも展開後の字数で数えられる。rawでは付かない。
         """
+        title = "long-target-title-for-expansion-xxxxxx"
         target = add_material(
-            title="long-target-title-for-expansion-xxxxxx", content="body",
-            tags=DEFAULT_TAGS, source="t",
+            title=title, content="body", tags=DEFAULT_TAGS, source="t",
             related=[{"type": "activity", "ids": [activity_id]}],
         )["material_id"]
+        cite = f"{{{{cite:M#{target}}}}}"
+        # 1件あたり生で約12字、展開後は約46字。予算は定数から導出し、
+        # 生は予算の約4割・展開後は約1.5倍になる件数にする
+        count = CHECKIN_BUDGET_CHARS // 30
+        raw_content_len = len(cite) * count
+        assert raw_content_len < CHECKIN_BUDGET_CHARS * 0.5
         owner = add_material(
-            title="owner", content=f"{{{{cite:M#{target}}}}}" * 300,  # 生で約3,600字
+            title="owner", content=cite * count,
             tags=DEFAULT_TAGS, source="t",
             related=[{"type": "activity", "ids": [activity_id]}],
         )["material_id"]
@@ -206,8 +213,13 @@ class TestFlavorAppliedBeforeBudget:
         result = tool_check_in(activity_id)  # flavor既定=internal
         assert "truncated" in result
         t = result["truncated"]
+        assert t["budget"] == CHECKIN_BUDGET_CHARS
+        # beforeは生の長さではなくflavor展開後の字数で数えられている
+        assert t["before"] > raw_content_len
+        assert t["before"] >= count * len(title)
         assert t["before"] > t["budget"]
-        assert t["after"] <= t["before"]
+        assert t["after"] <= t["budget"]
+        assert t["over_budget"] is False
 
 
 class TestAddActivityFinalization:
