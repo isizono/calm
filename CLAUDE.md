@@ -47,7 +47,7 @@ calmはローカルディレクトリをmarketplaceとして登録しており�
    - 起動するのはブリッジ（`src.launcher`）ではなくサーバー本体（`src.main --transport http`）。launcherはstdio MCPブリッジで、stdinが`/dev/null`になる非対話シェル（エージェントのツール実行・スクリプト等）から起動すると即EOFでサイレント終了し、HTTPサーバーが再起動されないままになる。各セッションのブリッジは既存の再接続機構で新サーバーへ自動的に繋ぎ直すため、launcher自体の再起動は不要
    - embeddingサーバー（:52836）は旧httpサーバーを止めた直後・新httpサーバーを起動する前に止める。旧サーバーが生きている間に止めると他セッションの記録・検索で旧サーバーが古いコードのまま再起動してしまい、新サーバーの起動後に止めるとバックフィルを途中で切る。止めたあとは再起動不要で、新サーバーの起動直後に自動で立ち上がって温まる
    - 起動後、`lsof -i tcp:52837 -sTCP:LISTEN` でLISTENしていることを確認する（LISTENが無ければ `/tmp/calm_http_server.log` を確認する）
-8. 生存している全Claude Codeセッションで `/mcp` からreconnectを実行する（個別でOK、全セッション同時に落とす必要なし）。reconnectで復旧しない場合はそのセッションを再起動する
+8. 既存のセッションは自動でつながり直すので、再接続の操作は不要。呼び出しが固まったセッションだけ、`/mcp` からreconnectするか、そのセッションを再起動する
 
 ### Windows版（PowerShell）
 
@@ -59,4 +59,4 @@ calmはローカルディレクトリをmarketplaceとして登録しており�
 6. プラグインキャッシュを削除: `Remove-Item -Recurse -Force "$env:USERPROFILE\.claude\plugins\cache\calm-marketplace"`
 7. `__pycache__` を削除（`.venv`配下は対象外。含めて消すと手順8の起動時に依存パッケージのバイトコードを再コンパイルする羽目になり遅くなる）: `Get-ChildItem -Recurse -Directory -Filter __pycache__ | Where-Object FullName -notmatch '\\\.venv\\' | Remove-Item -Recurse -Force`
 8. サーバーを起動し直す: `uv run --no-sync --directory . python scripts/restart_server.py`（embeddingサーバーはhttpサーバーの起動直後に自動で立ち上がって温まる）
-9. 閉じていたセッションを開き直す（新規セッションは起動時に自動でMCP接続するため、macOS版の手順8にあるような`/mcp`からのreconnectは不要）
+9. 閉じていたセッションを開き直す（新規セッションは起動時に自動でMCP接続するため、`/mcp`からのreconnectは不要）
