@@ -1023,6 +1023,7 @@ class TestCheckInNearby:
         result = await _run_check_in(_checkin_result(mine))
 
         assert [c["activity_title"] for c in result.structured_content["destination_candidates"]] == ["Theirs"]
+        assert _telemetry_rows() == [("check_in", "nearby", 1, "injected")]
 
     @pytest.mark.asyncio
     async def test_session_on_unrelated_topic_is_not_listed(self):
@@ -1098,4 +1099,50 @@ class TestCheckInNearby:
         result = await _run_check_in(tool_result)
 
         assert result.structured_content["destination_candidates"] == [{"name": "goal-peer"}]
+        assert _telemetry_rows() == []
         assert not any("📮" in b.text for b in result.content if hasattr(b, "text"))
+
+    @pytest.mark.asyncio
+    async def test_activity_without_topic_leaves_no_topics_row(self):
+        activity_id = add_activity(
+            title="Orphan", description="d", tags=["domain:test"], check_in=False
+        )["activity_id"]
+
+        await _run_check_in(_checkin_result(activity_id))
+
+        assert _telemetry_rows() == [("check_in", "nearby", 0, "no_topics")]
+
+    @pytest.mark.asyncio
+    async def test_add_logs_to_non_board_topic_leaves_not_board_topic_row(self):
+        topic_id = _make_plain_topic()
+        log_result = add_logs([{"topic_id": topic_id, "content": "c"}])
+
+        await DestinationCandidateMiddleware().on_call_tool(
+            _make_context("add_logs"), _call_next_returning(ToolResult(structured_content=log_result))
+        )
+
+        assert _telemetry_rows() == [("add_logs", "board", 0, "not_board_topic")]
+
+    @pytest.mark.asyncio
+    async def test_telemetry_write_failure_does_not_affect_response(self, monkeypatch):
+        topic_id = _make_plain_topic()
+        mine = _make_board_activity(topic_id, "Mine")
+        _seed_alive("other", _make_board_activity(topic_id, "Theirs"))
+        monkeypatch.setattr(destination_middleware, "_TELEMETRY_INSERT", "INSERT INTO no_such_table VALUES (?, ?, ?, ?, ?)")
+
+        result = await _run_check_in(_checkin_result(mine))
+
+        assert [c["activity_title"] for c in result.structured_content["destination_candidates"]] == ["Theirs"]
+        assert _telemetry_rows() == []
+
+    @pytest.mark.asyncio
+    async def test_one_call_writes_all_computed_paths_in_one_go(self):
+        """judge_readyな応答のcheck_inは、goal経路とnearby経路の2行がまとめて残る。"""
+        activity_id = _make_activity("Mine")
+        goal_id = _make_judge_ready_goal(activity_id)
+        result_in = _checkin_result(activity_id)
+        result_in.structured_content["goal"] = {"label": "judge_ready", "goal_id_raw": goal_id}
+
+        await _run_check_in(result_in)
+
+        assert {r[1] for r in _telemetry_rows()} == {"goal", "nearby"}
