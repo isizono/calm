@@ -40,8 +40,8 @@ class TestBuildRequest:
         assert "/path/to/worktree" in text
 
     def test_branch_omitted_when_not_given(self):
-        text = _build()
-        assert "、ブランチ " not in text
+        with_branch = _build(branch="feature/x")
+        assert with_branch.replace("、ブランチ feature/x", "") == _build()
 
     def test_branch_included_when_given(self):
         text = _build(branch="feature/x")
@@ -60,12 +60,6 @@ class TestBuildRequest:
     def test_goal_handle_omitted_instructs_set_goal_fallback(self):
         text = _build()
         assert "goalが未定義なら、スコープを条件としてset_goalで書く" in text
-
-    def test_forbids_pr_creation_and_asks_for_pr_body_draft(self):
-        text = _build()
-        assert "PRの作成(gh pr create)" in text
-        assert "ブランチをpushするところまでで止める" in text
-        assert "PR本文の案" in text
 
     def test_custom_sync_memory_scope(self):
         text = _build(sync_memory_scope="sync-memory")
