@@ -181,6 +181,25 @@ class TestUpdateTagCanonical:
         finally:
             conn.close()
 
+    @pytest.mark.parametrize("blank", [" ", "\t", "\u3000"])
+    def test_unset_canonical_with_blank_string(self, temp_db, blank):
+        """空白のみのcanonicalでもDATABASE_ERRORにならずエイリアス解除されること"""
+        add_topic(title="T", description="D", tags=["domain:BE", "prm"])
+        update_tag("prm", canonical="domain:BE")
+
+        result = update_tag("prm", canonical=blank)
+        assert "error" not in result
+        assert result["canonical"] is None
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT canonical_id FROM tags WHERE namespace = '' AND name = 'prm'"
+            ).fetchone()
+            assert row["canonical_id"] is None
+        finally:
+            conn.close()
+
     def test_unset_canonical(self, temp_db):
         """canonical=""でエイリアス解除されること"""
         add_topic(title="T", description="D", tags=["domain:BE", "prm"])
