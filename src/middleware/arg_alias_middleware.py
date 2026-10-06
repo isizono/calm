@@ -32,7 +32,8 @@ _RENAMES: dict[str, dict[str, str]] = {
 
 # 配列を JSON 文字列のまま渡されたときに配列へ戻す引数名。名前だけで判定するので、
 # 同名で str 型の引数を持つツールが増えたらツール別に持つ。entity_type は search 専用の
-# 分岐で扱う（他ツールの str 型 entity_type には触れない）。
+# 分岐で扱う（他ツールの str 型 entity_type には触れない）。search の keyword は
+# str | list[str] で、"[abc]" のような文字列が正当な検索語でもありうるため復元しない。
 _LIST_ARGS = {"items", "tags", "related", "targets", "changes"}
 
 # get_by_ids の items に "decision:123" の文字列で書かれた要素を dict に直す。
@@ -48,23 +49,23 @@ _ITEMS_WRAP: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "add_decisions": (("topic_id", "decision", "reason"), ("title", "tags")),
 }
 
-# 書き換えでは直せない取り違えに添える、正しい呼び方。見るのは各ツールで最も欠落の多い
-# 必須引数1つだけで、他の必須引数の欠落はここでは拾わない（通常のバリデーションに任せる）。
-_USAGE: dict[str, tuple[str, str]] = {
-    "get_by_ids": ("items", 'get_by_ids(items=[{"type": "decision", "id": 123}])'),
-    "add_logs": ("items", 'add_logs(items=[{"topic_id": 1, "content": "..."}])'),
+# 書き換えでは直せない取り違えに添える、(必須引数の列, 正しい呼び方)。列のうち欠けている
+# ものを全部挙げる。ここに載せない必須引数の欠落は通常のバリデーションに任せる。
+_USAGE: dict[str, tuple[tuple[str, ...], str]] = {
+    "get_by_ids": (("items",), 'get_by_ids(items=[{"type": "decision", "id": 123}])'),
+    "add_logs": (("items",), 'add_logs(items=[{"topic_id": 1, "content": "..."}])'),
     "add_decisions": (
-        "items",
+        ("items",),
         'add_decisions(items=[{"topic_id": 1, "decision": "...", "reason": "..."}])',
     ),
-    "check_in": ("activity_id", "check_in(activity_id=123)"),
+    "check_in": (("activity_id",), "check_in(activity_id=123)"),
     "update_goal": (
-        "goal_id",
+        ("goal_id",),
         'update_goal(goal_id=1, changes=[{"op": "set", "id": 10, "state": "satisfied"}])'
         "（goal_id は get_goal(handle=...) で引く）",
     ),
     "add_material": (
-        "source",
+        ("title", "content", "tags", "source"),
         'add_material(title="...", content="...", tags=["domain:x"], source="出典の説明")',
     ),
 }
@@ -110,9 +111,19 @@ def _strip_close_tags(value: Any) -> Any:
 
 
 def _rewrite(tool: str, args: dict[str, Any]) -> None:
+    renamed: dict[str, str] = {}  # 正しい名前 -> 値を渡してきた別名
     for wrong, right in _RENAMES.get(tool, {}).items():
         if wrong in args:
             value = args.pop(wrong)
+            # 正しい名前が直接渡されていればそれを優先する。別名同士で値が食い違うときは
+            # どちらかを黙って捨てず、エラーにする。
+            if right in renamed and args[right] != value:
+                raise ToolError(
+                    f"{tool}: {renamed[right]} と {wrong} は同じ引数 {right} の別名で、"
+                    f"値が食い違っています。{right} だけを指定してください"
+                )
+            if right not in args:
+                renamed[right] = wrong
             args.setdefault(right, value)
 
     list_keys = _LIST_ARGS | ({"entity_type"} if tool == "search" else set())
@@ -169,8 +180,11 @@ class ArgAliasMiddleware(Middleware):
             args.update(_strip_close_tags(args))
             _rewrite(tool, args)
             usage = _USAGE.get(tool)
-            if usage and usage[0] not in args:
-                raise ToolError(
-                    f"{tool}: 必須引数 {usage[0]} がありません。正しい呼び方: {usage[1]}"
-                )
+            if usage:
+                missing = [k for k in usage[0] if k not in args]
+                if missing:
+                    raise ToolError(
+                        f"{tool}: 必須引数 {', '.join(missing)} がありません。"
+                        f"正しい呼び方: {usage[1]}"
+                    )
         return await call_next(context)

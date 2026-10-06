@@ -68,6 +68,7 @@ async def test_entity_args_already_given_are_kept():
         ("check_in", {}, "check_in(activity_id="),
         ("update_goal", {"handle": "x"}, "update_goal(goal_id=1, changes="),
         ("add_material", {"title": "t"}, 'add_material(title="...", content="...", tags='),
+        ("add_material", {"source": "s"}, 'add_material(title="...", content="...", tags='),
     ],
 )
 async def test_unfixable_call_raises_error_with_example(tool, args, example):
@@ -156,8 +157,15 @@ async def test_namespaced_invoke_tag_is_stripped():
 
 
 @pytest.mark.asyncio
-async def test_get_by_ids_ids_alias_with_json_string_and_typed_ids():
-    out = await _run("get_by_ids", {"ids": '["decision:3321", {"type": "log", "id": 5}]'})
+async def test_get_by_ids_ids_alias_is_renamed_to_items():
+    assert await _run("get_by_ids", {"ids": [{"type": "log", "id": 5}]}) == {
+        "items": [{"type": "log", "id": 5}]
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_by_ids_json_string_items_are_decoded():
+    out = await _run("get_by_ids", {"items": '["decision:3321", {"type": "log", "id": 5}]'})
     assert out == {"items": [{"type": "decision", "id": 3321}, {"type": "log", "id": 5}]}
 
 
@@ -182,24 +190,73 @@ async def test_search_types_alias_unwraps_single_element():
 
 
 @pytest.mark.asyncio
-async def test_misc_renames():
+async def test_search_tags_keyword_is_renamed_to_query():
     assert await _run("search_tags", {"keyword": "k"}) == {"query": "k"}
+
+
+@pytest.mark.asyncio
+async def test_get_material_id_is_renamed_to_material_id():
     assert await _run("get_material", {"id": "620"}) == {"material_id": "620"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool,alias",
+    [("add_logs", "entries"), ("add_logs", "logs"), ("add_decisions", "entries"), ("add_decisions", "decisions")],
+)
+async def test_items_aliases_are_renamed(tool, alias):
+    assert await _run(tool, {alias: [{"topic_id": 1}]}) == {"items": [{"topic_id": 1}]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("alias", ["type", "types", "entity_types", "type_filter"])
+async def test_search_entity_type_aliases_are_renamed(alias):
+    assert await _run("search", {"keyword": "k", alias: "topic"}) == {
+        "keyword": "k",
+        "entity_type": "topic",
+    }
+
+
+@pytest.mark.asyncio
+async def test_conflicting_search_aliases_raise_error():
+    ctx = MagicMock()
+    ctx.message.name = "search"
+    ctx.message.arguments = {"keyword": "x", "types": "topic", "entity_types": "log"}
+    with pytest.raises(ToolError, match="別名"):
+        await ArgAliasMiddleware().on_call_tool(ctx, AsyncMock())
+
+
+@pytest.mark.asyncio
+async def test_agreeing_search_aliases_are_accepted():
+    out = await _run("search", {"keyword": "x", "types": "topic", "entity_types": "topic"})
+    assert out == {"keyword": "x", "entity_type": "topic"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool,args",
+    [
+        ("add_logs", {"logs": "[abc"}),
+        ("add_logs", {"items": '{"a": 1}'}),
+        ("get_decisions", {"entity_type": '["x"]', "entity_id": 1}),
+        ("add_logs", {"items": ["decision:1"]}),
+        ("search", {"keyword": "[abc]"}),
+    ],
+)
+async def test_inputs_that_must_not_be_rewritten_are_left_alone(tool, args):
+    out = await _run(tool, dict(args))
+    assert out == {("items" if k == "logs" else k): v for k, v in args.items()}
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "tool,args,expected",
     [
-        ("add_logs", {"logs": "[abc"}, {"items": "[abc"}),
-        ("add_logs", {"items": '{"a": 1}'}, {"items": '{"a": 1}'}),
-        ("search", {"keyword": "x", "type_filter": "topic"}, {"keyword": "x", "entity_type": "topic"}),
-        ("add_decisions", {"decisions": '[{"topic_id": 1}]'}, {"items": [{"topic_id": 1}]}),
         ("add_logs", {"logs": [{"topic_id": 1}]}, {"items": [{"topic_id": 1}]}),
         ("get_by_ids", {"items": [" decision:1 ", 5]}, {"items": [{"type": "decision", "id": 1}, 5]}),
-        ("get_decisions", {"entity_type": '["x"]', "entity_id": 1}, {"entity_type": '["x"]', "entity_id": 1}),
-        ("add_logs", {"items": ["decision:1"]}, {"items": ["decision:1"]}),
+        ("get_by_ids", {"ids": "[1]"}, {"items": [1]}),
+        ("search", {"keyword": "x", "types": '["topic", "log"]'}, {"keyword": "x", "entity_type": ["topic", "log"]}),
     ],
 )
-async def test_edge_inputs_are_left_alone_or_normalized(tool, args, expected):
+async def test_values_are_normalized(tool, args, expected):
     assert await _run(tool, dict(args)) == expected
