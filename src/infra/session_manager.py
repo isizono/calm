@@ -336,9 +336,11 @@ class SessionManager:
                 f"No active sessions after {self._grace_period}s grace period, "
                 "initiating shutdown"
             )
+            if self._shutdown_callback and self._shutdown_callback() is False:
+                # 処理中リクエストが捌けず見送られた。猶予期間からやり直す。
+                self._start_grace_timer()
+                return
             self._shutdown_event.set()
-            if self._shutdown_callback:
-                self._shutdown_callback()
         else:
             logger.info(
                 f"Grace period expired but {count} sessions active, "

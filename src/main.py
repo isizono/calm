@@ -243,6 +243,12 @@ def _apply_flavor_to_snippets(items: list[dict], flavor: str) -> None:
 # MCPサーバーを作成
 mcp = FastMCP("calm", instructions=build_instructions())
 
+# 処理中リクエスト数を数える middleware（シャットダウンガード用）。全 middleware を
+# 包むよう最初に登録する
+from src.infra.inflight import InflightMiddleware, shutdown_when_idle  # noqa: E402
+
+mcp.add_middleware(InflightMiddleware())
+
 # サブエージェントの識別子引数を取り出す middleware を最初に登録する（最も外側に置き、
 # 後続の middleware がスキーマに無いこの引数を見ないようにする）
 from src.middleware.agent_identity_middleware import (  # noqa: E402
@@ -3323,19 +3329,42 @@ if __name__ == "__main__":
             on_session_removed=lambda sid, reason: session_ledger_service.mark_ended(sid, reason),
         )
 
-        def _shutdown_server():
+        def _shutdown_server() -> bool:
             """ウォッチドッグから呼ばれるシャットダウンハンドラ
+
+            処理中のMCPリクエストが無いときだけSIGINTを送る。待ち上限内に
+            捌けなければ送らずFalseを返す。
 
             os.kill(os.getpid(), signal.SIGINT)はWindowsではTerminateProcess
             相当になりfinallyのrelease()が走らない。signal.raise_signalは
             プロセス内にシグナルを送る標準の手段で、全OSでPythonのシグナル
             ハンドラ経由の正常終了経路に乗る。
             """
-            logger.info("Shutdown triggered by watchdog, sending SIGINT")
-            signal.raise_signal(signal.SIGINT)
+            def _send():
+                logger.info("Shutdown triggered by watchdog, sending SIGINT")
+                signal.raise_signal(signal.SIGINT)
+
+            return shutdown_when_idle(_send)
 
         _session_manager.set_shutdown_callback(_shutdown_server)
         _session_manager.start_watchdog()
+
+        # ファイル陳腐化検知ウォッチドッグ（プラグイン更新後に古いコードで動き続けない
+        # ため）。session_managerとは独立したスレッド・独立した判定で動かす。
+        # CALM_AUTO_SHUTDOWN_SEC=0 で自動停止を無効化している場合は起動しない。
+        from src.infra.staleness_watchdog import StalenessWatchdog
+
+        if _session_manager.is_auto_shutdown_disabled:
+            logger.info(
+                "Auto-shutdown disabled (CALM_AUTO_SHUTDOWN_SEC=0), "
+                "skipping staleness watchdog start"
+            )
+        else:
+            _staleness_watchdog = StalenessWatchdog(
+                project_root=_fixed_root,
+                shutdown_callback=_shutdown_server,
+            )
+            _staleness_watchdog.start()
 
         try:
             _start_embedding_warmup()
