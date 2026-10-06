@@ -783,36 +783,44 @@ class TestMaintenanceHintPromoteLine:
         assert "未処理の躓き3件" in reason
 
 
-class TestAgentTypeSuppressesUtteranceAndToolFail:
-    """サブエージェント発(agent_typeがtruthy)は発話タイミング・ツール失敗の
-    いずれも配達を止める（書き込みを禁止されたサブエージェントに促しを
-    届けても実行できないため）。実行直前の配達（block）は続ける。"""
+class TestAgentTypeDeliversBodyWithoutWritePrompts:
+    """サブエージェント発(agent_typeがtruthy)でも、当たったnotifyエントリの本文は
+    配達し、配達回数も数える。出さないのは書き込みを促す行（未処理の躓きの手入れの行・
+    bootstrapの促し）だけである。実行直前の配達（block）は変わらず続く。"""
 
-    def test_agent_type_suppresses_utterance_delivery(self, db, capsys):
+    def test_agent_type_delivers_utterance_body_without_hint(self, db, capsys):
         _create_entry(
             "stump-a",
+            body="Aの躓き",
             condition={"tool": None, "all": [{"field": "prompt", "op": "regex", "value": "help"}]},
         )
-        out = _run_main_with_event(
-            {
-                "hook_event_name": "UserPromptSubmit",
-                "session_id": "s1",
-                "prompt_id": "p1",
-                "prompt": "please help",
-                "agent_type": "general-purpose",
-            },
-            capsys,
-        )
-        assert out == {}
-        assert _row("stump-a")["delivered_count"] == 0
+        for _ in range(3):
+            assert fs.add_feedback_note(name="stump-a", kind="stumble", body="踏んだ")["ok"]
+        event = {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "s1",
+            "prompt_id": "p1",
+            "prompt": "please help",
+        }
+        out = _run_main_with_event({**event, "agent_type": "general-purpose"}, capsys)
+        body = out["hookSpecificOutput"]["additionalContext"]
+        assert "Aの躓き" in body
+        assert "未処理の躓き" not in body
+        assert _row("stump-a")["delivered_count"] == 1
 
-    def test_agent_type_suppresses_tool_fail_delivery(self, db, capsys):
+        # agent_typeなしでは促しの行も付く
+        out = _run_main_with_event({**event, "prompt_id": "p2"}, capsys)
+        assert "未処理の躓き3件" in out["hookSpecificOutput"]["additionalContext"]
+
+    def test_agent_type_delivers_tool_fail_body_without_hint(self, db, capsys):
         _create_entry(
             "fail-a",
             body="タイムアウトの躓き",
             timing="tool_fail",
             condition={"tool": None, "all": [{"field": "error", "op": "regex", "value": "timeout"}]},
         )
+        for _ in range(3):
+            assert fs.add_feedback_note(name="fail-a", kind="stumble", body="踏んだ")["ok"]
         out = _run_main_with_event(
             {
                 "hook_event_name": "PostToolUseFailure",
@@ -824,8 +832,24 @@ class TestAgentTypeSuppressesUtteranceAndToolFail:
             },
             capsys,
         )
+        body = out["hookSpecificOutput"]["additionalContext"]
+        assert "タイムアウトの躓き" in body
+        assert "未処理の躓き" not in body
+        assert _row("fail-a")["delivered_count"] == 1
+
+    def test_agent_type_without_match_gets_no_bootstrap(self, db, capsys):
+        out = _run_main_with_event(
+            {
+                "hook_event_name": "PostToolUseFailure",
+                "session_id": "s1",
+                "tool_name": "Bash",
+                "tool_input": {},
+                "error": "boom",
+                "agent_type": "general-purpose",
+            },
+            capsys,
+        )
         assert out == {}
-        assert _row("fail-a")["delivered_count"] == 0
 
     def test_agent_type_does_not_suppress_pre_tool_block(self, db, capsys):
         _create_entry(

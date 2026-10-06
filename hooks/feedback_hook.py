@@ -11,11 +11,11 @@ mode値が不正のいずれも mode='off' 相当としてfail-open（何も出�
 条件JSON評価で例外（壊れた正規表現等）が出た場合は、そのエントリだけ評価をスキップし
 他のエントリの評価は継続する（_matches内で握る）。
 
-サブエージェント発（agent_type付き）の呼び出しでは、UserPromptSubmit・
-PostToolUseFailureのいずれも配達を止める（実行直前の配達は続ける。書き込みを
-禁止されたサブエージェントに促しを届けても実行できないため）。UserPromptSubmit
-では、agent_typeの有無に関わらず、プロンプトが人間の発話でないターン
-（hooks/turn_origin.py参照）のときも発話タイミングの配達を止める。
+サブエージェント発（agent_type付き）の呼び出しでも、エントリ本文は配達する。
+出さないのは、ノート・エントリの書き込みを促す行（手入れの行・bootstrapの促し）
+だけである（書き込みを禁止されたサブエージェントには実行できないため）。
+UserPromptSubmitでは、agent_typeの有無に関わらず、プロンプトが人間の発話でない
+ターン（hooks/turn_origin.py参照）のときは発話タイミングの配達を止める。
 """
 from __future__ import annotations
 
@@ -145,10 +145,16 @@ def _deliver(conn: sqlite3.Connection, session_id: str, prompt_id: str, shown: l
         )
 
 
-def _notify_render(entry: sqlite3.Row) -> str:
-    line = f"- {entry['body']}({entry['delivered_count'] + 1}回目)"
-    hint = maintenance_hint(entry["delivered_count"] + 1, entry["pending_stumbles"])
-    return line + ("\n" + hint if hint else "")
+def _notify_renderer(event: dict):
+    """notify配達の1件分を整形する関数を返す。サブエージェント発では手入れの行を付けない。"""
+    with_hint = not event.get("agent_type")
+
+    def render(entry: sqlite3.Row) -> str:
+        line = f"- {entry['body']}({entry['delivered_count'] + 1}回目)"
+        hint = maintenance_hint(entry["delivered_count"] + 1, entry["pending_stumbles"]) if with_hint else ""
+        return line + ("\n" + hint if hint else "")
+
+    return render
 
 
 # ---------------------------------------------------------------------------
@@ -159,9 +165,6 @@ def _notify_render(entry: sqlite3.Row) -> str:
 def _handle_user_prompt_submit(harness, event: dict) -> None:
     session_id = event.get("session_id") or ""
     if not session_id:
-        harness.emit_empty()
-        return
-    if event.get("agent_type"):
         harness.emit_empty()
         return
     prompt = event.get("prompt")
@@ -187,7 +190,7 @@ def _handle_user_prompt_submit(harness, event: dict) -> None:
             if not _turn_marked(conn, session_id, prompt_id, e["id"])
             and _matches(e, timing="utterance", prompt_text=prompt)
         ]
-        shown = _select_shown(candidates, budget_chars=UTTERANCE_BUDGET_CHARS, render=_notify_render)
+        shown = _select_shown(candidates, budget_chars=UTTERANCE_BUDGET_CHARS, render=_notify_renderer(event))
         if not shown:
             harness.emit_empty()
             return
@@ -233,9 +236,6 @@ def _handle_post_tool_use_failure(harness, event: dict) -> None:
     if not session_id:
         harness.emit_empty()
         return
-    if event.get("agent_type"):
-        harness.emit_empty()
-        return
     tool_name = event.get("tool_name")
     tool_input = event.get("tool_input")
     if not isinstance(tool_input, dict):
@@ -259,11 +259,14 @@ def _handle_post_tool_use_failure(harness, event: dict) -> None:
         ]
 
         if not matched:
-            _maybe_bootstrap(conn, harness, session_id)
+            if event.get("agent_type"):
+                harness.emit_empty()
+            else:
+                _maybe_bootstrap(conn, harness, session_id)
             return
 
         candidates = [e for e in matched if not _turn_marked(conn, session_id, prompt_id, e["id"])]
-        shown = _select_shown(candidates, budget_chars=TOOL_FAIL_BUDGET_CHARS, render=_notify_render)
+        shown = _select_shown(candidates, budget_chars=TOOL_FAIL_BUDGET_CHARS, render=_notify_renderer(event))
 
         if shown:
             _deliver(conn, session_id, prompt_id, shown)
