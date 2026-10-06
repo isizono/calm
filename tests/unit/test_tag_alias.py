@@ -200,6 +200,14 @@ class TestUpdateTagCanonical:
         finally:
             conn.close()
 
+    def test_blank_canonical_matches_empty_for_unknown_and_archived_tag(self, temp_db):
+        """存在しないタグ・archivedタグでも、空白のみのcanonicalは空文字と同じ結果になること"""
+        add_topic(title="T", description="D", tags=["domain:BE", "old"])
+        update_tag("old", archived=True)
+
+        for tag in ("nonexistent", "old"):
+            assert update_tag(tag, canonical=" ") == update_tag(tag, canonical="")
+
     def test_unset_canonical(self, temp_db):
         """canonical=""でエイリアス解除されること"""
         add_topic(title="T", description="D", tags=["domain:BE", "prm"])
