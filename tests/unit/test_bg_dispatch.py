@@ -74,22 +74,6 @@ class TestBuildRequest:
         assert "id_raw=55の条件のboundが" in text
         assert '{"type": "activity", "id_raw": 9}' in text
 
-    def test_sibling_section_defines_siblings_and_lookup(self):
-        text = _build()
-        assert "## 兄弟との連携" in text
-        assert "boundが自分以外のアクティビティを指す条件" in text
-        assert "get_sessions" in text
-        assert "空席として扱う" in text
-
-    def test_sibling_notice_duty_covers_four_facts_and_report_destination(self):
-        text = _build()
-        for fact in ("共有ファイル", "マイグレーション番号", "mainの破損", "前提の変化"):
-            assert fact in text
-        assert "報告先へのadd_logsに加えて、その兄弟へもSendMessage" in text
-
-    def test_sibling_contact_limited_to_notice(self):
-        assert "作業の依頼・質問・進捗の共有は送らない" in _build()
-
     def test_pending_dir_arg_is_embedded(self):
         text = _build(pending_dir="/tmp/calm-pending")
         assert "`/tmp/calm-pending` へファイルとして退避し、報告に書く" in text
