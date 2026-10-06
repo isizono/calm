@@ -145,6 +145,12 @@ def _deliver(conn: sqlite3.Connection, session_id: str, prompt_id: str, shown: l
         )
 
 
+def _mark_key(event: dict, session_id: str) -> str:
+    """区切り重複の管理キー。サブエージェント発は親と別に数える（同じ区切りで親が受け取れなくなるのを避ける）。"""
+    agent_id = event.get("agent_id")
+    return f"{session_id}:{agent_id}" if isinstance(agent_id, str) and agent_id else session_id
+
+
 def _notify_renderer(event: dict):
     """notify配達の1件分を整形する関数を返す。サブエージェント発では手入れの行を付けない。"""
     with_hint = not event.get("agent_type")
@@ -187,7 +193,7 @@ def _handle_user_prompt_submit(harness, event: dict) -> None:
         entries = _fetch_entries(conn, strength="notify", timing="utterance")
         candidates = [
             e for e in entries
-            if not _turn_marked(conn, session_id, prompt_id, e["id"])
+            if not _turn_marked(conn, _mark_key(event, session_id), prompt_id, e["id"])
             and _matches(e, timing="utterance", prompt_text=prompt)
         ]
         shown = _select_shown(candidates, budget_chars=UTTERANCE_BUDGET_CHARS, render=_notify_renderer(event))
@@ -195,7 +201,7 @@ def _handle_user_prompt_submit(harness, event: dict) -> None:
             harness.emit_empty()
             return
 
-        _deliver(conn, session_id, prompt_id, shown)
+        _deliver(conn, _mark_key(event, session_id), prompt_id, shown)
         conn.commit()
         body = "過去の躓きから学んだ注意点:\n" + "\n".join(text for _, text in shown)
         harness.emit_additional_context(_wrap(body))
@@ -265,11 +271,11 @@ def _handle_post_tool_use_failure(harness, event: dict) -> None:
                 _maybe_bootstrap(conn, harness, session_id)
             return
 
-        candidates = [e for e in matched if not _turn_marked(conn, session_id, prompt_id, e["id"])]
+        candidates = [e for e in matched if not _turn_marked(conn, _mark_key(event, session_id), prompt_id, e["id"])]
         shown = _select_shown(candidates, budget_chars=TOOL_FAIL_BUDGET_CHARS, render=_notify_renderer(event))
 
         if shown:
-            _deliver(conn, session_id, prompt_id, shown)
+            _deliver(conn, _mark_key(event, session_id), prompt_id, shown)
         conn.commit()
 
         if shown:
@@ -306,10 +312,16 @@ def _fingerprint(tool_input: dict) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _deny_render(entry: sqlite3.Row) -> str:
-    line = f"- {entry['body']}"
-    hint = maintenance_hint(entry["delivered_count"] + 1, entry["pending_stumbles"])
-    return line + ("\n" + hint if hint else "")
+def _deny_renderer(event: dict):
+    """block配達の1件分を整形する関数を返す。サブエージェント発では手入れの行を付けない。"""
+    with_hint = not event.get("agent_type")
+
+    def render(entry: sqlite3.Row) -> str:
+        line = f"- {entry['body']}"
+        hint = maintenance_hint(entry["delivered_count"] + 1, entry["pending_stumbles"]) if with_hint else ""
+        return line + ("\n" + hint if hint else "")
+
+    return render
 
 
 def _handle_pre_tool_use(harness, event: dict) -> None:
@@ -375,7 +387,7 @@ def _handle_pre_tool_use(harness, event: dict) -> None:
             harness.emit_empty()
             return
 
-        shown = _select_shown(blocking, budget_chars=PRE_TOOL_BUDGET_CHARS, render=_deny_render)
+        shown = _select_shown(blocking, budget_chars=PRE_TOOL_BUDGET_CHARS, render=_deny_renderer(event))
         for entry, _text in shown:
             conn.execute(
                 "UPDATE feedback_entries SET delivered_count = delivered_count + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",

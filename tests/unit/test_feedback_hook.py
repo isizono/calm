@@ -808,9 +808,37 @@ class TestAgentTypeDeliversBodyWithoutWritePrompts:
         assert "未処理の躓き" not in body
         assert _row("stump-a")["delivered_count"] == 1
 
-        # agent_typeなしでは促しの行も付く
-        out = _run_main_with_event({**event, "prompt_id": "p2"}, capsys)
+    def test_without_agent_type_utterance_keeps_hint(self, db, capsys):
+        _create_entry(
+            "stump-a",
+            body="Aの躓き",
+            condition={"tool": None, "all": [{"field": "prompt", "op": "regex", "value": "help"}]},
+        )
+        for _ in range(3):
+            assert fs.add_feedback_note(name="stump-a", kind="stumble", body="踏んだ")["ok"]
+        out = _run_main_with_event(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt_id": "p1", "prompt": "please help"},
+            capsys,
+        )
         assert "未処理の躓き3件" in out["hookSpecificOutput"]["additionalContext"]
+
+    def test_agent_delivery_does_not_consume_parent_turn_mark(self, db, capsys):
+        _create_entry(
+            "stump-a",
+            body="Aの躓き",
+            condition={"tool": None, "all": [{"field": "prompt", "op": "regex", "value": "help"}]},
+        )
+        event = {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "s1",
+            "prompt_id": "p1",
+            "prompt": "please help",
+        }
+        out = _run_main_with_event({**event, "agent_type": "general-purpose", "agent_id": "a1"}, capsys)
+        assert "Aの躓き" in out["hookSpecificOutput"]["additionalContext"]
+        # 同じ区切りで親にも届く
+        out = _run_main_with_event(event, capsys)
+        assert "Aの躓き" in out["hookSpecificOutput"]["additionalContext"]
 
     def test_agent_type_delivers_tool_fail_body_without_hint(self, db, capsys):
         _create_entry(
@@ -850,6 +878,18 @@ class TestAgentTypeDeliversBodyWithoutWritePrompts:
             capsys,
         )
         assert out == {}
+        # 親セッションの促しは消費されない
+        parent = _run_main_with_event(
+            {
+                "hook_event_name": "PostToolUseFailure",
+                "session_id": "s1",
+                "tool_name": "Bash",
+                "tool_input": {},
+                "error": "boom",
+            },
+            capsys,
+        )
+        assert "get_feedback_entries" in parent["hookSpecificOutput"]["additionalContext"]
 
     def test_agent_type_does_not_suppress_pre_tool_block(self, db, capsys):
         _create_entry(
@@ -866,6 +906,28 @@ class TestAgentTypeDeliversBodyWithoutWritePrompts:
             capsys,
         )
         assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+    def test_agent_type_pre_tool_block_omits_hint(self, db, capsys):
+        _create_entry(
+            "danger", strength="block", timing="pre_tool", body="危険",
+            condition={"tool": "Bash", "all": []},
+        )
+        for _ in range(3):
+            assert fs.add_feedback_note(name="danger", kind="stumble", body="踏んだ")["ok"]
+        out = _run_main_with_event(
+            {
+                "hook_event_name": "PreToolUse",
+                "session_id": "s1",
+                "tool_name": "Bash",
+                "tool_input": {"command": "rm -rf /"},
+                "agent_type": "general-purpose",
+            },
+            capsys,
+        )
+        reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "危険" in reason
+        assert "未処理の躓き" not in reason
 
 
 class TestNonhumanTurnSuppressesUtteranceDelivery:
