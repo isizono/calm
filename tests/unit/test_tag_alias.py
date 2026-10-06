@@ -200,13 +200,20 @@ class TestUpdateTagCanonical:
         finally:
             conn.close()
 
-    def test_blank_canonical_matches_empty_for_unknown_and_archived_tag(self, temp_db):
-        """存在しないタグ・archivedタグでも、空白のみのcanonicalは空文字と同じ結果になること"""
+    @pytest.mark.parametrize("blank", ["", " ", "\u3000"])
+    def test_unset_canonical_on_unknown_tag_is_not_found(self, temp_db, blank):
+        """存在しないタグの解除は、空文字でも空白のみでもNOT_FOUNDになること"""
+        result = update_tag("nonexistent", canonical=blank)
+        assert result["error"]["code"] == "NOT_FOUND"
+
+    @pytest.mark.parametrize("blank", ["", " ", "\u3000"])
+    def test_unset_canonical_on_archived_tag_succeeds(self, temp_db, blank):
+        """退役タグの解除は、空文字でも空白のみでも成功すること"""
         add_topic(title="T", description="D", tags=["domain:BE", "old"])
         update_tag("old", archived=True)
 
-        for tag in ("nonexistent", "old"):
-            assert update_tag(tag, canonical=" ") == update_tag(tag, canonical="")
+        result = update_tag("old", canonical=blank)
+        assert result == {"tag": "old", "canonical": None, "updated": True}
 
     def test_unset_canonical(self, temp_db):
         """canonical=""でエイリアス解除されること"""
