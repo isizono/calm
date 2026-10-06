@@ -4,11 +4,17 @@ on:
   pull_request:
     types: [opened, ready_for_review]
   workflow_dispatch:
+    inputs:
+      pr_number:
+        description: レビュー対象のPR番号
+        required: true
+        type: string
 
 jobs:
   claude-review:
     # fork PRではsecretsが配布されずOIDCも無効化されるため認証手段がなく必ず失敗する。
-    # fork PRをレビューしたい場合はworkflow_dispatchから手動起動する。詳細: #645
+    # fork PRをレビューしたい場合はworkflow_dispatchからPR番号を指定して手動起動する。詳細: #645
+    # checkoutは常にデフォルトブランチ。fork由来のコードをsecretsのある環境に取り込まないため、PRのheadは取得しない。
     # draft PRは除外する。workflow_dispatchにはpull_requestコンテキストが無いため別扱いにする。
     if: github.event_name == 'workflow_dispatch' || (!github.event.pull_request.head.repo.fork && !github.event.pull_request.draft)
 
@@ -38,7 +44,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             REPO: ${{ github.repository }}
-            PR NUMBER: ${{ github.event.pull_request.number }}
+            PR NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
 
             このPRをレビューして、以下の観点でフィードバックしてください：
             - コード品質とベストプラクティス
@@ -54,6 +60,10 @@ jobs:
             問題点・改善提案のみを書いてください。良い点や褒めるコメントは不要です。
             リポジトリのCLAUDE.mdを参照してスタイルと規約に従ってください。
 
+            ### チェックアウトの状態
+
+            作業ディレクトリはPRのheadではなくデフォルトブランチである。変更後の内容は `gh pr diff` で読むこと。`Read`や`Grep`で読めるのは変更前の既存コードである。
+
             ### コードを読んで確認してから指摘すること
 
             diffだけを見て推測で指摘してはいけません。指摘を行う前に、必ず以下の手順を踏んでください：
@@ -63,8 +73,8 @@ jobs:
 
             ### 既存コメントとの重複を避けること
 
-            `gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments` で既存のレビューコメントを確認し、同じ指摘を繰り返さないでください。
-            また `gh pr view ${{ github.event.pull_request.number }} --comments` でPRコメントも確認してください。
+            `gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number || inputs.pr_number }}/comments` で既存のレビューコメントを確認し、同じ指摘を繰り返さないでください。
+            また `gh pr view ${{ github.event.pull_request.number || inputs.pr_number }} --comments` でPRコメントも確認してください。
 
             ### テスト変更を含むPRの確認
 
