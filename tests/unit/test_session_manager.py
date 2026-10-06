@@ -464,21 +464,3 @@ def test_deferred_shutdown_restarts_grace_period():
         time.sleep(0.05)
     assert len(calls) == 2
     assert mgr.is_shutdown_requested
-
-
-def test_deferred_shutdown_restarts_grace_period():
-    """shutdown callbackが見送り(False)を返したら、猶予期間からやり直して再試行する"""
-    calls = []
-
-    def cb():
-        calls.append(1)
-        return len(calls) >= 2
-
-    mgr = SessionManager(grace_period_sec=0.1)
-    mgr.set_shutdown_callback(cb)
-    mgr.start_watchdog()
-    deadline = time.time() + 3
-    while not mgr.is_shutdown_requested and time.time() < deadline:
-        time.sleep(0.05)
-    assert len(calls) == 2
-    assert mgr.is_shutdown_requested

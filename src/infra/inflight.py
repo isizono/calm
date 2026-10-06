@@ -7,7 +7,7 @@ SIGINT直後に処理中だった呼び出しは、DB書き込みが完了して
 import logging
 import threading
 import time
-from typing import Callable
+from collections.abc import Callable
 
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 

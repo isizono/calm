@@ -16,8 +16,8 @@ import logging
 import os
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Optional
 
 from src.env_compat import env_get
 
@@ -133,9 +133,9 @@ class StalenessWatchdog:
     def __init__(
         self,
         project_root: Path,
-        check_interval_sec: Optional[float] = None,
-        debounce_sec: Optional[float] = None,
-        shutdown_callback: Optional[Callable[[], Optional[bool]]] = None,
+        check_interval_sec: float | None = None,
+        debounce_sec: float | None = None,
+        shutdown_callback: Callable[[], bool | None] | None = None,
     ):
         self._project_root = project_root
         self._check_interval = (
@@ -148,8 +148,8 @@ class StalenessWatchdog:
         )
         self._shutdown_callback = shutdown_callback
         self._stop_event = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-        self._baseline_hash: Optional[str] = None
+        self._thread: threading.Thread | None = None
+        self._baseline_hash: str | None = None
 
     def set_shutdown_callback(self, callback: Callable[[], None]) -> None:
         """陳腐化確定時に呼ばれるコールバックを設定する。"""

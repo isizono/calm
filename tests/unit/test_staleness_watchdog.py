@@ -384,32 +384,3 @@ class TestDeferredShutdownRetries:
             assert len(calls) == 2  # 成功後はワンショット
         finally:
             wd.stop()
-
-
-class TestDeferredShutdownRetries:
-    def test_callback_returning_false_keeps_watching_until_it_succeeds(self, tmp_path):
-        """shutdown callbackがFalse（見送り）を返したら次の周期で再判定し、成功で止まる"""
-        target = tmp_path / "a.py"
-        target.write_text("original")
-
-        calls = []
-
-        def cb():
-            calls.append(1)
-            return len(calls) >= 2
-
-        wd = StalenessWatchdog(
-            tmp_path, check_interval_sec=0.1, debounce_sec=0.05,
-            shutdown_callback=cb,
-        )
-        wd.start()
-        try:
-            target.write_text("changed")
-            deadline = time.time() + 3
-            while len(calls) < 2 and time.time() < deadline:
-                time.sleep(0.05)
-            assert len(calls) == 2
-            time.sleep(0.4)
-            assert len(calls) == 2  # 成功後はワンショット
-        finally:
-            wd.stop()
