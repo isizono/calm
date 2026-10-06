@@ -110,6 +110,18 @@ def _strip_close_tags(value: Any) -> Any:
     return value
 
 
+def _comparable(value: Any) -> Any:
+    """別名同士の値が一致するかを、JSON 文字列の復元と1要素配列の取り出しを済ませた形で比べる。"""
+    if isinstance(value, str) and value.lstrip().startswith("["):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return value
+    if isinstance(value, list) and len(value) == 1:
+        return value[0]
+    return value
+
+
 def _rewrite(tool: str, args: dict[str, Any]) -> None:
     renamed: dict[str, str] = {}  # 正しい名前 -> 値を渡してきた別名
     for wrong, right in _RENAMES.get(tool, {}).items():
@@ -117,7 +129,7 @@ def _rewrite(tool: str, args: dict[str, Any]) -> None:
             value = args.pop(wrong)
             # 正しい名前が直接渡されていればそれを優先する。別名同士で値が食い違うときは
             # どちらかを黙って捨てず、エラーにする。
-            if right in renamed and args[right] != value:
+            if right in renamed and _comparable(args[right]) != _comparable(value):
                 raise ToolError(
                     f"{tool}: {renamed[right]} と {wrong} は同じ引数 {right} の別名で、"
                     f"値が食い違っています。{right} だけを指定してください"

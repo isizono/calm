@@ -171,8 +171,8 @@ async def test_get_by_ids_json_string_items_are_decoded():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tool", ["add_logs", "add_decisions"])
-async def test_items_alias_and_json_string_items(tool):
-    assert await _run(tool, {"entries": '[{"topic_id": 1}]'}) == {"items": [{"topic_id": 1}]}
+async def test_json_string_items_are_decoded(tool):
+    assert await _run(tool, {"items": '[{"topic_id": 1}]'}) == {"items": [{"topic_id": 1}]}
 
 
 @pytest.mark.asyncio
@@ -185,7 +185,7 @@ async def test_flat_add_logs_with_json_string_tags_is_wrapped():
 async def test_search_types_alias_unwraps_single_element():
     out = await _run("search", {"query": "x", "types": '["topic"]'})
     assert out == {"keyword": "x", "entity_type": "topic"}
-    out = await _run("search", {"keyword": "x", "entity_types": ["topic", "log"]})
+    out = await _run("search", {"keyword": "x", "types": '["topic", "log"]'})
     assert out == {"keyword": "x", "entity_type": ["topic", "log"]}
 
 
@@ -218,12 +218,25 @@ async def test_search_entity_type_aliases_are_renamed(alias):
 
 
 @pytest.mark.asyncio
-async def test_conflicting_search_aliases_raise_error():
+@pytest.mark.parametrize(
+    "tool,args,names",
+    [
+        ("search", {"keyword": "x", "types": "topic", "entity_types": "log"}, ("types", "entity_types")),
+        ("add_logs", {"entries": [{"topic_id": 1}], "logs": [{"topic_id": 2}]}, ("entries", "logs")),
+        (
+            "add_decisions",
+            {"entries": [{"topic_id": 1}], "decisions": [{"topic_id": 2}]},
+            ("entries", "decisions"),
+        ),
+    ],
+)
+async def test_conflicting_aliases_raise_error_naming_both(tool, args, names):
     ctx = MagicMock()
-    ctx.message.name = "search"
-    ctx.message.arguments = {"keyword": "x", "types": "topic", "entity_types": "log"}
-    with pytest.raises(ToolError, match="別名"):
+    ctx.message.name = tool
+    ctx.message.arguments = args
+    with pytest.raises(ToolError) as exc:
         await ArgAliasMiddleware().on_call_tool(ctx, AsyncMock())
+    assert all(n in str(exc.value) for n in names)
 
 
 @pytest.mark.asyncio
@@ -233,10 +246,15 @@ async def test_agreeing_search_aliases_are_accepted():
 
 
 @pytest.mark.asyncio
+async def test_aliases_agreeing_after_json_decoding_are_accepted():
+    out = await _run("search", {"keyword": "x", "types": '["topic"]', "entity_types": "topic"})
+    assert out == {"keyword": "x", "entity_type": "topic"}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "tool,args",
     [
-        ("add_logs", {"logs": "[abc"}),
         ("add_logs", {"items": '{"a": 1}'}),
         ("get_decisions", {"entity_type": '["x"]', "entity_id": 1}),
         ("add_logs", {"items": ["decision:1"]}),
@@ -244,18 +262,20 @@ async def test_agreeing_search_aliases_are_accepted():
     ],
 )
 async def test_inputs_that_must_not_be_rewritten_are_left_alone(tool, args):
-    out = await _run(tool, dict(args))
-    assert out == {("items" if k == "logs" else k): v for k, v in args.items()}
+    assert await _run(tool, dict(args)) == args
+
+
+@pytest.mark.asyncio
+async def test_alias_with_undecodable_json_string_is_renamed_but_not_decoded():
+    assert await _run("add_logs", {"logs": "[abc"}) == {"items": "[abc"}
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "tool,args,expected",
     [
-        ("add_logs", {"logs": [{"topic_id": 1}]}, {"items": [{"topic_id": 1}]}),
         ("get_by_ids", {"items": [" decision:1 ", 5]}, {"items": [{"type": "decision", "id": 1}, 5]}),
         ("get_by_ids", {"ids": "[1]"}, {"items": [1]}),
-        ("search", {"keyword": "x", "types": '["topic", "log"]'}, {"keyword": "x", "entity_type": ["topic", "log"]}),
     ],
 )
 async def test_values_are_normalized(tool, args, expected):
