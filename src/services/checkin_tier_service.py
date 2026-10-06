@@ -118,14 +118,15 @@ def _consume_first_call_flag(session_id: str | None) -> bool:
 
     session_idが解決できない（None）場合は記録を読み書きせず、毎回Trueを返す。
     """
-    if session_id is None:
+    key = session_identity.delivery_key(session_id)
+    if key is None:
         return True
     with _greeted_sessions_lock:
-        if session_id in _greeted_sessions:
+        if key in _greeted_sessions:
             return False
         while len(_greeted_sessions) >= _GREETED_SESSIONS_MAX:
             del _greeted_sessions[next(iter(_greeted_sessions))]
-        _greeted_sessions[session_id] = True
+        _greeted_sessions[key] = True
         return True
 
 
@@ -348,6 +349,9 @@ def _register_session(activity_id: int, activity: dict) -> tuple[dict, str | Non
         from src.services import session_registry_service
 
         bridge_id = session_identity.get_caller_session_id()
+        if session_identity.current_agent_id() is not None:
+            # サブエージェントは親の別名行を書き換えない（別名は親のセッションに紐づく）
+            return {"registered": False, "reason": "subagent"}, bridge_id
         if bridge_id:
             reg = session_registry_service.register_checkin(
                 bridge_session_id=bridge_id,

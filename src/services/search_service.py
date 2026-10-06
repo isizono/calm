@@ -15,6 +15,7 @@ from sqlite_vec import serialize_float32
 
 from src import config
 from src.db import execute_query, get_connection, get_db_path, row_to_dict
+from src.infra.session_identity import delivery_key
 from src.services import embedding_service, precedent_pure
 from src.services.readable_id import strip_entity_id_inplace
 from src.services.supersede_service import (
@@ -2609,22 +2610,24 @@ _PRESENTED_RECORDS_MAX_SESSIONS = 256
 def _presented_records_contains(session_id: str | None, key: tuple[str, int]) -> bool:
     """session_idスコープで(type, id)が提示済みかを調べる。session_id=Noneは常にFalse
     （識別できない呼び出しは除外判定の対象外として扱う契約）。"""
-    if session_id is None:
+    dkey = delivery_key(session_id)
+    if dkey is None:
         return False
     with _presented_records_lock:
-        return key in _presented_records.get(session_id, ())
+        return key in _presented_records.get(dkey, ())
 
 
 def _presented_records_register(session_id: str | None, keys: list[tuple[str, int]]) -> None:
     """実際にmanifestへ採用した(type, id)群をsession_idスコープの既出集合へ登録する。
     session_id=Noneまたはkeysが空のときは何もしない。"""
-    if session_id is None or not keys:
+    dkey = delivery_key(session_id)
+    if dkey is None or not keys:
         return
     with _presented_records_lock:
-        if session_id not in _presented_records:
+        if dkey not in _presented_records:
             while len(_presented_records) >= _PRESENTED_RECORDS_MAX_SESSIONS:
                 del _presented_records[next(iter(_presented_records))]
-        _presented_records.setdefault(session_id, set()).update(keys)
+        _presented_records.setdefault(dkey, set()).update(keys)
 
 
 def build_related_records_manifest(

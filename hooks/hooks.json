@@ -91,6 +91,16 @@
             "args": ["run", "--directory", "${CLAUDE_PLUGIN_ROOT}", "python", "-X", "utf8", "hooks/deny_nested_bg_hook.py"]
           }
         ]
+      },
+      {
+        "matcher": "mcp__.*calm__.*|mcp__.*cc-memory__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv",
+            "args": ["run", "--directory", "${CLAUDE_PLUGIN_ROOT}", "python", "-X", "utf8", "hooks/agent_identity_hook.py"]
+          }
+        ]
       }
     ],
     "PostToolUseFailure": [
