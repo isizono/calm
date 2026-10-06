@@ -3,12 +3,15 @@ import os
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from src.db import (
     _check_fts5_available,
     execute_insert,
     execute_query,
     get_connection,
     get_db_path,
+    inserted_row_id,
 )
 
 
@@ -141,3 +144,19 @@ def test_check_fts5_available_returns_false_when_fts5_missing(monkeypatch):
         db_module.sqlite3, "connect", lambda *a, **k: _FakeConnWithoutFts5()
     )
     assert db_module._check_fts5_available() is False
+
+
+def test_inserted_row_id_returns_new_row_id():
+    """INSERT直後のcursorから、挿入した行のidを返す"""
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+    conn.execute("INSERT INTO t (v) VALUES ('a')")
+    cursor = conn.execute("INSERT INTO t (v) VALUES ('b')")
+    assert inserted_row_id(cursor) == 2
+
+
+def test_inserted_row_id_raises_when_nothing_inserted():
+    """何もINSERTしていないcursorでは、Noneを返さず例外にする"""
+    conn = sqlite3.connect(":memory:")
+    with pytest.raises(RuntimeError, match="row id"):
+        inserted_row_id(conn.cursor())
