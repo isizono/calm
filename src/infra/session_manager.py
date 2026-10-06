@@ -321,6 +321,9 @@ class SessionManager:
 
         猶予期間中にcancel_eventがsetされたらタイマーをキャンセルする。
         猶予期間が経過してもセッション0の場合、shutdownコールバックを呼ぶ。
+        コールバックがFalse（処理中リクエストが捌けず見送り）を返したら、
+        猶予期間からやり直す。is_shutdown_requestedはコールバックが実際に
+        停止を送った後にだけ立つ。
         """
         # 猶予期間待機（cancel_eventがsetされたら早期リターン）
         cancelled = cancel_event.wait(timeout=self._grace_period)

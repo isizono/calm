@@ -15,21 +15,24 @@ def _reset_count():
     inflight._count = 0
 
 
-def test_middleware_counts_while_handling_and_releases_on_error():
+def test_middleware_counts_while_handling_and_releases_after_success():
     seen = []
 
     async def ok(ctx):
         seen.append(inflight.inflight_count())
         return "r"
 
+    assert asyncio.run(InflightMiddleware().on_message(None, ok)) == "r"
+    assert seen == [1]
+    assert inflight.inflight_count() == 0
+
+
+def test_middleware_releases_count_when_handler_raises():
     async def boom(ctx):
         raise RuntimeError
 
-    mw = InflightMiddleware()
-    assert asyncio.run(mw.on_message(None, ok)) == "r"
     with pytest.raises(RuntimeError):
-        asyncio.run(mw.on_message(None, boom))
-    assert seen == [1]
+        asyncio.run(InflightMiddleware().on_message(None, boom))
     assert inflight.inflight_count() == 0
 
 

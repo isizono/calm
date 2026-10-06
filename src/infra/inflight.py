@@ -47,7 +47,9 @@ def shutdown_when_idle(
 
     timeout_sec 内に0件にならなければ呼ばずに False を返す（呼び出し元が次の
     周期で再試行する）。0件確認から send_shutdown までの間に届いた新規リクエストは
-    防げない。この窓は極小で、取りこぼしはSIGINT直後の失敗と同じ症状になる。
+    防げない。待機中に新規を拒否するゲートは入れない: 拒否もクライアントから見れば
+    失敗で、停止を見送った場合には不要な失敗を生むため。この窓は極小で、取りこぼしは
+    SIGINT直後の失敗と同じ症状になる。
     """
     deadline = time.monotonic() + timeout_sec
     while inflight_count() > 0:
