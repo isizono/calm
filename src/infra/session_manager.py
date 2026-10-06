@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from typing import Literal
 
 from src.env_compat import env_get
 
@@ -81,6 +82,9 @@ def read_liveness_timeout_sec() -> float:
     return value
 
 
+# on_session_removed に渡す除去経路（unregister=明示的な登録解除、ttl=期限切れ）
+RemovalReason = Literal["unregister", "ttl"]
+
 class SessionManager:
     """セッションカウント管理 + 自動停止ウォッチドッグ + liveness TTL失効
 
@@ -102,7 +106,7 @@ class SessionManager:
         self,
         grace_period_sec: int | None = None,
         liveness_timeout_sec: float | None = None,
-        on_session_removed: Callable[[str, str], None] | None = None,
+        on_session_removed: Callable[[str, RemovalReason], None] | None = None,
     ):
         self._active_sessions: set[str] = set()
         self._last_seen: dict[str, float] = {}
@@ -186,7 +190,7 @@ class SessionManager:
             self._start_grace_timer()
         return True
 
-    def _notify_removed(self, session_id: str, reason: str) -> None:
+    def _notify_removed(self, session_id: str, reason: RemovalReason) -> None:
         """session除去後（ロック解放後）に on_session_removed コールバックを呼ぶ。
 
         unregister() と liveness reaper 経由の失効（_evict_if_still_stale）の
