@@ -65,6 +65,9 @@ async def test_entity_args_already_given_are_kept():
         ("add_logs", {"topic_id": 1}, "add_logs(items="),
         ("add_logs", {"topic_id": 1, "content": "c", "flavor": "raw"}, "add_logs(items="),
         ("add_decisions", {"entity_type": "activity"}, "add_decisions(items="),
+        ("check_in", {}, "check_in(activity_id="),
+        ("update_goal", {"handle": "x"}, "update_goal(goal_id=1, changes="),
+        ("add_material", {"title": "t"}, 'add_material(title="...", content="...", tags='),
     ],
 )
 async def test_unfixable_call_raises_error_with_example(tool, args, example):
@@ -185,7 +188,18 @@ async def test_misc_renames():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tool", ["check_in", "update_goal", "add_material"])
-async def test_missing_required_arg_gets_usage_example(tool):
-    with pytest.raises(ToolError, match=r"正しい呼び方"):
-        await _run(tool, {"handle": "x"} if tool == "update_goal" else {})
+@pytest.mark.parametrize(
+    "tool,args,expected",
+    [
+        ("add_logs", {"logs": "[abc"}, {"items": "[abc"}),
+        ("add_logs", {"items": '{"a": 1}'}, {"items": '{"a": 1}'}),
+        ("search", {"keyword": "x", "type_filter": "topic"}, {"keyword": "x", "entity_type": "topic"}),
+        ("add_decisions", {"decisions": '[{"topic_id": 1}]'}, {"items": [{"topic_id": 1}]}),
+        ("add_logs", {"logs": [{"topic_id": 1}]}, {"items": [{"topic_id": 1}]}),
+        ("get_by_ids", {"items": [" decision:1 ", 5]}, {"items": [{"type": "decision", "id": 1}, 5]}),
+        ("get_decisions", {"entity_type": '["x"]', "entity_id": 1}, {"entity_type": '["x"]', "entity_id": 1}),
+        ("add_logs", {"items": ["decision:1"]}, {"items": ["decision:1"]}),
+    ],
+)
+async def test_edge_inputs_are_left_alone_or_normalized(tool, args, expected):
+    assert await _run(tool, dict(args)) == expected

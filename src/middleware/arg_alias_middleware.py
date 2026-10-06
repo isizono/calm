@@ -30,8 +30,10 @@ _RENAMES: dict[str, dict[str, str]] = {
     "add_decisions": {"entries": "items", "decisions": "items"},
 }
 
-# 配列を JSON 文字列のまま渡されたときに配列へ戻す引数名。
-_LIST_ARGS = {"items", "tags", "related", "targets", "changes", "entity_type"}
+# 配列を JSON 文字列のまま渡されたときに配列へ戻す引数名。名前だけで判定するので、
+# 同名で str 型の引数を持つツールが増えたらツール別に持つ。entity_type は search 専用の
+# 分岐で扱う（他ツールの str 型 entity_type には触れない）。
+_LIST_ARGS = {"items", "tags", "related", "targets", "changes"}
 
 # get_by_ids の items に "decision:123" の文字列で書かれた要素を dict に直す。
 _TYPED_ID = re.compile(r"(topic|decision|activity|log|material):(\d+)")
@@ -46,7 +48,8 @@ _ITEMS_WRAP: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "add_decisions": (("topic_id", "decision", "reason"), ("title", "tags")),
 }
 
-# 書き換えでは直せない取り違えに添える、正しい呼び方（必須引数が欠けたときのみ）。
+# 書き換えでは直せない取り違えに添える、正しい呼び方。見るのは各ツールで最も欠落の多い
+# 必須引数1つだけで、他の必須引数の欠落はここでは拾わない（通常のバリデーションに任せる）。
 _USAGE: dict[str, tuple[str, str]] = {
     "get_by_ids": ("items", 'get_by_ids(items=[{"type": "decision", "id": 123}])'),
     "add_logs": ("items", 'add_logs(items=[{"topic_id": 1, "content": "..."}])'),
@@ -112,7 +115,8 @@ def _rewrite(tool: str, args: dict[str, Any]) -> None:
             value = args.pop(wrong)
             args.setdefault(right, value)
 
-    for key in _LIST_ARGS & args.keys():
+    list_keys = _LIST_ARGS | ({"entity_type"} if tool == "search" else set())
+    for key in list_keys & args.keys():
         value = args[key]
         if isinstance(value, str) and value.lstrip().startswith("["):
             try:
