@@ -61,7 +61,7 @@ async def test_entity_args_already_given_are_kept():
 @pytest.mark.parametrize(
     "tool,args,example",
     [
-        ("get_by_ids", {"ids": "[1]"}, "get_by_ids(items="),
+        ("get_by_ids", {"entity_type": "topic"}, "get_by_ids(items="),
         ("add_logs", {"topic_id": 1}, "add_logs(items="),
         ("add_logs", {"topic_id": 1, "content": "c", "flavor": "raw"}, "add_logs(items="),
         ("add_decisions", {"entity_type": "activity"}, "add_decisions(items="),
@@ -150,3 +150,42 @@ async def test_many_close_tags_are_stripped_without_blowup():
 async def test_namespaced_invoke_tag_is_stripped():
     out = await _run("answer_ask", {"answer_body": "本文</ns:parameter>\n</ns:invoke>"})
     assert out == {"answer_body": "本文"}
+
+
+@pytest.mark.asyncio
+async def test_get_by_ids_ids_alias_with_json_string_and_typed_ids():
+    out = await _run("get_by_ids", {"ids": '["decision:3321", {"type": "log", "id": 5}]'})
+    assert out == {"items": [{"type": "decision", "id": 3321}, {"type": "log", "id": 5}]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", ["add_logs", "add_decisions"])
+async def test_items_alias_and_json_string_items(tool):
+    assert await _run(tool, {"entries": '[{"topic_id": 1}]'}) == {"items": [{"topic_id": 1}]}
+
+
+@pytest.mark.asyncio
+async def test_flat_add_logs_with_json_string_tags_is_wrapped():
+    out = await _run("add_logs", {"topic_id": 1, "content": "c", "tags": '["a"]'})
+    assert out == {"items": [{"topic_id": 1, "content": "c", "tags": ["a"]}]}
+
+
+@pytest.mark.asyncio
+async def test_search_types_alias_unwraps_single_element():
+    out = await _run("search", {"query": "x", "types": '["topic"]'})
+    assert out == {"keyword": "x", "entity_type": "topic"}
+    out = await _run("search", {"keyword": "x", "entity_types": ["topic", "log"]})
+    assert out == {"keyword": "x", "entity_type": ["topic", "log"]}
+
+
+@pytest.mark.asyncio
+async def test_misc_renames():
+    assert await _run("search_tags", {"keyword": "k"}) == {"query": "k"}
+    assert await _run("get_material", {"id": "620"}) == {"material_id": "620"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", ["check_in", "update_goal", "add_material"])
+async def test_missing_required_arg_gets_usage_example(tool):
+    with pytest.raises(ToolError, match=r"正しい呼び方"):
+        await _run(tool, {"handle": "x"} if tool == "update_goal" else {})

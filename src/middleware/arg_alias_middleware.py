@@ -6,6 +6,7 @@ machine_error で繰り返し観測された取り違えだけを正しい名前
 """
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -15,8 +16,25 @@ from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 
 # ツール名 -> {取り違えた名前: 正しい名前}。正しい名前が未指定のときだけ書き換える。
 _RENAMES: dict[str, dict[str, str]] = {
-    "search": {"query": "keyword", "type": "entity_type"},
+    "search": {
+        "query": "keyword",
+        "type": "entity_type",
+        "types": "entity_type",
+        "entity_types": "entity_type",
+        "type_filter": "entity_type",
+    },
+    "search_tags": {"keyword": "query"},
+    "get_material": {"id": "material_id"},
+    "get_by_ids": {"ids": "items"},
+    "add_logs": {"entries": "items", "logs": "items"},
+    "add_decisions": {"entries": "items", "decisions": "items"},
 }
+
+# 配列を JSON 文字列のまま渡されたときに配列へ戻す引数名。
+_LIST_ARGS = {"items", "tags", "related", "targets", "changes", "entity_type"}
+
+# get_by_ids の items に "decision:123" の文字列で書かれた要素を dict に直す。
+_TYPED_ID = re.compile(r"(topic|decision|activity|log|material):(\d+)")
 
 # get_logs / get_decisions は topic_id・activity_id を entity_type + entity_id に直す。
 _ENTITY_TOOLS = {"get_logs", "get_decisions"}
@@ -35,6 +53,16 @@ _USAGE: dict[str, tuple[str, str]] = {
     "add_decisions": (
         "items",
         'add_decisions(items=[{"topic_id": 1, "decision": "...", "reason": "..."}])',
+    ),
+    "check_in": ("activity_id", "check_in(activity_id=123)"),
+    "update_goal": (
+        "goal_id",
+        'update_goal(goal_id=1, changes=[{"op": "set", "id": 10, "state": "satisfied"}])'
+        "（goal_id は get_goal(handle=...) で引く）",
+    ),
+    "add_material": (
+        "source",
+        'add_material(title="...", content="...", tags=["domain:x"], source="出典の説明")',
     ),
 }
 
@@ -83,6 +111,29 @@ def _rewrite(tool: str, args: dict[str, Any]) -> None:
         if wrong in args:
             value = args.pop(wrong)
             args.setdefault(right, value)
+
+    for key in _LIST_ARGS & args.keys():
+        value = args[key]
+        if isinstance(value, str) and value.lstrip().startswith("["):
+            try:
+                decoded = json.loads(value)
+            except ValueError:
+                continue
+            if isinstance(decoded, list):
+                args[key] = decoded
+
+    # entity_type は単一値。1要素の配列だけ中身を取り出す（複数はそのままエラーにする）。
+    entity_type = args.get("entity_type")
+    if tool == "search" and isinstance(entity_type, list) and len(entity_type) == 1:
+        args["entity_type"] = entity_type[0]
+
+    if tool == "get_by_ids" and isinstance(args.get("items"), list):
+        args["items"] = [
+            {"type": m[1], "id": int(m[2])}
+            if isinstance(v, str) and (m := _TYPED_ID.fullmatch(v.strip()))
+            else v
+            for v in args["items"]
+        ]
 
     if tool in _ENTITY_TOOLS and "entity_type" not in args and "entity_id" not in args:
         for kind in ("topic", "activity"):
