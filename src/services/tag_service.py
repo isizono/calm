@@ -6,7 +6,7 @@ from typing import Literal
 
 from src.config import TAG_NOTES_DECAY_DAYS
 from src.db import get_connection, row_to_dict
-from src.infra.session_identity import delivery_key
+from src.infra.session_identity import delivery_key, evict_for_new_key
 from src.services.decay_utils import is_decay_eligible
 
 VALID_NAMESPACES = {'', 'domain', 'intent', 'glossary', 'layer'}
@@ -1274,8 +1274,7 @@ def collect_tag_notes_for_injection(
     if effective_mark:
         with _injected_tags_lock:
             if key not in _injected_tags:
-                while len(_injected_tags) >= _INJECTED_TAGS_MAX_SESSIONS:
-                    del _injected_tags[next(iter(_injected_tags))]
+                evict_for_new_key(_injected_tags, _INJECTED_TAGS_MAX_SESSIONS)
             session_set = _injected_tags.setdefault(key, set())
             new_normal = [
                 (t, p) for t, p in zip(normal_tags, normal_parsed, strict=False)

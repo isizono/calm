@@ -15,7 +15,7 @@ from sqlite_vec import serialize_float32
 
 from src import config
 from src.db import execute_query, get_connection, get_db_path, row_to_dict
-from src.infra.session_identity import delivery_key
+from src.infra.session_identity import delivery_key, evict_for_new_key
 from src.services import embedding_service, precedent_pure
 from src.services.readable_id import strip_entity_id_inplace
 from src.services.supersede_service import (
@@ -2625,8 +2625,7 @@ def _presented_records_register(session_id: str | None, keys: list[tuple[str, in
         return
     with _presented_records_lock:
         if dkey not in _presented_records:
-            while len(_presented_records) >= _PRESENTED_RECORDS_MAX_SESSIONS:
-                del _presented_records[next(iter(_presented_records))]
+            evict_for_new_key(_presented_records, _PRESENTED_RECORDS_MAX_SESSIONS)
         _presented_records.setdefault(dkey, set()).update(keys)
 
 

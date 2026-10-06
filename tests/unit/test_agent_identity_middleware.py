@@ -11,7 +11,7 @@ import pytest
 from src.infra import session_identity
 from src.infra.session_identity import AGENT_ID_ARG, current_agent_id, delivery_key
 from src.middleware.agent_identity_middleware import AgentIdentityMiddleware
-from src.services import search_service
+from src.services import checkin_tier_service, search_service
 
 
 @pytest.fixture(autouse=True)
@@ -133,3 +133,49 @@ class TestPresentedRecordsKeying:
             session_identity.reset_current_agent_id(token)
 
         assert not search_service._presented_records_contains("parent", key)
+
+
+class TestEvictionKeepsParentEntries:
+    """上限で押し出すとき、サブエージェントのキーを先に消して親のキーを残す。"""
+
+    @pytest.fixture(autouse=True)
+    def _clear_greeted(self):
+        checkin_tier_service._greeted_sessions.clear()
+        yield
+        checkin_tier_service._greeted_sessions.clear()
+
+    def test_evicts_the_oldest_subagent_key_before_any_parent_key(self):
+        store = {"p1": True, "p2#a": True, "p3#b": True}
+
+        session_identity.evict_for_new_key(store, 3)
+
+        assert store == {"p1": True, "p3#b": True}
+
+    def test_falls_back_to_the_oldest_key_when_there_is_no_subagent_key(self):
+        store = {"p1": True, "p2": True, "p3": True}
+
+        session_identity.evict_for_new_key(store, 3)
+
+        assert store == {"p2": True, "p3": True}
+
+    def test_parent_first_call_survives_a_flood_of_subagent_keys(self):
+        limit = checkin_tier_service._GREETED_SESSIONS_MAX
+        assert checkin_tier_service._consume_first_call_flag("parent") is True
+
+        for i in range(limit * 2):
+            token = session_identity.set_current_agent_id(f"a{i}")
+            try:
+                checkin_tier_service._consume_first_call_flag("parent")
+            finally:
+                session_identity.reset_current_agent_id(token)
+
+        assert checkin_tier_service._consume_first_call_flag("parent") is False
+
+    def test_parent_only_store_still_evicts_the_oldest_session(self):
+        limit = checkin_tier_service._GREETED_SESSIONS_MAX
+        for i in range(limit):
+            checkin_tier_service._consume_first_call_flag(f"s{i}")
+
+        checkin_tier_service._consume_first_call_flag("s_new")
+
+        assert checkin_tier_service._consume_first_call_flag("s0") is True

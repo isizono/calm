@@ -124,8 +124,7 @@ def _consume_first_call_flag(session_id: str | None) -> bool:
     with _greeted_sessions_lock:
         if key in _greeted_sessions:
             return False
-        while len(_greeted_sessions) >= _GREETED_SESSIONS_MAX:
-            del _greeted_sessions[next(iter(_greeted_sessions))]
+        session_identity.evict_for_new_key(_greeted_sessions, _GREETED_SESSIONS_MAX)
         _greeted_sessions[key] = True
         return True
 

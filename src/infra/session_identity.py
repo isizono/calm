@@ -159,6 +159,9 @@ def reset_current_agent_id(token: Token[str | None]) -> None:
     _current_agent_id.reset(token)
 
 
+_DELIVERY_KEY_AGENT_SEP = "#"
+
+
 def delivery_key(session_id: str | None) -> str | None:
     """既出管理（注入済みタグ・check_in初回・差分通知の既読位置・検索の提示済み）のキー。
 
@@ -170,7 +173,23 @@ def delivery_key(session_id: str | None) -> str | None:
     if session_id is None:
         return None
     agent = current_agent_id()
-    return session_id if agent is None else f"{session_id}#{agent}"
+    return session_id if agent is None else f"{session_id}{_DELIVERY_KEY_AGENT_SEP}{agent}"
+
+
+def evict_for_new_key(store: dict, limit: int) -> None:
+    """既出管理の辞書に新しいキーを入れる前に、上限未満まで古いキーを消す。
+
+    サブエージェントのキー（delivery_key参照）が含まれていれば、その最古のものから
+    先に消す。親のキーは、サブエージェントのキーが無くなった後にだけ最古から消す。
+    サブエージェントの呼び出しが親のエントリを先に押し出さないための処理。
+    呼び出し側は対象の辞書のロックを保持してから呼ぶこと。
+    """
+    while len(store) >= limit:
+        victim = next(
+            (key for key in store if _DELIVERY_KEY_AGENT_SEP in key),
+            next(iter(store)),
+        )
+        del store[victim]
 
 
 def _get_ppid(pid: int) -> int | None:

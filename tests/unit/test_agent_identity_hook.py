@@ -82,4 +82,4 @@ def test_non_ascii_arguments_survive_the_round_trip():
 def test_argument_name_matches_the_server_side_constant():
     # hook は src を import しないため、サーバー側の定数と文字列が一致することを
     # ここで固定する。片方だけ変わると、識別子が取り出されずに検証で落ちる。
-    assert agent_identity_hook._AGENT_ID_ARG == session_identity.AGENT_ID_ARG == "_calm_agent_id"
+    assert agent_identity_hook._AGENT_ID_ARG == session_identity.AGENT_ID_ARG

@@ -18,7 +18,11 @@ from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from mcp.types import TextContent
 
 from src.db import get_connection
-from src.infra.session_identity import delivery_key, get_caller_session_id
+from src.infra.session_identity import (
+    delivery_key,
+    evict_for_new_key,
+    get_caller_session_id,
+)
 from src.services import delta_service
 from src.services.checkin_queries import checkin_scope
 
@@ -138,8 +142,7 @@ def _handle_check_in(session_key: str, result: Any, nested_key: str | None = Non
 
     with _watermarks_lock:
         if session_key not in _watermarks:
-            while len(_watermarks) >= _WATERMARKS_MAX_SESSIONS:
-                del _watermarks[next(iter(_watermarks))]
+            evict_for_new_key(_watermarks, _WATERMARKS_MAX_SESSIONS)
         _watermarks[session_key] = {
             "activity_id": activity_id,
             "decision_id": baseline["decision_id"],
