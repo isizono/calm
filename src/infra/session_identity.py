@@ -36,6 +36,7 @@ import os
 import re
 import subprocess
 import tempfile
+from contextvars import ContextVar, Token
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -134,6 +135,61 @@ def get_caller_session_id() -> str | None:
         if isinstance(stable_id, str) and stable_id.strip():
             return stable_id.strip()
     return _ephemeral_session_id()
+
+
+# サブエージェント内のCALM呼び出しに PreToolUse hook（hooks/agent_identity_hook.py）が足す引数名。
+# hook 側は標準ライブラリだけで書くため同じ文字列を持つ。値の一致は
+# tests/unit/test_agent_identity_hook.py で固定する。
+AGENT_ID_ARG = "_calm_agent_id"
+AGENT_ID_MAX_LEN = 128
+
+_current_agent_id: ContextVar[str | None] = ContextVar("calm_current_agent_id", default=None)
+
+
+def current_agent_id() -> str | None:
+    """このツール呼び出しを行ったサブエージェントの識別子。親からの呼び出しならNone。"""
+    return _current_agent_id.get()
+
+
+def set_current_agent_id(agent_id: str | None) -> Token[str | None]:
+    return _current_agent_id.set(agent_id)
+
+
+def reset_current_agent_id(token: Token[str | None]) -> None:
+    _current_agent_id.reset(token)
+
+
+_DELIVERY_KEY_AGENT_SEP = "#"
+
+
+def delivery_key(session_id: str | None) -> str | None:
+    """既出管理（注入済みタグ・check_in初回・差分通知の既読位置・検索の提示済み）のキー。
+
+    サブエージェントからの呼び出しは、親の恒久識別子に識別子を連結した別キーになる。
+    これにより、親が受け取り済みの取扱注意をサブエージェントが再配達されず、
+    サブエージェントの呼び出しが親の既読位置を動かすこともない。session_idがNone
+    （識別できない呼び出し）のときはNoneを返し、記録しない契約を保つ。
+    """
+    if session_id is None:
+        return None
+    agent = current_agent_id()
+    return session_id if agent is None else f"{session_id}{_DELIVERY_KEY_AGENT_SEP}{agent}"
+
+
+def evict_for_new_key(store: dict, limit: int) -> None:
+    """既出管理の辞書に新しいキーを入れる前に、上限未満まで古いキーを消す。
+
+    サブエージェントのキー（delivery_key参照）が含まれていれば、その最古のものから
+    先に消す。親のキーは、サブエージェントのキーが無くなった後にだけ最古から消す。
+    サブエージェントの呼び出しが親のエントリを先に押し出さないための処理。
+    呼び出し側は対象の辞書のロックを保持してから呼ぶこと。
+    """
+    while len(store) >= limit:
+        victim = next(
+            (key for key in store if _DELIVERY_KEY_AGENT_SEP in key),
+            next(iter(store)),
+        )
+        del store[victim]
 
 
 def _get_ppid(pid: int) -> int | None:

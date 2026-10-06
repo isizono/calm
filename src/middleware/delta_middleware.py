@@ -18,11 +18,15 @@ from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from mcp.types import TextContent
 
 from src.db import get_connection
-from src.infra.session_identity import get_caller_session_id
+from src.infra.session_identity import (
+    delivery_key,
+    evict_for_new_key,
+    get_caller_session_id,
+)
 from src.services import delta_service
 from src.services.checkin_queries import checkin_scope
 
-# セッション別watermark。キーはget_caller_session_id()の解決結果。Noneが
+# セッション別watermark。キーはdelivery_key(get_caller_session_id())の解決結果（サブエージェントは親と別キー）。Noneが
 # 返る呼び出しはwatermarkの読み書き自体を行わない（共有キーに相乗りすると
 # 別セッションの既読位置が混ざるため）。
 # セッション終了はこのモジュールに通知されないため、tag_service._injected_tagsと
@@ -83,7 +87,7 @@ class DeltaNotificationMiddleware(Middleware):
         # レスポンス形状変化等）が全ツール呼び出しを道連れにしないよう、
         # ベストエフォートで握りつぶす。
         try:
-            session_key = get_caller_session_id()
+            session_key = delivery_key(get_caller_session_id())
             if session_key is None:
                 return result
             tool_name = context.message.name
@@ -138,8 +142,7 @@ def _handle_check_in(session_key: str, result: Any, nested_key: str | None = Non
 
     with _watermarks_lock:
         if session_key not in _watermarks:
-            while len(_watermarks) >= _WATERMARKS_MAX_SESSIONS:
-                del _watermarks[next(iter(_watermarks))]
+            evict_for_new_key(_watermarks, _WATERMARKS_MAX_SESSIONS)
         _watermarks[session_key] = {
             "activity_id": activity_id,
             "decision_id": baseline["decision_id"],

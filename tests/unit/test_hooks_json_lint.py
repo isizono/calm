@@ -39,11 +39,14 @@ _CODEX_UNSUPPORTED_EVENTS = {"MessageDisplay", "PostToolUseFailure"}
 # $CLAUDE_CODE_SESSION_ATTENDED）前提の機構で、Codex側に対応する仕組みが無い。
 # deny_nested_bg_hook.py: 判定対象の `claude agents --json` はClaude Code CLI
 # 固有のサブコマンドで、Codexには対応するbg起動・一覧機構が無い。
+# agent_identity_hook.py: 入力の agent_id はClaude Code の Agent ツールで起動した
+# サブエージェントにだけ付く値で、Codexの入力には無いため注入する対象が生じない。
 _CODEX_UNSUPPORTED_SCRIPTS: set[str] = {
     "ask_answer_rewake_hook.py",
     "sanitize_backfill_hook.py",
     "recorder_autostart_hook.py",
     "deny_nested_bg_hook.py",
+    "agent_identity_hook.py",
 }
 
 # hooks/ 配下のスクリプトが自身の担当イベントを宣言する規約:

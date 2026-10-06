@@ -243,6 +243,14 @@ def _apply_flavor_to_snippets(items: list[dict], flavor: str) -> None:
 # MCPサーバーを作成
 mcp = FastMCP("calm", instructions=build_instructions())
 
+# サブエージェントの識別子引数を取り出す middleware を最初に登録する（最も外側に置き、
+# 後続の middleware がスキーマに無いこの引数を見ないようにする）
+from src.middleware.agent_identity_middleware import (  # noqa: E402
+    AgentIdentityMiddleware,
+)
+
+mcp.add_middleware(AgentIdentityMiddleware())
+
 # tool呼び出し中の未捕捉例外を signal_events へ自動捕捉する middleware を登録する
 from src.services.signal_middleware import SignalCaptureMiddleware  # noqa: E402
 

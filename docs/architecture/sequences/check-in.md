@@ -129,7 +129,7 @@ sequenceDiagram
 | 名前 | 型 | 必須 | 説明 |
 |---|---|---|---|
 | activity_id | int | 必須 | check-in対象アクティビティのID |
-| session_id | str | 暗黙 | `get_caller_session_id()`で自動解決（起動器の恒久識別子を優先）。tag_notes・flow_guideの「初回注入」判定に使う |
+| session_id | str | 暗黙 | `get_caller_session_id()`で自動解決（起動器の恒久識別子を優先）。tag_notes・flow_guideの「初回注入」判定に使う。サブエージェントからの呼び出しは、hookが足す識別子引数を使い、`delivery_key()`で親と別のキーになる |
 
 ### 出力（成功時）
 

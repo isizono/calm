@@ -6,6 +6,7 @@ from typing import Literal
 
 from src.config import TAG_NOTES_DECAY_DAYS
 from src.db import get_connection, row_to_dict
+from src.infra.session_identity import delivery_key, evict_for_new_key
 from src.services.decay_utils import is_decay_eligible
 
 VALID_NAMESPACES = {'', 'domain', 'intent', 'glossary', 'layer'}
@@ -1253,7 +1254,9 @@ def collect_tag_notes_for_injection(
     """
     # session_idが解決できない呼び出し（mainのMCPリクエストコンテキスト外）は
     # _injected_tagsを読み書きしない（mark=False相当）。共有キーへの相乗りはしない。
-    effective_mark = mark and session_id is not None
+    # サブエージェントからの呼び出しは親と別キーで追跡する（delivery_key参照）。
+    key = delivery_key(session_id)
+    effective_mark = mark and key is not None
     always_ns = set(always_inject_namespaces) if always_inject_namespaces else set()
 
     # always_inject対象とそれ以外を分離（パース結果も保持）
@@ -1270,10 +1273,9 @@ def collect_tag_notes_for_injection(
 
     if effective_mark:
         with _injected_tags_lock:
-            if session_id not in _injected_tags:
-                while len(_injected_tags) >= _INJECTED_TAGS_MAX_SESSIONS:
-                    del _injected_tags[next(iter(_injected_tags))]
-            session_set = _injected_tags.setdefault(session_id, set())
+            if key not in _injected_tags:
+                evict_for_new_key(_injected_tags, _INJECTED_TAGS_MAX_SESSIONS)
+            session_set = _injected_tags.setdefault(key, set())
             new_normal = [
                 (t, p) for t, p in zip(normal_tags, normal_parsed, strict=False)
                 if t not in session_set
