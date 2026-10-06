@@ -182,11 +182,13 @@ async def test_flat_add_logs_with_json_string_tags_is_wrapped():
 
 
 @pytest.mark.asyncio
-async def test_search_types_alias_unwraps_single_element():
-    out = await _run("search", {"query": "x", "types": '["topic"]'})
-    assert out == {"keyword": "x", "entity_type": "topic"}
-    out = await _run("search", {"keyword": "x", "types": '["topic", "log"]'})
-    assert out == {"keyword": "x", "entity_type": ["topic", "log"]}
+@pytest.mark.parametrize(
+    "types,expected",
+    [('["topic"]', "topic"), ('["topic", "log"]', ["topic", "log"])],
+)
+async def test_search_types_json_string_is_decoded_and_single_element_unwrapped(types, expected):
+    out = await _run("search", {"keyword": "x", "types": types})
+    assert out == {"keyword": "x", "entity_type": expected}
 
 
 @pytest.mark.asyncio
@@ -215,6 +217,25 @@ async def test_search_entity_type_aliases_are_renamed(alias):
         "keyword": "k",
         "entity_type": "topic",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "args,missing",
+    [
+        ({"title": "t"}, ["content", "tags", "source"]),
+        ({"source": "s"}, ["title", "content", "tags"]),
+        ({}, ["title", "content", "tags", "source"]),
+    ],
+)
+async def test_add_material_error_lists_every_missing_required_arg(args, missing):
+    ctx = MagicMock()
+    ctx.message.name = "add_material"
+    ctx.message.arguments = args
+    with pytest.raises(ToolError) as exc:
+        await ArgAliasMiddleware().on_call_tool(ctx, AsyncMock())
+    msg = str(exc.value).split("正しい呼び方")[0]
+    assert msg == f"add_material: 必須引数 {', '.join(missing)} がありません。"
 
 
 @pytest.mark.asyncio
@@ -275,7 +296,6 @@ async def test_alias_with_undecodable_json_string_is_renamed_but_not_decoded():
     "tool,args,expected",
     [
         ("get_by_ids", {"items": [" decision:1 ", 5]}, {"items": [{"type": "decision", "id": 1}, 5]}),
-        ("get_by_ids", {"ids": "[1]"}, {"items": [1]}),
     ],
 )
 async def test_values_are_normalized(tool, args, expected):

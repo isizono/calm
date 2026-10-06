@@ -127,8 +127,9 @@ def _rewrite(tool: str, args: dict[str, Any]) -> None:
     for wrong, right in _RENAMES.get(tool, {}).items():
         if wrong in args:
             value = args.pop(wrong)
-            # 正しい名前が直接渡されていればそれを優先する。別名同士で値が食い違うときは
-            # どちらかを黙って捨てず、エラーにする。
+            # 正しい名前が直接渡されていれば、別名の値が違ってもそれを優先して別名を捨てる
+            # （正しい名前が書けている呼び出しは意図が明確なため）。別名同士で値が
+            # 食い違うときは、どちらが意図か決められないのでエラーにする。
             if right in renamed and _comparable(args[right]) != _comparable(value):
                 raise ToolError(
                     f"{tool}: {renamed[right]} と {wrong} は同じ引数 {right} の別名で、"
