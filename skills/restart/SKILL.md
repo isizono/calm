@@ -28,7 +28,11 @@ uv run --no-sync --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROO
 
 ## 直後
 
-既存のセッション（bgを含む）は再接続の操作なしでつながり直すため、`/mcp` の再接続や bg の stop→respawn は要らない。呼び出しが固まったセッションがあれば、そのセッションの bg だけ `claude stop <id>` で止め、`claude respawn <id>` で会話を引き継いだまま起こし直す（依頼文の再送は不要）。respawnで短い参照(id)が変わることがあるので、`SendMessage` は新しい参照へ「`get_config` を呼んで疎通を確認して」と伝える。`claude stop` がauto modeのclassifierに止められたら、迂回せずユーザーに `! claude stop <id>` を頼む。
+既存のセッション（bgを含む）は通常、再接続の操作なしでつながり直すため、`/mcp` の再接続や bg の stop→respawn は要らない。呼び出しが固まったセッションがあったときだけ、次のとおり対処する（固まったかどうかの見分け方は末尾の節）。
+
+- 窓口（対話セッション）: そのセッションで `/mcp` からreconnectする。直らなければそのセッションを再起動する
+- bg: `claude stop <id>` で止め、`claude respawn <id>` で会話を引き継いだまま起こし直す（依頼文の再送は不要）。respawnで短い参照(id)が変わることがあるので、`SendMessage` は新しい参照へ「`get_config` を呼んで疎通を確認して」と伝える。`claude stop` がauto modeのclassifierに止められたら、迂回せずユーザーに `! claude stop <id>` を頼む
+- 起こし直したbgがorchの子なら、そのorchの窓口へ `SendMessage` で「bgを起こし直した」と伝える（窓口の説明に書かれたbg一覧を直すため）
 
 ## 結果の報告
 
@@ -52,4 +56,4 @@ CALMのツールが通るのを確かめてから、退避してあった分を�
 
 ## 固まった接続の見分け方
 
-再起動の前からいた接続は、古いサーバーを掴んだままのことがある。エラー文言がauto modeのclassifierの拒否のように見えても、実際は古いサーバーへの接続が固まっているだけのことがある。`--status` の `mcp_server.started_at` が今回の再起動時刻より前なら、その接続は古いサーバーを掴んだままだと分かる。
+自動でつながり直さなかった場合の例外として、再起動の前からいた接続が古いサーバーを掴んだままのことがある（対処は「直後」の節）。エラー文言がauto modeのclassifierの拒否のように見えても、実際は古いサーバーへの接続が固まっているだけのことがある。`--status` の `mcp_server.started_at` が今回の再起動時刻より前なら、その接続は古いサーバーを掴んだままだと分かる。
