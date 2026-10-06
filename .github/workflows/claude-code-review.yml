@@ -14,7 +14,7 @@ jobs:
   claude-review:
     # fork PRではsecretsが配布されずOIDCも無効化されるため認証手段がなく必ず失敗する。
     # fork PRをレビューしたい場合はworkflow_dispatchからPR番号を指定して手動起動する。詳細: #645
-    # 手動起動のcheckoutは起動時の--refの中身になる。fork PRはデフォルトブランチから起動し、fork由来のコードをsecretsのある環境に取り込まない。
+    # 手動起動のcheckoutは起動時の--refの中身になる。fork PRはデフォルトブランチから起動し、fork由来のコードをsecretsのある環境に取り込まない。ただしPRのdiffはエージェントに読ませるため、起動前にPR内容を確認すること。
     # draft PRは除外する。workflow_dispatchにはpull_requestコンテキストが無いため別扱いにする。
     if: github.event_name == 'workflow_dispatch' || (!github.event.pull_request.head.repo.fork && !github.event.pull_request.draft)
 
@@ -45,6 +45,7 @@ jobs:
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+            EVENT: ${{ github.event_name }}
 
             このPRをレビューして、以下の観点でフィードバックしてください：
             - コード品質とベストプラクティス
@@ -62,7 +63,7 @@ jobs:
 
             ### チェックアウトの状態
 
-            workflow_dispatchで起動された場合、作業ディレクトリは起動時の--refの中身であり、PRのheadとは限らない（fork PRはデフォルトブランチから起動する）。変更後の内容は `gh pr diff` で読むこと。
+            workflow_dispatchで起動された場合、作業ディレクトリは起動時の--refの中身であり、PRのheadとは限らない（fork PRはデフォルトブランチから起動する）。変更後の内容は `gh pr diff` で読むこと。`Read`や`Grep`で見えるのは起動refの内容であり、PRで追加・変更されたファイルが見つからないことを根拠に指摘してはいけない。
 
             ### コードを読んで確認してから指摘すること
 
