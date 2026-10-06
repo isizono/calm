@@ -181,6 +181,40 @@ class TestUpdateTagCanonical:
         finally:
             conn.close()
 
+    @pytest.mark.parametrize("blank", [" ", "\t", "\u3000"])
+    def test_unset_canonical_with_blank_string(self, temp_db, blank):
+        """空白のみのcanonicalでもDATABASE_ERRORにならずエイリアス解除されること"""
+        add_topic(title="T", description="D", tags=["domain:BE", "prm"])
+        update_tag("prm", canonical="domain:BE")
+
+        result = update_tag("prm", canonical=blank)
+        assert "error" not in result
+        assert result["canonical"] is None
+
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT canonical_id FROM tags WHERE namespace = '' AND name = 'prm'"
+            ).fetchone()
+            assert row["canonical_id"] is None
+        finally:
+            conn.close()
+
+    @pytest.mark.parametrize("blank", ["", " ", "\u3000"])
+    def test_unset_canonical_on_unknown_tag_is_not_found(self, temp_db, blank):
+        """存在しないタグの解除は、空文字でも空白のみでもNOT_FOUNDになること"""
+        result = update_tag("nonexistent", canonical=blank)
+        assert result["error"]["code"] == "NOT_FOUND"
+
+    @pytest.mark.parametrize("blank", ["", " ", "\u3000"])
+    def test_unset_canonical_on_archived_tag_succeeds(self, temp_db, blank):
+        """退役タグの解除は、空文字でも空白のみでも成功すること"""
+        add_topic(title="T", description="D", tags=["domain:BE", "old"])
+        update_tag("old", archived=True)
+
+        result = update_tag("old", canonical=blank)
+        assert result == {"tag": "old", "canonical": None, "updated": True}
+
     def test_unset_canonical(self, temp_db):
         """canonical=""でエイリアス解除されること"""
         add_topic(title="T", description="D", tags=["domain:BE", "prm"])

@@ -8,7 +8,7 @@ import socket
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, get_args
+from typing import Literal, cast, get_args
 
 from fastmcp import Context, FastMCP
 from starlette.middleware import Middleware
@@ -181,7 +181,7 @@ _FlavorArg = Literal["raw", "internal", "readable"]
 _VALID_FLAVORS = get_args(_FlavorArg)
 
 
-def _normalize_flavor(flavor: str | None) -> str:
+def _normalize_flavor(flavor: str | None) -> citation_renderer.Flavor:
     """flavor 引数を検証し、未指定 (None) の場合は既定値 "internal" を返す。"""
     if flavor is None:
         return citation_renderer.DEFAULT_FLAVOR
@@ -189,13 +189,13 @@ def _normalize_flavor(flavor: str | None) -> str:
         raise ValueError(
             f"Invalid flavor {flavor!r}; must be one of {_VALID_FLAVORS}"
         )
-    return flavor
+    return cast(citation_renderer.Flavor, flavor)
 
 
 def _apply_flavor_to_items(
     items: list[dict],
     entity_type: str,
-    flavor: str,
+    flavor: citation_renderer.Flavor,
     id_key: str = "id",
     attach_citations: bool = True,
 ) -> None:
@@ -213,7 +213,7 @@ def _apply_flavor_to_items(
 def _apply_flavor_to_single(
     item: dict,
     entity_type: str,
-    flavor: str,
+    flavor: citation_renderer.Flavor,
     id_key: str = "id",
     attach_citations: bool = True,
 ) -> None:
@@ -227,7 +227,7 @@ def _apply_flavor_to_single(
         )
 
 
-def _apply_flavor_to_snippets(items: list[dict], flavor: str) -> None:
+def _apply_flavor_to_snippets(items: list[dict], flavor: citation_renderer.Flavor) -> None:
     """検索結果 snippet 群に raw 境界調整 → flavor 展開を適用 (in-place)。"""
     if not items or flavor == "raw":
         return
@@ -242,6 +242,12 @@ def _apply_flavor_to_snippets(items: list[dict], flavor: str) -> None:
 
 # MCPサーバーを作成
 mcp = FastMCP("calm", instructions=build_instructions())
+
+# 処理中リクエスト数を数える middleware（シャットダウンガード用）。全 middleware を
+# 包むよう最初に登録する
+from src.infra.inflight import InflightMiddleware, shutdown_when_idle  # noqa: E402
+
+mcp.add_middleware(InflightMiddleware())
 
 # サブエージェントの識別子引数を取り出す middleware を最初に登録する（最も外側に置き、
 # 後続の middleware がスキーマに無いこの引数を見ないようにする）
@@ -615,7 +621,7 @@ def pull_precedents(
     return result
 
 
-def _apply_flavor_to_pull_precedents_result(result: dict, flavor: str) -> None:
+def _apply_flavor_to_pull_precedents_result(result: dict, flavor: citation_renderer.Flavor) -> None:
     """pull_precedents レスポンスの各セクションに flavor 展開を適用する (in-place)。
 
     full decision の decision/reason/title は citations 展開 + citations_in/out 付与、
@@ -896,7 +902,7 @@ def update_tag(
     以降tagで記録・検索するとcanonical側のタグIDで解決される。
     設定時に既存の紐付け（topic_tags等4テーブル）をcanonical側に付け替える。
     この付け替えは設定時の1回のみで、canonical上書き時に旧付け替え分は戻らない。
-    canonical=""で解除。連鎖（エイリアスのエイリアス）は禁止。
+    canonical=""（空白のみも同じ）で解除。連鎖（エイリアスのエイリアス）は禁止。
     notes付きタグはエイリアスにできない（先にnotesを除去すること）。
     archivedなタグをcanonical先に指定する、またはarchivedなタグ自身をcanonical化する
     ことはできない（ARCHIVED_CANONICAL_INVALID）。
@@ -923,7 +929,7 @@ def update_tag(
     Args:
         tag: 対象タグ（例: "domain:calm", "hooks"）
         notes: 教訓・運用ルールのテキスト（全文置換）
-        canonical: エイリアス先タグ（""で解除）
+        canonical: エイリアス先タグ（""または空白のみで解除）
         rename: 新しいタグ名（例: "domain:hooks"）
         description: タグの短い説明文（最大100文字）
         archived: Trueで退役、Falseで解除
@@ -1615,7 +1621,7 @@ def check_in(
     return _finalize_checkin_result(result, flavor)
 
 
-def _finalize_checkin_result(result: dict, flavor: str) -> dict:
+def _finalize_checkin_result(result: dict, flavor: citation_renderer.Flavor) -> dict:
     """check_in結果の最終化: flavor適用の直後に全体予算を適用する（共通の最終処理）。
 
     check_inツールとadd_activity(check_in=True)の両方から呼ぶ。flavor適用は
@@ -1629,7 +1635,7 @@ def _finalize_checkin_result(result: dict, flavor: str) -> dict:
     return result
 
 
-def _apply_flavor_to_check_in_result(result: dict, flavor: str) -> None:
+def _apply_flavor_to_check_in_result(result: dict, flavor: citation_renderer.Flavor) -> None:
     """check_in レスポンス（tier形: anchor/control/context/catalog/env）の
     各セクションに flavor 展開を適用する (in-place)。
 
@@ -1678,7 +1684,7 @@ def _apply_flavor_to_check_in_result(result: dict, flavor: str) -> None:
         _apply_flavor_to_goal_block(control.get("goal"), flavor, conn)
 
 
-def _apply_flavor_to_pinned(pinned: object, flavor: str, conn) -> None:
+def _apply_flavor_to_pinned(pinned: object, flavor: citation_renderer.Flavor, conn) -> None:
     """pinnedセクション（decisions/logs/materials/topics/activities）にflavorを適用する
     (in-place)。旧実装ではpinnedにflavorが未適用のまま返っていた欠落を埋める。
     """
@@ -1710,7 +1716,7 @@ def _apply_flavor_to_pinned(pinned: object, flavor: str, conn) -> None:
             act["title"] = citation_renderer.expand(act["title"], flavor, conn)
 
 
-def _apply_flavor_to_goal_block(goal_block: object, flavor: str, conn) -> None:
+def _apply_flavor_to_goal_block(goal_block: object, flavor: citation_renderer.Flavor, conn) -> None:
     """goalブロックの束縛先タイトル(remaining/terminal内のbound文字列)と
     open_questionsのtitleにflavorを適用する(in-place)。
 
@@ -1732,7 +1738,7 @@ def _apply_flavor_to_goal_block(goal_block: object, flavor: str, conn) -> None:
                 item["title"] = citation_renderer.expand(item["title"], flavor, conn)
 
 
-def _flavor_snippet(item: dict, flavor: str, conn) -> None:
+def _flavor_snippet(item: dict, flavor: citation_renderer.Flavor, conn) -> None:
     """item dict 内の snippet / title フィールドに flavor を適用する (in-place)。"""
     if not isinstance(item, dict) or flavor == "raw":
         return
@@ -3326,19 +3332,42 @@ if __name__ == "__main__":
             on_session_removed=lambda sid, reason: session_ledger_service.mark_ended(sid, reason),
         )
 
-        def _shutdown_server():
+        def _shutdown_server() -> bool:
             """ウォッチドッグから呼ばれるシャットダウンハンドラ
+
+            処理中のMCPリクエストが無いときだけSIGINTを送る。待ち上限内に
+            捌けなければ送らずFalseを返す。
 
             os.kill(os.getpid(), signal.SIGINT)はWindowsではTerminateProcess
             相当になりfinallyのrelease()が走らない。signal.raise_signalは
             プロセス内にシグナルを送る標準の手段で、全OSでPythonのシグナル
             ハンドラ経由の正常終了経路に乗る。
             """
-            logger.info("Shutdown triggered by watchdog, sending SIGINT")
-            signal.raise_signal(signal.SIGINT)
+            def _send():
+                logger.info("Shutdown triggered by watchdog, sending SIGINT")
+                signal.raise_signal(signal.SIGINT)
+
+            return shutdown_when_idle(_send)
 
         _session_manager.set_shutdown_callback(_shutdown_server)
         _session_manager.start_watchdog()
+
+        # ファイル陳腐化検知ウォッチドッグ（プラグイン更新後に古いコードで動き続けない
+        # ため）。session_managerとは独立したスレッド・独立した判定で動かす。
+        # CALM_AUTO_SHUTDOWN_SEC=0 で自動停止を無効化している場合は起動しない。
+        from src.infra.staleness_watchdog import StalenessWatchdog
+
+        if _session_manager.is_auto_shutdown_disabled:
+            logger.info(
+                "Auto-shutdown disabled (CALM_AUTO_SHUTDOWN_SEC=0), "
+                "skipping staleness watchdog start"
+            )
+        else:
+            _staleness_watchdog = StalenessWatchdog(
+                project_root=_fixed_root,
+                shutdown_callback=_shutdown_server,
+            )
+            _staleness_watchdog.start()
 
         try:
             _start_embedding_warmup()
