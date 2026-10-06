@@ -14,8 +14,13 @@ mode値が不正のいずれも mode='off' 相当としてfail-open（何も出�
 サブエージェント発（agent_type付き）の呼び出しでは、UserPromptSubmit・
 PostToolUseFailureのいずれも配達を止める（実行直前の配達は続ける。書き込みを
 禁止されたサブエージェントに促しを届けても実行できないため）。UserPromptSubmit
-では、agent_typeの有無に関わらず、プロンプトが人間の発話でないターン
-（hooks/turn_origin.py参照）のときも発話タイミングの配達を止める。
+では、プロンプトが人間の発話でないターン（hooks/turn_origin.py参照）のとき
+発話タイミングの配達だけを止める。
+
+outputタイミング（Claude自身の直前の出力文への照合）もUserPromptSubmitで扱う。
+前回照合した位置以降にtranscriptへ追記されたassistantのtextブロックだけを読み、
+既読位置（byte_offset）だけをDBに持つ。transcriptの本文は保存しない。人間の
+発話でないターン（bg・orchへの通知や中継）にも届ける。
 """
 from __future__ import annotations
 
@@ -44,6 +49,11 @@ MAX_SHOWN = 3
 UTTERANCE_BUDGET_CHARS = 1000
 TOOL_FAIL_BUDGET_CHARS = 600
 PRE_TOOL_BUDGET_CHARS = 600
+OUTPUT_BUDGET_CHARS = 600
+# 同じセッションで同じoutputエントリを再配達するまでに空けるUserPromptSubmitの回数。
+# 機構や教訓そのものを話題にするセッションで、自分の言及に毎ターン反応して
+# 雑音になるのを抑える。
+OUTPUT_COOLDOWN_TURNS = 5
 
 BOOTSTRAP_MESSAGE = (
     "躓いた・エラーに遭遇したら、get_feedback_entriesで既存を確かめ、"
@@ -152,6 +162,114 @@ def _notify_render(entry: sqlite3.Row) -> str:
 
 
 # ---------------------------------------------------------------------------
+# output（transcript差分の照合）
+# ---------------------------------------------------------------------------
+
+
+def _read_new_assistant_texts(path: str, offset: int) -> tuple[list[str], int]:
+    """offset以降に追記された、改行まで読めた行のassistantのtextブロックを返す。
+
+    戻り値: (textブロックの本文の一覧, 新しいoffset)。書きかけの末尾行は
+    offsetを進めず次回に回す。JSONとして読めない行は読み飛ばす（offsetは進める）。
+    thinking・tool_use・tool_result・user行は見ない。ファイルが読めない・offsetより
+    小さくなっていた場合は現在の末尾へ位置を取り直し、本文は返さない。
+    """
+    try:
+        size = Path(path).stat().st_size
+        if offset > size:
+            return [], size
+        with open(path, "rb") as f:
+            f.seek(offset)
+            data = f.read()
+    except OSError:
+        return [], offset
+
+    end = data.rfind(b"\n") + 1
+    texts: list[str] = []
+    for raw_line in data[:end].split(b"\n"):
+        if not raw_line.strip():
+            continue
+        try:
+            obj = json.loads(raw_line.decode("utf-8", errors="replace"))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict) or obj.get("type") != "assistant":
+            continue
+        message = obj.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
+                texts.append(block["text"])
+    return texts, offset + end
+
+
+def _output_candidates(conn: sqlite3.Connection, session_id: str, transcript_path: str) -> list[sqlite3.Row]:
+    """今回のUserPromptSubmitで届けるoutputエントリを返す。
+
+    既読位置と通し番号は、エントリの有無・当たりの有無に関わらず毎回進める
+    （後からエントリが作られたときに、過去の発言の山へ一斉に当たらないため）。
+    初めて見るセッションは現在の末尾から始める（再開したセッションの過去分を
+    掘り返さない）。
+    """
+    row = conn.execute(
+        "SELECT byte_offset, turn_seq FROM feedback_output_cursor WHERE session_id = ?", (session_id,)
+    ).fetchone()
+    turn_seq = (row["turn_seq"] if row else 0) + 1
+
+    entries = _fetch_entries(conn, strength="notify", timing="output")
+    if row is None or not entries:
+        # ponytail: 本文を読まず現在のファイル末尾へ進める。書きかけの行の途中に
+        # 着地しうるが、次回その行はJSONとして読めず読み飛ばされるだけで済む。
+        try:
+            new_offset = Path(transcript_path).stat().st_size
+        except OSError:
+            new_offset = row["byte_offset"] if row else 0
+        texts: list[str] = []
+    else:
+        texts, new_offset = _read_new_assistant_texts(transcript_path, row["byte_offset"])
+
+    conn.execute(
+        """INSERT INTO feedback_output_cursor (session_id, byte_offset, turn_seq)
+           VALUES (?, ?, ?)
+           ON CONFLICT (session_id) DO UPDATE SET
+               byte_offset = excluded.byte_offset,
+               turn_seq = excluded.turn_seq,
+               updated_at = CURRENT_TIMESTAMP""",
+        (session_id, new_offset, turn_seq),
+    )
+    if not texts:
+        return []
+
+    candidates = []
+    for entry in entries:
+        cooldown = conn.execute(
+            "SELECT last_turn_seq FROM feedback_output_cooldowns WHERE session_id = ? AND entry_id = ?",
+            (session_id, entry["id"]),
+        ).fetchone()
+        if cooldown is not None and turn_seq - cooldown["last_turn_seq"] < OUTPUT_COOLDOWN_TURNS:
+            continue
+        if any(_matches(entry, timing="output", output_text=text) for text in texts):
+            candidates.append(entry)
+    return candidates
+
+
+def _mark_output_delivered(conn: sqlite3.Connection, session_id: str, shown: list[tuple[sqlite3.Row, str]]) -> None:
+    for entry, _text in shown:
+        conn.execute(
+            "UPDATE feedback_entries SET delivered_count = delivered_count + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (entry["id"],),
+        )
+        conn.execute(
+            """INSERT INTO feedback_output_cooldowns (session_id, entry_id, last_turn_seq)
+               VALUES (?, ?, (SELECT turn_seq FROM feedback_output_cursor WHERE session_id = ?))
+               ON CONFLICT (session_id, entry_id) DO UPDATE SET last_turn_seq = excluded.last_turn_seq""",
+            (session_id, entry["id"], session_id),
+        )
+
+
+# ---------------------------------------------------------------------------
 # UserPromptSubmit
 # ---------------------------------------------------------------------------
 
@@ -167,9 +285,10 @@ def _handle_user_prompt_submit(harness, event: dict) -> None:
     prompt = event.get("prompt")
     if not isinstance(prompt, str):
         prompt = ""
-    if is_nonhuman_turn(prompt):
-        harness.emit_empty()
-        return
+    nonhuman = is_nonhuman_turn(prompt)
+    transcript_path = event.get("transcript_path")
+    if not isinstance(transcript_path, str):
+        transcript_path = ""
     prompt_id = event.get("prompt_id") or ""
 
     conn = _connect()
@@ -181,21 +300,36 @@ def _handle_user_prompt_submit(harness, event: dict) -> None:
             harness.emit_empty()
             return
 
-        entries = _fetch_entries(conn, strength="notify", timing="utterance")
-        candidates = [
-            e for e in entries
-            if not _turn_marked(conn, session_id, prompt_id, e["id"])
-            and _matches(e, timing="utterance", prompt_text=prompt)
-        ]
-        shown = _select_shown(candidates, budget_chars=UTTERANCE_BUDGET_CHARS, render=_notify_render)
-        if not shown:
+        shown: list[tuple[sqlite3.Row, str]] = []
+        if not nonhuman:
+            entries = _fetch_entries(conn, strength="notify", timing="utterance")
+            candidates = [
+                e for e in entries
+                if not _turn_marked(conn, session_id, prompt_id, e["id"])
+                and _matches(e, timing="utterance", prompt_text=prompt)
+            ]
+            shown = _select_shown(candidates, budget_chars=UTTERANCE_BUDGET_CHARS, render=_notify_render)
+
+        shown_output: list[tuple[sqlite3.Row, str]] = []
+        if transcript_path:
+            output_candidates = _output_candidates(conn, session_id, transcript_path)
+            shown_output = _select_shown(output_candidates, budget_chars=OUTPUT_BUDGET_CHARS, render=_notify_render)
+
+        if shown:
+            _deliver(conn, session_id, prompt_id, shown)
+        if shown_output:
+            _mark_output_delivered(conn, session_id, shown_output)
+        conn.commit()
+        if not shown and not shown_output:
             harness.emit_empty()
             return
 
-        _deliver(conn, session_id, prompt_id, shown)
-        conn.commit()
-        body = "過去の躓きから学んだ注意点:\n" + "\n".join(text for _, text in shown)
-        harness.emit_additional_context(_wrap(body))
+        sections = []
+        if shown:
+            sections.append("過去の躓きから学んだ注意点:\n" + "\n".join(text for _, text in shown))
+        if shown_output:
+            sections.append("直前の自分の発言に関連する過去の躓き:\n" + "\n".join(text for _, text in shown_output))
+        harness.emit_additional_context(_wrap("\n".join(sections)))
     except sqlite3.Error:
         harness.emit_empty()
     finally:

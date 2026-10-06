@@ -2,8 +2,8 @@
 watch-tags: domain:calm, domain:cc-memory
 watch-direction: true
 watch-migrations: true
-last-synced: 2026-09-23
-last-synced-migration: 0079
+last-synced: 2026-10-07
+last-synced-migration: 0090
 -->
 
 # CALM DBスキーマ v0
@@ -619,14 +619,17 @@ activityとgoalの紐づけ、または不要印（このactivityには終了条
 フィードバック機構（Claudeが躓きを踏まえて自分に知見を配達する仕組み）のエントリ本体。名前（`name`、英小文字・数字・ハイフンのみでUNIQUE）で引く。
 
 補足:
-- `strength`（notify/block）と`timing`（utterance/tool_fail/pre_tool）はCHECKで双方向対応させる（`strength='block'`は必ず`timing='pre_tool'`）。block強度は実行直前ブロック以外に配達経路を持たないため
+- `strength`（notify/block）と`timing`（utterance/tool_fail/pre_tool/output）はCHECKで双方向対応させる（`strength='block'`は必ず`timing='pre_tool'`）。block強度は実行直前ブロック以外に配達経路を持たないため
 - `condition_json`は`{"tool": str|null, "all": [{"field","op","value"}, ...]}`形状のJSON文字列。評価規則（フィールドの予約名・ドットパス解決・正規表現/長さ比較）はDB制約では持たず`src/services/feedback_rules.py`で検証・評価する
 - `deleted_at`は論理削除。物理削除しないため`feedback_notes`・カウンタ（delivered_count/overridden_count）は削除後も保持される
 - `read_mark`（変更前に必ず最新ノートを読ませる仕組み）はDBカラムではなく、`get_feedback_entries`が返す`MAX(feedback_notes.id)`をアプリ層で都度計算する形で実現している
 
-関連 migration: 0079_add_feedback_entries
+- `timing='output'`はClaude自身の直前の出力文（前回照合した位置以降にtranscriptへ追記されたassistantのtextブロック）への照合で、次のUserPromptSubmitで届く。`body`のDB上限は100字だが、新規作成と本文を変える更新にはサービス層が50字の上限を掛ける（上限導入前の既存エントリは本文を書き換えるまでそのまま通る）
+- `feedback_output_cursor`（セッションごとのtranscript既読位置byte_offsetとUserPromptSubmitの通し番号。本文は保存しない）と`feedback_output_cooldowns`（セッション×エントリごとの直近配達時の通し番号。同じエントリの自己発火を抑える）が補助する
 
-カラム一覧・インデックス: `db-schema-tables.md` の `feedback_entries` 節参照。
+関連 migration: 0079_add_feedback_entries, 0090_feedback_output_timing
+
+カラム一覧・インデックス: `db-schema-tables.md` の `feedback_entries`・`feedback_output_cursor`・`feedback_output_cooldowns` 節参照。
 
 ### 3.33 feedback_notes
 

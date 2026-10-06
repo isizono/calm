@@ -17,7 +17,7 @@ MAX_REGEX_VALUE_LEN = 200
 MAX_EVAL_TEXT_LEN = 20_000
 
 _VALID_OPS = ("regex", "len_gt")
-_VALID_TIMINGS = ("utterance", "tool_fail", "pre_tool")
+_VALID_TIMINGS = ("utterance", "tool_fail", "pre_tool", "output")
 
 # entryの行を`e`として持つクエリからの相関サブクエリとして書く
 # （呼び出し側は必ず `FROM feedback_entries e` で問い合わせること）。
@@ -89,8 +89,8 @@ def validate_condition(condition: dict, *, strength: str, timing: str) -> dict:
     if tool is not None:
         if not isinstance(tool, str) or not tool.strip():
             raise ConditionError("tool は非空文字列またはnull")
-    if timing == "utterance" and tool is not None:
-        raise ConditionError("timing='utterance' の tool は null 固定")
+    if timing in ("utterance", "output") and tool is not None:
+        raise ConditionError(f"timing='{timing}' の tool は null 固定")
 
     raw_clauses = condition.get("all", [])
     if not isinstance(raw_clauses, list) or len(raw_clauses) > MAX_CLAUSES:
@@ -105,6 +105,8 @@ def validate_condition(condition: dict, *, strength: str, timing: str) -> dict:
             raise ConditionError("field は非空文字列")
         if timing == "utterance" and field != "prompt":
             raise ConditionError("timing='utterance' の field は 'prompt' 固定")
+        if timing == "output" and field != "text":
+            raise ConditionError("timing='output' の field は 'text' 固定")
         if op not in _VALID_OPS:
             raise ConditionError(f"op は {_VALID_OPS} のいずれか")
         if op == "regex":
@@ -152,10 +154,13 @@ def _resolve_field_text(
     tool_input: dict | None,
     error_text: str | None,
     prompt_text: str | None,
+    output_text: str | None,
 ) -> str | None:
     """フィールド名を実際の評価対象テキストへ解決する。該当なしはNone。"""
     if timing == "utterance":
         return prompt_text if field == "prompt" else None
+    if timing == "output":
+        return output_text if field == "text" else None
     if timing == "tool_fail" and field == "error":
         return error_text
     return _resolve_dot_path(tool_input, field)
@@ -168,6 +173,7 @@ def _evaluate_clause(
     tool_input: dict | None,
     error_text: str | None,
     prompt_text: str | None,
+    output_text: str | None,
 ) -> bool:
     text = _resolve_field_text(
         clause["field"],
@@ -175,6 +181,7 @@ def _evaluate_clause(
         tool_input=tool_input,
         error_text=error_text,
         prompt_text=prompt_text,
+        output_text=output_text,
     )
     if text is None:
         return False
@@ -197,6 +204,7 @@ def evaluate_condition(
     tool_input: dict | None = None,
     error_text: str | None = None,
     prompt_text: str | None = None,
+    output_text: str | None = None,
 ) -> bool:
     """正規化済みcondition（validate_conditionの戻り値と同じ形状）を実データに対して評価する。
 
@@ -208,7 +216,7 @@ def evaluate_condition(
     """
     tool = condition.get("tool")
     if tool is not None:
-        if timing == "utterance" or tool_name != tool:
+        if timing in ("utterance", "output") or tool_name != tool:
             return False
 
     for clause in condition.get("all", []):
@@ -218,6 +226,7 @@ def evaluate_condition(
             tool_input=tool_input,
             error_text=error_text,
             prompt_text=prompt_text,
+            output_text=output_text,
         ):
             return False
     return True

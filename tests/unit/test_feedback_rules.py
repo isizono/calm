@@ -336,3 +336,24 @@ class TestMaintenanceHint:
         assert "未処理の躓き1件" in lines[1]
         assert not result.startswith("\n")
         assert not result.endswith("\n")
+
+
+class TestOutputTiming:
+    _TEXT_COND = {"tool": None, "all": [{"field": "text", "op": "regex", "value": "既に記録"}]}
+
+    def test_valid_output_condition_accepted(self):
+        assert validate_condition(self._TEXT_COND, strength="notify", timing="output")["tool"] is None
+
+    def test_output_tool_non_null_rejected(self):
+        with pytest.raises(ConditionError):
+            validate_condition({"tool": "Bash", "all": []}, strength="notify", timing="output")
+
+    def test_output_field_must_be_text(self):
+        cond = {"tool": None, "all": [{"field": "prompt", "op": "len_gt", "value": 0}]}
+        with pytest.raises(ConditionError):
+            validate_condition(cond, strength="notify", timing="output")
+
+    def test_evaluates_against_output_text_only(self):
+        assert evaluate_condition(self._TEXT_COND, timing="output", output_text="これは既に記録済み")
+        assert not evaluate_condition(self._TEXT_COND, timing="output", output_text="無関係")
+        assert not evaluate_condition(self._TEXT_COND, timing="output", prompt_text="既に記録")

@@ -2572,6 +2572,7 @@ paths:
                     - utterance
                     - tool_fail
                     - pre_tool
+                    - output
                     type: string
                   - type: 'null'
                   default: null
