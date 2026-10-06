@@ -14,7 +14,7 @@ jobs:
   claude-review:
     # fork PRではsecretsが配布されずOIDCも無効化されるため認証手段がなく必ず失敗する。
     # fork PRをレビューしたい場合はworkflow_dispatchからPR番号を指定して手動起動する。詳細: #645
-    # checkoutは常にデフォルトブランチ。fork由来のコードをsecretsのある環境に取り込まないため、PRのheadは取得しない。
+    # 手動起動のcheckoutは起動時の--refの中身になる。fork PRはデフォルトブランチから起動し、fork由来のコードをsecretsのある環境に取り込まない。
     # draft PRは除外する。workflow_dispatchにはpull_requestコンテキストが無いため別扱いにする。
     if: github.event_name == 'workflow_dispatch' || (!github.event.pull_request.head.repo.fork && !github.event.pull_request.draft)
 
@@ -62,7 +62,7 @@ jobs:
 
             ### チェックアウトの状態
 
-            作業ディレクトリはPRのheadではなくデフォルトブランチである。変更後の内容は `gh pr diff` で読むこと。`Read`や`Grep`で読めるのは変更前の既存コードである。
+            workflow_dispatchで起動された場合、作業ディレクトリは起動時の--refの中身であり、PRのheadとは限らない（fork PRはデフォルトブランチから起動する）。変更後の内容は `gh pr diff` で読むこと。
 
             ### コードを読んで確認してから指摘すること
 
