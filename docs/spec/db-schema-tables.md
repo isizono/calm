@@ -5,7 +5,7 @@
 <!-- 再生成: uv run python scripts/dump_db_schema.py -->
 
 `migrations/` を通し番号順に全適用した結果として得られる、現在のテーブル/ビュー構造の機械的な写しである。
-カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0089）。
+カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0091）。
 
 「なぜこの形なのか」（設計判断の背景・変遷・既知の課題）は `docs/spec/db-schema.md` を参照。
 本ファイルは現在値のみを扱い、変遷の経緯（旧カラムの削除理由等）は記載しない。
@@ -571,6 +571,37 @@ CREATE TABLE decisions (
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   retracted_at TIMESTAMP NULL,
   title TEXT
+)
+```
+
+</details>
+
+### destination_telemetry
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| id | INTEGER | NO | — | PK |
+| caller_session_id | TEXT | YES | — | — |
+| trigger_tool | TEXT | NO | — | — |
+| path | TEXT | NO | — | — |
+| candidate_count | INTEGER | NO | — | — |
+| reason | TEXT | NO | — | — |
+| timestamp | TIMESTAMP | NO | `CURRENT_TIMESTAMP` | — |
+
+インデックス:
+- `idx_destination_telemetry_timestamp` ON `destination_telemetry`(timestamp)
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE destination_telemetry (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    caller_session_id  TEXT,
+    trigger_tool       TEXT NOT NULL,
+    path               TEXT NOT NULL,
+    candidate_count    INTEGER NOT NULL,
+    reason             TEXT NOT NULL,
+    timestamp          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 )
 ```
 

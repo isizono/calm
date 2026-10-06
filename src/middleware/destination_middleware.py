@@ -15,6 +15,14 @@ add_logsでboardタグ付きトピックへ投稿したときも同様に宛先�
 とき、goal系の応答（宛先候補・推奨文言）もPR適用前と完全に同一に保つ。
 config.PEER_NUDGE_ENABLEDがTrueのときは、goal系の推奨文言にもpeer-nudge
 スキルへの誘導を1行追加する。
+
+check_inの応答には、config.PEER_NUDGE_ENABLEDがTrueのときに限り、check-inした
+アクティビティと同じトピック（または1段relatedなトピック）で作業中の他セッション
+を宛先候補として同梱する（呼び出した本人の応答に見せるだけで、他セッションへは
+何も送らない）。判定待ちの宛先候補が既に同梱されている応答には重ねない。
+
+宛先候補を算出した呼び出しは、早期returnを含めdestination_telemetryに1行残す。
+算出に入る前の安価な早期return（対象外ツール・judge_readyでない等）は残さない。
 """
 from __future__ import annotations
 
@@ -95,6 +103,28 @@ _RELATED_TOPIC_QUERY = """
 """
 
 
+# (reason, 応答に出した候補数)。Noneは算出に入る前の早期return（記録しない）。
+_Outcome = tuple[str, int]
+
+_TELEMETRY_INSERT = (
+    "INSERT INTO destination_telemetry "
+    "(caller_session_id, trigger_tool, path, candidate_count, reason) VALUES (?, ?, ?, ?, ?)"
+)
+
+
+def _record_outcome(tool_name: str, path: str, outcome: _Outcome | None) -> None:
+    """算出結果を1行残す。書込失敗は応答に影響させない。"""
+    if outcome is None:
+        return
+    reason, count = outcome
+    try:
+        with contextlib.closing(get_connection(load_vec=False)) as conn:
+            conn.execute(_TELEMETRY_INSERT, (get_caller_session_id(), tool_name, path, count, reason))
+            conn.commit()
+    except Exception as e:
+        print(f"destination_middleware telemetry error: {e}", file=sys.stderr)
+
+
 class DestinationCandidateMiddleware(Middleware):
     """判定待ちgoal、およびboardトピックへの投稿に紐づく他セッションを宛先候補として応答に注入する。"""
 
@@ -111,9 +141,11 @@ class DestinationCandidateMiddleware(Middleware):
         try:
             tool_name = context.message.name
             if tool_name in _TARGET_TOOL_NAMES:
-                _maybe_inject(result)
+                _record_outcome(tool_name, "goal", _maybe_inject(result))
+                if tool_name == "check_in" and config.PEER_NUDGE_ENABLED:
+                    _record_outcome(tool_name, "nearby", _maybe_inject_nearby(result))
             elif tool_name == _BOARD_TARGET_TOOL_NAME and config.PEER_NUDGE_ENABLED:
-                _maybe_inject_board(result)
+                _record_outcome(tool_name, "board", _maybe_inject_board(result))
         except Exception as e:
             print(f"destination_middleware.on_call_tool error: {e}", file=sys.stderr)
 
@@ -204,18 +236,18 @@ def _related_topic_ids(conn: sqlite3.Connection, topic_id: int) -> list[int]:
     return [row["target_id"] for row in rows]
 
 
-def _maybe_inject(result: Any) -> None:
+def _maybe_inject(result: Any) -> _Outcome | None:
     goal_id = _find_judge_ready_goal_id(result)
     if goal_id is None:
-        return
+        return None
 
     caller_session_id = get_caller_session_id()
     if caller_session_id is None:
-        return
+        return ("no_caller_session", 0)
 
     candidates = _fetch_candidates(goal_id, caller_session_id)
     if not candidates:
-        return
+        return ("no_candidates", 0)
 
     lines = [
         f"📮 [宛先候補] 判定待ちのgoalに関連する他セッションが{len(candidates)}件あります。"
@@ -227,9 +259,10 @@ def _maybe_inject(result: Any) -> None:
         lines.append("話しかける前にpeer-nudgeスキルを確認してください。")
     result.content.append(TextContent(type="text", text="\n".join(lines)))
     result.structured_content["destination_candidates"] = candidates
+    return ("injected", len(candidates))
 
 
-def _maybe_inject_board(result: Any) -> None:
+def _maybe_inject_board(result: Any) -> _Outcome | None:
     """add_logsでboardタグ付きトピックへ投稿された場合、宛先候補を応答に同梱する。
 
     リクエスト引数ではなくレスポンスのcreated配列からtopic_idを拾う。
@@ -238,45 +271,34 @@ def _maybe_inject_board(result: Any) -> None:
     """
     structured = getattr(result, "structured_content", None)
     if not isinstance(structured, dict):
-        return
+        return None
     created = structured.get("created")
     if not isinstance(created, list) or not created:
-        return
+        return None
 
     topic_ids = sorted({
         c["topic_id"] for c in created
         if isinstance(c, dict) and isinstance(c.get("topic_id"), int)
     })
     if not topic_ids:
-        return
+        return None
 
     caller_session_id = get_caller_session_id()
     if caller_session_id is None:
-        return
+        return ("no_caller_session", 0)
 
     # topic数ぶんDB接続を開き直さないよう、この呼び出し1回につき接続1本にまとめる。
     with contextlib.closing(get_connection(load_vec=False)) as conn:
         board_topic_ids = [tid for tid in topic_ids if _is_board_topic(conn, tid)]
         if not board_topic_ids:
-            return
+            return ("not_board_topic", 0)
 
         # 質問・周知・事前の声かけでは[議論]アクティビティを立てないため、boardトピック
         # 自身へcheck-inする者がいないことが多い。元トピック(1段関連)側で作業している
         # セッションも候補に含める。
-        target_topic_ids = set(board_topic_ids)
-        for tid in board_topic_ids:
-            target_topic_ids.update(_related_topic_ids(conn, tid))
-
-        # topicを跨いで同じセッションの行が重複しうるため、session_id（一意）でdedupする。
-        # nameは表示名でしかなく一意性が保証されない。
-        rows_by_session_id: dict = {}
-        for topic_id in sorted(target_topic_ids):
-            for row in _fetch_board_candidates(conn, topic_id, caller_session_id):
-                rows_by_session_id.setdefault(row["session_id"], row)
-
-    candidates = _rows_to_candidates(list(rows_by_session_id.values()))
+        candidates = _fetch_nearby_candidates(conn, set(board_topic_ids), caller_session_id)
     if not candidates:
-        return
+        return ("no_candidates", 0)
 
     lines = [
         f"📮 [宛先候補] 投稿した掲示板トピックに関連する他セッションが{len(candidates)}件あります。"
@@ -286,3 +308,65 @@ def _maybe_inject_board(result: Any) -> None:
         lines.append(f"  - {c['name']}（{c['activity_title']}）")
     result.content.append(TextContent(type="text", text="\n".join(lines)))
     result.structured_content["destination_candidates"] = candidates
+    return ("injected", len(candidates))
+
+
+def _fetch_nearby_candidates(conn: sqlite3.Connection, topic_ids: set[int], caller_session_id: str) -> list[dict]:
+    """topic_idsと、そこから1段relatedなトピックで作業中の生存セッションを宛先候補にして返す。
+
+    topicを跨いで同じセッションの行が重複しうるため、session_id（一意）でdedupする。
+    nameは表示名でしかなく一意性が保証されない。
+    """
+    all_topic_ids = set(topic_ids)
+    for tid in topic_ids:
+        all_topic_ids.update(_related_topic_ids(conn, tid))
+    rows_by_session_id: dict = {}
+    for topic_id in sorted(all_topic_ids):
+        for row in _fetch_board_candidates(conn, topic_id, caller_session_id):
+            rows_by_session_id.setdefault(row["session_id"], row)
+    return _rows_to_candidates(list(rows_by_session_id.values()))
+
+
+_ACTIVITY_TOPIC_QUERY = """
+    SELECT target_id FROM relations
+    WHERE source_type = 'activity' AND source_id = ?
+      AND target_type = 'topic' AND relation_type = 'belongs_to'
+"""
+
+
+def _maybe_inject_nearby(result: Any) -> _Outcome | None:
+    """check_inしたアクティビティの近く（同じトピック・1段related）で作業中の他セッションを同梱する。"""
+    structured = getattr(result, "structured_content", None)
+    if not isinstance(structured, dict):
+        return None
+    if "destination_candidates" in structured:
+        # 判定待ちの宛先候補が既にあるときは重ねない
+        return None
+
+    anchor = structured.get("anchor")
+    activity = anchor.get("activity") if isinstance(anchor, dict) else None
+    activity_id = activity.get("id_raw") if isinstance(activity, dict) else None
+    if not isinstance(activity_id, int):
+        return ("no_activity", 0)
+
+    caller_session_id = get_caller_session_id()
+    if caller_session_id is None:
+        return ("no_caller_session", 0)
+
+    with contextlib.closing(get_connection(load_vec=False)) as conn:
+        topic_ids = {row["target_id"] for row in conn.execute(_ACTIVITY_TOPIC_QUERY, (activity_id,))}
+        if not topic_ids:
+            return ("no_topics", 0)
+        candidates = _fetch_nearby_candidates(conn, topic_ids, caller_session_id)
+    if not candidates:
+        return ("no_candidates", 0)
+
+    lines = [
+        f"📮 [宛先候補] このアクティビティの近くで作業中の他セッションが{len(candidates)}件あります。"
+        "話しかける前にpeer-nudgeスキルを確認してください。"
+    ]
+    for c in candidates:
+        lines.append(f"  - {c['name']}（{c['activity_title']}）")
+    result.content.append(TextContent(type="text", text="\n".join(lines)))
+    structured["destination_candidates"] = candidates
+    return ("injected", len(candidates))

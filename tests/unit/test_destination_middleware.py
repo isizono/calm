@@ -951,3 +951,151 @@ class TestPeerNudgeDisabledResponseParity:
         )
         on_text = on_result.content[-1].text
         assert on_text == off_text + "\n話しかける前にpeer-nudgeスキルを確認してください。"
+
+
+# ========================================
+# check_inの近傍セッション同梱
+# ========================================
+
+def _checkin_result(activity_id: int | None) -> ToolResult:
+    anchor = {"activity": {"id_raw": activity_id}} if activity_id is not None else {}
+    return ToolResult(structured_content={"anchor": anchor})
+
+
+async def _run_check_in(tool_result: ToolResult):
+    return await DestinationCandidateMiddleware().on_call_tool(
+        _make_context("check_in"), _call_next_returning(tool_result)
+    )
+
+
+def _telemetry_rows() -> list[tuple]:
+    conn = get_connection(load_vec=False)
+    try:
+        return [
+            tuple(r) for r in conn.execute(
+                "SELECT trigger_tool, path, candidate_count, reason FROM destination_telemetry ORDER BY id"
+            )
+        ]
+    finally:
+        conn.close()
+
+
+def _seed_alive(session_id: str, activity_id: int, **kwargs) -> None:
+    pid = register_alive_heartbeat_session(f"cli-{session_id}")
+    _seed_session_row(
+        session_id=session_id, cli_session_id=f"cli-{session_id}", cli_pid=pid,
+        activity_id=activity_id, **kwargs,
+    )
+
+
+class TestCheckInNearby:
+    @pytest.fixture(autouse=True)
+    def _enabled_as_self(self, temp_db, monkeypatch):
+        monkeypatch.setattr(config, "PEER_NUDGE_ENABLED", True)
+        monkeypatch.setattr(destination_middleware, "get_caller_session_id", lambda: "self-session")
+
+    @pytest.mark.asyncio
+    async def test_session_on_same_topic_is_listed(self):
+        topic_id = _make_plain_topic()
+        mine = _make_board_activity(topic_id, "Mine")
+        theirs = _make_board_activity(topic_id, "Theirs")
+        _seed_alive("other", theirs)
+
+        result = await _run_check_in(_checkin_result(mine))
+
+        assert result.structured_content["destination_candidates"] == [
+            {"name": "test-cli", "activity_id_raw": theirs, "activity_title": "Theirs"}
+        ]
+        assert any("📮" in b.text for b in result.content if hasattr(b, "text"))
+        assert _telemetry_rows() == [("check_in", "nearby", 1, "injected")]
+
+    @pytest.mark.asyncio
+    async def test_session_on_one_hop_related_topic_is_listed(self):
+        other_topic = _make_plain_topic("Other")
+        my_topic = add_topic(
+            title="Mine", description="d", tags=["domain:test"],
+            related=[{"type": "topic", "ids": [other_topic]}],
+        )["topic_id"]
+        mine = _make_board_activity(my_topic, "Mine")
+        theirs = _make_board_activity(other_topic, "Theirs")
+        _seed_alive("other", theirs)
+
+        result = await _run_check_in(_checkin_result(mine))
+
+        assert [c["activity_title"] for c in result.structured_content["destination_candidates"]] == ["Theirs"]
+
+    @pytest.mark.asyncio
+    async def test_session_on_unrelated_topic_is_not_listed(self):
+        mine = _make_board_activity(_make_plain_topic("A"), "Mine")
+        theirs = _make_board_activity(_make_plain_topic("B"), "Theirs")
+        _seed_alive("other", theirs)
+
+        result = await _run_check_in(_checkin_result(mine))
+
+        assert "destination_candidates" not in result.structured_content
+        assert _telemetry_rows() == [("check_in", "nearby", 0, "no_candidates")]
+
+    @pytest.mark.asyncio
+    async def test_two_hop_related_topic_is_not_listed(self):
+        far = _make_plain_topic("Far")
+        mid = add_topic(title="Mid", description="d", tags=["domain:test"],
+                        related=[{"type": "topic", "ids": [far]}])["topic_id"]
+        near = add_topic(title="Near", description="d", tags=["domain:test"],
+                         related=[{"type": "topic", "ids": [mid]}])["topic_id"]
+        mine = _make_board_activity(near, "Mine")
+        _seed_alive("other", _make_board_activity(far, "Theirs"))
+
+        result = await _run_check_in(_checkin_result(mine))
+
+        assert "destination_candidates" not in result.structured_content
+
+    @pytest.mark.asyncio
+    async def test_caller_itself_and_ended_session_are_excluded(self):
+        topic_id = _make_plain_topic()
+        mine = _make_board_activity(topic_id, "Mine")
+        theirs = _make_board_activity(topic_id, "Theirs")
+        _seed_alive("self-session", mine)
+        _seed_alive("ended", theirs, ended=True)
+
+        result = await _run_check_in(_checkin_result(mine))
+
+        assert "destination_candidates" not in result.structured_content
+
+    @pytest.mark.asyncio
+    async def test_disabled_flag_leaves_response_and_telemetry_untouched(self, monkeypatch):
+        monkeypatch.setattr(config, "PEER_NUDGE_ENABLED", False)
+        topic_id = _make_plain_topic()
+        mine = _make_board_activity(topic_id, "Mine")
+        _seed_alive("other", _make_board_activity(topic_id, "Theirs"))
+        tool_result = _checkin_result(mine)
+        before = copy.deepcopy(tool_result.structured_content)
+
+        result = await _run_check_in(tool_result)
+
+        assert result.structured_content == before
+        assert not any("📮" in b.text for b in result.content if hasattr(b, "text"))
+        assert _telemetry_rows() == []
+
+    @pytest.mark.asyncio
+    async def test_early_returns_leave_a_telemetry_row_with_reason(self, monkeypatch):
+        await _run_check_in(_checkin_result(None))
+        monkeypatch.setattr(destination_middleware, "get_caller_session_id", lambda: None)
+        await _run_check_in(_checkin_result(_make_board_activity(_make_plain_topic())))
+
+        assert _telemetry_rows() == [
+            ("check_in", "nearby", 0, "no_activity"),
+            ("check_in", "nearby", 0, "no_caller_session"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_judge_ready_candidates_are_not_duplicated(self):
+        topic_id = _make_plain_topic()
+        mine = _make_board_activity(topic_id, "Mine")
+        _seed_alive("other", _make_board_activity(topic_id, "Theirs"))
+        tool_result = _checkin_result(mine)
+        tool_result.structured_content["destination_candidates"] = [{"name": "goal-peer"}]
+
+        result = await _run_check_in(tool_result)
+
+        assert result.structured_content["destination_candidates"] == [{"name": "goal-peer"}]
+        assert not any("📮" in b.text for b in result.content if hasattr(b, "text"))
