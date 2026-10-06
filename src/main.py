@@ -902,7 +902,7 @@ def update_tag(
     以降tagで記録・検索するとcanonical側のタグIDで解決される。
     設定時に既存の紐付け（topic_tags等4テーブル）をcanonical側に付け替える。
     この付け替えは設定時の1回のみで、canonical上書き時に旧付け替え分は戻らない。
-    canonical=""で解除。連鎖（エイリアスのエイリアス）は禁止。
+    canonical=""（空白のみも同じ）で解除。連鎖（エイリアスのエイリアス）は禁止。
     notes付きタグはエイリアスにできない（先にnotesを除去すること）。
     archivedなタグをcanonical先に指定する、またはarchivedなタグ自身をcanonical化する
     ことはできない（ARCHIVED_CANONICAL_INVALID）。
@@ -929,7 +929,7 @@ def update_tag(
     Args:
         tag: 対象タグ（例: "domain:calm", "hooks"）
         notes: 教訓・運用ルールのテキスト（全文置換）
-        canonical: エイリアス先タグ（""で解除）
+        canonical: エイリアス先タグ（""または空白のみで解除）
         rename: 新しいタグ名（例: "domain:hooks"）
         description: タグの短い説明文（最大100文字）
         archived: Trueで退役、Falseで解除
