@@ -22,9 +22,11 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from collections.abc import Callable
+from typing import TypeGuard
 
 from src.config import GOAL_RECHECK_HOURS, HEARTBEAT_TIMEOUT_MINUTES
-from src.db import get_connection
+from src.db import get_connection, inserted_row_id
 from src.services import ask_service
 from src.services.readable_id import strip_entity_id_inplace
 from src.services.signal_service import record_signal
@@ -57,7 +59,7 @@ def _database_error(message: str) -> dict:
     return {"error": {"code": "DATABASE_ERROR", "message": message}}
 
 
-def _is_non_empty_str(value: object) -> bool:
+def _is_non_empty_str(value: object) -> TypeGuard[str]:
     return isinstance(value, str) and value.strip() != ""
 
 
@@ -190,7 +192,7 @@ def _insert_condition(conn: sqlite3.Connection, goal_id: int, value: dict) -> in
             value["bound_id"],
         ),
     )
-    return cursor.lastrowid
+    return inserted_row_id(cursor)
 
 
 # ========================================
@@ -228,6 +230,7 @@ def set_goal_with_conn(conn: sqlite3.Connection, activity_id: int, goal: dict | 
         form = "new" if "new" in goal else ("goal_id" if "goal_id" in goal else "waiver")
 
     if form == "new":
+        assert goal is not None
         new_spec = goal["new"]
         if not isinstance(new_spec, dict):
             return _validation_error("goal.new must be an object")
@@ -242,17 +245,19 @@ def set_goal_with_conn(conn: sqlite3.Connection, activity_id: int, goal: dict | 
             return _validation_error("goal.new.conditions must be a non-empty list")
         normalized_conditions = []
         for cond in conditions:
-            result = _validate_condition_form(cond)
-            if not result["ok"]:
-                return result["error"]
-            normalized_conditions.append(result["value"])
+            checked = _validate_condition_form(cond)
+            if not checked["ok"]:
+                return checked["error"]
+            normalized_conditions.append(checked["value"])
         handle = new_spec["handle"]
         statement = statement.strip()
     elif form == "goal_id":
+        assert goal is not None
         target_goal_id = goal["goal_id"]
         if not isinstance(target_goal_id, int) or isinstance(target_goal_id, bool):
             return _validation_error("goal.goal_id must be an integer")
     elif form == "waiver":
+        assert goal is not None
         waiver_reason = goal["waiver"]
         if not _is_non_empty_str(waiver_reason):
             return _validation_error("goal.waiver must be a non-empty string")
@@ -318,14 +323,14 @@ def set_goal_with_conn(conn: sqlite3.Connection, activity_id: int, goal: dict | 
         return {"info": "ACTIVITY_GOAL_EXISTS", "current": current}
 
     # 5. 付け先の goal か外す側の goal が判定済みなら GOAL_CLOSED
-    if form == "goal_id" and target_goal_row["closed"] == 1:
-        result = {"goal_id": target_goal_row["id"]}
-        strip_entity_id_inplace(result, "goal_id")
-        return {"info": "GOAL_CLOSED", "goal": result}
+    if form == "goal_id" and target_goal_row is not None and target_goal_row["closed"] == 1:
+        goal_ref = {"goal_id": target_goal_row["id"]}
+        strip_entity_id_inplace(goal_ref, "goal_id")
+        return {"info": "GOAL_CLOSED", "goal": goal_ref}
     if current_goal_row is not None and current_goal_row["closed"] == 1:
-        result = {"goal_id": current_goal_row["id"]}
-        strip_entity_id_inplace(result, "goal_id")
-        return {"info": "GOAL_CLOSED", "goal": result}
+        goal_ref = {"goal_id": current_goal_row["id"]}
+        strip_entity_id_inplace(goal_ref, "goal_id")
+        return {"info": "GOAL_CLOSED", "goal": goal_ref}
 
     # 6. 未判定 goal の最後の activity を外す結果になるなら GOAL_WOULD_ORPHAN
     if current_row is not None and current_row["goal_id"] is not None:
@@ -354,7 +359,7 @@ def set_goal_with_conn(conn: sqlite3.Connection, activity_id: int, goal: dict | 
         cursor = conn.execute(
             "INSERT INTO goals (handle, statement) VALUES (?, ?)", (handle, statement)
         )
-        new_goal_id = cursor.lastrowid
+        new_goal_id = inserted_row_id(cursor)
         for cond in normalized_conditions:
             _insert_condition(conn, new_goal_id, cond)
 
@@ -569,14 +574,14 @@ def update_goal_with_conn(
 
     if reopen_reason is not None:
         if goal_row["closed"] == 0:
-            result = {"goal_id": goal_id}
-            strip_entity_id_inplace(result, "goal_id")
-            return {"info": "GOAL_ALREADY_OPEN", "goal": result}
+            goal_ref = {"goal_id": goal_id}
+            strip_entity_id_inplace(goal_ref, "goal_id")
+            return {"info": "GOAL_ALREADY_OPEN", "goal": goal_ref}
     else:
         if goal_row["closed"] == 1 and (len(changes) > 0 or statement is not None):
-            result = {"goal_id": goal_id}
-            strip_entity_id_inplace(result, "goal_id")
-            return {"info": "GOAL_CLOSED", "goal": result}
+            goal_ref = {"goal_id": goal_id}
+            strip_entity_id_inplace(goal_ref, "goal_id")
+            return {"info": "GOAL_CLOSED", "goal": goal_ref}
 
     structure_err = _validate_changes_structure(changes)
     if structure_err:
@@ -686,9 +691,9 @@ def judge_goal_with_conn(
         return _not_found(f"goal {goal_id} not found")
 
     if goal_row["closed"] == 1:
-        result = {"goal_id": goal_id}
-        strip_entity_id_inplace(result, "goal_id")
-        return {"info": "GOAL_ALREADY_CLOSED", "goal": result}
+        goal_ref = {"goal_id": goal_id}
+        strip_entity_id_inplace(goal_ref, "goal_id")
+        return {"info": "GOAL_ALREADY_CLOSED", "goal": goal_ref}
 
     if verdict == "achieved":
         conditions = conn.execute(
@@ -745,9 +750,9 @@ def judge_goal_with_conn(
         (verdict, judged_by, note, goal_id),
     )
     if cursor.rowcount == 0:
-        result = {"goal_id": goal_id}
-        strip_entity_id_inplace(result, "goal_id")
-        return {"info": "GOAL_ALREADY_CLOSED", "goal": result}
+        goal_ref = {"goal_id": goal_id}
+        strip_entity_id_inplace(goal_ref, "goal_id")
+        return {"info": "GOAL_ALREADY_CLOSED", "goal": goal_ref}
 
     to_close = conn.execute(
         """
@@ -1352,7 +1357,7 @@ def _rule14_waiting(ctx: dict) -> dict:
 # ここに1行足すか動かすだけでよい。規則15（失敗した子の手当て）は既存の
 # 規則5〜14を詰め直さずに追加したため番号は末尾だが、評価の順番は規則6の
 # 直後・規則7の前に置く（子の崩れの手当てが先、差し戻しの手当てが次）。
-_GOAL_SCOPE_RULES: list[tuple[int, callable, callable]] = [
+_GOAL_SCOPE_RULES: list[tuple[int, Callable[[dict], bool], Callable[[dict], dict]]] = [
     (5, lambda ctx: ctx["goal_row"]["closed"] == 1, _rule5_judged),
     (6, lambda ctx: bool(ctx["broken"]), _rule6_broken),
     (15, lambda ctx: bool(ctx["bound_failed"]), _rule15_bound_failed),
@@ -1389,8 +1394,8 @@ def _bound_display(bound_type: str, bound_state: dict | None) -> str | None:
     if state == "pending":
         return f"{bound_type}『{title}』: 未"
     if state == "failed":
-        reason = _truncate_note(bound_state["judge_note"])
-        return f"{bound_type}『{title}』: 失敗（判定: {reason}）"
+        judge_note = _truncate_note(bound_state["judge_note"])
+        return f"{bound_type}『{title}』: 失敗（判定: {judge_note}）"
     reason = bound_state.get("reason")
     if reason == "replaced":
         succ = bound_state.get("successor_title") or "?"
@@ -1916,6 +1921,7 @@ def get_goal(
         else:
             if conn.execute("SELECT 1 FROM goals WHERE id = ?", (goal_id,)).fetchone() is None:
                 return _not_found(f"goal {goal_id} not found")
+        assert resolved_goal_id is not None
 
         goal_row = conn.execute("SELECT * FROM goals WHERE id = ?", (resolved_goal_id,)).fetchone()
         if goal_row is None:
