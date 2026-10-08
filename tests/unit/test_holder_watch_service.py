@@ -33,8 +33,9 @@ def _write_session(sid: str, pid: int, status: str = "idle") -> None:
     ))
 
 
-def _write_transcript(tmp_path, sid: str, age_sec: float) -> None:
-    p = tmp_path / "projects" / "-proj" / f"{sid}.jsonl"
+def _write_transcript(tmp_path, sid: str, age_sec: float, subagent: bool = False) -> None:
+    name = f"{sid}/subagents/agent-x.jsonl" if subagent else f"{sid}.jsonl"
+    p = tmp_path / "projects" / "-proj" / name
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("{}\n")
     t = time.time() - age_sec
@@ -90,6 +91,16 @@ class TestHandoffWarnings:
         result = update_activity(aid, description=_desc(NEW_SID, job="a1b2c3d4"))
 
         assert "holder_warnings" not in result
+
+    def test_idle_old_holder_with_running_subagent_warns(self, temp_db, projects):
+        aid = _orch(_desc(OLD_SID))
+        _write_session(OLD_SID, os.getpid(), status="idle")
+        _write_transcript(projects, OLD_SID, age_sec=30, subagent=True)
+
+        result = update_activity(aid, description=_desc(NEW_SID, job="a1b2c3d4"))
+
+        assert len(result["holder_warnings"]) == 1
+        assert "裏のSA" in result["holder_warnings"][0]
 
     def test_dead_old_holder_is_not_busy(self, temp_db):
         aid = _orch(_desc(OLD_SID))
@@ -148,6 +159,14 @@ class TestCheckOnce:
 
         assert [f["activity_id"] for f in fired] == [aid]
         assert "更新されていない" in fired[0]["reason"]
+
+    def test_running_subagent_keeps_an_idle_holder_from_looking_stuck(self, temp_db, projects):
+        _orch(_desc(OLD_SID))
+        _write_session(OLD_SID, os.getpid(), status="idle")
+        _write_transcript(projects, OLD_SID, age_sec=4000)
+        _write_transcript(projects, OLD_SID, age_sec=60, subagent=True)
+
+        assert check_once(dead_sec=600, stale_sec=3600) == []
 
     def test_live_fresh_holder_vacant_and_non_orch_are_left_alone(self, temp_db, projects):
         _orch(_desc(OLD_SID))

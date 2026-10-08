@@ -38,6 +38,9 @@ DEFAULT_DEAD_MIN = 10
 # その2倍を超えて伸びなければ、固まったか起こし直しが消えている。
 DEFAULT_STALE_MIN = 60
 
+# 裏のSAのtranscriptがこの秒数以内に更新されていれば、作業中とみなす
+SUBAGENT_ACTIVE_SEC = 300
+
 SIGNAL_KIND = "custom:holder-down"
 SIGNAL_SOURCE = "watch:holder"
 
@@ -103,15 +106,30 @@ def _projects_dir() -> Path:
     return Path(raw).expanduser() if raw else Path.home() / ".claude" / "projects"
 
 
-def transcript_age_sec(session_id: str, now: float) -> float | None:
-    """transcriptの最終更新からの秒数。transcriptが見つからなければNone。"""
+def _age_sec(pattern: str, now: float) -> float | None:
     mtimes = []
-    for p in _projects_dir().glob(f"*/{session_id}.jsonl"):
+    for p in _projects_dir().glob(pattern):
         try:
             mtimes.append(p.stat().st_mtime)
         except OSError:
             continue
     return now - max(mtimes) if mtimes else None
+
+
+def subagent_age_sec(session_id: str, now: float) -> float | None:
+    """そのセッションが裏で走らせたSAのtranscriptの最終更新からの秒数。無ければNone。"""
+    return _age_sec(f"*/{session_id}/subagents/*.jsonl", now)
+
+
+def transcript_age_sec(session_id: str, now: float) -> float | None:
+    """本体と裏のSAのtranscriptのうち最も新しい更新からの秒数。見つからなければNone。
+
+    裏でSAが走っている間、窓口はidleのままで本体のtranscriptは伸びないので、
+    SAの側も見ないと長いSAの最中を固まりと読んでしまう。
+    """
+    ages = [a for a in (_age_sec(f"*/{session_id}.jsonl", now),
+                        subagent_age_sec(session_id, now)) if a is not None]
+    return min(ages) if ages else None
 
 
 def judge(live: dict | None, age_sec: float | None, dead_sec: float, stale_sec: float) -> str | None:
@@ -229,6 +247,14 @@ def handoff_warnings(old_description: str | None, new_description: str) -> list[
             warnings.append(
                 f"旧担い手（sessionId {old_sid}、pid {old.get('pid')}）がbusy。"
                 "止める前に作業の終わりを待つか、旧担い手からの知らせを確かめる"
+            )
+        # 窓口がidleでも裏のSAが作業中のことがある。本体のtranscriptは見ない
+        # （計画どおりの交代では旧担い手が直前に状態節を書いているので毎回新しい）
+        sa_age = subagent_age_sec(old_sid, time.time()) if old is not None else None
+        if sa_age is not None and sa_age < SUBAGENT_ACTIVE_SEC:
+            warnings.append(
+                f"旧担い手（sessionId {old_sid}）の裏のSAが{sa_age / 60:.0f}分前まで動いている。"
+                "止めるとSAの作業が途中で切れる"
             )
     # 後継は旧状態節を写すので、旧担い手のjob idが残っていても仕込みの証拠にならない
     new_jobs = set(_JOB_ID_RE.findall(new_description)) - set(_JOB_ID_RE.findall(old_description or ""))
