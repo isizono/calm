@@ -1205,6 +1205,34 @@ _injected_tags: dict[str, set[str]] = {}
 _injected_tags_lock = threading.Lock()
 _INJECTED_TAGS_MAX_SESSIONS = 256
 
+# check_inの字数の天井で畳んだタグのうち、省略ポインタを出し済みのもの（delivery_keyキー）。
+# 畳んだタグは全文が届いていないため_injected_tagsには入れず、ポインタを繰り返し
+# 出さないためだけにここへ記録する。
+_fold_pointer_shown: dict[str, set[str]] = {}
+_fold_pointer_shown_lock = threading.Lock()
+
+
+def release_folded_tag(session_id: str | None, tag_str: str) -> bool:
+    """天井で畳んだタグを配信済みから外し、ポインタの初回表示かどうかを返す。
+
+    collect_tag_notes_for_injectionは全文を返す前提で_injected_tagsに登録するため、
+    畳んで全文が届かなかったタグはここで登録を外し、次のmark=True経路で全文が届くようにする。
+    戻り値は、このセッション（サブエージェントは別キー）でそのタグのポインタを
+    まだ出していないならTrue。session_idが解決できない場合は記録せずTrueを返す。
+    """
+    key = delivery_key(session_id)
+    if key is None:
+        return True
+    with _injected_tags_lock:
+        _injected_tags.get(key, set()).discard(tag_str)
+    with _fold_pointer_shown_lock:
+        if key not in _fold_pointer_shown:
+            evict_for_new_key(_fold_pointer_shown, _INJECTED_TAGS_MAX_SESSIONS)
+        shown = _fold_pointer_shown.setdefault(key, set())
+        first = tag_str not in shown
+        shown.add(tag_str)
+        return first
+
 
 def _max_timestamp(a: str | None, b: str | None) -> str | None:
     """2つのDB TIMESTAMP文字列（CURRENT_TIMESTAMPが生成する"YYYY-MM-DD HH:MM:SS"
@@ -1341,6 +1369,14 @@ def _decay_pointer_text(tag_str: str) -> str:
     """decay対象タグのnotesを全文の代わりに縮退させる1行ポインタ文言を返す。"""
     return (
         f"{tag_str} のnotesは長期間参照されていないため全文表示を省略した。"
+        "内容が必要な場合は search_tags(include_notes=True) で確認する。"
+    )
+
+
+def _fold_pointer_text(tag_str: str) -> str:
+    """check_inの字数の天井で畳んだタグのnotesを全文の代わりに示す1行ポインタ文言を返す。"""
+    return (
+        f"{tag_str} のnotesはcheck_inの字数の天井を超えたため、今回は全文表示を省略した。"
         "内容が必要な場合は search_tags(include_notes=True) で確認する。"
     )
 

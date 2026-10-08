@@ -16,10 +16,16 @@ from src.config import (
     CHECKIN_CONTROL_CAP_CHARS,
     CHECKIN_TAG_NOTES_CAP_CHARS,
 )
+from src.infra import session_identity
 from src.services import checkin_tier_service as cts
 from src.services import response_budget as rb
+from src.services import tag_service
 from src.services.checkin_queries import DECISIONS_FULL_LIMIT
-from src.services.tag_service import _TAG_NOTES_RATCHET_CEILING, _decay_pointer_text
+from src.services.tag_service import (
+    _TAG_NOTES_RATCHET_CEILING,
+    _decay_pointer_text,
+    _fold_pointer_text,
+)
 
 
 def _activity(desc: str = "d") -> dict:
@@ -79,7 +85,7 @@ class TestTagNotesExcludedFromMainBudget:
         assert out["context"]["decisions"] == response["context"]["decisions"]
         assert "truncated" not in out
 
-    def test_over_cap_tag_notes_are_folded_to_decay_pointer(self):
+    def test_over_cap_tag_notes_are_folded_to_fold_pointer(self):
         response = _base_response()
         # 2タグとも上限(4,000字)未満だが、合計は天井(6,000字)を超える
         response["env"]["tag_notes"] = [
@@ -91,8 +97,9 @@ class TestTagNotesExcludedFromMainBudget:
 
         notes = out["env"]["tag_notes"]
         assert rb.measure_chars(notes) <= CHECKIN_TAG_NOTES_CAP_CHARS
-        # 少なくとも1件はdecayと同じ1行ポインタへ縮退している
-        assert any(n["notes"] == _decay_pointer_text(n["tag"]) for n in notes)
+        # 少なくとも1件は天井超過の1行ポインタへ縮退している（decayの文言とは別）
+        assert any(n["notes"] == _fold_pointer_text(n["tag"]) for n in notes)
+        assert not any(n["notes"] == _decay_pointer_text(n["tag"]) for n in notes)
 
     def test_falsification_small_tag_notes_are_not_folded(self):
         response = _base_response()
@@ -102,6 +109,63 @@ class TestTagNotesExcludedFromMainBudget:
 
         assert out["env"]["tag_notes"] == [{"tag": "domain:small", "notes": "短い教訓"}]
         assert "truncated" not in out
+
+
+def _over_cap_response() -> dict:
+    response = _base_response()
+    response["env"]["tag_notes"] = [
+        {"tag": "domain:huge-a", "notes": "x" * (_TAG_NOTES_RATCHET_CEILING - 100)},
+        {"tag": "domain:huge-b", "notes": "y" * (_TAG_NOTES_RATCHET_CEILING - 100)},
+    ]
+    return response
+
+
+def _folded_tag(out: dict) -> str:
+    return next(n["tag"] for n in out["env"]["tag_notes"] if n["notes"].startswith(f"{n['tag']} のnotesはcheck_in"))
+
+
+class TestFoldedTagNotesLedger:
+    """畳んだタグは配信済みにならず、ポインタは同じセッションで1回だけ出る。"""
+
+    def _patch_session(self, monkeypatch, session_id: str = "sess-1"):
+        monkeypatch.setattr(session_identity, "get_caller_session_id", lambda: session_id)
+
+    def test_folded_tag_is_released_from_injected_tags(self, monkeypatch):
+        self._patch_session(monkeypatch)
+        tag_service._injected_tags.clear()
+        tag_service._fold_pointer_shown.clear()
+        tag_service._injected_tags["sess-1"] = {"domain:huge-a", "domain:huge-b"}
+
+        out = rb.apply_budget(_over_cap_response(), cts.TIER_FORM_BUDGET_POLICY)
+
+        folded = _folded_tag(out)
+        assert folded not in tag_service._injected_tags["sess-1"]
+        kept = {"domain:huge-a", "domain:huge-b"} - {folded}
+        assert kept <= tag_service._injected_tags["sess-1"]
+
+    def test_pointer_is_not_repeated_in_the_same_session(self, monkeypatch):
+        self._patch_session(monkeypatch)
+        tag_service._fold_pointer_shown.clear()
+
+        first = rb.apply_budget(_over_cap_response(), cts.TIER_FORM_BUDGET_POLICY)
+        second = rb.apply_budget(_over_cap_response(), cts.TIER_FORM_BUDGET_POLICY)
+
+        folded = _folded_tag(first)
+        second_tags = [n["tag"] for n in second.get("env", {}).get("tag_notes", [])]
+        assert folded not in second_tags
+
+    def test_subagent_and_parent_count_pointers_separately(self, monkeypatch):
+        self._patch_session(monkeypatch)
+        tag_service._fold_pointer_shown.clear()
+
+        parent = rb.apply_budget(_over_cap_response(), cts.TIER_FORM_BUDGET_POLICY)
+        token = session_identity.set_current_agent_id("agent-1")
+        try:
+            sub = rb.apply_budget(_over_cap_response(), cts.TIER_FORM_BUDGET_POLICY)
+        finally:
+            session_identity.reset_current_agent_id(token)
+
+        assert _folded_tag(sub) == _folded_tag(parent)
 
 
 class TestControlExcludedFromMainBudgetAndNeverFolded:
