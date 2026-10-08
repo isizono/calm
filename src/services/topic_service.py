@@ -1,7 +1,7 @@
 """議論トピック管理サービス"""
 import re
 import sqlite3
-from typing import Any
+from typing import Any, cast
 
 from src.db import get_connection, inserted_row_id, row_to_dict
 from src.services.citations_service import (
@@ -203,11 +203,8 @@ def add_topic(
             table="discussion_topics",
         )
         # 非 None で渡した field は変換後も非 None で返る
-        converted_title = converted["title"]
-        converted_description = converted["description"]
-        assert converted_title is not None and converted_description is not None
-        title = converted_title
-        description = converted_description
+        title = cast(str, converted["title"])
+        description = cast(str, converted["description"])
 
         # 本文中の {{cite:X#NNN}} を citations テーブルに保存
         upsert_citations_for_owner_with_conn(
