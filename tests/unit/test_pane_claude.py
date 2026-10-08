@@ -27,6 +27,13 @@ def test_holder_keeps_escalation_even_if_inherited():
     assert env["PATH"] == "/bin"
 
 
+@pytest.mark.parametrize("role", ["holder", "observer"])
+def test_inherited_session_id_is_dropped_for_every_role(role):
+    env = build_env(role, {"CLAUDE_CODE_SESSION_ID": "9c291449-abe5-426d-9c34-7b2c14116efb", "PATH": "/bin"})
+    assert "CLAUDE_CODE_SESSION_ID" not in env
+    assert env["PATH"] == "/bin"
+
+
 def test_main_passes_claude_args_through_and_sets_env(monkeypatch):
     captured = {}
 
