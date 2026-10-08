@@ -1062,27 +1062,20 @@ class TestResultBasedInjectionDoesNotMark:
         finally:
             conn.close()
 
-    def test_mark_false_queries_all_tags_including_already_marked(self, temp_db):
-        """mark=False は既にマーク済みのタグも含めて全タグをクエリする（同一session_id内）"""
+    def test_mark_false_skips_tags_delivered_by_mark_true(self, temp_db):
+        """mark=Trueで配ったタグはmark=Falseで返さず、まだ配っていないタグだけ返す（同一session_id内）"""
         add_topic(title="Test", description="Desc", tags=["domain:test", "domain:other"])
         update_tag("domain:test", "テスト教訓")
         update_tag("domain:other", "その他の教訓")
 
         conn = get_connection()
         try:
-            # まず mark=True で domain:test をマーク
             collect_tag_notes_for_injection(conn, ["domain:test"], session_id="sess-1")
-            assert "domain:test" in _injected_tags.get("sess-1", set())
 
-            # mark=False では domain:test もクエリ対象になる
             result = collect_tag_notes_for_injection(
                 conn, ["domain:test", "domain:other"], session_id="sess-1", mark=False
             )
-            assert result is not None
-            assert len(result) == 2
-            tag_strs = {r["tag"] for r in result}
-            assert "domain:test" in tag_strs
-            assert "domain:other" in tag_strs
+            assert result == [{"tag": "domain:other", "notes": "その他の教訓"}]
         finally:
             conn.close()
 
@@ -1568,15 +1561,15 @@ class TestArchivedPushExclusion:
         assert "error" not in result_archived
         assert set(result_plain.keys()) == set(result_archived.keys())
 
-    def test_registered_archived_tag_unarchive_not_injected_same_session(self, temp_db):
-        """同セッション内で一度参照済みのarchivedタグを解除しても、そのセッションでは注入されない（エッジケース#10）"""
+    def test_archived_tag_is_injected_after_unarchive_in_same_session(self, temp_db):
+        """archived中に参照したタグは、同じセッションで解除した後の参照で全文が届く"""
         add_topic(title="Test", description="Desc", tags=["domain:legacy"])
         update_tag("domain:legacy", "退役システムの教訓")
         update_tag("domain:legacy", archived=True, archived_reason="解体済み")
 
         conn = get_connection()
         try:
-            # archived状態で一度参照（_injected_tagsに登録される。notesは除外され返らない）
+            # archived状態で一度参照（notesは除外され返らない）
             first = collect_tag_notes_for_injection(
                 conn, ["domain:legacy"], session_id="session-same"
             )
@@ -1585,11 +1578,11 @@ class TestArchivedPushExclusion:
             # 同セッション内でarchived解除
             update_tag("domain:legacy", archived=False)
 
-            # 同じセッションで再参照 → 登録済みのためSELECT自体がスキップされ、注入されない
+            # archived中はnotesが届いていないので帳簿に入っておらず、解除後の再参照で1回届く
             second = collect_tag_notes_for_injection(
                 conn, ["domain:legacy"], session_id="session-same"
             )
-            assert second is None
+            assert second == [{"tag": "domain:legacy", "notes": "退役システムの教訓"}]
         finally:
             conn.close()
 

@@ -134,14 +134,14 @@ class TestFoldedTagNotesLedger:
         self._patch_session(monkeypatch)
         tag_service._injected_tags.clear()
         tag_service._fold_pointer_shown.clear()
-        tag_service._injected_tags["sess-1"] = {"domain:huge-a", "domain:huge-b"}
+        tag_service._injected_tags["sess-1"] = {"domain:huge-a": "", "domain:huge-b": ""}
 
         out = rb.apply_budget(_over_cap_response(), cts.TIER_FORM_BUDGET_POLICY)
 
         folded = _folded_tag(out)
         assert folded not in tag_service._injected_tags["sess-1"]
         kept = {"domain:huge-a", "domain:huge-b"} - {folded}
-        assert kept <= tag_service._injected_tags["sess-1"]
+        assert kept <= tag_service._injected_tags["sess-1"].keys()
 
     def test_pointer_is_not_repeated_in_the_same_session(self, monkeypatch):
         self._patch_session(monkeypatch)
@@ -157,7 +157,7 @@ class TestFoldedTagNotesLedger:
     def test_tag_notes_key_is_removed_when_the_only_item_is_dropped(self, monkeypatch):
         self._patch_session(monkeypatch)
         tag_service._fold_pointer_shown.clear()
-        tag_service._fold_pointer_shown["sess-1"] = {"domain:huge-a"}
+        tag_service._fold_pointer_shown["sess-1"] = {"domain:huge-a": ""}
         response = _base_response()
         response["env"]["tag_notes"] = [
             {"tag": "domain:huge-a", "notes": "x" * (CHECKIN_TAG_NOTES_CAP_CHARS + 100)}

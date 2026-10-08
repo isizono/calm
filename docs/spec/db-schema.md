@@ -259,6 +259,7 @@ namespace + name による分類タグ。
   import 経由の notes 書き込みでこの列を更新する（整理・取り込みしたタグは「いま手入れした」扱いで全文配信が戻る）。
   レンダー時decay述語（`is_decay_eligible`）の入力は
   last_injected_at と notes_updated_at のうち新しい方を使う
+  セッションごとの配信済み記録もこの列の値を持ち、記録より新しい版のnotesは同じセッションへ1回配り直す
 
 関連 migration: 0009 / 0012 / 0014 / 0015_tag_canonical / 0024 / 0039_extend_tag_namespace / 0061_add_tag_archived / 0064_add_tags_last_injected_at / 0066_add_tags_notes_ratchet_trigger / 0088_add_tags_notes_updated_at
 
