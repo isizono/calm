@@ -38,15 +38,21 @@ orchが作った束縛条件をこの依頼文の受け手に伝える。依頼�
 見つけたときに兄弟へも知らせる義務だけで、兄弟への連絡はこの4項目(共有ファイル・
 マイグレーション番号・mainの破損・前提の変化)の周知に限る。
 
-## 相談役
+## 相談役・観測役
 
 --consultant-activity-idを渡すと、作業役の依頼文に「相談先」の節が入る。相談役は
 兄弟ではなく相談先として名指しされ、判断に迷ったときのSendMessageでの相談が
 許される(兄弟へは事実の周知しか送れない規則の例外)。渡さない依頼文は従来のまま。
 --role consultantは、相談役自身に渡す依頼文の変種に切り替える(実装も調査もせず、
-判断の材料と案を返し、報告後も止まらず待つ)。--consultant-activity-idとは併用できない。
-相談役の依頼文には常設の仕事として担い手の見張り(予告止まり・生死・固まりの検知と、
-orch_liveness.pyがDEAD・STUCKを返した後の後継の起動)が入るため、--holder-name・
+判断の材料と案を返し、報告後も止まらず待つ)。--role observerは、測って数字を出す
+だけの観測役の依頼文(決定「orchは5本常駐、反証役は都度thinker」で、生死・文脈の
+測り手は相談役から観測役に寄った)。どちらも--consultant-activity-idとは併用できない。
+
+担い手の見張りは観測役が持つ(予告止まりの検知だけ相談役に残る)。観測役は
+orch_liveness.pyで生死・固まりを、handoff_trigger.pyで文脈・圧縮・skillの版の
+交代契機を判定し、超えたら担い手へ「交代せよ」を送る。DEAD・STUCKは検知して
+報告先へ書くところまでで、後継の起動はしない(決定「無人での後継起動は環境の
+限界とする」)。--role consultant・--role observerのいずれも、--holder-name・
 --holder-session-id・--holder-transcriptで起動時点の担い手を渡す。
 
 --pending-dirは、CALMに書けない内容の退避先を依頼文に埋め込む引数(省略時は
@@ -159,21 +165,12 @@ orchや作業役のbgから、SendMessageかorchアクティビティのログ�
 - 指摘の要点は、報告先(親のorchアクティビティ)へadd_logsでも書く
 - 同じ型の誤りの指摘は、そう明記する(フィードバックの材料になる)
 
-## 担い手の見張り(常設の仕事)
-相談役は実装も調査もしないが、この見張りだけは例外として常に行う。そのために担い手のtranscriptを読み、判定用の小さなスクリプトをジョブのtmpに置いてよい。
+## 担い手の見張り(観測役と分担)
+相談役に残るのは、担い手への`notify_when_idle`の購読と、知らせのたびの予告止まりの検査、押し上げ、経緯の要る検査。生死・固まりの判定、担い手の文脈の大きさの測定、「交代せよ」の送信は観測役が持つ(相談役は生死・文脈の定期のcronを持たない)。
 起動時点の担い手は {holder_name}(sessionId {holder_session_id}、transcript {holder_transcript})。担い手は世代交代で替わるので、見るたびに報告先(親のorchアクティビティ)の説明の担い手欄からsessionIdを読み直し、transcriptはそのsessionIdから引く(`~/.claude/projects/*/<sessionId>.jsonl`)。宛先は、`claude agents --json`でそのsessionIdが一致しpidがある行(複数あればstartedAtが最も新しい行)の今のname。
 
 1. 予告止まりの検査: 担い手へSendMessageの`notify_when_idle`で購読する。1回で切れるので、知らせが来るたびに今の担い手へ張り直す。知らせが来たら、transcriptの最後の返答と状態節の次の一手を突き合わせ、予告した手が打たれずに止まっていれば担い手へSendMessageで起こす
-2. 生死と固まりの見張り: 自分のCronCreate(recurring、30分ごと、:00と:30は避ける)で、担い手欄のsessionIdを判定スクリプト `python3 {liveness_script} --session-id <sessionId>` に通す。出力のverdictは次のとおり
-   - DEAD: そのsessionIdが一致しpidがある行が無い
-   - STUCK: その行のstatusがbusyのまま、transcriptが25分以上更新されていない
-   - OK: それ以外
-   - 担い手欄が空席なら判定しない(空席は異常ではない)
-3. DEADかSTUCKが出たら、まず報告先へadd_logsで判定スクリプトの出力をそのまま書く。そのうえで:
-   - 後継を起こしてよいのは、判定スクリプトがDEADかSTUCKを返した直後で、かつこのorchで直近60分以内に後継を起こしていないときだけ(1つのorchにつき1時間に1回まで)。直近の有無は、報告先のログに「後継を起こした」の記録があるかで確かめる
-   - 後継は、新しいiTerm2の窓の対話の窓口として起こす(bgでは子を振れないため)。`tell application "iTerm2" to tell current session of (create window with default profile) to write text "<コマンド>"`を`osascript <scriptファイル> "<コマンド>"`(on run argv)の形で実行する。コマンドは`cd ~/workspace && claude <担い手と同じ起動フラグ> '<orchの題>のorch続けて。旧担い手は<名前>(sessionId <id>)。引き継いだら旧担い手を止めて'`。起動フラグは、見張りを始めたときと担い手が替わったときに`ps -o args= -p <pid>`で読んで控えておく
-   - 起こしたら、報告先へ「後継を起こした」と、判定したsessionIdと時刻をadd_logsで書く。後継が担い手欄を書き換えて旧担い手を止める
-4. CronCreateや後継の起動がauto modeに止められたら(許可が無い環境)、迂回も言い換えての再試行もしない。後継は起こさず、止められたことと判定の根拠を報告先へ書くだけにし、1の検査と2の判定を続ける
+2. 観測役がいなければ、担い手に`bg_dispatch.py --role observer`で立てるよう報告先へ書く(観測役を立てるのは担い手の仕事で、相談役は自分で立てない)
 
 ## 越えない線
 - 外向きの操作、~/.claude配下の変更、既決を見直すことになる判断、auto modeや権限に止められた操作は、進めずに報告先(親のorchアクティビティ)へ返す
@@ -187,6 +184,43 @@ orchや作業役のbgから、SendMessageかorchアクティビティのログ�
 
 ## 待ち方
 報告のあとも自分から終わらない。次の相談が届くまで待つ。orchが止めるまで続ける。
+"""
+
+_OBSERVER_TEMPLATE = """あなたはCALMのアクティビティ「{activity_title}」の観測役のbgセッションです。測って数字を出すだけで、判断も提案もしません。実装も調査もしません。
+
+## 作業場所
+- worktree: {worktree}{branch_line}
+- ファイルは編集しない(読むだけ)。Bashでは毎回、絶対パスでcdすること
+
+{first_steps}
+
+## 担い手の見張り(常設の仕事)
+起動時点の担い手は {holder_name}(sessionId {holder_session_id}、transcript {holder_transcript})。担い手は世代交代で替わるので、見るたびに報告先(親のorchアクティビティ)の説明の担い手欄からsessionIdを読み直し、transcriptはそのsessionIdから引く(`~/.claude/projects/*/<sessionId>.jsonl`)。宛先は、`claude agents --json`でそのsessionIdが一致しpidがある行(複数あればstartedAtが最も新しい行)の今のname。
+
+自分のCronCreate(recurring、30分ごと、:00と:30は避ける)で、担い手欄のsessionIdを次の2本の判定スクリプトに通す。
+
+1. 生死・固まり: `python3 {liveness_script} --session-id <sessionId>` → 出力のverdictは次のとおり
+   - DEAD: そのsessionIdが一致しpidがある行が無い
+   - STUCK: その行のstatusがbusyのまま、transcriptが25分以上更新されていない
+   - OK: それ以外
+   - 担い手欄が空席なら判定しない(空席は異常ではない)
+2. 文脈・圧縮・skillの版: `python3 {handoff_script} --session-id <sessionId> --role holder` → `trigger`がtrueなら、まだ送っていなければ担い手へSendMessageで「交代せよ」を送る(同じ相手に二重に送らない。送ったことをログに書く)
+
+DEADかSTUCKが出たら、まず報告先へadd_logsで判定スクリプトの出力をそのまま書く。後継を起こすのは担い手(または次の担い手)の仕事で、観測役は検知して報告するところまで(決定「無人での後継起動は環境の限界とする」)。
+
+CronCreateがauto modeに止められたら(許可が無い環境)、迂回も言い換えての再試行もしない。止められたことを報告先へ書くだけにし、1・2の判定は手動で続ける。
+
+## 書き先
+数字は報告先(親のorchアクティビティ)へadd_logs、まとまった計数は資材。担い手には変化があったときだけ要約1行
+
+{dont}
+
+## 記録
+- 経緯はadd_logsで記録する
+{record_tail}
+
+## 待ち方
+報告のあとも自分から終わらない。次の見張りの周期まで待つ。orchが止めるまで続ける。
 """
 
 
@@ -209,15 +243,15 @@ def build_request(
     holder_session_id: str | None = None,
     holder_transcript: str | None = None,
 ) -> str:
-    if role not in ("worker", "consultant"):
+    if role not in ("worker", "consultant", "observer"):
         raise ValueError(f"unknown role: {role}")
-    if role == "consultant" and consultant_activity_id is not None:
-        raise ValueError("consultant_activity_id is for worker requests, not role=consultant")
+    if role != "worker" and consultant_activity_id is not None:
+        raise ValueError(f"consultant_activity_id is for worker requests, not role={role}")
     holder = (holder_name, holder_session_id, holder_transcript)
-    if role == "consultant" and not all(holder):
-        raise ValueError("role=consultant requires holder_name, holder_session_id, holder_transcript")
+    if role in ("consultant", "observer") and not all(holder):
+        raise ValueError(f"role={role} requires holder_name, holder_session_id, holder_transcript")
     if role == "worker" and any(holder):
-        raise ValueError("holder_* is for role=consultant")
+        raise ValueError("holder_* is for role=consultant or role=observer")
     completion_block = _bullet_block(completion)
     dont_block = _bullet_block(dont)
     if goal_handle:
@@ -248,7 +282,7 @@ def build_request(
         if consultant_activity_id is not None
         else ""
     )
-    template = _CONSULTANT_TEMPLATE if role == "consultant" else _TEMPLATE
+    template = {"consultant": _CONSULTANT_TEMPLATE, "observer": _OBSERVER_TEMPLATE}.get(role, _TEMPLATE)
     for name, part in (
         ("first_steps", _FIRST_STEPS), ("dont", _DONT), ("record_tail", _RECORD_TAIL),
     ):
@@ -269,6 +303,7 @@ def build_request(
         holder_session_id=holder_session_id,
         holder_transcript=holder_transcript,
         liveness_script=Path(__file__).resolve().parent / "orch_liveness.py",
+        handoff_script=Path(__file__).resolve().parent / "handoff_trigger.py",
     )
 
 
@@ -317,12 +352,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="CALMに書けないときの退避先ディレクトリ(省略時は環境変数CALM_PENDING_DIRを見る)",
     )
     parser.add_argument(
-        "--role", choices=["worker", "consultant"], default="worker",
-        help="依頼文の種類。consultantは実装も調査もしない相談役用(既定: worker)",
+        "--role", choices=["worker", "consultant", "observer"], default="worker",
+        help="依頼文の種類。consultantは実装も調査もしない相談役用、observerは生死・文脈を測って報告するだけの観測役用(既定: worker)",
     )
     parser.add_argument(
         "--consultant-activity-id", type=int, default=None,
-        help="相談役のactivityのID。渡すと作業役の依頼文に相談先の節が入る(--role consultantとは同時に指定できない)",
+        help="相談役のactivityのID。渡すと作業役の依頼文に相談先の節が入る(--role consultant・--role observerとは同時に指定できない)",
     )
     for flag, label in (
         ("--holder-name", "担い手の名前"),
@@ -331,16 +366,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ):
         parser.add_argument(
             flag, default=None,
-            help=f"{label}。--role consultantのとき必須(起動時点の値。相談役は見るたびに担い手欄から読み直す)",
+            help=f"{label}。--role consultant・--role observerのとき必須(起動時点の値。見るたびに担い手欄から読み直す)",
         )
     args = parser.parse_args(argv)
-    if args.role == "consultant" and args.consultant_activity_id is not None:
-        parser.error("--consultant-activity-idは--role consultantと同時に指定できない")
+    if args.role != "worker" and args.consultant_activity_id is not None:
+        parser.error(f"--consultant-activity-idは--role {args.role}と同時に指定できない")
     holder = (args.holder_name, args.holder_session_id, args.holder_transcript)
-    if args.role == "consultant" and not all(holder):
-        parser.error("--role consultantには--holder-name・--holder-session-id・--holder-transcriptが要る")
+    if args.role in ("consultant", "observer") and not all(holder):
+        parser.error(f"--role {args.role}には--holder-name・--holder-session-id・--holder-transcriptが要る")
     if args.role == "worker" and any(holder):
-        parser.error("--holder-*は--role consultantのときだけ指定できる")
+        parser.error("--holder-*は--role consultantまたは--role observerのときだけ指定できる")
     return args
 
 

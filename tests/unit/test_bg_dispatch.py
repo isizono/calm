@@ -27,7 +27,7 @@ def _build(**overrides):
         "worktree": "/w",
         **_PARENT_KWARGS,
     }
-    if overrides.get("role") == "consultant":
+    if overrides.get("role") in ("consultant", "observer"):
         kwargs.update(_HOLDER_KWARGS)
     kwargs.update(overrides)
     return build_request(**kwargs)
@@ -138,26 +138,50 @@ class TestBuildRequest:
 
     def test_consultant_request_has_holder_watch_section(self):
         text = _build(role="consultant")
-        watch = text.split("## 担い手の見張り(常設の仕事)\n", 1)[1].split("\n\n## ", 1)[0]
+        watch = text.split("## 担い手の見張り(観測役と分担)\n", 1)[1].split("\n\n## ", 1)[0]
         assert "holder-x(sessionId sess-123、transcript /t/sess-123.jsonl)" in watch
         # 世代交代で替わる担い手を追うため、見るたびに担い手欄から読み直す
         assert "担い手欄からsessionIdを読み直し" in watch
         assert "`notify_when_idle`で購読する" in watch
+        # 生死・文脈の測定と「交代せよ」の送信は観測役の仕事で、相談役は持たない
+        assert "観測役が持つ" in watch
+        assert "相談役は生死・文脈の定期のcronを持たない" in watch
+        assert "--role observer" in watch
+        assert "osascript" not in watch
+
+    def test_worker_request_has_no_holder_watch_section(self):
+        assert "担い手の見張り" not in _build()
+        assert "担い手の見張り" not in _build(consultant_activity_id=77)
+
+    def test_observer_request_has_liveness_and_handoff_checks(self):
+        text = _build(role="observer")
+        watch = text.split("## 担い手の見張り(常設の仕事)\n", 1)[1].split("\n\n## ", 1)[0]
+        assert "holder-x(sessionId sess-123、transcript /t/sess-123.jsonl)" in watch
+        assert "測って数字を出すだけで、判断も提案もしません" in text
         assert "CronCreate" in watch
         assert "statusがbusyのまま、transcriptが25分以上更新されていない" in watch
         liveness = Path(__file__).resolve().parents[2] / "scripts" / "orch_liveness.py"
         assert liveness.is_file()
         assert f"python3 {liveness} --session-id <sessionId>" in watch
-        # 許可がある環境: 判定スクリプトを通した後だけ、1つのorchにつき1時間に1回まで後継を起こす
-        assert "判定スクリプトがDEADかSTUCKを返した直後" in watch
-        assert "1つのorchにつき1時間に1回まで" in watch
-        assert "osascript" in watch
-        # 許可が無い環境: 止められたら迂回せず、後継は起こさずログに書くだけ
-        assert "後継は起こさず、止められたことと判定の根拠を報告先へ書くだけ" in watch
+        handoff = Path(__file__).resolve().parents[2] / "scripts" / "handoff_trigger.py"
+        assert handoff.is_file()
+        assert f"python3 {handoff} --session-id <sessionId> --role holder" in watch
+        assert "「交代せよ」を送る" in watch
+        assert "同じ相手に二重に送らない" in watch
 
-    def test_worker_request_has_no_holder_watch_section(self):
-        assert "担い手の見張り" not in _build()
-        assert "担い手の見張り" not in _build(consultant_activity_id=77)
+    def test_observer_role_requires_holder_values(self):
+        with pytest.raises(ValueError):
+            build_request(
+                activity_id=1, activity_title="a", worktree="/w", role="observer",
+                **_PARENT_KWARGS,
+            )
+
+    def test_observer_role_rejects_consultant_activity_id(self):
+        with pytest.raises(ValueError):
+            build_request(
+                activity_id=1, activity_title="a", worktree="/w", role="observer",
+                consultant_activity_id=5, **_PARENT_KWARGS, **_HOLDER_KWARGS,
+            )
 
     @pytest.mark.parametrize("missing", list(_HOLDER_KWARGS))
     def test_consultant_role_requires_each_holder_value(self, missing):
