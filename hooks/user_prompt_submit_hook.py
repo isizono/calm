@@ -236,7 +236,8 @@ def _handle_corrections(data: dict, session_id: str, state: HookState) -> list[s
     titles = "／".join(i["title"] for i in new[:3])
     return [
         f"このセッションで受けた人の訂正が、記録役により未教訓化として{len(new)}件積まれました（{titles}）。"
-        "届け先と観測は別の個体が付けます。記録役の読んだ「直された点」が違っていれば、経緯をadd_logsに残してください。"
+        "教訓にして届けるところは教訓化役が受け持っています（届け先を書くのは教訓化役が呼ぶ経緯なしの個体、"
+        "届いたかを測るのは観測役）。このセッションで教訓を書く必要はありません。"
     ]
 
 
