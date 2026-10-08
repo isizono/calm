@@ -1917,6 +1917,7 @@ def get_goal(
         else:
             if conn.execute("SELECT 1 FROM goals WHERE id = ?", (goal_id,)).fetchone() is None:
                 return _not_found(f"goal {goal_id} not found")
+            # 冒頭の検証で activity_id / handle / goal_id のちょうど1つの指定を保証済みのため、この分岐では goal_id は None でない
             resolved_goal_id = cast(int, goal_id)
 
         goal_row = conn.execute("SELECT * FROM goals WHERE id = ?", (resolved_goal_id,)).fetchone()
