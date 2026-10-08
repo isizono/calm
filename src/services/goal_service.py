@@ -23,7 +23,7 @@ import json
 import re
 import sqlite3
 from collections.abc import Callable
-from typing import TypeGuard
+from typing import TypeGuard, cast
 
 from src.config import GOAL_RECHECK_HOURS, HEARTBEAT_TIMEOUT_MINUTES
 from src.db import get_connection, inserted_row_id
@@ -225,13 +225,11 @@ def set_goal_with_conn(conn: sqlite3.Connection, activity_id: int, goal: dict | 
     if err:
         return err
 
-    form = None
-    if goal is not None:
-        form = "new" if "new" in goal else ("goal_id" if "goal_id" in goal else "waiver")
+    goal_spec = goal or {}
+    form = next((k for k in ("new", "goal_id", "waiver") if k in goal_spec), None)
 
     if form == "new":
-        assert goal is not None
-        new_spec = goal["new"]
+        new_spec = goal_spec["new"]
         if not isinstance(new_spec, dict):
             return _validation_error("goal.new must be an object")
         handle_err = _validate_handle(new_spec.get("handle"))
@@ -252,13 +250,11 @@ def set_goal_with_conn(conn: sqlite3.Connection, activity_id: int, goal: dict | 
         handle = new_spec["handle"]
         statement = statement.strip()
     elif form == "goal_id":
-        assert goal is not None
-        target_goal_id = goal["goal_id"]
+        target_goal_id = goal_spec["goal_id"]
         if not isinstance(target_goal_id, int) or isinstance(target_goal_id, bool):
             return _validation_error("goal.goal_id must be an integer")
     elif form == "waiver":
-        assert goal is not None
-        waiver_reason = goal["waiver"]
+        waiver_reason = goal_spec["waiver"]
         if not _is_non_empty_str(waiver_reason):
             return _validation_error("goal.waiver must be a non-empty string")
         waiver_reason = waiver_reason.strip()
@@ -1893,7 +1889,7 @@ def get_goal(
     conn = get_connection()
     try:
         activity_scope_id = None
-        resolved_goal_id = goal_id
+        resolved_goal_id: int
         pending_asks = None
 
         if activity_id is not None:
@@ -1921,7 +1917,8 @@ def get_goal(
         else:
             if conn.execute("SELECT 1 FROM goals WHERE id = ?", (goal_id,)).fetchone() is None:
                 return _not_found(f"goal {goal_id} not found")
-        assert resolved_goal_id is not None
+            # 冒頭の検証で activity_id / handle / goal_id のちょうど1つの指定を保証済みのため、この分岐では goal_id は None でない
+            resolved_goal_id = cast(int, goal_id)
 
         goal_row = conn.execute("SELECT * FROM goals WHERE id = ?", (resolved_goal_id,)).fetchone()
         if goal_row is None:
