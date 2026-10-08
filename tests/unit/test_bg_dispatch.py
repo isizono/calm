@@ -94,6 +94,49 @@ class TestBuildRequest:
         text = _build()
         assert "退避先の設定なし" in text
 
+    def test_role_switches_template(self):
+        assert _build(role="consultant") != _build()
+
+    def test_consultant_activity_id_value_is_embedded(self):
+        text77 = _build(consultant_activity_id=77)
+        assert "activity_id=77" in text77
+        assert text77 != _build(consultant_activity_id=88)
+
+    def test_consultant_section_removal_restores_default_text(self):
+        with_consultant = _build(consultant_activity_id=77)
+        before, rest = with_consultant.split("\n\n## 相談先", 1)
+        after = rest.split("\n\n## やらないこと", 1)[1]
+        assert before + "\n\n## やらないこと" + after == _build()
+
+    def test_consultant_role_keeps_parent_check_values(self):
+        text = _build(role="consultant", activity_id=5, parent_goal_handle="p", parent_condition_id=3)
+        assert 'get_goal(handle="p")' in text
+        assert "id_raw=3の条件のboundが" in text
+        assert '{"type": "activity", "id_raw": 5}' in text
+
+    @pytest.mark.parametrize("section", ["最初にやること", "やらないこと", "記録"])
+    def test_shared_sections_identical_across_roles(self, section):
+        kwargs = {"completion": ["c"], "dont": ["d"], "pending_dir": "/p", "activity_id": 5}
+
+        def body(role):
+            text = _build(role=role, **kwargs)
+            return text.split(f"## {section}\n", 1)[1].split("\n\n## ", 1)[0]
+
+        shared = body("worker")
+        if section == "記録":
+            # 作業役だけが持つ記録の項目を除いた共通の末尾が、相談役にも同じ形で入る
+            assert shared.endswith(body("consultant").split("\n", 1)[1])
+        else:
+            assert shared == body("consultant")
+
+    def test_unknown_role_rejected(self):
+        with pytest.raises(ValueError):
+            _build(role="reviewer")
+
+    def test_consultant_role_with_consultant_activity_id_rejected(self):
+        with pytest.raises(ValueError):
+            _build(role="consultant", consultant_activity_id=77)
+
 
 class TestMainCli:
     def test_main_prints_request_with_all_args(self, capsys):
@@ -127,6 +170,25 @@ class TestMainCli:
         assert 'get_goal(handle="orch-goal")' in out
         assert "id_raw=12の条件のboundが" in out
         assert "/tmp/pending" in out
+
+    _CLI_BASE = [
+        "--activity-id", "1", "--activity-title", "t", "--worktree", "/w",
+        "--parent-goal-handle", "g", "--parent-condition-id", "2",
+    ]
+
+    def test_main_role_and_consultant_id_change_output(self, capsys):
+        main(self._CLI_BASE)
+        default = capsys.readouterr().out
+        main(self._CLI_BASE + ["--role", "consultant"])
+        assert capsys.readouterr().out != default
+        main(self._CLI_BASE + ["--consultant-activity-id", "9"])
+        assert "activity_id=9" in capsys.readouterr().out
+
+    def test_main_rejects_role_consultant_with_consultant_activity_id(self, capsys):
+        with pytest.raises(SystemExit) as exc_info:
+            main(self._CLI_BASE + ["--role", "consultant", "--consultant-activity-id", "9"])
+        assert exc_info.value.code == 2
+        assert "--consultant-activity-id" in capsys.readouterr().err
 
     def test_main_requires_parent_goal_handle(self, capsys):
         with pytest.raises(SystemExit) as exc_info:

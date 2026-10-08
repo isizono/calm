@@ -38,6 +38,14 @@ orchが作った束縛条件をこの依頼文の受け手に伝える。依頼�
 見つけたときに兄弟へも知らせる義務だけで、兄弟への連絡はこの4項目(共有ファイル・
 マイグレーション番号・mainの破損・前提の変化)の周知に限る。
 
+## 相談役
+
+--consultant-activity-idを渡すと、作業役の依頼文に「相談先」の節が入る。相談役は
+兄弟ではなく相談先として名指しされ、判断に迷ったときのSendMessageでの相談が
+許される(兄弟へは事実の周知しか送れない規則の例外)。渡さない依頼文は従来のまま。
+--role consultantは、相談役自身に渡す依頼文の変種に切り替える(実装も調査もせず、
+判断の材料と案を返し、報告後も止まらず待つ)。--consultant-activity-idとは併用できない。
+
 --pending-dirは、CALMに書けない内容の退避先を依頼文に埋め込む引数(省略時は
 環境変数CALM_PENDING_DIRを見る。どちらも無ければ、退避先を決めずworktree内に
 残す指示になる)。
@@ -66,9 +74,7 @@ _TEMPLATE = """あなたはCALMのアクティビティ「{activity_title}」の
 - worktree: {worktree}{branch_line}
 - このworktreeの外のファイルは編集しない。Bashでは毎回、絶対パスでcdすること
 
-## 最初にやること
-1. CALMでアクティビティ「{activity_title}」(activity_id={activity_id})を探してcheck_inする
-2. {goal_instruction}{parent_check_step}
+{first_steps}
 
 ## 完了条件
 - goal.nextに従い、満たした条件はupdate_goalでsatisfiedにする{completion_block}
@@ -86,21 +92,82 @@ _TEMPLATE = """あなたはCALMのアクティビティ「{activity_title}」の
 兄弟とは、3で読んだ親goalのconditionsのうち、boundが自分以外のアクティビティを指す条件のアクティビティ(完了済みは除く)。一覧は着手時に作らず、下の事実を見つけたときに引く。
 - 兄弟の宛先: get_sessionsでそのactivity_idの行を探し、`claude agents --json`でその行のcli_session_idと一致するsessionIdでpidがある行を探す。あれば、その行の今のnameが宛先。行が無い・死んでいるときは空席として扱う
 - 兄弟の担当に関わる事実(共有ファイル・マイグレーション番号・mainの破損・前提の変化)を見つけたら、報告先へのadd_logsに加えて、その兄弟へもSendMessageで事実を知らせる。空席・送れないときは省く
-- 兄弟へ送るのは上の事実の周知だけ。作業の依頼・質問・進捗の共有は送らない
+- 兄弟へ送るのは上の事実の周知だけ。作業の依頼・質問・進捗の共有は送らない{consultant_block}
 
-## やらないこと
-- マージ、--delete-branchの使用{dont_block}
+{dont}
 
 ## 記録
 - 経緯はadd_logsで記録する。完了の合図(update_goalのsatisfiedかSendMessage)があるのに
   check_in以降にadd_logsが無いと、Stop hookが1回blockする(この依頼文の宛先activityにcheck-inしたセッションだけが対象)
-- CALMに書き込めない内容は{pending_line}
-- 最後の報告の前に `{sync_memory_scope}` でsync-memoryを実行する
+{record_tail}
 
 ## 完了したら
 3・4で控えた親のorchアクティビティへadd_logsで報告を書く。書く内容は、PR番号・CIの状態・自分で判断したこと・残っていること。
 そのあとget_by_idsでそのアクティビティの説明の担い手欄(sessionId)を読み、`claude agents --json`でそのsessionIdが一致しpidがある行を探す（名前は照合に使わない。複数あればstartedAtが最も新しい行）。あれば、その行の今のnameへSendMessageで「orchのログに報告を書いた」と要旨を知らせる。空席・死んでいる・送れないときは知らせを省く。
 報告のあとは次の指示を待ち、自分から終わらない。
+"""
+
+
+# 作業役と相談役の依頼文で共通の節。片方だけ直して食い違わないよう、ここに1つだけ持つ
+_FIRST_STEPS = """## 最初にやること
+1. CALMでアクティビティ「{activity_title}」(activity_id={activity_id})を探してcheck_inする
+2. {goal_instruction}{parent_check_step}
+
+goalのstatementをこの仕事の目的として読む。成果物ができたかでなく、statementが指す状態に近づいたかで判断する。"""
+
+_DONT = """## やらないこと
+- マージ、--delete-branchの使用{dont_block}"""
+
+_RECORD_TAIL = """- CALMに書き込めない内容は{pending_line}
+- 最後の報告の前に `{sync_memory_scope}` でsync-memoryを実行する"""
+
+_CONSULTANT_BLOCK = """
+
+## 相談先
+アクティビティ(activity_id={consultant_activity_id})の相談役は、兄弟ではなく相談先。上の兄弟の規則(質問を送らない)は相談役には当てはめない。
+- 宛先: 兄弟と同じ引き方(get_sessionsでそのactivity_idの行を探し、`claude agents --json`でpidのある行の今のnameを使う)
+- SendMessageで相談してよい。場面は、方針に迷うとき、手の結果が目的に近づいたか判断できないとき、人に返す前の分類(返す3項目に当たるか)
+- 送る中身: 次の手と、その手に何を期待するか、結果。調べた事実はそのまま付ける
+- 返事は助言。結論と責任は自分とorchが持つ。宛先が空席・死んでいる・返事が無いときは待たず、自分で判断して進め、判断を報告に書く"""
+
+_CONSULTANT_TEMPLATE = """あなたはCALMのアクティビティ「{activity_title}」の相談役のbgセッションです。
+指示を出したのはこのアクティビティを束ねるorchです。相談役は実装も調査も実測もしません。判断の材料と案を返すだけで、結論と責任はorchが持ちます。
+
+## 作業場所
+- worktree: {worktree}{branch_line}
+- ファイルは編集しない(読むだけ)。Bashでは毎回、絶対パスでcdすること
+
+{first_steps}
+
+## 受け取るもの
+orchや作業役のbgから、SendMessageかorchアクティビティのログで次が届く。
+- 目的節と現在地節
+- 次の手と、その手に何を期待するか
+- 手の結果
+
+## 返すもの
+- その手・結果が目的に近づいたか、その根拠。外部の観測、反証を試みて生き残った仮説、未確定事項の減少のどれに当たるか
+- 見落としや別の読み
+- 方向を変える数字の検算の要否と、そのやり方
+- 人に出そうとしている問いが、人しか持たない事実・本人の価値判断・orchの「ユーザーに上げるもの」のどれにも当たらないか
+
+## 書き先
+- SendMessageで来た相談には、送ってきた相手へSendMessageで返す
+- 指摘の要点は、報告先(親のorchアクティビティ)へadd_logsでも書く
+- 同じ型の誤りの指摘は、そう明記する(フィードバックの材料になる)
+
+## 越えない線
+- 外向きの操作、~/.claude配下の変更、既決を見直すことになる判断、auto modeや権限に止められた操作は、進めずに報告先(親のorchアクティビティ)へ返す
+- 人間宛てのaskは起票しない
+
+{dont}
+
+## 記録
+- 経緯はadd_logsで記録する
+{record_tail}
+
+## 待ち方
+報告のあとも自分から終わらない。次の相談が届くまで待つ。orchが止めるまで続ける。
 """
 
 
@@ -117,7 +184,13 @@ def build_request(
     dont: list[str] | None = None,
     sync_memory_scope: str = "sync-memory --minimal",
     pending_dir: str | None = None,
+    role: str = "worker",
+    consultant_activity_id: int | None = None,
 ) -> str:
+    if role not in ("worker", "consultant"):
+        raise ValueError(f"unknown role: {role}")
+    if role == "consultant" and consultant_activity_id is not None:
+        raise ValueError("consultant_activity_id is for worker requests, not role=consultant")
     completion_block = _bullet_block(completion)
     dont_block = _bullet_block(dont)
     if goal_handle:
@@ -143,7 +216,18 @@ def build_request(
         pending_line = f"`{resolved_pending_dir}` へファイルとして退避し、報告に書く"
     else:
         pending_line = "分かる形でworktree内に残し、報告に書く(退避先の設定なし)"
-    return _TEMPLATE.format(
+    consultant_block = (
+        _CONSULTANT_BLOCK.format(consultant_activity_id=consultant_activity_id)
+        if consultant_activity_id is not None
+        else ""
+    )
+    template = _CONSULTANT_TEMPLATE if role == "consultant" else _TEMPLATE
+    for name, part in (
+        ("first_steps", _FIRST_STEPS), ("dont", _DONT), ("record_tail", _RECORD_TAIL),
+    ):
+        template = template.replace("{" + name + "}", part)
+    return template.format(
+        consultant_block=consultant_block,
         activity_title=activity_title,
         activity_id=activity_id,
         worktree=worktree,
@@ -201,7 +285,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--pending-dir", default=None,
         help="CALMに書けないときの退避先ディレクトリ(省略時は環境変数CALM_PENDING_DIRを見る)",
     )
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--role", choices=["worker", "consultant"], default="worker",
+        help="依頼文の種類。consultantは実装も調査もしない相談役用(既定: worker)",
+    )
+    parser.add_argument(
+        "--consultant-activity-id", type=int, default=None,
+        help="相談役のactivityのID。渡すと作業役の依頼文に相談先の節が入る(--role consultantとは同時に指定できない)",
+    )
+    args = parser.parse_args(argv)
+    if args.role == "consultant" and args.consultant_activity_id is not None:
+        parser.error("--consultant-activity-idは--role consultantと同時に指定できない")
+    return args
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -221,6 +316,8 @@ def main(argv: list[str] | None = None) -> None:
         dont=args.dont,
         sync_memory_scope=args.sync_memory_scope,
         pending_dir=args.pending_dir,
+        role=args.role,
+        consultant_activity_id=args.consultant_activity_id,
     ), end="")
 
 
