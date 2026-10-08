@@ -126,6 +126,7 @@ erDiagram
 | `ask_tags` | — | ask ↔ tag junction |
 | `ask_vec` | — | asks と rowid 連動する sqlite-vec 仮想テーブル（384次元、cosine距離） |
 | `injection_telemetry` | — | 記録=クエリ添付（記録系ツールの関連既存記録top3提示）の追随カウンタ present側台帳 |
+| `destination_telemetry` | — | 宛先候補（📮）を算出した呼び出しの台帳（呼び出したツール・経路・候補数・出さなかった理由） |
 | `instance_meta` | — | 自インスタンスを識別する識別子（export/importバンドルの複合キー発行の基盤）を保持する単一行テーブル |
 | `import_provenance` | — | importしたエンティティの出自（出生インスタンス・出生ID・content_hash）を保持する台帳 |
 
@@ -700,6 +701,19 @@ hint_serviceが自動で発火に伴い付与する日次クールダウンの�
 関連 migration: 0084_add_hint_cooldowns
 
 カラム一覧・インデックス: `db-schema-tables.md` の `hint_cooldowns` 節参照。
+
+### 3.39 destination_telemetry
+
+宛先候補（他セッションへ話しかける候補）を算出した呼び出しを1行ずつ残す台帳。「何回算出し、なぜ出なかったか」を事後に数えるためのもので、`path`は`goal`（判定待ち）/`board`（掲示板投稿）/`nearby`（check_inの近傍）、`reason`は`injected`または出さなかった理由（`no_candidates` / `no_topics` / `no_activity` / `no_caller_session` / `not_board_topic`）。
+
+補足:
+- FK・UNIQUE制約は張らない（既存telemetryテーブル群と同じ生データ台帳の方針）
+- 算出に入る前の安価な早期return（対象外ツール・judge_readyでないgoal系応答等）は、DBを触らない設計を保つため記録しない
+- 書込は応答を組み立てる同じ処理内で同期の1 INSERTとし、失敗は握りつぶして本来のツール応答に影響させない
+
+関連 migration: 0091_add_destination_telemetry
+
+カラム一覧・インデックス: `db-schema-tables.md` の `destination_telemetry` 節参照。
 
 ---
 
