@@ -980,3 +980,146 @@ class TestNonhumanTurnSuppressesUtteranceDelivery:
             capsys,
         )
         assert _row("stump-human")["delivered_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# outputタイミング（Claude自身の直前の出力文への照合）
+# ---------------------------------------------------------------------------
+
+_OUTPUT_COND = {"tool": None, "all": [{"field": "text", "op": "regex", "value": "既に記録"}]}
+
+
+def _assistant_line(*blocks: dict) -> str:
+    return json.dumps({"type": "assistant", "message": {"content": list(blocks)}}, ensure_ascii=False) + "\n"
+
+
+def _append(path: Path, data: str) -> None:
+    with open(path, "ab") as f:
+        f.write(data.encode("utf-8"))
+
+
+def _ups(capsys, transcript: Path, *, prompt: str = "次の発話", prompt_id: str = "p", session_id: str = "s-out") -> dict:
+    return _run_main_with_event(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": session_id,
+            "prompt_id": prompt_id,
+            "prompt": prompt,
+            "transcript_path": str(transcript),
+        },
+        capsys,
+    )
+
+
+@pytest.fixture
+def transcript(tmp_path):
+    path = tmp_path / "t.jsonl"
+    path.write_text("")
+    return path
+
+
+class TestOutputTiming:
+    def _entry(self, name="out-1"):
+        return _create_entry(name, timing="output", condition=_OUTPUT_COND, body="再発ならnoteを残す")
+
+    def test_matching_assistant_text_delivered_on_next_prompt(self, db, capsys, transcript):
+        self._entry()
+        _ups(capsys, transcript, prompt_id="p0")  # 既読位置の初期化
+        _append(transcript, _assistant_line({"type": "text", "text": "それは既に記録済みです"}))
+        out = _ups(capsys, transcript, prompt_id="p1")
+        body = out["hookSpecificOutput"]["additionalContext"]
+        assert "再発ならnoteを残す" in body
+        assert _row("out-1")["delivered_count"] == 1
+
+    def test_only_assistant_text_blocks_are_matched(self, db, capsys, transcript):
+        self._entry()
+        _ups(capsys, transcript, prompt_id="p0")
+        _append(transcript, _assistant_line(
+            {"type": "thinking", "thinking": "既に記録"},
+            {"type": "tool_use", "name": "Bash", "input": {"command": "echo 既に記録"}},
+        ))
+        _append(transcript, json.dumps({"type": "user", "message": {"content": [
+            {"type": "tool_result", "content": "既に記録"}]}}) + "\n")
+        _append(transcript, json.dumps({"type": "user", "message": {"content": [
+            {"type": "text", "text": "既に記録"}]}}, ensure_ascii=False) + "\n")
+        assert _ups(capsys, transcript, prompt_id="p1") == {}
+        assert _row("out-1")["delivered_count"] == 0
+
+    def test_partial_line_is_not_read_and_resumes_next_call(self, db, capsys, transcript):
+        self._entry()
+        _ups(capsys, transcript, prompt_id="p0")
+        line = _assistant_line({"type": "text", "text": "既に記録済み"})
+        _append(transcript, line[:20])  # 書きかけ（改行未到達）
+        assert _ups(capsys, transcript, prompt_id="p1") == {}
+        _append(transcript, line[20:])
+        out = _ups(capsys, transcript, prompt_id="p2")
+        assert "再発ならnoteを残す" in out["hookSpecificOutput"]["additionalContext"]
+
+    def test_already_read_text_is_not_matched_again(self, db, capsys, transcript, monkeypatch):
+        monkeypatch.setattr(hook, "OUTPUT_COOLDOWN_TURNS", 0)
+        self._entry()
+        _ups(capsys, transcript, prompt_id="p0")
+        _append(transcript, _assistant_line({"type": "text", "text": "既に記録済み"}))
+        assert _ups(capsys, transcript, prompt_id="p1") != {}
+        assert _ups(capsys, transcript, prompt_id="p2") == {}
+
+    def test_history_before_first_sight_is_not_matched(self, db, capsys, transcript):
+        self._entry()
+        _append(transcript, _assistant_line({"type": "text", "text": "既に記録済み"}))
+        assert _ups(capsys, transcript, prompt_id="p0") == {}
+        assert _row("out-1")["delivered_count"] == 0
+
+    def test_cursor_stores_offset_only_not_text(self, db, capsys, transcript):
+        self._entry()
+        _ups(capsys, transcript, prompt_id="p0")
+        _append(transcript, _assistant_line({"type": "text", "text": "既に記録済み"}))
+        _ups(capsys, transcript, prompt_id="p1")
+        conn = get_connection()
+        try:
+            row = conn.execute("SELECT * FROM feedback_output_cursor WHERE session_id = 's-out'").fetchone()
+        finally:
+            conn.close()
+        assert row["byte_offset"] == transcript.stat().st_size
+        assert "既に記録" not in json.dumps(dict(row), ensure_ascii=False)
+
+    def test_cooldown_suppresses_redelivery_until_n_turns_pass(self, db, capsys, transcript):
+        self._entry()
+        _ups(capsys, transcript, prompt_id="p0")
+        hits = []
+        for i in range(1, hook.OUTPUT_COOLDOWN_TURNS + 2):
+            _append(transcript, _assistant_line({"type": "text", "text": "既に記録済み"}))
+            hits.append(_ups(capsys, transcript, prompt_id=f"p{i}") != {})
+        # 1回目は届き、N-1回は抑えられ、N回後にまた届く
+        assert hits == [True] + [False] * (hook.OUTPUT_COOLDOWN_TURNS - 1) + [True]
+
+    def test_cooldown_is_per_session(self, db, capsys, transcript):
+        self._entry()
+        for sid in ("s-a", "s-b"):
+            _ups(capsys, transcript, session_id=sid, prompt_id="p0")
+        _append(transcript, _assistant_line({"type": "text", "text": "既に記録済み"}))
+        assert _ups(capsys, transcript, session_id="s-a", prompt_id="p1") != {}
+        assert _ups(capsys, transcript, session_id="s-b", prompt_id="p1") != {}
+
+    def test_delivered_on_nonhuman_turn(self, db, capsys, transcript):
+        self._entry()
+        _ups(capsys, transcript, prompt_id="p0")
+        _append(transcript, _assistant_line({"type": "text", "text": "既に記録済み"}))
+        out = _ups(capsys, transcript, prompt_id="p1", prompt="<task-notification>done</task-notification>")
+        assert "再発ならnoteを残す" in out["hookSpecificOutput"]["additionalContext"]
+
+    def test_utterance_entry_still_suppressed_on_nonhuman_turn(self, db, capsys, transcript):
+        _create_entry("utt-1", condition={"tool": None, "all": []})
+        out = _ups(capsys, transcript, prompt="<task-notification>done</task-notification>")
+        assert out == {}
+        assert _row("utt-1")["delivered_count"] == 0
+
+    def test_subagent_prompt_does_not_deliver_output(self, db, capsys, transcript):
+        self._entry()
+        _ups(capsys, transcript, prompt_id="p0")
+        _append(transcript, _assistant_line({"type": "text", "text": "既に記録済み"}))
+        out = _run_main_with_event(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s-out", "prompt_id": "p1",
+             "prompt": "x", "transcript_path": str(transcript), "agent_type": "builder"},
+            capsys,
+        )
+        assert out == {}

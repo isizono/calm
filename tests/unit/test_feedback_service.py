@@ -473,3 +473,72 @@ class TestAddFeedbackNote:
         fs.add_feedback_note(name="note-target", kind="stumble", body="3回目")
         r_note = fs.add_feedback_note(name="note-target", kind="note", body="対応した")
         assert "hint" not in r_note
+
+
+class TestBodyLimit:
+    """本文50字の上限は、新規作成と本文を変える更新にだけ掛かる。"""
+
+    _COND = {"tool": None, "all": [{"field": "prompt", "op": "len_gt", "value": 0}]}
+
+    def _insert_legacy(self, name: str, body: str) -> None:
+        conn = get_connection()
+        try:
+            conn.execute(
+                "INSERT INTO feedback_entries (name, body, strength, timing, condition_json) "
+                "VALUES (?, ?, 'notify', 'utterance', ?)",
+                (name, body, '{"tool": null, "all": []}'),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _update(self, name: str, body: str, **overrides) -> dict:
+        fields = {
+            "name": name, "action": "update", "body": body, "strength": "notify",
+            "timing": "utterance", "condition": self._COND, "read_mark": 0,
+        }
+        fields.update(overrides)
+        return fs.write_feedback_entry(**fields)
+
+    def test_create_with_51_chars_rejected_and_message_points_to_ref(self, temp_db):
+        result = _create(body="あ" * 51)
+        assert result["ok"] is False
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+        assert "ref" in result["error"]["message"]
+
+    def test_create_with_50_chars_accepted(self, temp_db):
+        assert _create(body="あ" * 50)["ok"] is True
+
+    def test_update_changing_body_to_over_50_rejected(self, temp_db):
+        _create("upd-long")
+        assert self._update("upd-long", "あ" * 51)["ok"] is False
+
+    def test_update_keeping_legacy_long_body_passes(self, temp_db):
+        legacy = "あ" * 90
+        self._insert_legacy("legacy", legacy)
+        result = self._update("legacy", legacy, condition={"tool": None, "all": []})
+        assert result["ok"] is True
+        assert result["entry"]["body"] == legacy
+
+    def test_update_editing_legacy_body_to_another_long_body_rejected(self, temp_db):
+        self._insert_legacy("legacy", "あ" * 90)
+        assert self._update("legacy", "い" * 90)["ok"] is False
+
+    def test_output_timing_entry_can_be_created(self, temp_db):
+        result = _create(
+            "out-1", timing="output",
+            condition={"tool": None, "all": [{"field": "text", "op": "regex", "value": "既に記録"}]},
+        )
+        assert result["ok"] is True
+        assert result["entry"]["timing"] == "output"
+
+    def test_output_timing_rejects_prompt_field(self, temp_db):
+        result = _create("out-2", timing="output")  # field='prompt'のまま
+        assert result["ok"] is False
+
+    def test_output_timing_with_block_strength_rejected(self, temp_db):
+        result = _create(
+            "out-3", strength="block", timing="output",
+            condition={"tool": None, "all": [{"field": "text", "op": "regex", "value": "x"}]},
+        )
+        assert result["ok"] is False

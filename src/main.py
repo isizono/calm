@@ -3039,7 +3039,7 @@ def write_feedback_entry(
     body: str | None = None,
     ref: str | None = None,
     strength: Literal["notify", "block"] | None = None,
-    timing: Literal["utterance", "tool_fail", "pre_tool"] | None = None,
+    timing: Literal["utterance", "tool_fail", "pre_tool", "output"] | None = None,
     condition: dict | str | None = None,
     read_mark: int | None = None,
 ) -> dict:
@@ -3053,10 +3053,13 @@ def write_feedback_entry(
     Args:
         name: 英小文字・数字・ハイフンのみ
         action: "create" | "update" | "delete"
-        body: エントリ本文(100字以内)
+        body: エントリ本文(50字以内の一言。新規作成と本文を変える更新に掛かる。長い説明はrefへ)
         ref: 参照(任意、500字以内)
         strength: "notify"(知らせる) | "block"(止める、timing='pre_tool'必須)
         timing: "utterance"(発話時) | "tool_fail"(ツール失敗時) | "pre_tool"(実行直前)
+            | "output"(自分の直前の出力文に語があったとき。次のUserPromptSubmitで届く。
+            照合対象は前回以降のassistantのtextブロックだけ。fieldは'text'固定、toolはnull。
+            同じセッションで同じエントリは5ターンに1回まで。notify専用)
         condition: {"tool": str|None, "all": [{"field","op":"regex"|"len_gt","value"}, ...]}
             (all は0〜3要素、dictまたはJSON文字列)。timingごとのfield予約名は
             get_feedback_entriesで既存エントリを見て確認すること
