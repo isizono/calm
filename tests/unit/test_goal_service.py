@@ -10,6 +10,8 @@ signal 記録、並行書き込みの直列化を検証する。
 import threading
 import time
 
+import pytest
+
 from src.db import get_connection
 from src.services import ask_service as ak
 from src.services import goal_service as gs
@@ -1069,18 +1071,19 @@ class TestFollowupConditionForDesign:
             act, conditions=[{"statement": "c1", "actor": "claude"}, {"statement": "c2", "actor": "human"}]
         )["goal_id_raw"]
         rows = self._conditions(goal_id)
+        assert [r["statement"] for r in rows[:2]] == ["c1", "c2"]
         assert len(rows) == 3
         last = rows[-1]
-        assert last["statement"] == gs.FOLLOWUP_CONDITION_STATEMENT
+        assert "後続の[作業]アクティビティを起票" in last["statement"]
         assert (last["actor"], last["state"], last["bound_type"], last["note"]) == (
             "claude", "open", None, None,
         )
 
-    def test_other_or_no_intent_does_not_append(self, temp_db):
-        for i, intent in enumerate(["implement", "discuss", None]):
-            act = self._act(intent, title=f"a{i}")
-            goal_id = _new_goal(act, handle=f"g{i}")["goal_id_raw"]
-            assert len(self._conditions(goal_id)) == 1
+    @pytest.mark.parametrize("intent", ["implement", "discuss", None])
+    def test_other_or_no_intent_does_not_append(self, temp_db, intent):
+        act = self._act(intent)
+        goal_id = _new_goal(act)["goal_id_raw"]
+        assert len(self._conditions(goal_id)) == 1
 
     def test_alias_of_design_appends(self, temp_db):
         self._act("design")  # intent:design タグを作る
@@ -1114,18 +1117,29 @@ class TestFollowupConditionForDesign:
         goal_id = _new_goal(act)["goal_id_raw"]
         assert len(self._conditions(goal_id)) == 2
 
-    def test_goal_id_waiver_and_noop_do_not_append(self, temp_db):
-        act1 = self._act("design", "d1")
-        act2 = self._act("design", "d2")
-        act3 = self._act("design", "d3")
-        goal_id = _new_goal(act1, handle="shared")["goal_id_raw"]
+    def test_goal_id_form_does_not_append(self, temp_db):
+        goal_id = _new_goal(self._act("design", "d1"), handle="shared")["goal_id_raw"]
         before = len(self._conditions(goal_id))
-        gs.set_goal(act2, {"goal_id": goal_id})
-        gs.set_goal(act3, {"waiver": "不要"})
-        assert _new_goal(act1, handle="shared").get("no_op") is True
+        gs.set_goal(self._act("design", "d2"), {"goal_id": goal_id})
         assert len(self._conditions(goal_id)) == before
 
-    def test_replace_appends_and_missing_activity_not_found(self, temp_db):
+    def test_waiver_form_does_not_append(self, temp_db):
+        act = self._act("design")
+        assert "error" not in gs.set_goal(act, {"waiver": "不要"})
+        conn = get_connection()
+        try:
+            assert conn.execute("SELECT COUNT(*) AS c FROM goal_conditions").fetchone()["c"] == 0
+        finally:
+            conn.close()
+
+    def test_noop_does_not_append(self, temp_db):
+        act = self._act("design")
+        goal_id = _new_goal(act, handle="same")["goal_id_raw"]
+        before = len(self._conditions(goal_id))
+        assert _new_goal(act, handle="same").get("no_op") is True
+        assert len(self._conditions(goal_id)) == before
+
+    def test_replace_appends(self, temp_db):
         act = self._act("design")
         first = _new_goal(act, handle="first")["goal_id_raw"]
         gs.set_goal(self._act("design", "keeper"), {"goal_id": first})  # 孤児化を避ける
@@ -1135,6 +1149,8 @@ class TestFollowupConditionForDesign:
             replace=True,
         )
         assert len(self._conditions(replaced["goal_id_raw"])) == 2
+
+    def test_missing_activity_is_not_found(self, temp_db):
         assert _new_goal(99999, handle="nx")["error"]["code"] == "NOT_FOUND"
 
     def test_open_followup_blocks_judge_then_waived_allows(self, temp_db):
@@ -1145,7 +1161,6 @@ class TestFollowupConditionForDesign:
         blocked = gs.judge_goal(goal_id, "achieved")
         assert blocked["error"]["code"] == "GOAL_NOT_READY"
         followup = self._conditions(goal_id)[-1]
-        assert followup["statement"] == gs.FOLLOWUP_CONDITION_STATEMENT
         gs.update_goal(
             goal_id, [{"op": "set", "id": followup["id"], "state": "waived", "note": "後続不要"}]
         )
