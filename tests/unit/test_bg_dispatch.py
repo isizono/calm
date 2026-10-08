@@ -13,6 +13,11 @@ if str(_PROJECT_ROOT) not in sys.path:
 from scripts.bg_dispatch import build_request, main  # noqa: E402
 
 _PARENT_KWARGS = {"parent_goal_handle": "orch-goal", "parent_condition_id": 12}
+_HOLDER_KWARGS = {
+    "holder_name": "holder-x",
+    "holder_session_id": "sess-123",
+    "holder_transcript": "/t/sess-123.jsonl",
+}
 
 
 def _build(**overrides):
@@ -22,6 +27,8 @@ def _build(**overrides):
         "worktree": "/w",
         **_PARENT_KWARGS,
     }
+    if overrides.get("role") == "consultant":
+        kwargs.update(_HOLDER_KWARGS)
     kwargs.update(overrides)
     return build_request(**kwargs)
 
@@ -129,6 +136,37 @@ class TestBuildRequest:
         else:
             assert shared == body("consultant")
 
+    def test_consultant_request_has_holder_watch_section(self):
+        text = _build(role="consultant")
+        watch = text.split("## 担い手の見張り(常設の仕事)\n", 1)[1].split("\n\n## ", 1)[0]
+        assert "holder-x(sessionId sess-123、transcript /t/sess-123.jsonl)" in watch
+        # 世代交代で替わる担い手を追うため、見るたびに担い手欄から読み直す
+        assert "担い手欄からsessionIdを読み直し" in watch
+        assert "`notify_when_idle`で購読する" in watch
+        assert "CronCreate" in watch
+        assert "statusがbusyのまま、transcriptが25分以上更新されていない" in watch
+        # 後継を自動で起こすのはユーザーの許可待ちなので、検知してログに書くだけ
+        assert "報告先へadd_logsで判定の根拠" in watch
+        assert "後継は起こさない" in watch
+        assert "osascript" not in text
+
+    def test_worker_request_has_no_holder_watch_section(self):
+        assert "担い手の見張り" not in _build()
+        assert "担い手の見張り" not in _build(consultant_activity_id=77)
+
+    @pytest.mark.parametrize("missing", list(_HOLDER_KWARGS))
+    def test_consultant_role_requires_each_holder_value(self, missing):
+        kwargs = {k: v for k, v in _HOLDER_KWARGS.items() if k != missing}
+        with pytest.raises(ValueError):
+            build_request(
+                activity_id=1, activity_title="a", worktree="/w", role="consultant",
+                **_PARENT_KWARGS, **kwargs,
+            )
+
+    def test_worker_role_with_holder_rejected(self):
+        with pytest.raises(ValueError):
+            _build(holder_session_id="sess-123")
+
     def test_unknown_role_rejected(self):
         with pytest.raises(ValueError):
             _build(role="reviewer")
@@ -175,11 +213,15 @@ class TestMainCli:
         "--activity-id", "1", "--activity-title", "t", "--worktree", "/w",
         "--parent-goal-handle", "g", "--parent-condition-id", "2",
     ]
+    _CLI_HOLDER = [
+        "--holder-name", "holder-x", "--holder-session-id", "sess-123",
+        "--holder-transcript", "/t/sess-123.jsonl",
+    ]
 
     def test_main_role_and_consultant_id_change_output(self, capsys):
         main(self._CLI_BASE)
         default = capsys.readouterr().out
-        main(self._CLI_BASE + ["--role", "consultant"])
+        main(self._CLI_BASE + ["--role", "consultant"] + self._CLI_HOLDER)
         assert capsys.readouterr().out != default
         main(self._CLI_BASE + ["--consultant-activity-id", "9"])
         assert "activity_id=9" in capsys.readouterr().out
@@ -189,6 +231,22 @@ class TestMainCli:
             main(self._CLI_BASE + ["--role", "consultant", "--consultant-activity-id", "9"])
         assert exc_info.value.code == 2
         assert "--consultant-activity-id" in capsys.readouterr().err
+
+    def test_main_consultant_embeds_holder_values(self, capsys):
+        main(self._CLI_BASE + ["--role", "consultant"] + self._CLI_HOLDER)
+        assert "holder-x(sessionId sess-123、transcript /t/sess-123.jsonl)" in capsys.readouterr().out
+
+    def test_main_rejects_consultant_without_holder(self, capsys):
+        with pytest.raises(SystemExit) as exc_info:
+            main(self._CLI_BASE + ["--role", "consultant"] + self._CLI_HOLDER[:4])
+        assert exc_info.value.code == 2
+        assert "--holder-transcript" in capsys.readouterr().err
+
+    def test_main_rejects_holder_for_worker(self, capsys):
+        with pytest.raises(SystemExit) as exc_info:
+            main(self._CLI_BASE + self._CLI_HOLDER)
+        assert exc_info.value.code == 2
+        assert "--holder-" in capsys.readouterr().err
 
     def test_main_requires_parent_goal_handle(self, capsys):
         with pytest.raises(SystemExit) as exc_info:
