@@ -204,8 +204,11 @@ def cmd_metrics(args: argparse.Namespace) -> None:
         "delivered_within_24h": within,
         "rate_within_24h": round(within / n, 3) if n else None,
         "baseline_rate": BASELINE_RATE,
-        "observed": sum(1 for s in stats if s["observed_at"]),
-        "unresolved": sum(1 for s in stats if not (s["delivered_at"] and s["observed_at"])),
+        "resolved_observed": sum(1 for s in stats if s["delivered_at"] and s["observed_at"]),
+        "delivered_unobservable": sum(
+            1 for s in stats if s["delivered_at"] and s["unobservable"] and not s["observed_at"]),
+        "unresolved": sum(
+            1 for s in stats if not (s["delivered_at"] and (s["observed_at"] or s["unobservable"]))),
         "same_type_recurrences": sum(1 for s in stats if s["same_type_of"]),
         "note": "率は記録役が訂正と判定した件のうち24時間以内にlesson-deliveryが結ばれた割合。基準は照合係判定の別定義",
     }

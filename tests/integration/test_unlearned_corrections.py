@@ -10,6 +10,8 @@ from src.services.checkin_tier_service import collect_and_assemble
 from src.services.correction_service import (
     LESSON_DELIVERY_TAG,
     LESSON_OBSERVED_TAG,
+    LESSON_UNOBSERVABLE_TAG,
+    SAME_TYPE_CHECKED_TAG,
     UNLEARNED_CORRECTION_TAG,
     correction_stats,
 )
@@ -113,3 +115,30 @@ def test_stats_report_first_delivery_and_same_type(activity_id):
     assert stats[first]["same_type_of"] == []
     assert stats[second]["same_type_of"] == [first]
     assert stats[second]["delivered_at"] is None
+
+
+def test_unobservable_delivery_leaves_list_but_is_not_observed(activity_id):
+    mid = _correction("未教訓化: skillに書いた", activity_id)
+    _material("届け先: skill", [LESSON_DELIVERY_TAG, LESSON_UNOBSERVABLE_TAG], [{"type": "material", "ids": [mid]}])
+
+    assert _block(activity_id) is None
+    conn = get_connection(load_vec=False)
+    try:
+        stat = next(s for s in correction_stats(conn) if s["id"] == mid)
+    finally:
+        conn.close()
+    assert stat["unobservable"] is True and stat["observed_at"] is None
+
+
+def test_same_type_pending_until_checked(activity_id):
+    first = _correction("未教訓化: 型X 1回目", activity_id)
+    second = _correction("未教訓化: 型X 2回目", activity_id)
+    lone = _correction("未教訓化: 型Y", activity_id)
+    add_relation("material", second, [{"type": "material", "ids": [first]}])
+
+    assert [i["id_raw"] for i in _block(activity_id)["same_type_pending"]] == [first, second]
+    assert lone not in [i["id_raw"] for i in _block(activity_id)["same_type_pending"]]
+
+    _material("同型の点検: 型X", [SAME_TYPE_CHECKED_TAG], [{"type": "material", "ids": [first, second]}])
+
+    assert "same_type_pending" not in _block(activity_id)

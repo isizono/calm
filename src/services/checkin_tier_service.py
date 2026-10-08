@@ -97,9 +97,11 @@ UNLEARNED_CORRECTIONS_MAX = 3
 
 _UNLEARNED_CORRECTIONS_GUIDE = (
     "人の訂正で、まだ教訓として届いていないもの。届く置き場に教訓を書き、置き場と発火の契機を書いた記録"
-    "（素タグlesson-delivery）をこの件とadd_relationで結ぶ。置き場は配達の穴で選ぶ（tag notesの更新は生きた個体に届かない・"
-    "大きいnotesは天井で畳まれる・広いpre_toolはbgを止める）。届いたことの観測（素タグlesson-observed）は書き手以外が付ける"
-    "（CALMのscripts/corrections.py observe）。両方揃うと出なくなる。"
+    "（素タグlesson-delivery）をこの件とadd_relationで結ぶ。置き場は観測できるもの（check_inに出るnotes・"
+    "フィードバックエントリ）を優先し、配達の穴で選ぶ（tag notesの更新は生きた個体に届かない・大きいnotesは"
+    "天井で畳まれる・広いpre_toolはbgを止める）。届いたことの観測（素タグlesson-observed）は書き手以外が付ける"
+    "（CALMのscripts/corrections.py observe）。skill・rules等の観測できない置き場なら届け先の記録に"
+    "lesson-unobservableも付ける。same_type_pendingは同じ型の件で、他の誤りの洗い出し待ち。"
 )
 
 # control.dependenciesの上限。
@@ -245,8 +247,8 @@ def _build_decision_candidates(candidates: list[dict], total: int) -> dict | Non
     return result
 
 
-def _build_unlearned_corrections(items: list[dict], total: int) -> dict | None:
-    if not items:
+def _build_unlearned_corrections(items: list[dict], total: int, same_type: list[int]) -> dict | None:
+    if not items and not same_type:
         return None
     shown = []
     for c in items:
@@ -259,6 +261,10 @@ def _build_unlearned_corrections(items: list[dict], total: int) -> dict | None:
     result: dict = {"items": shown, "guide": _UNLEARNED_CORRECTIONS_GUIDE}
     if total > len(shown):
         result["more"] = total - len(shown)
+    if same_type:
+        result["same_type_pending"] = [{"id": i} for i in same_type]
+        for item in result["same_type_pending"]:
+            strip_entity_id_inplace(item)
     return result
 
 
@@ -286,7 +292,8 @@ def _collect_static(conn: sqlite3.Connection, activity_id: int, session_id: str 
     )
 
     unlearned_corrections = _build_unlearned_corrections(
-        *correction_service.unresolved_corrections(conn, activity_id, direct["topic"], UNLEARNED_CORRECTIONS_MAX)
+        *correction_service.unresolved_corrections(conn, activity_id, direct["topic"], UNLEARNED_CORRECTIONS_MAX),
+        correction_service.same_type_pending(conn, activity_id, direct["topic"], UNLEARNED_CORRECTIONS_MAX),
     )
 
     materials_full = get_materials_by_relation_with_conn(conn, activity_id)
