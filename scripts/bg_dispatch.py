@@ -45,9 +45,9 @@ orchが作った束縛条件をこの依頼文の受け手に伝える。依頼�
 許される(兄弟へは事実の周知しか送れない規則の例外)。渡さない依頼文は従来のまま。
 --role consultantは、相談役自身に渡す依頼文の変種に切り替える(実装も調査もせず、
 判断の材料と案を返し、報告後も止まらず待つ)。--consultant-activity-idとは併用できない。
-相談役の依頼文には常設の仕事として担い手の見張り(予告止まり・生死・固まりの検知)が
-入るため、--holder-name・--holder-session-id・--holder-transcriptで起動時点の担い手を
-渡す。
+相談役の依頼文には常設の仕事として担い手の見張り(予告止まり・生死・固まりの検知と、
+orch_liveness.pyがDEAD・STUCKを返した後の後継の起動)が入るため、--holder-name・
+--holder-session-id・--holder-transcriptで起動時点の担い手を渡す。
 
 --pending-dirは、CALMに書けない内容の退避先を依頼文に埋め込む引数(省略時は
 環境変数CALM_PENDING_DIRを見る。どちらも無ければ、退避先を決めずworktree内に
@@ -164,12 +164,16 @@ orchや作業役のbgから、SendMessageかorchアクティビティのログ�
 起動時点の担い手は {holder_name}(sessionId {holder_session_id}、transcript {holder_transcript})。担い手は世代交代で替わるので、見るたびに報告先(親のorchアクティビティ)の説明の担い手欄からsessionIdを読み直し、transcriptはそのsessionIdから引く(`~/.claude/projects/*/<sessionId>.jsonl`)。宛先は、`claude agents --json`でそのsessionIdが一致しpidがある行(複数あればstartedAtが最も新しい行)の今のname。
 
 1. 予告止まりの検査: 担い手へSendMessageの`notify_when_idle`で購読する。1回で切れるので、知らせが来るたびに今の担い手へ張り直す。知らせが来たら、transcriptの最後の返答と状態節の次の一手を突き合わせ、予告した手が打たれずに止まっていれば担い手へSendMessageで起こす
-2. 生死と固まりの見張り: 自分のCronCreate(recurring、30分ごと、:00と:30は避ける)で、担い手を次で判定する
-   - 死: 担い手欄のsessionIdが一致しpidがある行が無い
-   - 固まり: その行のstatusがbusyのまま、transcriptが25分以上更新されていない
+2. 生死と固まりの見張り: 自分のCronCreate(recurring、30分ごと、:00と:30は避ける)で、担い手欄のsessionIdを判定スクリプト `python3 {liveness_script} --session-id <sessionId>` に通す。出力のverdictは次のとおり
+   - DEAD: そのsessionIdが一致しpidがある行が無い
+   - STUCK: その行のstatusがbusyのまま、transcriptが25分以上更新されていない
+   - OK: それ以外
    - 担い手欄が空席なら判定しない(空席は異常ではない)
-3. 死・固まりを見つけたら、報告先へadd_logsで判定の根拠(sessionId、pidの有無、status、transcriptの最終更新時刻)を書く。後継は起こさない(後継を自動で起こすことはユーザーの許可待ち。許可が出たときの扱いはorchが別に伝える)
-4. CronCreateがauto modeに止められたら、迂回も言い換えての再試行もしない。止められたことを報告先へ書き、1の検査だけを続ける
+3. DEADかSTUCKが出たら、まず報告先へadd_logsで判定スクリプトの出力をそのまま書く。そのうえで:
+   - 後継を起こしてよいのは、判定スクリプトがDEADかSTUCKを返した直後で、かつこのorchで直近60分以内に後継を起こしていないときだけ(1つのorchにつき1時間に1回まで)。直近の有無は、報告先のログに「後継を起こした」の記録があるかで確かめる
+   - 後継は、新しいiTerm2の窓の対話の窓口として起こす(bgでは子を振れないため)。`tell application "iTerm2" to tell current session of (create window with default profile) to write text "<コマンド>"`を`osascript <scriptファイル> "<コマンド>"`(on run argv)の形で実行する。コマンドは`cd ~/workspace && claude <担い手と同じ起動フラグ> '<orchの題>のorch続けて。旧担い手は<名前>(sessionId <id>)。引き継いだら旧担い手を止めて'`。起動フラグは、見張りを始めたときと担い手が替わったときに`ps -o args= -p <pid>`で読んで控えておく
+   - 起こしたら、報告先へ「後継を起こした」と、判定したsessionIdと時刻をadd_logsで書く。後継が担い手欄を書き換えて旧担い手を止める
+4. CronCreateや後継の起動がauto modeに止められたら(許可が無い環境)、迂回も言い換えての再試行もしない。後継は起こさず、止められたことと判定の根拠を報告先へ書くだけにし、1の検査と2の判定を続ける
 
 ## 越えない線
 - 外向きの操作、~/.claude配下の変更、既決を見直すことになる判断、auto modeや権限に止められた操作は、進めずに報告先(親のorchアクティビティ)へ返す
@@ -264,6 +268,7 @@ def build_request(
         holder_name=holder_name,
         holder_session_id=holder_session_id,
         holder_transcript=holder_transcript,
+        liveness_script=Path(__file__).resolve().parent / "orch_liveness.py",
     )
 
 
