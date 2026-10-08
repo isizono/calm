@@ -1,8 +1,9 @@
 """議論トピック管理サービス"""
 import re
 import sqlite3
+from typing import Any
 
-from src.db import get_connection, row_to_dict
+from src.db import get_connection, inserted_row_id, row_to_dict
 from src.services.citations_service import (
     apply_and_writeback_conversions,
     upsert_citations_for_owner_with_conn,
@@ -182,7 +183,7 @@ def add_topic(
             "INSERT INTO discussion_topics (title, description) VALUES (?, ?)",
             (title, description),
         )
-        topic_id = cursor.lastrowid
+        topic_id = inserted_row_id(cursor)
 
         # タグをリンク
         tag_ids = ensure_tag_ids(conn, parsed_tags)
@@ -201,8 +202,12 @@ def add_topic(
             tool_name="add_topic",
             table="discussion_topics",
         )
-        title = converted["title"]
-        description = converted["description"]
+        # 非 None で渡した field は変換後も非 None で返る
+        converted_title = converted["title"]
+        converted_description = converted["description"]
+        assert converted_title is not None and converted_description is not None
+        title = converted_title
+        description = converted_description
 
         # 本文中の {{cite:X#NNN}} を citations テーブルに保存
         upsert_citations_for_owner_with_conn(
@@ -227,7 +232,7 @@ def add_topic(
         # 類似トピックをサジェスト（生成済みembeddingを再利用しHTTPリクエストを削減）
         similar = find_similar_topics(embedding_text, exclude_id=topic_id, embedding=embedding_vec)
 
-        result = {"topic_id": topic_id}
+        result: dict[str, Any] = {"topic_id": topic_id}
         if similar:
             result["similar_topics"] = similar
         return result
@@ -273,11 +278,12 @@ def get_topics(
         トピック一覧（total_count付き）
     """
     # タグのバリデーション（tags指定時のみ）
-    parsed_tags = None
+    parsed_tags: list[tuple[str, str]] | None = None
     if tags is not None:
-        parsed_tags = validate_and_parse_tags(tags, required=True)
-        if isinstance(parsed_tags, dict):
-            return parsed_tags
+        parsed = validate_and_parse_tags(tags, required=True)
+        if isinstance(parsed, dict):
+            return parsed
+        parsed_tags = parsed
 
     try:
         if limit < 1:
