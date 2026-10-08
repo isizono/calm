@@ -1252,7 +1252,8 @@ def set_goal(activity_id: int, goal: dict | None, replace: bool = False) -> dict
               "actor": "claude"|"human"|"external",
               "bound": {"type": "activity"|"decision"|"ask", "id": int} | None,
               "state": "open"|"satisfied"|"waived"(既定open), "note": str | None}。
-              waivedはnote必須
+              waivedはnote必須。intent:designのアクティビティに新しいgoalを作ると、
+              後続起票の条件が1件自動で足される(手で書かない。作成時点のタグだけを見る)
             - {"goal_id": int} 既存の未判定goalに紐づける(複数activityにまたがるgoal)
             - {"waiver": str} 終了条件は不要と記録する(理由)
             - None 紐づけ・不要印を外して未定義に戻す

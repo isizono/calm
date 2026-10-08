@@ -174,6 +174,27 @@ def _validate_condition_form(condition: object) -> dict:
     }
 
 
+FOLLOWUP_CONDITION_STATEMENT = (
+    "後続の[作業]アクティビティを起票してこの条件に束縛したか、"
+    "不要な理由を書いてwaivedにした"
+)
+
+
+def _has_intent_design(conn: sqlite3.Connection, activity_id: int) -> bool:
+    """activity のタグが（エイリアスを辿った上で）intent:design を含むかを返す。"""
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM activity_tags at
+        JOIN tags t ON t.id = at.tag_id
+        JOIN tags ct ON ct.id = COALESCE(t.canonical_id, t.id)
+        WHERE at.activity_id = ? AND ct.namespace = 'intent' AND ct.name = 'design'
+        """,
+        (activity_id,),
+    ).fetchone()
+    return row is not None
+
+
 def _insert_condition(conn: sqlite3.Connection, goal_id: int, value: dict) -> int:
     last_satisfied_at = "CURRENT_TIMESTAMP" if value["state"] == "satisfied" else None
     cursor = conn.execute(
@@ -351,6 +372,19 @@ def set_goal_with_conn(conn: sqlite3.Connection, activity_id: int, goal: dict | 
         for cond in normalized_conditions:
             if cond["bound_type"] is not None and not _bound_exists(conn, cond["bound_type"], cond["bound_id"]):
                 return _not_found(f"{cond['bound_type']} {cond['bound_id']} not found")
+
+        # 手書きの同趣旨の条件があっても重複判定はしない
+        if _has_intent_design(conn, activity_id):
+            normalized_conditions.append(
+                {
+                    "statement": FOLLOWUP_CONDITION_STATEMENT,
+                    "actor": "claude",
+                    "state": "open",
+                    "note": None,
+                    "bound_type": None,
+                    "bound_id": None,
+                }
+            )
 
         cursor = conn.execute(
             "INSERT INTO goals (handle, statement) VALUES (?, ?)", (handle, statement)
