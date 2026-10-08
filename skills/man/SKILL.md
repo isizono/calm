@@ -103,7 +103,7 @@ CALMは「着手 → 記録 → 完了 → 同期」のライフサイクルで�
 - **`/ask-compose`** — `add_ask`を呼ぶ前に、question/contextをテンプレートに沿って構成する。「これ聞いといて」「離席するから後で確認して」のように非同期の判断委譲を指示したときにも発動する
 - **`/ask-distill`** — `add_ask`のsimilar_asksを見て、同型の問いが繰り返され裁定が一貫していると気づいたときに、判例をまとめてメタask（kind="meta"）を起票する
 - **`/memory-export`** / **`/memory-import`** — CALMの記録（トピック・決定事項・ログ・資材・アクティビティ）を他のCALMインスタンスとやり取りする。exportは書き出し、importは受け取ったバンドルの取り込み。知識を別環境・別の相手と共有したいときに
-- **`/calm:restart`** — calmのローカルMCPサーバーを強制再起動する（embeddingサーバーも先に停止され、新しいサーバーの起動直後に自動で立ち上がる）。プラグインアップデート後にコード変更を反映させたいときに。ユーザーが手動で打つコマンドで、`restart_server.py`やkill・起動コマンドを自分で実行せず、ユーザーに`/calm:restart`を打ってもらう
+- **`/calm:restart`** — プラグインを更新し、calmのローカルMCPサーバーを強制再起動する（embeddingサーバーも先に停止され、新しいサーバーの起動直後に自動で立ち上がる）。コード変更や設定変更を反映させたいときに、Claudeが自分でrestart skillを呼んで実行する。ユーザーが打ってもよい
 - **`/ask-watch`** — Ask storeをMonitorツールでイベント駆動監視し、同型の問いが繰り返されていないか確認する。「ask storeを監視して」「asksを見張って」等で発動
 - **`/board`** — Claude同士の非同期のやり取り（質問・周知・意見募集・事前の声かけ）を、掲示板トピックへの投稿としてガイドする。相手が今生きていてすぐ返事が欲しいときはSendMessageで直接話しかける（このスキルの対象外）
 - **`/peer-nudge`** — セッション台帳の宛先候補へSendMessageで直接話しかける前に、担当範囲の確認手順・書き方・配慮・返事が来ないときの扱いをガイドする。相手が今生きていない、または往復が1回で済まない意見募集は`board`の担当
@@ -279,7 +279,7 @@ CALMには「壊れてもエラーにならず、静かに機能が縮退する�
 検索・check-in等でベクトル検索を使う際、embeddingサーバー（52836番ポート）が初回encode時に遅延起動する。起動に失敗しても例外は投げず、warningログのみを出して検索がキーワード一致（FTS5）のみに縮退したまま動き続ける。
 
 - **気づき方**: `uv run --no-sync --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/restart_server.py" --status` の `embedding_server.running` が `false` のまま。または後述の`degraded`フラグが立ち続ける
-- **直し方**: ユーザーに`/calm:restart`を打ってもらって再起動する（embeddingサーバーも一緒に入れ替わる）。`restart_server.py`やkill・起動コマンドは自分で実行しない
+- **直し方**: restart skillで再起動する（embeddingサーバーも一緒に入れ替わる）。`restart_server.py`やkill・起動コマンドを直接は打たない
 
 **検索応答の`degraded: true`**
 
@@ -307,7 +307,7 @@ CALMの全hookはfail-open設計（1つのhookの失敗が他の操作を止め�
 - **tag-notes**: タグに紐づく常備情報。そのタグに関連する作業が始まったときにAIへ自動注入される。「タグノート見せて」「このタグのnotes更新して」とAIに頼めば確認・更新できる
 - **振る舞い（habits）**: 全セッション共通のルール。alwaysタイプは全文、intelligentlyタイプはタイトル一覧（マニフェスト）が`~/.claude/rules`配下の自動生成ファイル経由でセッション開始時に読み込まれる（詳細は「記録の構造」参照）。AIに「覚えといて」と言えばOK
 - **`intent:`タグのtag-notes**: 議論・設計・作業の各フェーズでAIにどう振る舞ってほしいかを定義できる。初期状態でdiscussとdesignが登録されている
-- **環境変数**: `~/.claude/settings.json`の`env`フィールドで以下の値をオーバーライドできる。未設定ならデフォルト値で動作する。`/setup`から設定変更を選ぶと、一覧の表示と書き込みをAIが手伝う。変更後は`/calm:restart`でMCPサーバーを再起動する
+- **環境変数**: `~/.claude/settings.json`の`env`フィールドで以下の値をオーバーライドできる。未設定ならデフォルト値で動作する。`/setup`から設定変更を選ぶと、一覧の表示と書き込みをAIが手伝う。変更後はClaudeがrestart skill（`/calm:restart`。プラグイン更新と再起動を行う）でMCPサーバーを再起動する。ユーザーが打ってもよい
 
 | 環境変数名 | デフォルト | 説明 |
 |-----------|-----------|------|
