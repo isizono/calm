@@ -1,4 +1,4 @@
-"""migration 0090_feedback_output_timing のテスト
+"""migration 0092_feedback_output_timing のテスト
 
 - 適用前: timing='output'はCHECKで拒否される
 - 適用後: 'output'が許可され、既存のエントリ・ノートが内容と親子関係を保ったまま残る
@@ -19,12 +19,12 @@ _INSERT = (
 
 
 @pytest.fixture
-def db_before_0090():
-    with db_before_migration("0090") as db_path:
+def db_before_0092():
+    with db_before_migration("0092") as db_path:
         yield db_path
 
 
-def test_output_timing_rejected_before_migration(db_before_0090):
+def test_output_timing_rejected_before_migration(db_before_0092):
     conn = get_connection(load_vec=False)
     try:
         with pytest.raises(sqlite3.IntegrityError):
@@ -34,7 +34,7 @@ def test_output_timing_rejected_before_migration(db_before_0090):
         conn.close()
 
 
-def test_rows_and_children_survive_and_output_is_accepted(db_before_0090):
+def test_rows_and_children_survive_and_output_is_accepted(db_before_0092):
     conn = get_connection(load_vec=False)
     try:
         conn.execute(_INSERT, ("keep", "notify", "utterance"))

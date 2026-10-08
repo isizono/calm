@@ -3,7 +3,7 @@ watch-tags: domain:calm, domain:cc-memory
 watch-direction: true
 watch-migrations: true
 last-synced: 2026-10-07
-last-synced-migration: 0090
+last-synced-migration: 0092
 -->
 
 # CALM DBスキーマ v0
@@ -628,7 +628,7 @@ activityとgoalの紐づけ、または不要印（このactivityには終了条
 - `timing='output'`はClaude自身の直前の出力文（前回照合した位置以降にtranscriptへ追記されたassistantのtextブロック）への照合で、次のUserPromptSubmitで届く。`body`のDB上限は100字だが、新規作成と本文を変える更新にはサービス層が50字の上限を掛ける（上限導入前の既存エントリは本文を書き換えるまでそのまま通る）
 - `feedback_output_cursor`（セッションごとのtranscript既読位置byte_offsetとUserPromptSubmitの通し番号。本文は保存しない）と`feedback_output_cooldowns`（セッション×エントリごとの直近配達時の通し番号。同じエントリの自己発火を抑える）が補助する
 
-関連 migration: 0079_add_feedback_entries, 0090_feedback_output_timing
+関連 migration: 0079_add_feedback_entries, 0092_feedback_output_timing
 
 カラム一覧・インデックス: `db-schema-tables.md` の `feedback_entries`・`feedback_output_cursor`・`feedback_output_cooldowns` 節参照。
 

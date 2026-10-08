@@ -1,6 +1,6 @@
--- Migration 0090: フィードバックエントリにtiming='output'(Claudeの出力文への照合)を追加
+-- Migration 0092: フィードバックエントリにtiming='output'(Claudeの出力文への照合)を追加
 --
--- depends: 0089_sessions_add_stale_on_startup_reason
+-- depends: 0091_add_destination_telemetry
 -- destructive: feedback_entriesのCHECK制約更新のため新テーブルへ全行を写したうえで旧テーブルをDROP TABLEする（行・id・子テーブルの参照は保たれる）
 --
 -- 背景:

@@ -5,7 +5,7 @@
 <!-- 再生成: uv run python scripts/dump_db_schema.py -->
 
 `migrations/` を通し番号順に全適用した結果として得られる、現在のテーブル/ビュー構造の機械的な写しである。
-カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0091）。
+カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0092）。
 
 「なぜこの形なのか」（設計判断の背景・変遷・既知の課題）は `docs/spec/db-schema.md` を参照。
 本ファイルは現在値のみを扱い、変遷の経緯（旧カラムの削除理由等）は記載しない。
@@ -699,14 +699,14 @@ CREATE TABLE feedback_bootstrap_seen (
 <details><summary>CREATE文（生成元migration）</summary>
 
 ```sql
-CREATE TABLE feedback_entries (
+CREATE TABLE "feedback_entries" (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     name              TEXT NOT NULL UNIQUE
                       CHECK (LENGTH(name) > 0 AND name NOT GLOB '*[^a-z0-9-]*'),
     body              TEXT NOT NULL CHECK (LENGTH(body) <= 100 AND LENGTH(TRIM(body)) > 0),
     ref               TEXT CHECK (ref IS NULL OR LENGTH(ref) <= 500),
     strength          TEXT NOT NULL CHECK (strength IN ('notify', 'block')),
-    timing            TEXT NOT NULL CHECK (timing IN ('utterance', 'tool_fail', 'pre_tool')),
+    timing            TEXT NOT NULL CHECK (timing IN ('utterance', 'tool_fail', 'pre_tool', 'output')),
     -- {"tool": str|null, "all": [{"field","op","value"}, ...]}（all は0〜3要素）。
     -- 実行時の評価規則は src/services/feedback_rules.py 参照
     condition_json    TEXT NOT NULL,
@@ -716,8 +716,7 @@ CREATE TABLE feedback_entries (
     created_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     -- strength='block' は実行直前ブロック以外に配達経路を持たないため、
-    -- timing='pre_tool' と常に対応させる（片方だけを許すと、知らせる強さなのに
-    -- 実行直前タイミングを持つ・止める強さなのに配達経路が無い、という組み合わせが作れてしまう）
+    -- timing='pre_tool' と常に対応させる（0079と同じ）
     CHECK ((strength = 'block') = (timing = 'pre_tool'))
 )
 ```
@@ -771,6 +770,53 @@ CREATE TABLE feedback_notes (
     kind        TEXT NOT NULL CHECK (kind IN ('stumble', 'note')),
     body        TEXT NOT NULL CHECK (LENGTH(body) <= 500 AND LENGTH(TRIM(body)) > 0),
     created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+```
+
+</details>
+
+### feedback_output_cooldowns
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| session_id | TEXT | NO | — | PK |
+| entry_id | INTEGER | NO | — | PK |
+| last_turn_seq | INTEGER | NO | — | — |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE feedback_output_cooldowns (
+    session_id     TEXT NOT NULL,
+    entry_id       INTEGER NOT NULL REFERENCES feedback_entries(id),
+    last_turn_seq  INTEGER NOT NULL,
+    PRIMARY KEY (session_id, entry_id)
+)
+```
+
+</details>
+
+### feedback_output_cursor
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| session_id | TEXT | NO | — | PK |
+| byte_offset | INTEGER | NO | `0` | — |
+| turn_seq | INTEGER | NO | `0` | — |
+| updated_at | TIMESTAMP | NO | `CURRENT_TIMESTAMP` | — |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE feedback_output_cursor (
+    session_id   TEXT PRIMARY KEY,
+    byte_offset  INTEGER NOT NULL DEFAULT 0,
+    turn_seq     INTEGER NOT NULL DEFAULT 0,
+    updated_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 )
 ```
 
