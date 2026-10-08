@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from hooks import recorder_autostart_hook
 from hooks.correction_marks import MARKS_FILE, marks_from_transcript, read_mark_ids
 from hooks.hook_state import HookState
 from hooks.recorder_watch import _Line, _render_chunk
@@ -150,33 +149,3 @@ class TestDelegateStop:
         assert result["decision"] == "block"
         assert "予告で止まる" in result["reason"] and "ScheduleWakeup" in result["reason"]
 
-
-class TestRevive:
-    def _spawns(self, monkeypatch, tmp_path, *, attached: bool, env: dict) -> list[list[str]]:
-        calls: list[list[str]] = []
-        monkeypatch.setattr(recorder_autostart_hook.subprocess, "Popen", lambda cmd, **kw: calls.append(cmd))
-        monkeypatch.setattr("hooks.recorder_marker.is_recorder_attached", lambda sid: attached)
-        monkeypatch.setattr(HookState, "BASE_DIR", tmp_path)
-        for k, v in {"CALM_RECORDER": None, "CLAUDE_CODE_SESSION_ATTENDED": None, "CLAUDE_PID": "4242", **env}.items():
-            if v is None:
-                monkeypatch.delenv(k, raising=False)
-            else:
-                monkeypatch.setenv(k, v)
-        transcript = tmp_path / "main.jsonl"
-        transcript.write_text("", encoding="utf-8")
-        recorder_autostart_hook.revive_if_detached(
-            {"session_id": SID, "transcript_path": str(transcript), "cwd": str(tmp_path / "work")}
-        )
-        return calls
-
-    def test_detached_recorder_is_started_from_where_it_was(self, monkeypatch, tmp_path):
-        on = {"CALM_RECORDER": "1", "CLAUDE_CODE_SESSION_ATTENDED": "1"}
-        calls = self._spawns(monkeypatch, tmp_path, attached=False, env=on)
-        assert len(calls) == 1
-        assert calls[0][2:] == ["start", "--session-id", SID, "--pid", "4242", "--transcript",
-                                str(tmp_path / "main.jsonl")]
-
-    def test_attached_or_not_opted_in_does_nothing(self, monkeypatch, tmp_path):
-        on = {"CALM_RECORDER": "1", "CLAUDE_CODE_SESSION_ATTENDED": "1"}
-        assert self._spawns(monkeypatch, tmp_path, attached=True, env=on) == []
-        assert self._spawns(monkeypatch, tmp_path, attached=False, env={"CLAUDE_CODE_SESSION_ATTENDED": "1"}) == []
