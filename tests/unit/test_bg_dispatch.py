@@ -145,10 +145,15 @@ class TestBuildRequest:
         assert "`notify_when_idle`で購読する" in watch
         assert "CronCreate" in watch
         assert "statusがbusyのまま、transcriptが25分以上更新されていない" in watch
-        # 後継を自動で起こすのはユーザーの許可待ちなので、検知してログに書くだけ
-        assert "報告先へadd_logsで判定の根拠" in watch
-        assert "後継は起こさない" in watch
-        assert "osascript" not in text
+        liveness = Path(__file__).resolve().parents[2] / "scripts" / "orch_liveness.py"
+        assert liveness.is_file()
+        assert f"python3 {liveness} --session-id <sessionId>" in watch
+        # 許可がある環境: 判定スクリプトを通した後だけ、1つのorchにつき1時間に1回まで後継を起こす
+        assert "判定スクリプトがDEADかSTUCKを返した直後" in watch
+        assert "1つのorchにつき1時間に1回まで" in watch
+        assert "osascript" in watch
+        # 許可が無い環境: 止められたら迂回せず、後継は起こさずログに書くだけ
+        assert "後継は起こさず、止められたことと判定の根拠を報告先へ書くだけ" in watch
 
     def test_worker_request_has_no_holder_watch_section(self):
         assert "担い手の見張り" not in _build()
