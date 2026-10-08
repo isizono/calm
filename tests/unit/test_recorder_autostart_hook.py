@@ -415,3 +415,18 @@ class TestReviveOnPrompt:
         hook.revive_if_detached(self._payload(cwd=own_cwd))
 
         assert calls == []
+
+    def test_unattended_session_does_nothing(self, calls, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ATTENDED", "0")
+
+        hook.revive_if_detached(self._payload())
+
+        assert calls == []
+
+    def test_failed_attempt_is_not_retried_within_interval(self, calls):
+        hook.revive_if_detached(self._payload(), now=1000.0)
+        hook.revive_if_detached(self._payload(), now=1000.0 + hook._REVIVE_RETRY_SEC - 1)
+        assert len(_start_calls(calls)) == 1
+
+        hook.revive_if_detached(self._payload(), now=1000.0 + hook._REVIVE_RETRY_SEC)
+        assert len(_start_calls(calls)) == 2

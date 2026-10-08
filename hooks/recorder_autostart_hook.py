@@ -57,6 +57,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 _project_root = Path(__file__).resolve().parents[1]
@@ -189,22 +190,37 @@ def _start_for(payload: dict, *, stop_stale: bool) -> None:
     _spawn_start(session_id, main_pid, transcript_path)
 
 
-def revive_if_detached(payload: dict) -> None:
+# 起こし直しが恒常的に失敗する環境（tmux・venvが無い等）で、人の発話のたびに起動を試み続けないための間隔。
+_REVIVE_RETRY_SEC = 300
+
+
+# ponytail: 長く外れていた窓口では、溜まった差分を片に切って全部読み直す（数MBなら片が数百）。
+# 費用が問題になったら、空白区間は印の付いた発話だけ拾う形にする。
+def revive_if_detached(payload: dict, *, now: float | None = None) -> None:
     """UserPromptSubmitから呼ぶ。記録役を使う設定なのに付いていなければ起こし直す。
 
     記録役が外から落とされても（tmuxサーバーごと落ちる等）、起動の契機が
     SessionStartだけだと、長く生きる窓口ではcompactまで誰も起こし直さない。
     cursor.jsonは残るので、起こし直せば落ちた位置から読み直す。
-    # ponytail: 長く外れていた窓口では、溜まった差分を片に切って全部読み直す
-    # （数MBなら片が数百）。費用が問題になったら、空白区間は印の付いた発話だけ拾う形にする。
+    試みた時刻を実行ディレクトリに残し、_REVIVE_RETRY_SEC以内は再び試みない。
     """
     if sys.platform == "win32" or not _wants_recorder():
         return
     from hooks.recorder_marker import is_recorder_attached
 
     session_id = payload.get("session_id")
-    if isinstance(session_id, str) and session_id and not is_recorder_attached(session_id):
-        _start_for(payload, stop_stale=False)
+    if not isinstance(session_id, str) or not session_id or is_recorder_attached(session_id):
+        return
+    now = time.time() if now is None else now
+    stamp = run_dir_for(session_id) / "revive_attempt"
+    try:
+        if now - float(stamp.read_text(encoding="utf-8")) < _REVIVE_RETRY_SEC:
+            return
+    except (OSError, ValueError):
+        pass
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text(str(now), encoding="utf-8")
+    _start_for(payload, stop_stale=False)
 
 
 if __name__ == "__main__":
