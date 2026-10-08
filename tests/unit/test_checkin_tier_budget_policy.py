@@ -121,7 +121,7 @@ def _over_cap_response() -> dict:
 
 
 def _folded_tag(out: dict) -> str:
-    return next(n["tag"] for n in out["env"]["tag_notes"] if n["notes"].startswith(f"{n['tag']} のnotesはcheck_in"))
+    return next(n["tag"] for n in out["env"]["tag_notes"] if n["notes"] == _fold_pointer_text(n["tag"]))
 
 
 class TestFoldedTagNotesLedger:
@@ -154,6 +154,37 @@ class TestFoldedTagNotesLedger:
         second_tags = [n["tag"] for n in second.get("env", {}).get("tag_notes", [])]
         assert folded not in second_tags
 
+    def test_tag_notes_key_is_removed_when_the_only_item_is_dropped(self, monkeypatch):
+        self._patch_session(monkeypatch)
+        tag_service._fold_pointer_shown.clear()
+        tag_service._fold_pointer_shown["sess-1"] = {"domain:huge-a"}
+        response = _base_response()
+        response["env"]["tag_notes"] = [
+            {"tag": "domain:huge-a", "notes": "x" * (CHECKIN_TAG_NOTES_CAP_CHARS + 100)}
+        ]
+
+        out = rb.apply_budget(response, cts.TIER_FORM_BUDGET_POLICY)
+
+        assert "tag_notes" not in out["env"]
+
+    def test_always_inject_namespace_pointer_is_shown_every_time(self, monkeypatch):
+        self._patch_session(monkeypatch)
+        tag_service._fold_pointer_shown.clear()
+
+        def response():
+            r = _base_response()
+            r["env"]["tag_notes"] = [
+                {"tag": "intent:huge", "notes": "x" * (_TAG_NOTES_RATCHET_CEILING - 100)},
+                {"tag": "domain:huge", "notes": "y" * (_TAG_NOTES_RATCHET_CEILING - 100)},
+            ]
+            return r
+
+        for _ in range(2):
+            out = rb.apply_budget(response(), cts.TIER_FORM_BUDGET_POLICY)
+            by_tag = {n["tag"]: n["notes"] for n in out["env"]["tag_notes"]}
+            # 大きさが同じなら先に畳まれるのは並びの先頭(intent)。毎回ポインタが出る
+            assert by_tag["intent:huge"] == _fold_pointer_text("intent:huge")
+
     def test_subagent_and_parent_count_pointers_separately(self, monkeypatch):
         self._patch_session(monkeypatch)
         tag_service._fold_pointer_shown.clear()
@@ -166,6 +197,7 @@ class TestFoldedTagNotesLedger:
             session_identity.reset_current_agent_id(token)
 
         assert _folded_tag(sub) == _folded_tag(parent)
+        assert sub["env"]["tag_notes"] != []
 
 
 class TestControlExcludedFromMainBudgetAndNeverFolded:

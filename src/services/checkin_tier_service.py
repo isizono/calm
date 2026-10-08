@@ -235,6 +235,10 @@ def _build_decision_candidates(candidates: list[dict], total: int) -> dict | Non
     return result
 
 
+# 配信済みにせず毎回注入するnamespace。天井で畳んでも帳簿の対象にしない。
+ALWAYS_INJECT_NAMESPACES = ["intent"]
+
+
 def _collect_static(conn: sqlite3.Connection, activity_id: int, session_id: str | None) -> dict | None:
     """statusを変更する前に完結する読み取り（tag_notesの注入済み記録更新は除く）。
 
@@ -246,7 +250,7 @@ def _collect_static(conn: sqlite3.Connection, activity_id: int, session_id: str 
     activity = row_to_dict(row)
     tags = get_entity_tags(conn, "activity_tags", "activity_id", activity_id)
     tag_notes = collect_tag_notes_for_injection(
-        conn, tags, session_id=session_id, always_inject_namespaces=["intent"]
+        conn, tags, session_id=session_id, always_inject_namespaces=ALWAYS_INJECT_NAMESPACES
     ) or []
 
     direct = _get_direct_relations(conn, "activity", activity_id)
@@ -546,7 +550,7 @@ def _fold_tag_notes(response: dict) -> None:
         tag = item.get("tag")
         if not isinstance(tag, str):
             continue
-        if release_folded_tag(session_id, tag):
+        if tag.partition(":")[0] in ALWAYS_INJECT_NAMESPACES or release_folded_tag(session_id, tag):
             item["notes"] = _fold_pointer_text(tag)
         else:
             notes.remove(item)

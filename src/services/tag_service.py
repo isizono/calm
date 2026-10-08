@@ -1207,7 +1207,8 @@ _INJECTED_TAGS_MAX_SESSIONS = 256
 
 # check_inの字数の天井で畳んだタグのうち、省略ポインタを出し済みのもの（delivery_keyキー）。
 # 畳んだタグは全文が届いていないため_injected_tagsには入れず、ポインタを繰り返し
-# 出さないためだけにここへ記録する。
+# 出さないためだけにここへ記録する。_injected_tagsとは別に退避されるので、
+# 2つの台帳の寿命は一致しない（退避されたセッションはポインタをもう一度出すだけで実害はない）。
 _fold_pointer_shown: dict[str, set[str]] = {}
 _fold_pointer_shown_lock = threading.Lock()
 
