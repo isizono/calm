@@ -190,11 +190,23 @@ def main() -> None:
         # 6.5 止まる前の置き手: 自走するセッション(委譲先の目印かorchタグのactivityに
         # check-in中)が、このturnで問いの配達先も起こされる仕掛けも置かずに終えるなら1回blockする。
         # 2回目のStopはブロック上限で通るので、正当に終えるならそのまま終えられる
-        if (
+        no_wake = (
             has_checkin
             and not _has_wake_or_delivery(data, all_events, current_turn)
             and _is_self_driving_activity(state.get_checked_in_activity())
-        ):
+        )
+        # 6.4 未教訓化の持ち越し: 委譲先が、check-in先の未解消の未教訓化を抱えたまま
+        # 終えるなら1回blockする。同じ件では二度止めない（新しい件が積まれたときだけ）。
+        # 6.5と同じStopで両方当たるときは1回のblockにまとめる（上限1回のため、
+        # 別々に出すと後ろの段が評価されないまま次のStopで通ってしまう）
+        unlearned = _new_unlearned_for_delegate(state) if has_checkin else []
+        if unlearned:
+            state.add_correction_ids("stop", {i["id"] for i in unlearned})
+            state.increment_block_count()
+            reason = _unlearned_reason(unlearned)
+            harness.emit_block(f"{reason}\n\n{_NO_WAKE_REASON}" if no_wake else reason)
+            return
+        if no_wake:
             state.increment_block_count()
             harness.emit_block(_NO_WAKE_REASON)
             return
@@ -280,6 +292,32 @@ def _is_self_driving_activity(activity_id: int | None) -> bool:
     except Exception as e:
         print(f"stop_hook.py orch tag lookup error: {e}", file=sys.stderr)
         return False
+
+
+def _new_unlearned_for_delegate(state: HookState) -> list[dict]:
+    """委譲先なら、check-in先の未解消の未教訓化のうちまだ止めていないものを返す。
+
+    窓口は止めず、次のプロンプトでの注意（user_prompt_submit_hook）に留める。
+    DBを読めないときは止めない側に倒す。
+    """
+    if not is_delegate_activity(state.get_checked_in_activity()):
+        return []
+    try:
+        from hooks.correction_marks import new_unresolved
+
+        return new_unresolved(state, "stop")
+    except Exception as e:
+        print(f"stop_hook.py unlearned correction lookup error: {e}", file=sys.stderr)
+        return []
+
+
+def _unlearned_reason(items: list[dict]) -> str:
+    titles = "／".join(i["title"] for i in items[:3])
+    return (
+        f"check-in先に、人の訂正が未教訓化のまま{len(items)}件残っています（{titles}）。"
+        "終える前に、教訓を届く置き場に書き、置き場と発火の契機を書いた記録（素タグlesson-delivery）を"
+        "その件とadd_relationで結んでください。今の手番で書けない理由があれば、報告先へのadd_logsにその理由を残してください。"
+    )
 
 
 def _has_add_logs_since_first_checkin(events: list[dict]) -> bool:
