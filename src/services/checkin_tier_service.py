@@ -100,7 +100,7 @@ _UNLEARNED_CORRECTIONS_GUIDE = (
     "（素タグlesson-delivery）をこの件とadd_relationで結ぶ。置き場は観測できるもの（check_inに出るnotes・"
     "フィードバックエントリ）を優先し、配達の穴で選ぶ（tag notesの更新は生きた個体に届かない・大きいnotesは"
     "天井で畳まれる・広いpre_toolはbgを止める）。届いたことの観測（素タグlesson-observed）は書き手以外が付ける"
-    "（CALMのscripts/corrections.py observe）。skill・rules等の観測できない置き場なら届け先の記録に"
+    "（CALMのscripts/corrections.py observe）。skill等の観測できない置き場なら届け先の記録に"
     "lesson-unobservableも付ける。same_type_pendingは同じ型の件で、他の誤りの洗い出し待ち。"
 )
 
@@ -256,6 +256,8 @@ def _build_unlearned_corrections(items: list[dict], total: int, same_type: list[
         if len(title) > DECISION_CANDIDATE_TITLE_MAX_CHARS:
             title = title[:DECISION_CANDIDATE_TITLE_MAX_CHARS] + "…"
         item = {"id": c["id"], "title": title, "delivered": c["delivered"], "observed": c["observed"]}
+        if c.get("recurred"):
+            item["recurred"] = True
         strip_entity_id_inplace(item)
         shown.append(item)
     result: dict = {"items": shown, "guide": _UNLEARNED_CORRECTIONS_GUIDE}

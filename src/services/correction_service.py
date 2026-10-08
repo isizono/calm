@@ -5,7 +5,7 @@
 - 届け先: 次にどこから届くか（置き場と発火の契機）を書いた記録（素タグ`lesson-delivery`）
 - 観測: 届いたことを書き手以外が確かめた記録（素タグ`lesson-observed`）
 どちらもlogかmaterialで、未教訓化のmaterialとadd_relationで結ばれていればよい。
-skill・rulesのように届いたことを観測できない置き場に書いたときは、届け先の記録に
+skillのように届いたことを観測できない置き場に書いたときは、届け先の記録に
 素タグ`lesson-unobservable`も付ける。その件は未解消の一覧から外れるが、解消とは
 数えず「観測なし」として別に数える（混ぜると観測できない件で解消率が水増しされる）。
 
@@ -75,9 +75,32 @@ def unresolved_corrections(
             ORDER BY m.created_at, m.id LIMIT ?""",
         [LESSON_DELIVERY_TAG] * 2 + [LESSON_OBSERVED_TAG] * 2 + params + [limit],
     ).fetchall()
-    return [
-        {"id": r[0], "title": r[1], "delivered": bool(r[2]), "observed": bool(r[3])} for r in rows
-    ], total
+    items = [{"id": r[0], "title": r[1], "delivered": bool(r[2]), "observed": bool(r[3])} for r in rows]
+    recurred = _recurred_after_resolution(conn, [i["id"] for i in items])
+    for item in items:
+        if item["id"] in recurred:
+            item["recurred"] = True
+    return items, total
+
+
+def _recurred_after_resolution(conn: sqlite3.Connection, ids: list[int]) -> set[int]:
+    """idsのうち、同じ型として結ばれた古い件が既に解消済み（届け先＋観測か観測なし）のもの。
+
+    届いていたのに同じ型が再来したことを、新しい件の側に見えるようにする。
+    """
+    if not ids:
+        return set()
+    rows = conn.execute(
+        f"""SELECT DISTINCT rs.source_id FROM relations_view rs
+            JOIN materials m ON m.id = rs.target_id
+            WHERE rs.source_type = 'material' AND rs.source_id IN ({','.join('?' * len(ids))})
+              AND rs.target_type = 'material' AND rs.target_id < rs.source_id
+              AND {_IS_CORRECTION}
+              AND {_LINKED_TAG_EXISTS} AND ({_LINKED_TAG_EXISTS} OR {_LINKED_TAG_EXISTS})""",
+        [*ids, UNLEARNED_CORRECTION_TAG] + [LESSON_DELIVERY_TAG] * 2 + [LESSON_OBSERVED_TAG] * 2
+        + [LESSON_UNOBSERVABLE_TAG] * 2,
+    ).fetchall()
+    return {r[0] for r in rows}
 
 
 def same_type_pending(conn: sqlite3.Connection, activity_id: int, topic_ids: list[int], limit: int) -> list[int]:

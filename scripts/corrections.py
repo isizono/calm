@@ -10,6 +10,7 @@
     - checkin: DBの複製に対し、新しいセッションとしてcheck_inした応答に、教訓の文が全文で出るか
       （複製に対して行うので、本物のactivityの状態・既出記録は変えない）
     - feedback-entry: 届け先の記録より後に、そのフィードバックエントリが配達されたセッションがあるか
+    - file: 全セッションの起動時に読み込まれるファイル（rules・CLAUDE.md・habitsの投影）に全文があるか
 - metrics: 訂正から24時間以内に届け先が書かれた率と、同じ型の再来の数
 
 基準の19.5%（資材「feedback未記入の再計測: 最終集計」）は、人の訂正190件について
@@ -131,6 +132,15 @@ def _observe_feedback_entry(conn: sqlite3.Connection, correction_id: int, entry_
     )
 
 
+def _observe_file(path: Path, needle: str) -> tuple[bool, str]:
+    """全セッションの起動時に文脈へ読み込まれるファイル（rules・CLAUDE.md・habitsの投影）に全文があるか。"""
+    try:
+        found = needle in path.read_text(encoding="utf-8")
+    except OSError as e:
+        return False, f"{path} を読めない: {e}"
+    return found, f"起動時に全セッションへ読み込まれる {path} に、文「{needle}」が{'全文である' if found else '無い'}"
+
+
 def cmd_observe(args: argparse.Namespace) -> None:
     from src.db import get_connection
 
@@ -141,6 +151,10 @@ def cmd_observe(args: argparse.Namespace) -> None:
             if not (args.activity and args.needle):
                 sys.exit("checkinには--activityと--needleが要る")
             found, evidence = _observe_checkin(args.activity, args.needle)
+        elif args.mode == "file":
+            if not (args.path and args.needle):
+                sys.exit("fileには--pathと--needleが要る")
+            found, evidence = _observe_file(Path(args.path).expanduser(), args.needle)
         else:
             if not args.entry:
                 sys.exit("feedback-entryには--entryが要る")
@@ -180,6 +194,18 @@ def _uttered_at(content: str, created_at: str) -> datetime:
         return _utc(created_at)
 
 
+def _recurred_after_resolution(stat: dict, by_id: dict, uttered: datetime) -> bool:
+    """同じ型の古い件が、この件の発話より前に解消していたか（届いていたのに再来した）。"""
+    for old_id in stat["same_type_of"]:
+        old = by_id.get(old_id)
+        if not old or not old["delivered_at"]:
+            continue
+        resolved_at = old["observed_at"] or (old["delivered_at"] if old["unobservable"] else None)
+        if resolved_at and _utc(max(resolved_at, old["delivered_at"])) <= uttered:
+            return True
+    return False
+
+
 def cmd_metrics(args: argparse.Namespace) -> None:
     from src.db import get_connection
     from src.services.correction_service import correction_stats
@@ -191,6 +217,7 @@ def cmd_metrics(args: argparse.Namespace) -> None:
                     for s in stats}
     finally:
         conn.close()
+    by_id = {s["id"]: s for s in stats}
     n = len(stats)
     within = 0
     for s in stats:
@@ -210,6 +237,9 @@ def cmd_metrics(args: argparse.Namespace) -> None:
         "unresolved": sum(
             1 for s in stats if not (s["delivered_at"] and (s["observed_at"] or s["unobservable"]))),
         "same_type_recurrences": sum(1 for s in stats if s["same_type_of"]),
+        "recurred_after_resolution": sum(
+            1 for s in stats
+            if _recurred_after_resolution(s, by_id, _uttered_at(contents.get(s["id"], ""), s["created_at"]))),
         "note": "率は記録役が訂正と判定した件のうち24時間以内にlesson-deliveryが結ばれた割合。基準は照合係判定の別定義",
     }
     print(json.dumps(out, ensure_ascii=False, indent=2))
@@ -232,11 +262,12 @@ def main(argv: list[str] | None = None) -> None:
     p.set_defaults(func=cmd_context)
 
     p = sub.add_parser("observe", help="教訓が届いたかを確かめ、届いていれば観測を記録する")
-    p.add_argument("mode", choices=["checkin", "feedback-entry"])
+    p.add_argument("mode", choices=["checkin", "feedback-entry", "file"])
     p.add_argument("--correction", type=int, required=True, help="未教訓化のmaterial id")
     p.add_argument("--activity", type=int)
     p.add_argument("--needle", help="check_inの応答に全文で出るべき教訓の文")
     p.add_argument("--entry", type=int, help="フィードバックエントリのid")
+    p.add_argument("--path", help="起動時に読み込まれるファイル（~/.claude/rules/*.md、CLAUDE.md等）")
     p.add_argument("--record", action="store_true", help="届いていれば観測の記録を書く")
     p.set_defaults(func=cmd_observe)
 

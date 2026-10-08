@@ -142,3 +142,18 @@ def test_same_type_pending_until_checked(activity_id):
     _material("同型の点検: 型X", [SAME_TYPE_CHECKED_TAG], [{"type": "material", "ids": [first, second]}])
 
     assert "same_type_pending" not in _block(activity_id)
+
+
+def test_recurrence_of_resolved_type_is_flagged(activity_id):
+    old = _correction("未教訓化: 型X 1回目", activity_id)
+    _material("届け先", [LESSON_DELIVERY_TAG], [{"type": "material", "ids": [old]}])
+    _material("観測", [LESSON_OBSERVED_TAG], [{"type": "material", "ids": [old]}])
+    new = _correction("未教訓化: 型X 再来", activity_id)
+    add_relation("material", new, [{"type": "material", "ids": [old]}])
+    unrelated = _correction("未教訓化: 型Y", activity_id)
+
+    items = {i["id_raw"]: i for i in _block(activity_id)["items"]}
+
+    assert items[new].get("recurred") is True
+    assert "recurred" not in items[unrelated]
+    assert old not in items
