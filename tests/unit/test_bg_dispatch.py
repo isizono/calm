@@ -94,6 +94,50 @@ class TestBuildRequest:
         text = _build()
         assert "退避先の設定なし" in text
 
+    def test_worker_reads_goal_statement_as_purpose(self):
+        assert "goalのstatementをこの仕事の目的として読む" in _build()
+
+    def test_no_consultant_section_by_default(self):
+        text = _build()
+        assert "## 相談先" not in text
+        assert "相談役" not in text
+
+    def test_consultant_named_as_consultation_target_not_sibling(self):
+        text = _build(consultant_activity_id=77)
+        assert "## 相談先" in text
+        assert "activity_id=77" in text
+        assert "兄弟ではなく相談先" in text
+        assert "SendMessage" in text.split("## 相談先")[1].split("## やらないこと")[0]
+        # 兄弟への「質問は送らない」は残る(相談先の節がその後ろで例外を述べる)
+        assert "作業の依頼・質問・進捗の共有は送らない" in text
+
+    def test_consultant_section_removal_restores_default_text(self):
+        with_consultant = _build(consultant_activity_id=77)
+        before, rest = with_consultant.split("\n\n## 相談先", 1)
+        after = rest.split("\n\n## やらないこと", 1)[1]
+        assert before + "\n\n## やらないこと" + after == _build()
+
+    def test_consultant_role_forbids_implementation_and_keeps_waiting(self):
+        text = _build(role="consultant", worktree="/w2")
+        assert "相談役のbgセッション" in text
+        assert "実装も調査も実測もしません" in text
+        assert "報告のあとも自分から終わらない" in text
+        assert "実装担当" not in text
+
+    def test_consultant_role_keeps_parent_check_and_report_destination(self):
+        text = _build(role="consultant", activity_id=5, parent_goal_handle="p", parent_condition_id=3)
+        assert 'get_goal(handle="p")' in text
+        assert "id_raw=3の条件のboundが" in text
+        assert "報告先(親のorchアクティビティ)" in text
+
+    def test_consultant_role_ignores_consultant_section(self):
+        text = _build(role="consultant", consultant_activity_id=77)
+        assert "## 相談先" not in text
+
+    def test_unknown_role_rejected(self):
+        with pytest.raises(ValueError):
+            _build(role="reviewer")
+
 
 class TestMainCli:
     def test_main_prints_request_with_all_args(self, capsys):
@@ -127,6 +171,16 @@ class TestMainCli:
         assert 'get_goal(handle="orch-goal")' in out
         assert "id_raw=12の条件のboundが" in out
         assert "/tmp/pending" in out
+
+    def test_main_role_consultant_and_consultant_id(self, capsys):
+        base = [
+            "--activity-id", "1", "--activity-title", "t", "--worktree", "/w",
+            "--parent-goal-handle", "g", "--parent-condition-id", "2",
+        ]
+        main(base + ["--role", "consultant"])
+        assert "相談役のbgセッション" in capsys.readouterr().out
+        main(base + ["--consultant-activity-id", "9"])
+        assert "activity_id=9" in capsys.readouterr().out
 
     def test_main_requires_parent_goal_handle(self, capsys):
         with pytest.raises(SystemExit) as exc_info:
