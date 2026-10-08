@@ -373,6 +373,7 @@ def set_goal_with_conn(conn: sqlite3.Connection, activity_id: int, goal: dict | 
             if cond["bound_type"] is not None and not _bound_exists(conn, cond["bound_type"], cond["bound_id"]):
                 return _not_found(f"{cond['bound_type']} {cond['bound_id']} not found")
 
+        # 手書きの同趣旨の条件があっても重複判定はしない
         if _has_intent_design(conn, activity_id):
             normalized_conditions.append(
                 {
