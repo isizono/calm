@@ -1,7 +1,6 @@
 ---
 name: restart
-description: CALMのローカルMCPサーバーを強制再起動する。プラグイン更新後にコード変更を反映したいときに使う。embeddingサーバーも停止され、新しいサーバーの起動直後に自動で立ち上がる。
-disable-model-invocation: true
+description: CALMのプラグインを最新にし、ローカルMCPサーバーを強制再起動する。CALMのPRがマージされた後や、環境変数などの設定を変えた後に、Claudeが自分で実行してよい。embeddingサーバーも停止され、新しいサーバーの起動直後に自動で立ち上がる。
 ---
 
 # restart
@@ -16,15 +15,27 @@ embeddingサーバー(52836)はMCPサーバーの再起動より前に必ず停�
 
 ## 再起動の前
 
-- 古い窓口から打たない: `uv run --no-sync --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/restart_server.py" --status` の `mcp_server.started_at` を確かめ、直近の再起動より後の時刻であれば、別の窓口が既に打った後なので打ち直さない
+1. プラグインを最新にする: `claude plugin update calm@calm-marketplace` を実行する。設定を変えただけでコードの更新が無いときは省いてよい
+2. 急がないなら、更新だけして再起動は打たなくてよい。サーバーの陳腐化 watchdog が、処理中の呼び出しが0件になるのを待って自動で再起動する（確認間隔は `CALM_STALENESS_CHECK_INTERVAL_SEC`、既定1時間）
+3. 更新後の版のディレクトリを調べる。セッションの `${CLAUDE_PLUGIN_ROOT}` は更新前の版を指したままのことがあるため、次で取り直す:
+
+```
+PLUGIN_DIR=$(jq -r '.plugins["calm@calm-marketplace"][0].installPath' ~/.claude/plugins/installed_plugins.json)
+```
+
+4. 古い窓口から打たない: `uv run --directory "$PLUGIN_DIR" python "$PLUGIN_DIR/scripts/restart_server.py" --status` の `mcp_server.started_at` を確かめ、直近の再起動より後の時刻であれば、別の窓口が既に打った後なので打ち直さない
+
+新しい版のディレクトリは venv が未作成のことがある。`--no-sync` を付けると、スクリプト冒頭の `psutil` の import で `No module named 'psutil'` となり落ちるため、ここでは付けない（`uv run` が先に依存を同期する）。
 
 ## 実行
 
-ユーザーがこのスキルを明示的に呼び出したこと自体を実行の承認とみなし、追加確認は取らずに以下をBashツールで実行する。
+再起動が必要になったら、確認は取らずに以下をBashツールで実行する。
 
 ```
-uv run --no-sync --directory "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/scripts/restart_server.py"
+uv run --directory "$PLUGIN_DIR" python "$PLUGIN_DIR/scripts/restart_server.py"
 ```
+
+外から終了させるため、watchdog の「処理中の呼び出しが0件になるまで待つ」ガードを通らない。停止の直前に処理中だった書き込みは、失敗に見えても DB には書かれていることがある。再起動の前後で失敗に見えた書き込みは、リトライする前に検索で記録があるかを確かめる（確かめずに再送すると重複する）。
 
 ## 直後
 
