@@ -202,12 +202,13 @@ class _RelayedProcess:
         if self._finished:
             return self.returncode
         try:
-            self.returncode = self._handle.wait(timeout=timeout)
+            rc = self._handle.wait(timeout=timeout)
         except psutil.TimeoutExpired as e:
             raise subprocess.TimeoutExpired(str(self.pid), timeout) from e
         except psutil.NoSuchProcess:
-            pass
+            rc = None
         self._finished = True
+        self.returncode = _UNKNOWN_RETURNCODE if rc is None else rc
         return self.returncode
 
     def terminate(self) -> None:
