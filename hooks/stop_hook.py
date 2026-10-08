@@ -7,6 +7,7 @@
 4. events.jsonl全読み
 5. Skill Span判定 → Span中なら即approve（安全弁: MAX_SKILL_SPAN_TURNS）
 6. check-in判定（e:toolでcheck_in/add_activityが1件でもあるか、猶予あり）
+6.5 自走するactivityで、問いの配達先も起こされる仕掛けも置かずに終えるなら1回block
 7. nudge判定 + 状態更新 → approve
 """
 import os
@@ -42,6 +43,18 @@ _BLOCK_LIMIT = 1
 _CHECKIN_DEFER_TURNS = 3
 _MAX_SKILL_SPAN_TURNS = 20
 _NUDGE_INTERVAL = 2
+
+# このturnに呼んでいれば「問いの配達先か起こされる仕掛けを置いた」とみなすツール。
+# session_launchはhook_transcriptが後継の窓・子のbgの起動を表す名前。
+_WAKE_OR_DELIVERY_TOOLS = {"add_ask", "SendMessage", "ScheduleWakeup", "CronCreate", "session_launch"}
+_NO_WAKE_REASON = (
+    "このターンは、問いの配達先も、あとで起こしてもらう仕掛けも置かないまま終わろうとしています。"
+    "画面に書いた問いや「次にやること」は、誰にも届かず、誰もこのセッションを起こしません。"
+    "終える前に、当てはまるものを置いてください: "
+    "人に返す問いはadd_ask / 報告先・相談先へのSendMessage（返事か完了の通知で起こされる。notify_when_idleの購読も可）"
+    " / ScheduleWakeup・CronCreate・裏で走らせる処理（完了の通知で起こされる）/ 世代交代なら後継の起動。"
+    "どれも要らずに終えてよい場合（人がこの場で返事を待っている、仕事が済んで報告先が空席など）は、そのまま終えてください。次は止めません。"
+)
 
 
 def main() -> None:
@@ -174,6 +187,18 @@ def main() -> None:
                 "turn": current_turn,
             }])
 
+        # 6.5 止まる前の置き手: 自走するセッション(委譲先の目印かorchタグのactivityに
+        # check-in中)が、このturnで問いの配達先も起こされる仕掛けも置かずに終えるなら1回blockする。
+        # 2回目のStopはブロック上限で通るので、正当に終えるならそのまま終えられる
+        if (
+            has_checkin
+            and not _has_wake_or_delivery(data, all_events, current_turn)
+            and _is_self_driving_activity(state.get_checked_in_activity())
+        ):
+            state.increment_block_count()
+            harness.emit_block(_NO_WAKE_REASON)
+            return
+
         # 7. nudge判定 + 状態更新 + approve
         state.reset_block_count()
         harness.emit_approve()
@@ -218,6 +243,43 @@ def _has_completion_signal(events: list[dict]) -> bool:
         e["e"] == "tool" and (e.get("name") == "SendMessage" or (e.get("name") == "update_goal" and e.get("satisfied")))
         for e in events
     )
+
+
+def _has_wake_or_delivery(data: dict, events: list[dict], current_turn: int) -> bool:
+    """このturnに問いの配達先か起こされる仕掛けを置いたか。
+
+    裏で走っている処理(background_tasks)とcron(session_crons)はhook入力から読む。
+    どちらも完了・発火でこのセッションを起こすので、置いたturnを問わず数える。
+    """
+    if data.get("background_tasks") or data.get("session_crons"):
+        return True
+    return any(
+        e["e"] == "tool" and e.get("name") in _WAKE_OR_DELIVERY_TOOLS and e.get("turn", 0) == current_turn
+        for e in events
+    )
+
+
+def _is_self_driving_activity(activity_id: int | None) -> bool:
+    """人の入力を待たずに進むべきactivityか(委譲先の目印があるか、orchタグが付いているか)。
+
+    DBを読めないときは対象外(blockしない側)に倒す。
+    """
+    if activity_id is None:
+        return False
+    if is_delegate_activity(activity_id):
+        return True
+    try:
+        from src.db import get_connection
+        from src.services.tag_service import get_entity_tags
+
+        conn = get_connection()
+        try:
+            return "orch" in get_entity_tags(conn, "activity_tags", "activity_id", activity_id)
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"stop_hook.py orch tag lookup error: {e}", file=sys.stderr)
+        return False
 
 
 def _has_add_logs_since_first_checkin(events: list[dict]) -> bool:

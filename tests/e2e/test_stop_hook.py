@@ -92,10 +92,12 @@ def _run_stop_hook(
     env_override: dict | None = None,
     return_stderr: bool = False,
     agent_type: str | None = None,
+    extra_input: dict | None = None,
 ) -> dict | tuple[dict, str]:
     payload = {
         "transcript_path": transcript_path,
         "session_id": session_id,
+        **(extra_input or {}),
     }
     if agent_type is not None:
         payload["agent_type"] = agent_type
@@ -455,6 +457,109 @@ def _mark_delegate(env_setup, activity_id: int = 42) -> None:
     (d / str(activity_id)).write_text("1")
 
 
+def _checked_in_turn(last_turn_tools: list[str], last_turn_inputs: list[dict] | None = None, activity_id: int = 42) -> list[dict]:
+    """check_inと経緯のadd_logsをした後、次のturnで last_turn_tools を呼んで終わるtranscript。
+
+    add_logsは記録義務のblockを切り離すために置く(このturnの置き手には数えない)。
+    """
+    return [
+        _make_user_entry("hi"),
+        _make_assistant_entry(
+            tool_calls=["mcp__plugin_calm_calm__check_in", "mcp__plugin_calm_calm__add_logs"],
+            tool_inputs=[{"activity_id": activity_id}, {"items": []}],
+        ),
+        _make_user_entry("next"),
+        _make_assistant_entry(tool_calls=last_turn_tools or None, tool_inputs=last_turn_inputs, text="ここまでやった。次はXをやる"),
+    ]
+
+
+class TestStopWithoutWakeOrDelivery:
+    """自走するactivity(委譲先の目印かorchタグ)にcheck-in中のセッションが、このturnで
+    問いの配達先も起こされる仕掛けも置かずに終えようとすると1回blockする。"""
+
+    @staticmethod
+    def _use_db(env_setup, db_path):
+        from src.env_compat import env_names
+
+        env_setup["env_override"].update({"DISCUSSION_DB_PATH": db_path, **{n: db_path for n in env_names("CALM_DB_PATH")}})
+
+    def _run(self, env_setup, entries, extra_input=None):
+        transcript = env_setup["tmp_path"] / "transcript.jsonl"
+        _write_transcript(entries, transcript)
+        return _run_stop_hook(str(transcript), "test-session", env_setup["env_override"], extra_input=extra_input)
+
+    def test_delegate_ending_with_only_screen_text_blocks(self, env_setup):
+        _mark_delegate(env_setup)
+        result = self._run(env_setup, _checked_in_turn([]))
+        assert result["decision"] == "block"
+        assert "add_ask" in result["reason"]
+        assert "ScheduleWakeup" in result["reason"]
+
+    def test_second_stop_after_block_passes(self, env_setup):
+        _mark_delegate(env_setup)
+        assert self._run(env_setup, _checked_in_turn([]))["decision"] == "block"
+        assert self._run(env_setup, _checked_in_turn([])) == {}
+
+    @pytest.mark.parametrize(
+        ("tool", "tool_input"),
+        [
+            ("mcp__plugin_calm_calm__add_ask", {"question": "q"}),
+            ("SendMessage", {"to": "orch", "message": "質問"}),
+            ("ScheduleWakeup", {"delaySeconds": 1200}),
+            ("CronCreate", {"cron": "13 * * * *"}),
+            ("Bash", {"command": "osascript -e 'tell application \"iTerm2\" to write text \"claude --plugin-dir x 続けて\"'"}),
+            ("Bash", {"command": "cd /w && claude --bg 'やって'"}),
+        ],
+    )
+    def test_placing_any_wake_or_delivery_this_turn_approves(self, env_setup, tool, tool_input):
+        _mark_delegate(env_setup)
+        assert self._run(env_setup, _checked_in_turn([tool], [tool_input])) == {}
+
+    def test_plain_bash_does_not_count_as_wake(self, env_setup):
+        _mark_delegate(env_setup)
+        result = self._run(env_setup, _checked_in_turn(["Bash"], [{"command": "osascript -e 'display notification \"x\"'"}]))
+        assert result["decision"] == "block"
+
+    def test_send_message_in_earlier_turn_only_blocks(self, env_setup):
+        """前のturnに送ったSendMessageは、このturnの終わりの置き手にならない"""
+        _mark_delegate(env_setup)
+        entries = [
+            _make_user_entry("hi"),
+            _make_assistant_entry(
+                tool_calls=["mcp__plugin_calm_calm__check_in", "SendMessage", "mcp__plugin_calm_calm__add_logs"],
+                tool_inputs=[{"activity_id": 42}, {"to": "orch", "message": "相談"}, {"items": []}],
+            ),
+            _make_user_entry("返事"),
+            _make_assistant_entry(text="返事を読んだ。次はXをやる"),
+        ]
+        assert self._run(env_setup, entries)["decision"] == "block"
+
+    @pytest.mark.parametrize(
+        "extra_input",
+        [
+            {"background_tasks": [{"id": "b1", "type": "shell", "status": "running"}]},
+            {"session_crons": [{"id": "c1", "cron": "13 * * * *"}]},
+        ],
+    )
+    def test_running_background_task_or_cron_in_hook_input_approves(self, env_setup, extra_input):
+        _mark_delegate(env_setup)
+        assert self._run(env_setup, _checked_in_turn([]), extra_input=extra_input) == {}
+
+    def test_activity_without_marker_or_orch_tag_does_not_block(self, env_setup, temp_db):
+        from src.services.activity_service import add_activity
+
+        aid = add_activity(title="普通の対話", description="d", tags=["domain:test", "intent:discuss"], check_in=False)["activity_id"]
+        self._use_db(env_setup, temp_db)
+        assert self._run(env_setup, _checked_in_turn([], activity_id=aid)) == {}
+
+    def test_orch_tagged_activity_blocks(self, env_setup, temp_db):
+        from src.services.activity_service import add_activity
+
+        aid = add_activity(title="[統合] orch", description="d", tags=["domain:test", "intent:discuss", "orch"], check_in=False)["activity_id"]
+        self._use_db(env_setup, temp_db)
+        assert self._run(env_setup, _checked_in_turn([], activity_id=aid))["decision"] == "block"
+
+
 class TestRecordingObligationBlock:
     """完了の合図(update_goalのsatisfiedかSendMessage)があるのに、check_in以降に
     add_logsが無いとき、1セッション1回だけblockする(記録義務block)。
@@ -617,7 +722,8 @@ class TestRecordingObligationBlock:
 
         with open(transcript, "a") as f:
             f.write(json.dumps(_make_user_entry("continue")) + "\n")
-            f.write(json.dumps(_make_assistant_entry(text="作業継続中")) + "\n")
+            # 配達先を置かずに終えると止まる前の置き手のblockが出るので、このturnにもSendMessageを置く
+            f.write(json.dumps(_make_assistant_entry(tool_calls=["SendMessage"], tool_inputs=[{"to": "main", "message": "続報"}])) + "\n")
 
         second = _run_stop_hook(str(transcript), "test-session", env_setup["env_override"])
         assert second == {}
