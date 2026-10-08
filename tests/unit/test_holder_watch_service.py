@@ -119,12 +119,18 @@ class TestHandoffWarnings:
 
 
 class TestCheckOnce:
-    def test_dead_holder_fires_one_ask_and_one_signal_only_once(self, temp_db, projects):
+    def test_holder_seen_alive_then_dead_fires_one_ask_and_one_signal_only_once(
+            self, temp_db, projects):
         aid = _orch(_desc(OLD_SID))
+        seen = set()
+        _write_session(OLD_SID, os.getpid())
+        _write_transcript(projects, OLD_SID, age_sec=30)
+        assert check_once(dead_sec=600, stale_sec=3600, seen_alive=seen) == []
+
+        (sessions_dir() / f"{os.getpid()}.json").unlink()
         _write_session(OLD_SID, DEAD_PID)
         _write_transcript(projects, OLD_SID, age_sec=700)
-
-        fired = check_once(dead_sec=600, stale_sec=3600)
+        fired = check_once(dead_sec=600, stale_sec=3600, seen_alive=seen)
 
         assert [(f["activity_id"], f["session_id"]) for f in fired] == [(aid, OLD_SID)]
         assert "プロセスが無い" in fired[0]["reason"]
@@ -141,21 +147,28 @@ class TestCheckOnce:
         conn.execute("UPDATE signal_events SET status = 'dismissed'")
         conn.commit()
         conn.close()
-        assert check_once(dead_sec=600, stale_sec=3600) == []
+        assert check_once(dead_sec=600, stale_sec=3600, seen_alive=seen) == []
+
+    def test_holder_already_dead_when_first_seen_is_not_reported(self, temp_db, projects):
+        _orch(_desc(OLD_SID))
+        _write_session(OLD_SID, DEAD_PID)
+        _write_transcript(projects, OLD_SID, age_sec=700)
+
+        assert check_once(dead_sec=600, stale_sec=3600, seen_alive=set()) == []
 
     def test_recently_dead_holder_waits_for_the_grace(self, temp_db, projects):
-        _orch(_desc(OLD_SID))
+        aid = _orch(_desc(OLD_SID))
         _write_session(OLD_SID, DEAD_PID)
         _write_transcript(projects, OLD_SID, age_sec=60)
 
-        assert check_once(dead_sec=600, stale_sec=3600) == []
+        assert check_once(dead_sec=600, stale_sec=3600, seen_alive={(aid, OLD_SID)}) == []
 
     def test_live_holder_with_stale_transcript_fires_even_when_idle(self, temp_db, projects):
         aid = _orch(_desc(OLD_SID))
         _write_session(OLD_SID, os.getpid(), status="idle")
         _write_transcript(projects, OLD_SID, age_sec=4000)
 
-        fired = check_once(dead_sec=600, stale_sec=3600)
+        fired = check_once(dead_sec=600, stale_sec=3600, seen_alive=set())
 
         assert [f["activity_id"] for f in fired] == [aid]
         assert "更新されていない" in fired[0]["reason"]
@@ -166,7 +179,7 @@ class TestCheckOnce:
         _write_transcript(projects, OLD_SID, age_sec=4000)
         _write_transcript(projects, OLD_SID, age_sec=60, subagent=True)
 
-        assert check_once(dead_sec=600, stale_sec=3600) == []
+        assert check_once(dead_sec=600, stale_sec=3600, seen_alive=set()) == []
 
     def test_live_fresh_holder_vacant_and_non_orch_are_left_alone(self, temp_db, projects):
         _orch(_desc(OLD_SID))
@@ -176,4 +189,4 @@ class TestCheckOnce:
         _orch(_desc(NEW_SID), tags=("domain:calm", "intent:discuss", "orchestration"))
         _write_session(NEW_SID, DEAD_PID)
 
-        assert check_once(dead_sec=600, stale_sec=3600) == []
+        assert check_once(dead_sec=600, stale_sec=3600, seen_alive=set()) == []

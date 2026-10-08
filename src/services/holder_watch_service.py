@@ -183,8 +183,16 @@ def _domain_tags(conn, activity_id: int) -> list[str]:
     return [f"domain:{r['name']}" for r in rows] or ["domain:calm"]
 
 
-def check_once(dead_sec: float, stale_sec: float, now: float | None = None) -> list[dict]:
-    """orchを1周見て、止まった担い手ごとにaskとsignalを立てる。立てたものを返す。"""
+def check_once(dead_sec: float, stale_sec: float, seen_alive: set[tuple[int, str]],
+               now: float | None = None) -> list[dict]:
+    """orchを1周見て、止まった担い手ごとにaskとsignalを立てる。立てたものを返す。
+
+    死亡は、seen_aliveで生きているのを一度見た担い手だけを対象にする。窓口を閉じた
+    後の死んだ担い手欄は異常ではないため、見張りが起きた時点で既に死んでいる担い手は
+    知らせない。seen_aliveは呼び出し側が周をまたいで持ち、生きていた担い手をここで足す。
+    ponytail: プロセス内の記憶なので、サーバーの再起動直後の死は拾わない。要るならDBに
+    最後に見た生の時刻を持つ。
+    """
     now = time.time() if now is None else now
     fired = []
     conn = get_connection()
@@ -197,8 +205,13 @@ def check_once(dead_sec: float, stale_sec: float, now: float | None = None) -> l
             summary = _summary(row["id"], session_id)
             if _already_fired(conn, summary):
                 continue
-            reason = judge(live_session(session_id), transcript_age_sec(session_id, now),
-                           dead_sec, stale_sec)
+            live = live_session(session_id)
+            key = (row["id"], session_id)
+            if live is not None:
+                seen_alive.add(key)
+            elif key not in seen_alive:
+                continue
+            reason = judge(live, transcript_age_sec(session_id, now), dead_sec, stale_sec)
             if reason is None:
                 continue
             name = _holder_name(row["description"])
@@ -278,6 +291,7 @@ class HolderWatch:
         self._stale_sec = (stale_sec if stale_sec is not None
                            else _read_float_env(STALE_MIN_ENV, DEFAULT_STALE_MIN) * 60)
         self._stop_event = threading.Event()
+        self._seen_alive: set[tuple[int, str]] = set()
 
     def start(self) -> None:
         if self._interval <= 0:
@@ -291,7 +305,7 @@ class HolderWatch:
     def _loop(self) -> None:
         while not self._stop_event.wait(timeout=self._interval):
             try:
-                for f in check_once(self._dead_sec, self._stale_sec):
+                for f in check_once(self._dead_sec, self._stale_sec, self._seen_alive):
                     logger.info("holder watch fired: %s", f)
             except Exception:
                 logger.exception("holder watch check failed, continuing")
