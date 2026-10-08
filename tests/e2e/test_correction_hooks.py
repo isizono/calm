@@ -16,7 +16,8 @@ from src.services.correction_service import UNLEARNED_CORRECTION_TAG
 from src.services.material_service import add_material
 from tests.helpers import run_hook_subprocess
 
-SID = "corr-test-session"
+SID = "0b5a3c1e-1111-4222-8333-944455556666"
+OTHER_SID = "0b5a3c1e-9999-4222-8333-944455556666"
 TAGS = ["domain:test"]
 
 
@@ -26,8 +27,8 @@ def state_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _ups(state_dir: Path, prompt: str, prompt_id: str = "p-1") -> dict:
-    payload = {"session_id": SID, "prompt": prompt, "prompt_id": prompt_id, "transcript_path": "/nonexistent"}
+def _ups(state_dir: Path, prompt: str, prompt_id: str = "p-1", sid: str = SID) -> dict:
+    payload = {"session_id": sid, "prompt": prompt, "prompt_id": prompt_id, "transcript_path": "/nonexistent"}
     result = run_hook_subprocess(
         "hooks/user_prompt_submit_hook.py", json.dumps(payload),
         extra_env={"HOOK_STATE_DIR": str(state_dir), "CALM_RECORDER": "0"},
@@ -39,8 +40,9 @@ def _context(out: dict) -> str:
     return (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
 
 
-def _activity_with_correction(title="未教訓化: 予告で止まる") -> tuple[int, int]:
-    aid = add_activity(title="[作業] x", description="d", tags=TAGS, check_in=False)["activity_id"]
+def _activity_with_correction(title="未教訓化: 予告で止まる", holder=SID) -> tuple[int, int]:
+    description = f"## 状態\n担い手: workspace-x（sessionId {holder}）／2026-10-09\n"
+    aid = add_activity(title="[作業] x", description=description, tags=TAGS, check_in=False)["activity_id"]
     mid = add_material(title, "本文", TAGS + [UNLEARNED_CORRECTION_TAG], "recorder",
                        related=[{"type": "activity", "ids": [aid]}])["material_id"]
     return aid, mid
@@ -97,6 +99,28 @@ class TestWindowNotice:
         assert "未教訓化として1件" in first and "予告で止まる" in first
         assert "未教訓化" not in second
 
+    def test_session_that_is_not_the_holder_gets_no_notice(self, state_dir, temp_db):
+        aid, _ = _activity_with_correction(holder=OTHER_SID)
+        HookState(SID).set_checked_in_activity(aid)
+
+        assert "未教訓化" not in _context(_ups(state_dir, "次やって"))
+
+    def test_correction_reached_only_through_topic_gets_no_notice(self, state_dir, temp_db):
+        from src.services.relation_service import add_relation
+        from src.services.topic_service import add_topic
+
+        aid, _ = _activity_with_correction(holder=SID)
+        topic = add_topic(title="T", description="d", tags=TAGS)["topic_id"]
+        add_relation("activity", aid, [{"type": "topic", "ids": [topic]}])
+        child = add_activity(title="[作業] 子", description=f"担い手: y（sessionId {SID}）", tags=TAGS,
+                             check_in=False)["activity_id"]
+        add_relation("activity", child, [{"type": "topic", "ids": [topic]}])
+        add_material("未教訓化: topicだけ", "本文", TAGS + [UNLEARNED_CORRECTION_TAG], "recorder",
+                     related=[{"type": "topic", "ids": [topic]}])
+        HookState(SID).set_checked_in_activity(child)
+
+        assert "未教訓化" not in _context(_ups(state_dir, "次やって"))
+
     def test_no_notice_without_checked_in_activity(self, state_dir, temp_db):
         _activity_with_correction()
         assert "未教訓化" not in _context(_ups(state_dir, "次やって"))
@@ -140,6 +164,11 @@ class TestDelegateStop:
                      related=[{"type": "activity", "ids": [aid]}])
         again = self._stop(state_dir, aid, ["SendMessage"])
         assert again["decision"] == "block" and "二件目" in again["reason"]
+
+    def test_delegate_that_is_not_the_holder_is_not_blocked(self, state_dir, temp_db):
+        aid, _ = _activity_with_correction(holder=OTHER_SID)
+
+        assert self._stop(state_dir, aid, ["SendMessage"]) == {}
 
     def test_combined_with_no_wake_in_one_block(self, state_dir, temp_db):
         aid, _ = _activity_with_correction()

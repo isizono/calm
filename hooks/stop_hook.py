@@ -199,7 +199,7 @@ def main() -> None:
         # 終えるなら1回blockする。同じ件では二度止めない（新しい件が積まれたときだけ）。
         # 6.5と同じStopで両方当たるときは1回のblockにまとめる（上限1回のため、
         # 別々に出すと後ろの段が評価されないまま次のStopで通ってしまう）
-        unlearned = _new_unlearned_for_delegate(state) if has_checkin else []
+        unlearned = _new_unlearned_for_delegate(state, session_id) if has_checkin else []
         if unlearned:
             state.add_correction_ids("stop", {i["id"] for i in unlearned})
             state.increment_block_count()
@@ -294,8 +294,9 @@ def _is_self_driving_activity(activity_id: int | None) -> bool:
         return False
 
 
-def _new_unlearned_for_delegate(state: HookState) -> list[dict]:
-    """委譲先なら、check-in先の未解消の未教訓化のうちまだ止めていないものを返す。
+def _new_unlearned_for_delegate(state: HookState, session_id: str) -> list[dict]:
+    """委譲先の目印があるactivityを今担っている（担い手欄が自分の）bgなら、そのactivityに直接つながる
+    未解消の未教訓化のうちまだ止めていないものを返す。
 
     窓口は止めず、次のプロンプトでの注意（user_prompt_submit_hook）に留める。
     DBを読めないときは止めない側に倒す。
@@ -305,7 +306,7 @@ def _new_unlearned_for_delegate(state: HookState) -> list[dict]:
     try:
         from hooks.correction_marks import new_unresolved
 
-        return new_unresolved(state, "stop")
+        return new_unresolved(state, "stop", session_id)
     except Exception as e:
         print(f"stop_hook.py unlearned correction lookup error: {e}", file=sys.stderr)
         return []
@@ -314,9 +315,9 @@ def _new_unlearned_for_delegate(state: HookState) -> list[dict]:
 def _unlearned_reason(items: list[dict]) -> str:
     titles = "／".join(i["title"] for i in items[:3])
     return (
-        f"check-in先に、人の訂正が未教訓化のまま{len(items)}件残っています（{titles}）。"
-        "終える前に、教訓を届く置き場に書き、置き場と発火の契機を書いた記録（素タグlesson-delivery）を"
-        "その件とadd_relationで結んでください。今の手番で書けない理由があれば、報告先へのadd_logsにその理由を残してください。"
+        f"担っている作業で受けた人の訂正が、未教訓化のまま{len(items)}件残っています（{titles}）。"
+        "終える前に、届け先を作る担当（教訓化役がいればそこ）へ渡っているかを確かめ、"
+        "渡っていなければ渡したことを報告先へのadd_logsに残してください。"
     )
 
 

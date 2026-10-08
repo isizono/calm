@@ -11,6 +11,7 @@ UserPromptSubmit hookが、人の発話のたびにprompt_idを印として書�
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 
@@ -94,9 +95,21 @@ def marks_from_transcript(transcript: Path) -> list[dict]:
     return marks
 
 
-def new_unresolved(state: HookState, kind: str) -> list[dict]:
-    """check-in中のactivityの未解消の未教訓化のうち、kindでまだ扱っていないものを返す。
+_HOLDER_RE = re.compile(r"^担い手[:：].*?sessionId\s*([0-9a-fA-F-]{36})", re.MULTILINE)
 
+
+def holder_session_id(description: str | None) -> str | None:
+    """activityの説明の担い手欄（「担い手: 名前（sessionId <uuid>）」）からsessionIdを読む。"""
+    m = _HOLDER_RE.search(description or "")
+    return m.group(1) if m else None
+
+
+def new_unresolved(state: HookState, kind: str, session_id: str) -> list[dict]:
+    """check-in中のactivityの今の担い手に限り、そのactivityに直接つながる未解消の未教訓化のうち
+    kindでまだ扱っていないものを返す。
+
+    担い手欄の無いactivity・担い手でないセッション（同じtopicにつながる子や常駐）には返さない。
+    訂正を受けたセッション自体は交代ですぐ止まるので宛先にせず、今の担い手を宛先にする。
     DBを読めないときは空（知らせない・止めない側）に倒す。
     """
     activity_id = state.get_checked_in_activity()
@@ -107,14 +120,10 @@ def new_unresolved(state: HookState, kind: str) -> list[dict]:
 
     conn = get_connection(load_vec=False)
     try:
-        topic_ids = [
-            r[0] for r in conn.execute(
-                "SELECT target_id FROM relations_view WHERE source_type = 'activity' AND source_id = ?"
-                " AND target_type = 'topic'",
-                (activity_id,),
-            )
-        ]
-        items, _ = unresolved_corrections(conn, activity_id, topic_ids, 20)
+        row = conn.execute("SELECT description FROM activities WHERE id = ?", (activity_id,)).fetchone()
+        if row is None or holder_session_id(row[0]) != session_id:
+            return []
+        items, _ = unresolved_corrections(conn, activity_id, [], 20)
     finally:
         conn.close()
     seen = state.get_correction_ids(kind)

@@ -206,8 +206,8 @@ def main() -> None:
 def _handle_corrections(data: dict, session_id: str, state: HookState) -> list[str]:
     """印を書き、記録役を起こし直し、新しく積まれた未教訓化があれば注意の1行を返す。
 
-    どれも失敗してよい（他の配達を止めない）。注意は窓口に向けたもので、止めはしない。
-    同じ件は一度だけ知らせる。
+    どれも失敗してよい（他の配達を止めない）。注意は担っているactivityの今の担い手だけに出し、
+    止めはしない。同じ件は一度だけ知らせる。
     """
     from hooks.correction_marks import append_mark, is_human_prompt, new_unresolved
 
@@ -226,7 +226,7 @@ def _handle_corrections(data: dict, session_id: str, state: HookState) -> list[s
     except Exception as e:
         print(f"user_prompt_submit_hook.py recorder revive error: {e}", file=sys.stderr)
     try:
-        new = new_unresolved(state, "notice")
+        new = new_unresolved(state, "notice", session_id)
     except Exception as e:
         print(f"user_prompt_submit_hook.py correction lookup error: {e}", file=sys.stderr)
         return []
@@ -235,9 +235,9 @@ def _handle_corrections(data: dict, session_id: str, state: HookState) -> list[s
     state.add_correction_ids("notice", {i["id"] for i in new})
     titles = "／".join(i["title"] for i in new[:3])
     return [
-        f"人の訂正が未教訓化として{len(new)}件積まれています（{titles}）。"
-        "教訓を届く置き場に書き、置き場と発火の契機をlesson-deliveryの記録で結んでください。"
-        "詳しい閉じ方はcheck_inのcontrol.unlearned_correctionsにあります。"
+        f"担っている作業で受けた人の訂正が、記録役により未教訓化として{len(new)}件積まれました（{titles}）。"
+        "届け先を作る担当（教訓化役がいればそこ）に渡っているかを確かめてください。"
+        "状態と閉じ方はcheck_inのcontrol.unlearned_correctionsにあります。"
     ]
 
 
