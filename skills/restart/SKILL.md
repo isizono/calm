@@ -1,6 +1,6 @@
 ---
 name: restart
-description: CALMのプラグインを最新にし、ローカルMCPサーバーを強制再起動する。CALMのPRがマージされた後や、環境変数などの設定を変えた後に、Claudeが自分で実行してよい。embeddingサーバーも停止され、新しいサーバーの起動直後に自動で立ち上がる。
+description: CALMのプラグインを更新し、ローカルMCPサーバーを強制再起動する。プラグインを更新した後や、CALMのPRをマージした後、環境変数などの設定を変えた後に、反映が要るときはClaudeが自分で実行してよい（ユーザーが打ってもよい）。embeddingサーバーも停止され、新しいサーバーの起動直後に自動で立ち上がる。
 ---
 
 # restart
@@ -15,23 +15,31 @@ embeddingサーバー(52836)はMCPサーバーの再起動より前に必ず停�
 
 ## 再起動の前
 
-1. プラグインを最新にする: `claude plugin update calm@calm-marketplace` を実行する。設定を変えただけでコードの更新が無いときは省いてよい
-2. 急がないなら、更新だけして再起動は打たなくてよい。サーバーの陳腐化 watchdog が、処理中の呼び出しが0件になるのを待って自動で再起動する（確認間隔は `CALM_STALENESS_CHECK_INTERVAL_SEC`、既定1時間）
-3. 更新後の版のディレクトリは、セッションの `${CLAUDE_PLUGIN_ROOT}` が更新前の版を指したままのことがあるため、`installed_plugins.json` から取り直す。Bashツールは呼び出しをまたいでシェル変数を引き継がないので、以降のコマンドは毎回、同じ呼び出しの頭で `PLUGIN_DIR` を代入する
-4. 古い窓口から打たない: 次で `mcp_server.started_at` を確かめ、直近の再起動より後の時刻であれば、別の窓口が既に打った後なので打ち直さない
+打ってよいのは次の2つのときだけ。
+
+- このセッションでCALMのPRをマージした後や設定を変えた後で、反映を待っている作業や確認があるとき
+- CALMが古い版のまま動いていて困っているとき
+
+反映を待つものが無いなら、`claude plugin update calm@calm-marketplace` で更新だけして、再起動はサーバーの陳腐化 watchdog に任せる。watchdog は処理中の呼び出しが0件になるのを待って自動で再起動する（確認間隔は `CALM_STALENESS_CHECK_INTERVAL_SEC`、既定1時間）。設定を変えただけでコードの更新が無いときは、更新は省いてよい。
+
+1. 他のセッションが書き込み中かもしれないので、`claude agents --json` で生きているセッションを確かめる。確認は人に求めず、そのうえで自分の判断で進める
+2. `claude plugin update calm@calm-marketplace` を実行する
+3. 古い窓口から打たない: 次で `mcp_server.started_at` を確かめ、直近の再起動より後の時刻であれば、別の窓口が既に打った後なので打ち直さない
+
+Bashツールは呼び出しをまたいでシェル変数を引き継がず、セッションの `${CLAUDE_PLUGIN_ROOT}` は更新前の版を指したままのことがある。そのため以降のコマンドは、同じ呼び出しの頭で更新後の版のディレクトリ（`installed_plugins.json` の user スコープのエントリ）を取り直し、空なら止める。
 
 ```
-PLUGIN_DIR=$(jq -r '.plugins["calm@calm-marketplace"][0].installPath' ~/.claude/plugins/installed_plugins.json) && uv run --directory "$PLUGIN_DIR" python "$PLUGIN_DIR/scripts/restart_server.py" --status
+PLUGIN_DIR=$(jq -r '[.plugins["calm@calm-marketplace"][] | select(.scope=="user")][0].installPath // empty' ~/.claude/plugins/installed_plugins.json) && [ -n "$PLUGIN_DIR" ] && uv run --directory "$PLUGIN_DIR" python "$PLUGIN_DIR/scripts/restart_server.py" --status
 ```
 
-新しい版のディレクトリは venv が未作成のことがある。`--no-sync` を付けると、スクリプト冒頭の `psutil` の import で `No module named 'psutil'` となり落ちるため、ここでは付けない（`uv run` が先に依存を同期する）。
+新しい版のディレクトリは依存が未同期のことがあるため、`--no-sync` は付けない（`uv run` が先に同期する）。同期に失敗してコマンドが落ちたら、再起動はせず中断し、出力をそのまま報告する。
 
 ## 実行
 
-再起動が必要になったら、確認は取らずに以下をBashツールで実行する。
+上の条件を満たしたら、確認は取らずに以下をBashツールで実行する。
 
 ```
-PLUGIN_DIR=$(jq -r '.plugins["calm@calm-marketplace"][0].installPath' ~/.claude/plugins/installed_plugins.json) && uv run --directory "$PLUGIN_DIR" python "$PLUGIN_DIR/scripts/restart_server.py"
+PLUGIN_DIR=$(jq -r '[.plugins["calm@calm-marketplace"][] | select(.scope=="user")][0].installPath // empty' ~/.claude/plugins/installed_plugins.json) && [ -n "$PLUGIN_DIR" ] && uv run --directory "$PLUGIN_DIR" python "$PLUGIN_DIR/scripts/restart_server.py"
 ```
 
 外から終了させるため、watchdog の「処理中の呼び出しが0件になるまで待つ」ガードを通らない。停止の直前に処理中だった書き込みは、失敗に見えても DB には書かれていることがある。再起動の前後で失敗に見えた書き込みは、リトライする前に検索で記録があるかを確かめる（確かめずに再送すると重複する）。
