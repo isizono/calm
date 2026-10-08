@@ -316,7 +316,7 @@ def _unlearned_reason(items: list[dict]) -> str:
     titles = "／".join(i["title"] for i in items[:3])
     return (
         f"担っている作業で受けた人の訂正が、未教訓化のまま{len(items)}件残っています（{titles}）。"
-        "終える前に、届け先を作る担当（教訓化役がいればそこ）へ渡っているかを確かめ、"
+        "終える前に、届け先を作る個体（判定役の教訓化役とは別）へ渡っているかを確かめ、"
         "渡っていなければ渡したことを報告先へのadd_logsに残してください。"
     )
 

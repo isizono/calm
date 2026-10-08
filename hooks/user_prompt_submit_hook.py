@@ -236,7 +236,7 @@ def _handle_corrections(data: dict, session_id: str, state: HookState) -> list[s
     titles = "／".join(i["title"] for i in new[:3])
     return [
         f"担っている作業で受けた人の訂正が、記録役により未教訓化として{len(new)}件積まれました（{titles}）。"
-        "届け先を作る担当（教訓化役がいればそこ）に渡っているかを確かめてください。"
+        "届け先を作る個体（判定役の教訓化役とは別）に渡っているかを確かめてください。"
         "状態と閉じ方はcheck_inのcontrol.unlearned_correctionsにあります。"
     ]
 
