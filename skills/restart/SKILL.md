@@ -17,13 +17,12 @@ embeddingサーバー(52836)はMCPサーバーの再起動より前に必ず停�
 
 1. プラグインを最新にする: `claude plugin update calm@calm-marketplace` を実行する。設定を変えただけでコードの更新が無いときは省いてよい
 2. 急がないなら、更新だけして再起動は打たなくてよい。サーバーの陳腐化 watchdog が、処理中の呼び出しが0件になるのを待って自動で再起動する（確認間隔は `CALM_STALENESS_CHECK_INTERVAL_SEC`、既定1時間）
-3. 更新後の版のディレクトリを調べる。セッションの `${CLAUDE_PLUGIN_ROOT}` は更新前の版を指したままのことがあるため、次で取り直す:
+3. 更新後の版のディレクトリは、セッションの `${CLAUDE_PLUGIN_ROOT}` が更新前の版を指したままのことがあるため、`installed_plugins.json` から取り直す。Bashツールは呼び出しをまたいでシェル変数を引き継がないので、以降のコマンドは毎回、同じ呼び出しの頭で `PLUGIN_DIR` を代入する
+4. 古い窓口から打たない: 次で `mcp_server.started_at` を確かめ、直近の再起動より後の時刻であれば、別の窓口が既に打った後なので打ち直さない
 
 ```
-PLUGIN_DIR=$(jq -r '.plugins["calm@calm-marketplace"][0].installPath' ~/.claude/plugins/installed_plugins.json)
+PLUGIN_DIR=$(jq -r '.plugins["calm@calm-marketplace"][0].installPath' ~/.claude/plugins/installed_plugins.json) && uv run --directory "$PLUGIN_DIR" python "$PLUGIN_DIR/scripts/restart_server.py" --status
 ```
-
-4. 古い窓口から打たない: `uv run --directory "$PLUGIN_DIR" python "$PLUGIN_DIR/scripts/restart_server.py" --status` の `mcp_server.started_at` を確かめ、直近の再起動より後の時刻であれば、別の窓口が既に打った後なので打ち直さない
 
 新しい版のディレクトリは venv が未作成のことがある。`--no-sync` を付けると、スクリプト冒頭の `psutil` の import で `No module named 'psutil'` となり落ちるため、ここでは付けない（`uv run` が先に依存を同期する）。
 
@@ -32,7 +31,7 @@ PLUGIN_DIR=$(jq -r '.plugins["calm@calm-marketplace"][0].installPath' ~/.claude/
 再起動が必要になったら、確認は取らずに以下をBashツールで実行する。
 
 ```
-uv run --directory "$PLUGIN_DIR" python "$PLUGIN_DIR/scripts/restart_server.py"
+PLUGIN_DIR=$(jq -r '.plugins["calm@calm-marketplace"][0].installPath' ~/.claude/plugins/installed_plugins.json) && uv run --directory "$PLUGIN_DIR" python "$PLUGIN_DIR/scripts/restart_server.py"
 ```
 
 外から終了させるため、watchdog の「処理中の呼び出しが0件になるまで待つ」ガードを通らない。停止の直前に処理中だった書き込みは、失敗に見えても DB には書かれていることがある。再起動の前後で失敗に見えた書き込みは、リトライする前に検索で記録があるかを確かめる（確かめずに再送すると重複する）。
