@@ -372,3 +372,46 @@ class TestErrorHandling:
         with patch.object(hook.sys, "stdout", fake_stdout):
             _run_hook()
         assert fake_stdout.getvalue() == ""
+
+
+@_posix_only
+class TestReviveOnPrompt:
+    """UserPromptSubmitからの起こし直し: 記録役を使う設定で付いていなければ、落ちた位置から起こす。"""
+
+    def _payload(self, cwd: str = "/some/cwd") -> dict:
+        return {"session_id": _SID, "transcript_path": _TRANSCRIPT, "cwd": cwd, "prompt": "続けて"}
+
+    def test_detached_recorder_is_started_without_stopping_others(self, calls):
+        _write_run_json("old-sid", main_sid="old-sid", main_pid=_PID)
+
+        hook.revive_if_detached(self._payload())
+
+        starts = _start_calls(calls)
+        assert len(starts) == 1
+        cmd = starts[0][0]
+        assert cmd[cmd.index("--session-id") + 1] == _SID
+        assert cmd[cmd.index("--pid") + 1] == str(_PID)
+        assert _stop_calls(calls) == []
+
+    def test_attached_recorder_is_left_alone(self, calls):
+        from hooks.recorder_marker import write_marker
+
+        write_marker(_SID, _PID)
+
+        hook.revive_if_detached(self._payload())
+
+        assert calls == []
+
+    def test_not_opted_in_does_nothing(self, calls, monkeypatch):
+        monkeypatch.delenv("CALM_RECORDER")
+
+        hook.revive_if_detached(self._payload())
+
+        assert calls == []
+
+    def test_recorder_own_session_is_skipped(self, calls):
+        own_cwd = str(HookState.BASE_DIR / "recorder_runs" / "_cwd")
+
+        hook.revive_if_detached(self._payload(cwd=own_cwd))
+
+        assert calls == []
