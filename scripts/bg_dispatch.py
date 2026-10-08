@@ -44,7 +44,7 @@ orchが作った束縛条件をこの依頼文の受け手に伝える。依頼�
 兄弟ではなく相談先として名指しされ、判断に迷ったときのSendMessageでの相談が
 許される(兄弟へは事実の周知しか送れない規則の例外)。渡さない依頼文は従来のまま。
 --role consultantは、相談役自身に渡す依頼文の変種に切り替える(実装も調査もせず、
-判断の材料と案を返し、報告後も止まらず待つ)。
+判断の材料と案を返し、報告後も止まらず待つ)。--consultant-activity-idとは併用できない。
 
 --pending-dirは、CALMに書けない内容の退避先を依頼文に埋め込む引数(省略時は
 環境変数CALM_PENDING_DIRを見る。どちらも無ければ、退避先を決めずworktree内に
@@ -74,11 +74,7 @@ _TEMPLATE = """あなたはCALMのアクティビティ「{activity_title}」の
 - worktree: {worktree}{branch_line}
 - このworktreeの外のファイルは編集しない。Bashでは毎回、絶対パスでcdすること
 
-## 最初にやること
-1. CALMでアクティビティ「{activity_title}」(activity_id={activity_id})を探してcheck_inする
-2. {goal_instruction}{parent_check_step}
-
-goalのstatementをこの仕事の目的として読む。成果物ができたかでなく、statementが指す状態に近づいたかで判断する。
+{first_steps}
 
 ## 完了条件
 - goal.nextに従い、満たした条件はupdate_goalでsatisfiedにする{completion_block}
@@ -98,14 +94,12 @@ goalのstatementをこの仕事の目的として読む。成果物ができた�
 - 兄弟の担当に関わる事実(共有ファイル・マイグレーション番号・mainの破損・前提の変化)を見つけたら、報告先へのadd_logsに加えて、その兄弟へもSendMessageで事実を知らせる。空席・送れないときは省く
 - 兄弟へ送るのは上の事実の周知だけ。作業の依頼・質問・進捗の共有は送らない{consultant_block}
 
-## やらないこと
-- マージ、--delete-branchの使用{dont_block}
+{dont}
 
 ## 記録
 - 経緯はadd_logsで記録する。完了の合図(update_goalのsatisfiedかSendMessage)があるのに
   check_in以降にadd_logsが無いと、Stop hookが1回blockする(この依頼文の宛先activityにcheck-inしたセッションだけが対象)
-- CALMに書き込めない内容は{pending_line}
-- 最後の報告の前に `{sync_memory_scope}` でsync-memoryを実行する
+{record_tail}
 
 ## 完了したら
 3・4で控えた親のorchアクティビティへadd_logsで報告を書く。書く内容は、PR番号・CIの状態・自分で判断したこと・残っていること。
@@ -113,6 +107,19 @@ goalのstatementをこの仕事の目的として読む。成果物ができた�
 報告のあとは次の指示を待ち、自分から終わらない。
 """
 
+
+# 作業役と相談役の依頼文で共通の節。片方だけ直して食い違わないよう、ここに1つだけ持つ
+_FIRST_STEPS = """## 最初にやること
+1. CALMでアクティビティ「{activity_title}」(activity_id={activity_id})を探してcheck_inする
+2. {goal_instruction}{parent_check_step}
+
+goalのstatementをこの仕事の目的として読む。成果物ができたかでなく、statementが指す状態に近づいたかで判断する。"""
+
+_DONT = """## やらないこと
+- マージ、--delete-branchの使用{dont_block}"""
+
+_RECORD_TAIL = """- CALMに書き込めない内容は{pending_line}
+- 最後の報告の前に `{sync_memory_scope}` でsync-memoryを実行する"""
 
 _CONSULTANT_BLOCK = """
 
@@ -130,9 +137,7 @@ _CONSULTANT_TEMPLATE = """あなたはCALMのアクティビティ「{activity_t
 - worktree: {worktree}{branch_line}
 - ファイルは編集しない(読むだけ)。Bashでは毎回、絶対パスでcdすること
 
-## 最初にやること
-1. CALMでアクティビティ「{activity_title}」(activity_id={activity_id})を探してcheck_inする
-2. {goal_instruction}{parent_check_step}
+{first_steps}
 
 ## 受け取るもの
 orchや作業役のbgから、SendMessageかorchアクティビティのログで次が届く。
@@ -154,12 +159,12 @@ orchや作業役のbgから、SendMessageかorchアクティビティのログ�
 ## 越えない線
 - 外向きの操作、~/.claude配下の変更、既決を見直すことになる判断、auto modeや権限に止められた操作は、進めずに報告先(親のorchアクティビティ)へ返す
 - 人間宛てのaskは起票しない
-- マージ、--delete-branchの使用{dont_block}
+
+{dont}
 
 ## 記録
 - 経緯はadd_logsで記録する
-- CALMに書き込めない内容は{pending_line}
-- 止められる前の最後の報告の前に `{sync_memory_scope}` でsync-memoryを実行する
+{record_tail}
 
 ## 待ち方
 報告のあとも自分から終わらない。次の相談が届くまで待つ。orchが止めるまで続ける。
@@ -184,6 +189,8 @@ def build_request(
 ) -> str:
     if role not in ("worker", "consultant"):
         raise ValueError(f"unknown role: {role}")
+    if role == "consultant" and consultant_activity_id is not None:
+        raise ValueError("consultant_activity_id is for worker requests, not role=consultant")
     completion_block = _bullet_block(completion)
     dont_block = _bullet_block(dont)
     if goal_handle:
@@ -214,7 +221,12 @@ def build_request(
         if consultant_activity_id is not None
         else ""
     )
-    return (_CONSULTANT_TEMPLATE if role == "consultant" else _TEMPLATE).format(
+    template = _CONSULTANT_TEMPLATE if role == "consultant" else _TEMPLATE
+    for name, part in (
+        ("first_steps", _FIRST_STEPS), ("dont", _DONT), ("record_tail", _RECORD_TAIL),
+    ):
+        template = template.replace("{" + name + "}", part)
+    return template.format(
         consultant_block=consultant_block,
         activity_title=activity_title,
         activity_id=activity_id,
@@ -279,9 +291,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--consultant-activity-id", type=int, default=None,
-        help="相談役のactivityのID。渡すと作業役の依頼文に相談先の節が入る(role=consultantでは無視)",
+        help="相談役のactivityのID。渡すと作業役の依頼文に相談先の節が入る(--role consultantとは同時に指定できない)",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.role == "consultant" and args.consultant_activity_id is not None:
+        parser.error("--consultant-activity-idは--role consultantと同時に指定できない")
+    return args
 
 
 def main(argv: list[str] | None = None) -> None:
