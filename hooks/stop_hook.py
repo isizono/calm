@@ -295,7 +295,7 @@ def _is_self_driving_activity(activity_id: int | None) -> bool:
 
 
 def _new_unlearned_for_delegate(state: HookState, session_id: str) -> list[dict]:
-    """委譲先の目印があるactivityを今担っている（担い手欄が自分の）bgなら、そのactivityに直接つながる
+    """委譲先の目印があるactivityにcheck-in中のbgなら、このセッションが受けた訂正の
     未解消の未教訓化のうちまだ止めていないものを返す。
 
     窓口は止めず、次のプロンプトでの注意（user_prompt_submit_hook）に留める。
@@ -315,9 +315,9 @@ def _new_unlearned_for_delegate(state: HookState, session_id: str) -> list[dict]
 def _unlearned_reason(items: list[dict]) -> str:
     titles = "／".join(i["title"] for i in items[:3])
     return (
-        f"担っている作業で受けた人の訂正が、未教訓化のまま{len(items)}件残っています（{titles}）。"
-        "終える前に、届け先を作る個体（判定役の教訓化役とは別）へ渡っているかを確かめ、"
-        "渡っていなければ渡したことを報告先へのadd_logsに残してください。"
+        f"このセッションで受けた人の訂正が、記録役により未教訓化として{len(items)}件積まれています（{titles}）。"
+        "届け先と観測は別の個体が付けます。終える前に、記録役の読んだ「直された点」が違っていないかだけ確かめ、"
+        "違っていれば経緯を報告先へのadd_logsに残してください。"
     )
 
 

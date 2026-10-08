@@ -7,7 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from hooks.correction_marks import MARKS_FILE, marks_from_transcript, read_mark_ids
+from hooks.correction_marks import (
+    MARKS_FILE,
+    append_mark,
+    marks_from_transcript,
+    read_mark_ids,
+)
 from hooks.hook_state import HookState
 from hooks.recorder_watch import _Line, _render_chunk
 from src.harness.claude_code import ClaudeCodeHarness
@@ -16,8 +21,7 @@ from src.services.correction_service import UNLEARNED_CORRECTION_TAG
 from src.services.material_service import add_material
 from tests.helpers import run_hook_subprocess
 
-SID = "0b5a3c1e-1111-4222-8333-944455556666"
-OTHER_SID = "0b5a3c1e-9999-4222-8333-944455556666"
+SID = "corr-test-session"
 TAGS = ["domain:test"]
 
 
@@ -40,12 +44,14 @@ def _context(out: dict) -> str:
     return (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
 
 
-def _activity_with_correction(title="未教訓化: 予告で止まる", holder=SID) -> tuple[int, int]:
-    description = f"## 状態\n担い手: workspace-x（sessionId {holder}）／2026-10-09\n"
-    aid = add_activity(title="[作業] x", description=description, tags=TAGS, check_in=False)["activity_id"]
-    mid = add_material(title, "本文", TAGS + [UNLEARNED_CORRECTION_TAG], "recorder",
-                       related=[{"type": "activity", "ids": [aid]}])["material_id"]
-    return aid, mid
+def _activity_with_correction(title="未教訓化: 予告で止まる", prompt_id="p-recv") -> tuple[int, int]:
+    aid = add_activity(title="[作業] x", description="d", tags=TAGS, check_in=False)["activity_id"]
+    return aid, _correction(aid, title, prompt_id)
+
+
+def _correction(aid: int, title: str, prompt_id: str) -> int:
+    return add_material(title, f"- prompt_id: {prompt_id}\n- 発話: x", TAGS + [UNLEARNED_CORRECTION_TAG], "recorder",
+                        related=[{"type": "activity", "ids": [aid]}])["material_id"]
 
 
 class TestMarks:
@@ -89,41 +95,25 @@ class TestChunkLabel:
 
 
 class TestWindowNotice:
-    def test_new_unresolved_correction_is_noticed_once(self, state_dir, temp_db):
-        aid, _ = _activity_with_correction()
+    def test_session_that_received_the_correction_is_noticed_once(self, state_dir, temp_db):
+        aid, _ = _activity_with_correction(prompt_id="p-recv")
         HookState(SID).set_checked_in_activity(aid)
 
-        first = _context(_ups(state_dir, "次やって", "p-1"))
+        first = _context(_ups(state_dir, "なんで止まってるの", "p-recv"))
         second = _context(_ups(state_dir, "その次", "p-2"))
 
         assert "未教訓化として1件" in first and "予告で止まる" in first
         assert "未教訓化" not in second
 
-    def test_session_that_is_not_the_holder_gets_no_notice(self, state_dir, temp_db):
-        aid, _ = _activity_with_correction(holder=OTHER_SID)
+    def test_session_that_did_not_receive_it_gets_no_notice(self, state_dir, temp_db):
+        aid, _ = _activity_with_correction(prompt_id="p-someone-else")
         HookState(SID).set_checked_in_activity(aid)
 
-        assert "未教訓化" not in _context(_ups(state_dir, "次やって"))
-
-    def test_correction_reached_only_through_topic_gets_no_notice(self, state_dir, temp_db):
-        from src.services.relation_service import add_relation
-        from src.services.topic_service import add_topic
-
-        aid, _ = _activity_with_correction(holder=SID)
-        topic = add_topic(title="T", description="d", tags=TAGS)["topic_id"]
-        add_relation("activity", aid, [{"type": "topic", "ids": [topic]}])
-        child = add_activity(title="[作業] 子", description=f"担い手: y（sessionId {SID}）", tags=TAGS,
-                             check_in=False)["activity_id"]
-        add_relation("activity", child, [{"type": "topic", "ids": [topic]}])
-        add_material("未教訓化: topicだけ", "本文", TAGS + [UNLEARNED_CORRECTION_TAG], "recorder",
-                     related=[{"type": "topic", "ids": [topic]}])
-        HookState(SID).set_checked_in_activity(child)
-
-        assert "未教訓化" not in _context(_ups(state_dir, "次やって"))
+        assert "未教訓化" not in _context(_ups(state_dir, "次やって", "p-1"))
 
     def test_no_notice_without_checked_in_activity(self, state_dir, temp_db):
-        _activity_with_correction()
-        assert "未教訓化" not in _context(_ups(state_dir, "次やって"))
+        _activity_with_correction(prompt_id="p-recv")
+        assert "未教訓化" not in _context(_ups(state_dir, "次やって", "p-recv"))
 
 
 class TestDelegateStop:
@@ -152,29 +142,31 @@ class TestDelegateStop:
         )
         return json.loads(result.stdout.strip())
 
-    def test_delegate_holding_unresolved_is_blocked_once_per_item(self, state_dir, temp_db):
-        aid, _ = _activity_with_correction()
+    def test_delegate_that_received_it_is_blocked_once_per_item(self, state_dir, temp_db):
+        append_mark(SID, "p-recv", "なんで止まってるの")
+        append_mark(SID, "p-recv2", "それも違う")
+        aid, _ = _activity_with_correction(prompt_id="p-recv")
 
         first = self._stop(state_dir, aid, ["SendMessage"])
         assert first["decision"] == "block" and "予告で止まる" in first["reason"]
         assert self._stop(state_dir, aid, ["SendMessage"]) == {}
         assert self._stop(state_dir, aid, ["SendMessage"]) == {}
 
-        add_material("未教訓化: 二件目", "本文", TAGS + [UNLEARNED_CORRECTION_TAG], "recorder",
-                     related=[{"type": "activity", "ids": [aid]}])
+        _correction(aid, "未教訓化: 二件目", "p-recv2")
         again = self._stop(state_dir, aid, ["SendMessage"])
         assert again["decision"] == "block" and "二件目" in again["reason"]
 
-    def test_delegate_that_is_not_the_holder_is_not_blocked(self, state_dir, temp_db):
-        aid, _ = _activity_with_correction(holder=OTHER_SID)
+    def test_delegate_that_did_not_receive_it_is_not_blocked(self, state_dir, temp_db):
+        append_mark(SID, "p-mine", "続けて")
+        aid, _ = _activity_with_correction(prompt_id="p-someone-else")
 
         assert self._stop(state_dir, aid, ["SendMessage"]) == {}
 
     def test_combined_with_no_wake_in_one_block(self, state_dir, temp_db):
-        aid, _ = _activity_with_correction()
+        append_mark(SID, "p-recv", "なんで止まってるの")
+        aid, _ = _activity_with_correction(prompt_id="p-recv")
 
         result = self._stop(state_dir, aid, [])
 
         assert result["decision"] == "block"
         assert "予告で止まる" in result["reason"] and "ScheduleWakeup" in result["reason"]
-
