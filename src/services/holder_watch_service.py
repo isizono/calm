@@ -46,7 +46,10 @@ SIGNAL_SOURCE = "watch:holder"
 
 _HOLDER_LINE_RE = re.compile(r"^担い手[:：](.*)$", re.MULTILINE)
 _SESSION_ID_RE = re.compile(r"sessionId\s+([0-9a-fA-F-]{36})")
-_JOB_ID_RE = re.compile(r"job(?:\s*id)?\s*[:：]?\s*([0-9a-f]{8})", re.IGNORECASE)
+_JOB_ID_RE = re.compile(
+    r"(?:cron(?:\s*create|\s*job)?|job)(?:\s*id)?\s*[:：（(]?\s*([0-9a-f]{8})(?![0-9a-f])",
+    re.IGNORECASE,
+)
 
 
 def _read_float_env(name: str, default: float) -> float:
@@ -274,7 +277,7 @@ def handoff_warnings(old_description: str | None, new_description: str) -> list[
     if not new_jobs:
         warnings.append(
             "状態節に新しい起こし直し（CronCreate）のjob idが無い。"
-            "仕込んでからjob idを状態節に書く"
+            "仕込んでから「起こし直し: Cron <job id>（毎時MM分・MM分）」の形で状態節に書く"
         )
     return warnings
 

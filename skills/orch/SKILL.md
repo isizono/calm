@@ -304,7 +304,7 @@ orch同士の約束・待ちは、宛先を相手のorchアクティビティの
 
 ### 担い手になった手番で仕込むもの
 
-担い手になった窓口（[なる](#なる)で起票した、orchにした、または代わった）は、その手番で次の3つを仕込む。どれもセッションの中にしか残らないので、担い手が替わるたびに新しい担い手が仕込み直す。仕込んだことは状態節に1行書く。
+担い手になった窓口（[なる](#なる)で起票した、orchにした、または代わった）は、その手番で次の3つを仕込む。どれもセッションの中にしか残らないので、担い手が替わるたびに新しい担い手が仕込み直す。仕込んだことは状態節に1行書く。起こし直しは「起こし直し: Cron <job id>（毎時MM分・MM分）」の形で書く（担い手欄の見張りがこのjob idを読む）。
 
 1. **自分の定期の起こし直し**: CronCreate（recurring、30分ごと、:00と:30は避ける）。中身は「状態節・現在地節を読み、予告して打っていない手があれば打つ／bgとペインのセッションの生死を見る／相談役の文脈の大きさを測り、[世代交代](#世代交代)の契機を超えていたら相談役を立て直す（新しい相談役に務めを引き継がせてから、旧相談役をclaude stop）／未読の子の報告を読む／orchにcheck_inした応答の`control.unlearned_corrections`に`same_type_pending`があれば、`${CLAUDE_PLUGIN_ROOT}/scripts/corrections.py context`で各件の訂正の前後を切り出し、経緯を渡さずにAgent（thinker）へ切り出しと訂正だけを渡して同じ型の他の誤りを洗わせ、結果を素タグ`same-type-checked`の資材にしてそれらの件と結ぶ／変化が無ければ何も書かずに終える」
 2. **外からの見張り**: 常駐の観測役が、担い手の生死・固まり（判定スクリプト`${CLAUDE_PLUGIN_ROOT}/scripts/orch_liveness.py --session-id <sessionId>`のDEAD・STUCK。pidが無い、またはbusyのままtranscriptが25分以上更新されない）と、担い手の文脈・圧縮・skillの版（判定スクリプト`${CLAUDE_PLUGIN_ROOT}/scripts/handoff_trigger.py --session-id <sessionId> --role holder`の`trigger`）を測る。測るだけで判断はしない。`trigger`がtrueなら、観測役が担い手へSendMessageで「交代せよ」を送る（同じ相手に二重に送らない）。DEAD・STUCKなら、観測役がorchのログに書いたうえで、[世代交代](#世代交代)の手順3の形で後継を起こす（1つのorchにつき1時間に1回まで）。この見張りは観測役の依頼文に常設の仕事として入っているので、担い手は観測役がいるかを確かめ、いなければ`bg_dispatch.py --role observer`で自分の名前・sessionId・transcriptのパス（`~/.claude/projects/*/<sessionId>.jsonl`）を渡して立てる。観測役は見るたびに担い手欄から担い手を読み直すので、代わった担い手が頼み直す必要は無い。予告止まりの検知（idleの知らせのたびの、予告した手が打たれずに止まっていないかの検査）だけは相談役に残る

@@ -11,6 +11,7 @@ from src.services.activity_service import add_activity, update_activity
 from src.services.holder_watch_service import (
     PROJECTS_DIR_ENV,
     check_once,
+    handoff_warnings,
     holder_session_id,
 )
 
@@ -190,3 +191,21 @@ class TestCheckOnce:
         _write_session(NEW_SID, DEAD_PID)
 
         assert check_once(dead_sec=600, stale_sec=3600, seen_alive=set()) == []
+
+
+@pytest.mark.parametrize("line", [
+    "仕込み: 起こし直し（CronCreate、job id 81f254da）",
+    "起こし直し: Cron 9677e9a1（毎時11分・41分）",
+    "CronCreate f6f1d9b3（毎時17分・47分）",
+    "Cron job f74c2ab4 毎時17分・47分",
+])
+def test_handoff_accepts_the_job_id_however_the_holder_wrote_it(line):
+    new = f"## 状態\n担い手: holder-x（sessionId {NEW_SID}）／2026-10-09 03:10\n{line}\n"
+    assert handoff_warnings(_desc(None), new) == []
+
+
+def test_handoff_without_any_job_id_warns_with_the_expected_format():
+    warnings = handoff_warnings(_desc(None), _desc(NEW_SID))
+    assert len(warnings) == 1
+    assert "job id" in warnings[0]
+    assert "起こし直し: Cron <job id>" in warnings[0]
