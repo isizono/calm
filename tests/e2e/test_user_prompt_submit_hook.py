@@ -589,3 +589,38 @@ class TestRewriteEventsRetry:
 
         assert calls["count"] == 2
         assert state.read_events() == [{"e": "nudge", "turn": 1, "consumed": True}]
+
+
+class TestRecorderReviveWiring:
+    """人の発話のときだけ記録役の起こし直しを試み、失敗しても他の配達を止めない。
+
+    CLAUDE_PIDには存在しないpidを渡すので、起こし直しの子プロセス（scripts/recorder.py start）は
+    本体の起動時刻を取れずにすぐ終わり、tmux・claudeは起動しない。試みた印は実行ディレクトリの
+    revive_attemptに残る。
+    """
+
+    _ENV = {"CALM_RECORDER": "1", "CLAUDE_CODE_SESSION_ATTENDED": "1", "CLAUDE_PID": "999999"}
+
+    def _attempt_file(self, state_dir: Path) -> Path:
+        return state_dir / "recorder_runs" / _SESSION_ID / "revive_attempt"
+
+    def test_human_prompt_attempts_revive(self, state_dir):
+        _run_hook({"session_id": _SESSION_ID, "prompt": "続けて", "transcript_path": "/nonexistent"},
+                  state_dir, self._ENV)
+        assert self._attempt_file(state_dir).exists()
+
+    def test_relayed_message_does_not_attempt_revive(self, state_dir):
+        prompt = '<cross-session-message from="x">周知</cross-session-message>'
+        _run_hook({"session_id": _SESSION_ID, "prompt": prompt, "transcript_path": "/nonexistent"},
+                  state_dir, self._ENV)
+        assert not self._attempt_file(state_dir).exists()
+
+    def test_revive_failure_does_not_stop_nudge_delivery(self, state_dir):
+        (state_dir / "recorder_runs").write_text("壊れた置き場", encoding="utf-8")
+        _write_events([{"e": "nudge", "type": "record", "turn": 1, "repeat": 1}], state_dir)
+
+        result = _run_hook({"session_id": _SESSION_ID, "prompt": "続けて", "transcript_path": "/nonexistent"},
+                           state_dir, self._ENV)
+
+        context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+        assert "記録ツール" in context

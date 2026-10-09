@@ -7,6 +7,7 @@
 4. events.jsonl全読み
 5. Skill Span判定 → Span中なら即approve（安全弁: MAX_SKILL_SPAN_TURNS）
 6. check-in判定（e:toolでcheck_in/add_activityが1件でもあるか、猶予あり）
+6.5 自走するactivityで、問いの配達先も起こされる仕掛けも置かずに終えるなら1回block
 7. nudge判定 + 状態更新 → approve
 """
 import os
@@ -42,6 +43,18 @@ _BLOCK_LIMIT = 1
 _CHECKIN_DEFER_TURNS = 3
 _MAX_SKILL_SPAN_TURNS = 20
 _NUDGE_INTERVAL = 2
+
+# このturnに呼んでいれば「問いの配達先か起こされる仕掛けを置いた」とみなすツール。
+# session_launchはhook_transcriptが後継の窓・子のbgの起動を表す名前。
+_WAKE_OR_DELIVERY_TOOLS = {"add_ask", "SendMessage", "ScheduleWakeup", "CronCreate", "session_launch"}
+_NO_WAKE_REASON = (
+    "このターンは、問いの配達先も、あとで起こしてもらう仕掛けも置かないまま終わろうとしています。"
+    "画面に書いた問いや「次にやること」は、誰にも届かず、誰もこのセッションを起こしません。"
+    "終える前に、当てはまるものを置いてください: "
+    "人に返す問いはadd_ask / 報告先・相談先へのSendMessage（返事か完了の通知で起こされる。notify_when_idleの購読も可）"
+    " / ScheduleWakeup・CronCreate・裏で走らせる処理（完了の通知で起こされる）/ 世代交代なら後継の起動。"
+    "どれも要らずに終えてよい場合（人がこの場で返事を待っている、仕事が済んで報告先が空席など）は、そのまま終えてください。次は止めません。"
+)
 
 
 def main() -> None:
@@ -174,6 +187,30 @@ def main() -> None:
                 "turn": current_turn,
             }])
 
+        # 6.5 止まる前の置き手: 自走するセッション(委譲先の目印かorchタグのactivityに
+        # check-in中)が、このturnで問いの配達先も起こされる仕掛けも置かずに終えるなら1回blockする。
+        # 2回目のStopはブロック上限で通るので、正当に終えるならそのまま終えられる
+        no_wake = (
+            has_checkin
+            and not _has_wake_or_delivery(data, all_events, current_turn)
+            and _is_self_driving_activity(state.get_checked_in_activity())
+        )
+        # 6.4 未教訓化の持ち越し: 委譲先が、check-in先の未解消の未教訓化を抱えたまま
+        # 終えるなら1回blockする。同じ件では二度止めない（新しい件が積まれたときだけ）。
+        # 6.5と同じStopで両方当たるときは1回のblockにまとめる（上限1回のため、
+        # 別々に出すと後ろの段が評価されないまま次のStopで通ってしまう）
+        unlearned = _new_unlearned_for_delegate(state, session_id) if has_checkin else []
+        if unlearned:
+            state.add_correction_ids("stop", {i["id"] for i in unlearned})
+            state.increment_block_count()
+            reason = _unlearned_reason(unlearned)
+            harness.emit_block(f"{reason}\n\n{_NO_WAKE_REASON}" if no_wake else reason)
+            return
+        if no_wake:
+            state.increment_block_count()
+            harness.emit_block(_NO_WAKE_REASON)
+            return
+
         # 7. nudge判定 + 状態更新 + approve
         state.reset_block_count()
         harness.emit_approve()
@@ -217,6 +254,70 @@ def _has_completion_signal(events: list[dict]) -> bool:
     return any(
         e["e"] == "tool" and (e.get("name") == "SendMessage" or (e.get("name") == "update_goal" and e.get("satisfied")))
         for e in events
+    )
+
+
+def _has_wake_or_delivery(data: dict, events: list[dict], current_turn: int) -> bool:
+    """このturnに問いの配達先か起こされる仕掛けを置いたか。
+
+    裏で走っている処理(background_tasks)とcron(session_crons)はhook入力から読む。
+    どちらも完了・発火でこのセッションを起こすので、置いたturnを問わず数える。
+    """
+    if data.get("background_tasks") or data.get("session_crons"):
+        return True
+    return any(
+        e["e"] == "tool" and e.get("name") in _WAKE_OR_DELIVERY_TOOLS and e.get("turn", 0) == current_turn
+        for e in events
+    )
+
+
+def _is_self_driving_activity(activity_id: int | None) -> bool:
+    """人の入力を待たずに進むべきactivityか(委譲先の目印があるか、orchタグが付いているか)。
+
+    DBを読めないときは対象外(blockしない側)に倒す。
+    """
+    if activity_id is None:
+        return False
+    if is_delegate_activity(activity_id):
+        return True
+    try:
+        from src.db import get_connection
+        from src.services.tag_service import get_entity_tags
+
+        conn = get_connection()
+        try:
+            return "orch" in get_entity_tags(conn, "activity_tags", "activity_id", activity_id)
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"stop_hook.py orch tag lookup error: {e}", file=sys.stderr)
+        return False
+
+
+def _new_unlearned_for_delegate(state: HookState, session_id: str) -> list[dict]:
+    """委譲先の目印があるactivityにcheck-in中のbgなら、このセッションが受けた訂正の
+    未解消の未教訓化のうちまだ止めていないものを返す。
+
+    窓口は止めず、次のプロンプトでの注意（user_prompt_submit_hook）に留める。
+    DBを読めないときは止めない側に倒す。
+    """
+    if not is_delegate_activity(state.get_checked_in_activity()):
+        return []
+    try:
+        from hooks.correction_marks import new_unresolved
+
+        return new_unresolved(state, "stop", session_id)
+    except Exception as e:
+        print(f"stop_hook.py unlearned correction lookup error: {e}", file=sys.stderr)
+        return []
+
+
+def _unlearned_reason(items: list[dict]) -> str:
+    titles = "／".join(i["title"] for i in items[:3])
+    return (
+        f"このセッションで受けた人の訂正が、記録役により未教訓化として{len(items)}件積まれています（{titles}）。"
+        "教訓にして届けるところは教訓化役が受け持っています（届け先を書くのは教訓化役が呼ぶ経緯なしの個体、"
+        "届いたかを測るのは観測役）。このセッションで教訓を書く必要はありません。そのまま終えて構いません。"
     )
 
 

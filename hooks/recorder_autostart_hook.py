@@ -57,6 +57,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 _project_root = Path(__file__).resolve().parents[1]
@@ -146,41 +147,80 @@ def main() -> int:
         # 記録役はtmux前提でWindowsには未対応。
         return 0
     try:
-        if os.environ.get("CALM_RECORDER") != "1":
+        if not _wants_recorder():
             return 0
-        if os.environ.get("CLAUDE_CODE_SESSION_ATTENDED") != "1":
-            return 0
-
         if os.environ.get("HOOK_STATE_DIR"):
             HookState.BASE_DIR = Path(os.environ["HOOK_STATE_DIR"])
 
         payload = select_harness(hook_event_name="SessionStart").read_hook_input()
-        session_id = payload.get("session_id")
-        transcript_path = payload.get("transcript_path")
-        cwd = payload.get("cwd")
-        if not isinstance(session_id, str) or not session_id:
-            return 0
-        if not isinstance(transcript_path, str) or not transcript_path:
-            return 0
+        _start_for(payload, stop_stale=True)
+        return 0
+    except Exception:
+        return 0
 
-        recorder_runs_dir = (HookState.BASE_DIR / "recorder_runs").resolve()
-        if isinstance(cwd, str) and Path(cwd).resolve().is_relative_to(recorder_runs_dir):
-            return 0
 
-        main_pid = _read_int_env("CLAUDE_PID")
-        if main_pid is None:
-            return 0
+def _wants_recorder() -> bool:
+    return os.environ.get("CALM_RECORDER") == "1" and os.environ.get("CLAUDE_CODE_SESSION_ATTENDED") == "1"
 
+
+def _start_for(payload: dict, *, stop_stale: bool) -> None:
+    session_id = payload.get("session_id")
+    transcript_path = payload.get("transcript_path")
+    cwd = payload.get("cwd")
+    if not isinstance(session_id, str) or not session_id:
+        return
+    if not isinstance(transcript_path, str) or not transcript_path:
+        return
+
+    recorder_runs_dir = (HookState.BASE_DIR / "recorder_runs").resolve()
+    if isinstance(cwd, str) and Path(cwd).resolve().is_relative_to(recorder_runs_dir):
+        return
+
+    main_pid = _read_int_env("CLAUDE_PID")
+    if main_pid is None:
+        return
+
+    if stop_stale:
         for old_sid in _find_stale_sids(main_pid, session_id):
             try:
                 _spawn_detached_stop(_project_root, run_dir_for(old_sid), old_sid)
             except Exception:
                 pass
 
-        _spawn_start(session_id, main_pid, transcript_path)
-        return 0
-    except Exception:
-        return 0
+    _spawn_start(session_id, main_pid, transcript_path)
+
+
+# 起こし直しが恒常的に失敗する環境（tmux・venvが無い等）で、人の発話のたびに起動を試み続けないための間隔。
+_REVIVE_RETRY_SEC = 300
+
+
+# ponytail: 長く外れていた窓口では、溜まった差分を片に切って全部読み直す（数MBなら片が数百）。
+# 費用が問題になったら、空白区間は印の付いた発話だけ拾う形にする。
+def revive_if_detached(payload: dict, *, now: float | None = None) -> None:
+    """UserPromptSubmitから呼ぶ。記録役を使う設定なのに付いていなければ起こし直す。
+
+    記録役が外から落とされても（tmuxサーバーごと落ちる等）、起動の契機が
+    SessionStartだけだと、長く生きる窓口ではcompactまで誰も起こし直さない。
+    cursor.jsonは残るので、起こし直せば落ちた位置から読み直す。
+    試みた時刻を実行ディレクトリに残し、_REVIVE_RETRY_SEC以内は再び試みない。
+    """
+    if sys.platform == "win32" or not _wants_recorder():
+        return
+    from hooks.recorder_marker import is_recorder_attached
+
+    session_id = payload.get("session_id")
+    if not isinstance(session_id, str) or not session_id or is_recorder_attached(session_id):
+        return
+    now = time.time() if now is None else now
+    stamp = run_dir_for(session_id) / "revive_attempt"
+    try:
+        if now - float(stamp.read_text(encoding="utf-8")) < _REVIVE_RETRY_SEC:
+            return
+    except (OSError, ValueError):
+        pass
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text(str(now), encoding="utf-8")
+    _start_for(payload, stop_stale=False)
 
 
 if __name__ == "__main__":

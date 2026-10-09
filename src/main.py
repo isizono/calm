@@ -1603,7 +1603,8 @@ def check_in(
 
     Returns:
         5つの枠（anchor: {activity, pinned} / control: {goal, asks,
-        decision_candidates, dependencies} / context: {topics, activities, decisions, latest_log,
+        decision_candidates, unlearned_corrections, dependencies} / context: {topics, activities,
+        decisions, latest_log,
         materials} / catalog: {logs, map} / env: {tag_notes, hints, coverage,
         session, flow_guide}）に分けて返す。中身が空の枠・キーは省く
         （anchor.activity・control.goal・env.coverage・env.sessionは常に置く）。
@@ -1613,6 +1614,8 @@ def check_in(
         control.asks.awaiting_triageが1件以上あればtriage_askで振り分けること。
         control.decision_candidatesは記録役が退避した閉じていない決定事項の候補
         （guideに閉じ方がある。decisionと結ぶかretractすると出なくなる）。
+        control.unlearned_correctionsは記録役が積んだ未解消の人の訂正（届け先
+        lesson-deliveryと観測lesson-observedの記録が両方結ばれると出なくなる）。
         env.session.alias_collisionがtrueならユーザーに伝えること。
         応答全体が10,000字を超えるとtruncatedキーが付く（cuts[].sectionは
         "anchor.pinned"のようなドット区切りパス）。control・env.tag_notesは
@@ -3384,6 +3387,10 @@ if __name__ == "__main__":
                 shutdown_callback=_shutdown_server,
             )
             _staleness_watchdog.start()
+
+        from src.services.holder_watch_service import HolderWatch
+
+        HolderWatch().start()
 
         try:
             _start_embedding_warmup()

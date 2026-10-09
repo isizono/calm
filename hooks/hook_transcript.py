@@ -72,6 +72,18 @@ _COMPLETION_SIGNAL_TOOLS = {
     "SendMessage",
 }
 
+# --- 後でこのセッションを起こす仕掛けになるツール(名前をそのまま照合) ---
+
+_WAKE_TOOLS = {
+    "ScheduleWakeup",
+    "CronCreate",
+}
+
+# 後継の窓(osascript経由のclaude)か子のbgを起動するBashのcommand。
+# 起動された側が報告を送ってくるので、起こされる仕掛けとして数える。
+# ponytail: 文字列一致の近似。変数経由の起動やスクリプトファイル内の起動は拾えない(拾えなければblock側に倒れる)
+_SESSION_LAUNCH_RE = re.compile(r"osascript.*\bclaude\b|\bclaude\b[^\n]*--bg", re.DOTALL)
+
 
 # ===================================================================
 # イベント駆動アーキテクチャ: イベント抽出
@@ -174,10 +186,16 @@ def extract_events(
                             ):
                                 event["satisfied"] = True
                         events.append(event)
-                    elif name in _COMPLETION_SIGNAL_TOOLS:
+                    elif name in _COMPLETION_SIGNAL_TOOLS or name in _WAKE_TOOLS:
                         events.append({
                             "e": "tool",
                             "name": name,
+                            "turn": current_turn,
+                        })
+                    elif name == "Bash" and _SESSION_LAUNCH_RE.search(str(block.get("input", {}).get("command", ""))):
+                        events.append({
+                            "e": "tool",
+                            "name": "session_launch",
                             "turn": current_turn,
                         })
 

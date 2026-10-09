@@ -5,7 +5,7 @@ import sqlite3
 from typing import Any
 
 from src.db import get_connection, inserted_row_id, row_to_dict
-from src.services import ask_handover_service, goal_service
+from src.services import ask_handover_service, goal_service, holder_watch_service
 from src.services.citations_service import (
     apply_and_writeback_conversions,
     apply_raw_to_cite_conversion,
@@ -837,6 +837,12 @@ def update_activity(
                 }
             }
 
+        # 書き込み前の旧担い手の状態を見る（書き込みは止めない）
+        handoff_warnings = (
+            holder_watch_service.handoff_warnings(current_description, description)
+            if description is not None else []
+        )
+
         moved_asks: list[dict] = []
         if move_asks_to is not None:
             move_result = ask_handover_service.move_pending_asks_with_conn(
@@ -981,6 +987,9 @@ def update_activity(
 
         if moved_asks:
             result["moved_asks"] = moved_asks
+
+        if handoff_warnings:
+            result["holder_warnings"] = handoff_warnings
 
         # completedにする呼び出しでは、このactivityを止めている未決着askを添える
         # （完了は止めない）。完了のコミット後に読み、失敗しても完了は失わない。
