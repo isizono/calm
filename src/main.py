@@ -63,6 +63,7 @@ from src.services.tag_analysis_service import analyze_tags as _analyze_tags
 from src.services.tag_service import (
     collect_tag_notes_for_injection,
     get_archived_tags_for_strings,
+    reset_delivery,
 )
 from src.services.tag_service import (
     demote_tag_notes as _demote_tag_notes,
@@ -124,7 +125,9 @@ def _maybe_inject_tag_notes(result: dict, tag_strings: list[str], mark: bool = T
     check_in経路はalways_inject_namespacesで常時注入が保証されるため問題ない。
 
     Args:
-        mark: False の場合、_injected_tags を参照も更新もしない（読み取り経路用）。
+        mark: False の場合は読み取り経路として扱う。check_in・書き込み応答で配った
+            タグも読み取り経路で配ったタグも返さず、返したタグは読み取り経路専用の
+            帳簿にだけ記録する（後のcheck_in・書き込み応答での配信を奪わない）。
     """
     session_id = get_caller_session_id()
     with contextlib.closing(get_connection()) as conn:
@@ -3132,6 +3135,19 @@ async def health(_request: Request) -> JSONResponse:
         "uptime_sec": int((now - _SERVER_STARTED_AT).total_seconds()),
         "version": _SERVER_VERSION_ID,
     })
+
+
+@mcp.custom_route("/session/reset-delivery", methods=["POST"])
+async def session_reset_delivery(request: Request) -> JSONResponse:
+    """セッションのtag notes配信済み記録を消す（SessionStart hookがcompact・/clear・resumeの後に呼ぶ）"""
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    session_id = body.get("session_id") if isinstance(body, dict) else None
+    if not session_id or not isinstance(session_id, str):
+        return JSONResponse({"error": "session_id is required (string)"}, status_code=400)
+    return JSONResponse({"removed": reset_delivery(session_id)})
 
 
 # セッションエンドポイント（HTTPモード用カスタムルート）

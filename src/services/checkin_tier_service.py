@@ -59,9 +59,10 @@ from src.services.response_budget import (
 )
 from src.services.signal_service import record_signal
 from src.services.tag_service import (
-    _decay_pointer_text,
+    _fold_pointer_text,
     collect_tag_notes_for_injection,
     get_entity_tags,
+    release_folded_tag,
 )
 
 logger = logging.getLogger(__name__)
@@ -247,6 +248,10 @@ def _build_decision_candidates(candidates: list[dict], total: int) -> dict | Non
     return result
 
 
+# 配信済みにせず毎回注入するnamespace。天井で畳んでも帳簿の対象にしない。
+ALWAYS_INJECT_NAMESPACES = ["intent"]
+
+
 def _build_unlearned_corrections(items: list[dict], total: int, same_type: list[int]) -> dict | None:
     if not items and not same_type:
         return None
@@ -281,7 +286,7 @@ def _collect_static(conn: sqlite3.Connection, activity_id: int, session_id: str 
     activity = row_to_dict(row)
     tags = get_entity_tags(conn, "activity_tags", "activity_id", activity_id)
     tag_notes = collect_tag_notes_for_injection(
-        conn, tags, session_id=session_id, always_inject_namespaces=["intent"]
+        conn, tags, session_id=session_id, always_inject_namespaces=ALWAYS_INJECT_NAMESPACES
     ) or []
 
     direct = _get_direct_relations(conn, "activity", activity_id)
@@ -567,11 +572,16 @@ def _activity_description_pointer(response: dict) -> list[dict]:
 
 
 def _fold_tag_notes(response: dict) -> None:
-    """env.tag_notesの天井超過分を、大きいnotesから順にdecayと同じ1行ポインタへ縮退させる。"""
+    """env.tag_notesの天井超過分を、大きいnotesから順に1行ポインタへ縮退させる。
+
+    畳んだタグは全文が届いていないので配信済みから外す。同じセッションで
+    ポインタを出し済みのタグは、ポインタも出さず項目ごと取り除く。
+    """
     env = response.get("env")
     notes = env.get("tag_notes") if isinstance(env, dict) else None
     if not isinstance(notes, list) or not notes:
         return
+    session_id = session_identity.get_caller_session_id()
     sized = sorted(
         (item for item in notes if isinstance(item, dict)),
         key=lambda item: response_budget.measure_chars(item.get("notes", "")),
@@ -581,8 +591,14 @@ def _fold_tag_notes(response: dict) -> None:
         if response_budget.measure_chars(notes) <= CHECKIN_TAG_NOTES_CAP_CHARS:
             break
         tag = item.get("tag")
-        if isinstance(tag, str):
-            item["notes"] = _decay_pointer_text(tag)
+        if not isinstance(tag, str):
+            continue
+        if tag.partition(":")[0] in ALWAYS_INJECT_NAMESPACES or release_folded_tag(session_id, tag):
+            item["notes"] = _fold_pointer_text(tag)
+        else:
+            notes.remove(item)
+    if not notes:
+        del env["tag_notes"]
 
 
 # tier形のcheck_in応答に対する予算方針。保護パス（予算に数えるが削らない）は
